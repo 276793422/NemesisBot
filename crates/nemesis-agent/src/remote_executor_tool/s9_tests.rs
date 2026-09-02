@@ -54,6 +54,10 @@ async fn stdio_cmd_child_lands_in_an_error_arm() {
         .spawn_and_call("exec", "{}", &req_ctx())
         .await
         .expect_err("cmd.exe cannot answer the protocol");
+    // 留证：assert 消息随 panic 进 summary 的 failures 区，若整轮被其它
+    // 测试挂死连坐取消就一起蒸发（2026-09-02 CI nightly 实录）——先旁路
+    // 捕获把实际 err 直接写 stderr，任何情况下 CI 日志都留得住。
+    crate::test_support::force_stderr(&format!("[s9-stdio] spawn_and_call error arm: {err}"));
     assert!(
         err.contains("timed out")
             || err.contains("exited without a response")

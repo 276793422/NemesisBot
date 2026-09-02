@@ -17,3 +17,24 @@ pub(crate) fn capture_logs() -> tracing::subscriber::DefaultGuard {
         .finish();
     tracing::subscriber::set_default(subscriber)
 }
+
+/// 绕过 libtest 输出捕获直接写进程 stderr。
+///
+/// 为什么需要：println!/eprintln! 的输出被 libtest 捕获进 per-test 缓冲，
+/// panic 详情也统一在末尾 summary 的 failures 区输出——**测试挂死导致整轮
+/// 被 cancel 时，这些全部丢失**（2026-09-02 extended-tests Linux nightly
+/// 首跑实录：2 个 FAILED 的 panic 现场随 2h 挂死一起蒸发）。捕获是 TLS 挂钩
+/// 只拦 std 的 stdout()/stderr() 句柄；Linux 上重新 open /proc/self/fd/2
+/// 拿到的是裸 fd 2，写下去直达 job 日志。非 Linux 直接 eprintln!（本地
+/// 调试场景，挂死时终端本身就在看）。
+pub(crate) fn force_stderr(msg: &str) {
+    #[cfg(target_os = "linux")]
+    {
+        if let Ok(mut f) = std::fs::OpenOptions::new().write(true).open("/proc/self/fd/2") {
+            use std::io::Write;
+            let _ = f.write_all(format!("{msg}\n").as_bytes());
+            return;
+        }
+    }
+    eprintln!("{msg}");
+}

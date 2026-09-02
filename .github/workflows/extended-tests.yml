@@ -73,7 +73,12 @@ jobs:
           npm run build
 
       - name: cargo test --workspace
-        run: cargo test --workspace
+        # 雷区 11（2026-09-01 nemesis_web 实录）：GH ubuntu runner 默认
+        # ulimit -n 1024，fd 表进程级终生持有——nemesis_web 全量跑到 ~400
+        # 个后耗尽，后续上千个连坐 panic（Os error 24）。跑前抬高，不改代码。
+        run: |
+          ulimit -n 8192
+          cargo test --workspace
 
   feature-matrix:
     name: Feature trimming matrix (Linux)

@@ -148,18 +148,136 @@ fn test_append_full_with_cron_markers() {
     delete_chat_log(&key);
 }
 
+/// dirblock 挂死诊断（2026-09-02 extended-tests Linux nightly 首跑实录）。
+///
+/// Linux：后台线程每 90s 检查测试是否完成；未完成就把各线程内核态
+/// （stat 的 wchan + syscall 号）经 [`crate::test_support::force_stderr`]
+/// 旁路 libtest 捕获直接写 stderr，留挂死现场。其它平台：全 no-op 桩
+/// （/proc 依赖，无观测意义），保持测试体平台无关调同一 API。
+#[cfg(target_os = "linux")]
+mod dirblock_diag {
+    use std::io::Write;
+    use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
+    use std::sync::Arc;
+    use std::time::Duration;
+
+    const DUMP_INTERVAL_SECS: u64 = 90;
+    // 90s × 6 = 9 分钟的现场窗口；之后线程退出，进程留给 job 超时收割。
+    const MAX_ROUNDS: u64 = 6;
+
+    pub struct Watchdog {
+        done: Arc<AtomicBool>,
+        step: Arc<AtomicU8>,
+    }
+
+    impl Watchdog {
+        pub fn start() -> Self {
+            let done = Arc::new(AtomicBool::new(false));
+            let step = Arc::new(AtomicU8::new(0));
+            let (d2, s2) = (done.clone(), step.clone());
+            let _ = std::thread::Builder::new()
+                .name("dirblock-watchdog".into())
+                .spawn(move || {
+                    for round in 1..=MAX_ROUNDS {
+                        std::thread::sleep(Duration::from_secs(DUMP_INTERVAL_SECS));
+                        if d2.load(Ordering::Relaxed) {
+                            return;
+                        }
+                        Self::dump(round, s2.load(Ordering::Relaxed));
+                    }
+                });
+            Self { done, step }
+        }
+
+        pub fn step(&self, n: u8) {
+            self.step.store(n, Ordering::Relaxed);
+        }
+
+        pub fn finish(&self) {
+            self.done.store(true, Ordering::Relaxed);
+        }
+
+        fn dump(round: u64, step: u8) {
+            let Ok(mut err) =
+                std::fs::OpenOptions::new().write(true).open("/proc/self/fd/2")
+            else {
+                return;
+            };
+            let _ = writeln!(
+                err,
+                "[dirblock-watchdog] round {round}: test hung ~{}s, last step={step} \
+                 (1=path 2=mkdir 3=append 4=read 5=asserts); per-thread kernel state:",
+                round * DUMP_INTERVAL_SECS
+            );
+            let Ok(rd) = std::fs::read_dir("/proc/self/task") else {
+                return;
+            };
+            for ent in rd.flatten() {
+                let tid = ent.file_name().to_string_lossy().to_string();
+                let stat = std::fs::read_to_string(format!("/proc/self/task/{tid}/stat"))
+                    .unwrap_or_default();
+                // stat 形如 `PID (comm) rest...`：comm 可含空格与 ')'，从最后一
+                // 个 ')' 后切字段。rest[0] = state(field 3)，wchan = field 35
+                // → rest 下标 32。
+                let Some((_, after_lparen)) = stat.split_once('(') else {
+                    continue;
+                };
+                let Some((comm, rest)) = after_lparen.rsplit_once(')') else {
+                    continue;
+                };
+                let f: Vec<&str> = rest.split_whitespace().collect();
+                let state = f.first().copied().unwrap_or("?");
+                let wchan = f.get(32).copied().unwrap_or("?");
+                let syscall = std::fs::read_to_string(format!("/proc/self/task/{tid}/syscall"))
+                    .map(|s| s.trim().to_string())
+                    .unwrap_or_else(|_| "-".into());
+                let _ = writeln!(
+                    err,
+                    "  tid={tid} comm={comm} state={state} wchan={wchan} syscall={syscall}"
+                );
+            }
+        }
+    }
+}
+
+#[cfg(not(target_os = "linux"))]
+mod dirblock_diag {
+    /// 非 Linux no-op 桩：挂死观测依赖 /proc（Linux-only 语义），仅为保持
+    /// 测试体平台无关调同一 API。
+    pub struct Watchdog;
+
+    impl Watchdog {
+        pub fn start() -> Self {
+            Watchdog
+        }
+        pub fn step(&self, _n: u8) {}
+        pub fn finish(&self) {}
+    }
+}
+
 /// A DIRECTORY squatting on the jsonl path: append warns and returns;
 /// read_chat_log pass-1 open also fails (empty page, not a panic).
 #[test]
 fn test_directory_at_log_path_is_tolerated() {
+    // 挂死背景：本测试在 CI Linux nightly（bb308f4）第一波挂死 2h（job
+    // 120min 超时取消，全程唯一 60s 告警点名本测试）；本地/远端 Linux 单跑
+    // 恒绿 0.02s，静态代码全路径有界，无法从代码推理定位 → watchdog 留现场。
+    let watchdog = dirblock_diag::Watchdog::start();
+
     let key = uniq_key("dirblock");
     let path = log_path(&key);
+    watchdog.step(1); // path resolved
     std::fs::create_dir_all(&path).unwrap();
+    watchdog.step(2); // dir created
     append_chat_log(&key, "user", "blocked"); // warn + return
+    watchdog.step(3); // append returned
     let (rows, total, _, _) = read_chat_log(&key, 10, None);
+    watchdog.step(4); // read returned
     assert_eq!(total, 0);
     assert!(rows.is_empty());
+    watchdog.step(5); // asserts passed — 只剩 remove_dir
     std::fs::remove_dir(&path).unwrap();
+    watchdog.finish();
 }
 
 /// read_boundary_events on a missing sidecar and on a DIRECTORY squatting on
