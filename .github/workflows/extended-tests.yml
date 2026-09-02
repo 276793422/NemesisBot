@@ -80,9 +80,15 @@ jobs:
         # 失败就中止整个 workspace 跑——nemesis-sandbox 一红，后面
         # security..nemesisbot 约 2000 个测试全没跑。nightly 要的是全量
         # 体检报告，一轮把所有红都暴露出来，不在半路掐断。
+        # --exclude nemesisbot（2026-09-02 实录 285 红）：nemesisbot bin 测试段
+        # 是 Windows 形态专属（.exe 硬编码 / spawn gateway / ComSpec 等 CLI
+        # 臂假设，见雷区 21），Linux 上 1930 过 / 285 挂，挂的全部是该家族
+        # （与远端 Linux 首跑 284 红一致，A/B 验证 pre-existing）。bin-only
+        # crate，Windows 全量（ci.yml）每天覆盖，Linux nightly 规避并在此标记；
+        # 库 crate 的跨平台行为不受影响，照常全测。
         run: |
           ulimit -n 8192
-          cargo test --workspace --no-fail-fast
+          cargo test --workspace --no-fail-fast --exclude nemesisbot
 
   feature-matrix:
     name: Feature trimming matrix (Linux)
