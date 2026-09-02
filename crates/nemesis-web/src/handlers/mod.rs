@@ -322,7 +322,10 @@ mod tests;
 
 // Previously-written extra/more coverage modules were never `mod`-declared, so
 // they silently did not compile or run. Wire them in here.
-#[cfg(all(test, feature = "cluster"))]
+// （workflow 也在门控集里：测试体引用 nemesis_workflow / handlers::workflow，
+// 只开 cluster 不开 workflow 编译时 E0433——2026-09-02 本地 --features cluster
+// 单独验证时实录；nemesisbot 透传两者恒同开所以从未暴露。）
+#[cfg(all(test, feature = "cluster", feature = "workflow"))]
 mod cluster_extra_tests;
 #[cfg(all(test, feature = "cluster"))]
 mod cluster_more_tests;

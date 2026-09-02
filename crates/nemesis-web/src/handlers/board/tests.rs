@@ -942,11 +942,21 @@ async fn test_autopilot_crud_manual_run_and_history() {
     let number = out["issue_number"].as_str().unwrap().to_string();
     assert!(!number.contains("{date}"), "placeholder must be substituted: {number}");
 
-    // target 非空 + 集群缺失 → 建单前拒绝（不留半成品）。
+    // target 非空 + 集群缺失 → 建单前拒绝（不留半成品）。拒绝臂随编译形态：
+    // cluster 编译但未运行（nemesisbot 全量常态）→「集群未运行」；cluster
+    // 未编译（minimal-iot 裁剪档；nightly --exclude nemesisbot 后 feature
+    // 统一不再透传，同形态）→「cluster feature 未编译」。两者都是正确生产
+    // 行为，按实际编译形态断言对应臂（2026-09-02 CI 实录：本测试未像
+    // dispatch/cancel 测试那样整体门控，在无 cluster 编译下钉死单臂假红）。
     let err = dispatch(&ctx, "autopilot.run", serde_json::json!({ "id": ap_dispatch_id }))
         .await
         .expect_err("dispatch target without cluster must error");
-    assert!(err.contains("集群未运行"), "{err}");
+    let expected = if cfg!(feature = "cluster") {
+        "集群未运行"
+    } else {
+        "cluster feature 未编译"
+    };
+    assert!(err.contains(expected), "{err}");
 
     // run 历史：origin=autopilot 的 issue（只有 target 空的那次）。
     let out = dispatch(&ctx, "autopilot.runs", serde_json::json!({ "id": ap_id }))

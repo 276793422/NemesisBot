@@ -1,10 +1,12 @@
 use super::*;
 use std::sync::Mutex;
 
-// These two tests poke the shared global counters. Without serialization, a
+// These tests poke the shared global counters. Without serialization, a
 // parallel `pass/fail/skip` increment races with `reset_counters()`+`get_counters()`
-// and the reset assertion can see (1,1,1) instead of (0,0,0). Other tests still
-// run in parallel; only these two are mutually exclusive.
+// and the reset assertion can see (1,1,1) instead of (0,0,0); symmetrically, a
+// parallel naked `reset_counters()` wipes the locked test's increments mid-window
+// (`failed: 0`, Windows CI 实录 2026-09-02). The contract is bilateral: EVERY
+// test that touches the counters (increment or reset) must hold this lock.
 static COUNTER_TEST_LOCK: Mutex<()> = Mutex::new(());
 
 #[test]
@@ -95,6 +97,7 @@ fn pass_fail_skip_increment_counters() {
 
 #[test]
 fn test_result_variants_fields() {
+    let _g = COUNTER_TEST_LOCK.lock().unwrap();
     let r = pass("n", "m");
     assert!(r.passed);
     assert_eq!(r.name, "n");
@@ -111,6 +114,7 @@ fn test_result_variants_fields() {
 
 #[test]
 fn print_results_all_passed_returns_true() {
+    let _g = COUNTER_TEST_LOCK.lock().unwrap();
     reset_counters();
     let results = vec![pass("a", "ok"), pass("b", "ok")];
     assert!(print_results(&results));
@@ -118,12 +122,14 @@ fn print_results_all_passed_returns_true() {
 
 #[test]
 fn print_results_with_failure_returns_false() {
+    let _g = COUNTER_TEST_LOCK.lock().unwrap();
     let results = vec![pass("a", "ok"), fail("b", "bad")];
     assert!(!print_results(&results));
 }
 
 #[test]
 fn print_results_skip_does_not_fail() {
+    let _g = COUNTER_TEST_LOCK.lock().unwrap();
     let results = vec![skip("a", "no-op"), pass("b", "ok")];
     assert!(print_results(&results));
 }
