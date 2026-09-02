@@ -638,13 +638,16 @@ fn resolve_items_list(
     // stringification) so an array output stays an array.
     if trimmed.starts_with("{{") && trimmed.ends_with("}}") {
         let inner = trimmed[2..trimmed.len() - 2].trim();
-        if !inner.is_empty() && !inner.contains("{{") && !inner.contains(' ')
+        if !inner.is_empty()
+            && !inner.contains("{{")
+            && !inner.contains(' ')
             && let Some(val) = context.get(inner)
-                && let Some(arr) = val.as_array() {
-                    return Ok(arr.clone());
-                }
-                // Referenced value isn't an array — fall through to string
-                // parsing (JSON-array string or newline-separated list).
+            && let Some(arr) = val.as_array()
+        {
+            return Ok(arr.clone());
+        }
+        // Referenced value isn't an array — fall through to string
+        // parsing (JSON-array string or newline-separated list).
     }
 
     // General string: resolve placeholders, then JSON-array parse, else lines.
@@ -993,7 +996,8 @@ impl NodeExecutor for TransformNodeExecutor {
             "last_line" => {
                 let line = input
                     .lines()
-                    .map(str::trim).rfind(|l| !l.is_empty())
+                    .map(str::trim)
+                    .rfind(|l| !l.is_empty())
                     .unwrap_or("")
                     .to_string();
                 serde_json::json!({ "text": line })
@@ -1733,19 +1737,28 @@ impl ScriptNodeExecutor {
     /// No tool registry → direct spawn (unit tests, stub executors,
     /// `execute_inline_node`). Preserves the pre-sandbox behaviour.
     pub fn new() -> Self {
-        Self { tools: None, world: None }
+        Self {
+            tools: None,
+            world: None,
+        }
     }
 
     /// With the agent tool registry bridged in by the gateway → scripts run via
     /// the `run_script` MOVE_TOOL (sandbox-aware, security-pipelined).
     pub fn with_tools(tools: Arc<nemesis_tools::registry::ToolRegistry>) -> Self {
-        Self { tools: Some(tools), world: None }
+        Self {
+            tools: Some(tools),
+            world: None,
+        }
     }
 
     /// With a U10 execution world but no registry (CLI / bare engines):
     /// scripts route through the world's tool lane (executor child / box).
     pub fn with_world(world: Arc<dyn nemesis_sandbox::exec_world::ExecutionWorld>) -> Self {
-        Self { tools: None, world: Some(world) }
+        Self {
+            tools: None,
+            world: Some(world),
+        }
     }
 
     /// Registry + world (gateway integrated engine after
@@ -1755,7 +1768,10 @@ impl ScriptNodeExecutor {
         tools: Arc<nemesis_tools::registry::ToolRegistry>,
         world: Arc<dyn nemesis_sandbox::exec_world::ExecutionWorld>,
     ) -> Self {
-        Self { tools: Some(tools), world: Some(world) }
+        Self {
+            tools: Some(tools),
+            world: Some(world),
+        }
     }
 }
 
@@ -1823,22 +1839,23 @@ impl NodeExecutor for ScriptNodeExecutor {
         // checks" gap). The tool returns structured {stdout,stderr,exit_code},
         // preserving this node's output contract.
         if let Some(tools) = &self.tools
-            && tools.has("run_script") {
-                let args = serde_json::json!({
-                    "interpreter": interpreter,
-                    "flag": flag,
-                    "script": resolved_script,
-                });
-                let tool_result = tools.execute("run_script", &args).await;
-                return Ok(script_tool_result_to_node_result(
-                    &node.id,
-                    now,
-                    language,
-                    tool_result,
-                ));
-            }
-            // run_script not registered (minimal/test registry) → fall through
-            // to the world / direct-spawn paths below.
+            && tools.has("run_script")
+        {
+            let args = serde_json::json!({
+                "interpreter": interpreter,
+                "flag": flag,
+                "script": resolved_script,
+            });
+            let tool_result = tools.execute("run_script", &args).await;
+            return Ok(script_tool_result_to_node_result(
+                &node.id,
+                now,
+                language,
+                tool_result,
+            ));
+        }
+        // run_script not registered (minimal/test registry) → fall through
+        // to the world / direct-spawn paths below.
 
         // U10 per-node `sandbox` 开关（config key，bool）：
         // - 缺省 / `true`：跟随全局（registry → world 工具车道 → 受守卫
@@ -1850,82 +1867,82 @@ impl NodeExecutor for ScriptNodeExecutor {
         let sandbox_opt = node.config.get("sandbox").and_then(|v| v.as_bool());
 
         if sandbox_opt == Some(false)
-            && let Some(world) = &self.world {
-                let op = nemesis_sandbox::exec_world::ExecOp::Spawn(
-                    nemesis_sandbox::exec_world::SpawnOp {
-                        program: interpreter.to_string(),
-                        args: vec![flag.to_string(), resolved_script.clone()],
-                        cwd: None,
-                        stdin: None,
-                        timeout_secs: None,
-                    },
-                );
-                match world.run(op).await {
-                    Ok(outcome) => {
-                        return Ok(script_output_node_result(
-                            &node.id,
-                            now,
-                            language,
-                            outcome.stdout,
-                            outcome.stderr,
-                            outcome.exit_code.unwrap_or(-1) as i64,
-                        ));
-                    }
-                    Err(e) => {
-                        return Ok(script_output_node_result(
-                            &node.id,
-                            now,
-                            language,
-                            String::new(),
-                            format!("execution-world spawn failed: {e}"),
-                            -1,
-                        ));
-                    }
+            && let Some(world) = &self.world
+        {
+            let op =
+                nemesis_sandbox::exec_world::ExecOp::Spawn(nemesis_sandbox::exec_world::SpawnOp {
+                    program: interpreter.to_string(),
+                    args: vec![flag.to_string(), resolved_script.clone()],
+                    cwd: None,
+                    stdin: None,
+                    timeout_secs: None,
+                });
+            match world.run(op).await {
+                Ok(outcome) => {
+                    return Ok(script_output_node_result(
+                        &node.id,
+                        now,
+                        language,
+                        outcome.stdout,
+                        outcome.stderr,
+                        outcome.exit_code.unwrap_or(-1) as i64,
+                    ));
+                }
+                Err(e) => {
+                    return Ok(script_output_node_result(
+                        &node.id,
+                        now,
+                        language,
+                        String::new(),
+                        format!("execution-world spawn failed: {e}"),
+                        -1,
+                    ));
                 }
             }
-            // 无 world（单测/裸装配）→ 落到下方裸 spawn（保持旧行为）。
+        }
+        // 无 world（单测/裸装配）→ 落到下方裸 spawn（保持旧行为）。
 
         // U10 world 工具车道：无 registry 的装配（CLI `workflow run`、裸
         // engine）经执行世界调 `run_script` —— 与 agent `exec` 同一个
         // executor 子进程 / Sandboxie 盒开关，不再有「CLI 直 spawn 绕过
         // 沙盒」的逃逸路径。
         if let Some(world) = &self.world
-            && world.supports_tool_calls() {
-                let args = serde_json::json!({
-                    "interpreter": interpreter,
-                    "flag": flag,
-                    "script": resolved_script,
-                })
-                .to_string();
-                let op = nemesis_sandbox::exec_world::ExecOp::Tool(
-                    nemesis_sandbox::exec_world::ToolOp {
-                        tool: "run_script".to_string(),
-                        args,
-                    },
-                );
-                match world.run(op).await {
-                    Ok(outcome) => {
-                        return Ok(script_output_node_result(
-                            &node.id,
-                            now,
-                            language,
-                            outcome.stdout,
-                            outcome.stderr,
-                            outcome.exit_code.unwrap_or(-1) as i64,
-                        ));
-                    }
-                    Err(e) => {
-                        return Ok(script_output_node_result(
-                            &node.id,
-                            now,
-                            language,
-                            String::new(),
-                            format!("execution-world tool lane failed: {e}"),
-                            -1,
-                        ));
-                    }
+            && world.supports_tool_calls()
+        {
+            let args = serde_json::json!({
+                "interpreter": interpreter,
+                "flag": flag,
+                "script": resolved_script,
+            })
+            .to_string();
+            let op =
+                nemesis_sandbox::exec_world::ExecOp::Tool(nemesis_sandbox::exec_world::ToolOp {
+                    tool: "run_script".to_string(),
+                    args,
+                });
+            match world.run(op).await {
+                Ok(outcome) => {
+                    return Ok(script_output_node_result(
+                        &node.id,
+                        now,
+                        language,
+                        outcome.stdout,
+                        outcome.stderr,
+                        outcome.exit_code.unwrap_or(-1) as i64,
+                    ));
+                }
+                Err(e) => {
+                    return Ok(script_output_node_result(
+                        &node.id,
+                        now,
+                        language,
+                        String::new(),
+                        format!("execution-world tool lane failed: {e}"),
+                        -1,
+                    ));
                 }
             }
+        }
 
         // Fallback (no registry / no world — unit tests / stub paths):
         // direct spawn.
@@ -2288,23 +2305,24 @@ impl NodeExecutor for QuestionClassifierNodeExecutor {
                     let content = resp.content;
                     let class_id = parse_classifier_output(&content);
                     if let Some(ref id) = class_id
-                        && classes.iter().any(|c| &c.id == id) {
-                            return Ok(NodeResult {
-                                node_id: node.id.clone(),
-                                output: serde_json::json!({
-                                    "class_id": id,
-                                    "confidence": confidence_for(attempt, max_attempts),
-                                    "raw_response": content,
-                                    "model": model,
-                                    "attempts": attempt,
-                                }),
-                                error: None,
-                                state: ExecutionState::Completed,
-                                started_at: started,
-                                ended_at: Local::now(),
-                                metadata: HashMap::new(),
-                            });
-                        }
+                        && classes.iter().any(|c| &c.id == id)
+                    {
+                        return Ok(NodeResult {
+                            node_id: node.id.clone(),
+                            output: serde_json::json!({
+                                "class_id": id,
+                                "confidence": confidence_for(attempt, max_attempts),
+                                "raw_response": content,
+                                "model": model,
+                                "attempts": attempt,
+                            }),
+                            error: None,
+                            state: ExecutionState::Completed,
+                            started_at: started,
+                            ended_at: Local::now(),
+                            metadata: HashMap::new(),
+                        });
+                    }
                     last_error = Some(format!(
                         "attempt {}: LLM returned invalid class id {:?} (raw: {:?})",
                         attempt,
@@ -2656,18 +2674,20 @@ fn parse_json_object(content: &str) -> Result<serde_json::Value, String> {
         .and_then(|s| s.strip_suffix("```").map(|s| s.trim()))
         .unwrap_or(trimmed);
     if let Ok(v) = serde_json::from_str::<serde_json::Value>(fence_stripped)
-        && v.is_object() {
-            return Ok(v);
-        }
+        && v.is_object()
+    {
+        return Ok(v);
+    }
 
     // Last resort: pull out the outermost {...} region. Handles
     // "Sure, here's the JSON:\n{ \"name\": \"foo\" }\nHope this helps!".
     if let (Some(start), Some(end)) = (trimmed.find('{'), trimmed.rfind('}'))
         && start < end
-            && let Ok(v) = serde_json::from_str::<serde_json::Value>(&trimmed[start..=end])
-                && v.is_object() {
-                    return Ok(v);
-                }
+        && let Ok(v) = serde_json::from_str::<serde_json::Value>(&trimmed[start..=end])
+        && v.is_object()
+    {
+        return Ok(v);
+    }
 
     Err("not a JSON object".to_string())
 }
@@ -3511,9 +3531,10 @@ fn resolve_operand(s: &str, context: &HashMap<String, serde_json::Value>) -> ser
         return v.clone();
     }
     if let Ok(n) = trimmed.parse::<f64>()
-        && let Some(num) = serde_json::Number::from_f64(n) {
-            return serde_json::Value::Number(num);
-        }
+        && let Some(num) = serde_json::Number::from_f64(n)
+    {
+        return serde_json::Value::Number(num);
+    }
     if trimmed == "true" {
         return serde_json::Value::Bool(true);
     }

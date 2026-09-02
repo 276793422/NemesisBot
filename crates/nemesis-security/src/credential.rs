@@ -33,8 +33,7 @@ pub struct CredentialMatch {
 }
 
 /// Mask function configuration.
-#[derive(Debug, Clone, Copy)]
-#[derive(Default)]
+#[derive(Debug, Clone, Copy, Default)]
 pub enum MaskMode {
     /// Keep first 4 and last 4 chars
     #[default]
@@ -44,7 +43,6 @@ pub enum MaskMode {
     /// Show key name but redact value
     KeyValue,
 }
-
 
 /// Credential scanner with configurable masking.
 pub struct Scanner {

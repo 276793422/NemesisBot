@@ -454,7 +454,10 @@ fn w4a_resolve_variables_skips_unknown_keys_forward() {
     let mut vars = HashMap::new();
     vars.insert("x".to_string(), "1".to_string());
     // Unknown key: cursor jumps past it (stays verbatim), later keys resolve
-    assert_eq!(resolve_variables("{{miss}} == {{x}}", &vars), "{{miss}} == 1");
+    assert_eq!(
+        resolve_variables("{{miss}} == {{x}}", &vars),
+        "{{miss}} == 1"
+    );
 }
 
 #[test]

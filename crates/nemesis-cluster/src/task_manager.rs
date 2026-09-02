@@ -468,12 +468,13 @@ fn cleanup_completed(store: &Arc<dyn TaskStore>, on_complete: &Option<Arc<OnComp
         let tasks = store.list_by_status(*status);
         for task in tasks {
             if let Some(ref completed_at) = task.completed_at
-                && let Ok(completed) = chrono::DateTime::parse_from_rfc3339(completed_at) {
-                    let completed_utc = completed.with_timezone(&chrono::Local);
-                    if chrono::Local::now() - completed_utc > two_hours {
-                        let _ = store.delete(&task.id);
-                    }
+                && let Ok(completed) = chrono::DateTime::parse_from_rfc3339(completed_at)
+            {
+                let completed_utc = completed.with_timezone(&chrono::Local);
+                if chrono::Local::now() - completed_utc > two_hours {
+                    let _ = store.delete(&task.id);
                 }
+            }
         }
     }
 
@@ -504,9 +505,10 @@ fn cleanup_completed(store: &Arc<dyn TaskStore>, on_complete: &Option<Arc<OnComp
 
                 // Fire callback if set
                 if let Some(cb) = on_complete
-                    && let Ok(updated_task) = store.get(&task.id) {
-                        cb(&updated_task);
-                    }
+                    && let Ok(updated_task) = store.get(&task.id)
+                {
+                    cb(&updated_task);
+                }
             }
         }
     }

@@ -3,7 +3,7 @@
 use super::*;
 use crate::assignment::{Actor, AssignmentType};
 use crate::models::{
-    priority, CommentType, IssueFilter, IssuePatch, IssueStatus, NewComment, NewIssue,
+    CommentType, IssueFilter, IssuePatch, IssueStatus, NewComment, NewIssue, priority,
 };
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -79,9 +79,10 @@ fn test_create_subscribes_creator_and_assignee() {
     ni.assignee_id = Some("node-a".into());
     let issue = store.create_issue(ni).unwrap();
     let subs = store.list_subscribers(issue.id).unwrap();
-    assert!(subs
-        .iter()
-        .any(|s| s.subscriber == admin() && s.reason == "creator"));
+    assert!(
+        subs.iter()
+            .any(|s| s.subscriber == admin() && s.reason == "creator")
+    );
     assert!(subs
         .iter()
         .any(|s| s.subscriber == Actor::new("manager_self", "node-a")
@@ -224,7 +225,11 @@ fn test_update_issue_records_changed_fields() {
 #[test]
 fn test_update_missing_issue_errors() {
     let (store, dir) = temp_store("update-missing");
-    assert!(store.update_issue(123, &IssuePatch::default(), &admin()).is_err());
+    assert!(
+        store
+            .update_issue(123, &IssuePatch::default(), &admin())
+            .is_err()
+    );
     cleanup(&dir);
 }
 
@@ -313,11 +318,13 @@ fn test_assign_and_unassign() {
         .unwrap();
     assert_eq!(b.assignee, Some(AssignmentType::Worker));
     assert_eq!(b.assignee_id.as_deref(), Some("node-b"));
-    assert!(store
-        .list_subscribers(a.id)
-        .unwrap()
-        .iter()
-        .any(|s| s.subscriber == Actor::new("worker", "node-b")));
+    assert!(
+        store
+            .list_subscribers(a.id)
+            .unwrap()
+            .iter()
+            .any(|s| s.subscriber == Actor::new("worker", "node-b"))
+    );
 
     // 清空：两侧都必须是 None。
     let c = store.assign_issue(a.id, None, None, &admin()).unwrap();
@@ -330,20 +337,28 @@ fn test_assign_validation_errors() {
     let (store, dir) = temp_store("assign-invalid");
     let a = store.create_issue(new_issue("校验")).unwrap();
     // 有 type 无 id。
-    assert!(store
-        .assign_issue(a.id, Some(AssignmentType::Worker), None, &admin())
-        .is_err());
+    assert!(
+        store
+            .assign_issue(a.id, Some(AssignmentType::Worker), None, &admin())
+            .is_err()
+    );
     // 空串 id。
-    assert!(store
-        .assign_issue(
-            a.id,
-            Some(AssignmentType::Worker),
-            Some("  ".into()),
-            &admin()
-        )
-        .is_err());
+    assert!(
+        store
+            .assign_issue(
+                a.id,
+                Some(AssignmentType::Worker),
+                Some("  ".into()),
+                &admin()
+            )
+            .is_err()
+    );
     // 只给 id 不给 type。
-    assert!(store.assign_issue(a.id, None, Some("w".into()), &admin()).is_err());
+    assert!(
+        store
+            .assign_issue(a.id, None, Some("w".into()), &admin())
+            .is_err()
+    );
     cleanup(&dir);
 }
 
@@ -387,24 +402,28 @@ fn test_comments_thread_and_subscribe() {
     assert!(subs.iter().any(|s| s.subscriber == Actor::agent("mgr")));
 
     // 空内容 / 不存在 issue 拒绝。
-    assert!(store
-        .add_comment(NewComment {
-            issue_id: a.id,
-            author: admin(),
-            content: "  ".into(),
-            parent_id: None,
-            ctype: CommentType::Comment,
-        })
-        .is_err());
-    assert!(store
-        .add_comment(NewComment {
-            issue_id: 9999,
-            author: admin(),
-            content: "x".into(),
-            parent_id: None,
-            ctype: CommentType::Comment,
-        })
-        .is_err());
+    assert!(
+        store
+            .add_comment(NewComment {
+                issue_id: a.id,
+                author: admin(),
+                content: "  ".into(),
+                parent_id: None,
+                ctype: CommentType::Comment,
+            })
+            .is_err()
+    );
+    assert!(
+        store
+            .add_comment(NewComment {
+                issue_id: 9999,
+                author: admin(),
+                content: "x".into(),
+                parent_id: None,
+                ctype: CommentType::Comment,
+            })
+            .is_err()
+    );
     cleanup(&dir);
 }
 
@@ -423,7 +442,10 @@ fn test_subscribe_idempotent_unsubscribe_silent() {
     assert_eq!(subs.iter().filter(|s| s.subscriber == who).count(), 1);
     // 创建者（admin/admin）也在订阅列表且按 subscriber_id 排序在前，
     // 按 who 精确取行断言 reason 覆盖（不能索引 [0]）。
-    let bob_row = subs.iter().find(|s| s.subscriber == who).expect("bob subscribed");
+    let bob_row = subs
+        .iter()
+        .find(|s| s.subscriber == who)
+        .expect("bob subscribed");
     assert_eq!(bob_row.reason, "manual-again");
 
     store.unsubscribe(a.id, &who).unwrap();
@@ -444,7 +466,9 @@ fn test_subscribe_idempotent_unsubscribe_silent() {
 fn test_projects_crud() {
     let (store, dir) = temp_store("projects");
     assert!(store.list_projects().unwrap().is_empty());
-    let p = store.create_project("主项目", "描述", Some(&admin()), "🚀").unwrap();
+    let p = store
+        .create_project("主项目", "描述", Some(&admin()), "🚀")
+        .unwrap();
     assert_eq!(p.name, "主项目");
     assert_eq!(p.lead, Some(admin()));
     // 重名拒绝。
@@ -508,7 +532,10 @@ fn test_reopen_preserves_data() {
     };
     // 重开：编号 counter 延续（下一个是 NB-2），状态保留。
     let store2 = BoardStore::open(&db, "NB").unwrap();
-    assert_eq!(store2.get_issue(a.id).unwrap().status, IssueStatus::InProgress);
+    assert_eq!(
+        store2.get_issue(a.id).unwrap().status,
+        IssueStatus::InProgress
+    );
     let b = store2.create_issue(new_issue("续")).unwrap();
     assert_eq!(b.number, "NB-2");
     let _ = std::fs::remove_dir_all(&dir);
@@ -539,10 +566,11 @@ fn test_dispatch_crud_lifecycle() {
     assert_eq!(rec.state, dispatch_state::DISPATCHED);
     assert!(rec.completed_at.is_none());
     let acts = store.list_activity(issue.id).unwrap();
-    assert!(acts
-        .iter()
-        .any(|a| a.action == "dispatched"
-            && a.details.as_deref().unwrap_or("").contains("task-1")));
+    assert!(
+        acts.iter()
+            .any(|a| a.action == "dispatched"
+                && a.details.as_deref().unwrap_or("").contains("task-1"))
+    );
 
     // 历史列表。
     store
@@ -552,25 +580,37 @@ fn test_dispatch_crud_lifecycle() {
     assert_eq!(history.len(), 2);
 
     // 终结 task-1（done）→ 幂等语义：首次 true，重复 false。
-    assert!(store.finish_dispatch("task-1", dispatch_state::DONE).unwrap());
-    assert!(!store.finish_dispatch("task-1", dispatch_state::DONE).unwrap());
+    assert!(
+        store
+            .finish_dispatch("task-1", dispatch_state::DONE)
+            .unwrap()
+    );
+    assert!(
+        !store
+            .finish_dispatch("task-1", dispatch_state::DONE)
+            .unwrap()
+    );
     let rec = store.get_dispatch("task-1").unwrap().unwrap();
     assert_eq!(rec.state, dispatch_state::DONE);
     assert!(rec.completed_at.is_some());
 
     // 终结 task-2（failed）→ 无 active（task-1 已终态不计）。
-    assert!(store
-        .finish_dispatch("task-2", dispatch_state::FAILED)
-        .unwrap());
+    assert!(
+        store
+            .finish_dispatch("task-2", dispatch_state::FAILED)
+            .unwrap()
+    );
     assert!(!store.has_active_dispatch(issue.id).unwrap());
 
     // 非法终态拒绝。
     assert!(store.finish_dispatch("task-1", "cancelled").is_err());
 
     // 重复 task_id 拒绝（一 task 挂一 issue）。
-    assert!(store
-        .insert_dispatch("task-1", issue.id, "node-d", &admin())
-        .is_err());
+    assert!(
+        store
+            .insert_dispatch("task-1", issue.id, "node-d", &admin())
+            .is_err()
+    );
 
     let _ = std::fs::remove_dir_all(&dir);
 }
@@ -580,7 +620,9 @@ fn test_dispatch_scoped_to_issue() {
     let (store, dir) = temp_store("dispatch-scope");
     let a = store.create_issue(new_issue("甲")).unwrap();
     let b = store.create_issue(new_issue("乙")).unwrap();
-    store.insert_dispatch("t-a", a.id, "node-b", &admin()).unwrap();
+    store
+        .insert_dispatch("t-a", a.id, "node-b", &admin())
+        .unwrap();
     // b 无 active；a 的记录不串到 b。
     assert!(!store.has_active_dispatch(b.id).unwrap());
     assert!(store.list_dispatches(b.id).unwrap().is_empty());
@@ -621,11 +663,13 @@ fn test_move_issue_cross_column_reorder_and_illegal() {
         .unwrap();
     assert_eq!(reordered.status, IssueStatus::InProgress);
     assert_eq!(reordered.position, 7);
-    assert!(store
-        .list_activity(a.id)
-        .unwrap()
-        .iter()
-        .any(|x| x.action == "reordered"));
+    assert!(
+        store
+            .list_activity(a.id)
+            .unwrap()
+            .iter()
+            .any(|x| x.action == "reordered")
+    );
     let sc2 = store
         .list_comments(a.id)
         .unwrap()
@@ -639,12 +683,17 @@ fn test_move_issue_cross_column_reorder_and_illegal() {
         .move_issue(a.id, IssueStatus::Backlog, 1, &admin())
         .unwrap_err();
     assert!(err.contains("非法状态转移"), "{err}");
-    assert_eq!(store.get_issue(a.id).unwrap().status, IssueStatus::InProgress);
+    assert_eq!(
+        store.get_issue(a.id).unwrap().status,
+        IssueStatus::InProgress
+    );
 
     // 不存在的 issue。
-    assert!(store
-        .move_issue(999, IssueStatus::Todo, 1, &admin())
-        .is_err());
+    assert!(
+        store
+            .move_issue(999, IssueStatus::Todo, 1, &admin())
+            .is_err()
+    );
     cleanup(&dir);
 }
 
@@ -658,9 +707,16 @@ fn test_notification_assigned_and_status_changed_to_assignee() {
 
     // 指派 → 被指派人收到 assigned。
     store
-        .assign_issue(a.id, Some(AssignmentType::Worker), Some("node-b".into()), &admin())
+        .assign_issue(
+            a.id,
+            Some(AssignmentType::Worker),
+            Some("node-b".into()),
+            &admin(),
+        )
         .unwrap();
-    let inbox = store.list_notifications("worker", Some("node-b"), false, 100).unwrap();
+    let inbox = store
+        .list_notifications("worker", Some("node-b"), false, 100)
+        .unwrap();
     assert_eq!(inbox.len(), 1);
     assert_eq!(inbox[0].kind, "assigned");
     assert_eq!(inbox[0].issue_id, Some(a.id));
@@ -668,10 +724,18 @@ fn test_notification_assigned_and_status_changed_to_assignee() {
 
     // 重复指派同一人（值未变）→ 不重复通知。
     store
-        .assign_issue(a.id, Some(AssignmentType::Worker), Some("node-b".into()), &admin())
+        .assign_issue(
+            a.id,
+            Some(AssignmentType::Worker),
+            Some("node-b".into()),
+            &admin(),
+        )
         .unwrap();
     assert_eq!(
-        store.list_notifications("worker", Some("node-b"), false, 100).unwrap().len(),
+        store
+            .list_notifications("worker", Some("node-b"), false, 100)
+            .unwrap()
+            .len(),
         1
     );
 
@@ -679,7 +743,9 @@ fn test_notification_assigned_and_status_changed_to_assignee() {
     store
         .move_issue(a.id, IssueStatus::InProgress, 3, &admin())
         .unwrap();
-    let inbox = store.list_notifications("worker", Some("node-b"), false, 100).unwrap();
+    let inbox = store
+        .list_notifications("worker", Some("node-b"), false, 100)
+        .unwrap();
     assert_eq!(inbox.len(), 2);
     assert!(inbox.iter().any(|n| n.kind == "status_changed"));
 
@@ -688,14 +754,20 @@ fn test_notification_assigned_and_status_changed_to_assignee() {
         .transition_issue(a.id, IssueStatus::InReview, &worker)
         .unwrap();
     assert_eq!(
-        store.list_notifications("worker", Some("node-b"), false, 100).unwrap().len(),
+        store
+            .list_notifications("worker", Some("node-b"), false, 100)
+            .unwrap()
+            .len(),
         2
     );
 
     // 清空指派 → 无新通知（收件人没了）。
     store.assign_issue(a.id, None, None, &admin()).unwrap();
     assert_eq!(
-        store.list_notifications("worker", Some("node-b"), false, 100).unwrap().len(),
+        store
+            .list_notifications("worker", Some("node-b"), false, 100)
+            .unwrap()
+            .len(),
         2
     );
     cleanup(&dir);
@@ -710,7 +782,12 @@ fn test_notification_comment_and_mention_precedence() {
     let a = store.create_issue(ni).unwrap();
     let worker = Actor::new("worker", "node-b");
     store
-        .assign_issue(a.id, Some(AssignmentType::Worker), Some("node-b".into()), &alice)
+        .assign_issue(
+            a.id,
+            Some(AssignmentType::Worker),
+            Some("node-b".into()),
+            &alice,
+        )
         .unwrap();
 
     // alice 评论并 @node-b → node-b 只收 mentioned（优先于 commented，不重复）。
@@ -723,7 +800,9 @@ fn test_notification_comment_and_mention_precedence() {
             ctype: CommentType::Comment,
         })
         .unwrap();
-    let inbox = store.list_notifications("worker", Some("node-b"), false, 100).unwrap();
+    let inbox = store
+        .list_notifications("worker", Some("node-b"), false, 100)
+        .unwrap();
     assert_eq!(inbox.len(), 2, "assigned + mentioned");
     assert_eq!(inbox[0].kind, "mentioned"); // created_at 降序 → 最新在前
     assert_eq!(inbox[0].content, "请看 @node-b 这里");
@@ -738,11 +817,18 @@ fn test_notification_comment_and_mention_precedence() {
             ctype: CommentType::Comment,
         })
         .unwrap();
-    let inbox = store.list_notifications("worker", Some("node-b"), false, 100).unwrap();
+    let inbox = store
+        .list_notifications("worker", Some("node-b"), false, 100)
+        .unwrap();
     assert_eq!(inbox.len(), 3);
     assert_eq!(inbox[0].kind, "commented");
     // alice 自己评论：作者被排除，订阅（creator）不产生通知。
-    assert!(store.list_notifications("admin", Some("alice"), false, 100).unwrap().is_empty());
+    assert!(
+        store
+            .list_notifications("admin", Some("alice"), false, 100)
+            .unwrap()
+            .is_empty()
+    );
 
     // worker 评论 @alice → alice（订阅者）收 mentioned。
     store
@@ -754,7 +840,9 @@ fn test_notification_comment_and_mention_precedence() {
             ctype: CommentType::Comment,
         })
         .unwrap();
-    let alice_inbox = store.list_notifications("admin", Some("alice"), false, 100).unwrap();
+    let alice_inbox = store
+        .list_notifications("admin", Some("alice"), false, 100)
+        .unwrap();
     assert_eq!(alice_inbox.len(), 1);
     assert_eq!(alice_inbox[0].kind, "mentioned");
 
@@ -769,7 +857,10 @@ fn test_notification_comment_and_mention_precedence() {
         })
         .unwrap();
     assert_eq!(
-        store.list_notifications("worker", Some("node-b"), false, 100).unwrap().len(),
+        store
+            .list_notifications("worker", Some("node-b"), false, 100)
+            .unwrap()
+            .len(),
         3
     );
 
@@ -784,7 +875,10 @@ fn test_notification_comment_and_mention_precedence() {
         })
         .unwrap();
     assert_eq!(
-        store.list_notifications("worker", Some("node-b"), false, 100).unwrap().len(),
+        store
+            .list_notifications("worker", Some("node-b"), false, 100)
+            .unwrap()
+            .len(),
         4 // 只多了一条 commented
     );
     cleanup(&dir);
@@ -807,19 +901,45 @@ fn test_notification_inbox_read_flow_and_admin_wildcard() {
             .unwrap();
     }
     // admin 收件箱（不指定 id）→ 两位的都可见；worker 类型不串。
-    assert_eq!(store.list_notifications("admin", None, false, 100).unwrap().len(), 2);
-    assert!(store.list_notifications("worker", None, false, 100).unwrap().is_empty());
+    assert_eq!(
+        store
+            .list_notifications("admin", None, false, 100)
+            .unwrap()
+            .len(),
+        2
+    );
+    assert!(
+        store
+            .list_notifications("worker", None, false, 100)
+            .unwrap()
+            .is_empty()
+    );
 
     // unread_only 过滤 + 未读数。
-    assert_eq!(store.list_notifications("admin", None, true, 100).unwrap().len(), 2);
+    assert_eq!(
+        store
+            .list_notifications("admin", None, true, 100)
+            .unwrap()
+            .len(),
+        2
+    );
     assert_eq!(store.unread_notification_count("admin", None).unwrap(), 2);
 
     // 单条已读（幂等）。
     let first = &store.list_notifications("admin", None, false, 100).unwrap()[0];
     assert!(store.mark_notification_read(first.id).unwrap());
-    assert!(!store.mark_notification_read(first.id).unwrap(), "重复标记幂等");
+    assert!(
+        !store.mark_notification_read(first.id).unwrap(),
+        "重复标记幂等"
+    );
     assert_eq!(store.unread_notification_count("admin", None).unwrap(), 1);
-    assert_eq!(store.list_notifications("admin", None, true, 100).unwrap().len(), 1);
+    assert_eq!(
+        store
+            .list_notifications("admin", None, true, 100)
+            .unwrap()
+            .len(),
+        1
+    );
 
     // 全部已读（返回条数；再跑一次 = 0）。
     assert_eq!(store.mark_all_notifications_read("admin", None).unwrap(), 1);
@@ -827,7 +947,13 @@ fn test_notification_inbox_read_flow_and_admin_wildcard() {
     assert_eq!(store.unread_notification_count("admin", None).unwrap(), 0);
 
     // limit 生效（created_at 降序截断）。
-    assert_eq!(store.list_notifications("admin", None, false, 1).unwrap().len(), 1);
+    assert_eq!(
+        store
+            .list_notifications("admin", None, false, 1)
+            .unwrap()
+            .len(),
+        1
+    );
     cleanup(&dir);
 }
 
@@ -856,19 +982,41 @@ fn test_update_project_patch() {
 
     // 改名 + 空名拒绝 + 不存在报错。
     let renamed = store
-        .update_project(p.id, &ProjectPatch { name: Some("新项目".into()), ..Default::default() })
+        .update_project(
+            p.id,
+            &ProjectPatch {
+                name: Some("新项目".into()),
+                ..Default::default()
+            },
+        )
         .unwrap();
     assert_eq!(renamed.name, "新项目");
-    assert!(store
-        .update_project(p.id, &ProjectPatch { name: Some("  ".into()), ..Default::default() })
-        .is_err());
+    assert!(
+        store
+            .update_project(
+                p.id,
+                &ProjectPatch {
+                    name: Some("  ".into()),
+                    ..Default::default()
+                }
+            )
+            .is_err()
+    );
     assert!(store.update_project(999, &ProjectPatch::default()).is_err());
 
     // 改名撞 UNIQUE。
     store.create_project("另一个", "", None, "").unwrap();
-    assert!(store
-        .update_project(p.id, &ProjectPatch { name: Some("另一个".into()), ..Default::default() })
-        .is_err());
+    assert!(
+        store
+            .update_project(
+                p.id,
+                &ProjectPatch {
+                    name: Some("另一个".into()),
+                    ..Default::default()
+                }
+            )
+            .is_err()
+    );
     cleanup(&dir);
 }
 
@@ -876,7 +1024,9 @@ fn test_update_project_patch() {
 fn test_get_attachment_by_id() {
     let (store, dir) = temp_store("attachment-get");
     let a = store.create_issue(new_issue("附件")).unwrap();
-    let att = store.add_attachment(a.id, "log.txt", "board/files/x", 42).unwrap();
+    let att = store
+        .add_attachment(a.id, "log.txt", "board/files/x", 42)
+        .unwrap();
     let got = store.get_attachment(att.id).unwrap();
     assert_eq!(got.filename, "log.txt");
     assert_eq!(got.storage_path, "board/files/x");
@@ -897,20 +1047,28 @@ fn test_cancel_dispatch_wins_race_writes_activity() {
         .unwrap();
 
     // 取消 → Some(record)（赢得竞态）+ state=cancelled + completed_at + 活动。
-    let rec = store.cancel_dispatch("task-c1", &admin()).unwrap().expect("won race");
+    let rec = store
+        .cancel_dispatch("task-c1", &admin())
+        .unwrap()
+        .expect("won race");
     assert_eq!(rec.state, dispatch_state::CANCELLED);
     assert!(rec.completed_at.is_some());
     let acts = store.list_activity(issue.id).unwrap();
-    assert!(acts
-        .iter()
-        .any(|a| a.action == "dispatch_cancelled"
-            && a.details.as_deref().unwrap_or("").contains("task-c1")));
+    assert!(acts.iter().any(|a| a.action == "dispatch_cancelled"
+        && a.details.as_deref().unwrap_or("").contains("task-c1")));
 
     // 已取消再取消 → None（幂等跳过，不重复写活动）。
-    assert!(store.cancel_dispatch("task-c1", &admin()).unwrap().is_none());
+    assert!(
+        store
+            .cancel_dispatch("task-c1", &admin())
+            .unwrap()
+            .is_none()
+    );
     let acts = store.list_activity(issue.id).unwrap();
     assert_eq!(
-        acts.iter().filter(|a| a.action == "dispatch_cancelled").count(),
+        acts.iter()
+            .filter(|a| a.action == "dispatch_cancelled")
+            .count(),
         1
     );
     // 无活跃派发了。
@@ -927,14 +1085,28 @@ fn test_cancel_dispatch_loses_race_to_callback() {
         .insert_dispatch("task-c2", issue.id, "node-b", &admin())
         .unwrap();
     // 写回回调先终结（done）→ cancel 竞态输 → None + state 保持 done。
-    assert!(store.finish_dispatch("task-c2", dispatch_state::DONE).unwrap());
-    assert!(store.cancel_dispatch("task-c2", &admin()).unwrap().is_none());
+    assert!(
+        store
+            .finish_dispatch("task-c2", dispatch_state::DONE)
+            .unwrap()
+    );
+    assert!(
+        store
+            .cancel_dispatch("task-c2", &admin())
+            .unwrap()
+            .is_none()
+    );
     assert_eq!(
         store.get_dispatch("task-c2").unwrap().unwrap().state,
         dispatch_state::DONE
     );
     // 取消不存在/已终态的 task → None 不报错。
-    assert!(store.cancel_dispatch("no-such", &admin()).unwrap().is_none());
+    assert!(
+        store
+            .cancel_dispatch("no-such", &admin())
+            .unwrap()
+            .is_none()
+    );
     cleanup(&dir);
 }
 
@@ -954,16 +1126,30 @@ fn test_fail_dispatch_timeout_race_and_activity() {
     assert_eq!(rec.state, dispatch_state::FAILED);
     assert!(rec.completed_at.is_some());
     let acts = store.list_activity(issue.id).unwrap();
-    assert!(acts.iter().any(|a| a.action == "dispatch_timeout"
-        && a.details.as_deref().unwrap_or("").contains("timeout after 3600s")));
+    assert!(acts.iter().any(|a| {
+        a.action == "dispatch_timeout"
+            && a.details
+                .as_deref()
+                .unwrap_or("")
+                .contains("timeout after 3600s")
+    }));
 
     // 已 failed 再 fail → None；回调先到同理。
     assert!(store.fail_dispatch("task-f1", "again").unwrap().is_none());
     store
         .insert_dispatch("task-f2", issue.id, "node-c", &admin())
         .unwrap();
-    assert!(store.finish_dispatch("task-f2", dispatch_state::DONE).unwrap());
-    assert!(store.fail_dispatch("task-f2", "late sweep").unwrap().is_none());
+    assert!(
+        store
+            .finish_dispatch("task-f2", dispatch_state::DONE)
+            .unwrap()
+    );
+    assert!(
+        store
+            .fail_dispatch("task-f2", "late sweep")
+            .unwrap()
+            .is_none()
+    );
     cleanup(&dir);
 }
 
@@ -972,21 +1158,30 @@ fn test_list_active_dispatches_across_issues() {
     let (store, dir) = temp_store("active-list");
     let a = store.create_issue(new_issue("甲")).unwrap();
     let b = store.create_issue(new_issue("乙")).unwrap();
-    store.insert_dispatch("t-1", a.id, "node-b", &admin()).unwrap();
-    store.insert_dispatch("t-2", b.id, "node-c", &admin()).unwrap();
+    store
+        .insert_dispatch("t-1", a.id, "node-b", &admin())
+        .unwrap();
+    store
+        .insert_dispatch("t-2", b.id, "node-c", &admin())
+        .unwrap();
 
     // 全部在途：跨 issue 2 条。
     let active = store.list_active_dispatches().unwrap();
     assert_eq!(active.len(), 2);
 
     // 单 issue 取最新活跃（多条取最新一条）。
-    store.insert_dispatch("t-3", a.id, "node-d", &admin()).unwrap();
+    store
+        .insert_dispatch("t-3", a.id, "node-d", &admin())
+        .unwrap();
     let got = store.get_active_dispatch(a.id).unwrap().expect("active");
     assert_eq!(got.task_id, "t-3");
 
     // 终结其余两条 → 在途列表只剩 t-3。
     assert!(store.finish_dispatch("t-1", dispatch_state::DONE).unwrap());
-    store.cancel_dispatch("t-2", &admin()).unwrap().expect("won");
+    store
+        .cancel_dispatch("t-2", &admin())
+        .unwrap()
+        .expect("won");
     let active = store.list_active_dispatches().unwrap();
     assert_eq!(active.len(), 1);
     assert_eq!(active[0].task_id, "t-3");
@@ -1049,10 +1244,22 @@ fn test_autopilot_crud_and_validation() {
     assert_eq!(updated.target, "node-b");
     assert!(!updated.enabled);
     assert_eq!(updated.cron, "0 9 * * *"); // 未 patch 的字段不动
-    assert!(store
-        .update_autopilot(ap.id, &AutopilotPatch { name: Some(" ".into()), ..Default::default() })
-        .is_err());
-    assert!(store.update_autopilot(999, &AutopilotPatch::default()).is_err());
+    assert!(
+        store
+            .update_autopilot(
+                ap.id,
+                &AutopilotPatch {
+                    name: Some(" ".into()),
+                    ..Default::default()
+                }
+            )
+            .is_err()
+    );
+    assert!(
+        store
+            .update_autopilot(999, &AutopilotPatch::default())
+            .is_err()
+    );
 
     // 删除（幂等）。
     assert!(store.remove_autopilot(ap.id).unwrap());
@@ -1067,8 +1274,13 @@ fn test_autopilot_cron_bookkeeping_and_run_history() {
     let ap = store.create_autopilot(&new_ap("触发器")).unwrap();
 
     // 回存 job id → 清除 → 不存在的 id 报错。
-    store.set_autopilot_cron_job(ap.id, Some("cron-abc")).unwrap();
-    assert_eq!(store.get_autopilot(ap.id).unwrap().cron_job_id.as_deref(), Some("cron-abc"));
+    store
+        .set_autopilot_cron_job(ap.id, Some("cron-abc"))
+        .unwrap();
+    assert_eq!(
+        store.get_autopilot(ap.id).unwrap().cron_job_id.as_deref(),
+        Some("cron-abc")
+    );
     store.set_autopilot_cron_job(ap.id, None).unwrap();
     assert_eq!(store.get_autopilot(ap.id).unwrap().cron_job_id, None);
     assert!(store.set_autopilot_cron_job(999, Some("x")).is_err());
@@ -1085,12 +1297,20 @@ fn test_autopilot_cron_bookkeeping_and_run_history() {
 
     // 别的 issue（无 origin / 别的规则）不混进历史。
     store.create_issue(new_issue("无关")).unwrap();
-    let history = store.list_issues_by_origin("autopilot", &ap.id.to_string(), 10).unwrap();
+    let history = store
+        .list_issues_by_origin("autopilot", &ap.id.to_string(), 10)
+        .unwrap();
     assert_eq!(history.len(), 1);
     assert_eq!(history[0].id, r1.id);
 
     // limit 生效。
-    assert_eq!(store.list_issues_by_origin("autopilot", &ap.id.to_string(), 0).unwrap().len(), 0);
+    assert_eq!(
+        store
+            .list_issues_by_origin("autopilot", &ap.id.to_string(), 0)
+            .unwrap()
+            .len(),
+        0
+    );
     cleanup(&dir);
 }
 
@@ -1120,19 +1340,21 @@ fn test_notify_dispatch_event_recipients_dedup() {
     // admin wildcard（创建者 + watcher）各一条，worker 一条；kind/issue 归属正确。
     let admins = store.list_notifications("admin", None, false, 100).unwrap();
     assert_eq!(admins.len(), 2, "creator+watcher, deduped: {admins:?}");
-    assert!(admins
-        .iter()
-        .all(|n| n.kind == crate::models::notification_kind::DISPATCH_FAILED
-            && n.issue_id == Some(issue.id)));
+    assert!(admins.iter().all(
+        |n| n.kind == crate::models::notification_kind::DISPATCH_FAILED
+            && n.issue_id == Some(issue.id)
+    ));
     let workers = store
         .list_notifications("worker", Some("node-b"), false, 100)
         .unwrap();
     assert_eq!(workers.len(), 1);
 
     // 不存在的 issue 报错。
-    assert!(store
-        .notify_dispatch_event(999, crate::models::notification_kind::DISPATCH_FAILED, "x")
-        .is_err());
+    assert!(
+        store
+            .notify_dispatch_event(999, crate::models::notification_kind::DISPATCH_FAILED, "x")
+            .is_err()
+    );
 
     cleanup(&dir);
 }

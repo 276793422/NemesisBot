@@ -876,11 +876,13 @@ fn test_stored_session_legacy_json_loads_covers_none() {
     let json = serde_json::to_string(&session).unwrap();
     let mut value: serde_json::Value = serde_json::from_str(&json).unwrap();
     // Simulate a legacy file: remove the new field entirely.
-    assert!(value
-        .as_object_mut()
-        .unwrap()
-        .remove("summary_covers_up_to")
-        .is_some());
+    assert!(
+        value
+            .as_object_mut()
+            .unwrap()
+            .remove("summary_covers_up_to")
+            .is_some()
+    );
     let legacy_json = serde_json::to_string(&value).unwrap();
 
     let loaded: StoredSession = serde_json::from_str(&legacy_json).unwrap();
@@ -1090,13 +1092,19 @@ fn test_save_path_order_keeps_covers_coherent_after_trim() {
     store.set_summary_covers_up_to("long:k", Some(instance_covers));
     store.set_history("long:k", stored_msgs(1050));
 
-    let final_covers = store.get_summary_covers_up_to("long:k").expect("covers set");
+    let final_covers = store
+        .get_summary_covers_up_to("long:k")
+        .expect("covers set");
     let final_len = store.get_history("long:k").len();
     assert_eq!(final_len, SessionStore::MAX_STORED_MESSAGES); // trimmed to 1000
     // covers decremented by the 50 dropped oldest: 1044 -> 994.
     assert_eq!(final_covers, instance_covers - 50);
     // Verbatim tail (last K_TARGET=6 messages) survives: len - covers == 6.
-    assert_eq!(final_len - final_covers, 6, "verbatim tail must survive trim");
+    assert_eq!(
+        final_len - final_covers,
+        6,
+        "verbatim tail must survive trim"
+    );
 }
 
 // --- Additional coverage for session and summarizer ---
@@ -1869,7 +1877,6 @@ fn test_session_store_disk_save_and_reload_multiple() {
     }
 }
 
-
 // ---------------------------------------------------------------------------
 // X1 (U3 projection prune): compaction pressure measures the projection.
 // ---------------------------------------------------------------------------
@@ -2020,7 +2027,10 @@ fn test_get_or_create_fresh_key_without_log_stays_empty() {
     let store = SessionStore::new_with_storage(dir.path());
     let session = store.get_or_create(key);
     assert!(session.messages.is_empty());
-    assert!(!store.file_exists(key), "无内容可重放时不得写出空 store 文件");
+    assert!(
+        !store.file_exists(key),
+        "无内容可重放时不得写出空 store 文件"
+    );
     crate::chat_log::delete_chat_log(key); // cleanup
 }
 
@@ -2185,7 +2195,11 @@ fn test_capture_records_session_writes_when_enabled() {
 
     let base = cap_dir.path().join("logs").join("capture").join("cap_key");
     let entries: Vec<_> = std::fs::read_dir(&base).unwrap().collect();
-    assert_eq!(entries.len(), 1, "overwrite should have flushed exactly once");
+    assert_eq!(
+        entries.len(),
+        1,
+        "overwrite should have flushed exactly once"
+    );
     let edir = entries[0].as_ref().unwrap().path();
     assert!(
         edir.to_string_lossy().contains("session_overwrite"),
@@ -2204,10 +2218,19 @@ fn test_capture_records_session_writes_when_enabled() {
 fn test_hash_messages_stable_and_distinct() {
     let a = stored_msgs(2);
     let b = stored_msgs(2);
-    assert_eq!(SessionStore::hash_messages(&a), SessionStore::hash_messages(&b));
+    assert_eq!(
+        SessionStore::hash_messages(&a),
+        SessionStore::hash_messages(&b)
+    );
     let c = stored_msgs(3);
-    assert_ne!(SessionStore::hash_messages(&a), SessionStore::hash_messages(&c));
-    assert!(!SessionStore::hash_messages(&[]).is_empty(), "16-hex digits");
+    assert_ne!(
+        SessionStore::hash_messages(&a),
+        SessionStore::hash_messages(&c)
+    );
+    assert!(
+        !SessionStore::hash_messages(&[]).is_empty(),
+        "16-hex digits"
+    );
 }
 
 /// `sanitize_session_id` keeps [A-Za-z0-9_-] and collapses everything else
@@ -2438,8 +2461,7 @@ fn test_migrate_legacy_main_json_edge_arms() {
     SessionStore::migrate_legacy_main(dir2.path());
     let p = dir2.path().join("agent_main_session_legacy.json");
     assert!(p.exists(), "migrated regardless of key value");
-    let v: serde_json::Value =
-        serde_json::from_str(&std::fs::read_to_string(&p).unwrap()).unwrap();
+    let v: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(&p).unwrap()).unwrap();
     assert_eq!(v["key"], "other:key", "non-matching key left as-is");
     assert!(!dir2.path().join("agent_main_main.json").exists());
 }
@@ -2488,14 +2510,26 @@ impl LlmProvider for EmptyContentLlmProvider {
 fn test_summarize_batch_provider_error_returns_empty() {
     let store = Arc::new(SessionStore::new_in_memory());
     store.get_or_create("err:key");
-    let summarizer =
-        Summarizer::new_silent(Arc::new(ErrorLlmProvider), "m".to_string(), 128000, store.clone());
+    let summarizer = Summarizer::new_silent(
+        Arc::new(ErrorLlmProvider),
+        "m".to_string(),
+        128000,
+        store.clone(),
+    );
     let history: Vec<ConversationTurn> = (0..8)
-        .map(|i| conv_turn(if i % 2 == 0 { "user" } else { "assistant" }, &format!("m{i}")))
+        .map(|i| {
+            conv_turn(
+                if i % 2 == 0 { "user" } else { "assistant" },
+                &format!("m{i}"),
+            )
+        })
         .collect();
     let result = summarizer.summarize_session("err:key", &history);
     assert_eq!(result, "");
-    assert!(store.get_summary("err:key").is_empty(), "no summary on error");
+    assert!(
+        store.get_summary("err:key").is_empty(),
+        "no summary on error"
+    );
 }
 
 /// Multipart path (>10 valid messages) with a failing provider: both halves
@@ -2504,8 +2538,12 @@ fn test_summarize_batch_provider_error_returns_empty() {
 fn test_summarize_multipart_provider_error_falls_back_to_concat() {
     let store = Arc::new(SessionStore::new_in_memory());
     store.get_or_create("mp:key");
-    let summarizer =
-        Summarizer::new_silent(Arc::new(ErrorLlmProvider), "m".to_string(), 128000, store.clone());
+    let summarizer = Summarizer::new_silent(
+        Arc::new(ErrorLlmProvider),
+        "m".to_string(),
+        128000,
+        store.clone(),
+    );
     let history: Vec<ConversationTurn> = (0..16)
         .map(|i| conv_turn("user", &format!("m{i}")))
         .collect();
@@ -2539,8 +2577,12 @@ fn test_summarize_session_uses_existing_summary() {
     let store = Arc::new(SessionStore::new_in_memory());
     store.get_or_create("prior:key");
     store.set_summary("prior:key", "prior context");
-    let summarizer =
-        Summarizer::new_silent(Arc::new(NullLlmProvider), "m".to_string(), 128000, store.clone());
+    let summarizer = Summarizer::new_silent(
+        Arc::new(NullLlmProvider),
+        "m".to_string(),
+        128000,
+        store.clone(),
+    );
     let history: Vec<ConversationTurn> = (0..8)
         .map(|i| conv_turn("user", &format!("m{i}")))
         .collect();
@@ -2555,8 +2597,7 @@ fn test_summarize_session_uses_existing_summary() {
 fn test_summarize_session_appends_omission_note_for_oversized() {
     let store = Arc::new(SessionStore::new_in_memory());
     store.get_or_create("omit:key");
-    let summarizer =
-        Summarizer::new_silent(Arc::new(NullLlmProvider), "m".to_string(), 400, store);
+    let summarizer = Summarizer::new_silent(Arc::new(NullLlmProvider), "m".to_string(), 400, store);
     let history = vec![
         conv_turn("user", &"H".repeat(20_000)), // ~8000 tokens > 200 cap
         conv_turn("user", "q1"),
@@ -2590,8 +2631,12 @@ fn test_summarize_session_save_failure_warns_but_returns_summary() {
             .as_nanos()
     );
     store.get_or_create(&key);
-    let summarizer =
-        Summarizer::new_silent(Arc::new(NullLlmProvider), "m".to_string(), 128000, store.clone());
+    let summarizer = Summarizer::new_silent(
+        Arc::new(NullLlmProvider),
+        "m".to_string(),
+        128000,
+        store.clone(),
+    );
     let history: Vec<ConversationTurn> = (0..8)
         .map(|i| conv_turn("user", &format!("m{i}")))
         .collect();
@@ -2604,9 +2649,15 @@ fn test_summarize_session_save_failure_warns_but_returns_summary() {
 #[test]
 fn test_maybe_summarize_skips_when_already_summarizing() {
     let store = Arc::new(SessionStore::new_in_memory());
-    let summarizer =
-        Summarizer::new_silent(Arc::new(NullLlmProvider), "m".to_string(), 128000, store.clone());
-    summarizer.summarizing.insert("m:test:dup".to_string(), true);
+    let summarizer = Summarizer::new_silent(
+        Arc::new(NullLlmProvider),
+        "m".to_string(),
+        128000,
+        store.clone(),
+    );
+    summarizer
+        .summarizing
+        .insert("m:test:dup".to_string(), true);
     let history: Vec<ConversationTurn> = (0..30)
         .map(|i| conv_turn("user", &format!("m{i}")))
         .collect();
@@ -2632,7 +2683,9 @@ fn test_maybe_summarize_notifies_non_internal_channel() {
         "m".to_string(),
         128000,
         store,
-        Box::new(CountingNotify { count: count.clone() }),
+        Box::new(CountingNotify {
+            count: count.clone(),
+        }),
         None,
     );
     let history: Vec<ConversationTurn> = (0..30)
@@ -2689,7 +2742,10 @@ fn test_clear_session_empties_memory_and_disk() {
     assert!(dir.path().join("clr_key.json").exists());
 
     store.clear_session("clr:key");
-    assert!(!dir.path().join("clr_key.json").exists(), "disk file removed");
+    assert!(
+        !dir.path().join("clr_key.json").exists(),
+        "disk file removed"
+    );
     assert!(!store.contains("clr:key"));
 
     // NotFound arm: clearing again (no file) must not panic or warn.

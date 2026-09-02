@@ -101,11 +101,12 @@ pub fn format_report_from_report(report: &ReflectionReport) -> String {
 
     // LLM deep analysis
     if let Some(ref llm) = report.llm_insights
-        && !llm.is_empty() {
-            sb.push_str("## LLM Deep Analysis\n\n");
-            sb.push_str(llm);
-            sb.push_str("\n\n");
-        }
+        && !llm.is_empty()
+    {
+        sb.push_str("## LLM Deep Analysis\n\n");
+        sb.push_str(llm);
+        sb.push_str("\n\n");
+    }
 
     // Phase 5: Trace insights
     if let Some(ref trace_stats) = report.trace_stats {

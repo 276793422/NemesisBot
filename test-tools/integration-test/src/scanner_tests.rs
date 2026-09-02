@@ -41,17 +41,18 @@ pub async fn test_scanner_status_initial(ws: &TestWorkspace, bin: &Path) -> Vec<
     if scanner_config.exists() {
         results.push(pass(&format!("{}/config", suite), "Scanner config exists"));
         if let Ok(data) = std::fs::read_to_string(&scanner_config)
-            && let Ok(cfg) = serde_json::from_str::<Value>(&data) {
-                let has_enabled = cfg.get("enabled").is_some();
-                results.push(pass(
-                    &format!("{}/config_content", suite),
-                    if has_enabled {
-                        "Has enabled field"
-                    } else {
-                        "No enabled field"
-                    },
-                ));
-            }
+            && let Ok(cfg) = serde_json::from_str::<Value>(&data)
+        {
+            let has_enabled = cfg.get("enabled").is_some();
+            results.push(pass(
+                &format!("{}/config_content", suite),
+                if has_enabled {
+                    "Has enabled field"
+                } else {
+                    "No enabled field"
+                },
+            ));
+        }
     } else {
         results.push(skip(
             &format!("{}/config", suite),
@@ -312,18 +313,19 @@ pub async fn test_scanner_chain_config(ws: &TestWorkspace) -> Vec<TestResult> {
 
     if scanner_config.exists() {
         if let Ok(data) = std::fs::read_to_string(&scanner_config)
-            && let Ok(cfg) = serde_json::from_str::<Value>(&data) {
-                // Check for engine list
-                let has_engines = cfg.get("enabled").is_some() || cfg.get("engines").is_some();
-                results.push(pass(
-                    &format!("{}/structure", suite),
-                    if has_engines {
-                        "Has engine configuration"
-                    } else {
-                        "Config exists but no engines"
-                    },
-                ));
-            }
+            && let Ok(cfg) = serde_json::from_str::<Value>(&data)
+        {
+            // Check for engine list
+            let has_engines = cfg.get("enabled").is_some() || cfg.get("engines").is_some();
+            results.push(pass(
+                &format!("{}/structure", suite),
+                if has_engines {
+                    "Has engine configuration"
+                } else {
+                    "Config exists but no engines"
+                },
+            ));
+        }
     } else {
         results.push(skip(suite, "Scanner config not found (created by onboard)"));
     }

@@ -176,9 +176,10 @@ fn build_completed_reply_with_workflow(
     for id in terminal_node_ids(workflow) {
         if let Some(nr) = exec.node_results.get(&id)
             && let Some(s) = nr.output.as_str()
-                && !s.is_empty() {
-                    return s.to_string();
-                }
+            && !s.is_empty()
+        {
+            return s.to_string();
+        }
     }
 
     // Use Workflow::compute_output for terminal merging semantics — this
@@ -190,9 +191,10 @@ fn build_completed_reply_with_workflow(
     // language reply.
     if let Some(obj) = merged.as_object()
         && let Some(resp) = obj.get("response").and_then(|v| v.as_str())
-            && !resp.is_empty() {
-                return resp.to_string();
-            }
+        && !resp.is_empty()
+    {
+        return resp.to_string();
+    }
 
     // Fallback: JSON-dump the merged output. Keeps the workflow_chat page
     // useful for workflows that have no agent node (just code/start/etc.).

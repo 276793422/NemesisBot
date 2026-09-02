@@ -784,7 +784,9 @@ async fn test_tcp_conn_read_loop_invalid_json_recovers() {
     let peer = tokio::spawn(async move {
         let (mut stream, _) = listener.accept().await.unwrap();
         // Garbage frame first.
-        write_frame_async(&mut stream, b"this is not json").await.unwrap();
+        write_frame_async(&mut stream, b"this is not json")
+            .await
+            .unwrap();
         tokio::time::sleep(std::time::Duration::from_millis(100)).await;
         // Then a valid frame — the read loop must still deliver it.
         let msg = WireMessage::new_request("peer", "me", "ping", serde_json::json!({}));

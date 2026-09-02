@@ -1319,8 +1319,7 @@ async fn test_handle_api_internal_shutdown_wrong_token_unauthorized() {
     assert_eq!(status, StatusCode::UNAUTHORIZED);
     assert_eq!(json.0["error"], "unauthorized");
     // 未鉴权 → 通道必须保持空：唯一存活 Sender 挂着、无数据 → recv 只能 pend 到超时。
-    let drained =
-        tokio::time::timeout(std::time::Duration::from_millis(100), rx.recv()).await;
+    let drained = tokio::time::timeout(std::time::Duration::from_millis(100), rx.recv()).await;
     assert!(drained.is_err(), "unauthorized shutdown must NOT enqueue");
     drop(keep_alive);
 }

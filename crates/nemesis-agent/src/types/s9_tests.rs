@@ -80,10 +80,7 @@ fn repair_pairs_partial_answered_calls_get_synthetic_only_for_missing() {
         .collect();
     assert_eq!(a_results.len(), 1, "call_a keeps its single real result");
     // 合成结果紧跟 assistant 轮之后（插入位置正确）
-    let assistant_idx = messages
-        .iter()
-        .position(|m| m.role == "assistant")
-        .unwrap();
+    let assistant_idx = messages.iter().position(|m| m.role == "assistant").unwrap();
     assert_eq!(
         messages[assistant_idx + 1].tool_call_id.as_deref(),
         Some("call_b"),

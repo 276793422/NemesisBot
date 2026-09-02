@@ -84,14 +84,15 @@ fn redact_api_keys(content: &str) -> String {
 
     // Redact AWS access keys
     if let Some(pos) = result.find("AKIA")
-        && pos + 20 <= result.len() {
-            let is_valid = result[pos..pos + 20]
-                .chars()
-                .all(|c| c.is_ascii_alphanumeric());
-            if is_valid {
-                result = result.replace(&result[pos..pos + 20], "[REDACTED_AWS_KEY]");
-            }
+        && pos + 20 <= result.len()
+    {
+        let is_valid = result[pos..pos + 20]
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric());
+        if is_valid {
+            result = result.replace(&result[pos..pos + 20], "[REDACTED_AWS_KEY]");
         }
+    }
 
     result
 }
@@ -193,12 +194,13 @@ impl ForgeDataProvider for FileForgeProvider {
             for entry in entries.flatten() {
                 let path = entry.path();
                 if path.extension().and_then(|e| e.to_str()) == Some("json")
-                    && let Some(name) = path.file_name().and_then(|n| n.to_str()) {
-                        reflections.push(serde_json::json!({
-                            "filename": name,
-                            "remote": false,
-                        }));
-                    }
+                    && let Some(name) = path.file_name().and_then(|n| n.to_str())
+                {
+                    reflections.push(serde_json::json!({
+                        "filename": name,
+                        "remote": false,
+                    }));
+                }
             }
         }
 
@@ -207,12 +209,13 @@ impl ForgeDataProvider for FileForgeProvider {
             for entry in entries.flatten() {
                 let path = entry.path();
                 if path.extension().and_then(|e| e.to_str()) == Some("json")
-                    && let Some(name) = path.file_name().and_then(|n| n.to_str()) {
-                        reflections.push(serde_json::json!({
-                            "filename": name,
-                            "remote": true,
-                        }));
-                    }
+                    && let Some(name) = path.file_name().and_then(|n| n.to_str())
+                {
+                    reflections.push(serde_json::json!({
+                        "filename": name,
+                        "remote": true,
+                    }));
+                }
             }
         }
 
@@ -320,14 +323,15 @@ impl ForgeHandler {
 
         // If we have a provider, store the reflection
         if let Some(ref provider) = self.provider
-            && let Err(e) = provider.receive_reflection(&payload) {
-                tracing::error!(error = %e, "[ForgeHandler] Failed to store reflection");
-                return HandleResult {
-                    success: false,
-                    response: serde_json::Value::Null,
-                    error: Some(format!("Failed to store reflection: {}", e)),
-                };
-            }
+            && let Err(e) = provider.receive_reflection(&payload)
+        {
+            tracing::error!(error = %e, "[ForgeHandler] Failed to store reflection");
+            return HandleResult {
+                success: false,
+                response: serde_json::Value::Null,
+                error: Some(format!("Failed to store reflection: {}", e)),
+            };
+        }
 
         HandleResult {
             success: true,
@@ -364,27 +368,28 @@ impl ForgeHandler {
         // If a specific reflection is requested, include its content (sanitized)
         if let Some(filename) = payload.get("filename").and_then(|v| v.as_str())
             && !filename.is_empty()
-                && let Some(ref provider) = self.provider {
-                    match provider.read_reflection_content(filename) {
-                        Ok(content) => {
-                            result["content"] =
-                                serde_json::Value::String(provider.sanitize_content(&content));
-                            result["filename"] = serde_json::Value::String(filename.into());
-                        }
-                        Err(e) => {
-                            tracing::error!(
-                                filename = filename,
-                                error = %e,
-                                "[ForgeHandler] Failed to read reflection"
-                            );
-                            return HandleResult {
-                                success: false,
-                                response: serde_json::Value::Null,
-                                error: Some(format!("Failed to read reflection: {}", e)),
-                            };
-                        }
-                    }
+            && let Some(ref provider) = self.provider
+        {
+            match provider.read_reflection_content(filename) {
+                Ok(content) => {
+                    result["content"] =
+                        serde_json::Value::String(provider.sanitize_content(&content));
+                    result["filename"] = serde_json::Value::String(filename.into());
                 }
+                Err(e) => {
+                    tracing::error!(
+                        filename = filename,
+                        error = %e,
+                        "[ForgeHandler] Failed to read reflection"
+                    );
+                    return HandleResult {
+                        success: false,
+                        response: serde_json::Value::Null,
+                        error: Some(format!("Failed to read reflection: {}", e)),
+                    };
+                }
+            }
+        }
 
         result["node_id"] = serde_json::Value::String(self.node_id.clone());
 

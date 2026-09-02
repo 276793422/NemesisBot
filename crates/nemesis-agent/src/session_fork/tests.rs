@@ -16,7 +16,10 @@
 //! every key at the end (which also removes the boundary sidecar + meta).
 
 use super::*;
-use crate::chat_log::{append_chat_log, append_chat_log_with_model, delete_chat_log, read_boundary_events, read_chat_log};
+use crate::chat_log::{
+    append_chat_log, append_chat_log_with_model, delete_chat_log, read_boundary_events,
+    read_chat_log,
+};
 use crate::session::StoredMessage;
 use serde_json::Value;
 
@@ -102,14 +105,20 @@ fn test_fork_default_full_history_and_source_untouched() {
     assert_eq!(fork_rows.len(), src_rows.len());
     for (a, b) in fork_rows.iter().zip(src_rows.iter()) {
         assert_eq!(a["content"], b["content"]);
-        assert_eq!(a["timestamp"], b["timestamp"], "fork must not re-stamp rows");
+        assert_eq!(
+            a["timestamp"], b["timestamp"],
+            "fork must not re-stamp rows"
+        );
     }
 
     // New store = mirror of the same rows (no system/tool rows, real
     // timestamps — the shared self-heal mapping).
     let hist = store.get_history(&info.new_key);
     assert_eq!(hist.len(), 6);
-    assert!(hist.iter().all(|m| m.role == "user" || m.role == "assistant"));
+    assert!(
+        hist.iter()
+            .all(|m| m.role == "user" || m.role == "assistant")
+    );
     assert_eq!(hist.last().unwrap().content, "turn three answer");
 
     // SOURCE untouched (true branch, not rollback): both stores keep
@@ -213,7 +222,10 @@ fn test_fork_round3_regression_divergent_polluted_store() {
     junk.push(msg("assistant", "已记下"));
     store.get_or_create(&src);
     store.set_history(&src, junk);
-    store.set_summary(&src, "It looks like the two conversation summaries weren't included. Could you paste them here?");
+    store.set_summary(
+        &src,
+        "It looks like the two conversation summaries weren't included. Could you paste them here?",
+    );
     store.set_summary_covers_up_to(&src, Some(268));
 
     let info = fork_session(&store, &src, None, Some(9)).unwrap();
@@ -249,7 +261,10 @@ fn test_fork_round3_regression_divergent_polluted_store() {
     assert_eq!(hist.len(), 18);
     assert_eq!(hist[0].content, "在么");
     assert_eq!(hist.last().unwrap().content, "truth answer 9");
-    assert!(hist.iter().all(|m| m.role == "user" || m.role == "assistant"));
+    assert!(
+        hist.iter()
+            .all(|m| m.role == "user" || m.role == "assistant")
+    );
     assert_eq!(hist[0].timestamp, truth[0]["timestamp"].as_str().unwrap());
     assert_eq!(store.get_summary(&info.new_key), "");
 
@@ -262,13 +277,17 @@ fn test_fork_round3_regression_divergent_polluted_store() {
 
     // Boundary events on both keys (U9 sidecar).
     let out_ev = read_boundary_events(&src);
-    assert!(out_ev
-        .iter()
-        .any(|v| v.get("event").and_then(|e| e.as_str()) == Some("session_fork_out")));
+    assert!(
+        out_ev
+            .iter()
+            .any(|v| v.get("event").and_then(|e| e.as_str()) == Some("session_fork_out"))
+    );
     let in_ev = read_boundary_events(&info.new_key);
-    assert!(in_ev
-        .iter()
-        .any(|v| v.get("event").and_then(|e| e.as_str()) == Some("session_fork_in")));
+    assert!(
+        in_ev
+            .iter()
+            .any(|v| v.get("event").and_then(|e| e.as_str()) == Some("session_fork_in"))
+    );
 
     delete_chat_log(&src);
     delete_chat_log(&info.new_key);
@@ -301,16 +320,23 @@ fn test_fork_new_key_uniqueness() {
     // TTL deletes only the store side). The uniquifier must consult the
     // jsonl too, or the next fork would APPEND onto the surviving log and
     // duplicate the whole prefix.
-    std::fs::remove_file(dir.path().join(format!(
-        "{}.json",
-        i1.new_key.replace(':', "_")
-    )))
+    std::fs::remove_file(
+        dir.path()
+            .join(format!("{}.json", i1.new_key.replace(':', "_"))),
+    )
     .ok(); // simulate the TTL having deleted the store json
     let mem_only = SessionStore::new_in_memory(); // store-side checks all miss
     let i4 = fork_session(&mem_only, &src, None, None).unwrap();
-    assert_eq!(i4.new_key, format!("{}__fork_4", src), "jsonl existence must pin the key");
+    assert_eq!(
+        i4.new_key,
+        format!("{}__fork_4", src),
+        "jsonl existence must pin the key"
+    );
     let (rows4, total4, _, _) = read_chat_log(&i4.new_key, 50, None);
-    assert_eq!(total4, 6, "fresh log, not an append onto i1's surviving jsonl");
+    assert_eq!(
+        total4, 6,
+        "fresh log, not an append onto i1's surviving jsonl"
+    );
     assert_eq!(rows4.first().unwrap()["content"], "turn one question");
 
     for k in [&src, &i1.new_key, &i2.new_key, &i3.new_key, &i4.new_key] {

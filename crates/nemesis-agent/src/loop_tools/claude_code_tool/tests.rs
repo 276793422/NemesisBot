@@ -75,10 +75,7 @@ async fn test_claude_code_missing_prompt_fails() {
     let ctx = test_ctx();
     let err = t.execute(r#"{}"#, &ctx).await.unwrap_err();
     assert!(err.contains("prompt"));
-    let err2 = t
-        .execute(r#"{"prompt":"   "}"#, &ctx)
-        .await
-        .unwrap_err();
+    let err2 = t.execute(r#"{"prompt":"   "}"#, &ctx).await.unwrap_err();
     assert!(err2.contains("empty"));
 }
 
@@ -139,7 +136,10 @@ async fn test_claude_code_permission_mode_flag_passed_to_cli() {
         .await
         .unwrap();
     let got2 = fake.received_args();
-    assert!(got2.contains("--permission-mode plan"), "explicit tier: {got2}");
+    assert!(
+        got2.contains("--permission-mode plan"),
+        "explicit tier: {got2}"
+    );
 }
 
 /// Goal-required: enabled=false (or CLI absent) ⇒ build_tools output does

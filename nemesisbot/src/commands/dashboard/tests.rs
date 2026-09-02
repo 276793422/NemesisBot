@@ -75,7 +75,9 @@ fn gateway_state_wrong_types_are_none() {
 /// 回环地址 + 端口 1（无监听）→ 连接拒绝，确定性地失败（离线：不出本机）。
 #[tokio::test]
 async fn health_check_on_refused_port_fails() {
-    let err = check_health("http://127.0.0.1:1").await.expect_err("refused");
+    let err = check_health("http://127.0.0.1:1")
+        .await
+        .expect_err("refused");
     // reqwest 的连接错误信息（reqwest::Error Display）。
     assert!(!err.is_empty());
 }
@@ -141,9 +143,8 @@ async fn check_health_non_2xx_is_error_with_status() {
             };
             let mut buf = [0u8; 4096];
             let _ = stream.read(&mut buf);
-            let _ = stream.write_all(
-                b"HTTP/1.1 503 Service Unavailable\r\nContent-Length: 0\r\n\r\n",
-            );
+            let _ =
+                stream.write_all(b"HTTP/1.1 503 Service Unavailable\r\nContent-Length: 0\r\n\r\n");
         }
     });
     let err = check_health(&format!("http://127.0.0.1:{port}"))
@@ -160,11 +161,13 @@ async fn send_internal_command_success_and_failure() {
         .expect("200 → Ok");
 
     let port = start_mock_gateway("500 Internal Server Error", r#"{"err":"x"}"#);
-    let err =
-        send_internal_command(&format!("http://127.0.0.1:{port}"), "tok", "open_dashboard")
-            .await
-            .expect_err("500 → Err 带状态和响应体");
-    assert!(err.to_string().contains("Internal command failed"), "got: {err}");
+    let err = send_internal_command(&format!("http://127.0.0.1:{port}"), "tok", "open_dashboard")
+        .await
+        .expect_err("500 → Err 带状态和响应体");
+    assert!(
+        err.to_string().contains("Internal command failed"),
+        "got: {err}"
+    );
     assert!(err.to_string().contains("500"), "got: {err}");
 }
 
@@ -186,39 +189,30 @@ async fn send_internal_command_unreachable_is_error() {
 #[tokio::test]
 async fn get_json_parses_success_body() {
     let port = start_mock_gateway("200 OK", r#"{"engaged":true}"#);
-    let v = send_internal_command_get_json(
-        &format!("http://127.0.0.1:{port}"),
-        "tok",
-        "estop_status",
-    )
-    .await
-    .expect("200 + JSON → 解析值");
+    let v =
+        send_internal_command_get_json(&format!("http://127.0.0.1:{port}"), "tok", "estop_status")
+            .await
+            .expect("200 + JSON → 解析值");
     assert_eq!(v.get("engaged").and_then(|x| x.as_bool()), Some(true));
 }
 
 #[tokio::test]
 async fn get_json_non_json_body_falls_back_to_empty_object() {
     let port = start_mock_gateway("200 OK", "not-json-at-all");
-    let v = send_internal_command_get_json(
-        &format!("http://127.0.0.1:{port}"),
-        "tok",
-        "estop_status",
-    )
-    .await
-    .expect("200 + 非 JSON → 兜底空对象（166 行 unwrap_or_else）");
+    let v =
+        send_internal_command_get_json(&format!("http://127.0.0.1:{port}"), "tok", "estop_status")
+            .await
+            .expect("200 + 非 JSON → 兜底空对象（166 行 unwrap_or_else）");
     assert!(v.as_object().map(|o| o.is_empty()).unwrap_or(false));
 }
 
 #[tokio::test]
 async fn get_json_failure_is_error() {
     let port = start_mock_gateway("401 Unauthorized", "nope");
-    let err = send_internal_command_get_json(
-        &format!("http://127.0.0.1:{port}"),
-        "tok",
-        "estop_status",
-    )
-    .await
-    .expect_err("401 → Err");
+    let err =
+        send_internal_command_get_json(&format!("http://127.0.0.1:{port}"), "tok", "estop_status")
+            .await
+            .expect_err("401 → Err");
     assert!(err.to_string().contains("401"), "got: {err}");
 }
 
@@ -293,7 +287,7 @@ async fn run_success_when_mock_gateway_already_running() {
 // 整 mod Windows 形态（1/1 测试全走 Windows CLI 进程边界）。
 #[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
 mod r9_spawn_fail {
-    use test_harness::{resolve_nemesisbot_bin, TestWorkspace};
+    use test_harness::{TestWorkspace, resolve_nemesisbot_bin};
 
     #[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
     #[tokio::test]

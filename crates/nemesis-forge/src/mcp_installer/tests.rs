@@ -135,10 +135,7 @@ async fn test_invalid_json_config_is_installed_false() {
     // load_config fails with InvalidData...
     let loaded = installer.load_config().await;
     assert!(loaded.is_err());
-    assert_eq!(
-        loaded.unwrap_err().kind(),
-        std::io::ErrorKind::InvalidData
-    );
+    assert_eq!(loaded.unwrap_err().kind(), std::io::ErrorKind::InvalidData);
 
     // ...and is_installed treats a load failure as "not installed".
     assert!(!installer.is_installed("anything").await);
@@ -152,7 +149,10 @@ async fn test_s8_install_into_brand_new_workspace() {
     let dir = tempfile::tempdir().unwrap();
     let installer = MCPInstaller::new(dir.path().join("ws"));
     assert!(!installer.config_path().exists());
-    installer.install("fresh", "python", vec!["-m".into()]).await.unwrap();
+    installer
+        .install("fresh", "python", vec!["-m".into()])
+        .await
+        .unwrap();
     assert!(installer.config_path().exists());
     assert!(installer.is_installed("fresh").await);
 }

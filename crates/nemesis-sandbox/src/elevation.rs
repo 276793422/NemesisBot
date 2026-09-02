@@ -45,7 +45,13 @@ mod win {
         // so the elevated child's command-line parser receives it as one arg.
         let params_str = args
             .iter()
-            .map(|a| if a.contains(' ') { format!("\"{a}\"") } else { a.clone() })
+            .map(|a| {
+                if a.contains(' ') {
+                    format!("\"{a}\"")
+                } else {
+                    a.clone()
+                }
+            })
             .collect::<Vec<_>>()
             .join(" ");
         let params = wide(&params_str);

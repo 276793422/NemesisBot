@@ -29,10 +29,7 @@ use std::sync::atomic::{AtomicBool, AtomicUsize};
 use std::time::Instant;
 use tower::ServiceExt;
 
-fn make_state(
-    dir: &tempfile::TempDir,
-    auth_token: &str,
-) -> Arc<AppState> {
+fn make_state(dir: &tempfile::TempDir, auth_token: &str) -> Arc<AppState> {
     let ws = dir.path().to_string_lossy().to_string();
     Arc::new(AppState {
         auth_token: auth_token.to_string(),
@@ -157,7 +154,10 @@ fn seed_session(home: &std::path::Path, key: &str) {
     store.save(key).unwrap();
 }
 
-async fn oneshot(app: Router, req: axum::http::Request<axum::body::Body>) -> axum::response::Response {
+async fn oneshot(
+    app: Router,
+    req: axum::http::Request<axum::body::Body>,
+) -> axum::response::Response {
     app.oneshot(req).await.unwrap()
 }
 
@@ -214,7 +214,10 @@ async fn test_turns_table_counts_jsonl_not_the_divergent_store() {
     assert_eq!(turns[2]["kept_messages"], 6); // whole log
     // No august/store content anywhere in the turn table.
     let raw = v.to_string();
-    assert!(!raw.contains("august"), "store content leaked into turns: {raw}");
+    assert!(
+        !raw.contains("august"),
+        "store content leaked into turns: {raw}"
+    );
 
     nemesis_agent::chat_log::delete_chat_log(&key);
 }
@@ -309,8 +312,14 @@ async fn test_fork_copies_jsonl_verbatim_and_mirrors_store() {
     assert_eq!(v["source_session_id"], sid);
     let new_key = v["new_key"].as_str().unwrap().to_string();
     let new_sid = v["session_id"].as_str().unwrap().to_string();
-    assert!(new_key.starts_with(&format!("{key}__fork")), "new_key={new_key}");
-    assert!(chat_session_key(&new_sid).ends_with(&new_key), "session_id must map back onto new_key");
+    assert!(
+        new_key.starts_with(&format!("{key}__fork")),
+        "new_key={new_key}"
+    );
+    assert!(
+        chat_session_key(&new_sid).ends_with(&new_key),
+        "session_id must map back onto new_key"
+    );
 
     // ROUND 3: the new chat_log is a VERBATIM copy of the source jsonl's
     // first 4 rows — content, timestamps AND the model badge preserved;
@@ -320,28 +329,51 @@ async fn test_fork_copies_jsonl_verbatim_and_mirrors_store() {
     let (forked_log, n, _m, _o) = nemesis_agent::chat_log::read_chat_log(&new_key, 50, None);
     assert_eq!(n, 4);
     for (i, v) in forked_log.iter().enumerate() {
-        assert_eq!(v["content"], src_rows[i]["content"], "forked row {i} content");
-        assert_eq!(v["timestamp"], src_rows[i]["timestamp"], "forked row {i} ts");
+        assert_eq!(
+            v["content"], src_rows[i]["content"],
+            "forked row {i} content"
+        );
+        assert_eq!(
+            v["timestamp"], src_rows[i]["timestamp"],
+            "forked row {i} ts"
+        );
     }
-    assert_eq!(forked_log[1]["model"], "zhipu/glm-4.7", "model badge must survive verbatim copy");
     assert_eq!(
-        forked_log.last().unwrap()["content"], "回答二",
+        forked_log[1]["model"], "zhipu/glm-4.7",
+        "model badge must survive verbatim copy"
+    );
+    assert_eq!(
+        forked_log.last().unwrap()["content"],
+        "回答二",
         "fork must END on the picked turn's final assistant reply"
     );
     let raw = serde_json::to_string(&forked_log).unwrap();
-    assert!(!raw.contains("august"), "store content leaked into fork: {raw}");
+    assert!(
+        !raw.contains("august"),
+        "store content leaked into fork: {raw}"
+    );
 
     // New session's STORE (model context) is mirrored from the same 4 rows
     // via the shared self-heal mapping — no system/tool rows, real ts.
     let sessions_dir = dir.path().join("workspace").join("sessions");
     let safe = new_key.replace(':', "_");
-    assert!(sessions_dir.join(format!("{safe}.json")).exists(), "fork store file missing");
+    assert!(
+        sessions_dir.join(format!("{safe}.json")).exists(),
+        "fork store file missing"
+    );
     let fresh = nemesis_agent::session::SessionStore::new_with_storage(&sessions_dir);
     let history = fresh.get_history(&new_key);
     assert_eq!(history.len(), 4);
-    assert!(history.iter().all(|m| m.role == "user" || m.role == "assistant"));
+    assert!(
+        history
+            .iter()
+            .all(|m| m.role == "user" || m.role == "assistant")
+    );
     assert_eq!(history.last().unwrap().content, "回答二");
-    assert_eq!(history[1].timestamp, src_rows[1]["timestamp"].as_str().unwrap());
+    assert_eq!(
+        history[1].timestamp,
+        src_rows[1]["timestamp"].as_str().unwrap()
+    );
     // The divergent SOURCE store is untouched.
     assert_eq!(fresh.get_history(&key).len(), 6);
     // Source jsonl untouched: still 6 rows.

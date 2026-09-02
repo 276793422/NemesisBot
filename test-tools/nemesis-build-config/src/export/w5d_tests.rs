@@ -23,8 +23,7 @@ fn w5d_validate_flags_unknown_feature() {
 
 #[test]
 fn w5d_validate_clean_config_yields_no_problems() {
-    let m = man(
-        r#"
+    let m = man(r#"
 [[feature]]
 id = "cluster"
 default = false
@@ -41,8 +40,7 @@ id = "build-profile"
 type = "enum"
 default = "release"
 options = ["release", "iotsmall"]
-"#,
-    );
+"#);
     let mut cfg = BuildConfig::default();
     cfg.set_bool("channels-rpc", true);
     cfg.set_bool("cluster", true); // dependency satisfied
@@ -53,8 +51,7 @@ options = ["release", "iotsmall"]
 #[test]
 fn w5d_validate_skips_dep_check_when_feature_off() {
     // a disabled feature with an unsatisfied dependency is not a problem
-    let m = man(
-        r#"
+    let m = man(r#"
 [[feature]]
 id = "cluster"
 default = false
@@ -62,8 +59,7 @@ depends = ["channels-rpc"]
 [[feature]]
 id = "channels-rpc"
 default = true
-"#,
-    );
+"#);
     let mut cfg = BuildConfig::default();
     cfg.set_bool("cluster", false);
     cfg.set_bool("channels-rpc", false);
@@ -72,8 +68,7 @@ default = true
 
 #[test]
 fn w5d_validate_conflict_not_flagged_when_other_off() {
-    let m = man(
-        r#"
+    let m = man(r#"
 [[feature]]
 id = "a"
 default = false
@@ -81,8 +76,7 @@ conflicts = ["b"]
 [[feature]]
 id = "b"
 default = false
-"#,
-    );
+"#);
     let mut cfg = BuildConfig::default();
     cfg.set_bool("a", true);
     cfg.set_bool("b", false);
@@ -91,15 +85,13 @@ default = false
 
 #[test]
 fn w5d_validate_enum_unchosen_is_ok() {
-    let m = man(
-        r#"
+    let m = man(r#"
 [[feature]]
 id = "build-profile"
 type = "enum"
 default = "release"
 options = ["release", "iotsmall"]
-"#,
-    );
+"#);
     // config never sets the enum (e.g. built from a partial .config)
     assert!(validate(&BuildConfig::default(), &m).is_empty());
 }
@@ -108,18 +100,13 @@ options = ["release", "iotsmall"]
 fn w5d_frontend_env_unset_feature_defaults_false() {
     // documented contract: unset features render =false (matches
     // --no-default-features semantics; stale .env never re-enables a trim)
-    let m = man(
-        r#"
+    let m = man(r#"
 [[feature]]
 id = "cluster"
 default = true
-"#,
-    );
+"#);
     let env = frontend_env(&BuildConfig::default(), &m);
-    assert!(
-        env.contains("VITE_FEATURE_CLUSTER=false"),
-        "env was: {env}"
-    );
+    assert!(env.contains("VITE_FEATURE_CLUSTER=false"), "env was: {env}");
 }
 
 #[test]
@@ -136,16 +123,14 @@ fn w5d_frontend_env_multi_dash_uppercases_all_segments() {
 
 #[test]
 fn w5d_frontend_env_one_line_per_feature_with_trailing_newline() {
-    let m = man(
-        r#"
+    let m = man(r#"
 [[feature]]
 id = "b"
 default = false
 [[feature]]
 id = "a"
 default = false
-"#,
-    );
+"#);
     let mut cfg = BuildConfig::default();
     cfg.set_bool("a", true);
     cfg.set_bool("b", true);
@@ -197,15 +182,13 @@ fn w5d_profile_arg_reads_last_written_enum() {
 fn w5d_frontend_env_enum_only_manifest_renders_bare_newline() {
     // degenerate but reachable: a manifest with only enum features emits no
     // VITE_ lines (frontend keeps its default-include semantics)
-    let m = man(
-        r#"
+    let m = man(r#"
 [[feature]]
 id = "build-profile"
 type = "enum"
 default = "release"
 options = ["release"]
-"#,
-    );
+"#);
     let env = frontend_env(&BuildConfig::default(), &m);
     assert_eq!(env, "\n");
 }

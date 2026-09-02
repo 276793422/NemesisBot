@@ -157,8 +157,8 @@ fn test_append_full_with_cron_markers() {
 #[cfg(target_os = "linux")]
 mod dirblock_diag {
     use std::io::Write;
-    use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
     use std::sync::Arc;
+    use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
     use std::time::Duration;
 
     const DUMP_INTERVAL_SECS: u64 = 90;
@@ -198,8 +198,9 @@ mod dirblock_diag {
         }
 
         fn dump(round: u64, step: u8) {
-            let Ok(mut err) =
-                std::fs::OpenOptions::new().write(true).open("/proc/self/fd/2")
+            let Ok(mut err) = std::fs::OpenOptions::new()
+                .write(true)
+                .open("/proc/self/fd/2")
             else {
                 return;
             };
@@ -389,7 +390,10 @@ fn test_write_chat_log_from_store_projection() {
 
     // All-unprojectable input -> 0 lines, nothing written.
     let key2 = uniq_key("fromstore2");
-    assert_eq!(write_chat_log_from_store(&key2, &[stored_msg("tool", "x")]), 0);
+    assert_eq!(
+        write_chat_log_from_store(&key2, &[stored_msg("tool", "x")]),
+        0
+    );
     delete_chat_log(&key2);
 }
 
@@ -408,7 +412,10 @@ fn test_delete_chat_log_with_dir_squatters_does_not_panic() {
         std::fs::create_dir_all(p).unwrap();
     }
     delete_chat_log(&key); // warn x3, no panic
-    assert!(lp.is_dir() && bp.is_dir() && mp.is_dir(), "squatters remain");
+    assert!(
+        lp.is_dir() && bp.is_dir() && mp.is_dir(),
+        "squatters remain"
+    );
     for p in [&lp, &bp, &mp] {
         std::fs::remove_dir(p).unwrap();
     }

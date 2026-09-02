@@ -218,10 +218,10 @@ impl MemoryStore for TfIdfLocalStore {
                     .append(true)
                     .open(self.archive_path())
                     .await
-                {
-                    let _ = f.write_all(line.as_bytes()).await;
-                    let _ = f.write_all(b"\n").await;
-                }
+            {
+                let _ = f.write_all(line.as_bytes()).await;
+                let _ = f.write_all(b"\n").await;
+            }
             self.flush().await?;
             Ok(true)
         } else {

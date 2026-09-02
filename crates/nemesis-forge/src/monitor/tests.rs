@@ -948,9 +948,10 @@ fn test_s8_try_deprecate_expired_cooldown_degrades() {
     let after = registry.get("cooldown-expired").unwrap();
     assert_eq!(after.status, ArtifactStatus::Degraded);
     // last_degraded_at was refreshed to now (within the last minute).
-    let refreshed = chrono::DateTime::parse_from_rfc3339(after.last_degraded_at.as_deref().unwrap())
-        .unwrap()
-        .with_timezone(&chrono::Local);
+    let refreshed =
+        chrono::DateTime::parse_from_rfc3339(after.last_degraded_at.as_deref().unwrap())
+            .unwrap()
+            .with_timezone(&chrono::Local);
     let delta = chrono::Local::now() - refreshed;
     assert!(delta.num_minutes() < 1, "delta: {:?}", delta);
 }

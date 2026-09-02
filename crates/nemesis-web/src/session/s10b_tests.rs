@@ -22,7 +22,10 @@ async fn broadcast_without_queue_errs_and_stats_track_sessions() {
     assert!(ids.contains(&s2.id.as_str()));
 
     // No send queue registered → error mentioning the session id.
-    let err = mgr.broadcast(&s1.id, br#"{"type":"system"}"#).await.unwrap_err();
+    let err = mgr
+        .broadcast(&s1.id, br#"{"type":"system"}"#)
+        .await
+        .unwrap_err();
     assert!(err.contains(&s1.id), "error names the session: {}", err);
 }
 

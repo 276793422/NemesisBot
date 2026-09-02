@@ -414,12 +414,13 @@ impl WebSocketServer {
                                 };
 
                                 if msg.is_request()
-                                    && let Ok(Some(resp_msg)) = dispatch_result {
-                                        let resp_str =
-                                            serde_json::to_string(&resp_msg).unwrap_or_default();
-                                        let guard = conn_arc.lock().await;
-                                        let _ = guard.send(resp_str).await;
-                                    }
+                                    && let Ok(Some(resp_msg)) = dispatch_result
+                                {
+                                    let resp_str =
+                                        serde_json::to_string(&resp_msg).unwrap_or_default();
+                                    let guard = conn_arc.lock().await;
+                                    let _ = guard.send(resp_str).await;
+                                }
                             }
                         }
                     }

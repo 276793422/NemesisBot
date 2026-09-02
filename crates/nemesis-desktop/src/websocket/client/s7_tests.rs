@@ -11,7 +11,7 @@ use futures_util::{SinkExt, StreamExt};
 use tokio_tungstenite::tungstenite::Message as WsMessage;
 
 use super::*;
-use crate::websocket::protocol::{Message, ERR_METHOD_NOT_FOUND};
+use crate::websocket::protocol::{ERR_METHOD_NOT_FOUND, Message};
 use crate::websocket::server::{KeyGenerator, WebSocketServer};
 
 /// fake parent 在读完 child 的 auth 消息之后的行为。
@@ -36,7 +36,9 @@ async fn spawn_fake_parent(behavior: ParentBehavior) -> u16 {
     let port = listener.local_addr().unwrap().port();
     tokio::spawn(async move {
         loop {
-            let Ok((stream, _)) = listener.accept().await else { break };
+            let Ok((stream, _)) = listener.accept().await else {
+                break;
+            };
             let behavior = behavior;
             tokio::spawn(async move {
                 let Ok(mut ws) = tokio_tungstenite::accept_async(stream).await else {
@@ -53,7 +55,9 @@ async fn spawn_fake_parent(behavior: ParentBehavior) -> u16 {
                         tokio::time::sleep(Duration::from_secs(60)).await;
                     }
                     ParentBehavior::BinaryFrame => {
-                        let _ = ws.send(WsMessage::Binary(b"s7-binary".to_vec().into())).await;
+                        let _ = ws
+                            .send(WsMessage::Binary(b"s7-binary".to_vec().into()))
+                            .await;
                         tokio::time::sleep(Duration::from_secs(60)).await;
                     }
                     ParentBehavior::Reset => {
@@ -182,9 +186,7 @@ async fn s7_call_fails_when_pending_channel_dropped_by_close() {
 
     let c2 = client.clone();
     let handle =
-        tokio::spawn(
-            async move { c2.call("never.answered", serde_json::json!({})).await },
-        );
+        tokio::spawn(async move { c2.call("never.answered", serde_json::json!({})).await });
     // 等 call 发出请求并注册 pending。
     tokio::time::sleep(Duration::from_millis(200)).await;
 
@@ -236,11 +238,7 @@ async fn s7_call_errors_when_send_channel_is_saturated() {
         .call("blocked.request", serde_json::json!({}))
         .await
         .unwrap_err();
-    assert!(
-        err.contains("send request"),
-        "unexpected error: {}",
-        err
-    );
+    assert!(err.contains("send request"), "unexpected error: {}", err);
     client.close();
 }
 

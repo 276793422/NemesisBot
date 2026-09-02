@@ -2002,11 +2002,12 @@ fn run_confirm_scenarios_parent() {
             cmd.env_remove("HOME").env_remove("USERPROFILE");
         }
 
-        let mut child = cmd.spawn().unwrap_or_else(|e| panic!("spawn {}: {}", mode, e));
-        if need_stdin
-            && let Some(mut stdin) = child.stdin.take() {
-                let _ = stdin.write_all(stdin_bytes);
-            } // drop → EOF
+        let mut child = cmd
+            .spawn()
+            .unwrap_or_else(|e| panic!("spawn {}: {}", mode, e));
+        if need_stdin && let Some(mut stdin) = child.stdin.take() {
+            let _ = stdin.write_all(stdin_bytes);
+        } // drop → EOF
         let status = child.wait().expect("wait child");
         assert!(
             status.success(),
@@ -2025,11 +2026,7 @@ fn run_confirm_scenarios_parent() {
         match mode {
             "confirm_y" => {
                 // 确认通过 → 真正执行迁移。
-                assert!(
-                    outcome.starts_with("ok"),
-                    "confirm_y outcome: {}",
-                    outcome
-                );
+                assert!(outcome.starts_with("ok"), "confirm_y outcome: {}", outcome);
                 assert!(outcome.contains("migrated=true"), "outcome: {}", outcome);
                 assert!(!outcome.contains("copied=0"), "outcome: {}", outcome);
             }
@@ -2041,7 +2038,11 @@ fn run_confirm_scenarios_parent() {
             }
             "no_home" => {
                 assert!(outcome.contains("dirs_home=err"), "outcome: {}", outcome);
-                assert!(outcome.contains("expand1=~/some/path"), "outcome: {}", outcome);
+                assert!(
+                    outcome.contains("expand1=~/some/path"),
+                    "outcome: {}",
+                    outcome
+                );
                 assert!(outcome.contains("expand2=~"), "outcome: {}", outcome);
             }
             _ => unreachable!(),

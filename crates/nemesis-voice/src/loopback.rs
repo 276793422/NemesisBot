@@ -27,10 +27,11 @@ pub fn start_loopback() {
     {
         let slot = loopback_slot().lock().unwrap();
         if let Some(ref flag) = *slot
-            && !flag.load(Ordering::SeqCst) {
-                tracing::debug!("[AEC Loopback] already running");
-                return;
-            }
+            && !flag.load(Ordering::SeqCst)
+        {
+            tracing::debug!("[AEC Loopback] already running");
+            return;
+        }
     }
     let stop = Arc::new(AtomicBool::new(false));
     {

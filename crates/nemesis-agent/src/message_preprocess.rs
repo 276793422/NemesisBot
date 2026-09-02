@@ -20,8 +20,7 @@ pub fn expand_at_files(content: &str, base: &Path) -> String {
     let mut refs: Vec<String> = Vec::new();
     for cap in re.captures_iter(content) {
         let raw = cap.get(1).map(|m| m.as_str()).unwrap_or("");
-        let path_str =
-            raw.trim_end_matches(['.', ',', ';', '!', '?', ')', ']']);
+        let path_str = raw.trim_end_matches(['.', ',', ';', '!', '?', ')', ']']);
         if path_str.is_empty() {
             continue;
         }
@@ -31,22 +30,23 @@ pub fn expand_at_files(content: &str, base: &Path) -> String {
             base.join(path_str)
         };
         if candidate.is_file()
-            && let Ok(body) = std::fs::read_to_string(&candidate) {
-                let display = candidate.strip_prefix(base).unwrap_or(&candidate).display();
-                let truncated = if body.len() > 20000 {
-                    format!(
-                        "{}…\n(truncated, {} bytes total)",
-                        &body[..20000.min(body.len())],
-                        body.len()
-                    )
-                } else {
-                    body
-                };
-                refs.push(format!(
-                    "<file path=\"{}\">\n{}\n</file>",
-                    display, truncated
-                ));
-            }
+            && let Ok(body) = std::fs::read_to_string(&candidate)
+        {
+            let display = candidate.strip_prefix(base).unwrap_or(&candidate).display();
+            let truncated = if body.len() > 20000 {
+                format!(
+                    "{}…\n(truncated, {} bytes total)",
+                    &body[..20000.min(body.len())],
+                    body.len()
+                )
+            } else {
+                body
+            };
+            refs.push(format!(
+                "<file path=\"{}\">\n{}\n</file>",
+                display, truncated
+            ));
+        }
     }
     if refs.is_empty() {
         content.to_string()

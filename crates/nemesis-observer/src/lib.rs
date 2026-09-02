@@ -223,9 +223,10 @@ impl Manager {
                 o.on_event(e).await;
             });
             if let Err(err) = handle.await
-                && err.is_panic() {
-                    warn!("Observer {} panicked during emit_sync", name);
-                }
+                && err.is_panic()
+            {
+                warn!("Observer {} panicked during emit_sync", name);
+            }
         }
     }
 

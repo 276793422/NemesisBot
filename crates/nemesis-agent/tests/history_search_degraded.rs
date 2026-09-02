@@ -68,7 +68,8 @@ fn search_degrades_to_linear_when_db_unopenable() {
         "search must degrade to linear scan and still answer"
     );
     assert_eq!(
-        hits[0].session_key, key.replace(':', "_"),
+        hits[0].session_key,
+        key.replace(':', "_"),
         "hit must come from the session we just wrote"
     );
     assert_eq!(hits[0].role, "user");
@@ -81,7 +82,9 @@ fn search_degrades_to_linear_when_db_unopenable() {
     // The assistant line is findable too (scan covers all lines, not just user).
     let hits2 = search("linear scan should still see", 10);
     assert!(
-        hits2.iter().any(|h| h.role == "assistant" && h.session_key == key.replace(':', "_")),
+        hits2
+            .iter()
+            .any(|h| h.role == "assistant" && h.session_key == key.replace(':', "_")),
         "assistant turn reachable via degraded path"
     );
 

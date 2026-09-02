@@ -17,7 +17,7 @@ fn request_with_temperature_zero() {
     let req = ChatStreamRequest {
         messages: vec![MessageEntry {
             role: "user".to_string(),
-                content: "x".to_string(),
+            content: "x".to_string(),
         }],
         model: String::new(),
         temperature: Some(0.0),
@@ -32,7 +32,7 @@ fn request_with_negative_max_tokens_passes_through() {
     let req = ChatStreamRequest {
         messages: vec![MessageEntry {
             role: "user".to_string(),
-                content: "x".to_string(),
+            content: "x".to_string(),
         }],
         model: "m".to_string(),
         temperature: None,
@@ -57,7 +57,7 @@ fn request_default_model_is_empty_string() {
     let req = ChatStreamRequest {
         messages: vec![MessageEntry {
             role: "user".to_string(),
-                content: "x".to_string(),
+            content: "x".to_string(),
         }],
         model: String::new(),
         temperature: None,
@@ -71,7 +71,7 @@ fn request_with_explicit_model() {
     let req = ChatStreamRequest {
         messages: vec![MessageEntry {
             role: "user".to_string(),
-                content: "x".to_string(),
+            content: "x".to_string(),
         }],
         model: "custom-model".to_string(),
         temperature: None,
@@ -90,7 +90,7 @@ fn request_multi_message_preserves_order() {
             },
             MessageEntry {
                 role: "user".to_string(),
-                    content: "u1".to_string(),
+                content: "u1".to_string(),
             },
             MessageEntry {
                 role: "assistant".to_string(),
@@ -98,7 +98,7 @@ fn request_multi_message_preserves_order() {
             },
             MessageEntry {
                 role: "user".to_string(),
-                    content: "u2".to_string(),
+                content: "u2".to_string(),
             },
         ],
         model: String::new(),
@@ -115,7 +115,7 @@ fn request_full_options() {
     let req = ChatStreamRequest {
         messages: vec![MessageEntry {
             role: "user".to_string(),
-                content: "hi".to_string(),
+            content: "hi".to_string(),
         }],
         model: "gpt-4o".to_string(),
         temperature: Some(0.7),
@@ -134,7 +134,7 @@ fn request_full_options() {
 fn message_entry_unicode_content() {
     let m = MessageEntry {
         role: "user".to_string(),
-            content: "Hello 世界".to_string(),
+        content: "Hello 世界".to_string(),
     };
     assert!(m.content.contains("世"));
 }
@@ -143,14 +143,14 @@ fn message_entry_unicode_content() {
 fn message_entry_empty_content() {
     let m = MessageEntry {
         role: "user".to_string(),
-            content: String::new(),
-        };
-        assert!(m.content.is_empty());
-    }
+        content: String::new(),
+    };
+    assert!(m.content.is_empty());
+}
 
-    #[test]
-    fn message_entry_role_variants() {
-        for role in &["user", "assistant", "system", "tool"] {
+#[test]
+fn message_entry_role_variants() {
+    for role in &["user", "assistant", "system", "tool"] {
         let m = MessageEntry {
             role: role.to_string(),
             content: "x".to_string(),
@@ -163,11 +163,11 @@ fn message_entry_empty_content() {
 fn message_entry_debug_format() {
     let m = MessageEntry {
         role: "user".to_string(),
-            content: "hi".to_string(),
+        content: "hi".to_string(),
     };
     let s = format!("{:?}", m);
     assert!(s.contains("user"));
-        assert!(s.contains("hi"));
+    assert!(s.contains("hi"));
 }
 
 // -----------------------------------------------------------------------
@@ -246,8 +246,8 @@ use crate::session::SessionManager;
 use axum::Router;
 use nemesis_providers::http_provider::{HttpProvider, HttpProviderConfig};
 use std::collections::HashMap;
-use std::sync::atomic::{AtomicBool, AtomicUsize};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, AtomicUsize};
 use std::time::Instant;
 use tower::ServiceExt;
 
@@ -312,14 +312,13 @@ fn provider_for(base_url: String) -> Arc<HttpProvider> {
 /// 把 body 收成完整字符串（SSE 流在 done/error 后终止；keep-alive 只在
 /// 流空闲时打点，正常路径立即结束不会卡 to_bytes）。
 async fn sse_body(resp: axum::response::Response) -> String {
-    let bytes = axum::body::to_bytes(resp.into_body(), 1 << 20).await.unwrap();
+    let bytes = axum::body::to_bytes(resp.into_body(), 1 << 20)
+        .await
+        .unwrap();
     String::from_utf8_lossy(&bytes).to_string()
 }
 
-async fn post_stream(
-    state: Arc<AppState>,
-    body: serde_json::Value,
-) -> String {
+async fn post_stream(state: Arc<AppState>, body: serde_json::Value) -> String {
     let app = Router::new()
         .route(
             "/api/chat/stream",
@@ -338,15 +337,15 @@ async fn post_stream(
 
 #[tokio::test]
 async fn handler_no_provider_emits_error_event() {
-    let body = post_stream(make_state(None), serde_json::json!({
-        "messages": [{"role": "user", "content": "hi"}]
-    }))
+    let body = post_stream(
+        make_state(None),
+        serde_json::json!({
+            "messages": [{"role": "user", "content": "hi"}]
+        }),
+    )
     .await;
     assert!(body.contains("event: error"), "{body}");
-    assert!(
-        body.contains("No streaming provider configured"),
-        "{body}"
-    );
+    assert!(body.contains("No streaming provider configured"), "{body}");
 }
 
 #[tokio::test]
@@ -404,10 +403,7 @@ async fn handler_provider_http_error_emits_error_event() {
     let server = MockServer::start().await;
     Mock::given(method("POST"))
         .and(path("/chat/completions"))
-        .respond_with(
-            ResponseTemplate::new(500)
-                .set_body_string("{\"error\":\"boom\"}"),
-        )
+        .respond_with(ResponseTemplate::new(500).set_body_string("{\"error\":\"boom\"}"))
         .expect(1)
         .mount(&server)
         .await;

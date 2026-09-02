@@ -97,7 +97,11 @@ fn test_s1_tick_skip_file_blocks_execution() {
         );
     });
 
-    assert_eq!(called.load(Ordering::SeqCst), 0, "skip file must block the tick");
+    assert_eq!(
+        called.load(Ordering::SeqCst),
+        0,
+        "skip file must block the tick"
+    );
     assert_eq!(
         beat_count.load(Ordering::SeqCst),
         0,
@@ -384,7 +388,12 @@ fn test_s1_create_default_template_static_write_failure_no_panic() {
         create_default_heartbeat_template_static(&ws);
     });
 
-    assert!(!dir.path().join("never_created_subdir").join("HEARTBEAT.md").exists());
+    assert!(
+        !dir.path()
+            .join("never_created_subdir")
+            .join("HEARTBEAT.md")
+            .exists()
+    );
 }
 
 #[test]
@@ -396,7 +405,10 @@ fn test_s1_create_default_template_static_existing_file_not_overwritten() {
     create_default_heartbeat_template_static(&ws);
 
     let content = std::fs::read_to_string(dir.path().join("HEARTBEAT.md")).unwrap();
-    assert_eq!(content, "custom content", "existing file must not be overwritten");
+    assert_eq!(
+        content, "custom content",
+        "existing file must not be overwritten"
+    );
 }
 
 #[test]
@@ -465,7 +477,10 @@ fn test_s1_send_response_static_all_reject_arms_then_success() {
         "x",
     );
 
-    assert!(sent.lock().is_empty(), "all four reject arms must not publish");
+    assert!(
+        sent.lock().is_empty(),
+        "all four reject arms must not publish"
+    );
 
     // Happy path still publishes.
     send_response_static(&bus, &good_state, "hello");
@@ -473,10 +488,6 @@ fn test_s1_send_response_static_all_reject_arms_then_success() {
     assert_eq!(sent_lock.len(), 1);
     assert_eq!(
         &sent_lock[0],
-        &(
-            "telegram".to_string(),
-            "1".to_string(),
-            "hello".to_string()
-        )
+        &("telegram".to_string(), "1".to_string(), "hello".to_string())
     );
 }

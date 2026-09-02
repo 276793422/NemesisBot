@@ -2328,7 +2328,7 @@ fn test_s8_execute_create_skill_refine_err() {
         registry.clone(),
     )));
     engine.set_provider(Arc::new(S8QueueLLM::new(vec![
-        Ok(S8_BAD_DRAFT.to_string()), // fails static validation
+        Ok(S8_BAD_DRAFT.to_string()),   // fails static validation
         Err("refine boom".to_string()), // refinement errors
     ])));
 
@@ -2361,7 +2361,7 @@ fn test_s8_execute_create_skill_root_forge_dir() {
         registry.clone(),
     )));
     engine.set_provider(Arc::new(S8QueueLLM::new(vec![Ok(
-        S8_VALID_DRAFT.to_string(),
+        S8_VALID_DRAFT.to_string()
     )])));
 
     let mut action = LearningAction::new("create_skill", "high", "s8 chain");
@@ -2403,7 +2403,12 @@ fn test_s8_suggest_prompt_write_failures() {
         action.draft_name = Some("blocked".into());
         engine.execute_suggest_prompt_for_test(&mut action);
         assert_eq!(action.status, "failed");
-        assert!(action.error_msg.unwrap().contains("Failed to write suggestion"));
+        assert!(
+            action
+                .error_msg
+                .unwrap()
+                .contains("Failed to write suggestion")
+        );
     }
 }
 
@@ -2532,13 +2537,29 @@ fn test_s8_disable_degraded_variants() {
     let (engine, registry) = s8_engine(dir.path(), ForgeConfig::default());
 
     // Non-Skill degraded artifact -> skipped by kind.
-    registry.add(s8_artifact("s8-script", ArtifactKind::Script, ArtifactStatus::Degraded));
+    registry.add(s8_artifact(
+        "s8-script",
+        ArtifactKind::Script,
+        ArtifactStatus::Degraded,
+    ));
     // Skill but not degraded -> skipped by status.
-    registry.add(s8_artifact("s8-active-skill", ArtifactKind::Skill, ArtifactStatus::Active));
+    registry.add(s8_artifact(
+        "s8-active-skill",
+        ArtifactKind::Skill,
+        ArtifactStatus::Active,
+    ));
     // Degraded skill with no workspace file -> exists() false branch.
-    registry.add(s8_artifact("s8-no-file", ArtifactKind::Skill, ArtifactStatus::Degraded));
+    registry.add(s8_artifact(
+        "s8-no-file",
+        ArtifactKind::Skill,
+        ArtifactStatus::Degraded,
+    ));
     // Degraded skill whose SKILL.md exists but rename fails (target is a dir).
-    registry.add(s8_artifact("s8-blocked", ArtifactKind::Skill, ArtifactStatus::Degraded));
+    registry.add(s8_artifact(
+        "s8-blocked",
+        ArtifactKind::Skill,
+        ArtifactStatus::Degraded,
+    ));
     let blocked_dir = dir.path().join("skills").join("s8-blocked-forge");
     std::fs::create_dir_all(blocked_dir.join("SKILL.md.disabled")).unwrap();
     std::fs::write(blocked_dir.join("SKILL.md"), "content").unwrap();
@@ -2598,7 +2619,7 @@ fn test_s8_execute_create_skill_action_variants() {
             registry.clone(),
         )));
         engine.set_provider(Arc::new(S8QueueLLM::new(vec![Ok(
-            S8_VALID_DRAFT.to_string(),
+            S8_VALID_DRAFT.to_string()
         )])));
         let mut action = LearningAction::new("create_skill", "high", "s8 chain");
         action.draft_name = Some("s8-pub-happy".into());
@@ -2649,7 +2670,7 @@ fn test_s8_execute_create_skill_action_variants() {
         let dir = tempfile::tempdir().unwrap();
         let (engine, registry) = s8_engine(dir.path(), ForgeConfig::default());
         engine.set_provider(Arc::new(S8QueueLLM::new(vec![Ok(
-            S8_VALID_DRAFT.to_string(),
+            S8_VALID_DRAFT.to_string()
         )])));
         let mut action = LearningAction::new("create_skill", "high", "s8 chain");
         action.draft_name = Some("s8-pub-nopipe".into());

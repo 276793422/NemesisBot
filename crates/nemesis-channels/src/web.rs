@@ -278,9 +278,7 @@ impl Channel for WebChannel {
                 content_len = msg.content.len(),
                 "[WebChannel] broadcasting to all sessions"
             );
-            return srv
-                .broadcast(&msg.content)
-                .map_err(NemesisError::Channel);
+            return srv.broadcast(&msg.content).map_err(NemesisError::Channel);
         }
 
         // Extract session ID from chat ID (format: web:<session-id>)

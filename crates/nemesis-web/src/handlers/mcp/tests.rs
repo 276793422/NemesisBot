@@ -104,7 +104,10 @@ async fn servers_display_normalizes_legacy_entries() {
 async fn server_update_patches_all_optional_fields_and_persists() {
     let dir = tempfile::tempdir().unwrap();
     let ctx = make_ctx(&dir);
-    seed_mcp_config(&dir, serde_json::json!([{ "name": "s1", "url": "http://old" }]));
+    seed_mcp_config(
+        &dir,
+        serde_json::json!([{ "name": "s1", "url": "http://old" }]),
+    );
 
     let h = McpHandler::new();
     let out = h
@@ -127,15 +130,16 @@ async fn server_update_patches_all_optional_fields_and_persists() {
     assert_eq!(out["updated"], true);
 
     // 落盘回读（config.get）验证全部字段持久化。
-    let cfg = h.handle_cmd("config.get", None, &ctx).await.unwrap().unwrap();
+    let cfg = h
+        .handle_cmd("config.get", None, &ctx)
+        .await
+        .unwrap()
+        .unwrap();
     let s = &cfg["servers"][0];
     assert_eq!(s["transport_type"], "http");
     assert_eq!(s["url"], "http://old", "未 patch 的字段必须保持原值");
     assert_eq!(s["description"], "patched desc");
-    assert_eq!(
-        s["headers"],
-        serde_json::json!(["Authorization: b"])
-    );
+    assert_eq!(s["headers"], serde_json::json!(["Authorization: b"]));
     assert_eq!(s["provider_name"], "prov");
     assert_eq!(s["provider_url"], "https://prov.example");
     assert_eq!(s["tags"], serde_json::json!(["a", "b"]));

@@ -19,8 +19,8 @@
 //! absent CLI ⇒ tool simply not registered (graceful degradation).
 
 use crate::context::RequestContext;
-use crate::loop_tools::cli_delegation::{self, CliDelegationSpec};
 use crate::loop_tools::Tool;
+use crate::loop_tools::cli_delegation::{self, CliDelegationSpec};
 use async_trait::async_trait;
 
 /// Default wall-clock budget for one delegation.

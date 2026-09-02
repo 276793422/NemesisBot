@@ -1340,7 +1340,12 @@ fn test_s4_rate_limiter_window_limit_logs_fields() {
 /// (client.rs 128-145).
 #[test]
 fn test_s4_rate_limiter_token_exhaustion_fallthrough() {
-    let limiter = RateLimiter::new(1, Duration::from_secs(3600), 1000, Duration::from_secs(3600));
+    let limiter = RateLimiter::new(
+        1,
+        Duration::from_secs(3600),
+        1000,
+        Duration::from_secs(3600),
+    );
     assert!(limiter.acquire("s4-peer").is_ok());
     let err = limiter.acquire("s4-peer").unwrap_err();
     match err {
@@ -1373,7 +1378,12 @@ fn test_s4_rate_limiter_window_longer_than_uptime_no_underflow() {
 #[tokio::test(start_paused = true)]
 async fn test_s4_acquire_async_exhaustion_after_retries() {
     install_s4_client_subscriber();
-    let limiter = RateLimiter::new(0, Duration::from_secs(3600), 1_000_000, Duration::from_secs(3600));
+    let limiter = RateLimiter::new(
+        0,
+        Duration::from_secs(3600),
+        1_000_000,
+        Duration::from_secs(3600),
+    );
     let err = limiter.acquire_async("s4-peer").await.unwrap_err();
     match err {
         RpcClientError::RateLimited(msg) => {
@@ -1444,7 +1454,11 @@ async fn test_s4_call_timeout_logs_error_fields() {
     let client = RpcClient::with_resolver(resolver);
 
     let result = client
-        .call_with_timeout("s4-peer", s4_make_request("s4-to"), Duration::from_millis(200))
+        .call_with_timeout(
+            "s4-peer",
+            s4_make_request("s4-to"),
+            Duration::from_millis(200),
+        )
         .await;
     match result {
         Err(RpcClientError::Timeout) => {}
@@ -1480,7 +1494,11 @@ async fn test_s4_call_result_logging_fields() {
     // Failure path (unresolvable peer) → warn! with duration_ms (408-415).
     let client2 = RpcClient::new();
     let err = client2
-        .call_with_timeout("s4-missing-peer", s4_make_request("s4-fail"), Duration::from_secs(5))
+        .call_with_timeout(
+            "s4-missing-peer",
+            s4_make_request("s4-fail"),
+            Duration::from_secs(5),
+        )
         .await;
     match err {
         Err(RpcClientError::Connection(msg)) => {
@@ -1535,7 +1553,11 @@ async fn test_s4_fallback_remote_error_propagates() {
     let client = RpcClient::with_resolver(resolver);
 
     let result = client
-        .call_with_timeout("s4-peer", s4_make_request("s4-remote-err"), Duration::from_secs(5))
+        .call_with_timeout(
+            "s4-peer",
+            s4_make_request("s4-remote-err"),
+            Duration::from_secs(5),
+        )
         .await;
     match result {
         Err(RpcClientError::RemoteError(err)) => {

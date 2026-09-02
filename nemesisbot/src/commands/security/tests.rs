@@ -1321,7 +1321,9 @@ async fn test_s11b_run_config_show_missing_and_present() {
     let th = s11b_temp_home_env();
     let sec_cfg = crate::common::security_config_path(&th.home);
     // 无文件：None 与 Show 都走 default 分支
-    run(SecurityAction::Config { action: None }, false).await.unwrap();
+    run(SecurityAction::Config { action: None }, false)
+        .await
+        .unwrap();
     run(
         SecurityAction::Config {
             action: Some(SecurityConfigAction::Show),
@@ -1410,7 +1412,13 @@ async fn test_s11b_run_audit_show_export_denied() {
         [
             line("t1", "file_read", "read_file", "allowed", ""),
             line("t2", "process_exec", "exec", "denied", "dangerous command"),
-            line("t3", "file_write", "write_file", "denied", "outside workspace"),
+            line(
+                "t3",
+                "file_write",
+                "write_file",
+                "denied",
+                "outside workspace",
+            ),
             "not-json-line".to_string(),
         ]
         .join("\n"),
@@ -1418,7 +1426,9 @@ async fn test_s11b_run_audit_show_export_denied() {
     .unwrap();
 
     // Show：默认 limit=20（None）与 Some(Show{limit:1})
-    run(SecurityAction::Audit { action: None }, false).await.unwrap();
+    run(SecurityAction::Audit { action: None }, false)
+        .await
+        .unwrap();
     run(
         SecurityAction::Audit {
             action: Some(AuditAction::Show { limit: 1 }),
@@ -1448,13 +1458,16 @@ async fn test_s11b_run_audit_show_export_denied() {
     )
     .await
     .unwrap();
-    let v: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(&out).unwrap()).unwrap();
+    let v: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(&out).unwrap()).unwrap();
     assert_eq!(v["total_entries"], 3, "坏行被 filter_map 跳过");
     assert_eq!(v["entries"].as_array().unwrap().len(), 3);
 
     // 无审计文件的三条分支
     std::fs::remove_file(&audit_path).unwrap();
-    run(SecurityAction::Audit { action: None }, false).await.unwrap();
+    run(SecurityAction::Audit { action: None }, false)
+        .await
+        .unwrap();
     run(
         SecurityAction::Audit {
             action: Some(AuditAction::Denied),
@@ -1711,7 +1724,9 @@ mod wave_b {
         cmd_rules_add(&path, "registry", "read", Some("**HKLM**"), Some("deny")).unwrap();
 
         let cfg = read_rules_config(&path).unwrap();
-        let arr = cfg["rules"]["registry"].as_array().expect("type key created");
+        let arr = cfg["rules"]["registry"]
+            .as_array()
+            .expect("type key created");
         assert_eq!(arr.len(), 1);
         assert_eq!(arr[0]["pattern"], "**HKLM**");
         assert_eq!(arr[0]["operation"], "read");
@@ -1784,7 +1799,11 @@ mod wave_b {
     async fn wave_b_run_rules_add_dispatch_destructures_and_persists_rule() {
         let _guard = crate::GLOBAL_STATE_LOCK.lock().unwrap();
         let th = s11b_temp_home_env();
-        let sec_cfg = th.home.join("workspace").join("config").join("config.security.json");
+        let sec_cfg = th
+            .home
+            .join("workspace")
+            .join("config")
+            .join("config.security.json");
 
         run(
             SecurityAction::Rules {
@@ -1801,7 +1820,9 @@ mod wave_b {
         .unwrap();
 
         let cfg = read_rules_config(&sec_cfg).unwrap();
-        let arr = cfg["rules"]["process"].as_array().expect("run-level Add 写盘");
+        let arr = cfg["rules"]["process"]
+            .as_array()
+            .expect("run-level Add 写盘");
         assert_eq!(arr.len(), 1);
         assert_eq!(arr[0]["operation"], "exec");
         assert_eq!(arr[0]["action"], "deny");
@@ -1812,7 +1833,11 @@ mod wave_b {
     async fn wave_b_run_rules_remove_dispatch_removes_matched_operation_entry() {
         let _guard = crate::GLOBAL_STATE_LOCK.lock().unwrap();
         let th = s11b_temp_home_env();
-        let sec_cfg = th.home.join("workspace").join("config").join("config.security.json");
+        let sec_cfg = th
+            .home
+            .join("workspace")
+            .join("config")
+            .join("config.security.json");
 
         // 预置两条 file.read 规则；Remove #0 应摘除第一条（matching[0]=实际 idx 0）
         cmd_rules_add(&sec_cfg, "file", "read", Some("*.tmp"), Some("allow")).unwrap();
@@ -1929,11 +1954,7 @@ mod wave_c {
     async fn wc_run_enable_corrupt_main_config_fails_before_seeding_security_defaults() {
         let _guard = crate::GLOBAL_STATE_LOCK.lock().unwrap();
         let th = s11b_temp_home_env();
-        std::fs::write(
-            crate::common::config_path(&th.home),
-            "{ broken-main-cfg",
-        )
-        .unwrap();
+        std::fs::write(crate::common::config_path(&th.home), "{ broken-main-cfg").unwrap();
         let sec_cfg = crate::common::security_config_path(&th.home);
 
         assert!(run(SecurityAction::Enable, false).await.is_err());
@@ -1950,11 +1971,7 @@ mod wave_c {
     async fn wc_run_disable_corrupt_main_config_propagates_error() {
         let _guard = crate::GLOBAL_STATE_LOCK.lock().unwrap();
         let th = s11b_temp_home_env();
-        std::fs::write(
-            crate::common::config_path(&th.home),
-            r#"{"security": "#,
-        )
-        .unwrap();
+        std::fs::write(crate::common::config_path(&th.home), r#"{"security": "#).unwrap();
         assert!(run(SecurityAction::Disable, false).await.is_err());
     }
 
@@ -2109,7 +2126,7 @@ mod wave_c {
 
 mod r10_arcs {
     use super::*;
-    use test_harness::{resolve_nemesisbot_bin, TestWorkspace};
+    use test_harness::{TestWorkspace, resolve_nemesisbot_bin};
 
     /// 确认=y：真二进制 `security config reset` 吃到 "y" → 重置为默认并落盘。
     #[tokio::test]
@@ -2124,12 +2141,7 @@ mod r10_arcs {
             return;
         };
         let out = ws
-            .run_cli_with_stdin(
-                &bin,
-                &["security", "config", "reset"],
-                "y\n",
-                60,
-            )
+            .run_cli_with_stdin(&bin, &["security", "config", "reset"], "y\n", 60)
             .await;
 
         assert!(
@@ -2193,11 +2205,7 @@ mod r10_arcs {
 
         let v: serde_json::Value =
             serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
-        assert_eq!(
-            v["rules"],
-            42,
-            "merge 被跳过 → rules 必须仍是原标量"
-        );
+        assert_eq!(v["rules"], 42, "merge 被跳过 → rules 必须仍是原标量");
     }
 
     /// 类型槽标量 `{"rules":{"file":7}}`：remove 找不到数组 → not-found 臂
@@ -2225,8 +2233,7 @@ mod r10_arcs {
         let path = tmp.path().join("config.security.json");
         std::fs::write(&path, r#"{"rules":{"file":{"a":1}}}"#).unwrap();
 
-        cmd_rules_test(&path, "file", "read", "*.txt")
-            .expect("槽对象 → 无数组可比对 → Ok");
+        cmd_rules_test(&path, "file", "read", "*.txt").expect("槽对象 → 无数组可比对 → Ok");
     }
 
     /// config.json 是顶层数组时 Disable：as_object_mut 失败 → 整段编辑跳过、
@@ -2241,7 +2248,9 @@ mod r10_arcs {
         std::fs::write(&cfg_path, "[1,2]").unwrap();
         let sec_cfg = crate::common::security_config_path(&th.home);
 
-        run(SecurityAction::Disable, false).await.expect("非对象主配置 → 跳过编辑 → Ok");
+        run(SecurityAction::Disable, false)
+            .await
+            .expect("非对象主配置 → 跳过编辑 → Ok");
 
         assert_eq!(
             std::fs::read_to_string(&cfg_path).unwrap(),

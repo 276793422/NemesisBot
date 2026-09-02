@@ -696,11 +696,17 @@ async fn test_w4c_named_uses_config_name_over_self_reported() {
     let mock = MockClient::new(
         "self name",
         vec![
-            w4c_tool("tool_a", Some("Tool A"), serde_json::json!({"type": "object"})),
+            w4c_tool(
+                "tool_a",
+                Some("Tool A"),
+                serde_json::json!({"type": "object"}),
+            ),
             w4c_tool("tool_b", None, serde_json::json!({"type": "object"})),
         ],
     );
-    let adapters = create_tools_from_client_named(Box::new(mock), "Cfg Name!", 0).await.unwrap();
+    let adapters = create_tools_from_client_named(Box::new(mock), "Cfg Name!", 0)
+        .await
+        .unwrap();
     assert_eq!(adapters.len(), 2);
     let d0 = adapters[0].definition();
     // "Cfg Name!" → "cfg_name_"（'!' 也被换成 '_'，故双下划线）
@@ -732,7 +738,9 @@ async fn test_w4c_named_adapter_execute_non_object_args_still_calls() {
     let adapters = create_tools_from_client_named(Box::new(mock), "srv", 0)
         .await
         .unwrap();
-    let result = adapters[0].execute(serde_json::json!("not-an-object")).await;
+    let result = adapters[0]
+        .execute(serde_json::json!("not-an-object"))
+        .await;
     assert!(!result.is_error);
     assert_eq!(result.content, "ok");
 }
@@ -770,10 +778,7 @@ async fn test_w4c_named_adapter_execute_is_error_no_text_unknown() {
 
 #[tokio::test]
 async fn test_w4c_named_adapter_execute_image_and_resource_content() {
-    let mock = MockClient::new(
-        "srv",
-        vec![w4c_tool("rich", None, serde_json::json!({}))],
-    );
+    let mock = MockClient::new("srv", vec![w4c_tool("rich", None, serde_json::json!({}))]);
     mock.with_call_result(ToolCallResult {
         content: vec![
             ToolContent {
@@ -970,7 +975,10 @@ fn test_w4c_sanitize_schema_flattens_nested_type_arrays() {
     // 一级属性 type 数组展平为首个
     assert_eq!(p["properties"]["text"]["type"], "string");
     // 嵌套对象的属性 type 数组也展平
-    assert_eq!(p["properties"]["nested"]["properties"]["inner"]["type"], "integer");
+    assert_eq!(
+        p["properties"]["nested"]["properties"]["inner"]["type"],
+        "integer"
+    );
 }
 
 #[test]

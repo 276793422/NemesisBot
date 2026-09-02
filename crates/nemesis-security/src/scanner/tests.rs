@@ -1753,7 +1753,10 @@ fn test_extract_paths_exec_windows_backslash_path() {
     let chain = ScanChain::with_defaults();
     let args = serde_json::json!({"command": "C:\\tools\\evil.exe -x"});
     let paths = chain.extract_paths_from_args("exec", &args);
-    assert!(paths.contains(&"C:\\tools\\evil.exe".to_string()), "{paths:?}");
+    assert!(
+        paths.contains(&"C:\\tools\\evil.exe".to_string()),
+        "{paths:?}"
+    );
 }
 
 // ---- create_engine config keys ----
@@ -1826,7 +1829,11 @@ async fn serve_clamd(
                 if reader.read_line(&mut line).await.is_err() {
                     return;
                 }
-                let cmd = line.trim().strip_prefix('n').unwrap_or(line.trim()).to_string();
+                let cmd = line
+                    .trim()
+                    .strip_prefix('n')
+                    .unwrap_or(line.trim())
+                    .to_string();
                 if cmd == "INSTREAM" {
                     let mut lenbuf = [0u8; 4];
                     let mut terminated = false;
@@ -1864,11 +1871,7 @@ async fn serve_clamd(
 }
 
 fn exe_name() -> &'static str {
-    if cfg!(windows) {
-        "clamd.exe"
-    } else {
-        "clamd"
-    }
+    if cfg!(windows) { "clamd.exe" } else { "clamd" }
 }
 
 fn engine_on(addr: &str) -> ClamAVEngine {
@@ -1973,7 +1976,11 @@ async fn test_engine_scan_file_error_maps_to_scan_error() {
 
 #[tokio::test]
 async fn test_engine_scan_content_success_infected() {
-    let addr = serve_clamd(pong_and(|_| Vec::new()), "stream: Mock.Stream.Virus FOUND\n").await;
+    let addr = serve_clamd(
+        pong_and(|_| Vec::new()),
+        "stream: Mock.Stream.Virus FOUND\n",
+    )
+    .await;
     let engine = engine_on(&addr);
     engine.start().await.unwrap();
     let r = engine.scan_content(b"bad").await;
@@ -2154,19 +2161,29 @@ async fn test_engine_download_success_extracts_and_detects() {
     let dir = tempfile::tempdir().unwrap();
     let dir_str = dir.path().to_string_lossy().to_string();
 
-    let calls: Arc<std::sync::Mutex<Vec<(u64, u64)>>> =
-        Arc::new(std::sync::Mutex::new(Vec::new()));
+    let calls: Arc<std::sync::Mutex<Vec<(u64, u64)>>> = Arc::new(std::sync::Mutex::new(Vec::new()));
     let cb_calls = calls.clone();
     let cb: Arc<dyn Fn(u64, u64) + Send + Sync> =
         Arc::new(move |a, b| cb_calls.lock().unwrap().push((a, b)));
 
     engine
-        .download(&dir_str, tokio_util::sync::CancellationToken::new(), Some(cb))
+        .download(
+            &dir_str,
+            tokio_util::sync::CancellationToken::new(),
+            Some(cb),
+        )
         .await
         .unwrap();
 
-    assert!(dir.path().join(exe_name()).exists(), "zip must be extracted");
-    assert_eq!(engine.get_clamav_path(), dir_str, "install path auto-detected");
+    assert!(
+        dir.path().join(exe_name()).exists(),
+        "zip must be extracted"
+    );
+    assert_eq!(
+        engine.get_clamav_path(),
+        dir_str,
+        "install path auto-detected"
+    );
     assert!(
         !dir.path().join("clamav-download.zip").exists(),
         "temp zip must be cleaned up"
@@ -2292,7 +2309,9 @@ async fn test_wrapper_restart_clamd_if_down_manager_error_returns_false() {
 #[cfg(windows)]
 fn place_where_as(dir: &std::path::Path, name: &str) {
     let windir = std::env::var("WINDIR").unwrap_or_else(|_| r"C:\Windows".to_string());
-    let src = std::path::Path::new(&windir).join("System32").join("where.exe");
+    let src = std::path::Path::new(&windir)
+        .join("System32")
+        .join("where.exe");
     assert!(src.exists(), "where.exe not found at {}", src.display());
     std::fs::copy(&src, dir.join(format!("{}.exe", name))).unwrap();
 }
@@ -2321,7 +2340,11 @@ async fn serve_pong() -> String {
 }
 
 #[cfg(windows)]
-fn fake_started_manager(clamav_dir: &std::path::Path, data_dir: &std::path::Path, addr: String) -> crate::clamav::manager::Manager {
+fn fake_started_manager(
+    clamav_dir: &std::path::Path,
+    data_dir: &std::path::Path,
+    addr: String,
+) -> crate::clamav::manager::Manager {
     crate::clamav::manager::Manager::new(crate::clamav::manager::ManagerConfig {
         enabled: true,
         clamav_path: clamav_dir.to_string_lossy().to_string(),
@@ -2341,7 +2364,11 @@ async fn test_wrapper_restart_clamd_if_down_manager_restart_ok_returns_true() {
     place_where_as(clamav_dir.path(), "clamd");
     let data_dir = tempfile::tempdir().unwrap();
     std::fs::create_dir_all(data_dir.path().join("database")).unwrap();
-    std::fs::write(data_dir.path().join("database").join("main.cvd"), "fake cvd").unwrap();
+    std::fs::write(
+        data_dir.path().join("database").join("main.cvd"),
+        "fake cvd",
+    )
+    .unwrap();
 
     let pong = serve_pong().await;
     let mut mgr = fake_started_manager(clamav_dir.path(), data_dir.path(), pong);
@@ -2368,7 +2395,11 @@ async fn test_wrapper_stop_with_manager_stops_manager() {
     place_where_as(clamav_dir.path(), "clamd");
     let data_dir = tempfile::tempdir().unwrap();
     std::fs::create_dir_all(data_dir.path().join("database")).unwrap();
-    std::fs::write(data_dir.path().join("database").join("main.cvd"), "fake cvd").unwrap();
+    std::fs::write(
+        data_dir.path().join("database").join("main.cvd"),
+        "fake cvd",
+    )
+    .unwrap();
 
     let pong = serve_pong().await;
     let mut mgr = fake_started_manager(clamav_dir.path(), data_dir.path(), pong);
@@ -2530,7 +2561,11 @@ fn test_clamav_engine_detect_install_path_found_and_missing() {
     let dir = tempfile::tempdir().unwrap();
     let nest = dir.path().join("deep").join("bin");
     std::fs::create_dir_all(&nest).unwrap();
-    let exe_name = if cfg!(target_os = "windows") { "clamd.exe" } else { "clamd" };
+    let exe_name = if cfg!(target_os = "windows") {
+        "clamd.exe"
+    } else {
+        "clamd"
+    };
     std::fs::write(nest.join(exe_name), b"fake").unwrap();
     let found = engine.detect_install_path(dir.path()).unwrap();
     assert!(found.ends_with("bin"), "found: {found}");
@@ -2664,10 +2699,16 @@ async fn test_scan_tool_invocation_blocks_each_tool_arm() {
 
     // write_file：content 感染
     let (a, e) = chain
-        .scan_tool_invocation("write_file", &serde_json::json!({"path": "/tmp/o.exe", "content": "payload"}))
+        .scan_tool_invocation(
+            "write_file",
+            &serde_json::json!({"path": "/tmp/o.exe", "content": "payload"}),
+        )
         .await;
     assert!(!a);
-    assert!(e.as_deref().unwrap_or("").contains("virus detected"), "{e:?}");
+    assert!(
+        e.as_deref().unwrap_or("").contains("virus detected"),
+        "{e:?}"
+    );
 
     // download：save_path 文件感染
     let (a, e) = chain
@@ -2685,10 +2726,16 @@ async fn test_scan_tool_invocation_blocks_each_tool_arm() {
 
     // web_fetch：save_path 文件感染
     let (a, e) = chain
-        .scan_tool_invocation("web_fetch", &serde_json::json!({"save_path": "/tmp/fetched.exe"}))
+        .scan_tool_invocation(
+            "web_fetch",
+            &serde_json::json!({"save_path": "/tmp/fetched.exe"}),
+        )
         .await;
     assert!(!a);
-    assert!(e.as_deref().unwrap_or("").contains("/tmp/fetched.exe"), "{e:?}");
+    assert!(
+        e.as_deref().unwrap_or("").contains("/tmp/fetched.exe"),
+        "{e:?}"
+    );
 
     // cron：command 内容感染
     let (a, e) = chain

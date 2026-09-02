@@ -554,7 +554,8 @@ async fn w4a_spawn_in_runtime_without_llm_completes_with_placeholder_callback() 
     let manager = SubagentManager::new();
     assert!(!manager.has_llm_callback());
 
-    let seen: StdArc<std::sync::Mutex<Vec<String>>> = StdArc::new(std::sync::Mutex::new(Vec::new()));
+    let seen: StdArc<std::sync::Mutex<Vec<String>>> =
+        StdArc::new(std::sync::Mutex::new(Vec::new()));
     let seen_cb = seen.clone();
     let id = manager.spawn(
         "placeholder task".to_string(),
@@ -587,7 +588,8 @@ async fn w4a_spawn_in_runtime_with_llm_runs_tool_loop_and_callbacks() {
         tool_calls: vec![],
     }));
 
-    let seen: StdArc<std::sync::Mutex<Vec<String>>> = StdArc::new(std::sync::Mutex::new(Vec::new()));
+    let seen: StdArc<std::sync::Mutex<Vec<String>>> =
+        StdArc::new(std::sync::Mutex::new(Vec::new()));
     let seen_cb = seen.clone();
     let id = manager.spawn(
         "real task".to_string(),
@@ -608,7 +610,11 @@ async fn w4a_spawn_in_runtime_with_llm_runs_tool_loop_and_callbacks() {
         "unexpected summary: {}",
         seen[0]
     );
-    assert!(seen[0].contains("subagent done: all good"), "LLM reply must surface: {}", seen[0]);
+    assert!(
+        seen[0].contains("subagent done: all good"),
+        "LLM reply must surface: {}",
+        seen[0]
+    );
     // Task record still tracks as running (caller updates it, per design)
     assert_eq!(manager.get_task(&id).unwrap().status, "running");
 }

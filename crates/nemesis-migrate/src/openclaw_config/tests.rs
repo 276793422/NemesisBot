@@ -533,10 +533,7 @@ fn test_convert_config_defaults_temperature_and_max_tool_iterations() {
 fn test_convert_config_agents_without_defaults_key() {
     // 覆盖 121：agents 存在但没有 defaults 子对象 → 整段跳过，模板值保留
     let mut data = HashMap::new();
-    data.insert(
-        "agents".to_string(),
-        serde_json::json!({"other": true}),
-    );
+    data.insert("agents".to_string(), serde_json::json!({"other": true}));
     let (config, warnings) = convert_config(&data);
     assert!(warnings.is_empty());
     // defaults 保持初始模板值
@@ -562,10 +559,7 @@ fn test_convert_config_provider_value_not_an_object() {
 fn test_convert_config_supported_provider_without_credentials() {
     // 覆盖 171：受支持 provider 但 api_key/api_base 均空 → 不入 model_list
     let mut data = HashMap::new();
-    data.insert(
-        "providers".to_string(),
-        serde_json::json!({"zhipu": {}}),
-    );
+    data.insert("providers".to_string(), serde_json::json!({"zhipu": {}}));
     let (config, warnings) = convert_config(&data);
     assert!(warnings.is_empty());
     assert!(config["model_list"].as_array().unwrap().is_empty());
@@ -575,10 +569,7 @@ fn test_convert_config_supported_provider_without_credentials() {
 fn test_convert_config_channel_value_not_an_object() {
     // 覆盖 180：channel 值不是对象 → continue（同样在 SUPPORTED 检查前）
     let mut data = HashMap::new();
-    data.insert(
-        "channels".to_string(),
-        serde_json::json!({"telegram": 3}),
-    );
+    data.insert("channels".to_string(), serde_json::json!({"telegram": 3}));
     let (config, warnings) = convert_config(&data);
     assert!(warnings.is_empty());
     // 模板 telegram 保持禁用
@@ -628,10 +619,7 @@ fn test_convert_config_web_and_tools_missing_search_variants() {
     assert!(config.get("tools").is_none());
 
     let mut data2 = HashMap::new();
-    data2.insert(
-        "tools".to_string(),
-        serde_json::json!({"other": 1}),
-    );
+    data2.insert("tools".to_string(), serde_json::json!({"other": 1}));
     let (config2, _) = convert_config(&data2);
     assert!(config2.get("tools").is_none());
 }

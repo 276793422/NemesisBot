@@ -42,13 +42,17 @@ fn build_pe(spec: &PeSpec) -> Vec<u8> {
         }
     }
     if let Some((va, sz)) = spec.security
-        && sz > 0 {
-            len = len.max((va + sz) as usize);
-        }
+        && sz > 0
+    {
+        len = len.max((va + sz) as usize);
+    }
     if let Some(fl) = spec.force_len {
         len = fl;
     }
-    assert!(len >= 0x40 + 24 + size_of_opt + spec.sections.len() * 40, "file must cover headers");
+    assert!(
+        len >= 0x40 + 24 + size_of_opt + spec.sections.len() * 40,
+        "file must cover headers"
+    );
     let mut b = vec![0u8; len];
     b[0] = b'M';
     b[1] = b'Z';
@@ -58,7 +62,11 @@ fn build_pe(spec: &PeSpec) -> Vec<u8> {
     put16(&mut b, P + 20, size_of_opt as u16);
     put16(&mut b, P + 24, if spec.plus { 0x20b } else { 0x10b });
     put32(&mut b, P + 88, 0xDEADBEEF); // CheckSum 非零（排除才可观测）
-    let (nrva_off, dd_start) = if spec.plus { (P + 132, P + 136) } else { (P + 116, P + 120) };
+    let (nrva_off, dd_start) = if spec.plus {
+        (P + 132, P + 136)
+    } else {
+        (P + 116, P + 120)
+    };
     put32(&mut b, nrva_off, 16);
     if let Some((va, sz)) = spec.security {
         put32(&mut b, dd_start + 32, va);
@@ -142,7 +150,11 @@ fn content_hash_excludes_checksum_and_security_dir() {
     // CheckSum 区间 [0x98, 0x9C) 的首尾字节
     for off in [P + 88, P + 91] {
         pe[off] ^= 0xFF;
-        assert_eq!(PeCodec.content_hash(&pe, l).unwrap(), base, "CheckSum byte @{off} excluded");
+        assert_eq!(
+            PeCodec.content_hash(&pe, l).unwrap(),
+            base,
+            "CheckSum byte @{off} excluded"
+        );
         pe[off] ^= 0xFF;
     }
     // Security 目录项 [dd+32, dd+40)：VA 字节翻转（Size 仍 0 → 区域仍 None）
@@ -158,7 +170,11 @@ fn content_hash_excludes_checksum_and_security_dir() {
     // 对照：非排除区字节（DOS header / DataDirectory[3] 末字节）→ 哈希变
     for off in [0x10, P + 120 + 31] {
         pe[off] ^= 0xFF;
-        assert_ne!(PeCodec.content_hash(&pe, l).unwrap(), base, "byte @{off} must affect hash");
+        assert_ne!(
+            PeCodec.content_hash(&pe, l).unwrap(),
+            base,
+            "byte @{off} must affect hash"
+        );
         pe[off] ^= 0xFF;
     }
     // PE32+ 的 Security 目录项在 P+136+32
@@ -170,7 +186,11 @@ fn content_hash_excludes_checksum_and_security_dir() {
     });
     let base_plus = PeCodec.content_hash(&pe_plus, 0x280).unwrap();
     pe_plus[P + 136 + 32] ^= 0xFF;
-    assert_eq!(PeCodec.content_hash(&pe_plus, 0x280).unwrap(), base_plus, "PE32+ security dir excluded");
+    assert_eq!(
+        PeCodec.content_hash(&pe_plus, 0x280).unwrap(),
+        base_plus,
+        "PE32+ security dir excluded"
+    );
 }
 
 #[test]
@@ -241,14 +261,23 @@ fn nrva_below_5_means_no_security_directory() {
 fn parse_error_paths() {
     let codec = PeCodec;
     // < 0x40 字节 → Truncated
-    assert!(matches!(codec.compute_l(b"MZ".as_slice()), Err(CodecError::Truncated)));
+    assert!(matches!(
+        codec.compute_l(b"MZ".as_slice()),
+        Err(CodecError::Truncated)
+    ));
     // 非 MZ 开头 → NotAnExecutable
     let not_mz = vec![0u8; 0x80];
-    assert!(matches!(codec.compute_l(&not_mz), Err(CodecError::NotAnExecutable)));
+    assert!(matches!(
+        codec.compute_l(&not_mz),
+        Err(CodecError::NotAnExecutable)
+    ));
     // MZ 但 e_lfanew 指向处无 PE 签名 → NotAnExecutable
     let mut no_sig = one_section_pe(false);
     no_sig[P + 1] = b'X'; // "PE\0\0" → "PX\0\0"
-    assert!(matches!(codec.compute_l(&no_sig), Err(CodecError::NotAnExecutable)));
+    assert!(matches!(
+        codec.compute_l(&no_sig),
+        Err(CodecError::NotAnExecutable)
+    ));
     // 未知 Optional Header Magic
     let mut bad_magic = one_section_pe(false);
     bad_magic[P + 24] = 0x99;
@@ -264,7 +293,10 @@ fn parse_error_paths() {
         security: Some((0x100, 0x20)),  // VA 0x100 < L
         force_len: None,
     });
-    assert!(matches!(codec.compute_l(&va_below), Err(CodecError::Malformed(_))));
+    assert!(matches!(
+        codec.compute_l(&va_below),
+        Err(CodecError::Malformed(_))
+    ));
     // 交叉校验：auth end > file len → Malformed
     let end_over = build_pe(&PeSpec {
         plus: false,
@@ -272,7 +304,10 @@ fn parse_error_paths() {
         security: Some((0x310, 0x1000)),
         force_len: Some(0x340),
     });
-    assert!(matches!(codec.compute_l(&end_over), Err(CodecError::Malformed(_))));
+    assert!(matches!(
+        codec.compute_l(&end_over),
+        Err(CodecError::Malformed(_))
+    ));
     // 字段越界（num_sections 巨大 → section table 读越界）
     let mut huge_sections = one_section_pe(false);
     put16(&mut huge_sections, P + 6, 0xFFFF);

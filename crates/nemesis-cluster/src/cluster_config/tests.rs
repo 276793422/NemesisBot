@@ -572,10 +572,16 @@ fn test_w3b_save_create_parent_fails_when_parent_is_file() {
     // Parent path is occupied by a regular file → create_dir_all fails
     let config = create_static_config("node-x", "X", "0.0.0.0:9000");
     let r1 = save_static_config(&blocker.join("peers.toml"), &config);
-    assert!(r1.is_err(), "save_static_config must fail when parent is a file");
+    assert!(
+        r1.is_err(),
+        "save_static_config must fail when parent is a file"
+    );
 
     let r2 = save_dynamic_state(&blocker.join("state.toml"), &DynamicState::default());
-    assert!(r2.is_err(), "save_dynamic_state must fail when parent is a file");
+    assert!(
+        r2.is_err(),
+        "save_dynamic_state must fail when parent is a file"
+    );
 }
 
 #[test]
@@ -606,26 +612,28 @@ fn test_w3b_append_peer_error_paths_and_legacy_peers_array() {
     let blocker = dir.path().join("blocker");
     std::fs::write(&blocker, b"file").unwrap();
     assert!(
-        append_peer_to_file(&blocker.join("peers.toml"), "Node-B", "10.0.0.1:9000", "worker", "dev")
-            .is_err()
+        append_peer_to_file(
+            &blocker.join("peers.toml"),
+            "Node-B",
+            "10.0.0.1:9000",
+            "worker",
+            "dev"
+        )
+        .is_err()
     );
 
     // 2. peers.toml is a DIRECTORY → read_to_string fails → Err
     let dir2 = tempfile::tempdir().unwrap();
     let as_dir = dir2.path().join("peers.toml");
     std::fs::create_dir_all(&as_dir).unwrap();
-    assert!(
-        append_peer_to_file(&as_dir, "Node-B", "10.0.0.1:9000", "worker", "dev").is_err()
-    );
+    assert!(append_peer_to_file(&as_dir, "Node-B", "10.0.0.1:9000", "worker", "dev").is_err());
 
     // 3. atomic_write blocked at tmp path → Err, existing file untouched
     let dir3 = tempfile::tempdir().unwrap();
     let path = dir3.path().join("peers.toml");
     std::fs::write(&path, "[node]\nid = \"keep\"\n").unwrap();
     std::fs::create_dir_all(dir3.path().join("peers.toml.tmp")).unwrap();
-    assert!(
-        append_peer_to_file(&path, "Node-B", "10.0.0.1:9000", "worker", "dev").is_err()
-    );
+    assert!(append_peer_to_file(&path, "Node-B", "10.0.0.1:9000", "worker", "dev").is_err());
     assert_eq!(
         std::fs::read_to_string(&path).unwrap(),
         "[node]\nid = \"keep\"\n",
@@ -657,7 +665,10 @@ fn test_w3b_remove_peer_no_peers_table_and_error_paths() {
     let path = dir.path().join("peers.toml");
     std::fs::write(&path, "[node]\nid = \"n1\"\n").unwrap();
     remove_peer_from_file(&path, "anyone").unwrap();
-    assert_eq!(std::fs::read_to_string(&path).unwrap(), "[node]\nid = \"n1\"\n");
+    assert_eq!(
+        std::fs::read_to_string(&path).unwrap(),
+        "[node]\nid = \"n1\"\n"
+    );
 
     // 2. peers.toml is a DIRECTORY → read_to_string fails → Err
     let dir2 = tempfile::tempdir().unwrap();
@@ -686,5 +697,8 @@ fn test_w3b_atomic_write_rename_failure_cleans_tmp() {
     assert!(result.is_err(), "rename onto a directory must fail");
 
     let tmp = dir.path().join("peers.toml.tmp");
-    assert!(!tmp.exists(), "tmp file must be cleaned up after rename failure");
+    assert!(
+        !tmp.exists(),
+        "tmp file must be cleaned up after rename failure"
+    );
 }

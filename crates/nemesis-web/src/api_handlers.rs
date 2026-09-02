@@ -374,15 +374,16 @@ pub async fn handle_api_models(
         .map(|mut m| {
             if let Some(obj) = m.as_object_mut()
                 && let Some(key) = obj.get_mut("api_key")
-                    && let Some(s) = key.as_str()
-                        && !s.is_empty() {
-                            *key = if s.len() <= 4 {
-                                serde_json::Value::String("****".to_string())
-                            } else {
-                                let end = utils::floor_char_boundary(s, 4);
-                                serde_json::Value::String(format!("{}****", &s[..end]))
-                            };
-                        }
+                && let Some(s) = key.as_str()
+                && !s.is_empty()
+            {
+                *key = if s.len() <= 4 {
+                    serde_json::Value::String("****".to_string())
+                } else {
+                    let end = utils::floor_char_boundary(s, 4);
+                    serde_json::Value::String(format!("{}****", &s[..end]))
+                };
+            }
             m
         })
         .collect();
@@ -502,10 +503,7 @@ pub async fn handle_sdk_export() -> axum::response::Response {
 pub async fn handle_sdk_pip() -> axum::response::Response {
     sdk_zip_response(
         crate::sdk_embed::SDK_SDIST_ZIP,
-        format!(
-            "nemesisbot-sdk-pip-{}.zip",
-            crate::sdk_embed::SDK_VERSION
-        ),
+        format!("nemesisbot-sdk-pip-{}.zip", crate::sdk_embed::SDK_VERSION),
     )
 }
 
@@ -517,9 +515,7 @@ pub async fn handle_sdk_pip() -> axum::response::Response {
 fn load_scanner_status(workspace: &str) -> serde_json::Value {
     // 委托 nemesis-path 唯一拼接点。
     let scanner_config_path =
-        nemesis_path::resolve_scanner_config_path_in_workspace(std::path::Path::new(
-            workspace,
-        ));
+        nemesis_path::resolve_scanner_config_path_in_workspace(std::path::Path::new(workspace));
 
     let data = match std::fs::read_to_string(&scanner_config_path) {
         Ok(d) => d,
@@ -637,16 +633,16 @@ fn resolve_log_file_path(workspace: &str, source: &str) -> Option<String> {
         "llm" => {
             // Phase B1-3: 将来由 nemesis-providers 写 logs/llm/ 流式摘要（避免污染 request_logs 的 Markdown 目录）。
             // 在那之前 fallback 到 request_logs 最新目录，返回其 00.request.md（首条 user 消息）。
-            let dir =
-                nemesis_path::resolve_request_logs_dir_in_workspace(std::path::Path::new(workspace));
+            let dir = nemesis_path::resolve_request_logs_dir_in_workspace(std::path::Path::new(
+                workspace,
+            ));
             find_latest_request_summary(&dir)
         }
         "security" => {
             // Phase B1-1: audit.jsonl 是固定文件名（不是 glob），路径在 logs/security_logs/
-            let audit_file = nemesis_path::resolve_audit_log_dir_in_workspace(
-                std::path::Path::new(workspace),
-            )
-            .join("audit.jsonl");
+            let audit_file =
+                nemesis_path::resolve_audit_log_dir_in_workspace(std::path::Path::new(workspace))
+                    .join("audit.jsonl");
             if audit_file.exists() {
                 Some(audit_file.to_string_lossy().to_string())
             } else {
@@ -696,10 +692,11 @@ fn find_latest_request_summary(dir: &std::path::Path) -> Option<String> {
         }
         if let Ok(meta) = entry.metadata()
             && let Ok(mtime) = meta.modified()
-                && mtime > latest_dir_time {
-                    latest_dir_time = mtime;
-                    latest_dir = Some(entry.path());
-                }
+            && mtime > latest_dir_time
+        {
+            latest_dir_time = mtime;
+            latest_dir = Some(entry.path());
+        }
     }
 
     let target_dir = latest_dir?;
@@ -717,10 +714,11 @@ fn find_latest_request_summary(dir: &std::path::Path) -> Option<String> {
             }
             if let Ok(meta) = entry.metadata()
                 && let Ok(mtime) = meta.modified()
-                    && mtime > latest_file_time {
-                        latest_file_time = mtime;
-                        latest_file = Some(entry.path().to_string_lossy().to_string());
-                    }
+                && mtime > latest_file_time
+            {
+                latest_file_time = mtime;
+                latest_file = Some(entry.path().to_string_lossy().to_string());
+            }
         }
     }
 
@@ -815,15 +813,14 @@ fn sanitize_map(map: &mut serde_json::Map<String, serde_json::Value>) {
     for key in keys_to_sanitize {
         if let Some(value) = map.get_mut(&key) {
             match value {
-                serde_json::Value::String(s)
-                    if !s.is_empty() => {
-                        if s.len() <= 4 {
-                            *value = serde_json::Value::String("****".to_string());
-                        } else {
-                            let end = utils::floor_char_boundary(s, 4);
-                            *value = serde_json::Value::String(format!("{}****", &s[..end]));
-                        }
+                serde_json::Value::String(s) if !s.is_empty() => {
+                    if s.len() <= 4 {
+                        *value = serde_json::Value::String("****".to_string());
+                    } else {
+                        let end = utils::floor_char_boundary(s, 4);
+                        *value = serde_json::Value::String(format!("{}****", &s[..end]));
                     }
+                }
                 serde_json::Value::Object(inner_map) => {
                     sanitize_map(inner_map);
                 }
@@ -1006,9 +1003,10 @@ fn resolve_fork_store(
     state: &AppState,
 ) -> Result<Arc<nemesis_agent::session::SessionStore>, (StatusCode, Json<serde_json::Value>)> {
     if let Some(al) = state.agent_loop.read().as_ref()
-        && let Some(store) = al.session_store() {
-            return Ok(store.clone());
-        }
+        && let Some(store) = al.session_store()
+    {
+        return Ok(store.clone());
+    }
     let home = state.home.as_deref().ok_or_else(|| {
         (
             StatusCode::SERVICE_UNAVAILABLE,
@@ -1019,9 +1017,9 @@ fn resolve_fork_store(
     let dir = nemesis_path::resolve_sessions_dir_in_workspace(&nemesis_path::workspace_dir(
         std::path::Path::new(home),
     ));
-    Ok(Arc::new(nemesis_agent::session::SessionStore::new_with_storage(
-        dir,
-    )))
+    Ok(Arc::new(
+        nemesis_agent::session::SessionStore::new_with_storage(dir),
+    ))
 }
 
 /// First non-empty line of a message, truncated for preview display.
@@ -1070,8 +1068,7 @@ pub async fn handle_api_chat_session_turns(
     // cuts on and the Dashboard renders. Counting on any other store would
     // re-create the coordinate-mismatch bug this round fixed.
     let key = chat_session_key(&session_id);
-    let (rows, total, _, _) =
-        nemesis_agent::chat_log::read_chat_log(&key, usize::MAX, None);
+    let (rows, total, _, _) = nemesis_agent::chat_log::read_chat_log(&key, usize::MAX, None);
     if rows.is_empty() {
         return Err((
             StatusCode::NOT_FOUND,
@@ -1173,7 +1170,10 @@ pub async fn handle_api_chat_session_fork(
         ));
     }
 
-    let at_turn = body.get("at_turn").and_then(|v| v.as_u64()).map(|v| v as usize);
+    let at_turn = body
+        .get("at_turn")
+        .and_then(|v| v.as_u64())
+        .map(|v| v as usize);
     let title = body
         .get("title")
         .and_then(|v| v.as_str())
@@ -1196,8 +1196,8 @@ pub async fn handle_api_chat_session_fork(
         ));
     }
 
-    let info = nemesis_agent::session_fork::fork_session(&store, &key, None, at_turn)
-        .map_err(|e| {
+    let info =
+        nemesis_agent::session_fork::fork_session(&store, &key, None, at_turn).map_err(|e| {
             (
                 StatusCode::INTERNAL_SERVER_ERROR,
                 Json(serde_json::json!({"error": e})),

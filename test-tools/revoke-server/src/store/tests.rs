@@ -91,7 +91,11 @@ static FILE_SEQ: AtomicU32 = AtomicU32::new(0);
 fn temp_db_path(tag: &str) -> String {
     let n = FILE_SEQ.fetch_add(1, Ordering::SeqCst);
     std::env::temp_dir()
-        .join(format!("revoke_store_{tag}_{}_{}.db", std::process::id(), n))
+        .join(format!(
+            "revoke_store_{tag}_{}_{}.db",
+            std::process::id(),
+            n
+        ))
         .to_string_lossy()
         .into_owned()
 }
@@ -346,11 +350,19 @@ fn trusted_key_not_after_roundtrip() {
     .unwrap();
     let tkl = s.list_trusted_keys().unwrap();
     assert_eq!(
-        tkl.keys.iter().find(|k| k.key_fp == "aa").unwrap().not_after,
+        tkl.keys
+            .iter()
+            .find(|k| k.key_fp == "aa")
+            .unwrap()
+            .not_after,
         Some(4102444800)
     );
     assert_eq!(
-        tkl.keys.iter().find(|k| k.key_fp == "bb").unwrap().not_after,
+        tkl.keys
+            .iter()
+            .find(|k| k.key_fp == "bb")
+            .unwrap()
+            .not_after,
         None
     );
 }

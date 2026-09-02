@@ -235,44 +235,46 @@ impl InMemoryGraphStore {
         // Load entities
         let entities_path = dir.join("entities.jsonl");
         if entities_path.exists()
-            && let Ok(data) = std::fs::read_to_string(&entities_path) {
-                for line in data.lines() {
-                    let trimmed = line.trim();
-                    if trimmed.is_empty() {
-                        continue;
-                    }
-                    if let Ok(entity) = serde_json::from_str::<GraphEntity>(trimmed) {
-                        let key = entity.name.to_lowercase();
-                        self.entities.insert(key, entity);
-                    }
+            && let Ok(data) = std::fs::read_to_string(&entities_path)
+        {
+            for line in data.lines() {
+                let trimmed = line.trim();
+                if trimmed.is_empty() {
+                    continue;
+                }
+                if let Ok(entity) = serde_json::from_str::<GraphEntity>(trimmed) {
+                    let key = entity.name.to_lowercase();
+                    self.entities.insert(key, entity);
                 }
             }
+        }
 
         // Load triples
         let triples_path = dir.join("triples.jsonl");
         if triples_path.exists()
-            && let Ok(data) = std::fs::read_to_string(&triples_path) {
-                for line in data.lines() {
-                    let trimmed = line.trim();
-                    if trimmed.is_empty() {
-                        continue;
-                    }
-                    if let Ok(triple) = serde_json::from_str::<GraphTriple>(trimmed) {
-                        let subject = triple.subject.clone();
-                        let object = triple.object.clone();
+            && let Ok(data) = std::fs::read_to_string(&triples_path)
+        {
+            for line in data.lines() {
+                let trimmed = line.trim();
+                if trimmed.is_empty() {
+                    continue;
+                }
+                if let Ok(triple) = serde_json::from_str::<GraphTriple>(trimmed) {
+                    let subject = triple.subject.clone();
+                    let object = triple.object.clone();
 
-                        self.triples_by_subject
-                            .entry(subject)
-                            .or_default()
-                            .push(triple.clone());
+                    self.triples_by_subject
+                        .entry(subject)
+                        .or_default()
+                        .push(triple.clone());
 
-                        self.triples_by_object
-                            .entry(object)
-                            .or_default()
-                            .push(triple);
-                    }
+                    self.triples_by_object
+                        .entry(object)
+                        .or_default()
+                        .push(triple);
                 }
             }
+        }
 
         Ok(())
     }
@@ -373,9 +375,10 @@ impl GraphStore for InMemoryGraphStore {
             .push(triple);
 
         if self.persistence_dir.is_some()
-            && let Err(e) = self.persist_triples() {
-                tracing::warn!("[GraphStore] persist_triples failed: {e}");
-            }
+            && let Err(e) = self.persist_triples()
+        {
+            tracing::warn!("[GraphStore] persist_triples failed: {e}");
+        }
 
         Ok(())
     }
@@ -387,9 +390,10 @@ impl GraphStore for InMemoryGraphStore {
         self.entities.insert(name, entity);
 
         if self.persistence_dir.is_some()
-            && let Err(e) = self.persist_entities() {
-                tracing::warn!("[GraphStore] persist_entities failed: {e}");
-            }
+            && let Err(e) = self.persist_entities()
+        {
+            tracing::warn!("[GraphStore] persist_entities failed: {e}");
+        }
 
         Ok(())
     }
@@ -414,10 +418,12 @@ impl GraphStore for InMemoryGraphStore {
             triples.retain(|t| !(t.subject == subject && t.predicate == predicate));
         }
 
-        if removed && self.persistence_dir.is_some()
-            && let Err(e) = self.persist_triples() {
-                tracing::warn!("[GraphStore] persist_triples failed: {e}");
-            }
+        if removed
+            && self.persistence_dir.is_some()
+            && let Err(e) = self.persist_triples()
+        {
+            tracing::warn!("[GraphStore] persist_triples failed: {e}");
+        }
 
         Ok(removed)
     }
@@ -527,12 +533,12 @@ impl GraphStore for InMemoryGraphStore {
                     && (t.subject.to_lowercase().contains(&query_lower)
                         || t.predicate.to_lowercase().contains(&query_lower)
                         || t.object.to_lowercase().contains(&query_lower))
-                    {
-                        results.push(t.clone());
-                        if results.len() >= limit {
-                            break;
-                        }
+                {
+                    results.push(t.clone());
+                    if results.len() >= limit {
+                        break;
                     }
+                }
             }
             if results.len() >= limit {
                 break;
@@ -579,9 +585,10 @@ impl GraphStore for InMemoryGraphStore {
         }
 
         if self.persistence_dir.is_some()
-            && let Err(e) = self.persist_all() {
-                tracing::warn!("[GraphStore] persist_all failed: {e}");
-            }
+            && let Err(e) = self.persist_all()
+        {
+            tracing::warn!("[GraphStore] persist_all failed: {e}");
+        }
 
         Ok(())
     }

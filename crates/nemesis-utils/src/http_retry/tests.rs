@@ -1083,9 +1083,7 @@ async fn test_reqwest_retry_connection_error_returns_err_after_retries() {
         .unwrap();
 
     let result = do_request_with_retry_reqwest(&client, &req).await;
-    let err = result
-        .expect("should be Some")
-        .expect_err("should be Err");
+    let err = result.expect("should be Some").expect_err("should be Err");
     assert!(
         err.is_connect() || err.is_request(),
         "expected connect/request error, got: {err}"

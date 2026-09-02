@@ -14,8 +14,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 /// depend on any embedding crate — the assembly layer (agent_factory)
 /// injects this closure (typically wrapping nemesis-memory's vector store).
 /// `None` = embedding unavailable for this text → caller degrades.
-pub type SemanticEmbedder =
-    Arc<dyn Fn(&str) -> Option<Vec<f32>> + Send + Sync>;
+pub type SemanticEmbedder = Arc<dyn Fn(&str) -> Option<Vec<f32>> + Send + Sync>;
 
 /// Selection policy.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -34,7 +33,6 @@ pub enum Policy {
     /// selection degrades to Fallback (fail-open, never blocks).
     Semantic,
 }
-
 
 /// Policy configuration describing a named routing policy.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -271,10 +269,7 @@ impl MetricsCollector {
 
     /// Record a metric sample.
     pub fn record(&self, metric: Metric) {
-        let mut entry = self
-            .samples
-            .entry(metric.provider.clone())
-            .or_default();
+        let mut entry = self.samples.entry(metric.provider.clone()).or_default();
         if entry.len() >= self.max_per_provider {
             entry.remove(0);
         }
@@ -533,7 +528,6 @@ impl Router {
         }
     }
 
-
     /// I5 (P3.4): semantic selection. Embeds nothing per candidate unless a
     /// SemanticEmbedder is injected; every text must embed (None anywhere ⇒
     /// degrade to Fallback with a single warn — fail-open).
@@ -610,12 +604,16 @@ impl Router {
             let v = embedder(text)?;
             let v: Vec<f64> = v.into_iter().map(f64::from).collect();
             let arc = Arc::new(v);
-            self.semantic_desc_cache.insert(text.to_string(), arc.clone());
+            self.semantic_desc_cache
+                .insert(text.to_string(), arc.clone());
             Some(arc)
         };
 
         let mut best: Option<(f64, &Candidate)> = None;
-        for c in matching.iter().filter(|c| !c.semantic_description.is_empty()) {
+        for c in matching
+            .iter()
+            .filter(|c| !c.semantic_description.is_empty())
+        {
             let Some(dv) = embed_cached(&c.semantic_description) else {
                 continue; // this candidate's description won't embed — skip
             };
@@ -662,70 +660,71 @@ impl Router {
 
         // Try primary
         if let Some(candidate) = self.select(&resolved)
-            && let Some(provider) = self.providers.get(&candidate.provider) {
-                let start = std::time::Instant::now();
-                match provider
-                    .chat(messages, tools, &candidate.model, options)
-                    .await
-                {
-                    Ok(resp) => {
-                        self.metrics.record(Metric {
-                            provider: candidate.provider.clone(),
-                            latency_ms: start.elapsed().as_millis() as u64,
-                            success: true,
-                            tokens_used: resp.usage.as_ref().map(|u| u.total_tokens).unwrap_or(0),
-                            cost: candidate.cost_per_1k
-                                * resp.usage.as_ref().map(|u| u.total_tokens).unwrap_or(0) as f64
-                                / 1000.0,
-                            timestamp: chrono::Local::now(),
-                        });
-                        return Ok(resp);
-                    }
-                    Err(e) => {
-                        tracing::warn!(
-                            provider = %candidate.provider,
-                            model = %candidate.model,
-                            error = %e,
-                            "[Provider] Primary provider failed, attempting fallback"
-                        );
-                        self.metrics.record(Metric {
-                            provider: candidate.provider.clone(),
-                            latency_ms: start.elapsed().as_millis() as u64,
-                            success: false,
-                            tokens_used: 0,
-                            cost: 0.0,
-                            timestamp: chrono::Local::now(),
-                        });
-                        if e.is_retriable() {
-                            // Try fallback candidates. Snapshot the vec inside
-                            // the read lock and drop it before awaiting chat —
-                            // the guard must not cross the network call.
-                            let candidates = self.candidates.read().clone();
-                            for alt in candidates
-                                .iter()
-                                .filter(|c| c.model == resolved && c.provider != candidate.provider)
-                            {
-                                if let Some(alt_provider) = self.providers.get(&alt.provider) {
-                                    tracing::warn!(
-                                        from_provider = %candidate.provider,
-                                        to_provider = %alt.provider,
-                                        model = %alt.model,
-                                        "[Provider] Fallback triggered"
-                                    );
-                                    match alt_provider
-                                        .chat(messages, tools, &alt.model, options)
-                                        .await
-                                    {
-                                        Ok(resp) => return Ok(resp),
-                                        Err(_) => continue,
-                                    }
+            && let Some(provider) = self.providers.get(&candidate.provider)
+        {
+            let start = std::time::Instant::now();
+            match provider
+                .chat(messages, tools, &candidate.model, options)
+                .await
+            {
+                Ok(resp) => {
+                    self.metrics.record(Metric {
+                        provider: candidate.provider.clone(),
+                        latency_ms: start.elapsed().as_millis() as u64,
+                        success: true,
+                        tokens_used: resp.usage.as_ref().map(|u| u.total_tokens).unwrap_or(0),
+                        cost: candidate.cost_per_1k
+                            * resp.usage.as_ref().map(|u| u.total_tokens).unwrap_or(0) as f64
+                            / 1000.0,
+                        timestamp: chrono::Local::now(),
+                    });
+                    return Ok(resp);
+                }
+                Err(e) => {
+                    tracing::warn!(
+                        provider = %candidate.provider,
+                        model = %candidate.model,
+                        error = %e,
+                        "[Provider] Primary provider failed, attempting fallback"
+                    );
+                    self.metrics.record(Metric {
+                        provider: candidate.provider.clone(),
+                        latency_ms: start.elapsed().as_millis() as u64,
+                        success: false,
+                        tokens_used: 0,
+                        cost: 0.0,
+                        timestamp: chrono::Local::now(),
+                    });
+                    if e.is_retriable() {
+                        // Try fallback candidates. Snapshot the vec inside
+                        // the read lock and drop it before awaiting chat —
+                        // the guard must not cross the network call.
+                        let candidates = self.candidates.read().clone();
+                        for alt in candidates
+                            .iter()
+                            .filter(|c| c.model == resolved && c.provider != candidate.provider)
+                        {
+                            if let Some(alt_provider) = self.providers.get(&alt.provider) {
+                                tracing::warn!(
+                                    from_provider = %candidate.provider,
+                                    to_provider = %alt.provider,
+                                    model = %alt.model,
+                                    "[Provider] Fallback triggered"
+                                );
+                                match alt_provider
+                                    .chat(messages, tools, &alt.model, options)
+                                    .await
+                                {
+                                    Ok(resp) => return Ok(resp),
+                                    Err(_) => continue,
                                 }
                             }
                         }
-                        return Err(e);
                     }
+                    return Err(e);
                 }
             }
+        }
 
         Err(FailoverError::Unknown {
             provider: "router".to_string(),

@@ -158,7 +158,8 @@ pub fn init_db(db_path: &Path) -> Result<Connection, String> {
             .map_err(|e| format!("Failed to create board directory: {e}"))?;
     }
 
-    let conn = Connection::open(db_path).map_err(|e| format!("Failed to open board database: {e}"))?;
+    let conn =
+        Connection::open(db_path).map_err(|e| format!("Failed to open board database: {e}"))?;
 
     // WAL + FK enforcement；busy_timeout 让 CLI 与 gateway 并开同库时
     // 写写冲突退避重试而不是立刻报 SQLITE_BUSY（board.db 支持多进程读）。
@@ -179,17 +180,26 @@ pub fn init_db(db_path: &Path) -> Result<Connection, String> {
     if current_version < 2 {
         conn.execute_batch(SCHEMA_V2)
             .map_err(|e| format!("Board schema v2 migration failed: {e}"))?;
-        tracing::info!(version = 2, "[BoardStore] Database migrated to v2 (issue_dispatch)");
+        tracing::info!(
+            version = 2,
+            "[BoardStore] Database migrated to v2 (issue_dispatch)"
+        );
     }
     if current_version < 3 {
         conn.execute_batch(SCHEMA_V3)
             .map_err(|e| format!("Board schema v3 migration failed: {e}"))?;
-        tracing::info!(version = 3, "[BoardStore] Database migrated to v3 (notification)");
+        tracing::info!(
+            version = 3,
+            "[BoardStore] Database migrated to v3 (notification)"
+        );
     }
     if current_version < 4 {
         conn.execute_batch(SCHEMA_V4)
             .map_err(|e| format!("Board schema v4 migration failed: {e}"))?;
-        tracing::info!(version = 4, "[BoardStore] Database migrated to v4 (autopilot)");
+        tracing::info!(
+            version = 4,
+            "[BoardStore] Database migrated to v4 (autopilot)"
+        );
     }
     set_version(&conn, SCHEMA_VERSION)?;
 

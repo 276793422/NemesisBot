@@ -16,7 +16,10 @@ fn detect_codec_dispatches_by_behavior() {
     // MZ → PeCodec（用错误形状区分：PE 解析错误 vs Raw 的 Ok(None)）
     let mz_garbage = b"MZ".as_slice(); // 截断 PE → Err(Truncated)
     let pe_codec = detect_codec(mz_garbage);
-    assert!(pe_codec.compute_l(mz_garbage).is_err(), "MZ dispatches to PeCodec");
+    assert!(
+        pe_codec.compute_l(mz_garbage).is_err(),
+        "MZ dispatches to PeCodec"
+    );
     // PE32+ 变体的 MZ 同样进 PE codec
     let mz2 = b"MZ\x00\x00\x00\x00".as_slice();
     assert!(detect_codec(mz2).compute_l(mz2).is_err());
@@ -24,7 +27,10 @@ fn detect_codec_dispatches_by_behavior() {
     // \x7fELF → ElfCodec（同样用错误形状区分）
     let elf_garbage = b"\x7fELF".as_slice(); // 截断 → Err(Truncated)
     let elf_codec = detect_codec(elf_garbage);
-    assert!(elf_codec.compute_l(elf_garbage).is_err(), "ELF dispatches to ElfCodec");
+    assert!(
+        elf_codec.compute_l(elf_garbage).is_err(),
+        "ELF dispatches to ElfCodec"
+    );
 
     // 其他 → RawCodec（compute_l 恒 Ok(None)——无结构化长度标记）
     let raw = b"plain payload bytes".as_slice();

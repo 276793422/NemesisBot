@@ -388,11 +388,7 @@ for line in sys.stdin:
         os.close(1)
     # n >= 2：stdout 已关，不再写任何东西
 "#;
-    let mut t = StdioTransport::new(
-        "python",
-        vec!["-c".to_string(), script.to_string()],
-        vec![],
-    );
+    let mut t = StdioTransport::new("python", vec!["-c".to_string(), script.to_string()], vec![]);
     if t.connect().await.is_err() {
         eprintln!("Skipping test: python not available");
         return;
@@ -432,11 +428,7 @@ for line in sys.stdin:
     pass
 time.sleep(30)
 "#;
-    let mut t = StdioTransport::new(
-        "python",
-        vec!["-c".to_string(), script.to_string()],
-        vec![],
-    );
+    let mut t = StdioTransport::new("python", vec!["-c".to_string(), script.to_string()], vec![]);
     if t.connect().await.is_err() {
         eprintln!("Skipping test: python not available");
         return;
@@ -464,11 +456,7 @@ sys.stdout.write("this-is-not-json\n")
 sys.stdout.flush()
 time.sleep(30)
 "#;
-    let mut t = StdioTransport::new(
-        "python",
-        vec!["-c".to_string(), script.to_string()],
-        vec![],
-    );
+    let mut t = StdioTransport::new("python", vec!["-c".to_string(), script.to_string()], vec![]);
     if t.connect().await.is_err() {
         eprintln!("Skipping test: python not available");
         return;
@@ -498,11 +486,7 @@ import sys, time, os
 os.close(0)
 time.sleep(30)
 "#;
-    let mut t = StdioTransport::new(
-        "python",
-        vec!["-c".to_string(), script.to_string()],
-        vec![],
-    );
+    let mut t = StdioTransport::new("python", vec!["-c".to_string(), script.to_string()], vec![]);
     if t.connect().await.is_err() {
         eprintln!("Skipping test: python not available");
         return;

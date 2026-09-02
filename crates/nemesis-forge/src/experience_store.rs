@@ -197,17 +197,15 @@ impl ExperienceStore {
         // Merge by pattern hash
         let mut merged: HashMap<String, AggregatedExperience> = HashMap::new();
         for r in records {
-            let entry = merged
-                .entry(r.pattern_hash.clone())
-                .or_insert_with(|| {
-                    // (BUG #23, quality-hardening goal 冲刺 S8) 原实现 or_insert_with(|| r.clone())
-                    // 后无条件 entry.count += r.count，导致每个 pattern 的**首个**记录
-                    // count 被累计两次（3+5 合并成 11 而非 8）。插入时清零 count，统一走
-                    // 下面的 += 累加路径，语义修正为跨记录求和。
-                    let mut e = r.clone();
-                    e.count = 0;
-                    e
-                });
+            let entry = merged.entry(r.pattern_hash.clone()).or_insert_with(|| {
+                // (BUG #23, quality-hardening goal 冲刺 S8) 原实现 or_insert_with(|| r.clone())
+                // 后无条件 entry.count += r.count，导致每个 pattern 的**首个**记录
+                // count 被累计两次（3+5 合并成 11 而非 8）。插入时清零 count，统一走
+                // 下面的 += 累加路径，语义修正为跨记录求和。
+                let mut e = r.clone();
+                e.count = 0;
+                e
+            });
             entry.count += r.count;
             entry.avg_duration_ms = (entry.avg_duration_ms + r.avg_duration_ms) / 2;
             entry.success_rate = (entry.success_rate + r.success_rate) / 2.0;
@@ -289,10 +287,9 @@ impl ExperienceStore {
                     }
                     // Non-JSON lines (legacy aggregate pollution) are dropped.
                     if let Ok(ce) = serde_json::from_str::<CollectedExperience>(line) {
-                            let young =
-                                chrono::DateTime::parse_from_rfc3339(&ce.experience.timestamp)
-                                    .map(|t| t.with_timezone(&chrono::Local) >= cutoff_dt)
-                                    .unwrap_or(true); // unparseable ts → keep (don't lose data)
+                        let young = chrono::DateTime::parse_from_rfc3339(&ce.experience.timestamp)
+                            .map(|t| t.with_timezone(&chrono::Local) >= cutoff_dt)
+                            .unwrap_or(true); // unparseable ts → keep (don't lose data)
                         if young {
                             new_content.push_str(line);
                             new_content.push('\n');
@@ -417,9 +414,10 @@ impl ExperienceStore {
 
                 // Apply time filter on filename
                 if let Some(ref since_time) = since
-                    && !Self::file_newer_than(&name_str, since_time) {
-                        continue;
-                    }
+                    && !Self::file_newer_than(&name_str, since_time)
+                {
+                    continue;
+                }
 
                 let content = tokio::fs::read_to_string(file_entry.path()).await?;
                 for line in content.lines() {

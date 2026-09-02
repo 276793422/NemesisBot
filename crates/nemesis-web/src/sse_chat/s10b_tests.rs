@@ -70,10 +70,7 @@ fn provider_for(base_url: String) -> Arc<HttpProvider> {
 
 async fn post_stream(state: Arc<crate::api_handlers::AppState>, body: serde_json::Value) -> String {
     let app = axum::Router::new()
-        .route(
-            "/api/chat/stream",
-            axum::routing::post(handle_chat_stream),
-        )
+        .route("/api/chat/stream", axum::routing::post(handle_chat_stream))
         .with_state(state);
     let req = axum::http::Request::builder()
         .method("POST")
@@ -82,7 +79,9 @@ async fn post_stream(state: Arc<crate::api_handlers::AppState>, body: serde_json
         .body(serde_json::to_string(&body).unwrap())
         .unwrap();
     let resp = tower::ServiceExt::oneshot(app, req).await.unwrap();
-    let bytes = axum::body::to_bytes(resp.into_body(), 1 << 20).await.unwrap();
+    let bytes = axum::body::to_bytes(resp.into_body(), 1 << 20)
+        .await
+        .unwrap();
     String::from_utf8_lossy(&bytes).to_string()
 }
 

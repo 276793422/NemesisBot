@@ -190,8 +190,7 @@ impl CcEvents {
     /// 顺序：PreToolUse, PostToolUse, PostToolUseFailure, SessionStart,
     /// UserPromptSubmit, Stop, SessionEnd, PreCompact, PostCompact。
     pub fn script_counts(&self) -> [(&'static str, usize); 9] {
-        let count =
-            |v: &Vec<CcHookGroup>| v.iter().map(|g| g.hooks.len()).sum::<usize>();
+        let count = |v: &Vec<CcHookGroup>| v.iter().map(|g| g.hooks.len()).sum::<usize>();
         [
             ("PreToolUse", count(&self.pre_tool_use)),
             ("PostToolUse", count(&self.post_tool_use)),
@@ -227,7 +226,8 @@ pub fn parse_cc_hooks(json: &str) -> Result<CcEvents, String> {
     ] {
         for g in groups.iter_mut() {
             let before = g.hooks.len();
-            g.hooks.retain(|h| h.r#type.is_empty() || h.r#type == "command");
+            g.hooks
+                .retain(|h| h.r#type.is_empty() || h.r#type == "command");
             skipped += before - g.hooks.len();
         }
     }
@@ -278,12 +278,7 @@ fn enrich_tool_input(arguments: &str) -> Value {
 
 /// 构建发往脚本 stdin 的事件 JSON（单行紧凑）。
 /// `extra`：事件特有字段（tool_name/tool_input/tool_response/prompt/...）。
-pub fn build_event_payload(
-    event: &str,
-    session_key: &str,
-    cwd: &Path,
-    extra: Value,
-) -> String {
+pub fn build_event_payload(event: &str, session_key: &str, cwd: &Path, extra: Value) -> String {
     let mut payload = serde_json::json!({
         // CC 公共字段。session_id 用我们的 session_key；transcript_path
         // 无可指（诚实空串，见模块文档）。
@@ -376,7 +371,7 @@ pub async fn run_hook_script(
                 stdout: String::new(),
                 stderr: format!("failed to spawn hook: {e}"),
                 timed_out: false,
-            }
+            };
         }
     };
     if let Some(mut stdin) = child.stdin.take() {
@@ -491,7 +486,10 @@ impl CcHookBridge {
         match Self::from_json(&text, project_dir) {
             Ok(bridge) => {
                 if bridge.events.is_empty() {
-                    tracing::info!("[cc-hooks] {} loaded but declares no scripts", path.display());
+                    tracing::info!(
+                        "[cc-hooks] {} loaded but declares no scripts",
+                        path.display()
+                    );
                     return None;
                 }
                 tracing::info!(
@@ -499,11 +497,36 @@ impl CcHookBridge {
                      SessionStart={}, UserPromptSubmit={}, Stop={})",
                     bridge.events.total_scripts(),
                     path.display(),
-                    bridge.events.pre_tool_use.iter().map(|g| g.hooks.len()).sum::<usize>(),
-                    bridge.events.post_tool_use.iter().map(|g| g.hooks.len()).sum::<usize>(),
-                    bridge.events.session_start.iter().map(|g| g.hooks.len()).sum::<usize>(),
-                    bridge.events.user_prompt_submit.iter().map(|g| g.hooks.len()).sum::<usize>(),
-                    bridge.events.stop.iter().map(|g| g.hooks.len()).sum::<usize>(),
+                    bridge
+                        .events
+                        .pre_tool_use
+                        .iter()
+                        .map(|g| g.hooks.len())
+                        .sum::<usize>(),
+                    bridge
+                        .events
+                        .post_tool_use
+                        .iter()
+                        .map(|g| g.hooks.len())
+                        .sum::<usize>(),
+                    bridge
+                        .events
+                        .session_start
+                        .iter()
+                        .map(|g| g.hooks.len())
+                        .sum::<usize>(),
+                    bridge
+                        .events
+                        .user_prompt_submit
+                        .iter()
+                        .map(|g| g.hooks.len())
+                        .sum::<usize>(),
+                    bridge
+                        .events
+                        .stop
+                        .iter()
+                        .map(|g| g.hooks.len())
+                        .sum::<usize>(),
                 );
                 Some(Arc::new(bridge))
             }
@@ -534,9 +557,10 @@ impl CcHookBridge {
         let mut out = Vec::new();
         for g in groups {
             if let Some(t) = tool
-                && !g.matches(t) {
-                    continue;
-                }
+                && !g.matches(t)
+            {
+                continue;
+            }
             for h in &g.hooks {
                 let timeout = h.timeout.unwrap_or(DEFAULT_TIMEOUT_SECS);
                 let o = run_hook_script(&h.command, timeout, payload, &self.project_dir).await;
@@ -657,7 +681,11 @@ impl ToolHook for CcHookBridge {
             }),
         );
         for o in self
-            .run_group(&self.events.post_tool_use_failure, Some(&call.name), &payload)
+            .run_group(
+                &self.events.post_tool_use_failure,
+                Some(&call.name),
+                &payload,
+            )
             .await
         {
             if !o.stdout.is_empty() {
@@ -692,7 +720,8 @@ impl LifecycleHook for CcHookBridge {
                 &self.project_dir,
                 serde_json::json!({ "source": "startup" }),
             );
-            self.run_group(&self.events.session_start, None, &payload).await;
+            self.run_group(&self.events.session_start, None, &payload)
+                .await;
         }
         // UserPromptSubmit：exit 2 = 拦下 prompt（模型看不到）。
         let payload = build_event_payload(
@@ -753,7 +782,8 @@ impl CcHookBridge {
             &self.project_dir,
             serde_json::json!({ "reason": reason }),
         );
-        self.run_group(&self.events.session_end, None, &payload).await;
+        self.run_group(&self.events.session_end, None, &payload)
+            .await;
     }
 }
 
@@ -761,7 +791,11 @@ impl CcHookBridge {
     /// CC `PreCompact` / `PostCompact`（观察型）：压缩流水线前后触发。
     /// exit 2 不阻止压缩（稳定性机制，诚实边界）。
     pub async fn run_compact_hooks(&self, trigger: &str, phase: &str) {
-        let event = if phase == "pre" { "PreCompact" } else { "PostCompact" };
+        let event = if phase == "pre" {
+            "PreCompact"
+        } else {
+            "PostCompact"
+        };
         let payload = build_event_payload(
             event,
             "system",

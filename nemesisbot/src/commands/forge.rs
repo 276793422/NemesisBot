@@ -91,9 +91,10 @@ fn load_forge_config(forge_dir: &std::path::Path) -> serde_json::Value {
     let config_path = forge_dir.join("forge.json");
     if config_path.exists()
         && let Ok(data) = std::fs::read_to_string(&config_path)
-            && let Ok(cfg) = serde_json::from_str::<serde_json::Value>(&data) {
-                return cfg;
-            }
+        && let Ok(cfg) = serde_json::from_str::<serde_json::Value>(&data)
+    {
+        return cfg;
+    }
     default_forge_config()
 }
 
@@ -113,9 +114,10 @@ fn load_registry(forge_dir: &std::path::Path) -> Vec<serde_json::Value> {
     let registry_path = forge_dir.join("registry.json");
     if registry_path.exists()
         && let Ok(data) = std::fs::read_to_string(&registry_path)
-            && let Ok(arr) = serde_json::from_str::<Vec<serde_json::Value>>(&data) {
-                return arr;
-            }
+        && let Ok(arr) = serde_json::from_str::<Vec<serde_json::Value>>(&data)
+    {
+        return arr;
+    }
     Vec::new()
 }
 
@@ -351,17 +353,18 @@ fn cmd_reflect(cfg_path: &std::path::Path, forge_dir: &std::path::Path) -> Resul
     // Check if forge is enabled in main config
     if cfg_path.exists()
         && let Ok(data) = std::fs::read_to_string(cfg_path)
-            && let Ok(cfg) = serde_json::from_str::<serde_json::Value>(&data) {
-                let enabled = cfg
-                    .get("forge")
-                    .and_then(|f| f.get("enabled"))
-                    .and_then(|v| v.as_bool())
-                    .unwrap_or(false);
-                if !enabled {
-                    println!("Forge module is not enabled. Run 'nemesisbot forge enable' first.");
-                    return Ok(());
-                }
-            }
+        && let Ok(cfg) = serde_json::from_str::<serde_json::Value>(&data)
+    {
+        let enabled = cfg
+            .get("forge")
+            .and_then(|f| f.get("enabled"))
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false);
+        if !enabled {
+            println!("Forge module is not enabled. Run 'nemesisbot forge enable' first.");
+            return Ok(());
+        }
+    }
 
     println!("Triggering manual reflection...");
 

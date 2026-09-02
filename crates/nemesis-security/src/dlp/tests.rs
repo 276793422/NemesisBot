@@ -828,7 +828,11 @@ fn test_scan_tool_output_truncates_beyond_5000_bytes() {
     // 命中点在 5000 字节之前 → 检出
     let near = format!("{}{}", "x".repeat(4900), "AKIAIOSFODNN7EXAMPLE");
     let r = engine.scan_tool_output("shell", &near);
-    assert!(r.matches.iter().any(|m| m.rule_name == "aws_access_key"), "{:?}", r.matches);
+    assert!(
+        r.matches.iter().any(|m| m.rule_name == "aws_access_key"),
+        "{:?}",
+        r.matches
+    );
 
     // 命中点在 5000 字节之后 → 被截掉，不检出
     let far = format!("{}{}", "x".repeat(5010), " AKIAIOSFODNN7EXAMPLE");
@@ -875,7 +879,11 @@ fn test_scan_args_extracts_array_elements() {
     let engine = DlpEngine::new(true, "block");
     let args = serde_json::json!(["AKIAIOSFODNN7EXAMPLE", {"nested": "AIzaABCDEFGHIJKLMNOPQRSTUVWXYZ012345678"}]);
     let r = engine.scan_tool_input("exec", &args);
-    assert!(r.matches.iter().any(|m| m.rule_name == "aws_access_key"), "{:?}", r.matches);
+    assert!(
+        r.matches.iter().any(|m| m.rule_name == "aws_access_key"),
+        "{:?}",
+        r.matches
+    );
     assert!(
         r.matches.iter().any(|m| m.rule_name == "google_api_key"),
         "{:?}",

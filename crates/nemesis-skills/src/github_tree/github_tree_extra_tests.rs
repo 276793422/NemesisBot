@@ -595,5 +595,8 @@ async fn test_download_skill_tree_parent_create_fails_when_parent_is_file() {
     )
     .await
     .unwrap_err();
-    assert!(matches!(err, nemesis_types::error::NemesisError::Io(_)), "got: {err}");
+    assert!(
+        matches!(err, nemesis_types::error::NemesisError::Io(_)),
+        "got: {err}"
+    );
 }

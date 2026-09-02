@@ -85,7 +85,11 @@ fn verify_rejects_wrong_key() {
 fn verify_response_rejects_malformed_sig_hex() {
     let (sk, vk) = root_key(1);
     let mut signed = sign_response(
-        &Crl { version: 1, valid_until: 1, entries: vec![] },
+        &Crl {
+            version: 1,
+            valid_until: 1,
+            entries: vec![],
+        },
         &sk,
     )
     .unwrap();
@@ -93,7 +97,10 @@ fn verify_response_rejects_malformed_sig_hex() {
     // 长度 ≠ 128 hex 字符 → hex_decode_64 长度错误臂
     signed.sig = "abcd".into();
     let err = verify_response(&signed, &vk).unwrap_err();
-    assert!(format!("{err:#}").contains("expected 128 hex chars"), "{err:#}");
+    assert!(
+        format!("{err:#}").contains("expected 128 hex chars"),
+        "{err:#}"
+    );
 
     // 长度对但含非 hex 字符 → 逐字节解析错误臂
     signed.sig = "g".repeat(128);
@@ -111,7 +118,11 @@ fn hex_decode_64_accepts_uppercase_and_trims() {
     let sig = [0xABu8; 64];
     let upper: String = sig.iter().map(|b| format!("{:02X}", b)).collect();
     let via_resp = SignedResponse {
-        payload: Crl { version: 1, valid_until: 1, entries: vec![] },
+        payload: Crl {
+            version: 1,
+            valid_until: 1,
+            entries: vec![],
+        },
         sig: format!("  {upper}  "),
     };
     let (_, vk) = root_key(1);

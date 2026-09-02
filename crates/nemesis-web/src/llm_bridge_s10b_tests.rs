@@ -150,7 +150,12 @@ async fn adapter_maps_tool_call_messages_options_and_tools() {
 
     // Empty model → adapter falls back to the default model.
     let resp = adapter
-        .chat("", agent_messages_with_tool_calls(), Some(options), agent_tools)
+        .chat(
+            "",
+            agent_messages_with_tool_calls(),
+            Some(options),
+            agent_tools,
+        )
         .await
         .expect("mock chat succeeds");
     assert_eq!(resp.content, "好的");
@@ -215,5 +220,9 @@ async fn adapter_none_options_use_provider_defaults_and_err_maps_to_string() {
         .chat("m", vec![], None, vec![])
         .await
         .expect_err("provider error propagates");
-    assert!(err.contains("timeout"), "error text carried through: {}", err);
+    assert!(
+        err.contains("timeout"),
+        "error text carried through: {}",
+        err
+    );
 }

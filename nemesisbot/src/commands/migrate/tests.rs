@@ -597,8 +597,14 @@ fn run_force_migrates_config_workspace_prompts_skills_and_persona_files() {
         std::fs::read_to_string(target.join("IDENTITY.md")).unwrap(),
         "identity"
     );
-    assert_eq!(std::fs::read_to_string(target.join("SOUL.md")).unwrap(), "soul");
-    assert_eq!(std::fs::read_to_string(target.join("USER.md")).unwrap(), "user");
+    assert_eq!(
+        std::fs::read_to_string(target.join("SOUL.md")).unwrap(),
+        "soul"
+    );
+    assert_eq!(
+        std::fs::read_to_string(target.join("USER.md")).unwrap(),
+        "user"
+    );
 }
 
 #[test]
@@ -691,7 +697,11 @@ fn fallback_conversion_extracts_default_model_port_and_models() {
         "default_model: 'claude-9'\nport: 4321\n",
     )
     .unwrap();
-    std::fs::write(tmp.path().join("models.yaml"), "- name: alpha\n- model: \"beta\"\n").unwrap();
+    std::fs::write(
+        tmp.path().join("models.yaml"),
+        "- name: alpha\n- model: \"beta\"\n",
+    )
+    .unwrap();
 
     let (cfg, warnings) = convert_config_fallback(tmp.path()).unwrap();
     assert_eq!(cfg["default_model"], "claude-9", "单引号 YAML 值也要剥干净");
@@ -850,17 +860,27 @@ mod wave_a {
 
         run(opts(&oclaw, &nb, false), false).expect("强制迁移全流程 Ok");
 
-        let cfg: serde_json::Value =
-            serde_json::from_str(&std::fs::read_to_string(nb.join("config.json"))
-                .expect("config 迁移后存在（common::config_path = {home}/config.json）"))
-            .unwrap();
+        let cfg: serde_json::Value = serde_json::from_str(
+            &std::fs::read_to_string(nb.join("config.json"))
+                .expect("config 迁移后存在（common::config_path = {home}/config.json）"),
+        )
+        .unwrap();
         assert_eq!(
             cfg["agents"]["defaults"]["llm"], "zhipu/glm-4.7",
             "convert_config 消费 agents.defaults 并透传（对照 crate 单测 test_convert_config_basic）"
         );
-        assert!(nb.join("workspace").join("note.md").exists(), "workspace 树被复制");
+        assert!(
+            nb.join("workspace").join("note.md").exists(),
+            "workspace 树被复制"
+        );
         assert!(nb.join("workspace").join("prompts").join("p.md").exists());
-        assert!(nb.join("workspace").join("skills").join("s1").join("SKILL.md").exists());
+        assert!(
+            nb.join("workspace")
+                .join("skills")
+                .join("s1")
+                .join("SKILL.md")
+                .exists()
+        );
         assert_eq!(
             std::fs::read_to_string(nb.join("IDENTITY.md")).unwrap(),
             "IDENTITY.md body",
@@ -878,10 +898,7 @@ mod wave_a {
         std::fs::write(tmp.path().join("openclaw.json"), "{ broken json").unwrap();
 
         let (cfg, warnings) = super::convert_config_with_crate(tmp.path()).unwrap();
-        assert_eq!(
-            cfg["channels"]["web"]["port"], 8080,
-            "回退转换产出默认结构"
-        );
+        assert_eq!(cfg["channels"]["web"]["port"], 8080, "回退转换产出默认结构");
         assert!(
             warnings.iter().any(|w| w.contains("fallback")),
             "warnings 应包含 fallback 说明：{warnings:?}"
@@ -1102,7 +1119,7 @@ mod r10_fallback {
 // 整 mod Windows 形态（1/1 测试 + 专属 use 全走 Windows CLI 进程边界）。
 #[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
 mod r10_subprocess {
-    use test_harness::{resolve_nemesisbot_bin, TestWorkspace};
+    use test_harness::{TestWorkspace, resolve_nemesisbot_bin};
 
     #[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
     #[tokio::test]

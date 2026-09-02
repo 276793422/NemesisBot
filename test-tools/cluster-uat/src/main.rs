@@ -184,25 +184,29 @@ fn configure_ports(home: &Path, web_port: u16, health_port: u16) -> Result<()> {
     if let Some(obj) = config.as_object_mut() {
         // Set web server port (channels.web.port)
         if let Some(channels) = obj.get_mut("channels")
-            && let Some(ch) = channels.as_object_mut() {
-                if let Some(web) = ch.get_mut("web")
-                    && let Some(w) = web.as_object_mut() {
-                        w.insert("port".to_string(), json!(web_port));
-                    }
-                // Disable standalone websocket channel — the web server already
-                // handles WebSocket on the web port. Without this, the
-                // websocket channel binds to its default port (49001), which
-                // can conflict with a node's web port or a ghost listener.
-                if let Some(ws) = ch.get_mut("websocket")
-                    && let Some(w) = ws.as_object_mut() {
-                        w.insert("enabled".to_string(), json!(false));
-                    }
+            && let Some(ch) = channels.as_object_mut()
+        {
+            if let Some(web) = ch.get_mut("web")
+                && let Some(w) = web.as_object_mut()
+            {
+                w.insert("port".to_string(), json!(web_port));
             }
+            // Disable standalone websocket channel — the web server already
+            // handles WebSocket on the web port. Without this, the
+            // websocket channel binds to its default port (49001), which
+            // can conflict with a node's web port or a ghost listener.
+            if let Some(ws) = ch.get_mut("websocket")
+                && let Some(w) = ws.as_object_mut()
+            {
+                w.insert("enabled".to_string(), json!(false));
+            }
+        }
         // Set health check port (gateway.port)
         if let Some(gateway) = obj.get_mut("gateway")
-            && let Some(gw) = gateway.as_object_mut() {
-                gw.insert("port".to_string(), json!(health_port));
-            }
+            && let Some(gw) = gateway.as_object_mut()
+        {
+            gw.insert("port".to_string(), json!(health_port));
+        }
         // Enable DEBUG level logging for detailed traces
         obj.insert(
             "logging".to_string(),
@@ -274,7 +278,10 @@ async fn start_gateway_and_wait(
     if !rpc_ready {
         return Err(format!("{} RPC server not ready at {}", name, rpc_addr));
     }
-    println!("    {} restarted and healthy (RPC on {})", name, node.rpc_port);
+    println!(
+        "    {} restarted and healthy (RPC on {})",
+        name, node.rpc_port
+    );
 
     // UDP announce has 0-5s jitter; broadcast_interval is 3s in tests, so
     // 15s covers jitter + processing before callers rely on discovery.
@@ -512,9 +519,8 @@ async fn ws_send_recv_until<P: Fn(&str) -> bool>(
 }
 
 /// Gateway WebSocket stream type (matches `test_harness::ws_connect`).
-type WsStream = tokio_tungstenite::WebSocketStream<
-    tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>,
->;
+type WsStream =
+    tokio_tungstenite::WebSocketStream<tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>>;
 
 /// Send a WS API request (`type=request`) and wait for the matching response
 /// (correlated by `reqId`; non-matching frames — chat.receive, pushes — are
@@ -1572,8 +1578,7 @@ async fn main() {
                 .pointer("/issue/status")
                 .and_then(|v| v.as_str())
                 .unwrap_or("");
-            if disp.get("dispatched").and_then(|v| v.as_bool()) != Some(true)
-                || task_id.is_empty()
+            if disp.get("dispatched").and_then(|v| v.as_bool()) != Some(true) || task_id.is_empty()
             {
                 return fail(
                     "T15",
@@ -1662,10 +1667,7 @@ async fn main() {
                         .pointer("/author/id")
                         .and_then(|v| v.as_str())
                         .unwrap_or("");
-                    let content = c
-                        .get("content")
-                        .and_then(|v| v.as_str())
-                        .unwrap_or("");
+                    let content = c.get("content").and_then(|v| v.as_str()).unwrap_or("");
                     if kind == "agent"
                         && id == "Node-B"
                         && content.starts_with("✅ worker 汇报完成")
@@ -1735,11 +1737,17 @@ async fn main() {
                 .and_then(|v| v.as_i64())
                 .unwrap_or(0);
             if ap_id == 0 {
-                return fail("T16", format!("autopilot.create returned no id: {}", created));
+                return fail(
+                    "T16",
+                    format!("autopilot.create returned no id: {}", created),
+                );
             }
             // WSAPI create 即时挂载 cron_job。
             if created.pointer("/autopilot/cron_job_id").is_none() {
-                return fail("T16", format!("autopilot not armed (no cron_job_id): {}", created));
+                return fail(
+                    "T16",
+                    format!("autopilot not armed (no cron_job_id): {}", created),
+                );
             }
 
             // 等 cron 到点：轮询 runs 直到带 marker 的 issue 出现且 in_progress。
@@ -1781,15 +1789,31 @@ async fn main() {
                 }
             }
             // 清理：删规则（防后续轮次重复触发建单）。
-            let _ = ws_api_request(&mut ws, "board", "autopilot.remove", json!({ "id": ap_id }), 10).await;
+            let _ = ws_api_request(
+                &mut ws,
+                "board",
+                "autopilot.remove",
+                json!({ "id": ap_id }),
+                10,
+            )
+            .await;
             match found {
                 Some((id, title, status)) => pass(
                     "T16",
-                    format!("autopilot 定时触发 OK：规则 {} cron 到点建单 issue {}（状态 {}，{}）", ap_id, id, status, trunc(&title, 50)),
+                    format!(
+                        "autopilot 定时触发 OK：规则 {} cron 到点建单 issue {}（状态 {}，{}）",
+                        ap_id,
+                        id,
+                        status,
+                        trunc(&title, 50)
+                    ),
                 ),
                 None => fail(
                     "T16",
-                    format!("120s 内 cron 未触发建单+派发（rule {}）——检查 gateway on_job 挂载", ap_id),
+                    format!(
+                        "120s 内 cron 未触发建单+派发（rule {}）——检查 gateway on_job 挂载",
+                        ap_id
+                    ),
                 ),
             }
         })
@@ -1904,7 +1928,10 @@ async fn main() {
                 .and_then(|v| v.as_str())
                 .unwrap_or("");
             if status != "cancelled" {
-                return fail("T17", format!("issue not cancelled after cancel (got '{}')", status));
+                return fail(
+                    "T17",
+                    format!("issue not cancelled after cancel (got '{}')", status),
+                );
             }
 
             // 3. 重复取消被竞态守卫诚实拒绝（dispatch 已终结）。
@@ -1920,7 +1947,8 @@ async fn main() {
                 Ok(_) => return fail("T17", "second cancel unexpectedly succeeded"),
                 Err(e) => {
                     let msg = e.to_string();
-                    if !(msg.contains("没有进行中的派发") || msg.contains("派发已终结")) {
+                    if !(msg.contains("没有进行中的派发") || msg.contains("派发已终结"))
+                    {
                         return fail("T17", format!("second cancel wrong error: {}", msg));
                     }
                 }

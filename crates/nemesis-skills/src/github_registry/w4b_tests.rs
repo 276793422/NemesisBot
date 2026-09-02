@@ -53,7 +53,12 @@ fn tree_body(paths: &[(&str, &str)], truncated: bool) -> String {
 }
 
 /// 挂载 Trees API + raw 内容两个 mock（同一 server）。
-async fn mount_tree_and_raw(server: &MockServer, repo: &str, tree_json: &str, blobs: &[(&str, &str)]) {
+async fn mount_tree_and_raw(
+    server: &MockServer,
+    repo: &str,
+    tree_json: &str,
+    blobs: &[(&str, &str)],
+) {
     Mock::given(method("GET"))
         .and(path(format!("/repos/{}/git/trees/main", repo)))
         .respond_with(ResponseTemplate::new(200).set_body_string(tree_json.to_string()))
@@ -133,7 +138,11 @@ async fn test_download_and_install_author_slug_rejected_by_validation() {
     let dir = tempfile::tempdir().unwrap();
 
     let err = reg
-        .download_and_install("anthropics/pdf", "", &dir.path().join("t").to_string_lossy())
+        .download_and_install(
+            "anthropics/pdf",
+            "",
+            &dir.path().join("t").to_string_lossy(),
+        )
         .await
         .unwrap_err();
     let msg = format!("{}", err);

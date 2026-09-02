@@ -195,9 +195,10 @@ impl Tool for AppendFileTool {
 
         // Create parent directories if needed
         if let Some(parent) = resolved.parent()
-            && let Err(e) = tokio::fs::create_dir_all(parent).await {
-                return ToolResult::error(&format!("failed to create directories: {}", e));
-            }
+            && let Err(e) = tokio::fs::create_dir_all(parent).await
+        {
+            return ToolResult::error(&format!("failed to create directories: {}", e));
+        }
 
         // Use OpenOptions for append
         use tokio::io::AsyncWriteExt;

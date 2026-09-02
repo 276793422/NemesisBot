@@ -984,9 +984,10 @@ async fn try_raw_http_get(addr: &str, path: &str) -> Option<String> {
 async fn wait_until_serving(addr: &str, path: &str) -> String {
     for _ in 0..100 {
         if let Some(resp) = try_raw_http_get(addr, path).await
-            && (resp.starts_with("HTTP/1.1 200") || resp.starts_with("HTTP/1.0 200")) {
-                return resp;
-            }
+            && (resp.starts_with("HTTP/1.1 200") || resp.starts_with("HTTP/1.0 200"))
+        {
+            return resp;
+        }
         tokio::time::sleep(std::time::Duration::from_millis(50)).await;
     }
     panic!("health server at {addr}{path} did not come up within 5s");
@@ -1054,7 +1055,10 @@ async fn test_start_on_occupied_port_reports_bind_failure() {
     assert!(err.contains("bind failed"), "start() err: {err}");
 
     let err2 = server.start_with_shutdown().await.unwrap_err();
-    assert!(err2.contains("bind failed"), "start_with_shutdown() err: {err2}");
+    assert!(
+        err2.contains("bind failed"),
+        "start_with_shutdown() err: {err2}"
+    );
 
     drop(blocker);
 }

@@ -57,7 +57,8 @@ fn test_remove_trigger() {
 
 #[test]
 fn test_match_event() {
-    let mgr = TriggerManager::new();    let trigger = make_trigger("event", HashMap::from([("type", "file_created")]));
+    let mgr = TriggerManager::new();
+    let trigger = make_trigger("event", HashMap::from([("type", "file_created")]));
     mgr.register_trigger("file_processor", trigger).unwrap();
 
     let mut data = HashMap::new();
@@ -443,7 +444,10 @@ fn w4a_match_trigger_event_ignores_non_event_triggers() {
     let mgr = TriggerManager::new();
     let trigger = make_trigger(
         "cron",
-        HashMap::from([("event_type", "workflow.completed"), ("schedule", "0 * * * *")]),
+        HashMap::from([
+            ("event_type", "workflow.completed"),
+            ("schedule", "0 * * * *"),
+        ]),
     );
     mgr.register_trigger("cron_wf", trigger).unwrap();
 
@@ -516,7 +520,8 @@ fn w4a_match_message_chat_id_and_unknown_key() {
         "message",
         HashMap::from([("mystery_key", "whatever"), ("channel", "web")]),
     );
-    mgr.register_trigger("unknown_key_wf", with_unknown).unwrap();
+    mgr.register_trigger("unknown_key_wf", with_unknown)
+        .unwrap();
 
     let in_room = InboundMessageRef {
         channel: "web",
@@ -552,10 +557,7 @@ fn w4a_register_workflow_triggers_registers_and_errors() {
         triggers: vec![
             crate::types::TriggerConfig {
                 trigger_type: "cron".to_string(),
-                config: HashMap::from([(
-                    "schedule".to_string(),
-                    serde_json::json!("0 * * * *"),
-                )]),
+                config: HashMap::from([("schedule".to_string(), serde_json::json!("0 * * * *"))]),
             },
             crate::types::TriggerConfig {
                 trigger_type: "webhook".to_string(),
@@ -567,7 +569,8 @@ fn w4a_register_workflow_triggers_registers_and_errors() {
         variables: HashMap::new(),
         metadata: HashMap::new(),
     };
-    mgr.register_workflow_triggers("multi_wf", &wf.triggers).unwrap();
+    mgr.register_workflow_triggers("multi_wf", &wf.triggers)
+        .unwrap();
     assert_eq!(mgr.list_triggers("multi_wf").len(), 2);
     assert!(mgr.get_cron_workflows().contains_key("multi_wf"));
     assert_eq!(mgr.get_webhook_workflows(), vec!["multi_wf"]);

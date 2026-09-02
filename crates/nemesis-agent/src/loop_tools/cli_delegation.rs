@@ -87,7 +87,12 @@ pub async fn run_cli_delegation(spec: CliDelegationSpec<'_>) -> Result<String, S
                 // pipes).
                 use std::os::windows::process::CommandExt;
                 let _ = std::process::Command::new("taskkill")
-                    .args(["/PID", &child_pid.unwrap_or_default().to_string(), "/T", "/F"])
+                    .args([
+                        "/PID",
+                        &child_pid.unwrap_or_default().to_string(),
+                        "/T",
+                        "/F",
+                    ])
                     .stdout(Stdio::null())
                     .stderr(Stdio::null())
                     .creation_flags(0x0800_0000)
@@ -149,7 +154,11 @@ pub fn find_cli_on_path(name: &str) -> Option<String> {
         return None;
     }
     let s = String::from_utf8_lossy(&out.stdout);
-    let lines: Vec<&str> = s.lines().map(|l| l.trim()).filter(|l| !l.is_empty()).collect();
+    let lines: Vec<&str> = s
+        .lines()
+        .map(|l| l.trim())
+        .filter(|l| !l.is_empty())
+        .collect();
     let first = lines.first().copied()?;
     #[cfg(windows)]
     {
@@ -233,8 +242,7 @@ pub fn resolve_cc_permission_mode(cfg: &str) -> &'static str {
 }
 
 /// Valid codex sandbox tiers (config side, snake_case).
-pub const CODEX_SANDBOX_MODES: [&str; 3] =
-    ["read_only", "workspace_write", "danger_full_access"];
+pub const CODEX_SANDBOX_MODES: [&str; 3] = ["read_only", "workspace_write", "danger_full_access"];
 pub const CODEX_SANDBOX_DEFAULT: &str = "read_only";
 
 /// Normalize a configured codex sandbox tier: empty/unknown → default.

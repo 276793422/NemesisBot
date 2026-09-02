@@ -1452,7 +1452,7 @@ async fn test_broadcast_send_failure_with_active_but_slow_receiver() {
             Ok(Err(_)) => break, // Lagged error
             Err(_) => break,     // Timeout
         }
-    };
+    }
 
     // At least we attempted to receive, and sends were attempted
     // The key is that the code exercised the send operation

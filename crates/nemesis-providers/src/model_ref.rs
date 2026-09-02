@@ -19,16 +19,17 @@ pub fn parse_model_ref(raw: &str, default_provider: &str) -> Option<ModelRef> {
     }
 
     if let Some(idx) = raw.find('/')
-        && idx > 0 {
-            let model = raw[idx + 1..].trim();
-            if model.is_empty() {
-                return None;
-            }
-            return Some(ModelRef {
-                provider: normalize_provider(&raw[..idx]),
-                model: model.to_string(),
-            });
+        && idx > 0
+    {
+        let model = raw[idx + 1..].trim();
+        if model.is_empty() {
+            return None;
         }
+        return Some(ModelRef {
+            provider: normalize_provider(&raw[..idx]),
+            model: model.to_string(),
+        });
+    }
 
     Some(ModelRef {
         provider: normalize_provider(default_provider),

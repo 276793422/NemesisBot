@@ -254,9 +254,9 @@ async fn trends_empty_store_returns_empty_array() {
         start: Some(now - 3600),
         end: Some(now),
         group_by: Some("hour".to_string()),
-        });
-        let Json(v) = handle_api_usage_trends(State(state), q).await;
-        assert_eq!(v["status"], "success");
+    });
+    let Json(v) = handle_api_usage_trends(State(state), q).await;
+    assert_eq!(v["status"], "success");
     assert!(v["data"].is_array());
 }
 
@@ -271,9 +271,9 @@ async fn trends_with_log_hour_grouping() {
         start: Some(now - 3600),
         end: Some(now + 60),
         group_by: Some("hour".to_string()),
-        });
-        let Json(v) = handle_api_usage_trends(State(state), q).await;
-        assert_eq!(v["status"], "success");
+    });
+    let Json(v) = handle_api_usage_trends(State(state), q).await;
+    assert_eq!(v["status"], "success");
     let arr = v["data"].as_array().unwrap();
     assert!(!arr.is_empty(), "expected at least one trend bucket");
     // Find the bucket with inputTokens > 0
@@ -480,7 +480,11 @@ async fn pricing_returns_embedded_table() {
     // 无 DataStore → 仅内置表 + meta null。
     assert!(v["meta"].is_null());
     let entries = v["data"].as_array().expect("data array");
-    assert!(entries.len() >= 30, "expected ~36 entries, got {}", entries.len());
+    assert!(
+        entries.len() >= 30,
+        "expected ~36 entries, got {}",
+        entries.len()
+    );
     assert!(entries.iter().all(|e| e["source"] == "embedded"));
 
     let gpt = entries
@@ -585,11 +589,9 @@ async fn pricing_custom_upsert_and_remove_endpoints() {
     assert_eq!(ds.pricing().list_custom()[0].input_cost_per_million, 7.0);
 
     // 空 modelId 拒绝。
-    let Json(v) = handle_api_usage_pricing_custom_upsert(
-        State(state.clone()),
-        Json(custom_entry("  ", 1.0)),
-    )
-    .await;
+    let Json(v) =
+        handle_api_usage_pricing_custom_upsert(State(state.clone()), Json(custom_entry("  ", 1.0)))
+            .await;
     assert!(v["error"].is_string());
 
     // remove 存在 / 不存在。
@@ -646,11 +648,9 @@ async fn pricing_import_parses_litellm_body() {
 #[tokio::test]
 async fn pricing_update_requires_data_store() {
     let state = make_state_no_data_store();
-    let Json(v) = handle_api_usage_pricing_update(
-        State(state),
-        Some(Json(PricingUpdateBody { url: None })),
-    )
-    .await;
+    let Json(v) =
+        handle_api_usage_pricing_update(State(state), Some(Json(PricingUpdateBody { url: None })))
+            .await;
     assert_eq!(v["error"], "DataStore not configured");
 }
 
@@ -765,7 +765,8 @@ async fn log_detail_found_missing_and_no_store() {
     log.first_token_ms = Some(180);
     ds.insert_request_log(&log).unwrap();
     // 拿真实 id（AUTOINCREMENT 从 1 起）。
-    let id = ds.query_logs(0, now + 60, 1, 10, &nemesis_data::LogFilter::default())
+    let id = ds
+        .query_logs(0, now + 60, 1, 10, &nemesis_data::LogFilter::default())
         .unwrap()
         .0[0]
         .id;
@@ -786,6 +787,7 @@ async fn log_detail_found_missing_and_no_store() {
 
     // 无 DataStore。
     let Json(v) =
-        handle_api_usage_log_detail(State(make_state_no_data_store()), axum::extract::Path(1)).await;
+        handle_api_usage_log_detail(State(make_state_no_data_store()), axum::extract::Path(1))
+            .await;
     assert_eq!(v["error"], "DataStore not configured");
 }

@@ -82,7 +82,10 @@ fn update_field_matches_model_key_too() {
     )
     .unwrap()
     .unwrap();
-    assert_eq!(read_config_raw(dir.path())["model_list"][0]["model_tier"], "big");
+    assert_eq!(
+        read_config_raw(dir.path())["model_list"][0]["model_tier"],
+        "big"
+    );
 }
 
 #[test]
@@ -93,18 +96,46 @@ fn update_field_validation_rejects_bad_values() {
     let home = home_str(&dir);
 
     let cases: Vec<(&str, &str, serde_json::Value, &str)> = vec![
-        ("m1", "model_tier", serde_json::json!("huge"), "Invalid tier"),
-        ("m1", "reasoning_effort", serde_json::json!("turbo"), "Invalid effort"),
+        (
+            "m1",
+            "model_tier",
+            serde_json::json!("huge"),
+            "Invalid tier",
+        ),
+        (
+            "m1",
+            "reasoning_effort",
+            serde_json::json!("turbo"),
+            "Invalid effort",
+        ),
         ("m1", "model_size_b", serde_json::json!(0), "> 0"),
-        ("m1", "context_window", serde_json::json!(-5), "positive number"),
+        (
+            "m1",
+            "context_window",
+            serde_json::json!(-5),
+            "positive number",
+        ),
         ("m1", "model_tier", serde_json::json!(3), "must be a string"),
-        ("m1", "no_such_field", serde_json::json!("x"), "unknown field"),
-        ("ghost", "model_tier", serde_json::json!("mini"), "not found"),
+        (
+            "m1",
+            "no_such_field",
+            serde_json::json!("x"),
+            "unknown field",
+        ),
+        (
+            "ghost",
+            "model_tier",
+            serde_json::json!("mini"),
+            "not found",
+        ),
         ("m1", "real_name", serde_json::json!("  "), "not be empty"),
     ];
     for (name, field, value, want) in cases {
         let err = h
-            .update_field(&home, &serde_json::json!({ "name": name, "field": field, "value": value }))
+            .update_field(
+                &home,
+                &serde_json::json!({ "name": name, "field": field, "value": value }),
+            )
             .unwrap_err();
         assert!(
             err.contains(want),
@@ -112,7 +143,10 @@ fn update_field_validation_rejects_bad_values() {
         );
     }
     // Every rejection above must have left the file untouched.
-    assert_eq!(read_config_raw(dir.path())["model_list"][0]["model_tier"], "auto");
+    assert_eq!(
+        read_config_raw(dir.path())["model_list"][0]["model_tier"],
+        "auto"
+    );
 }
 
 /// Normalization parity with the CLI `model set-*` commands:
@@ -125,26 +159,51 @@ fn update_field_effort_and_size_normalization() {
     let h = ModelsHandler::new();
     let home = home_str(&dir);
 
-    h.update_field(&home, &serde_json::json!({ "name": "m1", "field": "reasoning_effort", "value": "HIGH" }))
-        .unwrap()
-        .unwrap();
-    assert_eq!(read_config_raw(dir.path())["model_list"][0]["reasoning_effort"], "high");
+    h.update_field(
+        &home,
+        &serde_json::json!({ "name": "m1", "field": "reasoning_effort", "value": "HIGH" }),
+    )
+    .unwrap()
+    .unwrap();
+    assert_eq!(
+        read_config_raw(dir.path())["model_list"][0]["reasoning_effort"],
+        "high"
+    );
 
-    h.update_field(&home, &serde_json::json!({ "name": "m1", "field": "reasoning_effort", "value": "off" }))
-        .unwrap()
-        .unwrap();
-    assert_eq!(read_config_raw(dir.path())["model_list"][0]["reasoning_effort"], "");
+    h.update_field(
+        &home,
+        &serde_json::json!({ "name": "m1", "field": "reasoning_effort", "value": "off" }),
+    )
+    .unwrap()
+    .unwrap();
+    assert_eq!(
+        read_config_raw(dir.path())["model_list"][0]["reasoning_effort"],
+        ""
+    );
 
-    h.update_field(&home, &serde_json::json!({ "name": "m1", "field": "model_size_b", "value": "30" }))
-        .unwrap()
-        .unwrap();
+    h.update_field(
+        &home,
+        &serde_json::json!({ "name": "m1", "field": "model_size_b", "value": "30" }),
+    )
+    .unwrap()
+    .unwrap();
     let size = &read_config_raw(dir.path())["model_list"][0]["model_size_b"];
-    assert_eq!(size.as_u64(), Some(30), "string input must be stored as a number");
+    assert_eq!(
+        size.as_u64(),
+        Some(30),
+        "string input must be stored as a number"
+    );
 
-    h.update_field(&home, &serde_json::json!({ "name": "m1", "field": "context_window", "value": 131072 }))
-        .unwrap()
-        .unwrap();
-    assert_eq!(read_config_raw(dir.path())["model_list"][0]["context_window"].as_u64(), Some(131072));
+    h.update_field(
+        &home,
+        &serde_json::json!({ "name": "m1", "field": "context_window", "value": 131072 }),
+    )
+    .unwrap()
+    .unwrap();
+    assert_eq!(
+        read_config_raw(dir.path())["model_list"][0]["context_window"].as_u64(),
+        Some(131072)
+    );
 }
 
 #[test]
@@ -395,12 +454,13 @@ fn add_preserves_sibling_extras_and_autofills_catalog() {
     assert_eq!(new["api_key"], "sk-5");
 
     // Duplicate model_name still rejected.
-    assert!(h
-        .add(
+    assert!(
+        h.add(
             &home_str(&dir),
             &serde_json::json!({ "name": "gpt5", "model": "openai/gpt-5", "key": "x" })
         )
-        .is_err());
+        .is_err()
+    );
 }
 
 #[test]
@@ -458,10 +518,7 @@ fn delete_default_model_refused() {
     let h = ModelsHandler::new();
 
     let err = h.delete(&home_str(&dir), "m1").unwrap_err();
-    assert!(
-        err.contains("cannot delete default model"),
-        "got: {err}"
-    );
+    assert!(err.contains("cannot delete default model"), "got: {err}");
     // 文件不动。
     let cfg = read_config_raw(dir.path());
     assert_eq!(cfg["model_list"].as_array().unwrap().len(), 2);

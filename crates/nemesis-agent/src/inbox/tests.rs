@@ -72,7 +72,10 @@ fn test_enqueue_routing_and_capacity() {
         EnqueueOutcome::QueuedForNextTurn
     );
     // Capacity 3 reached → rejected.
-    assert_eq!(inbox.enqueue("s", msg("overflow")), EnqueueOutcome::Rejected);
+    assert_eq!(
+        inbox.enqueue("s", msg("overflow")),
+        EnqueueOutcome::Rejected
+    );
     assert_eq!(inbox.pending("s"), (2, 1));
 }
 

@@ -100,9 +100,10 @@ pub fn aggregate_node_stats(log_dir: &Path) -> HashMap<String, NodeStats> {
     for entry in &entries {
         if entry.event == "task_assigned"
             && let Some(task_id) = entry.data.get("task_id").and_then(|v| v.as_str())
-                && let Some(node_id) = entry.data.get("action").and_then(|v| v.as_str()) {
-                    task_to_node.insert(task_id.to_string(), node_id.to_string());
-                }
+            && let Some(node_id) = entry.data.get("action").and_then(|v| v.as_str())
+        {
+            task_to_node.insert(task_id.to_string(), node_id.to_string());
+        }
     }
 
     // Step 2: Count tasks per node.

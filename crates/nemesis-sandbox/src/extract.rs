@@ -147,12 +147,13 @@ pub fn seven_zip_status(runtime_dir: &Path) -> (bool, &'static str) {
 fn find_system_7z() -> Option<PathBuf> {
     if let Ok(out) = std::process::Command::new("where").arg("7z.exe").output()
         && out.status.success()
-            && let Some(line) = String::from_utf8_lossy(&out.stdout).lines().next() {
-                let p = PathBuf::from(line.trim());
-                if p.exists() {
-                    return Some(p);
-                }
-            }
+        && let Some(line) = String::from_utf8_lossy(&out.stdout).lines().next()
+    {
+        let p = PathBuf::from(line.trim());
+        if p.exists() {
+            return Some(p);
+        }
+    }
     for candidate in [
         r"C:\Program Files\7-Zip\7z.exe",
         r"C:\Program Files (x86)\7-Zip\7z.exe",

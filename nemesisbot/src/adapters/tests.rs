@@ -299,9 +299,9 @@ fn make_shared_at_home(
         home: home.to_path_buf(),
         bus: bus.clone(),
         agent_outbound_tx: outbound_tx,
-        cron_service: Arc::new(std::sync::Mutex::new(nemesis_cron::service::CronService::new(
-            "",
-        ))),
+        cron_service: Arc::new(std::sync::Mutex::new(
+            nemesis_cron::service::CronService::new(""),
+        )),
         mcp_config_path: home.join("nonexistent-mcp.json"),
         ..Default::default()
     })
@@ -321,7 +321,9 @@ async fn agent_loop_adapter_full_lifecycle_with_prebuilt_loop() {
     assert!(!LifecycleService::is_running(&adapter));
 
     // start（预建分支）：bridge/agent 任务落位 + agent_loop_ref 同步 Some。
-    adapter.start().expect("start with prebuilt loop must succeed");
+    adapter
+        .start()
+        .expect("start with prebuilt loop must succeed");
     assert!(LifecycleService::is_running(&adapter));
     assert!(adapter.current().is_some());
     assert!(agent_loop_ref.read().is_some());
@@ -381,7 +383,9 @@ async fn agent_loop_adapter_rebuild_after_stop_and_err_on_bad_config() {
 
     // 恢复合法 config → 重建成功（走 build_agent_loop 分支）。
     write_minimal_model_config(&home);
-    adapter.start().expect("rebuild start must succeed with valid config");
+    adapter
+        .start()
+        .expect("rebuild start must succeed with valid config");
     assert!(LifecycleService::is_running(&adapter));
     assert!(adapter.current().is_some());
     assert!(agent_loop_ref.read().is_some());
@@ -394,9 +398,9 @@ async fn agent_loop_adapter_rebuild_after_stop_and_err_on_bad_config() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn web_server_ops_adapter_all_methods_on_empty_and_registered_sessions() {
-    let sm = Arc::new(nemesis_web::session::SessionManager::new(std::time::Duration::from_secs(
-        3600,
-    )));
+    let sm = Arc::new(nemesis_web::session::SessionManager::new(
+        std::time::Duration::from_secs(3600),
+    ));
     let adapter = WebServerOpsAdapter::new(sm.clone());
 
     // 空表：active 空、broadcast 无目标直接 Ok、start/stop 是 no-op。
@@ -409,10 +413,7 @@ async fn web_server_ops_adapter_all_methods_on_empty_and_registered_sessions() {
     let err = adapter
         .send_to_session("no-such-session", "assistant", "hi", None)
         .unwrap_err();
-    assert!(
-        err.contains("no send queue"),
-        "err: {err}"
-    );
+    assert!(err.contains("no send queue"), "err: {err}");
 
     // history：坏 JSON → unmarshal 错误；合法 JSON + 未知 session → 广播错误。
     assert!(
@@ -433,9 +434,11 @@ async fn web_server_ops_adapter_all_methods_on_empty_and_registered_sessions() {
     let ids = adapter.active_session_ids();
     assert_eq!(ids, vec![sess.id.clone()]);
     assert!(adapter.broadcast("boom").is_err());
-    assert!(adapter
-        .send_to_session(&sess.id, "assistant", "hi", Some("prov/model"))
-        .is_err());
+    assert!(
+        adapter
+            .send_to_session(&sess.id, "assistant", "hi", Some("prov/model"))
+            .is_err()
+    );
 }
 
 // =========================================================================
@@ -531,8 +534,8 @@ mod r10 {
         // 先占住一个真实端口（resident listener 保活到测试结束），
         // HealthServer 起在同一地址 → bind failed Err 字符串 → adapter
         // spawn 闭包里的 error!("[Main] Health server error: ..") 分支。
-        let occupied = std::net::TcpListener::bind("127.0.0.1:0")
-            .expect("ephemeral bind for occupation");
+        let occupied =
+            std::net::TcpListener::bind("127.0.0.1:0").expect("ephemeral bind for occupation");
         let port = occupied.local_addr().unwrap().port();
         let health_server = Arc::new(nemesis_health::server::HealthServer::new(
             make_health_config(port),

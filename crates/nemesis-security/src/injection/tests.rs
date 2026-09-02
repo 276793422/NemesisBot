@@ -628,7 +628,9 @@ fn test_analyze_tool_input_level_critical_with_custom_patterns() {
     assert_eq!(r.level, "critical", "score={}", r.score);
     assert!(r.score >= 0.9, "score={}", r.score);
     assert!(
-        r.matched_patterns.iter().any(|m| m.contains("command_injection")),
+        r.matched_patterns
+            .iter()
+            .any(|m| m.contains("command_injection")),
         "matched: {:?}",
         r.matched_patterns
     );
@@ -643,7 +645,9 @@ fn test_analyze_level_critical_with_custom_patterns() {
     assert_eq!(r.level, "critical", "score={}", r.score);
     assert!(r.is_injection);
     assert!(
-        r.matched_patterns.iter().any(|m| m.contains("command_injection")),
+        r.matched_patterns
+            .iter()
+            .any(|m| m.contains("command_injection")),
         "matched: {:?}",
         r.matched_patterns
     );
@@ -674,7 +678,9 @@ fn test_analyze_detailed_custom_patterns_matched() {
         &serde_json::json!({ "content": "this line contains s3custom marker" }),
     );
     assert!(
-        r.matched_patterns.iter().any(|m| m.pattern_name == "custom_0"),
+        r.matched_patterns
+            .iter()
+            .any(|m| m.pattern_name == "custom_0"),
         "matched: {:?}",
         r.matched_patterns
     );

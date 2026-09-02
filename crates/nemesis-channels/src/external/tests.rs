@@ -946,10 +946,11 @@ async fn test_w4c_external_send_writes_to_output_exe_stdin() {
     let mut content = String::new();
     while std::time::Instant::now() < deadline {
         if let Ok(s) = std::fs::read_to_string(&proof)
-            && !s.trim().is_empty() {
-                content = s;
-                break;
-            }
+            && !s.trim().is_empty()
+        {
+            content = s;
+            break;
+        }
         tokio::time::sleep(std::time::Duration::from_millis(100)).await;
     }
     let _ = std::fs::remove_file(&in_bat);
@@ -968,7 +969,10 @@ async fn test_w4c_external_send_writes_to_output_exe_stdin() {
 #[cfg(target_os = "windows")]
 #[tokio::test]
 async fn test_w4c_external_stop_cancels_long_running_input() {
-    let in_bat = w4c_write_bat("w4c_ext_in_hang", "@echo off\r\nping -n 60 127.0.0.1 > nul\r\n");
+    let in_bat = w4c_write_bat(
+        "w4c_ext_in_hang",
+        "@echo off\r\nping -n 60 127.0.0.1 > nul\r\n",
+    );
     let out_bat = w4c_write_bat("w4c_ext_out_hang", "@echo off\r\n");
 
     let (bus, _rx) = tokio::sync::broadcast::channel(16);
@@ -1048,7 +1052,11 @@ async fn s2_external_input_empty_line_is_skipped() {
     let _ = std::fs::remove_file(&in_bat);
     let _ = std::fs::remove_file(&out_bat);
     ch.stop().await.unwrap();
-    assert!(recv.is_err(), "empty line must not be published, got {:?}", recv.ok());
+    assert!(
+        recv.is_err(),
+        "empty line must not be published, got {:?}",
+        recv.ok()
+    );
 }
 
 /// The Channel trait's is_running impl was never called directly.

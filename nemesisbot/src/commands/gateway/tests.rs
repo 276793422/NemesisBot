@@ -851,8 +851,7 @@ fn test_cluster_result_persister_save_format() {
 #[test]
 fn test_peer_toml_key_sanitization() {
     let peer_id = "node-1.example.com:11949";
-    let key_safe = peer_id
-        .replace(['.', ':', '-'], "_");
+    let key_safe = peer_id.replace(['.', ':', '-'], "_");
     assert_eq!(key_safe, "node_1_example_com_11949");
 }
 
@@ -2382,7 +2381,11 @@ name = "Empty Addr Peer"
     )
     .unwrap();
     // BOOTSTRAP.md：heartbeat 跳过文件存在 → set_skip_file 被调用（3248）。
-    std::fs::write(th.home.join("workspace").join("BOOTSTRAP.md"), "# bootstrap\n").unwrap();
+    std::fs::write(
+        th.home.join("workspace").join("BOOTSTRAP.md"),
+        "# bootstrap\n",
+    )
+    .unwrap();
     // cors.json：development_mode=false + 一个 origin → CORSManager Ok 且走
     // list_origins 信息臂（2192-2199）。
     std::fs::create_dir_all(th.home.join("config")).unwrap();
@@ -2412,12 +2415,13 @@ name = "Empty Addr Peer"
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(120);
     let web_port: u16 = loop {
         if let Ok(txt) = std::fs::read_to_string(&state_path)
-            && let Ok(v) = serde_json::from_str::<serde_json::Value>(&txt) {
-                let p = v.get("web_port").and_then(|x| x.as_i64()).unwrap_or(0);
-                if p > 0 {
-                    break p as u16;
-                }
+            && let Ok(v) = serde_json::from_str::<serde_json::Value>(&txt)
+        {
+            let p = v.get("web_port").and_then(|x| x.as_i64()).unwrap_or(0);
+            if p > 0 {
+                break p as u16;
             }
+        }
         assert!(
             std::time::Instant::now() < deadline,
             "gateway 未在 120s 内完成 web bind；state={:?}",
@@ -2436,10 +2440,9 @@ name = "Empty Addr Peer"
     tokio::time::sleep(std::time::Duration::from_secs(3)).await;
 
     // 断言启动已完成到 banner 阶段：state 文件里 host 已是真实 bind 信息。
-    let final_state: serde_json::Value = serde_json::from_str(
-        &std::fs::read_to_string(&state_path).expect("state file readable"),
-    )
-    .expect("state json");
+    let final_state: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(&state_path).expect("state file readable"))
+            .expect("state json");
     assert_eq!(final_state["web_host"], "127.0.0.1");
     assert_eq!(final_state["web_port"].as_i64(), Some(web_port as i64));
 }
@@ -2477,7 +2480,10 @@ mod migrate_legacy_workflow_tests {
 
         migrate_legacy_workflow_dir(home, &exec_dir, &ckpt_dir);
 
-        assert!(exec_dir.join("wf_a_exec1.jsonl").exists(), "jsonl 迁到 executions/");
+        assert!(
+            exec_dir.join("wf_a_exec1.jsonl").exists(),
+            "jsonl 迁到 executions/"
+        );
         assert!(
             ckpt_dir.join("exec-1").join("cp.json").exists(),
             "checkpoint 子目录整体迁移"
@@ -2504,7 +2510,10 @@ mod migrate_legacy_workflow_tests {
             "NEW",
             "已存在的目的地文件不被覆盖"
         );
-        assert!(legacy.join("wf_x.jsonl").exists(), "legacy 文件保留（未搬走）");
+        assert!(
+            legacy.join("wf_x.jsonl").exists(),
+            "legacy 文件保留（未搬走）"
+        );
         assert!(legacy.exists(), "非空 legacy 目录保留（partial 分支）");
     }
 
@@ -2564,12 +2573,18 @@ mod migrate_legacy_workflow_tests {
 
         migrate_legacy_workflow_dir(home, &exec_dir, &ckpt_dir);
 
-        assert!(exec_dir.join("wf_ok.jsonl").exists(), "无阻挡的 jsonl 正常迁移");
+        assert!(
+            exec_dir.join("wf_ok.jsonl").exists(),
+            "无阻挡的 jsonl 正常迁移"
+        );
         assert!(
             legacy.join("wf_blocked.jsonl").exists(),
             "rename 失败的 jsonl 源文件保留"
         );
-        assert!(ckpt_dir.join("cp_ok").exists(), "无阻挡的 checkpoint 子目录迁移");
+        assert!(
+            ckpt_dir.join("cp_ok").exists(),
+            "无阻挡的 checkpoint 子目录迁移"
+        );
         assert!(
             legacy.join("checkpoints").join("cp_exists").exists(),
             "目的地已存在的 checkpoint 跳过（源保留）"
@@ -2682,421 +2697,416 @@ mod wave_b {
 
     #[test]
     fn wave_b_count_enabled_channels_all_flags() {
-    // 13 个通道位全开（web/websocket/telegram/discord/feishu/slack/external/
-    // whatsapp/dingtalk/qq/line/onebot/maixcam），点亮剩余 11 个 miss 推入臂。
-    let mut config = nemesis_config::Config::default();
-    config.channels.web.enabled = true;
-    config.channels.websocket.enabled = true;
-    config.channels.telegram.enabled = true;
-    config.channels.discord.enabled = true;
-    config.channels.feishu.enabled = true;
-    config.channels.slack.enabled = true;
-    config.channels.external.enabled = true;
-    config.channels.whatsapp.enabled = true;
-    config.channels.dingtalk.enabled = true;
-    config.channels.qq.enabled = true;
-    config.channels.line.enabled = true;
-    config.channels.onebot.enabled = true;
-    config.channels.maixcam.enabled = true;
-    assert_eq!(count_enabled_channels(&config), 13);
-}
-
-// -------------------------------------------------------------------------
-// GatewayLlmJudge —— guardian LLM 二审桥（security）
-// -------------------------------------------------------------------------
-
-#[cfg(feature = "security")]
-struct WaveBRouterProvider {
-    reply: Result<
-        nemesis_providers::types::LLMResponse,
-        nemesis_providers::failover::FailoverError,
-    >,
-    /// 共享捕获：记录 provider 收到的每条消息 content（供测试断言提示词组装）。
-    seen_user_content: std::sync::Arc<std::sync::Mutex<Vec<String>>>,
-}
-
-#[cfg(feature = "security")]
-impl WaveBRouterProvider {
-    fn llm_response(content: &str) -> nemesis_providers::types::LLMResponse {
-        nemesis_providers::types::LLMResponse {
-            content: content.to_string(),
-            tool_calls: vec![],
-            finish_reason: "stop".to_string(),
-            usage: None,
-            reasoning_content: None,
-            extra: std::collections::HashMap::new(),
-            raw_request_body: None,
-            raw_response_body: None,
-        }
+        // 13 个通道位全开（web/websocket/telegram/discord/feishu/slack/external/
+        // whatsapp/dingtalk/qq/line/onebot/maixcam），点亮剩余 11 个 miss 推入臂。
+        let mut config = nemesis_config::Config::default();
+        config.channels.web.enabled = true;
+        config.channels.websocket.enabled = true;
+        config.channels.telegram.enabled = true;
+        config.channels.discord.enabled = true;
+        config.channels.feishu.enabled = true;
+        config.channels.slack.enabled = true;
+        config.channels.external.enabled = true;
+        config.channels.whatsapp.enabled = true;
+        config.channels.dingtalk.enabled = true;
+        config.channels.qq.enabled = true;
+        config.channels.line.enabled = true;
+        config.channels.onebot.enabled = true;
+        config.channels.maixcam.enabled = true;
+        assert_eq!(count_enabled_channels(&config), 13);
     }
-}
 
-#[cfg(feature = "security")]
-#[async_trait::async_trait]
-impl nemesis_providers::router::LLMProvider for WaveBRouterProvider {
-    async fn chat(
-        &self,
-        messages: &[nemesis_providers::types::Message],
-        _tools: &[nemesis_providers::types::ToolDefinition],
-        _model: &str,
-        _options: &nemesis_providers::types::ChatOptions,
-    ) -> Result<
-        nemesis_providers::types::LLMResponse,
-        nemesis_providers::failover::FailoverError,
-    > {
-        self.seen_user_content
-            .lock()
-            .unwrap()
-            .extend(messages.iter().map(|m| m.content.clone()));
-        // Result 整体不可 clone（FailoverError 无 Clone），按边分别复制：
-        // Ok 边 LLMResponse 自带 Clone；Err 边仅测试用到 Unknown{provider,message}。
-        match &self.reply {
-            Ok(r) => Ok(r.clone()),
-            Err(nemesis_providers::failover::FailoverError::Unknown { provider, message }) => {
-                Err(nemesis_providers::failover::FailoverError::Unknown {
-                    provider: provider.clone(),
-                    message: message.clone(),
-                })
+    // -------------------------------------------------------------------------
+    // GatewayLlmJudge —— guardian LLM 二审桥（security）
+    // -------------------------------------------------------------------------
+
+    #[cfg(feature = "security")]
+    struct WaveBRouterProvider {
+        reply: Result<
+            nemesis_providers::types::LLMResponse,
+            nemesis_providers::failover::FailoverError,
+        >,
+        /// 共享捕获：记录 provider 收到的每条消息 content（供测试断言提示词组装）。
+        seen_user_content: std::sync::Arc<std::sync::Mutex<Vec<String>>>,
+    }
+
+    #[cfg(feature = "security")]
+    impl WaveBRouterProvider {
+        fn llm_response(content: &str) -> nemesis_providers::types::LLMResponse {
+            nemesis_providers::types::LLMResponse {
+                content: content.to_string(),
+                tool_calls: vec![],
+                finish_reason: "stop".to_string(),
+                usage: None,
+                reasoning_content: None,
+                extra: std::collections::HashMap::new(),
+                raw_request_body: None,
+                raw_response_body: None,
             }
-            #[allow(unreachable_patterns)]
-            _ => unreachable!("wave_b mock 只构造 Unknown 错误"),
         }
     }
 
-    fn default_model(&self) -> &str {
-        "wave-b-model"
+    #[cfg(feature = "security")]
+    #[async_trait::async_trait]
+    impl nemesis_providers::router::LLMProvider for WaveBRouterProvider {
+        async fn chat(
+            &self,
+            messages: &[nemesis_providers::types::Message],
+            _tools: &[nemesis_providers::types::ToolDefinition],
+            _model: &str,
+            _options: &nemesis_providers::types::ChatOptions,
+        ) -> Result<nemesis_providers::types::LLMResponse, nemesis_providers::failover::FailoverError>
+        {
+            self.seen_user_content
+                .lock()
+                .unwrap()
+                .extend(messages.iter().map(|m| m.content.clone()));
+            // Result 整体不可 clone（FailoverError 无 Clone），按边分别复制：
+            // Ok 边 LLMResponse 自带 Clone；Err 边仅测试用到 Unknown{provider,message}。
+            match &self.reply {
+                Ok(r) => Ok(r.clone()),
+                Err(nemesis_providers::failover::FailoverError::Unknown { provider, message }) => {
+                    Err(nemesis_providers::failover::FailoverError::Unknown {
+                        provider: provider.clone(),
+                        message: message.clone(),
+                    })
+                }
+                #[allow(unreachable_patterns)]
+                _ => unreachable!("wave_b mock 只构造 Unknown 错误"),
+            }
+        }
+
+        fn default_model(&self) -> &str {
+            "wave-b-model"
+        }
+
+        fn name(&self) -> &str {
+            "wave-b-router-mock"
+        }
     }
 
-    fn name(&self) -> &str {
-        "wave-b-router-mock"
-    }
-}
+    #[cfg(feature = "security")]
+    #[tokio::test]
+    async fn wave_b_guardian_judge_parses_fenced_verdict_and_builds_prompt() {
+        use nemesis_security::guardian::LlmJudge;
 
-#[cfg(feature = "security")]
-#[tokio::test]
-async fn wave_b_guardian_judge_parses_fenced_verdict_and_builds_prompt() {
-    use nemesis_security::guardian::LlmJudge;
-
-    // 带 ```json 围栏的合法裁决 → parse_verdict 容忍围栏 → Ok(Allow)。
-    let fenced = "```json\n\
+        // 带 ```json 围栏的合法裁决 → parse_verdict 容忍围栏 → Ok(Allow)。
+        let fenced = "```json\n\
                   {\"risk_level\":\"low\",\"user_authorization\":\"high\",\
                   \"outcome\":\"allow\",\"rationale\":\"explicitly requested\"}\n\
                   ```";
-    let seen_user_content = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
-    let judge = GatewayLlmJudge {
-        provider: std::sync::Arc::new(WaveBRouterProvider {
-            reply: Ok(WaveBRouterProvider::llm_response(fenced)),
-            seen_user_content: seen_user_content.clone(),
-        }),
-        model: "wave-b-model".to_string(),
-    };
-    let req = nemesis_security::guardian::JudgeRequest {
-        action: "process_exec".to_string(),
-        risk_level: "low".to_string(),
-        transcript: "user: please list files".to_string(),
-    };
-    let verdict = judge.judge(&req).await.expect("verdict parses");
-    assert_eq!(
-        verdict.outcome,
-        nemesis_security::guardian::JudgeOutcome::Allow
-    );
-    assert_eq!(verdict.risk_level, "low");
-    assert_eq!(verdict.user_authorization, "high");
-    assert_eq!(verdict.rationale, "explicitly requested");
+        let seen_user_content = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let judge = GatewayLlmJudge {
+            provider: std::sync::Arc::new(WaveBRouterProvider {
+                reply: Ok(WaveBRouterProvider::llm_response(fenced)),
+                seen_user_content: seen_user_content.clone(),
+            }),
+            model: "wave-b-model".to_string(),
+        };
+        let req = nemesis_security::guardian::JudgeRequest {
+            action: "process_exec".to_string(),
+            risk_level: "low".to_string(),
+            transcript: "user: please list files".to_string(),
+        };
+        let verdict = judge.judge(&req).await.expect("verdict parses");
+        assert_eq!(
+            verdict.outcome,
+            nemesis_security::guardian::JudgeOutcome::Allow
+        );
+        assert_eq!(verdict.risk_level, "low");
+        assert_eq!(verdict.user_authorization, "high");
+        assert_eq!(verdict.rationale, "explicitly requested");
 
-    // 提示词组装：system 含 guardian 提示词本体，user 含动作/风险/转录。
-    let seen = seen_user_content.lock().unwrap().clone();
-    assert!(
-        seen.iter().any(|c| c.contains("You are a safety gate")),
-        "GUARDIAN_PROMPT 必须作为 system 消息下发，seen={seen:?}"
-    );
-    assert!(
-        seen.iter()
-            .any(|c| c.contains("Proposed action")
+        // 提示词组装：system 含 guardian 提示词本体，user 含动作/风险/转录。
+        let seen = seen_user_content.lock().unwrap().clone();
+        assert!(
+            seen.iter().any(|c| c.contains("You are a safety gate")),
+            "GUARDIAN_PROMPT 必须作为 system 消息下发，seen={seen:?}"
+        );
+        assert!(
+            seen.iter().any(|c| c.contains("Proposed action")
                 && c.contains("process_exec")
                 && c.contains("please list files")),
-        "user 消息必须携带动作与转录证据，seen={seen:?}"
-    );
-}
+            "user 消息必须携带动作与转录证据，seen={seen:?}"
+        );
+    }
 
-#[cfg(feature = "security")]
-#[tokio::test]
-async fn wave_b_guardian_judge_propagates_llm_error() {
-    use nemesis_security::guardian::LlmJudge;
+    #[cfg(feature = "security")]
+    #[tokio::test]
+    async fn wave_b_guardian_judge_propagates_llm_error() {
+        use nemesis_security::guardian::LlmJudge;
 
-    let judge = GatewayLlmJudge {
-        provider: std::sync::Arc::new(WaveBRouterProvider {
-            reply: Err(nemesis_providers::failover::FailoverError::Unknown {
-                provider: "wave-b".to_string(),
-                message: "llm exploded".to_string(),
+        let judge = GatewayLlmJudge {
+            provider: std::sync::Arc::new(WaveBRouterProvider {
+                reply: Err(nemesis_providers::failover::FailoverError::Unknown {
+                    provider: "wave-b".to_string(),
+                    message: "llm exploded".to_string(),
+                }),
+                seen_user_content: std::sync::Arc::new(std::sync::Mutex::new(Vec::new())),
             }),
-            seen_user_content: std::sync::Arc::new(std::sync::Mutex::new(Vec::new())),
-        }),
-        model: "wave-b-model".to_string(),
-    };
-    let req = nemesis_security::guardian::JudgeRequest {
-        action: "file_delete".to_string(),
-        risk_level: "critical".to_string(),
-        transcript: String::new(),
-    };
-    let err = judge.judge(&req).await.expect_err("LLM 错误必须向上传播");
-    assert!(
-        err.contains("guardian LLM call failed"),
-        "err 应含统一前缀: {err}"
-    );
-}
-
-// -------------------------------------------------------------------------
-// load_security_rules 的读失败/解析失败臂（security）
-// -------------------------------------------------------------------------
-
-#[cfg(feature = "security")]
-#[test]
-fn wave_b_load_security_rules_survives_unreadable_and_malformed_config() {
-    use nemesis_security::pipeline::{SecurityPlugin, SecurityPluginConfig};
-
-    let make_plugin = || Arc::new(SecurityPlugin::new(SecurityPluginConfig::default()));
-
-    // ① 路径是一个目录 → read_to_string 直接报错 → 读失败告警臂后安全返回。
-    let tmp = tempfile::tempdir().unwrap();
-    let as_dir = tmp.path().join("config.security.json");
-    std::fs::create_dir_all(&as_dir).unwrap();
-    let plugin_a = make_plugin();
-    load_security_rules(&plugin_a, &as_dir); // 必须不 panic
-    drop(plugin_a);
-
-    // ② 文件存在但内容是非法 JSON → 解析失败告警臂后安全返回。
-    let bad = tmp.path().join("config.security.bad.json");
-    std::fs::write(&bad, "{{{ not json at all").unwrap();
-    let plugin_b = make_plugin();
-    load_security_rules(&plugin_b, &bad); // 必须不 panic
-}
-
-// -------------------------------------------------------------------------
-// ApprovalPopupAdapter —— 弹窗审批桥（desktop + security）
-// -------------------------------------------------------------------------
-
-#[cfg(all(feature = "desktop", feature = "security"))]
-#[test]
-fn wave_b_approval_adapter_is_running_and_denies_without_plugin_ui_dll() {
-    use nemesis_security::auditor::ApprovalManager;
-
-    let pm = std::sync::Arc::new(nemesis_desktop::process::ProcessManager::new());
-    let adapter = ApprovalPopupAdapter::new(pm);
-    assert!(adapter.is_running(), "适配器恒报运行中（探活语义）");
-
-    // plugin_ui.dll 不在测试二进制旁 → 早退分支直接 deny（不 spawn 子进程）。
-    if plugin_ui_library_exists() {
-        eprintln!("wave_b: plugin ui dll 在旁，跳过早退断言（避免真弹窗路径）");
-        return;
+            model: "wave-b-model".to_string(),
+        };
+        let req = nemesis_security::guardian::JudgeRequest {
+            action: "file_delete".to_string(),
+            risk_level: "critical".to_string(),
+            transcript: String::new(),
+        };
+        let err = judge.judge(&req).await.expect_err("LLM 错误必须向上传播");
+        assert!(
+            err.contains("guardian LLM call failed"),
+            "err 应含统一前缀: {err}"
+        );
     }
-    let decision = adapter.request_approval_sync(
-        "req-wave-b",
-        "file_write",
-        "C:/tmp/waveb-target",
-        "HIGH",
-        "wave_b unit probe",
-        5,
-    );
-    match decision {
-        Ok(approved) => assert!(
-            !approved,
-            "无插件 UI 时必须安全侧默认拒绝"
-        ),
-        Err(e) => panic!("早退分支应返回 Ok(deny) 而非 Err: {e}"),
+
+    // -------------------------------------------------------------------------
+    // load_security_rules 的读失败/解析失败臂（security）
+    // -------------------------------------------------------------------------
+
+    #[cfg(feature = "security")]
+    #[test]
+    fn wave_b_load_security_rules_survives_unreadable_and_malformed_config() {
+        use nemesis_security::pipeline::{SecurityPlugin, SecurityPluginConfig};
+
+        let make_plugin = || Arc::new(SecurityPlugin::new(SecurityPluginConfig::default()));
+
+        // ① 路径是一个目录 → read_to_string 直接报错 → 读失败告警臂后安全返回。
+        let tmp = tempfile::tempdir().unwrap();
+        let as_dir = tmp.path().join("config.security.json");
+        std::fs::create_dir_all(&as_dir).unwrap();
+        let plugin_a = make_plugin();
+        load_security_rules(&plugin_a, &as_dir); // 必须不 panic
+        drop(plugin_a);
+
+        // ② 文件存在但内容是非法 JSON → 解析失败告警臂后安全返回。
+        let bad = tmp.path().join("config.security.bad.json");
+        std::fs::write(&bad, "{{{ not json at all").unwrap();
+        let plugin_b = make_plugin();
+        load_security_rules(&plugin_b, &bad); // 必须不 panic
     }
-}
 
-// -------------------------------------------------------------------------
-// 集群桥接适配器（cluster）
-// -------------------------------------------------------------------------
+    // -------------------------------------------------------------------------
+    // ApprovalPopupAdapter —— 弹窗审批桥（desktop + security）
+    // -------------------------------------------------------------------------
 
-#[cfg(feature = "cluster")]
-#[test]
-fn wave_b_cluster_persister_running_success_error_and_delete_noop() {
-    use nemesis_cluster::rpc::peer_chat_handler::TaskResultPersister;
+    #[cfg(all(feature = "desktop", feature = "security"))]
+    #[test]
+    fn wave_b_approval_adapter_is_running_and_denies_without_plugin_ui_dll() {
+        use nemesis_security::auditor::ApprovalManager;
 
-    let store = std::sync::Arc::new(nemesis_cluster::task_result_store::TaskResultStore::new(16));
-    let adapter = ClusterResultPersisterAdapter {
-        result_store: store.clone(),
-        node_id: "node-wave-b".to_string(),
-    };
+        let pm = std::sync::Arc::new(nemesis_desktop::process::ProcessManager::new());
+        let adapter = ApprovalPopupAdapter::new(pm);
+        assert!(adapter.is_running(), "适配器恒报运行中（探活语义）");
 
-    // set_running → 以 "peer_chat"/running 占位结果成功态写入。
-    adapter.set_running("task-run", "peer-a");
-    let running = store.get("task-run").expect("running 结果应已入库");
-    assert!(running.success);
-    assert_eq!(running.action, "peer_chat");
-    assert_eq!(running.result["status"], "running");
-    assert_eq!(running.result["from"], "node-wave-b");
+        // plugin_ui.dll 不在测试二进制旁 → 早退分支直接 deny（不 spawn 子进程）。
+        if plugin_ui_library_exists() {
+            eprintln!("wave_b: plugin ui dll 在旁，跳过早退断言（避免真弹窗路径）");
+            return;
+        }
+        let decision = adapter.request_approval_sync(
+            "req-wave-b",
+            "file_write",
+            "C:/tmp/waveb-target",
+            "HIGH",
+            "wave_b unit probe",
+            5,
+        );
+        match decision {
+            Ok(approved) => assert!(!approved, "无插件 UI 时必须安全侧默认拒绝"),
+            Err(e) => panic!("早退分支应返回 Ok(deny) 而非 Err: {e}"),
+        }
+    }
 
-    // set_result 成功态 → 包 content + from。
-    adapter
-        .set_result("task-ok", "ok", "最终回复正文", "", "peer-a")
-        .expect("成功态写库应通过");
-    let ok = store.get("task-ok").expect("成功结果应已入库");
-    assert!(ok.success);
-    assert_eq!(ok.result["content"], "最终回复正文");
-    assert_eq!(ok.result["from"], "node-wave-b");
+    // -------------------------------------------------------------------------
+    // 集群桥接适配器（cluster）
+    // -------------------------------------------------------------------------
 
-    // set_result 错误态 → store_failure。
-    adapter
-        .set_result("task-err", "error", "", "远端炸了", "peer-a")
-        .expect("错误态写库应通过");
-    let failed = store.get("task-err").expect("失败结果应已入库");
-    assert!(!failed.success);
-    assert_eq!(failed.result["error"], "远端炸了");
+    #[cfg(feature = "cluster")]
+    #[test]
+    fn wave_b_cluster_persister_running_success_error_and_delete_noop() {
+        use nemesis_cluster::rpc::peer_chat_handler::TaskResultPersister;
 
-    // delete 是有意的 no-op（回调成功后由 TaskResultStore 自己清）。
-    adapter.delete("task-run").expect("delete 不应报错");
-    assert!(
-        store.get("task-run").is_some(),
-        "delete 为 no-op：结果保留待 A 端消费"
-    );
-    assert_eq!(store.len(), 3);
-}
+        let store =
+            std::sync::Arc::new(nemesis_cluster::task_result_store::TaskResultStore::new(16));
+        let adapter = ClusterResultPersisterAdapter {
+            result_store: store.clone(),
+            node_id: "node-wave-b".to_string(),
+        };
 
-#[cfg(feature = "cluster")]
-#[test]
-fn wave_b_bus_to_cluster_adapter_publishes_mapped_inbound_message() {
-    use nemesis_cluster::cluster::MessageBus as _;
+        // set_running → 以 "peer_chat"/running 占位结果成功态写入。
+        adapter.set_running("task-run", "peer-a");
+        let running = store.get("task-run").expect("running 结果应已入库");
+        assert!(running.success);
+        assert_eq!(running.action, "peer_chat");
+        assert_eq!(running.result["status"], "running");
+        assert_eq!(running.result["from"], "node-wave-b");
 
-    let bus = std::sync::Arc::new(nemesis_bus::MessageBus::new());
-    // broadcast 是晚订阅语义：先订阅再发布才能收到。
-    let mut rx = bus.subscribe_inbound();
-    let adapter = BusToClusterAdapter {
-        bus: bus.clone(),
-    };
+        // set_result 成功态 → 包 content + from。
+        adapter
+            .set_result("task-ok", "ok", "最终回复正文", "", "peer-a")
+            .expect("成功态写库应通过");
+        let ok = store.get("task-ok").expect("成功结果应已入库");
+        assert!(ok.success);
+        assert_eq!(ok.result["content"], "最终回复正文");
+        assert_eq!(ok.result["from"], "node-wave-b");
 
-    adapter.publish_inbound(nemesis_cluster::cluster::BusInboundMessage {
-        channel: "cluster".to_string(),
-        sender_id: "peer-node-x".to_string(),
-        chat_id: "chat-42".to_string(),
-        content: "cross-node hello".to_string(),
-    });
+        // set_result 错误态 → store_failure。
+        adapter
+            .set_result("task-err", "error", "", "远端炸了", "peer-a")
+            .expect("错误态写库应通过");
+        let failed = store.get("task-err").expect("失败结果应已入库");
+        assert!(!failed.success);
+        assert_eq!(failed.result["error"], "远端炸了");
 
-    let msg = rx
-        .try_recv()
-        .expect("适配器必须把 BusInboundMessage 映射到真实总线");
-    assert_eq!(msg.channel, "cluster");
-    assert_eq!(msg.sender_id, "peer-node-x");
-    assert_eq!(msg.chat_id, "chat-42");
-    assert_eq!(msg.content, "cross-node hello");
-    // 映射时补齐的默认字段：无媒体/空会话键/空关联 ID/无元数据。
-    assert!(msg.media.is_empty());
-    assert_eq!(msg.session_key, "");
-    assert_eq!(msg.correlation_id, "");
-    assert!(msg.metadata.is_empty());
-    assert!(msg.voice_playback.is_none());
-}
+        // delete 是有意的 no-op（回调成功后由 TaskResultStore 自己清）。
+        adapter.delete("task-run").expect("delete 不应报错");
+        assert!(
+            store.get("task-run").is_some(),
+            "delete 为 no-op：结果保留待 A 端消费"
+        );
+        assert_eq!(store.len(), 3);
+    }
 
-// -------------------------------------------------------------------------
-// migrate_legacy_workflow_dir 的 rename 失败与非目录跳过分支（workflow）
-// -------------------------------------------------------------------------
+    #[cfg(feature = "cluster")]
+    #[test]
+    fn wave_b_bus_to_cluster_adapter_publishes_mapped_inbound_message() {
+        use nemesis_cluster::cluster::MessageBus as _;
 
-#[cfg(feature = "workflow")]
-#[test]
-fn wave_b_migrate_skips_stray_file_and_existing_dest_checkpoint_dirs() {
-    let tmp = tempfile::tempdir().unwrap();
-    let home = tmp.path();
-    let exec_dir = home.join("workspace").join("workflow").join("executions");
-    let ckpt_dir = home.join("workspace").join("workflow").join("checkpoints");
-    std::fs::create_dir_all(&exec_dir).unwrap();
-    std::fs::create_dir_all(&ckpt_dir).unwrap();
+        let bus = std::sync::Arc::new(nemesis_bus::MessageBus::new());
+        // broadcast 是晚订阅语义：先订阅再发布才能收到。
+        let mut rx = bus.subscribe_inbound();
+        let adapter = BusToClusterAdapter { bus: bus.clone() };
 
-    let legacy = home.join("workflow");
-    std::fs::create_dir_all(legacy.join("checkpoints")).unwrap();
-    // 非目录条目：checkpoints/ 下混进一个散文件 → 跳过且原地保留。
-    std::fs::write(legacy.join("checkpoints").join("stray-note.txt"), "keep me").unwrap();
-    // 目的地已有同名 checkpoint 目录 → 跳过（幂等，不覆盖新数据）。
-    std::fs::create_dir_all(ckpt_dir.join("exec-exists")).unwrap();
-    std::fs::write(
-        ckpt_dir.join("exec-exists").join("cp.json"),
-        "{\"v\":2}",
-    )
-    .unwrap();
-    std::fs::create_dir_all(legacy.join("checkpoints").join("exec-exists")).unwrap();
-    std::fs::write(
-        legacy.join("checkpoints").join("exec-exists").join("cp.json"),
-        "{\"v\":1}",
-    )
-    .unwrap();
-    // 一个可正常迁移的对照目录。
-    std::fs::create_dir_all(legacy.join("checkpoints").join("exec-fresh")).unwrap();
-    std::fs::write(
-        legacy.join("checkpoints").join("exec-fresh").join("cp.json"),
-        "{\"v\":9}",
-    )
-    .unwrap();
+        adapter.publish_inbound(nemesis_cluster::cluster::BusInboundMessage {
+            channel: "cluster".to_string(),
+            sender_id: "peer-node-x".to_string(),
+            chat_id: "chat-42".to_string(),
+            content: "cross-node hello".to_string(),
+        });
 
-    migrate_legacy_workflow_dir(home, &exec_dir, &ckpt_dir);
+        let msg = rx
+            .try_recv()
+            .expect("适配器必须把 BusInboundMessage 映射到真实总线");
+        assert_eq!(msg.channel, "cluster");
+        assert_eq!(msg.sender_id, "peer-node-x");
+        assert_eq!(msg.chat_id, "chat-42");
+        assert_eq!(msg.content, "cross-node hello");
+        // 映射时补齐的默认字段：无媒体/空会话键/空关联 ID/无元数据。
+        assert!(msg.media.is_empty());
+        assert_eq!(msg.session_key, "");
+        assert_eq!(msg.correlation_id, "");
+        assert!(msg.metadata.is_empty());
+        assert!(msg.voice_playback.is_none());
+    }
 
-    assert!(
-        legacy.join("checkpoints").join("stray-note.txt").exists(),
-        "非目录条目必须原地保留"
-    );
-    assert_eq!(
-        std::fs::read_to_string(ckpt_dir.join("exec-exists").join("cp.json")).unwrap(),
-        "{\"v\":2}",
-        "目的地已存在的 checkpoint 目录不被覆盖"
-    );
-    assert!(
-        legacy.join("checkpoints").join("exec-exists").is_dir(),
-        "被跳过的来源 checkpoint 目录原地保留"
-    );
-    assert_eq!(
-        std::fs::read_to_string(ckpt_dir.join("exec-fresh").join("cp.json")).unwrap(),
-        "{\"v\":9}",
-        "对照目录正常迁入"
-    );
-}
+    // -------------------------------------------------------------------------
+    // migrate_legacy_workflow_dir 的 rename 失败与非目录跳过分支（workflow）
+    // -------------------------------------------------------------------------
 
-/// Windows 专属：用 std::os::windows::fs::OpenOptionsExt::share_mode 打开
-/// 句柄并剥掉 FILE_SHARE_DELETE → 目标文件的 fs::rename 报
-/// ERROR_SHARING_VIOLATION，确定性走进 rename 失败告警分支。
-#[cfg(all(windows, feature = "workflow"))]
-#[test]
-fn wave_b_migrate_locked_jsonl_rename_failure_warns_and_keeps_legacy_intact() {
-    use std::os::windows::fs::OpenOptionsExt;
+    #[cfg(feature = "workflow")]
+    #[test]
+    fn wave_b_migrate_skips_stray_file_and_existing_dest_checkpoint_dirs() {
+        let tmp = tempfile::tempdir().unwrap();
+        let home = tmp.path();
+        let exec_dir = home.join("workspace").join("workflow").join("executions");
+        let ckpt_dir = home.join("workspace").join("workflow").join("checkpoints");
+        std::fs::create_dir_all(&exec_dir).unwrap();
+        std::fs::create_dir_all(&ckpt_dir).unwrap();
 
-    const FILE_SHARE_READ: u32 = 0x1;
-    const FILE_SHARE_WRITE: u32 = 0x2; // 故意缺 FILE_SHARE_DELETE(0x4)
+        let legacy = home.join("workflow");
+        std::fs::create_dir_all(legacy.join("checkpoints")).unwrap();
+        // 非目录条目：checkpoints/ 下混进一个散文件 → 跳过且原地保留。
+        std::fs::write(legacy.join("checkpoints").join("stray-note.txt"), "keep me").unwrap();
+        // 目的地已有同名 checkpoint 目录 → 跳过（幂等，不覆盖新数据）。
+        std::fs::create_dir_all(ckpt_dir.join("exec-exists")).unwrap();
+        std::fs::write(ckpt_dir.join("exec-exists").join("cp.json"), "{\"v\":2}").unwrap();
+        std::fs::create_dir_all(legacy.join("checkpoints").join("exec-exists")).unwrap();
+        std::fs::write(
+            legacy
+                .join("checkpoints")
+                .join("exec-exists")
+                .join("cp.json"),
+            "{\"v\":1}",
+        )
+        .unwrap();
+        // 一个可正常迁移的对照目录。
+        std::fs::create_dir_all(legacy.join("checkpoints").join("exec-fresh")).unwrap();
+        std::fs::write(
+            legacy
+                .join("checkpoints")
+                .join("exec-fresh")
+                .join("cp.json"),
+            "{\"v\":9}",
+        )
+        .unwrap();
 
-    let tmp = tempfile::tempdir().unwrap();
-    let home = tmp.path();
-    let exec_dir = home.join("workspace").join("workflow").join("executions");
-    let ckpt_dir = home.join("workspace").join("workflow").join("checkpoints");
-    std::fs::create_dir_all(&exec_dir).unwrap();
-    std::fs::create_dir_all(&ckpt_dir).unwrap();
+        migrate_legacy_workflow_dir(home, &exec_dir, &ckpt_dir);
 
-    let legacy = home.join("workflow");
-    std::fs::create_dir_all(&legacy).unwrap();
-    // 被锁的 jsonl：rename 将失败 → 告警后原样留在 legacy。
-    let locked_path = legacy.join("wf_locked_exec1.jsonl");
-    std::fs::write(&locked_path, "{\"e\":\"locked\"}").unwrap();
-    let _lock = std::fs::OpenOptions::new()
-        .read(true)
-        .share_mode(FILE_SHARE_READ | FILE_SHARE_WRITE)
-        .open(&locked_path)
-        .expect("打开共享锁句柄");
-    // 自由文件作对照：随迁移搬走。
-    std::fs::write(legacy.join("wf_free_exec2.jsonl"), "{\"e\":\"free\"}").unwrap();
+        assert!(
+            legacy.join("checkpoints").join("stray-note.txt").exists(),
+            "非目录条目必须原地保留"
+        );
+        assert_eq!(
+            std::fs::read_to_string(ckpt_dir.join("exec-exists").join("cp.json")).unwrap(),
+            "{\"v\":2}",
+            "目的地已存在的 checkpoint 目录不被覆盖"
+        );
+        assert!(
+            legacy.join("checkpoints").join("exec-exists").is_dir(),
+            "被跳过的来源 checkpoint 目录原地保留"
+        );
+        assert_eq!(
+            std::fs::read_to_string(ckpt_dir.join("exec-fresh").join("cp.json")).unwrap(),
+            "{\"v\":9}",
+            "对照目录正常迁入"
+        );
+    }
 
-    migrate_legacy_workflow_dir(home, &exec_dir, &ckpt_dir);
+    /// Windows 专属：用 std::os::windows::fs::OpenOptionsExt::share_mode 打开
+    /// 句柄并剥掉 FILE_SHARE_DELETE → 目标文件的 fs::rename 报
+    /// ERROR_SHARING_VIOLATION，确定性走进 rename 失败告警分支。
+    #[cfg(all(windows, feature = "workflow"))]
+    #[test]
+    fn wave_b_migrate_locked_jsonl_rename_failure_warns_and_keeps_legacy_intact() {
+        use std::os::windows::fs::OpenOptionsExt;
 
-    assert!(
-        exec_dir.join("wf_free_exec2.jsonl").exists(),
-        "自由 jsonl 正常迁入 executions/"
-    );
-    assert!(
-        locked_path.exists(),
-        "被锁 jsonl rename 失败后必须原地保留（不得丢数据）"
-    );
-    assert!(
-        legacy.exists(),
-        "仍持有残留数据的 legacy 目录不得删除（partial 保护）"
-    );
-}
+        const FILE_SHARE_READ: u32 = 0x1;
+        const FILE_SHARE_WRITE: u32 = 0x2; // 故意缺 FILE_SHARE_DELETE(0x4)
+
+        let tmp = tempfile::tempdir().unwrap();
+        let home = tmp.path();
+        let exec_dir = home.join("workspace").join("workflow").join("executions");
+        let ckpt_dir = home.join("workspace").join("workflow").join("checkpoints");
+        std::fs::create_dir_all(&exec_dir).unwrap();
+        std::fs::create_dir_all(&ckpt_dir).unwrap();
+
+        let legacy = home.join("workflow");
+        std::fs::create_dir_all(&legacy).unwrap();
+        // 被锁的 jsonl：rename 将失败 → 告警后原样留在 legacy。
+        let locked_path = legacy.join("wf_locked_exec1.jsonl");
+        std::fs::write(&locked_path, "{\"e\":\"locked\"}").unwrap();
+        let _lock = std::fs::OpenOptions::new()
+            .read(true)
+            .share_mode(FILE_SHARE_READ | FILE_SHARE_WRITE)
+            .open(&locked_path)
+            .expect("打开共享锁句柄");
+        // 自由文件作对照：随迁移搬走。
+        std::fs::write(legacy.join("wf_free_exec2.jsonl"), "{\"e\":\"free\"}").unwrap();
+
+        migrate_legacy_workflow_dir(home, &exec_dir, &ckpt_dir);
+
+        assert!(
+            exec_dir.join("wf_free_exec2.jsonl").exists(),
+            "自由 jsonl 正常迁入 executions/"
+        );
+        assert!(
+            locked_path.exists(),
+            "被锁 jsonl rename 失败后必须原地保留（不得丢数据）"
+        );
+        assert!(
+            legacy.exists(),
+            "仍持有残留数据的 legacy 目录不得删除（partial 保护）"
+        );
+    }
 } // mod wave_b
 
 // =========================================================================
@@ -3178,7 +3188,10 @@ mod r9_gateway_boot_scenarios {
                 cmd.env("LLVM_PROFILE_FILE", profile);
             }
             let child = cmd.spawn().unwrap_or_else(|e| panic!("spawn {name}: {e}"));
-            Self { child: Some(child), name }
+            Self {
+                child: Some(child),
+                name,
+            }
         }
 
         /// 优雅停机后等子进程自然退出（让插桩二进制走 atexit 落 .profraw）。
@@ -3261,16 +3274,21 @@ mod r9_gateway_boot_scenarios {
         let bin = test_harness::resolve_nemesisbot_bin().expect("resolve nemesisbot bin");
         let mut proc = R9GatewayProc::spawn(name, &bin, ws.path());
 
-        let state_path = ws.home().join("workspace").join("state").join("gateway.json");
+        let state_path = ws
+            .home()
+            .join("workspace")
+            .join("state")
+            .join("gateway.json");
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(120);
         let web_port: u16 = loop {
             if let Ok(txt) = std::fs::read_to_string(&state_path)
-                && let Ok(v) = serde_json::from_str::<serde_json::Value>(&txt) {
-                    let p = v.get("web_port").and_then(|x| x.as_i64()).unwrap_or(0);
-                    if p > 0 {
-                        break p as u16;
-                    }
+                && let Ok(v) = serde_json::from_str::<serde_json::Value>(&txt)
+            {
+                let p = v.get("web_port").and_then(|x| x.as_i64()).unwrap_or(0);
+                if p > 0 {
+                    break p as u16;
                 }
+            }
             assert!(
                 std::time::Instant::now() < deadline,
                 "{name} 未在 120s 内完成 web bind；state={:?}",
@@ -3397,10 +3415,7 @@ mod r9_gateway_boot_scenarios {
         let state =
             r9_spawn_until_ready_then_graceful_stop("gateway-r9-quiet-flips", &ws, cfg).await;
         assert_eq!(state["web_host"], "127.0.0.1");
-        assert!(
-            state["web_port"].as_i64().unwrap_or(0) > 0,
-            "state={state}"
-        );
+        assert!(state["web_port"].as_i64().unwrap_or(0) > 0, "state={state}");
     }
 
     /// 「坏 JSON 种子」实例：config.skills.json 非法 JSON + cors.json 非法 JSON
@@ -3451,8 +3466,19 @@ mod r9_gateway_boot_scenarios {
 
         // 13 个通道位全开（2232-2272 push 臂逐个点亮）。
         for name in [
-            "web", "websocket", "telegram", "discord", "feishu", "slack", "whatsapp",
-            "dingtalk", "qq", "line", "onebot", "maixcam", "external",
+            "web",
+            "websocket",
+            "telegram",
+            "discord",
+            "feishu",
+            "slack",
+            "whatsapp",
+            "dingtalk",
+            "qq",
+            "line",
+            "onebot",
+            "maixcam",
+            "external",
         ] {
             cfg["channels"][name]["enabled"] = serde_json::json!(true);
         }
@@ -3624,13 +3650,23 @@ variables: {}
         // 注意落点深度：migrate 把 legacy/checkpoints/<exec> 直搬进
         // workspace/workflow/checkpoints/（无内层 checkpoints 段）——与引擎的
         // FileCheckpointStore（root/checkpoints/<exec>）是不同层级，互不干扰。
-        assert!(wf_root.join("executions").join("wf_old_exec1.jsonl").exists());
-        assert!(wf_root
-            .join("checkpoints")
-            .join("exec-old")
-            .join("cp.json")
-            .exists());
-        assert!(legacy.join("notes.txt").exists(), "partial 保留不得删干扰文件");
+        assert!(
+            wf_root
+                .join("executions")
+                .join("wf_old_exec1.jsonl")
+                .exists()
+        );
+        assert!(
+            wf_root
+                .join("checkpoints")
+                .join("exec-old")
+                .join("cp.json")
+                .exists()
+        );
+        assert!(
+            legacy.join("notes.txt").exists(),
+            "partial 保留不得删干扰文件"
+        );
     }
 
     // ---------------------------------------------------------------------
@@ -3695,10 +3731,11 @@ variables: {}
         let observed: u16 = loop {
             if let Ok(txt) = std::fs::read_to_string(&state_path)
                 && let Ok(v) = serde_json::from_str::<serde_json::Value>(&txt)
-                    && let Some(p) = v.get("web_port").and_then(|x| x.as_i64())
-                        && p > 0 {
-                            break p as u16;
-                        }
+                && let Some(p) = v.get("web_port").and_then(|x| x.as_i64())
+                && p > 0
+            {
+                break p as u16;
+            }
             assert!(
                 std::time::Instant::now() < deadline,
                 "bind-conflict 网关未在 120s 内写出 state；holder={:?}",
@@ -3710,10 +3747,9 @@ variables: {}
         // 尾巴时间让 banner / 自检输出跑完（全部发生在 bind 成功之后）。
         tokio::time::sleep(std::time::Duration::from_secs(3)).await;
 
-        let final_state: serde_json::Value = serde_json::from_str(
-            &std::fs::read_to_string(&state_path).expect("state readable"),
-        )
-        .expect("state json");
+        let final_state: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(&state_path).expect("state readable"))
+                .expect("state json");
         assert_eq!(final_state["web_host"], "127.0.0.1");
         assert!(
             final_state["web_port"]
@@ -3866,12 +3902,18 @@ variables: {}
 
         migrate_legacy_workflow_dir(home, &exec_dir, &ckpt_dir);
 
-        assert!(exec_dir.join("wf_a_e1.jsonl").exists(), "jsonl 已迁入 executions/");
+        assert!(
+            exec_dir.join("wf_a_e1.jsonl").exists(),
+            "jsonl 已迁入 executions/"
+        );
         assert!(
             ckpt_dir.join("exec-a").join("cp.json").exists(),
             "checkpoint 子目录整体迁移"
         );
-        assert!(!legacy.exists(), "清空后的 legacy 根目录应被删除（info 臂）");
+        assert!(
+            !legacy.exists(),
+            "清空后的 legacy 根目录应被删除（info 臂）"
+        );
     }
 
     #[cfg(feature = "workflow")]
@@ -3892,7 +3934,10 @@ variables: {}
         migrate_legacy_workflow_dir(home, &exec_dir, &ckpt_dir);
 
         assert!(exec_dir.join("wf_y.jsonl").exists());
-        assert!(legacy.exists(), "含未识别文件的 legacy 必须原地保留（partial warn 臂）");
+        assert!(
+            legacy.exists(),
+            "含未识别文件的 legacy 必须原地保留（partial warn 臂）"
+        );
         assert!(legacy.join("notes.txt").exists());
     }
 
@@ -4076,13 +4121,11 @@ variables: {}
         job["payload"]["max_rounds"] = serde_json::json!(3);
         r10_seed_cron_store(&home, vec![job]);
 
-        let state =
-            r9_spawn_until_ready_then_graceful_stop("gateway-r10-umbrella", &ws, cfg).await;
+        let state = r9_spawn_until_ready_then_graceful_stop("gateway-r10-umbrella", &ws, cfg).await;
 
         // 归一化铁证：模板 host "0.0.0.0" 只可能出现在 state 里为归一结果。
         assert_eq!(
-            state["web_host"],
-            "127.0.0.1",
+            state["web_host"], "127.0.0.1",
             "template 0.0.0.0 must normalize to 127.0.0.1 before bind"
         );
         assert!(state["web_port"].as_i64().unwrap_or(0) > 0);
@@ -4128,10 +4171,19 @@ fn dispatched_store(
         })
         .expect("create issue");
     store
-        .transition_issue(issue.id, nemesis_board::IssueStatus::InProgress, &nemesis_board::Actor::admin("t"))
+        .transition_issue(
+            issue.id,
+            nemesis_board::IssueStatus::InProgress,
+            &nemesis_board::Actor::admin("t"),
+        )
         .expect("transition");
     store
-        .insert_dispatch(task_id, issue.id, "node-b", &nemesis_board::Actor::admin("t"))
+        .insert_dispatch(
+            task_id,
+            issue.id,
+            "node-b",
+            &nemesis_board::Actor::admin("t"),
+        )
         .expect("insert dispatch");
     store
 }
@@ -4139,15 +4191,18 @@ fn dispatched_store(
 #[cfg(all(feature = "board", feature = "cluster"))]
 #[test]
 fn test_writeback_success_moves_to_in_review_with_result_comment() {
-    let dir = std::env::temp_dir().join(format!(
-        "nemesisbot-gw-writeback-ok-{}",
-        std::process::id()
-    ));
+    let dir =
+        std::env::temp_dir().join(format!("nemesisbot-gw-writeback-ok-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).unwrap();
     let store = dispatched_store(&dir, "task-ok");
 
-    let is_board = write_back_board_dispatch(&Some(store.clone()), "task-ok", "success", "改完了，产物在 foo.rs");
+    let is_board = write_back_board_dispatch(
+        &Some(store.clone()),
+        "task-ok",
+        "success",
+        "改完了，产物在 foo.rs",
+    );
     assert!(is_board, "dispatched task must be recognized as board task");
 
     // 状态推进 in_progress → in_review（等 coordinator 验收）。
@@ -4176,7 +4231,8 @@ fn test_writeback_error_keeps_in_progress_with_failure_comment() {
     std::fs::create_dir_all(&dir).unwrap();
     let store = dispatched_store(&dir, "task-err");
 
-    let is_board = write_back_board_dispatch(&Some(store.clone()), "task-err", "error", "编译失败：…");
+    let is_board =
+        write_back_board_dispatch(&Some(store.clone()), "task-err", "error", "编译失败：…");
     assert!(is_board);
 
     // 失败留在 in_progress（不推 in_review），失败评论留痕。
@@ -4200,9 +4256,19 @@ fn test_writeback_duplicate_callback_is_idempotent() {
     std::fs::create_dir_all(&dir).unwrap();
     let store = dispatched_store(&dir, "task-dup");
 
-    assert!(write_back_board_dispatch(&Some(store.clone()), "task-dup", "success", "第一份"));
+    assert!(write_back_board_dispatch(
+        &Some(store.clone()),
+        "task-dup",
+        "success",
+        "第一份"
+    ));
     // 重复回调：仍识别为 board 任务（跳过续行），但不重复写评论/转移。
-    assert!(write_back_board_dispatch(&Some(store.clone()), "task-dup", "success", "第一份"));
+    assert!(write_back_board_dispatch(
+        &Some(store.clone()),
+        "task-dup",
+        "success",
+        "第一份"
+    ));
 
     let issue = store.get_issue_by_number("NB-1").unwrap();
     assert_eq!(issue.status, nemesis_board::IssueStatus::InReview);
@@ -4233,7 +4299,12 @@ fn test_writeback_non_board_and_unavailable_store() {
         "success",
         "…"
     ));
-    assert!(!write_back_board_dispatch(&Some(store.clone()), "", "success", "…"));
+    assert!(!write_back_board_dispatch(
+        &Some(store.clone()),
+        "",
+        "success",
+        "…"
+    ));
     // store 未注入 → 恒 false。
     assert!(!write_back_board_dispatch(&None, "task-x", "success", "…"));
     let _ = std::fs::remove_dir_all(&dir);

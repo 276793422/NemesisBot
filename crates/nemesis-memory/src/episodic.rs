@@ -349,9 +349,10 @@ impl EpisodicStore for FileEpisodicStore {
         {
             let path = entry.path();
             if path.extension().is_some_and(|ext| ext == "jsonl")
-                && let Some(stem) = path.file_stem().and_then(|s| s.to_str()) {
-                    sessions.push(stem.to_string());
-                }
+                && let Some(stem) = path.file_stem().and_then(|s| s.to_str())
+            {
+                sessions.push(stem.to_string());
+            }
         }
 
         sessions.sort();

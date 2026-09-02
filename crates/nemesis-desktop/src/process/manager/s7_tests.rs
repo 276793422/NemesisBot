@@ -18,17 +18,16 @@ async fn s7_spawn_wait_for_result_without_and_with_result_channel() {
     let mgr = ProcessManager::new();
     mgr.start().await.unwrap();
     let port = mgr.ws_port();
-    let key = mgr
-        .ws_server()
-        .key_generator()
-        .generate("s7-wait", 77);
+    let key = mgr.ws_server().key_generator().generate("s7-wait", 77);
 
     // rogue 子进程：连上并 auth。
     let (mut ws, _) = tokio_tungstenite::connect_async(format!("ws://127.0.0.1:{}/k", port))
         .await
         .unwrap();
     ws.send(WsMessage::Text(
-        serde_json::json!({"type": "auth", "key": key}).to_string().into(),
+        serde_json::json!({"type": "auth", "key": key})
+            .to_string()
+            .into(),
     ))
     .await
     .unwrap();
@@ -52,9 +51,11 @@ async fn s7_spawn_wait_for_result_without_and_with_result_channel() {
         "approval.submit",
         serde_json::json!({"action": "approved", "request_id": "r1"}),
     );
-    ws.send(WsMessage::Text(serde_json::to_string(&note).unwrap().into()))
-        .await
-        .unwrap();
+    ws.send(WsMessage::Text(
+        serde_json::to_string(&note).unwrap().into(),
+    ))
+    .await
+    .unwrap();
     tokio::time::sleep(Duration::from_millis(300)).await;
 
     // (b) 有结果通道：结果必须送达 oneshot 接收端。
@@ -67,9 +68,11 @@ async fn s7_spawn_wait_for_result_without_and_with_result_channel() {
         "approval.submit",
         serde_json::json!({"action": "rejected", "request_id": "r2"}),
     );
-    ws.send(WsMessage::Text(serde_json::to_string(&note2).unwrap().into()))
-        .await
-        .unwrap();
+    ws.send(WsMessage::Text(
+        serde_json::to_string(&note2).unwrap().into(),
+    ))
+    .await
+    .unwrap();
     let got = tokio::time::timeout(Duration::from_secs(3), &mut rx)
         .await
         .expect("result was never delivered to the result channel")

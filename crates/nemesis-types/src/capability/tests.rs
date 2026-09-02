@@ -234,7 +234,10 @@ fn resolve_context_window_per_model() {
 fn tier_lists_delegation_tools() {
     let normal = tier_allowed_tools(ModelTier::Normal);
     assert!(normal.contains(&"claude_code"), "claude_code in Normal");
-    assert!(normal.contains(&"codex_delegate"), "codex_delegate in Normal");
+    assert!(
+        normal.contains(&"codex_delegate"),
+        "codex_delegate in Normal"
+    );
     let mini = tier_allowed_tools(ModelTier::Mini);
     assert!(!mini.contains(&"claude_code"), "Mini excluded by design");
     assert!(!mini.contains(&"codex_delegate"), "Mini excluded by design");
@@ -250,10 +253,7 @@ fn test_resolve_reasoning_effort_tiers() {
             {"model_name": "d", "model": "x/d", "reasoning_effort": "weird"}
         ]
     });
-    assert_eq!(
-        resolve_reasoning_effort(&cfg, "a").as_deref(),
-        Some("high")
-    );
+    assert_eq!(resolve_reasoning_effort(&cfg, "a").as_deref(), Some("high"));
     // "off" → None (send nothing).
     assert_eq!(resolve_reasoning_effort(&cfg, "b"), None);
     // Missing field → None.

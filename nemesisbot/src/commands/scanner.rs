@@ -97,8 +97,7 @@ impl Default for ClamAVEngineConfig {
 }
 
 /// Engine state (matches Go config.EngineState).
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
-#[derive(Default)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, Default)]
 pub struct EngineState {
     #[serde(default)]
     pub install_status: String,
@@ -111,7 +110,6 @@ pub struct EngineState {
     #[serde(default)]
     pub last_db_update: String,
 }
-
 
 /// Load scanner config from file.
 fn load_scanner_config(path: &std::path::Path) -> Result<ScannerFullConfig> {
@@ -158,9 +156,10 @@ fn lookup_system_clamav() -> Option<String> {
     // Check common names
     for name in &["clamd", "clamscan", "clamd.exe", "clamscan.exe"] {
         if let Ok(path) = which::which(name)
-            && let Some(parent) = path.parent() {
-                return Some(parent.to_string_lossy().to_string());
-            }
+            && let Some(parent) = path.parent()
+        {
+            return Some(parent.to_string_lossy().to_string());
+        }
     }
     None
 }
@@ -637,10 +636,9 @@ fn cmd_check(security_cfg: &std::path::Path) -> Result<()> {
     );
 
     // Save if state changed
-    if changed
-        && let Err(e) = save_scanner_config(security_cfg, &cfg) {
-            eprintln!("Warning: failed to save updated state: {}", e);
-        }
+    if changed && let Err(e) = save_scanner_config(security_cfg, &cfg) {
+        eprintln!("Warning: failed to save updated state: {}", e);
+    }
 
     // Print recommendations
     let mut recommendations = Vec::new();
@@ -663,13 +661,12 @@ fn cmd_check(security_cfg: &std::path::Path) -> Result<()> {
                         name, name
                     ));
                 }
-                "installed"
-                    if engine_cfg.state.db_status == "missing" => {
-                        recommendations.push(format!(
-                            "  - Run 'scanner {} update' to download virus database",
-                            name
-                        ));
-                    }
+                "installed" if engine_cfg.state.db_status == "missing" => {
+                    recommendations.push(format!(
+                        "  - Run 'scanner {} update' to download virus database",
+                        name
+                    ));
+                }
                 _ => {}
             }
         }
@@ -763,10 +760,7 @@ async fn download_engine(url: &str, target_dir: &std::path::Path) -> Result<Stri
                         .output()
                     {
                         Ok(o) if o.status.success() => std::fs::read_dir(target_dir)
-                            .map(|rd| {
-                                rd.filter_map(Result::ok)
-                                    .any(|e| e.path() != archive_path)
-                            })
+                            .map(|rd| rd.filter_map(Result::ok).any(|e| e.path() != archive_path))
                             .unwrap_or(false),
                         _ => false,
                     };
@@ -957,10 +951,11 @@ async fn cmd_clamav_install_inner(
 
     // Step 2: Check system PATH
     if detected_path.is_empty()
-        && let Some(sys_path) = lookup_system_clamav() {
-            detected_path = sys_path.clone();
-            println!("  clamav           found in system PATH: {}", sys_path);
-        }
+        && let Some(sys_path) = lookup_system_clamav()
+    {
+        detected_path = sys_path.clone();
+        println!("  clamav           found in system PATH: {}", sys_path);
+    }
 
     // Step 3: Download if still not found
     // URL priority: --url override > config url > error

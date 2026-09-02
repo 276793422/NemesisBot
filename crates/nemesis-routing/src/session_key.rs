@@ -10,8 +10,7 @@ use crate::agent_id::normalize_agent_id;
 // ---------------------------------------------------------------------------
 
 /// Controls DM session isolation granularity.
-#[derive(Debug, Clone, PartialEq, Eq)]
-#[derive(Default)]
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub enum DMScope {
     /// All DMs collapse to the agent's main session key.
     #[default]
@@ -23,7 +22,6 @@ pub enum DMScope {
     /// One session per (account, channel, peer) triple.
     PerAccountChannelPeer,
 }
-
 
 impl DMScope {
     /// Parse a DM scope from its string representation.
@@ -132,12 +130,13 @@ pub fn build_agent_peer_session_key(params: SessionKeyParams) -> String {
         let mut peer_id = peer.id.trim().to_string();
 
         // Resolve identity links (cross-platform collapse)
-        if *dm_scope != DMScope::Main && !peer_id.is_empty()
+        if *dm_scope != DMScope::Main
+            && !peer_id.is_empty()
             && let Some(linked) =
                 resolve_linked_peer_id(&params.identity_links, &params.channel, &peer_id)
-            {
-                peer_id = linked;
-            }
+        {
+            peer_id = linked;
+        }
         let peer_id_lower = peer_id.to_lowercase();
 
         match dm_scope {

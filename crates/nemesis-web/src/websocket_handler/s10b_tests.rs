@@ -85,7 +85,10 @@ async fn start_server(state: Arc<AppState>) -> std::net::SocketAddr {
 
 async fn connect_url(addr: &std::net::SocketAddr, query: &str) -> WsStream {
     let url = format!("ws://{}/ws{}", addr, query);
-    tokio_tungstenite::connect_async(url).await.expect("connect").0
+    tokio_tungstenite::connect_async(url)
+        .await
+        .expect("connect")
+        .0
 }
 
 /// Read the next TEXT message, skipping protocol-level Pong/Ping frames.
@@ -250,7 +253,9 @@ async fn protocol_ping_frame_receives_text_pong() {
     let addr = start_server(state).await;
     let mut ws = connect_url(&addr, "").await;
 
-    ws.send(WsMessage::Ping(vec![1, 2, 3].into())).await.unwrap();
+    ws.send(WsMessage::Ping(vec![1, 2, 3].into()))
+        .await
+        .unwrap();
     let pong = next_text(&mut ws).await;
     let v: serde_json::Value = serde_json::from_str(&pong).unwrap();
     assert_eq!(v["module"], "heartbeat", "got: {}", pong);
@@ -264,7 +269,12 @@ async fn abrupt_client_drop_ends_stream_and_cleans_up_session() {
     let mut ws = connect_url(&addr, "").await;
 
     // Connection is up → session count is 1.
-    assert_eq!(state.session_count.load(std::sync::atomic::Ordering::SeqCst), 1);
+    assert_eq!(
+        state
+            .session_count
+            .load(std::sync::atomic::Ordering::SeqCst),
+        1
+    );
 
     // Abrupt drop (no close frame) → server read returns None → stream-ended
     // arm → cleanup decrements the count.
@@ -276,8 +286,15 @@ async fn abrupt_client_drop_ends_stream_and_cleans_up_session() {
     drop(ws);
 
     let deadline = Instant::now() + Duration::from_secs(5);
-    while state.session_count.load(std::sync::atomic::Ordering::SeqCst) != 0 {
-        assert!(Instant::now() < deadline, "session count never returned to 0");
+    while state
+        .session_count
+        .load(std::sync::atomic::Ordering::SeqCst)
+        != 0
+    {
+        assert!(
+            Instant::now() < deadline,
+            "session count never returned to 0"
+        );
         tokio::time::sleep(Duration::from_millis(50)).await;
     }
 }

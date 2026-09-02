@@ -35,8 +35,7 @@ pub struct ProviderSelection {
 }
 
 /// Factory configuration for resolving providers.
-#[derive(Debug, Clone)]
-#[derive(Default)]
+#[derive(Debug, Clone, Default)]
 pub struct FactoryConfig {
     /// The LLM reference string (e.g. "anthropic/claude-sonnet", "claude-cli/claude-code").
     pub llm_ref: String,
@@ -53,7 +52,6 @@ pub struct FactoryConfig {
     /// Additional headers for HTTP provider.
     pub headers: HashMap<String, String>,
 }
-
 
 /// Resolve a provider selection from factory config.
 pub fn resolve_provider_selection(cfg: &FactoryConfig) -> Result<ProviderSelection, String> {

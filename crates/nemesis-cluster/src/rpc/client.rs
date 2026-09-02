@@ -101,10 +101,7 @@ impl RateLimiter {
             .tokens
             .entry(peer_id.to_string())
             .or_insert(self.max_tokens);
-        state
-            .requests
-            .entry(peer_id.to_string())
-            .or_default();
+        state.requests.entry(peer_id.to_string()).or_default();
 
         // Prune old timestamps in the sliding window.
         // checked_sub 而非裸减：`Instant` 是单调时钟（自系统启动起算），
@@ -134,15 +131,16 @@ impl RateLimiter {
 
         // Check token availability
         if let Some(tokens) = state.tokens.get_mut(peer_id)
-            && *tokens > 0 {
-                *tokens -= 1;
-                state
-                    .requests
-                    .get_mut(peer_id)
-                    .unwrap()
-                    .push(std::time::Instant::now());
-                return Ok(());
-            }
+            && *tokens > 0
+        {
+            *tokens -= 1;
+            state
+                .requests
+                .get_mut(peer_id)
+                .unwrap()
+                .push(std::time::Instant::now());
+            return Ok(());
+        }
 
         Err(RpcClientError::RateLimited(format!(
             "peer {} has no tokens available",

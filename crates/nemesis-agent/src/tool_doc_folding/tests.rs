@@ -34,7 +34,9 @@ fn test_cosine_basics() {
 fn test_one_line_summary_first_sentence() {
     // ASCII: cut at ". " — the second sentence is dropped.
     assert_eq!(
-        one_line_summary("Search the web for current information. Returns titles, URLs, and snippets."),
+        one_line_summary(
+            "Search the web for current information. Returns titles, URLs, and snippets."
+        ),
         "Search the web for current information."
     );
     // "e.g." must NOT cut (period not followed by whitespace).
@@ -49,7 +51,10 @@ fn test_one_line_summary_first_sentence() {
     );
     // Newline / semicolon terminate.
     assert_eq!(one_line_summary("line one\nline two"), "line one");
-    assert_eq!(one_line_summary("half a thought; rest dropped"), "half a thought");
+    assert_eq!(
+        one_line_summary("half a thought; rest dropped"),
+        "half a thought"
+    );
     // Single-sentence short descriptions pass through BYTE-identical.
     let short = "Read the contents of a file";
     assert_eq!(one_line_summary(short), short);
@@ -94,9 +99,15 @@ fn test_fold_top_n_expansion_and_shape() {
     assert_eq!(folded[0].function.parameters, defs[0].function.parameters);
 
     // Top-1 (bbb, 0.9) keeps FULL description bytes.
-    assert_eq!(folded[1].function.description, "Weather lookup tool. Returns the forecast.");
+    assert_eq!(
+        folded[1].function.description,
+        "Weather lookup tool. Returns the forecast."
+    );
     // Everyone else folds to the first sentence.
-    assert_eq!(folded[0].function.description, "First sentence dropped here.");
+    assert_eq!(
+        folded[0].function.description,
+        "First sentence dropped here."
+    );
     assert_eq!(folded[2].function.description, "Web search tool.");
     assert_eq!(folded[3].function.description, "File reader tool.");
 }
@@ -129,7 +140,10 @@ fn test_fold_passthrough_when_top_n_covers_all() {
     sims.insert("a".to_string(), 0.1);
     // top_n >= len → byte-identical passthrough (both descriptions full).
     let out = fold_tool_defs(defs.clone(), &sims, 2);
-    assert_eq!(serde_json::to_string(&out).unwrap(), serde_json::to_string(&defs).unwrap());
+    assert_eq!(
+        serde_json::to_string(&out).unwrap(),
+        serde_json::to_string(&defs).unwrap()
+    );
     // Empty set likewise.
     assert!(fold_tool_defs(vec![], &sims, 0).is_empty());
 }

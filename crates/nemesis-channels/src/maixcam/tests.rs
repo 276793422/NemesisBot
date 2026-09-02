@@ -1262,7 +1262,9 @@ async fn test_w4c_maixcam_tcp_person_detected_publishes_to_bus() {
         }
     })
     .to_string();
-    dev.write_all(format!("{payload}\n").as_bytes()).await.unwrap();
+    dev.write_all(format!("{payload}\n").as_bytes())
+        .await
+        .unwrap();
 
     let inbound = tokio::time::timeout(std::time::Duration::from_secs(5), rx.recv())
         .await
@@ -1271,7 +1273,11 @@ async fn test_w4c_maixcam_tcp_person_detected_publishes_to_bus() {
     assert_eq!(inbound.channel, "maixcam");
     assert_eq!(inbound.sender_id, "maixcam");
     assert_eq!(inbound.chat_id, "default");
-    assert!(inbound.content.contains("Person detected!"), "got: {}", inbound.content);
+    assert!(
+        inbound.content.contains("Person detected!"),
+        "got: {}",
+        inbound.content
+    );
     assert!(inbound.content.contains("Class: person"));
     assert_eq!(inbound.metadata.get("class_name").unwrap(), "person");
     assert_eq!(inbound.metadata.get("score").unwrap(), "0.95");
@@ -1283,7 +1289,11 @@ async fn test_w4c_maixcam_tcp_person_detected_publishes_to_bus() {
     while ch.client_count() != 0 && std::time::Instant::now() < deadline {
         tokio::time::sleep(std::time::Duration::from_millis(50)).await;
     }
-    assert_eq!(ch.client_count(), 0, "client count must drop to 0 after disconnect");
+    assert_eq!(
+        ch.client_count(),
+        0,
+        "client count must drop to 0 after disconnect"
+    );
 
     ch.stop().await.unwrap();
 }
@@ -1346,7 +1356,11 @@ async fn test_w4c_maixcam_stop_ends_accept_loop() {
     // stop 后再连：不会被 accept（连得上 TCP backlog，但 client_count 不涨）
     let _dev = tokio::net::TcpStream::connect(("127.0.0.1", port)).await;
     tokio::time::sleep(std::time::Duration::from_millis(400)).await;
-    assert_eq!(ch.client_count(), 0, "accept loop must be dead after stop()");
+    assert_eq!(
+        ch.client_count(),
+        0,
+        "accept loop must be dead after stop()"
+    );
     assert!(!ch.is_running());
 }
 

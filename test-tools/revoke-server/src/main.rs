@@ -113,6 +113,6 @@ async fn run(cli: Cli) -> Result<()> {
 }
 
 #[cfg(test)]
-mod tests;
-#[cfg(test)]
 mod s12b_tests;
+#[cfg(test)]
+mod tests;

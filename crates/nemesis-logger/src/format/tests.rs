@@ -332,7 +332,10 @@ fn s12b_go_style_formatter_full_pipeline_through_subscriber() {
     );
     // GoStyle 特有：target:line 前缀（行号是宏调用点，值不固定——只验形状）
     let first = content.lines().next().unwrap_or("");
-    let after_target = first.find("nemesis_logger").map(|i| &first[i..]).unwrap_or("");
+    let after_target = first
+        .find("nemesis_logger")
+        .map(|i| &first[i..])
+        .unwrap_or("");
     assert!(
         after_target.contains("format::tests:") && !after_target.ends_with(':'),
         "target:line shape rendered, got: {first}"

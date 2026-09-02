@@ -1015,40 +1015,41 @@ impl VoiceHandler {
         let dir = aec_dir.clone();
         let hub = ctx.state.event_hub.clone();
 
-        
-
         tokio::task::spawn_blocking(move || {
-                std::fs::create_dir_all(&dir)
-                    .map_err(|e| format!("failed to create aec dir: {}", e))?;
-                hub.publish(
-                    "voice-setup",
-                    serde_json::json!({
-                        "phase": "aec", "status": "starting", "message": "正在安装回声消除库..."
-                    }),
-                );
-                match nemesis_voice::download_aec_lib(&dir, &proxy_url) {
-                    Ok(p) => {
-                        hub.publish("voice-setup", serde_json::json!({
-                        "phase": "aec", "status": "complete", "message": "回声消除库安装完成"
-                    }));
-                        Ok(Some(
-                            serde_json::json!({ "success": true, "path": p.to_string_lossy() }),
-                        ))
-                    }
-                    Err(e) => {
-                        hub.publish(
-                            "voice-setup",
-                            serde_json::json!({
-                                "phase": "aec", "status": "error",
-                                "message": format!("回声消除库安装失败: {}", e)
-                            }),
-                        );
-                        Err(format!("aec install failed: {}", e))
-                    }
+            std::fs::create_dir_all(&dir)
+                .map_err(|e| format!("failed to create aec dir: {}", e))?;
+            hub.publish(
+                "voice-setup",
+                serde_json::json!({
+                    "phase": "aec", "status": "starting", "message": "正在安装回声消除库..."
+                }),
+            );
+            match nemesis_voice::download_aec_lib(&dir, &proxy_url) {
+                Ok(p) => {
+                    hub.publish(
+                        "voice-setup",
+                        serde_json::json!({
+                            "phase": "aec", "status": "complete", "message": "回声消除库安装完成"
+                        }),
+                    );
+                    Ok(Some(
+                        serde_json::json!({ "success": true, "path": p.to_string_lossy() }),
+                    ))
                 }
-            })
-            .await
-            .map_err(|e| format!("install task panicked: {}", e))?
+                Err(e) => {
+                    hub.publish(
+                        "voice-setup",
+                        serde_json::json!({
+                            "phase": "aec", "status": "error",
+                            "message": format!("回声消除库安装失败: {}", e)
+                        }),
+                    );
+                    Err(format!("aec install failed: {}", e))
+                }
+            }
+        })
+        .await
+        .map_err(|e| format!("install task panicked: {}", e))?
     }
 
     async fn cmd_install_model(
@@ -1489,9 +1490,7 @@ impl VoiceHandler {
             let speaker_ready = speaker_engine_state().lock().unwrap().is_some();
             let stt_dialogue_active = {
                 let state = stt_state().lock().await;
-                state
-                    .as_ref()
-                    .is_some_and(|s| s.dialogue_output.is_some())
+                state.as_ref().is_some_and(|s| s.dialogue_output.is_some())
             };
             Ok(Some(serde_json::json!({
                 "stt_ready": stt_ready,
@@ -1862,9 +1861,7 @@ impl VoiceHandler {
         #[cfg(target_os = "windows")]
         let stt_dialogue_active = {
             let state = stt_state().lock().await;
-            state
-                .as_ref()
-                .is_some_and(|s| s.dialogue_output.is_some())
+            state.as_ref().is_some_and(|s| s.dialogue_output.is_some())
         };
         #[cfg(not(target_os = "windows"))]
         let stt_dialogue_active = false;
@@ -2221,58 +2218,59 @@ impl VoiceHandler {
                             let resampled = resampler.resample(&chunk);
 
                             if let Some(speech) = detector.process(&resampled, target_sr)
-                                && !speech.is_empty() {
-                                    // Extract embedding and compute similarity
-                                    let similarity = {
-                                        let engine_guard = speaker_engine_state().lock().unwrap();
-                                        if let Some(ref engine) = *engine_guard {
-                                            match engine.embed(&speech, target_sr) {
-                                                Ok(emb) => nemesis_voice::cosine_similarity(
-                                                    &emb, &owner_emb,
-                                                ),
-                                                Err(_) => -1.0,
+                                && !speech.is_empty()
+                            {
+                                // Extract embedding and compute similarity
+                                let similarity = {
+                                    let engine_guard = speaker_engine_state().lock().unwrap();
+                                    if let Some(ref engine) = *engine_guard {
+                                        match engine.embed(&speech, target_sr) {
+                                            Ok(emb) => {
+                                                nemesis_voice::cosine_similarity(&emb, &owner_emb)
                                             }
-                                        } else {
-                                            -1.0
+                                            Err(_) => -1.0,
                                         }
-                                    };
+                                    } else {
+                                        -1.0
+                                    }
+                                };
 
-                                    // STT recognition
-                                    let text = {
-                                        let stt_guard = stt_engine_state().lock().unwrap();
-                                        if let Some(ref engine) = *stt_guard {
-                                            engine.recognize(&speech, target_sr).unwrap_or_default()
-                                        } else {
-                                            String::new()
-                                        }
-                                    };
+                                // STT recognition
+                                let text = {
+                                    let stt_guard = stt_engine_state().lock().unwrap();
+                                    if let Some(ref engine) = *stt_guard {
+                                        engine.recognize(&speech, target_sr).unwrap_or_default()
+                                    } else {
+                                        String::new()
+                                    }
+                                };
 
-                                    let trimmed = text.trim();
-                                    if similarity >= 0.0 {
-                                        let display_text = if trimmed.is_empty() {
-                                            "(无文字识别)"
-                                        } else {
-                                            trimmed
-                                        };
-                                        let matched = similarity >= threshold;
-                                        let msg = crate::protocol::ProtocolMessage::push(
-                                            "voice",
-                                            "speaker_test_result",
-                                            Some(serde_json::json!({
-                                                "text": display_text,
-                                                "similarity": similarity,
-                                                "matched": matched,
-                                            })),
-                                        );
-                                        if let Ok(bytes) = msg.to_json() {
-                                            let sid = session_id.clone();
-                                            let smgr = session_mgr.clone();
-                                            tokio::runtime::Handle::current().spawn(async move {
-                                                let _ = smgr.broadcast(&sid, &bytes).await;
-                                            });
-                                        }
+                                let trimmed = text.trim();
+                                if similarity >= 0.0 {
+                                    let display_text = if trimmed.is_empty() {
+                                        "(无文字识别)"
+                                    } else {
+                                        trimmed
+                                    };
+                                    let matched = similarity >= threshold;
+                                    let msg = crate::protocol::ProtocolMessage::push(
+                                        "voice",
+                                        "speaker_test_result",
+                                        Some(serde_json::json!({
+                                            "text": display_text,
+                                            "similarity": similarity,
+                                            "matched": matched,
+                                        })),
+                                    );
+                                    if let Ok(bytes) = msg.to_json() {
+                                        let sid = session_id.clone();
+                                        let smgr = session_mgr.clone();
+                                        tokio::runtime::Handle::current().spawn(async move {
+                                            let _ = smgr.broadcast(&sid, &bytes).await;
+                                        });
                                     }
                                 }
+                            }
                         }
                         None => {
                             std::thread::sleep(std::time::Duration::from_millis(10));
@@ -2282,50 +2280,51 @@ impl VoiceHandler {
 
                 // Flush remaining
                 if let Some(speech) = detector.flush()
-                    && !speech.is_empty() {
-                        let similarity = {
-                            let engine_guard = speaker_engine_state().lock().unwrap();
-                            if let Some(ref engine) = *engine_guard {
-                                match engine.embed(&speech, target_sr) {
-                                    Ok(emb) => nemesis_voice::cosine_similarity(&emb, &owner_emb),
-                                    Err(_) => -1.0,
-                                }
-                            } else {
-                                -1.0
+                    && !speech.is_empty()
+                {
+                    let similarity = {
+                        let engine_guard = speaker_engine_state().lock().unwrap();
+                        if let Some(ref engine) = *engine_guard {
+                            match engine.embed(&speech, target_sr) {
+                                Ok(emb) => nemesis_voice::cosine_similarity(&emb, &owner_emb),
+                                Err(_) => -1.0,
                             }
+                        } else {
+                            -1.0
+                        }
+                    };
+                    let text = {
+                        let stt_guard = stt_engine_state().lock().unwrap();
+                        if let Some(ref engine) = *stt_guard {
+                            engine.recognize(&speech, target_sr).unwrap_or_default()
+                        } else {
+                            String::new()
+                        }
+                    };
+                    let trimmed = text.trim();
+                    if similarity >= 0.0 {
+                        let display_text = if trimmed.is_empty() {
+                            "(无文字识别)"
+                        } else {
+                            trimmed
                         };
-                        let text = {
-                            let stt_guard = stt_engine_state().lock().unwrap();
-                            if let Some(ref engine) = *stt_guard {
-                                engine.recognize(&speech, target_sr).unwrap_or_default()
-                            } else {
-                                String::new()
-                            }
-                        };
-                        let trimmed = text.trim();
-                        if similarity >= 0.0 {
-                            let display_text = if trimmed.is_empty() {
-                                "(无文字识别)"
-                            } else {
-                                trimmed
-                            };
-                            let matched = similarity >= threshold;
-                            let msg = crate::protocol::ProtocolMessage::push(
-                                "voice",
-                                "speaker_test_result",
-                                Some(
-                                    serde_json::json!({ "text": display_text, "similarity": similarity, "matched": matched }),
-                                ),
-                            );
-                            if let Ok(bytes) = msg.to_json() {
-                                let sid = session_id.clone();
-                                let smgr = session_mgr.clone();
-                                tokio::runtime::Handle::current().spawn(async move {
-                                    let _ = smgr.broadcast(&sid, &bytes).await;
-                                });
-                            }
+                        let matched = similarity >= threshold;
+                        let msg = crate::protocol::ProtocolMessage::push(
+                            "voice",
+                            "speaker_test_result",
+                            Some(
+                                serde_json::json!({ "text": display_text, "similarity": similarity, "matched": matched }),
+                            ),
+                        );
+                        if let Ok(bytes) = msg.to_json() {
+                            let sid = session_id.clone();
+                            let smgr = session_mgr.clone();
+                            tokio::runtime::Handle::current().spawn(async move {
+                                let _ = smgr.broadcast(&sid, &bytes).await;
+                            });
                         }
                     }
+                }
 
                 tracing::info!("[Speaker Test] Stopped");
             });
@@ -2683,20 +2682,21 @@ impl VoiceHandler {
                 } else if current_len > 0 && current_len == last_text_len {
                     // No new text, check silence timeout
                     if let Some(start) = silence_start
-                        && start.elapsed().as_secs_f64() >= timeout_secs {
-                            // Timeout: flush and auto-send
-                            let text = dlg.flush();
-                            if let Some(text) = text {
-                                last_text_len = 0;
-                                silence_start = None;
-                                push_stt_dialogue(
-                                    &sid_timer,
-                                    smgr_timer.clone(),
-                                    "stt_auto_send",
-                                    &text,
-                                );
-                            }
+                        && start.elapsed().as_secs_f64() >= timeout_secs
+                    {
+                        // Timeout: flush and auto-send
+                        let text = dlg.flush();
+                        if let Some(text) = text {
+                            last_text_len = 0;
+                            silence_start = None;
+                            push_stt_dialogue(
+                                &sid_timer,
+                                smgr_timer.clone(),
+                                "stt_auto_send",
+                                &text,
+                            );
                         }
+                    }
                 }
             }
         });
@@ -2852,10 +2852,11 @@ fn tts_playback_loop(
     let cfg = nemesis_voice::AppConfig::load_or_default(&config_path);
 
     if !nemesis_voice::sherpa_is_initialized()
-        && let Err(e) = nemesis_voice::bootstrap::init_sherpa(voice_dir) {
-            tracing::error!("[TTS Playback] sherpa init failed: {}", e);
-            return;
-        }
+        && let Err(e) = nemesis_voice::bootstrap::init_sherpa(voice_dir)
+    {
+        tracing::error!("[TTS Playback] sherpa init failed: {}", e);
+        return;
+    }
 
     let mut consecutive_failures: u32 = 0;
     let max_consecutive = 3;
@@ -3062,18 +3063,19 @@ fn run_stt_loop(
 
     // Flush remaining audio on exit
     if let Some(speech) = detector.flush()
-        && !speech.is_empty() {
-            match stt_engine.recognize(&speech, target_sample_rate) {
-                Ok(text) => {
-                    let trimmed = text.trim();
-                    if !trimmed.is_empty() {
-                        tracing::info!("[STT] Recognized (final flush): {}", trimmed);
-                        push_stt_result(session_id, session_mgr.clone(), trimmed);
-                    }
+        && !speech.is_empty()
+    {
+        match stt_engine.recognize(&speech, target_sample_rate) {
+            Ok(text) => {
+                let trimmed = text.trim();
+                if !trimmed.is_empty() {
+                    tracing::info!("[STT] Recognized (final flush): {}", trimmed);
+                    push_stt_result(session_id, session_mgr.clone(), trimmed);
                 }
-                Err(e) => tracing::warn!("[STT] Final recognition error: {}", e),
             }
+            Err(e) => tracing::warn!("[STT] Final recognition error: {}", e),
         }
+    }
 
     tracing::info!(
         "[STT] Dictation stopped (session={}, chunks={}, speech_segments={})",
@@ -3224,21 +3226,22 @@ fn run_stt_pipeline(
 
     // Flush remaining audio
     if let Some(speech) = detector.flush()
-        && !speech.is_empty() {
-            let guard = stt_engine_state().lock().unwrap();
-            if let Some(ref engine) = *guard {
-                match engine.recognize(&speech, target_sr) {
-                    Ok(text) => {
-                        let trimmed = text.trim();
-                        if !trimmed.is_empty() {
-                            tracing::info!("[STT Pipeline] Recognized (final flush): {}", trimmed);
-                            output.send_text(&punctuate_if_loaded(trimmed));
-                        }
+        && !speech.is_empty()
+    {
+        let guard = stt_engine_state().lock().unwrap();
+        if let Some(ref engine) = *guard {
+            match engine.recognize(&speech, target_sr) {
+                Ok(text) => {
+                    let trimmed = text.trim();
+                    if !trimmed.is_empty() {
+                        tracing::info!("[STT Pipeline] Recognized (final flush): {}", trimmed);
+                        output.send_text(&punctuate_if_loaded(trimmed));
                     }
-                    Err(e) => tracing::warn!("[STT Pipeline] Final recognition error: {}", e),
                 }
+                Err(e) => tracing::warn!("[STT Pipeline] Final recognition error: {}", e),
             }
         }
+    }
 
     tracing::info!(
         "[STT Pipeline] Stopped (chunks={}, speech_segments={})",
@@ -3340,9 +3343,10 @@ fn check_model_subdir_any(parent: &std::path::Path) -> bool {
     if let Ok(entries) = std::fs::read_dir(parent) {
         for entry in entries.flatten() {
             if entry.file_type().map(|t| t.is_dir()).unwrap_or(false)
-                && has_onnx_file(&entry.path()) {
-                    return true;
-                }
+                && has_onnx_file(&entry.path())
+            {
+                return true;
+            }
         }
     }
     false

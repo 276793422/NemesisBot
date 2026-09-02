@@ -272,12 +272,7 @@ fn test_new_with_config_disabled_patterns() {
 fn w4a_new_with_config_invalid_custom_pattern_is_skipped() {
     // Invalid regexes among custom patterns are warned+skipped without
     // panicking; the valid ones still compile and deny.
-    let tool = AsyncExecTool::new_with_config(
-        ".",
-        false,
-        Some(&["[invalid", r"\bw4abad\b"]),
-        true,
-    );
+    let tool = AsyncExecTool::new_with_config(".", false, Some(&["[invalid", r"\bw4abad\b"]), true);
     assert!(tool.is_dangerous("w4abad thing"));
     assert!(!tool.is_dangerous("echo fine"));
 }
@@ -286,7 +281,10 @@ fn w4a_new_with_config_invalid_custom_pattern_is_skipped() {
 fn w4a_new_with_config_empty_custom_falls_back_to_defaults() {
     // Some(&[]) takes the `_` arm -> default deny patterns installed.
     let tool = AsyncExecTool::new_with_config(".", false, Some(&[]), true);
-    assert!(tool.is_dangerous("rm -rf /"), "empty list must fall back to defaults");
+    assert!(
+        tool.is_dangerous("rm -rf /"),
+        "empty list must fall back to defaults"
+    );
 }
 
 #[test]

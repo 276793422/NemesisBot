@@ -110,9 +110,10 @@ fn expand_tilde(path: &str) -> String {
             return format!("{}{}", home.display(), &path[1..]);
         }
     } else if path == "~"
-        && let Some(home) = dirs::home_dir() {
-            return home.to_string_lossy().to_string();
-        }
+        && let Some(home) = dirs::home_dir()
+    {
+        return home.to_string_lossy().to_string();
+    }
     path.to_string()
 }
 

@@ -26,7 +26,9 @@ fn scan() -> cargo_scan::ScanResult {
 
 fn write(root: &std::path::Path, rel: &str, text: &str) -> std::path::PathBuf {
     let p = root.join(rel);
-    if let Some(d) = p.parent() { fs::create_dir_all(d).unwrap() }
+    if let Some(d) = p.parent() {
+        fs::create_dir_all(d).unwrap()
+    }
     fs::write(&p, text).unwrap();
     p
 }
@@ -58,7 +60,10 @@ default = false
     // 1 stale (ghost-feature) + 3 missing (channels-rpc/migrate/sandbox absent
     // from the manifest) — both directions fire on a partial manifest.
     assert_eq!(problems.len(), 4, "got: {problems:?}");
-    let stale: Vec<&String> = problems.iter().filter(|p| p.starts_with("STALE:")).collect();
+    let stale: Vec<&String> = problems
+        .iter()
+        .filter(|p| p.starts_with("STALE:"))
+        .collect();
     assert_eq!(stale.len(), 1, "got: {problems:?}");
     assert!(stale[0].contains("ghost-feature"), "got: {stale:?}");
 }
@@ -82,7 +87,11 @@ default = "release"
     )
     .unwrap();
     let problems = check_problems(&scan, &manifest);
-    assert_eq!(problems.len(), 3, "sandbox+migrate+channels-rpc missing: {problems:?}");
+    assert_eq!(
+        problems.len(),
+        3,
+        "sandbox+migrate+channels-rpc missing: {problems:?}"
+    );
     assert!(
         problems.iter().all(|p| p.starts_with("MISSING:")),
         "got: {problems:?}"
@@ -105,8 +114,17 @@ default = true
     .unwrap();
     let problems = check_problems(&scan, &manifest);
     assert_eq!(problems.len(), 4, "1 stale + 3 missing: {problems:?}");
-    assert_eq!(problems.iter().filter(|p| p.starts_with("STALE:")).count(), 1);
-    assert_eq!(problems.iter().filter(|p| p.starts_with("MISSING:")).count(), 3);
+    assert_eq!(
+        problems.iter().filter(|p| p.starts_with("STALE:")).count(),
+        1
+    );
+    assert_eq!(
+        problems
+            .iter()
+            .filter(|p| p.starts_with("MISSING:"))
+            .count(),
+        3
+    );
 }
 
 #[test]

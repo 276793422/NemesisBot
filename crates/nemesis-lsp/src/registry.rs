@@ -110,7 +110,11 @@ pub fn server_available(lang: Lang) -> bool {
 /// registration (OnceLock-cached by the caller) — empty result ⇒ the LSP
 /// tool is not registered at all.
 pub fn probe_available() -> Vec<Lang> {
-    SERVERS.iter().map(|s| s.lang).filter(|l| server_available(*l)).collect()
+    SERVERS
+        .iter()
+        .map(|s| s.lang)
+        .filter(|l| server_available(*l))
+        .collect()
 }
 
 #[cfg(test)]

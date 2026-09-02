@@ -18,10 +18,9 @@ fn resolve_log_path_absolute_passthrough() {
 fn resolve_log_path_relative_joins_workspace() {
     let out = resolve_log_path(
         "logs/llm",
-        std::path::Path::new("C:/ws/s9" /* 平台无关：PathBuf join 语义一致 */),
+        std::path::Path::new(
+            "C:/ws/s9", /* 平台无关：PathBuf join 语义一致 */
+        ),
     );
-    assert_eq!(
-        out,
-        std::path::Path::new("C:/ws/s9").join("logs/llm")
-    );
+    assert_eq!(out, std::path::Path::new("C:/ws/s9").join("logs/llm"));
 }

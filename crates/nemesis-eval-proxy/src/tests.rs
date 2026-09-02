@@ -1,10 +1,10 @@
 //! Tests: spin up a local mock "real endpoint" (axum), start the proxy
 //! pointing at it, and verify pass-through + auth substitution.
 
+use axum::Router;
 use axum::body::Body;
 use axum::http::StatusCode;
 use axum::routing::{get, post};
-use axum::Router;
 
 #[tokio::test]
 async fn proxy_forwards_and_swaps_auth() {
@@ -37,7 +37,10 @@ async fn proxy_forwards_and_swaps_auth() {
     // Client call with a FAKE key through the proxy.
     let client = reqwest::Client::new();
     let resp = client
-        .post(format!("http://127.0.0.1:{}/v1/chat/completions", handle.port))
+        .post(format!(
+            "http://127.0.0.1:{}/v1/chat/completions",
+            handle.port
+        ))
         .header("authorization", "Bearer eval-fake-key")
         .json(&serde_json::json!({ "model": "test" }))
         .send()
@@ -55,26 +58,23 @@ async fn proxy_forwards_and_swaps_auth() {
 
 #[tokio::test]
 async fn proxy_passes_query_and_path_verbatim() {
-    let upstream = Router::new().route(
-        "/v1/anything",
-        get(|| async { "PATH_OK" }),
-    );
+    let upstream = Router::new().route("/v1/anything", get(|| async { "PATH_OK" }));
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let port = listener.local_addr().unwrap().port();
     tokio::spawn(async move {
         let _ = axum::serve(listener, upstream).await;
     });
 
-    let handle = crate::start(
-        format!("http://127.0.0.1:{port}"),
-        "k".to_string(),
-    )
-    .await
-    .unwrap();
-
-    let resp = reqwest::get(format!("http://127.0.0.1:{}/v1/anything?x=1&y=2", handle.port))
+    let handle = crate::start(format!("http://127.0.0.1:{port}"), "k".to_string())
         .await
         .unwrap();
+
+    let resp = reqwest::get(format!(
+        "http://127.0.0.1:{}/v1/anything?x=1&y=2",
+        handle.port
+    ))
+    .await
+    .unwrap();
     assert_eq!(resp.status(), StatusCode::OK);
     assert_eq!(resp.text().await.unwrap(), "PATH_OK");
 
@@ -98,12 +98,9 @@ async fn proxy_streaming_body_passthrough() {
         let _ = axum::serve(listener, upstream).await;
     });
 
-    let handle = crate::start(
-        format!("http://127.0.0.1:{port}"),
-        "k".to_string(),
-    )
-    .await
-    .unwrap();
+    let handle = crate::start(format!("http://127.0.0.1:{port}"), "k".to_string())
+        .await
+        .unwrap();
 
     let resp = reqwest::Client::new()
         .post(format!("http://127.0.0.1:{}/v1/stream", handle.port))
@@ -204,8 +201,14 @@ async fn x_api_key_swapped_to_bare_real_key() {
         .json()
         .await
         .unwrap();
-    assert_eq!(body["xkey"], "sk-REAL", "x-api-key must carry the bare real key");
-    assert_eq!(body["auth"], "<none>", "no authorization should be injected");
+    assert_eq!(
+        body["xkey"], "sk-REAL",
+        "x-api-key must carry the bare real key"
+    );
+    assert_eq!(
+        body["auth"], "<none>",
+        "no authorization should be injected"
+    );
 
     // ② 两个头都带：authorization → Bearer 真 key；x-api-key → 裸真 key
     let body: serde_json::Value = client

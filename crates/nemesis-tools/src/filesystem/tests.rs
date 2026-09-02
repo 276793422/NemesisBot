@@ -831,7 +831,9 @@ fn test_canonicalize_for_compare_current_dir_strips_verbatim() {
     assert!(resolved.is_absolute());
 
     let real = std::env::current_dir().unwrap();
-    let s = canonicalize_for_compare(&real).to_string_lossy().to_string();
+    let s = canonicalize_for_compare(&real)
+        .to_string_lossy()
+        .to_string();
     assert!(
         !s.starts_with(r"\\?\"),
         "verbatim prefix must be stripped for comparison: {s}"
@@ -1048,7 +1050,10 @@ fn w4a_tool_parameters_schemas_all_tools() {
 
     let delete_dir = DeleteDirTool::new(&ws, false);
     let p = delete_dir.parameters();
-    assert_eq!(p["properties"]["path"]["description"], "Directory path to delete");
+    assert_eq!(
+        p["properties"]["path"]["description"],
+        "Directory path to delete"
+    );
     assert_eq!(p["required"][0], "path");
 }
 
@@ -1083,7 +1088,10 @@ fn w4a_canonicalize_for_compare_branches() {
     let resolved = canonicalize_for_compare(&existing);
     assert!(resolved.is_absolute());
     let s = resolved.to_string_lossy();
-    assert!(!s.starts_with(r"\\?\") && s.ends_with("real.txt"), "got: {s}");
+    assert!(
+        !s.starts_with(r"\\?\") && s.ends_with("real.txt"),
+        "got: {s}"
+    );
 
     // 2. Nonexistent child under existing dir: walk up + append components.
     let ghost = dir.path().join("no_such_dir").join("leaf.txt");
@@ -1118,14 +1126,20 @@ async fn w4a_read_file_restricted_outside_workspace_rejected() {
         .execute(&serde_json::json!({"path": victim.to_string_lossy()}))
         .await;
     assert!(result.is_error);
-    assert!(result.for_llm.contains("outside workspace"), "got: {}", result.for_llm);
+    assert!(
+        result.for_llm.contains("outside workspace"),
+        "got: {}",
+        result.for_llm
+    );
     // and a file inside the workspace still reads fine under restrict
     let inside = dir.path().join("ok.txt");
     std::fs::write(&inside, b"fine").unwrap();
-    let result = tool
-        .execute(&serde_json::json!({"path": "ok.txt"}))
-        .await;
-    assert!(!result.is_error, "inside file must read: {}", result.for_llm);
+    let result = tool.execute(&serde_json::json!({"path": "ok.txt"})).await;
+    assert!(
+        !result.is_error,
+        "inside file must read: {}",
+        result.for_llm
+    );
 }
 
 #[tokio::test]
@@ -1139,7 +1153,11 @@ async fn w4a_create_directory_relative_path_joins_workspace() {
     let result = tool
         .execute(&serde_json::json!({"path": "w4a_new/sub"}))
         .await;
-    assert!(!result.is_error, "create should succeed: {}", result.for_llm);
+    assert!(
+        !result.is_error,
+        "create should succeed: {}",
+        result.for_llm
+    );
     assert!(dir.path().join("w4a_new").join("sub").is_dir());
 
     // missing path argument
@@ -1160,7 +1178,11 @@ async fn w4a_delete_dir_restricted_outside_workspace_rejected() {
         .execute(&serde_json::json!({"path": victim.to_string_lossy()}))
         .await;
     assert!(result.is_error);
-    assert!(result.for_llm.contains("outside workspace"), "got: {}", result.for_llm);
+    assert!(
+        result.for_llm.contains("outside workspace"),
+        "got: {}",
+        result.for_llm
+    );
     assert!(victim.exists(), "outside dir must NOT be deleted");
 }
 
@@ -1177,7 +1199,11 @@ async fn w4a_delete_dir_not_a_directory_is_rejected() {
         .execute(&serde_json::json!({"path": file.to_string_lossy()}))
         .await;
     assert!(result.is_error);
-    assert!(result.for_llm.contains("is not a directory"), "got: {}", result.for_llm);
+    assert!(
+        result.for_llm.contains("is not a directory"),
+        "got: {}",
+        result.for_llm
+    );
     assert!(file.exists(), "file must survive a delete_dir attempt");
 }
 

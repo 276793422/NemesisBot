@@ -307,12 +307,11 @@ pub fn parse_body(plaintext: &[u8]) -> Result<ParsedBody> {
                 publisher =
                     Some(String::from_utf8(v).map_err(|e| anyhow!("publisher utf8: {}", e))?);
             }
-            TLV_KEY_NOT_AFTER if v.len() == 9
-                && v[0] == 1 => {
-                    key_not_after = Some(u64::from_le_bytes([
-                        v[1], v[2], v[3], v[4], v[5], v[6], v[7], v[8],
-                    ]));
-                }
+            TLV_KEY_NOT_AFTER if v.len() == 9 && v[0] == 1 => {
+                key_not_after = Some(u64::from_le_bytes([
+                    v[1], v[2], v[3], v[4], v[5], v[6], v[7], v[8],
+                ]));
+            }
             TLV_TS_TOKEN => ts_token = Some(v),
             _ => {} // 忽略未知 TLV（向前兼容）
         }

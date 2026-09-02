@@ -191,7 +191,8 @@ fn flush_disabled_is_noop() {
 /// Tool ringbuffer is bounded at MAX_TOOLS=50: oldest entries dropped.
 #[test]
 fn tool_ringbuffer_drains_oldest_beyond_50() {
-    let dir = std::env::temp_dir().join(format!("nemesis_cap_rb_{}_{}", std::process::id(), line!()));
+    let dir =
+        std::env::temp_dir().join(format!("nemesis_cap_rb_{}_{}", std::process::id(), line!()));
     let _ = std::fs::remove_dir_all(&dir);
     let sink = CaptureSink::for_test(dir.clone());
     for i in 0..52 {
@@ -211,7 +212,8 @@ fn tool_ringbuffer_drains_oldest_beyond_50() {
 /// overwrite=false records never auto-flush).
 #[test]
 fn session_write_ringbuffer_drains_oldest_beyond_200() {
-    let dir = std::env::temp_dir().join(format!("nemesis_cap_wr_{}_{}", std::process::id(), line!()));
+    let dir =
+        std::env::temp_dir().join(format!("nemesis_cap_wr_{}_{}", std::process::id(), line!()));
     let _ = std::fs::remove_dir_all(&dir);
     let sink = CaptureSink::for_test(dir.clone());
     for _ in 0..202 {
@@ -220,7 +222,11 @@ fn session_write_ringbuffer_drains_oldest_beyond_200() {
     {
         let bufs = sink.buffers.lock().unwrap();
         let buf = bufs.get("wr").unwrap();
-        assert_eq!(buf.session_writes.len(), 200, "bounded at MAX_SESSION_WRITES");
+        assert_eq!(
+            buf.session_writes.len(),
+            200,
+            "bounded at MAX_SESSION_WRITES"
+        );
         // ts was auto-filled (non-empty) on record.
         assert!(!buf.session_writes[0].ts.is_empty());
     }

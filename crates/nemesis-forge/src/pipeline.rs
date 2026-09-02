@@ -196,15 +196,17 @@ impl Pipeline {
     pub fn determine_status(&self, validation: &ArtifactValidation) -> ArtifactStatus {
         // If stage 1 failed, keep as draft
         if let Some(ref s1) = validation.stage1_static
-            && !s1.stage.passed {
-                return ArtifactStatus::Draft;
-            }
+            && !s1.stage.passed
+        {
+            return ArtifactStatus::Draft;
+        }
 
         // If stage 2 failed, keep as draft
         if let Some(ref s2) = validation.stage2_functional
-            && !s2.stage.passed {
-                return ArtifactStatus::Draft;
-            }
+            && !s2.stage.passed
+        {
+            return ArtifactStatus::Draft;
+        }
 
         // Check quality score
         if let Some(ref s3) = validation.stage3_quality {

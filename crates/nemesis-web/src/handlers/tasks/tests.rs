@@ -69,7 +69,9 @@ fn max_rounds_invalid_values_rejected_loudly() {
 #[test]
 fn max_rounds_flatten_gives_add_semantics() {
     assert_eq!(
-        parse_max_rounds_patch(&serde_json::json!({})).unwrap().flatten(),
+        parse_max_rounds_patch(&serde_json::json!({}))
+            .unwrap()
+            .flatten(),
         None
     );
     assert_eq!(
@@ -191,7 +193,11 @@ async fn cron_toggle_flips_and_reports_not_found() {
 
     // 未知 id。
     let err = h
-        .handle_cmd("cron.toggle", Some(serde_json::json!({ "id": "nope" })), &ctx)
+        .handle_cmd(
+            "cron.toggle",
+            Some(serde_json::json!({ "id": "nope" })),
+            &ctx,
+        )
         .await
         .unwrap_err();
     assert!(err.contains("not found"), "{err}");
@@ -214,7 +220,11 @@ async fn cron_run_executes_without_handler_and_reports_not_found() {
     assert_eq!(out["id"], id);
 
     // last_status 落 "executed"。
-    let list = h.handle_cmd("cron.list", None, &ctx).await.unwrap().unwrap();
+    let list = h
+        .handle_cmd("cron.list", None, &ctx)
+        .await
+        .unwrap()
+        .unwrap();
     let job = list["jobs"]
         .as_array()
         .unwrap()
@@ -305,7 +315,8 @@ async fn cron_list_view_of_exprless_job_has_empty_description() {
     // 直接经 service 塞一个无 expr 的 job（kind="at"）——cron.add 路径
     // 永远带 expr，空 expr 视图臂只有这种历史/服务侧数据能触发。
     let svc = ctx.state.cron.as_ref().unwrap();
-    svc.lock().unwrap()
+    svc.lock()
+        .unwrap()
         .add_job_ext(
             "one-shot",
             CronSchedule {
@@ -326,7 +337,11 @@ async fn cron_list_view_of_exprless_job_has_empty_description() {
         .unwrap();
 
     let h = TasksHandler;
-    let out = h.handle_cmd("cron.list", None, &ctx).await.unwrap().unwrap();
+    let out = h
+        .handle_cmd("cron.list", None, &ctx)
+        .await
+        .unwrap()
+        .unwrap();
     assert_eq!(out["total"], 1);
     let job = &out["jobs"][0];
     assert_eq!(job["cron"], "");

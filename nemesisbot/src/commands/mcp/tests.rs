@@ -90,7 +90,16 @@ fn test_cmd_add_new_server() {
     let tmp = TempDir::new().unwrap();
     let cfg = make_empty_mcp_config(&tmp);
 
-    cmd_add(&cfg, &main_cfg_of(&tmp), "new-server", "python", Some("-m,server"), &[], 30).unwrap();
+    cmd_add(
+        &cfg,
+        &main_cfg_of(&tmp),
+        "new-server",
+        "python",
+        Some("-m,server"),
+        &[],
+        30,
+    )
+    .unwrap();
 
     let data: serde_json::Value =
         serde_json::from_str(&std::fs::read_to_string(&cfg).unwrap()).unwrap();
@@ -106,7 +115,16 @@ fn test_cmd_add_duplicate_server() {
     let cfg = make_mcp_config(&tmp);
 
     // Should succeed but not add duplicate
-    cmd_add(&cfg, &main_cfg_of(&tmp), "test-server", "node", None, &[], 30).unwrap();
+    cmd_add(
+        &cfg,
+        &main_cfg_of(&tmp),
+        "test-server",
+        "node",
+        None,
+        &[],
+        30,
+    )
+    .unwrap();
 
     let data: serde_json::Value =
         serde_json::from_str(&std::fs::read_to_string(&cfg).unwrap()).unwrap();
@@ -215,7 +233,16 @@ fn test_cmd_add_args_parsing() {
     let tmp = TempDir::new().unwrap();
     let cfg = make_empty_mcp_config(&tmp);
 
-    cmd_add(&cfg, &main_cfg_of(&tmp), "test", "cmd", Some("arg1,arg2,arg3"), &[], 30).unwrap();
+    cmd_add(
+        &cfg,
+        &main_cfg_of(&tmp),
+        "test",
+        "cmd",
+        Some("arg1,arg2,arg3"),
+        &[],
+        30,
+    )
+    .unwrap();
 
     let data: serde_json::Value =
         serde_json::from_str(&std::fs::read_to_string(&cfg).unwrap()).unwrap();
@@ -319,7 +346,16 @@ fn test_cmd_add_with_env_vars() {
     let cfg = make_empty_mcp_config(&tmp);
 
     let env = vec!["API_KEY=secret123".to_string(), "DEBUG=true".to_string()];
-    cmd_add(&cfg, &main_cfg_of(&tmp), "env-server", "python", None, &env, 60).unwrap();
+    cmd_add(
+        &cfg,
+        &main_cfg_of(&tmp),
+        "env-server",
+        "python",
+        None,
+        &env,
+        60,
+    )
+    .unwrap();
 
     let data: serde_json::Value =
         serde_json::from_str(&std::fs::read_to_string(&cfg).unwrap()).unwrap();
@@ -652,7 +688,11 @@ fn test_s11b_sync_master_switch_already_in_state() {
     let before = std::fs::read_to_string(&main_cfg).unwrap();
     // 已是 true → Ok 早退，不重写文件
     sync_mcp_master_switch(&main_cfg, true).unwrap();
-    assert_eq!(std::fs::read_to_string(&main_cfg).unwrap(), before, "同态不重写");
+    assert_eq!(
+        std::fs::read_to_string(&main_cfg).unwrap(),
+        before,
+        "同态不重写"
+    );
 }
 
 #[test]
@@ -686,7 +726,13 @@ fn test_s11b_sync_master_switch_flips_real_production_layout() {
         serde_json::from_str(&std::fs::read_to_string(&main_cfg).unwrap()).unwrap();
     assert_eq!(v["mcp"]["enabled"], true);
     // 旧的错误位置不得出现
-    assert!(!home.join("workspace").join("config").join("config.json").exists());
+    assert!(
+        !home
+            .join("workspace")
+            .join("config")
+            .join("config.json")
+            .exists()
+    );
 }
 
 // ------------------------- cmd_test / tools / resources / prompts ---------
@@ -868,10 +914,34 @@ async fn test_s11b_run_async_dispatch_arms() {
     let _ = &th.home;
     // block_in_place 分发 arm 用「服务器不存在」的快路径逐个覆盖：
     // Test / Tools / Resources / Prompts / Discover。
-    run(McpAction::Test { name: "nope".into() }, false).unwrap();
-    run(McpAction::Tools { name: "nope".into() }, false).unwrap();
-    run(McpAction::Resources { name: "nope".into() }, false).unwrap();
-    run(McpAction::Prompts { name: "nope".into() }, false).unwrap();
+    run(
+        McpAction::Test {
+            name: "nope".into(),
+        },
+        false,
+    )
+    .unwrap();
+    run(
+        McpAction::Tools {
+            name: "nope".into(),
+        },
+        false,
+    )
+    .unwrap();
+    run(
+        McpAction::Resources {
+            name: "nope".into(),
+        },
+        false,
+    )
+    .unwrap();
+    run(
+        McpAction::Prompts {
+            name: "nope".into(),
+        },
+        false,
+    )
+    .unwrap();
     run(
         McpAction::Discover {
             command: None,
@@ -1001,7 +1071,16 @@ mod wave_b {
 
         // 相位2：重名短路（快照对比整份文件不变）
         let before = std::fs::read_to_string(&cfg).unwrap();
-        cmd_add(&cfg, &main_cfg_of(&tmp), "second", "replacement-cmd", None, &[], 77).unwrap();
+        cmd_add(
+            &cfg,
+            &main_cfg_of(&tmp),
+            "second",
+            "replacement-cmd",
+            None,
+            &[],
+            77,
+        )
+        .unwrap();
         assert_eq!(
             std::fs::read_to_string(&cfg).unwrap(),
             before,
@@ -1261,12 +1340,23 @@ fn test_cmd_add_missing_servers_key_still_persists() {
     // 有文件但没有 servers 数组 —— 修复前这里静默丢服务器。
     std::fs::write(&cfg, r#"{"enabled": false}"#).unwrap();
 
-    cmd_add(&cfg, &main_cfg_of(&tmp), "late-server", "python", None, &[], 30).unwrap();
+    cmd_add(
+        &cfg,
+        &main_cfg_of(&tmp),
+        "late-server",
+        "python",
+        None,
+        &[],
+        30,
+    )
+    .unwrap();
 
     let data: serde_json::Value =
         serde_json::from_str(&std::fs::read_to_string(&cfg).unwrap()).unwrap();
     assert_eq!(data["enabled"], true);
-    let servers = data["servers"].as_array().expect("servers 必须被补建成数组");
+    let servers = data["servers"]
+        .as_array()
+        .expect("servers 必须被补建成数组");
     assert_eq!(servers.len(), 1, "服务器必须真实落盘（恰好一条）");
     assert_eq!(servers[0]["name"], "late-server");
     assert_eq!(servers[0]["command"], "python");
@@ -1280,11 +1370,22 @@ fn test_cmd_add_non_array_servers_is_repaired_not_dropped() {
     let cfg = dir.join("config.mcp.json");
     std::fs::write(&cfg, r#"{"enabled": true, "servers": {}}"#).unwrap();
 
-    cmd_add(&cfg, &main_cfg_of(&tmp), "healed-server", "node", None, &[], 30).unwrap();
+    cmd_add(
+        &cfg,
+        &main_cfg_of(&tmp),
+        "healed-server",
+        "node",
+        None,
+        &[],
+        30,
+    )
+    .unwrap();
 
     let data: serde_json::Value =
         serde_json::from_str(&std::fs::read_to_string(&cfg).unwrap()).unwrap();
-    let servers = data["servers"].as_array().expect("坏类型 servers 必须重置为数组");
+    let servers = data["servers"]
+        .as_array()
+        .expect("坏类型 servers 必须重置为数组");
     assert_eq!(servers.len(), 1);
     assert_eq!(servers[0]["name"], "healed-server");
 }

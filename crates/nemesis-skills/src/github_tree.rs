@@ -113,12 +113,13 @@ pub async fn download_skill_tree_from_github(
             .unwrap_or_else(|_| Path::new(target_dir).to_path_buf());
         let parent_dir = dest_path.parent().unwrap_or(Path::new(""));
         if let Ok(canonical_dest_parent) = parent_dir.canonicalize()
-            && !canonical_dest_parent.starts_with(&canonical_target) {
-                return Err(NemesisError::Security(format!(
-                    "path traversal detected: {}",
-                    relative_path
-                )));
-            }
+            && !canonical_dest_parent.starts_with(&canonical_target)
+        {
+            return Err(NemesisError::Security(format!(
+                "path traversal detected: {}",
+                relative_path
+            )));
+        }
 
         // Create parent directory.
         if let Some(parent) = dest_path.parent() {
@@ -172,18 +173,19 @@ pub fn decode_tree_blob_paths(body: &[u8], dir_prefix: &str) -> Result<Vec<Strin
         .map_err(|e| NemesisError::Other(format!("failed to parse tree response: {}", e)))?;
 
     if let serde_json::Value::Object(map) = root
-        && let Some(serde_json::Value::Array(tree)) = map.get("tree") {
-            for entry in tree {
-                if let serde_json::Value::Object(entry_map) = entry {
-                    let entry_type = entry_map.get("type").and_then(|v| v.as_str()).unwrap_or("");
-                    let path = entry_map.get("path").and_then(|v| v.as_str()).unwrap_or("");
+        && let Some(serde_json::Value::Array(tree)) = map.get("tree")
+    {
+        for entry in tree {
+            if let serde_json::Value::Object(entry_map) = entry {
+                let entry_type = entry_map.get("type").and_then(|v| v.as_str()).unwrap_or("");
+                let path = entry_map.get("path").and_then(|v| v.as_str()).unwrap_or("");
 
-                    if entry_type == "blob" && path.starts_with(&dir_prefix) {
-                        blob_paths.push(path.to_string());
-                    }
+                if entry_type == "blob" && path.starts_with(&dir_prefix) {
+                    blob_paths.push(path.to_string());
                 }
             }
         }
+    }
 
     Ok(blob_paths)
 }

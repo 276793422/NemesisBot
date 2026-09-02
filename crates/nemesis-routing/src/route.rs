@@ -93,62 +93,56 @@ impl RouteResolver {
         if let (Some(kind), Some(id)) = (&input.peer_kind, &input.peer_id) {
             let kind_trimmed = kind.trim();
             let id_trimmed = id.trim();
-            if !kind_trimmed.is_empty() && !id_trimmed.is_empty()
-                && let Some(b) = self.find_peer_match(&bindings, kind_trimmed, id_trimmed) {
-                    return self.build_route(
-                        &b.agent_id,
-                        &channel,
-                        &account_id,
-                        input,
-                        "binding.peer",
-                    );
-                }
+            if !kind_trimmed.is_empty()
+                && !id_trimmed.is_empty()
+                && let Some(b) = self.find_peer_match(&bindings, kind_trimmed, id_trimmed)
+            {
+                return self.build_route(&b.agent_id, &channel, &account_id, input, "binding.peer");
+            }
         }
 
         // Priority 2: Parent peer binding
         if let (Some(kind), Some(id)) = (&input.parent_peer_kind, &input.parent_peer_id) {
             let kind_trimmed = kind.trim();
             let id_trimmed = id.trim();
-            if !kind_trimmed.is_empty() && !id_trimmed.is_empty()
-                && let Some(b) = self.find_peer_match(&bindings, kind_trimmed, id_trimmed) {
-                    return self.build_route(
-                        &b.agent_id,
-                        &channel,
-                        &account_id,
-                        input,
-                        "binding.peer.parent",
-                    );
-                }
+            if !kind_trimmed.is_empty()
+                && !id_trimmed.is_empty()
+                && let Some(b) = self.find_peer_match(&bindings, kind_trimmed, id_trimmed)
+            {
+                return self.build_route(
+                    &b.agent_id,
+                    &channel,
+                    &account_id,
+                    input,
+                    "binding.peer.parent",
+                );
+            }
         }
 
         // Priority 3: Guild binding
         if let Some(guild_id) = &input.guild_id {
             let guild_trimmed = guild_id.trim();
             if !guild_trimmed.is_empty()
-                && let Some(b) = self.find_guild_match(&bindings, guild_trimmed) {
-                    return self.build_route(
-                        &b.agent_id,
-                        &channel,
-                        &account_id,
-                        input,
-                        "binding.guild",
-                    );
-                }
+                && let Some(b) = self.find_guild_match(&bindings, guild_trimmed)
+            {
+                return self.build_route(
+                    &b.agent_id,
+                    &channel,
+                    &account_id,
+                    input,
+                    "binding.guild",
+                );
+            }
         }
 
         // Priority 4: Team binding
         if let Some(team_id) = &input.team_id {
             let team_trimmed = team_id.trim();
             if !team_trimmed.is_empty()
-                && let Some(b) = self.find_team_match(&bindings, team_trimmed) {
-                    return self.build_route(
-                        &b.agent_id,
-                        &channel,
-                        &account_id,
-                        input,
-                        "binding.team",
-                    );
-                }
+                && let Some(b) = self.find_team_match(&bindings, team_trimmed)
+            {
+                return self.build_route(&b.agent_id, &channel, &account_id, input, "binding.team");
+            }
         }
 
         // Priority 5: Account binding (specific account_id, no peer/guild/team)

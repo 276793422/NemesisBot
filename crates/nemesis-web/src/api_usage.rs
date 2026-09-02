@@ -264,7 +264,9 @@ fn layered_entries(store: Option<&nemesis_data::PricingStore>) -> Vec<serde_json
 /// Layered effective pricing view (custom > downloaded > embedded) plus
 /// download meta and the custom-entry list. `data` stays an array of entries
 /// (each now with a `source` field) so existing consumers keep working.
-pub async fn handle_api_usage_pricing(State(state): State<Arc<AppState>>) -> Json<serde_json::Value> {
+pub async fn handle_api_usage_pricing(
+    State(state): State<Arc<AppState>>,
+) -> Json<serde_json::Value> {
     let Some(ref ds) = state.data_store else {
         // 无 DataStore（测试/早期启动）→ 仅内置表。
         return Json(serde_json::json!({
@@ -346,7 +348,9 @@ pub async fn handle_api_usage_pricing_custom_remove(
     };
     match ds.pricing().remove_custom(&body.model_id) {
         Ok(true) => Json(serde_json::json!({"status": "success", "removed": true})),
-        Ok(false) => Json(serde_json::json!({"error": format!("自定义条目不存在: {}", body.model_id)})),
+        Ok(false) => {
+            Json(serde_json::json!({"error": format!("自定义条目不存在: {}", body.model_id)}))
+        }
         Err(e) => Json(serde_json::json!({"error": e})),
     }
 }

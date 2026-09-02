@@ -49,7 +49,11 @@ fn rename_fallback_hits_when_destination_is_readonly() {
     // Seed a valid config file, then make it read-only so the atomic
     // rename (tmp → path) fails and save_to_file falls back to a direct
     // write (which also fails → add_origin surfaces the error).
-    std::fs::write(&path, serde_json::to_string(&CORSConfig::default()).unwrap()).unwrap();
+    std::fs::write(
+        &path,
+        serde_json::to_string(&CORSConfig::default()).unwrap(),
+    )
+    .unwrap();
     let mut perms = std::fs::metadata(&path).unwrap().permissions();
     perms.set_readonly(true);
     std::fs::set_permissions(&path, perms).unwrap();
@@ -69,7 +73,8 @@ fn rename_fallback_hits_when_destination_is_readonly() {
         // the write lock first) — only the disk write is refused.
         assert!(res.is_err(), "read-only destination surfaces write failure");
         assert!(
-            mgr.list_origins().contains(&"https://fallback.com".to_string()),
+            mgr.list_origins()
+                .contains(&"https://fallback.com".to_string()),
             "in-memory add precedes the failed persist"
         );
         // The read-only file on disk keeps its original content (no origin).
@@ -77,7 +82,11 @@ fn rename_fallback_hits_when_destination_is_readonly() {
         assert!(!disk.contains("fallback.com"), "disk unchanged: {disk}");
     } else {
         // POSIX rename ignores file permissions (directory is writable) → Ok.
-        assert!(res.is_ok(), "unix rename over read-only file succeeds: {:?}", res);
+        assert!(
+            res.is_ok(),
+            "unix rename over read-only file succeeds: {:?}",
+            res
+        );
     }
     let _ = std::fs::remove_file(dir.path().join("cors.json.tmp"));
 }

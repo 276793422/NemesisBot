@@ -8,8 +8,8 @@
 
 use crate::common;
 use anyhow::Result;
-use nemesis_board::models::{AutopilotPatch, NewAutopilot};
 use nemesis_board::BoardStore;
+use nemesis_board::models::{AutopilotPatch, NewAutopilot};
 
 #[derive(clap::Subcommand)]
 pub enum AutopilotAction {
@@ -102,7 +102,11 @@ fn print_autopilot(ap: &nemesis_board::Autopilot) {
         ap.name,
         ap.cron,
         ap.title,
-        if ap.target.is_empty() { "仅建单" } else { &ap.target },
+        if ap.target.is_empty() {
+            "仅建单"
+        } else {
+            &ap.target
+        },
         cron_state
     );
 }
@@ -146,7 +150,10 @@ pub fn run(action: AutopilotAction, local: bool) -> Result<()> {
                     enabled: !disabled,
                 })
                 .map_err(err)?;
-            println!("已创建 autopilot #{}（cron 挂载于 gateway 启动同步时生效）", ap.id);
+            println!(
+                "已创建 autopilot #{}（cron 挂载于 gateway 启动同步时生效）",
+                ap.id
+            );
             print_autopilot(&ap);
         }
         AutopilotAction::Update {
@@ -178,19 +185,34 @@ pub fn run(action: AutopilotAction, local: bool) -> Result<()> {
                     },
                 )
                 .map_err(err)?;
-            println!("已更新 autopilot #{}（cron 挂载于 gateway 启动同步时生效）", ap.id);
+            println!(
+                "已更新 autopilot #{}（cron 挂载于 gateway 启动同步时生效）",
+                ap.id
+            );
             print_autopilot(&ap);
         }
         AutopilotAction::Enable { id } => {
             let ap = store
-                .update_autopilot(id, &AutopilotPatch { enabled: Some(true), ..Default::default() })
+                .update_autopilot(
+                    id,
+                    &AutopilotPatch {
+                        enabled: Some(true),
+                        ..Default::default()
+                    },
+                )
                 .map_err(err)?;
             println!("已启用");
             print_autopilot(&ap);
         }
         AutopilotAction::Disable { id } => {
             let ap = store
-                .update_autopilot(id, &AutopilotPatch { enabled: Some(false), ..Default::default() })
+                .update_autopilot(
+                    id,
+                    &AutopilotPatch {
+                        enabled: Some(false),
+                        ..Default::default()
+                    },
+                )
                 .map_err(err)?;
             println!("已停用");
             print_autopilot(&ap);
@@ -214,12 +236,15 @@ pub fn run(action: AutopilotAction, local: bool) -> Result<()> {
                 }
                 #[cfg(not(feature = "cluster"))]
                 {
-                    nemesis_web::handlers::board::fire_autopilot(&store, &ap, &actor).map_err(err)?
+                    nemesis_web::handlers::board::fire_autopilot(&store, &ap, &actor)
+                        .map_err(err)?
                 }
             };
             println!(
                 "已触发：建单 {}",
-                out.get("issue_number").and_then(|v| v.as_str()).unwrap_or("?")
+                out.get("issue_number")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("?")
             );
             if out.get("dispatch").is_some() {
                 println!("（本次为仅建单：CLI 进程不连集群；到点自动触发由 gateway 派发）");

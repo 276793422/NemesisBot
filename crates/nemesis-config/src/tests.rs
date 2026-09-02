@@ -765,8 +765,7 @@ fn test_delegation_tool_permission_tier_config() {
     assert!(cfg.codex_tool.enabled);
     assert_eq!(cfg.codex_tool.sandbox, "workspace_write");
     // Round-trip keeps the tiers.
-    let rt: AgentsConfig =
-        serde_json::from_str(&serde_json::to_string(&cfg).unwrap()).unwrap();
+    let rt: AgentsConfig = serde_json::from_str(&serde_json::to_string(&cfg).unwrap()).unwrap();
     assert_eq!(rt.claude_code_tool.permission_mode, "plan");
     assert_eq!(rt.codex_tool.sandbox, "workspace_write");
 }
@@ -2535,7 +2534,6 @@ fn test_capture_config_default_enabled() {
 // 写 null 不报错，其余字段全为 bool/i64/String/Vec，永不会序列化失败。
 // （曾试图用 NaN 触发，实测 save 成功 NaN→null，测试前提错误已删。）
 
-
 #[test]
 fn test_save_config_write_target_is_directory_errors() {
     // lib.rs:1675-1678 (non-unix arm) — fs::write onto an existing DIRECTORY
@@ -2560,7 +2558,10 @@ fn test_config_loader_save_to_file_parent_is_file_errors() {
 
     let err =
         ConfigLoader::save_to_file(&Config::default(), &blocker.join("config.json")).unwrap_err();
-    assert!(matches!(err, ConfigError::Io(_)), "create-dir error: {err:?}");
+    assert!(
+        matches!(err, ConfigError::Io(_)),
+        "create-dir error: {err:?}"
+    );
 }
 
 #[test]
@@ -2577,7 +2578,10 @@ fn test_save_mcp_config_error_paths() {
     let blocker = dir.path().join("blocker.txt");
     std::fs::write(&blocker, b"x").unwrap();
     let err = save_mcp_config(&blocker.join("config.mcp.json"), &cfg).unwrap_err();
-    assert!(matches!(err, ConfigError::Io(_)), "create-dir error: {err:?}");
+    assert!(
+        matches!(err, ConfigError::Io(_)),
+        "create-dir error: {err:?}"
+    );
 
     let target = dir.path().join("iamdir");
     std::fs::create_dir_all(&target).unwrap();
@@ -2594,7 +2598,10 @@ fn test_save_security_config_error_paths() {
     let blocker = dir.path().join("blocker.txt");
     std::fs::write(&blocker, b"x").unwrap();
     let err = save_security_config(&blocker.join("config.security.json"), &cfg).unwrap_err();
-    assert!(matches!(err, ConfigError::Io(_)), "create-dir error: {err:?}");
+    assert!(
+        matches!(err, ConfigError::Io(_)),
+        "create-dir error: {err:?}"
+    );
 
     let target = dir.path().join("iamdir");
     std::fs::create_dir_all(&target).unwrap();
@@ -2611,7 +2618,10 @@ fn test_save_scanner_config_error_paths() {
     let blocker = dir.path().join("blocker.txt");
     std::fs::write(&blocker, b"x").unwrap();
     let err = save_scanner_config(&blocker.join("config.scanner.json"), &cfg).unwrap_err();
-    assert!(matches!(err, ConfigError::Io(_)), "create-dir error: {err:?}");
+    assert!(
+        matches!(err, ConfigError::Io(_)),
+        "create-dir error: {err:?}"
+    );
 
     let target = dir.path().join("iamdir");
     std::fs::create_dir_all(&target).unwrap();
@@ -2628,7 +2638,10 @@ fn test_save_skills_config_error_paths() {
     let blocker = dir.path().join("blocker.txt");
     std::fs::write(&blocker, b"x").unwrap();
     let err = save_skills_config(&blocker.join("config.skills.json"), &cfg).unwrap_err();
-    assert!(matches!(err, ConfigError::Io(_)), "create-dir error: {err:?}");
+    assert!(
+        matches!(err, ConfigError::Io(_)),
+        "create-dir error: {err:?}"
+    );
 
     let target = dir.path().join("iamdir");
     std::fs::create_dir_all(&target).unwrap();

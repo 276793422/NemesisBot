@@ -1007,7 +1007,8 @@ fn test_new_with_config_disabled_patterns() {
 fn w4a_new_with_config_invalid_custom_pattern_is_skipped() {
     // An invalid regex among custom patterns is warned+skipped; the valid
     // ones still compile and apply. Invalid input must not panic.
-    let tool = ShellTool::new_with_config(".", false, Some(&["[invalid", r"\bw4aforbidden\b"]), true);
+    let tool =
+        ShellTool::new_with_config(".", false, Some(&["[invalid", r"\bw4aforbidden\b"]), true);
     assert!(
         tool.guard_command("w4aforbidden thing", std::path::Path::new("."))
             .is_err(),

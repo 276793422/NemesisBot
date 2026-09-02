@@ -1657,20 +1657,26 @@ async fn test_s11b_run_dispatch_arms() {
     .unwrap();
     run(ScannerAction::List, false).await.unwrap();
     run(
-        ScannerAction::Enable { name: "clamav".into() },
+        ScannerAction::Enable {
+            name: "clamav".into(),
+        },
         false,
     )
     .await
     .unwrap();
     run(ScannerAction::Check, false).await.unwrap(); // enabled clamav 深路径
     run(
-        ScannerAction::Disable { name: "clamav".into() },
+        ScannerAction::Disable {
+            name: "clamav".into(),
+        },
         false,
     )
     .await
     .unwrap();
     run(
-        ScannerAction::Remove { name: "clamav".into() },
+        ScannerAction::Remove {
+            name: "clamav".into(),
+        },
         false,
     )
     .await
@@ -1748,7 +1754,10 @@ async fn test_s11b_run_clamav_subcommand_arms() {
         .unwrap();
     }
     let cfg = s11b_read_cfg(&cfg_path);
-    assert_eq!(cfg["engines"]["clamav"]["state"]["install_status"], "failed");
+    assert_eq!(
+        cfg["engines"]["clamav"]["state"]["install_status"],
+        "failed"
+    );
     assert!(
         cfg["engines"]["clamav"]["state"]["install_error"]
             .as_str()
@@ -1797,9 +1806,15 @@ fn test_s11b_cmd_check_installed_failed_disabled_and_url_truncate() {
 
     // 持久化校验：clamav=installed+ready；stub=failed+install_error；off 未动
     let cfg = s11b_read_cfg(&cfg_path);
-    assert_eq!(cfg["engines"]["clamav"]["state"]["install_status"], "installed");
+    assert_eq!(
+        cfg["engines"]["clamav"]["state"]["install_status"],
+        "installed"
+    );
     assert_eq!(cfg["engines"]["clamav"]["state"]["db_status"], "ready");
-    assert_eq!(cfg["engines"]["clamav"]["clamav_path"], good.to_str().unwrap());
+    assert_eq!(
+        cfg["engines"]["clamav"]["clamav_path"],
+        good.to_str().unwrap()
+    );
     // 注意：cmd_check 的 marshal 第 4 参（data_dir）传 ""，不落 data_dir
     assert_eq!(cfg["engines"]["clamav"]["data_dir"], "");
     assert_eq!(cfg["engines"]["stub"]["state"]["install_status"], "failed");
@@ -1809,7 +1824,10 @@ fn test_s11b_cmd_check_installed_failed_disabled_and_url_truncate() {
             .unwrap()
             .contains("executable not found")
     );
-    assert_eq!(cfg["engines"]["off"]["state"]["install_status"], "pending", "disabled 引擎不改状态");
+    assert_eq!(
+        cfg["engines"]["off"]["state"]["install_status"], "pending",
+        "disabled 引擎不改状态"
+    );
 }
 
 #[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
@@ -1840,10 +1858,19 @@ fn test_s11b_cmd_check_pending_and_recommendations() {
         cmd_check(&cfg_path).unwrap();
     }
     let cfg = s11b_read_cfg(&cfg_path);
-    assert_eq!(cfg["engines"]["fresh"]["state"]["install_status"], "pending");
-    assert_eq!(cfg["engines"]["broken"]["state"]["install_status"], "failed");
+    assert_eq!(
+        cfg["engines"]["fresh"]["state"]["install_status"],
+        "pending"
+    );
+    assert_eq!(
+        cfg["engines"]["broken"]["state"]["install_status"],
+        "failed"
+    );
     assert_eq!(cfg["engines"]["nodb"]["state"]["db_status"], "missing");
-    assert_eq!(cfg["engines"]["nodb"]["state"]["install_status"], "installed");
+    assert_eq!(
+        cfg["engines"]["nodb"]["state"]["install_status"],
+        "installed"
+    );
 }
 
 // ---------------------------- download_engine -----------------------------
@@ -1899,7 +1926,13 @@ async fn test_s11b_download_engine_tar_gz_extracts_and_detects_exe_dir() {
     std::fs::write(payload_bin.join("clamd.exe"), b"MZ").unwrap();
     let tgz = tmp.path().join("pkg.tar.gz");
     let out = std::process::Command::new("tar")
-        .args(["czf", &tgz.to_string_lossy(), "-C", &staging.to_string_lossy(), "payload"])
+        .args([
+            "czf",
+            &tgz.to_string_lossy(),
+            "-C",
+            &staging.to_string_lossy(),
+            "payload",
+        ])
         .output()
         .expect("tar (Win10+ bsdtar) 应可用");
     assert!(out.status.success(), "tar czf 失败: {out:?}");
@@ -1943,7 +1976,10 @@ async fn test_s11b_cmd_install_empty_and_stub_and_delegate() {
         cmd_install(&cfg_path, None).await.unwrap();
     }
     let cfg = s11b_read_cfg(&cfg_path);
-    assert_eq!(cfg["engines"]["clamav"]["state"]["install_status"], "failed");
+    assert_eq!(
+        cfg["engines"]["clamav"]["state"]["install_status"],
+        "failed"
+    );
 }
 
 #[tokio::test]
@@ -1965,12 +2001,16 @@ async fn test_s11b_clamav_install_inner_full_offline_path() {
         .await
         .unwrap();
     let cfg = s11b_read_cfg(&cfg_path);
-    assert_eq!(cfg["engines"]["clamav"]["state"]["install_status"], "installed");
+    assert_eq!(
+        cfg["engines"]["clamav"]["state"]["install_status"],
+        "installed"
+    );
     assert_eq!(cfg["engines"]["clamav"]["state"]["db_status"], "missing");
     assert!(
         !cfg["engines"]["clamav"]["state"]["last_install_attempt"]
             .as_str()
-            .unwrap().is_empty(),
+            .unwrap()
+            .is_empty(),
         "last_install_attempt 已写入"
     );
     assert!(av.join("freshclam.conf").exists(), "freshclam.conf 已生成");
@@ -1987,7 +2027,10 @@ async fn test_s11b_clamav_install_inner_full_offline_path() {
         .await
         .unwrap();
     let cfg = s11b_read_cfg(&cfg_path);
-    assert_eq!(cfg["engines"]["clamav"]["state"]["install_status"], "installed");
+    assert_eq!(
+        cfg["engines"]["clamav"]["state"]["install_status"],
+        "installed"
+    );
 
     // 路径无执行体 → failed "executable not found"
     let empty = tmp.path().join("empty_av");
@@ -2001,7 +2044,10 @@ async fn test_s11b_clamav_install_inner_full_offline_path() {
         .await
         .unwrap();
     let cfg = s11b_read_cfg(&cfg_path);
-    assert_eq!(cfg["engines"]["clamav"]["state"]["install_status"], "failed");
+    assert_eq!(
+        cfg["engines"]["clamav"]["state"]["install_status"],
+        "failed"
+    );
     assert!(
         cfg["engines"]["clamav"]["state"]["install_error"]
             .as_str()
@@ -2023,7 +2069,13 @@ async fn test_s11b_clamav_install_inner_download_branches() {
     std::fs::write(payload_bin.join("clamd.exe"), b"MZ").unwrap();
     let tgz = tmp.path().join("pkg.tar.gz");
     let out = std::process::Command::new("tar")
-        .args(["czf", &tgz.to_string_lossy(), "-C", &staging.to_string_lossy(), "payload"])
+        .args([
+            "czf",
+            &tgz.to_string_lossy(),
+            "-C",
+            &staging.to_string_lossy(),
+            "payload",
+        ])
         .output()
         .unwrap();
     assert!(out.status.success());
@@ -2038,7 +2090,10 @@ async fn test_s11b_clamav_install_inner_download_branches() {
         .await
         .unwrap();
     let cfg = s11b_read_cfg(&cfg_path);
-    assert_eq!(cfg["engines"]["clamav"]["state"]["install_status"], "installed");
+    assert_eq!(
+        cfg["engines"]["clamav"]["state"]["install_status"],
+        "installed"
+    );
     let detected = cfg["engines"]["clamav"]["clamav_path"].as_str().unwrap();
     assert!(detected.contains("clamav"), "detected={detected}");
     assert!(std::path::Path::new(detected).join("clamd.exe").exists());
@@ -2053,7 +2108,10 @@ async fn test_s11b_clamav_install_inner_download_branches() {
         .await
         .unwrap();
     let cfg = s11b_read_cfg(&cfg_path);
-    assert_eq!(cfg["engines"]["clamav"]["state"]["install_status"], "failed");
+    assert_eq!(
+        cfg["engines"]["clamav"]["state"]["install_status"],
+        "failed"
+    );
     assert!(
         cfg["engines"]["clamav"]["state"]["install_error"]
             .as_str()
@@ -2091,9 +2149,21 @@ async fn test_s11b_cmd_clamav_enable_disable_update_info() {
         serde_json::json!({"clamav": s11b_engine_json("", "", "", "", "installed", "")}),
     );
     cmd_clamav_enable(&cfg_path).unwrap();
-    assert!(s11b_read_cfg(&cfg_path)["enabled"].as_array().unwrap().iter().any(|v| v == "clamav"));
+    assert!(
+        s11b_read_cfg(&cfg_path)["enabled"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|v| v == "clamav")
+    );
     cmd_clamav_disable(&cfg_path).unwrap();
-    assert!(!s11b_read_cfg(&cfg_path)["enabled"].as_array().unwrap().iter().any(|v| v == "clamav"));
+    assert!(
+        !s11b_read_cfg(&cfg_path)["enabled"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|v| v == "clamav")
+    );
     cmd_clamav_disable(&cfg_path).unwrap(); // 未启用 → "not enabled" Ok
 
     // update：无路径 + PATH 收窄 → bail "ClamAV not found"
@@ -2209,9 +2279,10 @@ mod wave_b {
                 #[cfg(unix)]
                 {
                     use std::os::unix::fs::PermissionsExt;
-                    let _ =
-                        std::fs::set_permissions(dir.path().join("clamd.exe"),
-                            std::fs::Permissions::from_mode(0o755));
+                    let _ = std::fs::set_permissions(
+                        dir.path().join("clamd.exe"),
+                        std::fs::Permissions::from_mode(0o755),
+                    );
                 }
             }
             let old = std::env::var_os("PATH");
@@ -2314,7 +2385,10 @@ mod wave_b {
             env.fake_dir().to_string_lossy().as_ref(),
             "PATH 发现结果要持久化"
         );
-        assert_eq!(cfg["engines"]["clamav"]["state"]["install_status"], "installed");
+        assert_eq!(
+            cfg["engines"]["clamav"]["state"]["install_status"],
+            "installed"
+        );
         // database 目录不存在于假目录 ⇒ db_status 走 missing 探测分支。
         assert_eq!(cfg["engines"]["clamav"]["state"]["db_status"], "missing");
     }
@@ -2342,7 +2416,10 @@ mod wave_b {
             cfg["engines"]["clamav"]["clamav_path"],
             env.fake_dir().to_string_lossy().as_ref()
         );
-        assert_eq!(cfg["engines"]["clamav"]["state"]["install_status"], "installed");
+        assert_eq!(
+            cfg["engines"]["clamav"]["state"]["install_status"],
+            "installed"
+        );
         assert!(env.fake_dir().join("freshclam.conf").exists());
         assert!(env.fake_dir().join("clamd.conf").exists());
         // freshclam 二进制缺席 ⇒ DB 更新快失败为 missing，但不影响安装成功语义。
@@ -2378,8 +2455,10 @@ mod wave_b {
             .expect("conf generation failures must be reported, not fatal");
 
         let cfg = s11b_read_cfg(&cfg_path);
-        assert_eq!(cfg["engines"]["clamav"]["state"]["install_status"], "installed",
-            "conf 失败只警告，安装状态照常落盘");
+        assert_eq!(
+            cfg["engines"]["clamav"]["state"]["install_status"], "installed",
+            "conf 失败只警告，安装状态照常落盘"
+        );
     }
 
     #[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
@@ -2442,10 +2521,7 @@ fn test_url_display_truncated_multibyte_never_panics_and_stays_on_boundary() {
     let d = url_display_truncated(&u);
     assert!(d.ends_with("..."));
     let body = &d[..d.len() - 3];
-    assert!(
-        body.len() <= 37,
-        "截断点不得越过请求的 37 字节上限"
-    );
+    assert!(body.len() <= 37, "截断点不得越过请求的 37 字节上限");
     assert!(u.starts_with(body), "展示头必须是原文前缀");
     assert!(
         u.is_char_boundary(body.len()),
@@ -2502,9 +2578,9 @@ mod r10_process_boundary {
     // mod 级 use 按半拆：裸 mock-server 测试只用 BufRead/BufReader/Write/
     // TcpListener/Path/Duration；Read/TcpStream/PathBuf/Command/Stdio/Instant
     // 只被 Windows 形态子进程测试使用，随之门控。
-    use std::io::{BufRead, BufReader, Write};
     #[cfg(windows)] // Windows-form helper use (Linux nightly: excluded, 2026-09-02 sweep)
     use std::io::Read;
+    use std::io::{BufRead, BufReader, Write};
     use std::net::TcpListener;
     #[cfg(windows)] // Windows-form helper use (Linux nightly: excluded, 2026-09-02 sweep)
     use std::net::TcpStream;
@@ -2594,7 +2670,11 @@ mod r10_process_boundary {
     #[cfg(windows)] // Windows-form helper (Linux nightly: excluded, 2026-09-02 sweep)
     fn r10_copy_cmd_as(dest_dir: &Path, name: &str) -> PathBuf {
         let src = r10_system_root().join("System32").join("cmd.exe");
-        assert!(src.exists(), "System32\\cmd.exe 必须存在: {}", src.display());
+        assert!(
+            src.exists(),
+            "System32\\cmd.exe 必须存在: {}",
+            src.display()
+        );
         let dst = dest_dir.join(name);
         std::fs::copy(&src, &dst)
             .unwrap_or_else(|e| panic!("复制 cmd.exe 为 {} 失败: {}", name, e));
@@ -2655,7 +2735,7 @@ mod r10_process_boundary {
                         stdout: String::new(),
                         stderr: format!("failed to spawn: {}", e),
                     },
-                )
+                );
             }
         };
         let mut guard = R10Child { child: Some(child) };
@@ -2790,11 +2870,18 @@ mod r10_process_boundary {
             .expect("conf 生成失败只警告不中断");
 
         let cfg = s11b_read_cfg(&cfg_path);
-        assert_eq!(cfg["engines"]["clamav"]["state"]["install_status"], "installed");
-        assert_eq!(cfg["engines"]["clamav"]["state"]["db_status"], "missing",
-            "conf 缺失 ⇒ 明确标记 DB missing，而不是装作 ready");
-        assert!(!av.join("freshclam.conf").exists(),
-            "生成器失败后 conf 必须保持缺席（Step7 skip 臂的前提）");
+        assert_eq!(
+            cfg["engines"]["clamav"]["state"]["install_status"],
+            "installed"
+        );
+        assert_eq!(
+            cfg["engines"]["clamav"]["state"]["db_status"], "missing",
+            "conf 缺失 ⇒ 明确标记 DB missing，而不是装作 ready"
+        );
+        assert!(
+            !av.join("freshclam.conf").exists(),
+            "生成器失败后 conf 必须保持缺席（Step7 skip 臂的前提）"
+        );
     }
 
     // ----------------------- exit(1) 家族（子进程）-----------------------
@@ -2830,7 +2917,11 @@ mod r10_process_boundary {
         )
         .1;
         r10_expect_rc1(&o, "scanner add 非法名", "Unknown engine:");
-        assert!(o.stderr.contains("Available:"), "必须回显可用列表:\n{}", o.stderr);
+        assert!(
+            o.stderr.contains("Available:"),
+            "必须回显可用列表:\n{}",
+            o.stderr
+        );
     }
 
     /// 440-441：remove 一个不存在的引擎名 → exit(1)。
@@ -2934,7 +3025,11 @@ mod r10_process_boundary {
         for &b in data {
             c ^= b as u32;
             for _ in 0..8 {
-                c = if c & 1 != 0 { (c >> 1) ^ 0xEDB8_8320 } else { c >> 1 };
+                c = if c & 1 != 0 {
+                    (c >> 1) ^ 0xEDB8_8320
+                } else {
+                    c >> 1
+                };
             }
         }
         !c
@@ -3075,10 +3170,17 @@ mod r10_process_boundary {
             "install 全链必须 rc=0:\n{}\n--- stderr ---\n{}",
             o.stdout, o.stderr
         );
-        assert!(o.stdout.contains("virus database ready"), "stdout:\n{}", o.stdout);
+        assert!(
+            o.stdout.contains("virus database ready"),
+            "stdout:\n{}",
+            o.stdout
+        );
 
         let after = r10_read_cfg(&cfg);
-        assert_eq!(after["engines"]["clamav"]["state"]["install_status"], "installed");
+        assert_eq!(
+            after["engines"]["clamav"]["state"]["install_status"],
+            "installed"
+        );
         assert_eq!(after["engines"]["clamav"]["state"]["db_status"], "ready");
         assert!(
             after["engines"]["clamav"]["state"]["last_db_update"]
@@ -3112,18 +3214,17 @@ mod r10_process_boundary {
             serde_json::json!({"clamav": s11b_engine_json(
                 "", "", "", data_dir.to_str().unwrap(), "installed", "")}),
         );
-        assert!(!stub_dir.join("freshclam.conf").exists(),
-            "前置：conf 缺席，逼迫 update 现场生成（1165-1176）");
+        assert!(
+            !stub_dir.join("freshclam.conf").exists(),
+            "前置：conf 缺席，逼迫 update 现场生成（1165-1176）"
+        );
 
         let o = r10_spawn(
             &r10_bin(),
             &["scanner", "clamav", "update"],
             &[
                 ("NEMESISBOT_HOME", tmp.path().to_str().unwrap()),
-                (
-                    "PATH",
-                    &r10_synthetic_path(Some(&stub_dir)),
-                ),
+                ("PATH", &r10_synthetic_path(Some(&stub_dir))),
             ],
             180,
         )
@@ -3133,7 +3234,11 @@ mod r10_process_boundary {
             "update 全链必须 rc=0:\n{}\n--- stderr ---\n{}",
             o.stdout, o.stderr
         );
-        assert!(o.stdout.contains("Virus database updated."), "stdout:\n{}", o.stdout);
+        assert!(
+            o.stdout.contains("Virus database updated."),
+            "stdout:\n{}",
+            o.stdout
+        );
 
         let after = r10_read_cfg(&cfg);
         assert_eq!(
@@ -3142,7 +3247,10 @@ mod r10_process_boundary {
             "空 path 必须被 PATH 发现结果回填（1202-1204）"
         );
         assert_eq!(after["engines"]["clamav"]["state"]["db_status"], "ready");
-        assert!(stub_dir.join("freshclam.conf").exists(), "conf 应生成到发现目录");
+        assert!(
+            stub_dir.join("freshclam.conf").exists(),
+            "conf 应生成到发现目录"
+        );
     }
 
     // ------------------- ⭐ mock clamd 扫描流程三态 -----------------------
@@ -3218,10 +3326,7 @@ mod r10_process_boundary {
                 "--test-threads=1",
                 "--nocapture",
             ],
-            &[
-                ("R10_MOCK_ADDR", addr),
-                ("R10_MOCK_MODE", mode),
-            ],
+            &[("R10_MOCK_ADDR", addr), ("R10_MOCK_MODE", mode)],
         )
         .expect("mock clamd 镜像进程必须能起");
         let mut guard = R10Child { child: Some(child) };
@@ -3243,8 +3348,7 @@ mod r10_process_boundary {
                         .is_some();
                     if exited {
                         let mut err = String::new();
-                        if let Some(mut s) = guard.child.as_mut().unwrap().stderr.take()
-                        {
+                        if let Some(mut s) = guard.child.as_mut().unwrap().stderr.take() {
                             let _ = s.read_to_string(&mut err);
                         }
                         panic!("mock clamd 提前退出，stderr:\n{}", err);
@@ -3285,8 +3389,7 @@ mod r10_process_boundary {
     fn r10_copy_self_image(dest_dir: &Path, name: &str) -> PathBuf {
         let src = std::env::current_exe().expect("current_exe");
         let dst = dest_dir.join(name);
-        std::fs::copy(&src, &dst)
-            .unwrap_or_else(|e| panic!("复制自镜像为 {} 失败: {}", name, e));
+        std::fs::copy(&src, &dst).unwrap_or_else(|e| panic!("复制自镜像为 {} 失败: {}", name, e));
         dst
     }
 
@@ -3309,12 +3412,7 @@ mod r10_process_boundary {
 
         let o = r10_spawn(
             &r10_bin(),
-            &[
-                "scanner",
-                "clamav",
-                "test",
-                sample.to_str().unwrap(),
-            ],
+            &["scanner", "clamav", "test", sample.to_str().unwrap()],
             &[("NEMESISBOT_HOME", tmp.path().to_str().unwrap())],
             180,
         )
@@ -3326,7 +3424,11 @@ mod r10_process_boundary {
         );
         assert!(o.stdout.contains("Scanning:"), "stdout:\n{}", o.stdout);
         assert!(o.stdout.contains("INFECTED"), "stdout:\n{}", o.stdout);
-        assert!(o.stdout.contains("EicarProbe"), "病毒名必须透传:\n{}", o.stdout);
+        assert!(
+            o.stdout.contains("EicarProbe"),
+            "病毒名必须透传:\n{}",
+            o.stdout
+        );
         assert!(svc.child.is_some(), "服务守卫存活至断言结束");
     }
 
@@ -3346,7 +3448,11 @@ mod r10_process_boundary {
         .1;
         assert_eq!(o.code, 0, "clean 流程 rc=0:\n{}\n{}", o.stdout, o.stderr);
         assert!(o.stdout.contains("CLEAN"), "stdout:\n{}", o.stdout);
-        assert!(!o.stdout.contains("INFECTED"), "CLEAN 分支不得出现 INFECTED:\n{}", o.stdout);
+        assert!(
+            !o.stdout.contains("INFECTED"),
+            "CLEAN 分支不得出现 INFECTED:\n{}",
+            o.stdout
+        );
         assert!(svc.child.is_some());
     }
 
@@ -3415,13 +3521,31 @@ mod r10_process_boundary {
         r10_stage_home(tmp.path()); // 返回值是 engine 配置路径清单，此臂用不上
         let (_guard, o) = r10_spawn(
             &r10_bin(),
-            &["scanner", "add", "boguseng", "--url", "http://127.0.0.1:9/x"],
+            &[
+                "scanner",
+                "add",
+                "boguseng",
+                "--url",
+                "http://127.0.0.1:9/x",
+            ],
             &[("NEMESISBOT_HOME", tmp.path().to_string_lossy().as_ref())],
             30,
         );
-        assert_eq!(o.code, 1, "未知引擎必须 exit(1):\n--- stdout ---\n{}\n--- stderr ---\n{}", o.stdout, o.stderr);
-        assert!(o.stderr.contains("Unknown engine: boguseng"), "got:\n{}", o.stderr);
-        assert!(o.stderr.contains("Available"), "要列出可用引擎:\n{}", o.stderr);
+        assert_eq!(
+            o.code, 1,
+            "未知引擎必须 exit(1):\n--- stdout ---\n{}\n--- stderr ---\n{}",
+            o.stdout, o.stderr
+        );
+        assert!(
+            o.stderr.contains("Unknown engine: boguseng"),
+            "got:\n{}",
+            o.stderr
+        );
+        assert!(
+            o.stderr.contains("Available"),
+            "要列出可用引擎:\n{}",
+            o.stderr
+        );
     }
 
     /// cmd_remove 配置里没有该引擎 → not found in configuration + exit(1)。
@@ -3436,9 +3560,14 @@ mod r10_process_boundary {
             &[("NEMESISBOT_HOME", tmp.path().to_string_lossy().as_ref())],
             30,
         );
-        assert_eq!(o.code, 1, "remove 缺引擎必须 exit(1):\nstdout={}\nstderr={}", o.stdout, o.stderr);
+        assert_eq!(
+            o.code, 1,
+            "remove 缺引擎必须 exit(1):\nstdout={}\nstderr={}",
+            o.stdout, o.stderr
+        );
         assert!(
-            o.stderr.contains("Engine 'nosuch' not found in configuration."),
+            o.stderr
+                .contains("Engine 'nosuch' not found in configuration."),
             "got:\n{}",
             o.stderr
         );
@@ -3456,7 +3585,11 @@ mod r10_process_boundary {
             &[("NEMESISBOT_HOME", tmp.path().to_string_lossy().as_ref())],
             30,
         );
-        assert_eq!(o.code, 1, "enable 缺引擎必须 exit(1):\nstdout={}\nstderr={}", o.stdout, o.stderr);
+        assert_eq!(
+            o.code, 1,
+            "enable 缺引擎必须 exit(1):\nstdout={}\nstderr={}",
+            o.stdout, o.stderr
+        );
         assert!(
             o.stderr.contains("Add it first with 'scanner add nosuch'"),
             "got:\n{}",

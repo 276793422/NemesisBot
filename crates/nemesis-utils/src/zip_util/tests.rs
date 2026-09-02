@@ -683,7 +683,10 @@ fn test_extract_zip_entry_parent_not_yet_created_skips_canonicalize_check() {
         dest_dir.to_string_lossy().as_ref(),
     )
     .unwrap();
-    assert_eq!(fs::read_to_string(dest_dir.join("sub/inner.txt")).unwrap(), "inner");
+    assert_eq!(
+        fs::read_to_string(dest_dir.join("sub/inner.txt")).unwrap(),
+        "inner"
+    );
 }
 
 /// 目录条目名超长（300 字符 > 文件系统组件上限 255）→ 遍历检查通过但
@@ -698,9 +701,7 @@ fn test_extract_zip_dir_entry_with_overlong_name_fails() {
     let writer = std::io::BufWriter::new(file);
     let mut zip_writer = zip::ZipWriter::new(writer);
     let options = zip::write::SimpleFileOptions::default();
-    zip_writer
-        .add_directory("A".repeat(300), options)
-        .unwrap();
+    zip_writer.add_directory("A".repeat(300), options).unwrap();
     zip_writer.finish().unwrap();
 
     let result = extract_zip(

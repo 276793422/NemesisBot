@@ -11,7 +11,7 @@ use std::time::Duration;
 use futures_util::SinkExt;
 use tokio::net::TcpStream;
 use tokio_tungstenite::tungstenite::Message as WsMessage;
-use tokio_tungstenite::{connect_async, MaybeTlsStream, WebSocketStream};
+use tokio_tungstenite::{MaybeTlsStream, WebSocketStream, connect_async};
 
 use super::*;
 
@@ -21,7 +21,9 @@ async fn rogue_connect(port: u16, key: &str) -> WebSocketStream<MaybeTlsStream<T
         .await
         .unwrap();
     ws.send(WsMessage::Text(
-        serde_json::json!({"type": "auth", "key": key}).to_string().into(),
+        serde_json::json!({"type": "auth", "key": key})
+            .to_string()
+            .into(),
     ))
     .await
     .unwrap();

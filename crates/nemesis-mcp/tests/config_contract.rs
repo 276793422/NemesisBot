@@ -88,10 +88,12 @@ fn manager_roundtrip_preserves_server_entries() {
     let path = dir.path().join("config.mcp.json");
 
     let mut mgr = McpManager::new(path.clone());
-    mgr.add_server(nemesis_config::McpServerConfig::new("srv", "node")
-        .arg("a.js")
-        .env("K=V")
-        .timeout(45))
+    mgr.add_server(
+        nemesis_config::McpServerConfig::new("srv", "node")
+            .arg("a.js")
+            .env("K=V")
+            .timeout(45),
+    )
     .unwrap();
 
     let mgr2 = McpManager::new(path.clone());

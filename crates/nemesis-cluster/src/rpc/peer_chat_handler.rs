@@ -258,9 +258,10 @@ impl PeerChatHandler {
 
         // 5. Mark running in result persister
         if !source_node_id.is_empty()
-            && let Some(ref persister) = self.result_persister {
-                persister.set_running(&task_id, &source_node_id);
-            }
+            && let Some(ref persister) = self.result_persister
+        {
+            persister.set_running(&task_id, &source_node_id);
+        }
 
         // 6. Determine session key suffix.
         //
@@ -370,15 +371,14 @@ impl PeerChatHandler {
         source_node_id: &str,
     ) {
         if let Some(ref persister) = self.result_persister
-            && !source_node_id.is_empty() {
-                if let Err(e) =
-                    persister.set_result(task_id, status, response, error, source_node_id)
-                {
-                    tracing::error!(task_id = %task_id, error = %e, "[PeerChat] Failed to persist task result");
-                } else {
-                    tracing::info!(task_id = %task_id, "[PeerChat] Task result persisted for recovery");
-                }
+            && !source_node_id.is_empty()
+        {
+            if let Err(e) = persister.set_result(task_id, status, response, error, source_node_id) {
+                tracing::error!(task_id = %task_id, error = %e, "[PeerChat] Failed to persist task result");
+            } else {
+                tracing::info!(task_id = %task_id, "[PeerChat] Task result persisted for recovery");
             }
+        }
     }
 
     /// Delete a persisted task result (called after successful callback).
@@ -386,9 +386,10 @@ impl PeerChatHandler {
     /// Mirrors Go's `PeerChatHandler.deleteResult(taskID)`.
     pub fn delete_result(&self, task_id: &str) {
         if let Some(ref persister) = self.result_persister
-            && let Err(e) = persister.delete(task_id) {
-                tracing::error!(task_id = %task_id, error = %e, "[PeerChat] Failed to delete task result");
-            }
+            && let Err(e) = persister.delete(task_id)
+        {
+            tracing::error!(task_id = %task_id, error = %e, "[PeerChat] Failed to delete task result");
+        }
     }
 
     /// Wait for all active async tasks to complete.
@@ -560,21 +561,21 @@ async fn send_callback_or_persist(
     if callback_ok {
         // Clean up persisted result
         if let Some(persister) = result_persister
-            && let Err(e) = persister.delete(task_id) {
-                tracing::error!(task_id = %task_id, error = %e, "[PeerChat] Failed to delete task result");
-            }
+            && let Err(e) = persister.delete(task_id)
+        {
+            tracing::error!(task_id = %task_id, error = %e, "[PeerChat] Failed to delete task result");
+        }
     } else {
         // Persist locally for later recovery
         if let Some(persister) = result_persister
-            && !source_node_id.is_empty() {
-                if let Err(e) =
-                    persister.set_result(task_id, status, response, error, source_node_id)
-                {
-                    tracing::error!(task_id = %task_id, error = %e, "[PeerChat] Failed to persist task result");
-                } else {
-                    tracing::info!(task_id = %task_id, "[PeerChat] Task result persisted for recovery");
-                }
+            && !source_node_id.is_empty()
+        {
+            if let Err(e) = persister.set_result(task_id, status, response, error, source_node_id) {
+                tracing::error!(task_id = %task_id, error = %e, "[PeerChat] Failed to persist task result");
+            } else {
+                tracing::info!(task_id = %task_id, "[PeerChat] Task result persisted for recovery");
             }
+        }
     }
 }
 

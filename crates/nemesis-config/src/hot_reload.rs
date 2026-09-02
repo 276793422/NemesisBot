@@ -9,8 +9,8 @@
 //! parking_lot 依赖）；锁内不做 IO（mtime 先记、读盘在锁外——与
 //! `check_config_reload` 的既有模式一致）。
 
-use serde::de::DeserializeOwned;
 use serde::Serialize;
+use serde::de::DeserializeOwned;
 use std::path::{Path, PathBuf};
 use std::sync::{Mutex, RwLock};
 use std::time::SystemTime;
@@ -42,7 +42,9 @@ impl<T: Clone + Serialize + DeserializeOwned + Send + Sync + 'static> HotReloade
     /// Re-read if the file's mtime changed since the last check.
     /// Returns `true` when a reload actually happened.
     pub fn check(&self) -> bool {
-        let mtime = std::fs::metadata(&self.path).and_then(|m| m.modified()).ok();
+        let mtime = std::fs::metadata(&self.path)
+            .and_then(|m| m.modified())
+            .ok();
         {
             let mut last = self.mtime.lock().unwrap();
             if mtime == *last {

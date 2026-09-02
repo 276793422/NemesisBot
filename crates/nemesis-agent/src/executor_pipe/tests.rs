@@ -12,12 +12,7 @@ fn unique_pipe_id_increments_and_contains_pid() {
     let b = unique_pipe_id();
     assert_ne!(a, b, "consecutive ids must be unique");
     let pid = std::process::id().to_string();
-    assert!(
-        a.starts_with(&pid),
-        "id should embed pid: {} vs {}",
-        a,
-        pid
-    );
+    assert!(a.starts_with(&pid), "id should embed pid: {} vs {}", a, pid);
     assert!(a.contains('_'));
 }
 
@@ -34,9 +29,7 @@ async fn named_pipe_roundtrip() {
 
     let client_name = name.clone();
     let client_task = tokio::spawn(async move {
-        let mut client = connect_client(&client_name)
-            .await
-            .expect("client connect");
+        let mut client = connect_client(&client_name).await.expect("client connect");
         let mut buf = [0u8; 5];
         client.read_exact(&mut buf).await.expect("client read");
         assert_eq!(&buf, b"ping\n");

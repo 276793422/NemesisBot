@@ -744,7 +744,10 @@ async fn test_load_from_file_skips_blank_lines() {
     let exp = make_experience("tool_blank", "input", true);
     let ce = CollectedExperience {
         experience: exp,
-        dedup_hash: Collector::dedup_hash("tool_blank", &serde_json::json!({"input_summary": "input"})),
+        dedup_hash: Collector::dedup_hash(
+            "tool_blank",
+            &serde_json::json!({"input_summary": "input"}),
+        ),
     };
     let line = serde_json::to_string(&ce).unwrap();
     // Blank lines (including whitespace-only) must be skipped without error.
@@ -754,7 +757,10 @@ async fn test_load_from_file_skips_blank_lines() {
     let collector = Collector::new(CollectorConfig::default());
     collector.load_from_file(&path).await.unwrap();
     assert_eq!(collector.len(), 1);
-    assert_eq!(collector.experiences()[0].experience.tool_name, "tool_blank");
+    assert_eq!(
+        collector.experiences()[0].experience.tool_name,
+        "tool_blank"
+    );
 }
 
 #[tokio::test]
@@ -885,7 +891,9 @@ async fn test_s8_record_persistence_failure_still_succeeds_in_memory() {
     config.persistence_path = blocker.join("x.jsonl").to_string_lossy().to_string();
     let collector = Collector::new(config);
 
-    let inserted = collector.record(make_experience("tool_a", "input", true)).await;
+    let inserted = collector
+        .record(make_experience("tool_a", "input", true))
+        .await;
     assert!(inserted);
     assert_eq!(collector.experiences().len(), 1);
 }
@@ -894,7 +902,11 @@ async fn test_s8_record_persistence_failure_still_succeeds_in_memory() {
 async fn test_s8_flush_write_failure_logs_warning_and_skips_count() {
     let dir = tempfile::tempdir().unwrap();
     let mut config = CollectorConfig::default();
-    config.persistence_path = dir.path().join("experiences.jsonl").to_string_lossy().to_string();
+    config.persistence_path = dir
+        .path()
+        .join("experiences.jsonl")
+        .to_string_lossy()
+        .to_string();
     let collector = Collector::new(config);
 
     collector

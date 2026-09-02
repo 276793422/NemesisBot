@@ -47,9 +47,7 @@ impl SandboxBackend for LandlockBackend {
             .handle_access(AccessFs::from_all(ABI::V1))
         {
             Ok(_) => Availability::Full,
-            Err(err) => {
-                Availability::Unavailable(format!("kernel landlock probe failed: {err}"))
-            }
+            Err(err) => Availability::Unavailable(format!("kernel landlock probe failed: {err}")),
         }
     }
 
@@ -70,15 +68,13 @@ impl SandboxBackend for LandlockBackend {
             .map_err(|e| format!("landlock create ruleset: {e}"))?;
 
         for root in &conf.read_exec_roots {
-            let fd =
-                PathFd::new(root).map_err(|e| format!("landlock open {root:?}: {e}"))?;
+            let fd = PathFd::new(root).map_err(|e| format!("landlock open {root:?}: {e}"))?;
             ruleset = ruleset
                 .add_rule(PathBeneath::new(fd, read_access))
                 .map_err(|e| format!("landlock read rule {root:?}: {e}"))?;
         }
         for root in &conf.writable_roots {
-            let fd =
-                PathFd::new(root).map_err(|e| format!("landlock open {root:?}: {e}"))?;
+            let fd = PathFd::new(root).map_err(|e| format!("landlock open {root:?}: {e}"))?;
             ruleset = ruleset
                 .add_rule(PathBeneath::new(fd, all_access))
                 .map_err(|e| format!("landlock write rule {root:?}: {e}"))?;

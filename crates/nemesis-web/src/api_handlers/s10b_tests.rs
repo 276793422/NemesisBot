@@ -61,7 +61,7 @@ fn make_state(home: Option<&std::path::Path>) -> Arc<AppState> {
         ),
         #[cfg(not(feature = "workflow"))]
         #[cfg(feature = "workflow")]
-        chat_secret_store: std::sync::Arc::(()),
+        chat_secret_store: std::sync::Arc(()),
         #[cfg(not(feature = "workflow"))]
         chat_secret_store: std::sync::Arc::new(()),
         #[cfg(feature = "workflow")]
@@ -110,7 +110,11 @@ async fn models_config_masks_api_keys_in_all_arms() {
     assert_eq!(by_name("short")["api_key"], "****");
     // Multibyte: the 4-byte cut floors to the 3-byte char boundary → "密****".
     let cjk = by_name("cjk")["api_key"].as_str().unwrap().to_string();
-    assert!(cjk.starts_with("密") && cjk.ends_with("****"), "got {}", cjk);
+    assert!(
+        cjk.starts_with("密") && cjk.ends_with("****"),
+        "got {}",
+        cjk
+    );
     // No api_key field → entry untouched.
     assert!(by_name("bare").get("api_key").is_none());
 }
@@ -217,7 +221,11 @@ fn sanitize_map_masks_sensitive_keys_and_recurses() {
     assert_eq!(v["api_key"], "abcd****");
     assert_eq!(v["auth_token"], "****", "short value fully masked");
     let pwd = v["password"].as_str().unwrap();
-    assert!(pwd.starts_with("猎") && pwd.ends_with("****"), "multibyte floor, got {}", pwd);
+    assert!(
+        pwd.starts_with("猎") && pwd.ends_with("****"),
+        "multibyte floor, got {}",
+        pwd
+    );
     assert_eq!(v["my_secret"], 12345, "non-string value left as-is");
     // Nested object under a sensitive key recurses.
     assert_eq!(v["credentials"]["client_token"], "xyz9****");
@@ -226,7 +234,10 @@ fn sanitize_map_masks_sensitive_keys_and_recurses() {
 
 #[test]
 fn first_line_trunc_first_non_empty_line_and_ellipsis() {
-    assert_eq!(first_line_trunc("\n\n  hello world  \nsecond", 20), "  hello world  ");
+    assert_eq!(
+        first_line_trunc("\n\n  hello world  \nsecond", 20),
+        "  hello world  "
+    );
     assert_eq!(first_line_trunc("short", 10), "short");
     assert_eq!(first_line_trunc("0123456789A", 5), "01234…");
     assert_eq!(first_line_trunc("", 5), "");

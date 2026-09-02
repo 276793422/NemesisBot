@@ -21,7 +21,10 @@ sandbox = ["dep:nemesis-sandbox"]
     )
     .unwrap();
     let s = scan_file(&p).unwrap();
-    assert_eq!(s.names(), vec!["channels-web".to_string(), "sandbox".to_string()]);
+    assert_eq!(
+        s.names(),
+        vec!["channels-web".to_string(), "sandbox".to_string()]
+    );
     assert!(s.is_default("channels-web"));
     assert!(!s.is_default("sandbox"));
 }
@@ -56,7 +59,10 @@ mid = []
 "#,
     )
     .unwrap();
-    assert_eq!(s.names(), vec!["alpha".to_string(), "mid".to_string(), "zeta".to_string()]);
+    assert_eq!(
+        s.names(),
+        vec!["alpha".to_string(), "mid".to_string(), "zeta".to_string()]
+    );
 }
 
 #[test]

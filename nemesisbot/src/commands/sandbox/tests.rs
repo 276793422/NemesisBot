@@ -80,7 +80,11 @@ fn box_file_root_handles_missing_file_plain_path_and_section_switch() {
 fn relaunch_args_shape() {
     assert_eq!(
         relaunch_args("stop", false),
-        vec!["sandbox".to_string(), "stop".to_string(), "--internal".to_string()]
+        vec![
+            "sandbox".to_string(),
+            "stop".to_string(),
+            "--internal".to_string()
+        ]
     );
     assert_eq!(
         relaunch_args("ensure-ready", true),
@@ -430,7 +434,10 @@ fn test_s11b_run_startexe_timeout_hang_tree_killed_false() {
         std::time::Duration::from_millis(400),
     );
     assert!(!ok);
-    assert!(t0.elapsed() < std::time::Duration::from_secs(5), "超时后必须树杀返回");
+    assert!(
+        t0.elapsed() < std::time::Duration::from_secs(5),
+        "超时后必须树杀返回"
+    );
 }
 
 // =========================================================================

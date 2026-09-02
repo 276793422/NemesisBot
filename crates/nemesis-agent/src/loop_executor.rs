@@ -81,8 +81,7 @@ impl Default for ExecutorConfig {
 // ===========================================================================
 
 /// Session busy state for concurrency control.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[derive(Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum ConcurrentMode {
     /// Reject new messages when session is busy.
     #[default]
@@ -90,7 +89,6 @@ pub enum ConcurrentMode {
     /// Queue messages when session is busy.
     Queue,
 }
-
 
 /// Busy message returned when session is busy.
 const BUSY_MESSAGE: &str = "AI is processing a previous request, please try again later";
@@ -642,14 +640,15 @@ impl FallbackExecutor {
             {
                 let cooldowns = self.cooldowns.lock().unwrap();
                 if let Some(entry) = cooldowns.get(&key)
-                    && entry.last_failure.elapsed() < FALLBACK_COOLDOWN {
-                        debug!(
-                            "[FallbackExecutor] Skipping fallback candidate {} (cooldown remaining: {:?})",
-                            key,
-                            FALLBACK_COOLDOWN - entry.last_failure.elapsed()
-                        );
-                        continue;
-                    }
+                    && entry.last_failure.elapsed() < FALLBACK_COOLDOWN
+                {
+                    debug!(
+                        "[FallbackExecutor] Skipping fallback candidate {} (cooldown remaining: {:?})",
+                        key,
+                        FALLBACK_COOLDOWN - entry.last_failure.elapsed()
+                    );
+                    continue;
+                }
             }
 
             attempts += 1;
@@ -1354,37 +1353,35 @@ impl AgentLoopExecutor {
 
             // Record usage statistics if data store is available.
             if let Some(ref ds) = self.data_store
-                && let Some(ref usage) = response.usage {
-                    let log = nemesis_data::RequestLog {
-                        id: 0,
-                        trace_id: trace_id.to_string(),
-                        model: self.config.model.clone(),
-                        provider_type: String::new(),
-                        input_tokens: usage.prompt_tokens,
-                        output_tokens: usage.completion_tokens,
-                        cache_creation_tokens: usage.cache_creation_tokens.unwrap_or(0),
-                        cache_read_tokens: usage
-                            .cache_read_tokens
-                            .or(usage.cached_tokens)
-                            .unwrap_or(0),
-                        total_cost_usd: 0.0,
-                        latency_ms: round_duration.as_millis() as i64,
-                        status_code: if response.content.starts_with("Error:") {
-                            500
-                        } else {
-                            200
-                        },
-                        error_message: None,
-                        is_streaming: false,
-                        created_at: chrono::Local::now().timestamp(),
-                        // legacy 执行器（生产不实例化）：新明细字段不接线，
-                        // 取默认值仅为编译完整（改 agent 行为去 loop.rs）。
-                        ..Default::default()
-                    };
-                    if let Err(e) = ds.insert_request_log(&log) {
-                        tracing::warn!("[AgentLoopExecutor] Failed to record usage: {e}");
-                    }
+                && let Some(ref usage) = response.usage
+            {
+                let log = nemesis_data::RequestLog {
+                    id: 0,
+                    trace_id: trace_id.to_string(),
+                    model: self.config.model.clone(),
+                    provider_type: String::new(),
+                    input_tokens: usage.prompt_tokens,
+                    output_tokens: usage.completion_tokens,
+                    cache_creation_tokens: usage.cache_creation_tokens.unwrap_or(0),
+                    cache_read_tokens: usage.cache_read_tokens.or(usage.cached_tokens).unwrap_or(0),
+                    total_cost_usd: 0.0,
+                    latency_ms: round_duration.as_millis() as i64,
+                    status_code: if response.content.starts_with("Error:") {
+                        500
+                    } else {
+                        200
+                    },
+                    error_message: None,
+                    is_streaming: false,
+                    created_at: chrono::Local::now().timestamp(),
+                    // legacy 执行器（生产不实例化）：新明细字段不接线，
+                    // 取默认值仅为编译完整（改 agent 行为去 loop.rs）。
+                    ..Default::default()
+                };
+                if let Err(e) = ds.insert_request_log(&log) {
+                    tracing::warn!("[AgentLoopExecutor] Failed to record usage: {e}");
                 }
+            }
 
             // Check if no tool calls - we're done.
             if response.tool_calls.is_empty() || response.finished {
@@ -1475,24 +1472,26 @@ impl AgentLoopExecutor {
                 });
 
                 // Save continuation snapshot for async tools.
-                if tool_result.is_async && !tool_result.task_id.is_empty()
-                    && let Some(ref cont_mgr) = self.continuation_manager {
-                        let current_messages = self.build_messages(instance);
-                        cont_mgr
-                            .save_continuation(
-                                &tool_result.task_id,
-                                current_messages,
-                                &tc.id,
-                                &context.channel,
-                                &context.chat_id,
-                                &context.session_key,
-                            )
-                            .await;
-                        info!(
-                            "[AgentLoopExecutor] Continuation snapshot saved: task_id={}",
-                            tool_result.task_id
-                        );
-                    }
+                if tool_result.is_async
+                    && !tool_result.task_id.is_empty()
+                    && let Some(ref cont_mgr) = self.continuation_manager
+                {
+                    let current_messages = self.build_messages(instance);
+                    cont_mgr
+                        .save_continuation(
+                            &tool_result.task_id,
+                            current_messages,
+                            &tc.id,
+                            &context.channel,
+                            &context.chat_id,
+                            &context.session_key,
+                        )
+                        .await;
+                    info!(
+                        "[AgentLoopExecutor] Continuation snapshot saved: task_id={}",
+                        tool_result.task_id
+                    );
+                }
 
                 // Send ForUser content to user immediately if not Silent.
                 if !tool_result.silent && !tool_result.for_user.is_empty() {

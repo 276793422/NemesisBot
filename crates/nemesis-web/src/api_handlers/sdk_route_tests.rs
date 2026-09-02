@@ -5,8 +5,8 @@
 // test additionally exercises the REAL server router (WebServer::build_router)
 // to prove the routes are actually registered there.
 
-use axum::routing::get;
 use axum::Router;
+use axum::routing::get;
 use tower::ServiceExt;
 
 use super::{handle_sdk_export, handle_sdk_pip};

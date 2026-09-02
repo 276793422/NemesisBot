@@ -1737,7 +1737,10 @@ fn test_evaluate_request_default_arm_hardware_and_system_rules() {
         ..Default::default()
     };
     let (allowed, _, _) = auditor.request_permission(&req);
-    assert!(allowed, "cfg-* rule must allow SystemConfig via match_pattern");
+    assert!(
+        allowed,
+        "cfg-* rule must allow SystemConfig via match_pattern"
+    );
 
     // "*" 模式 → 短路匹配
     auditor.set_rules(
@@ -1780,10 +1783,7 @@ fn test_validate_path_inside_workspace_ok_and_dotdot_escape_denied() {
     let escape = missing_ws.join("..").join("secret.txt");
     let err = validate_path_internal(&escape.to_string_lossy(), &missing_ws.to_string_lossy())
         .unwrap_err();
-    assert!(
-        err.contains("outside workspace"),
-        "unexpected error: {err}"
-    );
+    assert!(err.contains("outside workspace"), "unexpected error: {err}");
 }
 
 #[test]
@@ -1863,7 +1863,10 @@ async fn monitor_security_status_tick_then_shutdown() {
 
     tx.send(true).unwrap();
     tokio::time::sleep(std::time::Duration::from_millis(200)).await;
-    assert!(handle.is_finished(), "monitor must exit after shutdown signal");
+    assert!(
+        handle.is_finished(),
+        "monitor must exit after shutdown signal"
+    );
 }
 
 // ============================================================
@@ -1876,9 +1879,7 @@ fn test_export_audit_log_creates_parent_dirs() {
     let auditor = SecurityAuditor::new(AuditorConfig::default());
     let dir = tempfile::tempdir().unwrap();
     let dest = dir.path().join("nested").join("deeper").join("audit.json");
-    auditor
-        .export_audit_log(&dest.to_string_lossy())
-        .unwrap();
+    auditor.export_audit_log(&dest.to_string_lossy()).unwrap();
     assert!(dest.exists());
     let content = std::fs::read_to_string(&dest).unwrap();
     assert!(content.contains("total_events"), "{content}");

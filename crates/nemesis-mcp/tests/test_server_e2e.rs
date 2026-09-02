@@ -45,7 +45,9 @@ fn make_manager(dir: &std::path::Path, server_exe: &std::path::Path) -> McpManag
 #[tokio::test]
 async fn manager_discovers_tools_from_real_stdio_server() {
     let Some(server_exe) = test_server_path() else {
-        eprintln!("SKIP: mcp-test-server not built — run: cd test-tools/mcp/server && go build -o mcp-test-server.exe .");
+        eprintln!(
+            "SKIP: mcp-test-server not built — run: cd test-tools/mcp/server && go build -o mcp-test-server.exe ."
+        );
         return;
     };
     let dir = tempfile::tempdir().unwrap();
@@ -70,7 +72,9 @@ async fn manager_discovers_tools_from_real_stdio_server() {
 #[tokio::test]
 async fn mcp_echo_call_roundtrip_through_real_server() {
     let Some(server_exe) = test_server_path() else {
-        eprintln!("SKIP: mcp-test-server not built — run: cd test-tools/mcp/server && go build -o mcp-test-server.exe .");
+        eprintln!(
+            "SKIP: mcp-test-server not built — run: cd test-tools/mcp/server && go build -o mcp-test-server.exe ."
+        );
         return;
     };
     let dir = tempfile::tempdir().unwrap();
@@ -103,7 +107,9 @@ async fn mcp_echo_call_roundtrip_through_real_server() {
 #[tokio::test]
 async fn echo_call_surfaces_server_error_text_on_bad_params() {
     let Some(server_exe) = test_server_path() else {
-        eprintln!("SKIP: mcp-test-server not built — run: cd test-tools/mcp/server && go build -o mcp-test-server.exe .");
+        eprintln!(
+            "SKIP: mcp-test-server not built — run: cd test-tools/mcp/server && go build -o mcp-test-server.exe ."
+        );
         return;
     };
     let dir = tempfile::tempdir().unwrap();
@@ -117,9 +123,7 @@ async fn echo_call_surfaces_server_error_text_on_bad_params() {
         .iter()
         .find(|t| t.definition().name.ends_with("echo"))
         .expect("echo tool");
-    let result = echo
-        .execute(serde_json::json!({ "wrong_param": 1 }))
-        .await;
+    let result = echo.execute(serde_json::json!({ "wrong_param": 1 })).await;
     assert!(
         !result.content.is_empty() || result.is_error,
         "bad params should produce a response: {:?}",

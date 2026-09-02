@@ -27,11 +27,12 @@ fn test_role_predicates() {
     let (svc, dir) = temp_service("coordinator", NodeRole::Coordinator);
     assert!(svc.is_coordinator());
     assert_eq!(svc.role(), NodeRole::Coordinator);
-    svc.store().create_issue(crate::NewIssue {
-        title: "权威节点可写（store 层不做角色拦截）".into(),
-        ..Default::default()
-    })
-    .unwrap();
+    svc.store()
+        .create_issue(crate::NewIssue {
+            title: "权威节点可写（store 层不做角色拦截）".into(),
+            ..Default::default()
+        })
+        .unwrap();
     cleanup(&dir);
 
     let (svc, dir) = temp_service("worker", NodeRole::Worker);

@@ -496,10 +496,8 @@ impl MemoryManager {
         if *self.vector_enabled.read() {
             let vs_guard = self.vector_store.read();
             if let Some(ref vs) = *vs_guard {
-                let type_filter: Vec<String> = memory_type
-                    .map(|mt| mt.to_string())
-                    .into_iter()
-                    .collect();
+                let type_filter: Vec<String> =
+                    memory_type.map(|mt| mt.to_string()).into_iter().collect();
                 let result = vs
                     .query(query, limit, &type_filter)
                     .map_err(|e| e.to_string())?;
@@ -693,22 +691,23 @@ impl MemoryManager {
         // Fall back to vector store if initialized
         let vs_guard = self.vector_store.read();
         if let Some(ref vs) = *vs_guard
-            && let Some(ve) = vs.get_by_id(id) {
-                return Ok(Some(Entry {
-                    id: ve.id,
-                    typ: parse_memory_type_from_str(&ve.entry_type),
-                    content: ve.content,
-                    metadata: ve.metadata,
-                    tags: ve.tags,
-                    score: Some(ve.score),
-                    created_at: chrono::DateTime::parse_from_rfc3339(&ve.created_at)
-                        .map(|dt| dt.with_timezone(&chrono::Local))
-                        .unwrap_or_else(|_| chrono::Local::now()),
-                    updated_at: chrono::DateTime::parse_from_rfc3339(&ve.updated_at)
-                        .map(|dt| dt.with_timezone(&chrono::Local))
-                        .unwrap_or_else(|_| chrono::Local::now()),
-                }));
-            }
+            && let Some(ve) = vs.get_by_id(id)
+        {
+            return Ok(Some(Entry {
+                id: ve.id,
+                typ: parse_memory_type_from_str(&ve.entry_type),
+                content: ve.content,
+                metadata: ve.metadata,
+                tags: ve.tags,
+                score: Some(ve.score),
+                created_at: chrono::DateTime::parse_from_rfc3339(&ve.created_at)
+                    .map(|dt| dt.with_timezone(&chrono::Local))
+                    .unwrap_or_else(|_| chrono::Local::now()),
+                updated_at: chrono::DateTime::parse_from_rfc3339(&ve.updated_at)
+                    .map(|dt| dt.with_timezone(&chrono::Local))
+                    .unwrap_or_else(|_| chrono::Local::now()),
+            }));
+        }
 
         Ok(None)
     }
@@ -877,9 +876,10 @@ impl MemoryManager {
         {
             let vs_guard = self.vector_store.read();
             if let Some(ref vs) = *vs_guard
-                && vs.delete_entry(id) {
-                    found = true;
-                }
+                && vs.delete_entry(id)
+            {
+                found = true;
+            }
         }
         Ok(found)
     }

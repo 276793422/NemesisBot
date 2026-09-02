@@ -27,10 +27,7 @@ async fn stdio_spawn_failure_surfaces_error() {
         .spawn_and_call("exec", "{}", &req_ctx())
         .await
         .expect_err("bogus exe must fail to spawn");
-    assert!(
-        err.contains("failed to spawn executor child"),
-        "err: {err}"
-    );
+    assert!(err.contains("failed to spawn executor child"), "err: {err}");
 }
 
 #[tokio::test]

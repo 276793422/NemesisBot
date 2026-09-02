@@ -128,9 +128,7 @@ fn turn_cut(messages: &[StoredMessage], n: usize) -> usize {
 /// survives its store json's 7-day TTL — reusing that key would APPEND the
 /// new prefix onto the old fork's log, duplicating it).
 fn unique_key(store: &SessionStore, source_key: &str, requested: Option<String>) -> String {
-    let taken = |k: &str| {
-        store.contains(k) || store.file_exists(k) || chat_log::chat_log_exists(k)
-    };
+    let taken = |k: &str| store.contains(k) || store.file_exists(k) || chat_log::chat_log_exists(k);
     let base = requested.unwrap_or_else(|| format!("{}__fork", source_key));
     if !taken(&base) {
         return base;
@@ -195,7 +193,9 @@ pub fn fork_session(
     store.set_history(&new_key, messages);
     store.set_summary(&new_key, "");
     store.set_summary_covers_up_to(&new_key, None);
-    store.save(&new_key).map_err(|e| format!("写入新会话失败: {}", e))?;
+    store
+        .save(&new_key)
+        .map_err(|e| format!("写入新会话失败: {}", e))?;
 
     // Boundary events on BOTH keys (U9 sidecar; new key = fresh ledger).
     chat_log::append_boundary_event(
@@ -203,7 +203,10 @@ pub fn fork_session(
         "session_fork_out",
         &format!(
             "forked to {} at turn {} (kept {} / dropped {} log rows)",
-            new_key, at, cut, total - cut
+            new_key,
+            at,
+            cut,
+            total - cut
         ),
     );
     chat_log::append_boundary_event(

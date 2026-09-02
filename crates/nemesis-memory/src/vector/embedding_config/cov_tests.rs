@@ -11,8 +11,8 @@
 //!
 //! 全部断言保持行为级（非 vacuous）：翻绿是副产物，测试本身独立有效。
 
-use super::*;
 use super::w2c_tests::{set_model_urls, spawn_http_server};
+use super::*;
 
 /// sink subscriber：TRACE 全开但输出丢弃——只为让宏字段表达式求值。
 fn sink_subscriber() -> impl tracing::Subscriber + Send + Sync + 'static {
@@ -30,9 +30,8 @@ fn sink_subscriber() -> impl tracing::Subscriber + Send + Sync + 'static {
 #[test]
 fn cov_fresh_dir_load_writes_default() {
     let dir = tempfile::tempdir().unwrap();
-    let got = tracing::subscriber::with_default(sink_subscriber(), || {
-        load_embedding_config(dir.path())
-    });
+    let got =
+        tracing::subscriber::with_default(sink_subscriber(), || load_embedding_config(dir.path()));
     // 首次加载：默认配置落盘 + 加载成功（info! 参数行求值）
     assert!(!got.enabled);
     assert_eq!(got.active, "medium");
@@ -47,9 +46,7 @@ fn cov_config_dir_is_file_create_fails() {
     let file = dir.path().join("not_a_dir");
     std::fs::write(&file, "x").unwrap();
 
-    let got = tracing::subscriber::with_default(sink_subscriber(), || {
-        load_embedding_config(&file)
-    });
+    let got = tracing::subscriber::with_default(sink_subscriber(), || load_embedding_config(&file));
     assert!(!got.enabled);
     assert_eq!(got.active, "medium");
 }
@@ -66,9 +63,8 @@ fn cov_readonly_dir_default_write() {
     perms.set_readonly(true);
     std::fs::set_permissions(dir.path(), perms).unwrap();
 
-    let got = tracing::subscriber::with_default(sink_subscriber(), || {
-        load_embedding_config(dir.path())
-    });
+    let got =
+        tracing::subscriber::with_default(sink_subscriber(), || load_embedding_config(dir.path()));
 
     // 恢复可写，保证 tempdir 清理不炸
     let mut perms = std::fs::metadata(dir.path()).unwrap().permissions();
@@ -99,9 +95,8 @@ fn cov_invalid_json_load_falls_back_to_default() {
     let path = dir.path().join("config.enhanced_memory.json");
     std::fs::write(&path, "{ this is not json").unwrap();
 
-    let got = tracing::subscriber::with_default(sink_subscriber(), || {
-        load_embedding_config(dir.path())
-    });
+    let got =
+        tracing::subscriber::with_default(sink_subscriber(), || load_embedding_config(dir.path()));
     // 解析失败（error! 参数行求值）→ default 兜底
     assert!(!got.enabled);
     assert_eq!(got.models.medium.dimension, 384);

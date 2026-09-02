@@ -78,12 +78,7 @@ fn process_exe_path(pid: u32) -> Option<std::path::PathBuf> {
     #[link(name = "kernel32")]
     unsafe extern "system" {
         fn OpenProcess(access: u32, inherit: i32, pid: u32) -> isize;
-        fn QueryFullProcessImageNameW(
-            h: isize,
-            flags: u32,
-            buf: *mut u16,
-            size: *mut u32,
-        ) -> i32;
+        fn QueryFullProcessImageNameW(h: isize, flags: u32, buf: *mut u16, size: *mut u32) -> i32;
         fn CloseHandle(h: isize) -> i32;
     }
     const PROCESS_QUERY_LIMITED_INFORMATION: u32 = 0x1000;

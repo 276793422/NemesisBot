@@ -252,13 +252,14 @@ impl ClawHubRegistry {
         );
         if let Ok(resp) = self.client.get(&file_url).send().await
             && resp.status().is_success()
-                && let Ok(content) = resp.text().await {
-                    return Ok(crate::types::SkillContent {
-                        slug: slug.to_string(),
-                        filename: "SKILL.md".to_string(),
-                        content,
-                    });
-                }
+            && let Ok(content) = resp.text().await
+        {
+            return Ok(crate::types::SkillContent {
+                slug: slug.to_string(),
+                filename: "SKILL.md".to_string(),
+                content,
+            });
+        }
 
         debug!(
             "ClawHub file API failed, falling back to GitHub raw for {}",
@@ -631,12 +632,13 @@ fn extract_zip_to_dir(data: &[u8], target_dir: &str) -> Result<()> {
             .unwrap_or_else(|_| std::path::PathBuf::from(target_dir));
         if let Some(parent) = dest_path.parent()
             && let Ok(canonical_parent) = parent.canonicalize()
-                && !canonical_parent.starts_with(&canonical_target) {
-                    return Err(NemesisError::Security(format!(
-                        "path traversal detected: {}",
-                        relative
-                    )));
-                }
+            && !canonical_parent.starts_with(&canonical_target)
+        {
+            return Err(NemesisError::Security(format!(
+                "path traversal detected: {}",
+                relative
+            )));
+        }
 
         // Create parent directory.
         if let Some(parent) = dest_path.parent() {

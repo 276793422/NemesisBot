@@ -165,7 +165,10 @@ impl crate::r#loop::LlmProvider for MockProbeProvider {
             .expect("prompt must match a probe task");
 
         match self.mode {
-            "perfect" => Ok(resp_with_tool(task.expected_tool, valid_args_for(task.expected_tool))),
+            "perfect" => Ok(resp_with_tool(
+                task.expected_tool,
+                valid_args_for(task.expected_tool),
+            )),
             "normal" => {
                 if task.expected_tool == "edit_file" {
                     Ok(empty_resp()) // format 失败一题
@@ -173,7 +176,10 @@ impl crate::r#loop::LlmProvider for MockProbeProvider {
                     // 用了工具通道但选错工具（args 对 grep 任务仍合法）
                     Ok(resp_with_tool("exec", valid_args_for("grep")))
                 } else {
-                    Ok(resp_with_tool(task.expected_tool, valid_args_for(task.expected_tool)))
+                    Ok(resp_with_tool(
+                        task.expected_tool,
+                        valid_args_for(task.expected_tool),
+                    ))
                 }
             }
             "mini" => {

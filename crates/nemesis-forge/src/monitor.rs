@@ -323,13 +323,14 @@ impl DeploymentMonitor {
 
         // Check cooldown
         if let Some(ref last_degraded) = artifact.last_degraded_at
-            && let Ok(degraded_at) = chrono::DateTime::parse_from_rfc3339(last_degraded) {
-                let now = chrono::Local::now();
-                let days_since = (now - degraded_at.with_timezone(&chrono::Local)).num_days();
-                if days_since < cooldown_days as i64 {
-                    return; // still in cooldown
-                }
+            && let Ok(degraded_at) = chrono::DateTime::parse_from_rfc3339(last_degraded)
+        {
+            let now = chrono::Local::now();
+            let days_since = (now - degraded_at.with_timezone(&chrono::Local)).num_days();
+            if days_since < cooldown_days as i64 {
+                return; // still in cooldown
             }
+        }
 
         // try_deprecate always degrades when reached — the caller gates on the
         // verdict (and a cooldown). 历史上的 `>= 3 || < 3` 恒真包裹条件已移除：
@@ -362,9 +363,10 @@ impl DeploymentMonitor {
 
         // Re-read to check if we should deprecate
         if let Some(updated) = self.registry.get(&artifact.id)
-            && updated.consecutive_observing_rounds >= 3 {
-                self.try_deprecate(&updated);
-            }
+            && updated.consecutive_observing_rounds >= 3
+        {
+            self.try_deprecate(&updated);
+        }
     }
 
     /// Evaluate all active/observing artifacts (simple mode).
@@ -386,15 +388,16 @@ impl DeploymentMonitor {
         // Post-process: auto-upgrade consecutive observing rounds to negative
         for result in results.iter_mut() {
             if let Some(artifact) = self.registry.get(&result.artifact_id)
-                && artifact.consecutive_observing_rounds >= 3 {
-                    tracing::warn!(
-                        artifact_id = %artifact.id,
-                        consecutive_rounds = artifact.consecutive_observing_rounds,
-                        "[Monitor] Auto-upgrading artifact to negative (3+ consecutive observing rounds)"
-                    );
-                    result.verdict = "negative".to_string();
-                    result.improvement_score = -0.3;
-                }
+                && artifact.consecutive_observing_rounds >= 3
+            {
+                tracing::warn!(
+                    artifact_id = %artifact.id,
+                    consecutive_rounds = artifact.consecutive_observing_rounds,
+                    "[Monitor] Auto-upgrading artifact to negative (3+ consecutive observing rounds)"
+                );
+                result.verdict = "negative".to_string();
+                result.improvement_score = -0.3;
+            }
         }
 
         results
@@ -435,9 +438,10 @@ impl DeploymentMonitor {
     pub fn apply_degradation(&self, artifact_id: &str) -> bool {
         // Check cooldown before updating
         if let Some(artifact) = self.registry.get(artifact_id)
-            && !self.is_degradation_cooldown_elapsed(&artifact) {
-                return false;
-            }
+            && !self.is_degradation_cooldown_elapsed(&artifact)
+        {
+            return false;
+        }
 
         self.registry.update(artifact_id, |a| {
             a.status = ArtifactStatus::Degraded;
@@ -457,21 +461,22 @@ impl DeploymentMonitor {
 
         for result in &results {
             if result.verdict == "negative"
-                && let Some(artifact) = self.registry.get(&result.artifact_id) {
-                    if self.is_degradation_cooldown_elapsed(&artifact) {
-                        tracing::info!(
-                            artifact_id = %result.artifact_id,
-                            improvement_score = result.improvement_score,
-                            "[Monitor] Degrading artifact due to negative evaluation"
-                        );
-                        self.apply_degradation(&result.artifact_id);
-                    } else {
-                        tracing::info!(
-                            artifact_id = %result.artifact_id,
-                            "[Monitor] Skipping degradation: cooldown period active"
-                        );
-                    }
+                && let Some(artifact) = self.registry.get(&result.artifact_id)
+            {
+                if self.is_degradation_cooldown_elapsed(&artifact) {
+                    tracing::info!(
+                        artifact_id = %result.artifact_id,
+                        improvement_score = result.improvement_score,
+                        "[Monitor] Degrading artifact due to negative evaluation"
+                    );
+                    self.apply_degradation(&result.artifact_id);
+                } else {
+                    tracing::info!(
+                        artifact_id = %result.artifact_id,
+                        "[Monitor] Skipping degradation: cooldown period active"
+                    );
                 }
+            }
         }
 
         results

@@ -338,8 +338,7 @@ pub const BUSY_MESSAGE: &str =
     "\u{23f3} AI is processing a previous request, please try again later";
 
 /// Concurrent request handling mode.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[derive(Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum ConcurrentMode {
     /// Reject new messages when session is busy (default; legacy behavior).
     #[default]
@@ -358,10 +357,7 @@ enum GateOutcome {
     Continuation(String),
     /// Short-circuit reply (busy receipt / busy bounce / queue-full / slash
     /// command response). No session was acquired.
-    Immediate {
-        agent_id: String,
-        response: String,
-    },
+    Immediate { agent_id: String, response: String },
     /// System (non-continuation) / history-request passthrough — async
     /// handling, no session semantics.
     Ungated,
@@ -387,7 +383,6 @@ pub fn parse_concurrent_mode(s: &str) -> ConcurrentMode {
         _ => ConcurrentMode::Reject,
     }
 }
-
 
 /// Tracks busy state for sessions.
 pub struct SessionBusyTracker {
@@ -696,8 +691,7 @@ pub struct AgentLoop {
     /// interactive approval; auto-inject is pure retrieval and must not trip
     /// the approval gate. `None` (default) disables injection entirely.
     #[cfg(feature = "memory")]
-    memory_inject_manager:
-        parking_lot::RwLock<Option<Arc<nemesis_memory::manager::MemoryManager>>>,
+    memory_inject_manager: parking_lot::RwLock<Option<Arc<nemesis_memory::manager::MemoryManager>>>,
     #[cfg(not(feature = "memory"))]
     #[allow(dead_code)] // placeholder when memory feature is off
     memory_inject_manager: parking_lot::RwLock<Option<()>>,
@@ -721,9 +715,8 @@ pub struct AgentLoop {
     /// agent 不接——命令不该跨节点复制，同 hooks 挂账决策）。
     /// 自定义命令表热重载器（HotReloader 统一收编，2026-08-29：原
     /// path/mtime/cache 三字段手写 mtime 模式收编为一行声明）。
-    commands_hot: parking_lot::RwLock<
-        Option<nemesis_config::HotReloader<nemesis_config::CommandsConfig>>,
-    >,
+    commands_hot:
+        parking_lot::RwLock<Option<nemesis_config::HotReloader<nemesis_config::CommandsConfig>>>,
     /// CC hooks 桥（2026-08-29 T3）：PreCompact/PostCompact 触发用。
     /// SessionEnd 经 SessionEndHookManager（factory 清理点直接调桥）。
     cc_bridge: parking_lot::RwLock<Option<std::sync::Arc<crate::cc_hooks::CcHookBridge>>>,
@@ -772,8 +765,7 @@ pub struct AgentLoop {
     /// nemesis-memory); `allow(dead_code)` keeps the no-default-features
     /// build warning-clean.
     #[cfg_attr(not(feature = "memory"), allow(dead_code))]
-    tool_vec_cache:
-        parking_lot::RwLock<std::collections::HashMap<String, (String, Vec<f32>)>>,
+    tool_vec_cache: parking_lot::RwLock<std::collections::HashMap<String, (String, Vec<f32>)>>,
     /// Last-seen mtime of config.json; `check_config_reload` compares against
     /// this each round to detect on-disk changes without re-reading every turn.
     config_mtime: parking_lot::RwLock<Option<std::time::SystemTime>>,
@@ -1120,28 +1112,29 @@ impl AgentLoop {
             // ensuring serialized execution with no resource contention.
             let task_error = task_metadata.get("error").map(|s| s.as_str());
             if let Some(ref mgr) = self.continuation_manager
-                && let Some(ref tx) = self.outbound_tx {
-                    // Clone data from RwLock guards before .await — guards are !Send
-                    // and cannot be held across yield points in an async fn.
-                    let provider = self.provider.read().clone();
-                    let model = self.active_model.read().clone();
-                    let tools = self.tools.read().clone();
+                && let Some(ref tx) = self.outbound_tx
+            {
+                // Clone data from RwLock guards before .await — guards are !Send
+                // and cannot be held across yield points in an async fn.
+                let provider = self.provider.read().clone();
+                let model = self.active_model.read().clone();
+                let tools = self.tools.read().clone();
 
-                    crate::loop_continuation::handle_cluster_continuation(
-                        mgr.as_ref(),
-                        &task_id,
-                        &task_response,
-                        task_failed,
-                        task_error,
-                        provider.as_ref(),
-                        &model,
-                        &tools,
-                        tx,
-                        self.observer_manager.clone(),
-                        self.session_store.as_ref().map(|v| v.as_ref()),
-                    )
-                    .await;
-                }
+                crate::loop_continuation::handle_cluster_continuation(
+                    mgr.as_ref(),
+                    &task_id,
+                    &task_response,
+                    task_failed,
+                    task_error,
+                    provider.as_ref(),
+                    &model,
+                    &tools,
+                    tx,
+                    self.observer_manager.clone(),
+                    self.session_store.as_ref().map(|v| v.as_ref()),
+                )
+                .await;
+            }
         } else {
             // Spawn with semaphore-controlled concurrency.
             let task_error = task_metadata.get("error").cloned();
@@ -1157,22 +1150,23 @@ impl AgentLoop {
             tokio::spawn(async move {
                 let _permit = semaphore.acquire().await.unwrap();
                 if let Some(ref mgr) = continuation_manager
-                    && let Some(ref tx) = outbound_tx {
-                        crate::loop_continuation::handle_cluster_continuation(
-                            mgr.as_ref(),
-                            &task_id,
-                            &task_response,
-                            task_failed,
-                            task_error.as_deref(),
-                            provider.as_ref(),
-                            &model,
-                            &tools,
-                            tx,
-                            observer_manager,
-                            session_store.as_ref().map(|v| v.as_ref()),
-                        )
-                        .await;
-                    }
+                    && let Some(ref tx) = outbound_tx
+                {
+                    crate::loop_continuation::handle_cluster_continuation(
+                        mgr.as_ref(),
+                        &task_id,
+                        &task_response,
+                        task_failed,
+                        task_error.as_deref(),
+                        provider.as_ref(),
+                        &model,
+                        &tools,
+                        tx,
+                        observer_manager,
+                        session_store.as_ref().map(|v| v.as_ref()),
+                    )
+                    .await;
+                }
             });
         }
     }
@@ -1659,41 +1653,43 @@ impl AgentLoop {
 
                         self.finish_message(&msg, response, err, true).await;
                     }
-                    ConcurrentMode::Queue | ConcurrentMode::Steer => match self.gate_inbound(&msg) {
-                        GateOutcome::Continuation(task_id) => {
-                            info!(
-                                "[AgentLoop] Handling cluster continuation for task {} (permits={})",
-                                task_id, self.max_continuation_permits
-                            );
-                            self.dispatch_continuation(task_id, &msg).await;
+                    ConcurrentMode::Queue | ConcurrentMode::Steer => {
+                        match self.gate_inbound(&msg) {
+                            GateOutcome::Continuation(task_id) => {
+                                info!(
+                                    "[AgentLoop] Handling cluster continuation for task {} (permits={})",
+                                    task_id, self.max_continuation_permits
+                                );
+                                self.dispatch_continuation(task_id, &msg).await;
+                            }
+                            GateOutcome::Immediate {
+                                agent_id: _,
+                                response,
+                            } => {
+                                // Busy receipt / slash reply — publish inline.
+                                // Never touches sent_in_round (may overlap the
+                                // session's running turn; see finish_message).
+                                self.finish_message(&msg, response, None, false).await;
+                            }
+                            GateOutcome::Ungated => {
+                                let this = self.clone();
+                                let m = msg.clone();
+                                self.spawn_turn_task(async move {
+                                    let (_, response, err) = this.process_ungated(&m).await;
+                                    this.finish_message(&m, response, err, true).await;
+                                });
+                            }
+                            GateOutcome::Admitted(admission) => {
+                                let this = self.clone();
+                                let m = msg.clone();
+                                self.spawn_turn_task(async move {
+                                    let (_, response, err) =
+                                        this.process_admitted(&m, admission).await;
+                                    this.finish_message(&m, response, err, true).await;
+                                });
+                            }
                         }
-                        GateOutcome::Immediate {
-                            agent_id: _,
-                            response,
-                        } => {
-                            // Busy receipt / slash reply — publish inline.
-                            // Never touches sent_in_round (may overlap the
-                            // session's running turn; see finish_message).
-                            self.finish_message(&msg, response, None, false).await;
-                        }
-                        GateOutcome::Ungated => {
-                            let this = self.clone();
-                            let m = msg.clone();
-                            self.spawn_turn_task(async move {
-                                let (_, response, err) = this.process_ungated(&m).await;
-                                this.finish_message(&m, response, err, true).await;
-                            });
-                        }
-                        GateOutcome::Admitted(admission) => {
-                            let this = self.clone();
-                            let m = msg.clone();
-                            self.spawn_turn_task(async move {
-                                let (_, response, err) =
-                                    this.process_admitted(&m, admission).await;
-                                this.finish_message(&m, response, err, true).await;
-                            });
-                        }
-                    },
+                    }
                 },
                 None => {
                     // Channel closed.
@@ -2039,9 +2035,7 @@ impl AgentLoop {
         // all direct callers (heartbeat, tests, inline queue-drain fallback)
         // still enter here — behavior identical to the pre-split monolith.
         match self.gate_inbound(&msg) {
-            GateOutcome::Continuation(task_id) => {
-                ("__continuation__".to_string(), task_id, None)
-            }
+            GateOutcome::Continuation(task_id) => ("__continuation__".to_string(), task_id, None),
             GateOutcome::Immediate { agent_id, response } => (agent_id, response, None),
             GateOutcome::Ungated => self.process_ungated(&msg).await,
             GateOutcome::Admitted(admission) => self.process_admitted(&msg, admission).await,
@@ -2076,10 +2070,7 @@ impl AgentLoop {
 
     /// Resolve (agent_id, session_key) for a message (V5: extracted verbatim
     /// from the routing block of the pre-split `process_inbound_message`).
-    fn route_message(
-        &self,
-        msg: &nemesis_types::channel::InboundMessage,
-    ) -> (String, String) {
+    fn route_message(&self, msg: &nemesis_types::channel::InboundMessage) -> (String, String) {
         // Resolve agent and session via route resolver.
         // Mirrors Go's processMessage: al.registry.ResolveRoute(RouteInput{...})
         let (agent_id, session_key) = if let Some(ref resolver) = self.route_resolver {
@@ -2188,9 +2179,10 @@ impl AgentLoop {
 
         // History request.
         if let Some(request_type) = msg.metadata.get("request_type")
-            && request_type == "history" {
-                return GateOutcome::Ungated;
-            }
+            && request_type == "history"
+        {
+            return GateOutcome::Ungated;
+        }
 
         // Slash commands.
         if let Some(response) = self.handle_command_with_context(&msg.content, &msg.channel) {
@@ -2271,7 +2263,8 @@ impl AgentLoop {
                             );
                             return GateOutcome::Immediate {
                                 agent_id,
-                                response: "⏳ 排队已满，消息未能接收。请等当前任务完成后再发。".to_string(),
+                                response: "⏳ 排队已满，消息未能接收。请等当前任务完成后再发。"
+                                    .to_string(),
                             };
                         }
                     }
@@ -2303,10 +2296,11 @@ impl AgentLoop {
 
         // History request.
         if let Some(request_type) = msg.metadata.get("request_type")
-            && request_type == "history" {
-                self.handle_history_request(msg).await;
-                return (String::new(), String::new(), None);
-            }
+            && request_type == "history"
+        {
+            self.handle_history_request(msg).await;
+            return (String::new(), String::new(), None);
+        }
 
         // The gate classified everything else; unreachable in practice.
         (String::new(), String::new(), None)
@@ -2439,16 +2433,17 @@ impl AgentLoop {
                             None => resp2,
                         };
                         if !content.is_empty()
-                            && let Some(ref tx) = self.outbound_tx {
-                                let outbound = nemesis_types::channel::OutboundMessage {
-                                    channel: head.msg.channel.clone(),
-                                    chat_id: head.msg.chat_id.clone(),
-                                    content,
-                                    message_type: String::new(),
-                                    meta: Default::default(),
-                                };
-                                let _ = tx.send(outbound).await;
-                            }
+                            && let Some(ref tx) = self.outbound_tx
+                        {
+                            let outbound = nemesis_types::channel::OutboundMessage {
+                                channel: head.msg.channel.clone(),
+                                chat_id: head.msg.chat_id.clone(),
+                                content,
+                                message_type: String::new(),
+                                meta: Default::default(),
+                            };
+                            let _ = tx.send(outbound).await;
+                        }
                     }
                 }
             }
@@ -2664,18 +2659,20 @@ impl AgentLoop {
     /// Mirrors Go's `state.Manager.SetLastChannel()`.
     pub fn record_last_channel(&self, channel: &str) {
         if let Some(ref mgr) = self.state_manager
-            && let Err(e) = mgr.set_last_channel(channel) {
-                tracing::warn!("[AgentLoop] Failed to persist last channel: {}", e);
-            }
+            && let Err(e) = mgr.set_last_channel(channel)
+        {
+            tracing::warn!("[AgentLoop] Failed to persist last channel: {}", e);
+        }
     }
 
     /// Record the last active chat ID for crash recovery.
     /// Mirrors Go's `state.Manager.SetLastChatID()`.
     pub fn record_last_chat_id(&self, chat_id: &str) {
         if let Some(ref mgr) = self.state_manager
-            && let Err(e) = mgr.set_last_chat_id(chat_id) {
-                tracing::warn!("[AgentLoop] Failed to persist last chat ID: {}", e);
-            }
+            && let Err(e) = mgr.set_last_chat_id(chat_id)
+        {
+            tracing::warn!("[AgentLoop] Failed to persist last chat ID: {}", e);
+        }
     }
 
     // -----------------------------------------------------------------------
@@ -2968,17 +2965,17 @@ impl AgentLoop {
         let clear_key = summarize_key.clone();
 
         if !is_internal_channel(&channel_owned)
-            && let Some(ref tx) = outbound_tx {
-                let outbound = nemesis_types::channel::OutboundMessage {
-                    channel: channel_owned.clone(),
-                    chat_id: chat_id_owned.clone(),
-                    content: "Memory threshold reached. Optimizing conversation history..."
-                        .to_string(),
-                    message_type: String::new(),
-                    meta: Default::default(),
-                };
-                let _ = tx.send(outbound).await;
-            }
+            && let Some(ref tx) = outbound_tx
+        {
+            let outbound = nemesis_types::channel::OutboundMessage {
+                channel: channel_owned.clone(),
+                chat_id: chat_id_owned.clone(),
+                content: "Memory threshold reached. Optimizing conversation history...".to_string(),
+                message_type: String::new(),
+                meta: Default::default(),
+            };
+            let _ = tx.send(outbound).await;
+        }
 
         // CC PreCompact（观察型，2026-08-29 三段化扩展）：exit 2 不阻止压缩
         // （稳定性机制）。先 clone Arc 再 await（不持锁跨 await）。
@@ -3457,8 +3454,13 @@ impl AgentLoop {
         trace_id: &str,
     ) -> Vec<AgentEvent> {
         // 委托带 token 版本（自造一次性 token，行为与旧实现一致）。
-        self.resume_execution_with_token(instance, context, trace_id, &tokio_util::sync::CancellationToken::new())
-            .await
+        self.resume_execution_with_token(
+            instance,
+            context,
+            trace_id,
+            &tokio_util::sync::CancellationToken::new(),
+        )
+        .await
     }
 
     /// `resume_execution` 的带取消令牌变体（W2 P4 per-task cancel）：集群续行
@@ -3694,9 +3696,7 @@ impl AgentLoop {
             // re-prefetching per LLM round keeps the section in sync with
             // what the model is about to see. Off (default) ⇒ None ⇒ the
             // build is byte-identical to pre-P3.1.
-            let memory_hits: Option<Vec<String>> = self
-                .prefetch_memory_context(instance)
-                .await;
+            let memory_hits: Option<Vec<String>> = self.prefetch_memory_context(instance).await;
 
             // Build the message list from instance history (AFTER the steer
             // claim so injected turns are already included).
@@ -3719,14 +3719,13 @@ impl AgentLoop {
             let mut replay_voice: Option<crate::replay::VoiceAppend> = None;
 
             // Voice playback prompt injection: append to last user message (not stored in history).
-            if voice_playback
-                && let Some(pos) = messages.iter().rposition(|m| m.role == "user") {
-                    messages[pos].content.push_str(VOICE_PLAYBACK_SUFFIX);
-                    replay_voice = Some(crate::replay::VoiceAppend {
-                        index: pos,
-                        suffix: VOICE_PLAYBACK_SUFFIX.to_string(),
-                    });
-                }
+            if voice_playback && let Some(pos) = messages.iter().rposition(|m| m.role == "user") {
+                messages[pos].content.push_str(VOICE_PLAYBACK_SUFFIX);
+                replay_voice = Some(crate::replay::VoiceAppend {
+                    index: pos,
+                    suffix: VOICE_PLAYBACK_SUFFIX.to_string(),
+                });
+            }
 
             // ② Grace-round nudge. Transient — NOT persisted to instance history
             // or session_log; only this turn's message list carries it.
@@ -3969,9 +3968,9 @@ impl AgentLoop {
                                     .iter_mut()
                                     .rev()
                                     .find(|m| m.role == "user")
-                                {
-                                    last_user.content.push_str("（语音播报模式已开启，请用简洁、便于口语播报的方式回复，避免使用代码块、表格等不适合语音的内容。）");
-                                }
+                            {
+                                last_user.content.push_str("（语音播报模式已开启，请用简洁、便于口语播报的方式回复，避免使用代码块、表格等不适合语音的内容。）");
+                            }
                             debug!(
                                 "[AgentLoop] Retry {}: sending {} messages after compression",
                                 retry_count,
@@ -4243,10 +4242,8 @@ impl AgentLoop {
                                 // Y1 (Phase4-a): fold the retry call's defs with
                                 // the same gates/rendering as the main call —
                                 // same query ⇒ same fold bytes.
-                                let r_tools = self.apply_tool_doc_folding(
-                                    self.build_tool_defs(),
-                                    instance,
-                                );
+                                let r_tools =
+                                    self.apply_tool_doc_folding(self.build_tool_defs(), instance);
                                 self.emit_observer_sync(
                                     crate::loop_executor::ObserverEvent::LlmRequest {
                                         trace_id: trace_id.to_string(),
@@ -4346,53 +4343,54 @@ impl AgentLoop {
 
             // Record usage statistics if data store is available.
             if let Some(ref ds) = self.data_store
-                && let Some(ref usage) = response.usage {
-                    let model_name = self.active_model.read().clone();
-                    let cache_creation = usage.cache_creation_tokens.unwrap_or(0);
-                    let cache_read = usage.cache_read_tokens.or(usage.cached_tokens).unwrap_or(0);
-                    // A3：分项计价 + 实际命中条目名（未命中 → 空名 + 全 0，
-                    // 明细行可区分「未命中」与「命中免费条目」）。
-                    let breakdown = ds.compute_cost_breakdown(
-                        &model_name,
-                        usage.prompt_tokens,
-                        usage.completion_tokens,
-                        cache_creation,
-                        cache_read,
-                    );
-                    let empty = nemesis_data::CostBreakdown::default();
-                    let bd = breakdown.as_ref().unwrap_or(&empty);
-                    let log = nemesis_data::RequestLog {
-                        id: 0,
-                        trace_id: trace_id.to_string(),
-                        model: model_name.clone(),
-                        provider_type: String::new(),
-                        input_tokens: usage.prompt_tokens,
-                        output_tokens: usage.completion_tokens,
-                        cache_creation_tokens: cache_creation,
-                        cache_read_tokens: cache_read,
-                        total_cost_usd: bd.total_cost_usd,
-                        latency_ms: round_duration.as_millis() as i64,
-                        status_code: if response.content.starts_with("Error:") {
-                            500
-                        } else {
-                            200
-                        },
-                        error_message: None,
-                        is_streaming: false,
-                        created_at: chrono::Local::now().timestamp(),
-                        pricing_model: bd.pricing_model.clone(),
-                        input_cost_usd: bd.input_cost_usd,
-                        output_cost_usd: bd.output_cost_usd,
-                        cache_creation_cost_usd: bd.cache_creation_cost_usd,
-                        cache_read_cost_usd: bd.cache_read_cost_usd,
-                        // provider trait 无流式通路，TTFT 无从测量（列留 NULL）。
-                        first_token_ms: None,
-                        session_key: context.session_key.clone(),
-                    };
-                    if let Err(e) = ds.insert_request_log(&log) {
-                        tracing::warn!("[AgentLoop] Failed to record usage: {e}");
-                    }
+                && let Some(ref usage) = response.usage
+            {
+                let model_name = self.active_model.read().clone();
+                let cache_creation = usage.cache_creation_tokens.unwrap_or(0);
+                let cache_read = usage.cache_read_tokens.or(usage.cached_tokens).unwrap_or(0);
+                // A3：分项计价 + 实际命中条目名（未命中 → 空名 + 全 0，
+                // 明细行可区分「未命中」与「命中免费条目」）。
+                let breakdown = ds.compute_cost_breakdown(
+                    &model_name,
+                    usage.prompt_tokens,
+                    usage.completion_tokens,
+                    cache_creation,
+                    cache_read,
+                );
+                let empty = nemesis_data::CostBreakdown::default();
+                let bd = breakdown.as_ref().unwrap_or(&empty);
+                let log = nemesis_data::RequestLog {
+                    id: 0,
+                    trace_id: trace_id.to_string(),
+                    model: model_name.clone(),
+                    provider_type: String::new(),
+                    input_tokens: usage.prompt_tokens,
+                    output_tokens: usage.completion_tokens,
+                    cache_creation_tokens: cache_creation,
+                    cache_read_tokens: cache_read,
+                    total_cost_usd: bd.total_cost_usd,
+                    latency_ms: round_duration.as_millis() as i64,
+                    status_code: if response.content.starts_with("Error:") {
+                        500
+                    } else {
+                        200
+                    },
+                    error_message: None,
+                    is_streaming: false,
+                    created_at: chrono::Local::now().timestamp(),
+                    pricing_model: bd.pricing_model.clone(),
+                    input_cost_usd: bd.input_cost_usd,
+                    output_cost_usd: bd.output_cost_usd,
+                    cache_creation_cost_usd: bd.cache_creation_cost_usd,
+                    cache_read_cost_usd: bd.cache_read_cost_usd,
+                    // provider trait 无流式通路，TTFT 无从测量（列留 NULL）。
+                    first_token_ms: None,
+                    session_key: context.session_key.clone(),
+                };
+                if let Err(e) = ds.insert_request_log(&log) {
+                    tracing::warn!("[AgentLoop] Failed to record usage: {e}");
                 }
+            }
 
             // Continue-generation on max_tokens truncation (内部专项/nanobot
             // pattern). When completion hits the cap, output is cut mid-way —
@@ -4619,9 +4617,7 @@ impl AgentLoop {
                     .as_ref()
                     .map(|e| e.is_engaged())
                     .unwrap_or(false)
-                && tool_calls
-                    .iter()
-                    .all(|tc| self.tool_is_read_only(&tc.name))
+                && tool_calls.iter().all(|tc| self.tool_is_read_only(&tc.name))
             {
                 let pc = self.precompute_readonly_batch(&tool_calls, context).await;
                 Some(pc)
@@ -4972,8 +4968,11 @@ impl AgentLoop {
                 // storm — consecutive identical — internally). On a repeated
                 // failure, append a nudge so the model sees it in the error.
                 // Signature input is the post-gate text — same as pre-X1.
-                let error_for_guard: Option<&str> =
-                    if tool_succeeded { None } else { Some(&gate_text) };
+                let error_for_guard: Option<&str> = if tool_succeeded {
+                    None
+                } else {
+                    Some(&gate_text)
+                };
                 let nudge6 = turn_guard
                     .record_tool_outcome(&tc.name, error_for_guard)
                     .inspect(|_nudge| {
@@ -5009,42 +5008,36 @@ impl AgentLoop {
                 // only when the path matches a chain file name.)
                 if tool_succeeded
                     && matches!(tc.name.as_str(), "read_file" | "write_file" | "edit_file")
-                    && let Ok(args_val) = serde_json::from_str::<serde_json::Value>(
-                        &tc.arguments,
-                    )
-                        && let Some(path_str) =
-                            args_val.get("path").and_then(|v| v.as_str())
-                        {
-                            let touched = std::path::PathBuf::from(path_str);
-                            let ws_root = self.workspace_root.read().clone();
-                            if let Some(ref root) = ws_root {
-                                // Chain files are <dir>/AGENTS.md or CLAUDE.md
-                                // under the workspace — check by file name to
-                                // avoid re-reading the whole chain on every
-                                // file op (the full path_is_on_chain check
-                                // happens against the loaded chain at
-                                // injection; here the name match is the
-                                // conservative trigger).
-                                let name = touched
-                                    .file_name()
-                                    .map(|n| n.to_string_lossy().to_string())
-                                    .unwrap_or_default();
-                                if name == "AGENTS.md" || name == "CLAUDE.md" {
-                                    let chain = crate::workspace_instructions::load_instruction_chain(
-                                        root, root,
-                                    );
-                                    if crate::workspace_instructions::path_is_on_chain(
-                                        &chain, &touched,
-                                    ) {
-                                        info!(
-                                            "[AgentLoop] instruction-chain file touched: {} — context digest invalidated",
-                                            touched.display()
-                                        );
-                                        self.invalidate_context_digests();
-                                    }
-                                }
+                    && let Ok(args_val) = serde_json::from_str::<serde_json::Value>(&tc.arguments)
+                    && let Some(path_str) = args_val.get("path").and_then(|v| v.as_str())
+                {
+                    let touched = std::path::PathBuf::from(path_str);
+                    let ws_root = self.workspace_root.read().clone();
+                    if let Some(ref root) = ws_root {
+                        // Chain files are <dir>/AGENTS.md or CLAUDE.md
+                        // under the workspace — check by file name to
+                        // avoid re-reading the whole chain on every
+                        // file op (the full path_is_on_chain check
+                        // happens against the loaded chain at
+                        // injection; here the name match is the
+                        // conservative trigger).
+                        let name = touched
+                            .file_name()
+                            .map(|n| n.to_string_lossy().to_string())
+                            .unwrap_or_default();
+                        if name == "AGENTS.md" || name == "CLAUDE.md" {
+                            let chain =
+                                crate::workspace_instructions::load_instruction_chain(root, root);
+                            if crate::workspace_instructions::path_is_on_chain(&chain, &touched) {
+                                info!(
+                                    "[AgentLoop] instruction-chain file touched: {} — context digest invalidated",
+                                    touched.display()
+                                );
+                                self.invalidate_context_digests();
                             }
                         }
+                    }
+                }
 
                 // ⑥ Escalation: same (tool, error) failed past the hard-stop
                 // threshold → nudges are being ignored. Latch a stop event and
@@ -5448,24 +5441,26 @@ impl AgentLoop {
                 // bounded). A Deny verdict blocks; errors/Allow proceed (the guardian
                 // only escalates — rules already denied cases returned above).
                 if security.is_critical_tool(&tool_call.name)
-                    && let Some(judge) = security.judge() {
-                        let req = nemesis_security::guardian::JudgeRequest {
-                            action: tool_call.name.clone(),
-                            risk_level: "critical".to_string(),
-                            transcript: tool_call.arguments.clone(),
-                        };
-                        if let Ok(v) = judge.judge(&req).await
-                            && v.outcome == nemesis_security::guardian::JudgeOutcome::Deny {
-                                warn!(
-                                    "[AgentLoop] Guardian denied critical tool {}: {}",
-                                    tool_call.name, v.rationale
-                                );
-                                return format!(
-                                    "⛔ GUARDIAN DENIED: {} — The safety judge flagged this critical operation as unsafe. Do NOT retry. Inform the user.",
-                                    v.rationale
-                                );
-                            }
+                    && let Some(judge) = security.judge()
+                {
+                    let req = nemesis_security::guardian::JudgeRequest {
+                        action: tool_call.name.clone(),
+                        risk_level: "critical".to_string(),
+                        transcript: tool_call.arguments.clone(),
+                    };
+                    if let Ok(v) = judge.judge(&req).await
+                        && v.outcome == nemesis_security::guardian::JudgeOutcome::Deny
+                    {
+                        warn!(
+                            "[AgentLoop] Guardian denied critical tool {}: {}",
+                            tool_call.name, v.rationale
+                        );
+                        return format!(
+                            "⛔ GUARDIAN DENIED: {} — The safety judge flagged this critical operation as unsafe. Do NOT retry. Inform the user.",
+                            v.rationale
+                        );
                     }
+                }
             }
         }
 
@@ -5520,7 +5515,10 @@ impl AgentLoop {
         let checkpoint_arc = std::sync::Arc::new(self.checkpoint_store.read().as_ref().cloned());
         let hooks_arc = std::sync::Arc::new(scoped_hooks.clone());
         type NextExec = std::sync::Arc<
-            dyn Fn(HookToolCall) -> std::pin::Pin<Box<dyn std::future::Future<Output = String> + Send>>
+            dyn Fn(
+                    HookToolCall,
+                )
+                    -> std::pin::Pin<Box<dyn std::future::Future<Output = String> + Send>>
                 + Send
                 + Sync,
         >;
@@ -5540,9 +5538,10 @@ impl AgentLoop {
                     let tool_was_registered = tool_opt.is_some();
                     if let Some(ref tool) = tool_opt
                         && let Some(change) = tool.preview(&call.arguments)
-                            && let Some(cp) = cp.as_ref() {
-                                cp.snapshot(&change).await;
-                            }
+                        && let Some(cp) = cp.as_ref()
+                    {
+                        cp.snapshot(&change).await;
+                    }
                     match tool_opt {
                         Some(tool) => match tool.execute(&call.arguments, &ctx).await {
                             Ok(result) => {
@@ -5582,9 +5581,7 @@ impl AgentLoop {
                 let hook = std::sync::Arc::clone(&hook);
                 let next = std::sync::Arc::clone(&next);
                 Box::pin(async move { hook.around_tool_use(call, next).await })
-                    as std::pin::Pin<
-                        Box<dyn std::future::Future<Output = String> + Send>,
-                    >
+                    as std::pin::Pin<Box<dyn std::future::Future<Output = String> + Send>>
             }) as NextExec;
         }
         let hook_call_owned = hook_call.clone();
@@ -5677,8 +5674,10 @@ impl AgentLoop {
     /// `rewrite_custom_command` 的 check() 里自动重载（HotReloader 统一收编，
     /// dashboard/CLI 改命令表后无需重启）。
     pub fn set_commands_path(&self, path: std::path::PathBuf) {
-        *self.commands_hot.write() =
-            Some(nemesis_config::HotReloader::new(path, nemesis_config::load_commands_config));
+        *self.commands_hot.write() = Some(nemesis_config::HotReloader::new(
+            path,
+            nemesis_config::load_commands_config,
+        ));
     }
 
     /// CC hooks 桥注入（PreCompact/PostCompact 触发用；工具/生命周期钩子走
@@ -5764,10 +5763,7 @@ impl AgentLoop {
     /// H3 (P2.2): enable skills-catalog digest injection by providing the
     /// loader. The digest is injected (same point as the time/env hint) only
     /// when the catalog changed since the last injection for this session.
-    pub fn set_skills_loader(
-        &self,
-        loader: Arc<nemesis_skills::loader::SkillsLoader>,
-    ) {
+    pub fn set_skills_loader(&self, loader: Arc<nemesis_skills::loader::SkillsLoader>) {
         *self.skills_loader.write() = Some(loader);
     }
 
@@ -5781,7 +5777,11 @@ impl AgentLoop {
     /// Full-review M4: set the context-snapshot message role ("user" |
     /// "system"). Anything unrecognized stays/becomes "user" (default).
     pub fn set_snapshot_role(&self, role: &str) {
-        let r = if role.eq_ignore_ascii_case("system") { "system" } else { "user" };
+        let r = if role.eq_ignore_ascii_case("system") {
+            "system"
+        } else {
+            "user"
+        };
         *self.snapshot_role.write() = r.to_string();
     }
 
@@ -5884,7 +5884,7 @@ impl AgentLoop {
             .and_then(|s| serde_json::from_str::<serde_json::Value>(&s).ok())
             .and_then(|v| nemesis_types::capability::resolve_max_output_tokens(&v, &active))
             .map(|n| n as u32)
-            // ↑ i64 (from JSON) → u32; max_output_tokens is a non-negative count
+        // ↑ i64 (from JSON) → u32; max_output_tokens is a non-negative count
     }
 
     /// U16 (sixth batch): resolve the active model's per-model
@@ -5921,9 +5921,7 @@ impl AgentLoop {
         std::fs::read_to_string(&path)
             .ok()
             .and_then(|s| serde_json::from_str::<serde_json::Value>(&s).ok())
-            .and_then(|v| {
-                nemesis_types::capability::resolve_summarizer_prefix_reuse(&v, &active)
-            })
+            .and_then(|v| nemesis_types::capability::resolve_summarizer_prefix_reuse(&v, &active))
             .unwrap_or(true)
     }
 
@@ -5976,13 +5974,20 @@ impl AgentLoop {
             // the plain search() runs the store's 0.7 bar (memory_search
             // tuning), which silently emptied loosely-related injection hits
             // (2026-08-29 根因).
-            let result = mgr.search_auto_inject(&query, top_k.max(1) + 2).await.ok()?;
+            let result = mgr
+                .search_auto_inject(&query, top_k.max(1) + 2)
+                .await
+                .ok()?;
             let mut scored: Vec<(f64, String)> = result
                 .entries
                 .into_iter()
                 .map(|e| {
                     let content = e.entry.content;
-                    let cut = content.char_indices().nth(300).map(|(i, _)| i).unwrap_or(content.len());
+                    let cut = content
+                        .char_indices()
+                        .nth(300)
+                        .map(|(i, _)| i)
+                        .unwrap_or(content.len());
                     (e.score, content[..cut].to_string())
                 })
                 .collect();
@@ -6153,16 +6158,17 @@ impl AgentLoop {
             // user message; here we only render. Empty/None ⇒ no section ⇒
             // byte-identical output to auto_inject=false.
             if let Some(hits) = memory_hits
-                && !hits.is_empty() {
-                    let body = hits
-                        .iter()
-                        .map(|h| format!("- {}", h))
-                        .collect::<Vec<_>>()
-                        .join("\n");
-                    sections.push(format!(
+                && !hits.is_empty()
+            {
+                let body = hits
+                    .iter()
+                    .map(|h| format!("- {}", h))
+                    .collect::<Vec<_>>()
+                    .join("\n");
+                sections.push(format!(
                         "# Memory Context\n{body}\n\n(以上是自动检索到的相关长期记忆，可能与当前对话有关，也可能无关——自行判断取舍。)"
                     ));
-                }
+            }
             // X2 (U8 refinement): runtime policy facts as the LAST section.
             // All three inputs are plain state rendered without clocks —
             // deterministic (same state ⇒ identical bytes, so the merged
@@ -6628,7 +6634,8 @@ fn conversation_turn_to_llm_message(turn: &crate::types::ConversationTurn) -> Ll
 
 /// The trailing instruction for a G1 prefix-reuse summary request. Kept in one
 /// place so the batch and multipart paths emit the identical instruction.
-const SUMMARIZE_INSTRUCTION: &str = "请对以上对话片段做一份简明摘要，保留核心上下文与关键要点，供后续对话作为前情提要使用。";
+const SUMMARIZE_INSTRUCTION: &str =
+    "请对以上对话片段做一份简明摘要，保留核心上下文与关键要点，供后续对话作为前情提要使用。";
 
 /// T4 (U1): pre-G1 summary shape, restored as the per-model fallback
 /// (`summarizer_prefix_reuse: false`).
@@ -6722,8 +6729,24 @@ async fn summarize_multipart_owned(
     let part1 = &messages[..mid];
     let part2 = &messages[mid..];
 
-    let s1 = summarize_batch_owned(system_msg, part1, existing_summary, provider, model, observer_manager.clone()).await;
-    let s2 = summarize_batch_owned(system_msg, part2, "", provider, model, observer_manager.clone()).await;
+    let s1 = summarize_batch_owned(
+        system_msg,
+        part1,
+        existing_summary,
+        provider,
+        model,
+        observer_manager.clone(),
+    )
+    .await;
+    let s2 = summarize_batch_owned(
+        system_msg,
+        part2,
+        "",
+        provider,
+        model,
+        observer_manager.clone(),
+    )
+    .await;
 
     let (s1, s2) = match (s1, s2) {
         (Some(a), Some(b)) => (a, b),
@@ -6959,16 +6982,17 @@ pub fn extract_continuation_task_id(sender_id: &str) -> Option<&str> {
 /// - If no metadata, returns sender_id
 pub fn extract_peer(msg: &nemesis_types::channel::InboundMessage) -> String {
     if let Some(peer_kind) = msg.metadata.get("peer_kind")
-        && !peer_kind.is_empty() {
-            let peer_id = msg.metadata.get("peer_id").cloned().unwrap_or_else(|| {
-                if peer_kind == "direct" {
-                    msg.sender_id.clone()
-                } else {
-                    msg.chat_id.clone()
-                }
-            });
-            return format!("{}:{}", peer_kind, peer_id);
-        }
+        && !peer_kind.is_empty()
+    {
+        let peer_id = msg.metadata.get("peer_id").cloned().unwrap_or_else(|| {
+            if peer_kind == "direct" {
+                msg.sender_id.clone()
+            } else {
+                msg.chat_id.clone()
+            }
+        });
+        return format!("{}:{}", peer_kind, peer_id);
+    }
     msg.sender_id.clone()
 }
 
@@ -7035,10 +7059,12 @@ pub fn resolve_route(input: &RouteInput) -> RouteOutput {
         .parent_peer
         .as_ref()
         .and_then(|pp| {
-            pp.find(':').map(|colon_pos| (
+            pp.find(':').map(|colon_pos| {
+                (
                     Some(pp[..colon_pos].to_string()),
                     Some(pp[colon_pos + 1..].to_string()),
-                ))
+                )
+            })
         })
         .unwrap_or((None, None));
 

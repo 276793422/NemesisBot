@@ -101,11 +101,9 @@ where
         serde_json::Value::Number(n) => n.as_i64().ok_or_else(|| {
             D::Error::invalid_type(Unexpected::Other("non-integer number"), &"an integer")
         }),
-        serde_json::Value::String(s) => {
-            s.trim().parse::<i64>().map_err(|_| {
-                D::Error::invalid_type(Unexpected::Str(&s), &"an integer or decimal string")
-            })
-        }
+        serde_json::Value::String(s) => s.trim().parse::<i64>().map_err(|_| {
+            D::Error::invalid_type(Unexpected::Str(&s), &"an integer or decimal string")
+        }),
         other => Err(D::Error::invalid_type(
             match &other {
                 serde_json::Value::Bool(b) => Unexpected::Bool(*b),
@@ -124,8 +122,7 @@ where
 // ============================================================================
 
 /// Top-level application configuration.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[derive(Default)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct Config {
     #[serde(default)]
     pub agents: AgentsConfig,
@@ -221,7 +218,6 @@ impl Default for BoardFlagConfig {
     }
 }
 
-
 // ============================================================================
 // Executor Separation Config (执行体剥离 + 沙盒开关)
 // ============================================================================
@@ -296,8 +292,7 @@ impl Default for CaptureConfig {
 // Agents Config
 // ============================================================================
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[derive(Default)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct AgentsConfig {
     #[serde(default)]
     pub defaults: AgentDefaults,
@@ -355,8 +350,7 @@ impl Default for ToolDocFoldingConfig {
 }
 
 /// L1 (U19): `agents.lsp_tool` config section.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[derive(Default)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct LspToolConfig {
     /// Enable the `lsp` semantic-code tool (default false).
     #[serde(default)]
@@ -371,10 +365,8 @@ pub struct LspToolConfig {
     pub idle_secs: Option<u64>,
 }
 
-
 /// I4: `agents.codex_tool` config section (mirrors claude_code_tool).
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[derive(Default)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct CodexToolConfig {
     #[serde(default)]
     pub enabled: bool,
@@ -388,10 +380,8 @@ pub struct CodexToolConfig {
     pub sandbox: String,
 }
 
-
 /// H7 (U13 half): `agents.claude_code_tool` config section.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[derive(Default)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct ClaudeCodeToolConfig {
     /// Enable the claude_code delegation tool (default false).
     #[serde(default)]
@@ -406,8 +396,6 @@ pub struct ClaudeCodeToolConfig {
     #[serde(default)]
     pub permission_mode: String,
 }
-
-
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AgentDefaults {
@@ -1175,7 +1163,10 @@ fn mcp_config_from_value(v: serde_json::Value) -> std::result::Result<McpConfig,
     }
 
     // 无 servers/mcpServers：仅开关等顶层字段（容忍空/残缺配置）。
-    let enabled = obj.get("enabled").and_then(|b| b.as_bool()).unwrap_or(false);
+    let enabled = obj
+        .get("enabled")
+        .and_then(|b| b.as_bool())
+        .unwrap_or(false);
     Ok(McpConfig {
         enabled,
         servers: Vec::new(),
@@ -1638,15 +1629,13 @@ pub struct RegistrySecurityRules {
 }
 
 /// Scanner configuration loaded from config.scanner.json.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[derive(Default)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct ScannerFullConfig {
     #[serde(default)]
     pub enabled: Vec<String>,
     #[serde(default)]
     pub engines: std::collections::HashMap<String, serde_json::Value>,
 }
-
 
 /// Engine state tracking for scanner engines.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -1906,9 +1895,10 @@ pub fn save_config(config_path: &Path, config: &mut Config) -> Result<()> {
             // Normalize logging directory
             if let Some(ref mut logging) = config.logging
                 && let Some(ref mut llm) = logging.llm
-                    && llm.log_dir.is_empty() {
-                        llm.log_dir = "logs/request_logs".to_string();
-                    }
+                && llm.log_dir.is_empty()
+            {
+                llm.log_dir = "logs/request_logs".to_string();
+            }
         }
     }
 
@@ -1952,10 +1942,11 @@ pub fn is_local_mode(config_path: &Path) -> bool {
         let local_dir = cwd.join(".nemesisbot");
         if local_dir.exists()
             && let Ok(canonical_config) = config_path.canonicalize()
-                && let Ok(canonical_local) = local_dir.canonicalize()
-                    && let Some(parent) = canonical_config.parent() {
-                        return parent == canonical_local;
-                    }
+            && let Ok(canonical_local) = local_dir.canonicalize()
+            && let Some(parent) = canonical_config.parent()
+        {
+            return parent == canonical_local;
+        }
     }
     false
 }
@@ -1997,24 +1988,28 @@ pub fn apply_env_overrides(config: &mut Config) {
         config.agents.defaults.image_model = v;
     }
     if let Ok(v) = std::env::var("NEMESISBOT_AGENTS_DEFAULTS_MAX_TOKENS")
-        && let Ok(n) = v.parse() {
-            config.agents.defaults.max_tokens = n;
-        }
+        && let Ok(n) = v.parse()
+    {
+        config.agents.defaults.max_tokens = n;
+    }
     if let Ok(v) = std::env::var("NEMESISBOT_AGENTS_DEFAULTS_TEMPERATURE")
-        && let Ok(f) = v.parse() {
-            config.agents.defaults.temperature = f;
-        }
+        && let Ok(f) = v.parse()
+    {
+        config.agents.defaults.temperature = f;
+    }
     if let Ok(v) = std::env::var("NEMESISBOT_AGENTS_DEFAULTS_MAX_TOOL_ITERATIONS")
-        && let Ok(n) = v.parse() {
-            config.agents.defaults.max_tool_iterations = n;
-        }
+        && let Ok(n) = v.parse()
+    {
+        config.agents.defaults.max_tool_iterations = n;
+    }
     if let Ok(v) = std::env::var("NEMESISBOT_AGENTS_DEFAULTS_CONCURRENT_REQUEST_MODE") {
         config.agents.defaults.concurrent_request_mode = v;
     }
     if let Ok(v) = std::env::var("NEMESISBOT_AGENTS_DEFAULTS_QUEUE_SIZE")
-        && let Ok(n) = v.parse() {
-            config.agents.defaults.queue_size = n;
-        }
+        && let Ok(n) = v.parse()
+    {
+        config.agents.defaults.queue_size = n;
+    }
 
     // Web channel
     if let Ok(v) = std::env::var("NEMESISBOT_CHANNELS_WEB_ENABLED") {
@@ -2024,27 +2019,30 @@ pub fn apply_env_overrides(config: &mut Config) {
         config.channels.web.host = v;
     }
     if let Ok(v) = std::env::var("NEMESISBOT_CHANNELS_WEB_PORT")
-        && let Ok(n) = v.parse() {
-            config.channels.web.port = n;
-        }
+        && let Ok(n) = v.parse()
+    {
+        config.channels.web.port = n;
+    }
 
     // Gateway
     if let Ok(v) = std::env::var("NEMESISBOT_GATEWAY_HOST") {
         config.gateway.host = v;
     }
     if let Ok(v) = std::env::var("NEMESISBOT_GATEWAY_PORT")
-        && let Ok(n) = v.parse() {
-            config.gateway.port = n;
-        }
+        && let Ok(n) = v.parse()
+    {
+        config.gateway.port = n;
+    }
 
     // Heartbeat
     if let Ok(v) = std::env::var("NEMESISBOT_HEARTBEAT_ENABLED") {
         config.heartbeat.enabled = v.parse().unwrap_or(true);
     }
     if let Ok(v) = std::env::var("NEMESISBOT_HEARTBEAT_INTERVAL")
-        && let Ok(n) = v.parse() {
-            config.heartbeat.interval = n;
-        }
+        && let Ok(n) = v.parse()
+    {
+        config.heartbeat.interval = n;
+    }
 
     // Security
     if let Ok(v) = std::env::var("NEMESISBOT_SECURITY_ENABLED") {
@@ -2211,9 +2209,10 @@ impl Config {
     pub fn workspace_path(&self) -> String {
         let ws = &self.agents.defaults.workspace;
         if ws.starts_with("~/")
-            && let Some(home) = dirs::home_dir() {
-                return home.join(&ws[2..]).to_string_lossy().to_string();
-            }
+            && let Some(home) = dirs::home_dir()
+        {
+            return home.join(&ws[2..]).to_string_lossy().to_string();
+        }
         if ws.is_empty() {
             return WorkspaceResolver::resolve(false)
                 .join("workspace")
@@ -2284,9 +2283,10 @@ impl Config {
         // Default log directory
         if let Some(ref mut logging) = self.logging
             && let Some(ref mut llm) = logging.llm
-                && llm.log_dir.is_empty() {
-                    llm.log_dir = "logs/request_logs".to_string();
-                }
+            && llm.log_dir.is_empty()
+        {
+            llm.log_dir = "logs/request_logs".to_string();
+        }
     }
 }
 
@@ -2314,10 +2314,11 @@ pub fn load_mcp_config(path: &Path) -> Result<McpConfig> {
     info!("[Config] MCP config file not found, trying embedded default");
     let defaults = get_embedded_defaults();
     if !defaults.mcp.is_empty()
-        && let Ok(cfg) = serde_json::from_slice::<McpConfig>(&defaults.mcp) {
-            info!("[Config] MCP config loaded from embedded default");
-            return Ok(cfg);
-        }
+        && let Ok(cfg) = serde_json::from_slice::<McpConfig>(&defaults.mcp)
+    {
+        info!("[Config] MCP config loaded from embedded default");
+        return Ok(cfg);
+    }
 
     info!("[Config] Using hardcoded default MCP config");
     Ok(McpConfig {
@@ -2368,10 +2369,11 @@ pub fn load_security_config(path: &Path) -> Result<SecurityConfig> {
     info!("[Config] Security config file not found, trying embedded default");
     let defaults = get_embedded_defaults();
     if !defaults.security.is_empty()
-        && let Ok(cfg) = serde_json::from_slice::<SecurityConfig>(&defaults.security) {
-            info!("[Config] Security config loaded from embedded default");
-            return Ok(cfg);
-        }
+        && let Ok(cfg) = serde_json::from_slice::<SecurityConfig>(&defaults.security)
+    {
+        info!("[Config] Security config loaded from embedded default");
+        return Ok(cfg);
+    }
 
     info!("[Config] Using hardcoded default security config");
     Ok(SecurityConfig::default())
@@ -2418,10 +2420,11 @@ pub fn load_scanner_config(path: &Path) -> Result<ScannerFullConfig> {
     info!("[Config] Scanner config file not found, trying embedded default");
     let defaults = get_embedded_defaults();
     if !defaults.scanner.is_empty()
-        && let Ok(cfg) = serde_json::from_slice::<ScannerFullConfig>(&defaults.scanner) {
-            info!("[Config] Scanner config loaded from embedded default");
-            return Ok(cfg);
-        }
+        && let Ok(cfg) = serde_json::from_slice::<ScannerFullConfig>(&defaults.scanner)
+    {
+        info!("[Config] Scanner config loaded from embedded default");
+        return Ok(cfg);
+    }
 
     info!("[Config] Using hardcoded default scanner config");
     Ok(ScannerFullConfig::default())
@@ -2468,10 +2471,11 @@ pub fn load_skills_config(path: &Path) -> Result<SkillsFullConfig> {
     info!("[Config] Skills config file not found, trying embedded default");
     let defaults = get_embedded_defaults();
     if !defaults.skills.is_empty()
-        && let Ok(cfg) = serde_json::from_slice::<SkillsFullConfig>(&defaults.skills) {
-            info!("[Config] Skills config loaded from embedded default");
-            return Ok(cfg);
-        }
+        && let Ok(cfg) = serde_json::from_slice::<SkillsFullConfig>(&defaults.skills)
+    {
+        info!("[Config] Skills config loaded from embedded default");
+        return Ok(cfg);
+    }
 
     info!("[Config] Using hardcoded default skills config");
     Ok(SkillsFullConfig::default())
@@ -2601,12 +2605,13 @@ fn default_mcp_timeout() -> i64 {
 /// Mirrors Go's `ExpandHome` function.
 pub fn expand_tilde(path: &str) -> PathBuf {
     if (path.starts_with("~/") || path == "~")
-        && let Some(home) = dirs::home_dir() {
-            if path == "~" {
-                return home;
-            }
-            return home.join(&path[2..]);
+        && let Some(home) = dirs::home_dir()
+    {
+        if path == "~" {
+            return home;
         }
+        return home.join(&path[2..]);
+    }
     PathBuf::from(path)
 }
 

@@ -106,7 +106,10 @@ impl Drop for MockAiServer {
 }
 
 /// Read one HTTP request, pop the next scripted reply, write the response.
-fn handle_request(stream: &mut std::net::TcpStream, script: &Mutex<Vec<MockAiReply>>) -> std::io::Result<()> {
+fn handle_request(
+    stream: &mut std::net::TcpStream,
+    script: &Mutex<Vec<MockAiReply>>,
+) -> std::io::Result<()> {
     let (head, body) = match read_request(stream) {
         Ok(v) => v,
         Err(_) => return Ok(()), // client went away; nothing to answer
@@ -126,7 +129,8 @@ fn handle_request(stream: &mut std::net::TcpStream, script: &Mutex<Vec<MockAiRep
         if guard.is_empty() {
             MockAiReply::Error {
                 status: 500,
-                body: r#"{"error":{"message":"mock script exhausted — under-provisioned test"}}"#.to_string(),
+                body: r#"{"error":{"message":"mock script exhausted — under-provisioned test"}}"#
+                    .to_string(),
             }
         } else {
             guard.remove(0)

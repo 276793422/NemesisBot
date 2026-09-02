@@ -285,7 +285,10 @@ fn test_read_side_repeat_success_nudge() {
     assert!(text.contains("重读上一次的结果"));
 
     // Different args reset nothing but count separately (no nudge).
-    assert!(g.record_read_success("grep", r#"{"pattern":"bar","path":"src"}"#).is_none());
+    assert!(
+        g.record_read_success("grep", r#"{"pattern":"bar","path":"src"}"#)
+            .is_none()
+    );
 
     // Write-like tools are ignored by the read side entirely (⑤ owns them).
     for _ in 0..5 {

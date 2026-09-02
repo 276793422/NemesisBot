@@ -207,8 +207,7 @@ fn test_resolve_model_files_searches_data_dir_when_no_local_path() {
     config.models.medium.local_model_path.clear();
     config.models.medium.local_tokenizer_path.clear();
 
-    let data_model_dir =
-        embedding_data_dir(&config_dir).join(&config.models.medium.name);
+    let data_model_dir = embedding_data_dir(&config_dir).join(&config.models.medium.name);
     assert!(
         data_model_dir.starts_with(base.path()),
         "data dir must stay inside the test tmpdir, got: {}",

@@ -38,9 +38,7 @@ fn make_state(engine: Option<Arc<WorkflowEngine>>) -> Arc<AppState> {
         cluster_service: None,
         cluster_log_dir: None,
         workflow_engine: engine,
-        chat_secret_store: Arc::new(
-            nemesis_workflow::chat_secrets::ChatSecretStore::in_memory(),
-        ),
+        chat_secret_store: Arc::new(nemesis_workflow::chat_secrets::ChatSecretStore::in_memory()),
         webhook_rate_limiter: Arc::new(crate::handlers::workflow::WebhookRateLimiter::new()),
         internal_cmd_tx: None,
         estop: None,
@@ -57,8 +55,7 @@ fn pm(cmd: &str, data: Option<serde_json::Value>) -> ProtocolMessage {
 async fn unknown_cmd_returns_error() {
     let state = make_state(None);
     let res =
-        handle_workflow_chat_message(state, "s".into(), "c".into(), pm("frobnicate", None))
-            .await;
+        handle_workflow_chat_message(state, "s".into(), "c".into(), pm("frobnicate", None)).await;
     assert!(res.is_err());
     assert!(res.unwrap_err().contains("unknown workflow_chat cmd"));
 }

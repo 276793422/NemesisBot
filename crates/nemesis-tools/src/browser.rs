@@ -416,23 +416,23 @@ impl Tool for ScreenCaptureTool {
         match mode {
             CaptureMode::FullScreen => {
                 if let Some(ref caller) = self.mcp_caller
-                    && caller.is_connected() {
-                        let mcp_args =
-                            serde_json::json!({"file_path": output_path.to_string_lossy()});
-                        match caller
-                            .call_tool("capture_screenshot_to_file", &mcp_args)
-                            .await
-                        {
-                            Ok(result) => {
-                                return ToolResult::success(&format!(
-                                    "Screenshot saved to {}\n{}",
-                                    output_path.display(),
-                                    result
-                                ));
-                            }
-                            Err(_) => { /* Fall through to PowerShell */ }
+                    && caller.is_connected()
+                {
+                    let mcp_args = serde_json::json!({"file_path": output_path.to_string_lossy()});
+                    match caller
+                        .call_tool("capture_screenshot_to_file", &mcp_args)
+                        .await
+                    {
+                        Ok(result) => {
+                            return ToolResult::success(&format!(
+                                "Screenshot saved to {}\n{}",
+                                output_path.display(),
+                                result
+                            ));
                         }
+                        Err(_) => { /* Fall through to PowerShell */ }
                     }
+                }
 
                 // Standalone: try PowerShell capture (Windows only)
                 if cfg!(target_os = "windows") {
@@ -459,28 +459,29 @@ impl Tool for ScreenCaptureTool {
                 }
 
                 if let Some(ref caller) = self.mcp_caller
-                    && caller.is_connected() {
-                        let mcp_args = serde_json::json!({
-                            "file_path": output_path.to_string_lossy(),
-                            "x": args["x"],
-                            "y": args["y"],
-                            "width": args["width"],
-                            "height": args["height"]
-                        });
-                        match caller
-                            .call_tool("capture_screenshot_to_file", &mcp_args)
-                            .await
-                        {
-                            Ok(result) => {
-                                return ToolResult::success(&format!(
-                                    "Region screenshot saved to {}\n{}",
-                                    output_path.display(),
-                                    result
-                                ));
-                            }
-                            Err(_) => { /* Fall through */ }
+                    && caller.is_connected()
+                {
+                    let mcp_args = serde_json::json!({
+                        "file_path": output_path.to_string_lossy(),
+                        "x": args["x"],
+                        "y": args["y"],
+                        "width": args["width"],
+                        "height": args["height"]
+                    });
+                    match caller
+                        .call_tool("capture_screenshot_to_file", &mcp_args)
+                        .await
+                    {
+                        Ok(result) => {
+                            return ToolResult::success(&format!(
+                                "Region screenshot saved to {}\n{}",
+                                output_path.display(),
+                                result
+                            ));
                         }
+                        Err(_) => { /* Fall through */ }
                     }
+                }
 
                 ToolResult::success(&format!(
                     "Region capture placeholder (needs MCP). Output would be: {}",
@@ -498,29 +499,30 @@ impl Tool for ScreenCaptureTool {
                 }
 
                 if let Some(ref caller) = self.mcp_caller
-                    && caller.is_connected() {
-                        let mut mcp_args =
-                            serde_json::json!({"file_path": output_path.to_string_lossy()});
-                        if !hwnd.is_empty() {
-                            mcp_args["hwnd"] = serde_json::Value::String(hwnd.to_string());
-                        }
+                    && caller.is_connected()
+                {
+                    let mut mcp_args =
+                        serde_json::json!({"file_path": output_path.to_string_lossy()});
+                    if !hwnd.is_empty() {
+                        mcp_args["hwnd"] = serde_json::Value::String(hwnd.to_string());
+                    }
 
-                        match caller
-                            .call_tool("capture_screenshot_to_file", &mcp_args)
-                            .await
-                        {
-                            Ok(result) => {
-                                return ToolResult::success(&format!(
-                                    "Window screenshot saved to {}\n{}",
-                                    output_path.display(),
-                                    result
-                                ));
-                            }
-                            Err(e) => {
-                                return ToolResult::error(&format!("window capture failed: {}", e));
-                            }
+                    match caller
+                        .call_tool("capture_screenshot_to_file", &mcp_args)
+                        .await
+                    {
+                        Ok(result) => {
+                            return ToolResult::success(&format!(
+                                "Window screenshot saved to {}\n{}",
+                                output_path.display(),
+                                result
+                            ));
+                        }
+                        Err(e) => {
+                            return ToolResult::error(&format!("window capture failed: {}", e));
                         }
                     }
+                }
 
                 ToolResult::error(
                     "window capture requires a window-mcp server (no standalone fallback available)",

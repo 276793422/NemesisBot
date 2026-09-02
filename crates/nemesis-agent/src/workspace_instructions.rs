@@ -22,10 +22,7 @@ use std::path::{Path, PathBuf};
 /// (AGENTS.md — configured order) is kept (a CLAUDE.md that merely mirrors
 /// its sibling renders once, dsh's per-directory duplicate collapse).
 /// Unreadable entries are skipped (never fail the conversation for this).
-pub fn load_instruction_chain(
-    workspace_root: &Path,
-    cwd: &Path,
-) -> Vec<(PathBuf, String)> {
+pub fn load_instruction_chain(workspace_root: &Path, cwd: &Path) -> Vec<(PathBuf, String)> {
     // Directory list: workspace root → … → cwd. If cwd is not inside the
     // workspace, fall back to just the workspace root.
     let mut dirs: Vec<PathBuf> = Vec::new();

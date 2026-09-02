@@ -51,17 +51,17 @@ fn builtin_roots() -> Vec<VerifyingKey> {
         && let Some(vk) = crate::hex_util::hex_decode_32(hex)
             .ok()
             .and_then(|b| VerifyingKey::from_bytes(&b).ok())
-        {
-            return vec![vk];
-        }
+    {
+        return vec![vk];
+    }
     // 运行时环境变量 fallback（R7 过渡）
     if let Ok(hex) = std::env::var("NEMESIS_ROOT_PUBKEY")
         && let Some(vk) = crate::hex_util::hex_decode_32(&hex)
             .ok()
             .and_then(|b| VerifyingKey::from_bytes(&b).ok())
-        {
-            return vec![vk];
-        }
+    {
+        return vec![vk];
+    }
     Vec::new()
 }
 

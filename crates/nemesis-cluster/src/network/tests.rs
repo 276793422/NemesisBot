@@ -85,12 +85,17 @@ fn test_get_all_local_ips_excludes_virtual() {
     let parsed: Vec<IpAddr> = ips
         .iter()
         .enumerate()
-        .map(|(i, ip)| ip.parse().unwrap_or_else(|_| panic!("Invalid IP at index {}: {}", i, ip)))
+        .map(|(i, ip)| {
+            ip.parse()
+                .unwrap_or_else(|_| panic!("Invalid IP at index {}: {}", i, ip))
+        })
         .collect();
     for ip in &parsed {
         assert!(!ip.is_loopback(), "should not include loopback: {}", ip);
     }
-    let first_ll = parsed.iter().position(|ip| matches!(ip, IpAddr::V4(v4) if v4.is_link_local()));
+    let first_ll = parsed
+        .iter()
+        .position(|ip| matches!(ip, IpAddr::V4(v4) if v4.is_link_local()));
     let last_normal = parsed
         .iter()
         .rposition(|ip| matches!(ip, IpAddr::V4(v4) if !v4.is_link_local()));
@@ -619,10 +624,7 @@ fn test_s4_find_available_port_all_busy_errors() {
 
 /// 从 base..=cap 找一段连续 100 个全部可由本测试绑定的 TCP 端口并全部占住。
 /// 返回 (holders, start)。找不到即 panic（环境端口极端受限，非调度问题）。
-fn hold_full_tcp_window(
-    base: u16,
-    cap: u16,
-) -> (Vec<std::net::TcpListener>, u16) {
+fn hold_full_tcp_window(base: u16, cap: u16) -> (Vec<std::net::TcpListener>, u16) {
     let mut scan = base;
     while scan.saturating_add(100) <= cap {
         let mut holders = Vec::new();

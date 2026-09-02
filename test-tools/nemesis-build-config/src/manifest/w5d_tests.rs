@@ -77,9 +77,16 @@ options = ["release", "iotsmall"]
     assert_eq!(cluster.depends, vec!["channels-rpc".to_string()]);
     assert_eq!(cluster.conflicts, vec!["forge".to_string()]);
     assert_eq!(cluster.default.as_bool(), Some(false));
-    let bp = back.features.iter().find(|f| f.id == "build-profile").unwrap();
+    let bp = back
+        .features
+        .iter()
+        .find(|f| f.id == "build-profile")
+        .unwrap();
     assert!(bp.is_enum());
-    assert_eq!(bp.options, vec!["release".to_string(), "iotsmall".to_string()]);
+    assert_eq!(
+        bp.options,
+        vec!["release".to_string(), "iotsmall".to_string()]
+    );
     assert_eq!(bp.default.as_str(), Some("iotsmall"));
 }
 

@@ -331,12 +331,13 @@ impl WebSocketClient {
 
         // Dispatch incoming notifications to registered handlers
         if msg.is_notification()
-            && let Err(e) = dispatcher.dispatch(&msg) {
-                warn!(
-                    "[WebSocketClient] {}: Dispatch error for notification: {}",
-                    id, e
-                );
-            }
+            && let Err(e) = dispatcher.dispatch(&msg)
+        {
+            warn!(
+                "[WebSocketClient] {}: Dispatch error for notification: {}",
+                id, e
+            );
+        }
     }
 
     /// Send a raw JSON-RPC message to the server.

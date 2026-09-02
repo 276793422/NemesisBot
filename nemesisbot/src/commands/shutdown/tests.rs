@@ -227,7 +227,10 @@ mod run_arm {
         body: String,
     }
 
-    fn start_mock(status: &'static str, body: &'static str) -> (u16, std::sync::mpsc::Receiver<MockRecord>) {
+    fn start_mock(
+        status: &'static str,
+        body: &'static str,
+    ) -> (u16, std::sync::mpsc::Receiver<MockRecord>) {
         let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
         let port = listener.local_addr().unwrap().port();
         let (tx, rx) = std::sync::mpsc::channel::<MockRecord>();
@@ -263,9 +266,10 @@ mod run_arm {
                 let mut auth_token = None;
                 for line in lines {
                     if let Some((k, v)) = line.split_once(':')
-                        && k.trim().eq_ignore_ascii_case("x-auth-token") {
-                            auth_token = Some(v.trim().to_string());
-                        }
+                        && k.trim().eq_ignore_ascii_case("x-auth-token")
+                    {
+                        auth_token = Some(v.trim().to_string());
+                    }
                 }
                 // 按 Content-Length 读 body（带超时兜底）
                 let content_length = head
@@ -401,7 +405,8 @@ mod run_arm {
                 "成功后信号文件应被清理"
             );
             // 断言打到的是【新端点 + 正确形状】而非旧死臂。
-            let rec = rx.recv_timeout(std::time::Duration::from_secs(2))
+            let rec = rx
+                .recv_timeout(std::time::Duration::from_secs(2))
                 .expect("mock 必须收到请求");
             assert!(
                 rec.request_line.starts_with("POST /api/internal "),
@@ -436,7 +441,8 @@ mod run_arm {
             .unwrap();
             run(false).expect("无 token 配置 → 照常成功");
             assert!(!home.join("shutdown.signal").exists());
-            let rec = rx.recv_timeout(std::time::Duration::from_secs(2))
+            let rec = rx
+                .recv_timeout(std::time::Duration::from_secs(2))
                 .expect("mock 必须收到请求");
             assert!(
                 rec.request_line.starts_with("POST /api/internal "),
@@ -468,7 +474,9 @@ mod run_arm {
                 "非 2xx 不清理信号文件"
             );
             // 收到过请求（端点确实被打了，是网关侧拒绝/错误）。
-            let rec = rx.recv_timeout(std::time::Duration::from_secs(2)).expect("mock 必须收到请求");
+            let rec = rx
+                .recv_timeout(std::time::Duration::from_secs(2))
+                .expect("mock 必须收到请求");
             assert!(rec.request_line.starts_with("POST /api/internal "));
         });
     }
@@ -540,10 +548,7 @@ mod run_arm {
             std::fs::create_dir_all(home.join("gateway.pid")).unwrap();
             run(false).expect("pid 目录不可读 → 穿透到 signal 文件路径 + Ok");
             assert!(home.join("shutdown.signal").exists());
-            assert!(
-                home.join("gateway.pid").is_dir(),
-                "该分支不清理 PID 文件"
-            );
+            assert!(home.join("gateway.pid").is_dir(), "该分支不清理 PID 文件");
         });
     }
 }
@@ -625,7 +630,9 @@ mod probes {
         std::thread::spawn(move || {
             use std::io::{Read, Write};
             for _ in 0..3 {
-                let Ok((mut stream, _)) = listener.accept() else { break };
+                let Ok((mut stream, _)) = listener.accept() else {
+                    break;
+                };
                 let mut buf = [0u8; 4096];
                 let _ = stream.read(&mut buf);
                 let resp_body = r#"{"status":"ok"}"#;
@@ -672,7 +679,7 @@ mod probes {
 #[cfg(target_os = "windows")]
 mod r9_zero {
     use std::os::windows::process::CommandExt;
-    use test_harness::{resolve_nemesisbot_bin, TestWorkspace};
+    use test_harness::{TestWorkspace, resolve_nemesisbot_bin};
 
     const CREATE_NO_WINDOW: u32 = 0x08000000;
 
@@ -702,9 +709,10 @@ $form.ShowInTaskbar = $false
             if let Ok(out) = out {
                 let text = String::from_utf8_lossy(&out.stdout).trim().to_string();
                 if let Ok(h) = text.parse::<usize>()
-                    && h != 0 {
-                        return true;
-                    }
+                    && h != 0
+                {
+                    return true;
+                }
             }
             std::thread::sleep(std::time::Duration::from_millis(500));
         }
@@ -828,7 +836,7 @@ $form.ShowInTaskbar = $false
 
 #[cfg(target_os = "windows")]
 mod r10 {
-    use test_harness::{resolve_nemesisbot_bin, TestWorkspace};
+    use test_harness::{TestWorkspace, resolve_nemesisbot_bin};
 
     /// taskkill.exe 零字节诱饵的 RAII guard：构造时写入，Drop 时删除
     /// （声明序在 run_cli 之前，panic 时也先于 TempDir 清理执行）。

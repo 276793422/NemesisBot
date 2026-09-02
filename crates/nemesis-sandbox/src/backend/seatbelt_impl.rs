@@ -12,7 +12,7 @@
 use std::path::PathBuf;
 use std::process::Command;
 
-use super::{seatbelt_profile, Availability, SandboxBackend, SandboxConf};
+use super::{Availability, SandboxBackend, SandboxConf, seatbelt_profile};
 
 /// Seatbelt 包装式后端（构造时探测 /usr/bin/sandbox-exec，一次）。
 pub struct SeatbeltBackend {

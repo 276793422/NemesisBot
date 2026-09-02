@@ -270,5 +270,8 @@ fn w4a_list_executions_skips_garbage_lines() {
     assert_eq!(listed.len(), 1);
     assert_eq!(listed[0].id, id);
     // load_execution still finds the valid record
-    assert_eq!(persistence.load_execution(&id).unwrap().workflow_name, "test_wf");
+    assert_eq!(
+        persistence.load_execution(&id).unwrap().workflow_name,
+        "test_wf"
+    );
 }

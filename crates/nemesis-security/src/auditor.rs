@@ -335,40 +335,41 @@ impl SecurityAuditor {
                 // Try to use interactive approval manager if available (mirrors Go behavior)
                 let mgr_opt = self.approval_manager.read().clone();
                 if let Some(mgr) = mgr_opt
-                    && mgr.is_running() {
-                        // Call the approval manager synchronously
-                        match mgr.request_approval_sync(
-                            &req.id,
-                            &req.op_type.to_string(),
-                            &req.target,
-                            &req.danger_level.to_string(),
-                            &reason,
-                            self.config.approval_timeout_secs,
-                        ) {
-                            Ok(true) => {
-                                // User approved the operation
-                                self.pending_count.fetch_sub(1, Ordering::SeqCst);
-                                self.approved_count.fetch_add(1, Ordering::SeqCst);
-                                return (true, None, req.id.clone());
-                            }
-                            Ok(false) => {
-                                // User explicitly denied or timed out
-                                self.pending_count.fetch_sub(1, Ordering::SeqCst);
-                                self.denied_count.fetch_add(1, Ordering::SeqCst);
-                                return (
-                                    false,
-                                    Some(format!(
-                                        "User rejected {} on '{}' ({})",
-                                        req.op_type, req.target, reason
-                                    )),
-                                    req.id.clone(),
-                                );
-                            }
-                            Err(_) => {
-                                // Dialog failed, fall through to pending request storage
-                            }
+                    && mgr.is_running()
+                {
+                    // Call the approval manager synchronously
+                    match mgr.request_approval_sync(
+                        &req.id,
+                        &req.op_type.to_string(),
+                        &req.target,
+                        &req.danger_level.to_string(),
+                        &reason,
+                        self.config.approval_timeout_secs,
+                    ) {
+                        Ok(true) => {
+                            // User approved the operation
+                            self.pending_count.fetch_sub(1, Ordering::SeqCst);
+                            self.approved_count.fetch_add(1, Ordering::SeqCst);
+                            return (true, None, req.id.clone());
+                        }
+                        Ok(false) => {
+                            // User explicitly denied or timed out
+                            self.pending_count.fetch_sub(1, Ordering::SeqCst);
+                            self.denied_count.fetch_add(1, Ordering::SeqCst);
+                            return (
+                                false,
+                                Some(format!(
+                                    "User rejected {} on '{}' ({})",
+                                    req.op_type, req.target, reason
+                                )),
+                                req.id.clone(),
+                            );
+                        }
+                        Err(_) => {
+                            // Dialog failed, fall through to pending request storage
                         }
                     }
+                }
 
                 // No approval manager available or dialog failed, store as pending request
                 let mut active = self.active_requests.write();
@@ -596,38 +597,39 @@ impl SecurityAuditor {
         // Write to the configured JSONL audit log directory
         if self.config.audit_log_file_enabled
             && let Some(ref log_dir) = self.config.audit_log_dir
-                && !log_dir.is_empty() {
-                    let log_path = Path::new(log_dir).join("audit.jsonl");
+            && !log_dir.is_empty()
+        {
+            let log_path = Path::new(log_dir).join("audit.jsonl");
 
-                    // Create directory if it doesn't exist
-                    if let Some(parent) = log_path.parent() {
-                        let _ = std::fs::create_dir_all(parent);
-                    }
+            // Create directory if it doesn't exist
+            if let Some(parent) = log_path.parent() {
+                let _ = std::fs::create_dir_all(parent);
+            }
 
-                    match serde_json::to_string(event) {
-                        Ok(line) => {
-                            use std::io::Write;
-                            // Open in append mode, create if not exists
-                            match std::fs::OpenOptions::new()
-                                .create(true)
-                                .append(true)
-                                .open(&log_path)
-                            {
-                                Ok(mut file) => {
-                                    if let Err(e) = writeln!(file, "{}", line) {
-                                        tracing::warn!(path = %log_path.display(), error = %e, "[Security] Failed to write audit event");
-                                    }
-                                }
-                                Err(e) => {
-                                    tracing::warn!(path = %log_path.display(), error = %e, "[Security] Failed to open audit log for writing");
-                                }
+            match serde_json::to_string(event) {
+                Ok(line) => {
+                    use std::io::Write;
+                    // Open in append mode, create if not exists
+                    match std::fs::OpenOptions::new()
+                        .create(true)
+                        .append(true)
+                        .open(&log_path)
+                    {
+                        Ok(mut file) => {
+                            if let Err(e) = writeln!(file, "{}", line) {
+                                tracing::warn!(path = %log_path.display(), error = %e, "[Security] Failed to write audit event");
                             }
                         }
                         Err(e) => {
-                            tracing::warn!(error = %e, "[Security] Failed to serialize audit event");
+                            tracing::warn!(path = %log_path.display(), error = %e, "[Security] Failed to open audit log for writing");
                         }
                     }
                 }
+                Err(e) => {
+                    tracing::warn!(error = %e, "[Security] Failed to serialize audit event");
+                }
+            }
+        }
 
         // Write to the explicit log_file_path if configured (mirrors Go's date-based log file)
         let log_path_opt = self.log_file_path.read().clone();
@@ -861,29 +863,35 @@ impl AuditFilter {
     /// Check if an event matches this filter.
     pub fn matches(&self, event: &AuditEvent) -> bool {
         if let Some(ref op_type) = self.operation_type
-            && event.request.op_type != *op_type {
-                return false;
-            }
+            && event.request.op_type != *op_type
+        {
+            return false;
+        }
         if let Some(ref user) = self.user
-            && event.request.user != *user {
-                return false;
-            }
+            && event.request.user != *user
+        {
+            return false;
+        }
         if let Some(ref source) = self.source
-            && (event.request.source.is_empty() || !event.request.source.contains(source)) {
-                return false;
-            }
+            && (event.request.source.is_empty() || !event.request.source.contains(source))
+        {
+            return false;
+        }
         if let Some(ref decision) = self.decision
-            && event.decision != *decision {
-                return false;
-            }
+            && event.decision != *decision
+        {
+            return false;
+        }
         if let Some(ref start) = self.start_time
-            && event.timestamp.as_str() < start.as_str() {
-                return false;
-            }
+            && event.timestamp.as_str() < start.as_str()
+        {
+            return false;
+        }
         if let Some(ref end) = self.end_time
-            && event.timestamp.as_str() > end.as_str() {
-                return false;
-            }
+            && event.timestamp.as_str() > end.as_str()
+        {
+            return false;
+        }
         true
     }
 }

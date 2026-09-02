@@ -358,7 +358,13 @@ fn test_query_logs_with_time_filter() {
 
     // Query with time filter
     let (logs, total) = store
-        .query_logs(1700000000 + 3 * 3600, 1700000000 + 8 * 3600, 1, 100, &LogFilter::default())
+        .query_logs(
+            1700000000 + 3 * 3600,
+            1700000000 + 8 * 3600,
+            1,
+            100,
+            &LogFilter::default(),
+        )
         .expect("Failed to query logs with time filter");
 
     assert_eq!(total, 5); // Logs 4-8
@@ -460,7 +466,9 @@ fn test_rollup_old_logs() {
             .expect("Failed to insert recent log");
     }
 
-    let deleted = store.retention_sweep(Some(30), None).expect("Failed to rollup old logs");
+    let deleted = store
+        .retention_sweep(Some(30), None)
+        .expect("Failed to rollup old logs");
 
     // Should delete 5 old logs
     assert_eq!(deleted, 5);
@@ -491,7 +499,9 @@ fn test_rollup_old_logs_when_no_old_logs() {
             .expect("Failed to insert recent log");
     }
 
-    let deleted = store.retention_sweep(Some(30), None).expect("Failed to rollup old logs");
+    let deleted = store
+        .retention_sweep(Some(30), None)
+        .expect("Failed to rollup old logs");
 
     // Should delete 0 logs
     assert_eq!(deleted, 0);

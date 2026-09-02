@@ -21,8 +21,7 @@ pub async fn run(local: bool) -> Result<(), Box<dyn std::error::Error>> {
         .to_string();
 
     // 2. Read gateway state
-    let state_path =
-        nemesis_path::resolve_gateway_state_path_in_workspace(
+    let state_path = nemesis_path::resolve_gateway_state_path_in_workspace(
         &crate::common::workspace_path(&home),
     );
     let gateway_info = read_gateway_state(&state_path);
@@ -121,13 +120,14 @@ async fn start_and_wait(
         tokio::time::sleep(Duration::from_millis(500)).await;
 
         if let Some(info) = read_gateway_state(state_path)
-            && info.web_port > 0 {
-                let base_url = format!("http://{}:{}", info.web_host, info.web_port);
-                if check_health(&base_url).await.is_ok() {
-                    println!("  Gateway started (port {})", info.web_port);
-                    return Ok((info.web_host, info.web_port));
-                }
+            && info.web_port > 0
+        {
+            let base_url = format!("http://{}:{}", info.web_host, info.web_port);
+            if check_health(&base_url).await.is_ok() {
+                println!("  Gateway started (port {})", info.web_port);
+                return Ok((info.web_host, info.web_port));
             }
+        }
     }
 
     Err("Gateway did not start within 30 seconds".into())

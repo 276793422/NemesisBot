@@ -1456,9 +1456,7 @@ async fn w4c_line_webhook_pair(
     (client, addr)
 }
 
-async fn w4c_read_http_response(
-    client: &mut tokio::net::TcpStream,
-) -> Option<String> {
+async fn w4c_read_http_response(client: &mut tokio::net::TcpStream) -> Option<String> {
     use tokio::io::AsyncReadExt;
     let mut out = String::new();
     let mut buf = [0u8; 1024];
@@ -1504,8 +1502,7 @@ async fn test_w4c_line_webhook_valid_signature_delivers_and_stores_token() {
     .to_string();
     let sig = w4c_line_signature(secret, body.as_bytes());
 
-    let (mut client, _addr) =
-        w4c_line_webhook_pair(&bus, secret, &reply_tokens, &running).await;
+    let (mut client, _addr) = w4c_line_webhook_pair(&bus, secret, &reply_tokens, &running).await;
     let req = format!(
         "POST /callback HTTP/1.1\r\nHost: localhost\r\nX-Line-Signature: {sig}\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{}",
         body.len(),
@@ -1513,8 +1510,13 @@ async fn test_w4c_line_webhook_valid_signature_delivers_and_stores_token() {
     );
     client.write_all(req.as_bytes()).await.unwrap();
 
-    let resp = w4c_read_http_response(&mut client).await.unwrap_or_default();
-    assert!(resp.starts_with("HTTP/1.1 200"), "expected 200 OK, got: {resp}");
+    let resp = w4c_read_http_response(&mut client)
+        .await
+        .unwrap_or_default();
+    assert!(
+        resp.starts_with("HTTP/1.1 200"),
+        "expected 200 OK, got: {resp}"
+    );
 
     let inbound = tokio::time::timeout(std::time::Duration::from_secs(5), rx.recv())
         .await
@@ -1549,8 +1551,7 @@ async fn test_w4c_line_webhook_invalid_signature_401() {
     })
     .to_string();
 
-    let (mut client, _) =
-        w4c_line_webhook_pair(&bus, "real-secret", &reply_tokens, &running).await;
+    let (mut client, _) = w4c_line_webhook_pair(&bus, "real-secret", &reply_tokens, &running).await;
     let req = format!(
         "POST /callback HTTP/1.1\r\nHost: localhost\r\nX-Line-Signature: FORGEDSIG==\r\nContent-Length: {}\r\n\r\n{}",
         body.len(),
@@ -1558,8 +1559,13 @@ async fn test_w4c_line_webhook_invalid_signature_401() {
     );
     client.write_all(req.as_bytes()).await.unwrap();
 
-    let resp = w4c_read_http_response(&mut client).await.unwrap_or_default();
-    assert!(resp.starts_with("HTTP/1.1 401"), "expected 401, got: {resp}");
+    let resp = w4c_read_http_response(&mut client)
+        .await
+        .unwrap_or_default();
+    assert!(
+        resp.starts_with("HTTP/1.1 401"),
+        "expected 401, got: {resp}"
+    );
 
     let leaked = tokio::time::timeout(std::time::Duration::from_millis(500), rx.recv()).await;
     assert!(
@@ -1587,8 +1593,13 @@ async fn test_w4c_line_webhook_malformed_body_400() {
     );
     client.write_all(req.as_bytes()).await.unwrap();
 
-    let resp = w4c_read_http_response(&mut client).await.unwrap_or_default();
-    assert!(resp.starts_with("HTTP/1.1 400"), "expected 400, got: {resp}");
+    let resp = w4c_read_http_response(&mut client)
+        .await
+        .unwrap_or_default();
+    assert!(
+        resp.starts_with("HTTP/1.1 400"),
+        "expected 400, got: {resp}"
+    );
 }
 
 #[tokio::test]
@@ -1623,8 +1634,13 @@ async fn test_w4c_line_webhook_event_guards_skip_invalid_events() {
         body
     );
     client.write_all(req.as_bytes()).await.unwrap();
-    let resp = w4c_read_http_response(&mut client).await.unwrap_or_default();
-    assert!(resp.starts_with("HTTP/1.1 200"), "expected 200, got: {resp}");
+    let resp = w4c_read_http_response(&mut client)
+        .await
+        .unwrap_or_default();
+    assert!(
+        resp.starts_with("HTTP/1.1 200"),
+        "expected 200, got: {resp}"
+    );
 
     let inbound = tokio::time::timeout(std::time::Duration::from_secs(5), rx.recv())
         .await
@@ -1637,7 +1653,10 @@ async fn test_w4c_line_webhook_event_guards_skip_invalid_events() {
 
     // 只有那条合法事件（其余被守卫跳过）
     let extra = tokio::time::timeout(std::time::Duration::from_millis(500), rx.recv()).await;
-    assert!(extra.is_err() || extra.unwrap().is_err(), "guarded events must be skipped");
+    assert!(
+        extra.is_err() || extra.unwrap().is_err(),
+        "guarded events must be skipped"
+    );
 }
 
 #[tokio::test]
@@ -1649,11 +1668,19 @@ async fn test_w4c_line_webhook_not_running_closes_without_response() {
     let running = Arc::new(parking_lot::RwLock::new(false));
 
     let (mut client, _) = w4c_line_webhook_pair(&bus, "w4c-secret", &reply_tokens, &running).await;
-    client.write_all(b"POST /callback HTTP/1.1\r\n\r\n{}").await.unwrap();
+    client
+        .write_all(b"POST /callback HTTP/1.1\r\n\r\n{}")
+        .await
+        .unwrap();
 
     // running=false → handler 直接 return，客户端读到 EOF（0 字节响应）
-    let resp = w4c_read_http_response(&mut client).await.unwrap_or_default();
-    assert!(!resp.contains("HTTP/1.1"), "no HTTP response expected when not running, got: {resp}");
+    let resp = w4c_read_http_response(&mut client)
+        .await
+        .unwrap_or_default();
+    assert!(
+        !resp.contains("HTTP/1.1"),
+        "no HTTP response expected when not running, got: {resp}"
+    );
 }
 
 // ===========================================================================
@@ -1661,7 +1688,12 @@ async fn test_w4c_line_webhook_not_running_closes_without_response() {
 // field / webhook accept-loop break after stop
 // ===========================================================================
 
-fn s2_line_channel(port: u16) -> (LineChannel, tokio::sync::broadcast::Receiver<InboundMessage>) {
+fn s2_line_channel(
+    port: u16,
+) -> (
+    LineChannel,
+    tokio::sync::broadcast::Receiver<InboundMessage>,
+) {
     let (bus, rx) = tokio::sync::broadcast::channel::<InboundMessage>(16);
     let config = LineConfig {
         channel_access_token: "s2-token".to_string(),
@@ -1681,7 +1713,9 @@ async fn s2_line_webhook_connect_then_close_returns_early() {
     ch.start().await.unwrap();
     tokio::time::sleep(std::time::Duration::from_millis(150)).await;
 
-    let s = tokio::net::TcpStream::connect(("127.0.0.1", port)).await.unwrap();
+    let s = tokio::net::TcpStream::connect(("127.0.0.1", port))
+        .await
+        .unwrap();
     drop(s); // no bytes written -> read returns Ok(0)
     tokio::time::sleep(std::time::Duration::from_millis(150)).await;
 
@@ -1733,7 +1767,9 @@ async fn s2_line_webhook_accept_loop_breaks_after_stop() {
 
     // Wake the (still blocked) accept with a fresh connection: the handler
     // returns immediately (running=false) and the loop top then breaks.
-    let s = tokio::net::TcpStream::connect(("127.0.0.1", port)).await.unwrap();
+    let s = tokio::net::TcpStream::connect(("127.0.0.1", port))
+        .await
+        .unwrap();
     tokio::time::sleep(std::time::Duration::from_millis(200)).await;
     drop(s);
 }

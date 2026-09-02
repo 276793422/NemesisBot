@@ -48,17 +48,18 @@ fn extract_tool_calls(response: &Value) -> Vec<(String, String, String)> {
     let mut result = Vec::new();
     if let Some(choices) = response["choices"].as_array()
         && let Some(choice) = choices.first()
-            && let Some(calls) = choice["message"]["tool_calls"].as_array() {
-                for call in calls {
-                    let id = call["id"].as_str().unwrap_or("unknown").to_string();
-                    let name = call["function"]["name"].as_str().unwrap_or("").to_string();
-                    let args = call["function"]["arguments"]
-                        .as_str()
-                        .unwrap_or("{}")
-                        .to_string();
-                    result.push((id, name, args));
-                }
-            }
+        && let Some(calls) = choice["message"]["tool_calls"].as_array()
+    {
+        for call in calls {
+            let id = call["id"].as_str().unwrap_or("unknown").to_string();
+            let name = call["function"]["name"].as_str().unwrap_or("").to_string();
+            let args = call["function"]["arguments"]
+                .as_str()
+                .unwrap_or("{}")
+                .to_string();
+            result.push((id, name, args));
+        }
+    }
     result
 }
 

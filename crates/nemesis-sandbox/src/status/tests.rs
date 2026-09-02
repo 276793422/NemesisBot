@@ -56,12 +56,18 @@ fn engine_owned_true_when_both_names_free() {
     let tmp = tempfile::tempdir().unwrap();
     let paths = crate::SandboxPaths::new(tmp.path());
     if matches!(service_state(crate::DRIVER_SERVICE), ServiceState::NotFound)
-        && matches!(service_state(crate::USERMODE_SERVICE), ServiceState::NotFound)
+        && matches!(
+            service_state(crate::USERMODE_SERVICE),
+            ServiceState::NotFound
+        )
     {
         assert!(engine_owned(&paths), "名字全空闲 → 归属门通过");
     } else {
         // 本机注册了（真/外部 Sandboxie）：tempdir home 下必不属于我们 → false
-        assert!(!engine_owned(&paths), "注册了但 binary 不在 tempdir runtime → 拒");
+        assert!(
+            !engine_owned(&paths),
+            "注册了但 binary 不在 tempdir runtime → 拒"
+        );
     }
 }
 

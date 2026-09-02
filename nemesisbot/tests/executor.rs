@@ -396,7 +396,7 @@ async fn u11_userland_sandbox_write_outside_denied_inside_allowed() {
     // 并注明（降级路径本身由 exec_worker::plan 决策表单测覆盖）。
     #[cfg(feature = "sandbox")]
     {
-        use nemesis_sandbox::backend::{detect_backend, Availability};
+        use nemesis_sandbox::backend::{Availability, detect_backend};
         let unavailable = matches!(
             detect_backend().map(|b| b.availability()),
             None | Some(Availability::Unavailable(_))

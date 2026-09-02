@@ -367,9 +367,10 @@ impl SessionMgr {
                 continue;
             }
             if let Ok(data) = fs::read_to_string(&path)
-                && let Ok(session) = serde_json::from_str::<ChatSession>(&data) {
-                    sessions.insert(session.key.clone(), session);
-                }
+                && let Ok(session) = serde_json::from_str::<ChatSession>(&data)
+            {
+                sessions.insert(session.key.clone(), session);
+            }
         }
 
         Ok(())

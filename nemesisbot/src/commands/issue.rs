@@ -5,9 +5,9 @@
 
 use crate::common;
 use anyhow::Result;
+use nemesis_board::BoardStore;
 use nemesis_board::assignment::{Actor, AssignmentType};
 use nemesis_board::models::{IssueFilter, IssueStatus, NewComment, NewIssue};
-use nemesis_board::BoardStore;
 
 #[derive(clap::Subcommand)]
 pub enum IssueAction {
@@ -71,8 +71,9 @@ pub enum IssueAction {
 /// Parse `type:id` / bare `manager_self` into (AssignmentType, id).
 fn parse_assignee(s: &str) -> Result<(AssignmentType, String)> {
     if let Some((t, id)) = s.split_once(':') {
-        let at = AssignmentType::from_str(t)
-            .ok_or_else(|| anyhow::anyhow!("未知 assignee 类型: {t}（可选 manager_self/worker）"))?;
+        let at = AssignmentType::from_str(t).ok_or_else(|| {
+            anyhow::anyhow!("未知 assignee 类型: {t}（可选 manager_self/worker）")
+        })?;
         if id.trim().is_empty() {
             anyhow::bail!("assignee id 不能为空（格式 type:id）");
         }
@@ -114,8 +115,13 @@ fn print_issue(issue: &nemesis_board::Issue) {
     };
     println!(
         "#{} [{}] P{} {} — {}（创建者 {}/{}）",
-        issue.number, issue.status, issue.priority, issue.title, assignee,
-        issue.creator.kind, issue.creator.id
+        issue.number,
+        issue.status,
+        issue.priority,
+        issue.title,
+        assignee,
+        issue.creator.kind,
+        issue.creator.id
     );
 }
 
@@ -159,14 +165,10 @@ pub fn run(action: IssueAction, local: bool) -> Result<()> {
                 status: status
                     .as_deref()
                     .map(|s| {
-                        IssueStatus::from_str(s)
-                            .ok_or_else(|| anyhow::anyhow!("未知 status: {s}"))
+                        IssueStatus::from_str(s).ok_or_else(|| anyhow::anyhow!("未知 status: {s}"))
                     })
                     .transpose()?,
-                assignee: assignee
-                    .as_deref()
-                    .map(parse_assignee)
-                    .transpose()?,
+                assignee: assignee.as_deref().map(parse_assignee).transpose()?,
                 project_id,
                 priority: None,
                 query,
@@ -189,15 +191,14 @@ pub fn run(action: IssueAction, local: bool) -> Result<()> {
                 println!("描述: {}", issue.description);
             }
             for c in store.list_comments(id).map_err(err)? {
-                println!(
-                    "  💬 [{}/{}] {}",
-                    c.author.kind, c.author.id, c.content
-                );
+                println!("  💬 [{}/{}] {}", c.author.kind, c.author.id, c.content);
             }
             for a in store.list_activity(id).map_err(err)? {
                 println!(
                     "  🕘 {} {} {} {}",
-                    a.created_at, a.actor.kind, a.action,
+                    a.created_at,
+                    a.actor.kind,
+                    a.action,
                     a.details.as_deref().unwrap_or("")
                 );
             }
@@ -233,12 +234,12 @@ pub fn run(action: IssueAction, local: bool) -> Result<()> {
             let id = resolve_issue_id(&store, &issue)?;
             store
                 .add_comment(NewComment {
-                issue_id: id,
-                author: actor,
-                content,
-                parent_id: None,
-                ctype: nemesis_board::models::CommentType::Comment,
-            })
+                    issue_id: id,
+                    author: actor,
+                    content,
+                    parent_id: None,
+                    ctype: nemesis_board::models::CommentType::Comment,
+                })
                 .map_err(err)?;
             println!("评论已添加");
         }

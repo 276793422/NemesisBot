@@ -21,7 +21,6 @@
 //! 6o assemble the final report
 //! 6p cleanup — real environment untouched (ini section restored)
 
-
 // Platform isolation: everything below the CLI types is `#[cfg(windows)]`
 // (see each item); on other targets only `run()` remains, which bails with a
 // clear runtime error. Imports used solely by windows-gated code are gated
@@ -33,7 +32,7 @@ use std::path::Path;
 #[cfg(target_os = "windows")]
 use std::process::Command;
 
-use anyhow::{bail, Result};
+use anyhow::{Result, bail};
 use clap::{Args, Subcommand};
 
 #[cfg(target_os = "windows")]
@@ -103,8 +102,10 @@ pub async fn run(action: EvalAction, cli_local: bool) -> Result<()> {
     #[cfg(not(target_os = "windows"))]
     {
         let _ = (action, cli_local); // silence unused params on non-Windows
-        bail!("`nemesisbot eval prompt/skill` is Windows-only (requires Sandboxie). \
-               `nemesisbot eval rules` works on all platforms.");
+        bail!(
+            "`nemesisbot eval prompt/skill` is Windows-only (requires Sandboxie). \
+               `nemesisbot eval rules` works on all platforms."
+        );
     }
     #[cfg(target_os = "windows")]
     {
@@ -123,9 +124,9 @@ pub async fn run(action: EvalAction, cli_local: bool) -> Result<()> {
             }
             EvalAction::Skill { name, common } => {
                 let loader = skills_loader_for_current_home(cli_local || common.local)?;
-                let body = loader
-                    .load_skill(&name)
-                    .with_context(|| format!("skill '{name}' not found (workspace/global/builtin)"))?;
+                let body = loader.load_skill(&name).with_context(|| {
+                    format!("skill '{name}' not found (workspace/global/builtin)")
+                })?;
                 let subject = format!("# Skill: {name}\n\n{body}");
                 let prompt_text = format!(
                     "Execute the skill '{name}' now. Use skills_info to read its full \
@@ -159,9 +160,9 @@ fn skills_loader_for_current_home(
     let workspace = home.join("workspace");
     let ws = workspace.to_string_lossy().to_string();
     let global = workspace.join("skills").to_string_lossy().to_string();
-    Ok(std::sync::Arc::new(nemesis_skills::loader::SkillsLoader::new(
-        &ws, &global, "",
-    )))
+    Ok(std::sync::Arc::new(
+        nemesis_skills::loader::SkillsLoader::new(&ws, &global, ""),
+    ))
 }
 
 #[cfg(target_os = "windows")]
@@ -294,7 +295,10 @@ async fn run_eval(
             ("Enabled", "y"),
             ("FileRootPath", &format!(r"\??\{}", eval_box_root.display())),
             ("DropAdminRights", "y"),
-            ("AllowNetworkAccess", if common_args.allow_network { "y" } else { "n" }),
+            (
+                "AllowNetworkAccess",
+                if common_args.allow_network { "y" } else { "n" },
+            ),
             ("ConfigLevel", "9"),
             ("Template", "SkipHook"),
             ("AutoRecover", "y"),
@@ -451,7 +455,11 @@ impl Drop for EvalLock {
 fn acquire_eval_lock(sandbox_root: &Path) -> Result<EvalLock> {
     let path = sandbox_root.join(".eval_lock");
     std::fs::create_dir_all(sandbox_root).ok();
-    let content = format!("pid={}\nstarted={}\n", std::process::id(), chrono::Local::now());
+    let content = format!(
+        "pid={}\nstarted={}\n",
+        std::process::id(),
+        chrono::Local::now()
+    );
 
     match std::fs::OpenOptions::new()
         .write(true)
@@ -465,13 +473,11 @@ fn acquire_eval_lock(sandbox_root: &Path) -> Result<EvalLock> {
         }
         Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {
             // 陈锁检测：读持有者 pid 判活。
-            let holder_pid = std::fs::read_to_string(&path)
-                .ok()
-                .and_then(|s| {
-                    s.lines()
-                        .find_map(|l| l.strip_prefix("pid="))
-                        .and_then(|v| v.trim().parse::<u32>().ok())
-                });
+            let holder_pid = std::fs::read_to_string(&path).ok().and_then(|s| {
+                s.lines()
+                    .find_map(|l| l.strip_prefix("pid="))
+                    .and_then(|v| v.trim().parse::<u32>().ok())
+            });
             let holder_alive = holder_pid.is_some_and(pid_alive);
             match holder_pid {
                 Some(p) if holder_alive => bail!(
@@ -489,7 +495,12 @@ fn acquire_eval_lock(sandbox_root: &Path) -> Result<EvalLock> {
                         .write(true)
                         .create_new(true)
                         .open(&path)
-                        .with_context(|| format!("re-acquire eval lock after stale cleanup {}", path.display()))?;
+                        .with_context(|| {
+                            format!(
+                                "re-acquire eval lock after stale cleanup {}",
+                                path.display()
+                            )
+                        })?;
                     use std::io::Write as _;
                     let _ = f.write_all(content.as_bytes());
                     Ok(EvalLock { path, _file: f })
@@ -509,7 +520,9 @@ fn acquire_eval_lock(sandbox_root: &Path) -> Result<EvalLock> {
 #[cfg(target_os = "windows")]
 fn pid_alive(pid: u32) -> bool {
     use windows_sys::Win32::Foundation::{CloseHandle, STILL_ACTIVE};
-    use windows_sys::Win32::System::Threading::{GetExitCodeProcess, OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION};
+    use windows_sys::Win32::System::Threading::{
+        GetExitCodeProcess, OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION,
+    };
     unsafe {
         let h = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid);
         if h.is_null() {
@@ -565,7 +578,10 @@ async fn run_phases(
         } },
         "executor": { "enabled": false },
     });
-    std::fs::write(home.join("config.json"), serde_json::to_string_pretty(&minimal)?)?;
+    std::fs::write(
+        home.join("config.json"),
+        serde_json::to_string_pretty(&minimal)?,
+    )?;
 
     // 6h — trace on for the eval box (immediate; never /reload).
     for key in ["FileTrace", "KeyTrace", "NetTrace", "PipeTrace"] {
@@ -617,13 +633,9 @@ async fn run_phases(
         ("NEMESISBOT_EVAL_SBIEDLL", &sbiedll_str),
         ("NEMESISBOT_EVAL_TIMEOUT_SECS", &timeout_str),
     ];
-    let (shell_hp, _shell_ht) = nemesis_injector::launch_and_inject_with_env(
-        &sbiectrl_str,
-        &monitor_dll_str,
-        0,
-        &env_cfg,
-    )
-    .context("launch monitor shell (injection)")?;
+    let (shell_hp, _shell_ht) =
+        nemesis_injector::launch_and_inject_with_env(&sbiectrl_str, &monitor_dll_str, 0, &env_cfg)
+            .context("launch monitor shell (injection)")?;
 
     // 6l — wait for the monitor shell (it ends when the box empties).
     // Total-timeout fuse: observe_secs + slack for the agent spawn.
@@ -632,41 +644,41 @@ async fn run_phases(
     let fuse = std::time::Duration::from_secs(common_args.observe_secs + 660);
     let shell_exit = wait_with_timeout(shell_hp, fuse).await;
 
-            // 6m — monitor events (env-error marker → abort with reason).
-            let events_raw = std::fs::read_to_string(&events_path).unwrap_or_default();
-            if let Some(errline) = events_raw.lines().find(|l| l.starts_with("# ERROR")) {
-                bail!("environment problem, eval aborted: {errline}");
-            }
-            // Event-cap truncation marker (plan 2026-08-18): make the loss
-            // visible on the console — the file itself carries the # LIMIT line.
-            if events_raw.lines().any(|l| l.starts_with("# LIMIT")) {
-                println!(
-                    "[eval] WARN: 监控事件文件达上限被截断（普通事件已抑制，deny 事件仍记录）——普通规则的命中计数可能偏低"
-                );
-            }
-            // F4（2026-08-19）监控壳异常退出降级：`# done` 行是 DLL 正常收尾
-            //（盒空+尾窗+drain 完）才写的——它的存在=事件流完整性证书。
-            // 有它 → 壳虽然异常退出（fuse 到/DLL watchdog ExitProcess(13)/被
-            // 杀）但数据可信：WARN + 继续评估（meta.monitor_shell_exit 会如实
-            // 记录非 0 值，assessor 据此判 Unknown——不丢已收集的证据）。
-            // 无它 → 真异常（事件流中途断），丢报告 bail。
-            if !matches!(shell_exit, Some(0)) {
-                let monitor_finished = events_raw.lines().any(|l| l.starts_with("# done"));
-                if monitor_finished {
-                    println!(
-                        "[eval] WARN: 监控壳异常退出（{:?}）但事件流已完整收尾（# done 存在）——保留报告继续评估，结论将标记风险未知",
-                        shell_exit
-                    );
-                } else {
-                    bail!(
-                        "monitor shell exited abnormally ({:?}) — 事件流不完整（无 # done 收尾标记），\
+    // 6m — monitor events (env-error marker → abort with reason).
+    let events_raw = std::fs::read_to_string(&events_path).unwrap_or_default();
+    if let Some(errline) = events_raw.lines().find(|l| l.starts_with("# ERROR")) {
+        bail!("environment problem, eval aborted: {errline}");
+    }
+    // Event-cap truncation marker (plan 2026-08-18): make the loss
+    // visible on the console — the file itself carries the # LIMIT line.
+    if events_raw.lines().any(|l| l.starts_with("# LIMIT")) {
+        println!(
+            "[eval] WARN: 监控事件文件达上限被截断（普通事件已抑制，deny 事件仍记录）——普通规则的命中计数可能偏低"
+        );
+    }
+    // F4（2026-08-19）监控壳异常退出降级：`# done` 行是 DLL 正常收尾
+    //（盒空+尾窗+drain 完）才写的——它的存在=事件流完整性证书。
+    // 有它 → 壳虽然异常退出（fuse 到/DLL watchdog ExitProcess(13)/被
+    // 杀）但数据可信：WARN + 继续评估（meta.monitor_shell_exit 会如实
+    // 记录非 0 值，assessor 据此判 Unknown——不丢已收集的证据）。
+    // 无它 → 真异常（事件流中途断），丢报告 bail。
+    if !matches!(shell_exit, Some(0)) {
+        let monitor_finished = events_raw.lines().any(|l| l.starts_with("# done"));
+        if monitor_finished {
+            println!(
+                "[eval] WARN: 监控壳异常退出（{:?}）但事件流已完整收尾（# done 存在）——保留报告继续评估，结论将标记风险未知",
+                shell_exit
+            );
+        } else {
+            bail!(
+                "monitor shell exited abnormally ({:?}) — 事件流不完整（无 # done 收尾标记），\
                          possible antivirus interference or sandbox fault",
-                        shell_exit
-                    );
-                }
-            }
+                shell_exit
+            );
+        }
+    }
 
-            // 6n — pending files + agent report from the box mirror.
+    // 6n — pending files + agent report from the box mirror.
     // Box-mirror path derivation must mirror Sandboxie's own redirection
     // (the reverse of nemesis_sandbox::pending::real_path_for_box):
     //   real path under %USERPROFILE%  →  <box_root>\user\current\<rel>
@@ -692,13 +704,17 @@ async fn run_phases(
         // Full mirror listing — shows exactly how far the worker got.
         let mut listing = String::new();
         fn walk(dir: &Path, depth: usize, out: &mut String) {
-            if depth > 3 { return; }
+            if depth > 3 {
+                return;
+            }
             if let Ok(rd) = std::fs::read_dir(dir) {
                 for e in rd.flatten() {
                     let p = e.path();
                     let tag = if p.is_dir() { "[D]" } else { "[F]" };
                     out.push_str(&format!("{} {}\n", tag, p.display()));
-                    if p.is_dir() { walk(&p, depth + 1, out); }
+                    if p.is_dir() {
+                        walk(&p, depth + 1, out);
+                    }
                 }
             }
         }
@@ -740,11 +756,15 @@ async fn run_phases(
     // 6o — assemble the report.
     let out_dir = match &common_args.output {
         Some(p) => p.clone(),
-        None => real_home.join("workspace").join("logs").join("eval").join(format!(
-            "{}_{}",
-            chrono::Local::now().format("%Y%m%d_%H%M%S"),
-            slug(kind)
-        )),
+        None => real_home
+            .join("workspace")
+            .join("logs")
+            .join("eval")
+            .join(format!(
+                "{}_{}",
+                chrono::Local::now().format("%Y%m%d_%H%M%S"),
+                slug(kind)
+            )),
     };
     std::fs::create_dir_all(&out_dir)?;
     // Run-status fields (assessor plan Step 0): the report consumer must be
@@ -792,9 +812,7 @@ async fn run_phases(
     // 是评估者和人工判读需要的信息——只过滤 progress 等纯噪音注释。
     let event_lines: Vec<&str> = events_raw
         .lines()
-        .filter(|l| {
-            l.starts_with('{') || l.starts_with("# LIMIT") || l.starts_with("# done")
-        })
+        .filter(|l| l.starts_with('{') || l.starts_with("# LIMIT") || l.starts_with("# done"))
         .collect();
     std::fs::write(
         out_dir.join("driver_events.jsonl"),
@@ -803,7 +821,10 @@ async fn run_phases(
     std::fs::write(out_dir.join("final_response.md"), &final_response)?;
     std::fs::write(out_dir.join("subject.txt"), subject)?;
     println!("[eval] report written to {}", out_dir.display());
-    println!("[eval] tool calls: see tool_trace.json | driver events: {}", event_lines.len());
+    println!(
+        "[eval] tool calls: see tool_trace.json | driver events: {}",
+        event_lines.len()
+    );
 
     // 6q — assess the report (plan 2026-08-17: rules-driven tri-classification).
     // 三通道立即落地（控制台/assessment.json/meta 段）；退码信号写进
@@ -868,7 +889,9 @@ fn assess_and_report(out_dir: &Path, real_home: &Path, fail_on_risk: bool) -> bo
             conclusion: Conclusion::Unknown,
             kind: read_kind_from_meta(out_dir),
             matched_rules: vec![],
-            gaps: vec!["无启用规则（0 enabled），无法评估。用 `eval rules list` 查看。".to_string()],
+            gaps: vec![
+                "无启用规则（0 enabled），无法评估。用 `eval rules list` 查看。".to_string(),
+            ],
             run_integrity: eval_assessor::RunIntegrity {
                 worker_error: None,
                 agent_exit: None,
@@ -933,27 +956,28 @@ fn write_assessment(out_dir: &Path, result: &crate::eval_assessor::AssessResult)
     let meta_path = out_dir.join("meta.json");
     if let Ok(content) = std::fs::read_to_string(&meta_path)
         && let Ok(mut meta) = serde_json::from_str::<serde_json::Value>(&content)
-            && let Some(obj) = meta.as_object_mut() {
-                obj.insert(
-                    "assessment".to_string(),
-                    serde_json::json!({
-                        "conclusion": match result.conclusion {
-                            Conclusion::Risk => "risk",
-                            Conclusion::Safe => "safe",
-                            Conclusion::Unknown => "unknown",
-                        },
-                        "matched_rules": result.matched_rules.iter()
-                            .map(|m| serde_json::json!({
-                                "id": m.id, "level": m.level, "hit_count": m.hit_count,
-                            }))
-                            .collect::<Vec<_>>(),
-                    }),
-                );
-                let pretty = serde_json::to_string_pretty(&meta).unwrap_or_default();
-                if let Err(e) = std::fs::write(&meta_path, pretty) {
-                    eprintln!("[eval] WARN: meta.json assessment 段写入失败（{e}）");
-                }
-            }
+        && let Some(obj) = meta.as_object_mut()
+    {
+        obj.insert(
+            "assessment".to_string(),
+            serde_json::json!({
+                "conclusion": match result.conclusion {
+                    Conclusion::Risk => "risk",
+                    Conclusion::Safe => "safe",
+                    Conclusion::Unknown => "unknown",
+                },
+                "matched_rules": result.matched_rules.iter()
+                    .map(|m| serde_json::json!({
+                        "id": m.id, "level": m.level, "hit_count": m.hit_count,
+                    }))
+                    .collect::<Vec<_>>(),
+            }),
+        );
+        let pretty = serde_json::to_string_pretty(&meta).unwrap_or_default();
+        if let Err(e) = std::fs::write(&meta_path, pretty) {
+            eprintln!("[eval] WARN: meta.json assessment 段写入失败（{e}）");
+        }
+    }
     result.fixed_notes()
 }
 
@@ -1020,9 +1044,26 @@ fn integrity_receipt(result: &crate::eval_assessor::AssessResult) -> String {
         Some(s) => format!("{label}{s}"),
         None => format!("{label}未记录"),
     };
-    let agent = part("agent ", i.agent_exit.map(|c| if c == 0 { "正常退出" } else { "异常退出" }));
-    let resp = part(" / 最终回复 ", i.final_response_len.map(|n| if n > 0 { "已产出" } else { "未产出" }));
-    let monitor = part(" / 监控 ", i.monitor_shell_exit.map(|c| if c == 0 { "正常" } else { "异常" }));
+    let agent = part(
+        "agent ",
+        i.agent_exit.map(|c| {
+            if c == 0 {
+                "正常退出"
+            } else {
+                "异常退出"
+            }
+        }),
+    );
+    let resp = part(
+        " / 最终回复 ",
+        i.final_response_len
+            .map(|n| if n > 0 { "已产出" } else { "未产出" }),
+    );
+    let monitor = part(
+        " / 监控 ",
+        i.monitor_shell_exit
+            .map(|c| if c == 0 { "正常" } else { "异常" }),
+    );
     let calls = match i.tool_call_count {
         Some(n) => format!(" / 工具调用 {n} 次"),
         None => " / 工具调用未记录".to_string(),
@@ -1086,12 +1127,12 @@ fn box_mirror_for(home: &Path, box_root: &Path, user_profile: &Path) -> PathBuf 
     // 1) user-tree mirror: home under %USERPROFILE% (case-insensitive).
     let prof_str = user_profile.to_string_lossy().to_string();
     let prof_prefix = format!("{}\\", prof_str.trim_end_matches('\\'));
-    if home_str.to_ascii_lowercase().starts_with(&prof_prefix.to_ascii_lowercase()) {
+    if home_str
+        .to_ascii_lowercase()
+        .starts_with(&prof_prefix.to_ascii_lowercase())
+    {
         let rel = &home_str[prof_prefix.len()..]; // safe: len from the original string
-        let user_mirror = box_root
-            .join("user")
-            .join("current")
-            .join(Path::new(rel));
+        let user_mirror = box_root.join("user").join("current").join(Path::new(rel));
         if user_mirror.exists() {
             return user_mirror;
         }
@@ -1128,10 +1169,7 @@ fn proxy_target_host(real_base: &str) -> String {
         .split_once("://")
         .map(|(_, r)| r)
         .unwrap_or(real_base);
-    rest.split(['/', '?', ':'])
-        .next()
-        .unwrap_or("")
-        .to_string()
+    rest.split(['/', '?', ':']).next().unwrap_or("").to_string()
 }
 
 #[cfg(target_os = "windows")]
@@ -1372,12 +1410,15 @@ fn user_profile_dir() -> PathBuf {
 }
 
 #[cfg(target_os = "windows")]
-async fn wait_with_timeout(handle: windows_sys::Win32::Foundation::HANDLE, timeout: std::time::Duration) -> Option<u32> {
+async fn wait_with_timeout(
+    handle: windows_sys::Win32::Foundation::HANDLE,
+    timeout: std::time::Duration,
+) -> Option<u32> {
     use windows_sys::Win32::System::Threading::{GetExitCodeProcess, WaitForSingleObject};
     // HANDLE (*mut c_void) is not Send — round-trip through usize.
     let h = handle as usize;
     let ms = wait_timeout_ms(timeout);
-    
+
     tokio::task::spawn_blocking(move || unsafe {
         let h = h as windows_sys::Win32::Foundation::HANDLE;
         if WaitForSingleObject(h, ms) != 0 {

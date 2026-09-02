@@ -98,11 +98,12 @@ fn readonly_enforced(dir: &std::path::Path, want_block: bool) -> bool {
 
 fn unset_readonly(path: &std::path::Path) {
     if path.exists()
-        && let Ok(m) = std::fs::metadata(path) {
-            let mut p = m.permissions();
-            p.set_readonly(false);
-            let _ = std::fs::set_permissions(path, p);
-        }
+        && let Ok(m) = std::fs::metadata(path)
+    {
+        let mut p = m.permissions();
+        p.set_readonly(false);
+        let _ = std::fs::set_permissions(path, p);
+    }
 }
 
 // ---------- MessageTool 141/149 回退臂 ----------
@@ -122,7 +123,10 @@ async fn message_tool_falls_back_to_stored_context_and_fires_callback() {
         .await
         .unwrap();
     assert_eq!(out, "hello fallback");
-    assert_eq!(*fired.lock().unwrap(), vec!["telegram|chat-s9d".to_string()]);
+    assert_eq!(
+        *fired.lock().unwrap(),
+        vec!["telegram|chat-s9d".to_string()]
+    );
     assert!(tool.has_sent_in_round());
     tool.reset_sent_in_round();
     assert!(!tool.has_sent_in_round());
@@ -155,7 +159,9 @@ async fn write_file_tool_error_arms_and_create_preview() {
     std::fs::write(&blocker, "x").unwrap();
 
     // 277：parent 是文件 → create_dir_all 失败。
-    let args = serde_json::json!({"path": ps(&blocker.join("sub").join("new.txt")), "content": "hi"}).to_string();
+    let args =
+        serde_json::json!({"path": ps(&blocker.join("sub").join("new.txt")), "content": "hi"})
+            .to_string();
     let out = super::WriteFileTool.execute(&args, &ctx()).await;
     assert!(out.unwrap_err().contains("Failed to create directories"));
 
@@ -165,7 +171,8 @@ async fn write_file_tool_error_arms_and_create_preview() {
     assert!(out.unwrap_err().contains("Failed to write file"));
 
     // 296：preview 对不存在文件 → Create（需要 path+content 双字段）。
-    let args = serde_json::json!({"path": ps(&ws.join("brand_new.txt")), "content": "x"}).to_string();
+    let args =
+        serde_json::json!({"path": ps(&ws.join("brand_new.txt")), "content": "x"}).to_string();
     assert!(super::WriteFileTool.preview(&args).is_some());
     let _ = std::fs::remove_dir_all(&ws);
 }
@@ -196,7 +203,8 @@ async fn edit_file_tool_read_error_write_error_and_preview() {
     let mut perm = meta.permissions();
     perm.set_readonly(true);
     std::fs::set_permissions(&ro, perm).unwrap();
-    let args = serde_json::json!({"path": ps(&ro), "old_text": "alpha", "new_text": "gamma"}).to_string();
+    let args =
+        serde_json::json!({"path": ps(&ro), "old_text": "alpha", "new_text": "gamma"}).to_string();
     let out = super::EditFileTool.execute(&args, &ctx()).await;
     if enforced {
         assert!(
@@ -224,7 +232,8 @@ async fn append_file_tool_error_arms_and_preview() {
     std::fs::write(&blocker, "x").unwrap();
 
     // 550：parent 是文件 → create_dir_all 失败。
-    let args = serde_json::json!({"path": ps(&blocker.join("leaf.txt")), "content": "hi"}).to_string();
+    let args =
+        serde_json::json!({"path": ps(&blocker.join("leaf.txt")), "content": "hi"}).to_string();
     let out = super::AppendFileTool.execute(&args, &ctx()).await;
     assert!(out.unwrap_err().contains("Failed to create directories"));
 
@@ -318,7 +327,9 @@ async fn delete_dir_tool_error_arms() {
     let out = super::DeleteDirTool.execute(&args, &ctx()).await;
     if enforced {
         assert!(
-            out.clone().unwrap_err().contains("Failed to remove directory"),
+            out.clone()
+                .unwrap_err()
+                .contains("Failed to remove directory"),
             "readonly child must block, got {:?}",
             out
         );
@@ -348,10 +359,7 @@ fn cron_tool_with_store(tag: &str, blocked: bool) -> super::CronTool {
 #[tokio::test]
 async fn cron_tool_list_serializes_jobs() {
     let tool = cron_tool_with_store("cronlist", false);
-    let out = tool
-        .execute(r#"{"action":"list"}"#, &ctx())
-        .await
-        .unwrap();
+    let out = tool.execute(r#"{"action":"list"}"#, &ctx()).await.unwrap();
     assert!(!out.is_empty());
 }
 
@@ -560,9 +568,7 @@ async fn workflow_run_tool_metadata_and_input_arms() {
     );
 
     // input 非 object → 类型错误臂。
-    let out = tool
-        .execute(r#"{"workflow":"x","input":5}"#, &ctx())
-        .await;
+    let out = tool.execute(r#"{"workflow":"x","input":5}"#, &ctx()).await;
     assert!(out.unwrap_err().contains("must be an object"));
 }
 

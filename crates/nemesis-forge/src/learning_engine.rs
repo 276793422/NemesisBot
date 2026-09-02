@@ -464,22 +464,21 @@ impl LearningEngine {
                     }
                 }
 
-                "error_recovery"
-                    if pattern.confidence >= high_conf => {
-                        let mut action =
-                            LearningAction::new("create_skill", "high", &pattern.description);
-                        action.confidence = pattern.confidence;
-                        action.pattern_id = Some(pattern_id.clone());
-                        action.draft_name = Some(format!(
-                            "{}-error-handler",
-                            pattern.tools.first().unwrap_or(&"unknown".to_string())
-                        ));
-                        action.rationale = Some(format!(
-                            "High-confidence error recovery ({:.2}): {}",
-                            pattern.confidence, pattern.description
-                        ));
-                        actions.push(action);
-                    }
+                "error_recovery" if pattern.confidence >= high_conf => {
+                    let mut action =
+                        LearningAction::new("create_skill", "high", &pattern.description);
+                    action.confidence = pattern.confidence;
+                    action.pattern_id = Some(pattern_id.clone());
+                    action.draft_name = Some(format!(
+                        "{}-error-handler",
+                        pattern.tools.first().unwrap_or(&"unknown".to_string())
+                    ));
+                    action.rationale = Some(format!(
+                        "High-confidence error recovery ({:.2}): {}",
+                        pattern.confidence, pattern.description
+                    ));
+                    actions.push(action);
+                }
 
                 "efficiency_issue" => {
                     let mut action =
@@ -494,19 +493,18 @@ impl LearningEngine {
                     actions.push(action);
                 }
 
-                "success_template"
-                    if pattern.confidence >= high_conf => {
-                        let mut action =
-                            LearningAction::new("create_skill", "high", &pattern.description);
-                        action.confidence = pattern.confidence;
-                        action.pattern_id = Some(pattern_id.clone());
-                        action.draft_name = Some(generate_skill_name(&pattern.tools.join("->")));
-                        action.rationale = Some(format!(
-                            "Success template ({:.2} confidence), automate as Skill",
-                            pattern.confidence
-                        ));
-                        actions.push(action);
-                    }
+                "success_template" if pattern.confidence >= high_conf => {
+                    let mut action =
+                        LearningAction::new("create_skill", "high", &pattern.description);
+                    action.confidence = pattern.confidence;
+                    action.pattern_id = Some(pattern_id.clone());
+                    action.draft_name = Some(generate_skill_name(&pattern.tools.join("->")));
+                    action.rationale = Some(format!(
+                        "Success template ({:.2} confidence), automate as Skill",
+                        pattern.confidence
+                    ));
+                    actions.push(action);
+                }
 
                 _ => {
                     // Unknown pattern type, skip
@@ -1395,20 +1393,22 @@ fn build_diagnosis(validation: &ArtifactValidation) -> String {
     let mut sb = String::new();
 
     if let Some(ref s1) = validation.stage1_static
-        && !s1.stage.passed {
-            sb.push_str("Stage 1 (Static) FAILED:\n");
-            for e in &s1.stage.errors {
-                sb.push_str(&format!("  - {}\n", e));
-            }
+        && !s1.stage.passed
+    {
+        sb.push_str("Stage 1 (Static) FAILED:\n");
+        for e in &s1.stage.errors {
+            sb.push_str(&format!("  - {}\n", e));
         }
+    }
 
     if let Some(ref s2) = validation.stage2_functional
-        && !s2.stage.passed {
-            sb.push_str("Stage 2 (Functional) FAILED:\n");
-            for e in &s2.stage.errors {
-                sb.push_str(&format!("  - {}\n", e));
-            }
+        && !s2.stage.passed
+    {
+        sb.push_str("Stage 2 (Functional) FAILED:\n");
+        for e in &s2.stage.errors {
+            sb.push_str(&format!("  - {}\n", e));
         }
+    }
 
     if let Some(ref s3) = validation.stage3_quality {
         sb.push_str(&format!("Stage 3 (Quality) Score: {}/100\n", s3.score));

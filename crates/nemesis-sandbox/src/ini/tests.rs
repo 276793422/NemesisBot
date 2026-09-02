@@ -53,9 +53,16 @@ fn write_ini_logs_and_pins_security_directives() {
     assert!(text.contains("AllowNetworkAccess=n"), "默认断网");
     assert!(text.contains("DropAdminRights=y"), "盒内去管理员");
     assert!(text.contains(r"OpenPipePath=\Device\NamedPipe\NemesisBox_*"));
-    assert!(text.contains("SbieCtrl_EnableAutoStart=n"), "headless 禁 GUI 自启");
+    assert!(
+        text.contains("SbieCtrl_EnableAutoStart=n"),
+        "headless 禁 GUI 自启"
+    );
     assert!(text.contains(&format!(r"FileRootPath=\??\{}", box_root.display())));
     // 幂等重写（allow_network 翻转）
     write_sandboxie_ini(&ini, "NemesisBox", &box_root, true).unwrap();
-    assert!(std::fs::read_to_string(&ini).unwrap().contains("AllowNetworkAccess=y"));
+    assert!(
+        std::fs::read_to_string(&ini)
+            .unwrap()
+            .contains("AllowNetworkAccess=y")
+    );
 }

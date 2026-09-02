@@ -18,14 +18,20 @@ fn read_allow_network_reads_executor_field() {
         r#"{ "executor": { "enabled": true, "sandbox": true, "allow_network": true } }"#,
     )
     .expect("seed config (true)");
-    assert!(read_allow_network(&paths), "allow_network=true must read as true");
+    assert!(
+        read_allow_network(&paths),
+        "allow_network=true must read as true"
+    );
 
     std::fs::write(
         home.join("config.json"),
         r#"{ "executor": { "enabled": true, "sandbox": true, "allow_network": false } }"#,
     )
     .expect("seed config (false)");
-    assert!(!read_allow_network(&paths), "allow_network=false must read as false");
+    assert!(
+        !read_allow_network(&paths),
+        "allow_network=false must read as false"
+    );
 }
 
 /// Missing field / missing section / missing file / unparseable file all default to
@@ -50,11 +56,17 @@ fn read_allow_network_defaults_false_when_unset_or_broken() {
         r#"{ "executor": { "enabled": true } }"#,
     )
     .expect("write config");
-    assert!(!read_allow_network(&paths), "executor without allow_network → false");
+    assert!(
+        !read_allow_network(&paths),
+        "executor without allow_network → false"
+    );
 
     // Unparseable config.json — must not panic, must return false.
     std::fs::write(home.join("config.json"), "not json {").expect("write config");
-    assert!(!read_allow_network(&paths), "unparseable config.json → false, not panic");
+    assert!(
+        !read_allow_network(&paths),
+        "unparseable config.json → false, not panic"
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -74,17 +86,31 @@ fn wait_for_state_immediate_hit_and_timeout() {
     // 立即命中：目标态 == 当前态（垃圾名 → NotFound）→ 不睡直接返回
     let t0 = std::time::Instant::now();
     assert_eq!(
-        wait_for_state(MISSING_SVC, ServiceState::NotFound, std::time::Duration::from_secs(5)),
+        wait_for_state(
+            MISSING_SVC,
+            ServiceState::NotFound,
+            std::time::Duration::from_secs(5)
+        ),
         ServiceState::NotFound
     );
-    assert!(t0.elapsed() < std::time::Duration::from_secs(2), "命中态必须立即返回");
+    assert!(
+        t0.elapsed() < std::time::Duration::from_secs(2),
+        "命中态必须立即返回"
+    );
     // 超时臂：目标态永不达成 → 睡满循环后返回当前态
     let t1 = std::time::Instant::now();
     assert_eq!(
-        wait_for_state(MISSING_SVC, ServiceState::Running, std::time::Duration::from_millis(400)),
+        wait_for_state(
+            MISSING_SVC,
+            ServiceState::Running,
+            std::time::Duration::from_millis(400)
+        ),
         ServiceState::NotFound
     );
-    assert!(t1.elapsed() >= std::time::Duration::from_millis(300), "超时臂必须真等");
+    assert!(
+        t1.elapsed() >= std::time::Duration::from_millis(300),
+        "超时臂必须真等"
+    );
 }
 
 #[test]
@@ -143,7 +169,10 @@ fn stop_without_purge_keeps_files() {
     let paths = SandboxPaths::new(tmp.path());
     std::fs::create_dir_all(&paths.runtime_dir).unwrap();
     stop(&paths, false).expect("tolerant stop ok");
-    assert!(paths.runtime_dir.exists(), "无 purge 保留 runtime（可再 start）");
+    assert!(
+        paths.runtime_dir.exists(),
+        "无 purge 保留 runtime（可再 start）"
+    );
 }
 
 #[test]
@@ -192,7 +221,13 @@ fn ensure_installed_bails_on_missing_runtime() {
 /// 不可执行——正是要让 spawn 失败）。
 fn plant_fake_runtime(paths: &SandboxPaths) {
     std::fs::create_dir_all(&paths.runtime_dir).unwrap();
-    for f in ["SbieDrv.sys", "SbieSvc.exe", "SbieMsg.dll", "KmdUtil.exe", "Start.exe"] {
+    for f in [
+        "SbieDrv.sys",
+        "SbieSvc.exe",
+        "SbieMsg.dll",
+        "KmdUtil.exe",
+        "Start.exe",
+    ] {
         std::fs::write(paths.runtime_dir.join(f), b"dummy-not-a-pe").unwrap();
     }
 }
@@ -208,7 +243,10 @@ fn start_propagates_kmdutil_spawn_failure_after_runtime_ok() {
     let err = start(&paths).unwrap_err();
     let msg = format!("{err:#}");
     assert!(msg.contains("install SbieDrv"), "{msg}");
-    assert!(msg.contains("spawn"), "失败必须发生在 spawn 层（非真 KmdUtil 执行）: {msg}");
+    assert!(
+        msg.contains("spawn"),
+        "失败必须发生在 spawn 层（非真 KmdUtil 执行）: {msg}"
+    );
 }
 
 #[cfg(windows)]
@@ -216,7 +254,7 @@ fn start_propagates_kmdutil_spawn_failure_after_runtime_ok() {
 fn ensure_installed_bails_on_foreign_or_fails_at_service_start() {
     if crate::elevation::is_elevated() {
         return; // 提权 + 干净机器会真写 HKLM/真注册服务（dummy KmdUtil 也被
-                // tolerant 吞掉不执行真操作，但 set_ini_path 会真写）——跳过
+        // tolerant 吞掉不执行真操作，但 set_ini_path 会真写）——跳过
     }
     let _log = crate::test_util::capture_logs();
     let tmp = tempfile::tempdir().unwrap();

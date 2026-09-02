@@ -149,14 +149,15 @@ impl ContinuationStore {
         // Also delete from disk
         let path = self.snapshot_path(task_id);
         if path.exists()
-            && let Err(e) = tokio::fs::remove_file(&path).await {
-                tracing::warn!(
-                    task_id,
-                    path = %path.display(),
-                    error = %e,
-                    "[ContinuationStore] Failed to delete continuation snapshot from disk"
-                );
-            }
+            && let Err(e) = tokio::fs::remove_file(&path).await
+        {
+            tracing::warn!(
+                task_id,
+                path = %path.display(),
+                error = %e,
+                "[ContinuationStore] Failed to delete continuation snapshot from disk"
+            );
+        }
 
         removed
     }
@@ -201,15 +202,16 @@ impl ContinuationStore {
             let path = entry.path();
             if path.extension().map(|e| e == "json").unwrap_or(false)
                 && let Ok(metadata) = entry.metadata().await
-                    && let Ok(modified) = metadata.modified()
-                        && modified < cutoff {
-                            // Extract task ID from filename
-                            if let Some(stem) = path.file_stem().and_then(|s| s.to_str()) {
-                                self.snapshots.lock().remove(stem);
-                                tokio::fs::remove_file(&path).await?;
-                                removed += 1;
-                            }
-                        }
+                && let Ok(modified) = metadata.modified()
+                && modified < cutoff
+            {
+                // Extract task ID from filename
+                if let Some(stem) = path.file_stem().and_then(|s| s.to_str()) {
+                    self.snapshots.lock().remove(stem);
+                    tokio::fs::remove_file(&path).await?;
+                    removed += 1;
+                }
+            }
         }
 
         if removed > 0 {
@@ -232,18 +234,20 @@ impl ContinuationStore {
 
         // Also scan disk for any snapshots not in memory
         if self.cache_dir.exists()
-            && let Ok(mut entries) = tokio::fs::read_dir(&self.cache_dir).await {
-                while let Ok(Some(entry)) = entries.next_entry().await {
-                    let path = entry.path();
-                    if path.extension().map(|e| e == "json").unwrap_or(false)
-                        && let Some(stem) = path.file_stem().and_then(|s| s.to_str()) {
-                            let task_id = stem.to_string();
-                            if !task_ids.contains(&task_id) {
-                                task_ids.push(task_id);
-                            }
-                        }
+            && let Ok(mut entries) = tokio::fs::read_dir(&self.cache_dir).await
+        {
+            while let Ok(Some(entry)) = entries.next_entry().await {
+                let path = entry.path();
+                if path.extension().map(|e| e == "json").unwrap_or(false)
+                    && let Some(stem) = path.file_stem().and_then(|s| s.to_str())
+                {
+                    let task_id = stem.to_string();
+                    if !task_ids.contains(&task_id) {
+                        task_ids.push(task_id);
+                    }
                 }
             }
+        }
 
         task_ids
     }
@@ -265,44 +269,43 @@ impl ContinuationStore {
         while let Some(entry) = entries.next_entry().await? {
             let path = entry.path();
             if path.extension().map(|e| e == "json").unwrap_or(false)
-                && let Some(stem) = path.file_stem().and_then(|s| s.to_str()) {
-                    // Skip if already in memory (save barrier may have populated it)
-                    {
-                        let snapshots = self.snapshots.lock();
-                        if snapshots.contains_key(stem) {
-                            continue;
-                        }
+                && let Some(stem) = path.file_stem().and_then(|s| s.to_str())
+            {
+                // Skip if already in memory (save barrier may have populated it)
+                {
+                    let snapshots = self.snapshots.lock();
+                    if snapshots.contains_key(stem) {
+                        continue;
                     }
+                }
 
-                    match tokio::fs::read_to_string(&path).await {
-                        Ok(content) => {
-                            match serde_json::from_str::<ContinuationSnapshot>(&content) {
-                                Ok(snapshot) => {
-                                    self.snapshots.lock().insert(stem.to_string(), snapshot);
-                                    recovered += 1;
-                                    tracing::info!(
-                                        task_id = stem,
-                                        "[ContinuationStore] Recovered continuation snapshot from disk"
-                                    );
-                                }
-                                Err(e) => {
-                                    tracing::warn!(
-                                        path = %path.display(),
-                                        error = %e,
-                                        "[ContinuationStore] Failed to deserialize continuation snapshot, skipping"
-                                    );
-                                }
-                            }
+                match tokio::fs::read_to_string(&path).await {
+                    Ok(content) => match serde_json::from_str::<ContinuationSnapshot>(&content) {
+                        Ok(snapshot) => {
+                            self.snapshots.lock().insert(stem.to_string(), snapshot);
+                            recovered += 1;
+                            tracing::info!(
+                                task_id = stem,
+                                "[ContinuationStore] Recovered continuation snapshot from disk"
+                            );
                         }
                         Err(e) => {
                             tracing::warn!(
                                 path = %path.display(),
                                 error = %e,
-                                "[ContinuationStore] Failed to read continuation snapshot, skipping"
+                                "[ContinuationStore] Failed to deserialize continuation snapshot, skipping"
                             );
                         }
+                    },
+                    Err(e) => {
+                        tracing::warn!(
+                            path = %path.display(),
+                            error = %e,
+                            "[ContinuationStore] Failed to read continuation snapshot, skipping"
+                        );
                     }
                 }
+            }
         }
 
         if recovered > 0 {

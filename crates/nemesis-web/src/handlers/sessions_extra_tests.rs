@@ -76,11 +76,7 @@ async fn rename_bails_on_missing_fields() {
 
     // 缺 session_id（title 在）。
     let err = h
-        .handle_cmd(
-            "rename",
-            Some(serde_json::json!({ "title": "t" })),
-            &ctx,
-        )
+        .handle_cmd("rename", Some(serde_json::json!({ "title": "t" })), &ctx)
         .await
         .unwrap_err();
     assert_eq!(err, "missing session_id");

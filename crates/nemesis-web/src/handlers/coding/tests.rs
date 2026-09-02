@@ -119,7 +119,11 @@ async fn coding_config_reads_written_sections() {
             "lsp_tool": { "enabled": true },
         }
     });
-    std::fs::write(home.join("config.json"), serde_json::to_string(&cfg).unwrap()).unwrap();
+    std::fs::write(
+        home.join("config.json"),
+        serde_json::to_string(&cfg).unwrap(),
+    )
+    .unwrap();
     let ctx = make_ctx(&dir);
     let handler = CodingHandler;
     let r = handler.config(&ctx).unwrap().unwrap();

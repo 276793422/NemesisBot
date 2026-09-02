@@ -777,7 +777,6 @@ fn skill_info_debug() {
     assert!(debug_str.contains("test-skill"));
 }
 
-
 // ----- W3a branch coverage -----
 
 /// SKILL.md that exists but is NOT valid UTF-8: read_to_string fails → the

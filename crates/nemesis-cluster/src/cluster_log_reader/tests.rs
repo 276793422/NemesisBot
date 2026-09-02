@@ -474,11 +474,17 @@ fn test_read_recent_events_skips_unreadable_blank_and_invalid_lines() {
     // Blank + invalid lines must not break parsing of valid lines.
     let yesterday = Local::now() - chrono::Duration::days(1);
     let yesterday_path = log_dir.join(format!("cluster_{}.log", yesterday.format("%Y-%m-%d")));
-    let log_content = "\n{\"event\":\"cluster_stop\",\"ts\":\"2024-01-01T10:00:00+00:00\"}\nthis is not json\n\n";
+    let log_content =
+        "\n{\"event\":\"cluster_stop\",\"ts\":\"2024-01-01T10:00:00+00:00\"}\nthis is not json\n\n";
     fs::write(yesterday_path, log_content).unwrap();
 
     let events = read_recent_events(log_dir, 10);
-    assert_eq!(events.len(), 1, "only the valid line survives: {:?}", events);
+    assert_eq!(
+        events.len(),
+        1,
+        "only the valid line survives: {:?}",
+        events
+    );
     assert_eq!(events[0].r#type, "system");
 }
 
@@ -512,7 +518,11 @@ fn test_format_event_ts_fallbacks_and_remaining_arms() {
         times
     );
     // Short ts → verbatim copy.
-    assert!(times.contains(&&"short".to_string()), "verbatim ts missing: {:?}", times);
+    assert!(
+        times.contains(&&"short".to_string()),
+        "verbatim ts missing: {:?}",
+        times
+    );
 
     let messages: Vec<&String> = events.iter().map(|e| &e.message).collect();
     // node_offline with peer_addr shows the addr; without falls back to node_id.

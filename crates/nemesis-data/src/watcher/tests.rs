@@ -4,10 +4,7 @@ use super::*;
 use std::path::PathBuf;
 
 fn tmp_db(tag: &str) -> PathBuf {
-    let dir = std::env::temp_dir().join(format!(
-        "nb-data-watcher-{tag}-{}",
-        std::process::id()
-    ));
+    let dir = std::env::temp_dir().join(format!("nb-data-watcher-{tag}-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).unwrap();
     dir.join("nemesisbot_data.db")
@@ -36,7 +33,10 @@ fn data_version_sees_other_connection_writes() {
     }
 
     let after = data_version(&watch_conn).unwrap();
-    assert!(after > baseline, "other-connection write must bump data_version");
+    assert!(
+        after > baseline,
+        "other-connection write must bump data_version"
+    );
 }
 
 /// watcher 连接保持零写入：open_conn 不跑迁移（user_version 不被碰），

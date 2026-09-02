@@ -129,31 +129,37 @@ impl Sanitizer {
 
         // Replace workspace path first (more specific)
         if let Some(ref ws) = self.workspace_dir
-            && !ws.is_empty() {
-                // Handle both forward-slash and backslash variants.
-                // (BUG #24, quality-hardening goal 冲刺 S8) 顺序替换全部拼写变体——
-                // 原 else-if 链在内容混用分隔符拼写时只替换第一个命中的变体，
-                // 另一种拼写的路径原样泄露。
-                let ws_normalized = ws.replace('\\', "/");
-                let ws_backslash = ws.replace('/', "\\");
-                for v in [ws.as_str(), ws_normalized.as_str(), ws_backslash.as_str()] {
-                    if result.contains(v) {
-                        result = result.replace(v, "[WORKSPACE]");
-                    }
+            && !ws.is_empty()
+        {
+            // Handle both forward-slash and backslash variants.
+            // (BUG #24, quality-hardening goal 冲刺 S8) 顺序替换全部拼写变体——
+            // 原 else-if 链在内容混用分隔符拼写时只替换第一个命中的变体，
+            // 另一种拼写的路径原样泄露。
+            let ws_normalized = ws.replace('\\', "/");
+            let ws_backslash = ws.replace('/', "\\");
+            for v in [ws.as_str(), ws_normalized.as_str(), ws_backslash.as_str()] {
+                if result.contains(v) {
+                    result = result.replace(v, "[WORKSPACE]");
                 }
             }
+        }
 
         // Replace home directory with [HOME]
         if let Some(ref home) = self.home_dir
-            && !home.is_empty() {
-                let home_normalized = home.replace('\\', "/");
-                let home_backslash = home.replace('/', "\\");
-                for v in [home.as_str(), home_normalized.as_str(), home_backslash.as_str()] {
-                    if result.contains(v) {
-                        result = result.replace(v, "[HOME]");
-                    }
+            && !home.is_empty()
+        {
+            let home_normalized = home.replace('\\', "/");
+            let home_backslash = home.replace('/', "\\");
+            for v in [
+                home.as_str(),
+                home_normalized.as_str(),
+                home_backslash.as_str(),
+            ] {
+                if result.contains(v) {
+                    result = result.replace(v, "[HOME]");
                 }
             }
+        }
 
         // Windows user paths: C:\Users\username\... -> ~/...
         let win_user_re =
@@ -230,9 +236,10 @@ pub fn is_private_ip(ip: &str) -> bool {
     // 172.16.x.x - 172.31.x.x - class B private
     if first == "172"
         && let Ok(second) = parts[1].parse::<u32>()
-            && (16..=31).contains(&second) {
-                return true;
-            }
+        && (16..=31).contains(&second)
+    {
+        return true;
+    }
 
     false
 }

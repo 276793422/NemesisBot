@@ -130,17 +130,27 @@ const INPUT: &str = "后端工程师岗位，负责订单中台微服务架构�
 #[tokio::test]
 async fn generate_persona_clean_run_completes_with_full_coverage() {
     let server = MockServer::start().await;
-    stage_mock("你是简历/JD 分析师", tool_args_response(units_args(&["Go", "微服务"], &["简洁"])))
-        .mount(&server).await;
     stage_mock(
-        "你是集群节点人格设计师",
-        tool_args_response(pkg_args("## 定位\nGo 微服务老兵，主导过订单中台。", "## 工作哲学\n一切从简洁出发。")),
+        "你是简历/JD 分析师",
+        tool_args_response(units_args(&["Go", "微服务"], &["简洁"])),
     )
     .mount(&server)
     .await;
-    stage_mock("你是完整性审计员", tool_args_response(serde_json::json!({ "entries": [] })))
-        .mount(&server)
-        .await;
+    stage_mock(
+        "你是集群节点人格设计师",
+        tool_args_response(pkg_args(
+            "## 定位\nGo 微服务老兵，主导过订单中台。",
+            "## 工作哲学\n一切从简洁出发。",
+        )),
+    )
+    .mount(&server)
+    .await;
+    stage_mock(
+        "你是完整性审计员",
+        tool_args_response(serde_json::json!({ "entries": [] })),
+    )
+    .mount(&server)
+    .await;
 
     let provider = provider_for(&server);
     let pkg = generate_persona(&provider, "mock-model", "jd", INPUT, 2)
@@ -149,7 +159,11 @@ async fn generate_persona_clean_run_completes_with_full_coverage() {
     assert_eq!(pkg.node_name, "node-s10b");
     assert!(pkg.identity_md.contains("Go"));
     let report = pkg.coverage.expect("complete run attaches report");
-    assert!(report.is_complete(), "no missing / gaps: {:?}", report.entries);
+    assert!(
+        report.is_complete(),
+        "no missing / gaps: {:?}",
+        report.entries
+    );
     // 3 target units (Go / 微服务 / 简洁 — one per key entity), all covered.
     assert_eq!(report.covered, 3);
 }
@@ -157,8 +171,12 @@ async fn generate_persona_clean_run_completes_with_full_coverage() {
 #[tokio::test]
 async fn generate_persona_retries_then_returns_pkg_with_gaps_report() {
     let server = MockServer::start().await;
-    stage_mock("你是简历/JD 分析师", tool_args_response(units_args(&["XyzzyMissing"], &[])))
-        .mount(&server).await;
+    stage_mock(
+        "你是简历/JD 分析师",
+        tool_args_response(units_args(&["XyzzyMissing"], &[])),
+    )
+    .mount(&server)
+    .await;
     // Persona never contains the entity → both attempts report missing.
     stage_mock(
         "你是集群节点人格设计师",
@@ -166,9 +184,12 @@ async fn generate_persona_retries_then_returns_pkg_with_gaps_report() {
     )
     .mount(&server)
     .await;
-    stage_mock("你是完整性审计员", tool_args_response(serde_json::json!({ "entries": [] })))
-        .mount(&server)
-        .await;
+    stage_mock(
+        "你是完整性审计员",
+        tool_args_response(serde_json::json!({ "entries": [] })),
+    )
+    .mount(&server)
+    .await;
 
     let provider = provider_for(&server);
     let pkg = generate_persona(&provider, "mock-model", "jd", INPUT, 2)
@@ -176,20 +197,31 @@ async fn generate_persona_retries_then_returns_pkg_with_gaps_report() {
         .expect("exhausted retries still return the last pkg, not Err");
     let report = pkg.coverage.expect("incomplete run attaches gap report");
     assert!(!report.is_complete());
-    assert!(report.missing >= 1, "the uncovered entity is reported: {:?}", report.entries);
+    assert!(
+        report.missing >= 1,
+        "the uncovered entity is reported: {:?}",
+        report.entries
+    );
     assert!(report.coverage_rate < 1.0);
 }
 
 #[tokio::test]
 async fn generate_persona_author_parse_failure_retries_and_audit_http_failure_falls_back() {
     let server = MockServer::start().await;
-    stage_mock("你是简历/JD 分析师", tool_args_response(units_args(&["Go"], &[])))
-        .mount(&server).await;
+    stage_mock(
+        "你是简历/JD 分析师",
+        tool_args_response(units_args(&["Go"], &[])),
+    )
+    .mount(&server)
+    .await;
     // First author call: plain text, no JSON → parse Err → continue arm.
-    stage_mock("你是集群节点人格设计师", text_response("抱歉，我无法以结构化形式输出。"))
-        .up_to_n_times(1)
-        .mount(&server)
-        .await;
+    stage_mock(
+        "你是集群节点人格设计师",
+        text_response("抱歉，我无法以结构化形式输出。"),
+    )
+    .up_to_n_times(1)
+    .mount(&server)
+    .await;
     // Second author call carries the failure hint in its prompt → good pkg.
     stage_mock(
         "上轮创作/解析失败",
@@ -198,27 +230,42 @@ async fn generate_persona_author_parse_failure_retries_and_audit_http_failure_fa
     .mount(&server)
     .await;
     // Audit stage fails with HTTP 500 → program-check fallback arm.
-    stage_mock("你是完整性审计员", ResponseTemplate::new(500).set_body_string("boom"))
-        .mount(&server)
-        .await;
+    stage_mock(
+        "你是完整性审计员",
+        ResponseTemplate::new(500).set_body_string("boom"),
+    )
+    .mount(&server)
+    .await;
 
     let provider = provider_for(&server);
     let pkg = generate_persona(&provider, "mock-model", "jd", INPUT, 2)
         .await
         .expect("second attempt completes via program check");
     let report = pkg.coverage.expect("report attached");
-    assert!(report.is_complete(), "audit failure falls back to program check: {:?}", report.entries);
+    assert!(
+        report.is_complete(),
+        "audit failure falls back to program check: {:?}",
+        report.entries
+    );
 }
 
 #[tokio::test]
 async fn generate_persona_validate_failure_retries_with_good_pkg() {
     let server = MockServer::start().await;
-    stage_mock("你是简历/JD 分析师", tool_args_response(units_args(&["Go"], &[])))
-        .mount(&server).await;
+    stage_mock(
+        "你是简历/JD 分析师",
+        tool_args_response(units_args(&["Go"], &[])),
+    )
+    .mount(&server)
+    .await;
     // First author call: role=boss → validate Err → continue arm.
     stage_mock(
         "你是集群节点人格设计师",
-        tool_args_response(pkg_args_with_role("## 定位\nGo。", "## 工作哲学\n务实。", "boss")),
+        tool_args_response(pkg_args_with_role(
+            "## 定位\nGo。",
+            "## 工作哲学\n务实。",
+            "boss",
+        )),
     )
     .up_to_n_times(1)
     .mount(&server)
@@ -230,9 +277,12 @@ async fn generate_persona_validate_failure_retries_with_good_pkg() {
     )
     .mount(&server)
     .await;
-    stage_mock("你是完整性审计员", tool_args_response(serde_json::json!({ "entries": [] })))
-        .mount(&server)
-        .await;
+    stage_mock(
+        "你是完整性审计员",
+        tool_args_response(serde_json::json!({ "entries": [] })),
+    )
+    .mount(&server)
+    .await;
 
     let provider = provider_for(&server);
     let pkg = generate_persona(&provider, "mock-model", "jd", INPUT, 2)

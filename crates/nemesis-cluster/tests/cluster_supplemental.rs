@@ -1879,7 +1879,10 @@ fn test_node_role_legacy_value_compat() {
 
     // 字符串映射（peers.toml [node].role / 广播 role 字段）：
     // 现行词表 + 旧值全部归一 Coordinator，其余回落 Worker。
-    assert_eq!(NodeRole::from_role_str("coordinator"), NodeRole::Coordinator);
+    assert_eq!(
+        NodeRole::from_role_str("coordinator"),
+        NodeRole::Coordinator
+    );
     assert_eq!(NodeRole::from_role_str("master"), NodeRole::Coordinator);
     assert_eq!(NodeRole::from_role_str("manager"), NodeRole::Coordinator);
     assert_eq!(NodeRole::from_role_str("worker"), NodeRole::Worker);

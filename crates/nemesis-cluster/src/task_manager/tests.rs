@@ -977,7 +977,8 @@ async fn test_w3b_start_cleanup_loop_processes_tasks_between_ticks() {
     // task (25h) must be failed and an old Completed task (3h) deleted by the
     // loop's interval ticks — not by a direct cleanup_completed() call.
     let store: Arc<dyn TaskStore> = Arc::new(InMemoryTaskStore::new());
-    let mut tm = TaskManager::with_store_and_interval(store.clone(), std::time::Duration::from_millis(20));
+    let mut tm =
+        TaskManager::with_store_and_interval(store.clone(), std::time::Duration::from_millis(20));
 
     let stale = Task {
         id: "w3b-old-pending".to_string(),
@@ -1063,10 +1064,7 @@ async fn test_w3b_start_cleanup_loop_processes_tasks_between_ticks() {
 #[tokio::test]
 async fn test_s4_cleanup_loop_stop_arm_runs() {
     let store: Arc<dyn TaskStore> = Arc::new(InMemoryTaskStore::new());
-    let mut tm = TaskManager::with_store_and_interval(
-        store,
-        std::time::Duration::from_millis(50),
-    );
+    let mut tm = TaskManager::with_store_and_interval(store, std::time::Duration::from_millis(50));
 
     tm.start();
     assert!(tm.stop_tx.is_some(), "loop must be started");

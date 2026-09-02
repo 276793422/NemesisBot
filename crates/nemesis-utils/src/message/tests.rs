@@ -541,7 +541,11 @@ fn test_split_message_extends_to_include_closing_fence() {
     let result = split_message(&content, 100);
     assert!(result.len() >= 2, "chunks: {}", result.len());
     assert!(result[0].contains("```python"));
-    assert!(result[0].ends_with("```"), "chunk0 tail: {:?}", &result[0][result[0].len().saturating_sub(10)..]);
+    assert!(
+        result[0].ends_with("```"),
+        "chunk0 tail: {:?}",
+        &result[0][result[0].len().saturating_sub(10)..]
+    );
 }
 
 /// 无任何换行：better_end=0 ≤ header_end → msg_end = inner_limit（90-91 臂）。

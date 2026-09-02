@@ -240,12 +240,13 @@ impl ModelsHandler {
         // models.dev catalog cache on an exact-key hit (silent no-op without
         // a cache — `model catalog-update` / the dashboard button fills it).
         if let Some(cat) = read_catalog(home)
-            && let Some(hit) = cat.entries.iter().find(|e| e.key == model) {
-                entry["context_window"] = serde_json::Value::Number(hit.context_window.into());
-                if let Some(mot) = hit.max_output_tokens {
-                    entry["max_output_tokens"] = serde_json::Value::Number(mot.into());
-                }
+            && let Some(hit) = cat.entries.iter().find(|e| e.key == model)
+        {
+            entry["context_window"] = serde_json::Value::Number(hit.context_window.into());
+            if let Some(mot) = hit.max_output_tokens {
+                entry["max_output_tokens"] = serde_json::Value::Number(mot.into());
             }
+        }
 
         list.push(entry);
         write_raw_config(home, &cfg)?;
@@ -280,9 +281,10 @@ impl ModelsHandler {
             .and_then(|v| v.as_str())
             .unwrap_or("")
             .to_string();
-        if let Some(m) = list.iter().find(|m| {
-            m.get("model_name").and_then(|v| v.as_str()) == Some(name)
-        }) {
+        if let Some(m) = list
+            .iter()
+            .find(|m| m.get("model_name").and_then(|v| v.as_str()) == Some(name))
+        {
             let model = m.get("model").and_then(|v| v.as_str()).unwrap_or("");
             let alias = model.split('/').next_back().unwrap_or("");
             let is_default = name == default_llm
@@ -332,9 +334,7 @@ impl ModelsHandler {
             let obj = cfg
                 .as_object_mut()
                 .ok_or("config.json root is not an object")?;
-            let agents = obj
-                .entry("agents")
-                .or_insert_with(|| serde_json::json!({}));
+            let agents = obj.entry("agents").or_insert_with(|| serde_json::json!({}));
             let agents_obj = agents
                 .as_object_mut()
                 .ok_or("config.json agents is not an object")?;
@@ -386,10 +386,8 @@ impl ModelsHandler {
             };
             match nemesis_providers::factory::create_provider(&factory_cfg) {
                 Ok(provider) => {
-                    let adapter = Arc::new(ProviderAdapter::new(
-                        provider.clone(),
-                        model_id.clone(),
-                    ));
+                    let adapter =
+                        Arc::new(ProviderAdapter::new(provider.clone(), model_id.clone()));
                     agent_loop.set_provider_and_model(adapter, model_id.clone());
                     tracing::info!(model = %model_id, "[Models] Runtime provider swapped");
 
@@ -467,13 +465,10 @@ impl ModelsHandler {
                 serde_json::Value::String(if s == "off" { String::new() } else { s })
             }
             "model_size_b" | "context_window" => {
-                let n = value.as_u64().or_else(|| {
-                    value
-                        .as_str()
-                        .and_then(|s| s.trim().parse::<u64>().ok())
-                });
-                let n = n
-                    .ok_or_else(|| format!("{field} must be a positive number"))?;
+                let n = value
+                    .as_u64()
+                    .or_else(|| value.as_str().and_then(|s| s.trim().parse::<u64>().ok()));
+                let n = n.ok_or_else(|| format!("{field} must be a positive number"))?;
                 if n == 0 {
                     return Err(format!("{field} must be > 0"));
                 }
@@ -489,7 +484,7 @@ impl ModelsHandler {
             _ => {
                 return Err(format!(
                     "unknown field '{field}'. Supported: model_tier | reasoning_effort | model_size_b | real_name | context_window"
-                ))
+                ));
             }
         };
 
@@ -500,7 +495,10 @@ impl ModelsHandler {
             .ok_or("config.json has no model_list")?;
         let mut updated = false;
         for entry in list.iter_mut() {
-            let model_name = entry.get("model_name").and_then(|v| v.as_str()).unwrap_or("");
+            let model_name = entry
+                .get("model_name")
+                .and_then(|v| v.as_str())
+                .unwrap_or("");
             let model = entry.get("model").and_then(|v| v.as_str()).unwrap_or("");
             if model_name == name || model == name {
                 entry[field.as_str()] = normalized.clone();
@@ -535,8 +533,7 @@ impl ModelsHandler {
                 serde_json::json!({ "exists": false, "fetched_at": "", "entries": 0 }),
             ));
         }
-        let raw =
-            std::fs::read_to_string(&path).map_err(|e| format!("read catalog cache: {e}"))?;
+        let raw = std::fs::read_to_string(&path).map_err(|e| format!("read catalog cache: {e}"))?;
         let v: serde_json::Value =
             serde_json::from_str(&raw).map_err(|e| format!("parse catalog cache: {e}"))?;
         Ok(Some(serde_json::json!({
@@ -555,8 +552,7 @@ impl ModelsHandler {
     async fn catalog_update(&self, home: &str) -> Result<Option<serde_json::Value>, String> {
         let home_pb = std::path::PathBuf::from(home);
         let env_home = home_pb.parent().unwrap_or(&home_pb).to_path_buf();
-        let exe =
-            std::env::current_exe().map_err(|e| format!("current_exe: {e}"))?;
+        let exe = std::env::current_exe().map_err(|e| format!("current_exe: {e}"))?;
         let output = tokio::time::timeout(
             std::time::Duration::from_secs(90),
             tokio::process::Command::new(&exe)
@@ -590,7 +586,9 @@ impl ModelsHandler {
 /// Read config.json as raw JSON and index `model_list[]` entries by
 /// `model_name`. Returns None when the file is missing/unparseable (callers
 /// treat extras as unset).
-fn read_raw_model_entries(home: &str) -> Option<std::collections::HashMap<String, serde_json::Value>> {
+fn read_raw_model_entries(
+    home: &str,
+) -> Option<std::collections::HashMap<String, serde_json::Value>> {
     let raw = std::fs::read_to_string(config_path(home)).ok()?;
     let v: serde_json::Value = serde_json::from_str(&raw).ok()?;
     let arr = v.get("model_list")?.as_array()?;
@@ -632,7 +630,10 @@ fn read_catalog(home: &str) -> Option<CatalogLite> {
         };
         entries.push(CatalogLiteEntry {
             key: key.to_string(),
-            context_window: e.get("context_window").and_then(|c| c.as_u64()).unwrap_or(0),
+            context_window: e
+                .get("context_window")
+                .and_then(|c| c.as_u64())
+                .unwrap_or(0),
             max_output_tokens: e.get("max_output_tokens").and_then(|c| c.as_u64()),
             family: e
                 .get("family")

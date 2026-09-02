@@ -86,10 +86,7 @@ fn parse_sections_unclosed_frontmatter_uses_whole_content_as_body() {
 const TOOLS_AGENT_MD: &str = "---\nname: Toolsmith\ndescription: uses tools\ntools: everything\n---\n\n# Toolsmith Agent\n\n## 🧰 Tools\n- shell\n- browser\n";
 
 async fn seed_caches() {
-    *TREE_CACHE.lock().unwrap() = Some(vec![(
-        "engineering/toolsmith.md".to_string(),
-        123,
-    )]);
+    *TREE_CACHE.lock().unwrap() = Some(vec![("engineering/toolsmith.md".to_string(), 123)]);
     CONTENT_CACHE
         .lock()
         .unwrap()
@@ -155,11 +152,7 @@ async fn fetch_agent_content_unknown_id_fails_offline_from_tree_cache() {
     // "unknown" is not in TREE_CACHE and not in CONTENT_CACHE → tree lookup
     // finds no match → error WITHOUT any network call.
     let err = fetch_agent_content("unknown").await.unwrap_err();
-    assert!(
-        err.contains("not found in repository"),
-        "got: {}",
-        err
-    );
+    assert!(err.contains("not found in repository"), "got: {}", err);
 }
 
 #[tokio::test]
@@ -206,10 +199,7 @@ async fn shop_download_writes_tools_md_with_extra_section() {
         .unwrap()
         .unwrap();
     assert_eq!(out["id"], serde_json::json!("toolsmith"));
-    let written = std::fs::read_to_string(
-        dir.path().join("personas/toolsmith/TOOLS.md"),
-    )
-    .unwrap();
+    let written = std::fs::read_to_string(dir.path().join("personas/toolsmith/TOOLS.md")).unwrap();
     assert!(written.contains("工具使用"));
     assert!(written.contains("## 🧰 Tools"));
     // Other persona files written too.
@@ -255,11 +245,7 @@ fn cmd_activate_restore_replaces_stale_archive_dir_contents() {
     std::fs::create_dir_all(&default).unwrap();
     std::fs::write(default.join("IDENTITY.md"), "default-identity").unwrap();
     // _active.json → custom.
-    std::fs::write(
-        ws.join("personas/_active.json"),
-        r#"{ "name": "custom" }"#,
-    )
-    .unwrap();
+    std::fs::write(ws.join("personas/_active.json"), r#"{ "name": "custom" }"#).unwrap();
 
     PersonaHandler
         .cmd_activate(&ws.to_string_lossy(), "default")

@@ -188,9 +188,7 @@ mod userland {
     use std::sync::Arc;
 
     use anyhow::{Context, Result};
-    use nemesis_sandbox::backend::{
-        self, BackendForm, Enforcement, SandboxBackend, SandboxConf,
-    };
+    use nemesis_sandbox::backend::{self, BackendForm, Enforcement, SandboxBackend, SandboxConf};
 
     /// engage() 的结果。`Debug`：测试里 `expect_err` 需要 Ok 侧 Debug。
     #[derive(Debug)]
@@ -202,11 +200,7 @@ mod userland {
     }
 
     /// 纯决策（单测覆盖）：标记与后端形态 → 执行路径。
-    pub fn plan(
-        sandbox_marker: bool,
-        already_boxed: bool,
-        form: Option<BackendForm>,
-    ) -> Plan {
+    pub fn plan(sandbox_marker: bool, already_boxed: bool, form: Option<BackendForm>) -> Plan {
         if already_boxed || !sandbox_marker {
             return Plan::Plain;
         }
@@ -239,7 +233,9 @@ mod userland {
     pub fn engage(workspace: &str, home: Option<&Path>) -> Result<Outcome> {
         let strict = home.map(backend::read_executor_strict).unwrap_or(false);
         let detected = backend::detect_backend();
-        let form = detected.as_ref().map(|b: &Arc<dyn SandboxBackend>| b.form());
+        let form = detected
+            .as_ref()
+            .map(|b: &Arc<dyn SandboxBackend>| b.form());
         match plan(true, false, form) {
             Plan::Plain => {
                 if strict {
@@ -300,10 +296,7 @@ mod userland {
 
     /// re-exec 自身进盒（bwrap / sandbox-exec）：外层进程退化为 stdio 代理，
     /// 工具全在盒内实例里跑。gateway 的 stdio 协议原样透传。
-    fn reexec_wrapped(
-        backend: Arc<dyn SandboxBackend>,
-        conf: SandboxConf,
-    ) -> Result<Outcome> {
+    fn reexec_wrapped(backend: Arc<dyn SandboxBackend>, conf: SandboxConf) -> Result<Outcome> {
         let exe = std::env::current_exe().context("resolve current exe for re-exec")?;
         let mut inner = std::process::Command::new(&exe);
         // env 继承自本进程（gateway 给的 ROLE/WORKSPACE/SANDBOX 都在）；

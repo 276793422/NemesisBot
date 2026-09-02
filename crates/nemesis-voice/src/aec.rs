@@ -223,8 +223,7 @@ impl SpeexAec {
             );
             self.far_buf.drain(..self.frame_size);
         } else {
-            self.echo_s16
-                .extend(self.far_buf.drain(..).map(f32_to_s16));
+            self.echo_s16.extend(self.far_buf.drain(..).map(f32_to_s16));
             self.echo_s16.resize(self.frame_size, 0);
         }
         self.near_buf.drain(..self.frame_size);

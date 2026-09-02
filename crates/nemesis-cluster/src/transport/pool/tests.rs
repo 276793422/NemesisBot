@@ -486,11 +486,8 @@ async fn test_s4_pool_double_check_per_node_after_semaphore() {
     assert_eq!(pool.semaphore.available_permits(), 0);
 
     let getter_pool = pool.clone();
-    let getter = tokio::spawn(async move {
-        getter_pool
-            .get_with_timeout("s4-dc", "127.0.0.1:1")
-            .await
-    });
+    let getter =
+        tokio::spawn(async move { getter_pool.get_with_timeout("s4-dc", "127.0.0.1:1").await });
 
     // Let the getter run up to its semaphore wait.
     tokio::time::sleep(Duration::from_millis(100)).await;

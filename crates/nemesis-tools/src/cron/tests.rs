@@ -678,16 +678,25 @@ struct W4aCapturingOutput {
 }
 impl CronJobOutput for W4aCapturingOutput {
     fn publish_outbound(&self, channel: &str, chat_id: &str, content: &str) {
-        self.published
-            .lock()
-            .unwrap()
-            .push((channel.to_string(), chat_id.to_string(), content.to_string()));
+        self.published.lock().unwrap().push((
+            channel.to_string(),
+            chat_id.to_string(),
+            content.to_string(),
+        ));
     }
 }
 
-fn w4a_capturing_output() -> (Arc<W4aCapturingOutput>, Arc<std::sync::Mutex<Vec<(String, String, String)>>>) {
+fn w4a_capturing_output() -> (
+    Arc<W4aCapturingOutput>,
+    Arc<std::sync::Mutex<Vec<(String, String, String)>>>,
+) {
     let published = Arc::new(std::sync::Mutex::new(Vec::new()));
-    (Arc::new(W4aCapturingOutput { published: published.clone() }), published)
+    (
+        Arc::new(W4aCapturingOutput {
+            published: published.clone(),
+        }),
+        published,
+    )
 }
 
 /// JobExecutor double: records the call args, returns a canned result.
@@ -702,9 +711,8 @@ impl JobExecutor for W4aMockExecutor {
         session_key: &str,
         channel: &str,
         chat_id: &str,
-    ) -> std::pin::Pin<
-        Box<dyn std::future::Future<Output = Result<String, String>> + Send + '_>,
-    > {
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<String, String>> + Send + '_>>
+    {
         let calls = self.calls.clone();
         let reply = self.reply.clone();
         let content = content.to_string();
@@ -723,7 +731,11 @@ impl JobExecutor for W4aMockExecutor {
 
 /// Add a job carrying a shell command via the tool's add action.
 /// (The add action requires session context; channel/chat_id args are ignored.)
-async fn w4a_add_command_job(service: &Arc<Mutex<CronService>>, tool: &mut CronTool, command: &str) -> String {
+async fn w4a_add_command_job(
+    service: &Arc<Mutex<CronService>>,
+    tool: &mut CronTool,
+    command: &str,
+) -> String {
     let ctx = crate::registry::ToolExecutionContext {
         channel: "web".to_string(),
         chat_id: "chat-w4a".to_string(),
@@ -758,7 +770,11 @@ async fn w4a_execute_job_with_command_runs_shell_and_publishes() {
     let result = tool.execute_job(&job).await;
     assert_eq!(result, "ok");
     let published = published.lock().unwrap();
-    assert_eq!(published.len(), 1, "command output must be published exactly once");
+    assert_eq!(
+        published.len(),
+        1,
+        "command output must be published exactly once"
+    );
     let (channel, chat_id, content) = &published[0];
     assert_eq!(channel, "web");
     assert_eq!(chat_id, "chat-w4a");
@@ -766,7 +782,10 @@ async fn w4a_execute_job_with_command_runs_shell_and_publishes() {
         content.contains("Scheduled command 'echo w4a_cron_ok' executed"),
         "unexpected published content: {content}"
     );
-    assert!(content.contains("w4a_cron_ok"), "shell stdout must reach the output: {content}");
+    assert!(
+        content.contains("w4a_cron_ok"),
+        "shell stdout must reach the output: {content}"
+    );
 }
 
 #[tokio::test]
@@ -782,14 +801,21 @@ async fn w4a_execute_job_failing_command_publishes_error_output() {
     let job = service.lock().await.get_job(&job_id).unwrap().clone();
 
     let result = tool.execute_job(&job).await;
-    assert_eq!(result, "ok", "execute_job itself reports ok; failure is in the published output");
+    assert_eq!(
+        result, "ok",
+        "execute_job itself reports ok; failure is in the published output"
+    );
     let published = published.lock().unwrap();
     assert!(
         published[0].2.contains("Error executing scheduled command"),
         "unexpected published content: {}",
         published[0].2
     );
-    assert!(published[0].2.contains("Exit code"), "shell error detail expected: {}", published[0].2);
+    assert!(
+        published[0].2.contains("Exit code"),
+        "shell error detail expected: {}",
+        published[0].2
+    );
 }
 
 #[tokio::test]
@@ -875,8 +901,16 @@ async fn w4a_list_jobs_formats_every_and_cron_schedules() {
 
     let result = tool.execute(&serde_json::json!({"action": "list"})).await;
     assert!(!result.is_error);
-    assert!(result.for_llm.contains("every 60s"), "Every arm not formatted: {}", result.for_llm);
-    assert!(result.for_llm.contains("*/5 * * * *"), "Cron arm not formatted: {}", result.for_llm);
+    assert!(
+        result.for_llm.contains("every 60s"),
+        "Every arm not formatted: {}",
+        result.for_llm
+    );
+    assert!(
+        result.for_llm.contains("*/5 * * * *"),
+        "Cron arm not formatted: {}",
+        result.for_llm
+    );
 }
 
 #[tokio::test]
@@ -886,7 +920,11 @@ async fn w4a_enable_job_not_found_returns_error() {
         .execute(&serde_json::json!({"action": "enable", "job_id": "cron-999"}))
         .await;
     assert!(result.is_error);
-    assert!(result.for_llm.contains("Job cron-999 not found"), "got: {}", result.for_llm);
+    assert!(
+        result.for_llm.contains("Job cron-999 not found"),
+        "got: {}",
+        result.for_llm
+    );
 
     let result = tool
         .execute(&serde_json::json!({"action": "disable", "job_id": "cron-999"}))
@@ -925,11 +963,12 @@ async fn s2_execute_job_empty_command_falls_through_to_deliver() {
     impl CronJobOutput for S2Out {
         fn publish_outbound(&self, _channel: &str, _chat_id: &str, content: &str) {
             assert_eq!(content, "s2 message");
-            self.called
-                .store(true, std::sync::atomic::Ordering::SeqCst);
+            self.called.store(true, std::sync::atomic::Ordering::SeqCst);
         }
     }
-    tool.set_output(Arc::new(S2Out { called: called.clone() }));
+    tool.set_output(Arc::new(S2Out {
+        called: called.clone(),
+    }));
 
     {
         let mut svc = service.lock().await;

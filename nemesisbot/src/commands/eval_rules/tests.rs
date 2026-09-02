@@ -60,11 +60,24 @@ fn cmd_toggle_enable_disable() {
 
     cmd_toggle(&path, "outbox-deny-ssh", false).unwrap();
     let file = eval_assessor::load_rules(&path).unwrap();
-    assert!(!file.rules.iter().find(|r| r.id == "outbox-deny-ssh").unwrap().enabled);
+    assert!(
+        !file
+            .rules
+            .iter()
+            .find(|r| r.id == "outbox-deny-ssh")
+            .unwrap()
+            .enabled
+    );
 
     cmd_toggle(&path, "outbox-deny-ssh", true).unwrap();
     let file = eval_assessor::load_rules(&path).unwrap();
-    assert!(file.rules.iter().find(|r| r.id == "outbox-deny-ssh").unwrap().enabled);
+    assert!(
+        file.rules
+            .iter()
+            .find(|r| r.id == "outbox-deny-ssh")
+            .unwrap()
+            .enabled
+    );
 
     // 不存在的 id 报错。
     assert!(cmd_toggle(&path, "no-such-rule", true).is_err());
@@ -96,11 +109,21 @@ fn cmd_edit_replaces_in_place() {
 
     cmd_edit(&path, "outbox-deny-ssh", &in_file).unwrap();
     let file = eval_assessor::load_rules(&path).unwrap();
-    let r = file.rules.iter().find(|r| r.id == "outbox-deny-ssh").unwrap();
+    let r = file
+        .rules
+        .iter()
+        .find(|r| r.id == "outbox-deny-ssh")
+        .unwrap();
     assert_eq!(r.description, "改过的描述");
     assert_eq!(r.level, "high");
     // 替换而非追加。
-    assert_eq!(file.rules.len(), eval_assessor::parse_rules(eval_assessor::DEFAULT_RULES_JSON).unwrap().rules.len());
+    assert_eq!(
+        file.rules.len(),
+        eval_assessor::parse_rules(eval_assessor::DEFAULT_RULES_JSON)
+            .unwrap()
+            .rules
+            .len()
+    );
 }
 
 #[test]
@@ -110,7 +133,11 @@ fn cmd_edit_rejects_multi_rule_file() {
     eval_assessor::load_rules(&path).unwrap();
 
     let in_file = path.parent().unwrap().join("multi.json");
-    std::fs::write(&in_file, format!("{{\"rules\":[{},{}]}}", rule_json("a"), rule_json("b"))).unwrap();
+    std::fs::write(
+        &in_file,
+        format!("{{\"rules\":[{},{}]}}", rule_json("a"), rule_json("b")),
+    )
+    .unwrap();
     assert!(cmd_edit(&path, "a", &in_file).is_err());
 }
 
@@ -143,7 +170,10 @@ fn cmd_reset_non_force_aborts_on_eof_stdin() {
 
     cmd_reset(&path, false).unwrap(); // EOF stdin → abort
     let file = eval_assessor::load_rules(&path).unwrap();
-    assert!(file.rules.iter().any(|r| r.id == "keep-me"), "aborted reset must not change rules");
+    assert!(
+        file.rules.iter().any(|r| r.id == "keep-me"),
+        "aborted reset must not change rules"
+    );
 }
 
 // ── M1 补测（quality-hardening goal 2026-08-25）：向导纯函数 + cmd_show +
@@ -153,11 +183,20 @@ fn cmd_reset_non_force_aborts_on_eof_stdin() {
 fn keyword_to_pattern_escapes_metachars_and_matches_literal() {
     // (?i) 前缀 + 元字符全部转义（用户输入按字面量处理）
     assert_eq!(keyword_to_pattern("a.b"), r"(?i)a\.b");
-    assert_eq!(keyword_to_pattern(".+*?()[]{}^$|"), r"(?i)\.\+\*\?\(\)\[\]\{\}\^\$\|");
+    assert_eq!(
+        keyword_to_pattern(".+*?()[]{}^$|"),
+        r"(?i)\.\+\*\?\(\)\[\]\{\}\^\$\|"
+    );
     // 产物必须可编译且语义是字面量：a.b 不匹配 axb（点被转义）。
     let re = regex::Regex::new(&keyword_to_pattern("secret.pem")).unwrap();
-    assert!(re.is_match("reading SECRET.PEM file"), "case-insensitive literal match");
-    assert!(!re.is_match("secretXpem"), "escaped dot must not match arbitrary char");
+    assert!(
+        re.is_match("reading SECRET.PEM file"),
+        "case-insensitive literal match"
+    );
+    assert!(
+        !re.is_match("secretXpem"),
+        "escaped dot must not match arbitrary char"
+    );
 }
 
 #[test]
@@ -189,7 +228,11 @@ fn slugify_normalizes_to_kebab() {
 }
 
 fn cond(field: &str, op: &str, value: serde_json::Value) -> eval_assessor::Condition {
-    eval_assessor::Condition { field: field.into(), op: op.into(), value }
+    eval_assessor::Condition {
+        field: field.into(),
+        op: op.into(),
+        value,
+    }
 }
 
 fn cond_rule(conditions: Vec<eval_assessor::Condition>, min_count: usize) -> eval_assessor::Rule {
@@ -224,7 +267,10 @@ fn condition_summary_formats_all_ops_and_min_count() {
     assert!(s.contains("text 含 '越狱'"), "got: {s}");
     assert!(s.contains("arguments.command 匹配 /(?i)curl/"), "got: {s}");
     assert!(s.contains("retries > 3"), "got: {s}");
-    assert!(s.contains("a within b"), "unknown op falls back to generic, got: {s}");
+    assert!(
+        s.contains("a within b"),
+        "unknown op falls back to generic, got: {s}"
+    );
     assert!(s.contains(" 且 "), "conditions joined by 且, got: {s}");
     assert!(s.ends_with("（≥2 条记录）"), "min_count>1 suffix, got: {s}");
     // min_count=1（默认）无后缀
@@ -241,14 +287,26 @@ fn condition_summary_truncates_long_values_on_char_boundary() {
     v.push_str(&"尾".repeat(10));
     let r = cond_rule(vec![cond("text", "contains", serde_json::json!(v))], 1);
     let s = condition_summary(&r);
-    assert!(s.contains('…'), "long value must be truncated with ellipsis, got: {s}");
+    assert!(
+        s.contains('…'),
+        "long value must be truncated with ellipsis, got: {s}"
+    );
     let expected_prefix: String = v.chars().take(21).collect(); // 19中文+ab = 21 chars = 59 bytes
-    assert!(s.contains(&format!("{expected_prefix}…")), "truncate at 59B boundary, got: {s}");
+    assert!(
+        s.contains(&format!("{expected_prefix}…")),
+        "truncate at 59B boundary, got: {s}"
+    );
     // 恰好 60B（20 个中文）不截断
     let v60 = "密".repeat(20);
-    let r60 = cond_rule(vec![cond("text", "contains", serde_json::json!(v60.clone()))], 1);
+    let r60 = cond_rule(
+        vec![cond("text", "contains", serde_json::json!(v60.clone()))],
+        1,
+    );
     let s60 = condition_summary(&r60);
-    assert!(!s60.contains('…'), "exactly 60 bytes must not truncate, got: {s60}");
+    assert!(
+        !s60.contains('…'),
+        "exactly 60 bytes must not truncate, got: {s60}"
+    );
     assert!(s60.contains(&v60));
 }
 
@@ -286,20 +344,47 @@ async fn bb4_local_missing_write_rejected_readonly_degrades() {
     std::env::set_current_dir(tmp.path()).unwrap();
 
     // 写命令：bail 发生在读输入文件之前，in.json 无需存在。
-    let add = run(RulesAction::Add { file: "in.json".into(), local: true }, false).await;
+    let add = run(
+        RulesAction::Add {
+            file: "in.json".into(),
+            local: true,
+        },
+        false,
+    )
+    .await;
     // 只读 list / show：降级内置默认集。
     let list = run(RulesAction::List { local: true }, false).await;
-    let show_ok = run(RulesAction::Show { id: "outbox-deny-ssh".into(), local: true }, false).await;
-    let show_missing = run(RulesAction::Show { id: "zzz-no-such".into(), local: true }, false).await;
+    let show_ok = run(
+        RulesAction::Show {
+            id: "outbox-deny-ssh".into(),
+            local: true,
+        },
+        false,
+    )
+    .await;
+    let show_missing = run(
+        RulesAction::Show {
+            id: "zzz-no-such".into(),
+            local: true,
+        },
+        false,
+    )
+    .await;
     let home_created = tmp.path().join(".nemesisbot").exists();
 
     std::env::set_current_dir(&orig).unwrap();
 
     let add_err = add.expect_err("write cmd must bail when --local home missing");
-    assert!(add_err.to_string().contains("--local home 不存在"), "got: {add_err}");
+    assert!(
+        add_err.to_string().contains("--local home 不存在"),
+        "got: {add_err}"
+    );
     list.expect("readonly list must degrade to built-in defaults");
     show_ok.expect("readonly show (id in defaults) must degrade to built-in defaults");
-    assert!(show_missing.is_err(), "show of unknown id in defaults must error");
+    assert!(
+        show_missing.is_err(),
+        "show of unknown id in defaults must error"
+    );
     assert!(!home_created, "--local home must not be silently created");
 }
 
@@ -345,7 +430,10 @@ async fn run_dispatch_list_toggle_and_remove_via_env_home() {
         .to_string();
 
     run(
-        RulesAction::Disable { id: id.clone(), local: false },
+        RulesAction::Disable {
+            id: id.clone(),
+            local: false,
+        },
         false,
     )
     .await
@@ -361,12 +449,24 @@ async fn run_dispatch_list_toggle_and_remove_via_env_home() {
         .collect();
     assert_eq!(disabled.len(), 1, "disable 经分发生效");
 
-    run(RulesAction::Enable { id: id.clone(), local: false }, false)
-        .await
-        .expect("run Enable ok");
-    run(RulesAction::Remove { id: id.clone(), local: false }, false)
-        .await
-        .expect("run Remove ok");
+    run(
+        RulesAction::Enable {
+            id: id.clone(),
+            local: false,
+        },
+        false,
+    )
+    .await
+    .expect("run Enable ok");
+    run(
+        RulesAction::Remove {
+            id: id.clone(),
+            local: false,
+        },
+        false,
+    )
+    .await
+    .expect("run Remove ok");
     let after: serde_json::Value =
         serde_json::from_str(&std::fs::read_to_string(&rules_path).unwrap()).unwrap();
     assert!(
@@ -442,7 +542,10 @@ mod wave_b {
         eval_assessor::load_rules(&path).unwrap(); // 首次调用种子默认集
         let seeded: serde_json::Value =
             serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
-        let id0 = seeded["rules"][0]["id"].as_str().expect("默认集首条有 id").to_string();
+        let id0 = seeded["rules"][0]["id"]
+            .as_str()
+            .expect("默认集首条有 id")
+            .to_string();
         (tmp, path, id0)
     }
 
@@ -507,7 +610,12 @@ mod wave_b {
         .expect("run Edit ok");
         let after = eval_assessor::load_rules(&path).unwrap();
         assert_eq!(
-            after.rules.iter().find(|r| r.id == id0).unwrap().description,
+            after
+                .rules
+                .iter()
+                .find(|r| r.id == id0)
+                .unwrap()
+                .description,
             "wave-b edited",
             "Edit 经分发替换生效"
         );
@@ -525,7 +633,10 @@ mod wave_b {
         .await
         .expect("run Add ok");
         let after = eval_assessor::load_rules(&path).unwrap();
-        assert!(after.rules.iter().any(|r| r.id == "wave-b-new"), "Add 经分发生效");
+        assert!(
+            after.rules.iter().any(|r| r.id == "wave-b-new"),
+            "Add 经分发生效"
+        );
         let defaults = eval_assessor::parse_rules(eval_assessor::DEFAULT_RULES_JSON).unwrap();
         assert_eq!(after.rules.len(), defaults.rules.len() + 1);
     }
@@ -601,7 +712,11 @@ mod r9_wizard_pipeline {
 
     /// 建 home 的隔离工作区 + 二进制；home 不建会被 BB4 写命令 bail。
     /// 二进制解析不了（未构建 / 非 Windows）→ None（调用方 SKIP 早退）。
-    fn r9_ws() -> Option<(test_harness::TestWorkspace, std::path::PathBuf, std::path::PathBuf)> {
+    fn r9_ws() -> Option<(
+        test_harness::TestWorkspace,
+        std::path::PathBuf,
+        std::path::PathBuf,
+    )> {
         let bin = r9_bin_or_skip()?;
         let tw = test_harness::TestWorkspace::new().expect("tempdir");
         let home = tw.home();
@@ -611,9 +726,10 @@ mod r9_wizard_pipeline {
 
     /// 从落盘规则 JSON 里找 id 对应条目（JSON Value 直查，不依赖 serde 模型）。
     fn find_rule(home: &std::path::Path, id: &str) -> Option<serde_json::Value> {
-        let rules: serde_json::Value =
-            serde_json::from_str(&std::fs::read_to_string(eval_assessor::rules_file_path(home)).ok()?)
-                .ok()?;
+        let rules: serde_json::Value = serde_json::from_str(
+            &std::fs::read_to_string(eval_assessor::rules_file_path(home)).ok()?,
+        )
+        .ok()?;
         rules["rules"]
             .as_array()?
             .iter()
@@ -631,7 +747,9 @@ mod r9_wizard_pipeline {
     // ── B1：kind=3（subject 静态文本层）完整向导流 ────────────────────────
     #[tokio::test]
     async fn r9_wizard_kind3_creates_subject_rule_persisted() {
-        let Some((tw, bin, home)) = r9_ws() else { return };
+        let Some((tw, bin, home)) = r9_ws() else {
+            return;
+        };
         // 答案序列：kind=3 → 关键词 secret.pem → 描述回车自动生成 → 确认 Y。
         let out = tw
             .run_cli_with_stdin(&bin, &["eval", "rules", "new"], "3\nsecret.pem\n\nY\n", 30)
@@ -653,14 +771,19 @@ mod r9_wizard_pipeline {
         assert_eq!(r["source"], "subject");
         assert_eq!(r["conditions"][0]["field"], "text");
         assert_eq!(r["conditions"][0]["op"], "contains");
-        assert_eq!(r["conditions"][0]["value"], "secret.pem", "用户输入按字面量保存");
+        assert_eq!(
+            r["conditions"][0]["value"], "secret.pem",
+            "用户输入按字面量保存"
+        );
         assert_eq!(r["enabled"], true);
     }
 
     // ── B2：kind=2（命令关键词层）+ ask_level 选 medium ───────────────────
     #[tokio::test]
     async fn r9_wizard_kind2_level_choice_maps_to_medium() {
-        let Some((tw, bin, home)) = r9_ws() else { return };
+        let Some((tw, bin, home)) = r9_ws() else {
+            return;
+        };
         // 序列：kind=2 → 关键词 curl upload → level=3(medium) → 描述回车 → Y。
         let out = tw
             .run_cli_with_stdin(
@@ -689,14 +812,21 @@ mod r9_wizard_pipeline {
     // ── B3：预览确认 n → 取消不写入（只剩 load_rules 在去重步骤种下的默认集）┐
     #[tokio::test]
     async fn r9_wizard_confirm_n_aborts_without_write() {
-        let Some((tw, bin, home)) = r9_ws() else { return };
+        let Some((tw, bin, home)) = r9_ws() else {
+            return;
+        };
         let path = eval_assessor::rules_file_path(&home);
         let before_exists = path.exists();
 
         let out = tw
             .run_cli_with_stdin(&bin, &["eval", "rules", "new"], "3\nkeep-out\n\nn\n", 30)
             .await;
-        assert!(out.success(), "取消是正常出口退 0，got:\n{}\n{}", out.stdout, out.stderr);
+        assert!(
+            out.success(),
+            "取消是正常出口退 0，got:\n{}\n{}",
+            out.stdout,
+            out.stderr
+        );
         assert!(
             out.stdout.contains("已取消，未写入"),
             "取消文案，got:\n{}",
@@ -708,7 +838,10 @@ mod r9_wizard_pipeline {
         );
         // 注意时序事实：load_rules（去重步）先于确认种子默认集 → 文件存在但
         // 内容必须仍是纯默认集，向导规则绝不混入。
-        assert!(path.exists(), "种子发生在确认前（既有行为），文件由默认集占位");
+        assert!(
+            path.exists(),
+            "种子发生在确认前（既有行为），文件由默认集占位"
+        );
         let file = eval_assessor::load_rules(&path).unwrap();
         assert_eq!(file.rules.len(), default_count(), "取消后维持默认集");
         assert!(!file.rules.iter().any(|r| r.id == "subject-keep-out"));
@@ -717,22 +850,30 @@ mod r9_wizard_pipeline {
     // ── B5：同一 id 连开两次向导 → 第二次自动 -2 后缀 ─────────────────────
     #[tokio::test]
     async fn r9_wizard_same_id_second_run_gets_minus_two_suffix() {
-        let Some((tw, bin, home)) = r9_ws() else { return };
+        let Some((tw, bin, home)) = r9_ws() else {
+            return;
+        };
         for i in 1..=2 {
             let out = tw
-                .run_cli_with_stdin(
-                    &bin,
-                    &["eval", "rules", "new"],
-                    "3\ndup-key\n\nY\n",
-                    30,
-                )
+                .run_cli_with_stdin(&bin, &["eval", "rules", "new"], "3\ndup-key\n\nY\n", 30)
                 .await;
-            assert!(out.success(), "第 {i} 次向导失败:\n{}\n{}", out.stdout, out.stderr);
+            assert!(
+                out.success(),
+                "第 {i} 次向导失败:\n{}\n{}",
+                out.stdout,
+                out.stderr
+            );
         }
         // 第二次的 stdout 必须点名 -2 后缀 id（打印行即去重结果）。
         let file = eval_assessor::load_rules(&eval_assessor::rules_file_path(&home)).unwrap();
-        assert!(file.rules.iter().any(|r| r.id == "subject-dup-key"), "第一条原 id");
-        assert!(file.rules.iter().any(|r| r.id == "subject-dup-key-2"), "第二条 -2 后缀");
+        assert!(
+            file.rules.iter().any(|r| r.id == "subject-dup-key"),
+            "第一条原 id"
+        );
+        assert!(
+            file.rules.iter().any(|r| r.id == "subject-dup-key-2"),
+            "第二条 -2 后缀"
+        );
         assert_eq!(
             file.rules.len(),
             default_count() + 2,
@@ -743,17 +884,30 @@ mod r9_wizard_pipeline {
     // ── B4：CLI 面各一发——list / show / disable / enable 全链路状态翻转 ──
     #[tokio::test]
     async fn r9_cli_list_show_disable_enable_roundtrip_on_seeded_defaults() {
-        let Some((tw, bin, home)) = r9_ws() else { return };
+        let Some((tw, bin, home)) = r9_ws() else {
+            return;
+        };
         let path = eval_assessor::rules_file_path(&home);
 
-        let list = tw.run_cli_with_timeout(&bin, &["eval", "rules", "list"], 30).await;
+        let list = tw
+            .run_cli_with_timeout(&bin, &["eval", "rules", "list"], 30)
+            .await;
         assert!(list.success(), "list: {}\n{}", list.stdout, list.stderr);
-        assert!(list.stdout.contains("rule(s)"), "列表尾部统计行，got:\n{}", list.stdout);
+        assert!(
+            list.stdout.contains("rule(s)"),
+            "列表尾部统计行，got:\n{}",
+            list.stdout
+        );
 
         let show = tw
             .run_cli_with_timeout(&bin, &["eval", "rules", "show", "outbox-deny-ssh"], 30)
             .await;
-        assert!(show.success(), "show 存在 id 退 0：\n{}\n{}", show.stdout, show.stderr);
+        assert!(
+            show.success(),
+            "show 存在 id 退 0：\n{}\n{}",
+            show.stdout,
+            show.stderr
+        );
         assert!(
             show.stdout.contains("outbox-deny-ssh"),
             "show 输出完整 JSON 定义"
@@ -786,7 +940,9 @@ mod r9_wizard_pipeline {
     // ── B6：reset 确认双答（n 拦停 / y 执行）────────────────────────────────
     #[tokio::test]
     async fn r9_cli_reset_confirm_n_blocks_then_y_restores_defaults() {
-        let Some((tw, bin, home)) = r9_ws() else { return };
+        let Some((tw, bin, home)) = r9_ws() else {
+            return;
+        };
         let path = eval_assessor::rules_file_path(&home);
 
         // 种子（首次 list 落默认集）+ 混入一条自定义规则（fixture 直改 JSON）。
@@ -808,9 +964,21 @@ mod r9_wizard_pipeline {
         let no = tw
             .run_cli_with_stdin(&bin, &["eval", "rules", "reset"], "n\n", 30)
             .await;
-        assert!(no.success(), "拦停是正常出口：\n{}\n{}", no.stdout, no.stderr);
-        assert!(no.stdout.contains("Aborted"), "拦停文案，got:\n{}", no.stdout);
-        assert!(find_rule(&home, "r9-custom-x").is_some(), "n 之后规则保持原样");
+        assert!(
+            no.success(),
+            "拦停是正常出口：\n{}\n{}",
+            no.stdout,
+            no.stderr
+        );
+        assert!(
+            no.stdout.contains("Aborted"),
+            "拦停文案，got:\n{}",
+            no.stdout
+        );
+        assert!(
+            find_rule(&home, "r9-custom-x").is_some(),
+            "n 之后规则保持原样"
+        );
 
         // 第二发：答 y → 回到默认集，自定义消失。
         let yes = tw
@@ -822,7 +990,10 @@ mod r9_wizard_pipeline {
             "reset 统计回执，got:\n{}",
             yes.stdout
         );
-        assert!(find_rule(&home, "r9-custom-x").is_none(), "y 之后自定义被清");
+        assert!(
+            find_rule(&home, "r9-custom-x").is_none(),
+            "y 之后自定义被清"
+        );
         let file = eval_assessor::load_rules(&path).unwrap();
         assert_eq!(file.rules.len(), default_count(), "回到纯默认集");
     }
@@ -852,7 +1023,11 @@ mod r10_wizard_deep_branches {
     }
 
     /// 建 home 的隔离工作区 + 二进制（home 不建会被 BB4 写命令拦停）。
-    fn r10_ws() -> Option<(test_harness::TestWorkspace, std::path::PathBuf, std::path::PathBuf)> {
+    fn r10_ws() -> Option<(
+        test_harness::TestWorkspace,
+        std::path::PathBuf,
+        std::path::PathBuf,
+    )> {
         let bin = r10_bin_or_skip()?;
         let tw = test_harness::TestWorkspace::new().expect("tempdir");
         let home = tw.home();
@@ -861,10 +1036,15 @@ mod r10_wizard_deep_branches {
     }
 
     fn r10_find_rule(home: &std::path::Path, id: &str) -> Option<serde_json::Value> {
-        let rules: serde_json::Value =
-            serde_json::from_str(&std::fs::read_to_string(eval_assessor::rules_file_path(home)).ok()?)
-                .ok()?;
-        rules["rules"].as_array()?.iter().find(|r| r["id"] == *id).cloned()
+        let rules: serde_json::Value = serde_json::from_str(
+            &std::fs::read_to_string(eval_assessor::rules_file_path(home)).ok()?,
+        )
+        .ok()?;
+        rules["rules"]
+            .as_array()?
+            .iter()
+            .find(|r| r["id"] == *id)
+            .cloned()
     }
 
     fn r10_default_count() -> usize {
@@ -884,7 +1064,9 @@ mod r10_wizard_deep_branches {
     //      "Y"           → 确认保存
     #[tokio::test]
     async fn r10_wizard_kind1_default_enter_full_flow_creates_or_split_probe_pair() {
-        let Some((tw, bin, home)) = r10_ws() else { return };
+        let Some((tw, bin, home)) = r10_ws() else {
+            return;
+        };
         let out = tw
             .run_cli_with_stdin(
                 &bin,
@@ -939,7 +1121,9 @@ mod r10_wizard_deep_branches {
     //    重试环于 level 菜单；关键词带 Windows 反斜杠验证斜杠等价正则。
     #[tokio::test]
     async fn r10_wizard_level_out_of_range_then_two_maps_high_arm() {
-        let Some((tw, bin, home)) = r10_ws() else { return };
+        let Some((tw, bin, home)) = r10_ws() else {
+            return;
+        };
         // 序列：kind=1 直接合法 → D:\secret → level 越界 9 → 重试后选 2(high) → 描述空 → Y。
         let out = tw
             .run_cli_with_stdin(
@@ -949,34 +1133,42 @@ mod r10_wizard_deep_branches {
                 30,
             )
             .await;
-        assert!(
-            out.success(),
-            "{}\n{}",
-            out.stdout,
-            out.stderr
-        );
+        assert!(out.success(), "{}\n{}", out.stdout, out.stderr);
         assert!(
             out.stdout.contains("请输入 1-4"),
             "level 菜单同样有越界重试提示，got:\n{}",
             out.stdout
         );
         let r = r10_find_rule(&home, "probe-d-secret").expect("反斜杠关键词 slug 化落盘");
-        assert_eq!(r["level"], "high", "ask_level 合法项 2 = high（`_` 兜底臂）");
+        assert_eq!(
+            r["level"], "high",
+            "ask_level 合法项 2 = high（`_` 兜底臂）"
+        );
         assert_eq!(
             r["conditions"][0]["value"],
             // 字母保持原样（大小写不敏感由 (?i) 前缀承担），只转义分隔符
             r"(?i)D:[\\/]secret",
             "路径分隔符兼容正则按 keyword_to_pattern 生成"
         );
-        assert!(r10_find_rule(&home, "probe-d-secret-path").is_some(), "OR 拆分第二件在盘");
+        assert!(
+            r10_find_rule(&home, "probe-d-secret-path").is_some(),
+            "OR 拆分第二件在盘"
+        );
     }
 
     // ── ask_level 第 4 项 = low 弱信号档（534 臂；此前 r9 只喂过 medium）。──
     #[tokio::test]
     async fn r10_wizard_kind2_level_four_maps_low_arm() {
-        let Some((tw, bin, home)) = r10_ws() else { return };
+        let Some((tw, bin, home)) = r10_ws() else {
+            return;
+        };
         let out = tw
-            .run_cli_with_stdin(&bin, &["eval", "rules", "new"], "2\ncurl upload\n4\n\nY\n", 30)
+            .run_cli_with_stdin(
+                &bin,
+                &["eval", "rules", "new"],
+                "2\ncurl upload\n4\n\nY\n",
+                30,
+            )
             .await;
         assert!(out.success(), "{}\n{}", out.stdout, out.stderr);
         let r = r10_find_rule(&home, "cmd-curl-upload").expect("cmd 规则落盘");
@@ -990,11 +1182,18 @@ mod r10_wizard_deep_branches {
     // ── kind=3（提示词文本层）关键词回车为空 → 「关键词为空」（408）。
     #[tokio::test]
     async fn r10_wizard_kind3_empty_keyword_bails_without_seeding_file() {
-        let Some((tw, _bin, home)) = r10_ws() else { return };
+        let Some((tw, _bin, home)) = r10_ws() else {
+            return;
+        };
         let out = tw
             .run_cli_with_stdin(_bin.as_path(), &["eval", "rules", "new"], "3\n\n", 30)
             .await;
-        assert!(!out.success(), "bail 必须非零退码:\n{}\n{}", out.stdout, out.stderr);
+        assert!(
+            !out.success(),
+            "bail 必须非零退码:\n{}\n{}",
+            out.stdout,
+            out.stderr
+        );
         assert!(
             out.stderr.contains("关键词为空"),
             "错误信息落到 stderr，got:\n{}\n{}",
@@ -1010,11 +1209,18 @@ mod r10_wizard_deep_branches {
     // ── kind=2（命令层）关键词回车为空 → 同型 bail（430）。─────────────────
     #[tokio::test]
     async fn r10_wizard_kind2_empty_keyword_bails_without_seeding_file() {
-        let Some((tw, _bin, home)) = r10_ws() else { return };
+        let Some((tw, _bin, home)) = r10_ws() else {
+            return;
+        };
         let out = tw
             .run_cli_with_stdin(_bin.as_path(), &["eval", "rules", "new"], "2\n\n", 30)
             .await;
-        assert!(!out.success(), "bail 必须非零退码:\n{}\n{}", out.stdout, out.stderr);
+        assert!(
+            !out.success(),
+            "bail 必须非零退码:\n{}\n{}",
+            out.stdout,
+            out.stderr
+        );
         assert!(
             out.stderr.contains("关键词为空"),
             "got:\n{}\n{}",
@@ -1028,11 +1234,18 @@ mod r10_wizard_deep_branches {
     //    （452-453 区域；进程内 EOF 版已钉行为，这里补 CLI 层同断言）。─────
     #[tokio::test]
     async fn r10_wizard_path_empty_keyword_bails_without_seeding_file() {
-        let Some((tw, _bin, home)) = r10_ws() else { return };
+        let Some((tw, _bin, home)) = r10_ws() else {
+            return;
+        };
         let out = tw
             .run_cli_with_stdin(_bin.as_path(), &["eval", "rules", "new"], "\n\n", 30)
             .await;
-        assert!(!out.success(), "bail 必须非零退码:\n{}\n{}", out.stdout, out.stderr);
+        assert!(
+            !out.success(),
+            "bail 必须非零退码:\n{}\n{}",
+            out.stdout,
+            out.stderr
+        );
         assert!(
             out.stderr.contains("路径为空"),
             "got:\n{}\n{}",

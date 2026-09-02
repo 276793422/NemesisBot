@@ -216,9 +216,10 @@ impl NemesisLogger {
 
         // File logging (always write if configured)
         if let Some(ref mut file) = state.file
-            && let Ok(json) = serde_json::to_string(&entry) {
-                let _ = writeln!(file, "{}", json);
-            }
+            && let Ok(json) = serde_json::to_string(&entry)
+        {
+            let _ = writeln!(file, "{}", json);
+        }
 
         // Console output
         let console_enabled = state.console_enabled;

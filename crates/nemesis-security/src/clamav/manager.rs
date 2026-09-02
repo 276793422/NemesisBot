@@ -297,12 +297,13 @@ impl Manager {
 
         if let Some(ref updater) = self.updater
             && let Some(last_update) = updater.last_update()
-                && let Ok(elapsed) = last_update.elapsed() {
-                    stats.as_object_mut().unwrap().insert(
-                        "last_update_secs_ago".to_string(),
-                        serde_json::Value::Number(elapsed.as_secs().into()),
-                    );
-                }
+            && let Ok(elapsed) = last_update.elapsed()
+        {
+            stats.as_object_mut().unwrap().insert(
+                "last_update_secs_ago".to_string(),
+                serde_json::Value::Number(elapsed.as_secs().into()),
+            );
+        }
 
         stats
     }

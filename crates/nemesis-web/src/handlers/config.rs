@@ -182,9 +182,10 @@ fn sanitize_config(json: &mut serde_json::Value) {
         for (key, value) in obj.iter_mut() {
             if crate::handlers::is_sensitive_field(key) {
                 if let Some(s) = value.as_str()
-                    && !s.is_empty() {
-                        *value = serde_json::Value::String(crate::handlers::mask_sensitive(s));
-                    }
+                    && !s.is_empty()
+                {
+                    *value = serde_json::Value::String(crate::handlers::mask_sensitive(s));
+                }
             } else {
                 sanitize_config(value);
             }
@@ -240,10 +241,7 @@ fn set_json_path(
 
 /// Resolve a dot path on a JSON value; None if any segment is missing.
 /// Array nodes take numeric-index segments (mirror of [`set_json_path`]).
-fn json_path_get<'a>(
-    json: &'a serde_json::Value,
-    path: &str,
-) -> Option<&'a serde_json::Value> {
+fn json_path_get<'a>(json: &'a serde_json::Value, path: &str) -> Option<&'a serde_json::Value> {
     let mut current = json;
     for part in path.split('.') {
         if current.is_array() {

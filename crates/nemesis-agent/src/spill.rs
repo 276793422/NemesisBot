@@ -35,7 +35,9 @@ const SPILL_PREVIEW_CHARS: usize = 2000;
 fn sanitize_segment(raw: &str) -> String {
     let mut out = String::with_capacity(raw.len());
     for c in raw.chars() {
-        let ok = c.is_ascii_alphanumeric() || c == '-' || c == '_'
+        let ok = c.is_ascii_alphanumeric()
+            || c == '-'
+            || c == '_'
             || (c == '.' && out.ends_with(|p: char| p.is_ascii_alphanumeric()));
         out.push(if ok { c } else { '_' });
     }
@@ -50,13 +52,11 @@ fn sanitize_segment(raw: &str) -> String {
 /// Where a spill file lands: `<spill_root>/<sanitized session>/<stamp>_<sanitized call_id>.txt`.
 /// Exposed for tests.
 fn spill_path(spill_root: &Path, session_key: &str, stamp: &str, call_id: &str) -> PathBuf {
-    spill_root
-        .join(sanitize_segment(session_key))
-        .join(format!(
-            "{}_{}.txt",
-            sanitize_segment(stamp),
-            sanitize_segment(call_id)
-        ))
+    spill_root.join(sanitize_segment(session_key)).join(format!(
+        "{}_{}.txt",
+        sanitize_segment(stamp),
+        sanitize_segment(call_id)
+    ))
 }
 
 /// Outcome of trying to spill a result.
@@ -122,8 +122,8 @@ pub fn cleanup_expired(spill_root: &Path, retention_days: u64) -> usize {
     if retention_days == 0 {
         return 0;
     }
-    let cutoff = std::time::SystemTime::now()
-        - std::time::Duration::from_secs(retention_days * 24 * 3600);
+    let cutoff =
+        std::time::SystemTime::now() - std::time::Duration::from_secs(retention_days * 24 * 3600);
     let mut deleted = 0usize;
 
     let sessions = match std::fs::read_dir(spill_root) {
@@ -163,14 +163,13 @@ pub fn cleanup_expired(spill_root: &Path, retention_days: u64) -> usize {
                     }
                 }
             }
-            if dir_empty
-                && let Err(e) = std::fs::remove_dir(&path) {
-                    tracing::warn!(
-                        "[Spill] retention cleanup failed to remove dir '{}': {}",
-                        path.display(),
-                        e
-                    );
-                }
+            if dir_empty && let Err(e) = std::fs::remove_dir(&path) {
+                tracing::warn!(
+                    "[Spill] retention cleanup failed to remove dir '{}': {}",
+                    path.display(),
+                    e
+                );
+            }
         } else if path.is_file() {
             // A stray file directly under the root (not expected from
             // spill_tool_result, but sweep it under the same rule).
@@ -213,11 +212,7 @@ pub fn status(root: &Path) -> SpillStatus {
     let mut st = SpillStatus::default();
     let mut oldest: Option<std::time::SystemTime> = None;
 
-    fn visit_dir(
-        dir: &Path,
-        st: &mut SpillStatus,
-        oldest: &mut Option<std::time::SystemTime>,
-    ) {
+    fn visit_dir(dir: &Path, st: &mut SpillStatus, oldest: &mut Option<std::time::SystemTime>) {
         let entries = match std::fs::read_dir(dir) {
             Ok(rd) => rd,
             Err(_) => return,
@@ -232,16 +227,15 @@ pub fn status(root: &Path) -> SpillStatus {
             st.files += 1;
             st.bytes += meta.len();
             if let Ok(mt) = meta.modified()
-                && oldest.is_none_or(|o| mt < o) {
-                    *oldest = Some(mt);
-                }
+                && oldest.is_none_or(|o| mt < o)
+            {
+                *oldest = Some(mt);
+            }
         }
     }
 
     visit_dir(root, &mut st, &mut oldest);
-    st.oldest = oldest.map(|t| {
-        chrono::DateTime::<chrono::Local>::from(t).to_rfc3339()
-    });
+    st.oldest = oldest.map(|t| chrono::DateTime::<chrono::Local>::from(t).to_rfc3339());
     st
 }
 

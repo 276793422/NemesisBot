@@ -515,8 +515,7 @@ fn test_score_clarity_single_fence_marker_scores_partial() {
     let with_fence = QualityScorer::score_clarity("# Title\n\nplain text line\nrun ``` inline\n");
     assert_eq!(base.score, 50.0, "base details: {}", base.details);
     assert_eq!(
-        with_fence.score,
-        60.0,
+        with_fence.score, 60.0,
         "fence details: {}",
         with_fence.details
     );

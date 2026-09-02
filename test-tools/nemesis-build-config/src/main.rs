@@ -178,7 +178,9 @@ fn check_problems(scan: &cargo_scan::ScanResult, manifest: &FeatureManifest) -> 
     let mut problems = Vec::new();
     for id in manifest_bool_ids.iter() {
         if !cargo_names.contains(id) {
-            problems.push(format!("STALE: manifest has `{id}` but nemesisbot/Cargo.toml does not"));
+            problems.push(format!(
+                "STALE: manifest has `{id}` but nemesisbot/Cargo.toml does not"
+            ));
         }
     }
     for id in cargo_names.iter() {
@@ -343,6 +345,6 @@ fn main() -> Result<()> {
 }
 
 #[cfg(test)]
-mod w5d_tests;
-#[cfg(test)]
 mod s12b_tests;
+#[cfg(test)]
+mod w5d_tests;

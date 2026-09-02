@@ -17,15 +17,22 @@ fn test_canonicalize_for_compare_nonexistent_tail_matches_existing_root() {
     {
         // 用大小写变体确定性模拟 CI runner 的短名条件（同一归一机制）：
         // 输入 root 与卷上真实表示不同，输出必须归一到真实表示。
-        let name = dir.path().file_name().unwrap().to_string_lossy().to_string();
+        let name = dir
+            .path()
+            .file_name()
+            .unwrap()
+            .to_string_lossy()
+            .to_string();
         let flipped: String = name
             .chars()
-            .map(|c| if c.is_ascii_lowercase() {
-                c.to_ascii_uppercase()
-            } else if c.is_ascii_uppercase() {
-                c.to_ascii_lowercase()
-            } else {
-                c
+            .map(|c| {
+                if c.is_ascii_lowercase() {
+                    c.to_ascii_uppercase()
+                } else if c.is_ascii_uppercase() {
+                    c.to_ascii_lowercase()
+                } else {
+                    c
+                }
             })
             .collect();
         assert_ne!(flipped, name, "tempdir name should contain a letter");
@@ -42,7 +49,11 @@ fn test_canonicalize_for_compare_dotdot_escape_kept() {
     let dir = tempfile::tempdir().unwrap();
     let root = canonicalize_for_compare(dir.path());
     let got = canonicalize_for_compare(&root.join("..").join("outside.txt"));
-    assert!(!got.starts_with(&root), "escape must stay outside: {}", got.display());
+    assert!(
+        !got.starts_with(&root),
+        "escape must stay outside: {}",
+        got.display()
+    );
     // 根内的 `..` 被解析掉。
     let inside = canonicalize_for_compare(&root.join("sub").join("..").join("in.txt"));
     assert_eq!(inside, root.join("in.txt"));
@@ -59,12 +70,14 @@ fn test_canonicalize_for_compare_representation_mismatch_normalized() {
     let name = root.file_name().unwrap().to_string_lossy().to_string();
     let flipped: String = name
         .chars()
-        .map(|c| if c.is_ascii_lowercase() {
-            c.to_ascii_uppercase()
-        } else if c.is_ascii_uppercase() {
-            c.to_ascii_lowercase()
-        } else {
-            c
+        .map(|c| {
+            if c.is_ascii_lowercase() {
+                c.to_ascii_uppercase()
+            } else if c.is_ascii_uppercase() {
+                c.to_ascii_lowercase()
+            } else {
+                c
+            }
         })
         .collect();
     assert_ne!(flipped, name, "tempdir name should contain a letter");
@@ -2681,7 +2694,10 @@ fn test_resolve_spill_dir_in_workspace_stays_under_workspace() {
     // U4 约束：spill 必须落在 restrict_to_workspace 限制范围内。
     let ws = std::path::PathBuf::from("/tmp/home_x/workspace");
     let spill = resolve_spill_dir_in_workspace(&ws);
-    assert!(spill.starts_with(&ws), "spill root must be inside workspace");
+    assert!(
+        spill.starts_with(&ws),
+        "spill root must be inside workspace"
+    );
 }
 
 #[test]

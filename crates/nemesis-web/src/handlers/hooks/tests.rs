@@ -42,7 +42,13 @@ async fn get_missing_file_returns_template_not_error() {
     assert_eq!(r["valid"], true);
     assert_eq!(r["error"], serde_json::Value::Null);
     assert_eq!(r["summary"]["total"], 0);
-    for ev in ["PreToolUse", "PostToolUse", "SessionStart", "UserPromptSubmit", "Stop"] {
+    for ev in [
+        "PreToolUse",
+        "PostToolUse",
+        "SessionStart",
+        "UserPromptSubmit",
+        "Stop",
+    ] {
         assert_eq!(r["summary"][ev], 0, "template names all five events: {ev}");
     }
 }
@@ -79,7 +85,11 @@ async fn get_invalid_file_returns_raw_content_plus_error() {
     assert_eq!(r["valid"], false);
     assert!(r["error"].as_str().unwrap().contains("not CC hooks format"));
     assert_eq!(r["content"].as_str().unwrap(), broken);
-    assert_eq!(r["summary"], serde_json::Value::Null, "no counts for a broken file");
+    assert_eq!(
+        r["summary"],
+        serde_json::Value::Null,
+        "no counts for a broken file"
+    );
 }
 
 #[tokio::test]
@@ -91,7 +101,10 @@ async fn set_writes_verbatim_and_reports_summary() {
     assert_eq!(r["summary"]["PreToolUse"], 2);
     assert_eq!(r["summary"]["total"], 3);
     // Verbatim write: byte-for-byte, key order preserved (no pretty re-shuffle).
-    assert_eq!(std::fs::read_to_string(hooks_path(dir.path())).unwrap(), GOOD);
+    assert_eq!(
+        std::fs::read_to_string(hooks_path(dir.path())).unwrap(),
+        GOOD
+    );
     // get now sees it.
     let g = h.get(&home_str(&dir)).unwrap().unwrap();
     assert_eq!(g["exists"], true);
@@ -106,10 +119,15 @@ async fn set_rejects_bad_json_without_touching_disk() {
     let err = h.set(&home_str(&dir), "{ not json").unwrap_err();
     assert!(err.contains("invalid JSON"), "got: {err}");
     // Semantic error: valid JSON, non-CC shape.
-    let err = h.set(&home_str(&dir), r#"{ "hooks": { "Stop": 5 } }"#).unwrap_err();
+    let err = h
+        .set(&home_str(&dir), r#"{ "hooks": { "Stop": 5 } }"#)
+        .unwrap_err();
     assert!(err.contains("not CC hooks format"), "got: {err}");
     // Neither attempt created the file.
-    assert!(!hooks_path(dir.path()).exists(), "validation must precede any write");
+    assert!(
+        !hooks_path(dir.path()).exists(),
+        "validation must precede any write"
+    );
 }
 
 #[tokio::test]
@@ -118,7 +136,8 @@ async fn set_accepts_bare_top_level_form() {
     // omit the outer "hooks" key) — set must not reject it.
     let dir = tempfile::tempdir().unwrap();
     let h = HooksHandler;
-    let bare = r#"{ "PreToolUse": [ { "hooks": [ { "type": "command", "command": "echo x" } ] } ] }"#;
+    let bare =
+        r#"{ "PreToolUse": [ { "hooks": [ { "type": "command", "command": "echo x" } ] } ] }"#;
     let r = h.set(&home_str(&dir), bare).unwrap().unwrap();
     assert_eq!(r["summary"]["total"], 1);
 }
@@ -194,20 +213,12 @@ async fn dispatch_get_and_set_via_ctx_home() {
     let h = HooksHandler;
 
     // get through dispatch: template for a fresh home.
-    let r = h
-        .handle_cmd("get", None, &ctx)
-        .await
-        .unwrap()
-        .unwrap();
+    let r = h.handle_cmd("get", None, &ctx).await.unwrap().unwrap();
     assert_eq!(r["exists"], false);
 
     // set through dispatch: data.content payload shape.
     let r = h
-        .handle_cmd(
-            "set",
-            Some(serde_json::json!({ "content": GOOD })),
-            &ctx,
-        )
+        .handle_cmd("set", Some(serde_json::json!({ "content": GOOD })), &ctx)
         .await
         .unwrap()
         .unwrap();

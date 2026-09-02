@@ -220,7 +220,11 @@ fn refresh_active_tier_reads_config_and_reload_detects_mtime() {
 #[test]
 fn handle_command_with_context_basic_arms() {
     let agent_loop = AgentLoop::new(Box::new(MockLlmProvider::new(vec![])), test_config());
-    assert!(agent_loop.handle_command_with_context("hello", "web").is_none());
+    assert!(
+        agent_loop
+            .handle_command_with_context("hello", "web")
+            .is_none()
+    );
     let help = agent_loop
         .handle_command_with_context("  /help  ", "web")
         .expect("/help answers");
@@ -285,7 +289,11 @@ async fn force_compression_advances_summary_cache() {
     agent_loop.force_compression(&instance).await;
     let cache = instance.get_summary_cache();
     let cache = cache.expect("summary cache must be set by force_compression");
-    assert!(cache.covers_up_to >= 1, "covers_up_to={}", cache.covers_up_to);
+    assert!(
+        cache.covers_up_to >= 1,
+        "covers_up_to={}",
+        cache.covers_up_to
+    );
     assert!(cache.text.contains("S9 summary"));
 }
 
@@ -327,10 +335,8 @@ async fn build_messages_with_memory_annotation_merges_sections() {
 #[tokio::test]
 async fn emit_observer_events_wraps_llm_call_both_ways() {
     // None manager：直接透传调用结果。
-    let out = emit_observer_events_around_llm(None, "s9label", "m", async {
-        Ok(resp("raw ok"))
-    })
-    .await;
+    let out =
+        emit_observer_events_around_llm(None, "s9label", "m", async { Ok(resp("raw ok")) }).await;
     assert!(matches!(out, Some(Ok(r)) if r.content == "raw ok"));
 
     // Some(manager)：发 ConversationStart/End + LlmRequest/Response 事件。
@@ -431,7 +437,10 @@ async fn maybe_update_summary_advances_on_long_history() {
 
 // ---------- 补充批次：route_message 兜底 / cancel / MCP 禁用重载 / prefetch 早退 ----------
 
-fn s9_inbound(session_key: &str, metadata: std::collections::HashMap<String, String>) -> nemesis_types::channel::InboundMessage {
+fn s9_inbound(
+    session_key: &str,
+    metadata: std::collections::HashMap<String, String>,
+) -> nemesis_types::channel::InboundMessage {
     nemesis_types::channel::InboundMessage {
         channel: "web".to_string(),
         sender_id: "user1".to_string(),
@@ -462,7 +471,10 @@ fn route_message_no_resolver_fallback_arms() {
         std::collections::HashMap::new(),
     ));
     assert_eq!(agent_id, "main");
-    assert_eq!(session_key, "agent:test/s9route", "agent: prefixed key honored");
+    assert_eq!(
+        session_key, "agent:test/s9route",
+        "agent: prefixed key honored"
+    );
 }
 
 /// cancel_session 命中/未命中 + cancel_all_sessions（2748-2775）。
@@ -512,7 +524,10 @@ fn remove_tool_shared_and_registry_misc() {
     assert_eq!(agent_loop.tool_count(), 1);
     assert_eq!(agent_loop.tool_names(), vec!["s9misc".to_string()]);
     assert!(agent_loop.remove_tool_shared("s9misc"));
-    assert!(!agent_loop.remove_tool_shared("s9misc"), "second remove -> false");
+    assert!(
+        !agent_loop.remove_tool_shared("s9misc"),
+        "second remove -> false"
+    );
     assert_eq!(agent_loop.tool_count(), 0);
 }
 
@@ -523,16 +538,29 @@ fn remove_tool_shared_and_registry_misc() {
 #[tokio::test]
 async fn prefetch_memory_context_early_returns() {
     let instance = AgentInstance::new(test_config());
-    let mut hist = vec![turn("system", "sys"), turn("user", "find memories about rust")];
+    let mut hist = vec![
+        turn("system", "sys"),
+        turn("user", "find memories about rust"),
+    ];
     instance.set_history(std::mem::take(&mut hist));
 
     let agent_loop = AgentLoop::new(Box::new(MockLlmProvider::new(vec![])), test_config());
     // auto=false（默认）→ None。
-    assert!(agent_loop.prefetch_memory_context(&instance).await.is_none());
+    assert!(
+        agent_loop
+            .prefetch_memory_context(&instance)
+            .await
+            .is_none()
+    );
 
     // auto=true、有 query，但 manager=None → None（5807 的 ? 臂）。
     agent_loop.set_memory_inject(None, true, 3);
-    assert!(agent_loop.prefetch_memory_context(&instance).await.is_none());
+    assert!(
+        agent_loop
+            .prefetch_memory_context(&instance)
+            .await
+            .is_none()
+    );
 }
 
 // ============================================================================
@@ -629,7 +657,14 @@ fn s9_msg(
 }
 
 fn plain_msg(content: &str) -> nemesis_types::channel::InboundMessage {
-    s9_msg("web", "user1", "chat1", "web:chat1", content, std::collections::HashMap::new())
+    s9_msg(
+        "web",
+        "user1",
+        "chat1",
+        "web:chat1",
+        content,
+        std::collections::HashMap::new(),
+    )
 }
 
 fn tc_resp(calls: Vec<crate::types::ToolCallInfo>) -> LlmResponse {
@@ -662,7 +697,9 @@ fn setters_roundtrip_part2() {
     agent_loop.set_reinject_tx(rein_tx);
     drop(rein_rx);
 
-    agent_loop.set_session_store(std::sync::Arc::new(crate::session::SessionStore::new_in_memory()));
+    agent_loop.set_session_store(std::sync::Arc::new(
+        crate::session::SessionStore::new_in_memory(),
+    ));
     assert!(agent_loop.session_store().is_some());
 
     agent_loop.set_continuation_manager(std::sync::Arc::new(
@@ -700,13 +737,13 @@ fn stop_and_clear_session_busy() {
     assert!(!agent_loop.is_running());
     agent_loop.clear_session_busy(); // 空 map → 无 warn 分支
 
-    agent_loop
-        .session_busy
-        .lock()
-        .insert("s9busy".to_string(), SessionBusyState {
+    agent_loop.session_busy.lock().insert(
+        "s9busy".to_string(),
+        SessionBusyState {
             busy: true,
             queue_length: 0,
-        });
+        },
+    );
     agent_loop.clear_session_busy(); // 非空 → warn 字段行
     assert!(!agent_loop.is_session_busy("s9busy"));
 }
@@ -758,7 +795,10 @@ async fn bus_flow_history_request_parse_error() {
     drop(in_tx);
     agent_loop.run_bus_owned(in_rx).await;
 
-    let out = out_rx.recv().await.expect("history error response published");
+    let out = out_rx
+        .recv()
+        .await
+        .expect("history error response published");
     assert!(!out.content.is_empty());
 }
 
@@ -869,7 +909,11 @@ async fn bus_flow_continuation_spawned() {
         tokio::time::sleep(std::time::Duration::from_millis(25)).await;
     }
     let out = got.expect("spawned continuation final published");
-    assert!(out.content.contains("cont spawned final"), "got: {}", out.content);
+    assert!(
+        out.content.contains("cont spawned final"),
+        "got: {}",
+        out.content
+    );
 }
 
 /// Queue 模式：slash → Immediate 内联回复（1665）+ 普通消息 → Admitted
@@ -1147,7 +1191,11 @@ async fn bus_flow_big_tool_result_spills() {
     let entries: Vec<_> = std::fs::read_dir(&session_dir)
         .expect("spill session dir exists")
         .collect();
-    assert!(!entries.is_empty(), "spill file written under {:?}", session_dir);
+    assert!(
+        !entries.is_empty(),
+        "spill file written under {:?}",
+        session_dir
+    );
 }
 
 /// H5：write_file 触到指令链文件 → digest 失效（4925-4980）。
@@ -1321,7 +1369,11 @@ async fn handle_cluster_continuation_wrapper_both_arms() {
         let msg = plain_msg("wrapper body");
         agent_loop.handle_cluster_continuation("s9w2", &msg).await;
         let out = out_rx.recv().await.expect("wrapper final published");
-        assert!(out.content.contains("wrapper final"), "got: {}", out.content);
+        assert!(
+            out.content.contains("wrapper final"),
+            "got: {}",
+            out.content
+        );
     }
 }
 
@@ -1508,7 +1560,11 @@ async fn bus_flow_context_error_compression_retry_recovers() {
     drop(in_tx);
     agent_loop.run_bus_owned(in_rx).await;
     let out = out_rx.recv().await.expect("final after compression retry");
-    assert!(out.content.contains("compressed ok"), "got: {}", out.content);
+    assert!(
+        out.content.contains("compressed ok"),
+        "got: {}",
+        out.content
+    );
 }
 
 /// 瞬时错误（503）→ 重试成功（4037-4078；重试路的 tool-defs 闭包
@@ -1546,11 +1602,7 @@ async fn bus_flow_empty_final_gives_up_after_budget() {
     let (out_tx, mut out_rx) = tokio::sync::mpsc::channel(16);
     let (in_tx, in_rx) = tokio::sync::mpsc::channel(16);
     let agent_loop = AgentLoop::new_bus(
-        Box::new(MockLlmProvider::new(vec![
-            resp("   "),
-            resp(""),
-            resp(""),
-        ])),
+        Box::new(MockLlmProvider::new(vec![resp("   "), resp(""), resp("")])),
         test_config(),
         out_tx,
         ConcurrentMode::Reject,
@@ -1795,7 +1847,9 @@ async fn bus_flow_summary_success_notice_and_persist() {
     );
     // 摘要写回 store（3239-3240 set_summary）。
     assert!(
-        store.get_summary("agent:main:main").contains("S9 SUMMARY TEXT"),
+        store
+            .get_summary("agent:main:main")
+            .contains("S9 SUMMARY TEXT"),
         "summary persisted"
     );
 }
@@ -1819,7 +1873,10 @@ async fn bus_flow_summary_failure_warns_and_keeps_cache_empty() {
         0,
     );
     agent_loop.set_session_store(store.clone());
-    in_tx.send(plain_msg("summarize me but fail")).await.unwrap();
+    in_tx
+        .send(plain_msg("summarize me but fail"))
+        .await
+        .unwrap();
     drop(in_tx);
     agent_loop.run_bus_owned(in_rx).await;
 
@@ -1868,8 +1925,7 @@ async fn bus_flow_spill_failed_and_below_threshold_both_prune() {
             8,
             0,
         );
-        agent_loop
-            .register_tool("s9big".to_string(), Box::new(BigResultTool));
+        agent_loop.register_tool("s9big".to_string(), Box::new(BigResultTool));
         agent_loop.set_workspace_root(ws.path().to_path_buf());
         agent_loop.set_spill_root(blocker);
         in_tx.send(plain_msg("big but blocked")).await.unwrap();
@@ -1894,14 +1950,16 @@ async fn bus_flow_spill_failed_and_below_threshold_both_prune() {
             8,
             0,
         );
-        agent_loop
-            .register_tool("s9mid".to_string(), Box::new(MidResultTool));
+        agent_loop.register_tool("s9mid".to_string(), Box::new(MidResultTool));
         agent_loop.set_workspace_root(ws.path().to_path_buf());
         agent_loop.set_spill_root(ws.path().join("spill"));
         in_tx.send(plain_msg("mid size result")).await.unwrap();
         drop(in_tx);
         agent_loop.run_bus_owned(in_rx).await;
-        let out = out_rx.recv().await.expect("final after below-threshold prune");
+        let out = out_rx
+            .recv()
+            .await
+            .expect("final after below-threshold prune");
         assert!(out.content.contains("mid pruned done"));
     }
 }
@@ -1914,8 +1972,7 @@ fn record_last_channel_and_chat_id_warn_on_save_failure() {
     let ws = tempfile::tempdir().unwrap();
     std::fs::write(ws.path().join("state"), "not a dir").unwrap();
     let mgr = nemesis_state::workspace_state::WorkspaceStateManager::new(ws.path());
-    let mut agent_loop =
-        AgentLoop::new(Box::new(MockLlmProvider::new(vec![])), test_config());
+    let mut agent_loop = AgentLoop::new(Box::new(MockLlmProvider::new(vec![])), test_config());
     agent_loop.set_state_manager(mgr);
     agent_loop.record_last_channel("web"); // 必须不 panic（warn 臂）
     agent_loop.record_last_chat_id("chat1"); // 同上
@@ -1988,13 +2045,16 @@ async fn parallel_readonly_batch_replays_validation_counters() {
             0,
         );
         agent_loop.register_tool("s9echo".to_string(), Box::new(EchoTool));
-        agent_loop
-            .register_tool("s9strict".to_string(), Box::new(StrictPathTool));
+        agent_loop.register_tool("s9strict".to_string(), Box::new(StrictPathTool));
         in_tx.send(plain_msg("run a parallel batch")).await.unwrap();
         drop(in_tx);
         agent_loop.run_bus_owned(in_rx).await;
         let out = out_rx.recv().await.expect("final after parallel batch");
-        assert!(out.content.contains("parallel done"), "got: {}", out.content);
+        assert!(
+            out.content.contains("parallel done"),
+            "got: {}",
+            out.content
+        );
     }
     // 2) p2 缺必填 path → precompute 标 validation_failed → 重放 +1 臂
     //    → big 档预算（1）耗尽 → 校验预算停（两个臂都要真实跑到）。
@@ -2013,8 +2073,7 @@ async fn parallel_readonly_batch_replays_validation_counters() {
             0,
         );
         agent_loop.register_tool("s9echo".to_string(), Box::new(EchoTool));
-        agent_loop
-            .register_tool("s9strict".to_string(), Box::new(StrictPathTool));
+        agent_loop.register_tool("s9strict".to_string(), Box::new(StrictPathTool));
         in_tx.send(plain_msg("run an invalid batch")).await.unwrap();
         drop(in_tx);
         agent_loop.run_bus_owned(in_rx).await;
@@ -2046,7 +2105,10 @@ async fn cancel_during_llm_call_breaks_turn() {
     let handle = std::sync::Arc::new(agent_loop);
     let runner = tokio::spawn(handle.clone().run_bus_arc(in_rx));
 
-    in_tx.send(plain_msg("cancel while thinking")).await.unwrap();
+    in_tx
+        .send(plain_msg("cancel while thinking"))
+        .await
+        .unwrap();
     // 等 chat 真正进入（token 一定已创建）。
     tokio::time::timeout(std::time::Duration::from_secs(3), started.notified())
         .await
@@ -2076,7 +2138,9 @@ async fn cancel_during_tool_execution_breaks_turn() {
     let tool_started = std::sync::Arc::new(tokio::sync::Notify::new());
     let tool_release = std::sync::Arc::new(tokio::sync::Notify::new());
     let mut agent_loop = AgentLoop::new_bus(
-        Box::new(MockLlmProvider::new(vec![tc_resp(vec![s9_call("t1", "s9gate", "{}")])])),
+        Box::new(MockLlmProvider::new(vec![tc_resp(vec![s9_call(
+            "t1", "s9gate", "{}",
+        )])])),
         test_config(),
         out_tx,
         ConcurrentMode::Reject,
@@ -2119,7 +2183,9 @@ async fn hook_cancels_session_before_tool_dispatch() {
     let (out_tx, mut out_rx) = tokio::sync::mpsc::channel(16);
     let (in_tx, in_rx) = tokio::sync::mpsc::channel(16);
     let mut agent_loop = AgentLoop::new_bus(
-        Box::new(MockLlmProvider::new(vec![tc_resp(vec![s9_call("h1", "s9echo", "{}")])])),
+        Box::new(MockLlmProvider::new(vec![tc_resp(vec![s9_call(
+            "h1", "s9echo", "{}",
+        )])])),
         test_config(),
         out_tx,
         ConcurrentMode::Reject,
@@ -2244,10 +2310,8 @@ async fn steer_mode_escape_hatch_extends_turn() {
     let _logs = capture_logs();
     let (out_tx, mut out_rx) = tokio::sync::mpsc::channel(16);
     let (in_tx, in_rx) = tokio::sync::mpsc::channel(16);
-    let (provider, started, release) = GateProvider::new(vec![
-        resp("first answer"),
-        resp("steer consumed answer"),
-    ]);
+    let (provider, started, release) =
+        GateProvider::new(vec![resp("first answer"), resp("steer consumed answer")]);
     let agent_loop = AgentLoop::new_bus(
         Box::new(provider),
         test_config(),

@@ -90,7 +90,10 @@ fn bm25_term_missing_from_df_is_skipped() {
 #[test]
 fn make_snippet_zero_max_and_short_text_return_whole() {
     // max_chars == 0 → early return of whitespace-compacted text.
-    assert_eq!(make_snippet("  hello   world  ", &["zz".to_string()], 0), "hello world");
+    assert_eq!(
+        make_snippet("  hello   world  ", &["zz".to_string()], 0),
+        "hello world"
+    );
     // text shorter than max_chars → early return too.
     assert_eq!(make_snippet("tiny", &["zz".to_string()], 10), "tiny");
 }
@@ -100,9 +103,18 @@ fn make_snippet_centers_on_multichar_hit() {
     let words: Vec<String> = (0..20).map(|i| format!("w{i:02}")).collect();
     let text = words.join(" ");
     let snippet = make_snippet(&text, &["w10".to_string()], 11);
-    assert!(snippet.contains("w10"), "snippet must contain the hit: {snippet}");
-    assert!(snippet.starts_with("..."), "start>0 → prefix ellipsis: {snippet}");
-    assert!(snippet.ends_with("..."), "end<total → suffix ellipsis: {snippet}");
+    assert!(
+        snippet.contains("w10"),
+        "snippet must contain the hit: {snippet}"
+    );
+    assert!(
+        snippet.starts_with("..."),
+        "start>0 → prefix ellipsis: {snippet}"
+    );
+    assert!(
+        snippet.ends_with("..."),
+        "end<total → suffix ellipsis: {snippet}"
+    );
 }
 
 #[test]
@@ -111,7 +123,10 @@ fn make_snippet_cjk_single_char_is_a_valid_term() {
     let words: Vec<String> = (0..15).map(|i| format!("t{i:02}")).collect();
     let text = format!("{} 你好吗 {}", words[..3].join(" "), words[3..].join(" "));
     let snippet = make_snippet(&text, &["你".to_string()], 9);
-    assert!(snippet.contains('你'), "CJK single-char term must hit: {snippet}");
+    assert!(
+        snippet.contains('你'),
+        "CJK single-char term must hit: {snippet}"
+    );
 }
 
 #[test]
@@ -120,9 +135,18 @@ fn make_snippet_hit_near_end_recomputes_start() {
     let words: Vec<String> = (0..10).map(|i| format!("p{i:02}")).collect();
     let text = words.join(" ");
     let snippet = make_snippet(&text, &["p09".to_string()], 7);
-    assert!(snippet.contains("p09"), "snippet must contain tail hit: {snippet}");
-    assert!(snippet.starts_with("..."), "recomputed start>0 → ellipsis: {snippet}");
-    assert!(!snippet.ends_with("..."), "end==total → no suffix: {snippet}");
+    assert!(
+        snippet.contains("p09"),
+        "snippet must contain tail hit: {snippet}"
+    );
+    assert!(
+        snippet.starts_with("..."),
+        "recomputed start>0 → ellipsis: {snippet}"
+    );
+    assert!(
+        !snippet.ends_with("..."),
+        "end==total → no suffix: {snippet}"
+    );
 }
 
 #[test]

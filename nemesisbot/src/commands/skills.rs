@@ -162,10 +162,10 @@ fn parse_github_url(url: &str) -> Result<(String, String)> {
 fn load_registry_config(skills_cfg: &std::path::Path) -> nemesis_skills::types::RegistryConfig {
     if skills_cfg.exists()
         && let Ok(data) = std::fs::read_to_string(skills_cfg)
-            && let Ok(config) = serde_json::from_str::<nemesis_skills::types::RegistryConfig>(&data)
-            {
-                return config;
-            }
+        && let Ok(config) = serde_json::from_str::<nemesis_skills::types::RegistryConfig>(&data)
+    {
+        return config;
+    }
     nemesis_skills::types::RegistryConfig::default()
 }
 
@@ -236,43 +236,52 @@ async fn detect_skill_structure(owner: &str, repo: &str) -> (String, String, Str
 
         // Mode A: skills/{slug}/SKILL.md (two-level)
         let skills_url = format!("{}{}?ref={}", base_url, "/skills", branch);
-        if let Ok(resp) = client.get(&skills_url).header("User-Agent", "nemesisbot").send().await
+        if let Ok(resp) = client
+            .get(&skills_url)
+            .header("User-Agent", "nemesisbot")
+            .send()
+            .await
             && resp.status().is_success()
-                && let Ok(entries) = resp.json::<Vec<serde_json::Value>>().await {
-                    let skill_dirs: Vec<&str> = entries
-                        .iter()
-                        .filter_map(|e| {
-                            if e.get("type").and_then(|v| v.as_str()) == Some("dir") {
-                                e.get("name").and_then(|v| v.as_str())
-                            } else {
-                                None
-                            }
-                        })
-                        .take(5)
-                        .collect();
-
-                    let mut has_skill_md = false;
-                    for dir in &skill_dirs {
-                        let check_url = format!(
-                            "{}{}{}{}/SKILL.md?ref={}",
-                            base_url, "/skills/", dir, "", branch
-                        );
-                        if let Ok(r) =
-                            client.get(&check_url).header("User-Agent", "nemesisbot").send().await
-                            && r.status().is_success() {
-                                has_skill_md = true;
-                                break;
-                            }
+            && let Ok(entries) = resp.json::<Vec<serde_json::Value>>().await
+        {
+            let skill_dirs: Vec<&str> = entries
+                .iter()
+                .filter_map(|e| {
+                    if e.get("type").and_then(|v| v.as_str()) == Some("dir") {
+                        e.get("name").and_then(|v| v.as_str())
+                    } else {
+                        None
                     }
+                })
+                .take(5)
+                .collect();
 
-                    if has_skill_md {
-                        return (
-                            "github_api".to_string(),
-                            "skills/{slug}/SKILL.md".to_string(),
-                            branch.to_string(),
-                        );
-                    }
+            let mut has_skill_md = false;
+            for dir in &skill_dirs {
+                let check_url = format!(
+                    "{}{}{}{}/SKILL.md?ref={}",
+                    base_url, "/skills/", dir, "", branch
+                );
+                if let Ok(r) = client
+                    .get(&check_url)
+                    .header("User-Agent", "nemesisbot")
+                    .send()
+                    .await
+                    && r.status().is_success()
+                {
+                    has_skill_md = true;
+                    break;
                 }
+            }
+
+            if has_skill_md {
+                return (
+                    "github_api".to_string(),
+                    "skills/{slug}/SKILL.md".to_string(),
+                    branch.to_string(),
+                );
+            }
+        }
 
         // Mode B: skills/{author}/{slug}/SKILL.md (three-level)
         // Check if first subdirectory of skills/ contains subdirectories with SKILL.md
@@ -283,62 +292,75 @@ async fn detect_skill_structure(owner: &str, repo: &str) -> (String, String, Str
             "https://raw.githubusercontent.com/{}/{}/{}/skills.json",
             owner, repo, branch
         );
-        if let Ok(resp) = client.get(&index_url).header("User-Agent", "nemesisbot").send().await
+        if let Ok(resp) = client
+            .get(&index_url)
+            .header("User-Agent", "nemesisbot")
+            .send()
+            .await
             && resp.status().is_success()
-                && let Ok(data) = resp.text().await
-                    && serde_json::from_str::<Vec<serde_json::Value>>(&data).is_ok() {
-                        return (
-                            "skills_json".to_string(),
-                            "skills.json".to_string(),
-                            branch.to_string(),
-                        );
-                    }
+            && let Ok(data) = resp.text().await
+            && serde_json::from_str::<Vec<serde_json::Value>>(&data).is_ok()
+        {
+            return (
+                "skills_json".to_string(),
+                "skills.json".to_string(),
+                branch.to_string(),
+            );
+        }
 
         // Mode D: {slug}/SKILL.md at root level
         let root_url = format!("{}?ref={}", base_url, branch);
-        if let Ok(resp) = client.get(&root_url).header("User-Agent", "nemesisbot").send().await
+        if let Ok(resp) = client
+            .get(&root_url)
+            .header("User-Agent", "nemesisbot")
+            .send()
+            .await
             && resp.status().is_success()
-                && let Ok(entries) = resp.json::<Vec<serde_json::Value>>().await {
-                    let skip_dirs = [
-                        "src", "pkg", "cmd", "internal", "docs", ".github", "test", "tests",
-                        "examples", "scripts", "config",
-                    ];
-                    let root_dirs: Vec<&str> = entries
-                        .iter()
-                        .filter_map(|e| {
-                            if e.get("type").and_then(|v| v.as_str()) == Some("dir") {
-                                let name = e.get("name").and_then(|v| v.as_str()).unwrap_or("");
-                                if !skip_dirs.contains(&name) && !name.starts_with('.') {
-                                    Some(name)
-                                } else {
-                                    None
-                                }
-                            } else {
-                                None
-                            }
-                        })
-                        .take(5)
-                        .collect();
-
-                    for dir in &root_dirs {
-                        let check_url = format!("{}/{}?ref={}", base_url, dir, branch);
-                        if let Ok(r) =
-                            client.get(&check_url).header("User-Agent", "nemesisbot").send().await
-                            && r.status().is_success()
-                                && let Ok(sub_entries) = r.json::<Vec<serde_json::Value>>().await
-                                    && sub_entries.iter().any(|e| {
-                                        e.get("name").and_then(|v| v.as_str()) == Some("SKILL.md")
-                                            && e.get("type").and_then(|v| v.as_str())
-                                                == Some("file")
-                                    }) {
-                                        return (
-                                            "github_api".to_string(),
-                                            format!("{}/SKILL.md", dir),
-                                            branch.to_string(),
-                                        );
-                                    }
+            && let Ok(entries) = resp.json::<Vec<serde_json::Value>>().await
+        {
+            let skip_dirs = [
+                "src", "pkg", "cmd", "internal", "docs", ".github", "test", "tests", "examples",
+                "scripts", "config",
+            ];
+            let root_dirs: Vec<&str> = entries
+                .iter()
+                .filter_map(|e| {
+                    if e.get("type").and_then(|v| v.as_str()) == Some("dir") {
+                        let name = e.get("name").and_then(|v| v.as_str()).unwrap_or("");
+                        if !skip_dirs.contains(&name) && !name.starts_with('.') {
+                            Some(name)
+                        } else {
+                            None
+                        }
+                    } else {
+                        None
                     }
+                })
+                .take(5)
+                .collect();
+
+            for dir in &root_dirs {
+                let check_url = format!("{}/{}?ref={}", base_url, dir, branch);
+                if let Ok(r) = client
+                    .get(&check_url)
+                    .header("User-Agent", "nemesisbot")
+                    .send()
+                    .await
+                    && r.status().is_success()
+                    && let Ok(sub_entries) = r.json::<Vec<serde_json::Value>>().await
+                    && sub_entries.iter().any(|e| {
+                        e.get("name").and_then(|v| v.as_str()) == Some("SKILL.md")
+                            && e.get("type").and_then(|v| v.as_str()) == Some("file")
+                    })
+                {
+                    return (
+                        "github_api".to_string(),
+                        format!("{}/SKILL.md", dir),
+                        branch.to_string(),
+                    );
                 }
+            }
+        }
     }
 
     // Default fallback
@@ -589,14 +611,15 @@ async fn cmd_install_github(skills_dir: &std::path::Path, repo_path: &str) -> Re
                 .send()
                 .await
                 && resp.status().is_success()
-                    && let Ok(content) = resp.text().await {
-                        let target = skills_dir.join(&skill_name);
-                        let _ = std::fs::create_dir_all(&target);
-                        std::fs::write(target.join("SKILL.md"), &content)?;
-                        println!("  Installed: {} (from GitHub)", skill_name);
-                        println!("  Location: {}", target.display());
-                        return Ok(());
-                    }
+                && let Ok(content) = resp.text().await
+            {
+                let target = skills_dir.join(&skill_name);
+                let _ = std::fs::create_dir_all(&target);
+                std::fs::write(target.join("SKILL.md"), &content)?;
+                println!("  Installed: {} (from GitHub)", skill_name);
+                println!("  Location: {}", target.display());
+                return Ok(());
+            }
         }
     }
 
@@ -832,7 +855,12 @@ async fn cmd_source_add(skills_cfg: &std::path::Path, url: &str) -> Result<()> {
     let mut verified = false;
 
     for attempt in 1..=max_retries {
-        match client.get(&api_url).header("User-Agent", "nemesisbot").send().await {
+        match client
+            .get(&api_url)
+            .header("User-Agent", "nemesisbot")
+            .send()
+            .await
+        {
             Ok(resp) => {
                 if resp.status() == reqwest::StatusCode::NOT_FOUND {
                     println!("Error: Repository '{}' not found (404).", full_repo);
@@ -882,8 +910,7 @@ async fn cmd_source_add(skills_cfg: &std::path::Path, url: &str) -> Result<()> {
     }
 
     // Auto-detect skill structure
-    let (index_type, skill_path_pattern, branch) =
-        detect_skill_structure(&owner, &repo).await;
+    let (index_type, skill_path_pattern, branch) = detect_skill_structure(&owner, &repo).await;
     println!(
         "  Detected structure: {} (pattern: {}, branch: {})",
         index_type, skill_path_pattern, branch
@@ -1080,7 +1107,12 @@ async fn cmd_install_clawhub(
         .build()
         .unwrap_or_else(|_| reqwest::Client::new());
 
-    match client.get(&url).header("User-Agent", "nemesisbot").send().await {
+    match client
+        .get(&url)
+        .header("User-Agent", "nemesisbot")
+        .send()
+        .await
+    {
         Ok(resp) => {
             if resp.status().is_success() {
                 if let Ok(content) = resp.text().await {
@@ -1126,7 +1158,6 @@ pub fn run(action: SkillsAction, local: bool) -> Result<()> {
             tokio::task::block_in_place(|| {
                 tokio::runtime::Handle::current().block_on(cmd_search(&skills_cfg, q, limit))
             })?;
-            
         }
         SkillsAction::Install { skill } => {
             tokio::task::block_in_place(|| {
@@ -1136,7 +1167,6 @@ pub fn run(action: SkillsAction, local: bool) -> Result<()> {
                     &skill,
                 ))
             })?;
-            
         }
         SkillsAction::Remove { name } => cmd_remove(&skills_dir, &name)?,
         SkillsAction::Source { action } => match action {
@@ -1147,7 +1177,6 @@ pub fn run(action: SkillsAction, local: bool) -> Result<()> {
                 tokio::task::block_in_place(|| {
                     tokio::runtime::Handle::current().block_on(cmd_source_add(&skills_cfg, &url))
                 })?;
-                
             }
             SourceAction::Remove { name } => cmd_source_remove(&skills_cfg, &name)?,
         },
@@ -1155,7 +1184,6 @@ pub fn run(action: SkillsAction, local: bool) -> Result<()> {
             tokio::task::block_in_place(|| {
                 tokio::runtime::Handle::current().block_on(cmd_source_add(&skills_cfg, &url))
             })?;
-            
         }
         SkillsAction::Validate { path } => cmd_validate(&path)?,
         SkillsAction::Show { name } => cmd_show(&skills_dir, &name)?,
@@ -1164,13 +1192,11 @@ pub fn run(action: SkillsAction, local: bool) -> Result<()> {
                 tokio::task::block_in_place(|| {
                     tokio::runtime::Handle::current().block_on(cmd_cache_stats(&skills_cfg))
                 })?;
-                
             }
             CacheAction::Clear => {
                 tokio::task::block_in_place(|| {
                     tokio::runtime::Handle::current().block_on(cmd_cache_clear(&skills_cfg))
                 })?;
-                
             }
         },
         SkillsAction::InstallBuiltin { name } => cmd_install_builtin(&skills_dir, name.as_deref())?,
@@ -1190,7 +1216,6 @@ pub fn run(action: SkillsAction, local: bool) -> Result<()> {
                     output_name.as_deref(),
                 ))
             })?;
-            
         }
         SkillsAction::Learn { source, name } => {
             tokio::task::block_in_place(|| {
@@ -1200,7 +1225,6 @@ pub fn run(action: SkillsAction, local: bool) -> Result<()> {
                     name.as_deref(),
                 ))
             })?;
-            
         }
     }
     Ok(())

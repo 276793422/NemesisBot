@@ -40,7 +40,11 @@ fn s7_startup_with_ws_client_registers_dashboard_handlers() {
     let dispatcher = client.dispatcher();
 
     // 3 个通知处理器：派发为通知（无 id + method），返回 Ok(None)。
-    for method in ["window.bring_to_front", "window.minimize", "state.service_status"] {
+    for method in [
+        "window.bring_to_front",
+        "window.minimize",
+        "state.service_status",
+    ] {
         let note = Message::new_notification(method, serde_json::Value::Null);
         let result = dispatcher.dispatch(&note);
         assert!(

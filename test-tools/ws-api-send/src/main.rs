@@ -60,7 +60,9 @@ async fn main() -> Result<()> {
 
     let req_id = format!(
         "e2e-{}",
-        std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH)?.as_nanos()
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)?
+            .as_nanos()
     );
 
     let full_url = if args.url.contains('?') {

@@ -2622,4 +2622,3 @@ fn test_chat_options_roundtrip() {
     assert_eq!(back.top_p, Some(0.95));
     assert_eq!(back.stop.as_ref().unwrap().len(), 2);
 }
-

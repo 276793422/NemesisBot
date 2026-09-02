@@ -111,7 +111,10 @@ pub trait SandboxBackend: Send + Sync {
     /// 进程内自装（landlock 形态）。装上后**不可逆**，只影响本进程树。
     /// 包装式后端默认不支持（返回 Err）。
     fn apply_to_self(&self, _conf: &SandboxConf) -> Result<Enforcement, String> {
-        Err(format!("backend '{}' does not support self-apply", self.name()))
+        Err(format!(
+            "backend '{}' does not support self-apply",
+            self.name()
+        ))
     }
 
     /// 包装式启动（bwrap / sandbox-exec 形态）：返回带沙盒参数的 `Command`

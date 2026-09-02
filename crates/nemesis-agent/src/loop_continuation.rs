@@ -145,8 +145,7 @@ impl ContinuationStore {
     pub fn save(&self, snapshot: &ContinuationSnapshot) -> std::io::Result<()> {
         self.ensure_dir()?;
         let path = self.snapshot_path(&snapshot.task_id);
-        let json = serde_json::to_string_pretty(snapshot)
-            .map_err(std::io::Error::other)?;
+        let json = serde_json::to_string_pretty(snapshot).map_err(std::io::Error::other)?;
         std::fs::write(&path, json)?;
         Ok(())
     }
@@ -162,12 +161,13 @@ impl ContinuationStore {
     pub fn delete(&self, task_id: &str) {
         let path = self.snapshot_path(task_id);
         if path.exists()
-            && let Err(e) = std::fs::remove_file(&path) {
-                warn!(
-                    "[Continuation] Failed to delete continuation snapshot {}: {}",
-                    task_id, e
-                );
-            }
+            && let Err(e) = std::fs::remove_file(&path)
+        {
+            warn!(
+                "[Continuation] Failed to delete continuation snapshot {}: {}",
+                task_id, e
+            );
+        }
     }
 
     /// List all pending task IDs on disk.
@@ -182,9 +182,10 @@ impl ContinuationStore {
         for entry in entries.flatten() {
             let path = entry.path();
             if path.extension().map(|e| e == "json").unwrap_or(false)
-                && let Some(stem) = path.file_stem().and_then(|s| s.to_str()) {
-                    task_ids.push(stem.to_string());
-                }
+                && let Some(stem) = path.file_stem().and_then(|s| s.to_str())
+            {
+                task_ids.push(stem.to_string());
+            }
         }
         task_ids
     }
@@ -281,9 +282,10 @@ impl ContinuationStore {
                 continue;
             };
             if modified < cutoff
-                && let Some(stem) = path.file_stem().and_then(|s| s.to_str()) {
-                    stale.push(stem.to_string());
-                }
+                && let Some(stem) = path.file_stem().and_then(|s| s.to_str())
+            {
+                stale.push(stem.to_string());
+            }
         }
         stale
     }
@@ -880,18 +882,19 @@ pub async fn handle_cluster_continuation<T: ToolLookup>(
 
             // Handle nested async: save a new continuation.
             if tool_result.is_async
-                && let Some(ref nested_task_id) = tool_result.task_id {
-                    manager
-                        .save_continuation(
-                            nested_task_id,
-                            messages.clone(),
-                            &tc.id,
-                            &cont_data.channel,
-                            &cont_data.chat_id,
-                            &cont_data.session_key,
-                        )
-                        .await;
-                }
+                && let Some(ref nested_task_id) = tool_result.task_id
+            {
+                manager
+                    .save_continuation(
+                        nested_task_id,
+                        messages.clone(),
+                        &tc.id,
+                        &cont_data.channel,
+                        &cont_data.chat_id,
+                        &cont_data.session_key,
+                    )
+                    .await;
+            }
 
             // Determine content for LLM.
             let content_for_llm = if tool_result.for_llm.is_empty() {

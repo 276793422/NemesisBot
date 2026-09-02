@@ -529,10 +529,18 @@ fn test_s8_receive_reflection_no_from() {
     });
     syncer.receive_reflection(&payload).unwrap();
 
-    let written = dir.path().join("reflections").join("remote").join("unknown_r8.md");
+    let written = dir
+        .path()
+        .join("reflections")
+        .join("remote")
+        .join("unknown_r8.md");
     let body = std::fs::read_to_string(&written)
         .unwrap_or_else(|e| panic!("expected {:?}: {}", written, e));
-    assert!(body.contains("<!-- Remote reflection from unknown at"), "body: {}", body);
+    assert!(
+        body.contains("<!-- Remote reflection from unknown at"),
+        "body: {}",
+        body
+    );
     assert!(body.contains("# remote insight"));
 }
 
@@ -550,7 +558,11 @@ fn test_s8_receive_reflection_with_from() {
     });
     syncer.receive_reflection(&payload).unwrap();
 
-    let written = dir.path().join("reflections").join("remote").join("peer-node-1_p1.md");
+    let written = dir
+        .path()
+        .join("reflections")
+        .join("remote")
+        .join("peer-node-1_p1.md");
     assert!(written.exists(), "expected prefixed file at {:?}", written);
 }
 

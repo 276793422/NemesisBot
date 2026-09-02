@@ -725,10 +725,8 @@ async fn load_persisted_async_wrapper_ingests_new_lines() {
     let entry = make_entry("lp-1", "first content");
     std::fs::write(&path, serde_json::to_string(&entry).unwrap() + "\n").unwrap();
 
-    let store = VectorStore::new_from_embed(
-        stub_embed(),
-        make_store_config(&path.to_string_lossy()),
-    );
+    let store =
+        VectorStore::new_from_embed(stub_embed(), make_store_config(&path.to_string_lossy()));
     assert_eq!(store.len(), 1, "constructor sync-loads the initial line");
 
     // Append a second line, then exercise the async wrapper.
@@ -736,7 +734,10 @@ async fn load_persisted_async_wrapper_ingests_new_lines() {
     let mut line = serde_json::to_string(&second).unwrap();
     line.push('\n');
     use std::io::Write;
-    let mut f = std::fs::OpenOptions::new().append(true).open(&path).unwrap();
+    let mut f = std::fs::OpenOptions::new()
+        .append(true)
+        .open(&path)
+        .unwrap();
     f.write_all(line.as_bytes()).unwrap();
     drop(f);
 
@@ -758,13 +759,14 @@ async fn persist_entry_fails_when_parent_is_file() {
     std::fs::write(&blocker, "x").unwrap();
     let path = blocker.join("vec.jsonl");
 
-    let store = VectorStore::new_from_embed(
-        stub_embed(),
-        make_store_config(&path.to_string_lossy()),
-    );
+    let store =
+        VectorStore::new_from_embed(stub_embed(), make_store_config(&path.to_string_lossy()));
     let entry = make_entry("p-1", "content");
     let err = store.persist_entry(&entry).await.unwrap_err();
-    assert!(!err.is_empty(), "persist against file-as-parent must fail: {err}");
+    assert!(
+        !err.is_empty(),
+        "persist against file-as-parent must fail: {err}"
+    );
 }
 
 // ---------------------------------------------------------------------------

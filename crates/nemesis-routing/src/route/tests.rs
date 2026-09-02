@@ -1120,9 +1120,18 @@ fn s12b_find_guild_match_skips_binding_without_guild_field() {
             },
         ],
         agents: vec![
-            AgentDef { id: "main".to_string(), is_default: true },
-            AgentDef { id: "plain".to_string(), is_default: false },
-            AgentDef { id: "guild-agent".to_string(), is_default: false },
+            AgentDef {
+                id: "main".to_string(),
+                is_default: true,
+            },
+            AgentDef {
+                id: "plain".to_string(),
+                is_default: false,
+            },
+            AgentDef {
+                id: "guild-agent".to_string(),
+                is_default: false,
+            },
         ],
         dm_scope: "main".to_string(),
     });
@@ -1158,9 +1167,18 @@ fn s12b_find_team_match_skips_binding_without_team_field() {
             },
         ],
         agents: vec![
-            AgentDef { id: "main".to_string(), is_default: true },
-            AgentDef { id: "plain".to_string(), is_default: false },
-            AgentDef { id: "team-agent".to_string(), is_default: false },
+            AgentDef {
+                id: "main".to_string(),
+                is_default: true,
+            },
+            AgentDef {
+                id: "plain".to_string(),
+                is_default: false,
+            },
+            AgentDef {
+                id: "team-agent".to_string(),
+                is_default: false,
+            },
         ],
         dm_scope: "main".to_string(),
     });
@@ -1197,9 +1215,18 @@ fn s12b_find_account_match_continues_past_scoped_bindings() {
             },
         ],
         agents: vec![
-            AgentDef { id: "main".to_string(), is_default: true },
-            AgentDef { id: "scoped".to_string(), is_default: false },
-            AgentDef { id: "account-agent".to_string(), is_default: false },
+            AgentDef {
+                id: "main".to_string(),
+                is_default: true,
+            },
+            AgentDef {
+                id: "scoped".to_string(),
+                is_default: false,
+            },
+            AgentDef {
+                id: "account-agent".to_string(),
+                is_default: false,
+            },
         ],
         dm_scope: "main".to_string(),
     });
@@ -1239,9 +1266,18 @@ fn s12b_channel_wildcard_match_continues_past_specific_accounts() {
             },
         ],
         agents: vec![
-            AgentDef { id: "main".to_string(), is_default: true },
-            AgentDef { id: "other-acct".to_string(), is_default: false },
-            AgentDef { id: "wildcard".to_string(), is_default: false },
+            AgentDef {
+                id: "main".to_string(),
+                is_default: true,
+            },
+            AgentDef {
+                id: "other-acct".to_string(),
+                is_default: false,
+            },
+            AgentDef {
+                id: "wildcard".to_string(),
+                is_default: false,
+            },
         ],
         dm_scope: "main".to_string(),
     });

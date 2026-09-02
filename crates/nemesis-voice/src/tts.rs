@@ -301,7 +301,12 @@ impl TtsEngine {
         };
 
         let audio_result = unsafe {
-            sherpa::safe_tts_generate_audio(tts_ptr, text_c.as_ptr(), speaker_id as libc::c_int, speed)
+            sherpa::safe_tts_generate_audio(
+                tts_ptr,
+                text_c.as_ptr(),
+                speaker_id as libc::c_int,
+                speed,
+            )
         };
 
         match audio_result {

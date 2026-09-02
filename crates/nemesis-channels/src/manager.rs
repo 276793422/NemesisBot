@@ -321,16 +321,17 @@ impl ChannelManager {
 
         // Apply allowed-channels filter
         if let Some(ref allowed) = self.allowed_channels
-            && !allowed.contains(&channel_name) {
-                self.metrics
-                    .dropped_filtered
-                    .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-                debug!(
-                    channel = %channel_name,
-                    "[ChannelManager] dropping outbound message: channel not in allowed list"
-                );
-                return Ok(());
-            }
+            && !allowed.contains(&channel_name)
+        {
+            self.metrics
+                .dropped_filtered
+                .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            debug!(
+                channel = %channel_name,
+                "[ChannelManager] dropping outbound message: channel not in allowed list"
+            );
+            return Ok(());
+        }
 
         let map = self.channels.read().await;
         match map.get(&channel_name) {

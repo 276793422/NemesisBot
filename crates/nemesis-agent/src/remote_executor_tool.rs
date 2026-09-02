@@ -232,17 +232,18 @@ impl ExecutorChannel {
             // 为 true），先过严格闸门——不过则拒绝执行，绝不静默降级成无盒。
             // 闸门内部 live 读 executor.strict：false 时秒过（现状字节不变）。
             if let Some(gate) = &self.strict_gate
-                && let Err(reason) = gate() {
-                    tracing::warn!(
-                        "[Executor] strict mode refusing '{tool}': sandbox required \
+                && let Err(reason) = gate()
+            {
+                tracing::warn!(
+                    "[Executor] strict mode refusing '{tool}': sandbox required \
                          but unavailable: {reason}"
-                    );
-                    return Err(format!(
-                        "strict mode (fail-closed): executor.sandbox=true but the \
+                );
+                return Err(format!(
+                    "strict mode (fail-closed): executor.sandbox=true but the \
                          sandbox backend is unavailable ({reason}) — refusing to run \
                          '{tool}' unsandboxed"
-                    ));
-                }
+                ));
+            }
             #[cfg(windows)]
             {
                 return self.spawn_and_call_pipe(tool, &request_line).await;
@@ -255,9 +256,7 @@ impl ExecutorChannel {
                 // 对自身装上限制（自装式），stdio 传输照常。降级语义在子进程侧：
                 // 后端不可用 → warn + 无盒继续（fail-open 默认；strict=true 时
                 // gateway 侧闸门已在上面拒绝 + 子进程侧 engage 同样拒绝，双保险）。
-                return self
-                    .spawn_and_call_stdio(tool, &request_line, true)
-                    .await;
+                return self.spawn_and_call_stdio(tool, &request_line, true).await;
             }
         }
         self.spawn_and_call_stdio(tool, &request_line, false).await

@@ -74,10 +74,7 @@ async fn spawn_tool_metadata_and_set_context() {
     assert!(!t.description().is_empty());
     assert!(t.parameters()["properties"]["task"].is_object());
     t.set_context("web", "chat9");
-    let err = t
-        .execute(r#"{"task":"do it"}"#, &ctx())
-        .await
-        .unwrap_err();
+    let err = t.execute(r#"{"task":"do it"}"#, &ctx()).await.unwrap_err();
     assert!(!err.is_empty(), "spawn without spawn_fn must error");
 }
 
@@ -113,14 +110,10 @@ async fn skill_manage_approval_slot_not_running_refuses_write() {
         }
     }
     let slot: super::ApprovalManagerSlot = std::sync::Arc::new(parking_lot::RwLock::new(Some(
-        std::sync::Arc::new(DeadManager) as std::sync::Arc<dyn ApprovalManager>
+        std::sync::Arc::new(DeadManager) as std::sync::Arc<dyn ApprovalManager>,
     )));
     let ws = tempfile::tempdir().unwrap();
-    let t = super::SkillManageTool::new(
-        ws.path().to_str().unwrap().to_string(),
-        Some(slot),
-        true,
-    );
+    let t = super::SkillManageTool::new(ws.path().to_str().unwrap().to_string(), Some(slot), true);
     let err = t
         .execute(
             r#"{"action":"create","name":"s9skill","content":"x"}"#,
@@ -213,7 +206,10 @@ async fn skill_manage_write_remove_error_arms() {
 
     // remove_file：目录不存在 / 缺 path / 文件不存在。
     let err = t
-        .execute(r#"{"action":"remove_file","name":"ghost","path":"a.md"}"#, &c)
+        .execute(
+            r#"{"action":"remove_file","name":"ghost","path":"a.md"}"#,
+            &c,
+        )
         .await
         .unwrap_err();
     assert!(err.contains("has no directory yet"), "got: {}", err);
@@ -223,7 +219,10 @@ async fn skill_manage_write_remove_error_arms() {
         .unwrap_err();
     assert!(err.contains("'path' is required"), "got: {}", err);
     let err = t
-        .execute(r#"{"action":"remove_file","name":"s9wr","path":"nope.md"}"#, &c)
+        .execute(
+            r#"{"action":"remove_file","name":"s9wr","path":"nope.md"}"#,
+            &c,
+        )
         .await
         .unwrap_err();
     assert!(err.contains("file not found"), "got: {}", err);
@@ -270,10 +269,7 @@ async fn grep_tool_finds_pattern_in_temp_tree() {
         .unwrap();
     assert!(out.contains("No matches"), "got: {}", out);
 
-    let err = t
-        .execute(r#"{"pattern":"("}"#, &ctx())
-        .await
-        .unwrap_err();
+    let err = t.execute(r#"{"pattern":"("}"#, &ctx()).await.unwrap_err();
     assert!(err.contains("invalid regex"), "got: {}", err);
 }
 
@@ -285,10 +281,7 @@ async fn git_tool_status_and_unknown_action() {
     assert!(t.description().contains("git"));
     assert!(t.parameters()["properties"]["action"].is_object());
 
-    let err = t
-        .execute(r#"{"action":"push"}"#, &ctx())
-        .await
-        .unwrap_err();
+    let err = t.execute(r#"{"action":"push"}"#, &ctx()).await.unwrap_err();
     assert!(err.contains("unknown git action"), "got: {}", err);
 
     // 真 git 仓库：init + status 成功路径（同时覆盖 3546-3550 三分支之一）。
@@ -297,13 +290,14 @@ async fn git_tool_status_and_unknown_action() {
         .current_dir(ws.path())
         .output();
     if let Ok(o) = init
-        && o.status.success() {
-            let out = t
-                .execute(r#"{"action":"status"}"#, &ctx())
-                .await
-                .expect("status in fresh repo");
-            assert!(!out.trim().is_empty(), "got: {}", out);
-        }
+        && o.status.success()
+    {
+        let out = t
+            .execute(r#"{"action":"status"}"#, &ctx())
+            .await
+            .expect("status in fresh repo");
+        assert!(!out.trim().is_empty(), "got: {}", out);
+    }
 }
 
 /// WebSearchTool：默认（无 provider）配置 → execute 报「未配置」；
@@ -328,7 +322,11 @@ async fn web_search_tool_no_provider_configured_errors() {
         .execute(r#"{"query":"anything"}"#, &ctx())
         .await
         .unwrap_err();
-    assert!(err.contains("No search provider configured"), "got: {}", err);
+    assert!(
+        err.contains("No search provider configured"),
+        "got: {}",
+        err
+    );
     let q = t.extract_query(r#"{"query":"literal query"}"#).unwrap();
     assert_eq!(q, "literal query");
 }

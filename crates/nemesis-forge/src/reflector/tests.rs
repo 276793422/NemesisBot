@@ -1336,7 +1336,10 @@ async fn test_reflect_with_llm_error_provider_keeps_none() {
         .reflect_with_llm(&experiences, &[], None, "today", "all")
         .await;
 
-    assert!(report.llm_insights.is_none(), "Err response must skip insights");
+    assert!(
+        report.llm_insights.is_none(),
+        "Err response must skip insights"
+    );
     // Sync stages still produced stats.
     assert_eq!(report.stats.total_records, 1);
 }
@@ -1493,10 +1496,12 @@ fn test_s8_merge_remote_reflections_parses_markdown_tables() {
 
     let reflector = Reflector::new();
     let merged = reflector.merge_remote_reflections(&[report], &[]);
-    assert!(merged
-        .remote_patterns
-        .iter()
-        .any(|p| p.tool_name == "read_file" && p.count >= 5));
+    assert!(
+        merged
+            .remote_patterns
+            .iter()
+            .any(|p| p.tool_name == "read_file" && p.count >= 5)
+    );
 }
 
 // 同上：Windows share_mode(0) 语义专属，Linux 无"锁住不许删"等价物。
@@ -1526,4 +1531,3 @@ fn test_s8_cleanup_reports_locked_file_not_counted() {
     assert_eq!(reflector.cleanup_reports(30), 0);
     assert!(old_md.exists());
 }
-

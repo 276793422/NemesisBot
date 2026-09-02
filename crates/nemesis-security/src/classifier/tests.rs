@@ -420,7 +420,13 @@ fn test_classify_malicious_band() {
     assert!(r.score >= 0.7, "score={}", r.score);
     // 五个因子都在结果里
     let names: Vec<&str> = r.factors.iter().map(|f| f.name.as_str()).collect();
-    for want in ["keyword_density", "entropy", "structural", "repetition", "instruction_structure"] {
+    for want in [
+        "keyword_density",
+        "entropy",
+        "structural",
+        "repetition",
+        "instruction_structure",
+    ] {
         assert!(names.contains(&want), "factors: {:?}", names);
     }
 }
@@ -462,7 +468,8 @@ fn test_repetition_mid_band_word_ratio() {
 #[test]
 fn test_instruction_structure_numbered_mid_band() {
     // 编号行 2/8 = 0.25 ∈ (0.2, 0.4] → +0.15；祈使行 0 → 不触发组合加成。
-    let input = "1. alpha\n2. beta\nplain one\nplain two\nplain three\nplain four\nplain five\nplain six";
+    let input =
+        "1. alpha\n2. beta\nplain one\nplain two\nplain three\nplain four\nplain five\nplain six";
     let (score, desc) = instruction_structure_score(input);
     assert_eq!(score, 0.15, "desc={desc}");
     assert!(desc.contains("numbered=2/8"), "desc={desc}");

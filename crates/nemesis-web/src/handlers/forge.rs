@@ -126,7 +126,8 @@ impl ForgeHandler {
         let started_at = ctx.state.forge.as_ref().and_then(|f| f.started_at());
 
         // Load forge config for intervals
-        let forge_config_path = nemesis_path::resolve_forge_config_path_in_workspace(Path::new(workspace));
+        let forge_config_path =
+            nemesis_path::resolve_forge_config_path_in_workspace(Path::new(workspace));
         let forge_config = if forge_config_path.exists() {
             nemesis_forge::config::load_forge_config(&forge_config_path)
         } else {
@@ -176,7 +177,8 @@ impl ForgeHandler {
         let forge_enabled = config.forge.as_ref().map(|f| f.enabled).unwrap_or(false);
 
         // Load full forge config from config dir if available
-        let forge_config_path = nemesis_path::resolve_forge_config_path_in_workspace(Path::new(workspace));
+        let forge_config_path =
+            nemesis_path::resolve_forge_config_path_in_workspace(Path::new(workspace));
         let forge_config = if forge_config_path.exists() {
             nemesis_forge::config::load_forge_config(&forge_config_path)
         } else {
@@ -393,21 +395,22 @@ impl ForgeHandler {
         let skills_dir = forge_dir(workspace).join("skills");
         let mut skill_files = Vec::new();
         if skills_dir.exists()
-            && let Ok(entries) = std::fs::read_dir(&skills_dir) {
-                for entry in entries.flatten() {
-                    let path = entry.path();
-                    if path.is_dir() {
-                        let name = entry.file_name().to_string_lossy().to_string();
-                        let skill_md = path.join("SKILL.md");
-                        let has_skill = skill_md.exists();
-                        skill_files.push(serde_json::json!({
-                            "name": name,
-                            "has_skill_md": has_skill,
-                            "type": "directory",
-                        }));
-                    }
+            && let Ok(entries) = std::fs::read_dir(&skills_dir)
+        {
+            for entry in entries.flatten() {
+                let path = entry.path();
+                if path.is_dir() {
+                    let name = entry.file_name().to_string_lossy().to_string();
+                    let skill_md = path.join("SKILL.md");
+                    let has_skill = skill_md.exists();
+                    skill_files.push(serde_json::json!({
+                        "name": name,
+                        "has_skill_md": has_skill,
+                        "type": "directory",
+                    }));
                 }
             }
+        }
 
         Ok(Some(serde_json::json!({
             "artifacts": artifacts,
@@ -585,19 +588,21 @@ impl ForgeHandler {
 
         // Sync enabled to config.forge.json as well.
         let workspace = require_workspace(ctx)?;
-        let forge_config_path = nemesis_path::resolve_forge_config_path_in_workspace(Path::new(workspace));
+        let forge_config_path =
+            nemesis_path::resolve_forge_config_path_in_workspace(Path::new(workspace));
         if let Some(parent) = forge_config_path.parent() {
             let _ = std::fs::create_dir_all(parent);
         }
         if forge_config_path.exists() {
             if let Ok(content) = std::fs::read_to_string(&forge_config_path)
                 && let Ok(mut fc) = serde_json::from_str::<serde_json::Value>(&content)
-                    && let Some(obj) = fc.as_object_mut() {
-                        obj.insert("enabled".to_string(), serde_json::Value::Bool(enabled));
-                        if let Ok(updated) = serde_json::to_string_pretty(&fc) {
-                            let _ = std::fs::write(&forge_config_path, updated);
-                        }
-                    }
+                && let Some(obj) = fc.as_object_mut()
+            {
+                obj.insert("enabled".to_string(), serde_json::Value::Bool(enabled));
+                if let Ok(updated) = serde_json::to_string_pretty(&fc) {
+                    let _ = std::fs::write(&forge_config_path, updated);
+                }
+            }
         } else {
             // Auto-create from defaults with the current enabled value.
             let mut default_config = nemesis_forge::config::ForgeConfig::default();
@@ -610,25 +615,28 @@ impl ForgeHandler {
         // Runtime start/stop: toggle Forge background tasks without restart.
         if enabled && !was_enabled {
             if let Some(ref forge) = ctx.state.forge
-                && !forge.is_running() {
-                    // start() requires Arc<Self>, so clone the Arc.
-                    let forge_arc = forge.clone();
-                    // Spawn start in background — it's async and takes Arc<Self>.
-                    tokio::spawn(async move {
-                        forge_arc.start().await;
-                    });
-                    tracing::info!("[Forge] Runtime start triggered via dashboard");
-                }
-        } else if !enabled && was_enabled
+                && !forge.is_running()
+            {
+                // start() requires Arc<Self>, so clone the Arc.
+                let forge_arc = forge.clone();
+                // Spawn start in background — it's async and takes Arc<Self>.
+                tokio::spawn(async move {
+                    forge_arc.start().await;
+                });
+                tracing::info!("[Forge] Runtime start triggered via dashboard");
+            }
+        } else if !enabled
+            && was_enabled
             && let Some(ref forge) = ctx.state.forge
-                && forge.is_running() {
-                    // stop() is async — spawn it.
-                    let forge_arc = forge.clone();
-                    tokio::spawn(async move {
-                        forge_arc.stop().await;
-                    });
-                    tracing::info!("[Forge] Runtime stop triggered via dashboard");
-                }
+            && forge.is_running()
+        {
+            // stop() is async — spawn it.
+            let forge_arc = forge.clone();
+            tokio::spawn(async move {
+                forge_arc.stop().await;
+            });
+            tracing::info!("[Forge] Runtime stop triggered via dashboard");
+        }
 
         Ok(Some(
             serde_json::json!({ "saved": true, "enabled": enabled }),
@@ -648,7 +656,8 @@ impl ForgeHandler {
             .ok_or("missing 'enabled' field")?;
 
         // Ensure config.forge.json exists — auto-create from defaults if missing.
-        let forge_config_path = nemesis_path::resolve_forge_config_path_in_workspace(Path::new(workspace));
+        let forge_config_path =
+            nemesis_path::resolve_forge_config_path_in_workspace(Path::new(workspace));
         if !forge_config_path.exists() {
             if let Some(parent) = forge_config_path.parent() {
                 let _ = std::fs::create_dir_all(parent);
@@ -910,10 +919,11 @@ fn find_latest_file_path(dir: &PathBuf, ext: &str) -> Option<PathBuf> {
             }
             if path.extension().map(|e| e == ext).unwrap_or(false)
                 && let Ok(meta) = path.metadata()
-                    && let Ok(modified) = meta.modified()
-                        && latest.as_ref().is_none_or(|(_, t)| modified > *t) {
-                            latest = Some((path, modified));
-                        }
+                && let Ok(modified) = meta.modified()
+                && latest.as_ref().is_none_or(|(_, t)| modified > *t)
+            {
+                latest = Some((path, modified));
+            }
         }
     }
     latest.map(|(p, _)| p)

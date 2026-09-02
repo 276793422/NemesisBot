@@ -607,26 +607,29 @@ fn extract_account_id_impl(token: &str) -> Option<String> {
 
     // Direct chatgpt_account_id field
     if let Some(id) = claims.get("chatgpt_account_id").and_then(|v| v.as_str())
-        && !id.is_empty() {
-            return Some(id.to_string());
-        }
+        && !id.is_empty()
+    {
+        return Some(id.to_string());
+    }
 
     // Namespaced claim
     if let Some(id) = claims
         .get("https://api.openai.com/auth.chatgpt_account_id")
         .and_then(|v| v.as_str())
-        && !id.is_empty() {
-            return Some(id.to_string());
-        }
+        && !id.is_empty()
+    {
+        return Some(id.to_string());
+    }
 
     // Nested auth claim
     if let Some(auth) = claims
         .get("https://api.openai.com/auth")
         .and_then(|v| v.as_object())
         && let Some(id) = auth.get("chatgpt_account_id").and_then(|v| v.as_str())
-            && !id.is_empty() {
-                return Some(id.to_string());
-            }
+        && !id.is_empty()
+    {
+        return Some(id.to_string());
+    }
 
     // Organizations array
     if let Some(orgs) = claims.get("organizations").and_then(|v| v.as_array()) {
@@ -635,9 +638,10 @@ fn extract_account_id_impl(token: &str) -> Option<String> {
                 .as_object()
                 .and_then(|o| o.get("id"))
                 .and_then(|v| v.as_str())
-                && !id.is_empty() {
-                    return Some(id.to_string());
-                }
+                && !id.is_empty()
+            {
+                return Some(id.to_string());
+            }
         }
     }
 

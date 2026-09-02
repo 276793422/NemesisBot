@@ -30,7 +30,10 @@ pub(crate) fn capture_logs() -> tracing::subscriber::DefaultGuard {
 pub(crate) fn force_stderr(msg: &str) {
     #[cfg(target_os = "linux")]
     {
-        if let Ok(mut f) = std::fs::OpenOptions::new().write(true).open("/proc/self/fd/2") {
+        if let Ok(mut f) = std::fs::OpenOptions::new()
+            .write(true)
+            .open("/proc/self/fd/2")
+        {
             use std::io::Write;
             let _ = f.write_all(format!("{msg}\n").as_bytes());
             return;

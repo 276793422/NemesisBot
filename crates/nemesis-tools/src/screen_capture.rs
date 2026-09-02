@@ -186,30 +186,31 @@ impl ScreenCaptureTool {
     async fn capture_full_screen(&self, output_path: &std::path::Path, format: &str) -> ToolResult {
         // Use window-mcp if available
         if let Some(ref caller) = self.mcp_caller
-            && caller.is_connected() {
-                let mcp_args = serde_json::json!({
-                    "file_path": output_path.to_string_lossy().to_string()
-                });
-                match caller
-                    .call_tool("capture_screenshot_to_file", &mcp_args)
-                    .await
-                {
-                    Ok(result) => {
-                        return ToolResult::success(&format!(
-                            "Screenshot saved to {}\n{}",
-                            output_path.display(),
-                            result
-                        ));
-                    }
-                    Err(e) => {
-                        tracing::warn!(
-                            error = %e,
-                            "[Tools] MCP capture failed, falling back to PowerShell"
-                        );
-                        // Fall through to PowerShell
-                    }
+            && caller.is_connected()
+        {
+            let mcp_args = serde_json::json!({
+                "file_path": output_path.to_string_lossy().to_string()
+            });
+            match caller
+                .call_tool("capture_screenshot_to_file", &mcp_args)
+                .await
+            {
+                Ok(result) => {
+                    return ToolResult::success(&format!(
+                        "Screenshot saved to {}\n{}",
+                        output_path.display(),
+                        result
+                    ));
+                }
+                Err(e) => {
+                    tracing::warn!(
+                        error = %e,
+                        "[Tools] MCP capture failed, falling back to PowerShell"
+                    );
+                    // Fall through to PowerShell
                 }
             }
+        }
 
         let script = self.build_full_screen_script(output_path, format);
         self.execute_capture(&script, output_path).await
@@ -257,37 +258,38 @@ impl ScreenCaptureTool {
 
         // Use window-mcp if available
         if let Some(ref caller) = self.mcp_caller
-            && caller.is_connected() {
-                let mcp_args = serde_json::json!({
-                    "file_path": output_path.to_string_lossy().to_string(),
-                    "x": x,
-                    "y": y,
-                    "width": w,
-                    "height": h
-                });
-                match caller
-                    .call_tool("capture_screenshot_to_file", &mcp_args)
-                    .await
-                {
-                    Ok(result) => {
-                        return ToolResult::success(&format!(
-                            "Region screenshot saved to {} ({}x{} at {},{})\n{}",
-                            output_path.display(),
-                            w,
-                            h,
-                            x,
-                            y,
-                            result
-                        ));
-                    }
-                    Err(e) => {
-                        tracing::warn!(
-                            error = %e,
-                            "[Tools] MCP region capture failed, falling back to PowerShell"
-                        );
-                    }
+            && caller.is_connected()
+        {
+            let mcp_args = serde_json::json!({
+                "file_path": output_path.to_string_lossy().to_string(),
+                "x": x,
+                "y": y,
+                "width": w,
+                "height": h
+            });
+            match caller
+                .call_tool("capture_screenshot_to_file", &mcp_args)
+                .await
+            {
+                Ok(result) => {
+                    return ToolResult::success(&format!(
+                        "Region screenshot saved to {} ({}x{} at {},{})\n{}",
+                        output_path.display(),
+                        w,
+                        h,
+                        x,
+                        y,
+                        result
+                    ));
+                }
+                Err(e) => {
+                    tracing::warn!(
+                        error = %e,
+                        "[Tools] MCP region capture failed, falling back to PowerShell"
+                    );
                 }
             }
+        }
 
         let script = self.build_region_script(x, y, w, h, output_path, format);
         self.execute_capture(&script, output_path).await
@@ -312,55 +314,56 @@ impl ScreenCaptureTool {
         // Use window-mcp for window-level capture (supports background windows
         // via PrintWindow, which PowerShell's CopyFromScreen cannot do).
         if let Some(ref caller) = self.mcp_caller
-            && caller.is_connected() {
-                let mut mcp_args = serde_json::json!({
-                    "file_path": output_path.to_string_lossy().to_string()
-                });
+            && caller.is_connected()
+        {
+            let mut mcp_args = serde_json::json!({
+                "file_path": output_path.to_string_lossy().to_string()
+            });
 
-                let resolved_hwnd;
-                if !hwnd.is_empty() {
-                    mcp_args["hwnd"] = serde_json::Value::String(hwnd.to_string());
-                } else if !window_title.is_empty() {
-                    // Find the window first by title
-                    let find_args = serde_json::json!({
-                        "title_contains": window_title
-                    });
-                    match caller.call_tool("find_window_by_title", &find_args).await {
-                        Ok(find_result) => {
-                            resolved_hwnd = if let Ok(parsed) =
-                                serde_json::from_str::<serde_json::Value>(&find_result)
-                            {
-                                parsed["hwnd"].as_str().unwrap_or("").to_string()
-                            } else {
-                                String::new()
-                            };
-                            if !resolved_hwnd.is_empty() {
-                                mcp_args["hwnd"] = serde_json::Value::String(resolved_hwnd.clone());
-                            }
-                        }
-                        Err(e) => {
-                            return ToolResult::error(&format!(
-                                "failed to find window '{}': {}",
-                                window_title, e
-                            ));
+            let resolved_hwnd;
+            if !hwnd.is_empty() {
+                mcp_args["hwnd"] = serde_json::Value::String(hwnd.to_string());
+            } else if !window_title.is_empty() {
+                // Find the window first by title
+                let find_args = serde_json::json!({
+                    "title_contains": window_title
+                });
+                match caller.call_tool("find_window_by_title", &find_args).await {
+                    Ok(find_result) => {
+                        resolved_hwnd = if let Ok(parsed) =
+                            serde_json::from_str::<serde_json::Value>(&find_result)
+                        {
+                            parsed["hwnd"].as_str().unwrap_or("").to_string()
+                        } else {
+                            String::new()
+                        };
+                        if !resolved_hwnd.is_empty() {
+                            mcp_args["hwnd"] = serde_json::Value::String(resolved_hwnd.clone());
                         }
                     }
-                }
-
-                match caller
-                    .call_tool("capture_screenshot_to_file", &mcp_args)
-                    .await
-                {
-                    Ok(result) => {
-                        return ToolResult::success(&format!(
-                            "Window screenshot saved to {}\n{}",
-                            output_path.display(),
-                            result
+                    Err(e) => {
+                        return ToolResult::error(&format!(
+                            "failed to find window '{}': {}",
+                            window_title, e
                         ));
                     }
-                    Err(e) => return ToolResult::error(&format!("window capture failed: {}", e)),
                 }
             }
+
+            match caller
+                .call_tool("capture_screenshot_to_file", &mcp_args)
+                .await
+            {
+                Ok(result) => {
+                    return ToolResult::success(&format!(
+                        "Window screenshot saved to {}\n{}",
+                        output_path.display(),
+                        result
+                    ));
+                }
+                Err(e) => return ToolResult::error(&format!("window capture failed: {}", e)),
+            }
+        }
 
         // PowerShell fallback
         self.capture_window_fallback(hwnd, window_title, output_path, format)

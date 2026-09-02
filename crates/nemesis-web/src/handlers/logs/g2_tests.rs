@@ -12,8 +12,8 @@ use crate::api_handlers::AppState;
 use crate::events::EventHub;
 use crate::session::SessionManager;
 use crate::ws_router::RequestContext;
-use nemesis_agent::replay::{InjectionRecord, RequestProjectionRecord, SummaryAsOf};
 use nemesis_agent::r#loop::LlmMessage;
+use nemesis_agent::replay::{InjectionRecord, RequestProjectionRecord, SummaryAsOf};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicUsize};
 use std::time::Instant;
@@ -212,10 +212,7 @@ fn injection_summary_aggregates_without_raw_content() {
     });
     write_ledger(dir.path(), &[rec]);
 
-    let out = LogsHandler
-        .injection_summary(&ws, STEM)
-        .unwrap()
-        .unwrap();
+    let out = LogsHandler.injection_summary(&ws, STEM).unwrap().unwrap();
 
     assert_eq!(out["available"], true);
     assert_eq!(out["session"], STEM);
@@ -250,10 +247,7 @@ fn injection_summary_missing_ledger_reports_unavailable() {
     let _ctx = make_ctx(&dir);
     let ws = dir.path().to_string_lossy().to_string();
 
-    let out = LogsHandler
-        .injection_summary(&ws, STEM)
-        .unwrap()
-        .unwrap();
+    let out = LogsHandler.injection_summary(&ws, STEM).unwrap().unwrap();
 
     assert_eq!(out["available"], false);
     assert_eq!(out["total_rounds"], 0);
@@ -311,7 +305,14 @@ fn replay_verify_explicit_request_id_also_works() {
     make_request_dir(dir.path(), "2026-08-28_07-00-00_cafebabe", 1, &plain_msgs());
 
     let out = LogsHandler
-        .replay_verify(&ctx, &ws, STEM, 1, Some("2026-08-28_07-00-00_cafebabe"), None)
+        .replay_verify(
+            &ctx,
+            &ws,
+            STEM,
+            1,
+            Some("2026-08-28_07-00-00_cafebabe"),
+            None,
+        )
         .unwrap()
         .unwrap();
     assert_eq!(out["ok"], true);

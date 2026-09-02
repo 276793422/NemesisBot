@@ -600,7 +600,11 @@ fn test_export_chain_with_rotated_segments() {
             .append("test", "tool", "u", "c", &format!("f{i}"), "allowed", "")
             .unwrap();
     }
-    assert!(chain.segment_count() >= 2, "segments: {}", chain.segment_count());
+    assert!(
+        chain.segment_count() >= 2,
+        "segments: {}",
+        chain.segment_count()
+    );
 
     // 导出会合并主文件 + 所有 _seg 段文件
     let export_path = dir.path().join("rotated_export.json");

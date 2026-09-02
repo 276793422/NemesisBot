@@ -383,7 +383,14 @@ fn test_null_callbacks_and_registry_callbacks_address() {
     assert_eq!(null_cb.address(), "0.0.0.0:9000");
 
     let registry = PeerRegistry::new(HealthConfig::default());
-    let cb = RegistryCallbacks::new("local-node", "0.0.0.0:9000", 9000, "worker", "dev", registry);
+    let cb = RegistryCallbacks::new(
+        "local-node",
+        "0.0.0.0:9000",
+        9000,
+        "worker",
+        "dev",
+        registry,
+    );
     assert_eq!(cb.address(), "0.0.0.0:9000");
 }
 
@@ -413,7 +420,8 @@ impl ScriptedCallbacks {
     }
 
     fn discovered(&self) -> usize {
-        self.discovered_count.load(std::sync::atomic::Ordering::SeqCst)
+        self.discovered_count
+            .load(std::sync::atomic::Ordering::SeqCst)
     }
     fn offline(&self) -> usize {
         self.offline_count.load(std::sync::atomic::Ordering::SeqCst)
@@ -633,7 +641,8 @@ fn test_discovery_handler_udp_arms() {
 #[test]
 fn test_discovery_handler_sync_error_logged() {
     let cb = std::sync::Arc::new(ScriptedCallbacks::new("local-sync-err"));
-    cb.sync_fail.store(true, std::sync::atomic::Ordering::SeqCst);
+    cb.sync_fail
+        .store(true, std::sync::atomic::Ordering::SeqCst);
 
     let config = DiscoveryConfig {
         port: 0,

@@ -408,7 +408,10 @@ fn test_w3b_restore_skips_terminal_and_running_and_tolerates_corrupt_conversatio
     let list = ClusterTaskList::new(dir.path());
     list.restore_from_disk().unwrap();
 
-    assert!(list.get_task("t-running").is_none(), "Running must not be restored");
+    assert!(
+        list.get_task("t-running").is_none(),
+        "Running must not be restored"
+    );
     assert!(list.get_task("t-completed").is_none());
     assert!(list.get_task("t-failed").is_none());
     let restored = list.get_task("t-wr-corrupt").unwrap();
@@ -608,13 +611,17 @@ fn test_p4_cancel_queued_pending_task() {
     list.create_task(make_task("t-p4-q", TaskStatus::Pending));
 
     assert_eq!(list.cancel_task("t-p4-q"), CancelOutcome::QueuedCancelled);
-    assert_eq!(list.get_task("t-p4-q").unwrap().status, TaskStatus::Cancelled);
+    assert_eq!(
+        list.get_task("t-p4-q").unwrap().status,
+        TaskStatus::Cancelled
+    );
 
     // 取消后的任务不进持久化索引（终态同待遇）。
     list.persist_to_disk().unwrap();
-    let on_disk: Vec<ClusterTask> =
-        serde_json::from_str(&std::fs::read_to_string(dir.path().join("cluster/tasks.json")).unwrap())
-            .unwrap();
+    let on_disk: Vec<ClusterTask> = serde_json::from_str(
+        &std::fs::read_to_string(dir.path().join("cluster/tasks.json")).unwrap(),
+    )
+    .unwrap();
     assert!(
         on_disk.iter().all(|t| t.task_id != "t-p4-q"),
         "cancelled task must be excluded from tasks.json"
@@ -640,7 +647,10 @@ fn test_p4_cancel_waiting_remote_and_late_callback_dropped() {
         "tc_p4".to_string(),
         serde_json::json!([{"role": "user", "content": "x"}]),
     );
-    assert_eq!(list.get_task("t-p4-w").unwrap().status, TaskStatus::WaitingRemote);
+    assert_eq!(
+        list.get_task("t-p4-w").unwrap().status,
+        TaskStatus::WaitingRemote
+    );
 
     // WaitingRemote → QueuedCancelled（排队/等待态都不会再执行）。
     assert_eq!(list.cancel_task("t-p4-w"), CancelOutcome::QueuedCancelled);
@@ -665,7 +675,10 @@ fn test_p4_cancel_running_task_fires_token() {
 
     assert_eq!(list.cancel_task("t-p4-r"), CancelOutcome::RunningCancelled);
     assert!(token.is_cancelled(), "running cancel must fire the token");
-    assert_eq!(list.get_task("t-p4-r").unwrap().status, TaskStatus::Cancelled);
+    assert_eq!(
+        list.get_task("t-p4-r").unwrap().status,
+        TaskStatus::Cancelled
+    );
 
     // run 结束路径：agent 注销令牌（幂等）。
     list.unregister_cancel_token("t-p4-r");

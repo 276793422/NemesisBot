@@ -423,8 +423,8 @@ mod loop_e2e {
     use nemesis_agent::r#loop::{LlmMessage, LlmProvider, LlmResponse, Tool};
     use nemesis_agent::types::ChatOptions;
     use nemesis_agent::types::ToolDefinition;
-    use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::Arc;
+    use std::sync::atomic::{AtomicUsize, Ordering};
 
     /// 可脚本化 provider：第 1 次调用返回 cluster_rpc tool_call（若有），
     /// 之后返回固定 Done 文本。call_count 供断言。
@@ -526,7 +526,11 @@ mod loop_e2e {
         }
     }
 
-    fn spawn_rig(agent_loop: AgentLoop, config: AgentConfig, data_dir: &std::path::Path) -> LoopRig {
+    fn spawn_rig(
+        agent_loop: AgentLoop,
+        config: AgentConfig,
+        data_dir: &std::path::Path,
+    ) -> LoopRig {
         let task_list = Arc::new(ClusterTaskList::new(data_dir));
         let work_queue = Arc::new(ClusterWorkQueue::new(8));
         let (shutdown_tx, shutdown_rx) = tokio::sync::broadcast::channel(1);
@@ -539,7 +543,12 @@ mod loop_e2e {
             None, // 无 observer
             shutdown_rx,
         ));
-        LoopRig { task_list, work_queue, shutdown_tx, handle }
+        LoopRig {
+            task_list,
+            work_queue,
+            shutdown_tx,
+            handle,
+        }
     }
 
     async fn wait_until(deadline_ms: u64, f: impl Fn() -> bool) {
@@ -772,8 +781,8 @@ mod wave_b {
     use nemesis_agent::r#loop::{LlmMessage, LlmProvider, LlmResponse, Tool};
     use nemesis_agent::request_logger::LoggingConfig;
     use nemesis_agent::types::{ChatOptions, ToolDefinition};
-    use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::Arc;
+    use std::sync::atomic::{AtomicUsize, Ordering};
 
     // -- 直接单测：truncate_str ---------------------------------------------
 
@@ -803,11 +812,7 @@ mod wave_b {
     #[test]
     fn wb_extract_async_info_prev_turn_not_assistant_returns_none() {
         let convo = vec![
-            make_turn(
-                "user",
-                "直接贴 marker",
-                vec![],
-            ),
+            make_turn("user", "直接贴 marker", vec![]),
             make_turn(
                 "tool",
                 "__CLUSTER_ASYNC__{\"task_id\":\"wb-no-assist\"}",
@@ -873,10 +878,7 @@ mod wave_b {
 
         // store 侧：cache-Some 写路径生效。
         assert_eq!(store.get_summary("sess-wb-covers"), "wb-summary-text");
-        assert_eq!(
-            store.get_summary_covers_up_to("sess-wb-covers"),
-            Some(2)
-        );
+        assert_eq!(store.get_summary_covers_up_to("sess-wb-covers"), Some(2));
 
         // restore 侧：covers=Some → clamp(1..=len) 保住索引并重建实例缓存。
         let fresh = AgentInstance::new(make_test_config());
@@ -1042,7 +1044,12 @@ mod wave_b {
             observer,
             shutdown_rx,
         ));
-        WbRig { task_list, work_queue, shutdown_tx, handle }
+        WbRig {
+            task_list,
+            work_queue,
+            shutdown_tx,
+            handle,
+        }
     }
 
     /// resume-Err 臂（90-91/96-97）：conversation 快照存在、callback_result
@@ -1067,7 +1074,9 @@ mod wave_b {
         task.callback_result = Some("late reply".to_string());
         // waiting_tool_call_id 保持 None。
         rig.task_list.create_task(task);
-        rig.work_queue.submit("t-wb-resume-err".to_string()).unwrap();
+        rig.work_queue
+            .submit("t-wb-resume-err".to_string())
+            .unwrap();
 
         wb_wait_until(10_000, || {
             rig.task_list.get_task("t-wb-resume-err").is_none()
@@ -1155,7 +1164,9 @@ mod wave_b {
         let rig = spawn_wb_rig(agent_loop, wb_config(true), tmp.path(), Some(observer));
 
         rig.task_list.create_task(wb_make_task("t-wb-resume-obs"));
-        rig.work_queue.submit("t-wb-resume-obs".to_string()).unwrap();
+        rig.work_queue
+            .submit("t-wb-resume-obs".to_string())
+            .unwrap();
 
         // 第一段：exec 异步挂起。
         wb_wait_until(10_000, || {
@@ -1171,8 +1182,11 @@ mod wave_b {
         assert!(saved.conversation.is_some());
 
         // 第二段：纯文本回调 → replace_tool_result 抹掉 marker → 同步完成。
-        rig.task_list.inject_callback("t-wb-resume-obs", "plain remote answer");
-        rig.work_queue.submit("t-wb-resume-obs".to_string()).unwrap();
+        rig.task_list
+            .inject_callback("t-wb-resume-obs", "plain remote answer");
+        rig.work_queue
+            .submit("t-wb-resume-obs".to_string())
+            .unwrap();
         wb_wait_until(10_000, || {
             rig.task_list.get_task("t-wb-resume-obs").is_none()
         })

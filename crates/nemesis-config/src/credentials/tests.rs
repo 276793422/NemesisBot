@@ -98,9 +98,15 @@ fn test_yaml_alias_missing_fails_loud_with_remedy() {
     let _g = GlobalPathGuard::set(cred_path);
 
     let cfg = model_config_with_key("yaml:nope");
-    let err = format!("{:?}", crate::resolve_model_config(&cfg, "ref").unwrap_err());
+    let err = format!(
+        "{:?}",
+        crate::resolve_model_config(&cfg, "ref").unwrap_err()
+    );
     assert!(err.contains("nope"), "error names the alias: {err}");
-    assert!(err.contains("credentials import"), "error carries remedy: {err}");
+    assert!(
+        err.contains("credentials import"),
+        "error carries remedy: {err}"
+    );
 }
 
 #[test]
@@ -110,9 +116,15 @@ fn test_yaml_file_missing_fails_loud() {
     let _g = GlobalPathGuard::set(dir.path().join("absent.yaml"));
 
     let cfg = model_config_with_key("yaml:main");
-    let err = format!("{:?}", crate::resolve_model_config(&cfg, "ref").unwrap_err());
+    let err = format!(
+        "{:?}",
+        crate::resolve_model_config(&cfg, "ref").unwrap_err()
+    );
     assert!(err.contains("absent.yaml"), "error names the file: {err}");
-    assert!(err.contains("credentials import"), "error carries remedy: {err}");
+    assert!(
+        err.contains("credentials import"),
+        "error carries remedy: {err}"
+    );
 }
 
 #[test]
@@ -120,7 +132,10 @@ fn test_yaml_path_unset_fails_loud() {
     let _guard = crate::GLOBAL_STATE_LOCK.lock().unwrap();
     clear_global_credentials_path();
     let cfg = model_config_with_key("yaml:main");
-    let err = format!("{:?}", crate::resolve_model_config(&cfg, "ref").unwrap_err());
+    let err = format!(
+        "{:?}",
+        crate::resolve_model_config(&cfg, "ref").unwrap_err()
+    );
     assert!(
         err.contains("credentials.yaml location"),
         "error explains the unset global: {err}"
@@ -187,7 +202,10 @@ fn test_credentials_save_load_roundtrip() {
 
     // Shape: top-level `keys:` map.
     let text = std::fs::read_to_string(&path).unwrap();
-    assert!(text.starts_with("keys:"), "yaml shape `keys:` first: {text}");
+    assert!(
+        text.starts_with("keys:"),
+        "yaml shape `keys:` first: {text}"
+    );
 }
 
 #[test]
@@ -238,12 +256,8 @@ fn temp_home_with_keys(keys: &[&str]) -> (tempfile::TempDir, PathBuf, PathBuf) {
 
 #[test]
 fn test_import_migrates_plaintext_keys() {
-    let (_dir, config_path, cred_path) = temp_home_with_keys(&[
-        "sk-plaintext-one",
-        "env:SOME_VAR",
-        "",
-        "sk-plaintext-two",
-    ]);
+    let (_dir, config_path, cred_path) =
+        temp_home_with_keys(&["sk-plaintext-one", "env:SOME_VAR", "", "sk-plaintext-two"]);
 
     let report = run_import(&config_path, &cred_path).unwrap();
     assert_eq!(report.migrated.len(), 2, "two plaintext keys migrated");
@@ -258,8 +272,14 @@ fn test_import_migrates_plaintext_keys() {
     // config.json: references in place of literals, and the raw file text no
     // longer contains ANY plaintext key (grep-style acceptance).
     let raw = std::fs::read_to_string(&config_path).unwrap();
-    assert!(!raw.contains("sk-plaintext-one"), "config.json has no plaintext: {raw}");
-    assert!(!raw.contains("sk-plaintext-two"), "config.json has no plaintext: {raw}");
+    assert!(
+        !raw.contains("sk-plaintext-one"),
+        "config.json has no plaintext: {raw}"
+    );
+    assert!(
+        !raw.contains("sk-plaintext-two"),
+        "config.json has no plaintext: {raw}"
+    );
     assert!(raw.contains("yaml:m0"));
     assert!(raw.contains("env:SOME_VAR"), "env: entries untouched");
 }
@@ -273,7 +293,11 @@ fn test_import_is_idempotent() {
     let raw_after_first = std::fs::read_to_string(&config_path).unwrap();
 
     let second = run_import(&config_path, &cred_path).unwrap();
-    assert!(second.is_noop(), "second run migrates nothing: {:?}", second);
+    assert!(
+        second.is_noop(),
+        "second run migrates nothing: {:?}",
+        second
+    );
     assert_eq!(second.skipped_reference, 1);
 
     // Config unchanged by the second run.
@@ -302,7 +326,11 @@ fn test_import_alias_conflict_uses_suffix_never_overwrites() {
     assert_eq!(report.conflicts[0], ("m0".to_string(), "m0__2".to_string()));
 
     let creds = load_credentials_file(&cred_path).unwrap();
-    assert_eq!(creds.keys.get("m0").unwrap(), "sk-old-value", "existing alias NOT overwritten");
+    assert_eq!(
+        creds.keys.get("m0").unwrap(),
+        "sk-old-value",
+        "existing alias NOT overwritten"
+    );
     assert_eq!(creds.keys.get("m0__2").unwrap(), "sk-new-value");
 
     let raw = std::fs::read_to_string(&config_path).unwrap();
@@ -353,8 +381,14 @@ fn test_load_credentials_invalid_yaml_fails_loud() {
     std::fs::write(&path, "keys: [not, a, map]").unwrap();
     let err = load_credentials_file(&path).unwrap_err();
     let msg = format!("{:?}", err);
-    assert!(msg.contains("not valid YAML"), "error names the shape problem: {msg}");
-    assert!(msg.contains("keys"), "error carries the expected shape: {msg}");
+    assert!(
+        msg.contains("not valid YAML"),
+        "error names the shape problem: {msg}"
+    );
+    assert!(
+        msg.contains("keys"),
+        "error carries the expected shape: {msg}"
+    );
 }
 
 #[test]
@@ -406,13 +440,23 @@ fn test_yaml_alias_set_but_empty_fails_loud() {
     let _g = GlobalPathGuard::set(&cred_path);
 
     let cfg = model_config_with_key("yaml:e");
-    let err = format!("{:?}", crate::resolve_model_config(&cfg, "ref").unwrap_err());
-    assert!(err.contains("set but empty"), "error names the empty value: {err}");
+    let err = format!(
+        "{:?}",
+        crate::resolve_model_config(&cfg, "ref").unwrap_err()
+    );
+    assert!(
+        err.contains("set but empty"),
+        "error names the empty value: {err}"
+    );
     assert!(err.contains("'e'"), "error names the alias: {err}");
 }
 
 /// Write a config.json with one model entry built from explicit parts.
-fn temp_home_with_entry(model_name: &str, model: &str, api_key: &str) -> (tempfile::TempDir, PathBuf, PathBuf) {
+fn temp_home_with_entry(
+    model_name: &str,
+    model: &str,
+    api_key: &str,
+) -> (tempfile::TempDir, PathBuf, PathBuf) {
     let dir = tempfile::tempdir().unwrap();
     let home = dir.path().to_path_buf();
     std::fs::create_dir_all(home.join("workspace").join("config")).unwrap();
@@ -454,7 +498,10 @@ fn test_import_reuses_same_value_alias() {
 
     // config.json rewritten to the reference.
     let raw = std::fs::read_to_string(&config_path).unwrap();
-    assert!(raw.contains("yaml:m0"), "config references the alias: {raw}");
+    assert!(
+        raw.contains("yaml:m0"),
+        "config references the alias: {raw}"
+    );
     assert!(!raw.contains("sk-same"), "no plaintext left: {raw}");
 }
 
@@ -477,11 +524,19 @@ fn test_import_conflict_reuses_existing_suffixed_alias_with_same_value() {
     .unwrap();
 
     let report = run_import(&config_path, &cred_path).unwrap();
-    assert_eq!(report.conflicts, vec![("m0".to_string(), "m0__2".to_string())]);
+    assert_eq!(
+        report.conflicts,
+        vec![("m0".to_string(), "m0__2".to_string())]
+    );
     assert_eq!(report.migrated[0], ("m0".to_string(), "m0__2".to_string()));
 
     let creds = load_credentials_file(&cred_path).unwrap();
-    assert_eq!(creds.keys.len(), 2, "no extra alias created: {:?}", creds.keys);
+    assert_eq!(
+        creds.keys.len(),
+        2,
+        "no extra alias created: {:?}",
+        creds.keys
+    );
     assert_eq!(creds.keys.get("m0__2").unwrap(), "sk-new");
 }
 
@@ -504,7 +559,10 @@ fn test_import_conflict_advances_past_taken_suffixes() {
     .unwrap();
 
     let report = run_import(&config_path, &cred_path).unwrap();
-    assert_eq!(report.conflicts, vec![("m0".to_string(), "m0__4".to_string())]);
+    assert_eq!(
+        report.conflicts,
+        vec![("m0".to_string(), "m0__4".to_string())]
+    );
     assert_eq!(report.migrated[0], ("m0".to_string(), "m0__4".to_string()));
 
     let creds = load_credentials_file(&cred_path).unwrap();
@@ -562,7 +620,8 @@ fn classify_key_source_serializes_without_plaintext() {
     assert_eq!(v["ref"], "main");
     assert!(v.get("reference").is_none(), "serde rename 生效");
     assert_eq!(
-        serde_json::to_string(&classify_key_source("sk-secret")).unwrap()
+        serde_json::to_string(&classify_key_source("sk-secret"))
+            .unwrap()
             .find("sk-secret"),
         None,
         "内联值绝不进序列化输出"

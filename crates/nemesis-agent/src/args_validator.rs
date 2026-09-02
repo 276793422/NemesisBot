@@ -100,9 +100,10 @@ pub fn check(schema: &Value, args_json: &str) -> Outcome {
     // Try to auto-fix near-miss field names; accept only if the result is clean.
     if let Some(fixed) = try_autofix(schema, &args)
         && validate(schema, &fixed).is_empty()
-            && let Ok(s) = serde_json::to_string(&fixed) {
-                return Outcome::Fixed(s);
-            }
+        && let Ok(s) = serde_json::to_string(&fixed)
+    {
+        return Outcome::Fixed(s);
+    }
 
     Outcome::Invalid {
         message: format_violations(schema, &violations),
@@ -164,24 +165,26 @@ pub fn validate(schema: &Value, args: &Value) -> Vec<Violation> {
             }
             Some(prop_schema) => {
                 if let Some(exp) = prop_schema.get("type").and_then(|t| t.as_str())
-                    && !type_matches(exp, val) {
-                        out.push(Violation::WrongType {
-                            field: key.clone(),
-                            expected: exp.to_string(),
-                            got: type_name(val).to_string(),
-                        });
-                    }
+                    && !type_matches(exp, val)
+                {
+                    out.push(Violation::WrongType {
+                        field: key.clone(),
+                        expected: exp.to_string(),
+                        got: type_name(val).to_string(),
+                    });
+                }
                 if let Some(allowed) = prop_schema.get("enum").and_then(|e| e.as_array())
-                    && !allowed.iter().any(|a| a == val) {
-                        let allowed_str: Vec<String> = allowed
-                            .iter()
-                            .filter_map(|a| a.as_str().map(String::from))
-                            .collect();
-                        out.push(Violation::NotInEnum {
-                            field: key.clone(),
-                            allowed: allowed_str,
-                        });
-                    }
+                    && !allowed.iter().any(|a| a == val)
+                {
+                    let allowed_str: Vec<String> = allowed
+                        .iter()
+                        .filter_map(|a| a.as_str().map(String::from))
+                        .collect();
+                    out.push(Violation::NotInEnum {
+                        field: key.clone(),
+                        allowed: allowed_str,
+                    });
+                }
             }
         }
     }
@@ -325,12 +328,13 @@ fn format_violations(schema: &Value, vs: &[Violation]) -> String {
     if vs
         .iter()
         .any(|v| matches!(v, Violation::UnknownField { .. }))
-        && let Some(props) = schema.get("properties").and_then(|p| p.as_object()) {
-            let names: Vec<&str> = props.keys().map(|s| s.as_str()).collect();
-            if !names.is_empty() {
-                msg.push_str(&format!("Accepted fields: {}.", names.join(", ")));
-            }
+        && let Some(props) = schema.get("properties").and_then(|p| p.as_object())
+    {
+        let names: Vec<&str> = props.keys().map(|s| s.as_str()).collect();
+        if !names.is_empty() {
+            msg.push_str(&format!("Accepted fields: {}.", names.join(", ")));
         }
+    }
     msg
 }
 

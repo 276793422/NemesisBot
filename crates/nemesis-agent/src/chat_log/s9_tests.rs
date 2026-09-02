@@ -28,7 +28,11 @@ fn write_chat_log_rows_writes_verbatim_lines() {
     let (msgs, total, _, _) = read_chat_log(&k, 10, None);
     assert_eq!(total, 2);
     assert_eq!(msgs.len(), 2);
-    assert_eq!(msgs[0]["extra"].as_str(), Some("kept"), "extra fields preserved verbatim");
+    assert_eq!(
+        msgs[0]["extra"].as_str(),
+        Some("kept"),
+        "extra fields preserved verbatim"
+    );
     // 空 rows → 0（early return）
     assert_eq!(write_chat_log_rows(&k, &[]), 0);
     delete_chat_log(&k);

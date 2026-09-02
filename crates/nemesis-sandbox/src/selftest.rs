@@ -54,14 +54,18 @@ pub fn run_probes(workspace: &Path) -> Vec<ProbeCheck> {
 /// Probe 1: write into the system temp dir (outside the workspace subtree).
 fn probe_outside_write(workspace: &Path) -> ProbeCheck {
     let name = "workspace 外写入（系统临时目录）";
-    let path = std::env::temp_dir().join(format!("nemesis_selftest_probe_{}.txt", std::process::id()));
+    let path =
+        std::env::temp_dir().join(format!("nemesis_selftest_probe_{}.txt", std::process::id()));
     if path.starts_with(workspace) {
         // Degenerate layout (workspace contains temp dir): the probe would be
         // meaningless — report honestly instead of guessing.
         return ProbeCheck {
             name: name.to_string(),
             blocked: false,
-            evidence: format!("跳过：临时目录 {} 在 workspace 内，探测无意义", path.display()),
+            evidence: format!(
+                "跳过：临时目录 {} 在 workspace 内，探测无意义",
+                path.display()
+            ),
         };
     }
     match std::fs::write(&path, b"probe") {
@@ -142,8 +146,9 @@ fn probe_workspace_write(workspace: &Path) -> ProbeCheck {
 
 /// Print `out` as a single stdout line (the parent parses this).
 pub fn emit(out: &SelftestChildOut) {
-    let json = serde_json::to_string(out)
-        .unwrap_or_else(|_| r#"{"ok":false,"error":"selftest serialize failed","checks":[]}"#.to_string());
+    let json = serde_json::to_string(out).unwrap_or_else(|_| {
+        r#"{"ok":false,"error":"selftest serialize failed","checks":[]}"#.to_string()
+    });
     let mut stdout = std::io::stdout();
     let _ = writeln!(stdout, "{json}");
     let _ = stdout.flush();

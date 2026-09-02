@@ -8,7 +8,12 @@ use crate::test_support::capture_logs;
 use crate::types::ConversationTurn;
 
 fn temp_ws(tag: &str) -> std::path::PathBuf {
-    std::env::temp_dir().join(format!("nemesis_ctx_s9_{}_{}_{}", tag, std::process::id(), line!()))
+    std::env::temp_dir().join(format!(
+        "nemesis_ctx_s9_{}_{}_{}",
+        tag,
+        std::process::id(),
+        line!()
+    ))
 }
 
 /// load_skills 从目录读 SKILL.md → skills_info 填充（274 循环收尾）。
@@ -49,7 +54,10 @@ fn build_system_prompt_with_empty_desc_skill_logs_debug() {
         active: true,
     }]);
     let prompt = builder.build_system_prompt(false);
-    assert!(prompt.contains("(no description)"), "empty desc renders placeholder");
+    assert!(
+        prompt.contains("(no description)"),
+        "empty desc renders placeholder"
+    );
     assert!(prompt.contains("silent"));
     let _ = std::fs::remove_dir_all(&ws);
 }

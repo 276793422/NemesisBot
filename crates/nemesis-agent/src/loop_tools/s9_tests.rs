@@ -10,11 +10,11 @@
 
 // Only the windows-gated tests below use these; gate them with the same cfg
 // so other targets don't see them as dead code (Linux CI clippy -D warnings).
+use super::Tool;
+use super::claude_code_tool::ClaudeCodeTool;
 #[cfg(windows)]
 use super::cli_delegation::find_cli_on_path;
 use super::codex_tool::CodexTool;
-use super::claude_code_tool::ClaudeCodeTool;
-use super::Tool;
 use crate::context::RequestContext;
 #[cfg(windows)]
 use std::sync::Mutex;
@@ -43,11 +43,7 @@ async fn claude_code_tool_invalid_json_args_err() {
         .execute("this is not json {{{", &delegation_ctx())
         .await
         .unwrap_err();
-    assert!(
-        err.contains("Invalid arguments"),
-        "got: {}",
-        err
-    );
+    assert!(err.contains("Invalid arguments"), "got: {}", err);
 }
 
 /// 同上（91）。
@@ -80,7 +76,9 @@ fn find_cli_on_path_extensionless_shim_falls_back_to_first_line() {
     }
     let found = find_cli_on_path(&name);
     // SAFETY: 同上（锁内还原）。
-    unsafe { std::env::set_var("PATH", &old_path); }
+    unsafe {
+        std::env::set_var("PATH", &old_path);
+    }
 
     let found = found.expect("where must find the extensionless shim");
     assert!(
@@ -108,7 +106,9 @@ fn find_cli_on_path_exec_extension_candidate_is_picked() {
     }
     let found = find_cli_on_path(&fname);
     // SAFETY: 同上（锁内还原）。
-    unsafe { std::env::set_var("PATH", &old_path); }
+    unsafe {
+        std::env::set_var("PATH", &old_path);
+    }
 
     let found = found.expect("where must find the .cmd file");
     assert!(

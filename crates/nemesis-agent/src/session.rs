@@ -350,13 +350,14 @@ impl SessionStore {
         if let Some(dir) = &self.storage_dir {
             let path = dir.join(format!("{}.json", sanitize_filename(key)));
             if let Ok(data) = std::fs::read_to_string(&path)
-                && let Ok(session) = serde_json::from_str::<StoredSession>(&data) {
-                    self.sessions
-                        .write()
-                        .unwrap()
-                        .insert(key.to_string(), session.clone());
-                    return session;
-                }
+                && let Ok(session) = serde_json::from_str::<StoredSession>(&data)
+            {
+                self.sessions
+                    .write()
+                    .unwrap()
+                    .insert(key.to_string(), session.clone());
+                return session;
+            }
         }
 
         // 2026-08-25 自愈重建（TTL 生命周期不对称修复）: memory AND disk both
@@ -369,14 +370,15 @@ impl SessionStore {
         // reasoning as the Z1 disk fallback above. In-memory-only stores (no
         // storage_dir) skip this: they are never TTL-evicted either.
         if self.storage_dir.is_some()
-            && let Some(session) = self.rebuild_from_chat_log(key) {
-                self.sessions
-                    .write()
-                    .unwrap()
-                    .insert(key.to_string(), session.clone());
-                let _ = self.save(key);
-                return session;
-            }
+            && let Some(session) = self.rebuild_from_chat_log(key)
+        {
+            self.sessions
+                .write()
+                .unwrap()
+                .insert(key.to_string(), session.clone());
+            let _ = self.save(key);
+            return session;
+        }
 
         let session = StoredSession {
             key: key.to_string(),
@@ -482,23 +484,22 @@ impl SessionStore {
             session.messages = messages;
             Self::trim_to_limit(session);
             session.updated = Local::now();
-            if capture_on
-                && let Some(sink) = crate::capture_sink::CaptureSink::global() {
-                    sink.record_session_write(
-                        key,
-                        crate::capture_sink::SessionWriteCapture {
-                            writer: "set_history".to_string(),
-                            op: "set_history".to_string(),
-                            before_len: Some(before_len),
-                            after_len: Some(session.messages.len()),
-                            first_role,
-                            last_role,
-                            messages_hash: incoming_hash,
-                            overwrite_detected: overwrite,
-                            ts: String::new(),
-                        },
-                    );
-                }
+            if capture_on && let Some(sink) = crate::capture_sink::CaptureSink::global() {
+                sink.record_session_write(
+                    key,
+                    crate::capture_sink::SessionWriteCapture {
+                        writer: "set_history".to_string(),
+                        op: "set_history".to_string(),
+                        before_len: Some(before_len),
+                        after_len: Some(session.messages.len()),
+                        first_role,
+                        last_role,
+                        messages_hash: incoming_hash,
+                        overwrite_detected: overwrite,
+                        ts: String::new(),
+                    },
+                );
+            }
         }
     }
 
@@ -544,45 +545,45 @@ impl SessionStore {
         }
     }
 
-/// Maximum number of messages kept in a stored session (disk + in-memory).
-///
-/// When exceeded, the oldest messages are dropped — but only from the
-/// summary-covered prefix (`index < summary_covers_up_to`), and the index is
-/// adjusted down by the number dropped so the cache stays coherent. The
-/// verbatim tail (`index >= covers_up_to`, ≈ K_target ≪ this limit) is never
-/// touched. See [`SessionStore::trim_to_limit`].
-pub(crate) const MAX_STORED_MESSAGES: usize = 1000;
+    /// Maximum number of messages kept in a stored session (disk + in-memory).
+    ///
+    /// When exceeded, the oldest messages are dropped — but only from the
+    /// summary-covered prefix (`index < summary_covers_up_to`), and the index is
+    /// adjusted down by the number dropped so the cache stays coherent. The
+    /// verbatim tail (`index >= covers_up_to`, ≈ K_target ≪ this limit) is never
+    /// touched. See [`SessionStore::trim_to_limit`].
+    pub(crate) const MAX_STORED_MESSAGES: usize = 1000;
 
-/// Drop oldest messages when a session exceeds [`MAX_STORED_MESSAGES`],
-/// adjusting `summary_covers_up_to` so the cache index stays coherent.
-///
-/// Only messages the summary already covers (index < `covers_up_to`) are
-/// eligible to drop — the verbatim tail is never touched. If there is no
-/// summary yet (`covers_up_to` is `None` / 0), nothing is dropped: we'd rather
-/// overshoot the soft limit than silently lose unsaved context. A summary gets
-/// computed as the conversation grows, after which drops become safe.
-///
-/// This is the SOLE history-trimming mechanism post-refactor (the instance's
-/// history is append-only). Called from `set_history` and `add_message`.
-fn trim_to_limit(session: &mut StoredSession) {
-    if session.messages.len() <= Self::MAX_STORED_MESSAGES {
-        return;
+    /// Drop oldest messages when a session exceeds [`MAX_STORED_MESSAGES`],
+    /// adjusting `summary_covers_up_to` so the cache index stays coherent.
+    ///
+    /// Only messages the summary already covers (index < `covers_up_to`) are
+    /// eligible to drop — the verbatim tail is never touched. If there is no
+    /// summary yet (`covers_up_to` is `None` / 0), nothing is dropped: we'd rather
+    /// overshoot the soft limit than silently lose unsaved context. A summary gets
+    /// computed as the conversation grows, after which drops become safe.
+    ///
+    /// This is the SOLE history-trimming mechanism post-refactor (the instance's
+    /// history is append-only). Called from `set_history` and `add_message`.
+    fn trim_to_limit(session: &mut StoredSession) {
+        if session.messages.len() <= Self::MAX_STORED_MESSAGES {
+            return;
+        }
+        let overflow = session.messages.len() - Self::MAX_STORED_MESSAGES;
+        let c = session.summary_covers_up_to.unwrap_or(0);
+        // Clamp to the covered prefix so we never drop verbatim-tail messages.
+        let drop_n = overflow.min(c);
+        if drop_n == 0 {
+            return;
+        }
+        session.messages.drain(0..drop_n);
+        session.summary_covers_up_to = Some(c - drop_n);
     }
-    let overflow = session.messages.len() - Self::MAX_STORED_MESSAGES;
-    let c = session.summary_covers_up_to.unwrap_or(0);
-    // Clamp to the covered prefix so we never drop verbatim-tail messages.
-    let drop_n = overflow.min(c);
-    if drop_n == 0 {
-        return;
-    }
-    session.messages.drain(0..drop_n);
-    session.summary_covers_up_to = Some(c - drop_n);
-}
 
-/// [capture] Stable hash of a message vec's (role, content) sequence —
-/// lets the write timeline distinguish wholesale replacement from
-/// in-place growth. Associated fn (no &self) so callers reuse it.
-fn hash_messages(messages: &[StoredMessage]) -> String {
+    /// [capture] Stable hash of a message vec's (role, content) sequence —
+    /// lets the write timeline distinguish wholesale replacement from
+    /// in-place growth. Associated fn (no &self) so callers reuse it.
+    fn hash_messages(messages: &[StoredMessage]) -> String {
         use std::collections::hash_map::DefaultHasher;
         use std::hash::{Hash, Hasher};
         let mut hasher = DefaultHasher::new();
@@ -650,11 +651,12 @@ fn hash_messages(messages: &[StoredMessage]) -> String {
     /// Truncate the history, keeping only the last N messages.
     pub fn truncate_history(&self, key: &str, keep_last: usize) {
         if let Some(session) = self.sessions.write().unwrap().get_mut(key)
-            && session.messages.len() > keep_last {
-                let start = session.messages.len() - keep_last;
-                session.messages = session.messages.split_off(start);
-                session.updated = Local::now();
-            }
+            && session.messages.len() > keep_last
+        {
+            let start = session.messages.len() - keep_last;
+            session.messages = session.messages.split_off(start);
+            session.updated = Local::now();
+        }
     }
 
     /// Save a session to disk.
@@ -763,7 +765,9 @@ fn hash_messages(messages: &[StoredMessage]) -> String {
     /// running gateway) still refuses to collide with it.
     pub fn file_exists(&self, key: &str) -> bool {
         match &self.storage_dir {
-            Some(dir) => dir.join(format!("{}.json", sanitize_filename(key))).exists(),
+            Some(dir) => dir
+                .join(format!("{}.json", sanitize_filename(key)))
+                .exists(),
             None => false,
         }
     }
@@ -785,13 +789,14 @@ fn hash_messages(messages: &[StoredMessage]) -> String {
         if let Some(dir) = &self.storage_dir {
             let path = dir.join(format!("{}.json", sanitize_filename(key)));
             if let Err(e) = std::fs::remove_file(&path)
-                && e.kind() != std::io::ErrorKind::NotFound {
-                    warn!(
-                        file = %path.display(),
-                        error = %e,
-                        "[SessionStore] delete_session: failed to remove json"
-                    );
-                }
+                && e.kind() != std::io::ErrorKind::NotFound
+            {
+                warn!(
+                    file = %path.display(),
+                    error = %e,
+                    "[SessionStore] delete_session: failed to remove json"
+                );
+            }
         }
 
         // 2. session_logs/{safe}.jsonl (user-facing chat history)
@@ -820,13 +825,14 @@ fn hash_messages(messages: &[StoredMessage]) -> String {
         if let Some(dir) = &self.storage_dir {
             let path = dir.join(format!("{}.json", sanitize_filename(key)));
             if let Err(e) = std::fs::remove_file(&path)
-                && e.kind() != std::io::ErrorKind::NotFound {
-                    warn!(
-                        file = %path.display(),
-                        error = %e,
-                        "[SessionStore] clear_session: failed to remove json"
-                    );
-                }
+                && e.kind() != std::io::ErrorKind::NotFound
+            {
+                warn!(
+                    file = %path.display(),
+                    error = %e,
+                    "[SessionStore] clear_session: failed to remove json"
+                );
+            }
         }
     }
 
@@ -863,12 +869,13 @@ fn hash_messages(messages: &[StoredMessage]) -> String {
                                 serde_json::Value::String("agent:main:session:legacy".to_string());
                         }
                         if let Ok(out) = serde_json::to_string_pretty(&v)
-                            && std::fs::write(&legacy_json, out).is_ok() {
-                                let _ = std::fs::remove_file(&main_json);
-                                info!(
-                                    "[migrate] sessions: agent_main_main.json → agent_main_session_legacy.json"
-                                );
-                            }
+                            && std::fs::write(&legacy_json, out).is_ok()
+                        {
+                            let _ = std::fs::remove_file(&main_json);
+                            info!(
+                                "[migrate] sessions: agent_main_main.json → agent_main_session_legacy.json"
+                            );
+                        }
                     }
                 }
                 Err(e) => warn!("[migrate] failed to read main session json: {}", e),

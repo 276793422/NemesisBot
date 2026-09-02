@@ -480,8 +480,7 @@ impl HttpProvider {
 // ---------------------------------------------------------------------------
 
 /// A chunk of streamed LLM response.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[derive(Default)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct StreamChunk {
     /// Incremental text content (may be empty for tool_call or usage chunks).
     #[serde(default)]
@@ -500,7 +499,6 @@ pub struct StreamChunk {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub reasoning_content: Option<String>,
 }
-
 
 #[async_trait]
 impl LLMProvider for HttpProvider {

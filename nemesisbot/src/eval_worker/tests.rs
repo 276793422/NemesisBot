@@ -167,8 +167,13 @@ mod layers {
     async fn no_command_field_skips_command_guard() {
         let (_dir, obs) = observer_in_tmp_home();
         let args = serde_json::json!({"path": "/tmp/x"});
-        let f = obs.run_layers("read_file", &args, &args.to_string(), "").await;
-        assert!(f.command_guard.is_none(), "no command field → no guard finding");
+        let f = obs
+            .run_layers("read_file", &args, &args.to_string(), "")
+            .await;
+        assert!(
+            f.command_guard.is_none(),
+            "no command field → no guard finding"
+        );
     }
 
     #[tokio::test]
@@ -177,7 +182,9 @@ mod layers {
         // 169.254.169.254 链路本地地址被 SSRF guard 无条件拦
         //（ssrf.rs resolve_and_validate_locked）。
         let args = serde_json::json!({"url": "http://169.254.169.254/latest/meta-data"});
-        let f = obs.run_layers("web_fetch", &args, &args.to_string(), "").await;
+        let f = obs
+            .run_layers("web_fetch", &args, &args.to_string(), "")
+            .await;
         let s = f.ssrf.expect("url field → ssrf layer runs");
         assert!(s.blocked, "metadata endpoint must be blocked");
         assert_eq!(s.url, "http://169.254.169.254/latest/meta-data");
@@ -190,7 +197,9 @@ mod layers {
         // AWS 访问键样例（credential/tests.rs 钉过的确定性样例）。
         let args = serde_json::json!({"command": "echo key=AKIAIOSFODNN7EXAMPLE"});
         let f = obs.run_layers("exec", &args, &args.to_string(), "").await;
-        let cin = f.credentials_in.expect("credential must be detected in args");
+        let cin = f
+            .credentials_in
+            .expect("credential must be detected in args");
         assert!(!cin.is_empty());
         // 无 result → credentials_out 不产出。
         assert!(f.credentials_out.is_none());
@@ -200,7 +209,9 @@ mod layers {
     async fn ordinary_args_produce_no_credential_findings() {
         let (_dir, obs) = observer_in_tmp_home();
         let args = serde_json::json!({"command": "echo hello world"});
-        let f = obs.run_layers("exec", &args, &args.to_string(), "hello world\n").await;
+        let f = obs
+            .run_layers("exec", &args, &args.to_string(), "hello world\n")
+            .await;
         assert!(f.credentials_in.is_none());
         assert!(f.credentials_out.is_none());
     }
@@ -215,7 +226,9 @@ mod layers {
         // 分级 + Luhn 校验后的确定性命中样本）。
         let args = serde_json::json!({"command": "echo card=4111111111111111"});
         let f = obs.run_layers("exec", &args, &args.to_string(), "").await;
-        let hits = f.dlp_in.expect("Luhn-valid card in args must produce inbound DLP findings");
+        let hits = f
+            .dlp_in
+            .expect("Luhn-valid card in args must produce inbound DLP findings");
         assert!(!hits.is_empty(), "入站命中必须有 summary");
         assert!(!hits[0].is_empty(), "summary 不能是空串");
         // 空 result → 出站不产出（与入站对称）。
@@ -277,7 +290,10 @@ mod observer_protocol {
             }),
         };
         obs.on_event(ev).await;
-        assert!(obs.take_tags().is_empty(), "non-ToolCall events must not tag");
+        assert!(
+            obs.take_tags().is_empty(),
+            "non-ToolCall events must not tag"
+        );
     }
 
     #[tokio::test]
@@ -299,7 +315,11 @@ mod observer_protocol {
         );
         assert!(!t.timestamp.is_empty());
         // 附带分析也跑了（benign 命令 → guard Some 未拦）。
-        let cg = t.findings.command_guard.as_ref().expect("findings attached");
+        let cg = t
+            .findings
+            .command_guard
+            .as_ref()
+            .expect("findings attached");
         assert!(!cg.blocked);
     }
 
@@ -402,7 +422,8 @@ mod run_error_paths {
 
         let err = run().await.expect_err("missing env must fail");
         assert!(
-            err.to_string().contains("NEMESISBOT_EVAL_WORKSPACE not set"),
+            err.to_string()
+                .contains("NEMESISBOT_EVAL_WORKSPACE not set"),
             "err: {err:#}"
         );
         // env 未设 → 连 worker_error.txt 的落点都没有，只能报错。
@@ -487,9 +508,9 @@ mod wave_b {
     use std::io::{Read, Write};
     #[cfg(windows)] // Windows-form helper use (Linux nightly: excluded, 2026-09-02 sweep)
     use std::net::TcpListener;
+    use std::sync::Arc;
     #[cfg(windows)] // Windows-form helper use (Linux nightly: excluded, 2026-09-02 sweep)
     use std::sync::atomic::{AtomicBool, Ordering};
-    use std::sync::Arc;
 
     /// RAII：设置 NEMESISBOT_EVAL_WORKSPACE，Drop 按 prev-value Option 恢复。
     #[cfg(windows)] // Windows-form helper (Linux nightly: excluded, 2026-09-02 sweep)
@@ -589,11 +610,10 @@ mod wave_b {
                                 Ok(n) => {
                                     buf.extend_from_slice(&chunk[..n]);
                                     if let Some(pos) = wave_b_header_end(&buf)
-                                        && buf.len()
-                                            >= pos + 4 + wave_b_content_length(&buf[..pos])
-                                        {
-                                            break;
-                                        }
+                                        && buf.len() >= pos + 4 + wave_b_content_length(&buf[..pos])
+                                    {
+                                        break;
+                                    }
                                 }
                             }
                         }
@@ -644,10 +664,9 @@ mod wave_b {
             "最终回复应为 mock 内容原文: {final_md}"
         );
 
-        let trace: serde_json::Value = serde_json::from_str(
-            &std::fs::read_to_string(report.join("tool_trace.json")).unwrap(),
-        )
-        .unwrap();
+        let trace: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(report.join("tool_trace.json")).unwrap())
+                .unwrap();
         assert_eq!(
             trace.as_array().map(|a| a.len()),
             Some(0),
@@ -714,7 +733,9 @@ mod wave_b {
         // 结果带 AWS 访问键（credential/tests.rs 的确定性样例）→ 出站扫描命中，
         // credentials_out Some(vec![summary])（既有夹具只钉过入站/无命中两态）。
         let result = "The output is key=AKIAIOSFODNN7EXAMPLE123456";
-        let f = obs.run_layers("exec", &args, &args.to_string(), result).await;
+        let f = obs
+            .run_layers("exec", &args, &args.to_string(), result)
+            .await;
         let cout = f.credentials_out.expect("出站凭据命中必须有 finding");
         assert!(!cout.is_empty());
         // 入参干净 → 入站仍为 None（对称语义固定）。
@@ -727,7 +748,9 @@ mod wave_b {
         let args = serde_json::json!({"command": "echo done"});
         // 结果带 Luhn 通过的 Visa 卡号（dlp/tests.rs 的确定性样例）→ dlp_out Some。
         let result = "Card: 4111111111111111";
-        let f = obs.run_layers("exec", &args, &args.to_string(), result).await;
+        let f = obs
+            .run_layers("exec", &args, &args.to_string(), result)
+            .await;
         let dout = f.dlp_out.expect("DLP 出站命中必须有 finding");
         assert!(!dout.is_empty());
     }
@@ -739,7 +762,9 @@ mod wave_b {
         // reserved 且 blocked_nets 默认空 → resolver.rs 对 IP 直判短路（不
         // 发 DNS 不建连接）→ validate_url Ok(())。既有夹具只钉过拦截面。
         let args = serde_json::json!({"url": "http://1.1.1.1/dns-query"});
-        let f = obs.run_layers("web_fetch", &args, &args.to_string(), "").await;
+        let f = obs
+            .run_layers("web_fetch", &args, &args.to_string(), "")
+            .await;
         let s = f.ssrf.expect("url 字段 → ssrf finding 必产出");
         assert!(!s.blocked, "公网 IP 字面量不应拦: {}", s.reason);
         assert_eq!(s.url, "http://1.1.1.1/dns-query");
@@ -769,7 +794,11 @@ mod wave_b {
         assert!(f.injection.is_some(), "L1 注入层必须产出 finding");
         if let Some(inj) = &f.injection {
             // level 序列化契约（plan C2 修复）：小写字符串，非双重引号包装。
-            assert!(!inj.level.starts_with('"'), "level 不得带字面引号: {}", inj.level);
+            assert!(
+                !inj.level.starts_with('"'),
+                "level 不得带字面引号: {}",
+                inj.level
+            );
         }
         // L2 command guard：rm -rf / 确定性拦截。
         let cg = f.command_guard.expect("command 字段 → guard finding");

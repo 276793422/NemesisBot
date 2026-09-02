@@ -1856,8 +1856,7 @@ async fn recover_from_disk_inside_async_runtime_does_not_panic() {
     let task_id = format!("bug45-{}", std::process::id());
     let snapshot = ContinuationSnapshot {
         task_id: task_id.clone(),
-        messages: r#"[{"role":"user","content":"cluster rpc in flight"}]"#
-            .to_string(),
+        messages: r#"[{"role":"user","content":"cluster rpc in flight"}]"#.to_string(),
         tool_call_id: "tc_bug45".to_string(),
         channel: "web".to_string(),
         chat_id: "chat_bug45".to_string(),
@@ -1906,11 +1905,13 @@ fn test_persist_final_reply_no_duplicate_when_store_missing() {
     persist_final_reply(Some(&store), &key, "test-model", "FINAL-REPLY");
 
     let hist = store.get_history(&key);
-    let finals = hist
-        .iter()
-        .filter(|m| m.content == "FINAL-REPLY")
-        .count();
-    assert_eq!(finals, 1, "final reply duplicated in store: {:?}", hist.iter().map(|m| m.content.clone()).collect::<Vec<_>>());
+    let finals = hist.iter().filter(|m| m.content == "FINAL-REPLY").count();
+    assert_eq!(
+        finals,
+        1,
+        "final reply duplicated in store: {:?}",
+        hist.iter().map(|m| m.content.clone()).collect::<Vec<_>>()
+    );
     // The rebuilt prefix survived alongside it.
     assert!(hist.iter().any(|m| m.content == "prior user turn"));
     assert!(hist.iter().any(|m| m.content == "prior assistant turn"));
@@ -1971,7 +1972,11 @@ async fn test_cleanup_old_snapshots_removes_stale_keeps_fresh() {
             )
             .await;
     }
-    let stale_path = tmp.path().join("cluster").join("rpc_cache").join("stale-task.json");
+    let stale_path = tmp
+        .path()
+        .join("cluster")
+        .join("rpc_cache")
+        .join("stale-task.json");
     assert!(stale_path.exists(), "snapshot written to cluster/rpc_cache");
     assert!(manager.has_continuation("stale-task").await);
 
@@ -2001,7 +2006,13 @@ async fn test_cleanup_old_snapshots_removes_stale_keeps_fresh() {
         assert!(!manager.has_continuation("stale-task").await);
         assert!(manager.has_continuation("fresh-task").await);
         assert!(!stale_path.exists());
-        assert!(tmp.path().join("cluster").join("rpc_cache").join("fresh-task.json").exists());
+        assert!(
+            tmp.path()
+                .join("cluster")
+                .join("rpc_cache")
+                .join("fresh-task.json")
+                .exists()
+        );
         // Long TTL removes nothing further.
         let removed = manager
             .cleanup_old_snapshots(std::time::Duration::from_secs(7 * 24 * 3600))
@@ -2065,7 +2076,11 @@ fn continuation_store_delete_readonly_file_warns() {
     let tmp = tempfile::TempDir::new().unwrap();
     let store = ContinuationStore::new(tmp.path());
     store.save(&snap("ro_task")).unwrap();
-    let path = tmp.path().join("cluster").join("rpc_cache").join("ro_task.json");
+    let path = tmp
+        .path()
+        .join("cluster")
+        .join("rpc_cache")
+        .join("ro_task.json");
 
     // Windows：只读属性让 remove_file 失败 → warn 分支（不 panic）。
     // 注意：部分文件系统（如 ReFS/Dev Drive）不强制只读删除语义，实测可删
@@ -2090,7 +2105,9 @@ fn continuation_store_delete_readonly_file_warns() {
             perms.set_readonly(false);
             std::fs::set_permissions(&path, perms).unwrap();
         } else {
-            eprintln!("skipping readonly-survives arm: filesystem does not enforce readonly deletes");
+            eprintln!(
+                "skipping readonly-survives arm: filesystem does not enforce readonly deletes"
+            );
         }
     }
     // 所有平台：正常删除幂等。
@@ -2114,7 +2131,10 @@ fn stale_task_ids_dir_extension_and_age_arms() {
 
     // (b) max_age 巨大 → 无 stale（mtime 新鲜）
     let none = store.stale_task_ids(Duration::from_secs(3600));
-    assert!(none.is_empty(), "fresh snapshots must not be stale: {none:?}");
+    assert!(
+        none.is_empty(),
+        "fresh snapshots must not be stale: {none:?}"
+    );
 
     // (c) 等 20ms 后 max_age=0 → 全部 .json stale；.txt 不参与
     std::thread::sleep(Duration::from_millis(20));
@@ -2161,7 +2181,14 @@ async fn save_continuation_disk_failure_still_marks_ready() {
     std::fs::write(tmp.path().join("cluster"), b"blocker").unwrap();
     let manager = ContinuationManager::with_disk_store(tmp.path());
     manager
-        .save_continuation("diskfail", vec![make_message("user", "x")], "tc", "web", "c", "s")
+        .save_continuation(
+            "diskfail",
+            vec![make_message("user", "x")],
+            "tc",
+            "web",
+            "c",
+            "s",
+        )
         .await;
     assert!(manager.has_continuation("diskfail").await);
     let loaded = manager.load_continuation("diskfail").await;
@@ -2203,7 +2230,10 @@ async fn wait_for_continuation_barrier_notified_path() {
     let m2 = manager.clone();
     let loader = tokio::spawn(async move { m2.load_continuation("barrier_task").await });
     tokio::time::sleep(Duration::from_millis(30)).await;
-    assert!(!loader.is_finished(), "loader must be parked on the barrier");
+    assert!(
+        !loader.is_finished(),
+        "loader must be parked on the barrier"
+    );
     ready_flag.store(true, AtomicOrdering::Release);
     ready.notify_waiters();
     let got = tokio::time::timeout(Duration::from_secs(2), loader)
@@ -2237,8 +2267,13 @@ fn persist_final_reply_save_error_warns_but_appends_chat_log() {
     // storage 下同名目录占位 → rename 失败 → save 错误告警分支。
     let tmp = tempfile::TempDir::new().unwrap();
     let store = crate::session::SessionStore::new_with_storage(tmp.path());
-    let key = format!("contfail{}", std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH).unwrap().subsec_nanos());
+    let key = format!(
+        "contfail{}",
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .subsec_nanos()
+    );
     std::fs::create_dir_all(tmp.path().join(format!("{key}.json"))).unwrap();
 
     persist_final_reply(Some(&store), &key, "m", "final content");
@@ -2254,7 +2289,14 @@ async fn final_outbound_send_error_warns_no_panic() {
     let (outbound_tx, outbound_rx) = tokio::sync::mpsc::channel(16);
     drop(outbound_rx);
     manager
-        .save_continuation("task-out", vec![make_message("user", "hi")], "tc", "web", "c", "")
+        .save_continuation(
+            "task-out",
+            vec![make_message("user", "hi")],
+            "tc",
+            "web",
+            "c",
+            "",
+        )
         .await;
 
     let provider = MockContinuationProvider::new(vec![LlmResponse {
@@ -2289,8 +2331,13 @@ async fn handle_continuation_with_observer_manager_persists_and_sends() {
     // 流 + persist_final_reply 真正写入 store + 带 model 的 OutboundMeta。
     let tmp = tempfile::TempDir::new().unwrap();
     let store = crate::session::SessionStore::new_with_storage(tmp.path().join("store"));
-    let session_key = format!("contobs{}", std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH).unwrap().subsec_nanos());
+    let session_key = format!(
+        "contobs{}",
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .subsec_nanos()
+    );
 
     let manager = ContinuationManager::new();
     let (outbound_tx, mut outbound_rx) = tokio::sync::mpsc::channel(16);
@@ -2339,7 +2386,10 @@ async fn handle_continuation_with_observer_manager_persists_and_sends() {
         .messages
         .iter()
         .any(|m| m.role == "assistant" && m.content.contains("observed final"));
-    assert!(has_final, "final reply must be persisted to the session store");
+    assert!(
+        has_final,
+        "final reply must be persisted to the session store"
+    );
 
     crate::chat_log::delete_chat_log(&session_key);
 }

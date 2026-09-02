@@ -125,7 +125,10 @@ async fn list_reports_registered_tools_with_schema() {
     assert_eq!(tools[0]["name"], "fake");
     assert_eq!(tools[0]["description"], "fake tool for coverage");
     assert_eq!(tools[0]["parameters"]["type"], "object");
-    assert_eq!(tools[0]["parameters"]["properties"]["path"]["type"], "string");
+    assert_eq!(
+        tools[0]["parameters"]["properties"]["path"]["type"],
+        "string"
+    );
 }
 
 #[tokio::test]

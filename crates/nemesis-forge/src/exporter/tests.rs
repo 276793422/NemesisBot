@@ -415,7 +415,9 @@ async fn test_copy_dir_recursive_nested_subdirs() {
     let dst = dir.path().join("dst");
     tokio::fs::create_dir_all(src.join("sub")).await.unwrap();
     tokio::fs::write(src.join("top.txt"), "top").await.unwrap();
-    tokio::fs::write(src.join("sub").join("nested.txt"), "nested").await.unwrap();
+    tokio::fs::write(src.join("sub").join("nested.txt"), "nested")
+        .await
+        .unwrap();
 
     let copied = copy_dir_recursive(&src, &dst).await;
     assert_eq!(copied.len(), 2, "both files must be reported: {:?}", copied);
@@ -441,15 +443,26 @@ async fn test_copy_dir_recursive_write_fail_skips_file() {
     let dst = dir.path().join("dst");
     tokio::fs::create_dir_all(&src).await.unwrap();
     tokio::fs::create_dir_all(&dst).await.unwrap();
-    tokio::fs::write(src.join("good.txt"), "good").await.unwrap();
-    tokio::fs::write(src.join("blocked.txt"), "blocked").await.unwrap();
+    tokio::fs::write(src.join("good.txt"), "good")
+        .await
+        .unwrap();
+    tokio::fs::write(src.join("blocked.txt"), "blocked")
+        .await
+        .unwrap();
 
     // Pre-create a DIRECTORY where blocked.txt would be written -> write fails,
     // the file is skipped, but good.txt is still copied.
-    tokio::fs::create_dir_all(dst.join("blocked.txt")).await.unwrap();
+    tokio::fs::create_dir_all(dst.join("blocked.txt"))
+        .await
+        .unwrap();
 
     let copied = copy_dir_recursive(&src, &dst).await;
-    assert_eq!(copied.len(), 1, "only the writable file reported: {:?}", copied);
+    assert_eq!(
+        copied.len(),
+        1,
+        "only the writable file reported: {:?}",
+        copied
+    );
     assert!(copied.contains(&"good.txt".to_string()));
     assert!(dst.join("good.txt").exists());
 }
@@ -474,7 +487,11 @@ async fn test_s8_export_artifact_copies_project_files_and_tests_dir() {
     let tests_src = src_dir.join("tests");
     std::fs::create_dir_all(tests_src.join("sub")).unwrap();
     std::fs::write(tests_src.join("test_a.py"), "def test_a(): pass").unwrap();
-    std::fs::write(tests_src.join("sub").join("test_b.py"), "def test_b(): pass").unwrap();
+    std::fs::write(
+        tests_src.join("sub").join("test_b.py"),
+        "def test_b(): pass",
+    )
+    .unwrap();
 
     let target = dir.path().join("export");
     let out = exporter.export_artifact(&artifact, &target).await.unwrap();

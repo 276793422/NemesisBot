@@ -76,10 +76,7 @@ fn mgr_with_flaky(fail_store: bool, fail_close: bool) -> (MemoryManager, tempfil
     });
     let episodic = Arc::new(FileEpisodicStore::new(dir.path().join("episodic")));
     let graph = Arc::new(InMemoryGraphStore::new());
-    (
-        MemoryManager::with_backends(store, episodic, graph),
-        dir,
-    )
+    (MemoryManager::with_backends(store, episodic, graph), dir)
 }
 
 // ============================================================
@@ -191,12 +188,12 @@ async fn search_vector_empty_result_falls_back_to_keyword() {
     // zero hits (threshold filters everything), search falls back to the
     // keyword store, which has the entry.
     let (mgr, _dir) = mgr_with_stub_vector(1.5); // impossible threshold
-    mgr.store_fact("apples are fruits", vec![])
-        .await
-        .unwrap();
+    mgr.store_fact("apples are fruits", vec![]).await.unwrap();
     let r = mgr.search("apples", None, 10).await.unwrap();
     assert!(
-        r.entries.iter().any(|se| se.entry.content.contains("apples")),
+        r.entries
+            .iter()
+            .any(|se| se.entry.content.contains("apples")),
         "expected keyword fallback hit, got {:?}",
         r.entries
     );
@@ -252,7 +249,11 @@ fn with_config_dir_disabled_config_left_untouched() {
 async fn delete_episode_session_removes_vector_entries() {
     let (mgr, _dir) = mgr_with_stub_vector(-1.0);
     let id = mgr
-        .append_episode(Episode::new("s1".into(), "user".into(), "vector cleanup".into()))
+        .append_episode(Episode::new(
+            "s1".into(),
+            "user".into(),
+            "vector cleanup".into(),
+        ))
         .await
         .unwrap();
     // append_episode does NOT touch the general store — a get() hit here
@@ -338,17 +339,28 @@ async fn vector_adapter_roundtrips_memory_type() {
 #[tokio::test]
 async fn search_type_filter_matches_stored_type() {
     let (mgr, _dir) = mgr_with_stub_vector(-1.0);
-    mgr.store_entry(Entry::new(MemoryType::ShortTerm, "short term probe one".into()))
-        .await
-        .unwrap();
-    mgr.store_entry(Entry::new(MemoryType::LongTerm, "long term probe two".into()))
-        .await
-        .unwrap();
+    mgr.store_entry(Entry::new(
+        MemoryType::ShortTerm,
+        "short term probe one".into(),
+    ))
+    .await
+    .unwrap();
+    mgr.store_entry(Entry::new(
+        MemoryType::LongTerm,
+        "long term probe two".into(),
+    ))
+    .await
+    .unwrap();
 
-    let r = mgr.search("probe", Some(MemoryType::ShortTerm), 10).await.unwrap();
+    let r = mgr
+        .search("probe", Some(MemoryType::ShortTerm), 10)
+        .await
+        .unwrap();
     assert!(!r.entries.is_empty(), "type filter must hit vector entries");
     assert!(
-        r.entries.iter().all(|se| se.entry.typ == MemoryType::ShortTerm),
+        r.entries
+            .iter()
+            .all(|se| se.entry.typ == MemoryType::ShortTerm),
         "filtered results must all be ShortTerm, got {:?}",
         r.entries.iter().map(|se| se.entry.typ).collect::<Vec<_>>()
     );
@@ -372,7 +384,11 @@ async fn append_episode_vector_persist_failure_is_silent() {
     mgr.set_vector_enabled(true);
 
     let id = mgr
-        .append_episode(Episode::new("persist-fail".into(), "user".into(), "still works".into()))
+        .append_episode(Episode::new(
+            "persist-fail".into(),
+            "user".into(),
+            "still works".into(),
+        ))
         .await
         .unwrap();
     assert!(!id.is_empty());

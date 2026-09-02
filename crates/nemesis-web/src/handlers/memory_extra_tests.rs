@@ -171,10 +171,10 @@ async fn test_memory_stats_with_jsonl_and_episodic() {
     // data_dir）；stats 与 manager 同源读这棵树（V2 修复：旧代码数的是
     // 永远不会被加载的 `memory/`）。
     let mem_dir = ws.join("memory_vector");
-        let vector_dir = mem_dir.join("vector");
-        std::fs::create_dir_all(&vector_dir).unwrap();
-        // Two JSONL entries (one empty line ignored)
-        let jsonl = vector_dir.join("vector_store.jsonl");
+    let vector_dir = mem_dir.join("vector");
+    std::fs::create_dir_all(&vector_dir).unwrap();
+    // Two JSONL entries (one empty line ignored)
+    let jsonl = vector_dir.join("vector_store.jsonl");
     std::fs::write(&jsonl, "{\"content\":\"a\"}\n{\"content\":\"b\"}\n\n").unwrap();
 
     // Episodic: one session dir with two episodes
@@ -353,12 +353,17 @@ async fn test_memory_entries_store_creates_file_and_appends() {
     // 是 manager 永远不加载的死树，不得再写。
     let jsonl = ws
         .join("memory_vector")
-            .join("vector")
-            .join("vector_store.jsonl");
+        .join("vector")
+        .join("vector_store.jsonl");
     let content = std::fs::read_to_string(&jsonl).unwrap();
     let lines: Vec<&str> = content.lines().filter(|l| !l.trim().is_empty()).collect();
     assert_eq!(lines.len(), 2);
-    assert!(!ws.join("memory").join("vector").join("vector_store.jsonl").exists());
+    assert!(
+        !ws.join("memory")
+            .join("vector")
+            .join("vector_store.jsonl")
+            .exists()
+    );
 }
 
 // -----------------------------------------------------------------------
@@ -629,7 +634,7 @@ async fn test_memory_config_set_wrong_types_rejected_loudly() {
         ("main_enabled", serde_json::json!("yes")),
         ("sub_enabled", serde_json::json!(1)),
         ("active_tier", serde_json::json!(5)),
-            ("auto_inject", serde_json::json!("true")),
+        ("auto_inject", serde_json::json!("true")),
         ("auto_inject_top_k", serde_json::json!("5")),
         ("auto_inject_top_k", serde_json::json!(5.5)),
         ("auto_inject_top_k", serde_json::json!(-3)),
@@ -777,20 +782,20 @@ async fn test_memory_model_install_unknown_tier() {
     let result = handler.handle_cmd("model.install", Some(data), &ctx).await;
     assert!(result.is_err());
     assert!(result.unwrap_err().contains("unknown tier"));
-    }
+}
 
-    #[tokio::test]
-    async fn test_memory_model_install_valid_tier_runs_or_fails_cleanly() {
-        let dir = tempfile::tempdir().unwrap();
-        let ws = dir.path();
-        ensure_config_dir(ws);
-        write_config(ws);
-        let handler = MemoryHandler;
-        let ctx = make_ctx(&dir);
+#[tokio::test]
+async fn test_memory_model_install_valid_tier_runs_or_fails_cleanly() {
+    let dir = tempfile::tempdir().unwrap();
+    let ws = dir.path();
+    ensure_config_dir(ws);
+    write_config(ws);
+    let handler = MemoryHandler;
+    let ctx = make_ctx(&dir);
 
-        // Valid tier name — we don't assert success (no real download in CI).
-        // We only require it does not panic and either succeeds or errors.
-        let data = serde_json::json!({ "tier": "small" });
+    // Valid tier name — we don't assert success (no real download in CI).
+    // We only require it does not panic and either succeeds or errors.
+    let data = serde_json::json!({ "tier": "small" });
     let _ = handler.handle_cmd("model.install", Some(data), &ctx).await;
     // Lock should be released after either path (we cannot easily check the
     // internal mutex, but a second call must not return "正在安装中").
@@ -876,7 +881,7 @@ async fn test_memory_entries_search_missing_query_field() {
     let ctx = make_ctx(&dir);
     // data present but missing "query" field
     let data = serde_json::json!({ "foo": "bar" });
-        let result = handler.handle_cmd("entries.search", Some(data), &ctx).await;
+    let result = handler.handle_cmd("entries.search", Some(data), &ctx).await;
     assert!(result.is_err());
     assert_eq!(result.unwrap_err(), "missing field: query");
 }
@@ -890,4 +895,4 @@ async fn test_memory_model_install_missing_tier_field() {
     let result = handler.handle_cmd("model.install", Some(data), &ctx).await;
     assert!(result.is_err());
     assert_eq!(result.unwrap_err(), "missing field: tier");
-    }
+}

@@ -30,10 +30,16 @@ fn lsp_op_parse_and_method() {
 #[test]
 fn transport_error_detection() {
     assert!(is_transport_error("server closed the stream"));
-    assert!(is_transport_error("write to server stdin failed: broken pipe"));
+    assert!(is_transport_error(
+        "write to server stdin failed: broken pipe"
+    ));
     assert!(is_transport_error("read header line failed: eof"));
-    assert!(!is_transport_error("server error on textDocument/definition: {code:-32601}"));
-    assert!(!is_transport_error("LSP request textDocument/hover timed out after 120s"));
+    assert!(!is_transport_error(
+        "server error on textDocument/definition: {code:-32601}"
+    ));
+    assert!(!is_transport_error(
+        "LSP request textDocument/hover timed out after 120s"
+    ));
 }
 
 #[test]
@@ -54,9 +60,15 @@ fn find_root_walks_to_marker_then_falls_back() {
     let bare = tmp.path().join("loose.py");
     std::fs::write(&bare, "x = 1\n").unwrap();
     let marker_above = bare.parent().unwrap().ancestors().skip(1).any(|d| {
-        [".git", "Cargo.toml", "package.json", "pyproject.toml", "go.mod"]
-            .iter()
-            .any(|m| d.join(m).exists())
+        [
+            ".git",
+            "Cargo.toml",
+            "package.json",
+            "pyproject.toml",
+            "go.mod",
+        ]
+        .iter()
+        .any(|m| d.join(m).exists())
     });
     if !marker_above {
         assert_eq!(find_root(&bare), bare.parent().unwrap());
@@ -204,7 +216,10 @@ async fn rust_analyzer_four_ops_on_real_repo() {
     let dir = fixture_repo();
     let lib = dir.path().join("src/lib.rs");
 
-    let mgr = LspManager::new(Some(Duration::from_secs(60)), Some(Duration::from_secs(600)));
+    let mgr = LspManager::new(
+        Some(Duration::from_secs(60)),
+        Some(Duration::from_secs(600)),
+    );
 
     // definition: use site (line 10, col of `fixture_answer`) → def line 0.
     let def = query_until(&mgr, LspOp::Definition, &lib, 10, 13, true).await;
@@ -219,8 +234,14 @@ async fn rust_analyzer_four_ops_on_real_repo() {
 
     // references: fn def (line 0, col 8) → at least the def + the call.
     let refs = query_until(&mgr, LspOp::References, &lib, 0, 8, true).await;
-    assert!(refs.contains("lib.rs:10:"), "references should include the call site, got: {refs}");
-    assert!(refs.contains("lib.rs:0:"), "references should include the declaration, got: {refs}");
+    assert!(
+        refs.contains("lib.rs:10:"),
+        "references should include the call site, got: {refs}"
+    );
+    assert!(
+        refs.contains("lib.rs:0:"),
+        "references should include the declaration, got: {refs}"
+    );
 
     // implementation: trait method decl (line 2, col 23 `greet`) → impl line 6.
     let impls = query_until(&mgr, LspOp::Implementation, &lib, 2, 23, true).await;
@@ -231,7 +252,10 @@ async fn rust_analyzer_four_ops_on_real_repo() {
 
     // hover: fn def → signature text mentions the fn name.
     let hover = query_until(&mgr, LspOp::Hover, &lib, 0, 8, true).await;
-    assert!(hover.contains("fixture_answer"), "hover should name the function, got: {hover}");
+    assert!(
+        hover.contains("fixture_answer"),
+        "hover should name the function, got: {hover}"
+    );
 
     // Lifecycle (验收 ③): one cached session; shutdown_all closes it.
     assert_eq!(mgr.session_count().await, 1);
@@ -263,7 +287,10 @@ async fn idle_sessions_are_reaped_and_respawn() {
         eprintln!("SKIP: rust-analyzer spawned but unusable on this machine ({hover})");
         return;
     }
-    assert!(hover.contains("fixture_answer"), "warm-up query should work: {hover}");
+    assert!(
+        hover.contains("fixture_answer"),
+        "warm-up query should work: {hover}"
+    );
     assert_eq!(mgr.session_count().await, 1);
 
     // Back-date last_used past the threshold (10s) → the lazy sweep must
@@ -290,7 +317,10 @@ async fn idle_sessions_are_reaped_and_respawn() {
 
     // Re-query: fresh session spawns transparently and still answers.
     let again = query_until_fast(&mgr, LspOp::Hover, &lib, 0, 8).await;
-    assert!(again.contains("fixture_answer"), "respawned session should answer: {again}");
+    assert!(
+        again.contains("fixture_answer"),
+        "respawned session should answer: {again}"
+    );
     assert_eq!(mgr.session_count().await, 1);
     assert_eq!(mgr.shutdown_all().await, 1);
 }
@@ -490,7 +520,11 @@ fn plant_fake_gopls(mode: &str) -> (tempfile::TempDir, PathRestore) {
     let dir = tempfile::tempdir().unwrap();
     std::fs::write(dir.path().join("fake_lsp_server.py"), FAKE_SERVER_PY).unwrap();
 
-    let py = dir.path().join("fake_lsp_server.py").to_string_lossy().to_string();
+    let py = dir
+        .path()
+        .join("fake_lsp_server.py")
+        .to_string_lossy()
+        .to_string();
     #[cfg(windows)]
     std::fs::write(
         dir.path().join("gopls.cmd"),
@@ -514,12 +548,16 @@ fn plant_fake_gopls(mode: &str) -> (tempfile::TempDir, PathRestore) {
 
     // go.mod marker makes find_root resolve to the temp dir deterministically.
     std::fs::write(dir.path().join("go.mod"), "module faketest\n\ngo 1.25\n").unwrap();
-    std::fs::write(dir.path().join("main.go"), "package main\n\nfunc main() {}\n").unwrap();
+    std::fs::write(
+        dir.path().join("main.go"),
+        "package main\n\nfunc main() {}\n",
+    )
+    .unwrap();
 
     let orig = std::env::var("PATH").unwrap_or_default();
-    let new_path = std::env::join_paths(std::iter::once(dir.path().to_path_buf()).chain(
-        std::env::split_paths(&orig),
-    ))
+    let new_path = std::env::join_paths(
+        std::iter::once(dir.path().to_path_buf()).chain(std::env::split_paths(&orig)),
+    )
     .unwrap()
     .to_string_lossy()
     .to_string();
@@ -545,7 +583,11 @@ async fn fake_server_full_query_chain_and_shutdown_handshake() {
     assert!(def.contains("1 definitions"), "{def}");
     assert!(def.contains("/fake/a.go:3:4"), "{def}");
 
-    assert_eq!(mgr.session_count().await, 1, "same root must reuse one session");
+    assert_eq!(
+        mgr.session_count().await,
+        1,
+        "same root must reuse one session"
+    );
     assert_eq!(mgr.shutdown_all().await, 1);
     assert!(
         dir.path().join("shutdown_seen.marker").exists(),

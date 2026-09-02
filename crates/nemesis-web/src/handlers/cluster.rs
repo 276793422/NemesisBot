@@ -1373,16 +1373,17 @@ impl ClusterHandler {
             let ppath = peers_path(workspace);
             if ppath.exists()
                 && let Ok(static_cfg) = nemesis_cluster::cluster_config::load_static_config(&ppath)
-                    && let Some(obj) = config.as_object_mut() {
-                        obj.insert("node_id".to_string(), serde_json::json!(static_cfg.node.id));
-                        obj.insert("name".to_string(), serde_json::json!(static_cfg.node.name));
-                        obj.insert("role".to_string(), serde_json::json!(static_cfg.node.role));
-                        obj.insert(
-                            "category".to_string(),
-                            serde_json::json!(static_cfg.node.category),
-                        );
-                        obj.insert("tags".to_string(), serde_json::json!(static_cfg.node.tags));
-                    }
+                && let Some(obj) = config.as_object_mut()
+            {
+                obj.insert("node_id".to_string(), serde_json::json!(static_cfg.node.id));
+                obj.insert("name".to_string(), serde_json::json!(static_cfg.node.name));
+                obj.insert("role".to_string(), serde_json::json!(static_cfg.node.role));
+                obj.insert(
+                    "category".to_string(),
+                    serde_json::json!(static_cfg.node.category),
+                );
+                obj.insert("tags".to_string(), serde_json::json!(static_cfg.node.tags));
+            }
         }
         Ok(Some(config))
     }
@@ -1401,19 +1402,22 @@ impl ClusterHandler {
 
             // Check ports in valid range (1-65535)
             if let Some(port) = discovery_port
-                && (port == 0 || port > 65535) {
-                    return Err("discovery_port must be between 1 and 65535".to_string());
-                }
+                && (port == 0 || port > 65535)
+            {
+                return Err("discovery_port must be between 1 and 65535".to_string());
+            }
             if let Some(port) = rpc_port
-                && (port == 0 || port > 65535) {
-                    return Err("rpc_port must be between 1 and 65535".to_string());
-                }
+                && (port == 0 || port > 65535)
+            {
+                return Err("rpc_port must be between 1 and 65535".to_string());
+            }
 
             // Check discovery_port != rpc_port
             if let (Some(dp), Some(rp)) = (discovery_port, rpc_port)
-                && dp == rp {
-                    return Err("discovery_port and rpc_port must be different".to_string());
-                }
+                && dp == rp
+            {
+                return Err("discovery_port and rpc_port must be different".to_string());
+            }
         }
 
         let path = cluster_config_path(workspace);
@@ -1454,9 +1458,10 @@ impl ClusterHandler {
             main_cfg["cluster"] = serde_json::json!({});
         }
         if let Some(cluster_obj) = main_cfg.get_mut("cluster")
-            && let Some(obj) = cluster_obj.as_object_mut() {
-                obj.insert("enabled".to_string(), serde_json::json!(enabled));
-            }
+            && let Some(obj) = cluster_obj.as_object_mut()
+        {
+            obj.insert("enabled".to_string(), serde_json::json!(enabled));
+        }
         let updated = serde_json::to_string_pretty(&main_cfg)
             .map_err(|e| format!("failed to serialize config.json: {}", e))?;
         std::fs::write(&main_cfg_path, updated)
@@ -2110,10 +2115,8 @@ fn check_platform_firewall(udp_port: u16, tcp_port: u16) -> serde_json::Value {
             });
         }
         // UFW is active — check if ports are allowed
-        let udp_ok =
-            stdout.contains(&format!("{}/udp", udp_port)) || stdout.contains("Anywhere");
-        let tcp_ok =
-            stdout.contains(&format!("{}/tcp", tcp_port)) || stdout.contains("Anywhere");
+        let udp_ok = stdout.contains(&format!("{}/udp", udp_port)) || stdout.contains("Anywhere");
+        let tcp_ok = stdout.contains(&format!("{}/tcp", tcp_port)) || stdout.contains("Anywhere");
         if udp_ok && tcp_ok {
             return serde_json::json!({
                 "name": "firewall_status",

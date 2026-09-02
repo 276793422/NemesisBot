@@ -12,7 +12,7 @@
 
 use std::time::Duration;
 
-use anyhow::{bail, Context, Result};
+use anyhow::{Context, Result, bail};
 use clap::Subcommand;
 
 use crate::common;
@@ -141,7 +141,7 @@ fn selftest_child() -> Result<()> {
     if engage && !boxed {
         // SelfApply path: landlock rules are irreversible — this is exactly
         // why the probe runs in a one-shot child, never in the gateway.
-        use nemesis_sandbox::backend::{detect_backend, SandboxConf};
+        use nemesis_sandbox::backend::{SandboxConf, detect_backend};
         let allow_network =
             std::env::var("NEMESISBOT_SELFTEST_ALLOW_NETWORK").as_deref() == Ok("1");
         let conf = SandboxConf {
@@ -375,7 +375,9 @@ fn kill(paths: &nemesis_sandbox::SandboxPaths, box_name: Option<String>) -> Resu
         }
     };
     if boxes.is_empty() {
-        println!("No NemesisEvalBox_* sections in ini — nothing to kill. (Use --box <name> for a specific box.)");
+        println!(
+            "No NemesisEvalBox_* sections in ini — nothing to kill. (Use --box <name> for a specific box.)"
+        );
         return Ok(());
     }
 
@@ -397,16 +399,28 @@ fn kill(paths: &nemesis_sandbox::SandboxPaths, box_name: Option<String>) -> Resu
             println!("[sandbox] box {b}: ini 段缺 FileRootPath——跳过 Start.exe");
             continue;
         }
-        println!("[sandbox] killing box {b}: /terminate + delete_sandbox_silent (engine stays up)...");
+        println!(
+            "[sandbox] killing box {b}: /terminate + delete_sandbox_silent (engine stays up)..."
+        );
         // 命令语法（官方 StartCommandLine 文档，2026-08-19 查证）：
         // - 停盒内进程是【开关形式】"/terminate"——裸写 "terminate_all" 会被
         //   Start.exe 当成要启动的程序名 → "找不到指定程序"弹窗串（实錯：
         //   20 个盒 × 1 弹窗，用户屏幕实报）。
         // - delete_sandbox_silent 是位置命令形式（不带斜杠），二者语法不同。
         // 快失败：3s 无响应即树杀并跳过（防个别盒拖垮整轮 kill）。
-        let term_ok = run_startexe_timeout(&start_exe, b, "/terminate", std::time::Duration::from_secs(3));
+        let term_ok = run_startexe_timeout(
+            &start_exe,
+            b,
+            "/terminate",
+            std::time::Duration::from_secs(3),
+        );
         if term_ok {
-            run_startexe_timeout(&start_exe, b, "delete_sandbox_silent", std::time::Duration::from_secs(10));
+            run_startexe_timeout(
+                &start_exe,
+                b,
+                "delete_sandbox_silent",
+                std::time::Duration::from_secs(10),
+            );
             println!("[sandbox] box {b} killed (processes terminated, contents discarded).");
         } else {
             println!(
@@ -430,12 +444,11 @@ fn box_file_root(ini_path: &std::path::Path, section: &str) -> Option<std::path:
             in_section = t.trim_start_matches('[').trim_end_matches(']') == section;
             continue;
         }
-        if in_section
-            && let Some(v) = t.strip_prefix("FileRootPath=") {
-                // 形如 `\??\C:\...`——剥掉 NT 前缀
-                let p = v.trim().trim_start_matches(r"\??\");
-                return Some(std::path::PathBuf::from(p));
-            }
+        if in_section && let Some(v) = t.strip_prefix("FileRootPath=") {
+            // 形如 `\??\C:\...`——剥掉 NT 前缀
+            let p = v.trim().trim_start_matches(r"\??\");
+            return Some(std::path::PathBuf::from(p));
+        }
     }
     None
 }
@@ -452,7 +465,12 @@ fn box_file_root(ini_path: &std::path::Path, section: &str) -> Option<std::path:
 ///
 /// 孤儿防护：Job Object kill-on-close——本进程被外杀时内核自动终止 job
 /// 内全部 Start.exe，杜绝孤儿继续弹窗。
-fn run_startexe_timeout(start_exe: &std::path::Path, box_name: &str, sub: &str, timeout: std::time::Duration) -> bool {
+fn run_startexe_timeout(
+    start_exe: &std::path::Path,
+    box_name: &str,
+    sub: &str,
+    timeout: std::time::Duration,
+) -> bool {
     let mut child = match std::process::Command::new(start_exe)
         .arg(format!("/box:{box_name}"))
         .arg("/silent")
@@ -508,9 +526,9 @@ struct ChildJob(windows_sys::Win32::Foundation::HANDLE);
 impl ChildJob {
     fn assign(child: &std::process::Child) -> Option<Self> {
         use windows_sys::Win32::System::JobObjects::{
-            AssignProcessToJobObject, CreateJobObjectW, JobObjectExtendedLimitInformation,
-            SetInformationJobObject, JOBOBJECT_EXTENDED_LIMIT_INFORMATION,
-            JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE,
+            AssignProcessToJobObject, CreateJobObjectW, JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE,
+            JOBOBJECT_EXTENDED_LIMIT_INFORMATION, JobObjectExtendedLimitInformation,
+            SetInformationJobObject,
         };
         unsafe {
             let job = CreateJobObjectW(std::ptr::null(), std::ptr::null());

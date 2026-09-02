@@ -1098,14 +1098,24 @@ async fn test_w4c_clone_preserves_state_and_shares_stats() {
     assert_eq!(cloned.messages_sent(), 1);
     assert_eq!(cloned.messages_received(), 1);
     ch.record_sent();
-    assert_eq!(cloned.messages_sent(), 2, "stats must be Arc-shared across clones");
+    assert_eq!(
+        cloned.messages_sent(),
+        2,
+        "stats must be Arc-shared across clones"
+    );
 
     // sync_targets 是独立副本：加到克隆上不影响原件
     let target = MockChannel::new("w4c-clone-tgt");
-    cloned.add_sync_target("w4c-clone-tgt", Arc::new(target)).unwrap();
+    cloned
+        .add_sync_target("w4c-clone-tgt", Arc::new(target))
+        .unwrap();
     let sent_before = ch.messages_sent();
     ch.sync_to_targets("should go nowhere").await;
-    assert_eq!(ch.messages_sent(), sent_before, "original must not have the clone's target");
+    assert_eq!(
+        ch.messages_sent(),
+        sent_before,
+        "original must not have the clone's target"
+    );
 }
 
 // ===========================================================================

@@ -67,9 +67,9 @@ fn convex_ok(value: serde_json::Value) -> serde_json::Value {
 /// learn 测试用的最小 RequestContext（可注入 inbound_tx）。
 fn learn_ctx(
     ws: &std::path::Path,
-    inbound_tx: Option<tokio::sync::mpsc::UnboundedSender<
-        crate::websocket_handler::IncomingMessage,
-    >>,
+    inbound_tx: Option<
+        tokio::sync::mpsc::UnboundedSender<crate::websocket_handler::IncomingMessage>,
+    >,
 ) -> RequestContext {
     use crate::api_handlers::AppState;
     use crate::events::EventHub;
@@ -279,7 +279,10 @@ async fn learn_success_enqueues_prompt_with_source_and_name_hint() {
     assert_eq!(incoming.sender_id, "s10-session"); // sender = session
     assert_eq!(incoming.chat_id, "s10-chat");
     assert!(incoming.content.contains("THE-SOURCE-DOC"));
-    assert!(incoming.content.contains("'my-skill'"), "name hint embedded");
+    assert!(
+        incoming.content.contains("'my-skill'"),
+        "name hint embedded"
+    );
     assert!(incoming.content.contains("learn"));
 
     // 无 name → prompt 不含 hint 片段
@@ -459,15 +462,15 @@ async fn shop_detail_ok_and_convex_error_arms() {
             "path": "skills:getBySlug",
             "args": {"slug": "detail-skill"}
         })))
-        .respond_with(ResponseTemplate::new(200).set_body_json(convex_ok(
-            serde_json::json!({
+        .respond_with(
+            ResponseTemplate::new(200).set_body_json(convex_ok(serde_json::json!({
                 "owner": {"handle": "alice"},
                 "skill": {"slug": "detail-skill", "displayName": "Detail",
                           "summary": "Sum", "stats": {"downloads": 100.0}},
                 "latestVersion": {"version": "1.2.0"},
                 "resolvedSlug": ""
-            })
-        )))
+            }))),
+        )
         .expect(1)
         .mount(&server)
         .await;
@@ -517,9 +520,7 @@ async fn shop_code_ok_via_file_api() {
     Mock::given(method("GET"))
         .and(path("/api/v1/skills/code-skill/file"))
         .and(query_param("path", "SKILL.md"))
-        .respond_with(
-            ResponseTemplate::new(200).set_body_string("# Code Skill\n\nbody"),
-        )
+        .respond_with(ResponseTemplate::new(200).set_body_string("# Code Skill\n\nbody"))
         .expect(1)
         .mount(&server)
         .await;
@@ -547,15 +548,15 @@ async fn install_ok_downloads_zip_and_extracts() {
     // 1) convex getBySlug → owner + version
     Mock::given(method("POST"))
         .and(path("/api/query"))
-        .respond_with(ResponseTemplate::new(200).set_body_json(convex_ok(
-            serde_json::json!({
+        .respond_with(
+            ResponseTemplate::new(200).set_body_json(convex_ok(serde_json::json!({
                 "owner": {"handle": "alice"},
                 "skill": {"slug": "zip-skill", "displayName": "Zip",
                           "summary": "zipped", "stats": {"downloads": 0.0}},
                 "latestVersion": {"version": "2.0.0"},
                 "resolvedSlug": ""
-            })
-        )))
+            }))),
+        )
         .expect(1)
         .mount(&server)
         .await;
@@ -590,7 +591,11 @@ async fn install_ok_downloads_zip_and_extracts() {
     // 解压落地（顶层目录拍平）
     let skill_md = ws.join("skills/zip-skill/SKILL.md");
     assert!(skill_md.exists(), "SKILL.md must be extracted");
-    assert!(std::fs::read_to_string(skill_md).unwrap().contains("Zip Skill"));
+    assert!(
+        std::fs::read_to_string(skill_md)
+            .unwrap()
+            .contains("Zip Skill")
+    );
 }
 
 #[tokio::test]

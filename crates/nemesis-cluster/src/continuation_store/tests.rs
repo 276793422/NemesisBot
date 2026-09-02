@@ -531,7 +531,10 @@ async fn test_w3b_save_warns_and_continues_when_cache_dir_is_file() {
     // save() must only warn and still record the snapshot in memory.
     let store = ContinuationStore::new(&blocker);
     store.save(make_snapshot("w3b-nodisk")).await.unwrap();
-    assert!(store.contains("w3b-nodisk"), "memory must win when disk fails");
+    assert!(
+        store.contains("w3b-nodisk"),
+        "memory must win when disk fails"
+    );
     assert_eq!(store.len(), 1);
 }
 
@@ -637,7 +640,10 @@ async fn test_w3b_remove_warns_when_disk_file_is_directory() {
     // delete failure is only logged.
     assert!(store.remove("w3b-rmwarn").await);
     assert!(!store.contains("w3b-rmwarn"));
-    assert!(path.is_dir(), "the directory must survive the failed delete");
+    assert!(
+        path.is_dir(),
+        "the directory must survive the failed delete"
+    );
 }
 
 #[tokio::test]
@@ -648,7 +654,9 @@ async fn test_w3b_cleanup_old_read_dir_error_and_dir_named_json_remove_error() {
     let blocker = holder.path().join("blocker");
     std::fs::write(&blocker, b"file").unwrap();
     let store = ContinuationStore::new(&blocker);
-    let result = store.cleanup_old(std::time::Duration::from_secs(3600)).await;
+    let result = store
+        .cleanup_old(std::time::Duration::from_secs(3600))
+        .await;
     assert!(result.is_err(), "read_dir failure must propagate");
 
     // (b) a DIRECTORY named *.json inside a valid cache dir passes the
@@ -739,10 +747,7 @@ async fn test_s4_load_final_attempt_after_retry_exhaustion() {
     let store = std::sync::Arc::new(ContinuationStore::new(dir.path()));
 
     let waiter_store = store.clone();
-    let waiter =
-        tokio::spawn(
-            async move { waiter_store.load("s4-late").await },
-        );
+    let waiter = tokio::spawn(async move { waiter_store.load("s4-late").await });
 
     let inserter_store = store.clone();
     tokio::spawn(async move {

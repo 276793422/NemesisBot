@@ -238,27 +238,29 @@ impl GitHubRegistry {
         };
 
         // Use Trees API to download the full skill directory.
-        if !self.repo.is_empty() && !self.skill_path_pattern.is_empty()
-            && let Some(dir_prefix) = self.skill_dir_prefix(slug) {
-                download_skill_tree_from_github(
-                    &self.client,
-                    self.api_base_url(),
-                    &self.base_url,
-                    &self.repo,
-                    &self.branch,
-                    &dir_prefix,
-                    target_dir,
-                    0,
-                )
-                .await?;
+        if !self.repo.is_empty()
+            && !self.skill_path_pattern.is_empty()
+            && let Some(dir_prefix) = self.skill_dir_prefix(slug)
+        {
+            download_skill_tree_from_github(
+                &self.client,
+                self.api_base_url(),
+                &self.base_url,
+                &self.repo,
+                &self.branch,
+                &dir_prefix,
+                target_dir,
+                0,
+            )
+            .await?;
 
-                return Ok(InstallResult {
-                    version: install_version,
-                    is_malware_blocked: false,
-                    is_suspicious: false,
-                    summary: meta.summary,
-                });
-            }
+            return Ok(InstallResult {
+                version: install_version,
+                is_malware_blocked: false,
+                is_suspicious: false,
+                summary: meta.summary,
+            });
+        }
 
         // Legacy fallback: download only SKILL.md.
         let url = self.build_skill_url(slug);
@@ -560,7 +562,8 @@ impl GitHubRegistry {
         };
 
         // Remove trailing filename (e.g., "/SKILL.md").
-        path.rfind('/').map(|last_slash| path[..last_slash].to_string())
+        path.rfind('/')
+            .map(|last_slash| path[..last_slash].to_string())
     }
 
     /// Build the download URL for a skill.

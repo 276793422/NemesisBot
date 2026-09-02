@@ -21,14 +21,15 @@
 
 pub mod args_validator;
 pub mod capture_sink;
+pub mod cc_hooks;
 pub mod chat_log;
 pub mod checkpoint;
 pub mod context;
 pub mod estop;
 pub mod executor_pipe;
 pub mod history_search;
-pub mod cc_hooks;
 pub mod hooks;
+pub mod inbox;
 pub mod instance;
 pub mod r#loop;
 pub mod loop_continuation;
@@ -38,23 +39,22 @@ pub mod mcp_bridge;
 pub mod memory;
 pub mod message_preprocess;
 pub mod probe;
-pub mod registry;
-pub mod inbox;
 pub mod prune;
-pub mod replay;
-pub mod skills_digest;
-pub mod workspace_instructions;
+pub mod registry;
 pub mod remote_executor_tool;
-pub mod spill;
+pub mod replay;
 pub mod request_logger;
 pub mod request_logger_observer;
 pub mod ringbuffer;
 pub mod session;
 pub mod session_fork;
+pub mod skills_digest;
+pub mod spill;
 pub mod tool_adapter;
 pub mod tool_doc_folding;
 pub mod turn_guard;
 pub mod types;
+pub mod workspace_instructions;
 
 // S9 (quality-hardening goal 冲刺 S9): 测试共享 helper（thread-local tracing
 // subscriber），声明式挂载指向独立文件，无内联测试。

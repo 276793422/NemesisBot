@@ -764,7 +764,10 @@ async fn test_from_forge_dir_with_config_ctor() {
 
     // Base dir must be {forge_dir}/experiences.
     let exp_dir = dir.path().join("experiences");
-    assert!(exp_dir.exists(), "from_forge_dir must add experiences subdir");
+    assert!(
+        exp_dir.exists(),
+        "from_forge_dir must add experiences subdir"
+    );
     let all = store.read_aggregated().await.unwrap();
     assert_eq!(all.len(), 1, "custom daily limit must apply");
 }
@@ -907,11 +910,7 @@ async fn test_cleanup_rename_skipped_when_tmp_write_fails() {
         })
         .unwrap()
     };
-    std::fs::write(
-        base.join("experiences.jsonl"),
-        format!("{}\n", mk_old()),
-    )
-    .unwrap();
+    std::fs::write(base.join("experiences.jsonl"), format!("{}\n", mk_old())).unwrap();
     // Block the temp path with a directory.
     std::fs::create_dir_all(base.join("experiences.jsonl.tmp")).unwrap();
 
@@ -992,7 +991,10 @@ async fn test_s8_cleanup_flat_file_skips_blank_and_legacy_lines() {
     // Blank line + unparsable legacy line in the flat file.
     use std::io::Write;
     let flat = dir.path().join("experiences.jsonl");
-    let mut f = std::fs::OpenOptions::new().append(true).open(&flat).unwrap();
+    let mut f = std::fs::OpenOptions::new()
+        .append(true)
+        .open(&flat)
+        .unwrap();
     writeln!(f).unwrap();
     writeln!(f, "not json").unwrap();
 

@@ -540,7 +540,10 @@ async fn test_tool_node_executor_default_fails_loudly() {
     assert!(err.contains("no tool executor configured"), "got: {err}");
     assert!(err.contains("未配置工具执行器"), "got: {err}");
     assert!(err.contains("'n1'"), "error should name the node: {err}");
-    assert!(err.contains("'unknown'"), "error should name the tool: {err}");
+    assert!(
+        err.contains("'unknown'"),
+        "error should name the tool: {err}"
+    );
 }
 
 #[tokio::test]
@@ -2082,9 +2085,7 @@ async fn test_script_node_delegates_to_run_script_tool() {
     // 单一真相源而非钉住平台相关字面量。
     assert_eq!(
         captured["interpreter"].as_str(),
-        Some(
-            nemesis_tools::shell::resolve_posix_shell_path("bash").as_str()
-        )
+        Some(nemesis_tools::shell::resolve_posix_shell_path("bash").as_str())
     );
     assert_eq!(captured["flag"].as_str(), Some("-c"));
     assert_eq!(captured["script"].as_str(), Some("echo delegated-out"));
@@ -3933,7 +3934,9 @@ async fn question_classifier_records_each_retry_attempt_separately() {
     assert_eq!(summary.total_output_tokens, 10);
 
     // Verify trace_ids are distinct (the bug pre-fix: they collided).
-    let (logs, _) = store.query_logs(before, end, 1, 50, &nemesis_data::LogFilter::default()).expect("query_logs");
+    let (logs, _) = store
+        .query_logs(before, end, 1, 50, &nemesis_data::LogFilter::default())
+        .expect("query_logs");
     assert_eq!(logs.len(), 2, "expected exactly 2 RequestLog rows");
     assert_ne!(logs[0].trace_id, logs[1].trace_id);
     for log in &logs {
@@ -3992,7 +3995,9 @@ async fn parameter_extractor_records_each_retry_attempt_separately() {
     let summary = store.query_summary(before, end).expect("query_summary");
     assert_eq!(summary.total_requests, 2);
 
-    let (logs, _) = store.query_logs(before, end, 1, 50, &nemesis_data::LogFilter::default()).expect("query_logs");
+    let (logs, _) = store
+        .query_logs(before, end, 1, 50, &nemesis_data::LogFilter::default())
+        .expect("query_logs");
     assert_eq!(logs.len(), 2);
     assert_ne!(logs[0].trace_id, logs[1].trace_id);
 }
@@ -4321,13 +4326,31 @@ async fn u10_script_routes_through_world_tool_lane() {
         .execute(&node, &HashMap::new(), &empty_wf_ctx())
         .await
         .unwrap();
-    assert_eq!(result.state, ExecutionState::Completed, "err={:?}", result.error);
-    assert!(result.output["stdout"].as_str().unwrap().contains("from-world"));
+    assert_eq!(
+        result.state,
+        ExecutionState::Completed,
+        "err={:?}",
+        result.error
+    );
+    assert!(
+        result.output["stdout"]
+            .as_str()
+            .unwrap()
+            .contains("from-world")
+    );
     let recorded = ops.lock();
     assert_eq!(recorded.len(), 1, "exactly one world op: {recorded:?}");
-    assert!(recorded[0].starts_with("tool:run_script:"), "recorded={:?}", recorded[0]);
+    assert!(
+        recorded[0].starts_with("tool:run_script:"),
+        "recorded={:?}",
+        recorded[0]
+    );
     // args 里的 script 内容完整传到世界（executor 子进程拿到的就是它）。
-    assert!(recorded[0].contains("echo hi"), "recorded={:?}", recorded[0]);
+    assert!(
+        recorded[0].contains("echo hi"),
+        "recorded={:?}",
+        recorded[0]
+    );
 }
 
 /// per-node `sandbox: false` 显式 opt-out → 受守卫 Spawn 车道（本进程直跑
@@ -4346,10 +4369,18 @@ async fn u10_script_sandbox_false_uses_spawn_lane() {
         .execute(&node, &HashMap::new(), &empty_wf_ctx())
         .await
         .unwrap();
-    assert_eq!(result.state, ExecutionState::Completed, "err={:?}", result.error);
+    assert_eq!(
+        result.state,
+        ExecutionState::Completed,
+        "err={:?}",
+        result.error
+    );
     let recorded = ops.lock();
     assert_eq!(recorded.len(), 1);
-    assert!(recorded[0].starts_with("spawn:"), "opt-out must take the Spawn lane: {recorded:?}");
+    assert!(
+        recorded[0].starts_with("spawn:"),
+        "opt-out must take the Spawn lane: {recorded:?}"
+    );
 }
 
 /// per-node `sandbox: true`（显式跟随全局）→ 仍走工具车道。
@@ -4363,7 +4394,9 @@ async fn u10_script_sandbox_true_follows_tool_lane() {
     };
     let exec = ScriptNodeExecutor::with_world(std::sync::Arc::new(world));
     let node = make_node("n1", "script", script_node_config("echo hi", Some(true)));
-    exec.execute(&node, &HashMap::new(), &empty_wf_ctx()).await.unwrap();
+    exec.execute(&node, &HashMap::new(), &empty_wf_ctx())
+        .await
+        .unwrap();
     let recorded = ops.lock();
     assert!(recorded[0].starts_with("tool:run_script:"), "{recorded:?}");
 }
@@ -4385,7 +4418,12 @@ async fn u10_script_world_without_tool_lane_falls_back_to_bare_spawn() {
         .await
         .unwrap();
     // 裸 spawn 真跑 bash（同既有 test_script_node_executor 环境）。
-    assert_eq!(result.state, ExecutionState::Completed, "err={:?}", result.error);
+    assert_eq!(
+        result.state,
+        ExecutionState::Completed,
+        "err={:?}",
+        result.error
+    );
     assert!(ops.lock().is_empty(), "no world op should be recorded");
 }
 
@@ -4396,12 +4434,18 @@ async fn u10_script_world_tool_lane_error_surfaces() {
     struct ErrWorld;
     #[async_trait::async_trait]
     impl nemesis_sandbox::exec_world::ExecutionWorld for ErrWorld {
-        fn name(&self) -> &str { "err-world" }
-        fn writable_roots(&self) -> Vec<std::path::PathBuf> { vec![] }
+        fn name(&self) -> &str {
+            "err-world"
+        }
+        fn writable_roots(&self) -> Vec<std::path::PathBuf> {
+            vec![]
+        }
         fn spawn_semantics(&self) -> nemesis_sandbox::exec_world::SpawnSemantics {
             nemesis_sandbox::exec_world::SpawnSemantics::ExecutorChild
         }
-        fn supports_tool_calls(&self) -> bool { true }
+        fn supports_tool_calls(&self) -> bool {
+            true
+        }
         async fn run(
             &self,
             _op: nemesis_sandbox::exec_world::ExecOp,
@@ -4488,10 +4532,7 @@ fn w4a_script_executor_default_and_with_tools_and_world_ctors() {
 fn w4a_resolve_template_value_array_arm() {
     let mut ctx = HashMap::new();
     ctx.insert("a".to_string(), serde_json::json!("v"));
-    let out = resolve_template_value(
-        &serde_json::json!(["{{a}}", 1, {"k": "{{a}}"}, null]),
-        &ctx,
-    );
+    let out = resolve_template_value(&serde_json::json!(["{{a}}", 1, {"k": "{{a}}"}, null]), &ctx);
     assert_eq!(out, serde_json::json!(["v", 1, {"k": "v"}, null]));
 }
 
@@ -4533,7 +4574,10 @@ fn w4a_json_path_lookup_edge_paths() {
     // empty path -> whole root
     assert_eq!(json_path_lookup(&root, ""), root.clone());
     // key lookup on non-object (array) -> Null
-    assert_eq!(json_path_lookup(&serde_json::json!([1]), "a"), serde_json::Value::Null);
+    assert_eq!(
+        json_path_lookup(&serde_json::json!([1]), "a"),
+        serde_json::Value::Null
+    );
     // trailing junk after ] -> stops applying, returns current
     assert_eq!(json_path_lookup(&root, "a[0]x"), serde_json::json!(7));
     // unterminated [ -> stops, returns the array itself
@@ -4547,7 +4591,10 @@ fn w4a_json_path_lookup_edge_paths() {
     // index applied to non-array -> Null
     assert_eq!(json_path_lookup(&root, "o[0]"), serde_json::Value::Null);
     // whitespace between indices still chains
-    assert_eq!(json_path_lookup(&root, "nested[0] [1]"), serde_json::json!(20));
+    assert_eq!(
+        json_path_lookup(&root, "nested[0] [1]"),
+        serde_json::json!(20)
+    );
     // dotted field + index combo
     assert_eq!(json_path_lookup(&root, "o.b"), serde_json::json!(1));
 }
@@ -4566,7 +4613,10 @@ impl NodeExecutor for W4aCapturingExecutor {
         context: &HashMap<String, serde_json::Value>,
         _wf_ctx: &WorkflowContext,
     ) -> Result<NodeResult, String> {
-        let v = context.get(self.key).cloned().unwrap_or(serde_json::Value::Null);
+        let v = context
+            .get(self.key)
+            .cloned()
+            .unwrap_or(serde_json::Value::Null);
         self.seen.lock().unwrap().push(v.clone());
         let now = Local::now();
         Ok(NodeResult {
@@ -4611,7 +4661,10 @@ async fn w4a_loop_foreach_custom_item_var() {
     let seen = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
     registry.register(
         "w4a_capture",
-        Arc::new(W4aCapturingExecutor { key: "elem", seen: Arc::clone(&seen) }),
+        Arc::new(W4aCapturingExecutor {
+            key: "elem",
+            seen: Arc::clone(&seen),
+        }),
     );
     let exec = LoopNodeExecutor::new(Arc::clone(&registry));
 
@@ -4723,7 +4776,10 @@ async fn w4a_execute_inline_node_dispatches_basic_types() {
         id: "ih".to_string(),
         node_type: "http".to_string(),
         config: HashMap::from([
-            ("url".to_string(), serde_json::json!(format!("http://127.0.0.1:{}/y", port))),
+            (
+                "url".to_string(),
+                serde_json::json!(format!("http://127.0.0.1:{}/y", port)),
+            ),
             ("method".to_string(), serde_json::json!("GET")),
         ]),
         depends_on: Vec::new(),
@@ -4731,7 +4787,9 @@ async fn w4a_execute_inline_node_dispatches_basic_types() {
         timeout: None,
         is_terminal: false,
     };
-    let r = execute_inline_node(&http_def, &HashMap::new()).await.unwrap();
+    let r = execute_inline_node(&http_def, &HashMap::new())
+        .await
+        .unwrap();
     assert_eq!(r.state, ExecutionState::Completed);
     assert_eq!(r.output["body"].as_str().unwrap(), "inline-body");
 
@@ -4745,7 +4803,9 @@ async fn w4a_execute_inline_node_dispatches_basic_types() {
         timeout: None,
         is_terminal: false,
     };
-    let r = execute_inline_node(&script_def, &HashMap::new()).await.unwrap();
+    let r = execute_inline_node(&script_def, &HashMap::new())
+        .await
+        .unwrap();
     assert_eq!(r.state, ExecutionState::Completed);
     assert!(r.output["stdout"].as_str().unwrap().contains("inline-hi"));
 
@@ -4753,16 +4813,15 @@ async fn w4a_execute_inline_node_dispatches_basic_types() {
     let review_def = NodeDef {
         id: "ir".to_string(),
         node_type: "human_review".to_string(),
-        config: HashMap::from([(
-            "message".to_string(),
-            serde_json::json!("check this"),
-        )]),
+        config: HashMap::from([("message".to_string(), serde_json::json!("check this"))]),
         depends_on: Vec::new(),
         retry_count: 0,
         timeout: None,
         is_terminal: false,
     };
-    let r = execute_inline_node(&review_def, &HashMap::new()).await.unwrap();
+    let r = execute_inline_node(&review_def, &HashMap::new())
+        .await
+        .unwrap();
     assert_eq!(r.state, ExecutionState::Waiting);
     assert_eq!(r.output["status"].as_str().unwrap(), "waiting_for_review");
 }
@@ -4864,7 +4923,8 @@ fn w4a_parse_json_object_all_recovery_arms() {
     let v = parse_json_object("```json\n{\"a\": 2}\n```").unwrap();
     assert_eq!(v, serde_json::json!({"a": 2}));
     // prose-wrapped: outermost {...} extraction
-    let v = parse_json_object("Sure, here's the JSON:\n{ \"name\": \"foo\" }\nHope this helps!").unwrap();
+    let v = parse_json_object("Sure, here's the JSON:\n{ \"name\": \"foo\" }\nHope this helps!")
+        .unwrap();
     assert_eq!(v, serde_json::json!({"name": "foo"}));
     // non-object JSON values rejected
     assert!(parse_json_object("[1, 2]").is_err());
@@ -4890,24 +4950,29 @@ fn w4a_normalize_object_wraps_non_object_and_fills_missing() {
 fn w4a_validate_required_params_arms() {
     let required: ParamDef =
         serde_json::from_value(serde_json::json!({"name": "a", "required": true})).unwrap();
-    let optional: ParamDef =
-        serde_json::from_value(serde_json::json!({"name": "b"})).unwrap();
+    let optional: ParamDef = serde_json::from_value(serde_json::json!({"name": "b"})).unwrap();
     // non-object -> Err
     assert_eq!(
         validate_required_params(&serde_json::json!("x"), std::slice::from_ref(&required)),
         Err("output is not an object".to_string())
     );
     // required missing -> Err naming it
-    let err = validate_required_params(
-        &serde_json::json!({"b": 1}),
-        &[required.clone(), optional],
-    )
-    .unwrap_err();
+    let err = validate_required_params(&serde_json::json!({"b": 1}), &[required.clone(), optional])
+        .unwrap_err();
     assert_eq!(err, "a");
     // required present but null -> still Err
     assert!(validate_required_params(&serde_json::json!({"a": null}), &[required]).is_err());
     // satisfied -> Ok
-    assert!(validate_required_params(&serde_json::json!({"a": 0}), &[serde_json::from_value::<ParamDef>(serde_json::json!({"name": "a", "required": true})).unwrap()]).is_ok());
+    assert!(
+        validate_required_params(
+            &serde_json::json!({"a": 0}),
+            &[serde_json::from_value::<ParamDef>(
+                serde_json::json!({"name": "a", "required": true})
+            )
+            .unwrap()]
+        )
+        .is_ok()
+    );
 }
 
 #[test]

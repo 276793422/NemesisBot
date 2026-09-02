@@ -62,7 +62,11 @@ impl crate::registry::SkillRegistry for FileWritingRegistry {
         "filewriter"
     }
 
-    async fn search(&self, _query: &str, _limit: usize) -> Result<Vec<crate::types::SkillSearchResult>> {
+    async fn search(
+        &self,
+        _query: &str,
+        _limit: usize,
+    ) -> Result<Vec<crate::types::SkillSearchResult>> {
         Ok(Vec::new())
     }
 
@@ -87,7 +91,9 @@ impl crate::registry::SkillRegistry for FileWritingRegistry {
         target_dir: &str,
     ) -> Result<InstallResult> {
         if self.fail_download {
-            return Err(NemesisError::Other("simulated download failure".to_string()));
+            return Err(NemesisError::Other(
+                "simulated download failure".to_string(),
+            ));
         }
         std::fs::create_dir_all(target_dir).map_err(NemesisError::Io)?;
         if self.write_skill_md {
@@ -159,7 +165,10 @@ async fn test_install_from_github_http_404_returns_error() {
     let mut installer = SkillInstaller::new(&dir.path().to_string_lossy());
     installer.set_github_base_url(&server.uri());
 
-    let err = installer.install_from_github("owner/repo").await.unwrap_err();
+    let err = installer
+        .install_from_github("owner/repo")
+        .await
+        .unwrap_err();
     assert!(format!("{}", err).contains("HTTP 404"), "got: {}", err);
 
     // 失败发生在写盘前，目录不应被创建。
@@ -179,7 +188,10 @@ async fn test_install_from_github_http_500_returns_error() {
     let mut installer = SkillInstaller::new(&dir.path().to_string_lossy());
     installer.set_github_base_url(&server.uri());
 
-    let err = installer.install_from_github("owner/repo").await.unwrap_err();
+    let err = installer
+        .install_from_github("owner/repo")
+        .await
+        .unwrap_err();
     assert!(format!("{}", err).contains("HTTP 500"), "got: {}", err);
 }
 
@@ -196,13 +208,12 @@ async fn test_install_from_github_security_blocked_cleans_up() {
     let mut installer = SkillInstaller::new(&dir.path().to_string_lossy());
     installer.set_github_base_url(&server.uri());
 
-    let err = installer.install_from_github("owner/repo").await.unwrap_err();
+    let err = installer
+        .install_from_github("owner/repo")
+        .await
+        .unwrap_err();
     let msg = format!("{}", err);
-    assert!(
-        msg.contains("blocked by security check"),
-        "got: {}",
-        msg
-    );
+    assert!(msg.contains("blocked by security check"), "got: {}", msg);
 
     // 拦截后目录必须被清理。
     let skill_dir = dir.path().join("skills").join("repo");
@@ -235,7 +246,11 @@ async fn test_install_from_github_low_quality_still_succeeds() {
     let check = installer.last_security_check().unwrap();
     assert!(!check.blocked);
     let quality = check.quality_score.expect("quality score always present");
-    assert!(quality.overall < 40.0, "expected low quality, got {}", quality.overall);
+    assert!(
+        quality.overall < 40.0,
+        "expected low quality, got {}",
+        quality.overall
+    );
 }
 
 #[tokio::test]
@@ -254,7 +269,11 @@ async fn test_install_from_github_no_origin_tracking_file() {
     installer.install_from_github("owner/repo").await.unwrap();
 
     // GitHub 直装路径不写 origin tracking（只有 registry 路径写）。
-    let origin = dir.path().join("skills").join("repo").join(".skill-origin.json");
+    let origin = dir
+        .path()
+        .join("skills")
+        .join("repo")
+        .join(".skill-origin.json");
     assert!(!origin.exists());
     assert!(installer.get_origin_tracking("repo").is_err());
 }
@@ -334,18 +353,15 @@ async fn test_install_registry_malware_blocked_removes_dir() {
 #[tokio::test]
 async fn test_install_registry_security_check_blocked_removes_dir() {
     let dir = tempfile::tempdir().unwrap();
-    let installer = installer_with_registry(dir.path(), FileWritingRegistry::new(DESTRUCTIVE_CONTENT));
+    let installer =
+        installer_with_registry(dir.path(), FileWritingRegistry::new(DESTRUCTIVE_CONTENT));
 
     let err = installer
         .install("filewriter", "evil-skill", "1.0")
         .await
         .unwrap_err();
     let msg = format!("{}", err);
-    assert!(
-        msg.contains("blocked by security check"),
-        "got: {}",
-        msg
-    );
+    assert!(msg.contains("blocked by security check"), "got: {}", msg);
 
     // 拦截后目录清理 + 检查结果记录。
     let skill_dir = dir.path().join("skills").join("evil-skill");
@@ -417,7 +433,10 @@ async fn test_install_registry_not_found_with_populated_manager() {
     let installer = installer_with_registry(dir.path(), FileWritingRegistry::new(CLEAN_CONTENT));
 
     // manager 里只有 "filewriter"，请求其它名字 → NotFound。
-    let err = installer.install("other", "some-skill", "1.0").await.unwrap_err();
+    let err = installer
+        .install("other", "some-skill", "1.0")
+        .await
+        .unwrap_err();
     assert!(
         format!("{}", err).contains("registry 'other' not found"),
         "got: {}",
@@ -435,7 +454,13 @@ async fn test_install_from_registry_error_only_signature() {
         .install_from_registry("filewriter", "compat-skill", "1.0")
         .await;
     assert!(result.is_ok());
-    assert!(dir.path().join("skills").join("compat-skill").join("SKILL.md").exists());
+    assert!(
+        dir.path()
+            .join("skills")
+            .join("compat-skill")
+            .join("SKILL.md")
+            .exists()
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -467,17 +492,24 @@ fn test_set_last_security_check_roundtrip() {
 #[tokio::test]
 async fn test_install_registry_lint_not_passed_warns_but_installs() {
     let dir = tempfile::tempdir().unwrap();
-    let installer = installer_with_registry(
-        dir.path(),
-        FileWritingRegistry::new(LINT_FAIL_CONTENT),
-    );
+    let installer =
+        installer_with_registry(dir.path(), FileWritingRegistry::new(LINT_FAIL_CONTENT));
 
-    let result = installer.install("filewriter", "lint-fail-skill", "1.0").await;
+    let result = installer
+        .install("filewriter", "lint-fail-skill", "1.0")
+        .await;
     assert!(result.is_ok(), "got: {:?}", result.err());
 
     // Directory must NOT have been cleaned up (only blocked paths remove it).
-    let skill_md = dir.path().join("skills").join("lint-fail-skill").join("SKILL.md");
-    assert!(skill_md.exists(), "skill must stay installed after lint warning");
+    let skill_md = dir
+        .path()
+        .join("skills")
+        .join("lint-fail-skill")
+        .join("SKILL.md");
+    assert!(
+        skill_md.exists(),
+        "skill must stay installed after lint warning"
+    );
 
     let check = installer.last_security_check().unwrap();
     assert!(!check.blocked, "0.55 >= 0.3 must not block");
@@ -502,7 +534,10 @@ async fn test_install_from_github_single_warning_still_succeeds() {
     let mut installer = SkillInstaller::new(&dir.path().to_string_lossy());
     installer.set_github_base_url(&server.uri());
 
-    installer.install_from_github("owner/warn-repo").await.unwrap();
+    installer
+        .install_from_github("owner/warn-repo")
+        .await
+        .unwrap();
 
     let skill_md = dir.path().join("skills").join("warn-repo").join("SKILL.md");
     assert!(skill_md.exists(), "warned skill must still install");
@@ -536,11 +571,7 @@ async fn test_list_available_skills_from_registry_maps_fields() {
         fn name(&self) -> &str {
             "searchstub"
         }
-        async fn search(
-            &self,
-            _query: &str,
-            _limit: usize,
-        ) -> Result<Vec<SkillSearchResult>> {
+        async fn search(&self, _query: &str, _limit: usize) -> Result<Vec<SkillSearchResult>> {
             Ok(vec![
                 SkillSearchResult {
                     score: 0.9,

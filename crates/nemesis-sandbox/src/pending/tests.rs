@@ -53,14 +53,31 @@ fn make_box(tmp: &TempDir) -> std::path::PathBuf {
     std::fs::create_dir_all(box_root.join("user").join("current").join("ws")).unwrap();
     std::fs::create_dir_all(box_root.join("drive").join("C").join("Windows")).unwrap();
     std::fs::create_dir_all(box_root.join("drive").join("C").join("proj").join("src")).unwrap();
-    std::fs::write(box_root.join("user").join("current").join("ws").join("a.txt"), b"aaa").unwrap();
     std::fs::write(
-        box_root.join("drive").join("C").join("Windows").join("evil.dll"),
+        box_root
+            .join("user")
+            .join("current")
+            .join("ws")
+            .join("a.txt"),
+        b"aaa",
+    )
+    .unwrap();
+    std::fs::write(
+        box_root
+            .join("drive")
+            .join("C")
+            .join("Windows")
+            .join("evil.dll"),
         b"pwn",
     )
     .unwrap();
     std::fs::write(
-        box_root.join("drive").join("C").join("proj").join("src").join("m.rs"),
+        box_root
+            .join("drive")
+            .join("C")
+            .join("proj")
+            .join("src")
+            .join("m.rs"),
         b"fn main(){}",
     )
     .unwrap();
@@ -82,21 +99,50 @@ fn real_path_for_box_maps_user_drive_and_rejects_metadata() {
 
     // user/<marker>/<rest> → %USERPROFILE%\<rest>
     assert_eq!(
-        real_path_for_box(&box_root.join("user").join("current").join("ws").join("a.txt"), &box_root, up),
+        real_path_for_box(
+            &box_root
+                .join("user")
+                .join("current")
+                .join("ws")
+                .join("a.txt"),
+            &box_root,
+            up
+        ),
         Some(up.join("ws").join("a.txt"))
     );
     // drive/<L>/<rest> → <L>:\<rest>
     assert_eq!(
-        real_path_for_box(&box_root.join("drive").join("C").join("proj").join("src").join("m.rs"), &box_root, up),
+        real_path_for_box(
+            &box_root
+                .join("drive")
+                .join("C")
+                .join("proj")
+                .join("src")
+                .join("m.rs"),
+            &box_root,
+            up
+        ),
         Some(PathBuf::from(r"C:\proj\src\m.rs"))
     );
     // 盒元数据 → None。
-    assert_eq!(real_path_for_box(&box_root.join("RegHive"), &box_root, up), None);
-    assert_eq!(real_path_for_box(&box_root.join("DONT-USE.TXT"), &box_root, up), None);
+    assert_eq!(
+        real_path_for_box(&box_root.join("RegHive"), &box_root, up),
+        None
+    );
+    assert_eq!(
+        real_path_for_box(&box_root.join("DONT-USE.TXT"), &box_root, up),
+        None
+    );
     // 前缀不在 box_root 内 → None。
-    assert_eq!(real_path_for_box(Path::new(r"C:\elsewhere\a"), &box_root, up), None);
+    assert_eq!(
+        real_path_for_box(Path::new(r"C:\elsewhere\a"), &box_root, up),
+        None
+    );
     // user 下没有 marker 段 → None。
-    assert_eq!(real_path_for_box(&box_root.join("user"), &box_root, up), None);
+    assert_eq!(
+        real_path_for_box(&box_root.join("user"), &box_root, up),
+        None
+    );
 }
 
 #[test]
@@ -105,16 +151,29 @@ fn enumerate_box_walks_all_mirrored_files_and_skips_metadata() {
     let box_root = make_box(&tmp);
     let up = Path::new(r"C:\Users\zoo");
     let files = enumerate_box(&box_root, up).unwrap();
-    let paths: Vec<String> = files.iter().map(|f| f.real_path.to_string_lossy().to_string()).collect();
+    let paths: Vec<String> = files
+        .iter()
+        .map(|f| f.real_path.to_string_lossy().to_string())
+        .collect();
     assert_eq!(files.len(), 3, "{paths:?}");
     assert!(paths.iter().any(|p| p.ends_with("a.txt")));
-    assert!(paths.iter().any(|p| p.contains("evil.dll")), "enumerate 不过滤（过滤在 pending_workspace）");
+    assert!(
+        paths.iter().any(|p| p.contains("evil.dll")),
+        "enumerate 不过滤（过滤在 pending_workspace）"
+    );
     assert!(paths.iter().any(|p| p.contains("m.rs")));
     // 元数据绝不出现。
     assert!(!paths.iter().any(|p| p.contains("RegHive")));
     assert!(!paths.iter().any(|p| p.contains("DONT-USE")));
     // size 记录了。
-    assert_eq!(files.iter().find(|f| f.real_path.ends_with("a.txt")).unwrap().size, 3);
+    assert_eq!(
+        files
+            .iter()
+            .find(|f| f.real_path.ends_with("a.txt"))
+            .unwrap()
+            .size,
+        3
+    );
 }
 
 #[test]
@@ -149,8 +208,22 @@ fn pending_workspace_results_sorted_by_real_path() {
         std::fs::create_dir_all(p.parent().unwrap()).unwrap();
         std::fs::write(&p, b"x").unwrap();
     }
-    let files = pending_workspace(&box_root, &PathBuf::from(r"D:\ws"), Path::new(r"C:\Users\x")).unwrap();
-    let names: Vec<String> = files.iter().map(|f| f.real_path.file_name().unwrap().to_string_lossy().to_string()).collect();
+    let files = pending_workspace(
+        &box_root,
+        &PathBuf::from(r"D:\ws"),
+        Path::new(r"C:\Users\x"),
+    )
+    .unwrap();
+    let names: Vec<String> = files
+        .iter()
+        .map(|f| {
+            f.real_path
+                .file_name()
+                .unwrap()
+                .to_string_lossy()
+                .to_string()
+        })
+        .collect();
     assert_eq!(names, vec!["a.txt", "b.txt", "c.txt"]);
 }
 
@@ -160,7 +233,11 @@ fn commit_file_copies_content_and_creates_parents() {
     let src = tmp.path().join("box_file.bin");
     std::fs::write(&src, b"payload-123").unwrap();
     let dest = tmp.path().join("deep").join("nested").join("out.bin");
-    let pf = PendingFile { box_path: src, real_path: dest.clone(), size: 11 };
+    let pf = PendingFile {
+        box_path: src,
+        real_path: dest.clone(),
+        size: 11,
+    };
     let n = commit_file(&pf).unwrap();
     assert_eq!(n, 11);
     assert_eq!(std::fs::read(&dest).unwrap(), b"payload-123");
@@ -234,13 +311,29 @@ fn walk_permission_denied_dir_is_skipped_not_fatal() {
     let mut out = Vec::new();
     let r = walk(tmp.path(), tmp.path(), Path::new(r"C:\Users\x"), &mut out);
     // 清理：owner 恒可改 DACL——移除 deny ACE 再删
-    let _ = std::process::Command::new("icacls").arg(&denied).args(["/remove:d", "*S-1-1-0"]).output();
-    let _ = std::process::Command::new("icacls").arg(&denied).args(["/reset"]).output();
+    let _ = std::process::Command::new("icacls")
+        .arg(&denied)
+        .args(["/remove:d", "*S-1-1-0"])
+        .output();
+    let _ = std::process::Command::new("icacls")
+        .arg(&denied)
+        .args(["/reset"])
+        .output();
     let _ = std::fs::remove_dir_all(&denied);
 
-    assert!(r.is_ok(), "PermissionDenied 目录必须跳过而非 Err: {:?}", r.map_err(|e| format!("{e:#}")));
-    assert!(out.iter().any(|f| f.box_path.ends_with("ok.txt")), "兄弟文件仍要枚举到");
-    assert!(!out.iter().any(|f| f.box_path.ends_with("inside.txt")), "deny 目录内的文件不出现");
+    assert!(
+        r.is_ok(),
+        "PermissionDenied 目录必须跳过而非 Err: {:?}",
+        r.map_err(|e| format!("{e:#}"))
+    );
+    assert!(
+        out.iter().any(|f| f.box_path.ends_with("ok.txt")),
+        "兄弟文件仍要枚举到"
+    );
+    assert!(
+        !out.iter().any(|f| f.box_path.ends_with("inside.txt")),
+        "deny 目录内的文件不出现"
+    );
 }
 
 #[test]
@@ -282,6 +375,10 @@ fn delete_box_contents_fake_start_exe_all_three_outcomes() {
     assert!(msg.contains("delete_sandbox failed"), "{msg}");
     assert!(msg.contains("start-exe-noise"), "stderr 必须带回: {msg}");
     // ③ Start.exe 缺失 → spawn Err 带 context
-    let err2 = delete_box_contents(&tmp.path().join("missing").join("Start.exe"), "NemesisBox").unwrap_err();
-    assert!(format!("{err2:#}").contains("spawn Start.exe delete_sandbox"), "{err2:#}");
+    let err2 = delete_box_contents(&tmp.path().join("missing").join("Start.exe"), "NemesisBox")
+        .unwrap_err();
+    assert!(
+        format!("{err2:#}").contains("spawn Start.exe delete_sandbox"),
+        "{err2:#}"
+    );
 }

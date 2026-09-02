@@ -48,7 +48,10 @@ async fn fetch_expected_sha256_parses_matching_line_case_insensitive() {
     let h = fetch_expected_sha256(&url, "Sandboxie-Classic-1.0.exe")
         .await
         .unwrap();
-    assert_eq!(h, "aaaa1111bbbb2222cccc3333dddd4444eeee5555ffff6666aaaa7777bbbb8888");
+    assert_eq!(
+        h,
+        "aaaa1111bbbb2222cccc3333dddd4444eeee5555ffff6666aaaa7777bbbb8888"
+    );
 }
 
 #[tokio::test]
@@ -76,7 +79,9 @@ async fn download_and_verify_matching_hash_writes_file() {
 
     let dir = tempfile::tempdir().unwrap();
     let dest = dir.path().join("nested").join("inst.exe");
-    download_and_verify(&url, Some(&expected), &dest).await.unwrap();
+    download_and_verify(&url, Some(&expected), &dest)
+        .await
+        .unwrap();
     assert_eq!(std::fs::read(&dest).unwrap(), b"sandboxie-installer-bytes");
 }
 

@@ -624,9 +624,7 @@ async fn test_w4c_discover_tools_success_and_execute_matrix() {
     assert!(def.description.contains("[MCP:Fake Srv]"));
 
     // 正常调用 → text
-    let r = tools[0]
-        .execute(serde_json::json!({"text": "hi"}))
-        .await;
+    let r = tools[0].execute(serde_json::json!({"text": "hi"})).await;
     assert!(!r.is_error);
     assert_eq!(r.content, "called");
 
@@ -723,7 +721,11 @@ time.sleep(30)
         Err(e) => e,
     };
     assert!(err.contains("hang-srv"), "unexpected: {}", err);
-    assert!(err.contains("initialization timed out"), "unexpected: {}", err);
+    assert!(
+        err.contains("initialization timed out"),
+        "unexpected: {}",
+        err
+    );
 }
 
 #[tokio::test]
@@ -754,13 +756,8 @@ async fn test_w4c_discover_server_metadata_timeout_hint() {
         return;
     }
     let script = "import time\ntime.sleep(30)\n";
-    let err = match discover_server_metadata(
-        "python",
-        vec!["-c".into(), script.into()],
-        vec![],
-        1,
-    )
-    .await
+    let err = match discover_server_metadata("python", vec!["-c".into(), script.into()], vec![], 1)
+        .await
     {
         Ok(_) => panic!("expected error"),
         Err(e) => e,
@@ -795,7 +792,9 @@ async fn test_w4c_discover_server_metadata_http_success() {
         .await;
     Mock::given(method("POST"))
         .and(path("/mcp"))
-        .and(body_partial_json(serde_json::json!({"method": "resources/list"})))
+        .and(body_partial_json(
+            serde_json::json!({"method": "resources/list"}),
+        ))
         .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
             "jsonrpc": "2.0", "id": 3, "result": {"resources": [{"uri": "u://1", "name": "r1"}]}
         })))
@@ -803,7 +802,9 @@ async fn test_w4c_discover_server_metadata_http_success() {
         .await;
     Mock::given(method("POST"))
         .and(path("/mcp"))
-        .and(body_partial_json(serde_json::json!({"method": "prompts/list"})))
+        .and(body_partial_json(
+            serde_json::json!({"method": "prompts/list"}),
+        ))
         .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
             "jsonrpc": "2.0", "id": 4, "result": {"prompts": [{"name": "pp", "description": "pd"}]}
         })))
@@ -828,9 +829,11 @@ async fn test_w4c_discover_server_metadata_http_timeout() {
     let server = MockServer::start().await;
     Mock::given(method("POST"))
         .and(path("/mcp"))
-        .respond_with(ResponseTemplate::new(200).set_body_json(
-            serde_json::json!({"jsonrpc":"2.0","id":1,"result":{}}),
-        ).set_delay(Duration::from_secs(5)))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .set_body_json(serde_json::json!({"jsonrpc":"2.0","id":1,"result":{}}))
+                .set_delay(Duration::from_secs(5)),
+        )
         .mount(&server)
         .await;
 
@@ -937,7 +940,9 @@ async fn test_s1_discover_server_metadata_http_list_failures() {
     // catch-all 202 (for the fire-and-forget notifications/initialized POST).
     Mock::given(method("POST"))
         .and(path("/mcp"))
-        .and(body_partial_json(serde_json::json!({"method": "initialize"})))
+        .and(body_partial_json(
+            serde_json::json!({"method": "initialize"}),
+        ))
         .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
             "jsonrpc": "2.0", "id": 1, "result": {
                 "protocolVersion": "2024-11-05", "capabilities": {},

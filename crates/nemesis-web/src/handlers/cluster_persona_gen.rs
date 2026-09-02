@@ -304,8 +304,9 @@ fn persona_tool_def() -> ToolDefinition {
         tool_type: "function".to_string(),
         function: ToolFunctionDefinition {
             name: "emit_cluster_persona".to_string(),
-            description: "基于信息单元清单创作集群节点人格包，必须调用此工具返回结果，不要输出其它内容。"
-                .to_string(),
+            description:
+                "基于信息单元清单创作集群节点人格包，必须调用此工具返回结果，不要输出其它内容。"
+                    .to_string(),
             parameters: persona_tool_schema(),
         },
     }
@@ -316,8 +317,9 @@ fn units_tool_def() -> ToolDefinition {
         tool_type: "function".to_string(),
         function: ToolFunctionDefinition {
             name: "extract_information_units".to_string(),
-            description: "把输入穷尽拆成信息单元 + 段落覆盖统计，必须调用此工具返回结果，不要输出其它内容。"
-                .to_string(),
+            description:
+                "把输入穷尽拆成信息单元 + 段落覆盖统计，必须调用此工具返回结果，不要输出其它内容。"
+                    .to_string(),
             parameters: units_tool_schema(),
         },
     }
@@ -430,14 +432,14 @@ fn unwrap_single_key(v: serde_json::Value) -> serde_json::Value {
     // the single inner object actually looks like one of our schemas.
     if let Some(obj) = v.as_object()
         && obj.len() == 1
-            && let Some(inner) = obj.values().next()
-                && inner.is_object()
-                    && (inner.get("identity_md").is_some()
-                        || inner.get("units").is_some()
-                        || inner.get("entries").is_some())
-                {
-                    return inner.clone();
-                }
+        && let Some(inner) = obj.values().next()
+        && inner.is_object()
+        && (inner.get("identity_md").is_some()
+            || inner.get("units").is_some()
+            || inner.get("entries").is_some())
+    {
+        return inner.clone();
+    }
     v
 }
 
@@ -474,14 +476,16 @@ fn extract_response_json(resp: &LLMResponse) -> Result<serde_json::Value, String
         if let Some(func) = &tc.function {
             let args = func.arguments.trim();
             if !args.is_empty()
-                && let Ok(v) = serde_json::from_str::<serde_json::Value>(args) {
-                    return Ok(unwrap_single_key(v));
-                }
-        }
-        if let Some(map) = &tc.arguments
-            && let Ok(v) = serde_json::to_value(map) {
+                && let Ok(v) = serde_json::from_str::<serde_json::Value>(args)
+            {
                 return Ok(unwrap_single_key(v));
             }
+        }
+        if let Some(map) = &tc.arguments
+            && let Ok(v) = serde_json::to_value(map)
+        {
+            return Ok(unwrap_single_key(v));
+        }
     }
     let cleaned = strip_code_fence(&resp.content);
     let candidate = extract_json_span(&cleaned).unwrap_or(cleaned.as_str());
@@ -598,7 +602,8 @@ fn build_coverage_report(
             }
         } else {
             // 程序未判（无 key_entities 的 target unit）→ 信审计，审计也没有则 Suspect。
-            a.map(|ae| ae.status.clone()).unwrap_or(CoverageStatus::Suspect)
+            a.map(|ae| ae.status.clone())
+                .unwrap_or(CoverageStatus::Suspect)
         };
         let reason = match &status {
             CoverageStatus::Missing => p.and_then(|pe| pe.reason.clone()),
@@ -706,7 +711,8 @@ async fn author_persona(
 ) -> Result<PersonaPackage, String> {
     let user = format!(
         "【原始输入】\n{clean}\n\n【信息单元清单】\n{}",
-        serde_json::to_string_pretty(units).unwrap_or_else(|_| serde_json::to_string(units).unwrap_or_default())
+        serde_json::to_string_pretty(units)
+            .unwrap_or_else(|_| serde_json::to_string(units).unwrap_or_default())
     );
     let v = chat_json(
         provider,
@@ -732,14 +738,27 @@ async fn audit_coverage(
         serde_json::to_string_pretty(&units.units).unwrap_or_default(),
         pkg.identity_md,
         pkg.soul_md,
-        if pkg.expertise_md.is_empty() { "（无）" } else { &pkg.expertise_md }
+        if pkg.expertise_md.is_empty() {
+            "（无）"
+        } else {
+            &pkg.expertise_md
+        }
     );
-    let v = chat_json(provider, model, &audit_prompt(), user, audit_tool_def(), 0.2).await?;
+    let v = chat_json(
+        provider,
+        model,
+        &audit_prompt(),
+        user,
+        audit_tool_def(),
+        0.2,
+    )
+    .await?;
     #[derive(Deserialize)]
     struct AuditOut {
         entries: Vec<CoverageEntry>,
     }
-    let out: AuditOut = serde_json::from_value(v).map_err(|e| format!("解析审计结果失败: {}", e))?;
+    let out: AuditOut =
+        serde_json::from_value(v).map_err(|e| format!("解析审计结果失败: {}", e))?;
     Ok(out.entries)
 }
 
@@ -830,9 +849,7 @@ pub async fn generate_persona(
             .filter(|e| matches!(e.status, CoverageStatus::Missing))
             .map(|e| {
                 let u = units.units.iter().find(|u| u.id == e.unit_id);
-                let ents = u
-                    .map(|u| u.key_entities.join("/"))
-                    .unwrap_or_default();
+                let ents = u.map(|u| u.key_entities.join("/")).unwrap_or_default();
                 format!(
                     "- unit {} (→{}): {}{}",
                     e.unit_id,

@@ -1221,12 +1221,19 @@ async fn webserver_all_setters_assemble() {
     ))));
 
     #[cfg(feature = "cluster")]
-    server.set_cluster(std::sync::Arc::new(nemesis_cluster::cluster::Cluster::with_workspace(
-        nemesis_cluster::types::ClusterConfig::default(),
-        dir.path().to_path_buf(),
-    )));
+    server.set_cluster(std::sync::Arc::new(
+        nemesis_cluster::cluster::Cluster::with_workspace(
+            nemesis_cluster::types::ClusterConfig::default(),
+            dir.path().to_path_buf(),
+        ),
+    ));
 
-    server.set_cluster_log_dir(dir.path().join("cluster_logs").to_string_lossy().to_string());
+    server.set_cluster_log_dir(
+        dir.path()
+            .join("cluster_logs")
+            .to_string_lossy()
+            .to_string(),
+    );
 
     #[cfg(feature = "workflow")]
     {
@@ -1276,9 +1283,7 @@ async fn webserver_all_setters_assemble() {
     server.set_internal_cmd_tx(tx);
     server.set_estop(std::sync::Arc::new(nemesis_agent::estop::EstopState::new()));
     server.set_cron(std::sync::Arc::new(std::sync::Mutex::new(
-        nemesis_cron::CronService::new(
-            dir.path().join("cron.json").to_string_lossy().as_ref(),
-        ),
+        nemesis_cron::CronService::new(dir.path().join("cron.json").to_string_lossy().as_ref()),
     )));
     server.set_conv_router(std::sync::Arc::new(crate::conv_router::ConvRouter::new()));
 

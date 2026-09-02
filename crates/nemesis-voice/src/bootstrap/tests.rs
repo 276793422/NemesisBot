@@ -37,7 +37,10 @@ fn required_lib_names_lists_windows_runtime_dlls() {
     let libs = required_lib_names();
     assert!(libs.contains(&"sherpa-onnx-c-api.dll"), "{libs:?}");
     assert!(libs.contains(&"onnxruntime.dll"), "{libs:?}");
-    assert!(libs.contains(&"onnxruntime_providers_shared.dll"), "{libs:?}");
+    assert!(
+        libs.contains(&"onnxruntime_providers_shared.dll"),
+        "{libs:?}"
+    );
 }
 
 #[test]
@@ -131,12 +134,18 @@ fn run_in_dir_existing_config_is_not_overwritten() {
     let lib_dir = dir_with_all_libs(&tmp.path().join("libs"));
     let config_path = tmp.path().join("config.toml");
     // 预置自定义 config（合法 TOML——run_in_dir 会 load_or_default 读它取 proxy）
-    std::fs::write(&config_path, "# custom marker config\n[models]\nauto_download = false\n")
-        .unwrap();
+    std::fs::write(
+        &config_path,
+        "# custom marker config\n[models]\nauto_download = false\n",
+    )
+    .unwrap();
 
     let _ = run_in_dir(&config_path, &lib_dir);
     let after = std::fs::read_to_string(&config_path).unwrap();
-    assert!(after.contains("# custom marker config"), "config overwritten: {after}");
+    assert!(
+        after.contains("# custom marker config"),
+        "config overwritten: {after}"
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -246,7 +255,10 @@ fn find_lib_dir_no_lib_anywhere_bails() {
 fn find_lib_dir_lib_dir_without_target_libs_is_skipped() {
     // nested lib/ 存在但不含任何目标库 → 不采纳，继续扫 → bail
     let tmp = tempfile::tempdir().unwrap();
-    touch(&tmp.path().join("pkg").join("lib").join("unrelated.dll"), b"x");
+    touch(
+        &tmp.path().join("pkg").join("lib").join("unrelated.dll"),
+        b"x",
+    );
     let err = format!("{:#}", find_lib_dir(tmp.path()).unwrap_err());
     assert!(err.contains("Could not find lib/"), "{err}");
 }
@@ -287,7 +299,10 @@ fn copy_libs_from_missing_lib_bails_with_name() {
     let dst = tmp.path().join("dst");
     std::fs::create_dir_all(&dst).unwrap();
     let err = format!("{:#}", copy_libs_from(&src, &dst).unwrap_err());
-    assert!(err.contains("Required library not found in archive"), "{err}");
+    assert!(
+        err.contains("Required library not found in archive"),
+        "{err}"
+    );
     assert!(err.contains(REQUIRED_LIBS[1]), "{err}");
 }
 

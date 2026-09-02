@@ -42,11 +42,11 @@ use std::path::Path;
 use std::sync::Mutex as StdMutex;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
 use test_harness::mock_ai::{MockAiReply, MockAiServer};
 use test_harness::{
-    graceful_shutdown_gateway, http_client, resolve_nemesisbot_bin, ManagedProcess, TestWorkspace,
+    ManagedProcess, TestWorkspace, graceful_shutdown_gateway, http_client, resolve_nemesisbot_bin,
 };
 
 // ---------------------------------------------------------------------------
@@ -98,9 +98,8 @@ fn probe_cluster_port_pair() -> (u16, u16) {
     let mut claimed = CLAIMED_CLUSTER_PORTS.lock().unwrap();
     // 起点混合 pid 与时间：同进程内多个测试串行调用时步进序列错开，
     // 时间项保证跨二进制运行不固定撞同一个起点。
-    let start = 20000u32 + ((std::process::id() as u32).wrapping_mul(2654435761)
-        ^ (now_ms() as u32))
-        % 25000;
+    let start = 20000u32
+        + ((std::process::id() as u32).wrapping_mul(2654435761) ^ (now_ms() as u32)) % 25000;
     for i in 0..25000 {
         let udp = (start + i) % 25000 + 20000; // 始终落在 [20000, 45000)
         let udp = udp as u16;
@@ -159,8 +158,7 @@ fn live_gateway_config(
     cluster_master_on: bool,
     security_on: bool,
 ) -> Value {
-    let mut cfg: Value =
-        serde_json::from_str(crate::CONFIG_DEFAULT).expect("parse CONFIG_DEFAULT");
+    let mut cfg: Value = serde_json::from_str(crate::CONFIG_DEFAULT).expect("parse CONFIG_DEFAULT");
     cfg["channels"]["web"]["host"] = json!("127.0.0.1");
     cfg["channels"]["web"]["port"] = json!(0);
     cfg["channels"]["web"]["auth_token"] = json!(auth_token);
@@ -169,8 +167,7 @@ fn live_gateway_config(
     cfg["gateway"]["host"] = json!("127.0.0.1");
     cfg["gateway"]["port"] = json!(0);
     cfg["agents"]["defaults"]["llm"] = json!(alias);
-    cfg["agents"]["defaults"]["workspace"] =
-        json!(workspace_abs.to_string_lossy().to_string());
+    cfg["agents"]["defaults"]["workspace"] = json!(workspace_abs.to_string_lossy().to_string());
     // 模型必须带 provider 前缀（裸名会被解析成 openai → Codex /responses）。
     cfg["model_list"] = json!([{
         "model_name": alias,
@@ -197,12 +194,16 @@ fn install_home_config(home: &Path, cfg: &Value) {
     std::fs::write(home.join("config.json"), cfg.to_string()).expect("write config.json");
     std::fs::create_dir_all(home.join("config")).expect("mkdir home/config");
     std::fs::write(
-        home.join("workspace").join("config").join("config.skills.json"),
+        home.join("workspace")
+            .join("config")
+            .join("config.skills.json"),
         "{}",
     )
     .expect("seed skills cfg");
     std::fs::write(
-        home.join("workspace").join("config").join("config.forge.json"),
+        home.join("workspace")
+            .join("config")
+            .join("config.forge.json"),
         "{}",
     )
     .expect("seed forge cfg");
@@ -259,7 +260,8 @@ fn seed_cron_store(home: &Path, jobs: Vec<Value>) {
 
 /// 读回 cron store（触发完成状态断言锚点）。
 fn read_cron_store(home: &Path) -> Option<Value> {
-    let txt = std::fs::read_to_string(home.join("workspace").join("cron").join("jobs.json")).ok()?;
+    let txt =
+        std::fs::read_to_string(home.join("workspace").join("cron").join("jobs.json")).ok()?;
     serde_json::from_str(&txt).ok()
 }
 
@@ -276,10 +278,12 @@ async fn wait_for_web_port(home: &Path) -> u16 {
     loop {
         if let Ok(txt) = std::fs::read_to_string(&state)
             && let Ok(v) = serde_json::from_str::<Value>(&txt)
-                && let Some(p) = v.get("web_port").and_then(|x| x.as_u64())
-                    && p > 0 && p <= u16::MAX as u64 {
-                        return p as u16;
-                    }
+            && let Some(p) = v.get("web_port").and_then(|x| x.as_u64())
+            && p > 0
+            && p <= u16::MAX as u64
+        {
+            return p as u16;
+        }
         assert!(
             Instant::now() < deadline,
             "gateway did not bind web within {}s (state={:?})",
@@ -403,7 +407,8 @@ fn diag_home(home: &Path) -> String {
 }
 
 /// 递归扫描目录下任意文本文件是否包含 needle（二进制/不可读文件跳过）。
-fn tree_contains(dir: &Path, needle: &str) -> bool {    let Ok(entries) = std::fs::read_dir(dir) else {
+fn tree_contains(dir: &Path, needle: &str) -> bool {
+    let Ok(entries) = std::fs::read_dir(dir) else {
         return false;
     };
     for entry in entries.flatten() {
@@ -430,7 +435,10 @@ fn tree_contains(dir: &Path, needle: &str) -> bool {    let Ok(entries) = std::f
 async fn graceful_teardown(mut gw: ManagedProcess, web_port: u16, token: &str, label: &str) {
     match graceful_shutdown_gateway(web_port, token).await {
         Ok(()) => {
-            if let Err(e) = gw.wait_for_exit(Duration::from_secs(EXIT_TIMEOUT_SECS)).await {
+            if let Err(e) = gw
+                .wait_for_exit(Duration::from_secs(EXIT_TIMEOUT_SECS))
+                .await
+            {
                 eprintln!("[r9-live] {label}: graceful exit timeout ({e}); killing (profraw lost)");
                 gw.kill().await;
             }
@@ -505,8 +513,7 @@ async fn r9_live_cron_on_job_both_branches_fire_and_mark_store() {
                 .find(|j| j.get("id").and_then(|v| v.as_str()) == Some(id))
                 .and_then(|j| j.pointer("/state/last_status").cloned())
         };
-        st("r9cronjja").and_then(|v| v.as_str().map(str::to_owned))
-            == Some("ok".into())
+        st("r9cronjja").and_then(|v| v.as_str().map(str::to_owned)) == Some("ok".into())
             && st("r9cronjjb").and_then(|v| v.as_str().map(str::to_owned)) == Some("ok".into())
     })
     .await;
@@ -527,7 +534,10 @@ async fn r9_live_cron_on_job_both_branches_fire_and_mark_store() {
 
     // --- 分支 B 断言：store 状态机收尾（enabled=false + next_run=None + history）---
     let store = read_cron_store(&home).expect("cron store readable after fire");
-    let jobs = store.get("jobs").and_then(|v| v.as_array()).expect("jobs arr");
+    let jobs = store
+        .get("jobs")
+        .and_then(|v| v.as_array())
+        .expect("jobs arr");
     let jb = jobs
         .iter()
         .find(|j| j.get("id").and_then(|v| v.as_str()) == Some("r9cronjjb"))
@@ -596,7 +606,9 @@ fn install_cluster_app_config(home: &Path, udp: u16, rpc: u16, token: &str) {
         "token": token,
     });
     std::fs::write(
-        home.join("workspace").join("config").join("config.cluster.json"),
+        home.join("workspace")
+            .join("config")
+            .join("config.cluster.json"),
         serde_json::to_string_pretty(&cfg).expect("ser cluster cfg"),
     )
     .expect("write config.cluster.json");
@@ -692,11 +704,18 @@ async fn r9_live_dual_node_peer_chat_full_chain_with_cluster_rpc_tool() {
     // —— 全链断言：A 侧续行请求的信封里嵌着 B 的 canned 回复 ——
     let logs_a = home_a.join("workspace").join("logs");
     let logs_b = home_b.join("workspace").join("logs");
-    wait_until_diag(150, "round-trip marker back on A", || {
-        tree_contains(&logs_a, &b_reply)
-    }, || {
-        format!("home_a={}\nhome_b={}", diag_home(&home_a), diag_home(&home_b))
-    })
+    wait_until_diag(
+        150,
+        "round-trip marker back on A",
+        || tree_contains(&logs_a, &b_reply),
+        || {
+            format!(
+                "home_a={}\nhome_b={}",
+                diag_home(&home_a),
+                diag_home(&home_b)
+            )
+        },
+    )
     .await;
     wait_until(30, "B side processed the peer message", || {
         tree_contains(&logs_b, &peer_msg)
@@ -785,10 +804,8 @@ async fn r9_live_workflow_message_trigger_cascades_to_event_trigger() {
     let tag = unique_tag("wf");
     let trigger_msg = format!("hello R9WFBT{tag} cascade please");
 
-    let mock = MockAiServer::start(vec![MockAiReply::Text(format!(
-        "R9-WF-AGENT-ECHO {tag}"
-    ))])
-    .expect("mock ai");
+    let mock = MockAiServer::start(vec![MockAiReply::Text(format!("R9-WF-AGENT-ECHO {tag}"))])
+        .expect("mock ai");
 
     let cfg = live_gateway_config(
         &home.join("workspace"),
@@ -867,7 +884,8 @@ async fn r9_live_workflow_message_trigger_cascades_to_event_trigger() {
         };
         entries.flatten().any(|e| {
             let name = e.file_name().to_string_lossy().to_string();
-            name.starts_with("wf-r9-msg_") && name.ends_with(".jsonl")
+            name.starts_with("wf-r9-msg_")
+                && name.ends_with(".jsonl")
                 && std::fs::read_to_string(e.path())
                     .map(|t| t.contains("saw:"))
                     .unwrap_or(false)
@@ -882,7 +900,8 @@ async fn r9_live_workflow_message_trigger_cascades_to_event_trigger() {
         };
         entries.flatten().any(|e| {
             let name = e.file_name().to_string_lossy().to_string();
-            name.starts_with("wf-r9-event_") && name.ends_with(".jsonl")
+            name.starts_with("wf-r9-event_")
+                && name.ends_with(".jsonl")
                 && std::fs::read_to_string(e.path())
                     .map(|t| t.contains("evt-cascade"))
                     .unwrap_or(false)
@@ -1063,8 +1082,7 @@ async fn r9_live_approval_ask_rule_denies_via_plugin_ui_early_exit() {
     let mock = MockAiServer::start(vec![
         MockAiReply::ToolCall {
             name: "write_file".to_string(),
-            arguments: json!({"path": probe_rel, "content": "should never be written"})
-                .to_string(),
+            arguments: json!({"path": probe_rel, "content": "should never be written"}).to_string(),
         },
         MockAiReply::Text(final_text.clone()),
     ])
@@ -1082,7 +1100,9 @@ async fn r9_live_approval_ask_rule_denies_via_plugin_ui_early_exit() {
     );
     install_home_config(&home, &cfg);
     std::fs::write(
-        home.join("workspace").join("config").join("config.security.json"),
+        home.join("workspace")
+            .join("config")
+            .join("config.security.json"),
         r#"{
             "default_action": "allow",
             "layers": {
@@ -1186,7 +1206,9 @@ fn r10_install_cluster_app_config_lagged(
         "token": token,
     });
     std::fs::write(
-        home.join("workspace").join("config").join("config.cluster.json"),
+        home.join("workspace")
+            .join("config")
+            .join("config.cluster.json"),
         serde_json::to_string_pretty(&cfg).expect("ser cluster cfg"),
     )
     .expect("write config.cluster.json");
@@ -1252,7 +1274,8 @@ fn r10_wsapi_request(
          Sec-WebSocket-Version: 13\r\n\r\n",
         b64(&key_bytes)
     );
-    s.write_all(req.as_bytes()).map_err(|e| format!("handshake write: {e}"))?;
+    s.write_all(req.as_bytes())
+        .map_err(|e| format!("handshake write: {e}"))?;
 
     // 读到响应头结束为止（拒绝则拿到非 101 状态行）。
     let mut head = Vec::new();
@@ -1274,7 +1297,10 @@ fn r10_wsapi_request(
     }
     let head_text = String::from_utf8_lossy(&head).to_string();
     if !head_text.starts_with("HTTP/1.1 101") {
-        return Err(format!("upgrade rejected: {}", head_text.lines().next().unwrap_or("")));
+        return Err(format!(
+            "upgrade rejected: {}",
+            head_text.lines().next().unwrap_or("")
+        ));
     }
 
     // 掩码文本帧（客户端→服务端必须掩码；请求 payload 远小于 125，无需扩展长度）。
@@ -1312,12 +1338,14 @@ fn r10_wsapi_request(
             .zip(mask.iter().cycle())
             .map(|(b, m)| b ^ m),
     );
-    s.write_all(&frame).map_err(|e| format!("frame write: {e}"))?;
+    s.write_all(&frame)
+        .map_err(|e| format!("frame write: {e}"))?;
 
     // 读一帧服务端响应（server→client 不掩码；支持 7/16/64-bit 三档长度）。
     fn read_exact_n(s: &mut std::net::TcpStream, n: usize) -> Result<Vec<u8>, String> {
         let mut buf = vec![0u8; n];
-        s.read_exact(&mut buf).map_err(|e| format!("ws read: {e}"))?;
+        s.read_exact(&mut buf)
+            .map_err(|e| format!("ws read: {e}"))?;
         Ok(buf)
     }
     let hdr = read_exact_n(&mut s, 2)?;
@@ -1344,7 +1372,8 @@ fn r10_wsapi_request(
         return Err(format!("response payload too large: {plen}"));
     }
     let raw = read_exact_n(&mut s, plen)?;
-    serde_json::from_slice(&raw).map_err(|e| format!("response json: {e}: {}", String::from_utf8_lossy(&raw)))
+    serde_json::from_slice(&raw)
+        .map_err(|e| format!("response json: {e}: {}", String::from_utf8_lossy(&raw)))
 }
 
 /// agent.stop 薄封装（无返回数据需求；失败即整串错误消息）。
@@ -1366,8 +1395,7 @@ async fn r10_live_cluster_rpc_port_busy_bind_error_stays_nonfatal() {
 
     let (udp, rpc) = probe_cluster_port_pair();
     // 双占位：先抢 wildcard；specific 若成功也一并持有（服务器绑哪个都撞）。
-    let hold_wild =
-        TcpListener::bind(("0.0.0.0", rpc)).expect("hold wildcard rpc port");
+    let hold_wild = TcpListener::bind(("0.0.0.0", rpc)).expect("hold wildcard rpc port");
     let hold_specific = TcpListener::bind(("127.0.0.1", rpc)); // 可能因 wild 已占而失败——无妨
 
     let cfg = live_gateway_config(
@@ -1563,8 +1591,11 @@ async fn r10_live_dual_node_callback_roundtrip_and_forged_error_route() {
             "source_node": "R10FORGE",
         }),
     );
-    let cipher = nemesis_cluster::transport::frame::encrypt_frame(&wire.to_bytes().expect("serialize wire"), &key)
-        .expect("encrypt forged callback");
+    let cipher = nemesis_cluster::transport::frame::encrypt_frame(
+        &wire.to_bytes().expect("serialize wire"),
+        &key,
+    )
+    .expect("encrypt forged callback");
     {
         use std::io::{Read as _, Write as _};
         let mut rpc =
@@ -1581,8 +1612,10 @@ async fn r10_live_dual_node_callback_roundtrip_and_forged_error_route() {
     }
 
     // Route3 fail 臂落地的外部观测：T 从 pending 翻成 failed。
-    wait_until(20, "forged error marked dashboard task failed via Route3", || {
-        match r10_wsapi_request(
+    wait_until(
+        20,
+        "forged error marked dashboard task failed via Route3",
+        || match r10_wsapi_request(
             web_port_a,
             token_a,
             "cluster",
@@ -1600,8 +1633,8 @@ async fn r10_live_dual_node_callback_roundtrip_and_forged_error_route() {
                     })
                 }),
             Err(_) => false,
-        }
-    })
+        },
+    )
     .await;
 
     graceful_teardown(gw_a, web_port_a, token_a, "err_node_a").await;
@@ -1709,9 +1742,11 @@ async fn r10_live_discovery_lag_unknown_peer_registers_via_rpc_meta() {
     // rpc 口>」回来了（若注册分支没跑、落到 unwrap_or(21949) 回退地址，回调必
     // 迷失，A 永远到不了终文本）——判别力不变。
     let logs_a = home_a.join("workspace").join("logs");
-    wait_until(150, "final text after callback along freshly-registered route", || {
-        tree_contains(&logs_a, "R10-LAG-FINAL-DONE")
-    })
+    wait_until(
+        150,
+        "final text after callback along freshly-registered route",
+        || tree_contains(&logs_a, "R10-LAG-FINAL-DONE"),
+    )
     .await;
     wait_until(20, "lag driver cron job marked ok", || {
         read_cron_store(&home_a)
@@ -1804,11 +1839,8 @@ async fn r10_live_heartbeat_agent_none_after_wsapi_stop_sends_zero_llm() {
 
     let t1 = format!("R10-HBD-TICK1-{}", unique_tag("hbd"));
     let t2 = format!("R10-HBD-TICK2-{}", unique_tag("hbd"));
-    let mock = MockAiServer::start(vec![
-        MockAiReply::Text(t1),
-        MockAiReply::Text(t2),
-    ])
-    .expect("two-entry mock");
+    let mock = MockAiServer::start(vec![MockAiReply::Text(t1), MockAiReply::Text(t2)])
+        .expect("two-entry mock");
 
     let cfg = live_gateway_config(
         &home.join("workspace"),

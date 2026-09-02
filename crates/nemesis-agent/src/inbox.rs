@@ -156,7 +156,8 @@ impl Inbox {
     /// Claim the head of the next-turn queue (one message starts a new turn).
     pub fn claim_next_turn_head(&self, session_key: &str) -> Option<QueuedMessage> {
         let mut all = self.queues.lock();
-        all.get_mut(session_key).and_then(|q| q.next_turn.pop_front())
+        all.get_mut(session_key)
+            .and_then(|q| q.next_turn.pop_front())
     }
 
     /// Peek whether a next-step message is pending (turn-escape-hatch check).

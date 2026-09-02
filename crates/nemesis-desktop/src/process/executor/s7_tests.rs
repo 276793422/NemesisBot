@@ -9,9 +9,15 @@ use super::*;
 fn s7_read_stderr_line_captures_child_stderr() {
     let executor = DefaultPlatformExecutor::with_defaults();
     let (exe, args): (&str, Vec<String>) = if cfg!(windows) {
-        ("cmd", vec!["/C".to_string(), "echo s7-stderr-marker 1>&2".to_string()])
+        (
+            "cmd",
+            vec!["/C".to_string(), "echo s7-stderr-marker 1>&2".to_string()],
+        )
     } else {
-        ("sh", vec!["-c".to_string(), "echo s7-stderr-marker 1>&2".to_string()])
+        (
+            "sh",
+            vec!["-c".to_string(), "echo s7-stderr-marker 1>&2".to_string()],
+        )
     };
     let mut child = executor.spawn_child(exe, &args).expect("spawn child");
 

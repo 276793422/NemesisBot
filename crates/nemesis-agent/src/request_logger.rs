@@ -16,14 +16,12 @@ use serde::{Deserialize, Serialize};
 use tracing::warn;
 
 /// Detail level for log output.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-#[derive(Default)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
 pub enum DetailLevel {
     #[default]
     Full,
     Truncated,
 }
-
 
 /// Configuration for the request logger.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -161,8 +159,7 @@ pub struct LLMResponseInfo {
 }
 
 /// Information about a local operation.
-#[derive(Debug, Clone)]
-#[derive(Default)]
+#[derive(Debug, Clone, Default)]
 pub struct OperationInfo {
     pub op_type: String,
     pub name: String,
@@ -174,7 +171,6 @@ pub struct OperationInfo {
     /// Tool result (JSON, mirrors Go's Result field).
     pub result: String,
 }
-
 
 /// Information about local operations for a round.
 #[derive(Debug, Clone)]
@@ -833,10 +829,7 @@ pub fn check_request_log_consistency(
     for cr in chat_log_roles {
         loop {
             if ri >= request_roles.len() {
-                let failed_at = chat_log_roles
-                    .iter()
-                    .take_while(|r| **r != *cr)
-                    .count();
+                let failed_at = chat_log_roles.iter().take_while(|r| **r != *cr).count();
                 return Err(format!(
                     "consistency: chat-log role '{}' at index {} not present in the recorded request roles (request has {} entries)",
                     cr,

@@ -25,7 +25,10 @@ fn tmp() -> PathBuf {
 #[test]
 fn within_roots_component_prefix_semantics() {
     let root = tmp();
-    assert!(path_within_roots(&root.join("a").join("b.txt"), std::slice::from_ref(&root)));
+    assert!(path_within_roots(
+        &root.join("a").join("b.txt"),
+        std::slice::from_ref(&root)
+    ));
     // 字符串前缀但不 component 前缀：C:\ws 不覆盖 C:\ws2\...
     let sibling = root.join("ws2");
     assert!(!path_within_roots(&sibling, &[root.join("ws")]));
@@ -74,12 +77,14 @@ fn within_roots_representation_mismatch_short_name_ancestor() {
     let name = root.file_name().unwrap().to_string_lossy().to_string();
     let flipped: String = name
         .chars()
-        .map(|c| if c.is_ascii_alphabetic() && !c.is_ascii_uppercase() {
-            c.to_ascii_uppercase()
-        } else if c.is_ascii_uppercase() {
-            c.to_ascii_lowercase()
-        } else {
-            c
+        .map(|c| {
+            if c.is_ascii_alphabetic() && !c.is_ascii_uppercase() {
+                c.to_ascii_uppercase()
+            } else if c.is_ascii_uppercase() {
+                c.to_ascii_lowercase()
+            } else {
+                c
+            }
         })
         .collect();
     assert_ne!(flipped, name, "tempdir name should contain a letter");
@@ -102,7 +107,12 @@ fn within_roots_representation_mismatch_short_name_ancestor() {
 #[test]
 fn check_writable_default_impl() {
     let root = tmp();
-    let world = DirectWorld::new("test", vec![root.clone()], vec![root.clone()], super::SpawnSemantics::InProcess);
+    let world = DirectWorld::new(
+        "test",
+        vec![root.clone()],
+        vec![root.clone()],
+        super::SpawnSemantics::InProcess,
+    );
     assert!(world.check_writable(&root.join("x.jsonl")).is_ok());
     let denied = world.check_writable(&root.join("..").join("evil.jsonl"));
     assert!(denied.is_err(), "out-of-root write must be denied");
@@ -120,7 +130,10 @@ fn check_writable_default_impl() {
 fn sanitize_env_strips_executor_internals_and_applies_overrides() {
     let mut base = HashMap::new();
     base.insert("NEMESISBOT_ROLE".to_string(), "executor".to_string());
-    base.insert("NEMESISBOT_EXECUTOR_PIPE".to_string(), "\\\\.\\pipe\\x".to_string());
+    base.insert(
+        "NEMESISBOT_EXECUTOR_PIPE".to_string(),
+        "\\\\.\\pipe\\x".to_string(),
+    );
     base.insert("PATH".to_string(), "/bin".to_string());
     let mut overrides = HashMap::new();
     overrides.insert("MY_FLAG".to_string(), "1".to_string());
@@ -138,34 +151,62 @@ fn sanitize_env_strips_executor_internals_and_applies_overrides() {
 
 #[cfg(unix)]
 fn echo_ok() -> SpawnOp {
-    SpawnOp { program: "sh".into(), args: vec!["-c".into(), "echo hi".into()], cwd: None, stdin: None, timeout_secs: Some(10) }
+    SpawnOp {
+        program: "sh".into(),
+        args: vec!["-c".into(), "echo hi".into()],
+        cwd: None,
+        stdin: None,
+        timeout_secs: Some(10),
+    }
 }
 #[cfg(windows)]
 fn echo_ok() -> SpawnOp {
-    SpawnOp { program: "cmd".into(), args: vec!["/C".into(), "echo hi".into()], cwd: None, stdin: None, timeout_secs: Some(10) }
+    SpawnOp {
+        program: "cmd".into(),
+        args: vec!["/C".into(), "echo hi".into()],
+        cwd: None,
+        stdin: None,
+        timeout_secs: Some(10),
+    }
 }
 
 #[tokio::test]
 async fn spawn_runs_and_captures_output() {
     let root = tmp();
-    let out = guarded_direct_spawn(&echo_ok(), &[root]).await.expect("spawn ok");
+    let out = guarded_direct_spawn(&echo_ok(), &[root])
+        .await
+        .expect("spawn ok");
     assert!(!out.failed());
     assert!(out.stdout.trim().contains("hi"), "stdout={}", out.stdout);
 }
 
 #[cfg(unix)]
 fn slow_cmd() -> SpawnOp {
-    SpawnOp { program: "sh".into(), args: vec!["-c".into(), "sleep 5".into()], cwd: None, stdin: None, timeout_secs: Some(1) }
+    SpawnOp {
+        program: "sh".into(),
+        args: vec!["-c".into(), "sleep 5".into()],
+        cwd: None,
+        stdin: None,
+        timeout_secs: Some(1),
+    }
 }
 #[cfg(windows)]
 fn slow_cmd() -> SpawnOp {
-    SpawnOp { program: "cmd".into(), args: vec!["/C".into(), "ping -n 5 127.0.0.1 >nul".into()], cwd: None, stdin: None, timeout_secs: Some(1) }
+    SpawnOp {
+        program: "cmd".into(),
+        args: vec!["/C".into(), "ping -n 5 127.0.0.1 >nul".into()],
+        cwd: None,
+        stdin: None,
+        timeout_secs: Some(1),
+    }
 }
 
 #[tokio::test]
 async fn spawn_timeout_reports_timed_out_not_err() {
     let root = tmp();
-    let out = guarded_direct_spawn(&slow_cmd(), &[root]).await.expect("timeout is an outcome, not Err");
+    let out = guarded_direct_spawn(&slow_cmd(), &[root])
+        .await
+        .expect("timeout is an outcome, not Err");
     assert!(out.timed_out);
     assert!(out.failed());
 }
@@ -182,17 +223,27 @@ async fn spawn_cwd_outside_roots_denied_before_spawn() {
         timeout_secs: Some(5),
     };
     // 守卫先于 spawn：不会到 spawn 错误。
-    let err = guarded_direct_spawn(&job, &[root]).await.expect_err("must deny");
+    let err = guarded_direct_spawn(&job, &[root])
+        .await
+        .expect_err("must deny");
     assert!(err.contains("spawn roots"), "err={err}");
 }
 
 #[tokio::test]
 async fn direct_world_tool_lane_is_honest_error() {
     let root = tmp();
-    let world = DirectWorld::new("dw", vec![root.clone()], vec![root], super::SpawnSemantics::InProcess);
+    let world = DirectWorld::new(
+        "dw",
+        vec![root.clone()],
+        vec![root],
+        super::SpawnSemantics::InProcess,
+    );
     assert!(!world.supports_tool_calls());
     let err = world
-        .run(ExecOp::Tool(ToolOp { tool: "run_script".into(), args: "{}".into() }))
+        .run(ExecOp::Tool(ToolOp {
+            tool: "run_script".into(),
+            args: "{}".into(),
+        }))
         .await
         .expect_err("no tool lane");
     assert!(err.contains("no executor tool lane"), "err={err}");
@@ -201,15 +252,26 @@ async fn direct_world_tool_lane_is_honest_error() {
 #[tokio::test]
 async fn direct_world_spawn_lane_routes_to_guarded_spawn() {
     let root = tmp();
-    let world = DirectWorld::new("dw", vec![root.clone()], vec![root], super::SpawnSemantics::InProcess);
+    let world = DirectWorld::new(
+        "dw",
+        vec![root.clone()],
+        vec![root],
+        super::SpawnSemantics::InProcess,
+    );
     let out: ExecOutcome = world.run(ExecOp::Spawn(echo_ok())).await.expect("spawn");
     assert!(!out.failed());
 }
 
 #[test]
 fn spawn_semantics_display() {
-    assert_eq!(super::SpawnSemantics::SandboxBoxed.to_string(), "sandbox-boxed");
-    assert_eq!(super::SpawnSemantics::ExecutorChild.to_string(), "executor-child");
+    assert_eq!(
+        super::SpawnSemantics::SandboxBoxed.to_string(),
+        "sandbox-boxed"
+    );
+    assert_eq!(
+        super::SpawnSemantics::ExecutorChild.to_string(),
+        "executor-child"
+    );
     assert_eq!(super::SpawnSemantics::InProcess.to_string(), "in-process");
 }
 
@@ -247,7 +309,12 @@ fn default_supports_tool_calls_is_false_for_minimal_world() {
 #[tokio::test]
 async fn direct_world_name_and_spawn_semantics_accessors() {
     let root = tmp();
-    let world = DirectWorld::new("dw-s6", vec![root.clone()], vec![root], super::SpawnSemantics::SandboxBoxed);
+    let world = DirectWorld::new(
+        "dw-s6",
+        vec![root.clone()],
+        vec![root],
+        super::SpawnSemantics::SandboxBoxed,
+    );
     assert_eq!(world.name(), "dw-s6");
     assert_eq!(world.spawn_semantics(), super::SpawnSemantics::SandboxBoxed);
     assert_eq!(world.writable_roots().len(), 1);
@@ -274,8 +341,17 @@ async fn spawn_with_valid_cwd_and_stdin_roundtrip() {
         timeout_secs: Some(20),
     };
     let out = guarded_direct_spawn(&job, &[root]).await.expect("spawn ok");
-    assert!(!out.failed(), "exit={:?} stderr={}", out.exit_code, out.stderr);
-    assert!(out.stdout.contains("s6-stdin-line"), "stdin 必须写进子进程: {}", out.stdout);
+    assert!(
+        !out.failed(),
+        "exit={:?} stderr={}",
+        out.exit_code,
+        out.stderr
+    );
+    assert!(
+        out.stdout.contains("s6-stdin-line"),
+        "stdin 必须写进子进程: {}",
+        out.stdout
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -310,7 +386,12 @@ async fn spawn_pipes_stdin_to_child() {
     let out = guarded_direct_spawn(&stdin_filter_cmd(), &[root])
         .await
         .expect("spawn ok");
-    assert!(!out.failed(), "exit={:?} stderr={}", out.exit_code, out.stderr);
+    assert!(
+        !out.failed(),
+        "exit={:?} stderr={}",
+        out.exit_code,
+        out.stderr
+    );
     assert!(
         out.stdout.trim().contains("needle-line"),
         "子进程必须真读到 stdin: stdout={}",

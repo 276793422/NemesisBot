@@ -56,13 +56,11 @@ pub struct ChannelsConfig {
     pub enabled_channels: Vec<String>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[derive(Default)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct ForgeConfig {
     #[serde(default)]
     pub enabled: bool,
 }
-
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct ClusterConfig {

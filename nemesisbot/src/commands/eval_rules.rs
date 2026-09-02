@@ -8,7 +8,7 @@
 
 use std::path::PathBuf;
 
-use anyhow::{bail, Context, Result};
+use anyhow::{Context, Result, bail};
 use clap::Subcommand;
 
 use crate::common;
@@ -118,7 +118,10 @@ pub async fn run(action: RulesAction, cli_local: bool) -> Result<()> {
             );
         }
         // 只读命令（list/show）：从内置默认集展示，不落盘不建目录。
-        println!("--local home 不存在：{}（以下为内置默认规则，未读写任何文件）", home.display());
+        println!(
+            "--local home 不存在：{}（以下为内置默认规则，未读写任何文件）",
+            home.display()
+        );
         let defaults = eval_assessor::parse_rules(eval_assessor::DEFAULT_RULES_JSON)?;
         match &act {
             A::Show { id, .. } => {
@@ -162,7 +165,10 @@ fn condition_summary(r: &eval_assessor::Rule) -> String {
             };
             // 值太长截断显示（完整内容用 show <id>）
             let val_display = if val.len() > 60 {
-                format!("{}…", &val[..crate::eval_assessor::truncation_point(&val, 60)])
+                format!(
+                    "{}…",
+                    &val[..crate::eval_assessor::truncation_point(&val, 60)]
+                )
             } else {
                 val
             };
@@ -179,7 +185,11 @@ fn condition_summary(r: &eval_assessor::Rule) -> String {
     format!(
         "{}{}",
         parts.join(" 且 "),
-        if r.min_count > 1 { format!("（≥{} 条记录）", r.min_count) } else { String::new() }
+        if r.min_count > 1 {
+            format!("（≥{} 条记录）", r.min_count)
+        } else {
+            String::new()
+        }
     )
 }
 
@@ -243,7 +253,11 @@ fn cmd_add(path: &std::path::Path, file_in: &std::path::Path) -> Result<()> {
     let mut file = eval_assessor::load_rules(path)?;
     for r in &incoming.rules {
         if file.rules.iter().any(|x| x.id == r.id) {
-            bail!("rule '{}' already exists (use: eval rules edit {} --file ...)", r.id, r.id);
+            bail!(
+                "rule '{}' already exists (use: eval rules edit {} --file ...)",
+                r.id,
+                r.id
+            );
         }
     }
     file.rules.extend(incoming.rules.clone());
@@ -269,7 +283,10 @@ fn cmd_edit(path: &std::path::Path, id: &str, file_in: &std::path::Path) -> Resu
     }
     let new_rule = incoming.rules.into_iter().next().unwrap();
     if new_rule.id != id {
-        bail!("rule id mismatch: edit target is '{id}' but the file defines '{}'", new_rule.id);
+        bail!(
+            "rule id mismatch: edit target is '{id}' but the file defines '{}'",
+            new_rule.id
+        );
     }
 
     let mut file = eval_assessor::load_rules(path)?;
@@ -331,7 +348,10 @@ fn cmd_reset(path: &std::path::Path, force: bool) -> Result<()> {
 
     let defaults = eval_assessor::parse_rules(eval_assessor::DEFAULT_RULES_JSON)?;
     eval_assessor::save_rules(path, &defaults)?;
-    println!("reset {custom_count} → {} rule(s) from built-in defaults", defaults.rules.len());
+    println!(
+        "reset {custom_count} → {} rule(s) from built-in defaults",
+        defaults.rules.len()
+    );
     Ok(())
 }
 
@@ -359,9 +379,10 @@ fn ask_choice(prompt: &str, max: usize, default: usize) -> usize {
             return default;
         }
         if let Ok(n) = raw.parse::<usize>()
-            && (1..=max).contains(&n) {
-                return n;
-            }
+            && (1..=max).contains(&n)
+        {
+            return n;
+        }
         println!("  请输入 1-{max}（回车 = 默认）");
     }
 }
@@ -378,7 +399,9 @@ fn keyword_to_pattern(kw: &str) -> String {
             // 路径分隔符：两种斜杠等价（必须先于元字符分支——'\' 也是元字符）
             '/' | '\\' => r"[\\/]".to_string(),
             // 正则元字符转义（按字面量处理）
-            '.' | '+' | '*' | '?' | '(' | ')' | '[' | ']' | '{' | '}' | '^' | '$' | '|' => format!("\\{c}"),
+            '.' | '+' | '*' | '?' | '(' | ')' | '[' | ']' | '{' | '}' | '^' | '$' | '|' => {
+                format!("\\{c}")
+            }
             _ => c.to_string(),
         })
         .collect();
@@ -407,7 +430,11 @@ fn cmd_new(path: &std::path::Path) -> Result<()> {
                 bail!("关键词为空，已取消");
             }
             let desc = ask("规则描述（回车自动生成）: ");
-            let desc = if desc.is_empty() { format!("提示词含关键词“{kw}”") } else { desc };
+            let desc = if desc.is_empty() {
+                format!("提示词含关键词“{kw}”")
+            } else {
+                desc
+            };
             rules.push(eval_assessor::Rule {
                 id: format!("subject-{}", slugify(&kw)),
                 description: desc,
@@ -424,13 +451,18 @@ fn cmd_new(path: &std::path::Path) -> Result<()> {
         }
         2 => {
             // 命令层：tool_trace 的 arguments.command
-            let kw = ask("\n命令里的关键词（命令中包含该词即命中，如 curl、reg add、可疑脚本名）: ");
+            let kw =
+                ask("\n命令里的关键词（命令中包含该词即命中，如 curl、reg add、可疑脚本名）: ");
             if kw.is_empty() {
                 bail!("关键词为空，已取消");
             }
             let level = ask_level();
             let desc = ask("规则描述（回车自动生成）: ");
-            let desc = if desc.is_empty() { format!("执行了含“{kw}”的命令") } else { desc };
+            let desc = if desc.is_empty() {
+                format!("执行了含“{kw}”的命令")
+            } else {
+                desc
+            };
             rules.push(eval_assessor::Rule {
                 id: format!("cmd-{}", slugify(&kw)),
                 description: desc,
@@ -447,13 +479,19 @@ fn cmd_new(path: &std::path::Path) -> Result<()> {
         }
         _ => {
             // 路径层：tool_trace 的 arguments.command + arguments.path 两条（OR 拆分）
-            let kw = ask("\n要保护的路径或文件名（写一部分即可，如 hosts、id_ed25519、.kube、D:\\secret）: ");
+            let kw = ask(
+                "\n要保护的路径或文件名（写一部分即可，如 hosts、id_ed25519、.kube、D:\\secret）: ",
+            );
             if kw.is_empty() {
                 bail!("路径为空，已取消");
             }
             let level = ask_level();
             let desc = ask("规则描述（回车自动生成）: ");
-            let desc = if desc.is_empty() { format!("工具调用中探测路径“{kw}”") } else { desc };
+            let desc = if desc.is_empty() {
+                format!("工具调用中探测路径“{kw}”")
+            } else {
+                desc
+            };
             let pattern = keyword_to_pattern(&kw);
             let base_id = format!("probe-{}", slugify(&kw));
             // OR 语义拆两条（引擎只支持记录内 AND）：
@@ -515,7 +553,10 @@ fn cmd_new(path: &std::path::Path) -> Result<()> {
 
     file.rules.extend(rules.clone());
     eval_assessor::save_rules(path, &file)?;
-    println!("已保存 {} 条规则。用 `eval rules list` 查看；下次 eval 自动生效。", rules.len());
+    println!(
+        "已保存 {} 条规则。用 `eval rules list` 查看；下次 eval 自动生效。",
+        rules.len()
+    );
     Ok(())
 }
 

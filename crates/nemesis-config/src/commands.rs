@@ -44,7 +44,11 @@ impl CommandsConfig {
 pub fn load_commands_config(path: &Path) -> CommandsConfig {
     match std::fs::read_to_string(path) {
         Ok(raw) => serde_json::from_str(&raw).unwrap_or_else(|e| {
-            tracing::warn!("[Commands] config 解析失败（{}），按空表处理: {}", path.display(), e);
+            tracing::warn!(
+                "[Commands] config 解析失败（{}），按空表处理: {}",
+                path.display(),
+                e
+            );
             CommandsConfig::default()
         }),
         Err(_) => CommandsConfig::default(),

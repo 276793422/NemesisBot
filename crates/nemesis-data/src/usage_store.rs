@@ -3,7 +3,7 @@
 use std::path::Path;
 use std::sync::Mutex;
 
-use rusqlite::{params, params_from_iter, Connection, ToSql};
+use rusqlite::{Connection, ToSql, params, params_from_iter};
 
 use crate::db;
 use crate::models::{LogFilter, RequestLog, TrendPoint, UsageSummary};
@@ -45,8 +45,13 @@ impl DataStore {
         cache_creation_tokens: i64,
         cache_read_tokens: i64,
     ) -> f64 {
-        self.pricing
-            .compute_cost_usd(model, input_tokens, output_tokens, cache_creation_tokens, cache_read_tokens)
+        self.pricing.compute_cost_usd(
+            model,
+            input_tokens,
+            output_tokens,
+            cache_creation_tokens,
+            cache_read_tokens,
+        )
     }
 
     /// Layered cost computation with per-component breakdown
@@ -294,7 +299,10 @@ impl DataStore {
             .map_err(|e| format!("prepare logs: {e}"))?;
 
         let logs = stmt
-            .query_map(params_from_iter(bind.iter().map(|b| b.as_ref())), row_to_log)
+            .query_map(
+                params_from_iter(bind.iter().map(|b| b.as_ref())),
+                row_to_log,
+            )
             .map_err(|e| format!("query_logs: {e}"))?
             .filter_map(|r| r.ok())
             .collect();

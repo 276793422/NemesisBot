@@ -287,13 +287,11 @@ impl ProcessManager {
                     })
                 }
             }
-            Err(e) => {
-                Ok(super::handshake::HandshakeResult {
-                    success: false,
-                    window_id: None,
-                    error: Some(format!("failed to read ACK: {}", e)),
-                })
-            }
+            Err(e) => Ok(super::handshake::HandshakeResult {
+                success: false,
+                window_id: None,
+                error: Some(format!("failed to read ACK: {}", e)),
+            }),
         }
     }
 
@@ -684,6 +682,6 @@ impl Default for ProcessManager {
 // ---------------------------------------------------------------------------
 
 #[cfg(test)]
-mod tests;
-#[cfg(test)]
 mod s7_tests;
+#[cfg(test)]
+mod tests;

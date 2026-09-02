@@ -116,7 +116,10 @@ fn cosine_similarity_large_vectors_do_not_overflow_to_nan() {
 #[test]
 fn speaker_engine_new_missing_model_bails() {
     let tmp = tempfile::tempdir().unwrap();
-    let err = format!("{:#}", SpeakerEngine::new(tmp.path(), 1).err().expect("must fail"));
+    let err = format!(
+        "{:#}",
+        SpeakerEngine::new(tmp.path(), 1).err().expect("must fail")
+    );
     assert!(err.contains("Speaker model not found"), "{err}");
     assert!(
         err.contains("3dspeaker_speech_campplus_sv_zh_en_16k-common_advanced.onnx"),
@@ -129,7 +132,8 @@ fn speaker_engine_new_missing_model_bails() {
 fn speaker_engine_new_with_model_builds_structs_until_ffi() {
     let tmp = tempfile::tempdir().unwrap();
     std::fs::write(
-        tmp.path().join("3dspeaker_speech_campplus_sv_zh_en_16k-common_advanced.onnx"),
+        tmp.path()
+            .join("3dspeaker_speech_campplus_sv_zh_en_16k-common_advanced.onnx"),
         b"fixture",
     )
     .unwrap();
@@ -205,8 +209,9 @@ fn speaker_manager_register_panics_at_symbol_lookup() {
 #[test]
 fn speaker_manager_register_multi_nonempty_panics_at_symbol_lookup() {
     let mut m = null_speaker_manager();
-    let msg =
-        crate::test_util::catch_panic_msg(|| m.register_multi("alice", &[vec![0.1; 192], vec![0.2; 192]]));
+    let msg = crate::test_util::catch_panic_msg(|| {
+        m.register_multi("alice", &[vec![0.1; 192], vec![0.2; 192]])
+    });
     assert!(msg.contains("sherpa-onnx not initialized"), "{msg}");
     std::mem::forget(m);
 }

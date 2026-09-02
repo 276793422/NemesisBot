@@ -39,7 +39,12 @@ fn deploy_env_embed_and_similarity() {
     let q = embed(QUERY).expect("查询文本嵌入失败");
     let d = embed(ENTRY).expect("记忆条目嵌入失败");
     let sim = cosine_similarity(&q, &d);
-    println!("dim query={} doc={} cosine={:.4}（注入阈值 0.35）", q.len(), d.len(), sim);
+    println!(
+        "dim query={} doc={} cosine={:.4}（注入阈值 0.35）",
+        q.len(),
+        d.len(),
+        sim
+    );
 
     assert_eq!(q.len(), 384, "medium 档应为 384 维");
     assert!(
@@ -75,7 +80,8 @@ fn deploy_env_manager_search_auto_inject_end_to_end() {
         similarity_threshold: 0.7,
         storage_path: format!("{data_dir}\\vector\\vector_store.jsonl"),
     };
-    mgr.init_vector_store(Some(store_config)).expect("向量库初始化（插件+模型）");
+    mgr.init_vector_store(Some(store_config))
+        .expect("向量库初始化（插件+模型）");
     mgr.set_vector_enabled(true);
 
     let runtime = tokio::runtime::Builder::new_current_thread()
@@ -95,5 +101,8 @@ fn deploy_env_manager_search_auto_inject_end_to_end() {
         result.total >= 1,
         "0.35 阈值下应召回「周六直播」条目（修复前 store 层 0.7 拦截为空）"
     );
-    assert!(result.entries[0].entry.content.contains("直播"), "召回内容应为用户那条记忆");
+    assert!(
+        result.entries[0].entry.content.contains("直播"),
+        "召回内容应为用户那条记忆"
+    );
 }

@@ -110,9 +110,10 @@ impl RequestContext {
     pub fn format_rpc_message(&self, message: &str) -> String {
         if self.channel == "rpc"
             && let Some(ref cid) = self.correlation_id
-                && !cid.is_empty() {
-                    return format!("[rpc:{}] {}", cid, message);
-                }
+            && !cid.is_empty()
+        {
+            return format!("[rpc:{}] {}", cid, message);
+        }
         message.to_string()
     }
 
@@ -262,21 +263,22 @@ impl ContextBuilder {
                 if entry.file_type().map(|t| t.is_dir()).unwrap_or(false) {
                     let skill_md = entry.path().join("SKILL.md");
                     if skill_md.exists()
-                        && let Ok(content) = std::fs::read_to_string(&skill_md) {
-                            let name = entry.file_name().to_string_lossy().to_string();
-                            let description = content
-                                .lines()
-                                .find(|l| !l.trim().is_empty())
-                                .unwrap_or("")
-                                .trim_start_matches('#')
-                                .trim()
-                                .to_string();
-                            self.skills_info.push(SkillInfo {
-                                name,
-                                description,
-                                active: true,
-                            });
-                        }
+                        && let Ok(content) = std::fs::read_to_string(&skill_md)
+                    {
+                        let name = entry.file_name().to_string_lossy().to_string();
+                        let description = content
+                            .lines()
+                            .find(|l| !l.trim().is_empty())
+                            .unwrap_or("")
+                            .trim_start_matches('#')
+                            .trim()
+                            .to_string();
+                        self.skills_info.push(SkillInfo {
+                            name,
+                            description,
+                            active: true,
+                        });
+                    }
                 }
             }
         }
@@ -327,9 +329,10 @@ impl ContextBuilder {
 
         // Memory context section
         if let Some(ref memory) = self.memory_context
-            && !memory.is_empty() {
-                parts.push(format!("## Memory Context\n\n{}", memory));
-            }
+            && !memory.is_empty()
+        {
+            parts.push(format!("## Memory Context\n\n{}", memory));
+        }
 
         // Core identity section (time, environment, workspace) — dynamic, placed last
         parts.push(self.build_identity());

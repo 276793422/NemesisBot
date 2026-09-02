@@ -44,8 +44,7 @@ pub const API_URL: &str = "https://models.dev/api.json";
 /// shape) IS in-repo and mirrorable. It carries ids + context lengths (no
 /// output limits), enough for context_window auto-fill. Field names differ
 /// from api.json — `parse_models_json` handles this shape.
-pub const API_MIRROR_URL: &str =
-    "https://cdn.jsdelivr.net/gh/anomalyco/models.dev@dev/models.json";
+pub const API_MIRROR_URL: &str = "https://cdn.jsdelivr.net/gh/anomalyco/models.dev@dev/models.json";
 
 /// One flattened catalog entry: provider/model → limits.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
@@ -81,7 +80,7 @@ pub fn parse_models_json(raw: &str) -> Result<Vec<CatalogEntry>, String> {
     let arr = v
         .get("data")
         .and_then(|d| d.as_array())
-        .ok_or_else(|| "expected {data: [...]}" .to_string())?;
+        .ok_or_else(|| "expected {data: [...]}".to_string())?;
     let mut entries = Vec::new();
     for m in arr {
         let Some(id) = m.get("id").and_then(|i| i.as_str()) else {
@@ -120,9 +119,10 @@ pub fn parse_models_json(raw: &str) -> Result<Vec<CatalogEntry>, String> {
 pub fn parse_any(raw: &str) -> Result<Vec<CatalogEntry>, String> {
     for parser in [parse_api_json, parse_models_json] {
         if let Ok(entries) = parser(raw)
-            && !entries.is_empty() {
-                return Ok(entries);
-            }
+            && !entries.is_empty()
+        {
+            return Ok(entries);
+        }
     }
     Err("no entries extracted from either api.json or models.json shape".to_string())
 }
@@ -193,8 +193,8 @@ pub fn load_cache(home_dir: &Path) -> Result<Option<Catalog>, String> {
     if !path.exists() {
         return Ok(None);
     }
-    let raw = std::fs::read_to_string(&path)
-        .map_err(|e| format!("read {}: {e}", path.display()))?;
+    let raw =
+        std::fs::read_to_string(&path).map_err(|e| format!("read {}: {e}", path.display()))?;
     let c: Catalog =
         serde_json::from_str(&raw).map_err(|e| format!("parse {}: {e}", path.display()))?;
     Ok(Some(c))

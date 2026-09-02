@@ -397,9 +397,9 @@ fn extract_offset_limit(args: &str) -> Result<(Option<usize>, Option<usize>), St
         match val.get(name) {
             None | Some(serde_json::Value::Null) => Ok(None),
             Some(v) => {
-                let n = v.as_u64().ok_or_else(|| {
-                    format!("'{name}' must be a non-negative integer, got: {v}")
-                })?;
+                let n = v
+                    .as_u64()
+                    .ok_or_else(|| format!("'{name}' must be a non-negative integer, got: {v}"))?;
                 Ok(Some(n as usize))
             }
         }
@@ -1319,11 +1319,7 @@ impl Tool for CronTool {
                 // 10 per the goal's tier table. None when not continuing (the
                 // fired turn then runs under the global max_turns).
                 let max_rounds: Option<u32> = if continue_session {
-                    Some(
-                        val.get("max_rounds")
-                            .and_then(|v| v.as_u64())
-                            .unwrap_or(10) as u32,
-                    )
+                    Some(val.get("max_rounds").and_then(|v| v.as_u64()).unwrap_or(10) as u32)
                 } else {
                     None
                 };
@@ -1672,9 +1668,10 @@ impl WebSearchTool {
 
             let mut url_clean = url_str.to_string();
             if url_clean.contains("uddg=")
-                && let Some(decoded) = url_decode_query_param(&url_clean, "uddg") {
-                    url_clean = decoded;
-                }
+                && let Some(decoded) = url_decode_query_param(&url_clean, "uddg")
+            {
+                url_clean = decoded;
+            }
 
             lines.push(format!("{}. {}\n   {}", i + 1, title, url_clean));
 
@@ -1769,9 +1766,10 @@ impl WebSearchTool {
 /// Extract search query from tool arguments.
 fn extract_search_query(args: &str) -> Result<String, String> {
     if let Ok(val) = serde_json::from_str::<serde_json::Value>(args)
-        && let Some(query) = val.get("query").and_then(|v| v.as_str()) {
-            return Ok(query.to_string());
-        }
+        && let Some(query) = val.get("query").and_then(|v| v.as_str())
+    {
+        return Ok(query.to_string());
+    }
     // Fallback: treat the entire argument as a query.
     Ok(args.trim().to_string())
 }
@@ -1779,9 +1777,10 @@ fn extract_search_query(args: &str) -> Result<String, String> {
 /// Extract the "name" argument from tool arguments.
 fn extract_name_arg(args: &str) -> Result<String, String> {
     if let Ok(val) = serde_json::from_str::<serde_json::Value>(args)
-        && let Some(name) = val.get("name").and_then(|v| v.as_str()) {
-            return Ok(name.to_string());
-        }
+        && let Some(name) = val.get("name").and_then(|v| v.as_str())
+    {
+        return Ok(name.to_string());
+    }
     // Fallback: treat the entire argument as a name.
     Ok(args.trim().to_string())
 }
@@ -2027,9 +2026,10 @@ fn expand_error(prefix: &str, e: &dyn std::error::Error) -> String {
 /// Extract URL from tool arguments.
 fn extract_url(args: &str) -> Result<String, String> {
     if let Ok(val) = serde_json::from_str::<serde_json::Value>(args)
-        && let Some(url) = val.get("url").and_then(|v| v.as_str()) {
-            return Ok(url.to_string());
-        }
+        && let Some(url) = val.get("url").and_then(|v| v.as_str())
+    {
+        return Ok(url.to_string());
+    }
     Ok(args.trim().to_string())
 }
 
@@ -2563,12 +2563,13 @@ impl Tool for SpawnTool {
 
         // Check allowlist.
         if let Some(ref checker) = self.allowlist_checker
-            && !checker(agent_id) {
-                return Err(format!(
-                    "Not allowed to spawn agent '{}'. Check sub-agent permissions.",
-                    agent_id
-                ));
-            }
+            && !checker(agent_id)
+        {
+            return Err(format!(
+                "Not allowed to spawn agent '{}'. Check sub-agent permissions.",
+                agent_id
+            ));
+        }
 
         // Use context from RequestContext, falling back to stored context.
         let channel = if context.channel.is_empty() {
@@ -3614,16 +3615,18 @@ fn grep_recursive(
             grep_recursive(&path, re, glob, max, out);
         } else if path.is_file() {
             if let Some(g) = glob
-                && let Some(fname) = path.file_name().and_then(|n| n.to_str()) {
-                    let suffix = g.trim_start_matches('*');
-                    if !fname.ends_with(suffix) {
-                        continue;
-                    }
-                }
-            if let Ok(meta) = std::fs::metadata(&path)
-                && meta.len() > 1_000_000 {
+                && let Some(fname) = path.file_name().and_then(|n| n.to_str())
+            {
+                let suffix = g.trim_start_matches('*');
+                if !fname.ends_with(suffix) {
                     continue;
                 }
+            }
+            if let Ok(meta) = std::fs::metadata(&path)
+                && meta.len() > 1_000_000
+            {
+                continue;
+            }
             if let Ok(content) = std::fs::read_to_string(&path) {
                 for (i, line) in content.lines().enumerate() {
                     if out.len() >= max {
@@ -4127,8 +4130,8 @@ impl Tool for HistorySearchTool {
     }
 
     async fn execute(&self, args: &str, _context: &RequestContext) -> Result<String, String> {
-        let v: serde_json::Value = serde_json::from_str(args)
-            .map_err(|e| format!("Invalid arguments: {}", e))?;
+        let v: serde_json::Value =
+            serde_json::from_str(args).map_err(|e| format!("Invalid arguments: {}", e))?;
         let query = v
             .get("query")
             .and_then(|q| q.as_str())
@@ -4680,8 +4683,7 @@ impl Tool for McpListTool {
 ///
 /// Mirrors Go's `registerSharedTools` parameters, bundling all the
 /// configuration needed for shared tool registration.
-#[derive(Clone)]
-#[derive(Default)]
+#[derive(Clone, Default)]
 pub struct SharedToolConfig {
     /// Web search configuration.
     pub web_search: Option<WebSearchConfig>,
@@ -4752,7 +4754,6 @@ pub struct SharedToolConfig {
     /// Whether skill_manage writes require interactive approval.
     pub skills_manage_approval: bool,
 }
-
 
 impl std::fmt::Debug for SharedToolConfig {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -4964,7 +4965,9 @@ pub fn register_shared_tools(config: &SharedToolConfig) -> HashMap<String, Box<d
                 );
             }
             None => {
-                info!("[Tools] claude_code_tool enabled in config but claude CLI not found on PATH; tool not registered");
+                info!(
+                    "[Tools] claude_code_tool enabled in config but claude CLI not found on PATH; tool not registered"
+                );
             }
         }
     }
@@ -4975,10 +4978,7 @@ pub fn register_shared_tools(config: &SharedToolConfig) -> HashMap<String, Box<d
         let cli = CODEX_PROBE.get_or_init(codex_tool::find_codex_cli);
         match cli {
             Some(path) => {
-                info!(
-                    "[Tools] codex_delegate tool registered (cli: {})",
-                    path
-                );
+                info!("[Tools] codex_delegate tool registered (cli: {})", path);
                 tools.insert(
                     "codex_delegate".to_string(),
                     Box::new(codex_tool::CodexTool::new(
@@ -4989,7 +4989,9 @@ pub fn register_shared_tools(config: &SharedToolConfig) -> HashMap<String, Box<d
                 );
             }
             None => {
-                info!("[Tools] codex_tool enabled in config but codex CLI not found on PATH; tool not registered");
+                info!(
+                    "[Tools] codex_tool enabled in config but codex CLI not found on PATH; tool not registered"
+                );
             }
         }
     }

@@ -1558,7 +1558,7 @@ async fn test_execute_forget_removes_from_vector_store() {
 // S5 coverage: failing-backend error branches + display arms
 // ============================================================
 
-use crate::episodic::{EpisodicStore, Episode};
+use crate::episodic::{Episode, EpisodicStore};
 use crate::graph::{GraphEntity, GraphQueryResult, GraphStore, GraphTriple};
 use crate::store::MemoryStore;
 use crate::types::{MemoryType, SearchResult};
@@ -1972,11 +1972,7 @@ async fn test_forget_delete_session_error_branch() {
         "got: {}",
         result.content
     );
-    assert!(
-        result.content.contains("boom"),
-        "got: {}",
-        result.content
-    );
+    assert!(result.content.contains("boom"), "got: {}", result.content);
 }
 
 #[tokio::test]
@@ -1997,11 +1993,7 @@ async fn test_forget_cleanup_error_branch() {
         "got: {}",
         result.content
     );
-    assert!(
-        result.content.contains("boom"),
-        "got: {}",
-        result.content
-    );
+    assert!(result.content.contains("boom"), "got: {}", result.content);
 }
 
 #[tokio::test]
@@ -2061,7 +2053,9 @@ async fn test_forget_delete_by_id_false_branch() {
         .await;
     assert!(result.success);
     assert!(
-        result.content.contains("No memory entry found with ID 'missing'"),
+        result
+            .content
+            .contains("No memory entry found with ID 'missing'"),
         "got: {}",
         result.content
     );
@@ -2109,7 +2103,9 @@ async fn test_list_status_reports_episodic_and_graph_unavailable() {
         .await;
     assert!(result.success);
     assert!(
-        result.content.contains("### Episodic Memory\n- Not available"),
+        result
+            .content
+            .contains("### Episodic Memory\n- Not available"),
         "got: {}",
         result.content
     );
@@ -2173,11 +2169,9 @@ async fn test_search_displays_semantic_results_with_score_and_tags() {
     let config = crate::manager::Config::new(dir.path());
     let mgr = Arc::new(MemoryManager::new(&config));
 
-    let entry = crate::types::Entry::new(
-        MemoryType::LongTerm,
-        "alpha beta gamma delta".to_string(),
-    )
-    .with_tags(vec!["rust".to_string(), "lang".to_string()]);
+    let entry =
+        crate::types::Entry::new(MemoryType::LongTerm, "alpha beta gamma delta".to_string())
+            .with_tags(vec!["rust".to_string(), "lang".to_string()]);
     mgr.store(entry).await.unwrap();
 
     let executor = MemoryToolExecutor::new(mgr.clone());
@@ -2389,9 +2383,7 @@ async fn test_list_graph_related_unknown_entity_reports_no_relations() {
         .await;
     assert!(result.success);
     assert!(
-        result
-            .content
-            .contains("No relationships found for: ghost"),
+        result.content.contains("No relationships found for: ghost"),
         "got: {}",
         result.content
     );
@@ -2420,7 +2412,10 @@ async fn delete_by_id_requires_an_id() {
     let executor = MemoryToolExecutor::new(mgr);
 
     let result = executor
-        .execute("memory_forget", &serde_json::json!({"action": "delete_by_id"}))
+        .execute(
+            "memory_forget",
+            &serde_json::json!({"action": "delete_by_id"}),
+        )
         .await;
     assert!(!result.success);
     assert!(

@@ -99,25 +99,29 @@ impl PricingStore {
 
         let custom = std::fs::read_to_string(data_dir.join(CUSTOM_FILE))
             .ok()
-            .and_then(|raw| match serde_json::from_str::<Vec<ModelPricing>>(&raw) {
-                Ok(v) => Some(v),
-                Err(e) => {
-                    tracing::warn!("[PricingStore] {CUSTOM_FILE} 损坏，忽略自定义层: {e}");
-                    None
-                }
-            })
+            .and_then(
+                |raw| match serde_json::from_str::<Vec<ModelPricing>>(&raw) {
+                    Ok(v) => Some(v),
+                    Err(e) => {
+                        tracing::warn!("[PricingStore] {CUSTOM_FILE} 损坏，忽略自定义层: {e}");
+                        None
+                    }
+                },
+            )
             .unwrap_or_default();
 
         let downloaded = std::fs::read_to_string(data_dir.join(DOWNLOADED_FILE))
             .ok()
-            .and_then(|raw| match serde_json::from_str::<Vec<ModelPricing>>(&raw) {
-                Ok(v) if !v.is_empty() => Some(v),
-                Ok(_) => None,
-                Err(e) => {
-                    tracing::warn!("[PricingStore] {DOWNLOADED_FILE} 损坏，忽略下载层: {e}");
-                    None
-                }
-            });
+            .and_then(
+                |raw| match serde_json::from_str::<Vec<ModelPricing>>(&raw) {
+                    Ok(v) if !v.is_empty() => Some(v),
+                    Ok(_) => None,
+                    Err(e) => {
+                        tracing::warn!("[PricingStore] {DOWNLOADED_FILE} 损坏，忽略下载层: {e}");
+                        None
+                    }
+                },
+            );
 
         let meta = std::fs::read_to_string(data_dir.join(META_FILE))
             .ok()
@@ -152,9 +156,10 @@ impl PricingStore {
         // 下载层。
         for key in [m, bare] {
             if let Some(&i) = layers.downloaded_idx.get(key)
-                && let Some(entries) = &layers.downloaded {
-                    return Some(entries[i].clone());
-                }
+                && let Some(entries) = &layers.downloaded
+            {
+                return Some(entries[i].clone());
+            }
         }
         // 内置层（兜底，永在）。
         PricingTable::embedded().lookup(m).cloned()
@@ -232,10 +237,7 @@ impl PricingStore {
         write_json_atomic(&self.data_dir.join(META_FILE), &meta)?;
 
         let mut layers = self.layers.write().map_err(|e| e.to_string())?;
-        *layers = Layers::rebuild(
-            std::mem::take(&mut layers.custom),
-            Some(entries),
-        );
+        *layers = Layers::rebuild(std::mem::take(&mut layers.custom), Some(entries));
         *self.meta.write().map_err(|e| e.to_string())? = meta;
         Ok(())
     }
@@ -271,8 +273,10 @@ impl PricingStore {
         let mut layers = self.layers.write().map_err(|e| e.to_string())?;
         let custom = std::mem::take(&mut layers.custom);
         let before = custom.len();
-        let custom: Vec<ModelPricing> =
-            custom.into_iter().filter(|p| p.model_id != model_id).collect();
+        let custom: Vec<ModelPricing> = custom
+            .into_iter()
+            .filter(|p| p.model_id != model_id)
+            .collect();
         let removed = custom.len() != before;
         if removed {
             write_json_atomic(&self.data_dir.join(CUSTOM_FILE), &custom)?;

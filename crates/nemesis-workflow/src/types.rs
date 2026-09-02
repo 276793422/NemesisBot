@@ -39,9 +39,10 @@ pub fn parse_duration(s: &str) -> Option<Duration> {
             return Some(Duration::from_secs(mins * 60));
         }
     } else if let Some(num_str) = s.strip_suffix('h')
-        && let Ok(hours) = num_str.parse::<u64>() {
-            return Some(Duration::from_secs(hours * 3600));
-        }
+        && let Ok(hours) = num_str.parse::<u64>()
+    {
+        return Some(Duration::from_secs(hours * 3600));
+    }
 
     None
 }

@@ -684,16 +684,25 @@ async fn shop_preview_offline_via_content_cache() {
     assert_eq!(out["installed"], false);
     assert_eq!(out["raw"], AGENT_MD_SAMPLE);
     let converted = &out["converted"];
-    assert!(converted["IDENTITY.md"]
-        .as_str()
-        .unwrap()
-        .contains("Code Reviewer"));
-    assert!(converted["SOUL.md"].as_str().unwrap().contains("Critical Rules"));
+    assert!(
+        converted["IDENTITY.md"]
+            .as_str()
+            .unwrap()
+            .contains("Code Reviewer")
+    );
+    assert!(
+        converted["SOUL.md"]
+            .as_str()
+            .unwrap()
+            .contains("Critical Rules")
+    );
     assert!(!converted["AGENT.md"].as_str().unwrap().is_empty());
-    assert!(converted["PERSONA.json"]
-        .as_str()
-        .unwrap()
-        .contains("\"name\""));
+    assert!(
+        converted["PERSONA.json"]
+            .as_str()
+            .unwrap()
+            .contains("\"name\"")
+    );
     invalidate_cache();
 }
 

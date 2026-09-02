@@ -240,9 +240,10 @@ pub fn verify_bytes(bytes: &[u8], root_pubs: &[VerifyingKey], now: u64) -> Verif
 
     // 签名有效期 key_not_after（D4）
     if let Some(kna) = body.key_not_after
-        && now > kna {
-            return VerifyOutcome::Expired(format!("key_not_after {} exceeded", kna));
-        }
+        && now > kna
+    {
+        return VerifyOutcome::Expired(format!("key_not_after {} exceeded", kna));
+    }
 
     // 吊销检查（P2a：联网 CRL，数据模式；Unknown 按 soft-fail/strict 处置）
     if let Some(root) = root_pubs.first() {

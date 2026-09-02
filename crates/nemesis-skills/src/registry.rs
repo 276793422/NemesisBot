@@ -244,14 +244,15 @@ impl RegistryManager {
         {
             let cache = self.search_cache.read();
             if let Some(ref cache) = *cache
-                && let Some(results) = cache.get(query, limit) {
-                    debug!(
-                        "Search cache hit for '{}' ({} registries)",
-                        query,
-                        results.len()
-                    );
-                    return Ok(results);
-                }
+                && let Some(results) = cache.get(query, limit)
+            {
+                debug!(
+                    "Search cache hit for '{}' ({} registries)",
+                    query,
+                    results.len()
+                );
+                return Ok(results);
+            }
         }
 
         let registries = self.registries.read().clone();
@@ -318,14 +319,15 @@ impl RegistryManager {
         {
             let cache = self.search_cache.read();
             if let Some(ref cache) = *cache
-                && !grouped.is_empty() {
-                    cache.put(query, grouped.clone());
-                    debug!(
-                        "Search cache stored for '{}' ({} registries)",
-                        query,
-                        grouped.len()
-                    );
-                }
+                && !grouped.is_empty()
+            {
+                cache.put(query, grouped.clone());
+                debug!(
+                    "Search cache stored for '{}' ({} registries)",
+                    query,
+                    grouped.len()
+                );
+            }
         }
 
         Ok(grouped)

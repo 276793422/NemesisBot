@@ -4,7 +4,10 @@ use super::*;
 fn test_url_encode_component_unreserved_passthrough() {
     // Unreserved set (RFC 3986) passes through unchanged.
     assert_eq!(url_encode_component("PantherAng"), "PantherAng");
-    assert_eq!(url_encode_component("zhima_credit_tech"), "zhima_credit_tech");
+    assert_eq!(
+        url_encode_component("zhima_credit_tech"),
+        "zhima_credit_tech"
+    );
     assert_eq!(url_encode_component("a.b-c_d~e"), "a.b-c_d~e");
 }
 

@@ -26,7 +26,12 @@ use super::SttEngine;
 fn stt_new_empty_dir_bails_model_not_found() {
     let tmp = tempfile::tempdir().unwrap();
     // model_sherpa.onnx / model.onnx 都缺 → 报 model.onnx（回退名）
-    let err = format!("{:#}", SttEngine::new(tmp.path(), "m", "auto", true, true, 1).err().expect("must fail"));
+    let err = format!(
+        "{:#}",
+        SttEngine::new(tmp.path(), "m", "auto", true, true, 1)
+            .err()
+            .expect("must fail")
+    );
     assert!(err.contains("STT model not found"), "{err}");
     assert!(err.contains("model.onnx"), "{err}");
 }
@@ -36,7 +41,12 @@ fn stt_new_model_onnx_without_tokens_bails_tokens() {
     // 只放 model.onnx（非 _sherpa 名）→ 命中 model.onnx 回退分支 + 缺 tokens
     let tmp = tempfile::tempdir().unwrap();
     std::fs::write(tmp.path().join("model.onnx"), b"m").unwrap();
-    let err = format!("{:#}", SttEngine::new(tmp.path(), "m", "auto", true, true, 1).err().expect("must fail"));
+    let err = format!(
+        "{:#}",
+        SttEngine::new(tmp.path(), "m", "auto", true, true, 1)
+            .err()
+            .expect("must fail")
+    );
     assert!(err.contains("STT tokens not found"), "{err}");
 }
 
@@ -45,7 +55,12 @@ fn stt_new_model_sherpa_without_tokens_bails_tokens() {
     // model_sherpa.onnx 优先命中
     let tmp = tempfile::tempdir().unwrap();
     std::fs::write(tmp.path().join("model_sherpa.onnx"), b"m").unwrap();
-    let err = format!("{:#}", SttEngine::new(tmp.path(), "m", "auto", true, true, 1).err().expect("must fail"));
+    let err = format!(
+        "{:#}",
+        SttEngine::new(tmp.path(), "m", "auto", true, true, 1)
+            .err()
+            .expect("must fail")
+    );
     assert!(err.contains("STT tokens not found"), "{err}");
 }
 

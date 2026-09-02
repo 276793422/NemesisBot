@@ -837,10 +837,11 @@ impl Reflector {
                     }
                     // Check if next field looks like a count
                     if let Ok(count) = fields.get(i + 1).unwrap_or(&"").parse::<i32>()
-                        && count > 0 {
-                            *freq.entry(tool_name.to_string()).or_insert(0) += count;
-                            break; // one tool per row
-                        }
+                        && count > 0
+                    {
+                        *freq.entry(tool_name.to_string()).or_insert(0) += count;
+                        break; // one tool per row
+                    }
                 }
             }
         }
@@ -917,17 +918,17 @@ impl Reflector {
                 }
                 if path.extension().map(|e| e == "md").unwrap_or(false)
                     && let Ok(metadata) = path.metadata()
-                        && let Ok(modified) = metadata.modified() {
-                            let modified_time: chrono::DateTime<chrono::Local> = modified.into();
-                            if modified_time < cutoff
-                                && std::fs::remove_file(&path).is_ok() {
-                                    deleted += 1;
-                                    tracing::debug!(
-                                        path = %path.display(),
-                                        "[Reflector] Deleted old reflection report"
-                                    );
-                                }
-                        }
+                    && let Ok(modified) = metadata.modified()
+                {
+                    let modified_time: chrono::DateTime<chrono::Local> = modified.into();
+                    if modified_time < cutoff && std::fs::remove_file(&path).is_ok() {
+                        deleted += 1;
+                        tracing::debug!(
+                            path = %path.display(),
+                            "[Reflector] Deleted old reflection report"
+                        );
+                    }
+                }
             }
         }
 
@@ -959,10 +960,11 @@ impl Reflector {
                 }
                 if path.extension().map(|e| e == "md").unwrap_or(false)
                     && let Ok(metadata) = path.metadata()
-                        && let Ok(modified) = metadata.modified()
-                            && latest.as_ref().is_none_or(|(_, t)| modified > *t) {
-                                latest = Some((path, modified));
-                            }
+                    && let Ok(modified) = metadata.modified()
+                    && latest.as_ref().is_none_or(|(_, t)| modified > *t)
+                {
+                    latest = Some((path, modified));
+                }
             }
         }
 
@@ -1004,17 +1006,15 @@ impl Reflector {
                 }
                 if path.extension().map(|e| e == "md").unwrap_or(false)
                     && let Ok(metadata) = path.metadata()
-                        && let Ok(modified) = metadata.modified() {
-                            let modified_time: chrono::DateTime<chrono::Local> = modified.into();
-                            if modified_time < cutoff
-                                && let Err(e) = std::fs::remove_file(&path) {
-                                    errors.push(format!(
-                                        "failed to delete {}: {}",
-                                        path.display(),
-                                        e
-                                    ));
-                                }
-                        }
+                    && let Ok(modified) = metadata.modified()
+                {
+                    let modified_time: chrono::DateTime<chrono::Local> = modified.into();
+                    if modified_time < cutoff
+                        && let Err(e) = std::fs::remove_file(&path)
+                    {
+                        errors.push(format!("failed to delete {}: {}", path.display(), e));
+                    }
+                }
             }
         }
 

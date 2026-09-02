@@ -351,7 +351,11 @@ async fn serve_clamd(
                 if reader.read_line(&mut line).await.is_err() {
                     return;
                 }
-                let cmd = line.trim().strip_prefix('n').unwrap_or(line.trim()).to_string();
+                let cmd = line
+                    .trim()
+                    .strip_prefix('n')
+                    .unwrap_or(line.trim())
+                    .to_string();
                 if cmd == "INSTREAM" {
                     let mut lenbuf = [0u8; 4];
                     let mut terminated = false;
@@ -481,11 +485,7 @@ async fn fake_scan_file_infected_records_stats() {
 
 #[tokio::test]
 async fn fake_scan_content_clean_records_bytes() {
-    let addr = serve_clamd(
-        StdArc::new(|_cmd: &str| Vec::new()),
-        "stream: OK\n",
-    )
-    .await;
+    let addr = serve_clamd(StdArc::new(|_cmd: &str| Vec::new()), "stream: OK\n").await;
     let scanner = scanner_on(&addr);
     let result = scanner.scan_content(b"abcdefghij").await.unwrap();
     assert!(result.clean());

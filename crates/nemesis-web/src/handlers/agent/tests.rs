@@ -347,10 +347,7 @@ async fn checkpoints_with_seeded_store_map_nonempty_list() {
     store.begin(1, "seed prompt");
     let al = AgentLoop::new(Box::new(WebMockProvider), AgentConfig::default());
     al.set_checkpoint_store(store);
-    let ctx = make_ctx_from_loop(
-        Arc::new(al),
-        Some(dir.path().to_string_lossy().to_string()),
-    );
+    let ctx = make_ctx_from_loop(Arc::new(al), Some(dir.path().to_string_lossy().to_string()));
 
     let r = handler
         .handle_cmd("checkpoints", None, &ctx)

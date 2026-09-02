@@ -13,12 +13,20 @@ fn install_driver_builds_official_nsis_sequence() {
         Path::new(r"C:\k\SbieMsg.dll"),
     );
     assert_eq!(c.get_program().to_string_lossy(), r"C:\k\KmdUtil.exe");
-    let args: Vec<String> = c.get_args().map(|a| a.to_string_lossy().to_string()).collect();
+    let args: Vec<String> = c
+        .get_args()
+        .map(|a| a.to_string_lossy().to_string())
+        .collect();
     assert_eq!(
         args,
         vec![
-            "install", "SbieDrv", r"C:\k\SbieDrv.sys", "type=kernel", "start=demand",
-            "msgfile=C:\\k\\SbieMsg.dll", "altitude=86900",
+            "install",
+            "SbieDrv",
+            r"C:\k\SbieDrv.sys",
+            "type=kernel",
+            "start=demand",
+            "msgfile=C:\\k\\SbieMsg.dll",
+            "altitude=86900",
         ]
     );
 }
@@ -30,12 +38,21 @@ fn install_service_builds_own_auto_ugroup_sequence() {
         Path::new(r"C:\k\SbieSvc.exe"),
         Path::new(r"C:\k\SbieMsg.dll"),
     );
-    let args: Vec<String> = c.get_args().map(|a| a.to_string_lossy().to_string()).collect();
+    let args: Vec<String> = c
+        .get_args()
+        .map(|a| a.to_string_lossy().to_string())
+        .collect();
     assert_eq!(
         args,
         vec![
-            "install", "SbieSvc", r"C:\k\SbieSvc.exe", "type=own", "start=auto",
-            "display=Sandboxie Service", "group=UIGroup", "msgfile=C:\\k\\SbieMsg.dll",
+            "install",
+            "SbieSvc",
+            r"C:\k\SbieSvc.exe",
+            "type=own",
+            "start=auto",
+            "display=Sandboxie Service",
+            "group=UIGroup",
+            "msgfile=C:\\k\\SbieMsg.dll",
         ]
     );
 }
@@ -43,11 +60,22 @@ fn install_service_builds_own_auto_ugroup_sequence() {
 #[test]
 fn start_stop_delete_build_simple_verbs() {
     let args = |c: &Command| -> Vec<String> {
-        c.get_args().map(|a| a.to_string_lossy().to_string()).collect()
+        c.get_args()
+            .map(|a| a.to_string_lossy().to_string())
+            .collect()
     };
-    assert_eq!(args(&start(Path::new("k"), "SbieSvc")), vec!["start", "SbieSvc"]);
-    assert_eq!(args(&stop(Path::new("k"), "SbieDrv")), vec!["stop", "SbieDrv"]);
-    assert_eq!(args(&delete(Path::new("k"), "SbieSvc")), vec!["delete", "SbieSvc"]);
+    assert_eq!(
+        args(&start(Path::new("k"), "SbieSvc")),
+        vec!["start", "SbieSvc"]
+    );
+    assert_eq!(
+        args(&stop(Path::new("k"), "SbieDrv")),
+        vec!["stop", "SbieDrv"]
+    );
+    assert_eq!(
+        args(&delete(Path::new("k"), "SbieSvc")),
+        vec!["delete", "SbieSvc"]
+    );
 }
 
 /// 造一个假 KmdUtil：exit `code`，stderr 打一行。
@@ -62,7 +90,11 @@ fn fake_kmdutil(dir: &Path, name: &str, code: u32) -> std::path::PathBuf {
         p
     } else {
         let p = dir.join(format!("{name}.sh"));
-        std::fs::write(&p, format!("#!/bin/sh\necho kmdutil-failure-noise 1>&2\nexit {code}\n")).unwrap();
+        std::fs::write(
+            &p,
+            format!("#!/bin/sh\necho kmdutil-failure-noise 1>&2\nexit {code}\n"),
+        )
+        .unwrap();
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
@@ -88,7 +120,10 @@ fn run_nonzero_strict_propagates_with_stderr_in_message() {
     let err = run(cmd, false).unwrap_err();
     let msg = format!("{err:#}");
     assert!(msg.contains("kmdutil failed"), "{msg}");
-    assert!(msg.contains("kmdutil-failure-noise"), "stderr 必须带回：{msg}");
+    assert!(
+        msg.contains("kmdutil-failure-noise"),
+        "stderr 必须带回：{msg}"
+    );
 }
 
 #[test]
@@ -96,7 +131,10 @@ fn run_nonzero_tolerant_swallows_but_still_ok() {
     let dir = tempfile::tempdir().unwrap();
     let fake = fake_kmdutil(dir.path(), "tol", 1);
     let cmd = Command::new(&fake);
-    assert!(run(cmd, true).is_ok(), "tolerant=true：非零退出只记日志不传播");
+    assert!(
+        run(cmd, true).is_ok(),
+        "tolerant=true：非零退出只记日志不传播"
+    );
 }
 
 #[test]

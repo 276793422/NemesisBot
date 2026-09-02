@@ -9,7 +9,7 @@
 use std::path::Path;
 use std::sync::Mutex;
 
-use rusqlite::{params, Connection, OptionalExtension};
+use rusqlite::{Connection, OptionalExtension, params};
 
 use crate::assignment::{Actor, AssignmentType};
 use crate::db;
@@ -61,9 +61,10 @@ impl BoardStore {
             return Err("issue title must not be empty".to_string());
         }
         if let Some(at) = &new.assignee
-            && new.assignee_id.as_deref().unwrap_or("").trim().is_empty() {
-                return Err(format!("assignee {} requires assignee_id", at));
-            }
+            && new.assignee_id.as_deref().unwrap_or("").trim().is_empty()
+        {
+            return Err(format!("assignee {} requires assignee_id", at));
+        }
 
         let mut conn = self.conn.lock().map_err(|e| e.to_string())?;
         let tx = conn.transaction().map_err(|e| e.to_string())?;
@@ -153,10 +154,14 @@ impl BoardStore {
     /// 按 id 取 issue；不存在报错。
     pub fn get_issue(&self, id: i64) -> Result<Issue, String> {
         let conn = self.conn.lock().map_err(|e| e.to_string())?;
-        conn.query_row("SELECT * FROM issue WHERE id = ?1", params![id], row_to_issue)
-            .optional()
-            .map_err(|e| e.to_string())?
-            .ok_or_else(|| format!("issue {id} not found"))
+        conn.query_row(
+            "SELECT * FROM issue WHERE id = ?1",
+            params![id],
+            row_to_issue,
+        )
+        .optional()
+        .map_err(|e| e.to_string())?
+        .ok_or_else(|| format!("issue {id} not found"))
     }
 
     /// 按编号取（如 `NB-42`）；不存在报错。
@@ -215,27 +220,45 @@ impl BoardStore {
         let rows = stmt
             .query_map(refs.as_slice(), row_to_issue)
             .map_err(|e| e.to_string())?;
-        rows.collect::<Result<Vec<_>, _>>().map_err(|e| e.to_string())
+        rows.collect::<Result<Vec<_>, _>>()
+            .map_err(|e| e.to_string())
     }
 
     /// 字段级部分更新（status/assignee 不走这里——分别走 [`Self::transition_issue`]
     /// / [`Self::assign_issue`] 保证审计）。变更字段写 updated 活动。
-    pub fn update_issue(&self, id: i64, patch: &IssuePatch, actor: &Actor) -> Result<Issue, String> {
+    pub fn update_issue(
+        &self,
+        id: i64,
+        patch: &IssuePatch,
+        actor: &Actor,
+    ) -> Result<Issue, String> {
         let mut conn = self.conn.lock().map_err(|e| e.to_string())?;
         let tx = conn.transaction().map_err(|e| e.to_string())?;
         let old: Issue = tx
-            .query_row("SELECT * FROM issue WHERE id = ?1", params![id], row_to_issue)
+            .query_row(
+                "SELECT * FROM issue WHERE id = ?1",
+                params![id],
+                row_to_issue,
+            )
             .optional()
             .map_err(|e| e.to_string())?
             .ok_or_else(|| format!("issue {id} not found"))?;
 
         let mut changes: Vec<String> = Vec::new();
         let title = apply_patch(&mut changes, "title", &old.title, &patch.title);
-        let description =
-            apply_patch(&mut changes, "description", &old.description, &patch.description);
+        let description = apply_patch(
+            &mut changes,
+            "description",
+            &old.description,
+            &patch.description,
+        );
         let priority = apply_patch(&mut changes, "priority", &old.priority, &patch.priority);
-        let project_id =
-            apply_set_opt(&mut changes, "project_id", &old.project_id, &patch.project_id);
+        let project_id = apply_set_opt(
+            &mut changes,
+            "project_id",
+            &old.project_id,
+            &patch.project_id,
+        );
         let due_date = apply_set_opt(&mut changes, "due_date", &old.due_date, &patch.due_date);
         let position = apply_patch(&mut changes, "position", &old.position, &patch.position);
         let acceptance_criteria = apply_set_opt(
@@ -298,7 +321,11 @@ impl BoardStore {
         let mut conn = self.conn.lock().map_err(|e| e.to_string())?;
         let tx = conn.transaction().map_err(|e| e.to_string())?;
         let old: Issue = tx
-            .query_row("SELECT * FROM issue WHERE id = ?1", params![id], row_to_issue)
+            .query_row(
+                "SELECT * FROM issue WHERE id = ?1",
+                params![id],
+                row_to_issue,
+            )
             .optional()
             .map_err(|e| e.to_string())?
             .ok_or_else(|| format!("issue {id} not found"))?;
@@ -313,21 +340,15 @@ impl BoardStore {
         .map_err(|e| e.to_string())?;
 
         let note = format!("{} → {}", old.status, to);
-        insert_comment(
-            &tx,
-            id,
-            actor,
-            &note,
-            None,
-            CommentType::StatusChange,
-            now,
-        )?;
+        insert_comment(&tx, id, actor, &note, None, CommentType::StatusChange, now)?;
         insert_activity(
             &tx,
             id,
             actor,
             "status_changed",
-            Some(&serde_json::json!({ "from": old.status.as_str(), "to": to.as_str() }).to_string()),
+            Some(
+                &serde_json::json!({ "from": old.status.as_str(), "to": to.as_str() }).to_string(),
+            ),
             now,
         )?;
         // 站内通知（W2 P3）：指派对象（非操作者本人）收到状态变化——状态在
@@ -376,7 +397,11 @@ impl BoardStore {
         let mut conn = self.conn.lock().map_err(|e| e.to_string())?;
         let tx = conn.transaction().map_err(|e| e.to_string())?;
         let old: Issue = tx
-            .query_row("SELECT * FROM issue WHERE id = ?1", params![id], row_to_issue)
+            .query_row(
+                "SELECT * FROM issue WHERE id = ?1",
+                params![id],
+                row_to_issue,
+            )
             .optional()
             .map_err(|e| e.to_string())?
             .ok_or_else(|| format!("issue {id} not found"))?;
@@ -384,12 +409,7 @@ impl BoardStore {
         let now = Self::now();
         tx.execute(
             "UPDATE issue SET assignee_type = ?1, assignee_id = ?2, updated_at = ?3 WHERE id = ?4",
-            params![
-                assignee.map(|a| a.as_str()),
-                assignee_id,
-                now,
-                id,
-            ],
+            params![assignee.map(|a| a.as_str()), assignee_id, now, id,],
         )
         .map_err(|e| e.to_string())?;
 
@@ -402,15 +422,18 @@ impl BoardStore {
             id,
             actor,
             "assigned",
-            Some(&format!("{}: {} → {detail}", actor.id, display_assignee(&old)), ),
+            Some(&format!(
+                "{}: {} → {detail}",
+                actor.id,
+                display_assignee(&old)
+            )),
             now,
         )?;
         if let (Some(at), Some(aid)) = (&assignee, &assignee_id) {
             let new_assignee = Actor::new(at.as_str(), aid);
             insert_subscriber(&tx, id, &new_assignee, "assignee")?;
             // 站内通知（W2 P3）：指派真的变了且不是自己指自己 → 通知被指派人。
-            let changed =
-                old.assignee != assignee || old.assignee_id != assignee_id;
+            let changed = old.assignee != assignee || old.assignee_id != assignee_id;
             if changed && new_assignee != *actor {
                 insert_notification(
                     &tx,
@@ -444,7 +467,11 @@ impl BoardStore {
         let mut conn = self.conn.lock().map_err(|e| e.to_string())?;
         let tx = conn.transaction().map_err(|e| e.to_string())?;
         let old: Issue = tx
-            .query_row("SELECT * FROM issue WHERE id = ?1", params![id], row_to_issue)
+            .query_row(
+                "SELECT * FROM issue WHERE id = ?1",
+                params![id],
+                row_to_issue,
+            )
             .optional()
             .map_err(|e| e.to_string())?
             .ok_or_else(|| format!("issue {id} not found"))?;
@@ -553,9 +580,10 @@ impl BoardStore {
         if new.ctype == CommentType::Comment {
             let mut recipients = self_subscribers(&conn, new.issue_id)?;
             if let Some(a) = &assignee
-                && !recipients.iter().any(|r| r == a) {
-                    recipients.push(a.clone());
-                }
+                && !recipients.iter().any(|r| r == a)
+            {
+                recipients.push(a.clone());
+            }
             let mentioned = extract_mentions(&new.content, &recipients);
             for m in &mentioned {
                 if *m != new.author {
@@ -610,7 +638,8 @@ impl BoardStore {
         let rows = stmt
             .query_map(params![issue_id], row_to_comment)
             .map_err(|e| e.to_string())?;
-        rows.collect::<Result<Vec<_>, _>>().map_err(|e| e.to_string())
+        rows.collect::<Result<Vec<_>, _>>()
+            .map_err(|e| e.to_string())
     }
 
     /// 时间线（activity_log，升序）。
@@ -622,7 +651,8 @@ impl BoardStore {
         let rows = stmt
             .query_map(params![issue_id], row_to_activity)
             .map_err(|e| e.to_string())?;
-        rows.collect::<Result<Vec<_>, _>>().map_err(|e| e.to_string())
+        rows.collect::<Result<Vec<_>, _>>()
+            .map_err(|e| e.to_string())
     }
 
     /// 订阅（幂等；reason 覆盖更新）。
@@ -660,7 +690,8 @@ impl BoardStore {
                 })
             })
             .map_err(|e| e.to_string())?;
-        rows.collect::<Result<Vec<_>, _>>().map_err(|e| e.to_string())
+        rows.collect::<Result<Vec<_>, _>>()
+            .map_err(|e| e.to_string())
     }
 
     // -----------------------------------------------------------------------
@@ -699,22 +730,31 @@ impl BoardStore {
 
     pub fn get_project(&self, id: i64) -> Result<Project, String> {
         let conn = self.conn.lock().map_err(|e| e.to_string())?;
-        conn.query_row("SELECT * FROM project WHERE id = ?1", params![id], row_to_project)
-            .optional()
-            .map_err(|e| e.to_string())?
-            .ok_or_else(|| format!("project {id} not found"))
+        conn.query_row(
+            "SELECT * FROM project WHERE id = ?1",
+            params![id],
+            row_to_project,
+        )
+        .optional()
+        .map_err(|e| e.to_string())?
+        .ok_or_else(|| format!("project {id} not found"))
     }
 
     /// 字段级部分更新项目（None = 不改；改名撞 UNIQUE 约束时报错透传）。
     /// 归档走 `status = "archived"`（软删除——列表仍可见）。
     pub fn update_project(&self, id: i64, patch: &ProjectPatch) -> Result<Project, String> {
         if let Some(n) = &patch.name
-            && n.trim().is_empty() {
-                return Err("project name must not be empty".to_string());
-            }
+            && n.trim().is_empty()
+        {
+            return Err("project name must not be empty".to_string());
+        }
         let conn = self.conn.lock().map_err(|e| e.to_string())?;
         let old: Project = conn
-            .query_row("SELECT * FROM project WHERE id = ?1", params![id], row_to_project)
+            .query_row(
+                "SELECT * FROM project WHERE id = ?1",
+                params![id],
+                row_to_project,
+            )
             .optional()
             .map_err(|e| e.to_string())?
             .ok_or_else(|| format!("project {id} not found"))?;
@@ -739,7 +779,8 @@ impl BoardStore {
         let rows = stmt
             .query_map([], row_to_project)
             .map_err(|e| e.to_string())?;
-        rows.collect::<Result<Vec<_>, _>>().map_err(|e| e.to_string())
+        rows.collect::<Result<Vec<_>, _>>()
+            .map_err(|e| e.to_string())
     }
 
     // -----------------------------------------------------------------------
@@ -789,7 +830,8 @@ impl BoardStore {
                 })
             })
             .map_err(|e| e.to_string())?;
-        rows.collect::<Result<Vec<_>, _>>().map_err(|e| e.to_string())
+        rows.collect::<Result<Vec<_>, _>>()
+            .map_err(|e| e.to_string())
     }
 
     /// 按 id 取附件元数据；不存在报错（attachment.get 下载入口用）。
@@ -892,7 +934,8 @@ impl BoardStore {
         let rows = stmt
             .query_map(refs.as_slice(), row_to_notification)
             .map_err(|e| e.to_string())?;
-        rows.collect::<Result<Vec<_>, _>>().map_err(|e| e.to_string())
+        rows.collect::<Result<Vec<_>, _>>()
+            .map_err(|e| e.to_string())
     }
 
     /// 标记单条已读；返回是否真的改变了状态（幂等：已读重复标记 = false）。
@@ -977,7 +1020,13 @@ impl BoardStore {
         conn.execute(
             "INSERT INTO issue_dispatch (task_id, issue_id, worker_id, state, dispatched_at)
              VALUES (?1, ?2, ?3, ?4, ?5)",
-            params![task_id, issue_id, worker_id, dispatch_state::DISPATCHED, now],
+            params![
+                task_id,
+                issue_id,
+                worker_id,
+                dispatch_state::DISPATCHED,
+                now
+            ],
         )
         .map_err(|e| format!("insert_dispatch: {e}"))?;
         insert_activity(
@@ -985,9 +1034,7 @@ impl BoardStore {
             issue_id,
             actor,
             "dispatched",
-            Some(
-                &serde_json::json!({ "task_id": task_id, "worker_id": worker_id }).to_string(),
-            ),
+            Some(&serde_json::json!({ "task_id": task_id, "worker_id": worker_id }).to_string()),
             now,
         )?;
         Ok(())
@@ -1018,7 +1065,8 @@ impl BoardStore {
         let rows = stmt
             .query_map(params![issue_id], row_to_dispatch)
             .map_err(|e| e.to_string())?;
-        rows.collect::<Result<Vec<_>, _>>().map_err(|e| e.to_string())
+        rows.collect::<Result<Vec<_>, _>>()
+            .map_err(|e| e.to_string())
     }
 
     /// issue 是否有未完结（`dispatched`）派发（防重复派发）。
@@ -1082,7 +1130,8 @@ impl BoardStore {
         let rows = stmt
             .query_map(params![dispatch_state::DISPATCHED], row_to_dispatch)
             .map_err(|e| e.to_string())?;
-        rows.collect::<Result<Vec<_>, _>>().map_err(|e| e.to_string())
+        rows.collect::<Result<Vec<_>, _>>()
+            .map_err(|e| e.to_string())
     }
 
     /// 管理端取消派发（P4 per-task cancel 的 A 侧落账）：state → cancelled +
@@ -1090,7 +1139,11 @@ impl BoardStore {
     /// 返回 `Ok(Some(record))` 表示本次调用赢得竞态（调用方据此才下行
     /// task_cancel RPC）；`Ok(None)` = 已终结（写回回调 / 超时 sweep 先到），
     /// 幂等跳过、不写活动。
-    pub fn cancel_dispatch(&self, task_id: &str, actor: &Actor) -> Result<Option<DispatchRecord>, String> {
+    pub fn cancel_dispatch(
+        &self,
+        task_id: &str,
+        actor: &Actor,
+    ) -> Result<Option<DispatchRecord>, String> {
         let mut conn = self.conn.lock().map_err(|e| e.to_string())?;
         let tx = conn.transaction().map_err(|e| e.to_string())?;
         let now = Self::now();
@@ -1099,7 +1152,12 @@ impl BoardStore {
                 "UPDATE issue_dispatch
                  SET state = ?2, completed_at = ?3
                  WHERE task_id = ?1 AND state = ?4",
-                params![task_id, dispatch_state::CANCELLED, now, dispatch_state::DISPATCHED],
+                params![
+                    task_id,
+                    dispatch_state::CANCELLED,
+                    now,
+                    dispatch_state::DISPATCHED
+                ],
             )
             .map_err(|e| e.to_string())?;
         if n == 0 {
@@ -1129,7 +1187,11 @@ impl BoardStore {
     /// `WHERE state = 'dispatched'` 守卫与写回回调竞态——`Ok(Some(record))` =
     /// 本次调用赢得竞态（调用方负责 ⛔ System 评论 + dispatch_failed 通知）；
     /// `Ok(None)` = 回调已先终结，跳过。
-    pub fn fail_dispatch(&self, task_id: &str, details: &str) -> Result<Option<DispatchRecord>, String> {
+    pub fn fail_dispatch(
+        &self,
+        task_id: &str,
+        details: &str,
+    ) -> Result<Option<DispatchRecord>, String> {
         let mut conn = self.conn.lock().map_err(|e| e.to_string())?;
         let tx = conn.transaction().map_err(|e| e.to_string())?;
         let now = Self::now();
@@ -1138,7 +1200,12 @@ impl BoardStore {
                 "UPDATE issue_dispatch
                  SET state = ?2, completed_at = ?3
                  WHERE task_id = ?1 AND state = ?4",
-                params![task_id, dispatch_state::FAILED, now, dispatch_state::DISPATCHED],
+                params![
+                    task_id,
+                    dispatch_state::FAILED,
+                    now,
+                    dispatch_state::DISPATCHED
+                ],
             )
             .map_err(|e| e.to_string())?;
         if n == 0 {
@@ -1208,10 +1275,14 @@ impl BoardStore {
 
     pub fn get_autopilot(&self, id: i64) -> Result<Autopilot, String> {
         let conn = self.conn.lock().map_err(|e| e.to_string())?;
-        conn.query_row("SELECT * FROM autopilot WHERE id = ?1", params![id], row_to_autopilot)
-            .optional()
-            .map_err(|e| e.to_string())?
-            .ok_or_else(|| format!("autopilot {id} not found"))
+        conn.query_row(
+            "SELECT * FROM autopilot WHERE id = ?1",
+            params![id],
+            row_to_autopilot,
+        )
+        .optional()
+        .map_err(|e| e.to_string())?
+        .ok_or_else(|| format!("autopilot {id} not found"))
     }
 
     pub fn list_autopilots(&self) -> Result<Vec<Autopilot>, String> {
@@ -1222,26 +1293,34 @@ impl BoardStore {
         let rows = stmt
             .query_map([], row_to_autopilot)
             .map_err(|e| e.to_string())?;
-        rows.collect::<Result<Vec<_>, _>>().map_err(|e| e.to_string())
+        rows.collect::<Result<Vec<_>, _>>()
+            .map_err(|e| e.to_string())
     }
 
     /// 字段级部分更新（None = 不改；空串 title/name 拒绝）。
     pub fn update_autopilot(&self, id: i64, patch: &AutopilotPatch) -> Result<Autopilot, String> {
         if let Some(n) = &patch.name
-            && n.trim().is_empty() {
-                return Err("autopilot name must not be empty".to_string());
-            }
+            && n.trim().is_empty()
+        {
+            return Err("autopilot name must not be empty".to_string());
+        }
         if let Some(t) = &patch.title
-            && t.trim().is_empty() {
-                return Err("autopilot title must not be empty".to_string());
-            }
+            && t.trim().is_empty()
+        {
+            return Err("autopilot title must not be empty".to_string());
+        }
         if let Some(c) = &patch.cron
-            && c.trim().is_empty() {
-                return Err("autopilot cron must not be empty".to_string());
-            }
+            && c.trim().is_empty()
+        {
+            return Err("autopilot cron must not be empty".to_string());
+        }
         let conn = self.conn.lock().map_err(|e| e.to_string())?;
         let old: Autopilot = conn
-            .query_row("SELECT * FROM autopilot WHERE id = ?1", params![id], row_to_autopilot)
+            .query_row(
+                "SELECT * FROM autopilot WHERE id = ?1",
+                params![id],
+                row_to_autopilot,
+            )
             .optional()
             .map_err(|e| e.to_string())?
             .ok_or_else(|| format!("autopilot {id} not found"))?;
@@ -1260,8 +1339,16 @@ impl BoardStore {
                  project_id = ?7, target = ?8, enabled = ?9, updated_at = ?10
              WHERE id = ?1",
             params![
-                id, name, cron, title, description, priority, project_id,
-                target, enabled as i64, Self::now(),
+                id,
+                name,
+                cron,
+                title,
+                description,
+                priority,
+                project_id,
+                target,
+                enabled as i64,
+                Self::now(),
             ],
         )
         .map_err(|e| format!("update_autopilot: {e}"))?;
@@ -1328,7 +1415,8 @@ impl BoardStore {
         let rows = stmt
             .query_map(params![origin_type, origin_id, limit as i64], row_to_issue)
             .map_err(|e| e.to_string())?;
-        rows.collect::<Result<Vec<_>, _>>().map_err(|e| e.to_string())
+        rows.collect::<Result<Vec<_>, _>>()
+            .map_err(|e| e.to_string())
     }
 
     // -----------------------------------------------------------------------
@@ -1345,16 +1433,17 @@ impl BoardStore {
             .query_map([], |r| {
                 let s: String = r.get(0)?;
                 let n: i64 = r.get(1)?;
-                IssueStatus::from_str(&s)
-                    .map(|st| (st, n))
-                    .ok_or_else(|| rusqlite::Error::FromSqlConversionFailure(
+                IssueStatus::from_str(&s).map(|st| (st, n)).ok_or_else(|| {
+                    rusqlite::Error::FromSqlConversionFailure(
                         0,
                         rusqlite::types::Type::Text,
                         format!("unknown status {s}").into(),
-                    ))
+                    )
+                })
             })
             .map_err(|e| e.to_string())?;
-        rows.collect::<Result<Vec<_>, _>>().map_err(|e| e.to_string())
+        rows.collect::<Result<Vec<_>, _>>()
+            .map_err(|e| e.to_string())
     }
 }
 
@@ -1457,11 +1546,7 @@ fn insert_subscriber(
     Ok(())
 }
 
-fn insert_notification(
-    conn: &Connection,
-    n: &NewNotification,
-    now: i64,
-) -> Result<(), String> {
+fn insert_notification(conn: &Connection, n: &NewNotification, now: i64) -> Result<(), String> {
     conn.execute(
         "INSERT INTO notification (recipient_type, recipient_id, kind, title, content, issue_id, read, created_at)
          VALUES (?1, ?2, ?3, ?4, ?5, ?6, 0, ?7)",
@@ -1481,7 +1566,8 @@ fn self_subscribers(conn: &Connection, issue_id: i64) -> Result<Vec<Actor>, Stri
             Ok(Actor::new(&r.get::<_, String>(0)?, &r.get::<_, String>(1)?))
         })
         .map_err(|e| e.to_string())?;
-    rows.collect::<Result<Vec<_>, _>>().map_err(|e| e.to_string())
+    rows.collect::<Result<Vec<_>, _>>()
+        .map_err(|e| e.to_string())
 }
 
 /// 从评论内容提取 @提及：`@<id>` token，与候选 Actor 的 id 精确匹配（kind
@@ -1501,9 +1587,10 @@ fn extract_mentions(content: &str, candidates: &[Actor]) -> Vec<Actor> {
             continue;
         }
         if let Some(a) = candidates.iter().find(|a| a.id == mentioned)
-            && !hits.iter().any(|h: &Actor| h.id == a.id) {
-                hits.push(a.clone());
-            }
+            && !hits.iter().any(|h: &Actor| h.id == a.id)
+        {
+            hits.push(a.clone());
+        }
     }
     hits
 }
@@ -1557,8 +1644,7 @@ fn row_to_notification(row: &rusqlite::Row<'_>) -> rusqlite::Result<Notification
 
 fn row_to_issue(row: &rusqlite::Row<'_>) -> rusqlite::Result<Issue> {
     let status_s: String = row.get("status")?;
-    let status =
-        IssueStatus::from_str(&status_s).unwrap_or(IssueStatus::Backlog);
+    let status = IssueStatus::from_str(&status_s).unwrap_or(IssueStatus::Backlog);
     let assignee_type: Option<String> = row.get("assignee_type")?;
     let origin_type: Option<String> = row.get("origin_type")?;
     let origin_id: Option<String> = row.get("origin_id")?;
@@ -1571,14 +1657,20 @@ fn row_to_issue(row: &rusqlite::Row<'_>) -> rusqlite::Result<Issue> {
         priority: row.get("priority")?,
         assignee: assignee_type.as_deref().and_then(AssignmentType::from_str),
         assignee_id: row.get("assignee_id")?,
-        creator: Actor::new(&row.get::<_, String>("creator_type")?, &row.get::<_, String>("creator_id")?),
+        creator: Actor::new(
+            &row.get::<_, String>("creator_type")?,
+            &row.get::<_, String>("creator_id")?,
+        ),
         parent_issue_id: row.get("parent_issue_id")?,
         project_id: row.get("project_id")?,
         due_date: row.get("due_date")?,
         position: row.get("position")?,
         acceptance_criteria: row.get("acceptance_criteria")?,
         origin: match (origin_type, origin_id) {
-            (Some(t), Some(i)) => Some(crate::models::TaskOrigin { origin_type: t, origin_id: i }),
+            (Some(t), Some(i)) => Some(crate::models::TaskOrigin {
+                origin_type: t,
+                origin_id: i,
+            }),
             _ => None,
         },
         created_at: row.get("created_at")?,
@@ -1590,7 +1682,10 @@ fn row_to_comment(row: &rusqlite::Row<'_>) -> rusqlite::Result<Comment> {
     Ok(Comment {
         id: row.get("id")?,
         issue_id: row.get("issue_id")?,
-        author: Actor::new(&row.get::<_, String>("author_type")?, &row.get::<_, String>("author_id")?),
+        author: Actor::new(
+            &row.get::<_, String>("author_type")?,
+            &row.get::<_, String>("author_id")?,
+        ),
         content: row.get("content")?,
         parent_id: row.get("parent_id")?,
         ctype: CommentType::from_str(&row.get::<_, String>("ctype")?)
@@ -1603,7 +1698,10 @@ fn row_to_activity(row: &rusqlite::Row<'_>) -> rusqlite::Result<ActivityLog> {
     Ok(ActivityLog {
         id: row.get("id")?,
         issue_id: row.get("issue_id")?,
-        actor: Actor::new(&row.get::<_, String>("actor_type")?, &row.get::<_, String>("actor_id")?),
+        actor: Actor::new(
+            &row.get::<_, String>("actor_type")?,
+            &row.get::<_, String>("actor_id")?,
+        ),
         action: row.get("action")?,
         details: row.get("details")?,
         created_at: row.get("created_at")?,
@@ -1619,9 +1717,7 @@ fn row_to_project(row: &rusqlite::Row<'_>) -> rusqlite::Result<Project> {
         description: row.get("description")?,
         status: row.get("status")?,
         priority: row.get("priority")?,
-        lead: lead_type
-            .zip(lead_id)
-            .map(|(k, i)| Actor::new(&k, &i)),
+        lead: lead_type.zip(lead_id).map(|(k, i)| Actor::new(&k, &i)),
         icon: row.get("icon")?,
         created_at: row.get("created_at")?,
     })

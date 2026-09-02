@@ -59,12 +59,13 @@ pub fn validate(cfg: &BuildConfig, manifest: &FeatureManifest) -> Vec<String> {
     for f in &manifest.features {
         if f.is_enum()
             && let Some(chosen) = cfg.get_enum(&f.id)
-                && !f.options.iter().any(|o| o == chosen) {
-                    problems.push(format!(
-                        "feature `{}` set to `{}` which is not in {:?}",
-                        f.id, chosen, f.options
-                    ));
-                }
+            && !f.options.iter().any(|o| o == chosen)
+        {
+            problems.push(format!(
+                "feature `{}` set to `{}` which is not in {:?}",
+                f.id, chosen, f.options
+            ));
+        }
     }
     problems
 }

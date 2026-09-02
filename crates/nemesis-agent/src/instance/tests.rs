@@ -642,9 +642,15 @@ fn compress_history_all_system_turns_is_noop() {
     instance.set_history(vec![mk_sys("s1"), mk_sys("s2"), mk_sys("s3")]);
     instance.compress_history();
     let history = instance.get_history();
-    assert_eq!(history.len(), 3, "all-system history must not be compressed");
+    assert_eq!(
+        history.len(),
+        3,
+        "all-system history must not be compressed"
+    );
     assert!(
-        !history.iter().any(|t| t.content.contains("Session compressed")),
+        !history
+            .iter()
+            .any(|t| t.content.contains("Session compressed")),
         "no compression note for empty non-system set"
     );
 }

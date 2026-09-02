@@ -28,7 +28,10 @@ fn f32_to_s16_clamps() {
 
 #[test]
 fn init_bad_path_returns_err_not_panic() {
-    let err = format!("{:#}", super::init(std::path::Path::new("Z:/no/such/aec.dll")).unwrap_err());
+    let err = format!(
+        "{:#}",
+        super::init(std::path::Path::new("Z:/no/such/aec.dll")).unwrap_err()
+    );
     assert!(err.contains("Failed to load AEC lib"), "{err}");
     assert!(err.contains("Z:/no/such/aec.dll"), "{err}");
 }

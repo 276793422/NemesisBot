@@ -90,35 +90,34 @@ pub fn convert_config(data: &HashMap<String, Value>) -> (Value, Vec<String>) {
 
     // Process agents.defaults
     if let Some(agents) = data.get("agents").and_then(|v| v.as_object())
-        && let Some(defaults) = agents.get("defaults").and_then(|v| v.as_object()) {
-            if let Some(llm) = defaults.get("llm").and_then(|v| v.as_str()) {
-                config["agents"]["defaults"]["llm"] = Value::String(llm.to_string());
-            } else if let Some(model) = defaults.get("model").and_then(|v| v.as_str()) {
-                let provider = infer_provider_from_model(model);
-                let llm = if provider.is_empty() {
-                    format!("zhipu/{}", model)
-                } else {
-                    format!("{}/{}", provider, model)
-                };
-                config["agents"]["defaults"]["llm"] = Value::String(llm);
-            }
-            if let Some(max_tokens) = defaults.get("max_tokens").and_then(|v| v.as_i64()) {
-                config["agents"]["defaults"]["max_tokens"] = Value::Number(max_tokens.into());
-            }
-            if let Some(temperature) = defaults.get("temperature").and_then(|v| v.as_f64()) {
-                config["agents"]["defaults"]["temperature"] = serde_json::json!(temperature);
-            }
-            if let Some(max_tool_iter) =
-                defaults.get("max_tool_iterations").and_then(|v| v.as_i64())
-            {
-                config["agents"]["defaults"]["max_tool_iterations"] =
-                    Value::Number(max_tool_iter.into());
-            }
-            if let Some(workspace) = defaults.get("workspace").and_then(|v| v.as_str()) {
-                let rewritten = workspace.replace(".openclaw", ".nemesisbot");
-                config["agents"]["defaults"]["workspace"] = Value::String(rewritten);
-            }
+        && let Some(defaults) = agents.get("defaults").and_then(|v| v.as_object())
+    {
+        if let Some(llm) = defaults.get("llm").and_then(|v| v.as_str()) {
+            config["agents"]["defaults"]["llm"] = Value::String(llm.to_string());
+        } else if let Some(model) = defaults.get("model").and_then(|v| v.as_str()) {
+            let provider = infer_provider_from_model(model);
+            let llm = if provider.is_empty() {
+                format!("zhipu/{}", model)
+            } else {
+                format!("{}/{}", provider, model)
+            };
+            config["agents"]["defaults"]["llm"] = Value::String(llm);
         }
+        if let Some(max_tokens) = defaults.get("max_tokens").and_then(|v| v.as_i64()) {
+            config["agents"]["defaults"]["max_tokens"] = Value::Number(max_tokens.into());
+        }
+        if let Some(temperature) = defaults.get("temperature").and_then(|v| v.as_f64()) {
+            config["agents"]["defaults"]["temperature"] = serde_json::json!(temperature);
+        }
+        if let Some(max_tool_iter) = defaults.get("max_tool_iterations").and_then(|v| v.as_i64()) {
+            config["agents"]["defaults"]["max_tool_iterations"] =
+                Value::Number(max_tool_iter.into());
+        }
+        if let Some(workspace) = defaults.get("workspace").and_then(|v| v.as_str()) {
+            let rewritten = workspace.replace(".openclaw", ".nemesisbot");
+            config["agents"]["defaults"]["workspace"] = Value::String(rewritten);
+        }
+    }
 
     // Process providers
     if let Some(providers) = data.get("providers").and_then(|v| v.as_object()) {
@@ -221,35 +220,35 @@ pub fn convert_config(data: &HashMap<String, Value>) -> (Value, Vec<String>) {
     // Migrate old "tools.web.search" config to "tools.web.brave" (mirrors Go lines 256-272)
     if let Some(tools) = data.get("tools").and_then(|v| v.as_object())
         && let Some(web) = tools.get("web").and_then(|v| v.as_object())
-            && let Some(search) = web.get("search").and_then(|v| v.as_object()) {
-                // Ensure tools.web.brave exists in config
-                if config["tools"].is_null() {
-                    config["tools"] = serde_json::json!({});
-                }
-                if config["tools"]["web"].is_null() {
-                    config["tools"]["web"] = serde_json::json!({});
-                }
-                if config["tools"]["web"]["brave"].is_null() {
-                    config["tools"]["web"]["brave"] = serde_json::json!({});
-                }
+        && let Some(search) = web.get("search").and_then(|v| v.as_object())
+    {
+        // Ensure tools.web.brave exists in config
+        if config["tools"].is_null() {
+            config["tools"] = serde_json::json!({});
+        }
+        if config["tools"]["web"].is_null() {
+            config["tools"]["web"] = serde_json::json!({});
+        }
+        if config["tools"]["web"]["brave"].is_null() {
+            config["tools"]["web"]["brave"] = serde_json::json!({});
+        }
 
-                if let Some(api_key) = search.get("api_key").and_then(|v| v.as_str()) {
-                    config["tools"]["web"]["brave"]["api_key"] = Value::String(api_key.to_string());
-                    if !api_key.is_empty() {
-                        config["tools"]["web"]["brave"]["enabled"] = Value::Bool(true);
-                    }
-                }
-                if let Some(max_results) = search.get("max_results").and_then(|v| v.as_i64()) {
-                    config["tools"]["web"]["brave"]["max_results"] =
-                        Value::Number(max_results.into());
-                    // Also set DuckDuckGo max_results, matching Go behavior
-                    if config["tools"]["web"]["duck_duck_go"].is_null() {
-                        config["tools"]["web"]["duck_duck_go"] = serde_json::json!({});
-                    }
-                    config["tools"]["web"]["duck_duck_go"]["max_results"] =
-                        Value::Number(max_results.into());
-                }
+        if let Some(api_key) = search.get("api_key").and_then(|v| v.as_str()) {
+            config["tools"]["web"]["brave"]["api_key"] = Value::String(api_key.to_string());
+            if !api_key.is_empty() {
+                config["tools"]["web"]["brave"]["enabled"] = Value::Bool(true);
             }
+        }
+        if let Some(max_results) = search.get("max_results").and_then(|v| v.as_i64()) {
+            config["tools"]["web"]["brave"]["max_results"] = Value::Number(max_results.into());
+            // Also set DuckDuckGo max_results, matching Go behavior
+            if config["tools"]["web"]["duck_duck_go"].is_null() {
+                config["tools"]["web"]["duck_duck_go"] = serde_json::json!({});
+            }
+            config["tools"]["web"]["duck_duck_go"]["max_results"] =
+                Value::Number(max_results.into());
+        }
+    }
 
     (config, warnings)
 }

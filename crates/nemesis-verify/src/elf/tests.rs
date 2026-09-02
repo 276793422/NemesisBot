@@ -38,7 +38,10 @@ fn build_elf(spec: &ElfSpec) -> Vec<u8> {
     let hdr_len = if spec.is64 { 64 } else { 52 };
     let phoff = hdr_len as u64;
     let phentsize: u64 = if spec.is64 { 56 } else { 32 };
-    let shentsize = spec.shdr.map(|(_, se, _)| se).unwrap_or(if spec.is64 { 64 } else { 40 });
+    let shentsize = spec
+        .shdr
+        .map(|(_, se, _)| se)
+        .unwrap_or(if spec.is64 { 64 } else { 40 });
     let shnum = spec.shdr.map(|(_, _, sn)| sn).unwrap_or(0);
     let shoff = spec.shdr.map(|(so, _, _)| so).unwrap_or(0);
 
@@ -136,7 +139,10 @@ fn compute_l_zero_shoff_ignored_and_l_cannot_exceed_file() {
         shdr: None,
         force_len: Some(0x100),
     });
-    assert!(matches!(ElfCodec.compute_l(&over), Err(CodecError::Malformed(_))));
+    assert!(matches!(
+        ElfCodec.compute_l(&over),
+        Err(CodecError::Malformed(_))
+    ));
 }
 
 #[test]

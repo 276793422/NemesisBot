@@ -71,7 +71,10 @@ fn set_history_reinserts_system_prompt_when_new_history_lacks_one() {
         },
     ]);
     let hist = instance.get_history();
-    assert_eq!(hist[0].role, "system", "system prompt re-inserted at index 0");
+    assert_eq!(
+        hist[0].role, "system",
+        "system prompt re-inserted at index 0"
+    );
     assert_eq!(hist[1].content, "fresh from disk");
     assert_eq!(hist.len(), 3);
 }

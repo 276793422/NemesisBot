@@ -195,7 +195,10 @@ fn violation_message_all_variants() {
         "unknown field 'pth' (did you mean 'path'?)"
     );
     assert_eq!(
-        Violation::MissingRequired { field: "path".into() }.message(),
+        Violation::MissingRequired {
+            field: "path".into()
+        }
+        .message(),
         "missing required field 'path'"
     );
     assert_eq!(

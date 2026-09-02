@@ -86,12 +86,13 @@ fn test_set_llm_preserves_existing_agents() {
     });
     if let Some(obj) = cfg.as_object_mut()
         && let Some(agents) = obj.get_mut("agents").and_then(|v| v.as_object_mut())
-            && let Some(defaults) = agents.get_mut("defaults").and_then(|v| v.as_object_mut()) {
-                defaults.insert(
-                    "llm".to_string(),
-                    serde_json::Value::String("test/model".to_string()),
-                );
-            }
+        && let Some(defaults) = agents.get_mut("defaults").and_then(|v| v.as_object_mut())
+    {
+        defaults.insert(
+            "llm".to_string(),
+            serde_json::Value::String("test/model".to_string()),
+        );
+    }
     assert_eq!(cfg["agents"]["defaults"]["max_tool_iterations"], 10);
     assert_eq!(cfg["agents"]["defaults"]["llm"], "test/model");
 }
@@ -108,12 +109,13 @@ fn test_set_concurrent_mode_reject() {
     let mode = "reject";
     if let Some(obj) = cfg.as_object_mut()
         && let Some(agents) = obj.get_mut("agents").and_then(|v| v.as_object_mut())
-            && let Some(defaults) = agents.get_mut("defaults").and_then(|v| v.as_object_mut()) {
-                defaults.insert(
-                    "concurrent_request_mode".to_string(),
-                    serde_json::Value::String(mode.to_string()),
-                );
-            }
+        && let Some(defaults) = agents.get_mut("defaults").and_then(|v| v.as_object_mut())
+    {
+        defaults.insert(
+            "concurrent_request_mode".to_string(),
+            serde_json::Value::String(mode.to_string()),
+        );
+    }
     assert_eq!(
         cfg["agents"]["defaults"]["concurrent_request_mode"],
         "reject"
@@ -135,18 +137,19 @@ fn test_set_concurrent_mode_queue_with_size() {
     let queue_size: Option<usize> = Some(16);
     if let Some(obj) = cfg.as_object_mut()
         && let Some(agents) = obj.get_mut("agents").and_then(|v| v.as_object_mut())
-            && let Some(defaults) = agents.get_mut("defaults").and_then(|v| v.as_object_mut()) {
-                defaults.insert(
-                    "concurrent_request_mode".to_string(),
-                    serde_json::Value::String(mode.to_string()),
-                );
-                if mode == "queue" {
-                    defaults.insert(
-                        "queue_size".to_string(),
-                        serde_json::json!(resolve_queue_size(queue_size)),
-                    );
-                }
-            }
+        && let Some(defaults) = agents.get_mut("defaults").and_then(|v| v.as_object_mut())
+    {
+        defaults.insert(
+            "concurrent_request_mode".to_string(),
+            serde_json::Value::String(mode.to_string()),
+        );
+        if mode == "queue" {
+            defaults.insert(
+                "queue_size".to_string(),
+                serde_json::json!(resolve_queue_size(queue_size)),
+            );
+        }
+    }
     assert_eq!(
         cfg["agents"]["defaults"]["concurrent_request_mode"],
         "queue"
@@ -636,10 +639,8 @@ impl nemesis_providers::router::LLMProvider for S11bMockProvider {
         tools: &[nemesis_providers::types::ToolDefinition],
         model: &str,
         options: &nemesis_providers::types::ChatOptions,
-    ) -> Result<
-        nemesis_providers::types::LLMResponse,
-        nemesis_providers::failover::FailoverError,
-    > {
+    ) -> Result<nemesis_providers::types::LLMResponse, nemesis_providers::failover::FailoverError>
+    {
         let snapshot = serde_json::json!({
             "model": model,
             "messages": serde_json::to_value(messages).unwrap(),
@@ -713,12 +714,7 @@ impl nemesis_providers::router::LLMProvider for S11bMockProvider {
     }
 }
 
-fn s11b_adapter(
-    reply: S11bMockReply,
-) -> (
-    ProviderAdapter,
-    std::sync::Arc<S11bMockProvider>,
-) {
+fn s11b_adapter(reply: S11bMockReply) -> (ProviderAdapter, std::sync::Arc<S11bMockProvider>) {
     let inner = std::sync::Arc::new(S11bMockProvider {
         calls: std::sync::Mutex::new(Vec::new()),
         reply,
@@ -735,15 +731,9 @@ fn s11b_adapter(
 async fn test_s11b_adapter_model_fallback_to_default() {
     let (adapter, inner) = s11b_adapter(S11bMockReply::Stop);
     // 空 model → default_model
-    adapter
-        .chat("", vec![], None, vec![])
-        .await
-        .unwrap();
+    adapter.chat("", vec![], None, vec![]).await.unwrap();
     // 非空 model → 原样透传
-    adapter
-        .chat("m2", vec![], None, vec![])
-        .await
-        .unwrap();
+    adapter.chat("m2", vec![], None, vec![]).await.unwrap();
     let calls = inner.calls.lock().unwrap();
     assert_eq!(calls[0]["model"], "mock-default-model");
     assert_eq!(calls[1]["model"], "m2");
@@ -886,7 +876,10 @@ async fn test_s11b_adapter_provider_error_to_string() {
     let (adapter, _inner) = s11b_adapter(S11bMockReply::Fail);
     let err = adapter.chat("m", vec![], None, vec![]).await.unwrap_err();
     // provider FailoverError → String（Display 含消息原文）
-    assert!(err.contains("boom-s11b"), "error should embed message: {err}");
+    assert!(
+        err.contains("boom-s11b"),
+        "error should embed message: {err}"
+    );
 }
 
 // ------------------------------- run() tests -------------------------------
@@ -896,9 +889,17 @@ async fn test_s11b_run_agent_mode_config_missing_bails() {
     let _guard = crate::GLOBAL_STATE_LOCK.lock().unwrap();
     let _th = s11b_agent_home_env();
     // 无 config.json → 在 build/REPL 之前 bail（不会进入交互模式）
-    let err = run(None, Some("hi".to_string()), "s11b".to_string(), false, false, false, false)
-        .await
-        .unwrap_err();
+    let err = run(
+        None,
+        Some("hi".to_string()),
+        "s11b".to_string(),
+        false,
+        false,
+        false,
+        false,
+    )
+    .await
+    .unwrap_err();
     assert!(err.to_string().contains("Configuration not found"), "{err}");
 }
 
@@ -911,13 +912,18 @@ async fn test_s11b_run_agent_mode_build_fail() {
         &th.home,
         serde_json::json!({"agents": {"defaults": {"llm": "nosuchmodel-xyz"}}}),
     );
-    let err = run(None, Some("hi".to_string()), "s11b".to_string(), false, false, false, false)
-        .await
-        .unwrap_err();
-    assert!(
-        err.to_string().contains("Failed to resolve model"),
-        "{err}"
-    );
+    let err = run(
+        None,
+        Some("hi".to_string()),
+        "s11b".to_string(),
+        false,
+        false,
+        false,
+        false,
+    )
+    .await
+    .unwrap_err();
+    assert!(err.to_string().contains("Failed to resolve model"), "{err}");
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -937,7 +943,10 @@ async fn test_s11b_run_agent_mode_single_message_dead_provider() {
         false,
     )
     .await;
-    assert!(res.is_ok(), "single-message mode must not propagate LLM error: {res:?}");
+    assert!(
+        res.is_ok(),
+        "single-message mode must not propagate LLM error: {res:?}"
+    );
 }
 
 #[test]
@@ -949,7 +958,11 @@ fn test_s11b_build_agent_loop_registers_default_agent() {
     let agent_loop = build_agent_loop(&cfg, &th.home).expect("dead-addr provider builds fine");
     // 共享工具注册后 tool_count 明显非零（register_shared_tools 生效）。
     // standalone 构造路径 registry 为 None（get_registry 只在 gateway 侧装配）。
-    assert!(agent_loop.tool_count() >= 20, "tools registered: {}", agent_loop.tool_count());
+    assert!(
+        agent_loop.tool_count() >= 20,
+        "tools registered: {}",
+        agent_loop.tool_count()
+    );
     assert!(agent_loop.get_registry().is_none());
 }
 
@@ -959,7 +972,9 @@ async fn test_s11b_run_set_llm_config_missing_bails() {
     let _th = s11b_agent_home_env();
     let err = run(
         Some(AgentSetCommand::Set {
-            action: AgentSetAction::Llm { model: "x".to_string() },
+            action: AgentSetAction::Llm {
+                model: "x".to_string(),
+            },
         }),
         None,
         "s11b".to_string(),
@@ -992,7 +1007,9 @@ async fn test_s11b_run_set_llm_resolved_writes_config() {
     );
     run(
         Some(AgentSetCommand::Set {
-            action: AgentSetAction::Llm { model: "fake".to_string() },
+            action: AgentSetAction::Llm {
+                model: "fake".to_string(),
+            },
         }),
         None,
         "s11b".to_string(),
@@ -1047,25 +1064,55 @@ async fn test_s11b_run_set_concurrent_mode_reject_then_queue() {
     };
 
     // reject：写 concurrent_request_mode，不写 queue_size
-    run(set_mode("reject", None), None, "s11b".to_string(), false, false, false, false)
-        .await
-        .unwrap();
+    run(
+        set_mode("reject", None),
+        None,
+        "s11b".to_string(),
+        false,
+        false,
+        false,
+        false,
+    )
+    .await
+    .unwrap();
     let cfg = s11b_read_agent_config(&th.home);
-    assert_eq!(cfg["agents"]["defaults"]["concurrent_request_mode"], "reject");
+    assert_eq!(
+        cfg["agents"]["defaults"]["concurrent_request_mode"],
+        "reject"
+    );
     assert!(cfg["agents"]["defaults"].get("queue_size").is_none());
 
     // queue 带尺寸
-    run(set_mode("queue", Some(3)), None, "s11b".to_string(), false, false, false, false)
-        .await
-        .unwrap();
+    run(
+        set_mode("queue", Some(3)),
+        None,
+        "s11b".to_string(),
+        false,
+        false,
+        false,
+        false,
+    )
+    .await
+    .unwrap();
     let cfg = s11b_read_agent_config(&th.home);
-    assert_eq!(cfg["agents"]["defaults"]["concurrent_request_mode"], "queue");
+    assert_eq!(
+        cfg["agents"]["defaults"]["concurrent_request_mode"],
+        "queue"
+    );
     assert_eq!(cfg["agents"]["defaults"]["queue_size"], 3);
 
     // queue 默认尺寸 8
-    run(set_mode("queue", None), None, "s11b".to_string(), false, false, false, false)
-        .await
-        .unwrap();
+    run(
+        set_mode("queue", None),
+        None,
+        "s11b".to_string(),
+        false,
+        false,
+        false,
+        false,
+    )
+    .await
+    .unwrap();
     let cfg = s11b_read_agent_config(&th.home);
     assert_eq!(cfg["agents"]["defaults"]["queue_size"], 8);
 }
@@ -1114,7 +1161,9 @@ mod wave_b {
     /// finish_reason=stop、无 tool_calls 的补全。adapter 走非流式 chat()，
     /// 普通 JSON 即可；若请求体出现 "stream":true 则回 SSE（防御，现路径
     /// 不触发）。返回端口；连接计数供调用方断言至少被调一次。
-    fn start_openai_mock(content: &'static str) -> (u16, std::sync::Arc<std::sync::atomic::AtomicUsize>) {
+    fn start_openai_mock(
+        content: &'static str,
+    ) -> (u16, std::sync::Arc<std::sync::atomic::AtomicUsize>) {
         let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
         let port = listener.local_addr().unwrap().port();
         let hits = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
@@ -1272,7 +1321,8 @@ mod wave_b {
             }),
         );
         let cfg = nemesis_config::load_config(&th.home.join("config.json")).unwrap();
-        build_agent_loop(&cfg, &th.home).expect("RequestLogger(truncated+custom dir) 注册后构建 Ok");
+        build_agent_loop(&cfg, &th.home)
+            .expect("RequestLogger(truncated+custom dir) 注册后构建 Ok");
     }
 
     #[tokio::test(flavor = "multi_thread")]
@@ -1315,7 +1365,10 @@ mod wave_b {
             false,
         )
         .await;
-        assert!(res.is_ok(), "flags 组合不得改变单消息模式的 Ok 收敛: {res:?}");
+        assert!(
+            res.is_ok(),
+            "flags 组合不得改变单消息模式的 Ok 收敛: {res:?}"
+        );
     }
 
     #[tokio::test(flavor = "multi_thread")]
@@ -1376,7 +1429,9 @@ mod wave_b {
         );
         run(
             Some(AgentSetCommand::Set {
-                action: AgentSetAction::Llm { model: "fake".to_string() },
+                action: AgentSetAction::Llm {
+                    model: "fake".to_string(),
+                },
             }),
             None,
             "s11b".to_string(),
@@ -1415,8 +1470,8 @@ mod wave_b {
 #[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
 mod r9_repl {
     use std::path::PathBuf;
-    use test_harness::mock_ai::{MockAiReply, MockAiServer};
     use test_harness::TestWorkspace;
+    use test_harness::mock_ai::{MockAiReply, MockAiServer};
 
     /// mock 回复内容标记串（宽松 contains 断言，纯 ASCII 防切片坑）。
     const MARKER: &str = "R9MOCK-REPLY-MARKER-ALPHA";
@@ -1541,9 +1596,7 @@ mod r9_repl {
             .expect("mock ai server starts");
         let (ws, bin) = r9_setup_model_ws(&srv.base_url()).await;
         // 无 quit 收尾：脚本耗尽后 stdin 关闭 → rustyline Eof → Goodbye 臂。
-        let out = ws
-            .run_cli_with_stdin(&bin, &["agent"], "hello\n", 60)
-            .await;
+        let out = ws.run_cli_with_stdin(&bin, &["agent"], "hello\n", 60).await;
         assert_eq!(
             out.exit_code, 0,
             "EOF 退出必须 rc=0:\n--- stdout ---\n{}\n--- stderr ---\n{}",
@@ -1591,11 +1644,7 @@ mod r9_repl {
             "循环必须继续吃掉后续 quit:\n{}",
             out.stdout
         );
-        assert_eq!(
-            srv.hits(),
-            0,
-            "slash 命令路径不允许触发任何 LLM 调用"
-        );
+        assert_eq!(srv.hits(), 0, "slash 命令路径不允许触发任何 LLM 调用");
     }
 
     #[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
@@ -1644,12 +1693,7 @@ mod r9_repl {
         // onboard 后没有任何 model_list 条目 → resolve 必失败 → WARNING +
         // "Set anyway? (y/N):" 裸 stdin read_line。答 y → 写入默认模型。
         let out = ws
-            .run_cli_with_stdin(
-                &bin,
-                &["agent", "set", "llm", "bogus-model-r9"],
-                "y\n",
-                30,
-            )
+            .run_cli_with_stdin(&bin, &["agent", "set", "llm", "bogus-model-r9"], "y\n", 30)
             .await;
         assert_eq!(
             out.exit_code, 0,
@@ -1657,7 +1701,8 @@ mod r9_repl {
             out.stdout, out.stderr
         );
         assert!(
-            out.stdout.contains("WARNING: Model 'bogus-model-r9' not found"),
+            out.stdout
+                .contains("WARNING: Model 'bogus-model-r9' not found"),
             "未命中提示缺失:\n{}",
             out.stdout
         );
@@ -1685,12 +1730,7 @@ mod r9_repl {
         let (ws, bin) = r9_setup_plain_ws().await;
         // 答 n（小写即可拒绝；只有恰好 "y" 才放行）→ Cancelled 臂 + 不写盘。
         let out = ws
-            .run_cli_with_stdin(
-                &bin,
-                &["agent", "set", "llm", "bogus-model-r9"],
-                "n\n",
-                30,
-            )
+            .run_cli_with_stdin(&bin, &["agent", "set", "llm", "bogus-model-r9"], "n\n", 30)
             .await;
         assert_eq!(
             out.exit_code, 0,
@@ -1738,10 +1778,7 @@ mod r9_repl {
             "错误后循环存活、quit 正常收尾:\n{}",
             out.stdout
         );
-        assert!(
-            !out.stdout.contains(MARKER),
-            "死地址场景不可能有回复内容"
-        );
+        assert!(!out.stdout.contains(MARKER), "死地址场景不可能有回复内容");
     }
 }
 

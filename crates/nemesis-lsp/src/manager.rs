@@ -6,7 +6,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
 use tokio::process::{Child, ChildStdin, ChildStdout, Command};
 use tokio::sync::Mutex;
@@ -92,27 +92,24 @@ impl Session {
                     match proto::classify(&incoming, id) {
                         proto::Incoming::Response(resp) => {
                             if let Some(err) = resp.get("error")
-                                && !err.is_null() {
-                                    if proto::is_transient_error(err) {
-                                        // Re-send with a fresh id; on the
-                                        // last attempt the `break` falls out
-                                        // of the for-loop to the descriptive
-                                        // "kept cancelling" error below (a
-                                        // bare -32800 would tell the model
-                                        // nothing about the retry budget).
-                                        break;
-                                    }
-                                    return Err(format!(
-                                        "server error on {method}: {err}"
-                                    ));
+                                && !err.is_null()
+                            {
+                                if proto::is_transient_error(err) {
+                                    // Re-send with a fresh id; on the
+                                    // last attempt the `break` falls out
+                                    // of the for-loop to the descriptive
+                                    // "kept cancelling" error below (a
+                                    // bare -32800 would tell the model
+                                    // nothing about the retry budget).
+                                    break;
                                 }
+                                return Err(format!("server error on {method}: {err}"));
+                            }
                             return Ok(resp.get("result").cloned().unwrap_or(Value::Null));
                         }
                         proto::Incoming::ServerRequest { id, method } => {
-                            let reply = proto::response_ok(
-                                id,
-                                proto::default_server_response(&method),
-                            );
+                            let reply =
+                                proto::response_ok(id, proto::default_server_response(&method));
                             write_message(&mut inner, &reply).await?;
                             // keep waiting for our own response
                         }
@@ -165,14 +162,15 @@ async fn read_message(inner: &mut Inner) -> Result<Value, String> {
             break; // end of headers
         }
         if let Some((name, value)) = trimmed.split_once(':')
-            && name.trim().eq_ignore_ascii_case("content-length") {
-                content_length = Some(
-                    value
-                        .trim()
-                        .parse::<usize>()
-                        .map_err(|e| format!("bad Content-Length {value:?}: {e}"))?,
-                );
-            }
+            && name.trim().eq_ignore_ascii_case("content-length")
+        {
+            content_length = Some(
+                value
+                    .trim()
+                    .parse::<usize>()
+                    .map_err(|e| format!("bad Content-Length {value:?}: {e}"))?,
+            );
+        }
     }
     let len = content_length.ok_or("message without Content-Length header")?;
     let mut body = vec![0u8; len];
@@ -224,7 +222,10 @@ impl LspManager {
             ));
         };
         let Some(spec) = registry::spec_for(lang) else {
-            return Err(format!("no language server configured for {}", lang.label()));
+            return Err(format!(
+                "no language server configured for {}",
+                lang.label()
+            ));
         };
         if !path.is_file() {
             return Err(format!("file does not exist: {}", path.display()));
@@ -275,7 +276,9 @@ impl LspManager {
                 }
                 let fresh = self.get_or_spawn(lang, &root, &server_path).await?;
                 *fresh.last_used.lock().unwrap() = Instant::now();
-                fresh.request(op.method(), params, self.request_timeout).await
+                fresh
+                    .request(op.method(), params, self.request_timeout)
+                    .await
             }
             Err(e) => Err(e),
         };
@@ -299,7 +302,10 @@ impl LspManager {
             return Ok(Arc::clone(s));
         }
         let Some(spec) = registry::spec_for(lang) else {
-            return Err(format!("no language server configured for {}", lang.label()));
+            return Err(format!(
+                "no language server configured for {}",
+                lang.label()
+            ));
         };
         let s = Arc::new(spawn_session(lang, spec, root, server_path).await?);
         sessions.insert(key, Arc::clone(&s));
@@ -451,9 +457,7 @@ async fn spawn_session(
     let _caps = session
         .request("initialize", init_params, Duration::from_secs(60))
         .await?;
-    let _ = session
-        .request_no_wait("initialized", json!({}))
-        .await;
+    let _ = session.request_no_wait("initialized", json!({})).await;
     Ok(session)
 }
 
@@ -480,7 +484,13 @@ fn is_transport_error(e: &str) -> bool {
 /// discover their workspace from this root (they walk up further on their
 /// own when needed, e.g. cargo workspace parents).
 fn find_root(path: &Path) -> PathBuf {
-    const MARKERS: [&str; 5] = [".git", "Cargo.toml", "package.json", "pyproject.toml", "go.mod"];
+    const MARKERS: [&str; 5] = [
+        ".git",
+        "Cargo.toml",
+        "package.json",
+        "pyproject.toml",
+        "go.mod",
+    ];
     let start = path
         .parent()
         .map(|p| p.to_path_buf())
@@ -522,7 +532,13 @@ fn format_result(op: LspOp, result: &Value) -> String {
         method_noun(op)
     );
     for (i, loc) in locs.iter().enumerate() {
-        out.push_str(&format!("{}. {}:{}:{}\n", i + 1, loc.path, loc.line, loc.character));
+        out.push_str(&format!(
+            "{}. {}:{}:{}\n",
+            i + 1,
+            loc.path,
+            loc.line,
+            loc.character
+        ));
     }
     out
 }

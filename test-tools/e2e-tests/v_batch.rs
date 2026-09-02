@@ -36,14 +36,14 @@
 //! + AI 18092，避开用户在跑的 gateway 49000/49001/18790）；进程 kill_on_drop
 //!   自动清理。
 
-use anyhow::{bail, Context, Result};
+use anyhow::{Context, Result, bail};
 use futures::{SinkExt, StreamExt};
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 use test_harness::{
-    cleanup_ports, resolve_ai_server_bin, resolve_nemesisbot_bin, resolve_project_root,
-    wait_for_http, ws_connect, ManagedProcess, TestWorkspace,
+    ManagedProcess, TestWorkspace, cleanup_ports, resolve_ai_server_bin, resolve_nemesisbot_bin,
+    resolve_project_root, wait_for_http, ws_connect,
 };
 use tokio_tungstenite::tungstenite::Message;
 
@@ -166,9 +166,10 @@ fn collect_request_mds(home: &Path) -> Vec<(String, String)> {
             for f in files.flatten() {
                 let fp = f.path();
                 if fp.extension().and_then(|e| e.to_str()) == Some("md")
-                    && let Ok(c) = std::fs::read_to_string(&fp) {
-                        out.push((f.file_name().to_string_lossy().to_string(), c));
-                    }
+                    && let Ok(c) = std::fs::read_to_string(&fp)
+                {
+                    out.push((f.file_name().to_string_lossy().to_string(), c));
+                }
             }
         }
     }
@@ -249,9 +250,12 @@ where
         &["--port", &ai_port.to_string()],
         &root,
     )?;
-    wait_for_http(&format!("http://127.0.0.1:{ai_port}/health"), Duration::from_secs(20))
-        .await
-        .context("TestAIServer failed to start")?;
+    wait_for_http(
+        &format!("http://127.0.0.1:{ai_port}/health"),
+        Duration::from_secs(20),
+    )
+    .await
+    .context("TestAIServer failed to start")?;
 
     let out = ws.run_cli(&bin, &["onboard", "default"]).await;
     anyhow::ensure!(
@@ -287,8 +291,7 @@ where
 
     // 改写端口：web / websocket / gateway(health) 全部避开生产实例。
     let cfg_path = ws.config_path();
-    let mut cfg: serde_json::Value =
-        serde_json::from_str(&std::fs::read_to_string(&cfg_path)?)?;
+    let mut cfg: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(&cfg_path)?)?;
     cfg["channels"]["web"]["port"] = serde_json::json!(web_port);
     cfg["channels"]["websocket"]["port"] = serde_json::json!(ws_channel_port);
     cfg["gateway"]["port"] = serde_json::json!(health_port);
@@ -299,9 +302,12 @@ where
 
     // gateway（--local：home = <temp>/.nemesisbot；cwd 必须在 temp 下）。
     let gw = ManagedProcess::spawn("nemesisbot-gateway", &bin, &["--local", "gateway"], &root)?;
-    wait_for_http(&format!("http://127.0.0.1:{web_port}/"), Duration::from_secs(60))
-        .await
-        .context("gateway failed to start (web port)")?;
+    wait_for_http(
+        &format!("http://127.0.0.1:{web_port}/"),
+        Duration::from_secs(60),
+    )
+    .await
+    .context("gateway failed to start (web port)")?;
 
     Ok((ws, ai, gw, cfg))
 }
@@ -315,8 +321,15 @@ async fn setup_test_home(
     ManagedProcess,
     serde_json::Value,
 )> {
-    setup_test_home_ports(model, AI_PORT, WEB_PORT, WS_CHANNEL_PORT, HEALTH_PORT, |_| Ok(()))
-        .await
+    setup_test_home_ports(
+        model,
+        AI_PORT,
+        WEB_PORT,
+        WS_CHANNEL_PORT,
+        HEALTH_PORT,
+        |_| Ok(()),
+    )
+    .await
 }
 
 #[tokio::test]
@@ -339,7 +352,10 @@ async fn run_v1(ws: &TestWorkspace, cfg: &serde_json::Value) -> Result<()> {
     let head = "HEAD_MARKER_START";
     let tail = "TAIL_MARKER_END";
     let blocks = |n: usize| -> String {
-        (0..n).map(|i| format!("{:09}|", i)).collect::<Vec<_>>().join("")
+        (0..n)
+            .map(|i| format!("{:09}|", i))
+            .collect::<Vec<_>>()
+            .join("")
     };
     let prune_body = format!("{head}{}{tail}", blocks(3000)); // 17+30000+15=30032 字符（8KB-64KB 档）
     let spill_body = format!("{head}{}{tail}", blocks(7000)); // 17+70000+15=70032 字符（≥64KB 档）
@@ -499,9 +515,10 @@ fn collect_ai_request_files(home: &Path) -> Vec<(PathBuf, String)> {
             for f in files.flatten() {
                 let name = f.file_name().to_string_lossy().to_string();
                 if name.ends_with(".AI.Request.md")
-                    && let Ok(c) = std::fs::read_to_string(f.path()) {
-                        out.push((f.path(), c));
-                    }
+                    && let Ok(c) = std::fs::read_to_string(f.path())
+                {
+                    out.push((f.path(), c));
+                }
             }
         }
     }
@@ -671,7 +688,8 @@ async fn run_v2(ws: &TestWorkspace, cfg: &serde_json::Value, web_port: u16) -> R
     )
     .await?;
     assert_eq!(
-        resp["stored"], serde_json::json!(true),
+        resp["stored"],
+        serde_json::json!(true),
         "entries.store must report stored=true, got: {resp}"
     );
 
@@ -807,8 +825,7 @@ fn security_audit_slow_order(home: &Path) -> Vec<u32> {
             for line in c.lines() {
                 if let Some(i) = line.find("/slow?secs=") {
                     let rest = &line[i + "/slow?secs=".len()..];
-                    let digits: String =
-                        rest.chars().take_while(|c| c.is_ascii_digit()).collect();
+                    let digits: String = rest.chars().take_while(|c| c.is_ascii_digit()).collect();
                     if let Ok(n) = digits.parse::<u32>() {
                         raw.push(n);
                     }
@@ -844,7 +861,12 @@ async fn v3_readonly_concurrent_batch_e2e() -> Result<()> {
     result
 }
 
-async fn run_v3(ws: &TestWorkspace, cfg: &serde_json::Value, ai_port: u16, web_port: u16) -> Result<()> {
+async fn run_v3(
+    ws: &TestWorkspace,
+    cfg: &serde_json::Value,
+    ai_port: u16,
+    web_port: u16,
+) -> Result<()> {
     let token = cfg["channels"]["web"]["auth_token"]
         .as_str()
         .unwrap_or("")
@@ -879,7 +901,9 @@ async fn run_v3(ws: &TestWorkspace, cfg: &serde_json::Value, ai_port: u16, web_p
         .iter()
         .map(|(_, c)| c.as_str())
         .find(|c| c.contains("slept 6 seconds"))
-        .context("no AI.Request.md contains the /slow?secs=6 result — batch results not fed back?")?;
+        .context(
+            "no AI.Request.md contains the /slow?secs=6 result — batch results not fed back?",
+        )?;
     for secs in [6u32, 3, 2] {
         assert!(
             final_req.contains(&format!("slept {secs} seconds")),
@@ -973,8 +997,9 @@ async fn run_v4(ws: &TestWorkspace, cfg: &serde_json::Value, web_port: u16) -> R
     );
 
     // ① 真跑的物证：CC 真创建了文件且内容精确。
-    let probe = find_file_recursive(ws.path(), "cc_probe.txt")
-        .context("cc_probe.txt not found anywhere under the test workspace — CC did not really execute")?;
+    let probe = find_file_recursive(ws.path(), "cc_probe.txt").context(
+        "cc_probe.txt not found anywhere under the test workspace — CC did not really execute",
+    )?;
     let content = std::fs::read_to_string(&probe)?;
     assert_eq!(
         content.trim(),
@@ -1158,7 +1183,9 @@ async fn run_v5a(
     let turn2_req = files
         .iter()
         .find(|(_, c)| c.contains("QUEUE_TURN2"))
-        .context("no AI.Request.md contains QUEUE_TURN2 — the queued message never reached the model")?;
+        .context(
+            "no AI.Request.md contains QUEUE_TURN2 — the queued message never reached the model",
+        )?;
     assert!(
         turn2_req.1.contains("<B5_BUSY>") || turn2_req.1.contains("slept 8 seconds"),
         "{}: turn-2 request must carry the session history (turn-1 trigger or tool result)",
@@ -1408,7 +1435,9 @@ async fn run_z1(ws: &TestWorkspace, cfg: &serde_json::Value) -> Result<()> {
         .join("agent_main_session_z1src__fork.json");
     let store_data: serde_json::Value =
         serde_json::from_str(&std::fs::read_to_string(&fork_store)?)?;
-    let msgs = store_data["messages"].as_array().context("fork store: messages array")?;
+    let msgs = store_data["messages"]
+        .as_array()
+        .context("fork store: messages array")?;
     let joined = msgs
         .iter()
         .map(|m| m["content"].as_str().unwrap_or(""))

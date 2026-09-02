@@ -290,12 +290,7 @@ fn test_generate_freshclam_config_creates_nested_parent() {
     let dir = tempfile::tempdir().unwrap();
     let nested = dir.path().join("conf").join("deep").join("freshclam.conf");
     let db_dir = dir.path().join("database");
-    generate_freshclam_config(
-        &db_dir.to_string_lossy(),
-        &nested.to_string_lossy(),
-        "",
-    )
-    .unwrap();
+    generate_freshclam_config(&db_dir.to_string_lossy(), &nested.to_string_lossy(), "").unwrap();
     assert!(nested.exists());
     assert!(db_dir.is_dir(), "db dir must be created");
     let content = fs::read_to_string(&nested).unwrap();
@@ -307,12 +302,8 @@ fn test_generate_freshclam_config_parent_is_file_errors() {
     let dir = tempfile::tempdir().unwrap();
     let blocker = dir.path().join("blocker.txt");
     std::fs::write(&blocker, "i am a file").unwrap();
-    let err = generate_freshclam_config(
-        "",
-        &blocker.join("freshclam.conf").to_string_lossy(),
-        "",
-    )
-    .unwrap_err();
+    let err = generate_freshclam_config("", &blocker.join("freshclam.conf").to_string_lossy(), "")
+        .unwrap_err();
     assert!(err.contains("create config dir"), "{err}");
 }
 

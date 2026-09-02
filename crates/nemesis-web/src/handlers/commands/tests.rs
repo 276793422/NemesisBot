@@ -58,10 +58,7 @@ fn save_rejects_empty_blank_and_duplicate_names() {
     assert!(err.contains("不能包含空格"), "{err}");
 
     let err = h
-        .commands_save(
-            &ws(&dir),
-            vec![entry("dup", "p1"), entry("dup", "p2")],
-        )
+        .commands_save(&ws(&dir), vec![entry("dup", "p1"), entry("dup", "p2")])
         .unwrap_err();
     assert!(err.contains("重复"), "{err}");
 
@@ -150,11 +147,7 @@ async fn dispatch_list_and_save_via_bare_cmd_names() {
     let h = CommandsHandler::new();
 
     // 裸名 "list"（不是 "commands.list"）→ 空表。
-    let listed = h
-        .handle_cmd("list", None, &ctx)
-        .await
-        .unwrap()
-        .unwrap();
+    let listed = h.handle_cmd("list", None, &ctx).await.unwrap().unwrap();
     assert_eq!(listed["total"], 0);
 
     // 裸名 "save" → 落盘 + 返回计数。
@@ -176,11 +169,7 @@ async fn dispatch_list_and_save_via_bare_cmd_names() {
     assert_eq!(saved["total"], 1);
 
     // 再 list → 读回。
-    let listed = h
-        .handle_cmd("list", None, &ctx)
-        .await
-        .unwrap()
-        .unwrap();
+    let listed = h.handle_cmd("list", None, &ctx).await.unwrap().unwrap();
     assert_eq!(listed["commands"][0]["name"], "review");
 
     // 未知子命令 → 带模块前缀的 loud 错误。

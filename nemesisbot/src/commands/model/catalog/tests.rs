@@ -101,7 +101,11 @@ fn test_cache_roundtrip_and_lookup() {
     let entries = parse_api_json(FIXTURE).unwrap();
     save_cache(dir, entries).expect("save");
     // Atomic rename leaves no temp residue.
-    assert!(!nemesis_path::models_catalog_cache_path(dir).with_extension("json.tmp").exists());
+    assert!(
+        !nemesis_path::models_catalog_cache_path(dir)
+            .with_extension("json.tmp")
+            .exists()
+    );
 
     let cat = load_cache(dir).unwrap().expect("loaded after save");
     assert_eq!(cat.version, 1);
@@ -134,7 +138,11 @@ fn test_parse_models_json_mirror_shape() {
       ]
     }"#;
     let entries = parse_models_json(mirror).expect("mirror shape parses");
-    assert_eq!(entries.len(), 1, "alias/no-slash/no-ctx/zero skipped: {entries:?}");
+    assert_eq!(
+        entries.len(),
+        1,
+        "alias/no-slash/no-ctx/zero skipped: {entries:?}"
+    );
     assert_eq!(entries[0].key, "anthropic/claude-opus-4.7-fast");
     assert_eq!(entries[0].context_window, 1_000_000);
     assert_eq!(entries[0].max_output_tokens, Some(64_000));
@@ -234,7 +242,10 @@ fn test_s11b_parse_models_json_skip_rules() {
     let entries = parse_models_json(raw).unwrap();
     // 只有第 1 条和最后 1 条合法（~ 前缀/无斜杠/ctx==0/缺 ctx/缺 id 全跳过）
     assert_eq!(entries.len(), 2, "{:?}", entries);
-    assert_eq!(entries[0].key, "anthropic/claude-opus-4.7-fast", "按 key 排序");
+    assert_eq!(
+        entries[0].key, "anthropic/claude-opus-4.7-fast",
+        "按 key 排序"
+    );
     assert_eq!(entries[0].context_window, 1000000);
     assert_eq!(entries[0].max_output_tokens, None);
     assert_eq!(entries[1].key, "openai/gpt-4o");
@@ -274,7 +285,11 @@ fn test_s11b_parse_api_json_skip_rules() {
         "meta-only": {"info": "not a provider"}
     }"#;
     let entries = parse_api_json(raw).unwrap();
-    assert_eq!(entries.len(), 1, "缺 limit/缺 context/ctx==0 的模型与无 models 的 provider 全跳过");
+    assert_eq!(
+        entries.len(),
+        1,
+        "缺 limit/缺 context/ctx==0 的模型与无 models 的 provider 全跳过"
+    );
     assert_eq!(entries[0].key, "zhipu/glm-4.7");
     assert_eq!(entries[0].context_window, 128000);
     assert_eq!(entries[0].max_output_tokens, Some(4096));
@@ -326,7 +341,12 @@ fn test_s11b_cache_roundtrip_missing_and_corrupt() {
     )
     .unwrap();
     assert!(nemesis_path::models_catalog_cache_path(&dir).exists());
-    assert!(!nemesis_path::models_catalog_cache_path(&dir).with_extension("json.tmp").exists(), "tmp 已 rename 走");
+    assert!(
+        !nemesis_path::models_catalog_cache_path(&dir)
+            .with_extension("json.tmp")
+            .exists(),
+        "tmp 已 rename 走"
+    );
     let cat = load_cache(&dir).unwrap().expect("cache present");
     assert_eq!(cat.version, 1);
     assert!(!cat.fetched_at.is_empty());
@@ -512,15 +532,15 @@ mod r9_fetch_seams {
         // 200 但解析不出来 → try 镜像；镜像 https 被死代理瞬杀 → 全失败。
         let port = serve_once("200 OK", "not-json{{{".to_string());
         let _env = EnvRestore::snapshot_and_apply(&[
-            ("NEMESISBOT_CATALOG_API_URL", format!("http://127.0.0.1:{port}")),
+            (
+                "NEMESISBOT_CATALOG_API_URL",
+                format!("http://127.0.0.1:{port}"),
+            ),
             ("HTTPS_PROXY", DEAD_PROXY.to_string()),
         ]);
 
         let err = fetch_http_blocking().expect_err("两端点皆败必须 Err");
-        assert!(
-            err.contains("all catalog endpoints failed"),
-            "got: {err}"
-        );
+        assert!(err.contains("all catalog endpoints failed"), "got: {err}");
         // last_err 只保留最后一条：必须是镜像端点的错误。
         assert!(
             err.contains("cdn.jsdelivr.net"),
@@ -534,7 +554,10 @@ mod r9_fetch_seams {
         let _guard = crate::GLOBAL_STATE_LOCK.lock().unwrap();
         let port = serve_once("500 Internal Server Error", "{}".to_string());
         let _env = EnvRestore::snapshot_and_apply(&[
-            ("NEMESISBOT_CATALOG_API_URL", format!("http://127.0.0.1:{port}")),
+            (
+                "NEMESISBOT_CATALOG_API_URL",
+                format!("http://127.0.0.1:{port}"),
+            ),
             ("HTTPS_PROXY", DEAD_PROXY.to_string()),
         ]);
 
@@ -555,7 +578,7 @@ mod r9_fetch_seams {
 // 整 mod Windows 形态（2/2 测试 + 专属 helper 全走 Windows CLI 进程边界）。
 #[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
 mod r9_offline_cli {
-    use test_harness::{resolve_nemesisbot_bin, TestWorkspace};
+    use test_harness::{TestWorkspace, resolve_nemesisbot_bin};
 
     const DEAD_PROXY: &str = "http://127.0.0.1:1";
 
@@ -577,8 +600,10 @@ mod r9_offline_cli {
                 "NO_PROXY",
                 "NEMESISBOT_CATALOG_API_URL",
             ];
-            let saved: Vec<(String, Option<String>)> =
-                names.iter().map(|n| (n.to_string(), std::env::var(n).ok())).collect();
+            let saved: Vec<(String, Option<String>)> = names
+                .iter()
+                .map(|n| (n.to_string(), std::env::var(n).ok()))
+                .collect();
             for n in ["HTTPS_PROXY", "https_proxy"] {
                 unsafe {
                     std::env::set_var(n, DEAD_PROXY);
@@ -638,7 +663,9 @@ mod r9_offline_cli {
         std::fs::write(&legacy, serde_json::to_string_pretty(&cache).unwrap()).unwrap();
 
         let bin = resolve_nemesisbot_bin().unwrap();
-        let out = ws.run_cli_with_timeout(&bin, &["model", "catalog-update"], 60).await;
+        let out = ws
+            .run_cli_with_timeout(&bin, &["model", "catalog-update"], 60)
+            .await;
         assert!(
             out.success(),
             "有缓存时离线只警告不清缓存：stdout={} stderr={}",
@@ -647,8 +674,7 @@ mod r9_offline_cli {
         );
         assert!(out.stdout_contains("拉取失败"));
         assert!(out.stdout_contains("保留现有缓存：1 个模型"));
-        assert!(out
-            .stdout_contains("fetched_at=2026-08-01T12:00:00+08:00"));
+        assert!(out.stdout_contains("fetched_at=2026-08-01T12:00:00+08:00"));
         // 迁移实证：legacy 已搬走，新位置文件原样保留。
         assert!(!legacy.exists(), "legacy home 根缓存应被迁移 rename 走");
         assert!(
@@ -665,11 +691,10 @@ mod r9_offline_cli {
         let ws = fresh_ws_with_empty_config();
 
         let bin = resolve_nemesisbot_bin().unwrap();
-        let out = ws.run_cli_with_timeout(&bin, &["model", "catalog-update"], 60).await;
-        assert!(
-            !out.success(),
-            "无缓存离线必须非零退码提示用户拷贝缓存"
-        );
+        let out = ws
+            .run_cli_with_timeout(&bin, &["model", "catalog-update"], 60)
+            .await;
+        assert!(!out.success(), "无缓存离线必须非零退码提示用户拷贝缓存");
         let combined = format!("{} {}", out.stdout, out.stderr);
         assert!(combined.contains("拉取失败且无本地缓存"), "{combined}");
         assert!(combined.contains("拷贝"), "应提示内网拷贝路径");
@@ -740,27 +765,28 @@ mod r10_body_read {
             if let Ok((mut stream, _)) = listener.accept() {
                 let mut buf = [0u8; 4096];
                 let _ = stream.read(&mut buf);
-                let head_and_partial =
-                    "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: 500\r\nConnection: close\r\n\r\n{\"prov1\":{\"id\":\"prov1\",\"models\":{\"m-1\":{\"limit\":{\"context\":";
-                let ok = stream.write_all(head_and_partial.as_bytes()).is_ok()
-                    && stream.flush().is_ok();
+                let head_and_partial = "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: 500\r\nConnection: close\r\n\r\n{\"prov1\":{\"id\":\"prov1\",\"models\":{\"m-1\":{\"limit\":{\"context\":";
+                let ok =
+                    stream.write_all(head_and_partial.as_bytes()).is_ok() && stream.flush().is_ok();
                 served_cloned.store(ok, std::sync::atomic::Ordering::SeqCst);
                 // stream drop → 连接关闭 → 客户端读体时 early EOF。
             }
         });
         unsafe {
-            std::env::set_var("NEMESISBOT_CATALOG_API_URL", format!("http://127.0.0.1:{port}"));
+            std::env::set_var(
+                "NEMESISBOT_CATALOG_API_URL",
+                format!("http://127.0.0.1:{port}"),
+            );
         }
         let _env = EnvGuard(saved);
 
         let entries = super::fetch_http_blocking();
-        assert!(served.load(std::sync::atomic::Ordering::SeqCst),
-            "mock 必须真的被请求到并完整写出截断响应");
-        let err = entries.expect_err("主端点读体失败 + 镜像死代理必须整体 Err");
         assert!(
-            err.contains("all catalog endpoints failed"),
-            "got: {err}"
+            served.load(std::sync::atomic::Ordering::SeqCst),
+            "mock 必须真的被请求到并完整写出截断响应"
         );
+        let err = entries.expect_err("主端点读体失败 + 镜像死代理必须整体 Err");
+        assert!(err.contains("all catalog endpoints failed"), "got: {err}");
         // last_err 被最后尝试的镜像端点覆写。
         assert!(err.contains("cdn.jsdelivr.net"), "got: {err}");
     }
@@ -776,10 +802,15 @@ fn migrate_moves_legacy_home_root_cache() {
     )
     .unwrap();
     // 首读触发迁移：内容可读 + legacy 消失 + 新位置存在。
-    let cat = load_cache(tmp.path()).unwrap().expect("migrated cache loads");
+    let cat = load_cache(tmp.path())
+        .unwrap()
+        .expect("migrated cache loads");
     assert_eq!(cat.entries.len(), 1);
     assert!(!legacy.exists(), "legacy 应被 rename 走");
-    assert!(nemesis_path::models_catalog_cache_path(tmp.path()).exists(), "缓存落在新位置");
+    assert!(
+        nemesis_path::models_catalog_cache_path(tmp.path()).exists(),
+        "缓存落在新位置"
+    );
     // 二读直接走新位置（迁移幂等）。
     assert!(load_cache(tmp.path()).unwrap().is_some());
 }
@@ -790,14 +821,13 @@ fn save_cache_removes_legacy_home_root_orphan() {
     // home 根的 legacy models_catalog.json 不再永久滞留成孤儿。
     let tmp = tempfile::tempdir().unwrap();
     let legacy = nemesis_path::legacy_models_catalog_cache_path(tmp.path());
-    std::fs::write(
-        &legacy,
-        r#"{"version":1,"fetched_at":"old","entries":[]}"#,
-    )
-    .unwrap();
+    std::fs::write(&legacy, r#"{"version":1,"fetched_at":"old","entries":[]}"#).unwrap();
 
     save_cache(tmp.path(), vec![]).expect("save");
 
-    assert!(nemesis_path::models_catalog_cache_path(tmp.path()).exists(), "新位置已写入");
+    assert!(
+        nemesis_path::models_catalog_cache_path(tmp.path()).exists(),
+        "新位置已写入"
+    );
     assert!(!legacy.exists(), "save 后 legacy 孤儿被清掉");
 }

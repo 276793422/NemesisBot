@@ -62,24 +62,34 @@ fn from_json_reports_bad_hex_per_field() {
 
     // 私钥 hex 长度错（root_sk / ca_sk / issuer_sk 逐个验错误消息带字段名）
     j.root_sk = "abcd".into();
-    assert!(matches!(KeyHierarchy::from_json(&j), Err(ref e) if format!("{e:#}").contains("root_sk")));
+    assert!(
+        matches!(KeyHierarchy::from_json(&j), Err(ref e) if format!("{e:#}").contains("root_sk"))
+    );
     j.root_sk = good.root_sk.clone();
 
     j.ca_sk = "z".repeat(64);
-    assert!(matches!(KeyHierarchy::from_json(&j), Err(ref e) if format!("{e:#}").contains("ca_sk")));
+    assert!(
+        matches!(KeyHierarchy::from_json(&j), Err(ref e) if format!("{e:#}").contains("ca_sk"))
+    );
     j.ca_sk = good.ca_sk.clone();
 
     j.issuer_sk = "1234".into();
-    assert!(matches!(KeyHierarchy::from_json(&j), Err(ref e) if format!("{e:#}").contains("issuer_sk")));
+    assert!(
+        matches!(KeyHierarchy::from_json(&j), Err(ref e) if format!("{e:#}").contains("issuer_sk"))
+    );
     j.issuer_sk = good.issuer_sk.clone();
 
     // 证书 hex 解不出（ca_cert 长度奇 / issuer_cert 非法字符）
     j.ca_cert = "abc".into();
-    assert!(matches!(KeyHierarchy::from_json(&j), Err(ref e) if format!("{e:#}").contains("ca_cert")));
+    assert!(
+        matches!(KeyHierarchy::from_json(&j), Err(ref e) if format!("{e:#}").contains("ca_cert"))
+    );
     j.ca_cert = good.ca_cert.clone();
 
     j.issuer_cert = "g".repeat(64);
-    assert!(matches!(KeyHierarchy::from_json(&j), Err(ref e) if format!("{e:#}").contains("issuer_cert")));
+    assert!(
+        matches!(KeyHierarchy::from_json(&j), Err(ref e) if format!("{e:#}").contains("issuer_cert"))
+    );
 
     // 证书 hex 合法但字节解析失败（< 146B）→ Certificate::from_bytes 错误透传
     // （ca_cert 与 issuer_cert 两处同一臂，各自都要走到）

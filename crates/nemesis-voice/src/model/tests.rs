@@ -94,7 +94,10 @@ where
 
 #[test]
 fn check_model_files_missing_dir_is_false() {
-    assert!(!check_model_files(Path::new("Z:/definitely/not/here"), &[("a.onnx", "a.onnx")]));
+    assert!(!check_model_files(
+        Path::new("Z:/definitely/not/here"),
+        &[("a.onnx", "a.onnx")]
+    ));
 }
 
 #[test]
@@ -155,7 +158,11 @@ fn ensure_stt_model_local_files_hit_returns_dir_without_network() {
 
     let cfg = cfg_with_model_dir(
         tmp.path(),
-        vec![source_with("sensevoice-small", "user/sv", &["model_sherpa.onnx", "tokens.txt"])],
+        vec![source_with(
+            "sensevoice-small",
+            "user/sv",
+            &["model_sherpa.onnx", "tokens.txt"],
+        )],
     );
     let got = ensure_stt_model(&cfg).unwrap();
     assert_eq!(got, dir);
@@ -166,7 +173,11 @@ fn ensure_stt_model_auto_download_disabled_bails() {
     let tmp = tempfile::tempdir().unwrap();
     let mut cfg = cfg_with_model_dir(
         tmp.path(),
-        vec![source_with("sensevoice-small", "user/sv", &["model_sherpa.onnx"])],
+        vec![source_with(
+            "sensevoice-small",
+            "user/sv",
+            &["model_sherpa.onnx"],
+        )],
     );
     cfg.models.auto_download = false;
 
@@ -181,7 +192,10 @@ fn ensure_stt_model_no_source_bails_even_with_autodownload() {
     // sources 为空 → files 为空 → check 不通过 → context 失败
     let cfg = cfg_with_model_dir(tmp.path(), vec![]);
     let err = format!("{:#}", ensure_stt_model(&cfg).unwrap_err());
-    assert!(err.contains("not found in config [models.sources]"), "{err}");
+    assert!(
+        err.contains("not found in config [models.sources]"),
+        "{err}"
+    );
 }
 
 #[test]
@@ -237,13 +251,21 @@ fn ensure_tts_model_auto_download_disabled_bails() {
 #[test]
 fn ensure_punct_model_local_files_hit_returns_dir() {
     let tmp = tempfile::tempdir().unwrap();
-    let dir = tmp.path().join("data").join("punct").join("ct-transformer-zh-en");
+    let dir = tmp
+        .path()
+        .join("data")
+        .join("punct")
+        .join("ct-transformer-zh-en");
     std::fs::create_dir_all(&dir).unwrap();
     std::fs::write(dir.join("model.onnx"), b"p").unwrap();
 
     let cfg = cfg_with_model_dir(
         tmp.path(),
-        vec![source_with("ct-transformer-zh-en", "user/p", &["model.onnx"])],
+        vec![source_with(
+            "ct-transformer-zh-en",
+            "user/p",
+            &["model.onnx"],
+        )],
     );
     assert_eq!(ensure_punct_model(&cfg).unwrap(), dir);
 }
@@ -253,7 +275,10 @@ fn ensure_punct_model_no_source_bails() {
     let tmp = tempfile::tempdir().unwrap();
     let cfg = cfg_with_model_dir(tmp.path(), vec![]);
     let err = format!("{:#}", ensure_punct_model(&cfg).unwrap_err());
-    assert!(err.contains("not found in config [models.sources]"), "{err}");
+    assert!(
+        err.contains("not found in config [models.sources]"),
+        "{err}"
+    );
 }
 
 #[test]
@@ -264,8 +289,10 @@ fn ensure_speaker_model_local_files_hit_returns_dir() {
     std::fs::create_dir_all(&dir).unwrap();
     std::fs::write(dir.join("campplus.onnx"), b"s").unwrap();
 
-    let mut cfg =
-        cfg_with_model_dir(tmp.path(), vec![source_with("3dspeaker", "user/sp", &["campplus.onnx"])]);
+    let mut cfg = cfg_with_model_dir(
+        tmp.path(),
+        vec![source_with("3dspeaker", "user/sp", &["campplus.onnx"])],
+    );
     cfg.speaker.model_name = "3dspeaker".to_string();
     assert_eq!(ensure_speaker_model(&cfg).unwrap(), dir);
 }
@@ -285,7 +312,10 @@ fn ensure_speaker_model_no_source_bails_even_with_autodownload() {
     let tmp = tempfile::tempdir().unwrap();
     let cfg = cfg_with_model_dir(tmp.path(), vec![]);
     let err = format!("{:#}", ensure_speaker_model(&cfg).unwrap_err());
-    assert!(err.contains("not found in config [models.sources]"), "{err}");
+    assert!(
+        err.contains("not found in config [models.sources]"),
+        "{err}"
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -308,11 +338,9 @@ fn download_model_files_full_download_writes_final_file_and_clears_part() {
         let target = tmp.path().join("stt").join("m");
         let target_check = target.clone();
         let f = files("model.onnx", "model.onnx");
-        run_blocking(move || {
-            download_model_files(&server_uri, "m", "repo", &f, &target, "")
-        })
-        .await
-        .unwrap();
+        run_blocking(move || download_model_files(&server_uri, "m", "repo", &f, &target, ""))
+            .await
+            .unwrap();
 
         let final_file = target_check.join("model.onnx");
         assert_eq!(std::fs::read(&final_file).unwrap(), b"MODEL-BYTES");
@@ -335,11 +363,9 @@ fn download_model_files_existing_nonempty_final_file_is_skipped_without_http() {
         let target_check = target.clone();
 
         let f = files("model.onnx", "model.onnx");
-        run_blocking(move || {
-            download_model_files(&server_uri, "m", "repo", &f, &target, "")
-        })
-        .await
-        .unwrap();
+        run_blocking(move || download_model_files(&server_uri, "m", "repo", &f, &target, ""))
+            .await
+            .unwrap();
 
         assert_eq!(
             std::fs::read(target_check.join("model.onnx")).unwrap(),
@@ -363,11 +389,9 @@ fn download_model_files_creates_parent_dirs_for_subdir_files() {
         let target = tmp.path().join("stt").join("m");
         let target_check = target.clone();
         let f = files("dict/a.txt", "dict/a.txt");
-        run_blocking(move || {
-            download_model_files(&server_uri, "m", "repo", &f, &target, "")
-        })
-        .await
-        .unwrap();
+        run_blocking(move || download_model_files(&server_uri, "m", "repo", &f, &target, ""))
+            .await
+            .unwrap();
         assert_eq!(
             std::fs::read(target_check.join("dict").join("a.txt")).unwrap(),
             b"DICT-A"
@@ -389,10 +413,9 @@ fn download_model_files_http_error_bails_with_status() {
         let tmp = tempfile::tempdir().unwrap();
         let target = tmp.path().join("stt").join("m");
         let f = files("missing.onnx", "missing.onnx");
-        let res = run_blocking(move || {
-            download_model_files(&server_uri, "m", "repo", &f, &target, "")
-        })
-        .await;
+        let res =
+            run_blocking(move || download_model_files(&server_uri, "m", "repo", &f, &target, ""))
+                .await;
         let err = format!("{:#}", res.unwrap_err());
         assert!(err.contains("HTTP 404"), "{err}");
     });
@@ -424,7 +447,10 @@ fn download_model_files_direct_url_overrides_mirror() {
         })
         .await
         .unwrap();
-        assert_eq!(std::fs::read(target_check.join("model.onnx")).unwrap(), b"DIRECT");
+        assert_eq!(
+            std::fs::read(target_check.join("model.onnx")).unwrap(),
+            b"DIRECT"
+        );
     });
 }
 
@@ -597,7 +623,11 @@ fn ensure_stt_model_downloads_when_missing_then_returns_dir() {
         let tmp = tempfile::tempdir().unwrap();
         let mut cfg = cfg_with_model_dir(
             tmp.path(),
-            vec![source_with("sensevoice-small", "user/sv", &["model_sherpa.onnx"])],
+            vec![source_with(
+                "sensevoice-small",
+                "user/sv",
+                &["model_sherpa.onnx"],
+            )],
         );
         cfg.models.mirror.base = server_uri;
 
@@ -642,13 +672,20 @@ fn ensure_stt_model_download_failure_propagates_err() {
         let tmp = tempfile::tempdir().unwrap();
         let mut cfg = cfg_with_model_dir(
             tmp.path(),
-            vec![source_with("sensevoice-small", "user/sv", &["model_sherpa.onnx"])],
+            vec![source_with(
+                "sensevoice-small",
+                "user/sv",
+                &["model_sherpa.onnx"],
+            )],
         );
         cfg.models.mirror.base = server_uri;
 
-        let err = format!("{:#}", run_blocking(move || ensure_stt_model(&cfg))
-            .await
-            .unwrap_err());
+        let err = format!(
+            "{:#}",
+            run_blocking(move || ensure_stt_model(&cfg))
+                .await
+                .unwrap_err()
+        );
         assert!(err.contains("HTTP 500"), "{err}");
     });
 }
@@ -697,9 +734,12 @@ fn ensure_vad_model_download_failure_propagates_err() {
         );
         cfg.models.mirror.base = server_uri;
 
-        let err = format!("{:#}", run_blocking(move || ensure_vad_model(&cfg))
-            .await
-            .unwrap_err());
+        let err = format!(
+            "{:#}",
+            run_blocking(move || ensure_vad_model(&cfg))
+                .await
+                .unwrap_err()
+        );
         assert!(err.contains("HTTP 500"), "{err}");
     });
 }
@@ -711,7 +751,10 @@ fn ensure_tts_model_no_source_bails() {
     let mut cfg = cfg_with_model_dir(tmp.path(), vec![]);
     cfg.tts.model_name = "kokoro".to_string();
     let err = format!("{:#}", ensure_tts_model(&cfg).unwrap_err());
-    assert!(err.contains("not found in config [models.sources]"), "{err}");
+    assert!(
+        err.contains("not found in config [models.sources]"),
+        "{err}"
+    );
 }
 
 #[test]
@@ -760,9 +803,12 @@ fn ensure_tts_model_download_failure_propagates_err() {
         cfg.tts.model_name = "kokoro".to_string();
         cfg.models.mirror.base = server_uri;
 
-        let err = format!("{:#}", run_blocking(move || ensure_tts_model(&cfg))
-            .await
-            .unwrap_err());
+        let err = format!(
+            "{:#}",
+            run_blocking(move || ensure_tts_model(&cfg))
+                .await
+                .unwrap_err()
+        );
         assert!(err.contains("HTTP 500"), "{err}");
     });
 }
@@ -773,7 +819,11 @@ fn ensure_punct_model_auto_download_disabled_bails() {
     let tmp = tempfile::tempdir().unwrap();
     let mut cfg = cfg_with_model_dir(
         tmp.path(),
-        vec![source_with("ct-transformer-zh-en", "user/p", &["model.onnx"])],
+        vec![source_with(
+            "ct-transformer-zh-en",
+            "user/p",
+            &["model.onnx"],
+        )],
     );
     cfg.models.auto_download = false;
     let err = format!("{:#}", ensure_punct_model(&cfg).unwrap_err());
@@ -795,11 +845,17 @@ fn ensure_punct_model_downloads_when_missing_then_returns_dir() {
         let tmp = tempfile::tempdir().unwrap();
         let mut cfg = cfg_with_model_dir(
             tmp.path(),
-            vec![source_with("ct-transformer-zh-en", "user/p", &["model.onnx"])],
+            vec![source_with(
+                "ct-transformer-zh-en",
+                "user/p",
+                &["model.onnx"],
+            )],
         );
         cfg.models.mirror.base = server_uri;
 
-        let dir = run_blocking(move || ensure_punct_model(&cfg)).await.unwrap();
+        let dir = run_blocking(move || ensure_punct_model(&cfg))
+            .await
+            .unwrap();
         assert!(dir.ends_with("ct-transformer-zh-en"), "{dir:?}");
         assert_eq!(std::fs::read(dir.join("model.onnx")).unwrap(), b"PUNCT");
     });
@@ -820,13 +876,20 @@ fn ensure_punct_model_download_failure_propagates_err() {
         let tmp = tempfile::tempdir().unwrap();
         let mut cfg = cfg_with_model_dir(
             tmp.path(),
-            vec![source_with("ct-transformer-zh-en", "user/p", &["model.onnx"])],
+            vec![source_with(
+                "ct-transformer-zh-en",
+                "user/p",
+                &["model.onnx"],
+            )],
         );
         cfg.models.mirror.base = server_uri;
 
-        let err = format!("{:#}", run_blocking(move || ensure_punct_model(&cfg))
-            .await
-            .unwrap_err());
+        let err = format!(
+            "{:#}",
+            run_blocking(move || ensure_punct_model(&cfg))
+                .await
+                .unwrap_err()
+        );
         assert!(err.contains("HTTP 500"), "{err}");
     });
 }
@@ -851,7 +914,9 @@ fn ensure_speaker_model_downloads_when_missing_then_returns_dir() {
         cfg.speaker.model_name = "3dspeaker".to_string();
         cfg.models.mirror.base = server_uri;
 
-        let dir = run_blocking(move || ensure_speaker_model(&cfg)).await.unwrap();
+        let dir = run_blocking(move || ensure_speaker_model(&cfg))
+            .await
+            .unwrap();
         assert!(dir.ends_with("3dspeaker"), "{dir:?}");
         assert_eq!(std::fs::read(dir.join("campplus.onnx")).unwrap(), b"SPK");
     });
@@ -877,9 +942,12 @@ fn ensure_speaker_model_download_failure_propagates_err() {
         cfg.speaker.model_name = "3dspeaker".to_string();
         cfg.models.mirror.base = server_uri;
 
-        let err = format!("{:#}", run_blocking(move || ensure_speaker_model(&cfg))
-            .await
-            .unwrap_err());
+        let err = format!(
+            "{:#}",
+            run_blocking(move || ensure_speaker_model(&cfg))
+                .await
+                .unwrap_err()
+        );
         assert!(err.contains("HTTP 500"), "{err}");
     });
 }
@@ -943,13 +1011,13 @@ fn download_model_files_body_over_4mb_hits_midstream_flush() {
         let target = tmp.path().join("stt").join("m");
         let target_check = target.clone();
         let f = files("model.onnx", "model.onnx");
-        run_blocking(move || {
-            download_model_files(&server_uri, "m", "repo", &f, &target, "")
-        })
-        .await
-        .unwrap();
+        run_blocking(move || download_model_files(&server_uri, "m", "repo", &f, &target, ""))
+            .await
+            .unwrap();
         assert_eq!(
-            std::fs::metadata(target_check.join("model.onnx")).unwrap().len(),
+            std::fs::metadata(target_check.join("model.onnx"))
+                .unwrap()
+                .len(),
             5 * 1024 * 1024
         );
     });
@@ -980,10 +1048,18 @@ fn spawn_drip_server(head_ok: bool) -> std::net::SocketAddr {
             if is_get {
                 let (head, c1, c2) = if head_ok {
                     // 带总长：Content-Length 10
-                    ("HTTP/1.1 200 OK\r\nContent-Length: 10\r\nConnection: close\r\n\r\n", "01234", "56789")
+                    (
+                        "HTTP/1.1 200 OK\r\nContent-Length: 10\r\nConnection: close\r\n\r\n",
+                        "01234",
+                        "56789",
+                    )
                 } else {
                     // 不带总长：读到 EOF 为止
-                    ("HTTP/1.1 200 OK\r\nConnection: close\r\n\r\n", "SLOW-", "BODY")
+                    (
+                        "HTTP/1.1 200 OK\r\nConnection: close\r\n\r\n",
+                        "SLOW-",
+                        "BODY",
+                    )
                 };
                 stream.write_all(head.as_bytes()).unwrap();
                 stream.write_all(c1.as_bytes()).unwrap();
@@ -994,12 +1070,16 @@ fn spawn_drip_server(head_ok: bool) -> std::net::SocketAddr {
                 // drop(stream) 关连接
             } else if head_ok {
                 stream
-                    .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 10\r\nConnection: close\r\n\r\n")
+                    .write_all(
+                        b"HTTP/1.1 200 OK\r\nContent-Length: 10\r\nConnection: close\r\n\r\n",
+                    )
                     .unwrap();
                 stream.flush().unwrap();
             } else {
                 stream
-                    .write_all(b"HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\nConnection: close\r\n\r\n")
+                    .write_all(
+                        b"HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
+                    )
                     .unwrap();
                 stream.flush().unwrap();
             }
@@ -1156,11 +1236,12 @@ fn download_model_files_zero_byte_existing_file_is_redownloaded() {
         let target_check = target.clone();
 
         let f = files("model.onnx", "model.onnx");
-        run_blocking(move || {
-            download_model_files(&server_uri, "m", "repo", &f, &target, "")
-        })
-        .await
-        .unwrap();
-        assert_eq!(std::fs::read(target_check.join("model.onnx")).unwrap(), b"NEW");
+        run_blocking(move || download_model_files(&server_uri, "m", "repo", &f, &target, ""))
+            .await
+            .unwrap();
+        assert_eq!(
+            std::fs::read(target_check.join("model.onnx")).unwrap(),
+            b"NEW"
+        );
     });
 }

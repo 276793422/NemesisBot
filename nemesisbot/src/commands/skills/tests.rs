@@ -1128,7 +1128,10 @@ async fn test_cmd_cache_stats_disabled() {
     let tmp = TempDir::new().unwrap();
     let home = tmp.path().join(".nemesisbot");
     std::fs::create_dir_all(home.join("workspace").join("config")).unwrap();
-    write_skills_cfg(&home, &serde_json::json!({ "search_cache": { "enabled": false } }));
+    write_skills_cfg(
+        &home,
+        &serde_json::json!({ "search_cache": { "enabled": false } }),
+    );
     cmd_cache_stats(&skills_cfg_of(&home)).await.unwrap();
     // 配置文件缺失 → 默认 enabled=false 同样走 disabled 分支
     let tmp2 = TempDir::new().unwrap();
@@ -1285,7 +1288,9 @@ async fn test_cmd_search_no_registries_early_return() {
     std::fs::create_dir_all(home.join("workspace").join("config")).unwrap();
     // 配置缺失 → 默认 RegistryConfig（clawhub.enabled=false，无 github_sources）
     // → registries() 为空 → 打印提示后返回，绝不发网络请求
-    cmd_search(&skills_cfg_of(&home), "query", 10).await.unwrap();
+    cmd_search(&skills_cfg_of(&home), "query", 10)
+        .await
+        .unwrap();
 }
 
 // -------------------------------------------------------------------------
@@ -1317,7 +1322,10 @@ async fn test_cmd_learn_unresolvable_model_bails() {
     )
     .unwrap();
     let err = cmd_learn(&home, "some-source", None).await.unwrap_err();
-    assert!(err.to_string().contains("Failed to initialize agent"), "err: {err}");
+    assert!(
+        err.to_string().contains("Failed to initialize agent"),
+        "err: {err}"
+    );
 }
 
 // -------------------------------------------------------------------------
@@ -1351,7 +1359,11 @@ fn test_run_skills_list_dir_missing_and_present() {
     // 有 skill 目录（带/不带 SKILL.md、forge 目录）
     let skills = crate::common::workspace_path(&th.home).join("skills");
     std::fs::create_dir_all(skills.join("alpha")).unwrap();
-    std::fs::write(skills.join("alpha").join("SKILL.md"), "# Alpha\nname: alpha\ndescription: d\n").unwrap();
+    std::fs::write(
+        skills.join("alpha").join("SKILL.md"),
+        "# Alpha\nname: alpha\ndescription: d\n",
+    )
+    .unwrap();
     std::fs::create_dir_all(skills.join("beta")).unwrap();
     std::fs::create_dir_all(skills.join(".forge").join("gamma")).unwrap();
     run(SkillsAction::List, false).unwrap();
@@ -1365,13 +1377,17 @@ fn test_run_skills_remove_found_and_not_found() {
     let skills = crate::common::workspace_path(&th.home).join("skills");
     std::fs::create_dir_all(skills.join("gone")).unwrap();
     run(
-        SkillsAction::Remove { name: "gone".into() },
+        SkillsAction::Remove {
+            name: "gone".into(),
+        },
         false,
     )
     .unwrap();
     assert!(!skills.join("gone").exists());
     run(
-        SkillsAction::Remove { name: "ghost".into() },
+        SkillsAction::Remove {
+            name: "ghost".into(),
+        },
         false,
     )
     .unwrap();
@@ -1384,15 +1400,33 @@ fn test_run_skills_show_variants() {
     let th = temp_home_env();
     let skills = crate::common::workspace_path(&th.home).join("skills");
     // 不存在
-    run(SkillsAction::Show { name: "nope".into() }, false).unwrap();
+    run(
+        SkillsAction::Show {
+            name: "nope".into(),
+        },
+        false,
+    )
+    .unwrap();
     // 带 SKILL.md
     std::fs::create_dir_all(skills.join("withmd")).unwrap();
     std::fs::write(skills.join("withmd").join("SKILL.md"), "# content").unwrap();
-    run(SkillsAction::Show { name: "withmd".into() }, false).unwrap();
+    run(
+        SkillsAction::Show {
+            name: "withmd".into(),
+        },
+        false,
+    )
+    .unwrap();
     // 不带 SKILL.md → 列目录文件
     std::fs::create_dir_all(skills.join("nomd")).unwrap();
     std::fs::write(skills.join("nomd").join("helper.py"), "x").unwrap();
-    run(SkillsAction::Show { name: "nomd".into() }, false).unwrap();
+    run(
+        SkillsAction::Show {
+            name: "nomd".into(),
+        },
+        false,
+    )
+    .unwrap();
 }
 
 #[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
@@ -1433,15 +1467,15 @@ fn test_run_skills_source_list_and_remove() {
         false,
     )
     .unwrap();
-    let cfg: serde_json::Value = serde_json::from_str(
-        &std::fs::read_to_string(skills_cfg_of(&th.home)).unwrap(),
-    )
-    .unwrap();
+    let cfg: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(skills_cfg_of(&th.home)).unwrap()).unwrap();
     assert_eq!(cfg["github_sources"].as_array().unwrap().len(), 0);
     // 移除不存在的
     run(
         SkillsAction::Source {
-            action: SourceAction::Remove { name: "ghost".into() },
+            action: SourceAction::Remove {
+                name: "ghost".into(),
+            },
         },
         false,
     )
@@ -1467,14 +1501,19 @@ fn test_run_skills_add_source_invalid_url() {
             let result = rt.block_on(async {
                 // 非 github URL → parse 先失败，不触网
                 run(
-                    SkillsAction::AddSource { url: "not-a-url".into() },
+                    SkillsAction::AddSource {
+                        url: "not-a-url".into(),
+                    },
                     false,
                 )
             });
             drop(rt);
             result
         });
-        let err = handle.join().expect("run() 在 runtime 上下文不得 panic").unwrap_err();
+        let err = handle
+            .join()
+            .expect("run() 在 runtime 上下文不得 panic")
+            .unwrap_err();
         assert!(err.to_string().contains("Invalid GitHub URL"), "err: {err}");
     });
 }
@@ -1520,10 +1559,7 @@ fn test_run_skills_validate_variants() {
     // 直接指向单个文件
     run(
         SkillsAction::Validate {
-            path: skill_dir
-                .join("SKILL.md")
-                .to_string_lossy()
-                .to_string(),
+            path: skill_dir.join("SKILL.md").to_string_lossy().to_string(),
         },
         false,
     )
@@ -1538,7 +1574,9 @@ fn test_run_skills_builtin_install_and_list() {
     run(SkillsAction::ListBuiltin, false).unwrap();
     // 指定名字安装
     run(
-        SkillsAction::InstallBuiltin { name: Some("weather".into()) },
+        SkillsAction::InstallBuiltin {
+            name: Some("weather".into()),
+        },
         false,
     )
     .unwrap();
@@ -1546,13 +1584,17 @@ fn test_run_skills_builtin_install_and_list() {
     assert!(skills.join("weather").exists());
     // 重复安装 → already exists 分支
     run(
-        SkillsAction::InstallBuiltin { name: Some("weather".into()) },
+        SkillsAction::InstallBuiltin {
+            name: Some("weather".into()),
+        },
         false,
     )
     .unwrap();
     // 未知名字
     run(
-        SkillsAction::InstallBuiltin { name: Some("no-such-builtin".into()) },
+        SkillsAction::InstallBuiltin {
+            name: Some("no-such-builtin".into()),
+        },
         false,
     )
     .unwrap();
@@ -1576,7 +1618,14 @@ async fn test_run_skills_search_empty_registries_dispatch() {
     )
     .unwrap();
     // query=None → 空串
-    run(SkillsAction::Search { query: None, limit: 5 }, false).unwrap();
+    run(
+        SkillsAction::Search {
+            query: None,
+            limit: 5,
+        },
+        false,
+    )
+    .unwrap();
 }
 
 #[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
@@ -1647,7 +1696,9 @@ fn probe_block_in_place_bridge_with_async_client_is_panic_free() {
     std::thread::spawn(move || {
         use std::io::{Read, Write};
         for _ in 0..3 {
-            let Ok((mut stream, _)) = listener.accept() else { break };
+            let Ok((mut stream, _)) = listener.accept() else {
+                break;
+            };
             let mut buf = [0u8; 2048];
             let _ = stream.read(&mut buf);
             let body = r#"{"ok":true}"#;
@@ -1731,9 +1782,7 @@ mod wave_b {
         fn start(routes: Vec<(&'static str, String)>, expected_requests: usize) -> Self {
             let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
             let addr = listener.local_addr().unwrap();
-            let rem = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(
-                expected_requests,
-            ));
+            let rem = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(expected_requests));
             std::thread::spawn(move || {
                 use std::io::Read;
                 use std::sync::atomic::Ordering;
@@ -1803,11 +1852,7 @@ mod wave_b {
 
     /// 写一份启用 ClawHub（base 指向 mock）的 config.skills.json。
     /// convex_url 可与 base 不同源（列表端点走 convex、搜索走 base）。
-    fn wave_b_write_clawhub_cfg(
-        home: &std::path::Path,
-        base_url: &str,
-        convex_url: &str,
-    ) {
+    fn wave_b_write_clawhub_cfg(home: &std::path::Path, base_url: &str, convex_url: &str) {
         std::fs::create_dir_all(home.join("workspace").join("config")).unwrap();
         write_skills_cfg(
             home,
@@ -2181,10 +2226,7 @@ mod wave_b {
     async fn wave_b_cmd_learn_success_round_trip_local_llm_mock() {
         let tmp = TempDir::new().unwrap();
         let home = tmp.path().join(".nemesisbot");
-        let _mock = WaveBMock::start(
-            vec![("/chat/completions", wave_b_completions_payload())],
-            1,
-        );
+        let _mock = WaveBMock::start(vec![("/chat/completions", wave_b_completions_payload())], 1);
         wave_b_write_llm_home(&home, &format!("{}/v1", _mock.base_url()));
 
         cmd_learn(&home, "some learning source", Some("wave-b-name"))
@@ -2319,10 +2361,7 @@ mod wave_c {
     fn wave_c_start_clawhub_mock(
         convex_json: String,
         zip: Vec<u8>,
-    ) -> (
-        String,
-        std::sync::mpsc::Receiver<&'static str>,
-    ) {
+    ) -> (String, std::sync::mpsc::Receiver<&'static str>) {
         let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind ephemeral port");
         let addr = listener.local_addr().unwrap();
         let (tx, rx) = std::sync::mpsc::channel::<&'static str>();
@@ -2339,10 +2378,8 @@ mod wave_c {
                         Ok(0) | Err(_) => break,
                         Ok(n) => {
                             buf.extend_from_slice(&chunk[..n]);
-                            if let Some(h) = buf
-                                .windows(4)
-                                .position(|w| w == b"\r\n\r\n")
-                                .map(|p| p + 4)
+                            if let Some(h) =
+                                buf.windows(4).position(|w| w == b"\r\n\r\n").map(|p| p + 4)
                             {
                                 let clen: usize = String::from_utf8_lossy(&buf[..h])
                                     .to_ascii_lowercase()
@@ -2364,7 +2401,11 @@ mod wave_c {
                     if req_head.contains("/api/v1/download") {
                         ("zip", "application/zip", zip.clone())
                     } else {
-                        ("convex", "application/json", convex_json.clone().into_bytes())
+                        (
+                            "convex",
+                            "application/json",
+                            convex_json.clone().into_bytes(),
+                        )
                     };
                 let resp = format!(
                     "HTTP/1.1 200 OK\r\nContent-Type: {ct}\r\nContent-Length: {cl}\r\nConnection: close\r\n\r\n",
@@ -2424,13 +2465,20 @@ mod wave_c {
             }),
         );
 
-        cmd_install(&skills_dir, &skills_cfg_of(&home), "clawhub/wavec-zip-skill")
-            .await
-            .expect("ClawHub ZIP 成功链必须 Ok（✅ Installed 臂 + 收尾 Ok）");
+        cmd_install(
+            &skills_dir,
+            &skills_cfg_of(&home),
+            "clawhub/wavec-zip-skill",
+        )
+        .await
+        .expect("ClawHub ZIP 成功链必须 Ok（✅ Installed 臂 + 收尾 Ok）");
 
         // 断言点①：技能文件确实落到 tempdir 工作区 skills/<slug>/SKILL.md 且内容匹配。
         let landed = skills_dir.join("wavec-zip-skill").join("SKILL.md");
-        assert!(landed.exists(), "SKILL.md 必须落在 workspace skills/<slug>/ 下");
+        assert!(
+            landed.exists(),
+            "SKILL.md 必须落在 workspace skills/<slug>/ 下"
+        );
         assert_eq!(
             std::fs::read_to_string(&landed).unwrap(),
             WAVE_C_SKILL_MD,

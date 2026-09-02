@@ -136,10 +136,12 @@ pub trait ToolHook: Send + Sync {
         &self,
         _call: HookToolCall,
         next: std::sync::Arc<
-            dyn Fn(HookToolCall) -> std::pin::Pin<
-                Box<dyn std::future::Future<Output = String> + Send>,
-            > + Send
-            + Sync,
+            dyn Fn(
+                    HookToolCall,
+                )
+                    -> std::pin::Pin<Box<dyn std::future::Future<Output = String> + Send>>
+                + Send
+                + Sync,
         >,
     ) -> String {
         next(_call).await
@@ -155,7 +157,8 @@ pub trait ToolHook: Send + Sync {
     /// [`Self::post_tool_use`]（错误文本作为结果，保持既有行为）；
     /// override 用于区分成败（如 CC `PostToolUseFailure` 事件派发）。
     async fn post_tool_use_failure(&self, call: &HookToolCall, err: &str) -> PostHookAction {
-        self.post_tool_use(call, &format!("Tool error: {err}")).await
+        self.post_tool_use(call, &format!("Tool error: {err}"))
+            .await
     }
 }
 
@@ -245,7 +248,11 @@ pub async fn run_pre_hooks(hooks: &[Arc<dyn ToolHook>], call: &HookToolCall) -> 
 /// Run post hooks as a pipeline. Every hook runs (observers are not
 /// short-circuited by an earlier `Replace`); each sees the current result.
 /// Returns the final (possibly rewritten) result.
-pub async fn run_post_hooks(hooks: &[Arc<dyn ToolHook>], call: &HookToolCall, result: String) -> String {
+pub async fn run_post_hooks(
+    hooks: &[Arc<dyn ToolHook>],
+    call: &HookToolCall,
+    result: String,
+) -> String {
     let mut current = result;
     for hook in hooks {
         match hook.post_tool_use(call, &current).await {
@@ -327,13 +334,21 @@ pub trait LlmHook: Send + Sync {
 
     /// Runs after messages are built (nudges included), BEFORE the LlmRequest
     /// observer event — so appended messages land in request_log.
-    async fn pre_llm_call(&self, _call: &HookLlmCall, _messages: &[LlmMessage]) -> LlmRequestDecision {
+    async fn pre_llm_call(
+        &self,
+        _call: &HookLlmCall,
+        _messages: &[LlmMessage],
+    ) -> LlmRequestDecision {
         LlmRequestDecision::Proceed
     }
 
     /// Runs after the response (and after the built-in error recovery), BEFORE
     /// the LlmResponse observer event — so downstream sees the final decision.
-    async fn post_llm_call(&self, _call: &HookLlmCall, _response: &LlmResponse) -> LlmResponseDecision {
+    async fn post_llm_call(
+        &self,
+        _call: &HookLlmCall,
+        _response: &LlmResponse,
+    ) -> LlmResponseDecision {
         LlmResponseDecision::Allow
     }
 }
@@ -640,7 +655,9 @@ pub fn metrics_plugin_slot() -> &'static std::sync::Arc<MetricsPipelinePlugin> {
 
 impl MetricsPipelinePlugin {
     pub fn new() -> Self {
-        Self { enabled: std::sync::atomic::AtomicBool::new(true) }
+        Self {
+            enabled: std::sync::atomic::AtomicBool::new(true),
+        }
     }
 
     pub fn set_enabled(&self, on: bool) {
@@ -668,10 +685,12 @@ impl ToolHook for MetricsPipelinePlugin {
         &self,
         call: HookToolCall,
         next: std::sync::Arc<
-            dyn Fn(HookToolCall) -> std::pin::Pin<
-                Box<dyn std::future::Future<Output = String> + Send>,
-            > + Send
-            + Sync,
+            dyn Fn(
+                    HookToolCall,
+                )
+                    -> std::pin::Pin<Box<dyn std::future::Future<Output = String> + Send>>
+                + Send
+                + Sync,
         >,
     ) -> String {
         if !self.is_enabled() {

@@ -42,18 +42,19 @@ pub async fn test_cli_cluster_init(ws: &TestWorkspace, bin: &Path) -> Vec<TestRe
             "config.cluster.json created",
         ));
         if let Ok(data) = std::fs::read_to_string(&cluster_cfg)
-            && let Ok(cfg) = serde_json::from_str::<Value>(&data) {
-                let has_enabled = cfg.get("enabled").is_some();
-                let has_port = cfg.get("port").is_some();
-                results.push(pass(
-                    &format!("{}/config_content", suite),
-                    if has_enabled && has_port {
-                        "Has enabled and port"
-                    } else {
-                        "Partial fields"
-                    },
-                ));
-            }
+            && let Ok(cfg) = serde_json::from_str::<Value>(&data)
+        {
+            let has_enabled = cfg.get("enabled").is_some();
+            let has_port = cfg.get("port").is_some();
+            results.push(pass(
+                &format!("{}/config_content", suite),
+                if has_enabled && has_port {
+                    "Has enabled and port"
+                } else {
+                    "Partial fields"
+                },
+            ));
+        }
     } else {
         // Create manually
         let _ = std::fs::create_dir_all(cluster_cfg.parent().unwrap());

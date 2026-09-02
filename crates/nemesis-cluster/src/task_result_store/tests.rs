@@ -1072,7 +1072,11 @@ fn test_w3b_load_from_disk_read_dir_and_per_file_read_failures() {
     )
     .unwrap();
     let store2 = TaskResultStore::with_disk_persistence(10, &cache);
-    assert_eq!(store2.load_from_disk(), 1, "only the readable json must load");
+    assert_eq!(
+        store2.load_from_disk(),
+        1,
+        "only the readable json must load"
+    );
     assert!(store2.get("good").is_some());
 }
 
@@ -1124,7 +1128,9 @@ async fn test_w3b_async_write_and_delete_failures() {
     let store = AsyncTaskResultStore::with_disk_persistence(10, dir.path());
     std::fs::create_dir_all(dir.path().join("a1.json")).unwrap();
 
-    store.store_success_async("a1", "act", serde_json::json!("x")).await;
+    store
+        .store_success_async("a1", "act", serde_json::json!("x"))
+        .await;
     assert!(store.get_async("a1").is_some());
     assert!(dir.path().join("a1.json").is_dir());
 
@@ -1135,7 +1141,9 @@ async fn test_w3b_async_write_and_delete_failures() {
     let dir2 = tempfile::tempdir().unwrap();
     let store2 = AsyncTaskResultStore::with_disk_persistence(10, dir2.path());
     std::fs::create_dir_all(dir2.path().join("a2.json.tmp")).unwrap();
-    store2.store_success_async("a2", "act", serde_json::json!("y")).await;
+    store2
+        .store_success_async("a2", "act", serde_json::json!("y"))
+        .await;
     assert!(store2.get_async("a2").is_some());
     assert!(!dir2.path().join("a2.json").exists());
 }
@@ -1192,7 +1200,9 @@ fn test_w3b_go_store_new_failure_and_corrupt_index_recovery() {
     assert_eq!(store.done_count(), 0, "corrupt index must reset to empty");
     // The store remains fully usable after recovery
     store.set_running("t1", "node-a");
-    store.set_result("t1", "success", "resp", "", "node-a").unwrap();
+    store
+        .set_result("t1", "success", "resp", "", "node-a")
+        .unwrap();
     assert_eq!(store.done_count(), 1);
 }
 
@@ -1256,7 +1266,11 @@ async fn test_s4_async_load_breaks_at_capacity() {
         .unwrap();
     }
     let store = AsyncTaskResultStore::with_disk_persistence(1, dir.path());
-    assert_eq!(store.load_from_disk_async().await, 1, "capacity 1 caps the load");
+    assert_eq!(
+        store.load_from_disk_async().await,
+        1,
+        "capacity 1 caps the load"
+    );
 }
 
 /// load_from_disk_async warns on an undecodable json file
@@ -1283,7 +1297,10 @@ async fn test_s4_async_store_evicts_from_disk() {
     store
         .store_success_async("s4-e2", "a", serde_json::json!(2))
         .await;
-    assert!(!dir.path().join("s4-e1.json").exists(), "evicted file deleted");
+    assert!(
+        !dir.path().join("s4-e1.json").exists(),
+        "evicted file deleted"
+    );
     assert!(dir.path().join("s4-e2.json").exists());
     assert!(store.get_async("s4-e1").is_none());
 }

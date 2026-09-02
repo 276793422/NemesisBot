@@ -12,9 +12,8 @@ fn write_temp(text: &str) -> (tempfile::TempDir, std::path::PathBuf) {
 
 #[test]
 fn w5d_load_reads_real_file() {
-    let (_dir, p) = write_temp(
-        "[features]\nchannels-web = true\n\n[enums]\nbuild-profile = \"iotsmall\"\n",
-    );
+    let (_dir, p) =
+        write_temp("[features]\nchannels-web = true\n\n[enums]\nbuild-profile = \"iotsmall\"\n");
     let cfg = BuildConfig::load(&p).unwrap();
     assert_eq!(cfg.get_bool("channels-web"), Some(true));
     assert_eq!(cfg.get_enum("build-profile"), Some("iotsmall"));
@@ -88,7 +87,10 @@ fn w5d_save_to_unwritable_path_is_err() {
     let blocker = dir.path().join("blocker");
     fs::write(&blocker, "i am a file").unwrap();
     let target = blocker.join(".config");
-    let err = BuildConfig::default().save(&target).unwrap_err().to_string();
+    let err = BuildConfig::default()
+        .save(&target)
+        .unwrap_err()
+        .to_string();
     assert!(err.contains("write config"), "err was: {err}");
 }
 

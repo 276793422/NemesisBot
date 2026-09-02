@@ -66,7 +66,13 @@ pub fn coverage_profile_file(slug: &str) -> Option<String> {
     let dir = std::env::var("NEMESISBOT_COVERAGE_DIR").ok()?;
     let safe: String = slug
         .chars()
-        .map(|c| if c.is_ascii_alphanumeric() { c.to_ascii_lowercase() } else { '_' })
+        .map(|c| {
+            if c.is_ascii_alphanumeric() {
+                c.to_ascii_lowercase()
+            } else {
+                '_'
+            }
+        })
         .collect();
     // A bare `%p-%m` pattern is NOT unique across a long measurement run:
     // Windows recycles PIDs aggressively, so among the hundreds of short-lived
@@ -327,7 +333,7 @@ impl TestWorkspace {
                     exit_code: -1,
                     stdout: String::new(),
                     stderr: format!("Failed to execute: {}", e),
-                }
+                };
             }
         };
         // Write the script, then drop stdin so the child observes EOF —
@@ -475,9 +481,10 @@ pub async fn wait_for_http(url: &str, timeout: Duration) -> Result<()> {
     let deadline = tokio::time::Instant::now() + timeout;
     loop {
         if let Ok(resp) = client.get(url).send().await
-            && resp.status().is_success() {
-                return Ok(());
-            }
+            && resp.status().is_success()
+        {
+            return Ok(());
+        }
         if tokio::time::Instant::now() > deadline {
             bail!("Timeout waiting for {}", url);
         }
@@ -725,11 +732,12 @@ pub fn cleanup_ports(ports: &[u16]) {
             for line in stdout.lines() {
                 let parts: Vec<&str> = line.split_whitespace().collect();
                 if let Some(pid) = parts.last()
-                    && let Ok(pid_num) = pid.parse::<u32>() {
-                        let _ = std::process::Command::new("taskkill")
-                            .args(["/F", "/PID", &pid_num.to_string()])
-                            .output();
-                    }
+                    && let Ok(pid_num) = pid.parse::<u32>()
+                {
+                    let _ = std::process::Command::new("taskkill")
+                        .args(["/F", "/PID", &pid_num.to_string()])
+                        .output();
+                }
             }
         }
     }

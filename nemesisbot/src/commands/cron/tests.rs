@@ -384,7 +384,7 @@ fn test_toggle_job_preserves_other_fields() {
 // ===========================================================================
 
 mod run_arm {
-    use super::super::{run, CronAction};
+    use super::super::{CronAction, run};
 
     fn with_env_home(f: impl FnOnce(std::path::PathBuf)) {
         let _guard = crate::GLOBAL_STATE_LOCK.lock().unwrap();
@@ -464,7 +464,11 @@ mod run_arm {
             assert_eq!(arr[0]["schedule"]["kind"], "interval");
             assert_eq!(arr[0]["schedule"]["every_ms"], 30000);
             assert_eq!(arr[0]["enabled"], true);
-            assert_eq!(arr[0]["id"].as_str().unwrap().len(), 8, "id 是 uuid 前 8 位");
+            assert_eq!(
+                arr[0]["id"].as_str().unwrap().len(),
+                8,
+                "id 是 uuid 前 8 位"
+            );
         });
     }
 
@@ -515,8 +519,7 @@ mod run_arm {
     fn remove_found_not_found_and_no_store() {
         with_env_home(|home| {
             // 无 store。
-            run(CronAction::Remove { id: "x".into() }, false)
-                .expect("无 store → not found Ok");
+            run(CronAction::Remove { id: "x".into() }, false).expect("无 store → not found Ok");
 
             write_store(&home, r#"[{"id":"abc","name":"n"}]"#);
             run(CronAction::Remove { id: "abc".into() }, false).expect("remove ok");
@@ -524,8 +527,7 @@ mod run_arm {
                 serde_json::from_str(&std::fs::read_to_string(store_of(&home)).unwrap()).unwrap();
             assert!(jobs.as_array().unwrap().is_empty(), "已删除");
 
-            run(CronAction::Remove { id: "ghost".into() }, false)
-                .expect("不存在 → not found Ok");
+            run(CronAction::Remove { id: "ghost".into() }, false).expect("不存在 → not found Ok");
         });
     }
 
@@ -670,7 +672,7 @@ mod run_arm {
 // 兄弟模块不可见，此处最小克隆。
 // =========================================================================
 mod wave_b {
-    use super::super::{run, CronAction};
+    use super::super::{CronAction, run};
 
     fn with_env_home(f: impl FnOnce(std::path::PathBuf)) {
         let _guard = crate::GLOBAL_STATE_LOCK.lock().unwrap();

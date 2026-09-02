@@ -40,7 +40,10 @@ fn run_local_missing_home_bails_without_creating() {
     let err = list.expect_err("local home missing → run must bail before any effect");
     assert!(err.to_string().contains("home 不一致"), "got: {err}");
     assert!(fork.is_err(), "fork must bail the same way");
-    assert!(!created, "bail must precede SessionStore::new_with_storage dir creation");
+    assert!(
+        !created,
+        "bail must precede SessionStore::new_with_storage dir creation"
+    );
 }
 
 /// `session show` 对不存在的会话：明确报错（jsonl 为空 → bail）。
@@ -140,7 +143,7 @@ mod list_sessions_arm {
 #[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
 mod r7_success_paths {
     use super::*;
-    use crate::tests::{singleton_test_home, EnvHomeGuard};
+    use crate::tests::{EnvHomeGuard, singleton_test_home};
     use std::path::PathBuf;
 
     fn rows_fixture(n_user_turns: usize) -> Vec<serde_json::Value> {
@@ -240,8 +243,8 @@ mod r7_success_paths {
         let text = std::fs::read_to_string(&copied).expect("forked jsonl exists");
         assert_eq!(text.lines().count(), 6, "verbatim copy of all 6 rows");
         // store json 落盘。
-        let store = singleton_test_home()
-            .join("workspace/sessions/agent_main_session_r7fork1__child.json");
+        let store =
+            singleton_test_home().join("workspace/sessions/agent_main_session_r7fork1__child.json");
         assert!(store.exists(), "new session store json must be saved");
     }
 
@@ -266,7 +269,11 @@ mod r7_success_paths {
         let copied = singleton_test_home()
             .join("workspace/logs/session_logs/agent_main_session_r7fork2__at1.jsonl");
         let text = std::fs::read_to_string(&copied).unwrap();
-        assert_eq!(text.lines().count(), 2, "turn-1 prefix = user+assistant rows");
+        assert_eq!(
+            text.lines().count(),
+            2,
+            "turn-1 prefix = user+assistant rows"
+        );
     }
 
     /// run(Fork) 源不存在：明确报错（jsonl 为空 → fork_session Err → run Err）。

@@ -516,7 +516,6 @@ struct ServiceRegistry {
     observer: Option<Arc<dyn ObserverManager>>,
 }
 
-
 // ---------------------------------------------------------------------------
 // BotService
 // ---------------------------------------------------------------------------
@@ -1014,10 +1013,10 @@ impl BotService {
 
         // Ensure the parent directory exists
         if let Some(parent) = self.config.config_path.parent()
-            && !parent.exists() {
-                std::fs::create_dir_all(parent)
-                    .map_err(nemesis_types::error::NemesisError::Io)?;
-            }
+            && !parent.exists()
+        {
+            std::fs::create_dir_all(parent).map_err(nemesis_types::error::NemesisError::Io)?;
+        }
 
         // Serialize with pretty formatting
         let config_str = serde_json::to_string_pretty(config_json)
@@ -1025,8 +1024,7 @@ impl BotService {
 
         // Write to disk atomically: write to temp file, then rename
         let temp_path = self.config.config_path.with_extension("json.tmp");
-        std::fs::write(&temp_path, &config_str)
-            .map_err(nemesis_types::error::NemesisError::Io)?;
+        std::fs::write(&temp_path, &config_str).map_err(nemesis_types::error::NemesisError::Io)?;
 
         // Atomic rename
         std::fs::rename(&temp_path, &self.config.config_path).map_err(|e| {

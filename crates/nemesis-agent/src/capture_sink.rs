@@ -203,9 +203,10 @@ impl CaptureSink {
         // 05.error.txt — full untruncated error text (the user-visible error
         // is short by construction; this captures the complete source string)
         if let Some(txt) = error_text
-            && let Err(e) = fs::write(dir.join("05.error.txt"), txt) {
-                warn!("[CaptureSink] failed to write error.txt: {}", e);
-            }
+            && let Err(e) = fs::write(dir.join("05.error.txt"), txt)
+        {
+            warn!("[CaptureSink] failed to write error.txt: {}", e);
+        }
     }
 }
 

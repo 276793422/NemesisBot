@@ -222,9 +222,10 @@ impl TasksHandler {
         };
         // Validate cron expr if a new one is provided.
         if let Some(ref sched) = patch.schedule
-            && let Some(ref e) = sched.expr {
-                CronService::validate_schedule(e)?;
-            }
+            && let Some(ref e) = sched.expr
+        {
+            CronService::validate_schedule(e)?;
+        }
         let job = svc.lock().unwrap().patch_job(&id, &patch)?;
         Ok(Some(
             serde_json::json!({ "updated": true, "job": job_to_view(&job) }),

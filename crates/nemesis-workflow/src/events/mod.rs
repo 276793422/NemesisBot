@@ -192,9 +192,10 @@ impl WorkflowEventManager {
                     o.on_event(e).await;
                 });
                 if let Err(err) = handle.await
-                    && err.is_panic() {
-                        warn!("WorkflowObserver {} panicked during emit", name);
-                    }
+                    && err.is_panic()
+                {
+                    warn!("WorkflowObserver {} panicked during emit", name);
+                }
             });
         }
     }

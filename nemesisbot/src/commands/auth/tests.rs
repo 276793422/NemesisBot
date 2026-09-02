@@ -245,7 +245,7 @@ fn test_token_trim() {
 // ===========================================================================
 
 mod run_arm {
-    use super::super::{run, AuthAction};
+    use super::super::{AuthAction, run};
     use tempfile::TempDir;
 
     async fn with_env_home<F, Fut>(f: F)
@@ -332,7 +332,10 @@ mod run_arm {
             let auth_path = home.join("auth.json");
             let store = nemesis_auth::AuthStore::new(&auth_path.to_string_lossy());
             store
-                .save("openai", nemesis_auth::AuthCredential::login_paste_token("openai", "k").unwrap())
+                .save(
+                    "openai",
+                    nemesis_auth::AuthCredential::login_paste_token("openai", "k").unwrap(),
+                )
                 .unwrap();
 
             run(
@@ -402,13 +405,19 @@ mod run_arm {
             store
                 .save(
                     "openai",
-                    cred_with(Some(chrono::Local::now() - chrono::Duration::hours(1)), None),
+                    cred_with(
+                        Some(chrono::Local::now() - chrono::Duration::hours(1)),
+                        None,
+                    ),
                 )
                 .unwrap();
             store
                 .save(
                     "anthropic",
-                    cred_with(Some(chrono::Local::now() + chrono::Duration::minutes(3)), None),
+                    cred_with(
+                        Some(chrono::Local::now() + chrono::Duration::minutes(3)),
+                        None,
+                    ),
                 )
                 .unwrap();
             store
@@ -441,7 +450,7 @@ mod run_arm {
 // ===========================================================================
 
 mod r9_zero {
-    use test_harness::{resolve_nemesisbot_bin, TestWorkspace};
+    use test_harness::{TestWorkspace, resolve_nemesisbot_bin};
 
     /// 单个环境变量的保存/移除/Drop 恢复。必须在持有
     /// crate::GLOBAL_STATE_LOCK 期间使用（子进程在 spawn 时继承 env）。
@@ -532,23 +541,31 @@ mod r9_zero {
             out.stderr
         );
         assert!(out.stdout_contains("Using browser-based OAuth flow..."));
-        assert!(out.stdout_contains("OAuth flow failed"), "端口被占 → bind 失败必须报错回落");
+        assert!(
+            out.stdout_contains("OAuth flow failed"),
+            "端口被占 → bind 失败必须报错回落"
+        );
         assert!(out.stdout_contains("Falling back to paste-token mode."));
         assert!(out.stdout_contains("Enter openai API token"));
         assert!(out.stdout_contains("Token saved to:"));
         assert!(out.stdout_contains("Logged in to openai successfully."));
 
         // auth.json 落盘且内容正确（AuthStore = HashMap<provider, AuthCredential>）。
-        let raw = std::fs::read_to_string(ws.home().join("auth.json"))
-            .expect("auth.json 必须落盘");
+        let raw = std::fs::read_to_string(ws.home().join("auth.json")).expect("auth.json 必须落盘");
         let v: serde_json::Value = serde_json::from_str(&raw).expect("合法 JSON");
         let cred = v.get("openai").expect("openai 条目存在");
         assert_eq!(
             cred.get("access_token").and_then(|t| t.as_str()),
             Some("sk-r9-paste-token")
         );
-        assert_eq!(cred.get("provider").and_then(|t| t.as_str()), Some("openai"));
-        assert_eq!(cred.get("auth_method").and_then(|t| t.as_str()), Some("token"));
+        assert_eq!(
+            cred.get("provider").and_then(|t| t.as_str()),
+            Some("openai")
+        );
+        assert_eq!(
+            cred.get("auth_method").and_then(|t| t.as_str()),
+            Some("token")
+        );
     }
 
     #[tokio::test]
@@ -609,11 +626,11 @@ mod r9_zero {
 // ===========================================================================
 
 mod r10_device_code_flow {
-    use super::super::{run, AuthAction};
+    use super::super::{AuthAction, run};
     use std::io::{Read, Write};
     use std::net::{TcpListener, TcpStream};
-    use std::sync::atomic::{AtomicBool, Ordering};
     use std::sync::Arc;
+    use std::sync::atomic::{AtomicBool, Ordering};
     use tempfile::TempDir;
 
     /// env 快照 RAII：构造时记录全部相关变量旧值并施加新值，Drop 一律恢复。
@@ -633,8 +650,10 @@ mod r10_device_code_flow {
         ];
 
         fn take_and_apply(home_parent: &std::path::Path, issuer_url: String) -> Self {
-            let saved: Vec<(String, Option<String>)> =
-                Self::NAMES.iter().map(|k| ((*k).to_string(), std::env::var(k).ok())).collect();
+            let saved: Vec<(String, Option<String>)> = Self::NAMES
+                .iter()
+                .map(|k| ((*k).to_string(), std::env::var(k).ok()))
+                .collect();
             unsafe {
                 for k in [
                     "HTTP_PROXY",
@@ -766,10 +785,8 @@ mod r10_device_code_flow {
                     match listener.accept() {
                         Ok((mut s, _)) => {
                             let _ = s.set_nonblocking(false);
-                            let _ =
-                                s.set_read_timeout(Some(std::time::Duration::from_secs(3)));
-                            let _ =
-                                s.set_write_timeout(Some(std::time::Duration::from_secs(3)));
+                            let _ = s.set_read_timeout(Some(std::time::Duration::from_secs(3)));
+                            let _ = s.set_write_timeout(Some(std::time::Duration::from_secs(3)));
                             serve_conn(&mut s);
                         }
                         Err(ref e) if e.kind() == ErrorKind::WouldBlock => {
@@ -779,7 +796,11 @@ mod r10_device_code_flow {
                     }
                 }
             });
-            Self { addr, shutdown, thread: Some(thread) }
+            Self {
+                addr,
+                shutdown,
+                thread: Some(thread),
+            }
         }
     }
 
@@ -815,8 +836,14 @@ mod r10_device_code_flow {
             Some("at-r10"),
             "/oauth/token 兑换的 access_token 应原样入库: {raw}"
         );
-        assert_eq!(cred.get("provider").and_then(|t| t.as_str()), Some("openai"));
+        assert_eq!(
+            cred.get("provider").and_then(|t| t.as_str()),
+            Some("openai")
+        );
         // oauth 凭据的 auth_method 恒为 "oauth"（区别于 paste-token 的 "token"）。
-        assert_eq!(cred.get("auth_method").and_then(|t| t.as_str()), Some("oauth"));
+        assert_eq!(
+            cred.get("auth_method").and_then(|t| t.as_str()),
+            Some("oauth")
+        );
     }
 }

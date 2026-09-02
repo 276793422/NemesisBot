@@ -3,7 +3,6 @@
 use super::*;
 
 fn temp_root(tag: &str) -> PathBuf {
-    
     std::env::temp_dir().join(format!(
         "nemesis_spill_test_{}_{}_{}",
         tag,
@@ -89,7 +88,10 @@ fn test_spill_roundtrip_readback() {
         .find(|l| l.contains("已完整保存到"))
         .expect("locator line");
     let start = path_line.find("：").map(|i| i + "：".len()).unwrap_or(0);
-    let end = path_line[start..].find("。").map(|i| start + i).unwrap_or(path_line.len());
+    let end = path_line[start..]
+        .find("。")
+        .map(|i| start + i)
+        .unwrap_or(path_line.len());
     let path_str = &path_line[start..end];
     let spilled = std::fs::read_to_string(path_str).expect("spill file readable");
     assert!(spilled.starts_with("HEAD_MARKER_START"));
@@ -168,8 +170,7 @@ fn make_spill_file(root: &Path, session: &str, name: &str, age_secs: u64, conten
         .unwrap();
     f.write_all(content.as_bytes()).unwrap();
     drop(f);
-    let past =
-        std::time::SystemTime::now() - std::time::Duration::from_secs(age_secs);
+    let past = std::time::SystemTime::now() - std::time::Duration::from_secs(age_secs);
     let f = std::fs::OpenOptions::new().write(true).open(&path).unwrap();
     f.set_modified(past).unwrap();
 }
@@ -184,7 +185,10 @@ fn test_cleanup_expired_deletes_old_and_keeps_fresh() {
     let deleted = cleanup_expired(&root, 7);
     assert_eq!(deleted, 2, "two expired files deleted");
     assert!(!root.join("s1").join("old.txt").exists());
-    assert!(root.join("s1").join("fresh.txt").exists(), "fresh file kept");
+    assert!(
+        root.join("s1").join("fresh.txt").exists(),
+        "fresh file kept"
+    );
     assert!(!root.join("s2").exists(), "s2 became empty -> dir removed");
     assert!(root.join("s1").exists(), "s1 still has a file -> dir kept");
     let _ = std::fs::remove_dir_all(&root);
@@ -194,7 +198,11 @@ fn test_cleanup_expired_deletes_old_and_keeps_fresh() {
 fn test_cleanup_zero_days_disables() {
     let root = temp_root("retention0");
     make_spill_file(&root, "s1", "old.txt", 365 * 24 * 3600, "ancient");
-    assert_eq!(cleanup_expired(&root, 0), 0, "0 = disabled, nothing touched");
+    assert_eq!(
+        cleanup_expired(&root, 0),
+        0,
+        "0 = disabled, nothing touched"
+    );
     assert!(root.join("s1").join("old.txt").exists());
     let _ = std::fs::remove_dir_all(&root);
 }

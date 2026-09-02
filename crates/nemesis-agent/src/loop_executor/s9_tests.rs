@@ -320,7 +320,9 @@ async fn cluster_continuation_without_manager_warns() {
 async fn cluster_continuation_with_manager_calls_handler() {
     let _logs = capture_logs();
     let (mut ex, in_tx, _out_rx) = make_executor(Vec::new());
-    ex.set_continuation_manager(Arc::new(crate::loop_continuation::ContinuationManager::new()));
+    ex.set_continuation_manager(Arc::new(
+        crate::loop_continuation::ContinuationManager::new(),
+    ));
     let prefix = nemesis_types::constants::CLUSTER_CONTINUATION_PREFIX;
     let mut meta = std::collections::HashMap::new();
     meta.insert("error".to_string(), "boom".to_string());
@@ -354,7 +356,12 @@ async fn outbound_send_failures_warn_on_busy_and_final() {
         ex.register_tool("message".to_string(), Arc::new(EchoTool));
         drop(out_rx);
         in_tx
-            .send(make_msg("web", "user1", "test:s9final", std::collections::HashMap::new()))
+            .send(make_msg(
+                "web",
+                "user1",
+                "test:s9final",
+                std::collections::HashMap::new(),
+            ))
             .await
             .unwrap();
         drop(in_tx);
@@ -459,7 +466,12 @@ async fn context_error_triggers_compression_notify_and_retry() {
         Ok(resp_content("compressed retry ok", true)),
     ]);
     in_tx
-        .send(make_msg("web", "user1", "test:s9ctx", std::collections::HashMap::new()))
+        .send(make_msg(
+            "web",
+            "user1",
+            "test:s9ctx",
+            std::collections::HashMap::new(),
+        ))
         .await
         .unwrap();
     drop(in_tx);
@@ -531,9 +543,17 @@ async fn handle_tool_calls_error_and_unknown_arms() {
     assert!(!results[0].is_error);
     assert!(results[0].result.contains("echo:"));
     assert!(results[1].is_error);
-    assert!(results[1].result.contains("Tool error:"), "got: {}", results[1].result);
+    assert!(
+        results[1].result.contains("Tool error:"),
+        "got: {}",
+        results[1].result
+    );
     assert!(results[2].is_error);
-    assert!(results[2].result.contains("Unknown tool"), "got: {}", results[2].result);
+    assert!(
+        results[2].result.contains("Unknown tool"),
+        "got: {}",
+        results[2].result
+    );
 }
 
 // ---------- 1977/2018 保存失败 / 发送失败 warn ----------
@@ -589,7 +609,12 @@ async fn process_message_full_flow_emits_observer_events_via_manager() {
     ex.set_observer_manager(Arc::new(nemesis_observer::Manager::new()));
 
     in_tx
-        .send(make_msg("web", "user1", "test:s9obs", std::collections::HashMap::new()))
+        .send(make_msg(
+            "web",
+            "user1",
+            "test:s9obs",
+            std::collections::HashMap::new(),
+        ))
         .await
         .unwrap();
     drop(in_tx);

@@ -24,12 +24,13 @@ pub fn get_local_ip() -> IpAddr {
     match std::net::UdpSocket::bind("0.0.0.0:0") {
         Ok(socket) => {
             if socket.connect("8.8.8.8:80").is_ok()
-                && let Ok(addr) = socket.local_addr() {
-                    let ip = addr.ip();
-                    if !ip.is_loopback() {
-                        return ip;
-                    }
+                && let Ok(addr) = socket.local_addr()
+            {
+                let ip = addr.ip();
+                if !ip.is_loopback() {
+                    return ip;
                 }
+            }
             IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1))
         }
         Err(_) => IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1)),

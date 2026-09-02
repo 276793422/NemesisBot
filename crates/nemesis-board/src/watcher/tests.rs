@@ -49,7 +49,10 @@ fn data_version_bumps_when_another_connection_writes() {
         .unwrap();
     std::thread::sleep(Duration::from_millis(10));
     let v1 = data_version(&watcher).unwrap();
-    assert!(v1 > v0, "another connection's commit must bump data_version");
+    assert!(
+        v1 > v0,
+        "another connection's commit must bump data_version"
+    );
 
     // 再写一次 → 继续递增（轮询循环靠持续递增区分「有新变化」）。
     store

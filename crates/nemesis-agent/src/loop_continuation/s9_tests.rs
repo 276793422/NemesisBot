@@ -52,7 +52,10 @@ async fn store_delete_blocked_by_directory_warns() {
     let task = format!("s9deltask_{}", std::process::id());
 
     store.save(&snapshot_for(&task)).expect("save");
-    let path = dir.join("cluster").join("rpc_cache").join(format!("{}.json", task));
+    let path = dir
+        .join("cluster")
+        .join("rpc_cache")
+        .join(format!("{}.json", task));
     assert!(path.exists(), "snapshot at {path:?}");
     std::fs::remove_file(&path).unwrap();
     std::fs::create_dir_all(&path).unwrap(); // 目录挡住 remove_file

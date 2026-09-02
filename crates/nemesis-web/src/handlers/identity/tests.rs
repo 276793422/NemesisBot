@@ -8,8 +8,8 @@ use crate::api_handlers::AppState;
 use crate::events::EventHub;
 use crate::session::SessionManager;
 use crate::ws_router::RequestContext;
-use std::sync::atomic::{AtomicBool, AtomicUsize};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, AtomicUsize};
 use std::time::Instant;
 
 fn make_ctx(dir: &tempfile::TempDir) -> RequestContext {
@@ -72,17 +72,22 @@ fn list_covers_six_docs_and_flags_instruction_chain() {
     std::fs::write(dir.path().join("AGENT.md"), "# Agent\n").unwrap();
     std::fs::write(dir.path().join("IDENTITY.md"), "# Identity\n").unwrap();
 
-    let out = IdentityHandler.list(ctx.workspace.as_deref().unwrap())
+    let out = IdentityHandler
+        .list(ctx.workspace.as_deref().unwrap())
         .unwrap()
         .unwrap();
     let docs = out["documents"].as_array().unwrap();
-    let names: Vec<&str> = docs
-        .iter()
-        .map(|d| d["name"].as_str().unwrap())
-        .collect();
+    let names: Vec<&str> = docs.iter().map(|d| d["name"].as_str().unwrap()).collect();
     assert_eq!(
         names,
-        vec!["AGENT.md", "IDENTITY.md", "SOUL.md", "USER.md", "AGENTS.md", "CLAUDE.md"]
+        vec![
+            "AGENT.md",
+            "IDENTITY.md",
+            "SOUL.md",
+            "USER.md",
+            "AGENTS.md",
+            "CLAUDE.md"
+        ]
     );
 
     let by_name = |n: &str| docs.iter().find(|d| d["name"] == n).unwrap();

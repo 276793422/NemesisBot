@@ -238,8 +238,13 @@ fn broken_chain_fingerprint_mismatch_rejected() {
 fn tampered_cert_signature_rejected() {
     let (root_sk, root_vk) = keypair(1);
     let (_, leaf_vk) = keypair(2);
-    let mut leaf_cert =
-        issue_certificate(&root_sk, &leaf_vk.to_bytes(), b"issuer-A", VALID_FROM, VALID_TO);
+    let mut leaf_cert = issue_certificate(
+        &root_sk,
+        &leaf_vk.to_bytes(),
+        b"issuer-A",
+        VALID_FROM,
+        VALID_TO,
+    );
     leaf_cert.signature[0] ^= 0x01; // 篡改签名
     let chain = serialize_chain(&[leaf_cert]);
     let err = verify_chain(
@@ -283,13 +288,19 @@ fn parse_chain_truncation_errors() {
     // 只留 count + 2 字节（cert_len 被截）→ "chain truncated at cert_len"
     let short_len = &chain[..4];
     let err = parse_chain(short_len).unwrap_err();
-    assert!(format!("{err:#}").contains("truncated at cert_len"), "{err:#}");
+    assert!(
+        format!("{err:#}").contains("truncated at cert_len"),
+        "{err:#}"
+    );
 
     // count 声明 1，cert_len 完整但 cert bytes 被截 → "truncated at cert bytes"
     let mut truncated = chain[..2 + 4].to_vec(); // count + cert_len
     truncated.extend_from_slice(&cert.to_bytes()[..100]); // 只给 100B cert
     let err = parse_chain(&truncated).unwrap_err();
-    assert!(format!("{err:#}").contains("truncated at cert bytes"), "{err:#}");
+    assert!(
+        format!("{err:#}").contains("truncated at cert bytes"),
+        "{err:#}"
+    );
 
     // 正常全长 → Ok
     assert_eq!(parse_chain(&chain).unwrap().len(), 1);

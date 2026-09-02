@@ -126,7 +126,7 @@ pub fn cjk_bigrams(text: &str) -> String {
             0x3400..=0x4DBF   |  // CJK ext A
             0x4E00..=0x9FFF   |  // CJK unified
             0xF900..=0xFAFF   |  // CJK compat
-            0x20000..=0x2A6DF);  // CJK ext B
+            0x20000..=0x2A6DF); // CJK ext B
         if is_cjk {
             flush_latin(&mut latin, &mut out);
             cjk.push(ch);
@@ -144,7 +144,9 @@ pub fn cjk_bigrams(text: &str) -> String {
     out.trim_end().to_string()
 }
 
-fn with_conn<R>(f: impl FnOnce(&mut Connection, &mut std::collections::HashMap<String, std::time::SystemTime>) -> R) -> Option<R> {
+fn with_conn<R>(
+    f: impl FnOnce(&mut Connection, &mut std::collections::HashMap<String, std::time::SystemTime>) -> R,
+) -> Option<R> {
     let mut guard = INDEX.lock().ok()?;
     let st = guard.get_or_insert_with(|| IndexState {
         conn: open_conn(),
@@ -193,13 +195,16 @@ pub fn reindex_session_logs() -> usize {
                 rusqlite::params![stem],
             );
             if let Ok(file) = std::fs::File::open(&path) {
-                for (seq, line) in
-                    std::io::BufReader::new(file).lines().map_while(Result::ok).enumerate()
+                for (seq, line) in std::io::BufReader::new(file)
+                    .lines()
+                    .map_while(Result::ok)
+                    .enumerate()
                 {
                     if let Ok(v) = serde_json::from_str::<serde_json::Value>(&line)
-                        && let Err(_) = insert_row(conn, stem, seq, &v) {
-                            break;
-                        }
+                        && let Err(_) = insert_row(conn, stem, seq, &v)
+                    {
+                        break;
+                    }
                 }
             }
             indexed.insert(stem.to_string(), mtime);
@@ -312,7 +317,10 @@ fn match_expr(query: &str) -> String {
         .filter(|t| t.chars().any(|c| (c as u32) >= 0x3400))
         .collect();
     if !bigrams.is_empty() {
-        let ors: Vec<String> = bigrams.iter().map(|t| format!("content_bigram : \"{}\"", t)).collect();
+        let ors: Vec<String> = bigrams
+            .iter()
+            .map(|t| format!("content_bigram : \"{}\"", t))
+            .collect();
         parts.push(ors.join(" OR "));
     }
     parts.join(" OR ")
@@ -432,7 +440,11 @@ fn search_linear(query: &str, limit: usize) -> Vec<HistoryHit> {
         let Ok(file) = std::fs::File::open(&path) else {
             continue;
         };
-        for (seq, line) in std::io::BufReader::new(file).lines().map_while(Result::ok).enumerate() {
+        for (seq, line) in std::io::BufReader::new(file)
+            .lines()
+            .map_while(Result::ok)
+            .enumerate()
+        {
             let Ok(v) = serde_json::from_str::<serde_json::Value>(&line) else {
                 continue;
             };
@@ -441,8 +453,16 @@ fn search_linear(query: &str, limit: usize) -> Vec<HistoryHit> {
                 hits.push(HistoryHit {
                     session_key: stem.clone(),
                     seq,
-                    role: v.get("role").and_then(|r| r.as_str()).unwrap_or("").to_string(),
-                    timestamp: v.get("timestamp").and_then(|t| t.as_str()).unwrap_or("").to_string(),
+                    role: v
+                        .get("role")
+                        .and_then(|r| r.as_str())
+                        .unwrap_or("")
+                        .to_string(),
+                    timestamp: v
+                        .get("timestamp")
+                        .and_then(|t| t.as_str())
+                        .unwrap_or("")
+                        .to_string(),
                     snippet: snippet_around(content, query, 160),
                 });
                 if hits.len() >= limit {

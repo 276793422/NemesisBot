@@ -81,10 +81,7 @@ async fn config_get_with_malformed_config_file_errors() {
     std::fs::write(dir.path().join("config.json"), "{definitely not json").unwrap();
     let ctx = make_ctx(&dir, false);
     let handler = ConfigHandler::new();
-    let err = handler
-        .handle_cmd("get", None, &ctx)
-        .await
-        .unwrap_err();
+    let err = handler.handle_cmd("get", None, &ctx).await.unwrap_err();
     assert!(err.contains("failed to load config"), "{err}");
 }
 
@@ -134,26 +131,42 @@ async fn config_cors_stubs_report_not_connected() {
     let ctx = make_ctx(&dir, true);
     let handler = ConfigHandler::new();
 
-    let list = handler.handle_cmd("cors.list", None, &ctx).await.unwrap().unwrap();
+    let list = handler
+        .handle_cmd("cors.list", None, &ctx)
+        .await
+        .unwrap()
+        .unwrap();
     assert_eq!(list["origins"].as_array().unwrap().len(), 0);
     assert!(list["message"].as_str().unwrap().contains("not connected"));
 
     let added = handler
-        .handle_cmd("cors.add", Some(serde_json::json!({ "origin": "https://x.com" })), &ctx)
+        .handle_cmd(
+            "cors.add",
+            Some(serde_json::json!({ "origin": "https://x.com" })),
+            &ctx,
+        )
         .await
         .unwrap()
         .unwrap();
     assert_eq!(added["added"], false);
 
     let removed = handler
-        .handle_cmd("cors.remove", Some(serde_json::json!({ "origin": "https://x.com" })), &ctx)
+        .handle_cmd(
+            "cors.remove",
+            Some(serde_json::json!({ "origin": "https://x.com" })),
+            &ctx,
+        )
         .await
         .unwrap()
         .unwrap();
     assert_eq!(removed["removed"], false);
 
     let toggled = handler
-        .handle_cmd("cors.toggle", Some(serde_json::json!({ "enabled": true })), &ctx)
+        .handle_cmd(
+            "cors.toggle",
+            Some(serde_json::json!({ "enabled": true })),
+            &ctx,
+        )
         .await
         .unwrap()
         .unwrap();
@@ -172,7 +185,11 @@ async fn config_tool_doc_folding_toggle_roundtrip() {
     let handler = ConfigHandler::new();
 
     // 默认关。
-    let get = handler.handle_cmd("get", None, &ctx).await.unwrap().unwrap();
+    let get = handler
+        .handle_cmd("get", None, &ctx)
+        .await
+        .unwrap()
+        .unwrap();
     assert_eq!(get["agents"]["tool_doc_folding"]["enabled"], false);
 
     // 开 → updated + get 回读 true。
@@ -186,14 +203,17 @@ async fn config_tool_doc_folding_toggle_roundtrip() {
         .unwrap()
         .unwrap();
     assert_eq!(out["updated"], true);
-    let get = handler.handle_cmd("get", None, &ctx).await.unwrap().unwrap();
+    let get = handler
+        .handle_cmd("get", None, &ctx)
+        .await
+        .unwrap()
+        .unwrap();
     assert_eq!(get["agents"]["tool_doc_folding"]["enabled"], true);
 
     // 盘上真实落盘（typed 序列化，不是只在内存）。
-    let raw: serde_json::Value = serde_json::from_str(
-        &std::fs::read_to_string(dir.path().join("config.json")).unwrap(),
-    )
-    .unwrap();
+    let raw: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(dir.path().join("config.json")).unwrap())
+            .unwrap();
     assert_eq!(raw["agents"]["tool_doc_folding"]["enabled"], true);
     // expand_top_n 保持 serde 默认 8。
     assert_eq!(raw["agents"]["tool_doc_folding"]["expand_top_n"], 8);
@@ -208,10 +228,9 @@ async fn config_tool_doc_folding_toggle_roundtrip() {
         .await
         .unwrap()
         .unwrap();
-    let raw: serde_json::Value = serde_json::from_str(
-        &std::fs::read_to_string(dir.path().join("config.json")).unwrap(),
-    )
-    .unwrap();
+    let raw: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(dir.path().join("config.json")).unwrap())
+            .unwrap();
     assert_eq!(raw["agents"]["tool_doc_folding"]["enabled"], false);
 }
 
@@ -233,10 +252,9 @@ async fn config_tool_doc_folding_rejects_wrong_typed_value() {
     assert!(err.contains("invalid config after field update"), "{err}");
 
     // 拒绝后盘上仍是 false（默认值），没有被半写。
-    let raw: serde_json::Value = serde_json::from_str(
-        &std::fs::read_to_string(dir.path().join("config.json")).unwrap(),
-    )
-    .unwrap();
+    let raw: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(dir.path().join("config.json")).unwrap())
+            .unwrap();
     assert_eq!(raw["agents"]["tool_doc_folding"]["enabled"], false);
 }
 
@@ -259,10 +277,9 @@ async fn config_set_field_unknown_key_loud_rejects() {
     assert!(err.contains("unknown config field"), "{err}");
 
     // 盘上没有被半写（不存在中间对象被静默创建）。
-    let raw: serde_json::Value = serde_json::from_str(
-        &std::fs::read_to_string(dir.path().join("config.json")).unwrap(),
-    )
-    .unwrap();
+    let raw: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(dir.path().join("config.json")).unwrap())
+            .unwrap();
     assert!(raw["agents"].get("nonexistent_key_xyz").is_none());
 
     // 深层未知路径同样拒绝（set_json_path 曾自动创建中间对象）。
@@ -308,12 +325,15 @@ async fn config_set_field_supports_array_index_paths() {
     assert_eq!(out["updated"], true);
 
     // get 回读 + 盘上真实落盘。
-    let get = handler.handle_cmd("get", None, &ctx).await.unwrap().unwrap();
+    let get = handler
+        .handle_cmd("get", None, &ctx)
+        .await
+        .unwrap()
+        .unwrap();
     assert_eq!(get["model_list"][0]["model_name"], "test/m2");
-    let raw: serde_json::Value = serde_json::from_str(
-        &std::fs::read_to_string(dir.path().join("config.json")).unwrap(),
-    )
-    .unwrap();
+    let raw: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(dir.path().join("config.json")).unwrap())
+            .unwrap();
     assert_eq!(raw["model_list"][0]["model_name"], "test/m2");
 
     // 越界下标 loud 报错（无 append 语义），盘上没有被半写。

@@ -256,9 +256,10 @@ impl DuckDuckGoSearchProvider {
             let mut url_clean = url_str.to_string();
             // Decode uddg parameter if present (DuckDuckGo redirect URL)
             if url_clean.contains("uddg=")
-                && let Some(decoded) = url_decode_query_param(&url_clean, "uddg") {
-                    url_clean = decoded;
-                }
+                && let Some(decoded) = url_decode_query_param(&url_clean, "uddg")
+            {
+                url_clean = decoded;
+            }
 
             lines.push(format!("{}. {}\n   {}", i + 1, title, url_clean));
 
@@ -284,10 +285,7 @@ impl Default for DuckDuckGoSearchProvider {
 #[async_trait]
 impl SearchProvider for DuckDuckGoSearchProvider {
     async fn search(&self, query: &str, count: usize) -> Result<String, String> {
-        let url = format!(
-            "https://html.duckduckgo.com/html/?q={}",
-            urlencoding(query)
-        );
+        let url = format!("https://html.duckduckgo.com/html/?q={}", urlencoding(query));
 
         let resp = self
             .client
@@ -526,31 +524,33 @@ impl WebSearchTool {
         // Priority: Perplexity > Brave > DuckDuckGo
         if opts.perplexity_enabled
             && let Some(ref key) = opts.perplexity_api_key
-                && !key.is_empty() {
-                    let max = if opts.perplexity_max_results > 0 {
-                        opts.perplexity_max_results
-                    } else {
-                        5
-                    };
-                    return Some(Self {
-                        provider: Box::new(PerplexitySearchProvider::new(key)),
-                        max_results: max,
-                    });
-                }
+            && !key.is_empty()
+        {
+            let max = if opts.perplexity_max_results > 0 {
+                opts.perplexity_max_results
+            } else {
+                5
+            };
+            return Some(Self {
+                provider: Box::new(PerplexitySearchProvider::new(key)),
+                max_results: max,
+            });
+        }
 
         if opts.brave_enabled
             && let Some(ref key) = opts.brave_api_key
-                && !key.is_empty() {
-                    let max = if opts.brave_max_results > 0 {
-                        opts.brave_max_results
-                    } else {
-                        5
-                    };
-                    return Some(Self {
-                        provider: Box::new(BraveSearchProvider::new(key)),
-                        max_results: max,
-                    });
-                }
+            && !key.is_empty()
+        {
+            let max = if opts.brave_max_results > 0 {
+                opts.brave_max_results
+            } else {
+                5
+            };
+            return Some(Self {
+                provider: Box::new(BraveSearchProvider::new(key)),
+                max_results: max,
+            });
+        }
 
         if opts.duckduckgo_enabled {
             let max = if opts.duckduckgo_max_results > 0 {

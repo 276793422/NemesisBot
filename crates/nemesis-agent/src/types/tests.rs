@@ -451,7 +451,9 @@ fn repair_tool_pairs_mismatched_id_removed() {
     assert_eq!(synth.role, "tool");
     assert_eq!(synth.tool_call_id.as_deref(), Some("call_A"));
     assert!(synth.content.contains(TOOL_OUTCOME_UNKNOWN));
-    let no_b = msgs.iter().any(|m| m.tool_call_id.as_deref() == Some("call_B"));
+    let no_b = msgs
+        .iter()
+        .any(|m| m.tool_call_id.as_deref() == Some("call_B"));
     assert!(!no_b, "mismatched call_B result removed");
 }
 
@@ -579,7 +581,12 @@ fn repair_tool_pairs_keeps_distinct_tool_call_ids() {
 // ---------------------------------------------------------------------------
 
 /// Helper: build a ConversationTurn quickly.
-fn turn(role: &str, content: &str, tool_calls: Vec<ToolCallInfo>, tool_call_id: Option<String>) -> ConversationTurn {
+fn turn(
+    role: &str,
+    content: &str,
+    tool_calls: Vec<ToolCallInfo>,
+    tool_call_id: Option<String>,
+) -> ConversationTurn {
     ConversationTurn {
         role: role.to_string(),
         content: content.to_string(),
@@ -608,7 +615,12 @@ fn test_repair_synthesizes_unknown_outcome_tool_result() {
     let mut msgs = vec![
         turn("system", "sys", vec![], None),
         turn("user", "hi", vec![], None),
-        turn("assistant", "let me check", vec![call("call_1", "read_file")], None),
+        turn(
+            "assistant",
+            "let me check",
+            vec![call("call_1", "read_file")],
+            None,
+        ),
         // NO tool result for call_1 (the orphan case: crash / truncation).
         turn("user", "and then?", vec![], None),
     ];
@@ -676,7 +688,12 @@ fn test_repair_paired_history_is_noop() {
     let mut msgs = vec![
         turn("system", "sys", vec![], None),
         turn("user", "hi", vec![], None),
-        turn("assistant", "checking", vec![call("call_1", "read_file")], None),
+        turn(
+            "assistant",
+            "checking",
+            vec![call("call_1", "read_file")],
+            None,
+        ),
         turn("tool", "file contents", vec![], Some("call_1".to_string())),
     ];
     let before = msgs.clone();
@@ -690,7 +707,12 @@ fn test_repair_paired_history_is_noop() {
 fn test_repair_still_removes_orphaned_tool_results() {
     let mut msgs = vec![
         turn("user", "hi", vec![], None),
-        turn("tool", "ghost result", vec![], Some("call_nonexistent".to_string())),
+        turn(
+            "tool",
+            "ghost result",
+            vec![],
+            Some("call_nonexistent".to_string()),
+        ),
     ];
     repair_tool_message_pairs(&mut msgs);
     assert_eq!(msgs.len(), 1);

@@ -258,13 +258,14 @@ impl TaskResultStore {
         if let Some(dir) = &self.cache_dir {
             let path = dir.join(format!("{}.json", task_id));
             if path.exists()
-                && let Err(e) = std::fs::remove_file(&path) {
-                    tracing::warn!(
-                        "[TaskResultStore] failed to delete result file {:?}: {}",
-                        path,
-                        e
-                    );
-                }
+                && let Err(e) = std::fs::remove_file(&path)
+            {
+                tracing::warn!(
+                    "[TaskResultStore] failed to delete result file {:?}: {}",
+                    path,
+                    e
+                );
+            }
         }
     }
 }
@@ -470,13 +471,14 @@ impl AsyncTaskResultStore {
         if let Some(dir) = &self.inner.cache_dir {
             let path = dir.join(format!("{}.json", task_id));
             if Path::new(&path).exists()
-                && let Err(e) = fs::remove_file(&path).await {
-                    tracing::warn!(
-                        "[TaskResultStore] failed to delete async result file {:?}: {}",
-                        path,
-                        e
-                    );
-                }
+                && let Err(e) = fs::remove_file(&path).await
+            {
+                tracing::warn!(
+                    "[TaskResultStore] failed to delete async result file {:?}: {}",
+                    path,
+                    e
+                );
+            }
         }
     }
 }
@@ -518,13 +520,11 @@ pub struct GoTaskResultEntry {
 ///
 /// Mirrors Go's `TaskResultIndex`. Maps task IDs to their result entries.
 /// Only contains "done" entries; "running" entries are tracked in memory only.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[derive(Default)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct GoTaskResultIndex {
     /// Map of task ID to result entry.
     pub tasks: HashMap<String, GoTaskResultEntry>,
 }
-
 
 /// Go-compatible task result store.
 ///

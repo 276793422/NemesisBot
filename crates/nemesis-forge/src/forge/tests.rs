@@ -1402,7 +1402,10 @@ async fn test_s8_cleanup_cycle_removes_old_cycles() {
     let _g = crate::test_support::quiet_trace_guard();
     forge.run_cleanup_cycle().await;
 
-    assert!(!old_file.exists(), "old learning cycle file should be removed");
+    assert!(
+        !old_file.exists(),
+        "old learning cycle file should be removed"
+    );
 }
 
 /// Cleanup cycle where the cycle-store base dir is a FILE -> cleanup errs.
@@ -1529,7 +1532,12 @@ fn test_s8_create_skill_auto_validate_with_pipeline() {
     let content =
         "# S8 Skill\nLong enough body so the functional validation passes its length check.\n";
     let artifact = forge
-        .create_skill("s8_auto_validate", content, "s8 test skill", vec!["read".into()])
+        .create_skill(
+            "s8_auto_validate",
+            content,
+            "s8 test skill",
+            vec!["read".into()],
+        )
         .expect("create_skill with pipeline should succeed");
     assert!(artifact.id.starts_with("skill-"));
     assert_eq!(artifact.name, "s8_auto_validate");
@@ -1564,13 +1572,14 @@ fn test_s8_skill_creator_trait_delegation() {
         )
         .expect("SkillCreator::create_skill should delegate successfully");
     assert_eq!(artifact.name, "s8_trait_skill");
-    assert!(dir
-        .path()
-        .join("forge")
-        .join("skills")
-        .join("s8_trait_skill")
-        .join("SKILL.md")
-        .exists());
+    assert!(
+        dir.path()
+            .join("forge")
+            .join("skills")
+            .join("s8_trait_skill")
+            .join("SKILL.md")
+            .exists()
+    );
 }
 
 /// Background loops with interval = 2s: the first 1s tick must take the
@@ -1608,7 +1617,11 @@ async fn test_s8_background_loops_interval_ladder() {
     forge.stop().await;
     assert!(!forge.is_running());
     assert!(
-        dir.path().join("forge").join("experiences").join("aggregates.jsonl").exists(),
+        dir.path()
+            .join("forge")
+            .join("experiences")
+            .join("aggregates.jsonl")
+            .exists(),
         "collector flush tick should have written aggregates.jsonl"
     );
 }

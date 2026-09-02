@@ -4,11 +4,11 @@
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
-use axum::extract::{State};
+use axum::Router;
+use axum::extract::State;
 use axum::http::{HeaderMap, StatusCode};
 use axum::response::IntoResponse;
 use axum::routing::get;
-use axum::Router;
 
 use super::fetch_and_replace;
 use nemesis_data::PricingStore;
@@ -112,10 +112,7 @@ async fn spawn_server() -> String {
 }
 
 fn tmp_store(name: &str) -> PricingStore {
-    let dir = std::env::temp_dir().join(format!(
-        "nb-pricing-sync-{}-{name}",
-        std::process::id()
-    ));
+    let dir = std::env::temp_dir().join(format!("nb-pricing-sync-{}-{name}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
     PricingStore::open(&dir).unwrap()
 }
@@ -125,7 +122,9 @@ async fn fetch_replaces_downloaded_layer_with_etag() {
     let base = spawn_server().await;
     let store = tmp_store("replace");
 
-    let r = fetch_and_replace(&store, Some(&format!("{base}/table"))).await.unwrap();
+    let r = fetch_and_replace(&store, Some(&format!("{base}/table")))
+        .await
+        .unwrap();
     assert!(r.updated);
     assert_eq!(r.entry_count, 2);
     assert_eq!(r.etag.as_deref(), Some(ETAG_V1));
@@ -133,7 +132,10 @@ async fn fetch_replaces_downloaded_layer_with_etag() {
     let p = store.lookup("test-model-a").unwrap();
     assert!((p.input_cost_per_million - 1.0).abs() < 1e-9);
     // provider/model 配置名 → bare-suffix 命中。
-    assert_eq!(store.lookup("zhipu/test-model-b").unwrap().model_id, "test-model-b");
+    assert_eq!(
+        store.lookup("zhipu/test-model-b").unwrap().model_id,
+        "test-model-b"
+    );
 
     let meta = store.meta();
     assert_eq!(meta.etag.as_deref(), Some(ETAG_V1));
@@ -141,7 +143,9 @@ async fn fetch_replaces_downloaded_layer_with_etag() {
     assert!(meta.fetched_at.is_some());
 
     // 同一 etag 再拉 → 304 NotModified。
-    let r2 = fetch_and_replace(&store, Some(&format!("{base}/table"))).await.unwrap();
+    let r2 = fetch_and_replace(&store, Some(&format!("{base}/table")))
+        .await
+        .unwrap();
     assert!(!r2.updated, "second fetch with same etag should be 304");
 }
 
@@ -149,11 +153,18 @@ async fn fetch_replaces_downloaded_layer_with_etag() {
 async fn server_side_update_bumps_table() {
     let base = spawn_server().await;
     let store = tmp_store("update");
-    fetch_and_replace(&store, Some(&format!("{base}/updated"))).await.unwrap();
+    fetch_and_replace(&store, Some(&format!("{base}/updated")))
+        .await
+        .unwrap();
     // 服务器换 v2 → 本次拉到新内容 + 新 etag。
-    let r = fetch_and_replace(&store, Some(&format!("{base}/updated"))).await.unwrap();
+    let r = fetch_and_replace(&store, Some(&format!("{base}/updated")))
+        .await
+        .unwrap();
     assert!(r.updated);
-    assert_eq!(store.lookup("test-model-a").unwrap().max_output_tokens, Some(8192));
+    assert_eq!(
+        store.lookup("test-model-a").unwrap().max_output_tokens,
+        Some(8192)
+    );
     assert!((store.lookup("test-model-a").unwrap().input_cost_per_million - 2.0).abs() < 1e-9);
     assert_eq!(store.meta().etag.as_deref(), Some("\"table-v2\""));
 }
@@ -162,24 +173,48 @@ async fn server_side_update_bumps_table() {
 async fn http_error_keeps_old_table() {
     let base = spawn_server().await;
     let store = tmp_store("httperr");
-    fetch_and_replace(&store, Some(&format!("{base}/table"))).await.unwrap();
+    fetch_and_replace(&store, Some(&format!("{base}/table")))
+        .await
+        .unwrap();
     let before = store.lookup("test-model-a").unwrap().input_cost_per_million;
 
     let err = fetch_and_replace(&store, Some(&format!("{base}/err"))).await;
     assert!(err.is_err());
     // 降级契约：旧表原封不动，meta 记录失败来源。
-    assert_eq!(store.lookup("test-model-a").unwrap().input_cost_per_million, before);
-    assert_eq!(store.meta().entry_count, 2, "meta entry_count still from last success");
-    assert!(store.meta().source_url.as_deref().unwrap_or("").ends_with("/err"));
+    assert_eq!(
+        store.lookup("test-model-a").unwrap().input_cost_per_million,
+        before
+    );
+    assert_eq!(
+        store.meta().entry_count,
+        2,
+        "meta entry_count still from last success"
+    );
+    assert!(
+        store
+            .meta()
+            .source_url
+            .as_deref()
+            .unwrap_or("")
+            .ends_with("/err")
+    );
 }
 
 #[tokio::test]
 async fn malformed_payload_keeps_old_table() {
     let base = spawn_server().await;
     let store = tmp_store("malformed");
-    fetch_and_replace(&store, Some(&format!("{base}/table"))).await.unwrap();
+    fetch_and_replace(&store, Some(&format!("{base}/table")))
+        .await
+        .unwrap();
 
     let err = fetch_and_replace(&store, Some(&format!("{base}/broken"))).await;
-    assert!(err.is_err(), "malformed payload must error, not blank the table");
-    assert_eq!(store.lookup("test-model-a").unwrap().input_cost_per_million, 1.0);
+    assert!(
+        err.is_err(),
+        "malformed payload must error, not blank the table"
+    );
+    assert_eq!(
+        store.lookup("test-model-a").unwrap().input_cost_per_million,
+        1.0
+    );
 }

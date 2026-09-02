@@ -27,7 +27,7 @@ use super::{
 };
 use crate::context::RequestContext;
 use crate::instance::AgentInstance;
-use crate::r#loop::{AgentLoop, LlmMessage, LlmResponse, LlmProvider, Tool};
+use crate::r#loop::{AgentLoop, LlmMessage, LlmProvider, LlmResponse, Tool};
 use crate::types::{AgentConfig, ChatOptions, ToolCallInfo};
 
 // ---------------------------------------------------------------------------
@@ -494,7 +494,11 @@ struct RetryOnMarkerHook {
 
 #[async_trait]
 impl LlmHook for RetryOnMarkerHook {
-    async fn post_llm_call(&self, _call: &HookLlmCall, response: &LlmResponse) -> LlmResponseDecision {
+    async fn post_llm_call(
+        &self,
+        _call: &HookLlmCall,
+        response: &LlmResponse,
+    ) -> LlmResponseDecision {
         if response.content.contains(&self.marker) {
             LlmResponseDecision::Retry {
                 reason: format!("response contained '{}', regenerate", self.marker),
@@ -510,7 +514,11 @@ struct AlwaysRetryHook;
 
 #[async_trait]
 impl LlmHook for AlwaysRetryHook {
-    async fn post_llm_call(&self, _call: &HookLlmCall, _response: &LlmResponse) -> LlmResponseDecision {
+    async fn post_llm_call(
+        &self,
+        _call: &HookLlmCall,
+        _response: &LlmResponse,
+    ) -> LlmResponseDecision {
         LlmResponseDecision::Retry {
             reason: "never good enough".to_string(),
         }
@@ -524,7 +532,11 @@ struct ReplaceResponseHook {
 
 #[async_trait]
 impl LlmHook for ReplaceResponseHook {
-    async fn post_llm_call(&self, _call: &HookLlmCall, _response: &LlmResponse) -> LlmResponseDecision {
+    async fn post_llm_call(
+        &self,
+        _call: &HookLlmCall,
+        _response: &LlmResponse,
+    ) -> LlmResponseDecision {
         LlmResponseDecision::Replace(scripted_resp(&self.to))
     }
 }
@@ -536,7 +548,11 @@ struct BlockResponseHook {
 
 #[async_trait]
 impl LlmHook for BlockResponseHook {
-    async fn post_llm_call(&self, _call: &HookLlmCall, _response: &LlmResponse) -> LlmResponseDecision {
+    async fn post_llm_call(
+        &self,
+        _call: &HookLlmCall,
+        _response: &LlmResponse,
+    ) -> LlmResponseDecision {
         LlmResponseDecision::Block {
             reason: self.reason.clone(),
         }
@@ -766,7 +782,11 @@ async fn llm_retry_budget_exhausted_fail_open() {
         1 + MAX_LLM_HOOK_RETRIES as usize,
         "initial call + budgeted retries, no more"
     );
-    assert_eq!(first_done(&events), "r3", "last obtained response is allowed");
+    assert_eq!(
+        first_done(&events),
+        "r3",
+        "last obtained response is allowed"
+    );
 }
 
 /// Acceptance ③: no hooks registered → exactly one provider call, and the
@@ -798,8 +818,8 @@ async fn llm_no_hooks_single_unchanged_call() {
 // ---------------------------------------------------------------------------
 
 use super::{
-    HookPrompt, HookTurnEnd, LifecycleHook, PromptDecision, TurnEndDecision,
-    run_turn_end_hooks, run_user_prompt_hooks,
+    HookPrompt, HookTurnEnd, LifecycleHook, PromptDecision, TurnEndDecision, run_turn_end_hooks,
+    run_user_prompt_hooks,
 };
 
 struct PromptHook {
@@ -1060,7 +1080,11 @@ async fn user_prompt_and_turn_end_empty_chains_pass() {
         final_content: "done".to_string(),
         stop_hook_active: false,
     };
-    assert!(crate::hooks::run_user_prompt_hooks(&[], &prompt).await.is_none());
+    assert!(
+        crate::hooks::run_user_prompt_hooks(&[], &prompt)
+            .await
+            .is_none()
+    );
     assert_eq!(
         crate::hooks::run_turn_end_hooks(&[], &end).await,
         crate::hooks::TurnEndDecision::Stop

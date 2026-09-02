@@ -21,9 +21,10 @@ fn test_model_add_and_list() {
     let entry = serde_json::json!({"model": "test/model-1", "api_key": "test-key", "proxy": "http://proxy:8080", "auth_method": "token"});
     if let Some(obj) = config.as_object_mut() {
         if let Some(models) = obj.get_mut("model_list")
-            && let Some(arr) = models.as_array_mut() {
-                arr.push(entry);
-            }
+            && let Some(arr) = models.as_array_mut()
+        {
+            arr.push(entry);
+        }
         obj.insert(
             "default_model".to_string(),
             serde_json::Value::String("test/model-1".to_string()),
@@ -986,7 +987,10 @@ fn test_model_set_effort_cli() {
     fs::write(&cfg_path, serde_json::to_string_pretty(&config).unwrap()).unwrap();
     let loaded: serde_json::Value =
         serde_json::from_str(&fs::read_to_string(&cfg_path).unwrap()).unwrap();
-    assert_eq!(loaded["model_list"][0]["reasoning_effort"], serde_json::json!(""));
+    assert_eq!(
+        loaded["model_list"][0]["reasoning_effort"],
+        serde_json::json!("")
+    );
 }
 
 // =========================================================================
@@ -1023,7 +1027,11 @@ fn s11b_temp_home_env() -> S11bTempHomeEnv {
 
 #[cfg(windows)] // Windows-form helper (Linux nightly: excluded, 2026-09-02 sweep)
 fn s11b_write_cfg(home: &std::path::Path, cfg: serde_json::Value) {
-    fs::write(home.join("config.json"), serde_json::to_string(&cfg).unwrap()).unwrap();
+    fs::write(
+        home.join("config.json"),
+        serde_json::to_string(&cfg).unwrap(),
+    )
+    .unwrap();
 }
 
 #[cfg(windows)] // Windows-form helper (Linux nightly: excluded, 2026-09-02 sweep)
@@ -1073,7 +1081,12 @@ async fn test_s11b_run_add_invalid_format_bails() {
     .unwrap_err();
     assert!(err.to_string().contains("Invalid model identifier"));
     // 失败路径不落盘任何条目
-    assert!(s11b_read_cfg(&th.home)["model_list"].as_array().unwrap().is_empty());
+    assert!(
+        s11b_read_cfg(&th.home)["model_list"]
+            .as_array()
+            .unwrap()
+            .is_empty()
+    );
 }
 
 #[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
@@ -1160,7 +1173,10 @@ async fn test_s11b_run_add_default_flag_sets_llm() {
     .unwrap();
     let cfg = s11b_read_cfg(&th.home);
     assert_eq!(cfg["model_list"].as_array().unwrap().len(), 2);
-    assert_eq!(cfg["agents"]["defaults"]["llm"], "gpt-4o", "--default 写 alias");
+    assert_eq!(
+        cfg["agents"]["defaults"]["llm"], "gpt-4o",
+        "--default 写 alias"
+    );
 }
 
 #[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
@@ -1263,13 +1279,17 @@ async fn test_s11b_run_list_variants() {
     // 无配置 → 打印提示后 Ok
     {
         let _th = s11b_temp_home_env();
-        super::run(super::ModelAction::List { verbose: false }, false).await.unwrap();
+        super::run(super::ModelAction::List { verbose: false }, false)
+            .await
+            .unwrap();
     }
     // 空 model_list
     {
         let th = s11b_temp_home_env();
         s11b_write_cfg(&th.home, serde_json::json!({"model_list": []}));
-        super::run(super::ModelAction::List { verbose: false }, false).await.unwrap();
+        super::run(super::ModelAction::List { verbose: false }, false)
+            .await
+            .unwrap();
     }
     // 有模型 + verbose（脱敏 bullet 输出）+ default 标记
     {
@@ -1284,14 +1304,20 @@ async fn test_s11b_run_list_variants() {
                 "agents": {"defaults": {"llm": "glm-4.7"}}
             }),
         );
-        super::run(super::ModelAction::List { verbose: true }, false).await.unwrap();
-        super::run(super::ModelAction::List { verbose: false }, false).await.unwrap();
+        super::run(super::ModelAction::List { verbose: true }, false)
+            .await
+            .unwrap();
+        super::run(super::ModelAction::List { verbose: false }, false)
+            .await
+            .unwrap();
     }
     // model_list 缺失（else 分支）
     {
         let th = s11b_temp_home_env();
         s11b_write_cfg(&th.home, serde_json::json!({}));
-        super::run(super::ModelAction::List { verbose: false }, false).await.unwrap();
+        super::run(super::ModelAction::List { verbose: false }, false)
+            .await
+            .unwrap();
     }
 }
 
@@ -1301,7 +1327,10 @@ async fn test_s11b_run_remove_no_config_bails() {
     let _guard = crate::GLOBAL_STATE_LOCK.lock().unwrap();
     let _th = s11b_temp_home_env();
     let err = super::run(
-        super::ModelAction::Remove { name: "x".into(), force: true },
+        super::ModelAction::Remove {
+            name: "x".into(),
+            force: true,
+        },
         false,
     )
     .await
@@ -1323,19 +1352,31 @@ async fn test_s11b_run_remove_default_protected() {
     );
     // 默认模型（alias 命中）→ 拒绝删除，Ok 返回不 bails
     super::run(
-        super::ModelAction::Remove { name: "glm-4.7".into(), force: true },
+        super::ModelAction::Remove {
+            name: "glm-4.7".into(),
+            force: true,
+        },
         false,
     )
     .await
     .unwrap();
     // 默认模型（全名命中）
     super::run(
-        super::ModelAction::Remove { name: "zhipu/glm-4.7".into(), force: true },
+        super::ModelAction::Remove {
+            name: "zhipu/glm-4.7".into(),
+            force: true,
+        },
         false,
     )
     .await
     .unwrap();
-    assert_eq!(s11b_read_cfg(&th.home)["model_list"].as_array().unwrap().len(), 1);
+    assert_eq!(
+        s11b_read_cfg(&th.home)["model_list"]
+            .as_array()
+            .unwrap()
+            .len(),
+        1
+    );
 }
 
 #[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
@@ -1354,19 +1395,30 @@ async fn test_s11b_run_remove_force_full_name_and_alias() {
     );
     // alias（suffix 匹配 vendor 斜杠 name）
     super::run(
-        super::ModelAction::Remove { name: "glm-4.7".into(), force: true },
+        super::ModelAction::Remove {
+            name: "glm-4.7".into(),
+            force: true,
+        },
         false,
     )
     .await
     .unwrap();
     // 全名
     super::run(
-        super::ModelAction::Remove { name: "openai/gpt-4o".into(), force: true },
+        super::ModelAction::Remove {
+            name: "openai/gpt-4o".into(),
+            force: true,
+        },
         false,
     )
     .await
     .unwrap();
-    assert!(s11b_read_cfg(&th.home)["model_list"].as_array().unwrap().is_empty());
+    assert!(
+        s11b_read_cfg(&th.home)["model_list"]
+            .as_array()
+            .unwrap()
+            .is_empty()
+    );
 }
 
 #[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
@@ -1376,7 +1428,10 @@ async fn test_s11b_run_remove_not_found_bails() {
     let th = s11b_temp_home_env();
     s11b_write_cfg(&th.home, serde_json::json!({"model_list": []}));
     let err = super::run(
-        super::ModelAction::Remove { name: "nope".into(), force: true },
+        super::ModelAction::Remove {
+            name: "nope".into(),
+            force: true,
+        },
         false,
     )
     .await
@@ -1391,13 +1446,17 @@ async fn test_s11b_run_default_arm() {
     // 无配置 → Ok（打印提示）
     {
         let _th = s11b_temp_home_env();
-        super::run(super::ModelAction::Default, false).await.unwrap();
+        super::run(super::ModelAction::Default, false)
+            .await
+            .unwrap();
     }
     // 无默认
     {
         let th = s11b_temp_home_env();
         s11b_write_cfg(&th.home, serde_json::json!({}));
-        super::run(super::ModelAction::Default, false).await.unwrap();
+        super::run(super::ModelAction::Default, false)
+            .await
+            .unwrap();
     }
     // agents.defaults.llm 命中
     {
@@ -1406,13 +1465,17 @@ async fn test_s11b_run_default_arm() {
             &th.home,
             serde_json::json!({"agents": {"defaults": {"llm": "glm-4.7"}}}),
         );
-        super::run(super::ModelAction::Default, false).await.unwrap();
+        super::run(super::ModelAction::Default, false)
+            .await
+            .unwrap();
     }
     // 兼容字段 default_model 回退
     {
         let th = s11b_temp_home_env();
         s11b_write_cfg(&th.home, serde_json::json!({"default_model": "legacy"}));
-        super::run(super::ModelAction::Default, false).await.unwrap();
+        super::run(super::ModelAction::Default, false)
+            .await
+            .unwrap();
     }
 }
 
@@ -1427,7 +1490,10 @@ async fn test_s11b_run_settier_matrix() {
     );
     // 非法 tier
     let err = super::run(
-        super::ModelAction::SetTier { name: "glm-4.7".into(), tier: "huge".into() },
+        super::ModelAction::SetTier {
+            name: "glm-4.7".into(),
+            tier: "huge".into(),
+        },
         false,
     )
     .await
@@ -1435,15 +1501,24 @@ async fn test_s11b_run_settier_matrix() {
     assert!(err.to_string().contains("Invalid tier"));
     // 合法 mini
     super::run(
-        super::ModelAction::SetTier { name: "glm-4.7".into(), tier: "mini".into() },
+        super::ModelAction::SetTier {
+            name: "glm-4.7".into(),
+            tier: "mini".into(),
+        },
         false,
     )
     .await
     .unwrap();
-    assert_eq!(s11b_read_cfg(&th.home)["model_list"][0]["model_tier"], "mini");
+    assert_eq!(
+        s11b_read_cfg(&th.home)["model_list"][0]["model_tier"],
+        "mini"
+    );
     // 找不到模型
     let err = super::run(
-        super::ModelAction::SetTier { name: "nope".into(), tier: "big".into() },
+        super::ModelAction::SetTier {
+            name: "nope".into(),
+            tier: "big".into(),
+        },
         false,
     )
     .await
@@ -1453,7 +1528,10 @@ async fn test_s11b_run_settier_matrix() {
     {
         let _th2 = s11b_temp_home_env();
         let err = super::run(
-            super::ModelAction::SetTier { name: "x".into(), tier: "big".into() },
+            super::ModelAction::SetTier {
+                name: "x".into(),
+                tier: "big".into(),
+            },
             false,
         )
         .await
@@ -1473,7 +1551,10 @@ async fn test_s11b_run_seteffort_matrix() {
     );
     // 非法
     let err = super::run(
-        super::ModelAction::SetEffort { name: "glm-4.7".into(), effort: "extreme".into() },
+        super::ModelAction::SetEffort {
+            name: "glm-4.7".into(),
+            effort: "extreme".into(),
+        },
         false,
     )
     .await
@@ -1481,23 +1562,38 @@ async fn test_s11b_run_seteffort_matrix() {
     assert!(err.to_string().contains("Invalid effort"));
     // off → 清空
     super::run(
-        super::ModelAction::SetEffort { name: "glm-4.7".into(), effort: "off".into() },
+        super::ModelAction::SetEffort {
+            name: "glm-4.7".into(),
+            effort: "off".into(),
+        },
         false,
     )
     .await
     .unwrap();
-    assert_eq!(s11b_read_cfg(&th.home)["model_list"][0]["reasoning_effort"], "");
+    assert_eq!(
+        s11b_read_cfg(&th.home)["model_list"][0]["reasoning_effort"],
+        ""
+    );
     // high → 写入
     super::run(
-        super::ModelAction::SetEffort { name: "glm-4.7".into(), effort: "high".into() },
+        super::ModelAction::SetEffort {
+            name: "glm-4.7".into(),
+            effort: "high".into(),
+        },
         false,
     )
     .await
     .unwrap();
-    assert_eq!(s11b_read_cfg(&th.home)["model_list"][0]["reasoning_effort"], "high");
+    assert_eq!(
+        s11b_read_cfg(&th.home)["model_list"][0]["reasoning_effort"],
+        "high"
+    );
     // 找不到
     let err = super::run(
-        super::ModelAction::SetEffort { name: "nope".into(), effort: "low".into() },
+        super::ModelAction::SetEffort {
+            name: "nope".into(),
+            effort: "low".into(),
+        },
         false,
     )
     .await
@@ -1516,7 +1612,10 @@ async fn test_s11b_run_setsize_matrix() {
     );
     // 非法
     let err = super::run(
-        super::ModelAction::SetSize { name: "lite".into(), size: "huge".into() },
+        super::ModelAction::SetSize {
+            name: "lite".into(),
+            size: "huge".into(),
+        },
         false,
     )
     .await
@@ -1524,7 +1623,10 @@ async fn test_s11b_run_setsize_matrix() {
     assert!(err.to_string().contains("Invalid size"));
     // 30B
     super::run(
-        super::ModelAction::SetSize { name: "lite".into(), size: "30B".into() },
+        super::ModelAction::SetSize {
+            name: "lite".into(),
+            size: "30B".into(),
+        },
         false,
     )
     .await
@@ -1532,7 +1634,10 @@ async fn test_s11b_run_setsize_matrix() {
     assert_eq!(s11b_read_cfg(&th.home)["model_list"][0]["model_size_b"], 30);
     // 裸数字
     super::run(
-        super::ModelAction::SetSize { name: "lite".into(), size: "70".into() },
+        super::ModelAction::SetSize {
+            name: "lite".into(),
+            size: "70".into(),
+        },
         false,
     )
     .await
@@ -1540,7 +1645,10 @@ async fn test_s11b_run_setsize_matrix() {
     assert_eq!(s11b_read_cfg(&th.home)["model_list"][0]["model_size_b"], 70);
     // 找不到
     let err = super::run(
-        super::ModelAction::SetSize { name: "nope".into(), size: "9b".into() },
+        super::ModelAction::SetSize {
+            name: "nope".into(),
+            size: "9b".into(),
+        },
         false,
     )
     .await
@@ -1566,9 +1674,15 @@ async fn test_s11b_run_setrealname_matrix() {
     )
     .await
     .unwrap();
-    assert_eq!(s11b_read_cfg(&th.home)["model_list"][0]["real_name"], "Qwen3-30B-A3B");
+    assert_eq!(
+        s11b_read_cfg(&th.home)["model_list"][0]["real_name"],
+        "Qwen3-30B-A3B"
+    );
     let err = super::run(
-        super::ModelAction::SetRealName { name: "nope".into(), real_name: "X".into() },
+        super::ModelAction::SetRealName {
+            name: "nope".into(),
+            real_name: "X".into(),
+        },
         false,
     )
     .await
@@ -1583,9 +1697,14 @@ async fn test_s11b_run_probe_no_config_bails() {
     let _th = s11b_temp_home_env();
     // cfg-missing bail 在 block_in_place 之前 → current_thread runtime 可跑。
     // 真 LLM 探针属结构性豁免（7 次真实模型调用）。
-    let err = super::run(super::ModelAction::Probe { name: "glm-4.7".into() }, false)
-        .await
-        .unwrap_err();
+    let err = super::run(
+        super::ModelAction::Probe {
+            name: "glm-4.7".into(),
+        },
+        false,
+    )
+    .await
+    .unwrap_err();
     assert!(err.to_string().contains("Configuration not found"));
 }
 
@@ -1595,7 +1714,9 @@ async fn test_s11b_run_catalog_update_no_config_bails() {
     let _guard = crate::GLOBAL_STATE_LOCK.lock().unwrap();
     let _th = s11b_temp_home_env();
     // cfg-missing bail；真网络拉取 models.dev 属结构性豁免。
-    let err = super::run(super::ModelAction::CatalogUpdate, false).await.unwrap_err();
+    let err = super::run(super::ModelAction::CatalogUpdate, false)
+        .await
+        .unwrap_err();
     assert!(err.to_string().contains("Configuration not found"));
 }
 
@@ -1611,11 +1732,19 @@ fn test_s11b_format_probe_report_direct() {
         per_task: vec![
             (
                 "exec".to_string(),
-                ProbeScore { format: 1.0, selection: 0.0, schema: 1.0 },
+                ProbeScore {
+                    format: 1.0,
+                    selection: 0.0,
+                    schema: 1.0,
+                },
             ),
             (
                 "grep".to_string(),
-                ProbeScore { format: 0.5, selection: 1.0, schema: 0.5 },
+                ProbeScore {
+                    format: 0.5,
+                    selection: 1.0,
+                    schema: 0.5,
+                },
             ),
         ],
     };
@@ -1676,11 +1805,11 @@ fn test_s11b_format_probe_report_direct() {
 mod wave_b {
     // s11b_* 与 run/ModelAction 只有下方 Windows 形态的 CLI 测试使用，随之门控；
     // update_model_entry_for_test 仍被本 mod 的 Linux 绿测试使用，保持无条件导入。
-    #[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
-    use super::{s11b_read_cfg, s11b_temp_home_env, s11b_write_cfg};
     use super::super::update_model_entry_for_test;
     #[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
-    use super::super::{run, ModelAction};
+    use super::super::{ModelAction, run};
+    #[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
+    use super::{s11b_read_cfg, s11b_temp_home_env, s11b_write_cfg};
 
     #[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
     #[tokio::test]
@@ -1751,20 +1880,32 @@ mod wave_b {
         let th = s11b_temp_home_env(); // 故意不写 config.json
 
         let err = run(
-            ModelAction::SetEffort { name: "m".into(), effort: "low".into() },
+            ModelAction::SetEffort {
+                name: "m".into(),
+                effort: "low".into(),
+            },
             false,
         )
         .await
         .unwrap_err();
         assert!(err.to_string().contains("Configuration not found"));
 
-        let err = run(ModelAction::SetSize { name: "m".into(), size: "30B".into() }, false)
-            .await
-            .unwrap_err();
+        let err = run(
+            ModelAction::SetSize {
+                name: "m".into(),
+                size: "30B".into(),
+            },
+            false,
+        )
+        .await
+        .unwrap_err();
         assert!(err.to_string().contains("Configuration not found"));
 
         let err = run(
-            ModelAction::SetRealName { name: "m".into(), real_name: "Qwen3-30B".into() },
+            ModelAction::SetRealName {
+                name: "m".into(),
+                real_name: "Qwen3-30B".into(),
+            },
             false,
         )
         .await
@@ -1826,9 +1967,13 @@ mod wave_c {
 
         // ② model_list 不是数组（对象形状同样路由到 676 的 None 臂）。
         let mut non_array_cfg = serde_json::json!({"model_list": {"model": "prov/x"}});
-        assert!(!update_model_entry_for_test(&mut non_array_cfg, "x", |_e| {
-            called = true;
-        }));
+        assert!(!update_model_entry_for_test(
+            &mut non_array_cfg,
+            "x",
+            |_e| {
+                called = true;
+            }
+        ));
 
         assert!(!called, "两种畸形形状都必须在任何闭包调用之前返 false");
     }
@@ -1878,9 +2023,9 @@ mod r9_subprocess {
     // mock_ai 被 mod 内唯一跨平台裸测试 r9_repro_toolcall_arguments_roundtrip
     // 使用（in-process，不 spawn），必须无条件导入；TestWorkspace 和
     // resolve_nemesisbot_bin 只有 Windows 形态的子进程测试使用，随之门控。
-    use test_harness::mock_ai::{MockAiReply, MockAiServer};
     #[cfg(windows)] // Windows-form helper use (Linux nightly: excluded, 2026-09-02 sweep)
     use test_harness::TestWorkspace;
+    use test_harness::mock_ai::{MockAiReply, MockAiServer};
     #[cfg(windows)] // Windows-form helper use (Linux nightly: excluded, 2026-09-02 sweep)
     use test_harness::resolve_nemesisbot_bin;
 
@@ -1959,7 +2104,9 @@ mod r9_subprocess {
             add.stderr
         );
 
-        let probe = ws.run_cli_with_timeout(&bin, &["model", "probe", "r9p/probe-x"], 60).await;
+        let probe = ws
+            .run_cli_with_timeout(&bin, &["model", "probe", "r9p/probe-x"], 60)
+            .await;
         assert!(
             probe.success(),
             "probe 应全对满分：stdout={} stderr={}",
@@ -1976,10 +2123,7 @@ mod r9_subprocess {
             "edit_file",
             "cluster_rpc",
         ] {
-            assert!(
-                probe.stdout_contains(task),
-                "每工具得分行缺失 {task}"
-);
+            assert!(probe.stdout_contains(task), "每工具得分行缺失 {task}");
         }
         assert!(
             probe.stdout_contains("→ tier=big"),
@@ -1998,10 +2142,7 @@ mod r9_subprocess {
             .and_then(|a| a.first())
             .expect("add 必须留下一条模型记录");
         assert_eq!(entry["model"], "r9p/probe-x");
-        assert_eq!(
-            entry["model_tier"], "big",
-            "探针结果必须写回 config.json"
-        );
+        assert_eq!(entry["model_tier"], "big", "探针结果必须写回 config.json");
     }
 
     #[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
@@ -2029,7 +2170,10 @@ mod r9_subprocess {
             out.stdout,
             out.stderr
         );
-        assert!(out.stdout_contains("Remove model 'r9/rm-y'"), "先出 y/N 提示");
+        assert!(
+            out.stdout_contains("Remove model 'r9/rm-y'"),
+            "先出 y/N 提示"
+        );
         assert!(out.stdout_contains("Model removed: r9/rm-y"));
         let cfg = read_cfg(&ws);
         let models = cfg["model_list"].as_array().unwrap();
@@ -2132,7 +2276,7 @@ mod r9_subprocess {
 #[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
 mod r10_subprocess {
     use test_harness::mock_ai::{MockAiReply, MockAiServer};
-    use test_harness::{resolve_nemesisbot_bin, TestWorkspace};
+    use test_harness::{TestWorkspace, resolve_nemesisbot_bin};
 
     fn perfect_probe_script() -> Vec<MockAiReply> {
         vec![
@@ -2204,12 +2348,13 @@ mod r10_subprocess {
         let cfg_path = ws.config_path();
         let mut cfg: serde_json::Value =
             serde_json::from_str(&std::fs::read_to_string(&cfg_path).unwrap()).unwrap();
-        cfg["agents"]["defaults"]["llm"] =
-            serde_json::Value::String("r10p/empty-name".to_string());
+        cfg["agents"]["defaults"]["llm"] = serde_json::Value::String("r10p/empty-name".to_string());
         std::fs::write(&cfg_path, serde_json::to_string_pretty(&cfg).unwrap()).unwrap();
 
         // 关键动作：探测目标传空串 → 走 get_effective_llm 回退臂。
-        let probe = ws.run_cli_with_timeout(&bin, &["model", "probe", ""], 60).await;
+        let probe = ws
+            .run_cli_with_timeout(&bin, &["model", "probe", ""], 60)
+            .await;
         assert!(
             probe.success(),
             "空名 probe 必须解析 effective LLM 后成功：stdout={} stderr={}",

@@ -212,9 +212,10 @@ impl Registry {
         // Simple semver patch bump: "x.y.z" -> "x.y.(z+1)"
         let parts: Vec<&str> = version.split('.').collect();
         if parts.len() == 3
-            && let Ok(patch) = parts[2].parse::<u32>() {
-                return format!("{}.{}.{}", parts[0], parts[1], patch + 1);
-            }
+            && let Ok(patch) = parts[2].parse::<u32>()
+        {
+            return format!("{}.{}.{}", parts[0], parts[1], patch + 1);
+        }
         // Fallback: just append ".1"
         format!("{}.1", version)
     }

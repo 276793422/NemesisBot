@@ -88,7 +88,10 @@ fn port_walk_sequence(base_port: u16) -> Vec<u16> {
 /// bind 失败端口走查：按 [`port_walk_sequence`] 逐个尝试 `ip:port`，
 /// 返回第一个绑定成功的 listener；序列耗尽仍全占用则 loud 失败。
 /// 落点偏离 `base_port` 时打 warn（运维可见端口漂移）。
-async fn bind_with_port_walk(ip: std::net::IpAddr, base_port: u16) -> Result<tokio::net::TcpListener, String> {
+async fn bind_with_port_walk(
+    ip: std::net::IpAddr,
+    base_port: u16,
+) -> Result<tokio::net::TcpListener, String> {
     let sequence = port_walk_sequence(base_port);
     let mut last_err = String::new();
     for (i, &try_port) in sequence.iter().enumerate() {
@@ -521,10 +524,7 @@ impl WebServer {
                 "/api/sdk/export",
                 get(crate::api_handlers::handle_sdk_export),
             )
-            .route(
-                "/api/sdk/pip",
-                get(crate::api_handlers::handle_sdk_pip),
-            )
+            .route("/api/sdk/pip", get(crate::api_handlers::handle_sdk_pip))
             // Usage statistics endpoints
             .route("/api/usage/summary", get(handle_api_usage_summary))
             .route("/api/usage/trends", get(handle_api_usage_trends))
@@ -870,39 +870,41 @@ async fn serve_embedded_static(
     //    client reads window.location.pathname to know which workflow to
     //    resolve.
     if path.starts_with("workflow/chat/")
-        && let Some(content) = files.get_file("workflow-chat/index.html") {
-            return (
-                axum::http::StatusCode::OK,
-                [
-                    (
-                        http::header::CONTENT_TYPE,
-                        "text/html; charset=utf-8".to_string(),
-                    ),
-                    (http::header::ACCESS_CONTROL_ALLOW_ORIGIN, origin),
-                    (http::header::VARY, "Origin".to_string()),
-                ],
-                content,
-            )
-                .into_response();
-        }
+        && let Some(content) = files.get_file("workflow-chat/index.html")
+    {
+        return (
+            axum::http::StatusCode::OK,
+            [
+                (
+                    http::header::CONTENT_TYPE,
+                    "text/html; charset=utf-8".to_string(),
+                ),
+                (http::header::ACCESS_CONTROL_ALLOW_ORIGIN, origin),
+                (http::header::VARY, "Origin".to_string()),
+            ],
+            content,
+        )
+            .into_response();
+    }
 
     // 3. SPA fallback: no file extension → serve index.html
     if !path.contains('.')
-        && let Some(content) = files.get_file("index.html") {
-            return (
-                axum::http::StatusCode::OK,
-                [
-                    (
-                        http::header::CONTENT_TYPE,
-                        "text/html; charset=utf-8".to_string(),
-                    ),
-                    (http::header::ACCESS_CONTROL_ALLOW_ORIGIN, origin),
-                    (http::header::VARY, "Origin".to_string()),
-                ],
-                content,
-            )
-                .into_response();
-        }
+        && let Some(content) = files.get_file("index.html")
+    {
+        return (
+            axum::http::StatusCode::OK,
+            [
+                (
+                    http::header::CONTENT_TYPE,
+                    "text/html; charset=utf-8".to_string(),
+                ),
+                (http::header::ACCESS_CONTROL_ALLOW_ORIGIN, origin),
+                (http::header::VARY, "Origin".to_string()),
+            ],
+            content,
+        )
+            .into_response();
+    }
 
     // 4. 404
     (axum::http::StatusCode::NOT_FOUND, "Not Found").into_response()

@@ -603,7 +603,11 @@ impl ForgeToolExecutor {
         // Validate artifact type
         match artifact_type.as_str() {
             "skill" | "script" | "mcp" => {}
-            _ => return ForgeToolResult::err("type must be 'skill', 'script', or 'mcp'".to_string()),
+            _ => {
+                return ForgeToolResult::err(
+                    "type must be 'skill', 'script', or 'mcp'".to_string(),
+                );
+            }
         }
 
         // Sanitize name
@@ -706,12 +710,13 @@ impl ForgeToolExecutor {
         // Write test cases if provided
         if let Some(test_cases) = args.get("test_cases")
             && !test_cases.is_null()
-                && let Ok(test_data) = serde_json::to_string_pretty(test_cases)
-                    && let Some(parent) = artifact_path.parent() {
-                        let test_dir = parent.join("tests");
-                        let _ = tokio::fs::create_dir_all(&test_dir).await;
-                        let _ = tokio::fs::write(test_dir.join("test_cases.json"), test_data).await;
-                    }
+            && let Ok(test_data) = serde_json::to_string_pretty(test_cases)
+            && let Some(parent) = artifact_path.parent()
+        {
+            let test_dir = parent.join("tests");
+            let _ = tokio::fs::create_dir_all(&test_dir).await;
+            let _ = tokio::fs::write(test_dir.join("test_cases.json"), test_data).await;
+        }
 
         // Register in registry
         let artifact = Artifact {
@@ -760,36 +765,36 @@ impl ForgeToolExecutor {
             let final_artifact = self.forge.registry().get(&artifact_id);
             if let Some(ref a) = final_artifact
                 && matches!(a.status, nemesis_types::forge::ArtifactStatus::Active)
-                    && let Some(installer) = self.forge.mcp_installer() {
-                        let _mcp_dir = artifact_path.parent().unwrap_or(&artifact_path);
-                        let command = if args["language"].as_str() == Some("go") {
-                            "go".to_string()
-                        } else {
-                            "uv".to_string()
-                        };
-                        // `go run <file>` and `uv run <file>` share the same args;
-                        // the command itself (see above) carries the difference.
-                        let cmd_args = vec![
-                            "run".to_string(),
-                            artifact_path
-                                .file_name()
-                                .unwrap_or_default()
-                                .to_string_lossy()
-                                .to_string(),
-                        ];
-                        match installer.install(&name, &command, cmd_args).await {
-                            Ok(()) => {
-                                validation_info
-                                    .push_str("\n- MCP auto-registered to config.mcp.json");
-                            }
-                            Err(e) => {
-                                validation_info.push_str(&format!(
-                                    "\n- MCP registration failed: {} (please register manually)",
-                                    e
-                                ));
-                            }
-                        }
+                && let Some(installer) = self.forge.mcp_installer()
+            {
+                let _mcp_dir = artifact_path.parent().unwrap_or(&artifact_path);
+                let command = if args["language"].as_str() == Some("go") {
+                    "go".to_string()
+                } else {
+                    "uv".to_string()
+                };
+                // `go run <file>` and `uv run <file>` share the same args;
+                // the command itself (see above) carries the difference.
+                let cmd_args = vec![
+                    "run".to_string(),
+                    artifact_path
+                        .file_name()
+                        .unwrap_or_default()
+                        .to_string_lossy()
+                        .to_string(),
+                ];
+                match installer.install(&name, &command, cmd_args).await {
+                    Ok(()) => {
+                        validation_info.push_str("\n- MCP auto-registered to config.mcp.json");
                     }
+                    Err(e) => {
+                        validation_info.push_str(&format!(
+                            "\n- MCP registration failed: {} (please register manually)",
+                            e
+                        ));
+                    }
+                }
+            }
         }
 
         // Determine final status
@@ -883,23 +888,24 @@ impl ForgeToolExecutor {
             let updated = self.forge.registry().get(&id);
             if let Some(ref a) = updated
                 && matches!(a.status, nemesis_types::forge::ArtifactStatus::Active)
-                    && let Some(installer) = self.forge.mcp_installer() {
-                        let _mcp_dir = artifact_path.parent().unwrap_or(&artifact_path);
-                        let _ = installer
-                            .install(
-                                &artifact.name,
-                                "uv",
-                                vec![
-                                    "run".to_string(),
-                                    artifact_path
-                                        .file_name()
-                                        .unwrap_or_default()
-                                        .to_string_lossy()
-                                        .to_string(),
-                                ],
-                            )
-                            .await;
-                    }
+                && let Some(installer) = self.forge.mcp_installer()
+            {
+                let _mcp_dir = artifact_path.parent().unwrap_or(&artifact_path);
+                let _ = installer
+                    .install(
+                        &artifact.name,
+                        "uv",
+                        vec![
+                            "run".to_string(),
+                            artifact_path
+                                .file_name()
+                                .unwrap_or_default()
+                                .to_string_lossy()
+                                .to_string(),
+                        ],
+                    )
+                    .await;
+            }
         }
 
         let rollback_info = if !rollback_version.is_empty() {
@@ -1192,8 +1198,7 @@ impl ForgeToolExecutor {
                 };
 
                 // Read or create the MCP config file
-                let config_dir =
-                    nemesis_path::workspace_config_dir(self.forge.workspace());
+                let config_dir = nemesis_path::workspace_config_dir(self.forge.workspace());
                 let mcp_config_path =
                     nemesis_path::resolve_mcp_config_path_in_workspace(self.forge.workspace());
 
@@ -1473,12 +1478,13 @@ fn find_latest_report(workspace: &std::path::Path) -> Option<String> {
             let path = entry.path();
             if path.extension().map(|e| e == "md").unwrap_or(false)
                 && let Ok(meta) = entry.metadata()
-                    && let Ok(modified) = meta.modified() {
-                        let is_newer = latest.as_ref().is_none_or(|(t, _)| modified > *t);
-                        if is_newer {
-                            latest = Some((modified, path.to_string_lossy().to_string()));
-                        }
-                    }
+                && let Ok(modified) = meta.modified()
+            {
+                let is_newer = latest.as_ref().is_none_or(|(t, _)| modified > *t);
+                if is_newer {
+                    latest = Some((modified, path.to_string_lossy().to_string()));
+                }
+            }
         }
     }
     // Also check subdirectories
@@ -1486,23 +1492,21 @@ fn find_latest_report(workspace: &std::path::Path) -> Option<String> {
         for entry in entries.flatten() {
             let path = entry.path();
             if path.is_dir()
-                && let Ok(sub_entries) = std::fs::read_dir(&path) {
-                    for sub_entry in sub_entries.flatten() {
-                        let sub_path = sub_entry.path();
-                        if sub_path.extension().map(|e| e == "md").unwrap_or(false)
-                            && let Ok(meta) = sub_entry.metadata()
-                                && let Ok(modified) = meta.modified() {
-                                    let is_newer =
-                                        latest.as_ref().is_none_or(|(t, _)| modified > *t);
-                                    if is_newer {
-                                        latest = Some((
-                                            modified,
-                                            sub_path.to_string_lossy().to_string(),
-                                        ));
-                                    }
-                                }
+                && let Ok(sub_entries) = std::fs::read_dir(&path)
+            {
+                for sub_entry in sub_entries.flatten() {
+                    let sub_path = sub_entry.path();
+                    if sub_path.extension().map(|e| e == "md").unwrap_or(false)
+                        && let Ok(meta) = sub_entry.metadata()
+                        && let Ok(modified) = meta.modified()
+                    {
+                        let is_newer = latest.as_ref().is_none_or(|(t, _)| modified > *t);
+                        if is_newer {
+                            latest = Some((modified, sub_path.to_string_lossy().to_string()));
+                        }
                     }
                 }
+            }
         }
     }
 

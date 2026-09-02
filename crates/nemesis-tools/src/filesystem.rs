@@ -155,9 +155,10 @@ impl Tool for WriteFileTool {
 
         // Create parent directories if needed
         if let Some(parent) = canonical.parent()
-            && let Err(e) = tokio::fs::create_dir_all(parent).await {
-                return ToolResult::error(&format!("failed to create directories: {}", e));
-            }
+            && let Err(e) = tokio::fs::create_dir_all(parent).await
+        {
+            return ToolResult::error(&format!("failed to create directories: {}", e));
+        }
 
         match tokio::fs::write(&canonical, content).await {
             Ok(()) => ToolResult::success(&format!("wrote {} bytes to {}", content.len(), path)),

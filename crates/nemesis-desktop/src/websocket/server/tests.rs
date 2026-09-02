@@ -424,11 +424,12 @@ async fn test_server_client_full_connection() {
             tokio::time::timeout(std::time::Duration::from_secs(2), ws_stream.next()).await;
 
         if let Ok(Some(Ok(ws_msg))) = msg_result
-            && let tokio_tungstenite::tungstenite::Message::Text(text) = ws_msg {
-                let msg: Message = serde_json::from_str(&text).unwrap();
-                assert!(msg.is_notification());
-                assert_eq!(msg.method.as_deref(), Some("test.method"));
-            }
+            && let tokio_tungstenite::tungstenite::Message::Text(text) = ws_msg
+        {
+            let msg: Message = serde_json::from_str(&text).unwrap();
+            assert!(msg.is_notification());
+            assert_eq!(msg.method.as_deref(), Some("test.method"));
+        }
 
         // Close connection
         ws_stream.close(None).await.ok();
@@ -559,11 +560,12 @@ async fn test_server_client_request_response() {
             tokio::time::timeout(std::time::Duration::from_secs(2), ws_stream.next()).await;
 
         if let Ok(Some(Ok(ws_msg))) = msg_result
-            && let tokio_tungstenite::tungstenite::Message::Text(text) = ws_msg {
-                let resp: Message = serde_json::from_str(&text).unwrap();
-                assert!(resp.is_success_response());
-                assert_eq!(resp.result.as_ref().unwrap()["result"], "added");
-            }
+            && let tokio_tungstenite::tungstenite::Message::Text(text) = ws_msg
+        {
+            let resp: Message = serde_json::from_str(&text).unwrap();
+            assert!(resp.is_success_response());
+            assert_eq!(resp.result.as_ref().unwrap()["result"], "added");
+        }
 
         ws_stream.close(None).await.ok();
     }
@@ -599,16 +601,17 @@ async fn test_server_call_child_with_connection() {
         // Read the call request from server and send a response
         let read_handle = tokio::spawn(async move {
             if let Some(Ok(ws_msg)) = ws_stream.next().await
-                && let tokio_tungstenite::tungstenite::Message::Text(text) = ws_msg {
-                    let msg: Message = serde_json::from_str(&text).unwrap();
-                    if msg.is_request() {
-                        let resp = Message::new_response(
-                            msg.id.as_deref().unwrap_or(""),
-                            serde_json::json!({"status": "handled"}),
-                        );
-                        let _ = client_tx.send(serde_json::to_string(&resp).unwrap()).await;
-                    }
+                && let tokio_tungstenite::tungstenite::Message::Text(text) = ws_msg
+            {
+                let msg: Message = serde_json::from_str(&text).unwrap();
+                if msg.is_request() {
+                    let resp = Message::new_response(
+                        msg.id.as_deref().unwrap_or(""),
+                        serde_json::json!({"status": "handled"}),
+                    );
+                    let _ = client_tx.send(serde_json::to_string(&resp).unwrap()).await;
                 }
+            }
             ws_stream
         });
 

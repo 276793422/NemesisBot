@@ -101,8 +101,13 @@ pub fn start(paths: &SandboxPaths) -> Result<()> {
     .context("install SbieSvc")?;
     kmdutil::set_sbiesvc_service_key_dwounds().context("set SbieSvc service-key DWORDs")?;
 
-    ini::write_sandboxie_ini(&paths.ini_path, crate::DEFAULT_BOX_NAME, &paths.box_root, read_allow_network(paths))
-        .context("write Sandboxie.ini")?;
+    ini::write_sandboxie_ini(
+        &paths.ini_path,
+        crate::DEFAULT_BOX_NAME,
+        &paths.box_root,
+        read_allow_network(paths),
+    )
+    .context("write Sandboxie.ini")?;
 
     kmdutil::run(kmdutil::start(&paths.kmdutil(), USERMODE_SERVICE), false)
         .context("start SbieSvc")?;
@@ -225,7 +230,12 @@ pub fn ensure_installed(paths: &SandboxPaths) -> Result<()> {
     );
     let _ = kmdutil::set_sbiesvc_service_key_dwounds();
 
-    ini::write_sandboxie_ini(&paths.ini_path, crate::DEFAULT_BOX_NAME, &paths.box_root, read_allow_network(paths))?;
+    ini::write_sandboxie_ini(
+        &paths.ini_path,
+        crate::DEFAULT_BOX_NAME,
+        &paths.box_root,
+        read_allow_network(paths),
+    )?;
 
     // Start the service (no-op if already running) + wait for RUNNING.
     start_service(paths)?;

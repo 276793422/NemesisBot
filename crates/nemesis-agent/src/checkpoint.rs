@@ -244,18 +244,20 @@ impl CheckpointStore {
             }
         }
         if let Some(dir) = &self.dir
-            && let Ok(entries) = std::fs::read_dir(dir) {
-                for ent in entries.flatten() {
-                    let name = ent.file_name().to_string_lossy().to_string();
-                    if let Some(rest) = name
-                        .strip_prefix("turn-")
-                        .and_then(|s| s.strip_suffix(".json"))
-                        && let Ok(t) = rest.parse::<usize>()
-                            && t >= from_turn {
-                                let _ = std::fs::remove_file(ent.path());
-                            }
+            && let Ok(entries) = std::fs::read_dir(dir)
+        {
+            for ent in entries.flatten() {
+                let name = ent.file_name().to_string_lossy().to_string();
+                if let Some(rest) = name
+                    .strip_prefix("turn-")
+                    .and_then(|s| s.strip_suffix(".json"))
+                    && let Ok(t) = rest.parse::<usize>()
+                    && t >= from_turn
+                {
+                    let _ = std::fs::remove_file(ent.path());
                 }
             }
+        }
     }
 
     fn persist(&self, cp: &Checkpoint) {

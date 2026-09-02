@@ -152,9 +152,10 @@ fn mask_sensitive_fields(value: serde_json::Value) -> serde_json::Value {
                 .map(|(k, v)| {
                     if crate::handlers::is_sensitive_field(&k)
                         && let Some(s) = v.as_str()
-                            && !s.is_empty() {
-                                return (k, serde_json::Value::String(mask_sensitive(s)));
-                            }
+                        && !s.is_empty()
+                    {
+                        return (k, serde_json::Value::String(mask_sensitive(s)));
+                    }
                     (k, mask_sensitive_fields(v))
                 })
                 .collect();

@@ -38,10 +38,16 @@ fn generate_key_pair_produces_distinct_keys() {
 fn signing_key_from_hex_rejects_bad_input() {
     // 长度错（hex_decode_32 的 64 字符校验）
     let err = signing_key_from_hex("abcd").unwrap_err();
-    assert!(format!("{err:#}").contains("invalid private key"), "{err:#}");
+    assert!(
+        format!("{err:#}").contains("invalid private key"),
+        "{err:#}"
+    );
     // 长度对但非 hex 字符
     let err = signing_key_from_hex(&"z".repeat(64)).unwrap_err();
-    assert!(format!("{err:#}").contains("invalid private key"), "{err:#}");
+    assert!(
+        format!("{err:#}").contains("invalid private key"),
+        "{err:#}"
+    );
 }
 
 #[test]

@@ -120,7 +120,10 @@ async fn history_unknown_index_reports_not_found_without_failing() {
         ),
     )
     .await;
-    assert!(res.is_ok(), "unknown index is reported to the client, not the caller");
+    assert!(
+        res.is_ok(),
+        "unknown index is reported to the client, not the caller"
+    );
 }
 
 #[tokio::test]
@@ -130,7 +133,11 @@ async fn history_happy_path_reads_chat_log_and_surfaces_broadcast_failure() {
     let index = WorkflowEngine::chat_index(&name);
     let key = format!("wf_chat:{}", name);
     for i in 0..3 {
-        nemesis_agent::chat_log::append_chat_log(&key, if i % 2 == 0 { "user" } else { "assistant" }, &format!("消息{}", i));
+        nemesis_agent::chat_log::append_chat_log(
+            &key,
+            if i % 2 == 0 { "user" } else { "assistant" },
+            &format!("消息{}", i),
+        );
     }
 
     let state = make_state(Some(engine));
@@ -169,5 +176,8 @@ async fn send_unknown_index_reports_not_found_without_failing() {
         ),
     )
     .await;
-    assert!(res.is_ok(), "unknown index is reported to the client, not the caller");
+    assert!(
+        res.is_ok(),
+        "unknown index is reported to the client, not the caller"
+    );
 }

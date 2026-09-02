@@ -767,14 +767,15 @@ impl LogsHandler {
                 for sub in dev_sub.flatten() {
                     let name = sub.file_name().to_string_lossy().to_string();
                     if let Some((_ts, id)) = parse_cluster_dir_name(&name)
-                        && (id == sanitized_target || id == task_id) {
-                            let dev_name = dev_path
-                                .file_name()
-                                .and_then(|n| n.to_str())
-                                .unwrap_or("")
-                                .to_string();
-                            candidates.push((sub.path(), dev_name));
-                        }
+                        && (id == sanitized_target || id == task_id)
+                    {
+                        let dev_name = dev_path
+                            .file_name()
+                            .and_then(|n| n.to_str())
+                            .unwrap_or("")
+                            .to_string();
+                        candidates.push((sub.path(), dev_name));
+                    }
                 }
             }
         }
@@ -1159,23 +1160,24 @@ impl LogsHandler {
                 let store = mgr.get_episodic_store();
                 for key in [session.to_string(), session.replace('_', ":")] {
                     if let Ok(eps) = store.get_session(&key).await
-                        && !eps.is_empty() {
-                            for (i, ep) in eps.iter().enumerate() {
-                                if let Some(msg) = messages.get_mut(i) {
-                                    if ep.tags.iter().any(|t| t == "cluster") {
-                                        msg["triggerCluster"] = serde_json::Value::Bool(true);
-                                    }
-                                    if let Some(n) = ep
-                                        .metadata
-                                        .get("tool_calls")
-                                        .and_then(|s| s.parse::<u32>().ok())
-                                    {
-                                        msg["toolCalls"] = serde_json::Value::Number(n.into());
-                                    }
+                        && !eps.is_empty()
+                    {
+                        for (i, ep) in eps.iter().enumerate() {
+                            if let Some(msg) = messages.get_mut(i) {
+                                if ep.tags.iter().any(|t| t == "cluster") {
+                                    msg["triggerCluster"] = serde_json::Value::Bool(true);
+                                }
+                                if let Some(n) = ep
+                                    .metadata
+                                    .get("tool_calls")
+                                    .and_then(|s| s.parse::<u32>().ok())
+                                {
+                                    msg["toolCalls"] = serde_json::Value::Number(n.into());
                                 }
                             }
-                            break;
                         }
+                        break;
+                    }
                 }
             }
         }
@@ -1334,20 +1336,25 @@ impl LogsHandler {
 
         // Session store: live loop's store first (fork visibility), else the
         // disk-backed fallback — same resolution as the fork API.
-        let store: std::sync::Arc<nemesis_agent::session::SessionStore> =
-            match ctx.state.agent_loop.read().as_ref().and_then(|al| al.session_store()) {
-                Some(s) => s.clone(),
-                None => {
-                    let home = crate::handlers::require_home(ctx)?;
-                    // home 是 home 根：先经 nemesis-path 转 workspace 再取
-                    // sessions 目录（勿把 home 直接当 workspace 传入）。
-                    std::sync::Arc::new(nemesis_agent::session::SessionStore::new_with_storage(
-                        nemesis_path::resolve_sessions_dir_in_workspace(
-                            &nemesis_path::workspace_dir(Path::new(home)),
-                        ),
-                    ))
-                }
-            };
+        let store: std::sync::Arc<nemesis_agent::session::SessionStore> = match ctx
+            .state
+            .agent_loop
+            .read()
+            .as_ref()
+            .and_then(|al| al.session_store())
+        {
+            Some(s) => s.clone(),
+            None => {
+                let home = crate::handlers::require_home(ctx)?;
+                // home 是 home 根：先经 nemesis-path 转 workspace 再取
+                // sessions 目录（勿把 home 直接当 workspace 传入）。
+                std::sync::Arc::new(nemesis_agent::session::SessionStore::new_with_storage(
+                    nemesis_path::resolve_sessions_dir_in_workspace(&nemesis_path::workspace_dir(
+                        Path::new(home),
+                    )),
+                ))
+            }
+        };
         // Store lookups key on the RAW session key; the ledger record carries
         // it (the request `session` param is the sanitized file stem).
         let store_key = if rec.session_key.is_empty() {
@@ -1356,7 +1363,11 @@ impl LogsHandler {
             rec.session_key.clone()
         };
 
-        let request_id_str = dir.file_name().and_then(|n| n.to_str()).unwrap_or("").to_string();
+        let request_id_str = dir
+            .file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or("")
+            .to_string();
         let base = serde_json::json!({
             "session": session,
             "round": round,
@@ -1365,12 +1376,7 @@ impl LogsHandler {
         let obj = base.as_object().expect("base is an object").clone();
 
         match nemesis_agent::replay::verify_session_round_in(
-            &store,
-            &ledger,
-            &store_key,
-            round,
-            trace_id,
-            &recorded,
+            &store, &ledger, &store_key, round, trace_id, &recorded,
         ) {
             Ok(nemesis_agent::replay::ReplayCheck::ByteExact) => {
                 let mut o = obj;
@@ -1386,9 +1392,12 @@ impl LogsHandler {
                 o.insert("verdict".into(), serde_json::json!("degraded_subsequence"));
                 o.insert("note".into(), serde_json::json!(note));
                 if let Err(ref msg) = verdict {
-                    o.insert("first_diff".into(), serde_json::json!({
-                        "index": 0, "kind": "subsequence", "detail": msg,
-                    }));
+                    o.insert(
+                        "first_diff".into(),
+                        serde_json::json!({
+                            "index": 0, "kind": "subsequence", "detail": msg,
+                        }),
+                    );
                 }
                 Ok(Some(serde_json::Value::Object(o)))
             }
@@ -1396,9 +1405,10 @@ impl LogsHandler {
                 let mut o = obj;
                 o.insert("ok".into(), serde_json::json!(false));
                 o.insert("verdict".into(), serde_json::json!("unavailable"));
-                o.insert("note".into(), serde_json::json!(
-                    "台账存在，但所需历史已被裁剪，无法逐字节重放（不伪造）"
-                ));
+                o.insert(
+                    "note".into(),
+                    serde_json::json!("台账存在，但所需历史已被裁剪，无法逐字节重放（不伪造）"),
+                );
                 o.insert("needed".into(), serde_json::json!(needed));
                 o.insert("available".into(), serde_json::json!(available));
                 Ok(Some(serde_json::Value::Object(o)))
@@ -1407,11 +1417,14 @@ impl LogsHandler {
                 let mut o = obj;
                 o.insert("ok".into(), serde_json::json!(false));
                 o.insert("verdict".into(), serde_json::json!("mismatch"));
-                o.insert("first_diff".into(), serde_json::json!({
-                    "index": diff.index,
-                    "kind": diff.kind,
-                    "detail": diff.detail,
-                }));
+                o.insert(
+                    "first_diff".into(),
+                    serde_json::json!({
+                        "index": diff.index,
+                        "kind": diff.kind,
+                        "detail": diff.detail,
+                    }),
+                );
                 Ok(Some(serde_json::Value::Object(o)))
             }
         }
@@ -1422,9 +1435,10 @@ impl LogsHandler {
     /// 迁回 workspace，U4 设计指定位置；restrict_to_workspace 内 agent 可回读）。
     fn spill_root_for(ctx: &RequestContext) -> Option<PathBuf> {
         if let Some(al) = ctx.state.agent_loop.read().as_ref()
-            && let Some(root) = al.spill_root_path() {
-                return Some(root);
-            }
+            && let Some(root) = al.spill_root_path()
+        {
+            return Some(root);
+        }
         let home = crate::handlers::require_home(ctx).ok()?;
         Some(nemesis_path::resolve_spill_dir_in_workspace(
             &nemesis_path::workspace_dir(Path::new(home)),
@@ -1509,48 +1523,54 @@ fn build_request_entry(dir: &Path, id: &str, ts: &str, _suffix: &str) -> serde_j
             }
         } else if ftype == "AI.Request.raw.json" {
             if let Ok(content) = std::fs::read_to_string(path)
-                && let Ok(envelope) = serde_json::from_str::<serde_json::Value>(&content) {
-                    if model.is_empty() {
-                        model = envelope
-                            .get("body")
-                            .and_then(|b| b.get("model"))
-                            .and_then(|v| v.as_str())
-                            .unwrap_or("")
-                            .to_string();
-                    }
-                    if let Some(r) = envelope.get("round").and_then(|v| v.as_u64())
-                        && (r as usize) > max_round {
-                            max_round = r as usize;
-                        }
+                && let Ok(envelope) = serde_json::from_str::<serde_json::Value>(&content)
+            {
+                if model.is_empty() {
+                    model = envelope
+                        .get("body")
+                        .and_then(|b| b.get("model"))
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("")
+                        .to_string();
                 }
+                if let Some(r) = envelope.get("round").and_then(|v| v.as_u64())
+                    && (r as usize) > max_round
+                {
+                    max_round = r as usize;
+                }
+            }
         } else if ftype == "AI.Response.raw.json" {
             if let Ok(content) = std::fs::read_to_string(path)
-                && let Ok(envelope) = serde_json::from_str::<serde_json::Value>(&content) {
-                    if let Some(d) = envelope.get("duration_ms").and_then(|v| v.as_u64()) {
-                        total_duration_ms = total_duration_ms.saturating_add(d);
-                    }
-                    let tool_count = envelope
-                        .get("body")
-                        .and_then(|b| b.get("choices"))
-                        .and_then(|c| c.get(0))
-                        .and_then(|c| c.get("message"))
-                        .and_then(|m| m.get("tool_calls"))
-                        .and_then(|t| t.as_array())
-                        .map(|a| a.len())
-                        .unwrap_or(0);
-                    total_tool_calls += tool_count;
+                && let Ok(envelope) = serde_json::from_str::<serde_json::Value>(&content)
+            {
+                if let Some(d) = envelope.get("duration_ms").and_then(|v| v.as_u64()) {
+                    total_duration_ms = total_duration_ms.saturating_add(d);
                 }
-        } else if ftype == "response.md"
-            && let Ok(content) = std::fs::read_to_string(path) {
-                if let Some(d) = extract_md_header(&content, "Total Duration")
-                    && let Some(ms) = parse_duration_seconds(&d) {
-                        final_duration_ms = ms;
-                    }
-                if let Some(r) = extract_md_header(&content, "LLM Rounds")
-                    && let Ok(n) = r.parse::<usize>() {
-                        final_rounds = n;
-                    }
+                let tool_count = envelope
+                    .get("body")
+                    .and_then(|b| b.get("choices"))
+                    .and_then(|c| c.get(0))
+                    .and_then(|c| c.get("message"))
+                    .and_then(|m| m.get("tool_calls"))
+                    .and_then(|t| t.as_array())
+                    .map(|a| a.len())
+                    .unwrap_or(0);
+                total_tool_calls += tool_count;
             }
+        } else if ftype == "response.md"
+            && let Ok(content) = std::fs::read_to_string(path)
+        {
+            if let Some(d) = extract_md_header(&content, "Total Duration")
+                && let Some(ms) = parse_duration_seconds(&d)
+            {
+                final_duration_ms = ms;
+            }
+            if let Some(r) = extract_md_header(&content, "LLM Rounds")
+                && let Ok(n) = r.parse::<usize>()
+            {
+                final_rounds = n;
+            }
+        }
     }
 
     // Prefer the final-response.md Total Duration (covers all rounds including
@@ -1608,33 +1628,36 @@ fn build_cluster_task_entry(
             }
         } else if ftype == "AI.Response.raw.json" {
             if let Ok(content) = std::fs::read_to_string(path)
-                && let Ok(envelope) = serde_json::from_str::<serde_json::Value>(&content) {
-                    if let Some(d) = envelope.get("duration_ms").and_then(|v| v.as_u64()) {
-                        total_duration_ms = total_duration_ms.saturating_add(d);
-                    }
-                    let tool_count = envelope
-                        .get("body")
-                        .and_then(|b| b.get("choices"))
-                        .and_then(|c| c.get(0))
-                        .and_then(|c| c.get("message"))
-                        .and_then(|m| m.get("tool_calls"))
-                        .and_then(|t| t.as_array())
-                        .map(|a| a.len())
-                        .unwrap_or(0);
-                    total_tool_calls += tool_count;
+                && let Ok(envelope) = serde_json::from_str::<serde_json::Value>(&content)
+            {
+                if let Some(d) = envelope.get("duration_ms").and_then(|v| v.as_u64()) {
+                    total_duration_ms = total_duration_ms.saturating_add(d);
                 }
+                let tool_count = envelope
+                    .get("body")
+                    .and_then(|b| b.get("choices"))
+                    .and_then(|c| c.get(0))
+                    .and_then(|c| c.get("message"))
+                    .and_then(|m| m.get("tool_calls"))
+                    .and_then(|t| t.as_array())
+                    .map(|a| a.len())
+                    .unwrap_or(0);
+                total_tool_calls += tool_count;
+            }
         } else if ftype == "Local.md" {
             if let Ok(content) = std::fs::read_to_string(path)
-                && content.contains("### Error") {
-                    has_error = true;
-                }
+                && content.contains("### Error")
+            {
+                has_error = true;
+            }
             last_was_response = false;
         } else if ftype == "response.md" {
             if let Ok(content) = std::fs::read_to_string(path)
                 && let Some(d) = extract_md_header(&content, "Total Duration")
-                    && let Some(ms) = parse_duration_seconds(&d) {
-                        final_duration_ms = ms;
-                    }
+                && let Some(ms) = parse_duration_seconds(&d)
+            {
+                final_duration_ms = ms;
+            }
             last_was_response = true;
         }
     }

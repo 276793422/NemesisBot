@@ -365,7 +365,9 @@ impl CronService {
         channel: Option<&str>,
         to: Option<&str>,
     ) -> Result<CronJob, String> {
-        self.add_job_ext(name, schedule, message, deliver, channel, to, None, None, true)
+        self.add_job_ext(
+            name, schedule, message, deliver, channel, to, None, None, true,
+        )
     }
 
     /// Add a new job with full control over `session_key`, `max_rounds` and
@@ -777,9 +779,13 @@ impl CronService {
         }
         // Every N minutes
         if let Some(step) = minute.strip_prefix("*/")
-            && hour == "*" && day == "*" && month == "*" && weekday == "*" {
-                return format!("Every {} minutes", step);
-            }
+            && hour == "*"
+            && day == "*"
+            && month == "*"
+            && weekday == "*"
+        {
+            return format!("Every {} minutes", step);
+        }
         // Daily at specific time
         if minute != "*" && hour != "*" && day == "*" && month == "*" && weekday == "*" {
             return format!("Daily at {}:{}", hour, minute);
@@ -824,10 +830,7 @@ impl CronService {
                 // when the service arms (compute_next_run drops it because
                 // at_ms <= now; that drop is correct only for a fully
                 // restarted schedule, not a gated one).
-                if disarmed
-                    && job.state.next_run_at_ms.is_none()
-                    && job.schedule.kind == "at"
-                {
+                if disarmed && job.state.next_run_at_ms.is_none() && job.schedule.kind == "at" {
                     job.state.next_run_at_ms = job.schedule.at_ms;
                 }
             }

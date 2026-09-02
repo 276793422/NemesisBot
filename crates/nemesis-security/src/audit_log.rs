@@ -134,23 +134,24 @@ impl AuditLogger {
 
         // Write to file if enabled
         if self.config.enabled
-            && let Some(ref mut file) = self.log_file {
-                let timestamp = Local::now().format("%Y-%m-%d %H:%M:%S%.3f").to_string();
-                let log_line = format!(
-                    "{} | {} | {} | {} | {} | {} | {} | {} | {} | {}\n",
-                    timestamp,
-                    event_id,
-                    decision,
-                    operation,
-                    user,
-                    source,
-                    sanitize_target(target),
-                    danger_level,
-                    sanitize_reason(reason),
-                    policy_rule,
-                );
-                let _ = file.write_all(log_line.as_bytes());
-            }
+            && let Some(ref mut file) = self.log_file
+        {
+            let timestamp = Local::now().format("%Y-%m-%d %H:%M:%S%.3f").to_string();
+            let log_line = format!(
+                "{} | {} | {} | {} | {} | {} | {} | {} | {} | {}\n",
+                timestamp,
+                event_id,
+                decision,
+                operation,
+                user,
+                source,
+                sanitize_target(target),
+                danger_level,
+                sanitize_reason(reason),
+                policy_rule,
+            );
+            let _ = file.write_all(log_line.as_bytes());
+        }
     }
 
     /// Get the current log file path.
@@ -199,15 +200,13 @@ impl AuditLogger {
 
 /// Sanitize a target string for log output.
 fn sanitize_target(target: &str) -> String {
-    let s = target
-        .replace(['\n', '\r', '\t'], " ");
+    let s = target.replace(['\n', '\r', '\t'], " ");
     utils::truncate(&s, 200)
 }
 
 /// Sanitize a reason string for log output.
 fn sanitize_reason(reason: &str) -> String {
-    let s = reason
-        .replace(['\n', '\r', '\t'], " ");
+    let s = reason.replace(['\n', '\r', '\t'], " ");
     utils::truncate(&s, 100)
 }
 

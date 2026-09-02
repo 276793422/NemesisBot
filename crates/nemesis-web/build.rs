@@ -100,7 +100,12 @@ fn write_zip(out_path: &Path, files: &[(String, PathBuf)]) {
 
 fn main() {
     let manifest_dir = PathBuf::from(std::env::var("CARGO_MANIFEST_DIR").unwrap());
-    let sdk_dir = manifest_dir.join("..").join("..").join("test-tools").join("python").join("sdk");
+    let sdk_dir = manifest_dir
+        .join("..")
+        .join("..")
+        .join("test-tools")
+        .join("python")
+        .join("sdk");
     let sdk_dir = sdk_dir.canonicalize().expect(
         "test-tools/python/sdk not found — the SDK source tree is required to build nemesis-web",
     );
@@ -108,8 +113,8 @@ fn main() {
     // Rebuild when any SDK file changes (directory-level tracking).
     println!("cargo:rerun-if-changed={}", sdk_dir.display());
 
-    let pyproject = fs::read_to_string(sdk_dir.join("pyproject.toml"))
-        .expect("read SDK pyproject.toml");
+    let pyproject =
+        fs::read_to_string(sdk_dir.join("pyproject.toml")).expect("read SDK pyproject.toml");
     let version = parse_version(&pyproject);
     println!("cargo:rustc-env=NEMESIS_SDK_VERSION={version}");
 

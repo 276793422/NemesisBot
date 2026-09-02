@@ -53,9 +53,9 @@ async fn cluster_agent_resolves_tier_and_spill_root_from_config() {
     let shared = Arc::new(SharedResources {
         home: home.clone(),
         agent_outbound_tx: outbound_tx,
-        cron_service: Arc::new(std::sync::Mutex::new(nemesis_cron::service::CronService::new(
-            "",
-        ))),
+        cron_service: Arc::new(std::sync::Mutex::new(
+            nemesis_cron::service::CronService::new(""),
+        )),
         mcp_config_path: home.join("nonexistent-mcp.json"),
         ..Default::default()
     });
@@ -142,7 +142,10 @@ fn cluster_prompt_skips_blank_files_and_single_file_works() {
     std::fs::create_dir_all(&dir2).unwrap();
     std::fs::write(dir2.join("IDENTITY.md"), "  \n \n").unwrap();
     std::fs::write(dir2.join("SOUL.md"), "").unwrap();
-    assert!(load_cluster_system_prompt(tmp2.path()).is_none(), "空白文件跳过 → None");
+    assert!(
+        load_cluster_system_prompt(tmp2.path()).is_none(),
+        "空白文件跳过 → None"
+    );
 }
 
 // =========================================================================
@@ -168,9 +171,10 @@ fn write_model_config(home: &std::path::Path, extra: serde_json::Value) {
             // 顶层键覆盖；"agents" 段做两层浅合并（agents.defaults.* 不整段替换，
             // 否则会把 write_model_config 预置的 llm 丢掉）。
             if k == "agents" {
-                if let (Some(dst), Some(src)) =
-                    (base.get_mut("agents").and_then(|a| a.as_object_mut()), v.as_object())
-                {
+                if let (Some(dst), Some(src)) = (
+                    base.get_mut("agents").and_then(|a| a.as_object_mut()),
+                    v.as_object(),
+                ) {
                     for (dk, dv) in src {
                         if dk == "defaults" {
                             if let (Some(ddst), Some(dsrc)) = (
@@ -216,9 +220,9 @@ fn make_shared(home: &std::path::Path) -> Arc<SharedResources> {
     Arc::new(SharedResources {
         home: home.to_path_buf(),
         agent_outbound_tx: outbound_tx,
-        cron_service: Arc::new(std::sync::Mutex::new(nemesis_cron::service::CronService::new(
-            "",
-        ))),
+        cron_service: Arc::new(std::sync::Mutex::new(
+            nemesis_cron::service::CronService::new(""),
+        )),
         mcp_config_path: home.join("nonexistent-mcp.json"),
         config_store,
         ..Default::default()
@@ -322,9 +326,9 @@ async fn build_agent_loop_with_mcp_enabled_and_config_file() {
     let shared = Arc::new(SharedResources {
         home: home.clone(),
         agent_outbound_tx: outbound_tx,
-        cron_service: Arc::new(std::sync::Mutex::new(nemesis_cron::service::CronService::new(
-            "",
-        ))),
+        cron_service: Arc::new(std::sync::Mutex::new(
+            nemesis_cron::service::CronService::new(""),
+        )),
         mcp_config_path: cfg_dir.join("config.mcp.json"),
         mcp_enabled: true,
         ..Default::default()
@@ -346,7 +350,10 @@ async fn build_agent_loop_with_executor_layer1_wraps_move_tools() {
     // 必须出 Some」：它失守即意味着有人把注入改回只写磁盘（替换循环随之静默失活）。
     let tmp = tempfile::TempDir::new().unwrap();
     let home = tmp.path().to_path_buf();
-    write_model_config(&home, serde_json::json!({ "executor": { "enabled": true } }));
+    write_model_config(
+        &home,
+        serde_json::json!({ "executor": { "enabled": true } }),
+    );
 
     let shared = make_shared(&home);
     let channel = crate::exec_world::build_executor_channel(
@@ -361,9 +368,11 @@ async fn build_agent_loop_with_executor_layer1_wraps_move_tools() {
          ConfigStore the factory reads — Layer 1 replacement loop would be skipped"
     );
 
-    let built =
-        build_agent_loop(&shared).expect("executor Layer 1 config must build");
-    assert!(built.tool_count() > 0, "MOVE tools replaced, count unchanged");
+    let built = build_agent_loop(&shared).expect("executor Layer 1 config must build");
+    assert!(
+        built.tool_count() > 0,
+        "MOVE tools replaced, count unchanged"
+    );
 }
 
 #[test]
@@ -483,10 +492,7 @@ mod r10 {
 
     /// 集群工厂种子：过期 cluster session json + 过期 spill（共享根）。
     fn seed_aged_cluster_files(home: &std::path::Path) {
-        let sess_dir = home
-            .join("workspace")
-            .join("sessions")
-            .join("cluster");
+        let sess_dir = home.join("workspace").join("sessions").join("cluster");
         std::fs::create_dir_all(&sess_dir).unwrap();
         std::fs::write(
             sess_dir.join("r10-aged-cluster.json"),
@@ -562,8 +568,7 @@ mod r10 {
         seed_auto_inject(&home);
 
         let shared = make_shared(&home);
-        let built =
-            build_agent_loop(&shared).expect("seeded config must build offline");
+        let built = build_agent_loop(&shared).expect("seeded config must build offline");
         assert!(built.tool_count() > 0);
 
         // 同步清扫的确定性证据：过期 spill 文件与过期 Main session 已被
@@ -611,14 +616,29 @@ mod r10 {
 
         // 离线 RPC 工具装配：call_fn 直接返回 Err（不触网），足以命中
         // set_rpc_call_fn + registered info 臂。
-        fn r10_call_fn()
-        -> Option<Arc<dyn Fn(&str, &str, serde_json::Value) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<serde_json::Value, String>> + Send>> + Send + Sync>>
-        {
+        fn r10_call_fn() -> Option<
+            Arc<
+                dyn Fn(
+                        &str,
+                        &str,
+                        serde_json::Value,
+                    ) -> std::pin::Pin<
+                        Box<
+                            dyn std::future::Future<Output = Result<serde_json::Value, String>>
+                                + Send,
+                        >,
+                    > + Send
+                    + Sync,
+            >,
+        > {
             Some(Arc::new(
                 |_peer: &str, _method: &str, _args: serde_json::Value| {
                     Box::pin(async { Err("r10 offline stub".to_string()) })
                         as std::pin::Pin<
-                            Box<dyn std::future::Future<Output = Result<serde_json::Value, String>> + Send>,
+                            Box<
+                                dyn std::future::Future<Output = Result<serde_json::Value, String>>
+                                    + Send,
+                            >,
                         >
                 },
             ))
@@ -695,12 +715,8 @@ mod r10 {
         let store = nemesis_config::ConfigStore::load(&home.join("config.json"))
             .expect("valid fixture config");
         let workspace = home.join("workspace");
-        let channel = crate::exec_world::build_executor_channel(
-            &home,
-            &workspace,
-            store.handle(),
-        )
-        .expect("channel build must not error on unready sandbox");
+        let channel = crate::exec_world::build_executor_channel(&home, &workspace, store.handle())
+            .expect("channel build must not error on unready sandbox");
         // 沙盒未就绪 ≠ 失败：降级为 stdio（Layer 1）通道仍然给出。
         assert!(
             channel.is_some(),

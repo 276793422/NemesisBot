@@ -172,34 +172,35 @@ impl SkillInstaller {
         // Security check on installed content.
         let skill_md_path = skill_dir.join("SKILL.md");
         if skill_md_path.exists()
-            && let Ok(content) = std::fs::read_to_string(&skill_md_path) {
-                let check_result = check_skill_security(&content, slug, "");
-                {
-                    let mut last = self.last_security_check.lock().unwrap();
-                    *last = Some(check_result.clone());
-                }
-
-                if check_result.blocked {
-                    let _ = std::fs::remove_dir_all(&skill_dir);
-                    return Err(NemesisError::Security(format!(
-                        "skill '{}' blocked by security check: {}",
-                        slug, check_result.block_reason
-                    )));
-                }
-
-                if !check_result.lint_result.passed {
-                    warn!(
-                        "Security warnings for '{}' (score: {:.0}/100, {} issues)",
-                        slug,
-                        check_result.lint_result.score * 100.0,
-                        check_result.lint_result.warnings.len()
-                    );
-                }
-
-                if let Some(ref quality) = check_result.quality_score {
-                    debug!("Quality score for '{}': {:.0}/100", slug, quality.overall);
-                }
+            && let Ok(content) = std::fs::read_to_string(&skill_md_path)
+        {
+            let check_result = check_skill_security(&content, slug, "");
+            {
+                let mut last = self.last_security_check.lock().unwrap();
+                *last = Some(check_result.clone());
             }
+
+            if check_result.blocked {
+                let _ = std::fs::remove_dir_all(&skill_dir);
+                return Err(NemesisError::Security(format!(
+                    "skill '{}' blocked by security check: {}",
+                    slug, check_result.block_reason
+                )));
+            }
+
+            if !check_result.lint_result.passed {
+                warn!(
+                    "Security warnings for '{}' (score: {:.0}/100, {} issues)",
+                    slug,
+                    check_result.lint_result.score * 100.0,
+                    check_result.lint_result.warnings.len()
+                );
+            }
+
+            if let Some(ref quality) = check_result.quality_score {
+                debug!("Quality score for '{}': {:.0}/100", slug, quality.overall);
+            }
+        }
 
         // Write origin tracking.
         if let Err(e) = self.write_origin_tracking(
@@ -303,12 +304,13 @@ impl SkillInstaller {
         }
 
         if let Some(ref quality) = check_result.quality_score
-            && quality.overall < 40.0 {
-                warn!(
-                    "skill has low quality score (score: {:.0}/100)",
-                    quality.overall
-                );
-            }
+            && quality.overall < 40.0
+        {
+            warn!(
+                "skill has low quality score (score: {:.0}/100)",
+                quality.overall
+            );
+        }
 
         debug!("Installed skill '{}' from GitHub", skill_name);
         Ok(())
@@ -429,8 +431,7 @@ impl SkillInstaller {
             installed_at: chrono::Local::now().timestamp(),
         };
 
-        let data =
-            serde_json::to_string_pretty(&origin).map_err(NemesisError::Serialization)?;
+        let data = serde_json::to_string_pretty(&origin).map_err(NemesisError::Serialization)?;
 
         let origin_path = Path::new(skill_dir).join(".skill-origin.json");
         std::fs::write(&origin_path, data).map_err(NemesisError::Io)?;

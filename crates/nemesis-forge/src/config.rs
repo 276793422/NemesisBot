@@ -12,8 +12,7 @@ use serde::{Deserialize, Serialize};
 use std::path::Path;
 
 /// Top-level forge configuration.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[derive(Default)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct ForgeConfig {
     /// Whether the forge system is enabled (main switch).
     #[serde(default)]
@@ -47,7 +46,6 @@ pub struct ForgeConfig {
     #[serde(default)]
     pub learning: LearningConfig,
 }
-
 
 /// Collection subsystem configuration.
 #[derive(Debug, Clone, Serialize, Deserialize)]

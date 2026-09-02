@@ -1,18 +1,23 @@
 //! CLI command modules.
 
 pub mod agent;
-#[cfg(feature = "board")]
-pub mod autopilot;
 #[cfg(feature = "auth")]
 pub mod auth;
+#[cfg(feature = "board")]
+pub mod autopilot;
 pub mod channel;
-pub mod credentials;
 #[cfg(feature = "cluster")]
 pub mod cluster;
 pub mod cors;
+pub mod credentials;
 pub mod cron;
 pub mod dashboard;
 pub mod estop;
+#[cfg(feature = "eval")]
+pub mod eval;
+/// `eval rules` 子命令组（规则管理；纯文件操作跨平台）。
+#[cfg(feature = "eval")]
+pub mod eval_rules;
 #[cfg(feature = "forge")]
 pub mod forge;
 pub mod gateway;
@@ -27,18 +32,13 @@ pub mod memory;
 pub mod migrate;
 pub mod model;
 pub mod persona;
-#[cfg(feature = "eval")]
-pub mod eval;
-/// `eval rules` 子命令组（规则管理；纯文件操作跨平台）。
-#[cfg(feature = "eval")]
-pub mod eval_rules;
 #[cfg(feature = "sandbox")]
 pub mod sandbox;
 #[cfg(feature = "security")]
 pub mod scanner;
-pub mod session;
 #[cfg(feature = "security")]
 pub mod security;
+pub mod session;
 pub mod shutdown;
 pub mod skills;
 pub mod status;

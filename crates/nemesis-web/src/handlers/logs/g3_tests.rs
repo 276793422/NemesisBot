@@ -65,7 +65,13 @@ fn make_ctx(dir: &tempfile::TempDir) -> RequestContext {
 }
 
 /// 造一个 spill 文件并把 mtime 拨回 `age_secs` 前（std File::set_modified）。
-fn make_spill_file(root: &std::path::Path, session: &str, name: &str, age_secs: u64, content: &str) {
+fn make_spill_file(
+    root: &std::path::Path,
+    session: &str,
+    name: &str,
+    age_secs: u64,
+    content: &str,
+) {
     let dir = root.join(session);
     std::fs::create_dir_all(&dir).unwrap();
     let path = dir.join(name);

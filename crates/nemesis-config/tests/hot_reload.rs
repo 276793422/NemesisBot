@@ -1,7 +1,7 @@
 //! Tests for `HotReloader`（热重载统一收编，2026-08-29）——经公开 API 验证
 //! mtime 变更重载/未变 no-op/缺失文件与垃圾内容兜底。
 
-use nemesis_config::{load_commands_config, CommandsConfig, HotReloader};
+use nemesis_config::{CommandsConfig, HotReloader, load_commands_config};
 use std::path::Path;
 use std::thread::sleep;
 use std::time::Duration;

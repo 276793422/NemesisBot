@@ -412,9 +412,10 @@ fn test_enable_channel_via_pointer_mut() {
     let data = std::fs::read_to_string(&cfg).unwrap();
     let mut config: serde_json::Value = serde_json::from_str(&data).unwrap();
     if let Some(ch) = config.pointer_mut("/channels/telegram")
-        && let Some(obj) = ch.as_object_mut() {
-            obj.insert("enabled".to_string(), serde_json::Value::Bool(true));
-        }
+        && let Some(obj) = ch.as_object_mut()
+    {
+        obj.insert("enabled".to_string(), serde_json::Value::Bool(true));
+    }
     std::fs::write(&cfg, serde_json::to_string_pretty(&config).unwrap()).unwrap();
 
     let loaded: serde_json::Value =
@@ -431,9 +432,10 @@ fn test_disable_channel_via_pointer_mut() {
     let data = std::fs::read_to_string(&cfg).unwrap();
     let mut config: serde_json::Value = serde_json::from_str(&data).unwrap();
     if let Some(ch) = config.pointer_mut("/channels/web")
-        && let Some(obj) = ch.as_object_mut() {
-            obj.insert("enabled".to_string(), serde_json::Value::Bool(false));
-        }
+        && let Some(obj) = ch.as_object_mut()
+    {
+        obj.insert("enabled".to_string(), serde_json::Value::Bool(false));
+    }
     std::fs::write(&cfg, serde_json::to_string_pretty(&config).unwrap()).unwrap();
 
     let loaded: serde_json::Value =
@@ -885,9 +887,10 @@ fn test_enable_channel_with_existing_config_preserves_fields() {
     let data = std::fs::read_to_string(&cfg).unwrap();
     let mut config: serde_json::Value = serde_json::from_str(&data).unwrap();
     if let Some(ch) = config.pointer_mut("/channels/telegram")
-        && let Some(obj) = ch.as_object_mut() {
-            obj.insert("enabled".to_string(), serde_json::Value::Bool(true));
-        }
+        && let Some(obj) = ch.as_object_mut()
+    {
+        obj.insert("enabled".to_string(), serde_json::Value::Bool(true));
+    }
     std::fs::write(&cfg, serde_json::to_string_pretty(&config).unwrap()).unwrap();
 
     let loaded: serde_json::Value =
@@ -907,9 +910,10 @@ fn test_disable_channel_preserves_other_keys() {
     let data = std::fs::read_to_string(&cfg).unwrap();
     let mut config: serde_json::Value = serde_json::from_str(&data).unwrap();
     if let Some(ch) = config.pointer_mut("/channels/web")
-        && let Some(obj) = ch.as_object_mut() {
-            obj.insert("enabled".to_string(), serde_json::Value::Bool(false));
-        }
+        && let Some(obj) = ch.as_object_mut()
+    {
+        obj.insert("enabled".to_string(), serde_json::Value::Bool(false));
+    }
     std::fs::write(&cfg, serde_json::to_string_pretty(&config).unwrap()).unwrap();
 
     let loaded: serde_json::Value =
@@ -1254,7 +1258,13 @@ fn test_run_enable_known_channel_existing_entry() {
         &th.home,
         &serde_json::json!({ "channels": { "telegram": { "enabled": false, "token": "t" } } }),
     );
-    run(ChannelAction::Enable { name: "telegram".into() }, false).unwrap();
+    run(
+        ChannelAction::Enable {
+            name: "telegram".into(),
+        },
+        false,
+    )
+    .unwrap();
     let ch = &read_main_cfg(&th.home)["channels"]["telegram"];
     assert_eq!(ch["enabled"], serde_json::json!(true));
     assert_eq!(ch["token"], serde_json::json!("t"));
@@ -1266,7 +1276,13 @@ fn test_run_enable_known_channel_new_entry() {
     let th = temp_home_env();
     // channels 对象存在但没有该条目 → else 分支插入
     write_main_cfg(&th.home, &serde_json::json!({ "channels": {} }));
-    run(ChannelAction::Enable { name: "discord".into() }, false).unwrap();
+    run(
+        ChannelAction::Enable {
+            name: "discord".into(),
+        },
+        false,
+    )
+    .unwrap();
     assert_eq!(
         read_main_cfg(&th.home)["channels"]["discord"]["enabled"],
         serde_json::json!(true)
@@ -1278,7 +1294,13 @@ fn test_run_enable_unknown_channel() {
     let _guard = crate::GLOBAL_STATE_LOCK.lock().unwrap();
     let th = temp_home_env();
     write_main_cfg(&th.home, &serde_json::json!({ "channels": {} }));
-    run(ChannelAction::Enable { name: "nope".into() }, false).unwrap();
+    run(
+        ChannelAction::Enable {
+            name: "nope".into(),
+        },
+        false,
+    )
+    .unwrap();
     assert!(read_main_cfg(&th.home)["channels"].get("nope").is_none());
 }
 
@@ -1310,7 +1332,13 @@ fn test_run_disable_unknown_and_no_config() {
     let _guard = crate::GLOBAL_STATE_LOCK.lock().unwrap();
     let th = temp_home_env();
     write_main_cfg(&th.home, &serde_json::json!({ "channels": {} }));
-    run(ChannelAction::Disable { name: "nope".into() }, false).unwrap();
+    run(
+        ChannelAction::Disable {
+            name: "nope".into(),
+        },
+        false,
+    )
+    .unwrap();
     // 无 config → Ok 且不创建
     let _th2 = temp_home_env();
     run(ChannelAction::Disable { name: "web".into() }, false).unwrap();
@@ -1360,7 +1388,9 @@ fn test_run_status_websocket_with_and_without_auth() {
         }),
     );
     run(
-        ChannelAction::Status { name: "websocket".into() },
+        ChannelAction::Status {
+            name: "websocket".into(),
+        },
         false,
     )
     .unwrap();
@@ -1369,7 +1399,9 @@ fn test_run_status_websocket_with_and_without_auth() {
         &serde_json::json!({ "channels": { "websocket": { "enabled": false } } }),
     );
     run(
-        ChannelAction::Status { name: "websocket".into() },
+        ChannelAction::Status {
+            name: "websocket".into(),
+        },
         false,
     )
     .unwrap();
@@ -1386,7 +1418,9 @@ fn test_run_status_generic_channel_extra_fields() {
         }),
     );
     run(
-        ChannelAction::Status { name: "telegram".into() },
+        ChannelAction::Status {
+            name: "telegram".into(),
+        },
         false,
     )
     .unwrap();
@@ -1398,7 +1432,9 @@ fn test_run_status_not_configured_and_no_config() {
     let th = temp_home_env();
     write_main_cfg(&th.home, &serde_json::json!({ "channels": {} }));
     run(
-        ChannelAction::Status { name: "discord".into() },
+        ChannelAction::Status {
+            name: "discord".into(),
+        },
         false,
     )
     .unwrap();
@@ -1418,7 +1454,9 @@ fn test_run_web_auth_interactive_eof_empty_token() {
     write_main_cfg(&th.home, &serde_json::json!({ "channels": { "web": {} } }));
     // stdin EOF → token 空 → 报错提前返回，不写配置
     run(
-        ChannelAction::Web { action: WebAction::Auth },
+        ChannelAction::Web {
+            action: WebAction::Auth,
+        },
         false,
     )
     .unwrap();
@@ -1436,7 +1474,9 @@ fn test_run_web_auth_set_normal_token() {
     write_main_cfg(&th.home, &serde_json::json!({ "channels": { "web": {} } }));
     run(
         ChannelAction::Web {
-            action: WebAction::AuthSet { token: "longenoughtoken".into() },
+            action: WebAction::AuthSet {
+                token: "longenoughtoken".into(),
+            },
         },
         false,
     )
@@ -1455,7 +1495,9 @@ fn test_run_web_auth_set_short_and_empty() {
     // 短 token → 警告但仍然写入
     run(
         ChannelAction::Web {
-            action: WebAction::AuthSet { token: "abc".into() },
+            action: WebAction::AuthSet {
+                token: "abc".into(),
+            },
         },
         false,
     )
@@ -1467,7 +1509,9 @@ fn test_run_web_auth_set_short_and_empty() {
     // 空 token → 报错提前返回（覆盖 4 字符以下 "***" 分支前的早退）
     run(
         ChannelAction::Web {
-            action: WebAction::AuthSet { token: String::new() },
+            action: WebAction::AuthSet {
+                token: String::new(),
+            },
         },
         false,
     )
@@ -1483,15 +1527,29 @@ fn test_run_web_auth_get_set_and_unset() {
     let _guard = crate::GLOBAL_STATE_LOCK.lock().unwrap();
     let th = temp_home_env();
     write_main_cfg(&th.home, &serde_json::json!({ "channels": { "web": {} } }));
-    run(ChannelAction::Web { action: WebAction::AuthGet }, false).unwrap();
     run(
         ChannelAction::Web {
-            action: WebAction::AuthSet { token: "my-secret-auth-token-value".into() },
+            action: WebAction::AuthGet,
         },
         false,
     )
     .unwrap();
-    run(ChannelAction::Web { action: WebAction::AuthGet }, false).unwrap();
+    run(
+        ChannelAction::Web {
+            action: WebAction::AuthSet {
+                token: "my-secret-auth-token-value".into(),
+            },
+        },
+        false,
+    )
+    .unwrap();
+    run(
+        ChannelAction::Web {
+            action: WebAction::AuthGet,
+        },
+        false,
+    )
+    .unwrap();
 }
 
 #[test]
@@ -1501,7 +1559,9 @@ fn test_run_web_host_and_port() {
     write_main_cfg(&th.home, &serde_json::json!({ "channels": { "web": {} } }));
     run(
         ChannelAction::Web {
-            action: WebAction::Host { host: "127.0.0.1".into() },
+            action: WebAction::Host {
+                host: "127.0.0.1".into(),
+            },
         },
         false,
     )
@@ -1532,21 +1592,27 @@ fn test_run_web_status_configured_and_not() {
         }),
     );
     run(
-        ChannelAction::Web { action: WebAction::Status },
+        ChannelAction::Web {
+            action: WebAction::Status,
+        },
         false,
     )
     .unwrap();
     // 无 web 条目 → (not configured)
     write_main_cfg(&th.home, &serde_json::json!({ "channels": {} }));
     run(
-        ChannelAction::Web { action: WebAction::Status },
+        ChannelAction::Web {
+            action: WebAction::Status,
+        },
         false,
     )
     .unwrap();
     // 无 config 文件 → No configuration found
     let _th2 = temp_home_env();
     run(
-        ChannelAction::Web { action: WebAction::Status },
+        ChannelAction::Web {
+            action: WebAction::Status,
+        },
         false,
     )
     .unwrap();
@@ -1563,7 +1629,9 @@ fn test_run_web_clear_interactive_eof_cancels() {
     );
     // stdin EOF → 答案非 y → Cancelled，token 保留
     run(
-        ChannelAction::Web { action: WebAction::Clear },
+        ChannelAction::Web {
+            action: WebAction::Clear,
+        },
         false,
     )
     .unwrap();
@@ -1598,7 +1666,9 @@ fn test_run_web_config_full_fields_and_missing() {
         }),
     );
     run(
-        ChannelAction::Web { action: WebAction::Config },
+        ChannelAction::Web {
+            action: WebAction::Config,
+        },
         false,
     )
     .unwrap();
@@ -1608,21 +1678,27 @@ fn test_run_web_config_full_fields_and_missing() {
         &serde_json::json!({ "channels": { "web": { "host": "h" } } }),
     );
     run(
-        ChannelAction::Web { action: WebAction::Config },
+        ChannelAction::Web {
+            action: WebAction::Config,
+        },
         false,
     )
     .unwrap();
     // 无 web 条目
     write_main_cfg(&th.home, &serde_json::json!({ "channels": {} }));
     run(
-        ChannelAction::Web { action: WebAction::Config },
+        ChannelAction::Web {
+            action: WebAction::Config,
+        },
         false,
     )
     .unwrap();
     // 无 config 文件
     let _th2 = temp_home_env();
     run(
-        ChannelAction::Web { action: WebAction::Config },
+        ChannelAction::Web {
+            action: WebAction::Config,
+        },
         false,
     )
     .unwrap();
@@ -1648,7 +1724,9 @@ fn test_run_websocket_setup_interactive_eof_defaults() {
     );
     // 全部提示 EOF → 用现有值；sync 问题答案 "" != "n" → 走同步分支
     run(
-        ChannelAction::WebSocket { action: WebSocketAction::Setup },
+        ChannelAction::WebSocket {
+            action: WebSocketAction::Setup,
+        },
         false,
     )
     .unwrap();
@@ -1657,7 +1735,10 @@ fn test_run_websocket_setup_interactive_eof_defaults() {
         cfg["channels"]["websocket"]["enabled"],
         serde_json::json!(true)
     );
-    assert_eq!(cfg["channels"]["websocket"]["host"], serde_json::json!("10.0.0.5"));
+    assert_eq!(
+        cfg["channels"]["websocket"]["host"],
+        serde_json::json!("10.0.0.5")
+    );
     // 同步到 web：session_id 生成（ws- 前缀）
     let session = cfg["channels"]["web"]["session_id"].as_str().unwrap();
     assert!(session.starts_with("ws-"));
@@ -1671,7 +1752,9 @@ fn test_run_websocket_setup_from_scratch_defaults() {
     // 无已有值 → 默认 127.0.0.1/49001//ws；无 channels 键也能建
     write_main_cfg(&th.home, &serde_json::json!({}));
     run(
-        ChannelAction::WebSocket { action: WebSocketAction::Setup },
+        ChannelAction::WebSocket {
+            action: WebSocketAction::Setup,
+        },
         false,
     )
     .unwrap();
@@ -1680,8 +1763,14 @@ fn test_run_websocket_setup_from_scratch_defaults() {
         cfg["channels"]["websocket"]["host"],
         serde_json::json!("127.0.0.1")
     );
-    assert_eq!(cfg["channels"]["websocket"]["port"], serde_json::json!(49001));
-    assert_eq!(cfg["channels"]["websocket"]["path"], serde_json::json!("/ws"));
+    assert_eq!(
+        cfg["channels"]["websocket"]["port"],
+        serde_json::json!(49001)
+    );
+    assert_eq!(
+        cfg["channels"]["websocket"]["path"],
+        serde_json::json!("/ws")
+    );
 }
 
 #[test]
@@ -1695,21 +1784,27 @@ fn test_run_websocket_config_variants() {
         }),
     );
     run(
-        ChannelAction::WebSocket { action: WebSocketAction::Config },
+        ChannelAction::WebSocket {
+            action: WebSocketAction::Config,
+        },
         false,
     )
     .unwrap();
     // 无 websocket 条目 → (not configured)
     write_main_cfg(&th.home, &serde_json::json!({ "channels": {} }));
     run(
-        ChannelAction::WebSocket { action: WebSocketAction::Config },
+        ChannelAction::WebSocket {
+            action: WebSocketAction::Config,
+        },
         false,
     )
     .unwrap();
     // 无 config 文件 → Ok（无输出）
     let _th2 = temp_home_env();
     run(
-        ChannelAction::WebSocket { action: WebSocketAction::Config },
+        ChannelAction::WebSocket {
+            action: WebSocketAction::Config,
+        },
         false,
     )
     .unwrap();
@@ -1720,7 +1815,10 @@ fn test_run_websocket_config_variants() {
 fn test_run_websocket_set_validations() {
     let _guard = crate::GLOBAL_STATE_LOCK.lock().unwrap();
     let th = temp_home_env();
-    write_main_cfg(&th.home, &serde_json::json!({ "channels": { "websocket": {} } }));
+    write_main_cfg(
+        &th.home,
+        &serde_json::json!({ "channels": { "websocket": {} } }),
+    );
     // 非数字端口 → Err
     let err = run(
         ChannelAction::WebSocket {
@@ -1792,7 +1890,10 @@ fn test_run_websocket_set_validations() {
 fn test_run_websocket_get_set_and_unset() {
     let _guard = crate::GLOBAL_STATE_LOCK.lock().unwrap();
     let th = temp_home_env();
-    write_main_cfg(&th.home, &serde_json::json!({ "channels": { "websocket": {} } }));
+    write_main_cfg(
+        &th.home,
+        &serde_json::json!({ "channels": { "websocket": {} } }),
+    );
     run(
         ChannelAction::WebSocket {
             action: WebSocketAction::Get { key: "host".into() },
@@ -1836,7 +1937,9 @@ fn test_run_external_setup_interactive_eof_defaults() {
         }),
     );
     run(
-        ChannelAction::External { action: ExternalAction::Setup },
+        ChannelAction::External {
+            action: ExternalAction::Setup,
+        },
         false,
     )
     .unwrap();
@@ -1854,7 +1957,9 @@ fn test_run_external_setup_from_scratch_removes_empty() {
     // 无已有值 → input/output 空 → remove（本就没有）；chat_id 默认写入
     write_main_cfg(&th.home, &serde_json::json!({ "channels": {} }));
     run(
-        ChannelAction::External { action: ExternalAction::Setup },
+        ChannelAction::External {
+            action: ExternalAction::Setup,
+        },
         false,
     )
     .unwrap();
@@ -1873,19 +1978,25 @@ fn test_run_external_config_variants() {
         &serde_json::json!({ "channels": { "external": { "enabled": true } } }),
     );
     run(
-        ChannelAction::External { action: ExternalAction::Config },
+        ChannelAction::External {
+            action: ExternalAction::Config,
+        },
         false,
     )
     .unwrap();
     write_main_cfg(&th.home, &serde_json::json!({ "channels": {} }));
     run(
-        ChannelAction::External { action: ExternalAction::Config },
+        ChannelAction::External {
+            action: ExternalAction::Config,
+        },
         false,
     )
     .unwrap();
     let _th2 = temp_home_env();
     run(
-        ChannelAction::External { action: ExternalAction::Config },
+        ChannelAction::External {
+            action: ExternalAction::Config,
+        },
         false,
     )
     .unwrap();
@@ -1899,7 +2010,9 @@ fn test_run_external_test_not_configured() {
     write_main_cfg(&th.home, &serde_json::json!({ "channels": {} }));
     // 两个 exe 都没配 → 提示后提前返回
     run(
-        ChannelAction::External { action: ExternalAction::Test },
+        ChannelAction::External {
+            action: ExternalAction::Test,
+        },
         false,
     )
     .unwrap();
@@ -1923,7 +2036,9 @@ fn test_run_external_test_not_found_and_failed_spawn() {
         }),
     );
     run(
-        ChannelAction::External { action: ExternalAction::Test },
+        ChannelAction::External {
+            action: ExternalAction::Test,
+        },
         false,
     )
     .unwrap();
@@ -1933,7 +2048,10 @@ fn test_run_external_test_not_found_and_failed_spawn() {
 fn test_run_external_set_and_get() {
     let _guard = crate::GLOBAL_STATE_LOCK.lock().unwrap();
     let th = temp_home_env();
-    write_main_cfg(&th.home, &serde_json::json!({ "channels": { "external": {} } }));
+    write_main_cfg(
+        &th.home,
+        &serde_json::json!({ "channels": { "external": {} } }),
+    );
     run(
         ChannelAction::External {
             action: ExternalAction::Set {
@@ -1950,14 +2068,18 @@ fn test_run_external_set_and_get() {
     );
     run(
         ChannelAction::External {
-            action: ExternalAction::Get { key: "input_exe".into() },
+            action: ExternalAction::Get {
+                key: "input_exe".into(),
+            },
         },
         false,
     )
     .unwrap();
     run(
         ChannelAction::External {
-            action: ExternalAction::Get { key: "ghost".into() },
+            action: ExternalAction::Get {
+                key: "ghost".into(),
+            },
         },
         false,
     )
@@ -1988,7 +2110,13 @@ mod wave_b {
         let _guard = crate::GLOBAL_STATE_LOCK.lock().unwrap();
         let th = temp_home_env();
         write_main_cfg(&th.home, &serde_json::json!({ "channels": {} }));
-        run(ChannelAction::Disable { name: "slack".into() }, false).unwrap();
+        run(
+            ChannelAction::Disable {
+                name: "slack".into(),
+            },
+            false,
+        )
+        .unwrap();
         let cfg = read_main_cfg(&th.home);
         assert!(
             cfg["channels"].get("slack").is_none(),
@@ -2023,7 +2151,9 @@ mod wave_b {
             &serde_json::json!({ "channels": { "discord": "bogus-not-an-object" } }),
         );
         run(
-            ChannelAction::Status { name: "discord".into() },
+            ChannelAction::Status {
+                name: "discord".into(),
+            },
             false,
         )
         .unwrap();
@@ -2043,7 +2173,13 @@ mod wave_b {
                 }
             }),
         );
-        run(ChannelAction::Web { action: WebAction::Status }, false).unwrap();
+        run(
+            ChannelAction::Web {
+                action: WebAction::Status,
+            },
+            false,
+        )
+        .unwrap();
 
         write_main_cfg(
             &th.home,
@@ -2051,7 +2187,13 @@ mod wave_b {
                 "channels": { "web": { "enabled": true, "path": "/ws" } }
             }),
         );
-        run(ChannelAction::Web { action: WebAction::Status }, false).unwrap();
+        run(
+            ChannelAction::Web {
+                action: WebAction::Status,
+            },
+            false,
+        )
+        .unwrap();
     }
 
     /// Web Config 两形态：(a) 短 auth_token → raw 分支（452）；
@@ -2066,13 +2208,25 @@ mod wave_b {
                 "channels": { "web": { "auth_token": "abc", "port": 5000 } }
             }),
         );
-        run(ChannelAction::Web { action: WebAction::Config }, false).unwrap();
+        run(
+            ChannelAction::Web {
+                action: WebAction::Config,
+            },
+            false,
+        )
+        .unwrap();
 
         write_main_cfg(
             &th.home,
             &serde_json::json!({ "channels": { "web": "junk-string" } }),
         );
-        run(ChannelAction::Web { action: WebAction::Config }, false).unwrap();
+        run(
+            ChannelAction::Web {
+                action: WebAction::Config,
+            },
+            false,
+        )
+        .unwrap();
     }
 
     /// WebSocket Setup：预置 ws.auth_token（EOF 保持原值）→ 提示语预览已有
@@ -2098,20 +2252,28 @@ mod wave_b {
             }),
         );
         run(
-            ChannelAction::WebSocket { action: WebSocketAction::Setup },
+            ChannelAction::WebSocket {
+                action: WebSocketAction::Setup,
+            },
             false,
         )
         .unwrap();
         let cfg = read_main_cfg(&th.home);
         let ws = &cfg["channels"]["websocket"];
-        assert_eq!(ws["enabled"], serde_json::json!(true), "正常对象条目 → 置位");
         assert_eq!(
-            ws["auth_token"], serde_json::json!("wstoken12345"),
+            ws["enabled"],
+            serde_json::json!(true),
+            "正常对象条目 → 置位"
+        );
+        assert_eq!(
+            ws["auth_token"],
+            serde_json::json!("wstoken12345"),
             "EOF 无输入 → 原有 token 保留而非移除"
         );
         let web = &cfg["channels"]["web"];
         assert_eq!(
-            web["auth_token"], serde_json::json!("wstoken12345"),
+            web["auth_token"],
+            serde_json::json!("wstoken12345"),
             "同步到 web 时非空 token 走 set 而非 remove"
         );
         assert_eq!(web["host"], serde_json::json!("10.9.9.9"));
@@ -2129,7 +2291,9 @@ mod wave_b {
         let original = serde_json::json!({ "channels": { "websocket": "junk" } });
         write_main_cfg(&th.home, &original);
         let err = run(
-            ChannelAction::WebSocket { action: WebSocketAction::Setup },
+            ChannelAction::WebSocket {
+                action: WebSocketAction::Setup,
+            },
             false,
         )
         .unwrap_err();
@@ -2153,7 +2317,9 @@ mod wave_b {
         let original = serde_json::json!({ "channels": { "external": "nope" } });
         write_main_cfg(&th.home, &original);
         let err = run(
-            ChannelAction::External { action: ExternalAction::Setup },
+            ChannelAction::External {
+                action: ExternalAction::Setup,
+            },
             false,
         )
         .unwrap_err();
@@ -2214,11 +2380,16 @@ mod wave_c {
     fn wc_disable_non_object_entry_loud_bails_untouched() {
         let _guard = crate::GLOBAL_STATE_LOCK.lock().unwrap();
         let th = temp_home_env();
-        let original =
-            serde_json::json!({ "channels": { "slack": ["not", "an", "object"] } });
+        let original = serde_json::json!({ "channels": { "slack": ["not", "an", "object"] } });
         write_main_cfg(&th.home, &original);
 
-        let err = run(ChannelAction::Disable { name: "slack".into() }, false).unwrap_err();
+        let err = run(
+            ChannelAction::Disable {
+                name: "slack".into(),
+            },
+            false,
+        )
+        .unwrap_err();
 
         assert!(
             err.to_string().contains("配置已损坏"),
@@ -2392,7 +2563,9 @@ mod r10_interactive_flows {
     }
 
     /// 隔离工作区 + 预置最小 channels 配置（子进程写路径要求文件已存在）。
-    fn r10_ws_with_cfg(channels: serde_json::Value) -> Option<(test_harness::TestWorkspace, std::path::PathBuf)> {
+    fn r10_ws_with_cfg(
+        channels: serde_json::Value,
+    ) -> Option<(test_harness::TestWorkspace, std::path::PathBuf)> {
         let bin = r10_bin_or_skip()?;
         let tw = test_harness::TestWorkspace::new().expect("tempdir");
         std::fs::create_dir_all(tw.home()).unwrap();
@@ -2414,11 +2587,18 @@ mod r10_interactive_flows {
     // 第二次覆盖第一次的值，断言以最后一次为准。─────────────────────────────────
     #[tokio::test]
     async fn r10_web_auth_interactive_save_long_and_short_token_arms() {
-        let Some((tw, bin)) = r10_ws_with_cfg(serde_json::json!({ "web": {} })) else { return };
+        let Some((tw, bin)) = r10_ws_with_cfg(serde_json::json!({ "web": {} })) else {
+            return;
+        };
 
         // 长 token + y 主流程：295 警告不触发、y 确认、auth_token 原样落盘。
         let long = tw
-            .run_cli_with_stdin(bin.as_path(), &["channel", "web", "auth"], "webtoken-long-01\ny\n", 30)
+            .run_cli_with_stdin(
+                bin.as_path(),
+                &["channel", "web", "auth"],
+                "webtoken-long-01\ny\n",
+                30,
+            )
             .await;
         assert!(long.success(), "{}\n{}", long.stdout, long.stderr);
         assert!(
@@ -2426,7 +2606,10 @@ mod r10_interactive_flows {
             "长 token 掩码打印前 4 字符，got:\n{}",
             long.stdout
         );
-        assert_eq!(r10_read_cfg(&tw)["channels"]["web"]["auth_token"], serde_json::json!("webtoken-long-01"));
+        assert_eq!(
+            r10_read_cfg(&tw)["channels"]["web"]["auth_token"],
+            serde_json::json!("webtoken-long-01")
+        );
 
         // 短 token（<8）：警告臂触发后仍走确认；len≤4 → 掩码走 "***" 分支。
         let short = tw
@@ -2439,20 +2622,30 @@ mod r10_interactive_flows {
             short.stdout
         );
         assert!(short.stdout.contains("***"), "≤4 字符掩码兜底为 ***");
-        assert_eq!(r10_read_cfg(&tw)["channels"]["web"]["auth_token"], serde_json::json!("abc"));
+        assert_eq!(
+            r10_read_cfg(&tw)["channels"]["web"]["auth_token"],
+            serde_json::json!("abc")
+        );
     }
 
     // ── Web Auth 早退/取消双出口：空 token 报错返回（288-294）；合法 token 但
     //    确认答 n → Cancelled 不落盘（304-306）。两态都不触碰 auth_token 键。──
     #[tokio::test]
     async fn r10_web_auth_empty_token_returns_and_decline_cancels_without_write() {
-        let Some((tw, bin)) = r10_ws_with_cfg(serde_json::json!({ "web": {} })) else { return };
+        let Some((tw, bin)) = r10_ws_with_cfg(serde_json::json!({ "web": {} })) else {
+            return;
+        };
 
         // 空 token → Error 提示提前 return Ok。
         let empty = tw
             .run_cli_with_stdin(bin.as_path(), &["channel", "web", "auth"], "\n", 30)
             .await;
-        assert!(empty.success(), "早退是正常出口退 0:\n{}\n{}", empty.stdout, empty.stderr);
+        assert!(
+            empty.success(),
+            "早退是正常出口退 0:\n{}\n{}",
+            empty.stdout,
+            empty.stderr
+        );
         assert!(
             empty.stdout.contains("Token cannot be empty"),
             "got:\n{}",
@@ -2461,12 +2654,19 @@ mod r10_interactive_flows {
 
         // 合法 token + 答 n → Cancelled，绝不写入。
         let decline = tw
-            .run_cli_with_stdin(bin.as_path(), &["channel", "web", "auth"], "validtoken99\nn\n", 30)
+            .run_cli_with_stdin(
+                bin.as_path(),
+                &["channel", "web", "auth"],
+                "validtoken99\nn\n",
+                30,
+            )
             .await;
         assert!(decline.success(), "{}\n{}", decline.stdout, decline.stderr);
         assert!(decline.stdout.contains("Cancelled"));
         assert!(
-            r10_read_cfg(&tw)["channels"]["web"].get("auth_token").is_none(),
+            r10_read_cfg(&tw)["channels"]["web"]
+                .get("auth_token")
+                .is_none(),
             "两个退出臂都不得留下 auth_token"
         );
     }
@@ -2474,7 +2674,8 @@ mod r10_interactive_flows {
     // ── Web Clear "y" 确认臂（415-417）：remove_channel_config + 回执文案。───
     #[tokio::test]
     async fn r10_web_clear_confirm_y_removes_auth_token_from_disk() {
-        let Some((tw, bin)) = r10_ws_with_cfg(serde_json::json!({ "web": { "auth_token": "tok123456" } }))
+        let Some((tw, bin)) =
+            r10_ws_with_cfg(serde_json::json!({ "web": { "auth_token": "tok123456" } }))
         else {
             return;
         };
@@ -2488,7 +2689,9 @@ mod r10_interactive_flows {
             out.stdout
         );
         assert!(
-            r10_read_cfg(&tw)["channels"]["web"].get("auth_token").is_none(),
+            r10_read_cfg(&tw)["channels"]["web"]
+                .get("auth_token")
+                .is_none(),
             "确认后 auth_token 必须从盘上移除"
         );
     }
@@ -2496,7 +2699,8 @@ mod r10_interactive_flows {
     // ── WebSocket Setup 四个非空输入臂 + 同步块显式 session ID 臂：一次脚本全走 ──
     #[tokio::test]
     async fn r10_websocket_setup_four_nonempty_inputs_then_explicit_session_id_synced() {
-        let Some((tw, bin)) = r10_ws_with_cfg(serde_json::json!({ "websocket": { "enabled": false } }))
+        let Some((tw, bin)) =
+            r10_ws_with_cfg(serde_json::json!({ "websocket": { "enabled": false } }))
         else {
             return;
         };
@@ -2511,24 +2715,40 @@ mod r10_interactive_flows {
             .await;
         assert!(out.success(), "{}\n{}", out.stdout, out.stderr);
         assert!(
-            out.stdout.contains("Synced to Web channel (session: sess-explicit-77)"),
+            out.stdout
+                .contains("Synced to Web channel (session: sess-explicit-77)"),
             "同步回执带用户显式 session id，got:\n{}",
             out.stdout
         );
-        assert!(out.stdout.contains("WebSocket channel configured and enabled."));
+        assert!(
+            out.stdout
+                .contains("WebSocket channel configured and enabled.")
+        );
 
         let cfg = r10_read_cfg(&tw);
         let ws = &cfg["channels"]["websocket"];
         assert_eq!(ws["enabled"], serde_json::json!(true));
-        assert_eq!(ws["host"], serde_json::json!("192.0.2.7"), "非空 host 臂生效");
+        assert_eq!(
+            ws["host"],
+            serde_json::json!("192.0.2.7"),
+            "非空 host 臂生效"
+        );
         assert_eq!(
             ws["port"],
             serde_json::json!(55021),
             "端口必须落 JSON 数字（BUG #41 契约），got: {}",
             ws["port"]
         );
-        assert_eq!(ws["path"], serde_json::json!("/customws"), "非空 path 臂生效");
-        assert_eq!(ws["auth_token"], serde_json::json!("tok98765"), "非空 token 臂生效");
+        assert_eq!(
+            ws["path"],
+            serde_json::json!("/customws"),
+            "非空 path 臂生效"
+        );
+        assert_eq!(
+            ws["auth_token"],
+            serde_json::json!("tok98765"),
+            "非空 token 臂生效"
+        );
 
         let web = &cfg["channels"]["web"];
         assert_eq!(web["host"], serde_json::json!("192.0.2.7"));
@@ -2546,7 +2766,8 @@ mod r10_interactive_flows {
     //    web 条目绝不被创建，其余默认值照常落盘并启用。──────────────────────
     #[tokio::test]
     async fn r10_websocket_setup_sync_answer_n_skips_web_mirror_block() {
-        let Some((tw, bin)) = r10_ws_with_cfg(serde_json::json!({ "websocket": { "enabled": false } }))
+        let Some((tw, bin)) =
+            r10_ws_with_cfg(serde_json::json!({ "websocket": { "enabled": false } }))
         else {
             return;
         };
@@ -2559,7 +2780,10 @@ mod r10_interactive_flows {
             )
             .await;
         assert!(out.success(), "{}\n{}", out.stdout, out.stderr);
-        assert!(out.stdout.contains("WebSocket channel configured and enabled."));
+        assert!(
+            out.stdout
+                .contains("WebSocket channel configured and enabled.")
+        );
         assert!(
             !out.stdout.contains("Synced to Web channel"),
             "答 n 不得出现同步回执"
@@ -2571,7 +2795,11 @@ mod r10_interactive_flows {
             serde_json::json!(true),
             "启用照常发生"
         );
-        assert_eq!(cfg["channels"]["websocket"]["port"], serde_json::json!(49001), "EOF 空输入保持默认端口且落数字");
+        assert_eq!(
+            cfg["channels"]["websocket"]["port"],
+            serde_json::json!(49001),
+            "EOF 空输入保持默认端口且落数字"
+        );
         assert!(
             cfg["channels"].get("web").is_none(),
             "答 n 后 web 条目必须完全不存在"
@@ -2581,7 +2809,8 @@ mod r10_interactive_flows {
     // ── External Setup 三值非空输入臂（712/728/737）+ 启用 + 三行回执。──────
     #[tokio::test]
     async fn r10_external_setup_three_nonempty_inputs_persisted_and_enabled() {
-        let Some((tw, bin)) = r10_ws_with_cfg(serde_json::json!({ "external": { "enabled": false } }))
+        let Some((tw, bin)) =
+            r10_ws_with_cfg(serde_json::json!({ "external": { "enabled": false } }))
         else {
             return;
         };
@@ -2594,13 +2823,28 @@ mod r10_interactive_flows {
             )
             .await;
         assert!(out.success(), "{}\n{}", out.stdout, out.stderr);
-        assert!(out.stdout.contains("External channel configured and enabled."));
+        assert!(
+            out.stdout
+                .contains("External channel configured and enabled.")
+        );
         assert!(out.stdout.contains("external:alpha"));
 
         let ext = &r10_read_cfg(&tw)["channels"]["external"];
-        assert_eq!(ext["input_exe"], serde_json::json!("demo-in.exe"), "非空 input_exe 臂生效");
-        assert_eq!(ext["output_exe"], serde_json::json!("demo-out.exe"), "非空 output_exe 臂生效");
-        assert_eq!(ext["chat_id"], serde_json::json!("external:alpha"), "非空 chat_id 臂生效");
+        assert_eq!(
+            ext["input_exe"],
+            serde_json::json!("demo-in.exe"),
+            "非空 input_exe 臂生效"
+        );
+        assert_eq!(
+            ext["output_exe"],
+            serde_json::json!("demo-out.exe"),
+            "非空 output_exe 臂生效"
+        );
+        assert_eq!(
+            ext["chat_id"],
+            serde_json::json!("external:alpha"),
+            "非空 chat_id 臂生效"
+        );
         assert_eq!(ext["enabled"], serde_json::json!(true));
     }
 
@@ -2610,10 +2854,16 @@ mod r10_interactive_flows {
     fn r10_websocket_set_port_success_saves_json_number_tail() {
         let _guard = crate::GLOBAL_STATE_LOCK.lock().unwrap();
         let th = temp_home_env();
-        write_main_cfg(&th.home, &serde_json::json!({ "channels": { "websocket": {} } }));
+        write_main_cfg(
+            &th.home,
+            &serde_json::json!({ "channels": { "websocket": {} } }),
+        );
         run(
             ChannelAction::WebSocket {
-                action: WebSocketAction::Set { key: "port".into(), value: "55501".into() },
+                action: WebSocketAction::Set {
+                    key: "port".into(),
+                    value: "55501".into(),
+                },
             },
             false,
         )

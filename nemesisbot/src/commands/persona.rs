@@ -72,9 +72,10 @@ fn cmd_current(workspace: &std::path::Path) -> Result<()> {
             active,
         );
         if let Some(desc) = pv["description"].as_str()
-            && !desc.is_empty() {
-                println!("  描述: {}", desc);
-            }
+            && !desc.is_empty()
+        {
+            println!("  描述: {}", desc);
+        }
     } else {
         println!("当前人格: {}", active);
     }
@@ -301,7 +302,8 @@ async fn search_personas(
     workspace: &std::path::Path,
 ) -> Result<Vec<(String, String, String, String, bool)>> {
     // Fetch tree
-    let url = "https://api.github.com/repos/msitarzewski/agency-agents/git/trees/main?recursive=1".to_string();
+    let url = "https://api.github.com/repos/msitarzewski/agency-agents/git/trees/main?recursive=1"
+        .to_string();
     let client = reqwest::Client::builder()
         .user_agent("Mozilla/5.0")
         .timeout(std::time::Duration::from_secs(30))
@@ -354,7 +356,8 @@ async fn search_personas(
 
 async fn fetch_and_convert(workspace: &str, id: &str) -> Result<Result<()>> {
     // Find path from tree
-    let url = "https://api.github.com/repos/msitarzewski/agency-agents/git/trees/main?recursive=1".to_string();
+    let url = "https://api.github.com/repos/msitarzewski/agency-agents/git/trees/main?recursive=1"
+        .to_string();
     let client = reqwest::Client::builder()
         .user_agent("Mozilla/5.0")
         .timeout(std::time::Duration::from_secs(30))

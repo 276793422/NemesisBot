@@ -84,7 +84,12 @@ fn nv_verify_target_valid_with_env_root() {
     let (sk, vk) = keypair(7);
     let signed = sign_content(b"nv abi payload", &sk, 424242, None, None, None, None).unwrap();
     let p = temp_bytes(&signed);
-    unsafe { std::env::set_var("NEMESIS_ROOT_PUBKEY", crate::hex_util::hex_encode(&vk.to_bytes())) };
+    unsafe {
+        std::env::set_var(
+            "NEMESIS_ROOT_PUBKEY",
+            crate::hex_util::hex_encode(&vk.to_bytes()),
+        )
+    };
 
     let mut out = NvOutcome::default();
     let rc = unsafe { nv_verify_target(c_path(&p).as_ptr(), &mut out) };
@@ -117,7 +122,12 @@ fn nv_self_verify_states() {
     let rc_no_root = unsafe { nv_self_verify(c_path(&signed_path).as_ptr()) };
 
     // ② 有根 + 已签名文件 → 0
-    unsafe { std::env::set_var("NEMESIS_ROOT_PUBKEY", crate::hex_util::hex_encode(&vk.to_bytes())) };
+    unsafe {
+        std::env::set_var(
+            "NEMESIS_ROOT_PUBKEY",
+            crate::hex_util::hex_encode(&vk.to_bytes()),
+        )
+    };
     let rc_valid = unsafe { nv_self_verify(c_path(&signed_path).as_ptr()) };
     // ③ 有根 + 未签名文件 → -4
     let rc_unsigned = unsafe { nv_self_verify(c_path(&unsigned).as_ptr()) };
@@ -158,7 +168,11 @@ fn crc32(data: &[u8]) -> u32 {
     for &b in data {
         crc ^= b as u32;
         for _ in 0..8 {
-            crc = if crc & 1 != 0 { (crc >> 1) ^ 0xEDB8_8320 } else { crc >> 1 };
+            crc = if crc & 1 != 0 {
+                (crc >> 1) ^ 0xEDB8_8320
+            } else {
+                crc >> 1
+            };
         }
     }
     !crc
@@ -176,7 +190,12 @@ fn nv_verify_target_maps_all_outcome_statuses() {
     }
     let _g = ENV_LOCK.lock().unwrap();
     let (sk, vk) = keypair(51);
-    unsafe { std::env::set_var("NEMESIS_ROOT_PUBKEY", crate::hex_util::hex_encode(&vk.to_bytes())) };
+    unsafe {
+        std::env::set_var(
+            "NEMESIS_ROOT_PUBKEY",
+            crate::hex_util::hex_encode(&vk.to_bytes()),
+        )
+    };
 
     let mut out = NvOutcome::default();
     let status_of = |bytes: &[u8], out: &mut NvOutcome| {
@@ -221,7 +240,12 @@ fn nv_verify_target_maps_all_outcome_statuses() {
     assert_eq!(status_of(&expired, &mut out), NV_EXPIRED);
 
     // Untrusted：签名自洽但根是另一把（清掉 env 根 → 空根列表）
-    unsafe { std::env::set_var("NEMESIS_ROOT_PUBKEY", crate::hex_util::hex_encode(&keypair(52).1.to_bytes())) };
+    unsafe {
+        std::env::set_var(
+            "NEMESIS_ROOT_PUBKEY",
+            crate::hex_util::hex_encode(&keypair(52).1.to_bytes()),
+        )
+    };
     assert_eq!(status_of(&valid, &mut out), NV_UNTRUSTED);
 
     unsafe { std::env::remove_var("NEMESIS_ROOT_PUBKEY") };
@@ -262,7 +286,12 @@ fn nv_verify_target_maps_revoked_via_local_crl_server() {
     }
     let _g = ENV_LOCK.lock().unwrap();
     let (sk, vk) = keypair(54);
-    unsafe { std::env::set_var("NEMESIS_ROOT_PUBKEY", crate::hex_util::hex_encode(&vk.to_bytes())) };
+    unsafe {
+        std::env::set_var(
+            "NEMESIS_ROOT_PUBKEY",
+            crate::hex_util::hex_encode(&vk.to_bytes()),
+        )
+    };
 
     // 本地 CRL 服务器：吊销本密钥（key_fp 维度）
     let fp: [u8; 32] = sha2::Sha256::digest(vk.to_bytes()).into();
@@ -344,12 +373,24 @@ fn nv_list_signatures_counts_and_args() {
     // null 参数 → -1
     let mut infos: [NvSigInfo; 4] = std::array::from_fn(|_| NvSigInfo::default());
     let mut count: u32 = 4;
-    assert_eq!(unsafe { nv_list_signatures(std::ptr::null(), infos.as_mut_ptr(), &mut count) }, -1);
-    assert_eq!(unsafe { nv_list_signatures(path.as_ptr(), std::ptr::null_mut(), &mut count) }, -1);
-    assert_eq!(unsafe { nv_list_signatures(path.as_ptr(), infos.as_mut_ptr(), std::ptr::null_mut()) }, -1);
+    assert_eq!(
+        unsafe { nv_list_signatures(std::ptr::null(), infos.as_mut_ptr(), &mut count) },
+        -1
+    );
+    assert_eq!(
+        unsafe { nv_list_signatures(path.as_ptr(), std::ptr::null_mut(), &mut count) },
+        -1
+    );
+    assert_eq!(
+        unsafe { nv_list_signatures(path.as_ptr(), infos.as_mut_ptr(), std::ptr::null_mut()) },
+        -1
+    );
     // 文件不存在 → -3
     let missing = c_path(&std::env::temp_dir().join("nv_abi_missing_list.bin"));
-    assert_eq!(unsafe { nv_list_signatures(missing.as_ptr(), infos.as_mut_ptr(), &mut count) }, -3);
+    assert_eq!(
+        unsafe { nv_list_signatures(missing.as_ptr(), infos.as_mut_ptr(), &mut count) },
+        -3
+    );
 
     // 未签名文件 → 0 + count=0
     let plain = temp_bytes(b"no signature".as_ref());
@@ -389,9 +430,18 @@ fn nv_get_signature_detail_with_chain_and_truncation() {
 
     // index 越界 → -4；null → -1
     let mut detail = NvSigDetail::default();
-    assert_eq!(unsafe { nv_get_signature(path.as_ptr(), 9, &mut detail) }, -4);
-    assert_eq!(unsafe { nv_get_signature(std::ptr::null(), 0, &mut detail) }, -1);
-    assert_eq!(unsafe { nv_get_signature(path.as_ptr(), 0, std::ptr::null_mut()) }, -1);
+    assert_eq!(
+        unsafe { nv_get_signature(path.as_ptr(), 9, &mut detail) },
+        -4
+    );
+    assert_eq!(
+        unsafe { nv_get_signature(std::ptr::null(), 0, &mut detail) },
+        -1
+    );
+    assert_eq!(
+        unsafe { nv_get_signature(path.as_ptr(), 0, std::ptr::null_mut()) },
+        -1
+    );
 
     // 正常详情：cert_count=1（chain=[leaf_cert]）、publisher 穿透、meta 穿透
     let rc = unsafe { nv_get_signature(path.as_ptr(), 0, &mut detail) };
@@ -410,13 +460,8 @@ fn nv_get_signature_detail_with_chain_and_truncation() {
     let (root_sk, _) = keypair(5);
     let (leaf_sk, leaf_vk) = keypair(6);
     let long_meta: Vec<u8> = (0..100u8).collect();
-    let leaf_cert = crate::cert::issue_certificate(
-        &root_sk,
-        &leaf_vk.to_bytes(),
-        &long_meta,
-        0,
-        u64::MAX,
-    );
+    let leaf_cert =
+        crate::cert::issue_certificate(&root_sk, &leaf_vk.to_bytes(), &long_meta, 0, u64::MAX);
     let chain = crate::cert::serialize_chain(&[leaf_cert]);
     let long_publisher = "p".repeat(200);
     let signed2 = sign_content(
@@ -436,6 +481,9 @@ fn nv_get_signature_detail_with_chain_and_truncation() {
     assert_eq!(rc2, 0);
     assert_eq!(detail2.publisher_len, 128, "publisher capped at 128");
     assert_eq!(&detail2.publisher[..128], &long_publisher.as_bytes()[..128]);
-    assert_eq!(detail2.certs[0].subject_meta_len, 64, "subject meta capped at 64");
+    assert_eq!(
+        detail2.certs[0].subject_meta_len, 64,
+        "subject meta capped at 64"
+    );
     assert_eq!(&detail2.certs[0].subject_meta[..64], &long_meta[..64]);
 }

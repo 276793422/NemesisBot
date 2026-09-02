@@ -178,8 +178,17 @@ fn audit_logger_new_enabled_ok_and_reuse_same_dir() {
     assert!(logger.flush().is_ok());
     // Second logger on the same dir: file already exists → no-header else arm.
     let mut logger2 = AuditLogger::new(cfg).unwrap();
-    logger2
-        .log_event("e2", "allowed", "file_read", "user", "cli", "a.txt", "low", "ok", "rule");
+    logger2.log_event(
+        "e2",
+        "allowed",
+        "file_read",
+        "user",
+        "cli",
+        "a.txt",
+        "low",
+        "ok",
+        "rule",
+    );
     assert!(logger2.flush().is_ok());
 }
 
@@ -205,7 +214,15 @@ fn audit_logger_denied_event_warns_and_export_creates_parent() {
     };
     let mut logger = AuditLogger::new(cfg).unwrap();
     logger.log_event(
-        "e3", "denied", "process_exec", "user", "cli", "cmd.exe", "critical", "blocked", "policy",
+        "e3",
+        "denied",
+        "process_exec",
+        "user",
+        "cli",
+        "cmd.exe",
+        "critical",
+        "blocked",
+        "policy",
     );
     assert!(logger.flush().is_ok());
     // Export to a destination whose parent directory does not exist yet.

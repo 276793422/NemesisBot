@@ -228,7 +228,11 @@ async fn serve_clamd(
                 if reader.read_line(&mut line).await.is_err() {
                     return;
                 }
-                let cmd = line.trim().strip_prefix('n').unwrap_or(line.trim()).to_string();
+                let cmd = line
+                    .trim()
+                    .strip_prefix('n')
+                    .unwrap_or(line.trim())
+                    .to_string();
                 if cmd == "INSTREAM" {
                     let mut lenbuf = [0u8; 4];
                     let mut terminated = false;
@@ -397,7 +401,10 @@ async fn fake_scan_tool_invocation_write_content_clean() {
     let addr = serve_clamd(noop_responder(), "stream: OK\n").await;
     let hook = hook_on(&addr);
     let args = serde_json::json!({"path": "x.bin", "content": "hello world"});
-    let ok = hook.scan_tool_invocation("write_file", &args).await.unwrap();
+    let ok = hook
+        .scan_tool_invocation("write_file", &args)
+        .await
+        .unwrap();
     assert!(ok);
 }
 
@@ -407,7 +414,10 @@ async fn fake_scan_tool_invocation_write_content_infected() {
     let addr = serve_clamd(noop_responder(), "stream: EICAR FOUND\n").await;
     let hook = hook_on(&addr);
     let args = serde_json::json!({"path": "y.bin", "content": "X5O!P%@AP[EICAR]"});
-    let err = hook.scan_tool_invocation("write_file", &args).await.unwrap_err();
+    let err = hook
+        .scan_tool_invocation("write_file", &args)
+        .await
+        .unwrap_err();
     assert!(err.contains("virus detected in content"), "{err}");
     assert!(err.contains("EICAR"), "{err}");
 }
@@ -418,13 +428,17 @@ async fn fake_scan_tool_invocation_edit_file_content_infected() {
     let addr = serve_clamd(noop_responder(), "stream: Bad.Virus FOUND\n").await;
     let hook = hook_on(&addr);
     let args = serde_json::json!({"content": "infected patch"});
-    let err = hook.scan_tool_invocation("edit_file", &args).await.unwrap_err();
+    let err = hook
+        .scan_tool_invocation("edit_file", &args)
+        .await
+        .unwrap_err();
     assert!(err.contains("Bad.Virus"), "{err}");
 }
 
 #[tokio::test]
 async fn scan_downloaded_file_missing_path_is_ok_and_none() {
-    let scanner = crate::clamav::scanner::Scanner::new(crate::clamav::scanner::ScannerConfig::default());
+    let scanner =
+        crate::clamav::scanner::Scanner::new(crate::clamav::scanner::ScannerConfig::default());
     let hook = ScanHook::new(std::sync::Arc::new(scanner));
     let (clean, res) = hook
         .scan_downloaded_file(std::path::Path::new(r"Z:\definitely\missing\file.bin"))

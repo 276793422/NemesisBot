@@ -361,9 +361,10 @@ impl Channel for WebSocketChannel {
                             {
                                 let mut guard = read_active_conn.lock();
                                 if let Some(ref conn) = *guard
-                                    && conn.client_id == read_client_id {
-                                        *guard = None;
-                                    }
+                                    && conn.client_id == read_client_id
+                                {
+                                    *guard = None;
+                                }
                             }
                             info!(client_id = %read_client_id, "[WebSocketChannel] client disconnected");
                         });

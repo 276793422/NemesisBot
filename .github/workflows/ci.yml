@@ -4,8 +4,8 @@ name: CI
 #
 # 初版范围（2026-08-31）：
 #   - ✅ cargo check / 全量测试 / inline-tests 纪律闸 / clippy -D warnings（阻塞门禁）/ 前端三件套
-#   - ❌ fmt --check 门禁：fmt 基线尚未落地（W3 H5 绝对最后一步），装上只会常红；
-#     H5 落地后在此补装（一行 job/step）。
+#   - ✅ fmt --check 门禁（2026-09-02 H5 fmt 基线落地后补装；基线=两遍 cargo fmt --all
+#     收敛不动点，647 文件重排，零语义变化证据见归档 goal 报告）
 #
 # clippy 门禁说明：H2 已完成全库清零（基线 1195w+10e → 0w+0e，2026-08-31，
 # 六轮全量验证），自本次起 `-D warnings` 阻塞 CI。新的 clippy 警告必须当场修，
@@ -79,6 +79,10 @@ jobs:
           # 防御性清旧 hashed chunk（emptyOutDir:true 已自清，此行兜底 config 翻转）
           rm -rf ../crates/nemesis-web/static/assets
           npm run build
+
+      # H5 fmt 基线已落地（2026-09-02），格式偏差在此阻塞；规则见 .rustfmt.toml
+      - name: cargo fmt --check（阻塞门禁）
+        run: cargo fmt --all --check
 
       - name: cargo check --workspace --all-targets
         run: cargo check --workspace --all-targets

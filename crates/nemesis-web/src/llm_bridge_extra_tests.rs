@@ -136,7 +136,7 @@ fn tool_call_response() -> ProviderResponse {
             call_type: None,
             function: Some(FunctionCall {
                 name: "get_weather".to_string(),
-                    arguments: r#"{"city":"Paris"}"#.to_string(),
+                arguments: r#"{"city":"Paris"}"#.to_string(),
             }),
             name: None,
             arguments: None,
@@ -153,7 +153,7 @@ fn tool_call_response() -> ProviderResponse {
 fn one_user_message() -> Vec<LlmMessage> {
     vec![LlmMessage {
         role: "user".to_string(),
-            content: "hi".to_string(),
+        content: "hi".to_string(),
         tool_calls: None,
         tool_call_id: None,
         reasoning_content: None,
@@ -219,7 +219,7 @@ async fn adapter_chat_passes_message_count() {
         },
         LlmMessage {
             role: "user".to_string(),
-                content: "u".to_string(),
+            content: "u".to_string(),
             tool_calls: None,
             tool_call_id: None,
             reasoning_content: None,
@@ -244,7 +244,7 @@ async fn adapter_chat_with_tool_calls_marks_not_finished() {
     assert!(!resp.finished, "tool_calls present → finished=false");
     assert_eq!(resp.tool_calls.len(), 1);
     assert_eq!(resp.tool_calls[0].name, "get_weather");
-        assert_eq!(resp.tool_calls[0].id, "call_1");
+    assert_eq!(resp.tool_calls[0].id, "call_1");
 }
 
 #[tokio::test]
@@ -500,7 +500,12 @@ async fn adapter_chat_passes_reasoning_effort_h4() {
         ..Default::default()
     };
     let _ = adapter
-        .chat("m", one_user_message(), Some(opts), empty_messages_to_tools())
+        .chat(
+            "m",
+            one_user_message(),
+            Some(opts),
+            empty_messages_to_tools(),
+        )
         .await
         .unwrap();
     assert_eq!(
@@ -515,7 +520,12 @@ async fn adapter_chat_passes_reasoning_effort_h4() {
         ..Default::default()
     };
     let _ = adapter
-        .chat("m", one_user_message(), Some(opts), empty_messages_to_tools())
+        .chat(
+            "m",
+            one_user_message(),
+            Some(opts),
+            empty_messages_to_tools(),
+        )
         .await
         .unwrap();
     assert_eq!(

@@ -95,9 +95,10 @@ impl ClusterLogWriter {
 
         // Write line.
         if let Some(ref mut file) = inner.file
-            && let Err(e) = writeln!(file, "{}", entry) {
-                tracing::warn!(error = %e, "[ClusterLog] Failed to write log entry");
-            }
+            && let Err(e) = writeln!(file, "{}", entry)
+        {
+            tracing::warn!(error = %e, "[ClusterLog] Failed to write log entry");
+        }
 
         // Drop the inner lock before calling the hook to avoid potential deadlocks
         // if the hook does anything that touches the cluster log (e.g. publishes

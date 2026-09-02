@@ -70,15 +70,12 @@ impl HooksHandler {
     }
 
     pub(crate) fn get(&self, workspace: &str) -> Result<Option<serde_json::Value>, String> {
-        let path = nemesis_path::resolve_hooks_config_path_in_workspace(std::path::Path::new(workspace));
+        let path =
+            nemesis_path::resolve_hooks_config_path_in_workspace(std::path::Path::new(workspace));
         match std::fs::read_to_string(&path) {
             Ok(content) => {
                 let (valid, error, summary) = match cc_hooks::parse_cc_hooks(&content) {
-                    Ok(events) => (
-                        true,
-                        serde_json::Value::Null,
-                        Some(events_summary(&events)),
-                    ),
+                    Ok(events) => (true, serde_json::Value::Null, Some(events_summary(&events))),
                     Err(e) => (false, serde_json::Value::String(e), None),
                 };
                 Ok(Some(serde_json::json!({
@@ -100,16 +97,20 @@ impl HooksHandler {
         }
     }
 
-    pub(crate) fn set(&self, workspace: &str, content: &str) -> Result<Option<serde_json::Value>, String> {
+    pub(crate) fn set(
+        &self,
+        workspace: &str,
+        content: &str,
+    ) -> Result<Option<serde_json::Value>, String> {
         // 语义校验先于一切 IO（goal：校验失败不落盘）。
         let events = cc_hooks::parse_cc_hooks(content)?;
-        let path = nemesis_path::resolve_hooks_config_path_in_workspace(std::path::Path::new(workspace));
+        let path =
+            nemesis_path::resolve_hooks_config_path_in_workspace(std::path::Path::new(workspace));
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent)
                 .map_err(|e| format!("failed to create config dir: {e}"))?;
         }
-        std::fs::write(&path, content)
-            .map_err(|e| format!("failed to write hooks.json: {e}"))?;
+        std::fs::write(&path, content).map_err(|e| format!("failed to write hooks.json: {e}"))?;
         Ok(Some(serde_json::json!({
             "written": true,
             "summary": events_summary(&events),

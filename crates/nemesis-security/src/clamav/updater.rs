@@ -113,9 +113,10 @@ impl Updater {
                     let main_cvd = Path::new(&self.config.database_dir).join("main.cvd");
                     if let Ok(meta) = std::fs::metadata(&main_cvd)
                         && let Ok(modified) = meta.modified()
-                            && modified.elapsed().unwrap_or(Duration::MAX) <= max_age {
-                                return false;
-                            }
+                        && modified.elapsed().unwrap_or(Duration::MAX) <= max_age
+                    {
+                        return false;
+                    }
                 }
                 true
             }

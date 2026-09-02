@@ -471,16 +471,18 @@ impl Cluster {
         // Stop RPC server first — reject new connections, existing connections
         // drain naturally via idle_timeout.
         if let Some(ref server) = self.rpc_server
-            && let Err(e) = server.stop() {
-                tracing::warn!(error = %e, "[Cluster] RPC server stop error");
-            }
+            && let Err(e) = server.stop()
+        {
+            tracing::warn!(error = %e, "[Cluster] RPC server stop error");
+        }
 
         // Stop discovery service (joins broadcast + receive threads)
         self.discovery_running.store(false, Ordering::SeqCst);
         if let Some(discovery) = self.discovery.lock().take()
-            && let Err(e) = discovery.stop() {
-                tracing::warn!(error = %e, "[Cluster] Discovery stop error");
-            }
+            && let Err(e) = discovery.stop()
+        {
+            tracing::warn!(error = %e, "[Cluster] Discovery stop error");
+        }
 
         // Signal recovery/sync loops to exit
         let _ = self.stop_tx.send(());
@@ -763,10 +765,11 @@ impl Cluster {
             // resolve via get_peer_info's name fallback.
             if let Some(human_name) = inherited_name
                 && let Some(mut info) = self.registry.get(node_id)
-                    && (info.base.name.is_empty() || info.base.name == node_id) {
-                        info.base.name = human_name;
-                        self.registry.upsert(info);
-                    }
+                && (info.base.name.is_empty() || info.base.name == node_id)
+            {
+                info.base.name = human_name;
+                self.registry.upsert(info);
+            }
             // Preserve static-ness across the upgrade so a configured peer
             // (loaded from peers.toml) doesn't suddenly become UDP-expirable
             // once its placeholder key is replaced by the real node_id.
@@ -914,9 +917,10 @@ impl Cluster {
     fn rpc_to_udp_address(rpc_addr: &str) -> String {
         if let Some((host, port_str)) = rpc_addr.rsplit_once(':')
             && let Ok(rpc_port) = port_str.parse::<u32>()
-                && rpc_port > 10000 {
-                    return format!("{}:{}", host, rpc_port - 10000);
-                }
+            && rpc_port > 10000
+        {
+            return format!("{}:{}", host, rpc_port - 10000);
+        }
         rpc_addr.to_string()
     }
 
@@ -1820,11 +1824,7 @@ impl Cluster {
         if let Err(e) =
             self.register_rpc_handler("query_task_result", self.build_query_task_result_handler())
         {
-            logger::log_error(
-                "cluster",
-                &format!("register query_task_result: {}", e),
-                "",
-            );
+            logger::log_error("cluster", &format!("register query_task_result: {}", e), "");
         }
         if let Err(e) = self.register_rpc_handler(
             "confirm_task_delivery",
@@ -2066,27 +2066,27 @@ impl Cluster {
 
                 // If a specific reflection is requested, include its content (sanitized)
                 if let Some(filename) = payload.get("filename").and_then(|v| v.as_str())
-                    && !filename.is_empty() {
-                        match provider_list.read_reflection_content(filename) {
-                            Ok(content) => {
-                                result["content"] = serde_json::Value::String(
-                                    provider_list.sanitize_content(&content),
-                                );
-                                result["filename"] = serde_json::Value::String(filename.into());
-                            }
-                            Err(e) => {
-                                tracing::error!(
-                                    filename = filename,
-                                    error = %e,
-                                    "[Cluster] Failed to read reflection"
-                                );
-                                return Ok(serde_json::json!({
-                                    "status": "error",
-                                    "error": format!("Failed to read reflection: {}", e),
-                                }));
-                            }
+                    && !filename.is_empty()
+                {
+                    match provider_list.read_reflection_content(filename) {
+                        Ok(content) => {
+                            result["content"] =
+                                serde_json::Value::String(provider_list.sanitize_content(&content));
+                            result["filename"] = serde_json::Value::String(filename.into());
+                        }
+                        Err(e) => {
+                            tracing::error!(
+                                filename = filename,
+                                error = %e,
+                                "[Cluster] Failed to read reflection"
+                            );
+                            return Ok(serde_json::json!({
+                                "status": "error",
+                                "error": format!("Failed to read reflection: {}", e),
+                            }));
                         }
                     }
+                }
 
                 result["node_id"] = serde_json::Value::String(node_id_list.clone());
 
@@ -2186,21 +2186,22 @@ impl Cluster {
 
             // Check if this callback is for a cluster agent task (B-side forwarding).
             if let (Some(tl), Some(wq)) = (&cluster_task_list, &cluster_work_queue)
-                && let Some(parent_id) = tl.find_by_child_task_id(task_id) {
-                    tracing::info!(
-                        child_task_id = %task_id,
-                        parent_task_id = %parent_id,
-                        "[Cluster] Routing callback to cluster agent task"
-                    );
-                    tl.inject_callback(&parent_id, response);
-                    if let Err(e) = wq.submit(parent_id) {
-                        tracing::error!(error = %e, "[Cluster] Failed to re-submit task to work queue");
-                    }
-                    return Ok(serde_json::json!({
-                        "status": "accepted",
-                        "task_id": task_id,
-                    }));
+                && let Some(parent_id) = tl.find_by_child_task_id(task_id)
+            {
+                tracing::info!(
+                    child_task_id = %task_id,
+                    parent_task_id = %parent_id,
+                    "[Cluster] Routing callback to cluster agent task"
+                );
+                tl.inject_callback(&parent_id, response);
+                if let Err(e) = wq.submit(parent_id) {
+                    tracing::error!(error = %e, "[Cluster] Failed to re-submit task to work queue");
                 }
+                return Ok(serde_json::json!({
+                    "status": "accepted",
+                    "task_id": task_id,
+                }));
+            }
 
             // Fall through to main agent's TaskManager (A-side continuation).
             task_manager.complete_callback(task_id, status, response, error);

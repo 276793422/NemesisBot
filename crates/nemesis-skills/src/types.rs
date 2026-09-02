@@ -281,8 +281,7 @@ fn default_cache_ttl() -> u64 {
 }
 
 /// ModelScope registry configuration.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[derive(Default)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct ModelScopeConfig {
     /// Whether the ModelScope registry is enabled.
     #[serde(default)]
@@ -291,7 +290,6 @@ pub struct ModelScopeConfig {
     #[serde(default)]
     pub timeout_secs: u64,
 }
-
 
 /// ClawHub registry configuration.
 #[derive(Debug, Clone, Serialize, Deserialize)]

@@ -47,8 +47,7 @@ fn update_executor_preserves_allow_network_across_sibling_edits() {
     assert_eq!(executor["enabled"], false);
     assert_eq!(executor["sandbox"], false);
     assert_eq!(
-        executor["allow_network"],
-        true,
+        executor["allow_network"], true,
         "allow_network must survive enabled/sandbox edits (field-merge fix regressed)"
     );
 }
@@ -144,7 +143,10 @@ async fn overview_shape_and_live_executor_switches() {
     assert_eq!(v["executor"]["enabled"], true);
     assert_eq!(v["executor"]["sandbox"], true);
     assert_eq!(v["executor"]["allow_network"], true);
-    assert_eq!(v["executor"]["strict"], true, "strict must be surfaced (P5-2)");
+    assert_eq!(
+        v["executor"]["strict"], true,
+        "strict must be surfaced (P5-2)"
+    );
     // 后端探测：结构随平台，但一定是对象且带 kind
     let kind = v["backend_probe"]["kind"].as_str().unwrap_or("");
     if cfg!(target_os = "windows") {
@@ -182,14 +184,21 @@ async fn set_config_merges_field_by_field() {
 
     // 1) 只改 strict → 其余兄弟字段保留
     let resp = h
-        .handle_cmd("set_config", Some(serde_json::json!({ "strict": true })), &ctx)
+        .handle_cmd(
+            "set_config",
+            Some(serde_json::json!({ "strict": true })),
+            &ctx,
+        )
         .await
         .expect("set_config ok")
         .expect("set_config returns a payload");
     assert_eq!(resp["executor"]["strict"], true);
     assert_eq!(resp["executor"]["enabled"], true, "enabled must survive");
     assert_eq!(resp["executor"]["sandbox"], false, "sandbox must survive");
-    assert_eq!(resp["executor"]["allow_network"], true, "allow_network must survive");
+    assert_eq!(
+        resp["executor"]["allow_network"], true,
+        "allow_network must survive"
+    );
 
     // 2) 只改 enabled+sandbox → strict/allow_network 保留
     let resp = h
@@ -203,7 +212,10 @@ async fn set_config_merges_field_by_field() {
         .expect("set_config returns a payload");
     assert_eq!(resp["executor"]["enabled"], false);
     assert_eq!(resp["executor"]["sandbox"], true);
-    assert_eq!(resp["executor"]["strict"], true, "strict must survive (P5-2)");
+    assert_eq!(
+        resp["executor"]["strict"], true,
+        "strict must survive (P5-2)"
+    );
     assert_eq!(resp["executor"]["allow_network"], true);
 
     // 3) 出现但非 bool → 明确报错（不静默忽略）
@@ -346,7 +358,11 @@ async fn set_network_requires_enabled_bool() {
     let err = h.handle_cmd("set_network", None, &ctx).await.unwrap_err();
     assert!(err.contains("requires"), "err: {err}");
     let err = h
-        .handle_cmd("set_network", Some(serde_json::json!({ "enabled": "yes" })), &ctx)
+        .handle_cmd(
+            "set_network",
+            Some(serde_json::json!({ "enabled": "yes" })),
+            &ctx,
+        )
         .await
         .unwrap_err();
     assert!(err.contains("requires"), "err: {err}");
@@ -364,21 +380,30 @@ async fn set_network_writes_config_and_ini_despite_reload_failure() {
     let ctx = make_ctx(&dir);
     let h = SandboxHandler::new();
     let r = h
-        .handle_cmd("set_network", Some(serde_json::json!({ "enabled": true })), &ctx)
+        .handle_cmd(
+            "set_network",
+            Some(serde_json::json!({ "enabled": true })),
+            &ctx,
+        )
         .await;
     // tempdir home 无 Start.exe → spawn 失败 → 命令返回 Err
-    assert!(r.is_err(), "reload spawn must fail without Start.exe: {r:?}");
+    assert!(
+        r.is_err(),
+        "reload spawn must fail without Start.exe: {r:?}"
+    );
     // config.json 的 allow_network 已写入
-    let cfg: serde_json::Value = serde_json::from_str(
-        &std::fs::read_to_string(dir.path().join("config.json")).unwrap(),
-    )
-    .unwrap();
+    let cfg: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(dir.path().join("config.json")).unwrap())
+            .unwrap();
     assert_eq!(cfg["executor"]["allow_network"], true);
     // Sandboxie.ini 已重写且网络开关 = y
     let home = dir.path().to_path_buf();
     let paths = nemesis_sandbox::SandboxPaths::new(&home);
     let ini = std::fs::read_to_string(&paths.ini_path).unwrap();
-    assert!(ini.contains("AllowNetworkAccess=y"), "ini must enable network");
+    assert!(
+        ini.contains("AllowNetworkAccess=y"),
+        "ini must enable network"
+    );
 }
 
 #[tokio::test]
@@ -422,5 +447,8 @@ async fn self_test_without_userland_backend_reports_unsupported() {
         v["note"]
     );
     // 副作用：workspace 目录被补建（探针子进程的目标目录）
-    assert!(dir.path().join("workspace").is_dir(), "workspace must be created");
+    assert!(
+        dir.path().join("workspace").is_dir(),
+        "workspace must be created"
+    );
 }

@@ -192,8 +192,7 @@ impl UdpListener {
 
         // Encrypt if encryption is enabled
         let send_data = if let Some(ref key) = self.enc_key {
-            encrypt_data(key, &data)
-                .map_err(|_| io::Error::other("encryption failed"))?
+            encrypt_data(key, &data).map_err(|_| io::Error::other("encryption failed"))?
         } else {
             data
         };
@@ -257,9 +256,10 @@ fn local_ip_addresses() -> io::Result<Vec<(Ipv4Addr, [u8; 4])>> {
         for iface in &interfaces {
             if let Ok(ip) = iface.ip.parse::<Ipv4Addr>()
                 && let Ok(mask) = iface.mask.parse::<Ipv4Addr>()
-                    && !results.iter().any(|(existing, _)| *existing == ip) {
-                        results.push((ip, mask.octets()));
-                    }
+                && !results.iter().any(|(existing, _)| *existing == ip)
+            {
+                results.push((ip, mask.octets()));
+            }
         }
         return Ok(results);
     }
@@ -269,10 +269,12 @@ fn local_ip_addresses() -> io::Result<Vec<(Ipv4Addr, [u8; 4])>> {
     let socket = UdpSocket::bind("0.0.0.0:0")?;
     if socket.connect("8.8.8.8:53").is_ok()
         && let Ok(local) = socket.local_addr()
-            && let std::net::IpAddr::V4(ip) = local.ip()
-                && !ip.is_loopback() && !ip.is_unspecified() {
-                    results.push((ip, [255, 255, 255, 0]));
-                }
+        && let std::net::IpAddr::V4(ip) = local.ip()
+        && !ip.is_loopback()
+        && !ip.is_unspecified()
+    {
+        results.push((ip, [255, 255, 255, 0]));
+    }
     Ok(results)
 }
 

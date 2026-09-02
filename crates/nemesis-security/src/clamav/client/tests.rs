@@ -502,7 +502,11 @@ async fn serve_clamd(responder: Arc<dyn Fn(&str) -> Vec<u8> + Send + Sync>) -> S
                 if reader.read_line(&mut line).await.is_err() {
                     return;
                 }
-                let cmd = line.trim().strip_prefix('n').unwrap_or(line.trim()).to_string();
+                let cmd = line
+                    .trim()
+                    .strip_prefix('n')
+                    .unwrap_or(line.trim())
+                    .to_string();
                 if cmd == "INSTREAM" {
                     // 吞 chunk 直到 0 长度终止，统计总字节数
                     let mut total: usize = 0;
@@ -618,8 +622,7 @@ async fn fake_server_scan_file_clean_absolute_path() {
     // 绝对路径（Windows 盘符 / Unix 根）
     let p = &result.path;
     assert!(
-        p.len() >= 3
-            && (p.as_bytes()[1] == b':' || p.starts_with('/')),
+        p.len() >= 3 && (p.as_bytes()[1] == b':' || p.starts_with('/')),
         "not absolute: {p}"
     );
 }

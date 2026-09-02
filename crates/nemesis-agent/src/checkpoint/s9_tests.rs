@@ -49,7 +49,10 @@ async fn restore_code_writes_back_and_deletes_by_snapshot_kind() {
     let (written, deleted) = store.restore_code(1).await;
     assert_eq!(written, vec!["a.txt".to_string()]);
     assert_eq!(deleted, vec!["made_up.txt".to_string()]);
-    assert_eq!(std::fs::read_to_string(root.join("a.txt")).unwrap(), "original");
+    assert_eq!(
+        std::fs::read_to_string(root.join("a.txt")).unwrap(),
+        "original"
+    );
     assert!(!root.join("made_up.txt").exists());
     let _ = std::fs::remove_dir_all(&root);
 }
@@ -83,7 +86,10 @@ async fn truncate_from_removes_persisted_turn_files() {
     assert!(ckpt_dir.join("turn-2.json").exists());
 
     store.truncate_from(2);
-    assert!(!ckpt_dir.join("turn-2.json").exists(), "turn-2 removed from disk");
+    assert!(
+        !ckpt_dir.join("turn-2.json").exists(),
+        "turn-2 removed from disk"
+    );
     assert!(ckpt_dir.join("turn-1.json").exists(), "turn-1 kept");
     let metas = store.list_meta();
     assert_eq!(metas.len(), 1, "only turn-1 remains in memory");

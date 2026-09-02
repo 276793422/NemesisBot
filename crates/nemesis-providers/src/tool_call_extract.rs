@@ -94,7 +94,6 @@ pub fn find_matching_brace(text: &str, pos: usize) -> Option<usize> {
     let mut escape_next = false;
 
     for (i, &ch) in bytes.iter().enumerate().skip(pos) {
-
         if escape_next {
             escape_next = false;
             continue;

@@ -107,13 +107,14 @@ impl WsRouter {
         };
 
         if let Ok(bytes) = response.to_json()
-            && let Err(e) = send_queue.send(bytes).await {
-                tracing::warn!(
-                    req_id = %req_id,
-                    error = %e,
-                    "[WebSocket] Failed to send WS API response"
-                );
-            }
+            && let Err(e) = send_queue.send(bytes).await
+        {
+            tracing::warn!(
+                req_id = %req_id,
+                error = %e,
+                "[WebSocket] Failed to send WS API response"
+            );
+        }
     }
 }
 

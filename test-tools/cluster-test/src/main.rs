@@ -1320,15 +1320,15 @@ fn stress_connection_pool() -> Result<String, String> {
     let mut success = 0;
     for i in 0..5 {
         if let Ok(mut conn) = pool.get_or_connect(&addr) {
-            let req =
-                WireMessage::new_request("client", "server", "pool_test", json!({"id": i}));
+            let req = WireMessage::new_request("client", "server", "pool_test", json!({"id": i}));
             let data = req.to_bytes().map_err(|e| e.to_string())?;
             if conn.send(&data).is_ok()
                 && let Ok(resp_data) = conn.recv()
-                    && let Ok(resp) = WireMessage::from_bytes(&resp_data)
-                        && resp.msg_type == "response" {
-                            success += 1;
-                        }
+                && let Ok(resp) = WireMessage::from_bytes(&resp_data)
+                && resp.msg_type == "response"
+            {
+                success += 1;
+            }
             pool.return_connection(&addr, conn);
         }
     }

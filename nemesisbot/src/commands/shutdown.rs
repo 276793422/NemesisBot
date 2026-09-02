@@ -19,51 +19,52 @@ pub fn run(local: bool) -> Result<()> {
     // Method 1: Try PID file
     if pid_path.exists()
         && let Ok(data) = std::fs::read_to_string(&pid_path)
-            && let Ok(pid) = data.trim().parse::<u32>() {
-                println!("  Found gateway PID: {}", pid);
+        && let Ok(pid) = data.trim().parse::<u32>()
+    {
+        println!("  Found gateway PID: {}", pid);
 
-                // Send SIGTERM on Unix, or use taskkill on Windows
-                #[cfg(target_os = "windows")]
-                {
-                    // On Windows, send CTRL_BREAK_EVENT or use taskkill
-                    let result = std::process::Command::new("taskkill")
-                        .args(["/PID", &pid.to_string()])
-                        .output();
-                    match result {
-                        Ok(output) if output.status.success() => {
-                            println!("  Shutdown signal sent to PID {}.", pid);
-                            // Clean up PID file
-                            let _ = std::fs::remove_file(&pid_path);
-                        }
-                        Ok(output) => {
-                            let stderr = String::from_utf8_lossy(&output.stderr);
-                            if stderr.contains("not found") {
-                                println!("  Process {} is not running.", pid);
-                                let _ = std::fs::remove_file(&pid_path);
-                            } else {
-                                println!("  Failed to signal process: {}", stderr.trim());
-                            }
-                        }
-                        Err(e) => println!("  Failed to send signal: {}", e),
+        // Send SIGTERM on Unix, or use taskkill on Windows
+        #[cfg(target_os = "windows")]
+        {
+            // On Windows, send CTRL_BREAK_EVENT or use taskkill
+            let result = std::process::Command::new("taskkill")
+                .args(["/PID", &pid.to_string()])
+                .output();
+            match result {
+                Ok(output) if output.status.success() => {
+                    println!("  Shutdown signal sent to PID {}.", pid);
+                    // Clean up PID file
+                    let _ = std::fs::remove_file(&pid_path);
+                }
+                Ok(output) => {
+                    let stderr = String::from_utf8_lossy(&output.stderr);
+                    if stderr.contains("not found") {
+                        println!("  Process {} is not running.", pid);
+                        let _ = std::fs::remove_file(&pid_path);
+                    } else {
+                        println!("  Failed to signal process: {}", stderr.trim());
                     }
                 }
-
-                #[cfg(not(target_os = "windows"))]
-                {
-                    // On Unix, send SIGTERM
-                    unsafe {
-                        if libc::kill(pid as i32, libc::SIGTERM) == 0 {
-                            println!("  SIGTERM sent to PID {}.", pid);
-                            let _ = std::fs::remove_file(&pid_path);
-                        } else {
-                            println!("  Failed to signal process {} (may not be running).", pid);
-                            let _ = std::fs::remove_file(&pid_path);
-                        }
-                    }
-                }
-
-                return Ok(());
+                Err(e) => println!("  Failed to send signal: {}", e),
             }
+        }
+
+        #[cfg(not(target_os = "windows"))]
+        {
+            // On Unix, send SIGTERM
+            unsafe {
+                if libc::kill(pid as i32, libc::SIGTERM) == 0 {
+                    println!("  SIGTERM sent to PID {}.", pid);
+                    let _ = std::fs::remove_file(&pid_path);
+                } else {
+                    println!("  Failed to signal process {} (may not be running).", pid);
+                    let _ = std::fs::remove_file(&pid_path);
+                }
+            }
+        }
+
+        return Ok(());
+    }
 
     // (BUG #31, quality-hardening goal 冲刺 S11e) legacy 无消费方：全仓库没有
     // 任何代码读取 shutdown.signal 文件（PID 臂与 HTTP 臂是仅有的两条活路径）。
@@ -79,37 +80,38 @@ pub fn run(local: bool) -> Result<()> {
     // config.json 的 channels.web.auth_token（未配置则不发 header——服务端
     // 空 token 可过的既有约定不变）。
     if let Ok(data) = std::fs::read_to_string(common::config_path(&home))
-        && let Ok(cfg) = serde_json::from_str::<serde_json::Value>(&data) {
-            let port = cfg
-                .get("channels")
-                .and_then(|c| c.get("web"))
-                .and_then(|w| w.get("port"))
-                .and_then(|v| v.as_u64())
-                .unwrap_or(8080);
-            let token = cfg
-                .pointer("/channels/web/auth_token")
-                .and_then(|v| v.as_str())
-                .unwrap_or("")
-                .to_string();
-            match post_internal_shutdown(port as u16, &token) {
-                Ok(200) => {
-                    println!("  Shutdown requested via HTTP API (/api/internal).");
-                    let _ = std::fs::remove_file(&signal_path);
-                    return Ok(());
-                }
-                Ok(401) => {
-                    // Token 配置不一致：gateway 的 web.auth_token 与本地 config
-                    // 不匹配。如实提示，与原实现一致地继续走收尾提示。
-                    println!("  Gateway rejected shutdown (HTTP 401): auth_token mismatch.");
-                }
-                Ok(status) => {
-                    println!("  Gateway responded with status: {}", status);
-                }
-                Err(err) => {
-                    println!("  Gateway HTTP API not reachable at port {}: {}", port, err);
-                }
+        && let Ok(cfg) = serde_json::from_str::<serde_json::Value>(&data)
+    {
+        let port = cfg
+            .get("channels")
+            .and_then(|c| c.get("web"))
+            .and_then(|w| w.get("port"))
+            .and_then(|v| v.as_u64())
+            .unwrap_or(8080);
+        let token = cfg
+            .pointer("/channels/web/auth_token")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .to_string();
+        match post_internal_shutdown(port as u16, &token) {
+            Ok(200) => {
+                println!("  Shutdown requested via HTTP API (/api/internal).");
+                let _ = std::fs::remove_file(&signal_path);
+                return Ok(());
+            }
+            Ok(401) => {
+                // Token 配置不一致：gateway 的 web.auth_token 与本地 config
+                // 不匹配。如实提示，与原实现一致地继续走收尾提示。
+                println!("  Gateway rejected shutdown (HTTP 401): auth_token mismatch.");
+            }
+            Ok(status) => {
+                println!("  Gateway responded with status: {}", status);
+            }
+            Err(err) => {
+                println!("  Gateway HTTP API not reachable at port {}: {}", port, err);
             }
         }
+    }
 
     println!();
     println!("  Could not reach a running gateway.");

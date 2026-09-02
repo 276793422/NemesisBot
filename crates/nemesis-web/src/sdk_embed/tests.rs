@@ -54,10 +54,8 @@ fn export_zip_file_bytes_roundtrip() {
     // The pyproject content must be byte-identical to the source file so the
     // pip build uses the real packaging config (not a stale copy).
     let manifest = Path::new(env!("CARGO_MANIFEST_DIR"));
-    let src = std::fs::read_to_string(
-        manifest.join("../../test-tools/python/sdk/pyproject.toml"),
-    )
-    .expect("source pyproject.toml");
+    let src = std::fs::read_to_string(manifest.join("../../test-tools/python/sdk/pyproject.toml"))
+        .expect("source pyproject.toml");
     let mut ar = open(SDK_EXPORT_ZIP);
     let mut embedded = String::new();
     ar.by_name("pyproject.toml")
@@ -90,7 +88,9 @@ fn sdk_version_is_populated() {
     // "0.0.0" is the parse fallback — a real build must have found a version.
     assert_ne!(SDK_VERSION, "0.0.0", "version parsed from pyproject.toml");
     assert!(
-        SDK_VERSION.chars().all(|c| c.is_ascii_alphanumeric() || c == '.'),
+        SDK_VERSION
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '.'),
         "version is x.y.z shaped: {SDK_VERSION}"
     );
 }

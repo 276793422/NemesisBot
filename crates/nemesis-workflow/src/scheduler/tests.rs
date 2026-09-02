@@ -997,7 +997,11 @@ fn w4a_topological_sort_edge_to_unknown_node() {
     }];
     let result = topological_sort(&nodes, &edges);
     let err = result.unwrap_err();
-    assert!(err.contains("cycle"), "unknown edge target must error, got {}", err);
+    assert!(
+        err.contains("cycle"),
+        "unknown edge target must error, got {}",
+        err
+    );
 }
 
 /// schedule_resume_with_hook invokes the hook after every level
@@ -1048,7 +1052,11 @@ async fn w4a_schedule_resume_with_hook_invoked_per_level() {
 
     assert_eq!(outcome, ScheduleOutcome::Completed);
     let levels = hook.levels_seen.lock().clone();
-    assert_eq!(levels, vec![1, 2], "hook after each level with growing result set");
+    assert_eq!(
+        levels,
+        vec![1, 2],
+        "hook after each level with growing result set"
+    );
     assert_eq!(calls.lock().len(), 2);
 }
 
@@ -1075,11 +1083,22 @@ async fn w4a_schedule_conditional_edge_filters_node() {
     }];
     let mut wf_ctx = WorkflowContext::new(HashMap::new());
 
-    let outcome = schedule(&nodes, &edges, &registry, &mut wf_ctx, CancellationToken::new()).await;
+    let outcome = schedule(
+        &nodes,
+        &edges,
+        &registry,
+        &mut wf_ctx,
+        CancellationToken::new(),
+    )
+    .await;
     assert_eq!(outcome.unwrap(), ScheduleOutcome::Completed);
     let ran = calls.lock().clone();
     assert!(ran.contains(&"a".to_string()));
-    assert!(!ran.contains(&"b".to_string()), "false condition must filter b, ran={:?}", ran);
+    assert!(
+        !ran.contains(&"b".to_string()),
+        "false condition must filter b, ran={:?}",
+        ran
+    );
     assert!(wf_ctx.get_node_result("b").is_none());
 }
 
@@ -1128,9 +1147,15 @@ async fn w4a_schedule_executor_error_fails_schedule() {
     let nodes = vec![make_typed_node("a", "kaput", vec![])];
     let mut wf_ctx = WorkflowContext::new(HashMap::new());
 
-    let err = schedule(&nodes, &[], &registry, &mut wf_ctx, CancellationToken::new())
-        .await
-        .unwrap_err();
+    let err = schedule(
+        &nodes,
+        &[],
+        &registry,
+        &mut wf_ctx,
+        CancellationToken::new(),
+    )
+    .await
+    .unwrap_err();
     assert!(err.contains("kaput"), "got {}", err);
     assert!(err.contains("execution failed"), "got {}", err);
 }
@@ -1156,8 +1181,16 @@ async fn w4a_schedule_retry_backoff_fail_then_succeed() {
             Ok(NodeResult {
                 node_id: node.id.clone(),
                 output: serde_json::json!({"attempt": n}),
-                error: if failed { Some("first try failed".to_string()) } else { None },
-                state: if failed { ExecutionState::Failed } else { ExecutionState::Completed },
+                error: if failed {
+                    Some("first try failed".to_string())
+                } else {
+                    None
+                },
+                state: if failed {
+                    ExecutionState::Failed
+                } else {
+                    ExecutionState::Completed
+                },
                 started_at: chrono::Local::now(),
                 ended_at: chrono::Local::now(),
                 metadata: HashMap::new(),
@@ -1167,18 +1200,36 @@ async fn w4a_schedule_retry_backoff_fail_then_succeed() {
 
     let attempts = Arc::new(AtomicUsize::new(0));
     let registry = NodeExecutorRegistry::new();
-    registry.register("flaky", Arc::new(FlakyExecutor { attempts: attempts.clone() }));
+    registry.register(
+        "flaky",
+        Arc::new(FlakyExecutor {
+            attempts: attempts.clone(),
+        }),
+    );
 
     let mut node = make_typed_node("a", "flaky", vec![]);
     node.retry_count = 1;
     let mut wf_ctx = WorkflowContext::new(HashMap::new());
 
     let start = std::time::Instant::now();
-    let outcome = schedule(&[node], &[], &registry, &mut wf_ctx, CancellationToken::new()).await;
+    let outcome = schedule(
+        &[node],
+        &[],
+        &registry,
+        &mut wf_ctx,
+        CancellationToken::new(),
+    )
+    .await;
     assert_eq!(outcome.unwrap(), ScheduleOutcome::Completed);
     assert_eq!(attempts.load(Ordering::SeqCst), 2, "retry must re-execute");
-    assert!(start.elapsed() >= Duration::from_millis(400), "backoff before retry");
-    assert_eq!(wf_ctx.get_node_result("a").unwrap().state, ExecutionState::Completed);
+    assert!(
+        start.elapsed() >= Duration::from_millis(400),
+        "backoff before retry"
+    );
+    assert_eq!(
+        wf_ctx.get_node_result("a").unwrap().state,
+        ExecutionState::Completed
+    );
 }
 
 /// Cancelling during the retry backoff window yields Cancelled, not an
@@ -1273,11 +1324,22 @@ async fn w4a_schedule_node_timeout_fails_node() {
     let mut wf_ctx = WorkflowContext::new(HashMap::new());
 
     let start = std::time::Instant::now();
-    let result = schedule(&[node], &[], &registry, &mut wf_ctx, CancellationToken::new()).await;
+    let result = schedule(
+        &[node],
+        &[],
+        &registry,
+        &mut wf_ctx,
+        CancellationToken::new(),
+    )
+    .await;
     let elapsed = start.elapsed();
     let err = result.unwrap_err();
     assert!(err.contains("timed out"), "got {}", err);
-    assert!(elapsed < Duration::from_secs(5), "timeout must fire at ~1s, took {:?}", elapsed);
+    assert!(
+        elapsed < Duration::from_secs(5),
+        "timeout must fire at ~1s, took {:?}",
+        elapsed
+    );
 }
 
 /// A panicking node executor surfaces as a JoinError schedule failure
@@ -1302,9 +1364,15 @@ async fn w4a_schedule_panic_executor_reports_join_error() {
     let nodes = vec![make_typed_node("a", "panicky", vec![])];
     let mut wf_ctx = WorkflowContext::new(HashMap::new());
 
-    let err = schedule(&nodes, &[], &registry, &mut wf_ctx, CancellationToken::new())
-        .await
-        .unwrap_err();
+    let err = schedule(
+        &nodes,
+        &[],
+        &registry,
+        &mut wf_ctx,
+        CancellationToken::new(),
+    )
+    .await
+    .unwrap_err();
     assert!(err.contains("panicked"), "got {}", err);
 }
 
@@ -1338,9 +1406,15 @@ async fn w4a_schedule_object_output_propagates_fields() {
     let nodes = vec![make_typed_node("n1", "fieldful", vec![])];
     let mut wf_ctx = WorkflowContext::new(HashMap::new());
 
-    schedule(&nodes, &[], &registry, &mut wf_ctx, CancellationToken::new())
-        .await
-        .unwrap();
+    schedule(
+        &nodes,
+        &[],
+        &registry,
+        &mut wf_ctx,
+        CancellationToken::new(),
+    )
+    .await
+    .unwrap();
     assert_eq!(wf_ctx.get_var("n1.x"), Some(serde_json::json!(1)));
     assert_eq!(wf_ctx.get_var("n1.y"), Some(serde_json::json!("two")));
     // The bare node_id key is NOT a variable — the full output lives in the
@@ -1399,10 +1473,15 @@ async fn s12b_timeout_wraps_fast_execution_success_path() {
     let edges: Vec<Edge> = vec![];
     let mut wf_ctx = WorkflowContext::new(HashMap::new());
 
-    let outcome =
-        schedule(&nodes, &edges, &registry, &mut wf_ctx, CancellationToken::new())
-            .await
-            .unwrap();
+    let outcome = schedule(
+        &nodes,
+        &edges,
+        &registry,
+        &mut wf_ctx,
+        CancellationToken::new(),
+    )
+    .await
+    .unwrap();
     assert_eq!(outcome, ScheduleOutcome::Completed);
     assert_eq!(
         wf_ctx.get_all_node_results()["t1"].state,
@@ -1445,10 +1524,15 @@ async fn s12b_panicking_executor_surfaces_task_panic_error() {
     let edges: Vec<Edge> = vec![];
     let mut wf_ctx = WorkflowContext::new(HashMap::new());
 
-    let err =
-        schedule(&nodes, &edges, &registry, &mut wf_ctx, CancellationToken::new())
-            .await
-            .unwrap_err();
+    let err = schedule(
+        &nodes,
+        &edges,
+        &registry,
+        &mut wf_ctx,
+        CancellationToken::new(),
+    )
+    .await
+    .unwrap_err();
     // 注：panic 臂的错误串只含 JoinError 信息，不带 node id（scheduler.rs ~431）
     assert!(
         err.contains("node task panicked"),

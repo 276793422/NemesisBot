@@ -164,7 +164,7 @@ fn rms_threshold_zero_marks_speaking_on_empty_chunk_due_to_geq() {
 //（should_panic 会因析构再 panic 触发双 panic fail-fast，见 test_util.rs）。
 // ===========================================================================
 
-use super::{create_detector, SileroVadParams, SileroVoiceDetector};
+use super::{SileroVadParams, SileroVoiceDetector, create_detector};
 
 /// 白盒构造 Silero 检测器：VadEngine 指针为 null，不触发任何 FFI。
 /// （VadEngine 的 null 构造器在 vad::tests 里——字段私有，只有 vad 子树能建。）
@@ -297,7 +297,10 @@ fn silero_new_missing_model_propagates_vad_bail() {
         window_size: 512,
         sample_rate: 16000,
     };
-    let err = format!("{:#}", SileroVoiceDetector::new(&params).err().expect("must fail"));
+    let err = format!(
+        "{:#}",
+        SileroVoiceDetector::new(&params).err().expect("must fail")
+    );
     assert!(err.contains("VAD model not found"), "{err}");
 }
 

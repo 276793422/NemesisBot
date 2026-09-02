@@ -118,9 +118,9 @@ fn make_shared_with_flag(home: &std::path::Path) -> Arc<crate::agent_factory::Sh
     Arc::new(crate::agent_factory::SharedResources {
         home: home.to_path_buf(),
         agent_outbound_tx: outbound_tx,
-        cron_service: Arc::new(std::sync::Mutex::new(nemesis_cron::service::CronService::new(
-            "",
-        ))),
+        cron_service: Arc::new(std::sync::Mutex::new(
+            nemesis_cron::service::CronService::new(""),
+        )),
         mcp_config_path: home.join("nonexistent-mcp.json"),
         cluster_rpc_enabled: parking_lot::RwLock::new(Some(Arc::new(AtomicBool::new(false)))),
         ..Default::default()
@@ -171,7 +171,9 @@ async fn first_start_with_valid_config_marks_running_and_enables_rpc_tool() {
         make_adapter(&home, &tmp.path().join("tasks"));
 
     assert!(!flag.load(std::sync::atomic::Ordering::Relaxed));
-    adapter.first_start().expect("first_start with valid config");
+    adapter
+        .first_start()
+        .expect("first_start with valid config");
     assert!(ClusterServiceAdapter::is_running(&adapter));
     assert!(LifecycleService::is_running(&adapter));
     // ClusterRpcTool 使能旗标被置 true。
@@ -186,8 +188,13 @@ async fn first_start_with_bad_config_is_lenient_running_without_agent() {
     let (adapter, _cluster, _shared, _tl, _wq, flag) =
         make_adapter(&tmp.path().join("home"), &tmp.path().join("tasks"));
 
-    adapter.first_start().expect("first_start never errors today");
-    assert!(LifecycleService::is_running(&adapter), "lenient: still running");
+    adapter
+        .first_start()
+        .expect("first_start never errors today");
+    assert!(
+        LifecycleService::is_running(&adapter),
+        "lenient: still running"
+    );
     assert!(flag.load(std::sync::atomic::Ordering::Relaxed));
 }
 
@@ -203,9 +210,7 @@ async fn first_start_recovers_persisted_tasks_and_resubmits_them() {
     let mut waiting = make_pending_task("recover-waiting");
     waiting.status = TaskStatus::WaitingRemote;
     seeder.create_task(waiting);
-    seeder
-        .persist_to_disk()
-        .expect("seed persist must succeed");
+    seeder.persist_to_disk().expect("seed persist must succeed");
     drop(seeder);
 
     // 用坏 config（无 config.json）让 agent 构建失败 → 没有 agent 消费队列，
@@ -217,14 +222,20 @@ async fn first_start_recovers_persisted_tasks_and_resubmits_them() {
     // WaitingRemote → Pending 归一化（恢复语义）。
     let restored = task_list.get_task("recover-waiting").expect("restored");
     assert_eq!(restored.status, TaskStatus::Pending);
-    assert_eq!(task_list.get_task("recover-pending").unwrap().status, TaskStatus::Pending);
+    assert_eq!(
+        task_list.get_task("recover-pending").unwrap().status,
+        TaskStatus::Pending
+    );
 
     // 两个恢复任务都被重新提交进 work queue（顺序按提交先后）。
     let mut seen = vec![work_queue.next().await, work_queue.next().await];
     seen.sort();
     assert_eq!(
         seen,
-        vec![Some("recover-pending".to_string()), Some("recover-waiting".to_string())]
+        vec![
+            Some("recover-pending".to_string()),
+            Some("recover-waiting".to_string())
+        ]
     );
     // 注：ClusterWorkQueue 自持 sender，next() 不会返回 None —— 不能断言队列排空。
 }
@@ -297,7 +308,9 @@ async fn wave_c_first_start_lenient_when_tasks_index_is_corrupt() {
     // 叠加也不影响 Ok。
     let (adapter, _cluster, _shared, _tl, _wq, _flag) =
         make_adapter(&tmp.path().join("home"), &task_dir);
-    adapter.first_start().expect("restore failure must be lenient");
+    adapter
+        .first_start()
+        .expect("restore failure must be lenient");
     assert!(LifecycleService::is_running(&adapter));
 }
 
@@ -328,17 +341,16 @@ async fn wave_c_first_start_resubmit_overflow_is_bounded_by_queue_capacity() {
     // 排空判定必须用超时而非等 None。
     let mut drained = Vec::new();
     for _ in 0..ids.len() + 4 {
-        match tokio::time::timeout(
-            std::time::Duration::from_millis(500),
-            work_queue.next(),
-        )
-        .await
-        {
+        match tokio::time::timeout(std::time::Duration::from_millis(500), work_queue.next()).await {
             Ok(Some(id)) => drained.push(id),
             _ => break,
         }
     }
-    assert_eq!(drained.len(), CAPACITY, "queue must accept exactly capacity items");
+    assert_eq!(
+        drained.len(),
+        CAPACITY,
+        "queue must accept exactly capacity items"
+    );
     // 抽到的都是合法任务 id 且无重复。
     drained.sort();
     drained.dedup();
@@ -365,14 +377,12 @@ async fn wave_c_start_fails_when_rpc_port_is_already_bound() {
         bind_address: "127.0.0.1:0".to_string(),
         peers: Vec::new(),
     });
-    cluster.set_rpc_server(Arc::new(
-        nemesis_cluster::rpc::server::RpcServer::new(
-            nemesis_cluster::rpc::server::RpcServerConfig {
-                bind_address: format!("127.0.0.1:{busy_port}"),
-                ..Default::default()
-            },
-        ),
-    ));
+    cluster.set_rpc_server(Arc::new(nemesis_cluster::rpc::server::RpcServer::new(
+        nemesis_cluster::rpc::server::RpcServerConfig {
+            bind_address: format!("127.0.0.1:{busy_port}"),
+            ..Default::default()
+        },
+    )));
     let cluster = Arc::new(cluster);
 
     let shared = make_shared_with_flag(&home);

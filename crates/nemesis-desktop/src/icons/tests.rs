@@ -466,7 +466,11 @@ fn test_load_tray_icon_checked_embedded_png_succeeds() {
     // The embedded icons/icon.png ships with the crate; decoding it and
     // converting to a tray_icon::Icon is pure state (no windowing).
     let icon = load_tray_icon_checked();
-    assert!(icon.is_ok(), "load_tray_icon_checked failed: {:?}", icon.err());
+    assert!(
+        icon.is_ok(),
+        "load_tray_icon_checked failed: {:?}",
+        icon.err()
+    );
 }
 
 #[cfg(all(not(target_os = "android"), not(target_os = "linux")))]

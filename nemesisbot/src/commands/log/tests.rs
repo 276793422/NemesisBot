@@ -596,7 +596,9 @@ mod run_arm {
 
             run(
                 LogAction::Llm {
-                    action: LlmAction::Type { log_type: "raw".into() },
+                    action: LlmAction::Type {
+                        log_type: "raw".into(),
+                    },
                 },
                 false,
             )
@@ -605,7 +607,9 @@ mod run_arm {
 
             run(
                 LogAction::Llm {
-                    action: LlmAction::Type { log_type: "default".into() },
+                    action: LlmAction::Type {
+                        log_type: "default".into(),
+                    },
                 },
                 false,
             )
@@ -614,7 +618,9 @@ mod run_arm {
 
             let err = run(
                 LogAction::Llm {
-                    action: LlmAction::Type { log_type: "bogus".into() },
+                    action: LlmAction::Type {
+                        log_type: "bogus".into(),
+                    },
                 },
                 false,
             )
@@ -704,7 +710,9 @@ mod run_arm {
 
             run(
                 LogAction::General {
-                    action: GeneralAction::Level { level: "DEBUG".into() },
+                    action: GeneralAction::Level {
+                        level: "DEBUG".into(),
+                    },
                 },
                 false,
             )
@@ -713,7 +721,9 @@ mod run_arm {
 
             run(
                 LogAction::General {
-                    action: GeneralAction::Level { level: "NOPE".into() },
+                    action: GeneralAction::Level {
+                        level: "NOPE".into(),
+                    },
                 },
                 false,
             )
@@ -721,7 +731,9 @@ mod run_arm {
 
             run(
                 LogAction::General {
-                    action: GeneralAction::File { path: "gen/app.log".into() },
+                    action: GeneralAction::File {
+                        path: "gen/app.log".into(),
+                    },
                 },
                 false,
             )
@@ -774,14 +786,18 @@ mod run_arm {
             assert_eq!(read_cfg(&home)["logging"]["llm"]["detail_level"], "full");
 
             run(
-                LogAction::SetLevel { level: "WARN".into() },
+                LogAction::SetLevel {
+                    level: "WARN".into(),
+                },
                 false,
             )
             .expect("顶层 SetLevel → general level");
             assert_eq!(read_cfg(&home)["logging"]["general"]["level"], "WARN");
 
             run(
-                LogAction::SetLevel { level: "BAD".into() },
+                LogAction::SetLevel {
+                    level: "BAD".into(),
+                },
                 false,
             )
             .expect("顶层 SetLevel 非法 → Ok-noop");
@@ -798,11 +814,16 @@ mod run_arm {
             // 污染仓库工作区——None 分支留白，见 tests.rs 头注）。
             let logfile = home.join("logs").join("app.log");
             run(
-                LogAction::EnableFile { path: Some(logfile.to_string_lossy().into()) },
+                LogAction::EnableFile {
+                    path: Some(logfile.to_string_lossy().into()),
+                },
                 false,
             )
             .expect("enable file ok");
-            assert!(logfile.parent().unwrap().exists(), "父目录被 create_dir_all");
+            assert!(
+                logfile.parent().unwrap().exists(),
+                "父目录被 create_dir_all"
+            );
             assert_eq!(
                 read_cfg(&home)["logging"]["general"]["file"],
                 logfile.to_string_lossy().as_ref()
@@ -834,12 +855,12 @@ mod run_arm {
 mod wave_a {
     // run/LlmAction/LogAction 只有下方 Windows 形态的 dispatch 测试使用，
     // 随之门控（Linux 上拆开导入，避免 unused import 死代码）。
+    #[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
+    use super::super::{LlmAction, LogAction, run};
     use super::super::{
         cmd_general_console, cmd_llm_enable, cmd_llm_status, default_logging_config,
         write_logging_config,
     };
-    #[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
-    use super::super::{run, LlmAction, LogAction};
 
     #[cfg(windows)] // Windows-form helper (Linux nightly: excluded, 2026-09-02 sweep)
     fn with_env_home(f: impl FnOnce(std::path::PathBuf)) {
@@ -918,7 +939,9 @@ mod wave_a {
 
             run(
                 LogAction::Llm {
-                    action: LlmAction::Type { log_type: "raw".into() },
+                    action: LlmAction::Type {
+                        log_type: "raw".into(),
+                    },
                 },
                 false,
             )
@@ -949,8 +972,7 @@ mod wave_a {
         let data: serde_json::Value =
             serde_json::from_str(&std::fs::read_to_string(&cfg).unwrap()).unwrap();
         assert_eq!(
-            data["logging"]["general"]["enable_console"],
-            true,
+            data["logging"]["general"]["enable_console"], true,
             "fallback 读到旧键 false 后必须翻为 true"
         );
         assert_eq!(data["logging"]["general"]["console"], true);
@@ -1028,7 +1050,10 @@ mod wave_c {
             "相对 log_dir 必须解析到 workspace 下：{written}"
         );
         assert!(std::path::Path::new(written).exists(), "log_dir 目录被创建");
-        assert_eq!(data["logging"]["llm"]["detail_level"], "full", "保持注入默认");
+        assert_eq!(
+            data["logging"]["llm"]["detail_level"], "full",
+            "保持注入默认"
+        );
         assert_eq!(data["logging"]["general"]["level"], "WARN", "原字段保留");
     }
 }
@@ -1056,7 +1081,10 @@ fn r10_llm_enable_fills_explicit_empty_string_fields() {
 
     let data: serde_json::Value =
         serde_json::from_str(&std::fs::read_to_string(&cfg).unwrap()).unwrap();
-    assert_eq!(data["logging"]["llm"]["detail_level"], "full", "显式空串必须被填成默认 full");
+    assert_eq!(
+        data["logging"]["llm"]["detail_level"], "full",
+        "显式空串必须被填成默认 full"
+    );
     assert_eq!(data["logging"]["llm"]["log_dir"], "logs/request_logs");
     assert_eq!(data["logging"]["llm"]["enabled"], true);
 }
@@ -1064,7 +1092,7 @@ fn r10_llm_enable_fills_explicit_empty_string_fields() {
 // 整 mod Windows 形态（1/1 测试 + 专属 use 全走 Windows CLI 进程边界）。
 #[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
 mod r10_subprocess {
-    use test_harness::{resolve_nemesisbot_bin, TestWorkspace};
+    use test_harness::{TestWorkspace, resolve_nemesisbot_bin};
 
     #[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
     #[tokio::test]
@@ -1078,13 +1106,7 @@ mod r10_subprocess {
         let out = ws
             .run_cli(
                 &bin,
-                &[
-                    "log",
-                    "llm",
-                    "config",
-                    "--detail-level",
-                    "r10-bogus-level",
-                ],
+                &["log", "llm", "config", "--detail-level", "r10-bogus-level"],
             )
             .await;
         assert_eq!(
@@ -1093,14 +1115,18 @@ mod r10_subprocess {
             out.stdout, out.stderr
         );
         assert!(
-            out.stdout.contains("Invalid detail level 'r10-bogus-level'"),
+            out.stdout
+                .contains("Invalid detail level 'r10-bogus-level'"),
             "错误文案必须指名非法值：\n{}",
             out.stdout
         );
 
         // 对照组：合法值正常退码 0 且落盘。
         let ok = ws
-            .run_cli(&bin, &["log", "llm", "config", "--detail-level", "truncated"])
+            .run_cli(
+                &bin,
+                &["log", "llm", "config", "--detail-level", "truncated"],
+            )
             .await;
         assert!(
             ok.success(),

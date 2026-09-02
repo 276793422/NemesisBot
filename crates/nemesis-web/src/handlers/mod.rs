@@ -7,12 +7,12 @@
 pub mod agent;
 pub mod board;
 pub mod channels;
-pub mod coding;
-pub mod commands;
 #[cfg(feature = "cluster")]
 pub mod cluster;
 #[cfg(feature = "cluster")]
 pub mod cluster_persona_gen;
+pub mod coding;
+pub mod commands;
 pub mod config;
 pub mod estop;
 #[cfg(feature = "forge")]
@@ -58,9 +58,9 @@ mod sessions_s10b_tests;
 // utility arms (absolute/traversal rejection, canonicalize fallback, atomic
 // write fallback) + ConfigHandler error arms and CORS stubs.
 #[cfg(test)]
-mod s10b_tests;
-#[cfg(test)]
 mod config_s10b_tests;
+#[cfg(test)]
+mod s10b_tests;
 
 use std::path::PathBuf;
 use std::sync::Arc;

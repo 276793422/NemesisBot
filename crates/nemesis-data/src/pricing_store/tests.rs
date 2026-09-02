@@ -5,10 +5,7 @@ use super::*;
 use crate::models::ModelPricing;
 
 fn tmp_dir(name: &str) -> PathBuf {
-    let d = std::env::temp_dir().join(format!(
-        "nb-pricing-store-{}-{name}",
-        std::process::id()
-    ));
+    let d = std::env::temp_dir().join(format!("nb-pricing-store-{}-{name}", std::process::id()));
     let _ = std::fs::remove_dir_all(&d);
     d
 }
@@ -70,14 +67,20 @@ fn custom_overrides_downloaded_and_embedded() {
     // 下载层条目仍可达。
     assert_eq!(store.lookup("glm-4.7").unwrap().input_cost_per_million, 8.0);
     // 内置兜底仍可达（claude-sonnet-4-5 在内置 36 表内）。
-    assert_eq!(store.lookup("claude-sonnet-4-5").unwrap().model_id, "claude-sonnet-4-5");
+    assert_eq!(
+        store.lookup("claude-sonnet-4-5").unwrap().model_id,
+        "claude-sonnet-4-5"
+    );
 }
 
 #[test]
 fn provider_qualified_name_hits_bare_suffix() {
     let (_dir, store) = fresh_store("suffix");
     store
-        .replace_downloaded(vec![entry("deepseek-chat", 0.27, 1.1)], PricingMeta::default())
+        .replace_downloaded(
+            vec![entry("deepseek-chat", 0.27, 1.1)],
+            PricingMeta::default(),
+        )
         .unwrap();
     // 我们的配置名是 provider/model 形状。
     let p = store.lookup("deepseek/deepseek-chat").unwrap();
@@ -92,7 +95,13 @@ fn cost_math_matches_cost_from_pricing() {
         .unwrap();
     // (1e6 - 2e5 - 3e5) * 2.5 + 2e5 * 10 / 1e6 … 全部 per-million /1e6。
     let cost = store.compute_cost_usd("m1", 1_000_000, 200_000, 200_000, 300_000);
-    let expect = crate::cost_from_pricing(&entry("m1", 2.5, 10.0), 1_000_000, 200_000, 200_000, 300_000);
+    let expect = crate::cost_from_pricing(
+        &entry("m1", 2.5, 10.0),
+        1_000_000,
+        200_000,
+        200_000,
+        300_000,
+    );
     assert!((cost - expect).abs() < 1e-12);
     assert_eq!(store.compute_cost_usd("unknown-model", 100, 100, 0, 0), 0.0);
 }
@@ -104,7 +113,10 @@ fn corrupt_custom_file_degrades_and_survives() {
     // 写坏自定义文件后重开 → 自定义层丢弃（降级），下载/内置层继续。
     std::fs::write(dir.join(CUSTOM_FILE), "{not json").unwrap();
     let reopened = PricingStore::open(&dir).unwrap();
-    assert!(reopened.lookup("keep").is_none(), "corrupt custom layer dropped");
+    assert!(
+        reopened.lookup("keep").is_none(),
+        "corrupt custom layer dropped"
+    );
     assert!(reopened.lookup("gpt-4o").is_some(), "embedded still works");
 }
 
@@ -116,7 +128,10 @@ fn upsert_is_idempotent_and_remove_reports_missing() {
     assert_eq!(store.list_custom().len(), 1);
     assert_eq!(store.list_custom()[0].input_cost_per_million, 2.0);
     assert!(store.remove_custom("x").unwrap());
-    assert!(!store.remove_custom("x").unwrap(), "second remove = not found");
+    assert!(
+        !store.remove_custom("x").unwrap(),
+        "second remove = not found"
+    );
 }
 
 #[test]
@@ -136,8 +151,17 @@ fn persistence_across_reopen() {
     store.upsert_custom(entry("cust-model", 7.0, 7.0)).unwrap();
 
     let reopened = PricingStore::open(&dir).unwrap();
-    assert_eq!(reopened.lookup("dl-model").unwrap().input_cost_per_million, 5.0);
-    assert_eq!(reopened.lookup("cust-model").unwrap().input_cost_per_million, 7.0);
+    assert_eq!(
+        reopened.lookup("dl-model").unwrap().input_cost_per_million,
+        5.0
+    );
+    assert_eq!(
+        reopened
+            .lookup("cust-model")
+            .unwrap()
+            .input_cost_per_million,
+        7.0
+    );
     let meta = reopened.meta();
     assert_eq!(meta.etag.as_deref(), Some("\"abc\""));
     assert_eq!(meta.entry_count, 1);
@@ -150,9 +174,14 @@ fn failed_fetch_updates_meta_but_keeps_table() {
     store
         .replace_downloaded(vec![entry("dl-model", 5.0, 5.0)], PricingMeta::default())
         .unwrap();
-    store.record_failed_fetch("https://mirror.test/table.json").unwrap();
+    store
+        .record_failed_fetch("https://mirror.test/table.json")
+        .unwrap();
     // 表保留 + meta 刷新。
-    assert_eq!(store.lookup("dl-model").unwrap().input_cost_per_million, 5.0);
+    assert_eq!(
+        store.lookup("dl-model").unwrap().input_cost_per_million,
+        5.0
+    );
     assert_eq!(
         store.meta().source_url.as_deref(),
         Some("https://mirror.test/table.json")

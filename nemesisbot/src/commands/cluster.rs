@@ -236,23 +236,22 @@ pub async fn run(action: ClusterAction, local: bool) -> Result<()> {
             if cfg_path.exists() {
                 println!("  Config: {} [found]", cfg_path.display());
                 if let Ok(data) = std::fs::read_to_string(&cfg_path)
-                    && let Ok(cfg) = serde_json::from_str::<serde_json::Value>(&data) {
-                        // 系统参数从 config.cluster.json 读
-                        if let Some(enabled) = cfg.get("enabled").and_then(|v| v.as_bool()) {
-                            println!("  Enabled: {}", enabled);
-                        }
-                        if let Some(port) = cfg.get("port").and_then(|v| v.as_u64()) {
-                            println!("  UDP Port: {}", port);
-                        }
-                        if let Some(rpc_port) = cfg.get("rpc_port").and_then(|v| v.as_u64()) {
-                            println!("  RPC Port: {}", rpc_port);
-                        }
-                        if let Some(interval) =
-                            cfg.get("broadcast_interval").and_then(|v| v.as_u64())
-                        {
-                            println!("  Broadcast Interval: {}s", interval);
-                        }
+                    && let Ok(cfg) = serde_json::from_str::<serde_json::Value>(&data)
+                {
+                    // 系统参数从 config.cluster.json 读
+                    if let Some(enabled) = cfg.get("enabled").and_then(|v| v.as_bool()) {
+                        println!("  Enabled: {}", enabled);
                     }
+                    if let Some(port) = cfg.get("port").and_then(|v| v.as_u64()) {
+                        println!("  UDP Port: {}", port);
+                    }
+                    if let Some(rpc_port) = cfg.get("rpc_port").and_then(|v| v.as_u64()) {
+                        println!("  RPC Port: {}", rpc_port);
+                    }
+                    if let Some(interval) = cfg.get("broadcast_interval").and_then(|v| v.as_u64()) {
+                        println!("  Broadcast Interval: {}s", interval);
+                    }
+                }
 
                 // 身份字段从 peers.toml [node] 段读
                 let peers_path = common::cluster_dir(&home).join("peers.toml");
@@ -291,48 +290,49 @@ pub async fn run(action: ClusterAction, local: bool) -> Result<()> {
             println!("======================");
             if cfg_path.exists() {
                 if let Ok(data) = std::fs::read_to_string(&cfg_path)
-                    && let Ok(mut cfg) = serde_json::from_str::<serde_json::Value>(&data) {
-                        // Read current values for display
-                        let cur_udp =
-                            cfg.get("port").and_then(|v| v.as_u64()).unwrap_or(11949) as u16;
-                        let cur_rpc = cfg
-                            .get("rpc_port")
-                            .and_then(|v| v.as_u64())
-                            .unwrap_or(21949) as u16;
-                        let cur_interval = cfg
-                            .get("broadcast_interval")
-                            .and_then(|v| v.as_u64())
-                            .unwrap_or(30);
+                    && let Ok(mut cfg) = serde_json::from_str::<serde_json::Value>(&data)
+                {
+                    // Read current values for display
+                    let cur_udp = cfg.get("port").and_then(|v| v.as_u64()).unwrap_or(11949) as u16;
+                    let cur_rpc = cfg
+                        .get("rpc_port")
+                        .and_then(|v| v.as_u64())
+                        .unwrap_or(21949) as u16;
+                    let cur_interval = cfg
+                        .get("broadcast_interval")
+                        .and_then(|v| v.as_u64())
+                        .unwrap_or(30);
 
-                        // Display current values
-                        println!("  UDP Port: {}", cur_udp);
-                        println!("  RPC Port: {}", cur_rpc);
-                        println!("  Broadcast Interval: {}s", cur_interval);
+                    // Display current values
+                    println!("  UDP Port: {}", cur_udp);
+                    println!("  RPC Port: {}", cur_rpc);
+                    println!("  Broadcast Interval: {}s", cur_interval);
 
-                        // Only update and save if values differ from what's currently stored
-                        if (udp_port != cur_udp
-                            || rpc_port != cur_rpc
-                            || broadcast_interval != cur_interval)
-                            && let Some(obj) = cfg.as_object_mut() {
-                                obj.insert(
-                                    "port".to_string(),
-                                    serde_json::Value::Number(udp_port.into()),
-                                );
-                                obj.insert(
-                                    "rpc_port".to_string(),
-                                    serde_json::Value::Number(rpc_port.into()),
-                                );
-                                obj.insert(
-                                    "broadcast_interval".to_string(),
-                                    serde_json::Value::Number(broadcast_interval.into()),
-                                );
-                                let _ = std::fs::write(
-                                    &cfg_path,
-                                    serde_json::to_string_pretty(&cfg).unwrap_or_default(),
-                                );
-                                println!("Configuration updated.");
-                            }
+                    // Only update and save if values differ from what's currently stored
+                    if (udp_port != cur_udp
+                        || rpc_port != cur_rpc
+                        || broadcast_interval != cur_interval)
+                        && let Some(obj) = cfg.as_object_mut()
+                    {
+                        obj.insert(
+                            "port".to_string(),
+                            serde_json::Value::Number(udp_port.into()),
+                        );
+                        obj.insert(
+                            "rpc_port".to_string(),
+                            serde_json::Value::Number(rpc_port.into()),
+                        );
+                        obj.insert(
+                            "broadcast_interval".to_string(),
+                            serde_json::Value::Number(broadcast_interval.into()),
+                        );
+                        let _ = std::fs::write(
+                            &cfg_path,
+                            serde_json::to_string_pretty(&cfg).unwrap_or_default(),
+                        );
+                        println!("Configuration updated.");
                     }
+                }
             } else {
                 println!("Config file not found. Run 'nemesisbot cluster init' first.");
             }
@@ -376,9 +376,9 @@ pub async fn run(action: ClusterAction, local: bool) -> Result<()> {
                     if changed
                         && let Err(e) =
                             nemesis_cluster::cluster_config::save_static_config(&peers_path, &sc)
-                        {
-                            println!("  Failed to save peers.toml: {}", e);
-                        }
+                    {
+                        println!("  Failed to save peers.toml: {}", e);
+                    }
                     println!("Node Information");
                     println!("================");
                     println!(
@@ -484,48 +484,47 @@ pub async fn run(action: ClusterAction, local: bool) -> Result<()> {
                 if peers_path.exists() {
                     if let Ok(data) = std::fs::read_to_string(&peers_path)
                         && let Ok(mut doc) = data.parse::<toml::Value>()
-                            && let Some(peers) = doc
-                                .as_table_mut()
-                                .and_then(|t| t.get_mut("peers"))
-                                .and_then(|v| v.as_table_mut())
-                            {
-                                let legacy_key =
-                                    id.replace(['.', ':', '-'], "_");
-                                let canonical_key = id.replace(['.', ':'], "_");
-                                let target_key = if peers.contains_key(&legacy_key) {
-                                    Some(legacy_key)
-                                } else if peers.contains_key(&canonical_key) {
-                                    Some(canonical_key)
-                                } else if peers.contains_key(id.as_str()) {
-                                    Some(id.clone())
+                        && let Some(peers) = doc
+                            .as_table_mut()
+                            .and_then(|t| t.get_mut("peers"))
+                            .and_then(|v| v.as_table_mut())
+                    {
+                        let legacy_key = id.replace(['.', ':', '-'], "_");
+                        let canonical_key = id.replace(['.', ':'], "_");
+                        let target_key = if peers.contains_key(&legacy_key) {
+                            Some(legacy_key)
+                        } else if peers.contains_key(&canonical_key) {
+                            Some(canonical_key)
+                        } else if peers.contains_key(id.as_str()) {
+                            Some(id.clone())
+                        } else {
+                            // 兜底：按 address 字段匹配（enable/disable 同款）
+                            peers.iter().find_map(|(k, v)| {
+                                let addr = v
+                                    .as_table()
+                                    .and_then(|t| t.get("address"))
+                                    .and_then(|a| a.as_str());
+                                if addr == Some(id.as_str()) {
+                                    Some(k.clone())
                                 } else {
-                                    // 兜底：按 address 字段匹配（enable/disable 同款）
-                                    peers.iter().find_map(|(k, v)| {
-                                        let addr = v
-                                            .as_table()
-                                            .and_then(|t| t.get("address"))
-                                            .and_then(|a| a.as_str());
-                                        if addr == Some(id.as_str()) {
-                                            Some(k.clone())
-                                        } else {
-                                            None
-                                        }
-                                    })
-                                };
-                                if let Some(key) = target_key {
-                                    if peers.remove(&key).is_some() {
-                                        let _ = std::fs::write(
-                                            &peers_path,
-                                            toml::to_string_pretty(&doc).unwrap_or_default(),
-                                        );
-                                        println!("  Peer {} removed.", id);
-                                    } else {
-                                        println!("  Peer {} not found.", id);
-                                    }
-                                } else {
-                                    println!("  Peer {} not found.", id);
+                                    None
                                 }
+                            })
+                        };
+                        if let Some(key) = target_key {
+                            if peers.remove(&key).is_some() {
+                                let _ = std::fs::write(
+                                    &peers_path,
+                                    toml::to_string_pretty(&doc).unwrap_or_default(),
+                                );
+                                println!("  Peer {} removed.", id);
+                            } else {
+                                println!("  Peer {} not found.", id);
                             }
+                        } else {
+                            println!("  Peer {} not found.", id);
+                        }
+                    }
                 } else {
                     println!("  No peers file found.");
                 }
@@ -791,15 +790,15 @@ pub async fn run(action: ClusterAction, local: bool) -> Result<()> {
             let cfg_path = common::cluster_config_path(&home);
             if cfg_path.exists()
                 && let Ok(data) = std::fs::read_to_string(&cfg_path)
-                    && let Ok(cfg) = serde_json::from_str::<serde_json::Value>(&data)
-                        && cfg
-                            .get("enabled")
-                            .and_then(|v| v.as_bool())
-                            .unwrap_or(false)
-                        {
-                            println!("Cluster is already enabled.");
-                            return Ok(());
-                        }
+                && let Ok(cfg) = serde_json::from_str::<serde_json::Value>(&data)
+                && cfg
+                    .get("enabled")
+                    .and_then(|v| v.as_bool())
+                    .unwrap_or(false)
+            {
+                println!("Cluster is already enabled.");
+                return Ok(());
+            }
             update_cluster_config(&home, "enabled", true)?;
             update_main_config_cluster(&home, true)?;
             println!("Cluster enabled. Restart gateway to apply.");
@@ -808,15 +807,15 @@ pub async fn run(action: ClusterAction, local: bool) -> Result<()> {
             let cfg_path = common::cluster_config_path(&home);
             if cfg_path.exists()
                 && let Ok(data) = std::fs::read_to_string(&cfg_path)
-                    && let Ok(cfg) = serde_json::from_str::<serde_json::Value>(&data)
-                        && !cfg
-                            .get("enabled")
-                            .and_then(|v| v.as_bool())
-                            .unwrap_or(false)
-                        {
-                            println!("Cluster is already disabled.");
-                            return Ok(());
-                        }
+                && let Ok(cfg) = serde_json::from_str::<serde_json::Value>(&data)
+                && !cfg
+                    .get("enabled")
+                    .and_then(|v| v.as_bool())
+                    .unwrap_or(false)
+            {
+                println!("Cluster is already disabled.");
+                return Ok(());
+            }
             update_cluster_config(&home, "enabled", false)?;
             update_main_config_cluster(&home, false)?;
             println!("Cluster disabled. Restart gateway to apply.");
@@ -825,15 +824,15 @@ pub async fn run(action: ClusterAction, local: bool) -> Result<()> {
             let cfg_path = common::cluster_config_path(&home);
             if cfg_path.exists()
                 && let Ok(data) = std::fs::read_to_string(&cfg_path)
-                    && let Ok(cfg) = serde_json::from_str::<serde_json::Value>(&data)
-                        && cfg
-                            .get("enabled")
-                            .and_then(|v| v.as_bool())
-                            .unwrap_or(false)
-                        {
-                            println!("Cluster is already enabled.");
-                            return Ok(());
-                        }
+                && let Ok(cfg) = serde_json::from_str::<serde_json::Value>(&data)
+                && cfg
+                    .get("enabled")
+                    .and_then(|v| v.as_bool())
+                    .unwrap_or(false)
+            {
+                println!("Cluster is already enabled.");
+                return Ok(());
+            }
             update_cluster_config(&home, "enabled", true)?;
             println!("Cluster enabled. Restart gateway to apply.");
         }
@@ -841,15 +840,15 @@ pub async fn run(action: ClusterAction, local: bool) -> Result<()> {
             let cfg_path = common::cluster_config_path(&home);
             if cfg_path.exists()
                 && let Ok(data) = std::fs::read_to_string(&cfg_path)
-                    && let Ok(cfg) = serde_json::from_str::<serde_json::Value>(&data)
-                        && !cfg
-                            .get("enabled")
-                            .and_then(|v| v.as_bool())
-                            .unwrap_or(false)
-                        {
-                            println!("Cluster is already disabled.");
-                            return Ok(());
-                        }
+                && let Ok(cfg) = serde_json::from_str::<serde_json::Value>(&data)
+                && !cfg
+                    .get("enabled")
+                    .and_then(|v| v.as_bool())
+                    .unwrap_or(false)
+            {
+                println!("Cluster is already disabled.");
+                return Ok(());
+            }
             update_cluster_config(&home, "enabled", false)?;
             println!("Cluster disabled. Restart gateway to apply.");
         }
@@ -1263,40 +1262,41 @@ async fn run_node(
     let peers_path = common::cluster_dir(home).join("peers.toml");
     if peers_path.exists()
         && let Ok(content) = std::fs::read_to_string(&peers_path)
-            && let Ok(doc) = content.parse::<toml::Value>()
-                && let Some(peers_table) = doc.get("peers").and_then(|v| v.as_table()) {
-                    for (key, val) in peers_table {
-                        let peer_id = key.replace('_', "-");
-                        let addr = val.get("address").and_then(|v| v.as_str()).unwrap_or("");
-                        let name = val.get("name").and_then(|v| v.as_str()).unwrap_or(&peer_id);
-                        let role = val.get("role").and_then(|v| v.as_str()).unwrap_or("worker");
-                        let cat = val
-                            .get("category")
-                            .and_then(|v| v.as_str())
-                            .unwrap_or("general");
-                        if addr.is_empty() {
-                            continue;
-                        }
-                        let (host, up) = parse_host_port(addr);
-                        let rp = if up > 0 { up + 10000 } else { 0 };
-                        let addresses = if host.is_empty() { vec![] } else { vec![host] };
-                        info!(
-                            "[Node] Loading static peer: {} ({}) addr={} rpc_port={}",
-                            name, peer_id, addr, rp
-                        );
-                        cluster.handle_discovered_node(
-                            &peer_id,
-                            name,
-                            addresses,
-                            rp,
-                            role,
-                            cat,
-                            vec![],
-                            vec![],
-                            "unknown",
-                        );
-                    }
-                }
+        && let Ok(doc) = content.parse::<toml::Value>()
+        && let Some(peers_table) = doc.get("peers").and_then(|v| v.as_table())
+    {
+        for (key, val) in peers_table {
+            let peer_id = key.replace('_', "-");
+            let addr = val.get("address").and_then(|v| v.as_str()).unwrap_or("");
+            let name = val.get("name").and_then(|v| v.as_str()).unwrap_or(&peer_id);
+            let role = val.get("role").and_then(|v| v.as_str()).unwrap_or("worker");
+            let cat = val
+                .get("category")
+                .and_then(|v| v.as_str())
+                .unwrap_or("general");
+            if addr.is_empty() {
+                continue;
+            }
+            let (host, up) = parse_host_port(addr);
+            let rp = if up > 0 { up + 10000 } else { 0 };
+            let addresses = if host.is_empty() { vec![] } else { vec![host] };
+            info!(
+                "[Node] Loading static peer: {} ({}) addr={} rpc_port={}",
+                name, peer_id, addr, rp
+            );
+            cluster.handle_discovered_node(
+                &peer_id,
+                name,
+                addresses,
+                rp,
+                role,
+                cat,
+                vec![],
+                vec![],
+                "unknown",
+            );
+        }
+    }
 
     // Create and set RPC server (before start)
     let rpc_server_config = nemesis_cluster::rpc::server::RpcServerConfig {
@@ -1523,10 +1523,11 @@ fn enable_peer_in_toml(toml_content: &str, addr: &str, enabled: bool) -> Result<
         for (key, val) in peers.iter() {
             if let Some(peer_table) = val.as_table()
                 && let Some(peer_addr) = peer_table.get("address").and_then(|v| v.as_str())
-                    && peer_addr == addr {
-                        found = Some(key.clone());
-                        break;
-                    }
+                && peer_addr == addr
+            {
+                found = Some(key.clone());
+                break;
+            }
         }
         found.ok_or_else(|| format!("Peer {} not found in peers.toml", addr))?
     };

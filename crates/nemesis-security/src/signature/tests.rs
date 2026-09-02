@@ -1313,14 +1313,20 @@ fn test_trust_store_save_rename_to_directory_errors() {
     let tmp = dir.path().join("store_dir.tmp");
     let store = TrustStore::new(Some(&store_dir));
     store.add_key("key-a", "alice", TrustLevel::Verified);
-    assert!(!tmp.exists(), "auto-save failure path must have cleaned tmp");
+    assert!(
+        !tmp.exists(),
+        "auto-save failure path must have cleaned tmp"
+    );
     // 再显式调一次观察错误文本
     let err = store.save().unwrap_err();
     assert!(
         err.contains("failed to rename trust store"),
         "unexpected error: {err}"
     );
-    assert!(!tmp.exists(), "tmp file must be cleaned after rename failure");
+    assert!(
+        !tmp.exists(),
+        "tmp file must be cleaned after rename failure"
+    );
 }
 
 #[test]
@@ -1507,7 +1513,8 @@ fn test_verify_file_non_matching_key_in_store_falls_through() {
     let wrong_key_sig = sign_file(&file_path, &sk2).unwrap();
 
     let v = make_verifier(dir.path());
-    v.trust_store().add_key(&pk1_b64, "alice", TrustLevel::Verified);
+    v.trust_store()
+        .add_key(&pk1_b64, "alice", TrustLevel::Verified);
 
     // 64 字节但由别的 key 签的 → verify 失败穿透
     let result = v.verify_file(&file_path, &wrong_key_sig).unwrap();
@@ -1554,13 +1561,25 @@ fn test_verify_signature_ed25519_fallthrough_arms() {
     let sig_hex = sign_content_hex("content", &kp.private_key).unwrap();
 
     // ① sig hex 合法但解码后非 64 字节
-    assert!(!verify_signature_ed25519(b"content", "abcd", &kp.public_key));
+    assert!(!verify_signature_ed25519(
+        b"content",
+        "abcd",
+        &kp.public_key
+    ));
     // ② sig 合法 64 字节但 pk hex 长度不对（hex_decode_32 Err）
     assert!(!verify_signature_ed25519(b"content", &sig_hex, "abcd"));
     // ③ sig 本身不是合法 hex（hex_decode_vec Err）
-    assert!(!verify_signature_ed25519(b"content", "not-hex!", &kp.public_key));
+    assert!(!verify_signature_ed25519(
+        b"content",
+        "not-hex!",
+        &kp.public_key
+    ));
     // 正向对照：真实签名验证通过
-    assert!(verify_signature_ed25519(b"content", &sig_hex, &kp.public_key));
+    assert!(verify_signature_ed25519(
+        b"content",
+        &sig_hex,
+        &kp.public_key
+    ));
 }
 
 #[test]
@@ -1571,12 +1590,19 @@ fn test_compute_directory_hash_nested_signature_included() {
     let skill = dir.path().join("nested");
     std::fs::create_dir_all(skill.join("sub")).unwrap();
     std::fs::write(skill.join("SKILL.md"), "# Test").unwrap();
-    std::fs::write(skill.join("sub").join(SIGNATURE_FILE_NAME), "junk-signature").unwrap();
+    std::fs::write(
+        skill.join("sub").join(SIGNATURE_FILE_NAME),
+        "junk-signature",
+    )
+    .unwrap();
     // 根级 .signature 也会被排除，不计数
     std::fs::write(skill.join(SIGNATURE_FILE_NAME), "root sig").unwrap();
 
     let (hash1, count) = compute_directory_hash(&skill).unwrap();
-    assert_eq!(count, 2, "SKILL.md + nested sub/.signature, root .signature excluded");
+    assert_eq!(
+        count, 2,
+        "SKILL.md + nested sub/.signature, root .signature excluded"
+    );
     let (hash2, _) = compute_directory_hash(&skill).unwrap();
     assert_eq!(hash1, hash2, "hash must be deterministic");
 }
@@ -1600,14 +1626,20 @@ fn test_trust_store_revoke_key_by_name_success() {
 
     // 按名字吊销成功 → level 变 Revoked，且持久化
     store.revoke_key("carol").unwrap();
-    assert!(matches!(store.get_key_by_name("carol").map(|k| k.level), Some(TrustLevel::Revoked)));
+    assert!(matches!(
+        store.get_key_by_name("carol").map(|k| k.level),
+        Some(TrustLevel::Revoked)
+    ));
 
     // 不存在的名字 → Err
     assert!(store.revoke_key("nobody").is_err());
 
     // 重新加载磁盘文件，吊销状态被持久化
     let reloaded = TrustStore::new(Some(&store_path));
-    assert!(matches!(reloaded.get_key_by_name("carol").map(|k| k.level), Some(TrustLevel::Revoked)));
+    assert!(matches!(
+        reloaded.get_key_by_name("carol").map(|k| k.level),
+        Some(TrustLevel::Revoked)
+    ));
 }
 
 #[test]
@@ -1628,10 +1660,15 @@ fn test_verify_skill_content_hash_mismatch() {
     std::fs::write(skill.join("extra.txt"), "tampered").unwrap();
 
     let v = make_verifier(dir.path());
-    v.trust_store().add_key(&pk_b64, "signer-t", TrustLevel::Verified);
+    v.trust_store()
+        .add_key(&pk_b64, "signer-t", TrustLevel::Verified);
     let result = v.verify_skill(&skill);
     assert!(!result.valid);
-    assert!(result.error.contains("hash mismatch"), "error: {}", result.error);
+    assert!(
+        result.error.contains("hash mismatch"),
+        "error: {}",
+        result.error
+    );
 }
 
 #[test]
@@ -1647,7 +1684,8 @@ fn test_verify_file_success_with_trusted_key() {
     let sig = sign_file(&file_path, &sk).unwrap();
 
     let v = make_verifier(dir.path());
-    v.trust_store().add_key(&pk_b64, "dave", TrustLevel::Verified);
+    v.trust_store()
+        .add_key(&pk_b64, "dave", TrustLevel::Verified);
     let result = v.verify_file(&file_path, &sig).unwrap();
     assert!(result.valid, "error: {}", result.error);
     assert_eq!(result.signer, "dave");

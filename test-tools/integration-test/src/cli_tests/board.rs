@@ -67,8 +67,11 @@ pub async fn test_cli_issue_crud(ws: &TestWorkspace, bin: &Path) -> Vec<TestResu
     }
 
     // status 转移 → in_progress
-    let out = ws.run_cli(bin, &["issue", "status", "NB-1", "in_progress"]).await;
-    if out.success() && out.stdout_contains("状态已转移") && out.stdout_contains("in_progress") {
+    let out = ws
+        .run_cli(bin, &["issue", "status", "NB-1", "in_progress"])
+        .await;
+    if out.success() && out.stdout_contains("状态已转移") && out.stdout_contains("in_progress")
+    {
         results.push(pass(&format!("{}/status", suite), "transitioned"));
     } else {
         results.push(fail(
@@ -79,15 +82,25 @@ pub async fn test_cli_issue_crud(ws: &TestWorkspace, bin: &Path) -> Vec<TestResu
 
     // 非法转移被状态机拒绝：in_progress → cancelled 是合法转移，但
     // backlog 直达等非法路径必须报错退出（此处用不存在的状态名验证报错路径）。
-    let out = ws.run_cli(bin, &["issue", "status", "NB-1", "no_such_status"]).await;
+    let out = ws
+        .run_cli(bin, &["issue", "status", "NB-1", "no_such_status"])
+        .await;
     if !out.success() {
-        results.push(pass(&format!("{}/status_bad_rejected", suite), "invalid status rejected"));
+        results.push(pass(
+            &format!("{}/status_bad_rejected", suite),
+            "invalid status rejected",
+        ));
     } else {
-        results.push(fail(&format!("{}/status_bad_rejected", suite), "invalid status accepted"));
+        results.push(fail(
+            &format!("{}/status_bad_rejected", suite),
+            "invalid status accepted",
+        ));
     }
 
     // comment → 确认
-    let out = ws.run_cli(bin, &["issue", "comment", "NB-1", "集成评论"]).await;
+    let out = ws
+        .run_cli(bin, &["issue", "comment", "NB-1", "集成评论"])
+        .await;
     if out.success() && out.stdout_contains("评论已添加") {
         results.push(pass(&format!("{}/comment", suite), "commented"));
     } else {
@@ -98,9 +111,15 @@ pub async fn test_cli_issue_crud(ws: &TestWorkspace, bin: &Path) -> Vec<TestResu
     }
     let out = ws.run_cli(bin, &["issue", "get", "NB-1"]).await;
     if out.stdout_contains("集成评论") {
-        results.push(pass(&format!("{}/comment_visible", suite), "comment in get"));
+        results.push(pass(
+            &format!("{}/comment_visible", suite),
+            "comment in get",
+        ));
     } else {
-        results.push(fail(&format!("{}/comment_visible", suite), "comment missing"));
+        results.push(fail(
+            &format!("{}/comment_visible", suite),
+            "comment missing",
+        ));
     }
 
     // stats → 有输出且含状态键
@@ -154,10 +173,24 @@ pub async fn test_cli_autopilot_crud(ws: &TestWorkspace, bin: &Path) -> Vec<Test
 
     // 非法 cron 被拒绝
     let out = ws
-        .run_cli(bin, &["autopilot", "create", "坏规则", "--cron", "not-a-cron", "--title", "x"])
+        .run_cli(
+            bin,
+            &[
+                "autopilot",
+                "create",
+                "坏规则",
+                "--cron",
+                "not-a-cron",
+                "--title",
+                "x",
+            ],
+        )
         .await;
     if !out.success() && out.stderr_contains("cron 表达式无效") {
-        results.push(pass(&format!("{}/invalid_cron_rejected", suite), "validated"));
+        results.push(pass(
+            &format!("{}/invalid_cron_rejected", suite),
+            "validated",
+        ));
     } else {
         results.push(fail(
             &format!("{}/invalid_cron_rejected", suite),
@@ -178,7 +211,10 @@ pub async fn test_cli_autopilot_crud(ws: &TestWorkspace, bin: &Path) -> Vec<Test
 
     // update 标题
     let out = ws
-        .run_cli(bin, &["autopilot", "update", "1", "--title", "每日站会 v2 {date}"])
+        .run_cli(
+            bin,
+            &["autopilot", "update", "1", "--title", "每日站会 v2 {date}"],
+        )
         .await;
     if out.success() && out.stdout_contains("已更新 autopilot #1") {
         results.push(pass(&format!("{}/update", suite), "title patched"));
@@ -216,7 +252,12 @@ pub async fn test_cli_autopilot_crud(ws: &TestWorkspace, bin: &Path) -> Vec<Test
     } else {
         results.push(fail(
             &format!("{}/run", suite),
-            format!("exit={} stdout={} stderr={}", out.exit_code, out.stdout_first_line(), stderr_snip(&out)),
+            format!(
+                "exit={} stdout={} stderr={}",
+                out.exit_code,
+                out.stdout_first_line(),
+                stderr_snip(&out)
+            ),
         ));
     }
     let out = ws.run_cli(bin, &["autopilot", "runs", "1"]).await;
@@ -279,7 +320,10 @@ pub async fn test_cli_autopilot_crud(ws: &TestWorkspace, bin: &Path) -> Vec<Test
     }
     let out = ws.run_cli(bin, &["autopilot", "list"]).await;
     if out.success() && !out.stdout_contains("派发规则") {
-        results.push(pass(&format!("{}/removed_gone", suite), "#2 absent from list"));
+        results.push(pass(
+            &format!("{}/removed_gone", suite),
+            "#2 absent from list",
+        ));
     } else {
         results.push(fail(&format!("{}/removed_gone", suite), "#2 still listed"));
     }
@@ -306,7 +350,9 @@ pub async fn test_cli_board_help(ws: &TestWorkspace, bin: &Path) -> Vec<TestResu
     }
 
     let ap_help = ws.run_cli(bin, &["autopilot", "--help"]).await;
-    for sub in &["list", "create", "update", "enable", "disable", "remove", "run", "runs"] {
+    for sub in &[
+        "list", "create", "update", "enable", "disable", "remove", "run", "runs",
+    ] {
         if ap_help.stdout_contains(sub) {
             results.push(pass(&format!("{}/autopilot_{sub}", suite), "listed"));
         } else {

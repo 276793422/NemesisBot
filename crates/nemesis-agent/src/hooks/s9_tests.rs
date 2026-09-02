@@ -15,7 +15,9 @@ impl ToolHook for BlockPreHook {
         "s9-block-pre".to_string()
     }
     async fn pre_tool_use(&self, _call: &HookToolCall) -> HookDecision {
-        HookDecision::Block { reason: "policy says no".to_string() }
+        HookDecision::Block {
+            reason: "policy says no".to_string(),
+        }
     }
 }
 
@@ -64,7 +66,11 @@ impl LlmHook for AppendLlmHook {
     fn name(&self) -> String {
         "s9-append-llm".to_string()
     }
-    async fn pre_llm_call(&self, _call: &HookLlmCall, _messages: &[LlmMessage]) -> LlmRequestDecision {
+    async fn pre_llm_call(
+        &self,
+        _call: &HookLlmCall,
+        _messages: &[LlmMessage],
+    ) -> LlmRequestDecision {
         LlmRequestDecision::Append(vec![LlmMessage {
             role: "system".to_string(),
             content: "reminder".to_string(),
@@ -81,8 +87,14 @@ impl LlmHook for BlockLlmHook {
     fn name(&self) -> String {
         "s9-block-llm".to_string()
     }
-    async fn pre_llm_call(&self, _call: &HookLlmCall, _messages: &[LlmMessage]) -> LlmRequestDecision {
-        LlmRequestDecision::Block { reason: "stop".to_string() }
+    async fn pre_llm_call(
+        &self,
+        _call: &HookLlmCall,
+        _messages: &[LlmMessage],
+    ) -> LlmRequestDecision {
+        LlmRequestDecision::Block {
+            reason: "stop".to_string(),
+        }
     }
 }
 
@@ -93,7 +105,9 @@ impl LlmHook for RetryLlmHook {
         "s9-retry-llm".to_string()
     }
     async fn post_llm_call(&self, _call: &HookLlmCall, _resp: &LlmResponse) -> LlmResponseDecision {
-        LlmResponseDecision::Retry { reason: "redo".to_string() }
+        LlmResponseDecision::Retry {
+            reason: "redo".to_string(),
+        }
     }
 }
 
@@ -104,7 +118,9 @@ impl LlmHook for BlockPostLlmHook {
         "s9-block-post-llm".to_string()
     }
     async fn post_llm_call(&self, _call: &HookLlmCall, _resp: &LlmResponse) -> LlmResponseDecision {
-        LlmResponseDecision::Block { reason: "abort".to_string() }
+        LlmResponseDecision::Block {
+            reason: "abort".to_string(),
+        }
     }
 }
 
@@ -192,7 +208,9 @@ impl LifecycleHook for BlockPromptHook {
         "s9-block-prompt".to_string()
     }
     async fn on_user_prompt(&self, _prompt: &HookPrompt) -> PromptDecision {
-        PromptDecision::Block { reason: "not now".to_string() }
+        PromptDecision::Block {
+            reason: "not now".to_string(),
+        }
     }
 }
 
@@ -203,7 +221,9 @@ impl LifecycleHook for ContinueTurnEndHook {
         "s9-continue-end".to_string()
     }
     async fn on_turn_end(&self, _end: &HookTurnEnd) -> TurnEndDecision {
-        TurnEndDecision::Continue { feedback: "keep going".to_string() }
+        TurnEndDecision::Continue {
+            feedback: "keep going".to_string(),
+        }
     }
 }
 

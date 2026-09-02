@@ -1800,8 +1800,7 @@ async fn embed_text_some_with_store_none_without() {
     let mgr = MemoryManager::new(&config);
     assert!(mgr.embed_text("hello").is_none());
 
-    let embed: crate::vector::EmbeddingFunc =
-        Box::new(|text: &str| Ok(vec![text.len() as f32; 3]));
+    let embed: crate::vector::EmbeddingFunc = Box::new(|text: &str| Ok(vec![text.len() as f32; 3]));
     mgr.init_vector_store_with_embed(embed, scoped_store_config(dir.path()))
         .unwrap();
     let vec = mgr.embed_text("hello").expect("store is live");
@@ -1841,8 +1840,7 @@ async fn live_store_drives_search_store_forget_vector_paths() {
     let mgr = MemoryManager::new(&config);
 
     // A live vector store that always embeds deterministically.
-    let embed: crate::vector::EmbeddingFunc =
-        Box::new(|text: &str| Ok(vec![text.len() as f32; 3]));
+    let embed: crate::vector::EmbeddingFunc = Box::new(|text: &str| Ok(vec![text.len() as f32; 3]));
     mgr.init_vector_store_with_embed(embed, scoped_store_config(dir.path()))
         .unwrap();
     mgr.set_vector_enabled(true);
@@ -1864,7 +1862,10 @@ async fn live_store_drives_search_store_forget_vector_paths() {
 
     // Non-empty index now answers from the semantic arm.
     let hits = mgr.search("golden needle", None, 5).await.unwrap();
-    assert!(hits.total >= 1, "vector-backed search should find the entry");
+    assert!(
+        hits.total >= 1,
+        "vector-backed search should find the entry"
+    );
 
     // delete_by_id reaches the episodic AND vector stores.
     assert!(

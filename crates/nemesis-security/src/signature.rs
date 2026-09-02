@@ -30,8 +30,7 @@ const ALGORITHM_NAME: &str = "ed25519";
 // ---------------------------------------------------------------------------
 
 /// Trust level for a signing key.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[derive(Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 pub enum TrustLevel {
     /// Unknown key, not trusted.
     #[serde(rename = "unknown")]
@@ -47,7 +46,6 @@ pub enum TrustLevel {
     #[serde(rename = "revoked")]
     Revoked,
 }
-
 
 impl std::fmt::Display for TrustLevel {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -205,12 +203,13 @@ impl TrustStore {
             .find(|(_, v)| v.name == name)
             .map(|(k, _)| k.clone());
         if let Some(b64) = b64
-            && let Some(entry) = keys.get_mut(&b64) {
-                entry.level = TrustLevel::Revoked;
-                drop(keys);
-                let _ = self.save();
-                return Ok(());
-            }
+            && let Some(entry) = keys.get_mut(&b64)
+        {
+            entry.level = TrustLevel::Revoked;
+            drop(keys);
+            let _ = self.save();
+            return Ok(());
+        }
         Err(format!("key not found: {}", name))
     }
 
@@ -700,22 +699,23 @@ impl Verifier {
                 continue;
             }
             if let Ok(verifying_key) = import_public_key(&k.public_key)
-                && signature.len() == 64 {
-                    let mut sig_arr = [0u8; 64];
-                    sig_arr.copy_from_slice(signature);
-                    let sig = Signature::from_bytes(&sig_arr);
-                    if verifying_key.verify(&hash, &sig).is_ok() {
-                        return Ok(VerificationResult {
-                            valid: true,
-                            signer: k.name.clone(),
-                            trust_level: k.level,
-                            algorithm: ALGORITHM_NAME.to_string(),
-                            error: String::new(),
-                            files_verified: 1,
-                            timestamp: now,
-                        });
-                    }
+                && signature.len() == 64
+            {
+                let mut sig_arr = [0u8; 64];
+                sig_arr.copy_from_slice(signature);
+                let sig = Signature::from_bytes(&sig_arr);
+                if verifying_key.verify(&hash, &sig).is_ok() {
+                    return Ok(VerificationResult {
+                        valid: true,
+                        signer: k.name.clone(),
+                        trust_level: k.level,
+                        algorithm: ALGORITHM_NAME.to_string(),
+                        error: String::new(),
+                        files_verified: 1,
+                        timestamp: now,
+                    });
                 }
+            }
         }
 
         Ok(VerificationResult {
@@ -902,13 +902,14 @@ pub fn sign_content_hex(content: &str, private_key_hex: &str) -> Result<String, 
 pub fn verify_signature_ed25519(content: &[u8], signature_hex: &str, public_key_hex: &str) -> bool {
     if let Ok(sig_bytes) = hex_decode_vec(signature_hex)
         && let Ok(pk_bytes) = hex_decode_32(public_key_hex)
-            && let Ok(verifying_key) = VerifyingKey::from_bytes(&pk_bytes)
-                && sig_bytes.len() == 64 {
-                    let mut sig_arr = [0u8; 64];
-                    sig_arr.copy_from_slice(&sig_bytes[..64]);
-                    let sig = Signature::from_bytes(&sig_arr);
-                    return verifying_key.verify(content, &sig).is_ok();
-                }
+        && let Ok(verifying_key) = VerifyingKey::from_bytes(&pk_bytes)
+        && sig_bytes.len() == 64
+    {
+        let mut sig_arr = [0u8; 64];
+        sig_arr.copy_from_slice(&sig_bytes[..64]);
+        let sig = Signature::from_bytes(&sig_arr);
+        return verifying_key.verify(content, &sig).is_ok();
+    }
     false
 }
 

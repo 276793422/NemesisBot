@@ -10,10 +10,7 @@ use super::*;
 fn canonical_args_non_json_collapses_whitespace() {
     assert_eq!(canonical_args("a   b\nc  d"), "a b c d");
     // JSON 路径对照：键排序 + 紧凑化
-    assert_eq!(
-        canonical_args(r#"{"b":1,"a":"x"}"#),
-        r#"{"a":"x","b":1}"#
-    );
+    assert_eq!(canonical_args(r#"{"b":1,"a":"x"}"#), r#"{"a":"x","b":1}"#);
 }
 
 /// 双空串相似度 = 1.0（367）。

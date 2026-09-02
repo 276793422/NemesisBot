@@ -2105,8 +2105,14 @@ async fn test_w4c_stop_all_continues_after_channel_stop_error() {
 
     // stop_all 对 Err 只记日志，整体 Ok，且后续通道也被停掉
     mgr.stop_all().await.unwrap();
-    assert!(*stopped_flag.read(), "error-stop channel's stop() must be called");
-    assert!(!ok_ch.is_started(), "channel after the error must still be stopped");
+    assert!(
+        *stopped_flag.read(),
+        "error-stop channel's stop() must be called"
+    );
+    assert!(
+        !ok_ch.is_started(),
+        "channel after the error must still be stopped"
+    );
 }
 
 /// add_sync_target 返回 Err 的源通道：setup_sync_targets 跳过该对并继续。
@@ -2133,11 +2139,7 @@ impl Channel for W4cRejectSyncChannel {
     async fn send(&self, _msg: OutboundMessage) -> Result<()> {
         Ok(())
     }
-    fn add_sync_target(
-        &self,
-        _name: &str,
-        _channel: std::sync::Arc<dyn Channel>,
-    ) -> Result<()> {
+    fn add_sync_target(&self, _name: &str, _channel: std::sync::Arc<dyn Channel>) -> Result<()> {
         Err(NemesisError::Channel("sync rejected".to_string()))
     }
 }

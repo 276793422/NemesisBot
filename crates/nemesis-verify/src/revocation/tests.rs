@@ -126,7 +126,11 @@ fn clear_revocation_env() {
 }
 
 fn crl_with(version: u64, entries: Vec<CrlEntry>) -> Crl {
-    Crl { version, valid_until: u64::MAX, entries }
+    Crl {
+        version,
+        valid_until: u64::MAX,
+        entries,
+    }
 }
 
 #[test]
@@ -135,9 +139,9 @@ fn strict_offline_env_parsing() {
     for (val, expect) in [
         ("1", true),
         ("true", true),
-        ("TRUE", true),   // eq_ignore_ascii_case
+        ("TRUE", true), // eq_ignore_ascii_case
         ("0", false),
-        ("yes", false),   // 只认 1/true
+        ("yes", false), // 只认 1/true
     ] {
         unsafe { std::env::set_var("NEMESIS_STRICT_OFFLINE", val) };
         assert_eq!(strict_offline(), expect, "NEMESIS_STRICT_OFFLINE={val}");
@@ -151,10 +155,7 @@ fn fetch_crl_validates_root_signature() {
     let _g = TEST_LOCK.lock().unwrap();
     let (root_sk, root_vk) = keypair(31);
     let signed = sign_response(&crl_with(7, vec![]), &root_sk).unwrap();
-    let base = serve_map(vec![(
-        "/v1/crl",
-        serde_json::to_string(&signed).unwrap(),
-    )]);
+    let base = serve_map(vec![("/v1/crl", serde_json::to_string(&signed).unwrap())]);
 
     // 正确根 → 拿到 CRL（版本穿透）
     let crl = fetch_crl(&base, &root_vk).expect("root-signed CRL must fetch");
@@ -163,7 +164,10 @@ fn fetch_crl_validates_root_signature() {
     // 错根验证 → 验签失败（防 MITM 伪造"未吊销"）
     let (_, other_vk) = keypair(32);
     let err = fetch_crl(&base, &other_vk).unwrap_err();
-    assert!(format!("{err:#}").contains("CRL signature invalid"), "{err:#}");
+    assert!(
+        format!("{err:#}").contains("CRL signature invalid"),
+        "{err:#}"
+    );
 }
 
 #[test]
@@ -213,7 +217,10 @@ fn get_crl_strict_without_cache_is_none() {
     set_env_url(&dead_url());
     unsafe { std::env::set_var("NEMESIS_STRICT_OFFLINE", "1") };
 
-    assert!(get_crl(&vk).is_none(), "strict + 拉取失败 + 无缓存 → None(Unknown)");
+    assert!(
+        get_crl(&vk).is_none(),
+        "strict + 拉取失败 + 无缓存 → None(Unknown)"
+    );
     clear_revocation_env();
 }
 
@@ -268,7 +275,10 @@ fn ocsp_check_single_all_arms() {
 
     // ① revoked + 根签 → Some(entry)
     let revoked = sign_response(&ocsp_resp("revoked"), &root_sk).unwrap();
-    let base_ok = serve_map(vec![("/v1/crl/query", serde_json::to_string(&revoked).unwrap())]);
+    let base_ok = serve_map(vec![(
+        "/v1/crl/query",
+        serde_json::to_string(&revoked).unwrap(),
+    )]);
     set_env_url(&base_ok);
     let entry = ocsp_check_single(&[0u8; 32], &[0u8; 32], &[0u8; 32], None, &root_vk);
     let e = entry.expect("revoked+root-signed → Some");
@@ -278,13 +288,19 @@ fn ocsp_check_single_all_arms() {
 
     // ② 验签失败（错根签）→ None
     let forged = sign_response(&ocsp_resp("revoked"), &other_sk).unwrap();
-    let base_bad = serve_map(vec![("/v1/crl/query", serde_json::to_string(&forged).unwrap())]);
+    let base_bad = serve_map(vec![(
+        "/v1/crl/query",
+        serde_json::to_string(&forged).unwrap(),
+    )]);
     set_env_url(&base_bad);
     assert!(ocsp_check_single(&[0u8; 32], &[0u8; 32], &[0u8; 32], None, &root_vk).is_none());
 
     // ③ code=valid → None
     let valid = sign_response(&ocsp_resp("valid"), &root_sk).unwrap();
-    let base_valid = serve_map(vec![("/v1/crl/query", serde_json::to_string(&valid).unwrap())]);
+    let base_valid = serve_map(vec![(
+        "/v1/crl/query",
+        serde_json::to_string(&valid).unwrap(),
+    )]);
     set_env_url(&base_valid);
     assert!(ocsp_check_single(&[0u8; 32], &[0u8; 32], &[0u8; 32], None, &root_vk).is_none());
 
@@ -306,8 +322,9 @@ fn verify_bytes_revoked_via_crl() {
     let _g = TEST_LOCK.lock().unwrap();
     clear_revocation_env();
     let (sk, vk) = keypair(39);
-    let signed = crate::verify::sign_content(b"revocation integration", &sk, 1000, None, None, None, None)
-        .unwrap();
+    let signed =
+        crate::verify::sign_content(b"revocation integration", &sk, 1000, None, None, None, None)
+            .unwrap();
     use sha2::Digest;
     let fp: [u8; 32] = sha2::Sha256::digest(vk.to_bytes()).into();
     let crl = sign_response(
@@ -327,7 +344,9 @@ fn verify_bytes_revoked_via_crl() {
     set_env_url(&base);
 
     match crate::verify::verify_bytes(&signed, &[vk], 1000) {
-        crate::verify::VerifyOutcome::Revoked { dim, value, reason, .. } => {
+        crate::verify::VerifyOutcome::Revoked {
+            dim, value, reason, ..
+        } => {
             assert_eq!(dim, RevDim::KeyFp);
             assert_eq!(value, hex_encode(&fp));
             assert_eq!(reason, "leak");
@@ -342,7 +361,8 @@ fn verify_bytes_soft_fail_unknown_still_valid() {
     let _g = TEST_LOCK.lock().unwrap();
     clear_revocation_env();
     let (sk, vk) = keypair(40);
-    let signed = crate::verify::sign_content(b"soft fail", &sk, 1000, None, None, None, None).unwrap();
+    let signed =
+        crate::verify::sign_content(b"soft fail", &sk, 1000, None, None, None, None).unwrap();
     set_env_url(&dead_url()); // CRL 不可达 + 无缓存 + 非 strict
     assert!(matches!(
         crate::verify::verify_bytes(&signed, &[vk], 1000),
@@ -356,7 +376,8 @@ fn verify_bytes_strict_unknown_rejects_as_untrusted() {
     let _g = TEST_LOCK.lock().unwrap();
     clear_revocation_env();
     let (sk, vk) = keypair(41);
-    let signed = crate::verify::sign_content(b"strict reject", &sk, 1000, None, None, None, None).unwrap();
+    let signed =
+        crate::verify::sign_content(b"strict reject", &sk, 1000, None, None, None, None).unwrap();
     set_env_url(&dead_url());
     unsafe { std::env::set_var("NEMESIS_STRICT_OFFLINE", "1") };
     // CRL 不可达 → Unknown → strict → OCSP 也不可达 → Untrusted
@@ -372,10 +393,14 @@ fn verify_bytes_strict_ocsp_fallback_revoked() {
     let _g = TEST_LOCK.lock().unwrap();
     clear_revocation_env();
     let (sk, vk) = keypair(42);
-    let signed = crate::verify::sign_content(b"strict ocsp", &sk, 1000, None, None, None, None).unwrap();
+    let signed =
+        crate::verify::sign_content(b"strict ocsp", &sk, 1000, None, None, None, None).unwrap();
     // 只注册 /v1/crl/query；/v1/crl 无路由 → 断连 → CRL 拉取失败
     let ocsp = sign_response(&ocsp_resp("revoked"), &sk).unwrap();
-    let base = serve_map(vec![("/v1/crl/query", serde_json::to_string(&ocsp).unwrap())]);
+    let base = serve_map(vec![(
+        "/v1/crl/query",
+        serde_json::to_string(&ocsp).unwrap(),
+    )]);
     set_env_url(&base);
     unsafe { std::env::set_var("NEMESIS_STRICT_OFFLINE", "1") };
 

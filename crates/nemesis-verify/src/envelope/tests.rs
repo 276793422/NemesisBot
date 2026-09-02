@@ -138,8 +138,18 @@ fn parse_body_ignores_unknown_tlv() {
 #[test]
 fn parse_body_tlv_short_value_skips_branches() {
     // kna TLV value != 9 字节 → 整个分支跳过（guard v.len()==9）。
-    let mut body = build_body(0, 1, &[0u8; PUBKEY_LEN], &[0u8; 32], &[1u8; PUBKEY_LEN],
-                              &[2u8; ED25519_SIG_LEN], None, None, None, None);
+    let mut body = build_body(
+        0,
+        1,
+        &[0u8; PUBKEY_LEN],
+        &[0u8; 32],
+        &[1u8; PUBKEY_LEN],
+        &[2u8; ED25519_SIG_LEN],
+        None,
+        None,
+        None,
+        None,
+    );
     // 覆盖掉末尾追加的畸形 kna：直接再写一个 9!=len 的 kna TLV。
     write_tlv(&mut body, TLV_KEY_NOT_AFTER, &[1u8, 2, 3]); // len=3 ≠ 9
     let p = parse_body(&body).unwrap();
@@ -176,7 +186,10 @@ fn align_up_semantics() {
     assert_eq!(align_up(0, ENVELOPE_ALIGN), 0);
     assert_eq!(align_up(1, ENVELOPE_ALIGN), ENVELOPE_ALIGN);
     assert_eq!(align_up(ENVELOPE_ALIGN, ENVELOPE_ALIGN), ENVELOPE_ALIGN);
-    assert_eq!(align_up(ENVELOPE_ALIGN + 1, ENVELOPE_ALIGN), ENVELOPE_ALIGN * 2);
+    assert_eq!(
+        align_up(ENVELOPE_ALIGN + 1, ENVELOPE_ALIGN),
+        ENVELOPE_ALIGN * 2
+    );
 }
 
 // ---------------------------------------------------------------------------

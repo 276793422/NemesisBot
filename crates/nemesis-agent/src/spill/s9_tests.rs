@@ -29,7 +29,9 @@ fn age_file(path: &std::path::Path, old: SystemTime) {
         .open(path)
         .expect("open for set_times");
     f.set_times(
-        std::fs::FileTimes::new().set_accessed(old).set_modified(old),
+        std::fs::FileTimes::new()
+            .set_accessed(old)
+            .set_modified(old),
     )
     .expect("set_times");
 }

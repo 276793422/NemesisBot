@@ -29,7 +29,10 @@ fn clamd_is_ours_true_for_own_listener_and_exe() {
     let port = listener.local_addr().unwrap().port();
     let addr = format!("127.0.0.1:{port}");
     let me = std::env::current_exe().unwrap();
-    assert!(clamd_is_ours(&addr, &me), "own listener + own exe must be ours");
+    assert!(
+        clamd_is_ours(&addr, &me),
+        "own listener + own exe must be ours"
+    );
 }
 
 #[test]
@@ -45,7 +48,10 @@ fn clamd_is_ours_false_for_exe_mismatch() {
 #[test]
 fn clamd_is_ours_false_for_free_port() {
     // 端口无监听 → pid_listening_on None → fail-closed false。
-    assert!(!clamd_is_ours("127.0.0.1:1", std::path::Path::new(r"C:\clamav\clamd.exe")));
+    assert!(!clamd_is_ours(
+        "127.0.0.1:1",
+        std::path::Path::new(r"C:\clamav\clamd.exe")
+    ));
 }
 
 #[test]

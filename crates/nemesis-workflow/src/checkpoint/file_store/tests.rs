@@ -227,7 +227,12 @@ async fn w4a_load_corrupt_file_returns_corrupt_and_quarantines() {
     assert!(matches!(err, StoreError::Corrupt(_)));
     // The bad file was moved into the .corrupt quarantine dir
     assert!(!cp_path.exists());
-    let quarantined = tmp.path().join("checkpoints").join("e").join(".corrupt").join("cp1.json");
+    let quarantined = tmp
+        .path()
+        .join("checkpoints")
+        .join("e")
+        .join(".corrupt")
+        .join("cp1.json");
     assert!(quarantined.exists());
 }
 
@@ -244,13 +249,14 @@ async fn w4a_latest_scan_skips_and_quarantines_corrupt_file() {
     let latest = store.latest("e").await.unwrap().unwrap();
     assert_eq!(latest.id, "cp1");
     assert!(!cp2_path.exists());
-    assert!(tmp
-        .path()
-        .join("checkpoints")
-        .join("e")
-        .join(".corrupt")
-        .join("cp2.json")
-        .exists());
+    assert!(
+        tmp.path()
+            .join("checkpoints")
+            .join("e")
+            .join(".corrupt")
+            .join("cp2.json")
+            .exists()
+    );
 }
 
 #[tokio::test]

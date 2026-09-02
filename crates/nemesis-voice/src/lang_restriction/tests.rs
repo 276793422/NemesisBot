@@ -68,7 +68,10 @@ fn lang_restriction_apply_allowed_language_returns_ok_none() {
     let lr = LangRestriction::new(zh_remedy(), std::ptr::null());
     for allowed in ["zh", "en"] {
         let out = lr.apply(Some(allowed), &[0.1; 64], 16000).unwrap();
-        assert!(out.is_none(), "{allowed} is whitelisted → no remedy: {out:?}");
+        assert!(
+            out.is_none(),
+            "{allowed} is whitelisted → no remedy: {out:?}"
+        );
     }
 }
 

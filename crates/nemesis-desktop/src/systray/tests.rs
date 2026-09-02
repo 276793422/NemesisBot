@@ -657,12 +657,7 @@ mod extra_cluster_menu_tests {
     fn test_cluster_menu_items_enable_disable_some_branch() {
         CLUSTER_MENU_ITEMS.with(|items| {
             *items.borrow_mut() = Some((
-                tray_icon::menu::MenuItem::with_id(
-                    "cluster_start",
-                    "cluster-start",
-                    false,
-                    None,
-                ),
+                tray_icon::menu::MenuItem::with_id("cluster_start", "cluster-start", false, None),
                 tray_icon::menu::MenuItem::with_id("cluster_stop", "cluster-stop", false, None),
             ));
         });

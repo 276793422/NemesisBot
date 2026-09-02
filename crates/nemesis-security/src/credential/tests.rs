@@ -29,7 +29,6 @@ fn test_reference_forms_not_flagged() {
     }
 }
 
-
 #[test]
 fn test_aws_key_detected() {
     let scanner = Scanner::new(true, "block");

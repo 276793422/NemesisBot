@@ -695,7 +695,9 @@ fn test_resolve_and_validate_disabled_ok() {
         ..SsrfConfig::default()
     })
     .unwrap();
-    guard.resolve_and_validate("http://127.0.0.1/secret").unwrap();
+    guard
+        .resolve_and_validate("http://127.0.0.1/secret")
+        .unwrap();
 }
 
 #[test]
@@ -713,20 +715,26 @@ fn test_resolve_and_validate_allowed_host_bypass() {
     })
     .unwrap();
     // 大小写归一化后命中白名单 → 直接 Ok（不做 DNS/IP 检查）
-    guard.resolve_and_validate("http://trusted.example.com/anything").unwrap();
+    guard
+        .resolve_and_validate("http://trusted.example.com/anything")
+        .unwrap();
 }
 
 #[test]
 fn test_resolve_and_validate_localhost_hostname_blocked() {
     let guard = Guard::new(SsrfConfig::default()).unwrap();
-    let err = guard.resolve_and_validate("http://localhost:8080/x").unwrap_err();
+    let err = guard
+        .resolve_and_validate("http://localhost:8080/x")
+        .unwrap_err();
     assert!(matches!(err, SsrfError::Localhost(_)), "{err}");
 }
 
 #[test]
 fn test_resolve_and_validate_ip_literal_blocked() {
     let guard = Guard::new(SsrfConfig::default()).unwrap();
-    let err = guard.resolve_and_validate("http://10.0.0.1/secret").unwrap_err();
+    let err = guard
+        .resolve_and_validate("http://10.0.0.1/secret")
+        .unwrap_err();
     assert!(matches!(err, SsrfError::PrivateIp(_)), "{err}");
 }
 

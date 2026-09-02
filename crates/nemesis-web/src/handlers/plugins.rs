@@ -44,24 +44,19 @@ impl PluginsHandler {
 
         // plugin_onnx：能力状态取自 embedding 配置（active tier 模型就绪与否）。
         // nemesis-memory 是可选依赖：feature off 时仅报告文件探测结果。
-        let mut onnx = self.detect_plugin(
-            "plugin_onnx",
-            "ONNX 嵌入推理",
-            "强化记忆 / 自动记忆注入",
-        );
+        let mut onnx =
+            self.detect_plugin("plugin_onnx", "ONNX 嵌入推理", "强化记忆 / 自动记忆注入");
         onnx["capabilities"] = serde_json::json!(["embedding 推理（tokenizer + model.onnx）"]);
         #[cfg(feature = "memory")]
         {
             let workspace_path = Path::new(workspace);
             let config_dir = nemesis_path::workspace_config_dir(workspace_path);
-            let emb =
-                nemesis_memory::vector::embedding_config::load_embedding_config(&config_dir);
+            let emb = nemesis_memory::vector::embedding_config::load_embedding_config(&config_dir);
             let emb_data_dir =
                 nemesis_memory::vector::embedding_config::embedding_data_dir(&config_dir);
             let active = &emb.active;
             let model_ready = emb.models.get(active).map(|mc| {
-                (!mc.local_model_path.is_empty()
-                    && Path::new(&mc.local_model_path).exists())
+                (!mc.local_model_path.is_empty() && Path::new(&mc.local_model_path).exists())
                     || emb_data_dir.join(&mc.name).join("model.onnx").exists()
             });
             onnx["detail"] = serde_json::json!({

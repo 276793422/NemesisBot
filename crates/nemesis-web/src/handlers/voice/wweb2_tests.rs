@@ -74,7 +74,10 @@ fn make_ctx(dir: &tempfile::TempDir) -> RequestContext {
 }
 
 /// 收集 push 回调参数的简易 sink。
-fn collector() -> (Arc<std::sync::Mutex<Vec<String>>>, Arc<dyn Fn(&str) + Send + Sync>) {
+fn collector() -> (
+    Arc<std::sync::Mutex<Vec<String>>>,
+    Arc<dyn Fn(&str) + Send + Sync>,
+) {
     let seen = Arc::new(std::sync::Mutex::new(Vec::new()));
     let seen2 = seen.clone();
     let f = move |s: &str| seen2.lock().unwrap().push(s.to_string());
@@ -125,9 +128,7 @@ fn check_model_subdir_any_variants() {
 // DialogueSttOutput / InputBoxSttOutput 缓冲语义
 // -----------------------------------------------------------------------
 
-fn make_dialogue(
-    push: Arc<dyn Fn(&str) + Send + Sync>,
-) -> DialogueSttOutput {
+fn make_dialogue(push: Arc<dyn Fn(&str) + Send + Sync>) -> DialogueSttOutput {
     DialogueSttOutput {
         push_fn: Box::new(move |s: &str| push(s)),
         state: Arc::new(std::sync::Mutex::new(DialogueState {
@@ -179,16 +180,23 @@ fn dialogue_output_reset_starts_fresh_buffer() {
 fn dialogue_wrapper_delegates_to_inner() {
     let (seen, push) = collector();
     let inner = Arc::new(make_dialogue(push));
-    let wrapper = DialogueSttOutputWrapper { inner: inner.clone() };
+    let wrapper = DialogueSttOutputWrapper {
+        inner: inner.clone(),
+    };
     wrapper.send_text("via-wrapper");
-    assert_eq!(seen.lock().unwrap().last().map(String::as_str), Some("accumulate:via-wrapper"));
+    assert_eq!(
+        seen.lock().unwrap().last().map(String::as_str),
+        Some("accumulate:via-wrapper")
+    );
     assert_eq!(inner.flush().as_deref(), Some("via-wrapper"));
 }
 
 #[test]
 fn input_box_output_invokes_push_fn_verbatim() {
     let (seen, push) = collector();
-    let out = InputBoxSttOutput { push_fn: Box::new(move |s: &str| push(s)) };
+    let out = InputBoxSttOutput {
+        push_fn: Box::new(move |s: &str| push(s)),
+    };
     out.send_text("verbatim text");
     let got = seen.lock().unwrap().clone();
     // 输入框模式不做 accumulate: 前缀、不做缓冲
@@ -224,9 +232,11 @@ fn read_voice_config_corrupt_json_falls_back_to_default() {
     std::fs::create_dir_all(&cfg_dir).unwrap();
     std::fs::write(cfg_dir.join(VOICE_CONFIG_FILENAME), "{not json").unwrap();
     let got = read_voice_config(&cfg_dir);
-    let default: serde_json::Value =
-        serde_json::from_str(DEFAULT_VOICE_CONFIG).unwrap();
-    assert_eq!(got, default, "corrupt JSON must fall back to embedded default");
+    let default: serde_json::Value = serde_json::from_str(DEFAULT_VOICE_CONFIG).unwrap();
+    assert_eq!(
+        got, default,
+        "corrupt JSON must fall back to embedded default"
+    );
 }
 
 #[test]
@@ -260,7 +270,10 @@ fn cmd_status_full_layout_reports_ready() {
     }
     let toml = nemesis_voice::bootstrap::default_config_toml()
         .replace("dir = \"./data\"", "dir = \"mymodels\"");
-    assert!(toml.contains("mymodels"), "template must contain the models dir line to replace");
+    assert!(
+        toml.contains("mymodels"),
+        "template must contain the models dir line to replace"
+    );
     std::fs::write(voice_dir.join("config.toml"), toml).unwrap();
     let stt_sub = voice_dir.join("mymodels").join("stt").join("sense");
     std::fs::create_dir_all(&stt_sub).unwrap();
@@ -268,16 +281,16 @@ fn cmd_status_full_layout_reports_ready() {
     std::fs::create_dir_all(voice_dir.join("aec")).unwrap();
     std::fs::write(voice_dir.join("aec").join("aec.dll"), b"x").unwrap();
 
-    let r = VoiceHandler::new()
-        .cmd_status(&voice_dir)
-        .unwrap()
-        .unwrap();
+    let r = VoiceHandler::new().cmd_status(&voice_dir).unwrap().unwrap();
     assert_eq!(r["ready"], true, "all dlls + config.toml → ready");
     assert_eq!(r["all_dlls_present"], true);
     assert_eq!(r["config_exists"], true);
     // 每个dll条目带 exists/size_bytes
     let dlls = r["dlls"].as_array().unwrap();
-    assert_eq!(dlls.len(), nemesis_voice::bootstrap::required_lib_names().len());
+    assert_eq!(
+        dlls.len(),
+        nemesis_voice::bootstrap::required_lib_names().len()
+    );
     for d in dlls {
         assert_eq!(d["exists"], true);
         assert!(d["size_bytes"].as_u64().unwrap() > 0);
@@ -305,10 +318,7 @@ fn cmd_status_without_config_uses_data_dir_and_not_ready() {
     for dll in nemesis_voice::bootstrap::required_lib_names() {
         std::fs::write(voice_dir.join(dll), b"x").unwrap();
     }
-    let r = VoiceHandler::new()
-        .cmd_status(&voice_dir)
-        .unwrap()
-        .unwrap();
+    let r = VoiceHandler::new().cmd_status(&voice_dir).unwrap().unwrap();
     assert_eq!(r["ready"], false);
     assert_eq!(r["all_dlls_present"], true);
     assert_eq!(r["config_exists"], false);
@@ -387,8 +397,16 @@ fn cmd_speaker_set_threshold_valid_and_persisted() {
     .unwrap();
     assert!((on_disk["threshold"].as_f64().unwrap() - 0.8).abs() < 1e-6);
     // 边界值合法
-    assert!(VoiceHandler::new().cmd_speaker_set_threshold(&cfg_dir, 0.0).is_ok());
-    assert!(VoiceHandler::new().cmd_speaker_set_threshold(&cfg_dir, 1.0).is_ok());
+    assert!(
+        VoiceHandler::new()
+            .cmd_speaker_set_threshold(&cfg_dir, 0.0)
+            .is_ok()
+    );
+    assert!(
+        VoiceHandler::new()
+            .cmd_speaker_set_threshold(&cfg_dir, 1.0)
+            .is_ok()
+    );
 }
 
 #[test]
@@ -466,5 +484,10 @@ async fn tts_rejects_text_over_1000_chars() {
     let r = h
         .handle_cmd("tts", Some(serde_json::json!({ "text": exact })), &ctx)
         .await;
-    if let Err(e) = r { assert!(!e.contains("too long"), "1000 chars must not hit the length cap: {e}") }
+    if let Err(e) = r {
+        assert!(
+            !e.contains("too long"),
+            "1000 chars must not hit the length cap: {e}"
+        )
+    }
 }

@@ -19,12 +19,11 @@
 //! - Lifecycle == eval lifecycle: dropped when eval ends; the real key never
 //!   touches disk.
 
-
+use axum::Router;
 use axum::body::Body;
 use axum::extract::State;
 use axum::http::{HeaderName, HeaderValue, Method, Request, Response, StatusCode};
 use axum::routing::any;
-use axum::Router;
 use futures::TryStreamExt;
 
 /// Headers stripped from the incoming request before forwarding: hop-by-hop
@@ -91,8 +90,7 @@ pub async fn start(real_base: String, api_key: String) -> Result<ProxyHandle, Pr
     let state = ProxyState {
         real_base: real_base.trim_end_matches('/').to_string(),
         api_key,
-        client: reqwest::Client::builder()
-            .build()?,
+        client: reqwest::Client::builder().build()?,
     };
 
     let app = Router::new()
@@ -112,14 +110,15 @@ pub async fn start(real_base: String, api_key: String) -> Result<ProxyHandle, Pr
         }
     });
 
-    Ok(ProxyHandle { port, shutdown: tx, task })
+    Ok(ProxyHandle {
+        port,
+        shutdown: tx,
+        task,
+    })
 }
 
 /// Core handler: pure pass-through with auth-header substitution.
-async fn proxy_handler(
-    State(state): State<ProxyState>,
-    req: Request<Body>,
-) -> Response<Body> {
+async fn proxy_handler(State(state): State<ProxyState>, req: Request<Body>) -> Response<Body> {
     // Split into parts first so headers survive the body extraction.
     let (parts, body) = req.into_parts();
     match forward_with_headers(
@@ -154,8 +153,8 @@ async fn forward_with_headers(
     let query = uri_query.map(|q| format!("?{q}")).unwrap_or_default();
     let url = format!("{}{}{}", state.real_base, uri_path, query);
 
-    let req_method =
-        reqwest::Method::from_bytes(method.as_str().as_bytes()).map_err(|_| ProxyError::BadUpstream("method"))?;
+    let req_method = reqwest::Method::from_bytes(method.as_str().as_bytes())
+        .map_err(|_| ProxyError::BadUpstream("method"))?;
 
     let mut out_req = state.client.request(req_method, &url);
 
@@ -189,15 +188,15 @@ async fn forward_with_headers(
     }
 
     // Body as a byte stream (keeps pass-through semantics for any content).
-    let stream = body.into_data_stream()
-        .map_err(std::io::Error::other);
+    let stream = body.into_data_stream().map_err(std::io::Error::other);
     out_req = out_req.body(reqwest::Body::wrap_stream(stream));
 
     let resp = out_req.send().await?;
 
     // Convert the upstream response back into an axum response, streaming the
     // body (SSE works because nothing buffers the whole payload).
-    let mut builder = Response::builder().status(StatusCode::from_u16(resp.status().as_u16()).unwrap());
+    let mut builder =
+        Response::builder().status(StatusCode::from_u16(resp.status().as_u16()).unwrap());
     for (name, value) in resp.headers().iter() {
         let lower = name.as_str().to_ascii_lowercase();
         if STRIP_HEADERS.contains(&lower.as_str()) {
@@ -214,7 +213,9 @@ async fn forward_with_headers(
     let body_stream = resp.bytes_stream().map_err(std::io::Error::other);
     let body = Body::from_stream(body_stream);
 
-    builder.body(body).map_err(|_| ProxyError::BadUpstream("build response"))
+    builder
+        .body(body)
+        .map_err(|_| ProxyError::BadUpstream("build response"))
 }
 
 // Convenience re-export for tests / future monitoring (v2).

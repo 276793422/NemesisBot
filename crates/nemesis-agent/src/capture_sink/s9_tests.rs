@@ -54,7 +54,10 @@ fn write_jsonl_to_directory_path_warns() {
         ts: String::new(),
     }];
     write_jsonl(&target, &items);
-    assert!(target.is_dir(), "blocker intact — create failed as intended");
+    assert!(
+        target.is_dir(),
+        "blocker intact — create failed as intended"
+    );
     let _ = fs::remove_dir_all(&ws);
 }
 

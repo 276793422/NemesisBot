@@ -1110,7 +1110,11 @@ async fn w4a_execute_with_context_error_and_missing_arms() {
         .execute_with_context("ghost", &serde_json::json!({}), "web", "c1")
         .await;
     assert!(result.is_error);
-    assert!(result.for_llm.contains("not found"), "got: {}", result.for_llm);
+    assert!(
+        result.for_llm.contains("not found"),
+        "got: {}",
+        result.for_llm
+    );
 }
 
 #[tokio::test]

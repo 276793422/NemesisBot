@@ -389,7 +389,9 @@ fn test_parse_duration_hours_and_minutes() {
 #[cfg(windows)]
 fn place_where_as(dir: &std::path::Path, name: &str) {
     let windir = std::env::var("WINDIR").unwrap_or_else(|_| r"C:\Windows".to_string());
-    let src = std::path::Path::new(&windir).join("System32").join("where.exe");
+    let src = std::path::Path::new(&windir)
+        .join("System32")
+        .join("where.exe");
     assert!(src.exists(), "where.exe not found at {}", src.display());
     std::fs::copy(&src, dir.join(format!("{}.exe", name))).unwrap();
 }
@@ -441,10 +443,18 @@ async fn fake_manager_full_start_and_stop() {
     let data_dir = tempfile::tempdir().unwrap();
     // 预置新鲜 main.cvd：跳过 freshclam 下载 + 过 G3
     std::fs::create_dir_all(data_dir.path().join("database")).unwrap();
-    std::fs::write(data_dir.path().join("database").join("main.cvd"), "fake cvd").unwrap();
+    std::fs::write(
+        data_dir.path().join("database").join("main.cvd"),
+        "fake cvd",
+    )
+    .unwrap();
 
     let addr = serve_pong().await;
-    let mut manager = Manager::new(fake_manager_config(clamav_dir.path(), data_dir.path(), addr));
+    let mut manager = Manager::new(fake_manager_config(
+        clamav_dir.path(),
+        data_dir.path(),
+        addr,
+    ));
     manager.start().await.unwrap();
     assert!(manager.is_running());
 
@@ -456,7 +466,13 @@ async fn fake_manager_full_start_and_stop() {
 
     // 配置文件已生成在 data_dir/config/
     assert!(data_dir.path().join("config").join("clamd.conf").exists());
-    assert!(data_dir.path().join("config").join("freshclam.conf").exists());
+    assert!(
+        data_dir
+            .path()
+            .join("config")
+            .join("freshclam.conf")
+            .exists()
+    );
 
     // get_stats：started=true + scanner 统计块存在
     let stats = manager.get_stats().await;
@@ -481,7 +497,11 @@ async fn fake_manager_start_missing_database_refuses() {
     place_where_as(clamav_dir.path(), "clamd");
     let data_dir = tempfile::tempdir().unwrap();
     let addr = serve_pong().await;
-    let mut manager = Manager::new(fake_manager_config(clamav_dir.path(), data_dir.path(), addr));
+    let mut manager = Manager::new(fake_manager_config(
+        clamav_dir.path(),
+        data_dir.path(),
+        addr,
+    ));
     let err = manager.start().await.unwrap_err();
     assert!(err.contains("virus database missing"), "{err}");
     assert!(!manager.is_running());
@@ -495,10 +515,18 @@ async fn fake_manager_restart_cycle() {
     place_where_as(clamav_dir.path(), "clamd");
     let data_dir = tempfile::tempdir().unwrap();
     std::fs::create_dir_all(data_dir.path().join("database")).unwrap();
-    std::fs::write(data_dir.path().join("database").join("main.cvd"), "fake cvd").unwrap();
+    std::fs::write(
+        data_dir.path().join("database").join("main.cvd"),
+        "fake cvd",
+    )
+    .unwrap();
 
     let addr = serve_pong().await;
-    let mut manager = Manager::new(fake_manager_config(clamav_dir.path(), data_dir.path(), addr));
+    let mut manager = Manager::new(fake_manager_config(
+        clamav_dir.path(),
+        data_dir.path(),
+        addr,
+    ));
     manager.start().await.unwrap();
     manager.restart().await.unwrap();
     manager.restart().await.unwrap();
@@ -581,7 +609,9 @@ async fn manager_start_auto_detect_without_clamav_fails() {
 #[cfg(windows)]
 fn place_hostname_as(dir: &std::path::Path, name: &str) {
     let windir = std::env::var("WINDIR").unwrap_or_else(|_| r"C:\Windows".to_string());
-    let src = std::path::Path::new(&windir).join("System32").join("hostname.exe");
+    let src = std::path::Path::new(&windir)
+        .join("System32")
+        .join("hostname.exe");
     assert!(src.exists(), "hostname.exe not found at {}", src.display());
     std::fs::copy(&src, dir.join(format!("{}.exe", name))).unwrap();
 }
@@ -596,7 +626,11 @@ async fn fake_manager_freshclam_conf_write_failure_errors() {
     let data_dir = tempfile::tempdir().unwrap();
     std::fs::create_dir_all(data_dir.path().join("config").join("freshclam.conf")).unwrap();
     let addr = serve_pong().await;
-    let mut manager = Manager::new(fake_manager_config(clamav_dir.path(), data_dir.path(), addr));
+    let mut manager = Manager::new(fake_manager_config(
+        clamav_dir.path(),
+        data_dir.path(),
+        addr,
+    ));
     let err = manager.start().await.unwrap_err();
     assert!(err.contains("freshclam.conf"), "{err}");
 }
@@ -612,7 +646,11 @@ async fn fake_manager_initial_database_download_success_arm() {
     place_hostname_as(clamav_dir.path(), "freshclam");
     let data_dir = tempfile::tempdir().unwrap();
     let addr = serve_pong().await;
-    let mut manager = Manager::new(fake_manager_config(clamav_dir.path(), data_dir.path(), addr));
+    let mut manager = Manager::new(fake_manager_config(
+        clamav_dir.path(),
+        data_dir.path(),
+        addr,
+    ));
     let err = manager.start().await.unwrap_err();
     assert!(err.contains("virus database missing"), "{err}");
 }

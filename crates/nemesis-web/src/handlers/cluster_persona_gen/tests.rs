@@ -291,10 +291,20 @@ fn tool_schemas_and_defs_are_wellformed() {
 
     let u = units_tool_schema();
     assert_eq!(u["properties"]["units"]["type"], "array");
-    assert!(u["required"].as_array().unwrap().contains(&serde_json::json!("units")));
+    assert!(
+        u["required"]
+            .as_array()
+            .unwrap()
+            .contains(&serde_json::json!("units"))
+    );
 
     let a = audit_tool_schema();
-    assert!(a["required"].as_array().unwrap().contains(&serde_json::json!("entries")));
+    assert!(
+        a["required"]
+            .as_array()
+            .unwrap()
+            .contains(&serde_json::json!("entries"))
+    );
 
     assert_eq!(persona_tool_def().function.name, "emit_cluster_persona");
     assert_eq!(units_tool_def().function.name, "extract_information_units");
@@ -407,7 +417,10 @@ fn extract_response_json_paths() {
         vec![ToolCall {
             id: "1".into(),
             call_type: None,
-            function: Some(FunctionCall { name: "t".into(), arguments: "   ".into() }),
+            function: Some(FunctionCall {
+                name: "t".into(),
+                arguments: "   ".into(),
+            }),
             name: None,
             arguments: Some(map),
         }],
@@ -416,7 +429,10 @@ fn extract_response_json_paths() {
     assert!(v["units"].is_array());
 
     // 3) content 带 fence 的 JSON
-    let r = resp_with("```json\n{\"audit_coverage\":{\"entries\": []}}\n```", vec![]);
+    let r = resp_with(
+        "```json\n{\"audit_coverage\":{\"entries\": []}}\n```",
+        vec![],
+    );
     let v = extract_response_json(&r).unwrap();
     assert!(v["entries"].is_array());
 
@@ -480,7 +496,10 @@ fn no_entity_unit(id: &str, disposition: &str) -> InformationUnit {
 fn report_trusts_audit_when_program_has_no_entry() {
     // 无 key_entities 的 target unit：程序不产出条目 → 信审计；审计也没有则
     // Suspect（两臂一次覆盖）。
-    let units = vec![no_entity_unit("u1", "soul"), no_entity_unit("u2", "identity")];
+    let units = vec![
+        no_entity_unit("u1", "soul"),
+        no_entity_unit("u2", "identity"),
+    ];
     let audit = vec![CoverageEntry {
         unit_id: "u1".into(),
         status: CoverageStatus::Covered,
@@ -512,7 +531,10 @@ fn report_audit_skipped_entry_counts_nothing() {
 #[test]
 fn report_rate_is_one_when_no_target_units() {
     // 全部 archive/drop → target_count=0 → 覆盖率约定为 1.0。
-    let units = vec![sample_unit("u1", "drop", &[]), sample_unit("u2", "archive", &[])];
+    let units = vec![
+        sample_unit("u1", "drop", &[]),
+        sample_unit("u2", "archive", &[]),
+    ];
     let report = build_coverage_report(&units, vec![], vec![], vec![]);
     assert_eq!(report.coverage_rate, 1.0);
     assert_eq!(report.total, 2);
@@ -631,11 +653,21 @@ fn audit_args() -> serde_json::Value {
 async fn generate_persona_full_flow_complete() {
     let server = MockServer::start().await;
     mount_stage_mock(&server, "分析师", units_args("identity", false), 200, 1, 5).await;
-    mount_stage_mock(&server, "人格设计师", persona_args(true, true, false), 200, 1, 5).await;
+    mount_stage_mock(
+        &server,
+        "人格设计师",
+        persona_args(true, true, false),
+        200,
+        1,
+        5,
+    )
+    .await;
     mount_stage_mock(&server, "完整性审计员", audit_args(), 200, 1, 5).await;
     let provider = mock_provider_at(server.uri()).await;
 
-    let pkg = generate_persona(&provider, "test-model", "jd", JD_TEXT, 2).await.unwrap();
+    let pkg = generate_persona(&provider, "test-model", "jd", JD_TEXT, 2)
+        .await
+        .unwrap();
     assert_eq!(pkg.node_name, "mq-architect");
     assert_eq!(pkg.role, "worker");
     let cov = pkg.coverage.expect("complete flow must attach coverage");
@@ -652,13 +684,31 @@ async fn generate_persona_retry_after_entity_missing() {
     let server = MockServer::start().await;
     mount_stage_mock(&server, "分析师", units_args("expertise", false), 200, 1, 5).await;
     // 重试轮（带补全提示，更具体 matcher + 最高优先级）
-    mount_stage_mock(&server, "把它们补进", persona_args(true, true, true), 200, 1, 1).await;
+    mount_stage_mock(
+        &server,
+        "把它们补进",
+        persona_args(true, true, true),
+        200,
+        1,
+        1,
+    )
+    .await;
     // 首轮（无补全提示；expect(1) 耗尽后不再匹配，重试轮只会落到上面的 mock）
-    mount_stage_mock(&server, "人格设计师", persona_args(false, true, false), 200, 1, 5).await;
+    mount_stage_mock(
+        &server,
+        "人格设计师",
+        persona_args(false, true, false),
+        200,
+        1,
+        5,
+    )
+    .await;
     mount_stage_mock(&server, "完整性审计员", audit_args(), 200, 2, 5).await;
     let provider = mock_provider_at(server.uri()).await;
 
-    let pkg = generate_persona(&provider, "test-model", "resume", JD_TEXT, 2).await.unwrap();
+    let pkg = generate_persona(&provider, "test-model", "resume", JD_TEXT, 2)
+        .await
+        .unwrap();
     assert!(pkg.expertise_md.contains("RocketMQ"));
     let cov = pkg.coverage.unwrap();
     assert!(cov.is_complete());
@@ -669,11 +719,21 @@ async fn generate_persona_exhausted_returns_pkg_with_report() {
     // 两轮实体都缺失 → 耗尽后不硬 Err，返回带缺口报告的最后一版 pkg。
     let server = MockServer::start().await;
     mount_stage_mock(&server, "分析师", units_args("identity", false), 200, 1, 5).await;
-    mount_stage_mock(&server, "人格设计师", persona_args(false, true, false), 200, 2, 5).await;
+    mount_stage_mock(
+        &server,
+        "人格设计师",
+        persona_args(false, true, false),
+        200,
+        2,
+        5,
+    )
+    .await;
     mount_stage_mock(&server, "完整性审计员", audit_args(), 200, 2, 5).await;
     let provider = mock_provider_at(server.uri()).await;
 
-    let pkg = generate_persona(&provider, "test-model", "jd", JD_TEXT, 2).await.unwrap();
+    let pkg = generate_persona(&provider, "test-model", "jd", JD_TEXT, 2)
+        .await
+        .unwrap();
     let cov = pkg.coverage.expect("exhausted flow still attaches report");
     assert!(!cov.is_complete());
     assert_eq!(cov.missing, 1);
@@ -684,7 +744,15 @@ async fn generate_persona_all_author_attempts_fail() {
     // 阶段2 全部解析失败 → 从未产出 pkg → 耗尽后硬 Err。
     let server = MockServer::start().await;
     mount_stage_mock(&server, "分析师", units_args("identity", false), 200, 1, 5).await;
-    mount_stage_mock(&server, "人格设计师", serde_json::json!({ "garbage": true }), 200, 2, 5).await;
+    mount_stage_mock(
+        &server,
+        "人格设计师",
+        serde_json::json!({ "garbage": true }),
+        200,
+        2,
+        5,
+    )
+    .await;
     let provider = mock_provider_at(server.uri()).await;
 
     let err = generate_persona(&provider, "test-model", "jd", JD_TEXT, 2)
@@ -698,12 +766,30 @@ async fn generate_persona_validate_fail_then_success() {
     // 首轮 role 非法（validate 失败）；重试轮合法且实体齐全。
     let server = MockServer::start().await;
     mount_stage_mock(&server, "分析师", units_args("identity", false), 200, 1, 5).await;
-    mount_stage_mock(&server, "把它们补进", persona_args(true, true, false), 200, 1, 1).await;
-    mount_stage_mock(&server, "人格设计师", persona_args(true, false, false), 200, 1, 5).await;
+    mount_stage_mock(
+        &server,
+        "把它们补进",
+        persona_args(true, true, false),
+        200,
+        1,
+        1,
+    )
+    .await;
+    mount_stage_mock(
+        &server,
+        "人格设计师",
+        persona_args(true, false, false),
+        200,
+        1,
+        5,
+    )
+    .await;
     mount_stage_mock(&server, "完整性审计员", audit_args(), 200, 1, 5).await;
     let provider = mock_provider_at(server.uri()).await;
 
-    let pkg = generate_persona(&provider, "test-model", "jd", JD_TEXT, 2).await.unwrap();
+    let pkg = generate_persona(&provider, "test-model", "jd", JD_TEXT, 2)
+        .await
+        .unwrap();
     assert_eq!(pkg.role, "worker");
     assert!(pkg.coverage.unwrap().is_complete());
 }
@@ -714,11 +800,21 @@ async fn generate_persona_segment_gap_hint_and_exhausted() {
     // 为空时补全提示走“段落缺口”分支。
     let server = MockServer::start().await;
     mount_stage_mock(&server, "分析师", units_args("identity", true), 200, 1, 5).await;
-    mount_stage_mock(&server, "人格设计师", persona_args(true, true, false), 200, 2, 5).await;
+    mount_stage_mock(
+        &server,
+        "人格设计师",
+        persona_args(true, true, false),
+        200,
+        2,
+        5,
+    )
+    .await;
     mount_stage_mock(&server, "完整性审计员", audit_args(), 200, 2, 5).await;
     let provider = mock_provider_at(server.uri()).await;
 
-    let pkg = generate_persona(&provider, "test-model", "jd", JD_TEXT, 2).await.unwrap();
+    let pkg = generate_persona(&provider, "test-model", "jd", JD_TEXT, 2)
+        .await
+        .unwrap();
     let cov = pkg.coverage.unwrap();
     assert!(!cov.is_complete());
     assert_eq!(cov.missing, 0);
@@ -731,11 +827,29 @@ async fn generate_persona_tolerates_audit_failure() {
     // 阶段3 审计解析失败 → 退化为空审计，程序校验兜底，仍能完整通过。
     let server = MockServer::start().await;
     mount_stage_mock(&server, "分析师", units_args("identity", false), 200, 1, 5).await;
-    mount_stage_mock(&server, "人格设计师", persona_args(true, true, false), 200, 1, 5).await;
-    mount_stage_mock(&server, "完整性审计员", serde_json::json!({ "nope": 1 }), 200, 1, 5).await;
+    mount_stage_mock(
+        &server,
+        "人格设计师",
+        persona_args(true, true, false),
+        200,
+        1,
+        5,
+    )
+    .await;
+    mount_stage_mock(
+        &server,
+        "完整性审计员",
+        serde_json::json!({ "nope": 1 }),
+        200,
+        1,
+        5,
+    )
+    .await;
     let provider = mock_provider_at(server.uri()).await;
 
-    let pkg = generate_persona(&provider, "test-model", "jd", JD_TEXT, 2).await.unwrap();
+    let pkg = generate_persona(&provider, "test-model", "jd", JD_TEXT, 2)
+        .await
+        .unwrap();
     let cov = pkg.coverage.unwrap();
     assert!(cov.is_complete());
     assert_eq!(cov.covered, 1);
@@ -744,7 +858,15 @@ async fn generate_persona_tolerates_audit_failure() {
 #[tokio::test]
 async fn generate_persona_units_parse_fail_errors() {
     let server = MockServer::start().await;
-    mount_stage_mock(&server, "分析师", serde_json::json!({ "foo": 1 }), 200, 1, 5).await;
+    mount_stage_mock(
+        &server,
+        "分析师",
+        serde_json::json!({ "foo": 1 }),
+        200,
+        1,
+        5,
+    )
+    .await;
     let provider = mock_provider_at(server.uri()).await;
 
     let err = generate_persona(&provider, "test-model", "jd", JD_TEXT, 2)

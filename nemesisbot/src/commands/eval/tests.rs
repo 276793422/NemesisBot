@@ -24,8 +24,13 @@ fn mirror_under_user_profile_uses_user_tree() {
     let box_root = td.path().join("box");
     let user_profile = Path::new(r"C:\Users\zoo");
     // 盒内已存在 user-tree 镜像（正常 %TEMP% 在 profile 下的形态）。
-    let mirrored = box_root.join("user").join("current").join("AppData")
-        .join("Local").join("Temp").join(".tmpX");
+    let mirrored = box_root
+        .join("user")
+        .join("current")
+        .join("AppData")
+        .join("Local")
+        .join("Temp")
+        .join(".tmpX");
     std::fs::create_dir_all(&mirrored).unwrap();
     let home = Path::new(r"C:\Users\zoo\AppData\Local\Temp\.tmpX");
     assert_eq!(box_mirror_for(home, &box_root, user_profile), mirrored);
@@ -51,7 +56,11 @@ fn mirror_case_insensitive_profile_prefix() {
     let td = t();
     let box_root = td.path().join("box");
     let user_profile = Path::new(r"C:\Users\Zoo");
-    let mirrored = box_root.join("user").join("current").join("Temp").join(".tmpX");
+    let mirrored = box_root
+        .join("user")
+        .join("current")
+        .join("Temp")
+        .join(".tmpX");
     std::fs::create_dir_all(&mirrored).unwrap();
     let home = Path::new(r"c:\users\zoo\Temp\.tmpX");
     assert_eq!(box_mirror_for(home, &box_root, user_profile), mirrored);
@@ -67,7 +76,9 @@ fn mirror_missing_user_tree_falls_through_to_drive() {
     let home = Path::new(r"C:\Users\zoo\AppData\Local\Temp\.tmpX");
     assert_eq!(
         box_mirror_for(home, &box_root, user_profile),
-        box_root.join("drive").join("C")
+        box_root
+            .join("drive")
+            .join("C")
             .join(r"Users\zoo\AppData\Local\Temp\.tmpX"),
     );
 }
@@ -114,7 +125,10 @@ fn mirror_unc_path_returned_as_is() {
 #[test]
 fn wait_ms_normal_values_pass_through() {
     assert_eq!(wait_timeout_ms(std::time::Duration::from_secs(0)), 0);
-    assert_eq!(wait_timeout_ms(std::time::Duration::from_secs(1800)), 1_800_000);
+    assert_eq!(
+        wait_timeout_ms(std::time::Duration::from_secs(1800)),
+        1_800_000
+    );
 }
 
 #[test]
@@ -170,7 +184,10 @@ fn stale_eval_section_at_eof_is_stripped_to_end() {
 fn ini_without_eval_sections_passes_through() {
     // 逐行重拼会规范出尾换行（每行 push '\n'）——与输入等价。
     let ini = "[GlobalSettings]\nKey=V\n[Other]\nQ=1";
-    assert_eq!(strip_stale_eval_sections(ini), "[GlobalSettings]\nKey=V\n[Other]\nQ=1\n");
+    assert_eq!(
+        strip_stale_eval_sections(ini),
+        "[GlobalSettings]\nKey=V\n[Other]\nQ=1\n"
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -179,11 +196,23 @@ fn ini_without_eval_sections_passes_through() {
 
 #[test]
 fn proxy_host_extracts_host_from_common_shapes() {
-    assert_eq!(proxy_target_host("https://api.example.com"), "api.example.com");
-    assert_eq!(proxy_target_host("https://api.example.com/v1"), "api.example.com");
-    assert_eq!(proxy_target_host("http://api.example.com:8080/v1"), "api.example.com");
+    assert_eq!(
+        proxy_target_host("https://api.example.com"),
+        "api.example.com"
+    );
+    assert_eq!(
+        proxy_target_host("https://api.example.com/v1"),
+        "api.example.com"
+    );
+    assert_eq!(
+        proxy_target_host("http://api.example.com:8080/v1"),
+        "api.example.com"
+    );
     assert_eq!(proxy_target_host("api.example.com/v1"), "api.example.com");
-    assert_eq!(proxy_target_host("https://api.example.com?x=1"), "api.example.com");
+    assert_eq!(
+        proxy_target_host("https://api.example.com?x=1"),
+        "api.example.com"
+    );
 }
 
 #[test]
@@ -265,7 +294,10 @@ fn integrity_receipt_missing_fields_say_unrecorded() {
 fn box_file_readable_content_passes_through_verbatim() {
     let dir = tempfile::tempdir().unwrap();
     std::fs::write(dir.path().join("tool_trace.json"), r#"[{"a":1}]"#).unwrap();
-    assert_eq!(read_box_file_or_marker(dir.path(), "tool_trace.json"), r#"[{"a":1}]"#);
+    assert_eq!(
+        read_box_file_or_marker(dir.path(), "tool_trace.json"),
+        r#"[{"a":1}]"#
+    );
 }
 
 #[test]
@@ -318,7 +350,9 @@ fn kind_from_meta_defaults_to_prompt_when_missing_or_bad() {
 // write_assessment / print_assessment —— 落盘 + 控制台通道
 // ---------------------------------------------------------------------------
 
-fn sample_result(conclusion: crate::eval_assessor::Conclusion) -> crate::eval_assessor::AssessResult {
+fn sample_result(
+    conclusion: crate::eval_assessor::Conclusion,
+) -> crate::eval_assessor::AssessResult {
     crate::eval_assessor::AssessResult {
         conclusion,
         kind: "prompt".to_string(),
@@ -352,10 +386,9 @@ fn write_assessment_writes_json_and_merges_meta_section() {
     let fixed = write_assessment(&out, &sample_result(crate::eval_assessor::Conclusion::Risk));
 
     // assessment.json 存在且 conclusion=risk（AssessResult 序列化蛇形命名）。
-    let saved: serde_json::Value = serde_json::from_str(
-        &std::fs::read_to_string(out.join("assessment.json")).unwrap(),
-    )
-    .unwrap();
+    let saved: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(out.join("assessment.json")).unwrap())
+            .unwrap();
     assert_eq!(saved["conclusion"], "risk");
     assert_eq!(saved["kind"], "prompt");
     assert_eq!(saved["rules_loaded"], 5);
@@ -382,7 +415,10 @@ fn write_assessment_without_meta_still_writes_json() {
     let out = dir.path().join("report");
     std::fs::create_dir_all(&out).unwrap();
     let fixed = write_assessment(&out, &sample_result(crate::eval_assessor::Conclusion::Safe));
-    assert!(out.join("assessment.json").exists(), "无 meta 也要写 assessment.json");
+    assert!(
+        out.join("assessment.json").exists(),
+        "无 meta 也要写 assessment.json"
+    );
     assert!(!out.join("meta.json").exists(), "无 meta 不凭空创建");
     assert_eq!(fixed.len(), 2);
 }
@@ -399,14 +435,15 @@ fn r10_write_assessment_non_object_meta_skips_merge_but_keeps_assessment_json() 
         std::fs::create_dir_all(&out).unwrap();
         std::fs::write(out.join("meta.json"), raw).unwrap();
 
-        let fixed =
-            write_assessment(&out, &sample_result(crate::eval_assessor::Conclusion::Unknown));
+        let fixed = write_assessment(
+            &out,
+            &sample_result(crate::eval_assessor::Conclusion::Unknown),
+        );
 
         // assessment.json 与七件套并排落盘（评估结果绝不因 meta 形态丢失）。
-        let saved: serde_json::Value = serde_json::from_str(
-            &std::fs::read_to_string(out.join("assessment.json")).unwrap(),
-        )
-        .unwrap();
+        let saved: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(out.join("assessment.json")).unwrap())
+                .unwrap();
         assert_eq!(saved["conclusion"], "unknown");
 
         // 非 JSON 对象 → 跳过 merge，原文件字节一字不动。
@@ -455,14 +492,14 @@ fn assess_and_report_corrupted_rules_yields_unknown_and_no_risk_exit() {
     let risk_exit = assess_and_report(&out_dir, home.path(), true);
     assert!(!risk_exit, "未知不退 2（即使 --fail-on-risk）");
 
-    let saved: serde_json::Value = serde_json::from_str(
-        &std::fs::read_to_string(out_dir.join("assessment.json")).unwrap(),
-    )
-    .unwrap();
+    let saved: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(out_dir.join("assessment.json")).unwrap())
+            .unwrap();
     assert_eq!(saved["conclusion"], "unknown");
     let gaps = saved["gaps"].as_array().unwrap();
     assert!(
-        gaps.iter().any(|g| g.as_str().unwrap().contains("规则文件")),
+        gaps.iter()
+            .any(|g| g.as_str().unwrap().contains("规则文件")),
         "gaps: {gaps:?}"
     );
 }
@@ -491,15 +528,15 @@ fn assess_and_report_zero_enabled_rules_yields_unknown() {
 
     let risk_exit = assess_and_report(&out_dir, home.path(), true);
     assert!(!risk_exit);
-    let saved: serde_json::Value = serde_json::from_str(
-        &std::fs::read_to_string(out_dir.join("assessment.json")).unwrap(),
-    )
-    .unwrap();
+    let saved: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(out_dir.join("assessment.json")).unwrap())
+            .unwrap();
     assert_eq!(saved["conclusion"], "unknown");
     assert_eq!(saved["rules_loaded"], 0);
     let gaps = saved["gaps"].as_array().unwrap();
     assert!(
-        gaps.iter().any(|g| g.as_str().unwrap().contains("无启用规则")),
+        gaps.iter()
+            .any(|g| g.as_str().unwrap().contains("无启用规则")),
         "gaps: {gaps:?}"
     );
 }
@@ -515,7 +552,10 @@ fn eval_lock_fresh_acquire_and_drop_cleanup() {
     let path = root.path().join(".eval_lock");
     assert!(path.exists());
     let content = std::fs::read_to_string(&path).unwrap();
-    assert!(content.starts_with("pid="), "lock 记录持有者 pid: {content}");
+    assert!(
+        content.starts_with("pid="),
+        "lock 记录持有者 pid: {content}"
+    );
     drop(lock);
     assert!(!path.exists(), "Drop 清理锁文件");
 }
@@ -533,7 +573,10 @@ fn eval_lock_live_holder_conflicts() {
     let err = acquire_eval_lock(root.path())
         .err()
         .expect("活持有者必须拒绝");
-    assert!(err.to_string().contains("另一个 eval 正在运行"), "err: {err:#}");
+    assert!(
+        err.to_string().contains("另一个 eval 正在运行"),
+        "err: {err:#}"
+    );
 }
 
 #[test]
@@ -611,7 +654,8 @@ fn copy_skill_dir_missing_header_bails() {
     let err = copy_skill_dir(home.path(), ws.path(), "no header here")
         .expect_err("无 # Skill: 头必须 Err");
     assert!(
-        err.to_string().contains("skill subject missing name header"),
+        err.to_string()
+            .contains("skill subject missing name header"),
         "err: {err:#}"
     );
 }
@@ -731,7 +775,10 @@ async fn test_run_prompt_no_text_no_file_bails() {
     )
     .await
     .unwrap_err();
-    assert!(err.to_string().contains("provide the prompt text"), "err: {err}");
+    assert!(
+        err.to_string().contains("provide the prompt text"),
+        "err: {err}"
+    );
 }
 
 #[tokio::test]
@@ -748,10 +795,7 @@ async fn test_run_prompt_missing_file_bails() {
     )
     .await
     .unwrap_err();
-    assert!(
-        err.to_string().contains("read prompt file"),
-        "err: {err}"
-    );
+    assert!(err.to_string().contains("read prompt file"), "err: {err}");
 }
 
 // -------------------------------------------------------------------------
@@ -773,10 +817,7 @@ async fn test_run_prompt_corrupted_config_bails() {
     )
     .await
     .unwrap_err();
-    assert!(
-        err.to_string().contains("load real config"),
-        "err: {err}"
-    );
+    assert!(err.to_string().contains("load real config"), "err: {err}");
 }
 
 #[tokio::test]
@@ -798,7 +839,8 @@ async fn test_run_prompt_unresolvable_model_bails() {
     .await
     .unwrap_err();
     assert!(
-        err.to_string().contains("resolve model 'zz-unresolvable-model'"),
+        err.to_string()
+            .contains("resolve model 'zz-unresolvable-model'"),
         "err: {err}"
     );
 }
@@ -824,10 +866,7 @@ async fn test_run_prompt_sandbox_not_ready_bails() {
     .await
     .unwrap_err();
     let msg = err.to_string();
-    assert!(
-        msg.contains("Sandbox engine not ready"),
-        "err: {msg}"
-    );
+    assert!(msg.contains("Sandbox engine not ready"), "err: {msg}");
     assert!(msg.contains("start_exe=false"), "err: {msg}");
 }
 
@@ -873,10 +912,7 @@ async fn test_run_skill_found_reaches_config_bail() {
     )
     .await
     .unwrap_err();
-    assert!(
-        err.to_string().contains("load real config"),
-        "err: {err}"
-    );
+    assert!(err.to_string().contains("load real config"), "err: {err}");
 }
 
 // -------------------------------------------------------------------------
@@ -1045,7 +1081,10 @@ fn test_clean_box_existing_root_with_fake_start_exe() {
 
 #[test]
 fn test_wait_box_deleted_immediate_when_missing() {
-    wait_box_deleted(Path::new(r"Z:\no\such\box_root"), std::time::Duration::from_secs(1));
+    wait_box_deleted(
+        Path::new(r"Z:\no\such\box_root"),
+        std::time::Duration::from_secs(1),
+    );
 }
 
 #[test]
@@ -1064,13 +1103,7 @@ fn test_wait_box_deleted_timeout_warns() {
 
 #[test]
 fn test_sbieini_set_missing_exe_errors() {
-    let err = sbieini_set(
-        Path::new(r"Z:\no\such\SbieIni.exe"),
-        "Box",
-        "Enabled",
-        "y",
-    )
-    .unwrap_err();
+    let err = sbieini_set(Path::new(r"Z:\no\such\SbieIni.exe"), "Box", "Enabled", "y").unwrap_err();
     assert!(err.to_string().contains("run SbieIni set"), "err: {err}");
 }
 
@@ -1083,10 +1116,7 @@ fn test_sbieini_append_missing_exe_errors() {
         r"C:\Users\x",
     )
     .unwrap_err();
-    assert!(
-        err.to_string().contains("run SbieIni append"),
-        "err: {err}"
-    );
+    assert!(err.to_string().contains("run SbieIni append"), "err: {err}");
 }
 
 // -------------------------------------------------------------------------
@@ -1103,7 +1133,10 @@ fn test_monitor_dll_path_matches_disk_shape() {
         // 部署形态：plugins/ 存在时，结果必须与部署 DLL 是否存在一致
         assert_eq!(
             r.is_ok(),
-            exe_dir.join("plugins").join("eval_monitor_dll.dll").exists()
+            exe_dir
+                .join("plugins")
+                .join("eval_monitor_dll.dll")
+                .exists()
         );
     } else {
         // 开发形态：回退编译期仓库路径
@@ -1313,10 +1346,9 @@ mod wave_b {
         // :892 第一态：fail_on_risk=true 且结论 risk → 信号 true。
         assert!(assess_and_report(&report, home.path(), true));
 
-        let saved: serde_json::Value = serde_json::from_str(
-            &std::fs::read_to_string(report.join("assessment.json")).unwrap(),
-        )
-        .unwrap();
+        let saved: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(report.join("assessment.json")).unwrap())
+                .unwrap();
         assert_eq!(saved["conclusion"], "risk");
         assert_eq!(saved["matched_rules"][0]["id"], "waveb-trigger-rule");
 
@@ -1344,10 +1376,9 @@ mod wave_b {
         // :892 第二态：fail_on_risk=true 但结论非 risk → false。
         assert!(!assess_and_report(&report, home.path(), true));
 
-        let saved: serde_json::Value = serde_json::from_str(
-            &std::fs::read_to_string(report.join("assessment.json")).unwrap(),
-        )
-        .unwrap();
+        let saved: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(report.join("assessment.json")).unwrap())
+                .unwrap();
         assert_eq!(saved["conclusion"], "safe");
         assert_eq!(saved["matched_rules"].as_array().unwrap().len(), 0);
     }
@@ -1382,10 +1413,9 @@ mod wave_b {
 
             write_assessment(&out, &sample_result(c));
 
-            let meta: serde_json::Value = serde_json::from_str(
-                &std::fs::read_to_string(out.join("meta.json")).unwrap(),
-            )
-            .unwrap();
+            let meta: serde_json::Value =
+                serde_json::from_str(&std::fs::read_to_string(out.join("meta.json")).unwrap())
+                    .unwrap();
             let expect = match c {
                 crate::eval_assessor::Conclusion::Safe => "safe",
                 crate::eval_assessor::Conclusion::Unknown => "unknown",
@@ -1671,7 +1701,8 @@ mod r9_real_chain {
             .lines()
             .find(|l| l.to_uppercase().contains("BINARY_PATH_NAME"))?;
         let raw = line
-            .split_once(':')?.1
+            .split_once(':')?
+            .1
             .trim()
             .trim_matches('"')
             .trim() // 闭合引号后可能还有空格（C:\Program Files 形态的带引号路径）
@@ -1741,7 +1772,11 @@ mod r9_real_chain {
     /// kill_on_drop 防泄漏。注入 CLI 覆盖 profile（测量模式下子进程计数落
     /// NEMESISBOT_COVERAGE_DIR；非测量环境 env 为空零影响）——曾因缺这行，
     /// B1 全量插桩跑里 eval 真链路 ~280 行覆盖全部丢在子进程默认位置。
-    pub(super) async fn spawn_eval(bin: &Path, args: &[&str], env_parent: &Path) -> tokio::process::Child {
+    pub(super) async fn spawn_eval(
+        bin: &Path,
+        args: &[&str],
+        env_parent: &Path,
+    ) -> tokio::process::Child {
         tokio::process::Command::new(bin)
             .args(args)
             .current_dir(std::env::temp_dir())
@@ -1826,7 +1861,11 @@ mod r9_real_chain {
             "final_response.md",
             "subject.txt",
         ] {
-            assert!(report.join(f).exists(), "报告七件套缺 {f}: {}", report.display());
+            assert!(
+                report.join(f).exists(),
+                "报告七件套缺 {f}: {}",
+                report.display()
+            );
         }
         let apath = report.join("assessment.json");
         assert!(apath.exists(), "assessment.json 必须与七件套并排落盘");
@@ -1848,9 +1887,11 @@ mod r9_real_chain {
         if let Ok(rd) = std::fs::read_dir(logs_eval) {
             for e in rd.flatten() {
                 if let Ok(n) = e.file_name().into_string()
-                    && is_ts_prompt(&n) && !before.contains(&n) {
-                        let _ = std::fs::remove_dir_all(e.path());
-                    }
+                    && is_ts_prompt(&n)
+                    && !before.contains(&n)
+                {
+                    let _ = std::fs::remove_dir_all(e.path());
+                }
             }
         }
     }
@@ -1863,13 +1904,25 @@ mod r9_real_chain {
         let Some((engine_home, bin)) = gate() else {
             return;
         };
-        let env_parent = engine_home.parent().expect("engine home 有父目录").to_path_buf();
+        let env_parent = engine_home
+            .parent()
+            .expect("engine home 有父目录")
+            .to_path_buf();
         let logs_eval = engine_home.join("workspace").join("logs").join("eval");
         let _ = std::fs::create_dir_all(&logs_eval); // 快照基线需要目录存在
-        let sandbox_root = engine_home.join("workspace").join("tools").join("sandboxie");
+        let sandbox_root = engine_home
+            .join("workspace")
+            .join("tools")
+            .join("sandboxie");
 
         let before = snapshot_prompt_reports(&logs_eval);
-        let args: &[&str] = &["eval", "prompt", "hello, just say hi", "--observe-secs", "60"];
+        let args: &[&str] = &[
+            "eval",
+            "prompt",
+            "hello, just say hi",
+            "--observe-secs",
+            "60",
+        ];
 
         // p1 先起，等它拿到 .eval_lock 再放 p2 —— 并发窗口确定性最大化。
         // p2 与 p1 同参同 env；p2 在 readiness 之后、ini 改写之前就撞锁退出，
@@ -1981,7 +2034,9 @@ mod r9_real_chain {
         std::fs::create_dir_all(ws.home()).unwrap();
         std::fs::write(ws.config_path(), "definitely not json {{{").unwrap();
 
-        let out = ws.run_cli_with_timeout(&bin, &["eval", "prompt", "hi"], 60).await;
+        let out = ws
+            .run_cli_with_timeout(&bin, &["eval", "prompt", "hi"], 60)
+            .await;
         assert_eq!(
             out.exit_code, 1,
             "损坏 config → 配置解析 bail → main 返 Err → 退码 1\n{}\n{}",
@@ -1999,8 +2054,14 @@ mod r9_real_chain {
     #[test]
     fn r9_monitor_dll_path_result_is_real_file_if_any_form_built() {
         match monitor_dll_path() {
-            Ok(p) => assert!(p.exists(), "monitor_dll_path 返回路径必须真实存在: {}", p.display()),
-            Err(e) => println!("[r9 SKIP] 两形态监控 DLL 均未编译在本机（不影响其余真链路）：{e:#}"),
+            Ok(p) => assert!(
+                p.exists(),
+                "monitor_dll_path 返回路径必须真实存在: {}",
+                p.display()
+            ),
+            Err(e) => {
+                println!("[r9 SKIP] 两形态监控 DLL 均未编译在本机（不影响其余真链路）：{e:#}")
+            }
         }
     }
 
@@ -2027,7 +2088,10 @@ mod r9_real_chain {
     fn r9_sbieini_nonzero_exit_exe_errors_both_calls() {
         let (_ws, exe) = temp_cmd("r9_fail.cmd", "@exit /b 2\r\n");
         let e1 = sbieini_set(&exe, "R9Box", "Enabled", "y").unwrap_err();
-        assert!(e1.to_string().contains("failed"), "set 失败臂文案带 failed，got {e1}");
+        assert!(
+            e1.to_string().contains("failed"),
+            "set 失败臂文案带 failed，got {e1}"
+        );
         let e2 = sbieini_append(&exe, "R9Box", "ClosedFilePath", r"C:\x").unwrap_err();
         assert!(
             e2.to_string().contains("failed"),
@@ -2067,7 +2131,10 @@ mod r10_exit_two_and_output {
 
     impl RulesSwap {
         fn force_risk(engine_home: &Path) -> Self {
-            let rules_path = engine_home.join("workspace").join("config").join("eval_rules.json");
+            let rules_path = engine_home
+                .join("workspace")
+                .join("config")
+                .join("eval_rules.json");
             let original = std::fs::read(&rules_path).ok();
             if let Some(parent) = rules_path.parent() {
                 std::fs::create_dir_all(parent).unwrap();
@@ -2084,12 +2151,12 @@ mod r10_exit_two_and_output {
                     ],
                 }]
             });
-            std::fs::write(
-                &rules_path,
-                serde_json::to_string_pretty(&rules).unwrap(),
-            )
-            .expect("覆写 owner eval_rules.json");
-            Self { rules_path, original }
+            std::fs::write(&rules_path, serde_json::to_string_pretty(&rules).unwrap())
+                .expect("覆写 owner eval_rules.json");
+            Self {
+                rules_path,
+                original,
+            }
         }
     }
 
@@ -2112,7 +2179,10 @@ mod r10_exit_two_and_output {
         let Some((engine_home, bin)) = gate() else {
             return; // 引擎不可用 → 整组 SKIP（与 r9 同纪律）
         };
-        let env_parent = engine_home.parent().expect("engine home 有父目录").to_path_buf();
+        let env_parent = engine_home
+            .parent()
+            .expect("engine home 有父目录")
+            .to_path_buf();
 
         let out_root = tempfile::tempdir().expect("temp out dir");
         let custom_report = out_root.path().join("custom_report");

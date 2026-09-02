@@ -144,9 +144,10 @@ async fn config_set_main_disabled_with_manager_turns_vector_off() {
     // Runtime arm executed: manager vector flag turned off synchronously.
     assert!(!mgr.is_vector_enabled());
     // Persisted switch also flipped.
-    let raw =
-        serde_json::from_str::<serde_json::Value>(&std::fs::read_to_string(dir.path().join("config.json")).unwrap())
-            .unwrap();
+    let raw = serde_json::from_str::<serde_json::Value>(
+        &std::fs::read_to_string(dir.path().join("config.json")).unwrap(),
+    )
+    .unwrap();
     assert_eq!(raw["memory"]["enabled"], serde_json::json!(false));
 }
 
@@ -186,10 +187,14 @@ async fn config_set_sub_enabled_local_model_path_passes_model_check_no_manager()
         state,
         auth_method: AuthMethod::default(),
     };
-    let out = run(&ctx, "config.set", serde_json::json!({ "sub_enabled": true }))
-        .await
-        .unwrap()
-        .unwrap();
+    let out = run(
+        &ctx,
+        "config.set",
+        serde_json::json!({ "sub_enabled": true }),
+    )
+    .await
+    .unwrap()
+    .unwrap();
     assert_eq!(out["updated"], serde_json::json!(true));
     let after = serde_json::from_str::<serde_json::Value>(
         &std::fs::read_to_string(emb_config_path(dir.path())).unwrap(),
@@ -225,9 +230,13 @@ async fn config_set_sub_enabled_rolls_back_when_vector_init_fails() {
     // Manager exists but plugin_onnx.dll is not next to the test exe →
     // init_vector_store_from_config must fail → config rolled back to
     // enabled=false + loud error.
-    let err = run(&ctx, "config.set", serde_json::json!({ "sub_enabled": true }))
-        .await
-        .unwrap_err();
+    let err = run(
+        &ctx,
+        "config.set",
+        serde_json::json!({ "sub_enabled": true }),
+    )
+    .await
+    .unwrap_err();
     assert!(
         err.contains("向量存储初始化失败"),
         "unexpected error: {}",
@@ -257,10 +266,14 @@ async fn config_set_sub_disabled_with_manager_disables_runtime_vector() {
     let mgr = ctx.state.memory_manager.clone().unwrap();
     mgr.set_vector_enabled(true);
 
-    run(&ctx, "config.set", serde_json::json!({ "sub_enabled": false }))
-        .await
-        .unwrap()
-        .unwrap();
+    run(
+        &ctx,
+        "config.set",
+        serde_json::json!({ "sub_enabled": false }),
+    )
+    .await
+    .unwrap()
+    .unwrap();
     assert!(!mgr.is_vector_enabled());
     let after = serde_json::from_str::<serde_json::Value>(
         &std::fs::read_to_string(emb_config_path(dir.path())).unwrap(),
@@ -406,9 +419,13 @@ async fn model_install_rejects_when_tier_already_locked() {
 
     let ctx = make_ctx_mgr(&dir, &dir.path().join("memory_vector"));
     install_locks().lock().unwrap().insert("large".to_string());
-    let err = run(&ctx, "model.install", serde_json::json!({ "tier": "large" }))
-        .await
-        .unwrap_err();
+    let err = run(
+        &ctx,
+        "model.install",
+        serde_json::json!({ "tier": "large" }),
+    )
+    .await
+    .unwrap_err();
     install_locks().lock().unwrap().remove("large");
     assert!(err.contains("正在安装中"), "got: {}", err);
 }
@@ -442,10 +459,14 @@ async fn model_install_succeeds_offline_via_local_model_path() {
     );
 
     let ctx = make_ctx_mgr(&dir, &dir.path().join("memory_vector"));
-    let out = run(&ctx, "model.install", serde_json::json!({ "tier": "small" }))
-        .await
-        .unwrap()
-        .unwrap();
+    let out = run(
+        &ctx,
+        "model.install",
+        serde_json::json!({ "tier": "small" }),
+    )
+    .await
+    .unwrap()
+    .unwrap();
     assert_eq!(out["success"], serde_json::json!(true));
     assert_eq!(out["tier"], serde_json::json!("small"));
     assert_eq!(out["dimension"], serde_json::json!(16));
@@ -546,7 +567,11 @@ fn migrate_legacy_fails_cleanly_when_target_parent_uncreatable() {
     let vector_dir = dir.path().join("memory_vector").join("vector");
     std::fs::create_dir_all(vector_dir.parent().unwrap()).unwrap();
     std::fs::write(&vector_dir, b"file").unwrap();
-    let legacy = dir.path().join("memory").join("vector").join("vector_store.jsonl");
+    let legacy = dir
+        .path()
+        .join("memory")
+        .join("vector")
+        .join("vector_store.jsonl");
     std::fs::create_dir_all(legacy.parent().unwrap()).unwrap();
     std::fs::write(&legacy, b"{\"id\":\"legacy\"}\n").unwrap();
 
@@ -574,7 +599,11 @@ async fn entries_get_returns_full_untruncated_content_offline() {
         .await
         .unwrap()
         .unwrap();
-    let listed_len = listed["entries"][0]["content"].as_str().unwrap().chars().count();
+    let listed_len = listed["entries"][0]["content"]
+        .as_str()
+        .unwrap()
+        .chars()
+        .count();
     assert!(listed_len < 300, "list must truncate, got {}", listed_len);
 
     let out = run(&ctx, "entries.get", serde_json::json!({ "id": "long" }))
@@ -582,7 +611,11 @@ async fn entries_get_returns_full_untruncated_content_offline() {
         .unwrap()
         .unwrap();
     let got = out["entry"]["content"].as_str().unwrap();
-    assert_eq!(got.chars().count(), 300, "entries.get must return FULL content");
+    assert_eq!(
+        got.chars().count(),
+        300,
+        "entries.get must return FULL content"
+    );
 
     // 不存在的 id → entry:null，不报错。
     let miss = run(&ctx, "entries.get", serde_json::json!({ "id": "nope" }))
@@ -611,9 +644,13 @@ async fn entries_delete_removes_line_offline_jsonl() {
     assert_eq!(out["deleted"], serde_json::json!(true));
 
     // 行级删除落盘：只剩 a。
-    let raw = std::fs::read_to_string(vector_store_jsonl_path(&dir.path().to_string_lossy()))
-        .unwrap();
-    assert!(raw.contains("\"a\"") && !raw.contains("\"drop\""), "raw: {}", raw);
+    let raw =
+        std::fs::read_to_string(vector_store_jsonl_path(&dir.path().to_string_lossy())).unwrap();
+    assert!(
+        raw.contains("\"a\"") && !raw.contains("\"drop\""),
+        "raw: {}",
+        raw
+    );
 
     // 再删同一个 id → deleted:false（不报错）。
     let again = run(&ctx, "entries.delete", serde_json::json!({ "id": "b" }))
@@ -653,10 +690,14 @@ async fn entries_update_with_enabled_manager_reembeds_via_delete_and_restore() {
     let mgr = ctx.state.memory_manager.clone().unwrap();
     mgr.set_vector_enabled(true);
 
-    let stored = run(&ctx, "entries.store", serde_json::json!({ "content": "old bytes" }))
-        .await
-        .unwrap()
-        .unwrap();
+    let stored = run(
+        &ctx,
+        "entries.store",
+        serde_json::json!({ "content": "old bytes" }),
+    )
+    .await
+    .unwrap()
+    .unwrap();
     let old_id = stored["id"].as_str().unwrap().to_string();
 
     let out = run(

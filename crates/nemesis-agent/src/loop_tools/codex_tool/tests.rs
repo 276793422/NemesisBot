@@ -41,7 +41,10 @@ fn test_codex_sandbox_not_in_schema() {
 /// through; unknown → default.
 #[test]
 fn test_codex_sandbox_normalization() {
-    assert_eq!(CodexTool::new("C:/fake".into(), None, None).sandbox(), "read_only");
+    assert_eq!(
+        CodexTool::new("C:/fake".into(), None, None).sandbox(),
+        "read_only"
+    );
     assert_eq!(
         CodexTool::new("C:/fake".into(), None, Some("workspace_write")).sandbox(),
         "workspace_write"
@@ -50,7 +53,10 @@ fn test_codex_sandbox_normalization() {
         CodexTool::new("C:/fake".into(), None, Some("danger_full_access")).sandbox(),
         "danger_full_access"
     );
-    assert_eq!(CodexTool::new("C:/fake".into(), None, Some("nope")).sandbox(), "read_only");
+    assert_eq!(
+        CodexTool::new("C:/fake".into(), None, Some("nope")).sandbox(),
+        "read_only"
+    );
 }
 
 #[tokio::test]
@@ -108,7 +114,10 @@ async fn test_codex_sandbox_flags_passed_to_cli() {
     let out = t.execute(r#"{"prompt":"hello task"}"#, &test_ctx()).await;
     assert!(out.is_ok(), "{:?}", out);
     let got = fake.received_args();
-    assert!(got.contains("--sandbox read-only"), "default tier kebab: {got}");
+    assert!(
+        got.contains("--sandbox read-only"),
+        "default tier kebab: {got}"
+    );
     assert!(
         got.contains("--ask-for-approval never"),
         "non-interactive approval: {got}"

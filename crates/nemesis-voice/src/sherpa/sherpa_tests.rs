@@ -50,7 +50,10 @@ fn is_initialized_false_when_dll_never_loaded() {
 
 #[test]
 fn init_nonexistent_path_fails_without_setting_lib() {
-    let err = format!("{:#}", init(std::path::Path::new("Z:/no/such/sherpa.dll")).unwrap_err());
+    let err = format!(
+        "{:#}",
+        init(std::path::Path::new("Z:/no/such/sherpa.dll")).unwrap_err()
+    );
     assert!(err.contains("Failed to load"), "{err}");
     assert!(err.contains("Z:/no/such/sherpa.dll"), "{err}");
     // 失败不得污染全局状态

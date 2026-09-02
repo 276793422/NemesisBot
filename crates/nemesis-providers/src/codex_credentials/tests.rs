@@ -355,7 +355,10 @@ fn test_w4c_token_source_rejects_stale_auth_file() {
     )
     .unwrap();
     // mtime 拨回 2 小时前 → expires_at = mtime + 1h 已过
-    let f = std::fs::File::options().write(true).open(&auth_path).unwrap();
+    let f = std::fs::File::options()
+        .write(true)
+        .open(&auth_path)
+        .unwrap();
     f.set_modified(std::time::SystemTime::now() - std::time::Duration::from_secs(7200))
         .unwrap();
     drop(f);

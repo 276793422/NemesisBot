@@ -249,12 +249,13 @@ impl Pool {
         {
             let counts = self.node_counts.lock();
             if let Some(&count) = counts.get(node_id)
-                && count >= self.config.max_conns_per_node {
-                    return Err(format!(
-                        "per-node limit reached for {} ({}/{})",
-                        node_id, count, self.config.max_conns_per_node
-                    ));
-                }
+                && count >= self.config.max_conns_per_node
+            {
+                return Err(format!(
+                    "per-node limit reached for {} ({}/{})",
+                    node_id, count, self.config.max_conns_per_node
+                ));
+            }
         }
 
         // Acquire semaphore permit (limits total connections)
@@ -275,14 +276,15 @@ impl Pool {
         {
             let counts = self.node_counts.lock();
             if let Some(&count) = counts.get(node_id)
-                && count >= self.config.max_conns_per_node {
-                    drop(counts);
-                    drop(permit); // Release the semaphore permit
-                    return Err(format!(
-                        "per-node limit reached for {} after acquiring semaphore",
-                        node_id
-                    ));
-                }
+                && count >= self.config.max_conns_per_node
+            {
+                drop(counts);
+                drop(permit); // Release the semaphore permit
+                return Err(format!(
+                    "per-node limit reached for {} after acquiring semaphore",
+                    node_id
+                ));
+            }
         }
 
         // Dial new connection

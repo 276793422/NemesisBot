@@ -169,8 +169,7 @@ fn get_plugin_data_dir_matches_workspace_join() {
 
     let plugin = CString::new("cov-plugin").unwrap();
     let mut buf = vec![0i8; 4096];
-    let n =
-        (hs.get_plugin_data_dir.unwrap())(plugin.as_ptr(), buf.as_mut_ptr(), buf.len());
+    let n = (hs.get_plugin_data_dir.unwrap())(plugin.as_ptr(), buf.as_mut_ptr(), buf.len());
     assert!(n > 0);
     let got = read_c_str(&buf, n as usize);
     assert_eq!(
@@ -235,7 +234,10 @@ fn download_file_unreachable_upstream_returns_minus_3() {
         -3,
         "connection refused must map to -3"
     );
-    assert!(!dest_path.exists(), "failed download must not write dest file");
+    assert!(
+        !dest_path.exists(),
+        "failed download must not write dest file"
+    );
     let _ = std::fs::remove_file(&dest_path);
 }
 
@@ -246,8 +248,7 @@ fn download_file_local_http_success_writes_dest() {
     let dl = hs.download_file.unwrap();
     let port = spawn_one_shot_http_server("MODEL_BYTES_12345");
     let url = CString::new(format!("http://127.0.0.1:{port}/model.bin")).unwrap();
-    let dest_path =
-        std::env::temp_dir().join(format!("hs_dl_ok_{}.bin", std::process::id()));
+    let dest_path = std::env::temp_dir().join(format!("hs_dl_ok_{}.bin", std::process::id()));
     let _ = std::fs::remove_file(&dest_path);
     let dest = CString::new(dest_path.to_str().unwrap()).unwrap();
 

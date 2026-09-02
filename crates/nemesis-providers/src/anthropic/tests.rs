@@ -713,9 +713,10 @@ fn test_w4c_anth_build_body_assistant_tool_calls_and_tool_result() {
         call_type: None,
         function: None,
         name: Some("get_weather".to_string()),
-        arguments: Some(HashMap::from([
-            ("city".to_string(), serde_json::json!("北京")),
-        ])),
+        arguments: Some(HashMap::from([(
+            "city".to_string(),
+            serde_json::json!("北京"),
+        )])),
     };
     let messages = vec![
         Message {

@@ -18,7 +18,7 @@
 
 use std::path::Path;
 
-use anyhow::{bail, Context, Result};
+use anyhow::{Context, Result, bail};
 use serde::{Deserialize, Serialize};
 
 /// 内置默认规则集 —— 唯一定义源 `config/eval_rules.default.json`
@@ -27,7 +27,9 @@ pub const DEFAULT_RULES_JSON: &str = include_str!("../config/eval_rules.default.
 
 /// 规则文件位置：`<home>/workspace/config/eval_rules.json`。
 pub fn rules_file_path(home: &Path) -> std::path::PathBuf {
-    home.join("workspace").join("config").join("eval_rules.json")
+    home.join("workspace")
+        .join("config")
+        .join("eval_rules.json")
 }
 
 // ---------------------------------------------------------------------------
@@ -115,14 +117,23 @@ pub fn validate_rule(rule: &Rule) -> Result<()> {
     for (i, c) in rule.conditions.iter().enumerate() {
         match c.op.as_str() {
             "equals" | "contains" | "regex" | "exists" | "gt" => {}
-            other => bail!("rule '{}': condition[{}] unknown op '{}'", rule.id, i, other),
+            other => bail!(
+                "rule '{}': condition[{}] unknown op '{}'",
+                rule.id,
+                i,
+                other
+            ),
         }
         if c.op == "regex" {
             regex::Regex::new(c.value.as_str().unwrap_or(""))
                 .with_context(|| format!("rule '{}': condition[{}] invalid regex", rule.id, i))?;
         }
         if c.op == "gt" && !c.value.is_number() {
-            bail!("rule '{}': condition[{}] gt requires a number value", rule.id, i);
+            bail!(
+                "rule '{}': condition[{}] gt requires a number value",
+                rule.id,
+                i
+            );
         }
     }
     if !matches!(rule.level.as_str(), "critical" | "high" | "medium" | "low") {
@@ -223,9 +234,9 @@ fn match_value(cond: &Condition, value: &serde_json::Value) -> bool {
             _ => false,
         },
         "regex" => match (cond.value.as_str(), value.as_str()) {
-            (Some(pat), Some(text)) => {
-                regex::Regex::new(pat).map(|re| re.is_match(text)).unwrap_or(false)
-            }
+            (Some(pat), Some(text)) => regex::Regex::new(pat)
+                .map(|re| re.is_match(text))
+                .unwrap_or(false),
             _ => false,
         },
         "gt" => match (cond.value.as_f64(), value.as_f64()) {
@@ -293,7 +304,10 @@ pub fn truncation_point(s: &str, max: usize) -> usize {
 /// 漏判——两条形态都要归一到同一个键再比较。
 #[cfg_attr(not(target_os = "windows"), allow(dead_code))]
 fn normalize_host(s: &str) -> String {
-    s.trim().to_ascii_lowercase().trim_end_matches('.').to_string()
+    s.trim()
+        .to_ascii_lowercase()
+        .trim_end_matches('.')
+        .to_string()
 }
 
 // ---------------------------------------------------------------------------
@@ -315,7 +329,11 @@ impl Conclusion {
     /// Safe 措辞带"本次运行范围内"限定——单次运行非证明，绝不裸"安全"。
     #[cfg_attr(not(target_os = "windows"), allow(dead_code))]
     pub fn phrase_zh(&self, kind: &str) -> String {
-        let noun = if kind == "skill" { "技能" } else { "提示词" };
+        let noun = if kind == "skill" {
+            "技能"
+        } else {
+            "提示词"
+        };
         match self {
             Conclusion::Risk => format!("{noun}有风险"),
             Conclusion::Safe => format!("本次运行范围内未发现风险行为（{noun}安全）"),
@@ -373,7 +391,8 @@ impl AssessResult {
         ];
         if self.legacy_report {
             notes.push(
-                "旧版报告（无运行状态字段）：结论不含运行完整性检查，可信度低于新版报告。".to_string(),
+                "旧版报告（无运行状态字段）：结论不含运行完整性检查，可信度低于新版报告。"
+                    .to_string(),
             );
         }
         notes
@@ -384,8 +403,7 @@ impl AssessResult {
 #[cfg_attr(not(target_os = "windows"), allow(dead_code))]
 fn read_report_file(dir: &Path, name: &str) -> Result<serde_json::Value> {
     let p = dir.join(name);
-    let content =
-        std::fs::read_to_string(&p).with_context(|| format!("{name} 缺失或不可读"))?;
+    let content = std::fs::read_to_string(&p).with_context(|| format!("{name} 缺失或不可读"))?;
     serde_json::from_str(&content).with_context(|| format!("{name} 不是合法 JSON"))
 }
 
@@ -400,8 +418,7 @@ pub fn assess(report_dir: &Path, rules: &RulesFile) -> AssessResult {
     let meta = read_report_file(report_dir, "meta.json");
     let driver_events = read_jsonl(report_dir, "driver_events.jsonl");
     let tool_trace = read_report_file(report_dir, "tool_trace.json");
-    let subject_txt =
-        std::fs::read_to_string(report_dir.join("subject.txt")).ok();
+    let subject_txt = std::fs::read_to_string(report_dir.join("subject.txt")).ok();
 
     let kind = meta
         .as_ref()
@@ -508,9 +525,13 @@ pub fn assess(report_dir: &Path, rules: &RulesFile) -> AssessResult {
         let mut r = make(Conclusion::Unknown, gaps);
         if r.gaps.iter().any(|g| g.contains("非法被跳过")) {
             // 启用规则全部非法被跳过（gaps 已有逐条明细）。
-            r.gaps.push("全部启用规则非法被跳过，评估覆盖为零，无法下结论。".to_string());
+            r.gaps
+                .push("全部启用规则非法被跳过，评估覆盖为零，无法下结论。".to_string());
         } else {
-            r.gaps.push("无启用规则（0 enabled），无法评估；用 `nemesisbot eval rules list` 检查。".to_string());
+            r.gaps.push(
+                "无启用规则（0 enabled），无法评估；用 `nemesisbot eval rules list` 检查。"
+                    .to_string(),
+            );
         }
         return r;
     }
@@ -521,12 +542,15 @@ pub fn assess(report_dir: &Path, rules: &RulesFile) -> AssessResult {
         // 注意：只要有一条启用规则被跳过，评估覆盖就不完整，"零命中"
         // 不再是有效观察 → 不得落"安全"（与 0-enabled 判未知同一立场）。
         let has_file_gap = r.gaps.iter().any(|g| {
-            g.contains("meta.json") || g.contains("driver_events")
-                || g.contains("tool_trace") || g.contains("subject.txt")
+            g.contains("meta.json")
+                || g.contains("driver_events")
+                || g.contains("tool_trace")
+                || g.contains("subject.txt")
         });
         let has_invalid_rule = r.gaps.iter().any(|g| g.contains("非法被跳过"));
         if has_file_gap {
-            r.gaps.push("报告不完整，无法下结论；修复运行后重新评估。".to_string());
+            r.gaps
+                .push("报告不完整，无法下结论；修复运行后重新评估。".to_string());
         } else if has_invalid_rule {
             r.gaps.push("规则文件存在非法规则，评估覆盖不全，无法下结论；用 `nemesisbot eval rules list` 检查。".to_string());
         } else {
@@ -557,36 +581,47 @@ pub fn assess(report_dir: &Path, rules: &RulesFile) -> AssessResult {
         worker_error: meta.get("worker_error").and_then(|v| v.as_bool()),
         agent_exit: meta.get("agent_exit").and_then(|v| v.as_i64()),
         monitor_shell_exit: meta.get("monitor_shell_exit").and_then(|v| v.as_i64()),
-        final_response_len: meta.get("final_response_len").and_then(|v| v.as_u64()).map(|v| v as usize),
-        tool_call_count: meta.get("tool_call_count").and_then(|v| v.as_u64()).map(|v| v as usize),
+        final_response_len: meta
+            .get("final_response_len")
+            .and_then(|v| v.as_u64())
+            .map(|v| v as usize),
+        tool_call_count: meta
+            .get("tool_call_count")
+            .and_then(|v| v.as_u64())
+            .map(|v| v as usize),
     };
     // Y9 反向矛盾：meta 说 final_response_len==0 但文件非空 → meta 与文件
     // 矛盾（meta 被篡改/手改坏）→ 未知。只查这一方向：meta 非零 vs 文件
     // 实际长度的差异不报（手工编辑/换行差异是合法的）。
     if integrity.final_response_len == Some(0)
         && let Ok(txt) = std::fs::read_to_string(report_dir.join("final_response.md"))
-            && !txt.trim().is_empty() {
-                let mut r = make(Conclusion::Unknown, vec![]);
-                r.run_integrity = integrity.clone();
-                r.gaps.push(
-                    "meta.final_response_len = 0 但 final_response.md 非空——报告自相矛盾，meta 不可信".to_string(),
-                );
-                r.gaps.push("报告不一致，无法下结论；检查报告是否被篡改。".to_string());
-                return r;
-            }
+        && !txt.trim().is_empty()
+    {
+        let mut r = make(Conclusion::Unknown, vec![]);
+        r.run_integrity = integrity.clone();
+        r.gaps.push(
+            "meta.final_response_len = 0 但 final_response.md 非空——报告自相矛盾，meta 不可信"
+                .to_string(),
+        );
+        r.gaps
+            .push("报告不一致，无法下结论；检查报告是否被篡改。".to_string());
+        return r;
+    }
     // Z5：tool_call_count 同样的反向矛盾——meta 说 0 但 tool_trace 有记录
     //（Y9 只做了 final_response，这条漏了；skill 零调用判定完全依赖这个
     // 字段，被篡改的 0 会让"其实执行了工具的技能"跳过零调用检查）。
-    if integrity.tool_call_count == Some(0)
-        && tool_trace.as_array().is_some_and(|a| !a.is_empty()) {
-            let mut r = make(Conclusion::Unknown, vec![]);
-            r.run_integrity = integrity.clone();
-            r.gaps.push(
-                "meta.tool_call_count = 0 但 tool_trace.json 有记录——报告自相矛盾，meta 不可信".to_string(),
-            );
-            r.gaps.push("报告不一致，无法下结论；检查报告是否被篡改。".to_string());
-            return r;
-        }
+    if integrity.tool_call_count == Some(0) && tool_trace.as_array().is_some_and(|a| !a.is_empty())
+    {
+        let mut r = make(Conclusion::Unknown, vec![]);
+        r.run_integrity = integrity.clone();
+        r.gaps.push(
+            "meta.tool_call_count = 0 但 tool_trace.json 有记录——报告自相矛盾，meta 不可信"
+                .to_string(),
+        );
+        r.gaps
+            .push("报告不一致，无法下结论；检查报告是否被篡改。".to_string());
+        return r;
+    }
     let legacy = integrity.worker_error.is_none()
         && integrity.agent_exit.is_none()
         && integrity.monitor_shell_exit.is_none()
@@ -603,7 +638,8 @@ pub fn assess(report_dir: &Path, rules: &RulesFile) -> AssessResult {
             x.run_integrity = i.clone();
             x.legacy_report = legacy;
             x.gaps.push(reason);
-            x.gaps.push("报告不完整或运行未完成，无法下结论；修复运行后重新评估。".to_string());
+            x.gaps
+                .push("报告不完整或运行未完成，无法下结论；修复运行后重新评估。".to_string());
             x
         };
         if i.worker_error == Some(true) {
@@ -632,10 +668,7 @@ pub fn assess(report_dir: &Path, rules: &RulesFile) -> AssessResult {
 
     // ── 规则求值（完整性通过才进入） ──
     // tool_trace.json 顶层是数组。
-    let trace_records: Vec<serde_json::Value> = tool_trace
-        .as_array()
-        .cloned()
-        .unwrap_or_default();
+    let trace_records: Vec<serde_json::Value> = tool_trace.as_array().cloned().unwrap_or_default();
     // subject 整个文本作为一条记录 { "text": "<全文>" }。
     let subject_record = serde_json::json!({ "text": subject_txt });
 
@@ -685,9 +718,10 @@ pub fn assess(report_dir: &Path, rules: &RulesFile) -> AssessResult {
         for (ci, c) in rule.conditions.iter().enumerate() {
             if c.op == "regex"
                 && let Some(pat) = c.value.as_str()
-                    && let Ok(re) = regex::Regex::new(pat) {
-                        compiled.push((ri, ci, re));
-                    }
+                && let Ok(re) = regex::Regex::new(pat)
+            {
+                compiled.push((ri, ci, re));
+            }
         }
     }
 
@@ -715,7 +749,10 @@ pub fn assess(report_dir: &Path, rules: &RulesFile) -> AssessResult {
                     (eval_src, &driver_events)
                 }
                 "tool_trace" => (&trace_records, &trace_records),
-                "subject" => (std::slice::from_ref(&subject_record), std::slice::from_ref(&subject_record)),
+                "subject" => (
+                    std::slice::from_ref(&subject_record),
+                    std::slice::from_ref(&subject_record),
+                ),
                 _ => continue,
             };
         let mut hits = 0usize;
@@ -775,7 +812,10 @@ fn regex_match_value(re: &regex::Regex, value: &serde_json::Value) -> bool {
     if let Some(arr) = value.as_array() {
         return arr.iter().any(|el| regex_match_value(re, el));
     }
-    value.as_str().map(|text| re.is_match(text)).unwrap_or(false)
+    value
+        .as_str()
+        .map(|text| re.is_match(text))
+        .unwrap_or(false)
 }
 
 /// 读 JSONL（driver_events.jsonl）：每行一个 JSON 对象；文件缺失 → Err；
@@ -785,8 +825,7 @@ fn regex_match_value(re: &regex::Regex, value: &serde_json::Value) -> bool {
 #[cfg_attr(not(target_os = "windows"), allow(dead_code))]
 fn read_jsonl(dir: &Path, name: &str) -> Result<Vec<serde_json::Value>> {
     let p = dir.join(name);
-    let content =
-        std::fs::read_to_string(&p).with_context(|| format!("{name} 缺失或不可读"))?;
+    let content = std::fs::read_to_string(&p).with_context(|| format!("{name} 缺失或不可读"))?;
     let mut out = Vec::new();
     let mut json_lines = 0usize; // 看起来像 JSON 的行（{ 开头）
     for line in content.lines() {

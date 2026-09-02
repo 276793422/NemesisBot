@@ -250,14 +250,14 @@ async fn extra_server_read_loop_response_routes_to_pending() {
     if let Some(Ok(ws_msg)) = tokio::time::timeout(Duration::from_secs(2), ws.next())
         .await
         .unwrap_or(None)
-        && let WsMessage::Text(text) = ws_msg {
-            let req: Message = serde_json::from_str(&text).unwrap();
-            assert!(req.is_request());
-            let resp =
-                Message::new_response(req.id.as_deref().unwrap_or(""), serde_json::json!("ok"));
-            let resp_str = serde_json::to_string(&resp).unwrap();
-            ws.send(WsMessage::Text(resp_str.into())).await.unwrap();
-        }
+        && let WsMessage::Text(text) = ws_msg
+    {
+        let req: Message = serde_json::from_str(&text).unwrap();
+        assert!(req.is_request());
+        let resp = Message::new_response(req.id.as_deref().unwrap_or(""), serde_json::json!("ok"));
+        let resp_str = serde_json::to_string(&resp).unwrap();
+        ws.send(WsMessage::Text(resp_str.into())).await.unwrap();
+    }
 
     let result = tokio::time::timeout(Duration::from_secs(2), call_handle).await;
     assert!(result.is_ok());
@@ -515,10 +515,12 @@ fn extra_validated_key_used_at_none_before_validate() {
 
 #[test]
 fn extra_ws_server_error_all_variants_to_string() {
-    let variants = [WsServerError::ConnectionNotFound.to_string(),
+    let variants = [
+        WsServerError::ConnectionNotFound.to_string(),
         WsServerError::CallTimeout.to_string(),
         WsServerError::SendTimeout.to_string(),
-        WsServerError::Other("xyz".to_string()).to_string()];
+        WsServerError::Other("xyz".to_string()).to_string(),
+    ];
     assert_eq!(variants[0], "connection not found");
     assert_eq!(variants[1], "call timeout");
     assert_eq!(variants[2], "send timeout");
@@ -666,13 +668,14 @@ async fn extra_server_request_unknown_method_returns_error_response() {
     if let Some(Ok(ws_msg)) = tokio::time::timeout(Duration::from_secs(2), ws.next())
         .await
         .unwrap_or(None)
-        && let WsMessage::Text(text) = ws_msg {
-            let resp: Message = serde_json::from_str(&text).unwrap();
-            assert!(resp.is_error_response());
-            assert_eq!(resp.id.as_deref(), Some("req-9100"));
-            let err = resp.error.unwrap();
-            assert_eq!(err.code, crate::websocket::protocol::ERR_METHOD_NOT_FOUND);
-        }
+        && let WsMessage::Text(text) = ws_msg
+    {
+        let resp: Message = serde_json::from_str(&text).unwrap();
+        assert!(resp.is_error_response());
+        assert_eq!(resp.id.as_deref(), Some("req-9100"));
+        let err = resp.error.unwrap();
+        assert_eq!(err.code, crate::websocket::protocol::ERR_METHOD_NOT_FOUND);
+    }
     ws.close(None).await.ok();
     tokio::time::sleep(Duration::from_millis(50)).await;
     server.stop();

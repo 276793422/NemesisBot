@@ -112,7 +112,10 @@ fn start_loopback_spawns_thread_and_stop_clears_slot() {
     {
         let slot = loopback_slot().lock().unwrap();
         let flag = slot.as_ref().expect("restart must install a new flag");
-        assert!(!flag.load(Ordering::SeqCst), "new flag must start un-stopped");
+        assert!(
+            !flag.load(Ordering::SeqCst),
+            "new flag must start un-stopped"
+        );
     }
     stop_loopback();
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);

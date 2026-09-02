@@ -135,8 +135,11 @@ pub fn build_executor_channel(
     #[cfg(all(feature = "sandbox", windows))]
     let strict_gate: nemesis_agent::StrictGate = {
         let home = home.to_path_buf();
-        let attached_start_exe: Option<std::path::PathBuf> =
-            if will_attach { Some(start_exe.clone()) } else { None };
+        let attached_start_exe: Option<std::path::PathBuf> = if will_attach {
+            Some(start_exe.clone())
+        } else {
+            None
+        };
         Arc::new(move || {
             if !strict_now() {
                 return Ok(());
@@ -155,7 +158,8 @@ pub fn build_executor_channel(
                 nemesis_sandbox::status::service_state(nemesis_sandbox::USERMODE_SERVICE),
                 nemesis_sandbox::status::ServiceState::Running
             );
-            let owned = nemesis_sandbox::status::engine_owned(&nemesis_sandbox::SandboxPaths::new(&home));
+            let owned =
+                nemesis_sandbox::status::engine_owned(&nemesis_sandbox::SandboxPaths::new(&home));
             if attached_path.exists() && sbiesvc_running && owned {
                 Ok(())
             } else {

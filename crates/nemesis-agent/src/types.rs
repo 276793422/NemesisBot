@@ -215,8 +215,7 @@ impl Default for ToolFunctionDef {
 }
 
 /// Current operational state of an agent instance.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[derive(Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 pub enum AgentState {
     /// Agent is idle and ready to process a new request.
     #[default]
@@ -228,7 +227,6 @@ pub enum AgentState {
     /// Agent is preparing the final response.
     Responding,
 }
-
 
 /// Events emitted by the agent loop during execution.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -286,9 +284,10 @@ pub fn repair_tool_message_pairs(messages: &mut Vec<ConversationTurn>) {
         for (idx, msg) in messages.iter().enumerate().rev() {
             if msg.role == "tool"
                 && let Some(ref id) = msg.tool_call_id
-                    && !seen.insert(id.clone()) {
-                        to_remove.push(idx);
-                    }
+                && !seen.insert(id.clone())
+            {
+                to_remove.push(idx);
+            }
         }
         for idx in to_remove {
             debug!(
@@ -355,9 +354,10 @@ pub fn repair_tool_message_pairs(messages: &mut Vec<ConversationTurn>) {
             for m in messages.iter().take(n).skip(i + 1) {
                 if m.role == "tool"
                     && let Some(ref tc_id) = m.tool_call_id
-                        && call_ids.contains(tc_id) {
-                            found_ids.insert(tc_id.clone());
-                        }
+                    && call_ids.contains(tc_id)
+                {
+                    found_ids.insert(tc_id.clone());
+                }
             }
             if found_ids.len() < call_ids.len() {
                 for tc in &messages[i].tool_calls {

@@ -26,7 +26,10 @@ fn test_init_db_creates_file_and_tables() {
         "attachment",
         "notification",
     ] {
-        assert!(tables.iter().any(|t| t == expected), "missing table {expected}");
+        assert!(
+            tables.iter().any(|t| t == expected),
+            "missing table {expected}"
+        );
     }
     let _ = std::fs::remove_dir_all(&dir);
 }
@@ -38,15 +41,14 @@ fn test_init_db_is_idempotent() {
     let _ = init_db(&path).unwrap();
     // 二次 open 不应报错也不应清数据。
     let conn = init_db(&path).unwrap();
-    conn.execute(
-        "INSERT INTO board_meta(key, value) VALUES('k', 'v')",
-        [],
-    )
-    .unwrap();
+    conn.execute("INSERT INTO board_meta(key, value) VALUES('k', 'v')", [])
+        .unwrap();
     drop(conn);
     let conn2 = init_db(&path).unwrap();
     let v: String = conn2
-        .query_row("SELECT value FROM board_meta WHERE key='k'", [], |r| r.get(0))
+        .query_row("SELECT value FROM board_meta WHERE key='k'", [], |r| {
+            r.get(0)
+        })
         .unwrap();
     assert_eq!(v, "v");
     let _ = std::fs::remove_dir_all(&dir);
@@ -99,7 +101,11 @@ fn test_migration_v1_to_latest_adds_dispatch_and_notification() {
     assert_eq!(n, 0);
     // v1 期数据保留。
     let prefix: String = conn
-        .query_row("SELECT value FROM board_meta WHERE key='number_prefix'", [], |r| r.get(0))
+        .query_row(
+            "SELECT value FROM board_meta WHERE key='number_prefix'",
+            [],
+            |r| r.get(0),
+        )
         .unwrap();
     assert_eq!(prefix, "NB");
     let _ = std::fs::remove_dir_all(&dir);

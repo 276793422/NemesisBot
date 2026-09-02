@@ -104,11 +104,9 @@ fn update_executor<F: FnOnce(&mut nemesis_config::ExecutorSeparationConfig)>(
         serde_json::from_str(&raw).map_err(|e| format!("parse config.json: {e}"))?;
     // Read the existing executor section FIRST (immutable borrow), before the
     // mutable object borrow below — borrowing `val` both ways at once won't compile.
-    let existing = val
-        .get("executor")
-        .and_then(|v| {
-            serde_json::from_value::<nemesis_config::ExecutorSeparationConfig>(v.clone()).ok()
-        });
+    let existing = val.get("executor").and_then(|v| {
+        serde_json::from_value::<nemesis_config::ExecutorSeparationConfig>(v.clone()).ok()
+    });
     let obj = val
         .as_object_mut()
         .ok_or_else(|| "config.json is not a JSON object".to_string())?;
@@ -254,8 +252,10 @@ impl ModuleHandler for SandboxHandler {
                 };
                 let (backend_probe, ready) = if cfg!(target_os = "windows") {
                     let start_exe_present = paths.start_exe().exists();
-                    let sbiesvc_running =
-                        matches!(nemesis_sandbox::status::service_state(nemesis_sandbox::USERMODE_SERVICE), ServiceState::Running);
+                    let sbiesvc_running = matches!(
+                        nemesis_sandbox::status::service_state(nemesis_sandbox::USERMODE_SERVICE),
+                        ServiceState::Running
+                    );
                     let engine_owned = nemesis_sandbox::status::engine_owned(&paths);
                     (
                         serde_json::json!({
@@ -557,11 +557,8 @@ impl SandboxHandler {
     ///   `NEMESISBOT_SELFTEST_ENGAGE=1` 自装后探测；
     /// - WrapCommand（bwrap / Seatbelt）→ 用后端包装同一条子命令
     ///   （`NEMESISBOT_SELFTEST_BOXED=1`，盒内实例跳过自装）。
-    async fn self_test(
-        &self,
-        home: &std::path::Path,
-    ) -> Result<Option<serde_json::Value>, String> {
-        use nemesis_sandbox::backend::{detect_backend, BackendForm};
+    async fn self_test(&self, home: &std::path::Path) -> Result<Option<serde_json::Value>, String> {
+        use nemesis_sandbox::backend::{BackendForm, detect_backend};
 
         let workspace = home.join("workspace");
         std::fs::create_dir_all(&workspace)
@@ -602,7 +599,10 @@ impl SandboxHandler {
             }
         }
         cmd.env("NEMESISBOT_SELFTEST_WORKSPACE", &workspace)
-            .env("NEMESISBOT_SELFTEST_ALLOW_NETWORK", if allow_network { "1" } else { "0" })
+            .env(
+                "NEMESISBOT_SELFTEST_ALLOW_NETWORK",
+                if allow_network { "1" } else { "0" },
+            )
             .stdin(std::process::Stdio::null())
             .stdout(std::process::Stdio::piped())
             .stderr(std::process::Stdio::piped());
@@ -641,7 +641,10 @@ impl SandboxHandler {
             Some(v) if v.get("ok").and_then(|b| b.as_bool()) == Some(true) => {
                 let mut o = obj.clone();
                 o.insert("probe_ok".into(), serde_json::Value::Bool(true));
-                o.insert("checks".into(), v.get("checks").cloned().unwrap_or_default());
+                o.insert(
+                    "checks".into(),
+                    v.get("checks").cloned().unwrap_or_default(),
+                );
                 Ok(Some(serde_json::Value::Object(o)))
             }
             Some(v) => {
@@ -649,9 +652,14 @@ impl SandboxHandler {
                 o.insert("probe_ok".into(), serde_json::Value::Bool(false));
                 o.insert(
                     "error".into(),
-                    v.get("error").cloned().unwrap_or_else(|| "probe child reported failure".into()),
+                    v.get("error")
+                        .cloned()
+                        .unwrap_or_else(|| "probe child reported failure".into()),
                 );
-                o.insert("checks".into(), v.get("checks").cloned().unwrap_or_default());
+                o.insert(
+                    "checks".into(),
+                    v.get("checks").cloned().unwrap_or_default(),
+                );
                 Ok(Some(serde_json::Value::Object(o)))
             }
             None => {

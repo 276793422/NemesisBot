@@ -1824,11 +1824,9 @@ async fn wait_for_callback_accepts_and_parses_callback_request() {
     // 先发起回调连接（wait_for_callback 未 accept 前连接在 backlog 排队）。
     let client = tokio::spawn(async move {
         let mut sock = tokio::net::TcpStream::connect(addr).await.unwrap();
-        sock.write_all(
-            b"GET /auth/callback?code=xyz789&state=st1 HTTP/1.1\r\nHost: x\r\n\r\n",
-        )
-        .await
-        .unwrap();
+        sock.write_all(b"GET /auth/callback?code=xyz789&state=st1 HTTP/1.1\r\nHost: x\r\n\r\n")
+            .await
+            .unwrap();
         let mut buf = vec![0u8; 4096];
         let n = sock.read(&mut buf).await.unwrap_or(0);
         String::from_utf8_lossy(&buf[..n]).to_string()
@@ -1849,11 +1847,9 @@ async fn wait_for_callback_state_mismatch_errors() {
 
     let client = tokio::spawn(async move {
         let mut sock = tokio::net::TcpStream::connect(addr).await.unwrap();
-        sock.write_all(
-            b"GET /auth/callback?code=xyz&state=WRONG HTTP/1.1\r\nHost: x\r\n\r\n",
-        )
-        .await
-        .unwrap();
+        sock.write_all(b"GET /auth/callback?code=xyz&state=WRONG HTTP/1.1\r\nHost: x\r\n\r\n")
+            .await
+            .unwrap();
         let mut buf = vec![0u8; 4096];
         let n = sock.read(&mut buf).await.unwrap_or(0);
         String::from_utf8_lossy(&buf[..n]).to_string()
@@ -2222,9 +2218,8 @@ fn test_extract_account_id_nested_auth_without_usable_key_falls_through() {
     assert_eq!(extract_account_id_impl(&jwt).unwrap(), "org_fallthrough");
 
     // 非字符串 chatgpt_account_id：同样落穿（无 organizations → None）
-    let payload = base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(
-        r#"{"https://api.openai.com/auth":{"chatgpt_account_id":123}}"#,
-    );
+    let payload = base64::engine::general_purpose::URL_SAFE_NO_PAD
+        .encode(r#"{"https://api.openai.com/auth":{"chatgpt_account_id":123}}"#);
     let jwt = format!("{}.{}.sig", header, payload);
     assert!(extract_account_id_impl(&jwt).is_none());
 }

@@ -86,12 +86,13 @@ impl ScanHook {
 
     async fn scan_write_args(&self, args: &serde_json::Value) -> Result<bool, String> {
         if let Some(content) = args.get("content").and_then(|v| v.as_str())
-            && !content.is_empty() {
-                let result = self.scanner.scan_content(content.as_bytes()).await?;
-                if result.infected {
-                    return Err(format!("virus detected in content: {}", result.virus));
-                }
+            && !content.is_empty()
+        {
+            let result = self.scanner.scan_content(content.as_bytes()).await?;
+            if result.infected {
+                return Err(format!("virus detected in content: {}", result.virus));
             }
+        }
         Ok(true)
     }
 

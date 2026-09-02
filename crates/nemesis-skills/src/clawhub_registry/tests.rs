@@ -1916,7 +1916,10 @@ async fn test_download_skill_zip_http_error_reports_status() {
         .await
         .unwrap_err();
     let msg = err.to_string();
-    assert!(msg.contains("ZIP download failed with status 503"), "msg: {msg}");
+    assert!(
+        msg.contains("ZIP download failed with status 503"),
+        "msg: {msg}"
+    );
 }
 
 #[tokio::test]
@@ -1986,7 +1989,10 @@ async fn test_get_skill_content_non_utf8_body_lossy_decoded_by_strategy_one() {
         .await;
 
     let content = registry.get_skill_content("pdf").await.unwrap();
-    assert!(content.content.contains('\u{FFFD}'), "lossy decode expected");
+    assert!(
+        content.content.contains('\u{FFFD}'),
+        "lossy decode expected"
+    );
     assert!(content.content.ends_with('\0'));
 }
 

@@ -505,7 +505,9 @@ async fn w4a_async_peer_chat_submit_failure_returns_error() {
         .await;
     assert!(result.is_error);
     assert!(
-        result.for_llm.contains("Failed to submit task: cluster unreachable"),
+        result
+            .for_llm
+            .contains("Failed to submit task: cluster unreachable"),
         "got: {}",
         result.for_llm
     );
@@ -544,7 +546,10 @@ fn w4a_parameters_peer_description_variants() {
         .to_string();
     assert!(desc.contains("Available online peers"), "got: {desc}");
     assert!(desc.contains("- n2 (Bot2): chat, tools"), "got: {desc}");
-    assert!(desc.contains("- n3 (Bot3): unknown capabilities"), "got: {desc}");
+    assert!(
+        desc.contains("- n3 (Bot3): unknown capabilities"),
+        "got: {desc}"
+    );
 
     // (c) disconnected
     let tool = ClusterRpcTool::with_cluster(Arc::new(StubClusterOps::new()));

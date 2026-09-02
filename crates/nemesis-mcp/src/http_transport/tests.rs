@@ -317,7 +317,8 @@ async fn test_w4c_http_send_invalid_json_maps_send_failed() {
 #[tokio::test]
 async fn test_w4c_http_send_sse_stream_parsed() {
     let server = MockServer::start().await;
-    let body = "event: message\r\ndata: {\"jsonrpc\":\"2.0\",\"id\":9,\"result\":{\"ok\":true}}\r\n\r\n";
+    let body =
+        "event: message\r\ndata: {\"jsonrpc\":\"2.0\",\"id\":9,\"result\":{\"ok\":true}}\r\n\r\n";
     Mock::given(method("POST"))
         .and(path("/mcp"))
         .respond_with(ResponseTemplate::new(200).set_body_raw(body, "text/event-stream"))
@@ -361,7 +362,8 @@ async fn test_w4c_http_send_202_returns_synthetic_result() {
 
     let mut t = HttpTransport::new(format!("{}/mcp", server.uri()));
     t.connect().await.unwrap();
-    let resp = t.send(&w4c_request("notifications/initialized", 5), 5000)
+    let resp = t
+        .send(&w4c_request("notifications/initialized", 5), 5000)
         .await
         .unwrap();
     assert!(resp.result.is_some());
@@ -403,9 +405,10 @@ async fn test_w4c_http_session_id_echoed_on_subsequent_requests() {
     Mock::given(method("POST"))
         .and(path("/mcp"))
         .and(header("Mcp-Session-Id", "sid-abc"))
-        .respond_with(ResponseTemplate::new(200).set_body_json(
-            serde_json::json!({"jsonrpc":"2.0","id":2,"result":{"echo":true}}),
-        ))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .set_body_json(serde_json::json!({"jsonrpc":"2.0","id":2,"result":{"echo":true}})),
+        )
         .mount(&server)
         .await;
     // 第一个请求（无 session header 落到这里）：响应头里发 Mcp-Session-Id
@@ -489,7 +492,11 @@ async fn test_s1_http_send_sse_empty_stream_maps_ended_without_data() {
     let mut t = HttpTransport::new(format!("{}/mcp", server.uri()));
     t.connect().await.unwrap();
     let err = t.send(&w4c_request("x", 32), 5000).await.unwrap_err();
-    assert!(err.message.contains("ended without data"), "got: {}", err.message);
+    assert!(
+        err.message.contains("ended without data"),
+        "got: {}",
+        err.message
+    );
     t.close().await.unwrap();
 }
 

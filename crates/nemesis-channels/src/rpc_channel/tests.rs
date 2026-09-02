@@ -1335,7 +1335,11 @@ async fn s2_rpc_input_with_timeout_and_cleanup_log_field_arms() {
     // active so the "cleanup sweep completed" counter fields evaluate.
     tokio::time::sleep(Duration::from_millis(80)).await;
     ch.cleanup_expired();
-    assert_eq!(ch.pending_count(), 1, "only the short-timeout entry expires");
+    assert_eq!(
+        ch.pending_count(),
+        1,
+        "only the short-timeout entry expires"
+    );
     ch.stop().await.unwrap();
 }
 

@@ -296,7 +296,10 @@ fn resolve_static_files_prefers_disk_dir_next_to_exe() {
         .get_file("/index.html")
         .expect("embedded fallback serves index.html");
     assert_ne!(std::str::from_utf8(&got2).unwrap(), MARKER);
-    assert!(resolve_embedded_static_dir().is_none(), "no disk dir → legacy None");
+    assert!(
+        resolve_embedded_static_dir().is_none(),
+        "no disk dir → legacy None"
+    );
 }
 
 #[test]
@@ -311,7 +314,13 @@ fn extract_workspace_templates_skips_existing_files() {
 
     let identity =
         std::fs::read_to_string(target.join("IDENTITY.md")).expect("IDENTITY.md present");
-    assert_eq!(identity, "USER-CUSTOMIZED", "existing file must NOT be overwritten");
+    assert_eq!(
+        identity, "USER-CUSTOMIZED",
+        "existing file must NOT be overwritten"
+    );
     // 未存在的其余模板照常铺出（同一棵嵌入树的其他根文件）。
-    assert!(target.join("SOUL.md").exists(), "missing templates must still be extracted");
+    assert!(
+        target.join("SOUL.md").exists(),
+        "missing templates must still be extracted"
+    );
 }

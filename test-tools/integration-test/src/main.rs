@@ -280,40 +280,41 @@ async fn test_tool_definitions(ws: &TestWorkspace) -> Vec<TestResult> {
     if let Some(log_path) = log_path {
         if let Ok(log_content) = std::fs::read_to_string(log_path)
             && let Some(start) = log_content.find("\"tools\"")
-                && let Some(arr_start) = log_content[start..].find('[') {
-                    let bracket_start = start + arr_start;
-                    let mut depth = 0;
-                    let mut bracket_end = bracket_start;
-                    for (i, ch) in log_content[bracket_start..].char_indices() {
-                        match ch {
-                            '[' => depth += 1,
-                            ']' => {
-                                depth -= 1;
-                                if depth == 0 {
-                                    bracket_end = bracket_start + i + 1;
-                                    break;
-                                }
-                            }
-                            _ => {}
+            && let Some(arr_start) = log_content[start..].find('[')
+        {
+            let bracket_start = start + arr_start;
+            let mut depth = 0;
+            let mut bracket_end = bracket_start;
+            for (i, ch) in log_content[bracket_start..].char_indices() {
+                match ch {
+                    '[' => depth += 1,
+                    ']' => {
+                        depth -= 1;
+                        if depth == 0 {
+                            bracket_end = bracket_start + i + 1;
+                            break;
                         }
                     }
-
-                    let tools_json = &log_content[bracket_start..bracket_end];
-                    if let Ok(tools) = serde_json::from_str::<Vec<serde_json::Value>>(tools_json) {
-                        let count = tools.len();
-                        if count >= 15 {
-                            results.push(pass(
-                                &format!("{}/tool_count", suite),
-                                format!("{} tools registered", count),
-                            ));
-                        } else {
-                            results.push(fail(
-                                &format!("{}/tool_count", suite),
-                                format!("Expected >= 15, got {}", count),
-                            ));
-                        }
-                    }
+                    _ => {}
                 }
+            }
+
+            let tools_json = &log_content[bracket_start..bracket_end];
+            if let Ok(tools) = serde_json::from_str::<Vec<serde_json::Value>>(tools_json) {
+                let count = tools.len();
+                if count >= 15 {
+                    results.push(pass(
+                        &format!("{}/tool_count", suite),
+                        format!("{} tools registered", count),
+                    ));
+                } else {
+                    results.push(fail(
+                        &format!("{}/tool_count", suite),
+                        format!("Expected >= 15, got {}", count),
+                    ));
+                }
+            }
+        }
     } else {
         results.push(skip(suite, "No log with tools found"));
     }

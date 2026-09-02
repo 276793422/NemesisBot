@@ -52,7 +52,10 @@ fn user_live_file_with_null_env_parses() {
 fn env_map_shape_converts_to_kv_list() {
     let json = r#"{"name":"n","command":"c","env":{"DEBUG":"1","LOG_LEVEL":"info"}}"#;
     let cfg: McpServerConfig = serde_json::from_str(json).unwrap();
-    assert_eq!(cfg.env, vec!["DEBUG=1".to_string(), "LOG_LEVEL=info".to_string()]);
+    assert_eq!(
+        cfg.env,
+        vec!["DEBUG=1".to_string(), "LOG_LEVEL=info".to_string()]
+    );
 }
 
 #[test]
@@ -103,9 +106,11 @@ fn timeout_key_and_alias_both_accepted() {
 
 #[test]
 fn global_timeout_tolerant() {
-    let a: McpConfig = serde_json::from_str(r#"{"enabled":true,"servers":[],"timeout":120}"#).unwrap();
+    let a: McpConfig =
+        serde_json::from_str(r#"{"enabled":true,"servers":[],"timeout":120}"#).unwrap();
     assert_eq!(a.timeout, 120);
-    let b: McpConfig = serde_json::from_str(r#"{"enabled":true,"servers":[],"timeout":null}"#).unwrap();
+    let b: McpConfig =
+        serde_json::from_str(r#"{"enabled":true,"servers":[],"timeout":null}"#).unwrap();
     assert_eq!(b.timeout, 30);
 }
 
@@ -172,7 +177,10 @@ fn serialize_emits_timeout_wire_key_and_roundtrips() {
     s.normalize();
     let json = serde_json::to_string(&s).unwrap();
     // UI / CLI / 存量工具读的都是 "timeout" 键——序列化不得改名
-    assert!(json.contains(r#""timeout":"#), "wire key must stay 'timeout': {json}");
+    assert!(
+        json.contains(r#""timeout":"#),
+        "wire key must stay 'timeout': {json}"
+    );
     assert!(!json.contains("timeout_secs"), "no stray alias key: {json}");
 
     let back: McpServerConfig = serde_json::from_str(&json).unwrap();

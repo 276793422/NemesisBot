@@ -39,16 +39,19 @@ pub async fn run() -> Result<()> {
 }
 
 async fn run_inner() -> Result<()> {
-    let workspace = PathBuf::from(
-        std::env::var("NEMESISBOT_EVAL_WORKSPACE")
-            .context("NEMESISBOT_EVAL_WORKSPACE not set — eval-agent must be spawned by `nemesisbot eval`")?,
-    );
+    let workspace = PathBuf::from(std::env::var("NEMESISBOT_EVAL_WORKSPACE").context(
+        "NEMESISBOT_EVAL_WORKSPACE not set — eval-agent must be spawned by `nemesisbot eval`",
+    )?);
 
     // Entry marker (in-box mirror) — proves the worker main was reached and
     // when it died, even when everything else fails.
     let _ = std::fs::write(
         workspace.join("worker_alive.txt"),
-        format!("entry pid={} role={:?}", std::process::id(), std::env::var("NEMESISBOT_ROLE")),
+        format!(
+            "entry pid={} role={:?}",
+            std::process::id(),
+            std::env::var("NEMESISBOT_ROLE")
+        ),
     );
 
     let prompt = std::env::var("NEMESISBOT_EVAL_PROMPT").unwrap_or_else(|_| {
@@ -57,7 +60,11 @@ async fn run_inner() -> Result<()> {
         std::fs::read_to_string(&p).unwrap_or_default()
     });
 
-    tracing::info!("[eval-agent] workspace={} prompt_len={}", workspace.display(), prompt.len());
+    tracing::info!(
+        "[eval-agent] workspace={} prompt_len={}",
+        workspace.display(),
+        prompt.len()
+    );
 
     // 1. Load the sanitized config from the temporary home.
     let config_path = workspace.join("config.json");
@@ -108,10 +115,7 @@ async fn run_inner() -> Result<()> {
     }
 
     // 5. Run the subject.
-    let session_key = format!(
-        "eval:{}",
-        chrono::Local::now().format("%Y%m%d%H%M%S")
-    );
+    let session_key = format!("eval:{}", chrono::Local::now().format("%Y%m%d%H%M%S"));
     tracing::info!("[eval-agent] running subject (session {})", session_key);
     let response = agent_loop
         .process_direct(&prompt, &session_key)
@@ -264,7 +268,9 @@ impl Observer for EvalTaggingObserver {
         let args_str = serde_json::to_string(&d.arguments).unwrap_or_default();
         let result_str = d.result.clone().unwrap_or_default();
 
-        let findings = self.run_layers(&d.tool_name, &args_value, &args_str, &result_str).await;
+        let findings = self
+            .run_layers(&d.tool_name, &args_value, &args_str, &result_str)
+            .await;
 
         self.push_tag(ToolTag {
             tool_name: d.tool_name,
@@ -308,27 +314,32 @@ impl EvalTaggingObserver {
 
         // L2 command guard (exec-like tools with a command field)
         if let Some(guard) = self.plugin.command_guard()
-            && let Some(cmd) = args_value.get("command").and_then(|v| v.as_str()) {
-                match guard.check(cmd) {
-                    Err(e) => {
-                        out.command_guard = Some(CommandFinding {
-                            blocked: true,
-                            reason: e.to_string(),
-                        });
-                    }
-                    Ok(()) => {
-                        out.command_guard = Some(CommandFinding {
-                            blocked: false,
-                            reason: String::new(),
-                        });
-                    }
+            && let Some(cmd) = args_value.get("command").and_then(|v| v.as_str())
+        {
+            match guard.check(cmd) {
+                Err(e) => {
+                    out.command_guard = Some(CommandFinding {
+                        blocked: true,
+                        reason: e.to_string(),
+                    });
+                }
+                Ok(()) => {
+                    out.command_guard = Some(CommandFinding {
+                        blocked: false,
+                        reason: String::new(),
+                    });
                 }
             }
+        }
 
         // L3 credentials — args in, result out
         if let Some(scanner) = self.plugin.credential_scanner() {
             let r_in = scanner.scan_content(args_str);
-            out.credentials_in = if r_in.has_matches { Some(vec![r_in.summary]) } else { None };
+            out.credentials_in = if r_in.has_matches {
+                Some(vec![r_in.summary])
+            } else {
+                None
+            };
             if !result.is_empty() {
                 let r_out = scanner.scan_tool_output(tool, result);
                 out.credentials_out = if r_out.has_matches {
@@ -342,10 +353,18 @@ impl EvalTaggingObserver {
         // L4 DLP — args in, result out
         if let Some(dlp) = self.plugin.dlp_engine() {
             let r_in = dlp.scan_tool_input(tool, args_value);
-            out.dlp_in = if r_in.has_matches { Some(vec![r_in.summary]) } else { None };
+            out.dlp_in = if r_in.has_matches {
+                Some(vec![r_in.summary])
+            } else {
+                None
+            };
             if !result.is_empty() {
                 let r_out = dlp.scan_tool_output(tool, result);
-                out.dlp_out = if r_out.has_matches { Some(vec![r_out.summary]) } else { None };
+                out.dlp_out = if r_out.has_matches {
+                    Some(vec![r_out.summary])
+                } else {
+                    None
+                };
             }
         }
 
@@ -391,13 +410,15 @@ fn summarize(tags: &[ToolTag]) -> FindingsSummary {
     for t in tags {
         let f = &t.findings;
         if let Some(i) = &f.injection
-            && i.is_injection {
-                s.injection_hits += 1;
-            }
+            && i.is_injection
+        {
+            s.injection_hits += 1;
+        }
         if let Some(c) = &f.command_guard
-            && c.blocked {
-                s.blocked_commands += 1;
-            }
+            && c.blocked
+        {
+            s.blocked_commands += 1;
+        }
         if f.credentials_in.as_ref().is_some_and(|v| !v.is_empty()) {
             s.credential_hits_in += 1;
         }
@@ -411,9 +432,10 @@ fn summarize(tags: &[ToolTag]) -> FindingsSummary {
             s.dlp_hits_out += 1;
         }
         if let Some(x) = &f.ssrf
-            && x.blocked {
-                s.ssrf_blocks += 1;
-            }
+            && x.blocked
+        {
+            s.ssrf_blocks += 1;
+        }
     }
     s
 }

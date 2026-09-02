@@ -267,7 +267,11 @@ fn compute_status_crl_hits_all_dims_with_priority() {
         (verify_req(Some("kf1"), None, None, None), 222u64, "by-key"),
         (verify_req(None, Some("sh1"), None, None), 111, "by-sig"),
         (verify_req(None, None, Some("fh1"), None), 333, "by-file"),
-        (verify_req(None, None, None, Some("pub1")), 444, "by-publisher"),
+        (
+            verify_req(None, None, None, Some("pub1")),
+            444,
+            "by-publisher",
+        ),
     ];
     for (req, at, reason) in cases {
         let (code, got_at, got_reason) = compute_status(&crl, &empty_tkl, &req, 1000);
@@ -300,9 +304,12 @@ fn compute_status_crl_hits_all_dims_with_priority() {
 #[tokio::test]
 async fn verify_empty_store_returns_valid_and_signed() {
     let state = setup();
-    let Json(signed) = verify(State(state.clone()), Json(verify_req(None, None, None, None)))
-        .await
-        .unwrap();
+    let Json(signed) = verify(
+        State(state.clone()),
+        Json(verify_req(None, None, None, None)),
+    )
+    .await
+    .unwrap();
     assert_eq!(signed.payload.code, "valid");
     assert_eq!(signed.payload.crl_ver, 1);
     assert_eq!(signed.payload.trusted_keys_ver, 1);
@@ -552,9 +559,12 @@ async fn trusted_key_lifecycle_through_handlers() {
     .unwrap();
     assert_eq!(s2.payload.code, "untrusted");
     // 不带 key_fp → untrusted（准入拦截）
-    let Json(s3) = verify(State(state.clone()), Json(verify_req(None, None, None, None)))
-        .await
-        .unwrap();
+    let Json(s3) = verify(
+        State(state.clone()),
+        Json(verify_req(None, None, None, None)),
+    )
+    .await
+    .unwrap();
     assert_eq!(s3.payload.code, "untrusted");
     // get_trusted_keys 端点：版本 + 内容 + 签名
     let Json(tkl) = get_trusted_keys(State(state.clone())).await.unwrap();
@@ -566,9 +576,11 @@ async fn trusted_key_lifecycle_through_handlers() {
     let Json(audit) = get_audit(State(state.clone()), admin_headers())
         .await
         .unwrap();
-    assert!(audit
-        .iter()
-        .any(|a| a.action == "trust_upsert" && a.value.as_deref() == Some("fingerprint-1")));
+    assert!(
+        audit
+            .iter()
+            .any(|a| a.action == "trust_upsert" && a.value.as_deref() == Some("fingerprint-1"))
+    );
 }
 
 // ===================== 用户 / 发行方管理 =====================
@@ -696,9 +708,7 @@ async fn admin_create_issuer_and_cert_chain_valid() {
         admin_create_issuer(
             State(state.clone()),
             HeaderMap::new(),
-            Json(CreateIssuerReq {
-                name: "x".into()
-            }),
+            Json(CreateIssuerReq { name: "x".into() }),
         )
         .await
         .unwrap_err()
@@ -731,13 +741,15 @@ async fn admin_create_issuer_and_cert_chain_valid() {
     let chain = nemesis_verify::cert::parse_chain(&chain_bytes).unwrap();
     assert_eq!(chain.len(), 2);
     let issuer_vk = nemesis_verify::crypto::verifying_key_from_hex(&issuer_pub).unwrap();
-    assert!(nemesis_verify::cert::verify_chain(
-        &issuer_vk.to_bytes(),
-        &chain,
-        &[state.hierarchy.root_vk],
-        now_secs()
-    )
-    .is_ok());
+    assert!(
+        nemesis_verify::cert::verify_chain(
+            &issuer_vk.to_bytes(),
+            &chain,
+            &[state.hierarchy.root_vk],
+            now_secs()
+        )
+        .is_ok()
+    );
     // 证书 subject == 发行方名
     assert_eq!(chain[0].subject_meta, b"acme".to_vec());
     // 审计留痕（issuer_create，detail=公钥）
@@ -773,9 +785,7 @@ async fn list_issuers_shape_and_no_private_key_leak() {
         let _ = admin_create_issuer(
             State(state.clone()),
             admin_headers(),
-            Json(CreateIssuerReq {
-                name: name.into(),
-            }),
+            Json(CreateIssuerReq { name: name.into() }),
         )
         .await
         .unwrap();
@@ -910,7 +920,9 @@ async fn sign_upload_default_issuer_full_circle() {
     assert_eq!(code, StatusCode::BAD_REQUEST);
     // 正常签发（user.publisher 生效，无 multipart publisher 覆盖）
     let content: &[u8] = b"nemesis revoke-server sign test payload alpha";
-    let resp = sign_file(&state, &token, Some(content), None).await.unwrap();
+    let resp = sign_file(&state, &token, Some(content), None)
+        .await
+        .unwrap();
     assert_eq!(resp.status(), StatusCode::OK);
     assert_eq!(
         resp.headers()
@@ -972,9 +984,14 @@ async fn sign_upload_publisher_override_and_user_fallback() {
     let state = setup();
     let token = create_user(&state, "bob", Some("bob-default-pub"), None).await;
     // multipart publisher 字段覆盖 user.publisher
-    let resp = sign_file(&state, &token, Some(b"override-content-1"), Some("override-pub"))
-        .await
-        .unwrap();
+    let resp = sign_file(
+        &state,
+        &token,
+        Some(b"override-content-1"),
+        Some("override-pub"),
+    )
+    .await
+    .unwrap();
     assert_eq!(resp.status(), StatusCode::OK);
     // 不同 content → 不同 sig_hash → REPLACE 不会吞行
     let resp2 = sign_file(&state, &token, Some(b"fallback-content-2"), None)
@@ -1056,16 +1073,16 @@ async fn sign_upload_unknown_issuer_name_400() {
 /// 最小合法 PE：字段偏移逐一对照 crates/nemesis-verify/src/pe.rs::parse_pe 的读取表。
 fn minimal_pe_with_section_and_overlay() -> Vec<u8> {
     let mut b = vec![0u8; 512];
-    b[0..2].copy_from_slice(b"MZ");                            // DOS magic
-    b[0x3C..0x40].copy_from_slice(&0x40u32.to_le_bytes());     // e_lfanew = 0x40
-    b[0x40..0x44].copy_from_slice(b"PE\0\0");                  // PE 签名 @ P
-    b[0x46..0x48].copy_from_slice(&1u16.to_le_bytes());        // NumberOfSections @ P+6
-    b[0x54..0x56].copy_from_slice(&0xF0u16.to_le_bytes());     // SizeOfOptionalHeader @ P+20
-    b[0x58..0x5A].copy_from_slice(&0x10Bu16.to_le_bytes());    // Magic=PE32 @ P+24
+    b[0..2].copy_from_slice(b"MZ"); // DOS magic
+    b[0x3C..0x40].copy_from_slice(&0x40u32.to_le_bytes()); // e_lfanew = 0x40
+    b[0x40..0x44].copy_from_slice(b"PE\0\0"); // PE 签名 @ P
+    b[0x46..0x48].copy_from_slice(&1u16.to_le_bytes()); // NumberOfSections @ P+6
+    b[0x54..0x56].copy_from_slice(&0xF0u16.to_le_bytes()); // SizeOfOptionalHeader @ P+20
+    b[0x58..0x5A].copy_from_slice(&0x10Bu16.to_le_bytes()); // Magic=PE32 @ P+24
     // NumberOfRvaAndSizes @ P+116：<5 → 跳过 Security 目录 / Authenticode 区域
     b[0xB4..0xB8].copy_from_slice(&4u32.to_le_bytes());
-    let sec_tbl: usize = 0x40 + 24 + 0xF0;                     // section table @ P+24+SizeOfOptionalHeader
-    b[sec_tbl + 16..sec_tbl + 20].copy_from_slice(&32u32.to_le_bytes());  // SizeOfRawData
+    let sec_tbl: usize = 0x40 + 24 + 0xF0; // section table @ P+24+SizeOfOptionalHeader
+    b[sec_tbl + 16..sec_tbl + 20].copy_from_slice(&32u32.to_le_bytes()); // SizeOfRawData
     b[sec_tbl + 20..sec_tbl + 24].copy_from_slice(&400u32.to_le_bytes()); // PointerToRawData
     // L = max(400+32=432, sec_tbl_end=0x158+40=384) = 432；[432,512) 即 overlay
     for slot in b.iter_mut().skip(432) {
@@ -1096,7 +1113,10 @@ async fn sign_upload_pe_codec_takes_content_len_some_arm() {
     // registry：content_hash 走的就是 Some(L) 值（与 codec 直算一致）
     let recs = state.store.list_signatures(10).unwrap();
     assert_eq!(recs.len(), 1);
-    let expected_hex =
-        hex_str(&nemesis_verify::codec::detect_codec(&pe).content_hash(&pe, 432).unwrap()[..]);
+    let expected_hex = hex_str(
+        &nemesis_verify::codec::detect_codec(&pe)
+            .content_hash(&pe, 432)
+            .unwrap()[..],
+    );
     assert_eq!(recs[0].content_hash, expected_hex);
 }

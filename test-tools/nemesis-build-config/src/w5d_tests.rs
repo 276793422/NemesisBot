@@ -26,7 +26,9 @@ fn scan() -> cargo_scan::ScanResult {
 
 fn write(root: &std::path::Path, rel: &str, text: &str) -> std::path::PathBuf {
     let p = root.join(rel);
-    if let Some(d) = p.parent() { fs::create_dir_all(d).unwrap() }
+    if let Some(d) = p.parent() {
+        fs::create_dir_all(d).unwrap()
+    }
     fs::write(&p, text).unwrap();
     p
 }
@@ -46,7 +48,13 @@ fn w5d_scaffold_from_scratch_uses_scan_reality() {
     let m = scaffold(&s, None);
     // every non-default cargo feature appears, plus the build-profile enum
     let ids: Vec<&str> = m.features.iter().map(|f| f.id.as_str()).collect();
-    for expected in ["channels-web", "channels-rpc", "migrate", "sandbox", "build-profile"] {
+    for expected in [
+        "channels-web",
+        "channels-rpc",
+        "migrate",
+        "sandbox",
+        "build-profile",
+    ] {
         assert!(ids.contains(&expected), "missing {expected} in {ids:?}");
     }
     assert_eq!(m.features.len(), 5);
@@ -67,7 +75,10 @@ fn w5d_scaffold_appends_builtin_build_profile_enum() {
     assert!(bp.is_enum());
     assert_eq!(bp.default.as_str(), Some("release"));
     assert_eq!(bp.category, "build");
-    assert_eq!(bp.options, vec!["release".to_string(), "iotsmall".to_string()]);
+    assert_eq!(
+        bp.options,
+        vec!["release".to_string(), "iotsmall".to_string()]
+    );
 }
 
 #[test]
@@ -131,7 +142,11 @@ options = ["release", "iotsmall"]
     .unwrap();
     let m = scaffold(&scan(), Some(&existing));
     // ensure-block finds it missing from scan names and re-adds the curated one
-    let bps: Vec<&FeatureSpec> = m.features.iter().filter(|f| f.id == "build-profile").collect();
+    let bps: Vec<&FeatureSpec> = m
+        .features
+        .iter()
+        .filter(|f| f.id == "build-profile")
+        .collect();
     assert_eq!(bps.len(), 1, "build-profile must appear exactly once");
     assert_eq!(bps[0].label, "定制 profile");
     assert_eq!(bps[0].default.as_str(), Some("iotsmall"));
@@ -140,7 +155,10 @@ options = ["release", "iotsmall"]
 #[test]
 fn w5d_path_helpers_join_under_root() {
     let root = std::path::Path::new("/proj");
-    assert_eq!(manifest_path(root), root.join("scripts/customize/features.toml"));
+    assert_eq!(
+        manifest_path(root),
+        root.join("scripts/customize/features.toml")
+    );
     assert_eq!(config_path(root), root.join("scripts/customize/.config"));
     assert_eq!(profiles_dir(root), root.join("scripts/customize/profiles"));
     assert_eq!(nemesisbot_cargo(root), root.join("nemesisbot/Cargo.toml"));
@@ -154,10 +172,8 @@ fn w5d_load_config_or_default_prefers_existing_file() {
         "scripts/customize/.config",
         "[features]\nchannels-rpc = true\n\n[enums]\nbuild-profile = \"iotsmall\"\n",
     );
-    let manifest = FeatureManifest::parse(
-        "[[feature]]\nid = \"channels-rpc\"\ndefault = false\n",
-    )
-    .unwrap();
+    let manifest =
+        FeatureManifest::parse("[[feature]]\nid = \"channels-rpc\"\ndefault = false\n").unwrap();
     let cfg = load_config_or_default(dir.path(), &manifest).unwrap();
     // file value wins over the manifest default (false)
     assert_eq!(cfg.get_bool("channels-rpc"), Some(true));
@@ -168,10 +184,8 @@ fn w5d_load_config_or_default_prefers_existing_file() {
 fn w5d_load_config_or_default_falls_back_to_manifest_defaults() {
     let dir = tempfile::tempdir().unwrap();
     // no .config anywhere
-    let manifest = FeatureManifest::parse(
-        "[[feature]]\nid = \"channels-rpc\"\ndefault = true\n",
-    )
-    .unwrap();
+    let manifest =
+        FeatureManifest::parse("[[feature]]\nid = \"channels-rpc\"\ndefault = true\n").unwrap();
     let cfg = load_config_or_default(dir.path(), &manifest).unwrap();
     assert_eq!(cfg.get_bool("channels-rpc"), Some(true));
 }
@@ -192,7 +206,9 @@ fn w5d_run_load_copies_preset_and_creates_parent_dirs() {
 #[test]
 fn w5d_run_load_unknown_preset_bails_with_path() {
     let dir = tempfile::tempdir().unwrap();
-    let err = run_load(dir.path(), "does-not-exist").unwrap_err().to_string();
+    let err = run_load(dir.path(), "does-not-exist")
+        .unwrap_err()
+        .to_string();
     assert!(err.contains("preset not found"), "err was: {err}");
     assert!(err.contains("does-not-exist.config"), "err was: {err}");
 }
@@ -206,7 +222,13 @@ fn w5d_run_init_scaffolds_manifest_from_cargo_toml() {
     assert!(mpath.exists(), "manifest must be written");
     let m = FeatureManifest::load(&mpath).unwrap();
     let ids: Vec<&str> = m.features.iter().map(|f| f.id.as_str()).collect();
-    for expected in ["channels-web", "channels-rpc", "migrate", "sandbox", "build-profile"] {
+    for expected in [
+        "channels-web",
+        "channels-rpc",
+        "migrate",
+        "sandbox",
+        "build-profile",
+    ] {
         assert!(ids.contains(&expected), "missing {expected}");
     }
 }
@@ -224,7 +246,11 @@ fn w5d_run_init_merges_existing_curated_manifest() {
     let m = FeatureManifest::load(&manifest_path(dir.path())).unwrap();
     let sb = m.features.iter().find(|f| f.id == "sandbox").unwrap();
     assert_eq!(sb.label, "沙盒", "curated label must survive re-init");
-    assert_eq!(sb.default.as_bool(), Some(false), "default refreshed to scan truth");
+    assert_eq!(
+        sb.default.as_bool(),
+        Some(false),
+        "default refreshed to scan truth"
+    );
 }
 
 #[test]

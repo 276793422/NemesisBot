@@ -13,8 +13,7 @@ use super::*;
 #[test]
 fn require_config_missing_bails_with_setup_hint() {
     let dir = tempfile::tempdir().unwrap();
-    let err = require_config(&dir.path().join("tools/voice"))
-        .expect_err("缺 config.toml 必须 Err");
+    let err = require_config(&dir.path().join("tools/voice")).expect_err("缺 config.toml 必须 Err");
     assert!(
         err.to_string().contains("nemesisbot voice setup"),
         "err: {err:#}"
@@ -87,21 +86,19 @@ mod run_arm {
         with_env_home(|home| {
             // 显式建出 voice_dir 但不放 config.toml：证明 bail 来自 require_config
             // 而不是别的 IO 错。
-            std::fs::create_dir_all(
-                home.join("workspace").join("tools").join("voice"),
-            )
-            .unwrap();
+            std::fs::create_dir_all(home.join("workspace").join("tools").join("voice")).unwrap();
             for action in [
                 VoiceAction::Download,
-                VoiceAction::Tts { text: "你好".into(), speaker: Some(45), speed: 1.0 },
+                VoiceAction::Tts {
+                    text: "你好".into(),
+                    speaker: Some(45),
+                    speed: 1.0,
+                },
                 VoiceAction::Stt,
                 VoiceAction::Chat,
             ] {
                 let err = run(action, false).expect_err("缺 config.toml → Voice not set up");
-                assert!(
-                    err.to_string().contains("Voice not set up"),
-                    "got: {err:#}"
-                );
+                assert!(err.to_string().contains("Voice not set up"), "got: {err:#}");
             }
         });
     }
@@ -383,7 +380,12 @@ base = "http://127.0.0.1:9"
 
         // 与上述名字一一对应的目录预置（model_dir 相对 config 所在目录解析）。
         let data = voice_dir.join("data");
-        for rel in ["stt/r10-stt", "vad/r10-vad", "tts/r10-tts", "punct/r10-punct"] {
+        for rel in [
+            "stt/r10-stt",
+            "vad/r10-vad",
+            "tts/r10-tts",
+            "punct/r10-punct",
+        ] {
             std::fs::create_dir_all(data.join(rel)).unwrap();
         }
 

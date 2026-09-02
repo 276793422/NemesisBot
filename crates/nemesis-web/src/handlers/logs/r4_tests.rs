@@ -98,7 +98,11 @@ async fn session_list_without_matching_episodic_entry_keeps_scan_defaults() {
     let ctx = make_ctx_with_memory(&dir);
     let ws = dir.path().to_string_lossy().to_string();
 
-    make_session_log(dir.path(), "sess_a", &[("user", "hello"), ("assistant", "hi")]);
+    make_session_log(
+        dir.path(),
+        "sess_a",
+        &[("user", "hello"), ("assistant", "hi")],
+    );
 
     // Episodic entry under an UNRELATED session key must not leak into sess_a.
     let mut ep = nemesis_memory::episodic::Episode::new(
@@ -106,7 +110,8 @@ async fn session_list_without_matching_episodic_entry_keeps_scan_defaults() {
         "assistant".to_string(),
         "did the thing".to_string(),
     );
-    ep.metadata.insert("model".to_string(), "probe-model".to_string());
+    ep.metadata
+        .insert("model".to_string(), "probe-model".to_string());
     ep.tags.push("cluster".to_string());
     ctx.state
         .memory_manager
@@ -143,14 +148,19 @@ async fn session_list_episodic_enrichment_matches_stem_and_colon_form() {
 
     // chat_log stores ':' as '_' in the file name; episodic key uses ':'
     // (file stem = "web_chat_1", episodic key = "web:chat_1" and its stem form).
-    make_session_log(dir.path(), "web_chat_1", &[("user", "q"), ("assistant", "a")]);
+    make_session_log(
+        dir.path(),
+        "web_chat_1",
+        &[("user", "q"), ("assistant", "a")],
+    );
 
     let mut ep = nemesis_memory::episodic::Episode::new(
         "web:chat_1".to_string(),
         "assistant".to_string(),
         "cluster triggered".to_string(),
     );
-    ep.metadata.insert("model".to_string(), "glm-4.7".to_string());
+    ep.metadata
+        .insert("model".to_string(), "glm-4.7".to_string());
     ep.tags.push("cluster".to_string());
     ctx.state
         .memory_manager
@@ -201,8 +211,15 @@ async fn session_detail_enriches_messages_with_episodic_tags() {
         "assistant".to_string(),
         "content".to_string(),
     );
-    counted.metadata.insert("tool_calls".to_string(), "3".to_string());
-    let store = ctx.state.memory_manager.as_ref().unwrap().get_episodic_store();
+    counted
+        .metadata
+        .insert("tool_calls".to_string(), "3".to_string());
+    let store = ctx
+        .state
+        .memory_manager
+        .as_ref()
+        .unwrap()
+        .get_episodic_store();
     store.append(clustered).await.unwrap();
     store.append(counted).await.unwrap();
 
@@ -252,12 +269,24 @@ async fn chain_list_prev_hash_break_reports_prev_mismatch() {
     // Rewrite event #1 with a foreign prev_hash and a freshly computed own hash:
     // own hash verifies (hash_match=true) but prev does not chain to event #0
     // → exercises the `prev_hash mismatch` breakReason branch.
-    let lines: Vec<String> = std::fs::read_to_string(&main).unwrap().lines().map(String::from).collect();
-    let mut ev: nemesis_security::integrity::AuditEvent =
-        serde_json::from_str(&lines[1]).unwrap();
+    let lines: Vec<String> = std::fs::read_to_string(&main)
+        .unwrap()
+        .lines()
+        .map(String::from)
+        .collect();
+    let mut ev: nemesis_security::integrity::AuditEvent = serde_json::from_str(&lines[1]).unwrap();
     ev.prev_hash = "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff".to_string();
     ev.hash = compute_audit_hash(&ev);
-    std::fs::write(&main, format!("{}\n{}\n{}\n", lines[0], serde_json::to_string(&ev).unwrap(), lines[2])).unwrap();
+    std::fs::write(
+        &main,
+        format!(
+            "{}\n{}\n{}\n",
+            lines[0],
+            serde_json::to_string(&ev).unwrap(),
+            lines[2]
+        ),
+    )
+    .unwrap();
 
     let ctx = {
         let ws = dir.path().to_string_lossy().to_string();

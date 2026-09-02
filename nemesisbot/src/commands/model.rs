@@ -204,20 +204,20 @@ pub async fn run(action: ModelAction, local: bool) -> Result<()> {
                     .map(|p| p.to_path_buf())
                     .unwrap_or_default();
                 if let Ok(Some(cat)) = catalog::load_cache(&cfg_dir)
-                    && let Some(hit) = catalog::lookup(&cat, &model) {
-                        entry["context_window"] =
-                            serde_json::Value::Number(hit.context_window.into());
-                        if let Some(mot) = hit.max_output_tokens {
-                            entry["max_output_tokens"] = serde_json::Value::Number(mot.into());
-                        }
-                        println!(
-                            "  Catalog hit (models.dev): context_window={}, max_output_tokens={}",
-                            hit.context_window,
-                            hit.max_output_tokens
-                                .map(|n| n.to_string())
-                                .unwrap_or_else(|| "(not declared)".to_string())
-                        );
+                    && let Some(hit) = catalog::lookup(&cat, &model)
+                {
+                    entry["context_window"] = serde_json::Value::Number(hit.context_window.into());
+                    if let Some(mot) = hit.max_output_tokens {
+                        entry["max_output_tokens"] = serde_json::Value::Number(mot.into());
                     }
+                    println!(
+                        "  Catalog hit (models.dev): context_window={}, max_output_tokens={}",
+                        hit.context_window,
+                        hit.max_output_tokens
+                            .map(|n| n.to_string())
+                            .unwrap_or_else(|| "(not declared)".to_string())
+                    );
+                }
             }
 
             // Add to model list
@@ -396,13 +396,15 @@ pub async fn run(action: ModelAction, local: bool) -> Result<()> {
                                 println!("    API Base: {}", b);
                             }
                             if let Some(p) = proxy
-                                && !p.is_empty() {
-                                    println!("    Proxy: {}", p);
-                                }
+                                && !p.is_empty()
+                            {
+                                println!("    Proxy: {}", p);
+                            }
                             if let Some(a) = auth_method
-                                && !a.is_empty() {
-                                    println!("    Auth Method: {}", a);
-                                }
+                                && !a.is_empty()
+                            {
+                                println!("    Auth Method: {}", a);
+                            }
                         }
                     }
                 }
@@ -474,17 +476,18 @@ pub async fn run(action: ModelAction, local: bool) -> Result<()> {
             let mut found = false;
             if let Some(obj) = cfg.as_object_mut()
                 && let Some(models) = obj.get_mut("model_list")
-                    && let Some(arr) = models.as_array_mut() {
-                        arr.retain(|m| {
-                            let model = m.get("model").and_then(|v| v.as_str()).unwrap_or("");
-                            if model == name || model.ends_with(&format!("/{}", name)) {
-                                found = true;
-                                false
-                            } else {
-                                true
-                            }
-                        });
+                && let Some(arr) = models.as_array_mut()
+            {
+                arr.retain(|m| {
+                    let model = m.get("model").and_then(|v| v.as_str()).unwrap_or("");
+                    if model == name || model.ends_with(&format!("/{}", name)) {
+                        found = true;
+                        false
+                    } else {
+                        true
                     }
+                });
+            }
 
             if found {
                 std::fs::write(
@@ -654,7 +657,10 @@ pub async fn run(action: ModelAction, local: bool) -> Result<()> {
             if !cfg_path.exists() {
                 anyhow::bail!("Configuration not found. Run 'nemesisbot onboard default' first.");
             }
-            println!("正在拉取 models.dev 模型目录（{}，失败自动走 jsDelivr 镜像）...", catalog::API_URL);
+            println!(
+                "正在拉取 models.dev 模型目录（{}，失败自动走 jsDelivr 镜像）...",
+                catalog::API_URL
+            );
             let cfg_dir = cfg_path
                 .parent()
                 .map(|p| p.to_path_buf())
@@ -673,7 +679,9 @@ pub async fn run(action: ModelAction, local: bool) -> Result<()> {
                         n,
                         nemesis_path::models_catalog_cache_path(&cfg_dir).display()
                     );
-                    println!("之后 `model add` 命中的模型会自动填充 context_window / max_output_tokens。");
+                    println!(
+                        "之后 `model add` 命中的模型会自动填充 context_window / max_output_tokens。"
+                    );
                 }
                 Err(e) => {
                     // Offline/intranet semantics: keep the existing cache,
@@ -735,9 +743,14 @@ async fn run_prices(action: PricesAction, home: &Path) -> Result<()> {
                     meta.source_url.as_deref().unwrap_or("-"),
                     meta.etag.as_deref().unwrap_or("-"),
                 ),
-                None => println!("  下载层:   未下载（`model prices update` 在线拉取，或 `import` 离线导入）"),
+                None => println!(
+                    "  下载层:   未下载（`model prices update` 在线拉取，或 `import` 离线导入）"
+                ),
             }
-            println!("  内置层:   {} 条（离线兜底）", nemesis_data::all_pricing().len());
+            println!(
+                "  内置层:   {} 条（离线兜底）",
+                nemesis_data::all_pricing().len()
+            );
             if !custom.is_empty() {
                 println!("自定义条目：");
                 for p in &custom {
@@ -753,7 +766,9 @@ async fn run_prices(action: PricesAction, home: &Path) -> Result<()> {
             }
         }
         PricesAction::Update { url } => {
-            let shown = url.clone().unwrap_or_else(|| nemesis_data::LITELLM_PRICE_URL.to_string());
+            let shown = url
+                .clone()
+                .unwrap_or_else(|| nemesis_data::LITELLM_PRICE_URL.to_string());
             println!("正在拉取价目表（{shown}）...");
             match nemesis_web::pricing_sync::fetch_and_replace(pricing, url.as_deref()).await {
                 Ok(r) if r.updated => {
@@ -763,7 +778,11 @@ async fn run_prices(action: PricesAction, home: &Path) -> Result<()> {
                         db_path.parent().unwrap_or(Path::new(".")).display()
                     );
                 }
-                Ok(r) => println!("表已是最新（304 NotModified，{} 条，etag={}）", r.entry_count, r.etag.as_deref().unwrap_or("-")),
+                Ok(r) => println!(
+                    "表已是最新（304 NotModified，{} 条，etag={}）",
+                    r.entry_count,
+                    r.etag.as_deref().unwrap_or("-")
+                ),
                 Err(e) => anyhow::bail!("{e}"),
             }
         }
@@ -831,11 +850,7 @@ async fn run_prices(action: PricesAction, home: &Path) -> Result<()> {
 /// and apply a mutation. Returns true if the entry was found and updated.
 /// Test-visible delegate for `update_model_entry` (same crate, tests module).
 #[cfg(test)]
-pub(crate) fn update_model_entry_for_test<F>(
-    cfg: &mut serde_json::Value,
-    name: &str,
-    f: F,
-) -> bool
+pub(crate) fn update_model_entry_for_test<F>(cfg: &mut serde_json::Value, name: &str, f: F) -> bool
 where
     F: FnOnce(&mut serde_json::Value),
 {

@@ -212,7 +212,11 @@ async fn stop_setup_with_and_without_token() {
 
     // 注入令牌 → stopped:true，令牌被消费
     *setup_cancel().lock().unwrap() = Some(CancellationToken::new());
-    let r = h.handle_cmd("stop_setup", None, &ctx).await.unwrap().unwrap();
+    let r = h
+        .handle_cmd("stop_setup", None, &ctx)
+        .await
+        .unwrap()
+        .unwrap();
     assert_eq!(r["stopped"], true);
     assert!(setup_cancel().lock().unwrap().is_none(), "token consumed");
     clear_session_states().await;
@@ -228,14 +232,22 @@ async fn config_get_missing_then_present() {
     let ctx = make_ctx(&dir);
     let h = VoiceHandler::new();
 
-    let r = h.handle_cmd("config_get", None, &ctx).await.unwrap().unwrap();
+    let r = h
+        .handle_cmd("config_get", None, &ctx)
+        .await
+        .unwrap()
+        .unwrap();
     assert_eq!(r["exists"], false);
     assert_eq!(r["content"], "");
 
     let voice_dir = dir.path().join("tools/voice");
     std::fs::create_dir_all(&voice_dir).unwrap();
     std::fs::write(voice_dir.join("config.toml"), "key = 1").unwrap();
-    let r = h.handle_cmd("config_get", None, &ctx).await.unwrap().unwrap();
+    let r = h
+        .handle_cmd("config_get", None, &ctx)
+        .await
+        .unwrap()
+        .unwrap();
     assert_eq!(r["exists"], true);
     assert_eq!(r["content"], "key = 1");
 }
@@ -256,8 +268,7 @@ async fn config_set_writes_file_and_creates_dir() {
         .unwrap()
         .unwrap();
     assert_eq!(r["success"], true);
-    let on_disk =
-        std::fs::read_to_string(dir.path().join("tools/voice/config.toml")).unwrap();
+    let on_disk = std::fs::read_to_string(dir.path().join("tools/voice/config.toml")).unwrap();
     assert_eq!(on_disk, "[models]\ndir = \"data\"");
 }
 
@@ -273,7 +284,10 @@ async fn voice_config_get_returns_default_and_set_updates_all_fields() {
         .await
         .unwrap()
         .unwrap();
-    assert!(r.get("stt_enabled").is_some(), "default config keys expected");
+    assert!(
+        r.get("stt_enabled").is_some(),
+        "default config keys expected"
+    );
 
     // 全字段更新
     let r = h
@@ -333,7 +347,12 @@ async fn chat_config_get_creates_default_and_set_roundtrips() {
         .unwrap()
         .unwrap();
     assert!(r.is_object(), "default chat config is a JSON object");
-    assert!(dir.path().join("config").join(CHAT_CONFIG_FILENAME).exists());
+    assert!(
+        dir.path()
+            .join("config")
+            .join(CHAT_CONFIG_FILENAME)
+            .exists()
+    );
 
     // set 整体替换
     let r = h
@@ -490,16 +509,27 @@ async fn engine_start_dispatch_all_four_arms() {
     // stt/tts/speaker 都在 spawn_blocking 里先查 config.toml → 空目录快速失败
     for model in ["stt", "tts", "speaker"] {
         let err = h
-            .handle_cmd("engine_start", Some(serde_json::json!({ "model": model })), &ctx)
+            .handle_cmd(
+                "engine_start",
+                Some(serde_json::json!({ "model": model })),
+                &ctx,
+            )
             .await
             .unwrap_err_or(format!("engine_start {model} must fail on empty dir"));
-        assert!(err.contains("config.toml not found"), "model={model} err={err}");
+        assert!(
+            err.contains("config.toml not found"),
+            "model={model} err={err}"
+        );
     }
     // 未知 model
     assert_eq!(
-        h.handle_cmd("engine_start", Some(serde_json::json!({ "model": "weird" })), &ctx)
-            .await
-            .unwrap_err(),
+        h.handle_cmd(
+            "engine_start",
+            Some(serde_json::json!({ "model": "weird" })),
+            &ctx
+        )
+        .await
+        .unwrap_err(),
         "unknown model: weird"
     );
 }
@@ -514,7 +544,11 @@ async fn engine_stop_all_four_arms() {
 
     // 未加载的引擎 → stopped + was_loaded:false
     let r = h
-        .handle_cmd("engine_stop", Some(serde_json::json!({ "model": "stt" })), &ctx)
+        .handle_cmd(
+            "engine_stop",
+            Some(serde_json::json!({ "model": "stt" })),
+            &ctx,
+        )
         .await
         .unwrap()
         .unwrap();
@@ -522,7 +556,11 @@ async fn engine_stop_all_four_arms() {
     assert_eq!(r["was_loaded"], false);
 
     let r = h
-        .handle_cmd("engine_stop", Some(serde_json::json!({ "model": "tts" })), &ctx)
+        .handle_cmd(
+            "engine_stop",
+            Some(serde_json::json!({ "model": "tts" })),
+            &ctx,
+        )
         .await
         .unwrap()
         .unwrap();
@@ -532,18 +570,29 @@ async fn engine_stop_all_four_arms() {
     // speaker 臂无条件清 engine/manager 并把 enabled 置 false
     *speaker_enabled_state().lock().unwrap() = true;
     let r = h
-        .handle_cmd("engine_stop", Some(serde_json::json!({ "model": "speaker" })), &ctx)
+        .handle_cmd(
+            "engine_stop",
+            Some(serde_json::json!({ "model": "speaker" })),
+            &ctx,
+        )
         .await
         .unwrap()
         .unwrap();
     assert_eq!(r["stopped"], true);
     assert_eq!(r["model"], "speaker");
-    assert!(!*speaker_enabled_state().lock().unwrap(), "enabled must be reset");
+    assert!(
+        !*speaker_enabled_state().lock().unwrap(),
+        "enabled must be reset"
+    );
 
     assert_eq!(
-        h.handle_cmd("engine_stop", Some(serde_json::json!({ "model": "weird" })), &ctx)
-            .await
-            .unwrap_err(),
+        h.handle_cmd(
+            "engine_stop",
+            Some(serde_json::json!({ "model": "weird" })),
+            &ctx
+        )
+        .await
+        .unwrap_err(),
         "unknown model: weird"
     );
 }
@@ -561,16 +610,24 @@ async fn pipeline_start_unsupported_model_and_engine_not_loaded() {
     let h = VoiceHandler::new();
 
     assert_eq!(
-        h.handle_cmd("pipeline_start", Some(serde_json::json!({ "model": "tts" })), &ctx)
-            .await
-            .unwrap_err(),
+        h.handle_cmd(
+            "pipeline_start",
+            Some(serde_json::json!({ "model": "tts" })),
+            &ctx
+        )
+        .await
+        .unwrap_err(),
         "pipeline not supported for model: tts"
     );
     // stt → 引擎未加载先于会话检查
     assert_eq!(
-        h.handle_cmd("pipeline_start", Some(serde_json::json!({ "model": "stt" })), &ctx)
-            .await
-            .unwrap_err(),
+        h.handle_cmd(
+            "pipeline_start",
+            Some(serde_json::json!({ "model": "stt" })),
+            &ctx
+        )
+        .await
+        .unwrap_err(),
         "STT engine not loaded. Enable STT toggle first."
     );
     clear_session_states().await;
@@ -589,23 +646,35 @@ async fn pipeline_stop_all_three_arms() {
         dialogue_output: None,
     });
     let r = h
-        .handle_cmd("pipeline_stop", Some(serde_json::json!({ "model": "stt" })), &ctx)
+        .handle_cmd(
+            "pipeline_stop",
+            Some(serde_json::json!({ "model": "stt" })),
+            &ctx,
+        )
         .await
         .unwrap()
         .unwrap();
     assert_eq!(r["stopped"], true);
 
     assert_eq!(
-        h.handle_cmd("pipeline_stop", Some(serde_json::json!({ "model": "stt" })), &ctx)
-            .await
-            .unwrap_err(),
+        h.handle_cmd(
+            "pipeline_stop",
+            Some(serde_json::json!({ "model": "stt" })),
+            &ctx
+        )
+        .await
+        .unwrap_err(),
         "STT pipeline not running"
     );
 
     assert_eq!(
-        h.handle_cmd("pipeline_stop", Some(serde_json::json!({ "model": "vad" })), &ctx)
-            .await
-            .unwrap_err(),
+        h.handle_cmd(
+            "pipeline_stop",
+            Some(serde_json::json!({ "model": "vad" })),
+            &ctx
+        )
+        .await
+        .unwrap_err(),
         "pipeline not supported for model: vad"
     );
     clear_session_states().await;
@@ -629,14 +698,18 @@ async fn stt_to_input_start_prechecks_and_stop_arms() {
         dialogue_output: None,
     });
     assert_eq!(
-        h.handle_cmd("stt_to_input_start", None, &ctx).await.unwrap_err(),
+        h.handle_cmd("stt_to_input_start", None, &ctx)
+            .await
+            .unwrap_err(),
         "STT already running. Stop current session first."
     );
     *stt_state().lock().await = None;
 
     // 引擎未加载
     assert_eq!(
-        h.handle_cmd("stt_to_input_start", None, &ctx).await.unwrap_err(),
+        h.handle_cmd("stt_to_input_start", None, &ctx)
+            .await
+            .unwrap_err(),
         "STT engine not loaded. Enable STT in voice settings first."
     );
 
@@ -652,7 +725,9 @@ async fn stt_to_input_start_prechecks_and_stop_arms() {
         .unwrap();
     assert_eq!(r["stopped"], true);
     assert_eq!(
-        h.handle_cmd("stt_to_input_stop", None, &ctx).await.unwrap_err(),
+        h.handle_cmd("stt_to_input_stop", None, &ctx)
+            .await
+            .unwrap_err(),
         "STT dictation not running"
     );
     clear_session_states().await;
@@ -676,14 +751,18 @@ async fn stt_dialogue_start_prechecks_and_timeout_extraction() {
         dialogue_output: None,
     });
     assert_eq!(
-        h.handle_cmd("stt_dialogue_start", None, &ctx).await.unwrap_err(),
+        h.handle_cmd("stt_dialogue_start", None, &ctx)
+            .await
+            .unwrap_err(),
         "STT already running. Stop current session first."
     );
     *stt_state().lock().await = None;
 
     // 引擎未加载（None data → 默认 3.0 超时提取臂；带 silence_timeout → 显式提取臂）
     assert_eq!(
-        h.handle_cmd("stt_dialogue_start", None, &ctx).await.unwrap_err(),
+        h.handle_cmd("stt_dialogue_start", None, &ctx)
+            .await
+            .unwrap_err(),
         "STT engine not loaded. Enable STT in voice settings first."
     );
     assert_eq!(
@@ -722,13 +801,18 @@ async fn stt_dialogue_stop_flushes_and_clears_state() {
         .unwrap();
     assert_eq!(r["stopped"], true);
     assert!(stt_state().lock().await.is_none());
-    assert!(dialogue_state().lock().await.is_none(), "dialogue state cleared");
+    assert!(
+        dialogue_state().lock().await.is_none(),
+        "dialogue state cleared"
+    );
     // flush 已把缓冲取走
     let cleared = dialogue_state().lock().await.clone();
     assert!(cleared.is_none() || cleared.unwrap().flush().is_none());
 
     assert_eq!(
-        h.handle_cmd("stt_dialogue_stop", None, &ctx).await.unwrap_err(),
+        h.handle_cmd("stt_dialogue_stop", None, &ctx)
+            .await
+            .unwrap_err(),
         "STT dialogue not running"
     );
     clear_session_states().await;
@@ -743,7 +827,9 @@ async fn stt_dialogue_reset_both_arms() {
     let h = VoiceHandler::new();
 
     assert_eq!(
-        h.handle_cmd("stt_dialogue_reset", None, &ctx).await.unwrap_err(),
+        h.handle_cmd("stt_dialogue_reset", None, &ctx)
+            .await
+            .unwrap_err(),
         "No dialogue session active"
     );
 
@@ -781,7 +867,10 @@ async fn tts_playback_stop_both_arms() {
         .unwrap()
         .unwrap();
     assert_eq!(r["stopped"], true);
-    assert!(r.get("was_running").is_none(), "was_running only on idle arm");
+    assert!(
+        r.get("was_running").is_none(),
+        "was_running only on idle arm"
+    );
     assert!(tts_playback_state().lock().await.is_none());
 
     // 空闲臂
@@ -799,10 +888,7 @@ async fn tts_playback_stop_both_arms() {
 // speaker register / test
 // -----------------------------------------------------------------------
 
-fn make_registration(
-    start_time: std::time::Instant,
-    samples: Vec<f32>,
-) -> SpeakerRegistration {
+fn make_registration(start_time: std::time::Instant, samples: Vec<f32>) -> SpeakerRegistration {
     SpeakerRegistration {
         name: "alice".to_string(),
         samples: std::sync::Mutex::new(samples),
@@ -866,8 +952,7 @@ async fn speaker_register_stop_error_ladder() {
     );
 
     // 4) 时间够、有样本、但引擎没加载
-    *speaker_register_state().lock().unwrap() =
-        Some(make_registration(past, vec![0.5; 160]));
+    *speaker_register_state().lock().unwrap() = Some(make_registration(past, vec![0.5; 160]));
     assert_eq!(
         h.handle_cmd("speaker_register_stop", None, &ctx)
             .await
@@ -914,7 +999,9 @@ async fn speaker_test_stop_three_paths() {
     let h = VoiceHandler::new();
 
     assert_eq!(
-        h.handle_cmd("speaker_test_stop", None, &ctx).await.unwrap_err(),
+        h.handle_cmd("speaker_test_stop", None, &ctx)
+            .await
+            .unwrap_err(),
         "No speaker test running"
     );
 
@@ -1148,9 +1235,6 @@ async fn stt_start_fails_fast_when_engine_unloaded_and_config_missing() {
     let dir = tempfile::tempdir().unwrap();
     let ctx = make_ctx(&dir);
     let h = VoiceHandler::new();
-    let err = h
-        .handle_cmd("stt_start", None, &ctx)
-        .await
-        .unwrap_err();
+    let err = h.handle_cmd("stt_start", None, &ctx).await.unwrap_err();
     assert!(err.contains("config.toml"), "unexpected err: {err}");
 }

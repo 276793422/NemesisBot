@@ -164,7 +164,9 @@ fn migrate_legacy_vector_store(workspace: &str) {
     if !legacy.is_file() || target.exists() {
         return;
     }
-    let Some(parent) = target.parent() else { return };
+    let Some(parent) = target.parent() else {
+        return;
+    };
     if std::fs::create_dir_all(parent).is_err() {
         return;
     }
@@ -369,7 +371,6 @@ impl MemoryHandler {
             .models
             .get(&active_tier)
             .map(|mc| {
-                
                 if !mc.local_model_path.is_empty()
                     && std::path::Path::new(&mc.local_model_path).exists()
                 {
@@ -532,10 +533,9 @@ impl MemoryHandler {
         // Main switch
         if let Some(enabled) = get_opt_bool_loud(data, "main_enabled")? {
             set_main_switch(home, enabled)?;
-            if !enabled
-                && let Some(mgr) = ctx.state.memory_manager.as_ref() {
-                    mgr.set_vector_enabled(false);
-                }
+            if !enabled && let Some(mgr) = ctx.state.memory_manager.as_ref() {
+                mgr.set_vector_enabled(false);
+            }
         }
 
         // Sub switch (write via unified config + runtime control)
@@ -720,8 +720,7 @@ impl MemoryHandler {
         let total = entries.len();
         // Return most recent first (last in file), then page.
         entries.reverse();
-        let page: Vec<serde_json::Value> =
-            entries.into_iter().skip(offset).take(limit).collect();
+        let page: Vec<serde_json::Value> = entries.into_iter().skip(offset).take(limit).collect();
 
         Ok(Some(
             serde_json::json!({ "entries": page, "total": total, "offset": offset }),
@@ -742,32 +741,33 @@ impl MemoryHandler {
         // exists (memory.enabled=false) or the vector store is off.
         #[cfg(feature = "memory")]
         if let Some(mgr) = ctx.state.memory_manager.as_ref()
-            && mgr.is_vector_enabled() {
-                let result = mgr
-                    .search(query, None, limit)
-                    .await
-                    .map_err(|e| format!("search error: {}", e))?;
-                let results: Vec<serde_json::Value> = result
-                    .entries
-                    .iter()
-                    .map(|se| {
-                        truncate_entry_content(serde_json::json!({
-                            "id": se.entry.id,
-                            "type": se.entry.typ.to_string(),
-                            "content": se.entry.content,
-                            "metadata": se.entry.metadata,
-                            "tags": se.entry.tags,
-                            "score": se.score,
-                            "created_at": se.entry.created_at.to_rfc3339(),
-                            "updated_at": se.entry.updated_at.to_rfc3339(),
-                        }))
-                    })
-                    .collect();
-                let total = results.len();
-                return Ok(Some(serde_json::json!({
-                    "query": query, "results": results, "total": total, "search_type": "semantic"
-                })));
-            }
+            && mgr.is_vector_enabled()
+        {
+            let result = mgr
+                .search(query, None, limit)
+                .await
+                .map_err(|e| format!("search error: {}", e))?;
+            let results: Vec<serde_json::Value> = result
+                .entries
+                .iter()
+                .map(|se| {
+                    truncate_entry_content(serde_json::json!({
+                        "id": se.entry.id,
+                        "type": se.entry.typ.to_string(),
+                        "content": se.entry.content,
+                        "metadata": se.entry.metadata,
+                        "tags": se.entry.tags,
+                        "score": se.score,
+                        "created_at": se.entry.created_at.to_rfc3339(),
+                        "updated_at": se.entry.updated_at.to_rfc3339(),
+                    }))
+                })
+                .collect();
+            let total = results.len();
+            return Ok(Some(serde_json::json!({
+                "query": query, "results": results, "total": total, "search_type": "semantic"
+            })));
+        }
 
         migrate_legacy_vector_store(workspace);
         let jsonl_path = vector_store_jsonl_path(workspace);
@@ -823,22 +823,23 @@ impl MemoryHandler {
         // a path no reader ever loaded.
         #[cfg(feature = "memory")]
         if let Some(mgr) = ctx.state.memory_manager.as_ref()
-            && mgr.is_vector_enabled() {
-                let entry = nemesis_memory::types::Entry::new(
-                    nemesis_memory::types::MemoryType::LongTerm,
-                    content.to_string(),
-                );
-                let id = mgr
-                    .store_entry(entry)
-                    .await
-                    .map_err(|e| format!("store entry error: {}", e))?;
-                return Ok(Some(serde_json::json!({ "id": id, "stored": true })));
-            }
-            // Manager present but vector off → fall through to the raw
-            // append: the in-memory general store (LocalStore) is not
-            // persisted, so the JSONL at the load path is the only durable
-            // copy — it is re-embedded when the sub-switch re-initializes
-            // the vector store.
+            && mgr.is_vector_enabled()
+        {
+            let entry = nemesis_memory::types::Entry::new(
+                nemesis_memory::types::MemoryType::LongTerm,
+                content.to_string(),
+            );
+            let id = mgr
+                .store_entry(entry)
+                .await
+                .map_err(|e| format!("store entry error: {}", e))?;
+            return Ok(Some(serde_json::json!({ "id": id, "stored": true })));
+        }
+        // Manager present but vector off → fall through to the raw
+        // append: the in-memory general store (LocalStore) is not
+        // persisted, so the JSONL at the load path is the only durable
+        // copy — it is re-embedded when the sub-switch re-initializes
+        // the vector store.
 
         migrate_legacy_vector_store(workspace);
         let jsonl_path = vector_store_jsonl_path(workspace);
@@ -891,17 +892,18 @@ impl MemoryHandler {
     ) -> Result<Option<serde_json::Value>, String> {
         #[cfg(feature = "memory")]
         if let Some(mgr) = ctx.state.memory_manager.as_ref()
-            && mgr.is_vector_enabled() {
-                let entry = mgr
-                    .get(id)
-                    .await
-                    .map_err(|e| format!("get entry error: {}", e))?;
-                let json = entry
-                    .map(|e| serde_json::to_value(&e))
-                    .transpose()
-                    .map_err(|e| format!("serialize entry error: {}", e))?;
-                return Ok(Some(serde_json::json!({ "entry": json })));
-            }
+            && mgr.is_vector_enabled()
+        {
+            let entry = mgr
+                .get(id)
+                .await
+                .map_err(|e| format!("get entry error: {}", e))?;
+            let json = entry
+                .map(|e| serde_json::to_value(&e))
+                .transpose()
+                .map_err(|e| format!("serialize entry error: {}", e))?;
+            return Ok(Some(serde_json::json!({ "entry": json })));
+        }
 
         migrate_legacy_vector_store(workspace);
         let jsonl_path = vector_store_jsonl_path(workspace);
@@ -916,9 +918,10 @@ impl MemoryHandler {
                 continue;
             }
             if let Ok(entry) = serde_json::from_str::<serde_json::Value>(trimmed)
-                && entry.get("id").and_then(|v| v.as_str()) == Some(id) {
-                    return Ok(Some(serde_json::json!({ "entry": entry })));
-                }
+                && entry.get("id").and_then(|v| v.as_str()) == Some(id)
+            {
+                return Ok(Some(serde_json::json!({ "entry": entry })));
+            }
         }
         Ok(Some(serde_json::json!({ "entry": null })))
     }
@@ -936,13 +939,14 @@ impl MemoryHandler {
     ) -> Result<Option<serde_json::Value>, String> {
         #[cfg(feature = "memory")]
         if let Some(mgr) = ctx.state.memory_manager.as_ref()
-            && mgr.is_vector_enabled() {
-                let deleted = mgr
-                    .delete(id)
-                    .await
-                    .map_err(|e| format!("delete entry error: {}", e))?;
-                return Ok(Some(serde_json::json!({ "id": id, "deleted": deleted })));
-            }
+            && mgr.is_vector_enabled()
+        {
+            let deleted = mgr
+                .delete(id)
+                .await
+                .map_err(|e| format!("delete entry error: {}", e))?;
+            return Ok(Some(serde_json::json!({ "id": id, "deleted": deleted })));
+        }
 
         migrate_legacy_vector_store(workspace);
         let jsonl_path = vector_store_jsonl_path(workspace);
@@ -991,24 +995,25 @@ impl MemoryHandler {
     ) -> Result<Option<serde_json::Value>, String> {
         #[cfg(feature = "memory")]
         if let Some(mgr) = ctx.state.memory_manager.as_ref()
-            && mgr.is_vector_enabled() {
-                let deleted = mgr
-                    .delete(id)
-                    .await
-                    .map_err(|e| format!("update entry error: {}", e))?;
-                if !deleted {
-                    return Err(format!("entry not found: {}", id));
-                }
-                let entry = nemesis_memory::types::Entry::new(
-                    nemesis_memory::types::MemoryType::LongTerm,
-                    content.to_string(),
-                );
-                let new_id = mgr
-                    .store_entry(entry)
-                    .await
-                    .map_err(|e| format!("store entry error: {}", e))?;
-                return Ok(Some(serde_json::json!({ "id": new_id, "updated": true })));
+            && mgr.is_vector_enabled()
+        {
+            let deleted = mgr
+                .delete(id)
+                .await
+                .map_err(|e| format!("update entry error: {}", e))?;
+            if !deleted {
+                return Err(format!("entry not found: {}", id));
             }
+            let entry = nemesis_memory::types::Entry::new(
+                nemesis_memory::types::MemoryType::LongTerm,
+                content.to_string(),
+            );
+            let new_id = mgr
+                .store_entry(entry)
+                .await
+                .map_err(|e| format!("store entry error: {}", e))?;
+            return Ok(Some(serde_json::json!({ "id": new_id, "updated": true })));
+        }
         let _ = workspace;
         Err("强化记忆未启用，无法编辑条目（需要重新生成向量）；可删除后重新添加".to_string())
     }
@@ -1191,21 +1196,22 @@ fn truncate_entry_content(mut entry: serde_json::Value) -> serde_json::Value {
         .and_then(|v| v.as_str())
         .map(|s| s.to_string());
     if let Some(c) = content
-        && c.len() > 200 {
-            // Truncate at the nearest char boundary ≤ 200 bytes. Slicing at a
-            // fixed byte index lands inside multibyte UTF-8 chars (e.g. Chinese
-            // in memory content) and panics.
-            let mut end = 200;
-            while !c.is_char_boundary(end) {
-                end -= 1;
-            }
-            entry.as_object_mut().map(|o| {
-                o.insert(
-                    "content".to_string(),
-                    serde_json::Value::String(format!("{}...", &c[..end])),
-                )
-            });
+        && c.len() > 200
+    {
+        // Truncate at the nearest char boundary ≤ 200 bytes. Slicing at a
+        // fixed byte index lands inside multibyte UTF-8 chars (e.g. Chinese
+        // in memory content) and panics.
+        let mut end = 200;
+        while !c.is_char_boundary(end) {
+            end -= 1;
         }
+        entry.as_object_mut().map(|o| {
+            o.insert(
+                "content".to_string(),
+                serde_json::Value::String(format!("{}...", &c[..end])),
+            )
+        });
+    }
     entry
 }
 

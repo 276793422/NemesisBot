@@ -612,7 +612,10 @@ fn test_api_key_env_var_set_but_empty_fails_loud() {
 
     let err = resolve_api_key_value(&format!("env:{}", var), "m").unwrap_err();
     let msg = format!("{:?}", err);
-    assert!(msg.contains("is set but empty"), "diagnosis is set-but-empty: {msg}");
+    assert!(
+        msg.contains("is set but empty"),
+        "diagnosis is set-but-empty: {msg}"
+    );
     assert!(msg.contains(&var), "error names the variable: {msg}");
 
     // SAFETY: same lock held, unique var.

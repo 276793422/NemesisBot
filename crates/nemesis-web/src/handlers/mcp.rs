@@ -188,17 +188,20 @@ impl McpHandler {
             server.description = v.to_string();
         }
         if let Some(v) = data.get("headers").cloned()
-            && let Ok(parsed) = serde_json::from_value::<Vec<String>>(v) {
-                server.headers = parsed;
-            }
+            && let Ok(parsed) = serde_json::from_value::<Vec<String>>(v)
+        {
+            server.headers = parsed;
+        }
         if let Some(v) = data.get("args").cloned()
-            && let Ok(parsed) = serde_json::from_value::<Vec<String>>(v) {
-                server.args = parsed;
-            }
+            && let Ok(parsed) = serde_json::from_value::<Vec<String>>(v)
+        {
+            server.args = parsed;
+        }
         if let Some(v) = data.get("env").cloned()
-            && let Ok(parsed) = serde_json::from_value::<Vec<String>>(v) {
-                server.env = parsed;
-            }
+            && let Ok(parsed) = serde_json::from_value::<Vec<String>>(v)
+        {
+            server.env = parsed;
+        }
         if let Some(v) = data
             .get("timeout")
             .or_else(|| data.get("timeout_secs"))
@@ -213,9 +216,10 @@ impl McpHandler {
             server.provider_url = v.to_string();
         }
         if let Some(v) = data.get("tags").cloned()
-            && let Ok(parsed) = serde_json::from_value::<Vec<String>>(v) {
-                server.tags = parsed;
-            }
+            && let Ok(parsed) = serde_json::from_value::<Vec<String>>(v)
+        {
+            server.tags = parsed;
+        }
 
         save_mcp_config(workspace, &config)?;
         Ok(Some(serde_json::json!({ "updated": true, "name": name })))

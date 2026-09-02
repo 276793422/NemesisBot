@@ -26,7 +26,10 @@ fn registration_plan_matrix() {
     assert!(!LspTool::registration_plan(false, 3), "disabled + servers");
     assert!(!LspTool::registration_plan(true, 0), "enabled + NO server");
     assert!(LspTool::registration_plan(true, 1), "enabled + one server");
-    assert!(LspTool::registration_plan(true, 5), "enabled + many servers");
+    assert!(
+        LspTool::registration_plan(true, 5),
+        "enabled + many servers"
+    );
 }
 
 #[test]
@@ -40,8 +43,14 @@ fn schema_requires_all_four_params_with_op_enum() {
         .filter_map(|v| v.as_str())
         .collect();
     for field in ["op", "path", "line", "character"] {
-        assert!(required.contains(&field), "schema must require {field}: {p}");
-        assert!(p["properties"][field].is_object(), "schema must document {field}");
+        assert!(
+            required.contains(&field),
+            "schema must require {field}: {p}"
+        );
+        assert!(
+            p["properties"][field].is_object(),
+            "schema must document {field}"
+        );
     }
     let ops: Vec<&str> = p["properties"]["op"]["enum"]
         .as_array()
@@ -49,7 +58,10 @@ fn schema_requires_all_four_params_with_op_enum() {
         .iter()
         .filter_map(|v| v.as_str())
         .collect();
-    assert_eq!(ops, vec!["definition", "references", "implementation", "hover"]);
+    assert_eq!(
+        ops,
+        vec!["definition", "references", "implementation", "hover"]
+    );
     // 0-based convention must be stated — models default to 1-based.
     assert!(p.to_string().contains("0-based"));
     assert!(t.description().contains("语义"));
@@ -78,7 +90,11 @@ async fn execute_rejects_unknown_op_listing_valid() {
 #[tokio::test]
 async fn execute_rejects_missing_file() {
     let t = LspTool::new(None, None);
-    let missing = if cfg!(windows) { "Z:/definitely/missing/a.rs" } else { "/definitely/missing/a.rs" };
+    let missing = if cfg!(windows) {
+        "Z:/definitely/missing/a.rs"
+    } else {
+        "/definitely/missing/a.rs"
+    };
     let err = t
         .execute(
             &format!(r#"{{"op":"definition","path":{missing:?},"line":0,"character":0}}"#),
@@ -94,7 +110,11 @@ async fn execute_rejects_missing_file() {
 #[tokio::test]
 async fn execute_rejects_unsupported_file_type() {
     let t = LspTool::new(None, None);
-    let missing = if cfg!(windows) { "Z:/definitely/missing/a.md" } else { "/definitely/missing/a.md" };
+    let missing = if cfg!(windows) {
+        "Z:/definitely/missing/a.md"
+    } else {
+        "/definitely/missing/a.md"
+    };
     let err = t
         .execute(
             &format!(r#"{{"op":"hover","path":{missing:?},"line":0,"character":0}}"#),

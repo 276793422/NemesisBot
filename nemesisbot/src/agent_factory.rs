@@ -252,7 +252,12 @@ pub fn build_agent_loop(
     let max_continuation_permits = cfg.agents.defaults.max_continuation_permits.max(0) as usize;
     // I1 (U7): concurrent_request_mode from config ("reject" default =
     // legacy behavior; "queue"/"steer" enable the session inbox).
-    let mode_str = cfg.agents.defaults.concurrent_request_mode.trim().to_lowercase();
+    let mode_str = cfg
+        .agents
+        .defaults
+        .concurrent_request_mode
+        .trim()
+        .to_lowercase();
     if !matches!(mode_str.as_str(), "reject" | "queue" | "steer") {
         tracing::warn!(
             "[AgentFactory] unknown concurrent_request_mode '{}' — falling back to reject",
@@ -280,8 +285,7 @@ pub fn build_agent_loop(
     ));
     // 内建示例管线插件（around 计时）——「插件」页 T4 可展示/启停的对象。
     // 经进程级单例槽注册（WSAPI plugins.set_metrics_enabled 翻转同一实例）。
-    agent_loop
-        .add_tool_hook(nemesis_agent::hooks::metrics_plugin_slot().clone());
+    agent_loop.add_tool_hook(nemesis_agent::hooks::metrics_plugin_slot().clone());
     // G4 (U4): enable tool-result spill under <workspace>/logs/spill — oversized
     // results (>64k chars) land there whole with a locator in-conversation.
     // 2026-08-31 迁回 workspace（U4 设计指定位置）：定位器必须在
@@ -448,9 +452,7 @@ pub fn build_agent_loop(
     {
         let config_dir = shared.home.join("workspace").join("config");
         let (auto, top_k) = {
-            let emb = nemesis_memory::vector::embedding_config::load_embedding_config(
-                &config_dir,
-            );
+            let emb = nemesis_memory::vector::embedding_config::load_embedding_config(&config_dir);
             (emb.auto_inject, emb.auto_inject_top_k)
         };
         agent_loop.set_memory_inject(shared.memory_manager.clone(), auto, top_k);
@@ -1056,13 +1058,15 @@ fn load_cluster_system_prompt(home: &std::path::Path) -> Option<String> {
     let mut parts = Vec::new();
 
     if let Ok(content) = std::fs::read_to_string(cluster_dir.join("IDENTITY.md"))
-        && !content.trim().is_empty() {
-            parts.push(content);
-        }
+        && !content.trim().is_empty()
+    {
+        parts.push(content);
+    }
     if let Ok(content) = std::fs::read_to_string(cluster_dir.join("SOUL.md"))
-        && !content.trim().is_empty() {
-            parts.push(content);
-        }
+        && !content.trim().is_empty()
+    {
+        parts.push(content);
+    }
 
     if parts.is_empty() {
         info!("[AgentFactory] No cluster identity files found, running without system prompt");
@@ -1257,7 +1261,5 @@ pub fn attach_semantic_embedder(
         return; // no memory subsystem => Semantic degrades to fallback
     };
     let mgr = memory.clone();
-    router.set_semantic_embedder(std::sync::Arc::new(move |text: &str| {
-        mgr.embed_text(text)
-    }));
+    router.set_semantic_embedder(std::sync::Arc::new(move |text: &str| mgr.embed_text(text)));
 }

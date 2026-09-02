@@ -160,11 +160,7 @@ pub fn append_projection_record(rec: &RequestProjectionRecord) {
     let mut file = match OpenOptions::new().create(true).append(true).open(&path) {
         Ok(f) => f,
         Err(e) => {
-            tracing::warn!(
-                "[replay] ledger open failed {}: {}",
-                path.display(),
-                e
-            );
+            tracing::warn!("[replay] ledger open failed {}: {}", path.display(), e);
             return;
         }
     };
@@ -341,9 +337,10 @@ pub fn rebuild_request_messages_in(
 
     // Voice suffix mutates a persisted-derived message at its final position.
     if let Some(va) = rec.voice_append
-        && let Some(m) = view.get_mut(va.index) {
-            m.content.push_str(&va.suffix);
-        }
+        && let Some(m) = view.get_mut(va.index)
+    {
+        m.content.push_str(&va.suffix);
+    }
 
     Ok(RebuildOutcome::Rebuilt(view))
 }
@@ -385,12 +382,11 @@ pub fn verify_request_replay(
         });
     }
     for (i, msg) in rebuilt.iter().enumerate() {
-        let rv = serde_json::to_value(msg)
-            .map_err(|e| ReplayDiff {
-                index: i,
-                kind: "field".to_string(),
-                detail: format!("rebuilt message failed to serialize: {}", e),
-            })?;
+        let rv = serde_json::to_value(msg).map_err(|e| ReplayDiff {
+            index: i,
+            kind: "field".to_string(),
+            detail: format!("rebuilt message failed to serialize: {}", e),
+        })?;
         let rec = &recorded[i];
         if rv == *rec {
             continue;
@@ -426,7 +422,8 @@ pub fn verify_request_replay(
                 kind: "tool_calls".to_string(),
                 detail: format!(
                     "tool_calls differ: rebuilt {:?} vs recorded {:?}",
-                    rv.get("tool_calls"), rec.get("tool_calls")
+                    rv.get("tool_calls"),
+                    rec.get("tool_calls")
                 ),
             });
         }
@@ -549,10 +546,9 @@ pub fn verify_session_round_in(
                 ),
             })
         }
-        Ok(RebuildOutcome::Unavailable { needed, available }) => Ok(ReplayCheck::Unavailable {
-            needed,
-            available,
-        }),
+        Ok(RebuildOutcome::Unavailable { needed, available }) => {
+            Ok(ReplayCheck::Unavailable { needed, available })
+        }
         Err(e) => Err(ReplayDiff {
             index: 0,
             kind: "rebuild".to_string(),
@@ -563,7 +559,9 @@ pub fn verify_session_round_in(
 
 /// Read one `NN.AI.Request.raw.json` envelope: returns `(round, body.messages)`.
 /// `None` when the file is missing, unparsable, or has no messages array.
-pub fn read_raw_request_messages(envelope_path: &std::path::Path) -> Option<(usize, Vec<serde_json::Value>)> {
+pub fn read_raw_request_messages(
+    envelope_path: &std::path::Path,
+) -> Option<(usize, Vec<serde_json::Value>)> {
     let content = fs::read_to_string(envelope_path).ok()?;
     let envelope: serde_json::Value = serde_json::from_str(&content).ok()?;
     let round = envelope.get("round").and_then(|v| v.as_u64())? as usize;

@@ -75,7 +75,10 @@ fn touch(dir: &Path, name: &str) {
 #[test]
 fn tts_new_vits_missing_model_bails() {
     let tmp = tempfile::tempdir().unwrap();
-    let err = format!("{:#}", TtsEngine::new(tmp.path(), 1).err().expect("must fail"));
+    let err = format!(
+        "{:#}",
+        TtsEngine::new(tmp.path(), 1).err().expect("must fail")
+    );
     assert!(err.contains("TTS model not found"), "{err}");
 }
 
@@ -83,7 +86,10 @@ fn tts_new_vits_missing_model_bails() {
 fn tts_new_vits_missing_tokens_bails() {
     let tmp = tempfile::tempdir().unwrap();
     touch(tmp.path(), "model.onnx");
-    let err = format!("{:#}", TtsEngine::new(tmp.path(), 1).err().expect("must fail"));
+    let err = format!(
+        "{:#}",
+        TtsEngine::new(tmp.path(), 1).err().expect("must fail")
+    );
     assert!(err.contains("TTS tokens not found"), "{err}");
 }
 
@@ -92,7 +98,10 @@ fn tts_new_vits_missing_lexicon_bails() {
     let tmp = tempfile::tempdir().unwrap();
     touch(tmp.path(), "model.onnx");
     touch(tmp.path(), "tokens.txt");
-    let err = format!("{:#}", TtsEngine::new(tmp.path(), 1).err().expect("must fail"));
+    let err = format!(
+        "{:#}",
+        TtsEngine::new(tmp.path(), 1).err().expect("must fail")
+    );
     assert!(err.contains("TTS lexicon not found"), "{err}");
 }
 
@@ -101,7 +110,10 @@ fn tts_new_kokoro_missing_model_bails() {
     let tmp = tempfile::tempdir().unwrap();
     // voices.bin 在场 → 走 kokoro 分支；model.onnx 缺
     touch(tmp.path(), "voices.bin");
-    let err = format!("{:#}", TtsEngine::new(tmp.path(), 1).err().expect("must fail"));
+    let err = format!(
+        "{:#}",
+        TtsEngine::new(tmp.path(), 1).err().expect("must fail")
+    );
     assert!(err.contains("Kokoro TTS model not found"), "{err}");
 }
 
@@ -110,7 +122,10 @@ fn tts_new_kokoro_missing_tokens_bails() {
     let tmp = tempfile::tempdir().unwrap();
     touch(tmp.path(), "voices.bin");
     touch(tmp.path(), "model.onnx");
-    let err = format!("{:#}", TtsEngine::new(tmp.path(), 1).err().expect("must fail"));
+    let err = format!(
+        "{:#}",
+        TtsEngine::new(tmp.path(), 1).err().expect("must fail")
+    );
     assert!(err.contains("Kokoro tokens not found"), "{err}");
 }
 
@@ -238,8 +253,7 @@ fn tts_build_kokoro_direct_missing_voices_bails() {
     touch(tmp.path(), "model.onnx");
     let err = format!(
         "{:#}",
-        TtsEngine::build_kokoro_config(tmp.path(), 1)
-            .expect_err("must fail")
+        TtsEngine::build_kokoro_config(tmp.path(), 1).expect_err("must fail")
     );
     assert!(err.contains("Kokoro voices.bin not found"), "{err}");
 }

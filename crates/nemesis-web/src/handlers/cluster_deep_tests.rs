@@ -55,14 +55,16 @@ impl nemesis_services::bot_service::LifecycleService for FakeClusterSvc {
         if self.fail_start {
             return Err("start boom".to_string());
         }
-        self.running.store(true, std::sync::atomic::Ordering::SeqCst);
+        self.running
+            .store(true, std::sync::atomic::Ordering::SeqCst);
         Ok(())
     }
     fn stop(&self) -> Result<(), String> {
         if self.fail_stop {
             return Err("stop boom".to_string());
         }
-        self.running.store(false, std::sync::atomic::Ordering::SeqCst);
+        self.running
+            .store(false, std::sync::atomic::Ordering::SeqCst);
         Ok(())
     }
     fn is_running(&self) -> bool {
@@ -99,7 +101,8 @@ fn make_deep_ctx(
         forge: None,
         agent_loop: Arc::new(parking_lot::RwLock::new(None)),
         cluster,
-        cluster_service: service.map(|s| s as Arc<dyn nemesis_services::bot_service::LifecycleService>),
+        cluster_service: service
+            .map(|s| s as Arc<dyn nemesis_services::bot_service::LifecycleService>),
         cluster_log_dir: log_dir,
         workflow_engine: None,
         #[cfg(feature = "workflow")]
@@ -147,13 +150,7 @@ fn test_cluster(dir: &tempfile::TempDir) -> Arc<Cluster> {
     ))
 }
 
-fn node(
-    id: &str,
-    name: &str,
-    role: NodeRole,
-    online: bool,
-    address: &str,
-) -> ExtendedNodeInfo {
+fn node(id: &str, name: &str, role: NodeRole, online: bool, address: &str) -> ExtendedNodeInfo {
     ExtendedNodeInfo {
         base: NodeInfo {
             id: id.to_string(),
@@ -206,7 +203,13 @@ async fn rt_status_task_state_metrics() {
     let handler = cluster::ClusterHandler::new();
     let dir = tempfile::tempdir().unwrap();
     let cluster = test_cluster(&dir);
-    cluster.register_node(node("n1", "alpha", NodeRole::Worker, true, "10.0.0.1:12000"));
+    cluster.register_node(node(
+        "n1",
+        "alpha",
+        NodeRole::Worker,
+        true,
+        "10.0.0.1:12000",
+    ));
     let svc = Arc::new(FakeClusterSvc::new());
     svc.running.store(true, std::sync::atomic::Ordering::SeqCst);
     let ctx = ctx_ws(&dir, Some(cluster.clone()), None, Some(svc));
@@ -244,10 +247,18 @@ async fn rt_status_recent_events_with_log_dir() {
         &log_dir,
         &[
             log_event("cluster_start", serde_json::json!({"node_id":"local-1"})),
-            log_event("node_discovered", serde_json::json!({"peer_addr":"10.0.0.9:12000"})),
+            log_event(
+                "node_discovered",
+                serde_json::json!({"peer_addr":"10.0.0.9:12000"}),
+            ),
         ],
     );
-    let ctx = ctx_ws(&dir, Some(test_cluster(&dir)), Some(log_dir.to_string_lossy().to_string()), None);
+    let ctx = ctx_ws(
+        &dir,
+        Some(test_cluster(&dir)),
+        Some(log_dir.to_string_lossy().to_string()),
+        None,
+    );
 
     let result = handler
         .handle_cmd("runtime.status", None, &ctx)
@@ -260,11 +271,7 @@ async fn rt_status_recent_events_with_log_dir() {
 
     // events.recent 命令独立走同一条读取路径（带 limit）。
     let result = handler
-        .handle_cmd(
-            "events.recent",
-            Some(serde_json::json!({"limit": 1})),
-            &ctx,
-        )
+        .handle_cmd("events.recent", Some(serde_json::json!({"limit": 1})), &ctx)
         .await
         .unwrap()
         .unwrap();
@@ -383,7 +390,11 @@ async fn nodes_ping_unknown_node() {
     let ctx = ctx_ws(&dir, Some(test_cluster(&dir)), None, None);
 
     let err = handler
-        .handle_cmd("nodes.ping", Some(serde_json::json!({"node_id":"ghost"})), &ctx)
+        .handle_cmd(
+            "nodes.ping",
+            Some(serde_json::json!({"node_id":"ghost"})),
+            &ctx,
+        )
         .await
         .unwrap_err();
     assert!(err.contains("node not found"), "{err}");
@@ -401,7 +412,11 @@ async fn nodes_ping_success_marks_peer_healthy() {
     let ctx = ctx_ws(&dir, Some(cluster.clone()), None, None);
 
     let result = handler
-        .handle_cmd("nodes.ping", Some(serde_json::json!({"node_id":"n1"})), &ctx)
+        .handle_cmd(
+            "nodes.ping",
+            Some(serde_json::json!({"node_id":"n1"})),
+            &ctx,
+        )
         .await
         .unwrap()
         .unwrap();
@@ -423,7 +438,11 @@ async fn nodes_ping_refused_marks_peer_offline() {
     let ctx = ctx_ws(&dir, Some(cluster.clone()), None, None);
 
     let err = handler
-        .handle_cmd("nodes.ping", Some(serde_json::json!({"node_id":"n1"})), &ctx)
+        .handle_cmd(
+            "nodes.ping",
+            Some(serde_json::json!({"node_id":"n1"})),
+            &ctx,
+        )
         .await
         .unwrap_err();
     assert!(err.contains("ping failed"), "{err}");
@@ -473,7 +492,13 @@ async fn nodes_refresh_success_upgrades_placeholder() {
     let handler = cluster::ClusterHandler::new();
     let dir = tempfile::tempdir().unwrap();
     let cluster = test_cluster(&dir);
-    cluster.register_node(node("ph", "placeholder", NodeRole::Worker, false, "10.1.2.3:9000"));
+    cluster.register_node(node(
+        "ph",
+        "placeholder",
+        NodeRole::Worker,
+        false,
+        "10.1.2.3:9000",
+    ));
     // 测试钩子：拦截 get_info，返回远端真实身份。
     cluster.set_call_with_context_fn(Box::new(|_peer, action, _payload| {
         assert_eq!(action, "get_info");
@@ -518,10 +543,14 @@ async fn nodes_refresh_rpc_error_restores_status() {
     let handler = cluster::ClusterHandler::new();
     let dir = tempfile::tempdir().unwrap();
     let cluster = test_cluster(&dir);
-    cluster.register_node(node("ph", "placeholder", NodeRole::Worker, false, "10.2.3.4:9000"));
-    cluster.set_call_with_context_fn(Box::new(|_p, _a, _payload| {
-        Err("boom".to_string())
-    }));
+    cluster.register_node(node(
+        "ph",
+        "placeholder",
+        NodeRole::Worker,
+        false,
+        "10.2.3.4:9000",
+    ));
+    cluster.set_call_with_context_fn(Box::new(|_p, _a, _payload| Err("boom".to_string())));
     let ctx = ctx_ws(&dir, Some(cluster.clone()), None, None);
 
     // 已注册（Offline）peer：失败后状态恢复为 Offline。
@@ -559,7 +588,13 @@ async fn nodes_refresh_timeout_clamped_to_one_sec() {
     let handler = cluster::ClusterHandler::new();
     let dir = tempfile::tempdir().unwrap();
     let cluster = test_cluster(&dir);
-    cluster.register_node(node("slow", "slow-peer", NodeRole::Worker, false, "127.0.0.1:1"));
+    cluster.register_node(node(
+        "slow",
+        "slow-peer",
+        NodeRole::Worker,
+        false,
+        "127.0.0.1:1",
+    ));
 
     // 前置原理：tokio::time::Timeout 只在「内层 future Pending 且 deadline 到」
     // 时返回 Elapsed；正常 RPC 路径内层自己的 timer 先臂先响（同一次 poll 级联
@@ -700,22 +735,46 @@ async fn nodes_detail_master_worker_with_log_stats() {
     let handler = cluster::ClusterHandler::new();
     let dir = tempfile::tempdir().unwrap();
     let cluster = test_cluster(&dir);
-    cluster.register_node(node("mA", "master-a", NodeRole::Coordinator, true, "10.0.0.1:12000"));
-    cluster.register_node(node("nB", "worker-b", NodeRole::Worker, true, "10.0.0.2:12000"));
+    cluster.register_node(node(
+        "mA",
+        "master-a",
+        NodeRole::Coordinator,
+        true,
+        "10.0.0.1:12000",
+    ));
+    cluster.register_node(node(
+        "nB",
+        "worker-b",
+        NodeRole::Worker,
+        true,
+        "10.0.0.2:12000",
+    ));
     let log_dir = dir.path().join("cluster_logs");
     // task_assigned 的 data.action 是承接节点 id（reader 的映射约定）。
     write_today_cluster_log(
         &log_dir,
         &[
-            log_event("task_assigned", serde_json::json!({"task_id":"tA", "action":"mA"})),
+            log_event(
+                "task_assigned",
+                serde_json::json!({"task_id":"tA", "action":"mA"}),
+            ),
             log_event("task_completed", serde_json::json!({"task_id":"tA"})),
             log_event("task_failed", serde_json::json!({"task_id":"tA"})),
         ],
     );
-    let ctx = ctx_ws(&dir, Some(cluster), Some(log_dir.to_string_lossy().to_string()), None);
+    let ctx = ctx_ws(
+        &dir,
+        Some(cluster),
+        Some(log_dir.to_string_lossy().to_string()),
+        None,
+    );
 
     let master = handler
-        .handle_cmd("nodes.detail", Some(serde_json::json!({"node_id":"mA"})), &ctx)
+        .handle_cmd(
+            "nodes.detail",
+            Some(serde_json::json!({"node_id":"mA"})),
+            &ctx,
+        )
         .await
         .unwrap()
         .unwrap();
@@ -726,7 +785,11 @@ async fn nodes_detail_master_worker_with_log_stats() {
     assert_eq!(master["successRate"], 0.5);
 
     let worker = handler
-        .handle_cmd("nodes.detail", Some(serde_json::json!({"node_id":"nB"})), &ctx)
+        .handle_cmd(
+            "nodes.detail",
+            Some(serde_json::json!({"node_id":"nB"})),
+            &ctx,
+        )
         .await
         .unwrap()
         .unwrap();
@@ -734,7 +797,11 @@ async fn nodes_detail_master_worker_with_log_stats() {
     assert!(worker["taskCount"].is_null()); // 无日志 → null
 
     let err = handler
-        .handle_cmd("nodes.detail", Some(serde_json::json!({"node_id":"ghost"})), &ctx)
+        .handle_cmd(
+            "nodes.detail",
+            Some(serde_json::json!({"node_id":"ghost"})),
+            &ctx,
+        )
         .await
         .unwrap_err();
     assert!(err.contains("node not found"), "{err}");
@@ -773,7 +840,10 @@ async fn node_update_identity_creates_missing_peers_file() {
     assert!(content.contains("dev"), "{content}");
     // tags trim + 空串过滤
     let parsed = nemesis_cluster::cluster_config::load_static_config(&ppath).unwrap();
-    assert_eq!(parsed.node.tags, vec!["rust".to_string(), "cluster".to_string()]);
+    assert_eq!(
+        parsed.node.tags,
+        vec!["rust".to_string(), "cluster".to_string()]
+    );
 }
 
 #[tokio::test]
@@ -822,7 +892,12 @@ async fn tasks_list_states_string_payload_and_summaries() {
     let t3 = c.submit_task("a", serde_json::json!({}), "dashboard", "s3");
     assert!(c.task_manager().assign_task(&t3, "n1"));
     let long_input = "x".repeat(250);
-    let t4 = c.submit_task("a", serde_json::json!(long_input.clone()), "dashboard", "s4");
+    let t4 = c.submit_task(
+        "a",
+        serde_json::json!(long_input.clone()),
+        "dashboard",
+        "s4",
+    );
 
     // 日志聚合 fixture（在拿到 task id 后写，键到 t1）
     write_today_cluster_log(
@@ -830,8 +905,14 @@ async fn tasks_list_states_string_payload_and_summaries() {
         &[
             log_event("task_llm_start", serde_json::json!({"task_id": t1})),
             log_event("task_llm_start", serde_json::json!({"task_id": t1})),
-            log_event("task_tool_call", serde_json::json!({"task_id": t1, "tool": "read_file"})),
-            log_event("task_tool_call", serde_json::json!({"task_id": t1, "tool": "write_file"})),
+            log_event(
+                "task_tool_call",
+                serde_json::json!({"task_id": t1, "tool": "read_file"}),
+            ),
+            log_event(
+                "task_tool_call",
+                serde_json::json!({"task_id": t1, "tool": "write_file"}),
+            ),
         ],
     );
 
@@ -880,10 +961,19 @@ async fn tasks_detail_enriched_from_log() {
     let cluster = test_cluster(&dir);
     let ctx = ctx_ws(&dir, Some(cluster.clone()), None, None);
     let c = ctx.state.cluster.as_ref().unwrap();
-    let t1 = c.submit_task("peer_chat", serde_json::json!({"content":"hi"}), "dashboard", "s1");
+    let t1 = c.submit_task(
+        "peer_chat",
+        serde_json::json!({"content":"hi"}),
+        "dashboard",
+        "s1",
+    );
 
     let result = handler
-        .handle_cmd("tasks.detail", Some(serde_json::json!({"task_id": t1})), &ctx)
+        .handle_cmd(
+            "tasks.detail",
+            Some(serde_json::json!({"task_id": t1})),
+            &ctx,
+        )
         .await
         .unwrap()
         .unwrap();
@@ -897,7 +987,10 @@ async fn tasks_detail_enriched_from_log() {
         &log_dir,
         &[
             log_event("task_llm_start", serde_json::json!({"task_id": t1})),
-            log_event("task_tool_call", serde_json::json!({"task_id": t1, "tool": "grep"})),
+            log_event(
+                "task_tool_call",
+                serde_json::json!({"task_id": t1, "tool": "grep"}),
+            ),
         ],
     );
     let ctx2 = ctx_ws(
@@ -907,7 +1000,11 @@ async fn tasks_detail_enriched_from_log() {
         None,
     );
     let result = handler
-        .handle_cmd("tasks.detail", Some(serde_json::json!({"task_id": t1})), &ctx2)
+        .handle_cmd(
+            "tasks.detail",
+            Some(serde_json::json!({"task_id": t1})),
+            &ctx2,
+        )
         .await
         .unwrap()
         .unwrap();
@@ -916,7 +1013,11 @@ async fn tasks_detail_enriched_from_log() {
     assert_eq!(result["toolChain"], serde_json::json!(["grep"]));
 
     let err = handler
-        .handle_cmd("tasks.detail", Some(serde_json::json!({"task_id":"ghost"})), &ctx)
+        .handle_cmd(
+            "tasks.detail",
+            Some(serde_json::json!({"task_id":"ghost"})),
+            &ctx,
+        )
         .await
         .unwrap_err();
     assert!(err.contains("task not found"), "{err}");
@@ -999,8 +1100,20 @@ async fn topology_connections_traces_and_roles() {
     let handler = cluster::ClusterHandler::new();
     let dir = tempfile::tempdir().unwrap();
     let cluster = test_cluster(&dir);
-    cluster.register_node(node("mA", "master-a", NodeRole::Coordinator, true, "10.0.0.1:12000"));
-    cluster.register_node(node("nB", "worker-b", NodeRole::Worker, true, "10.0.0.2:12000"));
+    cluster.register_node(node(
+        "mA",
+        "master-a",
+        NodeRole::Coordinator,
+        true,
+        "10.0.0.1:12000",
+    ));
+    cluster.register_node(node(
+        "nB",
+        "worker-b",
+        NodeRole::Worker,
+        true,
+        "10.0.0.2:12000",
+    ));
     let log_dir = dir.path().join("cluster_logs");
     write_today_cluster_log(
         &log_dir,
@@ -1022,7 +1135,12 @@ async fn topology_connections_traces_and_roles() {
             ),
         ],
     );
-    let ctx = ctx_ws(&dir, Some(cluster), Some(log_dir.to_string_lossy().to_string()), None);
+    let ctx = ctx_ws(
+        &dir,
+        Some(cluster),
+        Some(log_dir.to_string_lossy().to_string()),
+        None,
+    );
 
     let result = handler
         .handle_cmd("topology", None, &ctx)
@@ -1030,10 +1148,7 @@ async fn topology_connections_traces_and_roles() {
         .unwrap()
         .unwrap();
     let nodes = result["nodes"].as_array().unwrap();
-    let roles: Vec<&str> = nodes
-        .iter()
-        .map(|n| n["role"].as_str().unwrap())
-        .collect();
+    let roles: Vec<&str> = nodes.iter().map(|n| n["role"].as_str().unwrap()).collect();
     assert!(roles.contains(&"manager"));
     assert!(roles.contains(&"worker"));
 
@@ -1093,7 +1208,11 @@ async fn config_save_fails_when_config_dir_is_file() {
     let ctx = ctx_ws(&dir, None, None, None);
 
     let err = handler
-        .handle_cmd("config.save", Some(serde_json::json!({"port": 11949})), &ctx)
+        .handle_cmd(
+            "config.save",
+            Some(serde_json::json!({"port": 11949})),
+            &ctx,
+        )
         .await
         .unwrap_err();
     assert!(err.contains("failed to create config dir"), "{err}");
@@ -1174,10 +1293,20 @@ async fn firewall_check_reports_addr_in_use_as_pass() {
     // 端口被本测试占用 → AddrInUse → 视为“已被集群占用” pass
     let udp_bind = find("udp_bind");
     assert_eq!(udp_bind["pass"], true);
-    assert!(udp_bind["detail"].as_str().unwrap().contains("已被集群占用"));
+    assert!(
+        udp_bind["detail"]
+            .as_str()
+            .unwrap()
+            .contains("已被集群占用")
+    );
     let tcp_bind = find("tcp_bind");
     assert_eq!(tcp_bind["pass"], true);
-    assert!(tcp_bind["detail"].as_str().unwrap().contains("已被集群占用"));
+    assert!(
+        tcp_bind["detail"]
+            .as_str()
+            .unwrap()
+            .contains("已被集群占用")
+    );
 }
 
 // -----------------------------------------------------------------------
@@ -1426,11 +1555,7 @@ async fn persona_generate_success_via_mock_llm() {
             }]
         })
     }
-    async fn mount(
-        server: &MockServer,
-        marker: &str,
-        args: serde_json::Value,
-    ) {
+    async fn mount(server: &MockServer, marker: &str, args: serde_json::Value) {
         let template = ResponseTemplate::new(200).set_body_json(llm_args(args));
         Mock::given(method("POST"))
             .and(path("/chat/completions"))
@@ -1652,7 +1777,11 @@ async fn persona_apply_service_restart_success_and_failure() {
         .unwrap()
         .unwrap();
     assert_eq!(result["reloaded"], false);
-    assert!(result["note"].as_str().unwrap().contains("失败"), "{}", result["note"]);
+    assert!(
+        result["note"].as_str().unwrap().contains("失败"),
+        "{}",
+        result["note"]
+    );
 }
 
 #[tokio::test]
@@ -1733,10 +1862,21 @@ async fn tasks_detail_reports_running_status() {
     let dir = tempfile::tempdir().unwrap();
     let ws = dir.path().to_string_lossy().to_string();
     let cluster = test_cluster(&dir);
-    cluster.register_node(node("n1", "alpha", NodeRole::Worker, true, "10.0.0.1:12000"));
+    cluster.register_node(node(
+        "n1",
+        "alpha",
+        NodeRole::Worker,
+        true,
+        "10.0.0.1:12000",
+    ));
     let ctx = ctx_ws(&dir, Some(cluster.clone()), Some(ws.clone()), None);
 
-    let id = cluster.submit_task("peer_chat", serde_json::json!({"content":"hi"}), "dashboard", "s1");
+    let id = cluster.submit_task(
+        "peer_chat",
+        serde_json::json!({"content":"hi"}),
+        "dashboard",
+        "s1",
+    );
     assert!(cluster.task_manager().assign_task(&id, "n1"));
 
     let out = handler

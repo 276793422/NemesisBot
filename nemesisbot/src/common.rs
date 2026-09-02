@@ -88,9 +88,10 @@ pub fn resolve_home(local: bool) -> PathBuf {
     // Priority 3: Exe directory
     if let Ok(exe) = std::env::current_exe()
         && let Some(exe_dir) = exe.parent()
-            && exe_dir.join(".nemesisbot").exists() {
-                return exe_dir.join(".nemesisbot");
-            }
+        && exe_dir.join(".nemesisbot").exists()
+    {
+        return exe_dir.join(".nemesisbot");
+    }
     // Priority 4: Auto-detect cwd
     let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
     if cwd.join(".nemesisbot").exists() {
@@ -166,8 +167,7 @@ pub fn forge_config_path(home: &Path) -> PathBuf {
 /// 一次性迁移 legacy `<home>/config/cors.json`（copy-once：新位已存在则不动，
 /// legacy 保留——与 hooks.json 迁移同款先例）。
 pub fn cors_config_path(home: &Path) -> PathBuf {
-    let new_path =
-        nemesis_path::resolve_cors_config_path_in_workspace(&workspace_path(home));
+    let new_path = nemesis_path::resolve_cors_config_path_in_workspace(&workspace_path(home));
     let legacy = home.join("config").join("cors.json");
     if legacy.is_file() && !new_path.exists() {
         if let Some(parent) = new_path.parent() {
@@ -383,40 +383,42 @@ pub fn init_logger_from_config(config_path: &Path, check_args: &[String]) -> u32
     // Read from config file if it exists
     if config_path.exists()
         && let Ok(data) = std::fs::read_to_string(config_path)
-            && let Ok(cfg) = serde_json::from_str::<serde_json::Value>(&data)
-                && let Some(logging) = cfg.get("logging").and_then(|v| v.get("general")) {
-                    // Console switch
-                    if let Some(console) = logging.get("enable_console").and_then(|v| v.as_bool()) {
-                        enable_console = console;
-                    }
-                    // Log level
-                    if let Some(lvl) = logging.get("level").and_then(|v| v.as_str()) {
-                        level = match lvl.to_uppercase().as_str() {
-                            "DEBUG" | "TRACE" => tracing::Level::DEBUG,
-                            "INFO" => tracing::Level::INFO,
-                            "WARN" | "WARNING" => tracing::Level::WARN,
-                            "ERROR" => tracing::Level::ERROR,
-                            _ => tracing::Level::INFO,
-                        };
-                    }
-                    // File path — resolve relative paths against the workspace directory
-                    // (config_path's parent is the home dir; workspace is home/workspace).
-                    // This keeps logs in `.nemesisbot/workspace/logs/` regardless of CWD.
-                    if let Some(fp) = logging.get("file").and_then(|v| v.as_str())
-                        && !fp.is_empty() {
-                            let p = std::path::Path::new(fp);
-                            let resolved = if p.is_absolute() {
-                                p.to_path_buf()
-                            } else {
-                                config_path
-                                    .parent()
-                                    .unwrap_or_else(|| std::path::Path::new("."))
-                                    .join("workspace")
-                                    .join(p)
-                            };
-                            file_path = Some(resolved.to_string_lossy().into_owned());
-                        }
-                }
+        && let Ok(cfg) = serde_json::from_str::<serde_json::Value>(&data)
+        && let Some(logging) = cfg.get("logging").and_then(|v| v.get("general"))
+    {
+        // Console switch
+        if let Some(console) = logging.get("enable_console").and_then(|v| v.as_bool()) {
+            enable_console = console;
+        }
+        // Log level
+        if let Some(lvl) = logging.get("level").and_then(|v| v.as_str()) {
+            level = match lvl.to_uppercase().as_str() {
+                "DEBUG" | "TRACE" => tracing::Level::DEBUG,
+                "INFO" => tracing::Level::INFO,
+                "WARN" | "WARNING" => tracing::Level::WARN,
+                "ERROR" => tracing::Level::ERROR,
+                _ => tracing::Level::INFO,
+            };
+        }
+        // File path — resolve relative paths against the workspace directory
+        // (config_path's parent is the home dir; workspace is home/workspace).
+        // This keeps logs in `.nemesisbot/workspace/logs/` regardless of CWD.
+        if let Some(fp) = logging.get("file").and_then(|v| v.as_str())
+            && !fp.is_empty()
+        {
+            let p = std::path::Path::new(fp);
+            let resolved = if p.is_absolute() {
+                p.to_path_buf()
+            } else {
+                config_path
+                    .parent()
+                    .unwrap_or_else(|| std::path::Path::new("."))
+                    .join("workspace")
+                    .join(p)
+            };
+            file_path = Some(resolved.to_string_lossy().into_owned());
+        }
+    }
 
     // Check CLI argument overrides
     let mut override_flags: u32 = 0;

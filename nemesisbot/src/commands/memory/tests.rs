@@ -34,8 +34,10 @@ fn em_config_dir(home: &Path) -> std::path::PathBuf {
 fn test_common_memory_paths_layout() {
     let (_tmp, home) = setup_home(&serde_json::json!({}));
     let em = common::enhanced_memory_config_path(&home);
-    assert!(em.ends_with("workspace\\config\\config.enhanced_memory.json")
-        || em.ends_with("workspace/config/config.enhanced_memory.json"));
+    assert!(
+        em.ends_with("workspace\\config\\config.enhanced_memory.json")
+            || em.ends_with("workspace/config/config.enhanced_memory.json")
+    );
     assert!(em.starts_with(&home));
     let dir = em_config_dir(&home);
     assert!(dir.ends_with("config"));
@@ -150,7 +152,11 @@ fn test_set_main_switch_disable() {
 fn test_set_main_switch_creates_memory_object() {
     let tmp = TempDir::new().unwrap();
     let cfg_path = tmp.path().join("config.json");
-    std::fs::write(&cfg_path, serde_json::to_string(&serde_json::json!({})).unwrap()).unwrap();
+    std::fs::write(
+        &cfg_path,
+        serde_json::to_string(&serde_json::json!({})).unwrap(),
+    )
+    .unwrap();
 
     set_main_switch(&cfg_path, true).unwrap();
 
@@ -336,8 +342,11 @@ fn test_cmd_disable_turns_off_both_switches() {
     let dir = em_config_dir(&home);
     std::fs::create_dir_all(&dir).unwrap();
     let em_path = common::enhanced_memory_config_path(&home);
-    std::fs::write(&em_path, serde_json::to_string(&serde_json::json!({ "enabled": true })).unwrap())
-        .unwrap();
+    std::fs::write(
+        &em_path,
+        serde_json::to_string(&serde_json::json!({ "enabled": true })).unwrap(),
+    )
+    .unwrap();
 
     cmd_disable(&home).expect("disable ok");
 
@@ -389,7 +398,10 @@ async fn test_cmd_enable_bails_without_plugin_and_writes_no_config() {
     // bail 在任何开关写入之前：config.json 不变、em 配置不落盘。
     let cfg_data: serde_json::Value =
         serde_json::from_str(&std::fs::read_to_string(home.join("config.json")).unwrap()).unwrap();
-    assert_eq!(cfg_data["memory"]["enabled"], false, "主开关不得被提前置 true");
+    assert_eq!(
+        cfg_data["memory"]["enabled"], false,
+        "主开关不得被提前置 true"
+    );
     assert!(
         !common::enhanced_memory_config_path(&home).exists(),
         "em 配置不得落盘"
@@ -433,10 +445,9 @@ async fn run_status_and_disable_dispatch_via_env_home() {
 
         run(MemoryAction::Status, false).await.expect("status ok");
         run(MemoryAction::Disable, false).await.expect("disable ok");
-        let cfg: serde_json::Value = serde_json::from_str(
-            &std::fs::read_to_string(home.join("config.json")).unwrap(),
-        )
-        .unwrap();
+        let cfg: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(home.join("config.json")).unwrap())
+                .unwrap();
         assert_eq!(cfg["memory"]["enabled"], false, "run Disable 经分发生效");
     })
     .await;
@@ -591,10 +602,9 @@ mod r7_enable_success_chain {
         seed_model_files(&home);
         // 子开关开 → status READY 臂 + Plugin DLL [OK] 打印臂。
         let em_path = common::enhanced_memory_config_path(&home);
-        let mut em = serde_json::from_str::<serde_json::Value>(
-            &std::fs::read_to_string(&em_path).unwrap(),
-        )
-        .unwrap();
+        let mut em =
+            serde_json::from_str::<serde_json::Value>(&std::fs::read_to_string(&em_path).unwrap())
+                .unwrap();
         if let Some(obj) = em.as_object_mut() {
             obj.insert("enabled".to_string(), serde_json::Value::Bool(true));
         }
@@ -634,10 +644,7 @@ mod r7_enable_success_chain {
         }
         let err = r.expect_err("模型缺失 → Err");
         let msg = format!("{err:#}");
-        assert!(
-            msg.contains("memory install"),
-            "应映射安装提示，got: {msg}"
-        );
+        assert!(msg.contains("memory install"), "应映射安装提示，got: {msg}");
     }
 
     /// R7（coverage-95 goal）：workspace 是普通文件 → config 目录创建必然

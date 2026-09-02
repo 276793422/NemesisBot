@@ -241,7 +241,9 @@ async fn test_daemon_process_initially_none() {
 #[cfg(windows)]
 fn place_fake_exe(dir: &std::path::Path, name: &str) -> std::path::PathBuf {
     let windir = std::env::var("WINDIR").unwrap_or_else(|_| r"C:\Windows".to_string());
-    let src = std::path::Path::new(&windir).join("System32").join("where.exe");
+    let src = std::path::Path::new(&windir)
+        .join("System32")
+        .join("where.exe");
     assert!(src.exists(), "where.exe not found at {}", src.display());
     let dst = dir.join(format!("{}.exe", name));
     std::fs::copy(&src, &dst).unwrap();
@@ -354,7 +356,10 @@ async fn fake_daemon_wait_for_ready_timeout() {
     let mut cfg = test_config();
     cfg.listen_addr = "127.0.0.1:1".to_string();
     let daemon = Daemon::new(cfg);
-    let err = daemon.wait_for_ready(Duration::from_millis(200)).await.unwrap_err();
+    let err = daemon
+        .wait_for_ready(Duration::from_millis(200))
+        .await
+        .unwrap_err();
     assert!(err.contains("timed out"), "{err}");
 }
 
@@ -398,7 +403,11 @@ use std::time::Duration;
 #[tokio::test]
 async fn daemon_start_missing_clamd_exe_errors() {
     let cfg = DaemonConfig {
-        clamav_path: tempfile::tempdir().unwrap().path().to_string_lossy().to_string(),
+        clamav_path: tempfile::tempdir()
+            .unwrap()
+            .path()
+            .to_string_lossy()
+            .to_string(),
         config_file: "clamd.conf".to_string(),
         ..Default::default()
     };
@@ -436,7 +445,9 @@ async fn daemon_is_ready_and_wait_for_ready_with_mock_server() {
     };
     let daemon = Daemon::new(cfg);
     // Simulate a started daemon; readiness then depends on ping() only.
-    daemon.running.store(true, std::sync::atomic::Ordering::SeqCst);
+    daemon
+        .running
+        .store(true, std::sync::atomic::Ordering::SeqCst);
     assert!(daemon.is_ready().await);
     daemon.wait_for_ready(Duration::from_secs(2)).await.unwrap();
 }
@@ -449,7 +460,9 @@ async fn daemon_wait_for_ready_zero_deadline_times_out_immediately() {
         ..Default::default()
     };
     let daemon = Daemon::new(cfg);
-    daemon.running.store(true, std::sync::atomic::Ordering::SeqCst);
+    daemon
+        .running
+        .store(true, std::sync::atomic::Ordering::SeqCst);
     let e = daemon.wait_for_ready(Duration::ZERO).await.unwrap_err();
     assert!(e.contains("timed out"), "{e}");
 }

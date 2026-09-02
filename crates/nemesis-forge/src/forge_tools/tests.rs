@@ -1889,8 +1889,16 @@ async fn test_s8_reflect_outputs_recommendations() {
         "no recommendations section: {}",
         result.content
     );
-    assert!(result.content.contains("Investigate failures in tool 'flaky_tool'"));
-    assert!(result.content.contains("Consider optimizing or caching results for tool 'slow_tool'"));
+    assert!(
+        result
+            .content
+            .contains("Investigate failures in tool 'flaky_tool'")
+    );
+    assert!(
+        result
+            .content
+            .contains("Consider optimizing or caching results for tool 'slow_tool'")
+    );
 }
 
 /// forge_create skill with a hardcoded secret is rejected by the security
@@ -1939,7 +1947,9 @@ async fn test_s8_create_script_security_rejected() {
         .await;
     assert!(!result.success);
     assert!(
-        result.content.contains("Content failed security validation"),
+        result
+            .content
+            .contains("Content failed security validation"),
         "content: {}",
         result.content
     );
@@ -2008,7 +2018,9 @@ async fn test_s8_create_script_no_auto_validate() {
 async fn test_s8_create_mcp_active_registers_python() {
     let dir = tempfile::tempdir().unwrap();
     let mut forge = Forge::new(ForgeConfig::default(), dir.path().to_path_buf());
-    forge.init_mcp_installer(crate::mcp_installer::MCPInstaller::new(dir.path().to_path_buf()));
+    forge.init_mcp_installer(crate::mcp_installer::MCPInstaller::new(
+        dir.path().to_path_buf(),
+    ));
     let forge = Arc::new(forge);
     let executor = ForgeToolExecutor::new(forge.clone());
 
@@ -2025,7 +2037,9 @@ async fn test_s8_create_mcp_active_registers_python() {
         .await;
     assert!(result.success, "content: {}", result.content);
     assert!(
-        result.content.contains("MCP auto-registered to config.mcp.json"),
+        result
+            .content
+            .contains("MCP auto-registered to config.mcp.json"),
         "content: {}",
         result.content
     );
@@ -2043,7 +2057,9 @@ async fn test_s8_create_mcp_active_registers_python() {
 async fn test_s8_create_mcp_active_registers_go() {
     let dir = tempfile::tempdir().unwrap();
     let mut forge = Forge::new(ForgeConfig::default(), dir.path().to_path_buf());
-    forge.init_mcp_installer(crate::mcp_installer::MCPInstaller::new(dir.path().to_path_buf()));
+    forge.init_mcp_installer(crate::mcp_installer::MCPInstaller::new(
+        dir.path().to_path_buf(),
+    ));
     let forge = Arc::new(forge);
     let executor = ForgeToolExecutor::new(forge);
 
@@ -2061,7 +2077,14 @@ async fn test_s8_create_mcp_active_registers_go() {
         .await;
     assert!(result.success, "content: {}", result.content);
     assert!(result.content.contains("MCP auto-registered"));
-    assert!(dir.path().join("forge").join("mcp").join("gomcp").join("main.go").exists());
+    assert!(
+        dir.path()
+            .join("forge")
+            .join("mcp")
+            .join("gomcp")
+            .join("main.go")
+            .exists()
+    );
 
     let mcp_json =
         std::fs::read_to_string(dir.path().join("config").join("config.mcp.json")).unwrap();
@@ -2100,7 +2123,9 @@ async fn test_s8_create_mcp_installer_failure() {
     let dir = tempfile::tempdir().unwrap();
     std::fs::write(dir.path().join("config"), b"blocker").unwrap();
     let mut forge = Forge::new(ForgeConfig::default(), dir.path().to_path_buf());
-    forge.init_mcp_installer(crate::mcp_installer::MCPInstaller::new(dir.path().to_path_buf()));
+    forge.init_mcp_installer(crate::mcp_installer::MCPInstaller::new(
+        dir.path().to_path_buf(),
+    ));
     let forge = Arc::new(forge);
     let executor = ForgeToolExecutor::new(forge);
 
@@ -2143,7 +2168,12 @@ async fn test_s8_update_write_failure() {
         .await;
     assert!(created.success);
 
-    let skill_md = dir.path().join("forge").join("skills").join("upd-skill").join("SKILL.md");
+    let skill_md = dir
+        .path()
+        .join("forge")
+        .join("skills")
+        .join("upd-skill")
+        .join("SKILL.md");
     std::fs::remove_file(&skill_md).unwrap();
     std::fs::create_dir(&skill_md).unwrap();
 
@@ -2171,7 +2201,9 @@ async fn test_s8_update_write_failure() {
 async fn test_s8_update_script_and_active_mcp_reregister() {
     let dir = tempfile::tempdir().unwrap();
     let mut forge = Forge::new(ForgeConfig::default(), dir.path().to_path_buf());
-    forge.init_mcp_installer(crate::mcp_installer::MCPInstaller::new(dir.path().to_path_buf()));
+    forge.init_mcp_installer(crate::mcp_installer::MCPInstaller::new(
+        dir.path().to_path_buf(),
+    ));
     let forge = Arc::new(forge);
     let executor = ForgeToolExecutor::new(forge);
 
@@ -2229,7 +2261,10 @@ async fn test_s8_update_script_and_active_mcp_reregister() {
 
     // Active MCP update WITHOUT installer → skipped silently.
     let dir2 = tempfile::tempdir().unwrap();
-    let forge2 = Arc::new(Forge::new(ForgeConfig::default(), dir2.path().to_path_buf()));
+    let forge2 = Arc::new(Forge::new(
+        ForgeConfig::default(),
+        dir2.path().to_path_buf(),
+    ));
     let executor2 = ForgeToolExecutor::new(forge2);
     let c = executor2
         .execute(
@@ -2264,9 +2299,7 @@ async fn test_s8_list_success_rate_computed() {
     art.consecutive_observing_rounds = 2;
     forge.registry().add(art);
     let executor = ForgeToolExecutor::new(forge);
-    let result = executor
-        .execute("forge_list", &serde_json::json!({}))
-        .await;
+    let result = executor.execute("forge_list", &serde_json::json!({})).await;
     assert!(result.success);
     assert!(
         result.content.contains("83%"),
@@ -2325,7 +2358,10 @@ async fn test_s8_evaluate_observing_status() {
     assert!(created.success);
 
     let result = executor
-        .execute("forge_evaluate", &serde_json::json!({"id": "skill-obs-skill"}))
+        .execute(
+            "forge_evaluate",
+            &serde_json::json!({"id": "skill-obs-skill"}),
+        )
         .await;
     assert!(result.success);
     assert!(
@@ -2355,7 +2391,10 @@ async fn test_s8_evaluate_draft_static_fail() {
     assert!(created.success);
 
     let result = executor
-        .execute("forge_evaluate", &serde_json::json!({"id": "skill-nohead-skill"}))
+        .execute(
+            "forge_evaluate",
+            &serde_json::json!({"id": "skill-nohead-skill"}),
+        )
         .await;
     assert!(result.success);
     assert!(
@@ -2363,7 +2402,11 @@ async fn test_s8_evaluate_draft_static_fail() {
         "content: {}",
         result.content
     );
-    assert!(result.content.contains("Stage 1: Static Validation\n- **Failed**"));
+    assert!(
+        result
+            .content
+            .contains("Stage 1: Static Validation\n- **Failed**")
+    );
 }
 
 /// forge_build_mcp argument validation: missing id, non-MCP artifact, and
@@ -2393,7 +2436,10 @@ async fn test_s8_build_mcp_validation_errors() {
         .await;
     assert!(created.success);
     let r2 = executor
-        .execute("forge_build_mcp", &serde_json::json!({"id": "skill-bm-skill"}))
+        .execute(
+            "forge_build_mcp",
+            &serde_json::json!({"id": "skill-bm-skill"}),
+        )
         .await;
     assert!(!r2.success);
     assert!(r2.content.contains("is not an MCP type"));
@@ -2478,12 +2524,22 @@ async fn test_s8_build_mcp_install_go_and_fallback() {
         )
         .await;
     assert!(inst.success, "content: {}", inst.content);
-    assert!(inst.content.contains("Command: go"), "content: {}", inst.content);
+    assert!(
+        inst.content.contains("Command: go"),
+        "content: {}",
+        inst.content
+    );
 
     // Remove the go entry so neither server.py nor main.go exists → the
     // generic python fallback fires.
-    std::fs::remove_file(dir.path().join("forge").join("mcp").join("instgo").join("main.go"))
-        .unwrap();
+    std::fs::remove_file(
+        dir.path()
+            .join("forge")
+            .join("mcp")
+            .join("instgo")
+            .join("main.go"),
+    )
+    .unwrap();
     let fallback = executor
         .execute(
             "forge_build_mcp",
@@ -2491,7 +2547,11 @@ async fn test_s8_build_mcp_install_go_and_fallback() {
         )
         .await;
     assert!(fallback.success, "content: {}", fallback.content);
-    assert!(fallback.content.contains("Command: python"), "content: {}", fallback.content);
+    assert!(
+        fallback.content.contains("Command: python"),
+        "content: {}",
+        fallback.content
+    );
 
     // Existing config without an mcpServers object → section is created.
     std::fs::write(
@@ -2511,7 +2571,11 @@ async fn test_s8_build_mcp_install_go_and_fallback() {
     )
     .unwrap();
     assert!(cfg["mcpServers"].is_object(), "cfg: {}", cfg);
-    assert!(cfg["mcpServers"]["forge-instgo"].is_object(), "cfg: {}", cfg);
+    assert!(
+        cfg["mcpServers"]["forge-instgo"].is_object(),
+        "cfg: {}",
+        cfg
+    );
 }
 
 /// forge_build_mcp install when config.mcp.json is a directory: the read
@@ -2574,27 +2638,43 @@ async fn test_s8_build_mcp_uninstall_variants() {
     // No config file at all (config dir may not exist either).
     let r1 = executor.execute("forge_build_mcp", &args).await;
     assert!(r1.success);
-    assert!(r1.content.contains("does not exist"), "content: {}", r1.content);
+    assert!(
+        r1.content.contains("does not exist"),
+        "content: {}",
+        r1.content
+    );
 
     // Config without mcpServers.
     std::fs::create_dir_all(config_path.parent().unwrap()).unwrap();
     std::fs::write(&config_path, r#"{"foo": 1}"#).unwrap();
     let r2 = executor.execute("forge_build_mcp", &args).await;
     assert!(r2.success);
-    assert!(r2.content.contains("no mcpServers section"), "content: {}", r2.content);
+    assert!(
+        r2.content.contains("no mcpServers section"),
+        "content: {}",
+        r2.content
+    );
 
     // mcpServers present but entry absent.
     std::fs::write(&config_path, r#"{"mcpServers": {}}"#).unwrap();
     let r3 = executor.execute("forge_build_mcp", &args).await;
     assert!(r3.success);
-    assert!(r3.content.contains("already uninstalled"), "content: {}", r3.content);
+    assert!(
+        r3.content.contains("already uninstalled"),
+        "content: {}",
+        r3.content
+    );
 
     // Config unreadable (directory).
     std::fs::remove_file(&config_path).unwrap();
     std::fs::create_dir(&config_path).unwrap();
     let r4 = executor.execute("forge_build_mcp", &args).await;
     assert!(!r4.success);
-    assert!(r4.content.contains("Failed to read MCP config"), "content: {}", r4.content);
+    assert!(
+        r4.content.contains("Failed to read MCP config"),
+        "content: {}",
+        r4.content
+    );
 }
 
 /// forge_share branches: no report found, report_path outside reflections,
@@ -2604,16 +2684,25 @@ async fn test_s8_build_mcp_uninstall_variants() {
 async fn test_s8_share_branches() {
     // Failing bridge forge.
     let dir_fail = tempfile::tempdir().unwrap();
-    let forge_fail = Arc::new(Forge::new(ForgeConfig::default(), dir_fail.path().to_path_buf()));
+    let forge_fail = Arc::new(Forge::new(
+        ForgeConfig::default(),
+        dir_fail.path().to_path_buf(),
+    ));
     forge_fail.set_bridge(Arc::new(S8ShareBridge {
         ok: false,
         node_id: "s8-fail".into(),
     }));
     let exec_fail = ForgeToolExecutor::new(forge_fail);
     // No reflections dir → find_latest_report returns None.
-    let r0 = exec_fail.execute("forge_share", &serde_json::json!({})).await;
+    let r0 = exec_fail
+        .execute("forge_share", &serde_json::json!({}))
+        .await;
     assert!(!r0.success);
-    assert!(r0.content.contains("No reflection report found"), "content: {}", r0.content);
+    assert!(
+        r0.content.contains("No reflection report found"),
+        "content: {}",
+        r0.content
+    );
 
     // Ok bridge forge with reports.
     let dir = tempfile::tempdir().unwrap();
@@ -2638,7 +2727,8 @@ async fn test_s8_share_branches() {
         .await;
     assert!(!rout.success);
     assert!(
-        rout.content.contains("must be within forge reflections directory"),
+        rout.content
+            .contains("must be within forge reflections directory"),
         "content: {}",
         rout.content
     );
@@ -2649,18 +2739,30 @@ async fn test_s8_share_branches() {
     std::fs::create_dir_all(reflections.join("remote")).unwrap();
     std::fs::write(reflections.join("r1.md"), b"# r1").unwrap();
     std::fs::write(reflections.join("remote").join("r2.md"), b"# r2").unwrap();
-    let rok = executor.execute("forge_share", &serde_json::json!({})).await;
+    let rok = executor
+        .execute("forge_share", &serde_json::json!({}))
+        .await;
     assert!(rok.success, "content: {}", rok.content);
-    assert!(rok.content.contains("shared with 2 peers"), "content: {}", rok.content);
+    assert!(
+        rok.content.contains("shared with 2 peers"),
+        "content: {}",
+        rok.content
+    );
 
     // Bridge failure → error surfaces.
     forge.set_bridge(Arc::new(S8ShareBridge {
         ok: false,
         node_id: "s8-fail2".into(),
     }));
-    let rerr = executor.execute("forge_share", &serde_json::json!({})).await;
+    let rerr = executor
+        .execute("forge_share", &serde_json::json!({}))
+        .await;
     assert!(!rerr.success);
-    assert!(rerr.content.contains("Share failed"), "content: {}", rerr.content);
+    assert!(
+        rerr.content.contains("Share failed"),
+        "content: {}",
+        rerr.content
+    );
 }
 
 /// forge_learning_status with an engine holding a completed cycle and Active
@@ -2690,7 +2792,11 @@ async fn test_s8_learning_status_cycle_and_artifacts() {
     assert_eq!(cycle.status, nemesis_types::forge::CycleStatus::Completed);
 
     let monitor = Arc::new(DeploymentMonitor::new(config, engine_registry));
-    forge.init_learning(engine, monitor, CycleStore::from_base(dir.path().join("cycles2")));
+    forge.init_learning(
+        engine,
+        monitor,
+        CycleStore::from_base(dir.path().join("cycles2")),
+    );
 
     let mut used = s8_ft_artifact("used-skill", ArtifactKind::Skill);
     used.status = nemesis_types::forge::ArtifactStatus::Active;
@@ -2709,11 +2815,31 @@ async fn test_s8_learning_status_cycle_and_artifacts() {
         .execute("forge_learning_status", &serde_json::json!({}))
         .await;
     assert!(result.success, "content: {}", result.content);
-    assert!(result.content.contains("### Latest Learning Cycle"), "content: {}", result.content);
-    assert!(result.content.contains("- Completed:"), "content: {}", result.content);
-    assert!(result.content.contains("### Active Learning Artifacts (2)"), "content: {}", result.content);
-    assert!(result.content.contains("75%"), "content: {}", result.content);
-    assert!(result.content.contains("N/A"), "content: {}", result.content);
+    assert!(
+        result.content.contains("### Latest Learning Cycle"),
+        "content: {}",
+        result.content
+    );
+    assert!(
+        result.content.contains("- Completed:"),
+        "content: {}",
+        result.content
+    );
+    assert!(
+        result.content.contains("### Active Learning Artifacts (2)"),
+        "content: {}",
+        result.content
+    );
+    assert!(
+        result.content.contains("75%"),
+        "content: {}",
+        result.content
+    );
+    assert!(
+        result.content.contains("N/A"),
+        "content: {}",
+        result.content
+    );
 }
 
 /// resolve_artifact_path: Mcp artifact with neither entry file falls back to
@@ -2772,7 +2898,9 @@ async fn test_s8_update_non_active_mcp_skips_reregister() {
     let mut config = ForgeConfig::default();
     config.validation.auto_validate = false;
     let mut forge = Forge::new(config, dir.path().to_path_buf());
-    forge.init_mcp_installer(crate::mcp_installer::MCPInstaller::new(dir.path().to_path_buf()));
+    forge.init_mcp_installer(crate::mcp_installer::MCPInstaller::new(
+        dir.path().to_path_buf(),
+    ));
     let forge = Arc::new(forge);
     let executor = ForgeToolExecutor::new(forge);
 
@@ -2829,7 +2957,11 @@ async fn test_s8_learning_status_no_cycle() {
     );
     // No run_cycle call → latest cycle stays None.
     let monitor = Arc::new(DeploymentMonitor::new(config, engine_registry));
-    forge.init_learning(engine, monitor, CycleStore::from_base(dir.path().join("cycles2")));
+    forge.init_learning(
+        engine,
+        monitor,
+        CycleStore::from_base(dir.path().join("cycles2")),
+    );
 
     let executor = ForgeToolExecutor::new(Arc::new(forge));
     let result = executor
@@ -2858,9 +2990,15 @@ async fn test_s8_share_subdir_non_md_ignored() {
     let reflections = dir.path().join("forge").join("reflections");
     std::fs::create_dir_all(reflections.join("remote")).unwrap();
     std::fs::write(reflections.join("remote").join("r2.md"), b"# r2").unwrap();
-    std::fs::write(reflections.join("remote").join("notes.txt"), b"not a report").unwrap();
+    std::fs::write(
+        reflections.join("remote").join("notes.txt"),
+        b"not a report",
+    )
+    .unwrap();
 
-    let result = executor.execute("forge_share", &serde_json::json!({})).await;
+    let result = executor
+        .execute("forge_share", &serde_json::json!({}))
+        .await;
     assert!(result.success, "content: {}", result.content);
     assert!(
         result.content.contains("shared with 2 peers"),
@@ -2883,7 +3021,9 @@ async fn test_s8_share_no_reflections_dir() {
     // Ensure no reflections dir was created by construction.
     assert!(!dir.path().join("forge").join("reflections").exists());
 
-    let result = executor.execute("forge_share", &serde_json::json!({})).await;
+    let result = executor
+        .execute("forge_share", &serde_json::json!({}))
+        .await;
     assert!(!result.success);
     assert!(
         result.content.contains("No reflection report found"),

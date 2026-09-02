@@ -550,7 +550,8 @@ fn test_embed_text_delegates_and_degrades() {
         storage_path: dir.path().join("v2.jsonl").to_string_lossy().to_string(),
     };
     let failing: crate::vector::EmbeddingFunc = Box::new(|_: &str| Err("backend down".into()));
-    mgr.init_vector_store_with_embed(failing, store_cfg2).unwrap();
+    mgr.init_vector_store_with_embed(failing, store_cfg2)
+        .unwrap();
     assert!(mgr.embed_text("x").is_none());
 }
 

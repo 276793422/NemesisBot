@@ -1569,9 +1569,9 @@ async fn test_cron_create_continue_session_uses_ext() {
     use crate::context::RequestContext;
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("cron.json").to_string_lossy().to_string();
-    let svc = Arc::new(std::sync::Mutex::new(nemesis_cron::service::CronService::new(
-        &path,
-    )));
+    let svc = Arc::new(std::sync::Mutex::new(
+        nemesis_cron::service::CronService::new(&path),
+    ));
     let t = CronTool::new(Arc::clone(&svc));
 
     let ctx = RequestContext {
@@ -1627,9 +1627,9 @@ async fn test_cron_create_continue_session_max_rounds() {
     use crate::context::RequestContext;
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("cron.json").to_string_lossy().to_string();
-    let svc = Arc::new(std::sync::Mutex::new(nemesis_cron::service::CronService::new(
-        &path,
-    )));
+    let svc = Arc::new(std::sync::Mutex::new(
+        nemesis_cron::service::CronService::new(&path),
+    ));
     let t = CronTool::new(Arc::clone(&svc));
 
     let ctx = RequestContext {
@@ -1665,7 +1665,11 @@ async fn test_cron_create_continue_session_max_rounds() {
     .unwrap();
 
     let jobs = svc.lock().unwrap().list_jobs(true);
-    let by_name = |n: &str| jobs.iter().find(|j| j.name == n).unwrap_or_else(|| panic!("{n}"));
+    let by_name = |n: &str| {
+        jobs.iter()
+            .find(|j| j.name == n)
+            .unwrap_or_else(|| panic!("{n}"))
+    };
     assert_eq!(by_name("b5").payload.max_rounds, Some(5), "explicit tier");
     assert_eq!(
         by_name("bdef").payload.max_rounds,

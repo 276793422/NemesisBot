@@ -267,7 +267,11 @@ async fn learning_toggle_fails_when_forge_config_is_a_directory() {
     )
     .await
     .unwrap_err();
-    assert!(err.contains("failed to read config.forge.json"), "got: {}", err);
+    assert!(
+        err.contains("failed to read config.forge.json"),
+        "got: {}",
+        err
+    );
 }
 
 #[tokio::test]
@@ -284,7 +288,11 @@ async fn learning_toggle_fails_when_forge_config_unparseable() {
     )
     .await
     .unwrap_err();
-    assert!(err.contains("failed to parse config.forge.json"), "got: {}", err);
+    assert!(
+        err.contains("failed to parse config.forge.json"),
+        "got: {}",
+        err
+    );
 }
 
 // -----------------------------------------------------------------------

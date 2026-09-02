@@ -2649,13 +2649,7 @@ fn extra_batch_operation_individual_denied_by_rule_while_summary_approved() {
             comment: "deny secret reads".to_string(),
         }],
     );
-    let mw = SecurityMiddleware::with_preset(
-        auditor,
-        "u",
-        "s",
-        "/ws",
-        PermissionPreset::Elevated,
-    );
+    let mw = SecurityMiddleware::with_preset(auditor, "u", "s", "/ws", PermissionPreset::Elevated);
     let batch = BatchOperationRequest {
         id: "batch-indiv-rule".to_string(),
         operations: vec![
@@ -2766,7 +2760,10 @@ async fn extra_network_download_url_response_too_large() {
     let mw = make_middleware_with_preset(PermissionPreset::Standard, "allow");
     let w = SecureNetworkWrapper::new(&mw);
     let err = w.download_url(&base, 10).await.unwrap_err();
-    assert!(err.contains("response too large"), "unexpected error: {err}");
+    assert!(
+        err.contains("response too large"),
+        "unexpected error: {err}"
+    );
     assert!(err.contains("limit: 10"), "unexpected error: {err}");
 }
 
@@ -2807,7 +2804,10 @@ async fn extra_network_post_connection_refused() {
     let mw = make_middleware_with_preset(PermissionPreset::Unrestricted, "allow");
     let w = SecureNetworkWrapper::new(&mw);
     let err = w.post(&base, "payload", "text/plain").await.unwrap_err();
-    assert!(err.contains("POST request failed"), "unexpected error: {err}");
+    assert!(
+        err.contains("POST request failed"),
+        "unexpected error: {err}"
+    );
 }
 
 #[tokio::test]

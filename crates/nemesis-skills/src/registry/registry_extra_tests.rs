@@ -863,23 +863,27 @@ async fn test_skillregistry_delegation_github() {
     // skills.json index (search + get_skill_meta + browse all read it).
     Mock::given(method("GET"))
         .and(path("/276793422/nemesisbot-skills/main/skills.json"))
-        .respond_with(ResponseTemplate::new(200).set_body_string(
-            r#"[{"name":"pdf","description":"converts documents"}]"#,
-        ))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .set_body_string(r#"[{"name":"pdf","description":"converts documents"}]"#),
+        )
         .mount(&server)
         .await;
     // Raw SKILL.md (get_skill_content + tree download of install).
     Mock::given(method("GET"))
-        .and(path("/276793422/nemesisbot-skills/main/skills/pdf/SKILL.md"))
+        .and(path(
+            "/276793422/nemesisbot-skills/main/skills/pdf/SKILL.md",
+        ))
         .respond_with(ResponseTemplate::new(200).set_body_string("# pdf skill"))
         .mount(&server)
         .await;
     // Tree API (install dir download).
     Mock::given(method("GET"))
         .and(path("/repos/276793422/nemesisbot-skills/git/trees/main"))
-        .respond_with(ResponseTemplate::new(200).set_body_string(
-            r#"{"tree":[{"path":"skills/pdf/SKILL.md","type":"blob"}]}"#,
-        ))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .set_body_string(r#"{"tree":[{"path":"skills/pdf/SKILL.md","type":"blob"}]}"#),
+        )
         .mount(&server)
         .await;
 
@@ -935,9 +939,10 @@ async fn test_skillregistry_delegation_clawhub() {
     });
     Mock::given(method("POST"))
         .and(path("/api/query"))
-        .respond_with(ResponseTemplate::new(200).set_body_json(
-            serde_json::json!({"status": "success", "value": value}),
-        ))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .set_body_json(serde_json::json!({"status": "success", "value": value})),
+        )
         .mount(&server)
         .await;
 

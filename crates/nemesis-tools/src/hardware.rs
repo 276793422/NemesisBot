@@ -539,17 +539,20 @@ impl SPITool {
 
     fn validate_spi_params(&self, args: &serde_json::Value) -> Result<(), ToolResult> {
         if let Some(speed) = args["speed"].as_u64()
-            && (speed == 0 || speed > 125_000_000) {
-                return Err(ToolResult::error("speed must be between 1 Hz and 125 MHz"));
-            }
+            && (speed == 0 || speed > 125_000_000)
+        {
+            return Err(ToolResult::error("speed must be between 1 Hz and 125 MHz"));
+        }
         if let Some(mode) = args["mode"].as_u64()
-            && mode > 3 {
-                return Err(ToolResult::error("mode must be 0-3"));
-            }
+            && mode > 3
+        {
+            return Err(ToolResult::error("mode must be 0-3"));
+        }
         if let Some(bits) = args["bits"].as_u64()
-            && (bits == 0 || bits > 32) {
-                return Err(ToolResult::error("bits must be between 1 and 32"));
-            }
+            && (bits == 0 || bits > 32)
+        {
+            return Err(ToolResult::error("bits must be between 1 and 32"));
+        }
         Ok(())
     }
 }
@@ -631,8 +634,7 @@ mod linux_impl {
     /// Probe a single I2C address using SMBus.
     fn smbus_probe(fd: &std::fs::File, addr: usize, has_quick: bool) -> bool {
         // EEPROM ranges: use read byte (quick write can corrupt AT24RF08)
-        let use_read_byte =
-            (0x30..=0x37).contains(&addr) || (0x50..=0x5F).contains(&addr);
+        let use_read_byte = (0x30..=0x37).contains(&addr) || (0x50..=0x5F).contains(&addr);
 
         if !use_read_byte && has_quick {
             // SMBus Quick Write: safest probe, no data transferred

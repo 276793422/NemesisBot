@@ -44,7 +44,10 @@ async fn import_without_config_json_is_clean_noop() {
         run(CredentialsAction::Import, false)
             .await
             .expect("noop 路径 Ok");
-        assert!(!home.join("config.json").exists(), "不得反向创建 config.json");
+        assert!(
+            !home.join("config.json").exists(),
+            "不得反向创建 config.json"
+        );
         assert!(
             !home.join("workspace/config/credentials.yaml").exists(),
             "noop 不写 credentials.yaml"
@@ -68,7 +71,9 @@ async fn import_migrates_plaintext_key_and_rewrites_config() {
         )
         .unwrap();
 
-        run(CredentialsAction::Import, false).await.expect("import ok");
+        run(CredentialsAction::Import, false)
+            .await
+            .expect("import ok");
 
         // credentials.yaml 落盘且含明文 key。
         let creds_path = nemesis_config::credentials::credentials_path_for_home(&home);
@@ -77,10 +82,9 @@ async fn import_migrates_plaintext_key_and_rewrites_config() {
         assert!(creds.contains("m1"), "alias 来自 model_name");
 
         // config.json 里明文改写成 yaml: 引用；已是引用/空的保持原样。
-        let cfg: serde_json::Value = serde_json::from_str(
-            &std::fs::read_to_string(home.join("config.json")).unwrap(),
-        )
-        .unwrap();
+        let cfg: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(home.join("config.json")).unwrap())
+                .unwrap();
         assert_eq!(cfg["model_list"][0]["api_key"], "yaml:m1");
         assert_eq!(cfg["model_list"][1]["api_key"], "yaml:existing");
         assert_eq!(cfg["model_list"][2]["api_key"], "");
@@ -107,22 +111,29 @@ async fn import_is_idempotent_on_second_run() {
         )
         .unwrap();
 
-        run(CredentialsAction::Import, false).await.expect("first ok");
+        run(CredentialsAction::Import, false)
+            .await
+            .expect("first ok");
         let cfg_after_first = std::fs::read_to_string(home.join("config.json")).unwrap();
-        let creds_after_first =
-            std::fs::read_to_string(nemesis_config::credentials::credentials_path_for_home(&home))
-                .unwrap();
+        let creds_after_first = std::fs::read_to_string(
+            nemesis_config::credentials::credentials_path_for_home(&home),
+        )
+        .unwrap();
 
         // 第二遍：全部已是引用 → noop，两文件字节不变。
-        run(CredentialsAction::Import, false).await.expect("second ok");
+        run(CredentialsAction::Import, false)
+            .await
+            .expect("second ok");
         assert_eq!(
             std::fs::read_to_string(home.join("config.json")).unwrap(),
             cfg_after_first,
             "第二遍不得再改 config"
         );
         assert_eq!(
-            std::fs::read_to_string(nemesis_config::credentials::credentials_path_for_home(&home))
-                .unwrap(),
+            std::fs::read_to_string(nemesis_config::credentials::credentials_path_for_home(
+                &home
+            ))
+            .unwrap(),
             creds_after_first,
             "第二遍不得改写 credentials"
         );
@@ -153,15 +164,18 @@ async fn import_reuses_existing_alias_with_same_value() {
         // 预置同值 alias → run_import 走 reused 分支（不覆盖文件内容）。
         std::fs::write(&creds_path, "keys:\n  m1: sk-shared\n").unwrap();
 
-        run(CredentialsAction::Import, false).await.expect("import ok");
+        run(CredentialsAction::Import, false)
+            .await
+            .expect("import ok");
 
-        let cfg: serde_json::Value = serde_json::from_str(
-            &std::fs::read_to_string(home.join("config.json")).unwrap(),
-        )
-        .unwrap();
+        let cfg: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(home.join("config.json")).unwrap())
+                .unwrap();
         assert_eq!(cfg["model_list"][0]["api_key"], "yaml:m1");
         assert!(
-            std::fs::read_to_string(&creds_path).unwrap().contains("sk-shared"),
+            std::fs::read_to_string(&creds_path)
+                .unwrap()
+                .contains("sk-shared"),
             "同值复用不改动 credentials"
         );
     })
@@ -185,12 +199,13 @@ async fn import_conflicting_alias_gets_suffixed_and_warns() {
         // 预置同 alias 异值 → 新 key 落到 m1__2，原值不被覆盖。
         std::fs::write(&creds_path, "keys:\n  m1: other-value\n").unwrap();
 
-        run(CredentialsAction::Import, false).await.expect("import ok");
+        run(CredentialsAction::Import, false)
+            .await
+            .expect("import ok");
 
-        let cfg: serde_json::Value = serde_json::from_str(
-            &std::fs::read_to_string(home.join("config.json")).unwrap(),
-        )
-        .unwrap();
+        let cfg: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(home.join("config.json")).unwrap())
+                .unwrap();
         assert_eq!(
             cfg["model_list"][0]["api_key"], "yaml:m1__2",
             "冲突时改用 __2 后缀 alias"

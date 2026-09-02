@@ -168,7 +168,9 @@ fn request_detail_builds_entry_with_iterations() {
     let dir = tempfile::tempdir().unwrap();
     make_request_dir(dir.path(), "2026-08-25_07-00-00_zzzz", "model-z", 2);
     // 多塞一轮 envelope，凑成 iterations 列表。
-    let d = dir.path().join("logs/request_logs/2026-08-25_07-00-00_zzzz");
+    let d = dir
+        .path()
+        .join("logs/request_logs/2026-08-25_07-00-00_zzzz");
     std::fs::write(
         d.join("03.AI.Request.raw.json"),
         serde_json::json!({ "round": 2, "body": { "model": "model-z" } }).to_string(),
@@ -183,7 +185,10 @@ fn request_detail_builds_entry_with_iterations() {
         .unwrap()
         .unwrap();
     assert_eq!(out["model"], "model-z");
-    assert!(out.get("iterations").is_some(), "detail 必须带 iterations 字段");
+    assert!(
+        out.get("iterations").is_some(),
+        "detail 必须带 iterations 字段"
+    );
 }
 
 // -----------------------------------------------------------------------
@@ -193,7 +198,11 @@ fn request_detail_builds_entry_with_iterations() {
 fn make_cluster_task_dir(ws: &std::path::Path, dev: &str, name: &str) {
     let dir = ws.join("logs/cluster_logs").join(dev).join(name);
     std::fs::create_dir_all(&dir).unwrap();
-    std::fs::write(dir.join("00.request.md"), "# Peer Chat\n\nhello from peer\n").unwrap();
+    std::fs::write(
+        dir.join("00.request.md"),
+        "# Peer Chat\n\nhello from peer\n",
+    )
+    .unwrap();
 }
 
 #[tokio::test]
@@ -366,12 +375,18 @@ async fn session_list_bm25_query_filters_and_ranks() {
     make_session_log(
         dir.path(),
         "web_alpha",
-        &[("user", "tell me about rust async runtime"), ("assistant", "tokio")],
+        &[
+            ("user", "tell me about rust async runtime"),
+            ("assistant", "tokio"),
+        ],
     );
     make_session_log(
         dir.path(),
         "web_beta",
-        &[("user", "what is the weather today"), ("assistant", "sunny")],
+        &[
+            ("user", "what is the weather today"),
+            ("assistant", "sunny"),
+        ],
     );
 
     // 无 query：两个会话都在。

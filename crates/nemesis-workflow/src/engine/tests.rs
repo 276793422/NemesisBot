@@ -1136,10 +1136,11 @@ async fn test_trigger_source_preserved_through_start_async() {
             && matches!(
                 e.state,
                 ExecutionState::Completed | ExecutionState::Failed | ExecutionState::Cancelled
-            ) {
-                final_exec = Some(e);
-                break;
-            }
+            )
+        {
+            final_exec = Some(e);
+            break;
+        }
         tokio::time::sleep(Duration::from_millis(10)).await;
     }
     let final_exec = final_exec.expect("execution should complete within 2s");
@@ -2477,10 +2478,7 @@ async fn u10_guard_denies_out_of_root_persist_workflow() {
     engine.set_workflow_defs_dir(out_root.clone());
     engine.set_execution_world(std::sync::Arc::new(NarrowWorld { allowed: in_root }));
 
-    let wf = make_workflow(
-        "escape_attempt",
-        vec![make_node("n1", "delay", vec![])],
-    );
+    let wf = make_workflow("escape_attempt", vec![make_node("n1", "delay", vec![])]);
     let err = engine.persist_workflow(wf).expect_err("must be denied");
     assert!(
         err.to_string().contains("[U10 execution-world guard]"),
@@ -2498,7 +2496,9 @@ async fn u10_guard_allows_in_root_persist_workflow() {
     let root = temp_root("allowed");
     let engine = WorkflowEngine::new();
     engine.set_workflow_defs_dir(root.clone());
-    engine.set_execution_world(std::sync::Arc::new(NarrowWorld { allowed: root.clone() }));
+    engine.set_execution_world(std::sync::Arc::new(NarrowWorld {
+        allowed: root.clone(),
+    }));
 
     let wf = make_workflow("fine_wf", vec![make_node("n1", "delay", vec![])]);
     engine
@@ -2513,7 +2513,9 @@ async fn u10_guard_allows_in_root_persist_workflow() {
 async fn u10_guard_denies_jsonl_name_traversal() {
     let root = temp_root("executions");
     let engine = WorkflowEngine::with_persistence(root.clone());
-    engine.set_execution_world(std::sync::Arc::new(NarrowWorld { allowed: root.clone() }));
+    engine.set_execution_world(std::sync::Arc::new(NarrowWorld {
+        allowed: root.clone(),
+    }));
 
     // 同 persist_execution 的拼接逻辑：name 未 sanitize，`..` 能拼出逃逸路径。
     let escape_path = root.join("../escape_1.jsonl");
@@ -2737,12 +2739,13 @@ impl nemesis_providers::router::LLMProvider for W4aProvider {
         _tools: &[nemesis_providers::types::ToolDefinition],
         _model: &str,
         _options: &nemesis_providers::types::ChatOptions,
-    ) -> Result<
-        nemesis_providers::types::LLMResponse,
-        nemesis_providers::failover::FailoverError,
-    > {
+    ) -> Result<nemesis_providers::types::LLMResponse, nemesis_providers::failover::FailoverError>
+    {
         Err(nemesis_providers::failover::FailoverError::from_status(
-            "w4a", "w4a", 500, "unavailable",
+            "w4a",
+            "w4a",
+            500,
+            "unavailable",
         ))
     }
     fn default_model(&self) -> &str {
@@ -2858,13 +2861,17 @@ async fn w4a_accessors_expose_wired_internals() {
     let _ = engine.call_stack();
 
     assert!(engine.checkpoint_store().is_none());
-    let store: std::sync::Arc<dyn CheckpointStore> = std::sync::Arc::new(InMemoryCheckpointStore::new());
+    let store: std::sync::Arc<dyn CheckpointStore> =
+        std::sync::Arc::new(InMemoryCheckpointStore::new());
     engine.set_checkpoint_store(store);
     assert!(engine.checkpoint_store().is_some());
 
     assert!(engine.workflow_defs_dir().is_none());
     engine.set_workflow_defs_dir(PathBuf::from("/tmp/w4a_defs"));
-    assert_eq!(engine.workflow_defs_dir(), Some(PathBuf::from("/tmp/w4a_defs")));
+    assert_eq!(
+        engine.workflow_defs_dir(),
+        Some(PathBuf::from("/tmp/w4a_defs"))
+    );
 
     assert!(!engine.is_closed().await);
 }
@@ -2903,9 +2910,15 @@ async fn w4a_register_node_executor_custom_type_runs() {
         ))
         .unwrap();
 
-    let exec = engine.run("w4a_custom_wf", HashMap::new(), None).await.unwrap();
+    let exec = engine
+        .run("w4a_custom_wf", HashMap::new(), None)
+        .await
+        .unwrap();
     assert_eq!(exec.state, ExecutionState::Completed);
-    assert_eq!(exec.node_results["n1"].output["custom"], serde_json::json!(true));
+    assert_eq!(
+        exec.node_results["n1"].output["custom"],
+        serde_json::json!(true)
+    );
 }
 
 /// set_usage_store: wires the slot without panicking (engine.rs ~672-680).
@@ -2931,7 +2944,11 @@ async fn w4a_load_workflows_from_dir_error_paths() {
     std::fs::write(&file_path, "x").unwrap();
     let engine = WorkflowEngine::new();
     let err = engine.load_workflows_from_dir(&file_path).unwrap_err();
-    assert!(matches!(err, EngineError::PersistenceError(_)), "got {:?}", err);
+    assert!(
+        matches!(err, EngineError::PersistenceError(_)),
+        "got {:?}",
+        err
+    );
 
     // Garbage yaml parses-fail -> warn + skipped, other files still load.
     let defs = root.join("defs");
@@ -2951,7 +2968,11 @@ async fn w4a_load_workflows_from_dir_error_paths() {
     .unwrap();
     let engine3 = WorkflowEngine::new();
     let count3 = engine3.load_workflows_from_dir(&defs).unwrap();
-    assert_eq!(count3, 1, "invalid workflow must be skipped, got {}", count3);
+    assert_eq!(
+        count3, 1,
+        "invalid workflow must be skipped, got {}",
+        count3
+    );
     assert!(engine3.get_workflow("no_nodes_wf").is_none());
 }
 
@@ -2964,12 +2985,20 @@ async fn w4a_persist_workflow_error_paths() {
     // Invalid workflow (no nodes) is rejected before touching the disk.
     let invalid = make_workflow("w4a_bad", vec![]);
     let err = engine.persist_workflow(invalid).unwrap_err();
-    assert!(matches!(err, EngineError::ExecutionFailed(_)), "got {:?}", err);
+    assert!(
+        matches!(err, EngineError::ExecutionFailed(_)),
+        "got {:?}",
+        err
+    );
 
     // Valid workflow but no defs dir configured.
     let valid = make_workflow("w4a_ok", vec![make_node("n1", "delay", vec![])]);
     let err2 = engine.persist_workflow(valid).unwrap_err();
-    assert!(matches!(err2, EngineError::PersistenceError(_)), "got {:?}", err2);
+    assert!(
+        matches!(err2, EngineError::PersistenceError(_)),
+        "got {:?}",
+        err2
+    );
 }
 
 /// delete_workflow_file: .yaml removed through the guard; .yml/.json
@@ -2982,7 +3011,10 @@ async fn w4a_delete_workflow_file_variants() {
 
     // .yaml via persist_workflow.
     engine
-        .persist_workflow(make_workflow("del_yaml", vec![make_node("n1", "delay", vec![])]))
+        .persist_workflow(make_workflow(
+            "del_yaml",
+            vec![make_node("n1", "delay", vec![])],
+        ))
         .unwrap();
     assert!(root.join("del_yaml.yaml").exists());
 
@@ -3019,7 +3051,10 @@ fn w4a_validate_workflow_valid_and_invalid() {
 async fn w4a_chat_index_roundtrip() {
     let engine = WorkflowEngine::new();
     engine
-        .register_workflow(make_workflow("WfX_Chat", vec![make_node("n1", "delay", vec![])]))
+        .register_workflow(make_workflow(
+            "WfX_Chat",
+            vec![make_node("n1", "delay", vec![])],
+        ))
         .unwrap();
 
     let idx = WorkflowEngine::chat_index("WfX_Chat");
@@ -3027,7 +3062,10 @@ async fn w4a_chat_index_roundtrip() {
     assert!(idx.chars().all(|c| c.is_ascii_hexdigit()));
 
     // Exact and case-flipped lookups both resolve.
-    assert_eq!(engine.workflow_by_chat_index(&idx).as_deref(), Some("WfX_Chat"));
+    assert_eq!(
+        engine.workflow_by_chat_index(&idx).as_deref(),
+        Some("WfX_Chat")
+    );
     let upper = idx.to_uppercase();
     assert_eq!(
         engine.workflow_by_chat_index(&upper).as_deref(),
@@ -3108,11 +3146,7 @@ async fn w4a_restore_list_error_propagates() {
         ) -> Result<Vec<crate::checkpoint::CheckpointMeta>, crate::checkpoint::StoreError> {
             Ok(Vec::new())
         }
-        async fn delete(
-            &self,
-            _e: &str,
-            _c: &str,
-        ) -> Result<(), crate::checkpoint::StoreError> {
+        async fn delete(&self, _e: &str, _c: &str) -> Result<(), crate::checkpoint::StoreError> {
             Ok(())
         }
         async fn list_executions(&self) -> Result<Vec<String>, crate::checkpoint::StoreError> {
@@ -3123,7 +3157,11 @@ async fn w4a_restore_list_error_propagates() {
     let engine = WorkflowEngine::new();
     engine.set_checkpoint_store(std::sync::Arc::new(ListErrStore));
     let err = engine.restore_incomplete_executions().await.unwrap_err();
-    assert!(matches!(err, EngineError::PersistenceError(_)), "got {:?}", err);
+    assert!(
+        matches!(err, EngineError::PersistenceError(_)),
+        "got {:?}",
+        err
+    );
 }
 
 /// restore_incomplete_executions: latest error -> warn + continue -> Ok(0)
@@ -3154,7 +3192,10 @@ async fn w4a_restore_latest_none_continues() {
 async fn w4a_restore_skips_mismatch_terminal_and_all_completed() {
     let wf = make_workflow(
         "restore_skip_wf",
-        vec![make_node("n1", "delay", vec![]), make_node("n2", "delay", vec!["n1"])],
+        vec![
+            make_node("n1", "delay", vec![]),
+            make_node("n2", "delay", vec!["n1"]),
+        ],
     );
 
     // Hash mismatch: registered workflow differs from checkpoint hash.
@@ -3199,7 +3240,10 @@ async fn w4a_restore_waiting_execution() {
     engine.set_checkpoint_store(std::sync::Arc::new(ScriptedStore::with_latest(cp)));
 
     assert_eq!(engine.restore_incomplete_executions().await.unwrap(), 1);
-    let exec = engine.get_execution("exec-waiting").await.expect("restored");
+    let exec = engine
+        .get_execution("exec-waiting")
+        .await
+        .expect("restored");
     assert_eq!(exec.state, ExecutionState::Waiting);
     assert!(exec.ended_at.is_none());
     assert!(matches!(exec.trigger_source, Some(TriggerSource::Cli)));
@@ -3213,7 +3257,10 @@ async fn w4a_restore_waiting_execution() {
 async fn w4a_restore_midflight_running_execution() {
     let wf = make_workflow(
         "restore_run_wf",
-        vec![make_node("n1", "delay", vec![]), make_node("n2", "delay", vec!["n1"])],
+        vec![
+            make_node("n1", "delay", vec![]),
+            make_node("n2", "delay", vec!["n1"]),
+        ],
     );
     let cp = scripted_checkpoint(&wf, "exec-running", None, &["n1"], false);
     let engine = WorkflowEngine::new();
@@ -3221,7 +3268,10 @@ async fn w4a_restore_midflight_running_execution() {
     engine.set_checkpoint_store(std::sync::Arc::new(ScriptedStore::with_latest(cp)));
 
     assert_eq!(engine.restore_incomplete_executions().await.unwrap(), 1);
-    let exec = engine.get_execution("exec-running").await.expect("restored");
+    let exec = engine
+        .get_execution("exec-running")
+        .await
+        .expect("restored");
     assert_eq!(exec.state, ExecutionState::Running);
     assert!(exec.ended_at.is_some());
 }
@@ -3238,10 +3288,16 @@ async fn w4a_checkpoint_save_failure_warns_but_completes() {
     // Two levels so both the per-level hook and the terminal save fail.
     let wf = make_workflow(
         "save_fail_wf",
-        vec![make_node("n1", "delay", vec![]), make_node("n2", "delay", vec!["n1"])],
+        vec![
+            make_node("n1", "delay", vec![]),
+            make_node("n2", "delay", vec!["n1"]),
+        ],
     );
     engine.register_workflow(wf).unwrap();
-    let exec = engine.run("save_fail_wf", HashMap::new(), None).await.unwrap();
+    let exec = engine
+        .run("save_fail_wf", HashMap::new(), None)
+        .await
+        .unwrap();
     assert_eq!(exec.state, ExecutionState::Completed);
 }
 
@@ -3250,7 +3306,10 @@ async fn w4a_checkpoint_save_failure_warns_but_completes() {
 async fn w4a_run_async_on_closed_engine_rejected() {
     let engine = WorkflowEngine::new_arc();
     engine
-        .register_workflow(make_workflow("closed_wf", vec![make_node("n1", "delay", vec![])]))
+        .register_workflow(make_workflow(
+            "closed_wf",
+            vec![make_node("n1", "delay", vec![])],
+        ))
         .unwrap();
     let exec = engine.run("closed_wf", HashMap::new(), None).await.unwrap();
 
@@ -3266,7 +3325,8 @@ async fn w4a_run_async_on_closed_engine_rejected() {
 #[tokio::test]
 async fn w4a_run_workflow_with_variables() {
     let mut wf = make_workflow("vars_wf", vec![make_node("n1", "delay", vec![])]);
-    wf.variables.insert("greeting".to_string(), "hello".to_string());
+    wf.variables
+        .insert("greeting".to_string(), "hello".to_string());
     let engine = WorkflowEngine::new();
     engine.register_workflow(wf).unwrap();
 
@@ -3288,13 +3348,22 @@ async fn w4a_start_execution_failing_executor_marks_failed() {
         ))
         .unwrap();
 
-    let exec = engine.start_execution("boom_wf", HashMap::new()).await.unwrap();
+    let exec = engine
+        .start_execution("boom_wf", HashMap::new())
+        .await
+        .unwrap();
     assert_eq!(exec.state, ExecutionState::Failed);
     // Note: the deprecated inline path records the failure only on the node
     // result; execution.error stays None here (unlike the scheduler path).
     assert_eq!(exec.error, None);
     assert_eq!(exec.node_results["n1"].state, ExecutionState::Failed);
-    assert!(exec.node_results["n1"].error.as_deref().unwrap_or("").contains("boom"));
+    assert!(
+        exec.node_results["n1"]
+            .error
+            .as_deref()
+            .unwrap_or("")
+            .contains("boom")
+    );
     assert!(exec.ended_at.is_some());
 }
 
@@ -3333,7 +3402,10 @@ async fn w4a_insert_waiting_execution(
 async fn w4a_resume_without_waiting_node_errors() {
     let engine = WorkflowEngine::new();
     engine
-        .register_workflow(make_workflow("no_wait_wf", vec![make_node("n1", "delay", vec![])]))
+        .register_workflow(make_workflow(
+            "no_wait_wf",
+            vec![make_node("n1", "delay", vec![])],
+        ))
         .unwrap();
 
     // Execution claims Waiting but holds only a Completed node result.
@@ -3381,13 +3453,8 @@ async fn w4a_resume_approved_review_with_drift_warn_completes() {
         ))
         .unwrap();
 
-    let id = w4a_insert_waiting_execution(
-        &engine,
-        "drift_wf",
-        "n1",
-        Some("stale-hash-123".into()),
-    )
-    .await;
+    let id = w4a_insert_waiting_execution(&engine, "drift_wf", "n1", Some("stale-hash-123".into()))
+        .await;
     let exec = engine
         .resume_execution(
             &id,
@@ -3446,7 +3513,10 @@ async fn w4a_resume_second_human_review_stays_waiting() {
         ))
         .unwrap();
 
-    let exec = engine.run("double_review_wf", HashMap::new(), None).await.unwrap();
+    let exec = engine
+        .run("double_review_wf", HashMap::new(), None)
+        .await
+        .unwrap();
     assert_eq!(exec.state, ExecutionState::Waiting);
     assert_eq!(exec.node_results["n1"].state, ExecutionState::Waiting);
     assert_eq!(exec.node_results["n2"].state, ExecutionState::Waiting);
@@ -3461,7 +3531,11 @@ async fn w4a_resume_second_human_review_stays_waiting() {
     // Exactly one review node re-pauses the execution. Which one depends on
     // HashMap iteration order inside resume_execution's waiting-node search,
     // so assert the invariant, not the specific node.
-    assert_eq!(resumed.state, ExecutionState::Waiting, "second review pauses again");
+    assert_eq!(
+        resumed.state,
+        ExecutionState::Waiting,
+        "second review pauses again"
+    );
     assert!(resumed.ended_at.is_none());
     let waiting: Vec<&String> = resumed
         .node_results
@@ -3469,10 +3543,19 @@ async fn w4a_resume_second_human_review_stays_waiting() {
         .filter(|(_, r)| r.state == ExecutionState::Waiting)
         .map(|(id, _)| id)
         .collect();
-    assert_eq!(waiting.len(), 1, "exactly one waiting node, got {:?}", waiting);
+    assert_eq!(
+        waiting.len(),
+        1,
+        "exactly one waiting node, got {:?}",
+        waiting
+    );
 
     // The post-resume checkpoint records the remaining waiting node.
-    let cp = store.latest(&exec.id).await.unwrap().expect("checkpoint saved");
+    let cp = store
+        .latest(&exec.id)
+        .await
+        .unwrap()
+        .expect("checkpoint saved");
     assert_eq!(cp.waiting_node.as_deref(), Some(waiting[0].as_str()));
     assert!(!cp.terminal);
 }
@@ -3500,13 +3583,15 @@ async fn w4a_resume_cancelled_midflight() {
 
     let task_engine = engine.clone();
     let task_id = id.clone();
-    let task = tokio::spawn(async move {
-        task_engine.resume_execution(&task_id, HashMap::new()).await
-    });
+    let task =
+        tokio::spawn(async move { task_engine.resume_execution(&task_id, HashMap::new()).await });
 
     // Give the resume path time to install the cancel token + start n2.
     tokio::time::sleep(Duration::from_millis(400)).await;
-    engine.cancel_execution(&id).await.expect("cancel while running");
+    engine
+        .cancel_execution(&id)
+        .await
+        .expect("cancel while running");
 
     let finished = tokio::time::timeout(Duration::from_secs(8), task)
         .await
@@ -3523,14 +3608,28 @@ async fn w4a_cancel_execution_error_paths() {
     let engine = WorkflowEngine::new();
 
     let err = engine.cancel_execution("ghost").await.unwrap_err();
-    assert!(matches!(err, EngineError::ExecutionNotFound(_)), "got {:?}", err);
+    assert!(
+        matches!(err, EngineError::ExecutionNotFound(_)),
+        "got {:?}",
+        err
+    );
 
     engine
-        .register_workflow(make_workflow("cancel_done_wf", vec![make_node("n1", "delay", vec![])]))
+        .register_workflow(make_workflow(
+            "cancel_done_wf",
+            vec![make_node("n1", "delay", vec![])],
+        ))
         .unwrap();
-    let exec = engine.run("cancel_done_wf", HashMap::new(), None).await.unwrap();
+    let exec = engine
+        .run("cancel_done_wf", HashMap::new(), None)
+        .await
+        .unwrap();
     let err2 = engine.cancel_execution(&exec.id).await.unwrap_err();
-    assert!(matches!(err2, EngineError::InvalidState(_)), "got {:?}", err2);
+    assert!(
+        matches!(err2, EngineError::InvalidState(_)),
+        "got {:?}",
+        err2
+    );
 }
 
 /// persist_execution U10 refusal end-to-end: persistence dir outside the
@@ -3541,12 +3640,20 @@ async fn w4a_persist_execution_u10_refusal_writes_nothing() {
     let exec_dir = temp_root("w4a_exec_out");
     let world_root = temp_root("w4a_world_root");
     let engine = WorkflowEngine::with_persistence(exec_dir.clone());
-    engine.set_execution_world(std::sync::Arc::new(NarrowWorld { allowed: world_root }));
+    engine.set_execution_world(std::sync::Arc::new(NarrowWorld {
+        allowed: world_root,
+    }));
 
     engine
-        .register_workflow(make_workflow("u10json_wf", vec![make_node("n1", "delay", vec![])]))
+        .register_workflow(make_workflow(
+            "u10json_wf",
+            vec![make_node("n1", "delay", vec![])],
+        ))
         .unwrap();
-    let exec = engine.run("u10json_wf", HashMap::new(), None).await.unwrap();
+    let exec = engine
+        .run("u10json_wf", HashMap::new(), None)
+        .await
+        .unwrap();
     assert_eq!(exec.state, ExecutionState::Completed);
 
     let jsonl: Vec<_> = std::fs::read_dir(&exec_dir)
@@ -3554,7 +3661,10 @@ async fn w4a_persist_execution_u10_refusal_writes_nothing() {
         .filter_map(|e| e.ok())
         .filter(|e| e.path().extension().map(|x| x == "jsonl").unwrap_or(false))
         .collect();
-    assert!(jsonl.is_empty(), "guard must refuse JSONL outside world roots");
+    assert!(
+        jsonl.is_empty(),
+        "guard must refuse JSONL outside world roots"
+    );
 }
 
 /// get_execution falls back to disk: a second engine over the same
@@ -3565,7 +3675,10 @@ async fn w4a_get_execution_loads_from_disk() {
     let dir = temp_root("w4a_disk");
     let engine = WorkflowEngine::with_persistence(dir.clone());
     engine
-        .register_workflow(make_workflow("disk_wf", vec![make_node("n1", "delay", vec![])]))
+        .register_workflow(make_workflow(
+            "disk_wf",
+            vec![make_node("n1", "delay", vec![])],
+        ))
         .unwrap();
     let exec = engine.run("disk_wf", HashMap::new(), None).await.unwrap();
     let id = exec.id.clone();
@@ -3612,7 +3725,11 @@ async fn w4a_spawn_cron_triggers_local_fires() {
     let mut fired = false;
     for _ in 0..48 {
         tokio::time::sleep(Duration::from_millis(250)).await;
-        if !engine.list_executions(Some("w4a_cron_fire_wf")).await.is_empty() {
+        if !engine
+            .list_executions(Some("w4a_cron_fire_wf"))
+            .await
+            .is_empty()
+        {
             fired = true;
             break;
         }
@@ -3662,7 +3779,10 @@ async fn w4a_spawn_cron_triggers_invalid_and_missing_workflow() {
         h.abort();
     }
     assert!(
-        engine.list_executions(Some("w4a_utc_ghost_wf")).await.is_empty(),
+        engine
+            .list_executions(Some("w4a_utc_ghost_wf"))
+            .await
+            .is_empty(),
         "missing workflow must not produce executions"
     );
 }
@@ -3679,17 +3799,23 @@ async fn w4a_new_integrated_bad_checkpoint_root_degrades() {
 
     let tools = std::sync::Arc::new(nemesis_tools::registry::ToolRegistry::new());
     let engine = WorkflowEngine::new_integrated_with_dirs(
-        std::sync::Arc::new(W4aProvider) as std::sync::Arc<dyn nemesis_providers::router::LLMProvider>,
+        std::sync::Arc::new(W4aProvider)
+            as std::sync::Arc<dyn nemesis_providers::router::LLMProvider>,
         tools,
         Some(base.join("executions")),
         Some(blocker),
     );
-    assert!(engine.checkpoint_store().is_none(), "bad root must degrade to None");
+    assert!(
+        engine.checkpoint_store().is_none(),
+        "bad root must degrade to None"
+    );
 
     // Integrated engine carries tools; set_execution_world takes the
     // tools-lane branch and exposes the world.
     let world_root = temp_root("w4a_cp_world");
-    engine.set_execution_world(std::sync::Arc::new(NarrowWorld { allowed: world_root }));
+    engine.set_execution_world(std::sync::Arc::new(NarrowWorld {
+        allowed: world_root,
+    }));
     assert!(engine.execution_world().is_some());
     assert!(engine.node_executors.get("script").is_some());
 }
@@ -3744,10 +3870,7 @@ async fn integrated_engine_tool_node_still_executes() {
         fn parameters(&self) -> serde_json::Value {
             serde_json::json!({"type": "object", "properties": {}})
         }
-        async fn execute(
-            &self,
-            _args: &serde_json::Value,
-        ) -> nemesis_tools::types::ToolResult {
+        async fn execute(&self, _args: &serde_json::Value) -> nemesis_tools::types::ToolResult {
             nemesis_tools::types::ToolResult::success("echoed")
         }
     }
@@ -3767,8 +3890,7 @@ async fn integrated_engine_tool_node_still_executes() {
                 n.config
                     .insert("name".to_string(), serde_json::json!("echo"));
                 n
-            },
-            ],
+            }],
         ))
         .unwrap();
 
@@ -3876,11 +3998,7 @@ impl CheckpointStore for GhostIdStore {
     async fn save(&self, cp: Checkpoint) -> Result<String, crate::checkpoint::StoreError> {
         self.inner.save(cp).await
     }
-    async fn load(
-        &self,
-        e: &str,
-        c: &str,
-    ) -> Result<Checkpoint, crate::checkpoint::StoreError> {
+    async fn load(&self, e: &str, c: &str) -> Result<Checkpoint, crate::checkpoint::StoreError> {
         self.inner.load(e, c).await
     }
     async fn latest(&self, e: &str) -> Result<Option<Checkpoint>, crate::checkpoint::StoreError> {
@@ -3924,9 +4042,14 @@ async fn s12b_restore_iterates_ids_and_skips_missing_checkpoints() {
     engine.set_checkpoint_store(Arc::new(store));
     // restore 按 workflow_hash 在已注册工作流里找定义（找不到 = config drift 跳过），
     // 所以这里必须把同一份 wf（同 hash）注册进引擎
-    engine.register_workflow(s12b_wf_for_cp("restore_mix")).unwrap();
+    engine
+        .register_workflow(s12b_wf_for_cp("restore_mix"))
+        .unwrap();
     let restored = engine.restore_incomplete_executions().await.unwrap();
-    assert_eq!(restored, 1, "only the real execution restores; ghost skipped");
+    assert_eq!(
+        restored, 1,
+        "only the real execution restores; ghost skipped"
+    );
 }
 
 #[tokio::test]

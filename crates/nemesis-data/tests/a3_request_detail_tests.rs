@@ -100,7 +100,9 @@ fn migration_v1_to_v2_preserves_rows_and_adds_columns() {
     assert_eq!(logs[0].first_token_ms, None);
 
     // 迁移后可正常写入新字段行。
-    store.insert_request_log(&full_log("new-row", "deepseek-chat", "s1", 200, 1700000100)).unwrap();
+    store
+        .insert_request_log(&full_log("new-row", "deepseek-chat", "s1", 200, 1700000100))
+        .unwrap();
     let got = store.get_request_log(2).unwrap().expect("new row");
     assert_eq!(got.pricing_model, "deepseek-chat");
 
@@ -122,8 +124,13 @@ fn cost_breakdown_layers_and_unknown() {
     assert!(bd.input_cost_usd > 0.0);
     assert_eq!(bd.output_cost_usd, 0.0);
     assert!(
-        (bd.total_cost_usd - (bd.input_cost_usd + bd.output_cost_usd
-            + bd.cache_creation_cost_usd + bd.cache_read_cost_usd)).abs() < 1e-12,
+        (bd.total_cost_usd
+            - (bd.input_cost_usd
+                + bd.output_cost_usd
+                + bd.cache_creation_cost_usd
+                + bd.cache_read_cost_usd))
+            .abs()
+            < 1e-12,
         "total must equal sum of components"
     );
 
@@ -141,26 +148,59 @@ fn cost_breakdown_layers_and_unknown() {
 fn log_filter_dimensions() {
     let db_path = temp_db_path("filter");
     let store = DataStore::open(&db_path).unwrap();
-    store.insert_request_log(&full_log("t1", "gpt-4", "direct-a", 200, 1000)).unwrap();
-    store.insert_request_log(&full_log("t2", "claude-3", "direct-b", 500, 2000)).unwrap();
-    store.insert_request_log(&full_log("t3", "gpt-4o", "rpc:node-a/x", 200, 3000)).unwrap();
+    store
+        .insert_request_log(&full_log("t1", "gpt-4", "direct-a", 200, 1000))
+        .unwrap();
+    store
+        .insert_request_log(&full_log("t2", "claude-3", "direct-b", 500, 2000))
+        .unwrap();
+    store
+        .insert_request_log(&full_log("t3", "gpt-4o", "rpc:node-a/x", 200, 3000))
+        .unwrap();
 
     // model 子串命中 gpt-4 与 gpt-4o。
     let (logs, total) = store
-        .query_logs(0, 99999, 1, 100, &LogFilter { model: Some("gpt-4".into()), ..Default::default() })
+        .query_logs(
+            0,
+            99999,
+            1,
+            100,
+            &LogFilter {
+                model: Some("gpt-4".into()),
+                ..Default::default()
+            },
+        )
         .unwrap();
     assert_eq!(total, 2);
     assert!(logs.iter().all(|l| l.model.contains("gpt-4")));
 
     // status 精确。
     let (_, total) = store
-        .query_logs(0, 99999, 1, 100, &LogFilter { status: Some(500), ..Default::default() })
+        .query_logs(
+            0,
+            99999,
+            1,
+            100,
+            &LogFilter {
+                status: Some(500),
+                ..Default::default()
+            },
+        )
         .unwrap();
     assert_eq!(total, 1);
 
     // session 子串（跨 direct/rpc 前缀按片段）。
     let (_, total) = store
-        .query_logs(0, 99999, 1, 100, &LogFilter { session_key: Some("node-a".into()), ..Default::default() })
+        .query_logs(
+            0,
+            99999,
+            1,
+            100,
+            &LogFilter {
+                session_key: Some("node-a".into()),
+                ..Default::default()
+            },
+        )
         .unwrap();
     assert_eq!(total, 1);
 
@@ -171,7 +211,11 @@ fn log_filter_dimensions() {
             99999,
             1,
             100,
-            &LogFilter { model: Some("gpt".into()), status: Some(200), ..Default::default() },
+            &LogFilter {
+                model: Some("gpt".into()),
+                status: Some(200),
+                ..Default::default()
+            },
         )
         .unwrap();
     assert_eq!(total, 2);
@@ -218,17 +262,23 @@ fn retention_sweep_days_and_max_rows() {
     let now = chrono::Local::now().timestamp();
 
     // 40 天前 1 行（按天步应删并 rollup）。
-    store.insert_request_log(&full_log("old", "gpt-4", "s", 200, now - 40 * 86400)).unwrap();
+    store
+        .insert_request_log(&full_log("old", "gpt-4", "s", 200, now - 40 * 86400))
+        .unwrap();
     // 今天 3 行。
     for i in 0..3 {
-        store.insert_request_log(&full_log(&format!("new-{i}"), "gpt-4", "s", 200, now - i)).unwrap();
+        store
+            .insert_request_log(&full_log(&format!("new-{i}"), "gpt-4", "s", 200, now - i))
+            .unwrap();
     }
 
     // 按天 30 天：40 天前那行删掉 + rollup（rollup 查询直接开裸连接验证，
     // 不为测试加生产方法）。
     let deleted = store.retention_sweep(Some(30), None).unwrap();
     assert_eq!(deleted, 1);
-    let (_, total) = store.query_logs(0, now + 86400, 1, 100, &LogFilter::default()).unwrap();
+    let (_, total) = store
+        .query_logs(0, now + 86400, 1, 100, &LogFilter::default())
+        .unwrap();
     assert_eq!(total, 3);
     let rollup_models: Vec<String> = Connection::open(&db_path)
         .unwrap()
@@ -238,7 +288,10 @@ fn retention_sweep_days_and_max_rows() {
         .unwrap()
         .filter_map(|r| r.ok())
         .collect();
-    assert!(rollup_models.contains(&"gpt-4".to_string()), "rollup must include the old row's model");
+    assert!(
+        rollup_models.contains(&"gpt-4".to_string()),
+        "rollup must include the old row's model"
+    );
 
     // 条数裁到 2：今天 3 行中最旧的「new-2」被裁。
     let deleted = store.retention_sweep(None, Some(2)).unwrap();

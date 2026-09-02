@@ -47,29 +47,30 @@ pub async fn test_cli_model_add(ws: &TestWorkspace, bin: &Path) -> Vec<TestResul
 
     // Verify config.json contains the model
     if let Ok(data) = std::fs::read_to_string(ws.config_path())
-        && let Ok(cfg) = serde_json::from_str::<Value>(&data) {
-            let has_model = cfg
-                .get("model_list")
-                .and_then(|v| v.as_array())
-                .map(|arr| {
-                    arr.iter().any(|m| {
-                        m.get("model").and_then(|v| v.as_str()) == Some("test/testai-1.1")
-                            || m.get("name").and_then(|v| v.as_str()) == Some("test/testai-1.1")
-                    })
+        && let Ok(cfg) = serde_json::from_str::<Value>(&data)
+    {
+        let has_model = cfg
+            .get("model_list")
+            .and_then(|v| v.as_array())
+            .map(|arr| {
+                arr.iter().any(|m| {
+                    m.get("model").and_then(|v| v.as_str()) == Some("test/testai-1.1")
+                        || m.get("name").and_then(|v| v.as_str()) == Some("test/testai-1.1")
                 })
-                .unwrap_or(false);
-            if has_model {
-                results.push(pass(
-                    &format!("{}/config", suite),
-                    "test/testai-1.1 in model_list",
-                ));
-            } else {
-                results.push(fail(
-                    &format!("{}/config", suite),
-                    "Model not found in config",
-                ));
-            }
+            })
+            .unwrap_or(false);
+        if has_model {
+            results.push(pass(
+                &format!("{}/config", suite),
+                "test/testai-1.1 in model_list",
+            ));
+        } else {
+            results.push(fail(
+                &format!("{}/config", suite),
+                "Model not found in config",
+            ));
         }
+    }
 
     // Add second model with proxy flag
     let output2 = ws
@@ -176,28 +177,28 @@ pub async fn test_cli_model_remove(ws: &TestWorkspace, bin: &Path) -> Vec<TestRe
 
     // Verify model removed from config
     if let Ok(data) = std::fs::read_to_string(ws.config_path())
-        && let Ok(cfg) = serde_json::from_str::<Value>(&data) {
-            let still_exists = cfg
-                .get("model_list")
-                .and_then(|v| v.as_array())
-                .map(|arr| {
-                    arr.iter().any(|m| {
-                        m.get("model").and_then(|v| v.as_str()) == Some("test/proxy-model")
-                    })
-                })
-                .unwrap_or(false);
-            if !still_exists {
-                results.push(pass(
-                    &format!("{}/config_removed", suite),
-                    "proxy-model removed from config",
-                ));
-            } else {
-                results.push(fail(
-                    &format!("{}/config_removed", suite),
-                    "proxy-model still in config",
-                ));
-            }
+        && let Ok(cfg) = serde_json::from_str::<Value>(&data)
+    {
+        let still_exists = cfg
+            .get("model_list")
+            .and_then(|v| v.as_array())
+            .map(|arr| {
+                arr.iter()
+                    .any(|m| m.get("model").and_then(|v| v.as_str()) == Some("test/proxy-model"))
+            })
+            .unwrap_or(false);
+        if !still_exists {
+            results.push(pass(
+                &format!("{}/config_removed", suite),
+                "proxy-model removed from config",
+            ));
+        } else {
+            results.push(fail(
+                &format!("{}/config_removed", suite),
+                "proxy-model still in config",
+            ));
         }
+    }
 
     // Remove without --force (should fail or prompt)
     let nf_output = ws

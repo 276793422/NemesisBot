@@ -32,7 +32,10 @@ fn summarize_without_system_prompt_hits_noop_arm_and_logs() {
     });
     // 无 system：全部 user 轮
     for i in 0..8 {
-        mem.add(turn("user", &format!("message number {} with padding text", i)));
+        mem.add(turn(
+            "user",
+            &format!("message number {} with padding text", i),
+        ));
     }
     let removed = mem.summarize();
     assert!(removed > 0, "must remove some turns, removed={}", removed);
@@ -44,7 +47,11 @@ fn summarize_without_system_prompt_hits_noop_arm_and_logs() {
 #[test]
 fn memory_store_new_logs_info_line() {
     let _logs = capture_logs();
-    let dir = std::env::temp_dir().join(format!("nemesis_memstore_new_{}_{}", std::process::id(), line!()));
+    let dir = std::env::temp_dir().join(format!(
+        "nemesis_memstore_new_{}_{}",
+        std::process::id(),
+        line!()
+    ));
     let _ = std::fs::remove_dir_all(&dir);
     let _store = MemoryStore::new(dir.to_string_lossy().as_ref());
     let _ = std::fs::remove_dir_all(&dir);
@@ -54,7 +61,11 @@ fn memory_store_new_logs_info_line() {
 #[test]
 fn memory_store_write_long_term_logs_and_roundtrips() {
     let _logs = capture_logs();
-    let dir = std::env::temp_dir().join(format!("nemesis_memstore_lt_{}_{}", std::process::id(), line!()));
+    let dir = std::env::temp_dir().join(format!(
+        "nemesis_memstore_lt_{}_{}",
+        std::process::id(),
+        line!()
+    ));
     let _ = std::fs::remove_dir_all(&dir);
     let store = MemoryStore::new(dir.to_string_lossy().as_ref());
     store.write_long_term("长期记忆内容").unwrap();
@@ -66,7 +77,11 @@ fn memory_store_write_long_term_logs_and_roundtrips() {
 #[test]
 fn memory_store_append_today_creates_then_appends() {
     let _logs = capture_logs();
-    let dir = std::env::temp_dir().join(format!("nemesis_memstore_today_{}_{}", std::process::id(), line!()));
+    let dir = std::env::temp_dir().join(format!(
+        "nemesis_memstore_today_{}_{}",
+        std::process::id(),
+        line!()
+    ));
     let _ = std::fs::remove_dir_all(&dir);
     let store = MemoryStore::new(dir.to_string_lossy().as_ref());
     store.append_today("first note").unwrap();

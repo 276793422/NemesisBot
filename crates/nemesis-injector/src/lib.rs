@@ -15,14 +15,14 @@
 
 use windows_sys::Win32::Foundation::{CloseHandle, HANDLE};
 use windows_sys::Win32::System::Diagnostics::Debug::WriteProcessMemory;
+use windows_sys::Win32::System::LibraryLoader::{GetModuleHandleA, GetProcAddress};
 use windows_sys::Win32::System::Memory::{
-    VirtualAllocEx, VirtualProtectEx, MEM_COMMIT, MEM_RESERVE, PAGE_EXECUTE_READWRITE,
-    PAGE_PROTECTION_FLAGS,
+    MEM_COMMIT, MEM_RESERVE, PAGE_EXECUTE_READWRITE, PAGE_PROTECTION_FLAGS, VirtualAllocEx,
+    VirtualProtectEx,
 };
 use windows_sys::Win32::System::Threading::{
-    CreateProcessA, IsWow64Process, ResumeThread, PROCESS_INFORMATION, STARTUPINFOA,
+    CreateProcessA, IsWow64Process, PROCESS_INFORMATION, ResumeThread, STARTUPINFOA,
 };
-use windows_sys::Win32::System::LibraryLoader::{GetModuleHandleA, GetProcAddress};
 
 use thiserror::Error;
 
@@ -66,19 +66,19 @@ const OFF_DATA_DLLPATH: usize = 0x100;
 const OFF_DATA_NAME: usize = 0x200;
 
 const SHELLCODE: [u8; SHCODE_SIZE] = [
-    0x48,0x83,0xE4,0xF0,                              /* 00 and rsp,-16      */
-    0x48,0x83,0xEC,0x20,                              /* 04 sub rsp,0x20     */
-    0x48,0xB9, 0,0,0,0,0,0,0,0,                       /* 08 mov rcx, dllpath */
-    0x48,0xB8, 0,0,0,0,0,0,0,0,                       /* 12 mov rax, LoadLib */
-    0xFF,0xD0,                                        /* 1C call rax         */
-    0x48,0x89,0xC1,                                   /* 1E mov rcx, rax     */
-    0x48,0xBA, 0,0,0,0,0,0,0,0,                       /* 21 mov rdx, "Run"   */
-    0x48,0xB8, 0,0,0,0,0,0,0,0,                       /* 2B mov rax, GPA     */
-    0xFF,0xD0,                                        /* 35 call rax         */
-    0x48,0x85,0xC0,                                   /* 37 test rax,rax     */
-    0x74,0x02,                                        /* 3A jz +2 -> 0x3E    */
-    0xFF,0xD0,                                        /* 3C call rax (Run)   */
-    0xEB,0xFE,                                        /* 3E jmp self (spin)  */
+    0x48, 0x83, 0xE4, 0xF0, /* 00 and rsp,-16      */
+    0x48, 0x83, 0xEC, 0x20, /* 04 sub rsp,0x20     */
+    0x48, 0xB9, 0, 0, 0, 0, 0, 0, 0, 0, /* 08 mov rcx, dllpath */
+    0x48, 0xB8, 0, 0, 0, 0, 0, 0, 0, 0, /* 12 mov rax, LoadLib */
+    0xFF, 0xD0, /* 1C call rax         */
+    0x48, 0x89, 0xC1, /* 1E mov rcx, rax     */
+    0x48, 0xBA, 0, 0, 0, 0, 0, 0, 0, 0, /* 21 mov rdx, "Run"   */
+    0x48, 0xB8, 0, 0, 0, 0, 0, 0, 0, 0, /* 2B mov rax, GPA     */
+    0xFF, 0xD0, /* 35 call rax         */
+    0x48, 0x85, 0xC0, /* 37 test rax,rax     */
+    0x74, 0x02, /* 3A jz +2 -> 0x3E    */
+    0xFF, 0xD0, /* 3C call rax (Run)   */
+    0xEB, 0xFE, /* 3E jmp self (spin)  */
 ];
 
 #[repr(C)]
@@ -116,31 +116,59 @@ fn put64(p: &mut [u8], off: usize, v: u64) {
 /// 读远程进程的 OEP（ImageBase + PE AddressOfEntryPoint）。
 fn get_remote_oep(hp: HANDLE) -> Result<u64, InjectError> {
     unsafe {
-    let mut pbi = ProcessBasicInfo::default();
-    let mut ret: u32 = 0;
-    if NtQueryInformationProcess(hp, 0, &mut pbi as *mut _ as *mut _, std::mem::size_of::<ProcessBasicInfo>() as u32, &mut ret) < 0
-        || pbi.peb_base_address == 0
-    {
-        return Err(InjectError::QueryInfo);
-    }
-    let mut image_base: u64 = 0;
-    let mut done: usize = 0;
-    let peb_ib = (pbi.peb_base_address + PEB_IMAGEBASE_OFFSET) as *const _;
-    if ReadProcessMemory(hp, peb_ib, &mut image_base as *mut _ as *mut _, 8, &mut done) == 0 || image_base == 0 {
-        return Err(InjectError::ReadPeb);
-    }
-    let mut hdr = [0u8; 0x40];
-    if ReadProcessMemory(hp, image_base as *const _, hdr.as_mut_ptr() as *mut _, 0x40, &mut done) == 0 {
-        return Err(InjectError::ReadPe);
-    }
-    let e_lfanew = u32::from_le_bytes(hdr[0x3C..0x40].try_into().unwrap()) as u64;
-    let mut nt = [0u8; 0x40];
-    if ReadProcessMemory(hp, (image_base + e_lfanew) as *const _, nt.as_mut_ptr() as *mut _, 0x40, &mut done) == 0 {
-        return Err(InjectError::ReadPe);
-    }
-    // NT 头: 4 sig + 0x14 FileHeader → OptionalHeader；AddressOfEntryPoint 在 OptionalHeader +0x10
-    let aoep = u32::from_le_bytes(nt[0x18 + 0x10..0x18 + 0x14].try_into().unwrap()) as u64;
-    Ok(image_base + aoep)
+        let mut pbi = ProcessBasicInfo::default();
+        let mut ret: u32 = 0;
+        if NtQueryInformationProcess(
+            hp,
+            0,
+            &mut pbi as *mut _ as *mut _,
+            std::mem::size_of::<ProcessBasicInfo>() as u32,
+            &mut ret,
+        ) < 0
+            || pbi.peb_base_address == 0
+        {
+            return Err(InjectError::QueryInfo);
+        }
+        let mut image_base: u64 = 0;
+        let mut done: usize = 0;
+        let peb_ib = (pbi.peb_base_address + PEB_IMAGEBASE_OFFSET) as *const _;
+        if ReadProcessMemory(
+            hp,
+            peb_ib,
+            &mut image_base as *mut _ as *mut _,
+            8,
+            &mut done,
+        ) == 0
+            || image_base == 0
+        {
+            return Err(InjectError::ReadPeb);
+        }
+        let mut hdr = [0u8; 0x40];
+        if ReadProcessMemory(
+            hp,
+            image_base as *const _,
+            hdr.as_mut_ptr() as *mut _,
+            0x40,
+            &mut done,
+        ) == 0
+        {
+            return Err(InjectError::ReadPe);
+        }
+        let e_lfanew = u32::from_le_bytes(hdr[0x3C..0x40].try_into().unwrap()) as u64;
+        let mut nt = [0u8; 0x40];
+        if ReadProcessMemory(
+            hp,
+            (image_base + e_lfanew) as *const _,
+            nt.as_mut_ptr() as *mut _,
+            0x40,
+            &mut done,
+        ) == 0
+        {
+            return Err(InjectError::ReadPe);
+        }
+        // NT 头: 4 sig + 0x14 FileHeader → OptionalHeader；AddressOfEntryPoint 在 OptionalHeader +0x10
+        let aoep = u32::from_le_bytes(nt[0x18 + 0x10..0x18 + 0x14].try_into().unwrap()) as u64;
+        Ok(image_base + aoep)
     }
 }
 
@@ -185,9 +213,7 @@ pub fn launch_and_inject_with_env(
         // encoded to the ANSI code page — all eval paths are ASCII), then
         // apply the caller's overrides. The injected DLL reads env via
         // GetEnvironmentVariableA, which matches this encoding exactly.
-        let mut vars: Vec<String> = std::env::vars()
-            .map(|(k, v)| format!("{k}={v}"))
-            .collect();
+        let mut vars: Vec<String> = std::env::vars().map(|(k, v)| format!("{k}={v}")).collect();
         for (k, v) in env {
             let needle = format!("{k}=");
             vars.retain(|s| !s.starts_with(&needle));
@@ -218,7 +244,9 @@ pub fn launch_and_inject_with_env(
             &mut pi,
         ) == 0
         {
-            return Err(InjectError::CreateProcess(std::io::Error::last_os_error().raw_os_error().unwrap_or(0) as u32));
+            return Err(InjectError::CreateProcess(
+                std::io::Error::last_os_error().raw_os_error().unwrap_or(0) as u32,
+            ));
         }
 
         let hp = pi.hProcess;
@@ -252,64 +280,92 @@ pub fn launch_and_inject_with_env(
 
 fn inject_ep_hijack(hp: HANDLE, dll_path: &str) -> Result<(), InjectError> {
     unsafe {
-    let oep = get_remote_oep(hp)?;
-    tracing::info!("OEP = 0x{:X}", oep);
+        let oep = get_remote_oep(hp)?;
+        tracing::info!("OEP = 0x{:X}", oep);
 
-    let base = VirtualAllocEx(hp, std::ptr::null(), 0x1000, MEM_COMMIT | MEM_RESERVE, PAGE_EXECUTE_READWRITE);
-    if base.is_null() {
-        return Err(InjectError::Alloc(std::io::Error::last_os_error().raw_os_error().unwrap_or(0) as u32));
-    }
-    let base_addr = base as u64;
-    tracing::info!("remote block = 0x{:X}", base_addr);
+        let base = VirtualAllocEx(
+            hp,
+            std::ptr::null(),
+            0x1000,
+            MEM_COMMIT | MEM_RESERVE,
+            PAGE_EXECUTE_READWRITE,
+        );
+        if base.is_null() {
+            return Err(InjectError::Alloc(
+                std::io::Error::last_os_error().raw_os_error().unwrap_or(0) as u32,
+            ));
+        }
+        let base_addr = base as u64;
+        tracing::info!("remote block = 0x{:X}", base_addr);
 
-    let k32 = GetModuleHandleA(c"kernel32.dll".as_ptr().cast());
-    if k32.is_null() {
-        return Err(InjectError::ResolveApi);
-    }
-    let load_lib_addr = GetProcAddress(k32, c"LoadLibraryA".as_ptr().cast())
-        .ok_or(InjectError::ResolveApi)? as usize as u64;
-    let gpa_addr = GetProcAddress(k32, c"GetProcAddress".as_ptr().cast())
-        .ok_or(InjectError::ResolveApi)? as usize as u64;
+        let k32 = GetModuleHandleA(c"kernel32.dll".as_ptr().cast());
+        if k32.is_null() {
+            return Err(InjectError::ResolveApi);
+        }
+        let load_lib_addr = GetProcAddress(k32, c"LoadLibraryA".as_ptr().cast())
+            .ok_or(InjectError::ResolveApi)? as usize as u64;
+        let gpa_addr = GetProcAddress(k32, c"GetProcAddress".as_ptr().cast())
+            .ok_or(InjectError::ResolveApi)? as usize as u64;
 
-    let mut sc = [0u8; 0x1000];
-    sc[..SHCODE_SIZE].copy_from_slice(&SHELLCODE);
-    put64(&mut sc, OFF_DLLPATH, base_addr + OFF_DATA_DLLPATH as u64);
-    put64(&mut sc, OFF_LOADLIB, load_lib_addr);
-    put64(&mut sc, OFF_NAME, base_addr + OFF_DATA_NAME as u64);
-    put64(&mut sc, OFF_GPA, gpa_addr);
+        let mut sc = [0u8; 0x1000];
+        sc[..SHCODE_SIZE].copy_from_slice(&SHELLCODE);
+        put64(&mut sc, OFF_DLLPATH, base_addr + OFF_DATA_DLLPATH as u64);
+        put64(&mut sc, OFF_LOADLIB, load_lib_addr);
+        put64(&mut sc, OFF_NAME, base_addr + OFF_DATA_NAME as u64);
+        put64(&mut sc, OFF_GPA, gpa_addr);
 
-    // dllpath 写到 OFF_DATA_DLLPATH
-    let dp = &mut sc[OFF_DATA_DLLPATH..];
-    let bytes = dll_path.as_bytes();
-    let n = bytes.len().min(dp.len() - 1);
-    dp[..n].copy_from_slice(&bytes[..n]);
-    dp[n] = 0;
-    // "Run\0" 写到 OFF_DATA_NAME
-    sc[OFF_DATA_NAME..OFF_DATA_NAME + 4].copy_from_slice(b"Run\0");
+        // dllpath 写到 OFF_DATA_DLLPATH
+        let dp = &mut sc[OFF_DATA_DLLPATH..];
+        let bytes = dll_path.as_bytes();
+        let n = bytes.len().min(dp.len() - 1);
+        dp[..n].copy_from_slice(&bytes[..n]);
+        dp[n] = 0;
+        // "Run\0" 写到 OFF_DATA_NAME
+        sc[OFF_DATA_NAME..OFF_DATA_NAME + 4].copy_from_slice(b"Run\0");
 
-    let mut done: usize = 0;
-    if WriteProcessMemory(hp, base, sc.as_mut_ptr() as *mut _, 0x1000, &mut done) == 0 {
-        return Err(InjectError::WriteShell(std::io::Error::last_os_error().raw_os_error().unwrap_or(0) as u32));
-    }
+        let mut done: usize = 0;
+        if WriteProcessMemory(hp, base, sc.as_mut_ptr() as *mut _, 0x1000, &mut done) == 0 {
+            return Err(InjectError::WriteShell(
+                std::io::Error::last_os_error().raw_os_error().unwrap_or(0) as u32,
+            ));
+        }
 
-    // EP 首 12 字节改成 mov rax,base; jmp rax
-    let mut old_prot: PAGE_PROTECTION_FLAGS = 0;
-    if VirtualProtectEx(hp, oep as *const _, 16, PAGE_EXECUTE_READWRITE, &mut old_prot) == 0 {
-        return Err(InjectError::ProtectEp(std::io::Error::last_os_error().raw_os_error().unwrap_or(0) as u32));
-    }
-    let mut jmp = [0u8; 12];
-    jmp[0] = 0x48;
-    jmp[1] = 0xB8;
-    jmp[2..10].copy_from_slice(&base_addr.to_le_bytes());
-    jmp[10] = 0xFF;
-    jmp[11] = 0xE0;
-    if WriteProcessMemory(hp, oep as *const _, jmp.as_mut_ptr() as *mut _, 12, &mut done) == 0 {
-        return Err(InjectError::WriteEp(std::io::Error::last_os_error().raw_os_error().unwrap_or(0) as u32));
-    }
-    // FlushInstructionCache 非必需（WriteProcessMemory 已同步缓存），省略。
+        // EP 首 12 字节改成 mov rax,base; jmp rax
+        let mut old_prot: PAGE_PROTECTION_FLAGS = 0;
+        if VirtualProtectEx(
+            hp,
+            oep as *const _,
+            16,
+            PAGE_EXECUTE_READWRITE,
+            &mut old_prot,
+        ) == 0
+        {
+            return Err(InjectError::ProtectEp(
+                std::io::Error::last_os_error().raw_os_error().unwrap_or(0) as u32,
+            ));
+        }
+        let mut jmp = [0u8; 12];
+        jmp[0] = 0x48;
+        jmp[1] = 0xB8;
+        jmp[2..10].copy_from_slice(&base_addr.to_le_bytes());
+        jmp[10] = 0xFF;
+        jmp[11] = 0xE0;
+        if WriteProcessMemory(
+            hp,
+            oep as *const _,
+            jmp.as_mut_ptr() as *mut _,
+            12,
+            &mut done,
+        ) == 0
+        {
+            return Err(InjectError::WriteEp(
+                std::io::Error::last_os_error().raw_os_error().unwrap_or(0) as u32,
+            ));
+        }
+        // FlushInstructionCache 非必需（WriteProcessMemory 已同步缓存），省略。
 
-    tracing::info!("EP hijack installed: LoadLibrary -> GetProcAddress(\"Run\") -> call Run");
-    Ok(())
+        tracing::info!("EP hijack installed: LoadLibrary -> GetProcAddress(\"Run\") -> call Run");
+        Ok(())
     }
 }
 
@@ -336,7 +392,9 @@ pub unsafe fn close_handles(hp: HANDLE, ht: HANDLE) {
 /// `hp` 必须是本注入器返回的**有效**进程句柄；句柄被并发关闭或已释放
 /// 后调用是未定义行为。
 pub unsafe fn wait_and_get_exit(hp: HANDLE) -> Option<u32> {
-    use windows_sys::Win32::System::Threading::{GetExitCodeProcess, WaitForSingleObject, INFINITE};
+    use windows_sys::Win32::System::Threading::{
+        GetExitCodeProcess, INFINITE, WaitForSingleObject,
+    };
     unsafe {
         if WaitForSingleObject(hp, INFINITE) != 0 {
             return None;

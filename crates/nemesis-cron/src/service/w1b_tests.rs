@@ -12,8 +12,8 @@
 //!   `toggle_job` disable asymmetry (stale next_run), whitespace validate
 
 use super::*;
-use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Duration;
 
 fn every_schedule(ms: i64) -> CronSchedule {
@@ -178,8 +178,15 @@ fn test_w1b_patch_job_enabled_recomputes_next_run() {
         )
         .unwrap();
     assert!(on.enabled);
-    let next = on.state.next_run_at_ms.expect("re-enabled recomputes next_run");
-    assert!(next >= before_ms, "next_run must be recomputed, got {}", next);
+    let next = on
+        .state
+        .next_run_at_ms
+        .expect("re-enabled recomputes next_run");
+    assert!(
+        next >= before_ms,
+        "next_run must be recomputed, got {}",
+        next
+    );
 }
 
 #[test]
@@ -238,9 +245,7 @@ fn test_w1b_patch_job_schedule_enabled_recomputes_disabled_does_not() {
 fn test_w1b_patch_job_not_found_err() {
     let (_dir, path) = tmp_store_path("cron.json");
     let svc = CronService::new(&path);
-    let err = svc
-        .patch_job("nope", &CronJobPatch::default())
-        .unwrap_err();
+    let err = svc.patch_job("nope", &CronJobPatch::default()).unwrap_err();
     assert!(err.contains("job not found"), "got: {}", err);
 }
 
@@ -274,9 +279,11 @@ fn test_w1b_cron_job_patch_serde_roundtrip() {
     assert_eq!(empty.enabled, None);
 
     // Three-state max_rounds wire forms.
-    let cleared: CronJobPatch =
-        serde_json::from_str(r#"{"max_rounds": null}"#).unwrap();
-    assert_eq!(cleared.max_rounds, None, "absent key and null are both None");
+    let cleared: CronJobPatch = serde_json::from_str(r#"{"max_rounds": null}"#).unwrap();
+    assert_eq!(
+        cleared.max_rounds, None,
+        "absent key and null are both None"
+    );
     let set: CronJobPatch = serde_json::from_str(r#"{"max_rounds": 7}"#).unwrap();
     assert_eq!(set.max_rounds, Some(Some(7)));
 }
@@ -334,7 +341,10 @@ fn test_w1b_history_serde_default_old_store_json() {
     let svc = CronService::new(&path);
     let jobs = svc.list_jobs(true);
     assert_eq!(jobs.len(), 1);
-    assert!(jobs[0].state.history.is_empty(), "old store → empty history");
+    assert!(
+        jobs[0].state.history.is_empty(),
+        "old store → empty history"
+    );
     assert_eq!(jobs[0].payload.session_key, None);
     assert_eq!(jobs[0].payload.max_rounds, None);
 }
@@ -370,11 +380,11 @@ fn test_w1b_store_roundtrip_preserves_session_key_max_rounds_history() {
 
     // Fresh service from the same store: everything survives.
     let svc2 = CronService::new(&path);
-    let job = svc2.get_job(
-        &svc2.list_jobs(true)[0].id.clone(),
-    )
-    .unwrap();
-    assert_eq!(job.payload.session_key.as_deref(), Some("agent:main:session:sid42"));
+    let job = svc2.get_job(&svc2.list_jobs(true)[0].id.clone()).unwrap();
+    assert_eq!(
+        job.payload.session_key.as_deref(),
+        Some("agent:main:session:sid42")
+    );
     assert_eq!(job.payload.max_rounds, Some(20));
     assert_eq!(job.state.history.len(), 2);
     assert_eq!(job.state.history[1].status, "error");
@@ -408,8 +418,15 @@ fn test_w1b_add_job_ext_disabled_no_next_run_and_hidden_from_default_list() {
         job.state.next_run_at_ms, None,
         "disabled job must not be scheduled at creation"
     );
-    assert!(svc.list_jobs(false).is_empty(), "hidden from default listing");
-    assert_eq!(svc.list_jobs(true).len(), 1, "visible with include_disabled");
+    assert!(
+        svc.list_jobs(false).is_empty(),
+        "hidden from default listing"
+    );
+    assert_eq!(
+        svc.list_jobs(true).len(),
+        1,
+        "visible with include_disabled"
+    );
     // status() must not report a nextWake for the disabled job.
     assert_eq!(svc.status()["nextWakeAtMS"], serde_json::json!(null));
 }
@@ -504,7 +521,10 @@ fn test_w1b_mutators_roll_back_on_save_failure() {
     );
     let after = svc.get_job(&job.id).unwrap();
     assert_eq!(after.name, "j", "update rollback must restore name");
-    assert_eq!(after.schedule.kind, "every", "update rollback must restore schedule");
+    assert_eq!(
+        after.schedule.kind, "every",
+        "update rollback must restore schedule"
+    );
 
     // enable(false): Err + still enabled with next_run intact.
     assert!(svc.enable_job(&job.id, false).is_err());
@@ -561,7 +581,8 @@ fn test_w1b_execute_job_does_not_advance_next_run() {
     );
     assert_eq!(updated.state.last_status.as_deref(), Some("executed"));
     assert_eq!(
-        updated.state.history.last().unwrap().status, "executed",
+        updated.state.history.last().unwrap().status,
+        "executed",
         "manual run history status is 'executed', not 'ok'"
     );
 }
@@ -631,7 +652,11 @@ async fn test_w1b_fire_loop_at_job_without_delete_disables_after_fire() {
     assert!(job.delete_after_run);
     {
         let mut s = svc.store.lock();
-        s.jobs.iter_mut().find(|j| j.id == job.id).unwrap().delete_after_run = false;
+        s.jobs
+            .iter_mut()
+            .find(|j| j.id == job.id)
+            .unwrap()
+            .delete_after_run = false;
     }
 
     svc.arm();

@@ -9,10 +9,8 @@ use super::*;
 
 /// 建一个干净的临时基准目录（按进程 + tag 隔离，进入前先清残留）。
 fn temp_base(tag: &str) -> std::path::PathBuf {
-    let dir = std::env::temp_dir().join(format!(
-        "nemesis_data_db_test_{}_{tag}",
-        std::process::id()
-    ));
+    let dir =
+        std::env::temp_dir().join(format!("nemesis_data_db_test_{}_{tag}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).unwrap();
     dir

@@ -1,7 +1,7 @@
 //! Pricing table + cost-formula tests (kept out of production files).
 
 use crate::models::ModelPricing;
-use crate::pricing::{compute_cost_usd, cost_from_pricing, lookup_pricing, PricingTable};
+use crate::pricing::{PricingTable, compute_cost_usd, cost_from_pricing, lookup_pricing};
 use std::collections::HashMap;
 
 fn approx(a: f64, b: f64) -> bool {
@@ -13,7 +13,11 @@ fn embedded_table_loads_and_is_sane() {
     let table = PricingTable::embedded();
     assert!(table.entries().len() >= 30, "expected ~36 entries");
     // model_id unique.
-    let mut ids: Vec<&str> = table.entries().iter().map(|e| e.model_id.as_str()).collect();
+    let mut ids: Vec<&str> = table
+        .entries()
+        .iter()
+        .map(|e| e.model_id.as_str())
+        .collect();
     ids.sort_unstable();
     let before = ids.len();
     ids.dedup();
@@ -85,8 +89,8 @@ fn cost_deepseek_cache_split() {
 fn cost_claude_cache_creation() {
     // claude-opus-4-5: 5 in / 25 out / 0.5 read / 6.25 write.
     let cost = compute_cost_usd("claude-opus-4-5", 1_000_000, 50_000, 200_000, 300_000);
-    let expected = (500_000.0 * 5.0 + 50_000.0 * 25.0 + 200_000.0 * 6.25 + 300_000.0 * 0.5)
-        / 1_000_000.0;
+    let expected =
+        (500_000.0 * 5.0 + 50_000.0 * 25.0 + 200_000.0 * 6.25 + 300_000.0 * 0.5) / 1_000_000.0;
     assert!(approx(cost, expected), "got {cost} want {expected}");
 }
 
@@ -103,7 +107,10 @@ fn cost_clamps_negative_plain_input() {
 
 #[test]
 fn cost_unknown_model_degrades_to_zero() {
-    assert_eq!(compute_cost_usd("testai-1.1", 1_000_000, 1_000_000, 0, 0), 0.0);
+    assert_eq!(
+        compute_cost_usd("testai-1.1", 1_000_000, 1_000_000, 0, 0),
+        0.0
+    );
     assert_eq!(compute_cost_usd("", 1000, 1000, 0, 0), 0.0);
 }
 
@@ -137,7 +144,10 @@ fn cost_from_pricing_synthetic_entry() {
     }
     assert!(table.lookup("synthetic").is_some());
     assert!(table.lookup("vendor/synthetic").is_some());
-    assert_eq!(table.lookup("vendor/synthetic").unwrap().model_id, "synthetic");
+    assert_eq!(
+        table.lookup("vendor/synthetic").unwrap().model_id,
+        "synthetic"
+    );
 }
 
 #[test]

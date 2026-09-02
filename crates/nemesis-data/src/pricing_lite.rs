@@ -88,7 +88,9 @@ pub fn parse_litellm_json(raw: &str) -> Result<Vec<ModelPricing>, String> {
     }
     // 0 条 = 传错文件/形状不对（真表数千条）——报错让调用方降级保留旧表。
     if out.is_empty() {
-        return Err("LiteLLM price table parsed to 0 chat entries — wrong file or shape?".to_string());
+        return Err(
+            "LiteLLM price table parsed to 0 chat entries — wrong file or shape?".to_string(),
+        );
     }
     Ok(out)
 }

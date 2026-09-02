@@ -746,10 +746,8 @@ fn test_ensure_exe_in_path() {
 #[test]
 fn ensure_exe_in_path_without_path_env_sets_it_from_scratch() {
     let _guard = crate::GLOBAL_STATE_LOCK.lock().unwrap();
-    let canonical = std::fs::canonicalize(
-        std::env::current_exe().unwrap().parent().unwrap(),
-    )
-    .unwrap();
+    let canonical =
+        std::fs::canonicalize(std::env::current_exe().unwrap().parent().unwrap()).unwrap();
     let saved = std::env::var("PATH").ok();
 
     unsafe { std::env::remove_var("PATH") };
@@ -776,7 +774,11 @@ fn resolve_home_exe_dir_and_cwd_marker_branches() {
 
     // --- exe-dir 分支：exe 旁建 .nemesisbot 标记（target 下的构建产物
     // 目录，非生产数据；测点测量完立即拆除）。---
-    let exe_dir = std::env::current_exe().unwrap().parent().unwrap().to_path_buf();
+    let exe_dir = std::env::current_exe()
+        .unwrap()
+        .parent()
+        .unwrap()
+        .to_path_buf();
     let exe_marker = exe_dir.join(".nemesisbot");
     let exe_marker_created = !exe_marker.exists();
     if exe_marker_created {
@@ -805,8 +807,14 @@ fn resolve_home_exe_dir_and_cwd_marker_branches() {
         None => unsafe { std::env::remove_var("NEMESISBOT_HOME") },
     }
 
-    assert_eq!(home_from_exe, exe_marker, "exe-dir marker must beat cwd/default");
-    assert_eq!(home_from_cwd, cwd_marker, "cwd marker must beat default home");
+    assert_eq!(
+        home_from_exe, exe_marker,
+        "exe-dir marker must beat cwd/default"
+    );
+    assert_eq!(
+        home_from_cwd, cwd_marker,
+        "cwd marker must beat default home"
+    );
 }
 
 #[test]
@@ -880,7 +888,10 @@ fn init_logger_absolute_file_path_uses_it_verbatim() {
     let flags = init_logger_from_config(&cfg, &[]);
     assert_eq!(flags, 0);
     // 日志目录（绝对路径的 parent）被 create_dir_all。
-    assert!(tmp.path().join("abs").exists(), "absolute file dir must be created");
+    assert!(
+        tmp.path().join("abs").exists(),
+        "absolute file dir must be created"
+    );
 }
 
 #[test]
@@ -918,7 +929,10 @@ fn init_logger_uncreatable_log_dir_warns_but_continues() {
         } } }),
     );
     let flags = init_logger_from_config(&cfg, &[]);
-    assert_eq!(flags, 0, "dir-creation failure must not alter override flags");
+    assert_eq!(
+        flags, 0,
+        "dir-creation failure must not alter override flags"
+    );
 }
 
 #[test]
@@ -965,7 +979,11 @@ mod r9_zero {
 
         let bin_dir = tmp.path().join("bin");
         std::fs::create_dir_all(bin_dir.join(".nemesisbot")).unwrap();
-        let exe_name = if cfg!(windows) { "nemesisbot.exe" } else { "nemesisbot" };
+        let exe_name = if cfg!(windows) {
+            "nemesisbot.exe"
+        } else {
+            "nemesisbot"
+        };
         let bin_dst = bin_dir.join(exe_name);
         std::fs::copy(&bin_src, &bin_dst).expect("拷贝 exe 到临时 bin/");
 

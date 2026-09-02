@@ -858,8 +858,8 @@ fn send_response_static(
 }
 
 #[cfg(test)]
+mod s1_tests;
+#[cfg(test)]
 mod tests;
 #[cfg(test)]
 mod w1b_tests;
-#[cfg(test)]
-mod s1_tests;

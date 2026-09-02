@@ -1621,7 +1621,9 @@ async fn w4a_i2c_detect_reports_no_buses_on_this_host() {
     // 如实列出）。真实 Linux 板子常挂 24+ 个 i2c 节点（2026-09-01 远端实测
     // "Found 24 I2C bus(es)"）→ 机器依赖，按 SKIP 约定退出。
     if std::path::Path::new("/dev/i2c-0").exists() {
-        eprintln!("SKIP: host exposes /dev/i2c-* nodes; the no-buses hint branch is not reachable — 补齐命令(换无 i2c 总线的机器)");
+        eprintln!(
+            "SKIP: host exposes /dev/i2c-* nodes; the no-buses hint branch is not reachable — 补齐命令(换无 i2c 总线的机器)"
+        );
         return;
     }
     let tool = I2CTool::new();
@@ -1644,15 +1646,15 @@ async fn w4a_i2c_scan_validation_and_missing_device() {
     assert!(r.is_error);
     assert!(r.for_llm.contains("bus is required"), "got: {}", r.for_llm);
     // non-numeric bus
-    let r = tool
-        .scan(&serde_json::json!({"bus": "abc"}))
-        .await;
+    let r = tool.scan(&serde_json::json!({"bus": "abc"})).await;
     assert!(r.is_error);
-    assert!(r.for_llm.contains("invalid bus identifier"), "got: {}", r.for_llm);
+    assert!(
+        r.for_llm.contains("invalid bus identifier"),
+        "got: {}",
+        r.for_llm
+    );
     // well-formed bus but /dev/i2c-1 does not exist on this host
-    let r = tool
-        .scan(&serde_json::json!({"bus": "1"}))
-        .await;
+    let r = tool.scan(&serde_json::json!({"bus": "1"})).await;
     assert!(r.is_error);
     assert!(
         r.for_llm.contains("failed to open /dev/i2c-1"),
@@ -1665,7 +1667,9 @@ async fn w4a_i2c_scan_validation_and_missing_device() {
 async fn w4a_i2c_read_validation_and_platform_arm() {
     let tool = I2CTool::new();
     // missing bus
-    let r = tool.read_device(&serde_json::json!({"address": 0x38})).await;
+    let r = tool
+        .read_device(&serde_json::json!({"address": 0x38}))
+        .await;
     assert!(r.is_error);
     assert!(r.for_llm.contains("bus is required"));
     // address below range
@@ -1691,7 +1695,8 @@ async fn w4a_i2c_read_validation_and_platform_arm() {
             .await;
         assert!(!r.is_error);
         assert!(
-            r.for_llm.contains("I2C read 256 bytes from 0x38 (platform not supported"),
+            r.for_llm
+                .contains("I2C read 256 bytes from 0x38 (platform not supported"),
             "got: {}",
             r.for_llm
         );
@@ -1706,7 +1711,11 @@ async fn w4a_i2c_write_full_validation_matrix_and_platform_arm() {
         .write_device(&serde_json::json!({"bus": "1", "address": 0x38, "data": [1]}))
         .await;
     assert!(r.is_error);
-    assert!(r.for_llm.contains("require confirm: true"), "got: {}", r.for_llm);
+    assert!(
+        r.for_llm.contains("require confirm: true"),
+        "got: {}",
+        r.for_llm
+    );
     // missing bus
     let r = tool
         .write_device(&serde_json::json!({"confirm": true, "address": 0x38, "data": [1]}))
@@ -1715,12 +1724,16 @@ async fn w4a_i2c_write_full_validation_matrix_and_platform_arm() {
     assert!(r.for_llm.contains("bus is required"));
     // non-numeric bus
     let r = tool
-        .write_device(&serde_json::json!({"confirm": true, "bus": "x9", "address": 0x38, "data": [1]}))
+        .write_device(
+            &serde_json::json!({"confirm": true, "bus": "x9", "address": 0x38, "data": [1]}),
+        )
         .await;
     assert!(r.is_error);
     // address out of range
     let r = tool
-        .write_device(&serde_json::json!({"confirm": true, "bus": "1", "address": 0x99, "data": [1]}))
+        .write_device(
+            &serde_json::json!({"confirm": true, "bus": "1", "address": 0x99, "data": [1]}),
+        )
         .await;
     assert!(r.is_error);
     // missing data
@@ -1731,28 +1744,46 @@ async fn w4a_i2c_write_full_validation_matrix_and_platform_arm() {
     assert!(r.for_llm.contains("data is required"));
     // empty data array
     let r = tool
-        .write_device(&serde_json::json!({"confirm": true, "bus": "1", "address": 0x38, "data": []}))
+        .write_device(
+            &serde_json::json!({"confirm": true, "bus": "1", "address": 0x38, "data": []}),
+        )
         .await;
     assert!(r.is_error);
     // data too long (257)
     let big: Vec<u64> = (0..257).collect();
     let r = tool
-        .write_device(&serde_json::json!({"confirm": true, "bus": "1", "address": 0x38, "data": big}))
+        .write_device(
+            &serde_json::json!({"confirm": true, "bus": "1", "address": 0x38, "data": big}),
+        )
         .await;
     assert!(r.is_error);
-    assert!(r.for_llm.contains("maximum 256 bytes"), "got: {}", r.for_llm);
+    assert!(
+        r.for_llm.contains("maximum 256 bytes"),
+        "got: {}",
+        r.for_llm
+    );
     // register out of range
     let r = tool
         .write_device(&serde_json::json!({"confirm": true, "bus": "1", "address": 0x38, "register": 256, "data": [1]}))
         .await;
     assert!(r.is_error);
-    assert!(r.for_llm.contains("register must be between"), "got: {}", r.for_llm);
+    assert!(
+        r.for_llm.contains("register must be between"),
+        "got: {}",
+        r.for_llm
+    );
     // invalid byte in data (256)
     let r = tool
-        .write_device(&serde_json::json!({"confirm": true, "bus": "1", "address": 0x38, "data": [0, 256]}))
+        .write_device(
+            &serde_json::json!({"confirm": true, "bus": "1", "address": 0x38, "data": [0, 256]}),
+        )
         .await;
     assert!(r.is_error);
-    assert!(r.for_llm.contains("data[1] is not a valid byte"), "got: {}", r.for_llm);
+    assert!(
+        r.for_llm.contains("data[1] is not a valid byte"),
+        "got: {}",
+        r.for_llm
+    );
     // valid write on non-Linux: platform arm; register counts into the length
     // （Linux 上走真实打开路径 → 平台臂门控，同上）
     #[cfg(not(target_os = "linux"))]
@@ -1762,7 +1793,8 @@ async fn w4a_i2c_write_full_validation_matrix_and_platform_arm() {
             .await;
         assert!(!r.is_error);
         assert!(
-            r.for_llm.contains("I2C write 3 bytes to 0x38 (platform not supported"),
+            r.for_llm
+                .contains("I2C write 3 bytes to 0x38 (platform not supported"),
             "register+2 data bytes expected, got: {}",
             r.for_llm
         );
@@ -1790,7 +1822,11 @@ async fn w4a_spi_transfer_validation_and_platform_arm() {
         .transfer(&serde_json::json!({"device": "2.0", "data": [1]}))
         .await;
     assert!(r.is_error);
-    assert!(r.for_llm.contains("require confirm: true"), "got: {}", r.for_llm);
+    assert!(
+        r.for_llm.contains("require confirm: true"),
+        "got: {}",
+        r.for_llm
+    );
     // missing device
     let r = tool
         .transfer(&serde_json::json!({"confirm": true, "data": [1]}))
@@ -1821,13 +1857,21 @@ async fn w4a_spi_transfer_validation_and_platform_arm() {
         .transfer(&serde_json::json!({"confirm": true, "device": "2.0", "data": big}))
         .await;
     assert!(r.is_error);
-    assert!(r.for_llm.contains("maximum 4096 bytes"), "got: {}", r.for_llm);
+    assert!(
+        r.for_llm.contains("maximum 4096 bytes"),
+        "got: {}",
+        r.for_llm
+    );
     // invalid byte
     let r = tool
         .transfer(&serde_json::json!({"confirm": true, "device": "2.0", "data": [7, 300]}))
         .await;
     assert!(r.is_error);
-    assert!(r.for_llm.contains("data[1] is not a valid byte"), "got: {}", r.for_llm);
+    assert!(
+        r.for_llm.contains("data[1] is not a valid byte"),
+        "got: {}",
+        r.for_llm
+    );
     // valid transfer on non-Linux: platform arm（Linux 上走真实打开路径 →
     // 平台臂门控，同上）
     #[cfg(not(target_os = "linux"))]
@@ -1837,7 +1881,8 @@ async fn w4a_spi_transfer_validation_and_platform_arm() {
             .await;
         assert!(!r.is_error);
         assert!(
-            r.for_llm.contains("SPI transfer 2 bytes (platform not supported"),
+            r.for_llm
+                .contains("SPI transfer 2 bytes (platform not supported"),
             "got: {}",
             r.for_llm
         );
@@ -1862,7 +1907,11 @@ async fn w4a_spi_read_validation_and_platform_arm() {
         .read_device(&serde_json::json!({"device": "2.0", "length": 0}))
         .await;
     assert!(r.is_error);
-    assert!(r.for_llm.contains("between 1 and 4096"), "got: {}", r.for_llm);
+    assert!(
+        r.for_llm.contains("between 1 and 4096"),
+        "got: {}",
+        r.for_llm
+    );
     // length too large
     let r = tool
         .read_device(&serde_json::json!({"device": "2.0", "length": 5000}))
@@ -1877,7 +1926,8 @@ async fn w4a_spi_read_validation_and_platform_arm() {
             .await;
         assert!(!r.is_error);
         assert!(
-            r.for_llm.contains("SPI read 16 bytes (platform not supported"),
+            r.for_llm
+                .contains("SPI read 16 bytes (platform not supported"),
             "got: {}",
             r.for_llm
         );
@@ -1895,7 +1945,9 @@ async fn s2_i2c_detect_no_buses_reports_hint() {
     // 机器依赖前提（同 w4a_i2c_detect_reports_no_buses_on_this_host）：
     // 真实 Linux 板子常挂 i2c 节点 → detect 如实列出，hint 分支不可达。
     if std::path::Path::new("/dev/i2c-0").exists() {
-        eprintln!("SKIP: host exposes /dev/i2c-* nodes; the no-buses hint branch is not reachable — 补齐命令(换无 i2c 总线的机器)");
+        eprintln!(
+            "SKIP: host exposes /dev/i2c-* nodes; the no-buses hint branch is not reachable — 补齐命令(换无 i2c 总线的机器)"
+        );
         return;
     }
     let tool = I2CTool::new();
@@ -1914,11 +1966,7 @@ async fn s2_i2c_scan_missing_device_errors() {
     let tool = I2CTool::new();
     let r = tool.scan(&serde_json::json!({"bus": "1"})).await;
     assert!(r.is_error);
-    assert!(
-        r.for_llm.contains("failed to open"),
-        "got: {}",
-        r.for_llm
-    );
+    assert!(r.for_llm.contains("failed to open"), "got: {}", r.for_llm);
 }
 
 /// SPITool::list on Windows finds no /dev/spidevX.Y -> silent hint result.

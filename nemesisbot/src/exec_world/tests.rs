@@ -37,7 +37,10 @@ mod strict_channel_refusal {
         // 构造时没挂上盒 → 闸门按「通道无盒」拒绝（提示 start + 重启），
         // 而不是按磁盘上有没有 Start.exe。
         assert!(err.contains("no box attached"), "err: {err}");
-        assert!(!err.contains("failed to spawn"), "refusal must precede spawn: {err}");
+        assert!(
+            !err.contains("failed to spawn"),
+            "refusal must precede spawn: {err}"
+        );
     }
 
     #[tokio::test]
@@ -99,13 +102,20 @@ mod world_descriptors {
         .expect("enabled=true → Some(world)");
 
         assert_eq!(world.name(), "executor-channel");
-        assert!(world.supports_tool_calls(), "executor world has the tool lane");
+        assert!(
+            world.supports_tool_calls(),
+            "executor world has the tool lane"
+        );
         // 临时 home 下 Sandboxie 未就绪 → 通道无 Start.exe → 描述轴 = ExecutorChild。
         assert_eq!(world.spawn_semantics(), SpawnSemantics::ExecutorChild);
         assert_eq!(world.writable_roots(), vec![dir.path().join("w")]);
         // 默认写守卫：根内 Ok / 根外 Err
         assert!(world.check_writable(&dir.path().join("w/def.json")).is_ok());
-        assert!(world.check_writable(&dir.path().join("elsewhere/def.json")).is_err());
+        assert!(
+            world
+                .check_writable(&dir.path().join("elsewhere/def.json"))
+                .is_err()
+        );
 
         // Spawn 车道 cwd 守卫：根外 cwd 在 spawn 之前被拒（不会真起进程）。
         let err = world
@@ -216,7 +226,8 @@ mod layer0_and_live_probe {
     async fn strict_gate_flips_live_via_store_update() {
         // 临时 home 下通道无盒（构造时 Start.exe 不存在）——strict=false 闸门
         // 秒过；live 翻 strict=true 后同一闸门必须拒绝（构造结果未挂盒）。
-        let (dir, store) = seed(r#"{ "executor": { "enabled": true, "sandbox": true, "strict": false } }"#);
+        let (dir, store) =
+            seed(r#"{ "executor": { "enabled": true, "sandbox": true, "strict": false } }"#);
         let channel = build_executor_channel(dir.path(), dir.path(), store.handle())
             .expect("build")
             .expect("enabled=true → Some");

@@ -203,8 +203,11 @@ fn cleanup_old_sessions_deletes_expired_and_warns_on_readonly() {
     // readonly 过期 session（先写内容再设属性，之后绝不动它）
     let k2 = key("cleanup2");
     let ro_path = dir.join(format!("{}.json", sanitize_filename(&k2)));
-    std::fs::write(&ro_path, format!(r#"{{"key":"{k2}","messages":[],"updated":"{old_ts}"}}"#))
-        .unwrap();
+    std::fs::write(
+        &ro_path,
+        format!(r#"{{"key":"{k2}","messages":[],"updated":"{old_ts}"}}"#),
+    )
+    .unwrap();
     let meta = std::fs::metadata(&ro_path).unwrap();
     let mut perm = meta.permissions();
     perm.set_readonly(true);
@@ -240,7 +243,8 @@ fn cleanup_old_sessions_deletes_expired_and_warns_on_readonly() {
         assert!(!ro_path.exists());
     }
     assert!(
-        dir.join(format!("{}.json", sanitize_filename(&k3))).exists(),
+        dir.join(format!("{}.json", sanitize_filename(&k3)))
+            .exists(),
         "fresh session kept"
     );
 
@@ -282,7 +286,12 @@ fn force_compress_turns_logs_and_drops_half() {
         });
     }
     let out = force_compress_turns(&hist);
-    assert!(out.len() < hist.len(), "compressed {} -> {}", hist.len(), out.len());
+    assert!(
+        out.len() < hist.len(),
+        "compressed {} -> {}",
+        hist.len(),
+        out.len()
+    );
     assert_eq!(out[0].role, "system");
     assert!(out[1].content.contains("Emergency compression"));
     // 短历史原样返回（1505-1506 对照）

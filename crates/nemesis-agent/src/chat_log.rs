@@ -77,7 +77,10 @@ pub fn append_chat_log_full(
     // U20 (sixth batch): lazy FTS index hook — best-effort, failures inside
     // are swallowed (the next full reindex repairs). Timestamp mirrors the
     // entry written above.
-    let ts = entry.get("timestamp").and_then(|t| t.as_str()).unwrap_or("");
+    let ts = entry
+        .get("timestamp")
+        .and_then(|t| t.as_str())
+        .unwrap_or("");
     crate::history_search::index_append(session_key, role, content, ts);
 }
 
@@ -189,7 +192,9 @@ pub fn write_chat_log_rows(new_key: &str, rows: &[Value]) -> usize {
     let mut written = 0usize;
     if let Ok(mut f) = OpenOptions::new().create(true).append(true).open(&target) {
         for v in rows {
-            let Ok(line) = serde_json::to_string(v) else { continue };
+            let Ok(line) = serde_json::to_string(v) else {
+                continue;
+            };
             if writeln!(f, "{}", line).is_ok() {
                 written += 1;
             }
@@ -351,19 +356,22 @@ pub fn write_chat_log_from_store(
 pub fn delete_chat_log(session_key: &str) {
     let path = log_path(session_key);
     if let Err(e) = std::fs::remove_file(&path)
-        && e.kind() != std::io::ErrorKind::NotFound {
-            tracing::warn!("[chat_log] Failed to delete {}: {}", path.display(), e);
-        }
+        && e.kind() != std::io::ErrorKind::NotFound
+    {
+        tracing::warn!("[chat_log] Failed to delete {}: {}", path.display(), e);
+    }
     let bpath = boundary_path(session_key);
     if let Err(e) = std::fs::remove_file(&bpath)
-        && e.kind() != std::io::ErrorKind::NotFound {
-            tracing::warn!("[chat_log] Failed to delete {}: {}", bpath.display(), e);
-        }
+        && e.kind() != std::io::ErrorKind::NotFound
+    {
+        tracing::warn!("[chat_log] Failed to delete {}: {}", bpath.display(), e);
+    }
     let mpath = meta_path(session_key);
     if let Err(e) = std::fs::remove_file(&mpath)
-        && e.kind() != std::io::ErrorKind::NotFound {
-            tracing::warn!("[chat_log] Failed to delete {}: {}", mpath.display(), e);
-        }
+        && e.kind() != std::io::ErrorKind::NotFound
+    {
+        tracing::warn!("[chat_log] Failed to delete {}: {}", mpath.display(), e);
+    }
 }
 
 /// Clear (truncate) a session's chat log, keeping the file. Used by session
@@ -376,9 +384,10 @@ pub fn clear_chat_log(session_key: &str) {
     }
     let bpath = boundary_path(session_key);
     if bpath.exists()
-        && let Err(e) = fs::write(&bpath, "") {
-            tracing::warn!("[chat_log] Failed to clear {}: {}", bpath.display(), e);
-        }
+        && let Err(e) = fs::write(&bpath, "")
+    {
+        tracing::warn!("[chat_log] Failed to clear {}: {}", bpath.display(), e);
+    }
 }
 
 /// Path for the sidecar title meta file (`{safe_key}.meta.json`, next to the
@@ -450,7 +459,11 @@ pub fn append_boundary_event(session_key: &str, kind: &str, detail: &str) {
     let mut file = match OpenOptions::new().create(true).append(true).open(&path) {
         Ok(f) => f,
         Err(e) => {
-            tracing::warn!("[chat_log] boundary event open failed {}: {}", path.display(), e);
+            tracing::warn!(
+                "[chat_log] boundary event open failed {}: {}",
+                path.display(),
+                e
+            );
             return;
         }
     };

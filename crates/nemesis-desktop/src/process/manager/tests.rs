@@ -1267,8 +1267,7 @@ mod scripted_spawn_tests {
     // --- script builder ---
 
     fn build_script(variant: &str, log_path: &str) -> String {
-        const ACK: &str =
-            "[Console]::Out.WriteLine('{\"type\":\"ack\"}'); [Console]::Out.Flush()";
+        const ACK: &str = "[Console]::Out.WriteLine('{\"type\":\"ack\"}'); [Console]::Out.Flush()";
         const HELLO: &str =
             "[Console]::Out.WriteLine('{\"type\":\"hello\"}'); [Console]::Out.Flush()";
 
@@ -1330,10 +1329,8 @@ mod scripted_spawn_tests {
     }
 
     fn mgr_with_script(variant: &'static str) -> (ProcessManager, std::path::PathBuf) {
-        let log_path = std::env::temp_dir().join(format!(
-            "nb-desktop-mgr-{}.log",
-            uuid::Uuid::new_v4()
-        ));
+        let log_path =
+            std::env::temp_dir().join(format!("nb-desktop-mgr-{}.log", uuid::Uuid::new_v4()));
         let mgr = ProcessManager::with_executor(Arc::new(ScriptedExecutor {
             inner: DefaultPlatformExecutor::with_defaults(),
             log_path: log_path.clone(),
@@ -1350,12 +1347,13 @@ mod scripted_spawn_tests {
                 continue;
             }
             if let Ok(v) = serde_json::from_str::<serde_json::Value>(line)
-                && v["type"] == "ws_key" {
-                    return v["data"]["key"]
-                        .as_str()
-                        .expect("key field in ws_key message")
-                        .to_string();
-                }
+                && v["type"] == "ws_key"
+            {
+                return v["data"]["key"]
+                    .as_str()
+                    .expect("key field in ws_key message")
+                    .to_string();
+            }
         }
         panic!("no ws_key line found in child log:\n{}", content);
     }
@@ -1417,10 +1415,7 @@ mod scripted_spawn_tests {
         let err = mgr
             .spawn_child("approval", &serde_json::json!({}))
             .unwrap_err();
-        assert_eq!(
-            err,
-            "failed to send window data: expected ack, got hello"
-        );
+        assert_eq!(err, "failed to send window data: expected ack, got hello");
         assert_eq!(mgr.active_count(), 0);
         mgr.stop().unwrap();
     }
@@ -1465,12 +1460,10 @@ mod scripted_spawn_tests {
         // real child received (parsed from the child's stdin log).
         let key = read_ws_key_from_log(&log_path);
         let port = mgr.ws_port();
-        let (mut ws, _) = tokio_tungstenite::connect_async(format!(
-            "ws://127.0.0.1:{}/child/{}",
-            port, key
-        ))
-        .await
-        .expect("rogue connect");
+        let (mut ws, _) =
+            tokio_tungstenite::connect_async(format!("ws://127.0.0.1:{}/child/{}", port, key))
+                .await
+                .expect("rogue connect");
         let auth = serde_json::json!({"type": "auth", "key": key});
         ws.send(WsMessage::Text(auth.to_string().into()))
             .await
@@ -1505,7 +1498,9 @@ mod scripted_spawn_tests {
                         serde_json::json!({"echo": true}),
                     );
                     let _ = ws
-                        .send(WsMessage::Text(serde_json::to_string(&resp).unwrap().into()))
+                        .send(WsMessage::Text(
+                            serde_json::to_string(&resp).unwrap().into(),
+                        ))
                         .await;
                 }
             }
@@ -1541,12 +1536,10 @@ mod scripted_spawn_tests {
         // Rogue child connects with the key from the child's stdin log.
         let key = read_ws_key_from_log(&log_path);
         let port = mgr.ws_port();
-        let (mut ws, _) = tokio_tungstenite::connect_async(format!(
-            "ws://127.0.0.1:{}/child/{}",
-            port, key
-        ))
-        .await
-        .expect("rogue connect");
+        let (mut ws, _) =
+            tokio_tungstenite::connect_async(format!("ws://127.0.0.1:{}/child/{}", port, key))
+                .await
+                .expect("rogue connect");
         let auth = serde_json::json!({"type": "auth", "key": key});
         ws.send(WsMessage::Text(auth.to_string().into()))
             .await
@@ -1560,9 +1553,11 @@ mod scripted_spawn_tests {
             "approval.submit",
             serde_json::json!({"action": "approved", "request_id": "r1"}),
         );
-        ws.send(WsMessage::Text(serde_json::to_string(&note).unwrap().into()))
-            .await
-            .unwrap();
+        ws.send(WsMessage::Text(
+            serde_json::to_string(&note).unwrap().into(),
+        ))
+        .await
+        .unwrap();
 
         let value = tokio::time::timeout(Duration::from_secs(5), &mut rx)
             .await

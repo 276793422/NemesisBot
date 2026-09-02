@@ -233,7 +233,13 @@ async fn on_event_ignores_unknown_execution_and_non_chat_triggers() {
     // chat_log write happens for it.
     let wf_name = unique_wf("other");
     let engine = WorkflowEngine::with_persistence(dir.path().to_path_buf());
-    let exec = seeded_execution("exec-s10b-cli", &wf_name, Some(TriggerSource::Cli), None, None);
+    let exec = seeded_execution(
+        "exec-s10b-cli",
+        &wf_name,
+        Some(TriggerSource::Cli),
+        None,
+        None,
+    );
     persist(dir.path(), &exec);
     let obs = make_observer(engine);
     obs.on_event(WorkflowEvent::Completed {
@@ -254,6 +260,10 @@ async fn build_completed_reply_without_workflow_def_dumps_node_results() {
     let engine = WorkflowEngine::new();
     let exec = seeded_execution("exec-x", "vanished", None, Some("原始输出"), None);
     let reply = build_completed_reply(&engine, &exec).await;
-    assert!(reply.contains("原始输出"), "dumped node_results, got: {}", reply);
+    assert!(
+        reply.contains("原始输出"),
+        "dumped node_results, got: {}",
+        reply
+    );
     assert!(reply.starts_with('{'), "pretty JSON dump: {}", reply);
 }

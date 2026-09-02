@@ -225,29 +225,30 @@ impl CronTool {
 
         // Execute command if present
         if let Some(ref command) = job.command
-            && !command.is_empty() {
-                if let Some(ref shell) = self.shell_tool {
-                    let args = serde_json::json!({
-                        "command": command
-                    });
-                    let result = shell.execute(&args).await;
-                    let output = if result.is_error {
-                        format!("Error executing scheduled command: {}", result.for_llm)
-                    } else {
-                        format!(
-                            "Scheduled command '{}' executed:\n{}",
-                            command, result.for_llm
-                        )
-                    };
-
-                    if let Some(ref out) = self.output {
-                        out.publish_outbound(channel, chat_id, &output);
-                    }
-                    return "ok".to_string();
+            && !command.is_empty()
+        {
+            if let Some(ref shell) = self.shell_tool {
+                let args = serde_json::json!({
+                    "command": command
+                });
+                let result = shell.execute(&args).await;
+                let output = if result.is_error {
+                    format!("Error executing scheduled command: {}", result.for_llm)
                 } else {
-                    return "error: no shell tool configured".to_string();
+                    format!(
+                        "Scheduled command '{}' executed:\n{}",
+                        command, result.for_llm
+                    )
+                };
+
+                if let Some(ref out) = self.output {
+                    out.publish_outbound(channel, chat_id, &output);
                 }
+                return "ok".to_string();
+            } else {
+                return "error: no shell tool configured".to_string();
             }
+        }
 
         // If deliver=true, send message directly without agent processing
         if job.deliver {

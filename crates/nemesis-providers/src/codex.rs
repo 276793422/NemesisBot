@@ -328,9 +328,10 @@ fn parse_codex_response(data: &serde_json::Value) -> LLMResponse {
                     if let Some(content_arr) = item.get("content").and_then(|c| c.as_array()) {
                         for c in content_arr {
                             if c.get("type").and_then(|t| t.as_str()) == Some("output_text")
-                                && let Some(text) = c.get("text").and_then(|t| t.as_str()) {
-                                    content.push_str(text);
-                                }
+                                && let Some(text) = c.get("text").and_then(|t| t.as_str())
+                            {
+                                content.push_str(text);
+                            }
                         }
                     }
                 }

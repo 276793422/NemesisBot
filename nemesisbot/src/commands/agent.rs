@@ -378,37 +378,38 @@ pub(crate) fn build_agent_loop(
     //    sessions also write raw LLM request/response logs (same as gateway).
     if let Some(ref logging_cfg) = cfg.logging
         && let Some(llm_cfg) = &logging_cfg.llm
-            && llm_cfg.enabled {
-                let rl_logging_config = nemesis_agent::request_logger::LoggingConfig {
-                    enabled: true,
-                    detail_level: match llm_cfg.detail_level.as_str() {
-                        "truncated" => nemesis_agent::request_logger::DetailLevel::Truncated,
-                        _ => nemesis_agent::request_logger::DetailLevel::Full,
-                    },
-                    log_dir: if llm_cfg.log_dir.is_empty() {
-                        "logs/request_logs".to_string()
-                    } else {
-                        llm_cfg.log_dir.clone()
-                    },
-                    save_raw: llm_cfg.save_raw,
-                };
-                let workspace_path = home.join("workspace");
-                let rl_observer = std::sync::Arc::new(
-                    nemesis_agent::request_logger_observer::RequestLoggerObserver::new(
-                        rl_logging_config,
-                        &workspace_path,
-                    ),
-                );
-                let observer_mgr = std::sync::Arc::new(nemesis_observer::Manager::new());
-                let mgr = observer_mgr.clone();
-                tokio::task::block_in_place(|| {
-                    tokio::runtime::Handle::current().block_on(async {
-                        mgr.register(rl_observer).await;
-                    })
-                });
-                agent_loop.set_observer_manager(observer_mgr);
-                info!("[Agent] RequestLoggerObserver registered (logging.llm.enabled = true)");
-            }
+        && llm_cfg.enabled
+    {
+        let rl_logging_config = nemesis_agent::request_logger::LoggingConfig {
+            enabled: true,
+            detail_level: match llm_cfg.detail_level.as_str() {
+                "truncated" => nemesis_agent::request_logger::DetailLevel::Truncated,
+                _ => nemesis_agent::request_logger::DetailLevel::Full,
+            },
+            log_dir: if llm_cfg.log_dir.is_empty() {
+                "logs/request_logs".to_string()
+            } else {
+                llm_cfg.log_dir.clone()
+            },
+            save_raw: llm_cfg.save_raw,
+        };
+        let workspace_path = home.join("workspace");
+        let rl_observer = std::sync::Arc::new(
+            nemesis_agent::request_logger_observer::RequestLoggerObserver::new(
+                rl_logging_config,
+                &workspace_path,
+            ),
+        );
+        let observer_mgr = std::sync::Arc::new(nemesis_observer::Manager::new());
+        let mgr = observer_mgr.clone();
+        tokio::task::block_in_place(|| {
+            tokio::runtime::Handle::current().block_on(async {
+                mgr.register(rl_observer).await;
+            })
+        });
+        agent_loop.set_observer_manager(observer_mgr);
+        info!("[Agent] RequestLoggerObserver registered (logging.llm.enabled = true)");
+    }
 
     Ok(agent_loop)
 }
@@ -569,11 +570,11 @@ pub async fn run(
                                             if let Some(registry) = agent_loop.get_registry()
                                                 && let Some(default_id) =
                                                     registry.default_agent_id()
-                                                {
-                                                    registry.with_agent(&default_id, |inst| {
-                                                        inst.clear_history();
-                                                    });
-                                                }
+                                            {
+                                                registry.with_agent(&default_id, |inst| {
+                                                    inst.clear_history();
+                                                });
+                                            }
                                             println!("  History cleared.");
                                             println!();
                                             continue;
@@ -722,20 +723,20 @@ pub async fn run(
                     let mut cfg: serde_json::Value = serde_json::from_str(&data)?;
                     if let Some(obj) = cfg.as_object_mut()
                         && let Some(agents) = obj.get_mut("agents").and_then(|v| v.as_object_mut())
-                            && let Some(defaults) =
-                                agents.get_mut("defaults").and_then(|v| v.as_object_mut())
-                            {
-                                defaults.insert(
-                                    "concurrent_request_mode".to_string(),
-                                    serde_json::Value::String(mode.clone()),
-                                );
-                                if mode == "queue" {
-                                    defaults.insert(
-                                        "queue_size".to_string(),
-                                        serde_json::json!(queue_size.unwrap_or(8)),
-                                    );
-                                }
-                            }
+                        && let Some(defaults) =
+                            agents.get_mut("defaults").and_then(|v| v.as_object_mut())
+                    {
+                        defaults.insert(
+                            "concurrent_request_mode".to_string(),
+                            serde_json::Value::String(mode.clone()),
+                        );
+                        if mode == "queue" {
+                            defaults.insert(
+                                "queue_size".to_string(),
+                                serde_json::json!(queue_size.unwrap_or(8)),
+                            );
+                        }
+                    }
                     std::fs::write(
                         &cfg_path,
                         serde_json::to_string_pretty(&cfg).unwrap_or_default(),

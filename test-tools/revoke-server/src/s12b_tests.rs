@@ -71,10 +71,11 @@ async fn run_boots_full_server_and_init_keys_on_ephemeral_port() {
     let mut health_ok = false;
     while tokio::time::Instant::now() < deadline {
         if let Some(resp) = http_get(port, "/v1/health").await
-            && (resp.starts_with("HTTP/1.1 200") || resp.contains(" 200 ")) {
-                health_ok = true;
-                break;
-            }
+            && (resp.starts_with("HTTP/1.1 200") || resp.contains(" 200 "))
+        {
+            health_ok = true;
+            break;
+        }
         tokio::time::sleep(Duration::from_millis(100)).await;
     }
     assert!(health_ok, "server did not come up on port {port} in time");
@@ -92,8 +93,7 @@ async fn run_boots_full_server_and_init_keys_on_ephemeral_port() {
         .find("\r\n\r\n")
         .map(|i| &crl_resp[i + 4..])
         .unwrap_or("");
-    let v: serde_json::Value =
-        serde_json::from_str(body_start.trim()).expect("crl JSON body");
+    let v: serde_json::Value = serde_json::from_str(body_start.trim()).expect("crl JSON body");
     assert_eq!(v["payload"]["version"], 1, "初始 CRL version=1: {v}");
     assert!(!v["sig"].as_str().unwrap_or("").is_empty(), "带根签");
 
@@ -118,9 +118,6 @@ async fn run_without_init_keys_and_missing_keyfile_is_err() {
         admin_token: "t".to_string(),
     };
     let err = run(cli).await.unwrap_err().to_string();
-    assert!(
-        err.contains("load keys file"),
-        "错误应来自密钥加载: {err}"
-    );
+    assert!(err.contains("load keys file"), "错误应来自密钥加载: {err}");
     let _ = std::fs::remove_file(&keys);
 }

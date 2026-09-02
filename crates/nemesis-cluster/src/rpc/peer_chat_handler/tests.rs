@@ -1278,10 +1278,12 @@ impl TaskResultPersister for RecordingPersisterW3b {
         error: &str,
         _source_node: &str,
     ) -> Result<(), String> {
-        self.results
-            .lock()
-            .unwrap()
-            .push((task_id.into(), status.into(), response.into(), error.into()));
+        self.results.lock().unwrap().push((
+            task_id.into(),
+            status.into(),
+            response.into(),
+            error.into(),
+        ));
         Ok(())
     }
     fn delete(&self, task_id: &str) -> Result<(), String> {
@@ -1433,19 +1435,37 @@ async fn test_w3b_send_callback_real_server_success_and_error_field() {
     let client = RpcClient::with_resolver(Arc::new(StaticResolverW3b { port }));
 
     // Success without error → payload omits the error field entirely
-    let ok = send_callback(Some(&client), "origin-node", "w3b-cb-1", "success", "done-work", "").await;
+    let ok = send_callback(
+        Some(&client),
+        "origin-node",
+        "w3b-cb-1",
+        "success",
+        "done-work",
+        "",
+    )
+    .await;
     assert!(ok, "callback should succeed against the live server");
     {
         let cap = captured.lock().unwrap();
         assert_eq!(cap.len(), 1);
         assert_eq!(cap[0]["task_id"], "w3b-cb-1");
         assert_eq!(cap[0]["status"], "success");
-        assert!(cap[0].get("error").is_none(), "error field omitted when empty");
+        assert!(
+            cap[0].get("error").is_none(),
+            "error field omitted when empty"
+        );
     }
 
     // Non-empty error → payload carries it
-    let ok2 =
-        send_callback(Some(&client), "origin-node", "w3b-cb-2", "error", "", "boom-detail").await;
+    let ok2 = send_callback(
+        Some(&client),
+        "origin-node",
+        "w3b-cb-2",
+        "error",
+        "",
+        "boom-detail",
+    )
+    .await;
     assert!(ok2);
     {
         let cap = captured.lock().unwrap();
@@ -1703,6 +1723,14 @@ async fn test_s4_send_callback_or_persist_set_result_failure_logs() {
 async fn test_s4_send_callback_retry_warn_field_line() {
     s4_tracing_subscriber();
     let client = RpcClient::with_resolver(Arc::new(StaticResolverW3b { port: 1 }));
-    let ok = send_callback(Some(&client), "ghost-node", "s4-retry-1", "success", "r", "").await;
+    let ok = send_callback(
+        Some(&client),
+        "ghost-node",
+        "s4-retry-1",
+        "success",
+        "r",
+        "",
+    )
+    .await;
     assert!(!ok, "all callback retries should be exhausted");
 }

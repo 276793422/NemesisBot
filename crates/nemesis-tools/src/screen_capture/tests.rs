@@ -810,10 +810,7 @@ async fn w4a_region_mcp_error_falls_back_to_powershell_and_times_out() {
         }
     }
     let dir = tempfile::TempDir::new().unwrap();
-    let tool = ScreenCaptureTool::new(
-        dir.path().to_path_buf(),
-        Some(Arc::new(FailingRegionMCP)),
-    );
+    let tool = ScreenCaptureTool::new(dir.path().to_path_buf(), Some(Arc::new(FailingRegionMCP)));
     tool.set_timeout(Duration::from_millis(1)).await;
     let result = tool
         .execute(&serde_json::json!({
@@ -863,10 +860,7 @@ async fn w4a_window_mode_title_find_returning_garbage_captures_without_hwnd() {
         }
     }
     let dir = tempfile::TempDir::new().unwrap();
-    let tool = ScreenCaptureTool::new(
-        dir.path().to_path_buf(),
-        Some(Arc::new(GarbageFindMCP)),
-    );
+    let tool = ScreenCaptureTool::new(dir.path().to_path_buf(), Some(Arc::new(GarbageFindMCP)));
     let result = tool
         .execute(&serde_json::json!({
             "mode": "window", "window_title": "Whatever"

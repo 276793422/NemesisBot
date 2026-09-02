@@ -327,12 +327,12 @@ impl PeerRegistry {
                 if entry.info.status != NodeStatus::Online
                     && let Ok(last_check) =
                         chrono::DateTime::parse_from_rfc3339(&entry.last_health_check)
-                    {
-                        let last_check_utc = last_check.with_timezone(&chrono::Local);
-                        if last_check_utc < threshold {
-                            return Some(id.clone());
-                        }
+                {
+                    let last_check_utc = last_check.with_timezone(&chrono::Local);
+                    if last_check_utc < threshold {
+                        return Some(id.clone());
                     }
+                }
                 None
             })
             .collect();

@@ -289,7 +289,10 @@ fn test_s4_write_entry_open_failure_warns_and_skips() {
     writer.write_entry("s4_event", serde_json::json!({"k": "v"}));
 
     let inner = writer.inner.lock();
-    assert!(inner.file.is_none(), "file handle must be cleared on open failure");
+    assert!(
+        inner.file.is_none(),
+        "file handle must be cleared on open failure"
+    );
     drop(inner);
 }
 

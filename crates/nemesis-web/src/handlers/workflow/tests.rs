@@ -1183,7 +1183,11 @@ fn node(node_type: &str, config: HashMap<String, serde_json::Value>) -> NodeDef 
     }
 }
 
-fn workflow_of(name: &str, node_type: &str, config: HashMap<String, serde_json::Value>) -> Workflow {
+fn workflow_of(
+    name: &str,
+    node_type: &str,
+    config: HashMap<String, serde_json::Value>,
+) -> Workflow {
     Workflow {
         name: name.to_string(),
         description: format!("wf {}", name),
@@ -1316,7 +1320,10 @@ async fn rest_run_success_returns_completed_execution() {
     assert_eq!(json["state"], "Completed");
     assert!(json["execution_id"].is_string());
     assert!(json["ended_at"].is_string());
-    assert!(json["trigger_source"].is_object(), "run passes TriggerSource::Webhook");
+    assert!(
+        json["trigger_source"].is_object(),
+        "run passes TriggerSource::Webhook"
+    );
 }
 
 #[tokio::test]
@@ -1353,7 +1360,9 @@ async fn rest_start_engine_missing_missing_name_unknown_and_success() {
 
     // 4) 成功 → execution_id 立即返回，后台任务已登记执行记录
     let engine = build_test_engine();
-    engine.register_workflow(instant_workflow("asyncwf")).unwrap();
+    engine
+        .register_workflow(instant_workflow("asyncwf"))
+        .unwrap();
     let Json(json) = handle_workflow_start(
         axum::extract::State(state_with_engine(engine.clone())),
         Json(serde_json::json!({ "name": "asyncwf" })),
@@ -1367,16 +1376,18 @@ async fn rest_start_engine_missing_missing_name_unknown_and_success() {
 
 #[tokio::test]
 async fn rest_list_engine_missing_and_with_workflows() {
-    let (status, _) =
-        handle_workflow_list(axum::extract::State(make_test_state(""))).await.unwrap_err();
+    let (status, _) = handle_workflow_list(axum::extract::State(make_test_state("")))
+        .await
+        .unwrap_err();
     assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE);
 
     let engine = build_test_engine();
-    engine.register_workflow(instant_workflow("listed")).unwrap();
-    let Json(json) =
-        handle_workflow_list(axum::extract::State(state_with_engine(engine)))
-            .await
-            .unwrap();
+    engine
+        .register_workflow(instant_workflow("listed"))
+        .unwrap();
+    let Json(json) = handle_workflow_list(axum::extract::State(state_with_engine(engine)))
+        .await
+        .unwrap();
     assert_eq!(json["count"], 1);
     assert_eq!(json["workflows"][0]["name"], "listed");
     assert!(json["trigger_driver_status"].is_object());
@@ -1385,16 +1396,16 @@ async fn rest_list_engine_missing_and_with_workflows() {
 #[tokio::test]
 async fn rest_status_found_and_not_found() {
     let engine = build_test_engine();
-    engine.register_workflow(instant_workflow("statwf")).unwrap();
+    engine
+        .register_workflow(instant_workflow("statwf"))
+        .unwrap();
     let exec = engine.run("statwf", HashMap::new(), None).await.unwrap();
     let state = state_with_engine(engine.clone());
 
-    let Json(json) = handle_workflow_status(
-        axum::extract::State(state.clone()),
-        Path(exec.id.clone()),
-    )
-    .await
-    .unwrap();
+    let Json(json) =
+        handle_workflow_status(axum::extract::State(state.clone()), Path(exec.id.clone()))
+            .await
+            .unwrap();
     assert_eq!(json["execution_id"], exec.id);
     assert_eq!(json["state"], "Completed");
 
@@ -1494,7 +1505,9 @@ async fn webhook_rate_limit_returns_429_on_61st_call_same_ip() {
 #[tokio::test]
 async fn webhook_unsigned_workflow_accepted_without_secret() {
     let engine = build_test_engine();
-    engine.register_workflow(webhook_workflow("hookopen", None)).unwrap();
+    engine
+        .register_workflow(webhook_workflow("hookopen", None))
+        .unwrap();
     let state = state_with_engine(engine.clone());
     let Json(json) = handle_workflow_webhook(
         axum::extract::State(state),
@@ -1566,7 +1579,9 @@ async fn webhook_signed_flow_rejects_then_accepts() {
 #[tokio::test]
 async fn webhook_get_variant_triggers_via_query_params() {
     let engine = build_test_engine();
-    engine.register_workflow(webhook_workflow("hookget", None)).unwrap();
+    engine
+        .register_workflow(webhook_workflow("hookget", None))
+        .unwrap();
     let state = state_with_engine(engine.clone());
     let Json(json) = handle_workflow_webhook_get(
         axum::extract::State(state),
@@ -1583,13 +1598,9 @@ async fn webhook_get_variant_triggers_via_query_params() {
 #[tokio::test]
 async fn webhook_trigger_private_fn_covers_all_three_arms() {
     // engine 缺失 → InvalidState
-    let err = trigger_workflow_via_webhook(
-        &make_test_state(""),
-        "wf",
-        serde_json::Value::Null,
-    )
-    .await
-    .unwrap_err();
+    let err = trigger_workflow_via_webhook(&make_test_state(""), "wf", serde_json::Value::Null)
+        .await
+        .unwrap_err();
     assert!(matches!(
         err,
         nemesis_workflow::engine::EngineError::InvalidState(_)
@@ -1615,7 +1626,9 @@ async fn webhook_trigger_private_fn_covers_all_three_arms() {
 
     // 成功臂：payload 传进 input.payload / input（字符串化）
     let engine = build_test_engine();
-    engine.register_workflow(instant_workflow("hooksuc")).unwrap();
+    engine
+        .register_workflow(instant_workflow("hooksuc"))
+        .unwrap();
     let state = state_with_engine(engine);
     let id = trigger_workflow_via_webhook(&state, "hooksuc", serde_json::json!({"e": 9}))
         .await
@@ -1629,9 +1642,14 @@ async fn workflow_webhook_secret_reads_trigger_config() {
     engine
         .register_workflow(webhook_workflow("secyes", Some("s1")))
         .unwrap();
-    engine.register_workflow(webhook_workflow("secno", None)).unwrap();
+    engine
+        .register_workflow(webhook_workflow("secno", None))
+        .unwrap();
     let state = state_with_engine(engine);
-    assert_eq!(workflow_webhook_secret(&state, "secyes").await.as_deref(), Some("s1"));
+    assert_eq!(
+        workflow_webhook_secret(&state, "secyes").await.as_deref(),
+        Some("s1")
+    );
     assert_eq!(workflow_webhook_secret(&state, "secno").await, None);
     assert_eq!(workflow_webhook_secret(&state, "ghost").await, None);
 }
@@ -1697,7 +1715,10 @@ fn parse_input_object_object_wrapped_and_none_arms() {
 
     // 非对象 → 包成 {"input": value}
     let wrapped = parse_input_object(Some(&serde_json::json!("just a string")));
-    assert_eq!(wrapped.get("input"), Some(&serde_json::json!("just a string")));
+    assert_eq!(
+        wrapped.get("input"),
+        Some(&serde_json::json!("just a string"))
+    );
 
     // None → 空 map
     assert!(parse_input_object(None).is_empty());
@@ -1805,7 +1826,10 @@ fn make_checkpoint(id: &str) -> Checkpoint {
     }
 }
 
-fn engine_with_mock(load: MockLoad, list: MockList) -> Arc<nemesis_workflow::engine::WorkflowEngine> {
+fn engine_with_mock(
+    load: MockLoad,
+    list: MockList,
+) -> Arc<nemesis_workflow::engine::WorkflowEngine> {
     let engine = build_test_engine();
     engine.set_checkpoint_store(Arc::new(MockCheckpointStore { load, list }));
     engine
@@ -1860,23 +1884,22 @@ async fn checkpoints_rest_list_ok_and_store_error() {
             CheckpointMeta::from(&make_checkpoint("cp2")),
         ]),
     ));
-    let Json(json) = handle_workflow_checkpoints_list(
-        axum::extract::State(state),
-        Path("exec-1".to_string()),
-    )
-    .await
-    .unwrap();
+    let Json(json) =
+        handle_workflow_checkpoints_list(axum::extract::State(state), Path("exec-1".to_string()))
+            .await
+            .unwrap();
     assert_eq!(json["execution_id"], "exec-1");
     assert_eq!(json["checkpoints"].as_array().unwrap().len(), 2);
 
     // store 报 Io 错 → 500 checkpoint_list_failed
-    let state = state_with_engine(engine_with_mock(MockLoad::Ok(make_checkpoint("cp")), MockList::Io));
-    let (status, body) = handle_workflow_checkpoints_list(
-        axum::extract::State(state),
-        Path("exec-1".to_string()),
-    )
-    .await
-    .unwrap_err();
+    let state = state_with_engine(engine_with_mock(
+        MockLoad::Ok(make_checkpoint("cp")),
+        MockList::Io,
+    ));
+    let (status, body) =
+        handle_workflow_checkpoints_list(axum::extract::State(state), Path("exec-1".to_string()))
+            .await
+            .unwrap_err();
     assert_eq!(status, StatusCode::INTERNAL_SERVER_ERROR);
     assert_eq!(body["error"], "checkpoint_list_failed");
 }
@@ -1891,32 +1914,41 @@ async fn checkpoints_rest_load_all_four_outcomes() {
     };
 
     // Ok
-    let Json(json) = call(engine_with_mock(MockLoad::Ok(make_checkpoint("cp9")), MockList::Ok(vec![])), "cp9")
-        .await
-        .unwrap();
+    let Json(json) = call(
+        engine_with_mock(MockLoad::Ok(make_checkpoint("cp9")), MockList::Ok(vec![])),
+        "cp9",
+    )
+    .await
+    .unwrap();
     assert_eq!(json["checkpoint"]["id"], "cp9");
 
     // NotFound → 404
-    let (status, body) =
-        call(engine_with_mock(MockLoad::NotFound, MockList::Ok(vec![])), "cp")
-            .await
-            .unwrap_err();
+    let (status, body) = call(
+        engine_with_mock(MockLoad::NotFound, MockList::Ok(vec![])),
+        "cp",
+    )
+    .await
+    .unwrap_err();
     assert_eq!(status, StatusCode::NOT_FOUND);
     assert_eq!(body["error"], "checkpoint_not_found");
 
     // Corrupt → 500 checkpoint_corrupt
-    let (status, body) =
-        call(engine_with_mock(MockLoad::Corrupt, MockList::Ok(vec![])), "cp")
-            .await
-            .unwrap_err();
+    let (status, body) = call(
+        engine_with_mock(MockLoad::Corrupt, MockList::Ok(vec![])),
+        "cp",
+    )
+    .await
+    .unwrap_err();
     assert_eq!(status, StatusCode::INTERNAL_SERVER_ERROR);
     assert_eq!(body["error"], "checkpoint_corrupt");
 
     // 其它（Serialization）→ 500 checkpoint_load_failed 兜底
-    let (status, body) =
-        call(engine_with_mock(MockLoad::Serialization, MockList::Ok(vec![])), "cp")
-            .await
-            .unwrap_err();
+    let (status, body) = call(
+        engine_with_mock(MockLoad::Serialization, MockList::Ok(vec![])),
+        "cp",
+    )
+    .await
+    .unwrap_err();
     assert_eq!(status, StatusCode::INTERNAL_SERVER_ERROR);
     assert_eq!(body["error"], "checkpoint_load_failed");
 }
@@ -1928,7 +1960,9 @@ async fn chat_info_engine_missing_not_found_eligible_and_human_review() {
     // engine 缺失
     let (status, _) = handle_workflow_chat_info(
         axum::extract::State(make_test_state("")),
-        Query(ChatInfoQuery { index: "aabbccdd".to_string() }),
+        Query(ChatInfoQuery {
+            index: "aabbccdd".to_string(),
+        }),
     )
     .await
     .unwrap_err();
@@ -1938,7 +1972,9 @@ async fn chat_info_engine_missing_not_found_eligible_and_human_review() {
     let engine = build_test_engine();
     let Json(json) = handle_workflow_chat_info(
         axum::extract::State(state_with_engine(engine)),
-        Query(ChatInfoQuery { index: "ffffffff".to_string() }),
+        Query(ChatInfoQuery {
+            index: "ffffffff".to_string(),
+        }),
     )
     .await
     .unwrap();
@@ -1949,12 +1985,16 @@ async fn chat_info_engine_missing_not_found_eligible_and_human_review() {
 
     // 命中 + 无 human_review → eligible，reason null
     let engine = build_test_engine();
-    engine.register_workflow(instant_workflow("chatable")).unwrap();
+    engine
+        .register_workflow(instant_workflow("chatable"))
+        .unwrap();
     let index = WorkflowEngine::chat_index("chatable");
     let state = state_with_engine(engine);
     let Json(json) = handle_workflow_chat_info(
         axum::extract::State(state.clone()),
-        Query(ChatInfoQuery { index: index.clone() }),
+        Query(ChatInfoQuery {
+            index: index.clone(),
+        }),
     )
     .await
     .unwrap();
@@ -1965,17 +2005,17 @@ async fn chat_info_engine_missing_not_found_eligible_and_human_review() {
 
     // needs_password 反映 secret store 状态
     state.chat_secret_store.set_password(&index, "pw").unwrap();
-    let Json(json) = handle_workflow_chat_info(
-        axum::extract::State(state),
-        Query(ChatInfoQuery { index }),
-    )
-    .await
-    .unwrap();
+    let Json(json) =
+        handle_workflow_chat_info(axum::extract::State(state), Query(ChatInfoQuery { index }))
+            .await
+            .unwrap();
     assert_eq!(json["needs_password"], true);
 
     // human_review 节点 → ineligible + 中文 reason
     let engine = build_test_engine();
-    engine.register_workflow(human_review_workflow("reviewwf")).unwrap();
+    engine
+        .register_workflow(human_review_workflow("reviewwf"))
+        .unwrap();
     let index = WorkflowEngine::chat_index("reviewwf");
     let Json(json) = handle_workflow_chat_info(
         axum::extract::State(state_with_engine(engine)),
@@ -2011,10 +2051,15 @@ async fn chat_verify_missing_index_wrong_password_orphan_and_success() {
 
     // 错密码 → 401（不泄露 index 是否存在）
     let engine = build_test_engine();
-    engine.register_workflow(instant_workflow("chatverifiable")).unwrap();
+    engine
+        .register_workflow(instant_workflow("chatverifiable"))
+        .unwrap();
     let index = WorkflowEngine::chat_index("chatverifiable");
     let state = state_with_engine(engine);
-    state.chat_secret_store.set_password(&index, "pw123").unwrap();
+    state
+        .chat_secret_store
+        .set_password(&index, "pw123")
+        .unwrap();
     let (status, body) = handle_workflow_chat_verify(
         axum::extract::State(state.clone()),
         Json(serde_json::json!({ "index": index, "password": "WRONG" })),
@@ -2026,7 +2071,10 @@ async fn chat_verify_missing_index_wrong_password_orphan_and_success() {
 
     // 正确密码但 index 无对应工作流 → 404
     let state2 = state_with_engine(build_test_engine());
-    state2.chat_secret_store.set_password("deadbeef", "pw").unwrap();
+    state2
+        .chat_secret_store
+        .set_password("deadbeef", "pw")
+        .unwrap();
     let (status, body) = handle_workflow_chat_verify(
         axum::extract::State(state2),
         Json(serde_json::json!({ "index": "deadbeef", "password": "pw" })),
@@ -2052,7 +2100,9 @@ async fn chat_verify_missing_index_wrong_password_orphan_and_success() {
 #[tokio::test]
 async fn wsapi_run_now_start_and_status_success() {
     let engine = build_test_engine();
-    engine.register_workflow(instant_workflow("runnow")).unwrap();
+    engine
+        .register_workflow(instant_workflow("runnow"))
+        .unwrap();
     let ctx = make_ctx_with_engine(engine.clone());
     let handler = WorkflowHandler;
 
@@ -2073,7 +2123,11 @@ async fn wsapi_run_now_start_and_status_success() {
 
     // status：真实执行记录（既有测试只测了 not-found 臂）
     let payload = handler
-        .handle_cmd("status", Some(serde_json::json!({ "execution_id": id })), &ctx)
+        .handle_cmd(
+            "status",
+            Some(serde_json::json!({ "execution_id": id })),
+            &ctx,
+        )
         .await
         .unwrap()
         .unwrap();
@@ -2091,7 +2145,9 @@ async fn wsapi_run_now_start_and_status_success() {
 #[tokio::test]
 async fn wsapi_list_executions_filter_and_limit_with_real_runs() {
     let engine = build_test_engine();
-    engine.register_workflow(instant_workflow("batchwf")).unwrap();
+    engine
+        .register_workflow(instant_workflow("batchwf"))
+        .unwrap();
     for _ in 0..3 {
         engine.run("batchwf", HashMap::new(), None).await.unwrap();
     }
@@ -2180,28 +2236,47 @@ async fn wsapi_create_and_validate_missing_data_arms() {
     let ctx = make_ctx_with_engine(build_test_engine());
     let handler = WorkflowHandler;
 
-    assert_eq!(handler.handle_cmd("create", None, &ctx).await.unwrap_err(), "missing data");
-    assert!(handler
-        .handle_cmd("create", Some(serde_json::json!({})), &ctx)
-        .await
-        .unwrap_err()
-        .contains("missing field: workflow"));
-    assert_eq!(handler.handle_cmd("validate", None, &ctx).await.unwrap_err(), "missing data");
-    assert!(handler
-        .handle_cmd("validate", Some(serde_json::json!({})), &ctx)
-        .await
-        .unwrap_err()
-        .contains("missing field: workflow"));
+    assert_eq!(
+        handler.handle_cmd("create", None, &ctx).await.unwrap_err(),
+        "missing data"
+    );
+    assert!(
+        handler
+            .handle_cmd("create", Some(serde_json::json!({})), &ctx)
+            .await
+            .unwrap_err()
+            .contains("missing field: workflow")
+    );
+    assert_eq!(
+        handler
+            .handle_cmd("validate", None, &ctx)
+            .await
+            .unwrap_err(),
+        "missing data"
+    );
+    assert!(
+        handler
+            .handle_cmd("validate", Some(serde_json::json!({})), &ctx)
+            .await
+            .unwrap_err()
+            .contains("missing field: workflow")
+    );
 }
 
 #[tokio::test]
 async fn wsapi_delete_without_defs_dir_succeeds_and_deregisters() {
     // defs_dir 未设 → delete_workflow_file 只清内存注册表，直接 Ok
     let engine = build_test_engine();
-    engine.register_workflow(instant_workflow("delper")).unwrap();
+    engine
+        .register_workflow(instant_workflow("delper"))
+        .unwrap();
     let ctx = make_ctx_with_engine(engine.clone());
     let r = WorkflowHandler
-        .handle_cmd("delete", Some(serde_json::json!({ "name": "delper" })), &ctx)
+        .handle_cmd(
+            "delete",
+            Some(serde_json::json!({ "name": "delper" })),
+            &ctx,
+        )
         .await
         .unwrap()
         .unwrap();
@@ -2249,7 +2324,9 @@ async fn rest_run_sync_timeout_returns_504_with_paused_clock() {
 async fn webhook_get_variant_rate_limited_on_61st_call() {
     // GET 入口有自己独立的限流检查（POST 的 429 测试不经过这里）。
     let engine = build_test_engine();
-    engine.register_workflow(webhook_workflow("hookgetrl", None)).unwrap();
+    engine
+        .register_workflow(webhook_workflow("hookgetrl", None))
+        .unwrap();
     let state = state_with_engine(engine);
     for _ in 0..60 {
         let _ = handle_workflow_webhook_get(
@@ -2371,7 +2448,9 @@ async fn wsapi_create_update_validate_and_delete_error_with_defs_dir() {
     // defs_dir 未设的 engine 上 update → persist_workflow 报
     // PersistenceError → update 臂的 persist map_err 闭包
     let bare_engine = build_test_engine();
-    bare_engine.register_workflow(instant_workflow("bare_wf")).unwrap();
+    bare_engine
+        .register_workflow(instant_workflow("bare_wf"))
+        .unwrap();
     let bare_ctx = make_ctx_with_engine(bare_engine);
     let err = handler
         .handle_cmd(
@@ -2394,7 +2473,11 @@ async fn wsapi_create_update_validate_and_delete_error_with_defs_dir() {
     let ctx2 = make_ctx_with_engine_and_defs_dir(dir_engine, tmp2.path());
     std::fs::create_dir_all(tmp2.path().join("trap_wf.yaml")).unwrap();
     let err = handler
-        .handle_cmd("delete", Some(serde_json::json!({ "name": "trap_wf" })), &ctx2)
+        .handle_cmd(
+            "delete",
+            Some(serde_json::json!({ "name": "trap_wf" })),
+            &ctx2,
+        )
         .await
         .unwrap_err();
     assert!(!err.is_empty(), "expected remove failure, got ok");
@@ -2402,13 +2485,21 @@ async fn wsapi_create_update_validate_and_delete_error_with_defs_dir() {
     // delete 成功 → 再 delete 一次：注册表已空 + 文件已删，仍是幂等 Ok
     // （delete_workflow_file 对缺失目标返回 Ok；Err 闭包只在真实 IO 失败时触达）
     let payload = handler
-        .handle_cmd("delete", Some(serde_json::json!({ "name": "made_wf" })), &ctx)
+        .handle_cmd(
+            "delete",
+            Some(serde_json::json!({ "name": "made_wf" })),
+            &ctx,
+        )
         .await
         .unwrap()
         .unwrap();
     assert_eq!(payload["deleted"], true);
     let payload = handler
-        .handle_cmd("delete", Some(serde_json::json!({ "name": "made_wf" })), &ctx)
+        .handle_cmd(
+            "delete",
+            Some(serde_json::json!({ "name": "made_wf" })),
+            &ctx,
+        )
         .await
         .unwrap()
         .unwrap();
@@ -2428,10 +2519,7 @@ async fn wsapi_run_now_and_start_unknown_workflow_map_start_errors() {
             .handle_cmd(cmd, Some(serde_json::json!({ "name": "ghost_wf" })), &ctx)
             .await
             .unwrap_err();
-        assert!(
-            err.to_lowercase().contains("not found"),
-            "{cmd} err: {err}"
-        );
+        assert!(err.to_lowercase().contains("not found"), "{cmd} err: {err}");
     }
 }
 

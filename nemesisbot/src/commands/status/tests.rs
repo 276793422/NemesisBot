@@ -432,12 +432,9 @@ mod run_arm {
             std::fs::create_dir_all(&home).unwrap();
             // expired / needs-refresh / active / 带 account_id+expires_at 四种
             // 凭据状态一起过（status.rs:121-152 全分支）。
-            let store = nemesis_auth::AuthStore::new(
-                &home.join("auth.json").to_string_lossy(),
-            );
+            let store = nemesis_auth::AuthStore::new(&home.join("auth.json").to_string_lossy());
             let mk = |expires_at: Option<chrono::DateTime<chrono::Local>>,
-                      account: Option<&str>|
-             nemesis_auth::AuthCredential {
+                      account: Option<&str>| nemesis_auth::AuthCredential {
                 access_token: "tok".into(),
                 refresh_token: None,
                 expires_at,
@@ -448,13 +445,19 @@ mod run_arm {
             store
                 .save(
                     "openai",
-                    mk(Some(chrono::Local::now() - chrono::Duration::hours(1)), None),
+                    mk(
+                        Some(chrono::Local::now() - chrono::Duration::hours(1)),
+                        None,
+                    ),
                 )
                 .unwrap();
             store
                 .save(
                     "anthropic",
-                    mk(Some(chrono::Local::now() + chrono::Duration::minutes(3)), None),
+                    mk(
+                        Some(chrono::Local::now() + chrono::Duration::minutes(3)),
+                        None,
+                    ),
                 )
                 .unwrap();
             store

@@ -299,10 +299,7 @@ mod run_arm {
     #[test]
     fn check_plugin_library_missing_errors_deterministically() {
         let err = check_plugin_library_exists().expect_err("测试 exe 旁无 plugins/ → Err");
-        assert!(
-            err.to_string().contains("plugin-ui"),
-            "got: {err:#}"
-        );
+        assert!(err.to_string().contains("plugin-ui"), "got: {err:#}");
     }
 
     #[test]

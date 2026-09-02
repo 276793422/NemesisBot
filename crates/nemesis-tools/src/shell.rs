@@ -463,19 +463,20 @@ impl ShellTool {
         for cmd in &problematic_commands {
             let pattern_str = format!(r#"(?i)^\s*{}\s+"([^"]+)"(.*)$"#, regex::escape(cmd));
             if let Ok(re) = Regex::new(&pattern_str)
-                && let Some(caps) = re.captures(command) {
-                    let path = caps.get(1).map(|m| m.as_str()).unwrap_or("");
-                    let rest = caps.get(2).map(|m| m.as_str()).unwrap_or("");
+                && let Some(caps) = re.captures(command)
+            {
+                let path = caps.get(1).map(|m| m.as_str()).unwrap_or("");
+                let rest = caps.get(2).map(|m| m.as_str()).unwrap_or("");
 
-                    // If path has no spaces, remove quotes
-                    if !path.contains(' ') {
-                        return format!("{} {}{}", cmd, path, rest);
-                    }
-
-                    // For paths with spaces, escape with ^ (cmd.exe escape character)
-                    let escaped = path.replace(' ', "^ ");
-                    return format!("{} {}{}", cmd, escaped, rest);
+                // If path has no spaces, remove quotes
+                if !path.contains(' ') {
+                    return format!("{} {}{}", cmd, path, rest);
                 }
+
+                // For paths with spaces, escape with ^ (cmd.exe escape character)
+                let escaped = path.replace(' ', "^ ");
+                return format!("{} {}{}", cmd, escaped, rest);
+            }
         }
 
         command.to_string()

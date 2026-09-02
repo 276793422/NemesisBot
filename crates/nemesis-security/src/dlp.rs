@@ -339,10 +339,11 @@ impl DlpEngine {
         let mut resolved: Vec<(usize, usize)> = Vec::new();
         for span in spans {
             if let Some(last) = resolved.last()
-                && span.0 < last.1 {
-                    // Overlapping - skip (already have a longer match at this position)
-                    continue;
-                }
+                && span.0 < last.1
+            {
+                // Overlapping - skip (already have a longer match at this position)
+                continue;
+            }
             resolved.push(span);
         }
 

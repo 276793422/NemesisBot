@@ -121,7 +121,10 @@ fn extract_failure_bails_with_stderr() {
     let err = extract(&installer, tmp.path(), &seven_zip).unwrap_err();
     let msg = format!("{err:#}");
     assert!(msg.contains("7z extraction failed"), "{msg}");
-    assert!(msg.contains("seven-zip-stderr-noise"), "stderr 必须带回：{msg}");
+    assert!(
+        msg.contains("seven-zip-stderr-noise"),
+        "stderr 必须带回：{msg}"
+    );
 }
 
 #[test]
@@ -156,7 +159,9 @@ async fn extract_release_with_cached_7z_propagates_extraction_error() {
     let seven_zip_dir = tmp.path().join("7z");
     std::fs::create_dir_all(&seven_zip_dir).unwrap();
     let windir = std::env::var("SystemRoot").unwrap_or_else(|_| r"C:\Windows".into());
-    let real_where = std::path::Path::new(&windir).join("System32").join("where.exe");
+    let real_where = std::path::Path::new(&windir)
+        .join("System32")
+        .join("where.exe");
     std::fs::copy(&real_where, seven_zip_dir.join("7z.exe")).unwrap();
     let installer = tmp.path().join("Sandboxie-Classic-fake.exe");
     std::fs::write(&installer, b"fake-installer").unwrap();
@@ -207,6 +212,10 @@ async fn resolve_seven_zip_uses_system_7z_when_no_cache() {
         return;
     }
     let p = resolve_seven_zip(tmp.path()).await.unwrap();
-    assert_ne!(p, tmp.path().join("7z").join("7z.exe"), "无缓存必不返回 cached 路径");
+    assert_ne!(
+        p,
+        tmp.path().join("7z").join("7z.exe"),
+        "无缓存必不返回 cached 路径"
+    );
     assert!(p.exists(), "系统 7z 路径必须真实存在: {}", p.display());
 }

@@ -449,8 +449,7 @@ impl SecurityMiddleware {
 /// Batch of operations to be approved together.
 ///
 /// Equivalent to Go's `BatchOperationRequest`.
-#[derive(Debug, Clone)]
-#[derive(Default)]
+#[derive(Debug, Clone, Default)]
 pub struct BatchOperationRequest {
     /// Batch ID.
     pub id: String,
@@ -463,7 +462,6 @@ pub struct BatchOperationRequest {
     /// Description of the batch.
     pub description: String,
 }
-
 
 // ---------------------------------------------------------------------------
 // Permission factories

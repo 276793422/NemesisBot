@@ -12,12 +12,15 @@ use super::*;
 
 #[cfg(feature = "sandbox")]
 mod userland_plan {
-    use super::userland::{plan, Plan};
+    use super::userland::{Plan, plan};
     use nemesis_sandbox::backend::BackendForm;
 
     #[test]
     fn no_marker_runs_plain() {
-        assert_eq!(plan(false, false, Some(BackendForm::SelfApply)), Plan::Plain);
+        assert_eq!(
+            plan(false, false, Some(BackendForm::SelfApply)),
+            Plan::Plain
+        );
         // 即使 bwrap 可用，没标记也不介入
         assert_eq!(
             plan(false, false, Some(BackendForm::WrapCommand)),
@@ -29,7 +32,10 @@ mod userland_plan {
     fn reexeced_instance_never_re_engages() {
         // 防环核心：盒内实例（REEXEC=1）见到标记也直接 Plain
         assert_eq!(plan(true, true, Some(BackendForm::SelfApply)), Plan::Plain);
-        assert_eq!(plan(true, true, Some(BackendForm::WrapCommand)), Plan::Plain);
+        assert_eq!(
+            plan(true, true, Some(BackendForm::WrapCommand)),
+            Plan::Plain
+        );
     }
 
     #[test]
@@ -64,14 +70,12 @@ mod userland_plan {
 // 真对测试进程装 landlock（不可逆，污染同进程其他测试）。
 #[cfg(all(feature = "sandbox", windows))]
 mod engage_strict {
-    use super::userland::{engage, Outcome};
+    use super::userland::{Outcome, engage};
 
     fn seed_home(strict: Option<bool>) -> tempfile::TempDir {
         let dir = tempfile::tempdir().expect("tempdir");
         let body = match strict {
-            None => {
-                r#"{ "executor": { "enabled": true, "sandbox": true } }"#.to_string()
-            }
+            None => r#"{ "executor": { "enabled": true, "sandbox": true } }"#.to_string(),
             Some(s) => format!(
                 r#"{{ "executor": {{ "enabled": true, "sandbox": true, "strict": {s} }} }}"#
             ),
@@ -136,10 +140,12 @@ mod dispatch_protocol {
     #[async_trait::async_trait]
     impl Tool for EchoTool {
         async fn execute(&self, args: &str, ctx: &RequestContext) -> Result<String, String> {
-            self.seen
-                .lock()
-                .unwrap()
-                .push((args.to_string(), ctx.channel.clone(), ctx.user.clone(), ctx.session_key.clone()));
+            self.seen.lock().unwrap().push((
+                args.to_string(),
+                ctx.channel.clone(),
+                ctx.user.clone(),
+                ctx.session_key.clone(),
+            ));
             Ok(format!("ok:{args}"))
         }
     }
@@ -154,10 +160,7 @@ mod dispatch_protocol {
         }
     }
 
-    fn registry_with_echo() -> (
-        HashMap<String, Box<dyn Tool>>,
-        std::sync::Arc<EchoTool>,
-    ) {
+    fn registry_with_echo() -> (HashMap<String, Box<dyn Tool>>, std::sync::Arc<EchoTool>) {
         let recorder = std::sync::Arc::new(EchoTool {
             seen: std::sync::Mutex::new(Vec::new()),
         });
@@ -183,7 +186,11 @@ mod dispatch_protocol {
         for bad in ["", "not json", "{", r#"{"tool": 123}"#, "[]"] {
             let resp = dispatch(&tools, bad).await;
             assert!(!resp.ok, "line {bad:?} must not pass");
-            assert!(resp.error.starts_with("bad request line"), "line {bad:?}: {}", resp.error);
+            assert!(
+                resp.error.starts_with("bad request line"),
+                "line {bad:?}: {}",
+                resp.error
+            );
             assert!(resp.result.is_empty());
         }
     }
@@ -264,7 +271,9 @@ async fn run_requires_workspace_env() {
     unsafe {
         std::env::remove_var("NEMESISBOT_EXECUTOR_WORKSPACE");
     }
-    let err = run().await.expect_err("missing workspace env must fail fast");
+    let err = run()
+        .await
+        .expect_err("missing workspace env must fail fast");
     assert!(
         err.to_string().contains("NEMESISBOT_EXECUTOR_WORKSPACE"),
         "err: {err:#}"
@@ -329,7 +338,9 @@ mod executor_main_glue {
         let dir = tempfile::tempdir().expect("tempdir");
         std::fs::write(
             dir.path().join("config.json"),
-            format!(r#"{{ "executor": {{ "enabled": true, "sandbox": true, "strict": {strict} }} }}"#),
+            format!(
+                r#"{{ "executor": {{ "enabled": true, "sandbox": true, "strict": {strict} }} }}"#
+            ),
         )
         .expect("seed config");
         dir
@@ -343,7 +354,9 @@ mod executor_main_glue {
         let _env = ExecEnvGuard::set(tmp.path());
 
         // stdio（无 PIPE）+ 无沙盒标记：注册共享工具集后 stdin EOF → Ok。
-        run().await.expect("stdio transport must exit cleanly on EOF");
+        run()
+            .await
+            .expect("stdio transport must exit cleanly on EOF");
     }
 
     #[cfg(all(feature = "sandbox", windows))]
@@ -356,7 +369,9 @@ mod executor_main_glue {
         env.set_marker_and_home(home.path());
 
         // Windows 无用户态后端 + strict=false → warn + Continue → stdio EOF Ok。
-        run().await.expect("fail-open marker must continue to the tool loop");
+        run()
+            .await
+            .expect("fail-open marker must continue to the tool loop");
     }
 
     #[cfg(all(feature = "sandbox", windows))]
@@ -482,7 +497,10 @@ mod wave_b {
         // lines() 解码失败 → Err(InvalidData) → pipe_loop 的 pipe-read 错误臂。
         server.connect().await.expect("server side connect");
         let bad: Vec<u8> = b"\xff\xfe not-utf8 \x80 payload\n".to_vec();
-        server.write_all(&bad).await.expect("write invalid utf8 line");
+        server
+            .write_all(&bad)
+            .await
+            .expect("write invalid utf8 line");
         server.flush().await.expect("flush");
         drop(server); // 关管道，别让服务端悬着
 

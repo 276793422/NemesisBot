@@ -56,7 +56,9 @@ fn make_ctx(dir: &tempfile::TempDir, with_store: bool) -> RequestContext {
             Box::new(NoopProvider),
             nemesis_agent::types::AgentConfig::default(),
         );
-        al.set_session_store(Arc::new(nemesis_agent::session::SessionStore::new_in_memory()));
+        al.set_session_store(Arc::new(
+            nemesis_agent::session::SessionStore::new_in_memory(),
+        ));
         *agent_loop.get_mut() = Some(Arc::new(al));
     }
     let state = Arc::new(AppState {
@@ -252,7 +254,10 @@ async fn delete_removes_chat_log_only_through_the_store_arm() {
     assert_eq!(out["deleted"], serde_json::json!(sid));
     assert_eq!(out["paused_cron_jobs"], serde_json::json!([]));
     let (_, total, _, _) = nemesis_agent::chat_log::read_chat_log(&key, 10, None);
-    assert_eq!(total, 1, "loopless delete leaves the jsonl (store arm skipped)");
+    assert_eq!(
+        total, 1,
+        "loopless delete leaves the jsonl (store arm skipped)"
+    );
     nemesis_agent::chat_log::delete_chat_log(&key);
 
     // With a live store (production shape): store.delete_session removes the

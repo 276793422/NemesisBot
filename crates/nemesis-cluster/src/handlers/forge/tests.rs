@@ -401,10 +401,7 @@ fn test_s4_handle_share_provider_error() {
         serde_json::json!({"report": {"a": 1}, "source_node": "node-b"}),
     );
     assert!(!result.success);
-    assert!(result
-        .error
-        .unwrap()
-        .contains("Failed to store reflection"));
+    assert!(result.error.unwrap().contains("Failed to store reflection"));
 }
 
 /// Requesting a specific existing reflection flows through the read-success

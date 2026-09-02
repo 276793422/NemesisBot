@@ -83,7 +83,9 @@ fn persist_entry_sync_parent_is_file_errors() {
     let path = dir.path().join("blocker.txt").join("v.jsonl");
 
     let store = VectorStore::new_from_embed(stub_embed(), make_cfg(&path));
-    let err = store.persist_entry_sync(&make_entry("p1", "x")).unwrap_err();
+    let err = store
+        .persist_entry_sync(&make_entry("p1", "x"))
+        .unwrap_err();
     assert!(!err.is_empty());
 }
 
@@ -92,7 +94,9 @@ fn persist_entry_sync_storage_path_is_dir_errors() {
     let dir = tempfile::tempdir().unwrap();
     // The persist path itself is a directory → open(create+append) fails.
     let store = VectorStore::new_from_embed(stub_embed(), make_cfg(dir.path()));
-    let err = store.persist_entry_sync(&make_entry("p2", "x")).unwrap_err();
+    let err = store
+        .persist_entry_sync(&make_entry("p2", "x"))
+        .unwrap_err();
     assert!(!err.is_empty());
 }
 

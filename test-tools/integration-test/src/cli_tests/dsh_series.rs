@@ -108,40 +108,54 @@ pub async fn test_cli_model_set_effort(ws: &TestWorkspace, bin: &Path) -> Vec<Te
     let out = ws
         .run_cli(bin, &["model", "set-effort", "test/no-such-model", "low"])
         .await;
-    results.push(if !out.success()
-        && (out.stderr_contains("Model not found") || out.stdout_contains("Model not found"))
-    {
-        pass(
-            &format!("{}/unknown_model", suite),
-            "non-zero + Model not found",
-        )
-    } else {
-        fail(
-            &format!("{}/unknown_model", suite),
-            format!(
-                "exit={} stdout='{}' stderr='{}'",
-                out.exit_code,
-                out.stdout.trim(),
-                out.stderr.trim()
-            ),
-        )
-    });
+    results.push(
+        if !out.success()
+            && (out.stderr_contains("Model not found") || out.stdout_contains("Model not found"))
+        {
+            pass(
+                &format!("{}/unknown_model", suite),
+                "non-zero + Model not found",
+            )
+        } else {
+            fail(
+                &format!("{}/unknown_model", suite),
+                format!(
+                    "exit={} stdout='{}' stderr='{}'",
+                    out.exit_code,
+                    out.stdout.trim(),
+                    out.stderr.trim()
+                ),
+            )
+        },
+    );
 
     // Horizontal regression (bug-fix #6): every mutating model command must
     // fail loudly on a missing entry — set-tier / set-size / remove previously
     // printed "Model not found" and still exited 0.
     for (label, args) in [
-        ("set_tier", vec!["model", "set-tier", "test/no-such-model", "big"]),
-        ("set_size", vec!["model", "set-size", "test/no-such-model", "30B"]),
+        (
+            "set_tier",
+            vec!["model", "set-tier", "test/no-such-model", "big"],
+        ),
+        (
+            "set_size",
+            vec!["model", "set-size", "test/no-such-model", "30B"],
+        ),
         (
             "set_real_name",
             vec!["model", "set-real-name", "test/no-such-model", "X"],
         ),
-        ("remove", vec!["model", "remove", "test/no-such-model", "--force"]),
+        (
+            "remove",
+            vec!["model", "remove", "test/no-such-model", "--force"],
+        ),
     ] {
         let out = ws.run_cli(bin, &args).await;
         results.push(if !out.success() {
-            pass(&format!("{}/missing_{label}", suite), "non-zero on unknown model")
+            pass(
+                &format!("{}/missing_{label}", suite),
+                "non-zero on unknown model",
+            )
         } else {
             fail(
                 &format!("{}/missing_{label}", suite),
@@ -177,8 +191,8 @@ pub async fn test_cli_session_fork(ws: &TestWorkspace, bin: &Path) -> Vec<TestRe
     let out = ws
         .run_cli(bin, &["session", "show", "agent:main:session:nonexistent"])
         .await;
-    let show_missing_ok = !out.success()
-        && (out.stderr_contains("不存在") || out.stdout_contains("不存在"));
+    let show_missing_ok =
+        !out.success() && (out.stderr_contains("不存在") || out.stdout_contains("不存在"));
     results.push(if show_missing_ok {
         pass(&format!("{}/show_missing", suite), "non-zero + 不存在")
     } else {
@@ -202,7 +216,10 @@ pub async fn test_cli_session_fork(ws: &TestWorkspace, bin: &Path) -> Vec<TestRe
             "non-zero on missing source",
         )
     } else {
-        fail(&format!("{}/fork_missing", suite), "exit=0 on missing source")
+        fail(
+            &format!("{}/fork_missing", suite),
+            "exit=0 on missing source",
+        )
     });
 
     // Fabricate a real 2-turn session + its chat log. The two stores are
@@ -235,10 +252,26 @@ pub async fn test_cli_session_fork(ws: &TestWorkspace, bin: &Path) -> Vec<TestRe
         .join(format!("{safe}.jsonl"));
     std::fs::create_dir_all(log_path.parent().unwrap()).unwrap();
     let log_lines: Vec<String> = [
-        ("user", "ITFORK turn one question", "2026-08-24T10:00:00+08:00"),
-        ("assistant", "ITFORK turn one answer", "2026-08-24T10:00:05+08:00"),
-        ("user", "ITFORK turn two question", "2026-08-24T10:01:00+08:00"),
-        ("assistant", "ITFORK turn two answer", "2026-08-24T10:01:05+08:00"),
+        (
+            "user",
+            "ITFORK turn one question",
+            "2026-08-24T10:00:00+08:00",
+        ),
+        (
+            "assistant",
+            "ITFORK turn one answer",
+            "2026-08-24T10:00:05+08:00",
+        ),
+        (
+            "user",
+            "ITFORK turn two question",
+            "2026-08-24T10:01:00+08:00",
+        ),
+        (
+            "assistant",
+            "ITFORK turn two answer",
+            "2026-08-24T10:01:05+08:00",
+        ),
     ]
     .iter()
     .map(|(role, content, ts)| {
@@ -250,14 +283,16 @@ pub async fn test_cli_session_fork(ws: &TestWorkspace, bin: &Path) -> Vec<TestRe
 
     // list now shows the session.
     let out = ws.run_cli(bin, &["session", "list"]).await;
-    results.push(if out.success() && out.stdout_contains("agent:main:session:it1") {
-        pass(&format!("{}/list_shows", suite), "key listed")
-    } else {
-        fail(
-            &format!("{}/list_shows", suite),
-            format!("stdout='{}'", out.stdout.trim()),
-        )
-    });
+    results.push(
+        if out.success() && out.stdout_contains("agent:main:session:it1") {
+            pass(&format!("{}/list_shows", suite), "key listed")
+        } else {
+            fail(
+                &format!("{}/list_shows", suite),
+                format!("stdout='{}'", out.stdout.trim()),
+            )
+        },
+    );
 
     // show prints the --at boundary table (2 turns + preview).
     let out = ws.run_cli(bin, &["session", "show", key]).await;
@@ -279,7 +314,15 @@ pub async fn test_cli_session_fork(ws: &TestWorkspace, bin: &Path) -> Vec<TestRe
     let out = ws
         .run_cli(
             bin,
-            &["session", "fork", key, "--at", "1", "--new-key", "agent:main:session:it1f"],
+            &[
+                "session",
+                "fork",
+                key,
+                "--at",
+                "1",
+                "--new-key",
+                "agent:main:session:it1f",
+            ],
         )
         .await;
     if out.success()
@@ -336,7 +379,10 @@ pub async fn test_cli_session_fork(ws: &TestWorkspace, bin: &Path) -> Vec<TestRe
     results.push(if source_after == source_before {
         pass(&format!("{}/source_untouched", suite), "byte-identical")
     } else {
-        fail(&format!("{}/source_untouched", suite), "source session mutated")
+        fail(
+            &format!("{}/source_untouched", suite),
+            "source session mutated",
+        )
     });
 
     // Chat-log copied VERBATIM from the source jsonl prefix (2026-08-25
@@ -362,7 +408,10 @@ pub async fn test_cli_session_fork(ws: &TestWorkspace, bin: &Path) -> Vec<TestRe
             && rows[1]["content"] == "ITFORK turn one answer"
             && rows[1]["timestamp"] == "2026-08-24T10:00:05+08:00";
         results.push(if ok {
-            pass(&format!("{}/chatlog_prefix", suite), "jsonl verbatim 2-row prefix")
+            pass(
+                &format!("{}/chatlog_prefix", suite),
+                "jsonl verbatim 2-row prefix",
+            )
         } else {
             fail(
                 &format!("{}/chatlog_prefix", suite),
@@ -390,36 +439,35 @@ pub async fn test_cli_history_search(ws: &TestWorkspace, bin: &Path) -> Vec<Test
 
     // reindex on a quiet home: exit 0, deterministic summary line.
     let out = ws.run_cli(bin, &["history", "reindex"]).await;
-    results.push(
-        if out.success() && out.stdout_contains("重建索引完成") {
-            pass(&format!("{}/reindex", suite), "exit=0")
-        } else {
-            fail(
-                &format!("{}/reindex", suite),
-                format!(
-                    "exit={} stdout='{}' stderr='{}'",
-                    out.exit_code,
-                    out.stdout.trim(),
-                    out.stderr.trim()
-                ),
-            )
-        },
-    );
+    results.push(if out.success() && out.stdout_contains("重建索引完成") {
+        pass(&format!("{}/reindex", suite), "exit=0")
+    } else {
+        fail(
+            &format!("{}/reindex", suite),
+            format!(
+                "exit={} stdout='{}' stderr='{}'",
+                out.exit_code,
+                out.stdout.trim(),
+                out.stderr.trim()
+            ),
+        )
+    });
 
     // No-hit query: graceful empty result, not an error.
     let out = ws
-        .run_cli(bin, &["history", "search", "zebraunicorn42", "--limit", "5"])
+        .run_cli(
+            bin,
+            &["history", "search", "zebraunicorn42", "--limit", "5"],
+        )
         .await;
-    results.push(
-        if out.success() && out.stdout_contains("没有找到匹配") {
-            pass(&format!("{}/no_hit", suite), "graceful empty")
-        } else {
-            fail(
-                &format!("{}/no_hit", suite),
-                format!("stdout='{}'", out.stdout.trim()),
-            )
-        },
-    );
+    results.push(if out.success() && out.stdout_contains("没有找到匹配") {
+        pass(&format!("{}/no_hit", suite), "graceful empty")
+    } else {
+        fail(
+            &format!("{}/no_hit", suite),
+            format!("stdout='{}'", out.stdout.trim()),
+        )
+    });
 
     // A hit: a fabricated chat log must be found and attributed to its session.
     let key = "agent:main:session:hit1";
@@ -511,10 +559,7 @@ pub async fn test_cli_credentials_import(ws: &TestWorkspace, bin: &Path) -> Vec<
         } else {
             fail(&format!("{}/yaml_store", suite), "value missing from yaml")
         }),
-        Err(e) => results.push(fail(
-            &format!("{}/yaml_store", suite),
-            format!("read: {e}"),
-        )),
+        Err(e) => results.push(fail(&format!("{}/yaml_store", suite), format!("read: {e}"))),
     }
 
     // Idempotent: a second run is a noop.
@@ -562,7 +607,11 @@ pub async fn test_cli_model_catalog_update(ws: &TestWorkspace, bin: &Path) -> Ve
     results.push(if online || offline {
         pass(
             &format!("{}/contract", suite),
-            if online { "online updated" } else { "offline non-zero" },
+            if online {
+                "online updated"
+            } else {
+                "offline non-zero"
+            },
         )
     } else {
         fail(
@@ -586,9 +635,15 @@ pub async fn test_cli_model_catalog_update(ws: &TestWorkspace, bin: &Path) -> Ve
             .join("data")
             .join("models_catalog.json");
         results.push(if cache.is_file() {
-            pass(&format!("{}/cache_file", suite), "workspace/data/models_catalog.json written")
+            pass(
+                &format!("{}/cache_file", suite),
+                "workspace/data/models_catalog.json written",
+            )
         } else {
-            fail(&format!("{}/cache_file", suite), "cache missing after online update")
+            fail(
+                &format!("{}/cache_file", suite),
+                "cache missing after online update",
+            )
         });
     }
 

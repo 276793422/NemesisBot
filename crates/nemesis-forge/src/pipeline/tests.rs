@@ -638,7 +638,10 @@ fn test_s8_determine_status_all_stages_none_returns_observing() {
         stage3_quality: None,
         last_validated: chrono::Local::now().to_rfc3339(),
     };
-    assert_eq!(pipeline.determine_status(&validation), ArtifactStatus::Observing);
+    assert_eq!(
+        pipeline.determine_status(&validation),
+        ArtifactStatus::Observing
+    );
 }
 
 #[tokio::test]
@@ -714,11 +717,13 @@ async fn test_s8_evaluate_quality_unparseable_llm_response() {
         .await;
     assert!(!result.stage.passed);
     assert_eq!(result.score, 0);
-    assert!(result
-        .stage
-        .errors
-        .iter()
-        .any(|e| e.contains("Failed to parse LLM response as JSON")));
+    assert!(
+        result
+            .stage
+            .errors
+            .iter()
+            .any(|e| e.contains("Failed to parse LLM response as JSON"))
+    );
 }
 
 #[tokio::test]
@@ -751,11 +756,13 @@ async fn test_s8_evaluate_quality_llm_call_error() {
         .await;
     assert!(!result.stage.passed);
     assert_eq!(result.score, 0);
-    assert!(result
-        .stage
-        .errors
-        .iter()
-        .any(|e| e.contains("LLM call failed: connection refused")));
+    assert!(
+        result
+            .stage
+            .errors
+            .iter()
+            .any(|e| e.contains("LLM call failed: connection refused"))
+    );
 }
 
 #[tokio::test]

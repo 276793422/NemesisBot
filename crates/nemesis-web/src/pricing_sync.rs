@@ -6,7 +6,7 @@
 
 use std::sync::OnceLock;
 
-use nemesis_data::{PricingMeta, PricingStore, LITELLM_PRICE_URL, parse_litellm_json};
+use nemesis_data::{LITELLM_PRICE_URL, PricingMeta, PricingStore, parse_litellm_json};
 
 const USER_AGENT: &str = concat!("NemesisBot/", env!("CARGO_PKG_VERSION"));
 const FETCH_TIMEOUT_SECS: u64 = 60;
@@ -37,7 +37,10 @@ fn http_client() -> &'static reqwest::Client {
 ///
 /// 失败（网络/解析/空表）→ `record_failed_fetch` 刷 meta + 返回 Err，**旧表
 /// 保持不动**。304 → `Ok(updated: false)`。
-pub async fn fetch_and_replace(store: &PricingStore, url: Option<&str>) -> Result<PricingSyncResult, String> {
+pub async fn fetch_and_replace(
+    store: &PricingStore,
+    url: Option<&str>,
+) -> Result<PricingSyncResult, String> {
     let url = url.unwrap_or(LITELLM_PRICE_URL).to_string();
 
     let mut req = http_client().get(&url);

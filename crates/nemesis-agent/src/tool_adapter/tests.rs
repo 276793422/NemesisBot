@@ -89,11 +89,7 @@ async fn test_adapter_security_deny_blocks_execution() {
     let _ = std::fs::remove_file(&tmp_path);
 
     let inner: Arc<dyn AgentTool> = Arc::new(crate::loop_tools::WriteFileTool);
-    let adapter = AgentToolAdapter::new(
-        "write_file".to_string(),
-        inner,
-        Some(plugin),
-    );
+    let adapter = AgentToolAdapter::new("write_file".to_string(), inner, Some(plugin));
 
     let args = serde_json::json!({ "path": tmp_path.display().to_string(), "content": "must not be written" });
     let result = adapter.execute(&args).await;

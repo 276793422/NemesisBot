@@ -40,7 +40,9 @@ struct WsApi {
 impl WsApi {
     async fn connect() -> Result<Self, String> {
         Ok(Self {
-            stream: ws_connect(WS_PORT, AUTH_TOKEN).await.map_err(|e| e.to_string())?,
+            stream: ws_connect(WS_PORT, AUTH_TOKEN)
+                .await
+                .map_err(|e| e.to_string())?,
             next_id: 0,
         })
     }
@@ -62,7 +64,11 @@ impl WsApi {
             "reqId": req_id,
             "data": data,
         });
-        if let Err(e) = self.stream.send(Message::Text(msg.to_string().into())).await {
+        if let Err(e) = self
+            .stream
+            .send(Message::Text(msg.to_string().into()))
+            .await
+        {
             return (None, Some(format!("ws send failed: {e}")));
         }
         let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(60);
@@ -161,10 +167,7 @@ fn sanitize_key(key: &str) -> String {
 pub fn seed_fork_sessions(ws: &TestWorkspace) {
     let key = "agent:main:session:itui1";
     let safe = sanitize_key(key);
-    let sess_path = ws
-        .workspace()
-        .join("sessions")
-        .join(format!("{safe}.json"));
+    let sess_path = ws.workspace().join("sessions").join(format!("{safe}.json"));
     std::fs::create_dir_all(sess_path.parent().unwrap()).unwrap();
     let session_json = json!({
         "key": key,
@@ -229,7 +232,10 @@ pub async fn test_ui_p1_memory_auto_inject(ws: &TestWorkspace) -> Vec<TestResult
                 && d.get("auto_inject_top_k").and_then(|v| v.as_u64()) == Some(3)
         });
     results.push(if ok {
-        pass(&format!("{}/get_defaults", suite), "auto_inject=false top_k=3")
+        pass(
+            &format!("{}/get_defaults", suite),
+            "auto_inject=false top_k=3",
+        )
     } else {
         fail(
             &format!("{}/get_defaults", suite),
@@ -275,7 +281,11 @@ pub async fn test_ui_p1_memory_auto_inject(ws: &TestWorkspace) -> Vec<TestResult
     // P1-3 越界：0 / 11 → 拒（含 1-10 提示）
     for bad in [0u64, 11u64] {
         let (_, err) = api
-            .call("memory", "config.set", Some(json!({"auto_inject_top_k": bad})))
+            .call(
+                "memory",
+                "config.set",
+                Some(json!({"auto_inject_top_k": bad})),
+            )
             .await;
         let refused = err.as_deref().is_some_and(|e| e.contains("1-10"));
         results.push(if refused {
@@ -288,12 +298,19 @@ pub async fn test_ui_p1_memory_auto_inject(ws: &TestWorkspace) -> Vec<TestResult
     // P1-3 边界：1 / 10 合法（顺序执行，后写覆盖前写，各自断言成功）
     for good in [1u64, 10u64] {
         let (_, err) = api
-            .call("memory", "config.set", Some(json!({"auto_inject_top_k": good})))
+            .call(
+                "memory",
+                "config.set",
+                Some(json!({"auto_inject_top_k": good})),
+            )
             .await;
         results.push(if err.is_none() {
             pass(&format!("{}/boundary_{good}", suite), "边界值过")
         } else {
-            fail(&format!("{}/boundary_{good}", suite), format!("err={err:?}"))
+            fail(
+                &format!("{}/boundary_{good}", suite),
+                format!("err={err:?}"),
+            )
         });
     }
 
@@ -301,13 +318,18 @@ pub async fn test_ui_p1_memory_auto_inject(ws: &TestWorkspace) -> Vec<TestResult
     // set_config 惯例对「出现但类型错」loud 拒绝（验收预案 P1-4 记录的
     // 静默忽略债已核销）。断言：报错指名字段 + 盘上保持 10 不落盘。
     let (_, err) = api
-        .call("memory", "config.set", Some(json!({"auto_inject_top_k": "5"})))
+        .call(
+            "memory",
+            "config.set",
+            Some(json!({"auto_inject_top_k": "5"})),
+        )
         .await;
     let disk = std::fs::read_to_string(&mem_cfg_path).unwrap_or_default();
     let rejected = err
         .as_deref()
         .is_some_and(|e| e.contains("auto_inject_top_k"))
-        && (disk.contains("\"auto_inject_top_k\": 10") || disk.contains("\"auto_inject_top_k\":10"));
+        && (disk.contains("\"auto_inject_top_k\": 10")
+            || disk.contains("\"auto_inject_top_k\":10"));
     results.push(if rejected {
         pass(&format!("{}/string_type_rejected", suite), "拒且不落盘")
     } else {
@@ -387,13 +409,18 @@ pub async fn test_ui_p1_cron_max_rounds(ws: &TestWorkspace) -> Vec<TestResult> {
     });
 
     // jobs.json 落盘对账（gateway 的 cron store = <home>/workspace/cron/jobs.json）
-    let disk = std::fs::read_to_string(ws.workspace().join("cron").join("jobs.json"))
-        .unwrap_or_default();
-    results.push(if disk.contains("ui-p1-cron") && disk.contains("max_rounds") {
-        pass(&format!("{}/jobs_json", suite), "jobs.json 含 job+max_rounds")
-    } else {
-        fail(&format!("{}/jobs_json", suite), format!("disk='{disk}'"))
-    });
+    let disk =
+        std::fs::read_to_string(ws.workspace().join("cron").join("jobs.json")).unwrap_or_default();
+    results.push(
+        if disk.contains("ui-p1-cron") && disk.contains("max_rounds") {
+            pass(
+                &format!("{}/jobs_json", suite),
+                "jobs.json 含 job+max_rounds",
+            )
+        } else {
+            fail(&format!("{}/jobs_json", suite), format!("disk='{disk}'"))
+        },
+    );
 
     // 三态之 set：update 成 10 → 回显 10
     let (_, err) = api
@@ -516,7 +543,10 @@ pub async fn test_ui_p2_coding() -> Vec<TestResult> {
                 && d.get("codex").is_some()
         });
     results.push(if cfg_ok {
-        pass(&format!("{}/config_sections", suite), "三段齐 + lsp 默认 off")
+        pass(
+            &format!("{}/config_sections", suite),
+            "三段齐 + lsp 默认 off",
+        )
     } else {
         fail(
             &format!("{}/config_sections", suite),
@@ -545,7 +575,10 @@ pub async fn test_ui_p2_sdk_http() -> Vec<TestResult> {
         results.push(if status == 200 {
             pass(&format!("{}/public_200{tag}", suite), "200")
         } else {
-            fail(&format!("{}/public_200{tag}", suite), format!("status={status}"))
+            fail(
+                &format!("{}/public_200{tag}", suite),
+                format!("status={status}"),
+            )
         });
 
         // 带 token → 200 + zip 魔数 PK\x03\x04
@@ -707,7 +740,10 @@ pub async fn test_ui_p3_models_update_field(ws: &TestWorkspace) -> Vec<TestResul
         .unwrap_or(Value::Null);
     results.push(
         if entry_disk.get("model_tier").and_then(|v| v.as_str()) == Some("mini") {
-            pass(&format!("{}/reject_no_disk_change", suite), "盘上 tier 仍 mini")
+            pass(
+                &format!("{}/reject_no_disk_change", suite),
+                "盘上 tier 仍 mini",
+            )
         } else {
             fail(
                 &format!("{}/reject_no_disk_change", suite),
@@ -783,7 +819,10 @@ pub async fn test_ui_p3_models_update_field(ws: &TestWorkspace) -> Vec<TestResul
     results.push(if err.is_none() && gone {
         pass(&format!("{}/cleanup", suite), "delete ok")
     } else {
-        fail(&format!("{}/cleanup", suite), format!("err={err:?} gone={gone}"))
+        fail(
+            &format!("{}/cleanup", suite),
+            format!("err={err:?} gone={gone}"),
+        )
     });
 
     results
@@ -850,7 +889,8 @@ pub async fn test_ui_p3_fork_http(ws: &TestWorkspace) -> Vec<TestResult> {
 
     // fork at_turn=1：新 session 文件只含第 1 轮（2 条），原会话字节不动。
     // new_key 由服务端生成（响应回传），文件名 = sanitize(new_key).json。
-    let (status, body) = http_post_json("/api/chat/sessions/itui1/fork", r#"{"at_turn":1}"#, true).await;
+    let (status, body) =
+        http_post_json("/api/chat/sessions/itui1/fork", r#"{"at_turn":1}"#, true).await;
     let resp: Value = serde_json::from_str(&body).unwrap_or(Value::Null);
     let new_key = resp
         .get("new_key")
@@ -953,9 +993,9 @@ pub async fn test_ui_p4_hooks(ws: &TestWorkspace) -> Vec<TestResult> {
         && data.as_ref().is_some_and(|d| {
             d.get("exists").and_then(|v| v.as_bool()) == Some(false)
                 && d.get("valid").and_then(|v| v.as_bool()) == Some(true)
-                && d.get("content").and_then(|c| c.as_str()).is_some_and(|c| {
-                    serde_json::from_str::<Value>(c).is_ok()
-                })
+                && d.get("content")
+                    .and_then(|c| c.as_str())
+                    .is_some_and(|c| serde_json::from_str::<Value>(c).is_ok())
         });
     results.push(if tmpl_ok {
         pass(&format!("{}/get_template", suite), "模板可解析")
@@ -1086,19 +1126,20 @@ pub async fn test_ui_p5_sandbox(ws: &TestWorkspace) -> Vec<TestResult> {
             .and_then(|b| b.get("kind"))
             .and_then(|k| k.as_str())
             == Some("sandboxie")
-            && ["start_exe_present", "sbiesvc_running", "engine_owned"].iter().all(|k| {
-                d.get("backend_probe")
-                    .and_then(|b| b.get(k))
-                    .and_then(|v| v.as_bool())
-                    .is_some()
-            })
+            && ["start_exe_present", "sbiesvc_running", "engine_owned"]
+                .iter()
+                .all(|k| {
+                    d.get("backend_probe")
+                        .and_then(|b| b.get(k))
+                        .and_then(|v| v.as_bool())
+                        .is_some()
+                })
     } else {
         d.get("backend_probe")
             .and_then(|b| b.get("kind"))
             .and_then(|k| k.as_str())
             == Some("userland")
-            && d
-                .get("backend_probe")
+            && d.get("backend_probe")
                 .and_then(|b| b.get("backends"))
                 .is_some_and(|v| v.is_array())
     };
@@ -1137,7 +1178,10 @@ pub async fn test_ui_p5_sandbox(ws: &TestWorkspace) -> Vec<TestResult> {
             .and_then(|d| d.get("restart_hint"))
             .is_some_and(|h| h.is_string());
     results.push(if step1 {
-        pass(&format!("{}/set_enabled_sandbox", suite), "联动落盘 + restart_hint")
+        pass(
+            &format!("{}/set_enabled_sandbox", suite),
+            "联动落盘 + restart_hint",
+        )
     } else {
         fail(
             &format!("{}/set_enabled_sandbox", suite),
@@ -1172,7 +1216,10 @@ pub async fn test_ui_p5_sandbox(ws: &TestWorkspace) -> Vec<TestResult> {
     results.push(if refused_field {
         pass(&format!("{}/reject_non_bool", suite), "拒并指名字段")
     } else {
-        fail(&format!("{}/reject_non_bool", suite), format!("err={err:?}"))
+        fail(
+            &format!("{}/reject_non_bool", suite),
+            format!("err={err:?}"),
+        )
     });
     let (_, err) = api.call("sandbox", "set_config", Some(json!({}))).await;
     results.push(if err.is_some() {

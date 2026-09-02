@@ -7,14 +7,20 @@ fn test_resolve_cc_permission_mode_tiers() {
     // Exact camelCase values (claude CLI 2.1.240 实测合法集) pass through.
     assert_eq!(resolve_cc_permission_mode("acceptEdits"), "acceptEdits");
     assert_eq!(resolve_cc_permission_mode("auto"), "auto");
-    assert_eq!(resolve_cc_permission_mode("bypassPermissions"), "bypassPermissions");
+    assert_eq!(
+        resolve_cc_permission_mode("bypassPermissions"),
+        "bypassPermissions"
+    );
     assert_eq!(resolve_cc_permission_mode("manual"), "manual");
     assert_eq!(resolve_cc_permission_mode("dontAsk"), "dontAsk");
     assert_eq!(resolve_cc_permission_mode("plan"), "plan");
     // Legacy snake_case（T5 时代错误值集）→ camelCase 映射。
     assert_eq!(resolve_cc_permission_mode("accept_edits"), "acceptEdits");
     assert_eq!(resolve_cc_permission_mode("default"), "acceptEdits");
-    assert_eq!(resolve_cc_permission_mode("bypass_permissions"), "bypassPermissions");
+    assert_eq!(
+        resolve_cc_permission_mode("bypass_permissions"),
+        "bypassPermissions"
+    );
     // Empty (absent config) and unknown values fall back to the default.
     assert_eq!(resolve_cc_permission_mode(""), "acceptEdits");
     assert_eq!(resolve_cc_permission_mode("yolo"), "acceptEdits");
@@ -26,14 +32,20 @@ fn test_resolve_cc_permission_mode_tiers() {
 fn test_resolve_codex_sandbox_and_kebab_mapping() {
     assert_eq!(resolve_codex_sandbox("read_only"), "read_only");
     assert_eq!(resolve_codex_sandbox("workspace_write"), "workspace_write");
-    assert_eq!(resolve_codex_sandbox("danger_full_access"), "danger_full_access");
+    assert_eq!(
+        resolve_codex_sandbox("danger_full_access"),
+        "danger_full_access"
+    );
     assert_eq!(resolve_codex_sandbox(""), "read_only");
     assert_eq!(resolve_codex_sandbox("full"), "read_only");
 
     // snake_case (config) → kebab-case (codex CLI flag value).
     assert_eq!(codex_sandbox_kebab("read_only"), "read-only");
     assert_eq!(codex_sandbox_kebab("workspace_write"), "workspace-write");
-    assert_eq!(codex_sandbox_kebab("danger_full_access"), "danger-full-access");
+    assert_eq!(
+        codex_sandbox_kebab("danger_full_access"),
+        "danger-full-access"
+    );
     // Unknown input maps to the default tier's CLI form.
     assert_eq!(codex_sandbox_kebab("garbage"), "read-only");
 }
@@ -65,8 +77,11 @@ impl FakeArgEchoCli {
         let script = if cfg!(windows) {
             let p = dir.join(format!("{}.bat", name));
             let m = marker.to_string_lossy().replace('\\', "/");
-            std::fs::write(&p, format!("@echo off\r\necho %* > \"{}\"\r\necho FAKE_RESULT\r\n", m))
-                .unwrap();
+            std::fs::write(
+                &p,
+                format!("@echo off\r\necho %* > \"{}\"\r\necho FAKE_RESULT\r\n", m),
+            )
+            .unwrap();
             p
         } else {
             let p = dir.join(format!("{}.sh", name));
@@ -162,11 +177,19 @@ async fn test_run_cli_delegation_nonzero_exit_returns_structured_ok() {
     // fake CLI: 打一行 stdout 再 exit 2
     let script = if cfg!(windows) {
         let p = dir.path().join("fake_fail.bat");
-        std::fs::write(&p, "@echo off\r\necho boom on stdout\r\necho boom on stderr 1>&2\r\nexit /b 2\r\n").unwrap();
+        std::fs::write(
+            &p,
+            "@echo off\r\necho boom on stdout\r\necho boom on stderr 1>&2\r\nexit /b 2\r\n",
+        )
+        .unwrap();
         p
     } else {
         let p = dir.path().join("fake_fail.sh");
-        std::fs::write(&p, "#!/bin/sh\necho boom on stdout\necho boom on stderr 1>&2\nexit 2\n").unwrap();
+        std::fs::write(
+            &p,
+            "#!/bin/sh\necho boom on stdout\necho boom on stderr 1>&2\nexit 2\n",
+        )
+        .unwrap();
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;

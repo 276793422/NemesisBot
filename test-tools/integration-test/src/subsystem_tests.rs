@@ -48,17 +48,18 @@ pub async fn test_memory_save_recall(ws: &TestWorkspace) -> Vec<TestResult> {
 
     // Recall (read back)
     if let Ok(data) = std::fs::read_to_string(&mem_file)
-        && let Ok(loaded) = serde_json::from_str::<Value>(&data) {
-            let value = loaded.get("value").and_then(|v| v.as_str()).unwrap_or("");
-            if value == "test value for recall" {
-                results.push(pass(
-                    &format!("{}/recall", suite),
-                    "Memory recalled correctly",
-                ));
-            } else {
-                results.push(fail(&format!("{}/recall", suite), "Value mismatch"));
-            }
+        && let Ok(loaded) = serde_json::from_str::<Value>(&data)
+    {
+        let value = loaded.get("value").and_then(|v| v.as_str()).unwrap_or("");
+        if value == "test value for recall" {
+            results.push(pass(
+                &format!("{}/recall", suite),
+                "Memory recalled correctly",
+            ));
+        } else {
+            results.push(fail(&format!("{}/recall", suite), "Value mismatch"));
         }
+    }
 
     results
 }
@@ -92,9 +93,10 @@ pub async fn test_memory_search(ws: &TestWorkspace) -> Vec<TestResult> {
     if let Ok(entries) = std::fs::read_dir(&memory_dir) {
         for entry in entries.flatten() {
             if let Ok(data) = std::fs::read_to_string(entry.path())
-                && data.contains("ALPHA") {
-                    found += 1;
-                }
+                && data.contains("ALPHA")
+            {
+                found += 1;
+            }
         }
     }
 
@@ -186,17 +188,18 @@ pub async fn test_cron_scheduled_execution(ws: &TestWorkspace, _bin: &Path) -> V
     // Cron scheduling requires a running gateway.
     // Test that the cron service is properly configured.
     if let Ok(data) = std::fs::read_to_string(ws.config_path())
-        && let Ok(cfg) = serde_json::from_str::<Value>(&data) {
-            let has_cron = cfg.get("cron").is_some();
-            results.push(pass(
-                &format!("{}/config", suite),
-                if has_cron {
-                    "Cron config present"
-                } else {
-                    "No cron section (uses defaults)"
-                },
-            ));
-        }
+        && let Ok(cfg) = serde_json::from_str::<Value>(&data)
+    {
+        let has_cron = cfg.get("cron").is_some();
+        results.push(pass(
+            &format!("{}/config", suite),
+            if has_cron {
+                "Cron config present"
+            } else {
+                "No cron section (uses defaults)"
+            },
+        ));
+    }
 
     results.push(pass(
         &format!("{}/note", suite),

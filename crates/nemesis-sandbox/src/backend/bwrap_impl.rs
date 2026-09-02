@@ -12,7 +12,7 @@
 use std::path::PathBuf;
 use std::process::Command;
 
-use super::{bwrap_args, Availability, SandboxBackend, SandboxConf};
+use super::{Availability, SandboxBackend, SandboxConf, bwrap_args};
 
 /// bubblewrap 包装式后端（构造时探测 bwrap 二进制，一次）。
 pub struct BwrapBackend {

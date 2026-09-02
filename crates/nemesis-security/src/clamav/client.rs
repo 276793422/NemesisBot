@@ -108,8 +108,6 @@ impl Client {
 
     /// Scan content using the INSTREAM protocol.
     pub async fn scan_stream(&self, content: &[u8]) -> Result<ClamavScanResult, String> {
-        
-
         tokio::time::timeout(self.timeout, async {
             let mut stream = TcpStream::connect(&self.socket_addr)
                 .await

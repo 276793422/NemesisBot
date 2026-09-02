@@ -884,8 +884,11 @@ mod cmd_run_tests {
         let tmp = tempfile::tempdir().unwrap();
         let home = tmp.path().join(".nemesisbot");
         let wf_dir = setup(&home);
-        std::fs::write(wf_dir.join("smoke.json"), delay_workflow_json("smoke", "冒烟", 0.0))
-            .unwrap();
+        std::fs::write(
+            wf_dir.join("smoke.json"),
+            delay_workflow_json("smoke", "冒烟", 0.0),
+        )
+        .unwrap();
 
         // 带位置参数与键值参数（覆盖 input 打印分支）；home 无 config.json →
         // sandbox world None 分支（executor 分离关闭提示）。
@@ -939,7 +942,8 @@ mod cmd_run_tests {
         )
         .unwrap();
 
-        cmd_run(&home, &wf_dir, abs.to_string_lossy().as_ref(), &[]).await
+        cmd_run(&home, &wf_dir, abs.to_string_lossy().as_ref(), &[])
+            .await
             .expect("name 是存在的绝对路径 → 直接用（428-429 分支）");
 
         // (BUG S11c-3) 绝对路径分支此前必然 "workflow not found"：注册键是
@@ -1087,7 +1091,7 @@ mod cmd_run_tests {
 // 整 mod Windows 形态（3/3 测试 + 专属 use/helper 全走 Windows CLI 进程边界）。
 #[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
 mod run_arm {
-    use super::super::{run, TemplateAction, WorkflowAction};
+    use super::super::{TemplateAction, WorkflowAction, run};
 
     fn with_env_home(f: impl FnOnce(std::path::PathBuf)) {
         let _guard = crate::GLOBAL_STATE_LOCK.lock().unwrap();
@@ -1110,8 +1114,13 @@ mod run_arm {
 
             // Status：无 executions → not found / 空。
             run(WorkflowAction::Status { id: None }, false).expect("status none ok");
-            run(WorkflowAction::Status { id: Some("nope".into()) }, false)
-                .expect("status id not found ok");
+            run(
+                WorkflowAction::Status {
+                    id: Some("nope".into()),
+                },
+                false,
+            )
+            .expect("status id not found ok");
 
             // Template 默认臂（action=None）+ List 臂：磁盘无模板 → 内置默认集。
             run(WorkflowAction::Template { action: None }, false)
@@ -1127,14 +1136,18 @@ mod run_arm {
             // Show：默认集里 researcher 必在；not-found 打印可用列表。
             run(
                 WorkflowAction::Template {
-                    action: Some(TemplateAction::Show { name: "researcher".into() }),
+                    action: Some(TemplateAction::Show {
+                        name: "researcher".into(),
+                    }),
                 },
                 false,
             )
             .expect("template show found");
             run(
                 WorkflowAction::Template {
-                    action: Some(TemplateAction::Show { name: "ghost".into() }),
+                    action: Some(TemplateAction::Show {
+                        name: "ghost".into(),
+                    }),
                 },
                 false,
             )
@@ -1142,7 +1155,9 @@ mod run_arm {
 
             // Validate：不存在的路径 → File not found + Ok。
             run(
-                WorkflowAction::Validate { path: "Z:/no/such/wf.yaml".into() },
+                WorkflowAction::Validate {
+                    path: "Z:/no/such/wf.yaml".into(),
+                },
                 false,
             )
             .expect("validate missing ok");
@@ -1165,7 +1180,10 @@ mod run_arm {
             )
             .expect("create default yaml ok");
             let defs = home.join("workspace").join("workflow").join("definitions");
-            assert!(defs.join("researcher.yaml").exists(), "默认落 researcher.yaml");
+            assert!(
+                defs.join("researcher.yaml").exists(),
+                "默认落 researcher.yaml"
+            );
 
             // 显式 .json 输出：JSON 写分支（831-835）。
             run(
@@ -1178,10 +1196,9 @@ mod run_arm {
                 false,
             )
             .expect("create json ok");
-            let j: serde_json::Value = serde_json::from_str(
-                &std::fs::read_to_string(defs.join("custom.json")).unwrap(),
-            )
-            .unwrap();
+            let j: serde_json::Value =
+                serde_json::from_str(&std::fs::read_to_string(defs.join("custom.json")).unwrap())
+                    .unwrap();
             assert_eq!(j["name"], "coder");
 
             // 不存在的模板 → not found + 可用列表，Ok。
@@ -1231,7 +1248,7 @@ mod run_arm {
 #[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
 #[test]
 fn template_list_picks_up_disk_templates_and_warns_on_broken() {
-    use super::{run, TemplateAction, WorkflowAction};
+    use super::{TemplateAction, WorkflowAction, run};
 
     let _guard = crate::GLOBAL_STATE_LOCK.lock().unwrap();
     let tmp = tempfile::tempdir().unwrap();
@@ -1273,7 +1290,9 @@ fn template_list_picks_up_disk_templates_and_warns_on_broken() {
     // Show：磁盘模板可查（cmd_template_show 的磁盘模板路径）。
     run(
         WorkflowAction::Template {
-            action: Some(TemplateAction::Show { name: "my-disk-tpl".into() }),
+            action: Some(TemplateAction::Show {
+                name: "my-disk-tpl".into(),
+            }),
         },
         false,
     )
@@ -1323,9 +1342,9 @@ fn template_list_picks_up_disk_templates_and_warns_on_broken() {
 mod wave_b {
     // run/TemplateAction/WorkflowAction 只有下方 Windows 形态的测试使用，
     // 随之门控（Linux 上拆开导入，避免 unused import 死代码）。
-    use super::super::{cmd_list, cmd_run, cmd_status};
     #[cfg(windows)] // Windows-form helper use (Linux nightly: excluded, 2026-09-02 sweep)
-    use super::super::{run, TemplateAction, WorkflowAction};
+    use super::super::{TemplateAction, WorkflowAction, run};
+    use super::super::{cmd_list, cmd_run, cmd_status};
 
     /// 组装一个能被 parser 接受的最小 delay 工作流 YAML 文本。
     fn delay_yaml(name: &str, description: &str, triggers: &str) -> String {
@@ -1350,7 +1369,11 @@ mod wave_b {
 
         // 长（>37 字节）描述 → 383-385 截断臂。
         let long_desc = "L".repeat(60);
-        std::fs::write(def_dir.join("long.yaml"), delay_yaml("long", &long_desc, "")).unwrap();
+        std::fs::write(
+            def_dir.join("long.yaml"),
+            delay_yaml("long", &long_desc, ""),
+        )
+        .unwrap();
         // 空描述 → 386-387 "-" 臂。
         std::fs::write(def_dir.join("blank.yaml"), delay_yaml("blank", "", "")).unwrap();
         // 双 triggers → 398-400 join(", ") 臂。
@@ -1512,13 +1535,11 @@ mod wave_b {
             .join("templates");
         std::fs::create_dir_all(tpl_dir.join("subdir")).unwrap(); // 目录 entry
 
-        let good_body =
-            "name: good\ndescription: g\nversion: 1.0.0\nnodes:\n  - id: d\n    node_type: delay\n    config:\n      seconds: 0\n    depends_on: []\nedges: []\n";
+        let good_body = "name: good\ndescription: g\nversion: 1.0.0\nnodes:\n  - id: d\n    node_type: delay\n    config:\n      seconds: 0\n    depends_on: []\nedges: []\n";
         std::fs::write(tpl_dir.join("good.yaml"), good_body).unwrap();
         std::fs::write(tpl_dir.join("notes.txt"), "wrong extension").unwrap(); // 扩展名臂
         // a.yaml / a.yml 同 stem —— 第二个进 seen_names 去重臂。
-        let twin_a =
-            "name: anything\ndescription: t\nversion: 1.0.0\nnodes:\n  - id: d\n    node_type: delay\n    config:\n      seconds: 0\n    depends_on: []\nedges: []\n";
+        let twin_a = "name: anything\ndescription: t\nversion: 1.0.0\nnodes:\n  - id: d\n    node_type: delay\n    config:\n      seconds: 0\n    depends_on: []\nedges: []\n";
         std::fs::write(tpl_dir.join("a.yaml"), twin_a).unwrap();
         std::fs::write(tpl_dir.join("a.yml"), twin_a).unwrap();
 
@@ -1531,8 +1552,13 @@ mod wave_b {
         );
 
         // 同一环境跑一次显式 List（消费 disk 模板路径）。
-        run(WorkflowAction::Template { action: Some(TemplateAction::List) }, false)
-            .expect("template list over scanned disk templates ok");
+        run(
+            WorkflowAction::Template {
+                action: Some(TemplateAction::List),
+            },
+            false,
+        )
+        .expect("template list over scanned disk templates ok");
 
         unsafe {
             std::env::remove_var("NEMESISBOT_HOME");
@@ -1554,7 +1580,7 @@ mod wave_b {
 // 整 mod Windows 形态（1/1 测试 + 专属 use 全走 Windows CLI 进程边界）。
 #[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
 mod r10 {
-    use super::super::{run, WorkflowAction};
+    use super::super::{WorkflowAction, run};
 
     #[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
     #[tokio::test(flavor = "multi_thread")]

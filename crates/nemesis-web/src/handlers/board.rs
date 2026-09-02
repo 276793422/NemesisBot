@@ -14,11 +14,11 @@
 use crate::handlers::{get_opt_str, get_str, require_workspace};
 use crate::ws_router::{ModuleHandler, RequestContext};
 use base64::Engine;
+use nemesis_board::BoardStore;
 use nemesis_board::assignment::{Actor, AssignmentType};
 use nemesis_board::models::{
     CommentType, IssueFilter, IssuePatch, IssueStatus, NewComment, NewIssue, ProjectPatch,
 };
-use nemesis_board::BoardStore;
 use std::sync::Arc;
 
 pub struct BoardHandler;
@@ -42,9 +42,7 @@ fn ctx_actor(ctx: &RequestContext) -> Actor {
 
 /// 解析可选指派对：`assignee_type`（"manager_self"/"worker"）+ `assignee_id`。
 /// 二者必须同时出现或同时缺失。
-fn parse_assignee(
-    data: &serde_json::Value,
-) -> Result<Option<(AssignmentType, String)>, String> {
+fn parse_assignee(data: &serde_json::Value) -> Result<Option<(AssignmentType, String)>, String> {
     let at = get_opt_str(data, "assignee_type");
     let aid = get_opt_str(data, "assignee_id");
     match (at, aid) {
@@ -81,12 +79,14 @@ fn sanitize_filename(name: &str) -> Result<String, String> {
     Ok(base.to_string())
 }
 
-fn issue_to_view(store: &BoardStore, issue: &nemesis_board::Issue) -> Result<serde_json::Value, String> {
+fn issue_to_view(
+    store: &BoardStore,
+    issue: &nemesis_board::Issue,
+) -> Result<serde_json::Value, String> {
     let comments = store.list_comments(issue.id)?;
     let activity = store.list_activity(issue.id)?;
     let subscribers = store.list_subscribers(issue.id)?;
-    let mut v = serde_json::to_value(issue)
-        .map_err(|e| format!("serialize issue: {e}"))?;
+    let mut v = serde_json::to_value(issue).map_err(|e| format!("serialize issue: {e}"))?;
     if let Some(obj) = v.as_object_mut() {
         obj.insert(
             "comments".to_string(),
@@ -110,10 +110,7 @@ fn build_filter(data: &serde_json::Value) -> Result<IssueFilter, String> {
         ..Default::default()
     };
     if let Some(s) = get_opt_str(data, "status") {
-        filter.status = Some(
-            IssueStatus::from_str(&s)
-                .ok_or_else(|| format!("未知 status: {s}"))?,
-        );
+        filter.status = Some(IssueStatus::from_str(&s).ok_or_else(|| format!("未知 status: {s}"))?);
     }
     if let Some((at, aid)) = parse_assignee(data)? {
         filter.assignee = Some((at, aid));
@@ -131,7 +128,10 @@ fn build_patch(data: &serde_json::Value) -> IssuePatch {
     IssuePatch {
         title: get_opt_str(data, "title"),
         description: get_opt_str(data, "description"),
-        priority: data.get("priority").and_then(|v| v.as_i64()).map(|p| p as i32),
+        priority: data
+            .get("priority")
+            .and_then(|v| v.as_i64())
+            .map(|p| p as i32),
         project_id: data.get("project_id").and_then(|v| v.as_i64()),
         due_date: data.get("due_date").and_then(|v| v.as_i64()),
         position: data.get("position").and_then(|v| v.as_i64()),
@@ -179,9 +179,10 @@ fn build_dispatch_prompt(issue: &nemesis_board::Issue) -> String {
         p.push_str(&format!("\n## 描述\n{}\n", issue.description));
     }
     if let Some(ac) = issue.acceptance_criteria.as_deref()
-        && !ac.trim().is_empty() {
-            p.push_str(&format!("\n## 验收标准\n{}\n", ac));
-        }
+        && !ac.trim().is_empty()
+    {
+        p.push_str(&format!("\n## 验收标准\n{}\n", ac));
+    }
     p.push_str(
         "\n## 要求\n\
          完成后在最终回复中汇报：做了什么、改动/产物在哪、结果如何。\n\
@@ -216,7 +217,7 @@ async fn issue_dispatch(
         None => match (&issue.assignee, &issue.assignee_id) {
             (Some(AssignmentType::Worker), Some(wid)) => wid.clone(),
             (Some(AssignmentType::ManagerSelf), _) => {
-                return Err("manager_self 指派由 coordinator 本机执行，不支持远端派发".to_string())
+                return Err("manager_self 指派由 coordinator 本机执行，不支持远端派发".to_string());
             }
             _ => return Err("缺少派发目标：提供 target 或先把 issue 指派给 worker".to_string()),
         },
@@ -245,7 +246,9 @@ pub fn dispatch_issue_core(
     // 状态闸：blocked/终态不可派发；backlog/todo/in_review 派发即转
     // in_progress（都合法）。
     match issue.status {
-        IssueStatus::Backlog | IssueStatus::Todo | IssueStatus::InProgress
+        IssueStatus::Backlog
+        | IssueStatus::Todo
+        | IssueStatus::InProgress
         | IssueStatus::InReview => {}
         other => return Err(format!("issue 处于 {other} 状态，不可派发")),
     }
@@ -292,9 +295,7 @@ pub fn dispatch_issue_core(
     //    peer_chat_callback。目标不可达时立刻终结派发 + 系统评论留痕
     //    （callback 不会再来，不留悬挂 dispatched 态）。
     let issue_id = issue.id;
-    let rpc_client = cluster
-        .rpc_client_arc()
-        .ok_or("RPC client not available")?;
+    let rpc_client = cluster.rpc_client_arc().ok_or("RPC client not available")?;
     let request = nemesis_cluster::rpc_types::RPCRequest {
         id: task_id.clone(),
         action: nemesis_cluster::rpc_types::ActionType::Known(
@@ -403,9 +404,7 @@ async fn issue_cancel(
 
     // 下行取消（fire-and-forget）：B 端 gateway 收 task_cancel → abort 任务。
     // 送达失败不影响 A 侧终态（worker 回报被写回幂等早退兜住），评论留痕。
-    let rpc_client = cluster
-        .rpc_client_arc()
-        .ok_or("RPC client not available")?;
+    let rpc_client = cluster.rpc_client_arc().ok_or("RPC client not available")?;
     let request = nemesis_cluster::rpc_types::RPCRequest {
         id: format!("cancel-{task_id}"),
         action: nemesis_cluster::rpc_types::ActionType::Custom("task_cancel".to_string()),
@@ -417,7 +416,10 @@ async fn issue_cancel(
     let task_id_for_rpc = task_id.clone();
     tokio::spawn(async move {
         let timeout = std::time::Duration::from_secs(30);
-        match rpc_client.call_with_timeout(&worker_id, request, timeout).await {
+        match rpc_client
+            .call_with_timeout(&worker_id, request, timeout)
+            .await
+        {
             Ok(_) => {
                 tracing::info!("[Board] task_cancel delivered (task_id={task_id_for_rpc})");
             }
@@ -479,13 +481,7 @@ fn auto_dispatch_after_assign(
     issue: &nemesis_board::Issue,
     actor: &Actor,
 ) -> bool {
-    auto_dispatch_with_config(
-        live_board_config().as_ref(),
-        store,
-        cluster,
-        issue,
-        actor,
-    )
+    auto_dispatch_with_config(live_board_config().as_ref(), store, cluster, issue, actor)
 }
 
 /// [`auto_dispatch_after_assign`] 的可测内核：config 显式入参（测试不碰
@@ -513,7 +509,10 @@ fn auto_dispatch_with_config(
             true
         }
         Err(e) => {
-            tracing::warn!("[Board] auto-dispatch failed for issue #{}: {e}", issue.number);
+            tracing::warn!(
+                "[Board] auto-dispatch failed for issue #{}: {e}",
+                issue.number
+            );
             let _ = store.add_comment(nemesis_board::models::NewComment {
                 issue_id: issue.id,
                 author: nemesis_board::Actor::system("board"),
@@ -666,17 +665,18 @@ fn arm_autopilot_job_with(
         .lock()
         .map_err(|_| "cron service lock poisoned".to_string())?;
     if let Some(job_id) = ap.cron_job_id.as_deref()
-        && svc.get_job(job_id).is_some() {
-            svc.patch_job(
-                job_id,
-                &nemesis_cron::CronJobPatch {
-                    schedule: Some(schedule),
-                    enabled: Some(ap.enabled),
-                    ..Default::default()
-                },
-            )?;
-            return Ok(());
-        }
+        && svc.get_job(job_id).is_some()
+    {
+        svc.patch_job(
+            job_id,
+            &nemesis_cron::CronJobPatch {
+                schedule: Some(schedule),
+                enabled: Some(ap.enabled),
+                ..Default::default()
+            },
+        )?;
+        return Ok(());
+    }
     // add_job_ext 返回随机 id（不支持指定 id），注册后回存映射。
     let job = svc.add_job_ext(
         &format!("board-ap:{}", ap.id),
@@ -787,7 +787,9 @@ impl ModuleHandler for BoardHandler {
                 let data = data.ok_or("missing data")?;
                 let issues = store.list_issues(&build_filter(&data)?)?;
                 let total = issues.len();
-                Ok(Some(serde_json::json!({ "issues": issues, "total": total })))
+                Ok(Some(
+                    serde_json::json!({ "issues": issues, "total": total }),
+                ))
             }
             "issue.get" => {
                 let data = data.ok_or("missing data")?;
@@ -796,7 +798,9 @@ impl ModuleHandler for BoardHandler {
                 } else {
                     store.get_issue_by_number(&get_str(&data, "number")?)?
                 };
-                Ok(Some(serde_json::json!({ "issue": issue_to_view(&store, &issue)? })))
+                Ok(Some(
+                    serde_json::json!({ "issue": issue_to_view(&store, &issue)? }),
+                ))
             }
             "issue.create" => {
                 let data = data.ok_or("missing data")?;
@@ -832,12 +836,8 @@ impl ModuleHandler for BoardHandler {
                 // 且指派给 worker 时触发）。触发后重取 issue，响应反映派发
                 // 推进的 in_progress 态。
                 #[cfg(feature = "cluster")]
-                let dispatched = auto_dispatch_after_assign(
-                    &store,
-                    ctx.state.cluster.as_ref(),
-                    &issue,
-                    &actor,
-                );
+                let dispatched =
+                    auto_dispatch_after_assign(&store, ctx.state.cluster.as_ref(), &issue, &actor);
                 #[cfg(not(feature = "cluster"))]
                 let dispatched = auto_dispatch_after_assign(&store, &issue, &actor);
                 let issue = if dispatched {
@@ -882,15 +882,11 @@ impl ModuleHandler for BoardHandler {
             // 派发到远端 worker（W2 P2）：issue → peer_chat，task_id ↔ issue
             // 绑定入 issue_dispatch 表；worker 回报经 peer_chat_callback 由
             // gateway 写回看板（成功 → 结果评论 + in_review，失败 → 失败评论）。
-            "issue.dispatch" => {
-                issue_dispatch(&store, actor, ctx, data).await
-            }
+            "issue.dispatch" => issue_dispatch(&store, actor, ctx, data).await,
             // 取消进行中的派发（W2 P4）：A 侧派发/issue 双终态 + 下行
             // task_cancel 让 worker abort。赢竞态才动账（worker 恰好回报则
             // 拒绝取消，issue 保持写回的状态）。
-            "issue.cancel" => {
-                issue_cancel(&store, actor, ctx, data).await
-            }
+            "issue.cancel" => issue_cancel(&store, actor, ctx, data).await,
             // --- autopilot（W2 P4 定时派活）---
             "autopilot.list" => {
                 let autopilots = store.list_autopilots()?;
@@ -912,13 +908,18 @@ impl ModuleHandler for BoardHandler {
                         .unwrap_or(nemesis_board::models::priority::MEDIUM),
                     project_id: data.get("project_id").and_then(|v| v.as_i64()),
                     target: get_opt_str(&data, "target").unwrap_or_default(),
-                    enabled: data.get("enabled").and_then(|v| v.as_bool()).unwrap_or(true),
+                    enabled: data
+                        .get("enabled")
+                        .and_then(|v| v.as_bool())
+                        .unwrap_or(true),
                 })?;
                 // cron 已注入 → 即时登记并回填 cron_job_id；未注入（单测/
                 // 极简构建）→ 启动同步兜底。
                 arm_autopilot_job(ctx, &store, &ap)?;
                 let ap = store.get_autopilot(ap.id)?;
-                Ok(Some(serde_json::json!({ "created": true, "autopilot": ap })))
+                Ok(Some(
+                    serde_json::json!({ "created": true, "autopilot": ap }),
+                ))
             }
             "autopilot.update" => {
                 let data = data.ok_or("missing data")?;
@@ -936,7 +937,10 @@ impl ModuleHandler for BoardHandler {
                         cron: get_opt_str(&data, "cron"),
                         title: get_opt_str(&data, "title"),
                         description: get_opt_str(&data, "description"),
-                        priority: data.get("priority").and_then(|v| v.as_i64()).map(|p| p as i32),
+                        priority: data
+                            .get("priority")
+                            .and_then(|v| v.as_i64())
+                            .map(|p| p as i32),
                         project_id: data.get("project_id").and_then(|v| v.as_i64()),
                         target: get_opt_str(&data, "target"),
                         enabled: data.get("enabled").and_then(|v| v.as_bool()),
@@ -944,7 +948,9 @@ impl ModuleHandler for BoardHandler {
                 )?;
                 arm_autopilot_job(ctx, &store, &ap)?;
                 let ap = store.get_autopilot(ap.id)?;
-                Ok(Some(serde_json::json!({ "updated": true, "autopilot": ap })))
+                Ok(Some(
+                    serde_json::json!({ "updated": true, "autopilot": ap }),
+                ))
             }
             "autopilot.remove" => {
                 let data = data.ok_or("missing data")?;
@@ -1006,7 +1012,9 @@ impl ModuleHandler for BoardHandler {
                     parent_id: data.get("parent_id").and_then(|v| v.as_i64()),
                     ctype: CommentType::Comment,
                 })?;
-                Ok(Some(serde_json::json!({ "added": true, "comment": comment })))
+                Ok(Some(
+                    serde_json::json!({ "added": true, "comment": comment }),
+                ))
             }
             "comment.list" => {
                 let data = data.ok_or("missing data")?;
@@ -1034,7 +1042,9 @@ impl ModuleHandler for BoardHandler {
                     .and_then(|v| v.as_i64())
                     .ok_or("missing field: issue_id")?;
                 store.subscribe(issue_id, &actor, "manual")?;
-                Ok(Some(serde_json::json!({ "subscribed": true, "issue_id": issue_id })))
+                Ok(Some(
+                    serde_json::json!({ "subscribed": true, "issue_id": issue_id }),
+                ))
             }
             "subscriber.remove" => {
                 let data = data.ok_or("missing data")?;
@@ -1043,7 +1053,9 @@ impl ModuleHandler for BoardHandler {
                     .and_then(|v| v.as_i64())
                     .ok_or("missing field: issue_id")?;
                 store.unsubscribe(issue_id, &actor)?;
-                Ok(Some(serde_json::json!({ "unsubscribed": true, "issue_id": issue_id })))
+                Ok(Some(
+                    serde_json::json!({ "unsubscribed": true, "issue_id": issue_id }),
+                ))
             }
             "subscriber.list" => {
                 let data = data.ok_or("missing data")?;
@@ -1067,7 +1079,9 @@ impl ModuleHandler for BoardHandler {
                     None,
                     &get_opt_str(&data, "icon").unwrap_or_default(),
                 )?;
-                Ok(Some(serde_json::json!({ "created": true, "project": project })))
+                Ok(Some(
+                    serde_json::json!({ "created": true, "project": project }),
+                ))
             }
             // 项目字段级更新（W2 P3）：归档走 status="archived"（软删除）。
             "project.update" => {
@@ -1083,7 +1097,9 @@ impl ModuleHandler for BoardHandler {
                     icon: get_opt_str(&data, "icon"),
                 };
                 let project = store.update_project(id, &patch)?;
-                Ok(Some(serde_json::json!({ "updated": true, "project": project })))
+                Ok(Some(
+                    serde_json::json!({ "updated": true, "project": project }),
+                ))
             }
             // 附件上传（W2 P3）：base64 内容 → workspace/board/files/ 存文件
             // + 元数据入表。storage_path 记 workspace 相对路径（可移植）。
@@ -1095,10 +1111,9 @@ impl ModuleHandler for BoardHandler {
                     .ok_or("missing field: issue_id")?;
                 let filename = sanitize_filename(&get_str(&data, "filename")?)?;
                 let content_b64 = get_str(&data, "content")?;
-                let bytes =
-                    base64::engine::general_purpose::STANDARD.decode(content_b64.trim()).map_err(
-                        |e| format!("content 不是合法 base64: {e}"),
-                    )?;
+                let bytes = base64::engine::general_purpose::STANDARD
+                    .decode(content_b64.trim())
+                    .map_err(|e| format!("content 不是合法 base64: {e}"))?;
                 if bytes.len() > MAX_ATTACHMENT_BYTES {
                     return Err(format!(
                         "附件过大（{} 字节，上限 {} 字节）",
@@ -1116,14 +1131,15 @@ impl ModuleHandler for BoardHandler {
                 std::fs::create_dir_all(&files_dir)
                     .map_err(|e| format!("创建附件目录失败: {e}"))?;
                 // 毫秒时间戳前缀防同名覆盖。
-                let stored_name =
-                    format!("{}_{}", chrono::Utc::now().timestamp_millis(), filename);
+                let stored_name = format!("{}_{}", chrono::Utc::now().timestamp_millis(), filename);
                 std::fs::write(files_dir.join(&stored_name), &bytes)
                     .map_err(|e| format!("写入附件文件失败: {e}"))?;
                 let rel_path = format!("board/files/issue_{issue_id}/{stored_name}");
                 let attachment =
                     store.add_attachment(issue_id, &filename, &rel_path, bytes.len() as i64)?;
-                Ok(Some(serde_json::json!({ "added": true, "attachment": attachment })))
+                Ok(Some(
+                    serde_json::json!({ "added": true, "attachment": attachment }),
+                ))
             }
             // 附件下载（W2 P3）：读文件回 base64（MVP 经 WS 传小文件；大文件
             // 走 HTTP 静态路由留 P4 评估）。
@@ -1135,10 +1151,13 @@ impl ModuleHandler for BoardHandler {
                     .ok_or("missing field: id")?;
                 let attachment = store.get_attachment(id)?;
                 let workspace = require_workspace(ctx)?;
-                let bytes = std::fs::read(std::path::Path::new(workspace).join(&attachment.storage_path))
-                    .map_err(|e| format!("读取附件文件失败: {e}"))?;
+                let bytes =
+                    std::fs::read(std::path::Path::new(workspace).join(&attachment.storage_path))
+                        .map_err(|e| format!("读取附件文件失败: {e}"))?;
                 let content = base64::engine::general_purpose::STANDARD.encode(&bytes);
-                Ok(Some(serde_json::json!({ "attachment": attachment, "content": content })))
+                Ok(Some(
+                    serde_json::json!({ "attachment": attachment, "content": content }),
+                ))
             }
             // 收件箱（W2 P3）：站内通知列表（store 事件钩子产生；经通道的
             // 站外投递留 P4）。MVP 单管理员语义：admin 通知全员可见。
@@ -1175,7 +1194,9 @@ impl ModuleHandler for BoardHandler {
                     }
                 };
                 let unread = store.unread_notification_count("admin", None)?;
-                Ok(Some(serde_json::json!({ "marked": marked, "unread": unread })))
+                Ok(Some(
+                    serde_json::json!({ "marked": marked, "unread": unread }),
+                ))
             }
             "attachment.list" => {
                 let data = data.ok_or("missing data")?;

@@ -103,10 +103,12 @@ impl LlmProvider for CapturingProvider {
         _options: Option<crate::types::ChatOptions>,
         _tools: Vec<crate::types::ToolDefinition>,
     ) -> Result<LlmResponse, String> {
-        self.captured
-            .lock()
-            .unwrap()
-            .push(messages.iter().filter_map(|m| serde_json::to_value(m).ok()).collect());
+        self.captured.lock().unwrap().push(
+            messages
+                .iter()
+                .filter_map(|m| serde_json::to_value(m).ok())
+                .collect(),
+        );
         let mut responses = self.responses.lock().unwrap();
         if responses.is_empty() {
             Ok(LlmResponse {
@@ -206,12 +208,12 @@ fn test_rebuild_byte_exact_with_ledger_and_later_history() {
     // Store history has grown past the round (post-round assistant + new user).
     let (store, dir) = temp_store(&key);
     let mut final_history = instance.get_history();
-    final_history.push(turn("assistant", "second answer (after the recorded round)"));
+    final_history.push(turn(
+        "assistant",
+        "second answer (after the recorded round)",
+    ));
     final_history.push(turn("user", "third question (after the recorded round)"));
-    store.set_history(
-        &key,
-        final_history.iter().map(|t| t.into()).collect(),
-    );
+    store.set_history(&key, final_history.iter().map(|t| t.into()).collect());
 
     match rebuild_request_messages(&store, &key, 1).expect("rebuild must not error") {
         RebuildOutcome::Rebuilt(rebuilt) => {
@@ -253,7 +255,10 @@ fn test_verify_locates_injection_diff() {
 
     let diff = verify_request_replay(&messages, &tampered)
         .expect_err("a tampered digest content must be caught");
-    assert_eq!(diff.index, digest_index, "diff located at the digest position");
+    assert_eq!(
+        diff.index, digest_index,
+        "diff located at the digest position"
+    );
     assert_eq!(diff.kind, "content");
     assert!(
         diff.detail.contains("content differs"),
@@ -264,8 +269,8 @@ fn test_verify_locates_injection_diff() {
     // Role drift is classified separately.
     let mut tampered_role = recorded.clone();
     tampered_role[digest_index]["role"] = serde_json::json!("system");
-    let diff = verify_request_replay(&messages, &tampered_role)
-        .expect_err("role drift must be caught");
+    let diff =
+        verify_request_replay(&messages, &tampered_role).expect_err("role drift must be caught");
     assert_eq!(diff.kind, "role");
 
     // Count mismatch is classified separately.
@@ -284,13 +289,16 @@ fn test_voice_append_replays_on_top_of_digest_insert() {
     let (store, dir) = temp_store(&key);
     store.set_history(
         &key,
-        [turn("system", "You are a test assistant."),
-            turn("user", "hello")]
+        [
+            turn("system", "You are a test assistant."),
+            turn("user", "hello"),
+        ]
         .iter()
         .map(|t| t.into())
         .collect(),
     );
-    let digest_body = "<system-reminder>\n# Current Time / Environment snapshot\nfake\n</system-reminder>";
+    let digest_body =
+        "<system-reminder>\n# Current Time / Environment snapshot\nfake\n</system-reminder>";
     append_projection_record(&RequestProjectionRecord {
         trace_id: "unit-voice".to_string(),
         session_key: key.clone(),
@@ -334,8 +342,10 @@ fn test_voice_append_replays_on_top_of_digest_insert() {
 
     match rebuild_request_messages(&store, &key, 1).expect("rebuild must not error") {
         RebuildOutcome::Rebuilt(rebuilt) => {
-            assert!(verify_request_replay(&rebuilt, &recorded).is_ok(),
-                "digest insert + voice suffix must replay to the hand-authored bytes");
+            assert!(
+                verify_request_replay(&rebuilt, &recorded).is_ok(),
+                "digest insert + voice suffix must replay to the hand-authored bytes"
+            );
         }
         other => panic!("expected Rebuilt, got {:?}", other),
     }
@@ -355,8 +365,10 @@ fn test_trace_id_disambiguates_equal_rounds_across_turns() {
     let (store, dir) = temp_store(&key);
     store.set_history(
         &key,
-        [turn("system", "You are a test assistant."),
-            turn("user", "hello")]
+        [
+            turn("system", "You are a test assistant."),
+            turn("user", "hello"),
+        ]
         .iter()
         .map(|t| t.into())
         .collect(),
@@ -462,9 +474,11 @@ fn test_no_ledger_degrades_to_subsequence() {
     let (store, dir) = temp_store(&key);
     store.set_history(
         &key,
-        [turn("system", "You are a test assistant."),
+        [
+            turn("system", "You are a test assistant."),
             turn("user", "hello"),
-            turn("assistant", "hi")]
+            turn("assistant", "hi"),
+        ]
         .iter()
         .map(|t| t.into())
         .collect(),
@@ -504,8 +518,10 @@ fn test_trimmed_history_reports_unavailable() {
     let (store, dir) = temp_store(&key);
     store.set_history(
         &key,
-        [turn("system", "You are a test assistant."),
-            turn("user", "hello")]
+        [
+            turn("system", "You are a test assistant."),
+            turn("user", "hello"),
+        ]
         .iter()
         .map(|t| t.into())
         .collect(),
@@ -617,7 +633,9 @@ async fn test_full_turn_replay_byte_exact() {
     assert_eq!(records[1].round, 2);
     for r in &records {
         assert!(
-            r.injections.iter().any(|i| i.source == INJECTION_CONTEXT_DIGEST),
+            r.injections
+                .iter()
+                .any(|i| i.source == INJECTION_CONTEXT_DIGEST),
             "every round's digest injection must be recorded"
         );
     }
@@ -730,7 +748,12 @@ async fn test_x1_pruned_tool_result_replay_byte_exact() {
         }),
         test_config(),
     );
-    agent_loop.register_tool("big_output".to_string(), Box::new(BigOutputTool { output: original.clone() }));
+    agent_loop.register_tool(
+        "big_output".to_string(),
+        Box::new(BigOutputTool {
+            output: original.clone(),
+        }),
+    );
     agent_loop.set_session_store(store.clone());
 
     let instance = AgentInstance::new(test_config());
@@ -750,7 +773,10 @@ async fn test_x1_pruned_tool_result_replay_byte_exact() {
         .iter()
         .find(|t| t.role == "tool")
         .expect("tool turn in history");
-    assert_eq!(tool_turn.content, original, "history must keep the original");
+    assert_eq!(
+        tool_turn.content, original,
+        "history must keep the original"
+    );
     assert_eq!(tool_turn.tool_name.as_deref(), Some("big_output"));
     assert!(
         tool_turn.tool_result_projection.is_none(),
@@ -797,7 +823,10 @@ async fn test_x1_pruned_tool_result_replay_byte_exact() {
         .iter()
         .find(|t| t.role == "tool")
         .expect("tool turn after reload");
-    assert_eq!(reloaded_tool.content, original, "store round-trip keeps original");
+    assert_eq!(
+        reloaded_tool.content, original,
+        "store round-trip keeps original"
+    );
     assert_eq!(reloaded_tool.tool_name.as_deref(), Some("big_output"));
 
     // (3) Byte-exact replay for BOTH rounds: the rebuild recomputes the fold
@@ -862,10 +891,7 @@ fn rebuild_pushes_injection_beyond_view_end_and_applies_voice() {
     let (store, dir) = temp_store(&key);
     store.set_history(
         &key,
-        vec![
-            (&turn("system", "sys")).into(),
-            (&turn("user", "q")).into(),
-        ],
+        vec![(&turn("system", "sys")).into(), (&turn("user", "q")).into()],
     );
     append_projection_record(&RequestProjectionRecord {
         trace_id: "t".to_string(),

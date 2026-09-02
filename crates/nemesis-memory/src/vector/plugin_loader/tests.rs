@@ -312,9 +312,10 @@ fn test_native_plugin_dim_default_zero() {
 
 fn real_dll_path() -> Option<String> {
     if let Ok(path) = std::env::var("PLUGIN_ONNX_DLL_PATH")
-        && Path::new(&path).exists() {
-            return Some(path);
-        }
+        && Path::new(&path).exists()
+    {
+        return Some(path);
+    }
     let manifest_dir = env!("CARGO_MANIFEST_DIR");
     let candidates = [
         format!(
@@ -340,9 +341,10 @@ fn real_dll_path() -> Option<String> {
 
 fn real_model_dir() -> Option<String> {
     if let Ok(dir) = std::env::var("PLUGIN_ONNX_TEST_MODEL_DIR")
-        && Path::new(&dir).exists() {
-            return Some(dir);
-        }
+        && Path::new(&dir).exists()
+    {
+        return Some(dir);
+    }
     let manifest_dir = env!("CARGO_MANIFEST_DIR");
     let candidates = [
         format!("{}/models/all-MiniLM-L6-v2", manifest_dir),
@@ -355,9 +357,10 @@ fn real_model_dir() -> Option<String> {
     for candidate in &candidates {
         let path = std::path::PathBuf::from(candidate);
         if path.join("model.onnx").exists()
-            && let Ok(canonical) = path.canonicalize() {
-                return Some(canonical.to_str().expect("valid path").to_string());
-            }
+            && let Ok(canonical) = path.canonicalize()
+        {
+            return Some(canonical.to_str().expect("valid path").to_string());
+        }
     }
     None
 }
@@ -490,7 +493,10 @@ fn debug_impls_render_unloaded_plugin_state() {
     };
     let plugin_dbg = format!("{:?}", plugin);
     assert!(plugin_dbg.contains("NativePlugin"), "got: {plugin_dbg}");
-    assert!(plugin_dbg.contains("NativePluginInner"), "got: {plugin_dbg}");
+    assert!(
+        plugin_dbg.contains("NativePluginInner"),
+        "got: {plugin_dbg}"
+    );
 }
 
 // ---- R1 coverage: Library::new failure on an existing non-library file ----

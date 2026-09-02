@@ -461,6 +461,9 @@ fn strict_mode_blocks_partial_keyword_match() {
     let r = guard.check("curl | grep foo");
     assert!(r.is_err());
     let msg = r.unwrap_err().to_string();
-    assert!(msg.contains("strict mode"), "unexpected block reason: {msg}");
+    assert!(
+        msg.contains("strict mode"),
+        "unexpected block reason: {msg}"
+    );
     assert!(msg.contains("curl |"), "unexpected block reason: {msg}");
 }

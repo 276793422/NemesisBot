@@ -35,7 +35,10 @@ fn bwrap_args_basic_shape() {
     // workspace 读写挂载存在，且在 ro-bind / 之后（后项覆盖 = 该子树可写）
     let ro_pos = joined.find("--ro-bind\u{1}/\u{1}/").unwrap();
     let bind_pos = joined.find("--bind\u{1}/ws\u{1}/ws").unwrap();
-    assert!(bind_pos > ro_pos, "workspace --bind must override --ro-bind /: {args:?}");
+    assert!(
+        bind_pos > ro_pos,
+        "workspace --bind must override --ro-bind /: {args:?}"
+    );
     // allow_network=true → 不加 --unshare-net
     assert!(!args.contains(&"--unshare-net".to_string()));
 }
@@ -86,7 +89,10 @@ fn seatbelt_profile_shape() {
         label: "seatbelt-test".into(),
     };
     let profile = seatbelt_profile(&conf);
-    assert!(profile.starts_with("(version 1)\n"), "profile head: {profile}");
+    assert!(
+        profile.starts_with("(version 1)\n"),
+        "profile head: {profile}"
+    );
     assert!(profile.contains("(deny default)"));
     assert!(profile.contains("(allow process-exec*)"));
     assert!(profile.contains("(allow process-fork)"));
@@ -113,7 +119,10 @@ fn seatbelt_profile_no_network_deny_when_allowed() {
 #[test]
 fn for_executor_conf_shape() {
     let conf = SandboxConf::for_executor(std::path::Path::new("/home/bot/ws"), false);
-    assert_eq!(conf.writable_roots, vec![std::path::PathBuf::from("/home/bot/ws")]);
+    assert_eq!(
+        conf.writable_roots,
+        vec![std::path::PathBuf::from("/home/bot/ws")]
+    );
     assert_eq!(conf.read_exec_roots, vec![std::path::PathBuf::from("/")]);
     assert!(!conf.allow_network);
     assert_eq!(conf.label, "executor");
@@ -291,7 +300,8 @@ mod linux_live {
             "outside write was NOT denied; child stdout:\n{stdout}"
         );
         assert!(
-            stdout.contains("ENFORCEMENT_PARTIAL_NETWORK_GAP") || stdout.contains("ENFORCEMENT_FULL"),
+            stdout.contains("ENFORCEMENT_PARTIAL_NETWORK_GAP")
+                || stdout.contains("ENFORCEMENT_FULL"),
             "child did not report enforcement level; stdout:\n{stdout}"
         );
         // 「写内放行」的真凭实据：宿主侧文件确实写成
@@ -321,10 +331,7 @@ mod linux_live {
         match backend.apply_to_self(&conf) {
             Ok(Enforcement::Partial(gaps)) => {
                 let net_gap = gaps.iter().any(|g| g.contains("network"));
-                println!(
-                    "ENFORCEMENT_PARTIAL_NETWORK_GAP={}",
-                    net_gap
-                );
+                println!("ENFORCEMENT_PARTIAL_NETWORK_GAP={}", net_gap);
             }
             Ok(Enforcement::Full) => println!("ENFORCEMENT_FULL"),
             Err(err) => {
@@ -398,9 +405,10 @@ mod linux_live {
 
         // 写内：exit 0 + 宿主文件落盘
         let mut ok_cmd = Command::new("/bin/sh");
-        ok_cmd
-            .arg("-c")
-            .arg(format!("echo bwrap-ok > {}", inside.join("ok.txt").display()));
+        ok_cmd.arg("-c").arg(format!(
+            "echo bwrap-ok > {}",
+            inside.join("ok.txt").display()
+        ));
         let mut wrapped = backend.wrap_command(&conf, &ok_cmd).expect("wrap");
         let out = run_with_timeout(&mut wrapped, 60).expect("run inside-write");
         assert!(
@@ -457,9 +465,9 @@ mod linux_live {
         let conf = SandboxConf::for_executor(tmp.path(), false);
         // bash /dev/tcp 探针：无网 namespace 里 connect 立即失败
         let mut probe = Command::new("/bin/bash");
-        probe.arg("-c").arg(
-            "exec 3<>/dev/tcp/203.0.113.1/80 && echo NET_CONNECTED && exec 3>&-",
-        );
+        probe
+            .arg("-c")
+            .arg("exec 3<>/dev/tcp/203.0.113.1/80 && echo NET_CONNECTED && exec 3>&-");
         let mut wrapped = backend.wrap_command(&conf, &probe).expect("wrap");
         let out = run_with_timeout(&mut wrapped, 30).expect("run net probe");
         let stdout = String::from_utf8_lossy(&out.stdout);

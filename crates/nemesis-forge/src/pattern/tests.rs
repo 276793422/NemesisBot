@@ -760,7 +760,12 @@ fn test_s8_detect_conversation_efficiency_issues_full_paths() {
     let mut exps = Vec::new();
     // 10 fast single-exp sessions (drive the global average down).
     for i in 0..10 {
-        exps.push(exp_full("fast", 10, &format!("fast-{}", i), "2026-01-01T00:00:05+08:00"));
+        exps.push(exp_full(
+            "fast",
+            10,
+            &format!("fast-{}", i),
+            "2026-01-01T00:00:05+08:00",
+        ));
     }
     // 3 slow single-exp sessions with the SAME chain ("slow") → same
     // fingerprint, count 3; distinct timestamps so both the first_seen

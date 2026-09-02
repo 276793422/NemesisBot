@@ -169,9 +169,10 @@ fn read_rules_config(security_cfg: &std::path::Path) -> Result<serde_json::Value
         // Ensure rules section exists
         let mut cfg = cfg;
         if cfg.get("rules").is_none()
-            && let Some(obj) = cfg.as_object_mut() {
-                obj.insert("rules".to_string(), default_rules());
-            }
+            && let Some(obj) = cfg.as_object_mut()
+        {
+            obj.insert("rules".to_string(), default_rules());
+        }
         Ok(cfg)
     } else {
         Ok(default_security_config())
@@ -433,21 +434,22 @@ fn cmd_rules_remove(
     let mut found = false;
 
     if let Some(rules) = cfg.get_mut("rules").and_then(|v| v.as_object_mut())
-        && let Some(arr) = rules.get_mut(rule_type).and_then(|v| v.as_array_mut()) {
-            // Find entries matching operation at the given index
-            let matching: Vec<usize> = arr
-                .iter()
-                .enumerate()
-                .filter(|(_, e)| e.get("operation").and_then(|v| v.as_str()) == Some(operation))
-                .map(|(i, _)| i)
-                .collect();
+        && let Some(arr) = rules.get_mut(rule_type).and_then(|v| v.as_array_mut())
+    {
+        // Find entries matching operation at the given index
+        let matching: Vec<usize> = arr
+            .iter()
+            .enumerate()
+            .filter(|(_, e)| e.get("operation").and_then(|v| v.as_str()) == Some(operation))
+            .map(|(i, _)| i)
+            .collect();
 
-            if index < matching.len() {
-                let actual_idx = matching[index];
-                arr.remove(actual_idx);
-                found = true;
-            }
+        if index < matching.len() {
+            let actual_idx = matching[index];
+            arr.remove(actual_idx);
+            found = true;
         }
+    }
 
     if found {
         write_rules_config(security_cfg, &cfg)?;
@@ -809,16 +811,17 @@ pub async fn run(action: SecurityAction, local: bool) -> Result<()> {
             // Show scanner status
             if security_cfg.exists() {
                 if let Ok(data) = std::fs::read_to_string(&security_cfg)
-                    && let Ok(cfg) = serde_json::from_str::<serde_json::Value>(&data) {
-                        if let Some(engines) = cfg.get("enabled").and_then(|v| v.as_array()) {
-                            println!("  Scanner engines: {} configured", engines.len());
-                        }
-                        let restrict = cfg
-                            .get("restrict_to_workspace")
-                            .and_then(|v| v.as_bool())
-                            .unwrap_or(true);
-                        println!("  Restrict to workspace: {}", restrict);
+                    && let Ok(cfg) = serde_json::from_str::<serde_json::Value>(&data)
+                {
+                    if let Some(engines) = cfg.get("enabled").and_then(|v| v.as_array()) {
+                        println!("  Scanner engines: {} configured", engines.len());
                     }
+                    let restrict = cfg
+                        .get("restrict_to_workspace")
+                        .and_then(|v| v.as_bool())
+                        .unwrap_or(true);
+                    println!("  Restrict to workspace: {}", restrict);
+                }
             } else {
                 println!("  Scanner: not configured");
             }

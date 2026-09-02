@@ -150,13 +150,14 @@ impl SecurityHandler {
             let entry = entry.map_err(|e| format!("failed to read entry: {}", e))?;
             let path = entry.path();
             if path.extension().and_then(|e| e.to_str()) == Some("jsonl")
-                && let Ok(content) = std::fs::read_to_string(&path) {
-                    for line in content.lines().rev() {
-                        if let Ok(val) = serde_json::from_str::<serde_json::Value>(line) {
-                            entries.push(flatten_audit_entry(&val));
-                        }
+                && let Ok(content) = std::fs::read_to_string(&path)
+            {
+                for line in content.lines().rev() {
+                    if let Ok(val) = serde_json::from_str::<serde_json::Value>(line) {
+                        entries.push(flatten_audit_entry(&val));
                     }
                 }
+            }
         }
 
         // Sort by timestamp descending (if available)
@@ -195,15 +196,16 @@ impl SecurityHandler {
             let entry = entry.map_err(|e| format!("failed to read entry: {}", e))?;
             let path = entry.path();
             if path.extension().and_then(|e| e.to_str()) == Some("jsonl")
-                && let Ok(content) = std::fs::read_to_string(&path) {
-                    for line in content.lines() {
-                        if let Ok(val) = serde_json::from_str::<serde_json::Value>(line) {
-                            total += 1;
-                            let level = extract_risk_level(&val).to_string();
-                            *by_level.entry(level).or_insert(0) += 1;
-                        }
+                && let Ok(content) = std::fs::read_to_string(&path)
+            {
+                for line in content.lines() {
+                    if let Ok(val) = serde_json::from_str::<serde_json::Value>(line) {
+                        total += 1;
+                        let level = extract_risk_level(&val).to_string();
+                        *by_level.entry(level).or_insert(0) += 1;
                     }
                 }
+            }
         }
 
         Ok(Some(serde_json::json!({

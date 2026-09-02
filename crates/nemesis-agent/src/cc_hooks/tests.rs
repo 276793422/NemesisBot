@@ -17,13 +17,13 @@ use std::sync::Arc;
 use async_trait::async_trait;
 
 use super::{
-    CcHookBridge, ScriptOutcome, build_event_payload, cc_tool_alias, migrate_legacy_home_hooks_config,
-    parse_cc_hooks, pre_tool_use_payload,
+    CcHookBridge, ScriptOutcome, build_event_payload, cc_tool_alias,
+    migrate_legacy_home_hooks_config, parse_cc_hooks, pre_tool_use_payload,
 };
 use crate::context::RequestContext;
 use crate::hooks::{HookPrompt, HookToolCall, HookTurnEnd, LifecycleHook, ToolHook};
 use crate::instance::AgentInstance;
-use crate::r#loop::{AgentLoop, LlmMessage, LlmResponse, LlmProvider, Tool};
+use crate::r#loop::{AgentLoop, LlmMessage, LlmProvider, LlmResponse, Tool};
 use crate::types::{AgentConfig, ChatOptions, ToolCallInfo};
 
 // ---------------------------------------------------------------------------
@@ -90,9 +90,7 @@ fn marker_lines(path: &std::path::Path) -> usize {
 }
 
 fn tempdir() -> std::path::PathBuf {
-    tempfile::tempdir()
-        .expect("tempdir")
-        .keep() // 测试进程内自管生命周期；keep 免得还回句柄
+    tempfile::tempdir().expect("tempdir").keep() // 测试进程内自管生命周期；keep 免得还回句柄
 }
 
 fn hook_json(events: &str) -> String {
@@ -149,8 +147,8 @@ fn parse_full_cc_format() {
 fn parse_bare_top_level_and_ignores_unknown_type() {
     // 裸顶层（无 "hooks" 外层）也要收——外层花括号还是得有（JSON 根必须是
     // 对象）。
-    let ev = parse_cc_hooks("{\"PreToolUse\":[{\"hooks\":[{\"command\":\"a\"}]}]}")
-        .expect("bare parse");
+    let ev =
+        parse_cc_hooks("{\"PreToolUse\":[{\"hooks\":[{\"command\":\"a\"}]}]}").expect("bare parse");
     assert_eq!(ev.total_scripts(), 1);
     // 空 / 无已知事件 = 空配置。
     assert!(parse_cc_hooks("{}").expect("empty").is_empty());
@@ -269,7 +267,10 @@ fn script_outcome_exit_semantics_pure() {
     };
     assert_eq!(json_block.json_block_reason().as_deref(), Some("bad"));
     // stderr 空时回落 stdout。
-    assert_eq!(json_block.block_text(), "{\"decision\":\"block\",\"reason\":\"bad\"}");
+    assert_eq!(
+        json_block.block_text(),
+        "{\"decision\":\"block\",\"reason\":\"bad\"}"
+    );
 
     // 超时 / 其他退出码 = 非阻断。
     let to = ScriptOutcome {
@@ -293,7 +294,12 @@ fn bridge_with(json: &str, project_dir: &std::path::Path) -> CcHookBridge {
 async fn pre_tool_use_exit_2_blocks_with_stderr() {
     let tmp = tempdir();
     let b = bridge_with(
-        &hooks_doc("PreToolUse", Some("Edit"), &block_cmd("lint failed: trailing whitespace"), None),
+        &hooks_doc(
+            "PreToolUse",
+            Some("Edit"),
+            &block_cmd("lint failed: trailing whitespace"),
+            None,
+        ),
         &tmp,
     );
     let d = b.pre_tool_use(&edit_call("{}")).await;
@@ -336,10 +342,7 @@ async fn pre_tool_use_json_decision_blocks() {
 #[tokio::test]
 async fn pre_tool_use_timeout_is_non_blocking() {
     let tmp = tempdir();
-    let b = bridge_with(
-        &hooks_doc("PreToolUse", None, &slow_cmd(), Some(1)),
-        &tmp,
-    );
+    let b = bridge_with(&hooks_doc("PreToolUse", None, &slow_cmd(), Some(1)), &tmp);
     // 超时（1s）→ 非阻断 → 放行。
     assert_eq!(
         b.pre_tool_use(&edit_call("{}")).await,
@@ -352,7 +355,12 @@ async fn pre_tool_use_non_matching_tool_skips_script() {
     let tmp = tempdir();
     // matcher 只挂 Write；edit 不命中 → 脚本不该跑（block 脚本存在也放行）。
     let b = bridge_with(
-        &hooks_doc("PreToolUse", Some("Write"), &block_cmd("must not fire"), None),
+        &hooks_doc(
+            "PreToolUse",
+            Some("Write"),
+            &block_cmd("must not fire"),
+            None,
+        ),
         &tmp,
     );
     assert_eq!(
@@ -365,7 +373,12 @@ async fn pre_tool_use_non_matching_tool_skips_script() {
 async fn post_tool_use_exit_2_appends_note() {
     let tmp = tempdir();
     let b = bridge_with(
-        &hooks_doc("PostToolUse", Some("Edit"), &block_cmd("post-hint: run fmt"), None),
+        &hooks_doc(
+            "PostToolUse",
+            Some("Edit"),
+            &block_cmd("post-hint: run fmt"),
+            None,
+        ),
         &tmp,
     );
     match b.post_tool_use(&edit_call("{}"), "ok").await {
@@ -411,7 +424,11 @@ async fn user_prompt_block_and_session_start_fires_once() {
         crate::hooks::PromptDecision::Block { .. }
     ));
     assert_eq!(marker_lines(&start_marker), 1, "SessionStart fires once");
-    assert_eq!(marker_lines(&prompt_marker), 0, "no prompt marker configured");
+    assert_eq!(
+        marker_lines(&prompt_marker),
+        0,
+        "no prompt marker configured"
+    );
 }
 
 #[tokio::test]
@@ -436,10 +453,16 @@ async fn stop_block_continue_then_flag_allows_and_resets() {
         }
         other => panic!("expected Continue, got {other:?}"),
     }
-    assert!(b.stop_hook_active_for("sess-1"), "second stop sees active=true");
+    assert!(
+        b.stop_hook_active_for("sess-1"),
+        "second stop sees active=true"
+    );
     // 落 flag → 下次放行 + 计数复位。
     std::fs::write(&flag, b"x").unwrap();
-    assert_eq!(b.on_turn_end(&mk_end(true)).await, crate::hooks::TurnEndDecision::Stop);
+    assert_eq!(
+        b.on_turn_end(&mk_end(true)).await,
+        crate::hooks::TurnEndDecision::Stop
+    );
     assert!(!b.stop_hook_active_for("sess-1"), "reset on accepted stop");
 }
 
@@ -586,18 +609,20 @@ sys.exit(0)
     lp.register_tool("edit".to_string(), Box::new(MarkerTool));
     bridge.register(&lp);
 
-    let call = |file: &str| {
-        ToolCallInfo {
-            id: format!("call-{file}"),
-            name: "edit".to_string(),
-            arguments: format!(r#"{{"path":"{file}"}}"#),
-        }
+    let call = |file: &str| ToolCallInfo {
+        id: format!("call-{file}"),
+        name: "edit".to_string(),
+        arguments: format!(r#"{{"path":"{file}"}}"#),
     };
     // 放行文件：脚本 exit 0 → 工具真执行，返回工具本体结果。
-    let ok = lp.handle_tool_call(&call("src/good.rs"), &test_context()).await;
+    let ok = lp
+        .handle_tool_call(&call("src/good.rs"), &test_context())
+        .await;
     assert_eq!(ok, "tool-ok", "allowed edit must run the tool body");
     // 受保护文件：脚本 exit 2 + stderr → 拦停，工具不执行。
-    let blocked = lp.handle_tool_call(&call("src/bad.rs"), &test_context()).await;
+    let blocked = lp
+        .handle_tool_call(&call("src/bad.rs"), &test_context())
+        .await;
     assert!(blocked.contains("⛔ HOOK BLOCKED"), "blocked={blocked}");
     assert!(blocked.contains("bad.rs is protected"), "blocked={blocked}");
 }
@@ -608,7 +633,12 @@ async fn loop_integration_pre_tool_use_blocks_dispatch() {
     let tmp = tempdir();
     let bridge = Arc::new(
         CcHookBridge::from_json(
-            &hooks_doc("PreToolUse", Some("Edit"), &block_cmd("lint failed: fix it"), None),
+            &hooks_doc(
+                "PreToolUse",
+                Some("Edit"),
+                &block_cmd("lint failed: fix it"),
+                None,
+            ),
             tmp.clone(),
         )
         .expect("bridge"),
@@ -637,7 +667,12 @@ async fn loop_integration_prompt_block_aborts_before_llm() {
     let tmp = tempdir();
     let bridge = Arc::new(
         CcHookBridge::from_json(
-            &hooks_doc("UserPromptSubmit", None, &block_cmd("prompt denied by policy"), None),
+            &hooks_doc(
+                "UserPromptSubmit",
+                None,
+                &block_cmd("prompt denied by policy"),
+                None,
+            ),
             tmp,
         )
         .expect("bridge"),
@@ -686,7 +721,11 @@ async fn loop_integration_stop_block_forces_extra_rounds() {
     let instance = AgentInstance::new(test_config());
     let events = lp.run(&instance, "work", &test_context()).await;
 
-    assert_eq!(first_done(&events), "r3", "fail-open stops on last response");
+    assert_eq!(
+        first_done(&events),
+        "r3",
+        "fail-open stops on last response"
+    );
     let calls = recorder.calls();
     assert_eq!(
         calls.len(),
@@ -759,7 +798,12 @@ fn enrich_tool_input_non_object_and_pathless() {
 #[test]
 fn build_event_payload_merges_object_extra() {
     let cwd = std::path::Path::new("/proj");
-    let p = build_event_payload("Stop", "sk1", cwd, serde_json::json!({"stop_hook_active": true}));
+    let p = build_event_payload(
+        "Stop",
+        "sk1",
+        cwd,
+        serde_json::json!({"stop_hook_active": true}),
+    );
     let v: serde_json::Value = serde_json::from_str(&p).unwrap();
     assert_eq!(v["session_id"].as_str(), Some("sk1"));
     assert_eq!(v["hook_event_name"].as_str(), Some("Stop"));
@@ -782,13 +826,23 @@ fn json_block_reason_non_block_and_fallbacks() {
         stderr: String::new(),
         timed_out: false,
     };
-    assert!(mk(Some(0), "{\"decision\":\"approve\"}").json_block_reason().is_none());
+    assert!(
+        mk(Some(0), "{\"decision\":\"approve\"}")
+            .json_block_reason()
+            .is_none()
+    );
     assert!(mk(Some(0), "not json").json_block_reason().is_none());
     assert_eq!(
-        mk(Some(0), "{\"decision\":\"block\"}").json_block_reason().as_deref(),
+        mk(Some(0), "{\"decision\":\"block\"}")
+            .json_block_reason()
+            .as_deref(),
         Some("blocked by hook (no reason given)")
     );
-    assert!(mk(Some(1), "{\"decision\":\"block\"}").json_block_reason().is_none());
+    assert!(
+        mk(Some(1), "{\"decision\":\"block\"}")
+            .json_block_reason()
+            .is_none()
+    );
 }
 
 /// block_text：stderr 空 → stdout；两者皆空 → 占位。
@@ -843,9 +897,15 @@ fn load_from_dir_branches() {
     assert_eq!(
         b.events.script_counts(),
         [
-            ("PreToolUse", 1), ("PostToolUse", 0), ("PostToolUseFailure", 0),
-            ("SessionStart", 0), ("UserPromptSubmit", 0), ("Stop", 0),
-            ("SessionEnd", 0), ("PreCompact", 0), ("PostCompact", 0),
+            ("PreToolUse", 1),
+            ("PostToolUse", 0),
+            ("PostToolUseFailure", 0),
+            ("SessionStart", 0),
+            ("UserPromptSubmit", 0),
+            ("Stop", 0),
+            ("SessionEnd", 0),
+            ("PreCompact", 0),
+            ("PostCompact", 0),
         ]
     );
 
@@ -918,7 +978,11 @@ async fn session_end_hook_runs_script_and_is_observational() {
     bridge.on_session_end("sess-1", "expired").await;
 
     let marker = proj.join("session_end_marker.txt");
-    assert!(marker.exists(), "SessionEnd 脚本应已执行: {}", marker.display());
+    assert!(
+        marker.exists(),
+        "SessionEnd 脚本应已执行: {}",
+        marker.display()
+    );
     let _ = std::fs::remove_dir_all(&cfg);
     let _ = std::fs::remove_dir_all(&proj);
 }
@@ -1005,7 +1069,10 @@ fn migrate_legacy_home_hooks_config_copies_once() {
     let target = ws_cfg.join("hooks.json");
     assert!(!target.exists());
     migrate_legacy_home_hooks_config(&home_cfg, &ws_cfg);
-    assert!(target.exists(), "copy-once: legacy content lands at new location");
+    assert!(
+        target.exists(),
+        "copy-once: legacy content lands at new location"
+    );
     assert!(legacy.exists(), "copy-once: legacy file KEPT as backup");
 
     // 幂等：重复迁移不动已存在的新位。
@@ -1032,5 +1099,8 @@ fn migrate_is_noop_without_legacy_or_with_existing_target() {
     std::fs::write(ws_cfg.join("hooks.json"), r#"{ "new": true }"#).unwrap();
     migrate_legacy_home_hooks_config(&home_cfg, &ws_cfg);
     let content = std::fs::read_to_string(ws_cfg.join("hooks.json")).unwrap();
-    assert!(content.contains("new"), "existing target must win: {content}");
+    assert!(
+        content.contains("new"),
+        "existing target must win: {content}"
+    );
 }

@@ -101,7 +101,10 @@ async fn test_history_search_rejects_missing_or_empty_query() {
     let h = LogsHandler;
 
     // Missing data object entirely.
-    let err = h.handle_cmd("history_search", None, &ctx).await.unwrap_err();
+    let err = h
+        .handle_cmd("history_search", None, &ctx)
+        .await
+        .unwrap_err();
     assert!(err.contains("missing data"), "got: {err}");
 
     // Data present but no query field.
@@ -133,7 +136,9 @@ async fn test_history_reindex_returns_session_count() {
     let out = h.handle_cmd("history_reindex", None, &ctx).await.unwrap();
     let v = out.expect("reindex returns a payload");
     assert!(
-        v.get("reindexed_sessions").and_then(|n| n.as_u64()).is_some(),
+        v.get("reindexed_sessions")
+            .and_then(|n| n.as_u64())
+            .is_some(),
         "missing reindexed_sessions: {v}"
     );
 }
@@ -176,9 +181,10 @@ async fn test_history_search_finds_appended_message_e2e() {
             .and_then(|v| v.as_array())
             .cloned()
             .unwrap_or_default();
-        if found.iter().any(|hit| {
-            hit.get("session_key").and_then(|s| s.as_str()) == Some(stem.as_str())
-        }) {
+        if found
+            .iter()
+            .any(|hit| hit.get("session_key").and_then(|s| s.as_str()) == Some(stem.as_str()))
+        {
             hits = found;
             break;
         }
@@ -205,7 +211,10 @@ async fn test_history_search_finds_appended_message_e2e() {
     // No cross-session leak: every hit's session_key must be our stem or at
     // least contain the unique marker (unique per run, so only ours).
     for other in &hits {
-        let sk = other.get("session_key").and_then(|s| s.as_str()).unwrap_or("");
+        let sk = other
+            .get("session_key")
+            .and_then(|s| s.as_str())
+            .unwrap_or("");
         assert!(
             sk.contains(&marker),
             "foreign session leaked in: {sk} (marker {marker})"

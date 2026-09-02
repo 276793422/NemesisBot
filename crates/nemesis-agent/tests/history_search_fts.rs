@@ -190,7 +190,11 @@ fn test_index_append_incremental() {
     // full reindex.
     append_chat_log(&k, "assistant", "after marker wabbajack");
     let hits = search("wabbajack", 10);
-    assert_eq!(hits.len(), 1, "appended row indexed incrementally: {hits:?}");
+    assert_eq!(
+        hits.len(),
+        1,
+        "appended row indexed incrementally: {hits:?}"
+    );
     assert_eq!(hits[0].role, "assistant");
     // Key assertion: without it a STALE row from a deleted prior-run file
     // could satisfy this test (which is exactly how the raw-key/stem lookup

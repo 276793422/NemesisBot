@@ -308,46 +308,47 @@ pub async fn test_cli_onboard_default(ws: &TestWorkspace, bin: &Path) -> Vec<Tes
     // --- Skills config content verification ---
     let skills_cfg_path = workspace.join("config/config.skills.json");
     if let Ok(raw) = std::fs::read_to_string(&skills_cfg_path)
-        && let Ok(val) = serde_json::from_str::<Value>(&raw) {
-            let sources = val.get("github_sources").and_then(|v| v.as_array());
-            if let Some(arr) = sources {
-                let source_names: Vec<&str> = arr
-                    .iter()
-                    .filter_map(|s| s.get("name").and_then(|n| n.as_str()))
-                    .collect();
-                let has_anthropics = source_names.contains(&"anthropics");
-                let has_openclaw = source_names.contains(&"openclaw");
-                let has_clawhub = val.get("clawhub").and_then(|c| c.get("enabled")).is_some();
-                let count = source_names.len();
+        && let Ok(val) = serde_json::from_str::<Value>(&raw)
+    {
+        let sources = val.get("github_sources").and_then(|v| v.as_array());
+        if let Some(arr) = sources {
+            let source_names: Vec<&str> = arr
+                .iter()
+                .filter_map(|s| s.get("name").and_then(|n| n.as_str()))
+                .collect();
+            let has_anthropics = source_names.contains(&"anthropics");
+            let has_openclaw = source_names.contains(&"openclaw");
+            let has_clawhub = val.get("clawhub").and_then(|c| c.get("enabled")).is_some();
+            let count = source_names.len();
 
-                if has_anthropics && has_openclaw && has_clawhub {
-                    results.push(pass(
-                        &format!("{}/skills_sources", suite),
-                        format!("{} GitHub sources (anthropics, openclaw) + clawhub", count),
-                    ));
-                } else {
-                    let mut missing = Vec::new();
-                    if !has_anthropics {
-                        missing.push("anthropics");
-                    }
-                    if !has_openclaw {
-                        missing.push("openclaw");
-                    }
-                    if !has_clawhub {
-                        missing.push("clawhub");
-                    }
-                    results.push(fail(
-                        &format!("{}/skills_sources", suite),
-                        format!("Missing: {:?}", missing),
-                    ));
-                }
+            if has_anthropics && has_openclaw && has_clawhub {
+                results.push(pass(
+                    &format!("{}/skills_sources", suite),
+                    format!("{} GitHub sources (anthropics, openclaw) + clawhub", count),
+                ));
             } else {
+                let mut missing = Vec::new();
+                if !has_anthropics {
+                    missing.push("anthropics");
+                }
+                if !has_openclaw {
+                    missing.push("openclaw");
+                }
+                if !has_clawhub {
+                    missing.push("clawhub");
+                }
                 results.push(fail(
                     &format!("{}/skills_sources", suite),
-                    "github_sources is not an array",
+                    format!("Missing: {:?}", missing),
                 ));
             }
+        } else {
+            results.push(fail(
+                &format!("{}/skills_sources", suite),
+                "github_sources is not an array",
+            ));
         }
+    }
 
     // --- Skills list CLI verification ---
     let skills_list = ws.run_cli(bin, &["skills", "list"]).await;

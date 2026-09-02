@@ -8,7 +8,11 @@ async fn index_serves_embedded_html() {
     let Html(page) = index().await;
     assert_eq!(page, INDEX_HTML);
     // 页面真实可用性最低门槛：是 HTML 且非空壳
-    assert!(page.trim_start().to_ascii_lowercase().starts_with("<!doctype html"));
+    assert!(
+        page.trim_start()
+            .to_ascii_lowercase()
+            .starts_with("<!doctype html")
+    );
     assert!(page.contains("NemesisBot"));
 }
 
@@ -16,7 +20,11 @@ async fn index_serves_embedded_html() {
 async fn admin_page_serves_embedded_html() {
     let Html(page) = admin_page().await;
     assert_eq!(page, ADMIN_HTML);
-    assert!(page.trim_start().to_ascii_lowercase().starts_with("<!doctype html"));
+    assert!(
+        page.trim_start()
+            .to_ascii_lowercase()
+            .starts_with("<!doctype html")
+    );
 }
 
 #[test]

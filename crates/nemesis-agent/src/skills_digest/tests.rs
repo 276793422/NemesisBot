@@ -50,13 +50,25 @@ fn test_digest_state_inject_only_on_change() {
     let st = DigestState::new();
     let rendered = "alpha: a";
     // First call injects.
-    assert_eq!(st.should_inject("sess1", rendered).as_deref(), Some("alpha: a"));
+    assert_eq!(
+        st.should_inject("sess1", rendered).as_deref(),
+        Some("alpha: a")
+    );
     // Same content again → SAME rendering re-emitted (stable).
-    assert_eq!(st.should_inject("sess1", rendered).as_deref(), Some("alpha: a"));
+    assert_eq!(
+        st.should_inject("sess1", rendered).as_deref(),
+        Some("alpha: a")
+    );
     // Changed content → the NEW content is returned (replacement).
-    assert_eq!(st.should_inject("sess1", "alpha: a2").as_deref(), Some("alpha: a2"));
+    assert_eq!(
+        st.should_inject("sess1", "alpha: a2").as_deref(),
+        Some("alpha: a2")
+    );
     // Per-session isolation: another session gets its own state.
-    assert_eq!(st.should_inject("sess2", "alpha: a2").as_deref(), Some("alpha: a2"));
+    assert_eq!(
+        st.should_inject("sess2", "alpha: a2").as_deref(),
+        Some("alpha: a2")
+    );
 }
 
 #[test]
@@ -87,8 +99,6 @@ impl crate::r#loop::LlmProvider for NoopProvider {
     }
 }
 
-
-
 #[test]
 fn test_skills_digest_injected_when_changed() {
     use crate::r#loop::AgentLoop;
@@ -110,10 +120,7 @@ fn test_skills_digest_injected_when_changed() {
         "/nonexistent-global",
         "/nonexistent-builtin",
     );
-    let agent_loop = AgentLoop::new(
-        Box::new(NoopProvider),
-        AgentConfig::default(),
-    );
+    let agent_loop = AgentLoop::new(Box::new(NoopProvider), AgentConfig::default());
     agent_loop.set_skills_loader(std::sync::Arc::new(loader));
 
     let instance = crate::instance::AgentInstance::new(AgentConfig {
@@ -167,8 +174,10 @@ fn test_skills_digest_injected_when_changed() {
         c.lines()
             .filter(|l| !l.contains("Current Time") && !l.trim_start().starts_with("20"))
             .collect::<Vec<_>>()
-            .join("
-")
+            .join(
+                "
+",
+            )
     };
     let snap1: Vec<String> = m1
         .iter()
@@ -196,10 +205,7 @@ fn test_skills_digest_empty_no_injection() {
         "/nonexistent-global",
         "/nonexistent-builtin",
     );
-    let agent_loop = AgentLoop::new(
-        Box::new(NoopProvider),
-        AgentConfig::default(),
-    );
+    let agent_loop = AgentLoop::new(Box::new(NoopProvider), AgentConfig::default());
     agent_loop.set_skills_loader(std::sync::Arc::new(loader));
 
     let instance = crate::instance::AgentInstance::new(AgentConfig {

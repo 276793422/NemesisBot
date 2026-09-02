@@ -338,8 +338,7 @@ fn test_updater_is_database_stale_zero_threshold() {
     // timestamp, and ZERO > ZERO is false - a latent flake under parallel
     // load. A 1s-old timestamp makes "zero threshold => stale" hold on
     // every platform deterministically.
-    *updater.last_update.lock().unwrap() =
-        Some(SystemTime::now() - Duration::from_secs(1));
+    *updater.last_update.lock().unwrap() = Some(SystemTime::now() - Duration::from_secs(1));
     // Zero threshold -> always stale
     assert!(updater.is_database_stale(Duration::ZERO));
 }
@@ -359,7 +358,9 @@ fn test_updater_is_database_stale_zero_threshold() {
 #[cfg(windows)]
 fn place_where_as(dir: &std::path::Path, name: &str) {
     let windir = std::env::var("WINDIR").unwrap_or_else(|_| r"C:\Windows".to_string());
-    let src = std::path::Path::new(&windir).join("System32").join("where.exe");
+    let src = std::path::Path::new(&windir)
+        .join("System32")
+        .join("where.exe");
     assert!(src.exists(), "where.exe not found at {}", src.display());
     std::fs::copy(&src, dir.join(format!("{}.exe", name))).unwrap();
 }
@@ -434,7 +435,10 @@ async fn fake_update_creates_database_dir_then_nonzero_exit() {
     assert!(err.contains("non-zero status"), "{err}");
     // 关键副作用：db 目录在 spawn 前已创建
     assert!(db_dir.is_dir(), "database dir must be created");
-    assert!(updater.last_update().is_none(), "failure must not set last_update");
+    assert!(
+        updater.last_update().is_none(),
+        "failure must not set last_update"
+    );
 }
 
 #[cfg(windows)]
@@ -447,7 +451,11 @@ async fn fake_update_missing_config_path_nonzero_exit() {
     let config = UpdaterConfig {
         clamav_path: dir.path().to_string_lossy().to_string(),
         database_dir: String::new(),
-        config_file: dir.path().join("no-such.conf").to_string_lossy().to_string(),
+        config_file: dir
+            .path()
+            .join("no-such.conf")
+            .to_string_lossy()
+            .to_string(),
         update_interval: Duration::from_secs(3600),
         mirror_urls: Vec::new(),
     };
@@ -497,7 +505,10 @@ async fn fake_auto_update_loop_success_then_stop() {
         .expect("auto-update loop must stop")
         .unwrap();
     assert!(!updater.running.load(Ordering::SeqCst));
-    assert!(updater.last_update().is_some(), "loop must have updated once");
+    assert!(
+        updater.last_update().is_some(),
+        "loop must have updated once"
+    );
 }
 
 #[cfg(windows)]
@@ -510,7 +521,11 @@ async fn fake_auto_update_loop_failure_does_not_stop_loop() {
     let config = UpdaterConfig {
         clamav_path: dir.path().to_string_lossy().to_string(),
         database_dir: String::new(),
-        config_file: dir.path().join("missing.conf").to_string_lossy().to_string(),
+        config_file: dir
+            .path()
+            .join("missing.conf")
+            .to_string_lossy()
+            .to_string(),
         update_interval: Duration::from_millis(30),
         mirror_urls: Vec::new(),
     };
@@ -527,7 +542,10 @@ async fn fake_auto_update_loop_failure_does_not_stop_loop() {
         .await
         .expect("auto-update loop must stop")
         .unwrap();
-    assert!(updater.last_update().is_none(), "failed updates must not set last_update");
+    assert!(
+        updater.last_update().is_none(),
+        "failed updates must not set last_update"
+    );
 }
 
 use std::sync::Arc;

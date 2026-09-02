@@ -53,13 +53,11 @@ impl Default for CollectorConfig {
 }
 
 /// Configuration for the registry.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[derive(Default)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct RegistryConfig {
     /// Path to the JSON index file.
     pub index_path: String,
 }
-
 
 /// Aggregated experience record (deduplicated pattern).
 #[derive(Debug, Clone, Serialize, Deserialize)]

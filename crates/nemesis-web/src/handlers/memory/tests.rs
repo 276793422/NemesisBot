@@ -22,7 +22,11 @@ fn migrates_legacy_file_to_manager_path_with_same_bytes() {
     migrate_legacy_vector_store(ws.path().to_str().unwrap());
 
     let target = vector_store_jsonl_path(ws.path().to_str().unwrap());
-    assert!(target.is_file(), "target {} must exist after migration", target.display());
+    assert!(
+        target.is_file(),
+        "target {} must exist after migration",
+        target.display()
+    );
     assert_eq!(
         std::fs::read_to_string(&target).unwrap(),
         "line1\nline2\n",
@@ -59,7 +63,11 @@ fn missing_legacy_file_is_noop() {
     // No legacy file at all: nothing happens, no target created.
     migrate_legacy_vector_store(ws.path().to_str().unwrap());
     let target = vector_store_jsonl_path(ws.path().to_str().unwrap());
-    assert!(!target.exists(), "noop must not create {}", target.display());
+    assert!(
+        !target.exists(),
+        "noop must not create {}",
+        target.display()
+    );
 }
 
 // ============================================================
@@ -136,7 +144,11 @@ fn status_counts_documents_and_switches() {
         r#"{"enabled": true}"#,
     )
     .unwrap();
-    std::fs::write(dir.path().join("config.json"), r#"{"memory": {"enabled": true}}"#).unwrap();
+    std::fs::write(
+        dir.path().join("config.json"),
+        r#"{"memory": {"enabled": true}}"#,
+    )
+    .unwrap();
     let out = h.status(ws, ws).unwrap().unwrap();
     assert_eq!(out["document_memory"]["document_count"], 2);
     assert_eq!(out["document_memory"]["directory_exists"], true);
@@ -172,7 +184,10 @@ fn document_get_save_roundtrip_and_missing_file() {
     let dir = tempfile::tempdir().unwrap();
     let ws = dir.path().to_str().unwrap();
 
-    let out = h.document_save(ws, "memory/notes.md", "hello").unwrap().unwrap();
+    let out = h
+        .document_save(ws, "memory/notes.md", "hello")
+        .unwrap()
+        .unwrap();
     assert_eq!(out["saved"], true);
     assert_eq!(out["path"], "memory/notes.md");
 
@@ -213,7 +228,11 @@ fn env_check_local_model_paths_mark_ready() {
     // readiness is completely determined by file existence.
     let dir = tempfile::tempdir().unwrap();
     let ws = dir.path().to_str().unwrap();
-    std::fs::write(dir.path().join("config.json"), r#"{"memory": {"enabled": true}}"#).unwrap();
+    std::fs::write(
+        dir.path().join("config.json"),
+        r#"{"memory": {"enabled": true}}"#,
+    )
+    .unwrap();
 
     let model_file = dir.path().join("fake.onnx");
     let tok_file = dir.path().join("fake-tok.json");
@@ -244,7 +263,10 @@ fn env_check_local_model_paths_mark_ready() {
         .unwrap()
         .unwrap();
     let small = &out["models"]["small"];
-    assert_eq!(small["model_ready"], true, "local_model_path exists → ready");
+    assert_eq!(
+        small["model_ready"], true,
+        "local_model_path exists → ready"
+    );
     assert_eq!(small["tokenizer_ready"], true);
     assert_eq!(small["name"], "mini");
     assert_eq!(small["dimension"], 384);

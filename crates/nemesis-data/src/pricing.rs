@@ -33,8 +33,10 @@ use crate::models::ModelPricing;
 
 /// Compile-time embedded price table (extracted from LiteLLM; see
 /// `assets/model_prices.json` for the source/date header).
-static PRICES_JSON: &str =
-    include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/assets/model_prices.json"));
+static PRICES_JSON: &str = include_str!(concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/assets/model_prices.json"
+));
 
 #[derive(Deserialize)]
 struct RawTable {

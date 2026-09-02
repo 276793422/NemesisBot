@@ -72,10 +72,7 @@ fn decoder_returns_none_on_partial_body() {
 #[test]
 fn classify_response_server_request_and_notification() {
     let resp = serde_json::json!({"jsonrpc":"2.0","id":7,"result":{"ok":true}});
-    assert_eq!(
-        classify(&resp, 7),
-        Incoming::Response(resp.clone())
-    );
+    assert_eq!(classify(&resp, 7), Incoming::Response(resp.clone()));
     // Response to a different id (stale) → skippable.
     assert!(matches!(classify(&resp, 8), Incoming::Notification { .. }));
 
@@ -103,18 +100,31 @@ fn default_server_response_configuration_is_empty_array() {
         default_server_response("workspace/configuration"),
         serde_json::json!([])
     );
-    assert_eq!(default_server_response("anything/else"), serde_json::Value::Null);
+    assert_eq!(
+        default_server_response("anything/else"),
+        serde_json::Value::Null
+    );
 }
 
 #[test]
 fn transient_error_detection() {
     // Spec transient codes (retry-safe).
-    assert!(is_transient_error(&serde_json::json!({"code": -32800, "message": "RequestCancelled"})));
-    assert!(is_transient_error(&serde_json::json!({"code": -32801, "message": "content modified"})));
+    assert!(is_transient_error(
+        &serde_json::json!({"code": -32800, "message": "RequestCancelled"})
+    ));
+    assert!(is_transient_error(
+        &serde_json::json!({"code": -32801, "message": "content modified"})
+    ));
     // Real errors must NOT be retried blindly.
-    assert!(!is_transient_error(&serde_json::json!({"code": -32603, "message": "internal"})));
-    assert!(!is_transient_error(&serde_json::json!({"code": -32601, "message": "method not found"})));
-    assert!(!is_transient_error(&serde_json::json!({"message": "no code"})));
+    assert!(!is_transient_error(
+        &serde_json::json!({"code": -32603, "message": "internal"})
+    ));
+    assert!(!is_transient_error(
+        &serde_json::json!({"code": -32601, "message": "method not found"})
+    ));
+    assert!(!is_transient_error(
+        &serde_json::json!({"message": "no code"})
+    ));
 }
 
 // ---------------------------------------------------------------------------
@@ -173,10 +183,17 @@ fn parse_locations_all_spec_shapes() {
     let one = loc_json("file:///a.rs", 3, 8);
     assert_eq!(
         parse_locations(&one),
-        vec![Loc { path: "/a.rs".into(), line: 3, character: 8 }]
+        vec![Loc {
+            path: "/a.rs".into(),
+            line: 3,
+            character: 8
+        }]
     );
     // Location array
-    let arr = serde_json::json!([loc_json("file:///a.rs", 1, 0), loc_json("file:///b.rs", 2, 4)]);
+    let arr = serde_json::json!([
+        loc_json("file:///a.rs", 1, 0),
+        loc_json("file:///b.rs", 2, 4)
+    ]);
     assert_eq!(parse_locations(&arr).len(), 2);
     // LocationLink array (targetUri/targetRange)
     let link = serde_json::json!([{
@@ -186,7 +203,11 @@ fn parse_locations_all_spec_shapes() {
     }]);
     assert_eq!(
         parse_locations(&link),
-        vec![Loc { path: "/c.rs".into(), line: 9, character: 5 }]
+        vec![Loc {
+            path: "/c.rs".into(),
+            line: 9,
+            character: 5
+        }]
     );
     // locationless entries are skipped, not fatal
     let mixed = serde_json::json!([loc_json("file:///a.rs", 0, 0), {"uri": "file:///no-range.rs"}]);
@@ -222,10 +243,7 @@ fn s1_frame_decoder_default_is_empty() {
     let mut d = FrameDecoder::default();
     assert!(d.next_message().unwrap().is_none());
     d.push(b"Content-Length: 2\r\n\r\n{}");
-    assert_eq!(
-        d.next_message().unwrap().unwrap(),
-        serde_json::json!({})
-    );
+    assert_eq!(d.next_message().unwrap().unwrap(), serde_json::json!({}));
 }
 
 #[test]

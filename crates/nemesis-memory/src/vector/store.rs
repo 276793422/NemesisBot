@@ -120,12 +120,11 @@ impl VectorStore {
             host_services: None,
         };
 
-        let embed: std::sync::Arc<
-            dyn Fn(&str) -> Result<Vec<f32>, String> + Send + Sync,
-        > = std::sync::Arc::from(
-            new_embedding_func(&vector_config)
-                .map_err(|e| format!("Failed to create embedding function: {}", e))?,
-        );
+        let embed: std::sync::Arc<dyn Fn(&str) -> Result<Vec<f32>, String> + Send + Sync> =
+            std::sync::Arc::from(
+                new_embedding_func(&vector_config)
+                    .map_err(|e| format!("Failed to create embedding function: {}", e))?,
+            );
 
         let store = Self {
             docs: RwLock::new(Vec::new()),
@@ -146,13 +145,9 @@ impl VectorStore {
     /// This is a test-only constructor that allows sharing a single ONNX
     /// plugin across multiple VectorStore instances.
     #[cfg(any(test, feature = "test-fixture"))]
-    pub fn new_from_embed(
-        embed: crate::vector::EmbeddingFunc,
-        config: StoreConfig,
-    ) -> Self {
-        let embed: std::sync::Arc<
-            dyn Fn(&str) -> Result<Vec<f32>, String> + Send + Sync,
-        > = std::sync::Arc::from(embed);
+    pub fn new_from_embed(embed: crate::vector::EmbeddingFunc, config: StoreConfig) -> Self {
+        let embed: std::sync::Arc<dyn Fn(&str) -> Result<Vec<f32>, String> + Send + Sync> =
+            std::sync::Arc::from(embed);
         let persist_path = if config.storage_path.is_empty() {
             PathBuf::from("memory/vector/vector_store.jsonl")
         } else {

@@ -191,22 +191,21 @@ fn convert_config_fallback(openclaw_home: &Path) -> Result<(serde_json::Value, V
                     if let Some(model) = trimmed.strip_prefix("default_model:") {
                         let model = model.trim().trim_matches('"').trim_matches('\'');
                         if !model.is_empty()
-                            && let Some(obj) = config.as_object_mut() {
-                                obj.insert(
-                                    "default_model".to_string(),
-                                    serde_json::Value::String(model.to_string()),
-                                );
-                            }
+                            && let Some(obj) = config.as_object_mut()
+                        {
+                            obj.insert(
+                                "default_model".to_string(),
+                                serde_json::Value::String(model.to_string()),
+                            );
+                        }
                     }
                     if let Some(port_str) = trimmed.strip_prefix("port:")
                         && let Ok(port) = port_str.trim().parse::<u64>()
-                            && let Some(web) = config.pointer_mut("/channels/web")
-                                && let Some(obj) = web.as_object_mut() {
-                                    obj.insert(
-                                        "port".to_string(),
-                                        serde_json::Value::Number(port.into()),
-                                    );
-                                }
+                        && let Some(web) = config.pointer_mut("/channels/web")
+                        && let Some(obj) = web.as_object_mut()
+                    {
+                        obj.insert("port".to_string(), serde_json::Value::Number(port.into()));
+                    }
                 }
             }
             break;
@@ -216,31 +215,33 @@ fn convert_config_fallback(openclaw_home: &Path) -> Result<(serde_json::Value, V
     // Extract models from models.yaml
     let models_yaml = openclaw_home.join("models.yaml");
     if models_yaml.exists()
-        && let Ok(models_content) = std::fs::read_to_string(&models_yaml) {
-            let mut model_list = Vec::new();
-            for line in models_content.lines() {
-                let trimmed = line.trim();
-                if trimmed.starts_with("- name:") || trimmed.starts_with("- model:") {
-                    let model_name = trimmed
-                        .strip_prefix("- name:")
-                        .or_else(|| trimmed.strip_prefix("- model:"))
-                        .unwrap_or("")
-                        .trim()
-                        .trim_matches('"')
-                        .trim_matches('\'');
-                    if !model_name.is_empty() {
-                        model_list.push(serde_json::json!({ "model": model_name, "key": "" }));
-                    }
+        && let Ok(models_content) = std::fs::read_to_string(&models_yaml)
+    {
+        let mut model_list = Vec::new();
+        for line in models_content.lines() {
+            let trimmed = line.trim();
+            if trimmed.starts_with("- name:") || trimmed.starts_with("- model:") {
+                let model_name = trimmed
+                    .strip_prefix("- name:")
+                    .or_else(|| trimmed.strip_prefix("- model:"))
+                    .unwrap_or("")
+                    .trim()
+                    .trim_matches('"')
+                    .trim_matches('\'');
+                if !model_name.is_empty() {
+                    model_list.push(serde_json::json!({ "model": model_name, "key": "" }));
                 }
             }
-            if !model_list.is_empty()
-                && let Some(obj) = config.as_object_mut() {
-                    obj.insert(
-                        "model_list".to_string(),
-                        serde_json::Value::Array(model_list),
-                    );
-                }
         }
+        if !model_list.is_empty()
+            && let Some(obj) = config.as_object_mut()
+        {
+            obj.insert(
+                "model_list".to_string(),
+                serde_json::Value::Array(model_list),
+            );
+        }
+    }
 
     warnings.push("Used fallback config conversion (no OpenClaw config file found)".to_string());
     Ok((config, warnings))
@@ -380,11 +381,10 @@ pub fn run(options: MigrateOptions, local: bool) -> Result<()> {
     }
 
     // Step 5: Confirmation.
-    if !options.force
-        && !confirm("Proceed with migration?") {
-            println!("Migration cancelled.");
-            return Ok(());
-        }
+    if !options.force && !confirm("Proceed with migration?") {
+        println!("Migration cancelled.");
+        return Ok(());
+    }
 
     // Step 6: Perform migration.
     let mut migrated_files: u32 = 0;

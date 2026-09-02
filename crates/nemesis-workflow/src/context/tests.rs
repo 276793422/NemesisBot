@@ -482,10 +482,7 @@ fn w4a_resolve_unknown_reference_stays_verbatim() {
     assert_eq!(ctx.resolve("hello {{ghost}}"), "hello {{ghost}}");
     // Mixed with resolvable parts: only the known one is substituted
     ctx.set_var("known", "k");
-    assert_eq!(
-        ctx.resolve("{{known}}-{{ghost}}"),
-        "k-{{ghost}}"
-    );
+    assert_eq!(ctx.resolve("{{known}}-{{ghost}}"), "k-{{ghost}}");
 }
 
 // ===========================================================================

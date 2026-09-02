@@ -553,52 +553,53 @@ fn load_and_run_plugin_window(
 
     // --- Approval result: read from DLL and send via WS ---
     if window_type == "approval"
-        && let Some(ref get_result_fn) = get_approval_result_fn {
-            let ptr = unsafe { (**get_result_fn)() };
-            let action = if ptr.is_null() {
-                eprintln!("[Child] Approval window closed without action, defaulting to rejected");
-                "rejected".to_string()
-            } else {
-                let c_str = unsafe { std::ffi::CStr::from_ptr(ptr) };
-                let action = c_str.to_str().unwrap_or("rejected").to_string();
-                eprintln!("[Child] Approval result from DLL: {}", action);
-                action
-            };
+        && let Some(ref get_result_fn) = get_approval_result_fn
+    {
+        let ptr = unsafe { (**get_result_fn)() };
+        let action = if ptr.is_null() {
+            eprintln!("[Child] Approval window closed without action, defaulting to rejected");
+            "rejected".to_string()
+        } else {
+            let c_str = unsafe { std::ffi::CStr::from_ptr(ptr) };
+            let action = c_str.to_str().unwrap_or("rejected").to_string();
+            eprintln!("[Child] Approval result from DLL: {}", action);
+            action
+        };
 
-            let request_id = window_data
-                .get("request_id")
-                .and_then(|v| v.as_str())
-                .unwrap_or("")
-                .to_string();
+        let request_id = window_data
+            .get("request_id")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .to_string();
 
-            // Send approval.submit notification to parent via WS (with retries)
-            if let Some(handle) = ws_handle.as_ref() {
-                eprintln!("[Child] WS client exists, attempting to send approval.submit...");
-                let params = serde_json::json!({
-                    "action": action,
-                    "request_id": request_id,
-                });
-                for attempt in 0..10 {
-                    match handle.client.notify("approval.submit", params.clone()) {
-                        Ok(()) => {
-                            eprintln!(
-                                "[Child] Sent approval.submit notification (action={})",
-                                action
-                            );
-                            break;
-                        }
-                        Err(e) => {
-                            eprintln!("[Child] approval.submit attempt {} failed: {}", attempt, e);
-                            if attempt < 9 {
-                                std::thread::sleep(std::time::Duration::from_millis(200));
-                            }
+        // Send approval.submit notification to parent via WS (with retries)
+        if let Some(handle) = ws_handle.as_ref() {
+            eprintln!("[Child] WS client exists, attempting to send approval.submit...");
+            let params = serde_json::json!({
+                "action": action,
+                "request_id": request_id,
+            });
+            for attempt in 0..10 {
+                match handle.client.notify("approval.submit", params.clone()) {
+                    Ok(()) => {
+                        eprintln!(
+                            "[Child] Sent approval.submit notification (action={})",
+                            action
+                        );
+                        break;
+                    }
+                    Err(e) => {
+                        eprintln!("[Child] approval.submit attempt {} failed: {}", attempt, e);
+                        if attempt < 9 {
+                            std::thread::sleep(std::time::Duration::from_millis(200));
                         }
                     }
                 }
-            } else {
-                eprintln!("[Child] No WS client — cannot send approval.submit!");
             }
+        } else {
+            eprintln!("[Child] No WS client — cannot send approval.submit!");
         }
+    }
 
     // Give WS background thread time to flush any pending messages
     std::thread::sleep(std::time::Duration::from_millis(300));
@@ -1062,6 +1063,6 @@ fn build_plugin_config(window_type: &str, window_data: &serde_json::Value) -> St
 // ---------------------------------------------------------------------------
 
 #[cfg(test)]
-mod tests;
-#[cfg(test)]
 mod s7_tests;
+#[cfg(test)]
+mod tests;

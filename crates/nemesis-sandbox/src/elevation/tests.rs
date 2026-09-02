@@ -18,7 +18,11 @@ fn is_elevated_matches_net_session_exit_code() {
         .stderr(std::process::Stdio::null())
         .status();
     match status {
-        Ok(s) => assert_eq!(is_elevated(), s.success(), "is_elevated == net session 成功位"),
+        Ok(s) => assert_eq!(
+            is_elevated(),
+            s.success(),
+            "is_elevated == net session 成功位"
+        ),
         // net.exe 不可用时 is_elevated 内部同样 Err → false；两边一致性仍成立
         Err(_) => assert!(!is_elevated()),
     }

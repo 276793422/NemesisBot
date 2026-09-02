@@ -377,7 +377,9 @@ fn test_exact_boundary_rollup() {
         .insert_request_log(&recent_log)
         .expect("Failed to insert recent log");
 
-    let deleted = store.retention_sweep(Some(30), None).expect("Failed to rollup");
+    let deleted = store
+        .retention_sweep(Some(30), None)
+        .expect("Failed to rollup");
     assert_eq!(deleted, 1); // Only the old log should be deleted
 
     let (remaining, _) = store

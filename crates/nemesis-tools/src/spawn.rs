@@ -276,12 +276,10 @@ impl Tool for SpawnTool {
         // Check allowlist if targeting specific agent
         if !agent_id.is_empty()
             && let Some(ref check) = self.allowlist_check
-                && !check(agent_id) {
-                    return ToolResult::error(&format!(
-                        "not allowed to spawn agent '{}'",
-                        agent_id
-                    ));
-                }
+            && !check(agent_id)
+        {
+            return ToolResult::error(&format!("not allowed to spawn agent '{}'", agent_id));
+        }
 
         let channel = self.channel.lock().await.clone();
         let chat_id = self.chat_id.lock().await.clone();

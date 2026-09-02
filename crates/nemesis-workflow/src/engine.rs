@@ -1292,12 +1292,11 @@ impl WorkflowEngine {
     /// 无 registry 的装配（CLI `workflow run`）经 world 工具车道进
     /// executor 子进程/Sandboxie 盒；③ per-node `sandbox: false` 显式
     /// opt-out 走受守卫 Spawn 车道。
-    pub fn set_execution_world(
-        &self,
-        world: Arc<dyn nemesis_sandbox::exec_world::ExecutionWorld>,
-    ) {
+    pub fn set_execution_world(&self, world: Arc<dyn nemesis_sandbox::exec_world::ExecutionWorld>) {
         let exec = match self.script_tools.clone() {
-            Some(tools) => crate::nodes::ScriptNodeExecutor::with_tools_and_world(tools, world.clone()),
+            Some(tools) => {
+                crate::nodes::ScriptNodeExecutor::with_tools_and_world(tools, world.clone())
+            }
             None => crate::nodes::ScriptNodeExecutor::with_world(world.clone()),
         };
         self.node_executors.register("script", Arc::new(exec));
@@ -1313,9 +1312,7 @@ impl WorkflowEngine {
     /// Query the attached execution world (U10). `None` = bare engine
     /// (unit tests / no assembly) — all guards inert, script falls to bare
     /// spawn.
-    pub fn execution_world(
-        &self,
-    ) -> Option<Arc<dyn nemesis_sandbox::exec_world::ExecutionWorld>> {
+    pub fn execution_world(&self) -> Option<Arc<dyn nemesis_sandbox::exec_world::ExecutionWorld>> {
         self.execution_world.read().clone()
     }
 
@@ -1333,11 +1330,12 @@ impl WorkflowEngine {
     fn guard_engine_write(&self, path: &std::path::Path) -> Result<(), EngineError> {
         let world = self.execution_world.read().clone();
         if let Some(world) = world
-            && let Err(reason) = world.check_writable(path) {
-                return Err(EngineError::PersistenceError(format!(
-                    "[U10 execution-world guard] {reason}"
-                )));
-            }
+            && let Err(reason) = world.check_writable(path)
+        {
+            return Err(EngineError::PersistenceError(format!(
+                "[U10 execution-world guard] {reason}"
+            )));
+        }
         Ok(())
     }
 
@@ -2204,9 +2202,10 @@ impl WorkflowEngine {
                     result.state = ExecutionState::Completed;
                     result.ended_at = Local::now();
                     if let Some(approved) = review_result.get("approved")
-                        && let Some(b) = approved.as_bool() {
-                            debug!("[Workflow] Node {} review result: approved={}", node_id, b);
-                        }
+                        && let Some(b) = approved.as_bool()
+                    {
+                        debug!("[Workflow] Node {} review result: approved={}", node_id, b);
+                    }
                     found_waiting = Some(node_id.clone());
                     break;
                 }

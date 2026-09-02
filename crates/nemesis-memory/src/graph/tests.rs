@@ -823,13 +823,21 @@ async fn persist_and_reload_triples_roundtrip() {
     let store = InMemoryGraphStore::new().with_persistence(dir.path().to_path_buf());
 
     store
-        .add_triple(GraphTriple::new("s1".to_string(), "p1".to_string(), "o1".to_string()))
+        .add_triple(GraphTriple::new(
+            "s1".to_string(),
+            "p1".to_string(),
+            "o1".to_string(),
+        ))
         .await
         .unwrap();
     store
-        .add_triple(GraphTriple::new("s1".to_string(), "p2".to_string(), "o2".to_string()))
+        .add_triple(GraphTriple::new(
+            "s1".to_string(),
+            "p2".to_string(),
+            "o2".to_string(),
+        ))
         .await
-    .unwrap();
+        .unwrap();
 
     let path = dir.path().join("triples.jsonl");
     assert!(path.exists(), "triples must be persisted on mutation");
@@ -870,8 +878,11 @@ async fn persist_triples_dedupes_identical_keys_on_save() {
 
     // In-memory keeps every push; the JSONL snapshot dedupes by key.
     let all = store.list_triples("s").await.unwrap();
-    let raw = std::fs::read_to_string(dir.path().join("triples.jsonl"))
-        .unwrap_or_default();
+    let raw = std::fs::read_to_string(dir.path().join("triples.jsonl")).unwrap_or_default();
     let on_disk = raw.lines().filter(|l| !l.trim().is_empty()).count();
-    assert_eq!(on_disk, std::cmp::min(all.len(), 1), "dup keys collapse on disk");
+    assert_eq!(
+        on_disk,
+        std::cmp::min(all.len(), 1),
+        "dup keys collapse on disk"
+    );
 }

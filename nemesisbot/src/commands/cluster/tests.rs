@@ -1497,10 +1497,7 @@ async fn test_run_info_updates_fields_and_saves() {
 async fn test_run_info_read_only_no_changes() {
     let _guard = crate::GLOBAL_STATE_LOCK.lock().unwrap();
     let th = temp_home_env();
-    write_peers_toml(
-        &th.home,
-        "[node]\nid = \"node-a\"\nname = \"Node A\"\n",
-    );
+    write_peers_toml(&th.home, "[node]\nid = \"node-a\"\nname = \"Node A\"\n");
     run(
         ClusterAction::Info {
             name: None,
@@ -1620,7 +1617,9 @@ async fn test_run_peers_remove_dash_id_after_add() {
     .unwrap();
     run(
         ClusterAction::Peers {
-            action: Some(PeerAction::Remove { id: "node-a".into() }),
+            action: Some(PeerAction::Remove {
+                id: "node-a".into(),
+            }),
         },
         false,
     )
@@ -1642,7 +1641,9 @@ async fn test_run_peers_remove_by_address_fallback() {
     );
     run(
         ClusterAction::Peers {
-            action: Some(PeerAction::Remove { id: "9.9.9.9:1234".into() }),
+            action: Some(PeerAction::Remove {
+                id: "9.9.9.9:1234".into(),
+            }),
         },
         false,
     )
@@ -1688,7 +1689,9 @@ async fn test_run_peers_remove_existing() {
     );
     run(
         ClusterAction::Peers {
-            action: Some(PeerAction::Remove { id: "peer-1".into() }),
+            action: Some(PeerAction::Remove {
+                id: "peer-1".into(),
+            }),
         },
         false,
     )
@@ -1703,7 +1706,10 @@ async fn test_run_peers_remove_existing() {
 async fn test_run_peers_remove_not_found() {
     let _guard = crate::GLOBAL_STATE_LOCK.lock().unwrap();
     let th = temp_home_env();
-    write_peers_toml(&th.home, "[peers]\n[peers.other]\naddress = \"1.1.1.1:1\"\n");
+    write_peers_toml(
+        &th.home,
+        "[peers]\n[peers.other]\naddress = \"1.1.1.1:1\"\n",
+    );
     run(
         ClusterAction::Peers {
             action: Some(PeerAction::Remove { id: "ghost".into() }),
@@ -1742,7 +1748,9 @@ async fn test_run_peers_enable_and_disable() {
     );
     run(
         ClusterAction::Peers {
-            action: Some(PeerAction::Enable { id: "10.0.0.9:21949".into() }),
+            action: Some(PeerAction::Enable {
+                id: "10.0.0.9:21949".into(),
+            }),
         },
         false,
     )
@@ -1755,7 +1763,9 @@ async fn test_run_peers_enable_and_disable() {
 
     run(
         ClusterAction::Peers {
-            action: Some(PeerAction::Disable { id: "10.0.0.9:21949".into() }),
+            action: Some(PeerAction::Disable {
+                id: "10.0.0.9:21949".into(),
+            }),
         },
         false,
     )
@@ -1796,7 +1806,10 @@ async fn test_run_token_generate_save_persists() {
     write_cluster_config(&th.home, &serde_json::json!({ "enabled": false }));
     run(
         ClusterAction::Token {
-            action: TokenAction::Generate { length: 32, save: true },
+            action: TokenAction::Generate {
+                length: 32,
+                save: true,
+            },
         },
         false,
     )
@@ -1814,7 +1827,10 @@ async fn test_run_token_generate_nosave_and_missing_config() {
     // 无 config 且 --save → 提示后正常返回
     run(
         ClusterAction::Token {
-            action: TokenAction::Generate { length: 32, save: true },
+            action: TokenAction::Generate {
+                length: 32,
+                save: true,
+            },
         },
         false,
     )
@@ -1824,7 +1840,10 @@ async fn test_run_token_generate_nosave_and_missing_config() {
     // 不带 --save → 只打印不落盘
     run(
         ClusterAction::Token {
-            action: TokenAction::Generate { length: 16, save: false },
+            action: TokenAction::Generate {
+                length: 16,
+                save: false,
+            },
         },
         false,
     )
@@ -1839,7 +1858,10 @@ async fn test_run_token_generate_bad_length_bails() {
     let _th = temp_home_env();
     let err = run(
         ClusterAction::Token {
-            action: TokenAction::Generate { length: 8, save: false },
+            action: TokenAction::Generate {
+                length: 8,
+                save: false,
+            },
         },
         false,
     )
@@ -2051,9 +2073,7 @@ async fn test_run_token_verify_no_config() {
     let _th = temp_home_env();
     run(
         ClusterAction::Token {
-            action: TokenAction::Verify {
-                token: "x".into(),
-            },
+            action: TokenAction::Verify { token: "x".into() },
         },
         false,
     )
@@ -2410,7 +2430,10 @@ async fn test_run_node_not_initialized_bails() {
 
 #[test]
 fn test_parse_host_port_typical() {
-    assert_eq!(parse_host_port("10.0.0.1:21949"), ("10.0.0.1".into(), 21949));
+    assert_eq!(
+        parse_host_port("10.0.0.1:21949"),
+        ("10.0.0.1".into(), 21949)
+    );
 }
 
 #[test]
@@ -2450,18 +2473,16 @@ fn test_update_main_config_cluster_writes_section() {
     )
     .unwrap();
     update_main_config_cluster(&home, true).unwrap();
-    let cfg: serde_json::Value = serde_json::from_str(
-        &std::fs::read_to_string(crate::common::config_path(&home)).unwrap(),
-    )
-    .unwrap();
+    let cfg: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(crate::common::config_path(&home)).unwrap())
+            .unwrap();
     assert_eq!(cfg["cluster"]["enabled"], serde_json::json!(true));
     assert_eq!(cfg["other"], serde_json::json!(1));
     // 再关 → 覆盖为 false
     update_main_config_cluster(&home, false).unwrap();
-    let cfg: serde_json::Value = serde_json::from_str(
-        &std::fs::read_to_string(crate::common::config_path(&home)).unwrap(),
-    )
-    .unwrap();
+    let cfg: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(crate::common::config_path(&home)).unwrap())
+            .unwrap();
     assert_eq!(cfg["cluster"]["enabled"], serde_json::json!(false));
 }
 
@@ -2478,283 +2499,286 @@ fn test_update_main_config_cluster_writes_section() {
 // =========================================================================
 
 mod wave_b {
-use super::*;
+    use super::*;
 
-/// RAII 守卫：把文件设为只读，drop 时恢复。
-/// Windows 下 READONLY 属性使 `std::fs::write` 打开即 Access Denied；
-/// Unix 下等价于移除 owner 写位（root 除外，见各测试注）。
-struct WaveBReadOnlyGuard {
-    path: std::path::PathBuf,
-}
+    /// RAII 守卫：把文件设为只读，drop 时恢复。
+    /// Windows 下 READONLY 属性使 `std::fs::write` 打开即 Access Denied；
+    /// Unix 下等价于移除 owner 写位（root 除外，见各测试注）。
+    struct WaveBReadOnlyGuard {
+        path: std::path::PathBuf,
+    }
 
-impl WaveBReadOnlyGuard {
-    fn apply(path: &std::path::Path) -> Self {
-        let mut perm = std::fs::metadata(path)
-            .expect("readonly target must exist")
-            .permissions();
-        perm.set_readonly(true);
-        std::fs::set_permissions(path, perm).expect("set readonly failed");
-        Self {
-            path: path.to_path_buf(),
+    impl WaveBReadOnlyGuard {
+        fn apply(path: &std::path::Path) -> Self {
+            let mut perm = std::fs::metadata(path)
+                .expect("readonly target must exist")
+                .permissions();
+            perm.set_readonly(true);
+            std::fs::set_permissions(path, perm).expect("set readonly failed");
+            Self {
+                path: path.to_path_buf(),
+            }
         }
     }
-}
 
-impl Drop for WaveBReadOnlyGuard {
-    fn drop(&mut self) {
-        // 先恢复权限再让 TempDir 删除目录树
-        if let Ok(meta) = std::fs::metadata(&self.path) {
-            let mut perm = meta.permissions();
-            perm.set_readonly(false);
-            let _ = std::fs::set_permissions(&self.path, perm);
+    impl Drop for WaveBReadOnlyGuard {
+        fn drop(&mut self) {
+            // 先恢复权限再让 TempDir 删除目录树
+            if let Ok(meta) = std::fs::metadata(&self.path) {
+                let mut perm = meta.permissions();
+                perm.set_readonly(false);
+                let _ = std::fs::set_permissions(&self.path, perm);
+            }
         }
     }
-}
 
-/// 255-256 / 276：Status 对「config.cluster.json 存在但 JSON 解析失败」与
-/// 「peers.toml 存在但解析失败」都静默跳过对应段继续输出（不报错）。
-#[tokio::test]
-async fn wave_b_status_survives_corrupt_config_and_corrupt_peers_toml() {
-    let _guard = crate::GLOBAL_STATE_LOCK.lock().unwrap();
-    let th = temp_home_env();
-    std::fs::write(
-        crate::common::cluster_config_path(&th.home),
-        "{{{ not json",
-    )
-    .unwrap();
-    write_peers_toml(&th.home, "invalid {{{ toml");
-    run(ClusterAction::Status, false).await.unwrap();
-}
+    /// 255-256 / 276：Status 对「config.cluster.json 存在但 JSON 解析失败」与
+    /// 「peers.toml 存在但解析失败」都静默跳过对应段继续输出（不报错）。
+    #[tokio::test]
+    async fn wave_b_status_survives_corrupt_config_and_corrupt_peers_toml() {
+        let _guard = crate::GLOBAL_STATE_LOCK.lock().unwrap();
+        let th = temp_home_env();
+        std::fs::write(crate::common::cluster_config_path(&th.home), "{{{ not json").unwrap();
+        write_peers_toml(&th.home, "invalid {{{ toml");
+        run(ClusterAction::Status, false).await.unwrap();
+    }
 
-/// 338-339：Config 动作遇到无法解析的 config 文件时静默跳过且绝不改写原文件。
-#[tokio::test]
-async fn wave_b_config_leaves_unparseable_config_byte_identical() {
-    let _guard = crate::GLOBAL_STATE_LOCK.lock().unwrap();
-    let th = temp_home_env();
-    let cfg_path = crate::common::cluster_config_path(&th.home);
-    let garbage = "[[[ definitely not json";
-    std::fs::write(&cfg_path, garbage).unwrap();
-    run(
-        ClusterAction::Config {
-            udp_port: 10000,
-            rpc_port: 20000,
-            broadcast_interval: 40,
-        },
-        false,
-    )
-    .await
-    .unwrap();
-    assert_eq!(
-        std::fs::read_to_string(&cfg_path).unwrap(),
-        garbage,
-        "unparseable config must be left untouched"
-    );
-}
-
-/// 381 / 383-384：Info 修改字段时 save_static_config 失败（peers.toml 只读）
-/// → 打印失败信息后仍继续显示节点信息，run 正常返回。
-/// 注：以 root/admin 运行时只读位可能被无视 → 此时只是正常保存成功，
-/// 断言因此只钉 Ok 语义。
-#[tokio::test]
-async fn wave_b_info_save_failure_prints_error_and_continues() {
-    let _guard = crate::GLOBAL_STATE_LOCK.lock().unwrap();
-    let th = temp_home_env();
-    let peers = crate::common::cluster_dir(&th.home).join("peers.toml");
-    write_peers_toml(&th.home, "[node]\nid = \"wb-ro\"\nname = \"old\"\n");
-    let _ro = WaveBReadOnlyGuard::apply(&peers);
-    run(
-        ClusterAction::Info {
-            name: Some("renamed".into()),
-            role: None,
-            category: None,
-            tags: None,
-            address: None,
-        },
-        false,
-    )
-    .await
-    .unwrap();
-}
-
-/// 392 / 400 / 408：name/role/category 为空串时显示 "(not set)"。
-/// 注意：NodeInfo 各字段带 serde 默认值（worker/general），缺字段不会触发
-/// 这些分支 —— 必须显式写空串才能进入（见报告生产可疑点）。
-#[tokio::test]
-async fn wave_b_info_empty_identity_fields_print_not_set_markers() {
-    let _guard = crate::GLOBAL_STATE_LOCK.lock().unwrap();
-    let th = temp_home_env();
-    write_peers_toml(
-        &th.home,
-        "[node]\nid = \"wb-empty\"\nname = \"\"\nrole = \"\"\ncategory = \"\"\ntags = []\n",
-    );
-    run(
-        ClusterAction::Info {
-            name: None,
-            role: None,
-            category: None,
-            tags: None,
-            address: None,
-        },
-        false,
-    )
-    .await
-    .unwrap();
-}
-
-/// 430-432：peers.toml 存在但解析失败 → 打印 "Failed to parse peers.toml."。
-#[tokio::test]
-async fn wave_b_info_parse_failure_prints_failed_to_parse() {
-    let _guard = crate::GLOBAL_STATE_LOCK.lock().unwrap();
-    let th = temp_home_env();
-    write_peers_toml(&th.home, "{ not toml {{{");
-    run(
-        ClusterAction::Info {
-            name: Some("x".into()),
-            role: None,
-            category: None,
-            tags: None,
-            address: None,
-        },
-        false,
-    )
-    .await
-    .unwrap();
-}
-
-/// 475：peers add 时权威写路径 append_peer_to_file 失败（peers.toml 是个
-/// 目录 → read_to_string Err）→ 打印失败且目录不被破坏。
-/// 用路径形态混淆确定性触发，不依赖权限。
-#[tokio::test]
-async fn wave_b_peers_add_failure_when_peers_toml_is_directory() {
-    let _guard = crate::GLOBAL_STATE_LOCK.lock().unwrap();
-    let th = temp_home_env();
-    let fake = crate::common::cluster_dir(&th.home).join("peers.toml");
-    std::fs::create_dir_all(&fake).unwrap();
-    run(
-        ClusterAction::Peers {
-            action: Some(PeerAction::Add {
-                id: "wb-dir".into(),
-                name: Some("Dir Peer".into()),
-                address: Some("10.5.5.5:11949".into()),
-                role: None,
-                category: None,
-                priority: None,
-            }),
-        },
-        false,
-    )
-    .await
-    .unwrap();
-    assert!(fake.is_dir(), "directory must remain untouched");
-}
-
-/// 505：[peers] 表里存在与 id 逐字相等的 quoted key（含 '.'/':'，只能用
-/// quoted bare-key 表达）→ legacy/canonical 变体都未命中时走原始 id 分支删除。
-#[tokio::test]
-async fn wave_b_peers_remove_hits_raw_id_key_arm() {
-    let _guard = crate::GLOBAL_STATE_LOCK.lock().unwrap();
-    let th = temp_home_env();
-    write_peers_toml(
-        &th.home,
-        // key 是带 '.'/':' 的 quoted bare-key；address 故意与 id 不同，
-        // 否则兜底按地址扫描也能命中、掩盖 raw-id key 分支。
-        "[peers]\n[peers.\"10.0.0.77:11949\"]\naddress = \"10.9.9.9:12345\"\nrole = \"worker\"\n",
-    );
-    run(
-        ClusterAction::Peers {
-            action: Some(PeerAction::Remove {
-                id: "10.0.0.77:11949".into(),
-            }),
-        },
-        false,
-    )
-    .await
-    .unwrap();
-    let content =
-        std::fs::read_to_string(crate::common::cluster_dir(&th.home).join("peers.toml")).unwrap();
-    assert!(
-        !content.contains("10.0.0.77"),
-        "raw-id keyed peer should be removed, got: {content}"
-    );
-}
-
-/// 550 / 552 / 567：peers.toml 存在但没有 [peers] 段 →
-/// enable_peer_in_toml 报错字符串 → Enable/Disable 都打印消息且不落盘。
-#[tokio::test]
-async fn wave_b_peers_enable_disable_reports_missing_section_and_keeps_file() {
-    let _guard = crate::GLOBAL_STATE_LOCK.lock().unwrap();
-    let th = temp_home_env();
-    let original = "[node]\nid = \"solo\"\n";
-    write_peers_toml(&th.home, original);
-    run(
-        ClusterAction::Peers {
-            action: Some(PeerAction::Enable { id: "whatever".into() }),
-        },
-        false,
-    )
-    .await
-    .unwrap();
-    run(
-        ClusterAction::Peers {
-            action: Some(PeerAction::Disable { id: "whatever".into() }),
-        },
-        false,
-    )
-    .await
-    .unwrap();
-    let content =
-        std::fs::read_to_string(crate::common::cluster_dir(&th.home).join("peers.toml")).unwrap();
-    assert_eq!(content, original, "failed toggle must not rewrite the file");
-}
-
-/// 788：Init 重写 peers.toml 失败（预置只读文件）→ 打印失败信息后 Init 继续。
-/// root/admin 下只读位可能被无视 → 只断言 Ok。
-#[tokio::test]
-async fn wave_b_init_over_readonly_peers_toml_still_ok() {
-    let _guard = crate::GLOBAL_STATE_LOCK.lock().unwrap();
-    let th = temp_home_env();
-    let peers = crate::common::cluster_dir(&th.home).join("peers.toml");
-    write_peers_toml(&th.home, "[node]\nid = \"pre-existing\"\n");
-    let _ro = WaveBReadOnlyGuard::apply(&peers);
-    run(
-        ClusterAction::Init {
-            name: Some("WaveB".into()),
-            role: None,
-            category: None,
-            tags: None,
-            address: None,
-        },
-        false,
-    )
-    .await
-    .unwrap();
-}
-
-/// 810-811 / 830-832 / 850-852 / 869-871：config 存在但 JSON 解析失败时，
-/// Enable/Disable/Start/Stop 的「已启用？」前置检查静默跳过，随后
-/// update_cluster_config 解析同一个坏文件 → 错误向上传播（run 返回 Err）。
-#[tokio::test]
-async fn wave_b_enable_disable_start_stop_propagate_corrupt_config_parse_error() {
-    let _guard = crate::GLOBAL_STATE_LOCK.lock().unwrap();
-    let th = temp_home_env();
-    std::fs::write(
-        crate::common::cluster_config_path(&th.home),
-        "{{{ not json",
-    )
-    .unwrap();
-
-    let e1 = run(ClusterAction::Enable, false).await.expect_err("Enable must propagate");
-    let e2 = run(ClusterAction::Disable, false).await.expect_err("Disable must propagate");
-    let e3 = run(ClusterAction::Start, false).await.expect_err("Start must propagate");
-    let e4 = run(ClusterAction::Stop, false).await.expect_err("Stop must propagate");
-    for (name, e) in [("Enable", e1), ("Disable", e2), ("Start", e3), ("Stop", e4)] {
-        let msg = format!("{name}: {e}");
-        assert!(
-            !msg.is_empty(),
-            "each action must surface a parse error"
+    /// 338-339：Config 动作遇到无法解析的 config 文件时静默跳过且绝不改写原文件。
+    #[tokio::test]
+    async fn wave_b_config_leaves_unparseable_config_byte_identical() {
+        let _guard = crate::GLOBAL_STATE_LOCK.lock().unwrap();
+        let th = temp_home_env();
+        let cfg_path = crate::common::cluster_config_path(&th.home);
+        let garbage = "[[[ definitely not json";
+        std::fs::write(&cfg_path, garbage).unwrap();
+        run(
+            ClusterAction::Config {
+                udp_port: 10000,
+                rpc_port: 20000,
+                broadcast_interval: 40,
+            },
+            false,
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            std::fs::read_to_string(&cfg_path).unwrap(),
+            garbage,
+            "unparseable config must be left untouched"
         );
     }
-}
+
+    /// 381 / 383-384：Info 修改字段时 save_static_config 失败（peers.toml 只读）
+    /// → 打印失败信息后仍继续显示节点信息，run 正常返回。
+    /// 注：以 root/admin 运行时只读位可能被无视 → 此时只是正常保存成功，
+    /// 断言因此只钉 Ok 语义。
+    #[tokio::test]
+    async fn wave_b_info_save_failure_prints_error_and_continues() {
+        let _guard = crate::GLOBAL_STATE_LOCK.lock().unwrap();
+        let th = temp_home_env();
+        let peers = crate::common::cluster_dir(&th.home).join("peers.toml");
+        write_peers_toml(&th.home, "[node]\nid = \"wb-ro\"\nname = \"old\"\n");
+        let _ro = WaveBReadOnlyGuard::apply(&peers);
+        run(
+            ClusterAction::Info {
+                name: Some("renamed".into()),
+                role: None,
+                category: None,
+                tags: None,
+                address: None,
+            },
+            false,
+        )
+        .await
+        .unwrap();
+    }
+
+    /// 392 / 400 / 408：name/role/category 为空串时显示 "(not set)"。
+    /// 注意：NodeInfo 各字段带 serde 默认值（worker/general），缺字段不会触发
+    /// 这些分支 —— 必须显式写空串才能进入（见报告生产可疑点）。
+    #[tokio::test]
+    async fn wave_b_info_empty_identity_fields_print_not_set_markers() {
+        let _guard = crate::GLOBAL_STATE_LOCK.lock().unwrap();
+        let th = temp_home_env();
+        write_peers_toml(
+            &th.home,
+            "[node]\nid = \"wb-empty\"\nname = \"\"\nrole = \"\"\ncategory = \"\"\ntags = []\n",
+        );
+        run(
+            ClusterAction::Info {
+                name: None,
+                role: None,
+                category: None,
+                tags: None,
+                address: None,
+            },
+            false,
+        )
+        .await
+        .unwrap();
+    }
+
+    /// 430-432：peers.toml 存在但解析失败 → 打印 "Failed to parse peers.toml."。
+    #[tokio::test]
+    async fn wave_b_info_parse_failure_prints_failed_to_parse() {
+        let _guard = crate::GLOBAL_STATE_LOCK.lock().unwrap();
+        let th = temp_home_env();
+        write_peers_toml(&th.home, "{ not toml {{{");
+        run(
+            ClusterAction::Info {
+                name: Some("x".into()),
+                role: None,
+                category: None,
+                tags: None,
+                address: None,
+            },
+            false,
+        )
+        .await
+        .unwrap();
+    }
+
+    /// 475：peers add 时权威写路径 append_peer_to_file 失败（peers.toml 是个
+    /// 目录 → read_to_string Err）→ 打印失败且目录不被破坏。
+    /// 用路径形态混淆确定性触发，不依赖权限。
+    #[tokio::test]
+    async fn wave_b_peers_add_failure_when_peers_toml_is_directory() {
+        let _guard = crate::GLOBAL_STATE_LOCK.lock().unwrap();
+        let th = temp_home_env();
+        let fake = crate::common::cluster_dir(&th.home).join("peers.toml");
+        std::fs::create_dir_all(&fake).unwrap();
+        run(
+            ClusterAction::Peers {
+                action: Some(PeerAction::Add {
+                    id: "wb-dir".into(),
+                    name: Some("Dir Peer".into()),
+                    address: Some("10.5.5.5:11949".into()),
+                    role: None,
+                    category: None,
+                    priority: None,
+                }),
+            },
+            false,
+        )
+        .await
+        .unwrap();
+        assert!(fake.is_dir(), "directory must remain untouched");
+    }
+
+    /// 505：[peers] 表里存在与 id 逐字相等的 quoted key（含 '.'/':'，只能用
+    /// quoted bare-key 表达）→ legacy/canonical 变体都未命中时走原始 id 分支删除。
+    #[tokio::test]
+    async fn wave_b_peers_remove_hits_raw_id_key_arm() {
+        let _guard = crate::GLOBAL_STATE_LOCK.lock().unwrap();
+        let th = temp_home_env();
+        write_peers_toml(
+            &th.home,
+            // key 是带 '.'/':' 的 quoted bare-key；address 故意与 id 不同，
+            // 否则兜底按地址扫描也能命中、掩盖 raw-id key 分支。
+            "[peers]\n[peers.\"10.0.0.77:11949\"]\naddress = \"10.9.9.9:12345\"\nrole = \"worker\"\n",
+        );
+        run(
+            ClusterAction::Peers {
+                action: Some(PeerAction::Remove {
+                    id: "10.0.0.77:11949".into(),
+                }),
+            },
+            false,
+        )
+        .await
+        .unwrap();
+        let content =
+            std::fs::read_to_string(crate::common::cluster_dir(&th.home).join("peers.toml"))
+                .unwrap();
+        assert!(
+            !content.contains("10.0.0.77"),
+            "raw-id keyed peer should be removed, got: {content}"
+        );
+    }
+
+    /// 550 / 552 / 567：peers.toml 存在但没有 [peers] 段 →
+    /// enable_peer_in_toml 报错字符串 → Enable/Disable 都打印消息且不落盘。
+    #[tokio::test]
+    async fn wave_b_peers_enable_disable_reports_missing_section_and_keeps_file() {
+        let _guard = crate::GLOBAL_STATE_LOCK.lock().unwrap();
+        let th = temp_home_env();
+        let original = "[node]\nid = \"solo\"\n";
+        write_peers_toml(&th.home, original);
+        run(
+            ClusterAction::Peers {
+                action: Some(PeerAction::Enable {
+                    id: "whatever".into(),
+                }),
+            },
+            false,
+        )
+        .await
+        .unwrap();
+        run(
+            ClusterAction::Peers {
+                action: Some(PeerAction::Disable {
+                    id: "whatever".into(),
+                }),
+            },
+            false,
+        )
+        .await
+        .unwrap();
+        let content =
+            std::fs::read_to_string(crate::common::cluster_dir(&th.home).join("peers.toml"))
+                .unwrap();
+        assert_eq!(content, original, "failed toggle must not rewrite the file");
+    }
+
+    /// 788：Init 重写 peers.toml 失败（预置只读文件）→ 打印失败信息后 Init 继续。
+    /// root/admin 下只读位可能被无视 → 只断言 Ok。
+    #[tokio::test]
+    async fn wave_b_init_over_readonly_peers_toml_still_ok() {
+        let _guard = crate::GLOBAL_STATE_LOCK.lock().unwrap();
+        let th = temp_home_env();
+        let peers = crate::common::cluster_dir(&th.home).join("peers.toml");
+        write_peers_toml(&th.home, "[node]\nid = \"pre-existing\"\n");
+        let _ro = WaveBReadOnlyGuard::apply(&peers);
+        run(
+            ClusterAction::Init {
+                name: Some("WaveB".into()),
+                role: None,
+                category: None,
+                tags: None,
+                address: None,
+            },
+            false,
+        )
+        .await
+        .unwrap();
+    }
+
+    /// 810-811 / 830-832 / 850-852 / 869-871：config 存在但 JSON 解析失败时，
+    /// Enable/Disable/Start/Stop 的「已启用？」前置检查静默跳过，随后
+    /// update_cluster_config 解析同一个坏文件 → 错误向上传播（run 返回 Err）。
+    #[tokio::test]
+    async fn wave_b_enable_disable_start_stop_propagate_corrupt_config_parse_error() {
+        let _guard = crate::GLOBAL_STATE_LOCK.lock().unwrap();
+        let th = temp_home_env();
+        std::fs::write(crate::common::cluster_config_path(&th.home), "{{{ not json").unwrap();
+
+        let e1 = run(ClusterAction::Enable, false)
+            .await
+            .expect_err("Enable must propagate");
+        let e2 = run(ClusterAction::Disable, false)
+            .await
+            .expect_err("Disable must propagate");
+        let e3 = run(ClusterAction::Start, false)
+            .await
+            .expect_err("Start must propagate");
+        let e4 = run(ClusterAction::Stop, false)
+            .await
+            .expect_err("Stop must propagate");
+        for (name, e) in [("Enable", e1), ("Disable", e2), ("Start", e3), ("Stop", e4)] {
+            let msg = format!("{name}: {e}");
+            assert!(!msg.is_empty(), "each action must surface a parse error");
+        }
+    }
 } // mod wave_b
 
 // =========================================================================
@@ -2885,7 +2909,9 @@ mod wave_c {
         write_peers_toml(&th_a.home, &original);
         run(
             ClusterAction::Peers {
-                action: Some(PeerAction::Remove { id: "ghost-a".into() }),
+                action: Some(PeerAction::Remove {
+                    id: "ghost-a".into(),
+                }),
             },
             false,
         )
@@ -2905,7 +2931,9 @@ mod wave_c {
         write_peers_toml(&th_b.home, garbage);
         run(
             ClusterAction::Peers {
-                action: Some(PeerAction::Remove { id: "ghost-b".into() }),
+                action: Some(PeerAction::Remove {
+                    id: "ghost-b".into(),
+                }),
             },
             false,
         )
@@ -2925,7 +2953,9 @@ mod wave_c {
         make_path_a_directory(&peers);
         run(
             ClusterAction::Peers {
-                action: Some(PeerAction::Remove { id: "ghost-c".into() }),
+                action: Some(PeerAction::Remove {
+                    id: "ghost-c".into(),
+                }),
             },
             false,
         )
@@ -2944,7 +2974,9 @@ mod wave_c {
         make_path_a_directory(&peers);
         run(
             ClusterAction::Peers {
-                action: Some(PeerAction::Enable { id: "10.0.0.1:1".into() }),
+                action: Some(PeerAction::Enable {
+                    id: "10.0.0.1:1".into(),
+                }),
             },
             false,
         )
@@ -2952,7 +2984,9 @@ mod wave_c {
         .unwrap();
         run(
             ClusterAction::Peers {
-                action: Some(PeerAction::Disable { id: "10.0.0.1:1".into() }),
+                action: Some(PeerAction::Disable {
+                    id: "10.0.0.1:1".into(),
+                }),
             },
             false,
         )
@@ -3127,10 +3161,7 @@ mod wave_c {
             toml::Value::Boolean(true)
         );
         // 未命中形态的原条目保持原样。
-        assert_eq!(
-            doc["peers"]["scalar_entry"].as_str(),
-            Some("not-a-table")
-        );
+        assert_eq!(doc["peers"]["scalar_entry"].as_str(), Some("not-a-table"));
         assert!(doc["peers"]["noaddr"].get("enabled").is_none());
     }
 
@@ -3179,7 +3210,7 @@ mod wave_r10 {
     use std::process::{Command, Stdio};
     use std::time::{Duration, Instant};
 
-    use test_harness::{resolve_nemesisbot_bin, TestWorkspace};
+    use test_harness::{TestWorkspace, resolve_nemesisbot_bin};
 
     /// 子进程单次等待预算（秒）。任何等待超过它就强杀并 fail。
     const BUDGET_SECS: u64 = 60;
@@ -3211,10 +3242,7 @@ mod wave_r10 {
                 .local_addr()
                 .expect("tcp addr")
                 .port();
-            if !FORBIDDEN_PORTS.contains(&udp)
-                && !FORBIDDEN_PORTS.contains(&tcp)
-                && udp != tcp
-            {
+            if !FORBIDDEN_PORTS.contains(&udp) && !FORBIDDEN_PORTS.contains(&tcp) && udp != tcp {
                 break (udp, tcp);
             }
         }
@@ -3474,10 +3502,8 @@ mod wave_r10 {
         std::fs::write(&cfg_path, r#"{"enabled": true}"#).unwrap();
 
         let enabled_of = || -> bool {
-            serde_json::from_str::<serde_json::Value>(
-                &std::fs::read_to_string(&cfg_path).unwrap(),
-            )
-            .unwrap()["enabled"]
+            serde_json::from_str::<serde_json::Value>(&std::fs::read_to_string(&cfg_path).unwrap())
+                .unwrap()["enabled"]
                 == serde_json::json!(true)
         };
 
@@ -3535,10 +3561,13 @@ mod wave_r10 {
         std::fs::write(&cfg_path, r#"{"enabled": false}"#).unwrap();
 
         // token generate --save：stdout 带 token + 保存提示；文件里 token=44 字符 base64(32B)
-        let out = ws.run_cli(&bin, &["cluster", "token", "generate", "--save"]).await;
+        let out = ws
+            .run_cli(&bin, &["cluster", "token", "generate", "--save"])
+            .await;
         assert!(out.success(), "token generate: {}", out.stderr);
         assert!(
-            out.stdout.contains("Generated token:") && out.stdout.contains("Token saved to cluster config."),
+            out.stdout.contains("Generated token:")
+                && out.stdout.contains("Token saved to cluster config."),
             "generate/save prints missing:\n{}",
             out.stdout
         );
@@ -3560,7 +3589,9 @@ mod wave_r10 {
             "[peers]\n[peers.r10node]\naddress = \"10.9.9.9:11949\"\nrole = \"worker\"\n",
         )
         .unwrap();
-        let out = ws.run_cli(&bin, &["cluster", "peers", "remove", "--id", "r10node"]).await;
+        let out = ws
+            .run_cli(&bin, &["cluster", "peers", "remove", "--id", "r10node"])
+            .await;
         assert!(out.success(), "peers remove: {}", out.stderr);
         assert!(
             out.stdout.contains("removed"),

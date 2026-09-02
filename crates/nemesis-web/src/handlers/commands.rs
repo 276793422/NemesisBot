@@ -8,7 +8,7 @@
 //! 可空。`$ARGUMENTS` 占位符由 AgentLoop 改写时替换，此处不校验。
 
 use crate::ws_router::{ModuleHandler, RequestContext};
-use nemesis_config::{CommandsConfig, CommandEntry, load_commands_config, save_commands_config};
+use nemesis_config::{CommandEntry, CommandsConfig, load_commands_config, save_commands_config};
 use nemesis_path::resolve_commands_config_path_in_workspace;
 use std::path::{Path, PathBuf};
 
@@ -91,7 +91,9 @@ impl ModuleHandler for CommandsHandler {
             "save" => {
                 let data = data.ok_or("missing data")?;
                 let commands: Vec<CommandEntry> = serde_json::from_value(
-                    data.get("commands").cloned().unwrap_or(serde_json::json!([])),
+                    data.get("commands")
+                        .cloned()
+                        .unwrap_or(serde_json::json!([])),
                 )
                 .map_err(|e| format!("invalid commands payload: {e}"))?;
                 Ok(Some(self.commands_save(workspace, commands)?))

@@ -659,7 +659,7 @@ fn test_cors_default_config_values() {
 // ===========================================================================
 
 mod run_arm {
-    use super::super::{run, CorsAction, CorsDevModeAction};
+    use super::super::{CorsAction, CorsDevModeAction, run};
     use serde_json::json;
 
     fn with_env_home(f: impl FnOnce(std::path::PathBuf)) {
@@ -727,7 +727,10 @@ mod run_arm {
     fn add_rejects_non_http_origin() {
         with_env_home(|home| {
             let err = run(
-                CorsAction::Add { origin: "notaurl".into(), cdn: false },
+                CorsAction::Add {
+                    origin: "notaurl".into(),
+                    cdn: false,
+                },
                 false,
             )
             .expect_err("非 http(s) 前缀 → bail");
@@ -743,20 +746,32 @@ mod run_arm {
     fn add_valid_origin_and_cdn_domain_and_duplicate_noop() {
         with_env_home(|home| {
             run(
-                CorsAction::Add { origin: "https://app.test".into(), cdn: false },
+                CorsAction::Add {
+                    origin: "https://app.test".into(),
+                    cdn: false,
+                },
                 false,
             )
             .expect("首个 origin 会顺带初始化 cors.json");
             let cfg = read_cors(&home);
             assert_eq!(cfg["allowed_origins"][0], "https://app.test");
 
-            run(CorsAction::Add { origin: "cdn.test".into(), cdn: true }, false)
-                .expect("cdn add ok");
+            run(
+                CorsAction::Add {
+                    origin: "cdn.test".into(),
+                    cdn: true,
+                },
+                false,
+            )
+            .expect("cdn add ok");
             assert_eq!(read_cors(&home)["allowed_cdn_domains"][0], "cdn.test");
 
             // 重复添加 → already exists 分支，不重复入列。
             run(
-                CorsAction::Add { origin: "https://app.test".into(), cdn: false },
+                CorsAction::Add {
+                    origin: "https://app.test".into(),
+                    cdn: false,
+                },
                 false,
             )
             .expect("duplicate → Ok");
@@ -776,7 +791,10 @@ mod run_arm {
         with_env_home(|home| {
             // 无配置文件。
             run(
-                CorsAction::Remove { origin: "https://x.test".into(), cdn: false },
+                CorsAction::Remove {
+                    origin: "https://x.test".into(),
+                    cdn: false,
+                },
                 false,
             )
             .expect("无 cors.json → No CORS configuration found");
@@ -789,7 +807,10 @@ mod run_arm {
                 }),
             );
             run(
-                CorsAction::Remove { origin: "https://a.test".into(), cdn: false },
+                CorsAction::Remove {
+                    origin: "https://a.test".into(),
+                    cdn: false,
+                },
                 false,
             )
             .expect("remove ok");
@@ -797,14 +818,14 @@ mod run_arm {
             assert_eq!(cfg["allowed_origins"], json!(["https://b.test"]));
 
             run(
-                CorsAction::Remove { origin: "ghost.test".into(), cdn: true },
+                CorsAction::Remove {
+                    origin: "ghost.test".into(),
+                    cdn: true,
+                },
                 false,
             )
             .expect("cdn not found → Ok");
-            assert_eq!(
-                read_cors(&home)["allowed_cdn_domains"],
-                json!(["cdn.test"])
-            );
+            assert_eq!(read_cors(&home)["allowed_cdn_domains"], json!(["cdn.test"]));
         });
     }
 
@@ -815,34 +836,44 @@ mod run_arm {
         with_env_home(|home| {
             // Disable 无配置文件分支（264-267）。
             run(
-                CorsAction::DevMode { action: CorsDevModeAction::Disable },
+                CorsAction::DevMode {
+                    action: CorsDevModeAction::Disable,
+                },
                 false,
             )
             .expect("无文件 disable → already disabled Ok");
 
             // Status 无配置文件 → false 分支。
             run(
-                CorsAction::DevMode { action: CorsDevModeAction::Status },
+                CorsAction::DevMode {
+                    action: CorsDevModeAction::Status,
+                },
                 false,
             )
             .expect("无文件 status → DISABLED");
 
             // Enable → 写文件；Status 读到 true。
             run(
-                CorsAction::DevMode { action: CorsDevModeAction::Enable },
+                CorsAction::DevMode {
+                    action: CorsDevModeAction::Enable,
+                },
                 false,
             )
             .expect("enable ok");
             assert_eq!(read_cors(&home)["development_mode"], true);
             run(
-                CorsAction::DevMode { action: CorsDevModeAction::Status },
+                CorsAction::DevMode {
+                    action: CorsDevModeAction::Status,
+                },
                 false,
             )
             .expect("enabled status ok");
 
             // Disable 有配置文件 → 置 false。
             run(
-                CorsAction::DevMode { action: CorsDevModeAction::Disable },
+                CorsAction::DevMode {
+                    action: CorsDevModeAction::Disable,
+                },
                 false,
             )
             .expect("disable ok");
@@ -867,7 +898,9 @@ mod run_arm {
     fn validate_without_config_is_denied() {
         with_env_home(|_home| {
             run(
-                CorsAction::Validate { origin: "https://any.test".into() },
+                CorsAction::Validate {
+                    origin: "https://any.test".into(),
+                },
                 false,
             )
             .expect("无配置 → DENIED + Ok");
@@ -888,25 +921,41 @@ mod run_arm {
             );
             // allowed_origins 精确命中。
             run(
-                CorsAction::Validate { origin: "https://app.test".into() },
+                CorsAction::Validate {
+                    origin: "https://app.test".into(),
+                },
                 false,
             )
             .expect("exact origin ok");
             // cdn 精确命中。
-            run(CorsAction::Validate { origin: "cdn.test".into() }, false)
-                .expect("cdn exact ok");
+            run(
+                CorsAction::Validate {
+                    origin: "cdn.test".into(),
+                },
+                false,
+            )
+            .expect("cdn exact ok");
             // cdn 子域命中（.cdn.test 后缀）。
             run(
-                CorsAction::Validate { origin: "static.cdn.test".into() },
+                CorsAction::Validate {
+                    origin: "static.cdn.test".into(),
+                },
                 false,
             )
             .expect("cdn subdomain ok");
             // 通配 *wild.test 前缀命中。
-            run(CorsAction::Validate { origin: "*wild.test".into() }, false)
-                .expect("wildcard prefix ok");
+            run(
+                CorsAction::Validate {
+                    origin: "*wild.test".into(),
+                },
+                false,
+            )
+            .expect("wildcard prefix ok");
             // 都不命中 + localhost 关 → DENIED。
             run(
-                CorsAction::Validate { origin: "https://evil.test".into() },
+                CorsAction::Validate {
+                    origin: "https://evil.test".into(),
+                },
                 false,
             )
             .expect("denied ok");
@@ -931,8 +980,13 @@ mod run_arm {
                 "http://127.0.0.1:49000",
                 "http://LOCALHOST:5173",
             ] {
-                run(CorsAction::Validate { origin: origin.into() }, false)
-                    .expect("localhost 允许分支");
+                run(
+                    CorsAction::Validate {
+                        origin: origin.into(),
+                    },
+                    false,
+                )
+                .expect("localhost 允许分支");
             }
 
             // dev_mode=true 时 localhost 也放行（development_mode + localhost）。
@@ -946,7 +1000,9 @@ mod run_arm {
                 }),
             );
             run(
-                CorsAction::Validate { origin: "http://localhost:3000".into() },
+                CorsAction::Validate {
+                    origin: "http://localhost:3000".into(),
+                },
                 false,
             )
             .expect("dev_mode + localhost ok");
@@ -962,7 +1018,9 @@ mod run_arm {
                 }),
             );
             run(
-                CorsAction::Validate { origin: "http://localhost:9999".into() },
+                CorsAction::Validate {
+                    origin: "http://localhost:9999".into(),
+                },
                 false,
             )
             .expect("localhost 关闭 → DENIED");
@@ -980,7 +1038,7 @@ mod run_arm {
 // ===========================================================================
 
 mod wave_a {
-    use super::super::{load_or_create_cors, run, CorsAction};
+    use super::super::{CorsAction, load_or_create_cors, run};
 
     fn with_env_home(f: impl FnOnce(std::path::PathBuf)) {
         let _guard = crate::GLOBAL_STATE_LOCK.lock().unwrap();
@@ -1050,7 +1108,10 @@ mod wave_a {
                 }),
             );
             run(
-                CorsAction::Add { origin: "cdn.test".into(), cdn: true },
+                CorsAction::Add {
+                    origin: "cdn.test".into(),
+                    cdn: true,
+                },
                 false,
             )
             .expect("重复 cdn 域 → already exists + Ok");
@@ -1074,7 +1135,10 @@ mod wave_a {
             );
             // 已存在的 cdn 条目被移除（230-235 found + cdn 标签臂）。
             run(
-                CorsAction::Remove { origin: "cdn.test".into(), cdn: true },
+                CorsAction::Remove {
+                    origin: "cdn.test".into(),
+                    cdn: true,
+                },
                 false,
             )
             .expect("remove 存在的 cdn 条目");
@@ -1084,7 +1148,10 @@ mod wave_a {
             );
             // 不存在的纯 origin（236-245 not-found + 非 cdn 标签臂）。
             run(
-                CorsAction::Remove { origin: "https://ghost.test".into(), cdn: false },
+                CorsAction::Remove {
+                    origin: "https://ghost.test".into(),
+                    cdn: false,
+                },
                 false,
             )
             .expect("remove 不存在的纯 origin");
@@ -1111,7 +1178,9 @@ mod wave_a {
                 }),
             );
             run(
-                CorsAction::Validate { origin: "https://LOCALHOST:8443".into() },
+                CorsAction::Validate {
+                    origin: "https://LOCALHOST:8443".into(),
+                },
                 false,
             )
             .expect("contains-only localhost 臂放行");
@@ -1164,7 +1233,10 @@ mod wave_a {
 
         deny_write(&p);
         let res = run(
-            CorsAction::Add { origin: "https://b.test".into(), cdn: false },
+            CorsAction::Add {
+                origin: "https://b.test".into(),
+                cdn: false,
+            },
             false,
         );
         allow_write(&p); // 先恢复再清场，TempDir 才能删掉
@@ -1185,7 +1257,7 @@ mod wave_a {
 // ===========================================================================
 
 mod r10_validate {
-    use super::super::{run, CorsAction};
+    use super::super::{CorsAction, run};
 
     fn with_env_home(f: impl FnOnce(&std::path::Path)) {
         let _guard = crate::GLOBAL_STATE_LOCK.lock().unwrap();

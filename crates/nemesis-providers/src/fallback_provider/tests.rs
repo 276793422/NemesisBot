@@ -875,11 +875,12 @@ async fn test_w4c_execute_detailed_all_in_cooldown_falls_through_exhausted() {
     // 两个都被跳过，errors 空（跳过不进 errors），attempts 各带 cooldown 标记
     assert_eq!(err.errors.len(), 0);
     assert_eq!(result.attempts.len(), 2);
-    assert!(result.attempts.iter().all(|a| a
-        .error
-        .as_ref()
-        .map(|e| e.contains("cooldown"))
-        .unwrap_or(false)));
+    assert!(result.attempts.iter().all(|a| {
+        a.error
+            .as_ref()
+            .map(|e| e.contains("cooldown"))
+            .unwrap_or(false)
+    }));
 }
 
 #[tokio::test]

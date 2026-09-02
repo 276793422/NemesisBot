@@ -26,9 +26,17 @@ fn vad_new_missing_model_bails() {
     let tmp = tempfile::tempdir().unwrap();
     let err = format!(
         "{:#}",
-        VadEngine::new(&tmp.path().join("silero_vad.onnx"), 0.5, 0.5, 0.25, 5.0, 512, 16000)
-            .err()
-            .expect("must fail")
+        VadEngine::new(
+            &tmp.path().join("silero_vad.onnx"),
+            0.5,
+            0.5,
+            0.25,
+            5.0,
+            512,
+            16000
+        )
+        .err()
+        .expect("must fail")
     );
     assert!(err.contains("VAD model not found"), "{err}");
 }

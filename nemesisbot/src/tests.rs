@@ -101,7 +101,11 @@ fn test_config_scanner_default_is_valid_json() {
 #[test]
 fn test_eval_rules_default_is_valid_and_unique_ids() {
     let file = crate::eval_assessor::parse_rules(crate::eval_assessor::DEFAULT_RULES_JSON).unwrap();
-    assert!(file.rules.len() >= 10, "default rule set too small: {}", file.rules.len());
+    assert!(
+        file.rules.len() >= 10,
+        "default rule set too small: {}",
+        file.rules.len()
+    );
     let mut ids = std::collections::HashSet::new();
     for r in &file.rules {
         assert!(ids.insert(r.id.clone()), "duplicate id {}", r.id);
@@ -286,17 +290,18 @@ fn test_config_llm_logging_modification() {
         "logging": {"llm": {}}
     });
     if let Some(logging) = cfg.get_mut("logging").and_then(|v| v.get_mut("llm"))
-        && let Some(obj) = logging.as_object_mut() {
-            obj.insert("enabled".to_string(), serde_json::Value::Bool(true));
-            obj.insert(
-                "log_dir".to_string(),
-                serde_json::Value::String("logs/request_logs".to_string()),
-            );
-            obj.insert(
-                "detail_level".to_string(),
-                serde_json::Value::String("full".to_string()),
-            );
-        }
+        && let Some(obj) = logging.as_object_mut()
+    {
+        obj.insert("enabled".to_string(), serde_json::Value::Bool(true));
+        obj.insert(
+            "log_dir".to_string(),
+            serde_json::Value::String("logs/request_logs".to_string()),
+        );
+        obj.insert(
+            "detail_level".to_string(),
+            serde_json::Value::String("full".to_string()),
+        );
+    }
     assert_eq!(cfg["logging"]["llm"]["enabled"], true);
     assert_eq!(cfg["logging"]["llm"]["log_dir"], "logs/request_logs");
     assert_eq!(cfg["logging"]["llm"]["detail_level"], "full");
@@ -308,9 +313,10 @@ fn test_config_security_modification_existing() {
         "security": {"some_field": "value"}
     });
     if let Some(security) = cfg.get_mut("security")
-        && let Some(obj) = security.as_object_mut() {
-            obj.insert("enabled".to_string(), serde_json::Value::Bool(true));
-        }
+        && let Some(obj) = security.as_object_mut()
+    {
+        obj.insert("enabled".to_string(), serde_json::Value::Bool(true));
+    }
     assert_eq!(cfg["security"]["enabled"], true);
     assert_eq!(cfg["security"]["some_field"], "value");
 }
@@ -336,12 +342,13 @@ fn test_config_workspace_restriction_modification() {
         "agents": {"defaults": {}}
     });
     if let Some(agents) = cfg.get_mut("agents").and_then(|v| v.get_mut("defaults"))
-        && let Some(obj) = agents.as_object_mut() {
-            obj.insert(
-                "restrict_to_workspace".to_string(),
-                serde_json::Value::Bool(false),
-            );
-        }
+        && let Some(obj) = agents.as_object_mut()
+    {
+        obj.insert(
+            "restrict_to_workspace".to_string(),
+            serde_json::Value::Bool(false),
+        );
+    }
     assert_eq!(cfg["agents"]["defaults"]["restrict_to_workspace"], false);
 }
 
@@ -351,17 +358,18 @@ fn test_config_web_channel_modification() {
         "channels": {"web": {}}
     });
     if let Some(web) = cfg.pointer_mut("/channels/web")
-        && let Some(obj) = web.as_object_mut() {
-            obj.insert(
-                "auth_token".to_string(),
-                serde_json::Value::String("276793422".to_string()),
-            );
-            obj.insert(
-                "host".to_string(),
-                serde_json::Value::String("127.0.0.1".to_string()),
-            );
-            obj.insert("port".to_string(), serde_json::Value::Number(49000.into()));
-        }
+        && let Some(obj) = web.as_object_mut()
+    {
+        obj.insert(
+            "auth_token".to_string(),
+            serde_json::Value::String("276793422".to_string()),
+        );
+        obj.insert(
+            "host".to_string(),
+            serde_json::Value::String("127.0.0.1".to_string()),
+        );
+        obj.insert("port".to_string(), serde_json::Value::Number(49000.into()));
+    }
     assert_eq!(cfg["channels"]["web"]["auth_token"], "276793422");
     assert_eq!(cfg["channels"]["web"]["port"], 49000);
 }
@@ -372,9 +380,10 @@ fn test_config_websocket_modification() {
         "channels": {"websocket": {}}
     });
     if let Some(ws) = cfg.pointer_mut("/channels/websocket")
-        && let Some(obj) = ws.as_object_mut() {
-            obj.insert("enabled".to_string(), serde_json::Value::Bool(true));
-        }
+        && let Some(obj) = ws.as_object_mut()
+    {
+        obj.insert("enabled".to_string(), serde_json::Value::Bool(true));
+    }
     assert_eq!(cfg["channels"]["websocket"]["enabled"], true);
 }
 
@@ -680,17 +689,18 @@ fn test_config_web_channel_modification_with_pointer() {
         "channels": {"web": {"enabled": false}}
     });
     if let Some(web) = cfg.pointer_mut("/channels/web")
-        && let Some(obj) = web.as_object_mut() {
-            obj.insert(
-                "auth_token".to_string(),
-                serde_json::Value::String("test-token".to_string()),
-            );
-            obj.insert(
-                "host".to_string(),
-                serde_json::Value::String("0.0.0.0".to_string()),
-            );
-            obj.insert("port".to_string(), serde_json::Value::Number(8080.into()));
-        }
+        && let Some(obj) = web.as_object_mut()
+    {
+        obj.insert(
+            "auth_token".to_string(),
+            serde_json::Value::String("test-token".to_string()),
+        );
+        obj.insert(
+            "host".to_string(),
+            serde_json::Value::String("0.0.0.0".to_string()),
+        );
+        obj.insert("port".to_string(), serde_json::Value::Number(8080.into()));
+    }
     assert_eq!(cfg["channels"]["web"]["auth_token"], "test-token");
     assert_eq!(cfg["channels"]["web"]["host"], "0.0.0.0");
     assert_eq!(cfg["channels"]["web"]["port"], 8080);
@@ -776,14 +786,15 @@ async fn run_command_onboard_default_writes_full_home() {
             args: vec![],
         },
     };
-    run_command(cli).await.expect("onboard default must succeed offline");
+    run_command(cli)
+        .await
+        .expect("onboard default must succeed offline");
 
     // 主配置 + 各子系统配置 + workspace 模板 + 人格文件 + peers.toml。
     assert!(th.home.join("config.json").exists(), "main config");
-    let cfg: serde_json::Value = serde_json::from_str(
-        &std::fs::read_to_string(th.home.join("config.json")).unwrap(),
-    )
-    .unwrap();
+    let cfg: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(th.home.join("config.json")).unwrap())
+            .unwrap();
     // onboard default 的三处特征改写：web 端口 49000 / websocket 开 / security 开。
     assert_eq!(cfg["channels"]["web"]["port"], 49000);
     assert_eq!(cfg["channels"]["websocket"]["enabled"], true);
@@ -793,12 +804,36 @@ async fn run_command_onboard_default_writes_full_home() {
     assert!(th.home.join("workspace").join("IDENTITY.md").exists());
     assert!(th.home.join("workspace").join("SOUL.md").exists());
     assert!(th.home.join("workspace").join("USER.md").exists());
-    assert!(th.home.join("workspace").join("cluster").join("IDENTITY.md").exists());
-    assert!(th.home.join("workspace").join("workflow").join("definitions").exists());
-    assert!(th.home.join("workspace").join("cluster").join("peers.toml").exists());
+    assert!(
+        th.home
+            .join("workspace")
+            .join("cluster")
+            .join("IDENTITY.md")
+            .exists()
+    );
+    assert!(
+        th.home
+            .join("workspace")
+            .join("workflow")
+            .join("definitions")
+            .exists()
+    );
+    assert!(
+        th.home
+            .join("workspace")
+            .join("cluster")
+            .join("peers.toml")
+            .exists()
+    );
     // Step 7.8：eval 规则种子（feature 开时）。
     #[cfg(feature = "eval")]
-    assert!(th.home.join("workspace").join("config").join("eval_rules.json").exists());
+    assert!(
+        th.home
+            .join("workspace")
+            .join("config")
+            .join("eval_rules.json")
+            .exists()
+    );
 }
 
 #[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
@@ -815,7 +850,9 @@ async fn run_command_onboard_via_args_variant_also_defaults() {
             args: vec!["default".to_string()],
         },
     };
-    run_command(cli).await.expect("onboard args=default must succeed");
+    run_command(cli)
+        .await
+        .expect("onboard args=default must succeed");
     assert!(th.home.join("config.json").exists());
 }
 
@@ -839,18 +876,25 @@ async fn run_command_onboard_existing_config_keeps_main_config() {
             args: vec![],
         },
     };
-    run_command(cli).await.expect("onboard with existing config must succeed");
+    run_command(cli)
+        .await
+        .expect("onboard with existing config must succeed");
 
-    let cfg: serde_json::Value = serde_json::from_str(
-        &std::fs::read_to_string(th.home.join("config.json")).unwrap(),
-    )
-    .unwrap();
+    let cfg: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(th.home.join("config.json")).unwrap())
+            .unwrap();
     assert_eq!(
         cfg["channels"]["web"]["port"], 12345,
         "EOF 输入 ≠ y → 既有主配置必须保留"
     );
     // 其余配置文件仍写入。
-    assert!(th.home.join("workspace").join("cluster").join("peers.toml").exists());
+    assert!(
+        th.home
+            .join("workspace")
+            .join("cluster")
+            .join("peers.toml")
+            .exists()
+    );
 }
 
 #[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
@@ -891,8 +935,8 @@ pub(crate) fn singleton_test_home() -> std::path::PathBuf {
     use std::sync::OnceLock;
     static HOME: OnceLock<std::path::PathBuf> = OnceLock::new();
     HOME.get_or_init(|| {
-        let base = std::env::temp_dir()
-            .join(format!("nemesisbot_r7_sandbox_{}", std::process::id()));
+        let base =
+            std::env::temp_dir().join(format!("nemesisbot_r7_sandbox_{}", std::process::id()));
         let home = base.join(".nemesisbot");
         std::fs::create_dir_all(&home).expect("create singleton test home");
         nemesis_path::default_path_manager().set_home_dir(home.clone());
@@ -969,7 +1013,9 @@ mod wave_b {
             default: false,
             args: vec![],
         });
-        run_command(cli).await.expect("interactive 分支同样完成装配");
+        run_command(cli)
+            .await
+            .expect("interactive 分支同样完成装配");
 
         assert!(th.home.join("config.json").exists());
         assert!(th.home.join("workspace").join("IDENTITY.md").exists());
@@ -1177,7 +1223,7 @@ mod r9_process_boundary {
                     code: -1,
                     stdout: String::new(),
                     stderr: format!("failed to spawn: {}", e),
-                }
+                };
             }
         };
         let deadline = Instant::now() + Duration::from_secs(deadline_secs);
@@ -1388,10 +1434,7 @@ mod r9_process_boundary {
     async fn r9_dashboard_and_estop_empty_home_exit_1() {
         let bin = r9_bin();
         let ws = TestWorkspace::new().expect("temp workspace");
-        assert!(
-            !ws.config_path().exists(),
-            "前置：本夹具不得预先 onboard"
-        );
+        assert!(!ws.config_path().exists(), "前置：本夹具不得预先 onboard");
 
         let estop = ws
             .run_cli_with_timeout(&bin, &["estop", "--status"], 30)
@@ -1407,9 +1450,7 @@ mod r9_process_boundary {
             estop.stderr
         );
 
-        let dash = ws
-            .run_cli_with_timeout(&bin, &["dashboard"], 30)
-            .await;
+        let dash = ws.run_cli_with_timeout(&bin, &["dashboard"], 30).await;
         assert_eq!(
             dash.exit_code, 1,
             "空 home dashboard 必须 exit(1):\n--- stdout ---\n{}\n--- stderr ---\n{}",
@@ -1444,9 +1485,16 @@ mod r9_process_boundary {
             "onboard 收尾横幅缺失:\n{}",
             out.stdout
         );
-        assert!(ws.config_path().exists(), "./.nemesisbot/config.json 未生成");
         assert!(
-            ws.home().join("workspace").join("cluster").join("peers.toml").exists(),
+            ws.config_path().exists(),
+            "./.nemesisbot/config.json 未生成"
+        );
+        assert!(
+            ws.home()
+                .join("workspace")
+                .join("cluster")
+                .join("peers.toml")
+                .exists(),
             "peers.toml 未生成"
         );
         let raw = std::fs::read_to_string(ws.config_path()).unwrap();
@@ -1481,14 +1529,9 @@ mod r9_process_boundary {
             help.stdout
         );
 
-        let ver = ws
-            .run_cli_with_timeout(&bin, &["--version"], 20)
-            .await;
+        let ver = ws.run_cli_with_timeout(&bin, &["--version"], 20).await;
         assert_eq!(ver.exit_code, 0, "--version 必须 rc=0");
-        assert!(
-            !ver.stdout.trim().is_empty(),
-            "--version 应打印版本串"
-        );
+        assert!(!ver.stdout.trim().is_empty(), "--version 应打印版本串");
     }
 }
 
@@ -1563,7 +1606,7 @@ mod r10_main {
                     code: -1,
                     stdout: String::new(),
                     stderr: format!("failed to spawn: {}", e),
-                }
+                };
             }
         };
         let deadline = Instant::now() + Duration::from_secs(deadline_secs);
@@ -1594,7 +1637,11 @@ mod r10_main {
             let _ = s.read_to_string(&mut err);
         }
         let code = child.wait().ok().and_then(|s| s.code()).unwrap_or(-1);
-        R10Spawn { code, stdout: out, stderr: err }
+        R10Spawn {
+            code,
+            stdout: out,
+            stderr: err,
+        }
     }
 
     fn r10_bin() -> std::path::PathBuf {
@@ -1649,11 +1696,7 @@ mod r10_main {
 
         // 三个 flag 一并喂入 → --debug/--quiet/--no-console 三条 push 全执行。
         let out = ws
-            .run_cli_with_timeout(
-                &bin,
-                &["gateway", "--debug", "--quiet", "--no-console"],
-                60,
-            )
+            .run_cli_with_timeout(&bin, &["gateway", "--debug", "--quiet", "--no-console"], 60)
             .await;
         assert_ne!(
             out.exit_code, 0,
@@ -1661,9 +1704,11 @@ mod r10_main {
             out.stdout, out.stderr
         );
         assert!(
-            out.stderr.contains("Error loading config") || out.stdout.contains("Error loading config"),
+            out.stderr.contains("Error loading config")
+                || out.stdout.contains("Error loading config"),
             "必须经 anyhow 干净传播 'Error loading config':\n--- stdout ---\n{}\n--- stderr ---\n{}",
-            out.stdout, out.stderr
+            out.stdout,
+            out.stderr
         );
         assert!(
             !out.stderr.contains("Configuration file not found"),
@@ -1736,13 +1781,8 @@ mod r10_main {
         });
         std::fs::write(home.join("config.json"), cfg.to_string()).unwrap();
 
-        let proc = ManagedProcess::spawn(
-            "R10Gateway",
-            &bin,
-            &["--local", "gateway"],
-            ws.path(),
-        )
-        .expect("gateway process spawns");
+        let proc = ManagedProcess::spawn("R10Gateway", &bin, &["--local", "gateway"], ws.path())
+            .expect("gateway process spawns");
         // readiness 以 web /api/health 为准（estop 的 check_health 打这里）。
         test_harness::wait_for_http(
             &format!("http://127.0.0.1:{p_web}/api/health"),
@@ -1798,15 +1838,17 @@ mod r10_main {
         // gateway 子进程自身的覆盖计数随正常退出链落盘。
         let web_port = {
             let raw = std::fs::read_to_string(
-                ws.home().join("workspace").join("state").join("gateway.json"),
+                ws.home()
+                    .join("workspace")
+                    .join("state")
+                    .join("gateway.json"),
             )
             .expect("state/gateway.json written by gateway");
             let v: serde_json::Value = serde_json::from_str(&raw).unwrap();
             v["web_port"].as_i64().expect("web_port i64") as u16
         };
         let token = {
-            let raw =
-                std::fs::read_to_string(ws.home().join("config.json")).unwrap();
+            let raw = std::fs::read_to_string(ws.home().join("config.json")).unwrap();
             let v: serde_json::Value = serde_json::from_str(&raw).unwrap();
             v["channels"]["web"]["auth_token"]
                 .as_str()
@@ -1846,7 +1888,8 @@ mod r10_main {
         assert!(
             out.stdout.contains("Headless Approval Test"),
             "必须进入 test_cmd 入口横幅:\n--- stdout ---\n{}\n--- stderr ---\n{}",
-            out.stdout, out.stderr
+            out.stdout,
+            out.stderr
         );
         if out.exit_code != 0 {
             // 三类已知合理失败（超时/通道关闭/断言不符）同样证明了派发臂 +
@@ -1854,7 +1897,8 @@ mod r10_main {
             assert!(
                 out.stderr.contains("Error:") || out.stdout.contains("Error:"),
                 "非零退出必须是 anyhow 干净传播，不允许 panic:\n--- stdout ---\n{}\n--- stderr ---\n{}",
-                out.stdout, out.stderr
+                out.stdout,
+                out.stderr
             );
         }
     }
@@ -1870,20 +1914,37 @@ fn cors_config_path_migrates_legacy_home_config_copy_once() {
     let home = tmp.path();
     let legacy_dir = home.join("config");
     std::fs::create_dir_all(&legacy_dir).unwrap();
-    std::fs::write(legacy_dir.join("cors.json"), r#"{"origins":["https://a.com"]}"#).unwrap();
+    std::fs::write(
+        legacy_dir.join("cors.json"),
+        r#"{"origins":["https://a.com"]}"#,
+    )
+    .unwrap();
 
     // 首次调用（读路径即触发 copy-once 迁移）：legacy 内容到达新位。
     let path = common::cors_config_path(home);
-    assert!(path.exists(), "legacy cors.json must be migrated on first access");
+    assert!(
+        path.exists(),
+        "legacy cors.json must be migrated on first access"
+    );
     let content = std::fs::read_to_string(&path).unwrap();
     assert!(content.contains("https://a.com"));
 
     // legacy 保留（备份）。
-    assert!(legacy_dir.join("cors.json").exists(), "legacy file kept as backup");
+    assert!(
+        legacy_dir.join("cors.json").exists(),
+        "legacy file kept as backup"
+    );
 
     // 幂等：改 legacy 后再调用不覆盖已迁移的新位。
-    std::fs::write(legacy_dir.join("cors.json"), r#"{"origins":["https://changed.com"]}"#).unwrap();
+    std::fs::write(
+        legacy_dir.join("cors.json"),
+        r#"{"origins":["https://changed.com"]}"#,
+    )
+    .unwrap();
     let path2 = common::cors_config_path(home);
     let content2 = std::fs::read_to_string(&path2).unwrap();
-    assert!(content2.contains("https://a.com"), "existing target must win");
+    assert!(
+        content2.contains("https://a.com"),
+        "existing target must win"
+    );
 }

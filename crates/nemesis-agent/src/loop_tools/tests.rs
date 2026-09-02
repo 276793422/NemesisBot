@@ -923,9 +923,7 @@ async fn test_read_file_offset_limit_slices_by_chars_not_bytes() {
     let tmp = TempDir::new().unwrap();
     let file_path = tmp.path().join("zh.txt");
     // 5 chars / 15 UTF-8 bytes: slicing must be char-based (multibyte-safe).
-    tokio::fs::write(&file_path, "你好世界A")
-        .await
-        .unwrap();
+    tokio::fs::write(&file_path, "你好世界A").await.unwrap();
 
     let tool = ReadFileTool;
     let ctx = RequestContext::new("web", "chat1", "user1", "sess1");
@@ -942,7 +940,10 @@ async fn test_read_file_offset_limit_slices_by_chars_not_bytes() {
     assert!(out.contains("offset=2"), "{out}");
     assert!(out.contains("limit=3"), "{out}");
     assert!(out.contains("chars_returned=3"), "{out}");
-    assert!(out.ends_with("世界A"), "slice must be chars 2..5, got: {out}");
+    assert!(
+        out.ends_with("世界A"),
+        "slice must be chars 2..5, got: {out}"
+    );
 }
 
 #[tokio::test]
@@ -1014,7 +1015,10 @@ async fn test_read_file_rejects_malformed_offset_limit() {
 #[test]
 fn test_extract_offset_limit_non_json_falls_back_to_none() {
     // Raw-path fallback (non-JSON args) must not error on missing offset/limit.
-    assert_eq!(extract_offset_limit("C:/some/raw path.txt").unwrap(), (None, None));
+    assert_eq!(
+        extract_offset_limit("C:/some/raw path.txt").unwrap(),
+        (None, None)
+    );
     // JSON without either field → legacy full read.
     assert_eq!(
         extract_offset_limit(r#"{"path": "a.txt"}"#).unwrap(),
@@ -4602,7 +4606,9 @@ fn grep_recursive_skips_hidden_and_build_dirs() {
     grep_recursive(tmp.path(), &re, None, 10, &mut out);
     assert_eq!(out.len(), 1, "only src/s.rs must match: {out:?}");
     assert!(
-        out[0].replace('\\', "/").ends_with("src/s.rs:1: needle here"),
+        out[0]
+            .replace('\\', "/")
+            .ends_with("src/s.rs:1: needle here"),
         "got: {out:?}"
     );
 }
@@ -4632,11 +4638,22 @@ fn grep_recursive_truncates_long_multibyte_lines_at_char_boundary() {
     grep_recursive(tmp.path(), &re, None, 10, &mut out);
     assert_eq!(out.len(), 1);
     let entry = &out[0];
-    assert!(entry.contains('…'), "long line must end with ellipsis: {entry}");
-    assert!(entry.contains("long.txt:1: needle ab"), "prefix kept: {entry}");
+    assert!(
+        entry.contains('…'),
+        "long line must end with ellipsis: {entry}"
+    );
+    assert!(
+        entry.contains("long.txt:1: needle ab"),
+        "prefix kept: {entry}"
+    );
     // The truncated body must be strictly shorter than the full 600+ byte line.
     let body = entry.rsplit(": ").next().unwrap();
-    assert!(body.len() < line.len(), "body must be truncated: {} vs {}", body.len(), line.len());
+    assert!(
+        body.len() < line.len(),
+        "body must be truncated: {} vs {}",
+        body.len(),
+        line.len()
+    );
 }
 
 #[test]
@@ -4704,7 +4721,10 @@ async fn git_tool_fresh_repo_diff_and_log_arms() {
 #[tokio::test]
 async fn git_tool_log_with_extra_args_and_branch() {
     // The project tree is a real git repo (git walks up from the test cwd).
-    let cwd = std::env::current_dir().unwrap().to_string_lossy().to_string();
+    let cwd = std::env::current_dir()
+        .unwrap()
+        .to_string_lossy()
+        .to_string();
     let tool = GitTool::new(cwd.clone());
     let ctx = script_ctx();
 

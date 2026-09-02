@@ -560,23 +560,25 @@ impl SecurityPlugin {
             && matches!(
                 op_type,
                 OperationType::ProcessExec | OperationType::ProcessSpawn
-            ) && !target.is_empty()
-                && let Err(e) = guard.check(&target) {
-                    self.log_audit_event(
-                        "denied",
-                        &op_type.to_string(),
-                        &invocation.user,
-                        &invocation.source,
-                        &target,
-                        "HIGH",
-                        &format!("command guard: {}", e),
-                        "command_guard",
-                    );
-                    return (
-                        false,
-                        Some(format!("operation blocked by command guard: {}", e)),
-                    );
-                }
+            )
+            && !target.is_empty()
+            && let Err(e) = guard.check(&target)
+        {
+            self.log_audit_event(
+                "denied",
+                &op_type.to_string(),
+                &invocation.user,
+                &invocation.source,
+                &target,
+                "HIGH",
+                &format!("command guard: {}", e),
+                "command_guard",
+            );
+            return (
+                false,
+                Some(format!("operation blocked by command guard: {}", e)),
+            );
+        }
 
         // Layer 3: ABAC (Auditor)
         let req = OperationRequest {
@@ -608,33 +610,35 @@ impl SecurityPlugin {
 
         // Layer 4: Credential Scanner
         if let Some(ref scanner) = self.credential_scanner
-            && let serde_json::Value::Object(map) = &invocation.args {
-                for (_key, value) in map {
-                    if let serde_json::Value::String(s) = value
-                        && s.len() > 10 {
-                            let result = scanner.scan_content(s);
-                            if result.has_matches && result.action == "block" {
-                                self.log_audit_event(
-                                    "denied",
-                                    &op_type.to_string(),
-                                    &invocation.user,
-                                    &invocation.source,
-                                    &target,
-                                    "CRITICAL",
-                                    &format!("credential leak: {}", result.summary),
-                                    "credential_scanner",
-                                );
-                                return (
-                                    false,
-                                    Some(format!(
-                                        "operation blocked: potential credential leak detected ({})",
-                                        result.summary
-                                    )),
-                                );
-                            }
-                        }
+            && let serde_json::Value::Object(map) = &invocation.args
+        {
+            for (_key, value) in map {
+                if let serde_json::Value::String(s) = value
+                    && s.len() > 10
+                {
+                    let result = scanner.scan_content(s);
+                    if result.has_matches && result.action == "block" {
+                        self.log_audit_event(
+                            "denied",
+                            &op_type.to_string(),
+                            &invocation.user,
+                            &invocation.source,
+                            &target,
+                            "CRITICAL",
+                            &format!("credential leak: {}", result.summary),
+                            "credential_scanner",
+                        );
+                        return (
+                            false,
+                            Some(format!(
+                                "operation blocked: potential credential leak detected ({})",
+                                result.summary
+                            )),
+                        );
+                    }
                 }
             }
+        }
 
         // Layer 5: DLP — confidence-aware + direction-aware.
         // Only block on genuine exfiltration: an outbound operation carrying a
@@ -700,22 +704,23 @@ impl SecurityPlugin {
         if let Some(ref guard) = self.ssrf_guard {
             let url = extract_url(&invocation.tool_name, &invocation.args);
             if !url.is_empty()
-                && let Err(e) = guard.validate_url(&url) {
-                    self.log_audit_event(
-                        "denied",
-                        &op_type.to_string(),
-                        &invocation.user,
-                        &invocation.source,
-                        &url,
-                        "HIGH",
-                        &format!("SSRF: {}", e),
-                        "ssrf_guard",
-                    );
-                    return (
-                        false,
-                        Some(format!("operation blocked by SSRF guard: {}", e)),
-                    );
-                }
+                && let Err(e) = guard.validate_url(&url)
+            {
+                self.log_audit_event(
+                    "denied",
+                    &op_type.to_string(),
+                    &invocation.user,
+                    &invocation.source,
+                    &url,
+                    "HIGH",
+                    &format!("SSRF: {}", e),
+                    "ssrf_guard",
+                );
+                return (
+                    false,
+                    Some(format!("operation blocked by SSRF guard: {}", e)),
+                );
+            }
         }
 
         // Layer 7: Virus Scanner
@@ -765,41 +770,43 @@ impl SecurityPlugin {
                 // Scan content in tool arguments (check multiple content fields)
                 for content_key in &["content", "data", "body", "html"] {
                     if let Some(content) = args.get(*content_key).and_then(|v| v.as_str())
-                        && !content.is_empty() {
-                            let result = rt.block_on(chain.scan_content(content.as_bytes()));
-                            if result.blocked {
-                                return Some((
-                                    false,
-                                    Some(format!(
-                                        "operation blocked by virus scanner: threat detected in {} (engine: {})",
-                                        content_key, result.engine
-                                    )),
-                                ));
-                            }
+                        && !content.is_empty()
+                    {
+                        let result = rt.block_on(chain.scan_content(content.as_bytes()));
+                        if result.blocked {
+                            return Some((
+                                false,
+                                Some(format!(
+                                    "operation blocked by virus scanner: threat detected in {} (engine: {})",
+                                    content_key, result.engine
+                                )),
+                            ));
                         }
+                    }
                 }
 
                 None
             });
 
             if let Some((blocked, reason)) = scan_result
-                && !blocked {
-                    // Log the denial
-                    let target = extract_target(&tool_name, &args);
-                    if let Some(reason_str) = &reason {
-                        self.log_audit_event(
-                            "denied",
-                            &op_type.to_string(),
-                            &user,
-                            &source,
-                            &target,
-                            "CRITICAL",
-                            reason_str,
-                            "virus_scanner",
-                        );
-                    }
-                    return (false, reason);
+                && !blocked
+            {
+                // Log the denial
+                let target = extract_target(&tool_name, &args);
+                if let Some(reason_str) = &reason {
+                    self.log_audit_event(
+                        "denied",
+                        &op_type.to_string(),
+                        &user,
+                        &source,
+                        &target,
+                        "CRITICAL",
+                        reason_str,
+                        "virus_scanner",
+                    );
                 }
+                return (false, reason);
+            }
         }
 
         // Layer 8: Audit Chain

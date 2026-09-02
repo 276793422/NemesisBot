@@ -26,8 +26,7 @@ use tokio::task::JoinHandle;
 /// Used to gate certain WSAPI commands (e.g. `workflow.set_chat_password`)
 /// to dashboard-only access — a session that connected via the standalone
 /// workflow-chat page must not be able to change passwords.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[derive(Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum AuthMethod {
     /// Authenticated via the dashboard `token` query param (or no auth configured).
     #[default]
@@ -36,7 +35,6 @@ pub enum AuthMethod {
     /// on the standalone `/workflow/chat/<index>` page.
     WorkflowChat,
 }
-
 
 // ---------------------------------------------------------------------------
 // Session

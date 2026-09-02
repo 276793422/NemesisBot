@@ -621,7 +621,10 @@ fn test_cron_payload_max_rounds_old_json_compat() {
         "session_key": "agent:main:session:abc"
     }"#;
     let parsed: CronPayload = serde_json::from_str(old_json).unwrap();
-    assert_eq!(parsed.session_key.as_deref(), Some("agent:main:session:abc"));
+    assert_eq!(
+        parsed.session_key.as_deref(),
+        Some("agent:main:session:abc")
+    );
     assert_eq!(parsed.max_rounds, None, "old JSON → no budget");
 }
 
@@ -639,7 +642,10 @@ fn test_cron_payload_max_rounds_roundtrip() {
         max_rounds: Some(5),
     };
     let json = serde_json::to_string(&payload).unwrap();
-    assert!(json.contains("\"max_rounds\":5"), "field serialized: {json}");
+    assert!(
+        json.contains("\"max_rounds\":5"),
+        "field serialized: {json}"
+    );
     let parsed: CronPayload = serde_json::from_str(&json).unwrap();
     assert_eq!(parsed.max_rounds, Some(5));
 }
@@ -659,7 +665,17 @@ fn test_add_job_ext_max_rounds() {
         tz: None,
     };
     let budgeted = svc
-        .add_job_ext("b", every.clone(), "m", false, None, None, Some("agent:s"), Some(10), true)
+        .add_job_ext(
+            "b",
+            every.clone(),
+            "m",
+            false,
+            None,
+            None,
+            Some("agent:s"),
+            Some(10),
+            true,
+        )
         .unwrap();
     assert_eq!(budgeted.payload.max_rounds, Some(10));
     assert_eq!(budgeted.payload.session_key.as_deref(), Some("agent:s"));
@@ -689,9 +705,7 @@ fn test_patch_job_max_rounds_three_states() {
         .unwrap();
 
     // 1. absent key → unchanged.
-    let patched = svc
-        .patch_job(&job.id, &CronJobPatch::default())
-        .unwrap();
+    let patched = svc.patch_job(&job.id, &CronJobPatch::default()).unwrap();
     assert_eq!(patched.payload.max_rounds, Some(10), "absent → unchanged");
 
     // 2. null (Some(None)) → cleared, global default applies.
@@ -939,7 +953,7 @@ fn test_cron_service_start_and_stop() {
     let rt = tokio::runtime::Runtime::new().unwrap();
     rt.block_on(async {
         svc.arm(); // H1: arm before start (fresh-process gate)
-    svc.start().await.unwrap();
+        svc.start().await.unwrap();
     });
     let status = svc.status();
     assert_eq!(status["enabled"], true);
@@ -1711,10 +1725,10 @@ fn test_cron_service_start_idempotent() {
     rt.block_on(async {
         // First start
         svc.arm(); // H1: arm before start (fresh-process gate)
-    svc.start().await.unwrap();
+        svc.start().await.unwrap();
         // Second start should be idempotent (return Ok)
         svc.arm(); // H1: arm before start (fresh-process gate)
-    svc.start().await.unwrap();
+        svc.start().await.unwrap();
     });
 
     svc.stop();
@@ -1820,7 +1834,7 @@ fn test_recompute_next_runs_skips_disabled() {
     let rt = tokio::runtime::Runtime::new().unwrap();
     rt.block_on(async {
         svc.arm(); // H1: arm before start (fresh-process gate)
-    svc.start().await.unwrap();
+        svc.start().await.unwrap();
     });
     svc.stop();
 
@@ -2036,7 +2050,7 @@ fn test_cron_service_status_running_with_no_jobs() {
     let rt = tokio::runtime::Runtime::new().unwrap();
     rt.block_on(async {
         svc.arm(); // H1: arm before start (fresh-process gate)
-    svc.start().await.unwrap();
+        svc.start().await.unwrap();
     });
 
     let status = svc.status();

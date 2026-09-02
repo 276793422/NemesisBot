@@ -838,11 +838,7 @@ fn llm_response_skips_tool_calls_without_name() {
     let resp = std::fs::read_dir(&session)
         .unwrap()
         .filter_map(|e| e.ok())
-        .find(|e| {
-            e.file_name()
-                .to_string_lossy()
-                .ends_with(".AI.Response.md")
-        })
+        .find(|e| e.file_name().to_string_lossy().ends_with(".AI.Response.md"))
         .expect("response md exists");
     let md = std::fs::read_to_string(resp.path()).unwrap();
     assert!(md.contains("web_search"), "valid call kept: {md}");

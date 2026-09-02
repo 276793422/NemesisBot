@@ -113,9 +113,10 @@ impl Collector {
         // Persist to JSONL (before adding to memory so a crash between the two
         // does not lose data; re-loading will deduplicate anyway).
         if let Some(ref path) = self.persistence_path
-            && let Err(e) = Self::append_jsonl(path, &ce).await {
-                tracing::warn!(path = %path.display(), error = %e, "[Collector] Failed to persist experience");
-            }
+            && let Err(e) = Self::append_jsonl(path, &ce).await
+        {
+            tracing::warn!(path = %path.display(), error = %e, "[Collector] Failed to persist experience");
+        }
 
         // Add to in-memory store
         {

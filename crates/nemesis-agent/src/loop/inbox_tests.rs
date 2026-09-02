@@ -80,10 +80,7 @@ impl LlmProvider for ArcCapturing {
     }
 }
 
-fn loop_with(
-    mode: ConcurrentMode,
-    provider: Box<dyn LlmProvider>,
-) -> Arc<AgentLoop> {
+fn loop_with(mode: ConcurrentMode, provider: Box<dyn LlmProvider>) -> Arc<AgentLoop> {
     let (tx, _rx) = tokio::sync::mpsc::channel(16);
     Arc::new(AgentLoop::new_bus(
         provider,
@@ -106,7 +103,9 @@ async fn test_inbox_reject_mode_unchanged() {
     let lp = loop_with(ConcurrentMode::Reject, Box::new(provider));
     // Manually mark busy (the same state try_acquire would produce).
     assert!(lp.try_acquire_session("agent:s1"));
-    let (_id, resp, _err) = lp.process_inbound_message(&inbound("agent:s1", "hello")).await;
+    let (_id, resp, _err) = lp
+        .process_inbound_message(&inbound("agent:s1", "hello"))
+        .await;
     assert_eq!(resp, BUSY_MESSAGE);
     lp.release_session("agent:s1");
 }
@@ -118,7 +117,9 @@ async fn test_inbox_queue_mode_busy_message_queued() {
     let provider = CapturingProvider::new(vec![]);
     let lp = loop_with(ConcurrentMode::Queue, Box::new(provider));
     assert!(lp.try_acquire_session("agent:s2"));
-    let (_id, resp, _err) = lp.process_inbound_message(&inbound("agent:s2", "later message")).await;
+    let (_id, resp, _err) = lp
+        .process_inbound_message(&inbound("agent:s2", "later message"))
+        .await;
     assert_ne!(resp, BUSY_MESSAGE, "queue mode must not bounce");
     assert!(resp.contains("排队"), "queued receipt: {resp}");
     assert_eq!(lp_inbox_pending(&lp, "agent:s2"), (1, 0));
@@ -126,7 +127,10 @@ async fn test_inbox_queue_mode_busy_message_queued() {
     // Release (turn ends) → post-turn handler claims the head. Here we
     // simulate the release-only path: release and manually claim.
     lp.release_session("agent:s2");
-    let head = lp.inbox.claim_next_turn_head("agent:s2").expect("head claimed");
+    let head = lp
+        .inbox
+        .claim_next_turn_head("agent:s2")
+        .expect("head claimed");
     assert_eq!(head.msg.content, "later message");
 }
 
@@ -161,15 +165,19 @@ async fn test_inbox_steer_mode_interjects_next_step() {
     );
 
     // Park a steer message for the session (as the busy path would).
-    lp.inbox
-        .enqueue("agent:s3", crate::inbox::QueuedMessage {
+    lp.inbox.enqueue(
+        "agent:s3",
+        crate::inbox::QueuedMessage {
             msg: inbound("agent:s3", "!stop deleting"),
             timestamp: String::new(),
-        });
+        },
+    );
 
     // Run a turn; the sleep tool is unknown → error result → next iteration
     // claims the steer batch and injects before the (final) call.
-    let (_id, _resp, _err) = lp.process_inbound_message(&inbound("agent:s3", "do things")).await;
+    let (_id, _resp, _err) = lp
+        .process_inbound_message(&inbound("agent:s3", "do things"))
+        .await;
 
     // Inspect the provider's captured requests: some request must contain
     // the steer text as a user message.
@@ -194,11 +202,13 @@ async fn test_inbox_steer_mode_interjects_next_step() {
 async fn test_inbox_abort_transfers_next_step() {
     let provider = CapturingProvider::new(vec![]);
     let lp = loop_with(ConcurrentMode::Steer, Box::new(provider));
-    lp.inbox
-        .enqueue("agent:s4", crate::inbox::QueuedMessage {
+    lp.inbox.enqueue(
+        "agent:s4",
+        crate::inbox::QueuedMessage {
             msg: inbound("agent:s4", "!urgent"),
             timestamp: String::new(),
-        });
+        },
+    );
     // Simulate the post-turn abort path directly.
     lp.inbox.transfer_next_step_to_next_turn("agent:s4");
     let (turns, steps) = lp_inbox_pending(&lp, "agent:s4");
@@ -332,12 +342,18 @@ fn test_snapshot_time_changes_reinject_minimal() {
         c.lines()
             .filter(|l| !l.contains("Current Time") && !l.trim_start().starts_with("20"))
             .collect::<Vec<_>>()
-            .join("
-")
+            .join(
+                "
+",
+            )
     };
     for (a, b) in m1.iter().zip(m2.iter()) {
         assert_eq!(a.role, b.role);
-        assert_eq!(strip_time(&a.content), strip_time(&b.content), "existing messages frozen (time-insensitive)");
+        assert_eq!(
+            strip_time(&a.content),
+            strip_time(&b.content),
+            "existing messages frozen (time-insensitive)"
+        );
     }
 
     // System prompt byte-frozen across builds.
@@ -374,9 +390,15 @@ async fn test_boundary_events_written() {
             }
         })
         .collect();
-    assert!(kinds.contains(&"turn_start".to_string()), "events: {kinds:?}");
+    assert!(
+        kinds.contains(&"turn_start".to_string()),
+        "events: {kinds:?}"
+    );
     assert!(kinds.contains(&"turn_end".to_string()), "events: {kinds:?}");
-    assert!(kinds.contains(&"llm_request".to_string()), "events: {kinds:?}");
+    assert!(
+        kinds.contains(&"llm_request".to_string()),
+        "events: {kinds:?}"
+    );
     // Pairing: turn_start precedes the first llm_request; turn_end last.
     let pos = |k: &str| kinds.iter().position(|x| x == k);
     assert!(pos("turn_start") < pos("llm_request"));
@@ -440,17 +462,21 @@ fn test_request_log_consistency_check() {
     use crate::request_logger::check_request_log_consistency;
     // Consistent: persisted sequence present in the request (request has
     // extra injected context messages — allowed).
-    assert!(check_request_log_consistency(
-        &["system", "user", "user", "assistant", "user"],
-        &["system", "user", "assistant", "user"],
-    )
-    .is_ok());
+    assert!(
+        check_request_log_consistency(
+            &["system", "user", "user", "assistant", "user"],
+            &["system", "user", "assistant", "user"],
+        )
+        .is_ok()
+    );
     // Inconsistent: chat log claims a message the request never carried.
-    assert!(check_request_log_consistency(
-        &["system", "user", "assistant"],
-        &["system", "user", "assistant", "user"], // phantom final user
-    )
-    .is_err());
+    assert!(
+        check_request_log_consistency(
+            &["system", "user", "assistant"],
+            &["system", "user", "assistant", "user"], // phantom final user
+        )
+        .is_err()
+    );
 }
 
 /// Regression for the max_turns detection fix: the paused-after message is
@@ -488,7 +514,9 @@ fn test_boundary_turn_end_max_turns_detection() {
 fn inbox_status_reports_queues_capacity_and_mode() {
     let al = loop_with(
         ConcurrentMode::Steer,
-        Box::new(ArcCapturing(std::sync::Arc::new(CapturingProvider::new(vec![])))),
+        Box::new(ArcCapturing(std::sync::Arc::new(CapturingProvider::new(
+            vec![],
+        )))),
     );
     let key = "agent:main:session:s1";
 

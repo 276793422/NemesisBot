@@ -983,7 +983,11 @@ async fn cron_budget_exhaustion_writes_boundary_marker() {
         turn_ends.iter().any(|l| l.contains("budget_exhausted")),
         "sidecar has budget_exhausted turn_end: {content}"
     );
-    assert_eq!(turn_ends.len(), 1, "exactly one turn_end, got: {turn_ends:?}");
+    assert_eq!(
+        turn_ends.len(),
+        1,
+        "exactly one turn_end, got: {turn_ends:?}"
+    );
     assert!(
         !content.contains("\"turn_start\""),
         "cron exemption still suppresses per-turn markers"
@@ -1880,18 +1884,42 @@ fn test_concurrent_mode_default() {
 fn test_parse_concurrent_mode_normalizes_and_falls_back() {
     use std::fmt::Write as _;
     // 精确值
-    assert!(matches!(parse_concurrent_mode("queue"), ConcurrentMode::Queue));
-    assert!(matches!(parse_concurrent_mode("steer"), ConcurrentMode::Steer));
-    assert!(matches!(parse_concurrent_mode("reject"), ConcurrentMode::Reject));
+    assert!(matches!(
+        parse_concurrent_mode("queue"),
+        ConcurrentMode::Queue
+    ));
+    assert!(matches!(
+        parse_concurrent_mode("steer"),
+        ConcurrentMode::Steer
+    ));
+    assert!(matches!(
+        parse_concurrent_mode("reject"),
+        ConcurrentMode::Reject
+    ));
     // 大小写 + 首尾空白归一
-    assert!(matches!(parse_concurrent_mode("  QUEUE "), ConcurrentMode::Queue));
-    assert!(matches!(parse_concurrent_mode("Steer"), ConcurrentMode::Steer));
+    assert!(matches!(
+        parse_concurrent_mode("  QUEUE "),
+        ConcurrentMode::Queue
+    ));
+    assert!(matches!(
+        parse_concurrent_mode("Steer"),
+        ConcurrentMode::Steer
+    ));
     // 未知值 / 空串 → Reject（fail-safe）
-    assert!(matches!(parse_concurrent_mode("fuzzy"), ConcurrentMode::Reject));
+    assert!(matches!(
+        parse_concurrent_mode("fuzzy"),
+        ConcurrentMode::Reject
+    ));
     assert!(matches!(parse_concurrent_mode(""), ConcurrentMode::Reject));
     // 三种取值可 Debug 输出（派生断言：用于 tracing 日志）
     let mut dbg = String::new();
-    let _ = write!(dbg, "{:?}{:?}{:?}", ConcurrentMode::Reject, ConcurrentMode::Queue, ConcurrentMode::Steer);
+    let _ = write!(
+        dbg,
+        "{:?}{:?}{:?}",
+        ConcurrentMode::Reject,
+        ConcurrentMode::Queue,
+        ConcurrentMode::Steer
+    );
     assert!(!dbg.is_empty());
 }
 
@@ -2234,7 +2262,11 @@ fn test_build_messages_with_memory_off_is_byte_identical() {
         )
     };
 
-    let plain: Vec<_> = agent_loop.build_messages(&instance).iter().map(proj).collect();
+    let plain: Vec<_> = agent_loop
+        .build_messages(&instance)
+        .iter()
+        .map(proj)
+        .collect();
     let with_none: Vec<_> = agent_loop
         .build_messages_with_memory(&instance, None)
         .iter()
@@ -2270,8 +2302,15 @@ fn test_build_messages_with_memory_renders_section() {
         .find(|m| m.role == "user" && m.content.contains("# Memory Context"))
         .expect("Memory Context section rendered in the snapshot");
     assert!(snapshot.content.contains("user prefers concise output"));
-    assert!(snapshot.content.contains("deploy target is the staging box"));
-    assert!(snapshot.content.contains("# Current Time"), "snapshot still carries time");
+    assert!(
+        snapshot
+            .content
+            .contains("deploy target is the staging box")
+    );
+    assert!(
+        snapshot.content.contains("# Current Time"),
+        "snapshot still carries time"
+    );
 }
 
 #[test]
@@ -2282,7 +2321,11 @@ fn test_textwise_similar_dedup_helper() {
     // be genuinely near-identical.
     let a = "the user prefers concise output in replies";
     let b = "the user prefers concise output in replies.";
-    assert!(textwise_similar(a, b) > 0.92, "near-dup: {}", textwise_similar(a, b));
+    assert!(
+        textwise_similar(a, b) > 0.92,
+        "near-dup: {}",
+        textwise_similar(a, b)
+    );
     // Unrelated → low.
     assert!(textwise_similar("deploy the docs", "weather is sunny") < 0.2);
     // Empty pair → 1.0 (degenerate, but the caller guards against it).
@@ -2411,10 +2454,8 @@ async fn test_summarize_multipart_part_failure_returns_none() {
 /// Both parts fail → None after exactly 2 calls (merge skipped).
 #[tokio::test]
 async fn test_summarize_multipart_both_parts_fail_returns_none() {
-    let provider = OutcomeMockProvider::new(vec![
-        Err("timeout".to_string()),
-        Err("timeout".to_string()),
-    ]);
+    let provider =
+        OutcomeMockProvider::new(vec![Err("timeout".to_string()), Err("timeout".to_string())]);
     let history = g1_history(6);
     let prefix_refs: Vec<&crate::types::ConversationTurn> = history.iter().collect();
 
@@ -2451,8 +2492,10 @@ async fn test_summarize_multipart_merge_failure_falls_back_to_concat() {
 #[tokio::test]
 async fn test_summarize_batch_failure_returns_none() {
     let provider = OutcomeMockProvider::new(vec![Err("500 upstream".to_string())]);
-    let turns = [summary_turn("user", "question one"),
-        summary_turn("assistant", "answer one")];
+    let turns = [
+        summary_turn("user", "question one"),
+        summary_turn("assistant", "answer one"),
+    ];
     let refs: Vec<&crate::types::ConversationTurn> = turns.iter().collect();
 
     let out = summarize_prefix_owned(&refs, "", 32_000, true, &provider, "m", None).await;
@@ -4505,16 +4548,16 @@ fn test_tool_safe_boundary_backs_past_leading_tool() {
         tool_result_projection: None,
     };
     let history = vec![
-        turn("system", "sys", vec![], None),            // 0
-        turn("user", "u1", vec![], None),               // 1
-        turn("user", "u2", vec![], None),               // 2
-        turn("assistant", "go", vec![tc("c1")], None),  // 3 parent
-        turn("tool", "res", vec![], Some("c1")),        // 4 naive boundary lands here
-        turn("user", "u3", vec![], None),               // 5
-        turn("assistant", "a2", vec![], None),          // 6
-        turn("user", "u4", vec![], None),               // 7
-        turn("assistant", "a3", vec![], None),          // 8
-        turn("user", "u5", vec![], None),               // 9
+        turn("system", "sys", vec![], None),           // 0
+        turn("user", "u1", vec![], None),              // 1
+        turn("user", "u2", vec![], None),              // 2
+        turn("assistant", "go", vec![tc("c1")], None), // 3 parent
+        turn("tool", "res", vec![], Some("c1")),       // 4 naive boundary lands here
+        turn("user", "u3", vec![], None),              // 5
+        turn("assistant", "a2", vec![], None),         // 6
+        turn("user", "u4", vec![], None),              // 7
+        turn("assistant", "a3", vec![], None),         // 8
+        turn("user", "u5", vec![], None),              // 9
     ];
     // Naive new_c = 10 - K_TARGET(6) = 4 → history[4] is tool → back up to 3.
     assert_eq!(tool_safe_boundary(&history, 10 - K_TARGET), 3);
@@ -4566,15 +4609,15 @@ async fn test_maybe_update_summary_boundary_is_tool_pair_safe() {
         tool_result_projection: None,
     };
     instance.set_history(vec![
-        turn("system", "sys", vec![], None),                       // 0
+        turn("system", "sys", vec![], None), // 0
         turn("user", &format!("u1 {}", "x".repeat(60)), vec![], None), // 1
         turn("user", &format!("u2 {}", "x".repeat(60)), vec![], None), // 2
-        turn("assistant", "go", vec![tc("c1")], None),             // 3 parent
-        turn("tool", "res", vec![], Some("c1")),                   // 4 naive new_c lands here
+        turn("assistant", "go", vec![tc("c1")], None), // 3 parent
+        turn("tool", "res", vec![], Some("c1")), // 4 naive new_c lands here
         turn("user", &format!("u3 {}", "x".repeat(60)), vec![], None), // 5
-        turn("assistant", "a2", vec![], None),                     // 6
+        turn("assistant", "a2", vec![], None), // 6
         turn("user", &format!("u4 {}", "x".repeat(60)), vec![], None), // 7
-        turn("assistant", "a3", vec![], None),                     // 8
+        turn("assistant", "a3", vec![], None), // 8
         turn("user", &format!("u5 {}", "x".repeat(60)), vec![], None), // 9
     ]);
     // len=10, naive new_c = 10 - K_TARGET(6) = 4 → tool_safe_boundary backs to 3.
@@ -4645,7 +4688,9 @@ async fn test_e2e_summarize_persist_reload_inject() {
 
     let messages = agent_loop.build_messages(&inst2);
     assert!(
-        messages[0].content.contains("## Summary of Previous Conversation"),
+        messages[0]
+            .content
+            .contains("## Summary of Previous Conversation"),
         "summary must be injected into the system message"
     );
     assert!(messages[0].content.contains("EARLIER CONTEXT SUMMARY"));
@@ -4663,9 +4708,11 @@ async fn test_summarize_prefix_owned_returns_summary() {
     // summarize_prefix_owned folds ALL provided messages (no "keep last N")
     // and merges the existing summary.
     let provider = MockLlmProvider::new(vec![llm_text("prefix summary")]);
-    let turns = [summary_turn("user", "question one"),
+    let turns = [
+        summary_turn("user", "question one"),
         summary_turn("assistant", "answer one"),
-        summary_turn("user", "question two")];
+        summary_turn("user", "question two"),
+    ];
     let refs: Vec<&crate::types::ConversationTurn> = turns.iter().collect();
     let result = summarize_prefix_owned(
         &refs,
@@ -4695,21 +4742,14 @@ async fn test_summarize_prefix_reuse_true_keeps_g1_shape() {
         captured: std::sync::Mutex::new(Vec::new()),
         reply: "S".to_string(),
     };
-    let turns = [summary_turn("system", "SYS"),
+    let turns = [
+        summary_turn("system", "SYS"),
         summary_turn("user", "question one"),
         summary_turn("assistant", "answer one"),
-        summary_turn("user", "question two")];
+        summary_turn("user", "question two"),
+    ];
     let refs: Vec<&crate::types::ConversationTurn> = turns.iter().collect();
-    let out = summarize_prefix_owned(
-        &refs,
-        "",
-        32000,
-        true,
-        &provider,
-        "test-model",
-        None,
-    )
-    .await;
+    let out = summarize_prefix_owned(&refs, "", 32000, true, &provider, "test-model", None).await;
     assert!(out.is_some());
 
     let seen = provider.captured.lock().unwrap();
@@ -4736,10 +4776,12 @@ async fn test_summarize_prefix_reuse_false_uses_bare_shape() {
         captured: std::sync::Mutex::new(Vec::new()),
         reply: "S".to_string(),
     };
-    let turns = [summary_turn("system", "SYS"),
+    let turns = [
+        summary_turn("system", "SYS"),
         summary_turn("user", "question one"),
         summary_turn("assistant", "answer one"),
-        summary_turn("user", "question two")];
+        summary_turn("user", "question two"),
+    ];
     let refs: Vec<&crate::types::ConversationTurn> = turns.iter().collect();
     let out = summarize_prefix_owned(
         &refs,
@@ -4840,7 +4882,9 @@ fn test_get_or_create_instance_restores_summary_cache() {
     store.set_summary_covers_up_to("sk", Some(3));
 
     let instance = agent_loop.get_or_create_instance("sk");
-    let cache = instance.get_summary_cache().expect("cache should be restored");
+    let cache = instance
+        .get_summary_cache()
+        .expect("cache should be restored");
     assert_eq!(cache.covers_up_to, 3);
     assert_eq!(cache.text, "OLD SUMMARY");
 
@@ -6499,7 +6543,10 @@ fn test_build_messages_repairs_orphan_tool_call() {
         name: "t".to_string(),
         arguments: "{}".to_string(),
     };
-    let turn = |role: &str, content: &str, tcs: Vec<crate::types::ToolCallInfo>, tcid: Option<&str>| crate::types::ConversationTurn {
+    let turn = |role: &str,
+                content: &str,
+                tcs: Vec<crate::types::ToolCallInfo>,
+                tcid: Option<&str>| crate::types::ConversationTurn {
         role: role.to_string(),
         content: content.to_string(),
         tool_calls: tcs,
@@ -6548,10 +6595,12 @@ fn test_build_messages_repairs_orphan_tool_call() {
     // And the stored instance history is untouched (repair is projection-only).
     let stored = instance.get_history();
     assert_eq!(stored.len(), 5);
-    assert!(stored
-        .iter()
-        .all(|m| m.tool_call_id.as_deref() != Some("call_A")),
-        "no synthetic result leaks into stored history");
+    assert!(
+        stored
+            .iter()
+            .all(|m| m.tool_call_id.as_deref() != Some("call_A")),
+        "no synthetic result leaks into stored history"
+    );
 }
 
 // ===========================================================================
@@ -6597,7 +6646,11 @@ fn test_build_messages_injects_summary_from_cache() {
     // Leading system message carries the original prompt + the summary block.
     assert_eq!(messages[0].role, "system");
     assert!(messages[0].content.contains("SYS"));
-    assert!(messages[0].content.contains("## Summary of Previous Conversation"));
+    assert!(
+        messages[0]
+            .content
+            .contains("## Summary of Previous Conversation")
+    );
     assert!(messages[0].content.contains("EARLIER CONTEXT"));
 
     let joined: String = messages
@@ -6971,14 +7024,30 @@ async fn u5_readonly_batch_runs_concurrently() {
     // 3 read-only tools each sleeping 300ms. Serial ≈ 900ms; parallel ≈ 300ms.
     // Bound at 700ms to stay well clear of serial while tolerating scheduler
     // jitter / the 4-permit semaphore (3 ≤ 4 → no queueing).
-    let provider = MockLlmProvider::new(vec![
-        llm_tool_calls(&["r1", "r2", "r3"]),
-        llm_text("done"),
-    ]);
+    let provider =
+        MockLlmProvider::new(vec![llm_tool_calls(&["r1", "r2", "r3"]), llm_text("done")]);
     let mut agent_loop = AgentLoop::new(Box::new(provider), test_config());
-    agent_loop.register_tool("r1".into(), Box::new(SlowReadTool { marker: "A".into(), delay_ms: 300 }));
-    agent_loop.register_tool("r2".into(), Box::new(SlowReadTool { marker: "B".into(), delay_ms: 300 }));
-    agent_loop.register_tool("r3".into(), Box::new(SlowReadTool { marker: "C".into(), delay_ms: 300 }));
+    agent_loop.register_tool(
+        "r1".into(),
+        Box::new(SlowReadTool {
+            marker: "A".into(),
+            delay_ms: 300,
+        }),
+    );
+    agent_loop.register_tool(
+        "r2".into(),
+        Box::new(SlowReadTool {
+            marker: "B".into(),
+            delay_ms: 300,
+        }),
+    );
+    agent_loop.register_tool(
+        "r3".into(),
+        Box::new(SlowReadTool {
+            marker: "C".into(),
+            delay_ms: 300,
+        }),
+    );
 
     let instance = AgentInstance::new(test_config());
     let context = RequestContext::new("web", "c1", "u1", "s1");
@@ -6998,13 +7067,22 @@ async fn u5_writer_in_batch_keeps_serial() {
     // all-read-only → serial path, byte-identical to pre-U5. 2×300ms serial ≈
     // 600ms. Bound: > 500ms proves they did NOT overlap (parallel would be
     // ~300ms).
-    let provider = MockLlmProvider::new(vec![
-        llm_tool_calls(&["r1", "w1"]),
-        llm_text("done"),
-    ]);
+    let provider = MockLlmProvider::new(vec![llm_tool_calls(&["r1", "w1"]), llm_text("done")]);
     let mut agent_loop = AgentLoop::new(Box::new(provider), test_config());
-    agent_loop.register_tool("r1".into(), Box::new(SlowReadTool { marker: "A".into(), delay_ms: 300 }));
-    agent_loop.register_tool("w1".into(), Box::new(SlowWriteTool { marker: "W".into(), delay_ms: 300 }));
+    agent_loop.register_tool(
+        "r1".into(),
+        Box::new(SlowReadTool {
+            marker: "A".into(),
+            delay_ms: 300,
+        }),
+    );
+    agent_loop.register_tool(
+        "w1".into(),
+        Box::new(SlowWriteTool {
+            marker: "W".into(),
+            delay_ms: 300,
+        }),
+    );
 
     let instance = AgentInstance::new(test_config());
     let context = RequestContext::new("web", "c1", "u1", "s2");
@@ -7023,14 +7101,30 @@ async fn u5_parallel_results_preserve_source_order() {
     // Distinct markers A/B/C — the tool_results must reach history in MODEL
     // SOURCE ORDER (the roadmap risk-3 hard constraint), not completion order.
     // Tiny delays so order is a function of source position, not timing.
-    let provider = MockLlmProvider::new(vec![
-        llm_tool_calls(&["r1", "r2", "r3"]),
-        llm_text("done"),
-    ]);
+    let provider =
+        MockLlmProvider::new(vec![llm_tool_calls(&["r1", "r2", "r3"]), llm_text("done")]);
     let mut agent_loop = AgentLoop::new(Box::new(provider), test_config());
-    agent_loop.register_tool("r1".into(), Box::new(SlowReadTool { marker: "A".into(), delay_ms: 5 }));
-    agent_loop.register_tool("r2".into(), Box::new(SlowReadTool { marker: "B".into(), delay_ms: 5 }));
-    agent_loop.register_tool("r3".into(), Box::new(SlowReadTool { marker: "C".into(), delay_ms: 5 }));
+    agent_loop.register_tool(
+        "r1".into(),
+        Box::new(SlowReadTool {
+            marker: "A".into(),
+            delay_ms: 5,
+        }),
+    );
+    agent_loop.register_tool(
+        "r2".into(),
+        Box::new(SlowReadTool {
+            marker: "B".into(),
+            delay_ms: 5,
+        }),
+    );
+    agent_loop.register_tool(
+        "r3".into(),
+        Box::new(SlowReadTool {
+            marker: "C".into(),
+            delay_ms: 5,
+        }),
+    );
 
     let instance = AgentInstance::new(test_config());
     let context = RequestContext::new("web", "c1", "u1", "s3");
@@ -7145,7 +7239,6 @@ async fn test_summarize_request_reuses_conversation_prefix() {
     assert!(last.content.contains("摘要"));
 }
 
-
 /// G1 multipart: >10 covered messages split into two batches; each batch's
 /// message list is [system?, ...contiguous prefix slice..., instruction] —
 /// i.e. an ordered subset of the covered prefix.
@@ -7159,16 +7252,7 @@ async fn test_summarize_multipart_batch_is_prefix_subset() {
     let history = g1_history(6);
     let prefix_refs: Vec<&crate::types::ConversationTurn> = history.iter().collect();
 
-    let out = summarize_prefix_owned(
-        &prefix_refs,
-        "",
-        32_000,
-        true,
-        &provider,
-        "m",
-        None,
-    )
-    .await;
+    let out = summarize_prefix_owned(&prefix_refs, "", 32_000, true, &provider, "m", None).await;
 
     assert!(out.is_some());
     let requests = provider.captured.lock().unwrap();
@@ -7231,7 +7315,10 @@ fn test_gate_busy_reject_mode_bounces() {
     assert!(agent_loop.try_acquire_session(&session_key));
 
     let response = match agent_loop.gate_inbound(&msg) {
-        GateOutcome::Immediate { agent_id: _, response } => response,
+        GateOutcome::Immediate {
+            agent_id: _,
+            response,
+        } => response,
         _ => panic!("expected Immediate busy bounce in Reject mode"),
     };
     assert!(response.contains("try again later"), "bounce: {response}");
@@ -7261,7 +7348,10 @@ fn test_gate_busy_queue_mode_parks_in_next_turn() {
     assert!(agent_loop.try_acquire_session(&session_key));
 
     let response = match agent_loop.gate_inbound(&msg) {
-        GateOutcome::Immediate { agent_id: _, response } => response,
+        GateOutcome::Immediate {
+            agent_id: _,
+            response,
+        } => response,
         _ => panic!("expected Immediate queue receipt"),
     };
     assert!(response.contains("已排队"), "receipt: {response}");
@@ -7289,7 +7379,10 @@ fn test_gate_busy_steer_mode_parks_bang_in_next_step() {
     assert!(agent_loop.try_acquire_session(&session_key));
 
     let response = match agent_loop.gate_inbound(&msg) {
-        GateOutcome::Immediate { agent_id: _, response } => response,
+        GateOutcome::Immediate {
+            agent_id: _,
+            response,
+        } => response,
         _ => panic!("expected Immediate steer receipt"),
     };
     assert!(response.contains("紧急插话"), "receipt: {response}");
@@ -7441,7 +7534,11 @@ async fn test_process_admitted_drains_parked_next_turn() {
         .await
         .expect("drained reply within timeout")
         .expect("outbound channel open");
-    assert!(drained.content.contains("drained-reply"), "{:?}", drained.content);
+    assert!(
+        drained.content.contains("drained-reply"),
+        "{:?}",
+        drained.content
+    );
 }
 
 /// Drop-guard probe: proves `stop()` ABORTS tracked turn tasks (the future
@@ -7451,7 +7548,8 @@ struct TurnAbortProbe {
 }
 impl Drop for TurnAbortProbe {
     fn drop(&mut self) {
-        self.dropped.store(true, std::sync::atomic::Ordering::SeqCst);
+        self.dropped
+            .store(true, std::sync::atomic::Ordering::SeqCst);
     }
 }
 
@@ -7489,7 +7587,6 @@ async fn test_stop_aborts_tracked_turn_tasks() {
         "stop() must abort (drop) tracked turn tasks"
     );
 }
-
 
 // ---------------------------------------------------------------------------
 // X1 (U3 projection prune): build-time fold keeps history originals.
@@ -7638,7 +7735,10 @@ fn test_x2_runtime_policy_default_off() {
     let messages = agent_loop.build_messages(&instance);
 
     let section = x2_policy_section(&messages);
-    assert!(section.contains("approval: off"), "default approval: {section}");
+    assert!(
+        section.contains("approval: off"),
+        "default approval: {section}"
+    );
     assert!(section.contains("guardian: off"), "no plugin: {section}");
     // The tier line renders one of the four Display values.
     let tier_line = section
@@ -7726,8 +7826,14 @@ fn test_x2_runtime_policy_guardian_on_reflects_live_judge() {
     instance.add_user_message("hello");
 
     let section = x2_policy_section(&agent_loop.build_messages(&instance));
-    assert!(section.contains("guardian: on"), "judge attached: {section}");
-    assert!(section.contains("approval: off"), "approval untouched: {section}");
+    assert!(
+        section.contains("guardian: on"),
+        "judge attached: {section}"
+    );
+    assert!(
+        section.contains("approval: off"),
+        "approval untouched: {section}"
+    );
 }
 
 // ---------------------------------------------------------------------------

@@ -546,7 +546,10 @@ fn llm_events_without_prior_start_are_dropped() {
 /// 读 session 目录下所有文件内容拼成一个大字符串（内容级断言用）。
 fn dump_session_files(device_dir: &std::path::Path) -> String {
     let mut out = String::new();
-    for entry in std::fs::read_dir(device_dir).unwrap().filter_map(|e| e.ok()) {
+    for entry in std::fs::read_dir(device_dir)
+        .unwrap()
+        .filter_map(|e| e.ok())
+    {
         let p = entry.path();
         if p.is_dir() {
             for f in std::fs::read_dir(&p).unwrap().filter_map(|e| e.ok()) {
@@ -587,7 +590,11 @@ async fn observer_trait_name_and_on_event_dispatch_converted_events() {
     observer.on_event(ev).await;
     assert_eq!(observer.active_count(), 1, "start must register the trace");
     assert!(
-        tmp.path().join("logs").join("cluster_logs").join("_unknown").exists(),
+        tmp.path()
+            .join("logs")
+            .join("cluster_logs")
+            .join("_unknown")
+            .exists(),
         "on_event must land files like dispatch does"
     );
 }
@@ -639,7 +646,10 @@ fn failed_tool_call_logs_failed_status_and_error_text() {
 
     let device_dir = tmp.path().join("logs").join("cluster_logs").join("node-F");
     let dump = dump_session_files(&device_dir);
-    assert!(dump.contains("Failed"), "success=false → Failed status: {dump}");
+    assert!(
+        dump.contains("Failed"),
+        "success=false → Failed status: {dump}"
+    );
     assert!(dump.contains("boom"), "error text must be carried through");
 }
 

@@ -184,8 +184,5 @@ async fn run_errors_when_web_port_zero() {
     let err = run(dir.path(), false, false)
         .await
         .expect_err("web_port=0 → state 无效早退（estop.rs:36-38）");
-    assert!(
-        err.to_string().contains("web_port"),
-        "got: {err}"
-    );
+    assert!(err.to_string().contains("web_port"), "got: {err}");
 }

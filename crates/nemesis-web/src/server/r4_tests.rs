@@ -59,7 +59,11 @@ async fn workflow_chat_path_prefix_serves_standalone_html() {
         .await
         .unwrap();
     let body = String::from_utf8_lossy(&bytes);
-    assert!(body.contains("<"), "expected HTML shell, got: {}", &body[..body.len().min(80)]);
+    assert!(
+        body.contains("<"),
+        "expected HTML shell, got: {}",
+        &body[..body.len().min(80)]
+    );
 }
 
 // ============================================================
@@ -72,7 +76,10 @@ fn port_walk_sequence_in_range_starts_at_base_and_skips_49001() {
     // 1001 个带内端口去掉 49001 → 1000 个尝试
     assert_eq!(seq.len(), 1000);
     assert_eq!(seq[0], 49000);
-    assert_eq!(seq[1], 49002, "49001 must be skipped (WebSocket channel port)");
+    assert_eq!(
+        seq[1], 49002,
+        "49001 must be skipped (WebSocket channel port)"
+    );
     assert_eq!(*seq.last().unwrap(), 50000);
     assert!(!seq.contains(&49001));
 }
@@ -84,7 +91,11 @@ fn port_walk_sequence_wraps_from_top_back_to_bottom() {
     assert_eq!(seq[1], 50000);
     assert_eq!(seq[2], 49000, "must wrap back to range start (循环往复)");
     assert_eq!(seq[3], 49002, "wrap also skips 49001");
-    assert_eq!(*seq.last().unwrap(), 49998, "full circle ends just before base");
+    assert_eq!(
+        *seq.last().unwrap(),
+        49998,
+        "full circle ends just before base"
+    );
     assert_eq!(seq.len(), 1000);
     assert!(!seq.contains(&49001));
 }
@@ -120,8 +131,12 @@ fn port_walk_sequence_out_of_range_walks_linear_no_wrap() {
 #[tokio::test]
 async fn start_walks_to_next_free_port_when_first_in_range_occupied() {
     // 带内 4999x 段（远离生产端口 49000/49001）：占前两个 → 应落到第三个。
-    let b1 = tokio::net::TcpListener::bind("127.0.0.1:49990").await.unwrap();
-    let b2 = tokio::net::TcpListener::bind("127.0.0.1:49991").await.unwrap();
+    let b1 = tokio::net::TcpListener::bind("127.0.0.1:49990")
+        .await
+        .unwrap();
+    let b2 = tokio::net::TcpListener::bind("127.0.0.1:49991")
+        .await
+        .unwrap();
     let config = base_config("127.0.0.1:49990");
     let server = WebServer::new(config);
     let (tx, rx) = tokio::sync::broadcast::channel::<()>(1);
@@ -150,7 +165,11 @@ async fn start_loud_fails_when_all_linear_fallback_ports_busy() {
     // 避开系统临时分配）：20 个全部占住 → 线性走查耗尽 → loud 失败。
     let mut blockers = Vec::new();
     for port in 21000..21020u16 {
-        blockers.push(tokio::net::TcpListener::bind(("127.0.0.1", port)).await.unwrap());
+        blockers.push(
+            tokio::net::TcpListener::bind(("127.0.0.1", port))
+                .await
+                .unwrap(),
+        );
     }
     let config = base_config("127.0.0.1:21000");
     let server = WebServer::new(config);
@@ -165,5 +184,8 @@ async fn start_loud_fails_when_all_linear_fallback_ports_busy() {
         err.starts_with("bind failed:"),
         "expected loud bind failure, got: {err}"
     );
-    assert!(err.contains("21000"), "error should mention base port: {err}");
+    assert!(
+        err.contains("21000"),
+        "error should mention base port: {err}"
+    );
 }

@@ -24,8 +24,8 @@ pub fn open_conn(db_path: &Path) -> Result<Connection, String> {
         std::fs::create_dir_all(parent)
             .map_err(|e| format!("watcher create board dir failed: {e}"))?;
     }
-    let conn = Connection::open(db_path)
-        .map_err(|e| format!("watcher open board.db failed: {e}"))?;
+    let conn =
+        Connection::open(db_path).map_err(|e| format!("watcher open board.db failed: {e}"))?;
     conn.execute_batch("PRAGMA busy_timeout = 5000;")
         .map_err(|e| format!("watcher set busy_timeout failed: {e}"))?;
     Ok(conn)

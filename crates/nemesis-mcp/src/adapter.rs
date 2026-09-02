@@ -461,9 +461,10 @@ fn sanitize_schema(mut schema: serde_json::Value) -> serde_json::Value {
 /// Flatten `type` arrays to the first element (e.g. `["string", "null"]` → `"string"`).
 fn flatten_type(schema: &mut serde_json::Value) {
     if let Some(types) = schema.get("type").and_then(|t| t.as_array())
-        && let Some(first) = types.first() {
-            schema["type"] = first.clone();
-        }
+        && let Some(first) = types.first()
+    {
+        schema["type"] = first.clone();
+    }
 }
 
 // ===========================================================================

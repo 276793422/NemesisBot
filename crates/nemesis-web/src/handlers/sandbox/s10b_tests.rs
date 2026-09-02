@@ -103,10 +103,9 @@ async fn set_executor_config_flips_both_switches_and_preserves_siblings() {
     )
     .unwrap();
     set_executor_config(dir.path(), true, true).unwrap();
-    let cfg: serde_json::Value = serde_json::from_str(
-        &std::fs::read_to_string(dir.path().join("config.json")).unwrap(),
-    )
-    .unwrap();
+    let cfg: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(dir.path().join("config.json")).unwrap())
+            .unwrap();
     assert_eq!(cfg["executor"]["enabled"], true);
     assert_eq!(cfg["executor"]["sandbox"], true);
     assert_eq!(cfg["executor"]["allow_network"], true, "sibling preserved");
@@ -283,7 +282,19 @@ async fn set_config_allow_network_field_round_trips() {
         .unwrap()
         .unwrap();
     assert_eq!(out["executor"]["allow_network"], serde_json::json!(true));
-    assert_eq!(out["executor"]["enabled"], serde_json::json!(true), "sibling kept");
-    assert_eq!(out["executor"]["sandbox"], serde_json::json!(false), "sibling kept");
-    assert_eq!(out["executor"]["strict"], serde_json::json!(true), "sibling kept");
+    assert_eq!(
+        out["executor"]["enabled"],
+        serde_json::json!(true),
+        "sibling kept"
+    );
+    assert_eq!(
+        out["executor"]["sandbox"],
+        serde_json::json!(false),
+        "sibling kept"
+    );
+    assert_eq!(
+        out["executor"]["strict"],
+        serde_json::json!(true),
+        "sibling kept"
+    );
 }

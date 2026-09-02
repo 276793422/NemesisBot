@@ -347,7 +347,9 @@ async fn load_skips_blank_lines() {
     let reloaded = TfIdfLocalStore::new(&path).await.unwrap();
     let res = reloaded.query("hello", None, 10).await.unwrap();
     assert!(
-        res.entries.iter().any(|se| se.entry.content.contains("hello world")),
+        res.entries
+            .iter()
+            .any(|se| se.entry.content.contains("hello world")),
         "entry must survive reload across blank lines"
     );
 }

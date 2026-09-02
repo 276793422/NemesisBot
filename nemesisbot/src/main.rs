@@ -17,9 +17,9 @@ mod embedded;
 /// rules 管理命令在所有平台可用）。
 #[cfg(feature = "eval")]
 mod eval_assessor;
-mod exec_worker;
 #[cfg(feature = "eval")]
 mod eval_worker;
+mod exec_worker;
 /// U10 统一执行世界：executor 通道装配单一真相源 + workflow 引擎的
 /// ExecutionWorld 桥（world 部分 `sandbox` feature 门控）。
 mod exec_world;
@@ -338,8 +338,7 @@ async fn main() -> Result<()> {
     // exe 同级的另一个 home（跨实例数据串写；config/session 等走 DI 的路径
     // 不受影响，所以才隐蔽）。`set_home_dir` 是 OnceLock 初始化后唯一的运行时
     // 重定向缝；非 --local 时与单例自身解析结果一致，是无害的 no-op。
-    nemesis_path::default_path_manager()
-        .set_home_dir(common::resolve_home(local_mode));
+    nemesis_path::default_path_manager().set_home_dir(common::resolve_home(local_mode));
 
     // Lazy logging initialization:
     // Commands like gateway/agent call init_logger_from_config() internally
@@ -428,8 +427,7 @@ fn main() -> Result<()> {
 
     // R1 真机验收修复（2026-08-28）：与非 mac 入口同构 —— 把解析出的 home
     // 同步进 nemesis-path 进程单例（详见非 mac 入口同位置的注释）。
-    nemesis_path::default_path_manager()
-        .set_home_dir(common::resolve_home(local_mode));
+    nemesis_path::default_path_manager().set_home_dir(common::resolve_home(local_mode));
 
     // Only the Gateway command needs the main-thread tray handoff.
     if matches!(&cli.command, Commands::Gateway { .. }) {
@@ -555,79 +553,77 @@ async fn run_command(cli: Cli) -> Result<()> {
                     .expect("embedded CONFIG_DEFAULT must be valid JSON (compile-time constant)");
                 {
                     // Enable LLM logging
-                        if let Some(logging) = cfg.get_mut("logging").and_then(|v| v.get_mut("llm"))
-                            && let Some(obj) = logging.as_object_mut() {
-                                obj.insert("enabled".to_string(), serde_json::Value::Bool(true));
-                                obj.insert(
-                                    "log_dir".to_string(),
-                                    serde_json::Value::String("logs/request_logs".to_string()),
-                                );
-                                obj.insert(
-                                    "detail_level".to_string(),
-                                    serde_json::Value::String("full".to_string()),
-                                );
-                            }
-                        println!("  LLM logging enabled");
+                    if let Some(logging) = cfg.get_mut("logging").and_then(|v| v.get_mut("llm"))
+                        && let Some(obj) = logging.as_object_mut()
+                    {
+                        obj.insert("enabled".to_string(), serde_json::Value::Bool(true));
+                        obj.insert(
+                            "log_dir".to_string(),
+                            serde_json::Value::String("logs/request_logs".to_string()),
+                        );
+                        obj.insert(
+                            "detail_level".to_string(),
+                            serde_json::Value::String("full".to_string()),
+                        );
+                    }
+                    println!("  LLM logging enabled");
 
-                        // Enable security
-                        if let Some(security) = cfg.get_mut("security") {
-                            if let Some(obj) = security.as_object_mut() {
-                                obj.insert("enabled".to_string(), serde_json::Value::Bool(true));
-                            }
-                        } else {
-                            if let Some(obj) = cfg.as_object_mut() {
-                                obj.insert(
-                                    "security".to_string(),
-                                    serde_json::json!({"enabled": true}),
-                                );
-                            }
+                    // Enable security
+                    if let Some(security) = cfg.get_mut("security") {
+                        if let Some(obj) = security.as_object_mut() {
+                            obj.insert("enabled".to_string(), serde_json::Value::Bool(true));
                         }
-                        println!("  Security module enabled");
+                    } else {
+                        if let Some(obj) = cfg.as_object_mut() {
+                            obj.insert(
+                                "security".to_string(),
+                                serde_json::json!({"enabled": true}),
+                            );
+                        }
+                    }
+                    println!("  Security module enabled");
 
-                        // Disable workspace restriction (security module enforces rules)
-                        if let Some(agents) =
-                            cfg.get_mut("agents").and_then(|v| v.get_mut("defaults"))
-                            && let Some(obj) = agents.as_object_mut() {
-                                obj.insert(
-                                    "restrict_to_workspace".to_string(),
-                                    serde_json::Value::Bool(false),
-                                );
-                                if cli.local {
-                                    obj.insert(
-                                        "workspace".to_string(),
-                                        serde_json::Value::String(
-                                            ".nemesisbot/workspace".to_string(),
-                                        ),
-                                    );
-                                }
-                            }
+                    // Disable workspace restriction (security module enforces rules)
+                    if let Some(agents) = cfg.get_mut("agents").and_then(|v| v.get_mut("defaults"))
+                        && let Some(obj) = agents.as_object_mut()
+                    {
+                        obj.insert(
+                            "restrict_to_workspace".to_string(),
+                            serde_json::Value::Bool(false),
+                        );
+                        if cli.local {
+                            obj.insert(
+                                "workspace".to_string(),
+                                serde_json::Value::String(".nemesisbot/workspace".to_string()),
+                            );
+                        }
+                    }
 
-                        // Set web auth token, port, websocket
-                        if let Some(web) = cfg.pointer_mut("/channels/web")
-                            && let Some(obj) = web.as_object_mut() {
-                                obj.insert(
-                                    "auth_token".to_string(),
-                                    serde_json::Value::String("276793422".to_string()),
-                                );
-                                obj.insert(
-                                    "host".to_string(),
-                                    serde_json::Value::String("127.0.0.1".to_string()),
-                                );
-                                obj.insert(
-                                    "port".to_string(),
-                                    serde_json::Value::Number(49000.into()),
-                                );
-                            }
-                        if let Some(ws) = cfg.pointer_mut("/channels/websocket")
-                            && let Some(obj) = ws.as_object_mut() {
-                                obj.insert("enabled".to_string(), serde_json::Value::Bool(true));
-                            }
+                    // Set web auth token, port, websocket
+                    if let Some(web) = cfg.pointer_mut("/channels/web")
+                        && let Some(obj) = web.as_object_mut()
+                    {
+                        obj.insert(
+                            "auth_token".to_string(),
+                            serde_json::Value::String("276793422".to_string()),
+                        );
+                        obj.insert(
+                            "host".to_string(),
+                            serde_json::Value::String("127.0.0.1".to_string()),
+                        );
+                        obj.insert("port".to_string(), serde_json::Value::Number(49000.into()));
+                    }
+                    if let Some(ws) = cfg.pointer_mut("/channels/websocket")
+                        && let Some(obj) = ws.as_object_mut()
+                    {
+                        obj.insert("enabled".to_string(), serde_json::Value::Bool(true));
+                    }
 
-                        std::fs::write(
-                            &cfg_path,
-                            serde_json::to_string_pretty(&cfg).unwrap_or_default(),
-                        )?;
-                        println!("  Main config saved to .nemesisbot/config.json");
+                    std::fs::write(
+                        &cfg_path,
+                        serde_json::to_string_pretty(&cfg).unwrap_or_default(),
+                    )?;
+                    println!("  Main config saved to .nemesisbot/config.json");
                 }
             }
 
@@ -659,7 +655,9 @@ async fn run_command(cli: Cli) -> Result<()> {
             // 触发：CONFIG_CLUSTER_DEFAULT 是编译期嵌入常量，from_str 不可能
             // 失败。恒 Ok 路径行为不变。
             let mut cluster_cfg = serde_json::from_str::<serde_json::Value>(CONFIG_CLUSTER_DEFAULT)
-                .expect("embedded CONFIG_CLUSTER_DEFAULT must be valid JSON (compile-time constant)");
+                .expect(
+                    "embedded CONFIG_CLUSTER_DEFAULT must be valid JSON (compile-time constant)",
+                );
             {
                 if let Some(obj) = cluster_cfg.as_object_mut() {
                     obj.insert(

@@ -35,24 +35,25 @@ pub async fn test_forge_enable_disable(ws: &TestWorkspace, bin: &Path) -> Vec<Te
 
     // Verify config
     if let Ok(data) = std::fs::read_to_string(ws.config_path())
-        && let Ok(cfg) = serde_json::from_str::<Value>(&data) {
-            let enabled = cfg
-                .get("forge")
-                .and_then(|f| f.get("enabled"))
-                .and_then(|v| v.as_bool())
-                .unwrap_or(false);
-            if enabled {
-                results.push(pass(
-                    &format!("{}/config_enabled", suite),
-                    "forge.enabled=true",
-                ));
-            } else {
-                results.push(fail(
-                    &format!("{}/config_enabled", suite),
-                    "forge.enabled not true",
-                ));
-            }
+        && let Ok(cfg) = serde_json::from_str::<Value>(&data)
+    {
+        let enabled = cfg
+            .get("forge")
+            .and_then(|f| f.get("enabled"))
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false);
+        if enabled {
+            results.push(pass(
+                &format!("{}/config_enabled", suite),
+                "forge.enabled=true",
+            ));
+        } else {
+            results.push(fail(
+                &format!("{}/config_enabled", suite),
+                "forge.enabled not true",
+            ));
         }
+    }
 
     // Check forge directories were created
     let forge_dir = ws.forge_dir();
@@ -108,24 +109,25 @@ pub async fn test_forge_enable_disable(ws: &TestWorkspace, bin: &Path) -> Vec<Te
 
     // Verify disabled in config
     if let Ok(data) = std::fs::read_to_string(ws.config_path())
-        && let Ok(cfg) = serde_json::from_str::<Value>(&data) {
-            let enabled = cfg
-                .get("forge")
-                .and_then(|f| f.get("enabled"))
-                .and_then(|v| v.as_bool())
-                .unwrap_or(true);
-            if !enabled {
-                results.push(pass(
-                    &format!("{}/config_disabled", suite),
-                    "forge.enabled=false",
-                ));
-            } else {
-                results.push(fail(
-                    &format!("{}/config_disabled", suite),
-                    "forge.enabled still true",
-                ));
-            }
+        && let Ok(cfg) = serde_json::from_str::<Value>(&data)
+    {
+        let enabled = cfg
+            .get("forge")
+            .and_then(|f| f.get("enabled"))
+            .and_then(|v| v.as_bool())
+            .unwrap_or(true);
+        if !enabled {
+            results.push(pass(
+                &format!("{}/config_disabled", suite),
+                "forge.enabled=false",
+            ));
+        } else {
+            results.push(fail(
+                &format!("{}/config_disabled", suite),
+                "forge.enabled still true",
+            ));
         }
+    }
 
     // Re-enable for subsequent tests
     let _ = ws.run_cli(bin, &["forge", "enable"]).await;
@@ -321,12 +323,13 @@ pub async fn test_forge_list_artifacts(ws: &TestWorkspace, bin: &Path) -> Vec<Te
     let registry_path = ws.forge_dir().join("registry.json");
     if registry_path.exists()
         && let Ok(data) = std::fs::read_to_string(&registry_path)
-            && let Ok(arr) = serde_json::from_str::<Vec<Value>>(&data) {
-                results.push(pass(
-                    &format!("{}/count", suite),
-                    format!("{} artifact(s) in registry", arr.len()),
-                ));
-            }
+        && let Ok(arr) = serde_json::from_str::<Vec<Value>>(&data)
+    {
+        results.push(pass(
+            &format!("{}/count", suite),
+            format!("{} artifact(s) in registry", arr.len()),
+        ));
+    }
 
     results
 }
@@ -358,16 +361,17 @@ pub async fn test_forge_learning_status(ws: &TestWorkspace, bin: &Path) -> Vec<T
     let forge_config = ws.forge_dir().join("forge.json");
     if forge_config.exists()
         && let Ok(data) = std::fs::read_to_string(&forge_config)
-            && let Ok(cfg) = serde_json::from_str::<Value>(&data) {
-                let learning_enabled = cfg
-                    .get("learning_enabled")
-                    .and_then(|v| v.as_bool())
-                    .unwrap_or(false);
-                results.push(pass(
-                    &format!("{}/config", suite),
-                    format!("learning_enabled: {}", learning_enabled),
-                ));
-            }
+        && let Ok(cfg) = serde_json::from_str::<Value>(&data)
+    {
+        let learning_enabled = cfg
+            .get("learning_enabled")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false);
+        results.push(pass(
+            &format!("{}/config", suite),
+            format!("learning_enabled: {}", learning_enabled),
+        ));
+    }
 
     results
 }

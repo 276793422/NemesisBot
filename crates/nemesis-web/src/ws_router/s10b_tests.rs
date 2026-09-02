@@ -94,7 +94,10 @@ async fn dispatch_with_dead_send_queue_warns_and_survives() {
 
     // Must complete (not hang, not panic) despite the dead queue.
     let ctx = make_ctx();
-    tokio::time::timeout(std::time::Duration::from_secs(5), router.dispatch(&msg, &ctx, &queue))
-        .await
-        .expect("dispatch returns promptly on send failure");
+    tokio::time::timeout(
+        std::time::Duration::from_secs(5),
+        router.dispatch(&msg, &ctx, &queue),
+    )
+    .await
+    .expect("dispatch returns promptly on send failure");
 }

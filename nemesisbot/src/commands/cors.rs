@@ -334,19 +334,20 @@ pub fn run(action: CorsAction, local: bool) -> Result<()> {
 
             // Check CDN domains
             if !allowed
-                && let Some(cdns) = cfg.get("allowed_cdn_domains").and_then(|v| v.as_array()) {
-                    for c in cdns {
-                        if let Some(domain) = c.as_str()
-                            && (origin == domain
-                                || origin.ends_with(&format!(".{}", domain))
-                                || origin.starts_with(&format!("*{}", domain)))
-                            {
-                                allowed = true;
-                                match_source = "allowed_cdn_domains".to_string();
-                                break;
-                            }
+                && let Some(cdns) = cfg.get("allowed_cdn_domains").and_then(|v| v.as_array())
+            {
+                for c in cdns {
+                    if let Some(domain) = c.as_str()
+                        && (origin == domain
+                            || origin.ends_with(&format!(".{}", domain))
+                            || origin.starts_with(&format!("*{}", domain)))
+                    {
+                        allowed = true;
+                        match_source = "allowed_cdn_domains".to_string();
+                        break;
                     }
                 }
+            }
 
             // Check dev mode / localhost
             if !allowed {

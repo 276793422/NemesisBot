@@ -7,8 +7,7 @@ use serde::{Deserialize, Serialize};
 use std::fmt;
 
 /// Represents the current state of the Bot service.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
-#[derive(Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, Default)]
 pub enum BotState {
     /// Bot has not been started yet.
     #[serde(rename = "not_started")]
@@ -63,7 +62,6 @@ impl fmt::Display for BotState {
         }
     }
 }
-
 
 // ---------------------------------------------------------------------------
 // Tests

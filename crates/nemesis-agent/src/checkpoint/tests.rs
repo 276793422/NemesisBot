@@ -269,7 +269,10 @@ async fn restore_respects_from_turn_and_earliest_wins() {
     let shared0 = tokio::fs::read_to_string(root.join("shared.txt"))
         .await
         .unwrap();
-    assert_eq!(shared0, "turn0-content", "from_turn=0 restores turn-0 content");
+    assert_eq!(
+        shared0, "turn0-content",
+        "from_turn=0 restores turn-0 content"
+    );
 }
 
 /// restore() recreates parent dirs when a snapshot path is nested and its
@@ -284,7 +287,9 @@ async fn restore_recreates_parent_directories() {
     // The snapshot helper writes via tokio::fs::write, which needs the parent
     // to exist — create it explicitly (restore() is the code under test for
     // parent recreation, not snapshot()).
-    tokio::fs::create_dir_all(root.join("sub").join("dir")).await.unwrap();
+    tokio::fs::create_dir_all(root.join("sub").join("dir"))
+        .await
+        .unwrap();
     snapshot_modify(&store, "sub/dir/f.txt", "nested-original").await;
     // Simulate the tool deleting the whole subtree.
     let _ = tokio::fs::remove_dir_all(root.join("sub")).await;
@@ -358,12 +363,18 @@ async fn persist_with_broken_dir_is_silent_noop() {
 #[tokio::test]
 async fn empty_turn_does_not_create_file() {
     let dir = tempfile::tempdir().unwrap();
-    let store = CheckpointStore::new(Some(dir.path().join("cp").to_path_buf()), dir.path().to_path_buf());
+    let store = CheckpointStore::new(
+        Some(dir.path().join("cp").to_path_buf()),
+        dir.path().to_path_buf(),
+    );
 
     store.begin(0, "empty turn");
     // 无任何 snapshot → 不落盘。
     let cp_file = dir.path().join("cp").join("turn-0.json");
-    assert!(!cp_file.exists(), "empty turn must not be persisted: {cp_file:?}");
+    assert!(
+        !cp_file.exists(),
+        "empty turn must not be persisted: {cp_file:?}"
+    );
 
     // 有文件快照的 turn → 落盘。
     store
@@ -372,5 +383,8 @@ async fn empty_turn_does_not_create_file() {
             kind: FileChangeKind::Modify,
         })
         .await;
-    assert!(cp_file.exists(), "turn with file changes is persisted: {cp_file:?}");
+    assert!(
+        cp_file.exists(),
+        "turn with file changes is persisted: {cp_file:?}"
+    );
 }

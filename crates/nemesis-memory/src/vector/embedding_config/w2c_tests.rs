@@ -208,7 +208,11 @@ fn download_model_files_downloads_via_http_and_saves_config() {
     // Download happened → config persisted with the resolved local paths.
     let saved = load_embedding_config(&config_dir);
     let mc = saved.models.get("medium").unwrap();
-    assert!(mc.local_model_path.ends_with("model.onnx"), "got {}", mc.local_model_path);
+    assert!(
+        mc.local_model_path.ends_with("model.onnx"),
+        "got {}",
+        mc.local_model_path
+    );
     assert!(
         mc.local_tokenizer_path.ends_with("tokenizer.json"),
         "got {}",
@@ -321,8 +325,5 @@ fn download_file_parent_create_failure_errors() {
     let dest = blocker.join("out.bin");
 
     let err = download_file(&format!("http://127.0.0.1:{}/f", port), &dest).unwrap_err();
-    assert!(
-        err.contains("failed to create parent dir"),
-        "got: {err}"
-    );
+    assert!(err.contains("failed to create parent dir"), "got: {err}");
 }

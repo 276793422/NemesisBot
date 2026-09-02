@@ -934,8 +934,8 @@ fn consistency_missing_role_and_order_violation_fail_with_role_name() {
     assert!(err.contains("not present"), "{err}");
 
     // Both roles exist but in the wrong order — not a subsequence.
-    let err = check_request_log_consistency(&["assistant", "user"], &["user", "assistant"])
-        .unwrap_err();
+    let err =
+        check_request_log_consistency(&["assistant", "user"], &["user", "assistant"]).unwrap_err();
     assert!(err.contains("'assistant'"), "{err}");
 }
 
@@ -948,11 +948,7 @@ fn create_session_base_dir_failure_is_silent() {
     let tmp = TempDir::new().unwrap();
     let blocker = tmp.path().join("blocker");
     std::fs::write(&blocker, b"x").unwrap();
-    let logger = RequestLogger::new_with_paths(
-        test_config(),
-        blocker.join("logs"),
-        None,
-    );
+    let logger = RequestLogger::new_with_paths(test_config(), blocker.join("logs"), None);
     logger.create_session().expect("silent failure returns Ok");
     assert!(logger.session_dir().is_none());
 }
@@ -985,11 +981,7 @@ fn disabled_raw_logging_methods_noop() {
     let logger = RequestLogger::new(config, tmp.path());
 
     // 三个 raw 方法在 disabled 下都必须早退（不建文件、不推进 index）。
-    logger.log_raw_request(
-        &serde_json::json!({"messages": []}),
-        Local::now(),
-        1,
-    );
+    logger.log_raw_request(&serde_json::json!({"messages": []}), Local::now(), 1);
     logger.log_raw_request_envelope(&serde_json::json!({"round": 1}));
     logger.log_raw_response("{\"ok\":true}", Local::now(), 1, 5);
 

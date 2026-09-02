@@ -233,7 +233,6 @@ impl Syncer {
 
     /// Sanitize reflection content before sharing with remote peers.
     pub fn sanitize_content(&self, content: &str) -> String {
-        
         self.sanitizer.sanitize(content)
     }
 

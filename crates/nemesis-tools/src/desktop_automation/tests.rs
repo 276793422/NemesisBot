@@ -1949,12 +1949,12 @@ async fn s2_find_window_without_mcp_found_path_via_live_title() {
     for line in listed.for_llm.lines().filter(|l| l.contains("\"title\":")) {
         let raw = line.split("\"title\":").nth(1).unwrap_or("").trim();
         let Some(start) = raw.find('"') else { continue };
-        let Some(rel_end) = raw[start + 1..].rfind('"') else { continue };
+        let Some(rel_end) = raw[start + 1..].rfind('"') else {
+            continue;
+        };
         let value = &raw[start + 1..start + 1 + rel_end];
         let needle: String = value.chars().take(6).collect();
-        let usable = needle.chars().count() >= 3
-            && !needle.contains('"')
-            && !needle.contains('\\');
+        let usable = needle.chars().count() >= 3 && !needle.contains('"') && !needle.contains('\\');
         if usable && !needles.contains(&needle) {
             needles.push(needle);
         }
@@ -1974,7 +1974,11 @@ async fn s2_find_window_without_mcp_found_path_via_live_title() {
             .await;
         assert!(!result.is_error, "got: {}", result.for_llm);
         if result.for_llm.contains("Found") {
-            assert!(result.for_llm.contains("matching"), "got: {}", result.for_llm);
+            assert!(
+                result.for_llm.contains("matching"),
+                "got: {}",
+                result.for_llm
+            );
             return;
         }
     }

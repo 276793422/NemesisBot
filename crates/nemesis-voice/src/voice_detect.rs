@@ -202,9 +202,10 @@ impl VoiceDetector for SileroVoiceDetector {
             while !self.engine.is_empty() {
                 self.detect_count += 1;
                 if let Some(segment) = self.engine.front()
-                    && !segment.samples.is_empty() {
-                        self.pending_segments.push(segment.samples);
-                    }
+                    && !segment.samples.is_empty()
+                {
+                    self.pending_segments.push(segment.samples);
+                }
                 self.engine.pop();
             }
         }
@@ -252,9 +253,10 @@ impl VoiceDetector for SileroVoiceDetector {
         while !self.engine.is_empty() {
             self.detect_count += 1;
             if let Some(segment) = self.engine.front()
-                && !segment.samples.is_empty() {
-                    self.pending_segments.push(segment.samples);
-                }
+                && !segment.samples.is_empty()
+            {
+                self.pending_segments.push(segment.samples);
+            }
             self.engine.pop();
         }
 

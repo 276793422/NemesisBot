@@ -766,9 +766,11 @@ async fn test_security_audit_with_data() {
     let log_dir = ws.join("logs/security_logs");
     std::fs::create_dir_all(&log_dir).unwrap();
 
-    let entries = [serde_json::json!({"event_id":"evt-1","request":{"op_type":"FileWrite","danger_level":"HIGH","target":"/test","user":"","source":"test"},"decision":"allowed","reason":"test","timestamp":"2026-01-01T00:00:00Z","policy_rule":"test"}),
+    let entries = [
+        serde_json::json!({"event_id":"evt-1","request":{"op_type":"FileWrite","danger_level":"HIGH","target":"/test","user":"","source":"test"},"decision":"allowed","reason":"test","timestamp":"2026-01-01T00:00:00Z","policy_rule":"test"}),
         serde_json::json!({"event_id":"evt-2","request":{"op_type":"FileRead","danger_level":"LOW","target":"/test","user":"","source":"test"},"decision":"allowed","reason":"test","timestamp":"2026-01-02T00:00:00Z","policy_rule":"test"}),
-        serde_json::json!({"event_id":"evt-3","request":{"op_type":"ProcessExec","danger_level":"HIGH","target":"/test","user":"","source":"test"},"decision":"denied","reason":"test","timestamp":"2026-01-03T00:00:00Z","policy_rule":"test"})];
+        serde_json::json!({"event_id":"evt-3","request":{"op_type":"ProcessExec","danger_level":"HIGH","target":"/test","user":"","source":"test"},"decision":"denied","reason":"test","timestamp":"2026-01-03T00:00:00Z","policy_rule":"test"}),
+    ];
     let jsonl: String = entries
         .iter()
         .map(|e| e.to_string())
@@ -3785,10 +3787,9 @@ async fn test_config_set_field_unknown_intermediate_rejected() {
     let err = result.expect_err("unknown intermediate path must be loud-rejected");
     assert!(err.contains("unknown config field"), "{err}");
     // 拒绝后盘上没有被半写（不存在中间对象被静默创建）。
-    let raw: serde_json::Value = serde_json::from_str(
-        &std::fs::read_to_string(dir.path().join("config.json")).unwrap(),
-    )
-    .unwrap();
+    let raw: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(dir.path().join("config.json")).unwrap())
+            .unwrap();
     assert!(raw.get("new_section").is_none());
 }
 
@@ -3964,10 +3965,12 @@ async fn test_security_audit_risk_level_filter() {
     let dir = tempfile::tempdir().unwrap();
     let log_dir = dir.path().join("logs/security_logs");
     std::fs::create_dir_all(&log_dir).unwrap();
-    let entries = [serde_json::json!({ "timestamp": "2026-01-01T00:00:00Z", "risk_level": "HIGH" }),
+    let entries = [
+        serde_json::json!({ "timestamp": "2026-01-01T00:00:00Z", "risk_level": "HIGH" }),
         serde_json::json!({ "timestamp": "2026-01-02T00:00:00Z", "risk_level": "LOW" }),
         serde_json::json!({ "timestamp": "2026-01-03T00:00:00Z", "risk_level": "HIGH" }),
-        serde_json::json!({ "timestamp": "2026-01-04T00:00:00Z", "risk_level": "CRITICAL" })];
+        serde_json::json!({ "timestamp": "2026-01-04T00:00:00Z", "risk_level": "CRITICAL" }),
+    ];
     let jsonl: String = entries
         .iter()
         .map(|e| e.to_string())
@@ -4312,14 +4315,16 @@ async fn fuzz_tasks_cron_add_various_cron_exprs() {
 
     // Valid 5-field cron expressions (the live CronService validates via
     // croner; @-macros like @reboot are not accepted, so only real exprs).
-    let exprs = ["* * * * *",
+    let exprs = [
+        "* * * * *",
         "0 9 * * 1-5",
         "*/15 * * * *",
         "0 0 1 1 *",
         "0 0,12 * * *",
         "30 8 * * *",
         "0 18 * * 5",
-        "*/5 * * * *"];
+        "*/5 * * * *",
+    ];
     for (i, cron) in exprs.iter().enumerate() {
         let data = serde_json::json!({
             "name": format!("cron-{}", i),
@@ -4351,10 +4356,12 @@ async fn fuzz_mcp_server_add_various_commands() {
     .unwrap();
     let ctx = make_ctx(&dir);
 
-    let commands = [("node", vec!["server.js"]),
+    let commands = [
+        ("node", vec!["server.js"]),
         ("python", vec!["-m", "mcp_server"]),
         ("C:\\Program Files\\tool.exe", vec![]),
-        ("/usr/bin/mcp", vec!["--port", "3000"])];
+        ("/usr/bin/mcp", vec!["--port", "3000"]),
+    ];
     for (i, (cmd, args)) in commands.iter().enumerate() {
         let data = serde_json::json!({
             "name": format!("srv-{}", i),
@@ -5523,13 +5530,21 @@ async fn test_sessions_delete_pauses_cron_jobs_bound_to_session() {
 
     // Delete the session.
     let result = handler
-        .handle_cmd("delete", Some(serde_json::json!({ "session_id": "victim-sid" })), &ctx)
+        .handle_cmd(
+            "delete",
+            Some(serde_json::json!({ "session_id": "victim-sid" })),
+            &ctx,
+        )
         .await
         .unwrap()
         .unwrap();
     assert_eq!(result["deleted"], "victim-sid");
     let paused = result["paused_cron_jobs"].as_array().unwrap();
-    assert_eq!(paused.len(), 1, "exactly the enabled target job is reported");
+    assert_eq!(
+        paused.len(),
+        1,
+        "exactly the enabled target job is reported"
+    );
     assert_eq!(paused[0]["id"], job_a.id.as_str());
     assert_eq!(paused[0]["name"], "target-job");
 
@@ -5557,7 +5572,11 @@ async fn test_sessions_delete_no_cron_service_still_deletes() {
     Arc::get_mut(&mut ctx.state).unwrap().cron = None;
 
     let result = handler
-        .handle_cmd("delete", Some(serde_json::json!({ "session_id": "x" })), &ctx)
+        .handle_cmd(
+            "delete",
+            Some(serde_json::json!({ "session_id": "x" })),
+            &ctx,
+        )
         .await
         .unwrap()
         .unwrap();

@@ -333,12 +333,10 @@ impl ModelScopeRegistry {
             url_encode_component(path),
             url_encode_component(name),
         );
-        let resp = self
-            .client
-            .get(&url)
-            .send()
-            .await
-            .map_err(|e| NemesisError::Other(format!("ModelScope detail request failed: {}", e)))?;
+        let resp =
+            self.client.get(&url).send().await.map_err(|e| {
+                NemesisError::Other(format!("ModelScope detail request failed: {}", e))
+            })?;
         if !resp.status().is_success() {
             return Err(NemesisError::Other(format!(
                 "ModelScope detail HTTP {} for '{}/{}'",
@@ -396,12 +394,9 @@ impl ModelScopeRegistry {
             self.skill_api_url(path, name),
             url_encode_filepath(root),
         );
-        let resp = self
-            .client
-            .get(&url)
-            .send()
-            .await
-            .map_err(|e| NemesisError::Other(format!("ModelScope file-list request failed: {}", e)))?;
+        let resp = self.client.get(&url).send().await.map_err(|e| {
+            NemesisError::Other(format!("ModelScope file-list request failed: {}", e))
+        })?;
         if !resp.status().is_success() {
             return Err(NemesisError::Other(format!(
                 "ModelScope file-list HTTP {} for '{}/{}'",
@@ -424,23 +419,16 @@ impl ModelScopeRegistry {
     }
 
     /// Fetch a single file's content via `/repo/raw?Revision=master&FilePath=`.
-    async fn fetch_repo_raw(
-        &self,
-        path: &str,
-        name: &str,
-        file_path: &str,
-    ) -> Result<String> {
+    async fn fetch_repo_raw(&self, path: &str, name: &str, file_path: &str) -> Result<String> {
         let url = format!(
             "{}/repo/raw?Revision=master&FilePath={}",
             self.skill_api_url(path, name),
             url_encode_filepath(file_path),
         );
-        let resp = self
-            .client
-            .get(&url)
-            .send()
-            .await
-            .map_err(|e| NemesisError::Other(format!("ModelScope file request failed: {}", e)))?;
+        let resp =
+            self.client.get(&url).send().await.map_err(|e| {
+                NemesisError::Other(format!("ModelScope file request failed: {}", e))
+            })?;
         if !resp.status().is_success() {
             return Err(NemesisError::Other(format!(
                 "ModelScope file HTTP {} for '{}/{}'",
@@ -469,11 +457,7 @@ impl ModelScopeRegistry {
     /// The tree API does not flatten, so directories (`Type:"tree"`) are walked
     /// level by level via `Root`, and each blob is downloaded via `/repo/raw`.
     /// Returns `(relative_path, content)` pairs.
-    async fn fetch_full_skill(
-        &self,
-        path: &str,
-        name: &str,
-    ) -> Result<Vec<(String, String)>> {
+    async fn fetch_full_skill(&self, path: &str, name: &str) -> Result<Vec<(String, String)>> {
         let mut files = Vec::new();
         let mut roots: Vec<String> = vec![String::new()];
         while let Some(root) = roots.pop() {
@@ -570,41 +554,43 @@ impl ModelScopeRegistry {
         // (references/, scripts/) are not silently dropped. Falls back to the
         // (partial) ModelScope mirror if GitHub is unreachable.
         let has_subdirs = files.iter().any(|(p, _)| p.contains('/'));
-        if !has_subdirs && skill.source == "github"
-            && let Some((owner, repo, branch, gh_path)) = parse_github_tree_url(&skill.source_url) {
-                let repo_str = format!("{}/{}", owner, repo);
-                match download_skill_tree_from_github(
-                    &self.github_client,
-                    "https://api.github.com",
-                    "https://raw.githubusercontent.com",
-                    &repo_str,
-                    branch,
-                    gh_path,
-                    target_dir,
-                    0,
-                )
-                .await
-                {
-                    Ok(()) => {
-                        debug!(
-                            "installed skill '{}' full tree from GitHub (modelscope mirror was partial)",
-                            slug
-                        );
-                        return Ok(InstallResult {
-                            version: "latest".to_string(),
-                            is_malware_blocked: false,
-                            is_suspicious: false,
-                            summary: meta.summary,
-                        });
-                    }
-                    Err(e) => warn!(
-                        "GitHub fallback for skill '{}' failed ({}); ModelScope mirror has only {} file(s)",
-                        slug,
-                        e,
-                        files.len()
-                    ),
+        if !has_subdirs
+            && skill.source == "github"
+            && let Some((owner, repo, branch, gh_path)) = parse_github_tree_url(&skill.source_url)
+        {
+            let repo_str = format!("{}/{}", owner, repo);
+            match download_skill_tree_from_github(
+                &self.github_client,
+                "https://api.github.com",
+                "https://raw.githubusercontent.com",
+                &repo_str,
+                branch,
+                gh_path,
+                target_dir,
+                0,
+            )
+            .await
+            {
+                Ok(()) => {
+                    debug!(
+                        "installed skill '{}' full tree from GitHub (modelscope mirror was partial)",
+                        slug
+                    );
+                    return Ok(InstallResult {
+                        version: "latest".to_string(),
+                        is_malware_blocked: false,
+                        is_suspicious: false,
+                        summary: meta.summary,
+                    });
                 }
+                Err(e) => warn!(
+                    "GitHub fallback for skill '{}' failed ({}); ModelScope mirror has only {} file(s)",
+                    slug,
+                    e,
+                    files.len()
+                ),
             }
+        }
 
         let target_path = std::path::Path::new(target_dir);
         std::fs::create_dir_all(target_path)
@@ -615,10 +601,7 @@ impl ModelScopeRegistry {
 
         for (rel, content) in &files {
             // Path-traversal guard: server-provided paths must stay under target.
-            if rel.is_empty()
-                || rel.starts_with('/')
-                || rel.starts_with('\\')
-                || rel.contains("..")
+            if rel.is_empty() || rel.starts_with('/') || rel.starts_with('\\') || rel.contains("..")
             {
                 return Err(NemesisError::Security(format!(
                     "refusing unsafe skill file path: {}",
@@ -630,12 +613,13 @@ impl ModelScopeRegistry {
                 std::fs::create_dir_all(parent)
                     .map_err(|e| NemesisError::Other(format!("create dir failed: {}", e)))?;
                 if let Ok(canonical_parent) = parent.canonicalize()
-                    && !canonical_parent.starts_with(&canonical_target) {
-                        return Err(NemesisError::Security(format!(
-                            "path traversal detected: {}",
-                            rel
-                        )));
-                    }
+                    && !canonical_parent.starts_with(&canonical_target)
+                {
+                    return Err(NemesisError::Security(format!(
+                        "path traversal detected: {}",
+                        rel
+                    )));
+                }
             }
             std::fs::write(&dest, content)
                 .map_err(|e| NemesisError::Other(format!("write failed: {}", e)))?;

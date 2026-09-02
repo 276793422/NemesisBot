@@ -84,7 +84,10 @@ fn test_w1b_set_handler_overwrite_second_wins() {
     }));
 
     svc.execute_heartbeat();
-    assert!(!first.load(Ordering::SeqCst), "first handler must be replaced");
+    assert!(
+        !first.load(Ordering::SeqCst),
+        "first handler must be replaced"
+    );
     assert!(second.load(Ordering::SeqCst), "second handler wins");
 }
 
@@ -122,8 +125,7 @@ fn test_w1b_execute_heartbeat_handler_receives_prompt_and_parsed_channel() {
     write_tasks(&dir, "- Unique task marker XYZ\n");
     let svc = HeartbeatService::new(ws_config(&dir));
 
-    let captured: Arc<Mutex<Option<(String, String, String)>>> =
-        Arc::new(Mutex::new(None));
+    let captured: Arc<Mutex<Option<(String, String, String)>>> = Arc::new(Mutex::new(None));
     let cap2 = captured.clone();
     svc.set_state_manager(Arc::new(W1bState {
         last_channel: "telegram:42".to_string(),
@@ -151,8 +153,7 @@ fn test_w1b_execute_heartbeat_internal_channel_passes_empty_to_handler() {
     write_tasks(&dir, "- Task\n");
     let svc = HeartbeatService::new(ws_config(&dir));
 
-    let captured: Arc<Mutex<Option<(String, String, String)>>> =
-        Arc::new(Mutex::new(None));
+    let captured: Arc<Mutex<Option<(String, String, String)>>> = Arc::new(Mutex::new(None));
     let cap2 = captured.clone();
     svc.set_state_manager(Arc::new(W1bState {
         last_channel: "system:123".to_string(), // internal → filtered
@@ -185,10 +186,22 @@ fn test_w1b_status_interval_secs_and_running_flag() {
 #[test]
 fn test_w1b_config_interval_boundaries() {
     // 4 → clamped up to the 5-minute floor; 5 stays exactly 5; 6 passes.
-    assert_eq!(HeartbeatConfig::new(4, true, "/tmp/x".into()).interval, Duration::from_secs(5 * 60));
-    assert_eq!(HeartbeatConfig::new(5, true, "/tmp/x".into()).interval, Duration::from_secs(5 * 60));
-    assert_eq!(HeartbeatConfig::new(6, true, "/tmp/x".into()).interval, Duration::from_secs(6 * 60));
-    assert_eq!(HeartbeatConfig::new(1, true, "/tmp/x".into()).interval, Duration::from_secs(5 * 60));
+    assert_eq!(
+        HeartbeatConfig::new(4, true, "/tmp/x".into()).interval,
+        Duration::from_secs(5 * 60)
+    );
+    assert_eq!(
+        HeartbeatConfig::new(5, true, "/tmp/x".into()).interval,
+        Duration::from_secs(5 * 60)
+    );
+    assert_eq!(
+        HeartbeatConfig::new(6, true, "/tmp/x".into()).interval,
+        Duration::from_secs(6 * 60)
+    );
+    assert_eq!(
+        HeartbeatConfig::new(1, true, "/tmp/x".into()).interval,
+        Duration::from_secs(5 * 60)
+    );
 }
 
 #[test]
@@ -204,7 +217,10 @@ fn test_w1b_build_prompt_non_utf8_lossy() {
     let prompt = svc.build_prompt();
     assert!(prompt.contains("Heartbeat Check"));
     assert!(prompt.contains("plain task"));
-    assert!(prompt.contains("\u{FFFD}"), "lossy replacement char present");
+    assert!(
+        prompt.contains("\u{FFFD}"),
+        "lossy replacement char present"
+    );
 }
 
 #[test]
@@ -230,7 +246,10 @@ fn test_w1b_should_skip_reflects_file_appearance() {
     std::fs::write(&skip, "on").unwrap();
     assert!(svc.should_skip(), "skip flag is a live file check");
     std::fs::remove_file(&skip).unwrap();
-    assert!(!svc.should_skip(), "and clears again when the file goes away");
+    assert!(
+        !svc.should_skip(),
+        "and clears again when the file goes away"
+    );
 }
 
 #[tokio::test]
@@ -278,14 +297,20 @@ async fn test_w1b_tick_error_and_async_results_publish_nothing_but_track_beats()
     tokio::time::sleep(Duration::from_millis(1500)).await;
     svc.stop();
 
-    assert!(sent.lock().is_empty(), "error and async branches must not publish");
+    assert!(
+        sent.lock().is_empty(),
+        "error and async branches must not publish"
+    );
     assert!(
         svc.beat_count() >= beat0 + 2,
         "beat tracking advances even when the result is an error/async, got {}→{}",
         beat0,
         svc.beat_count()
     );
-    assert!(calls.load(Ordering::SeqCst) >= 2, "handler ran for both branches");
+    assert!(
+        calls.load(Ordering::SeqCst) >= 2,
+        "handler ran for both branches"
+    );
 }
 
 #[tokio::test]

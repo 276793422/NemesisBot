@@ -14,7 +14,12 @@ use super::*;
 fn local_transcriber_new_without_models_fails_fast() {
     let tmp = tempfile::tempdir().unwrap();
     // 不放 config.toml（load_or_default 走默认配置）、不放任何模型
-    let err = format!("{:#}", LocalVoiceTranscriber::new(tmp.path()).err().expect("must fail"));
+    let err = format!(
+        "{:#}",
+        LocalVoiceTranscriber::new(tmp.path())
+            .err()
+            .expect("must fail")
+    );
     assert!(
         err.contains("not found in config [models.sources]") || err.contains("not found"),
         "{err}"

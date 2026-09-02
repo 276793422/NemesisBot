@@ -155,9 +155,10 @@ impl CORSManager {
 
         // Development mode / localhost ------------------------------------
         if (cfg.development_mode || cfg.allow_localhost)
-            && (origin.starts_with("http://localhost:") || origin.starts_with("http://127.0.0.1:")) {
-                return true;
-            }
+            && (origin.starts_with("http://localhost:") || origin.starts_with("http://127.0.0.1:"))
+        {
+            return true;
+        }
 
         // Exact match in allowed_origins ----------------------------------
         if cfg.allowed_origins.iter().any(|o| o == origin) {
@@ -167,12 +168,13 @@ impl CORSManager {
         // CDN subdomain matching ------------------------------------------
         for cdn in &cfg.allowed_cdn_domains {
             if let Ok(parsed) = url::Url::parse(origin)
-                && let Some(host) = parsed.host_str() {
-                    // Exact CDN match or proper subdomain (".cdn" prefix).
-                    if host == cdn || host.ends_with(&format!(".{cdn}")) {
-                        return true;
-                    }
+                && let Some(host) = parsed.host_str()
+            {
+                // Exact CDN match or proper subdomain (".cdn" prefix).
+                if host == cdn || host.ends_with(&format!(".{cdn}")) {
+                    return true;
                 }
+            }
         }
 
         false

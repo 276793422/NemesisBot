@@ -880,7 +880,8 @@ mod r7_cmd_paths {
     fn seed_experiences(forge_dir: &std::path::Path) {
         let dir = forge_dir.join("experiences").join("202608");
         std::fs::create_dir_all(&dir).unwrap();
-        let rows = [serde_json::json!({
+        let rows = [
+            serde_json::json!({
                 "pattern_hash": "r7hash1", "tool_name": "read_file", "count": 10,
                 "avg_duration_ms": 12, "success_rate": 0.9,
                 "last_seen": "2026-08-27T00:00:00+08:00"
@@ -889,7 +890,8 @@ mod r7_cmd_paths {
                 "pattern_hash": "r7hash2", "tool_name": "exec", "count": 4,
                 "avg_duration_ms": 340, "success_rate": 0.25,
                 "last_seen": "2026-08-27T01:00:00+08:00"
-            })];
+            }),
+        ];
         let body: String = rows
             .iter()
             .map(|r| serde_json::to_string(r).unwrap())
@@ -934,7 +936,10 @@ mod r7_cmd_paths {
         let r = run(ForgeAction::Status, false);
         clear_env();
         r.expect("status on fresh home ok");
-        assert!(!home.join("config.json").exists(), "status must not create config");
+        assert!(
+            !home.join("config.json").exists(),
+            "status must not create config"
+        );
     }
 
     #[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
@@ -967,25 +972,32 @@ mod r7_cmd_paths {
         write_config(&home, None);
         run(ForgeAction::Enable, false).expect("enable ok");
         let forge_dir = home.join("workspace").join("forge");
-        for d in ["experiences", "reflections", "skills", "scripts", "mcp", "traces", "learning", "prompts"] {
+        for d in [
+            "experiences",
+            "reflections",
+            "skills",
+            "scripts",
+            "mcp",
+            "traces",
+            "learning",
+            "prompts",
+        ] {
             assert!(forge_dir.join(d).is_dir(), "enable must create {d}");
         }
         assert!(forge_dir.join("forge.json").exists());
         assert!(forge_dir.join("registry.json").exists());
-        let cfg: serde_json::Value = serde_json::from_str(
-            &std::fs::read_to_string(home.join("config.json")).unwrap(),
-        )
-        .unwrap();
+        let cfg: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(home.join("config.json")).unwrap())
+                .unwrap();
         assert_eq!(cfg["forge"]["enabled"], true);
 
         // 已有 forge 对象 → 只改 enabled=false。注意：本测试的 config 是
         // Enable 时从「无 forge 键」臂新建的（只含 enabled），sibling 保留
         // 语义由下一个测试（已有 forge 对象）钉住。
         run(ForgeAction::Disable, false).expect("disable ok");
-        let cfg2: serde_json::Value = serde_json::from_str(
-            &std::fs::read_to_string(home.join("config.json")).unwrap(),
-        )
-        .unwrap();
+        let cfg2: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(home.join("config.json")).unwrap())
+                .unwrap();
         assert_eq!(cfg2["forge"]["enabled"], false);
         clear_env();
     }
@@ -997,19 +1009,17 @@ mod r7_cmd_paths {
         let (_tmp, home) = env_home();
         write_config(&home, Some(false));
         run(ForgeAction::Enable, false).expect("enable with existing forge obj ok");
-        let cfg: serde_json::Value = serde_json::from_str(
-            &std::fs::read_to_string(home.join("config.json")).unwrap(),
-        )
-        .unwrap();
+        let cfg: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(home.join("config.json")).unwrap())
+                .unwrap();
         assert_eq!(cfg["forge"]["enabled"], true);
         assert_eq!(cfg["forge"]["collect_interval_sec"], 60);
 
         // disable 同样保留 sibling 字段（337-343 臂）。
         run(ForgeAction::Disable, false).expect("disable with existing forge obj ok");
-        let cfg2: serde_json::Value = serde_json::from_str(
-            &std::fs::read_to_string(home.join("config.json")).unwrap(),
-        )
-        .unwrap();
+        let cfg2: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(home.join("config.json")).unwrap())
+                .unwrap();
         assert_eq!(cfg2["forge"]["enabled"], false);
         assert_eq!(
             cfg2["forge"]["collect_interval_sec"], 60,
@@ -1063,7 +1073,11 @@ mod r7_cmd_paths {
         let has_report = std::fs::read_dir(&reflect_dir)
             .map(|rd| rd.filter_map(|e| e.ok()).count() > 0)
             .unwrap_or(false);
-        assert!(has_report, "reflection report must be written to {:?}", reflect_dir);
+        assert!(
+            has_report,
+            "reflection report must be written to {:?}",
+            reflect_dir
+        );
     }
 
     #[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
@@ -1074,11 +1088,26 @@ mod r7_cmd_paths {
         let forge_dir = home.join("workspace").join("forge");
         seed_registry(&forge_dir);
         // registry 非空 + all → 明细打印臂。
-        let r1 = run(ForgeAction::List { r#type: "all".into() }, false);
+        let r1 = run(
+            ForgeAction::List {
+                r#type: "all".into(),
+            },
+            false,
+        );
         // registry 非空 + 类型过滤命中。
-        let r2 = run(ForgeAction::List { r#type: "skill".into() }, false);
+        let r2 = run(
+            ForgeAction::List {
+                r#type: "skill".into(),
+            },
+            false,
+        );
         // registry 非空 + 类型过滤无命中 → “(no artifacts matching type)” 臂。
-        let r3 = run(ForgeAction::List { r#type: "mcp".into() }, false);
+        let r3 = run(
+            ForgeAction::List {
+                r#type: "mcp".into(),
+            },
+            false,
+        );
         clear_env();
         r1.expect("list all ok");
         r2.expect("list skill ok");
@@ -1089,8 +1118,18 @@ mod r7_cmd_paths {
         let fd2 = h2.join("workspace").join("forge");
         std::fs::create_dir_all(fd2.join("skills")).unwrap();
         std::fs::write(fd2.join("skills").join("s.md"), "x").unwrap();
-        let r4 = run(ForgeAction::List { r#type: "all".into() }, false);
-        let r5 = run(ForgeAction::List { r#type: "scripts".into() }, false);
+        let r4 = run(
+            ForgeAction::List {
+                r#type: "all".into(),
+            },
+            false,
+        );
+        let r5 = run(
+            ForgeAction::List {
+                r#type: "scripts".into(),
+            },
+            false,
+        );
         clear_env();
         r4.expect("list fallback scan all ok");
         r5.expect("list fallback scan single missing dir ok");
@@ -1117,7 +1156,11 @@ mod r7_cmd_paths {
         // 守卫臂：forge 目录不存在。
         let (_t1, _h1) = env_home();
         let r1 = run(
-            ForgeAction::Export { id: None, output: None, all: false },
+            ForgeAction::Export {
+                id: None,
+                output: None,
+                all: false,
+            },
             false,
         );
         clear_env();
@@ -1128,7 +1171,11 @@ mod r7_cmd_paths {
         std::fs::create_dir_all(&fd2).unwrap();
         std::fs::write(fd2.join("registry.json"), "[]").unwrap();
         let r2 = run(
-            ForgeAction::Export { id: None, output: None, all: false },
+            ForgeAction::Export {
+                id: None,
+                output: None,
+                all: false,
+            },
             false,
         );
         clear_env();
@@ -1138,7 +1185,11 @@ mod r7_cmd_paths {
         let fd3 = h3.join("workspace").join("forge");
         seed_registry(&fd3);
         let r3 = run(
-            ForgeAction::Export { id: Some("zzz".into()), output: None, all: false },
+            ForgeAction::Export {
+                id: Some("zzz".into()),
+                output: None,
+                all: false,
+            },
             false,
         );
         clear_env();
@@ -1148,7 +1199,11 @@ mod r7_cmd_paths {
         let fd4 = h4.join("workspace").join("forge");
         seed_registry(&fd4);
         let r4 = run(
-            ForgeAction::Export { id: Some("r7a1".into()), output: None, all: false },
+            ForgeAction::Export {
+                id: Some("r7a1".into()),
+                output: None,
+                all: false,
+            },
             false,
         );
         clear_env();
@@ -1166,40 +1221,69 @@ mod r7_cmd_paths {
         let (_tmp, home) = env_home();
         let forge_dir = home.join("workspace").join("forge");
         // status：默认配置（无 forge.json）→ 学习配置打印臂走 unwrap_or 默认。
-        run(ForgeAction::Learning { action: None }, false)
-            .expect("learning status (bare) ok");
-        run(ForgeAction::Learning { action: Some(LearningAction::Status) }, false)
-            .expect("learning status ok");
+        run(ForgeAction::Learning { action: None }, false).expect("learning status (bare) ok");
+        run(
+            ForgeAction::Learning {
+                action: Some(LearningAction::Status),
+            },
+            false,
+        )
+        .expect("learning status ok");
 
         // enable → forge.json 落盘 learning_enabled=true + 目录创建。
-        run(ForgeAction::Learning { action: Some(LearningAction::Enable) }, false)
-            .expect("learning enable ok");
-        let cfg: serde_json::Value = serde_json::from_str(
-            &std::fs::read_to_string(forge_dir.join("forge.json")).unwrap(),
+        run(
+            ForgeAction::Learning {
+                action: Some(LearningAction::Enable),
+            },
+            false,
         )
-        .unwrap();
+        .expect("learning enable ok");
+        let cfg: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(forge_dir.join("forge.json")).unwrap())
+                .unwrap();
         assert_eq!(cfg["learning_enabled"], true);
-        assert_eq!(cfg["trace_collection"], true, "auto-enable trace collection");
+        assert_eq!(
+            cfg["trace_collection"], true,
+            "auto-enable trace collection"
+        );
         assert!(forge_dir.join("learning").is_dir());
 
         // history：无 cycles 文件 → “No learning history”。
-        run(ForgeAction::Learning { action: Some(LearningAction::History { limit: 5 }) }, false)
-            .expect("learning history (no file) ok");
+        run(
+            ForgeAction::Learning {
+                action: Some(LearningAction::History { limit: 5 }),
+            },
+            false,
+        )
+        .expect("learning history (no file) ok");
 
         // 播种 cycles（好行 + 坏行 + 空行）→ 解析打印臂。
         let cycles = "{\"timestamp\":\"2026-08-27T01:00:00+08:00\",\"patterns_found\":2,\"actions_generated\":1,\"actions_deployed\":1}\n\nnot-json-line\n";
         std::fs::create_dir_all(forge_dir.join("learning")).unwrap();
-        std::fs::write(forge_dir.join("learning").join("learning_cycles.jsonl"), cycles).unwrap();
-        run(ForgeAction::Learning { action: Some(LearningAction::History { limit: 10 }) }, false)
-            .expect("learning history with cycles ok");
-
-        // disable → learning_enabled=false。
-        run(ForgeAction::Learning { action: Some(LearningAction::Disable) }, false)
-            .expect("learning disable ok");
-        let cfg2: serde_json::Value = serde_json::from_str(
-            &std::fs::read_to_string(forge_dir.join("forge.json")).unwrap(),
+        std::fs::write(
+            forge_dir.join("learning").join("learning_cycles.jsonl"),
+            cycles,
         )
         .unwrap();
+        run(
+            ForgeAction::Learning {
+                action: Some(LearningAction::History { limit: 10 }),
+            },
+            false,
+        )
+        .expect("learning history with cycles ok");
+
+        // disable → learning_enabled=false。
+        run(
+            ForgeAction::Learning {
+                action: Some(LearningAction::Disable),
+            },
+            false,
+        )
+        .expect("learning disable ok");
+        let cfg2: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(forge_dir.join("forge.json")).unwrap())
+                .unwrap();
         assert_eq!(cfg2["learning_enabled"], false);
         clear_env();
     }
@@ -1282,7 +1366,11 @@ mod wave_b {
             std::fs::create_dir_all(&home).unwrap();
             let prev = std::env::var_os("NEMESISBOT_HOME");
             unsafe { std::env::set_var("NEMESISBOT_HOME", tmp.path()) };
-            Self { _tmp: tmp, home, prev }
+            Self {
+                _tmp: tmp,
+                home,
+                prev,
+            }
         }
 
         fn forge_dir(&self) -> std::path::PathBuf {
@@ -1304,8 +1392,7 @@ mod wave_b {
     fn wb_write_config(home: &std::path::Path, forge_enabled: bool) {
         std::fs::write(
             home.join("config.json"),
-            serde_json::json!({"version": "1.0", "forge": {"enabled": forge_enabled}})
-                .to_string(),
+            serde_json::json!({"version": "1.0", "forge": {"enabled": forge_enabled}}).to_string(),
         )
         .unwrap();
     }
@@ -1361,7 +1448,9 @@ mod wave_b {
         // forge.json 预建成目录：load 静默回默认，save 的 fs::write 必然失败。
         std::fs::create_dir_all(g.forge_dir().join("forge.json")).unwrap();
         let r = run(
-            ForgeAction::Learning { action: Some(LearningAction::Enable) },
+            ForgeAction::Learning {
+                action: Some(LearningAction::Enable),
+            },
             false,
         );
         let err = r.expect_err("unwritable forge.json must propagate the IO error");
@@ -1382,11 +1471,13 @@ mod wave_b {
 
         run(ForgeAction::Disable, false).expect("disable without forge key ok");
 
-        let cfg: serde_json::Value = serde_json::from_str(
-            &std::fs::read_to_string(g.home.join("config.json")).unwrap(),
-        )
-        .unwrap();
-        assert_eq!(cfg["forge"]["enabled"], false, "插入的 forge 对象应为 disabled");
+        let cfg: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(g.home.join("config.json")).unwrap())
+                .unwrap();
+        assert_eq!(
+            cfg["forge"]["enabled"], false,
+            "插入的 forge 对象应为 disabled"
+        );
         assert_eq!(cfg["default_model"], "m", "存量 sibling 字段必须保留");
     }
 
@@ -1411,8 +1502,13 @@ mod wave_b {
         // 月目录下的“数据文件”实际是个目录 → walk 的 read_to_string 失败并
         // 传播为 read_aggregated 的 Err → cmd_reflect 走 Err 提示臂。
         let month = chrono::Local::now().format("%Y%m").to_string();
-        std::fs::create_dir_all(g.forge_dir().join("experiences").join(month).join("x.jsonl"))
-            .unwrap();
+        std::fs::create_dir_all(
+            g.forge_dir()
+                .join("experiences")
+                .join(month)
+                .join("x.jsonl"),
+        )
+        .unwrap();
         run(ForgeAction::Reflect, false).expect("aggregate error arm returns Ok with hint");
     }
 
@@ -1426,8 +1522,14 @@ mod wave_b {
         // Ok(vec![]) → “No experiences loaded.” 早退臂（区别于 store 层 Err）。
         let month = chrono::Local::now().format("%Y%m").to_string();
         std::fs::create_dir_all(g.forge_dir().join("experiences").join(&month)).unwrap();
-        std::fs::write(g.forge_dir().join("experiences").join(&month).join("keep.txt"), "-")
-            .unwrap(); // 非 .jsonl，保证不被扫描
+        std::fs::write(
+            g.forge_dir()
+                .join("experiences")
+                .join(&month)
+                .join("keep.txt"),
+            "-",
+        )
+        .unwrap(); // 非 .jsonl，保证不被扫描
         run(ForgeAction::Reflect, false).expect("empty aggregation early-return ok");
     }
 
@@ -1451,7 +1553,12 @@ mod wave_b {
         run(ForgeAction::Reflect, false).expect("reflect with failing tool ok");
         // 报告仍应正常落盘（write_report 成功臂并行自证）。
         assert!(
-            g.forge_dir().join("reflections").read_dir().map(|d| d.count()).unwrap_or(0) > 0,
+            g.forge_dir()
+                .join("reflections")
+                .read_dir()
+                .map(|d| d.count())
+                .unwrap_or(0)
+                > 0,
             "reflection report must be written"
         );
     }
@@ -1479,7 +1586,11 @@ mod wave_b {
         wb_write_registry(g.forge_dir().as_path(), &[wb_artifact("wbd1", "Draft")]);
 
         run(
-            ForgeAction::Export { id: None, output: None, all: false },
+            ForgeAction::Export {
+                id: None,
+                output: None,
+                all: false,
+            },
             false,
         )
         .expect("draft-only export ok");
@@ -1507,12 +1618,20 @@ mod wave_b {
 
         // 默认（active 文案头）与 --all（all 文案头）两种头部臂各跑一次。
         run(
-            ForgeAction::Export { id: None, output: None, all: false },
+            ForgeAction::Export {
+                id: None,
+                output: None,
+                all: false,
+            },
             false,
         )
         .expect("active export (default header) ok");
         run(
-            ForgeAction::Export { id: None, output: None, all: true },
+            ForgeAction::Export {
+                id: None,
+                output: None,
+                all: true,
+            },
             false,
         )
         .expect("active export (--all header) ok");
@@ -1533,8 +1652,13 @@ mod wave_b {
         // trace_collection 取默认 true 的兜底打印仍要走到。
         std::fs::create_dir_all(g.forge_dir()).unwrap();
         std::fs::write(g.forge_dir().join("forge.json"), "{}").unwrap();
-        run(ForgeAction::Learning { action: Some(LearningAction::Status) }, false)
-            .expect("status without learning key ok");
+        run(
+            ForgeAction::Learning {
+                action: Some(LearningAction::Status),
+            },
+            false,
+        )
+        .expect("status without learning key ok");
     }
 
     #[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
@@ -1545,10 +1669,15 @@ mod wave_b {
         // cycles 文件存在但内容全是空白行 → 过滤后 lines 为空 → 内层
         // “No learning history found.” 臂（区别于文件不存在的外层臂）。
         std::fs::create_dir_all(g.forge_dir().join("learning")).unwrap();
-        std::fs::write(g.forge_dir().join("learning").join("learning_cycles.jsonl"), "\n \n\t\n")
-            .unwrap();
+        std::fs::write(
+            g.forge_dir().join("learning").join("learning_cycles.jsonl"),
+            "\n \n\t\n",
+        )
+        .unwrap();
         run(
-            ForgeAction::Learning { action: Some(LearningAction::History { limit: 5 }) },
+            ForgeAction::Learning {
+                action: Some(LearningAction::History { limit: 5 }),
+            },
             false,
         )
         .expect("blank cycles history ok");
@@ -1561,12 +1690,12 @@ mod wave_b {
         let g = WbEnvGuard::new();
         // cycles 路径是目录：exists() 通过、read_to_string 失败 → 外层
         // if-let Ok 静默跳过，函数仍返回 Ok（该容错语义的行为钉死）。
-        std::fs::create_dir_all(
-            g.forge_dir().join("learning").join("learning_cycles.jsonl"),
-        )
-        .unwrap();
+        std::fs::create_dir_all(g.forge_dir().join("learning").join("learning_cycles.jsonl"))
+            .unwrap();
         run(
-            ForgeAction::Learning { action: Some(LearningAction::History { limit: 5 }) },
+            ForgeAction::Learning {
+                action: Some(LearningAction::History { limit: 5 }),
+            },
             false,
         )
         .expect("cycles-as-directory is silently skipped, not an error");
@@ -1605,7 +1734,11 @@ fn r10_fresh_enable_writes_default_config_empty_registry_then_disable_roundtrip(
     );
     // registry.json 恰为空数组文本（不是缺失、不是对象）。
     let reg = std::fs::read_to_string(forge_dir.join("registry.json")).unwrap();
-    assert_eq!(reg.trim(), "[]", "全新 enable 的 registry.json 必须恰为 \"[]\"");
+    assert_eq!(
+        reg.trim(),
+        "[]",
+        "全新 enable 的 registry.json 必须恰为 \"[]\""
+    );
 
     // 二次 enable 不重写既有 forge.json/registry.json（幂等保用户数据）。
     let forged_before = std::fs::read_to_string(forge_dir.join("forge.json")).unwrap();

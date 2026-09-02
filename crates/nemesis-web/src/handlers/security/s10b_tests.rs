@@ -96,7 +96,11 @@ async fn security_audit_pages_skips_malformed_and_normalizes_decisions() {
     let handler = SecurityHandler::new();
     let ctx = make_ctx(&ws);
     let resp = handler
-        .handle_cmd("audit", Some(serde_json::json!({ "limit": 1, "offset": 1 })), &ctx)
+        .handle_cmd(
+            "audit",
+            Some(serde_json::json!({ "limit": 1, "offset": 1 })),
+            &ctx,
+        )
         .await
         .unwrap()
         .unwrap();
@@ -106,7 +110,10 @@ async fn security_audit_pages_skips_malformed_and_normalizes_decisions() {
     assert_eq!(entries.len(), 1, "limit=1 window");
     // Sorted desc by timestamp → offset 1 lands on e3.
     assert_eq!(entries[0]["id"], "e3");
-    assert_eq!(entries[0]["result"], "allow", "approved normalizes to allow");
+    assert_eq!(
+        entries[0]["result"], "allow",
+        "approved normalizes to allow"
+    );
     assert_eq!(entries[0]["decision"], "approved");
     assert_eq!(entries[0]["operation"], "file_write");
 
@@ -161,7 +168,10 @@ async fn security_config_malformed_file_and_invalid_save_error() {
     // Missing file → defaults (Ok); a present-but-broken file errors.
     std::fs::create_dir_all(dir.path().join("config")).unwrap();
     std::fs::write(dir.path().join("config/config.security.json"), "{nope").unwrap();
-    let err = handler.handle_cmd("config.get", None, &ctx).await.unwrap_err();
+    let err = handler
+        .handle_cmd("config.get", None, &ctx)
+        .await
+        .unwrap_err();
     assert!(err.contains("failed to load security config"), "{err}");
 
     let err = handler

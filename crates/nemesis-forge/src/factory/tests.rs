@@ -163,15 +163,21 @@ fn test_evaluate_artifact_tiny_no_signature() {
 
     let eval = factory.evaluate_artifact(&artifact);
     assert_eq!(eval.quality_score, 0.0);
-    assert!(eval
-        .feedback
-        .iter()
-        .any(|f| f.contains("Content is very short")));
-    assert!(eval.feedback.iter().any(|f| f.contains("No tool signature")));
-    assert!(eval
-        .feedback
-        .iter()
-        .any(|f| f.contains("Missing recommended sections")));
+    assert!(
+        eval.feedback
+            .iter()
+            .any(|f| f.contains("Content is very short"))
+    );
+    assert!(
+        eval.feedback
+            .iter()
+            .any(|f| f.contains("No tool signature"))
+    );
+    assert!(
+        eval.feedback
+            .iter()
+            .any(|f| f.contains("Missing recommended sections"))
+    );
 }
 
 #[test]

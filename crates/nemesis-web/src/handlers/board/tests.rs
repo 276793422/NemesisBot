@@ -128,7 +128,11 @@ async fn test_issue_create_list_get_flow() {
     assert_eq!(out["issue"]["number"], "NB-1");
 
     // get 缺参 → 报错
-    assert!(dispatch(&ctx, "issue.get", serde_json::json!({})).await.is_err());
+    assert!(
+        dispatch(&ctx, "issue.get", serde_json::json!({}))
+            .await
+            .is_err()
+    );
 
     let _ = std::fs::remove_dir_all(&dir);
 }
@@ -144,28 +148,42 @@ async fn test_issue_status_transition_and_illegal() {
     let id = out["issue"]["id"].as_i64().unwrap();
 
     // 合法：backlog → in_progress
-    let out = dispatch(&ctx, "issue.status", serde_json::json!({ "id": id, "status": "in_progress" }))
-        .await
-        .unwrap()
-        .unwrap();
+    let out = dispatch(
+        &ctx,
+        "issue.status",
+        serde_json::json!({ "id": id, "status": "in_progress" }),
+    )
+    .await
+    .unwrap()
+    .unwrap();
     assert_eq!(out["issue"]["status"], "in_progress");
     // 转移写入 status_change 评论。
-    assert!(out["issue"]["comments"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .any(|c| c["ctype"] == "status_change"));
+    assert!(
+        out["issue"]["comments"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|c| c["ctype"] == "status_change")
+    );
 
     // 非法：in_progress → backlog
-    let err = dispatch(&ctx, "issue.status", serde_json::json!({ "id": id, "status": "backlog" }))
-        .await
-        .expect_err("illegal transition must be rejected");
+    let err = dispatch(
+        &ctx,
+        "issue.status",
+        serde_json::json!({ "id": id, "status": "backlog" }),
+    )
+    .await
+    .expect_err("illegal transition must be rejected");
     assert!(err.contains("非法状态转移"), "{err}");
 
     // 未知 status 字符串
-    let err = dispatch(&ctx, "issue.status", serde_json::json!({ "id": id, "status": "bogus" }))
-        .await
-        .expect_err("unknown status must be rejected");
+    let err = dispatch(
+        &ctx,
+        "issue.status",
+        serde_json::json!({ "id": id, "status": "bogus" }),
+    )
+    .await
+    .expect_err("unknown status must be rejected");
     assert!(err.contains("未知 status"), "{err}");
 
     let _ = std::fs::remove_dir_all(&dir);
@@ -216,9 +234,11 @@ async fn test_issue_assign_and_update() {
     assert_eq!(out["issue"]["description"], "新描述");
 
     // update 缺 id → 报错
-    assert!(dispatch(&ctx, "issue.update", serde_json::json!({ "title": "x" }))
-        .await
-        .is_err());
+    assert!(
+        dispatch(&ctx, "issue.update", serde_json::json!({ "title": "x" }))
+            .await
+            .is_err()
+    );
 
     let _ = std::fs::remove_dir_all(&dir);
 }
@@ -233,13 +253,23 @@ async fn test_comments_activity_subscribers() {
         .unwrap();
     let id = out["issue"]["id"].as_i64().unwrap();
 
-    dispatch(&ctx, "comment.add", serde_json::json!({ "issue_id": id, "content": "第一条" }))
-        .await
-        .expect("comment.add should succeed");
+    dispatch(
+        &ctx,
+        "comment.add",
+        serde_json::json!({ "issue_id": id, "content": "第一条" }),
+    )
+    .await
+    .expect("comment.add should succeed");
     // 空评论被拒（store 校验透传）。
-    assert!(dispatch(&ctx, "comment.add", serde_json::json!({ "issue_id": id, "content": "  " }))
+    assert!(
+        dispatch(
+            &ctx,
+            "comment.add",
+            serde_json::json!({ "issue_id": id, "content": "  " })
+        )
         .await
-        .is_err());
+        .is_err()
+    );
 
     let out = dispatch(&ctx, "comment.list", serde_json::json!({ "issue_id": id }))
         .await
@@ -255,23 +285,39 @@ async fn test_comments_activity_subscribers() {
     assert!(acts.iter().any(|a| a["action"] == "created"));
     assert!(acts.iter().any(|a| a["action"] == "commented"));
 
-    dispatch(&ctx, "subscriber.add", serde_json::json!({ "issue_id": id }))
-        .await
-        .expect("subscriber.add should succeed");
-    let out = dispatch(&ctx, "subscriber.list", serde_json::json!({ "issue_id": id }))
-        .await
-        .unwrap()
-        .unwrap();
+    dispatch(
+        &ctx,
+        "subscriber.add",
+        serde_json::json!({ "issue_id": id }),
+    )
+    .await
+    .expect("subscriber.add should succeed");
+    let out = dispatch(
+        &ctx,
+        "subscriber.list",
+        serde_json::json!({ "issue_id": id }),
+    )
+    .await
+    .unwrap()
+    .unwrap();
     let subs = out["subscribers"].as_array().unwrap();
     // 创建者（admin/test-session）+ 手动订阅（同一 admin 身份 → 幂等一条）。
     assert!(subs.iter().any(|s| s["subscriber"]["kind"] == "admin"));
-    dispatch(&ctx, "subscriber.remove", serde_json::json!({ "issue_id": id }))
-        .await
-        .expect("subscriber.remove should succeed");
-    let out = dispatch(&ctx, "subscriber.list", serde_json::json!({ "issue_id": id }))
-        .await
-        .unwrap()
-        .unwrap();
+    dispatch(
+        &ctx,
+        "subscriber.remove",
+        serde_json::json!({ "issue_id": id }),
+    )
+    .await
+    .expect("subscriber.remove should succeed");
+    let out = dispatch(
+        &ctx,
+        "subscriber.list",
+        serde_json::json!({ "issue_id": id }),
+    )
+    .await
+    .unwrap()
+    .unwrap();
     assert!(out["subscribers"].as_array().unwrap().is_empty());
 
     let _ = std::fs::remove_dir_all(&dir);
@@ -292,9 +338,15 @@ async fn test_projects_attachments_stats() {
     .unwrap();
     let pid = out["project"]["id"].as_i64().unwrap();
     // 重名拒绝。
-    assert!(dispatch(&ctx, "project.create", serde_json::json!({ "name": "主项目" }))
+    assert!(
+        dispatch(
+            &ctx,
+            "project.create",
+            serde_json::json!({ "name": "主项目" })
+        )
         .await
-        .is_err());
+        .is_err()
+    );
     let out = dispatch(&ctx, "project.list", serde_json::json!({}))
         .await
         .unwrap()
@@ -324,10 +376,14 @@ async fn test_projects_attachments_stats() {
     assert_eq!(out["by_status"]["backlog"], 1);
 
     // attachment.list 空（P1 只读元数据）。
-    let out = dispatch(&ctx, "attachment.list", serde_json::json!({ "issue_id": id }))
-        .await
-        .unwrap()
-        .unwrap();
+    let out = dispatch(
+        &ctx,
+        "attachment.list",
+        serde_json::json!({ "issue_id": id }),
+    )
+    .await
+    .unwrap()
+    .unwrap();
     assert_eq!(out["attachments"].as_array().unwrap().len(), 0);
 
     let _ = std::fs::remove_dir_all(&dir);
@@ -341,25 +397,41 @@ async fn test_worker_role_has_full_write_access() {
     let ctx = make_ctx_with_role(&dir, NodeRole::Worker);
 
     // worker 完整 CRUD 往返。
-    let out = dispatch(&ctx, "issue.create", serde_json::json!({ "title": "worker 写入", "priority": 2 }))
-        .await
-        .expect("worker must create issues locally");
+    let out = dispatch(
+        &ctx,
+        "issue.create",
+        serde_json::json!({ "title": "worker 写入", "priority": 2 }),
+    )
+    .await
+    .expect("worker must create issues locally");
     let issue = &out.unwrap()["issue"];
     assert_eq!(issue["number"], "NB-1");
     let id = issue["id"].as_i64().unwrap();
 
-    let out = dispatch(&ctx, "issue.update", serde_json::json!({ "id": id, "priority": 3 }))
-        .await
-        .expect("worker must update issues locally");
+    let out = dispatch(
+        &ctx,
+        "issue.update",
+        serde_json::json!({ "id": id, "priority": 3 }),
+    )
+    .await
+    .expect("worker must update issues locally");
     assert_eq!(out.unwrap()["issue"]["priority"], 3);
 
-    dispatch(&ctx, "comment.add", serde_json::json!({ "issue_id": id, "content": "来自 worker" }))
-        .await
-        .expect("worker must add comments locally");
+    dispatch(
+        &ctx,
+        "comment.add",
+        serde_json::json!({ "issue_id": id, "content": "来自 worker" }),
+    )
+    .await
+    .expect("worker must add comments locally");
 
-    let out = dispatch(&ctx, "issue.status", serde_json::json!({ "id": id, "status": "todo" }))
-        .await
-        .expect("worker must transition status locally");
+    let out = dispatch(
+        &ctx,
+        "issue.status",
+        serde_json::json!({ "id": id, "status": "todo" }),
+    )
+    .await
+    .expect("worker must transition status locally");
     assert_eq!(out.unwrap()["issue"]["status"], "todo");
 
     let _ = std::fs::remove_dir_all(&dir);
@@ -376,18 +448,33 @@ async fn test_worker_role_never_403() {
         ("issue.create", serde_json::json!({ "title": "x" })),
         ("issue.update", serde_json::json!({ "id": 1, "title": "x" })),
         ("issue.assign", serde_json::json!({ "id": 1 })),
-        ("issue.status", serde_json::json!({ "id": 1, "status": "todo" })),
-        ("issue.move", serde_json::json!({ "id": 1, "status": "todo", "position": 0 })),
+        (
+            "issue.status",
+            serde_json::json!({ "id": 1, "status": "todo" }),
+        ),
+        (
+            "issue.move",
+            serde_json::json!({ "id": 1, "status": "todo", "position": 0 }),
+        ),
         ("issue.dispatch", serde_json::json!({ "id": 1 })),
         ("issue.cancel", serde_json::json!({ "id": 1 })),
-        ("comment.add", serde_json::json!({ "issue_id": 1, "content": "x" })),
+        (
+            "comment.add",
+            serde_json::json!({ "issue_id": 1, "content": "x" }),
+        ),
         ("subscriber.add", serde_json::json!({ "issue_id": 1 })),
         ("subscriber.remove", serde_json::json!({ "issue_id": 1 })),
         ("project.create", serde_json::json!({ "name": "p" })),
         ("project.update", serde_json::json!({ "id": 1 })),
-        ("attachment.add", serde_json::json!({ "issue_id": 1, "filename": "a.txt", "content": "eA==" })),
+        (
+            "attachment.add",
+            serde_json::json!({ "issue_id": 1, "filename": "a.txt", "content": "eA==" }),
+        ),
         ("inbox.mark_read", serde_json::json!({ "all": true })),
-        ("autopilot.create", serde_json::json!({ "name": "ap", "title": "t", "cron": "0 9 * * *" })),
+        (
+            "autopilot.create",
+            serde_json::json!({ "name": "ap", "title": "t", "cron": "0 9 * * *" }),
+        ),
         ("autopilot.update", serde_json::json!({ "id": 1 })),
         ("autopilot.remove", serde_json::json!({ "id": 1 })),
         ("autopilot.run", serde_json::json!({ "id": 1 })),
@@ -408,9 +495,13 @@ async fn test_worker_role_never_403() {
 async fn test_coordinator_role_writes_allowed() {
     let dir = unique_dir("coordinator-gate");
     let ctx = make_ctx_with_role(&dir, NodeRole::Coordinator);
-    let out = dispatch(&ctx, "issue.create", serde_json::json!({ "title": "权威节点" }))
-        .await
-        .expect("coordinator writes must pass the gate");
+    let out = dispatch(
+        &ctx,
+        "issue.create",
+        serde_json::json!({ "title": "权威节点" }),
+    )
+    .await
+    .expect("coordinator writes must pass the gate");
     assert_eq!(out.unwrap()["issue"]["number"], "NB-1");
     let _ = std::fs::remove_dir_all(&dir);
 }
@@ -431,10 +522,14 @@ async fn test_issue_dispatch_validation_without_cluster() {
     assert!(err.contains("missing field: id"), "{err}");
 
     // 建 issue（无指派）→ 缺目标。
-    let out = dispatch(&ctx, "issue.create", serde_json::json!({ "title": "派发目标校验" }))
-        .await
-        .unwrap()
-        .unwrap();
+    let out = dispatch(
+        &ctx,
+        "issue.create",
+        serde_json::json!({ "title": "派发目标校验" }),
+    )
+    .await
+    .unwrap()
+    .unwrap();
     let id = out["issue"]["id"].as_i64().unwrap();
     let err = dispatch(&ctx, "issue.dispatch", serde_json::json!({ "id": id }))
         .await
@@ -465,14 +560,22 @@ async fn test_issue_dispatch_validation_without_cluster() {
     assert!(err.contains("集群未运行"), "{err}");
 
     // 终态（done）→ 不可派发。
-    let out = dispatch(&ctx, "issue.create", serde_json::json!({ "title": "终态派发" }))
-        .await
-        .unwrap()
-        .unwrap();
+    let out = dispatch(
+        &ctx,
+        "issue.create",
+        serde_json::json!({ "title": "终态派发" }),
+    )
+    .await
+    .unwrap()
+    .unwrap();
     let id2 = out["issue"]["id"].as_i64().unwrap();
-    dispatch(&ctx, "issue.status", serde_json::json!({ "id": id2, "status": "done" }))
-        .await
-        .unwrap();
+    dispatch(
+        &ctx,
+        "issue.status",
+        serde_json::json!({ "id": id2, "status": "done" }),
+    )
+    .await
+    .unwrap();
     let err = dispatch(
         &ctx,
         "issue.dispatch",
@@ -560,16 +663,24 @@ async fn test_issue_move_handler() {
     assert_eq!(out["moved"], true);
     assert_eq!(out["issue"]["status"], "backlog");
     assert_eq!(out["issue"]["position"], 42);
-    assert!(out["issue"]["comments"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .all(|c| c["ctype"] != "status_change"));
+    assert!(
+        out["issue"]["comments"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|c| c["ctype"] != "status_change")
+    );
     let out = dispatch(&ctx, "activity.list", serde_json::json!({ "issue_id": id }))
         .await
         .unwrap()
         .unwrap();
-    assert!(out["activity"].as_array().unwrap().iter().any(|a| a["action"] == "reordered"));
+    assert!(
+        out["activity"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|a| a["action"] == "reordered")
+    );
 
     // 跨列：backlog → in_progress + 指定 position（一个原子操作）。
     let out = dispatch(
@@ -582,11 +693,13 @@ async fn test_issue_move_handler() {
     .unwrap();
     assert_eq!(out["issue"]["status"], "in_progress");
     assert_eq!(out["issue"]["position"], 7);
-    assert!(out["issue"]["comments"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .any(|c| c["ctype"] == "status_change"));
+    assert!(
+        out["issue"]["comments"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|c| c["ctype"] == "status_change")
+    );
 
     // 非法转移（in_progress → backlog）被状态机拒绝。
     let err = dispatch(
@@ -599,9 +712,13 @@ async fn test_issue_move_handler() {
     assert!(err.contains("非法状态转移"), "{err}");
 
     // 缺 position。
-    let err = dispatch(&ctx, "issue.move", serde_json::json!({ "id": id, "status": "todo" }))
-        .await
-        .expect_err("missing position must error");
+    let err = dispatch(
+        &ctx,
+        "issue.move",
+        serde_json::json!({ "id": id, "status": "todo" }),
+    )
+    .await
+    .expect_err("missing position must error");
     assert!(err.contains("missing field: position"), "{err}");
 
     let _ = std::fs::remove_dir_all(&dir);
@@ -613,10 +730,14 @@ async fn test_issue_move_handler() {
 async fn test_attachment_add_get_roundtrip() {
     let dir = unique_dir("attachment");
     let ctx = make_ctx_with_board(&dir);
-    let out = dispatch(&ctx, "issue.create", serde_json::json!({ "title": "带附件" }))
-        .await
-        .unwrap()
-        .unwrap();
+    let out = dispatch(
+        &ctx,
+        "issue.create",
+        serde_json::json!({ "title": "带附件" }),
+    )
+    .await
+    .unwrap()
+    .unwrap();
     let id = out["issue"]["id"].as_i64().unwrap();
 
     // 上传 "hello"（base64）→ 落盘 + 元数据入表。
@@ -633,7 +754,10 @@ async fn test_attachment_add_get_roundtrip() {
     assert_eq!(out["attachment"]["size"], 5);
     let att_id = out["attachment"]["id"].as_i64().unwrap();
     let storage_path = out["attachment"]["storage_path"].as_str().unwrap();
-    assert!(storage_path.starts_with("board/files/issue_"), "{storage_path}");
+    assert!(
+        storage_path.starts_with("board/files/issue_"),
+        "{storage_path}"
+    );
     let files_dir = dir.join("board").join("files").join(format!("issue_{id}"));
     assert_eq!(
         std::fs::read_dir(&files_dir).unwrap().count(),
@@ -650,10 +774,14 @@ async fn test_attachment_add_get_roundtrip() {
     assert_eq!(out["attachment"]["id"], att_id);
 
     // attachment.list 元数据可见。
-    let out = dispatch(&ctx, "attachment.list", serde_json::json!({ "issue_id": id }))
-        .await
-        .unwrap()
-        .unwrap();
+    let out = dispatch(
+        &ctx,
+        "attachment.list",
+        serde_json::json!({ "issue_id": id }),
+    )
+    .await
+    .unwrap()
+    .unwrap();
     assert_eq!(out["attachments"].as_array().unwrap().len(), 1);
 
     // 坏 base64 拒绝。
@@ -677,13 +805,15 @@ async fn test_attachment_add_get_roundtrip() {
     assert!(err.contains("非法附件文件名"), "{err}");
 
     // 不存在的 issue 拒绝（先校验后落盘 → 不产生新文件）。
-    assert!(dispatch(
-        &ctx,
-        "attachment.add",
-        serde_json::json!({ "issue_id": 99999, "filename": "x.txt", "content": "aGVsbG8=" }),
-    )
-    .await
-    .is_err());
+    assert!(
+        dispatch(
+            &ctx,
+            "attachment.add",
+            serde_json::json!({ "issue_id": 99999, "filename": "x.txt", "content": "aGVsbG8=" }),
+        )
+        .await
+        .is_err()
+    );
     assert_eq!(
         std::fs::read_dir(&files_dir).unwrap().count(),
         1,
@@ -724,20 +854,30 @@ async fn test_project_update_handler() {
     assert_eq!(out["project"]["description"], "旧描述");
 
     // 空名拒绝。
-    let err = dispatch(&ctx, "project.update", serde_json::json!({ "id": pid, "name": "  " }))
-        .await
-        .expect_err("empty name must be rejected");
+    let err = dispatch(
+        &ctx,
+        "project.update",
+        serde_json::json!({ "id": pid, "name": "  " }),
+    )
+    .await
+    .expect_err("empty name must be rejected");
     assert!(err.contains("must not be empty"), "{err}");
 
     // 缺 id。
-    assert!(dispatch(&ctx, "project.update", serde_json::json!({ "name": "x" }))
-        .await
-        .is_err());
+    assert!(
+        dispatch(&ctx, "project.update", serde_json::json!({ "name": "x" }))
+            .await
+            .is_err()
+    );
 
     // 不存在的项目。
-    let err = dispatch(&ctx, "project.update", serde_json::json!({ "id": 99999, "name": "x" }))
-        .await
-        .expect_err("missing project must error");
+    let err = dispatch(
+        &ctx,
+        "project.update",
+        serde_json::json!({ "id": 99999, "name": "x" }),
+    )
+    .await
+    .expect_err("missing project must error");
     assert!(err.contains("not found"), "{err}");
 
     let _ = std::fs::remove_dir_all(&dir);
@@ -776,24 +916,36 @@ async fn test_inbox_list_and_mark_read() {
     assert_eq!(list[0]["title"], "通知二");
 
     // unread_only + limit 过滤。
-    let out = dispatch(&ctx, "inbox.list", serde_json::json!({ "unread_only": true, "limit": 1 }))
-        .await
-        .unwrap()
-        .unwrap();
+    let out = dispatch(
+        &ctx,
+        "inbox.list",
+        serde_json::json!({ "unread_only": true, "limit": 1 }),
+    )
+    .await
+    .unwrap()
+    .unwrap();
     assert_eq!(out["notifications"].as_array().unwrap().len(), 1);
 
     // 单条已读（幂等：第二次 marked=0）。
     let first_id = list[0]["id"].as_i64().unwrap();
-    let out = dispatch(&ctx, "inbox.mark_read", serde_json::json!({ "id": first_id }))
-        .await
-        .unwrap()
-        .unwrap();
+    let out = dispatch(
+        &ctx,
+        "inbox.mark_read",
+        serde_json::json!({ "id": first_id }),
+    )
+    .await
+    .unwrap()
+    .unwrap();
     assert_eq!(out["marked"], 1);
     assert_eq!(out["unread"], 1);
-    let out = dispatch(&ctx, "inbox.mark_read", serde_json::json!({ "id": first_id }))
-        .await
-        .unwrap()
-        .unwrap();
+    let out = dispatch(
+        &ctx,
+        "inbox.mark_read",
+        serde_json::json!({ "id": first_id }),
+    )
+    .await
+    .unwrap()
+    .unwrap();
     assert_eq!(out["marked"], 0);
     assert_eq!(out["unread"], 1);
 
@@ -804,16 +956,22 @@ async fn test_inbox_list_and_mark_read() {
         .unwrap();
     assert_eq!(out["marked"], 1);
     assert_eq!(out["unread"], 0);
-    let out = dispatch(&ctx, "inbox.list", serde_json::json!({ "unread_only": true }))
-        .await
-        .unwrap()
-        .unwrap();
+    let out = dispatch(
+        &ctx,
+        "inbox.list",
+        serde_json::json!({ "unread_only": true }),
+    )
+    .await
+    .unwrap()
+    .unwrap();
     assert_eq!(out["notifications"].as_array().unwrap().len(), 0);
 
     // 缺 id 且无 all → 报错。
-    assert!(dispatch(&ctx, "inbox.mark_read", serde_json::json!({}))
-        .await
-        .is_err());
+    assert!(
+        dispatch(&ctx, "inbox.mark_read", serde_json::json!({}))
+            .await
+            .is_err()
+    );
 
     let _ = std::fs::remove_dir_all(&dir);
 }
@@ -828,10 +986,14 @@ async fn test_issue_cancel_validation_without_cluster() {
     let store = ctx.state.board.as_ref().unwrap().store().clone();
 
     // 建 issue → 无派发 → 取消报「没有进行中的派发」。
-    let out = dispatch(&ctx, "issue.create", serde_json::json!({ "title": "待取消" }))
-        .await
-        .unwrap()
-        .unwrap();
+    let out = dispatch(
+        &ctx,
+        "issue.create",
+        serde_json::json!({ "title": "待取消" }),
+    )
+    .await
+    .unwrap()
+    .unwrap();
     let id = out["issue"]["id"].as_i64().unwrap();
     let err = dispatch(&ctx, "issue.cancel", serde_json::json!({ "id": id }))
         .await
@@ -917,20 +1079,26 @@ async fn test_autopilot_crud_manual_run_and_history() {
     assert_eq!(out["autopilots"].as_array().unwrap().len(), 2);
 
     // update：patch 语义（只改 enabled，其余不动）+ 坏 cron 拒绝。
-    let out = dispatch(&ctx, "autopilot.update", serde_json::json!({ "id": ap_id, "enabled": false }))
-        .await
-        .unwrap()
-        .unwrap();
+    let out = dispatch(
+        &ctx,
+        "autopilot.update",
+        serde_json::json!({ "id": ap_id, "enabled": false }),
+    )
+    .await
+    .unwrap()
+    .unwrap();
     assert_eq!(out["updated"], true);
     assert_eq!(out["autopilot"]["enabled"], false);
     assert_eq!(out["autopilot"]["title"], "日报 {date}");
-    assert!(dispatch(
-        &ctx,
-        "autopilot.update",
-        serde_json::json!({ "id": ap_id, "cron": "bad" })
-    )
-    .await
-    .is_err());
+    assert!(
+        dispatch(
+            &ctx,
+            "autopilot.update",
+            serde_json::json!({ "id": ap_id, "cron": "bad" })
+        )
+        .await
+        .is_err()
+    );
 
     // 手动 run（target 空、enabled=false 也可手动触发）：仅建单 + {date} 替换。
     let out = dispatch(&ctx, "autopilot.run", serde_json::json!({ "id": ap_id }))
@@ -940,7 +1108,10 @@ async fn test_autopilot_crud_manual_run_and_history() {
     assert_eq!(out["ran"], true);
     assert!(out["dispatch"].is_null());
     let number = out["issue_number"].as_str().unwrap().to_string();
-    assert!(!number.contains("{date}"), "placeholder must be substituted: {number}");
+    assert!(
+        !number.contains("{date}"),
+        "placeholder must be substituted: {number}"
+    );
 
     // target 非空 + 集群缺失 → 建单前拒绝（不留半成品）。拒绝臂随编译形态：
     // cluster 编译但未运行（nemesisbot 全量常态）→「集群未运行」；cluster
@@ -948,9 +1119,13 @@ async fn test_autopilot_crud_manual_run_and_history() {
     // 「cluster feature 未编译」。两者都是正确生产行为，按实际编译形态断言
     // 对应臂（2026-09-02 CI 实录：本测试未像 dispatch/cancel 测试那样整体
     // 门控，在无 cluster 编译下钉死单臂假红）。
-    let err = dispatch(&ctx, "autopilot.run", serde_json::json!({ "id": ap_dispatch_id }))
-        .await
-        .expect_err("dispatch target without cluster must error");
+    let err = dispatch(
+        &ctx,
+        "autopilot.run",
+        serde_json::json!({ "id": ap_dispatch_id }),
+    )
+    .await
+    .expect_err("dispatch target without cluster must error");
     let expected = if cfg!(feature = "cluster") {
         "集群未运行"
     } else {
@@ -982,14 +1157,22 @@ async fn test_autopilot_crud_manual_run_and_history() {
         .unwrap()
         .unwrap();
     assert_eq!(out["removed"], true);
-    assert!(dispatch(&ctx, "autopilot.run", serde_json::json!({ "id": ap_id }))
-        .await
-        .is_err());
+    assert!(
+        dispatch(&ctx, "autopilot.run", serde_json::json!({ "id": ap_id }))
+            .await
+            .is_err()
+    );
 
     // 缺 id。
-    assert!(dispatch(&ctx, "autopilot.update", serde_json::json!({ "enabled": true }))
+    assert!(
+        dispatch(
+            &ctx,
+            "autopilot.update",
+            serde_json::json!({ "enabled": true })
+        )
         .await
-        .is_err());
+        .is_err()
+    );
 
     let _ = std::fs::remove_dir_all(&dir);
 }
@@ -1005,15 +1188,24 @@ fn auto_dispatch_gate_requires_switch_and_worker() {
     // 有段但开关关（Default）→ 关。
     let off = nemesis_config::BoardFlagConfig::default();
     assert!(!off.auto_dispatch);
-    assert!(!should_auto_dispatch(Some(&off), Some(AssignmentType::Worker)));
+    assert!(!should_auto_dispatch(
+        Some(&off),
+        Some(AssignmentType::Worker)
+    ));
     // 开关开 + worker 指派 → 触发。
     let on = nemesis_config::BoardFlagConfig {
         auto_dispatch: true,
         ..Default::default()
     };
-    assert!(should_auto_dispatch(Some(&on), Some(AssignmentType::Worker)));
+    assert!(should_auto_dispatch(
+        Some(&on),
+        Some(AssignmentType::Worker)
+    ));
     // 开关开但非 worker（manager_self / 未指派）→ 不触发。
-    assert!(!should_auto_dispatch(Some(&on), Some(AssignmentType::ManagerSelf)));
+    assert!(!should_auto_dispatch(
+        Some(&on),
+        Some(AssignmentType::ManagerSelf)
+    ));
     assert!(!should_auto_dispatch(Some(&on), None));
 }
 
@@ -1024,10 +1216,14 @@ async fn assign_worker_default_stays_pending_no_dispatch() {
     //（不要求集群、状态不推进、无 ⛔ 评论）。
     let dir = unique_dir("assign-default-off");
     let ctx = make_ctx_with_board(&dir);
-    let out = dispatch(&ctx, "issue.create", serde_json::json!({ "title": "默认关" }))
-        .await
-        .unwrap()
-        .unwrap();
+    let out = dispatch(
+        &ctx,
+        "issue.create",
+        serde_json::json!({ "title": "默认关" }),
+    )
+    .await
+    .unwrap()
+    .unwrap();
     let id = out["issue"]["id"].as_i64().unwrap();
 
     let out = dispatch(
@@ -1084,13 +1280,7 @@ async fn auto_dispatch_on_without_cluster_leaves_trace_comment() {
         auto_dispatch: true,
         ..Default::default()
     };
-    let dispatched = super::auto_dispatch_with_config(
-        Some(&on),
-        &store,
-        None,
-        &issue,
-        &actor,
-    );
+    let dispatched = super::auto_dispatch_with_config(Some(&on), &store, None, &issue, &actor);
     assert!(!dispatched, "no cluster → dispatch must not succeed");
 
     let comments = store.list_comments(issue.id).unwrap();

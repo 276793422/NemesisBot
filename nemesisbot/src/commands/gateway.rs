@@ -172,7 +172,10 @@ fn sweep_dispatch_timeouts(
                 );
             }
             Ok(None) => { /* 输竞态（worker 恰好回报），下轮不再列出 */ }
-            Err(e) => warn!("[Board][Sweep] fail_dispatch (task {}): {e}", record.task_id),
+            Err(e) => warn!(
+                "[Board][Sweep] fail_dispatch (task {}): {e}",
+                record.task_id
+            ),
         }
     }
 }
@@ -1109,30 +1112,31 @@ fn migrate_legacy_workflow_dir(
     // Move checkpoints/ subdir contents.
     let legacy_checkpoints = legacy_root.join("checkpoints");
     if legacy_checkpoints.exists()
-        && let Ok(entries) = std::fs::read_dir(&legacy_checkpoints) {
-            for entry in entries.flatten() {
-                let path = entry.path();
-                if !path.is_dir() {
-                    continue;
-                }
-                let name = path
-                    .file_name()
-                    .unwrap_or_default()
-                    .to_string_lossy()
-                    .to_string();
-                let dest = new_checkpoints_dir.join(&name);
-                if dest.exists() {
-                    continue;
-                }
-                if let Err(e) = std::fs::rename(&path, &dest) {
-                    warn!(
-                        "[Gateway] migration: failed to move checkpoint {}: {}",
-                        path.display(),
-                        e
-                    );
-                }
+        && let Ok(entries) = std::fs::read_dir(&legacy_checkpoints)
+    {
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if !path.is_dir() {
+                continue;
+            }
+            let name = path
+                .file_name()
+                .unwrap_or_default()
+                .to_string_lossy()
+                .to_string();
+            let dest = new_checkpoints_dir.join(&name);
+            if dest.exists() {
+                continue;
+            }
+            if let Err(e) = std::fs::rename(&path, &dest) {
+                warn!(
+                    "[Gateway] migration: failed to move checkpoint {}: {}",
+                    path.display(),
+                    e
+                );
             }
         }
+    }
 
     // Best-effort cleanup: remove legacy dir if empty (ignoring the
     // now-empty checkpoints/ subdir). Don't touch non-empty dir — user may
@@ -1186,7 +1190,10 @@ fn write_back_board_dispatch(
         }
     };
     if disp.state != dispatch_state::DISPATCHED {
-        info!("[Gateway] board dispatch {task_id} already terminal ({}), skip", disp.state);
+        info!(
+            "[Gateway] board dispatch {task_id} already terminal ({}), skip",
+            disp.state
+        );
         return true;
     }
 
@@ -1216,14 +1223,15 @@ fn write_back_board_dispatch(
             // in_progress，失败评论已留痕（重派走 issue.dispatch）。
             if status != "error"
                 && let Ok(issue) = bstore.get_issue(disp.issue_id)
-                    && issue.status == nemesis_board::IssueStatus::InProgress
-                        && let Err(e) = bstore.transition_issue(
-                            disp.issue_id,
-                            nemesis_board::IssueStatus::InReview,
-                            &worker_actor,
-                        ) {
-                            warn!("[Gateway] board writeback transition failed (task_id={task_id}): {e}");
-                        }
+                && issue.status == nemesis_board::IssueStatus::InProgress
+                && let Err(e) = bstore.transition_issue(
+                    disp.issue_id,
+                    nemesis_board::IssueStatus::InReview,
+                    &worker_actor,
+                )
+            {
+                warn!("[Gateway] board writeback transition failed (task_id={task_id}): {e}");
+            }
             info!(
                 "[Gateway] board dispatch writeback done (task_id={task_id}, issue_id={}, state={terminal})",
                 disp.issue_id
@@ -1581,14 +1589,14 @@ pub async fn run(local: bool, extra_args: &[String]) -> Result<()> {
         let board_db = home.join("workspace").join("board").join("board.db");
         match nemesis_board::BoardStore::open(&board_db, "NB") {
             Ok(store) => {
-                info!(
-                    "[Gateway] Board store opened at {}",
-                    board_db.display()
-                );
+                info!("[Gateway] Board store opened at {}", board_db.display());
                 Some(std::sync::Arc::new(store))
             }
             Err(e) => {
-                warn!("[Gateway] Board store open failed: {} (board.* disabled)", e);
+                warn!(
+                    "[Gateway] Board store open failed: {} (board.* disabled)",
+                    e
+                );
                 None
             }
         }
@@ -1606,8 +1614,9 @@ pub async fn run(local: bool, extra_args: &[String]) -> Result<()> {
     // 好后取用；未启用集群时保持 None（target 为空的 autopilot 规则仍可
     // 纯本地建单）。
     #[cfg(all(feature = "board", feature = "cluster"))]
-    let autopilot_cluster_slot: Arc<std::sync::OnceLock<Arc<nemesis_cluster::cluster::Cluster>>> =
-        Arc::new(std::sync::OnceLock::new());
+    let autopilot_cluster_slot: Arc<
+        std::sync::OnceLock<Arc<nemesis_cluster::cluster::Cluster>>,
+    > = Arc::new(std::sync::OnceLock::new());
 
     // C3: Wire CronService — set_on_job handler + start.
     // Mirrors Go's bot_service.go:392-399, 571-579.
@@ -2008,52 +2017,53 @@ pub async fn run(local: bool, extra_args: &[String]) -> Result<()> {
         let peers_toml_path = common::cluster_dir(&home).join("peers.toml");
         if peers_toml_path.exists()
             && let Ok(content) = std::fs::read_to_string(&peers_toml_path)
-                && let Ok(doc) = content.parse::<toml::Value>()
-                    && let Some(peers_table) = doc.get("peers").and_then(|v| v.as_table()) {
-                        for (key, val) in peers_table {
-                            // sanitize_peer_key only replaces `.` and `:` now (both are valid TOML
-                            // bare key chars but ambiguous in key names). `-` and `_` are preserved
-                            // as-is per TOML v1.0.0 spec, so the key IS the peer_id — no reverse
-                            // mapping needed.
-                            let peer_id = key.clone();
-                            let addr = val.get("address").and_then(|v| v.as_str()).unwrap_or("");
-                            let name = val.get("name").and_then(|v| v.as_str()).unwrap_or(&peer_id);
-                            let role = val.get("role").and_then(|v| v.as_str()).unwrap_or("worker");
-                            let cat = val
-                                .get("category")
-                                .and_then(|v| v.as_str())
-                                .unwrap_or("general");
-                            if addr.is_empty() {
-                                continue;
-                            }
-                            // The address field contains UDP host:port (e.g., "127.0.0.1:11950").
-                            // Derive RPC port by convention: UDP port + 10000 (11949→21949).
-                            let (host, udp_port) = parse_host_port(addr);
-                            let rpc_port = if udp_port > 0 { udp_port + 10000 } else { 0 };
-                            let addresses = if host.is_empty() { vec![] } else { vec![host] };
-                            info!(
-                                "[Gateway] Loading static peer: {} ({}) addr={} rpc_port={}",
-                                name, peer_id, addr, rpc_port
-                            );
-                            cluster.handle_discovered_node(
-                                &peer_id,
-                                name,
-                                addresses,
-                                rpc_port,
-                                role,
-                                cat,
-                                vec![],
-                                vec![],
-                                "unknown",
-                            );
-                            // Mark as static/configured so flaky UDP discovery
-                            // (e.g. multi-node on one device) can't take it
-                            // offline via check_health staleness — the address
-                            // is known, only explicit removal/RPC-failure takes
-                            // it down.
-                            cluster.mark_peer_static(&peer_id);
-                        }
-                    }
+            && let Ok(doc) = content.parse::<toml::Value>()
+            && let Some(peers_table) = doc.get("peers").and_then(|v| v.as_table())
+        {
+            for (key, val) in peers_table {
+                // sanitize_peer_key only replaces `.` and `:` now (both are valid TOML
+                // bare key chars but ambiguous in key names). `-` and `_` are preserved
+                // as-is per TOML v1.0.0 spec, so the key IS the peer_id — no reverse
+                // mapping needed.
+                let peer_id = key.clone();
+                let addr = val.get("address").and_then(|v| v.as_str()).unwrap_or("");
+                let name = val.get("name").and_then(|v| v.as_str()).unwrap_or(&peer_id);
+                let role = val.get("role").and_then(|v| v.as_str()).unwrap_or("worker");
+                let cat = val
+                    .get("category")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("general");
+                if addr.is_empty() {
+                    continue;
+                }
+                // The address field contains UDP host:port (e.g., "127.0.0.1:11950").
+                // Derive RPC port by convention: UDP port + 10000 (11949→21949).
+                let (host, udp_port) = parse_host_port(addr);
+                let rpc_port = if udp_port > 0 { udp_port + 10000 } else { 0 };
+                let addresses = if host.is_empty() { vec![] } else { vec![host] };
+                info!(
+                    "[Gateway] Loading static peer: {} ({}) addr={} rpc_port={}",
+                    name, peer_id, addr, rpc_port
+                );
+                cluster.handle_discovered_node(
+                    &peer_id,
+                    name,
+                    addresses,
+                    rpc_port,
+                    role,
+                    cat,
+                    vec![],
+                    vec![],
+                    "unknown",
+                );
+                // Mark as static/configured so flaky UDP discovery
+                // (e.g. multi-node on one device) can't take it
+                // offline via check_health staleness — the address
+                // is known, only explicit removal/RPC-failure takes
+                // it down.
+                cluster.mark_peer_static(&peer_id);
+            }
+        }
 
         // --- Create and set RPC Server (before start, needs &mut self) ---
         let rpc_server_config = nemesis_cluster::rpc::server::RpcServerConfig {
@@ -2247,7 +2257,9 @@ pub async fn run(local: bool, extra_args: &[String]) -> Result<()> {
         // poll_stale_pending_tasks（120s 周期）永远收到 "no handler"，
         // B 重启丢结果后的 stale 恢复链路断裂（2026-09-01 跨机 E2E 实测）。
         cluster.register_task_recovery_handlers();
-        info!("[Gateway] Registered task recovery handlers (query_task_result/confirm_task_delivery)");
+        info!(
+            "[Gateway] Registered task recovery handlers (query_task_result/confirm_task_delivery)"
+        );
 
         // --- W2 P4: task_cancel handler — per-task cancel ---
         // 取消指定 peer_chat 任务的执行：排队中的直接出队丢弃，运行中的经
@@ -2298,7 +2310,11 @@ pub async fn run(local: bool, extra_args: &[String]) -> Result<()> {
                         let Some(store) = store_for_sweep.as_ref() else {
                             continue;
                         };
-                        sweep_dispatch_timeouts(store, &cluster_for_sweep, sweep_cfg.dispatch_timeout_secs);
+                        sweep_dispatch_timeouts(
+                            store,
+                            &cluster_for_sweep,
+                            sweep_cfg.dispatch_timeout_secs,
+                        );
                     }
                 });
                 info!(
@@ -2895,11 +2911,10 @@ pub async fn run(local: bool, extra_args: &[String]) -> Result<()> {
             // The JSON config field is "audit_log_file_enabled"; default is true.
             // Log directory is always `{home}/workspace/logs/security_logs/`.
             // 委托 nemesis-path 唯一拼接点（web Logs 页 security 源同源读取）。
-            let audit_dir = nemesis_path::resolve_audit_log_dir_in_workspace(
-                &common::workspace_path(&home),
-            )
-            .to_string_lossy()
-            .to_string();
+            let audit_dir =
+                nemesis_path::resolve_audit_log_dir_in_workspace(&common::workspace_path(&home))
+                    .to_string_lossy()
+                    .to_string();
             if let Err(e) = plugin.init_audit_log_file(&audit_dir) {
                 warn!("[Gateway] Failed to initialize security audit log: {}", e);
             } else {
@@ -2914,10 +2929,11 @@ pub async fn run(local: bool, extra_args: &[String]) -> Result<()> {
             let scanner_config_path = common::scanner_config_path(&home);
             if scanner_config_path.exists() {
                 if let Some(full_config) = load_scanner_full_config(&scanner_config_path)
-                    && !full_config.enabled.is_empty() {
-                        info!("[Gateway] Initializing scanner chain from config...");
-                        plugin.init_scanner_from_config(&full_config).await;
-                    }
+                    && !full_config.enabled.is_empty()
+                {
+                    info!("[Gateway] Initializing scanner chain from config...");
+                    plugin.init_scanner_from_config(&full_config).await;
+                }
             } else {
                 info!(
                     "[Gateway] Scanner config file not found: {}, scanner chain not initialized",
@@ -2944,39 +2960,38 @@ pub async fn run(local: bool, extra_args: &[String]) -> Result<()> {
         // Register RequestLogger as Observer (if logging.llm.enabled)
         if let Some(ref logging_cfg) = cfg.logging
             && let Some(llm_cfg) = &logging_cfg.llm
-                && llm_cfg.enabled {
-                    let rl_logging_config = nemesis_agent::request_logger::LoggingConfig {
-                        enabled: true,
-                        detail_level: match llm_cfg.detail_level.as_str() {
-                            "truncated" => nemesis_agent::request_logger::DetailLevel::Truncated,
-                            _ => nemesis_agent::request_logger::DetailLevel::Full,
-                        },
-                        log_dir: if llm_cfg.log_dir.is_empty() {
-                            "logs/request_logs".to_string()
-                        } else {
-                            llm_cfg.log_dir.clone()
-                        },
-                        save_raw: llm_cfg.save_raw,
-                    };
-                    let workspace_path = home.join("workspace");
-                    let rl_observer = Arc::new(
-                        nemesis_agent::request_logger_observer::RequestLoggerObserver::new(
-                            rl_logging_config,
-                            &workspace_path,
-                        ),
-                    );
-                    // We need an async context to register, but observer_mgr.register is async
-                    // and we're not in an async block here. Use tokio runtime handle directly.
-                    let mgr = observer_mgr.clone();
-                    tokio::task::block_in_place(|| {
-                        tokio::runtime::Handle::current().block_on(async {
-                            mgr.register(rl_observer).await;
-                        })
-                    });
-                    info!(
-                        "[Gateway] RequestLoggerObserver registered (logging.llm.enabled = true)"
-                    );
-                }
+            && llm_cfg.enabled
+        {
+            let rl_logging_config = nemesis_agent::request_logger::LoggingConfig {
+                enabled: true,
+                detail_level: match llm_cfg.detail_level.as_str() {
+                    "truncated" => nemesis_agent::request_logger::DetailLevel::Truncated,
+                    _ => nemesis_agent::request_logger::DetailLevel::Full,
+                },
+                log_dir: if llm_cfg.log_dir.is_empty() {
+                    "logs/request_logs".to_string()
+                } else {
+                    llm_cfg.log_dir.clone()
+                },
+                save_raw: llm_cfg.save_raw,
+            };
+            let workspace_path = home.join("workspace");
+            let rl_observer = Arc::new(
+                nemesis_agent::request_logger_observer::RequestLoggerObserver::new(
+                    rl_logging_config,
+                    &workspace_path,
+                ),
+            );
+            // We need an async context to register, but observer_mgr.register is async
+            // and we're not in an async block here. Use tokio runtime handle directly.
+            let mgr = observer_mgr.clone();
+            tokio::task::block_in_place(|| {
+                tokio::runtime::Handle::current().block_on(async {
+                    mgr.register(rl_observer).await;
+                })
+            });
+            info!("[Gateway] RequestLoggerObserver registered (logging.llm.enabled = true)");
+        }
 
         // Check if any observers were registered.
         let mgr_check = observer_mgr.clone();
@@ -3145,10 +3160,9 @@ pub async fn run(local: bool, extra_args: &[String]) -> Result<()> {
             ));
             // Only perform first start when both config flags are enabled.
             // Otherwise the adapter is created but idle — can be started from Dashboard.
-            if cluster_should_start
-                && let Err(e) = adapter.first_start() {
-                    warn!("[Gateway] Cluster adapter first start failed: {}", e);
-                }
+            if cluster_should_start && let Err(e) = adapter.first_start() {
+                warn!("[Gateway] Cluster adapter first start failed: {}", e);
+            }
             cluster_adapter = Some(adapter);
         }
     }
@@ -3299,8 +3313,7 @@ pub async fn run(local: bool, extra_args: &[String]) -> Result<()> {
         // 明细 tab 200ms 防抖静默刷新。无 SSE 订阅者（dashboard 未开）
         // 时跳过轮询读数，空闲零成本。
         const USAGE_CHANGE_POLL_SECS: u64 = 2;
-        let usage_db_for_watch =
-            nemesis_path::workspace_data_dir(&home).join("nemesisbot_data.db");
+        let usage_db_for_watch = nemesis_path::workspace_data_dir(&home).join("nemesisbot_data.db");
         let event_hub_for_usage = web_server.event_hub().clone();
         match nemesis_data::watcher::open_conn(&usage_db_for_watch) {
             Ok(watch_conn) => {
@@ -3330,9 +3343,7 @@ pub async fn run(local: bool, extra_args: &[String]) -> Result<()> {
                         }
                     }
                 });
-                info!(
-                    "[Gateway] usage change watcher armed (poll={USAGE_CHANGE_POLL_SECS}s)"
-                );
+                info!("[Gateway] usage change watcher armed (poll={USAGE_CHANGE_POLL_SECS}s)");
             }
             Err(e) => {
                 warn!("[Gateway] usage change watcher disabled: {e}");
@@ -3903,15 +3914,15 @@ pub async fn run(local: bool, extra_args: &[String]) -> Result<()> {
     }
     start_cron_scheduler(&cron_service).await;
     // H1 (U12) armed gate：这里只 start 不 arm——arm() 被移到 Step 17 之后
-        // （agent 已订阅 + web 已 bind）。此前 arm 挂在本处是 BUG #49（2026-08-28）
-        // 的根因：boot 顺序是 arm(Step14) → web bind/state 写盘(Step17) →
-        // agent_adapter.start() 才订阅 bus inbound(旧 Step18)，中间没有任何
-        // 订阅者。overdue 的持久化 job 在 arm 后第一个 1s tick 即 fire，消息
-        // publish 进 tokio broadcast 时零订阅者 = 静默丢弃（cron fire-and-forget
-        // 照记 last_status=ok，agent 的 LLM 一次不发）。空载时间隙 <1s 订阅赢，
-        // 负载下间隙拉开 >1s 必丢——测试全部通过/失败随负载轮换的根源。
-        // tick 调度器在 disarm 状态下空转（见 service.rs H1 gate），晚 arm 无
-        // 副作用，只是把 fire 时机推迟到"订阅者就位"之后。
+    // （agent 已订阅 + web 已 bind）。此前 arm 挂在本处是 BUG #49（2026-08-28）
+    // 的根因：boot 顺序是 arm(Step14) → web bind/state 写盘(Step17) →
+    // agent_adapter.start() 才订阅 bus inbound(旧 Step18)，中间没有任何
+    // 订阅者。overdue 的持久化 job 在 arm 后第一个 1s tick 即 fire，消息
+    // publish 进 tokio broadcast 时零订阅者 = 静默丢弃（cron fire-and-forget
+    // 照记 last_status=ok，agent 的 LLM 一次不发）。空载时间隙 <1s 订阅赢，
+    // 负载下间隙拉开 >1s 必丢——测试全部通过/失败随负载轮换的根源。
+    // tick 调度器在 disarm 状态下空转（见 service.rs H1 gate），晚 arm 无
+    // 副作用，只是把 fire 时机推迟到"订阅者就位"之后。
 
     // Step 14b: Start AgentLoop's bus processing（原 Step 18 上移，BUG #49）
     // 订阅必须在所有 inbound 生产者上线之前完成：
@@ -4186,9 +4197,7 @@ pub async fn run(local: bool, extra_args: &[String]) -> Result<()> {
                         }
                     }
                     nemesis_web::internal::InternalCommand::Shutdown => {
-                        info!(
-                            "[Gateway] Internal command: shutdown via /api/internal (BUG #31)"
-                        );
+                        info!("[Gateway] Internal command: shutdown via /api/internal (BUG #31)");
                         #[cfg(not(target_os = "android"))]
                         trigger_global_shutdown();
                         shutdown_svc_internal.shutdown();
@@ -4234,31 +4243,31 @@ pub async fn run(local: bool, extra_args: &[String]) -> Result<()> {
                     // Write config.json cluster.enabled = true
                     let cfg_path = home_for_start.join("config.json");
                     if let Ok(content) = std::fs::read_to_string(&cfg_path)
-                        && let Ok(mut cfg) = serde_json::from_str::<serde_json::Value>(&content) {
-                            if cfg.get("cluster").is_none() {
-                                cfg["cluster"] = serde_json::json!({});
-                            }
-                            if let Some(obj) =
-                                cfg.get_mut("cluster").and_then(|c| c.as_object_mut())
-                            {
-                                obj.insert("enabled".to_string(), serde_json::json!(true));
-                                if let Ok(updated) = serde_json::to_string_pretty(&cfg) {
-                                    let _ = std::fs::write(&cfg_path, updated);
-                                }
+                        && let Ok(mut cfg) = serde_json::from_str::<serde_json::Value>(&content)
+                    {
+                        if cfg.get("cluster").is_none() {
+                            cfg["cluster"] = serde_json::json!({});
+                        }
+                        if let Some(obj) = cfg.get_mut("cluster").and_then(|c| c.as_object_mut()) {
+                            obj.insert("enabled".to_string(), serde_json::json!(true));
+                            if let Ok(updated) = serde_json::to_string_pretty(&cfg) {
+                                let _ = std::fs::write(&cfg_path, updated);
                             }
                         }
+                    }
                     // Write config.cluster.json enabled = true
                     let cluster_cfg_path = nemesis_path::resolve_cluster_config_path_in_workspace(
                         &common::workspace_path(&home_for_start),
                     );
                     if let Ok(content) = std::fs::read_to_string(&cluster_cfg_path)
                         && let Ok(mut cfg) = serde_json::from_str::<serde_json::Value>(&content)
-                            && let Some(obj) = cfg.as_object_mut() {
-                                obj.insert("enabled".to_string(), serde_json::json!(true));
-                                if let Ok(updated) = serde_json::to_string_pretty(&cfg) {
-                                    let _ = std::fs::write(&cluster_cfg_path, updated);
-                                }
-                            }
+                        && let Some(obj) = cfg.as_object_mut()
+                    {
+                        obj.insert("enabled".to_string(), serde_json::json!(true));
+                        if let Ok(updated) = serde_json::to_string_pretty(&cfg) {
+                            let _ = std::fs::write(&cluster_cfg_path, updated);
+                        }
+                    }
                     if let Err(e) = ca_start.start() {
                         tracing::warn!("[Gateway] Tray: failed to start cluster: {}", e);
                     }
@@ -4276,24 +4285,24 @@ pub async fn run(local: bool, extra_args: &[String]) -> Result<()> {
                     );
                     if let Ok(content) = std::fs::read_to_string(&cluster_cfg_path)
                         && let Ok(mut cfg) = serde_json::from_str::<serde_json::Value>(&content)
-                            && let Some(obj) = cfg.as_object_mut() {
-                                obj.insert("enabled".to_string(), serde_json::json!(false));
-                                if let Ok(updated) = serde_json::to_string_pretty(&cfg) {
-                                    let _ = std::fs::write(&cluster_cfg_path, updated);
-                                }
-                            }
+                        && let Some(obj) = cfg.as_object_mut()
+                    {
+                        obj.insert("enabled".to_string(), serde_json::json!(false));
+                        if let Ok(updated) = serde_json::to_string_pretty(&cfg) {
+                            let _ = std::fs::write(&cluster_cfg_path, updated);
+                        }
+                    }
                     // Write config.json cluster.enabled = false
                     let cfg_path = home_for_stop.join("config.json");
                     if let Ok(content) = std::fs::read_to_string(&cfg_path)
                         && let Ok(mut cfg) = serde_json::from_str::<serde_json::Value>(&content)
-                            && let Some(obj) =
-                                cfg.get_mut("cluster").and_then(|c| c.as_object_mut())
-                            {
-                                obj.insert("enabled".to_string(), serde_json::json!(false));
-                                if let Ok(updated) = serde_json::to_string_pretty(&cfg) {
-                                    let _ = std::fs::write(&cfg_path, updated);
-                                }
-                            }
+                        && let Some(obj) = cfg.get_mut("cluster").and_then(|c| c.as_object_mut())
+                    {
+                        obj.insert("enabled".to_string(), serde_json::json!(false));
+                        if let Ok(updated) = serde_json::to_string_pretty(&cfg) {
+                            let _ = std::fs::write(&cfg_path, updated);
+                        }
+                    }
                 }));
             }
         }

@@ -104,9 +104,15 @@ fn format_bytes_boundaries() {
 async fn mark_op_dedup_then_finish_allows_restart() {
     let key = "wweb2-dup";
     assert!(mark_op_started(key).await.is_some(), "first start ok");
-    assert!(mark_op_started(key).await.is_none(), "second start must be rejected");
+    assert!(
+        mark_op_started(key).await.is_none(),
+        "second start must be rejected"
+    );
     mark_op_finished(key).await;
-    assert!(mark_op_started(key).await.is_some(), "after finish, restart ok");
+    assert!(
+        mark_op_started(key).await.is_some(),
+        "after finish, restart ok"
+    );
     mark_op_finished(key).await;
 }
 
@@ -120,14 +126,20 @@ async fn cmd_cancel_no_active_op_errors() {
         .cmd_cancel(&serde_json::json!({ "name": "wweb2-never" }))
         .await
         .unwrap_err();
-    assert!(err.contains("no active operation for wweb2-never"), "err: {err}");
+    assert!(
+        err.contains("no active operation for wweb2-never"),
+        "err: {err}"
+    );
 }
 
 #[tokio::test]
 async fn cmd_cancel_exact_key_cancels_token() {
     let key = "wweb2-exact";
     let token = CancellationToken::new();
-    active_ops().lock().await.insert(key.to_string(), token.clone());
+    active_ops()
+        .lock()
+        .await
+        .insert(key.to_string(), token.clone());
     let r = ScannerHandler::new()
         .cmd_cancel(&serde_json::json!({ "name": key }))
         .await
@@ -143,7 +155,10 @@ async fn cmd_cancel_exact_key_cancels_token() {
 async fn cmd_cancel_update_db_prefix_key_cancels() {
     let key = "wweb2-eng-update-db";
     let token = CancellationToken::new();
-    active_ops().lock().await.insert(key.to_string(), token.clone());
+    active_ops()
+        .lock()
+        .await
+        .insert(key.to_string(), token.clone());
     // 用户只传 engine 名，前缀匹配到 update-db 操作键
     let r = ScannerHandler::new()
         .cmd_cancel(&serde_json::json!({ "name": "wweb2-eng" }))
@@ -186,7 +201,10 @@ async fn cmd_install_rejects_while_op_in_progress() {
     let ctx = make_ctx(&dir);
     let ws = dir.path().to_string_lossy().to_string();
     let key = "wweb2-busy";
-    active_ops().lock().await.insert(key.to_string(), CancellationToken::new());
+    active_ops()
+        .lock()
+        .await
+        .insert(key.to_string(), CancellationToken::new());
     let err = ScannerHandler::new()
         .cmd_install(&ws, &serde_json::json!({ "name": key }), &ctx)
         .await
@@ -201,12 +219,18 @@ async fn cmd_update_db_rejects_while_op_in_progress() {
     let ctx = make_ctx(&dir);
     let ws = dir.path().to_string_lossy().to_string();
     let key = "wweb2-busy2-update-db";
-    active_ops().lock().await.insert(key.to_string(), CancellationToken::new());
+    active_ops()
+        .lock()
+        .await
+        .insert(key.to_string(), CancellationToken::new());
     let err = ScannerHandler::new()
         .cmd_update_db(&ws, &serde_json::json!({ "name": "wweb2-busy2" }), &ctx)
         .await
         .unwrap_err();
-    assert!(err.contains("database update already in progress"), "err: {err}");
+    assert!(
+        err.contains("database update already in progress"),
+        "err: {err}"
+    );
     active_ops().lock().await.remove(key);
 }
 
@@ -271,12 +295,16 @@ async fn update_db_inner_early_errors() {
     let cfg_dir = dir.path().join("config");
     std::fs::create_dir_all(&cfg_dir).unwrap();
     std::fs::write(cfg_dir.join("config.scanner.json"), "{broken").unwrap();
-    let err = update_db_inner(&ws, "clamav", &hub, &token).await.unwrap_err();
+    let err = update_db_inner(&ws, "clamav", &hub, &token)
+        .await
+        .unwrap_err();
     assert!(err.starts_with("load config:"), "err: {err}");
 
     // 2) 引擎不存在（合法空配置）
     write_cfg(dir.path(), serde_json::json!({}));
-    let err = update_db_inner(&ws, "ghost", &hub, &token).await.unwrap_err();
+    let err = update_db_inner(&ws, "ghost", &hub, &token)
+        .await
+        .unwrap_err();
     assert_eq!(err, "engine 'ghost' not found");
 
     // 3) 未安装（无 clamav_path）→ 不进入 freshclam
@@ -284,7 +312,9 @@ async fn update_db_inner_early_errors() {
         dir.path(),
         serde_json::json!({ "clamav": { "clamav_path": "" } }),
     );
-    let err = update_db_inner(&ws, "clamav", &hub, &token).await.unwrap_err();
+    let err = update_db_inner(&ws, "clamav", &hub, &token)
+        .await
+        .unwrap_err();
     assert_eq!(err, "engine not installed (no clamav_path)");
 }
 
@@ -325,7 +355,10 @@ async fn download_progress_cb_zero_total_uses_bytes_arm() {
     assert_eq!(ev.data["progress"], 0);
     let msg = ev.data["message"].as_str().unwrap();
     assert!(msg.contains("300 B"), "msg: {msg}");
-    assert!(!msg.contains('%'), "no percentage in unknown-total arm: {msg}");
+    assert!(
+        !msg.contains('%'),
+        "no percentage in unknown-total arm: {msg}"
+    );
 }
 
 #[tokio::test]

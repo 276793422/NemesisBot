@@ -40,7 +40,10 @@ fn cli_search_limit_defaults_to_20() {
             assert_eq!(query, "你好");
             assert_eq!(limit, 20, "--limit 缺省必须是 20（与 U20 设计一致）");
         }
-        other => match other { HistoryAction::Search { .. } => unreachable!(), HistoryAction::Reindex => panic!("expected Search, got Reindex") },
+        other => match other {
+            HistoryAction::Search { .. } => unreachable!(),
+            HistoryAction::Reindex => panic!("expected Search, got Reindex"),
+        },
     }
 }
 
@@ -55,7 +58,10 @@ fn cli_search_limit_accepts_explicit_value() {
             assert_eq!(query, "kw");
             assert_eq!(limit, 5);
         }
-        other => match other { HistoryAction::Search { .. } => unreachable!(), HistoryAction::Reindex => panic!("expected Search, got Reindex") },
+        other => match other {
+            HistoryAction::Search { .. } => unreachable!(),
+            HistoryAction::Reindex => panic!("expected Search, got Reindex"),
+        },
     }
 }
 
@@ -83,7 +89,7 @@ fn cli_reindex_takes_no_positional_args() {
 #[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
 mod r7_run_via_singleton_redirect {
     use super::*;
-    use crate::tests::{singleton_test_home, EnvHomeGuard};
+    use crate::tests::{EnvHomeGuard, singleton_test_home};
 
     fn seed_jsonl(key: &str, lines: &[serde_json::Value]) {
         let home = singleton_test_home();

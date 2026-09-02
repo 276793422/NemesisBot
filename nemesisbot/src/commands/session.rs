@@ -124,9 +124,10 @@ fn list_sessions(home: &Path) -> Result<()> {
             if path.extension().and_then(|e| e.to_str()) != Some("json") {
                 continue;
             }
-            let Ok(data) = std::fs::read_to_string(&path) else { continue };
-            let Ok(s) = serde_json::from_str::<nemesis_agent::session::StoredSession>(&data)
-            else {
+            let Ok(data) = std::fs::read_to_string(&path) else {
+                continue;
+            };
+            let Ok(s) = serde_json::from_str::<nemesis_agent::session::StoredSession>(&data) else {
                 continue;
             };
             let summary_tag = if s.summary.is_empty() {
@@ -150,11 +151,20 @@ fn list_sessions(home: &Path) -> Result<()> {
         return Ok(());
     }
     rows.sort_by(|a, b| b.3.cmp(&a.3));
-    println!("{:<44} {:>6} {:>9}  {:<16} ", "SESSION KEY", "TURNS", "ROWS", "UPDATED");
+    println!(
+        "{:<44} {:>6} {:>9}  {:<16} ",
+        "SESSION KEY", "TURNS", "ROWS", "UPDATED"
+    );
     for (key, turns, msgs, updated, tag) in &rows {
-        println!("{:<44} {:>6} {:>9}  {:<16} {}", key, turns, msgs, updated, tag);
+        println!(
+            "{:<44} {:>6} {:>9}  {:<16} {}",
+            key, turns, msgs, updated, tag
+        );
     }
-    println!("\n（TURNS/ROWS 按 chat_log 统计；home: {}）", home.display());
+    println!(
+        "\n（TURNS/ROWS 按 chat_log 统计；home: {}）",
+        home.display()
+    );
     Ok(())
 }
 
@@ -163,13 +173,21 @@ fn list_sessions(home: &Path) -> Result<()> {
 fn show_turns(session_key: &str) -> Result<()> {
     let (rows, _, _, _) = nemesis_agent::chat_log::read_chat_log(session_key, usize::MAX, None);
     if rows.is_empty() {
-        bail!("会话 {:?} 不存在或聊天记录（jsonl）为空（用 session list 查看可用 key）", session_key);
+        bail!(
+            "会话 {:?} 不存在或聊天记录（jsonl）为空（用 session list 查看可用 key）",
+            session_key
+        );
     }
     let turns = row_user_turn_count(&rows);
     if turns == 0 {
         bail!("会话 {:?} 没有完整 user 轮次，无可分支内容", session_key);
     }
-    println!("会话 {} 共 {} 轮 / {} 行聊天记录：", session_key, turns, rows.len());
+    println!(
+        "会话 {} 共 {} 轮 / {} 行聊天记录：",
+        session_key,
+        turns,
+        rows.len()
+    );
     let mut turn = 0usize;
     let mut preview: Option<&str> = None;
     let mut acc = 0usize;
@@ -177,7 +195,10 @@ fn show_turns(session_key: &str) -> Result<()> {
         let role = v.get("role").and_then(|r| r.as_str()).unwrap_or("");
         if role == "user" {
             if let Some(p) = preview.take() {
-                println!("  --at {:<3} 保留前 {} 轮（{} 行）  首条: {}", turn, turn, acc, p);
+                println!(
+                    "  --at {:<3} 保留前 {} 轮（{} 行）  首条: {}",
+                    turn, turn, acc, p
+                );
                 acc = 0;
             }
             turn += 1;
@@ -186,7 +207,10 @@ fn show_turns(session_key: &str) -> Result<()> {
         acc += 1;
     }
     if let Some(p) = preview {
-        println!("  --at {:<3} 保留前 {} 轮（{} 行）  首条: {}", turn, turn, acc, p);
+        println!(
+            "  --at {:<3} 保留前 {} 轮（{} 行）  首条: {}",
+            turn, turn, acc, p
+        );
     }
     println!("  （--at {} = 全量分支；省略 --at 默认全量）", turns);
     Ok(())

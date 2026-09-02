@@ -216,6 +216,6 @@ pub fn png_to_ico(png_data: &[u8]) -> Vec<u8> {
 // ---------------------------------------------------------------------------
 
 #[cfg(test)]
-mod tests;
-#[cfg(test)]
 mod s7_tests;
+#[cfg(test)]
+mod tests;

@@ -22,7 +22,9 @@ async fn test_fetch_skill_content_success() {
     let server = MockServer::start().await;
     Mock::given(method("GET"))
         .and(path("/PantherAng/pdf"))
-        .respond_with(ResponseTemplate::new(200).set_body_string(detail_json("---\nname: pdf\n---\nbody")))
+        .respond_with(
+            ResponseTemplate::new(200).set_body_string(detail_json("---\nname: pdf\n---\nbody")),
+        )
         .mount(&server)
         .await;
     let reg = make_registry_pointing_at(&server).await;
@@ -39,7 +41,10 @@ async fn test_fetch_skill_content_empty_readme_errors() {
         .mount(&server)
         .await;
     let reg = make_registry_pointing_at(&server).await;
-    let err = reg.fetch_skill_content("PantherAng", "pdf").await.unwrap_err();
+    let err = reg
+        .fetch_skill_content("PantherAng", "pdf")
+        .await
+        .unwrap_err();
     assert!(err.to_string().contains("empty"));
 }
 
@@ -54,7 +59,10 @@ async fn test_fetch_skill_content_api_error_code() {
         .mount(&server)
         .await;
     let reg = make_registry_pointing_at(&server).await;
-    let err = reg.fetch_skill_content("PantherAng", "pdf").await.unwrap_err();
+    let err = reg
+        .fetch_skill_content("PantherAng", "pdf")
+        .await
+        .unwrap_err();
     assert!(err.to_string().contains("404") || err.to_string().contains("not found"));
 }
 
@@ -66,7 +74,10 @@ async fn test_fetch_skill_content_http_error() {
         .mount(&server)
         .await;
     let reg = make_registry_pointing_at(&server).await;
-    let err = reg.fetch_skill_content("PantherAng", "pdf").await.unwrap_err();
+    let err = reg
+        .fetch_skill_content("PantherAng", "pdf")
+        .await
+        .unwrap_err();
     assert!(err.to_string().contains("HTTP"));
 }
 
@@ -135,9 +146,15 @@ fn test_convert_skill_falls_back_to_description_en() {
 
 #[test]
 fn test_convert_skill_both_descriptions_empty() {
-    let json = make_skill_json(&[
-        ("empty", "Empty", "", "", "https://github.com/o/r/tree/main/skills/empty", "", 0),
-    ]);
+    let json = make_skill_json(&[(
+        "empty",
+        "Empty",
+        "",
+        "",
+        "https://github.com/o/r/tree/main/skills/empty",
+        "",
+        0,
+    )]);
     let api: ApiResponse = serde_json::from_str(&json).unwrap();
     let converted = ModelScopeRegistry::convert_skill(&api.data.skill_list[0]);
     assert_eq!(converted.summary, "");
@@ -165,7 +182,8 @@ fn test_convert_skill_score_is_half() {
 
 #[test]
 fn test_api_response_with_empty_skill_list() {
-    let json = r#"{"Code":200,"Data":{"SkillList":[],"TotalCount":0},"Message":"ok","Success":true}"#;
+    let json =
+        r#"{"Code":200,"Data":{"SkillList":[],"TotalCount":0},"Message":"ok","Success":true}"#;
     let api: ApiResponse = serde_json::from_str(json).unwrap();
     assert_eq!(api.code, 200);
     assert!(api.data.skill_list.is_empty());
@@ -378,8 +396,24 @@ async fn test_search_caps_limit_at_50() {
 async fn test_search_returns_converted_results() {
     let server = MockServer::start().await;
     let body = make_skill_json(&[
-        ("pdf", "PDF", "PDF描述", "", "https://github.com/o/r/tree/main/skills/pdf", "alice", 10),
-        ("csv", "CSV", "", "CSV EN", "https://github.com/o/r/tree/main/skills/csv", "bob", 20),
+        (
+            "pdf",
+            "PDF",
+            "PDF描述",
+            "",
+            "https://github.com/o/r/tree/main/skills/pdf",
+            "alice",
+            10,
+        ),
+        (
+            "csv",
+            "CSV",
+            "",
+            "CSV EN",
+            "https://github.com/o/r/tree/main/skills/csv",
+            "bob",
+            20,
+        ),
     ]);
     Mock::given(method("PUT"))
         .respond_with(ResponseTemplate::new(200).set_body_string(body))
@@ -437,7 +471,8 @@ async fn test_get_skill_meta_empty_slug() {
 #[tokio::test]
 async fn test_get_skill_meta_not_found() {
     let server = MockServer::start().await;
-    let body = r#"{"Code":200,"Data":{"SkillList":[],"TotalCount":0},"Message":"ok","Success":true}"#;
+    let body =
+        r#"{"Code":200,"Data":{"SkillList":[],"TotalCount":0},"Message":"ok","Success":true}"#;
     Mock::given(method("PUT"))
         .respond_with(ResponseTemplate::new(200).set_body_string(body))
         .mount(&server)
@@ -455,14 +490,18 @@ async fn test_get_skill_meta_not_found() {
 #[tokio::test]
 async fn test_download_and_install_invalid_slug() {
     let reg = ModelScopeRegistry::new();
-    let err = reg.download_and_install("a/b", "1.0", "/tmp").await.unwrap_err();
+    let err = reg
+        .download_and_install("a/b", "1.0", "/tmp")
+        .await
+        .unwrap_err();
     assert!(err.to_string().contains("invalid") || err.to_string().contains("separator"));
 }
 
 #[tokio::test]
 async fn test_download_and_install_no_files() {
     let server = MockServer::start().await;
-    let body = r#"{"Code":200,"Data":{"SkillList":[],"TotalCount":0},"Message":"ok","Success":true}"#;
+    let body =
+        r#"{"Code":200,"Data":{"SkillList":[],"TotalCount":0},"Message":"ok","Success":true}"#;
     Mock::given(method("PUT"))
         .respond_with(ResponseTemplate::new(200).set_body_string(body))
         .mount(&server)
@@ -486,7 +525,10 @@ async fn test_download_and_install_name_mismatch_errors() {
         .await;
 
     let reg = make_registry_pointing_at(&server).await;
-    let err = reg.download_and_install("pdf", "1.0", "/tmp/modelscope_install").await.unwrap_err();
+    let err = reg
+        .download_and_install("pdf", "1.0", "/tmp/modelscope_install")
+        .await
+        .unwrap_err();
     assert!(err.to_string().to_lowercase().contains("not found"));
     assert!(err.to_string().contains("not-pdf"));
 }
@@ -541,7 +583,10 @@ async fn test_download_and_install_full_success() {
 
     let dir = tempfile::tempdir().unwrap();
     let reg = make_registry_pointing_at(&server).await;
-    let result = reg.download_and_install("pdf", "1.0", dir.path().to_str().unwrap()).await.unwrap();
+    let result = reg
+        .download_and_install("pdf", "1.0", dir.path().to_str().unwrap())
+        .await
+        .unwrap();
     assert_eq!(result.version, "latest");
     assert_eq!(result.summary, "summary");
     let skill_md = std::fs::read_to_string(dir.path().join("SKILL.md")).unwrap();
@@ -580,7 +625,10 @@ async fn test_download_and_install_rejects_path_traversal() {
 
     let dir = tempfile::tempdir().unwrap();
     let reg = make_registry_pointing_at(&server).await;
-    let err = reg.download_and_install("pdf", "1.0", dir.path().to_str().unwrap()).await.unwrap_err();
+    let err = reg
+        .download_and_install("pdf", "1.0", dir.path().to_str().unwrap())
+        .await
+        .unwrap_err();
     let msg = err.to_string().to_lowercase();
     assert!(msg.contains("unsafe") || msg.contains("traversal") || msg.contains("security"));
     assert!(!dir.path().join("../evil.md").exists());
@@ -597,15 +645,25 @@ async fn live_modelscope_install_divination_full_tree() {
         .await
         .expect("install should succeed");
 
-    assert!(dir.path().join("SKILL.md").exists(), "SKILL.md must be installed");
+    assert!(
+        dir.path().join("SKILL.md").exists(),
+        "SKILL.md must be installed"
+    );
     let refs_dir = dir.path().join("references");
     assert!(refs_dir.is_dir(), "references/ directory must be installed");
     let ref_count = std::fs::read_dir(&refs_dir).unwrap().count();
-    assert!(ref_count >= 5, "expected several reference files, got {}", ref_count);
+    assert!(
+        ref_count >= 5,
+        "expected several reference files, got {}",
+        ref_count
+    );
 
     let bazi = std::fs::read_to_string(refs_dir.join("bazi-workflow.md"))
         .expect("bazi-workflow.md must be installed");
-    assert!(bazi.contains("Bazi") || bazi.contains("八字"), "content must be intact UTF-8");
+    assert!(
+        bazi.contains("Bazi") || bazi.contains("八字"),
+        "content must be intact UTF-8"
+    );
 }
 
 #[tokio::test]
@@ -657,7 +715,10 @@ async fn live_modelscope_install_mingli_partial_mirror_graceful() {
     reg.download_and_install("mingli", "latest", dir.path().to_str().unwrap())
         .await
         .expect("install should succeed (at least the mirrored SKILL.md)");
-    assert!(dir.path().join("SKILL.md").exists(), "mirrored SKILL.md must install");
+    assert!(
+        dir.path().join("SKILL.md").exists(),
+        "mirrored SKILL.md must install"
+    );
 }
 
 #[tokio::test]
@@ -689,7 +750,9 @@ async fn test_get_skill_content_via_detail_api() {
         .await;
     Mock::given(method("GET"))
         .and(path("/PantherAng/pdf"))
-        .respond_with(ResponseTemplate::new(200).set_body_string(detail_json("---\nname: pdf\n---\nbody")))
+        .respond_with(
+            ResponseTemplate::new(200).set_body_string(detail_json("---\nname: pdf\n---\nbody")),
+        )
         .mount(&server)
         .await;
     let reg = make_registry_pointing_at(&server).await;
@@ -706,7 +769,15 @@ async fn test_get_skill_content_via_detail_api() {
 #[tokio::test]
 async fn test_browse_default_sort() {
     let server = MockServer::start().await;
-    let body = make_skill_json(&[("a", "A", "x", "", "https://github.com/o/r/tree/main/skills/a", "", 0)]);
+    let body = make_skill_json(&[(
+        "a",
+        "A",
+        "x",
+        "",
+        "https://github.com/o/r/tree/main/skills/a",
+        "",
+        0,
+    )]);
     Mock::given(method("PUT"))
         .respond_with(ResponseTemplate::new(200).set_body_string(body))
         .mount(&server)
@@ -719,7 +790,15 @@ async fn test_browse_default_sort() {
 #[tokio::test]
 async fn test_browse_downloads_sort() {
     let server = MockServer::start().await;
-    let body = make_skill_json(&[("a", "A", "x", "", "https://github.com/o/r/tree/main/skills/a", "", 0)]);
+    let body = make_skill_json(&[(
+        "a",
+        "A",
+        "x",
+        "",
+        "https://github.com/o/r/tree/main/skills/a",
+        "",
+        0,
+    )]);
     Mock::given(method("PUT"))
         .respond_with(ResponseTemplate::new(200).set_body_string(body))
         .mount(&server)
@@ -731,7 +810,15 @@ async fn test_browse_downloads_sort() {
 #[tokio::test]
 async fn test_browse_updated_sort() {
     let server = MockServer::start().await;
-    let body = make_skill_json(&[("a", "A", "x", "", "https://github.com/o/r/tree/main/skills/a", "", 0)]);
+    let body = make_skill_json(&[(
+        "a",
+        "A",
+        "x",
+        "",
+        "https://github.com/o/r/tree/main/skills/a",
+        "",
+        0,
+    )]);
     Mock::given(method("PUT"))
         .respond_with(ResponseTemplate::new(200).set_body_string(body))
         .mount(&server)
@@ -820,8 +907,14 @@ fn test_registry_name() {
 #[test]
 fn test_default_base_url() {
     let reg = ModelScopeRegistry::new();
-    assert_eq!(reg.base_url, "https://www.modelscope.cn/api/v1/dolphin/skills");
-    assert_eq!(reg.content_base_url, "https://www.modelscope.cn/api/v1/skills");
+    assert_eq!(
+        reg.base_url,
+        "https://www.modelscope.cn/api/v1/dolphin/skills"
+    );
+    assert_eq!(
+        reg.content_base_url,
+        "https://www.modelscope.cn/api/v1/skills"
+    );
 }
 
 // ============================================================
@@ -896,7 +989,13 @@ async fn test_search_with_description_en_fallback_in_results() {
 async fn test_search_clamps_limit_to_50_in_request() {
     let server = MockServer::start().await;
     let body = make_skill_json(&[(
-        "x", "X", "d", "", "https://github.com/o/r/tree/main/skills/x", "", 0,
+        "x",
+        "X",
+        "d",
+        "",
+        "https://github.com/o/r/tree/main/skills/x",
+        "",
+        0,
     )]);
     // The mock records the request body; we verify PageSize is clamped to 50
     // by asserting the call succeeds (search internally uses limit.min(50)).
@@ -998,7 +1097,13 @@ async fn test_browse_propagates_converted_item_fields() {
 async fn test_browse_stars_sort_maps_to_default() {
     let server = MockServer::start().await;
     let body = make_skill_json(&[(
-        "a", "A", "x", "", "https://github.com/o/r/tree/main/skills/a", "", 0,
+        "a",
+        "A",
+        "x",
+        "",
+        "https://github.com/o/r/tree/main/skills/a",
+        "",
+        0,
     )]);
     Mock::given(method("PUT"))
         .respond_with(ResponseTemplate::new(200).set_body_string(body))
@@ -1036,9 +1141,33 @@ async fn test_search_empty_query_still_calls_api() {
     // search("") is valid — it still issues the PUT and returns converted results.
     let server = MockServer::start().await;
     let body = make_skill_json(&[
-        ("a", "A", "d1", "", "https://github.com/o/r/tree/main/skills/a", "", 1),
-        ("b", "B", "d2", "", "https://github.com/o/r/tree/main/skills/b", "", 2),
-        ("c", "C", "d3", "", "https://github.com/o/r/tree/main/skills/c", "", 3),
+        (
+            "a",
+            "A",
+            "d1",
+            "",
+            "https://github.com/o/r/tree/main/skills/a",
+            "",
+            1,
+        ),
+        (
+            "b",
+            "B",
+            "d2",
+            "",
+            "https://github.com/o/r/tree/main/skills/b",
+            "",
+            2,
+        ),
+        (
+            "c",
+            "C",
+            "d3",
+            "",
+            "https://github.com/o/r/tree/main/skills/c",
+            "",
+            3,
+        ),
     ]);
     Mock::given(method("PUT"))
         .respond_with(ResponseTemplate::new(200).set_body_string(body))
@@ -1078,15 +1207,27 @@ fn test_parse_github_tree_url_shapes() {
         Some(("o", "r", "main", "skills/pdf"))
     );
     // Non-github host.
-    assert_eq!(parse_github_tree_url("https://gitlab.com/o/r/tree/main/x"), None);
+    assert_eq!(
+        parse_github_tree_url("https://gitlab.com/o/r/tree/main/x"),
+        None
+    );
     // Missing 4th segment (bare repo root).
     assert_eq!(parse_github_tree_url("https://github.com/o/r"), None);
     // Not a /tree/ URL.
-    assert_eq!(parse_github_tree_url("https://github.com/o/r/blob/main/x"), None);
+    assert_eq!(
+        parse_github_tree_url("https://github.com/o/r/blob/main/x"),
+        None
+    );
     // Trailing slash -> path empty -> None.
-    assert_eq!(parse_github_tree_url("https://github.com/o/r/tree/main/"), None);
+    assert_eq!(
+        parse_github_tree_url("https://github.com/o/r/tree/main/"),
+        None
+    );
     // No slash after branch.
-    assert_eq!(parse_github_tree_url("https://github.com/o/r/tree/main"), None);
+    assert_eq!(
+        parse_github_tree_url("https://github.com/o/r/tree/main"),
+        None
+    );
 }
 
 #[tokio::test]
@@ -1099,7 +1240,10 @@ async fn test_list_repo_files_http_error() {
         .await;
     let reg = make_registry_pointing_at(&server).await;
 
-    let err = reg.list_repo_files("PantherAng", "pdf", "").await.unwrap_err();
+    let err = reg
+        .list_repo_files("PantherAng", "pdf", "")
+        .await
+        .unwrap_err();
     let msg = err.to_string();
     assert!(msg.contains("file-list HTTP 500"), "msg: {msg}");
 }
@@ -1116,7 +1260,10 @@ async fn test_list_repo_files_api_error_code() {
         .await;
     let reg = make_registry_pointing_at(&server).await;
 
-    let err = reg.list_repo_files("PantherAng", "pdf", "").await.unwrap_err();
+    let err = reg
+        .list_repo_files("PantherAng", "pdf", "")
+        .await
+        .unwrap_err();
     let msg = err.to_string();
     assert!(
         msg.contains("file-list API error") && msg.contains("db down"),
@@ -1170,17 +1317,16 @@ async fn test_fetch_full_skill_empty_listing_errors() {
     let server = MockServer::start().await;
     Mock::given(method("GET"))
         .and(path("/PantherAng/pdf/repo/files"))
-        .respond_with(ResponseTemplate::new(200).set_body_string(
-            r#"{"Code":200,"Data":{"Files":[]},"Message":"ok","Success":true}"#,
-        ))
+        .respond_with(
+            ResponseTemplate::new(200).set_body_string(
+                r#"{"Code":200,"Data":{"Files":[]},"Message":"ok","Success":true}"#,
+            ),
+        )
         .mount(&server)
         .await;
     let reg = make_registry_pointing_at(&server).await;
 
-    let err = reg
-        .fetch_full_skill("PantherAng", "pdf")
-        .await
-        .unwrap_err();
+    let err = reg.fetch_full_skill("PantherAng", "pdf").await.unwrap_err();
     let msg = err.to_string();
     assert!(
         msg.contains("has no files") && msg.contains("PantherAng/pdf"),

@@ -1069,7 +1069,9 @@ fn test_send_window_data_then_receive_roundtrip() {
 fn test_run_child_mode_without_flag_returns_error() {
     // The test harness argv never contains --multiple, so the flag check at
     // the top of run_child_mode trips before any real I/O happens.
-    let rt = tokio::runtime::Builder::new_current_thread().build().unwrap();
+    let rt = tokio::runtime::Builder::new_current_thread()
+        .build()
+        .unwrap();
     let err = rt.block_on(run_child_mode()).unwrap_err();
     assert_eq!(err, "not in child mode");
 }
@@ -1090,14 +1092,7 @@ mod host_decode_png_tests {
     fn test_host_decode_png_null_png_data_returns_minus_one() {
         let mut w: u32 = 0;
         let mut h: u32 = 0;
-        let rc = host_decode_png(
-            std::ptr::null(),
-            0,
-            std::ptr::null_mut(),
-            0,
-            &mut w,
-            &mut h,
-        );
+        let rc = host_decode_png(std::ptr::null(), 0, std::ptr::null_mut(), 0, &mut w, &mut h);
         assert_eq!(rc, -1);
     }
 
@@ -1153,7 +1148,14 @@ mod host_decode_png_tests {
         let mut w: u32 = 0;
         let mut h: u32 = 0;
         // Query mode: null output buffer still receives the dimensions.
-        let rc = host_decode_png(png.as_ptr(), png.len(), std::ptr::null_mut(), 0, &mut w, &mut h);
+        let rc = host_decode_png(
+            png.as_ptr(),
+            png.len(),
+            std::ptr::null_mut(),
+            0,
+            &mut w,
+            &mut h,
+        );
         assert_eq!(rc, -3);
         assert_eq!(w, 3);
         assert_eq!(h, 2);
@@ -1248,8 +1250,7 @@ fn test_bring_to_front_fn_set_and_call_invokes_function() {
 fn test_connect_ws_with_handler_loopback_fires_bring_to_front() {
     use crate::websocket::server::{KeyGenerator, WebSocketServer};
 
-    static PROBE_CALLED: std::sync::atomic::AtomicBool =
-        std::sync::atomic::AtomicBool::new(false);
+    static PROBE_CALLED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
     unsafe extern "C" fn probe() {
         PROBE_CALLED.store(true, std::sync::atomic::Ordering::SeqCst);
     }
@@ -1358,13 +1359,12 @@ fn test_run_headless_auto_approve_loopback_sends_approval() {
             for _ in 0..40 {
                 if let Some(conn) = server_ref.get_connection("headless-1") {
                     let guard = conn.blocking_lock();
-                    guard.dispatcher.register_notification(
-                        "approval.submit",
-                        move |msg| {
+                    guard
+                        .dispatcher
+                        .register_notification("approval.submit", move |msg| {
                             let mut c = captured_clone.lock().unwrap();
                             *c = msg.params.clone();
-                        },
-                    );
+                        });
                     return;
                 }
                 std::thread::sleep(std::time::Duration::from_millis(50));

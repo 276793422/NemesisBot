@@ -80,7 +80,10 @@ async fn strict_gate_refuses_sandboxed_call_before_spawn() {
     assert!(err.contains("strict mode"), "err: {err}");
     assert!(err.contains("Sandboxie engine not ready"), "err: {err}");
     // 拒绝发生在 spawn 之前：不是子进程 spawn 失败的错误。
-    assert!(!err.contains("failed to spawn"), "refusal must precede spawn: {err}");
+    assert!(
+        !err.contains("failed to spawn"),
+        "refusal must precede spawn: {err}"
+    );
 }
 
 #[tokio::test]
@@ -126,7 +129,10 @@ fn builders_set_fields() {
     .with_start_exe(PathBuf::from("/x/Start.exe"))
     .with_timeout(Duration::from_secs(7));
     assert_eq!(ch.home.as_deref(), Some(tmp.path()));
-    assert_eq!(ch.start_exe.as_deref(), Some(std::path::Path::new("/x/Start.exe")));
+    assert_eq!(
+        ch.start_exe.as_deref(),
+        Some(std::path::Path::new("/x/Start.exe"))
+    );
     assert_eq!(ch.timeout, Duration::from_secs(7));
     assert_eq!(ch.box_name, "NemesisBox");
 }
@@ -180,13 +186,9 @@ fn build_request_line_is_newline_terminated_jsonl() {
 async fn stdio_transport_child_exits_without_response() {
     let tmp = tempfile::TempDir::new().unwrap();
     let cmd = std::env::var("ComSpec").unwrap_or_else(|_| "cmd.exe".to_string());
-    let ch = ExecutorChannel::new(
-        PathBuf::from(&cmd),
-        "/ws".into(),
-        Arc::new(|| false),
-    )
-    .with_home(tmp.path().to_path_buf()) // 顺带覆盖 home env 分支
-    .with_timeout(Duration::from_secs(15));
+    let ch = ExecutorChannel::new(PathBuf::from(&cmd), "/ws".into(), Arc::new(|| false))
+        .with_home(tmp.path().to_path_buf()) // 顺带覆盖 home env 分支
+        .with_timeout(Duration::from_secs(15));
     let err = ch
         .spawn_and_call("exec", "{}", &req_ctx())
         .await
@@ -244,12 +246,8 @@ async fn stdio_transport_echo_child_hits_parse_error() {
 #[cfg(not(windows))]
 #[tokio::test]
 async fn stdio_transport_child_exits_without_response() {
-    let ch = ExecutorChannel::new(
-        PathBuf::from("/bin/true"),
-        "/ws".into(),
-        Arc::new(|| false),
-    )
-    .with_timeout(Duration::from_secs(15));
+    let ch = ExecutorChannel::new(PathBuf::from("/bin/true"), "/ws".into(), Arc::new(|| false))
+        .with_timeout(Duration::from_secs(15));
     let err = ch
         .spawn_and_call("exec", "{}", &req_ctx())
         .await
@@ -344,7 +342,11 @@ fn remote_tool_set_context_reaches_local_impl() {
         "/ws".into(),
         Arc::new(|| false),
     ));
-    let remote = RemoteExecutorTool::new("exec".to_string(), Box::new(FlagTool { got: got.clone() }), ch);
+    let remote = RemoteExecutorTool::new(
+        "exec".to_string(),
+        Box::new(FlagTool { got: got.clone() }),
+        ch,
+    );
     assert!(!got.load(Ordering::SeqCst));
     remote.set_context("web", "c1");
     assert!(got.load(Ordering::SeqCst), "set_context must be forwarded");

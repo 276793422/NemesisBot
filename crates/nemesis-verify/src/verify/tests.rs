@@ -82,8 +82,7 @@ fn sign_with_chain_wrong_root_untrusted() {
 #[test]
 fn tampered_content_detected() {
     let (sk, vk) = keypair(7);
-    let mut signed =
-        sign_content(b"original content", &sk, 1000, None, None, None, None).unwrap();
+    let mut signed = sign_content(b"original content", &sk, 1000, None, None, None, None).unwrap();
     signed[5] ^= 0xFF; // 篡改 content 区
     match verify_bytes(&signed, &[vk], 1000) {
         VerifyOutcome::Tampered(_) => {}
@@ -114,8 +113,7 @@ fn untrusted_pubkey_rejected() {
 #[test]
 fn signature_tamper_detected() {
     let (sk7, _) = keypair(7);
-    let mut signed =
-        sign_content(b"sig tamper test", &sk7, 1000, None, None, None, None).unwrap();
+    let mut signed = sign_content(b"sig tamper test", &sk7, 1000, None, None, None, None).unwrap();
     let sig_byte_off = 15 + 108; // body 偏移 108（envelope::BODY_OFF_SIG）；content_len=15
     signed[sig_byte_off] ^= 0xFF;
     match verify_bytes(&signed, &[sk7.verifying_key()], 1000) {
@@ -136,7 +134,11 @@ fn crc32(data: &[u8]) -> u32 {
     for &b in data {
         crc ^= b as u32;
         for _ in 0..8 {
-            crc = if crc & 1 != 0 { (crc >> 1) ^ 0xEDB8_8320 } else { crc >> 1 };
+            crc = if crc & 1 != 0 {
+                (crc >> 1) ^ 0xEDB8_8320
+            } else {
+                crc >> 1
+            };
         }
     }
     !crc
@@ -306,7 +308,16 @@ fn cert_chain_window_expired_is_expired() {
     let (leaf_sk, leaf_vk) = keypair(19);
     let leaf_cert = cert::issue_certificate(&root_sk, &leaf_vk.to_bytes(), b"issuer", 100, 200);
     let chain = cert::serialize_chain(&[leaf_cert]);
-    let signed = sign_content(b"expired chain", &leaf_sk, 1000, Some(&chain), None, None, None).unwrap();
+    let signed = sign_content(
+        b"expired chain",
+        &leaf_sk,
+        1000,
+        Some(&chain),
+        None,
+        None,
+        None,
+    )
+    .unwrap();
     match verify_bytes(&signed, &[root_vk], 500) {
         VerifyOutcome::Expired(m) => assert!(m.contains("certificate expired"), "{m}"),
         o => panic!("expected Expired(chain), got {:?}", o),
@@ -319,7 +330,8 @@ fn garbage_cert_chain_is_malformed() {
     // parse_chain 失败 → Malformed("cert_chain parse failed")。
     let (sk, vk) = keypair(20);
     let garbage: &[u8] = &[0x00, 0x01]; // count=1 但无 cert_len
-    let signed = sign_content(b"garbage chain", &sk, 1000, Some(garbage), None, None, None).unwrap();
+    let signed =
+        sign_content(b"garbage chain", &sk, 1000, Some(garbage), None, None, None).unwrap();
     match verify_bytes(&signed, &[vk], 1000) {
         VerifyOutcome::Malformed(m) => assert!(m.contains("cert_chain parse failed"), "{m}"),
         o => panic!("expected Malformed(chain), got {:?}", o),
@@ -336,7 +348,10 @@ fn key_not_after_exceeded_is_expired() {
     }
     // now ≤ kna → 仍 Valid
     let _g = crate::GLOBAL_STATE_LOCK.lock().unwrap();
-    assert!(matches!(verify_bytes(&signed, &[vk], 1400), VerifyOutcome::Valid { .. }));
+    assert!(matches!(
+        verify_bytes(&signed, &[vk], 1400),
+        VerifyOutcome::Valid { .. }
+    ));
 }
 
 /// 最小合法 PE32（与 pe/tests.rs 的 build_pe 同构的紧凑版）。
@@ -365,10 +380,16 @@ fn pe_roundtrip_valid_and_content_len_mismatch_malformed() {
     let (sk, vk) = keypair(22);
     let pe = make_min_pe();
     let mut signed = sign_content(&pe, &sk, 1000, None, None, None, None).unwrap();
-    let l = codec::detect_codec(&signed).compute_l(&signed).unwrap().unwrap();
+    let l = codec::detect_codec(&signed)
+        .compute_l(&signed)
+        .unwrap()
+        .unwrap();
 
     // PE 的 sign+verify 全链路 → Valid
-    assert!(matches!(verify_bytes(&signed, &[vk], 1000), VerifyOutcome::Valid { .. }));
+    assert!(matches!(
+        verify_bytes(&signed, &[vk], 1000),
+        VerifyOutcome::Valid { .. }
+    ));
 
     // footer.content_len ≠ L → Malformed（PE 内容长度与结构 L 必须一致）
     let fo = footer_off_of(&signed);

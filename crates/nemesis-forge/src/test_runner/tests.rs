@@ -277,16 +277,20 @@ fn test_s8_mcp_undetectable_language_reports_unknown_lang() {
     let artifact = make_artifact(ArtifactKind::Mcp, "just some plain words here");
     let result = runner.run_tests(&artifact);
     assert!(!result.stage.passed);
-    assert!(result
-        .stage
-        .errors
-        .iter()
-        .any(|e| e.contains("Cannot detect MCP language")));
-    assert!(result
-        .stage
-        .errors
-        .iter()
-        .any(|e| e.contains("Unknown language")));
+    assert!(
+        result
+            .stage
+            .errors
+            .iter()
+            .any(|e| e.contains("Cannot detect MCP language"))
+    );
+    assert!(
+        result
+            .stage
+            .errors
+            .iter()
+            .any(|e| e.contains("Unknown language"))
+    );
 }
 
 #[test]
@@ -299,11 +303,13 @@ fn test_s8_mcp_python_missing_tool_registration_and_run_entry() {
     let artifact = make_artifact(ArtifactKind::Mcp, content);
     let result = runner.run_tests(&artifact);
     assert!(!result.stage.passed);
-    assert!(result
-        .stage
-        .errors
-        .iter()
-        .any(|e| e.contains("lacks tool registration")));
+    assert!(
+        result
+            .stage
+            .errors
+            .iter()
+            .any(|e| e.contains("lacks tool registration"))
+    );
     // Server + tool registration present but no run entry: the structure
     // checker proceeds past has_tool_reg and fails on has_run.
     let content2 = "def setup():
@@ -313,11 +319,13 @@ fn test_s8_mcp_python_missing_tool_registration_and_run_entry() {
 ";
     let artifact2 = make_artifact(ArtifactKind::Mcp, content2);
     let result2 = runner.run_tests(&artifact2);
-    assert!(result2
-        .stage
-        .errors
-        .iter()
-        .any(|e| e.contains("lacks run entry")));
+    assert!(
+        result2
+            .stage
+            .errors
+            .iter()
+            .any(|e| e.contains("lacks run entry"))
+    );
 }
 
 #[test]
@@ -326,22 +334,26 @@ fn test_s8_mcp_go_lacking_func_main_and_brace_on_next_line() {
     let runner = TestRunner::new();
     let artifact = make_artifact(ArtifactKind::Mcp, "package main\n\nfunc helper(x int) {\n}");
     let result = runner.run_tests(&artifact);
-    assert!(result
-        .stage
-        .errors
-        .iter()
-        .any(|e| e.contains("Go MCP lacks func main()")));
+    assert!(
+        result
+            .stage
+            .errors
+            .iter()
+            .any(|e| e.contains("Go MCP lacks func main()"))
+    );
 
     // func main() with no '{' on the line and ending in ')' → the
     // "brace might be on next line" continue path in completeness check.
     let artifact2 = make_artifact(ArtifactKind::Mcp, "package main\n\nfunc main()\n");
     let result2 = runner.run_tests(&artifact2);
     // structure check passes (GO_FUNC_RE matches), completeness returns Ok.
-    assert!(!result2
-        .stage
-        .errors
-        .iter()
-        .any(|e| e.contains("completeness")));
+    assert!(
+        !result2
+            .stage
+            .errors
+            .iter()
+            .any(|e| e.contains("completeness"))
+    );
 }
 
 #[test]
@@ -421,11 +433,13 @@ fn test_s8_mcp_python_structure_ok_but_completeness_fails() {
     let content = "def setup():\nx = 1\ns = Server(\"x\")\n@server.tool\nt.run()\n";
     let artifact = make_artifact(ArtifactKind::Mcp, content);
     let result = runner.run_tests(&artifact);
-    assert!(result
-        .stage
-        .errors
-        .iter()
-        .any(|e| e.contains("Function completeness")));
+    assert!(
+        result
+            .stage
+            .errors
+            .iter()
+            .any(|e| e.contains("Function completeness"))
+    );
 }
 
 #[test]

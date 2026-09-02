@@ -186,7 +186,11 @@ fn test_cluster_config_serialization() {
 #[test]
 fn test_s4_save_config_creates_nested_parent_dirs() {
     let dir = tempfile::tempdir().unwrap();
-    let path = dir.path().join("nested").join("deeper").join("cluster.json");
+    let path = dir
+        .path()
+        .join("nested")
+        .join("deeper")
+        .join("cluster.json");
     save_config(&path, &ClusterConfig::default()).unwrap();
     assert!(path.exists());
 }

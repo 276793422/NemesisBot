@@ -10,8 +10,7 @@ use std::io::{self, Write};
 use std::path::Path;
 
 /// Migration options controlling what gets migrated and how.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[derive(Default)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct MigrateOptions {
     pub dry_run: bool,
     pub config_only: bool,
@@ -21,7 +20,6 @@ pub struct MigrateOptions {
     pub openclaw_home: String,
     pub nemesisbot_home: String,
 }
-
 
 /// Types of migration actions that can be performed.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -46,8 +44,7 @@ pub struct FullMigrationAction {
 }
 
 /// Result of executing a full migration.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[derive(Default)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct FullMigrationResult {
     pub files_copied: usize,
     pub files_skipped: usize,
@@ -57,7 +54,6 @@ pub struct FullMigrationResult {
     pub warnings: Vec<String>,
     pub errors: Vec<String>,
 }
-
 
 /// Migrator handles data migration between versions.
 pub struct Migrator {
@@ -550,12 +546,13 @@ fn dirs_home() -> Result<String, String> {
 /// Expand ~ to home directory.
 fn expand_home(path: &str) -> String {
     if (path.starts_with("~/") || path == "~")
-        && let Ok(home) = dirs_home() {
-            if path == "~" {
-                return home;
-            }
-            return format!("{}{}", home, &path[1..]);
+        && let Ok(home) = dirs_home()
+    {
+        if path == "~" {
+            return home;
         }
+        return format!("{}{}", home, &path[1..]);
+    }
     path.to_string()
 }
 

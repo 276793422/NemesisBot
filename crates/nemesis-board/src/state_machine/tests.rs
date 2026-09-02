@@ -15,10 +15,7 @@ fn test_valid_transitions_from_table() {
     ];
     for (from, targets) in table {
         for to in *targets {
-            assert!(
-                can_transition(*from, *to),
-                "expected legal: {from} → {to}"
-            );
+            assert!(can_transition(*from, *to), "expected legal: {from} → {to}");
             assert!(
                 validate_transition(*from, *to).is_ok(),
                 "validate_transition should accept {from} → {to}"
@@ -42,7 +39,10 @@ fn test_invalid_transitions_rejected() {
     for (from, to) in illegal {
         assert!(!can_transition(from, to), "expected illegal: {from} → {to}");
         let err = validate_transition(from, to).unwrap_err();
-        assert!(err.contains("非法状态转移"), "error should be descriptive: {err}");
+        assert!(
+            err.contains("非法状态转移"),
+            "error should be descriptive: {err}"
+        );
     }
 }
 
@@ -52,7 +52,10 @@ fn test_self_transition_rejected() {
         Backlog, Todo, InProgress, InReview, Done, Blocked, Cancelled,
     ];
     for s in all {
-        assert!(!can_transition(s, s), "self-transition must be illegal: {s}");
+        assert!(
+            !can_transition(s, s),
+            "self-transition must be illegal: {s}"
+        );
         let err = validate_transition(s, s).unwrap_err();
         assert!(err.contains("已处于"), "self-transition error: {err}");
     }
@@ -79,5 +82,8 @@ fn test_terminal_states_are_absorbing() {
 fn test_validate_transition_error_lists_targets() {
     // backlog 不能直接 in_review；错误信息应列出 backlog 的合法目标集。
     let err = validate_transition(Backlog, InReview).unwrap_err();
-    assert!(err.contains("todo/in_progress/done/blocked/cancelled"), "{err}");
+    assert!(
+        err.contains("todo/in_progress/done/blocked/cancelled"),
+        "{err}"
+    );
 }

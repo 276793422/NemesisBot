@@ -25,7 +25,10 @@ fn agent_file_accepts_normal_docs() {
 #[test]
 fn agent_file_rejects_non_md_and_no_dir() {
     assert!(!is_agent_file_simple("docs/readme.txt"), "not .md");
-    assert!(!is_agent_file_simple("readme.md"), "no '/' — root files rejected");
+    assert!(
+        !is_agent_file_simple("readme.md"),
+        "no '/' — root files rejected"
+    );
     assert!(!is_agent_file_simple(""));
 }
 
@@ -48,7 +51,10 @@ fn agent_file_rejects_meta_filenames() {
         "SECURITY.md",
         "CONTRIBUTING_zh-CN.md",
     ] {
-        assert!(!is_agent_file_simple(&format!("engineering/{name}")), "{name}");
+        assert!(
+            !is_agent_file_simple(&format!("engineering/{name}")),
+            "{name}"
+        );
     }
     assert!(!is_agent_file_simple("engineering/QUICKSTART.md"));
     assert!(!is_agent_file_simple("engineering/EXECUTIVE_summary.md"));
@@ -102,8 +108,7 @@ fn strip_emoji_handles_variation_selector_and_zwj() {
 #[test]
 fn frontmatter_parses_all_fields_and_strips_quotes() {
     let md = "---\nname: \"Code Reviewer\"\nemoji: \"🤖\"\ndescription: \"Reviews code\"\nvibe: strict\nother: ignored\n---\nbody";
-    let (name, emoji, desc, vibe) =
-        parse_frontmatter_simple(md).expect("valid frontmatter parses");
+    let (name, emoji, desc, vibe) = parse_frontmatter_simple(md).expect("valid frontmatter parses");
     assert_eq!(name, "Code Reviewer");
     assert_eq!(emoji, "🤖");
     assert_eq!(desc, "Reviews code");
@@ -125,8 +130,7 @@ fn frontmatter_missing_name_is_none() {
 #[test]
 fn frontmatter_name_only_yields_empty_optionals() {
     let md = "---\nname: Writer\n---\nbody";
-    let (name, emoji, desc, vibe) =
-        parse_frontmatter_simple(md).expect("name alone is enough");
+    let (name, emoji, desc, vibe) = parse_frontmatter_simple(md).expect("name alone is enough");
     assert_eq!(name, "Writer");
     assert_eq!(emoji, "");
     assert_eq!(desc, "");
@@ -135,7 +139,10 @@ fn frontmatter_name_only_yields_empty_optionals() {
 
 #[test]
 fn frontmatter_unclosed_marker_is_none() {
-    assert!(parse_frontmatter_simple("---\nname: X\n").is_none(), "无闭合 ---");
+    assert!(
+        parse_frontmatter_simple("---\nname: X\n").is_none(),
+        "无闭合 ---"
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -148,7 +155,10 @@ fn sections_split_on_h2_and_keep_preamble() {
     let (preamble, sections) = parse_sections_simple(md);
     assert_eq!(preamble, "intro line");
     assert_eq!(sections.len(), 2);
-    assert_eq!(sections[0], ("First".to_string(), "content A1\ncontent A2".to_string()));
+    assert_eq!(
+        sections[0],
+        ("First".to_string(), "content A1\ncontent A2".to_string())
+    );
     assert_eq!(sections[1], ("Second".to_string(), "content B".to_string()));
 }
 
@@ -202,7 +212,11 @@ mod file_commands {
         std::fs::create_dir_all(&dir).unwrap();
         std::fs::write(dir.join("IDENTITY.md"), identity).unwrap();
         std::fs::write(dir.join("SOUL.md"), format!("soul of {name}")).unwrap();
-        std::fs::write(dir.join("PERSONA.json"), format!(r#"{{"name":"{name}","emoji":"🤖","description":"d"}}"#)).unwrap();
+        std::fs::write(
+            dir.join("PERSONA.json"),
+            format!(r#"{{"name":"{name}","emoji":"🤖","description":"d"}}"#),
+        )
+        .unwrap();
     }
 
     #[test]
@@ -216,11 +230,7 @@ mod file_commands {
         let dir = ws();
         seed_persona(dir.path(), "p1", "identity-1");
         std::fs::create_dir_all(dir.path().join("personas")).unwrap();
-        std::fs::write(
-            dir.path().join("personas/_active.json"),
-            r#"{"name":"p1"}"#,
-        )
-        .unwrap();
+        std::fs::write(dir.path().join("personas/_active.json"), r#"{"name":"p1"}"#).unwrap();
         cmd_current(dir.path()).expect("active + PERSONA.json → Ok");
     }
 
@@ -391,18 +401,28 @@ async fn run_dispatches_local_file_commands() {
         std::fs::write(pdir.join("IDENTITY.md"), "default identity").unwrap();
     }
 
-    run(PersonaAction::List, "home", &ws_str).await.expect("List ok");
-    run(PersonaAction::Current, "home", &ws_str).await.expect("Current ok");
-    run(PersonaAction::Restore, "home", &ws_str).await.expect("Restore ok");
+    run(PersonaAction::List, "home", &ws_str)
+        .await
+        .expect("List ok");
+    run(PersonaAction::Current, "home", &ws_str)
+        .await
+        .expect("Current ok");
+    run(PersonaAction::Restore, "home", &ws_str)
+        .await
+        .expect("Restore ok");
     run(
-        PersonaAction::Activate { name: "default".to_string() },
+        PersonaAction::Activate {
+            name: "default".to_string(),
+        },
         "home",
         &ws_str,
     )
     .await
     .expect("Activate ok");
     run(
-        PersonaAction::Remove { name: "default".to_string() },
+        PersonaAction::Remove {
+            name: "default".to_string(),
+        },
         "home",
         &ws_str,
     )
@@ -511,16 +531,15 @@ mod wave_b {
         let ws_str = dir.path().to_string_lossy().to_string();
         wb_seed(dir.path(), "dupe", "already-here");
         let err = run(
-            PersonaAction::Install { id: "dupe".to_string() },
+            PersonaAction::Install {
+                id: "dupe".to_string(),
+            },
             "home",
             &ws_str,
         )
         .await
         .expect_err("已安装人格必须 Err 且不发生任何网络请求");
-        assert!(
-            err.to_string().contains("已经安装"),
-            "err: {err:#}"
-        );
+        assert!(err.to_string().contains("已经安装"), "err: {err:#}");
     }
 
     /// cmd_remove：删除活动人格但 personas/default 不存在 → 不执行恢复块，
@@ -676,9 +695,7 @@ mod r10_lead_in {
         let id = "r10-absent-persona-run";
         assert!(
             run(
-                PersonaAction::Install {
-                    id: id.to_string(),
-                },
+                PersonaAction::Install { id: id.to_string() },
                 "home-unused",
                 &ws_str,
             )

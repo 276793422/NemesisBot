@@ -1430,7 +1430,10 @@ async fn test_w4c_ws_wrong_path_with_auth_token_rejected() {
     // 带鉴权分支（auth_token 非空）下的路径校验
     let url = format!("ws://127.0.0.1:{port}/wrong?token=secret123");
     let result = connect_async(url).await;
-    assert!(result.is_err(), "wrong path must be rejected in auth branch");
+    assert!(
+        result.is_err(),
+        "wrong path must be rejected in auth branch"
+    );
 
     ch.stop().await.unwrap();
 }
@@ -1454,13 +1457,12 @@ async fn w4c_wait_send_state(
         if want_ok && r.is_ok() {
             return None;
         }
-        if !want_ok
-            && let Err(e) = r {
-                let s = e.to_string();
-                if s.contains("no websocket client connected") {
-                    return Some(s);
-                }
+        if !want_ok && let Err(e) = r {
+            let s = e.to_string();
+            if s.contains("no websocket client connected") {
+                return Some(s);
             }
+        }
         if std::time::Instant::now() > deadline {
             return None;
         }
@@ -1536,7 +1538,10 @@ async fn test_w4c_ws_binary_frame_ignored_text_still_works() {
     tokio::time::sleep(std::time::Duration::from_millis(200)).await;
 
     // Binary 帧：reader 记 warn 后忽略，连接保持
-    write.send(Message::Binary(vec![1, 2, 3].into())).await.unwrap();
+    write
+        .send(Message::Binary(vec![1, 2, 3].into()))
+        .await
+        .unwrap();
     tokio::time::sleep(std::time::Duration::from_millis(300)).await;
 
     // Ping 帧：Ok(_) 空分支

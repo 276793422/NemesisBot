@@ -1352,11 +1352,7 @@ fn test_get_skill_metadata_json_without_name_or_description_falls_back_to_yaml()
     // must fall through to the simple YAML parser, which also finds nothing.
     let dir = tempfile::tempdir().unwrap();
     let skill_md = dir.path().join("SKILL.md");
-    fs::write(
-        &skill_md,
-        "---\n{\"x\": \"1\"}\n---\n# body\n",
-    )
-    .unwrap();
+    fs::write(&skill_md, "---\n{\"x\": \"1\"}\n---\n# body\n").unwrap();
 
     let meta = get_skill_metadata(&skill_md).expect("metadata must parse");
     assert_eq!(meta.name, "");

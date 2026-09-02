@@ -164,13 +164,14 @@ pub async fn test_security_file_workspace_only(ws: &TestWorkspace) -> Vec<TestRe
     let sec_config_path = ws.security_config_path();
     if sec_config_path.exists() {
         if let Ok(data) = std::fs::read_to_string(&sec_config_path)
-            && let Ok(cfg) = serde_json::from_str::<Value>(&data) {
-                let restrict = cfg.get("restrict_to_workspace").and_then(|v| v.as_bool());
-                results.push(pass(
-                    &format!("{}/config", suite),
-                    format!("restrict_to_workspace: {:?}", restrict),
-                ));
-            }
+            && let Ok(cfg) = serde_json::from_str::<Value>(&data)
+        {
+            let restrict = cfg.get("restrict_to_workspace").and_then(|v| v.as_bool());
+            results.push(pass(
+                &format!("{}/config", suite),
+                format!("restrict_to_workspace: {:?}", restrict),
+            ));
+        }
     } else {
         results.push(skip(
             &format!("{}/config", suite),
@@ -180,24 +181,25 @@ pub async fn test_security_file_workspace_only(ws: &TestWorkspace) -> Vec<TestRe
 
     // Check main config for security enabled
     if let Ok(data) = std::fs::read_to_string(ws.config_path())
-        && let Ok(cfg) = serde_json::from_str::<Value>(&data) {
-            let enabled = cfg
-                .get("security")
-                .and_then(|s| s.get("enabled"))
-                .and_then(|v| v.as_bool())
-                .unwrap_or(false);
-            if enabled {
-                results.push(pass(
-                    &format!("{}/enabled", suite),
-                    "Security module enabled",
-                ));
-            } else {
-                results.push(fail(
-                    &format!("{}/enabled", suite),
-                    "Security module disabled",
-                ));
-            }
+        && let Ok(cfg) = serde_json::from_str::<Value>(&data)
+    {
+        let enabled = cfg
+            .get("security")
+            .and_then(|s| s.get("enabled"))
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false);
+        if enabled {
+            results.push(pass(
+                &format!("{}/enabled", suite),
+                "Security module enabled",
+            ));
+        } else {
+            results.push(fail(
+                &format!("{}/enabled", suite),
+                "Security module disabled",
+            ));
         }
+    }
 
     results
 }
@@ -264,22 +266,23 @@ pub async fn test_security_audit_log(ws: &TestWorkspace) -> Vec<TestResult> {
 
                 // Check entry structure
                 if let Some(first) = lines.first()
-                    && let Ok(evt) = serde_json::from_str::<Value>(first) {
-                        let has_ts = evt.get("timestamp").is_some();
-                        let has_op = evt.get("operation").is_some();
-                        let has_decision = evt.get("decision").is_some();
-                        if has_ts && has_op && has_decision {
-                            results.push(pass(
-                                &format!("{}/structure", suite),
-                                "Audit entries have timestamp, operation, decision",
-                            ));
-                        } else {
-                            results.push(fail(
-                                &format!("{}/structure", suite),
-                                "Missing fields in audit entry",
-                            ));
-                        }
+                    && let Ok(evt) = serde_json::from_str::<Value>(first)
+                {
+                    let has_ts = evt.get("timestamp").is_some();
+                    let has_op = evt.get("operation").is_some();
+                    let has_decision = evt.get("decision").is_some();
+                    if has_ts && has_op && has_decision {
+                        results.push(pass(
+                            &format!("{}/structure", suite),
+                            "Audit entries have timestamp, operation, decision",
+                        ));
+                    } else {
+                        results.push(fail(
+                            &format!("{}/structure", suite),
+                            "Missing fields in audit entry",
+                        ));
                     }
+                }
             } else {
                 results.push(skip(&format!("{}/entries", suite), "Audit log empty"));
             }
@@ -412,24 +415,25 @@ pub async fn test_security_disabled_bypass(ws: &TestWorkspace, bin: &Path) -> Ve
 
     // Verify config reflects the change
     if let Ok(data) = std::fs::read_to_string(ws.config_path())
-        && let Ok(cfg) = serde_json::from_str::<Value>(&data) {
-            let enabled = cfg
-                .get("security")
-                .and_then(|s| s.get("enabled"))
-                .and_then(|v| v.as_bool())
-                .unwrap_or(false);
-            if enabled {
-                results.push(pass(
-                    &format!("{}/config", suite),
-                    "Config: security.enabled=true",
-                ));
-            } else {
-                results.push(fail(
-                    &format!("{}/config", suite),
-                    "Config: security.enabled=false",
-                ));
-            }
+        && let Ok(cfg) = serde_json::from_str::<Value>(&data)
+    {
+        let enabled = cfg
+            .get("security")
+            .and_then(|s| s.get("enabled"))
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false);
+        if enabled {
+            results.push(pass(
+                &format!("{}/config", suite),
+                "Config: security.enabled=true",
+            ));
+        } else {
+            results.push(fail(
+                &format!("{}/config", suite),
+                "Config: security.enabled=false",
+            ));
         }
+    }
 
     results
 }

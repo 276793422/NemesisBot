@@ -30,7 +30,6 @@ fn test_select_fallback() {
         quality_score: 0.9,
         priority: 1,
         semantic_description: String::new(),
-    
     });
     router.add_candidate(Candidate {
         provider: "azure".to_string(),
@@ -39,7 +38,6 @@ fn test_select_fallback() {
         quality_score: 0.9,
         priority: 2,
         semantic_description: String::new(),
-    
     });
 
     let selected = router.select("gpt-4").unwrap();
@@ -59,7 +57,6 @@ fn test_select_cost() {
         quality_score: 0.9,
         priority: 1,
         semantic_description: String::new(),
-    
     });
     router.add_candidate(Candidate {
         provider: "deepseek".to_string(),
@@ -68,7 +65,6 @@ fn test_select_cost() {
         quality_score: 0.7,
         priority: 1,
         semantic_description: String::new(),
-    
     });
 
     let selected = router.select("gpt-4").unwrap();
@@ -352,7 +348,6 @@ fn test_select_quality_policy() {
         quality_score: 0.9,
         priority: 1,
         semantic_description: String::new(),
-    
     });
     router.add_candidate(Candidate {
         provider: "deepseek".to_string(),
@@ -361,7 +356,6 @@ fn test_select_quality_policy() {
         quality_score: 0.7,
         priority: 2,
         semantic_description: String::new(),
-    
     });
 
     let selected = router.select("gpt-4").unwrap();
@@ -381,7 +375,6 @@ fn test_select_latency_policy() {
         quality_score: 0.9,
         priority: 1,
         semantic_description: String::new(),
-    
     });
     router.add_candidate(Candidate {
         provider: "slow-provider".to_string(),
@@ -390,7 +383,6 @@ fn test_select_latency_policy() {
         quality_score: 0.7,
         priority: 2,
         semantic_description: String::new(),
-    
     });
 
     // Record metrics for the slow provider (higher latency)
@@ -428,7 +420,6 @@ fn test_select_round_robin() {
         quality_score: 0.9,
         priority: 1,
         semantic_description: String::new(),
-    
     });
     router.add_candidate(Candidate {
         provider: "provider-b".to_string(),
@@ -437,7 +428,6 @@ fn test_select_round_robin() {
         quality_score: 0.7,
         priority: 2,
         semantic_description: String::new(),
-    
     });
 
     let first = router.select("gpt-4").unwrap();
@@ -456,7 +446,6 @@ fn test_select_no_matching_returns_first() {
         quality_score: 0.5,
         priority: 1,
         semantic_description: String::new(),
-    
     });
 
     let selected = router.select("nonexistent-model");
@@ -484,7 +473,6 @@ fn test_select_with_policy_override() {
         quality_score: 0.5,
         priority: 1,
         semantic_description: String::new(),
-    
     });
     router.add_candidate(Candidate {
         provider: "expensive".to_string(),
@@ -493,7 +481,6 @@ fn test_select_with_policy_override() {
         quality_score: 0.9,
         priority: 2,
         semantic_description: String::new(),
-    
     });
 
     // Default is Fallback (priority-based)
@@ -607,7 +594,6 @@ fn test_candidate_serialization() {
         quality_score: 0.9,
         priority: 1,
         semantic_description: String::new(),
-    
     };
     let json = serde_json::to_string(&c).unwrap();
     let deserialized: Candidate = serde_json::from_str(&json).unwrap();
@@ -686,7 +672,6 @@ fn test_router_register_and_use_provider() {
         quality_score: 0.5,
         priority: 1,
         semantic_description: String::new(),
-    
     });
 
     let selected = router.select("mock-model");
@@ -733,7 +718,10 @@ fn test_prune_no_samples() {
 #[test]
 fn test_model_matches_full_name() {
     assert!(model_matches("deepseek-chat", "deepseek/deepseek-chat"));
-    assert!(model_matches("deepseek/deepseek-chat", "deepseek/deepseek-chat"));
+    assert!(model_matches(
+        "deepseek/deepseek-chat",
+        "deepseek/deepseek-chat"
+    ));
     assert!(model_matches("gpt-4", "gpt-4"));
 }
 
@@ -766,7 +754,6 @@ fn test_select_by_prefixed_model_finds_bare_candidate() {
         quality_score: 0.5,
         priority: 1,
         semantic_description: String::new(),
-    
     });
     router.add_candidate(Candidate {
         provider: "deepseek".to_string(),
@@ -775,7 +762,6 @@ fn test_select_by_prefixed_model_finds_bare_candidate() {
         quality_score: 0.5,
         priority: 2,
         semantic_description: String::new(),
-    
     });
     let selected = router.select("deepseek/deepseek-chat").unwrap();
     assert_eq!(selected.provider, "deepseek");
@@ -816,16 +802,27 @@ fn test_semantic_policy_selects_matching_model() {
     let router = Router::new(RouterConfig::default());
     router.set_semantic_embedder(mock_embedder());
     let code_model = sem_candidate("prov-a", "code-gen-model", "best at coding 编程 tasks", 1);
-    let chat_model = sem_candidate("prov-b", "chat-warm-model", "good at chat 闲聊 casual talk", 1);
+    let chat_model = sem_candidate(
+        "prov-b",
+        "chat-warm-model",
+        "good at chat 闲聊 casual talk",
+        1,
+    );
     let matching = vec![code_model.clone(), chat_model];
 
     // Programming intent routes to the code model.
     let pick = router.select_with_semantic("帮我写段 code 修复这个 bug", &matching);
-    assert_eq!(pick.as_ref().map(|c| c.model.as_str()), Some("code-gen-model"));
+    assert_eq!(
+        pick.as_ref().map(|c| c.model.as_str()),
+        Some("code-gen-model")
+    );
 
     // Chat intent routes to the chat model.
     let pick2 = router.select_with_semantic("陪我 chat 聊聊天", &matching);
-    assert_eq!(pick2.as_ref().map(|c| c.model.as_str()), Some("chat-warm-model"));
+    assert_eq!(
+        pick2.as_ref().map(|c| c.model.as_str()),
+        Some("chat-warm-model")
+    );
 }
 
 #[test]

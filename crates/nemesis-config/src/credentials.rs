@@ -81,20 +81,34 @@ pub struct KeySource {
 /// logic — mirrors the resolution order without touching any store.
 pub fn classify_key_source(api_key: &str) -> KeySource {
     if let Some(var) = api_key.strip_prefix("env:") {
-        KeySource { kind: "env".to_string(), reference: var.to_string() }
+        KeySource {
+            kind: "env".to_string(),
+            reference: var.to_string(),
+        }
     } else if let Some(alias) = api_key.strip_prefix("yaml:") {
-        KeySource { kind: "yaml".to_string(), reference: alias.to_string() }
+        KeySource {
+            kind: "yaml".to_string(),
+            reference: alias.to_string(),
+        }
     } else if api_key.is_empty() {
-        KeySource { kind: "none".to_string(), reference: String::new() }
+        KeySource {
+            kind: "none".to_string(),
+            reference: String::new(),
+        }
     } else {
-        KeySource { kind: "inline".to_string(), reference: String::new() }
+        KeySource {
+            kind: "inline".to_string(),
+            reference: String::new(),
+        }
     }
 }
 
 /// Canonical credentials.yaml path for a NemesisBot home dir:
 /// `<home>/workspace/config/credentials.yaml` (sits next to auth.json).
 pub fn credentials_path_for_home(home: &Path) -> PathBuf {
-    home.join("workspace").join("config").join("credentials.yaml")
+    home.join("workspace")
+        .join("config")
+        .join("credentials.yaml")
 }
 
 // ----------------------------------------------------------------------------
@@ -248,12 +262,16 @@ pub(crate) fn resolve_yaml_reference(alias: &str, model_for_error: &str) -> Resu
         Some(v) if !v.is_empty() => Ok(v.clone()),
         Some(_) => Err(ConfigError::Validation(format!(
             "model '{}': alias '{}' in credentials file '{}' is set but empty — set it to the key value",
-            model_for_error, alias, path.display()
+            model_for_error,
+            alias,
+            path.display()
         ))),
         None => Err(ConfigError::Validation(format!(
             "model '{}': alias '{}' not found in credentials file '{}' — add it under `keys:` \
              or run `nemesisbot credentials import`",
-            model_for_error, alias, path.display()
+            model_for_error,
+            alias,
+            path.display()
         ))),
     }
 }
@@ -321,7 +339,9 @@ pub fn run_import(config_path: &Path, credentials_path: &Path) -> Result<ImportR
                 if !creds.keys.contains_key(&candidate) {
                     creds.keys.insert(candidate.clone(), literal);
                 }
-                report.conflicts.push((base_alias.clone(), candidate.clone()));
+                report
+                    .conflicts
+                    .push((base_alias.clone(), candidate.clone()));
                 candidate
             }
         } else {

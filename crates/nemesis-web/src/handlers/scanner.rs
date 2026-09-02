@@ -305,9 +305,10 @@ impl ScannerHandler {
                 {
                     let mut updated = raw.clone();
                     if let Some(obj) = updated.as_object_mut()
-                        && let Ok(state_val) = serde_json::to_value(&state) {
-                            obj.insert("state".to_string(), state_val);
-                        }
+                        && let Ok(state_val) = serde_json::to_value(&state)
+                    {
+                        obj.insert("state".to_string(), state_val);
+                    }
                     cfg.engines.insert(name.clone(), updated);
                     changed = true;
                 }
@@ -320,10 +321,9 @@ impl ScannerHandler {
             ));
         }
 
-        if changed
-            && let Err(e) = save_scanner_config(&path, &cfg) {
-                tracing::warn!("Failed to save scanner state after check: {}", e);
-            }
+        if changed && let Err(e) = save_scanner_config(&path, &cfg) {
+            tracing::warn!("Failed to save scanner state after check: {}", e);
+        }
 
         if target_name.is_some() && results.len() == 1 {
             Ok(Some(results.into_iter().next().unwrap()))
@@ -439,22 +439,23 @@ impl ScannerHandler {
                     } else {
                         let path = scanner_config_path(&ws);
                         if let Ok(mut cfg) = load_scanner_config(&path)
-                            && let Some(raw) = cfg.engines.get(&name).cloned() {
-                                let mut updated = raw.clone();
-                                if let Some(obj) = updated.as_object_mut() {
-                                    let state = EngineState {
-                                        install_status: INSTALL_STATUS_FAILED.to_string(),
-                                        install_error: e.clone(),
-                                        last_install_attempt: chrono::Local::now().to_rfc3339(),
-                                        ..parse_engine_config(&raw).state
-                                    };
-                                    if let Ok(state_val) = serde_json::to_value(&state) {
-                                        obj.insert("state".to_string(), state_val);
-                                    }
+                            && let Some(raw) = cfg.engines.get(&name).cloned()
+                        {
+                            let mut updated = raw.clone();
+                            if let Some(obj) = updated.as_object_mut() {
+                                let state = EngineState {
+                                    install_status: INSTALL_STATUS_FAILED.to_string(),
+                                    install_error: e.clone(),
+                                    last_install_attempt: chrono::Local::now().to_rfc3339(),
+                                    ..parse_engine_config(&raw).state
+                                };
+                                if let Ok(state_val) = serde_json::to_value(&state) {
+                                    obj.insert("state".to_string(), state_val);
                                 }
-                                cfg.engines.insert(name.clone(), updated);
-                                let _ = save_scanner_config(&path, &cfg);
                             }
+                            cfg.engines.insert(name.clone(), updated);
+                            let _ = save_scanner_config(&path, &cfg);
+                        }
 
                         hub.publish(
                             "scanner-progress",
@@ -507,19 +508,20 @@ impl ScannerHandler {
                 Ok(()) => {
                     let path = scanner_config_path(&ws);
                     if let Ok(mut cfg) = load_scanner_config(&path)
-                        && let Some(raw) = cfg.engines.get(&name).cloned() {
-                            let mut updated = raw.clone();
-                            if let Some(obj) = updated.as_object_mut() {
-                                let mut state = parse_engine_config(&raw).state;
-                                state.db_status = DB_STATUS_READY.to_string();
-                                state.last_db_update = chrono::Local::now().to_rfc3339();
-                                if let Ok(state_val) = serde_json::to_value(&state) {
-                                    obj.insert("state".to_string(), state_val);
-                                }
+                        && let Some(raw) = cfg.engines.get(&name).cloned()
+                    {
+                        let mut updated = raw.clone();
+                        if let Some(obj) = updated.as_object_mut() {
+                            let mut state = parse_engine_config(&raw).state;
+                            state.db_status = DB_STATUS_READY.to_string();
+                            state.last_db_update = chrono::Local::now().to_rfc3339();
+                            if let Ok(state_val) = serde_json::to_value(&state) {
+                                obj.insert("state".to_string(), state_val);
                             }
-                            cfg.engines.insert(name.clone(), updated);
-                            let _ = save_scanner_config(&path, &cfg);
                         }
+                        cfg.engines.insert(name.clone(), updated);
+                        let _ = save_scanner_config(&path, &cfg);
+                    }
 
                     hub.publish(
                         "scanner-progress",

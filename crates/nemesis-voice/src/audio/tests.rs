@@ -134,8 +134,16 @@ fn audio_capture_bogus_device_name_bails_without_opening_stream() {
         eprintln!("{CI_AUDIO_SKIP_MSG}");
         return;
     }
-    let err = format!("{:#}", AudioCapture::new("no-such-input-device-xyz").err().expect("must fail"));
-    assert!(err.contains("Input device 'no-such-input-device-xyz' not found"), "{err}");
+    let err = format!(
+        "{:#}",
+        AudioCapture::new("no-such-input-device-xyz")
+            .err()
+            .expect("must fail")
+    );
+    assert!(
+        err.contains("Input device 'no-such-input-device-xyz' not found"),
+        "{err}"
+    );
 }
 
 #[test]
@@ -150,7 +158,10 @@ fn audio_playback_bogus_device_name_bails_without_opening_stream() {
             .err()
             .expect("must fail")
     );
-    assert!(err.contains("Output device 'no-such-output-device-xyz' not found"), "{err}");
+    assert!(
+        err.contains("Output device 'no-such-output-device-xyz' not found"),
+        "{err}"
+    );
 }
 
 #[test]

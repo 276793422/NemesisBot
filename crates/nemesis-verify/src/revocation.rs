@@ -57,9 +57,10 @@ const BUILTIN_REVOCATION_URL: Option<&str> = option_env!("NEMESIS_BUILD_REVOCATI
 
 fn revocation_url() -> Option<String> {
     if let Some(url) = BUILTIN_REVOCATION_URL
-        && !url.is_empty() {
-            return Some(url.to_string());
-        }
+        && !url.is_empty()
+    {
+        return Some(url.to_string());
+    }
     std::env::var("NEMESIS_REVOCATION_URL")
         .ok()
         .filter(|s| !s.is_empty())
@@ -88,9 +89,10 @@ fn get_crl(root_pub: &VerifyingKey) -> Option<Crl> {
     // 缓存命中（未过期）
     if let Ok(c) = cache().lock()
         && let Some(cached) = c.as_ref()
-            && now < cached.fetched_at + CRL_TTL_SECS {
-                return Some(cached.crl.clone());
-            }
+        && now < cached.fetched_at + CRL_TTL_SECS
+    {
+        return Some(cached.crl.clone());
+    }
     // 缓存过期/无 → 拉取
     if let Some(base) = revocation_url() {
         match fetch_crl(&base, root_pub) {

@@ -48,12 +48,13 @@ pub fn extract_zip(zip_path: &str, dest_dir: &str) -> Result<(), String> {
         // then check if it's within the destination.
         if let Some(parent) = entry_path.parent()
             && let Ok(parent_canonical) = parent.canonicalize()
-                && !parent_canonical.starts_with(&dest_dir_abs) {
-                    return Err(format!(
-                        "invalid file path: {} (zip slip detected)",
-                        entry_name
-                    ));
-                }
+            && !parent_canonical.starts_with(&dest_dir_abs)
+        {
+            return Err(format!(
+                "invalid file path: {} (zip slip detected)",
+                entry_name
+            ));
+        }
 
         // Additional check: reject entries with path traversal components
         let entry_name_lower = entry_name.to_lowercase();

@@ -4,7 +4,7 @@
 //! Everything here is pure — no process, no async — so the framing and
 //! parsing rules are unit-testable in isolation from any language server.
 
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
 // ---------------------------------------------------------------------------
 // Framing
@@ -61,14 +61,15 @@ impl FrameDecoder {
             .map_err(|e| format!("non-UTF-8 headers: {e}"))?;
         for line in headers.split("\r\n") {
             if let Some((name, value)) = line.split_once(':')
-                && name.trim().eq_ignore_ascii_case("content-length") {
-                    content_length = Some(
-                        value
-                            .trim()
-                            .parse::<usize>()
-                            .map_err(|e| format!("bad Content-Length {value:?}: {e}"))?,
-                    );
-                }
+                && name.trim().eq_ignore_ascii_case("content-length")
+            {
+                content_length = Some(
+                    value
+                        .trim()
+                        .parse::<usize>()
+                        .map_err(|e| format!("bad Content-Length {value:?}: {e}"))?,
+                );
+            }
         }
         let Some(len) = content_length else {
             return Err("message without Content-Length header".to_string());
@@ -91,9 +92,7 @@ impl Default for FrameDecoder {
 }
 
 fn find_subsequence(haystack: &[u8], needle: &[u8]) -> Option<usize> {
-    haystack
-        .windows(needle.len())
-        .position(|w| w == needle)
+    haystack.windows(needle.len()).position(|w| w == needle)
 }
 
 // ---------------------------------------------------------------------------
@@ -168,7 +167,10 @@ pub fn default_server_response(method: &str) -> Value {
 /// -32801 ContentModified (spec-defined codes servers use when a request
 /// is invalidated by document/VFS changes rather than rejected).
 pub fn is_transient_error(err: &Value) -> bool {
-    matches!(err.get("code").and_then(|c| c.as_i64()), Some(-32800) | Some(-32801))
+    matches!(
+        err.get("code").and_then(|c| c.as_i64()),
+        Some(-32800) | Some(-32801)
+    )
 }
 
 // ---------------------------------------------------------------------------
@@ -219,12 +221,14 @@ pub fn uri_to_path(uri: &str) -> String {
     let mut out: Vec<u8> = Vec::with_capacity(b.len());
     let mut i = 0usize;
     while i < b.len() {
-        if b[i] == b'%' && i + 2 < b.len()
-            && let (Some(h), Some(l)) = (hex(b[i + 1]), hex(b[i + 2])) {
-                out.push(h * 16 + l);
-                i += 3;
-                continue;
-            }
+        if b[i] == b'%'
+            && i + 2 < b.len()
+            && let (Some(h), Some(l)) = (hex(b[i + 1]), hex(b[i + 2]))
+        {
+            out.push(h * 16 + l);
+            i += 3;
+            continue;
+        }
         out.push(b[i]);
         i += 1;
     }

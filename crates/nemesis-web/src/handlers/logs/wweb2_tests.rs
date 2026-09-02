@@ -150,11 +150,7 @@ async fn security_command_merges_files_filters_sorts_and_paginates() {
 
     let ctx = make_ctx(&dir);
     let h = LogsHandler;
-    let r = h
-        .handle_cmd("security", None, &ctx)
-        .await
-        .unwrap()
-        .unwrap();
+    let r = h.handle_cmd("security", None, &ctx).await.unwrap().unwrap();
     assert_eq!(r["total"], 3);
     let entries = r["entries"].as_array().unwrap();
     // 时间倒序：evt-3 (12:00) → evt-1 (10:00) → evt-0 (09:00)
@@ -242,10 +238,7 @@ async fn chain_list_real_chain_all_valid_with_rotation() {
     let dir = tempfile::tempdir().unwrap();
     let main = make_real_chain(dir.path());
     // 轮转确实发生了：主文件 + _seg0002 分片都在
-    let seg2 = main
-        .parent()
-        .unwrap()
-        .join("audit_chain_seg0002.jsonl");
+    let seg2 = main.parent().unwrap().join("audit_chain_seg0002.jsonl");
     assert!(seg2.exists(), "rotation must have produced a _seg0002 file");
 
     let ctx = make_ctx(&dir);
@@ -308,7 +301,10 @@ async fn chain_list_tampered_event_marks_hash_mismatch() {
     assert_eq!(segs[1]["valid"], false, "tampered index 1 invalid");
     assert_eq!(segs[1]["breakReason"], "hash mismatch");
     assert_eq!(segs[0]["valid"], true);
-    assert_eq!(segs[2]["valid"], true, "prev_hash still links to stored hash");
+    assert_eq!(
+        segs[2]["valid"], true,
+        "prev_hash still links to stored hash"
+    );
     assert_eq!(segs[3]["valid"], true);
 }
 
