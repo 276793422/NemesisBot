@@ -301,6 +301,35 @@ impl RpcClient {
         request: RPCRequest,
         timeout: Duration,
     ) -> Result<RPCResponse, RpcClientError> {
+        self.dispatch(peer_id, request, timeout, true).await
+    }
+
+    /// G2: 发送健康探针 RPC，**不受对端 Online 状态门禁限制**。
+    ///
+    /// [`Self::call_with_timeout`] 会拒绝 Offline 对端（online gate）；而健康
+    /// 探针恰恰要在对端"看起来离线"时到达它——既确认真故障也捕捉自愈。
+    /// 本变体跳过门禁，其余路径（限流/组帧/日志）与普通调用完全一致。
+    pub async fn call_probe_with_timeout(
+        &self,
+        peer_id: &str,
+        request: RPCRequest,
+        timeout: Duration,
+    ) -> Result<RPCResponse, RpcClientError> {
+        self.dispatch(peer_id, request, timeout, false).await
+    }
+
+    /// Shared dispatch path behind [`Self::call_with_timeout`] and
+    /// [`Self::call_probe_with_timeout`].
+    ///
+    /// `require_online = false` 跳过 registry online 门禁（探针专用），
+    /// 其余步骤完全共享。
+    async fn dispatch(
+        &self,
+        peer_id: &str,
+        request: RPCRequest,
+        timeout: Duration,
+        require_online: bool,
+    ) -> Result<RPCResponse, RpcClientError> {
         let start = std::time::Instant::now();
 
         // 1. Rate limiting (async retry matching Go's blocking Acquire)
@@ -324,7 +353,7 @@ impl RpcClient {
                     RpcClientError::Connection(format!("peer not found: {}", peer_id))
                 })?;
 
-            if !is_online {
+            if require_online && !is_online {
                 tracing::warn!(peer_id = peer_id, "[RpcClient] Peer is offline",);
                 return Err(RpcClientError::Connection(format!(
                     "peer is offline: {}",

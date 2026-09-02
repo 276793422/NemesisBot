@@ -998,11 +998,14 @@ impl nemesis_cluster::rpc::peer_chat_handler::TaskResultPersister
         if status == "error" {
             self.result_store.store_failure(task_id, "peer_chat", error);
         } else {
+            // G5 键归一（2026-09-01）：恢复轮询的 query_task_result handler
+            // 读 "response"（与 peer_chat_callback 信封同键）；旧值 "content"
+            // 曾导致查询恢复拿到空回复。
             self.result_store.store_success(
                 task_id,
                 "peer_chat",
                 serde_json::json!({
-                    "content": response,
+                    "response": response,
                     "from": self.node_id,
                 }),
             );
@@ -1037,7 +1040,9 @@ impl nemesis_cluster::cluster::MessageBus for BusToClusterAdapter {
             media: vec![],
             session_key: String::new(),
             correlation_id: String::new(),
-            metadata: std::collections::HashMap::new(),
+            // G5: 透传结构化元数据（cluster_continuation 的 status /
+            // source_node / error）——AgentLoop 续行拦截依赖这些字段。
+            metadata: msg.metadata,
             voice_playback: None,
         };
         self.bus.publish_inbound(inbound);

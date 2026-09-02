@@ -131,7 +131,10 @@ pub struct PeerChatHandler {
 }
 
 impl PeerChatHandler {
-    /// Create a new peer chat handler with default 59-minute timeout.
+    /// Create a new peer chat handler with the default 2-hour LLM timeout
+    /// ([`DEFAULT_LLM_TIMEOUT`]；可经 config.cluster.json 的 `llm_timeout_secs`
+    /// 覆盖，0 = 不设超时。G4 修正：旧注释"59-minute"是错的，59 分钟是
+    /// RPC Client 的 ACK 等待上限，与 B 端 LLM 处理超时是两回事）。
     pub fn new(node_id: String) -> Self {
         Self {
             node_id,

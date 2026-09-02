@@ -144,12 +144,21 @@ type OnCompleteCallback = Box<dyn Fn(&Task) + Send + Sync>;
 ///
 /// If started with `start()`, a background cleanup loop runs periodically
 /// to remove completed/failed tasks older than 2 hours, and to time out
-/// pending tasks older than 24 hours.
+/// pending tasks older than the configured pending timeout.
 pub struct TaskManager {
     store: Arc<dyn TaskStore>,
     cleanup_interval: std::time::Duration,
     on_complete: Mutex<Option<Arc<OnCompleteCallback>>>,
+    /// G4: pending 任务安全网超时（默认 24h）。集群层用
+    /// `stale_task_safety_net(llm_timeout)` 按阶梯推导后经
+    /// [`Self::set_pending_timeout`] 覆盖，保证安全网 > B 端 LLM 超时。
+    pending_timeout: Arc<parking_lot::RwLock<chrono::Duration>>,
     stop_tx: Option<tokio::sync::broadcast::Sender<()>>,
+}
+
+/// G4: pending 任务安全网默认值（24 小时）。
+pub fn default_pending_timeout() -> chrono::Duration {
+    chrono::Duration::hours(24)
 }
 
 impl TaskManager {
@@ -179,6 +188,7 @@ impl TaskManager {
             store,
             cleanup_interval,
             on_complete: Mutex::new(None),
+            pending_timeout: Arc::new(parking_lot::RwLock::new(default_pending_timeout())),
             stop_tx: None,
         }
     }
@@ -213,6 +223,7 @@ impl TaskManager {
         let store = self.store.clone();
         let cleanup_interval = self.cleanup_interval;
         let on_complete = self.on_complete.lock().clone();
+        let pending_timeout = self.pending_timeout.clone();
 
         handle.spawn(async move {
             let mut interval = tokio::time::interval(cleanup_interval);
@@ -222,7 +233,7 @@ impl TaskManager {
                         return;
                     }
                     _ = interval.tick() => {
-                        cleanup_completed(&store, &on_complete);
+                        cleanup_completed(&store, &on_complete, &pending_timeout);
                     }
                 }
             }
@@ -239,6 +250,16 @@ impl TaskManager {
     }
 
     // -- Callback management ----------------------------------------------------
+
+    /// G4: 覆盖 pending 任务安全网超时（`Cluster::start` 按超时阶梯推导后调用）。
+    pub fn set_pending_timeout(&self, timeout: chrono::Duration) {
+        *self.pending_timeout.write() = timeout;
+    }
+
+    /// G4: 当前 pending 任务安全网超时。
+    pub fn pending_timeout(&self) -> chrono::Duration {
+        *self.pending_timeout.read()
+    }
 
     /// Set or replace the completion callback.
     pub fn set_callback(&self, callback: Box<dyn Fn(&Task) + Send + Sync>) {
@@ -451,10 +472,14 @@ impl Default for TaskManager {
 // ---------------------------------------------------------------------------
 
 /// Clean up completed/failed tasks older than 2 hours, and time out pending
-/// tasks older than 24 hours.
+/// tasks older than `pending_timeout`（G4：由集群超时阶梯推导，默认 24h）.
 ///
 /// Mirrors Go's `TaskManager.cleanupCompleted()`.
-fn cleanup_completed(store: &Arc<dyn TaskStore>, on_complete: &Option<Arc<OnCompleteCallback>>) {
+fn cleanup_completed(
+    store: &Arc<dyn TaskStore>,
+    on_complete: &Option<Arc<OnCompleteCallback>>,
+    pending_timeout: &parking_lot::RwLock<chrono::Duration>,
+) {
     // Clean up completed, failed, and cancelled tasks older than 2 hours
     let finished_statuses = [
         TaskStatus::Completed,
@@ -478,19 +503,23 @@ fn cleanup_completed(store: &Arc<dyn TaskStore>, on_complete: &Option<Arc<OnComp
         }
     }
 
-    // H4: Time out pending tasks older than 24 hours
-    let twenty_four_hours = chrono::Duration::hours(24);
+    // H4: Time out pending tasks past the safety-net timeout
+    // （G4: 每 tick 读一次当前配置，set_pending_timeout 即时生效）
+    let pending_limit = *pending_timeout.read();
     let pending_tasks = store.list_by_status(TaskStatus::Pending);
     for task in pending_tasks {
         if let Ok(created) = chrono::DateTime::parse_from_rfc3339(&task.created_at) {
             let created_utc = created.with_timezone(&chrono::Local);
-            if chrono::Local::now() - created_utc > twenty_four_hours {
+            if chrono::Local::now() - created_utc > pending_limit {
                 // Mark as failed with timeout error
                 let _ = store.update_result(
                     &task.id,
                     TaskStatus::Failed,
                     Some(serde_json::json!({
-                        "error": "task timed out: no response received within 24 hours"
+                        "error": format!(
+                            "task timed out: no response received within {} seconds",
+                            pending_limit.num_seconds()
+                        )
                     })),
                 );
 

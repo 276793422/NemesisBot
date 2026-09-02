@@ -702,10 +702,13 @@ async fn r9_live_dual_node_peer_chat_full_chain_with_cluster_rpc_tool() {
     let web_port_a = wait_for_web_port(&home_a).await;
 
     // —— 全链断言：A 侧续行请求的信封里嵌着 B 的 canned 回复 ——
+    // 预算 300s：正常全链 ~10s；150s 曾在本机 24 核全量并行矩阵
+    // （多 live gateway 测试同跑）下被资源争抢吃光致 flaky（单独串行
+    // 复跑 13.84s 全链 PASS，非链路回归）。预算只影响失败路径等待上限。
     let logs_a = home_a.join("workspace").join("logs");
     let logs_b = home_b.join("workspace").join("logs");
     wait_until_diag(
-        150,
+        300,
         "round-trip marker back on A",
         || tree_contains(&logs_a, &b_reply),
         || {

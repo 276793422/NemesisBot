@@ -3,5 +3,8 @@
   "port": 11949,
   "rpc_port": 21949,
   "broadcast_interval": 30,
-  "llm_timeout_secs": 7200
+  "llm_timeout_secs": 7200,
+  "health_check_interval_secs": 60,
+  "health_check_failure_threshold": 3,
+  "announce_expiry_secs": 120
 }

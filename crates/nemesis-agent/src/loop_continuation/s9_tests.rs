@@ -40,6 +40,7 @@ fn snapshot_for(task: &str) -> ContinuationSnapshot {
         chat_id: "chat1".to_string(),
         session_key: String::new(),
         created_at: chrono::Local::now().to_rfc3339(),
+        peer_id: String::new(),
     }
 }
 
@@ -107,6 +108,7 @@ async fn wait_for_continuation_expired_deadline_falls_back() {
                 session_key: "s9sess".to_string(),
                 ready: Arc::new(tokio::sync::Notify::new()),
                 ready_flag: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+                peer_id: String::new(),
             }),
         );
     }
@@ -157,6 +159,7 @@ async fn continuation_final_response_logs_info_fields() {
             "web",
             "chat9",
             "s9sess",
+            "",
         )
         .await;
 

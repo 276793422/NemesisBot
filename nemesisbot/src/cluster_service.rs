@@ -107,6 +107,87 @@ impl ClusterServiceAdapter {
             );
         }
 
+        // G1（2026-09-01 集群韧性 goal）：rpc_cache/results 7 天 TTL 清扫 +
+        // 磁盘结果回载（A 崩溃前本地完成的任务结果，轮询恢复时可直接命中）。
+        let swept = self
+            .cluster
+            .result_store()
+            .sweep_older_than(chrono::Duration::days(7));
+        if swept > 0 {
+            tracing::info!(
+                count = swept,
+                "[ClusterAdapter] Swept {} stale rpc_cache result files",
+                swept
+            );
+        }
+        let loaded_results = self.cluster.result_store().load_from_disk();
+        if loaded_results > 0 {
+            tracing::info!(
+                count = loaded_results,
+                "[ClusterAdapter] Loaded {} task results from disk",
+                loaded_results
+            );
+        }
+
+        // G5（A 侧重启恢复链路）：把磁盘上未删除的续行快照重新登记进
+        // TaskManager（Pending + peer_id），让恢复轮询（poll_stale_pending_tasks）
+        // 能向 B 查询结果并回灌 bus → AgentLoop 拦截 cluster_continuation 完成
+        // 回复。continuation 数据本体已由 agent_factory 的
+        // ContinuationManager::with_disk_store 回载进内存，这里只补任务登记。
+        {
+            let workspace = self.cluster.workspace().clone();
+            let cont_store = nemesis_agent::ContinuationStore::new(&workspace);
+            let mut restored = 0usize;
+            for task_id in cont_store.list_pending() {
+                if self.cluster.task_manager().get_task(&task_id).is_some() {
+                    continue; // 已登记，防重复提交
+                }
+                let snapshot = match cont_store.load(&task_id) {
+                    Ok(s) => s,
+                    Err(e) => {
+                        tracing::warn!(
+                            task_id = %task_id,
+                            "[ClusterAdapter] Failed to load continuation snapshot: {}",
+                            e
+                        );
+                        continue;
+                    }
+                };
+                if snapshot.peer_id.is_empty() {
+                    // 旧格式快照无 peer_id，无法向 B 发起查询；留给 TTL 清扫。
+                    continue;
+                }
+                let task = nemesis_types::cluster::Task {
+                    id: task_id.clone(),
+                    status: nemesis_types::cluster::TaskStatus::Pending,
+                    action: "peer_chat".to_string(),
+                    peer_id: snapshot.peer_id,
+                    payload: serde_json::json!({}),
+                    result: None,
+                    original_channel: snapshot.channel,
+                    original_chat_id: snapshot.chat_id,
+                    created_at: snapshot.created_at,
+                    completed_at: None,
+                };
+                if let Err(e) = self.cluster.task_manager().submit(task) {
+                    tracing::warn!(
+                        task_id = %task_id,
+                        "[ClusterAdapter] Failed to re-register pending continuation: {}",
+                        e
+                    );
+                    continue;
+                }
+                restored += 1;
+            }
+            if restored > 0 {
+                tracing::info!(
+                    count = restored,
+                    "[ClusterAdapter] Re-registered {} pending cluster tasks from continuation snapshots",
+                    restored
+                );
+            }
+        }
+
         // Build and spawn cluster agent loop
         let rpc_client = self.cluster.rpc_client_arc();
         let cluster_arc = self.cluster.clone();

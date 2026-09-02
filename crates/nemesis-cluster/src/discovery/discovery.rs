@@ -311,6 +311,9 @@ pub struct DiscoveryConfig {
     pub interval: Duration,
     /// Shared secret for message authentication (empty = no auth).
     pub secret: String,
+    /// G3: announce 过期阈值（秒）。超过该时长的入站消息被丢弃（限频 WARN），
+    /// ≤0 = 关闭过期丢弃。默认 [`super::message::DEFAULT_EXPIRY_THRESHOLD_SECS`]。
+    pub announce_expiry_secs: i64,
     /// AES encryption key derived from the auth token, if any.
     enc_key: Option<[u8; 32]>,
 }
@@ -327,6 +330,7 @@ impl DiscoveryConfig {
             port,
             interval,
             secret: token.to_string(),
+            announce_expiry_secs: super::message::DEFAULT_EXPIRY_THRESHOLD_SECS,
             enc_key,
         }
     }
@@ -343,8 +347,61 @@ impl Default for DiscoveryConfig {
             port: DEFAULT_PORT,
             interval: Duration::from_secs(DEFAULT_INTERVAL_SECS),
             secret: String::new(),
+            announce_expiry_secs: super::message::DEFAULT_EXPIRY_THRESHOLD_SECS,
             enc_key: None,
         }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// AnnounceWarnGate - rate-limited WARN logging (G3)
+// ---------------------------------------------------------------------------
+
+/// G3: 时钟漂移预警阈值（秒）。入站 announce 的 timestamp 与本地时钟偏差超过
+/// 该值时限频 WARN —— 漂移过大会让 announce 过期判断失真。
+pub const DRIFT_WARN_THRESHOLD_SECS: i64 = 60;
+
+/// WARN 限频闸门：同一 key（node_id）在一个 cooldown 窗口内只放行一条
+/// WARN 日志，防止广播风暴或持续漂移刷屏日志。
+///
+/// 内部 `Mutex` 保证 `admit(&self)` 可在 `Fn` 消息回调里直接调用。
+pub struct AnnounceWarnGate {
+    last: std::sync::Mutex<std::collections::HashMap<String, std::time::Instant>>,
+    cooldown: Duration,
+}
+
+impl AnnounceWarnGate {
+    /// 10 分钟 cooldown（默认）。
+    pub fn new() -> Self {
+        Self::with_cooldown(Duration::from_secs(600))
+    }
+
+    /// 自定义 cooldown 窗口。
+    pub fn with_cooldown(cooldown: Duration) -> Self {
+        Self {
+            last: std::sync::Mutex::new(std::collections::HashMap::new()),
+            cooldown,
+        }
+    }
+
+    /// 放行判定：key 首次出现或距上次放行已超过 cooldown 时返回 `true`
+    /// （并记录本次放行时间），否则返回 `false`。
+    pub fn admit(&self, key: &str) -> bool {
+        let mut last = self.last.lock().unwrap_or_else(|p| p.into_inner());
+        let now = std::time::Instant::now();
+        match last.get(key) {
+            Some(t) if now.duration_since(*t) < self.cooldown => false,
+            _ => {
+                last.insert(key.to_string(), now);
+                true
+            }
+        }
+    }
+}
+
+impl Default for AnnounceWarnGate {
+    fn default() -> Self {
+        Self::new()
     }
 }
 
@@ -434,15 +491,27 @@ impl DiscoveryService {
 
         // Set message handler
         let cluster = Arc::clone(&self.cluster);
+        // G3: 可配置过期阈值 + WARN 限频闸门（过期丢弃 / 时钟漂移各一把）。
+        let expiry_secs = self.config.announce_expiry_secs;
+        let expiry_gate = AnnounceWarnGate::new();
+        let drift_gate = AnnounceWarnGate::new();
         self.listener.set_message_handler(Box::new(move |msg, _addr| {
             // Ignore messages from self
             if msg.node_id == cluster.node_id() {
                 return;
             }
 
-            // Ignore expired messages
-            if msg.is_expired() {
-                tracing::debug!(node_id = %msg.node_id, "[Discovery] Ignoring expired discovery message");
+            // Ignore expired messages (G3: 阈值可配置，丢弃时限频 WARN。
+            // 正常 LAN 环境不该出现——出现即说明对端时钟漂移大或网络异常积压)。
+            if msg.is_expired_with_threshold(expiry_secs) {
+                if expiry_gate.admit(&msg.node_id) {
+                    tracing::warn!(
+                        node_id = %msg.node_id,
+                        age_secs = msg.age_secs(),
+                        threshold_secs = expiry_secs,
+                        "[Discovery] Dropping expired discovery message (peer clock skew or backlog?)"
+                    );
+                }
                 return;
             }
 
@@ -454,6 +523,17 @@ impl DiscoveryService {
 
             match msg.msg_type {
                 super::message::DiscoveryMessageType::Announce => {
+                    // G3: 时钟漂移预警 —— announce timestamp 与本地时钟偏差过大会
+                    // 让过期判断失真，限频 WARN 提示对端校时。
+                    let drift = (chrono::Utc::now().timestamp() - msg.timestamp).abs();
+                    if drift > DRIFT_WARN_THRESHOLD_SECS && drift_gate.admit(&msg.node_id) {
+                        tracing::warn!(
+                            node_id = %msg.node_id,
+                            drift_secs = drift,
+                            threshold_secs = DRIFT_WARN_THRESHOLD_SECS,
+                            "[Discovery] Announce timestamp drift detected (peer clock not synced?)"
+                        );
+                    }
                     let changed = cluster.handle_discovered_node(
                         &msg.node_id,
                         &msg.name,
@@ -676,3 +756,6 @@ fn send_announce_with(
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+mod gate_tests;

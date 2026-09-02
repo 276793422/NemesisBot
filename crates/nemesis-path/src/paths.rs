@@ -425,6 +425,14 @@ pub fn resolve_cluster_rpc_cache_dir_in_workspace(workspace: &Path) -> PathBuf {
     cluster_dir_in_workspace(workspace).join("rpc_cache")
 }
 
+/// `<workspace>/cluster/rpc_cache/results` —— B 端任务结果持久化目录
+/// （`TaskResultStore` 磁盘层：A 端回调失败时结果落盘，B 重启后仍可被
+/// A 端 `query_task_result` 查到；与快照同住 rpc_cache 但子目录隔离，
+/// 避免快照清理误删结果文件）。
+pub fn resolve_cluster_results_dir_in_workspace(workspace: &Path) -> PathBuf {
+    resolve_cluster_rpc_cache_dir_in_workspace(workspace).join("results")
+}
+
 // --- 子系统配置区补充（与上方 resolve_*_config_path_in_workspace 同族） ---
 
 /// `<workspace>/config/config.forge.json` —— Forge 自学习配置。

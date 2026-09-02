@@ -522,6 +522,23 @@ async fn ws_send_recv_until<P: Fn(&str) -> bool>(
 type WsStream =
     tokio_tungstenite::WebSocketStream<tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>>;
 
+/// Query `cluster.nodes.list` and return one node's `online` flag (T20).
+/// Matched by human **name** ("Node-B") — registry `id` 是运行时生成的
+/// `node-laptop-<host>-<uuid>`，跨次运行不稳定；name 才是稳定身份。
+async fn node_online(stream: &mut WsStream, target: &str) -> Result<bool> {
+    let nodes = ws_api_request(stream, "cluster", "nodes.list", json!({}), 10).await?;
+    nodes
+        .pointer("/nodes")
+        .and_then(|v| v.as_array())
+        .and_then(|arr| {
+            arr.iter()
+                .find(|n| n.get("name").and_then(|i| i.as_str()) == Some(target))
+                .map(|n| n.get("online").and_then(|o| o.as_bool()))
+        })
+        .flatten()
+        .ok_or_else(|| anyhow::anyhow!("node {} not in nodes.list", target))
+}
+
 /// Send a WS API request (`type=request`) and wait for the matching response
 /// (correlated by `reqId`; non-matching frames — chat.receive, pushes — are
 /// skipped). Returns the response `data` payload. A non-null `error` field is
@@ -868,7 +885,7 @@ async fn main() {
     // Run Tests
     // ==================================================================
     println!("\n========================================");
-    println!("  Running Tests (T1-T18, 4-node full chain verification)");
+    println!("  Running Tests (T1-T20, 4-node full chain verification)");
     println!("========================================");
 
     // T1: Node startup and configuration verification
@@ -2165,6 +2182,319 @@ async fn main() {
                 "T18",
                 format!("离线 sweep OK：{}（issue {} 保持 in_progress 待人工处置，通知已达）", trunc(&comment, 80), issue_id),
             )
+        })
+        .await,
+    );
+
+    // T19: A 崩溃 → 重启恢复（G5 端到端；2026-09-01 集群韧性 goal）。
+    //
+    // 场景：A 发起 peer_chat 后崩溃，B 在 A 宕机窗口内完成 —— 回调打到
+    // 空处丢失，B 的结果落盘（G1 持久化）。A 重启后 first_start 从续行
+    // 快照重建 TaskManager 登记项（G5 接线），恢复循环（120s tick，2min
+    // 新鲜保护）查询 B 的 query_task_result → done → 回灌 bus → 续行把
+    // B 的回复写进 session_log。
+    //
+    // 确定性设计：B 切 testai-1.2（固定 30s 延迟 + 固定回复「好的，
+    // 我知道了」）。A 的快照文件落盘（rpc_cache/*.json 出现）后才 kill；
+    // B 的结果文件落盘（rpc_cache/results/*.json 新增）后才重启 A ——
+    // 两步都以磁盘证据为闸，无 sleep 竞态。session_log 断言同文件内：
+    // user 行含 marker（重启前写入，重启存活）+ assistant 行含 B 的固定
+    // 回复（只可能来自恢复路径 —— A 的 testai-3.1 在 async ack 轮不会
+    // 产生该文案，回调路径在 A 宕机时已丢失）。
+    all_results.push(
+        run_test("T19: A 崩溃 → 重启恢复（G5）", || async {
+            let marker = "T19ARECOVERYMARKERUNIQXYZ";
+
+            // 0. B 切 30s 延迟模型 + 重启。
+            let out = ws_b
+                .run_cli(
+                    &gateway_bin,
+                    &[
+                        "model",
+                        "add",
+                        "--model",
+                        "test/testai-1.2",
+                        "--base",
+                        &format!("http://127.0.0.1:{}/v1", AI_SERVER_PORT),
+                        "--key",
+                        "test-key",
+                        "--default",
+                    ],
+                )
+                .await;
+            if !out.success() {
+                return fail("T19", format!("B model switch failed: {}", out.stderr));
+            }
+            gw_b.kill().await;
+            gw_b = match start_gateway_and_wait("Gateway-B", &gateway_bin, ws_b.path(), &NODES[1])
+                .await
+            {
+                Ok(g) => g,
+                Err(e) => return fail("T19", format!("B restart failed: {}", e)),
+            };
+
+            let a_cache = ws_a
+                .home()
+                .join("workspace")
+                .join("cluster")
+                .join("rpc_cache");
+            let b_results = ws_b
+                .home()
+                .join("workspace")
+                .join("cluster")
+                .join("rpc_cache")
+                .join("results");
+
+            // 基线：A 的快照数 / B 的结果数（此前测试完成即清理，应为 0，
+            // 但用增量判断以容忍残留）。
+            let count_json = |dir: &std::path::Path| -> usize {
+                std::fs::read_dir(dir)
+                    .map(|entries| {
+                        entries
+                            .flatten()
+                            .filter(|e| {
+                                e.path().extension().and_then(|x| x.to_str()) == Some("json")
+                            })
+                            .count()
+                    })
+                    .unwrap_or(0)
+            };
+            let a_snapshots_before = count_json(&a_cache);
+            let b_results_before = count_json(&b_results);
+
+            // 1. 发起 peer_chat（不等待回复 —— A 即将崩溃）。
+            let mut ws = match ws_connect_gateway(NODES[0].web_port).await {
+                Ok(s) => s,
+                Err(e) => return fail("T19", format!("WS connect to A failed: {}", e)),
+            };
+            let send_msg = json!({
+                "type": "message",
+                "module": "chat",
+                "cmd": "send",
+                "data": { "content": format!(
+                    r#"<PEER_CHAT>{{"peer_id":"Node-B","content":"{}"}}</PEER_CHAT>"#,
+                    marker
+                ) },
+                "timestamp": chrono::Local::now().to_rfc3339()
+            });
+            if let Err(e) = ws.send(Message::Text(send_msg.to_string().into())).await {
+                return fail("T19", format!("WS send failed: {}", e));
+            }
+
+            // 2. 等 A 的续行快照落盘（≤20s）—— 这是恢复的物质基础。
+            let deadline = tokio::time::Instant::now() + Duration::from_secs(20);
+            loop {
+                if count_json(&a_cache) > a_snapshots_before {
+                    break;
+                }
+                if tokio::time::Instant::now() >= deadline {
+                    return fail(
+                        "T19",
+                        format!("20s 内 A 的续行快照未出现在 {}", a_cache.display()),
+                    );
+                }
+                tokio::time::sleep(Duration::from_millis(500)).await;
+            }
+
+            // 3. 杀 A（此刻 B 仍在 30s LLM 延迟中）。
+            gw_a.kill().await;
+
+            // 4. 等 B 在 A 宕机窗口内完成（结果文件落盘，≤90s from now）。
+            let deadline = tokio::time::Instant::now() + Duration::from_secs(90);
+            loop {
+                if count_json(&b_results) > b_results_before {
+                    break;
+                }
+                if tokio::time::Instant::now() >= deadline {
+                    return fail(
+                        "T19",
+                        format!("90s 内 B 的结果未落盘于 {}（B 未在 A 宕机期间完成）", b_results.display()),
+                    );
+                }
+                tokio::time::sleep(Duration::from_secs(2)).await;
+            }
+
+            // 5. 重启 A → first_start 重建登记项 → 恢复循环接管。
+            gw_a = match start_gateway_and_wait("Gateway-A", &gateway_bin, ws_a.path(), &NODES[0])
+                .await
+            {
+                Ok(g) => g,
+                Err(e) => return fail("T19", format!("A restart failed: {}", e)),
+            };
+
+            // 6. 轮询 session_logs（恢复循环 120s tick + 2min 新鲜保护，
+            //    预计 2-4 分钟内完成；deadline 300s）。
+            let session_logs_dir = ws_a
+                .home()
+                .join("workspace")
+                .join("logs")
+                .join("session_logs");
+            let deadline = tokio::time::Instant::now() + Duration::from_secs(300);
+            let mut recovered = false;
+            while tokio::time::Instant::now() < deadline {
+                tokio::time::sleep(Duration::from_secs(5)).await;
+                let mut user_seen = false;
+                let mut reply_seen = false;
+                if let Ok(entries) = std::fs::read_dir(&session_logs_dir) {
+                    for entry in entries.flatten() {
+                        let path = entry.path();
+                        if path.extension().and_then(|s| s.to_str()) != Some("jsonl") {
+                            continue;
+                        }
+                        let Ok(content) = std::fs::read_to_string(&path) else {
+                            continue;
+                        };
+                        if !content.contains(marker) {
+                            continue;
+                        }
+                        for line in content.lines() {
+                            if line.contains(marker)
+                                && (line.contains(r#""role":"user""#)
+                                    || line.contains(r#""role": "user""#))
+                            {
+                                user_seen = true;
+                            }
+                            if line.contains("好的，我知道了")
+                                && (line.contains(r#""role":"assistant""#)
+                                    || line.contains(r#""role": "assistant""#))
+                            {
+                                reply_seen = true;
+                            }
+                        }
+                    }
+                }
+                if user_seen && reply_seen {
+                    recovered = true;
+                    break;
+                }
+            }
+            if !recovered {
+                return fail(
+                    "T19",
+                    format!(
+                        "300s 内恢复未完成：session_logs 无 marker user 行 + 「好的，我知道了」assistant 行（dir={}）——检查 first_start 登记/恢复循环/回灌 bus 链路",
+                        session_logs_dir.display()
+                    ),
+                );
+            }
+            pass(
+                "T19",
+                "A 崩溃重启后经恢复循环取回 B 的结果并写入 session_log（G5 端到端 OK）",
+            )
+        })
+        .await,
+    );
+
+    // T20: 主动健康探针 Offline/Online 翻转（G2 端到端；2026-09-01 集群韧性
+    // goal）。A 注入 test-speed 探针配置（2s 间隔 / 阈值 2）并重启；kill B →
+    // 2 次探针失败（~4-8s）翻转 Offline（被动过期要 120s+，主动探针是本次
+    // 验证点）；重启 B → announce upsert Online / 探针成功自愈。
+    // 本测试最后跑：A 的探针配置会保留到 run 结束。
+    all_results.push(
+        run_test("T20: 主动健康探针翻转（G2）", || async {
+            // 0. A 注入探针配置（AppConfig 读 workspace/config/config.cluster.json
+            //    顶层键）+ 重启武装探针循环。
+            let cluster_cfg = ws_a
+                .home()
+                .join("workspace")
+                .join("config")
+                .join("config.cluster.json");
+            let raw = match std::fs::read_to_string(&cluster_cfg) {
+                Ok(r) => r,
+                Err(e) => {
+                    return fail(
+                        "T20",
+                        format!("read {} failed: {}", cluster_cfg.display(), e),
+                    );
+                }
+            };
+            let mut cfg: Value = match serde_json::from_str(&raw) {
+                Ok(v) => v,
+                Err(e) => return fail("T20", format!("parse config.cluster.json failed: {}", e)),
+            };
+            if let Some(obj) = cfg.as_object_mut() {
+                obj.insert("health_check_interval_secs".into(), json!(2));
+                obj.insert("health_check_failure_threshold".into(), json!(2));
+            }
+            let pretty = match serde_json::to_string_pretty(&cfg) {
+                Ok(s) => s,
+                Err(e) => return fail("T20", format!("serialize config failed: {}", e)),
+            };
+            if let Err(e) = std::fs::write(&cluster_cfg, pretty) {
+                return fail(
+                    "T20",
+                    format!("write {} failed: {}", cluster_cfg.display(), e),
+                );
+            }
+
+            gw_a.kill().await;
+            gw_a = match start_gateway_and_wait("Gateway-A", &gateway_bin, ws_a.path(), &NODES[0])
+                .await
+            {
+                Ok(g) => g,
+                Err(e) => return fail("T20", format!("A restart failed: {}", e)),
+            };
+
+            // 1. 基线：B 在线。
+            let mut ws = match ws_connect_gateway(NODES[0].web_port).await {
+                Ok(s) => s,
+                Err(e) => return fail("T20", format!("WS connect to A failed: {}", e)),
+            };
+            match node_online(&mut ws, "Node-B").await {
+                Ok(true) => {}
+                Ok(false) => return fail("T20", "基线即 offline —— 前序测试未恢复或探针误报"),
+                Err(e) => return fail("T20", format!("nodes.list failed: {}", e)),
+            }
+
+            // 2. kill B → 轮询 ≤40s 等 Offline（2 次失败 × 2s ≈ 4-8s）。
+            gw_b.kill().await;
+            let deadline = tokio::time::Instant::now() + Duration::from_secs(40);
+            let mut went_offline = false;
+            while tokio::time::Instant::now() < deadline {
+                tokio::time::sleep(Duration::from_secs(2)).await;
+                match node_online(&mut ws, "Node-B").await {
+                    Ok(false) => {
+                        went_offline = true;
+                        break;
+                    }
+                    Ok(true) => {}
+                    Err(e) => return fail("T20", format!("nodes.list failed: {}", e)),
+                }
+            }
+            if !went_offline {
+                return fail(
+                    "T20",
+                    "40s 内 B 未被主动探针标记 Offline（预期 2 次失败 × 2s 间隔 ≈ 4-8s）",
+                );
+            }
+
+            // 3. 重启 B → announce upsert Online / 探针成功自愈（≤60s）。
+            gw_b = match start_gateway_and_wait("Gateway-B", &gateway_bin, ws_b.path(), &NODES[1])
+                .await
+            {
+                Ok(g) => g,
+                Err(e) => return fail("T20", format!("B restart failed: {}", e)),
+            };
+            let deadline = tokio::time::Instant::now() + Duration::from_secs(60);
+            let mut healed = false;
+            while tokio::time::Instant::now() < deadline {
+                tokio::time::sleep(Duration::from_secs(3)).await;
+                match node_online(&mut ws, "Node-B").await {
+                    Ok(true) => {
+                        healed = true;
+                        break;
+                    }
+                    Ok(false) => {}
+                    Err(e) => return fail("T20", format!("nodes.list failed: {}", e)),
+                }
+            }
+            if !healed {
+                return fail(
+                    "T20",
+                    "60s 内 B 未恢复 Online（announce upsert / 探针自愈均未生效）",
+                );
+            }
+            pass("T20", "主动探针 Offline/Online 双向翻转 OK（G2 端到端）")
         })
         .await,
     );

@@ -197,6 +197,59 @@ impl TaskResultStore {
         loaded
     }
 
+    /// Remove results older than `max_age` from both disk and memory (G1).
+    ///
+    /// Disk is the sweep authority: every `*.json` file in `cache_dir` whose
+    /// `stored_at` parses and is older than the cutoff is deleted, then the
+    /// in-memory map is pruned to match. Entries with an unparsable
+    /// `stored_at` are kept (fail-open) so a clock skew or format change
+    /// cannot wipe fresh data. Returns the number of removed entries.
+    ///
+    /// Without disk persistence this is a no-op (memory-only entries are not
+    /// swept — they are bounded by `max_size` eviction instead).
+    pub fn sweep_older_than(&self, max_age: chrono::Duration) -> usize {
+        let dir = match &self.cache_dir {
+            Some(d) => d,
+            None => return 0,
+        };
+        let cutoff = chrono::Local::now() - max_age;
+        let mut removed = 0usize;
+
+        if let Ok(entries) = std::fs::read_dir(dir) {
+            for entry in entries.flatten() {
+                let path = entry.path();
+                if path.extension().and_then(|e| e.to_str()) != Some("json") {
+                    continue;
+                }
+                let keep = std::fs::read_to_string(&path)
+                    .ok()
+                    .and_then(|data| serde_json::from_str::<TaskResult>(&data).ok())
+                    .and_then(|r| chrono::DateTime::parse_from_rfc3339(&r.stored_at).ok())
+                    .map(|stored| stored.with_timezone(&chrono::Local) >= cutoff)
+                    .unwrap_or(true); // unparsable -> keep (fail-open)
+                if !keep && std::fs::remove_file(&path).is_ok() {
+                    removed += 1;
+                }
+            }
+        }
+
+        // Prune memory to match the disk sweep.
+        let mut results = self.results.lock();
+        let stale: Vec<String> = results
+            .iter()
+            .filter(|(_, r)| {
+                chrono::DateTime::parse_from_rfc3339(&r.stored_at)
+                    .map(|stored| stored.with_timezone(&chrono::Local) < cutoff)
+                    .unwrap_or(false)
+            })
+            .map(|(id, _)| id.clone())
+            .collect();
+        for id in stale {
+            results.remove(&id);
+        }
+        removed
+    }
+
     // ---- Internal helpers ----
 
     fn store(&self, result: TaskResult) {

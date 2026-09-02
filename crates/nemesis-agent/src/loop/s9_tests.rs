@@ -830,6 +830,7 @@ async fn bus_flow_continuation_inline() {
         "web",
         "chat9",
         "s9sess",
+        "",
     )
     .await;
     agent_loop.set_continuation_manager(mgr);
@@ -883,6 +884,7 @@ async fn bus_flow_continuation_spawned() {
         "web",
         "chat9",
         "s9sess",
+        "",
     )
     .await;
     agent_loop.set_continuation_manager(mgr);
@@ -1363,6 +1365,7 @@ async fn handle_cluster_continuation_wrapper_both_arms() {
             "web",
             "chat9",
             "s9sess",
+            "",
         )
         .await;
         agent_loop.set_continuation_manager(mgr);
@@ -1696,6 +1699,7 @@ async fn bus_flow_queue_mode_continuation_arm() {
         "web",
         "chat9",
         "s9sess",
+        "",
     )
     .await;
     agent_loop.set_continuation_manager(mgr);

@@ -10,12 +10,13 @@ use std::time::{SystemTime, UNIX_EPOCH};
 /// Discovery protocol version. Must match the Go constant `ProtocolVersion`.
 pub const PROTOCOL_VERSION: &str = "1.0";
 
-/// Expiry threshold in seconds. Messages older than this are considered stale.
+/// Default expiry threshold in seconds. Messages older than this are considered stale.
 ///
-/// NOTE: The 120-second threshold is intentionally hardcoded for LAN scenarios
-/// (RTT <1ms, clock skew <1s). This is NOT a bug — do not change to configurable
-/// unless deploying in cross-subnet/high-latency networks.
-const EXPIRY_THRESHOLD_SECS: i64 = 120;
+/// The 120-second threshold is intentionally chosen for LAN scenarios
+/// (RTT <1ms, clock skew <1s). It can be overridden per deployment via
+/// `config.cluster.json` 的 `announce_expiry_secs`（G3，≤0 = 关闭过期丢弃）；
+/// 此常量是该配置的默认值与协议层 fallback。
+pub const DEFAULT_EXPIRY_THRESHOLD_SECS: i64 = 120;
 
 // ---------------------------------------------------------------------------
 // MessageType
@@ -190,7 +191,23 @@ impl DiscoveryMessage {
     ///
     /// Mirrors Go's `DiscoveryMessage.IsExpired()`.
     pub fn is_expired(&self) -> bool {
-        now_unix() - self.timestamp > EXPIRY_THRESHOLD_SECS
+        self.is_expired_with_threshold(DEFAULT_EXPIRY_THRESHOLD_SECS)
+    }
+
+    /// G3: 用可配置阈值判断消息是否过期。
+    ///
+    /// `threshold <= 0` 视为关闭过期丢弃（恒返回 false），与
+    /// `announce_expiry_secs` 配置语义一致。
+    pub fn is_expired_with_threshold(&self, threshold: i64) -> bool {
+        if threshold <= 0 {
+            return false;
+        }
+        self.age_secs() > threshold
+    }
+
+    /// G3: 消息年龄（当前 Unix 时间 − 消息时间戳，秒）。时钟回拨时可为负。
+    pub fn age_secs(&self) -> i64 {
+        now_unix() - self.timestamp
     }
 
     /// Serialize the message to JSON bytes, mirroring Go's `DiscoveryMessage.Bytes()`.

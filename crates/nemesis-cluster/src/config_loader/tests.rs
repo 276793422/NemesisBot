@@ -39,6 +39,14 @@ fn test_app_config_default() {
     assert_eq!(config.port, 11949);
     assert_eq!(config.rpc_port, 21949);
     assert_eq!(config.broadcast_interval, 30);
+    // G2: 主动健康探针默认 60s 间隔、3 次失败判离线。
+    assert_eq!(config.health_check_interval_secs, 60);
+    assert_eq!(config.health_check_failure_threshold, 3);
+    // G3: announce 过期阈值默认与协议常量一致。
+    assert_eq!(
+        config.announce_expiry_secs,
+        crate::discovery::DEFAULT_EXPIRY_THRESHOLD_SECS
+    );
 }
 
 #[test]
@@ -52,6 +60,9 @@ fn test_app_config_roundtrip() {
         rpc_port: 22345,
         broadcast_interval: 60,
         llm_timeout_secs: 7200,
+        health_check_interval_secs: 30,
+        health_check_failure_threshold: 2,
+        announce_expiry_secs: 180,
     };
 
     save_app_config(workspace, &config).unwrap();
@@ -59,6 +70,9 @@ fn test_app_config_roundtrip() {
     assert!(loaded.enabled);
     assert_eq!(loaded.port, 12345);
     assert_eq!(loaded.rpc_port, 22345);
+    assert_eq!(loaded.health_check_interval_secs, 30);
+    assert_eq!(loaded.health_check_failure_threshold, 2);
+    assert_eq!(loaded.announce_expiry_secs, 180);
 }
 
 // ============================================================
@@ -127,6 +141,9 @@ fn test_app_config_serialization_roundtrip() {
         rpc_port: 19999,
         broadcast_interval: 45,
         llm_timeout_secs: 3600,
+        health_check_interval_secs: 15,
+        health_check_failure_threshold: 5,
+        announce_expiry_secs: 0,
     };
     let json = serde_json::to_string_pretty(&config).unwrap();
     let parsed: AppConfig = serde_json::from_str(&json).unwrap();
@@ -134,6 +151,9 @@ fn test_app_config_serialization_roundtrip() {
     assert_eq!(parsed.port, 9999);
     assert_eq!(parsed.rpc_port, 19999);
     assert_eq!(parsed.broadcast_interval, 45);
+    assert_eq!(parsed.health_check_interval_secs, 15);
+    assert_eq!(parsed.health_check_failure_threshold, 5);
+    assert_eq!(parsed.announce_expiry_secs, 0);
 }
 
 #[test]
@@ -144,6 +164,9 @@ fn test_app_config_deserialization_defaults() {
     assert_eq!(config.port, 11949);
     assert_eq!(config.rpc_port, 21949);
     assert_eq!(config.broadcast_interval, 30);
+    assert_eq!(config.health_check_interval_secs, 60);
+    assert_eq!(config.health_check_failure_threshold, 3);
+    assert_eq!(config.announce_expiry_secs, 120);
 }
 
 #[test]

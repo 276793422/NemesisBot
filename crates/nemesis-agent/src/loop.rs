@@ -4789,6 +4789,9 @@ impl AgentLoop {
                             let tc_id = tc.id.clone();
                             let msgs = messages.clone();
                             let task_id_spawn = task_id.clone();
+                            // G5: 对端 ID 随快照落盘 —— A 侧重启后 first_start
+                            // 恢复 pending 任务时才知道 poll 该问谁。
+                            let peer_id_spawn = target_id.clone();
                             tokio::spawn(async move {
                                 mgr.save_continuation(
                                     &task_id_spawn,
@@ -4797,6 +4800,7 @@ impl AgentLoop {
                                     &channel,
                                     &chat_id,
                                     &session_key,
+                                    &peer_id_spawn,
                                 )
                                 .await;
                             });

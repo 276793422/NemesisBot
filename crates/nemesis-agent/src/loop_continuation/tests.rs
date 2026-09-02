@@ -29,6 +29,7 @@ async fn test_save_and_load_continuation() {
             "web",
             "chat1",
             "test_session",
+            "",
         )
         .await;
 
@@ -60,6 +61,7 @@ async fn test_remove_continuation() {
             "web",
             "chat1",
             "test_session",
+            "",
         )
         .await;
 
@@ -86,6 +88,7 @@ async fn test_disk_persistence_and_recovery() {
             "rpc",
             "chat2",
             "test_session",
+            "",
         )
         .await;
 
@@ -122,6 +125,7 @@ fn test_disk_recovery_on_startup() {
         chat_id: "chat_r".to_string(),
         created_at: "2026-04-29T12:00:00Z".to_string(),
         session_key: String::new(),
+        peer_id: String::new(),
     };
     store.save(&snapshot).unwrap();
 
@@ -145,6 +149,7 @@ async fn test_disk_store_save_and_load() {
         chat_id: "chat100".to_string(),
         created_at: "2026-04-29T12:00:00Z".to_string(),
         session_key: String::new(),
+        peer_id: String::new(),
     };
 
     store.save(&snapshot).unwrap();
@@ -166,6 +171,7 @@ async fn test_disk_store_delete() {
         chat_id: "chat-del".to_string(),
         created_at: "2026-04-29T12:00:00Z".to_string(),
         session_key: String::new(),
+        peer_id: String::new(),
     };
 
     store.save(&snapshot).unwrap();
@@ -192,6 +198,7 @@ async fn test_save_barrier_pattern() {
                 "web",
                 "chat_b",
                 "test_session",
+                "",
             )
             .await;
     });
@@ -217,6 +224,7 @@ async fn test_overwrite_continuation() {
             "web",
             "chat1",
             "test_session",
+            "",
         )
         .await;
 
@@ -228,6 +236,7 @@ async fn test_overwrite_continuation() {
             "web",
             "chat1",
             "test_session",
+            "",
         )
         .await;
 
@@ -249,6 +258,7 @@ fn test_continuation_snapshot_serialization() {
         chat_id: "chat_ser".to_string(),
         created_at: "2026-04-29T12:00:00Z".to_string(),
         session_key: String::new(),
+        peer_id: String::new(),
     };
 
     let json = serde_json::to_string(&snapshot).unwrap();
@@ -268,6 +278,7 @@ fn test_continuation_data_debug() {
         session_key: "test_session".to_string(),
         ready: Arc::new(tokio::sync::Notify::new()),
         ready_flag: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+        peer_id: String::new(),
     };
     let debug_str = format!("{:?}", data);
     assert!(debug_str.contains("tc_1"));
@@ -306,6 +317,7 @@ fn test_manager_has_continuation_sync() {
         session_key: "test_session".to_string(),
         ready: Arc::new(tokio::sync::Notify::new()),
         ready_flag: Arc::new(std::sync::atomic::AtomicBool::new(true)),
+        peer_id: String::new(),
     });
     manager.insert_continuation_sync("task-sync".to_string(), data);
 
@@ -325,6 +337,7 @@ async fn test_manager_multiple_continuations() {
                 "web",
                 &format!("chat_{}", i),
                 "test_session",
+                "",
             )
             .await;
     }
@@ -362,6 +375,7 @@ fn test_continuation_store_list_pending_with_snapshots() {
             chat_id: format!("chat_{}", i),
             created_at: "2026-04-29T12:00:00Z".to_string(),
             session_key: String::new(),
+            peer_id: String::new(),
         };
         store.save(&snapshot).unwrap();
     }
@@ -384,6 +398,7 @@ fn test_continuation_snapshot_clone() {
         chat_id: "chat_c".to_string(),
         created_at: "2026-04-29T12:00:00Z".to_string(),
         session_key: String::new(),
+        peer_id: String::new(),
     };
     let cloned = snapshot.clone();
     assert_eq!(cloned.task_id, "task-clone");
@@ -411,6 +426,7 @@ fn test_continuation_data_with_ready_notify() {
         session_key: "test_session".to_string(),
         ready: notify,
         ready_flag: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+        peer_id: String::new(),
     };
 
     assert!(!data.ready_flag.load(std::sync::atomic::Ordering::SeqCst));
@@ -432,6 +448,7 @@ async fn test_concurrent_save_and_load() {
                 "web",
                 &format!("chat_{}", i),
                 "test_session",
+                "",
             )
             .await;
         }));
@@ -493,6 +510,7 @@ fn test_continuation_store_save_overwrite() {
         chat_id: "chat1".to_string(),
         created_at: "2026-04-29T12:00:00Z".to_string(),
         session_key: String::new(),
+        peer_id: String::new(),
     };
     store.save(&snapshot1).unwrap();
 
@@ -504,6 +522,7 @@ fn test_continuation_store_save_overwrite() {
         chat_id: "chat1".to_string(),
         created_at: "2026-04-29T12:00:00Z".to_string(),
         session_key: String::new(),
+        peer_id: String::new(),
     };
     store.save(&snapshot2).unwrap();
 
@@ -588,6 +607,7 @@ fn test_continuation_store_recover_skips_already_loaded() {
         chat_id: "chat_skip".to_string(),
         created_at: "2026-04-29T12:00:00Z".to_string(),
         session_key: String::new(),
+        peer_id: String::new(),
     };
     store.save(&snapshot).unwrap();
 
@@ -601,6 +621,7 @@ fn test_continuation_store_recover_skips_already_loaded() {
         session_key: "test_session".to_string(),
         ready: Arc::new(tokio::sync::Notify::new()),
         ready_flag: Arc::new(std::sync::atomic::AtomicBool::new(true)),
+        peer_id: String::new(),
     });
     manager.insert_continuation_sync("task-skip".to_string(), data);
 
@@ -623,6 +644,7 @@ fn test_continuation_store_recover_corrupted_messages() {
         chat_id: "chat_bad".to_string(),
         created_at: "2026-04-29T12:00:00Z".to_string(),
         session_key: String::new(),
+        peer_id: String::new(),
     };
     store.save(&snapshot).unwrap();
 
@@ -688,7 +710,15 @@ async fn test_handle_cluster_continuation_simple_response() {
     // Save a continuation snapshot
     let messages = vec![make_message("user", "Hello")];
     manager
-        .save_continuation("task-1", messages, "tc_1", "web", "chat1", "test_session")
+        .save_continuation(
+            "task-1",
+            messages,
+            "tc_1",
+            "web",
+            "chat1",
+            "test_session",
+            "",
+        )
         .await;
 
     // Provider returns a simple text response (no tool calls)
@@ -739,6 +769,7 @@ async fn test_handle_cluster_continuation_failed_task() {
             "web",
             "chat1",
             "test_session",
+            "",
         )
         .await;
 
@@ -786,6 +817,7 @@ async fn test_handle_cluster_continuation_with_tool_calls() {
             "web",
             "chat1",
             "test_session",
+            "",
         )
         .await;
 
@@ -853,7 +885,15 @@ async fn test_handle_cluster_continuation_llm_error() {
 
     let messages = vec![make_message("user", "Hello")];
     manager
-        .save_continuation("task-err", messages, "tc_1", "web", "chat1", "test_session")
+        .save_continuation(
+            "task-err",
+            messages,
+            "tc_1",
+            "web",
+            "chat1",
+            "test_session",
+            "",
+        )
         .await;
 
     let provider = MockContinuationProvider::new_error("LLM connection failed".to_string());
@@ -892,6 +932,7 @@ async fn test_handle_cluster_continuation_unknown_tool() {
             "web",
             "chat1",
             "test_session",
+            "",
         )
         .await;
 
@@ -1009,6 +1050,7 @@ fn test_continuation_snapshot_created_at() {
         chat_id: "chat1".to_string(),
         created_at: "2026-01-01T00:00:00Z".to_string(),
         session_key: String::new(),
+        peer_id: String::new(),
     };
     assert_eq!(snapshot.task_id, "t1");
     assert_eq!(snapshot.created_at, "2026-01-01T00:00:00Z");
@@ -1147,6 +1189,7 @@ fn test_disk_persistence_load_from_disk() {
         chat_id: "chat_dl".to_string(),
         created_at: "2026-04-29T12:00:00Z".to_string(),
         session_key: String::new(),
+        peer_id: String::new(),
     };
     store.save(&snapshot).unwrap();
 
@@ -1168,6 +1211,7 @@ async fn test_disk_store_remove_and_verify() {
         chat_id: "chat_rm".to_string(),
         created_at: "2026-04-29T12:00:00Z".to_string(),
         session_key: String::new(),
+        peer_id: String::new(),
     };
     store.save(&snapshot).unwrap();
     assert!(store.load("task-rm").is_ok());
@@ -1190,6 +1234,7 @@ async fn test_handle_cluster_continuation_failed_task_no_error_msg() {
             "web",
             "chat1",
             "test_session",
+            "",
         )
         .await;
 
@@ -1266,6 +1311,7 @@ async fn test_handle_cluster_continuation_writes_session_log() {
             "web",
             "chat_log",
             &session_key,
+            "",
         )
         .await;
 
@@ -1339,6 +1385,7 @@ async fn test_handle_cluster_continuation_writes_session_store_when_provided() {
             "web",
             "chat_store",
             &session_key,
+            "",
         )
         .await;
 
@@ -1403,6 +1450,7 @@ async fn test_handle_cluster_continuation_skips_log_when_session_key_empty() {
             "tc_legacy",
             "web",
             "chat_legacy",
+            "",
             "",
         )
         .await;
@@ -1469,6 +1517,7 @@ async fn test_load_continuation_preserves_session_key() {
             "web",
             "chat_flow",
             session_key,
+            "",
         )
         .await;
 
@@ -1537,6 +1586,7 @@ async fn test_disk_recovery_preserves_session_key_for_handle() {
                 "web",
                 "chat_rh",
                 &session_key_phase1,
+                "",
             ));
         })
         .await
@@ -1618,6 +1668,7 @@ async fn test_save_load_roundtrip_through_disk_preserves_session_key() {
         "web",
         "chat_rt",
         session_key,
+        "",
     )
     .await;
 
@@ -1657,6 +1708,7 @@ async fn test_handle_cluster_continuation_emits_observer_events() {
             "web",
             "chat_obs",
             "obs_session",
+            "",
         )
         .await;
 
@@ -1733,6 +1785,7 @@ async fn test_handle_cluster_continuation_persists_to_session_store() {
             "web",
             "chat_s",
             "persist_session",
+            "",
         )
         .await;
 
@@ -1804,6 +1857,7 @@ async fn test_load_continuation_falls_back_to_disk() {
         chat_id: "chat_d".to_string(),
         session_key: "disk_session".to_string(),
         created_at: "2026-01-01T00:00:00Z".to_string(),
+        peer_id: String::new(),
     };
     store.save(&snap).unwrap();
 
@@ -1862,6 +1916,7 @@ async fn recover_from_disk_inside_async_runtime_does_not_panic() {
         chat_id: "chat_bug45".to_string(),
         session_key: String::new(),
         created_at: "2026-08-27T00:00:00Z".to_string(),
+        peer_id: String::new(),
     };
     store.save(&snapshot).unwrap();
     drop(store);
@@ -1969,6 +2024,7 @@ async fn test_cleanup_old_snapshots_removes_stale_keeps_fresh() {
                 "rpc",
                 "chat",
                 "test_session",
+                "",
             )
             .await;
     }
@@ -2042,6 +2098,7 @@ async fn test_cleanup_old_snapshots_memory_only_manager_is_noop() {
             "rpc",
             "chat",
             "test_session",
+            "",
         )
         .await;
     let removed = manager
@@ -2068,6 +2125,7 @@ fn snap(task: &str) -> ContinuationSnapshot {
         chat_id: "c1".to_string(),
         session_key: String::new(),
         created_at: "2026-08-25T00:00:00+08:00".to_string(),
+        peer_id: String::new(),
     }
 }
 
@@ -2156,10 +2214,26 @@ async fn cleanup_old_snapshots_evicts_disk_and_memory() {
     let tmp = tempfile::TempDir::new().unwrap();
     let manager = ContinuationManager::with_disk_store(tmp.path());
     manager
-        .save_continuation("t1", vec![make_message("user", "a")], "tc", "web", "c", "s")
+        .save_continuation(
+            "t1",
+            vec![make_message("user", "a")],
+            "tc",
+            "web",
+            "c",
+            "s",
+            "",
+        )
         .await;
     manager
-        .save_continuation("t2", vec![make_message("user", "b")], "tc", "web", "c", "s")
+        .save_continuation(
+            "t2",
+            vec![make_message("user", "b")],
+            "tc",
+            "web",
+            "c",
+            "s",
+            "",
+        )
         .await;
     assert!(manager.has_continuation("t1").await);
     let cache = tmp.path().join("cluster").join("rpc_cache");
@@ -2188,6 +2262,7 @@ async fn save_continuation_disk_failure_still_marks_ready() {
             "web",
             "c",
             "s",
+            "",
         )
         .await;
     assert!(manager.has_continuation("diskfail").await);
@@ -2207,6 +2282,7 @@ fn not_ready_data() -> Arc<ContinuationData> {
         session_key: String::new(),
         ready: Arc::new(Notify::new()),
         ready_flag: Arc::new(AtomicBool::new(false)),
+        peer_id: String::new(),
     })
 }
 
@@ -2296,6 +2372,7 @@ async fn final_outbound_send_error_warns_no_panic() {
             "web",
             "c",
             "",
+            "",
         )
         .await;
 
@@ -2349,6 +2426,7 @@ async fn handle_continuation_with_observer_manager_persists_and_sends() {
             "web",
             "chat1",
             &session_key,
+            "",
         )
         .await;
 

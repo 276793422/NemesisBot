@@ -992,3 +992,90 @@ fn test_s4_check_health_skips_static_peer() {
         NodeStatus::Online
     );
 }
+
+// ---- G2: 主动健康探针失败/自愈（2026-09-01 集群韧性 goal）----
+
+/// 连续失败达阈值：Online → Offline 翻转（仅第 threshold 次返回 true）。
+#[test]
+fn test_probe_failure_flips_online_to_offline_at_threshold() {
+    let registry = PeerRegistry::new(HealthConfig::default());
+    registry.upsert(make_node("s4-probe-a"));
+
+    // 阈值 3：前两次 false（未达阈值），第三次 true（翻转）。
+    assert!(!registry.record_probe_failure("s4-probe-a", 3));
+    assert!(!registry.record_probe_failure("s4-probe-a", 3));
+    assert!(
+        registry.record_probe_failure("s4-probe-a", 3),
+        "third consecutive failure must flip to Offline"
+    );
+    assert_eq!(
+        registry.get("s4-probe-a").unwrap().status,
+        NodeStatus::Offline
+    );
+}
+
+/// 已 Offline 后继续失败：不再重复翻转（返回 false，避免日志刷屏）。
+#[test]
+fn test_probe_failure_after_offline_does_not_reflip() {
+    let registry = PeerRegistry::new(HealthConfig::default());
+    registry.upsert(make_node("s4-probe-b"));
+
+    assert!(registry.record_probe_failure("s4-probe-b", 1));
+    assert!(
+        !registry.record_probe_failure("s4-probe-b", 1),
+        "already Offline -> no reflip"
+    );
+}
+
+/// 一次成功即自愈：Offline → Online + 计数清零；Online 时返回 false。
+#[test]
+fn test_probe_success_heals_offline_and_resets_counter() {
+    let registry = PeerRegistry::new(HealthConfig::default());
+    registry.upsert(make_node("s4-probe-c"));
+
+    // 打成 Offline（阈值 1）。
+    assert!(registry.record_probe_failure("s4-probe-c", 1));
+
+    // 一次成功自愈。
+    assert!(
+        registry.record_probe_success("s4-probe-c"),
+        "offline -> online heal must report"
+    );
+    assert_eq!(
+        registry.get("s4-probe-c").unwrap().status,
+        NodeStatus::Online
+    );
+
+    // Online 状态下成功：返回 false（无状态变化），且失败计数保持清零
+    // ——一次失败不再立即翻转（证明计数被重置）。
+    assert!(!registry.record_probe_success("s4-probe-c"));
+    assert!(
+        !registry.record_probe_failure("s4-probe-c", 3),
+        "counter was reset by success: one failure < threshold 3"
+    );
+}
+
+/// 未知节点：两个方法都诚实返回 false。
+#[test]
+fn test_probe_methods_unknown_node_return_false() {
+    let registry = PeerRegistry::new(HealthConfig::default());
+    assert!(!registry.record_probe_failure("s4-ghost-probe", 3));
+    assert!(!registry.record_probe_success("s4-ghost-probe"));
+}
+
+/// announce/upsert 刷新节点：失败计数随之清零（重新发现视为复活信号）。
+#[test]
+fn test_probe_failure_counter_cleared_by_upsert() {
+    let registry = PeerRegistry::new(HealthConfig::default());
+    registry.upsert(make_node("s4-probe-d"));
+    registry.record_probe_failure("s4-probe-d", 3);
+    registry.record_probe_failure("s4-probe-d", 3);
+
+    // 节点重新被发现（announce 路径走 upsert_node）。
+    registry.upsert(make_node("s4-probe-d"));
+
+    assert!(
+        !registry.record_probe_failure("s4-probe-d", 3),
+        "counter reset by upsert: one failure < threshold"
+    );
+}

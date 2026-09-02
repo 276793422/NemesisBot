@@ -62,6 +62,18 @@ pub struct AppConfig {
     /// Default: 7200 (2 hours). Set to 0 to disable timeout.
     #[serde(default = "default_llm_timeout_secs")]
     pub llm_timeout_secs: u64,
+    /// G2: RPC 健康探针循环间隔（秒）。0 = 关闭主动探测（只保留 UDP 广播
+    /// 被动过期检查）。默认 60。
+    #[serde(default = "default_health_check_interval_secs")]
+    pub health_check_interval_secs: u64,
+    /// G2: 连续探针失败多少次后把节点标记 Offline（自愈 = 一次探针成功即回
+    /// Online）。默认 3。
+    #[serde(default = "default_health_check_failure_threshold")]
+    pub health_check_failure_threshold: u32,
+    /// G3: discovery announce 过期阈值（秒）。超过该时长的 announce 被丢弃
+    /// （WARN 限频），0 = 关闭过期丢弃。默认 120（与协议默认一致）。
+    #[serde(default = "default_announce_expiry_secs")]
+    pub announce_expiry_secs: i64,
 }
 
 impl Default for AppConfig {
@@ -72,6 +84,9 @@ impl Default for AppConfig {
             rpc_port: default_rpc_port(),
             broadcast_interval: default_broadcast_interval(),
             llm_timeout_secs: default_llm_timeout_secs(),
+            health_check_interval_secs: default_health_check_interval_secs(),
+            health_check_failure_threshold: default_health_check_failure_threshold(),
+            announce_expiry_secs: default_announce_expiry_secs(),
         }
     }
 }
@@ -90,6 +105,18 @@ fn default_broadcast_interval() -> u64 {
 
 fn default_llm_timeout_secs() -> u64 {
     7200 // 2 hours
+}
+
+fn default_health_check_interval_secs() -> u64 {
+    60
+}
+
+fn default_health_check_failure_threshold() -> u32 {
+    3
+}
+
+fn default_announce_expiry_secs() -> i64 {
+    crate::discovery::DEFAULT_EXPIRY_THRESHOLD_SECS
 }
 
 /// Load app configuration from workspace/config/config.cluster.json.

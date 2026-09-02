@@ -240,6 +240,47 @@ fn test_just_past_boundary_is_expired() {
 }
 
 // -----------------------------------------------------------------------
+// G3: configurable expiry threshold + message age
+// -----------------------------------------------------------------------
+
+#[test]
+fn test_is_expired_with_custom_threshold() {
+    let mut msg = DiscoveryMessage::new_bye("n1");
+    // 100 seconds old.
+    msg.timestamp = now_unix() - 100;
+    // Default 120s: not expired. Custom 60s: expired.
+    assert!(!msg.is_expired_with_threshold(120));
+    assert!(msg.is_expired_with_threshold(60));
+    // Boundary: strictly greater-than.
+    assert!(!msg.is_expired_with_threshold(100));
+    assert!(msg.is_expired_with_threshold(99));
+}
+
+#[test]
+fn test_is_expired_with_non_positive_threshold_disables_expiry() {
+    let mut msg = DiscoveryMessage::new_bye("n1");
+    // Very old message.
+    msg.timestamp = now_unix() - 100_000;
+    // threshold <= 0 means "expiry drop disabled" → never expired.
+    assert!(!msg.is_expired_with_threshold(0));
+    assert!(!msg.is_expired_with_threshold(-1));
+}
+
+#[test]
+fn test_age_secs_matches_timestamp_delta() {
+    let mut msg = DiscoveryMessage::new_bye("n1");
+    msg.timestamp = now_unix() - 42;
+    let age = msg.age_secs();
+    // 1s tolerance against the tick advancing between the two now_unix() calls.
+    assert!((41..=43).contains(&age), "age_secs = {age}");
+}
+
+#[test]
+fn test_default_expiry_threshold_value() {
+    assert_eq!(DEFAULT_EXPIRY_THRESHOLD_SECS, 120);
+}
+
+// -----------------------------------------------------------------------
 // JSON serialization / deserialization
 // -----------------------------------------------------------------------
 

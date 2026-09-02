@@ -199,6 +199,40 @@ impl PeerRegistry {
         false
     }
 
+    /// G2: 记录一次主动健康探针失败。
+    ///
+    /// 累加 `consecutive_failures`；达到 `threshold` 且当前仍标记 Online 时
+    /// 翻转为 Offline 并返回 `true`（调用方据此打 WARN 日志）。未达阈值或
+    /// 节点不存在 / 已是 Offline 返回 `false`。
+    pub fn record_probe_failure(&self, node_id: &str, threshold: u32) -> bool {
+        let mut peers = self.peers.lock();
+        if let Some(entry) = peers.get_mut(node_id) {
+            entry.consecutive_failures = entry.consecutive_failures.saturating_add(1);
+            if entry.consecutive_failures >= threshold && entry.info.status == NodeStatus::Online {
+                entry.info.status = NodeStatus::Offline;
+                return true;
+            }
+        }
+        false
+    }
+
+    /// G2: 记录一次主动健康探针成功（一次成功即自愈）。
+    ///
+    /// 清零失败计数、刷新 `last_health_check`；若节点此前是 Offline 则翻回
+    /// Online 并返回 `true`（调用方据此打日志）。节点不存在返回 `false`。
+    pub fn record_probe_success(&self, node_id: &str) -> bool {
+        let mut peers = self.peers.lock();
+        if let Some(entry) = peers.get_mut(node_id) {
+            entry.last_health_check = chrono::Local::now().to_rfc3339();
+            entry.consecutive_failures = 0;
+            if entry.info.status != NodeStatus::Online {
+                entry.info.status = NodeStatus::Online;
+                return true;
+            }
+        }
+        false
+    }
+
     /// List all known peers.
     pub fn list_peers(&self) -> Vec<ExtendedNodeInfo> {
         self.peers.lock().values().map(|e| e.info.clone()).collect()

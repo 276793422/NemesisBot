@@ -2946,7 +2946,9 @@ mod wave_b {
             .expect("成功态写库应通过");
         let ok = store.get("task-ok").expect("成功结果应已入库");
         assert!(ok.success);
-        assert_eq!(ok.result["content"], "最终回复正文");
+        // G5 键归一（2026-09-01）：persister 写 "response"（query_task_result
+        // handler 读该键；旧键 "content" 曾致恢复轮询拿到空回复）。
+        assert_eq!(ok.result["response"], "最终回复正文");
         assert_eq!(ok.result["from"], "node-wave-b");
 
         // set_result 错误态 → store_failure。
@@ -2981,6 +2983,7 @@ mod wave_b {
             sender_id: "peer-node-x".to_string(),
             chat_id: "chat-42".to_string(),
             content: "cross-node hello".to_string(),
+            metadata: std::collections::HashMap::new(),
         });
 
         let msg = rx

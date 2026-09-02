@@ -1,6 +1,11 @@
 use super::*;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
+/// G4: cleanup_completed 第三参 —— 默认 24h 安全网（测试大多数用默认值）。
+fn test_pending_timeout() -> parking_lot::RwLock<chrono::Duration> {
+    parking_lot::RwLock::new(super::default_pending_timeout())
+}
+
 #[test]
 fn test_create_and_get_task() {
     let tm = TaskManager::new();
@@ -263,7 +268,7 @@ fn test_cleanup_completed_removes_old_tasks() {
     // the store interface, so we test the logic indirectly)
     // The cleanup function checks completed_at. Since we just created it,
     // it won't be cleaned up.
-    cleanup_completed(&store, &None);
+    cleanup_completed(&store, &None, &test_pending_timeout());
 
     // Task should still exist (completed_at is recent)
     assert!(store.get("old-completed").is_ok());
@@ -311,7 +316,7 @@ fn test_cleanup_pending_timeout() {
     };
     store.create(recent_task).unwrap();
 
-    cleanup_completed(&store, &on_complete);
+    cleanup_completed(&store, &on_complete, &test_pending_timeout());
 
     // Old pending should be failed
     let old = store.get("old-pending").unwrap();
@@ -654,7 +659,7 @@ fn test_cleanup_completed_removes_cancelled_tasks() {
         .unwrap();
 
     // Since just created, should not be cleaned up
-    cleanup_completed(&store, &None);
+    cleanup_completed(&store, &None, &test_pending_timeout());
     assert!(store.get("cancelled-task").is_ok());
 }
 
@@ -678,7 +683,7 @@ fn test_cleanup_completed_with_invalid_created_at() {
     store.create(task).unwrap();
 
     // Should not panic with invalid date
-    cleanup_completed(&store, &None);
+    cleanup_completed(&store, &None, &test_pending_timeout());
     assert!(store.get("bad-date").is_ok());
 }
 
@@ -708,7 +713,7 @@ fn test_cleanup_completed_with_invalid_completed_at() {
         .unwrap();
 
     // Should not panic
-    cleanup_completed(&store, &None);
+    cleanup_completed(&store, &None, &test_pending_timeout());
 }
 
 #[test]
@@ -805,7 +810,7 @@ fn test_cleanup_completed_removes_old_completed_tasks() {
     assert!(store.get("old-completed-v2").is_ok());
     assert!(store.get("old-failed-v2").is_ok());
 
-    cleanup_completed(&store, &None);
+    cleanup_completed(&store, &None, &test_pending_timeout());
 
     // Both should be deleted (older than 2 hours)
     assert!(store.get("old-completed-v2").is_err());
@@ -832,7 +837,7 @@ fn test_cleanup_completed_keeps_recent_completed_tasks() {
     };
     store.create(recent_task).unwrap();
 
-    cleanup_completed(&store, &None);
+    cleanup_completed(&store, &None, &test_pending_timeout());
 
     // Should still exist (completed only 5 min ago)
     let t = store.get("recent-completed").unwrap();
@@ -880,7 +885,7 @@ fn test_cleanup_pending_timeout_fires_callback_v2() {
     };
     store.create(recent_pending).unwrap();
 
-    cleanup_completed(&store, &on_complete);
+    cleanup_completed(&store, &on_complete, &test_pending_timeout());
 
     // Old pending task should now be Failed
     let timed_out = store.get("timed-out-task").unwrap();
@@ -1111,7 +1116,7 @@ fn test_s4_cleanup_completed_deletes_old_completed_task() {
     };
     store.create(fresh_done).unwrap();
 
-    cleanup_completed(&store, &None);
+    cleanup_completed(&store, &None, &test_pending_timeout());
 
     assert!(store.get("s4-old-done").is_err(), "3h-old task deleted");
     assert!(store.get("s4-fresh-done").is_ok(), "fresh task kept");

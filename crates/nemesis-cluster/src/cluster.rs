@@ -39,6 +39,10 @@ pub struct BusInboundMessage {
     pub sender_id: String,
     pub chat_id: String,
     pub content: String,
+    /// G5: 结构化元数据（如 cluster_continuation 的 status / source_node /
+    /// error）。`BusToClusterAdapter` 原样映射到 `InboundMessage.metadata`，
+    /// 供 AgentLoop 的续行拦截逻辑读取。空 = 无元数据。
+    pub metadata: std::collections::HashMap<String, String>,
 }
 
 /// Trait for publishing messages to the message bus.
@@ -97,7 +101,10 @@ pub struct Cluster {
     discovery_running: Arc<AtomicBool>,
     discovery: Mutex<Option<crate::discovery::DiscoveryService>>,
     stop_tx: broadcast::Sender<()>,
-    bus: Mutex<Option<Arc<dyn MessageBus>>>,
+    /// G5: Arc 包一层 —— 恢复循环 spawn 时克隆 Arc，之后每 tick 重新
+    /// `.lock().clone()` 读取，兼容 `set_message_bus` 在 `start()` 之后才
+    /// 被调用的装配顺序（gateway 生产路径即如此）。
+    bus: Arc<Mutex<Option<Arc<dyn MessageBus>>>>,
     /// Blacklisted peer IDs — removed nodes that should not be re-discovered.
     removed_peers: parking_lot::RwLock<std::collections::HashSet<String>>,
 
@@ -154,7 +161,7 @@ impl Cluster {
             discovery_running: Arc::new(AtomicBool::new(false)),
             discovery: Mutex::new(None),
             stop_tx,
-            bus: Mutex::new(None),
+            bus: Arc::new(Mutex::new(None)),
             removed_peers: parking_lot::RwLock::new(std::collections::HashSet::new()),
             cluster_task_list: Mutex::new(None),
             cluster_work_queue: Mutex::new(None),
@@ -241,7 +248,13 @@ impl Cluster {
             cont_store: Arc::new(ContinuationStore::new(
                 nemesis_path::resolve_cluster_rpc_cache_dir_in_workspace(&workspace),
             )),
-            result_store: Arc::new(TaskResultStore::new(1000)),
+            // G1: 磁盘持久化 —— B 端回调失败时结果落盘（rpc_cache/results/），
+            // A 端重启恢复的 poll（query_task_result）才有真实数据可查。
+            // 构造期同步建目录；启动后的清扫+恢复在 ClusterService::first_start。
+            result_store: Arc::new(TaskResultStore::with_disk_persistence(
+                1000,
+                nemesis_path::resolve_cluster_results_dir_in_workspace(&workspace),
+            )),
             rpc_client: Mutex::new(None),
             rpc_server: None,
             rpc_channel: RwLock::new(None),
@@ -252,7 +265,7 @@ impl Cluster {
             discovery_running: Arc::new(AtomicBool::new(false)),
             discovery: Mutex::new(None),
             stop_tx,
-            bus: Mutex::new(None),
+            bus: Arc::new(Mutex::new(None)),
             removed_peers: parking_lot::RwLock::new(std::collections::HashSet::new()),
             cluster_task_list: Mutex::new(None),
             cluster_work_queue: Mutex::new(None),
@@ -335,6 +348,34 @@ impl Cluster {
         // MUST be after RPC client creation so token is set on both server and client.
         self.load_rpc_auth_token();
 
+        // G4: 超时阶梯 —— pending 任务安全网 = max(24h, 2×B端LLM超时)，
+        // 保证安全网永远在 B 端 LLM 处理超时（llm_timeout_secs）之后才触发，
+        // 不会把仍在正常处理中的任务提前判死。
+        let app_cfg = crate::config_loader::load_app_config(&self.workspace);
+        let effective_llm_timeout = if app_cfg.llm_timeout_secs == 0 {
+            // 0 = 不设超时：按 peer_chat_handler 的协议默认（2h）推阶梯
+            crate::rpc::peer_chat_handler::DEFAULT_LLM_TIMEOUT
+        } else {
+            Duration::from_secs(app_cfg.llm_timeout_secs)
+        };
+        let safety_net = stale_task_safety_net(app_cfg.llm_timeout_secs);
+        self.task_manager.set_pending_timeout(safety_net);
+        if effective_llm_timeout >= Duration::from_secs(24 * 3600) {
+            tracing::warn!(
+                llm_timeout_secs = app_cfg.llm_timeout_secs,
+                safety_net_secs = safety_net.num_seconds(),
+                "[Cluster] B-side LLM timeout >= 24h: the pending-task safety net is now larger than the result-store TTL (7d at 2x) — timed-out tasks may lose their results"
+            );
+        }
+
+        // G2: 主动健康探针循环（health_check_interval_secs=0 关闭）。
+        if app_cfg.health_check_interval_secs > 0 {
+            self.start_health_check_loop(
+                Duration::from_secs(app_cfg.health_check_interval_secs),
+                app_cfg.health_check_failure_threshold,
+            );
+        }
+
         // Start the recovery loop
         self.start_recovery_loop();
 
@@ -411,11 +452,15 @@ impl Cluster {
 
         let secret = self.load_discovery_secret();
 
-        let discovery_config = crate::discovery::DiscoveryConfig::with_encryption(
+        // G3: 从 config.cluster.json 读取可配置 announce 过期阈值
+        // （announce_expiry_secs，≤0 = 关闭过期丢弃）。
+        let app_cfg = crate::config_loader::load_app_config(&self.workspace);
+        let mut discovery_config = crate::discovery::DiscoveryConfig::with_encryption(
             self.udp_port,
             self.broadcast_interval,
             &secret,
         );
+        discovery_config.announce_expiry_secs = app_cfg.announce_expiry_secs;
 
         match crate::discovery::DiscoveryService::new(arc_self, discovery_config) {
             Ok(discovery) => {
@@ -512,6 +557,8 @@ impl Cluster {
         let task_manager = self.task_manager.clone();
         let call_fn = self.call_with_context_fn.lock().clone();
         let rpc_client = self.rpc_client.lock().clone();
+        let bus = self.bus.clone();
+        let safety_net = self.task_manager.pending_timeout();
 
         handle.spawn(async move {
             let mut interval = tokio::time::interval(Duration::from_secs(120));
@@ -521,11 +568,133 @@ impl Cluster {
                         return;
                     }
                     _ = interval.tick() => {
+                        // G5: 每 tick 重新读 bus —— set_message_bus 可能在
+                        // start() 之后才被调用（gateway 装配顺序）。
+                        let bus_snapshot: Option<Arc<dyn MessageBus>> = bus.lock().clone();
                         poll_stale_pending_tasks(
                             &task_manager,
                             &call_fn,
                             rpc_client.as_deref(),
+                            safety_net,
+                            bus_snapshot.as_deref(),
                         ).await;
+                    }
+                }
+            }
+        });
+    }
+
+    /// G2: 主动健康探针循环。
+    ///
+    /// 每个 tick 对所有 **Online** 对端发 frame 级 ping（5s 超时）；**Offline**
+    /// 对端每 5 个 tick 探一次（自愈检测——一次成功立即翻回 Online）。连续
+    /// `failure_threshold` 次失败把 Online 节点翻成 Offline。
+    ///
+    /// 探针走 AEAD 加密的 RPC 通道：**"TCP 通但握手/解密失败"同样计为失败**
+    /// —— 探的是可通信性而非端口存活。跳过本节点；`interval=0` 不进入本循环
+    /// （调用方 `start()` 已判断）。
+    fn start_health_check_loop(&self, interval: Duration, failure_threshold: u32) {
+        let handle = match tokio::runtime::Handle::try_current() {
+            Ok(h) => h,
+            Err(_) => return, // No runtime available (e.g. in unit tests)
+        };
+
+        let mut stop_rx = self.stop_tx.subscribe();
+        let registry = self.registry.clone();
+        let rpc_client = self.rpc_client.lock().clone();
+        let local_node_id = self.node_id.clone();
+
+        handle.spawn(async move {
+            // 错过 tick 用 Delay 追赶语义（不补帧），避免卡顿后连发风暴
+            let mut tick = tokio::time::interval(interval);
+            tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+            let mut tick_count: u64 = 0;
+            loop {
+                tokio::select! {
+                    _ = stop_rx.recv() => {
+                        return;
+                    }
+                    _ = tick.tick() => {
+                        tick_count = tick_count.wrapping_add(1);
+                        let probe_offline_too = tick_count % 5 == 0;
+
+                        let peers = registry.list_peers();
+                        for peer in peers {
+                            // 跳过本节点（自 ping 无意义）
+                            if peer.base.id == local_node_id {
+                                continue;
+                            }
+                            let online = peer.status == NodeStatus::Online;
+                            if !online && !probe_offline_too {
+                                continue;
+                            }
+
+                            let client = match rpc_client.as_ref() {
+                                Some(c) => c.clone(),
+                                None => return, // RPC client never initialized
+                            };
+                            let node_id = peer.base.id.clone();
+                            let request = crate::rpc_types::RPCRequest {
+                                id: uuid::Uuid::new_v4().to_string(),
+                                action: crate::rpc_types::ActionType::Custom(
+                                    "ping".to_string(),
+                                ),
+                                payload: serde_json::json!({}),
+                                source: local_node_id.clone(),
+                                target: Some(node_id.clone()),
+                            };
+                            // 5s 探针超时：正常 LAN RTT <1ms，5s 足够宽容
+                            let result = client
+                                .call_probe_with_timeout(&node_id, request, Duration::from_secs(5))
+                                .await;
+
+                            match result {
+                                Ok(resp) => {
+                                    // G2: 交叉校验对端响应 timestamp，漂移过大限频 WARN
+                                    // （复用 discovery 的 AnnounceWarnGate，10 分钟冷却）
+                                    if let Some(ts) = resp
+                                        .result
+                                        .as_ref()
+                                        .and_then(|r| r.get("timestamp"))
+                                        .and_then(|t| t.as_i64())
+                                    {
+                                        let drift = (chrono::Utc::now().timestamp() - ts).abs();
+                                        if drift > crate::discovery::DRIFT_WARN_THRESHOLD_SECS
+                                            && probe_drift_gate().admit(&node_id)
+                                        {
+                                            tracing::warn!(
+                                                node_id = %node_id,
+                                                drift_secs = drift,
+                                                "[Cluster] Health probe response timestamp drift (peer clock not synced?)"
+                                            );
+                                        }
+                                    }
+                                    if registry.record_probe_success(&node_id) {
+                                        tracing::info!(
+                                            node_id = %node_id,
+                                            "[Cluster] Health probe: peer recovered -> Online"
+                                        );
+                                        logger::log_discovery_info(
+                                            "health probe recovered, marked Online",
+                                        );
+                                    }
+                                }
+                                Err(e) => {
+                                    if registry.record_probe_failure(&node_id, failure_threshold) {
+                                        tracing::warn!(
+                                            node_id = %node_id,
+                                            error = %e,
+                                            threshold = failure_threshold,
+                                            "[Cluster] Health probe: peer marked Offline after consecutive failures"
+                                        );
+                                        logger::log_discovery_info(&format!(
+                                            "health probe failed {}x, marked Offline",
+                                            failure_threshold
+                                        ));
+                                    }
+                                }
+                            }
+                        }
                     }
                 }
             }
@@ -1382,6 +1551,7 @@ impl Cluster {
             sender_id: format!("cluster_continuation:{}", task_id),
             chat_id: format!("{}:{}", task.original_channel, task.original_chat_id),
             content: String::new(),
+            metadata: std::collections::HashMap::new(),
         });
 
         logger::log_task("completed", task_id, &task.action);
@@ -1858,6 +2028,9 @@ impl Cluster {
                 Ok(serde_json::json!({
                     "status": "pong",
                     "node_id": node_id,
+                    // G2: 供主动探针交叉校验对端时钟漂移（additive 字段，
+                    // 旧客户端忽略）。
+                    "timestamp": chrono::Utc::now().timestamp(),
                 }))
             }),
         )?;
@@ -2232,10 +2405,29 @@ impl Cluster {
 
             match result_store.get(task_id) {
                 Some(entry) => {
+                    // G5 修复（2026-09-01）：set_running 占位条目
+                    // （gateway ClusterResultPersisterAdapter，result 内含
+                    // "status":"running"）曾在此被误报为 done+空回复 —— A 端
+                    // 恢复轮询会拿着空内容过早完成任务。running 条目必须
+                    // 原样上报，让 A 继续等。
+                    let inner_status = entry
+                        .result
+                        .get("status")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("");
+                    if inner_status == "running" {
+                        return Ok(serde_json::json!({
+                            "status": "running",
+                            "task_id": task_id,
+                        }));
+                    }
                     let result_status = if entry.success { "success" } else { "error" };
+                    // 键归一：写端（adapter set_result）现为 "response"；
+                    // 保留 "content" 回退兼容修复前落盘的旧结果。
                     let response = entry
                         .result
                         .get("response")
+                        .or_else(|| entry.result.get("content"))
                         .and_then(|v| v.as_str())
                         .unwrap_or("")
                         .to_string();
@@ -2293,13 +2485,22 @@ impl Cluster {
     /// Queries tasks that have been pending for more than 2 minutes. If the
     /// remote B-node reports a completed result, completes the task locally.
     /// If the task is not found on the B-node, fails it locally. Tasks older
-    /// than 24 hours are timed out as a safety net.
+    /// than the pending safety net (G4: max(24h, 2×LLM timeout)) time out.
     ///
     /// Mirrors Go's `Cluster.pollStalePendingTasks()`.
     pub async fn poll_stale_pending_tasks(&self) {
         let call_fn = self.call_with_context_fn.lock().clone();
         let rpc_client = self.rpc_client.lock().clone();
-        poll_stale_pending_tasks(&self.task_manager, &call_fn, rpc_client.as_deref()).await;
+        let bus_snapshot: Option<Arc<dyn MessageBus>> = self.bus.lock().clone();
+        let safety_net = self.task_manager.pending_timeout();
+        poll_stale_pending_tasks(
+            &self.task_manager,
+            &call_fn,
+            rpc_client.as_deref(),
+            safety_net,
+            bus_snapshot.as_deref(),
+        )
+        .await;
     }
 
     /// Confirm task delivery to the B-node, allowing it to clean up the result.
@@ -2385,19 +2586,54 @@ impl Cluster {
 // Recovery loop free functions
 // ---------------------------------------------------------------------------
 
+/// G4: A 端 stale-task 安全网超时 = max(24h, 2 × B 端 LLM 有效超时)。
+///
+/// `llm_timeout_secs == 0`（B 端不设超时）按 peer_chat 协议默认
+/// [`crate::rpc::peer_chat_handler::DEFAULT_LLM_TIMEOUT`]（2h）计算。
+/// 超时阶梯不变量：provider 单请求超时 < B 端 LLM 处理超时 < **本安全网**
+/// < 结果存储 TTL（7 天）—— 安全网触发时 B 端结果尚未被 TTL 清掉，
+/// A 端 poll 仍能捞回真实结果。
+pub fn stale_task_safety_net(llm_timeout_secs: u64) -> chrono::Duration {
+    const FLOOR: chrono::Duration = chrono::Duration::hours(24);
+    let effective = if llm_timeout_secs == 0 {
+        crate::rpc::peer_chat_handler::DEFAULT_LLM_TIMEOUT
+    } else {
+        Duration::from_secs(llm_timeout_secs)
+    };
+    let doubled = effective.saturating_mul(2);
+    chrono::Duration::from_std(doubled)
+        .unwrap_or(FLOOR)
+        .max(FLOOR)
+}
+
+/// G2: 探针 timestamp 漂移 WARN 限频闸门（进程级，每节点 10 分钟冷却）。
+fn probe_drift_gate() -> &'static crate::discovery::AnnounceWarnGate {
+    static GATE: std::sync::OnceLock<crate::discovery::AnnounceWarnGate> =
+        std::sync::OnceLock::new();
+    GATE.get_or_init(crate::discovery::AnnounceWarnGate::new)
+}
+
 /// Poll stale pending tasks: query the B-node for any task that has been
 /// pending for longer than 2 minutes. If the B-node reports it done, complete
-/// the task locally; if not found, fail it; if older than 24 h, time it out.
+/// the task locally; if not found, fail it; if older than the safety net,
+/// time it out.
 ///
 /// Uses the real RPC client when available, falling back to the synchronous
 /// test override (`call_fn`).  This matches Go's `pollStalePendingTasks`
 /// which calls `c.CallWithContext()`.
+///
+/// G5: `bus` 非空时，done / not_found 分支会按 gateway Route 2 的形状向总线
+/// 重发 `cluster_continuation:{task_id}`（含真实响应内容 + metadata），唤醒
+/// A 端主 agent 的续行恢复——生产装配不接 TaskManager.on_complete，仅靠
+/// complete_callback 只会更新任务状态、不会唤醒 agent。
 async fn poll_stale_pending_tasks(
     task_manager: &Arc<TaskManager>,
     call_fn: &Option<
         Arc<dyn Fn(&str, &str, serde_json::Value) -> Result<Vec<u8>, String> + Send + Sync>,
     >,
     rpc_client: Option<&RpcClient>,
+    safety_net: chrono::Duration,
+    bus: Option<&dyn MessageBus>,
 ) {
     let tasks = task_manager.list_pending_tasks();
 
@@ -2418,14 +2654,23 @@ async fn poll_stale_pending_tasks(
             continue;
         }
 
-        // Timeout tasks older than 24 hours.
-        if age > chrono::Duration::hours(24) {
+        // Timeout tasks past the safety net (G4: 可配置，默认 max(24h, 2×LLM超时)).
+        if age > safety_net {
             tracing::warn!(
                 task_id = %task.id,
                 age_secs = age.num_seconds(),
-                "[Cluster] Timing out stale task after 24h",
+                safety_net_secs = safety_net.num_seconds(),
+                "[Cluster] Timing out stale task after safety-net timeout",
             );
-            task_manager.complete_callback(&task.id, "error", "", "task timed out after 24h");
+            task_manager.complete_callback(
+                &task.id,
+                "error",
+                "",
+                &format!(
+                    "task timed out: no response within {}s safety net",
+                    safety_net.num_seconds()
+                ),
+            );
             continue;
         }
 
@@ -2500,6 +2745,17 @@ async fn poll_stale_pending_tasks(
                     "[Cluster] Stale task recovered from peer",
                 );
                 task_manager.complete_callback(&task.id, &result_status, &response, &error);
+                // G5: 唤醒 A 端主 agent（形状对齐 gateway Route 2）。
+                if let Some(bus) = bus {
+                    publish_continuation_to_bus(
+                        bus,
+                        &task.id,
+                        &response,
+                        &result_status,
+                        &task.peer_id,
+                        if error.is_empty() { None } else { Some(&error) },
+                    );
+                }
                 // Best-effort delivery confirmation
                 confirm_delivery_with(call_fn, rpc_client, &task.peer_id, &task.id).await;
             }
@@ -2510,6 +2766,18 @@ async fn poll_stale_pending_tasks(
                     "[Cluster] Stale task not found on remote peer",
                 );
                 task_manager.complete_callback(&task.id, "error", "", "remote task not found");
+                // G5: not_found 同样要唤醒 agent（带 error metadata），
+                // 否则续行快照永远悬着直到安全网清理。
+                if let Some(bus) = bus {
+                    publish_continuation_to_bus(
+                        bus,
+                        &task.id,
+                        "",
+                        "error",
+                        &task.peer_id,
+                        Some("remote task not found"),
+                    );
+                }
             }
             _ => {
                 // Unknown status, skip.
@@ -2517,6 +2785,35 @@ async fn poll_stale_pending_tasks(
             }
         }
     }
+}
+
+/// G5: 按 gateway Route 2 的形状把恢复出的任务结果发回总线，唤醒 A 端
+/// 主 agent 的 `cluster_continuation` 续行恢复。
+///
+/// - `sender_id` = `cluster_continuation:{task_id}`（AgentLoop 拦截前缀）
+/// - `content` = B 端真实响应（恢复的 LLM 回复）
+/// - `metadata` = status / source_node / error（与 Route 2 字段一致）
+fn publish_continuation_to_bus(
+    bus: &dyn MessageBus,
+    task_id: &str,
+    content: &str,
+    status: &str,
+    source_node: &str,
+    error: Option<&str>,
+) {
+    let mut metadata = std::collections::HashMap::new();
+    metadata.insert("status".to_string(), status.to_string());
+    metadata.insert("source_node".to_string(), source_node.to_string());
+    if let Some(err) = error {
+        metadata.insert("error".to_string(), err.to_string());
+    }
+    bus.publish_inbound(BusInboundMessage {
+        channel: "system".into(),
+        sender_id: format!("cluster_continuation:{}", task_id),
+        chat_id: String::new(),
+        content: content.to_string(),
+        metadata,
+    });
 }
 
 /// Notify the B-node that the task result was received.

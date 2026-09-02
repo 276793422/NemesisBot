@@ -130,14 +130,29 @@ fn port_walk_sequence_out_of_range_walks_linear_no_wrap() {
 
 #[tokio::test]
 async fn start_walks_to_next_free_port_when_first_in_range_occupied() {
-    // 带内 4999x 段（远离生产端口 49000/49001）：占前两个 → 应落到第三个。
-    let b1 = tokio::net::TcpListener::bind("127.0.0.1:49990")
-        .await
-        .unwrap();
-    let b2 = tokio::net::TcpListener::bind("127.0.0.1:49991")
-        .await
-        .unwrap();
-    let config = base_config("127.0.0.1:49990");
+    // CI 教训（61aabbe，GitHub Windows runner）：Hyper-V 排除端口段会让
+    // 固定端口 bind 报 WSAEACCES 10013——49991 曾恰落排除段，测试自身
+    // bind 即 panic（runner 环境差异，与代码无关，同代码前绿后红）。
+    // 改为动态探测基点：找连续三口全可绑的 b（b+2 仍带内），占 b、b+1，
+    // 断言走查落到 b+2。排除段按开机静态，探测可靠滤除；全带无三连口
+    // 才 panic（该环境下产品本就无可用 Web 端口）。生产 bind_with_port_walk
+    // 对 10013 本就走查跳过，不受影响。
+    let mut found: Option<(u16, Vec<tokio::net::TcpListener>)> = None;
+    for b in 49002u16..=49998 {
+        let l0 = tokio::net::TcpListener::bind(("127.0.0.1", b)).await;
+        let l1 = tokio::net::TcpListener::bind(("127.0.0.1", b + 1)).await;
+        let l2 = tokio::net::TcpListener::bind(("127.0.0.1", b + 2)).await;
+        if let (Ok(a), Ok(c), Ok(d)) = (l0, l1, l2) {
+            found = Some((b, vec![a, c])); // 占 b、b+1；d（b+2）作走查预期落点
+            drop(d);
+            break;
+        }
+        // 任一口失败（被占/排除段）→ 已绑上的随块释放，试下一候选
+    }
+    let (base, blockers) =
+        found.expect("no bindable 3-port run in 49002..=50000 (band fully excluded/occupied?)");
+
+    let config = base_config(&format!("127.0.0.1:{base}"));
     let server = WebServer::new(config);
     let (tx, rx) = tokio::sync::broadcast::channel::<()>(1);
     let _ = tx.send(()); // 预发关闭信号：bind 成功后 select 立即返回，serve 不阻塞
@@ -148,28 +163,32 @@ async fn start_walks_to_next_free_port_when_first_in_range_occupied() {
         server.start_with_shutdown(rx, Some(bound_tx)),
     )
     .await;
-    drop(b1);
-    drop(b2);
+    drop(blockers);
 
     result.unwrap().unwrap();
     let addr = tokio::time::timeout(Duration::from_secs(2), bound_rx)
         .await
         .unwrap()
         .unwrap();
-    assert_eq!(addr.port(), 49992, "walk should land on the next free port");
+    assert_eq!(
+        addr.port(),
+        base + 2,
+        "walk should land on the next free port"
+    );
 }
 
 #[tokio::test]
 async fn start_loud_fails_when_all_linear_fallback_ports_busy() {
     // 带外 2100x 段（低于 Windows 49152+ / Linux 32768+ 动态端口区间，
     // 避开系统临时分配）：20 个全部占住 → 线性走查耗尽 → loud 失败。
+    // CI 教训（同 start_walks_to…）：测试绑不上的口（Windows 排除段
+    // WSAEACCES 等）对 server 同样不可绑——walk 在该口同样失败，耗尽
+    // 语义不变，故测试侧 bind 失败容忍跳过而非 panic。
     let mut blockers = Vec::new();
     for port in 21000..21020u16 {
-        blockers.push(
-            tokio::net::TcpListener::bind(("127.0.0.1", port))
-                .await
-                .unwrap(),
-        );
+        if let Ok(l) = tokio::net::TcpListener::bind(("127.0.0.1", port)).await {
+            blockers.push(l);
+        }
     }
     let config = base_config("127.0.0.1:21000");
     let server = WebServer::new(config);

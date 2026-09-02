@@ -66,6 +66,10 @@ pub struct ContinuationData {
     /// Session key for persisting the continuation's final reply to chat_log
     /// and session_store. Empty for legacy on-disk snapshots (skips logging).
     pub session_key: String,
+    /// G5: 发起 cluster_rpc 的对端节点 ID。A 侧重启恢复（first_start 把
+    /// 快照还原成 TaskManager pending 条目）需要它才知道 poll 该问谁。
+    /// 旧快照无此字段（空串），恢复时跳过。
+    pub peer_id: String,
     /// Save barrier: notified when data is fully written.
     pub ready: Arc<Notify>,
     /// Non-blocking ready flag: set to true when data is fully written.
@@ -85,6 +89,9 @@ pub struct ContinuationSnapshot {
     /// resume).
     #[serde(default)]
     pub session_key: String,
+    /// G5: 对端节点 ID。`#[serde(default)]` 兼容旧快照（空串 = 恢复时跳过）。
+    #[serde(default)]
+    pub peer_id: String,
     pub created_at: String,
 }
 
@@ -229,6 +236,7 @@ impl ContinuationStore {
                         channel: snapshot.channel,
                         chat_id: snapshot.chat_id,
                         session_key: snapshot.session_key,
+                        peer_id: snapshot.peer_id,
                         ready,
                         ready_flag,
                     });
@@ -362,6 +370,7 @@ impl ContinuationManager {
         channel: &str,
         chat_id: &str,
         session_key: &str,
+        peer_id: &str,
     ) {
         let ready = Arc::new(Notify::new());
         let ready_flag = Arc::new(AtomicBool::new(false));
@@ -372,6 +381,7 @@ impl ContinuationManager {
             channel: channel.to_string(),
             chat_id: chat_id.to_string(),
             session_key: session_key.to_string(),
+            peer_id: peer_id.to_string(),
             ready: ready.clone(),
             ready_flag: ready_flag.clone(),
         });
@@ -398,6 +408,7 @@ impl ContinuationManager {
                 channel: channel.to_string(),
                 chat_id: chat_id.to_string(),
                 session_key: session_key.to_string(),
+                peer_id: peer_id.to_string(),
                 created_at: chrono::Local::now().to_rfc3339(),
             };
             if let Err(e) = store.save(&snapshot) {
@@ -451,6 +462,7 @@ impl ContinuationManager {
                             channel: data.channel.clone(),
                             chat_id: data.chat_id.clone(),
                             session_key: data.session_key.clone(),
+                            peer_id: data.peer_id.clone(),
                             ready: data.ready.clone(),
                             ready_flag: data.ready_flag.clone(),
                         });
@@ -469,6 +481,7 @@ impl ContinuationManager {
                             channel: arc.channel.clone(),
                             chat_id: arc.chat_id.clone(),
                             session_key: arc.session_key.clone(),
+                            peer_id: arc.peer_id.clone(),
                             ready: arc.ready.clone(),
                             ready_flag: arc.ready_flag.clone(),
                         });
@@ -499,6 +512,7 @@ impl ContinuationManager {
                             channel: arc.channel.clone(),
                             chat_id: arc.chat_id.clone(),
                             session_key: arc.session_key.clone(),
+                            peer_id: arc.peer_id.clone(),
                             ready: arc.ready.clone(),
                             ready_flag: arc.ready_flag.clone(),
                         });
@@ -537,6 +551,7 @@ impl ContinuationManager {
             channel: snapshot.channel,
             chat_id: snapshot.chat_id,
             session_key: snapshot.session_key,
+            peer_id: snapshot.peer_id,
             ready: Arc::new(Notify::new()),
             ready_flag,
         })
@@ -884,6 +899,14 @@ pub async fn handle_cluster_continuation<T: ToolLookup>(
             if tool_result.is_async
                 && let Some(ref nested_task_id) = tool_result.task_id
             {
+                // G5: 嵌套异步的对端 ID —— 从 __ASYNC__:{task_id}:{target_id}:{name}
+                // marker 里抠第 3 段；抠不到（老格式）回退继承当前快照的 peer_id。
+                let nested_peer = tool_result
+                    .for_llm
+                    .strip_prefix("__ASYNC__:")
+                    .and_then(|rest| rest.split(':').nth(1))
+                    .unwrap_or(&cont_data.peer_id)
+                    .to_string();
                 manager
                     .save_continuation(
                         nested_task_id,
@@ -892,6 +915,7 @@ pub async fn handle_cluster_continuation<T: ToolLookup>(
                         &cont_data.channel,
                         &cont_data.chat_id,
                         &cont_data.session_key,
+                        &nested_peer,
                     )
                     .await;
             }

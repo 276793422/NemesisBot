@@ -1322,3 +1322,85 @@ async fn test_s4_async_cleanup_blocked_path_warns() {
     assert!(store.get_async("s4-del").is_none());
     assert!(path.is_dir());
 }
+
+// ---- G1: sweep_older_than tests (2026-09-01 cluster resilience goal) ----
+
+/// 陈旧结果（stored_at 超 max_age）被磁盘清除 + 内存同步清理；新鲜结果保留。
+#[test]
+fn test_sweep_removes_stale_keeps_fresh() {
+    let tmp = tempfile::tempdir().unwrap();
+    let store = TaskResultStore::with_disk_persistence(100, tmp.path());
+
+    // 新鲜结果走正常 API。
+    store.store_success("sweep-fresh", "peer_chat", serde_json::json!("ok"));
+
+    // 手写一个 8 天前的陈旧结果文件。
+    let stale_stored_at = (chrono::Local::now() - chrono::Duration::days(8)).to_rfc3339();
+    let stale = serde_json::json!({
+        "task_id": "sweep-stale",
+        "action": "peer_chat",
+        "result": "old",
+        "success": true,
+        "stored_at": stale_stored_at,
+    });
+    let stale_path = tmp.path().join("sweep-stale.json");
+    std_fs::write(&stale_path, stale.to_string()).unwrap();
+
+    // 内存里也放一份陈旧结果，验证内存同步清理。
+    store.results.lock().insert(
+        "sweep-stale".to_string(),
+        super::TaskResult {
+            task_id: "sweep-stale".to_string(),
+            action: "peer_chat".to_string(),
+            result: serde_json::json!("old"),
+            success: true,
+            stored_at: stale_stored_at,
+        },
+    );
+
+    let removed = store.sweep_older_than(chrono::Duration::days(7));
+    assert_eq!(removed, 1, "exactly the stale file removed");
+    assert!(!stale_path.exists(), "stale file deleted from disk");
+    assert!(tmp.path().join("sweep-fresh.json").exists(), "fresh kept");
+    assert!(store.get("sweep-fresh").is_some(), "fresh in memory kept");
+    assert!(
+        store.get("sweep-stale").is_none(),
+        "stale pruned from memory"
+    );
+}
+
+/// 无法解析的文件（坏 JSON / 坏 stored_at）fail-open 保留，不误删。
+#[test]
+fn test_sweep_keeps_unparsable_fail_open() {
+    let tmp = tempfile::tempdir().unwrap();
+    let store = TaskResultStore::with_disk_persistence(100, tmp.path());
+
+    let bad_json = tmp.path().join("sweep-bad.json");
+    std_fs::write(&bad_json, "{not valid json").unwrap();
+
+    let bad_ts = serde_json::json!({
+        "task_id": "sweep-badts",
+        "action": "peer_chat",
+        "result": "x",
+        "success": true,
+        "stored_at": "not-a-timestamp",
+    });
+    let bad_ts_path = tmp.path().join("sweep-badts.json");
+    std_fs::write(&bad_ts_path, bad_ts.to_string()).unwrap();
+
+    let removed = store.sweep_older_than(chrono::Duration::days(7));
+    assert_eq!(removed, 0, "unparsable entries fail-open kept");
+    assert!(bad_json.exists());
+    assert!(bad_ts_path.exists());
+}
+
+/// 无磁盘持久化的纯内存 store：sweep 是 no-op（只清内存陈旧项，无盘可删）。
+#[test]
+fn test_sweep_no_persistence_noop() {
+    let store = TaskResultStore::new(100);
+    store.store_success("sweep-mem", "a", serde_json::json!(1));
+
+    let removed = store.sweep_older_than(chrono::Duration::days(7));
+    assert_eq!(removed, 0, "no disk dir -> nothing removed");
+    assert!(store.get("sweep-mem").is_some(), "fresh memory entry kept");
+}

@@ -1485,6 +1485,10 @@ impl AgentLoopExecutor {
                             &context.channel,
                             &context.chat_id,
                             &context.session_key,
+                            // G5: legacy 路径 —— loop_executor 生产不实例化
+                            // （⚠️ STATUS），context 无 target 信息，置空。
+                            // 空.peer_id 的快照在 A 侧重启恢复时被跳过。
+                            "",
                         )
                         .await;
                     info!(

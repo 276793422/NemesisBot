@@ -1,6 +1,11 @@
 use super::*;
 use nemesis_types::cluster::TaskStatus;
 
+/// G4/G5: poll_stale_pending_tasks 第 4/5 参 —— 默认 24h 安全网 + 无总线。
+fn poll_defaults() -> chrono::Duration {
+    chrono::Duration::hours(24)
+}
+
 fn make_config() -> ClusterConfig {
     ClusterConfig {
         node_id: "local-node-001".into(),
@@ -1070,6 +1075,7 @@ fn test_bus_inbound_message_fields() {
         sender_id: "sender-1".into(),
         chat_id: "chat-1".into(),
         content: "hello".into(),
+        metadata: std::collections::HashMap::new(),
     };
     assert_eq!(msg.channel, "system");
     assert_eq!(msg.sender_id, "sender-1");
@@ -1677,6 +1683,7 @@ fn test_bus_inbound_message_debug() {
         sender_id: "sender".into(),
         chat_id: "chat".into(),
         content: "content".into(),
+        metadata: std::collections::HashMap::new(),
     };
     let debug_str = format!("{:?}", msg);
     assert!(debug_str.contains("test"));
@@ -1775,7 +1782,7 @@ async fn test_poll_stale_pending_tasks_young_task_skipped() {
     let tm = Arc::new(TaskManager::new());
     // Create a brand new task (< 2 minutes old) - should be skipped
     let _task = tm.create_task("action", serde_json::json!({}), "rpc", "ch");
-    poll_stale_pending_tasks(&tm, &None, None).await;
+    poll_stale_pending_tasks(&tm, &None, None, poll_defaults(), None).await;
     // Task should still be pending
     let pending = tm.list_pending_tasks();
     assert_eq!(pending.len(), 1);
@@ -1800,7 +1807,7 @@ async fn test_poll_stale_pending_tasks_old_task_timed_out() {
     };
     tm.submit(task).unwrap();
 
-    poll_stale_pending_tasks(&tm, &None, None).await;
+    poll_stale_pending_tasks(&tm, &None, None, poll_defaults(), None).await;
     let t = tm.get_task("stale-24h").unwrap();
     assert_eq!(t.status, TaskStatus::Failed);
 }
@@ -1832,7 +1839,7 @@ async fn test_poll_stale_pending_tasks_stale_with_call_fn() {
         Ok(serde_json::to_vec(&resp).unwrap())
     }));
 
-    poll_stale_pending_tasks(&tm, &call_fn, None).await;
+    poll_stale_pending_tasks(&tm, &call_fn, None, poll_defaults(), None).await;
     let t = tm.get_task("stale-5m").unwrap();
     assert_eq!(t.status, TaskStatus::Failed);
 }
@@ -1874,7 +1881,7 @@ async fn test_poll_stale_pending_tasks_stale_with_done_response() {
         }
     }));
 
-    poll_stale_pending_tasks(&tm, &call_fn, None).await;
+    poll_stale_pending_tasks(&tm, &call_fn, None, poll_defaults(), None).await;
     let t = tm.get_task("stale-done").unwrap();
     assert_eq!(t.status, TaskStatus::Completed);
 }
@@ -1905,7 +1912,7 @@ async fn test_poll_stale_pending_tasks_stale_with_running_response() {
         Ok(serde_json::to_vec(&resp).unwrap())
     }));
 
-    poll_stale_pending_tasks(&tm, &call_fn, None).await;
+    poll_stale_pending_tasks(&tm, &call_fn, None, poll_defaults(), None).await;
     let t = tm.get_task("stale-running").unwrap();
     assert_eq!(t.status, TaskStatus::Pending);
 }
@@ -1929,7 +1936,7 @@ async fn test_poll_stale_pending_tasks_no_peer_id() {
     };
     tm.submit(task).unwrap();
 
-    poll_stale_pending_tasks(&tm, &None, None).await;
+    poll_stale_pending_tasks(&tm, &None, None, poll_defaults(), None).await;
     let t = tm.get_task("no-peer").unwrap();
     assert_eq!(t.status, TaskStatus::Pending); // still pending
 }
@@ -1959,7 +1966,7 @@ async fn test_poll_stale_pending_tasks_call_fn_error() {
         Err("connection refused".to_string())
     }));
 
-    poll_stale_pending_tasks(&tm, &call_fn, None).await;
+    poll_stale_pending_tasks(&tm, &call_fn, None, poll_defaults(), None).await;
     let t = tm.get_task("call-error").unwrap();
     assert_eq!(t.status, TaskStatus::Pending);
 }
@@ -2923,6 +2930,7 @@ fn test_bus_inbound_message_debug_v2() {
         sender_id: "test".into(),
         chat_id: "chat-1".into(),
         content: "hello".into(),
+        metadata: std::collections::HashMap::new(),
     };
     let debug = format!("{:?}", msg);
     assert!(debug.contains("system"));
@@ -3110,7 +3118,7 @@ async fn test_poll_stale_pending_tasks_malformed_created_at() {
     };
     tm.submit(task).unwrap();
 
-    poll_stale_pending_tasks(&tm, &None, None).await;
+    poll_stale_pending_tasks(&tm, &None, None, poll_defaults(), None).await;
     // Task should still be pending (skipped due to malformed date)
     let t = tm.get_task("bad-date").unwrap();
     assert_eq!(t.status, TaskStatus::Pending);
@@ -3144,7 +3152,7 @@ async fn test_poll_stale_pending_tasks_unknown_status_response() {
         Ok(serde_json::to_vec(&resp).unwrap())
     }));
 
-    poll_stale_pending_tasks(&tm, &call_fn, None).await;
+    poll_stale_pending_tasks(&tm, &call_fn, None, poll_defaults(), None).await;
     let t = tm.get_task("weird-status").unwrap();
     // Unknown status -> continue -> task stays pending
     assert_eq!(t.status, TaskStatus::Pending);
@@ -3177,7 +3185,7 @@ async fn test_poll_stale_pending_tasks_invalid_json_response() {
         Ok(b"this is not valid json {{{".to_vec())
     }));
 
-    poll_stale_pending_tasks(&tm, &call_fn, None).await;
+    poll_stale_pending_tasks(&tm, &call_fn, None, poll_defaults(), None).await;
     let t = tm.get_task("invalid-json").unwrap();
     // Invalid JSON -> continue -> task stays pending
     assert_eq!(t.status, TaskStatus::Pending);
@@ -3222,7 +3230,7 @@ async fn test_poll_stale_pending_tasks_done_with_error_status() {
         }
     }));
 
-    poll_stale_pending_tasks(&tm, &call_fn, None).await;
+    poll_stale_pending_tasks(&tm, &call_fn, None, poll_defaults(), None).await;
     let t = tm.get_task("done-err").unwrap();
     // result_status "error" -> complete_callback with "error" -> should be completed (callback handled)
     assert_eq!(t.status, TaskStatus::Failed);
@@ -5227,7 +5235,7 @@ async fn test_poll_stale_pending_tasks_real_client_running_done_notfound_and_dea
         Box::new(|_p| Ok(serde_json::json!({"status": "running"}))),
     );
     submit_stale(&tm, "stale-running", "peer-b");
-    poll_stale_pending_tasks(&tm, &None, Some(client.as_ref())).await;
+    poll_stale_pending_tasks(&tm, &None, Some(client.as_ref()), poll_defaults(), None).await;
     assert_eq!(
         tm.get_task("stale-running").unwrap().status,
         TaskStatus::Pending
@@ -5246,7 +5254,7 @@ async fn test_poll_stale_pending_tasks_real_client_running_done_notfound_and_dea
         }),
     );
     submit_stale(&tm, "stale-done", "peer-b");
-    poll_stale_pending_tasks(&tm, &None, Some(client.as_ref())).await;
+    poll_stale_pending_tasks(&tm, &None, Some(client.as_ref()), poll_defaults(), None).await;
     assert_eq!(
         tm.get_task("stale-done").unwrap().status,
         TaskStatus::Completed
@@ -5258,12 +5266,12 @@ async fn test_poll_stale_pending_tasks_real_client_running_done_notfound_and_dea
         Box::new(|_p| Ok(serde_json::json!({"status": "not_found"}))),
     );
     submit_stale(&tm, "stale-nf", "peer-b");
-    poll_stale_pending_tasks(&tm, &None, Some(client.as_ref())).await;
+    poll_stale_pending_tasks(&tm, &None, Some(client.as_ref()), poll_defaults(), None).await;
     assert_eq!(tm.get_task("stale-nf").unwrap().status, TaskStatus::Failed);
 
     // 4. Dead peer → transport error → task stays Pending
     submit_stale(&tm, "stale-dead", "peer-dead");
-    poll_stale_pending_tasks(&tm, &None, Some(client.as_ref())).await;
+    poll_stale_pending_tasks(&tm, &None, Some(client.as_ref()), poll_defaults(), None).await;
     assert_eq!(
         tm.get_task("stale-dead").unwrap().status,
         TaskStatus::Pending
@@ -5793,7 +5801,7 @@ async fn test_poll_stale_24h_timeout_logs_age_under_subscriber() {
     };
     tm.submit(task).unwrap();
 
-    poll_stale_pending_tasks(&tm, &None, None).await;
+    poll_stale_pending_tasks(&tm, &None, None, poll_defaults(), None).await;
     assert_eq!(
         tm.get_task("stale-24h-s4").unwrap().status,
         TaskStatus::Failed
@@ -5821,7 +5829,7 @@ async fn test_poll_stale_no_client_no_call_fn_continues() {
     };
     tm.submit(task).unwrap();
 
-    poll_stale_pending_tasks(&tm, &None, None).await;
+    poll_stale_pending_tasks(&tm, &None, None, poll_defaults(), None).await;
     assert_eq!(
         tm.get_task("stale-5m-noclient").unwrap().status,
         TaskStatus::Pending,
@@ -5988,4 +5996,132 @@ fn test_cluster_peer_resolver_fallback_host_from_primary_address() {
     assert_eq!(port, 9001);
     assert!(online);
     cluster.stop();
+}
+
+// ---- G4: 超时阶梯不变量（2026-09-01 集群韧性 goal）----
+//
+// 正确阶梯（每层都必须大于下一层，否则外层先死、内层超时形同虚设）：
+//   provider 单请求 600s（nemesis-providers openai_compat default_timeout）
+//     < B 端 llm_timeout 默认 2h（peer_chat_handler DEFAULT_LLM_TIMEOUT）
+//     < A 端 stale 安全网 max(24h, 2×llm_timeout)
+//     < 结果存储 TTL 7d（task_result_store 清扫周期）。
+
+/// 安全网：llm_timeout=0（不限制）→ 落到 24h 地板。
+#[test]
+fn test_safety_net_zero_llm_timeout_hits_floor() {
+    let net = super::stale_task_safety_net(0);
+    assert_eq!(net, chrono::Duration::hours(24));
+}
+
+/// 安全网：普通 llm_timeout（如 1h）→ 2×1h=2h < 24h 地板 → 仍是 24h。
+#[test]
+fn test_safety_net_normal_llm_timeout_still_floor() {
+    let net = super::stale_task_safety_net(3600);
+    assert_eq!(net, chrono::Duration::hours(24));
+}
+
+/// 安全网：超大 llm_timeout（48h）→ 2×48h=96h 顶穿地板。
+#[test]
+fn test_safety_net_huge_llm_timeout_scales() {
+    let net = super::stale_task_safety_net(48 * 3600);
+    assert_eq!(net, chrono::Duration::hours(96));
+}
+
+/// 全阶梯不变量（数值文字量对应上面各真相源常量；一边改了这里会红）。
+#[test]
+fn test_timeout_ladder_ordering() {
+    let provider_single_request_secs: i64 = 600; // openai_compat default_timeout
+    let b_side_llm_timeout_secs: i64 = 2 * 3600; // DEFAULT_LLM_TIMEOUT
+    let a_side_safety_net = super::stale_task_safety_net(b_side_llm_timeout_secs as u64);
+    let result_ttl_secs: i64 = 7 * 24 * 3600; // task_result_store TTL
+
+    assert!(
+        provider_single_request_secs < b_side_llm_timeout_secs,
+        "provider request must time out before B-side LLM timeout"
+    );
+    assert!(
+        chrono::Duration::seconds(b_side_llm_timeout_secs) < a_side_safety_net,
+        "B-side timeout must expire before A-side safety net"
+    );
+    assert!(
+        a_side_safety_net < chrono::Duration::seconds(result_ttl_secs),
+        "safety net must fire before result store TTL cleanup"
+    );
+}
+
+// ---- G5: query_task_result handler 语义（2026-09-01 集群韧性 goal）----
+
+/// running 占位条目必须上报 running（修复前误报 done+空回复，A 会过早完成任务）。
+#[test]
+fn test_query_task_result_running_entry_reports_running() {
+    let cluster = Cluster::new(make_config());
+    cluster.result_store().store_success(
+        "qtr-running",
+        "peer_chat",
+        serde_json::json!({"status": "running", "from": "Node-B"}),
+    );
+
+    let handler = cluster.build_query_task_result_handler();
+    let resp = handler(serde_json::json!({"task_id": "qtr-running"})).unwrap();
+    assert_eq!(resp.get("status").and_then(|v| v.as_str()), Some("running"));
+}
+
+/// 成功结果读 "response" 键（写端归一后）；旧格式 "content" 键回退兼容。
+#[test]
+fn test_query_task_result_done_reads_response_key_with_content_fallback() {
+    let cluster = Cluster::new(make_config());
+
+    // 新格式（gateway adapter set_result 归一后写 "response"）。
+    cluster.result_store().store_success(
+        "qtr-done",
+        "peer_chat",
+        serde_json::json!({"response": "final answer", "from": "Node-B"}),
+    );
+    // 旧格式（修复前落盘）。
+    cluster.result_store().store_success(
+        "qtr-done-legacy",
+        "peer_chat",
+        serde_json::json!({"content": "legacy answer", "from": "Node-B"}),
+    );
+
+    let handler = cluster.build_query_task_result_handler();
+
+    let resp = handler(serde_json::json!({"task_id": "qtr-done"})).unwrap();
+    assert_eq!(resp.get("status").and_then(|v| v.as_str()), Some("done"));
+    assert_eq!(
+        resp.get("response").and_then(|v| v.as_str()),
+        Some("final answer")
+    );
+
+    let legacy = handler(serde_json::json!({"task_id": "qtr-done-legacy"})).unwrap();
+    assert_eq!(
+        legacy.get("response").and_then(|v| v.as_str()),
+        Some("legacy answer"),
+        "legacy 'content' key must fall back"
+    );
+}
+
+/// 失败结果：done + result_status=error + error 文案；未知任务 not_found。
+#[test]
+fn test_query_task_result_error_and_not_found() {
+    let cluster = Cluster::new(make_config());
+    cluster
+        .result_store()
+        .store_failure("qtr-fail", "peer_chat", "boom");
+
+    let handler = cluster.build_query_task_result_handler();
+
+    let resp = handler(serde_json::json!({"task_id": "qtr-fail"})).unwrap();
+    assert_eq!(resp.get("status").and_then(|v| v.as_str()), Some("done"));
+    assert_eq!(
+        resp.get("result_status").and_then(|v| v.as_str()),
+        Some("error")
+    );
+    assert_eq!(resp.get("error").and_then(|v| v.as_str()), Some("boom"));
+
+    let missing = handler(serde_json::json!({"task_id": "qtr-missing"})).unwrap();
+    assert_eq!(
+        missing.get("status").and_then(|v| v.as_str()),
+        Some("not_found")
+    );
 }

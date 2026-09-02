@@ -42,6 +42,7 @@ fn test_start_stop_lifecycle() {
         port: 0, // OS assigns port
         interval: Duration::from_secs(30),
         secret: String::new(),
+        announce_expiry_secs: 120,
         enc_key: None,
     };
 
@@ -68,6 +69,7 @@ fn test_double_start_fails() {
         port: 0,
         interval: Duration::from_secs(30),
         secret: String::new(),
+        announce_expiry_secs: 120,
         enc_key: None,
     };
 
@@ -173,12 +175,14 @@ fn test_two_discovery_nodes_communicate() {
         port: 0,
         interval: Duration::from_secs(300), // Long interval so we don't spam
         secret: String::new(),
+        announce_expiry_secs: 120,
         enc_key: None,
     };
     let config_b = DiscoveryConfig {
         port: 0,
         interval: Duration::from_secs(300),
         secret: String::new(),
+        announce_expiry_secs: 120,
         enc_key: None,
     };
 
@@ -334,6 +338,7 @@ fn test_set_broadcast_interval() {
         port: 0,
         interval: Duration::from_secs(30),
         secret: String::new(),
+        announce_expiry_secs: 120,
         enc_key: None,
     };
     let mut service =
@@ -541,6 +546,7 @@ fn test_discovery_handler_udp_arms() {
         port: 0,
         interval: Duration::from_secs(300),
         secret: String::new(),
+        announce_expiry_secs: 120,
         enc_key: None,
     };
     let service = DiscoveryService::new(
@@ -648,6 +654,7 @@ fn test_discovery_handler_sync_error_logged() {
         port: 0,
         interval: Duration::from_secs(300),
         secret: String::new(),
+        announce_expiry_secs: 120,
         enc_key: None,
     };
     let service = DiscoveryService::new(
@@ -713,6 +720,7 @@ fn test_discovery_broadcast_thread_periodic_announce() {
         port: 0,
         interval: Duration::from_secs(1),
         secret: String::new(),
+        announce_expiry_secs: 120,
         enc_key: None,
     };
     let service = DiscoveryService::new(
