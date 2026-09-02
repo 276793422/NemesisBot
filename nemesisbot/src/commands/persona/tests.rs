@@ -639,7 +639,7 @@ mod r10_lead_in {
     /// cmd_search 前置段：query 归一 → 提示打印 → workspace 快照克隆 →
     /// block_in_place 桥内 GET；send Err 经 `?` 一路上抛成 Err。
     #[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
-    #[tokio::test(flavor = "multi_thread")]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn r10_persona_search_lead_in_errors_at_dead_upstream() {
         let _lock = crate::GLOBAL_STATE_LOCK.lock().unwrap();
         let _net = NetDead::engage();
@@ -654,7 +654,7 @@ mod r10_lead_in {
     /// 无论哪层接力，最终都 Err 且绝不创建 personas/<id>（安装目录只在
     /// 内容写盘阶段创建——离线 Err 与在线"未找到"两条世界同守此断言）。
     #[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
-    #[tokio::test(flavor = "multi_thread")]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn r10_persona_install_uninstalled_id_bails_after_network_leg_one() {
         let _lock = crate::GLOBAL_STATE_LOCK.lock().unwrap();
         let _net = NetDead::engage();
@@ -672,7 +672,7 @@ mod r10_lead_in {
     /// run() 的 Search / Install 两条分发臂（此前只钉过本地五臂）：即便套上
     /// run 的 async 包装层，前置段的 Err 语义同样成立。
     #[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
-    #[tokio::test(flavor = "multi_thread")]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn r10_persona_run_dispatch_reaches_search_and_install_arms() {
         let _lock = crate::GLOBAL_STATE_LOCK.lock().unwrap();
         let _net = NetDead::engage();

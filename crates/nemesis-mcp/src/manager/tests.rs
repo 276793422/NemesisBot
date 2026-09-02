@@ -893,7 +893,7 @@ fn s1_sink_subscriber() -> impl tracing::Subscriber + Send + Sync + 'static {
         .finish()
 }
 
-#[tokio::test(flavor = "multi_thread")]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn test_s1_discover_server_metadata_list_failures_after_init() {
     if !w4c_have_python() {
         eprintln!("Skipping test: python not available");
@@ -930,7 +930,7 @@ sys.exit(0)
     assert!(result.prompts.is_empty());
 }
 
-#[tokio::test(flavor = "multi_thread")]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn test_s1_discover_server_metadata_http_list_failures() {
     use wiremock::matchers::{body_partial_json, method, path};
     use wiremock::{Mock, MockServer, ResponseTemplate};

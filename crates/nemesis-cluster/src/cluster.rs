@@ -616,7 +616,7 @@ impl Cluster {
                     }
                     _ = tick.tick() => {
                         tick_count = tick_count.wrapping_add(1);
-                        let probe_offline_too = tick_count % 5 == 0;
+                        let probe_offline_too = tick_count.is_multiple_of(5);
 
                         let peers = registry.list_peers();
                         for peer in peers {

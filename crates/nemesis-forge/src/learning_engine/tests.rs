@@ -1645,7 +1645,7 @@ async fn test_execute_create_skill_action_no_provider() {
     assert!(result.error_msg.unwrap().contains("No LLM provider"));
 }
 
-#[tokio::test(flavor = "multi_thread")]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn test_execute_create_skill_action_llm_fails() {
     let dir = tempfile::tempdir().unwrap();
     let registry = Arc::new(Registry::new(RegistryConfig::default()));
@@ -1702,7 +1702,7 @@ async fn test_execute_create_skill_action_already_exists() {
     assert_eq!(result.status, "skipped");
 }
 
-#[tokio::test(flavor = "multi_thread")]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn test_execute_create_skill_action_no_pipeline() {
     let dir = tempfile::tempdir().unwrap();
     let registry = Arc::new(Registry::new(RegistryConfig::default()));

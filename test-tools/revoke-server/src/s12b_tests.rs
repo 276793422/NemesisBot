@@ -49,7 +49,7 @@ async fn http_get(port: u16, path: &str) -> Option<String> {
     Some(String::from_utf8_lossy(&buf).into_owned())
 }
 
-#[tokio::test(flavor = "multi_thread")]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn run_boots_full_server_and_init_keys_on_ephemeral_port() {
     let keys = temp_path("boot", ".json");
     let db = temp_path("boot", ".db");

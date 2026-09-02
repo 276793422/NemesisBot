@@ -907,7 +907,7 @@ fn test_s11b_run_sync_arms() {
 }
 
 #[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
-#[tokio::test(flavor = "multi_thread")]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn test_s11b_run_async_dispatch_arms() {
     let _guard = crate::GLOBAL_STATE_LOCK.lock().unwrap();
     let th = s11b_temp_home_env();

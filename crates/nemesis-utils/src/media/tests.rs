@@ -763,7 +763,7 @@ fn s1_subscriber() -> impl tracing::Subscriber + Send + Sync + 'static {
         .finish()
 }
 
-#[tokio::test(flavor = "multi_thread")]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn test_s1_download_with_opts_non_200_status_field() {
     use wiremock::matchers::method;
     use wiremock::{Mock, MockServer, ResponseTemplate};
@@ -791,7 +791,7 @@ async fn test_s1_download_with_opts_non_200_status_field() {
     assert_eq!(out, "");
 }
 
-#[tokio::test(flavor = "multi_thread")]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn test_s1_download_with_opts_mkdir_failure() {
     use wiremock::matchers::method;
     use wiremock::{Mock, MockServer, ResponseTemplate};
@@ -858,7 +858,7 @@ async fn test_s1_download_with_opts_mkdir_failure() {
     assert_eq!(out, "");
 }
 
-#[tokio::test(flavor = "multi_thread")]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn test_s1_download_with_opts_write_failure_nul_filename() {
     use wiremock::matchers::method;
     use wiremock::{Mock, MockServer, ResponseTemplate};

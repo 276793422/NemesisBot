@@ -1120,7 +1120,7 @@ fn test_reflector_with_llm_failure() {
     );
 }
 
-#[tokio::test(flavor = "multi_thread")]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn test_learning_engine_with_llm_failure() {
     let dir = tempfile::tempdir().unwrap();
     let config = ForgeConfig::default();

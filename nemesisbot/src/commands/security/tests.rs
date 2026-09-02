@@ -1493,7 +1493,7 @@ async fn test_s11b_run_audit_show_export_denied() {
 // -------------------------------- Test ------------------------------------
 
 #[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
-#[tokio::test(flavor = "multi_thread")]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn test_s11b_run_security_test_allowed_blocked_invalid_json() {
     let _guard = crate::GLOBAL_STATE_LOCK.lock().unwrap();
     let _th = s11b_temp_home_env();

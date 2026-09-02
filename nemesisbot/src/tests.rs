@@ -1025,7 +1025,7 @@ mod wave_b {
     /// 单消息 + 死地址 provider（127.0.0.1:1 立即拒绝）→ agent 内部消化
     /// LLM 错误，run 返回 Ok —— 只验分发与收敛，不触网不出进程。
     #[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
-    #[tokio::test(flavor = "multi_thread")]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn wave_b_agent_dispatch_single_message_dead_provider_ok() {
         let _guard = GLOBAL_STATE_LOCK.lock().unwrap();
         let th = temp_home_env();
@@ -1794,7 +1794,7 @@ mod r10_main {
     }
 
     #[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
-    #[tokio::test(flavor = "multi_thread")]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn r10_estop_trio_status_engage_release_live_gateway() {
         let _guard = GLOBAL_STATE_LOCK.lock().unwrap();
         let bin = r10_bin();
@@ -1865,7 +1865,7 @@ mod r10_main {
 
     #[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
     #[cfg(feature = "desktop")]
-    #[tokio::test(flavor = "multi_thread")]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn r10_test_hidden_approval_headless_arm() {
         let _guard = GLOBAL_STATE_LOCK.lock().unwrap();
         let bin = r10_bin();

@@ -3372,7 +3372,7 @@ async fn test_checkpoint_e2e_write_then_rewind_restores() {
     );
 }
 
-#[tokio::test(flavor = "multi_thread")]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn test_guardian_e2e_critical_op_denied_by_judge() {
     // P5 AgentLoop-level e2e: a CRITICAL op that passes the rule layers is
     // blocked by the guardian judge. Verifies: set_judge → security allow →
@@ -3429,7 +3429,7 @@ async fn test_guardian_e2e_critical_op_denied_by_judge() {
     );
 }
 
-#[tokio::test(flavor = "multi_thread")]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn test_guardian_e2e_allows_when_judge_approves() {
     // P5 e2e counterpart: when the judge allows, the CRITICAL op proceeds.
     use nemesis_security::guardian::{JudgeOutcome, JudgeRequest, JudgeVerdict, LlmJudge};

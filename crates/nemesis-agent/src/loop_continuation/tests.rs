@@ -1554,7 +1554,7 @@ fn test_legacy_snapshot_without_session_key_deserializes_to_empty() {
     );
 }
 
-#[tokio::test(flavor = "multi_thread")]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn test_disk_recovery_preserves_session_key_for_handle() {
     // Crash-recovery scenario: continuation is saved with a session_key,
     // process restarts, a new ContinuationManager recovers from disk, and

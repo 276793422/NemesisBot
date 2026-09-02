@@ -926,7 +926,7 @@ async fn test_s11b_run_agent_mode_build_fail() {
     assert!(err.to_string().contains("Failed to resolve model"), "{err}");
 }
 
-#[tokio::test(flavor = "multi_thread")]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn test_s11b_run_agent_mode_single_message_dead_provider() {
     let _guard = crate::GLOBAL_STATE_LOCK.lock().unwrap();
     let th = s11b_agent_home_env();
@@ -1296,7 +1296,7 @@ mod wave_b {
             .expect("config.skills.json={} 可解析 → RegistryManager 构建成功 → Ok");
     }
 
-    #[tokio::test(flavor = "multi_thread")]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn wave_b_build_loop_request_logger_truncated_custom_logdir() {
         let _guard = crate::GLOBAL_STATE_LOCK.lock().unwrap();
         let th = s11b_agent_home_env();
@@ -1325,7 +1325,7 @@ mod wave_b {
             .expect("RequestLogger(truncated+custom dir) 注册后构建 Ok");
     }
 
-    #[tokio::test(flavor = "multi_thread")]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn wave_b_build_loop_request_logger_defaults_full_and_default_logdir() {
         let _guard = crate::GLOBAL_STATE_LOCK.lock().unwrap();
         let th = s11b_agent_home_env();
@@ -1348,7 +1348,7 @@ mod wave_b {
         build_agent_loop(&cfg, &th.home).expect("RequestLogger 默认 Full+默认目录注册后构建 Ok");
     }
 
-    #[tokio::test(flavor = "multi_thread")]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn wave_b_run_flags_debug_quiet_no_console_single_message_dead_provider() {
         let _guard = crate::GLOBAL_STATE_LOCK.lock().unwrap();
         let th = s11b_agent_home_env();
@@ -1371,7 +1371,7 @@ mod wave_b {
         );
     }
 
-    #[tokio::test(flavor = "multi_thread")]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn wave_b_run_single_message_success_via_loopback_openai_mock() {
         let _guard = crate::GLOBAL_STATE_LOCK.lock().unwrap();
         let th = s11b_agent_home_env();
@@ -1555,7 +1555,7 @@ mod r9_repl {
     }
 
     #[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
-    #[tokio::test(flavor = "multi_thread")]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn r9_repl_hello_then_quit_returns_mock_reply() {
         let srv = MockAiServer::start(vec![MockAiReply::Text(MARKER.to_string())])
             .expect("mock ai server starts");
@@ -1590,7 +1590,7 @@ mod r9_repl {
     }
 
     #[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
-    #[tokio::test(flavor = "multi_thread")]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn r9_repl_eof_without_quit_hits_eof_goodbye_arm() {
         let srv = MockAiServer::start(vec![MockAiReply::Text(MARKER.to_string())])
             .expect("mock ai server starts");
@@ -1615,7 +1615,7 @@ mod r9_repl {
     }
 
     #[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
-    #[tokio::test(flavor = "multi_thread")]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn r9_repl_unknown_slash_command_lists_options_and_loops() {
         // 空 script：任何意外 LLM 调用会被 mock 以 500 "script exhausted"
         // 拒绝——比静默通过更响。slash 命令不应产生任何 LLM 调用。
@@ -1648,7 +1648,7 @@ mod r9_repl {
     }
 
     #[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
-    #[tokio::test(flavor = "multi_thread")]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn r9_repl_builtin_slash_trio_recognized_loop_survives() {
         // registry=None 下：/history 无正文输出、/clear 恒打 "History
         // cleared."、/status 恒打 Session/State(no registry)。三者都应被
@@ -1687,7 +1687,7 @@ mod r9_repl {
     }
 
     #[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
-    #[tokio::test(flavor = "multi_thread")]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn r9_repl_set_llm_unresolved_confirm_yes_writes_default() {
         let (ws, bin) = r9_setup_plain_ws().await;
         // onboard 后没有任何 model_list 条目 → resolve 必失败 → WARNING +
@@ -1725,7 +1725,7 @@ mod r9_repl {
     }
 
     #[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
-    #[tokio::test(flavor = "multi_thread")]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn r9_repl_set_llm_unresolved_confirm_no_cancels() {
         let (ws, bin) = r9_setup_plain_ws().await;
         // 答 n（小写即可拒绝；只有恰好 "y" 才放行）→ Cancelled 臂 + 不写盘。
@@ -1755,7 +1755,7 @@ mod r9_repl {
     }
 
     #[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
-    #[tokio::test(flavor = "multi_thread")]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn r9_repl_llm_failure_arm_prints_agent_error_and_loop_survives() {
         // api_base 指向立即拒绝的死端口：hello 的 LLM 调用失败 → process_
         // direct Err → "\nAgent error: ...\n"（eprintln）→ 循环继续吃 quit。
@@ -1807,7 +1807,7 @@ mod r10 {
     }
 
     #[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
-    #[tokio::test(flavor = "multi_thread")]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn r10_repl_seed_history_load_and_blank_line_continue() {
         let bin = r10_resolve_bin();
         let ws = TestWorkspace::new().expect("temp workspace");

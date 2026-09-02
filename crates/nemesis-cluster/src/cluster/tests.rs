@@ -5924,31 +5924,42 @@ async fn test_async_call_null_handler_result_serializes_null() {
 /// `result: None`, so the sync `call_with_context` returns empty bytes
 /// (cluster.rs 1210-1215). Requires a multi-thread runtime because the
 /// sync path bridges through `block_in_place` + `handle.block_on`.
-#[tokio::test(flavor = "multi_thread")]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn test_sync_call_missing_result_field_returns_empty() {
     s4_tracing_subscriber();
 
-    // Raw server: accept one request, reply a bare RPCResponse JSON
+    // Raw server: for EVERY connection, reply a bare RPCResponse JSON
     // (no result, no error) — decode_response's WireMessage parse fails,
     // the direct fallback yields result: None.
+    //
+    // 曾经的 one-shot 形态（只 accept 一次、回完即 drop listener）是 flaky
+    // 根因（2026-09-03）：G2 健康探针循环随 cluster.start() 启动，
+    // tokio::time::interval 首 tick 立即到期；若 probe task 首次 poll 晚于
+    // register_node，探针与本测试的主调用会并发争抢这唯一一次 accept——
+    // 探针抢到则主连接还挂在 backlog 里，listener 一 drop 被 Windows RST
+    // （os error 10054），全量并行下约 10% 概率红。改为循环 accept + 每
+    // 连接独立回同一份裸回复：探针/主调用谁先到都被服务，listener 存活
+    // 到测试结束，backlog RST 类竞争被结构性消除（测试语义不变）。
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap().to_string();
     let raw = tokio::spawn(async move {
         use tokio::io::{AsyncReadExt, AsyncWriteExt};
-        if let Ok((mut sock, _)) = listener.accept().await {
-            let mut len_buf = [0u8; 4];
-            if sock.read_exact(&mut len_buf).await.is_err() {
-                return;
-            }
-            let len = u32::from_be_bytes(len_buf) as usize;
-            let mut buf = vec![0u8; len];
-            if sock.read_exact(&mut buf).await.is_err() {
-                return;
-            }
-            let reply = br#"{"id":"s4-none-1"}"#.to_vec();
-            let total = (reply.len() as u32).to_be_bytes();
-            let _ = sock.write_all(&total).await;
-            let _ = sock.write_all(&reply).await;
+        while let Ok((mut sock, _)) = listener.accept().await {
+            tokio::spawn(async move {
+                let mut len_buf = [0u8; 4];
+                if sock.read_exact(&mut len_buf).await.is_err() {
+                    return;
+                }
+                let len = u32::from_be_bytes(len_buf) as usize;
+                let mut buf = vec![0u8; len];
+                if sock.read_exact(&mut buf).await.is_err() {
+                    return;
+                }
+                let reply = br#"{"id":"s4-none-1"}"#.to_vec();
+                let total = (reply.len() as u32).to_be_bytes();
+                let _ = sock.write_all(&total).await;
+                let _ = sock.write_all(&reply).await;
+            });
         }
     });
 

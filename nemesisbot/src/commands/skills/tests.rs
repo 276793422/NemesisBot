@@ -1605,7 +1605,7 @@ fn test_run_skills_builtin_install_and_list() {
 // -------------------------------------------------------------------------
 
 #[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
-#[tokio::test(flavor = "multi_thread")]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn test_run_skills_search_empty_registries_dispatch() {
     let _guard = crate::GLOBAL_STATE_LOCK.lock().unwrap();
     let _th = temp_home_env();
@@ -1629,7 +1629,7 @@ async fn test_run_skills_search_empty_registries_dispatch() {
 }
 
 #[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
-#[tokio::test(flavor = "multi_thread")]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn test_run_skills_cache_dispatch() {
     let _guard = crate::GLOBAL_STATE_LOCK.lock().unwrap();
     let th = temp_home_env();
@@ -1663,7 +1663,7 @@ async fn test_run_skills_cache_dispatch() {
 }
 
 #[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
-#[tokio::test(flavor = "multi_thread")]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn test_run_skills_learn_missing_config_dispatch() {
     let _guard = crate::GLOBAL_STATE_LOCK.lock().unwrap();
     let _th = temp_home_env();
@@ -2068,7 +2068,7 @@ mod wave_b {
 
     /// Install 臂的桥接体（1153-1158 + 1160-1161）：走上面同款离线终局。
     #[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
-    #[tokio::test(flavor = "multi_thread")]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn wave_b_run_skills_install_arm_bridge_dispatch() {
         let _guard = crate::GLOBAL_STATE_LOCK.lock().unwrap();
         let home_root = TempDir::new().unwrap();
@@ -2086,7 +2086,7 @@ mod wave_b {
 
     /// Source::Add 子臂（1168-1172）：非法 URL 在任何网络语句之前被 parse 拒绝。
     #[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
-    #[tokio::test(flavor = "multi_thread")]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn wave_b_run_skills_source_add_arm_bridge_invalid_url() {
         let _guard = crate::GLOBAL_STATE_LOCK.lock().unwrap();
         let home_root = TempDir::new().unwrap();
@@ -2222,7 +2222,7 @@ mod wave_b {
         std::fs::write(home.join("config.json"), cfg.to_string()).unwrap();
     }
 
-    #[tokio::test(flavor = "multi_thread")]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn wave_b_cmd_learn_success_round_trip_local_llm_mock() {
         let tmp = TempDir::new().unwrap();
         let home = tmp.path().join(".nemesisbot");
@@ -2234,7 +2234,7 @@ mod wave_b {
             .expect("本地 mock 应答 → cmd_learn 全链路 Ok（1246/1255-1258/1267-1272/1277）");
     }
 
-    #[tokio::test(flavor = "multi_thread")]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn wave_b_cmd_learn_provider_failure_surfaces_agent_error() {
         let tmp = TempDir::new().unwrap();
         let home = tmp.path().join(".nemesisbot");
@@ -2648,7 +2648,7 @@ mod r10_wave {
     /// run() 的 AddSource 分发桥（合法 URL 变体）：此前只有非法 URL 早退版本，
     /// 这里补上「桥接体真正驱动完整个 async 主干」的分发路径。
     #[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
-    #[tokio::test(flavor = "multi_thread")]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn r10_run_add_source_arm_drives_full_trunk_via_bridge() {
         let _lock = crate::GLOBAL_STATE_LOCK.lock().unwrap();
         let tmp_root = TempDir::new().unwrap();
@@ -2716,7 +2716,7 @@ mod r10_wave {
     /// run() 的 InstallClawhub 分发桥：既有测试从未驱动过的 async 命令包装臂
     /// （block_in_place + Handle::block_on 承载内部异步 client）。
     #[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
-    #[tokio::test(flavor = "multi_thread")]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn r10_run_install_clawhub_bridge_dispatches_offline_error_arm() {
         let _lock = crate::GLOBAL_STATE_LOCK.lock().unwrap();
         let tmp_root = TempDir::new().unwrap();

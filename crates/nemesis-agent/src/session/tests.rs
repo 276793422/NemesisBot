@@ -2724,7 +2724,7 @@ fn tokio_block_on_creates_runtime_when_none() {
 }
 
 /// tokio_block_on INSIDE a multi-thread runtime uses block_in_place (Ok arm).
-#[tokio::test(flavor = "multi_thread")]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn tokio_block_on_uses_current_runtime() {
     let v = tokio_block_on(async { 11u32 });
     assert_eq!(v, 11);

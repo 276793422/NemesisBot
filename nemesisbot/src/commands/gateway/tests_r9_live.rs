@@ -65,6 +65,20 @@ const FORBIDDEN_PORTS: &[u16] = &[8080, 18790, 18791, 18792, 18793, 49000, 49001
 /// 本进程内已认领的集群 UDP 基端口（防同进程多实例探到同一对端口后竞速绑定）。
 static CLAIMED_CLUSTER_PORTS: StdMutex<Vec<u16>> = StdMutex::new(Vec::new());
 
+/// live gateway 测试互斥闸：本文件 11 个测试都起真 gateway 子进程（全装配：
+/// web+cluster+discovery+agent+security+MockAi），全量并行矩阵下 11 个编排
+/// 同时抢 CPU 曾把 150s 等待预算吃光致 flaky（2026-09-03：本机 24 核全量
+/// 红、单独串行复跑 13.84s PASS）。互斥后同一时刻至多一个 live 编排在跑，
+/// 争抢源被结构性消除；其他 crate 的普通单测不受影响照常并行。
+/// 用 tokio::sync::Mutex：guard 须横跨整个 live 编排的 .await 持有——std
+/// Mutex 的 guard 跨 await 触发 clippy::await_holding_lock（-D warnings 门禁），
+/// tokio Mutex 无毒化语义（某次 live 测试 panic 不连坐后续测试），FIFO 公平。
+static LIVE_GATEWAY_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+
+async fn live_gate() -> tokio::sync::MutexGuard<'static, ()> {
+    LIVE_GATEWAY_LOCK.lock().await
+}
+
 /// 毫秒时间戳（种子 cron 用）。
 fn now_ms() -> i64 {
     SystemTime::now()
@@ -465,6 +479,7 @@ async fn graceful_teardown(mut gw: ManagedProcess, web_port: u16, token: &str, l
 #[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn r9_live_cron_on_job_both_branches_fire_and_mark_store() {
+    let _live = live_gate().await;
     let ws = TestWorkspace::new().expect("temp workspace");
     let bin = resolve_nemesisbot_bin().expect("nemesisbot binary");
     let home = ws.home();
@@ -627,6 +642,7 @@ fn install_cluster_app_config(home: &Path, udp: u16, rpc: u16, token: &str) {
 #[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn r9_live_dual_node_peer_chat_full_chain_with_cluster_rpc_tool() {
+    let _live = live_gate().await;
     let bin = resolve_nemesisbot_bin().expect("nemesisbot binary");
 
     // —— 端口组：A/B 完全独立且互相不同 ——
@@ -799,6 +815,7 @@ async fn r9_live_dual_node_peer_chat_full_chain_with_cluster_rpc_tool() {
 #[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn r9_live_workflow_message_trigger_cascades_to_event_trigger() {
+    let _live = live_gate().await;
     let ws = TestWorkspace::new().expect("temp workspace");
     let bin = resolve_nemesisbot_bin().expect("nemesisbot binary");
     let home = ws.home();
@@ -938,6 +955,7 @@ async fn r9_live_workflow_message_trigger_cascades_to_event_trigger() {
 #[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn r9_live_heartbeat_bootstrap_skip_makes_zero_llm_calls() {
+    let _live = live_gate().await;
     let ws = TestWorkspace::new().expect("temp workspace");
     let bin = resolve_nemesisbot_bin().expect("nemesisbot binary");
     let home = ws.home();
@@ -990,6 +1008,7 @@ async fn r9_live_heartbeat_bootstrap_skip_makes_zero_llm_calls() {
 #[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn r9_live_heartbeat_two_ticks_passthrough_then_heartbeat_ok_match() {
+    let _live = live_gate().await;
     let ws = TestWorkspace::new().expect("temp workspace");
     let bin = resolve_nemesisbot_bin().expect("nemesisbot binary");
     let home = ws.home();
@@ -1066,6 +1085,7 @@ async fn r9_live_heartbeat_two_ticks_passthrough_then_heartbeat_ok_match() {
 #[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn r9_live_approval_ask_rule_denies_via_plugin_ui_early_exit() {
+    let _live = live_gate().await;
     let ws = TestWorkspace::new().expect("temp workspace");
     let bin = resolve_nemesisbot_bin().expect("nemesisbot binary");
     if plugin_ui_dll_next_to_bin(&bin) {
@@ -1391,6 +1411,7 @@ fn r10_wsapi_agent_stop(web_port: u16, token: &str, req_id: &str) -> Result<(), 
 #[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn r10_live_cluster_rpc_port_busy_bind_error_stays_nonfatal() {
+    let _live = live_gate().await;
     let ws = TestWorkspace::new().expect("temp workspace");
     let bin = resolve_nemesisbot_bin().expect("nemesisbot binary");
     let home = ws.home();
@@ -1449,6 +1470,7 @@ async fn r10_live_cluster_rpc_port_busy_bind_error_stays_nonfatal() {
 #[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn r10_live_dual_node_callback_roundtrip_and_forged_error_route() {
+    let _live = live_gate().await;
     let bin = resolve_nemesisbot_bin().expect("nemesisbot binary");
 
     let (udp_a, rpc_a) = probe_cluster_port_pair();
@@ -1660,6 +1682,7 @@ async fn r10_live_dual_node_callback_roundtrip_and_forged_error_route() {
 #[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn r10_live_discovery_lag_unknown_peer_registers_via_rpc_meta() {
+    let _live = live_gate().await;
     let bin = resolve_nemesisbot_bin().expect("nemesisbot binary");
 
     let (udp_a, rpc_a) = probe_cluster_port_pair();
@@ -1777,6 +1800,7 @@ async fn r10_live_discovery_lag_unknown_peer_registers_via_rpc_meta() {
 #[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn r10_live_heartbeat_bootstrap_written_after_boot_suppresses_all_llm() {
+    let _live = live_gate().await;
     let ws = TestWorkspace::new().expect("temp workspace");
     let bin = resolve_nemesisbot_bin().expect("nemesisbot binary");
     let home = ws.home();
@@ -1835,6 +1859,7 @@ async fn r10_live_heartbeat_bootstrap_written_after_boot_suppresses_all_llm() {
 #[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn r10_live_heartbeat_agent_none_after_wsapi_stop_sends_zero_llm() {
+    let _live = live_gate().await;
     let ws = TestWorkspace::new().expect("temp workspace");
     let bin = resolve_nemesisbot_bin().expect("nemesisbot binary");
     let home = ws.home();

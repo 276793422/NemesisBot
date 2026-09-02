@@ -1216,7 +1216,7 @@ mod run_arm {
     }
 
     #[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
-    #[tokio::test(flavor = "multi_thread")]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn dispatch_run_arm_needs_multithread_runtime() {
         // Run 臂走 tokio::task::block_in_place——current_thread runtime 会
         // panic，必须 multi_thread（这也是给未来读代码的人钉的契约）。
@@ -1583,7 +1583,7 @@ mod r10 {
     use super::super::{WorkflowAction, run};
 
     #[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
-    #[tokio::test(flavor = "multi_thread")]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn r10_run_dispatch_success_path_with_failed_transform_node_prints_error() {
         let _guard = crate::GLOBAL_STATE_LOCK.lock().unwrap();
         let tmp = tempfile::tempdir().unwrap();
