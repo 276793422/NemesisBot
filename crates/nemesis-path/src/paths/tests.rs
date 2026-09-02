@@ -335,6 +335,15 @@ fn test_path_manager_default_trait() {
 /// so concurrent modifications cause race conditions. The reentrant mutex allows
 /// a single test thread to acquire multiple guards (for multiple EnvGuard instances)
 /// while blocking other test threads.
+///
+/// The contract is bilateral: besides env vars it also covers the other
+/// process-global inputs the resolvers read — `LOCAL_MODE` (`static mut`,
+/// read first by `resolve_home_dir()`: a naked `set_local_mode(true)` inside a
+/// parallel EnvGuard window short-circuits that test's env assertions) and the
+/// `default_path_manager()` OnceLock singleton (the first `get_or_init` freezes
+/// the then-live env-derived home for the whole test binary). EVERY test that
+/// touches any of these must hold this lock — env setters via EnvGuard, the
+/// rest via an explicit `ENV_LOCK.lock()` (2026-09-02 lock-contract sweep).
 static ENV_LOCK: parking_lot::ReentrantMutex<()> = parking_lot::ReentrantMutex::new(());
 
 /// Helper to safely set env var (set_var/remove_var became unsafe in Rust 2024 edition).
@@ -405,6 +414,9 @@ fn test_resolve_home_dir_with_env() {
 
 #[test]
 fn test_resolve_home_dir_local_mode() {
+    // LOCAL_MODE is process-global — hold ENV_LOCK (see contract above) so a
+    // parallel EnvGuard test's env-window assertions can't be short-circuited.
+    let _g = ENV_LOCK.lock();
     set_local_mode(true);
     let result = resolve_home_dir();
     set_local_mode(false);
@@ -420,6 +432,7 @@ fn test_detect_local() {
 
 #[test]
 fn test_set_and_is_local_mode() {
+    let _g = ENV_LOCK.lock(); // LOCAL_MODE is process-global — see ENV_LOCK contract.
     set_local_mode(true);
     assert!(is_local_mode());
     set_local_mode(false);
@@ -535,6 +548,9 @@ fn test_path_manager_mcp_config_path_with_env() {
 
 #[test]
 fn test_default_path_manager() {
+    // The OnceLock singleton freezes the env-derived home on first get_or_init —
+    // hold ENV_LOCK so it can't initialize inside a parallel env window (contract above).
+    let _g = ENV_LOCK.lock();
     let pm = default_path_manager();
     assert!(pm.home_dir().to_string_lossy().contains(".nemesisbot"));
     let pm2 = default_path_manager();
@@ -1284,6 +1300,9 @@ fn test_path_manager_new_no_home_env() {
 
 #[test]
 fn test_resolve_config_path_with_local_mode() {
+    // Lock BEFORE touching LOCAL_MODE — the old shape wrote it unlocked first,
+    // leaving an unprotected true-window (see ENV_LOCK contract).
+    let _g = ENV_LOCK.lock();
     set_local_mode(true);
     let _g = EnvGuard::remove(ENV_CONFIG);
     let result = resolve_config_path();
@@ -1435,12 +1454,14 @@ fn test_resolve_skills_config_path_with_workspace_config() {
 
 #[test]
 fn test_is_local_mode_default() {
+    let _g = ENV_LOCK.lock(); // LOCAL_MODE is process-global — see ENV_LOCK contract.
     set_local_mode(false);
     assert!(!is_local_mode());
 }
 
 #[test]
 fn test_is_local_mode_enabled() {
+    let _g = ENV_LOCK.lock(); // LOCAL_MODE is process-global — see ENV_LOCK contract.
     set_local_mode(true);
     assert!(is_local_mode());
     set_local_mode(false);
@@ -1992,6 +2013,7 @@ fn test_expand_home_with_unicode() {
 
 #[test]
 fn test_set_local_mode_toggles() {
+    let _g = ENV_LOCK.lock(); // LOCAL_MODE is process-global — see ENV_LOCK contract.
     let original = is_local_mode();
     set_local_mode(true);
     assert!(is_local_mode());
@@ -2174,6 +2196,9 @@ fn test_path_manager_memory_vector_dir_method() {
 
 #[test]
 fn test_default_path_manager_singleton() {
+    // OnceLock singleton must not first-initialize inside a parallel env window —
+    // hold ENV_LOCK (see contract above).
+    let _g = ENV_LOCK.lock();
     let pm1 = default_path_manager();
     let pm2 = default_path_manager();
     // Same singleton instance
@@ -2427,6 +2452,8 @@ fn test_load_config_for_workspace_directory_not_file() {
 
 #[test]
 fn test_resolve_config_path_when_local_mode_and_env() {
+    // Lock BEFORE touching LOCAL_MODE — no unprotected true-window (ENV_LOCK contract).
+    let _g = ENV_LOCK.lock();
     // local_mode true, ENV_CONFIG unset -> uses cwd
     set_local_mode(true);
     let _g = EnvGuard::remove(ENV_CONFIG);

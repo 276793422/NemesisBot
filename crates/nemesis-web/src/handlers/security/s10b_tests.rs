@@ -51,9 +51,15 @@ fn make_ctx(ws: &str) -> RequestContext {
         cluster_log_dir: None,
         workflow_engine: None,
         #[cfg(feature = "workflow")]
+        #[cfg(feature = "workflow")]
         chat_secret_store: Arc::new(nemesis_workflow::chat_secrets::ChatSecretStore::in_memory()),
+        #[cfg(not(feature = "workflow"))]
+        chat_secret_store: Arc::new(()),
+        #[cfg(feature = "workflow")]
         #[cfg(feature = "workflow")]
         webhook_rate_limiter: Arc::new(crate::handlers::workflow::WebhookRateLimiter::new()),
+        #[cfg(not(feature = "workflow"))]
+        webhook_rate_limiter: Arc::new(()),
         internal_cmd_tx: None,
         estop: None,
         cron: None,
