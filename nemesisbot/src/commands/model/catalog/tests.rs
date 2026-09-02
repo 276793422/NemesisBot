@@ -407,6 +407,8 @@ fn test_wave_a_save_cache_mkdir_failure_bubbles_with_prefix() {
 // 上下文 drop 会 panic，这里不进 async 测试运行时）。
 // ===========================================================================
 
+// 整 mod Windows 形态（3/3 测试 + 专属 helper 全走 Windows CLI 进程边界）。
+#[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
 mod r9_fetch_seams {
     use super::*;
 
@@ -481,6 +483,7 @@ mod r9_fetch_seams {
 
     const DEAD_PROXY: &str = "http://127.0.0.1:1";
 
+    #[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
     #[test]
     fn seam_success_parses_api_json_entries() {
         let _guard = crate::GLOBAL_STATE_LOCK.lock().unwrap();
@@ -502,6 +505,7 @@ mod r9_fetch_seams {
         assert_eq!(entries[0].family.as_deref(), Some("fam-a"));
     }
 
+    #[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
     #[test]
     fn seam_bad_body_falls_back_to_mirror_and_reports_all_failed() {
         let _guard = crate::GLOBAL_STATE_LOCK.lock().unwrap();
@@ -524,6 +528,7 @@ mod r9_fetch_seams {
         );
     }
 
+    #[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
     #[test]
     fn seam_http_500_also_falls_back_and_fails_loudly() {
         let _guard = crate::GLOBAL_STATE_LOCK.lock().unwrap();
@@ -547,6 +552,8 @@ mod r9_fetch_seams {
 // 并行测试线程正在改写这些全局变量。
 // ===========================================================================
 
+// 整 mod Windows 形态（2/2 测试 + 专属 helper 全走 Windows CLI 进程边界）。
+#[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
 mod r9_offline_cli {
     use test_harness::{resolve_nemesisbot_bin, TestWorkspace};
 
@@ -613,6 +620,7 @@ mod r9_offline_cli {
         ws
     }
 
+    #[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
     #[tokio::test]
     async fn offline_with_seed_cache_keeps_cache_and_exits_zero() {
         let _guard = crate::GLOBAL_STATE_LOCK.lock().unwrap();
@@ -649,6 +657,7 @@ mod r9_offline_cli {
         );
     }
 
+    #[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
     #[tokio::test]
     async fn offline_without_cache_bails_nonzero() {
         let _guard = crate::GLOBAL_STATE_LOCK.lock().unwrap();
@@ -680,6 +689,7 @@ mod r9_offline_cli {
 // ===========================================================================
 #[cfg(test)]
 mod r10_body_read {
+    #[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
     #[test]
     fn r10_truncated_200_body_hits_body_read_err_arm() {
         let _guard = crate::GLOBAL_STATE_LOCK.lock().unwrap();

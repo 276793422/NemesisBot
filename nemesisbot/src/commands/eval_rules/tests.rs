@@ -275,6 +275,7 @@ fn cmd_add_rejects_empty_rules_file() {
     assert_eq!(file.rules.len(), defaults.rules.len());
 }
 
+#[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
 #[tokio::test]
 async fn bb4_local_missing_write_rejected_readonly_degrades() {
     // BB4 防静默建家回归：--local home 不存在时——写命令 bail（且不创建
@@ -317,6 +318,7 @@ fn cmd_new_eof_stdin_cancels_with_path_empty_error() {
     assert!(!path.exists(), "取消路径绝不落盘");
 }
 
+#[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
 #[tokio::test]
 async fn run_dispatch_list_toggle_and_remove_via_env_home() {
     let _guard = crate::GLOBAL_STATE_LOCK.lock().unwrap();
@@ -407,10 +409,12 @@ mod wave_b {
     /// NEMESISBOT_HOME 守卫：prev-value 按 Option 恢复（纪律要求）。调用方必须持
     /// crate::GLOBAL_STATE_LOCK；#[tokio::test] 不要求 Send，守卫可跨 await 存活
     /// （同文件 run_dispatch_list_toggle_and_remove_via_env_home 先例）。
+    #[cfg(windows)] // Windows-form helper (Linux nightly: excluded, 2026-09-02 sweep)
     struct WaveBHomeGuard {
         prev: Option<std::ffi::OsString>,
     }
 
+    #[cfg(windows)] // Windows-form helper (Linux nightly: excluded, 2026-09-02 sweep)
     impl WaveBHomeGuard {
         fn set(root: &std::path::Path) -> Self {
             let prev = std::env::var_os("NEMESISBOT_HOME");
@@ -419,6 +423,7 @@ mod wave_b {
         }
     }
 
+    #[cfg(windows)] // Windows-form helper (Linux nightly: excluded, 2026-09-02 sweep)
     impl Drop for WaveBHomeGuard {
         fn drop(&mut self) {
             match self.prev.take() {
@@ -428,6 +433,7 @@ mod wave_b {
         }
     }
 
+    #[cfg(windows)] // Windows-form helper (Linux nightly: excluded, 2026-09-02 sweep)
     fn wave_b_seeded_home() -> (tempfile::TempDir, std::path::PathBuf, String) {
         let tmp = tempfile::tempdir().unwrap();
         let home = tmp.path().join(".nemesisbot");
@@ -452,6 +458,7 @@ mod wave_b {
     /// tuple-98 + dispatch-142：New 子命令经 run() 分发。stdin EOF → 向导 kind
     /// 默认 path 分支 → 关键词读空 → bail「路径为空」，且绝不落盘（S11c 直调
     /// cmd_new 已钉行为；这里补的是 run() 这层分派桥）。
+    #[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
     #[tokio::test]
     async fn wave_b_run_new_wizard_eof_stdin_cancels() {
         let _guard = crate::GLOBAL_STATE_LOCK.lock().unwrap();
@@ -472,6 +479,7 @@ mod wave_b {
 
     /// dispatch-144（Edit 臂经 run()）+ dispatch-143（Add 臂经 run()）：
     /// 全链路替换与追加都以落盘后的文件内容断言。
+    #[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
     #[tokio::test]
     async fn wave_b_run_edit_then_add_dispatch_persist_effects() {
         let _guard = crate::GLOBAL_STATE_LOCK.lock().unwrap();
@@ -523,6 +531,7 @@ mod wave_b {
     }
 
     /// tuple-104 + dispatch-148：Reset --force 经 run() 分发回默认集。
+    #[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
     #[tokio::test]
     async fn wave_b_run_reset_force_dispatch_restores_defaults() {
         let _guard = crate::GLOBAL_STATE_LOCK.lock().unwrap();

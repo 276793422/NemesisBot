@@ -741,17 +741,20 @@ fn test_cli_has_version_command() {
 // =========================================================================
 
 /// 隔离 home（NEMESISBOT_HOME → tempdir；resolve_home Priority 2）。
+#[cfg(windows)] // Windows-form helper (Linux nightly: excluded, 2026-09-02 sweep)
 struct TempHomeEnv {
     _tmp: TempDir,
     home: std::path::PathBuf,
 }
 
+#[cfg(windows)] // Windows-form helper (Linux nightly: excluded, 2026-09-02 sweep)
 impl Drop for TempHomeEnv {
     fn drop(&mut self) {
         unsafe { std::env::remove_var("NEMESISBOT_HOME") };
     }
 }
 
+#[cfg(windows)] // Windows-form helper (Linux nightly: excluded, 2026-09-02 sweep)
 fn temp_home_env() -> TempHomeEnv {
     let tmp = TempDir::new().unwrap();
     let home = tmp.path().join(".nemesisbot");
@@ -760,6 +763,7 @@ fn temp_home_env() -> TempHomeEnv {
     TempHomeEnv { _tmp: tmp, home }
 }
 
+#[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
 #[tokio::test]
 async fn run_command_onboard_default_writes_full_home() {
     let _guard = GLOBAL_STATE_LOCK.lock().unwrap();
@@ -797,6 +801,7 @@ async fn run_command_onboard_default_writes_full_home() {
     assert!(th.home.join("workspace").join("config").join("eval_rules.json").exists());
 }
 
+#[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
 #[tokio::test]
 async fn run_command_onboard_via_args_variant_also_defaults() {
     // `onboard` 不带 --default 但 args 里含 "default" → 同样走默认装配分支。
@@ -814,6 +819,7 @@ async fn run_command_onboard_via_args_variant_also_defaults() {
     assert!(th.home.join("config.json").exists());
 }
 
+#[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
 #[tokio::test]
 async fn run_command_onboard_existing_config_keeps_main_config() {
     // 已有 config.json + cargo test 的 stdin 是管道 EOF（read_line 空串）→
@@ -847,6 +853,7 @@ async fn run_command_onboard_existing_config_keeps_main_config() {
     assert!(th.home.join("workspace").join("cluster").join("peers.toml").exists());
 }
 
+#[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
 #[tokio::test]
 async fn run_command_version_arm_is_safe_no_op() {
     let _guard = GLOBAL_STATE_LOCK.lock().unwrap();
@@ -879,6 +886,7 @@ async fn run_command_version_arm_is_safe_no_op() {
 /// 测试沙箱 home（`<dir>/.nemesisbot`）；首次调用时创建并重定向单例。
 /// 返回的是 `.nemesisbot` 本体；`NEMESISBOT_HOME` env 应设为其 parent
 /// （resolve_home 语义：`{env}/.nemesisbot`）。
+#[cfg(windows)] // Windows-form helper (Linux nightly: excluded, 2026-09-02 sweep)
 pub(crate) fn singleton_test_home() -> std::path::PathBuf {
     use std::sync::OnceLock;
     static HOME: OnceLock<std::path::PathBuf> = OnceLock::new();
@@ -895,10 +903,12 @@ pub(crate) fn singleton_test_home() -> std::path::PathBuf {
 
 /// 测试内临时设 `NEMESISBOT_HOME` 指向沙箱 parent 的守卫；drop 恢复原值。
 /// 必须在持有 `crate::GLOBAL_STATE_LOCK` 时创建。
+#[cfg(windows)] // Windows-form helper (Linux nightly: excluded, 2026-09-02 sweep)
 pub(crate) struct EnvHomeGuard {
     orig: Option<std::ffi::OsString>,
 }
 
+#[cfg(windows)] // Windows-form helper (Linux nightly: excluded, 2026-09-02 sweep)
 impl EnvHomeGuard {
     pub(crate) fn point_at(home: &std::path::Path) -> Self {
         let parent = home
@@ -913,6 +923,7 @@ impl EnvHomeGuard {
     }
 }
 
+#[cfg(windows)] // Windows-form helper (Linux nightly: excluded, 2026-09-02 sweep)
 impl Drop for EnvHomeGuard {
     fn drop(&mut self) {
         unsafe {
@@ -932,6 +943,8 @@ impl Drop for EnvHomeGuard {
 // 门）一律豁免。每个测试持 GLOBAL_STATE_LOCK + temp_home_env 隔离。
 // =========================================================================
 
+// 整 mod Windows 形态（9/9 测试 + 专属 helper 全走 Windows CLI 进程边界）。
+#[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
 mod wave_b {
     use super::*;
 
@@ -946,6 +959,7 @@ mod wave_b {
     /// "Interactive configuration setup..." 横幅臂，后续装配管线与 default
     /// 一致（唯一 stdin 触点是「已存在 config.json 的 y/N」，cargo test 的
     /// 管道 EOF 天然落入"保留既有"，已被既有三测验证安全）。
+    #[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
     #[tokio::test]
     async fn wave_b_onboard_interactive_branch_prints_setup_banner() {
         let _guard = GLOBAL_STATE_LOCK.lock().unwrap();
@@ -964,6 +978,7 @@ mod wave_b {
     /// Commands::Agent 分发：字段解构 → commands::agent::run 七参透传。
     /// 单消息 + 死地址 provider（127.0.0.1:1 立即拒绝）→ agent 内部消化
     /// LLM 错误，run 返回 Ok —— 只验分发与收敛，不触网不出进程。
+    #[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
     #[tokio::test(flavor = "multi_thread")]
     async fn wave_b_agent_dispatch_single_message_dead_provider_ok() {
         let _guard = GLOBAL_STATE_LOCK.lock().unwrap();
@@ -995,6 +1010,7 @@ mod wave_b {
         assert!(res.is_ok(), "单消息死地址模式必须 Ok 收敛: {res:?}");
     }
 
+    #[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
     #[tokio::test]
     async fn wave_b_status_arm_is_offline_safe() {
         let _guard = GLOBAL_STATE_LOCK.lock().unwrap();
@@ -1004,6 +1020,7 @@ mod wave_b {
             .expect("status 纯文件检查打印，空 home 也必须 Ok");
     }
 
+    #[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
     #[tokio::test]
     async fn wave_b_cors_list_missing_config_prints_and_ok() {
         let _guard = GLOBAL_STATE_LOCK.lock().unwrap();
@@ -1016,6 +1033,7 @@ mod wave_b {
             .expect("cors list 缺配置文件 → 打印提示 → Ok");
     }
 
+    #[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
     #[tokio::test]
     async fn wave_b_model_list_verbose_with_one_entry() {
         let _guard = GLOBAL_STATE_LOCK.lock().unwrap();
@@ -1044,6 +1062,7 @@ mod wave_b {
             .expect("model list 单条目 + verbose 必须 Ok");
     }
 
+    #[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
     #[tokio::test]
     async fn wave_b_cron_list_without_store_is_ok() {
         let _guard = GLOBAL_STATE_LOCK.lock().unwrap();
@@ -1056,6 +1075,7 @@ mod wave_b {
             .expect("cron store 缺失 → 打印空列表 → Ok");
     }
 
+    #[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
     #[tokio::test]
     async fn wave_b_mcp_list_without_config_is_ok() {
         let _guard = GLOBAL_STATE_LOCK.lock().unwrap();
@@ -1068,6 +1088,7 @@ mod wave_b {
             .expect("mcp 配置缺失 → 打印提示 → Ok");
     }
 
+    #[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
     #[tokio::test]
     async fn wave_b_persona_current_without_active_persona_is_ok() {
         let _guard = GLOBAL_STATE_LOCK.lock().unwrap();
@@ -1080,6 +1101,7 @@ mod wave_b {
             .expect("无 _active.json → 打印未激活 → Ok");
     }
 
+    #[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
     #[tokio::test]
     async fn wave_b_shutdown_without_gateway_writes_signal_file_only() {
         let _guard = GLOBAL_STATE_LOCK.lock().unwrap();
@@ -1105,6 +1127,9 @@ mod wave_b {
 // - executor 角色短路已有既有测试；本批补 eval-agent 与 --multiple。
 // =========================================================================
 
+// 整 mod Windows 形态（7/7 测试 + 专属 helper 全走 Windows CLI 进程边界；
+// 个别测试另有 feature 双门控，语义不变）。
+#[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
 mod r9_process_boundary {
     use super::*;
     use std::process::{Command, Stdio};
@@ -1203,6 +1228,7 @@ mod r9_process_boundary {
     /// eval_worker；缺 NEMESISBOT_EVAL_WORKSPACE env → context Err →
     /// tokio main 返回 Err → 运行时打 "Error: ..." 并以退码 1 结束。
     /// 若短路被回归移除，`status` 子命令会正常跑完 rc=0 → 断言响亮失败。
+    #[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
     #[cfg(feature = "eval")]
     #[test]
     fn r9_eval_agent_role_short_circuit_fails_fast_rc1() {
@@ -1232,6 +1258,7 @@ mod r9_process_boundary {
     /// specified") → "[Child] Error: ..." eprintln + process::exit(1)。
     /// 早退发生在任何窗口/DLL 创建之前，headless 安全。若触发条件被回归
     /// 移除，clap 会报 unrecognized 并 rc=2 → 两处断言都响亮失败。
+    #[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
     #[cfg(feature = "desktop")]
     #[test]
     fn r9_multiple_child_mode_missing_handshake_args_exits_1() {
@@ -1279,6 +1306,7 @@ mod r9_process_boundary {
     }
 
     /// S2-3a 只读命令扫雷 A 半：无 feature 门控的通用臂（+ cluster push）。
+    #[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
     #[tokio::test]
     async fn r9_dispatch_sweep_part_a_universal_arms() {
         let bin = r9_bin();
@@ -1313,6 +1341,7 @@ mod r9_process_boundary {
     /// S2-3b 只读命令扫雷 B 半（feature 门控臂 + 本地写但无害的收尾臂）。
     /// 空 home 下缺配置走「打印提示/保底」路径 → rc∈{0,1} 都在预期内；
     /// log disable / credentials import 即使因缺配置 bail 也只是 rc=1。
+    #[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
     #[tokio::test]
     async fn r9_dispatch_sweep_part_b_feature_gated_arms() {
         let bin = r9_bin();
@@ -1354,6 +1383,7 @@ mod r9_process_boundary {
     /// S2-4：空 home（onboard 未执行）下 estop/dashboard 在第一步读
     /// config.json 即 Err → main.rs 对应分支 eprintln "Error: ..." +
     /// process::exit(1)。这正是 S11d 当年列结构豁免的两个臂。
+    #[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
     #[tokio::test]
     async fn r9_dashboard_and_estop_empty_home_exit_1() {
         let bin = r9_bin();
@@ -1396,6 +1426,7 @@ mod r9_process_boundary {
     /// 路径改写）。in-process 既有覆盖（S11d 三测）全走 local:false，该
     /// `if cli.local` 插入分支此前只有二进制视角能命中。顺带覆盖 onboard
     /// dispatch 臂的全文件落盘结果。
+    #[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
     #[tokio::test]
     async fn r9_onboard_local_subprocess_pins_local_only_branch() {
         let bin = r9_bin();
@@ -1431,6 +1462,7 @@ mod r9_process_boundary {
 
     /// S3：gateway 子命令 --help 渲染 Usage 且 rc=0（gateway 本体是长驻
     /// 服务不测，flag 渲染臂补上）；根级 --version 同理 rc=0。
+    #[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
     #[tokio::test]
     async fn r9_gateway_help_flag_renders_usage_rc0() {
         let bin = r9_bin();
@@ -1486,6 +1518,9 @@ mod r9_process_boundary {
 //   两头都不满足覆盖纪律 → 放弃。
 // =========================================================================
 
+// 整 mod Windows 形态（5/5 测试 + 专属 helper 全走 Windows CLI 进程边界；
+// 个别测试另有 feature 双门控，语义不变）。
+#[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
 mod r10_main {
     use super::*;
     use std::process::{Command, Stdio};
@@ -1566,6 +1601,7 @@ mod r10_main {
         test_harness::resolve_nemesisbot_bin().expect("nemesisbot binary resolved")
     }
 
+    #[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
     #[test]
     fn r10_executor_role_short_circuit_clean_rc0() {
         let _guard = GLOBAL_STATE_LOCK.lock().unwrap();
@@ -1599,6 +1635,7 @@ mod r10_main {
         );
     }
 
+    #[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
     #[tokio::test]
     async fn r10_gateway_flag_pushes_invalid_config_clean_err() {
         let _guard = GLOBAL_STATE_LOCK.lock().unwrap();
@@ -1635,6 +1672,7 @@ mod r10_main {
         );
     }
 
+    #[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
     #[tokio::test]
     async fn r10_history_search_dispatch_arm_offline_rc0() {
         let _guard = GLOBAL_STATE_LOCK.lock().unwrap();
@@ -1715,6 +1753,7 @@ mod r10_main {
         (ws, proc)
     }
 
+    #[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
     #[tokio::test(flavor = "multi_thread")]
     async fn r10_estop_trio_status_engage_release_live_gateway() {
         let _guard = GLOBAL_STATE_LOCK.lock().unwrap();
@@ -1782,6 +1821,7 @@ mod r10_main {
             .expect("gateway exits after graceful shutdown");
     }
 
+    #[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
     #[cfg(feature = "desktop")]
     #[tokio::test(flavor = "multi_thread")]
     async fn r10_test_hidden_approval_headless_arm() {

@@ -224,6 +224,7 @@ async fn get_json_failure_is_error() {
 
 // --- run()（不 spawn 网关的两条路径）---
 
+#[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
 #[tokio::test]
 async fn run_missing_config_errors_cleanly() {
     let _guard = crate::GLOBAL_STATE_LOCK.lock().unwrap();
@@ -247,6 +248,7 @@ async fn run_missing_config_errors_cleanly() {
     }
 }
 
+#[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
 #[tokio::test]
 async fn run_success_when_mock_gateway_already_running() {
     // 网关"已在跑"：health 200 + internal 200 → run 全链路 Ok，绝不 spawn。
@@ -288,9 +290,12 @@ async fn run_success_when_mock_gateway_already_running() {
 // 无残留进程（子网关自毙）、不占任何生产端口。慢测（~32s），全程持锁串行。
 // ===========================================================================
 
+// 整 mod Windows 形态（1/1 测试全走 Windows CLI 进程边界）。
+#[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
 mod r9_spawn_fail {
     use test_harness::{resolve_nemesisbot_bin, TestWorkspace};
 
+    #[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
     #[tokio::test]
     async fn start_and_wait_times_out_when_spawned_gateway_dies_on_bad_config() {
         let _guard = crate::GLOBAL_STATE_LOCK.lock().unwrap();

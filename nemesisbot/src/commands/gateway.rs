@@ -863,7 +863,8 @@ fn print_gateway_banner(
 mod tests;
 
 /// R9 补测批：gateway 活动场景组（live 双节点/心跳/审批/工作流，见模块头注释）。
-#[cfg(test)]
+/// 整文件 Windows 形态（11/11 live 场景走 Windows CLI 进程边界），随测试一并门控。
+#[cfg(all(test, windows))]
 mod tests_r9_live;
 
 /// Parse "host:port" string into (host, port).

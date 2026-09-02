@@ -999,17 +999,20 @@ fn test_model_set_effort_cli() {
 // =========================================================================
 
 /// RAII 守卫：设置 NEMESISBOT_HOME 指向临时根，drop 时移除。
+#[cfg(windows)] // Windows-form helper (Linux nightly: excluded, 2026-09-02 sweep)
 struct S11bTempHomeEnv {
     _tmp: tempfile::TempDir,
     home: std::path::PathBuf,
 }
 
+#[cfg(windows)] // Windows-form helper (Linux nightly: excluded, 2026-09-02 sweep)
 impl Drop for S11bTempHomeEnv {
     fn drop(&mut self) {
         unsafe { std::env::remove_var("NEMESISBOT_HOME") };
     }
 }
 
+#[cfg(windows)] // Windows-form helper (Linux nightly: excluded, 2026-09-02 sweep)
 fn s11b_temp_home_env() -> S11bTempHomeEnv {
     let tmp = tempfile::TempDir::new().unwrap();
     let home = tmp.path().join(".nemesisbot");
@@ -1018,14 +1021,17 @@ fn s11b_temp_home_env() -> S11bTempHomeEnv {
     S11bTempHomeEnv { _tmp: tmp, home }
 }
 
+#[cfg(windows)] // Windows-form helper (Linux nightly: excluded, 2026-09-02 sweep)
 fn s11b_write_cfg(home: &std::path::Path, cfg: serde_json::Value) {
     fs::write(home.join("config.json"), serde_json::to_string(&cfg).unwrap()).unwrap();
 }
 
+#[cfg(windows)] // Windows-form helper (Linux nightly: excluded, 2026-09-02 sweep)
 fn s11b_read_cfg(home: &std::path::Path) -> serde_json::Value {
     serde_json::from_str(&fs::read_to_string(home.join("config.json")).unwrap()).unwrap()
 }
 
+#[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
 #[tokio::test]
 async fn test_s11b_run_add_no_config_bails() {
     let _guard = crate::GLOBAL_STATE_LOCK.lock().unwrap();
@@ -1046,6 +1052,7 @@ async fn test_s11b_run_add_no_config_bails() {
     assert!(err.to_string().contains("Configuration not found"));
 }
 
+#[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
 #[tokio::test]
 async fn test_s11b_run_add_invalid_format_bails() {
     let _guard = crate::GLOBAL_STATE_LOCK.lock().unwrap();
@@ -1069,6 +1076,7 @@ async fn test_s11b_run_add_invalid_format_bails() {
     assert!(s11b_read_cfg(&th.home)["model_list"].as_array().unwrap().is_empty());
 }
 
+#[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
 #[tokio::test]
 async fn test_s11b_run_add_basic_writes_entry() {
     let _guard = crate::GLOBAL_STATE_LOCK.lock().unwrap();
@@ -1098,6 +1106,7 @@ async fn test_s11b_run_add_basic_writes_entry() {
     assert_eq!(cfg["agents"]["defaults"]["llm"], "glm-4.7");
 }
 
+#[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
 #[tokio::test]
 async fn test_s11b_run_add_full_fields() {
     let _guard = crate::GLOBAL_STATE_LOCK.lock().unwrap();
@@ -1123,6 +1132,7 @@ async fn test_s11b_run_add_full_fields() {
     assert_eq!(e["auth_method"], "token");
 }
 
+#[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
 #[tokio::test]
 async fn test_s11b_run_add_default_flag_sets_llm() {
     let _guard = crate::GLOBAL_STATE_LOCK.lock().unwrap();
@@ -1153,6 +1163,7 @@ async fn test_s11b_run_add_default_flag_sets_llm() {
     assert_eq!(cfg["agents"]["defaults"]["llm"], "gpt-4o", "--default 写 alias");
 }
 
+#[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
 #[tokio::test]
 async fn test_s11b_run_add_auto_default_skipped_when_default_exists() {
     let _guard = crate::GLOBAL_STATE_LOCK.lock().unwrap();
@@ -1181,6 +1192,7 @@ async fn test_s11b_run_add_auto_default_skipped_when_default_exists() {
     assert_eq!(s11b_read_cfg(&th.home)["agents"]["defaults"]["llm"], "old");
 }
 
+#[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
 #[tokio::test]
 async fn test_s11b_run_add_duplicate_replaces() {
     let _guard = crate::GLOBAL_STATE_LOCK.lock().unwrap();
@@ -1207,6 +1219,7 @@ async fn test_s11b_run_add_duplicate_replaces() {
     assert_eq!(arr[0]["api_key"], "sk-two");
 }
 
+#[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
 #[tokio::test]
 async fn test_s11b_run_add_catalog_hit_fills_context_window() {
     use crate::commands::model::catalog::{self, CatalogEntry};
@@ -1243,6 +1256,7 @@ async fn test_s11b_run_add_catalog_hit_fills_context_window() {
     assert!(e.get("family").is_none());
 }
 
+#[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
 #[tokio::test]
 async fn test_s11b_run_list_variants() {
     let _guard = crate::GLOBAL_STATE_LOCK.lock().unwrap();
@@ -1281,6 +1295,7 @@ async fn test_s11b_run_list_variants() {
     }
 }
 
+#[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
 #[tokio::test]
 async fn test_s11b_run_remove_no_config_bails() {
     let _guard = crate::GLOBAL_STATE_LOCK.lock().unwrap();
@@ -1294,6 +1309,7 @@ async fn test_s11b_run_remove_no_config_bails() {
     assert!(err.to_string().contains("Configuration not found"));
 }
 
+#[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
 #[tokio::test]
 async fn test_s11b_run_remove_default_protected() {
     let _guard = crate::GLOBAL_STATE_LOCK.lock().unwrap();
@@ -1322,6 +1338,7 @@ async fn test_s11b_run_remove_default_protected() {
     assert_eq!(s11b_read_cfg(&th.home)["model_list"].as_array().unwrap().len(), 1);
 }
 
+#[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
 #[tokio::test]
 async fn test_s11b_run_remove_force_full_name_and_alias() {
     let _guard = crate::GLOBAL_STATE_LOCK.lock().unwrap();
@@ -1352,6 +1369,7 @@ async fn test_s11b_run_remove_force_full_name_and_alias() {
     assert!(s11b_read_cfg(&th.home)["model_list"].as_array().unwrap().is_empty());
 }
 
+#[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
 #[tokio::test]
 async fn test_s11b_run_remove_not_found_bails() {
     let _guard = crate::GLOBAL_STATE_LOCK.lock().unwrap();
@@ -1366,6 +1384,7 @@ async fn test_s11b_run_remove_not_found_bails() {
     assert!(err.to_string().contains("Model not found"));
 }
 
+#[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
 #[tokio::test]
 async fn test_s11b_run_default_arm() {
     let _guard = crate::GLOBAL_STATE_LOCK.lock().unwrap();
@@ -1397,6 +1416,7 @@ async fn test_s11b_run_default_arm() {
     }
 }
 
+#[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
 #[tokio::test]
 async fn test_s11b_run_settier_matrix() {
     let _guard = crate::GLOBAL_STATE_LOCK.lock().unwrap();
@@ -1442,6 +1462,7 @@ async fn test_s11b_run_settier_matrix() {
     }
 }
 
+#[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
 #[tokio::test]
 async fn test_s11b_run_seteffort_matrix() {
     let _guard = crate::GLOBAL_STATE_LOCK.lock().unwrap();
@@ -1484,6 +1505,7 @@ async fn test_s11b_run_seteffort_matrix() {
     assert!(err.to_string().contains("Model not found"));
 }
 
+#[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
 #[tokio::test]
 async fn test_s11b_run_setsize_matrix() {
     let _guard = crate::GLOBAL_STATE_LOCK.lock().unwrap();
@@ -1526,6 +1548,7 @@ async fn test_s11b_run_setsize_matrix() {
     assert!(err.to_string().contains("Model not found"));
 }
 
+#[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
 #[tokio::test]
 async fn test_s11b_run_setrealname_matrix() {
     let _guard = crate::GLOBAL_STATE_LOCK.lock().unwrap();
@@ -1553,6 +1576,7 @@ async fn test_s11b_run_setrealname_matrix() {
     assert!(err.to_string().contains("Model not found"));
 }
 
+#[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
 #[tokio::test]
 async fn test_s11b_run_probe_no_config_bails() {
     let _guard = crate::GLOBAL_STATE_LOCK.lock().unwrap();
@@ -1565,6 +1589,7 @@ async fn test_s11b_run_probe_no_config_bails() {
     assert!(err.to_string().contains("Configuration not found"));
 }
 
+#[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
 #[tokio::test]
 async fn test_s11b_run_catalog_update_no_config_bails() {
     let _guard = crate::GLOBAL_STATE_LOCK.lock().unwrap();
@@ -1649,9 +1674,15 @@ fn test_s11b_format_probe_report_direct() {
 // ===========================================================================
 
 mod wave_b {
+    // s11b_* 与 run/ModelAction 只有下方 Windows 形态的 CLI 测试使用，随之门控；
+    // update_model_entry_for_test 仍被本 mod 的 Linux 绿测试使用，保持无条件导入。
+    #[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
     use super::{s11b_read_cfg, s11b_temp_home_env, s11b_write_cfg};
-    use super::super::{run, update_model_entry_for_test, ModelAction};
+    use super::super::update_model_entry_for_test;
+    #[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
+    use super::super::{run, ModelAction};
 
+    #[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
     #[tokio::test]
     async fn wave_b_run_add_inserts_model_list_key_and_mini_hint() {
         let _guard = crate::GLOBAL_STATE_LOCK.lock().unwrap();
@@ -1682,6 +1713,7 @@ mod wave_b {
         assert_eq!(list[0]["model_tier"], "auto");
     }
 
+    #[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
     #[tokio::test]
     async fn wave_b_run_list_verbose_and_base_url_rows() {
         let _guard = crate::GLOBAL_STATE_LOCK.lock().unwrap();
@@ -1712,6 +1744,7 @@ mod wave_b {
             .expect("plain list must succeed");
     }
 
+    #[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
     #[tokio::test]
     async fn wave_b_run_setaffort_setsize_setrealname_bail_no_config() {
         let _guard = crate::GLOBAL_STATE_LOCK.lock().unwrap();
@@ -1842,11 +1875,18 @@ mod wave_c {
 // ===========================================================================
 
 mod r9_subprocess {
+    // mock_ai 被 mod 内唯一跨平台裸测试 r9_repro_toolcall_arguments_roundtrip
+    // 使用（in-process，不 spawn），必须无条件导入；TestWorkspace 和
+    // resolve_nemesisbot_bin 只有 Windows 形态的子进程测试使用，随之门控。
     use test_harness::mock_ai::{MockAiReply, MockAiServer};
-    use test_harness::{resolve_nemesisbot_bin, TestWorkspace};
+    #[cfg(windows)] // Windows-form helper use (Linux nightly: excluded, 2026-09-02 sweep)
+    use test_harness::TestWorkspace;
+    #[cfg(windows)] // Windows-form helper use (Linux nightly: excluded, 2026-09-02 sweep)
+    use test_harness::resolve_nemesisbot_bin;
 
     /// 按探针任务顺序给全对 tool_call：exec/read_file/create_dir/grep/
     /// write_file/edit_file/cluster_rpc，每个的 arguments 满足其 required。
+    #[cfg(windows)] // Windows-form helper (Linux nightly: excluded, 2026-09-02 sweep)
     fn perfect_probe_script() -> Vec<MockAiReply> {
         vec![
             MockAiReply::ToolCall {
@@ -1880,10 +1920,12 @@ mod r9_subprocess {
         ]
     }
 
+    #[cfg(windows)] // Windows-form helper (Linux nightly: excluded, 2026-09-02 sweep)
     fn read_cfg(ws: &TestWorkspace) -> serde_json::Value {
         serde_json::from_str(&std::fs::read_to_string(ws.config_path()).unwrap()).unwrap()
     }
 
+    #[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
     #[tokio::test]
     async fn probe_full_chain_writes_tier_big_via_mock_script() {
         let ws = TestWorkspace::new().expect("workspace");
@@ -1962,6 +2004,7 @@ mod r9_subprocess {
         );
     }
 
+    #[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
     #[tokio::test]
     async fn remove_confirm_prompt_both_arms() {
         let bin = resolve_nemesisbot_bin().expect("release binary");
@@ -2085,6 +2128,8 @@ mod r9_subprocess {
 // tier 不落盘（734-739 的写回短路边），一并断言。
 // ===========================================================================
 
+// 整 mod Windows 形态（1/1 测试 + 专属 use/helper 全走 Windows CLI 进程边界）。
+#[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
 mod r10_subprocess {
     use test_harness::mock_ai::{MockAiReply, MockAiServer};
     use test_harness::{resolve_nemesisbot_bin, TestWorkspace};
@@ -2122,6 +2167,7 @@ mod r10_subprocess {
         ]
     }
 
+    #[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
     #[tokio::test]
     async fn r10_probe_with_empty_name_resolves_effective_llm_and_skips_tier_persist() {
         let ws = TestWorkspace::new().expect("workspace");

@@ -77,14 +77,37 @@ pub trait EventSource: Send + Sync {
 /// USB event source using udevadm (Linux only).
 /// On non-Linux platforms, start() returns an error.
 pub struct UsbEventSource {
-    running: std::sync::Mutex<bool>,
+    /// The spawned `udevadm monitor` child, if running. Shared with the reader
+    /// thread so either exit path (`stop()` or receiver drop) can reap it —
+    /// udevadm monitor never exits on its own, so dropping the handle here
+    /// would leak one thread + one process per start() (2026-09-02: 3 orphans
+    /// hung the remote Linux nightly's stdout pipe; root-fixed here).
+    child: std::sync::Arc<std::sync::Mutex<Option<std::process::Child>>>,
 }
 
 impl UsbEventSource {
     pub fn new() -> Self {
         Self {
-            running: std::sync::Mutex::new(false),
+            child: std::sync::Arc::new(std::sync::Mutex::new(None)),
         }
+    }
+
+    /// Kill and reap the child process if present. Idempotent; the reader
+    /// thread exits once stdout closes (EOF) after the kill.
+    fn kill_child(child: &std::sync::Mutex<Option<std::process::Child>>) {
+        if let Some(mut c) = child.lock().unwrap().take() {
+            let _ = c.kill();
+            let _ = c.wait();
+        }
+    }
+}
+
+impl Drop for UsbEventSource {
+    fn drop(&mut self) {
+        // Receiver drop alone cannot wake the reader thread (it blocks in
+        // read() until stdout closes) — kill the child here so a started
+        // source dropped without stop() doesn't leak the process/thread.
+        Self::kill_child(&self.child);
     }
 }
 
@@ -103,17 +126,21 @@ impl EventSource for UsbEventSource {
         #[cfg(target_os = "linux")]
         {
             let (tx, rx) = tokio::sync::mpsc::channel(100);
-            *self.running.lock().unwrap() = true;
 
             // Spawn udevadm monitor
-            std::thread::spawn(move || {
-                let output = std::process::Command::new("udevadm")
-                    .args(["monitor", "--property", "--subsystem-match=usb"])
-                    .stdout(std::process::Stdio::piped())
-                    .spawn();
+            let spawned = std::process::Command::new("udevadm")
+                .args(["monitor", "--property", "--subsystem-match=usb"])
+                .stdout(std::process::Stdio::piped())
+                .spawn();
 
-                if let Ok(mut child) = output {
-                    if let Some(stdout) = child.stdout.take() {
+            if let Ok(mut child) = spawned {
+                let stdout = child.stdout.take();
+                // Hand the child to the shared slot BEFORE moving stdout into
+                // the reader thread, so stop() can kill it at any time.
+                *self.child.lock().unwrap() = Some(child);
+                let child_slot = std::sync::Arc::clone(&self.child);
+                std::thread::spawn(move || {
+                    if let Some(stdout) = stdout {
                         use std::io::{BufRead, BufReader};
                         let reader = BufReader::new(stdout);
                         let mut current_props: HashMap<String, String> = HashMap::new();
@@ -174,9 +201,12 @@ impl EventSource for UsbEventSource {
                             }
                         }
                     }
-                    let _ = child.wait();
-                }
-            });
+                    // Reader done (stdout EOF after stop()/kill, or receiver
+                    // dropped): reap the child so neither the thread nor the
+                    // udevadm process leaks.
+                    Self::kill_child(&child_slot);
+                });
+            }
 
             Ok(rx)
         }
@@ -188,7 +218,9 @@ impl EventSource for UsbEventSource {
     }
 
     fn stop(&self) -> Result<(), String> {
-        *self.running.lock().unwrap() = false;
+        // Kill the udevadm child (if any); the reader thread exits on stdout
+        // EOF and reaps whatever it holds. Idempotent (no-op when not started).
+        Self::kill_child(&self.child);
         Ok(())
     }
 }

@@ -105,6 +105,7 @@ fn test_list_embedded_files_no_backslashes() {
     }
 }
 
+#[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
 #[test]
 #[allow(deprecated)]
 fn test_resolve_embedded_static_dir_returns_path() {
@@ -116,6 +117,7 @@ fn test_resolve_embedded_static_dir_returns_path() {
     let _ = result;
 }
 
+#[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
 #[test]
 fn test_resolve_static_files_returns_provider() {
     // GLOBAL_STATE_LOCK：与 S11d 磁盘覆盖测试（exe 旁瞬时 static/）互斥。
@@ -129,6 +131,7 @@ fn test_resolve_static_files_returns_provider() {
     assert!(html.contains("<!DOCTYPE html>") || html.contains("<html"));
 }
 
+#[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
 #[test]
 fn test_resolve_static_files_list() {
     // GLOBAL_STATE_LOCK：与 S11d 磁盘覆盖测试（exe 旁瞬时 static/）互斥。
@@ -252,6 +255,7 @@ fn test_collect_files_returns_all() {
 // - extract_workspace_templates 的"已存在跳过"臂（用户自定义不被覆盖）
 // =========================================================================
 
+#[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
 #[test]
 #[allow(deprecated)]
 fn resolve_static_files_prefers_disk_dir_next_to_exe() {

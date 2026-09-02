@@ -844,6 +844,8 @@ fn test_forge_config_round_trip_preserves_custom_values() {
 // running on the multi-threaded runtime"，tokio 1.52.1 探针实证）。
 // ===========================================================================
 
+// 整 mod Windows 形态（10/10 测试 + 专属 helper 全走 Windows CLI 进程边界）。
+#[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
 mod r7_cmd_paths {
     use super::*;
 
@@ -924,6 +926,7 @@ mod r7_cmd_paths {
         .unwrap();
     }
 
+    #[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
     #[test]
     fn run_status_without_config_prints_disabled() {
         let _g = crate::GLOBAL_STATE_LOCK.lock().unwrap();
@@ -934,6 +937,7 @@ mod r7_cmd_paths {
         assert!(!home.join("config.json").exists(), "status must not create config");
     }
 
+    #[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
     #[test]
     fn run_status_enabled_with_registry_prints_type_counts() {
         let _g = crate::GLOBAL_STATE_LOCK.lock().unwrap();
@@ -954,6 +958,7 @@ mod r7_cmd_paths {
         r.expect("status with registry ok");
     }
 
+    #[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
     #[test]
     fn run_enable_creates_dirs_and_config_then_disable_flips_flag() {
         let _g = crate::GLOBAL_STATE_LOCK.lock().unwrap();
@@ -985,6 +990,7 @@ mod r7_cmd_paths {
         clear_env();
     }
 
+    #[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
     #[test]
     fn run_enable_on_existing_forge_object_preserves_fields() {
         let _g = crate::GLOBAL_STATE_LOCK.lock().unwrap();
@@ -1012,6 +1018,7 @@ mod r7_cmd_paths {
         clear_env();
     }
 
+    #[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn run_reflect_guard_arms_disabled_and_uninitialized_and_empty() {
         let _g = crate::GLOBAL_STATE_LOCK.lock().unwrap();
@@ -1040,6 +1047,7 @@ mod r7_cmd_paths {
         r3.expect("reflect empty-experiences returns Ok");
     }
 
+    #[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn run_reflect_full_path_produces_report() {
         let _g = crate::GLOBAL_STATE_LOCK.lock().unwrap();
@@ -1058,6 +1066,7 @@ mod r7_cmd_paths {
         assert!(has_report, "reflection report must be written to {:?}", reflect_dir);
     }
 
+    #[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
     #[test]
     fn run_list_registry_filter_and_fallback_scan_arms() {
         let _g = crate::GLOBAL_STATE_LOCK.lock().unwrap();
@@ -1087,6 +1096,7 @@ mod r7_cmd_paths {
         r5.expect("list fallback scan single missing dir ok");
     }
 
+    #[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
     #[test]
     fn run_evaluate_found_and_not_found() {
         let _g = crate::GLOBAL_STATE_LOCK.lock().unwrap();
@@ -1100,6 +1110,7 @@ mod r7_cmd_paths {
         missing.expect("evaluate not-found still Ok (prints message)");
     }
 
+    #[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn run_export_guard_and_specific_artifact() {
         let _g = crate::GLOBAL_STATE_LOCK.lock().unwrap();
@@ -1148,6 +1159,7 @@ mod r7_cmd_paths {
         r4.expect("export specific artifact ok");
     }
 
+    #[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
     #[test]
     fn run_learning_lifecycle_and_history() {
         let _g = crate::GLOBAL_STATE_LOCK.lock().unwrap();
@@ -1250,6 +1262,8 @@ mod r7_cmd_paths {
 // 「包含非 Active 制品」并未生效（与 709 行提示语自相矛盾）。
 // ===========================================================================
 
+// 整 mod Windows 形态（12/12 测试 + 专属 helper 全走 Windows CLI 进程边界）。
+#[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
 mod wave_b {
     use super::*;
 
@@ -1339,6 +1353,7 @@ mod wave_b {
         .unwrap();
     }
 
+    #[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
     #[test]
     fn wave_b_learning_enable_fails_when_forge_json_unwritable() {
         let _g = crate::GLOBAL_STATE_LOCK.lock().unwrap();
@@ -1353,6 +1368,7 @@ mod wave_b {
         assert!(!err.to_string().is_empty());
     }
 
+    #[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
     #[test]
     fn wave_b_disable_inserts_forge_key_when_missing() {
         let _g = crate::GLOBAL_STATE_LOCK.lock().unwrap();
@@ -1374,6 +1390,7 @@ mod wave_b {
         assert_eq!(cfg["default_model"], "m", "存量 sibling 字段必须保留");
     }
 
+    #[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn wave_b_reflect_without_experiences_subdir_returns_hint() {
         let _g = crate::GLOBAL_STATE_LOCK.lock().unwrap();
@@ -1385,6 +1402,7 @@ mod wave_b {
         run(ForgeAction::Reflect, false).expect("reflect without experiences ok");
     }
 
+    #[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn wave_b_reflect_aggregate_read_error_on_jsonl_as_directory() {
         let _g = crate::GLOBAL_STATE_LOCK.lock().unwrap();
@@ -1398,6 +1416,7 @@ mod wave_b {
         run(ForgeAction::Reflect, false).expect("aggregate error arm returns Ok with hint");
     }
 
+    #[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn wave_b_reflect_empty_aggregation_stops_early() {
         let _g = crate::GLOBAL_STATE_LOCK.lock().unwrap();
@@ -1412,6 +1431,7 @@ mod wave_b {
         run(ForgeAction::Reflect, false).expect("empty aggregation early-return ok");
     }
 
+    #[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn wave_b_reflect_reports_low_success_patterns() {
         let _g = crate::GLOBAL_STATE_LOCK.lock().unwrap();
@@ -1436,6 +1456,7 @@ mod wave_b {
         );
     }
 
+    #[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn wave_b_reflect_warns_when_report_target_is_a_file() {
         let _g = crate::GLOBAL_STATE_LOCK.lock().unwrap();
@@ -1449,6 +1470,7 @@ mod wave_b {
         run(ForgeAction::Reflect, false).expect("report failure must degrade to warning");
     }
 
+    #[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn wave_b_export_draft_only_hints_all_flag() {
         let _g = crate::GLOBAL_STATE_LOCK.lock().unwrap();
@@ -1472,6 +1494,7 @@ mod wave_b {
         );
     }
 
+    #[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn wave_b_export_active_artifacts_report_count() {
         let _g = crate::GLOBAL_STATE_LOCK.lock().unwrap();
@@ -1501,6 +1524,7 @@ mod wave_b {
         );
     }
 
+    #[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
     #[test]
     fn wave_b_learning_status_skips_details_without_learning_key() {
         let _g = crate::GLOBAL_STATE_LOCK.lock().unwrap();
@@ -1513,6 +1537,7 @@ mod wave_b {
             .expect("status without learning key ok");
     }
 
+    #[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
     #[test]
     fn wave_b_history_blank_cycles_file_prints_no_history() {
         let _g = crate::GLOBAL_STATE_LOCK.lock().unwrap();
@@ -1529,6 +1554,7 @@ mod wave_b {
         .expect("blank cycles history ok");
     }
 
+    #[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
     #[test]
     fn wave_b_history_cycles_as_directory_skips_silently() {
         let _g = crate::GLOBAL_STATE_LOCK.lock().unwrap();

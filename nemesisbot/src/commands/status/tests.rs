@@ -342,6 +342,8 @@ fn test_status_model_parsing_mixed_models() {
 // 模型、空 model_list）/ 非法 JSON config / auth.json 各凭据状态分支。
 // ===========================================================================
 
+// 整 mod Windows 形态（6/6 测试全走 Windows CLI 进程边界）。
+#[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
 mod run_arm {
     use super::super::run;
 
@@ -361,6 +363,7 @@ mod run_arm {
         }
     }
 
+    #[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
     #[tokio::test]
     async fn no_config_and_no_auth_prints_not_found() {
         with_env_home(|_home| async {
@@ -369,6 +372,7 @@ mod run_arm {
         .await;
     }
 
+    #[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
     #[tokio::test]
     async fn full_config_covers_model_provider_lines() {
         with_env_home(|home| async move {
@@ -395,6 +399,7 @@ mod run_arm {
         .await;
     }
 
+    #[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
     #[tokio::test]
     async fn empty_model_list_skips_provider_block() {
         with_env_home(|home| async move {
@@ -409,6 +414,7 @@ mod run_arm {
         .await;
     }
 
+    #[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
     #[tokio::test]
     async fn invalid_config_json_is_skipped_gracefully() {
         with_env_home(|home| async move {
@@ -419,6 +425,7 @@ mod run_arm {
         .await;
     }
 
+    #[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
     #[tokio::test]
     async fn auth_file_with_all_credential_states() {
         with_env_home(|home| async move {
@@ -464,6 +471,7 @@ mod run_arm {
         .await;
     }
 
+    #[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
     #[tokio::test]
     async fn auth_file_with_zero_providers() {
         with_env_home(|home| async move {

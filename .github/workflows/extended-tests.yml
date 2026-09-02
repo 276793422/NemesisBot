@@ -80,15 +80,16 @@ jobs:
         # 失败就中止整个 workspace 跑——nemesis-sandbox 一红，后面
         # security..nemesisbot 约 2000 个测试全没跑。nightly 要的是全量
         # 体检报告，一轮把所有红都暴露出来，不在半路掐断。
-        # --exclude nemesisbot（2026-09-02 实录 285 红）：nemesisbot bin 测试段
-        # 是 Windows 形态专属（.exe 硬编码 / spawn gateway / ComSpec 等 CLI
-        # 臂假设，见雷区 21），Linux 上 1930 过 / 285 挂，挂的全部是该家族
-        # （与远端 Linux 首跑 284 红一致，A/B 验证 pre-existing）。bin-only
-        # crate，Windows 全量（ci.yml）每天覆盖，Linux nightly 规避并在此标记；
-        # 库 crate 的跨平台行为不受影响，照常全测。
+        # 平台形态标记约定（2026-09-02 起，替代旧的 --exclude nemesisbot）：
+        # Windows 形态的 CLI 测试（.exe 硬编码 / taskkill / ComSpec 等
+        # 进程边界假设）在测试 fn 上挂 `#[cfg(windows)]`——Linux 上编译期
+        # 消失而非运行期跳过（清单对账干净，不产生假 pass）。首迁移 285 个
+        # （雷区 21 家族，模块粒度不可行：29 个失败模块里 28 个混合，
+        # 1,386 个 Linux 绿测试会被陪葬）。新增此类测试不挂标记会在本
+        # job 红出来——有兜底，不静默。
         run: |
           ulimit -n 8192
-          cargo test --workspace --no-fail-fast --exclude nemesisbot
+          cargo test --workspace --no-fail-fast
 
   feature-matrix:
     name: Feature trimming matrix (Linux)

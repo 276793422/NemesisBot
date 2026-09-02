@@ -626,6 +626,7 @@ fn test_cmd_status_with_input_and_vars() {
 // cmd_template_show all templates
 // -------------------------------------------------------------------------
 
+#[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
 #[test]
 fn test_cmd_template_show_all_defaults() {
     // get_templates() 经 load_templates_from_disk 读 NEMESISBOT_HOME——必须
@@ -641,6 +642,7 @@ fn test_cmd_template_show_all_defaults() {
 // cmd_template_create with all templates
 // -------------------------------------------------------------------------
 
+#[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
 #[test]
 fn test_cmd_template_create_all_defaults() {
     // 同上：get_templates() 读 NEMESISBOT_HOME（env 测试竞争锁纪律）。
@@ -1082,6 +1084,8 @@ mod cmd_run_tests {
     }
 }
 
+// 整 mod Windows 形态（3/3 测试 + 专属 use/helper 全走 Windows CLI 进程边界）。
+#[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
 mod run_arm {
     use super::super::{run, TemplateAction, WorkflowAction};
 
@@ -1097,6 +1101,7 @@ mod run_arm {
         }
     }
 
+    #[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
     #[test]
     fn dispatch_list_status_template_and_validate_arms() {
         with_env_home(|_home| {
@@ -1144,6 +1149,7 @@ mod run_arm {
         });
     }
 
+    #[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
     #[test]
     fn dispatch_template_create_yaml_and_json_outputs() {
         with_env_home(|home| {
@@ -1192,6 +1198,7 @@ mod run_arm {
         });
     }
 
+    #[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
     #[tokio::test(flavor = "multi_thread")]
     async fn dispatch_run_arm_needs_multithread_runtime() {
         // Run 臂走 tokio::task::block_in_place——current_thread runtime 会
@@ -1221,6 +1228,7 @@ mod run_arm {
 // 去重/坏文件警告臂）——既有 64 测试全在无模板目录的环境跑，循环体没进过。
 // ---------------------------------------------------------------------------
 
+#[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
 #[test]
 fn template_list_picks_up_disk_templates_and_warns_on_broken() {
     use super::{run, TemplateAction, WorkflowAction};
@@ -1313,7 +1321,11 @@ fn template_list_picks_up_disk_templates_and_warns_on_broken() {
 // ===========================================================================
 
 mod wave_b {
-    use super::super::{cmd_list, cmd_run, cmd_status, run, TemplateAction, WorkflowAction};
+    // run/TemplateAction/WorkflowAction 只有下方 Windows 形态的测试使用，
+    // 随之门控（Linux 上拆开导入，避免 unused import 死代码）。
+    use super::super::{cmd_list, cmd_run, cmd_status};
+    #[cfg(windows)] // Windows-form helper use (Linux nightly: excluded, 2026-09-02 sweep)
+    use super::super::{run, TemplateAction, WorkflowAction};
 
     /// 组装一个能被 parser 接受的最小 delay 工作流 YAML 文本。
     fn delay_yaml(name: &str, description: &str, triggers: &str) -> String {
@@ -1481,6 +1493,7 @@ mod wave_b {
         assert_eq!(rec["state"], "completed");
     }
 
+    #[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
     #[test]
     fn wave_b_template_scan_skips_and_dedup() {
         // 目标行 177-179（目录 continue）/185-187（扩展名 continue）/
@@ -1538,9 +1551,12 @@ mod wave_b {
 //   transform 执行器（nodes.rs 注册），无外部依赖。
 // ===========================================================================
 
+// 整 mod Windows 形态（1/1 测试 + 专属 use 全走 Windows CLI 进程边界）。
+#[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
 mod r10 {
     use super::super::{run, WorkflowAction};
 
+    #[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
     #[tokio::test(flavor = "multi_thread")]
     async fn r10_run_dispatch_success_path_with_failed_transform_node_prints_error() {
         let _guard = crate::GLOBAL_STATE_LOCK.lock().unwrap();

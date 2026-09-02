@@ -893,6 +893,7 @@ fn min_count_zero_behaves_like_one() {
     assert_eq!(r.conclusion, Conclusion::Safe, "min_count=0 must not fire on zero hits");
 }
 
+#[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
 #[test]
 fn exec_new_binary_rule_against_real_native_paths() {
     // T1（第三轮复查）核心回归：真实 driver_events 的路径是

@@ -200,6 +200,8 @@ fn test_shutdown_http_timeout() {
 // - 两个 panic 探针：#27 同款拓扑红对照 + 生产新写法绿证明（见 probe 段）。
 // ===========================================================================
 
+// 整 mod Windows 形态（11/11 测试 + 专属 helper 全走 Windows CLI 进程边界）。
+#[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
 mod run_arm {
     use super::*;
 
@@ -311,6 +313,7 @@ mod run_arm {
             .port()
     }
 
+    #[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
     #[test]
     fn run_without_pid_and_config_writes_signal_and_reports_unreachable() {
         with_env_home(|home| {
@@ -320,6 +323,7 @@ mod run_arm {
         });
     }
 
+    #[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
     #[test]
     fn run_with_unparsable_pid_falls_through_to_signal_file() {
         with_env_home(|home| {
@@ -332,6 +336,7 @@ mod run_arm {
         });
     }
 
+    #[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
     #[test]
     fn run_with_out_of_range_pid_is_safe_noop() {
         with_env_home(|home| {
@@ -345,6 +350,7 @@ mod run_arm {
         });
     }
 
+    #[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
     #[test]
     fn run_with_live_pid_uses_taskkill_graceful_path() {
         // 真 spawn 一个本机 sleep 进程（继承当前控制台，不开新窗口），
@@ -375,6 +381,7 @@ mod run_arm {
             .output();
     }
 
+    #[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
     #[test]
     fn run_http_shutdown_success_posts_internal_cmd_and_removes_signal_file() {
         with_env_home(|home| {
@@ -414,6 +421,7 @@ mod run_arm {
         });
     }
 
+    #[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
     #[test]
     fn run_http_shutdown_missing_token_omits_header_still_succeeds() {
         // token 缺失分支：config 未配 auth_token → 不发 X-Auth-Token 头
@@ -443,6 +451,7 @@ mod run_arm {
         });
     }
 
+    #[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
     #[test]
     fn run_http_shutdown_non_2xx_keeps_signal_file() {
         with_env_home(|home| {
@@ -464,6 +473,7 @@ mod run_arm {
         });
     }
 
+    #[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
     #[test]
     fn run_http_shutdown_unreachable_port_reports_not_reachable() {
         with_env_home(|home| {
@@ -479,6 +489,7 @@ mod run_arm {
         });
     }
 
+    #[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
     #[test]
     fn run_http_401_reports_auth_mismatch_and_keeps_signal_file() {
         // R7（coverage-95 goal）Ok(401) 臂：token 配置不一致时如实提示，
@@ -506,6 +517,7 @@ mod run_arm {
         });
     }
 
+    #[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
     #[test]
     fn run_corrupt_config_json_skips_http_block_and_keeps_signal() {
         // config.json 存在但 JSON 损坏：serde 解析失败 → 跳过整个 HTTP 块
@@ -518,6 +530,7 @@ mod run_arm {
         });
     }
 
+    #[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
     #[test]
     fn run_pid_unreadable_directory_falls_through_to_signal_file() {
         // gateway.pid 是【目录】而非文件：exists()==true 但 read_to_string

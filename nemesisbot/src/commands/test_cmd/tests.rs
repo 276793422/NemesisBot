@@ -311,6 +311,7 @@ mod run_arm {
         print_result(false, "fail banner");
     }
 
+    #[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
     #[cfg(feature = "desktop")]
     #[tokio::test]
     async fn approval_headless_fails_fast_when_handshake_eof_and_cleans_env() {

@@ -160,6 +160,7 @@ fn test_should_skip_heartbeat() {
     assert!(should_skip_heartbeat_for_bootstrap(tmp.path()));
 }
 
+#[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
 #[test]
 fn test_resolve_home_env_var() {
     let _guard = crate::GLOBAL_STATE_LOCK.lock().unwrap();
@@ -418,6 +419,7 @@ fn test_resolve_home_local_returns_cwd_based() {
     assert_eq!(home, cwd.join(".nemesisbot"));
 }
 
+#[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
 #[test]
 fn test_resolve_home_env_var_custom_path() {
     let _guard = crate::GLOBAL_STATE_LOCK.lock().unwrap();
@@ -691,6 +693,7 @@ fn test_log_flag_constants() {
 
 // --- ensure_exe_in_path tests ---
 
+#[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
 #[test]
 fn test_ensure_exe_in_path() {
     let _guard = crate::GLOBAL_STATE_LOCK.lock().unwrap();
@@ -739,6 +742,7 @@ fn test_ensure_exe_in_path() {
 // - setup_cron_tool 组件可用
 // =========================================================================
 
+#[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
 #[test]
 fn ensure_exe_in_path_without_path_env_sets_it_from_scratch() {
     let _guard = crate::GLOBAL_STATE_LOCK.lock().unwrap();
@@ -762,6 +766,7 @@ fn ensure_exe_in_path_without_path_env_sets_it_from_scratch() {
     assert_eq!(now, canonical.to_string_lossy().to_string());
 }
 
+#[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
 #[test]
 fn resolve_home_exe_dir_and_cwd_marker_branches() {
     let _guard = crate::GLOBAL_STATE_LOCK.lock().unwrap();
@@ -951,6 +956,7 @@ async fn setup_cron_tool_returns_wired_service_and_tool() {
 // ===========================================================================
 
 mod r9_zero {
+    #[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
     #[test]
     fn resolve_home_priority3_exe_side_dotnemesisbot_wins_before_cwd_autodetect() {
         let tmp = tempfile::tempdir().unwrap();

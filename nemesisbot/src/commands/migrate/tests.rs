@@ -23,6 +23,7 @@ fn test_detect_openclaw_home_no_override_no_env() {
     let _ = detect_openclaw_home(&None);
 }
 
+#[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
 #[test]
 fn test_detect_openclaw_home_env_var() {
     let _guard = crate::GLOBAL_STATE_LOCK.lock().unwrap();
@@ -40,6 +41,7 @@ fn test_detect_openclaw_home_env_var() {
     // The actual value might differ if env var was overridden by parallel tests
 }
 
+#[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
 #[test]
 fn test_detect_openclaw_home_env_var_takes_precedence() {
     let _guard = crate::GLOBAL_STATE_LOCK.lock().unwrap();
@@ -163,6 +165,7 @@ fn test_copy_dir_recursive_creates_dst() {
     assert!(dst.join("file.txt").exists());
 }
 
+#[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
 #[test]
 fn test_atty_isnt_with_prompt() {
     let _guard = crate::GLOBAL_STATE_LOCK.lock().unwrap();
@@ -176,6 +179,7 @@ fn test_atty_isnt_with_prompt() {
     assert!(!result);
 }
 
+#[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
 #[test]
 fn test_atty_isnt_with_term() {
     let _guard = crate::GLOBAL_STATE_LOCK.lock().unwrap();
@@ -796,6 +800,7 @@ mod wave_a {
         );
     }
 
+    #[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
     #[test]
     fn confirm_cancelled_when_stdin_is_non_tty() {
         // 摘除 PROMPT/TERM → atty_isnt()=true → confirm 直接 false →
@@ -892,6 +897,7 @@ mod wave_a {
         assert!(warnings.iter().any(|w| w.contains("fallback")));
     }
 
+    #[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
     #[test]
     fn atty_isnt_true_when_both_prompt_and_term_absent() {
         // 与既有的「PROMPT 存在/TERM 存在」用例互补：双缺 → true 臂（139）。
@@ -928,9 +934,12 @@ mod wave_a {
 // 不可注入）。
 // ===========================================================================
 
+// 整 mod Windows 形态（2/2 测试 + 专属 use 全走 Windows CLI 进程边界）。
+#[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
 mod wave_c {
     use super::*;
 
+    #[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
     #[test]
     fn env_openclaw_home_existing_dir_is_returned_verbatim() {
         let _guard = crate::GLOBAL_STATE_LOCK.lock().unwrap();
@@ -953,6 +962,7 @@ mod wave_c {
         );
     }
 
+    #[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
     #[test]
     fn run_migrates_entirely_via_env_detected_openclaw_home() {
         // 端到端：无 --openclaw-home，源定位纯靠 OPENCLAW_HOME；
@@ -1089,9 +1099,12 @@ mod r10_fallback {
 // 取消。spawn 接 coverage_cli_env（纪律 #2），无 env 竞争不持全局锁。
 // ===========================================================================
 
+// 整 mod Windows 形态（1/1 测试 + 专属 use 全走 Windows CLI 进程边界）。
+#[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
 mod r10_subprocess {
     use test_harness::{resolve_nemesisbot_bin, TestWorkspace};
 
+    #[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
     #[tokio::test]
     async fn r10_confirm_stdin_answer_n_cancels_migration_without_force() {
         let ws = TestWorkspace::new().expect("workspace");

@@ -2228,17 +2228,20 @@ fn test_web_server_url_custom_host() {
 
 /// 隔离 home 环境（与 channel/cluster/eval 测试同款模式）。
 /// env set_var 是进程级操作 → 持 crate::GLOBAL_STATE_LOCK 串行。
+#[cfg(windows)] // Windows-form helper (Linux nightly: excluded, 2026-09-02 sweep)
 struct TempHomeEnv {
     _tmp: tempfile::TempDir,
     home: std::path::PathBuf,
 }
 
+#[cfg(windows)] // Windows-form helper (Linux nightly: excluded, 2026-09-02 sweep)
 impl Drop for TempHomeEnv {
     fn drop(&mut self) {
         unsafe { std::env::remove_var("NEMESISBOT_HOME") };
     }
 }
 
+#[cfg(windows)] // Windows-form helper (Linux nightly: excluded, 2026-09-02 sweep)
 fn temp_home_env() -> TempHomeEnv {
     let tmp = tempfile::TempDir::new().unwrap();
     let home = tmp.path().join(".nemesisbot");
@@ -2267,6 +2270,7 @@ fn temp_home_env() -> TempHomeEnv {
 // 持有而留 %TEMP% 残留（无害，进程退出即失效）。
 // -------------------------------------------------------------------------
 
+#[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn full_assembly_starts_and_binds_web_and_health() {
     let _guard = crate::GLOBAL_STATE_LOCK.lock().unwrap();
@@ -3135,6 +3139,7 @@ mod r9_gateway_boot_scenarios {
     // 子进程托管（双流继承版，规避 ManagedProcess 的 stdout 回压隐患）
     // ---------------------------------------------------------------------
 
+    #[cfg(windows)] // Windows-form helper (Linux nightly: excluded, 2026-09-02 sweep)
     struct R9GatewayProc {
         child: Option<tokio::process::Child>,
         #[allow(dead_code)]
@@ -3143,6 +3148,7 @@ mod r9_gateway_boot_scenarios {
 
     /// 子网关的 LLVM_PROFILE_FILE 注入。曾因 test-harness 对应 helper 私有而
     /// 整段复刻（漂移风险），现直接委托公开的单一真相源实现。
+    #[cfg(windows)] // Windows-form helper (Linux nightly: excluded, 2026-09-02 sweep)
     fn r9_coverage_profile(slug: &str) -> Option<String> {
         test_harness::coverage_profile_file(slug)
     }
@@ -3150,6 +3156,7 @@ mod r9_gateway_boot_scenarios {
     /// 先 bind 再放手，取一个「此刻空闲」的高位端口（line webhook / 冲突占位用）。
     /// 有固有 TOCTOU 窗口；对 line 场景即使被抢也只是通道内部 bind warn，
     /// 不影响网关就绪与断言。
+    #[cfg(windows)] // Windows-form helper (Linux nightly: excluded, 2026-09-02 sweep)
     fn r9_probe_free_tcp_port() -> u16 {
         std::net::TcpListener::bind(("127.0.0.1", 0))
             .expect("probe ephemeral port")
@@ -3158,6 +3165,7 @@ mod r9_gateway_boot_scenarios {
             .port()
     }
 
+    #[cfg(windows)] // Windows-form helper (Linux nightly: excluded, 2026-09-02 sweep)
     impl R9GatewayProc {
         fn spawn(name: &'static str, program: &std::path::Path, cwd: &std::path::Path) -> Self {
             let mut cmd = tokio::process::Command::new(program);
@@ -3200,6 +3208,7 @@ mod r9_gateway_boot_scenarios {
         }
     }
 
+    #[cfg(windows)] // Windows-form helper (Linux nightly: excluded, 2026-09-02 sweep)
     impl Drop for R9GatewayProc {
         fn drop(&mut self) {
             if let Some(mut child) = self.child.take() {
@@ -3214,6 +3223,7 @@ mod r9_gateway_boot_scenarios {
     ///
     /// 注意保持与既有测试的差异面最小：security/devices/memory/logging 等
     /// 开关一律留给各场景自己翻转，基座不动。
+    #[cfg(windows)] // Windows-form helper (Linux nightly: excluded, 2026-09-02 sweep)
     fn r9_base_config(home: &std::path::Path) -> serde_json::Value {
         let mut cfg: serde_json::Value =
             serde_json::from_str(crate::CONFIG_DEFAULT).expect("parse CONFIG_DEFAULT");
@@ -3236,6 +3246,7 @@ mod r9_gateway_boot_scenarios {
 
     /// 启动网关子进程直到 state 文件出现非零 web_port（bind 后才写），留出
     /// 尾巴时间，然后优雅停机并等自然退出；返回最终 state JSON 供断言。
+    #[cfg(windows)] // Windows-form helper (Linux nightly: excluded, 2026-09-02 sweep)
     async fn r9_spawn_until_ready_then_graceful_stop(
         name: &'static str,
         ws: &test_harness::TestWorkspace,
@@ -3294,6 +3305,7 @@ mod r9_gateway_boot_scenarios {
 
     /// 真实子进程负向断言：cwd 下没有 `.nemesisbot`（--local 解析到的 home），
     /// gateway 必须立刻打错误提示并以退码 1 结束，绝不进入装配流程。
+    #[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
     #[tokio::test]
     async fn r9_gateway_missing_config_exits_1_with_onboard_hint() {
         let bin = test_harness::resolve_nemesisbot_bin().expect("resolve nemesisbot bin");
@@ -3349,6 +3361,7 @@ mod r9_gateway_boot_scenarios {
     /// 2568-2572 非空 log_dir 臂（_=>Full 由默认 summary 已命中，仍显式给值
     /// 保持意图）、3276-3285 DeviceService 启动成功臂、1843 的 24h 回退臂。
     /// 这些分支只能靠日志文本观测，测试断言收敛到「按期就绪 + 干净退出」。
+    #[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn r9_gateway_quiet_flips_boot_reaches_ready_and_exits_cleanly() {
         let ws = test_harness::TestWorkspace::new().expect("temp workspace");
@@ -3396,6 +3409,7 @@ mod r9_gateway_boot_scenarios {
     /// 点亮：1586-1595 skills 坏 JSON warn 臂、2201-2207 CORS 坏 JSON warn 臂、
     /// 2454-2460 sec_json=None 臂 + 插件照常构造、scanner 配置缺失 info 臂。
     /// 断言核心：坏文件绝不阻断启动。
+    #[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn r9_gateway_bad_json_seeds_keep_boot_alive() {
         let ws = test_harness::TestWorkspace::new().expect("temp workspace");
@@ -3427,6 +3441,7 @@ mod r9_gateway_boot_scenarios {
     /// 注意：telegram/discord/feishu/slack/whatsapp/dingtalk/qq/onebot 在默认
     /// 构建里未编译（channels-* feature 默认只开 web/webhook/rpc），它们的
     /// 开关只点亮 gateway 侧 push 行和 enabled_channels 计数，不会拉起网络。
+    #[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn r9_gateway_channel_ladder_boot_constructs_all_init_configs() {
         let ws = test_harness::TestWorkspace::new().expect("temp workspace");
@@ -3479,6 +3494,7 @@ mod r9_gateway_boot_scenarios {
     ///     真实启动路径上的旧布局迁移（含 partial 清理告警）。
     ///   - executor.enabled=true + sandbox=false → build_workflow_world Some(world)
     ///     接线臂（Layer-1 stdio 世界不需要 Sandboxie 就绪）。
+    #[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
     #[cfg(feature = "workflow")]
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn r9_gateway_workflow_defs_cron_checkpoint_restore_live() {
@@ -3638,6 +3654,7 @@ variables: {}
     /// 强杀子进程会丢 profraw——所以与本模块其余子进程用例不同，这里走
     /// 进程内线程，测试进程自身干净退出时统一落盘覆盖率（同 S11d 注释里的
     /// 「线程随测试进程退出销毁」豁免条款）。
+    #[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn r9_gateway_web_bind_conflict_walks_to_neighbor_port_in_state() {
         let _guard = crate::GLOBAL_STATE_LOCK.lock().unwrap();
@@ -3726,6 +3743,7 @@ variables: {}
 
     /// 固定端口就绪等待器。state 文件被敌意化的场景里 gateway.json 不再是
     /// 可靠就绪信号，改用「配置端口可 TCP 连通」作 bind 完成证据。
+    #[cfg(windows)] // Windows-form helper (Linux nightly: excluded, 2026-09-02 sweep)
     async fn r10_wait_tcp_ready(port: u16, what: &str) {
         let addr = std::net::SocketAddr::from(([127, 0, 0, 1], port));
         let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(120);
@@ -3745,6 +3763,7 @@ variables: {}
 
     /// 通用轮询等待器（与 tests_r9_live 的 wait_until 同构；两文件互为独立
     /// 测试模块无法互相导入，就地复制保持各文件的单一真相源自足）。
+    #[cfg(windows)] // Windows-form helper (Linux nightly: excluded, 2026-09-02 sweep)
     async fn r10_wait_until(timeout_secs: u64, what: &str, mut cond: impl FnMut() -> bool) {
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(timeout_secs);
         while !cond() {
@@ -3759,6 +3778,7 @@ variables: {}
     /// 组装一条预种子过期 "at" 任务（schema 逐字段复刻 nemesis-cron 序列化
     /// 形态；session_key/max_rounds 由调用方对返回值就地改写以驱动 Opt2 分支
     /// 与 T3 元数据插入）。
+    #[cfg(windows)] // Windows-form helper (Linux nightly: excluded, 2026-09-02 sweep)
     fn r10_seed_at_job(id: &str, name: &str, message: &str, due_ms: i64) -> serde_json::Value {
         serde_json::json!({
             "id": id,
@@ -3794,6 +3814,7 @@ variables: {}
         })
     }
 
+    #[cfg(windows)] // Windows-form helper (Linux nightly: excluded, 2026-09-02 sweep)
     fn r10_seed_cron_store(home: &std::path::Path, jobs: Vec<serde_json::Value>) {
         let store = serde_json::json!({ "version": 1, "jobs": jobs });
         let dir = home.join("workspace").join("cron");
@@ -3805,6 +3826,7 @@ variables: {}
         .expect("write cron store");
     }
 
+    #[cfg(windows)] // Windows-form helper (Linux nightly: excluded, 2026-09-02 sweep)
     fn r10_cron_last_status(home: &std::path::Path, id: &str) -> Option<String> {
         let txt =
             std::fs::read_to_string(home.join("workspace").join("cron").join("jobs.json")).ok()?;
@@ -3883,6 +3905,7 @@ variables: {}
     /// 场景 B：{home}/workspace/state 是一个**普通文件**——create_dir_all
     /// 报错 → warn 臂；随后向 <file>/gateway.json 写 state 也报错 → 第二个
     /// warn 臂。断言核心：启动不被阻断，web 真实 bind 固定探测端口。
+    #[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn r10_state_dir_as_regular_file_boot_warns_but_binds_web() {
         let ws = test_harness::TestWorkspace::new().expect("temp workspace");
@@ -3916,6 +3939,7 @@ variables: {}
 
     /// 场景 C：state 目录正常、gateway.json 本身是**目录**——首次 fs::write
     /// 命中 1104-1105 warn（else 臂反向：info@1107 不触发）。其余与场景 B 相同。
+    #[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn r10_state_gateway_json_as_directory_boot_survives_first_write_warn() {
         let ws = test_harness::TestWorkspace::new().expect("temp workspace");
@@ -3968,6 +3992,7 @@ variables: {}
     // 断言：state 文件 web_host=="127.0.0.1"（归一化铁证）+ cron last_status
     // =="ok"。state 文件在本场景完好，复用 R9 的标准就绪等待器。
     // ---------------------------------------------------------------------
+    #[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn r10_hostile_fs_and_config_seeds_boot_reaches_web_with_normalized_host() {
         let ws = test_harness::TestWorkspace::new().expect("temp workspace");
@@ -4075,6 +4100,7 @@ variables: {}
 }
 
 /// 毫秒时间戳（cron 种子的过期时刻锚点；模块级自由函数避免在每个测试里重复）。
+#[cfg(windows)] // Windows-form helper (Linux nightly: excluded, 2026-09-02 sweep)
 fn chrono_millis_now() -> i64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)

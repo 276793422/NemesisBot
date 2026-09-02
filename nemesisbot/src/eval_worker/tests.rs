@@ -368,6 +368,8 @@ fn tool_tag_serializes_with_all_report_fields() {
 // 文件是唯一诊断线索）。
 // =========================================================================
 
+// 整 mod Windows 形态（3/3 测试 + 专属 use/helper 全走 Windows CLI 进程边界）。
+#[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
 mod run_error_paths {
     use super::super::*;
 
@@ -390,6 +392,7 @@ mod run_error_paths {
         }
     }
 
+    #[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
     #[tokio::test]
     async fn run_err_when_workspace_env_missing() {
         let _lock = crate::GLOBAL_STATE_LOCK.lock().unwrap();
@@ -410,6 +413,7 @@ mod run_error_paths {
         }
     }
 
+    #[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
     #[tokio::test]
     async fn run_err_on_broken_config_writes_worker_error_and_alive_marker() {
         let tmp = tempfile::tempdir().unwrap();
@@ -436,6 +440,7 @@ mod run_error_paths {
         assert!(werr.contains("load eval config"), "werr: {werr}");
     }
 
+    #[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
     #[tokio::test]
     async fn run_err_when_agent_factory_fails_writes_worker_error() {
         let tmp = tempfile::tempdir().unwrap();
@@ -476,13 +481,20 @@ mod run_error_paths {
 mod wave_b {
     use super::*;
     use nemesis_observer::Observer;
+    // 下面三组只被 Windows 形态的 mock LLM server 测试使用，随之门控
+    // （Observer/Arc 被跨平台裸测试使用，保持无条件导入）。
+    #[cfg(windows)] // Windows-form helper use (Linux nightly: excluded, 2026-09-02 sweep)
     use std::io::{Read, Write};
+    #[cfg(windows)] // Windows-form helper use (Linux nightly: excluded, 2026-09-02 sweep)
     use std::net::TcpListener;
+    #[cfg(windows)] // Windows-form helper use (Linux nightly: excluded, 2026-09-02 sweep)
     use std::sync::atomic::{AtomicBool, Ordering};
     use std::sync::Arc;
 
     /// RAII：设置 NEMESISBOT_EVAL_WORKSPACE，Drop 按 prev-value Option 恢复。
+    #[cfg(windows)] // Windows-form helper (Linux nightly: excluded, 2026-09-02 sweep)
     struct WaveBEvalEnvGuard(Option<String>);
+    #[cfg(windows)] // Windows-form helper (Linux nightly: excluded, 2026-09-02 sweep)
     impl WaveBEvalEnvGuard {
         fn set_workspace(path: &std::path::Path) -> Self {
             let saved = std::env::var("NEMESISBOT_EVAL_WORKSPACE").ok();
@@ -490,6 +502,7 @@ mod wave_b {
             Self(saved)
         }
     }
+    #[cfg(windows)] // Windows-form helper (Linux nightly: excluded, 2026-09-02 sweep)
     impl Drop for WaveBEvalEnvGuard {
         fn drop(&mut self) {
             match self.0.take() {
@@ -504,6 +517,7 @@ mod wave_b {
     /// 端点 /chat/completions。⚠️ 不能用裸名：parse_model_ref 对无前缀名
     /// 默认 provider="openai" → 工厂映射 Codex（POST {base}/responses,
     /// Chat 补全格式解析为空 → 3 次空 final → turn_guard 放弃文案）。
+    #[cfg(windows)] // Windows-form helper (Linux nightly: excluded, 2026-09-02 sweep)
     fn wave_b_write_llm_config(ws: &std::path::Path, api_base: &str) {
         let cfg = serde_json::json!({
             "agents": {"defaults": {"llm": "wbprov/waveb-probe"}},
@@ -521,10 +535,12 @@ mod wave_b {
         .unwrap();
     }
 
+    #[cfg(windows)] // Windows-form helper (Linux nightly: excluded, 2026-09-02 sweep)
     fn wave_b_header_end(buf: &[u8]) -> Option<usize> {
         buf.windows(4).position(|w| w == b"\r\n\r\n")
     }
 
+    #[cfg(windows)] // Windows-form helper (Linux nightly: excluded, 2026-09-02 sweep)
     fn wave_b_content_length(headers: &[u8]) -> usize {
         String::from_utf8_lossy(headers)
             .lines()
@@ -540,6 +556,7 @@ mod wave_b {
 
     /// 进程内 mock LLM：任何请求都回一条 finish_reason=stop 的补全。
     /// accept 用 nonblocking+轮询以便 stop 置位后退出线程；served 上限兜底。
+    #[cfg(windows)] // Windows-form helper (Linux nightly: excluded, 2026-09-02 sweep)
     fn wave_b_spawn_mock_llm() -> (String, Arc<AtomicBool>) {
         let listener = TcpListener::bind("127.0.0.1:0").expect("bind ephemeral port");
         let addr = listener.local_addr().unwrap();
@@ -594,6 +611,7 @@ mod wave_b {
         (format!("http://{addr}"), stop)
     }
 
+    #[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn wave_b_worker_writes_full_report_after_successful_llm_round() {
         let ws = tempfile::tempdir().unwrap();
@@ -648,6 +666,7 @@ mod wave_b {
         );
     }
 
+    #[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn wave_b_worker_maps_agent_loop_llm_error_into_worker_error_txt() {
         let ws = tempfile::tempdir().unwrap();

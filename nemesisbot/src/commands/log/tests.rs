@@ -531,6 +531,7 @@ fn test_cmd_llm_config_both_options() {
 mod run_arm {
     use super::*;
 
+    #[cfg(windows)] // Windows-form helper (Linux nightly: excluded, 2026-09-02 sweep)
     fn with_env_home(f: impl FnOnce(std::path::PathBuf)) {
         let _guard = crate::GLOBAL_STATE_LOCK.lock().unwrap();
         let tmp = tempfile::tempdir().unwrap();
@@ -543,17 +544,20 @@ mod run_arm {
         }
     }
 
+    #[cfg(windows)] // Windows-form helper (Linux nightly: excluded, 2026-09-02 sweep)
     fn seed_home(home: &std::path::Path) {
         std::fs::create_dir_all(home).unwrap();
         std::fs::write(home.join("config.json"), "{}").unwrap();
     }
 
+    #[cfg(windows)] // Windows-form helper (Linux nightly: excluded, 2026-09-02 sweep)
     fn read_cfg(home: &std::path::Path) -> serde_json::Value {
         serde_json::from_str(&std::fs::read_to_string(home.join("config.json")).unwrap()).unwrap()
     }
 
     // --- Llm 子树 ---
 
+    #[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
     #[test]
     fn llm_subtree_dispatch_enable_disable_status_config_type() {
         with_env_home(|home| {
@@ -675,6 +679,7 @@ mod run_arm {
 
     // --- General 子树 ---
 
+    #[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
     #[test]
     fn general_subtree_dispatch_all_actions() {
         with_env_home(|home| {
@@ -744,6 +749,7 @@ mod run_arm {
 
     // --- 顶层命令（别名 + Status/Config/SetLevel/文件/控制台）---
 
+    #[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
     #[test]
     fn top_level_dispatch_aliases_status_and_config() {
         with_env_home(|home| {
@@ -782,6 +788,7 @@ mod run_arm {
         });
     }
 
+    #[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
     #[test]
     fn top_level_file_and_console_switches() {
         with_env_home(|home| {
@@ -825,11 +832,16 @@ mod run_arm {
 // ===========================================================================
 
 mod wave_a {
+    // run/LlmAction/LogAction 只有下方 Windows 形态的 dispatch 测试使用，
+    // 随之门控（Linux 上拆开导入，避免 unused import 死代码）。
     use super::super::{
-        cmd_general_console, cmd_llm_enable, cmd_llm_status, default_logging_config, run,
-        write_logging_config, LlmAction, LogAction,
+        cmd_general_console, cmd_llm_enable, cmd_llm_status, default_logging_config,
+        write_logging_config,
     };
+    #[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
+    use super::super::{run, LlmAction, LogAction};
 
+    #[cfg(windows)] // Windows-form helper (Linux nightly: excluded, 2026-09-02 sweep)
     fn with_env_home(f: impl FnOnce(std::path::PathBuf)) {
         let _guard = crate::GLOBAL_STATE_LOCK.lock().unwrap();
         let tmp = tempfile::tempdir().unwrap();
@@ -895,6 +907,7 @@ mod wave_a {
         cmd_llm_status(&cfg, &workspace).expect("空串字段走默认填充分支");
     }
 
+    #[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
     #[test]
     fn dispatch_type_raw_creates_llm_section_with_save_raw() {
         // logging 段存在但没有 llm 键 + dispatch 层 Type raw → 425-432 带
@@ -1048,9 +1061,12 @@ fn r10_llm_enable_fills_explicit_empty_string_fields() {
     assert_eq!(data["logging"]["llm"]["enabled"], true);
 }
 
+// 整 mod Windows 形态（1/1 测试 + 专属 use 全走 Windows CLI 进程边界）。
+#[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
 mod r10_subprocess {
     use test_harness::{resolve_nemesisbot_bin, TestWorkspace};
 
+    #[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
     #[tokio::test]
     async fn r10_invalid_detail_level_exits_1_in_child_process() {
         // 进程内 std::process::exit(1) 会杀掉测试二进制 → 只能在子进程钉。

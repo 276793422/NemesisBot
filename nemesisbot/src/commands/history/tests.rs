@@ -79,6 +79,8 @@ fn cli_reindex_takes_no_positional_args() {
 // 其中）——search 断言用本 mod 独有关键词，避免跨测试撞命中。
 // ===========================================================================
 
+// 整 mod Windows 形态（3/3 测试 + 专属 helper 全走 Windows CLI 进程边界）。
+#[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
 mod r7_run_via_singleton_redirect {
     use super::*;
     use crate::tests::{singleton_test_home, EnvHomeGuard};
@@ -97,6 +99,7 @@ mod r7_run_via_singleton_redirect {
         std::fs::write(&path, body + "\n").unwrap();
     }
 
+    #[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
     #[tokio::test]
     async fn run_reindex_reports_file_count_in_sandbox() {
         let _g = crate::GLOBAL_STATE_LOCK.lock().unwrap();
@@ -114,6 +117,7 @@ mod r7_run_via_singleton_redirect {
             .expect("reindex in sandbox home ok");
     }
 
+    #[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
     #[tokio::test]
     async fn run_search_finds_seeded_unique_keyword() {
         let _g = crate::GLOBAL_STATE_LOCK.lock().unwrap();
@@ -138,6 +142,7 @@ mod r7_run_via_singleton_redirect {
         .expect("search ok");
     }
 
+    #[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
     #[tokio::test]
     async fn run_search_no_match_prints_empty_message() {
         let _g = crate::GLOBAL_STATE_LOCK.lock().unwrap();

@@ -454,6 +454,7 @@ async fn graceful_teardown(mut gw: ManagedProcess, web_port: u16, token: &str, l
 ///
 /// 断言锚点：workspace/cron/jobs.json（last_status/history/enabled=false 收尾态）
 /// + workspace/logs/request_logs 树内标记扫描 + MockAi 命中计数。
+#[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn r9_live_cron_on_job_both_branches_fire_and_mark_store() {
     let ws = TestWorkspace::new().expect("temp workspace");
@@ -611,6 +612,7 @@ fn install_cluster_app_config(home: &Path, udp: u16, rpc: u16, token: &str) {
 ///    PEER_MESSAGE（B 的 PeerChatHandler 真跑了 LLM）、两侧 store/cron ok；
 /// 4. open_dashboard 臂（POST /api/internal，dll 缺席守卫下无窗口风险）拿 ack；
 /// 5. 双节点各自走 shutdown 内部命令臂优雅停机（3601-3608）。
+#[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn r9_live_dual_node_peer_chat_full_chain_with_cluster_rpc_tool() {
     let bin = resolve_nemesisbot_bin().expect("nemesisbot binary");
@@ -772,6 +774,7 @@ async fn r9_live_dual_node_peer_chat_full_chain_with_cluster_rpc_tool() {
 ///
 /// 断言锚点：workspace/workflow/executions/{name}_{execution_id}.jsonl 存在且含
 /// 各自节点输出文本。
+#[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn r9_live_workflow_message_trigger_cascades_to_event_trigger() {
     let ws = TestWorkspace::new().expect("temp workspace");
@@ -910,6 +913,7 @@ async fn r9_live_workflow_message_trigger_cascades_to_event_trigger() {
 ///
 /// 断言：boot 完成后观察 20s（第一拍固定 +1s，若未跳过必然有命中），mock 命中
 /// 必须为 0。诚实边界：只实证第一拍的跳过决策；后续 60s 节拍不再等待（预算纪律）。
+#[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn r9_live_heartbeat_bootstrap_skip_makes_zero_llm_calls() {
     let ws = TestWorkspace::new().expect("temp workspace");
@@ -961,6 +965,7 @@ async fn r9_live_heartbeat_bootstrap_skip_makes_zero_llm_calls() {
 /// 两臂覆盖度的如实说明：silent 结果不落盘是生产行为；llvm-cov 行命中来自代码
 /// 真跑（不同内容 ⇒ else/if 两个臂都被求值），测试断言锚定的是信封层面的输入/
 /// 输出证据，而不是推测 silent 分支内部状态。
+#[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn r9_live_heartbeat_two_ticks_passthrough_then_heartbeat_ok_match() {
     let ws = TestWorkspace::new().expect("temp workspace");
@@ -1036,6 +1041,7 @@ async fn r9_live_heartbeat_two_ticks_passthrough_then_heartbeat_ok_match() {
 ///
 /// 诚实边界：超时臂（272-275 recv_timeout → Ok(false)）需要真 popup 进程，
 /// 本批不改测；若检测到 exe 旁确有 plugin_ui 库，整个测试按纪律提前让步。
+#[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn r9_live_approval_ask_rule_denies_via_plugin_ui_early_exit() {
     let ws = TestWorkspace::new().expect("temp workspace");
@@ -1350,6 +1356,7 @@ fn r10_wsapi_agent_stop(web_port: u16, token: &str, req_id: &str) -> Result<(), 
 /// gateway.rs:1822-1827 的 error! 臂（非致命），网关继续装配到就绪。
 /// 断言收敛为「照常就绪 + 照常优雅停机」——error!/info 双臂按执行顺序必然
 /// 都被走过；端口全程由测试进程持有（wildcard 尽力 + specific 兜底双占位）。
+#[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn r10_live_cluster_rpc_port_busy_bind_error_stays_nonfatal() {
     let ws = TestWorkspace::new().expect("temp workspace");
@@ -1408,6 +1415,7 @@ async fn r10_live_cluster_rpc_port_busy_bind_error_stays_nonfatal() {
 /// tasks.submit 先建 pending 任务 T（目标指向不存在的 peer，永不收到真回调），
 /// 伪造回调后 tasks.list 里 T 变 **failed**（Route3 fail_task 臂 2034-2035）；
 /// 同载荷也吃过 Route2 的 error 键插入（2008-2010）。
+#[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn r10_live_dual_node_callback_roundtrip_and_forged_error_route() {
     let bin = resolve_nemesisbot_bin().expect("nemesisbot binary");
@@ -1613,6 +1621,7 @@ async fn r10_live_dual_node_callback_roundtrip_and_forged_error_route() {
 /// 因此「A 收到 B 的 canned 回复」同时证明：注册分支真跑 + 回调寻址成功。
 /// （RpcMeta{from:Some} 主臂与 fallback None 臂由同一段提取代码产出的
 /// source_node_id 决定，非空在先，两臂结构上是同一出口。）⭐
+#[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn r10_live_discovery_lag_unknown_peer_registers_via_rpc_meta() {
     let bin = resolve_nemesisbot_bin().expect("nemesisbot binary");
@@ -1727,6 +1736,7 @@ async fn r10_live_discovery_lag_unknown_peer_registers_via_rpc_meta() {
 /// 就绪后同时写 HEARTBEAT.md（任务行）+ BOOTSTRAP.md → 下一拍起 handler 进入
 /// 「bootstrap 存在早退 HEARTBEAT_OK」臂（gateway.rs:3195-3204），依旧零 LLM。
 /// 观察 ≥80s 保证至少一拍落在写文件之后；mock 空脚本下任何命中都会响亮失败。
+#[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn r10_live_heartbeat_bootstrap_written_after_boot_suppresses_all_llm() {
     let ws = TestWorkspace::new().expect("temp workspace");
@@ -1784,6 +1794,7 @@ async fn r10_live_heartbeat_bootstrap_written_after_boot_suppresses_all_llm() {
 /// 断言：恰好 2 次命中、脚本余量 0。诚实的失败模式：若机器极慢导致第三拍
 /// 抢在 stop 之前，脚本第 3 次请求拿到 500 → hits==3 → 断言响亮失败（按
 /// problem-analysis 纪律视为环境慢而非静默放过）。
+#[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn r10_live_heartbeat_agent_none_after_wsapi_stop_sends_zero_llm() {
     let ws = TestWorkspace::new().expect("temp workspace");

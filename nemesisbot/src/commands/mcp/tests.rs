@@ -807,17 +807,20 @@ async fn test_s11b_cmd_discover_stdio_python_fake_ok_arm() {
 // ------------------------- run() 分发 -------------------------------------
 
 /// RAII 守卫：NEMESISBOT_HOME 指向临时根，drop 时移除（同 cluster/tests.rs 模式）。
+#[cfg(windows)] // Windows-form helper (Linux nightly: excluded, 2026-09-02 sweep)
 struct S11bTempHomeEnv {
     _tmp: TempDir,
     home: std::path::PathBuf,
 }
 
+#[cfg(windows)] // Windows-form helper (Linux nightly: excluded, 2026-09-02 sweep)
 impl Drop for S11bTempHomeEnv {
     fn drop(&mut self) {
         unsafe { std::env::remove_var("NEMESISBOT_HOME") };
     }
 }
 
+#[cfg(windows)] // Windows-form helper (Linux nightly: excluded, 2026-09-02 sweep)
 fn s11b_temp_home_env() -> S11bTempHomeEnv {
     let tmp = TempDir::new().unwrap();
     let home = tmp.path().join(".nemesisbot");
@@ -826,6 +829,7 @@ fn s11b_temp_home_env() -> S11bTempHomeEnv {
     S11bTempHomeEnv { _tmp: tmp, home }
 }
 
+#[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
 #[test]
 fn test_s11b_run_sync_arms() {
     let _guard = crate::GLOBAL_STATE_LOCK.lock().unwrap();
@@ -856,6 +860,7 @@ fn test_s11b_run_sync_arms() {
     assert!(v["servers"].as_array().unwrap().is_empty());
 }
 
+#[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
 #[tokio::test(flavor = "multi_thread")]
 async fn test_s11b_run_async_dispatch_arms() {
     let _guard = crate::GLOBAL_STATE_LOCK.lock().unwrap();

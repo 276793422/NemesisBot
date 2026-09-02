@@ -257,6 +257,7 @@ mod dispatch_protocol {
 
 /// run() 前置守卫：workspace env 缺失必须干净报错（而不是进 stdio 循环挂死）。
 /// GLOBAL_STATE_LOCK：remove_var 是进程级环境操作，与其它 env 测试互斥。
+#[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
 #[tokio::test]
 async fn run_requires_workspace_env() {
     let _guard = crate::GLOBAL_STATE_LOCK.lock().unwrap();
@@ -279,6 +280,9 @@ async fn run_requires_workspace_env() {
 // - Windows 具名管道传输：run() 全链（server 假 gateway 一来一回 + EOF）。
 // =========================================================================
 
+// 整 mod Windows 形态（3/3 测试全走 Windows 进程边界；sandbox 项另有
+// feature 双门控，随 mod 一并消失于 Linux）。
+#[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
 mod executor_main_glue {
     use super::*;
 
@@ -331,6 +335,7 @@ mod executor_main_glue {
         dir
     }
 
+    #[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
     #[tokio::test]
     async fn run_stdio_transport_registers_tools_and_exits_on_eof() {
         let _guard = crate::GLOBAL_STATE_LOCK.lock().unwrap();

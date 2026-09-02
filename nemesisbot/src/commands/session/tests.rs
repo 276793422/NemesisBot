@@ -16,6 +16,7 @@ use super::*;
 
 /// --local 指向不存在 home 时：拒绝执行（home 不一致守卫），且**不创建**
 /// `.nemesisbot`（create_dir_all 在守卫之后才轮到）。
+#[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
 #[test]
 fn run_local_missing_home_bails_without_creating() {
     let _guard = crate::GLOBAL_STATE_LOCK.lock().unwrap();
@@ -135,6 +136,8 @@ mod list_sessions_arm {
 // 纪律：每测试先拿 GLOBAL_STATE_LOCK；key 全部带 r7 前缀防跨测试撞车。
 // ===========================================================================
 
+// 整 mod Windows 形态（8/8 测试 + 专属 helper 全走 Windows CLI 进程边界）。
+#[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
 mod r7_success_paths {
     use super::*;
     use crate::tests::{singleton_test_home, EnvHomeGuard};
@@ -184,6 +187,7 @@ mod r7_success_paths {
     }
 
     /// run(List, local=false)：env home 与单例一致 → 守卫放行 → 空会话表 Ok。
+    #[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
     #[test]
     fn run_list_via_env_home_ok_empty() {
         let _g = crate::GLOBAL_STATE_LOCK.lock().unwrap();
@@ -193,6 +197,7 @@ mod r7_success_paths {
     }
 
     /// run(Show)：有 jsonl 的会话 → 轮次表打印 Ok。
+    #[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
     #[test]
     fn run_show_prints_turn_table_ok() {
         let _g = crate::GLOBAL_STATE_LOCK.lock().unwrap();
@@ -210,6 +215,7 @@ mod r7_success_paths {
     }
 
     /// run(Fork) 全量：源 jsonl 逐行复制到新 key + store 落盘 + boundary 事件。
+    #[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
     #[test]
     fn run_fork_full_flow_copies_jsonl_and_creates_store() {
         let _g = crate::GLOBAL_STATE_LOCK.lock().unwrap();
@@ -240,6 +246,7 @@ mod r7_success_paths {
     }
 
     /// run(Fork --at 1)：只保留第 1 轮（2 行）。
+    #[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
     #[test]
     fn run_fork_at_turn_1_keeps_prefix_only() {
         let _g = crate::GLOBAL_STATE_LOCK.lock().unwrap();
@@ -263,6 +270,7 @@ mod r7_success_paths {
     }
 
     /// run(Fork) 源不存在：明确报错（jsonl 为空 → fork_session Err → run Err）。
+    #[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
     #[test]
     fn run_fork_missing_source_errors() {
         let _g = crate::GLOBAL_STATE_LOCK.lock().unwrap();
@@ -281,6 +289,7 @@ mod r7_success_paths {
     }
 
     /// run(Fork) 源只有 assistant 行：没有 user 轮 → 报错。
+    #[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
     #[test]
     fn run_fork_source_without_user_turns_errors() {
         let _g = crate::GLOBAL_STATE_LOCK.lock().unwrap();
@@ -309,6 +318,7 @@ mod r7_success_paths {
 
     /// run(Show) 对不存在的会话走 run() 入口（show_turns bail 在 tests 顶部
     /// 已有直接调用版本；这里钉 run() 分发臂）。
+    #[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
     #[test]
     fn run_show_missing_session_dispatches_to_error() {
         let _g = crate::GLOBAL_STATE_LOCK.lock().unwrap();
@@ -329,6 +339,7 @@ mod r7_success_paths {
     /// run(Show) 对「只有 assistant 行」的会话：CLI 层 show_turns 自己的
     /// zero-user-turn bail（上面 fork 测试报错来自 nemesis-agent 的
     /// fork_session；这里是 commands/session.rs 的同义 bail 臂）。
+    #[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
     #[test]
     fn run_show_zero_user_turns_errors_from_cli_bail() {
         let _g = crate::GLOBAL_STATE_LOCK.lock().unwrap();

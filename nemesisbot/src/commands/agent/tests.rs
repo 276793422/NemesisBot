@@ -1411,6 +1411,8 @@ mod wave_b {
 // 因此断言目标 = 「命令被识别且不崩、循环推进到后续输入」，不钉内层文案。
 // =========================================================================
 
+// 整 mod Windows 形态（7/7 测试 + 3 个专属 helper 全走 Windows CLI 进程边界）。
+#[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
 mod r9_repl {
     use std::path::PathBuf;
     use test_harness::mock_ai::{MockAiReply, MockAiServer};
@@ -1497,6 +1499,7 @@ mod r9_repl {
         (ws, bin)
     }
 
+    #[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
     #[tokio::test(flavor = "multi_thread")]
     async fn r9_repl_hello_then_quit_returns_mock_reply() {
         let srv = MockAiServer::start(vec![MockAiReply::Text(MARKER.to_string())])
@@ -1531,6 +1534,7 @@ mod r9_repl {
         );
     }
 
+    #[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
     #[tokio::test(flavor = "multi_thread")]
     async fn r9_repl_eof_without_quit_hits_eof_goodbye_arm() {
         let srv = MockAiServer::start(vec![MockAiReply::Text(MARKER.to_string())])
@@ -1557,6 +1561,7 @@ mod r9_repl {
         );
     }
 
+    #[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
     #[tokio::test(flavor = "multi_thread")]
     async fn r9_repl_unknown_slash_command_lists_options_and_loops() {
         // 空 script：任何意外 LLM 调用会被 mock 以 500 "script exhausted"
@@ -1593,6 +1598,7 @@ mod r9_repl {
         );
     }
 
+    #[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
     #[tokio::test(flavor = "multi_thread")]
     async fn r9_repl_builtin_slash_trio_recognized_loop_survives() {
         // registry=None 下：/history 无正文输出、/clear 恒打 "History
@@ -1631,6 +1637,7 @@ mod r9_repl {
         assert_eq!(srv.hits(), 0, "slash 命令不应打到 mock");
     }
 
+    #[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
     #[tokio::test(flavor = "multi_thread")]
     async fn r9_repl_set_llm_unresolved_confirm_yes_writes_default() {
         let (ws, bin) = r9_setup_plain_ws().await;
@@ -1672,6 +1679,7 @@ mod r9_repl {
         );
     }
 
+    #[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
     #[tokio::test(flavor = "multi_thread")]
     async fn r9_repl_set_llm_unresolved_confirm_no_cancels() {
         let (ws, bin) = r9_setup_plain_ws().await;
@@ -1706,6 +1714,7 @@ mod r9_repl {
         );
     }
 
+    #[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
     #[tokio::test(flavor = "multi_thread")]
     async fn r9_repl_llm_failure_arm_prints_agent_error_and_loop_survives() {
         // api_base 指向立即拒绝的死端口：hello 的 LLM 调用失败 → process_
@@ -1749,6 +1758,8 @@ mod r9_repl {
 // （standalone 构造路径 registry=None，r9_repl 头注已论证），仍不在此批。
 // =========================================================================
 
+// 整 mod Windows 形态（1/1 测试 + resolve helper，全走 Windows CLI 进程边界）。
+#[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
 mod r10 {
     use std::path::PathBuf;
 
@@ -1758,6 +1769,7 @@ mod r10 {
         test_harness::resolve_nemesisbot_bin().expect("nemesisbot binary resolved")
     }
 
+    #[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
     #[tokio::test(flavor = "multi_thread")]
     async fn r10_repl_seed_history_load_and_blank_line_continue() {
         let bin = r10_resolve_bin();

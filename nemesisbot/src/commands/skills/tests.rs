@@ -1061,17 +1061,20 @@ fn test_parse_github_url_with_extra_path_components() {
 // cmd_learn 用 config 缺失 / 不可解析模型两条纯本地 bail 路径。
 // =========================================================================
 
+#[cfg(windows)] // Windows-form helper (Linux nightly: excluded, 2026-09-02 sweep)
 struct TempHomeEnv {
     _tmp: TempDir,
     home: std::path::PathBuf,
 }
 
+#[cfg(windows)] // Windows-form helper (Linux nightly: excluded, 2026-09-02 sweep)
 impl Drop for TempHomeEnv {
     fn drop(&mut self) {
         unsafe { std::env::remove_var("NEMESISBOT_HOME") };
     }
 }
 
+#[cfg(windows)] // Windows-form helper (Linux nightly: excluded, 2026-09-02 sweep)
 fn temp_home_env() -> TempHomeEnv {
     let tmp = TempDir::new().unwrap();
     let home = tmp.path().join(".nemesisbot");
@@ -1339,6 +1342,7 @@ async fn test_cmd_source_add_invalid_url_errors_before_network() {
 // run() 同步分支
 // -------------------------------------------------------------------------
 
+#[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
 #[test]
 fn test_run_skills_list_dir_missing_and_present() {
     let _guard = crate::GLOBAL_STATE_LOCK.lock().unwrap();
@@ -1353,6 +1357,7 @@ fn test_run_skills_list_dir_missing_and_present() {
     run(SkillsAction::List, false).unwrap();
 }
 
+#[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
 #[test]
 fn test_run_skills_remove_found_and_not_found() {
     let _guard = crate::GLOBAL_STATE_LOCK.lock().unwrap();
@@ -1372,6 +1377,7 @@ fn test_run_skills_remove_found_and_not_found() {
     .unwrap();
 }
 
+#[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
 #[test]
 fn test_run_skills_show_variants() {
     let _guard = crate::GLOBAL_STATE_LOCK.lock().unwrap();
@@ -1389,6 +1395,7 @@ fn test_run_skills_show_variants() {
     run(SkillsAction::Show { name: "nomd".into() }, false).unwrap();
 }
 
+#[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
 #[test]
 fn test_run_skills_source_list_and_remove() {
     let _guard = crate::GLOBAL_STATE_LOCK.lock().unwrap();
@@ -1446,6 +1453,7 @@ fn test_run_skills_source_list_and_remove() {
 // 模式），要求 tokio multi-thread runtime 上下文——因此本测试改为生产同款拓扑：
 // 自建 runtime + block_on 驱动 run()。旧「裸线程直调」契约随之作废（原实现内嵌
 // reqwest::blocking，在生产 runtime 上下文里 drop 必 panic，才是真正要改的 bug）。
+#[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
 #[test]
 fn test_run_skills_add_source_invalid_url() {
     let _guard = crate::GLOBAL_STATE_LOCK.lock().unwrap();
@@ -1471,6 +1479,7 @@ fn test_run_skills_add_source_invalid_url() {
     });
 }
 
+#[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
 #[test]
 fn test_run_skills_validate_variants() {
     let _guard = crate::GLOBAL_STATE_LOCK.lock().unwrap();
@@ -1521,6 +1530,7 @@ fn test_run_skills_validate_variants() {
     .unwrap();
 }
 
+#[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
 #[test]
 fn test_run_skills_builtin_install_and_list() {
     let _guard = crate::GLOBAL_STATE_LOCK.lock().unwrap();
@@ -1552,6 +1562,7 @@ fn test_run_skills_builtin_install_and_list() {
 // run() 异步分支（block_in_place → multi_thread flavor）
 // -------------------------------------------------------------------------
 
+#[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
 #[tokio::test(flavor = "multi_thread")]
 async fn test_run_skills_search_empty_registries_dispatch() {
     let _guard = crate::GLOBAL_STATE_LOCK.lock().unwrap();
@@ -1568,6 +1579,7 @@ async fn test_run_skills_search_empty_registries_dispatch() {
     run(SkillsAction::Search { query: None, limit: 5 }, false).unwrap();
 }
 
+#[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
 #[tokio::test(flavor = "multi_thread")]
 async fn test_run_skills_cache_dispatch() {
     let _guard = crate::GLOBAL_STATE_LOCK.lock().unwrap();
@@ -1601,6 +1613,7 @@ async fn test_run_skills_cache_dispatch() {
     .unwrap();
 }
 
+#[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
 #[tokio::test(flavor = "multi_thread")]
 async fn test_run_skills_learn_missing_config_dispatch() {
     let _guard = crate::GLOBAL_STATE_LOCK.lock().unwrap();
@@ -1812,10 +1825,12 @@ mod wave_b {
     /// NEMESISBOT_HOME 守卫：纪律要求 prev-value 按 Option 恢复
     /// （既有 temp_home_env 不恢复环境变量，本块不沿用）。调用方必须持
     /// crate::GLOBAL_STATE_LOCK。
+    #[cfg(windows)] // Windows-form helper (Linux nightly: excluded, 2026-09-02 sweep)
     struct WaveBHomeGuard {
         prev: Option<std::ffi::OsString>,
     }
 
+    #[cfg(windows)] // Windows-form helper (Linux nightly: excluded, 2026-09-02 sweep)
     impl WaveBHomeGuard {
         fn set(root: &std::path::Path) -> Self {
             let prev = std::env::var_os("NEMESISBOT_HOME");
@@ -1824,6 +1839,7 @@ mod wave_b {
         }
     }
 
+    #[cfg(windows)] // Windows-form helper (Linux nightly: excluded, 2026-09-02 sweep)
     impl Drop for WaveBHomeGuard {
         fn drop(&mut self) {
             match self.prev.take() {
@@ -2006,6 +2022,7 @@ mod wave_b {
     // -----------------------------------------------------------------------
 
     /// Install 臂的桥接体（1153-1158 + 1160-1161）：走上面同款离线终局。
+    #[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
     #[tokio::test(flavor = "multi_thread")]
     async fn wave_b_run_skills_install_arm_bridge_dispatch() {
         let _guard = crate::GLOBAL_STATE_LOCK.lock().unwrap();
@@ -2023,6 +2040,7 @@ mod wave_b {
     }
 
     /// Source::Add 子臂（1168-1172）：非法 URL 在任何网络语句之前被 parse 拒绝。
+    #[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
     #[tokio::test(flavor = "multi_thread")]
     async fn wave_b_run_skills_source_add_arm_bridge_invalid_url() {
         let _guard = crate::GLOBAL_STATE_LOCK.lock().unwrap();
@@ -2450,6 +2468,8 @@ mod wave_c {
 // Option 恢复（wave_b HomeGuard 同款纪律）。
 // ===========================================================================
 
+// 整 mod Windows 形态（6/6 测试 + 专属 helper 全走 Windows CLI 进程边界）。
+#[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
 mod r10_wave {
     use super::*;
     use std::ffi::OsString;
@@ -2508,6 +2528,7 @@ mod r10_wave {
 
     /// 主干全链：parse → 验证（重试耗尽或成功皆可）→ 结构探测兜底 →
     /// 写回 github_sources + github_sources_legacy 双份登记。
+    #[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
     #[tokio::test]
     async fn r10_skills_source_add_trunk_persists_new_registry_source() {
         let _lock = crate::GLOBAL_STATE_LOCK.lock().unwrap();
@@ -2537,6 +2558,7 @@ mod r10_wave {
 
     /// 重名拒绝臂：检测阶段照跑（含网络重试/探测），但走到重名检查时
     /// 提前 Ok 返回——既不加新条目也不写 legacy。
+    #[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
     #[tokio::test]
     async fn r10_skills_source_add_duplicate_name_rejected_before_second_write() {
         let _lock = crate::GLOBAL_STATE_LOCK.lock().unwrap();
@@ -2577,6 +2599,7 @@ mod r10_wave {
 
     /// run() 的 AddSource 分发桥（合法 URL 变体）：此前只有非法 URL 早退版本，
     /// 这里补上「桥接体真正驱动完整个 async 主干」的分发路径。
+    #[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
     #[tokio::test(flavor = "multi_thread")]
     async fn r10_run_add_source_arm_drives_full_trunk_via_bridge() {
         let _lock = crate::GLOBAL_STATE_LOCK.lock().unwrap();
@@ -2600,6 +2623,7 @@ mod r10_wave {
     /// cmd_install_github 的下载穷尽终局：owner/repo 合法解析后 4 路径 × 2
     /// 分支共 8 次 raw 请求全部失败（离线被拒 / 在线 404 / 限流），落在
     /// "Failed to download skill from GitHub" 打印后干净收尾。
+    #[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
     #[tokio::test]
     async fn r10_cmd_install_github_download_exhaustion_ends_cleanly() {
         let _lock = crate::GLOBAL_STATE_LOCK.lock().unwrap();
@@ -2618,6 +2642,7 @@ mod r10_wave {
     /// cmd_install_clawhub 不可达终点臂：openclaw/skills 的 raw URL 打不通时
     /// 打印排障提示并 Ok 收尾；output_name None / Some 两变体都过一遍
     /// （覆盖 out_name 解析两个臂）。
+    #[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
     #[tokio::test]
     async fn r10_cmd_install_clawhub_unreachable_reports_and_returns_ok() {
         let _lock = crate::GLOBAL_STATE_LOCK.lock().unwrap();
@@ -2642,6 +2667,7 @@ mod r10_wave {
 
     /// run() 的 InstallClawhub 分发桥：既有测试从未驱动过的 async 命令包装臂
     /// （block_in_place + Handle::block_on 承载内部异步 client）。
+    #[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
     #[tokio::test(flavor = "multi_thread")]
     async fn r10_run_install_clawhub_bridge_dispatches_offline_error_arm() {
         let _lock = crate::GLOBAL_STATE_LOCK.lock().unwrap();

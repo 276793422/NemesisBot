@@ -375,6 +375,7 @@ fn test_cmd_disable_no_enhanced_memory_config_creates_it_off() {
 // Step 1 bail。插件就绪路径（Step 2-4）结构性豁免（需真实 dll+模型）。
 // ===========================================================================
 
+#[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
 #[tokio::test]
 async fn test_cmd_enable_bails_without_plugin_and_writes_no_config() {
     // 必须持锁：r7_enable_success_chain 的哑 DLL 测试也持 GLOBAL_STATE_LOCK
@@ -401,6 +402,7 @@ async fn test_cmd_enable_bails_without_plugin_and_writes_no_config() {
 // run() 分发（env home 隔离 + 进程锁）
 // ===========================================================================
 
+#[cfg(windows)] // Windows-form helper (Linux nightly: excluded, 2026-09-02 sweep)
 async fn with_locked_env_home<F, Fut>(f: F)
 where
     F: FnOnce(std::path::PathBuf) -> Fut,
@@ -417,6 +419,7 @@ where
     }
 }
 
+#[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
 #[tokio::test]
 async fn run_status_and_disable_dispatch_via_env_home() {
     with_locked_env_home(|tmp| async move {
@@ -439,6 +442,7 @@ async fn run_status_and_disable_dispatch_via_env_home() {
     .await;
 }
 
+#[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
 #[tokio::test]
 async fn run_enable_without_plugin_errors_via_env_home() {
     with_locked_env_home(|tmp| async move {
@@ -465,6 +469,8 @@ async fn run_enable_without_plugin_errors_via_env_home() {
 // 进程级全局），所以哑 DLL 的写/删必须整体持 GLOBAL_STATE_LOCK。
 // cmd_* 无单例参与，home 隔离走 NEMESISBOT_HOME（父目录）env 即可。
 // ===========================================================================
+// 整 mod Windows 形态（5/5 测试 + 专属 helper 全走 Windows CLI 进程边界）。
+#[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
 mod r7_enable_success_chain {
     use super::*;
     use std::path::PathBuf;
@@ -526,6 +532,7 @@ mod r7_enable_success_chain {
         std::fs::write(dir.join("model.onnx"), b"r7 dummy onnx").unwrap();
     }
 
+    #[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn run_enable_full_success_chain_flips_both_switches() {
         // 锁与守卫同生命周期：DLL 写入期间其它内存测试不得并发探测 exe 目录。
@@ -564,6 +571,7 @@ mod r7_enable_success_chain {
         assert_eq!(em["enabled"], true, "子开关翻 true");
     }
 
+    #[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn run_status_overall_ready_branch_with_all_ingredients() {
         let _guard = crate::GLOBAL_STATE_LOCK.lock().unwrap();
@@ -600,6 +608,7 @@ mod r7_enable_success_chain {
         r.expect("status with full stack ok");
     }
 
+    #[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn run_enable_plugin_ok_but_model_missing_maps_install_hint() {
         let _guard = crate::GLOBAL_STATE_LOCK.lock().unwrap();
@@ -633,6 +642,7 @@ mod r7_enable_success_chain {
 
     /// R7（coverage-95 goal）：workspace 是普通文件 → config 目录创建必然
     /// 失败，with_context 的错误臂（错误发生在 DLL 探测之前，无需哑 DLL）。
+    #[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn run_enable_blocked_when_workspace_is_regular_file() {
         let _guard = crate::GLOBAL_STATE_LOCK.lock().unwrap();
@@ -659,6 +669,7 @@ mod r7_enable_success_chain {
     /// R7（coverage-95 goal）：has_onnx_files 的 false 臂——空目录 / 无
     /// onnx 扩展名文件 / 目录本身不存在都返回 false（true 臂由上面成功链
     /// 的嵌套递归覆盖）。
+    #[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
     #[test]
     fn has_onnx_files_false_arms_on_empty_missing_and_non_onnx() {
         let _guard = crate::GLOBAL_STATE_LOCK.lock().unwrap();
