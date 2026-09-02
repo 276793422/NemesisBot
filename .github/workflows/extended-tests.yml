@@ -76,9 +76,13 @@ jobs:
         # 雷区 11（2026-09-01 nemesis_web 实录）：GH ubuntu runner 默认
         # ulimit -n 1024，fd 表进程级终生持有——nemesis_web 全量跑到 ~400
         # 个后耗尽，后续上千个连坐 panic（Os error 24）。跑前抬高，不改代码。
+        # --no-fail-fast（2026-09-02 bwrap 实录）：cargo 默认一个测试二进制
+        # 失败就中止整个 workspace 跑——nemesis-sandbox 一红，后面
+        # security..nemesisbot 约 2000 个测试全没跑。nightly 要的是全量
+        # 体检报告，一轮把所有红都暴露出来，不在半路掐断。
         run: |
           ulimit -n 8192
-          cargo test --workspace
+          cargo test --workspace --no-fail-fast
 
   feature-matrix:
     name: Feature trimming matrix (Linux)

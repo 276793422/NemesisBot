@@ -354,6 +354,25 @@ mod linux_live {
         }
     }
 
+    /// bwrap 真·能力探针：`availability()` 只查二进制在不在；Ubuntu 24.04
+    /// 的 AppArmor 无特权 userns 限制（apparmor_restrict_unprivileged_userns）
+    /// 会让 bwrap 起 --unshare-net 沙盒时死在 loopback 配置（`Failed
+    /// RTM_NEWADDR: Operation not permitted`，2026-09-02 CI runner 实录）——
+    /// 二进制在但沙盒起不来。跑 bwrap 真沙盒测试前先起一个最小沙盒确认
+    /// 能力，起不来就 SKIP（无限制宿主=真机环境照常真跑）。
+    fn bwrap_sandbox_capable(backend: &crate::backend::bwrap_impl::BwrapBackend) -> bool {
+        let Ok(tmp) = tempfile::tempdir() else {
+            return false;
+        };
+        let conf = SandboxConf::for_executor(tmp.path(), false);
+        let trivial = Command::new("/bin/true");
+        let Ok(wrapped) = backend.wrap_command(&conf, &trivial) else {
+            return false;
+        };
+        let mut wrapped = wrapped;
+        matches!(run_with_timeout(&mut wrapped, 30), Ok(out) if out.status.success())
+    }
+
     /// bwrap 写外拒 / 写内放行（宿主文件真落盘验证写穿）。
     /// 「外」= /etc 下（namespace 内只读 bind）；「内」= workspace bind。
     #[test]
@@ -361,6 +380,13 @@ mod linux_live {
         let backend = crate::backend::bwrap_impl::BwrapBackend::new();
         if !matches!(backend.availability(), Availability::Full) {
             eprintln!("SKIP: bwrap not installed");
+            return;
+        }
+        if !bwrap_sandbox_capable(&backend) {
+            eprintln!(
+                "SKIP: bwrap sandbox cannot start on this host (Ubuntu 24.04 \
+                 apparmor_restrict_unprivileged_userns denies netns loopback setup)"
+            );
             return;
         }
 
@@ -410,6 +436,16 @@ mod linux_live {
         let backend = crate::backend::bwrap_impl::BwrapBackend::new();
         if !matches!(backend.availability(), Availability::Full) {
             eprintln!("SKIP: bwrap not installed");
+            return;
+        }
+        // 能力探针必须挡在本测试之前：bwrap 起不来时沙盒命令整体失败，
+        // 本测试的负断言（probe 不成功）会被启动失败【假满足】——无限制
+        // 宿主上才是真测，起不来的宿主上诚实 SKIP（2026-09-02 CI 实录）。
+        if !bwrap_sandbox_capable(&backend) {
+            eprintln!(
+                "SKIP: bwrap sandbox cannot start on this host (Ubuntu 24.04 \
+                 apparmor_restrict_unprivileged_userns denies netns loopback setup)"
+            );
             return;
         }
         if !std::path::Path::new("/bin/bash").exists() {
