@@ -692,6 +692,29 @@ async fn test_append_experiences_raw_format() {
 }
 
 #[tokio::test]
+async fn test_append_immediately_visible_to_read_all() {
+    // 回归测试（2026-09-03 Linux CI flake 根因）：tokio `fs::File::write_all`
+    // 只把字节提交给后台阻塞任务，`append` 返回时数据可能尚未写入文件
+    // （观测特征：文件存在但 len=0 且 created==modified）。缺 `flush` 时本
+    // 测试在暖进程里数轮内必红；flush 在位则确定性通过。
+    for i in 0..200 {
+        let dir = tempfile::tempdir().unwrap();
+        let store = ExperienceStore::from_forge_dir(dir.path());
+        let ce = CollectedExperience {
+            experience: make_experience("test_tool"),
+            dedup_hash: "hash-1".into(),
+        };
+        store.append(&ce).await.unwrap();
+        let all = store.read_all().await.unwrap();
+        assert_eq!(
+            all.len(),
+            1,
+            "iteration {i}: append 不可见于紧随其后的 read_all"
+        );
+    }
+}
+
+#[tokio::test]
 async fn test_append_experience_deduplication() {
     let dir = tempfile::tempdir().unwrap();
     let store = ExperienceStore::from_forge_dir(dir.path());

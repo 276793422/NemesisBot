@@ -564,6 +564,11 @@ impl Tool for AppendFileTool {
         file.write_all(content.as_bytes())
             .await
             .map_err(|e| format!("Failed to append to file: {}", e))?;
+        // tokio fs::File 的 write_all 只提交到后台任务，不 flush 则数据可能
+        // 尚未写入文件（drop 不等待未完成 IO）。
+        file.flush()
+            .await
+            .map_err(|e| format!("Failed to flush file: {}", e))?;
 
         Ok(format!(
             "Appended {} bytes to {}",

@@ -213,7 +213,11 @@ impl Tool for AppendFileTool {
         };
 
         match file.write_all(content.as_bytes()).await {
-            Ok(()) => ToolResult::silent(&format!("Appended to {}", path)),
+            Ok(()) => match file.flush().await {
+                // tokio fs::File 的 write_all 只提交到后台任务，必须 flush 才落盘
+                Ok(()) => ToolResult::silent(&format!("Appended to {}", path)),
+                Err(e) => ToolResult::error(&format!("failed to flush file: {}", e)),
+            },
             Err(e) => ToolResult::error(&format!("failed to append to file: {}", e)),
         }
     }

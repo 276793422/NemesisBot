@@ -221,6 +221,9 @@ impl MemoryStore for TfIdfLocalStore {
             {
                 let _ = f.write_all(line.as_bytes()).await;
                 let _ = f.write_all(b"\n").await;
+                // tokio fs::File 的 write_all 只提交到后台任务；归档以可恢复为
+                // 目的，必须 flush 确认落盘（best-effort 同主体风格）。
+                let _ = f.flush().await;
             }
             self.flush().await?;
             Ok(true)

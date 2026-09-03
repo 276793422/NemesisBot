@@ -105,6 +105,10 @@ impl ExperienceStore {
             .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e.to_string()))?;
         line.push('\n');
         file.write_all(line.as_bytes()).await?;
+        // tokio fs::File 的 write_all 只把字节提交到后台阻塞任务，不保证已写入
+        // 文件；drop 不等待未完成 IO。不显式 flush，read-your-writes 会被打破
+        // （2026-09-03 CI flake 根因：append 返回后立即读到空文件）。
+        file.flush().await?;
         Ok(())
     }
 
@@ -126,6 +130,7 @@ impl ExperienceStore {
             .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e.to_string()))?;
         line.push('\n');
         file.write_all(line.as_bytes()).await?;
+        file.flush().await?;
         Ok(())
     }
 

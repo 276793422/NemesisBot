@@ -192,6 +192,8 @@ impl Collector {
             .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e.to_string()))?;
         line.push('\n');
         file.write_all(line.as_bytes()).await?;
+        // 同 experience_store：write_all 不保证落盘，必须 flush 才满足 read-your-writes。
+        file.flush().await?;
         Ok(())
     }
 
@@ -295,6 +297,7 @@ impl Collector {
             .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e.to_string()))?;
         line.push('\n');
         file.write_all(line.as_bytes()).await?;
+        file.flush().await?;
         Ok(())
     }
 
