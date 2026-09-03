@@ -2,6 +2,8 @@
 //!
 //! 从用户消息文本中提取候选图片路径并验真：Windows 绝对（`C:\...`）/
 //! POSIX 绝对（`/...`）/ UNC（`\\server\share\a.png`）/ 工作区相对。
+//! 含空格的路径必须用引号包裹（`"..."` / `「...」`，shell 语义——空白是
+//! 行文与路径的边界，理由见 [`path_regex`] 文档）。
 //! 扩展名白名单 png/jpg/jpeg/webp/gif；验真 = 存在性 + 单图 ≤25MB（D6）
 //! + magic byte 嗅探（防文本伪装 .png）+ 同消息去重。
 //!
@@ -80,34 +82,68 @@ impl ImagePathCandidate {
 
 /// 候选提取正则（OnceLock 缓存）。
 ///
-/// 段字符类：字母数字/下划线/CJK/谚文/拉丁扩展/空格/点/括号/连字符；
-/// 不含分隔符与 Windows 文件名非法字符（`:*?"<>|`）。
+/// 两形态家族（2026-09-04 三份 CI 日志 28 处红的根修，shell 语义对齐）：
+/// - **无引号形态**：段字符类**不含任何空白**——空白是行文与路径的天然
+///   边界。此前类含空格 + POSIX/相对分支无左锚点，`/a.png 和 /b.png` 被
+///   贪心连成**一个**候选（`find_iter` 只取这一个重叠匹配，真路径全丢）。
+///   Windows 靠盘符 `:` 不在类内天然截断所以本地测不出；Linux CI 上是
+///   生产 bug：同句两图粘连成假 NotFound 候选。根修 = 空白出类。
+/// - **引号形态**（`"..."` / `「...」`）：路径含空格必须包裹（与 shell
+///   一致）；引号不在段类内，贪心既逃不出也进不来，引号内段可含空格。
+///   匹配后剥离成对包裹字符再解析（[`strip_path_quotes`]）。
+///
+/// 段字符类其余部分：字母数字/下划线/`~`（**8.3 短名** `RUNNER~1`——CI
+/// runner 与开启短名生成的机器上 `std::env::temp_dir()` 真实返回这种路径，
+/// `~` 曾不在类内导致文本点名路径全部失明）/CJK/谚文/拉丁扩展/点/括号/
+/// 连字符；不含分隔符与 Windows 文件名非法字符（`:*?"<>|`）。
 /// 扩展名要求前置点号 + 白名单词（防 "C:\\tempng" 之类吞段误报）。
 fn path_regex() -> &'static regex::Regex {
     use std::sync::OnceLock;
     static RE: OnceLock<regex::Regex> = OnceLock::new();
     RE.get_or_init(|| {
-        let seg =
-            r#"[\w\u{4e00}-\u{9fff}\u{3400}-\u{4dbf}\u{ac00}-\u{d7af}\u{00c0}-\u{024f} .()\-]"#;
-        let name = format!("(?:{seg}+)"); // 末段文件名（可含点）
-        let ext = r#"\.(?i:png|jpe?g|webp|gif)"#;
-        // Windows 盘符绝对：C:\a\b.png（\ / 混用均收）
-        let win = format!(r#"[A-Za-z]:[\\/](?:{name}[\\/])*{name}{ext}"#);
-        // UNC：\\server\share\a.png
-        let unc = format!(r#"\\\\{name}[\\/](?:{name}[\\/])*{name}{ext}"#);
-        // POSIX 绝对：/a/b.png（仅 / 分隔）
-        let nix_abs = format!(r#"/(?:{name}/)*{name}{ext}"#);
-        // 相对（含 ./ ../ 与任意含分隔符的相对；\ / 均收）。
-        // 首段禁止空格：无锚点分支若首段允许空格，行文前缀（"看 "）
-        // 会贪心吞进首段产生脏匹配；首段无空格使引擎从真实路径起点重新起搏。
-        // （代价：相对路径首段含空格需写 ./ 前缀；绝对/UNC 不受影响。）
-        let first_seg =
-            r#"[\w\u{4e00}-\u{9fff}\u{3400}-\u{4dbf}\u{ac00}-\u{d7af}\u{00c0}-\u{024f}.()\-]"#;
-        let rel = format!(r#"{first_seg}+(?:[\\/]{name}+)*[\\/]{name}{ext}"#);
-        regex::RegexBuilder::new(format!("(?:{win})|(?:{unc})|(?:{nix_abs})|(?:{rel})").as_str())
+        let seg_ns =
+            r#"[\w~\u{4e00}-\u{9fff}\u{3400}-\u{4dbf}\u{ac00}-\u{d7af}\u{00c0}-\u{024f}.()\-]"#;
+        // 引号内形态：允许空格（引号是边界，贪心跨不出去）。
+        let seg_q =
+            r#"[\w~\u{4e00}-\u{9fff}\u{3400}-\u{4dbf}\u{ac00}-\u{d7af}\u{00c0}-\u{024f}.()\- ]"#;
+        let build = |seg: &str| -> (String, String, String, String) {
+            let name = format!("(?:{seg}+)"); // 末段文件名（可含点）
+            let ext = r#"\.(?i:png|jpe?g|webp|gif)"#;
+            // Windows 盘符绝对：C:\a\b.png（\ / 混用均收）
+            let win = format!(r#"[A-Za-z]:[\\/](?:{name}[\\/])*{name}{ext}"#);
+            // UNC：\\server\share\a.png
+            let unc = format!(r#"\\\\{name}[\\/](?:{name}[\\/])*{name}{ext}"#);
+            // POSIX 绝对：/a/b.png（仅 / 分隔）
+            let nix_abs = format!(r#"/(?:{name}/)*{name}{ext}"#);
+            // 相对（含 ./ ../ 与任意含分隔符的相对；\ / 均收）。段内无空白后，
+            // 无锚点分支天然从真实路径起点起搏（行文前缀 "看 " 含空格进不了首段）。
+            let rel = format!(r#"{seg}+(?:[\\/]{name}+)*[\\/]{name}{ext}"#);
+            (win, unc, nix_abs, rel)
+        };
+        let (win, unc, nix_abs, rel) = build(seg_ns);
+        let core = format!("(?:{win})|(?:{unc})|(?:{nix_abs})|(?:{rel})");
+        let (win_q, unc_q, nix_q, rel_q) = build(seg_q);
+        let core_q = format!("(?:{win_q})|(?:{unc_q})|(?:{nix_q})|(?:{rel_q})");
+        // 引号形态排在无引号之前：同一位置两者都可行时优先整段带引号匹配
+        // （leftmost-first），raw 恒定走剥离逻辑，行为单一。
+        regex::RegexBuilder::new(format!("\"(?:{core_q})\"|「(?:{core_q})」|(?:{core})").as_str())
             .build()
             .expect("image path regex is static and valid")
     })
+}
+
+/// 引号形态匹配的 raw 带包裹字符（`"..."` / `「...」`）——剥成对包裹后再
+/// 解析。引号分支产出的 raw 必然成对（闭合引号是分支的一部分），故两侧
+/// 独立剥离即可；无引号形态不含引号字符，剥离是 no-op。
+fn strip_path_quotes(raw: &str) -> &str {
+    let inner = raw
+        .strip_prefix('"')
+        .or_else(|| raw.strip_prefix('「'))
+        .unwrap_or(raw);
+    inner
+        .strip_suffix('"')
+        .or_else(|| inner.strip_suffix('」'))
+        .unwrap_or(inner)
 }
 
 /// 扩展名是否在白名单（大小写不敏感）。
@@ -260,7 +296,9 @@ pub fn detect_image_paths(text: &str, workspace_dir: Option<&Path>) -> Vec<Image
         if in_url_span(m.start(), m.end()) {
             continue;
         }
-        let raw = m.as_str().to_string();
+        // 引号形态的匹配带包裹字符——剥离后再进扩展名判断与路径解析，
+        // raw/notes/去重键见到的都是干净路径。
+        let raw = strip_path_quotes(m.as_str()).to_string();
         if !has_image_extension(&raw) {
             continue;
         }

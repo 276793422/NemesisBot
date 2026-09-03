@@ -67,7 +67,13 @@ fn test_windows_path_forward_slash_mix() {
     assert!(out[0].is_attachable());
 }
 
+// UNC 是 Windows 形态语义（`\` 是分隔符、`\\server` 是根）：POSIX 上
+// `Path::has_root()` 对反斜杠前缀返回 false → 按相对路径处理 → 本测试的
+// 「deliberate + 诚实 NotFound」前提不成立。2026-09-02 约定：Windows 形态
+// 测试挂 #[cfg(windows)]，Linux 上编译期消失而非运行期跳过（2026-09-04
+// Linux CI 红 9 处的根因之一）。
 #[test]
+#[cfg(windows)]
 fn test_unc_path_detected() {
     let ws = temp_dir("unc");
     // UNC 无法在单机测试里真实创建共享；验证提取 + 诚实的 NotFound
@@ -286,9 +292,13 @@ fn test_ext_from_magic_matches_sniff_and_names() {
     }
 }
 
-// 2026-09-03 二次回归 C1：dedup_key 分隔符归一（全平台可移植断言）——
-// `\` 与 `/` 形态产生同一键。
+// 2026-09-03 二次回归 C1：dedup_key 分隔符归一。**Windows 形态语义**——
+// 归一与小写化都只 cfg!(windows)（L5：POSIX 上 `\` 是合法文件名字符），
+// POSIX 侧的「不归一」前提由 test_posix_backslash_filename_not_deduped
+// 锁定。挂 #[cfg(windows)]（2026-09-02 约定；2026-09-04 Linux CI 红 9 处
+// 的根因之一）。
 #[test]
+#[cfg(windows)]
 fn test_dedup_key_separator_normalized() {
     let a = super::dedup_key(std::path::Path::new("C:\\imgs\\A.png"));
     let b = super::dedup_key(std::path::Path::new("C:/imgs/A.png"));
@@ -312,7 +322,7 @@ fn test_posix_backslash_filename_not_deduped() {
     write_png(&b, b"y");
 
     let text = "对比 dir\\a.png 和 dir/a.png";
-    let out = detect_image_paths(&text, Some(&ws));
+    let out = detect_image_paths(text, Some(&ws));
     assert_eq!(out.len(), 2, "POSIX 反斜杠文件名不应被归一去重: {:?}", out);
 }
 
@@ -388,4 +398,77 @@ fn test_no_workspace_dir_relative_dropped() {
     // 无 workspace_dir 基准时相对候选不产出（避免误报）
     let out = detect_image_paths("看 sub/dir/a.png", None);
     assert!(out.is_empty());
+}
+
+// ============================================================
+// 2026-09-04 CI 回归根修回归锁（28 处红 → 正则两形态家族重构）
+// ============================================================
+
+// `~`（8.3 短名）回归：段字符类此前不含 `~`，`C:\Users\RUNNER~1\...`
+// （GitHub Actions Windows runner 的 std::env::temp_dir() 真实返回形态，
+// 开启 8.3 短名生成的机器同理）永不匹配 → 文本点名路径全部失明（Windows
+// CI 红 19 处）。`~` 在 Windows/POSIX 文件名里都合法，用字面 RUNNER~1
+// 目录名做双平台确定性回归。
+#[test]
+fn test_83_shortname_tilde_segment_detected() {
+    let base = temp_dir("tilde");
+    let dir = base.join("RUNNER~1");
+    let img = dir.join("a.png");
+    write_png(&img, b"x");
+
+    let text = format!("看 {}", img.to_string_lossy());
+    let out = detect_image_paths(&text, Some(&base));
+    assert_eq!(out.len(), 1, "含 ~ 的 8.3 短名路径应被检出: {:?}", out);
+    assert!(out[0].is_attachable());
+    assert_eq!(out[0].resolved, img);
+}
+
+// 贪心粘连回归：段字符类含空格时，无锚点的 POSIX/相对分支把
+// 「/a.png 和 /b.png」连成**一个**候选（find_iter 只取这个重叠匹配，
+// 真路径全丢）。Windows 靠盘符 `:` 不在类内天然截断所以本地测不出；
+// Linux CI 上是生产 bug（同句两图粘连成假 NotFound，红 9 处之一）。
+// 空白出类后同句多路径各自成候选。POSIX 形态在 Windows 上按 NotFound
+// deliberate 检出（形态 bug 与操作系统无关），故双平台可跑。
+#[test]
+fn test_two_paths_in_one_sentence_not_joined() {
+    let ws = temp_dir("nojoin");
+    let out = detect_image_paths("对比 /tmp/x/a1.png 和 /tmp/x/b2.jpg 的差别", Some(&ws));
+    assert_eq!(out.len(), 2, "同句两个 POSIX 路径不应粘连: {:?}", out);
+    assert_eq!(out[0].raw, "/tmp/x/a1.png");
+    assert_eq!(out[1].raw, "/tmp/x/b2.jpg");
+    assert!(out.iter().all(|c| c.deliberate));
+}
+
+// 引号形态覆盖**中间段**空格（目录名含空格，如 "my dir"）：含空格路径
+// 必须加引号（shell 语义），引号内任意段可含空格。
+#[test]
+fn test_quoted_path_with_space_dir_detected() {
+    let ws = temp_dir("quotedir");
+    let img = ws.join("my dir").join("a.png");
+    write_png(&img, b"x");
+
+    let text = format!("看下 \"{}\" 这张", img.to_string_lossy());
+    let out = detect_image_paths(&text, Some(&ws));
+    assert_eq!(out.len(), 1, "引号包裹的含空格目录路径应被检出: {:?}", out);
+    assert!(out[0].is_attachable());
+    assert_eq!(out[0].resolved, img);
+}
+
+// 行为决策锁：无引号含空格路径**不**检出（空白 = 行文边界，shell 语义；
+// 加引号即可检出，见 test_quoted_path_with_space_dir_detected）。这是
+// 贪心粘连根修的代价面——若要恢复无引号空格支持，必须先解决同句多路径
+// 粘连，不能简单把空格加回段字符类（CI 会重新红给你看）。
+#[test]
+fn test_unquoted_space_path_not_candidate() {
+    let ws = temp_dir("nospace");
+    let img = ws.join("my photo.png");
+    write_png(&img, b"x");
+
+    let text = format!("看 {}", img.to_string_lossy());
+    let out = detect_image_paths(&text, Some(&ws));
+    assert!(
+        out.is_empty(),
+        "无引号含空格路径不检出（shell 语义决策锁）: {:?}",
+        out
+    );
 }
