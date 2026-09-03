@@ -22,7 +22,7 @@ fn test_build_request_body_simple() {
     let provider = AnthropicProvider::new(AnthropicConfig::default());
     let messages = vec![Message {
         role: "user".to_string(),
-        content: "Hello".to_string(),
+        content: "Hello".into(),
         tool_calls: vec![],
         tool_call_id: None,
         timestamp: None,
@@ -41,7 +41,7 @@ fn test_build_request_body_with_system() {
     let messages = vec![
         Message {
             role: "system".to_string(),
-            content: "You are helpful".to_string(),
+            content: "You are helpful".into(),
             tool_calls: vec![],
             tool_call_id: None,
             timestamp: None,
@@ -50,7 +50,7 @@ fn test_build_request_body_with_system() {
         },
         Message {
             role: "user".to_string(),
-            content: "Hi".to_string(),
+            content: "Hi".into(),
             tool_calls: vec![],
             tool_call_id: None,
             timestamp: None,
@@ -294,7 +294,7 @@ fn test_build_request_body_user_with_tool_call_id() {
     let provider = AnthropicProvider::new(AnthropicConfig::default());
     let messages = vec![Message {
         role: "user".to_string(),
-        content: "file result data".to_string(),
+        content: "file result data".into(),
         tool_calls: vec![],
         tool_call_id: Some("tu_123".to_string()),
         timestamp: None,
@@ -314,7 +314,7 @@ fn test_build_request_body_tool_with_call_id() {
     let provider = AnthropicProvider::new(AnthropicConfig::default());
     let messages = vec![Message {
         role: "tool".to_string(),
-        content: "tool output".to_string(),
+        content: "tool output".into(),
         tool_calls: vec![],
         tool_call_id: Some("tu_456".to_string()),
         timestamp: None,
@@ -334,7 +334,7 @@ fn test_build_request_body_tool_without_call_id() {
     let provider = AnthropicProvider::new(AnthropicConfig::default());
     let messages = vec![Message {
         role: "tool".to_string(),
-        content: "orphan output".to_string(),
+        content: "orphan output".into(),
         tool_calls: vec![],
         tool_call_id: None,
         timestamp: None,
@@ -351,7 +351,7 @@ fn test_build_request_body_unknown_role() {
     let provider = AnthropicProvider::new(AnthropicConfig::default());
     let messages = vec![Message {
         role: "custom_role".to_string(),
-        content: "ignored".to_string(),
+        content: "ignored".into(),
         tool_calls: vec![],
         tool_call_id: None,
         timestamp: None,
@@ -541,7 +541,7 @@ fn test_assistant_with_tool_calls_and_function_fallback() {
     // ToolCall with no name field, but has function.name
     let messages = vec![Message {
         role: "assistant".to_string(),
-        content: String::new(),
+        content: String::new().into(),
         tool_calls: vec![ToolCall {
             id: "tc_1".to_string(),
             call_type: Some("function".to_string()),
@@ -573,7 +573,7 @@ fn test_effort_anthropic_budget_mapping() {
     let provider = AnthropicProvider::new(AnthropicConfig::default());
     let messages = vec![Message {
         role: "user".to_string(),
-        content: "Hello".to_string(),
+        content: "Hello".into(),
         tool_calls: vec![],
         tool_call_id: None,
         timestamp: None,
@@ -622,7 +622,7 @@ fn anth_config(base: &str) -> AnthropicConfig {
 fn anth_messages() -> Vec<Message> {
     vec![Message {
         role: "user".to_string(),
-        content: "hi".to_string(),
+        content: "hi".into(),
         tool_calls: vec![],
         tool_call_id: None,
         timestamp: None,
@@ -721,7 +721,7 @@ fn test_w4c_anth_build_body_assistant_tool_calls_and_tool_result() {
     let messages = vec![
         Message {
             role: "assistant".to_string(),
-            content: "let me check".to_string(),
+            content: "let me check".into(),
             tool_calls: vec![tc.clone()],
             tool_call_id: None,
             timestamp: None,
@@ -730,7 +730,7 @@ fn test_w4c_anth_build_body_assistant_tool_calls_and_tool_result() {
         },
         Message {
             role: "assistant".to_string(),
-            content: String::new(),
+            content: String::new().into(),
             tool_calls: vec![tc.clone()],
             tool_call_id: None,
             timestamp: None,
@@ -739,7 +739,7 @@ fn test_w4c_anth_build_body_assistant_tool_calls_and_tool_result() {
         },
         Message {
             role: "tool".to_string(),
-            content: "{\"temp\": 25}".to_string(),
+            content: "{\"temp\": 25}".into(),
             tool_calls: vec![],
             tool_call_id: Some("tc-1".to_string()),
             timestamp: None,
@@ -785,7 +785,7 @@ fn test_w4c_anth_build_body_assistant_tool_calls_and_tool_result() {
     });
     let msgs2 = vec![Message {
         role: "assistant".to_string(),
-        content: String::new(),
+        content: String::new().into(),
         tool_calls: vec![tc],
         tool_call_id: None,
         timestamp: None,
@@ -797,4 +797,216 @@ fn test_w4c_anth_build_body_assistant_tool_calls_and_tool_result() {
     assert_eq!(b["name"], "fn-name");
     // arguments 为 None → 空 object
     assert_eq!(b["input"], serde_json::json!({}));
+}
+
+// ============================================================
+// 字节快照（goal T1/T3 纪律 6）：content 类型多态化
+// （String → MessageContent）前后，纯文本请求体必须逐字节一致
+// ——这是 prompt cache 前缀契约（真相源 §1.5.2）。本测试先于
+// 类型改动写好并锁死当前字节；类型改动后必须原样保持绿。
+// 注：请求体经 serde_json::Value（无 preserve_order → BTreeMap），
+// 键序为字母序——快照锁定的是"当前真实字节"而非声明序。
+// ============================================================
+
+#[test]
+fn test_request_body_bytesnapshot_pure_text() {
+    let provider = AnthropicProvider::new(AnthropicConfig::default());
+    let messages = vec![
+        Message {
+            role: "system".to_string(),
+            content: "You are helpful.".into(),
+            tool_calls: vec![],
+            tool_call_id: None,
+            timestamp: None,
+            reasoning_content: None,
+            extra: HashMap::new(),
+        },
+        Message {
+            role: "user".to_string(),
+            content: "Hello".into(),
+            tool_calls: vec![],
+            tool_call_id: None,
+            timestamp: None,
+            reasoning_content: None,
+            extra: HashMap::new(),
+        },
+        Message {
+            role: "assistant".to_string(),
+            content: "Hi there!".into(),
+            tool_calls: vec![],
+            tool_call_id: None,
+            timestamp: None,
+            reasoning_content: None,
+            extra: HashMap::new(),
+        },
+    ];
+
+    let body = provider.build_request_body(&messages, &[], "claude-3", &ChatOptions::default());
+    let serialized = serde_json::to_string(&body).unwrap();
+    assert_eq!(
+        serialized,
+        r#"{"max_tokens":4096,"messages":[{"content":"Hello","role":"user"},{"content":"Hi there!","role":"assistant"}],"model":"claude-3","system":[{"text":"You are helpful.","type":"text"}]}"#
+    );
+}
+
+// ============================================================
+// T3：Anthropic image blocks（goal T3）
+// ============================================================
+
+#[test]
+fn test_request_body_image_parts_anthropic_blocks() {
+    let provider = AnthropicProvider::new(AnthropicConfig::default());
+    let messages = vec![Message {
+        role: "user".to_string(),
+        content: MessageContent::Parts(vec![
+            ContentPart::Text {
+                text: "这是什么".to_string(),
+            },
+            ContentPart::Image {
+                image: ImageSource::Base64 {
+                    media_type: "image/png".to_string(),
+                    data: "aGVsbG8=".to_string(),
+                },
+                detail: Some(ImageDetail::Low), // Anthropic 无 detail 字段 → 不透传
+            },
+            ContentPart::Image {
+                image: ImageSource::Url("https://example.com/b.jpg".to_string()),
+                detail: None,
+            },
+        ]),
+        tool_calls: vec![],
+        tool_call_id: None,
+        timestamp: None,
+        reasoning_content: None,
+        extra: HashMap::new(),
+    }];
+
+    let body = provider.build_request_body(&messages, &[], "claude-3", &ChatOptions::default());
+    let content = body["messages"][0]["content"]
+        .as_array()
+        .expect("blocks 数组");
+    assert_eq!(content.len(), 3);
+
+    assert_eq!(content[0]["type"], "text");
+    assert_eq!(content[0]["text"], "这是什么");
+
+    assert_eq!(content[1]["type"], "image");
+    assert_eq!(content[1]["source"]["type"], "base64");
+    assert_eq!(content[1]["source"]["media_type"], "image/png");
+    assert_eq!(content[1]["source"]["data"], "aGVsbG8=");
+    assert!(content[1].get("detail").is_none());
+
+    assert_eq!(content[2]["type"], "image");
+    assert_eq!(content[2]["source"]["type"], "url");
+    assert_eq!(content[2]["source"]["url"], "https://example.com/b.jpg");
+}
+
+#[test]
+fn test_request_body_tool_result_content_stays_string() {
+    // tool result content 不转 blocks（工具结果文本;MCP 图像属 P5 范围）
+    let provider = AnthropicProvider::new(AnthropicConfig::default());
+    let messages = vec![Message {
+        role: "user".to_string(),
+        content: MessageContent::Text("工具输出".to_string()),
+        tool_calls: vec![],
+        tool_call_id: Some("call_1".to_string()),
+        timestamp: None,
+        reasoning_content: None,
+        extra: HashMap::new(),
+    }];
+    let body = provider.build_request_body(&messages, &[], "claude-3", &ChatOptions::default());
+    let msg = &body["messages"][0];
+    assert_eq!(msg["content"][0]["type"], "tool_result");
+    assert_eq!(msg["content"][0]["content"], "工具输出");
+}
+
+// 2026-09-03 二次回归 F1 回归锁：非 user 位（system / assistant / tool_result）
+// 携带 Parts 时不得 raw 序列化产出非法 wire 块——文本视图（+诚实注记，D7 同族），
+// 全请求无 base64 泄漏；Text 形态保持原字节（既有快照测试覆盖）。
+#[test]
+fn test_request_body_non_user_roles_with_parts_degrade_to_text_note() {
+    let provider = AnthropicProvider::new(AnthropicConfig::default());
+    let mk = |role: &str, content: MessageContent, tool_call_id: Option<String>| Message {
+        role: role.to_string(),
+        content,
+        tool_calls: vec![],
+        tool_call_id,
+        timestamp: None,
+        reasoning_content: None,
+        extra: HashMap::new(),
+    };
+    let parts = |text: &str, b64: &str| {
+        MessageContent::Parts(vec![
+            ContentPart::Text {
+                text: text.to_string(),
+            },
+            ContentPart::Image {
+                image: ImageSource::Base64 {
+                    media_type: "image/png".to_string(),
+                    data: b64.to_string(),
+                },
+                detail: None,
+            },
+        ])
+    };
+
+    let messages = vec![
+        mk("system", parts("系统指令", "aGVsbG8="), None),
+        // user 位正常转 blocks（对照组；用独立 base64 标记区分「正常保留」与「泄漏」）
+        mk("user", parts("看看这张图", "Y29udHJvbA=="), None),
+        mk("assistant", parts("回答", "aGVsbG8="), None),
+        mk(
+            "user",
+            parts("工具结果", "aGVsbG8="),
+            Some("call_1".to_string()),
+        ),
+        mk(
+            "tool",
+            parts("工具结果2", "aGVsbG8="),
+            Some("call_2".to_string()),
+        ),
+    ];
+
+    let body = provider.build_request_body(&messages, &[], "claude-3", &ChatOptions::default());
+    let raw = serde_json::to_string(&body).unwrap();
+
+    // 非 user 位不得出现 image block / base64 泄漏（非 user 标记全请求消失）
+    assert!(!raw.contains("aGVsbG8="), "base64 泄漏进请求: {raw}");
+    // user 位对照组的图片照常保留（降级只作用于非 user 位）
+    assert!(raw.contains("Y29udHJvbA=="), "user 位图片被误剥: {raw}");
+
+    // system：**纯文本视图**（to_text）——system 是内部指令位，无"用户附带"
+    // 语义，故无注记（与 codex system 分支同语义；回归 F1 的一致性修正）。
+    assert_eq!(body["system"][0]["type"], "text");
+    let sys_text = body["system"][0]["text"].as_str().unwrap();
+    assert_eq!(sys_text, "系统指令", "system 位应取纯文本、无图片注记");
+
+    // assistant 无 tool_calls：content 保持字符串 + 注记
+    let asst = &body["messages"][1];
+    assert_eq!(asst["role"], "assistant");
+    assert!(asst["content"].is_string());
+    assert!(asst["content"].as_str().unwrap().contains("1 张图片"));
+
+    // user/tool 两个 tool_result 位：content 字符串 + 注记
+    let tr1 = &body["messages"][2];
+    assert_eq!(tr1["content"][0]["type"], "tool_result");
+    assert!(
+        tr1["content"][0]["content"]
+            .as_str()
+            .unwrap()
+            .contains("1 张图片")
+    );
+    let tr2 = &body["messages"][3];
+    assert_eq!(tr2["content"][0]["type"], "tool_result");
+    assert!(
+        tr2["content"][0]["content"]
+            .as_str()
+            .unwrap()
+            .contains("1 张图片")
+    );
+
+    // 对照组：user 位 Parts 正常转 blocks（image block 仍在，证明降级只作用于非 user 位）
+    let user = &body["messages"][0];
+    let ucontent = user["content"].as_array().expect("user 位 blocks 数组");
+    assert_eq!(ucontent[1]["type"], "image");
 }

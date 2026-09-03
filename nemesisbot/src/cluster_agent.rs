@@ -190,6 +190,7 @@ async fn execute_new_task(
             false,
             &token,
             None,
+            &[],
         )
         .await;
     task_list.unregister_cancel_token(&task.task_id);

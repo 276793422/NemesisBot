@@ -157,6 +157,7 @@ fn one_user_message() -> Vec<LlmMessage> {
         tool_calls: None,
         tool_call_id: None,
         reasoning_content: None,
+        images: Vec::new(),
     }]
 }
 
@@ -216,6 +217,7 @@ async fn adapter_chat_passes_message_count() {
             tool_calls: None,
             tool_call_id: None,
             reasoning_content: None,
+            images: Vec::new(),
         },
         LlmMessage {
             role: "user".to_string(),
@@ -223,6 +225,7 @@ async fn adapter_chat_passes_message_count() {
             tool_calls: None,
             tool_call_id: None,
             reasoning_content: None,
+            images: Vec::new(),
         },
     ];
     let _ = adapter
@@ -533,4 +536,108 @@ async fn adapter_chat_passes_reasoning_effort_h4() {
         None,
         "不带 effort 时必须透传 None，不能串轮次残留"
     );
+}
+
+// -----------------------------------------------------------------------
+// T5（多模态，goal 2026-09-03）：agent_message_to_provider 转换
+// -----------------------------------------------------------------------
+
+#[test]
+fn text_only_message_stays_string_shape() {
+    let m = LlmMessage {
+        role: "user".to_string(),
+        content: "纯文本".to_string(),
+        tool_calls: None,
+        tool_call_id: None,
+        reasoning_content: None,
+        images: Vec::new(),
+    };
+    let out = crate::llm_bridge::agent_message_to_provider(m);
+    // 字节兼容红线：无图消息 content 恒为字符串形态（prompt cache 前缀不破）。
+    assert_eq!(
+        out.content,
+        nemesis_providers::types::MessageContent::Text("纯文本".to_string())
+    );
+}
+
+#[test]
+fn images_produce_parts_with_annotation_order() {
+    let m = LlmMessage {
+        role: "user".to_string(),
+        content: "看图".to_string(),
+        tool_calls: None,
+        tool_call_id: None,
+        reasoning_content: None,
+        images: vec![
+            nemesis_agent::LlmImage {
+                path: "C:/tmp/a.png".to_string(),
+                media_type: "image/png".to_string(),
+                data: "QUJD".to_string(),
+            },
+            nemesis_agent::LlmImage {
+                path: "C:/tmp/b.jpg".to_string(),
+                media_type: "image/jpeg".to_string(),
+                data: "REVG".to_string(),
+            },
+        ],
+    };
+    let out = crate::llm_bridge::agent_message_to_provider(m);
+    let nemesis_providers::types::MessageContent::Parts(parts) = out.content else {
+        panic!("含图消息必须是 Parts 形态");
+    };
+    // 形态：[Text(看图), Text(标注a), Image(a), Text(标注b), Image(b)]
+    assert_eq!(parts.len(), 5, "文本 part + 每图（标注+图片）2 part");
+    assert_eq!(
+        parts[0],
+        nemesis_providers::types::ContentPart::Text {
+            text: "看图".to_string()
+        }
+    );
+    assert_eq!(
+        parts[1],
+        nemesis_providers::types::ContentPart::Text {
+            text: "[图片: C:/tmp/a.png]".to_string()
+        }
+    );
+    assert_eq!(
+        parts[2],
+        nemesis_providers::types::ContentPart::Image {
+            image: nemesis_providers::types::ImageSource::Base64 {
+                media_type: "image/png".to_string(),
+                data: "QUJD".to_string(),
+            },
+            detail: None,
+        }
+    );
+    assert_eq!(
+        parts[4],
+        nemesis_providers::types::ContentPart::Image {
+            image: nemesis_providers::types::ImageSource::Base64 {
+                media_type: "image/jpeg".to_string(),
+                data: "REVG".to_string(),
+            },
+            detail: None,
+        }
+    );
+}
+
+#[test]
+fn images_with_empty_content_have_no_leading_text_part() {
+    let m = LlmMessage {
+        role: "user".to_string(),
+        content: String::new(),
+        tool_calls: None,
+        tool_call_id: None,
+        reasoning_content: None,
+        images: vec![nemesis_agent::LlmImage {
+            path: "a.webp".to_string(),
+            media_type: "image/webp".to_string(),
+            data: "WA".to_string(),
+        }],
+    };
+    let out = crate::llm_bridge::agent_message_to_provider(m);
+    let nemesis_providers::types::MessageContent::Parts(parts) = out.content else {
+        panic!("含图消息必须是 Parts 形态");
+    };
+    assert_eq!(parts.len(), 2, "空文本不产空 Text part（标注+图片）");
 }

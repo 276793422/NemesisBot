@@ -104,6 +104,7 @@ fn projection_record(
         injections,
         voice_append: None,
         summary_as_of: None,
+        vision_projected: false,
     }
 }
 
@@ -128,6 +129,7 @@ fn plain_msgs() -> Vec<LlmMessage> {
             tool_calls: None,
             tool_call_id: None,
             reasoning_content: None,
+            images: Vec::new(),
         },
         LlmMessage {
             role: "assistant".into(),
@@ -135,6 +137,7 @@ fn plain_msgs() -> Vec<LlmMessage> {
             tool_calls: None,
             tool_call_id: None,
             reasoning_content: None,
+            images: Vec::new(),
         },
         LlmMessage {
             role: "user".into(),
@@ -142,6 +145,7 @@ fn plain_msgs() -> Vec<LlmMessage> {
             tool_calls: None,
             tool_call_id: None,
             reasoning_content: None,
+            images: Vec::new(),
         },
     ]
 }

@@ -177,6 +177,7 @@ fn test_message_role_mapping() {
             tool_calls: None,
             tool_call_id: None,
             reasoning_content: None,
+            images: Vec::new(),
         };
         assert_eq!(msg.role, *role);
         assert_eq!(msg.content, "test");
@@ -753,6 +754,7 @@ async fn test_s11b_adapter_message_and_tool_conversion() {
             }]),
             tool_call_id: None,
             reasoning_content: None,
+            images: Vec::new(),
         },
         LlmMessage {
             role: "user".to_string(),
@@ -760,6 +762,7 @@ async fn test_s11b_adapter_message_and_tool_conversion() {
             tool_calls: None,
             tool_call_id: None,
             reasoning_content: None,
+            images: Vec::new(),
         },
         LlmMessage {
             role: "tool".to_string(),
@@ -767,6 +770,7 @@ async fn test_s11b_adapter_message_and_tool_conversion() {
             tool_calls: None,
             tool_call_id: Some("t9".to_string()),
             reasoning_content: Some("because".to_string()),
+            images: Vec::new(),
         },
     ];
     let tools = vec![nemesis_agent::types::ToolDefinition {

@@ -92,7 +92,7 @@ async fn test_fallback_first_succeeds() {
 
     let messages = vec![Message {
         role: "user".to_string(),
-        content: "Hello".to_string(),
+        content: "Hello".into(),
         tool_calls: vec![],
         tool_call_id: None,
         timestamp: None,
@@ -132,7 +132,7 @@ async fn test_fallback_second_succeeds() {
 
     let messages = vec![Message {
         role: "user".to_string(),
-        content: "Hello".to_string(),
+        content: "Hello".into(),
         tool_calls: vec![],
         tool_call_id: None,
         timestamp: None,
@@ -172,7 +172,7 @@ async fn test_fallback_non_retriable_stops() {
 
     let messages = vec![Message {
         role: "user".to_string(),
-        content: "Hello".to_string(),
+        content: "Hello".into(),
         tool_calls: vec![],
         tool_call_id: None,
         timestamp: None,
@@ -193,7 +193,7 @@ async fn test_fallback_empty_chain() {
 
     let messages = vec![Message {
         role: "user".to_string(),
-        content: "Hello".to_string(),
+        content: "Hello".into(),
         tool_calls: vec![],
         tool_call_id: None,
         timestamp: None,
@@ -235,7 +235,7 @@ async fn test_fallback_cooldown_skips() {
 
     let messages = vec![Message {
         role: "user".to_string(),
-        content: "Hello".to_string(),
+        content: "Hello".into(),
         tool_calls: vec![],
         tool_call_id: None,
         timestamp: None,
@@ -296,7 +296,7 @@ async fn test_execute_detailed_success() {
 
     let messages = vec![Message {
         role: "user".to_string(),
-        content: "Hello".to_string(),
+        content: "Hello".into(),
         tool_calls: vec![],
         tool_call_id: None,
         timestamp: None,
@@ -339,7 +339,7 @@ async fn test_execute_detailed_exhausted() {
 
     let messages = vec![Message {
         role: "user".to_string(),
-        content: "Hello".to_string(),
+        content: "Hello".into(),
         tool_calls: vec![],
         tool_call_id: None,
         timestamp: None,
@@ -456,7 +456,7 @@ async fn test_execute_detailed_non_retriable_stops_immediately() {
 
     let messages = vec![Message {
         role: "user".to_string(),
-        content: "Hello".to_string(),
+        content: "Hello".into(),
         tool_calls: vec![],
         tool_call_id: None,
         timestamp: None,
@@ -480,7 +480,7 @@ async fn test_execute_detailed_empty_chain_returns_exhausted() {
 
     let messages = vec![Message {
         role: "user".to_string(),
-        content: "Hello".to_string(),
+        content: "Hello".into(),
         tool_calls: vec![],
         tool_call_id: None,
         timestamp: None,
@@ -512,7 +512,7 @@ async fn test_execute_image_success() {
 
     let messages = vec![Message {
         role: "user".to_string(),
-        content: "Describe this image".to_string(),
+        content: "Describe this image".into(),
         tool_calls: vec![],
         tool_call_id: None,
         timestamp: None,
@@ -535,7 +535,7 @@ async fn test_execute_image_empty_chain() {
 
     let messages = vec![Message {
         role: "user".to_string(),
-        content: "Describe".to_string(),
+        content: "Describe".into(),
         tool_calls: vec![],
         tool_call_id: None,
         timestamp: None,
@@ -604,7 +604,7 @@ async fn test_execute_image_dimension_error_aborts() {
 
     let messages = vec![Message {
         role: "user".to_string(),
-        content: "Describe this image".to_string(),
+        content: "Describe this image".into(),
         tool_calls: vec![],
         tool_call_id: None,
         timestamp: None,
@@ -672,7 +672,7 @@ async fn test_execute_image_size_error_aborts() {
 
     let messages = vec![Message {
         role: "user".to_string(),
-        content: "Describe".to_string(),
+        content: "Describe".into(),
         tool_calls: vec![],
         tool_call_id: None,
         timestamp: None,
@@ -715,7 +715,7 @@ async fn test_execute_detailed_cooldown_skips() {
 
     let messages = vec![Message {
         role: "user".to_string(),
-        content: "Hello".to_string(),
+        content: "Hello".into(),
         tool_calls: vec![],
         tool_call_id: None,
         timestamp: None,
@@ -808,7 +808,7 @@ impl LLMProvider for RecordingProvider {
     ) -> Result<LLMResponse, FailoverError> {
         self.seen.lock().push(model.to_string());
         Ok(LLMResponse {
-            content: "ok".to_string(),
+            content: "ok".into(),
             tool_calls: vec![],
             finish_reason: "stop".to_string(),
             usage: None,
@@ -829,7 +829,7 @@ impl LLMProvider for RecordingProvider {
 fn w4c_msg() -> Vec<Message> {
     vec![Message {
         role: "user".to_string(),
-        content: "hi".to_string(),
+        content: "hi".into(),
         tool_calls: vec![],
         tool_call_id: None,
         timestamp: None,

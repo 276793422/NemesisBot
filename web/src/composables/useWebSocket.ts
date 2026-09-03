@@ -174,14 +174,24 @@ export function sendRaw(msg: object) {
 // Initialize useWSAPI with sendRaw (breaks circular dependency)
 initWSAPI(sendRaw)
 
+/** T8 多模态：chat.send media 项——`{id}`（上传端点返回的 uploads 裸文件名）
+ *  或 `{path}`（用户点名本地路径）。后端 resolve_media_ref 统一解析。 */
+export interface MediaRef {
+  id?: string
+  path?: string
+}
+
 export function send(
   content: string,
   voicePlayback?: boolean,
-  extra?: { module?: string; moduleData?: Record<string, unknown> },
+  extra?: { module?: string; moduleData?: Record<string, unknown>; media?: MediaRef[] },
 ) {
   const data: any = { content }
   if (voicePlayback) {
     data.voice_playback = true
+  }
+  if (extra?.media && extra.media.length > 0) {
+    data.media = extra.media
   }
   if (extra?.moduleData) {
     Object.assign(data, extra.moduleData)

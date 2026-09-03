@@ -904,7 +904,7 @@ impl LLMProvider for ScriptedProvider {
 
 fn ok_response(content: &str, total_tokens: i64) -> LLMResponse {
     LLMResponse {
-        content: content.to_string(),
+        content: content.into(),
         tool_calls: vec![],
         finish_reason: "stop".to_string(),
         usage: Some(UsageInfo {
@@ -936,7 +936,7 @@ fn plain_candidate(provider: &str, model: &str, priority: i32) -> Candidate {
 fn one_user_message() -> Vec<Message> {
     vec![Message {
         role: "user".to_string(),
-        content: "hi".to_string(),
+        content: "hi".into(),
         tool_calls: vec![],
         tool_call_id: None,
         timestamp: None,

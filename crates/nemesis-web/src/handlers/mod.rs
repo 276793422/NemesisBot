@@ -37,6 +37,7 @@ pub mod skills;
 pub mod system;
 pub mod tasks;
 pub mod tools;
+pub mod upload;
 #[cfg(feature = "voice")]
 pub mod voice;
 #[cfg(feature = "workflow")]

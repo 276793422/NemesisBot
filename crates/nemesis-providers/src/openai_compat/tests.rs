@@ -134,7 +134,7 @@ fn test_build_request_body_basic() {
 
     let messages = vec![Message {
         role: "user".to_string(),
-        content: "Hello".to_string(),
+        content: "Hello".into(),
         tool_calls: vec![],
         tool_call_id: None,
         timestamp: None,
@@ -519,7 +519,7 @@ fn test_effort_openai_request_includes_field() {
     let provider = OpenAICompatProvider::new(OpenAICompatConfig::default());
     let messages = vec![Message {
         role: "user".to_string(),
-        content: "hi".to_string(),
+        content: "hi".into(),
         tool_calls: vec![],
         tool_call_id: None,
         timestamp: None,
@@ -566,7 +566,7 @@ fn oacc_config(base: &str) -> OpenAICompatConfig {
 fn oacc_messages() -> Vec<Message> {
     vec![Message {
         role: "user".to_string(),
-        content: "hi".to_string(),
+        content: "hi".into(),
         tool_calls: vec![],
         tool_call_id: None,
         timestamp: None,
@@ -707,4 +707,205 @@ fn test_w4c_oacc_normalize_model_with_base_variants() {
         provider.normalize_model_with_base("openrouter/qwen"),
         "qwen"
     );
+}
+
+// ============================================================
+// 字节快照（goal T1/T2 纪律 6）：content 类型多态化
+// （String → MessageContent）前后，纯文本请求体必须逐字节一致
+// ——这是 prompt cache 前缀契约（真相源 §1.5.2）。本测试先于
+// 类型改动写好并锁死当前字节；类型改动后必须原样保持绿。
+// 注：请求体经 serde_json::Value（无 preserve_order → BTreeMap），
+// 键序为字母序——快照锁定的是"当前真实字节"而非声明序。
+// ============================================================
+
+#[test]
+fn test_request_body_bytesnapshot_pure_text() {
+    let config = OpenAICompatConfig {
+        name: "test".to_string(),
+        base_url: "https://api.openai.com/v1".to_string(),
+        api_key: "test-key".to_string(),
+        default_model: "gpt-4".to_string(),
+        timeout_secs: 30,
+        proxy: None,
+    };
+    let provider = OpenAICompatProvider::new(config);
+
+    let messages = vec![
+        Message {
+            role: "system".to_string(),
+            content: "You are helpful.".into(),
+            tool_calls: vec![],
+            tool_call_id: None,
+            timestamp: None,
+            reasoning_content: None,
+            extra: HashMap::new(),
+        },
+        Message {
+            role: "user".to_string(),
+            content: "Hello".into(),
+            tool_calls: vec![],
+            tool_call_id: None,
+            timestamp: None,
+            reasoning_content: None,
+            extra: HashMap::new(),
+        },
+        Message {
+            role: "assistant".to_string(),
+            content: "Let me check.".into(),
+            tool_calls: vec![ToolCall {
+                id: "call_1".to_string(),
+                call_type: Some("function".to_string()),
+                function: Some(FunctionCall {
+                    name: "read_file".to_string(),
+                    arguments: "{}".to_string(),
+                }),
+                name: None,
+                arguments: None,
+            }],
+            tool_call_id: None,
+            timestamp: None,
+            reasoning_content: None,
+            extra: HashMap::new(),
+        },
+        Message {
+            role: "tool".to_string(),
+            content: "file data".into(),
+            tool_calls: vec![],
+            tool_call_id: Some("call_1".to_string()),
+            timestamp: None,
+            reasoning_content: None,
+            extra: HashMap::new(),
+        },
+    ];
+
+    let body = provider.build_request_body(&messages, &[], "gpt-4", &ChatOptions::default());
+    let serialized = serde_json::to_string(&body).unwrap();
+    assert_eq!(
+        serialized,
+        r#"{"messages":[{"content":"You are helpful.","role":"system"},{"content":"Hello","role":"user"},{"content":"Let me check.","role":"assistant","tool_calls":[{"function":{"arguments":"{}","name":"read_file"},"id":"call_1","type":"function"}]},{"content":"file data","role":"tool","tool_call_id":"call_1"}],"model":"gpt-4"}"#
+    );
+}
+
+// ============================================================
+// T2：OpenAI vision 数组适配（goal T2）
+// ============================================================
+
+#[test]
+fn test_request_body_image_parts_openai_format() {
+    let config = OpenAICompatConfig {
+        name: "test".to_string(),
+        base_url: "https://api.openai.com/v1".to_string(),
+        api_key: "test-key".to_string(),
+        default_model: "gpt-4".to_string(),
+        timeout_secs: 30,
+        proxy: None,
+    };
+    let provider = OpenAICompatProvider::new(config);
+
+    let messages = vec![Message {
+        role: "user".to_string(),
+        content: MessageContent::Parts(vec![
+            ContentPart::Text {
+                text: "这是什么".to_string(),
+            },
+            // Base64 → data URI；带 detail
+            ContentPart::Image {
+                image: ImageSource::Base64 {
+                    media_type: "image/png".to_string(),
+                    data: "aGVsbG8=".to_string(),
+                },
+                detail: Some(ImageDetail::Low),
+            },
+            // Url 原样透传；detail None 不传
+            ContentPart::Image {
+                image: ImageSource::Url("https://example.com/b.jpg".to_string()),
+                detail: None,
+            },
+        ]),
+        tool_calls: vec![],
+        tool_call_id: None,
+        timestamp: None,
+        reasoning_content: None,
+        extra: HashMap::new(),
+    }];
+
+    let body = provider.build_request_body(&messages, &[], "gpt-4", &ChatOptions::default());
+    let content = body["messages"][0]["content"]
+        .as_array()
+        .expect("content 数组");
+    assert_eq!(content.len(), 3);
+
+    // part 0：文本
+    assert_eq!(content[0]["type"], "text");
+    assert_eq!(content[0]["text"], "这是什么");
+
+    // part 1：base64 → data URI + detail 透传
+    assert_eq!(content[1]["type"], "image_url");
+    assert_eq!(
+        content[1]["image_url"]["url"],
+        "data:image/png;base64,aGVsbG8="
+    );
+    assert_eq!(content[1]["image_url"]["detail"], "low");
+
+    // part 2：URL 原样；无 detail 键
+    assert_eq!(content[2]["type"], "image_url");
+    assert_eq!(content[2]["image_url"]["url"], "https://example.com/b.jpg");
+    assert!(content[2]["image_url"].get("detail").is_none());
+}
+
+#[test]
+fn test_request_body_same_image_two_rounds_byte_identical() {
+    // prompt cache 契约（真相源 §1.5.2 前提①②）：同一图片多轮序列化字节一致
+    let config = OpenAICompatConfig {
+        name: "test".to_string(),
+        base_url: "https://api.openai.com/v1".to_string(),
+        api_key: "test-key".to_string(),
+        default_model: "gpt-4".to_string(),
+        timeout_secs: 30,
+        proxy: None,
+    };
+    let provider = OpenAICompatProvider::new(config);
+
+    let image_part = || ContentPart::Image {
+        image: ImageSource::Base64 {
+            media_type: "image/png".to_string(),
+            data: "aGVsbG8=".to_string(),
+        },
+        detail: None,
+    };
+
+    // 第一轮：[user(+img)]
+    let round1 = vec![Message {
+        role: "user".to_string(),
+        content: MessageContent::Parts(vec![
+            ContentPart::Text {
+                text: "看图".to_string(),
+            },
+            image_part(),
+        ]),
+        tool_calls: vec![],
+        tool_call_id: None,
+        timestamp: None,
+        reasoning_content: None,
+        extra: HashMap::new(),
+    }];
+
+    // 第二轮：[user(+img), assistant, user] —— 历史前缀含同一张图
+    let mut round2 = round1.clone();
+    round2.push(Message::text("assistant", "图里是猫"));
+    round2.push(Message::text("user", "它是什么品种？"));
+
+    let body1 = provider.build_request_body(&round1, &[], "gpt-4", &ChatOptions::default());
+    let body2_full = provider.build_request_body(&round2, &[], "gpt-4", &ChatOptions::default());
+
+    let s1 = serde_json::to_string(&body1).unwrap();
+    let s2_full = serde_json::to_string(&body2_full).unwrap();
+    // 同一构建器对同一输入字节稳定
+    let body1_again = provider.build_request_body(&round1, &[], "gpt-4", &ChatOptions::default());
+    assert_eq!(s1, serde_json::to_string(&body1_again).unwrap());
+    // 第二轮的 messages 前缀与第一轮逐字节一致（追加式历史不重写前缀）
+    let prefix2 = serde_json::to_string(&body2_full["messages"][0]).unwrap();
+    let msg1 = serde_json::to_string(&body1["messages"][0]).unwrap();
+    assert_eq!(msg1, prefix2);
+    let _ = s2_full; // 完整体仅用于构造前缀
 }

@@ -29,6 +29,8 @@ pub mod estop;
 pub mod executor_pipe;
 pub mod history_search;
 pub mod hooks;
+pub mod image_attach;
+pub mod image_path_detector;
 pub mod inbox;
 pub mod instance;
 pub mod r#loop;
@@ -64,6 +66,7 @@ mod test_support;
 pub use capture_sink::{CaptureSink, SessionWriteCapture, ToolCapture};
 pub use context::RequestContext;
 pub use estop::EstopState;
+pub use image_attach::LlmImage;
 pub use instance::AgentInstance;
 pub use loop_continuation::{
     ContinuationData, ContinuationManager, ContinuationSnapshot, ContinuationStore,

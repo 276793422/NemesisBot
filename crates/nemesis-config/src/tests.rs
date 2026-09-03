@@ -51,6 +51,7 @@ fn test_load_from_workspace() {
 #[test]
 fn test_model_config_validate() {
     let model = ModelConfig {
+        extra: Default::default(),
         model_name: "gpt-4".to_string(),
         model: "openai/gpt-4".to_string(),
         api_key: "key".to_string(),
@@ -65,6 +66,7 @@ fn test_model_config_validate() {
 #[test]
 fn test_model_parse_protocol() {
     let model = ModelConfig {
+        extra: Default::default(),
         model_name: "test".to_string(),
         model: "anthropic/claude-3".to_string(),
         ..Default::default()
@@ -74,6 +76,7 @@ fn test_model_parse_protocol() {
     assert_eq!(name, "claude-3");
 
     let model2 = ModelConfig {
+        extra: Default::default(),
         model_name: "test2".to_string(),
         model: "gpt-4o".to_string(),
         ..Default::default()
@@ -87,12 +90,14 @@ fn test_model_parse_protocol() {
 fn test_provider_resolver() {
     let models = vec![
         ModelConfig {
+            extra: Default::default(),
             model_name: "default".to_string(),
             model: "openai/gpt-4".to_string(),
             api_key: "key1".to_string(),
             ..Default::default()
         },
         ModelConfig {
+            extra: Default::default(),
             model_name: "fast".to_string(),
             model: "groq/llama3".to_string(),
             api_key: "key2".to_string(),
@@ -317,12 +322,14 @@ fn test_config_get_model_by_model_name() {
     let config = Config {
         model_list: vec![
             ModelConfig {
+                extra: Default::default(),
                 model_name: "default".to_string(),
                 model: "openai/gpt-4".to_string(),
                 api_key: "key1".to_string(),
                 ..Default::default()
             },
             ModelConfig {
+                extra: Default::default(),
                 model_name: "fast".to_string(),
                 model: "groq/llama3".to_string(),
                 api_key: "key2".to_string(),
@@ -348,6 +355,7 @@ fn test_config_get_model_by_model_name() {
 fn test_config_get_model_config() {
     let config = Config {
         model_list: vec![ModelConfig {
+            extra: Default::default(),
             model_name: "test".to_string(),
             model: "test/model".to_string(),
             ..Default::default()
@@ -381,6 +389,7 @@ fn test_config_workspace_path() {
 fn test_resolve_model_config() {
     let config = Config {
         model_list: vec![ModelConfig {
+            extra: Default::default(),
             model_name: "my-model".to_string(),
             model: "openai/gpt-4".to_string(),
             api_key: "test-key".to_string(),
@@ -413,6 +422,7 @@ fn test_resolve_model_config() {
 fn test_get_model_by_name_free_fn() {
     let config = Config {
         model_list: vec![ModelConfig {
+            extra: Default::default(),
             model_name: "default".to_string(),
             model: "zhipu/glm-4".to_string(),
             ..Default::default()
@@ -604,6 +614,7 @@ fn test_full_config_roundtrip() {
             }],
         },
         model_list: vec![ModelConfig {
+            extra: Default::default(),
             model_name: "test".to_string(),
             model: "test/test-1.0".to_string(),
             api_key: "test-key".to_string(),
@@ -795,6 +806,7 @@ fn test_model_config_default() {
 #[test]
 fn test_model_parse_no_slash() {
     let model = ModelConfig {
+        extra: Default::default(),
         model_name: "test".to_string(),
         model: "gpt-4o-mini".to_string(),
         ..Default::default()
@@ -807,6 +819,7 @@ fn test_model_parse_no_slash() {
 #[test]
 fn test_model_validate_empty_model_name() {
     let model = ModelConfig {
+        extra: Default::default(),
         model_name: String::new(),
         model: "openai/gpt-4".to_string(),
         api_key: "key".to_string(),
@@ -818,6 +831,7 @@ fn test_model_validate_empty_model_name() {
 #[test]
 fn test_model_validate_empty_api_key() {
     let model = ModelConfig {
+        extra: Default::default(),
         model_name: "test".to_string(),
         model: "openai/gpt-4".to_string(),
         api_key: String::new(),
@@ -1059,6 +1073,7 @@ fn test_skills_config_default() {
 #[test]
 fn test_model_config_parse_multiple_slashes() {
     let model = ModelConfig {
+        extra: Default::default(),
         model_name: "test".to_string(),
         model: "provider/model/variant".to_string(),
         ..Default::default()
@@ -1608,6 +1623,7 @@ fn test_config_get_model_by_model_name_not_found() {
 #[test]
 fn test_model_validate_empty_model() {
     let model = ModelConfig {
+        extra: Default::default(),
         model_name: "test".to_string(),
         model: String::new(),
         ..Default::default()
@@ -2078,6 +2094,7 @@ fn test_signature_layer_config_roundtrip() {
 #[test]
 fn test_model_config_all_fields() {
     let model = ModelConfig {
+        extra: Default::default(),
         model_name: "test-model".to_string(),
         model: "test/test-v1".to_string(),
         api_base: "https://api.test.com/v1".to_string(),
@@ -2795,6 +2812,7 @@ fn test_config_loader_load_embedded_default_fallback() {
 #[test]
 fn test_model_config_parse_empty_model() {
     let model = ModelConfig {
+        extra: Default::default(),
         model_name: "test".to_string(),
         model: String::new(),
         ..Default::default()
@@ -2807,6 +2825,7 @@ fn test_model_config_parse_empty_model() {
 #[test]
 fn test_model_config_parse_only_provider() {
     let model = ModelConfig {
+        extra: Default::default(),
         model_name: "test".to_string(),
         model: "anthropic/".to_string(),
         ..Default::default()
@@ -2904,4 +2923,196 @@ fn test_board_flag_config_auto_dispatch_roundtrip() {
     assert!(cfg.auto_dispatch);
     let re: BoardFlagConfig = serde_json::from_str(&serde_json::to_string(&cfg).unwrap()).unwrap();
     assert!(re.auto_dispatch);
+}
+
+// ============================================================
+// ModelConfig.extra passthrough（2026-09-03 二次回归根修回归锁）
+// ============================================================
+
+#[test]
+fn test_typed_save_roundtrip_preserves_untyped_per_model_keys() {
+    // ModelConfig 未类型化的 per-model 键（model_tier / vision / vision_probe /
+    // max_output_tokens 等 raw-Value 层约定键）在 typed load→save round-trip
+    // 后必须原样保留。没有 `#[serde(flatten)] extra` 时，任何走 typed
+    // `save_config` 的保存（dashboard models/config/channels/forge handler、
+    // save_live、credentials 迁移）都会把这些键静默抹掉。
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("config.json");
+    let raw = serde_json::json!({
+        "model_list": [
+            {
+                "model_name": "m1",
+                "model": "test/m1",
+                "model_tier": "mini",
+                "vision": "no",
+                "vision_probe": false,
+                "max_output_tokens": 4096,
+                "some_future_key": { "nested": [1, 2, 3] },
+                "extra": { "note": "字面 extra 键也必须保留（flatten 吸收后回吐）" }
+            },
+            {
+                "model_name": "m2",
+                "model": "test/m2",
+                "model_tier": "big",
+                "vision_probe": true
+            }
+        ]
+    });
+    std::fs::write(&path, serde_json::to_string_pretty(&raw).unwrap()).unwrap();
+
+    let mut cfg = crate::load_config(&path).unwrap();
+    crate::save_config(&path, &mut cfg).unwrap();
+
+    let after: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+    let list = after["model_list"].as_array().unwrap();
+    assert_eq!(list.len(), 2);
+    let e1 = &list[0];
+    assert_eq!(e1["model_tier"], "mini");
+    assert_eq!(e1["vision"], "no");
+    assert_eq!(e1["vision_probe"], false);
+    assert_eq!(e1["max_output_tokens"], 4096);
+    assert_eq!(e1["some_future_key"]["nested"][2], 3);
+    // 字面名为 "extra" 的用户键：flatten 吸收进 extra map、round-trip 后原样
+    // 回吐（值在 map 里，不作为实体键丢失）。
+    assert_eq!(
+        e1["extra"]["note"],
+        "字面 extra 键也必须保留（flatten 吸收后回吐）"
+    );
+    let e2 = &list[1];
+    assert_eq!(e2["model_tier"], "big");
+    assert_eq!(e2["vision_probe"], true);
+
+    // 纯 typed 条目（无 unknown 键）序列化形态不含 extra 残留
+    //（skip_serializing_if 空 map 跳过 → 与既有输出字节一致）。
+    let e2_obj = e2.as_object().unwrap();
+    assert!(!e2_obj.contains_key("extra"), "extra 不应作为实体键落盘");
+}
+
+#[test]
+fn test_typed_entry_without_unknown_keys_serializes_without_extra_noise() {
+    // 无 unknown 键的条目：typed → JSON 不应出现新增键（既有快照/形态兼容）。
+    let mc = ModelConfig {
+        model_name: "m".to_string(),
+        model: "test/m".to_string(),
+        ..Default::default()
+    };
+    let v = serde_json::to_value(&mc).unwrap();
+    let obj = v.as_object().unwrap();
+    assert!(obj.contains_key("model_name") && obj.contains_key("model"));
+    assert_eq!(obj.len(), 9, "九个类型化字段，无 extra 噪音: {obj:#?}");
+}
+
+// ============================================================
+// McpServerConfig.extra passthrough（2026-09-03 二次回归 F2 同族回归锁）
+// ============================================================
+
+#[test]
+fn test_typed_mcp_roundtrip_preserves_untyped_per_server_keys() {
+    // McpServerConfig 未类型化的 per-server 键在 typed save→load round-trip
+    // 后必须原样保留（flatten extra，对齐 ModelConfig.extra 惯例）。
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("config.mcp.json");
+    let raw = serde_json::json!({
+        "enabled": true,
+        "mcpServers": [
+            {
+                "name": "srv1",
+                "transport_type": "http",
+                "url": "http://127.0.0.1:9/mcp",
+                "timeout": 45,
+                "some_future_server_key": { "a": [1, 2] }
+            }
+        ]
+    });
+    std::fs::write(&path, serde_json::to_string_pretty(&raw).unwrap()).unwrap();
+
+    let cfg = crate::load_mcp_config(&path).unwrap();
+    crate::save_mcp_config(&path, &cfg).unwrap();
+
+    let after: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+    // 序列化键名是结构体字段名 `servers`（`mcpServers` 只是宽容解析接受的别名）。
+    let srv = &after["servers"][0];
+    assert_eq!(srv["name"], "srv1");
+    assert_eq!(srv["timeout"], 45);
+    assert_eq!(srv["some_future_server_key"]["a"][1], 2);
+
+    // 无 unknown 键的条目无 extra 噪音（round-trip 形态兼容）。
+    let plain = crate::McpServerConfig::new("s", "cmd");
+    let v = serde_json::to_value(&plain).unwrap();
+    assert!(
+        !v.as_object().unwrap().contains_key("extra"),
+        "extra 不应作为实体键落盘"
+    );
+}
+
+// ============================================================
+// L7（2026-09-04 四轮盲审）：extra map 键序确定性——BTreeMap
+// ============================================================
+
+#[test]
+fn test_l7_extra_serialization_is_deterministic_btreemap_sorted() {
+    // 带多个 unknown 键的条目序列化键序必须确定（BTreeMap 排序）且多次
+    // round-trip 字节稳定。HashMap 时代每进程随机种子 → 同一份 config
+    // 两次保存字节不同（无谓 diff / reload 抖动）。
+    let raw = serde_json::json!({
+        "model_list": [
+            {
+                "model_name": "m1",
+                "model": "test/m1",
+                "zebra_key": 1,
+                "alpha_key": 2,
+                "middle_key": {"z": true, "a": false},
+                "vision_probe": false
+            }
+        ]
+    });
+    let first = serde_json::to_string(&raw).unwrap(); // 任意基线，仅用于构造条目
+    let _ = first;
+    let dir = tempfile::tempdir().unwrap(); // 绑定：临时值当行 drop 会删目录
+    let path = dir.path().join("cfg.json");
+    std::fs::write(&path, serde_json::to_string_pretty(&raw).unwrap()).unwrap();
+
+    let cfg = crate::load_config(&path).unwrap();
+    let s1 = serde_json::to_string(&cfg).unwrap();
+    let s2 = serde_json::to_string(&cfg).unwrap();
+
+    // 同一进程内两次序列化字节一致（确定性下限）。
+    assert_eq!(s1, s2, "同进程两次序列化必须字节一致");
+
+    // 键序为字典序（BTreeMap），与输入 JSON 顺序无关。
+    let zebra = s1.find("\"zebra_key\"").expect("zebra_key present");
+    let middle = s1.find("\"middle_key\"").expect("middle_key present");
+    let alpha = s1.find("\"alpha_key\"").expect("alpha_key present");
+    assert!(
+        alpha < middle && middle < zebra,
+        "extra 键必须按字典序输出: {s1}"
+    );
+
+    // save → load → save 全链字节稳定。
+    let re = serde_json::from_str::<crate::Config>(&s1).unwrap();
+    let s3 = serde_json::to_string(&re).unwrap();
+    assert_eq!(s1, s3, "load→save 全链字节稳定");
+}
+
+#[test]
+fn test_l7_mcp_extra_serialization_deterministic() {
+    let srv = crate::McpServerConfig {
+        name: "s".into(),
+        transport_type: "http".into(),
+        extra: [
+            ("zebra".to_string(), serde_json::json!(1)),
+            ("alpha".to_string(), serde_json::json!(2)),
+        ]
+        .into_iter()
+        .collect(),
+        ..Default::default()
+    };
+    let s1 = serde_json::to_string(&srv).unwrap();
+    let s2 = serde_json::to_string(&srv).unwrap();
+    assert_eq!(s1, s2);
+    let alpha = s1.find("\"alpha\"").expect("alpha present");
+    let zebra = s1.find("\"zebra\"").expect("zebra present");
+    assert!(alpha < zebra, "per-server extra 键按字典序输出: {s1}");
 }

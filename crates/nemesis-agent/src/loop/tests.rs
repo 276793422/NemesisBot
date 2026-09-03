@@ -852,6 +852,7 @@ async fn cron_budget_override_stops_turn() {
             false,
             &token,
             Some(2),
+            &[],
         )
         .await;
 
@@ -904,6 +905,7 @@ async fn cron_budget_none_uses_global_default() {
             false,
             &token,
             None,
+            &[],
         )
         .await;
 
@@ -959,6 +961,7 @@ async fn cron_budget_exhaustion_writes_boundary_marker() {
             false,
             &token,
             Some(2),
+            &[],
         )
         .await;
     assert!(
@@ -1388,6 +1391,7 @@ fn test_format_messages_for_log() {
             tool_calls: None,
             tool_call_id: None,
             reasoning_content: None,
+            images: Vec::new(),
         },
         LlmMessage {
             role: "user".to_string(),
@@ -1395,6 +1399,7 @@ fn test_format_messages_for_log() {
             tool_calls: None,
             tool_call_id: None,
             reasoning_content: None,
+            images: Vec::new(),
         },
         LlmMessage {
             role: "assistant".to_string(),
@@ -1406,6 +1411,7 @@ fn test_format_messages_for_log() {
             }]),
             tool_call_id: None,
             reasoning_content: None,
+            images: Vec::new(),
         },
         LlmMessage {
             role: "tool".to_string(),
@@ -1413,6 +1419,7 @@ fn test_format_messages_for_log() {
             tool_calls: None,
             tool_call_id: Some("tc_1".to_string()),
             reasoning_content: None,
+            images: Vec::new(),
         },
     ];
 
@@ -1435,6 +1442,7 @@ fn test_format_messages_truncates_long_content() {
         tool_calls: None,
         tool_call_id: None,
         reasoning_content: None,
+        images: Vec::new(),
     }];
 
     let result = format_messages_for_log(&messages);
@@ -1828,6 +1836,7 @@ fn test_llm_message_serialization() {
         }]),
         tool_call_id: None,
         reasoning_content: None,
+        images: Vec::new(),
     };
     let json = serde_json::to_string(&msg).unwrap();
     let parsed: LlmMessage = serde_json::from_str(&json).unwrap();
@@ -1844,6 +1853,7 @@ fn test_llm_message_no_tool_calls() {
         tool_calls: None,
         tool_call_id: Some("tc_1".to_string()),
         reasoning_content: None,
+        images: Vec::new(),
     };
     let json = serde_json::to_string(&msg).unwrap();
     let parsed: LlmMessage = serde_json::from_str(&json).unwrap();
@@ -4325,6 +4335,7 @@ fn test_llm_message_serialization_roundtrip() {
         }]),
         tool_call_id: Some("tc_1".to_string()),
         reasoning_content: None,
+        images: Vec::new(),
     };
     let json = serde_json::to_string(&msg).unwrap();
     let deserialized: LlmMessage = serde_json::from_str(&json).unwrap();
@@ -4342,6 +4353,7 @@ fn test_format_messages_for_log_with_tool_call_id() {
         tool_calls: None,
         tool_call_id: Some("tc_42".to_string()),
         reasoning_content: None,
+        images: Vec::new(),
     }];
     let log = format_messages_for_log(&messages);
     assert!(log.contains("tc_42"));
@@ -4546,6 +4558,7 @@ fn test_tool_safe_boundary_backs_past_leading_tool() {
         reasoning_content: None,
         tool_name: None,
         tool_result_projection: None,
+        image_refs: Vec::new(),
     };
     let history = vec![
         turn("system", "sys", vec![], None),           // 0
@@ -4607,6 +4620,7 @@ async fn test_maybe_update_summary_boundary_is_tool_pair_safe() {
         reasoning_content: None,
         tool_name: None,
         tool_result_projection: None,
+        image_refs: Vec::new(),
     };
     instance.set_history(vec![
         turn("system", "sys", vec![], None), // 0
@@ -5574,6 +5588,7 @@ fn test_format_messages_for_log_with_tool_calls_and_content() {
         }]),
         tool_call_id: None,
         reasoning_content: None,
+        images: Vec::new(),
     }];
     let result = format_messages_for_log(&messages);
     assert!(result.contains("ToolCalls:"));
@@ -5590,6 +5605,7 @@ fn test_format_messages_for_log_with_tool_call_id_v2() {
         tool_calls: None,
         tool_call_id: Some("call_abc".to_string()),
         reasoning_content: None,
+        images: Vec::new(),
     }];
     let result = format_messages_for_log(&messages);
     assert!(result.contains("ToolCallID: call_abc"));
@@ -5604,6 +5620,7 @@ fn test_format_messages_for_log_long_content_truncated() {
         tool_calls: None,
         tool_call_id: None,
         reasoning_content: None,
+        images: Vec::new(),
     }];
     let result = format_messages_for_log(&messages);
     assert!(result.len() < long_content.len() + 100);
@@ -5622,6 +5639,7 @@ fn test_format_messages_for_log_long_arguments_truncated() {
         }]),
         tool_call_id: None,
         reasoning_content: None,
+        images: Vec::new(),
     }];
     let result = format_messages_for_log(&messages);
     assert!(result.len() < long_args.len() + 100);
@@ -6265,6 +6283,7 @@ fn test_llm_message_serialization_roundtrip_all_fields() {
         }]),
         tool_call_id: Some("tc_1".to_string()),
         reasoning_content: Some("thinking...".to_string()),
+        images: Vec::new(),
     };
     let json = serde_json::to_string(&msg).unwrap();
     let de: LlmMessage = serde_json::from_str(&json).unwrap();
@@ -6555,6 +6574,7 @@ fn test_build_messages_repairs_orphan_tool_call() {
         reasoning_content: None,
         tool_name: None,
         tool_result_projection: None,
+        image_refs: Vec::new(),
     };
     // assistant issues [call_A, call_B] but only call_B has a tool result.
     instance.set_history(vec![
@@ -6618,6 +6638,7 @@ fn summary_turn(role: &str, content: &str) -> crate::types::ConversationTurn {
         reasoning_content: None,
         tool_name: None,
         tool_result_projection: None,
+        image_refs: Vec::new(),
     }
 }
 
@@ -7602,6 +7623,7 @@ fn x1_loop_turn(role: &str, content: &str) -> crate::types::ConversationTurn {
         reasoning_content: None,
         tool_name: None,
         tool_result_projection: None,
+        image_refs: Vec::new(),
     }
 }
 
@@ -8081,5 +8103,300 @@ fn test_y1_folding_mini_tier_excluded() {
         serde_json::to_string(&baseline).unwrap(),
         serde_json::to_string(&folded).unwrap(),
         "mini tier must never fold"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// T6（多模态）：主循环请求逐轮水合 —— 第二轮仍含图 / 删文件降级占位不炸
+// ---------------------------------------------------------------------------
+
+/// 最小 PNG（8 字节签名 + IHDR 长度前缀；与 image_attach 测试同形）。
+fn t6_turn_png_bytes() -> Vec<u8> {
+    let mut v = vec![0x89, b'P', b'N', b'G', 0x0D, 0x0A, 0x1A, 0x0A];
+    v.extend_from_slice(&[0, 0, 0, 13, b'I', b'H', b'D', b'R']);
+    v
+}
+
+fn t6_turn_with_refs(refs: Vec<String>) -> crate::types::ConversationTurn {
+    crate::types::ConversationTurn {
+        role: "user".to_string(),
+        content: "看这张图".to_string(),
+        tool_calls: Vec::new(),
+        tool_call_id: None,
+        timestamp: String::new(),
+        reasoning_content: None,
+        tool_name: None,
+        tool_result_projection: None,
+        image_refs: refs,
+    }
+}
+
+#[test]
+fn t6_turn_to_request_message_hydrates_every_turn() {
+    use base64::Engine as _;
+
+    let dir = tempfile::tempdir().unwrap();
+    let img = dir.path().join("t6_every_turn.png");
+    let bytes = t6_turn_png_bytes();
+    std::fs::write(&img, &bytes).unwrap();
+    let refs = vec![img.to_string_lossy().into_owned()];
+
+    // 第一轮与第二轮各自转换：路径引用**每轮重读**，两轮请求都含图片字节
+    //（build_messages 对每个 turn 走 turn_to_request_message，即此语义）。
+    let turn = t6_turn_with_refs(refs.clone());
+    let first = turn_to_request_message(&turn);
+    let second = turn_to_request_message(&turn);
+    for (i, msg) in [&first, &second].iter().enumerate() {
+        assert_eq!(msg.images.len(), 1, "第 {} 轮请求应含图", i + 1);
+        assert_eq!(
+            msg.images[0].data,
+            base64::engine::general_purpose::STANDARD.encode(&bytes),
+            "第 {} 轮水合字节应与文件一致",
+            i + 1
+        );
+        assert!(!msg.content.contains("[图片已失效"), "文件存在时不得有占位");
+    }
+}
+
+#[test]
+fn t6_turn_to_request_message_deleted_file_degrades() {
+    let dir = tempfile::tempdir().unwrap();
+    let img = dir.path().join("t6_deleted.png");
+    std::fs::write(&img, t6_turn_png_bytes()).unwrap();
+    let refs = vec![img.to_string_lossy().into_owned()];
+
+    // 历史里存着引用，但文件已删 → 该轮请求无字节、content 追加占位行，
+    // 不炸、不静默。
+    std::fs::remove_file(&img).unwrap();
+    let msg = turn_to_request_message(&t6_turn_with_refs(refs.clone()));
+
+    assert!(msg.images.is_empty(), "文件已删不得产出图片字节");
+    assert!(
+        msg.content.contains(&format!("[图片已失效: {}]", refs[0])),
+        "应追加失效占位，got: {}",
+        msg.content
+    );
+    assert!(msg.content.starts_with("看这张图"), "原文必须在占位之前");
+}
+
+#[test]
+fn t6_summarizer_message_stays_text_only() {
+    // 摘要请求不发图片字节：conversation_turn_to_llm_message 对带引用的
+    // turn 也保持 images 恒空（G1 前缀字节等价 + 廉价摘要模型友好）。
+    let turn = t6_turn_with_refs(vec!["C:\\nonexistent\\t6_sum.png".to_string()]);
+    let msg = conversation_turn_to_llm_message(&turn);
+    assert!(msg.images.is_empty(), "摘要请求不得携带图片字节");
+    assert_eq!(msg.content, "看这张图", "摘要请求不改写 content");
+}
+
+#[test]
+fn t6_turn_without_refs_is_plain_message() {
+    let msg = turn_to_request_message(&t6_turn_with_refs(Vec::new()));
+    assert!(msg.images.is_empty());
+    assert_eq!(msg.content, "看这张图");
+}
+
+// ---------------------------------------------------------------------------
+// T10（多模态 D4）：vision=no 投影 —— 当前轮拒绝注明 / 历史轮已省略 /
+// 引用清空 / build 级联动 + 注解台账标志
+// ---------------------------------------------------------------------------
+
+fn t10_turn(role: &str, content: &str, refs: Vec<String>) -> crate::types::ConversationTurn {
+    crate::types::ConversationTurn {
+        role: role.to_string(),
+        content: content.to_string(),
+        tool_calls: Vec::new(),
+        tool_call_id: None,
+        timestamp: String::new(),
+        reasoning_content: None,
+        tool_name: None,
+        tool_result_projection: None,
+        image_refs: refs,
+    }
+}
+
+#[test]
+fn t10_project_turns_notes_and_clears_refs() {
+    let mut turns = vec![
+        t10_turn("system", "sys", Vec::new()),
+        t10_turn("user", "第一张", vec!["a.png".into()]),
+        t10_turn("assistant", "好的", Vec::new()),
+        t10_turn("user", "第二张", vec!["b.png".into()]),
+    ];
+    // 与 build 路径同一表达式派生的 last_user_idx（最后一轮 user）。
+    let last_user_idx = turns
+        .iter()
+        .rposition(|t| t.role == "user")
+        .filter(|&i| i > 0)
+        .filter(|_| turns.first().is_some_and(|t| t.role == "system"));
+    assert_eq!(last_user_idx, Some(3));
+
+    project_turns_for_no_vision(&mut turns, last_user_idx);
+
+    assert!(
+        turns.iter().all(|t| t.image_refs.is_empty()),
+        "所有引用必须清空（图片字节根本不进请求）"
+    );
+    assert_eq!(
+        turns[1].content, "第一张\n[图片已省略: 当前模型仅支持文本]",
+        "历史轮固定已省略占位"
+    );
+    assert_eq!(
+        turns[3].content, "第二张\n[图片未发送: 当前模型 vision=no（不支持图像输入），图片已忽略]",
+        "当前轮注明拒绝语义"
+    );
+    // 无图轮不动。
+    assert_eq!(turns[0].content, "sys");
+    assert_eq!(turns[2].content, "好的");
+}
+
+#[test]
+fn t10_project_turns_empty_content_no_leading_newline() {
+    let mut turns = vec![t10_turn("user", "", vec!["a.png".into()])];
+    project_turns_for_no_vision(&mut turns, Some(0));
+    assert_eq!(
+        turns[0].content, "[图片未发送: 当前模型 vision=no（不支持图像输入），图片已忽略]",
+        "空 content 直接以占位开头，不产生前导换行"
+    );
+    // 已省略轮同样处理（trim 后视为空 → 不加换行，note 直接跟随）。
+    let mut turns2 = vec![t10_turn("user", "  ", vec!["a.png".into()])];
+    project_turns_for_no_vision(&mut turns2, None);
+    assert!(
+        !turns2[0].content.starts_with('\n') && turns2[0].content.contains("[图片已省略"),
+        "空白 content 不前导换行，got: {:?}",
+        turns2[0].content
+    );
+}
+
+/// vision=no 的 build 环境：config.json 钉 `vision: "no"` 的 plain 模型。
+fn t10_no_vision_loop(dir: &tempfile::TempDir) -> AgentLoop {
+    let cfg = dir.path().join("config.json");
+    std::fs::write(
+        &cfg,
+        r#"{"model_list":[{"model":"x/plain","model_name":"plain","vision":"no"}]}"#,
+    )
+    .unwrap();
+    let agent_loop = AgentLoop::new(Box::new(MockLlmProvider::new(vec![])), test_config());
+    agent_loop.set_config_path(cfg);
+    agent_loop.set_active_model("plain");
+    agent_loop
+}
+
+fn t10_instance_with_two_image_turns(img1: &str, img2: &str) -> AgentInstance {
+    let instance = AgentInstance::new(test_config());
+    instance.add_user_message_with_images("第一张", &[img1.to_string()]);
+    instance.add_assistant_message("好的", Vec::new(), None);
+    instance.add_user_message_with_images("第二张", &[img2.to_string()]);
+    instance
+}
+
+#[test]
+fn t10_build_vision_no_projects_all_images() {
+    let dir = tempfile::tempdir().unwrap();
+    let img1 = dir.path().join("t10_a.png");
+    let img2 = dir.path().join("t10_b.png");
+    std::fs::write(&img1, t6_turn_png_bytes()).unwrap();
+    std::fs::write(&img2, t6_turn_png_bytes()).unwrap();
+
+    let agent_loop = t10_no_vision_loop(&dir);
+    let instance =
+        t10_instance_with_two_image_turns(&img1.to_string_lossy(), &img2.to_string_lossy());
+    let messages = agent_loop.build_messages(&instance);
+
+    assert!(
+        messages.iter().all(|m| m.images.is_empty()),
+        "vision=no 时任何请求消息都不得携带图片字节"
+    );
+    let last = messages.last().unwrap();
+    assert_eq!(last.role, "user");
+    assert!(
+        last.content.contains("第二张") && last.content.contains("[图片未发送: 当前模型 vision=no"),
+        "当前轮带拒绝注明，got: {}",
+        last.content
+    );
+    let first_img = messages
+        .iter()
+        .find(|m| m.content.contains("第一张"))
+        .expect("历史图轮必须在请求里");
+    assert!(
+        first_img
+            .content
+            .contains("[图片已省略: 当前模型仅支持文本]"),
+        "历史轮带已省略占位，got: {}",
+        first_img.content
+    );
+    assert!(
+        !first_img.content.contains("未发送"),
+        "历史轮不得误用当前轮文案"
+    );
+}
+
+#[test]
+fn t10_build_supported_keeps_images_and_bytes() {
+    let dir = tempfile::tempdir().unwrap();
+    let img1 = dir.path().join("t10_c.png");
+    std::fs::write(&img1, t6_turn_png_bytes()).unwrap();
+
+    // vision=yes 的同形环境（只差 vision 键）。
+    let cfg = dir.path().join("config.json");
+    std::fs::write(
+        &cfg,
+        r#"{"model_list":[{"model":"x/plain","model_name":"plain","vision":"yes"}]}"#,
+    )
+    .unwrap();
+    let agent_loop = AgentLoop::new(Box::new(MockLlmProvider::new(vec![])), test_config());
+    agent_loop.set_config_path(cfg);
+    agent_loop.set_active_model("plain");
+
+    let instance =
+        t10_instance_with_two_image_turns(&img1.to_string_lossy(), &img1.to_string_lossy());
+    let messages = agent_loop.build_messages(&instance);
+
+    let with_images = messages.iter().filter(|m| !m.images.is_empty()).count();
+    assert_eq!(with_images, 2, "supported 模型两轮图片字节照常水合");
+    assert!(
+        !messages
+            .iter()
+            .any(|m| m.content.contains("图片已省略") || m.content.contains("图片未发送")),
+        "supported 模型不得出现占位文案"
+    );
+
+    // 字节兼容验收 #2：supported 下纯文本历史的请求与"无投影逻辑"基线一致
+    // ——vision=yes（配置放行）与 standalone（无 config_path，默认放行）两路
+    // 必须产出字节相同的请求。
+    let plain_instance = AgentInstance::new(test_config());
+    plain_instance.add_user_message("纯文本提问");
+    let via_config = agent_loop.build_messages(&plain_instance);
+    let standalone = AgentLoop::new(Box::new(MockLlmProvider::new(vec![])), test_config());
+    let via_standalone = standalone.build_messages(&plain_instance);
+    assert_eq!(
+        serde_json::to_string(&via_config).unwrap(),
+        serde_json::to_string(&via_standalone).unwrap(),
+        "supported 两路必须字节一致（零投影改动）"
+    );
+}
+
+#[test]
+fn t10_build_annotation_flag_follows_vision() {
+    let dir = tempfile::tempdir().unwrap();
+    let img1 = dir.path().join("t10_d.png");
+    std::fs::write(&img1, t6_turn_png_bytes()).unwrap();
+
+    // vision=no → 投影发生，annotation.vision_projected = true。
+    let agent_loop = t10_no_vision_loop(&dir);
+    let instance =
+        t10_instance_with_two_image_turns(&img1.to_string_lossy(), &img1.to_string_lossy());
+    let (messages, annotation) = agent_loop.build_messages_with_memory_annotated(&instance, None);
+    assert!(annotation.vision_projected, "vision=no 必须置台账标志");
+    assert!(messages.iter().all(|m| m.images.is_empty()));
+
+    // supported（无 config_path → 默认放行）→ false，请求带字节。
+    let standalone = AgentLoop::new(Box::new(MockLlmProvider::new(vec![])), test_config());
+    let (messages2, annotation2) = standalone.build_messages_with_memory_annotated(&instance, None);
+    assert!(!annotation2.vision_projected, "supported 不得置投影标志");
+    assert_eq!(
+        messages2.iter().filter(|m| !m.images.is_empty()).count(),
+        2,
+        "supported 下图片字节照常"
     );
 }

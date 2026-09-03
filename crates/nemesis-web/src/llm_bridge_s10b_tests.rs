@@ -105,6 +105,7 @@ fn agent_messages_with_tool_calls() -> Vec<LlmMessage> {
             tool_calls: None,
             tool_call_id: None,
             reasoning_content: None,
+            images: Vec::new(),
         },
         LlmMessage {
             role: "assistant".to_string(),
@@ -116,6 +117,7 @@ fn agent_messages_with_tool_calls() -> Vec<LlmMessage> {
             }]),
             tool_call_id: None,
             reasoning_content: None,
+            images: Vec::new(),
         },
         LlmMessage {
             role: "tool".to_string(),
@@ -123,6 +125,7 @@ fn agent_messages_with_tool_calls() -> Vec<LlmMessage> {
             tool_calls: None,
             tool_call_id: Some("call-1".to_string()),
             reasoning_content: None,
+            images: Vec::new(),
         },
     ]
 }
@@ -202,6 +205,7 @@ async fn adapter_none_options_use_provider_defaults_and_err_maps_to_string() {
                 tool_calls: None,
                 tool_call_id: None,
                 reasoning_content: None,
+                images: Vec::new(),
             }],
             None,
             vec![],

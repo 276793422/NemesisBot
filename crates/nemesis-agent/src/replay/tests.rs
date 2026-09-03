@@ -37,6 +37,7 @@ fn turn(role: &str, content: &str) -> ConversationTurn {
         reasoning_content: None,
         tool_name: None,
         tool_result_projection: None,
+        image_refs: Vec::new(),
     }
 }
 
@@ -203,6 +204,7 @@ fn test_rebuild_byte_exact_with_ledger_and_later_history() {
         }],
         voice_append: None,
         summary_as_of: annotation.summary_as_of.clone(),
+        vision_projected: false,
     });
 
     // Store history has grown past the round (post-round assistant + new user).
@@ -318,6 +320,7 @@ fn test_voice_append_replays_on_top_of_digest_insert() {
             suffix: VOICE_PLAYBACK_SUFFIX.to_string(),
         }),
         summary_as_of: None,
+        vision_projected: false,
     });
 
     // Hand-authored expected request bytes: system, digest, user+suffix.
@@ -330,6 +333,7 @@ fn test_voice_append_replays_on_top_of_digest_insert() {
         tool_calls: None,
         tool_call_id: None,
         reasoning_content: None,
+        images: Vec::new(),
     };
     let recorded: Vec<serde_json::Value> = [
         lm("system", "You are a test assistant.".to_string()),
@@ -392,6 +396,7 @@ fn test_trace_id_disambiguates_equal_rounds_across_turns() {
         }],
         voice_append: None,
         summary_as_of: None,
+        vision_projected: false,
     };
     let digest_a = "<system-reminder>\nTRACE-A digest\n</system-reminder>".to_string();
     let digest_b = "<system-reminder>\nTRACE-B digest\n</system-reminder>".to_string();
@@ -405,6 +410,7 @@ fn test_trace_id_disambiguates_equal_rounds_across_turns() {
         tool_calls: None,
         tool_call_id: None,
         reasoning_content: None,
+        images: Vec::new(),
     };
     let recorded_for = |digest: &str| -> Vec<serde_json::Value> {
         [
@@ -537,6 +543,7 @@ fn test_trimmed_history_reports_unavailable() {
         injections: vec![],
         voice_append: None,
         summary_as_of: None,
+        vision_projected: false,
     });
 
     match rebuild_request_messages(&store, &key, 1).expect("rebuild must not error") {
@@ -877,6 +884,7 @@ fn append_projection_record_open_failure_warns() {
         injections: vec![],
         voice_append: None,
         summary_as_of: None,
+        vision_projected: false,
     });
     assert!(load_projection_records(&key).is_empty(), "nothing written");
 
@@ -912,6 +920,7 @@ fn rebuild_pushes_injection_beyond_view_end_and_applies_voice() {
             suffix: " [voice]".to_string(),
         }),
         summary_as_of: None,
+        vision_projected: false,
     });
 
     match rebuild_request_messages(&store, &key, 1).expect("rebuild") {
@@ -938,6 +947,7 @@ fn verify_request_replay_tool_calls_and_field_arms() {
         tool_calls: None,
         tool_call_id: None,
         reasoning_content: None,
+        images: Vec::new(),
     };
 
     // tool_calls 臂：rebuilt 无 tool_calls，recorded 带数组。
@@ -1008,6 +1018,7 @@ fn verify_session_round_rebuilt_path_byte_exact() {
         injections: vec![],
         voice_append: None,
         summary_as_of: None,
+        vision_projected: false,
     });
 
     let recorded: Vec<serde_json::Value> = ["sys prompt", "hello"]
@@ -1070,4 +1081,190 @@ fn read_raw_request_messages_variants() {
     let na = tmp.path().join("notarray.json");
     std::fs::write(&na, r#"{"round":1,"body":{"messages":42}}"#).unwrap();
     assert!(read_raw_request_messages(&na).is_none());
+}
+
+/// T10（多模态 D4）：vision=no 轮的台账重放——重建路径用同一共享投影函数
+/// 把历史 image_refs 重放为占位文本，与生产 build 字节一致；且重建视图
+/// 不含任何图片字节（图片根本没进请求，文件甚至可以不存在）。
+#[test]
+fn test_rebuild_reapplies_vision_projection() {
+    let key = unique_key("t10_vision");
+
+    // vision=no 的 loop 环境（plain 模型钉 no）。
+    let dir = tempfile::tempdir().unwrap();
+    let cfg = dir.path().join("config.json");
+    std::fs::write(
+        &cfg,
+        r#"{"model_list":[{"model":"x/plain","model_name":"plain","vision":"no"}]}"#,
+    )
+    .unwrap();
+    let agent_loop = AgentLoop::new(Box::new(NoopProvider), test_config());
+    agent_loop.set_config_path(cfg);
+    agent_loop.set_active_model("plain");
+
+    // 历史带图（引用指向**不存在**的文件——vision=no 下字节根本不该被碰）。
+    let ghost = dir.path().join("t10_ghost.png");
+    let mut with_refs = turn("user", "第一张");
+    with_refs.image_refs = vec![ghost.to_string_lossy().into_owned()];
+    let mut current = turn("user", "第二张");
+    current.image_refs = vec![ghost.to_string_lossy().into_owned()];
+    let history = vec![
+        turn("system", "You are a test assistant."),
+        with_refs,
+        turn("assistant", "好的"),
+        current,
+    ];
+
+    let instance = AgentInstance::new(test_config());
+    instance.set_history(history.clone());
+
+    let (messages, annotation) = agent_loop.build_messages_with_memory_annotated(&instance, None);
+    assert!(annotation.vision_projected, "vision=no 构建必须置投影标志");
+    assert!(
+        messages.iter().all(|m| m.images.is_empty()),
+        "构建期图片字节不得进请求"
+    );
+    assert!(
+        messages.last().unwrap().content.contains("[图片未发送"),
+        "当前轮拒绝注明"
+    );
+
+    let recorded: Vec<serde_json::Value> = messages
+        .iter()
+        .filter_map(|m| serde_json::to_value(m).ok())
+        .collect();
+    let digest_index = annotation.digest_index;
+    append_projection_record(&RequestProjectionRecord {
+        trace_id: "t10-vision".to_string(),
+        session_key: key.clone(),
+        round: 1,
+        ts: now_rfc3339(),
+        messages_count: messages.len(),
+        roles: messages.iter().map(|m| m.role.clone()).collect(),
+        history_len_at_build: annotation.history_len,
+        injections: digest_index
+            .map(|i| {
+                vec![InjectionRecord {
+                    index: i,
+                    role: messages[i].role.clone(),
+                    source: INJECTION_CONTEXT_DIGEST.to_string(),
+                    content: messages[i].content.clone(),
+                }]
+            })
+            .unwrap_or_default(),
+        voice_append: None,
+        summary_as_of: annotation.summary_as_of.clone(),
+        vision_projected: true,
+    });
+
+    // store 保存的是**原始历史**（refs 原样保留——投影视图不落盘）。
+    let (store, sdir) = temp_store(&key);
+    store.set_history(&key, history.iter().map(|t| t.into()).collect());
+
+    match rebuild_request_messages(&store, &key, 1).expect("rebuild must not error") {
+        RebuildOutcome::Rebuilt(rebuilt) => {
+            verify_request_replay(&rebuilt, &recorded)
+                .expect("vision 投影重放必须与生产 build 字节一致");
+            assert!(
+                rebuilt.iter().all(|m| m.images.is_empty()),
+                "重建视图同样不含图片字节"
+            );
+            assert!(
+                rebuilt.last().unwrap().content.contains("[图片未发送"),
+                "重建视图带当前轮拒绝注明"
+            );
+        }
+        other => panic!("expected Rebuilt, got {:?}", other),
+    }
+
+    cleanup_sidecars(&key);
+    let _ = std::fs::remove_dir_all(sdir);
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+/// F-D（2026-09-04 四轮盲审）：vision=no 会话在 build 之后又追加了 user 轮
+/// ——重放必须先截断到当轮窗口再投影（生产投影的就是当轮窗口）。先投影
+/// 全长再截断的旧实现会把"最新 user 轮"的 rposition 落到后来追加的轮上，
+/// 当前轮/历史轮注记错位 → 字节漂移（重放恒红）。
+#[test]
+fn test_rebuild_vision_projection_truncates_before_projecting() {
+    let key = unique_key("t10_vision_fd");
+
+    let dir = tempfile::tempdir().unwrap();
+    let cfg = dir.path().join("config.json");
+    std::fs::write(
+        &cfg,
+        r#"{"model_list":[{"model":"x/plain","model_name":"plain","vision":"no"}]}"#,
+    )
+    .unwrap();
+    let agent_loop = AgentLoop::new(Box::new(NoopProvider), test_config());
+    agent_loop.set_config_path(cfg);
+    agent_loop.set_active_model("plain");
+
+    let ghost = dir.path().join("fd_ghost.png");
+    let mut with_refs = turn("user", "第一张");
+    with_refs.image_refs = vec![ghost.to_string_lossy().into_owned()];
+    let mut current = turn("user", "第二张");
+    current.image_refs = vec![ghost.to_string_lossy().into_owned()];
+    let history = vec![
+        turn("system", "You are a test assistant."),
+        with_refs,
+        turn("assistant", "好的"),
+        current,
+    ];
+
+    let instance = AgentInstance::new(test_config());
+    instance.set_history(history.clone());
+
+    let (messages, annotation) = agent_loop.build_messages_with_memory_annotated(&instance, None);
+    assert!(annotation.vision_projected);
+    let recorded: Vec<serde_json::Value> = messages
+        .iter()
+        .filter_map(|m| serde_json::to_value(m).ok())
+        .collect();
+    let digest_index = annotation.digest_index;
+    append_projection_record(&RequestProjectionRecord {
+        trace_id: "t10-vision-fd".to_string(),
+        session_key: key.clone(),
+        round: 1,
+        ts: now_rfc3339(),
+        messages_count: messages.len(),
+        roles: messages.iter().map(|m| m.role.clone()).collect(),
+        history_len_at_build: annotation.history_len,
+        injections: digest_index
+            .map(|i| {
+                vec![InjectionRecord {
+                    index: i,
+                    role: messages[i].role.clone(),
+                    source: INJECTION_CONTEXT_DIGEST.to_string(),
+                    content: messages[i].content.clone(),
+                }]
+            })
+            .unwrap_or_default(),
+        voice_append: None,
+        summary_as_of: annotation.summary_as_of.clone(),
+        vision_projected: true,
+    });
+
+    // store 保存原始历史，随后**追加 build 之后的轮次**（F-D 场景核心：
+    // store 比当轮窗口长）。追加的后轮也带图，放大错位效应。
+    let (store, sdir) = temp_store(&key);
+    let mut later = history.clone();
+    let mut later_img = turn("user", "build 之后才发的第三张");
+    later_img.image_refs = vec![ghost.to_string_lossy().into_owned()];
+    later.push(turn("assistant", "后续回复"));
+    later.push(later_img);
+    store.set_history(&key, later.iter().map(|t| t.into()).collect());
+
+    match rebuild_request_messages(&store, &key, 1).expect("rebuild must not error") {
+        RebuildOutcome::Rebuilt(rebuilt) => {
+            verify_request_replay(&rebuilt, &recorded)
+                .expect("截断先于投影：build 后追加轮次不得造成字节漂移");
+        }
+        other => panic!("expected Rebuilt, got {:?}", other),
+    }
+
+    cleanup_sidecars(&key);
+    let _ = std::fs::remove_dir_all(sdir);
+    let _ = std::fs::remove_dir_all(dir);
 }

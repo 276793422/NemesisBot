@@ -234,6 +234,46 @@ impl Guard {
         self.resolve_and_validate_locked(&guard, &parsed.host)
     }
 
+    /// Resolve DNS for the URL's host, validate all resulting IPs, and RETURN
+    /// them so the caller can pin the connection to validated addresses.
+    ///
+    /// Why the caller needs the IPs (2026-09-04 四轮盲审 S2): a plain
+    /// validate-then-fetch flow performs two independent DNS resolutions —
+    /// the guard's and the HTTP client's. A rebinding domain (attacker
+    /// controlled DNS, TTL 0) can answer the first lookup with a public IP
+    /// (passes the guard) and the second with an internal/metadata IP
+    /// (receives the fetch), reopening the very reach the guard exists to
+    /// block. Returning the validated set lets the caller build a client
+    /// with those addresses pinned (reqwest `resolve`), so no second
+    /// resolution ever happens.
+    ///
+    /// Return semantics: `Ok(vec![])` = nothing to pin (guard disabled, or
+    /// host on the allowlist — caller uses normal resolution); `Ok(ips)` =
+    /// validated, pin to these; `Err` = blocked, do not fetch.
+    pub fn resolve_and_validate_collect(&self, raw_url: &str) -> Result<Vec<IpAddr>, SsrfError> {
+        if !self.config.enabled {
+            return Ok(Vec::new());
+        }
+
+        let guard = self.inner.read();
+
+        let parsed =
+            resolver::parse_url(raw_url).map_err(|e| SsrfError::InvalidUrl(e.to_string()))?;
+
+        let host_lower = parsed.host.to_lowercase();
+        if guard.allowed_set.contains(&host_lower) {
+            return Ok(Vec::new());
+        }
+
+        // Scheme check (same rule as validate_url/resolve_and_validate).
+        let scheme = parsed.scheme.to_lowercase();
+        if scheme != "http" && scheme != "https" {
+            return Err(SsrfError::BlockedScheme(scheme));
+        }
+
+        self.resolve_and_validate_collect_locked(&guard, &parsed.host)
+    }
+
     // -----------------------------------------------------------------------
     // Check IP
     // -----------------------------------------------------------------------
@@ -281,14 +321,16 @@ impl Guard {
     // Internal helpers (must be called with read lock held)
     // -----------------------------------------------------------------------
 
-    /// Resolve host via DNS and validate all resulting IPs.
+    /// Resolve host via DNS and validate all resulting IPs, returning the
+    /// validated set (single truth source; the void-returning
+    /// [`Self::resolve_and_validate_locked`] is a thin wrapper).
     ///
     /// `guard` is the read-lock guard so we don't re-acquire the lock.
-    fn resolve_and_validate_locked(
+    fn resolve_and_validate_collect_locked(
         &self,
         guard: &parking_lot::RwLockReadGuard<'_, Inner>,
         host: &str,
-    ) -> Result<(), SsrfError> {
+    ) -> Result<Vec<IpAddr>, SsrfError> {
         let host_lower = host.to_lowercase();
 
         // Check localhost hostname strings
@@ -305,7 +347,8 @@ impl Guard {
 
         // Try to parse as IP directly
         if let Ok(ip) = host_lower.parse::<IpAddr>() {
-            return self.check_ip_locked(guard, &ip);
+            self.check_ip_locked(guard, &ip)?;
+            return Ok(vec![ip]);
         }
 
         // DNS resolution (synchronous via std::net)
@@ -327,7 +370,19 @@ impl Guard {
             }
         }
 
-        Ok(())
+        Ok(ips)
+    }
+
+    /// Resolve host via DNS and validate all resulting IPs.
+    ///
+    /// `guard` is the read-lock guard so we don't re-acquire the lock.
+    fn resolve_and_validate_locked(
+        &self,
+        guard: &parking_lot::RwLockReadGuard<'_, Inner>,
+        host: &str,
+    ) -> Result<(), SsrfError> {
+        self.resolve_and_validate_collect_locked(guard, host)
+            .map(|_| ())
     }
 
     /// Check a single `IpAddr` against all blocking rules.

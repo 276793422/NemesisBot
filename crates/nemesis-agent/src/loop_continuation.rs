@@ -70,6 +70,17 @@ pub struct ContinuationData {
     /// 快照还原成 TaskManager pending 条目）需要它才知道 poll 该问谁。
     /// 旧快照无此字段（空串），恢复时跳过。
     pub peer_id: String,
+    /// T6（多模态）：触发本续行的 turn 已过安全闸的图片路径引用（最后一条
+    /// user 消息的 `ConversationTurn.image_refs` 同源）。内存里 `messages`
+    /// 保留已水合的图片字节（同进程续行字节级无损）；磁盘快照则剥离字节、
+    /// 只落引用（见 [`ContinuationSnapshot::image_refs`]），加载时重水合。
+    pub image_refs: Vec<String>,
+    /// L1（2026-09-04 四轮盲审）：**每条 user 轮**的图片路径引用（与
+    /// `messages` 中 user 消息按出现顺序一一对应）。旧版单层 `image_refs`
+    /// 只恢复最后一条 user 轮的图——多轮带图会话崩溃恢复后，更早轮的图
+    /// 无声丢失（连占位都没有）。磁盘恢复时若非空则按本字段逐轮重水合，
+    /// 为空（旧快照）回退 `image_refs` 单层语义。
+    pub image_refs_by_user_turn: Vec<Vec<String>>,
     /// Save barrier: notified when data is fully written.
     pub ready: Arc<Notify>,
     /// Non-blocking ready flag: set to true when data is fully written.
@@ -92,6 +103,19 @@ pub struct ContinuationSnapshot {
     /// G5: 对端节点 ID。`#[serde(default)]` 兼容旧快照（空串 = 恢复时跳过）。
     #[serde(default)]
     pub peer_id: String,
+    /// T6（多模态）：图片路径引用。快照**不落图片字节**——`messages` 序列化
+    /// 前剥离每条消息的 `images`（base64），只保留路径引用，加载（重启恢复 /
+    /// 磁盘回退）时按引用重读本地文件水合回最后一条 user 消息（B 端本机路径
+    /// 语义，读不到 → `[图片已失效]` 占位；不做跨节点传输）。`#[serde(default)]`
+    /// 兼容旧快照（空 = 无图）。
+    #[serde(default)]
+    pub image_refs: Vec<String>,
+    /// L1（2026-09-04 四轮盲审）：每条 user 轮的图片路径引用（顺序与
+    /// `messages` 里的 user 消息一一对应）。非空时磁盘恢复按本字段逐轮重水合
+    /// （多轮带图会话更早轮的图不再丢失）；空 = 旧快照，回退 `image_refs`
+    /// 单层语义。`#[serde(default)]` 兼容旧快照。
+    #[serde(default)]
+    pub image_refs_by_user_turn: Vec<Vec<String>>,
     pub created_at: String,
 }
 
@@ -121,6 +145,116 @@ impl Default for ContinuationToolResult {
             is_async: false,
             task_id: None,
             error: None,
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// T6（多模态）：快照图片引用重水合
+// ---------------------------------------------------------------------------
+
+/// 把快照携带的图片路径引用重水合进 `messages` 的**最后一条 user 消息**
+/// （触发续行的那个 turn）。B 端本机路径语义：按引用重读本地文件；读不到 /
+/// 不是图片 → `[图片已失效: <path>]` 占位行追加进 content（诚实降级，不静默、
+/// 不炸），不做跨节点字节传输。`refs` 为空（无图 turn / 旧快照）时是 no-op。
+/// 已存在同文占位行则跳过（save→load 多次往返不重复堆叠）。
+fn rehydrate_last_user_images(messages: &mut [LlmMessage], refs: &[String]) {
+    if refs.is_empty() {
+        return;
+    }
+    let Some(last_user) = messages
+        .iter_mut()
+        .rev()
+        .find(|m| m.role == "user" && m.tool_call_id.is_none())
+    else {
+        return;
+    };
+    let (images, placeholders) = crate::image_attach::hydrate_image_refs(refs);
+    for p in placeholders {
+        if !last_user.content.contains(&p) {
+            last_user.content.push('\n');
+            last_user.content.push_str(&p);
+        }
+    }
+    last_user.images = images;
+}
+
+/// L1（2026-09-04 四轮盲审）：从水合后的消息列表按 user 轮派生图片路径引用
+/// （`images[].path`，每条 user 消息一项，顺序一致）。保存快照时调用——
+/// 传入的 messages 是 build_messages 产物（已水合），派生即快照真相，
+/// 不需要调用方额外穿参。
+pub(crate) fn derive_image_refs_by_user_turn(messages: &[LlmMessage]) -> Vec<Vec<String>> {
+    messages
+        .iter()
+        .filter(|m| m.role == "user" && m.tool_call_id.is_none())
+        .map(|m| m.images.iter().map(|i| i.path.clone()).collect())
+        .collect()
+}
+
+/// L1（2026-09-04 四轮盲审）：按 user 轮逐条重水合（磁盘恢复路径）。
+/// `refs_by_turn[i]` 对应第 i 条 user 消息；条目为空 = 该轮无图（跳过）；
+/// 快照条目数少于 user 消息数（手改/损坏）时多出的轮不恢复（诚实缺省）。
+/// 占位行与 [`rehydrate_last_user_images`] 同款去重（多次往返不堆叠）。
+fn rehydrate_images_by_user_turn(messages: &mut [LlmMessage], refs_by_turn: &[Vec<String>]) {
+    if refs_by_turn.is_empty() {
+        return;
+    }
+    let mut turn_idx = 0usize;
+    for m in messages.iter_mut() {
+        if m.role != "user" || m.tool_call_id.is_some() {
+            continue;
+        }
+        let Some(refs) = refs_by_turn.get(turn_idx) else {
+            break; // 快照引用少于 user 轮数：剩余轮诚实缺省
+        };
+        turn_idx += 1;
+        if refs.is_empty() {
+            continue;
+        }
+        let (images, placeholders) = crate::image_attach::hydrate_image_refs(refs);
+        for p in placeholders {
+            if !m.content.contains(&p) {
+                m.content.push('\n');
+                m.content.push_str(&p);
+            }
+        }
+        m.images = images;
+    }
+}
+
+/// F-F（2026-09-04 四轮盲审）：vision=no 模型的**消息级**投影（续行恢复
+/// 路径对应 loop.rs 的 turn 级 `project_turns_for_no_vision`）。
+///
+/// 为什么需要：T10 的 vision=no 投影发生在 build_messages（turn 视图），
+/// 续行快照恢复却绕过 build_messages 直接拿 `messages` 调 provider——
+/// 内存快照保留了已水合字节、磁盘恢复又按引用重水合，vision=no 模型
+/// 接管续行时请求带图 → provider 4xx（正常轮被投影保护、恢复轮裸奔）。
+/// 在 `handle_cluster_continuation` 调 LLM 前按 active 模型的 vision
+/// 解析结果统一投影：带图消息清空 `images` 并追加占位文本（最后一条
+/// user 轮「未发送」、其余「已省略」，与 turn 级投影同语义同措辞）；
+/// 已含同文占位则不重复堆叠。
+pub fn project_messages_for_no_vision(messages: &mut [LlmMessage]) {
+    let last_user_pos = messages
+        .iter()
+        .rposition(|m| m.role == "user" && m.tool_call_id.is_none());
+    for (i, m) in messages.iter_mut().enumerate() {
+        if m.images.is_empty() {
+            continue;
+        }
+        m.images.clear();
+        let note = if Some(i) == last_user_pos {
+            "[图片未发送: 当前模型 vision=no（不支持图像输入），图片已忽略]"
+        } else {
+            "[图片已省略: 当前模型仅支持文本]"
+        };
+        if m.content.contains(note) {
+            continue;
+        }
+        if m.content.trim().is_empty() {
+            m.content.push_str(note);
+        } else {
+            m.content.push('\n');
+            m.content.push_str(note);
         }
     }
 }
@@ -215,7 +349,9 @@ impl ContinuationStore {
 
             match self.load(task_id) {
                 Ok(snapshot) => {
-                    let messages: Vec<LlmMessage> = match serde_json::from_str(&snapshot.messages) {
+                    let mut messages: Vec<LlmMessage> = match serde_json::from_str(
+                        &snapshot.messages,
+                    ) {
                         Ok(m) => m,
                         Err(e) => {
                             warn!(
@@ -225,6 +361,17 @@ impl ContinuationStore {
                             continue;
                         }
                     };
+                    // T6（多模态）：磁盘快照不带图片字节（保存时已剥离）。
+                    // L1：优先按每轮引用逐 user 轮重水合（多轮带图会话更早
+                    // 轮的图不再丢）；空（旧快照）回退单层 image_refs 语义。
+                    if snapshot.image_refs_by_user_turn.is_empty() {
+                        rehydrate_last_user_images(&mut messages, &snapshot.image_refs);
+                    } else {
+                        rehydrate_images_by_user_turn(
+                            &mut messages,
+                            &snapshot.image_refs_by_user_turn,
+                        );
+                    }
 
                     // Create ready continuation data (loaded from disk, so already complete)
                     let ready = Arc::new(Notify::new());
@@ -237,6 +384,8 @@ impl ContinuationStore {
                         chat_id: snapshot.chat_id,
                         session_key: snapshot.session_key,
                         peer_id: snapshot.peer_id,
+                        image_refs: snapshot.image_refs,
+                        image_refs_by_user_turn: snapshot.image_refs_by_user_turn,
                         ready,
                         ready_flag,
                     });
@@ -357,6 +506,9 @@ impl ContinuationManager {
 
     /// Save a continuation snapshot (memory + disk dual-write).
     ///
+    /// T6（多模态）：无图调用的兼容入口（签名不动），等价于
+    /// [`Self::save_continuation_with_images`] 传空引用。
+    ///
     /// This method implements the save-barrier pattern:
     /// 1. Create `ContinuationData` with an open `ready` Notify.
     /// 2. Insert into the in-memory map (loaders will see the entry but wait on `ready`).
@@ -372,8 +524,44 @@ impl ContinuationManager {
         session_key: &str,
         peer_id: &str,
     ) {
+        self.save_continuation_with_images(
+            task_id,
+            messages,
+            tool_call_id,
+            channel,
+            chat_id,
+            session_key,
+            peer_id,
+            &[],
+        )
+        .await;
+    }
+
+    /// T6（多模态）：带图片路径引用的续行快照保存（memory + disk 双写）。
+    ///
+    /// 内存侧 `ContinuationData.messages` 原样保存（同进程续行字节级无损，
+    /// 已水合的图片字节保留）；磁盘侧 `ContinuationSnapshot.messages` 序列化
+    /// 前剥离每条消息的 `images`（base64 字节不落盘），只落 `image_refs`
+    /// 路径引用，加载时重水合。
+    #[allow(clippy::too_many_arguments)]
+    pub async fn save_continuation_with_images(
+        &self,
+        task_id: &str,
+        messages: Vec<LlmMessage>,
+        tool_call_id: &str,
+        channel: &str,
+        chat_id: &str,
+        session_key: &str,
+        peer_id: &str,
+        image_refs: &[String],
+    ) {
         let ready = Arc::new(Notify::new());
         let ready_flag = Arc::new(AtomicBool::new(false));
+
+        // L1（2026-09-04 四轮盲审）：按 user 轮派生图片引用快照字段——
+        // messages 是 build_messages 产物（已水合），从 `images[].path`
+        // 派生即快照真相，无需调用方额外穿参。
+        let image_refs_by_user_turn = derive_image_refs_by_user_turn(&messages);
 
         let cont_data = Arc::new(ContinuationData {
             messages: messages.clone(),
@@ -382,6 +570,8 @@ impl ContinuationManager {
             chat_id: chat_id.to_string(),
             session_key: session_key.to_string(),
             peer_id: peer_id.to_string(),
+            image_refs: image_refs.to_vec(),
+            image_refs_by_user_turn: image_refs_by_user_turn.clone(),
             ready: ready.clone(),
             ready_flag: ready_flag.clone(),
         });
@@ -392,9 +582,19 @@ impl ContinuationManager {
             conts.insert(task_id.to_string(), cont_data);
         }
 
-        // Step 2: Persist to disk.
+        // Step 2: Persist to disk (T6: strip image bytes, keep path refs).
         if let Some(ref store) = self.disk_store {
-            let messages_json = serde_json::to_string(&messages).unwrap_or_else(|e| {
+            let stripped: Vec<LlmMessage> = messages
+                .iter()
+                .map(|m| {
+                    let mut m = m.clone();
+                    if !m.images.is_empty() {
+                        m.images = Vec::new();
+                    }
+                    m
+                })
+                .collect();
+            let messages_json = serde_json::to_string(&stripped).unwrap_or_else(|e| {
                 warn!(
                     "[Continuation] Failed to serialize messages for continuation: {}",
                     e
@@ -409,6 +609,8 @@ impl ContinuationManager {
                 chat_id: chat_id.to_string(),
                 session_key: session_key.to_string(),
                 peer_id: peer_id.to_string(),
+                image_refs: image_refs.to_vec(),
+                image_refs_by_user_turn,
                 created_at: chrono::Local::now().to_rfc3339(),
             };
             if let Err(e) = store.save(&snapshot) {
@@ -463,6 +665,8 @@ impl ContinuationManager {
                             chat_id: data.chat_id.clone(),
                             session_key: data.session_key.clone(),
                             peer_id: data.peer_id.clone(),
+                            image_refs: data.image_refs.clone(),
+                            image_refs_by_user_turn: data.image_refs_by_user_turn.clone(),
                             ready: data.ready.clone(),
                             ready_flag: data.ready_flag.clone(),
                         });
@@ -482,6 +686,8 @@ impl ContinuationManager {
                             chat_id: arc.chat_id.clone(),
                             session_key: arc.session_key.clone(),
                             peer_id: arc.peer_id.clone(),
+                            image_refs: arc.image_refs.clone(),
+                            image_refs_by_user_turn: arc.image_refs_by_user_turn.clone(),
                             ready: arc.ready.clone(),
                             ready_flag: arc.ready_flag.clone(),
                         });
@@ -513,6 +719,8 @@ impl ContinuationManager {
                             chat_id: arc.chat_id.clone(),
                             session_key: arc.session_key.clone(),
                             peer_id: arc.peer_id.clone(),
+                            image_refs: arc.image_refs.clone(),
+                            image_refs_by_user_turn: arc.image_refs_by_user_turn.clone(),
                             ready: arc.ready.clone(),
                             ready_flag: arc.ready_flag.clone(),
                         });
@@ -542,7 +750,14 @@ impl ContinuationManager {
         let store = self.disk_store.as_ref()?;
         let snapshot = store.load(task_id).ok()?;
 
-        let messages: Vec<LlmMessage> = serde_json::from_str(&snapshot.messages).ok()?;
+        let mut messages: Vec<LlmMessage> = serde_json::from_str(&snapshot.messages).ok()?;
+        // T6（多模态）：磁盘快照不带图片字节，按路径引用重水合（失效 → 占位）。
+        // L1：优先按每轮引用逐 user 轮重水合；空（旧快照）回退单层语义。
+        if snapshot.image_refs_by_user_turn.is_empty() {
+            rehydrate_last_user_images(&mut messages, &snapshot.image_refs);
+        } else {
+            rehydrate_images_by_user_turn(&mut messages, &snapshot.image_refs_by_user_turn);
+        }
 
         let ready_flag = Arc::new(AtomicBool::new(true)); // Already ready from disk
         Some(ContinuationData {
@@ -552,6 +767,8 @@ impl ContinuationManager {
             chat_id: snapshot.chat_id,
             session_key: snapshot.session_key,
             peer_id: snapshot.peer_id,
+            image_refs: snapshot.image_refs,
+            image_refs_by_user_turn: snapshot.image_refs_by_user_turn,
             ready: Arc::new(Notify::new()),
             ready_flag,
         })
@@ -696,6 +913,7 @@ pub async fn handle_cluster_continuation<T: ToolLookup>(
     outbound_tx: &tokio::sync::mpsc::Sender<nemesis_types::channel::OutboundMessage>,
     observer_manager: Option<Arc<nemesis_observer::Manager>>,
     session_store: Option<&SessionStore>,
+    vision_supported: bool,
 ) {
     // Generate trace_id for observer event correlation.
     let trace_id = format!(
@@ -759,7 +977,16 @@ pub async fn handle_cluster_continuation<T: ToolLookup>(
         tool_calls: None,
         tool_call_id: Some(cont_data.tool_call_id.clone()),
         reasoning_content: None,
+        images: Vec::new(),
     });
+
+    // F-F（2026-09-04 四轮盲审）：vision=no 模型接管续行时，恢复路径
+    // （内存快照的已水合字节 / 磁盘重水合）绕过了 build_messages 的 T10
+    // 投影——正常轮被保护、恢复轮裸奔 → provider 4xx。调 LLM 前按 active
+    // 模型的 vision 解析结果统一投影（supported / 默认放行 = 零改动）。
+    if !vision_supported {
+        project_messages_for_no_vision(&mut messages);
+    }
 
     // 5. Run the continuation LLM + tool loop.
     let max_iterations = 20;
@@ -847,6 +1074,7 @@ pub async fn handle_cluster_continuation<T: ToolLookup>(
             tool_calls: Some(response.tool_calls.clone()),
             tool_call_id: None,
             reasoning_content: response.reasoning_content.clone(),
+            images: Vec::new(),
         };
         messages.push(assistant_msg);
 
@@ -908,7 +1136,7 @@ pub async fn handle_cluster_continuation<T: ToolLookup>(
                     .unwrap_or(&cont_data.peer_id)
                     .to_string();
                 manager
-                    .save_continuation(
+                    .save_continuation_with_images(
                         nested_task_id,
                         messages.clone(),
                         &tc.id,
@@ -916,6 +1144,7 @@ pub async fn handle_cluster_continuation<T: ToolLookup>(
                         &cont_data.chat_id,
                         &cont_data.session_key,
                         &nested_peer,
+                        &cont_data.image_refs,
                     )
                     .await;
             }
@@ -933,6 +1162,7 @@ pub async fn handle_cluster_continuation<T: ToolLookup>(
                 tool_calls: None,
                 tool_call_id: Some(tc.id.clone()),
                 reasoning_content: None,
+                images: Vec::new(),
             });
         }
     }

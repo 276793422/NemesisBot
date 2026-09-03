@@ -37,6 +37,7 @@ fn conversation_turn_serialization() {
         reasoning_content: None,
         tool_name: None,
         tool_result_projection: None,
+        image_refs: Vec::new(),
     };
     let json = serde_json::to_string(&turn).unwrap();
     let parsed: ConversationTurn = serde_json::from_str(&json).unwrap();
@@ -89,6 +90,7 @@ fn conversation_turn_with_tool_calls() {
         reasoning_content: None,
         tool_name: None,
         tool_result_projection: None,
+        image_refs: Vec::new(),
     };
     let json = serde_json::to_string(&turn).unwrap();
     let parsed: ConversationTurn = serde_json::from_str(&json).unwrap();
@@ -162,6 +164,7 @@ fn conversation_turn_tool_call_id() {
         reasoning_content: None,
         tool_name: None,
         tool_result_projection: None,
+        image_refs: Vec::new(),
     };
     let json = serde_json::to_string(&turn).unwrap();
     let parsed: ConversationTurn = serde_json::from_str(&json).unwrap();
@@ -300,6 +303,7 @@ fn conversation_turn_clone() {
         reasoning_content: None,
         tool_name: None,
         tool_result_projection: None,
+        image_refs: Vec::new(),
     };
     let cloned = turn.clone();
     assert_eq!(cloned.role, "user");
@@ -356,6 +360,7 @@ fn make_turn(role: &str, content: &str) -> ConversationTurn {
         reasoning_content: None,
         tool_name: None,
         tool_result_projection: None,
+        image_refs: Vec::new(),
     }
 }
 
@@ -376,6 +381,7 @@ fn make_assistant_with_tc(content: &str, ids: &[&str]) -> ConversationTurn {
         reasoning_content: None,
         tool_name: None,
         tool_result_projection: None,
+        image_refs: Vec::new(),
     }
 }
 
@@ -389,6 +395,7 @@ fn make_tool_response(content: &str, tc_id: &str) -> ConversationTurn {
         reasoning_content: None,
         tool_name: None,
         tool_result_projection: None,
+        image_refs: Vec::new(),
     }
 }
 
@@ -596,6 +603,7 @@ fn turn(
         reasoning_content: None,
         tool_name: None,
         tool_result_projection: None,
+        image_refs: Vec::new(),
     }
 }
 
@@ -733,6 +741,7 @@ fn x1_turn(role: &str, content: &str) -> ConversationTurn {
         reasoning_content: None,
         tool_name: None,
         tool_result_projection: None,
+        image_refs: Vec::new(),
     }
 }
 
@@ -848,6 +857,7 @@ fn assistant_with_calls(ids: &[&str]) -> ConversationTurn {
         reasoning_content: None,
         tool_name: None,
         tool_result_projection: None,
+        image_refs: Vec::new(),
     }
 }
 
@@ -861,6 +871,7 @@ fn tool_result_turn(id: Option<&str>, content: &str) -> ConversationTurn {
         reasoning_content: None,
         tool_name: None,
         tool_result_projection: None,
+        image_refs: Vec::new(),
     }
 }
 

@@ -74,7 +74,7 @@ impl ClaudeCliProvider {
 
         for msg in messages {
             if msg.role == "system" {
-                parts.push(msg.content.clone());
+                parts.push(msg.content.to_text());
             }
         }
 
@@ -122,11 +122,21 @@ impl ClaudeCliProvider {
         for msg in messages {
             match msg.role.as_str() {
                 "system" => { /* handled via --system-prompt flag */ }
-                "user" => parts.push(format!("User: {}", msg.content)),
-                "assistant" => parts.push(format!("Assistant: {}", msg.content)),
+                "user" => parts.push(format!(
+                    "User: {}",
+                    msg.content.to_prompt_text_with_image_note()
+                )),
+                "assistant" => parts.push(format!(
+                    "Assistant: {}",
+                    msg.content.to_prompt_text_with_image_note()
+                )),
                 "tool" => {
                     if let Some(ref tc_id) = msg.tool_call_id {
-                        parts.push(format!("[Tool Result for {}]: {}", tc_id, msg.content));
+                        parts.push(format!(
+                            "[Tool Result for {}]: {}",
+                            tc_id,
+                            msg.content.to_prompt_text_with_image_note()
+                        ));
                     }
                 }
                 _ => {}

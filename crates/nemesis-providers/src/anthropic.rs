@@ -119,26 +119,33 @@ impl AnthropicProvider {
         for msg in messages {
             match msg.role.as_str() {
                 "system" => {
+                    // 回归 F1 防御：system 位不支持图像 Parts，raw 序列化会产出
+                    // wire 非法块。system 是内部指令位（无"用户附带"语义），
+                    // 取纯文本视图即可，与 codex system 分支同语义。
                     system_parts.push(serde_json::json!({
                         "type": "text",
-                        "text": msg.content
+                        "text": msg.content.to_text()
                     }));
                 }
                 "user" => {
                     if let Some(ref tc_id) = msg.tool_call_id {
-                        // Tool result
+                        // Tool result。D7 同族降级（回归 F1）：tool_result 在本实现
+                        // 只承载文本（图像进 tool_result 属 Phase 5），Parts 走
+                        // 文本视图 + 诚实注记，防 raw 序列化产出非法 wire 块。
                         api_messages.push(serde_json::json!({
                             "role": "user",
                             "content": [{
                                 "type": "tool_result",
                                 "tool_use_id": tc_id,
-                                "content": msg.content
+                                "content": msg.content.to_prompt_text_with_image_note()
                             }]
                         }));
                     } else {
+                        // anthropic_content_value：纯文本保持字符串（字节不变）；
+                        // Parts 转 blocks（text / image base64|url）。
                         api_messages.push(serde_json::json!({
                             "role": "user",
-                            "content": msg.content
+                            "content": anthropic_content_value(&msg.content)
                         }));
                     }
                 }
@@ -146,9 +153,11 @@ impl AnthropicProvider {
                     if !msg.tool_calls.is_empty() {
                         let mut content: Vec<serde_json::Value> = Vec::new();
                         if !msg.content.is_empty() {
+                            // D7 同族降级（回归 F1）：assistant 不产出图像，Parts
+                            // 降级为文本视图 + 诚实注记。
                             content.push(serde_json::json!({
                                 "type": "text",
-                                "text": msg.content
+                                "text": msg.content.to_prompt_text_with_image_note()
                             }));
                         }
                         for tc in &msg.tool_calls {
@@ -178,20 +187,23 @@ impl AnthropicProvider {
                             "content": content
                         }));
                     } else {
+                        // D7 同族降级（回归 F1）：同上，Parts 防非法 wire 块。
                         api_messages.push(serde_json::json!({
                             "role": "assistant",
-                            "content": msg.content
+                            "content": msg.content.to_prompt_text_with_image_note()
                         }));
                     }
                 }
                 "tool" => {
                     if let Some(ref tc_id) = msg.tool_call_id {
+                        // D7 同族降级（回归 F1）：同 user tool_result，Parts 走
+                        // 文本视图 + 诚实注记（图像进 tool_result 属 Phase 5）。
                         api_messages.push(serde_json::json!({
                             "role": "user",
                             "content": [{
                                 "type": "tool_result",
                                 "tool_use_id": tc_id,
-                                "content": msg.content
+                                "content": msg.content.to_prompt_text_with_image_note()
                             }]
                         }));
                     }
@@ -242,6 +254,48 @@ impl AnthropicProvider {
         }
 
         body
+    }
+}
+
+/// 单条消息 content → Anthropic Messages API content 值：
+/// - `Text`  → JSON 字符串（字节兼容现网请求，prompt cache 前缀不变）
+/// - `Parts` → blocks 数组：Text → `{"type":"text",text}`；
+///   Base64 图 → `{"type":"image","source":{"type":"base64",media_type,data}}`；
+///   Url 图 → `{"type":"image","source":{"type":"url",url}}`。
+///   （Anthropic image block 无 detail 字段——D2 透传仅 OpenAI 形态适用。）
+fn anthropic_content_value(content: &crate::types::MessageContent) -> serde_json::Value {
+    match content {
+        crate::types::MessageContent::Text(_) => {
+            serde_json::to_value(content).expect("MessageContent serialize is infallible")
+        }
+        crate::types::MessageContent::Parts(parts) => serde_json::Value::Array(
+            parts
+                .iter()
+                .map(|p| match p {
+                    crate::types::ContentPart::Text { text } => {
+                        serde_json::json!({ "type": "text", "text": text })
+                    }
+                    crate::types::ContentPart::Image { image, .. } => match image {
+                        crate::types::ImageSource::Base64 { media_type, data } => {
+                            serde_json::json!({
+                                "type": "image",
+                                "source": {
+                                    "type": "base64",
+                                    "media_type": media_type,
+                                    "data": data
+                                }
+                            })
+                        }
+                        crate::types::ImageSource::Url(url) => {
+                            serde_json::json!({
+                                "type": "image",
+                                "source": { "type": "url", "url": url }
+                            })
+                        }
+                    },
+                })
+                .collect(),
+        ),
     }
 }
 

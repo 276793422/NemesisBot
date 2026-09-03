@@ -8,6 +8,8 @@ import { useWSAPI } from '../composables/useWSAPI'
 import { useInboxStatus } from '../composables/useInboxStatus'
 import { useSlashCommands, filterSlashCommands, type SlashCommand } from '../composables/useSlashCommands'
 import { useSessionStore } from '../stores/session'
+import { uploadImage, validateImageFile, type UploadedImage } from '../composables/useImageUpload'
+import { useToast } from '../composables/useToast'
 import { marked } from 'marked'
 import hljs from 'highlight.js/lib/core'
 import javascript from 'highlight.js/lib/languages/javascript'
@@ -365,6 +367,7 @@ function handleHistoryResponse(data: any) {
           content: m.content,
           timestamp: m.timestamp || new Date().toISOString(),
           model: m.model,
+          imageCount: Array.isArray(m.images) ? m.images.length : undefined,
         })),
       )
       chatStore.streaming = false
@@ -389,6 +392,7 @@ function handleHistoryResponse(data: any) {
       content: m.content,
       timestamp: m.timestamp || new Date().toISOString(),
       model: m.model,
+      imageCount: Array.isArray(m.images) ? m.images.length : undefined,
     }))
     chatStore.prependHistory(newMessages)
 
@@ -428,19 +432,111 @@ function loadHistory() {
   }, 10000)
 }
 
+// ---------------------------------------------------------------------------
+// T8 多模态（2026-09-03）：图片附件（上传端点 /api/upload/image → chat.send
+// media）。三种入口：📎 选择文件、粘贴（clipboard files）、拖拽到输入区。
+// 上传成功后持 id 等待随消息发送；不做 canvas 压缩，超限由前置校验与后端
+// 同一口径拒绝。
+// ---------------------------------------------------------------------------
+
+const toast = useToast()
+type PendingImage = UploadedImage & { name: string }
+const pendingImages = ref<PendingImage[]>([])
+const uploadingImages = ref(0)
+const imageFileInput = ref<HTMLInputElement | null>(null)
+const dragOver = ref(false)
+// 前置上限与后端真相源一致：image_path_detector::MAX_IMAGES_PER_MESSAGE = 8
+// （D6，2026-09-03 用户定值；此前前端写 4 与后端 8 不一致）。
+const MAX_IMAGES_PER_MESSAGE = 8
+
+/** 收文件 → 逐个前置校验 + 异步上传（并发安全：计数器占位防超量）。 */
+function addImageFiles(files: FileList | File[] | null) {
+  if (!files) return
+  for (const f of Array.from(files)) {
+    if (pendingImages.value.length + uploadingImages.value >= MAX_IMAGES_PER_MESSAGE) {
+      toast.warn(`每条消息最多附带 ${MAX_IMAGES_PER_MESSAGE} 张图片`)
+      break
+    }
+    const invalid = validateImageFile(f)
+    if (invalid) {
+      toast.warn(invalid)
+      continue
+    }
+    uploadingImages.value++
+    uploadImage(f)
+      .then(up => {
+        pendingImages.value.push({ ...up, name: f.name })
+      })
+      .catch(e => {
+        toast.error(String((e as Error)?.message ?? e))
+      })
+      .finally(() => {
+        uploadingImages.value--
+      })
+  }
+}
+
+function removePendingImage(idx: number) {
+  pendingImages.value.splice(idx, 1)
+}
+
+function pickImages() {
+  imageFileInput.value?.click()
+}
+
+function onImageFilesChosen(e: Event) {
+  const input = e.target as HTMLInputElement
+  addImageFiles(input.files)
+  input.value = ''
+}
+
+function onPaste(e: ClipboardEvent) {
+  // 只在有图片文件时接管；纯文本粘贴走默认行为。
+  const files = e.clipboardData?.files
+  if (files && files.length > 0) {
+    e.preventDefault()
+    addImageFiles(files)
+  }
+}
+
+function onDragOver(e: DragEvent) {
+  e.preventDefault()
+  dragOver.value = true
+}
+
+function onDragLeave() {
+  dragOver.value = false
+}
+
+function onDrop(e: DragEvent) {
+  e.preventDefault()
+  dragOver.value = false
+  addImageFiles(e.dataTransfer?.files ?? null)
+}
+
 function sendMessage() {
   const content = chatStore.input.trim()
-  if (!content) return
+  const media = pendingImages.value.map(p => ({ id: p.id }))
+  if (!content && media.length === 0) return
+  // LO1（2026-09-04 四轮盲审）：上传未完成时发送被拒——旧行为静默 return，
+  // 用户按 Ctrl+Enter 毫无反馈（以为已发出）。toast 明示原因。
+  if (uploadingImages.value > 0) {
+    toast.warn('图片仍在上传中，请稍候再发送')
+    return
+  }
   // U7: queue/steer 模式下 busy 发送是合法操作（后端排队/插队）；reject 模式维持原样。
   if (chatStore.streaming && !canQueueWhileBusy.value) return
 
   chatStore.addMessage({
     role: 'user',
-    content,
+    // 纯图无文字时回显占位（发送内容保持原样，不污染提示词）。
+    content: content || (media.length ? '[图片]' : ''),
     timestamp: new Date().toISOString(),
+    imageCount: media.length || undefined,
   })
 
   chatStore.clearInput()
+  pendingImages.value = []
   chatStore.streaming = true
   startWatchdog()
 
@@ -451,6 +547,7 @@ function sendMessage() {
   send(content, voicePlayback.value, {
     module: props.module,
     moduleData: activeModuleData(),
+    media,
   })
 
   // U7: busy 中排队/插队 → 立即拉一次队列快照并轮询，chip 才能出现。
@@ -683,21 +780,29 @@ function setupScrollListener() {
 
 // Watch WS status
 const unwatchStatus = watch(wsStatus, (val) => {
+  // F-B（2026-09-04 四轮盲审）：standalone 只是自管连接状态展示，不等于
+  // 不要历史——旧分支把整个 body 跳过，独立聊天页永远是空会话（仅新消息
+  // 可见）。连接建立拉历史 + 断连复位 streaming 两态通用。
   if (props.standalone) {
-    // standalone handles its own connection status
-  } else {
-    appStore.connected = val === 'connected'
-    if (val === 'connected' && !chatStore.historyLoaded) {
+    if (val === 'connected' && !chatStore.historyLoaded && !chatStore.historyLoading) {
       loadHistory()
     }
-    // Reset streaming flag on disconnect to prevent stuck UI
     if (val === 'disconnected' && chatStore.streaming) {
       chatStore.streaming = false
     }
-    if (val === 'connected') {
-      initVoiceState()
-      syncInboxMode()
-    }
+    return
+  }
+  appStore.connected = val === 'connected'
+  if (val === 'connected' && !chatStore.historyLoaded) {
+    loadHistory()
+  }
+  // Reset streaming flag on disconnect to prevent stuck UI
+  if (val === 'disconnected' && chatStore.streaming) {
+    chatStore.streaming = false
+  }
+  if (val === 'connected') {
+    initVoiceState()
+    syncInboxMode()
   }
 })
 
@@ -748,11 +853,11 @@ onMounted(() => {
     if (token) {
       connect(null, token)
     }
-    // Auth store may have already connected WS before this component mounted.
-    // The watcher only fires on value changes, so check current status directly.
-    if (wsStatus.value === 'connected' && !chatStore.historyLoaded && !chatStore.historyLoading) {
-      loadHistory()
-    }
+  }
+  // F-B：历史首拉对两种模式一致——standalone 的 connect 由 auth store 在
+  // 登录时完成，挂载时可能已 connected（watcher 不回放旧值，这里直接查）。
+  if (wsStatus.value === 'connected' && !chatStore.historyLoaded && !chatStore.historyLoading) {
+    loadHistory()
   }
 
   // Initialize voice toolbar state after WS is ready
@@ -812,6 +917,7 @@ onUnmounted(() => {
           <div class="message-bubble">
             <div v-if="msg.role === 'assistant'" class="markdown-body" v-html="getRenderedHtml(msg)"></div>
             <div v-else class="message-text">{{ msg.content }}</div>
+            <span v-if="msg.imageCount" class="msg-image-chip" title="消息附带图片">📷 {{ msg.imageCount }}</span>
           </div>
           <div class="message-time">
             <span>{{ formatTime(msg.timestamp) }}</span>
@@ -895,7 +1001,24 @@ onUnmounted(() => {
     </div>
 
     <!-- Input -->
-    <div class="chat-input-area">
+    <div
+      class="chat-input-area"
+      :class="{ 'drag-over': dragOver }"
+      @dragover="onDragOver"
+      @dragleave="onDragLeave"
+      @drop="onDrop"
+    >
+      <!-- T8 多模态：待发送图片附件 chips -->
+      <div v-if="pendingImages.length || uploadingImages > 0" class="attach-chips">
+        <span v-for="(p, i) in pendingImages" :key="p.id" class="attach-chip" :title="p.path">
+          🖼 {{ p.name }}
+          <button class="attach-chip-x" title="移除" @click="removePendingImage(i)">×</button>
+        </span>
+        <span v-if="uploadingImages > 0" class="attach-chip uploading">
+          <span class="spinner" style="width:12px;height:12px;border-width:2px;"></span>
+          上传中…
+        </span>
+      </div>
       <!-- slash 命令补全菜单 -->
       <div v-if="slashOpen" class="slash-menu">
         <div
@@ -911,6 +1034,24 @@ onUnmounted(() => {
           <span v-if="c.argument_hint" class="slash-item-hint">{{ c.argument_hint }}</span>
         </div>
       </div>
+      <button
+        class="attach-btn"
+        title="附带图片（也可粘贴或拖拽进来）"
+        :disabled="chatStore.streaming && !canQueueWhileBusy"
+        @click="pickImages"
+      >
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" width="18" height="18">
+          <path d="m21.44 11.05-9.19 9.19a6 6 0 0 1-8.49-8.49l8.57-8.57A4 4 0 1 1 18 8.84l-8.59 8.57a2 2 0 0 1-2.83-2.83l8.49-8.48"/>
+        </svg>
+      </button>
+      <input
+        ref="imageFileInput"
+        type="file"
+        accept="image/png,image/jpeg,image/webp,image/gif"
+        multiple
+        hidden
+        @change="onImageFilesChosen"
+      >
       <textarea
         ref="chatInput"
         :placeholder="props.placeholderOverride || '输入消息... (Ctrl+Enter 发送)'"
@@ -918,6 +1059,7 @@ onUnmounted(() => {
         v-model="chatStore.input"
         @keydown="handleKeydown"
         @input="handleInput"
+        @paste="onPaste"
         :disabled="chatStore.streaming && !canQueueWhileBusy"
       ></textarea>
       <button v-if="chatStore.streaming && showStopButton" class="btn btn-stop" @click="stopGeneration" title="停止生成">
@@ -925,7 +1067,7 @@ onUnmounted(() => {
           <rect x="6" y="6" width="12" height="12" rx="2"/>
         </svg>
       </button>
-      <button v-if="!chatStore.streaming || canQueueWhileBusy" class="btn btn-primary" @click="sendMessage" :disabled="!chatStore.input.trim()">
+      <button v-if="!chatStore.streaming || canQueueWhileBusy" class="btn btn-primary" @click="sendMessage" :disabled="(!chatStore.input.trim() && !pendingImages.length) || uploadingImages > 0">
         发送
       </button>
       <span v-else-if="!showStopButton" class="btn btn-primary btn-disabled-workflow" title="工作流执行中，无法中断">
@@ -1091,6 +1233,81 @@ onUnmounted(() => {
 /* slash 菜单锚定：chat-input-area 全局样式无定位，本组件内补 relative。 */
 .chat-input-area {
   position: relative;
+}
+
+/* T8 多模态：拖拽高亮 + 附件 chips + 📎 按钮 */
+.chat-input-area.drag-over {
+  outline: 2px dashed var(--accent);
+  outline-offset: -2px;
+}
+.attach-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  align-self: flex-end;
+  padding: 0 10px;
+  height: 38px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  background: var(--bg-primary);
+  color: var(--text-secondary);
+  cursor: pointer;
+  transition: all 0.15s;
+  flex-shrink: 0;
+}
+.attach-btn:hover:not(:disabled) {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+.attach-btn:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+.attach-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  padding: 6px 12px 0;
+}
+.attach-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  max-width: 220px;
+  padding: 3px 8px;
+  font-size: var(--text-xs);
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: var(--surface);
+  color: var(--text-secondary);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.attach-chip.uploading {
+  color: var(--text-muted);
+}
+.attach-chip-x {
+  border: none;
+  background: none;
+  color: var(--text-muted);
+  font-size: 14px;
+  line-height: 1;
+  cursor: pointer;
+  padding: 0 2px;
+}
+.attach-chip-x:hover {
+  color: #dc3545;
+}
+.msg-image-chip {
+  display: inline-block;
+  margin-top: 4px;
+  padding: 1px 8px;
+  font-size: var(--text-xs);
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.12);
+  color: inherit;
+  opacity: 0.85;
 }
 
 /* slash 命令补全菜单（2026-08-29） */

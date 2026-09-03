@@ -5,7 +5,7 @@ fn test_build_prompt_single_user() {
     let provider = CodexCliProvider::new(CodexCliConfig::default());
     let messages = vec![Message {
         role: "user".to_string(),
-        content: "Hello".to_string(),
+        content: "Hello".into(),
         tool_calls: vec![],
         tool_call_id: None,
         timestamp: None,
@@ -22,7 +22,7 @@ fn test_build_prompt_with_system() {
     let messages = vec![
         Message {
             role: "system".to_string(),
-            content: "Be helpful".to_string(),
+            content: "Be helpful".into(),
             tool_calls: vec![],
             tool_call_id: None,
             timestamp: None,
@@ -31,7 +31,7 @@ fn test_build_prompt_with_system() {
         },
         Message {
             role: "user".to_string(),
-            content: "Hello".to_string(),
+            content: "Hello".into(),
             tool_calls: vec![],
             tool_call_id: None,
             timestamp: None,
@@ -141,7 +141,7 @@ fn test_build_prompt_with_tools_and_system() {
     let messages = vec![
         Message {
             role: "system".to_string(),
-            content: "Be helpful".to_string(),
+            content: "Be helpful".into(),
             tool_calls: vec![],
             tool_call_id: None,
             timestamp: None,
@@ -150,7 +150,7 @@ fn test_build_prompt_with_tools_and_system() {
         },
         Message {
             role: "user".to_string(),
-            content: "Hello".to_string(),
+            content: "Hello".into(),
             tool_calls: vec![],
             tool_call_id: None,
             timestamp: None,
@@ -179,7 +179,7 @@ fn test_build_prompt_with_assistant_message() {
     let messages = vec![
         Message {
             role: "user".to_string(),
-            content: "Hi".to_string(),
+            content: "Hi".into(),
             tool_calls: vec![],
             tool_call_id: None,
             timestamp: None,
@@ -188,7 +188,7 @@ fn test_build_prompt_with_assistant_message() {
         },
         Message {
             role: "assistant".to_string(),
-            content: "Hello!".to_string(),
+            content: "Hello!".into(),
             tool_calls: vec![],
             tool_call_id: None,
             timestamp: None,
@@ -207,7 +207,7 @@ fn test_build_prompt_with_tool_result() {
     let messages = vec![
         Message {
             role: "user".to_string(),
-            content: "Read file".to_string(),
+            content: "Read file".into(),
             tool_calls: vec![],
             tool_call_id: None,
             timestamp: None,
@@ -216,7 +216,7 @@ fn test_build_prompt_with_tool_result() {
         },
         Message {
             role: "tool".to_string(),
-            content: "file content here".to_string(),
+            content: "file content here".into(),
             tool_calls: vec![],
             tool_call_id: Some("call_123".into()),
             timestamp: None,
@@ -317,4 +317,29 @@ fn test_provider_name_and_default_model() {
     let provider = CodexCliProvider::new(CodexCliConfig::default());
     assert_eq!(provider.name(), "codex-cli");
     assert_eq!(provider.default_model(), "codex-cli");
+}
+
+// ============================================================
+// T3：CLI 委派降级（D7）——图像 → 文字占位，不静默
+// ============================================================
+
+#[test]
+fn test_build_prompt_image_degrades_to_note() {
+    let config = CodexCliConfig::default();
+    let provider = CodexCliProvider::new(config);
+    let messages = vec![Message::parts(
+        "user",
+        vec![
+            ContentPart::Text {
+                text: "描述一下".to_string(),
+            },
+            ContentPart::Image {
+                image: ImageSource::Url("https://example.com/a.png".to_string()),
+                detail: None,
+            },
+        ],
+    )];
+    let prompt = provider.build_prompt(&messages, &[]);
+    assert!(prompt.contains("描述一下"));
+    assert!(prompt.contains("[用户附带 1 张图片（当前委派通道不支持视觉输入）]"));
 }

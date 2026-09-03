@@ -24,6 +24,7 @@ impl Drop for GlobalPathGuard {
 fn model_config_with_key(api_key: &str) -> Config {
     Config {
         model_list: vec![ModelConfig {
+            extra: Default::default(),
             model_name: "ref".to_string(),
             model: "openai/gpt-4".to_string(),
             api_key: api_key.to_string(),
@@ -242,6 +243,7 @@ fn temp_home_with_keys(keys: &[&str]) -> (tempfile::TempDir, PathBuf, PathBuf) {
     let mut cfg = Config::default();
     for (i, k) in keys.iter().enumerate() {
         cfg.model_list.push(ModelConfig {
+            extra: Default::default(),
             model_name: format!("m{}", i),
             model: format!("openai/gpt-{}", i),
             api_key: k.to_string(),
@@ -462,6 +464,7 @@ fn temp_home_with_entry(
     std::fs::create_dir_all(home.join("workspace").join("config")).unwrap();
     let mut cfg = Config::default();
     cfg.model_list.push(ModelConfig {
+        extra: Default::default(),
         model_name: model_name.to_string(),
         model: model.to_string(),
         api_key: api_key.to_string(),

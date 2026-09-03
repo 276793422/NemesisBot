@@ -1,6 +1,11 @@
 package models
 
-import "time"
+import (
+	"encoding/json"
+	"fmt"
+	"strings"
+	"time"
+)
 
 // Model 定义测试模型接口
 type Model interface {
@@ -25,6 +30,68 @@ type Message struct {
 	Role      string     `json:"role"`
 	Content   string     `json:"content"`
 	ToolCalls []ToolCall `json:"tool_calls,omitempty"`
+	// Parts 保存多模态 content 数组的完整内容（UnmarshalJSON 填充）；
+	// json:"-" 不回传——响应侧 assistant 消息恒为纯文本。
+	Parts []ContentPart `json:"-"`
+}
+
+// ContentPart 定义 OpenAI 兼容的多模态内容部分
+type ContentPart struct {
+	Type     string    `json:"type"` // "text" | "image_url"
+	Text     string    `json:"text,omitempty"`
+	ImageURL *ImageURL `json:"image_url,omitempty"`
+}
+
+// ImageURL 定义图像引用（base64 data URI 或 http URL）
+type ImageURL struct {
+	URL    string `json:"url"`
+	Detail string `json:"detail,omitempty"`
+}
+
+// UnmarshalJSON 兼容两种 content 形态：纯字符串 / 多模态数组。
+// 数组形态下文本部分拼接进 Content（现有模型零改动继续工作），
+// 完整 parts 保留在 Parts 供视觉检测模型（testai-vision-1.0）断言。
+func (m *Message) UnmarshalJSON(data []byte) error {
+	type alias struct {
+		Role      string          `json:"role"`
+		Content   json.RawMessage `json:"content"`
+		ToolCalls []ToolCall      `json:"tool_calls,omitempty"`
+	}
+	var a alias
+	if err := json.Unmarshal(data, &a); err != nil {
+		return err
+	}
+	m.Role = a.Role
+	m.ToolCalls = a.ToolCalls
+	m.Parts = nil
+
+	if len(a.Content) == 0 || string(a.Content) == "null" {
+		m.Content = ""
+		return nil
+	}
+
+	// 形态 1：纯字符串
+	var s string
+	if err := json.Unmarshal(a.Content, &s); err == nil {
+		m.Content = s
+		return nil
+	}
+
+	// 形态 2：多模态数组
+	var parts []ContentPart
+	if err := json.Unmarshal(a.Content, &parts); err == nil {
+		m.Parts = parts
+		var texts []string
+		for _, p := range parts {
+			if p.Type == "text" {
+				texts = append(texts, p.Text)
+			}
+		}
+		m.Content = strings.Join(texts, "\n")
+		return nil
+	}
+
+	return fmt.Errorf("content 字段既不是字符串也不是数组")
 }
 
 // ChatCompletionRequest 定义 OpenAI 兼容的请求格式

@@ -5,7 +5,7 @@ fn test_build_system_prompt() {
     let provider = ClaudeCliProvider::new(ClaudeCliConfig::default());
     let messages = vec![Message {
         role: "system".to_string(),
-        content: "You are helpful".to_string(),
+        content: "You are helpful".into(),
         tool_calls: vec![],
         tool_call_id: None,
         timestamp: None,
@@ -37,7 +37,7 @@ fn test_messages_to_prompt_single_user() {
     let provider = ClaudeCliProvider::new(ClaudeCliConfig::default());
     let messages = vec![Message {
         role: "user".to_string(),
-        content: "Hello world".to_string(),
+        content: "Hello world".into(),
         tool_calls: vec![],
         tool_call_id: None,
         timestamp: None,
@@ -54,7 +54,7 @@ fn test_messages_to_prompt_multi() {
     let messages = vec![
         Message {
             role: "user".to_string(),
-            content: "Hello".to_string(),
+            content: "Hello".into(),
             tool_calls: vec![],
             tool_call_id: None,
             timestamp: None,
@@ -63,7 +63,7 @@ fn test_messages_to_prompt_multi() {
         },
         Message {
             role: "assistant".to_string(),
-            content: "Hi there".to_string(),
+            content: "Hi there".into(),
             tool_calls: vec![],
             tool_call_id: None,
             timestamp: None,
@@ -141,7 +141,7 @@ fn test_build_system_prompt_with_tools() {
     let provider = ClaudeCliProvider::new(ClaudeCliConfig::default());
     let messages = vec![Message {
         role: "system".to_string(),
-        content: "Be helpful".to_string(),
+        content: "Be helpful".into(),
         tool_calls: vec![],
         tool_call_id: None,
         timestamp: None,
@@ -167,7 +167,7 @@ fn test_build_system_prompt_no_system_messages() {
     let provider = ClaudeCliProvider::new(ClaudeCliConfig::default());
     let messages = vec![Message {
         role: "user".to_string(),
-        content: "Hello".to_string(),
+        content: "Hello".into(),
         tool_calls: vec![],
         tool_call_id: None,
         timestamp: None,
@@ -184,7 +184,7 @@ fn test_messages_to_prompt_with_tool_result() {
     let messages = vec![
         Message {
             role: "user".to_string(),
-            content: "Check".to_string(),
+            content: "Check".into(),
             tool_calls: vec![],
             tool_call_id: None,
             timestamp: None,
@@ -193,7 +193,7 @@ fn test_messages_to_prompt_with_tool_result() {
         },
         Message {
             role: "tool".to_string(),
-            content: "result data".to_string(),
+            content: "result data".into(),
             tool_calls: vec![],
             tool_call_id: Some("call_1".into()),
             timestamp: None,
@@ -211,7 +211,7 @@ fn test_messages_to_prompt_system_ignored() {
     let messages = vec![
         Message {
             role: "system".to_string(),
-            content: "System prompt".to_string(),
+            content: "System prompt".into(),
             tool_calls: vec![],
             tool_call_id: None,
             timestamp: None,
@@ -220,7 +220,7 @@ fn test_messages_to_prompt_system_ignored() {
         },
         Message {
             role: "user".to_string(),
-            content: "Hello".to_string(),
+            content: "Hello".into(),
             tool_calls: vec![],
             tool_call_id: None,
             timestamp: None,
@@ -239,7 +239,7 @@ fn test_messages_to_prompt_tool_without_call_id() {
     let provider = ClaudeCliProvider::new(ClaudeCliConfig::default());
     let messages = vec![Message {
         role: "tool".to_string(),
-        content: "orphan result".to_string(),
+        content: "orphan result".into(),
         tool_calls: vec![],
         tool_call_id: None,
         timestamp: None,
@@ -284,4 +284,38 @@ fn test_provider_name_and_default_model() {
     let provider = ClaudeCliProvider::new(ClaudeCliConfig::default());
     assert_eq!(provider.name(), "claude-cli");
     assert_eq!(provider.default_model(), "claude-code");
+}
+
+// ============================================================
+// T3：CLI 委派降级（D7）——图像 → 文字占位，不静默
+// ============================================================
+
+#[test]
+fn test_messages_to_prompt_image_degrades_to_note() {
+    let config = crate::claude_cli::ClaudeCliConfig::default();
+    let provider = crate::claude_cli::ClaudeCliProvider::new(config);
+    let messages = vec![
+        Message::text("user", "看看这张图"),
+        Message::parts(
+            "user",
+            vec![
+                ContentPart::Text {
+                    text: "第二张".to_string(),
+                },
+                ContentPart::Image {
+                    image: ImageSource::Base64 {
+                        media_type: "image/png".to_string(),
+                        data: "aGVsbG8=".to_string(),
+                    },
+                    detail: None,
+                },
+            ],
+        ),
+    ];
+    let prompt = provider.messages_to_prompt(&messages);
+    assert!(prompt.contains("看看这张图"));
+    assert!(prompt.contains("第二张"));
+    assert!(prompt.contains("[用户附带 1 张图片（当前委派通道不支持视觉输入）]"));
+    // 不泄露 base64
+    assert!(!prompt.contains("aGVsbG8="));
 }

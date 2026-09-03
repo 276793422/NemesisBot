@@ -234,6 +234,10 @@ pub struct StoredMessage {
     /// `ConversationTurn::tool_result_projection`.
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub tool_result_projection: Option<String>,
+    /// T5/T6（多模态）：图片路径引用（与 `ConversationTurn.image_refs` 同源，
+    /// store round-trip 必须保留否则重载后图片丢失）。旧文件无此键 → default 空。
+    #[serde(skip_serializing_if = "Vec::is_empty", default)]
+    pub image_refs: Vec<String>,
 }
 
 /// Stored tool call info.
@@ -265,6 +269,7 @@ impl From<&ConversationTurn> for StoredMessage {
             reasoning_content: None,
             tool_name: turn.tool_name.clone(),
             tool_result_projection: turn.tool_result_projection.clone(),
+            image_refs: turn.image_refs.clone(),
         }
     }
 }
@@ -288,6 +293,7 @@ impl From<StoredMessage> for ConversationTurn {
             reasoning_content: msg.reasoning_content,
             tool_name: msg.tool_name,
             tool_result_projection: msg.tool_result_projection,
+            image_refs: msg.image_refs,
         }
     }
 }
@@ -517,6 +523,7 @@ impl SessionStore {
                 reasoning_content: None,
                 tool_name: None,
                 tool_result_projection: None,
+                image_refs: Vec::new(),
             });
             Self::trim_to_limit(session);
             session.updated = Local::now();
@@ -1267,6 +1274,7 @@ impl Summarizer {
             tool_calls: None,
             tool_call_id: None,
             reasoning_content: None,
+            images: Vec::new(),
         }];
 
         // Use tokio runtime for the async LLM call.
@@ -1367,6 +1375,7 @@ impl Summarizer {
             tool_calls: None,
             tool_call_id: None,
             reasoning_content: None,
+            images: Vec::new(),
         }];
 
         // Summarization uses conservative parameters matching Go:
@@ -1540,6 +1549,7 @@ pub fn force_compress_turns(history: &[ConversationTurn]) -> Vec<ConversationTur
         reasoning_content: None,
         tool_name: None,
         tool_result_projection: None,
+        image_refs: Vec::new(),
     });
 
     // Kept conversation.
@@ -1578,6 +1588,10 @@ pub fn is_internal_channel(channel: &str) -> bool {
 /// single-source-of-truth predicate [`crate::chat_log::is_projected_chat_row`]
 /// (empty-content assistant intermediates skipped); tool_calls stay empty
 /// (chat_log never recorded them); timestamps keep their jsonl values.
+/// F-E（2026-09-04 四轮盲审）：行内 `"images": [路径...]` 数组（T6 起写入）
+/// 必须还原进 `image_refs`——硬编码 `Vec::new()` 会让 self-heal 重建和
+/// fork_session 的图片引用凭空消失（store 里有图、jsonl 里也有图、重建后
+/// 没图；vision=no 投影/重水合都失去依据）。
 pub(crate) fn projected_messages_from_rows(rows: &[serde_json::Value]) -> Vec<StoredMessage> {
     rows.iter()
         .filter_map(|v| {
@@ -1586,6 +1600,15 @@ pub(crate) fn projected_messages_from_rows(rows: &[serde_json::Value]) -> Vec<St
             if !crate::chat_log::is_projected_chat_row(role, content) {
                 return None;
             }
+            let image_refs: Vec<String> = v
+                .get("images")
+                .and_then(|i| i.as_array())
+                .map(|arr| {
+                    arr.iter()
+                        .filter_map(|p| p.as_str().map(|s| s.to_string()))
+                        .collect()
+                })
+                .unwrap_or_default();
             Some(StoredMessage {
                 role: role.to_string(),
                 content: content.to_string(),
@@ -1599,6 +1622,7 @@ pub(crate) fn projected_messages_from_rows(rows: &[serde_json::Value]) -> Vec<St
                 reasoning_content: None,
                 tool_name: None,
                 tool_result_projection: None,
+                image_refs,
             })
         })
         .collect()

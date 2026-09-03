@@ -16,7 +16,7 @@ fn test_build_request_body() {
 
     let messages = vec![Message {
         role: "user".to_string(),
-        content: "Hello".to_string(),
+        content: "Hello".into(),
         tool_calls: vec![],
         tool_call_id: None,
         timestamp: None,
@@ -560,7 +560,7 @@ fn test_build_request_body_with_multiple_messages() {
     let messages = vec![
         Message {
             role: "system".to_string(),
-            content: "You are helpful".to_string(),
+            content: "You are helpful".into(),
             tool_calls: vec![],
             tool_call_id: None,
             timestamp: None,
@@ -569,7 +569,7 @@ fn test_build_request_body_with_multiple_messages() {
         },
         Message {
             role: "user".to_string(),
-            content: "Hello".to_string(),
+            content: "Hello".into(),
             tool_calls: vec![],
             tool_call_id: None,
             timestamp: None,
@@ -578,7 +578,7 @@ fn test_build_request_body_with_multiple_messages() {
         },
         Message {
             role: "assistant".to_string(),
-            content: "Hi".to_string(),
+            content: "Hi".into(),
             tool_calls: vec![],
             tool_call_id: None,
             timestamp: None,
@@ -587,7 +587,7 @@ fn test_build_request_body_with_multiple_messages() {
         },
         Message {
             role: "user".to_string(),
-            content: "How are you?".to_string(),
+            content: "How are you?".into(),
             tool_calls: vec![],
             tool_call_id: None,
             timestamp: None,
@@ -686,7 +686,7 @@ async fn test_chat_stream_returns_channel() {
 
     let messages = vec![Message {
         role: "user".to_string(),
-        content: "test".to_string(),
+        content: "test".into(),
         tool_calls: vec![],
         tool_call_id: None,
         timestamp: None,
@@ -857,7 +857,7 @@ fn test_build_request_body_with_tool_calls_message() {
 
     let messages = vec![Message {
         role: "assistant".to_string(),
-        content: "".to_string(),
+        content: "".into(),
         tool_calls: vec![ToolCall {
             id: "call_1".to_string(),
             call_type: Some("function".to_string()),
@@ -898,7 +898,7 @@ fn test_build_request_body_with_tool_result_message() {
 
     let messages = vec![Message {
         role: "tool".to_string(),
-        content: "file contents here".to_string(),
+        content: "file contents here".into(),
         tool_calls: vec![],
         tool_call_id: Some("call_1".to_string()),
         timestamp: None,
@@ -976,7 +976,7 @@ async fn test_chat_connection_error() {
 
     let messages = vec![Message {
         role: "user".to_string(),
-        content: "test".to_string(),
+        content: "test".into(),
         tool_calls: vec![],
         tool_call_id: None,
         timestamp: None,
@@ -1017,7 +1017,7 @@ async fn test_chat_http_401_error() {
 
     let messages = vec![Message {
         role: "user".to_string(),
-        content: "test".to_string(),
+        content: "test".into(),
         tool_calls: vec![],
         tool_call_id: None,
         timestamp: None,
@@ -1048,7 +1048,7 @@ async fn test_chat_empty_model_uses_default() {
 
     let messages = vec![Message {
         role: "user".to_string(),
-        content: "test".to_string(),
+        content: "test".into(),
         tool_calls: vec![],
         tool_call_id: None,
         timestamp: None,
@@ -1087,7 +1087,7 @@ async fn test_chat_stream_connection_error() {
 
     let messages = vec![Message {
         role: "user".to_string(),
-        content: "test".to_string(),
+        content: "test".into(),
         tool_calls: vec![],
         tool_call_id: None,
         timestamp: None,
@@ -1139,7 +1139,7 @@ async fn test_chat_stream_empty_model_uses_default() {
 
     let messages = vec![Message {
         role: "user".to_string(),
-        content: "test".to_string(),
+        content: "test".into(),
         tool_calls: vec![],
         tool_call_id: None,
         timestamp: None,
@@ -1186,7 +1186,7 @@ async fn test_chat_stream_with_tools() {
 
     let messages = vec![Message {
         role: "user".to_string(),
-        content: "test".to_string(),
+        content: "test".into(),
         tool_calls: vec![],
         tool_call_id: None,
         timestamp: None,
@@ -1223,7 +1223,7 @@ async fn test_chat_stream_with_custom_options() {
 
     let messages = vec![Message {
         role: "user".to_string(),
-        content: "test".to_string(),
+        content: "test".into(),
         tool_calls: vec![],
         tool_call_id: None,
         timestamp: None,
@@ -1278,7 +1278,7 @@ async fn test_chat_with_tools() {
 
     let messages = vec![Message {
         role: "user".to_string(),
-        content: "test".to_string(),
+        content: "test".into(),
         tool_calls: vec![],
         tool_call_id: None,
         timestamp: None,
@@ -1309,7 +1309,7 @@ async fn test_chat_with_custom_options() {
 
     let messages = vec![Message {
         role: "user".to_string(),
-        content: "test".to_string(),
+        content: "test".into(),
         tool_calls: vec![],
         tool_call_id: None,
         timestamp: None,
@@ -1347,7 +1347,7 @@ async fn test_chat_with_proxy_config() {
 
     let messages = vec![Message {
         role: "user".to_string(),
-        content: "test".to_string(),
+        content: "test".into(),
         tool_calls: vec![],
         tool_call_id: None,
         timestamp: None,
@@ -1382,7 +1382,7 @@ async fn test_chat_with_custom_headers() {
 
     let messages = vec![Message {
         role: "user".to_string(),
-        content: "test".to_string(),
+        content: "test".into(),
         tool_calls: vec![],
         tool_call_id: None,
         timestamp: None,
@@ -1413,7 +1413,7 @@ async fn test_chat_stream_reasoning_model() {
 
     let messages = vec![Message {
         role: "user".to_string(),
-        content: "test".to_string(),
+        content: "test".into(),
         tool_calls: vec![],
         tool_call_id: None,
         timestamp: None,
@@ -1707,7 +1707,7 @@ fn test_build_request_body_with_system_and_user_messages() {
     let messages = vec![
         Message {
             role: "system".to_string(),
-            content: "You are helpful assistant".to_string(),
+            content: "You are helpful assistant".into(),
             tool_calls: vec![],
             tool_call_id: None,
             timestamp: None,
@@ -1716,7 +1716,7 @@ fn test_build_request_body_with_system_and_user_messages() {
         },
         Message {
             role: "user".to_string(),
-            content: "Hello".to_string(),
+            content: "Hello".into(),
             tool_calls: vec![],
             tool_call_id: None,
             timestamp: None,
@@ -1730,4 +1730,50 @@ fn test_build_request_body_with_system_and_user_messages() {
     assert_eq!(messages_array.len(), 2);
     assert_eq!(messages_array[0]["role"], "system");
     assert_eq!(messages_array[1]["role"], "user");
+}
+
+// ============================================================
+// T2：http_provider 跟随 openai_compat 的 vision 数组适配（共享 helper）
+// ============================================================
+
+#[test]
+fn test_build_request_body_image_parts_openai_format() {
+    let config = HttpProviderConfig {
+        name: "test".to_string(),
+        base_url: "https://api.example.com/v1".to_string(),
+        api_key: "test-key".to_string(),
+        default_model: "gpt-4".to_string(),
+        timeout_secs: 30,
+        headers: HashMap::new(),
+        proxy: None,
+        preserve_prefix: false,
+    };
+    let provider = HttpProvider::new(config);
+
+    let messages = vec![Message {
+        role: "user".to_string(),
+        content: MessageContent::Parts(vec![
+            ContentPart::Text {
+                text: "看".to_string(),
+            },
+            ContentPart::Image {
+                image: ImageSource::Url("https://example.com/a.png".to_string()),
+                detail: None,
+            },
+        ]),
+        tool_calls: vec![],
+        tool_call_id: None,
+        timestamp: None,
+        reasoning_content: None,
+        extra: std::collections::HashMap::new(),
+    }];
+
+    let body = provider.build_request_body(&messages, &[], "gpt-4", &ChatOptions::default());
+    let content = body["messages"][0]["content"]
+        .as_array()
+        .expect("content 数组");
+    assert_eq!(content.len(), 2);
+    assert_eq!(content[0]["type"], "text");
+    assert_eq!(content[1]["type"], "image_url");
+    assert_eq!(content[1]["image_url"]["url"], "https://example.com/a.png");
 }

@@ -88,13 +88,19 @@ impl CodexCliProvider {
 
         for msg in messages {
             match msg.role.as_str() {
-                "system" => system_parts.push(msg.content.clone()),
-                "user" => conversation_parts.push(msg.content.clone()),
-                "assistant" => conversation_parts.push(format!("Assistant: {}", msg.content)),
+                "system" => system_parts.push(msg.content.to_prompt_text_with_image_note()),
+                "user" => conversation_parts.push(msg.content.to_prompt_text_with_image_note()),
+                "assistant" => conversation_parts.push(format!(
+                    "Assistant: {}",
+                    msg.content.to_prompt_text_with_image_note()
+                )),
                 "tool" => {
                     if let Some(ref tc_id) = msg.tool_call_id {
-                        conversation_parts
-                            .push(format!("[Tool Result for {}]: {}", tc_id, msg.content));
+                        conversation_parts.push(format!(
+                            "[Tool Result for {}]: {}",
+                            tc_id,
+                            msg.content.to_prompt_text_with_image_note()
+                        ));
                     }
                 }
                 _ => {}

@@ -78,7 +78,7 @@ fn test_telegram_set_transcriber() {
         ..Default::default()
     };
     let (tx, _rx) = broadcast::channel(256);
-    let ch = TelegramChannel::new(config, tx).unwrap();
+    let _ch = TelegramChannel::new(config, tx).unwrap();
 
     // Should not panic with None
     // (We can't test with a real transcriber because the trait requires async)
@@ -500,4 +500,155 @@ fn test_telegram_config_proxy_support() {
     // Verify default config has no proxy
     let default_cfg = TelegramConfig::default();
     assert!(default_cfg.proxy.is_none());
+}
+
+// ---------------------------------------------------------------------------
+// T7（多模态）：photo 下载落盘 → 本地路径引用（mock Telegram API 单测）
+// ---------------------------------------------------------------------------
+
+/// 极简 mock Telegram Bot API：阻塞线程逐连接应答。
+/// - `POST …/getFile` → `{"ok":true,"result":{"file_path":"photos/<file>.jpg"}}`
+/// - `GET  …/file/photos/<file>.jpg` → 传入的字节
+/// 返回 (api_url_base, 关闭句柄)。监听 127.0.0.1:0（系统分配端口）。
+fn spawn_mock_telegram_api(file_bytes: Vec<u8>) -> String {
+    use std::io::{Read, Write};
+
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind mock");
+    let addr = listener.local_addr().expect("addr");
+    std::thread::spawn(move || {
+        // 恰好两轮：getFile + file 下载（各一连接；keep-alive 关闭语义由
+        // Connection: close 保证，reqwest 每请求新连）。
+        for _ in 0..2 {
+            let Ok((mut stream, _)) = listener.accept() else {
+                return;
+            };
+            let mut buf = [0u8; 4096];
+            let n = stream.read(&mut buf).unwrap_or(0);
+            let req = String::from_utf8_lossy(&buf[..n]).to_string();
+            let path = req.split_whitespace().nth(1).unwrap_or("").to_string();
+
+            let (status, body): (&str, Vec<u8>) = if path.ends_with("/getFile") {
+                (
+                    "200 OK",
+                    br#"{"ok":true,"result":{"file_id":"agg","file_path":"photos/nb_t7.jpg","file_size":1}}"#
+                        .to_vec(),
+                )
+            } else if path.contains("/file/") {
+                ("200 OK", file_bytes.clone())
+            } else {
+                ("404 Not Found", b"{}".to_vec())
+            };
+            let resp = format!(
+                "HTTP/1.1 {}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                status,
+                body.len()
+            );
+            let _ = stream.write_all(resp.as_bytes());
+            let _ = stream.write_all(&body);
+        }
+    });
+    format!("http://{addr}")
+}
+
+#[tokio::test]
+async fn t7_photo_download_lands_local_path_reference() {
+    use base64::Engine as _;
+
+    // 最小 PNG（8 字节签名 + IHDR）——Telegram 不校验内容，这里只验证
+    // 字节搬运。
+    let mut png = vec![0x89, b'P', b'N', b'G', 0x0D, 0x0A, 0x1A, 0x0A];
+    png.extend_from_slice(&[0, 0, 0, 13, b'I', b'H', b'D', b'R']);
+
+    let base = spawn_mock_telegram_api(png.clone());
+    let uploads = tempfile::tempdir().expect("uploads tempdir");
+
+    let client = reqwest::Client::new();
+    let att = TelegramChannel::fetch_photo_attachment(
+        Some(&client),
+        Some(&base),
+        "AgAC-file/id.99",
+        uploads.path(),
+    )
+    .await
+    .expect("download should succeed");
+
+    // MediaAttachment 形态：image + **本地路径**引用（非 URL）。
+    assert_eq!(att.media_type, "image");
+    assert!(
+        !att.url.starts_with("http"),
+        "引用必须是本地路径: {}",
+        att.url
+    );
+    assert!(att.data.is_none());
+
+    // 落盘文件：tg_{sanitized}_{millis}.jpg，字节与下载内容一致，写后可读回。
+    let dest = std::path::PathBuf::from(&att.url);
+    assert_eq!(
+        dest.parent(),
+        Some(uploads.path()),
+        "文件必须落在 uploads 目录内"
+    );
+    let name = dest.file_name().unwrap().to_string_lossy().to_string();
+    assert!(name.starts_with("tg_"), "文件名前缀 tg_: {}", name);
+    assert!(name.ends_with(".jpg"), "ext 抠自 file_path: {}", name);
+    assert!(
+        !name.contains('/'),
+        "file_id 消毒后文件名不得含分隔符: {}",
+        name
+    );
+    let on_disk = std::fs::read(&dest).expect("file readable back");
+    assert_eq!(on_disk, png, "落盘字节与下载内容一致");
+    // base64 水合可读（T5 build_messages 语义的前置保证）。
+    assert_eq!(
+        base64::engine::general_purpose::STANDARD.encode(&on_disk[..8]),
+        base64::engine::general_purpose::STANDARD.encode(&png[..8])
+    );
+}
+
+#[tokio::test]
+async fn t7_photo_download_failure_returns_none() {
+    // getFile ok:false（无效 file_id 的真实 API 行为）→ None，不产出引用。
+    use std::io::{Read, Write};
+
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind");
+    let addr = listener.local_addr().unwrap();
+    std::thread::spawn(move || {
+        if let Ok((mut stream, _)) = listener.accept() {
+            let mut buf = [0u8; 4096];
+            let _ = stream.read(&mut buf);
+            let body =
+                br#"{"ok":false,"error_code":400,"description":"Bad Request: wrong file id"}"#;
+            let resp = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                body.len()
+            );
+            let _ = stream.write_all(resp.as_bytes());
+            let _ = stream.write_all(body);
+        }
+    });
+
+    let uploads = tempfile::tempdir().expect("uploads tempdir");
+    let client = reqwest::Client::new();
+    let att = TelegramChannel::fetch_photo_attachment(
+        Some(&client),
+        Some(&format!("http://{addr}")),
+        "bad_id",
+        uploads.path(),
+    )
+    .await;
+    assert!(att.is_none(), "ok:false 必须返回 None");
+}
+
+#[tokio::test]
+async fn t7_photo_download_without_http_returns_none() {
+    // http 客户端缺失（轮询未起/代理未配）→ None（诚实降级，不 panic）。
+    let uploads = tempfile::tempdir().expect("uploads tempdir");
+    let att = TelegramChannel::fetch_photo_attachment(
+        None,
+        Some("http://127.0.0.1:1"),
+        "x",
+        uploads.path(),
+    )
+    .await;
+    assert!(att.is_none());
 }

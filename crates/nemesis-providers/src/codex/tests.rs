@@ -121,7 +121,7 @@ fn test_build_request_body() {
     let provider = CodexProvider::new(CodexConfig::default());
     let messages = vec![Message {
         role: "user".to_string(),
-        content: "Hello".to_string(),
+        content: "Hello".into(),
         tool_calls: vec![],
         tool_call_id: None,
         timestamp: None,
@@ -226,7 +226,7 @@ fn test_build_request_body_with_tools() {
     let provider = CodexProvider::new(CodexConfig::default());
     let messages = vec![Message {
         role: "user".to_string(),
-        content: "Hello".to_string(),
+        content: "Hello".into(),
         tool_calls: vec![],
         tool_call_id: None,
         timestamp: None,
@@ -265,7 +265,7 @@ fn test_build_request_body_with_system_message() {
     let messages = vec![
         Message {
             role: "system".to_string(),
-            content: "You are a code reviewer".to_string(),
+            content: "You are a code reviewer".into(),
             tool_calls: vec![],
             tool_call_id: None,
             timestamp: None,
@@ -274,7 +274,7 @@ fn test_build_request_body_with_system_message() {
         },
         Message {
             role: "user".to_string(),
-            content: "Review this code".to_string(),
+            content: "Review this code".into(),
             tool_calls: vec![],
             tool_call_id: None,
             timestamp: None,
@@ -291,7 +291,7 @@ fn test_build_request_body_with_assistant_tool_calls() {
     let provider = CodexProvider::new(CodexConfig::default());
     let messages = vec![Message {
         role: "assistant".to_string(),
-        content: "Let me read the file".to_string(),
+        content: "Let me read the file".into(),
         tool_calls: vec![ToolCall {
             id: "call_1".to_string(),
             call_type: Some("function".to_string()),
@@ -318,7 +318,7 @@ fn test_build_request_body_with_assistant_tool_calls_empty_content() {
     let provider = CodexProvider::new(CodexConfig::default());
     let messages = vec![Message {
         role: "assistant".to_string(),
-        content: String::new(),
+        content: String::new().into(),
         tool_calls: vec![ToolCall {
             id: "call_1".to_string(),
             call_type: Some("function".to_string()),
@@ -345,7 +345,7 @@ fn test_build_request_body_with_assistant_no_tool_calls() {
     let provider = CodexProvider::new(CodexConfig::default());
     let messages = vec![Message {
         role: "assistant".to_string(),
-        content: "I can help with that".to_string(),
+        content: "I can help with that".into(),
         tool_calls: vec![],
         tool_call_id: None,
         timestamp: None,
@@ -363,7 +363,7 @@ fn test_build_request_body_with_user_tool_call_id() {
     let provider = CodexProvider::new(CodexConfig::default());
     let messages = vec![Message {
         role: "user".to_string(),
-        content: "file contents here".to_string(),
+        content: "file contents here".into(),
         tool_calls: vec![],
         tool_call_id: Some("call_1".to_string()),
         timestamp: None,
@@ -381,7 +381,7 @@ fn test_build_request_body_with_tool_message() {
     let provider = CodexProvider::new(CodexConfig::default());
     let messages = vec![Message {
         role: "tool".to_string(),
-        content: "tool result".to_string(),
+        content: "tool result".into(),
         tool_calls: vec![],
         tool_call_id: Some("call_1".to_string()),
         timestamp: None,
@@ -398,7 +398,7 @@ fn test_build_request_body_with_tool_message_no_call_id() {
     let provider = CodexProvider::new(CodexConfig::default());
     let messages = vec![Message {
         role: "tool".to_string(),
-        content: "orphan result".to_string(),
+        content: "orphan result".into(),
         tool_calls: vec![],
         tool_call_id: None,
         timestamp: None,
@@ -415,7 +415,7 @@ fn test_build_request_body_with_options() {
     let provider = CodexProvider::new(CodexConfig::default());
     let messages = vec![Message {
         role: "user".to_string(),
-        content: "Hello".to_string(),
+        content: "Hello".into(),
         tool_calls: vec![],
         tool_call_id: None,
         timestamp: None,
@@ -441,7 +441,7 @@ fn test_build_request_body_with_unknown_role() {
     let provider = CodexProvider::new(CodexConfig::default());
     let messages = vec![Message {
         role: "custom_role".to_string(),
-        content: "custom content".to_string(),
+        content: "custom content".into(),
         tool_calls: vec![],
         tool_call_id: None,
         timestamp: None,
@@ -591,4 +591,45 @@ fn test_resolved_codex_model_debug() {
     let r = resolve_codex_model("gpt-4o");
     let debug = format!("{:?}", r);
     assert!(debug.contains("gpt-4o"));
+}
+
+// 2026-09-03 二次回归 F2 回归锁：function_call_output 的 output 必须是字符串，
+// Parts 走文本视图 + 诚实注记（D7 同族），无 base64 泄漏；Text 形态保持原字节。
+#[test]
+fn test_build_request_body_tool_output_with_parts_degrades_to_text_note() {
+    let provider = CodexProvider::new(CodexConfig::default());
+    let mk = |tool_call_id: Option<String>| Message {
+        role: "tool".to_string(),
+        content: MessageContent::Parts(vec![
+            ContentPart::Text {
+                text: "工具输出".to_string(),
+            },
+            ContentPart::Image {
+                image: ImageSource::Base64 {
+                    media_type: "image/png".to_string(),
+                    data: "aGVsbG8=".to_string(),
+                },
+                detail: None,
+            },
+        ]),
+        tool_calls: vec![],
+        tool_call_id,
+        timestamp: None,
+        reasoning_content: None,
+        extra: HashMap::new(),
+    };
+
+    let messages = vec![
+        mk(Some("call_1".to_string())),
+        mk(Some("call_2".to_string())),
+    ];
+    let body = provider.build_request_body(&messages, &[], "gpt-4o", &ChatOptions::default());
+    let raw = serde_json::to_string(&body).unwrap();
+    assert!(!raw.contains("aGVsbG8="), "base64 泄漏进请求: {raw}");
+    let input = body["input"].as_array().unwrap();
+    assert_eq!(input[0]["type"], "function_call_output");
+    assert_eq!(input[1]["type"], "function_call_output");
+    let out = input[0]["output"].as_str().expect("output 必须是字符串");
+    assert!(out.starts_with("工具输出"));
+    assert!(out.contains("1 张图片"));
 }

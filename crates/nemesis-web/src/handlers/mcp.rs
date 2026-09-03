@@ -156,6 +156,7 @@ impl McpHandler {
                 .and_then(|v| serde_json::from_value(v.clone()).ok())
                 .unwrap_or_default(),
             command: String::new(),
+            extra: std::collections::BTreeMap::new(),
         };
         // Legacy compat: if url empty but command provided, use command as url
         server.normalize();

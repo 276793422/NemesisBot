@@ -79,6 +79,7 @@ fn build_messages_logs_debug_lines() {
         reasoning_content: None,
         tool_name: None,
         tool_result_projection: None,
+        image_refs: Vec::new(),
     }];
     let msgs = builder.build_messages(
         &history,

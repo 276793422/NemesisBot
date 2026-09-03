@@ -137,6 +137,7 @@ fn test_skills_digest_injected_when_changed() {
             reasoning_content: None,
             tool_name: None,
             tool_result_projection: None,
+            image_refs: Vec::new(),
         },
         crate::types::ConversationTurn {
             role: "user".to_string(),
@@ -147,6 +148,7 @@ fn test_skills_digest_injected_when_changed() {
             reasoning_content: None,
             tool_name: None,
             tool_result_projection: None,
+            image_refs: Vec::new(),
         },
     ]);
 
@@ -222,6 +224,7 @@ fn test_skills_digest_empty_no_injection() {
             reasoning_content: None,
             tool_name: None,
             tool_result_projection: None,
+            image_refs: Vec::new(),
         },
         crate::types::ConversationTurn {
             role: "user".to_string(),
@@ -232,6 +235,7 @@ fn test_skills_digest_empty_no_injection() {
             reasoning_content: None,
             tool_name: None,
             tool_result_projection: None,
+            image_refs: Vec::new(),
         },
     ]);
     let m = agent_loop.build_messages(&instance);

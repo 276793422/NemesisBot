@@ -57,13 +57,14 @@ impl GitHubCopilotProvider {
     }
 
     /// Serialize messages to a prompt string for Copilot.
+    /// 图像部分按 D7 降级为文字占位（该通道不支持视觉输入，诚实注明不静默）。
     fn messages_to_prompt(&self, messages: &[Message]) -> String {
         let prompt_messages: Vec<serde_json::Value> = messages
             .iter()
             .map(|msg| {
                 serde_json::json!({
                     "role": msg.role,
-                    "content": msg.content
+                    "content": msg.content.to_prompt_text_with_image_note()
                 })
             })
             .collect();

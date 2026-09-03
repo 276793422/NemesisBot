@@ -45,6 +45,54 @@ pub fn append_chat_log_full(
     cron_job_id: Option<&str>,
     cron_job_name: Option<&str>,
 ) {
+    write_chat_entry(
+        session_key,
+        role,
+        content,
+        model,
+        cron_job_id,
+        cron_job_name,
+        &[],
+    );
+}
+
+/// T6（多模态）：带图片路径引用的追加变体（`append_chat_log_full` 的签名
+/// 不动，媒体信息走此函数）。`images` 非空时写入 `"images": [路径...]`
+/// 字段——只存**路径引用**，不落 base64 字节（与 SessionStore 的
+/// `StoredMessage.image_refs` 同源同语义）；读侧缺字段 = 无图，旧条目解析
+/// 不受影响。
+#[allow(clippy::too_many_arguments)]
+pub fn append_chat_log_full_with_images(
+    session_key: &str,
+    role: &str,
+    content: &str,
+    model: Option<&str>,
+    cron_job_id: Option<&str>,
+    cron_job_name: Option<&str>,
+    images: &[String],
+) {
+    write_chat_entry(
+        session_key,
+        role,
+        content,
+        model,
+        cron_job_id,
+        cron_job_name,
+        images,
+    );
+}
+
+/// Write core shared by all append variants (single source of truth for the
+/// jsonl entry shape). `images` non-empty → extra `"images"` array field.
+fn write_chat_entry(
+    session_key: &str,
+    role: &str,
+    content: &str,
+    model: Option<&str>,
+    cron_job_id: Option<&str>,
+    cron_job_name: Option<&str>,
+    images: &[String],
+) {
     let path = log_path(session_key);
     if let Some(parent) = path.parent() {
         let _ = fs::create_dir_all(parent);
@@ -69,6 +117,14 @@ pub fn append_chat_log_full(
     }
     if let Some(name) = cron_job_name {
         entry["cron_job_name"] = serde_json::Value::String(name.to_string());
+    }
+    if !images.is_empty() {
+        entry["images"] = serde_json::Value::Array(
+            images
+                .iter()
+                .map(|p| serde_json::Value::String(p.clone()))
+                .collect(),
+        );
     }
     if let Err(e) = writeln!(file, "{}", entry) {
         tracing::warn!("[chat_log] Failed to write to {}: {}", path.display(), e);

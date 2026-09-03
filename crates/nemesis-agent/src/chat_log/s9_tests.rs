@@ -79,6 +79,7 @@ fn write_chat_log_from_store_projects_chat_rows_only() {
             reasoning_content: None,
             tool_name: None,
             tool_result_projection: None,
+            image_refs: Vec::new(),
         },
         crate::session::StoredMessage {
             role: "assistant".to_string(),
@@ -89,6 +90,7 @@ fn write_chat_log_from_store_projects_chat_rows_only() {
             reasoning_content: None,
             tool_name: None,
             tool_result_projection: None,
+            image_refs: Vec::new(),
         },
         crate::session::StoredMessage {
             role: "assistant".to_string(),
@@ -99,6 +101,7 @@ fn write_chat_log_from_store_projects_chat_rows_only() {
             reasoning_content: None,
             tool_name: None,
             tool_result_projection: None,
+            image_refs: Vec::new(),
         },
     ];
     let n = write_chat_log_from_store(&k, &msgs);

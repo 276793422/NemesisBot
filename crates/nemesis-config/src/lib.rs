@@ -870,6 +870,22 @@ pub struct ModelConfig {
     /// provider default apply. Written by `nemesisbot model set-effort`.
     #[serde(default)]
     pub reasoning_effort: String,
+    /// Passthrough for untyped per-model keys（raw-Value 层约定：`model_tier` /
+    /// `vision` / `vision_probe` / `max_output_tokens` 及未来键）。**没有这个
+    /// flatten 时，任何 typed `save_config` 都会静默丢掉这些键**（dashboard
+    /// models/config/channels/forge handler、save_live、credentials 迁移全走
+    /// typed 保存）——2026-09-03 二次回归根修。空表序列化时跳过（输出与
+    /// 既有形态字节一致）。
+    /// L7（2026-09-04 四轮盲审）：BTreeMap——flatten map 的键序决定
+    /// `save_config` 落盘字节；HashMap 每进程随机种子 → 同一份 config
+    /// 两次保存字节不同（无谓 diff / mtime reload 抖动），BTreeMap 键序
+    /// 确定，round-trip 字节稳定。
+    #[serde(
+        flatten,
+        default,
+        skip_serializing_if = "std::collections::BTreeMap::is_empty"
+    )]
+    pub extra: std::collections::BTreeMap<String, serde_json::Value>,
 }
 
 impl ModelConfig {
@@ -1210,6 +1226,18 @@ pub struct McpServerConfig {
     pub tags: Vec<String>,
     #[serde(default)]
     pub command: String,
+    /// 未类型化键兜底（2026-09-03 二次回归 F2 同族根修，对齐 `ModelConfig.extra`
+    /// 惯例）：typed `save_config` round-trip 时编译器保证保留未知键，不再静默
+    /// 抹掉（如未来新增的 per-server 键）。空 map 序列化跳过 → 无 unknown 键的
+    /// 条目输出形态与既有字节一致。注意：PartialEq 参与相等比较（round-trip
+    /// 两侧携带同一 extra 时语义不变）。
+    /// L7：BTreeMap 键序确定（同 `ModelConfig.extra`，字节稳定）。
+    #[serde(
+        flatten,
+        default,
+        skip_serializing_if = "std::collections::BTreeMap::is_empty"
+    )]
+    pub extra: std::collections::BTreeMap<String, serde_json::Value>,
 }
 
 impl Default for McpServerConfig {
@@ -1227,6 +1255,7 @@ impl Default for McpServerConfig {
             provider_url: String::new(),
             tags: Vec::new(),
             command: String::new(),
+            extra: std::collections::BTreeMap::new(),
         }
     }
 }
@@ -1530,8 +1559,9 @@ pub struct SecurityLayersConfig {
 pub struct SecurityLayerConfig {
     #[serde(default)]
     pub enabled: bool,
+    /// L7：BTreeMap 键序确定（同 `ModelConfig.extra`，security 段字节稳定）。
     #[serde(default)]
-    pub extra: std::collections::HashMap<String, serde_json::Value>,
+    pub extra: std::collections::BTreeMap<String, serde_json::Value>,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]

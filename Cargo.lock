@@ -3315,6 +3315,7 @@ name = "nemesis-agent"
 version = "0.1.0"
 dependencies = [
  "async-trait",
+ "base64",
  "chrono",
  "dashmap",
  "futures",
@@ -3323,6 +3324,7 @@ dependencies = [
  "nemesis-cron",
  "nemesis-data",
  "nemesis-forge",
+ "nemesis-http-pool",
  "nemesis-lsp",
  "nemesis-mcp",
  "nemesis-memory",
@@ -3419,6 +3421,7 @@ dependencies = [
  "hex",
  "hmac",
  "http",
+ "nemesis-path",
  "nemesis-types",
  "parking_lot",
  "rand 0.8.6",
@@ -4168,6 +4171,7 @@ name = "nemesisbot-tests"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "base64",
  "futures",
  "reqwest",
  "serde_json",

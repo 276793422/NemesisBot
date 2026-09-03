@@ -134,6 +134,7 @@ fn build_messages_with_history() {
             reasoning_content: None,
             tool_name: None,
             tool_result_projection: None,
+            image_refs: Vec::new(),
         },
         crate::types::ConversationTurn {
             role: "assistant".to_string(),
@@ -144,6 +145,7 @@ fn build_messages_with_history() {
             reasoning_content: None,
             tool_name: None,
             tool_result_projection: None,
+            image_refs: Vec::new(),
         },
     ];
 
@@ -174,6 +176,7 @@ fn build_messages_skips_orphaned_tool_at_start() {
             reasoning_content: None,
             tool_name: None,
             tool_result_projection: None,
+            image_refs: Vec::new(),
         },
         crate::types::ConversationTurn {
             role: "user".to_string(),
@@ -184,6 +187,7 @@ fn build_messages_skips_orphaned_tool_at_start() {
             reasoning_content: None,
             tool_name: None,
             tool_result_projection: None,
+            image_refs: Vec::new(),
         },
     ];
 
@@ -211,6 +215,7 @@ fn build_messages_skips_all_leading_orphaned_tools() {
             reasoning_content: None,
             tool_name: None,
             tool_result_projection: None,
+            image_refs: Vec::new(),
         },
         crate::types::ConversationTurn {
             role: "tool".to_string(),
@@ -221,6 +226,7 @@ fn build_messages_skips_all_leading_orphaned_tools() {
             reasoning_content: None,
             tool_name: None,
             tool_result_projection: None,
+            image_refs: Vec::new(),
         },
         crate::types::ConversationTurn {
             role: "tool".to_string(),
@@ -231,6 +237,7 @@ fn build_messages_skips_all_leading_orphaned_tools() {
             reasoning_content: None,
             tool_name: None,
             tool_result_projection: None,
+            image_refs: Vec::new(),
         },
         crate::types::ConversationTurn {
             role: "user".to_string(),
@@ -241,6 +248,7 @@ fn build_messages_skips_all_leading_orphaned_tools() {
             reasoning_content: None,
             tool_name: None,
             tool_result_projection: None,
+            image_refs: Vec::new(),
         },
     ];
 
@@ -674,6 +682,7 @@ fn build_messages_with_tool_calls_in_history() {
         reasoning_content: None,
         tool_name: None,
         tool_result_projection: None,
+        image_refs: Vec::new(),
     }];
 
     let messages = builder.build_messages(&history, "", "Continue", "web", "chat1", false);
@@ -698,6 +707,7 @@ fn build_messages_with_tool_call_id_in_history() {
             reasoning_content: None,
             tool_name: None,
             tool_result_projection: None,
+            image_refs: Vec::new(),
         },
         crate::types::ConversationTurn {
             role: "assistant".to_string(),
@@ -708,6 +718,7 @@ fn build_messages_with_tool_call_id_in_history() {
             reasoning_content: None,
             tool_name: None,
             tool_result_projection: None,
+            image_refs: Vec::new(),
         },
     ];
 

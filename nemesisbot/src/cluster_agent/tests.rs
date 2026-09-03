@@ -61,6 +61,7 @@ fn make_turn(role: &str, content: &str, tool_calls: Vec<ToolCallInfo>) -> Conver
         reasoning_content: None,
         tool_name: None,
         tool_result_projection: None,
+        image_refs: Vec::new(),
     }
 }
 

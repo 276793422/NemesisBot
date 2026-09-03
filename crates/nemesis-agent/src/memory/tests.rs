@@ -10,6 +10,7 @@ fn make_turn(role: &str, content: impl Into<String>) -> ConversationTurn {
         reasoning_content: None,
         tool_name: None,
         tool_result_projection: None,
+        image_refs: Vec::new(),
     }
 }
 

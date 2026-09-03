@@ -102,6 +102,7 @@ impl AgentInstance {
                 reasoning_content: None,
                 tool_name: None,
                 tool_result_projection: None,
+                image_refs: Vec::new(),
             };
             instance.history.lock().unwrap().push(system_turn);
         }
@@ -178,6 +179,25 @@ impl AgentInstance {
             reasoning_content: None,
             tool_name: None,
             tool_result_projection: None,
+            image_refs: Vec::new(),
+        };
+        self.push_turn(turn);
+    }
+
+    /// T5（多模态）：带图片路径引用的 user 消息变体（`add_user_message`
+    /// 签名不动；引用进 `ConversationTurn.image_refs`，build_messages 每轮
+    /// 水合重读）。
+    pub fn add_user_message_with_images(&self, content: &str, image_refs: &[String]) {
+        let turn = ConversationTurn {
+            role: "user".to_string(),
+            content: content.to_string(),
+            tool_calls: Vec::new(),
+            tool_call_id: None,
+            timestamp: chrono::Local::now().to_rfc3339(),
+            reasoning_content: None,
+            tool_name: None,
+            tool_result_projection: None,
+            image_refs: image_refs.to_vec(),
         };
         self.push_turn(turn);
     }
@@ -198,6 +218,7 @@ impl AgentInstance {
             reasoning_content,
             tool_name: None,
             tool_result_projection: None,
+            image_refs: Vec::new(),
         };
         self.push_turn(turn);
     }
@@ -213,6 +234,7 @@ impl AgentInstance {
             reasoning_content: None,
             tool_name: None,
             tool_result_projection: None,
+            image_refs: Vec::new(),
         };
         self.push_turn(turn);
     }
@@ -244,6 +266,7 @@ impl AgentInstance {
             reasoning_content: None,
             tool_name: Some(tool_name.to_string()),
             tool_result_projection: projection,
+            image_refs: Vec::new(),
         };
         self.push_turn(turn);
     }
@@ -282,6 +305,7 @@ impl AgentInstance {
                 reasoning_content: None,
                 tool_name: None,
                 tool_result_projection: None,
+                image_refs: Vec::new(),
             };
             history.push(turn);
             return;
@@ -370,6 +394,7 @@ impl AgentInstance {
             reasoning_content: None,
             tool_name: None,
             tool_result_projection: None,
+            image_refs: Vec::new(),
         };
         history.push(compression_note);
 

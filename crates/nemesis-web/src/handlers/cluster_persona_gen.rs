@@ -414,7 +414,7 @@ fn audit_prompt() -> String {
 fn mk_msg(role: &str, content: String) -> Message {
     Message {
         role: role.to_string(),
-        content,
+        content: content.into(),
         tool_calls: Vec::new(),
         tool_call_id: None,
         timestamp: None,

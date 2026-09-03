@@ -555,6 +555,16 @@ impl WebServer {
             )
             // SSE event stream
             .route("/api/events/stream", get(handle_events_stream))
+            // T8（多模态）：Dashboard 图片上传（raw body + ?name=；25MB 上限
+            // 需放宽 axum 默认 2MB body 限制，+1MB 余量留给超限错误路径）。
+            .route(
+                "/api/upload/image",
+                axum::routing::post(crate::handlers::upload::handle_upload_image).layer(
+                    axum::extract::DefaultBodyLimit::max(
+                        crate::handlers::upload::UPLOAD_BODY_LIMIT_BYTES,
+                    ),
+                ),
+            )
             // SSE chat streaming endpoint
             .route(
                 "/api/chat/stream",
@@ -841,6 +851,10 @@ fn cors_origin_value(req: &axum::extract::Request) -> String {
 ///    (the standalone entry; the rest of the path is parsed client-side)
 /// 3. SPA fallback: paths without a file extension → index.html
 /// 4. 404
+///
+/// Exact `/chat` + `/chat/` are handled inside rule 3's slot: they serve the
+/// standalone chat page shell (`chat/index.html`) rather than the dashboard
+/// fallback (L2b). Deeper `/chat/<x>` paths keep the SPA fallback.
 async fn serve_embedded_static(
     files: Arc<dyn StaticFiles>,
     req: axum::extract::Request,
@@ -871,6 +885,29 @@ async fn serve_embedded_static(
     //    resolve.
     if path.starts_with("workflow/chat/")
         && let Some(content) = files.get_file("workflow-chat/index.html")
+    {
+        return (
+            axum::http::StatusCode::OK,
+            [
+                (
+                    http::header::CONTENT_TYPE,
+                    "text/html; charset=utf-8".to_string(),
+                ),
+                (http::header::ACCESS_CONTROL_ALLOW_ORIGIN, origin),
+                (http::header::VARY, "Origin".to_string()),
+            ],
+            content,
+        )
+            .into_response();
+    }
+
+    // 2b. Standalone chat page（LO2，2026-09-04 四轮盲审）：`/chat` 与
+    //     `/chat/` 都直达 chat 壳——旧行为两者都落到 SPA fallback 的
+    //     index.html（Dashboard），用户从友好的 /chat 地址进来看到的是
+    //     错页面。chat 入口无子路径语义（不像 workflow/chat 的 index 在
+    //     path 里），精确匹配两级即可；更深层 /chat/foo 不劫持。
+    if (path == "chat" || path == "chat/")
+        && let Some(content) = files.get_file("chat/index.html")
     {
         return (
             axum::http::StatusCode::OK,
@@ -1141,7 +1178,7 @@ pub async fn process_messages_with_router(
             sender_id: msg.sender_id.clone(),
             chat_id: msg.chat_id.clone(),
             content: msg.content,
-            media: vec![],
+            media: msg.media,
             session_key,
             correlation_id: String::new(),
             metadata: msg.metadata,

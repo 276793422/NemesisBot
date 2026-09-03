@@ -33,6 +33,7 @@ fn append_projection_record_blocked_by_directory_warns() {
         injections: Vec::new(),
         voice_append: None,
         summary_as_of: None,
+        vision_projected: false,
     };
     append_projection_record(&rec); // 必须不 panic
     assert!(ledger.is_dir(), "blocker intact — open failed as intended");

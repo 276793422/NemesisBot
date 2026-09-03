@@ -99,20 +99,24 @@ impl CodexProvider {
         for msg in messages {
             match msg.role.as_str() {
                 "system" => {
-                    instructions = msg.content.clone();
+                    instructions = msg.content.to_text();
                 }
                 "user" => {
                     if let Some(ref tc_id) = msg.tool_call_id {
+                        // D7 同族降级（2026-09-03 二次回归 F2）：function_call_output
+                        // 的 output 必须是字符串，Parts 走文本视图 + 诚实注记
+                        //（Text 形态返回原串，字节不变；图像进 tool_result 属 Phase 5）。
                         input_items.push(serde_json::json!({
                             "type": "function_call_output",
                             "call_id": tc_id,
-                            "output": msg.content
+                            "output": msg.content.to_prompt_text_with_image_note()
                         }));
                     } else {
                         input_items.push(serde_json::json!({
                             "type": "message",
                             "role": "user",
-                            "content": msg.content
+                            // 该 provider 未实现 vision 数组 → 图像按 D7 诚实降级
+                            "content": msg.content.to_prompt_text_with_image_note()
                         }));
                     }
                 }
@@ -122,7 +126,7 @@ impl CodexProvider {
                             input_items.push(serde_json::json!({
                                 "type": "message",
                                 "role": "assistant",
-                                "content": msg.content
+                                "content": msg.content.to_prompt_text_with_image_note()
                             }));
                         }
                         for tc in &msg.tool_calls {
@@ -147,16 +151,19 @@ impl CodexProvider {
                         input_items.push(serde_json::json!({
                             "type": "message",
                             "role": "assistant",
-                            "content": msg.content
+                            "content": msg.content.to_prompt_text_with_image_note()
                         }));
                     }
                 }
                 "tool" => {
                     if let Some(ref tc_id) = msg.tool_call_id {
+                        // D7 同族降级（2026-09-03 二次回归 F2）：function_call_output
+                        // 的 output 必须是字符串，Parts 走文本视图 + 诚实注记
+                        //（Text 形态返回原串，字节不变；图像进 tool_result 属 Phase 5）。
                         input_items.push(serde_json::json!({
                             "type": "function_call_output",
                             "call_id": tc_id,
-                            "output": msg.content
+                            "output": msg.content.to_prompt_text_with_image_note()
                         }));
                     }
                 }

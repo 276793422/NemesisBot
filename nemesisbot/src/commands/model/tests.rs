@@ -1235,6 +1235,119 @@ async fn test_s11b_run_add_duplicate_replaces() {
     assert_eq!(arr[0]["api_key"], "sk-two");
 }
 
+// --- F-I（2026-09-04 四轮盲审）：重复 add 不得重置 model_tier 等资产 ---
+//
+// 旧行为：add 无条件写 entry["model_tier"]="auto"，合并块的 or_insert_with
+// 只填缺失键 → 重复 add 把 set-tier / probe 写入的 tier 静默重置为 auto。
+
+#[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
+#[tokio::test]
+async fn test_fi_readd_preserves_tier_vision_and_probe_assets() {
+    let _guard = crate::GLOBAL_STATE_LOCK.lock().unwrap();
+    let th = s11b_temp_home_env();
+    s11b_write_cfg(&th.home, serde_json::json!({"model_list": []}));
+    // 首次 add。
+    super::run(
+        super::ModelAction::Add {
+            model: "qwen/qwen3-30b-a3b".into(),
+            key: Some("sk-one".into()),
+            base: None,
+            proxy: None,
+            auth: None,
+            default: false,
+        },
+        false,
+    )
+    .await
+    .unwrap();
+    // 模拟用户后续资产写入：set-tier mini + probe 实测 vision + 手钉 vision。
+    {
+        let mut cfg = s11b_read_cfg(&th.home);
+        let e = &mut cfg["model_list"][0];
+        e["model_tier"] = serde_json::json!("mini");
+        e["vision_probe"] = serde_json::json!(false);
+        e["vision"] = serde_json::json!("no");
+        s11b_write_cfg(&th.home, cfg);
+    }
+    // 重复 add（换 key）。
+    super::run(
+        super::ModelAction::Add {
+            model: "qwen/qwen3-30b-a3b".into(),
+            key: Some("sk-two".into()),
+            base: None,
+            proxy: None,
+            auth: None,
+            default: false,
+        },
+        false,
+    )
+    .await
+    .unwrap();
+    let e = &s11b_read_cfg(&th.home)["model_list"][0];
+    assert_eq!(
+        e["model_tier"], "mini",
+        "重复 add 不得重置 set-tier 写入的 tier"
+    );
+    assert_eq!(e["vision_probe"], false, "probe 实测资产保留");
+    assert_eq!(e["vision"], "no", "用户手钉 vision 保留");
+    assert_eq!(e["api_key"], "sk-two", "显式新值照常覆盖");
+}
+
+#[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
+#[tokio::test]
+async fn test_fi_new_add_still_tags_auto_tier() {
+    let _guard = crate::GLOBAL_STATE_LOCK.lock().unwrap();
+    let th = s11b_temp_home_env();
+    s11b_write_cfg(&th.home, serde_json::json!({"model_list": []}));
+    super::run(
+        super::ModelAction::Add {
+            model: "zhipu/glm-4.7".into(),
+            key: Some("sk".into()),
+            base: None,
+            proxy: None,
+            auth: None,
+            default: false,
+        },
+        false,
+    )
+    .await
+    .unwrap();
+    let e = &s11b_read_cfg(&th.home)["model_list"][0];
+    assert_eq!(e["model_tier"], "auto", "新增条目照常打 auto 标");
+}
+
+#[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
+#[tokio::test]
+async fn test_fi_readd_legacy_entry_without_tier_stays_absent() {
+    // 旧版条目（无 model_tier 键）重复 add：既不写 auto 也不回填垃圾——
+    // 缺键在 resolve_active_tier 语义里就是 auto，行为不变。
+    let _guard = crate::GLOBAL_STATE_LOCK.lock().unwrap();
+    let th = s11b_temp_home_env();
+    s11b_write_cfg(
+        &th.home,
+        serde_json::json!({"model_list": [{"model_name": "glm", "model": "zhipu/glm-4.7"}]}),
+    );
+    super::run(
+        super::ModelAction::Add {
+            model: "zhipu/glm-4.7".into(),
+            key: Some("sk".into()),
+            base: None,
+            proxy: None,
+            auth: None,
+            default: false,
+        },
+        false,
+    )
+    .await
+    .unwrap();
+    let e = &s11b_read_cfg(&th.home)["model_list"][0];
+    assert!(
+        e.get("model_tier").is_none(),
+        "旧条目无 tier 键，重复 add 不得写入"
+    );
+    assert_eq!(e["api_key"], "sk");
+}
+
 #[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
 #[tokio::test]
 async fn test_s11b_run_add_catalog_hit_fills_context_window() {
@@ -1747,6 +1860,7 @@ fn test_s11b_format_probe_report_direct() {
                 },
             ),
         ],
+        vision_probe: Some(true),
     };
     let s = super::format_probe_report("glm-4.7", &report);
     assert!(s.contains("能力探针报告: glm-4.7"));
@@ -1756,6 +1870,7 @@ fn test_s11b_format_probe_report_direct() {
     assert!(s.contains("exec"), "每任务得分行：{s}");
     assert!(s.contains("grep"));
     assert!(s.contains("tier=normal"), "tier 结论行：{s}");
+    assert!(s.contains("vision=支持"), "T10 第 8 题视觉探针结论行：{s}");
     // 空任务表也能格式化
     let empty = ProbeReport {
         format_score: 0.0,
@@ -1763,9 +1878,11 @@ fn test_s11b_format_probe_report_direct() {
         schema_score: 0.0,
         tier: ModelTier::Mini,
         per_task: vec![],
+        vision_probe: None,
     };
     let s2 = super::format_probe_report("m", &empty);
     assert!(s2.contains("tier=mini"));
+    assert!(s2.contains("vision=未定"), "未定分支：{s2}");
 }
 
 // ===========================================================================

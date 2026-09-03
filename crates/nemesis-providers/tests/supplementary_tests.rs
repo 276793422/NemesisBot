@@ -16,7 +16,7 @@ mod types_extra {
     fn test_message_role_system() {
         let msg = Message {
             role: "system".to_string(),
-            content: "You are helpful".to_string(),
+            content: "You are helpful".into(),
             tool_calls: vec![],
             tool_call_id: None,
             timestamp: None,
@@ -33,7 +33,7 @@ mod types_extra {
     fn test_message_role_user() {
         let msg = Message {
             role: "user".to_string(),
-            content: "Hello".to_string(),
+            content: "Hello".into(),
             tool_calls: vec![],
             tool_call_id: None,
             timestamp: None,
@@ -49,7 +49,7 @@ mod types_extra {
     fn test_message_role_assistant() {
         let msg = Message {
             role: "assistant".to_string(),
-            content: "Hi there".to_string(),
+            content: "Hi there".into(),
             tool_calls: vec![],
             tool_call_id: None,
             timestamp: None,
@@ -65,7 +65,7 @@ mod types_extra {
     fn test_message_role_tool() {
         let msg = Message {
             role: "tool".to_string(),
-            content: "result data".to_string(),
+            content: "result data".into(),
             tool_calls: vec![],
             tool_call_id: Some("call_1".to_string()),
             timestamp: None,
@@ -109,7 +109,7 @@ mod types_extra {
     #[test]
     fn test_llm_response_stop_reason() {
         let resp = LLMResponse {
-            content: "done".to_string(),
+            content: "done".into(),
             tool_calls: vec![],
             finish_reason: "stop".to_string(),
             usage: None,
@@ -124,7 +124,7 @@ mod types_extra {
     #[test]
     fn test_llm_response_tool_calls_reason() {
         let resp = LLMResponse {
-            content: "".to_string(),
+            content: "".into(),
             tool_calls: vec![ToolCall {
                 id: "c1".to_string(),
                 call_type: Some("function".to_string()),
@@ -256,7 +256,7 @@ mod types_extra {
     #[test]
     fn test_llm_response_empty_tool_calls_not_serialized() {
         let resp = LLMResponse {
-            content: "test".to_string(),
+            content: "test".into(),
             tool_calls: vec![],
             finish_reason: "stop".to_string(),
             usage: None,
@@ -272,7 +272,7 @@ mod types_extra {
     #[test]
     fn test_llm_response_with_usage_serialized() {
         let resp = LLMResponse {
-            content: "test".to_string(),
+            content: "test".into(),
             tool_calls: vec![],
             finish_reason: "stop".to_string(),
             usage: Some(UsageInfo {
@@ -1918,7 +1918,7 @@ mod fallback_provider_extra {
     fn test_fallback_result_success() {
         let result = FallbackResult {
             response: Some(LLMResponse {
-                content: "hello".to_string(),
+                content: "hello".into(),
                 tool_calls: vec![],
                 finish_reason: "stop".to_string(),
                 usage: None,
@@ -2053,7 +2053,7 @@ mod fallback_provider_extra {
         let provider = FallbackProvider::new("test", vec![]);
         let msgs = vec![Message {
             role: "user".to_string(),
-            content: "hello".to_string(),
+            content: "hello".into(),
             tool_calls: vec![],
             tool_call_id: None,
             timestamp: None,
@@ -2078,7 +2078,7 @@ mod fallback_provider_extra {
         );
         let msgs = vec![Message {
             role: "user".to_string(),
-            content: "hello".to_string(),
+            content: "hello".into(),
             tool_calls: vec![],
             tool_call_id: None,
             timestamp: None,
@@ -2116,7 +2116,7 @@ mod fallback_provider_extra {
         );
         let msgs = vec![Message {
             role: "user".to_string(),
-            content: "hello".to_string(),
+            content: "hello".into(),
             tool_calls: vec![],
             tool_call_id: None,
             timestamp: None,
@@ -2154,7 +2154,7 @@ mod fallback_provider_extra {
         );
         let msgs = vec![Message {
             role: "user".to_string(),
-            content: "hello".to_string(),
+            content: "hello".into(),
             tool_calls: vec![],
             tool_call_id: None,
             timestamp: None,
@@ -2180,7 +2180,7 @@ mod fallback_provider_extra {
         );
         let msgs = vec![Message {
             role: "user".to_string(),
-            content: "hello".to_string(),
+            content: "hello".into(),
             tool_calls: vec![],
             tool_call_id: None,
             timestamp: None,
@@ -2222,7 +2222,7 @@ mod fallback_provider_extra {
         );
         let msgs = vec![Message {
             role: "user".to_string(),
-            content: "hello".to_string(),
+            content: "hello".into(),
             tool_calls: vec![],
             tool_call_id: None,
             timestamp: None,
@@ -2255,7 +2255,7 @@ mod fallback_provider_extra {
         );
         let msgs = vec![Message {
             role: "user".to_string(),
-            content: "describe this image".to_string(),
+            content: "describe this image".into(),
             tool_calls: vec![],
             tool_call_id: None,
             timestamp: None,
@@ -2273,7 +2273,7 @@ mod fallback_provider_extra {
         let provider = FallbackProvider::new("test", vec![]);
         let msgs = vec![Message {
             role: "user".to_string(),
-            content: "hello".to_string(),
+            content: "hello".into(),
             tool_calls: vec![],
             tool_call_id: None,
             timestamp: None,

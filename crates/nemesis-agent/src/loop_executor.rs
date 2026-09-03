@@ -44,7 +44,7 @@ use tracing::{debug, info, warn};
 
 use crate::context::RequestContext;
 use crate::instance::AgentInstance;
-use crate::r#loop::{LlmMessage, LlmProvider, Tool};
+use crate::r#loop::{LlmMessage, LlmProvider, Tool, observer_msg_values};
 use crate::session::SessionStore;
 use crate::types::{AgentConfig, AgentState, ToolCallInfo, ToolCallResult};
 
@@ -1070,6 +1070,9 @@ impl AgentLoopExecutor {
                     &self.outbound_tx,
                     self.observer_manager.clone(),
                     self.session_store.as_ref().map(|v| v.as_ref()),
+                    // F-F：legacy 路径无 config_path/vision 解析设施，传 true
+                    //（默认放行）保持既有语义——生产实例化的是 loop.rs 侧。
+                    true,
                 )
                 .await;
             } else {
@@ -1286,10 +1289,8 @@ impl AgentLoopExecutor {
             };
 
             // Emit LLM request event (asynchronous).
-            let msg_values: Vec<serde_json::Value> = messages
-                .iter()
-                .filter_map(|m| serde_json::to_value(m).ok())
-                .collect();
+            // F-J：经 observer_msg_values 剥掉图片 base64（legacy 路径同规）。
+            let msg_values: Vec<serde_json::Value> = observer_msg_values(&messages);
             let tool_values: Vec<serde_json::Value> = tool_defs
                 .iter()
                 .filter_map(|t| serde_json::to_value(t).ok())
@@ -1745,10 +1746,9 @@ impl AgentLoopExecutor {
                     current_messages = self.build_messages(instance);
 
                     // Emit a new LLM request for the retry (asynchronous).
-                    let retry_msg_values: Vec<serde_json::Value> = current_messages
-                        .iter()
-                        .filter_map(|m| serde_json::to_value(m).ok())
-                        .collect();
+                    // F-J：同规剥字节。
+                    let retry_msg_values: Vec<serde_json::Value> =
+                        observer_msg_values(&current_messages);
                     self.emit_async_event(ObserverEvent::LlmRequest {
                         trace_id: trace_id.to_string(),
                         round: iteration,
@@ -1863,6 +1863,7 @@ impl AgentLoopExecutor {
             tool_calls: None,
             tool_call_id: None,
             reasoning_content: None,
+            images: Vec::new(),
         };
 
         let turn_to_msg = |turn: crate::types::ConversationTurn| LlmMessage {
@@ -1875,6 +1876,7 @@ impl AgentLoopExecutor {
             },
             tool_call_id: turn.tool_call_id,
             reasoning_content: turn.reasoning_content,
+            images: Vec::new(),
         };
 
         // Find the last user message index and inject time_msg just before it.

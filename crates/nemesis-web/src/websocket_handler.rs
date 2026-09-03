@@ -36,6 +36,9 @@ pub struct IncomingMessage {
     pub content: String,
     pub metadata: HashMap<String, String>,
     pub voice_playback: Option<bool>,
+    /// T8（多模态）：随消息的图片引用（`chat.send` data.media 解析产物）。
+    /// 空 = 纯文本（老前端零影响）；进 T5 统一附加（安全闸 → 历史引用）。
+    pub media: Vec<nemesis_types::channel::MediaAttachment>,
 }
 
 // ---------------------------------------------------------------------------
@@ -484,9 +487,17 @@ fn handle_chat_send(
         /// each conversation gets its own history/context (server.rs:895).
         #[serde(default)]
         session_id: Option<String>,
+        /// T8（多模态）：图片引用列表，`[{id: "<上传 id>"}]` 或
+        /// `[{path: "<本地绝对路径>"}]`。缺省 = 纯文本（老前端零影响）。
+        #[serde(default)]
+        media: Option<Vec<serde_json::Value>>,
     }
     let data: ChatData = msg.decode_data()?;
-    if data.content.is_empty() {
+    // BUG-1（2026-09-03 二次回归）：纯图片消息合法——前端支持只传 media 不带
+    // 文本；content 为空但带 media 引用时放行（后续 media 解析失败的项会诚实
+    // 注记进文本，不会变空消息）。无文本无 media 的真空消息仍拒绝。
+    let has_media_refs = data.media.as_ref().is_some_and(|m| !m.is_empty());
+    if data.content.is_empty() && !has_media_refs {
         return Err("message content cannot be empty".to_string());
     }
 
@@ -495,6 +506,31 @@ fn handle_chat_send(
         content = %data.content,
         "[WebSocket] Message forwarded to channel (new protocol)"
     );
+
+    // T8：media 引用解析——{id} → uploads 落盘文件（裸文件名校验，防穿越）；
+    // {path} → 原样引用（用户点名路径语义）。解析失败的项诚实注记进文本。
+    let mut content = data.content;
+    let mut media = Vec::new();
+    for item in data.media.unwrap_or_default() {
+        match crate::handlers::upload::resolve_media_ref(&item) {
+            Some(path) => media.push(nemesis_types::channel::MediaAttachment {
+                media_type: "image".to_string(),
+                url: path,
+                data: None,
+            }),
+            None => {
+                let raw = item
+                    .get("id")
+                    .or_else(|| item.get("path"))
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("<无效项>");
+                if !content.is_empty() {
+                    content.push('\n');
+                }
+                content.push_str(&format!("[图片未附加: 附件无效或已过期 ({})]", raw));
+            }
+        }
+    }
 
     let mut metadata = HashMap::new();
     if let Some(sid) = data.session_id.as_ref().filter(|s| !s.is_empty()) {
@@ -505,9 +541,10 @@ fn handle_chat_send(
         session_id: session_id.to_string(),
         sender_id: sender_id.to_string(),
         chat_id: chat_id.to_string(),
-        content: data.content,
+        content,
         metadata,
         voice_playback: data.voice_playback,
+        media,
     }))
 }
 
@@ -555,6 +592,7 @@ fn handle_history_request(
         content: payload.to_string(),
         metadata,
         voice_playback: None,
+        media: Vec::new(),
     }))
 }
 

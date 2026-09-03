@@ -534,6 +534,7 @@ impl ContextBuilder {
             tool_calls: None,
             tool_call_id: None,
             reasoning_content: None,
+            images: Vec::new(),
         });
 
         // History messages: filter orphaned tool messages anywhere in history.
@@ -567,6 +568,7 @@ impl ContextBuilder {
                 },
                 tool_call_id: turn.tool_call_id.clone(),
                 reasoning_content: turn.reasoning_content.clone(),
+                images: Vec::new(),
             });
         }
 
@@ -578,6 +580,7 @@ impl ContextBuilder {
                 tool_calls: None,
                 tool_call_id: None,
                 reasoning_content: None,
+                images: Vec::new(),
             });
         }
 
@@ -603,6 +606,7 @@ impl ContextBuilder {
             tool_calls: None,
             tool_call_id: Some(tool_call_id.to_string()),
             reasoning_content: None,
+            images: Vec::new(),
         });
     }
 
@@ -623,6 +627,7 @@ impl ContextBuilder {
             },
             tool_call_id: None,
             reasoning_content: None,
+            images: Vec::new(),
         });
     }
 }

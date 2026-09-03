@@ -9,6 +9,8 @@ export interface ChatMessage {
    *  Rendered as a "供应商·模型名" badge; undefined for user/error/system or
    *  legacy messages persisted before the badge feature. */
   model?: string
+  /** T8 多模态：该消息附带的图片数（本地回显 + 历史映射 m.images.length）。 */
+  imageCount?: number
 }
 
 export const useChatStore = defineStore('chat', () => {

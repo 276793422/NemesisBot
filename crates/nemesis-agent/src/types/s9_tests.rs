@@ -43,6 +43,7 @@ fn repair_pairs_partial_answered_calls_get_synthetic_only_for_missing() {
             reasoning_content: None,
             tool_name: None,
             tool_result_projection: None,
+            image_refs: Vec::new(),
         },
         ConversationTurn {
             role: "assistant".to_string(),
@@ -53,6 +54,7 @@ fn repair_pairs_partial_answered_calls_get_synthetic_only_for_missing() {
             reasoning_content: None,
             tool_name: None,
             tool_result_projection: None,
+            image_refs: Vec::new(),
         },
         // call_a 已有结果；call_b 没有
         ConversationTurn {
@@ -64,6 +66,7 @@ fn repair_pairs_partial_answered_calls_get_synthetic_only_for_missing() {
             reasoning_content: None,
             tool_name: None,
             tool_result_projection: None,
+            image_refs: Vec::new(),
         },
     ];
     repair_tool_message_pairs(&mut messages);

@@ -278,7 +278,9 @@ impl nemesis_security::guardian::LlmJudge for GatewayLlmJudge {
         let messages = vec![
             nemesis_providers::types::Message {
                 role: "system".into(),
-                content: nemesis_security::guardian::GUARDIAN_PROMPT.to_string(),
+                content: nemesis_security::guardian::GUARDIAN_PROMPT
+                    .to_string()
+                    .into(),
                 tool_calls: vec![],
                 tool_call_id: None,
                 timestamp: None,
@@ -287,7 +289,7 @@ impl nemesis_security::guardian::LlmJudge for GatewayLlmJudge {
             },
             nemesis_providers::types::Message {
                 role: "user".into(),
-                content: user,
+                content: user.into(),
                 tool_calls: vec![],
                 tool_call_id: None,
                 timestamp: None,
@@ -4212,6 +4214,13 @@ pub async fn run(local: bool, extra_args: &[String]) -> Result<()> {
         });
         info!("[Gateway] Internal command listener started");
     }
+
+    // T8（多模态 goal 2026-09-03）：uploads 暂存目录 TTL 清扫（启动扫一次 +
+    // 每 6 小时一次，7 天 TTL）。uploads 是 temp 语义；被清扫文件的历史引用
+    // 由 T6 水合层诚实降级 `[图片已失效]`，不依赖此处。路径唯一真相源
+    // nemesis-path resolve_uploads_dir_in_workspace。
+    nemesis_web::handlers::upload::spawn_uploads_sweeper();
+    info!("[Gateway] uploads TTL sweeper started (7d TTL, 6h interval)");
 
     // Ctrl+C / SIGINT 优雅停机臂（2026-08-31 web-dead 停机事故教训）：
     // 此前 gateway 停机只有两条路——/api/internal（骑 web，web 任务一死即全断）

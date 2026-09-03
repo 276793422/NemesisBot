@@ -1454,6 +1454,7 @@ async fn test_call_llm_with_fallback_no_candidates() {
         tool_calls: None,
         tool_call_id: None,
         reasoning_content: None,
+        images: Vec::new(),
     }];
     let result = executor
         .call_llm_with_fallback(&messages, None, vec![])
@@ -1734,6 +1735,7 @@ async fn test_call_llm_with_fallback_with_candidates() {
         tool_calls: None,
         tool_call_id: None,
         reasoning_content: None,
+        images: Vec::new(),
     }];
     let result = executor
         .call_llm_with_fallback(&messages, None, vec![])

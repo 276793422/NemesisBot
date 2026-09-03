@@ -2760,7 +2760,7 @@ mod wave_b {
             self.seen_user_content
                 .lock()
                 .unwrap()
-                .extend(messages.iter().map(|m| m.content.clone()));
+                .extend(messages.iter().map(|m| m.content.to_text()));
             // Result 整体不可 clone（FailoverError 无 Clone），按边分别复制：
             // Ok 边 LLMResponse 自带 Clone；Err 边仅测试用到 Unknown{provider,message}。
             match &self.reply {

@@ -42,8 +42,11 @@ nemesis-security = { workspace = true, optional = true }
 nemesis-state = { workspace = true }
 nemesis-data = { workspace = true }
 nemesis-path = { workspace = true }
+# T9（多模态 goal 2026-09-03）：URL 图片拉取走共享连接池（超时/UA/连接复用）。
+nemesis-http-pool = { workspace = true }
 parking_lot = { workspace = true }
 sha2 = { workspace = true }
+base64 = { workspace = true }
 reqwest = { workspace = true }
 regex = { workspace = true }
 # U20 (sixth batch): FTS5 index for session full-text search. Same version +

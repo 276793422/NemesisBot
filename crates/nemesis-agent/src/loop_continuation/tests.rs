@@ -9,6 +9,7 @@ fn make_message(role: &str, content: &str) -> LlmMessage {
         tool_calls: None,
         tool_call_id: None,
         reasoning_content: None,
+        images: Vec::new(),
     }
 }
 
@@ -126,6 +127,8 @@ fn test_disk_recovery_on_startup() {
         created_at: "2026-04-29T12:00:00Z".to_string(),
         session_key: String::new(),
         peer_id: String::new(),
+        image_refs: Vec::new(),
+        image_refs_by_user_turn: Vec::new(), // L1
     };
     store.save(&snapshot).unwrap();
 
@@ -150,6 +153,8 @@ async fn test_disk_store_save_and_load() {
         created_at: "2026-04-29T12:00:00Z".to_string(),
         session_key: String::new(),
         peer_id: String::new(),
+        image_refs: Vec::new(),
+        image_refs_by_user_turn: Vec::new(), // L1
     };
 
     store.save(&snapshot).unwrap();
@@ -172,6 +177,8 @@ async fn test_disk_store_delete() {
         created_at: "2026-04-29T12:00:00Z".to_string(),
         session_key: String::new(),
         peer_id: String::new(),
+        image_refs: Vec::new(),
+        image_refs_by_user_turn: Vec::new(), // L1
     };
 
     store.save(&snapshot).unwrap();
@@ -259,6 +266,8 @@ fn test_continuation_snapshot_serialization() {
         created_at: "2026-04-29T12:00:00Z".to_string(),
         session_key: String::new(),
         peer_id: String::new(),
+        image_refs: Vec::new(),
+        image_refs_by_user_turn: Vec::new(), // L1
     };
 
     let json = serde_json::to_string(&snapshot).unwrap();
@@ -279,6 +288,8 @@ fn test_continuation_data_debug() {
         ready: Arc::new(tokio::sync::Notify::new()),
         ready_flag: Arc::new(std::sync::atomic::AtomicBool::new(false)),
         peer_id: String::new(),
+        image_refs: Vec::new(),
+        image_refs_by_user_turn: Vec::new(), // L1
     };
     let debug_str = format!("{:?}", data);
     assert!(debug_str.contains("tc_1"));
@@ -318,6 +329,8 @@ fn test_manager_has_continuation_sync() {
         ready: Arc::new(tokio::sync::Notify::new()),
         ready_flag: Arc::new(std::sync::atomic::AtomicBool::new(true)),
         peer_id: String::new(),
+        image_refs: Vec::new(),
+        image_refs_by_user_turn: Vec::new(), // L1
     });
     manager.insert_continuation_sync("task-sync".to_string(), data);
 
@@ -376,6 +389,8 @@ fn test_continuation_store_list_pending_with_snapshots() {
             created_at: "2026-04-29T12:00:00Z".to_string(),
             session_key: String::new(),
             peer_id: String::new(),
+            image_refs: Vec::new(),
+            image_refs_by_user_turn: Vec::new(), // L1
         };
         store.save(&snapshot).unwrap();
     }
@@ -399,6 +414,8 @@ fn test_continuation_snapshot_clone() {
         created_at: "2026-04-29T12:00:00Z".to_string(),
         session_key: String::new(),
         peer_id: String::new(),
+        image_refs: Vec::new(),
+        image_refs_by_user_turn: Vec::new(), // L1
     };
     let cloned = snapshot.clone();
     assert_eq!(cloned.task_id, "task-clone");
@@ -427,6 +444,8 @@ fn test_continuation_data_with_ready_notify() {
         ready: notify,
         ready_flag: Arc::new(std::sync::atomic::AtomicBool::new(false)),
         peer_id: String::new(),
+        image_refs: Vec::new(),
+        image_refs_by_user_turn: Vec::new(), // L1
     };
 
     assert!(!data.ready_flag.load(std::sync::atomic::Ordering::SeqCst));
@@ -511,6 +530,8 @@ fn test_continuation_store_save_overwrite() {
         created_at: "2026-04-29T12:00:00Z".to_string(),
         session_key: String::new(),
         peer_id: String::new(),
+        image_refs: Vec::new(),
+        image_refs_by_user_turn: Vec::new(), // L1
     };
     store.save(&snapshot1).unwrap();
 
@@ -523,6 +544,8 @@ fn test_continuation_store_save_overwrite() {
         created_at: "2026-04-29T12:00:00Z".to_string(),
         session_key: String::new(),
         peer_id: String::new(),
+        image_refs: Vec::new(),
+        image_refs_by_user_turn: Vec::new(), // L1
     };
     store.save(&snapshot2).unwrap();
 
@@ -608,6 +631,8 @@ fn test_continuation_store_recover_skips_already_loaded() {
         created_at: "2026-04-29T12:00:00Z".to_string(),
         session_key: String::new(),
         peer_id: String::new(),
+        image_refs: Vec::new(),
+        image_refs_by_user_turn: Vec::new(), // L1
     };
     store.save(&snapshot).unwrap();
 
@@ -622,6 +647,8 @@ fn test_continuation_store_recover_skips_already_loaded() {
         ready: Arc::new(tokio::sync::Notify::new()),
         ready_flag: Arc::new(std::sync::atomic::AtomicBool::new(true)),
         peer_id: String::new(),
+        image_refs: Vec::new(),
+        image_refs_by_user_turn: Vec::new(), // L1
     });
     manager.insert_continuation_sync("task-skip".to_string(), data);
 
@@ -645,6 +672,8 @@ fn test_continuation_store_recover_corrupted_messages() {
         created_at: "2026-04-29T12:00:00Z".to_string(),
         session_key: String::new(),
         peer_id: String::new(),
+        image_refs: Vec::new(),
+        image_refs_by_user_turn: Vec::new(), // L1
     };
     store.save(&snapshot).unwrap();
 
@@ -697,6 +726,7 @@ async fn test_handle_cluster_continuation_no_data() {
         &outbound_tx,
         None,
         None,
+        true, // F-F vision_supported
     )
     .await;
     // No outbound should be sent
@@ -744,6 +774,7 @@ async fn test_handle_cluster_continuation_simple_response() {
         &outbound_tx,
         None,
         None,
+        true, // F-F vision_supported
     )
     .await;
 
@@ -795,6 +826,7 @@ async fn test_handle_cluster_continuation_failed_task() {
         &outbound_tx,
         None,
         None,
+        true, // F-F vision_supported
     )
     .await;
 
@@ -870,6 +902,7 @@ async fn test_handle_cluster_continuation_with_tool_calls() {
         &outbound_tx,
         None,
         None,
+        true, // F-F vision_supported
     )
     .await;
 
@@ -910,6 +943,7 @@ async fn test_handle_cluster_continuation_llm_error() {
         &outbound_tx,
         None,
         None,
+        true, // F-F vision_supported
     )
     .await;
 
@@ -973,6 +1007,7 @@ async fn test_handle_cluster_continuation_unknown_tool() {
         &outbound_tx,
         None,
         None,
+        true, // F-F vision_supported
     )
     .await;
 
@@ -1051,6 +1086,8 @@ fn test_continuation_snapshot_created_at() {
         created_at: "2026-01-01T00:00:00Z".to_string(),
         session_key: String::new(),
         peer_id: String::new(),
+        image_refs: Vec::new(),
+        image_refs_by_user_turn: Vec::new(), // L1
     };
     assert_eq!(snapshot.task_id, "t1");
     assert_eq!(snapshot.created_at, "2026-01-01T00:00:00Z");
@@ -1061,6 +1098,8 @@ fn test_continuation_snapshot_created_at() {
 struct MockContinuationProvider {
     responses: std::sync::Mutex<Vec<LlmResponse>>,
     error: std::sync::Mutex<Option<String>>,
+    // F-F 回归锁：记录每次 chat() 收到的消息图片数（vision 投影验证用）。
+    seen_image_counts: std::sync::Mutex<Vec<Vec<usize>>>,
 }
 
 impl MockContinuationProvider {
@@ -1068,6 +1107,7 @@ impl MockContinuationProvider {
         Self {
             responses: std::sync::Mutex::new(responses),
             error: std::sync::Mutex::new(None),
+            seen_image_counts: std::sync::Mutex::new(Vec::new()),
         }
     }
 
@@ -1075,7 +1115,13 @@ impl MockContinuationProvider {
         Self {
             responses: std::sync::Mutex::new(Vec::new()),
             error: std::sync::Mutex::new(Some(err)),
+            seen_image_counts: std::sync::Mutex::new(Vec::new()),
         }
+    }
+
+    /// 每轮 chat() 各消息的 images.len()（F-F 断言用）。
+    fn seen_image_counts(&self) -> Vec<Vec<usize>> {
+        self.seen_image_counts.lock().unwrap().clone()
     }
 }
 
@@ -1088,6 +1134,10 @@ impl crate::r#loop::LlmProvider for MockContinuationProvider {
         _options: Option<crate::types::ChatOptions>,
         _tools: Vec<crate::types::ToolDefinition>,
     ) -> Result<LlmResponse, String> {
+        self.seen_image_counts
+            .lock()
+            .unwrap()
+            .push(_messages.iter().map(|m| m.images.len()).collect());
         if let Some(ref err) = *self.error.lock().unwrap() {
             return Err(err.clone());
         }
@@ -1190,6 +1240,8 @@ fn test_disk_persistence_load_from_disk() {
         created_at: "2026-04-29T12:00:00Z".to_string(),
         session_key: String::new(),
         peer_id: String::new(),
+        image_refs: Vec::new(),
+        image_refs_by_user_turn: Vec::new(), // L1
     };
     store.save(&snapshot).unwrap();
 
@@ -1212,6 +1264,8 @@ async fn test_disk_store_remove_and_verify() {
         created_at: "2026-04-29T12:00:00Z".to_string(),
         session_key: String::new(),
         peer_id: String::new(),
+        image_refs: Vec::new(),
+        image_refs_by_user_turn: Vec::new(), // L1
     };
     store.save(&snapshot).unwrap();
     assert!(store.load("task-rm").is_ok());
@@ -1261,6 +1315,7 @@ async fn test_handle_cluster_continuation_failed_task_no_error_msg() {
         &outbound_tx,
         None,
         None,
+        true, // F-F vision_supported
     )
     .await;
 
@@ -1337,6 +1392,7 @@ async fn test_handle_cluster_continuation_writes_session_log() {
         &outbound_tx,
         None,
         None,
+        true, // F-F vision_supported
     )
     .await;
 
@@ -1413,6 +1469,7 @@ async fn test_handle_cluster_continuation_writes_session_store_when_provided() {
         &outbound_tx,
         None,
         Some(store.as_ref()),
+        true, // F-F vision_supported
     )
     .await;
 
@@ -1477,6 +1534,7 @@ async fn test_handle_cluster_continuation_skips_log_when_session_key_empty() {
         &outbound_tx,
         None,
         None,
+        true, // F-F vision_supported
     )
     .await;
 
@@ -1626,6 +1684,7 @@ async fn test_disk_recovery_preserves_session_key_for_handle() {
         &outbound_tx,
         None,
         None,
+        true, // F-F vision_supported
     )
     .await;
 
@@ -1763,6 +1822,7 @@ async fn test_handle_cluster_continuation_emits_observer_events() {
         &outbound_tx,
         Some(Arc::clone(&observer)),
         None,
+        true, // F-F vision_supported
     )
     .await;
 
@@ -1813,6 +1873,7 @@ async fn test_handle_cluster_continuation_persists_to_session_store() {
         &outbound_tx,
         None,
         Some(&store),
+        true, // F-F vision_supported
     )
     .await;
 
@@ -1858,6 +1919,8 @@ async fn test_load_continuation_falls_back_to_disk() {
         session_key: "disk_session".to_string(),
         created_at: "2026-01-01T00:00:00Z".to_string(),
         peer_id: String::new(),
+        image_refs: Vec::new(),
+        image_refs_by_user_turn: Vec::new(), // L1
     };
     store.save(&snap).unwrap();
 
@@ -1917,6 +1980,8 @@ async fn recover_from_disk_inside_async_runtime_does_not_panic() {
         session_key: String::new(),
         created_at: "2026-08-27T00:00:00Z".to_string(),
         peer_id: String::new(),
+        image_refs: Vec::new(),
+        image_refs_by_user_turn: Vec::new(), // L1
     };
     store.save(&snapshot).unwrap();
     drop(store);
@@ -2126,6 +2191,8 @@ fn snap(task: &str) -> ContinuationSnapshot {
         session_key: String::new(),
         created_at: "2026-08-25T00:00:00+08:00".to_string(),
         peer_id: String::new(),
+        image_refs: Vec::new(),
+        image_refs_by_user_turn: Vec::new(), // L1
     }
 }
 
@@ -2283,6 +2350,8 @@ fn not_ready_data() -> Arc<ContinuationData> {
         ready: Arc::new(Notify::new()),
         ready_flag: Arc::new(AtomicBool::new(false)),
         peer_id: String::new(),
+        image_refs: Vec::new(),
+        image_refs_by_user_turn: Vec::new(), // L1
     })
 }
 
@@ -2397,6 +2466,7 @@ async fn final_outbound_send_error_warns_no_panic() {
         &outbound_tx,
         None,
         None,
+        true, // F-F vision_supported
     )
     .await;
     assert!(!manager.has_continuation("task-out").await);
@@ -2451,6 +2521,7 @@ async fn handle_continuation_with_observer_manager_persists_and_sends() {
         &outbound_tx,
         Some(Arc::new(nemesis_observer::Manager::new())),
         Some(&store),
+        true, // F-F vision_supported
     )
     .await;
 
@@ -2470,4 +2541,602 @@ async fn handle_continuation_with_observer_manager_persists_and_sends() {
     );
 
     crate::chat_log::delete_chat_log(&session_key);
+}
+
+// ---------------------------------------------------------------------------
+// T6（多模态）：快照带图片路径引用 —— 磁盘剥离字节 / 加载重水合 / 旧快照兼容
+// ---------------------------------------------------------------------------
+
+/// 最小 PNG（8 字节签名 + IHDR 长度前缀；与 image_attach 测试同形）。
+fn t6_png_bytes() -> Vec<u8> {
+    let mut v = vec![0x89, b'P', b'N', b'G', 0x0D, 0x0A, 0x1A, 0x0A];
+    v.extend_from_slice(&[0, 0, 0, 13, b'I', b'H', b'D', b'R']);
+    v
+}
+
+fn t6_png_image(path: &str, bytes: &[u8]) -> LlmMessage {
+    use base64::Engine as _;
+    LlmMessage {
+        role: "user".to_string(),
+        content: "看这张图".to_string(),
+        tool_calls: None,
+        tool_call_id: None,
+        reasoning_content: None,
+        images: vec![crate::image_attach::LlmImage {
+            path: path.to_string(),
+            media_type: "image/png".to_string(),
+            data: base64::engine::general_purpose::STANDARD.encode(bytes),
+        }],
+    }
+}
+
+#[tokio::test]
+async fn t6_snapshot_roundtrip_strips_bytes_and_rehydrates() {
+    use base64::Engine as _;
+
+    let tmp = TempDir::new().unwrap();
+    let img = tmp.path().join("t6_roundtrip.png");
+    let bytes = t6_png_bytes();
+    std::fs::write(&img, &bytes).unwrap();
+    let refs = vec![img.to_string_lossy().into_owned()];
+
+    let task = format!("t6rt_{}", std::process::id());
+    let manager1 = ContinuationManager::with_disk_store(tmp.path());
+    let messages = vec![
+        make_message("system", "sys"),
+        t6_png_image(&refs[0], &bytes),
+        {
+            let mut m = make_message("assistant", "");
+            m.tool_calls = Some(vec![ToolCallInfo {
+                id: "tc_t6".to_string(),
+                name: "cluster_rpc".to_string(),
+                arguments: "{}".to_string(),
+            }]);
+            m
+        },
+    ];
+    manager1
+        .save_continuation_with_images(
+            &task,
+            messages,
+            "tc_t6",
+            "web",
+            "chat1",
+            "t6_session",
+            "",
+            &refs,
+        )
+        .await;
+
+    // 磁盘快照：messages JSON 不含 base64 字节，image_refs 只落路径。
+    drop(manager1);
+    let store = ContinuationStore::new(tmp.path());
+    let snapshot = store.load(&task).expect("snapshot on disk");
+    let png_sig_b64 = base64::engine::general_purpose::STANDARD.encode(&t6_png_bytes()[..8]);
+    assert!(
+        !snapshot.messages.contains(&png_sig_b64),
+        "磁盘快照不得携带图片 base64 字节"
+    );
+    assert_eq!(snapshot.image_refs, refs, "快照应携带路径引用");
+
+    // 新 manager 启动恢复（recover_to_manager）→ 加载后重水合回最后一条
+    // user 消息，字节与文件内容一致。
+    let manager2 = ContinuationManager::with_disk_store(tmp.path());
+    assert!(manager2.has_continuation(&task).await, "启动恢复应还原条目");
+    let data = manager2
+        .load_continuation(&task)
+        .await
+        .expect("recovered continuation");
+    let user = data
+        .messages
+        .iter()
+        .rev()
+        .find(|m| m.role == "user")
+        .expect("user message");
+    assert_eq!(user.images.len(), 1, "加载后应重水合出图片");
+    assert_eq!(
+        user.images[0].data,
+        base64::engine::general_purpose::STANDARD.encode(&bytes),
+        "重水合字节应与文件内容一致"
+    );
+    assert_eq!(user.images[0].media_type, "image/png");
+    assert_eq!(data.image_refs, refs);
+    assert!(
+        !user.content.contains("[图片已失效"),
+        "文件存在时不得出现失效占位"
+    );
+
+    manager2.remove_continuation(&task).await;
+}
+
+#[tokio::test]
+async fn t6_disk_fallback_load_rehydrates_refs() {
+    use base64::Engine as _;
+
+    let tmp = TempDir::new().unwrap();
+    let img = tmp.path().join("t6_fallback.png");
+    let bytes = t6_png_bytes();
+    std::fs::write(&img, &bytes).unwrap();
+    let refs = vec![img.to_string_lossy().into_owned()];
+    let task = format!("t6fb_{}", std::process::id());
+
+    // manager 先建（此刻磁盘无快照，恢复空跑），后手写快照 → load 走
+    // try_load_from_disk 磁盘回退臂。
+    let manager = ContinuationManager::with_disk_store(tmp.path());
+    let stripped = vec![LlmMessage {
+        role: "user".to_string(),
+        content: "带图消息".to_string(),
+        tool_calls: None,
+        tool_call_id: None,
+        reasoning_content: None,
+        images: Vec::new(), // 保存侧已剥离
+    }];
+    let snapshot = ContinuationSnapshot {
+        task_id: task.clone(),
+        messages: serde_json::to_string(&stripped).unwrap(),
+        tool_call_id: "tc_fb".to_string(),
+        channel: "web".to_string(),
+        chat_id: "chat1".to_string(),
+        session_key: String::new(),
+        peer_id: String::new(),
+        image_refs: refs.clone(),
+        image_refs_by_user_turn: Vec::new(), // L1
+        created_at: "2026-09-03T00:00:00Z".to_string(),
+    };
+    ContinuationStore::new(tmp.path())
+        .save(&snapshot)
+        .expect("manual snapshot save");
+
+    let data = manager
+        .load_continuation(&task)
+        .await
+        .expect("disk fallback load");
+    let user = &data.messages[0];
+    assert_eq!(user.images.len(), 1, "磁盘回退加载应重水合");
+    assert_eq!(
+        user.images[0].data,
+        base64::engine::general_purpose::STANDARD.encode(&bytes)
+    );
+    assert_eq!(user.content, "带图消息", "文件在时不加占位");
+}
+
+#[tokio::test]
+async fn t6_disk_load_deleted_file_degrades_to_placeholder() {
+    let tmp = TempDir::new().unwrap();
+    let img = tmp.path().join("t6_gone.png");
+    let bytes = t6_png_bytes();
+    std::fs::write(&img, &bytes).unwrap();
+    let refs = vec![img.to_string_lossy().into_owned()];
+    let task = format!("t6gone_{}", std::process::id());
+
+    let manager = ContinuationManager::with_disk_store(tmp.path());
+    let snapshot = ContinuationSnapshot {
+        task_id: task.clone(),
+        messages: serde_json::to_string(&vec![LlmMessage {
+            role: "user".to_string(),
+            content: "带图消息".to_string(),
+            tool_calls: None,
+            tool_call_id: None,
+            reasoning_content: None,
+            images: Vec::new(),
+        }])
+        .unwrap(),
+        tool_call_id: "tc_gone".to_string(),
+        channel: "web".to_string(),
+        chat_id: "chat1".to_string(),
+        session_key: String::new(),
+        peer_id: String::new(),
+        image_refs: refs.clone(),
+        image_refs_by_user_turn: Vec::new(), // L1
+        created_at: "2026-09-03T00:00:00Z".to_string(),
+    };
+    ContinuationStore::new(tmp.path())
+        .save(&snapshot)
+        .expect("manual snapshot save");
+
+    // 快照落盘后文件被删 → 加载降级：无字节、占位行进 content，文本不炸。
+    std::fs::remove_file(&img).unwrap();
+
+    let data = manager.load_continuation(&task).await.expect("loaded");
+    let user = &data.messages[0];
+    assert!(user.images.is_empty(), "文件已删不得产出图片字节");
+    assert!(
+        user.content.contains(&format!("[图片已失效: {}]", refs[0])),
+        "应追加失效占位行，got: {}",
+        user.content
+    );
+}
+
+#[tokio::test]
+async fn t6_old_snapshot_without_image_refs_field_loads() {
+    let tmp = TempDir::new().unwrap();
+    let task = format!("t6old_{}", std::process::id());
+
+    let manager = ContinuationManager::with_disk_store(tmp.path());
+    // 手写**旧版本快照 JSON**：无 image_refs 字段（serde default 兼容）。
+    let dir = nemesis_path::resolve_cluster_rpc_cache_dir_in_workspace(tmp.path());
+    std::fs::create_dir_all(&dir).unwrap();
+    let legacy = serde_json::json!({
+        "task_id": task,
+        "messages": serde_json::to_string(&vec![make_message("user", "legacy")]).unwrap(),
+        "tool_call_id": "tc_old",
+        "channel": "web",
+        "chat_id": "chat1",
+        "session_key": "",
+        "peer_id": "",
+        "created_at": "2026-08-01T00:00:00Z",
+    });
+    std::fs::write(
+        dir.join(format!("{}.json", task)),
+        serde_json::to_string_pretty(&legacy).unwrap(),
+    )
+    .unwrap();
+
+    let data = manager
+        .load_continuation(&task)
+        .await
+        .expect("legacy snapshot loads");
+    assert_eq!(data.messages.len(), 1);
+    assert!(data.messages[0].images.is_empty());
+    assert!(data.image_refs.is_empty());
+    assert!(!data.messages[0].content.contains("[图片已失效"));
+}
+
+#[test]
+fn t6_rehydrate_skips_duplicate_placeholder_line() {
+    let path = "C:\\nonexistent\\t6_dup.png";
+    let refs = vec![path.to_string()];
+    let placeholder = format!("[图片已失效: {}]", path);
+    let mut messages = vec![LlmMessage {
+        role: "user".to_string(),
+        content: format!("带图消息\n{}", placeholder), // 已有一份占位
+        tool_calls: None,
+        tool_call_id: None,
+        reasoning_content: None,
+        images: Vec::new(),
+    }];
+
+    rehydrate_last_user_images(&mut messages, &refs);
+
+    let count = messages[0].content.matches(&placeholder).count();
+    assert_eq!(
+        count, 1,
+        "重复重水合不得堆叠占位行，got: {}",
+        messages[0].content
+    );
+}
+
+#[test]
+fn t6_rehydrate_noop_without_refs() {
+    let mut messages = vec![make_message("user", "纯文本")];
+    let before = messages[0].content.clone();
+    rehydrate_last_user_images(&mut messages, &[]);
+    assert_eq!(messages[0].content, before, "无引用必须 no-op");
+    assert!(messages[0].images.is_empty());
+}
+
+// ---------------------------------------------------------------------------
+// L1（2026-09-04 四轮盲审）：按 user 轮的图片引用快照 + 逐轮恢复
+// ---------------------------------------------------------------------------
+
+/// 最小合法 PNG 写入（与 T6 相关测试同款）。
+fn write_l1_png(path: &std::path::Path) {
+    let mut data = vec![0x89, b'P', b'N', b'G', 0x0D, 0x0A, 0x1A, 0x0A];
+    data.extend_from_slice(b"l1");
+    std::fs::write(path, &data).unwrap();
+}
+
+fn l1_image(path: &std::path::Path) -> crate::image_attach::LlmImage {
+    crate::image_attach::LlmImage {
+        path: path.to_string_lossy().to_string(),
+        media_type: "image/png".to_string(),
+        data: "aGVsbG8=".to_string(), // 占位字节（快照只取 path）
+    }
+}
+
+#[tokio::test]
+async fn l1_snapshot_derives_per_turn_refs_and_recovers_every_user_turn() {
+    let tmp = TempDir::new().unwrap();
+    let workspace = tmp.path().to_path_buf();
+    let png_a = workspace.join("a.png");
+    let png_b = workspace.join("b.png");
+    write_l1_png(&png_a);
+    write_l1_png(&png_b);
+
+    // 多轮带图会话：user(A) → assistant → user(B) → assistant(tool_call)。
+    let messages = vec![
+        make_message("system", "sys"),
+        LlmMessage {
+            images: vec![l1_image(&png_a)],
+            ..make_message("user", "第一轮带图")
+        },
+        make_message("assistant", "中间回复"),
+        LlmMessage {
+            images: vec![l1_image(&png_b)],
+            ..make_message("user", "第二轮带图")
+        },
+        LlmMessage {
+            tool_calls: Some(vec![crate::types::ToolCallInfo {
+                id: "tc_l1".to_string(),
+                name: "cluster_rpc".to_string(),
+                arguments: "{}".to_string(),
+            }]),
+            ..make_message("assistant", "发起请求")
+        },
+    ];
+
+    let manager = ContinuationManager::with_disk_store(&workspace);
+    let task = format!("l1-{}", std::process::id());
+    manager
+        .save_continuation_with_images(
+            &task,
+            messages,
+            "tc_l1",
+            "web",
+            "chat_l1",
+            "session_l1",
+            "peer-1",
+            &[], // 旧单层参数留空：per-turn 字段从 messages 派生
+        )
+        .await;
+
+    // 快照侧：image_refs_by_user_turn 两轮各一条。
+    let store = ContinuationStore::new(&workspace);
+    let snap = store.load(&task).unwrap();
+    assert_eq!(
+        snap.image_refs_by_user_turn.len(),
+        2,
+        "应按 user 轮派生两条引用"
+    );
+    assert_eq!(
+        snap.image_refs_by_user_turn[0],
+        vec![png_a.to_string_lossy()]
+    );
+    assert_eq!(
+        snap.image_refs_by_user_turn[1],
+        vec![png_b.to_string_lossy()]
+    );
+
+    // 恢复侧：全新 manager（空内存 → 磁盘加载）→ 两条 user 轮的图都回来。
+    let mgr2 = ContinuationManager::with_disk_store(&workspace);
+    let data = mgr2
+        .load_continuation(&task)
+        .await
+        .expect("快照应从磁盘恢复");
+    let user_turns: Vec<&LlmMessage> = data
+        .messages
+        .iter()
+        .filter(|m| m.role == "user" && m.tool_call_id.is_none())
+        .collect();
+    assert_eq!(user_turns.len(), 2);
+    assert_eq!(user_turns[0].images.len(), 1, "第一轮 user 的图必须恢复");
+    assert_eq!(user_turns[0].images[0].path, png_a.to_string_lossy());
+    assert!(
+        !user_turns[0].images[0].data.is_empty(),
+        "重水合应有真实字节"
+    );
+    assert_eq!(
+        user_turns[1].images.len(),
+        1,
+        "第二轮 user 的图必须恢复（旧实现只有最后一轮）"
+    );
+    assert_eq!(user_turns[1].images[0].path, png_b.to_string_lossy());
+}
+
+#[tokio::test]
+async fn l1_legacy_flat_refs_still_rehydrate_last_turn() {
+    // 旧快照兼容：只有单层 image_refs（无 per-turn 字段）→ 回退原语义，
+    // 最后一条 user 轮重水合。
+    let tmp = TempDir::new().unwrap();
+    let workspace = tmp.path().to_path_buf();
+    let png = workspace.join("legacy.png");
+    write_l1_png(&png);
+
+    let store = ContinuationStore::new(&workspace);
+    let task = format!("l1-legacy-{}", std::process::id());
+    let snapshot = ContinuationSnapshot {
+        task_id: task.clone(),
+        messages: serde_json::to_string(&vec![
+            make_message("user", "旧快照带图"),
+            make_message("assistant", "发起"),
+        ])
+        .unwrap(),
+        tool_call_id: "tc_legacy".to_string(),
+        channel: "web".to_string(),
+        chat_id: "chat_l1_legacy".to_string(),
+        session_key: String::new(),
+        peer_id: String::new(),
+        image_refs: vec![png.to_string_lossy().to_string()],
+        image_refs_by_user_turn: Vec::new(),
+        created_at: "2026-09-01T00:00:00Z".to_string(),
+    };
+    store.save(&snapshot).unwrap();
+    drop(store);
+
+    let mgr = ContinuationManager::with_disk_store(&workspace);
+    let data = mgr.load_continuation(&task).await.unwrap();
+    let last_user = data
+        .messages
+        .iter()
+        .rev()
+        .find(|m| m.role == "user")
+        .unwrap();
+    assert_eq!(
+        last_user.images.len(),
+        1,
+        "旧快照回退单层语义应恢复最后一轮"
+    );
+    assert_eq!(last_user.images[0].path, png.to_string_lossy());
+}
+
+// ---------------------------------------------------------------------------
+// F-F（2026-09-04 四轮盲审）：vision=no 的续行投影
+// ---------------------------------------------------------------------------
+
+#[test]
+fn ff_projection_strips_images_and_notes_by_turn_position() {
+    let png = std::path::Path::new("C:\\nonexistent\\ff.png");
+    let mut messages = vec![
+        LlmMessage {
+            images: vec![l1_image(png)],
+            ..make_message("user", "历史轮带图")
+        },
+        make_message("assistant", "回复"),
+        LlmMessage {
+            images: vec![l1_image(png)],
+            ..make_message("user", "最新轮带图")
+        },
+        LlmMessage {
+            tool_call_id: Some("tc_x".to_string()),
+            ..make_message("tool", "结果")
+        },
+    ];
+
+    crate::loop_continuation::project_messages_for_no_vision(&mut messages);
+
+    assert!(messages[0].images.is_empty(), "历史轮图应被剥离");
+    assert!(
+        messages[0]
+            .content
+            .contains("[图片已省略: 当前模型仅支持文本]")
+    );
+    assert!(messages[2].images.is_empty(), "最新 user 轮图应被剥离");
+    assert!(
+        messages[2]
+            .content
+            .contains("[图片未发送: 当前模型 vision=no（不支持图像输入），图片已忽略]")
+    );
+    // 纯文本消息不受影响。
+    assert_eq!(messages[1].content, "回复");
+}
+
+#[test]
+fn ff_projection_is_idempotent() {
+    let png = std::path::Path::new("C:\\nonexistent\\ff2.png");
+    let mut messages = vec![LlmMessage {
+        images: vec![l1_image(png)],
+        ..make_message("user", "带图")
+    }];
+    crate::loop_continuation::project_messages_for_no_vision(&mut messages);
+    let once = messages[0].content.clone();
+    crate::loop_continuation::project_messages_for_no_vision(&mut messages);
+    assert_eq!(messages[0].content, once, "重复投影不得堆叠占位行");
+}
+
+/// F-F 端到端：vision_supported=false 时 handler 在调 LLM 前剥掉图片；
+/// true 时图片原样到达 provider（快照内已水合字节保留）。
+#[tokio::test]
+async fn ff_handler_projects_images_when_vision_unsupported() {
+    let manager = ContinuationManager::new();
+    let png = std::path::Path::new("C:\\nonexistent\\ff3.png");
+    let messages = vec![
+        LlmMessage {
+            images: vec![l1_image(png)],
+            ..make_message("user", "带图请求")
+        },
+        LlmMessage {
+            tool_calls: Some(vec![crate::types::ToolCallInfo {
+                id: "tc_ff".to_string(),
+                name: "cluster_rpc".to_string(),
+                arguments: "{}".to_string(),
+            }]),
+            ..make_message("assistant", "发起")
+        },
+    ];
+    manager
+        .save_continuation_with_images(
+            "task-ff",
+            messages,
+            "tc_ff",
+            "web",
+            "chat_ff",
+            "session_ff",
+            "peer-1",
+            &[],
+        )
+        .await;
+
+    // vision=no：provider 收到的消息必须零图片。
+    let (outbound_tx, mut outbound_rx) = tokio::sync::mpsc::channel(16);
+    let provider_no_vision = MockContinuationProvider::new(vec![LlmResponse {
+        content: "done".to_string(),
+        tool_calls: Vec::new(),
+        finished: true,
+        reasoning_content: None,
+        usage: None,
+        raw_request_body: None,
+        raw_response_body: None,
+    }]);
+    handle_cluster_continuation(
+        &manager,
+        "task-ff",
+        "result",
+        false,
+        None,
+        &provider_no_vision,
+        "test-model",
+        &HashMap::<String, Arc<dyn Tool>>::new(),
+        &outbound_tx,
+        None,
+        None,
+        false, // vision_supported = false → 投影
+    )
+    .await;
+    let counts = provider_no_vision.seen_image_counts();
+    assert!(!counts.is_empty(), "provider 应被调用");
+    assert!(
+        counts[0].iter().all(|&n| n == 0),
+        "vision=no 时 provider 收到的消息不应带图: {:?}",
+        counts[0]
+    );
+    let _ = outbound_rx.try_recv(); // 消费出站（不校验内容）
+
+    // vision=yes：图片原样到达（内存快照字节级无损语义不变）。
+    let manager2 = ContinuationManager::new();
+    let messages2 = vec![LlmMessage {
+        images: vec![l1_image(png)],
+        ..make_message("user", "带图请求")
+    }];
+    manager2
+        .save_continuation_with_images(
+            "task-ff2",
+            messages2,
+            "tc_ff2",
+            "web",
+            "chat_ff",
+            "session_ff",
+            "peer-1",
+            &[],
+        )
+        .await;
+    let provider_vision = MockContinuationProvider::new(vec![LlmResponse {
+        content: "done".to_string(),
+        tool_calls: Vec::new(),
+        finished: true,
+        reasoning_content: None,
+        usage: None,
+        raw_request_body: None,
+        raw_response_body: None,
+    }]);
+    handle_cluster_continuation(
+        &manager2,
+        "task-ff2",
+        "result",
+        false,
+        None,
+        &provider_vision,
+        "test-model",
+        &HashMap::<String, Arc<dyn Tool>>::new(),
+        &outbound_tx,
+        None,
+        None,
+        true, // vision_supported = true → 零改动
+    )
+    .await;
+    let counts = provider_vision.seen_image_counts();
+    assert!(
+        counts[0].contains(&1),
+        "vision=yes 时图片应原样到达 provider: {:?}",
+        counts[0]
+    );
 }

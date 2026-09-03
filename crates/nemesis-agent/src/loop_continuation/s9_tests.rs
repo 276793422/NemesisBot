@@ -28,6 +28,7 @@ fn make_message(role: &str, content: &str) -> LlmMessage {
         tool_calls: None,
         tool_call_id: None,
         reasoning_content: None,
+        images: Vec::new(),
     }
 }
 
@@ -41,6 +42,8 @@ fn snapshot_for(task: &str) -> ContinuationSnapshot {
         session_key: String::new(),
         created_at: chrono::Local::now().to_rfc3339(),
         peer_id: String::new(),
+        image_refs: Vec::new(),
+        image_refs_by_user_turn: Vec::new(), // L1
     }
 }
 
@@ -109,6 +112,8 @@ async fn wait_for_continuation_expired_deadline_falls_back() {
                 ready: Arc::new(tokio::sync::Notify::new()),
                 ready_flag: Arc::new(std::sync::atomic::AtomicBool::new(false)),
                 peer_id: String::new(),
+                image_refs: Vec::new(),
+                image_refs_by_user_turn: Vec::new(), // L1
             }),
         );
     }
@@ -189,6 +194,7 @@ async fn continuation_final_response_logs_info_fields() {
         &outbound_tx,
         None,
         None,
+        true, // F-F vision_supported
     )
     .await;
 

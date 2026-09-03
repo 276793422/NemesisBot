@@ -750,3 +750,57 @@ fn test_resolve_and_validate_dns_failure_errors() {
         "unexpected error: {err}"
     );
 }
+
+// =======================================================================
+// S2（2026-09-04 四轮盲审）：resolve_and_validate_collect —— 返回已验证
+// IP 集供调用方钉死连接（防 DNS rebinding TOCTOU 的两次独立解析）。
+// =======================================================================
+
+#[test]
+fn s2_collect_ip_literal_returns_validated_pin_set() {
+    let guard = Guard::new(SsrfConfig::default()).unwrap();
+    // 公网 IP 字面量：直接过闸，pin 集合就是它本身（不再二次解析）。
+    let ips = guard
+        .resolve_and_validate_collect("http://8.8.8.8/pic.png")
+        .unwrap();
+    assert_eq!(ips, vec!["8.8.8.8".parse::<std::net::IpAddr>().unwrap()]);
+}
+
+#[test]
+fn s2_collect_blocked_ip_literal_errors() {
+    let guard = Guard::new(SsrfConfig::default()).unwrap();
+    let err = guard
+        .resolve_and_validate_collect("http://10.0.0.1/secret")
+        .unwrap_err();
+    assert!(matches!(err, SsrfError::PrivateIp(_)), "{err}");
+}
+
+#[test]
+fn s2_collect_disabled_returns_empty_pin_set() {
+    // 闸关 = 无需钉死（调用方回退正常解析路径，不是回退默认 client）。
+    let guard = Guard::from_enabled(false);
+    let ips = guard
+        .resolve_and_validate_collect("http://10.0.0.1/secret")
+        .unwrap();
+    assert!(ips.is_empty(), "disabled 闸应返回空 pin 集: {:?}", ips);
+}
+
+#[test]
+fn s2_collect_allowed_host_returns_empty_pin_set() {
+    // 白名单主机在解析前短路（零 DNS，确定性）→ 空 pin 集 = 正常解析放行。
+    let guard = Guard::new(SsrfConfig::default()).unwrap();
+    guard.add_allowed_host("Example.COM");
+    let ips = guard
+        .resolve_and_validate_collect("http://example.com/pic.png")
+        .unwrap();
+    assert!(ips.is_empty(), "白名单主机应返回空 pin 集: {:?}", ips);
+}
+
+#[test]
+fn s2_collect_localhost_hostname_blocked() {
+    let guard = Guard::new(SsrfConfig::default()).unwrap();
+    let err = guard
+        .resolve_and_validate_collect("http://localhost/secret")
+        .unwrap_err();
+    assert!(matches!(err, SsrfError::Localhost(_)), "{err}");
+}

@@ -283,6 +283,7 @@ fn list_attaches_extras_and_catalog_match() {
         connect_mode: String::new(),
         workspace: String::new(),
         reasoning_effort: String::new(),
+        extra: Default::default(),
     });
     cfg.model_list.push(nemesis_config::ModelConfig {
         model_name: "m2".to_string(),
@@ -294,6 +295,7 @@ fn list_attaches_extras_and_catalog_match() {
         connect_mode: String::new(),
         workspace: String::new(),
         reasoning_effort: String::new(),
+        extra: Default::default(),
     });
     nemesis_config::save_config(&dir.path().join("config.json"), &mut cfg).unwrap();
     {

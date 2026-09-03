@@ -671,6 +671,7 @@ fn log_llm_request_with_messages_and_tool_calls_section() {
         }]),
         tool_call_id: None,
         reasoning_content: None,
+        images: Vec::new(),
     };
     logger.log_llm_request(&LLMRequestInfo {
         round: 1,
@@ -715,6 +716,7 @@ fn log_llm_request_truncates_long_message_content() {
         tool_calls: None,
         tool_call_id: None,
         reasoning_content: None,
+        images: Vec::new(),
     };
     logger.log_llm_request(&LLMRequestInfo {
         round: 1,
@@ -1016,6 +1018,7 @@ fn truncated_args_preview_in_request_md() {
         }]),
         tool_call_id: None,
         reasoning_content: None,
+        images: Vec::new(),
     }];
     info.messages_count = 1;
     logger.log_llm_request(&info);

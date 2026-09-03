@@ -1021,6 +1021,7 @@ fn extra_mcp_server_normalize_both_set_keeps_url() {
 #[test]
 fn extra_model_config_validate_full() {
     let m = ModelConfig {
+        extra: Default::default(),
         model_name: "n".into(),
         model: "p/m".into(),
         ..Default::default()
@@ -1031,6 +1032,7 @@ fn extra_model_config_validate_full() {
 #[test]
 fn extra_model_config_parse_first_slash() {
     let m = ModelConfig {
+        extra: Default::default(),
         model: "a/b/c".into(),
         ..Default::default()
     };

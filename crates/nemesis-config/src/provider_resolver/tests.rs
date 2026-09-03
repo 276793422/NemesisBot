@@ -5,6 +5,7 @@ use crate::Config;
 fn test_resolve_model_config_by_model_name() {
     let cfg = Config {
         model_list: vec![ModelConfig {
+            extra: Default::default(),
             model_name: "default".to_string(),
             model: "openai/gpt-4".to_string(),
             api_key: "key1".to_string(),
@@ -23,6 +24,7 @@ fn test_resolve_model_config_by_model_name() {
 fn test_resolve_model_config_by_vendor_model() {
     let cfg = Config {
         model_list: vec![ModelConfig {
+            extra: Default::default(),
             model_name: "primary".to_string(),
             model: "anthropic/claude-3".to_string(),
             api_key: "key2".to_string(),
@@ -62,6 +64,7 @@ fn test_resolve_model_config_empty_ref() {
 fn test_get_model_by_name_single() {
     let cfg = Config {
         model_list: vec![ModelConfig {
+            extra: Default::default(),
             model_name: "fast".to_string(),
             model: "groq/llama3".to_string(),
             ..Default::default()
@@ -85,11 +88,13 @@ fn test_get_model_by_name_round_robin() {
     let cfg = Config {
         model_list: vec![
             ModelConfig {
+                extra: Default::default(),
                 model_name: "pool".to_string(),
                 model: "openai/gpt-4".to_string(),
                 ..Default::default()
             },
             ModelConfig {
+                extra: Default::default(),
                 model_name: "pool".to_string(),
                 model: "anthropic/claude-3".to_string(),
                 ..Default::default()
@@ -170,12 +175,14 @@ fn test_get_default_api_base() {
 fn test_provider_resolver_find_by_name() {
     let models = vec![
         ModelConfig {
+            extra: Default::default(),
             model_name: "default".to_string(),
             model: "openai/gpt-4".to_string(),
             api_key: "key1".to_string(),
             ..Default::default()
         },
         ModelConfig {
+            extra: Default::default(),
             model_name: "fast".to_string(),
             model: "groq/llama3".to_string(),
             api_key: "key2".to_string(),
@@ -225,6 +232,7 @@ fn test_resolve_model_resolution() {
 fn test_find_model_by_name() {
     let cfg = Config {
         model_list: vec![ModelConfig {
+            extra: Default::default(),
             model_name: "primary".to_string(),
             model: "openai/gpt-4".to_string(),
             ..Default::default()
@@ -432,6 +440,7 @@ fn test_model_resolution_serialization() {
 fn test_resolve_model_config_with_custom_api_base() {
     let cfg = Config {
         model_list: vec![ModelConfig {
+            extra: Default::default(),
             model_name: "custom".to_string(),
             model: "openai/gpt-4".to_string(),
             api_key: "key1".to_string(),
@@ -449,6 +458,7 @@ fn test_resolve_model_config_with_custom_api_base() {
 fn test_resolve_model_config_model_without_slash() {
     let cfg = Config {
         model_list: vec![ModelConfig {
+            extra: Default::default(),
             model_name: "test".to_string(),
             model: "local-model".to_string(),
             api_key: "key".to_string(),
@@ -505,6 +515,7 @@ fn test_find_model_by_name_not_found() {
 fn test_get_model_by_name_by_model_field() {
     let cfg = Config {
         model_list: vec![ModelConfig {
+            extra: Default::default(),
             model_name: "primary".to_string(),
             model: "anthropic/claude-3".to_string(),
             api_key: "key".to_string(),
@@ -551,6 +562,7 @@ fn test_api_key_env_reference_resolves() {
 
     let cfg = Config {
         model_list: vec![ModelConfig {
+            extra: Default::default(),
             model_name: "ref".to_string(),
             model: "openai/gpt-4".to_string(),
             api_key: format!("env:{}", var),
@@ -574,6 +586,7 @@ fn test_api_key_env_reference_resolves() {
 fn test_api_key_literal_passthrough() {
     let cfg = Config {
         model_list: vec![ModelConfig {
+            extra: Default::default(),
             model_name: "lit".to_string(),
             model: "openai/gpt-4".to_string(),
             api_key: "sk-literal-123".to_string(),
@@ -590,6 +603,7 @@ fn test_api_key_env_empty_reference_fails_loud() {
     let _guard = crate::GLOBAL_STATE_LOCK.lock().unwrap();
     let cfg = Config {
         model_list: vec![ModelConfig {
+            extra: Default::default(),
             model_name: "bad".to_string(),
             model: "openai/gpt-4".to_string(),
             api_key: "env:".to_string(),
@@ -629,6 +643,7 @@ fn test_api_key_env_var_set_but_empty_fails_loud() {
 fn test_resolve_and_find_by_model_field_arm() {
     let cfg = Config {
         model_list: vec![ModelConfig {
+            extra: Default::default(),
             model_name: "alias-only".to_string(),
             model: "zhipu/glm-4.7".to_string(),
             api_key: "k".to_string(),

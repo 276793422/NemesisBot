@@ -2765,3 +2765,131 @@ async fn test_load_from_full_config_skips_pending_engine() {
     chain.load_from_full_config(&full_config);
     assert_eq!(chain.engine_count(), 0, "pending engine must be skipped");
 }
+
+// ---------------------------------------------------------------------------
+// T11（多模态 P4.2）：EICAR 内容伪装 .png 必须被 ScanChain 拦截
+//
+// 默认扫描语义钉死：scan_extensions（白名单）为空 + skip_extensions（黑名单）
+// 只排文本类 → .png 落在"默认全扫"区间。链级用内容识别引擎验证拦截路径，
+// clamav 协议级在 clamav/scanner/tests.rs（mock clamd）+ 在线 clamd 门控用例。
+// ---------------------------------------------------------------------------
+
+/// 标准 EICAR 测试串**运行时拼接**（源码/测试二进制里不落完整字面量，避免
+/// 被本机 AV 误扫——CI 常见坑）。raw string 避免 `\P` 与 `}` 的转义纠缠。
+fn t11_eicar_string() -> String {
+    let mut s = String::from(r"X5O!P%@AP[4\PZX54(P^)7CC)7}$EICAR-");
+    s.push_str("STANDARD-ANTIVIRUS-TEST-FILE");
+    s.push_str("!$H+H*");
+    s
+}
+
+/// 内容识别模拟引擎（VirusScanner 契约全实现；is_ready 恒真 → 免 daemon）。
+struct T11EicarSimEngine;
+
+fn t11_scan_bytes(engine: &str, path: &str, data: &[u8]) -> ScanResult {
+    if data.windows(5).any(|w| w == b"EICAR") {
+        ScanResult::with_threats(engine, "Eicar-Sim-Test", path)
+    } else {
+        ScanResult::clean_with_path(engine, path)
+    }
+}
+
+#[async_trait::async_trait]
+impl VirusScanner for T11EicarSimEngine {
+    fn name(&self) -> &str {
+        "eicar-sim"
+    }
+
+    async fn get_info(&self) -> EngineInfo {
+        EngineInfo {
+            name: self.name().to_string(),
+            version: "t11".to_string(),
+            address: String::new(),
+            ready: true,
+            start_time: String::new(),
+        }
+    }
+
+    async fn start(&self) -> Result<(), String> {
+        Ok(())
+    }
+
+    async fn stop(&self) -> Result<(), String> {
+        Ok(())
+    }
+
+    async fn is_ready(&self) -> bool {
+        true
+    }
+
+    async fn scan_file(&self, path: &Path) -> ScanResult {
+        let data = tokio::fs::read(path).await.unwrap_or_default();
+        t11_scan_bytes(self.name(), &path.to_string_lossy(), &data)
+    }
+
+    async fn scan_content(&self, content: &[u8]) -> ScanResult {
+        t11_scan_bytes(self.name(), "", content)
+    }
+
+    async fn scan_directory(&self, _dir: &Path) -> Vec<ScanResult> {
+        Vec::new()
+    }
+
+    async fn get_database_status(&self) -> DatabaseStatus {
+        DatabaseStatus::default()
+    }
+
+    async fn update_database(&self) -> Result<(), String> {
+        Ok(())
+    }
+
+    fn get_stats(&self) -> HashMap<String, serde_json::Value> {
+        HashMap::new()
+    }
+}
+
+#[tokio::test]
+async fn t11_eicar_png_blocked_by_scan_chain() {
+    // 默认扫描语义：.png 不得被扩展名规则排除。
+    assert!(ExtensionRules::default().should_scan_file(Path::new("pic.png")));
+    assert!(ExtensionRules::default().should_scan_file(Path::new("C:/x/y.PNG")));
+
+    let mut chain = ScanChain::with_defaults();
+    chain.add_engine(Box::new(T11EicarSimEngine));
+
+    // 文件级路径语义：.png 规则放行 → 引擎读盘 → 判脏 → blocked 短路。
+    // **不写真签名**——本机 Defender 实时防护会在 std::fs::write 后立即
+    // 隔离真 EICAR 文件（读盘错误 225），文件级用例与 Defender 天然竞态；
+    // 真签名拦截覆盖在内容流（scan_content）+ clamav 协议级（mock clamd
+    // INSTREAM）+ 在线 clamd 门控用例。这里用含 EICAR 标记的良性 REPLICA。
+    let dir = tempfile::tempdir().unwrap();
+    let png = dir.path().join("eicar.png");
+    std::fs::write(
+        &png,
+        "EICAR-REPLICA marker (benign, not the real signature)",
+    )
+    .unwrap();
+
+    let result = chain.scan_file(&png).await;
+    assert!(!result.clean, "EICAR 标记伪装 .png 必须被判脏");
+    assert!(result.blocked, "必须走 blocked 短路路径");
+    assert_eq!(result.engine, "eicar-sim");
+    assert!(result.virus.contains("Eicar"), "virus: {}", result.virus);
+
+    // 正常 PNG（无标记字节）照常放行。
+    let clean_png = dir.path().join("ok.png");
+    std::fs::write(&clean_png, b"\x89PNG\r\n\x1a\n real bytes").unwrap();
+    let ok = chain.scan_file(&clean_png).await;
+    assert!(ok.clean && !ok.blocked);
+}
+
+#[tokio::test]
+async fn t11_eicar_png_content_scan_also_blocks() {
+    // 内容直扫路径（scan_content：上传流等无落盘场景）同样拦截。
+    // 字节只在内存里流转，不落盘 → 不与 Defender 竞态，用真签名。
+    let mut chain = ScanChain::with_defaults();
+    chain.add_engine(Box::new(T11EicarSimEngine));
+    let result = chain.scan_content(t11_eicar_string().as_bytes()).await;
+    assert!(!result.clean);
+    assert!(result.blocked);
+}

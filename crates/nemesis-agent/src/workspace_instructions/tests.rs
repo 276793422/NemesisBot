@@ -138,6 +138,7 @@ fn test_touch_invalidates_digest_and_reinjects() {
                 reasoning_content: None,
                 tool_name: None,
                 tool_result_projection: None,
+                image_refs: Vec::new(),
             },
             ConversationTurn {
                 role: "user".to_string(),
@@ -148,6 +149,7 @@ fn test_touch_invalidates_digest_and_reinjects() {
                 reasoning_content: None,
                 tool_name: None,
                 tool_result_projection: None,
+                image_refs: Vec::new(),
             },
         ]
     };

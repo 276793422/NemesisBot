@@ -150,6 +150,7 @@ async fn learn(
         content: prompt,
         metadata: std::collections::HashMap::new(),
         voice_playback: None,
+        media: Vec::new(),
     };
     tx.send(incoming)
         .map_err(|_| "failed to enqueue learn request".to_string())?;

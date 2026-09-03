@@ -368,6 +368,7 @@ fn instance_set_history() {
             reasoning_content: None,
             tool_name: None,
             tool_result_projection: None,
+            image_refs: Vec::new(),
         },
         ConversationTurn {
             role: "user".to_string(),
@@ -378,6 +379,7 @@ fn instance_set_history() {
             reasoning_content: None,
             tool_name: None,
             tool_result_projection: None,
+            image_refs: Vec::new(),
         },
     ];
 
@@ -502,6 +504,7 @@ fn make_history_with_async_placeholder() -> Vec<ConversationTurn> {
             reasoning_content: None,
             tool_name: None,
             tool_result_projection: None,
+            image_refs: Vec::new(),
         },
         ConversationTurn {
             role: "user".to_string(),
@@ -512,6 +515,7 @@ fn make_history_with_async_placeholder() -> Vec<ConversationTurn> {
             reasoning_content: None,
             tool_name: None,
             tool_result_projection: None,
+            image_refs: Vec::new(),
         },
         ConversationTurn {
             role: "assistant".to_string(),
@@ -526,6 +530,7 @@ fn make_history_with_async_placeholder() -> Vec<ConversationTurn> {
             reasoning_content: None,
             tool_name: None,
             tool_result_projection: None,
+            image_refs: Vec::new(),
         },
         ConversationTurn {
             role: "tool".to_string(),
@@ -536,6 +541,7 @@ fn make_history_with_async_placeholder() -> Vec<ConversationTurn> {
             reasoning_content: None,
             tool_name: None,
             tool_result_projection: None,
+            image_refs: Vec::new(),
         },
     ]
 }
@@ -638,6 +644,7 @@ fn compress_history_all_system_turns_is_noop() {
         reasoning_content: None,
         tool_name: None,
         tool_result_projection: None,
+        image_refs: Vec::new(),
     };
     instance.set_history(vec![mk_sys("s1"), mk_sys("s2"), mk_sys("s3")]);
     instance.compress_history();

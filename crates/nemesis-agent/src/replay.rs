@@ -112,6 +112,10 @@ pub struct BuildAnnotation {
     pub history_len: usize,
     /// Summary cache state the fold used (`None` = no active cache).
     pub summary_as_of: Option<SummaryAsOf>,
+    /// T10（多模态 D4）：build 时是否应用了 vision=no 投影。`true` → replay
+    /// 在 fold 后用同一共享纯函数重放投影——占位文本是投影视图的一部分，
+    /// 不重放则字节对不上。
+    pub vision_projected: bool,
 }
 
 /// One ledger row: the projection of one LLM round's request.
@@ -138,6 +142,10 @@ pub struct RequestProjectionRecord {
     pub voice_append: Option<VoiceAppend>,
     /// Summary-cache state as-of this request (`None` = full verbatim history).
     pub summary_as_of: Option<SummaryAsOf>,
+    /// T10（多模态 D4）：build 时是否应用了 vision=no 投影（老记录缺键 =
+    /// `false` = 无投影，向后兼容）。
+    #[serde(default)]
+    pub vision_projected: bool,
 }
 
 /// Resolve the replay-ledger sidecar path. Lives in the boundary-events dir
@@ -215,18 +223,11 @@ pub enum RebuildOutcome {
 }
 
 /// Same mapping `build_messages_with_memory` applies to history turns.
+///
+/// T5/T6（多模态）：委托主循环共用转换（`turn_to_request_message`）——
+/// image_refs 每轮水合重读，重建视图与生产请求的字节语义一致。
 fn turn_to_msg(turn: &ConversationTurn) -> LlmMessage {
-    LlmMessage {
-        role: turn.role.clone(),
-        content: turn.content.clone(),
-        tool_calls: if turn.tool_calls.is_empty() {
-            None
-        } else {
-            Some(turn.tool_calls.clone())
-        },
-        tool_call_id: turn.tool_call_id.clone(),
-        reasoning_content: turn.reasoning_content.clone(),
-    }
+    crate::r#loop::turn_to_request_message(turn)
 }
 
 /// Rebuild the message list one recorded LLM round sent to the provider.
@@ -300,6 +301,7 @@ pub fn rebuild_request_messages_in(
             .as_ref()
             .map(|s| (s.text.as_str(), s.covers_up_to)),
     );
+
     if folded.len() < rec.history_len_at_build {
         // The store's history (after fold) is shorter than what the round
         // saw: trim_to_limit (or a store reset) dropped the needed prefix.
@@ -307,6 +309,24 @@ pub fn rebuild_request_messages_in(
             needed: rec.history_len_at_build,
             available: folded.len(),
         });
+    }
+
+    // T10（多模态 D4）：vision=no 投影重放——生产 build 在 fold 后立即投影
+    // （投影窗口 = 当轮 fold 结果，即 history_len_at_build 条），重建同序
+    // （占位文本参与后续逐字节比对）。
+    // F-D（2026-09-04 四轮盲审）：截断必须在投影**之前**——先投影全长再截
+    // 断时，"最新 user 轮"的 rposition 会落到 build 之后才追加的 user 轮上
+    // （当前轮/历史轮注记错位 → 字节漂移，带后续轮次的 vision=no 会话重放
+    // 恒红）。生产投影的就是当轮窗口，重放先截到同窗口再投影才是同输入。
+    let mut folded = folded;
+    folded.truncate(rec.history_len_at_build);
+    if rec.vision_projected {
+        let vision_last_user_idx = folded
+            .iter()
+            .rposition(|t| t.role == "user")
+            .filter(|&i| i > 0)
+            .filter(|_| folded.first().is_some_and(|t| t.role == "system"));
+        crate::r#loop::project_turns_for_no_vision(&mut folded, vision_last_user_idx);
     }
 
     let mut view: Vec<LlmMessage> = folded[..rec.history_len_at_build]
@@ -326,6 +346,7 @@ pub fn rebuild_request_messages_in(
             tool_calls: None,
             tool_call_id: None,
             reasoning_content: None,
+            images: Vec::new(),
         };
         let idx = inj.index.min(view.len());
         if idx >= view.len() {

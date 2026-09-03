@@ -175,9 +175,11 @@ impl HttpProvider {
             Self::normalize_model(model)
         };
 
+        // 与 openai_compat 同一转换（crate 共享 helper）：纯文本 content
+        // 保持字符串（字节不变）；Parts 消息转 OpenAI vision 数组。
         let mut body = serde_json::json!({
             "model": normalized,
-            "messages": messages,
+            "messages": crate::types::messages_to_openai_json(messages),
         });
 
         if !tools.is_empty() {

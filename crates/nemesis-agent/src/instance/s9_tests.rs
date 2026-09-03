@@ -58,6 +58,7 @@ fn set_history_reinserts_system_prompt_when_new_history_lacks_one() {
             reasoning_content: None,
             tool_name: None,
             tool_result_projection: None,
+            image_refs: Vec::new(),
         },
         ConversationTurn {
             role: "assistant".to_string(),
@@ -68,6 +69,7 @@ fn set_history_reinserts_system_prompt_when_new_history_lacks_one() {
             reasoning_content: None,
             tool_name: None,
             tool_result_projection: None,
+            image_refs: Vec::new(),
         },
     ]);
     let hist = instance.get_history();
@@ -93,6 +95,7 @@ fn set_history_no_double_system_when_new_history_has_one() {
             reasoning_content: None,
             tool_name: None,
             tool_result_projection: None,
+            image_refs: Vec::new(),
         },
         ConversationTurn {
             role: "user".to_string(),
@@ -103,6 +106,7 @@ fn set_history_no_double_system_when_new_history_has_one() {
             reasoning_content: None,
             tool_name: None,
             tool_result_projection: None,
+            image_refs: Vec::new(),
         },
     ]);
     let hist = instance.get_history();

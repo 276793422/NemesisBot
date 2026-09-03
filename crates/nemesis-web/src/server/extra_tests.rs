@@ -268,6 +268,78 @@ async fn test_serve_embedded_static_root_path_serves_index() {
     assert_eq!(resp.status(), 200);
 }
 
+// LO2（2026-09-04 四轮盲审）：`/chat` 与 `/chat/` 直达 standalone chat 壳；
+// 旧行为两者都落到 SPA fallback 的 Dashboard index.html。
+#[tokio::test]
+async fn lo2_chat_without_trailing_slash_serves_chat_shell() {
+    let files = make_mock_static(&[
+        ("index.html", "<html>DASHBOARD</html>"),
+        ("chat/index.html", "<html>CHAT</html>"),
+    ]);
+    let req: axum::extract::Request = axum::http::Request::builder()
+        .uri("/chat")
+        .body(axum::body::Body::empty())
+        .unwrap();
+    let resp = serve_embedded_static(files, req).await;
+    assert_eq!(resp.status(), 200);
+    let ct = resp.headers().get(http::header::CONTENT_TYPE).unwrap();
+    assert_eq!(ct.to_str().unwrap(), "text/html; charset=utf-8");
+    let body = axum::body::to_bytes(resp.into_body(), 4096).await.unwrap();
+    assert!(
+        std::str::from_utf8(&body).unwrap().contains("CHAT"),
+        "/chat 必须服务 chat 壳而不是 Dashboard: {:?}",
+        std::str::from_utf8(&body).unwrap()
+    );
+}
+
+#[tokio::test]
+async fn lo2_chat_with_trailing_slash_serves_chat_shell() {
+    let files = make_mock_static(&[
+        ("index.html", "<html>DASHBOARD</html>"),
+        ("chat/index.html", "<html>CHAT</html>"),
+    ]);
+    let req: axum::extract::Request = axum::http::Request::builder()
+        .uri("/chat/")
+        .body(axum::body::Body::empty())
+        .unwrap();
+    let resp = serve_embedded_static(files, req).await;
+    assert_eq!(resp.status(), 200);
+    let body = axum::body::to_bytes(resp.into_body(), 4096).await.unwrap();
+    assert!(std::str::from_utf8(&body).unwrap().contains("CHAT"));
+}
+
+// 更深层 /chat/foo 不劫持（chat 入口无子路径语义）：无扩展名 → SPA fallback
+// 到 Dashboard index（与 /models 等仪表盘路由同语义），不服务 chat 壳。
+#[tokio::test]
+async fn lo2_chat_deeper_path_falls_to_spa_not_chat_shell() {
+    let files = make_mock_static(&[
+        ("index.html", "<html>DASHBOARD</html>"),
+        ("chat/index.html", "<html>CHAT</html>"),
+    ]);
+    let req: axum::extract::Request = axum::http::Request::builder()
+        .uri("/chat/foo")
+        .body(axum::body::Body::empty())
+        .unwrap();
+    let resp = serve_embedded_static(files, req).await;
+    assert_eq!(resp.status(), 200);
+    let body = axum::body::to_bytes(resp.into_body(), 4096).await.unwrap();
+    assert!(std::str::from_utf8(&body).unwrap().contains("DASHBOARD"));
+}
+
+// chat 壳缺失（裁剪构建）时 /chat 不炸：落到 SPA fallback / 404 语义。
+#[tokio::test]
+async fn lo2_chat_when_shell_missing_falls_through() {
+    let files = make_mock_static(&[("index.html", "<html>DASHBOARD</html>")]);
+    let req: axum::extract::Request = axum::http::Request::builder()
+        .uri("/chat")
+        .body(axum::body::Body::empty())
+        .unwrap();
+    let resp = serve_embedded_static(files, req).await;
+    assert_eq!(resp.status(), 200);
+    let body = axum::body::to_bytes(resp.into_body(), 4096).await.unwrap();
+    assert!(std::str::from_utf8(&body).unwrap().contains("DASHBOARD"));
+}
+
 #[tokio::test]
 async fn test_serve_embedded_static_404_for_missing_file_with_extension() {
     let files = make_mock_static(&[]);
@@ -887,6 +959,7 @@ async fn test_process_messages_default_web_session_is_legacy() {
         content: "hi".to_string(),
         metadata: HashMap::new(),
         voice_playback: None,
+        media: Vec::new(),
     };
     tx.send(inc).unwrap();
     drop(tx); // let process_messages drain and exit
@@ -939,6 +1012,7 @@ async fn test_process_messages_preserves_voice_playback_some() {
         content: "speak this".to_string(),
         metadata: HashMap::new(),
         voice_playback: Some(true),
+        media: Vec::new(),
     })
     .unwrap();
     drop(tx);
@@ -967,6 +1041,7 @@ async fn test_process_messages_no_voice_playback_keeps_none() {
         content: "no voice".to_string(),
         metadata: HashMap::new(),
         voice_playback: None,
+        media: Vec::new(),
     })
     .unwrap();
     drop(tx);

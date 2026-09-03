@@ -643,3 +643,83 @@ async fn scan_file_missing_file_metadata_err_falls_through_to_client() {
         .unwrap();
     assert!(!r.infected);
 }
+
+// ---------------------------------------------------------------------------
+// T11（多模态 P4.2）：EICAR 内容伪装 .png —— clamav 协议级（mock clamd）
+// 与在线 clamd 门控（已装才跑，未装诚实跳过并在报告标注）。
+// ---------------------------------------------------------------------------
+
+/// 标准 EICAR 串**运行时拼接**（源码不落完整字面量，防本机 AV 误扫测试产物）。
+/// raw string 避免 `\P` 与 `}` 的转义纠缠。
+fn t11_eicar_bytes() -> Vec<u8> {
+    let mut s = String::from(r"X5O!P%@AP[4\PZX54(P^)7CC)7}$EICAR-");
+    s.push_str("STANDARD-ANTIVIRUS-TEST-FILE");
+    s.push_str("!$H+H*");
+    s.into_bytes()
+}
+
+#[tokio::test]
+async fn t11_clamd_protocol_eicar_png_infected() {
+    // INSTREAM 流式扫描语义：daemon 按内容判毒，.png 扩展名不影响结果。
+    // 落盘内容用良性 REPLICA——mock clamd 回包与内容无关；真 EICAR 文件
+    // 会被本机 Defender 落盘即隔离（读盘错误 225），引入无谓竞态。真签名
+    // 的端到端覆盖在下方在线 clamd 门控用例。
+    let addr = clamd_mock("stream: Win.Test.EICAR-TestFile FOUND\n").await;
+    let cfg = ScannerConfig {
+        address: addr,
+        ..Default::default()
+    };
+    let scanner = Scanner::new(cfg);
+    let dir = tempfile::tempdir().unwrap();
+    let png = dir.path().join("eicar.png");
+    std::fs::write(
+        &png,
+        "EICAR-REPLICA marker (benign, not the real signature)",
+    )
+    .unwrap();
+
+    let r = scanner.scan_file(&png).await.unwrap();
+    assert!(r.infected, "EICAR 判毒回包必须判感染（.png 不豁免）");
+    assert!(r.virus.contains("EICAR"), "病毒名应回传，got: {}", r.virus);
+}
+
+#[tokio::test]
+async fn t11_live_clamd_eicar_png_when_installed() {
+    // 在线门控：127.0.0.1:3310 有真 clamd 才跑；未装/未运行诚实跳过
+    // （goal 约定：报告里标注“本机未运行 clamd，在线用例跳过”）。
+    let probe = tokio::time::timeout(
+        Duration::from_secs(2),
+        crate::clamav::client::Client::with_timeout("127.0.0.1:3310", Duration::from_secs(2))
+            .ping(),
+    )
+    .await;
+    let Ok(Ok(())) = probe else {
+        println!("T11 SKIP: clamd 未运行（127.0.0.1:3310 无 PONG）——在线 EICAR-png 用例诚实跳过");
+        return;
+    };
+
+    let cfg = ScannerConfig {
+        enabled: true,
+        address: "127.0.0.1:3310".to_string(),
+        ..Default::default()
+    };
+    let scanner = Scanner::new(cfg);
+    let dir = tempfile::tempdir().unwrap();
+    let png = dir.path().join("eicar_live.png");
+    std::fs::write(&png, t11_eicar_bytes()).unwrap();
+
+    // 本机 Defender 实时防护可能抢在 clamd 之前把文件隔离（读盘错误
+    // 225）——这本身即"拦截成立"的证据，如实记录后通过（避免环境竞态
+    // 假红）。读盘成功则按 clamd 判毒结果断言。
+    match tokio::fs::read(&png).await {
+        Err(e) if e.raw_os_error() == Some(225) => {
+            println!("T11: 本机 Defender 抢先拦截了 EICAR 文件（错误 225）——拦截成立");
+            return;
+        }
+        _ => {}
+    }
+
+    let r = scanner.scan_file(&png).await.unwrap();
+    assert!(r.infected, "真 clamd 必须拦截 EICAR 伪装 .png");
+    assert!(!r.virus.is_empty());
+}

@@ -74,8 +74,9 @@ pub enum ModelAction {
         /// One of: off | low | medium | high
         effort: String,
     },
-    /// Run a capability probe — sends 7 short tool-use tasks to the model and
-    /// writes the detected tier to config. Costs ~7 LLM calls. Explicit only.
+    /// Run a capability probe — sends 8 short tasks (7 tool-use + 1 vision
+    /// probe) to the model and writes the detected tier (and vision probe
+    /// result) to config. Costs ~8 LLM calls. Explicit only.
     Probe { name: String },
     /// U16 (sixth batch): fetch the models.dev catalog (context windows /
     /// max output tokens per model) and cache it at
@@ -169,6 +170,18 @@ pub async fn run(action: ModelAction, local: bool) -> Result<()> {
                 _ => model.clone(),
             };
 
+            // F-I（2026-09-04 四轮盲审）：add 前先查重——重复 add 是「更新」语义，
+            // 走下方 or_insert_with 合并；若这里无条件写 model_tier="auto"，
+            // 新条目已带该键 → 合并填不进旧值 → 用户 set-tier / probe 写入的
+            // tier 被静默重置为 auto（auto→big 默认，小模型会被发全量工具）。
+            let already_exists = cfg
+                .get("model_list")
+                .and_then(|v| v.as_array())
+                .is_some_and(|arr| {
+                    arr.iter()
+                        .any(|m| m.get("model").and_then(|v| v.as_str()) == Some(model.as_str()))
+                });
+
             // Build model entry
             let mut entry = serde_json::json!({
                 "model_name": model_name_alias,
@@ -190,7 +203,10 @@ pub async fn run(action: ModelAction, local: bool) -> Result<()> {
             // Phase 4a (small-model-tool-robustness): tag with an auto-detect
             // tier. Resolved at runtime from the model name (and any real_name /
             // model_size_b the user adds later). Override with `model set-tier`.
-            entry["model_tier"] = serde_json::Value::String("auto".to_string());
+            // F-I：只对**新增**条目写 auto——重复 add 由下方合并保留旧 tier。
+            if !already_exists {
+                entry["model_tier"] = serde_json::Value::String("auto".to_string());
+            }
 
             // U16 (sixth batch): auto-fill context_window / max_output_tokens
             // from the models.dev catalog cache when the model is a catalog
@@ -239,6 +255,20 @@ pub async fn run(action: ModelAction, local: bool) -> Result<()> {
                             );
                         }
                         // Remove existing entry with same model name
+                        // （2026-09-03 二次回归 model-1：替换时保留旧条目的未类型化
+                        // 键——model_tier / vision / vision_probe / max_output_tokens
+                        // 等是 probe / set-tier / catalog 写进来的资产，重复 add
+                        // 不该静默清掉；新条目显式设置的键以新值为准。
+                        // F-I（2026-09-04）：model_tier 现在只对新增条目写入
+                        // （见上方 already_exists 门），重复 add 走这里回填旧值。）
+                        if let Some(old) = existing
+                            && let (Some(new_obj), Some(old_obj)) =
+                                (entry.as_object_mut(), old.as_object())
+                        {
+                            for (k, v) in old_obj {
+                                new_obj.entry(k.clone()).or_insert_with(|| v.clone());
+                            }
+                        }
                         arr.retain(|m| m.get("model").and_then(|v| v.as_str()) != Some(&model));
                         arr.push(entry);
                     }
@@ -264,10 +294,11 @@ pub async fn run(action: ModelAction, local: bool) -> Result<()> {
                     }
                 }
 
-                std::fs::write(
-                    &cfg_path,
-                    serde_json::to_string_pretty(&cfg).unwrap_or_default(),
-                )?;
+                // 序列化失败必须报错退出，不得 unwrap_or_default() 静默写空文件
+                //（2026-09-03 二次回归 model-4，两处写入点同修）。
+                let body = serde_json::to_string_pretty(&cfg)
+                    .map_err(|e| anyhow::anyhow!("序列化 config 失败: {e}"))?;
+                std::fs::write(&cfg_path, body)?;
             }
 
             println!("Model added: {}", model);
@@ -322,7 +353,8 @@ pub async fn run(action: ModelAction, local: bool) -> Result<()> {
                         }
                         std::fs::write(
                             &cfg_path,
-                            serde_json::to_string_pretty(&cfg).unwrap_or_default(),
+                            serde_json::to_string_pretty(&cfg)
+                                .map_err(|e| anyhow::anyhow!("序列化 config 失败: {e}"))?,
                         )?;
                     }
                     println!(
@@ -492,7 +524,8 @@ pub async fn run(action: ModelAction, local: bool) -> Result<()> {
             if found {
                 std::fs::write(
                     &cfg_path,
-                    serde_json::to_string_pretty(&cfg).unwrap_or_default(),
+                    serde_json::to_string_pretty(&cfg)
+                        .map_err(|e| anyhow::anyhow!("序列化 config 失败: {e}"))?,
                 )?;
                 println!("Model removed: {}", name);
             } else {
@@ -537,10 +570,14 @@ pub async fn run(action: ModelAction, local: bool) -> Result<()> {
             if updated {
                 std::fs::write(
                     &cfg_path,
-                    serde_json::to_string_pretty(&cfg).unwrap_or_default(),
+                    serde_json::to_string_pretty(&cfg)
+                        .map_err(|e| anyhow::anyhow!("序列化 config 失败: {e}"))?,
                 )?;
                 println!("✓ {} → model_tier={}", name, parsed);
-                println!("  (生效于下次 gateway 启动；当前运行实例需重启)");
+                // tier 热生效：AgentLoop 每轮 LLM 前 check_config_reload()（mtime
+                // 检测）自动重解析，切档无需重启（旧文案"需重启"是错的，二次回归
+                // model-2 修正；与 set-effort 文案同语义）。
+                println!("  (生效于下次 LLM 调用前的 config 重读)");
             } else {
                 anyhow::bail!("Model not found: {}", name);
             }
@@ -570,7 +607,8 @@ pub async fn run(action: ModelAction, local: bool) -> Result<()> {
             if updated {
                 std::fs::write(
                     &cfg_path,
-                    serde_json::to_string_pretty(&cfg).unwrap_or_default(),
+                    serde_json::to_string_pretty(&cfg)
+                        .map_err(|e| anyhow::anyhow!("序列化 config 失败: {e}"))?,
                 )?;
                 if e == "off" {
                     println!("✓ {} → reasoning_effort cleared", name);
@@ -601,7 +639,8 @@ pub async fn run(action: ModelAction, local: bool) -> Result<()> {
             if updated {
                 std::fs::write(
                     &cfg_path,
-                    serde_json::to_string_pretty(&cfg).unwrap_or_default(),
+                    serde_json::to_string_pretty(&cfg)
+                        .map_err(|e| anyhow::anyhow!("序列化 config 失败: {e}"))?,
                 )?;
                 println!(
                     "✓ {} → model_size_b={} (auto 检测将解析为 tier={})",
@@ -630,7 +669,8 @@ pub async fn run(action: ModelAction, local: bool) -> Result<()> {
             if updated {
                 std::fs::write(
                     &cfg_path,
-                    serde_json::to_string_pretty(&cfg).unwrap_or_default(),
+                    serde_json::to_string_pretty(&cfg)
+                        .map_err(|e| anyhow::anyhow!("序列化 config 失败: {e}"))?,
                 )?;
                 println!(
                     "✓ {} → real_name=\"{}\" (auto 检测将解析为 tier={})",
@@ -645,7 +685,7 @@ pub async fn run(action: ModelAction, local: bool) -> Result<()> {
                 anyhow::bail!("Configuration not found. Run 'nemesisbot onboard default' first.");
             }
             println!(
-                "正在对 '{}' 运行能力探针（7 个任务，约 7 次 LLM 调用，请稍候）...",
+                "正在对 '{}' 运行能力探针（8 个任务：7 工具 + 1 视觉，约 8 次 LLM 调用，请稍候）...",
                 name
             );
             let report = tokio::task::block_in_place(|| {
@@ -920,11 +960,17 @@ async fn run_probe(
     let mut cfg_val: serde_json::Value = serde_json::from_str(&data)?;
     let wrote = update_model_entry(&mut cfg_val, name, |e| {
         e["model_tier"] = serde_json::Value::String(report.tier.to_string());
+        // T10（多模态 D9）：视觉探针结果——`Some(_)` 才写（None = 传输类
+        // 未定，不给模型钉"不支持"；auto 解析序继续走名字关键词/默认放行）。
+        if let Some(vp) = report.vision_probe {
+            e["vision_probe"] = serde_json::Value::Bool(vp);
+        }
     });
     if wrote {
         std::fs::write(
             &cfg_path,
-            serde_json::to_string_pretty(&cfg_val).unwrap_or_default(),
+            serde_json::to_string_pretty(&cfg_val)
+                .map_err(|e| anyhow::anyhow!("序列化 config 失败: {e}"))?,
         )?;
     }
     Ok(report)
@@ -944,6 +990,18 @@ fn format_probe_report(name: &str, r: &nemesis_agent::probe::ProbeReport) -> Str
         ));
     }
     s.push_str(&format!("  → tier={} (已写入 config.json)", r.tier));
+    // T10（多模态 D9）：第 8 题视觉探针结果。
+    match r.vision_probe {
+        Some(true) => s.push_str(
+            "\n  vision=支持（第 8 题带图请求成功，已写 vision_probe=true）",
+        ),
+        Some(false) => s.push_str(
+            "\n  vision=不支持（模型拒绝带图请求，已写 vision_probe=false）",
+        ),
+        None => s.push_str(
+            "\n  vision=未定（传输类失败，未写 vision_probe；可在 config.json 用 \"vision\": \"yes\"/\"no\" 手动钉）",
+        ),
+    }
     s
 }
 

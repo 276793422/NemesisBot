@@ -15,6 +15,66 @@ use tracing::warn;
 // ProviderAdapter — providers → agent LlmProvider trait
 // ---------------------------------------------------------------------------
 
+/// T5（多模态，goal 2026-09-03）：agent LlmMessage → provider Message 的统一
+/// 转换。gateway 的 [`ProviderAdapter`] 与 CLI `agent` 命令的 adapter 共用
+/// （单一真相源，此前两处手写重复的转换收敛于此）。
+///
+/// 转换规则：`images` 为空 → 纯文本字符串形态（与历史请求逐字节一致，prompt
+/// cache 前缀不破）；`images` 非空 → `MessageContent::Parts` 数组形态——文本
+/// part 在前（非空时），每张图片产出 `[图片: <path>]` 标注 part + 图片 part
+/// （Base64；`detail: None` 走服务端 auto，goal P2.2 锁定的线上形态）。
+pub fn agent_message_to_provider(
+    m: nemesis_agent::r#loop::LlmMessage,
+) -> nemesis_providers::types::Message {
+    use nemesis_providers::types::{ContentPart, ImageSource, MessageContent};
+
+    let content = if m.images.is_empty() {
+        MessageContent::Text(m.content)
+    } else {
+        let mut parts: Vec<ContentPart> = Vec::with_capacity(m.images.len() * 2 + 1);
+        if !m.content.is_empty() {
+            parts.push(ContentPart::Text { text: m.content });
+        }
+        for img in m.images {
+            parts.push(ContentPart::Text {
+                text: format!("[图片: {}]", img.path),
+            });
+            parts.push(ContentPart::Image {
+                image: ImageSource::Base64 {
+                    media_type: img.media_type,
+                    data: img.data,
+                },
+                detail: None,
+            });
+        }
+        MessageContent::Parts(parts)
+    };
+
+    nemesis_providers::types::Message {
+        role: m.role,
+        content,
+        tool_calls: m
+            .tool_calls
+            .unwrap_or_default()
+            .into_iter()
+            .map(|tc| nemesis_providers::types::ToolCall {
+                id: tc.id,
+                call_type: Some("function".to_string()),
+                function: Some(nemesis_providers::types::FunctionCall {
+                    name: tc.name,
+                    arguments: tc.arguments,
+                }),
+                name: None,
+                arguments: None,
+            })
+            .collect(),
+        tool_call_id: m.tool_call_id,
+        timestamp: None,
+        reasoning_content: m.reasoning_content,
+        extra: HashMap::new(),
+    }
+}
+
 /// Wraps a `nemesis_providers::LLMProvider` so it satisfies the agent's
 /// `LlmProvider` trait.
 ///
@@ -54,31 +114,10 @@ impl nemesis_agent::r#loop::LlmProvider for ProviderAdapter {
             model
         };
 
+        // T5：转换收敛到统一 helper（含多模态 images → Parts 分支）。
         let provider_messages: Vec<nemesis_providers::types::Message> = messages
             .into_iter()
-            .map(|m| nemesis_providers::types::Message {
-                role: m.role,
-                content: m.content,
-                tool_calls: m
-                    .tool_calls
-                    .unwrap_or_default()
-                    .into_iter()
-                    .map(|tc| nemesis_providers::types::ToolCall {
-                        id: tc.id,
-                        call_type: Some("function".to_string()),
-                        function: Some(nemesis_providers::types::FunctionCall {
-                            name: tc.name,
-                            arguments: tc.arguments,
-                        }),
-                        name: None,
-                        arguments: None,
-                    })
-                    .collect(),
-                tool_call_id: m.tool_call_id,
-                timestamp: None,
-                reasoning_content: m.reasoning_content,
-                extra: HashMap::new(),
-            })
+            .map(agent_message_to_provider)
             .collect();
 
         let provider_options = match options {
@@ -195,7 +234,7 @@ impl nemesis_forge::reflector_llm::LLMCaller for ForgeProviderBridge {
         let messages = vec![
             nemesis_providers::types::Message {
                 role: "system".to_string(),
-                content: system_prompt.to_string(),
+                content: system_prompt.to_string().into(),
                 tool_calls: vec![],
                 tool_call_id: None,
                 timestamp: None,
@@ -204,7 +243,7 @@ impl nemesis_forge::reflector_llm::LLMCaller for ForgeProviderBridge {
             },
             nemesis_providers::types::Message {
                 role: "user".to_string(),
-                content: user_prompt.to_string(),
+                content: user_prompt.to_string().into(),
                 tool_calls: vec![],
                 tool_call_id: None,
                 timestamp: None,

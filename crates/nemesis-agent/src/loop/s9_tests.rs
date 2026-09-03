@@ -123,6 +123,7 @@ fn turn(role: &str, content: &str) -> crate::types::ConversationTurn {
         reasoning_content: None,
         tool_name: None,
         tool_result_projection: None,
+        image_refs: Vec::new(),
     }
 }
 
@@ -825,6 +826,7 @@ async fn bus_flow_continuation_inline() {
             tool_calls: None,
             tool_call_id: None,
             reasoning_content: None,
+            images: Vec::new(),
         }],
         "tcI",
         "web",
@@ -879,6 +881,7 @@ async fn bus_flow_continuation_spawned() {
             tool_calls: None,
             tool_call_id: None,
             reasoning_content: None,
+            images: Vec::new(),
         }],
         "tcS",
         "web",
@@ -1360,6 +1363,7 @@ async fn handle_cluster_continuation_wrapper_both_arms() {
                 tool_calls: None,
                 tool_call_id: None,
                 reasoning_content: None,
+                images: Vec::new(),
             }],
             "tcW",
             "web",
@@ -1694,6 +1698,7 @@ async fn bus_flow_queue_mode_continuation_arm() {
             tool_calls: None,
             tool_call_id: None,
             reasoning_content: None,
+            images: Vec::new(),
         }],
         "tcQ",
         "web",

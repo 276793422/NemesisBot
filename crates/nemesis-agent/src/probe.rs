@@ -6,6 +6,10 @@
 //! The aggregate scores map to a [`ModelTier`], giving a direct measurement of
 //! tool-calling ability that complements the name/size heuristic.
 //!
+//! T10（多模态 goal，D9）：第 8 题为**视觉探针**——发一条带 1×1 PNG 的最小
+//! 请求，不报错 = 模型接受图像输入，结果独立写入 `vision_probe`（不参与
+//! tier 打分）。
+//!
 //! Scoring is pure and unit-tested; the LLM-call boundary is the async [`run`]
 //! function. The probe is invoked only by the user (CLI `model probe` or
 //! `--probe`) — never automatically injected into a live conversation.
@@ -41,6 +45,11 @@ pub struct ProbeReport {
     pub schema_score: f64,
     pub tier: ModelTier,
     pub per_task: Vec<(String, ProbeScore)>,
+    /// T10（多模态 D9）：第 8 题视觉探针结果。`Some(true)` = 带图请求成功；
+    /// `Some(false)` = 模型拒绝带图请求（非传输类错误）；`None` = 未定
+    /// （传输类失败——网络/服务问题不说明模型不支持视觉，不给模型钉
+    /// "不支持"）。`Some(_)` 由 CLI 写入 config 的 `vision_probe` 键。
+    pub vision_probe: Option<bool>,
 }
 
 /// The fixed 7-task battery. Tool names match the production tools so the
@@ -183,9 +192,10 @@ pub fn tier_from_scores(format_score: f64, selection_score: f64, schema_score: f
     }
 }
 
-/// Run the probe battery against `provider`/`model`. One LLM call per task.
+/// Run the probe battery against `provider`/`model`. One LLM call per task
+/// (7 tool tasks + 1 vision probe).
 ///
-/// **Cost**: 7 short chat completions. The caller MUST be the user (CLI) — never
+/// **Cost**: 8 short chat completions. The caller MUST be the user (CLI) — never
 /// invoke this automatically inside a live conversation.
 pub async fn run(provider: &dyn LlmProvider, model: &str) -> Result<ProbeReport, String> {
     let tasks = probe_tasks();
@@ -207,6 +217,7 @@ pub async fn run(provider: &dyn LlmProvider, model: &str) -> Result<ProbeReport,
                 tool_calls: None,
                 tool_call_id: None,
                 reasoning_content: None,
+                images: Vec::new(),
             },
             LlmMessage {
                 role: "user".to_string(),
@@ -214,6 +225,7 @@ pub async fn run(provider: &dyn LlmProvider, model: &str) -> Result<ProbeReport,
                 tool_calls: None,
                 tool_call_id: None,
                 reasoning_content: None,
+                images: Vec::new(),
             },
         ];
         let resp = provider
@@ -233,13 +245,94 @@ pub async fn run(provider: &dyn LlmProvider, model: &str) -> Result<ProbeReport,
     let schema_score = sch_sum / n;
     let tier = tier_from_scores(format_score, selection_score, schema_score);
 
+    // T10（多模态 D9）：第 8 题——视觉探针（在工具电池全部跑通后执行；工具
+    // 任务失败会提前返回 Err，探针不跑）。
+    let vision_probe = run_vision_probe(provider, model).await;
+
     Ok(ProbeReport {
         format_score,
         selection_score,
         schema_score,
         tier,
         per_task,
+        vision_probe,
     })
+}
+
+/// T10（多模态 D9）：视觉探针载荷——1×1 透明 PNG（70 字节，业界通用最小
+/// 合法 PNG）的 base64。以 base64 常量内联避免手抄十六进制出错；载荷合法性
+/// 有单测钉死（签名 + chunk CRC + IDAT 可解压）。
+const VISION_PROBE_PNG_B64: &str = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg==";
+
+/// 传输类错误标记——这类失败不说明模型不支持视觉（网络/服务问题），探针
+/// 结果记为未定（`None`），不写 config。
+/// F-G（2026-09-04 四轮盲审）：补 FailoverError 的 Display 形态——限流渲染
+/// 为 "rate limited by provider p/m"、过载渲染为 "provider p is overloaded"
+/// （都不含原始数字码，旧表只匹配 "502"/"503" 数字漏接）→ 瞬态 429/5xx
+/// 会被误判 `Some(false)` **永久钉死** vision_probe（探针 > 名字识别的解析
+/// 优先级，污染后续所有带图会话）。
+const VISION_PROBE_TRANSPORT_MARKERS: &[&str] = &[
+    "timeout",
+    "timed out",
+    "connection",
+    "connect",
+    "refused",
+    "reset",
+    "unreachable",
+    "dns",
+    "temporarily",
+    "502",
+    "503",
+    "504",
+    // F-G：FailoverError Display 形态（限流/过载/429 数字码兜底）。
+    "rate limited",
+    "rate limit",
+    "overloaded",
+    "429",
+];
+
+/// T10（多模态 D9）：第 8 题视觉探针——发一条带 1×1 PNG 的最小 user 请求
+/// （无工具），请求不报错 = 模型接受图像输入。传输类失败 → `None`（未定）；
+/// 其余错误（典型为 provider 4xx 拒绝图像字段）→ `Some(false)`。
+/// **只由 CLI `model probe` 调用**，绝不在对话中自动运行。
+async fn run_vision_probe(provider: &dyn LlmProvider, model: &str) -> Option<bool> {
+    let messages = vec![LlmMessage {
+        role: "user".to_string(),
+        content: "请用一个词描述这张图片的颜色。".to_string(),
+        tool_calls: None,
+        tool_call_id: None,
+        reasoning_content: None,
+        // data 字段就是 base64 字符串形态（与 hydrate_image_refs 产出一致），
+        // 载荷常量直接可用；其 PNG 合法性由单测钉死。
+        images: vec![crate::image_attach::LlmImage {
+            path: "probe_vision.png".to_string(),
+            media_type: "image/png".to_string(),
+            data: VISION_PROBE_PNG_B64.to_string(),
+        }],
+    }];
+    match provider
+        .chat(
+            model,
+            messages,
+            Some(crate::types::ChatOptions::default()),
+            Vec::new(),
+        )
+        .await
+    {
+        Ok(_) => Some(true),
+        Err(e) => {
+            let lower = e.to_lowercase();
+            if VISION_PROBE_TRANSPORT_MARKERS
+                .iter()
+                .any(|m| lower.contains(m))
+            {
+                tracing::warn!("[Probe] vision probe inconclusive (transport error): {}", e);
+                None
+            } else {
+                Some(false)
+            }
+        }
+    }
 }
 
 #[cfg(test)]

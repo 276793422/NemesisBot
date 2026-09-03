@@ -124,6 +124,7 @@ fn stored_msg(role: &str, content: &str) -> StoredMessage {
         reasoning_content: None,
         tool_name: None,
         tool_result_projection: None,
+        image_refs: Vec::new(),
     }
 }
 

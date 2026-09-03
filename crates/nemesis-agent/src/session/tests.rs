@@ -99,6 +99,7 @@ fn test_session_store_history() {
             reasoning_content: None,
             tool_name: None,
             tool_result_projection: None,
+            image_refs: Vec::new(),
         },
         StoredMessage {
             role: "assistant".to_string(),
@@ -109,6 +110,7 @@ fn test_session_store_history() {
             reasoning_content: None,
             tool_name: None,
             tool_result_projection: None,
+            image_refs: Vec::new(),
         },
     ];
 
@@ -148,6 +150,7 @@ fn test_session_store_truncate() {
             reasoning_content: None,
             tool_name: None,
             tool_result_projection: None,
+            image_refs: Vec::new(),
         })
         .collect();
 
@@ -178,6 +181,7 @@ fn test_session_store_disk_persistence() {
             reasoning_content: None,
             tool_name: None,
             tool_result_projection: None,
+            image_refs: Vec::new(),
         }],
     );
     store.save("disk:key1").unwrap();
@@ -234,6 +238,7 @@ fn test_estimate_tokens_for_turns() {
             reasoning_content: None,
             tool_name: None,
             tool_result_projection: None,
+            image_refs: Vec::new(),
         },
         ConversationTurn {
             role: "assistant".to_string(),
@@ -244,6 +249,7 @@ fn test_estimate_tokens_for_turns() {
             reasoning_content: None,
             tool_name: None,
             tool_result_projection: None,
+            image_refs: Vec::new(),
         },
     ];
     // "Hello" = 5 chars, "World" = 5 chars, total = 10, 10*2/5 = 4
@@ -264,6 +270,7 @@ fn test_force_compress_short() {
             reasoning_content: None,
             tool_name: None,
             tool_result_projection: None,
+            image_refs: Vec::new(),
         })
         .collect();
 
@@ -288,6 +295,7 @@ fn test_force_compress_long() {
             reasoning_content: None,
             tool_name: None,
             tool_result_projection: None,
+            image_refs: Vec::new(),
         })
         .collect();
 
@@ -337,6 +345,7 @@ fn test_stored_message_roundtrip() {
         reasoning_content: None,
         tool_name: None,
         tool_result_projection: None,
+        image_refs: Vec::new(),
     };
 
     let stored: StoredMessage = (&turn).into();
@@ -423,6 +432,7 @@ fn test_session_store_set_history_nonexistent() {
             reasoning_content: None,
             tool_name: None,
             tool_result_projection: None,
+            image_refs: Vec::new(),
         }],
     );
     assert!(store.get_history("nonexistent").is_empty());
@@ -450,6 +460,7 @@ fn test_session_store_truncate_fewer_than_keep() {
             reasoning_content: None,
             tool_name: None,
             tool_result_projection: None,
+            image_refs: Vec::new(),
         }],
     );
     store.truncate_history("test:trunc", 10);
@@ -512,6 +523,7 @@ fn test_stored_session_serialization() {
             reasoning_content: None,
             tool_name: None,
             tool_result_projection: None,
+            image_refs: Vec::new(),
         }],
         summary: "test summary".to_string(),
         summary_covers_up_to: None,
@@ -536,6 +548,7 @@ fn test_estimate_tokens_for_messages() {
         reasoning_content: None,
         tool_name: None,
         tool_result_projection: None,
+        image_refs: Vec::new(),
     }];
     let tokens = estimate_tokens_for_messages(&messages);
     assert!(tokens > 0);
@@ -554,6 +567,7 @@ fn test_force_compress_exact_boundary() {
             reasoning_content: None,
             tool_name: None,
             tool_result_projection: None,
+            image_refs: Vec::new(),
         })
         .collect();
     let result = force_compress_turns(&history);
@@ -573,6 +587,7 @@ fn test_force_compress_empty_conversation() {
             reasoning_content: None,
             tool_name: None,
             tool_result_projection: None,
+            image_refs: Vec::new(),
         },
         ConversationTurn {
             role: "user".to_string(),
@@ -583,6 +598,7 @@ fn test_force_compress_empty_conversation() {
             reasoning_content: None,
             tool_name: None,
             tool_result_projection: None,
+            image_refs: Vec::new(),
         },
     ];
     let result = force_compress_turns(&history);
@@ -658,6 +674,7 @@ fn test_session_store_set_and_get_history() {
             reasoning_content: None,
             tool_name: None,
             tool_result_projection: None,
+            image_refs: Vec::new(),
         },
         StoredMessage {
             role: "assistant".to_string(),
@@ -668,6 +685,7 @@ fn test_session_store_set_and_get_history() {
             reasoning_content: None,
             tool_name: None,
             tool_result_projection: None,
+            image_refs: Vec::new(),
         },
     ];
     store.set_history("test-key", messages);
@@ -710,6 +728,7 @@ fn test_estimate_tokens_for_turns_basic() {
         reasoning_content: None,
         tool_name: None,
         tool_result_projection: None,
+        image_refs: Vec::new(),
     }];
     let tokens = estimate_tokens_for_turns(&turns);
     assert!(tokens > 0);
@@ -733,6 +752,7 @@ fn test_stored_message_from_conversation_turn() {
         reasoning_content: None,
         tool_name: None,
         tool_result_projection: None,
+        image_refs: Vec::new(),
     };
     let stored: StoredMessage = StoredMessage::from(&turn);
     assert_eq!(stored.role, "user");
@@ -756,6 +776,7 @@ fn test_session_store_truncate_history() {
             reasoning_content: None,
             tool_name: None,
             tool_result_projection: None,
+            image_refs: Vec::new(),
         })
         .collect();
     store.set_history("test-key", msgs);
@@ -788,6 +809,7 @@ fn test_session_store_truncate_to_zero() {
             reasoning_content: None,
             tool_name: None,
             tool_result_projection: None,
+            image_refs: Vec::new(),
         })
         .collect();
     store.set_history("test-key", msgs);
@@ -815,6 +837,7 @@ fn test_force_compress_with_many_messages() {
         reasoning_content: None,
         tool_name: None,
         tool_result_projection: None,
+        image_refs: Vec::new(),
     }];
     for i in 0..20 {
         history.push(ConversationTurn {
@@ -826,6 +849,7 @@ fn test_force_compress_with_many_messages() {
             reasoning_content: None,
             tool_name: None,
             tool_result_projection: None,
+            image_refs: Vec::new(),
         });
     }
     let result = force_compress_turns(&history);
@@ -983,6 +1007,7 @@ fn stored_msgs(n: usize) -> Vec<StoredMessage> {
             reasoning_content: None,
             tool_name: None,
             tool_result_projection: None,
+            image_refs: Vec::new(),
         })
         .collect()
 }
@@ -1151,6 +1176,7 @@ fn test_session_store_disk_roundtrip() {
             reasoning_content: None,
             tool_name: None,
             tool_result_projection: None,
+            image_refs: Vec::new(),
         })
         .collect();
     store.set_history("web:chat1", messages);
@@ -1225,6 +1251,7 @@ fn test_cleanup_old_sessions_keeps_recent_deletes_old() {
             reasoning_content: None,
             tool_name: None,
             tool_result_projection: None,
+            image_refs: Vec::new(),
         }],
     );
     store.save("recent:key").unwrap();
@@ -1332,6 +1359,7 @@ fn test_session_store_truncate_exact() {
             reasoning_content: None,
             tool_name: None,
             tool_result_projection: None,
+            image_refs: Vec::new(),
         })
         .collect();
     store.set_history("key1", msgs);
@@ -1359,6 +1387,7 @@ fn test_stored_message_from_conversation_turn_with_tools() {
         reasoning_content: None,
         tool_name: None,
         tool_result_projection: None,
+        image_refs: Vec::new(),
     };
 
     let stored: StoredMessage = StoredMessage::from(&turn);
@@ -1384,6 +1413,7 @@ fn test_stored_message_into_conversation_turn() {
         reasoning_content: None,
         tool_name: None,
         tool_result_projection: None,
+        image_refs: Vec::new(),
     };
 
     let turn: ConversationTurn = ConversationTurn::from(stored);
@@ -1422,6 +1452,7 @@ fn test_estimate_tokens_for_messages_with_content() {
         reasoning_content: None,
         tool_name: None,
         tool_result_projection: None,
+        image_refs: Vec::new(),
     }];
     let tokens = estimate_tokens_for_messages(&messages);
     assert!(tokens > 0);
@@ -1499,6 +1530,7 @@ fn test_summarizer_should_summarize_short_history() {
             reasoning_content: None,
             tool_name: None,
             tool_result_projection: None,
+            image_refs: Vec::new(),
         })
         .collect();
     assert!(!summarizer.should_summarize(&history, 128000));
@@ -1527,6 +1559,7 @@ fn test_summarizer_should_summarize_long_history() {
             reasoning_content: None,
             tool_name: None,
             tool_result_projection: None,
+            image_refs: Vec::new(),
         })
         .collect();
     // 30 messages > 20 threshold
@@ -1565,6 +1598,7 @@ fn test_summarizer_should_summarize_by_token_threshold() {
             reasoning_content: None,
             tool_name: None,
             tool_result_projection: None,
+            image_refs: Vec::new(),
         })
         .collect();
     // Token threshold is 100 * 75 / 100 = 75 tokens
@@ -1604,6 +1638,7 @@ fn test_summarizer_summarize_session_too_few_messages() {
             reasoning_content: None,
             tool_name: None,
             tool_result_projection: None,
+            image_refs: Vec::new(),
         })
         .collect();
     // Only 4 messages (<=4), so summarize_session returns empty
@@ -1630,6 +1665,7 @@ fn test_summarizer_summarize_session_all_system_messages() {
             reasoning_content: None,
             tool_name: None,
             tool_result_projection: None,
+            image_refs: Vec::new(),
         })
         .collect();
     // All system messages -> none pass the user/assistant filter
@@ -1656,6 +1692,7 @@ fn test_summarizer_summarize_session_basic() {
             reasoning_content: None,
             tool_name: None,
             tool_result_projection: None,
+            image_refs: Vec::new(),
         })
         .collect();
     let result = summarizer.summarize_session("test:basic", &history);
@@ -1696,6 +1733,7 @@ fn test_summarizer_maybe_summarize_internal_channel() {
             reasoning_content: None,
             tool_name: None,
             tool_result_projection: None,
+            image_refs: Vec::new(),
         })
         .collect();
     let result = summarizer.maybe_summarize("test:cli", "cli", "direct", &history, 128000);
@@ -1721,6 +1759,7 @@ fn test_summarizer_maybe_summarize_not_triggered() {
             reasoning_content: None,
             tool_name: None,
             tool_result_projection: None,
+            image_refs: Vec::new(),
         })
         .collect();
     assert!(!summarizer.maybe_summarize("test:short", "web", "chat1", &history, 128000));
@@ -1738,6 +1777,7 @@ fn test_force_compress_three_messages() {
             reasoning_content: None,
             tool_name: None,
             tool_result_projection: None,
+            image_refs: Vec::new(),
         },
         ConversationTurn {
             role: "user".to_string(),
@@ -1748,6 +1788,7 @@ fn test_force_compress_three_messages() {
             reasoning_content: None,
             tool_name: None,
             tool_result_projection: None,
+            image_refs: Vec::new(),
         },
         ConversationTurn {
             role: "assistant".to_string(),
@@ -1758,6 +1799,7 @@ fn test_force_compress_three_messages() {
             reasoning_content: None,
             tool_name: None,
             tool_result_projection: None,
+            image_refs: Vec::new(),
         },
     ];
     // 3 messages (<=4), should return unchanged
@@ -1776,6 +1818,7 @@ fn test_force_compress_preserves_system_and_last() {
         reasoning_content: None,
         tool_name: None,
         tool_result_projection: None,
+        image_refs: Vec::new(),
     }];
     for i in 0..10 {
         history.push(ConversationTurn {
@@ -1787,6 +1830,7 @@ fn test_force_compress_preserves_system_and_last() {
             reasoning_content: None,
             tool_name: None,
             tool_result_projection: None,
+            image_refs: Vec::new(),
         });
     }
     let result = force_compress_turns(&history);
@@ -1897,6 +1941,7 @@ fn test_estimate_tokens_projected_bounded() {
         reasoning_content: None,
         tool_name: Some("exec".to_string()),
         tool_result_projection: None,
+        image_refs: Vec::new(),
     }];
     let raw = super::estimate_tokens(&big);
     let projected = super::estimate_tokens_for_turns_projected(&turns);
@@ -1916,6 +1961,7 @@ fn test_estimate_tokens_projected_bounded() {
         reasoning_content: None,
         tool_name: None,
         tool_result_projection: None,
+        image_refs: Vec::new(),
     }];
     assert_eq!(
         super::estimate_tokens_for_turns_projected(&plain),
@@ -1998,6 +2044,7 @@ fn test_get_or_create_no_rebuild_when_store_file_exists() {
             reasoning_content: None,
             tool_name: None,
             tool_result_projection: None,
+            image_refs: Vec::new(),
         }],
         summary: String::new(),
         summary_covers_up_to: None,
@@ -2174,6 +2221,7 @@ fn conv_turn(role: &str, content: &str) -> ConversationTurn {
         reasoning_content: None,
         tool_name: None,
         tool_result_projection: None,
+        image_refs: Vec::new(),
     }
 }
 
@@ -2763,4 +2811,62 @@ fn test_load_from_disk_in_memory_store_is_noop() {
     store.get_or_create("mem:key");
     store.load_from_disk(); // must not panic or drop in-memory sessions
     assert!(store.contains("mem:key"));
+}
+
+// F-E（2026-09-04 四轮盲审）：chat_log 行的 "images" 数组必须还原进
+// image_refs——硬编码 Vec::new() 会让 self-heal 重建 / fork 的图片引用
+// 凭空消失（两套存储分叉）。
+#[test]
+fn fe_projected_rows_restore_image_refs() {
+    let rows = vec![
+        serde_json::json!({
+            "role": "user",
+            "content": "看这张图",
+            "timestamp": "2026-09-04T10:00:00+08:00",
+            "images": ["/ws/uploads/a.png", "/ws/uploads/b.jpg"]
+        }),
+        serde_json::json!({
+            "role": "assistant",
+            "content": "好的，我看到了",
+            "timestamp": "2026-09-04T10:00:05+08:00"
+        }),
+        serde_json::json!({
+            "role": "user",
+            "content": "纯文本后续",
+            "timestamp": "2026-09-04T10:00:10+08:00"
+        }),
+    ];
+
+    let msgs = super::projected_messages_from_rows(&rows);
+
+    assert_eq!(msgs.len(), 3, "可投影行数不变");
+    assert_eq!(
+        msgs[0].image_refs,
+        vec![
+            "/ws/uploads/a.png".to_string(),
+            "/ws/uploads/b.jpg".to_string()
+        ],
+        "images 数组必须还原进 image_refs"
+    );
+    assert!(msgs[1].image_refs.is_empty(), "无 images 字段的行 = 无图");
+    assert!(msgs[2].image_refs.is_empty());
+}
+
+/// images 字段形态异常时诚实降级（非字符串条目跳过，不炸）。
+#[test]
+fn fe_projected_rows_tolerates_malformed_images() {
+    let rows = vec![serde_json::json!({
+        "role": "user",
+        "content": "坏形态",
+        "images": ["/ok.png", 42, null, "/also_ok.png"]
+    })];
+
+    let msgs = super::projected_messages_from_rows(&rows);
+
+    assert_eq!(msgs.len(), 1);
+    assert_eq!(
+        msgs[0].image_refs,
+        vec!["/ok.png".to_string(), "/also_ok.png".to_string()],
+        "非字符串条目跳过"
+    );
 }

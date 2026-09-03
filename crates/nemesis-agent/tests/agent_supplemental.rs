@@ -287,6 +287,7 @@ fn test_conversation_turn_user() {
         reasoning_content: None,
         tool_name: None,
         tool_result_projection: None,
+        image_refs: Vec::new(),
     };
     let json = serde_json::to_string(&turn).unwrap();
     let back: ConversationTurn = serde_json::from_str(&json).unwrap();
@@ -315,6 +316,7 @@ fn test_conversation_turn_assistant_with_tools() {
         reasoning_content: None,
         tool_name: None,
         tool_result_projection: None,
+        image_refs: Vec::new(),
     };
     assert_eq!(turn.tool_calls.len(), 2);
     let json = serde_json::to_string(&turn).unwrap();
@@ -335,6 +337,7 @@ fn test_conversation_turn_tool_response() {
         reasoning_content: None,
         tool_name: None,
         tool_result_projection: None,
+        image_refs: Vec::new(),
     };
     assert_eq!(turn.tool_call_id, Some("tc-1".to_string()));
     let json = serde_json::to_string(&turn).unwrap();
@@ -491,6 +494,7 @@ fn test_agent_instance_set_history() {
         reasoning_content: None,
         tool_name: None,
         tool_result_projection: None,
+        image_refs: Vec::new(),
     }];
     instance.set_history(history);
     assert_eq!(instance.message_count(), 1);
@@ -834,6 +838,7 @@ fn test_context_builder_build_messages_with_history() {
             reasoning_content: None,
             tool_name: None,
             tool_result_projection: None,
+            image_refs: Vec::new(),
         },
         ConversationTurn {
             role: "assistant".to_string(),
@@ -844,6 +849,7 @@ fn test_context_builder_build_messages_with_history() {
             reasoning_content: None,
             tool_name: None,
             tool_result_projection: None,
+            image_refs: Vec::new(),
         },
     ];
     let messages = builder.build_messages(&history, "", "How are you?", "web", "c1", false);
@@ -883,6 +889,7 @@ fn test_context_builder_build_messages_skip_orphaned_tools() {
             reasoning_content: None,
             tool_name: None,
             tool_result_projection: None,
+            image_refs: Vec::new(),
         },
         ConversationTurn {
             role: "user".to_string(),
@@ -893,6 +900,7 @@ fn test_context_builder_build_messages_skip_orphaned_tools() {
             reasoning_content: None,
             tool_name: None,
             tool_result_projection: None,
+            image_refs: Vec::new(),
         },
     ];
     let messages = builder.build_messages(&history, "", "Hi", "web", "c1", false);
@@ -909,6 +917,7 @@ fn test_context_builder_add_tool_result() {
         tool_calls: None,
         tool_call_id: None,
         reasoning_content: None,
+        images: Vec::new(),
     }];
     ContextBuilder::add_tool_result(&mut messages, "tc-1", "calculator", "42");
     assert_eq!(messages.len(), 2);
@@ -1062,6 +1071,7 @@ fn test_session_store_history() {
         reasoning_content: None,
         tool_name: None,
         tool_result_projection: None,
+        image_refs: Vec::new(),
     }];
     store.set_history("key1", msgs);
     let history = store.get_history("key1");
@@ -1092,6 +1102,7 @@ fn test_session_store_truncate() {
             reasoning_content: None,
             tool_name: None,
             tool_result_projection: None,
+            image_refs: Vec::new(),
         })
         .collect();
     store.set_history("key1", msgs);
@@ -1188,6 +1199,7 @@ fn test_stored_message_from_turn() {
         reasoning_content: None,
         tool_name: None,
         tool_result_projection: None,
+        image_refs: Vec::new(),
     };
     let stored: StoredMessage = (&turn).into();
     assert_eq!(stored.role, "assistant");
@@ -1206,6 +1218,7 @@ fn test_turn_from_stored_message() {
         reasoning_content: None,
         tool_name: None,
         tool_result_projection: None,
+        image_refs: Vec::new(),
     };
     let turn: ConversationTurn = stored.into();
     assert_eq!(turn.role, "tool");
@@ -1247,6 +1260,7 @@ fn test_estimate_tokens_for_turns() {
             reasoning_content: None,
             tool_name: None,
             tool_result_projection: None,
+            image_refs: Vec::new(),
         },
         ConversationTurn {
             role: "assistant".to_string(),
@@ -1257,6 +1271,7 @@ fn test_estimate_tokens_for_turns() {
             reasoning_content: None,
             tool_name: None,
             tool_result_projection: None,
+            image_refs: Vec::new(),
         },
     ];
     assert_eq!(estimate_tokens_for_turns(&turns), 4);
@@ -1278,6 +1293,7 @@ fn test_force_compress_short() {
             reasoning_content: None,
             tool_name: None,
             tool_result_projection: None,
+            image_refs: Vec::new(),
         })
         .collect();
 
@@ -1297,6 +1313,7 @@ fn test_force_compress_long() {
             reasoning_content: None,
             tool_name: None,
             tool_result_projection: None,
+            image_refs: Vec::new(),
         })
         .collect();
 
@@ -1320,6 +1337,7 @@ fn test_force_compress_exact_boundary() {
             reasoning_content: None,
             tool_name: None,
             tool_result_projection: None,
+            image_refs: Vec::new(),
         })
         .collect();
 
@@ -1410,6 +1428,7 @@ fn test_conversation_memory_add() {
         reasoning_content: None,
         tool_name: None,
         tool_result_projection: None,
+        image_refs: Vec::new(),
     });
     assert_eq!(mem.len(), 1);
     assert!(!mem.is_empty());
@@ -1428,6 +1447,7 @@ fn test_conversation_memory_get_context() {
         reasoning_content: None,
         tool_name: None,
         tool_result_projection: None,
+        image_refs: Vec::new(),
     });
     let ctx = mem.get_context();
     assert_eq!(ctx.len(), 1);
@@ -1447,6 +1467,7 @@ fn test_conversation_memory_estimated_tokens() {
         reasoning_content: None,
         tool_name: None,
         tool_result_projection: None,
+        image_refs: Vec::new(),
     });
     let tokens = mem.estimated_tokens();
     assert!(tokens > 0);
@@ -1465,6 +1486,7 @@ fn test_conversation_memory_search() {
         reasoning_content: None,
         tool_name: None,
         tool_result_projection: None,
+        image_refs: Vec::new(),
     });
     mem.add(ConversationTurn {
         role: "assistant".to_string(),
@@ -1475,6 +1497,7 @@ fn test_conversation_memory_search() {
         reasoning_content: None,
         tool_name: None,
         tool_result_projection: None,
+        image_refs: Vec::new(),
     });
 
     let results = mem.search("Rust");
@@ -1620,6 +1643,7 @@ fn test_llm_message_serialization() {
         tool_calls: None,
         tool_call_id: None,
         reasoning_content: None,
+        images: Vec::new(),
     };
     let json = serde_json::to_string(&msg).unwrap();
     let back: LlmMessage = serde_json::from_str(&json).unwrap();
@@ -1639,6 +1663,7 @@ fn test_llm_message_with_tool_calls() {
         }]),
         tool_call_id: None,
         reasoning_content: None,
+        images: Vec::new(),
     };
     let json = serde_json::to_string(&msg).unwrap();
     let back: LlmMessage = serde_json::from_str(&json).unwrap();
@@ -1654,6 +1679,7 @@ fn test_llm_message_tool_response() {
         tool_calls: None,
         tool_call_id: Some("tc-1".to_string()),
         reasoning_content: None,
+        images: Vec::new(),
     };
     let json = serde_json::to_string(&msg).unwrap();
     let back: LlmMessage = serde_json::from_str(&json).unwrap();
@@ -1772,6 +1798,7 @@ fn test_stored_session_serialization() {
             reasoning_content: None,
             tool_name: None,
             tool_result_projection: None,
+            image_refs: Vec::new(),
         }],
         summary: "A greeting".to_string(),
         summary_covers_up_to: None,
@@ -1803,6 +1830,7 @@ fn test_stored_session_with_tool_calls() {
                 reasoning_content: None,
                 tool_name: None,
                 tool_result_projection: None,
+                image_refs: Vec::new(),
             },
             StoredMessage {
                 role: "tool".to_string(),
@@ -1813,6 +1841,7 @@ fn test_stored_session_with_tool_calls() {
                 reasoning_content: None,
                 tool_name: None,
                 tool_result_projection: None,
+                image_refs: Vec::new(),
             },
         ],
         summary: String::new(),
@@ -2098,6 +2127,7 @@ fn test_context_builder_build_messages_tool_in_middle() {
             reasoning_content: None,
             tool_name: None,
             tool_result_projection: None,
+            image_refs: Vec::new(),
         },
         ConversationTurn {
             role: "tool".to_string(),
@@ -2108,6 +2138,7 @@ fn test_context_builder_build_messages_tool_in_middle() {
             reasoning_content: None,
             tool_name: None,
             tool_result_projection: None,
+            image_refs: Vec::new(),
         },
         ConversationTurn {
             role: "assistant".to_string(),
@@ -2118,6 +2149,7 @@ fn test_context_builder_build_messages_tool_in_middle() {
             reasoning_content: None,
             tool_name: None,
             tool_result_projection: None,
+            image_refs: Vec::new(),
         },
     ];
     let messages = builder.build_messages(&history, "", "Next", "web", "c1", false);
@@ -2243,6 +2275,7 @@ fn test_session_store_truncate_fewer_than_keep() {
             reasoning_content: None,
             tool_name: None,
             tool_result_projection: None,
+            image_refs: Vec::new(),
         })
         .collect();
     store.set_history("key1", msgs);
@@ -2278,6 +2311,7 @@ fn test_conversation_memory_multiple_adds() {
             reasoning_content: None,
             tool_name: None,
             tool_result_projection: None,
+            image_refs: Vec::new(),
         });
     }
     assert_eq!(mem.len(), 20);
@@ -2298,6 +2332,7 @@ fn test_conversation_memory_search_case_insensitive() {
         reasoning_content: None,
         tool_name: None,
         tool_result_projection: None,
+        image_refs: Vec::new(),
     });
     assert_eq!(mem.search("rust").len(), 1);
     assert_eq!(mem.search("RUST").len(), 1);
@@ -2324,6 +2359,7 @@ fn test_conversation_memory_tokens_multiple_messages() {
         reasoning_content: None,
         tool_name: None,
         tool_result_projection: None,
+        image_refs: Vec::new(),
     });
     mem.add(ConversationTurn {
         role: "assistant".to_string(),
@@ -2334,6 +2370,7 @@ fn test_conversation_memory_tokens_multiple_messages() {
         reasoning_content: None,
         tool_name: None,
         tool_result_projection: None,
+        image_refs: Vec::new(),
     });
     let tokens = mem.estimated_tokens();
     // "Hello world" (11 chars) -> 11*2/5=4, "Goodbye world" (13 chars) -> 13*2/5=5 => total 9
@@ -2481,6 +2518,7 @@ fn test_force_compress_preserves_system() {
             reasoning_content: None,
             tool_name: None,
             tool_result_projection: None,
+            image_refs: Vec::new(),
         })
         .collect();
     let result = force_compress_turns(&history);
@@ -2500,6 +2538,7 @@ fn test_force_compress_preserves_last() {
             reasoning_content: None,
             tool_name: None,
             tool_result_projection: None,
+            image_refs: Vec::new(),
         })
         .collect();
     let result = force_compress_turns(&history);
@@ -2524,6 +2563,7 @@ fn test_force_compress_single() {
         reasoning_content: None,
         tool_name: None,
         tool_result_projection: None,
+        image_refs: Vec::new(),
     }];
     let result = force_compress_turns(&history);
     assert_eq!(result.len(), 1);

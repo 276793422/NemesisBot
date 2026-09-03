@@ -267,6 +267,177 @@ pub fn resolve_summarizer_prefix_reuse(
         .and_then(|v| v.as_bool())
 }
 
+// ============================================================================
+// Vision capability（多模态 goal T10，2026-09-03）
+// ============================================================================
+
+/// T10（多模态 goal）：vision 能力解析结果——`supported` 决定图片是否进
+/// 请求，`source` 记录判定来源（诊断/展示用）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct VisionResolution {
+    /// 该模型当前是否按"支持图像输入"处理。
+    pub supported: bool,
+    /// 判定来源。
+    pub source: VisionSource,
+}
+
+/// vision 判定来源。解析序（钉死）：`User > Probe > Name > DefaultAllow`。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum VisionSource {
+    /// config.json 条目 `vision`——用户钉死，最大权威（L8：宽容解析，
+    /// 接受 "yes"/"no"/"true"/"false" 任意大小写及 JSON 布尔）。
+    User,
+    /// `model probe` 第 8 题实测（条目 `vision_probe` bool）。
+    Probe,
+    /// 名字关键词命中（关键词只判"支持"，永不判"不支持"）。
+    Name,
+    /// 认不出的名字默认放行——避免把用户的 VL 模型误判成纯文本；真不支持
+    /// 由 provider 4xx 兜底 + 错误文案提示可跑 `model probe` 实测或钉
+    /// `vision: "no"`。
+    DefaultAllow,
+}
+
+impl VisionSource {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            VisionSource::User => "user",
+            VisionSource::Probe => "probe",
+            VisionSource::Name => "name",
+            VisionSource::DefaultAllow => "default_allow",
+        }
+    }
+}
+
+/// 默认放行（standalone / 条目缺失 / 名字认不出共用的同一语义）。
+pub fn vision_default_allow() -> VisionResolution {
+    VisionResolution {
+        supported: true,
+        source: VisionSource::DefaultAllow,
+    }
+}
+
+/// L8（2026-09-04 四轮盲审）：`vision` 钉死值的宽容解析（`None` = 非钉死值，
+/// 走后续解析层）。接受：`"yes"/"no"`（任意大小写/首尾空白）、JSON 布尔
+/// `true/false`、`"true"/"false"`；其余（空串/垃圾值）返回 None。
+fn parse_vision_pin(v: &serde_json::Value) -> Option<bool> {
+    match v {
+        serde_json::Value::Bool(b) => Some(*b),
+        serde_json::Value::String(s) => match s.trim().to_lowercase().as_str() {
+            "yes" | "true" => Some(true),
+            "no" | "false" => Some(false),
+            _ => None,
+        },
+        _ => None,
+    }
+}
+
+/// T10：名字关键词视觉识别。**只判"支持"**（命中返回 true），认不出一律
+/// 返回 false（由调用方落到默认放行）——检测链永不产生"不支持"结论，避免
+/// 把用户的 VL 模型误判成纯文本（provider 4xx 才是兜底真相）。
+///
+/// 匹配在归一化形态（仅保留 `[a-z0-9]`）上做 contains，兼容连字符/点号/
+/// 大小写变体：`Qwen2.5-VL` → `qwen25vl`、`gpt-4o` → `gpt4o`、
+/// `glm-4.1v` → `glm41v`。误报（把纯文本模型标成"支持"）与默认放行同向，
+/// 零额外行为代价（都进 provider 4xx 兜底）。
+pub fn detect_vision_from_name(name: &str) -> bool {
+    let norm: String = name
+        .chars()
+        .filter(|c| c.is_ascii_alphanumeric())
+        .map(|c| c.to_ascii_lowercase())
+        .collect();
+    // 单标记家族（云端旗舰 + 常见开源 VL 家族）。
+    const MARKERS: &[&str] = &[
+        "gpt4o", "gpt41", "gpt42", "gpt45", "gpt5", "chatgpt", //
+        "o1", "o3", "o4", //
+        "gemini", "claude", //
+        "llava", "internvl", "minicpmv", "minicpmo", "pixtral", "qvq",    //
+        "vision", //
+        "glm4v", "glm5v", "glm41v", "glm45v",
+    ];
+    if MARKERS.iter().any(|m| norm.contains(m)) {
+        return true;
+    }
+    // 组合规则：qwen*/kimi* 系的 -VL 变体（qwen2.5-vl / kimi-vl 等）。
+    if norm.contains("vl") && (norm.contains("qwen") || norm.contains("kimi")) {
+        return true;
+    }
+    false
+}
+
+/// T10（多模态 goal）：解析 active 模型的 vision 能力。镜像
+/// [`resolve_active_tier`] 的条目查找（`model_name` 或 `model` 匹配），条目
+/// 额外读 `real_name` 参与名字识别。
+///
+/// 解析序（钉死）：
+/// 1. 条目 `vision`——用户钉死，直接采信（L8：大小写不敏感 + 布尔宽容）；
+/// 2. 条目 `vision_probe`（`model probe` 第 8 题实测 bool）——true/false 均
+///    采信（实测 > 猜测）；
+/// 3. 名字关键词（[`detect_vision_from_name`]，model_name / model /
+///    real_name 任一命中即"支持"）——只判支持；
+/// 4. 默认放行——认不出的名字按支持处理，provider 4xx 兜底。
+///
+/// 条目缺失 / 无 model_list（standalone）→ 默认放行。
+pub fn resolve_active_vision(cfg: &serde_json::Value, active_alias: &str) -> VisionResolution {
+    let entry = cfg
+        .get("model_list")
+        .and_then(|v| v.as_array())
+        .and_then(|arr| {
+            arr.iter().find(|m| {
+                let name = m.get("model_name").and_then(|v| v.as_str()).unwrap_or("");
+                let full = m.get("model").and_then(|v| v.as_str()).unwrap_or("");
+                name == active_alias || full == active_alias
+            })
+        });
+    let Some(entry) = entry else {
+        return vision_default_allow();
+    };
+
+    // 1) 用户钉死。
+    // L8（2026-09-04 四轮盲审）：钉死值宽容解析——手改 config 用大写
+    // （"Yes"/"NO"）或 JSON 布尔（`"vision": true`）不该被静默忽略落回
+    // 名字识别/默认放行（用户明确表达了意图）。
+    match entry.get("vision").map(parse_vision_pin) {
+        Some(Some(true)) => {
+            return VisionResolution {
+                supported: true,
+                source: VisionSource::User,
+            };
+        }
+        Some(Some(false)) => {
+            return VisionResolution {
+                supported: false,
+                source: VisionSource::User,
+            };
+        }
+        _ => {}
+    }
+    // 2) 探针实测（D9）。
+    if let Some(measured) = entry.get("vision_probe").and_then(|v| v.as_bool()) {
+        return VisionResolution {
+            supported: measured,
+            source: VisionSource::Probe,
+        };
+    }
+    // 3) 名字关键词（只判支持）。
+    let name_fields = [
+        entry.get("model_name").and_then(|v| v.as_str()),
+        entry.get("model").and_then(|v| v.as_str()),
+        entry.get("real_name").and_then(|v| v.as_str()),
+    ];
+    if name_fields
+        .into_iter()
+        .flatten()
+        .any(detect_vision_from_name)
+    {
+        return VisionResolution {
+            supported: true,
+            source: VisionSource::Name,
+        };
+    }
+    // 4) 默认放行。
+    vision_default_allow()
+}
+
 /// Resolve the display model id (`provider/name`, e.g. `deepseek/deepseek-v4-flash`)
 /// for the active model alias, by looking up `model_list[]` for the matching
 /// entry (by `model_name` or `model`) and returning its `model` field. Falls

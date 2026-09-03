@@ -85,32 +85,11 @@ impl LlmProvider for ProviderAdapter {
             model
         };
 
-        // Convert agent LlmMessage → provider Message
+        // Convert agent LlmMessage → provider Message（T5：与 gateway adapter
+        // 共用统一 helper——含多模态 images → Parts 分支，单一真相源）。
         let provider_messages: Vec<nemesis_providers::types::Message> = messages
             .into_iter()
-            .map(|m| nemesis_providers::types::Message {
-                role: m.role,
-                content: m.content,
-                tool_calls: m
-                    .tool_calls
-                    .unwrap_or_default()
-                    .into_iter()
-                    .map(|tc| nemesis_providers::types::ToolCall {
-                        id: tc.id,
-                        call_type: Some("function".to_string()),
-                        function: Some(nemesis_providers::types::FunctionCall {
-                            name: tc.name,
-                            arguments: tc.arguments,
-                        }),
-                        name: None,
-                        arguments: None,
-                    })
-                    .collect(),
-                tool_call_id: m.tool_call_id,
-                timestamp: None,
-                reasoning_content: m.reasoning_content,
-                extra: std::collections::HashMap::new(),
-            })
+            .map(nemesis_web::llm_bridge::agent_message_to_provider)
             .collect();
 
         // Convert agent ToolDefinition → provider ToolDefinition.

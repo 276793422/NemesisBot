@@ -88,7 +88,7 @@ pub async fn handle_chat_stream(
         .into_iter()
         .map(|m| Message {
             role: m.role,
-            content: m.content,
+            content: m.content.into(),
             tool_calls: vec![],
             tool_call_id: None,
             timestamp: None,

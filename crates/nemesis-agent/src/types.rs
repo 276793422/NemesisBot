@@ -82,6 +82,12 @@ pub struct ConversationTurn {
     /// projecting an already-projected turn is a no-op.
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub tool_result_projection: Option<String>,
+    /// T5/T6（多模态，goal 2026-09-03）：本 turn 附带的图片路径引用（路径
+    /// 注入 + media 落盘引用）。历史只存引用不存字节——build_messages 每轮
+    /// 水合重读（文件已删 → 占位文本），provider 字节路径零影响。
+    /// 旧会话文件无此键 → `#[serde(default)]` 加载为空。
+    #[serde(skip_serializing_if = "Vec::is_empty", default)]
+    pub image_refs: Vec<String>,
 }
 
 impl ConversationTurn {
@@ -380,6 +386,7 @@ pub fn repair_tool_message_pairs(messages: &mut Vec<ConversationTurn>) {
                                 reasoning_content: None,
                                 tool_name: Some(tc.name.clone()),
                                 tool_result_projection: None,
+                                image_refs: Vec::new(),
                             },
                         ));
                     }

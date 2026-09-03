@@ -161,6 +161,7 @@ pub(crate) fn project_history_for_request(
                 reasoning_content: None,
                 tool_name: None,
                 tool_result_projection: None,
+                image_refs: Vec::new(),
             });
         }
         out.extend(history[tail_start..].iter().cloned());
@@ -208,6 +209,51 @@ pub struct LlmMessage {
     /// Reasoning content from thinking-mode models, passed back to the API.
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub reasoning_content: Option<String>,
+    /// T5/T6（多模态，goal 2026-09-03）：本条消息携带的图片（已水合的
+    /// base64 字节）。历史存储只留路径引用（`ConversationTurn.image_refs`），
+    /// build_messages 组包时经 `hydrate_image_refs` 每轮重读填充；文件已删
+    /// → 占位文本进 content。旧请求重放/下游适配器忽略此字段即纯文本路径，
+    /// `#[serde(default)]` 保旧快照兼容。
+    #[serde(skip_serializing_if = "Vec::is_empty", default)]
+    pub images: Vec<crate::image_attach::LlmImage>,
+}
+
+/// F-J（2026-09-04 四轮盲审）：observer 事件里 images[].data 的省略标记。
+pub const OBSERVER_IMAGE_DATA_MARKER: &str =
+    "[图片字节已省略：observer 事件不落 base64，路径见 path]";
+
+/// observer 事件的 messages 序列化（F-J 单一真相源）。
+///
+/// build_messages 水合后的 `LlmMessage.images[].data` 是完整图片 base64
+/// （单图 ≤25MB、每消息 ≤8 张）。逐轮 `serde_json::to_value` 若原样发射，
+/// 字节会被复制进 observer 事件下游（to_callback_json /
+/// request_logger_observer 的 01.AI.Request.raw.json），8×25MB 图 ≈ 每轮
+/// ~270MB JSON 的磁盘/内存放大。此处在**发射源**把非空 `data` 替换为
+/// [`OBSERVER_IMAGE_DATA_MARKER`]（保留 path/media_type 供排障定位）——
+/// 下游消费方（loop_executor::to_callback_json / request_logger_observer）
+/// 序列化的是事件里的值，源头干净则全链干净。真实 LLM 请求不受影响
+/// （只改序列化副本，`messages` 本体原样上行）。
+pub fn observer_msg_values(msgs: &[LlmMessage]) -> Vec<serde_json::Value> {
+    msgs.iter()
+        .filter_map(|m| {
+            let mut v = serde_json::to_value(m).ok()?;
+            if let Some(images) = v.get_mut("images").and_then(|i| i.as_array_mut()) {
+                for img in images.iter_mut() {
+                    let has_data = img
+                        .get("data")
+                        .and_then(|d| d.as_str())
+                        .is_some_and(|s| !s.is_empty());
+                    if let (true, Some(obj)) = (has_data, img.as_object_mut()) {
+                        obj.insert(
+                            "data".to_string(),
+                            serde_json::Value::String(OBSERVER_IMAGE_DATA_MARKER.to_string()),
+                        );
+                    }
+                }
+            }
+            Some(v)
+        })
+        .collect()
 }
 
 /// A simplified LLM response.
@@ -1132,6 +1178,8 @@ impl AgentLoop {
                     tx,
                     self.observer_manager.clone(),
                     self.session_store.as_ref().map(|v| v.as_ref()),
+                    // F-F：active 模型 vision 解析（config.json 唯一真相源）。
+                    self.current_vision().supported,
                 )
                 .await;
             }
@@ -1146,6 +1194,8 @@ impl AgentLoop {
             let observer_manager = self.observer_manager.clone();
             let session_store = self.session_store.clone();
             let semaphore = self.continuation_semaphore.clone().unwrap();
+            // F-F：vision 解析在 spawn 前取值（闭包外，self 不可 move 进去）。
+            let vision_supported = self.current_vision().supported;
 
             tokio::spawn(async move {
                 let _permit = semaphore.acquire().await.unwrap();
@@ -1164,6 +1214,7 @@ impl AgentLoop {
                         tx,
                         observer_manager,
                         session_store.as_ref().map(|v| v.as_ref()),
+                        vision_supported,
                     )
                     .await;
                 }
@@ -1829,6 +1880,8 @@ impl AgentLoop {
                     tx,
                     self.observer_manager.clone(),
                     self.session_store.as_ref().map(|v| v.as_ref()),
+                    // F-F：active 模型 vision 解析。
+                    self.current_vision().supported,
                 )
                 .await;
             }
@@ -1883,7 +1936,16 @@ impl AgentLoop {
 
         let token = tokio_util::sync::CancellationToken::new();
         let events = self
-            .run_with_trace(&instance, content, &context, &trace_id, false, &token, None)
+            .run_with_trace(
+                &instance,
+                content,
+                &context,
+                &trace_id,
+                false,
+                &token,
+                None,
+                &[],
+            )
             .await;
 
         // Extract final response for the conversation end event.
@@ -1971,7 +2033,16 @@ impl AgentLoop {
 
         let token = tokio_util::sync::CancellationToken::new();
         let events = self
-            .run_with_trace(&instance, content, &context, &trace_id, false, &token, None)
+            .run_with_trace(
+                &instance,
+                content,
+                &context,
+                &trace_id,
+                false,
+                &token,
+                None,
+                &[],
+            )
             .await;
 
         // Extract final response for the conversation end event.
@@ -2328,6 +2399,44 @@ impl AgentLoop {
             &msg.content,
             &std::env::current_dir().unwrap_or_default(),
         );
+        // T5（多模态，goal 2026-09-03）：统一图片附加——文本点名路径（T4 检测）
+        // + media 引用（T7/T8/T9 落盘产物）统一过安全闸（8 层管线全跑）产出
+        // **路径引用**；失败/拒绝诚实注明合并进轮次文本。注意：挂了真实
+        // SecurityPlugin 时管线 Layer 7 会 block_in_place，须 multi_thread
+        // runtime（gateway 生产 runtime 即是）。
+        // T9：URL media 先经 fetch_url_media 预取（SSRF 闸 + http-pool 下载 →
+        // uploads 落盘改写为本地路径引用），再统一走同步附加链；失败注记随
+        // 附加注记一并合并进轮次文本。
+        let ws_for_uploads = self.workspace_root.read().clone();
+        let uploads_base =
+            ws_for_uploads.unwrap_or_else(|| nemesis_path::default_path_manager().workspace());
+        let uploads_dir = nemesis_path::resolve_uploads_dir_in_workspace(&uploads_base);
+        let (media_for_attach, url_notes) = crate::image_attach::fetch_url_media(
+            &msg.media,
+            &uploads_dir,
+            #[cfg(feature = "security")]
+            self.security_plugin.as_deref().and_then(|p| p.ssrf_guard()),
+            #[cfg(not(feature = "security"))]
+            None,
+        )
+        .await;
+        let attach = crate::image_attach::attach_turn_images(
+            &processed_content,
+            &media_for_attach,
+            self.workspace_root.read().as_deref(),
+            &msg.channel,
+            #[cfg(feature = "security")]
+            self.security_plugin.as_deref(),
+            #[cfg(not(feature = "security"))]
+            None,
+        );
+        let processed_content = attach.merge_into_text(processed_content);
+        let processed_content = crate::image_attach::AttachOutcome {
+            attached: Vec::new(),
+            notes: url_notes,
+        }
+        .merge_into_text(processed_content);
+        let image_refs = attach.ref_strings();
         let cron_job_id = msg.metadata.get("cron_job_id").map(|s| s.as_str());
         let cron_job_name = msg.metadata.get("cron_job_name").map(|s| s.as_str());
         // T3 (U12): per-fire tool-round budget set by the gateway cron fire
@@ -2349,6 +2458,7 @@ impl AgentLoop {
                 cron_job_id,
                 cron_job_name,
                 cron_max_rounds,
+                &image_refs,
             )
             .await;
 
@@ -2526,6 +2636,7 @@ impl AgentLoop {
                 cron_job_id,
                 cron_job_name,
                 None,
+                &[],
             )
             .await;
 
@@ -3164,6 +3275,10 @@ impl AgentLoop {
 
     /// Run the agent loop for a specific session.
     /// Mirrors Go's `runAgentLoop()`.
+    ///
+    /// T5（多模态）：`image_refs` 是本 turn 已通过安全闸的图片路径引用
+    /// （process_admitted 统一附加产出），随 user turn 进
+    /// `ConversationTurn.image_refs`；无图调用方传 `&[]`。
     async fn run_agent_loop_internal(
         &self,
         session_key: &str,
@@ -3175,6 +3290,7 @@ impl AgentLoop {
         cron_job_id: Option<&str>,
         cron_job_name: Option<&str>,
         turn_budget: Option<u32>,
+        image_refs: &[String],
     ) -> Result<String, String> {
         // Round-5 fix: cron-originated turns are exempt from boundary events,
         // same as heartbeat. A recurring cron job targeting a persistent
@@ -3226,6 +3342,7 @@ impl AgentLoop {
                 voice_playback,
                 cancel_token,
                 turn_budget,
+                image_refs,
             )
             .await;
 
@@ -3303,13 +3420,15 @@ impl AgentLoop {
         }
 
         // Append to chat log (independent of session store).
-        crate::chat_log::append_chat_log_full(
+        // T6（多模态）：user 行带图片路径引用（只存路径不落字节）。
+        crate::chat_log::append_chat_log_full_with_images(
             session_key,
             "user",
             user_message,
             None,
             cron_job_id,
             cron_job_name,
+            image_refs,
         );
         crate::chat_log::append_chat_log_full(
             session_key,
@@ -3379,6 +3498,7 @@ impl AgentLoop {
             false,
             &token,
             None,
+            &[],
         )
         .await
     }
@@ -3398,6 +3518,7 @@ impl AgentLoop {
         voice_playback: bool,
         cancel_token: &tokio_util::sync::CancellationToken,
         turn_budget: Option<u32>,
+        image_refs: &[String],
     ) -> Vec<AgentEvent> {
         // K2 (U14): prompt-level lifecycle hooks (CC SessionStart +
         // UserPromptSubmit dialect events). Runs BEFORE `add_user_message`
@@ -3428,7 +3549,9 @@ impl AgentLoop {
         }
 
         // Add user message to instance history.
-        instance.add_user_message(user_message);
+        // T5（多模态）：带图片路径引用的变体（引用进 ConversationTurn.image_refs，
+        // build_messages 每轮水合；无图时与 add_user_message 等价）。
+        instance.add_user_message_with_images(user_message, image_refs);
         instance.set_state(crate::types::AgentState::Thinking);
 
         self.run_llm_loop(
@@ -3668,11 +3791,53 @@ impl AgentLoop {
                     // arrive marker-free whether injected in-turn (here) or
                     // replayed post-turn (drain path).
                     let content = crate::inbox::strip_steer_marker(&m.msg.content).to_string();
-                    instance.add_user_message(&content);
-                    crate::chat_log::append_chat_log(
+                    // B1（2026-09-03 二次回归）：steer 消息与首轮同源——同样可能
+                    // 携带图片（media 引用 + 文本点名路径）。走与 process_admitted
+                    // 同一附加链（URL 预取 + 统一附加 + 诚实注记 + image_refs），
+                    // 不静默丢图。
+                    let ws_for_uploads = self.workspace_root.read().clone();
+                    let uploads_base = ws_for_uploads
+                        .unwrap_or_else(|| nemesis_path::default_path_manager().workspace());
+                    let uploads_dir = nemesis_path::resolve_uploads_dir_in_workspace(&uploads_base);
+                    let (media_for_attach, url_notes) = crate::image_attach::fetch_url_media(
+                        &m.msg.media,
+                        &uploads_dir,
+                        #[cfg(feature = "security")]
+                        self.security_plugin.as_deref().and_then(|p| p.ssrf_guard()),
+                        #[cfg(not(feature = "security"))]
+                        None,
+                    )
+                    .await;
+                    let attach = crate::image_attach::attach_turn_images(
+                        &content,
+                        &media_for_attach,
+                        self.workspace_root.read().as_deref(),
+                        &m.msg.channel,
+                        #[cfg(feature = "security")]
+                        self.security_plugin.as_deref(),
+                        #[cfg(not(feature = "security"))]
+                        None,
+                    );
+                    let content = attach.merge_into_text(content);
+                    let content = crate::image_attach::AttachOutcome {
+                        attached: Vec::new(),
+                        notes: url_notes,
+                    }
+                    .merge_into_text(content);
+                    instance.add_user_message_with_images(&content, &attach.ref_strings());
+                    // L3（2026-09-04 四轮盲审）：steer 的 chat_log 行也要带图片
+                    // 路径引用——首轮路径用 append_chat_log_full_with_images，
+                    // steer 路径却用 3 参变体丢掉 images → 会话浏览器/self-heal
+                    // 重建/fork 时 steer 轮的图片凭空消失（instance 里有图、
+                    // 落盘行无图，两套存储分叉）。
+                    crate::chat_log::append_chat_log_full_with_images(
                         &context.session_key,
                         "user",
                         &format!("[steer] {}", content),
+                        None,
+                        None,
+                        None,
+                        &attach.ref_strings(),
                     );
                     info!(
                         "[AgentLoop] steer message injected before LLM call: session_key={}, len={}",
@@ -3736,6 +3901,7 @@ impl AgentLoop {
                     tool_calls: None,
                     tool_call_id: None,
                     reasoning_content: None,
+                    images: Vec::new(),
                 });
                 replay_injections.push(crate::replay::InjectionRecord {
                     index: messages.len() - 1,
@@ -3754,6 +3920,7 @@ impl AgentLoop {
                     tool_calls: None,
                     tool_call_id: None,
                     reasoning_content: None,
+                    images: Vec::new(),
                 });
                 replay_injections.push(crate::replay::InjectionRecord {
                     index: messages.len() - 1,
@@ -3771,6 +3938,7 @@ impl AgentLoop {
                     tool_calls: None,
                     tool_call_id: None,
                     reasoning_content: None,
+                    images: Vec::new(),
                 });
                 replay_injections.push(crate::replay::InjectionRecord {
                     index: messages.len() - 1,
@@ -3836,10 +4004,8 @@ impl AgentLoop {
             );
 
             // Emit LLM request observer event.
-            let msg_values: Vec<serde_json::Value> = messages
-                .iter()
-                .filter_map(|m| serde_json::to_value(m).ok())
-                .collect();
+            // F-J：经 observer_msg_values 剥掉图片 base64（见其 doc）。
+            let msg_values: Vec<serde_json::Value> = observer_msg_values(&messages);
             let tool_values: Vec<serde_json::Value> = tool_defs
                 .iter()
                 .filter_map(|t| serde_json::to_value(t).ok())
@@ -3904,8 +4070,14 @@ impl AgentLoop {
                     injections: replay_injections,
                     voice_append: replay_voice,
                     summary_as_of: build_annotation.summary_as_of.clone(),
+                    vision_projected: build_annotation.vision_projected,
                 });
             }
+
+            // T10（多模态 D4 ③）：provider 兜底提示的判定输入——最终请求里
+            // 是否真的带了图片字节（vision=yes/默认放行时图才会进来；nudge/
+            // hook 注入消息恒无图）。
+            let request_had_images = messages.iter().any(|m| !m.images.is_empty());
 
             // Use tokio::select! to allow cancellation / e-stop during the LLM call.
             let chat_result = tokio::select! {
@@ -4054,8 +4226,14 @@ impl AgentLoop {
                                         Some(retry_err.as_str()),
                                     );
                                 }
+                                // T10（多模态 D4 ③）：兜底提示只进用户可见
+                                // 文案；retry_err 原文继续走 history /
+                                // observer / capture（诊断不掺提示）。
                                 let formatted =
-                                    context.format_rpc_message(&format!("Error: {}", retry_err));
+                                    context.format_rpc_message(&append_vision_fallback_hint(
+                                        format!("Error: {}", retry_err),
+                                        request_had_images,
+                                    ));
                                 events.push(AgentEvent::Error(formatted));
                                 break;
                             }
@@ -4166,8 +4344,14 @@ impl AgentLoop {
                                     Some(last_err.as_str()),
                                 );
                             }
+                            // T10（多模态 D4 ③）：同上——提示只进用户可见
+                            // 文案，last_err 原文继续走 history / observer /
+                            // capture。
                             let formatted =
-                                context.format_rpc_message(&format!("Error: {}", last_err));
+                                context.format_rpc_message(&append_vision_fallback_hint(
+                                    format!("Error: {}", last_err),
+                                    request_had_images,
+                                ));
                             events.push(AgentEvent::Error(formatted));
                             break;
                         }
@@ -4238,6 +4422,7 @@ impl AgentLoop {
                                     tool_calls: None,
                                     tool_call_id: None,
                                     reasoning_content: None,
+                                    images: Vec::new(),
                                 });
                                 // Y1 (Phase4-a): fold the retry call's defs with
                                 // the same gates/rendering as the main call —
@@ -4251,10 +4436,7 @@ impl AgentLoop {
                                         model: active_model.clone(),
                                         messages_count: r_msgs.len(),
                                         tools_count: r_tools.len(),
-                                        messages: r_msgs
-                                            .iter()
-                                            .filter_map(|m| serde_json::to_value(m).ok())
-                                            .collect(),
+                                        messages: observer_msg_values(&r_msgs),
                                         tools: r_tools
                                             .iter()
                                             .filter_map(|t| serde_json::to_value(t).ok())
@@ -4783,6 +4965,16 @@ impl AgentLoop {
                             let channel = context.channel.clone();
                             let chat_id = context.chat_id.clone();
                             let session_key = context.session_key.clone();
+                            // T6（多模态）：快照只落图片路径引用（磁盘侧剥离
+                            // base64 字节）。引用取自 instance 历史最后一条
+                            // user turn（即本 turn 的 image_refs，:3468 写入）。
+                            let image_refs: Vec<String> = instance
+                                .get_history()
+                                .iter()
+                                .rev()
+                                .find(|t| t.role == "user")
+                                .map(|t| t.image_refs.clone())
+                                .unwrap_or_default();
 
                             // Save continuation snapshot (spawns a tokio task for disk write)
                             let mgr = mgr.clone();
@@ -4793,7 +4985,7 @@ impl AgentLoop {
                             // 恢复 pending 任务时才知道 poll 该问谁。
                             let peer_id_spawn = target_id.clone();
                             tokio::spawn(async move {
-                                mgr.save_continuation(
+                                mgr.save_continuation_with_images(
                                     &task_id_spawn,
                                     msgs,
                                     &tc_id,
@@ -4801,6 +4993,7 @@ impl AgentLoop {
                                     &chat_id,
                                     &session_key,
                                     &peer_id_spawn,
+                                    &image_refs,
                                 )
                                 .await;
                             });
@@ -5908,6 +6101,22 @@ impl AgentLoop {
             .map(|w| w as usize)
     }
 
+    /// T10（多模态 goal）：active 模型的 vision 能力（读 config.json 新鲜
+    /// 值，同 [`current_max_tokens`] 模式——config.json 是唯一真相源，模型
+    /// 中途切换 / 磁盘改动都自然生效）。standalone / 条目缺失 → 默认放行。
+    pub(crate) fn current_vision(&self) -> nemesis_types::capability::VisionResolution {
+        let active = self.active_model.read().clone();
+        let path = match self.config_path.read().clone() {
+            Some(p) => p,
+            None => return nemesis_types::capability::vision_default_allow(),
+        };
+        std::fs::read_to_string(&path)
+            .ok()
+            .and_then(|s| serde_json::from_str::<serde_json::Value>(&s).ok())
+            .map(|v| nemesis_types::capability::resolve_active_vision(&v, &active))
+            .unwrap_or_else(nemesis_types::capability::vision_default_allow)
+    }
+
     /// T4 (U1): per-model summarizer prefix-reuse switch from config.json
     /// (`summarizer_prefix_reuse`, default true — the main model keeps the
     /// G1 prefix-reuse summary shape). `false` → the summary request falls
@@ -6082,6 +6291,26 @@ impl AgentLoop {
             active_cache.map(|c| (c.text.as_str(), c.covers_up_to)),
         );
 
+        // T10（多模态）：最新 user 注入点的判定提前——vision 投影与后面的
+        // digest 注入共用同一个 index（纯 turns 派生，与注入内容无关）。
+        let last_user_idx = turns
+            .iter()
+            .rposition(|t| t.role == "user")
+            .filter(|&i| i > 0)
+            .filter(|_| turns.first().is_some_and(|t| t.role == "system"));
+
+        // T10（多模态 D4）：vision=no 时把 image_refs 投影为稳定占位文本
+        // （当前轮拒绝注明 / 历史轮已省略）。supported（默认放行含）零改动
+        // ——纯文本请求字节不受影响（字节兼容验收 #2）。投影发生在
+        // turn → 请求消息转换**之前**，图片字节根本不进请求；占位写入的是
+        // 投影视图，历史持久化不动（切回 vision 模型图片原样回来）。投影
+        // 标志随投影台账落盘，replay 用同一共享纯函数重放。
+        let mut turns = turns;
+        let vision_projected = !self.current_vision().supported;
+        if vision_projected {
+            project_turns_for_no_vision(&mut turns, last_user_idx);
+        }
+
         let mut annotation = crate::replay::BuildAnnotation {
             digest_index: None,
             history_len: turns.len(),
@@ -6089,6 +6318,7 @@ impl AgentLoop {
                 covers_up_to: c.covers_up_to,
                 text: c.text.clone(),
             }),
+            vision_projected,
         };
 
         // I2 (U8): time/env becomes the FIRST section of the merged context
@@ -6108,17 +6338,9 @@ impl AgentLoop {
             now, env_hint
         );
 
-        let turn_to_msg = |turn: &crate::types::ConversationTurn| LlmMessage {
-            role: turn.role.clone(),
-            content: turn.content.clone(),
-            tool_calls: if turn.tool_calls.is_empty() {
-                None
-            } else {
-                Some(turn.tool_calls.clone())
-            },
-            tool_call_id: turn.tool_call_id.clone(),
-            reasoning_content: turn.reasoning_content.clone(),
-        };
+        // T5/T6（多模态）：turn → 请求消息统一走 `turn_to_request_message`
+        // （与 replay 重建共用；image_refs 每轮水合重读，失效 → 占位文本）。
+        let turn_to_msg = |turn: &crate::types::ConversationTurn| turn_to_request_message(turn);
 
         // Inject dyn_msg just before the last user message, but only when there
         // is a system prompt at turns[0] to protect (otherwise there's no
@@ -6228,15 +6450,10 @@ impl AgentLoop {
                         tool_calls: None,
                         tool_call_id: None,
                         reasoning_content: None,
+                        images: Vec::new(),
                     })
             }
         };
-
-        let last_user_idx = turns
-            .iter()
-            .rposition(|t| t.role == "user")
-            .filter(|&i| i > 0)
-            .filter(|_| turns.first().is_some_and(|t| t.role == "system"));
 
         match last_user_idx {
             Some(idx) => {
@@ -6622,6 +6839,11 @@ async fn summarize_prefix_owned(
 /// same projection `build_messages`'s `turn_to_msg` performs. Shared by the
 /// summarizers so the summary request's prefix messages are byte-equal to the
 /// main loop's.
+///
+/// T6（多模态）：摘要请求**不发图片字节**（摘要模型可能是不支持视觉的廉价
+/// 档，且图片字节会破坏 G1 前缀复用的字节等价前提）——历史 turn 的
+/// `image_refs` 在此不水合，`images` 恒空。失效图片的占位文本也只出现在
+/// 主循环请求（`turn_to_request_message`）里，摘要请求保持纯文本。
 fn conversation_turn_to_llm_message(turn: &crate::types::ConversationTurn) -> LlmMessage {
     LlmMessage {
         role: turn.role.clone(),
@@ -6633,7 +6855,76 @@ fn conversation_turn_to_llm_message(turn: &crate::types::ConversationTurn) -> Ll
         },
         tool_call_id: turn.tool_call_id.clone(),
         reasoning_content: turn.reasoning_content.clone(),
+        images: Vec::new(),
     }
+}
+
+/// T5/T6（多模态）：主循环请求的 history turn → 请求消息转换（`build_messages`
+/// 与 replay 重建共用，水合语义单点）。路径引用**每轮重读**：验真通过 →
+/// base64 字节进 `LlmMessage.images`；文件已删/失效 → 占位文本行
+/// `[图片已失效: <path>]` 追加进 content（诚实降级，不静默、不炸）。
+pub(crate) fn turn_to_request_message(turn: &crate::types::ConversationTurn) -> LlmMessage {
+    let mut msg = conversation_turn_to_llm_message(turn);
+    if turn.image_refs.is_empty() {
+        return msg;
+    }
+    let (images, placeholders) = crate::image_attach::hydrate_image_refs(&turn.image_refs);
+    if !placeholders.is_empty() {
+        msg.content.push('\n');
+        msg.content.push_str(&placeholders.join("\n"));
+    }
+    msg.images = images;
+    msg
+}
+
+/// T10（多模态 D4）：vision=no 模型的 image_refs 确定性投影（纯函数，生产
+/// build 与 replay 重建共用）。带引用的 turn 一律清空 `image_refs` 并把占位
+/// 文本行追加进 content：
+/// - 最新 user 轮（本轮要发的图）→ `[图片未发送: 当前模型 vision=no（不支持
+///   图像输入），图片已忽略]`（拒绝注明，文本照常处理，与 T5 失败路径同构）；
+/// - 其余（历史）轮 → `[图片已省略: 当前模型仅支持文本]`（模型中途切换不
+///   砖会话）。
+///
+/// 同输入同输出（无时钟/无 IO）：历史前缀字节稳定保 prompt cache；占位写入
+/// 的是**投影视图**——历史持久化的 image_refs 不动，切回 vision 模型图片
+/// 原样回来。`last_user_idx` 用与 build 注入点判定完全相同的表达式。
+pub(crate) fn project_turns_for_no_vision(
+    turns: &mut [crate::types::ConversationTurn],
+    last_user_idx: Option<usize>,
+) {
+    for (i, turn) in turns.iter_mut().enumerate() {
+        if turn.image_refs.is_empty() {
+            continue;
+        }
+        turn.image_refs.clear();
+        let note = if Some(i) == last_user_idx {
+            "[图片未发送: 当前模型 vision=no（不支持图像输入），图片已忽略]"
+        } else {
+            "[图片已省略: 当前模型仅支持文本]"
+        };
+        if turn.content.trim().is_empty() {
+            turn.content.push_str(note);
+        } else {
+            turn.content.push('\n');
+            turn.content.push_str(note);
+        }
+    }
+}
+
+/// T10（多模态 D4 ③）：provider 4xx 兜底——请求带图且本轮调用最终失败时，
+/// 把逃生通道（probe 实测 / vision=no）附加到**用户可见**错误文案。措辞条件
+/// 化（"若该错误与图像输入有关"），对无关失败（网络超时等）不误导；历史、
+/// request_log 与 observer 事件里的原始错误保持干净（不带提示）。
+fn append_vision_fallback_hint(err_text: String, request_had_images: bool) -> String {
+    if !request_had_images {
+        return err_text;
+    }
+    format!(
+        "{}\n[提示: 本次请求携带了图片。若该错误与图像输入有关（如模型不支持视觉），\
+         可运行 `model probe <模型名>` 实测视觉能力，或在 config.json 对应模型条目\
+         设置 \"vision\": \"no\" 后重试。]",
+        err_text
+    )
 }
 
 /// The trailing instruction for a G1 prefix-reuse summary request. Kept in one
@@ -6684,6 +6975,7 @@ async fn summarize_bare_concat_owned(
         tool_calls: None,
         tool_call_id: None,
         reasoning_content: None,
+        images: Vec::new(),
     }];
 
     let response = emit_observer_events_around_llm(
@@ -6775,6 +7067,7 @@ async fn summarize_multipart_owned(
         tool_calls: None,
         tool_call_id: None,
         reasoning_content: None,
+        images: Vec::new(),
     }];
 
     let response = emit_observer_events_around_llm(
@@ -6845,6 +7138,7 @@ async fn summarize_batch_owned(
         tool_calls: None,
         tool_call_id: None,
         reasoning_content: None,
+        images: Vec::new(),
     });
 
     let response = emit_observer_events_around_llm(

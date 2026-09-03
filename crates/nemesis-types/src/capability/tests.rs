@@ -261,3 +261,211 @@ fn test_resolve_reasoning_effort_tiers() {
     // Unknown tier → None (no garbage on the wire).
     assert_eq!(resolve_reasoning_effort(&cfg, "d"), None);
 }
+
+// ============================================================================
+// T10（多模态 goal）：vision 能力解析（解析序 User > Probe > Name > Default）
+// ============================================================================
+
+#[test]
+fn vision_name_detection_boundaries() {
+    // 组合规则：qwen/kimi 系 -VL 变体（归一化去点/连字符）。
+    assert!(detect_vision_from_name("qwen2.5-vl"));
+    assert!(detect_vision_from_name("Qwen2.5-VL-72B"));
+    assert!(detect_vision_from_name("qwen/qwen2.5-vl-72b-instruct"));
+    assert!(detect_vision_from_name("kimi-vl-a3b"));
+    // 单标记家族。
+    assert!(detect_vision_from_name("gpt-4o"));
+    assert!(detect_vision_from_name("gpt-4.1"));
+    assert!(detect_vision_from_name("o1-mini"));
+    assert!(detect_vision_from_name("gemini-2.5-flash"));
+    assert!(detect_vision_from_name("claude-sonnet-4"));
+    assert!(detect_vision_from_name("llava-1.5"));
+    assert!(detect_vision_from_name("InternVL2-8B"));
+    assert!(detect_vision_from_name("glm-4.1v-thinking"));
+    assert!(detect_vision_from_name("my-model-vision-addon"));
+    // 纯文本模型不命中（false → 调用方落到名字/默认层）。
+    assert!(!detect_vision_from_name("qwen2.5-72b"));
+    assert!(!detect_vision_from_name("kimi-k2-instruct"));
+    assert!(!detect_vision_from_name("deepseek-v4-flash"));
+    assert!(!detect_vision_from_name("astron-code-latest"));
+}
+
+#[test]
+fn vision_resolution_user_pin_wins() {
+    let cfg = serde_json::json!({
+        "model_list": [
+            {"model_name": "pinned-yes", "model": "x/pinned-yes", "vision": "yes"},
+            {"model_name": "pinned-no", "model": "x/pinned-no", "vision": "no"},
+            // 用户钉 no 压过名字命中 + 探针实测。
+            {"model_name": "qwen2.5-vl", "model": "x/qwen2.5-vl",
+             "vision": "no", "vision_probe": true},
+            // 用户钉 yes 压过探针 false。
+            {"model_name": "plain", "model": "x/plain",
+             "vision": "yes", "vision_probe": false}
+        ]
+    });
+    assert_eq!(
+        resolve_active_vision(&cfg, "pinned-yes"),
+        VisionResolution {
+            supported: true,
+            source: VisionSource::User
+        }
+    );
+    assert_eq!(
+        resolve_active_vision(&cfg, "pinned-no"),
+        VisionResolution {
+            supported: false,
+            source: VisionSource::User
+        }
+    );
+    assert_eq!(
+        resolve_active_vision(&cfg, "qwen2.5-vl"),
+        VisionResolution {
+            supported: false,
+            source: VisionSource::User
+        },
+        "用户钉死压过探针与名字"
+    );
+    assert_eq!(
+        resolve_active_vision(&cfg, "plain"),
+        VisionResolution {
+            supported: true,
+            source: VisionSource::User
+        }
+    );
+}
+
+// L8（2026-09-04 四轮盲审）：钉死值宽容解析——大写 / JSON 布尔 / true/false
+// 变体都算用户钉死，不再静默忽略落回名字识别（用户明确表达了意图）。
+#[test]
+fn vision_resolution_user_pin_tolerant_forms() {
+    let cfg = serde_json::json!({
+        "model_list": [
+            {"model_name": "upper-no", "model": "x/u", "vision": "NO"},
+            {"model_name": "mixed-yes", "model": "x/m", "vision": "Yes"},
+            {"model_name": "bool-true", "model": "x/bt", "vision": true},
+            {"model_name": "bool-false", "model": "x/bf", "vision": false},
+            {"model_name": "str-true", "model": "x/st", "vision": "true"},
+            {"model_name": "padded-no", "model": "x/pn", "vision": " no "}
+        ]
+    });
+    let no = VisionResolution {
+        supported: false,
+        source: VisionSource::User,
+    };
+    let yes = VisionResolution {
+        supported: true,
+        source: VisionSource::User,
+    };
+    assert_eq!(resolve_active_vision(&cfg, "upper-no"), no, "大写 NO");
+    assert_eq!(
+        resolve_active_vision(&cfg, "mixed-yes"),
+        yes,
+        "混合大小写 Yes"
+    );
+    assert_eq!(
+        resolve_active_vision(&cfg, "bool-true"),
+        yes,
+        "JSON 布尔 true"
+    );
+    assert_eq!(
+        resolve_active_vision(&cfg, "bool-false"),
+        no,
+        "JSON 布尔 false"
+    );
+    assert_eq!(resolve_active_vision(&cfg, "str-true"), yes, "字符串 true");
+    assert_eq!(resolve_active_vision(&cfg, "padded-no"), no, "首尾空白 no");
+}
+
+/// 垃圾钉死值（空串/乱写）不钉死 → 落回名字识别（qwen-vl 命中支持）。
+#[test]
+fn vision_resolution_garbage_pin_falls_through_to_name() {
+    let cfg = serde_json::json!({
+        "model_list": [
+            {"model_name": "qwen2.5-vl", "model": "x/q", "vision": "maybe"},
+            {"model_name": "plain", "model": "x/p", "vision": ""}
+        ]
+    });
+    assert_eq!(
+        resolve_active_vision(&cfg, "qwen2.5-vl"),
+        VisionResolution {
+            supported: true,
+            source: VisionSource::Name
+        },
+        "垃圾钉死值落回名字识别"
+    );
+    assert_eq!(
+        resolve_active_vision(&cfg, "plain"),
+        VisionResolution {
+            supported: true,
+            source: VisionSource::DefaultAllow
+        },
+        "空串钉死值落回默认放行"
+    );
+}
+
+#[test]
+fn vision_resolution_probe_overrides_name() {
+    let cfg = serde_json::json!({
+        "model_list": [
+            {"model_name": "gpt-4o", "model": "x/gpt-4o", "vision_probe": false},
+            {"model_name": "plain", "model": "x/plain", "vision_probe": true}
+        ]
+    });
+    // 探针实测 false 压过名字命中。
+    assert_eq!(
+        resolve_active_vision(&cfg, "gpt-4o"),
+        VisionResolution {
+            supported: false,
+            source: VisionSource::Probe
+        }
+    );
+    // 探针实测 true（名字认不出时也放行，来源标记为 probe）。
+    assert_eq!(
+        resolve_active_vision(&cfg, "plain"),
+        VisionResolution {
+            supported: true,
+            source: VisionSource::Probe
+        }
+    );
+}
+
+#[test]
+fn vision_resolution_name_and_default() {
+    let cfg = serde_json::json!({
+        "model_list": [
+            {"model_name": "qwen2.5-vl", "model": "vendor/qwen2.5-vl-72b"},
+            // opaque 别名 + real_name 参与 名字识别。
+            {"model_name": "astron-code-latest", "model": "vendor/astron-code-latest",
+             "real_name": "Qwen2.5-VL-72B"},
+            {"model_name": "plain", "model": "x/plain"}
+        ]
+    });
+    // 名字命中。
+    assert_eq!(
+        resolve_active_vision(&cfg, "qwen2.5-vl"),
+        VisionResolution {
+            supported: true,
+            source: VisionSource::Name
+        }
+    );
+    // real_name 命中（opaque 别名场景）。
+    assert_eq!(
+        resolve_active_vision(&cfg, "astron-code-latest"),
+        VisionResolution {
+            supported: true,
+            source: VisionSource::Name
+        }
+    );
+    // 认不出 → 默认放行（不是拒绝）。
+    assert_eq!(resolve_active_vision(&cfg, "plain"), vision_default_allow());
+    // 条目缺失 / 无 model_list → 默认放行。
+    assert_eq!(
+        resolve_active_vision(&cfg, "nonexistent"),
+        vision_default_allow()
+    );
+    assert_eq!(
+        resolve_active_vision(&serde_json::json!({}), "anything"),
+        vision_default_allow()
+    );
+}

@@ -347,7 +347,7 @@ impl NodeExecutor for RealLLMNodeExecutor {
         if let Some(sys) = system_prompt {
             messages.push(Message {
                 role: "system".to_string(),
-                content: sys,
+                content: sys.into(),
                 tool_calls: Vec::new(),
                 tool_call_id: None,
                 timestamp: None,
@@ -357,7 +357,7 @@ impl NodeExecutor for RealLLMNodeExecutor {
         }
         messages.push(Message {
             role: "user".to_string(),
-            content: prompt,
+            content: prompt.into(),
             tool_calls: Vec::new(),
             tool_call_id: None,
             timestamp: None,
@@ -2266,7 +2266,7 @@ impl NodeExecutor for QuestionClassifierNodeExecutor {
             let messages = vec![
                 Message {
                     role: "system".to_string(),
-                    content: system_prompt.clone(),
+                    content: system_prompt.clone().into(),
                     tool_calls: Vec::new(),
                     tool_call_id: None,
                     timestamp: None,
@@ -2275,7 +2275,7 @@ impl NodeExecutor for QuestionClassifierNodeExecutor {
                 },
                 Message {
                     role: "user".to_string(),
-                    content: question.clone(),
+                    content: question.clone().into(),
                     tool_calls: Vec::new(),
                     tool_call_id: None,
                     timestamp: None,
@@ -2557,7 +2557,7 @@ impl NodeExecutor for ParameterExtractorNodeExecutor {
             let messages = vec![
                 Message {
                     role: "system".to_string(),
-                    content: system_prompt.clone(),
+                    content: system_prompt.clone().into(),
                     tool_calls: Vec::new(),
                     tool_call_id: None,
                     timestamp: None,
@@ -2566,7 +2566,7 @@ impl NodeExecutor for ParameterExtractorNodeExecutor {
                 },
                 Message {
                     role: "user".to_string(),
-                    content: text.clone(),
+                    content: text.clone().into(),
                     tool_calls: Vec::new(),
                     tool_call_id: None,
                     timestamp: None,

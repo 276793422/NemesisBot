@@ -76,7 +76,8 @@ func main() {
 	registry.Register(models.NewTestAI91())
 	registry.Register(models.NewTestAI92())
 	registry.Register(models.NewTestAI93())
-	fmt.Println("测试模型已注册: testai-1.1, testai-1.2, testai-1.3, testai-1.4, testai-2.0, testai-2.1, testai-3.0, testai-3.1, testai-4.2, testai-4.3, testai-5.0, testai-6.0, testai-7.0, testai-8.0, testai-9.0, testai-9.1, testai-9.2, testai-9.3")
+	registry.Register(models.NewTestAIVision())
+	fmt.Println("测试模型已注册: testai-1.1, testai-1.2, testai-1.3, testai-1.4, testai-2.0, testai-2.1, testai-3.0, testai-3.1, testai-4.2, testai-4.3, testai-5.0, testai-6.0, testai-7.0, testai-8.0, testai-9.0, testai-9.1, testai-9.2, testai-9.3, testai-vision-1.0")
 
 	// 别名表（W1.5）：TESTAI_ALIASES="gpt-4o-mini=testai-1.1,..." 把价目表内
 	// 已知的真实模型名映射到测试模型，使计价管线断言不依赖真实模型环境。

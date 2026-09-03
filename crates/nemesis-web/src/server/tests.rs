@@ -187,6 +187,7 @@ async fn test_process_messages_publishes_to_bus() {
         content: "hello".to_string(),
         metadata: HashMap::new(),
         voice_playback: None,
+        media: Vec::new(),
     })
     .unwrap();
     drop(tx); // Close the sender so process_messages exits
@@ -394,6 +395,7 @@ async fn test_process_messages_preserves_metadata() {
         content: "test".to_string(),
         metadata,
         voice_playback: None,
+        media: Vec::new(),
     })
     .unwrap();
     drop(tx);
@@ -703,6 +705,7 @@ async fn test_process_messages_multiple_messages() {
             content: format!("message {}", i),
             metadata: HashMap::new(),
             voice_playback: None,
+            media: Vec::new(),
         })
         .unwrap();
     }
@@ -1148,6 +1151,7 @@ async fn test_process_messages_with_bus_and_metadata() {
         content: "What is the weather?".to_string(),
         metadata,
         voice_playback: None,
+        media: Vec::new(),
     })
     .unwrap();
     drop(tx);

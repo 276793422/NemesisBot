@@ -6,7 +6,7 @@ fn test_messages_to_prompt() {
     let messages = vec![
         Message {
             role: "user".to_string(),
-            content: "Hello".to_string(),
+            content: "Hello".into(),
             tool_calls: vec![],
             tool_call_id: None,
             timestamp: None,
@@ -15,7 +15,7 @@ fn test_messages_to_prompt() {
         },
         Message {
             role: "assistant".to_string(),
-            content: "Hi there".to_string(),
+            content: "Hi there".into(),
             tool_calls: vec![],
             tool_call_id: None,
             timestamp: None,
@@ -83,7 +83,7 @@ fn test_messages_to_prompt_single_message() {
     let provider = GitHubCopilotProvider::new(GitHubCopilotConfig::default());
     let messages = vec![Message {
         role: "user".to_string(),
-        content: "Hello".to_string(),
+        content: "Hello".into(),
         tool_calls: vec![],
         tool_call_id: None,
         timestamp: None,
@@ -134,7 +134,7 @@ use wiremock::{Mock, MockServer, ResponseTemplate};
 fn gh_messages() -> Vec<Message> {
     vec![Message {
         role: "user".to_string(),
-        content: "hello".to_string(),
+        content: "hello".into(),
         tool_calls: vec![],
         tool_call_id: None,
         timestamp: None,

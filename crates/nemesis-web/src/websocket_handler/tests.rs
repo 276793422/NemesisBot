@@ -20,6 +20,73 @@ fn test_handle_chat_send_empty_content() {
     assert!(result.unwrap_err().contains("empty"));
 }
 
+// BUG-1（2026-09-03 二次回归）：纯图片消息合法——content 空但带 media 引用
+// 放行；引用解析失败诚实注记进文本（测试环境无该上传文件 → 注记 + media 空）。
+#[test]
+fn test_handle_chat_send_pure_media_passes() {
+    let raw = br#"{"type":"message","module":"chat","cmd":"send","data":{"content":"","media":[{"id":"no_such_upload_zz.png"}]}}"#;
+    let result = handle_text_message("s1", "web:s1", "web:s1", raw).unwrap();
+    assert!(result.is_some(), "纯图片消息不应被空 content 检查拒绝");
+    let msg = result.unwrap();
+    assert!(
+        msg.content.contains("[图片未附加:"),
+        "无效引用应诚实注记: {:?}",
+        msg.content
+    );
+    assert!(msg.media.is_empty(), "解析失败的引用不应进 media");
+}
+
+// BUG-1 反向：空 content + 空 media 数组 = 真空消息，仍拒绝。
+#[test]
+fn test_handle_chat_send_empty_content_with_empty_media_rejected() {
+    let raw =
+        br#"{"type":"message","module":"chat","cmd":"send","data":{"content":"","media":[]}}"#;
+    let result = handle_text_message("s1", "web:s1", "web:s1", raw);
+    assert!(result.is_err());
+    assert!(result.unwrap_err().contains("empty"));
+}
+
+// 四轮盲审（2026-09-04）补强：真实可解析的上传 id → media 填充解析出的
+// 路径（上方 BUG-1 测试只锚定失败臂——注记 + media 空；成功臂必须有测试
+// 钉住，防止解析路径回归成「永远注记」）。
+// 竞态纪律（env-test-race-lock-pattern）：resolve_media_ref 走 PathManager
+// 单例 → 需重定向进程全局 home；持模块级锁串行 + RAII 恢复。
+#[test]
+fn test_handle_chat_send_resolvable_media_id_populates_media() {
+    static LOCK: std::sync::OnceLock<std::sync::Mutex<()>> = std::sync::OnceLock::new();
+    let _guard = LOCK
+        .get_or_init(|| std::sync::Mutex::new(()))
+        .lock()
+        .unwrap();
+    let dir = tempfile::tempdir().unwrap();
+    let old_home = nemesis_path::default_path_manager().home_dir();
+    nemesis_path::default_path_manager().set_home_dir(dir.path().to_path_buf());
+
+    // 在重定向后的 uploads 目录里放一张真实 PNG（magic 合法即可，水合在
+    // agent 层，这里只验证引用解析）。
+    let uploads_dir = nemesis_path::resolve_uploads_dir_in_workspace(
+        &nemesis_path::default_path_manager().workspace(),
+    );
+    std::fs::create_dir_all(&uploads_dir).unwrap();
+    let png: &[u8] = &[0x89, b'P', b'N', b'G', 0x0D, 0x0A, 0x1A, 0x0A, 1, 2, 3];
+    std::fs::write(uploads_dir.join("web_test_ok.png"), png).unwrap();
+
+    let raw = r#"{"type":"message","module":"chat","cmd":"send","data":{"content":"看这张","media":[{"id":"web_test_ok.png"}]}}"#.as_bytes();
+    let result = handle_text_message("s1", "web:s1", "web:s1", raw);
+    // RAII 恢复（断言前恢复，避免 panic 污染同进程其它测试）。
+    nemesis_path::default_path_manager().set_home_dir(old_home);
+    let msg = result.unwrap().expect("带可解析 media 的消息应放行");
+    assert!(!msg.content.contains("[图片未附加"), "不应有失败注记");
+    assert_eq!(msg.media.len(), 1, "解析成功 → media 填充");
+    assert_eq!(msg.media[0].media_type, "image");
+    let expected = uploads_dir.join("web_test_ok.png");
+    assert_eq!(
+        msg.media[0].url,
+        expected.to_string_lossy(),
+        "media.url = 解析出的落盘路径"
+    );
+}
+
 #[test]
 fn test_handle_heartbeat_ping() {
     let raw = br#"{"type":"system","module":"heartbeat","cmd":"ping","data":null}"#;
@@ -265,6 +332,7 @@ fn test_incoming_message_debug() {
         content: "hello".to_string(),
         metadata: HashMap::new(),
         voice_playback: None,
+        media: Vec::new(),
     };
     let debug_str = format!("{:?}", msg);
     assert!(debug_str.contains("s1"));
@@ -280,6 +348,7 @@ fn test_incoming_message_clone() {
         content: "hello".to_string(),
         metadata: HashMap::new(),
         voice_playback: None,
+        media: Vec::new(),
     };
     let cloned = msg.clone();
     assert_eq!(cloned.session_id, msg.session_id);
@@ -345,6 +414,7 @@ fn test_incoming_message_with_metadata() {
         content: "hello".to_string(),
         metadata,
         voice_playback: None,
+        media: Vec::new(),
     };
     assert_eq!(msg.metadata.get("key1"), Some(&"val1".to_string()));
 }
@@ -358,6 +428,7 @@ fn test_incoming_message_equality() {
         content: "hello".to_string(),
         metadata: HashMap::new(),
         voice_playback: None,
+        media: Vec::new(),
     };
     let msg2 = msg1.clone();
     assert_eq!(msg1.session_id, msg2.session_id);
@@ -373,6 +444,7 @@ fn test_incoming_message_voice_playback_field() {
         content: "hello".to_string(),
         metadata: HashMap::new(),
         voice_playback: None,
+        media: Vec::new(),
     };
     assert!(msg_none.voice_playback.is_none());
 
@@ -383,6 +455,7 @@ fn test_incoming_message_voice_playback_field() {
         content: "hello".to_string(),
         metadata: HashMap::new(),
         voice_playback: Some(true),
+        media: Vec::new(),
     };
     assert_eq!(msg_enabled.voice_playback, Some(true));
 }
@@ -609,6 +682,7 @@ fn test_incoming_message_default_metadata() {
         content: "hi".to_string(),
         metadata: HashMap::new(),
         voice_playback: None,
+        media: Vec::new(),
     };
     assert!(msg.metadata.is_empty());
     assert_eq!(msg.session_id, "s");
@@ -703,6 +777,7 @@ fn test_incoming_message_clone_equality() {
             m
         },
         voice_playback: None,
+        media: Vec::new(),
     };
     let cloned = msg.clone();
     assert_eq!(cloned.session_id, msg.session_id);

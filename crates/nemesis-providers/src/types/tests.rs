@@ -4,7 +4,7 @@ use super::*;
 fn test_message_serialization() {
     let msg = Message {
         role: "user".to_string(),
-        content: "Hello".to_string(),
+        content: "Hello".into(),
         tool_calls: vec![],
         tool_call_id: None,
         timestamp: None,
@@ -97,7 +97,7 @@ fn test_provider_model_config_deserialization() {
 fn test_message_with_tool_calls() {
     let msg = Message {
         role: "assistant".to_string(),
-        content: "".to_string(),
+        content: "".into(),
         tool_calls: vec![ToolCall {
             id: "call_1".to_string(),
             call_type: Some("function".to_string()),
@@ -122,7 +122,7 @@ fn test_message_with_tool_calls() {
 fn test_message_with_tool_call_id() {
     let msg = Message {
         role: "tool".to_string(),
-        content: "file contents".to_string(),
+        content: "file contents".into(),
         tool_calls: vec![],
         tool_call_id: Some("call_123".to_string()),
         timestamp: None,
@@ -140,7 +140,7 @@ fn test_message_with_timestamp() {
     let now = chrono::Local::now();
     let msg = Message {
         role: "user".to_string(),
-        content: "hello".to_string(),
+        content: "hello".into(),
         tool_calls: vec![],
         tool_call_id: None,
         timestamp: Some(now),
@@ -156,7 +156,7 @@ fn test_message_with_timestamp() {
 fn test_message_skip_empty_tool_calls() {
     let msg = Message {
         role: "user".to_string(),
-        content: "hello".to_string(),
+        content: "hello".into(),
         tool_calls: vec![],
         tool_call_id: None,
         timestamp: None,
@@ -172,7 +172,7 @@ fn test_message_skip_empty_tool_calls() {
 fn test_message_skip_none_fields() {
     let msg = Message {
         role: "user".to_string(),
-        content: "hello".to_string(),
+        content: "hello".into(),
         tool_calls: vec![],
         tool_call_id: None,
         timestamp: None,
@@ -238,7 +238,7 @@ fn test_function_call_serialization() {
 #[test]
 fn test_llm_response_no_usage_serialization() {
     let resp = LLMResponse {
-        content: "Hello".to_string(),
+        content: "Hello".into(),
         tool_calls: vec![],
         finish_reason: "stop".to_string(),
         usage: None,
@@ -254,7 +254,7 @@ fn test_llm_response_no_usage_serialization() {
 #[test]
 fn test_llm_response_with_tool_calls_serialization() {
     let resp = LLMResponse {
-        content: "".to_string(),
+        content: "".into(),
         tool_calls: vec![ToolCall {
             id: "c1".to_string(),
             call_type: Some("function".to_string()),
@@ -458,7 +458,7 @@ fn test_tool_call_minimal() {
 #[test]
 fn test_llm_response_serialization() {
     let resp = LLMResponse {
-        content: "Hello!".to_string(),
+        content: "Hello!".into(),
         tool_calls: vec![],
         finish_reason: "stop".to_string(),
         usage: Some(UsageInfo {
@@ -506,4 +506,216 @@ fn test_tool_definition_serialization() {
     let json = serde_json::to_string(&td).unwrap();
     assert!(json.contains("test_tool"));
     assert!(json.contains("function"));
+}
+
+// ============================================================
+// T1 内容类型多态（D1=A）验证：serde 三态 + 旧快照兼容 + helper
+// ============================================================
+
+#[test]
+fn test_message_content_text_serializes_as_json_string() {
+    // 纯文本形态必须序列化为 JSON 字符串（字节兼容现网请求，快照契约）
+    let c = MessageContent::Text("hello 世界".to_string());
+    let json = serde_json::to_string(&c).unwrap();
+    assert_eq!(json, r#""hello 世界""#);
+}
+
+#[test]
+fn test_message_content_parts_serialize_as_array() {
+    let c = MessageContent::Parts(vec![
+        ContentPart::Text {
+            text: "看这张图".to_string(),
+        },
+        ContentPart::Image {
+            image: ImageSource::Url("https://example.com/a.png".to_string()),
+            detail: None,
+        },
+    ]);
+    let json = serde_json::to_string(&c).unwrap();
+    assert_eq!(
+        json,
+        r#"[{"type":"text","text":"看这张图"},{"type":"image","image":{"url":"https://example.com/a.png"}}]"#
+    );
+}
+
+#[test]
+fn test_message_content_serde_roundtrip_three_forms() {
+    // 形态 1：纯字符串
+    let c: MessageContent = serde_json::from_str(r#""plain text""#).unwrap();
+    assert_eq!(c, MessageContent::Text("plain text".to_string()));
+
+    // 形态 2：纯文本数组
+    let c: MessageContent =
+        serde_json::from_str(r#"[{"type":"text","text":"a"},{"type":"text","text":"b"}]"#).unwrap();
+    match c {
+        MessageContent::Parts(parts) => {
+            assert_eq!(parts.len(), 2);
+            assert_eq!(parts[0], ContentPart::Text { text: "a".into() });
+        }
+        other => panic!("expected Parts, got {:?}", other),
+    }
+
+    // 形态 3：混合（文本 + base64 图 + detail）round-trip
+    let original = MessageContent::Parts(vec![
+        ContentPart::Text {
+            text: "这是什么".to_string(),
+        },
+        ContentPart::Image {
+            image: ImageSource::Base64 {
+                media_type: "image/png".to_string(),
+                data: "aGVsbG8=".to_string(),
+            },
+            detail: Some(ImageDetail::Low),
+        },
+    ]);
+    let json = serde_json::to_string(&original).unwrap();
+    let back: MessageContent = serde_json::from_str(&json).unwrap();
+    assert_eq!(back, original);
+    // detail 序列化形态
+    assert!(json.contains(r#""detail":"low""#));
+    assert!(json.contains(r#""base64""#));
+    assert!(json.contains(r#""media_type":"image/png""#));
+}
+
+#[test]
+fn test_legacy_continuation_snapshot_string_content_loads() {
+    // 旧集群续行快照 messages 字段存 provider Message 的 raw JSON，
+    // content 恒为字符串（goal T1 向后兼容红线）：from_value 加载路径必须可用
+    let legacy = serde_json::json!([
+        { "role": "user", "content": "看看这个" },
+        {
+            "role": "assistant",
+            "content": "",
+            "tool_calls": [
+                {
+                    "id": "call_1",
+                    "type": "function",
+                    "function": { "name": "cluster_rpc", "arguments": "{}" }
+                }
+            ]
+        },
+        { "role": "user", "content": "工具结果文本", "tool_call_id": "call_1" }
+    ]);
+    let messages: Vec<Message> = serde_json::from_value(legacy).unwrap();
+    assert_eq!(messages.len(), 3);
+    assert_eq!(messages[0].content, "看看这个");
+    assert!(messages[0].content.is_pure_text());
+    assert_eq!(messages[2].tool_call_id.as_deref(), Some("call_1"));
+
+    // null content 兜底宽容 → Text("")
+    let nulled: MessageContent = serde_json::from_str("null").unwrap();
+    assert_eq!(nulled, MessageContent::Text(String::new()));
+}
+
+#[test]
+fn test_message_content_helpers() {
+    let text = MessageContent::Text("abc".to_string());
+    assert_eq!(text.as_text(), Some("abc"));
+    assert_eq!(text.to_text(), "abc");
+    assert!(text.is_pure_text());
+    assert!(!text.is_empty());
+    assert!(!text.has_image());
+    assert!(text.contains("bc"));
+    // Display（format! 兼容）
+    assert_eq!(format!("{}", text), "abc");
+    // From / PartialEq<&str>
+    let from_str: MessageContent = "xyz".into();
+    let from_string: MessageContent = String::from("xyz").into();
+    assert_eq!(from_str, from_string);
+    assert_eq!(from_str, "xyz");
+
+    let parts = MessageContent::Parts(vec![
+        ContentPart::Text {
+            text: "行1".to_string(),
+        },
+        ContentPart::Image {
+            image: ImageSource::Url("https://x/y.png".to_string()),
+            detail: None,
+        },
+        ContentPart::Text {
+            text: "行2".to_string(),
+        },
+    ]);
+    // Parts 不是纯文本形态；as_text 返回 None
+    assert_eq!(parts.as_text(), None);
+    assert!(!parts.is_pure_text());
+    // to_text 拼 text part、跳过图片
+    assert_eq!(parts.to_text(), "行1\n行2");
+    // 图片查询
+    assert!(parts.has_image());
+    assert_eq!(parts.images().len(), 1);
+    // 空判断
+    assert!(MessageContent::Text(String::new()).is_empty());
+    assert!(MessageContent::Parts(vec![]).is_empty());
+    // contains 走文本视图
+    assert!(parts.contains("行2"));
+    assert!(!parts.contains("https"));
+}
+
+#[test]
+fn test_message_with_parts_serde_roundtrip() {
+    let msg = Message::parts(
+        "user",
+        vec![
+            ContentPart::Text {
+                text: "看看".to_string(),
+            },
+            ContentPart::Image {
+                image: ImageSource::Base64 {
+                    media_type: "image/jpeg".to_string(),
+                    data: "Zml2ZQ==".to_string(),
+                },
+                detail: Some(ImageDetail::High),
+            },
+        ],
+    );
+    let json = serde_json::to_string(&msg).unwrap();
+    // content 字段内联为数组（Message 序列化不受多态影响）
+    assert!(json.contains(r#""content":[{"type":"text","text":"看看"},{"type":"image""#));
+    let back: Message = serde_json::from_str(&json).unwrap();
+    assert_eq!(back.role, "user");
+    assert!(back.content.has_image());
+    assert_eq!(back.content.to_text(), "看看");
+
+    // 便捷构造器
+    let plain = Message::text("user", "hi");
+    assert_eq!(plain.content, "hi");
+    assert!(plain.content.is_pure_text());
+    assert!(plain.tool_calls.is_empty());
+    assert_eq!(plain.content_str(), "hi");
+}
+
+#[test]
+fn test_to_prompt_text_with_image_note_degrade() {
+    // 纯文本：原样，无占位
+    let text = MessageContent::Text("hello".to_string());
+    assert_eq!(text.to_prompt_text_with_image_note(), "hello");
+
+    // 含图：追加占位（诚实降级）
+    let with_img = MessageContent::Parts(vec![
+        ContentPart::Text {
+            text: "看".to_string(),
+        },
+        ContentPart::Image {
+            image: ImageSource::Url("https://x/y.png".to_string()),
+            detail: None,
+        },
+    ]);
+    assert_eq!(
+        with_img.to_prompt_text_with_image_note(),
+        "看\n[用户附带 1 张图片（当前委派通道不支持视觉输入）]"
+    );
+
+    // 两张图计数正确
+    let two = MessageContent::Parts(vec![
+        ContentPart::Image {
+            image: ImageSource::Url("https://x/1.png".to_string()),
+            detail: None,
+        },
+        ContentPart::Image {
+            image: ImageSource::Url("https://x/2.png".to_string()),
+            detail: None,
+        },
+    ]);
+    assert!(two.to_prompt_text_with_image_note().contains("2 张图片"));
 }

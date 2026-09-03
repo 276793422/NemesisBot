@@ -556,23 +556,26 @@ impl TelegramChannel {
             content.push_str(caption);
         }
 
-        // Photo — resolve file_id to download URL via getFile API
+        // Photo — T7（多模态）：getFile → 下载落盘 uploads → **本地路径引用**
+        // 进 T5 统一 attach（安全闸 → 历史引用 → build_messages 水合）。
+        // 下载失败诚实降级为 "[Photo received]" 文案（不产出无法水合的引用）。
         if let Some(ref photos) = msg.photo {
             if !photos.is_empty() {
                 // Use the largest photo (last in array)
                 let photo = &photos[photos.len() - 1];
-                let file_url = Self::get_file_url(http, api_url_base, &photo.file_id).await;
-                if let Some(ref url) = file_url {
-                    media.push(MediaAttachment {
-                        media_type: "image".to_string(),
-                        url: url.clone(),
-                        data: None,
-                    });
+                let uploads_dir = nemesis_path::resolve_uploads_dir_in_workspace(
+                    &nemesis_path::default_path_manager().workspace(),
+                );
+                let attachment =
+                    Self::fetch_photo_attachment(http, api_url_base, &photo.file_id, &uploads_dir)
+                        .await;
+                if let Some(ref att) = attachment {
+                    media.push(att.clone());
                 }
                 if !content.is_empty() {
                     content.push('\n');
                 }
-                match (&file_url, &msg.caption) {
+                match (&attachment, &msg.caption) {
                     (Some(_), Some(cap)) => content.push_str(&format!("[image: {cap}]")),
                     (Some(_), None) => content.push_str("[image: photo]"),
                     (None, Some(cap)) => content.push_str(&format!("[Photo received: {cap}]")),
@@ -721,6 +724,92 @@ impl TelegramChannel {
         }
         let file_path = body["result"]["file_path"].as_str()?;
         Some(format!("{api_url_base}/file/{file_path}"))
+    }
+
+    /// T7（多模态，goal 2026-09-03）：把 Telegram photo **下载落盘**成本地
+    /// 文件，返回路径形态的 `MediaAttachment`（供 T5 统一 attach 走安全闸 +
+    /// 历史路径引用；Telegram 的下载 URL 需要 bot token，直接给 agent 引用
+    /// 是无法水合的死链——必须本地方案）。
+    ///
+    /// 流程：getFile 拿 file_path → 组下载 URL → 拉字节 → 写
+    /// `uploads_dir/tg_{file_id sanitized}_{millis}.{ext}`（ext 抠自
+    /// file_path，白名单字母数字且 ≤5 位，缺省 jpg）。任一步失败返回
+    /// `None`，调用方降级为 "[Photo received]" 文案。写后即关 fd
+    /// （`std::fs::write`），返回前数据已落盘（纪律 4）。
+    async fn fetch_photo_attachment(
+        http: Option<&reqwest::Client>,
+        api_url_base: Option<&str>,
+        file_id: &str,
+        uploads_dir: &std::path::Path,
+    ) -> Option<MediaAttachment> {
+        let http = http?;
+        let api_url_base = api_url_base?;
+
+        // Step 1: getFile → file_path
+        let resp = http
+            .post(format!("{api_url_base}/getFile"))
+            .json(&serde_json::json!({"file_id": file_id}))
+            .send()
+            .await
+            .ok()?;
+        let body: serde_json::Value = resp.json().await.ok()?;
+        if body["ok"].as_bool() != Some(true) {
+            return None;
+        }
+        let file_path = body["result"]["file_path"].as_str()?;
+
+        // Step 2: download bytes
+        let bytes = http
+            .get(format!("{api_url_base}/file/{file_path}"))
+            .send()
+            .await
+            .ok()?
+            .error_for_status()
+            .ok()?
+            .bytes()
+            .await
+            .ok()?;
+        if bytes.is_empty() {
+            return None;
+        }
+
+        // Step 3: 落盘（文件名注入面消毒：file_id 只留字母数字，其余转 `_`；
+        // ext 白名单校验，防 file_path 夹带路径分隔符/奇怪后缀）。
+        let ext = std::path::Path::new(file_path)
+            .extension()
+            .and_then(|e| e.to_str())
+            .map(|e| e.trim_start_matches('.').to_ascii_lowercase())
+            .filter(|e| {
+                !e.is_empty() && e.len() <= 5 && e.chars().all(|c| c.is_ascii_alphanumeric())
+            })
+            .unwrap_or_else(|| "jpg".to_string());
+        let sanitized: String = file_id
+            .chars()
+            .map(|c| if c.is_ascii_alphanumeric() { c } else { '_' })
+            .collect();
+        let name = format!(
+            "tg_{}_{}.{}",
+            sanitized,
+            chrono::Utc::now().timestamp_millis(),
+            ext
+        );
+        let dest = uploads_dir.join(name);
+        if let Some(parent) = dest.parent() {
+            let _ = std::fs::create_dir_all(parent);
+        }
+        std::fs::write(&dest, &bytes).ok()?;
+
+        let path_str = dest.to_string_lossy().into_owned();
+        info!(
+            "[TelegramChannel] photo downloaded to {} ({} bytes)",
+            path_str,
+            bytes.len()
+        );
+        Some(MediaAttachment {
+            media_type: "image".to_string(),
+            url: path_str,
+            data: None,
+        })
     }
 
     /// Attempts to transcribe a voice message.

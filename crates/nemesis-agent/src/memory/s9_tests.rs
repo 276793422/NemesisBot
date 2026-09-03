@@ -18,6 +18,7 @@ fn turn(role: &str, content: &str) -> ConversationTurn {
         reasoning_content: None,
         tool_name: None,
         tool_result_projection: None,
+        image_refs: Vec::new(),
     }
 }
 

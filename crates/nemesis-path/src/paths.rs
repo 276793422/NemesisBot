@@ -403,6 +403,16 @@ pub fn workspace_dir(home_dir: &Path) -> PathBuf {
     home_dir.join("workspace")
 }
 
+// --- uploads 区（T7 Telegram 图片落盘 / T8 Web 上传端点共享的暂存目录） ---
+
+/// `<workspace>/uploads` —— 入站媒体暂存目录（多模态 goal 2026-09-03）。
+/// temp 语义：TTL 7 天周期清扫（gateway 启动 + 周期，照 task_result_store
+/// 惯例）；用户点名路径 / 历史引用不受清扫影响（引用即路径，文件被清扫后
+/// 水合降级为 `[图片已失效]` 占位）。
+pub fn resolve_uploads_dir_in_workspace(workspace: &Path) -> PathBuf {
+    workspace.join("uploads")
+}
+
 // --- cluster 区（peers.toml 读写方：nemesis-cluster / nemesis-web / CLI） ---
 
 /// `<workspace>/cluster` —— 集群身份/拓扑/续行快照根目录。

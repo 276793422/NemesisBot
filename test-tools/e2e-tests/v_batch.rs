@@ -23,11 +23,16 @@
 //! 文件物证 + accept_edits 差分证明（非交互能写入 ⟹ --permission-mode
 //! 真传到 CLI）+ 结果回灌 AI.Request.md。Codex 半边挂账。
 //!
+//! V6 (T12, 多模态 goal 2026-09-03) vision e2e 两态：WS chat.send 带
+//! data.media [{path}] + testai-vision-1.0（计数 image_url parts）——
+//! ① vision 默认放行：图片上 wire（VISION_OK:1）+ 历史回放第二轮仍带图；
+//! ② vision="no"：projection 剥图（NO_IMAGE）+ AI.Request.md 含剥图注记。
+//!
 //! `#[ignore]` 惯例（与 e2e_ai_flow 一致），显式运行：
 //!   cargo test -p nemesisbot-tests --test v_batch -- --ignored
-//! 前置：testaiserver.exe 已含 testai-8.0/9.0/2.1（go build）；
+//! 前置：testaiserver.exe 已含 testai-8.0/9.0/2.1/testai-vision-1.0（go build）；
 //!       target/release/nemesisbot.exe 已含 read_file offset/limit + memory
-//!       entries.store 走 live manager 的修复；
+//!       entries.store 走 live manager 的修复（V6 另需多模态链路）；
 //!       V2 另需：target/e2e-cache/embedding/all-MiniLM-L6-v2/{model.onnx,
 //!       tokenizer.json} + target/release/plugins/plugin_onnx.dll。
 //!
@@ -1481,5 +1486,228 @@ async fn run_z1(ws: &TestWorkspace, cfg: &serde_json::Value) -> Result<()> {
     }
 
     println!("Z1 session-fork e2e: 4 source turns + fork-at-2 projection all verified");
+    Ok(())
+}
+
+// ===========================================================================
+// V6 (T12, 多模态 goal 2026-09-03): vision e2e —— 真实 gateway + WS 带图
+// chat.send（data.media = [{path}]）+ TestAIServer testai-vision-1.0（计数
+// 请求里全部非空 image_url parts，确定性回复 VISION_OK:<n> / NO_IMAGE）。
+// 两组对照共用同一 Go 模型，唯一差异是 bot 侧 vision 配置：
+//   ① 默认放行（config 无 vision 键）→ 图片穿过 provider 上线：回复
+//      VISION_OK:1；第二轮纯文本消息的历史回放仍带图（同样 VISION_OK:1，
+//      image_refs 重水合）。模型回复即线上真相源——比任何落盘日志更强
+//      （字节真过了 HTTP wire；默认配置不落 raw.json，AI.Request.md 只渲染
+//      content 字符串不渲染图片 parts，故 wire 断言只能靠模型实测回复）。
+//   ② vision="no"（用户钉死，T10 解析序最高优先级）→ projection 剥图：
+//      回复 NO_IMAGE（图片没到模型——若漏剥则回复 VISION_OK:1，等待超时）；
+//      AI.Request.md 的 user turn content 含「[图片未发送: 当前模型
+//      vision=no」注记。
+// 前置：重编后的 testaiserver.exe（含 testai-vision-1.0）+
+//       target/release/nemesisbot.exe（含多模态链路）。
+// ===========================================================================
+
+const V6_AI_PORT: u16 = 18096;
+const V6_WEB_PORT: u16 = 49025;
+const V6_WS_CHANNEL_PORT: u16 = 49026;
+const V6_HEALTH_PORT: u16 = 18797;
+
+// F-A（2026-09-04 四轮盲审）：V6N 与 V6 端口组**必须分离**——两个测试若并行
+// 跑（cargo test -- --ignored 多线程），同端口 bind 冲突 → 先启动方成功、
+// 后启动方 gateway 起不来 → 假失败排障半天。V6N 用独立段（18097/4903x/18798）。
+const V6N_AI_PORT: u16 = 18097;
+const V6N_WEB_PORT: u16 = 49035;
+const V6N_WS_CHANNEL_PORT: u16 = 49036;
+const V6N_HEALTH_PORT: u16 = 18798;
+
+/// 1×1 透明 PNG（与 nemesis-agent probe 第 8 题同一载荷，合法性已在
+/// vision_probe_payload_is_valid_png 离线验证）。
+const V6_PNG_B64: &str = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg==";
+
+/// 带 media 的聊天发送（T8 协议：data.media = [{path: "<本地绝对路径>"}]，
+/// 用户点名路径语义——websocket_handler.rs 原样引用）。
+async fn ws_send_chat_with_media(
+    stream: &mut test_harness::WsStream,
+    content: &str,
+    media: serde_json::Value,
+) -> Result<()> {
+    let msg = serde_json::json!({
+        "type": "message",
+        "module": "chat",
+        "cmd": "send",
+        "data": { "content": content, "media": media },
+        "timestamp": std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_millis()
+            .to_string()
+    });
+    stream.send(Message::Text(msg.to_string().into())).await?;
+    Ok(())
+}
+
+/// pre_gateway 钩子：把 PNG 落进 workspace（绝对路径引用给 chat.send）。
+fn v6_drop_png_fixture(ws: &TestWorkspace) -> Result<()> {
+    use base64::Engine as _;
+    let png = base64::engine::general_purpose::STANDARD.decode(V6_PNG_B64)?;
+    std::fs::write(ws.workspace().join("v6_image.png"), png)?;
+    Ok(())
+}
+
+#[tokio::test]
+#[ignore = "V6 真机：需重编后的 testaiserver.exe（含 testai-vision-1.0）+ target/release/nemesisbot.exe（含多模态链路）"]
+async fn v6_vision_yes_image_reaches_model_e2e() -> Result<()> {
+    let (ws, mut ai, mut gw, cfg) = setup_test_home_ports(
+        "test/testai-vision-1.0",
+        V6_AI_PORT,
+        V6_WEB_PORT,
+        V6_WS_CHANNEL_PORT,
+        V6_HEALTH_PORT,
+        v6_drop_png_fixture,
+    )
+    .await?;
+    let result = run_v6_yes(&ws, &cfg).await;
+    let _ = gw.kill().await;
+    let _ = ai.kill().await;
+    result
+}
+
+async fn run_v6_yes(ws: &TestWorkspace, cfg: &serde_json::Value) -> Result<()> {
+    let token = cfg["channels"]["web"]["auth_token"]
+        .as_str()
+        .unwrap_or("")
+        .to_string();
+    let mut stream = ws_connect(V6_WEB_PORT, &token)
+        .await
+        .context("WS connect to test gateway failed")?;
+
+    let png_path = ws.workspace().join("v6_image.png");
+    anyhow::ensure!(png_path.exists(), "PNG fixture must exist before chat");
+
+    // —— ① 带图首轮：模型必须真的收到图（VISION_OK:1 = provider 请求里
+    //    恰有 1 个非空 image_url part）——
+    ws_send_chat_with_media(
+        &mut stream,
+        "V6_TURN1 描述这张图",
+        serde_json::json!([{ "path": png_path.to_string_lossy() }]),
+    )
+    .await?;
+    let r1 = ws_wait_reply_containing(&mut stream, "VISION_OK", 120).await?;
+    assert!(
+        r1.contains("VISION_OK:1"),
+        "turn-1 must deliver exactly 1 image to the model, got: {r1}"
+    );
+
+    // —— ② 纯文本第二轮：历史回放仍带图（ConversationTurn.image_refs 每轮
+    //    重水合）——若回放丢图，模型会回 NO_IMAGE 而非 VISION_OK:1 ——
+    ws_send_chat(&mut stream, "V6_TURN2 纯文本追问：图还在吗").await?;
+    let r2 = ws_wait_reply_containing(&mut stream, "VISION_OK", 120).await?;
+    assert!(
+        r2.contains("VISION_OK:1"),
+        "turn-2 history replay must still carry the turn-1 image, got: {r2}"
+    );
+
+    // —— ③ request log 真相源：两轮 AI.Request.md 都在；vision=yes 不产生
+    //    剥图注记；第二轮请求回放第一轮文本 ——
+    let files = collect_ai_request_files(&ws.home());
+    let turn1_req = files
+        .iter()
+        .find(|(_, c)| c.contains("V6_TURN1"))
+        .context("no AI.Request.md contains V6_TURN1 — turn not logged?")?;
+    assert!(
+        !turn1_req.1.contains("[图片未发送"),
+        "{}: vision=yes must not add projection notes",
+        turn1_req.0.display()
+    );
+    let turn2_req = files
+        .iter()
+        .find(|(_, c)| c.contains("V6_TURN2"))
+        .context("no AI.Request.md contains V6_TURN2")?;
+    assert!(
+        turn2_req.1.contains("V6_TURN1"),
+        "{}: turn-2 request must replay turn-1 history",
+        turn2_req.0.display()
+    );
+
+    println!("V6 vision=yes e2e: image crossed the wire (VISION_OK:1) and history replay kept it");
+    Ok(())
+}
+
+#[tokio::test]
+#[ignore = "V6N 真机：需重编后的 testaiserver.exe（含 testai-vision-1.0）+ target/release/nemesisbot.exe（含 vision=no projection）"]
+async fn v6n_vision_no_projection_e2e() -> Result<()> {
+    // pre_gateway：落 PNG + 用户钉死 vision=no（T10 解析序最高优先级，
+    // gateway 启动即生效，无需热重载）。
+    let pre = |ws: &TestWorkspace| -> Result<()> {
+        v6_drop_png_fixture(ws)?;
+        let cfg_path = ws.config_path();
+        let mut cfg: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(&cfg_path)?)?;
+        let entry = cfg["model_list"]
+            .as_array_mut()
+            .and_then(|a| a.first_mut())
+            .context("model_list must have the default entry")?;
+        entry["vision"] = serde_json::json!("no");
+        std::fs::write(&cfg_path, serde_json::to_string_pretty(&cfg)?)?;
+        Ok(())
+    };
+    let (ws, mut ai, mut gw, cfg) = setup_test_home_ports(
+        "test/testai-vision-1.0",
+        V6N_AI_PORT,
+        V6N_WEB_PORT,
+        V6N_WS_CHANNEL_PORT,
+        V6N_HEALTH_PORT,
+        pre,
+    )
+    .await?;
+    let result = run_v6_no(&ws, &cfg, V6N_WEB_PORT).await;
+    let _ = gw.kill().await;
+    let _ = ai.kill().await;
+    result
+}
+
+async fn run_v6_no(ws: &TestWorkspace, cfg: &serde_json::Value, web_port: u16) -> Result<()> {
+    let token = cfg["channels"]["web"]["auth_token"]
+        .as_str()
+        .unwrap_or("")
+        .to_string();
+    let mut stream = ws_connect(web_port, &token)
+        .await
+        .context("WS connect to test gateway failed")?;
+
+    let png_path = ws.workspace().join("v6_image.png");
+
+    // —— ① 带图首轮：vision=no → 图片在 projection 阶段被剥，请求正常发出
+    //    （纯文本 + 注记），模型回 NO_IMAGE。若漏剥，模型回 VISION_OK:1、
+    //    不含 NO_IMAGE → 等待超时失败（负向证明）。——
+    ws_send_chat_with_media(
+        &mut stream,
+        "V6N_TURN1 描述这张图",
+        serde_json::json!([{ "path": png_path.to_string_lossy() }]),
+    )
+    .await?;
+    let r1 = ws_wait_reply_containing(&mut stream, "NO_IMAGE", 120).await?;
+    assert!(
+        r1.contains("NO_IMAGE"),
+        "vision=no must strip the image before the provider, got: {r1}"
+    );
+
+    // —— ② request log 真相源：user turn 的 content 含剥图注记
+    //    （「[图片未发送: 当前模型 vision=no（不支持图像输入），图片已忽略]」
+    //    前缀，即模型实际看到的文本）——
+    let files = collect_ai_request_files(&ws.home());
+    let turn1_req = files
+        .iter()
+        .find(|(_, c)| c.contains("V6N_TURN1"))
+        .context("no AI.Request.md contains V6N_TURN1 — turn not logged?")?;
+    assert!(
+        turn1_req.1.contains("[图片未发送: 当前模型 vision=no"),
+        "{}: projection note must be model-facing in the request",
+        turn1_req.0.display()
+    );
+
+    println!(
+        "V6N vision=no e2e: image stripped before provider (NO_IMAGE) + projection note logged"
+    );
     Ok(())
 }

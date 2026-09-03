@@ -22,7 +22,7 @@ use wiremock::{Mock, MockServer, ResponseTemplate};
 fn user_message(content: &str) -> Message {
     Message {
         role: "user".to_string(),
-        content: content.to_string(),
+        content: content.into(),
         tool_calls: vec![],
         tool_call_id: None,
         timestamp: None,
@@ -1105,7 +1105,7 @@ fn test_build_request_body_includes_messages() {
         user_message("hello"),
         Message {
             role: "assistant".to_string(),
-            content: "hi there".to_string(),
+            content: "hi there".into(),
             tool_calls: vec![],
             tool_call_id: None,
             timestamp: None,

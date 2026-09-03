@@ -283,6 +283,7 @@ fn force_compress_turns_logs_and_drops_half() {
             reasoning_content: None,
             tool_name: None,
             tool_result_projection: None,
+            image_refs: Vec::new(),
         });
     }
     let out = force_compress_turns(&hist);

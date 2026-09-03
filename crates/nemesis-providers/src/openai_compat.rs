@@ -123,9 +123,11 @@ impl OpenAICompatProvider {
     ) -> serde_json::Value {
         let normalized_model = self.normalize_model_with_base(model);
 
+        // messages_to_openai_json：纯文本 content 保持字符串（字节不变）；
+        // Parts 消息转 OpenAI vision 数组（text / image_url，detail 透传）。
         let mut body = serde_json::json!({
             "model": normalized_model,
-            "messages": messages,
+            "messages": crate::types::messages_to_openai_json(messages),
         });
 
         if !tools.is_empty() {

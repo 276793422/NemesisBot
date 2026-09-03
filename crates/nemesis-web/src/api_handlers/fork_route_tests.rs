@@ -111,6 +111,7 @@ fn msg(role: &str, content: &str, timestamp: &str) -> nemesis_agent::session::St
         reasoning_content: None,
         tool_name: None,
         tool_result_projection: None,
+        image_refs: Vec::new(),
     }
 }
 
