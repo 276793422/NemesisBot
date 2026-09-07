@@ -43,8 +43,19 @@ function windowsOverview() {
   return {
     platform: 'windows',
     executor: { enabled: true, sandbox: false, strict: false, allow_network: false },
-    backend_probe: { backends: [], selected: null },
-    ready: false,
+    // 2026-09-08 去重：原 status/check 探测数据内联进 backend_probe
+    backend_probe: {
+      kind: 'sandboxie',
+      start_exe_present: true,
+      sbiesvc_running: true,
+      sbiesvc_state: 'Running',
+      sbiedrv_state: 'Stopped',
+      driver_installed: true,
+      engine_owned: true,
+      seven_zip: { available: true, source: 'runtime' },
+      box_root: 'C:\\box\\NemesisBox',
+    },
+    ready: true,
   }
 }
 
@@ -89,14 +100,32 @@ async function mountView(overview: unknown) {
 }
 
 describe('SandboxView 平台自适应加载', () => {
-  it('Windows：overview 后追加 status + pending', async () => {
+  it('Windows：挂载只发 overview + pending（status/check 已并入 overview，不再单发）', async () => {
     const w = await mountView(windowsOverview())
     const cmds = requestMock.mock.calls.map(c => c[1])
     expect(cmds).toContain('overview')
-    expect(cmds).toContain('status')
     expect(cmds).toContain('pending')
-    // executor.sandbox=false → 未启用态
+    expect(cmds).not.toContain('status')
+    expect(cmds).not.toContain('check')
+    // 挂载页（config tab）从 backend_probe 派生环境数据：7z 就绪 + 文件已下载 + 引擎行
     expect(w.text()).toContain('Windows')
+    expect(w.text()).toContain('可用（runtime）')
+    expect(w.text()).toContain('已下载')
+    expect(w.text()).toContain('SbieSvc（运行中）')
+    expect(w.text()).toContain('驱动 + 服务（已安装）')
+    w.unmount()
+  })
+
+  it('Windows 状态 tab：SbieSvc/SbieDrv/Start.exe/box_root 从 backend_probe 渲染', async () => {
+    const w = await mountView(windowsOverview())
+    await w.findAll('button').find(b => b.text() === '沙箱状态')!.trigger('click')
+    await flushPromises()
+    expect(w.text()).toContain('SbieSvc（服务）：Running')
+    expect(w.text()).toContain('SbieDrv（驱动）：Stopped')
+    expect(w.text()).toContain('Start.exe：存在')
+    expect(w.text()).toContain('沙盒就绪：是')
+    expect(w.text()).toContain('C:\\box\\NemesisBox')
+    w.unmount()
   })
 
   it('Linux：只拉 overview（不发 status/pending），渲染后端探测表', async () => {

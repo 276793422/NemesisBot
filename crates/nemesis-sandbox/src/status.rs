@@ -70,13 +70,27 @@ pub fn service_binary_path(name: &str) -> Option<String> {
 /// touching (stop/start/reuse/install) the engine.
 pub fn engine_owned(paths: &crate::SandboxPaths) -> bool {
     let runtime = paths.runtime_dir.to_string_lossy().to_lowercase();
-    for name in [crate::DRIVER_SERVICE, crate::USERMODE_SERVICE] {
-        if matches!(service_state(name), ServiceState::NotFound) {
+    engine_owned_with_states(
+        &runtime,
+        &[
+            (crate::DRIVER_SERVICE, service_state(crate::DRIVER_SERVICE)),
+            (crate::USERMODE_SERVICE, service_state(crate::USERMODE_SERVICE)),
+        ],
+    )
+}
+
+/// [`engine_owned`] 的预计算变体：调用方（如 web handler 的 overview）已经
+/// 为 `sbiesvc_running` / `driver_installed` 探测查过 service state 时复用
+/// 同一批结果，避免重复 spawn `sc query`（每个 ~160ms，挂载路径去重）。
+/// 仍会按需 spawn `sc qc` 查 binary path（注册中的服务才查）。
+pub fn engine_owned_with_states(runtime: &str, states: &[(&str, ServiceState)]) -> bool {
+    for (name, state) in states {
+        if matches!(state, ServiceState::NotFound) {
             continue; // not registered — name free, fine
         }
         // registered — must be ours (binary under our runtime dir)
         let ours = service_binary_path(name)
-            .map(|b| b.to_lowercase().contains(&runtime))
+            .map(|b| b.to_lowercase().contains(runtime))
             .unwrap_or(false);
         if !ours {
             return false; // registered but not ours → foreign Sandboxie

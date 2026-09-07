@@ -271,18 +271,41 @@ impl ModuleHandler for SandboxHandler {
                     "other"
                 };
                 let (backend_probe, ready) = if cfg!(target_os = "windows") {
+                    // 挂载路径去重（2026-09-08）：service state 只查一次，
+                    // SbieSvc/SbieDrv 状态同时喂给 engine_owned_with_states
+                    // 与 backend_probe（此前 overview 内部 engine_owned 再查
+                    // 一遍 + 前端另发 status/check 各查一遍 = 每次进页
+                    // ~8 个 sc spawn）。check 数据（7z / driver_installed /
+                    // box_root）一并在 overview 内联回报，前端挂载只发
+                    // overview + pending；`status` / `check` 命令保留给手动
+                    // 重查与既有消费方。
+                    let sbiesvc =
+                        nemesis_sandbox::status::service_state(nemesis_sandbox::USERMODE_SERVICE);
+                    let sbiedrv =
+                        nemesis_sandbox::status::service_state(nemesis_sandbox::DRIVER_SERVICE);
                     let start_exe_present = paths.start_exe().exists();
-                    let sbiesvc_running = matches!(
-                        nemesis_sandbox::status::service_state(nemesis_sandbox::USERMODE_SERVICE),
-                        ServiceState::Running
+                    let (sz_available, sz_source) =
+                        nemesis_sandbox::extract::seven_zip_status(&paths.runtime_dir);
+                    let runtime = paths.runtime_dir.to_string_lossy().to_lowercase();
+                    let engine_owned = nemesis_sandbox::status::engine_owned_with_states(
+                        &runtime,
+                        &[
+                            (nemesis_sandbox::DRIVER_SERVICE, sbiedrv),
+                            (nemesis_sandbox::USERMODE_SERVICE, sbiesvc),
+                        ],
                     );
-                    let engine_owned = nemesis_sandbox::status::engine_owned(&paths);
+                    let sbiesvc_running = matches!(sbiesvc, ServiceState::Running);
                     (
                         serde_json::json!({
                             "kind": "sandboxie",
                             "start_exe_present": start_exe_present,
                             "sbiesvc_running": sbiesvc_running,
+                            "sbiesvc_state": format!("{sbiesvc:?}"),
+                            "sbiedrv_state": format!("{sbiedrv:?}"),
+                            "driver_installed": !matches!(sbiedrv, ServiceState::NotFound),
                             "engine_owned": engine_owned,
+                            "seven_zip": { "available": sz_available, "source": sz_source },
+                            "box_root": paths.box_root.to_string_lossy(),
                         }),
                         start_exe_present && sbiesvc_running && engine_owned,
                     )

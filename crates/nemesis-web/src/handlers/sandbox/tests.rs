@@ -154,6 +154,13 @@ async fn overview_shape_and_live_executor_switches() {
         assert!(v["backend_probe"]["start_exe_present"].is_boolean());
         assert!(v["backend_probe"]["sbiesvc_running"].is_boolean());
         assert!(v["backend_probe"]["engine_owned"].is_boolean());
+        // 挂载路径去重（2026-09-08）：原 status/check 的探测数据内联进
+        // overview——前端挂载只发 overview + pending，这些字段是契约
+        assert!(v["backend_probe"]["sbiesvc_state"].is_string());
+        assert!(v["backend_probe"]["sbiedrv_state"].is_string());
+        assert!(v["backend_probe"]["driver_installed"].is_boolean());
+        assert!(v["backend_probe"]["seven_zip"]["available"].is_boolean());
+        assert!(v["backend_probe"]["box_root"].is_string());
     } else {
         assert_eq!(kind, "userland");
         assert!(v["backend_probe"]["backends"].is_array());

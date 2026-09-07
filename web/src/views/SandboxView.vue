@@ -19,9 +19,11 @@ const toast = useToast()
 const loading = ref(true)
 const activeTab = ref<'config' | 'status' | 'files'>('config')
 // P5 平台自适应总览（platform / executor 四开关 live / backend_probe / ready）
+// 2026-09-08 去重：backend_probe 已内联原 status/check 命令的探测数据
+// （service 状态 / 7z / box_root），挂载只发 overview + pending——
+// `sandbox.status` / `sandbox.check` 保留给手动重查与既有消费方。
 const overview = ref<any>(null)
-const status = ref<any>(null)
-const env = ref<any>(null)
+const probe = computed(() => overview.value?.backend_probe ?? null)
 const pending = ref<any[]>([])
 const busy = ref<string | null>(null)
 const selected = ref<Set<string>>(new Set())
@@ -49,41 +51,25 @@ const strictHint = computed(() => {
   return '当前后端：⚠️ landlock / bwrap 均不可用 — 严格开启后，要求沙盒的高危工具调用将被拒绝'
 })
 
-// Windows-only（Sandboxie 专属语义）computed 保持原样
-const ready = computed(() => !!status.value?.ready)
-const allowNetwork = computed(() => !!status.value?.allow_network)
-const sevenZipOk = computed(() => !!env.value?.seven_zip?.available)
-const filesAcquired = computed(() => !!env.value?.sandboxie?.files_acquired)
-const driverInstalled = computed(() => !!env.value?.sandboxie?.driver_installed)
-const sbiesvcRunning = computed(() => !!env.value?.sandboxie?.sbiesvc_running)
+// Windows-only（Sandboxie 专属语义）computed——全部从 overview.backend_probe 派生
+const allowNetwork = computed(() => allowNetworkCfg.value)
+const sevenZipOk = computed(() => !!probe.value?.seven_zip?.available)
+const filesAcquired = computed(() => !!probe.value?.start_exe_present)
+const driverInstalled = computed(() => !!probe.value?.driver_installed)
+const sbiesvcRunning = computed(() => !!probe.value?.sbiesvc_running)
 
 async function refreshAll() {
   loading.value = true
   try {
-    // overview 是平台真相源：先拿它，再按平台决定要不要拉 Sandboxie 专属状态
+    // overview 是平台真相源 + Windows 探测数据（原 status/check 内容）单一来源
     const ov = await request('sandbox', 'overview').catch(() => null)
     overview.value = ov
     if (ov?.platform === 'windows') {
-      const [st, pend] = await Promise.all([
-        request('sandbox', 'status').catch(() => null),
-        request('sandbox', 'pending').catch(() => []),
-      ])
-      status.value = st
+      const pend = await request('sandbox', 'pending').catch(() => [])
       pending.value = Array.isArray(pend) ? pend : (pend?.files ?? [])
     }
   } finally {
     loading.value = false
-  }
-}
-
-async function checkEnv() {
-  busy.value = 'check'
-  try {
-    env.value = await request('sandbox', 'check')
-  } catch (e: any) {
-    toast.error('环境检查失败: ' + (e?.message ?? e))
-  } finally {
-    busy.value = null
   }
 }
 
@@ -148,7 +134,7 @@ async function install7z() {
   try {
     await request('sandbox', 'install_7z', undefined, 0)
     toast.success('7z 环境就绪')
-    await checkEnv()
+    await refreshAll()
   } catch (e: any) {
     toast.error('7z 安装失败: ' + (e?.message ?? e))
   } finally {
@@ -161,7 +147,7 @@ async function installSandboxie() {
   try {
     await request('sandbox', 'install_sandboxie', undefined, 0)
     toast.success('Sandboxie 文件已下载')
-    await checkEnv()
+    await refreshAll()
   } catch (e: any) {
     toast.error('下载失败: ' + (e?.message ?? e))
   } finally {
@@ -181,7 +167,6 @@ async function startSandboxie() {
     await request('sandbox', 'start')
     toast.success('Sandboxie 引擎已启动 · config 已更新 (executor+sandbox=true)。⚠️ 请重启 Agent / Gateway 使其完全生效。')
     await refreshAll()
-    await checkEnv()
   } catch (e: any) {
     toast.error('启动失败: ' + (e?.message ?? e))
   } finally {
@@ -201,7 +186,6 @@ async function stopSandboxie() {
     await request('sandbox', 'stop')
     toast.success('Sandboxie 引擎已停止 · config 已更新 (executor+sandbox=false)。⚠️ 请重启 Agent / Gateway 使其完全生效。')
     await refreshAll()
-    await checkEnv()
   } catch (e: any) {
     toast.error('停止失败: ' + (e?.message ?? e))
   } finally {
@@ -321,7 +305,6 @@ async function toggleNetwork() {
 
 onMounted(async () => {
   await refreshAll()
-  if (isWindows.value) await checkEnv()
 })
 </script>
 
@@ -355,7 +338,7 @@ onMounted(async () => {
              : busy === 'open_explorer' ? '正在沙盒内打开资源管理器...'
              : busy === 'set_network' ? '正在切换盒内联网状态...'
              : busy === 'set_config' ? '正在更新执行体配置...'
-             : '正在检查环境...' }}
+             : '正在处理...' }}
           </span>
         </div>
       </div>
@@ -375,7 +358,7 @@ onMounted(async () => {
         <div class="card">
           <div class="card-header" style="display: flex; justify-content: space-between; align-items: center;">
             <h3 style="margin: 0;">环境管理</h3>
-            <button class="btn btn-sm" @click="checkEnv" :disabled="!!busy">检查环境</button>
+            <button class="btn btn-sm" @click="refreshAll" :disabled="!!busy">检查环境</button>
           </div>
           <div class="card-body">
 
@@ -389,7 +372,7 @@ onMounted(async () => {
               </div>
               <div style="padding-left: var(--space-4); font-size: var(--text-sm); color: var(--text-secondary);">
                 <span :style="{ color: sevenZipOk ? 'var(--success)' : 'var(--text-secondary)' }">{{ sevenZipOk ? '●' : '○' }}</span>
-                <span style="margin-left: var(--space-2);">{{ sevenZipOk ? `可用（${env?.seven_zip?.source ?? 'system'}）` : '未找到 — 用于解压 Sandboxie 安装包' }}</span>
+                <span style="margin-left: var(--space-2);">{{ sevenZipOk ? `可用（${probe?.seven_zip?.source ?? 'system'}）` : '未找到 — 用于解压 Sandboxie 安装包' }}</span>
               </div>
             </div>
 
@@ -489,29 +472,29 @@ onMounted(async () => {
             <div v-if="loading" style="color: var(--text-secondary);">加载中…</div>
             <div v-else style="display: flex; flex-direction: column; gap: var(--space-2); font-size: var(--text-sm);">
               <div>
-                <span :style="{ color: status?.sbiesvc === 'Running' ? 'var(--success)' : 'var(--text-secondary)' }">{{ status?.sbiesvc === 'Running' ? '●' : '○' }}</span>
-                <span style="margin-left: var(--space-2);">SbieSvc（服务）：{{ status?.sbiesvc ?? '未知' }}</span>
+                <span :style="{ color: probe?.sbiesvc_state === 'Running' ? 'var(--success)' : 'var(--text-secondary)' }">{{ probe?.sbiesvc_state === 'Running' ? '●' : '○' }}</span>
+                <span style="margin-left: var(--space-2);">SbieSvc（服务）：{{ probe?.sbiesvc_state ?? '未知' }}</span>
               </div>
               <div>
-                <span :style="{ color: status?.sbiedrv === 'Running' ? 'var(--success)' : 'var(--text-secondary)' }">{{ status?.sbiedrv === 'Running' ? '●' : '○' }}</span>
-                <span style="margin-left: var(--space-2);">SbieDrv（驱动）：{{ status?.sbiedrv ?? '未知' }}</span>
+                <span :style="{ color: probe?.sbiedrv_state === 'Running' ? 'var(--success)' : 'var(--text-secondary)' }">{{ probe?.sbiedrv_state === 'Running' ? '●' : '○' }}</span>
+                <span style="margin-left: var(--space-2);">SbieDrv（驱动）：{{ probe?.sbiedrv_state ?? '未知' }}</span>
               </div>
               <div>
-                <span :style="{ color: status?.start_exe_present ? 'var(--success)' : 'var(--text-secondary)' }">{{ status?.start_exe_present ? '●' : '○' }}</span>
-                <span style="margin-left: var(--space-2);">Start.exe：{{ status?.start_exe_present ? '存在' : '缺失' }}</span>
+                <span :style="{ color: probe?.start_exe_present ? 'var(--success)' : 'var(--text-secondary)' }">{{ probe?.start_exe_present ? '●' : '○' }}</span>
+                <span style="margin-left: var(--space-2);">Start.exe：{{ probe?.start_exe_present ? '存在' : '缺失' }}</span>
               </div>
               <div>
-                <span :style="{ color: status?.ready ? 'var(--success)' : 'var(--text-secondary)' }">{{ status?.ready ? '●' : '○' }}</span>
-                <span style="margin-left: var(--space-2);">沙盒就绪：{{ status?.ready ? '是' : '否' }}</span>
+                <span :style="{ color: overview?.ready ? 'var(--success)' : 'var(--text-secondary)' }">{{ overview?.ready ? '●' : '○' }}</span>
+                <span style="margin-left: var(--space-2);">沙盒就绪：{{ overview?.ready ? '是' : '否' }}</span>
               </div>
               <div style="margin-top: var(--space-3); padding-top: var(--space-3); border-top: 1px solid var(--border); display: flex; justify-content: space-between; align-items: center;">
                 <div style="font-size: var(--text-sm); overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">
                   <span style="color: var(--text-secondary);">沙箱缓存路径：</span>
-                  <code>{{ status?.box_root || '(未知)' }}</code>
+                  <code>{{ probe?.box_root || '(未知)' }}</code>
                 </div>
                 <div style="display: flex; gap: var(--space-2);">
-                  <button class="btn btn-sm" @click="openBox" :disabled="!status?.box_root">打开沙箱</button>
-                  <button class="btn btn-sm btn-primary" @click="openExplorer" :disabled="!!busy || !ready">打开盒内资源管理器</button>
+                  <button class="btn btn-sm" @click="openBox" :disabled="!probe?.box_root">打开沙箱</button>
+                  <button class="btn btn-sm btn-primary" @click="openExplorer" :disabled="!!busy || !sandboxReady">打开盒内资源管理器</button>
                 </div>
               </div>
             </div>

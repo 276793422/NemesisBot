@@ -12,6 +12,11 @@ import { ref, onMounted, onUnmounted, nextTick } from 'vue'
 import { Terminal } from '@xterm/xterm'
 import { FitAddon } from '@xterm/addon-fit'
 import '@xterm/xterm/css/xterm.css'
+import { useWSAPI } from '../composables/useWSAPI'
+import { useToast } from '../composables/useToast'
+
+const { request } = useWSAPI()
+const toast = useToast()
 
 const WELCOME =
   'NemesisBot 终端\r\n' +
@@ -20,6 +25,44 @@ const WELCOME =
 
 const container = ref<HTMLDivElement | null>(null)
 const status = ref<'disconnected' | 'connecting' | 'connected'>('disconnected')
+// 终端启用开关（config.json terminal.enabled）。null = 配置读取失败（退回旧行为）。
+// 后端 pty 闸每次 WS 升级 fresh-read config → 切换即生效，无需重启网关。
+const terminalEnabled = ref<boolean | null>(null)
+const toggling = ref(false)
+
+async function loadTerminalConfig() {
+  try {
+    const cfg = await request('config', 'get')
+    terminalEnabled.value = !!(cfg as { terminal?: { enabled?: boolean } } | null)?.terminal?.enabled
+  } catch {
+    terminalEnabled.value = null
+  }
+}
+
+async function toggleTerminal(e: Event) {
+  const box = e.target as HTMLInputElement
+  if (terminalEnabled.value === null || toggling.value) return
+  const next = !terminalEnabled.value
+  toggling.value = true
+  try {
+    await request('config', 'set_field', { path: 'terminal.enabled', value: next })
+    terminalEnabled.value = next
+    if (next) {
+      term?.writeln('\x1b[90m[终端已启用，正在连接…]\x1b[0m\r\n')
+      connect()
+    } else {
+      disconnect()
+      term?.writeln('\x1b[90m[终端已停用]\x1b[0m\r\n')
+    }
+  } catch (err: any) {
+    // Vue :checked 对未变化的 vnode 值不回写 DOM——失败时手动回弹，
+    // 否则勾选框视觉状态与真实配置脱节。
+    box.checked = terminalEnabled.value === true
+    toast.error('切换失败: ' + (err?.message ?? err))
+  } finally {
+    toggling.value = false
+  }
+}
 
 let ws: WebSocket | null = null
 let term: Terminal | null = null
@@ -105,7 +148,9 @@ onMounted(async () => {
   // 容器尺寸变化 → fit + 通知 PTY resize
   resizeObserver = new ResizeObserver(() => sendResize())
   resizeObserver.observe(container.value)
-  connect()
+  // 先读配置：未启用时不发起连接（避免必然失败的重连噪音）；读取失败退回旧行为
+  await loadTerminalConfig()
+  if (terminalEnabled.value !== false) connect()
 })
 
 onUnmounted(() => {
@@ -127,14 +172,26 @@ onUnmounted(() => {
         </svg>
         <span>终端</span>
         <span class="terminal-status" :class="status">
-          {{ status === 'connected' ? '已连接' : status === 'connecting' ? '连接中…' : '未连接' }}
+          {{ status === 'connected' ? '已连接' : status === 'connecting' ? '连接中…' : (terminalEnabled === false ? '未启用' : '未连接') }}
         </span>
       </div>
       <div class="terminal-actions">
+        <label class="terminal-switch" title="启用后可使用本机 shell（写入 config.json，立即生效）">
+          <input
+            type="checkbox"
+            :checked="terminalEnabled === true"
+            :disabled="toggling || terminalEnabled === null"
+            @change="toggleTerminal"
+          >
+          <span>{{ terminalEnabled ? '已启用' : '启用终端' }}</span>
+        </label>
         <button v-if="status !== 'connected'" class="terminal-btn" @click="connect">连接</button>
         <button v-else class="terminal-btn" @click="disconnect">断开</button>
         <button class="terminal-btn" @click="clearScreen">清屏</button>
       </div>
+    </div>
+    <div v-if="terminalEnabled === false" class="terminal-disabled-banner">
+      终端功能当前未启用。打开右上角「启用终端」开关即可使用本机 shell（写入配置立即生效，无需重启网关；estop 急停会断开全部会话）。
     </div>
     <div ref="container" class="terminal-container"></div>
     <div class="terminal-footer">
@@ -174,7 +231,25 @@ onUnmounted(() => {
 }
 .terminal-status.connected { color: #2ecc71; }
 .terminal-status.connecting { color: #f39c12; }
-.terminal-actions { display: flex; gap: 8px; }
+.terminal-actions { display: flex; gap: 8px; align-items: center; }
+.terminal-switch {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  color: var(--text-secondary, #8b93a3);
+  cursor: pointer;
+  user-select: none;
+}
+.terminal-switch input { cursor: pointer; accent-color: var(--accent, #3b82f6); }
+.terminal-switch input:disabled { cursor: not-allowed; opacity: 0.5; }
+.terminal-disabled-banner {
+  padding: 8px 12px;
+  font-size: 12px;
+  color: var(--text-secondary, #8b93a3);
+  background: var(--bg-tertiary, #1d222c);
+  border-bottom: 1px solid var(--border-color, #2a2f3a);
+}
 .terminal-btn {
   padding: 4px 12px;
   font-size: 12px;

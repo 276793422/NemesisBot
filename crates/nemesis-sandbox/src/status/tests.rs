@@ -116,3 +116,45 @@ fn engine_owned_true_when_runtime_matches_registered_binaries() {
         paths.runtime_dir.display()
     );
 }
+
+// ---------------------------------------------------------------------------
+// 挂载路径去重（2026-09-08）：预计算变体 engine_owned_with_states
+// ---------------------------------------------------------------------------
+
+#[cfg(windows)]
+#[test]
+fn engine_owned_with_states_matches_engine_owned() {
+    // 同一批 state 喂给预计算变体，结果必须与整装版一致（委托等价）。
+    let tmp = tempfile::tempdir().unwrap();
+    let paths = crate::SandboxPaths::new(tmp.path());
+    let runtime = paths.runtime_dir.to_string_lossy().to_lowercase();
+    let states = [
+        (crate::DRIVER_SERVICE, service_state(crate::DRIVER_SERVICE)),
+        (crate::USERMODE_SERVICE, service_state(crate::USERMODE_SERVICE)),
+    ];
+    assert_eq!(
+        engine_owned_with_states(&runtime, &states),
+        engine_owned(&paths),
+        "预计算变体与整装版必须等价"
+    );
+}
+
+#[cfg(windows)]
+#[test]
+fn engine_owned_with_states_deterministic_arms() {
+    let runtime = "c:/some/runtime";
+    // NotFound → 名字空闲跳过 → true（跨机器确定性）
+    assert!(engine_owned_with_states(
+        runtime,
+        &[
+            (crate::DRIVER_SERVICE, ServiceState::NotFound),
+            (crate::USERMODE_SERVICE, ServiceState::NotFound),
+        ],
+    ));
+    // 注册中（Stopped）但 binary 查不到（未注册名）→ 视为非我们 → false
+    // （确定性：MISSING 名字必 qc 失败 → None → unwrap_or(false)）
+    assert!(!engine_owned_with_states(
+        runtime,
+        &[(MISSING, ServiceState::Stopped)],
+    ));
+}
