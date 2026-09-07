@@ -14,6 +14,7 @@ import { FitAddon } from '@xterm/addon-fit'
 import '@xterm/xterm/css/xterm.css'
 import { useWSAPI } from '../composables/useWSAPI'
 import { useToast } from '../composables/useToast'
+import { useAuthStore } from '../stores/auth'
 
 const { request } = useWSAPI()
 const toast = useToast()
@@ -71,7 +72,12 @@ let resizeObserver: ResizeObserver | null = null
 let disposed = false
 
 function ptyUrl(): string {
-  const token = localStorage.getItem('nemesisbot_auth_token') ?? ''
+  // token 真相源 = auth store 的内存 token（本会话主 WS 正是用它通过认证）。
+  // plugin-ui WebView 经 __DASHBOARD_TOKEN__ 注入认证，从不写 localStorage
+  // ——只读 localStorage 会拿到空/过期值，/ws/pty 401 →「连接已断开」。
+  // localStorage 仅为兜底（与 App.vue 自动登录的普通浏览器路径对齐）。
+  const auth = useAuthStore()
+  const token = auth.token || localStorage.getItem('nemesisbot_auth_token') || ''
   const backend = (window as any).__DASHBOARD_BACKEND__
   const base = backend
     ? 'ws://' + backend + '/ws/pty'
