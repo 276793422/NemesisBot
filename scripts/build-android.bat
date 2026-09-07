@@ -246,6 +246,9 @@ echo [Step 3/4] Building Android release ^(%TARGET_ARCH%^)...
 echo   Injecting version info...
 set NEMESISBOT_VERSION=%VERSION%
 set NEMESISBOT_GIT_COMMIT=%GIT_COMMIT%
+REM 编译期价目表内嵌：值随构建变化 → 绕开 target 缓存强制 build.rs 重跑
+REM （下载 LiteLLM 最新表内嵌；失败自动快照兜底，见 nemesis-data/build.rs）
+set NEMESIS_PRICES_REFRESH=%GIT_COMMIT%_%RANDOM%%RANDOM%
 
 cargo ndk -t %TARGET_ARCH% build --release -p nemesisbot
 if errorlevel 1 (

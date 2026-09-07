@@ -286,6 +286,8 @@ pub async fn handle_api_usage_pricing(
             "fetchedAt": meta.fetched_at,
             "sourceUrl": meta.source_url,
             "entryCount": meta.entry_count,
+            // 内置兜底表的编译期来源（快照 vs 构建期下载，含日期/条目数）。
+            "embeddedSource": nemesis_data::embedded_source(),
         },
         "custom": pricing.list_custom().iter()
             .map(|p| pricing_entry_json(p, SRC_CUSTOM))

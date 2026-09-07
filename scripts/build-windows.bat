@@ -67,6 +67,10 @@ for /f "tokens=*" %%i in ('git describe --tags --abbrev=0 2^>nul') do set VERSIO
 set GIT_COMMIT=unknown
 for /f "tokens=*" %%i in ('git rev-parse --short HEAD 2^>nul') do set GIT_COMMIT=%%i
 
+REM 编译期价目表内嵌：值随构建变化 → 绕开 target 缓存强制 build.rs 重跑
+REM （下载 LiteLLM 最新表内嵌；失败自动快照兜底，见 nemesis-data/build.rs）
+set NEMESIS_PRICES_REFRESH=%GIT_COMMIT%_%RANDOM%%RANDOM%
+
 for /f "tokens=*" %%i in ('rustc --version 2^>nul') do set RUSTC_VERSION=%%i
 
 echo ============================================

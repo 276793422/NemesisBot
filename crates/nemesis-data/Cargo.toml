@@ -13,3 +13,10 @@ tracing = "0.1"
 
 [lints]
 workspace = true
+
+[build-dependencies]
+# 编译期价目表内嵌（build.rs）：过滤/合并逻辑与 lib 共享（pricing_filter.rs
+# #[path] include），HTTP 走 blocking + rustls（与运行时同栈）。
+reqwest = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }

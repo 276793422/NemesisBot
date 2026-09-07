@@ -69,6 +69,10 @@ if git rev-parse --short HEAD >/dev/null 2>&1; then
     GIT_COMMIT="$(git rev-parse --short HEAD)"
 fi
 
+# 编译期价目表内嵌：值随构建变化 → 绕开 target 缓存强制 build.rs 重跑
+# （下载 LiteLLM 最新表内嵌；失败自动快照兜底，见 nemesis-data/build.rs）
+export NEMESIS_PRICES_REFRESH="${GIT_COMMIT}_$(date +%s)"
+
 RUSTC_VERSION="$(rustc --version 2>/dev/null || echo "unknown")"
 
 # Detect architecture (Apple Silicon vs Intel)

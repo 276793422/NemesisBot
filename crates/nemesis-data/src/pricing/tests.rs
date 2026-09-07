@@ -1,7 +1,7 @@
 //! Pricing table + cost-formula tests (kept out of production files).
 
 use crate::models::ModelPricing;
-use crate::pricing::{PricingTable, compute_cost_usd, cost_from_pricing, lookup_pricing};
+use crate::pricing::{PricingTable, compute_cost_usd, cost_from_pricing, embedded_source, lookup_pricing};
 use std::collections::HashMap;
 
 fn approx(a: f64, b: f64) -> bool {
@@ -11,7 +11,9 @@ fn approx(a: f64, b: f64) -> bool {
 #[test]
 fn embedded_table_loads_and_is_sane() {
     let table = PricingTable::embedded();
-    assert!(table.entries().len() >= 30, "expected ~36 entries");
+    // 全量精简表：过滤后 ~2800 条（快照 2026-09-07）。阈值钉在下限防
+    // 快照意外缩水，不钉精确数（上游增减条目是常态）。
+    assert!(table.entries().len() >= 1000, "got {}", table.entries().len());
     // model_id unique.
     let mut ids: Vec<&str> = table
         .entries()
@@ -29,6 +31,15 @@ fn embedded_table_loads_and_is_sane() {
         assert!(e.cache_read_cost_per_million >= 0.0);
         assert!(e.cache_creation_cost_per_million >= 0.0);
     }
+    // 来源标记注入（build.rs NEMESIS_PRICES_EMBED_SOURCE）。
+    assert!(!embedded_source().is_empty());
+    // extras 合并生效：上游裸名缺失的国内模型在快照里可查。
+    for bare in ["glm-4.7", "qwen-max", "kimi-k2.5", "grok-4", "codestral-latest"] {
+        assert!(
+            lookup_pricing(bare).is_some(),
+            "extras bare name {bare} must resolve"
+        );
+    }
 }
 
 #[test]
@@ -45,15 +56,15 @@ fn lookup_exact_and_bare_suffix() {
 
 #[test]
 fn lookup_alias_paths() {
-    // deepseek/ prefixed alias defined on the deepseek-chat entry.
-    let hit = lookup_pricing("deepseek/deepseek-chat").expect("alias hit");
-    assert_eq!(hit.model_id, "deepseek-chat");
-    // Fireworks GLM alias resolves to glm-4.7.
-    let hit = lookup_pricing("fireworks_ai/glm-4p7").expect("glm alias hit");
-    assert_eq!(hit.model_id, "glm-4.7");
-    // Alias matched via bare suffix too.
-    let hit = lookup_pricing("zhipu/glm-4.6");
-    assert!(hit.is_some());
+    // extras 别名命中：fireworks_ai/glm-4p46 不在上游键集里 → 走 alias 表。
+    let hit = lookup_pricing("fireworks_ai/glm-4p46").expect("glm alias hit");
+    assert_eq!(hit.model_id, "glm-4.6");
+    // 上游把 provider 限定名升级为顶层键后（deepseek/deepseek-chat 已是
+    // 上游键），精确命中优先于别名——上游权威，返回其自身。
+    let hit = lookup_pricing("deepseek/deepseek-chat").expect("upstream qualified key");
+    assert_eq!(hit.model_id, "deepseek/deepseek-chat");
+    // extras 裸名键的 bare-suffix 兜底（zhipu/ 前缀不在表中 → 剥到 glm-4.6）。
+    assert!(lookup_pricing("zhipu/glm-4.6").is_some());
 }
 
 #[test]
@@ -78,10 +89,16 @@ fn cost_gpt4o_plain_math() {
 
 #[test]
 fn cost_deepseek_cache_split() {
-    // deepseek-chat: 0.28 in / 0.42 out / 0.03 cache-read.
+    // 上游价格会随时间漂移——期望值从实际命中的条目现算（本测试钉的是
+    // cache 拆分公式，不是任何具体价格）。
+    let p = lookup_pricing("deepseek/deepseek-chat").expect("deepseek-chat");
+    assert!(p.input_cost_per_million > 0.0, "lookup actually hit");
     let cost = compute_cost_usd("deepseek/deepseek-chat", 1_000_000, 100_000, 0, 600_000);
-    // plain 400k*0.28 + out 100k*0.42 + read 600k*0.03, all /1e6
-    let expected = (400_000.0 * 0.28 + 100_000.0 * 0.42 + 600_000.0 * 0.03) / 1_000_000.0;
+    // plain 400k*in + out 100k*out + read 600k*read, all /1e6
+    let expected = (400_000.0 * p.input_cost_per_million
+        + 100_000.0 * p.output_cost_per_million
+        + 600_000.0 * p.cache_read_cost_per_million)
+        / 1_000_000.0;
     assert!(approx(cost, expected), "got {cost} want {expected}");
 }
 
@@ -153,13 +170,12 @@ fn cost_from_pricing_synthetic_entry() {
 #[test]
 fn embedded_aliases_roundtrip() {
     let table = PricingTable::embedded();
-    // glm-4.7 carries the fireworks provider-qualified alias.
-    let glm = table.lookup("fireworks_ai/glm-4p7").expect("glm alias");
-    assert_eq!(glm.model_id, "glm-4.7");
-    assert!(glm.aliases.iter().any(|a| a == "fireworks_ai/glm-4p7"));
-    // Entries expose their aliases for frontend matching.
-    // (OpenAI entries carry no aliases — `openai/gpt-4o` resolves via the
-    // bare-suffix fallback; deepseek defines one explicitly.)
-    let ds = table.lookup("deepseek-chat").unwrap();
-    assert!(ds.aliases.iter().any(|a| a == "deepseek/deepseek-chat"));
+    // extras 条目的 aliases 完整保留并可通过 alias 表反查
+    // （fireworks_ai/glm-4p46 不在上游键集 → 唯一命中路径是 alias 表）。
+    let glm = table.lookup("glm-4.6").expect("glm entry");
+    assert!(glm.aliases.iter().any(|a| a == "fireworks_ai/glm-4p46"));
+    assert_eq!(
+        table.lookup("fireworks_ai/glm-4p46").unwrap().model_id,
+        "glm-4.6"
+    );
 }

@@ -99,6 +99,8 @@ async fn spawn_server() -> String {
     let state = FixtureState::default();
     let app = Router::new()
         .route("/table", get(table_handler))
+        // 镜像链测试的第二 URL：与 /table 同 handler（304 语义可复用）。
+        .route("/mirror", get(table_handler))
         .route("/updated", get(updated_handler))
         .route("/broken", get(broken_handler))
         .route("/err", get(err_handler))
@@ -217,4 +219,88 @@ async fn malformed_payload_keeps_old_table() {
         store.lookup("test-model-a").unwrap().input_cost_per_million,
         1.0
     );
+}
+
+// ---------------------------------------------------------------------------
+// 镜像链（2026-09-07）：None → 链式回落；ETag 不跨镜像附带
+// （测试注入本地 URL，受限网络下不打外网）
+// ---------------------------------------------------------------------------
+
+use super::fetch_chain;
+
+#[tokio::test]
+async fn mirror_chain_falls_back_to_next_mirror() {
+    let base = spawn_server().await;
+    let store = tmp_store("chain-fallback");
+
+    // 主镜像 500 → 回落到备用镜像 → 成功替换。
+    let r = fetch_chain(
+        &store,
+        &[
+            &format!("{base}/err"),
+            &format!("{base}/table"),
+        ],
+    )
+    .await
+    .unwrap();
+    assert!(r.updated);
+    assert_eq!(r.entry_count, 2);
+    assert!(r.source_url.ends_with("/table"), "source = winning mirror");
+    assert!(store.lookup("test-model-a").is_some());
+}
+
+#[tokio::test]
+async fn mirror_chain_all_fail_reports_every_mirror() {
+    let base = spawn_server().await;
+    let store = tmp_store("chain-allfail");
+
+    let err = fetch_chain(
+        &store,
+        &[
+            &format!("{base}/err"),
+            &format!("{base}/broken"),
+        ],
+    )
+    .await
+    .unwrap_err();
+    // 聚合报错必须点名每一条镜像（诊断友好），旧表保持未动。
+    assert!(err.contains("/err"), "err: {err}");
+    assert!(err.contains("/broken"), "err: {err}");
+    assert!(store.list_downloaded().is_none());
+}
+
+#[tokio::test]
+async fn etag_not_sent_across_mirrors() {
+    let base = spawn_server().await;
+    let store = tmp_store("chain-etag");
+
+    // 先从 /table 成功拿到 etag V1。
+    fetch_and_replace(&store, Some(&format!("{base}/table")))
+        .await
+        .unwrap();
+
+    // /mirror 挂的也是 table_handler：若错误地附带跨源 etag → 304；
+    // 正确语义（不带）→ 200 全量 → updated=true。
+    let r = fetch_chain(&store, &[&format!("{base}/mirror")])
+        .await
+        .unwrap();
+    assert!(
+        r.updated,
+        "different mirror must be fetched in full, not answered with 304"
+    );
+}
+
+#[tokio::test]
+async fn same_url_etag_still_gives_304() {
+    let base = spawn_server().await;
+    let store = tmp_store("chain-etag-same");
+
+    fetch_and_replace(&store, Some(&format!("{base}/table")))
+        .await
+        .unwrap();
+    // 同一 URL 链式拉取：etag 附带 → 304 NotModified（增量语义不回退）。
+    let r = fetch_chain(&store, &[&format!("{base}/table")])
+        .await
+        .unwrap();
+    assert!(!r.updated, "same-url refetch with etag should be 304");
 }

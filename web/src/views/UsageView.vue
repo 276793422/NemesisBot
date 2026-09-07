@@ -94,6 +94,8 @@ interface PricingMeta {
   fetchedAt: number | null
   sourceUrl: string | null
   entryCount: number | null
+  // 内置兜底表的编译期来源（快照 vs 构建期下载，含日期/条目数）。
+  embeddedSource?: string | null
 }
 
 // ---------------------------------------------------------------------------
@@ -426,7 +428,11 @@ function matchesActiveModel(row: PricingRow): boolean {
   return bare === row.modelId || row.aliases.includes(bare)
 }
 
-const filteredPricing = computed(() => {
+// 全量精简表后内置层 ~2800 行：无分页全量渲染会拖垮 DOM——搜索过滤
+// 在全量上算，但只渲染前 PRICING_RENDER_CAP 行，尾部给诚实注记。
+const PRICING_RENDER_CAP = 200
+
+const filteredPricingAll = computed(() => {
   const q = pricingQuery.value.trim().toLowerCase()
   if (!q) return pricingRows.value
   return pricingRows.value.filter(
@@ -435,6 +441,21 @@ const filteredPricing = computed(() => {
       r.displayName.toLowerCase().includes(q) ||
       r.aliases.some(a => a.toLowerCase().includes(q)),
   )
+})
+const filteredPricing = computed(() => filteredPricingAll.value.slice(0, PRICING_RENDER_CAP))
+const pricingHiddenCount = computed(() =>
+  Math.max(0, filteredPricingAll.value.length - filteredPricing.value.length),
+)
+
+// embeddedSource 是构建期溯源长文案（快照描述/下载 URL + 细节）——工具栏
+// 只放短摘要（类型 + 日期）防 UI 变形，完整原文进 title 悬浮提示。
+const pricingSourceShort = computed(() => {
+  const src = pricingMeta.value?.embeddedSource || ''
+  if (!src) return '内置价目表'
+  const date = src.match(/\d{4}-\d{2}-\d{2}/)?.[0]
+  if (src.startsWith('bundled')) return date ? `内置快照 · ${date}` : '内置快照'
+  if (src.startsWith('downloaded')) return date ? `在线更新 · ${date}` : '在线更新'
+  return src.length <= 40 ? src : `${src.slice(0, 37)}…`
 })
 
 function formatPrice(n: number): string {
@@ -715,8 +736,12 @@ onMounted(() => {
             <span v-if="activeModel" class="pricing-active-model">
               当前模型：<strong>{{ activeModel }}</strong>
             </span>
-            <span class="pricing-meta" data-testid="pricing-meta">
-              {{ pricingMeta && pricingMeta.entryCount ? `${pricingMeta.entryCount} 条 · ${formatFetchedAt(pricingMeta.fetchedAt)}` : '内置 36 模型表' }}
+            <span
+              class="pricing-meta"
+              data-testid="pricing-meta"
+              :title="pricingMeta?.embeddedSource || '内置价目表'"
+            >
+              {{ pricingMeta && pricingMeta.entryCount ? `${pricingMeta.entryCount} 条 · ${formatFetchedAt(pricingMeta.fetchedAt)}` : pricingSourceShort }}
             </span>
             <button
               type="button"
@@ -787,6 +812,9 @@ onMounted(() => {
                 </tr>
               </tbody>
             </table>
+          </div>
+          <div v-if="pricingHiddenCount > 0" class="pricing-state" data-testid="pricing-cap-note">
+            已显示前 {{ filteredPricing.length }} 条，还有 {{ pricingHiddenCount }} 条未列出——用上方搜索缩小范围。
           </div>
         </div>
 

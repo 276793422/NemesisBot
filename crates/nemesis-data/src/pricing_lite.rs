@@ -16,35 +16,10 @@
 //! - 非 chat 之外的未知字段一律忽略（LiteLLM 每个版本都会加字段，宽容
 //!   解析保证旧解析器吃新表不炸）。
 
-use serde::Deserialize;
-
 use crate::models::ModelPricing;
+use crate::pricing_filter::LiteLLMEntry;
 
-/// LiteLLM 表的默认下载地址（raw 直拉；ETag 增量）。运行时可通过
-/// CLI `--url` / WSAPI `url` 参数覆盖（镜像场景——受限网络下指向可达的
-/// 镜像端点）。
-pub const LITELLM_PRICE_URL: &str =
-    "https://raw.githubusercontent.com/BerriAI/litellm/main/model_prices_and_context_window.json";
-
-#[derive(Deserialize)]
-struct LiteLLMEntry {
-    #[serde(default)]
-    mode: Option<String>,
-    #[serde(default)]
-    input_cost_per_token: Option<f64>,
-    #[serde(default)]
-    output_cost_per_token: Option<f64>,
-    #[serde(default)]
-    cache_read_input_token_cost: Option<f64>,
-    #[serde(default)]
-    cache_creation_input_token_cost: Option<f64>,
-    #[serde(default)]
-    max_input_tokens: Option<i64>,
-    #[serde(default)]
-    max_tokens: Option<i64>,
-    #[serde(default)]
-    litellm_provider: Option<String>,
-}
+pub use crate::pricing_filter::LITELLM_PRICE_URL;
 
 /// 解析 LiteLLM 价目表 JSON → 本项目 [`ModelPricing`] 列表。
 ///
@@ -82,8 +57,9 @@ pub fn parse_litellm_json(raw: &str) -> Result<Vec<ModelPricing>, String> {
                 * 1_000_000.0,
             max_input_tokens: e.max_input_tokens,
             max_output_tokens: e.max_tokens,
-            // LiteLLM 顶层键即权威名；同义别名靠 lookup 的后缀匹配兜底。
-            aliases: Vec::new(),
+            // 精选补充层条目带 aliases（`deepseek/deepseek-chat` 等）；上游
+            // 条目无此字段 → 空表（同义名靠 lookup 的后缀匹配兜底）。
+            aliases: e.aliases.unwrap_or_default(),
         });
     }
     // 0 条 = 传错文件/形状不对（真表数千条）——报错让调用方降级保留旧表。

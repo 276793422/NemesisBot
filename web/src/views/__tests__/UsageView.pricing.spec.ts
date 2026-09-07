@@ -284,3 +284,49 @@ describe('UsageView 价格 tab A2（在线更新 + 自定义条目）', () => {
     expect(removeBody!['model_id']).toBe('my-model/v1')
   })
 })
+
+// -----------------------------------------------------------------------
+// embeddedSource 短摘要（2026-09-08）：溯源长文案只进 title 悬浮，
+// 工具栏显示短摘要（类型 + 日期）防 UI 变形。
+// -----------------------------------------------------------------------
+
+describe('UsageView 价格 tab embeddedSource 短摘要', () => {
+  function routeNoDownload(embeddedSource: string | null) {
+    return (url: string) => {
+      if (url.startsWith('/api/usage/pricing')) {
+        return Promise.resolve(jsonResponse({ status: 'success', data: PRICING, meta: { etag: null, fetchedAt: null, sourceUrl: null, entryCount: 0, embeddedSource }, custom: [] }))
+      }
+      if (url.startsWith('/api/status')) return Promise.resolve(jsonResponse({ model_name: 'deepseek/deepseek-chat', version: 'test' }))
+      if (url.startsWith('/api/usage/summary')) return Promise.resolve(jsonResponse({ data: SUMMARY }))
+      if (url.startsWith('/api/usage/trends')) return Promise.resolve(jsonResponse({ data: [] }))
+      return Promise.resolve(jsonResponse({ data: null }))
+    }
+  }
+
+  it('bundled 快照来源 → 显示「内置快照 · 日期」，完整文案进 title', async () => {
+    const long = 'bundled snapshot (LiteLLM model_prices_and_context_window.json, extracted 2026-09-07; filtered to chat/completion entries with both base prices (2799 entries) + 15 curated bare-name extras merged)'
+    fetchMock.mockImplementation(routeNoDownload(long))
+    const w = await mountView()
+    await clickPricingTab(w)
+    const meta = w.find('[data-testid="pricing-meta"]')
+    expect(meta.text()).toBe('内置快照 · 2026-09-07')
+    expect(meta.text()).not.toContain('model_prices_and_context_window')
+    expect(meta.attributes('title')).toBe(long)
+  })
+
+  it('downloaded 编译期来源 → 显示「在线更新 · 日期」', async () => {
+    fetchMock.mockImplementation(routeNoDownload('downloaded https://raw.githubusercontent.com/BerriAI/litellm/main/model_prices_and_context_window.json (2799 entries, build 2026-09-08)'))
+    const w = await mountView()
+    await clickPricingTab(w)
+    expect(w.find('[data-testid="pricing-meta"]').text()).toBe('在线更新 · 2026-09-08')
+  })
+
+  it('无 embeddedSource（旧后端）→ 回落「内置价目表」', async () => {
+    fetchMock.mockImplementation(routeNoDownload(null))
+    const w = await mountView()
+    await clickPricingTab(w)
+    const meta = w.find('[data-testid="pricing-meta"]')
+    expect(meta.text()).toBe('内置价目表')
+    expect(meta.attributes('title')).toBe('内置价目表')
+  })
+})

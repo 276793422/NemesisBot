@@ -1,12 +1,20 @@
 //! Static model pricing table (LiteLLM-derived, compile-time embedded).
 //!
-//! The table is extracted from LiteLLM's
-//! `model_prices_and_context_window.json` (~36 mainstream models covering
-//! OpenAI / Anthropic / Google / DeepSeek / GLM / Kimi / Qwen / Grok /
-//! Mistral) and embedded at compile time from
-//! `assets/model_prices.json`. Extraction date and source are recorded in
-//! the JSON itself; refresh by re-running the extraction against an updated
-//! LiteLLM table.
+//! The table is embedded at compile time from
+//! `$OUT_DIR/model_prices_embedded.json` — written by `build.rs`:
+//!
+//! - default (offline) build: bundled snapshot
+//!   `assets/model_prices_litellm.json` (LiteLLM chat/completion entries
+//!   filtered down to priced ones + `assets/model_prices_extras.json`
+//!   hand-curated bare-name entries merged on top);
+//! - `NEMESIS_PRICES_REFRESH=<value>` (set by the official build scripts,
+//!   value changes per build so caches don't skip it): fresh download over
+//!   the mirror chain, same filter+merge, snapshot fallback on any failure.
+//!
+//! Format is the raw LiteLLM shape (per-token map) — the same format the
+//! runtime download layer uses, so `parse_litellm_json` is the single
+//! parsing path for both. `embedded_source()` reports which variant was
+//! compiled in (CLI / API display it verbatim).
 //!
 //! Cost formula (usage-pricing plan):
 //!
@@ -27,29 +35,14 @@
 use std::collections::HashMap;
 use std::sync::OnceLock;
 
-use serde::Deserialize;
-
 use crate::models::ModelPricing;
 
-/// Compile-time embedded price table (extracted from LiteLLM; see
-/// `assets/model_prices.json` for the source/date header).
-static PRICES_JSON: &str = include_str!(concat!(
-    env!("CARGO_MANIFEST_DIR"),
-    "/assets/model_prices.json"
-));
+/// Compile-time embedded price table (written by `build.rs`; LiteLLM shape).
+static PRICES_JSON: &str =
+    include_str!(concat!(env!("OUT_DIR"), "/model_prices_embedded.json"));
 
-#[derive(Deserialize)]
-struct RawTable {
-    #[serde(default)]
-    models: Vec<RawEntry>,
-}
-
-#[derive(Deserialize)]
-struct RawEntry {
-    /// Entry payload incl. `aliases` (flattened from the JSON).
-    #[serde(flatten)]
-    pricing: ModelPricing,
-}
+/// Provenance of the embedded table (injected by `build.rs`).
+static EMBED_SOURCE: &str = env!("NEMESIS_PRICES_EMBED_SOURCE");
 
 /// In-memory lookup index over the embedded pricing entries.
 pub struct PricingTable {
@@ -62,18 +55,20 @@ pub struct PricingTable {
 
 impl PricingTable {
     fn from_embedded_json() -> Self {
-        let raw: RawTable =
-            serde_json::from_str(PRICES_JSON).expect("embedded model_prices.json is valid JSON");
-        let mut entries = Vec::with_capacity(raw.models.len());
+        // 内嵌表与下载层同格式同解析（parse_litellm_json 单一路径）；失败
+        // 只可能是 build.rs 产出了坏文件——编译期即panic暴露，不留到运行时。
+        let parsed = crate::parse_litellm_json(PRICES_JSON)
+            .expect("embedded model_prices_embedded.json is valid");
+        let mut entries = Vec::with_capacity(parsed.len());
         let mut by_id = HashMap::new();
         let mut by_alias = HashMap::new();
-        for entry in raw.models {
+        for entry in parsed {
             let idx = entries.len();
-            by_id.insert(entry.pricing.model_id.clone(), idx);
-            for alias in &entry.pricing.aliases {
+            by_id.insert(entry.model_id.clone(), idx);
+            for alias in &entry.aliases {
                 by_alias.insert(alias.clone(), idx);
             }
-            entries.push(entry.pricing);
+            entries.push(entry);
         }
         Self {
             entries,
@@ -195,6 +190,13 @@ pub fn cost_breakdown_from_pricing(
 /// All embedded entries (convenience wrapper for handlers).
 pub fn all_pricing() -> &'static [ModelPricing] {
     PricingTable::embedded().entries()
+}
+
+/// Which variant of the embedded table was compiled in（快照 vs 构建期下
+/// 载，含来源 URL / 日期 / 条目数）。CLI 与 usage API 原样展示——诚实
+/// 来源标记，由 `build.rs` 经 `NEMESIS_PRICES_EMBED_SOURCE` 注入。
+pub fn embedded_source() -> &'static str {
+    EMBED_SOURCE
 }
 
 /// Look up in the embedded table (convenience wrapper).

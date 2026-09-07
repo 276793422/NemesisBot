@@ -116,11 +116,12 @@ fn cost_breakdown_layers_and_unknown() {
     let db_path = temp_db_path("breakdown");
     let store = DataStore::open(&db_path).unwrap();
 
-    // deepseek-chat 在内置 36 模型表内（provider/前缀裸名匹配也覆盖）。
+    // deepseek/deepseek-chat：上游已把它升级为顶层键 → 精确命中其自身
+    // （裸名 deepseek-chat 也在表中，bare-suffix 同样覆盖）。
     let bd = store
         .compute_cost_breakdown("deepseek/deepseek-chat", 1_000_000, 0, 0, 0)
         .expect("known model must hit");
-    assert_eq!(bd.pricing_model, "deepseek-chat");
+    assert_eq!(bd.pricing_model, "deepseek/deepseek-chat");
     assert!(bd.input_cost_usd > 0.0);
     assert_eq!(bd.output_cost_usd, 0.0);
     assert!(

@@ -62,12 +62,15 @@ if errorlevel 1 exit /b 1
 if errorlevel 1 (
     echo [customize] no .config - full default build, profile=release
     set "PROFILE=release"
+    REM 编译期价目表内嵌（值随构建变化 → build.rs 必跑；失败快照兜底）
+    set "NEMESIS_PRICES_REFRESH=customize_%RANDOM%%RANDOM%"
     cargo build --profile release -p nemesisbot
     if errorlevel 1 ( echo [customize] BUILD FAILED & exit /b 1 )
 ) else (
     for /f "delims=" %%F in ('%CFG% export --features') do set "FEATS=%%F"
     for /f "delims=" %%P in ('%CFG% export --profile') do set "PROFILE=%%P"
     echo [customize] customized build - profile=!PROFILE! features=[!FEATS!]
+    set "NEMESIS_PRICES_REFRESH=customize_%RANDOM%%RANDOM%"
     cargo build --profile !PROFILE! -p nemesisbot --no-default-features --features "!FEATS!"
     if errorlevel 1 ( echo [customize] BUILD FAILED & exit /b 1 )
 )

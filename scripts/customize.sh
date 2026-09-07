@@ -58,11 +58,14 @@ do_build() {
         FEATS=$("$CFG" --root "$ROOT" export --features)
         PROFILE=$("$CFG" --root "$ROOT" export --profile)
         echo "[customize] customized build — profile=$PROFILE features=[$FEATS]"
-        cargo build --profile "$PROFILE" -p nemesisbot --no-default-features --features "$FEATS"
+        # 编译期价目表内嵌（值随构建变化 → build.rs 必跑；失败快照兜底）
+        NEMESIS_PRICES_REFRESH="customize_$(date +%s)" \
+            cargo build --profile "$PROFILE" -p nemesisbot --no-default-features --features "$FEATS"
     else
         echo "[customize] no .config — full default build (release)"
         PROFILE=release
-        cargo build --profile release -p nemesisbot
+        NEMESIS_PRICES_REFRESH="customize_$(date +%s)" \
+            cargo build --profile release -p nemesisbot
     fi
     mkdir -p bin/bin_customize
     cp -f "target/$PROFILE/nemesisbot$BIN_EXT" "bin/bin_customize/nemesisbot$BIN_EXT"

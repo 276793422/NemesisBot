@@ -833,8 +833,9 @@ async fn run_prices(action: PricesAction, home: &Path) -> Result<()> {
                 ),
             }
             println!(
-                "  内置层:   {} 条（离线兜底）",
-                nemesis_data::all_pricing().len()
+                "  内置层:   {} 条（离线兜底，{}）",
+                nemesis_data::all_pricing().len(),
+                nemesis_data::embedded_source()
             );
             if !custom.is_empty() {
                 println!("自定义条目：");
@@ -851,9 +852,13 @@ async fn run_prices(action: PricesAction, home: &Path) -> Result<()> {
             }
         }
         PricesAction::Update { url } => {
-            let shown = url
-                .clone()
-                .unwrap_or_else(|| nemesis_data::LITELLM_PRICE_URL.to_string());
+            let shown = match &url {
+                Some(u) => u.clone(),
+                None => format!(
+                    "镜像链：{}",
+                    nemesis_data::PRICE_MIRROR_URLS.join(" → ")
+                ),
+            };
             println!("正在拉取价目表（{shown}）...");
             match nemesis_web::pricing_sync::fetch_and_replace(pricing, url.as_deref()).await {
                 Ok(r) if r.updated => {
