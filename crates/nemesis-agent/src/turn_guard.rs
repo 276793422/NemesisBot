@@ -60,13 +60,15 @@ pub const MAX_EMPTY_FINAL_RETRIES: u32 = 3;
 
 /// ⑤ Tools whose success is "write-like" — repeating an identical successful
 /// call is almost always a no-op loop. Conservative list; extend as needed.
+/// A7 (2026-09-06): the long-reserved "multi_edit" placeholder is now live as
+/// the actual `multiedit` tool name.
 const WRITE_LIKE_TOOLS: &[&str] = &[
     "edit_file",
     "write_file",
     "create_file",
     "save_file",
     "patch_file",
-    "multi_edit",
+    "multiedit",
 ];
 
 /// ⑦ Verdict from checking a candidate final answer.
@@ -170,18 +172,39 @@ impl TurnGuard {
     /// has failed at least [`ALTERNATING_LOOP_HARD_STOP`] times this turn — the
     /// model is ignoring the nudges, so stop the turn to avoid burning the whole
     /// `max_turns` budget. The caller breaks the loop and surfaces the message.
+    /// J5：派生自 [`Self::escalating_signature`]（单一真相源）。
     pub fn escalation_check(&self) -> Option<String> {
-        self.fail_freq.iter().find_map(|(sig, count)| {
-            if *count >= ALTERNATING_LOOP_HARD_STOP {
-                let tool = sig.split('\x00').next().unwrap_or("tool");
-                Some(format!(
-                    "检测到循环无法打破：{} 在本任务中已 {} 次报相同错误，多次提示后仍未改变方向。已停止本轮以避免空耗，已完成的工作已保存。请人工介入，或换一种思路后重试。",
-                    tool, count
-                ))
-            } else {
-                None
-            }
-        })
+        self.escalating_signature()
+            .map(|(sig, count)| Self::escalation_message(&sig, count))
+    }
+
+    /// J5 (devtool-upgrade 阶段 6)：当前已到硬停阈值的第一个 `(tool, error)`
+    /// 签名 `(sig, count)`（无则 `None`）。escalation 审批化（loop 侧）据此
+    /// 发提问卡，批准后用 [`Self::clear_signature`] 清计数；
+    /// [`Self::escalation_check`] 亦由此派生。
+    pub fn escalating_signature(&self) -> Option<(String, u32)> {
+        self.fail_freq
+            .iter()
+            .find(|(_, count)| **count >= ALTERNATING_LOOP_HARD_STOP)
+            .map(|(sig, count)| (sig.clone(), *count))
+    }
+
+    /// J5：escalation 停轮文案（签名 + 次数 → 用户可见消息）。审批被拒 /
+    /// 超时 / 通路缺失时 loop 侧用同一文案停轮，与 [`Self::escalation_check`]
+    /// 的输出一字不差。
+    pub fn escalation_message(sig: &str, count: u32) -> String {
+        let tool = sig.split('\x00').next().unwrap_or("tool");
+        format!(
+            "检测到循环无法打破：{} 在本任务中已 {} 次报相同错误，多次提示后仍未改变方向。已停止本轮以避免空耗，已完成的工作已保存。请人工介入，或换一种思路后重试。",
+            tool, count
+        )
+    }
+
+    /// J5：审批通过后清签名计数——用户确认可继续后，同一 `(tool, error)`
+    /// 从零重新计数；再次撞到硬停阈值会**再次发卡**（一次批准不等于永久
+    /// 豁免该循环）。故意不清其它签名：其它循环的累计证据仍然有效。
+    pub fn clear_signature(&mut self, sig: &str) {
+        self.fail_freq.remove(sig);
     }
 
     /// ⑤ Record a successful write-like tool call; returns a nudge if this

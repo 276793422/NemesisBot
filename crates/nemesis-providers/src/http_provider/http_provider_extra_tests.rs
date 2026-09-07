@@ -1433,3 +1433,163 @@ async fn test_no_repair_when_content_is_plain_text() {
     assert!(result.tool_calls.is_empty());
     assert_eq!(result.finish_reason, "stop");
 }
+
+// ---------------------------------------------------------------------------
+// J1: Retry-After 头 + 流式中断恢复
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn test_chat_429_with_retry_after_header_populates_error() {
+    let server = MockServer::start().await;
+    let provider = HttpProvider::new(basic_config(server.uri()));
+
+    Mock::given(method("POST"))
+        .and(path("/chat/completions"))
+        .respond_with(
+            ResponseTemplate::new(429)
+                .insert_header("Retry-After", "30")
+                .set_body_string("rate limited"),
+        )
+        .mount(&server)
+        .await;
+
+    let err = provider
+        .chat(&[user_message("hi")], &[], "gpt-4", &ChatOptions::default())
+        .await
+        .unwrap_err();
+    match err {
+        FailoverError::RateLimit { retry_after, .. } => assert_eq!(retry_after, Some(30)),
+        other => panic!("expected RateLimit, got {:?}", other),
+    }
+}
+
+#[tokio::test]
+async fn test_chat_stream_429_with_retry_after_header_populates_error() {
+    let server = MockServer::start().await;
+    let provider = HttpProvider::new(basic_config(server.uri()));
+
+    Mock::given(method("POST"))
+        .and(path("/chat/completions"))
+        .respond_with(
+            ResponseTemplate::new(429)
+                .insert_header("Retry-After", "45")
+                .set_body_string("rate limited"),
+        )
+        .mount(&server)
+        .await;
+
+    let mut rx = provider.chat_stream(&[user_message("hi")], &[], "gpt-4", &ChatOptions::default());
+    let first = rx.recv().await.expect("channel should yield the error");
+    match first {
+        Err(FailoverError::RateLimit { retry_after, .. }) => assert_eq!(retry_after, Some(45)),
+        other => panic!("expected RateLimit error, got {:?}", other),
+    }
+}
+
+#[tokio::test]
+async fn test_chat_stream_eof_without_done_flushes_tool_calls() {
+    let server = MockServer::start().await;
+    let provider = HttpProvider::new(basic_config(server.uri()));
+
+    // 半截流：tool_calls 分片累积后连接结束——无 finish_reason、无 [DONE]。
+    let sse_body = concat!(
+        "data: {\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":0,\"id\":\"call_eof\",\"function\":{\"name\":\"get_weather\",\"arguments\":\"{\\\"loc\\\":\"}}]}}]}\n\n",
+        "data: {\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":0,\"function\":{\"arguments\":\"\\\"SF\\\"}\"}}]}}]}\n\n"
+    );
+
+    Mock::given(method("POST"))
+        .and(path("/chat/completions"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .insert_header("Content-Type", "text/event-stream")
+                .set_body_string(sse_body),
+        )
+        .mount(&server)
+        .await;
+
+    let mut rx = provider.chat_stream(&[user_message("hi")], &[], "gpt-4", &ChatOptions::default());
+
+    let mut chunks = Vec::new();
+    while let Some(chunk_result) = rx.recv().await {
+        chunks.push(chunk_result.expect("EOF flush should not error"));
+    }
+    assert_eq!(
+        chunks.len(),
+        1,
+        "single synthesized final chunk: {:?}",
+        chunks
+    );
+    let final_chunk = &chunks[0];
+    assert_eq!(final_chunk.finish_reason.as_deref(), Some("tool_calls"));
+    assert_eq!(final_chunk.tool_calls.len(), 1);
+    let tc = &final_chunk.tool_calls[0];
+    assert_eq!(tc.id, "call_eof");
+    let func = tc.function.as_ref().expect("function field");
+    assert_eq!(func.name, "get_weather");
+    assert_eq!(func.arguments, "{\"loc\":\"SF\"}");
+}
+
+#[tokio::test]
+async fn test_chat_stream_eof_plain_text_synthesizes_stop() {
+    let server = MockServer::start().await;
+    let provider = HttpProvider::new(basic_config(server.uri()));
+
+    // 半截流：只有 content delta，无 finish_reason、无 [DONE]。
+    let sse_body = "data: {\"choices\":[{\"delta\":{\"content\":\"partial\"}}]}\n\n";
+
+    Mock::given(method("POST"))
+        .and(path("/chat/completions"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .insert_header("Content-Type", "text/event-stream")
+                .set_body_string(sse_body),
+        )
+        .mount(&server)
+        .await;
+
+    let mut rx = provider.chat_stream(&[user_message("hi")], &[], "gpt-4", &ChatOptions::default());
+
+    let mut deltas = String::new();
+    let mut finals = 0;
+    while let Some(Ok(chunk)) = rx.recv().await {
+        deltas.push_str(&chunk.delta);
+        if chunk.finish_reason.is_some() {
+            finals += 1;
+            assert_eq!(chunk.finish_reason.as_deref(), Some("stop"));
+        }
+    }
+    assert_eq!(deltas, "partial");
+    assert_eq!(finals, 1, "exactly one synthesized stop chunk");
+}
+
+/// J1：SSE 流中途真读错误（Content-Length 谎报 + 提前关闭连接）→ Timeout
+/// （可 failover），而非旧分类 Format（不可重试、直接放弃整条链）。
+#[tokio::test]
+async fn test_chat_stream_read_error_classified_as_timeout() {
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let addr = listener.local_addr().unwrap();
+    std::thread::spawn(move || {
+        if let Ok((mut sock, _)) = listener.accept() {
+            use std::io::Write;
+            let _ = sock.write_all(
+                b"HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nContent-Length: 5000\r\n\r\ndata: {\"choices\":[{\"delta\":{\"content\":\"par",
+            );
+            // drop sock → FIN；body 声称 5000 字节实际 ~90 → hyper 中途读错误。
+        }
+    });
+
+    let provider = HttpProvider::new(basic_config(format!("http://{}", addr)));
+    let mut rx = provider.chat_stream(&[user_message("hi")], &[], "gpt-4", &ChatOptions::default());
+
+    let mut got_err: Option<FailoverError> = None;
+    while let Some(chunk_result) = rx.recv().await {
+        if let Err(e) = chunk_result {
+            got_err = Some(e);
+            break;
+        }
+    }
+    match got_err {
+        Some(FailoverError::Timeout { .. }) => {}
+        other => panic!("expected Timeout, got {:?}", other),
+    }
+}

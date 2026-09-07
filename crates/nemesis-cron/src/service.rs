@@ -140,8 +140,8 @@ pub struct CronService {
     /// Startup arm gate (H1, U12): a fresh process starts DISARMED —
     /// persisted jobs do not fire until the owning startup path calls
     /// [`CronService::arm`] (the gateway does this once bus+agent are ready).
-    /// This is the "restart → paused pending confirmation" stance (dsh goal
-    /// armed-gate analog): a restart must not silently resume autonomous
+    /// This is the "restart → paused pending confirmation" stance: a restart
+    /// must not silently resume autonomous
     /// scheduling. Jobs created AFTER startup are unaffected (armed latches
     /// for the process lifetime; only `new()` re-arms the gate).
     pending_arm: Arc<Mutex<bool>>,

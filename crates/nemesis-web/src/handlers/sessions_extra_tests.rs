@@ -126,3 +126,45 @@ async fn unknown_cmd_errors() {
         .unwrap_err();
     assert!(err.contains("unknown sessions cmd"), "{err}");
 }
+
+// M3（devtool-upgrade 阶段 5）：file_diff 的 bail 臂——缺参 / agent loop
+// 未装配（ctx 的 agent_loop=None）诚实报错。
+#[tokio::test]
+async fn file_diff_bails_on_missing_params_and_unwired_loop() {
+    let dir = tempfile::tempdir().unwrap();
+    let ctx = make_ctx(&dir);
+    let h = SessionsHandler;
+
+    // 缺 path（session_id 在）。
+    let err = h
+        .handle_cmd(
+            "file_diff",
+            Some(serde_json::json!({ "session_id": "s1" })),
+            &ctx,
+        )
+        .await
+        .unwrap_err();
+    assert_eq!(err, "missing path");
+
+    // 缺 session_id（path 在）。
+    let err = h
+        .handle_cmd(
+            "file_diff",
+            Some(serde_json::json!({ "path": "a.txt" })),
+            &ctx,
+        )
+        .await
+        .unwrap_err();
+    assert_eq!(err, "missing session_id");
+
+    // 参数齐但 loop 未装配。
+    let err = h
+        .handle_cmd(
+            "file_diff",
+            Some(serde_json::json!({ "session_id": "s1", "path": "a.txt" })),
+            &ctx,
+        )
+        .await
+        .unwrap_err();
+    assert_eq!(err, "agent loop 未装配");
+}

@@ -12,7 +12,7 @@ fn hooks_path(workspace: &std::path::Path) -> std::path::PathBuf {
     nemesis_path::resolve_hooks_config_path_in_workspace(workspace)
 }
 
-/// Working CC config: 2 PreToolUse scripts in one group + 1 Stop script.
+/// Working hooks config: 2 PreToolUse scripts in one group + 1 Stop script.
 const GOOD: &str = r#"{
   "hooks": {
     "PreToolUse": [
@@ -36,7 +36,7 @@ async fn get_missing_file_returns_template_not_error() {
     let h = HooksHandler;
     let r = h.get(&home_str(&dir)).unwrap().unwrap();
     assert_eq!(r["exists"], false, "fresh home is normal, not an error");
-    // Template must itself be valid CC format the user can save as-is.
+    // Template must itself be valid hooks.json format the user can save as-is.
     let content = r["content"].as_str().unwrap();
     assert!(cc_hooks::parse_cc_hooks(content).is_ok());
     assert_eq!(r["valid"], true);
@@ -83,7 +83,12 @@ async fn get_invalid_file_returns_raw_content_plus_error() {
     let r = h.get(&home_str(&dir)).unwrap().unwrap();
     assert_eq!(r["exists"], true);
     assert_eq!(r["valid"], false);
-    assert!(r["error"].as_str().unwrap().contains("not CC hooks format"));
+    assert!(
+        r["error"]
+            .as_str()
+            .unwrap()
+            .contains("unsupported hooks.json format")
+    );
     assert_eq!(r["content"].as_str().unwrap(), broken);
     assert_eq!(
         r["summary"],
@@ -118,11 +123,11 @@ async fn set_rejects_bad_json_without_touching_disk() {
     // Syntax error.
     let err = h.set(&home_str(&dir), "{ not json").unwrap_err();
     assert!(err.contains("invalid JSON"), "got: {err}");
-    // Semantic error: valid JSON, non-CC shape.
+    // Semantic error: valid JSON, non-dialect shape.
     let err = h
         .set(&home_str(&dir), r#"{ "hooks": { "Stop": 5 } }"#)
         .unwrap_err();
-    assert!(err.contains("not CC hooks format"), "got: {err}");
+    assert!(err.contains("unsupported hooks.json format"), "got: {err}");
     // Neither attempt created the file.
     assert!(
         !hooks_path(dir.path()).exists(),

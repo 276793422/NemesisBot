@@ -888,6 +888,30 @@ impl crate::ws_router::ModuleHandler for WorkflowHandler {
         "workflow"
     }
 
+    fn commands(&self) -> &'static [&'static str] {
+        &[
+            "list",
+            "get",
+            "create",
+            "update",
+            "delete",
+            "validate",
+            "run_now",
+            "start",
+            "fire_event",
+            "resolve_chat_target",
+            "status",
+            "cancel",
+            "resume",
+            "list_executions",
+            "list_checkpoints",
+            "get_checkpoint",
+            "set_chat_password",
+            "clear_chat_password",
+            "verify_chat_password",
+        ]
+    }
+
     async fn handle_cmd(
         &self,
         cmd: &str,

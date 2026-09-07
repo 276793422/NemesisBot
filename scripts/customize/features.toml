@@ -260,6 +260,17 @@ desc = "manager 看板（issue/项目/评论/指派，`nemesisbot issue` + Dashb
 category = "subsystems"
 default = true
 
+# NOTE: `terminal` 可裁剪（L8 PTY 内嵌终端，feature 穿透 nemesisbot → nemesis-web/terminal）。
+# 双闸之二（编译闸）；config terminal.enabled（默认 false）是运行闸。交互 shell
+# 无法逐命令审批——信任级=dashboard 登录用户，全 I/O 审计 <workspace>/logs/terminal/。
+# 关闭后 /ws/pty 端点 + portable-pty 依赖 + TerminalView 从前后端同时消失。
+[[feature]]
+id = "terminal"
+label = "PTY 内嵌终端"
+desc = "Dashboard 交互终端（/ws/pty + xterm.js，config terminal.enabled 默认关）。交互 shell 信任级高，IoT/无头建议关；裁后端点+页面 tree-shake 掉"
+category = "subsystems"
+default = true
+
 # ── Frontend-only gate (no Rust code; exists in nemesisbot/Cargo.toml [features]
 #    only so `nemesis-config check` passes) ────────────────────────────────
 

@@ -20,6 +20,7 @@
 //! - [`RequestContext`] carries per-request metadata (channel, session, correlation ID)
 
 pub mod args_validator;
+pub mod background_registry;
 pub mod capture_sink;
 pub mod cc_hooks;
 pub mod chat_log;
@@ -27,9 +28,12 @@ pub mod checkpoint;
 pub mod context;
 pub mod estop;
 pub mod executor_pipe;
+pub mod formatter;
+pub mod fs_watcher;
 pub mod history_search;
 pub mod hooks;
 pub mod image_attach;
+pub mod image_downscale;
 pub mod image_path_detector;
 pub mod inbox;
 pub mod instance;
@@ -54,6 +58,7 @@ pub mod skills_digest;
 pub mod spill;
 pub mod tool_adapter;
 pub mod tool_doc_folding;
+pub mod tool_event_hook;
 pub mod turn_guard;
 pub mod types;
 pub mod workspace_instructions;
@@ -63,6 +68,7 @@ pub mod workspace_instructions;
 #[cfg(test)]
 mod test_support;
 
+pub use background_registry::BackgroundProcessRegistry;
 pub use capture_sink::{CaptureSink, SessionWriteCapture, ToolCapture};
 pub use context::RequestContext;
 pub use estop::EstopState;
@@ -80,6 +86,7 @@ pub use loop_tools::ClusterRpcChannelConfig;
 pub use loop_tools::ClusterRpcConfig;
 pub use loop_tools::ClusterRpcTool;
 pub use loop_tools::SharedToolConfig;
+pub use loop_tools::WorkspaceBoundary;
 pub use loop_tools::register_default_tools;
 pub use loop_tools::register_extended_tools;
 pub use loop_tools::register_shared_tools;

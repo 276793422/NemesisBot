@@ -17,9 +17,8 @@ const MAX_OUTPUT_LEN: usize = 10_000;
 /// Head/tail budget within MAX_OUTPUT_LEN when truncating (the marker takes
 /// the rest). Head+tail instead of head-only: shell errors (compiler
 /// diagnostics, stack traces) cluster at the END of output, so a head-only
-/// cut hides exactly what the model needs. Decision per G3 of the dsh
-/// alignment first-batch goal: this local truncation now matches the unified
-/// prune semantics (head + marker + tail) implemented in
+/// cut hides exactly what the model needs. This local truncation matches the
+/// unified prune semantics (head + marker + tail) implemented in
 /// `nemesis-agent::prune` (which handles the >8192-char tier for ALL tools
 /// at the loop level); this shell-local, tighter bound is kept as defense in
 /// depth for paths that bypass the loop-level prune. Also fixes a latent
@@ -152,6 +151,14 @@ fn default_deny_patterns() -> Vec<Regex> {
 }
 
 /// Shell command execution tool with safety validation.
+///
+/// 【2026-09-04 B1 核实】本工具**当前无生产注册路径**：agent `exec` 走
+/// `nemesis-agent::loop_tools::ExecTool`（无工具内截断，全量交 loop 层
+/// spill/prune 闸治理）；workflow `script` 节点走 `run_script` 工具 /
+/// execution world / 裸 spawn 三车道，均不经本工具。唯一潜在消费方是
+/// cron 的 `set_shell_tool`（生产未接线）。下方 10k 截断因此是遗留实现的
+/// defense-in-depth，不是生产语义——
+/// 勿据此推断「workflow 输出 10k 之外丢失」。
 pub struct ShellTool {
     /// Working directory for command execution.
     workspace: PathBuf,

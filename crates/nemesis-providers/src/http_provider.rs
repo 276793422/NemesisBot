@@ -235,6 +235,17 @@ impl HttpProvider {
     ///
     /// The returned `tokio::sync::mpsc::Receiver` will be closed when the
     /// stream ends (either naturally on `[DONE]` or on error).
+    ///
+    /// J1 流式边界：
+    /// - HTTP 错误（status≥400）携带 `Retry-After` 头解析出的秒数（failover
+    ///   侧冷却据此优先于公式退避）。
+    /// - SSE 读错误分类为 `Timeout`（可 failover）而非 `Format`（不可重试）——
+    ///   连接中断是暂时性故障，换 provider/重试是正确反应。
+    /// - EOF 无 `[DONE]`（半截响应）：flush 已累积的 tool_calls + 发一个合成
+    ///   终止 chunk（finish_reason 有 tool_calls 时为 `tool_calls`，否则
+    ///   `stop`）——receiver 消费者看到唯一 final chunk，不再悬挂等待。
+    ///   内容可能不完整，整请求级重试由调用方（agent loop 的 context-error
+    ///   压缩重试路径）负责，provider 层不重放半截流。
     pub fn chat_stream(
         &self,
         messages: &[Message],
@@ -295,6 +306,8 @@ impl HttpProvider {
 
             let status = resp.status().as_u16();
             if status >= 400 {
+                // 先取 Retry-After 头再消费 body（text() 按值拿走 resp）。
+                let retry_after = crate::failover::retry_after_from_headers(resp.headers());
                 let text = resp.text().await.unwrap_or_default();
                 tracing::error!(
                     provider = %provider_name,
@@ -308,6 +321,7 @@ impl HttpProvider {
                         &model,
                         status,
                         &text,
+                        retry_after,
                     )))
                     .await;
                 return;
@@ -331,13 +345,17 @@ impl HttpProvider {
                             error = %e,
                             "[Provider] SSE stream read error"
                         );
+                        // J1：读错误（连接中断）是暂时性故障 → Timeout（可
+                        // failover）；旧分类 Format 会直接放弃整条链。终止后
+                        // return（不走下方 EOF flush——错误已是终态，不再发
+                        // 合成 chunk 混淆消费者）。
                         let _ = tx
-                            .send(Err(FailoverError::Format {
+                            .send(Err(FailoverError::Timeout {
                                 provider: provider_name.clone(),
-                                message: e.to_string(),
+                                model: model.clone(),
                             }))
                             .await;
-                        break;
+                        return;
                     }
                 };
 
@@ -471,6 +489,51 @@ impl HttpProvider {
                     }
                 }
             }
+
+            // J1：EOF 无 [DONE]（半截响应）——不悬挂 receiver。合成唯一
+            // final chunk：有累积 tool_calls 时一并 flush（finish_reason=
+            // "tool_calls"，OpenAI 语义），否则纯 "stop"。单 chunk 而非
+            // tool_calls chunk + stop chunk 两连发——覆盖式消费 final chunk
+            // 的下游会在第二发丢掉 tool_calls。
+            let flushed_calls: Vec<ToolCall> = pending_tool_calls
+                .iter()
+                .map(|(_, (id, name, args))| ToolCall {
+                    id: id.clone(),
+                    call_type: Some("function".to_string()),
+                    function: Some(FunctionCall {
+                        name: name.clone(),
+                        arguments: args.clone(),
+                    }),
+                    name: None,
+                    arguments: None,
+                })
+                .collect();
+            tracing::warn!(
+                provider = %provider_name,
+                model = %model,
+                tool_call_count = flushed_calls.len(),
+                "[Provider] SSE stream ended without [DONE] — synthesized termination chunk"
+            );
+            let _ = tx
+                .send(Ok(StreamChunk {
+                    delta: String::new(),
+                    finish_reason: Some(
+                        if !flushed_calls.is_empty() {
+                            "tool_calls"
+                        } else {
+                            "stop"
+                        }
+                        .to_string(),
+                    ),
+                    tool_calls: flushed_calls,
+                    usage: None,
+                    reasoning_content: if accumulated_reasoning.is_empty() {
+                        None
+                    } else {
+                        Some(accumulated_reasoning.clone())
+                    },
+                }))
+                .await;
         });
 
         rx
@@ -553,6 +616,8 @@ impl LLMProvider for HttpProvider {
         let status = resp.status().as_u16();
 
         if status >= 400 {
+            // 先取 Retry-After 头再消费 body（text() 按值拿走 resp）。
+            let retry_after = crate::failover::retry_after_from_headers(resp.headers());
             let text = resp.text().await.unwrap_or_default();
             tracing::error!(
                 provider = %self.config.name,
@@ -566,6 +631,7 @@ impl LLMProvider for HttpProvider {
                 model,
                 status,
                 &text,
+                retry_after,
             ));
         }
 

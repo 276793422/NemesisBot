@@ -29,6 +29,10 @@ impl ModuleHandler for IdentityHandler {
         "identity"
     }
 
+    fn commands(&self) -> &'static [&'static str] {
+        &["list", "get", "save"]
+    }
+
     async fn handle_cmd(
         &self,
         cmd: &str,

@@ -38,6 +38,7 @@ impl WebServerOps for MockWebServer {
         role: &str,
         content: &str,
         model: Option<&str>,
+        _session_key: Option<&str>,
     ) -> std::result::Result<(), String> {
         self.sent.lock().unwrap().push((
             session_id.to_string(),
@@ -166,6 +167,7 @@ async fn test_send_to_session_forwards_model_badge() {
         message_type: String::new(),
         meta: nemesis_types::channel::OutboundMeta {
             model: Some("deepseek/deepseek-v4-flash".to_string()),
+            session_key: None,
         },
     };
     let result = ch.send(msg).await;
@@ -439,6 +441,7 @@ impl WebServerOps for FailingMockServer {
         _: &str,
         _: &str,
         _: &str,
+        _: Option<&str>,
         _: Option<&str>,
     ) -> std::result::Result<(), String> {
         Err("send failed".to_string())
@@ -757,6 +760,7 @@ impl WebServerOps for FailStartServer {
         _: &str,
         _: &str,
         _: &str,
+        _: Option<&str>,
         _: Option<&str>,
     ) -> std::result::Result<(), String> {
         Ok(())

@@ -16,6 +16,7 @@
 
 pub mod api_handlers;
 pub mod api_usage;
+pub mod chat_event_log;
 pub mod conv_router;
 pub mod cors;
 pub mod events;
@@ -25,9 +26,12 @@ pub mod internal;
 pub mod llm_bridge;
 pub mod pricing_sync;
 pub mod protocol;
+#[cfg(feature = "terminal")]
+pub mod pty;
 pub mod sdk_embed;
 pub mod server;
 pub mod session;
+pub mod share;
 pub mod sse_chat;
 pub mod websocket_handler;
 #[cfg(feature = "workflow")]

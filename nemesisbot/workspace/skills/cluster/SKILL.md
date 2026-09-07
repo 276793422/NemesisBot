@@ -2,7 +2,6 @@
 name: cluster
 description: 与集群中的其他节点进行 RPC 通信，实现分布式协作和能力发现
 homepage: https://github.com/276793422/NemesisBot
-metadata: {"nanobot":{"emoji":"🌐","requires":{"bins":["curl"]}}}
 ---
 
 # 集群通信 (Cluster Communication)

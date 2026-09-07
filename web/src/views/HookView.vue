@@ -4,7 +4,7 @@ import { useWSAPI } from '../composables/useWSAPI'
 import { useToast } from '../composables/useToast'
 
 // Hooks 钩子页（2026-08-29 自设置页迁移 + 双 TAB 重构）：
-// - 总览：统计徽标 + 每事件只读明细 + 可编辑原文 + CC 5 事件文档表
+// - 总览：统计徽标 + 每事件只读明细 + 可编辑原文 + 方言 5 事件文档表
 // - 设置：扁平结构化编辑（每条钩子 = 触发工具[可空] + 命令 + 超时），
 //   保存时每条各自成组写入 hooks.json（方案 B，语义与分组版等价）。
 // 单一真相源 = hooks.json；两处编辑都走 hooks.set（后端语义校验兜底），
@@ -26,7 +26,7 @@ const EVENTS = [
 ] as const
 
 interface HookEntry {
-  /** 触发工具的 matcher（CC 工具名正则/子串；空 = 全部工具）。 */
+  /** 触发工具的 matcher（工具名正则/子串；空 = 全部工具）。 */
   matcher: string
   command: string
   /** 秒；空串 = 后端默认 60。输入框绑定用字符串。 */
@@ -234,7 +234,7 @@ onMounted(loadHooks)
           <div class="card-body">
             <textarea class="form-textarea" style="min-height: 40vh; font-family: var(--font-mono); font-size: var(--text-xs);" v-model="rawJson"></textarea>
             <p class="form-hint" style="margin-top: var(--space-2);">
-              可直接编辑；保存走后端 CC 方言语义校验，校验失败不落盘。保存后「设置」页随之更新。
+              可直接编辑；保存走后端方言语义校验，校验失败不落盘。保存后「设置」页随之更新。
             </p>
           </div>
         </div>
@@ -243,11 +243,11 @@ onMounted(loadHooks)
           <div class="card-header"><h3>Hooks 钩子说明</h3></div>
           <div class="card-body">
             <p style="font-size: var(--text-sm); margin: 0 0 var(--space-3);">
-              hooks.json 采用 Claude Code 方言：每个 hook 是一条子进程脚本（stdin 收单行 JSON 事件、
+              hooks.json 方言：每个 hook 是一条子进程脚本（stdin 收单行 JSON 事件、
               env <code>CLAUDE_PROJECT_DIR</code>、cwd 为 workspace），九个事件映射到 Agent 内核钩点：
             </p>
             <table class="hooks-table">
-              <thead><tr><th>CC 事件</th><th>触发时机</th><th>阻断语义（exit 2）</th></tr></thead>
+              <thead><tr><th>事件</th><th>触发时机</th><th>阻断语义（exit 2）</th></tr></thead>
               <tbody>
                 <tr><td>SessionStart</td><td>每会话首条 prompt 到达时</td><td>观察型（不阻断）</td></tr>
                 <tr><td>UserPromptSubmit</td><td>用户消息进入历史之前</td><td>拦下 prompt，模型永远看不到</td></tr>
@@ -262,9 +262,9 @@ onMounted(loadHooks)
             </table>
             <p style="font-size: var(--text-sm); margin: var(--space-3) 0 0; color: var(--text-muted);">
               脚本协议：退出码 0 = 放行（PreToolUse/Stop 还认 stdout JSON <code>{"decision":"block","reason":…}</code>）；
-              2 = 阻断；其他/超时/启动失败 = 非阻断错误（fail-open）。触发工具（matcher）用 CC 工具名
+              2 = 阻断；其他/超时/启动失败 = 非阻断错误（fail-open）。触发工具（matcher）用工具名
               （Bash/Edit/Write/Read/Grep，本系统工具名自动映射别名），留空 = 全命中。每条钩子可设
-              <code>timeout</code> 秒（默认 60）。LLM 调用级钩子（K1b）无 CC 对应事件，不在此文件配置。
+              <code>timeout</code> 秒（默认 60）。LLM 调用级钩子（K1b）无对应事件，不在此文件配置。
             </p>
           </div>
         </div>
@@ -273,7 +273,7 @@ onMounted(loadHooks)
       <!-- ===================== 设置（结构化编辑） ===================== -->
       <div v-else>
         <p style="font-size: var(--text-sm); color: var(--text-secondary); margin: 0 0 var(--space-3);">
-          每条钩子 = 触发工具（可选，留空对全部工具生效）+ 命令 + 超时。保存时后端做 CC 方言语义校验，
+          每条钩子 = 触发工具（可选，留空对全部工具生效）+ 命令 + 超时。保存时后端做方言语义校验，
           校验失败不落盘；保存后点右上角「重启 Agent 生效」。
         </p>
         <div v-for="ev in EVENTS" :key="ev.id" class="card" style="margin-bottom: var(--space-4);">
@@ -310,7 +310,7 @@ onMounted(loadHooks)
 </template>
 
 <style scoped>
-/* CC 5-event mapping table */
+/* Hooks event mapping table */
 .hooks-table {
   width: 100%;
   border-collapse: collapse;

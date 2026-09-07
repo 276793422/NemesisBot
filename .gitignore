@@ -61,3 +61,7 @@ __pycache__/
 /test-tools/python/sdk/build/
 /test-tools/python/sdk/nemesisbot.egg-info/
 /Temp
+/.m*
+/.gate*
+/.acp-*
+/.k1-*

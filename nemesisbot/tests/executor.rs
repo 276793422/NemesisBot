@@ -7,6 +7,12 @@
 //!
 //! Run: `cargo test -p nemesisbot --test executor`
 //!
+//! Contract note (A5, 2026-09-05): the executor child registers its tools with
+//! a WorkspaceBoundary rooted at `NEMESISBOT_EXECUTOR_WORKSPACE` (`restrict`
+//! always true — see `exec_worker.rs`). File writes OUTSIDE that workspace are
+//! rejected by the child itself, defense-in-depth ahead of the Sandboxie box.
+//! Tests below must write INSIDE `workspace()`.
+//!
 //! See `docs/PLAN/2026-07-08_executor-separation.md`.
 
 use std::path::PathBuf;
@@ -135,8 +141,12 @@ async fn spawn_and_call_file_write_then_read_round_trips() {
         workspace(),
         Arc::new(|| false),
     ));
-    // Unique temp file to avoid parallel-test collisions.
-    let path = std::env::temp_dir().join(format!("executor_test_{}.txt", std::process::id()));
+    // Must live INSIDE workspace() — the child-side WorkspaceBoundary (A5)
+    // rejects outside writes. `<manifest>/target/` is gitignored build-artifact
+    // space (`**/target`); write_file creates parent dirs, so it need not exist.
+    let path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("target")
+        .join(format!("executor_test_{}.txt", std::process::id()));
     let write_args = format!(
         r#"{{"path":{:?},"content":"executor-file-round-trip"}}"#,
         path.to_string_lossy()
@@ -214,11 +224,14 @@ async fn spawn_and_call_via_startexe_crosses_box() {
 #[cfg(windows)]
 #[tokio::test]
 #[ignore = "requires Sandboxie started (SbieDrv + SbieSvc + NemesisBox drivable); run via the sandbox e2e workflow or `cargo test -p nemesisbot --test executor -- --ignored`"]
-async fn spawn_and_call_via_startexe_isolates_outside_workspace_write() {
-    // L2.2 isolation: a boxed write_file to a path OUTSIDE the workspace must
-    // NOT touch the real disk — the write is contained in the box's virtual FS.
-    // (write_file is a unit tool with no self-restrict, so it will happily write
-    // wherever asked; the box must contain it.) Requires sandbox install.
+async fn spawn_and_call_via_startexe_outside_write_rejected_inside_box() {
+    // L2.2 isolation, post-A5 contract: a boxed write_file to a path OUTSIDE
+    // the workspace is rejected by the child-side WorkspaceBoundary BEFORE the
+    // box is even consulted (defense-in-depth ordering). The box remains the
+    // final physical net for anything that slips past the boundary; this test
+    // pins that the boundary ALSO holds in the Start.exe/pipe boxed transport.
+    // Requires `nemesisbot sandbox install` to have been run (driver + Start.exe
+    // present).
     let home = sandbox_home();
     let paths = nemesis_sandbox::SandboxPaths::new(&home);
     let start_exe = paths.start_exe();
@@ -249,16 +262,18 @@ async fn spawn_and_call_via_startexe_isolates_outside_workspace_write() {
         outside.to_string_lossy()
     );
     let res = ch.spawn_and_call("write_file", &args, &ctx()).await;
-    // The boxed tool should report success (it wrote to the box's virtual FS)...
+    // The boundary must reject the outside write (inside the box too)...
     assert!(
-        res.as_ref().map(|r| r.contains("wrote")).unwrap_or(false),
-        "write_file should succeed inside the box: {:?}",
+        res.as_ref()
+            .is_err_and(|r| r.contains("outside the workspace"))
+            || res.as_ref().is_ok_and(|r| !r.contains("wrote")),
+        "outside write must be DENIED even in the boxed transport: {:?}",
         res
     );
-    // ...but the REAL disk must NOT have the file (containment held).
+    // ...and the REAL disk must NOT have the file (rejection held).
     assert!(
         !outside.exists(),
-        "ISOLATION FAILED: real file exists at {} — the box did not contain the write",
+        "ISOLATION FAILED: real file exists at {} — the write was not rejected",
         outside.display()
     );
 }
@@ -268,9 +283,11 @@ async fn spawn_and_call_via_startexe_isolates_outside_workspace_write() {
 #[ignore = "requires Sandboxie started (SbieDrv + SbieSvc + NemesisBox drivable); run via the sandbox e2e workflow or `cargo test -p nemesisbot --test executor -- --ignored`"]
 async fn l23_pending_commit_brings_boxed_workspace_write_to_real_disk() {
     // L2.3: a sandboxed write to the workspace lands in the box's virtual FS;
-    // pending lists it; commit copies it to real disk. (write_file is a unit tool
-    // — no self-restrict — so it writes wherever asked; the box contains it until
-    // commit.) Requires `nemesisbot sandbox install`.
+    // pending lists it; commit copies it to real disk. (Post-A5 the child-side
+    // WorkspaceBoundary allows workspace writes through — the box contains even
+    // those until commit. The target here is INSIDE the workspace, so the
+    // boundary lets it through and the box is what holds it.) Requires
+    // `nemesisbot sandbox install`.
     let home = sandbox_home();
     let paths = nemesis_sandbox::SandboxPaths::new(&home);
     let start_exe = paths.start_exe();
@@ -389,8 +406,12 @@ async fn u11_userland_sandbox_write_outside_denied_inside_allowed() {
     // U11/B7 验收：sandbox probe=true → gateway 以 stdio + SANDBOX 标记 spawn
     // 真实 nemesisbot 子进程 → 子进程（exec_worker）对自身装 landlock
     // （writable = workspace）→ write_file 写工作区内成功落盘、写工作区外
-    // 被 syscall 层拒绝。整条链是 gateway 生产路径（spawn_and_call），非
-    // 手工拼装。
+    // 被拒绝。整条链是 gateway 生产路径（spawn_and_call），非手工拼装。
+    //
+    // 层级注记（A5, 2026-09-05）：exec_worker 现在还为工具挂 WorkspaceBoundary
+    // （restrict 恒 true），所以工作区外的拒绝**先来自边界层**（工具报错），
+    // landlock 是其下的 syscall 级兜底（覆盖未来无边界检查的写路径）。本测试
+    // 钉的是最终可观察契约：外拒内成 + 真盘无泄漏。
     //
     // 环境依赖：内核 landlock（WSL2 kernel 5.15+/6.x 均有）。不可用时跳过
     // 并注明（降级路径本身由 exec_worker::plan 决策表单测覆盖）。
@@ -457,10 +478,11 @@ async fn u11_userland_sandbox_write_outside_denied_inside_allowed() {
 
 #[cfg(target_os = "linux")]
 #[tokio::test]
-async fn u11_userland_sandbox_disabled_marker_absent_writes_anywhere() {
-    // 反向对照：probe=false（Layer 1，无标记）→ 子进程不装沙盒 → 写工作区
-    // 外照常成功（确认上面的拒绝确实来自用户态沙盒，而非工具自身的
-    // workspace 限制）。
+async fn u11_plain_layer1_boundary_still_enforced_without_sandbox() {
+    // 反向对照（A5 后契约）：probe=false（Layer 1，无 landlock 标记）→ 子进程
+    // 不装沙盒，但 exec_worker 挂的 WorkspaceBoundary（restrict 恒 true）仍然
+    // 生效：工作区内的写照常落真盘，工作区外的写被边界层拒绝。既证明上面的
+    // 拒绝不是「无沙盒就裸奔」，也钉住边界与传输形态（stdio/管道/沙盒）解耦。
     let ws = tempfile::tempdir().expect("workspace tempdir");
     let ch = Arc::new(
         ExecutorChannel::new(
@@ -470,6 +492,22 @@ async fn u11_userland_sandbox_disabled_marker_absent_writes_anywhere() {
         )
         .with_timeout(Duration::from_secs(120)),
     );
+
+    // 写内：成功 + 真盘文件存在（无沙盒路径的基线行为）。
+    let inside = ws.path().join("plain_inside_ok.txt");
+    let args = format!(
+        r#"{{"path":{:?},"content":"plain-layer1"}}"#,
+        inside.to_string_lossy()
+    );
+    let res = ch.spawn_and_call("write_file", &args, &ctx()).await;
+    assert!(
+        res.as_ref().map(|r| r.contains("wrote")).unwrap_or(false),
+        "Layer-1 (no sandbox marker) INSIDE write should succeed: {:?}",
+        res
+    );
+    assert!(inside.exists(), "Layer-1 inside write must land on disk");
+
+    // 写外（workspace 的兄弟目录）：子进程边界拒绝，真盘无泄漏。
     let outside = ws
         .path()
         .parent()
@@ -477,15 +515,18 @@ async fn u11_userland_sandbox_disabled_marker_absent_writes_anywhere() {
         .join(format!("nemesis_u11_plain_{}.txt", std::process::id()));
     let _ = std::fs::remove_file(&outside);
     let args = format!(
-        r#"{{"path":{:?},"content":"plain-layer1"}}"#,
+        r#"{{"path":{:?},"content":"must-be-denied"}}"#,
         outside.to_string_lossy()
     );
     let res = ch.spawn_and_call("write_file", &args, &ctx()).await;
     assert!(
-        res.as_ref().map(|r| r.contains("wrote")).unwrap_or(false),
-        "Layer-1 (no sandbox marker) outside write should succeed: {:?}",
+        res.is_err() || !res.as_ref().unwrap().contains("wrote"),
+        "Layer-1 (no sandbox) OUTSIDE write must be DENIED by the workspace boundary, got: {:?}",
         res
     );
-    assert!(outside.exists(), "Layer-1 write must land on disk");
+    assert!(
+        !outside.exists(),
+        "ISOLATION FAILED: outside file leaked to real disk"
+    );
     let _ = std::fs::remove_file(&outside);
 }

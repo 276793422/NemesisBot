@@ -166,6 +166,34 @@ pub struct Config {
     /// 使用统计保留策略（A3；None = 全默认——30 天 rollup，无条数上限）。
     #[serde(default)]
     pub usage: Option<UsageConfig>,
+    /// PTY 内嵌终端（L8；None = 全默认——**enabled=false 关**，双闸的另一闸
+    /// 是 `terminal` cargo feature）。
+    #[serde(default)]
+    pub terminal: Option<TerminalConfig>,
+}
+
+/// PTY 内嵌终端配置（`config.json` 的 `terminal` 段；L8。交互 shell 无法
+/// 逐命令审批——默认关闭，启用即接受「dashboard 登录用户=shell 信任级」
+/// +全 I/O 审计 `<workspace>/logs/terminal/`）。
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(default)]
+pub struct TerminalConfig {
+    /// 终端总开关（默认 false；启用还需 `terminal` cargo feature 在场）。
+    pub enabled: bool,
+    /// 并发 PTY 会话上限（满员拒绝新连接；默认 4）。
+    pub max_sessions: u32,
+    /// shell 覆盖（None=Windows powershell / Unix $SHELL >/bin/sh）。
+    pub shell: Option<String>,
+}
+
+impl Default for TerminalConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            max_sessions: 4,
+            shell: None,
+        }
+    }
 }
 
 /// 使用统计保留策略（`config.json` 的 `usage` 段；`#[serde(default)]`
@@ -298,7 +326,7 @@ pub struct AgentsConfig {
     pub defaults: AgentDefaults,
     #[serde(default)]
     pub list: Vec<AgentConfigEntry>,
-    /// H7 (U13 half): Claude Code delegation tool settings. Default
+    /// H7 (U13 half): claude CLI delegation tool settings. Default
     /// disabled (opt-in) — absent section = tool never registered.
     #[serde(default)]
     pub claude_code_tool: ClaudeCodeToolConfig,
@@ -314,6 +342,104 @@ pub struct AgentsConfig {
     /// absent section = tool defs render byte-identical to the pre-Y1 build.
     #[serde(default)]
     pub tool_doc_folding: ToolDocFoldingConfig,
+    /// G2 (devtool-upgrade 阶段 3): sub-agent spawn settings.
+    #[serde(default)]
+    pub subagent: SubagentConfig,
+    /// I1 (devtool-upgrade 阶段 3): workspace fs-watcher settings.
+    #[serde(default)]
+    pub fs_watcher: FsWatcherConfig,
+    /// F8 (devtool-upgrade 阶段 3): tool names hidden from the model's
+    /// tool_defs AND rejected at dispatch (double gate). Entries may carry a
+    /// trailing `*` wildcard (e.g. `mcp_*` hides every MCP tool). Runtime
+    /// edits take effect from the next turn (fresh-read, no restart).
+    #[serde(default)]
+    pub hidden_tools: Vec<String>,
+    /// N2 (devtool-upgrade 阶段 4): 小模型专职杂务通道 — a model reference
+    /// (alias from `model_list` or `vendor/model`) used for cheap chores.
+    /// Sole consumer today: manual `/compact` summarization (E6) — auto
+    /// compression stays on the main model (quality-sensitive). Resolved to
+    /// a provider at AgentLoop construction; absent/empty/unresolvable =
+    /// honest fallback to the main model (warn in the factory, never a
+    /// startup blocker). Runtime edits need an Agent restart.
+    #[serde(default)]
+    pub small_model: Option<String>,
+    /// J5 (devtool-upgrade 阶段 6): doom-loop 审批化开关。默认关——turn_guard
+    /// 的 escalation 硬停是安全底座。开且 question asker 已装配时，escalation
+    /// 触发先发提问卡问用户「继续吗？」：approve = 清签名计数继续；deny /
+    /// 超时 / asker 缺失 = 现行为（停轮）。loop 侧 fresh-read（每次 escalation
+    /// 现读 config.json），运行时改键下一轮生效，无需重启。
+    #[serde(default)]
+    pub doom_loop_approval: bool,
+    /// J6 (devtool-upgrade 阶段 6): 超限图片自动降采样开关。默认**开**——
+    /// 超过 25MB 或最长边超过 8000px 的图片在附加前先降采样（阶梯
+    /// 4096→2048→1024，JPEG q85，产物不超过 8MB 落 uploads 内容寻址复用）；
+    /// 关 = 原 25MB 硬拒绝。loop 侧 fresh-read（每条消息现读 config.json），
+    /// 运行时改键下一轮生效。
+    #[serde(default = "default_true")]
+    pub image_downscale: bool,
+}
+
+/// I1 (devtool-upgrade 阶段 3): `agents.fs_watcher` config section —
+/// workspace file watching (notify-based, recursive). External edits
+/// surface to the agent as a one-shot `<external_changes>` annotation in
+/// the next context snapshot; instruction-chain files (AGENTS.md/CLAUDE.md)
+/// additionally invalidate context digests (structural no-op since round-5
+/// stateless digests — kept as the anchor, same as the dispatch path's
+/// touch-driven call). Watcher startup failure degrades to warn-once and
+/// never blocks the loop.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct FsWatcherConfig {
+    /// Master switch (default true). Failure to start is warn-once +
+    /// disabled either way — this only controls whether we try.
+    #[serde(default = "default_fs_watcher_enabled")]
+    pub enabled: bool,
+    /// Extra ignore entries merged over the built-in table (built-in:
+    /// `.git`/`node_modules`/`target`/`dist`/`logs`/`uploads`/`memory`/
+    /// `cluster`/`board`/`data`/`config`/`tools` dir names + `*.jsonl`/
+    /// `*.db*`/`*.sqlite*` extensions). A bare name matches any path
+    /// component (workspace-relative); `*.ext` matches by extension.
+    #[serde(default)]
+    pub ignore: Vec<String>,
+}
+
+fn default_fs_watcher_enabled() -> bool {
+    true
+}
+
+// 手写 Default（不 derive）：`enabled` 的本意默认是 true，derive 给零值
+// false（同 DiagnosticsLoopConfig 的坑）。
+impl Default for FsWatcherConfig {
+    fn default() -> Self {
+        Self {
+            enabled: default_fs_watcher_enabled(),
+            ignore: Vec::new(),
+        }
+    }
+}
+
+/// G2 (devtool-upgrade 阶段 3): `agents.subagent` config section — spawn
+/// nesting governance. The enforcement lives in `SpawnTool` (nemesis-agent):
+/// a spawn request is rejected when `parent_depth + 1 > max_depth`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SubagentConfig {
+    /// Maximum sub-agent nesting depth. Depth 0 = the top-level agent;
+    /// a spawn from depth N creates a child at depth N+1, allowed only when
+    /// N+1 <= max_depth. Default 1 = sub-agents cannot spawn sub-agents
+    /// (grandchild requests bounce back to the model with a limit message).
+    #[serde(default = "default_subagent_max_depth")]
+    pub max_depth: usize,
+}
+
+impl Default for SubagentConfig {
+    fn default() -> Self {
+        Self {
+            max_depth: default_subagent_max_depth(),
+        }
+    }
+}
+
+fn default_subagent_max_depth() -> usize {
+    1
 }
 
 /// Y1 (Phase4-a): `agents.tool_doc_folding` config section. When enabled,
@@ -363,6 +489,50 @@ pub struct LspToolConfig {
     /// longer than this get shut down lazily on the next query.
     #[serde(default)]
     pub idle_secs: Option<u64>,
+    /// C6 (devtool-upgrade 阶段 6): 静默自举缺失的语言服务器——true 时网关
+    /// 启动期后台串行安装全部缺失的非交互语言服务器（官方安装通道白名单
+    /// 目录），装完需重启 Agent 重新探测注册（default false——默认绝不自动装东西）。
+    #[serde(default)]
+    pub auto_install: bool,
+}
+
+/// C4 (2026-09-04 devtool-upgrade 阶段 1): `agents.diagnostics_loop` config
+/// section. 编辑→诊断回灌闭环（阶段 2 C1-C3 消费）的独立开关——config 键先行，
+/// dashboard 可在闭环落地前先配置。**与 `agents.lsp_tool.enabled` 解耦**：
+/// 诊断闭环开而 lsp 工具关是合法组合（闭环自身按需起服务器）。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DiagnosticsLoopConfig {
+    /// Enable the edit→diagnostics feedback loop (default false).
+    #[serde(default)]
+    pub enabled: bool,
+    /// Max diagnostics fed back per edit (default 20).
+    #[serde(default = "default_diagnostics_max_errors")]
+    pub max_errors: usize,
+    /// Max wall-clock wait for diagnostics after an edit, in ms (default 2000).
+    #[serde(default = "default_diagnostics_wait_max_ms")]
+    pub wait_max_ms: u64,
+}
+
+// 手写 Default（不 derive）：字段级 `#[serde(default)]` 在 **整个
+// `diagnostics_loop` 键缺席**时用的是类型的 Default impl（derive 会给零值
+// 20/2000 的本意就落空了——首测抓出）。手写保证「全键缺席」与「部分键
+// 缺席」（内部字段的 serde default fn 管）两条路都落在同一组默认值上。
+impl Default for DiagnosticsLoopConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            max_errors: default_diagnostics_max_errors(),
+            wait_max_ms: default_diagnostics_wait_max_ms(),
+        }
+    }
+}
+
+fn default_diagnostics_max_errors() -> usize {
+    20
+}
+
+fn default_diagnostics_wait_max_ms() -> u64 {
+    2000
 }
 
 /// I4: `agents.codex_tool` config section (mirrors claude_code_tool).
@@ -397,6 +567,23 @@ pub struct ClaudeCodeToolConfig {
     pub permission_mode: String,
 }
 
+/// A6 (2026-09-06 devtool-upgrade 阶段 5): `agents.defaults.format_on_save`
+/// config section — write/edit 成功后自动跑外部格式化工具（format-on-save）。
+/// 执行点在 PostToolUse hooks 之前（用户自定义 hook 看到格式化后文件）、
+/// C3 诊断带之前（诊断看到格式化后文件）；`executor.enabled=true` 时诚实
+/// 停用（写落子进程/盒内，gateway 侧后格式化会读到陈旧内容甚至绕盒写）。
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct FormatOnSaveConfig {
+    /// Enable format-on-save (default false — opt-in).
+    #[serde(default)]
+    pub enabled: bool,
+    /// Per-extension formatter override: ext → argv template（首元素 = 工具
+    /// 名，其余 = 参数；`{file}` 占位符替换为目标路径）。按条目覆盖——命中的
+    /// ext 用配置 argv，未命中的 ext 回落内置表。空表 = 全内置。
+    #[serde(default)]
+    pub formatters: std::collections::BTreeMap<String, Vec<String>>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AgentDefaults {
     #[serde(default)]
@@ -417,8 +604,8 @@ pub struct AgentDefaults {
     pub max_tool_iterations: i64,
     #[serde(default = "default_concurrent_request_mode")]
     pub concurrent_request_mode: String,
-    /// Full-review M4: context-snapshot message role. "user" (default,
-    /// dsh-aligned) places the merged snapshot as a user message; some
+    /// Full-review M4: context-snapshot message role. "user" (default)
+    /// places the merged snapshot as a user message; some
     /// strict chat templates reject adjacent user/user pairs — set
     /// "system" to restore the pre-I2 single system-role injection.
     #[serde(default = "default_snapshot_role")]
@@ -432,6 +619,12 @@ pub struct AgentDefaults {
     /// daily midnight task in agent_factory). 0 = never clean up. Default 7.
     #[serde(default = "default_spill_retention_days")]
     pub spill_retention_days: i64,
+    /// C4: edit→diagnostics feedback loop switch (see [`DiagnosticsLoopConfig`]).
+    #[serde(default)]
+    pub diagnostics_loop: DiagnosticsLoopConfig,
+    /// A6: format-on-save after write/edit (see [`FormatOnSaveConfig`]).
+    #[serde(default)]
+    pub format_on_save: FormatOnSaveConfig,
 }
 
 impl Default for AgentDefaults {
@@ -450,6 +643,8 @@ impl Default for AgentDefaults {
             queue_size: default_queue_size(),
             max_continuation_permits: 0,
             spill_retention_days: default_spill_retention_days(),
+            diagnostics_loop: DiagnosticsLoopConfig::default(),
+            format_on_save: FormatOnSaveConfig::default(),
         }
     }
 }
@@ -2124,6 +2319,12 @@ pub fn default_config() -> Config {
             codex_tool: CodexToolConfig::default(),
             lsp_tool: LspToolConfig::default(),
             tool_doc_folding: ToolDocFoldingConfig::default(),
+            subagent: SubagentConfig::default(),
+            fs_watcher: FsWatcherConfig::default(),
+            hidden_tools: Vec::new(),
+            small_model: None,
+            doom_loop_approval: false,
+            image_downscale: true,
             defaults: AgentDefaults {
                 workspace: ws,
                 restrict_to_workspace: true,
@@ -2131,7 +2332,10 @@ pub fn default_config() -> Config {
                 max_tokens: 8192,
                 temperature: 0.7,
                 max_tool_iterations: 100,
-                concurrent_request_mode: "reject".to_string(),
+                // concurrent_request_mode intentionally omitted — filled by
+                // `..Default::default()` → `default_concurrent_request_mode()`
+                // (E1: single truth source; a stale "reject" literal lived here
+                // until 2026-09-05 and silently outvoted the default fn).
                 queue_size: 8,
                 ..Default::default()
             },
@@ -2231,6 +2435,7 @@ pub fn default_config() -> Config {
         debug: None,
         board: None,
         usage: None,
+        terminal: None,
     }
 }
 
@@ -2577,8 +2782,14 @@ fn default_temperature() -> f64 {
 fn default_max_tool_iterations() -> i64 {
     100
 }
+/// E1 (2026-09-05 拍板): default concurrent mode is **queue** — busy sessions
+/// park messages in the per-session inbox instead of bouncing them (devtool
+/// upgrade: multi-entry coding agent needs turn-end continuation, not
+/// rejection). Applies ONLY when config.json omits the key (serde default);
+/// explicit `"reject"` configs keep legacy behavior. Unknown strings still
+/// fail safe to reject at `parse_concurrent_mode` (nemesis-agent).
 fn default_concurrent_request_mode() -> String {
-    "reject".to_string()
+    "queue".to_string()
 }
 
 fn default_snapshot_role() -> String {

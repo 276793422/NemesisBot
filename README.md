@@ -649,7 +649,7 @@ NemesisBot_Rust/
 - **病毒扫描** - 内置 ClamAV 引擎，文件操作自动扫描
 - **执行体隔离** - LLM 高危操作（exec/文件/grep/git）剥离到 per-call 子进程，安全层仍在 gateway 执行前跑（config: `executor.enabled`）
 - **Sandboxie 沙盒（安全第 9 层）** - 最终防御红线：子进程套进 Sandboxie 盒（断网+降权+全隔离），前 8 层放行的操作在盒里也动不了真盘，工作区写入手动审阅提交（config: `executor.sandbox`，Windows）
-- **可执行文件签名验证（v3，独立子系统）** - PE/ELF/Raw 文件 Ed25519 签名 + 证书链 + 云端吊销（CRL），架构参照微软 Authenticode（DLL 验证模块 + 公钥随签名走 + 根锚）。`nemesis-verify` crate（产物 `nemesis_verify.dll` 导出 C ABI `nv_*`）+ `revoke-server`（云端签发/吊销）+ `exe-sign-tool`/`verify-loader`（签发与验签 CLI）。核心已完成、端到端跑通，**尚未接入主程序**（防篡改/防替换，抬高攻击成本；诚实边界：纯软件自检，D3 防绕过有物理上限）
+- **可执行文件签名验证（v3，独立子系统）** - PE/ELF/Raw 文件 Ed25519 签名 + 证书链 + 云端吊销（CRL），架构为「DLL 验证模块 + 公钥随签名走 + 根锚」的证书链信任模型。`nemesis-verify` crate（产物 `nemesis_verify.dll` 导出 C ABI `nv_*`）+ `revoke-server`（云端签发/吊销）+ `exe-sign-tool`/`verify-loader`（签发与验签 CLI）。核心已完成、端到端跑通，**尚未接入主程序**（防篡改/防替换，抬高攻击成本；诚实边界：纯软件自检，D3 防绕过有物理上限）
 - **分布式集群** - 多节点协同，异步 RPC + 续行快照 + Dashboard 6-Tab 管理
 - **集群请求日志** - 按对端设备 ID + 任务 ID 分目录隔离（`cluster_logs/{device}/{ts}_{task_id}/`），双向视角查看
 - **集群 Session Key 隔离** - 复合键 `{node_id}/{chat_id}` 避免跨节点会话串扰
@@ -718,7 +718,7 @@ nemesisbot agent            # Agent 管理
 | 工具 | 20+ | 32+（含 mcp_discover、cli_reference、exec_async、cluster_rpc 等） |
 | Forge 组件 | 24 文件 | 26 文件 |
 | Web API 端点 | 7 | 17（含 SSE /api/chat/stream） |
-| SSE 流式传输 | Codex SDK 内部流式 | HttpProvider.chat_stream + /api/chat/stream |
+| SSE 流式传输 | 内置流式实现 | HttpProvider.chat_stream + /api/chat/stream |
 | 系统托盘 | fyne.io/systray | tray-icon + winit（Windows/macOS）；plugin-ui.so + GTK + libayatana-appindicator3（Linux） |
 | 桌面窗口 | Wails (WebView2) | plugin-ui DLL (wry + tao) |
 | 审批弹窗 | 有 | 有（含 DLL 缺失安全降级） |
@@ -817,13 +817,7 @@ NemesisBot 采用 **双授权（dual-license）** 模式：同一份代码，两
 
 ## 致谢
 
-本项目是 [NemesisBot Go 版](https://github.com/276793422/NemesisBot) 的 Rust 重写，灵感来源于：
-- [OpenClaw](https://github.com/openclaw/openclaw)
-- [nanobot](https://github.com/HKUDS/nanobot)
-- [PicoClaw](https://github.com/sipeed/picoclaw)
-- [内部专项](https://github.com/RightNow-AI/内部专项)
-
-感谢这些项目的贡献者！（其实不只是灵感，我的Claw也抄了他们不少代码。）
+本项目是 [NemesisBot Go 版](https://github.com/276793422/NemesisBot) 的 Rust 重写。
 
 ---
 

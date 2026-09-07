@@ -601,6 +601,12 @@ fn test_full_config_roundtrip() {
             codex_tool: CodexToolConfig::default(),
             lsp_tool: LspToolConfig::default(),
             tool_doc_folding: ToolDocFoldingConfig::default(),
+            subagent: SubagentConfig::default(),
+            fs_watcher: FsWatcherConfig::default(),
+            hidden_tools: Vec::new(),
+            small_model: None,
+            doom_loop_approval: false,
+            image_downscale: true,
             defaults: AgentDefaults {
                 max_tokens: 256000,
                 temperature: 0.5,
@@ -750,6 +756,76 @@ fn test_agent_defaults_default() {
 fn test_agents_config_default() {
     let agents = AgentsConfig::default();
     assert!(agents.list.is_empty());
+}
+
+/// G2 (devtool-upgrade 阶段 3): sub-agent depth config — absent section
+/// defaults to max_depth 1; explicit values parse; round-trips losslessly.
+#[test]
+fn test_subagent_depth_config() {
+    // Old JSON (pre-G2) — no agents.subagent section at all.
+    let old: AgentsConfig = serde_json::from_str(r#"{"list": []}"#).unwrap();
+    assert_eq!(old.subagent.max_depth, 1, "缺省段 = 默认深度上限 1");
+
+    // Explicit values.
+    let cfg: AgentsConfig = serde_json::from_str(r#"{"subagent": {"max_depth": 3}}"#).unwrap();
+    assert_eq!(cfg.subagent.max_depth, 3);
+
+    // Round-trip keeps the value.
+    let json = serde_json::to_string(&cfg).unwrap();
+    let back: AgentsConfig = serde_json::from_str(&json).unwrap();
+    assert_eq!(back.subagent.max_depth, 3, "round-trip 不得丢 max_depth");
+}
+
+/// F8 (devtool-upgrade 阶段 3): `agents.hidden_tools` — absent key (old
+/// config.json) defaults to empty (= hide nothing); explicit entries parse;
+/// round-trips losslessly (typed save paths must not silently drop the key).
+#[test]
+fn test_hidden_tools_config() {
+    // Old JSON (pre-F8) — no agents.hidden_tools key.
+    let old: AgentsConfig = serde_json::from_str(r#"{"list": []}"#).unwrap();
+    assert!(old.hidden_tools.is_empty(), "缺省键 = 不隐藏任何工具");
+
+    // Explicit entries (mixed exact + wildcard).
+    let cfg: AgentsConfig = serde_json::from_str(r#"{"hidden_tools": ["exec", "mcp_*"]}"#).unwrap();
+    assert_eq!(cfg.hidden_tools, vec!["exec", "mcp_*"]);
+
+    // Round-trip keeps the entries.
+    let rt: AgentsConfig = serde_json::from_str(&serde_json::to_string(&cfg).unwrap()).unwrap();
+    assert_eq!(
+        rt.hidden_tools,
+        vec!["exec", "mcp_*"],
+        "round-trip 不得丢 hidden_tools"
+    );
+}
+
+/// N2 (devtool-upgrade 阶段 4): small-model chore lane — `agents.small_model`
+/// parses when present, defaults to None on old config.json (pre-N2), and
+/// round-trips losslessly (typed save paths must not silently drop the key).
+#[test]
+fn test_small_model_config() {
+    // Old JSON (pre-N2) — no agents.small_model key.
+    let old: AgentsConfig = serde_json::from_str(r#"{"list": []}"#).unwrap();
+    assert!(old.small_model.is_none(), "缺省键 = 未配置小模型");
+
+    // Explicit model reference (alias or vendor/model).
+    let cfg: AgentsConfig = serde_json::from_str(r#"{"small_model": "cheap-mini"}"#).unwrap();
+    assert_eq!(cfg.small_model.as_deref(), Some("cheap-mini"));
+
+    // Empty string stays present (factory-side trim+empty filter handles it).
+    let blank: AgentsConfig = serde_json::from_str(r#"{"small_model": "  "}"#).unwrap();
+    assert_eq!(blank.small_model.as_deref(), Some("  "));
+
+    // Round-trip keeps the value.
+    let rt: AgentsConfig = serde_json::from_str(&serde_json::to_string(&cfg).unwrap()).unwrap();
+    assert_eq!(
+        rt.small_model.as_deref(),
+        Some("cheap-mini"),
+        "round-trip 不得丢 small_model"
+    );
+
+    // null（Dashboard「清空」写 null）→ None，恢复未配置语义。
+    let unset: AgentsConfig = serde_json::from_str(r#"{"small_model": null}"#).unwrap();
+    assert!(unset.small_model.is_none(), "null = 未配置");
 }
 
 /// T5 (U13): delegation permission-tier config — new fields parse, absent
@@ -955,7 +1031,9 @@ fn test_agent_defaults_queue_size() {
 #[test]
 fn test_agent_defaults_concurrent_request_mode() {
     let defaults = AgentDefaults::default();
-    assert_eq!(defaults.concurrent_request_mode, "reject");
+    // E1 (2026-09-05): default flipped reject → queue (busy sessions park
+    // messages in the inbox instead of bouncing; serde default = key absent).
+    assert_eq!(defaults.concurrent_request_mode, "queue");
 }
 
 #[test]
@@ -3115,4 +3193,64 @@ fn test_l7_mcp_extra_serialization_deterministic() {
     let alpha = s1.find("\"alpha\"").expect("alpha present");
     let zebra = s1.find("\"zebra\"").expect("zebra present");
     assert!(alpha < zebra, "per-server extra 键按字典序输出: {s1}");
+}
+
+// ---------------------------------------------------------------------------
+// C4 (2026-09-04 devtool-upgrade 阶段 1): agents.diagnostics_loop
+// ---------------------------------------------------------------------------
+
+#[test]
+fn test_diagnostics_loop_missing_key_defaults() {
+    // 缺键不炸（#[serde(default)] 全覆盖）：诊断闭环默认关、20 条、2000ms。
+    let parsed: crate::AgentDefaults = serde_json::from_str("{}").unwrap();
+    assert!(!parsed.diagnostics_loop.enabled);
+    assert_eq!(parsed.diagnostics_loop.max_errors, 20);
+    assert_eq!(parsed.diagnostics_loop.wait_max_ms, 2000);
+
+    // 部分键缺席（内部字段的 serde default fn 路径）落到同一组默认值。
+    let partial: crate::DiagnosticsLoopConfig =
+        serde_json::from_str(r#"{"enabled": true}"#).unwrap();
+    assert!(partial.enabled);
+    assert_eq!(partial.max_errors, 20);
+    assert_eq!(partial.wait_max_ms, 2000);
+
+    // 类型 Default impl 与 serde 缺键路径一致（手写 Default 的锚点）。
+    let d = crate::DiagnosticsLoopConfig::default();
+    assert_eq!((d.enabled, d.max_errors, d.wait_max_ms), (false, 20, 2000));
+}
+
+#[test]
+fn test_diagnostics_loop_roundtrip_in_full_config() {
+    // C4 验收回归锁：typed save round-trip 保留新键（模式同
+    // test_typed_save_roundtrip_preserves_untyped_per_model_keys，但那是
+    // untyped extra 键；本键是 typed 字段，锁的是「加字段后序列化/反序列化
+    // 全链不丢」+ 与 lsp_tool 解耦两语义同时成立）。
+    let config = Config {
+        agents: AgentsConfig {
+            defaults: AgentDefaults {
+                diagnostics_loop: crate::DiagnosticsLoopConfig {
+                    enabled: true,
+                    max_errors: 7,
+                    wait_max_ms: 1500,
+                },
+                ..Default::default()
+            },
+            lsp_tool: crate::LspToolConfig {
+                enabled: false,
+                ..Default::default()
+            },
+            ..Default::default()
+        },
+        ..Default::default()
+    };
+
+    let json = serde_json::to_string_pretty(&config).unwrap();
+    let parsed: Config = serde_json::from_str(&json).unwrap();
+
+    let diag = &parsed.agents.defaults.diagnostics_loop;
+    assert!(diag.enabled, "enabled must survive typed round-trip");
+    assert_eq!(diag.max_errors, 7);
+    assert_eq!(diag.wait_max_ms, 1500);
+    // 解耦语义锚点：诊断闭环开而 lsp 工具关是合法组合（各自独立存储）。
+    assert!(!parsed.agents.lsp_tool.enabled);
 }

@@ -165,6 +165,57 @@ fn uri_to_path_strips_drive_slash_and_decodes() {
 }
 
 // ---------------------------------------------------------------------------
+// URI 规范化键（2026-09-05 C3 实机闭环验证根修）
+// ---------------------------------------------------------------------------
+
+#[test]
+fn uri_key_unifies_whatwg_normal_forms() {
+    // Windows 盘符大小写（rust-analyzer 的 url crate 把 `C:` 规范成 `c:`
+    // 回显）必须落到同一个键上——record/lookup 双端靠它精确匹配。
+    // 跨平台纯字符串级：POSIX 宿主上同样归一（不依赖路径语义）。
+    assert_eq!(uri_key("file:///C:/u/a.rs"), "file:///c:/u/a.rs");
+    assert_eq!(uri_key("file:///C:/u/a.rs"), uri_key("file:///c:/u/a.rs"));
+    // 规范形自身幂等。
+    assert_eq!(uri_key("file:///c:/u/a.rs"), "file:///c:/u/a.rs");
+    assert_eq!(uri_key("file:///u/a.rs"), "file:///u/a.rs");
+    // 非 file scheme / 解析失败原样返回（绝不 panic）。
+    assert_eq!(uri_key("http://x/a.rs"), "http://x/a.rs");
+    assert_eq!(uri_key("not a uri at all"), "not a uri at all");
+}
+
+#[test]
+fn path_to_uri_matches_server_normalized_form() {
+    // 闭环真不变量：本端发射形态经 uri_key 归一后，必须与「WHATWG 规范化
+    // 服务器」的回显形态**同键**。发射与回显字面不必一致（2026-09-05 实
+    // 测：本机 rust-url from_file_path 产出大写盘符，真 rust-analyzer 回
+    // 显小写）——键归一兜住两端，这才是 publishDiagnostics 记录/查询精
+    // 确匹配的实际依赖。
+    let p = std::env::temp_dir().join("uri_norm_probe").join("a.rs");
+    let uri = path_to_uri(&p);
+    // 模拟 rust-analyzer 系服务器的回显：file:///X:/ → file:///x:/。
+    let b = uri.as_bytes();
+    let echoed = if uri.starts_with("file:///")
+        && b.len() >= 10
+        && b[8].is_ascii_alphabetic()
+        && b[9] == b':'
+    {
+        format!(
+            "{}{}{}",
+            &uri[..8],
+            (b[8] as char).to_ascii_lowercase(),
+            &uri[9..]
+        )
+    } else {
+        uri.clone()
+    };
+    assert_eq!(
+        uri_key(&uri),
+        uri_key(&echoed),
+        "发射键必须与服务器回显键一致: emit={uri} echo={echoed}"
+    );
+}
+
+// ---------------------------------------------------------------------------
 // Response parsing
 // ---------------------------------------------------------------------------
 
@@ -269,4 +320,340 @@ fn s1_parse_hover_object_without_value_is_empty() {
         parse_hover(&serde_json::json!({"contents": {"kind": "plaintext"}})),
         ""
     );
+}
+
+// ===========================================================================
+// C2 补测（devtool-upgrade 阶段 2）：publishDiagnostics 解析
+// ===========================================================================
+
+#[test]
+fn c2_parse_publish_diagnostics_full_and_defaults() {
+    let params = serde_json::json!({
+        "uri": "file:///a/b.go",
+        "diagnostics": [
+            {"range": {"start": {"line": 1, "character": 2}, "end": {"line": 1, "character": 7}},
+             "severity": 2, "source": "go build", "message": "undefined: x"},
+            {"range": {"start": {"line": 4, "character": 0}, "end": {"line": 4, "character": 1}},
+             "message": "syntax error"}
+        ]
+    });
+    let (uri, diags) = parse_publish_diagnostics(&params).unwrap();
+    assert_eq!(uri, "file:///a/b.go");
+    assert_eq!(diags.len(), 2);
+    assert_eq!(diags[0].range_start, (1, 2));
+    assert_eq!(diags[0].range_end, (1, 7));
+    assert_eq!(diags[0].severity, 2);
+    assert_eq!(diags[0].source.as_deref(), Some("go build"));
+    assert_eq!(diags[0].message, "undefined: x");
+    // 缺 severity → 规范默认 1（Error）；缺 source → None。
+    assert_eq!(diags[1].severity, 1);
+    assert_eq!(diags[1].source, None);
+    assert_eq!(diags[1].message, "syntax error");
+}
+
+#[test]
+fn c2_parse_publish_diagnostics_tolerant() {
+    // 缺 uri / 缺 diagnostics / 形状错 → None（不炸）。
+    assert!(parse_publish_diagnostics(&serde_json::json!({})).is_none());
+    assert!(parse_publish_diagnostics(&serde_json::json!({"uri": "file:///x.go"})).is_none());
+    assert!(parse_publish_diagnostics(&serde_json::json!({"uri": 3, "diagnostics": []})).is_none());
+    assert!(
+        parse_publish_diagnostics(&serde_json::json!({"uri": "file:///x.go", "diagnostics": "no"}))
+            .is_none()
+    );
+    // 空列表合法（服务器用它清诊断）。
+    let empty = parse_publish_diagnostics(&serde_json::json!({
+        "uri": "file:///x.go", "diagnostics": []
+    }))
+    .unwrap();
+    assert!(empty.1.is_empty());
+    // 个别畸形条目（无 range / 无 message）跳过，不拖垮整批。
+    let mixed = parse_publish_diagnostics(&serde_json::json!({
+        "uri": "file:///x.go",
+        "diagnostics": [
+            {"message": "no range"},
+            {"range": {"start": {"line": 0, "character": 0}, "end": {"line": 0, "character": 0}}},
+            {"range": {"start": {"line": 2, "character": 1}, "end": {"line": 2, "character": 2}},
+             "message": "ok"}
+        ]
+    }))
+    .unwrap();
+    assert_eq!(mixed.1.len(), 1);
+    assert_eq!(mixed.1[0].message, "ok");
+    // severity 越界回落默认 1。
+    let weird = parse_publish_diagnostics(&serde_json::json!({
+        "uri": "file:///x.go",
+        "diagnostics": [{"range": {"start": {"line": 0, "character": 0},
+                                   "end": {"line": 0, "character": 0}},
+                         "severity": 9, "message": "m"}]
+    }))
+    .unwrap();
+    assert_eq!(weird.1[0].severity, 1);
+}
+
+// ===========================================================================
+// C7 补测（devtool-upgrade 阶段 6）：WorkspaceEdit / CodeAction / 位置换算 /
+// TextEdit 应用
+// ===========================================================================
+
+fn te(sl: u64, sc: u64, el: u64, ec: u64, new_text: &str) -> serde_json::Value {
+    serde_json::json!({
+        "range": {"start": {"line": sl, "character": sc}, "end": {"line": el, "character": ec}},
+        "newText": new_text
+    })
+}
+
+#[test]
+fn c7_parse_workspace_edit_changes_map() {
+    let result = serde_json::json!({
+        "changes": {
+            "file:///a.rs": [te(0, 4, 0, 7, "bar"), te(3, 0, 3, 3, "bar")],
+            "file:///b.go": [te(1, 0, 1, 2, "y")]
+        }
+    });
+    let mut edits = parse_workspace_edit(&result);
+    edits.sort_by(|a, b| a.path.cmp(&b.path));
+    assert_eq!(edits.len(), 2);
+    assert_eq!(edits[0].path, "/a.rs");
+    assert_eq!(edits[0].edits.len(), 2);
+    assert_eq!(edits[0].edits[0].range_start, (0, 4));
+    assert_eq!(edits[0].edits[0].new_text, "bar");
+    assert_eq!(edits[1].path, "/b.go");
+}
+
+#[test]
+fn c7_parse_workspace_edit_document_changes() {
+    // spec 3.16 documentChanges 形态（rust-analyzer 常用）。
+    let result = serde_json::json!({
+        "documentChanges": [
+            {"textDocument": {"uri": "file:///a.rs", "version": 7},
+             "edits": [te(0, 0, 0, 3, "z")]}
+        ]
+    });
+    let edits = parse_workspace_edit(&result);
+    assert_eq!(edits.len(), 1);
+    assert_eq!(edits[0].path, "/a.rs");
+    assert_eq!(edits[0].edits[0].new_text, "z");
+}
+
+#[test]
+fn c7_parse_workspace_edit_tolerant() {
+    assert!(parse_workspace_edit(&serde_json::Value::Null).is_empty());
+    assert!(parse_workspace_edit(&serde_json::json!({})).is_empty());
+    // 两种形态同时出现都收（规范允许双发）。
+    let both = serde_json::json!({
+        "changes": {"file:///a.rs": [te(0, 0, 0, 1, "x")]},
+        "documentChanges": [
+            {"textDocument": {"uri": "file:///b.rs"}, "edits": [te(1, 1, 1, 1, "y")]}
+        ]
+    });
+    assert_eq!(parse_workspace_edit(&both).len(), 2);
+    // 畸形条目跳过不炸：edits 非数组 / TextEdit 缺 newText。
+    let broken = serde_json::json!({
+        "changes": {"file:///a.rs": "not-an-array"},
+        "documentChanges": [
+            {"textDocument": {"uri": "file:///b.rs"}, "edits": [{"range": {}}]},
+            {"textDocument": {"uri": "file:///c.rs"}, "edits": [te(0, 0, 0, 1, "ok")]}
+        ]
+    });
+    let got = parse_workspace_edit(&broken);
+    assert_eq!(got.len(), 1);
+    assert_eq!(got[0].path, "/c.rs");
+}
+
+#[test]
+fn c7_parse_code_actions_full_and_degraded() {
+    let result = serde_json::json!([
+        {"title": "Import `std::io`", "kind": "quickfix", "isPreferred": true,
+         "edit": {"changes": {}}},
+        {"title": "Wrap in Ok", "kind": "quickfix"},
+        {"title": "legacy command", "command": {"title": "legacy command"}}
+    ]);
+    let actions = parse_code_actions(&result);
+    assert_eq!(actions.len(), 3);
+    assert_eq!(actions[0].title, "Import `std::io`");
+    assert_eq!(actions[0].kind.as_deref(), Some("quickfix"));
+    assert!(actions[0].has_edit);
+    assert!(actions[0].is_preferred);
+    assert!(!actions[1].has_edit);
+    assert!(!actions[1].is_preferred);
+    // legacy Command 形态：只有 title，kind/edit 缺省。
+    assert_eq!(actions[2].title, "legacy command");
+    assert_eq!(actions[2].kind, None);
+    assert!(!actions[2].has_edit);
+    // null / 无 title 条目 → 空或跳过。
+    assert!(parse_code_actions(&serde_json::Value::Null).is_empty());
+    assert!(parse_code_actions(&serde_json::json!([{"kind": "quickfix"}])).is_empty());
+}
+
+#[test]
+fn c7_position_to_byte_ascii_and_boundaries() {
+    let content = "hello\nworld\n";
+    assert_eq!(position_to_byte(content, 0, 0).unwrap(), 0);
+    assert_eq!(position_to_byte(content, 0, 3).unwrap(), 3);
+    // EOL 插入点（'o' 与 '\n' 之间）合法。
+    assert_eq!(position_to_byte(content, 0, 5).unwrap(), 5);
+    assert_eq!(position_to_byte(content, 1, 2).unwrap(), 8);
+    // 末尾空行（最后一个 '\n' 之后）。
+    assert_eq!(position_to_byte(content, 2, 0).unwrap(), 12);
+    // 无终止换行的最后一行：EOF 落点合法。
+    let no_nl = "ab\ncd";
+    assert_eq!(position_to_byte(no_nl, 1, 2).unwrap(), 5);
+    // 越界：行 / 列都诚实报错（不 clamp——错位会腐蚀编辑）。
+    assert!(position_to_byte(content, 9, 0).is_err());
+    assert!(position_to_byte(content, 0, 6).is_err());
+    assert!(position_to_byte(content, 1, 99).is_err());
+    // 空文档。
+    assert_eq!(position_to_byte("", 0, 0).unwrap(), 0);
+    assert!(position_to_byte("", 1, 0).is_err());
+}
+
+#[test]
+fn c7_position_to_byte_utf16_columns() {
+    // CJK：BMP 内 = 1 UTF-16 单位 = 3 UTF-8 字节。
+    let cjk = "中文\nx";
+    assert_eq!(position_to_byte(cjk, 0, 1).unwrap(), 3);
+    assert_eq!(position_to_byte(cjk, 0, 2).unwrap(), 6);
+    assert_eq!(position_to_byte(cjk, 1, 0).unwrap(), 7);
+    // (1,1) = 'x' 之后 = EOF。
+    assert_eq!(position_to_byte(cjk, 1, 1).unwrap(), 8);
+    // astral（emoji = 2 UTF-16 单位）：列按单位数、字节按 UTF-8 落点。
+    let emoji = "😀x\ny";
+    assert_eq!(position_to_byte(emoji, 0, 2).unwrap(), 4);
+    assert_eq!(position_to_byte(emoji, 0, 3).unwrap(), 5);
+    // 落在代理对中间 = 诚实报错。
+    assert!(position_to_byte(emoji, 0, 1).is_err());
+}
+
+#[test]
+fn c7_apply_text_edits_basic_shapes() {
+    let content = "fn foo() {\n    bar();\n}\n";
+    // 单替换。
+    let repl = vec![TextEdit {
+        range_start: (1, 4),
+        range_end: (1, 7),
+        new_text: "baz".into(),
+    }];
+    assert_eq!(
+        apply_text_edits(content, &repl).unwrap(),
+        "fn foo() {\n    baz();\n}\n"
+    );
+    // 纯插入（start==end）。
+    let ins = vec![TextEdit {
+        range_start: (0, 0),
+        range_end: (0, 0),
+        new_text: "//! doc\n".into(),
+    }];
+    assert_eq!(
+        apply_text_edits(content, &ins).unwrap(),
+        "//! doc\nfn foo() {\n    bar();\n}\n"
+    );
+    // 删除（newText 空）。
+    let del = vec![TextEdit {
+        range_start: (1, 0),
+        range_end: (2, 0),
+        new_text: String::new(),
+    }];
+    assert_eq!(apply_text_edits(content, &del).unwrap(), "fn foo() {\n}\n");
+    // 空 edits = 原文不变。
+    assert_eq!(apply_text_edits(content, &[]).unwrap(), content);
+}
+
+#[test]
+fn c7_apply_text_edits_order_and_overlap() {
+    // 乱序输入（服务器不保证有序）→ 按 byte 位置倒序应用。
+    let content = "let aa = aa + aa;\n";
+    let edits = vec![
+        TextEdit {
+            range_start: (0, 14),
+            range_end: (0, 16),
+            new_text: "zz".into(),
+        },
+        TextEdit {
+            range_start: (0, 4),
+            range_end: (0, 6),
+            new_text: "bb".into(),
+        },
+        TextEdit {
+            range_start: (0, 9),
+            range_end: (0, 11),
+            new_text: "cc".into(),
+        },
+    ];
+    assert_eq!(
+        apply_text_edits(content, &edits).unwrap(),
+        "let bb = cc + zz;\n"
+    );
+    // 相邻不重叠（前一个 end == 后一个 start）合法。
+    let adjacent = vec![
+        TextEdit {
+            range_start: (0, 0),
+            range_end: (0, 3),
+            new_text: "X".into(),
+        },
+        TextEdit {
+            range_start: (0, 3),
+            range_end: (0, 6),
+            new_text: "Y".into(),
+        },
+    ];
+    assert_eq!(apply_text_edits("abcdef", &adjacent).unwrap(), "XY");
+    // 重叠范围 = 拒绝（坏服务器的嵌套 range 不能静默合并出损坏文本）。
+    let overlap = vec![
+        TextEdit {
+            range_start: (0, 0),
+            range_end: (0, 5),
+            new_text: "x".into(),
+        },
+        TextEdit {
+            range_start: (0, 3),
+            range_end: (0, 6),
+            new_text: "y".into(),
+        },
+    ];
+    assert!(apply_text_edits("abcdef", &overlap).is_err());
+    // 越界位置 = 拒绝。
+    let oob = vec![TextEdit {
+        range_start: (5, 0),
+        range_end: (5, 1),
+        new_text: "x".into(),
+    }];
+    assert!(apply_text_edits("abcdef", &oob).is_err());
+    // end < start = 拒绝（防御畸形 range）。
+    let reversed = vec![TextEdit {
+        range_start: (0, 3),
+        range_end: (0, 1),
+        new_text: "x".into(),
+    }];
+    assert!(apply_text_edits("abcdef", &reversed).is_err());
+    // CJK 内容上跨行替换（UTF-16 列 → UTF-8 字节落点）。
+    let cjk = "中文\n中文";
+    let cross = vec![TextEdit {
+        range_start: (0, 1),
+        range_end: (1, 1),
+        new_text: "X".into(),
+    }];
+    assert_eq!(apply_text_edits(cjk, &cross).unwrap(), "中X文");
+}
+
+#[test]
+fn c7_diagnostic_to_json_shape() {
+    let d = Diagnostic {
+        range_start: (1, 2),
+        range_end: (1, 7),
+        severity: 2,
+        source: Some("rustc".into()),
+        message: "unused variable".into(),
+    };
+    let j = d.to_json();
+    assert_eq!(j["range"]["start"]["line"], 1);
+    assert_eq!(j["range"]["start"]["character"], 2);
+    assert_eq!(j["range"]["end"]["line"], 1);
+    assert_eq!(j["range"]["end"]["character"], 7);
+    assert_eq!(j["severity"], 2);
+    assert_eq!(j["source"], "rustc");
+    assert_eq!(j["message"], "unused variable");
+    // source=None → JSON null（codeAction context 规范允许）。
+    let d2 = Diagnostic { source: None, ..d };
+    assert!(d2.to_json()["source"].is_null());
 }

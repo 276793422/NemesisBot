@@ -1806,14 +1806,50 @@ mod r9_real_chain {
         )
     }
 
-    /// 轮询 .eval_lock 出现（锁获取在 readiness 之后——这是子进程健康前进的
-    /// 锚点，也决定并发臂的起跑时机）。
-    async fn wait_eval_lock(sandbox_root: &Path, max: Duration) -> bool {
+    /// 开跑前清陈旧 .eval_lock：持有者已死（崩溃残留）→ 删除；仍活着 →
+    /// 有真实 eval 在跑，大声失败（测试不替活跃持有者拆锁）。只探存在性的
+    /// 等待曾让 p2 在 p1 建锁前观察到陈锁 → 按崩溃残留偷锁放行 → 假红
+    /// （run 2, 2026-09-04）。
+    #[cfg(windows)]
+    pub(super) fn clear_stale_eval_lock(sandbox_root: &Path) {
+        let lock = sandbox_root.join(".eval_lock");
+        if let Ok(s) = std::fs::read_to_string(&lock) {
+            let pid = s
+                .lines()
+                .find_map(|l| l.strip_prefix("pid="))
+                .and_then(|v| v.trim().parse::<u32>().ok());
+            if let Some(p) = pid.filter(|p| super::pid_alive(*p)) {
+                panic!(
+                    ".eval_lock 持有者 pid={p} 仍存活：有真实 eval 正在运行，\
+                     请等它结束或人工处理后重跑（测试不替活跃持有者拆锁）"
+                );
+            }
+        }
+        let _ = std::fs::remove_file(&lock);
+    }
+
+    /// 非 Windows 兜底（r9 由 gate() 在非 Windows 提前 SKIP，不会真跑到）。
+    #[cfg(not(windows))]
+    pub(super) fn clear_stale_eval_lock(sandbox_root: &Path) {
+        let _ = std::fs::remove_file(sandbox_root.join(".eval_lock"));
+    }
+
+    /// 轮询 .eval_lock 出现**且持有者 pid == expect_pid**（锁获取在 readiness
+    /// 之后——这是子进程健康前进的锚点，也决定并发臂的起跑时机）。内容级
+    /// 匹配保证「磁盘上有陈锁」不再满足等待条件——p2 起跑时看到的必是 p1
+    /// 的活锁，并发拒绝臂因此确定性成立。
+    async fn wait_eval_lock(sandbox_root: &Path, expect_pid: u32, max: Duration) -> bool {
         let lock = sandbox_root.join(".eval_lock");
         let t0 = Instant::now();
         while t0.elapsed() < max {
-            if lock.exists() {
-                return true;
+            if let Ok(s) = std::fs::read_to_string(&lock) {
+                let holder = s
+                    .lines()
+                    .find_map(|l| l.strip_prefix("pid="))
+                    .and_then(|v| v.trim().parse::<u32>().ok());
+                if holder == Some(expect_pid) {
+                    return true;
+                }
             }
             tokio::time::sleep(Duration::from_millis(250)).await;
         }
@@ -1927,10 +1963,13 @@ mod r9_real_chain {
         // p1 先起，等它拿到 .eval_lock 再放 p2 —— 并发窗口确定性最大化。
         // p2 与 p1 同参同 env；p2 在 readiness 之后、ini 改写之前就撞锁退出，
         // 绝不会碰 p1 正在做的 Sandboxie.ini 手术（锁获取点先于 ini 写入）。
+        clear_stale_eval_lock(&sandbox_root);
         let p1 = spawn_eval(&bin, args, &env_parent).await;
+        let p1_pid = p1.id().expect("p1 pid 可用");
         assert!(
-            wait_eval_lock(&sandbox_root, Duration::from_secs(120)).await,
-            "120s 内未观察到 .eval_lock：子进程可能在 readiness 前就异常退出"
+            wait_eval_lock(&sandbox_root, p1_pid, Duration::from_secs(120)).await,
+            "120s 内未观察到 p1(pid={p1_pid}) 的 .eval_lock：子进程可能在 \
+             readiness 前就异常退出"
         );
 
         let (code2, out2, err2) = {
@@ -1984,6 +2023,12 @@ mod r9_real_chain {
         let env_parent = engine_home.parent().unwrap().to_path_buf();
         let logs_eval = engine_home.join("workspace").join("logs").join("eval");
         let _ = std::fs::create_dir_all(&logs_eval);
+        clear_stale_eval_lock(
+            &engine_home
+                .join("workspace")
+                .join("tools")
+                .join("sandboxie"),
+        );
         let before = snapshot_prompt_reports(&logs_eval);
 
         let args: &[&str] = &[
@@ -2188,6 +2233,12 @@ mod r10_exit_two_and_output {
         let custom_report = out_root.path().join("custom_report");
 
         let _swap = RulesSwap::force_risk(&engine_home);
+        super::r9_real_chain::clear_stale_eval_lock(
+            &engine_home
+                .join("workspace")
+                .join("tools")
+                .join("sandboxie"),
+        );
 
         let args: &[&str] = &[
             "eval",

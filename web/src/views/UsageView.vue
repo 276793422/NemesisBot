@@ -790,7 +790,7 @@ onMounted(() => {
           </div>
         </div>
 
-        <!-- 自定义条目编辑弹窗（参照 cc-switch PricingEditModal） -->
+        <!-- 自定义条目编辑弹窗 -->
         <div v-if="showCustomModal" class="modal-backdrop" @click.self="showCustomModal = false">
           <div class="modal" style="max-width: 480px;">
             <div class="modal-header"><h3>{{ customEditingId ? '编辑自定义条目' : '新增自定义条目' }}</h3></div>

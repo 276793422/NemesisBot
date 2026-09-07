@@ -1,6 +1,7 @@
 //! Tests for tool-result spill (U4).
 
 use super::*;
+use crate::prune::SUBAGENT_HINT_SUFFIX;
 
 fn temp_root(tag: &str) -> PathBuf {
     std::env::temp_dir().join(format!(
@@ -26,6 +27,7 @@ fn test_spill_rejects_path_traversal() {
         "../../../etc",
         "20260821_000000",
         "call_..\\..\\evil",
+        false,
     );
     match out {
         SpillOutcome::Spilled(text) => {
@@ -74,7 +76,15 @@ fn test_spill_roundtrip_readback() {
         body.push_str(&format!("line {:06}\n", i));
     }
     body.push_str("TAIL_MARKER_END\n");
-    let out = spill_tool_result(&body, "exec", &root, "sess", "20260821_010101", "call_1");
+    let out = spill_tool_result(
+        &body,
+        "exec",
+        &root,
+        "sess",
+        "20260821_010101",
+        "call_1",
+        false,
+    );
     let text = match out {
         SpillOutcome::Spilled(t) => t,
         _ => panic!("expected spill"),
@@ -111,6 +121,7 @@ fn test_spill_below_threshold_passthrough() {
         "s",
         "t",
         "c",
+        false,
     );
     assert!(matches!(out, SpillOutcome::BelowThreshold));
     let _ = std::fs::remove_dir_all(&root);
@@ -132,6 +143,7 @@ fn test_spill_failure_is_best_effort() {
         "sess",
         "t",
         "c",
+        false,
     );
     assert!(matches!(out, SpillOutcome::SpillFailed));
     let _ = std::fs::remove_dir_all(&root);
@@ -245,8 +257,74 @@ fn test_spill_file_create_blocked_by_directory_at_path() {
         "sess",
         "20260821_000000",
         "call",
+        false,
     );
     assert!(matches!(out, SpillOutcome::SpillFailed));
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+// ---------------------------------------------------------------------------
+// B3 (devtool-upgrade 阶段 3): sub-agent hint in the spill locator.
+// 验收：有/无 spawn 两种文案断言。
+// ---------------------------------------------------------------------------
+
+/// Hinted locator (spawn registered): guidance sentence appended inside the
+/// locator brackets; the file itself and preview are unaffected.
+#[test]
+fn test_spill_locator_with_subagent_hint() {
+    let root = temp_root("hint_on");
+    let out = spill_tool_result(
+        &"x".repeat(SPILL_THRESHOLD_CHARS),
+        "exec",
+        &root,
+        "sess",
+        "20260821_000000",
+        "call",
+        true,
+    );
+    match out {
+        SpillOutcome::Spilled(text) => {
+            assert!(text.contains(SUBAGENT_HINT_SUFFIX), "locator 缺 spawn 提示");
+            assert!(text.contains("spawn 工具"));
+            // Hint sits inside the locator brackets (before its closing `]。`).
+            let loc_start = text.find("[输出过大").expect("locator opening");
+            let loc_end = text[loc_start..].find("。]").expect("locator closing") + loc_start;
+            assert!(
+                text[loc_start..loc_end].contains("子代理"),
+                "hint 必须在 locator 括号内"
+            );
+            // Tool attribution line still intact after the brackets.
+            assert!(text.contains("（工具：exec）"));
+        }
+        _ => panic!("expected spill"),
+    }
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+/// Unhinted locator (no spawn tool): byte-stable with the pre-B3 form — no
+/// sub-agent wording.
+#[test]
+fn test_spill_locator_without_hint_no_subagent_wording() {
+    let root = temp_root("hint_off");
+    let out = spill_tool_result(
+        &"x".repeat(SPILL_THRESHOLD_CHARS),
+        "exec",
+        &root,
+        "sess",
+        "20260821_000000",
+        "call",
+        false,
+    );
+    match out {
+        SpillOutcome::Spilled(text) => {
+            assert!(
+                !text.contains("子代理"),
+                "无 spawn 时 locator 不得出现子代理提示"
+            );
+            assert!(text.contains("read_file") && text.contains("grep"));
+        }
+        _ => panic!("expected spill"),
+    }
     let _ = std::fs::remove_dir_all(&root);
 }
 

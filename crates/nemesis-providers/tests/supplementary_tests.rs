@@ -544,36 +544,36 @@ mod failover_extra {
     #[test]
     fn test_from_status_all_codes() {
         // Auth codes
-        let auth401 = FailoverError::from_status("p", "m", 401, "");
+        let auth401 = FailoverError::from_status("p", "m", 401, "", None);
         assert!(matches!(auth401, FailoverError::Auth { .. }));
-        let auth403 = FailoverError::from_status("p", "m", 403, "");
+        let auth403 = FailoverError::from_status("p", "m", 403, "", None);
         assert!(matches!(auth403, FailoverError::Auth { .. }));
 
         // Rate limit
-        let rl = FailoverError::from_status("p", "m", 429, "");
+        let rl = FailoverError::from_status("p", "m", 429, "", None);
         assert!(matches!(rl, FailoverError::RateLimit { .. }));
 
         // Billing
-        let bill = FailoverError::from_status("p", "m", 402, "");
+        let bill = FailoverError::from_status("p", "m", 402, "", None);
         assert!(matches!(bill, FailoverError::Billing { .. }));
 
         // Overloaded
-        let ol502 = FailoverError::from_status("p", "m", 502, "");
+        let ol502 = FailoverError::from_status("p", "m", 502, "", None);
         assert!(matches!(ol502, FailoverError::Overloaded { .. }));
-        let ol503 = FailoverError::from_status("p", "m", 503, "");
+        let ol503 = FailoverError::from_status("p", "m", 503, "", None);
         assert!(matches!(ol503, FailoverError::Overloaded { .. }));
 
         // Unknown
-        let unk400 = FailoverError::from_status("p", "m", 400, "bad");
+        let unk400 = FailoverError::from_status("p", "m", 400, "bad", None);
         assert!(matches!(unk400, FailoverError::Unknown { .. }));
-        let unk500 = FailoverError::from_status("p", "m", 500, "internal");
+        let unk500 = FailoverError::from_status("p", "m", 500, "internal", None);
         assert!(matches!(unk500, FailoverError::Unknown { .. }));
     }
 
     #[test]
     fn test_from_status_truncates_long_body() {
         let long_body = "x".repeat(500);
-        let err = FailoverError::from_status("p", "m", 400, &long_body);
+        let err = FailoverError::from_status("p", "m", 400, &long_body, None);
         if let FailoverError::Unknown { message, .. } = err {
             assert!(message.len() < long_body.len());
         } else {
@@ -754,15 +754,15 @@ mod cooldown_extra {
     #[test]
     fn test_tracker_mark_failure_then_unavailable() {
         let t = CooldownTracker::new();
-        t.mark_failure("p1", FailoverReason::RateLimit);
+        t.mark_failure("p1", FailoverReason::RateLimit, None);
         assert!(!t.is_available("p1"));
     }
 
     #[test]
     fn test_tracker_mark_success_resets_all() {
         let t = CooldownTracker::new();
-        t.mark_failure("p1", FailoverReason::RateLimit);
-        t.mark_failure("p1", FailoverReason::Timeout);
+        t.mark_failure("p1", FailoverReason::RateLimit, None);
+        t.mark_failure("p1", FailoverReason::Timeout, None);
         assert_eq!(t.error_count("p1"), 2);
         t.mark_success("p1");
         assert_eq!(t.error_count("p1"), 0);
@@ -772,9 +772,9 @@ mod cooldown_extra {
     #[test]
     fn test_tracker_failure_count_by_reason_multiple() {
         let t = CooldownTracker::new();
-        t.mark_failure("p1", FailoverReason::RateLimit);
-        t.mark_failure("p1", FailoverReason::RateLimit);
-        t.mark_failure("p1", FailoverReason::Timeout);
+        t.mark_failure("p1", FailoverReason::RateLimit, None);
+        t.mark_failure("p1", FailoverReason::RateLimit, None);
+        t.mark_failure("p1", FailoverReason::Timeout, None);
         assert_eq!(t.failure_count("p1", FailoverReason::RateLimit), 2);
         assert_eq!(t.failure_count("p1", FailoverReason::Timeout), 1);
         assert_eq!(t.failure_count("p1", FailoverReason::Auth), 0);
@@ -783,7 +783,7 @@ mod cooldown_extra {
     #[test]
     fn test_tracker_independent_providers() {
         let t = CooldownTracker::new();
-        t.mark_failure("p1", FailoverReason::RateLimit);
+        t.mark_failure("p1", FailoverReason::RateLimit, None);
         assert!(!t.is_available("p1"));
         assert!(t.is_available("p2"));
     }
@@ -791,14 +791,14 @@ mod cooldown_extra {
     #[test]
     fn test_tracker_billing_disable() {
         let t = CooldownTracker::new();
-        t.mark_failure("p1", FailoverReason::Billing);
+        t.mark_failure("p1", FailoverReason::Billing, None);
         assert!(!t.is_available("p1"));
     }
 
     #[test]
     fn test_tracker_cooldown_remaining_after_failure() {
         let t = CooldownTracker::new();
-        t.mark_failure("p1", FailoverReason::RateLimit);
+        t.mark_failure("p1", FailoverReason::RateLimit, None);
         let rem = t.cooldown_remaining("p1");
         assert!(rem.is_some());
         let dur = rem.unwrap();
@@ -815,7 +815,7 @@ mod cooldown_extra {
     #[test]
     fn test_tracker_cooldown_remaining_after_success() {
         let t = CooldownTracker::new();
-        t.mark_failure("p1", FailoverReason::RateLimit);
+        t.mark_failure("p1", FailoverReason::RateLimit, None);
         t.mark_success("p1");
         assert!(t.cooldown_remaining("p1").is_none());
     }

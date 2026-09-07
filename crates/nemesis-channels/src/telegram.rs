@@ -701,7 +701,7 @@ impl TelegramChannel {
     /// Resolve a Telegram file_id to a download URL via the Bot API's getFile endpoint.
     ///
     /// Returns `Some(download_url)` on success, `None` if HTTP is unavailable or
-    /// the API call fails. Pattern follows 内部专项's `telegram_get_file_url`.
+    /// the API call fails.
     async fn get_file_url(
         http: Option<&reqwest::Client>,
         api_url_base: Option<&str>,
@@ -995,7 +995,7 @@ impl TelegramChannel {
 
     /// Converts markdown text to Telegram-compatible HTML.
     ///
-    /// Uses a line-by-line parser (inspired by 内部专项's formatter.rs) that
+    /// Uses a line-by-line parser that
     /// produces more reliable HTML than regex-based approaches:
     /// - Fenced code blocks → `<pre><code>`
     /// - Headings → `<b>` (bold title)

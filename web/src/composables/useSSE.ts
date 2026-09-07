@@ -5,7 +5,9 @@ type EventHandler = (data: any) => void
 let eventSource: EventSource | null = null
 const eventHandlers: Record<string, EventHandler[]> = {}
 
-const EVENT_TYPES = ['log', 'status', 'security-alert', 'scanner-progress', 'cluster-event', 'heartbeat', 'memory-setup', 'board-changed', 'usage-changed']
+// L2（devtool-upgrade 阶段 6）：'resync' = 服务端提示缺口已滑出重放窗口
+// （或网关重启 seq 重置），订阅方应全量刷新兜底。
+const EVENT_TYPES = ['log', 'status', 'security-alert', 'scanner-progress', 'cluster-event', 'heartbeat', 'memory-setup', 'board-changed', 'usage-changed', 'approval-requested', 'approval-resolved', 'question-asked', 'question-resolved', 'resync']
 
 function dispatch(eventType: string, data: any) {
   const handlers = eventHandlers[eventType] || []

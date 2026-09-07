@@ -7,6 +7,8 @@ use std::sync::Arc;
 use std::time::Duration;
 
 const DEFAULT_FAILURE_WINDOW: Duration = Duration::from_secs(24 * 60 * 60);
+/// 标准退避上限（公式值与 Retry-After hint 共用同一 cap）。
+const MAX_STANDARD_COOLDOWN: Duration = Duration::from_secs(3600);
 
 /// Per-provider cooldown entry.
 #[derive(Debug, Clone, Default)]
@@ -62,7 +64,17 @@ impl CooldownTracker {
 
     /// Record a failure for a provider and set appropriate cooldown.
     /// Resets error counts if last failure was more than `failure_window` ago.
-    pub fn mark_failure(&self, provider: &str, reason: FailoverReason) {
+    ///
+    /// J1：`retry_after_hint` 是服务端 `Retry-After` 头的权威退避（来自
+    /// `FailoverError::retry_after_hint()`）——非 Billing 路径优先于
+    /// [`calculate_standard_cooldown`] 公式，cap 1h（防异常超大值把 provider
+    /// 钉死过久）；Billing 有独立量级（5h 起），hint 不适用。None = 走公式。
+    pub fn mark_failure(
+        &self,
+        provider: &str,
+        reason: FailoverReason,
+        retry_after_hint: Option<Duration>,
+    ) {
         let mut entries = self.entries.write();
         let now = self.clock.now();
         let entry = entries.entry(provider.to_string()).or_default();
@@ -87,7 +99,10 @@ impl CooldownTracker {
             entry.disabled_until = Some(now + calculate_billing_cooldown(billing_count));
             entry.disabled_reason = Some(reason);
         } else {
-            entry.cooldown_end = Some(now + calculate_standard_cooldown(entry.error_count));
+            let cooldown = retry_after_hint
+                .map(|d| d.min(MAX_STANDARD_COOLDOWN))
+                .unwrap_or_else(|| calculate_standard_cooldown(entry.error_count));
+            entry.cooldown_end = Some(now + cooldown);
         }
     }
 
@@ -189,7 +204,7 @@ pub fn calculate_standard_cooldown(error_count: usize) -> Duration {
     let n = error_count.max(1);
     let exp = (n - 1).min(3);
     let secs = 60 * 5f64.powi(exp as i32) as u64;
-    Duration::from_secs(secs.min(3600))
+    Duration::from_secs(secs).min(MAX_STANDARD_COOLDOWN)
 }
 
 /// Calculate billing-specific exponential backoff.

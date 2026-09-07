@@ -119,6 +119,10 @@ impl ModuleHandler for PluginsHandler {
         "plugins"
     }
 
+    fn commands(&self) -> &'static [&'static str] {
+        &["list", "set_metrics_enabled"]
+    }
+
     async fn handle_cmd(
         &self,
         cmd: &str,

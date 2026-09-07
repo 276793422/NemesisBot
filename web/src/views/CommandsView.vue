@@ -111,8 +111,11 @@ onMounted(loadCommands)
             <p style="font-size: var(--text-sm); margin: 0; color: var(--text-secondary);">
               命令是<b>快捷提示词发送器</b>：在聊天输入框输入 <code>/命令名 参数</code>，Agent
               会把「命令提示词」模板（<code>$ARGUMENTS</code> 替换为参数）作为你的消息发给 LLM——
-              类似 Claude Code 的 <code>/命令</code>。对所有通道生效；命令表保存后热更新，无需重启。
-              内置命令（/help /model /show /list /switch）优先于同名自定义命令。
+              斜杠命令（<code>/命令</code> 形式）。对所有通道生效；命令表保存后热更新，无需重启。
+              内置命令（/help /model /show /list /switch /compact /clear /plan /build）优先于同名自定义命令，
+              已安装技能也会进补全菜单（/技能名 → 后端改写为技能驱动提示词）；
+              模板支持 <code>!`命令`</code> 注入（展开时执行命令，stdout 替换进模板）。
+              输入 <code>/</code> 时补全菜单给出：自定义命令、内置命令、已安装技能。
             </p>
           </div>
         </div>

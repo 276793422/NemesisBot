@@ -656,6 +656,23 @@ impl ModuleHandler for PersonaHandler {
         "persona"
     }
 
+    fn commands(&self) -> &'static [&'static str] {
+        &[
+            "current",
+            "list",
+            "activate",
+            "restore",
+            "remove",
+            "file.get",
+            "file.save",
+            "shop.browse",
+            "shop.search",
+            "shop.refresh",
+            "shop.preview",
+            "shop.download",
+        ]
+    }
+
     async fn handle_cmd(
         &self,
         cmd: &str,

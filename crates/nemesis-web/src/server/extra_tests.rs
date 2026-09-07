@@ -870,7 +870,8 @@ async fn test_send_to_session_with_active_queue_succeeds() {
     let queue = Arc::new(SendQueue::from_channels(tx, done_rx));
     mgr.set_send_queue(&session.id, queue);
 
-    let send_result = send_to_session(&mgr, &session.id, "assistant", "hello world", None).await;
+    let send_result =
+        send_to_session(&mgr, &session.id, "assistant", "hello world", None, None).await;
     assert!(send_result.is_ok());
 
     let received = tokio::time::timeout(Duration::from_millis(500), rx.recv()).await;
@@ -904,6 +905,7 @@ async fn test_send_to_session_includes_model_badge() {
         "assistant",
         "badged reply",
         Some("deepseek/deepseek-v4-flash"),
+        None,
     )
     .await
     .unwrap();
@@ -916,7 +918,7 @@ async fn test_send_to_session_includes_model_badge() {
     assert_eq!(parsed["data"]["model"], "deepseek/deepseek-v4-flash");
 
     // Without a model badge → field absent (badge-less messages unchanged).
-    send_to_session(&mgr, &session.id, "assistant", "plain reply", None)
+    send_to_session(&mgr, &session.id, "assistant", "plain reply", None, None)
         .await
         .unwrap();
     let bytes2 = tokio::time::timeout(Duration::from_millis(500), rx.recv())

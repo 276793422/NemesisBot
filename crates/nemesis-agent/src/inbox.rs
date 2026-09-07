@@ -1,4 +1,4 @@
-//! Per-session message inbox (I1 / U7, dsh-alignment third batch).
+//! Per-session message inbox (I1 / U7).
 //!
 //! Two FIFO queues per session key:
 //! - `next_turn`: messages that start a NEW conversation turn after the
@@ -144,7 +144,7 @@ impl Inbox {
     }
 
     /// Claim the batch for the next LLM call of a running turn: ALL pending
-    /// next-step messages (dsh claim order: interjections first).
+    /// next-step messages (interjections first).
     pub fn claim_next_step(&self, session_key: &str) -> Vec<QueuedMessage> {
         let mut all = self.queues.lock();
         match all.get_mut(session_key) {

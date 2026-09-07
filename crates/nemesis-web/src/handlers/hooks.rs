@@ -2,14 +2,14 @@
 //! （2026-08-29：路径收编至 `<workspace>/config/hooks.json`，legacy 一次性
 //! copy-once 迁移——见 cc_hooks::migrate_legacy_home_hooks_config。）
 //!
-//! `<workspace>/config/hooks.json` 是 CC 方言（K2，`nemesis_agent::cc_hooks`）：
+//! `<workspace>/config/hooks.json` 是 hooks.json 方言（K2，`nemesis_agent::cc_hooks`）：
 //! 五事件 PreToolUse/PostToolUse/SessionStart/UserPromptSubmit/Stop，每条
 //! hook 是子进程脚本（stdin JSON / env / 退出码拦放行）。
 //!
 //! - `get`：读文件；**不存在 → 返回空模板而非错误**（fresh home 常态）。
 //!   文件存在但解析失败也照样返回原文 + `valid:false` + 错误详情 —— 用户
 //!   要在编辑器里修好它，报错不给出原文等于让人盲修。
-//! - `set`：先 `parse_cc_hooks` 语义校验（JSON 语法 + CC 格式），
+//! - `set`：先 `parse_cc_hooks` 语义校验（JSON 语法 + 方言格式），
 //!   **校验失败不落盘**；通过则原文照写（不 pretty 重排 —— 保用户键序）。
 //! - `summary`：每事件脚本数（get/set 都带，UI 显示「当前 N 个脚本」）。
 //!
@@ -26,6 +26,10 @@ pub struct HooksHandler;
 impl ModuleHandler for HooksHandler {
     fn module_name(&self) -> &str {
         "hooks"
+    }
+
+    fn commands(&self) -> &'static [&'static str] {
+        &["get", "set"]
     }
 
     async fn handle_cmd(
@@ -55,7 +59,7 @@ impl ModuleHandler for HooksHandler {
 }
 
 impl HooksHandler {
-    /// 空模板：五事件全空（合法 CC 格式、0 脚本），既是骨架也是事件名速查。
+    /// 空模板：五事件全空（合法方言格式、0 脚本），既是骨架也是事件名速查。
     fn empty_template() -> String {
         serde_json::to_string_pretty(&serde_json::json!({
             "hooks": {

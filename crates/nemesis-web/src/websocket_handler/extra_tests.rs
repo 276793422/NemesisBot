@@ -719,6 +719,42 @@ fn test_handle_chat_send_with_voice_playback_null() {
     assert_eq!(result.voice_playback, None);
 }
 
+// ---------------------------------------------------------------------------
+// I5（devtool-upgrade 阶段 7）：chat.send data.open_files → metadata
+// ---------------------------------------------------------------------------
+
+#[test]
+fn test_handle_chat_send_open_files_into_metadata() {
+    let raw = br#"{"type":"message","module":"chat","cmd":"send","data":{"content":"fix this","open_files":[" /ws/src/main.rs ","/ws/src/main.rs","/ws/lib.rs"]}}"#;
+    let result = handle_text_message("s1", "w:s1", "w:s1", raw)
+        .unwrap()
+        .unwrap();
+    let raw_meta = result.metadata.get("open_files").expect("open_files key");
+    let parsed: Vec<String> = serde_json::from_str(raw_meta).unwrap();
+    // 清洗单点生效：trim + 去重保序。
+    assert_eq!(parsed, vec!["/ws/src/main.rs", "/ws/lib.rs"]);
+}
+
+#[test]
+fn test_handle_chat_send_without_open_files_has_no_key() {
+    // 老客户端零影响：不带 open_files → metadata 无该键。
+    let raw = br#"{"type":"message","module":"chat","cmd":"send","data":{"content":"hello"}}"#;
+    let result = handle_text_message("s1", "w:s1", "w:s1", raw)
+        .unwrap()
+        .unwrap();
+    assert!(!result.metadata.contains_key("open_files"));
+}
+
+#[test]
+fn test_handle_chat_send_all_garbage_open_files_dropped() {
+    // 全垃圾（空串 + 重复空白）→ 清洗后为空 → 不写键。
+    let raw = br#"{"type":"message","module":"chat","cmd":"send","data":{"content":"hi","open_files":["", "   "]}}"#;
+    let result = handle_text_message("s1", "w:s1", "w:s1", raw)
+        .unwrap()
+        .unwrap();
+    assert!(!result.metadata.contains_key("open_files"));
+}
+
 #[test]
 fn test_handle_chat_send_with_extra_unknown_fields() {
     // Extra fields in data should be ignored

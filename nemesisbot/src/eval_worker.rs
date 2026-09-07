@@ -106,10 +106,14 @@ async fn run_inner() -> Result<()> {
                 .await;
         })
     });
-    // build_agent_loop returns an Arc; no clones exist yet, so get_mut is
-    // guaranteed to succeed right after construction.
-    if let Some(al) = Arc::get_mut(&mut agent_loop) {
+    // build_agent_loop returns an Arc; require sole *strong* ownership before
+    // mutating. (Arc::get_mut would wrongly refuse here: since G0 the factory's
+    // spawn closure keeps a Weak<AgentLoop> alive in the spawn slot, and
+    // get_mut demands zero weak refs. try_unwrap only needs strong==1 — the
+    // Weak is an unobservable implementation detail, not a sharer.)
+    if let Ok(mut al) = Arc::try_unwrap(agent_loop) {
         al.set_observer_manager(observer_manager);
+        agent_loop = Arc::new(al);
     } else {
         anyhow::bail!("agent loop Arc already shared — cannot attach observer");
     }

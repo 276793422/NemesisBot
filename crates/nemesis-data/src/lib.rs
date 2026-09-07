@@ -12,7 +12,8 @@ mod usage_store;
 pub mod watcher;
 
 pub use models::{
-    CostBreakdown, DailyRollup, LogFilter, ModelPricing, RequestLog, TrendPoint, UsageSummary,
+    CostBreakdown, DailyRollup, LogFilter, ModelPricing, RequestLog, SessionUsageAgg, TrendPoint,
+    UsageSummary,
 };
 pub use pricing::{
     PricingTable, all_pricing, compute_cost_usd, cost_breakdown_from_pricing, cost_from_pricing,

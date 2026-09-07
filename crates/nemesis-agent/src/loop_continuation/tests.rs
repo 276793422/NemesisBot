@@ -3140,3 +3140,93 @@ async fn ff_handler_projects_images_when_vision_unsupported() {
         counts[0]
     );
 }
+
+// ---------------------------------------------------------------------------
+// merge_real_tool_result：resume 装配同 id tool 消息替换语义
+// （门 3 G4 实机回归：repair 合成的 [TOOL_OUTCOME_UNKNOWN] 占位若被追加式
+//  灌入真实结果 → 同 tool_call_id 双 tool 消息 → 严格 provider 400）
+// ---------------------------------------------------------------------------
+
+use crate::types::ToolCallInfo;
+
+fn assistant_with_tool_call(id: &str) -> LlmMessage {
+    LlmMessage {
+        role: "assistant".to_string(),
+        content: String::new(),
+        tool_calls: Some(vec![ToolCallInfo {
+            id: id.to_string(),
+            name: "spawn".to_string(),
+            arguments: "{}".to_string(),
+        }]),
+        tool_call_id: None,
+        reasoning_content: None,
+        images: Vec::new(),
+    }
+}
+
+fn placeholder_tool(id: &str) -> LlmMessage {
+    LlmMessage {
+        role: "tool".to_string(),
+        content: format!("[{}] {}", crate::types::TOOL_OUTCOME_UNKNOWN, "结果未知"),
+        tool_calls: None,
+        tool_call_id: Some(id.to_string()),
+        reasoning_content: None,
+        images: Vec::new(),
+    }
+}
+
+#[test]
+fn merge_replaces_outcome_unknown_placeholder_in_place() {
+    // 快照尾部形态（marker 块在 add_tool_result 前存档）：
+    // [user, assistant(tool_calls), tool(占位)]
+    let msgs = vec![
+        make_message("user", "跑任务"),
+        assistant_with_tool_call("call_1"),
+        placeholder_tool("call_1"),
+    ];
+    let merged = super::merge_real_tool_result(msgs, "call_1", "真实结果 42".to_string());
+    assert_eq!(merged.len(), 3, "替换不增条目");
+    let tool_msgs: Vec<&LlmMessage> = merged.iter().filter(|m| m.role == "tool").collect();
+    assert_eq!(tool_msgs.len(), 1, "同 id 只能有一条 tool 消息");
+    assert_eq!(tool_msgs[0].tool_call_id.as_deref(), Some("call_1"));
+    assert_eq!(tool_msgs[0].content, "真实结果 42");
+    // 占位在 assistant 之后原位（位置 2）——替换不动位置。
+    assert_eq!(merged[2].content, "真实结果 42");
+}
+
+#[test]
+fn merge_appends_when_no_placeholder() {
+    // 老快照/无占位形态：[user, assistant(tool_calls)] → 追加到末尾。
+    let msgs = vec![
+        make_message("user", "跑任务"),
+        assistant_with_tool_call("call_2"),
+    ];
+    let merged = super::merge_real_tool_result(msgs, "call_2", "结果".to_string());
+    assert_eq!(merged.len(), 3, "无占位时退回追加");
+    assert_eq!(merged[2].role, "tool");
+    assert_eq!(merged[2].tool_call_id.as_deref(), Some("call_2"));
+    assert_eq!(merged[2].content, "结果");
+}
+
+#[test]
+fn merge_overwrites_existing_real_result_idempotently() {
+    // 已有真实结果（重复回灌场景）→ 覆盖为最新内容，不产生第二条。
+    // （注意 make_message 不设 tool_call_id——无 id 的 tool 消息无法按 id
+    //  配对，追加是正确行为，这里用带 id 的消息验证覆盖语义。）
+    let msgs = vec![
+        assistant_with_tool_call("call_3"),
+        placeholder_tool("call_3"),
+    ];
+    let merged = super::merge_real_tool_result(msgs, "call_3", "新结果".to_string());
+    assert_eq!(merged.len(), 2);
+    assert_eq!(merged[1].content, "新结果");
+    // 其他 id 的 tool 消息不受影响。
+    let msgs = vec![placeholder_tool("call_a"), placeholder_tool("call_b")];
+    let merged = super::merge_real_tool_result(msgs, "call_b", "b 的结果".to_string());
+    assert_eq!(merged.len(), 2);
+    assert_eq!(
+        merged[0].content,
+        format!("[{}] {}", crate::types::TOOL_OUTCOME_UNKNOWN, "结果未知")
+    );
+    assert_eq!(merged[1].content, "b 的结果");
+}

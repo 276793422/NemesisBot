@@ -14,7 +14,7 @@ async fn test_adapter_delegates_to_agent_tool() {
     let _ = std::fs::remove_file(&tmp_path);
     let path_str = tmp_path.to_string_lossy().to_string();
 
-    let inner: Arc<dyn AgentTool> = Arc::new(crate::loop_tools::WriteFileTool);
+    let inner: Arc<dyn AgentTool> = Arc::new(crate::loop_tools::WriteFileTool::default());
     #[cfg(feature = "security")]
     let adapter = AgentToolAdapter::new("write_file".to_string(), inner, None);
     #[cfg(not(feature = "security"))]
@@ -53,7 +53,7 @@ async fn test_adapter_surfaces_agent_tool_error() {
 /// workflow canvas can render a schema-driven form.
 #[test]
 fn test_adapter_forwards_schema_and_metadata() {
-    let inner: Arc<dyn AgentTool> = Arc::new(crate::loop_tools::WriteFileTool);
+    let inner: Arc<dyn AgentTool> = Arc::new(crate::loop_tools::WriteFileTool::default());
     #[cfg(feature = "security")]
     let adapter = AgentToolAdapter::new("write_file".to_string(), inner, None);
     #[cfg(not(feature = "security"))]
@@ -88,7 +88,7 @@ async fn test_adapter_security_deny_blocks_execution() {
         std::env::temp_dir().join(format!("nemesis_adapter_deny_{}.txt", std::process::id()));
     let _ = std::fs::remove_file(&tmp_path);
 
-    let inner: Arc<dyn AgentTool> = Arc::new(crate::loop_tools::WriteFileTool);
+    let inner: Arc<dyn AgentTool> = Arc::new(crate::loop_tools::WriteFileTool::default());
     let adapter = AgentToolAdapter::new("write_file".to_string(), inner, Some(plugin));
 
     let args = serde_json::json!({ "path": tmp_path.display().to_string(), "content": "must not be written" });

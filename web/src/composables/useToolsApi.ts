@@ -13,11 +13,11 @@
 
 import { useWSAPI } from './useWSAPI'
 
-/** One registered tool: name + description + OpenAI-style JSON Schema. */
+/** One registered tool: name + description + JSON Schema. */
 export interface ToolSchema {
   name: string
   description: string
-  /** OpenAI-compatible JSON Schema object: { type:'object', properties, required }. */
+  /** JSON Schema object: { type:'object', properties, required }. */
   parameters: Record<string, unknown>
 }
 

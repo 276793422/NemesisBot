@@ -48,12 +48,16 @@ impl nemesis_security::auditor::ApprovalManager for MockApproval {
         risk_level: &str,
         reason: &str,
         _timeout_secs: u64,
-    ) -> Result<bool, String> {
+    ) -> Result<nemesis_security::auditor::ApprovalVerdict, String> {
         self.calls.lock().unwrap().push(format!(
             "{}/{}/{}/{}/{}",
             request_id, operation, target, risk_level, reason
         ));
-        Ok(self.approve)
+        if self.approve {
+            Ok(nemesis_security::auditor::ApprovalVerdict::approved())
+        } else {
+            Ok(nemesis_security::auditor::ApprovalVerdict::denied())
+        }
     }
 }
 

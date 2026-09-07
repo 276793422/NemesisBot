@@ -40,20 +40,20 @@
 //!    hooks 之后记录最终 result（就是事实上的 post 末位）。字面转换要把
 //!    security.execute + guardian 子路径搬进 async trait 边界，纯机械风险、
 //!    零行为收益，且直接威胁验收③（security/Forge 行为不变）——按代码修改
-//!    守则不赌。K2 的 CC 方言层只需要 user hooks + 事件，不需要 uniformity。
-//! 2. **pre/post 钩子异步**（`#[async_trait]`）：K2 的 CC hook 是**子进程脚本**
+//!    守则不赌。K2 的 hooks 方言层只需要 user hooks + 事件，不需要 uniformity。
+//! 2. **pre/post 钩子异步**（`#[async_trait]`）：K2 的方言 hook 是**子进程脚本**
 //!    （stdin JSON / env / 退出码），同步 trait 装不下。用户钩子运行时注册、
 //!    数量少（个位数），异步开销可忽略。
 //!
 //! # 覆盖范围与旁路
 //!
-//! 所有工具分发收口在 `AgentLoop::handle_tool_call`（loop.rs），包括 U5 只读
-//! 并行批（`precompute_readonly_batch` 内部逐个调 handle_tool_call）——单一
-//! 插入点即全覆盖。LLM 调用级钩子布在生产主路径 `run_llm_loop`（loop.rs 的
+//! 所有工具分发收口在 `AgentLoop::handle_tool_call`（loop.rs），包括 U5
+//! 并行批（`precompute_parallel_batch` 内部逐个调 handle_tool_call_at_depth）——
+//! 单一插入点即全覆盖。LLM 调用级钩子布在生产主路径 `run_llm_loop`（loop.rs 的
 //! `'turn` 循环）；`loop_executor.rs` 是 legacy 旁路（生产零构造），不铺死
 //! 代码，只留指针注释。
 //!
-//! # 语义（对齐 CC PreToolUse/PostToolUse）
+//! # 语义（对齐 hooks.json 方言的 PreToolUse/PostToolUse）
 //!
 //! - pre：**每次分发尝试都跑**（含未知工具名——钩子可拦「模型想调什么」）；
 //!   有序执行，首个 `Block` 生效并短路（后续钩子不再跑）。
@@ -81,7 +81,7 @@ pub struct HookToolCall {
     pub channel: String,
     /// Chat/conversation ID on that channel.
     pub chat_id: String,
-    /// Session key of the conversation driving this dispatch (K2: CC dialect
+    /// Session key of the conversation driving this dispatch (K2: hooks dialect
     /// scripts key per-session state off payload `session_id`).
     pub session_key: String,
 }
@@ -116,7 +116,7 @@ pub trait ToolHook: Send + Sync {
         "unnamed-hook".to_string()
     }
 
-    /// 工具作用域（cordis 作用域过滤的移植）：`None` = 全部 agent；`Some(id)`
+    /// 工具作用域：`None` = 全部 agent；`Some(id)`
     /// = 仅该 id 的 agent（主 agent 分发只接 `None`——cluster 子 agent 不继承
     /// 主 agent 的钩子，同 hooks 挂账决策）。
     fn scope(&self) -> Option<&str> {
@@ -129,9 +129,9 @@ pub trait ToolHook: Send + Sync {
         HookDecision::Allow
     }
 
-    /// Around 包装（cordis waterfall 语义，2026-08-29 三段化补齐）：默认直通
+    /// Around 包装（waterfall 语义，2026-08-29 三段化补齐）：默认直通
     /// 调 `next()`。实现可测量耗时/重试/替换结果——但**取消信号不可被包装层
-    /// 脱离**（dsh 教训），且必须恰好调用一次 `next`。
+    /// 脱离**，且必须恰好调用一次 `next`。
     async fn around_tool_use(
         &self,
         _call: HookToolCall,
@@ -155,7 +155,7 @@ pub trait ToolHook: Send + Sync {
 
     /// 工具执行失败（execute 返回 Err）时的变体。默认委托
     /// [`Self::post_tool_use`]（错误文本作为结果，保持既有行为）；
-    /// override 用于区分成败（如 CC `PostToolUseFailure` 事件派发）。
+    /// override 用于区分成败（如方言 `PostToolUseFailure` 事件派发）。
     async fn post_tool_use_failure(&self, call: &HookToolCall, err: &str) -> PostHookAction {
         self.post_tool_use(call, &format!("Tool error: {err}"))
             .await
@@ -224,7 +224,7 @@ impl ToolHookManager {
 }
 
 /// Run pre hooks in order. Returns `Some(reason)` when a hook blocked (the
-/// FIRST block wins — later hooks don't run, matching CC's deny semantics),
+/// FIRST block wins — later hooks don't run, matching the dialect's deny semantics),
 /// `None` when the dispatch may proceed.
 pub async fn run_pre_hooks(hooks: &[Arc<dyn ToolHook>], call: &HookToolCall) -> Option<String> {
     for (i, hook) in hooks.iter().enumerate() {
@@ -470,17 +470,17 @@ pub async fn run_llm_post_hooks(
 }
 
 // ---------------------------------------------------------------------------
-// Prompt/turn lifecycle hooks (K2 — CC SessionStart/UserPromptSubmit/Stop 桥)
+// Prompt/turn lifecycle hooks (K2 — 方言 SessionStart/UserPromptSubmit/Stop 桥)
 // ---------------------------------------------------------------------------
 
-/// Per-turn safety cap for `TurnEndDecision::Continue` demands (CC Stop-hook
+/// Per-turn safety cap for `TurnEndDecision::Continue` demands (dialect Stop-hook
 /// "block stopping"). Exhausted → the turn stops anyway with a loud warn
 /// (fail-open, same discipline as [`MAX_LLM_HOOK_RETRIES`]: a buggy hook must
 /// not be able to keep a session answering forever).
 pub const MAX_TURN_END_CONTINUES: u32 = 2;
 
 /// Snapshot of an arriving user prompt (BEFORE it enters instance history —
-/// a blocked prompt is never seen by the model, matching CC's
+/// a blocked prompt is never seen by the model, matching the dialect's
 /// UserPromptSubmit block semantics).
 #[derive(Debug, Clone)]
 pub struct HookPrompt {
@@ -509,7 +509,7 @@ pub struct HookTurnEnd {
     pub chat_id: String,
     /// The final assistant content about to be delivered.
     pub final_content: String,
-    /// True when this turn's stop was already blocked once before (CC's
+    /// True when this turn's stop was already blocked once before (the dialect's
     /// `stop_hook_active` — scripts use it to avoid infinite loops).
     pub stop_hook_active: bool,
 }
@@ -525,7 +525,7 @@ pub enum TurnEndDecision {
     Continue { feedback: String },
 }
 
-/// A prompt/turn lifecycle hook (K2). The CC dialect bridge is the primary
+/// A prompt/turn lifecycle hook (K2). The hooks-dialect bridge is the primary
 /// consumer; defaults are permissive so an observer implements only what it
 /// needs.
 #[async_trait]
@@ -537,7 +537,7 @@ pub trait LifecycleHook: Send + Sync {
 
     /// User prompt arrived — runs in `run_with_trace` BEFORE
     /// `add_user_message`. Ordered; the first `Block` short-circuits.
-    /// Note: CC's SessionStart event has no dedicated point here — a bridge
+    /// Note: the dialect's SessionStart event has no dedicated point here — a bridge
     /// fires it itself on first sight of a session inside this callback.
     async fn on_user_prompt(&self, _prompt: &HookPrompt) -> PromptDecision {
         PromptDecision::Allow
@@ -603,7 +603,7 @@ pub async fn run_user_prompt_hooks(
     None
 }
 
-/// Run turn-end hooks in order. The first `Continue` short-circuits (CC: any
+/// Run turn-end hooks in order. The first `Continue` short-circuits (dialect: any
 /// hook may veto stopping); `Stop` when all agree (or none demand more).
 pub async fn run_turn_end_hooks(
     hooks: &[Arc<dyn LifecycleHook>],
@@ -639,7 +639,7 @@ mod s9_tests;
 // 「插件」页（T4）可展示/启停。
 // ---------------------------------------------------------------------------
 
-/// 每工具调用计时的 around 插件（cordis waterfall 的 Rust 参考实现）。
+/// 每工具调用计时的 around 插件（waterfall 包装示例）。
 /// 进程内单例槽（同 loopback_slot 模式）：「插件」页经 WSAPI 翻转 enabled。
 pub struct MetricsPipelinePlugin {
     enabled: std::sync::atomic::AtomicBool,

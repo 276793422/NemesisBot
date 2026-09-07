@@ -28,6 +28,8 @@ pub fn classify_error(error_msg: &str, provider: &str, model: &str) -> Option<Fa
 }
 
 /// Classify by HTTP status code.
+// J1：此处 status 是从错误消息文本里抠出来的，拿不到响应头 → retry_after
+// 维持 None（能拿到 header 的 HTTP 路径已由 retry_after_from_headers 填充）。
 fn classify_by_status(status: u16, provider: &str, model: &str) -> Option<FailoverError> {
     match status {
         401 | 403 => Some(FailoverError::Auth {
@@ -68,7 +70,7 @@ fn classify_by_message(msg: &str, provider: &str, model: &str) -> Option<Failove
         });
     }
     if matches_overloaded(msg) {
-        // Overloaded treated as rate_limit per OpenClaw convention.
+        // Overloaded treated as rate_limit (existing convention).
         return Some(FailoverError::RateLimit {
             provider: provider.to_string(),
             model: model.to_string(),

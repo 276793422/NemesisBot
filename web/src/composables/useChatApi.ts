@@ -19,6 +19,14 @@ export interface SessionEntry {
   firstMessage: string
   model: string
   title?: string
+  /** M5（2026-09-05）：会话用量（`logs.session_list` 从 request_logs
+   *  按 session_key 聚合回填；无用量记录时缺省）。 */
+  tokens?: number
+  cost?: number
+  /** E4（2026-09-05）：fork 血缘（sidecar meta 回填；非 fork 会话缺省）。 */
+  parent?: string
+  parentTitle?: string
+  forkedAtTurn?: number
 }
 
 /** P3-1 (2026-08-24 UI entry gap): fork-dialog turn row (GET /api/chat/sessions/:id/turns).

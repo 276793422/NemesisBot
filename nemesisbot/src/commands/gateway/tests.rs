@@ -44,7 +44,7 @@ use nemesis_memory::memory_tools::MemoryApprovalGate;
 /// Mock approval manager returning a canned decision.
 #[cfg(all(feature = "desktop", feature = "memory"))]
 struct MockApproval {
-    decision: Result<bool, String>,
+    decision: Result<nemesis_security::auditor::ApprovalVerdict, String>,
 }
 
 #[cfg(all(feature = "desktop", feature = "memory"))]
@@ -60,13 +60,15 @@ impl nemesis_security::auditor::ApprovalManager for MockApproval {
         _risk_level: &str,
         _reason: &str,
         _timeout_secs: u64,
-    ) -> Result<bool, String> {
+    ) -> Result<nemesis_security::auditor::ApprovalVerdict, String> {
         self.decision.clone()
     }
 }
 
 #[cfg(all(feature = "desktop", feature = "memory"))]
-fn mock_memory_gate(decision: Result<bool, String>) -> GatewayMemoryGate {
+fn mock_memory_gate(
+    decision: Result<nemesis_security::auditor::ApprovalVerdict, String>,
+) -> GatewayMemoryGate {
     let am: std::sync::Arc<dyn nemesis_security::auditor::ApprovalManager> =
         std::sync::Arc::new(MockApproval { decision });
     GatewayMemoryGate::new(am)
@@ -75,7 +77,7 @@ fn mock_memory_gate(decision: Result<bool, String>) -> GatewayMemoryGate {
 #[cfg(all(feature = "desktop", feature = "memory"))]
 #[tokio::test]
 async fn memory_gate_approves_when_user_approves() {
-    let g = mock_memory_gate(Ok(true));
+    let g = mock_memory_gate(Ok(nemesis_security::auditor::ApprovalVerdict::approved()));
     assert!(g.approve_store("store fact X").await);
     assert!(g.approve_forget("forget session Y").await);
 }
@@ -83,7 +85,7 @@ async fn memory_gate_approves_when_user_approves() {
 #[cfg(all(feature = "desktop", feature = "memory"))]
 #[tokio::test]
 async fn memory_gate_denies_when_user_denies() {
-    let g = mock_memory_gate(Ok(false));
+    let g = mock_memory_gate(Ok(nemesis_security::auditor::ApprovalVerdict::denied()));
     assert!(!g.approve_store("x").await, "denied store must be blocked");
     assert!(
         !g.approve_forget("y").await,
@@ -293,7 +295,9 @@ fn test_parse_security_rules_missing_fields() {
 
 #[test]
 fn test_load_scanner_full_config_missing_file() {
-    let result = load_scanner_full_config(std::path::Path::new("/nonexistent/config.json"));
+    let result = crate::security_setup::load_scanner_full_config(std::path::Path::new(
+        "/nonexistent/config.json",
+    ));
     assert!(result.is_none());
 }
 
@@ -309,7 +313,7 @@ fn test_load_scanner_full_config_valid() {
         }
     });
     std::fs::write(&path, serde_json::to_string(&data).unwrap()).unwrap();
-    let result = load_scanner_full_config(&path);
+    let result = crate::security_setup::load_scanner_full_config(&path);
     assert!(result.is_some());
     let cfg = result.unwrap();
     assert_eq!(cfg.enabled.len(), 2);
@@ -322,7 +326,7 @@ fn test_load_scanner_full_config_empty_engines() {
     let path = tmp.path().join("config.scanner.json");
     let data = serde_json::json!({"enabled": [], "engines": {}});
     std::fs::write(&path, serde_json::to_string(&data).unwrap()).unwrap();
-    let result = load_scanner_full_config(&path);
+    let result = crate::security_setup::load_scanner_full_config(&path);
     assert!(result.is_some());
     let cfg = result.unwrap();
     assert!(cfg.enabled.is_empty());
@@ -334,7 +338,7 @@ fn test_load_scanner_full_config_invalid_json() {
     let tmp = tempfile::TempDir::new().unwrap();
     let path = tmp.path().join("config.scanner.json");
     std::fs::write(&path, "not valid json {{{{").unwrap();
-    let result = load_scanner_full_config(&path);
+    let result = crate::security_setup::load_scanner_full_config(&path);
     assert!(result.is_none());
 }
 
@@ -348,7 +352,10 @@ fn test_load_security_rules_missing_file() {
         nemesis_security::pipeline::SecurityPluginConfig::default(),
     ));
     // Should not panic, just return
-    load_security_rules(&plugin, std::path::Path::new("/nonexistent/security.json"));
+    crate::security_setup::load_security_rules(
+        &plugin,
+        std::path::Path::new("/nonexistent/security.json"),
+    );
 }
 
 #[test]
@@ -375,7 +382,7 @@ fn test_load_security_rules_valid_config() {
         }
     });
     std::fs::write(&path, serde_json::to_string(&data).unwrap()).unwrap();
-    load_security_rules(&plugin, &path);
+    crate::security_setup::load_security_rules(&plugin, &path);
 }
 
 #[test]
@@ -393,7 +400,7 @@ fn test_load_security_rules_with_append() {
         }
     });
     std::fs::write(&path, serde_json::to_string(&data).unwrap()).unwrap();
-    load_security_rules(&plugin, &path);
+    crate::security_setup::load_security_rules(&plugin, &path);
 }
 
 #[test]
@@ -404,7 +411,7 @@ fn test_load_security_rules_invalid_json() {
     let tmp = tempfile::TempDir::new().unwrap();
     let path = tmp.path().join("config.security.json");
     std::fs::write(&path, "invalid json {{{{").unwrap();
-    load_security_rules(&plugin, &path);
+    crate::security_setup::load_security_rules(&plugin, &path);
     // Should not panic
 }
 
@@ -424,7 +431,7 @@ fn test_apply_security_layer_switches_all_off() {
         }
     });
     let mut cfg = nemesis_security::pipeline::SecurityPluginConfig::default();
-    apply_security_layer_switches(&json, &mut cfg);
+    crate::security_setup::apply_security_layer_switches(&json, &mut cfg);
     assert!(!cfg.injection_enabled);
     assert!(!cfg.command_guard_enabled);
     assert!(!cfg.credential_enabled);
@@ -438,7 +445,7 @@ fn test_apply_security_layer_switches_absent_keys_keep_defaults() {
     // 只有 dlp 段（合法形状）：其余 layer 开关保持默认全开
     let json = serde_json::json!({"layers": {"dlp": {"enabled": true}}});
     let mut cfg = nemesis_security::pipeline::SecurityPluginConfig::default();
-    apply_security_layer_switches(&json, &mut cfg);
+    crate::security_setup::apply_security_layer_switches(&json, &mut cfg);
     assert!(cfg.injection_enabled);
     assert!(cfg.command_guard_enabled);
     assert!(cfg.credential_enabled);
@@ -450,7 +457,7 @@ fn test_apply_security_layer_switches_no_layers_section() {
     // 完全没有 layers 段（最小配置文件）：不 panic、不改任何值
     let json = serde_json::json!({"default_action": "allow"});
     let mut cfg = nemesis_security::pipeline::SecurityPluginConfig::default();
-    apply_security_layer_switches(&json, &mut cfg);
+    crate::security_setup::apply_security_layer_switches(&json, &mut cfg);
     assert!(cfg.ssrf_enabled && cfg.injection_enabled);
 }
 
@@ -459,7 +466,7 @@ fn test_apply_security_layer_switches_partial_override() {
     // 只关 ssrf，其余默认开（V3 e2e 的实际形状）
     let json = serde_json::json!({"layers": {"ssrf": {"enabled": false}}});
     let mut cfg = nemesis_security::pipeline::SecurityPluginConfig::default();
-    apply_security_layer_switches(&json, &mut cfg);
+    crate::security_setup::apply_security_layer_switches(&json, &mut cfg);
     assert!(!cfg.ssrf_enabled);
     assert!(cfg.injection_enabled);
     assert!(cfg.command_guard_enabled);
@@ -708,7 +715,7 @@ fn test_load_scanner_full_config_with_engines_and_enabled() {
         }
     });
     std::fs::write(&path, serde_json::to_string(&data).unwrap()).unwrap();
-    let result = load_scanner_full_config(&path);
+    let result = crate::security_setup::load_scanner_full_config(&path);
     assert!(result.is_some());
     let cfg = result.unwrap();
     assert_eq!(cfg.enabled.len(), 1);
@@ -722,7 +729,7 @@ fn test_load_scanner_full_config_partial_data() {
     // Only enabled, no engines
     let data = serde_json::json!({"enabled": ["clamav"]});
     std::fs::write(&path, serde_json::to_string(&data).unwrap()).unwrap();
-    let result = load_scanner_full_config(&path);
+    let result = crate::security_setup::load_scanner_full_config(&path);
     assert!(result.is_some());
     let cfg = result.unwrap();
     assert_eq!(cfg.enabled.len(), 1);
@@ -734,7 +741,7 @@ fn test_load_scanner_full_config_empty_file() {
     let tmp = tempfile::TempDir::new().unwrap();
     let path = tmp.path().join("scanner.json");
     std::fs::write(&path, "{}").unwrap();
-    let result = load_scanner_full_config(&path);
+    let result = crate::security_setup::load_scanner_full_config(&path);
     assert!(result.is_some());
     let cfg = result.unwrap();
     assert!(cfg.enabled.is_empty());
@@ -743,14 +750,22 @@ fn test_load_scanner_full_config_empty_file() {
 
 #[test]
 fn test_load_scanner_full_config_nonexistent() {
-    let result = load_scanner_full_config(std::path::Path::new("/nonexistent/scanner.json"));
+    let result = crate::security_setup::load_scanner_full_config(std::path::Path::new(
+        "/nonexistent/scanner.json",
+    ));
     assert!(result.is_none());
 }
 
 #[test]
 fn test_print_agent_startup_info_no_panic() {
     let tmp = tempfile::TempDir::new().unwrap();
-    print_agent_startup_info(tmp.path(), 10);
+    // 真实 default 数 + 若干 extended——硬编码 10 曾在 26154f0（阶段 5）
+    // 加第 11 个 default 工具后 usize 下溢 panic（显示路径减法已根修为
+    // saturating_sub；这里改从真相源推导，不再随 default 增长腐烂）。
+    let default_count = nemesis_agent::register_default_tools().len();
+    print_agent_startup_info(tmp.path(), default_count + 5);
+    // 回归锁：total < default 的 skew 也不 panic（saturating 打 0 extended）。
+    print_agent_startup_info(tmp.path(), 3);
 }
 
 #[test]
@@ -759,7 +774,8 @@ fn test_print_agent_startup_info_with_skills_dir() {
     let skills_dir = tmp.path().join("workspace").join("skills");
     std::fs::create_dir_all(skills_dir.join("test-skill")).unwrap();
     std::fs::write(skills_dir.join("test-skill").join("SKILL.md"), "# Test").unwrap();
-    print_agent_startup_info(tmp.path(), 15);
+    let default_count = nemesis_agent::register_default_tools().len();
+    print_agent_startup_info(tmp.path(), default_count + 4);
 }
 
 #[test]
@@ -1026,7 +1042,7 @@ fn test_load_scanner_full_config_with_non_object() {
     let tmp = tempfile::TempDir::new().unwrap();
     let path = tmp.path().join("scanner.json");
     std::fs::write(&path, "42").unwrap(); // Not an object
-    let result = load_scanner_full_config(&path);
+    let result = crate::security_setup::load_scanner_full_config(&path);
     // Should parse as valid JSON but ScannerFullConfig default should work
     assert!(result.is_some() || result.is_none()); // Don't panic
 }
@@ -1888,7 +1904,7 @@ fn test_load_security_rules_with_process_rules() {
         }
     });
     std::fs::write(&path, serde_json::to_string(&data).unwrap()).unwrap();
-    load_security_rules(&plugin, &path);
+    crate::security_setup::load_security_rules(&plugin, &path);
     // Verify no panic
 }
 
@@ -1907,7 +1923,7 @@ fn test_load_security_rules_with_network_rules() {
         }
     });
     std::fs::write(&path, serde_json::to_string(&data).unwrap()).unwrap();
-    load_security_rules(&plugin, &path);
+    crate::security_setup::load_security_rules(&plugin, &path);
 }
 
 #[test]
@@ -1925,7 +1941,7 @@ fn test_load_security_rules_with_hardware_rules() {
         }
     });
     std::fs::write(&path, serde_json::to_string(&data).unwrap()).unwrap();
-    load_security_rules(&plugin, &path);
+    crate::security_setup::load_security_rules(&plugin, &path);
 }
 
 #[test]
@@ -1943,7 +1959,7 @@ fn test_load_security_rules_with_registry_rules() {
         }
     });
     std::fs::write(&path, serde_json::to_string(&data).unwrap()).unwrap();
-    load_security_rules(&plugin, &path);
+    crate::security_setup::load_security_rules(&plugin, &path);
 }
 
 // -------------------------------------------------------------------------
@@ -2015,7 +2031,7 @@ fn test_scanner_config_nested_engines() {
         }
     });
     std::fs::write(&path, serde_json::to_string(&data).unwrap()).unwrap();
-    let result = load_scanner_full_config(&path);
+    let result = crate::security_setup::load_scanner_full_config(&path);
     assert!(result.is_some());
     let cfg = result.unwrap();
     assert_eq!(cfg.enabled.len(), 2);
@@ -2874,14 +2890,14 @@ mod wave_b {
         let as_dir = tmp.path().join("config.security.json");
         std::fs::create_dir_all(&as_dir).unwrap();
         let plugin_a = make_plugin();
-        load_security_rules(&plugin_a, &as_dir); // 必须不 panic
+        crate::security_setup::load_security_rules(&plugin_a, &as_dir); // 必须不 panic
         drop(plugin_a);
 
         // ② 文件存在但内容是非法 JSON → 解析失败告警臂后安全返回。
         let bad = tmp.path().join("config.security.bad.json");
         std::fs::write(&bad, "{{{ not json at all").unwrap();
         let plugin_b = make_plugin();
-        load_security_rules(&plugin_b, &bad); // 必须不 panic
+        crate::security_setup::load_security_rules(&plugin_b, &bad); // 必须不 panic
     }
 
     // -------------------------------------------------------------------------
@@ -2911,7 +2927,7 @@ mod wave_b {
             5,
         );
         match decision {
-            Ok(approved) => assert!(!approved, "无插件 UI 时必须安全侧默认拒绝"),
+            Ok(v) => assert!(!v.approved, "无插件 UI 时必须安全侧默认拒绝"),
             Err(e) => panic!("早退分支应返回 Ok(deny) 而非 Err: {e}"),
         }
     }

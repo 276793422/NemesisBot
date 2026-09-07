@@ -7,7 +7,7 @@
       "max_tokens": 8192,
       "temperature": 0.7,
       "max_tool_iterations": 100,
-      "concurrent_request_mode": "reject",
+      "concurrent_request_mode": "queue",
       "queue_size": 8,
       "max_continuation_permits": 0
     }
@@ -15,6 +15,10 @@
   "executor": {
     "enabled": false,
     "sandbox": false
+  },
+  "terminal": {
+    "enabled": false,
+    "max_sessions": 4
   },
   "channels": {
     "whatsapp": {

@@ -4,14 +4,25 @@ import { useAuthStore } from './stores/auth'
 import { useAppStore } from './stores/app'
 import AuthOverlay from './components/AuthOverlay.vue'
 import AppLayout from './components/AppLayout.vue'
+// M6（devtool-upgrade 阶段 7）：Ctrl+K 命令面板（三源合一）。
+import CommandPalette from './components/CommandPalette.vue'
+import { useCommandPalette } from './composables/useCommandPalette'
 
 const auth = useAuthStore()
 const appStore = useAppStore()
+const palette = useCommandPalette()
 
 function handleKeydown(e: KeyboardEvent) {
   if (e.ctrlKey && e.key === 'b') {
     e.preventDefault()
     appStore.toggleSidebar()
+  }
+  // M6：Ctrl/Cmd+K 命令面板（preventDefault 拦浏览器地址栏聚焦；metaKey
+  // 覆盖 macOS ⌘K）。认证覆盖层打开时无意义，可见性由 AppLayout 挂载点
+  // 决定（AuthOverlay 分支不渲染面板）。
+  if ((e.ctrlKey || e.metaKey) && (e.key === 'k' || e.key === 'K')) {
+    e.preventDefault()
+    palette.toggle()
   }
 }
 
@@ -63,4 +74,6 @@ onUnmounted(() => {
 <template>
   <AuthOverlay v-if="!auth.authenticated" />
   <AppLayout v-else />
+  <!-- M6：Teleport to body，挂哪都行；认证后才有意义，跟随 AppLayout 分支。 -->
+  <CommandPalette v-if="auth.authenticated" />
 </template>

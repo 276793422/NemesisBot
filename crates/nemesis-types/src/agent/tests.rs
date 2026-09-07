@@ -447,3 +447,200 @@ fn test_agent_session_clone() {
     assert_eq!(session.session_key, session2.session_key);
     assert_eq!(session.channel, session2.channel);
 }
+
+// ---------------------------------------------------------------------------
+// M7（devtool-upgrade 阶段 5）：ApprovalRequested 事件 + ApprovalResponder trait
+// ---------------------------------------------------------------------------
+
+#[test]
+fn test_agent_event_approval_requested_serde_tag_shape() {
+    use super::AgentEvent;
+    let ev = AgentEvent::ApprovalRequested {
+        session_key: "agent:main:session:s1".to_string(),
+        chat_id: "web:abc".to_string(),
+        request_id: "req-1".to_string(),
+        operation: "process_exec".to_string(),
+        target: "cargo publish".to_string(),
+        risk_level: "HIGH".to_string(),
+        reason: "rule: exec-publish".to_string(),
+        timeout_secs: 300,
+        pattern: "cargo publish *".to_string(),
+    };
+    let v = serde_json::to_value(&ev).unwrap();
+    // serde(tag = "kind", content = "data") 形状——web pump 原样转 SSE/WS。
+    // tag 取变体原名（enum 无 rename_all，与 ModeChanged 等既有 kind 一致）。
+    assert_eq!(v["kind"], "ApprovalRequested");
+    assert_eq!(v["data"]["request_id"], "req-1");
+    assert_eq!(v["data"]["operation"], "process_exec");
+    assert_eq!(v["data"]["risk_level"], "HIGH");
+    assert_eq!(v["data"]["timeout_secs"], 300);
+    assert_eq!(v["data"]["pattern"], "cargo publish *");
+    // 反序列化回事件并逐字段核对（AgentEvent 未 derive PartialEq）。
+    match serde_json::from_value::<AgentEvent>(v).unwrap() {
+        AgentEvent::ApprovalRequested {
+            session_key,
+            chat_id,
+            request_id,
+            operation,
+            target,
+            risk_level,
+            reason,
+            timeout_secs,
+            pattern,
+        } => {
+            assert_eq!(session_key, "agent:main:session:s1");
+            assert_eq!(chat_id, "web:abc");
+            assert_eq!(request_id, "req-1");
+            assert_eq!(operation, "process_exec");
+            assert_eq!(target, "cargo publish");
+            assert_eq!(risk_level, "HIGH");
+            assert_eq!(reason, "rule: exec-publish");
+            assert_eq!(timeout_secs, 300);
+            assert_eq!(pattern, "cargo publish *");
+        }
+        other => panic!("wrong variant: {:?}", other),
+    }
+}
+
+#[test]
+fn test_agent_event_approval_requested_accessors() {
+    use super::AgentEvent;
+    let ev = AgentEvent::ApprovalRequested {
+        session_key: "k".to_string(),
+        chat_id: "web:x".to_string(),
+        request_id: "r".to_string(),
+        operation: "file_write".to_string(),
+        target: "t".to_string(),
+        risk_level: "CRITICAL".to_string(),
+        reason: "why".to_string(),
+        timeout_secs: 60,
+        pattern: String::new(),
+    };
+    assert_eq!(ev.chat_id(), "web:x");
+    assert_eq!(ev.kind(), "ApprovalRequested");
+}
+
+#[test]
+fn test_approval_responder_is_object_safe() {
+    use super::ApprovalResponder;
+    struct Dummy;
+    impl ApprovalResponder for Dummy {
+        fn respond(
+            &self,
+            _request_id: &str,
+            _approved: bool,
+            _always: bool,
+            _note: Option<String>,
+        ) -> Result<bool, String> {
+            Ok(true)
+        }
+        fn pending(&self) -> Vec<serde_json::Value> {
+            Vec::new()
+        }
+    }
+    // trait 对象可持有（nemesis-web 经 agent_loop 槽触达的形态）。
+    let r: std::sync::Arc<dyn ApprovalResponder> = std::sync::Arc::new(Dummy);
+    assert!(r.respond("x", true, false, None).unwrap());
+    assert!(r.pending().is_empty());
+}
+
+#[test]
+fn test_agent_event_approval_resolved_serde_shape() {
+    use super::AgentEvent;
+    let ev = AgentEvent::ApprovalResolved {
+        request_id: "req-9".to_string(),
+        decision: "denied".to_string(),
+    };
+    let v = serde_json::to_value(&ev).unwrap();
+    // 与 ApprovalRequested 同形状：tag=变体原名，data 承载字段。
+    assert_eq!(v["kind"], "ApprovalResolved");
+    assert_eq!(v["data"]["request_id"], "req-9");
+    assert_eq!(v["data"]["decision"], "denied");
+    // 反序列化回事件逐字段核对。
+    match serde_json::from_value::<AgentEvent>(v).unwrap() {
+        AgentEvent::ApprovalResolved {
+            request_id,
+            decision,
+        } => {
+            assert_eq!(request_id, "req-9");
+            assert_eq!(decision, "denied");
+        }
+        other => panic!("wrong variant: {:?}", other),
+    }
+    // 全局事件：chat_id 恒空串（不属单一会话，同 ApprovalRequested）。
+    let ev = AgentEvent::ApprovalResolved {
+        request_id: "r".to_string(),
+        decision: "timeout".to_string(),
+    };
+    assert_eq!(ev.chat_id(), "");
+    assert_eq!(ev.kind(), "ApprovalResolved");
+}
+
+/// F7（devtool-upgrade 阶段 5）：QuestionAsked / QuestionResolved 的 serde
+/// 形状 + accessors。QuestionAsked 带会话 chat_id；Resolved 是全局事件。
+#[test]
+fn test_agent_event_question_serde_shape() {
+    use super::{AgentEvent, QuestionOutcome, QuestionRequest};
+
+    let ev = AgentEvent::QuestionAsked {
+        session_key: "web:chat-1".to_string(),
+        chat_id: "chat-1".to_string(),
+        question_id: "q-3".to_string(),
+        question: "用哪个包管理器?".to_string(),
+        options: vec!["pnpm".to_string(), "npm".to_string()],
+        multi: false,
+        timeout_secs: 120,
+    };
+    let v = serde_json::to_value(&ev).unwrap();
+    assert_eq!(v["kind"], "QuestionAsked");
+    assert_eq!(v["data"]["question_id"], "q-3");
+    assert_eq!(v["data"]["question"], "用哪个包管理器?");
+    assert_eq!(v["data"]["options"][0], "pnpm");
+    assert_eq!(v["data"]["multi"], false);
+    assert_eq!(v["data"]["timeout_secs"], 120);
+    match serde_json::from_value::<AgentEvent>(v).unwrap() {
+        AgentEvent::QuestionAsked {
+            question_id,
+            options,
+            multi,
+            ..
+        } => {
+            assert_eq!(question_id, "q-3");
+            assert_eq!(options, vec!["pnpm".to_string(), "npm".to_string()]);
+            assert!(!multi);
+        }
+        other => panic!("wrong variant: {:?}", other),
+    }
+    // 提问有会话上下文：chat_id 透传。
+    assert_eq!(ev.chat_id(), "chat-1");
+    assert_eq!(ev.kind(), "QuestionAsked");
+
+    let resolved = AgentEvent::QuestionResolved {
+        question_id: "q-3".to_string(),
+        decision: "answered".to_string(),
+    };
+    let v = serde_json::to_value(&resolved).unwrap();
+    assert_eq!(v["kind"], "QuestionResolved");
+    assert_eq!(v["data"]["question_id"], "q-3");
+    assert_eq!(v["data"]["decision"], "answered");
+    assert_eq!(resolved.chat_id(), "");
+    assert_eq!(resolved.kind(), "QuestionResolved");
+
+    // QuestionOutcome：单选恰一项 / Timeout 与 Answered 可区分。
+    let answered = QuestionOutcome::Answered(vec!["pnpm".to_string()]);
+    assert_eq!(
+        answered,
+        QuestionOutcome::Answered(vec!["pnpm".to_string()])
+    );
+    assert_ne!(answered, QuestionOutcome::Timeout);
+    let req = QuestionRequest {
+        question_id: "q-1".to_string(),
+        question: "q".to_string(),
+        options: vec!["a".to_string(), "b".to_string()],
+        multi: true,
+        chat_id: "c".to_string(),
+        session_key: "s".to_string(),
+        timeout_secs: 60,
+    };
+    assert_eq!(req.timeout_secs, 60);
+}

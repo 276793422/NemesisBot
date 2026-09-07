@@ -19,6 +19,7 @@ default = [
     "channels-web", "channels-webhook", "channels-rpc",
     "migrate", "devices", "desktop", "health", "heartbeat", "auth", "voice", "cluster",
     "forge", "memory", "workflow", "security", "sandbox", "eval", "usage", "board",
+    "terminal",
 ]
 
 # Optional subsystems (on by default = current full build; drop with --no-default-features)
@@ -49,6 +50,9 @@ eval = ["sandbox", "security", "dep:nemesis-injector", "dep:nemesis-eval-proxy"]
 # (UsageView) which pulls in echarts (~558KB). Off in minimal-iot → the page +
 # echarts are tree-shaken from the embedded frontend. No-op on the Rust side.
 usage = []
+
+# L8 PTY 内嵌终端（dashboard 终端 tab；config terminal.enabled 默认关双闸）
+terminal = ["nemesis-web/terminal"]
 
 # Channel backends (forwarded to nemesis-channels)
 channels-web = ["nemesis-channels/web"]
@@ -90,6 +94,9 @@ nemesis-migrate = { workspace = true, optional = true }
 nemesis-auth = { workspace = true, optional = true }
 nemesis-cluster = { workspace = true, optional = true }
 nemesis-web = { workspace = true }
+# C5 (2026-09-04): LSP manager singleton lives in SharedResources — gateway
+# shutdown_all + web server share the same Arc the LspTool registers with.
+nemesis-lsp = { workspace = true }
 nemesis-health = { workspace = true, optional = true }
 nemesis-data = { workspace = true }
 nemesis-heartbeat = { workspace = true, optional = true }

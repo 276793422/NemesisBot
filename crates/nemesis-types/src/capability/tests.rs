@@ -243,6 +243,31 @@ fn tier_lists_delegation_tools() {
     assert!(!mini.contains(&"codex_delegate"), "Mini excluded by design");
 }
 
+// B4 (2026-09-05): background-process trio is Normal-tier and above.
+#[test]
+fn tier_lists_background_tools() {
+    let normal = tier_allowed_tools(ModelTier::Normal);
+    assert!(
+        normal.contains(&"background_start"),
+        "background_start in Normal"
+    );
+    assert!(
+        normal.contains(&"background_output"),
+        "background_output in Normal"
+    );
+    assert!(
+        normal.contains(&"background_kill"),
+        "background_kill in Normal"
+    );
+    let mini = tier_allowed_tools(ModelTier::Mini);
+    assert!(
+        !mini.contains(&"background_start"),
+        "Mini excluded by design (job_id bookkeeping burns turns)"
+    );
+    // Big/Auto see everything (empty slice = no filtering).
+    assert!(tier_allowed_tools(ModelTier::Big).is_empty());
+}
+
 #[test]
 fn test_resolve_reasoning_effort_tiers() {
     let cfg = serde_json::json!({

@@ -32,10 +32,15 @@ fn move_tools_is_the_expected_set() {
         &[
             "exec",
             "run_script",
+            // C8 (2026-09-06): run_checks spawns cargo/npm/go — same write
+            // surface as exec (target/, node_modules/).
+            "run_checks",
             "read_file",
             "write_file",
             "list_dir",
             "edit_file",
+            // A7 (2026-09-06): batch edit_file — contained identically.
+            "multiedit",
             "append_file",
             "delete_file",
             "create_dir",

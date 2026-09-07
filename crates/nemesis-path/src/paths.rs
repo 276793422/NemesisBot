@@ -295,6 +295,13 @@ pub fn resolve_mcp_config_path_in_workspace(workspace: &Path) -> PathBuf {
     workspace_config_dir(workspace).join("config.mcp.json")
 }
 
+/// `<workspace>/config/approval_rules.json` —— 审批 pattern 记忆规则表
+/// （F3：auditor 自动放行查询 + M7 审批卡「总是允许」写入 + CLI/WSAPI
+/// 管理，单一真相源）。
+pub fn resolve_approval_rules_path_in_workspace(workspace: &Path) -> PathBuf {
+    workspace_config_dir(workspace).join("approval_rules.json")
+}
+
 /// `<workspace>/config/cors.json` —— CORS 配置（2026-08-29 收编：原游离在
 /// `<home>/config/cors.json`，同 hooks.json 为路径大迁移漏网项）。
 pub fn resolve_cors_config_path_in_workspace(workspace: &Path) -> PathBuf {
@@ -314,7 +321,7 @@ pub fn resolve_checkpoints_dir_in_workspace(workspace: &Path) -> PathBuf {
     logs_dir_in_workspace(workspace).join("checkpoints")
 }
 
-/// `<workspace>/config/hooks.json` —— CC 方言钩子配置（2026-08-29 收编：
+/// `<workspace>/config/hooks.json` —— 钩子方言配置（2026-08-29 收编：
 /// 原先游离在 `<home>/config/hooks.json`，为 08-28 路径大迁移的漏网项；
 /// 读取方经 `migrate_legacy_home_hooks_config` 一次性迁移）。
 pub fn resolve_hooks_config_path_in_workspace(workspace: &Path) -> PathBuf {
@@ -501,8 +508,8 @@ pub fn home_logs_dir(home_dir: &Path) -> PathBuf {
 }
 
 /// `<home>/logs/spill` —— 【已废弃位置，2026-08-31 迁回 workspace】LLM 请求
-/// 外溢目录的旧位置。U4 设计（docs/PLAN/2026-08-21_dsh-alignment-update-list.md
-/// U4 条目）指定 `<workspace>/logs/spill`：spill 定位器文件必须落在
+/// 外溢目录的旧位置。U4 设计（docs/PLAN 2026-08-21 更新清单 U4 条目，本地档案）
+/// 指定 `<workspace>/logs/spill`：spill 定位器文件必须落在
 /// `restrict_to_workspace` 限制范围内，agent 的 file 工具才读得到全文；
 /// 实现期曾漂移到 home 根，且 2026-08-28 路径收敛只验证了内部一致性、
 /// 未对照设计规格，把漂移固化了下来。新代码一律用
@@ -765,6 +772,56 @@ fn normalize_lexical(path: &Path) -> PathBuf {
         }
     }
     out
+}
+
+// --- Workspace 遍历忽略表（单一真相源） ---
+//
+// 消费方：nemesis-agent `fs_watcher`（watch 事件过滤，I1）+ nemesis-web
+// `fs` handler（@补全目录遍历，I2）。两处此前/原本会各写一份并漂移，收敛
+// 到 nemesis-path（双方共同依赖的底层 crate）。
+
+/// 目录/组件名忽略：workspace 相对路径任一组件命中即整棵子树忽略。
+/// 覆盖 VCS/构建产物与运行时属主子树（会话流水、影子 git、rpc_cache、
+/// 看板 db、catalog 派生数据、热重载配置、sandboxie runtime）。
+pub const WORKSPACE_IGNORED_DIRS: &[&str] = &[
+    ".git",
+    "node_modules",
+    "target",
+    "dist",
+    "logs",
+    "uploads",
+    "memory",
+    "cluster",
+    "board",
+    "data",
+    "config",
+    "tools",
+];
+
+/// 文件扩展名忽略（如 `*.jsonl` 会话流水、sqlite 主/侧车文件）。
+pub const WORKSPACE_IGNORED_EXTS: &[&str] = &["jsonl", "db", "db-wal", "db-shm", "sqlite"];
+
+/// Workspace 相对路径是否被忽略表命中（目录组件或扩展名，大小写不敏感）。
+/// 调用方必须先剥掉 workspace 根前缀——根自身的名字（哪怕叫 `target`）
+/// 不参与匹配（见 fs_watcher 同款语义）。
+pub fn is_workspace_ignored(rel: &Path) -> bool {
+    let ignored_dir = |name: &str| {
+        WORKSPACE_IGNORED_DIRS
+            .iter()
+            .any(|d| d.eq_ignore_ascii_case(name))
+    };
+    if rel
+        .components()
+        .any(|c| c.as_os_str().to_str().map(ignored_dir).unwrap_or(false))
+    {
+        return true;
+    }
+    match rel.extension().and_then(|e| e.to_str()) {
+        Some(ext) => WORKSPACE_IGNORED_EXTS
+            .iter()
+            .any(|e| e.eq_ignore_ascii_case(ext)),
+        None => false,
+    }
 }
 
 #[cfg(test)]

@@ -456,3 +456,217 @@ fn test_write_session_meta_dir_squatter_warns() {
     assert!(read_session_meta(&key).is_none());
     std::fs::remove_dir(&mp).unwrap();
 }
+
+// --- E4 (2026-09-05): sidecar meta 扩展 fork 血缘（parent/forked_at_turn）---
+
+fn e4_uniq_key(tag: &str) -> String {
+    format!(
+        "test:meta:e4:{}:{}",
+        tag,
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    )
+}
+
+/// 血缘与 title 双向 upsert：先血缘（fork_session 的写入顺序）后 title
+/// （fork endpoint 的写入顺序），两个字段互不覆盖。
+#[test]
+fn test_e4_lineage_and_title_upsert_both_directions() {
+    let key = e4_uniq_key("upsert");
+    delete_chat_log(&key); // clean slate（顺带清 meta）
+
+    // fork 顺序：血缘先落，endpoint 随后写 title。
+    write_session_parent(&key, "agent:main:session:src-1", 3);
+    write_session_meta(&key, "fork title");
+    let full = read_session_meta_full(&key).expect("meta present");
+    assert_eq!(full.parent.as_deref(), Some("agent:main:session:src-1"));
+    assert_eq!(full.forked_at_turn, Some(3));
+    assert_eq!(full.title.as_deref(), Some("fork title"));
+    // 旧读取口（title-only）不回归。
+    assert_eq!(read_session_meta(&key).as_deref(), Some("fork title"));
+
+    // 反向：已有 title 的 meta 补写血缘，title 保留。
+    let key2 = e4_uniq_key("upsert-rev");
+    delete_chat_log(&key2);
+    write_session_meta(&key2, "original title");
+    write_session_parent(&key2, "p:q:r", 7);
+    let full2 = read_session_meta_full(&key2).expect("meta present");
+    assert_eq!(
+        full2.title.as_deref(),
+        Some("original title"),
+        "血缘写入保 title"
+    );
+    assert_eq!(full2.parent.as_deref(), Some("p:q:r"));
+    assert_eq!(full2.forked_at_turn, Some(7));
+
+    delete_chat_log(&key);
+    delete_chat_log(&key2);
+}
+
+/// pre-E4 形态的 meta 文件（只有 title）兼容读取：血缘字段缺省为 None；
+/// 随后补写血缘时 title 保留（不抹旧数据）。
+#[test]
+fn test_e4_legacy_title_only_meta_compatible() {
+    let key = e4_uniq_key("legacy");
+    delete_chat_log(&key);
+    // 直接落一个 pre-E4 形态文件（无血缘字段）。
+    write_session_meta(&key, "legacy");
+    let path = meta_path(&key);
+    std::fs::write(&path, r#"{"title":"legacy"}"#).unwrap();
+
+    let full = read_session_meta_full(&key).expect("legacy meta parses");
+    assert_eq!(full.title.as_deref(), Some("legacy"));
+    assert_eq!(full.parent, None, "旧文件无血缘字段");
+    assert_eq!(full.forked_at_turn, None);
+
+    // 升级路径：补写血缘不破坏旧 title。
+    write_session_parent(&key, "agent:main:session:old-parent", 1);
+    let upgraded = read_session_meta_full(&key).unwrap();
+    assert_eq!(upgraded.title.as_deref(), Some("legacy"));
+    assert_eq!(
+        upgraded.parent.as_deref(),
+        Some("agent:main:session:old-parent")
+    );
+
+    delete_chat_log(&key);
+}
+
+/// 缺失的 meta 文件：read_session_meta_full 返回 None（不 panic）。
+#[test]
+fn test_e4_read_meta_full_missing_file_is_none() {
+    let key = e4_uniq_key("missing");
+    delete_chat_log(&key);
+    assert!(read_session_meta_full(&key).is_none());
+    assert!(read_session_meta(&key).is_none());
+}
+
+// ===================== E7: 会话标题自动生成（meta 侧语义） =====================
+
+fn e7_uniq_key(tag: &str) -> String {
+    format!(
+        "test:e7meta:{}:{}",
+        tag,
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    )
+}
+
+/// write_session_meta_manual 置 title_manual 标记；普通写入不置。
+#[test]
+fn test_e7_manual_flag_roundtrip() {
+    let key = e7_uniq_key("manual");
+    delete_chat_log(&key);
+    write_session_meta(&key, "auto-ish");
+    assert!(
+        !read_meta_full(&key).unwrap().title_manual,
+        "普通写入不置 manual"
+    );
+
+    write_session_meta_manual(&key, "用户命名");
+    let m = read_meta_full(&key).unwrap();
+    assert!(m.title_manual);
+    assert_eq!(m.title.as_deref(), Some("用户命名"));
+
+    // lineage upsert 不破坏 manual 标记。
+    write_session_parent(&key, "agent:main:session:p", 1);
+    assert!(read_meta_full(&key).unwrap().title_manual);
+    delete_chat_log(&key);
+}
+
+/// auto_title_eligible 四态：无 meta / 占位符 / 真实标题 / 手动标记。
+#[test]
+fn test_e7_eligibility_matrix() {
+    let key = e7_uniq_key("elig");
+    delete_chat_log(&key);
+    assert!(auto_title_eligible(&key), "无 meta → 可写");
+
+    write_session_meta(&key, DEFAULT_SESSION_TITLE);
+    assert!(auto_title_eligible(&key), "占位符 → 可覆盖");
+
+    write_session_meta(&key, "真标题");
+    assert!(!auto_title_eligible(&key), "真实标题 → 不覆盖");
+
+    write_session_meta_manual(&key, DEFAULT_SESSION_TITLE);
+    assert!(
+        !auto_title_eligible(&key),
+        "手动命名成占位符也算用户意志 → 不覆盖"
+    );
+
+    // pre-E7 旧 meta（无 title_manual 字段）→ 反序列化缺省 false，真实标题仍保护。
+    let key2 = e7_uniq_key("legacy");
+    delete_chat_log(&key2);
+    let path = meta_path(&key2);
+    std::fs::write(&path, r#"{"title":"旧标题"}"#).unwrap();
+    assert!(!auto_title_eligible(&key2), "legacy 真实标题受保护");
+
+    delete_chat_log(&key);
+    delete_chat_log(&key2);
+}
+
+/// write_session_meta_auto_title：只写合格会话，返回是否写入。
+#[test]
+fn test_e7_auto_title_write_guards() {
+    let key = e7_uniq_key("write");
+    delete_chat_log(&key);
+    // 无 meta：直接写（upsert 创建 meta，不置 manual）。
+    assert!(write_session_meta_auto_title(&key, "自动标题A"));
+    assert_eq!(read_session_meta(&key).as_deref(), Some("自动标题A"));
+    assert!(!read_meta_full(&key).unwrap().title_manual);
+
+    // 已有真实标题 → 拒绝。
+    assert!(!write_session_meta_auto_title(&key, "不该覆盖"));
+    assert_eq!(read_session_meta(&key).as_deref(), Some("自动标题A"));
+
+    // 占位符（非 manual）→ 覆盖。
+    let key2 = e7_uniq_key("placeholder");
+    delete_chat_log(&key2);
+    write_session_meta(&key2, DEFAULT_SESSION_TITLE);
+    assert!(write_session_meta_auto_title(&key2, "自动标题B"));
+    assert_eq!(read_session_meta(&key2).as_deref(), Some("自动标题B"));
+
+    // 手动标记 → 拒绝（哪怕标题文本恰好是占位符）。
+    let key3 = e7_uniq_key("manual");
+    delete_chat_log(&key3);
+    write_session_meta_manual(&key3, DEFAULT_SESSION_TITLE);
+    assert!(!write_session_meta_auto_title(&key3, "自动标题C"));
+    assert_eq!(
+        read_session_meta(&key3).as_deref(),
+        Some(DEFAULT_SESSION_TITLE)
+    );
+
+    delete_chat_log(&key);
+    delete_chat_log(&key2);
+    delete_chat_log(&key3);
+}
+
+/// first_user_message：取首条非空 user 行、跳过空行、截断到 max_chars。
+#[test]
+fn test_e7_first_user_message_extraction() {
+    let key = e7_uniq_key("first");
+    delete_chat_log(&key);
+    use crate::chat_log::ChatLogMeta;
+    append_chat_log_meta(&key, "assistant", "先有句回复", &ChatLogMeta::default());
+    append_chat_log_meta(&key, "user", "   ", &ChatLogMeta::default());
+    append_chat_log_meta(
+        &key,
+        "user",
+        "  帮我修这个编译错误  ",
+        &ChatLogMeta::default(),
+    );
+    append_chat_log_meta(&key, "user", "第二条不该被取", &ChatLogMeta::default());
+
+    let got = first_user_message(&key, 500).expect("有 user 消息");
+    assert_eq!(got, "帮我修这个编译错误");
+
+    // max_chars 截断（CJK 安全）。
+    let got = first_user_message(&key, 3).unwrap();
+    assert_eq!(got, "帮我修");
+
+    // max_chars=0 截空 → sanitize 侧空串兜底 None，这里验证原始契约。
+    assert_eq!(first_user_message(&key, 0).as_deref(), Some(""));
+    delete_chat_log(&key);
+}

@@ -26,6 +26,27 @@ impl ModuleHandler for LogsHandler {
         "logs"
     }
 
+    fn commands(&self) -> &'static [&'static str] {
+        &[
+            "requests",
+            "request_detail",
+            "cluster_task_list",
+            "cluster_task_detail",
+            "security",
+            "chain_list",
+            "chain_verify",
+            "session_list",
+            "session_detail",
+            "session_usage",
+            "injection_summary",
+            "replay_verify",
+            "spill_status",
+            "spill_cleanup",
+            "history_search",
+            "history_reindex",
+        ]
+    }
+
     async fn handle_cmd(
         &self,
         cmd: &str,
@@ -97,6 +118,21 @@ impl ModuleHandler for LogsHandler {
                 let data = data.ok_or("missing data")?;
                 let session = crate::handlers::get_str(&data, "session")?;
                 self.session_detail(ctx, workspace, &session).await
+            }
+            // M5（2026-09-05）：单会话用量聚合（tokens/cost）。`session_key`
+            // 优先（精确键直查）；否则 `session_id`（sid 或 chat_log stem）
+            // 按 [`session_usage_key`] 构造。消费方：ChatPanel 头部常驻条。
+            "session_usage" => {
+                let data = data.ok_or("missing data")?;
+                let session_key = data
+                    .get("session_key")
+                    .and_then(|v| v.as_str())
+                    .map(|s| s.to_string());
+                let session_id = data
+                    .get("session_id")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("");
+                self.session_usage(ctx, session_id, session_key.as_deref())
             }
             // G2 (U9 ②): injection-ledger visibility. `injection_summary`
             // aggregates the session's projection ledger (sources/positions,
@@ -274,7 +310,7 @@ pub fn scan_session_logs(workspace: &str) -> Vec<serde_json::Value> {
         } else {
             id.replace('_', ":")
         };
-        sessions.push(serde_json::json!({
+        let mut entry = serde_json::json!({
             "id": id,
             "session_key": session_key,
             "channel": channel,
@@ -286,7 +322,22 @@ pub fn scan_session_logs(workspace: &str) -> Vec<serde_json::Value> {
             "firstMessage": first_message,
             "triggerCluster": false,
             "messages": [],
-        }));
+        });
+        // E4 (2026-09-05): fork 血缘回填（sidecar meta 的 parent/forked_at_turn，
+        // fork_session 成功路径写入）。父会话标题就地解析一次（父已删/无 meta
+        // 时缺省——前端回退显示 parent key）。缺血缘的条目不加字段。
+        let (parent, forked_at) = read_meta_lineage(&path);
+        if let Some(p) = parent {
+            entry["parent"] = serde_json::Value::String(p.clone());
+            let parent_jsonl = dir.join(format!("{}.jsonl", p.replace(':', "_")));
+            if let Some(pt) = read_meta_title(&parent_jsonl) {
+                entry["parentTitle"] = serde_json::Value::String(pt);
+            }
+        }
+        if let Some(t) = forked_at {
+            entry["forkedAtTurn"] = serde_json::Value::from(t);
+        }
+        sessions.push(entry);
     }
     sessions
 }
@@ -300,6 +351,60 @@ fn read_meta_title(jsonl_path: &Path) -> Option<String> {
     v.get("title")
         .and_then(|t| t.as_str())
         .map(|s| s.to_string())
+}
+
+/// E4 (2026-09-05): fork lineage from the sidecar meta —
+/// `(parent_session_key, forked_at_turn)`, both `None` for pre-E4 meta files
+/// (only `title`) or absent sidecars.
+fn read_meta_lineage(jsonl_path: &Path) -> (Option<String>, Option<usize>) {
+    let meta = jsonl_path.with_extension("meta.json");
+    let v = std::fs::read_to_string(&meta)
+        .ok()
+        .and_then(|d| serde_json::from_str::<serde_json::Value>(&d).ok());
+    match v {
+        Some(v) => (
+            v.get("parent").and_then(|p| p.as_str()).map(String::from),
+            v.get("forked_at_turn")
+                .and_then(|t| t.as_u64())
+                .map(|t| t as usize),
+        ),
+        None => (None, None),
+    }
+}
+
+/// M5: 会话 id → `RequestLog.session_key`。接受 sid（`s1`，Dashboard
+/// sessions.list 语义）或 chat_log 文件 stem（`agent_main_session_s1`，
+/// scan_session_logs 的 id 语义）；构造规则与 chat handler / server.rs
+/// pump 同源（`agent:main:session:{sanitize(sid)}`）。
+fn session_usage_key(session_id: &str) -> String {
+    let sid = session_id
+        .strip_prefix("agent_main_session_")
+        .unwrap_or(session_id);
+    format!(
+        "agent:main:session:{}",
+        nemesis_agent::session::SessionStore::sanitize_session_id(sid)
+    )
+}
+
+/// M5（2026-09-05）：会话条目就地回填 `tokens` / `cost` 两字段（best-effort
+/// ——无 usage store 或单条聚合失败时静默跳过，字段缺省即前端不展示）。
+/// `logs.session_list`（日志页会话浏览器）与 `sessions.list`（聊天侧栏）
+/// 两个消费方共用同一实现。页 ≤limit 条、`request_logs.session_key` 有
+/// 索引，逐条点查开销可忽略。
+pub(crate) fn backfill_session_usage(ctx: &RequestContext, sessions: &mut [serde_json::Value]) {
+    let Some(ref ds) = ctx.state.data_store else {
+        return;
+    };
+    for s in sessions.iter_mut() {
+        let key = s["session_key"].as_str().unwrap_or("");
+        if key.is_empty() {
+            continue;
+        }
+        if let Ok(agg) = ds.aggregate_session_usage(key) {
+            s["tokens"] = serde_json::json!(agg.input_tokens);
+            s["cost"] = serde_json::json!(agg.total_cost_usd);
+        }
+    }
 }
 
 #[cfg(feature = "security")]
@@ -1113,12 +1218,44 @@ impl LogsHandler {
         });
 
         let total = sessions.len();
-        let page: Vec<_> = sessions.into_iter().skip(offset).take(limit).collect();
+        let mut page: Vec<_> = sessions.into_iter().skip(offset).take(limit).collect();
+        backfill_session_usage(ctx, &mut page);
         Ok(Some(serde_json::json!({
             "sessions": page,
             "total": total,
             "limit": limit,
             "offset": offset,
+        })))
+    }
+
+    /// M5（2026-09-05）：`logs.session_usage` —— 单会话的 LLM 用量聚合
+    /// （请求条数 / 输入 token（含 cache_read）/ 输出 token / 总成本）。
+    /// 数据来自 `request_logs`（RequestLog.session_key 精确匹配）；无
+    /// 数据库（usage 统计未启用）时诚实报错，前端静默降级为不展示。
+    fn session_usage(
+        &self,
+        ctx: &RequestContext,
+        session_id: &str,
+        session_key: Option<&str>,
+    ) -> Result<Option<serde_json::Value>, String> {
+        let key = match session_key {
+            Some(k) if !k.is_empty() => k.to_string(),
+            _ if !session_id.is_empty() => session_usage_key(session_id),
+            _ => return Err("session_id or session_key is required".to_string()),
+        };
+        let ds = ctx
+            .state
+            .data_store
+            .as_ref()
+            .ok_or_else(|| "usage data store not available".to_string())?;
+        let agg = ds.aggregate_session_usage(&key)?;
+        Ok(Some(serde_json::json!({
+            "session_id": session_id,
+            "session_key": key,
+            "requests": agg.requests,
+            "input_tokens": agg.input_tokens,
+            "output_tokens": agg.output_tokens,
+            "total_cost_usd": agg.total_cost_usd,
         })))
     }
 
@@ -1147,6 +1284,12 @@ impl LogsHandler {
                 }
                 if let Some(name) = ln["cron_job_name"].as_str() {
                     msg["cron_job_name"] = serde_json::Value::String(name.to_string());
+                }
+                // D3：本 turn 声明式文件工具的变更清单（消息↔文件变更映射；
+                // M3 会话级 diff 查看器的数据源）。缺字段 = 旧条目/无变更，
+                // 不带该键。
+                if let Some(fc) = ln["file_changes"].as_array() {
+                    msg["file_changes"] = serde_json::Value::Array(fc.clone());
                 }
                 msg
             })
@@ -2227,3 +2370,8 @@ mod g2_tests;
 // 按保留期立即清理。不依赖 security/memory。
 #[cfg(test)]
 mod g3_tests;
+
+// E4（fork 血缘标记，2026-09-05）：scan_session_logs 的 parent/parentTitle/
+// forkedAtTurn 回填 + pre-E4 meta / 父会话已删的缺省分支。不依赖 security/memory。
+#[cfg(test)]
+mod e4_lineage_tests;

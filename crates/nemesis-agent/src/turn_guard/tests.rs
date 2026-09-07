@@ -81,6 +81,48 @@ fn escalation_survives_intervening_successes() {
     assert!(g.escalation_check().is_some());
 }
 
+/// J5: escalating_signature exposes the hard-stopped (sig, count); both
+/// escalation_check and escalation_message derive from the same text, and
+/// clear_signature removes exactly one signature (the J5 approve path) while
+/// leaving other stuck loops' cumulative evidence intact.
+#[test]
+fn escalating_signature_and_clear_signature() {
+    let mut g = TurnGuard::new();
+    let err_a = "Error: build failed: unresolved import";
+    let err_b = "Error: test failed: assert_eq";
+    for _ in 0..6 {
+        g.record_tool_outcome("exec", Some(err_a));
+    }
+    // At threshold: signature carries the raw key and the count.
+    let (sig, count) = g.escalating_signature().expect("at hard-stop threshold");
+    assert_eq!(count, 6);
+    assert!(sig.starts_with("exec\x00"), "sig is the raw key: {}", sig);
+    // Derivation consistency: escalation_check text == escalation_message(sig).
+    let checked = g.escalation_check().expect("check derives from signature");
+    assert_eq!(checked, TurnGuard::escalation_message(&sig, count));
+
+    // A second stuck signature exists alongside; clearing the first leaves it.
+    for _ in 0..6 {
+        g.record_tool_outcome("cargo_test", Some(err_b));
+    }
+    g.clear_signature(&sig);
+    assert!(
+        g.escalating_signature().is_some(),
+        "other stuck signature survives the clear"
+    );
+    // The cleared signature restarts from zero — a fresh failure is 1, far
+    // from the threshold (approve = re-count, not permanent exemption).
+    g.record_tool_outcome("exec", Some(err_a));
+    let (_, count) = g.escalating_signature().expect("other sig still at 6");
+    assert_eq!(count, 6, "the surviving signature's count is untouched");
+    // Its identity is the cargo_test one, not a resurrected exec one.
+    let (sig2, _) = g.escalating_signature().unwrap();
+    assert!(sig2.starts_with("cargo_test\x00"));
+    g.clear_signature(&sig2);
+    assert!(g.escalating_signature().is_none());
+    assert!(g.escalation_check().is_none());
+}
+
 #[test]
 fn signature_strips_error_prefix() {
     // "Error:" and "Tool error:" prefixes should not leak into the sig

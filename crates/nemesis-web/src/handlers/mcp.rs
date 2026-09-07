@@ -26,6 +26,18 @@ impl ModuleHandler for McpHandler {
         "mcp"
     }
 
+    fn commands(&self) -> &'static [&'static str] {
+        &[
+            "status",
+            "servers",
+            "server.add",
+            "server.update",
+            "server.delete",
+            "config.get",
+            "config.save",
+        ]
+    }
+
     async fn handle_cmd(
         &self,
         cmd: &str,

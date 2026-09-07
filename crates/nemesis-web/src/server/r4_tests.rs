@@ -67,6 +67,53 @@ async fn workflow_chat_path_prefix_serves_standalone_html() {
 }
 
 // ============================================================
+// L4（2026-09-07）：/share 与 /share/ 直达分享壳（规则 2c）。
+// 不加规则时两者落到 SPA fallback 的 Dashboard index.html——
+// 分享链接打开的是错页面。
+// ============================================================
+
+#[tokio::test]
+async fn share_path_serves_standalone_share_shell() {
+    let dir = tempfile::tempdir().unwrap();
+    let share = dir.path().join("share");
+    std::fs::create_dir_all(&share).unwrap();
+    std::fs::write(
+        share.join("index.html"),
+        "<!doctype html><html>share shell</html>",
+    )
+    .unwrap();
+    std::fs::write(
+        dir.path().join("index.html"),
+        "<!doctype html><html>dashboard</html>",
+    )
+    .unwrap();
+
+    let mut config = base_config("127.0.0.1:0");
+    config.static_files = Some(std::sync::Arc::new(DirectoryStaticFiles::new(dir.path())));
+    let server = WebServer::new(config);
+
+    for uri in ["/share?t=abc", "/share/?t=abc"] {
+        let app = server.build_router();
+        let req = Request::builder().uri(uri).body(Body::empty()).unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), axum::http::StatusCode::OK, "uri: {uri}");
+        let bytes = axum::body::to_bytes(resp.into_body(), 1 << 20)
+            .await
+            .unwrap();
+        let body = String::from_utf8_lossy(&bytes);
+        assert!(
+            body.contains("share shell"),
+            "uri {uri} must serve the share shell, got: {}",
+            &body[..body.len().min(80)]
+        );
+        assert!(
+            !body.contains("dashboard"),
+            "uri {uri} must NOT fall through to the dashboard SPA shell"
+        );
+    }
+}
+
+// ============================================================
 // port_walk_sequence（纯函数：走查序列生成）
 // ============================================================
 

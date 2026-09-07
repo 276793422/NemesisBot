@@ -364,6 +364,50 @@ impl ModuleHandler for VoiceHandler {
         "voice"
     }
 
+    fn commands(&self) -> &'static [&'static str] {
+        &[
+            "status",
+            "check",
+            "setup",
+            "stop_setup",
+            "install_runtime",
+            "install_aec",
+            "install_model",
+            "config_get",
+            "config_set",
+            "voice_config_get",
+            "voice_config_set",
+            "tts",
+            "stt_start",
+            "stt_stop",
+            "speakers",
+            "devices",
+            "engine_status",
+            "chat_config_get",
+            "chat_config_set",
+            "engine_start",
+            "engine_stop",
+            "pipeline_start",
+            "pipeline_stop",
+            "stt_to_input_start",
+            "stt_to_input_stop",
+            "stt_dialogue_start",
+            "stt_dialogue_stop",
+            "stt_dialogue_reset",
+            "tts_playback",
+            "tts_playback_stop",
+            "speaker_status",
+            "speaker_register_start",
+            "speaker_register_stop",
+            "speaker_register_cancel",
+            "speaker_remove",
+            "speaker_list",
+            "speaker_test_start",
+            "speaker_test_stop",
+            "speaker_set_threshold",
+        ]
+    }
+
     async fn handle_cmd(
         &self,
         cmd: &str,

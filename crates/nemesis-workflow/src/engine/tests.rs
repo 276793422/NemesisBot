@@ -2746,6 +2746,7 @@ impl nemesis_providers::router::LLMProvider for W4aProvider {
             "w4a",
             500,
             "unavailable",
+            None,
         ))
     }
     fn default_model(&self) -> &str {

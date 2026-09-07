@@ -105,7 +105,7 @@ async fn test_write_file_creates_directories() {
     let nested_path = tmp.path().join("nested/dir/file.txt");
     let path_str = nested_path.to_string_lossy().to_string();
 
-    let tool = WriteFileTool;
+    let tool = WriteFileTool::default();
     let ctx = RequestContext::new("web", "chat1", "user1", "sess1");
 
     let args = serde_json::json!({
@@ -307,7 +307,7 @@ mod file_tool_edge_cases {
         let file_path = tmp.path().join("binary.bin");
         let path_str = file_path.to_string_lossy().to_string();
 
-        let tool = WriteFileTool;
+        let tool = WriteFileTool::default();
         let ctx = RequestContext::new("web", "chat1", "user1", "sess1");
 
         // Create some binary-like content

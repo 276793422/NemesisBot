@@ -71,6 +71,7 @@ const itemFeature: Record<string, string> = {
   scanner: 'SECURITY',
   sandbox: 'SANDBOX',
   board: 'BOARD',
+  terminal: 'TERMINAL',
 }
 function featureOn(id: string): boolean {
   const f = itemFeature[id]
@@ -130,6 +131,8 @@ const navGroups = [
       { id: 'security', label: '安全', path: '/security', icon: 'M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z' },
       { id: 'scanner', label: '扫描器', path: '/scanner', icon: 'M2 12s3-7 10-7 10 7 10 7-3 7-10 7-10-7-10-7z M12 9a3 3 0 1 0 0 6 3 3 0 0 0 0-6z' },
       { id: 'sandbox', label: '沙盒', path: '/sandbox', icon: 'M5 11h14a2 2 0 0 1 2 2v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-7a2 2 0 0 1 2-2zm0 0V7a2 2 0 0 1 2-2h10a2 2 0 0 1 2 2v4 M12 15v3' },
+      // L8：PTY 内嵌终端（VITE_FEATURE_TERMINAL 门控）。
+      { id: 'terminal', label: '终端', path: '/terminal', icon: 'M4 17l6-6-6-6M12 19h8' },
       { id: 'local-models', label: '本地模型', path: '/local-models', icon: 'M21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16z M3.27 6.96L12 12.01l8.73-5.05 M12 22.08V12' },
       { id: 'sdk', label: '二次开发', path: '/sdk', icon: 'M10 20l4-16m4 4l4 4-4 4M6 16l-4-4 4-4' },
     ],

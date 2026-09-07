@@ -218,6 +218,11 @@ pub fn fork_session(
         ),
     );
 
+    // E4 (2026-09-05): 记录 fork 血缘到新 key 的 sidecar meta（parent +
+    // forked_at_turn）。Upsert 语义——随后 fork endpoint 写 title 时保留
+    // 这两字段；旧 meta 文件（只有 title）不受影响。
+    chat_log::write_session_parent(&new_key, source_key, at);
+
     Ok(ForkInfo {
         kept_messages: cut,
         dropped_messages: total - cut,

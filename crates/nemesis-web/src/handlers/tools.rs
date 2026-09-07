@@ -19,6 +19,10 @@ impl ModuleHandler for ToolsHandler {
         "tools"
     }
 
+    fn commands(&self) -> &'static [&'static str] {
+        &["list", "get", "save"]
+    }
+
     async fn handle_cmd(
         &self,
         cmd: &str,

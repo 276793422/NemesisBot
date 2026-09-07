@@ -14,6 +14,18 @@ impl ModuleHandler for AgentHandler {
         "agent"
     }
 
+    fn commands(&self) -> &'static [&'static str] {
+        &[
+            "status",
+            "start",
+            "stop",
+            "cancel",
+            "rewind",
+            "checkpoints",
+            "inbox_status",
+        ]
+    }
+
     async fn handle_cmd(
         &self,
         cmd: &str,

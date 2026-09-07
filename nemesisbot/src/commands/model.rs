@@ -385,6 +385,11 @@ pub async fn run(action: ModelAction, local: bool) -> Result<()> {
 
             println!("  Default: {}", default_model);
             println!();
+            // N1 (devtool-upgrade 阶段 1)：生效 context_window + 来源标记
+            // （config 显式 > 价目表 catalog > fallback-128k）。价目表打开
+            // 失败 → None，catalog 级静默跳过（fallback 链兜底）。
+            let pricing =
+                nemesis_data::PricingStore::open(&nemesis_path::workspace_data_dir(&home)).ok();
 
             if let Some(models) = cfg.get("model_list").and_then(|v| v.as_array()) {
                 if models.is_empty() {
@@ -407,7 +412,23 @@ pub async fn run(action: ModelAction, local: bool) -> Result<()> {
                         // Match by model_name (alias) or full model identifier
                         let is_default = model == default_model || model_name == default_model;
 
+                        // N1: effective context window + source for THIS alias.
+                        let alias_for_window = if model_name.is_empty() {
+                            model
+                        } else {
+                            model_name
+                        };
+                        let (window, source) = nemesis_agent::r#loop::resolve_context_window_tiered(
+                            Some(&cfg),
+                            alias_for_window,
+                            pricing.as_ref(),
+                        );
+                        let window_display = window.map(|w| w.to_string()).unwrap_or_else(|| {
+                            nemesis_agent::r#loop::FALLBACK_CONTEXT_WINDOW.to_string()
+                        });
+
                         println!("  {} {}", if is_default { "*" } else { " " }, model);
+                        println!("    Context window: {} ({})", window_display, source);
                         println!(
                             "    API key: {}",
                             if has_key { "configured" } else { "not set" }
@@ -578,6 +599,11 @@ pub async fn run(action: ModelAction, local: bool) -> Result<()> {
                 // 检测）自动重解析，切档无需重启（旧文案"需重启"是错的，二次回归
                 // model-2 修正；与 set-effort 文案同语义）。
                 println!("  (生效于下次 LLM 调用前的 config 重读)");
+                // F8：tier 决定「档位工具集」，`agents.hidden_tools` 决定「彻底
+                // 隐藏」——两者叠加。若切档后仍看不到某工具，检查是否被隐藏。
+                println!(
+                    "  提示：工具供给 = tier 档位 ∩ 未隐藏（agents.hidden_tools 可通配隐藏，如 \"mcp_*\"）；详见 TOOLS.md"
+                );
             } else {
                 anyhow::bail!("Model not found: {}", name);
             }
@@ -692,6 +718,25 @@ pub async fn run(action: ModelAction, local: bool) -> Result<()> {
                 tokio::runtime::Handle::current().block_on(run_probe(&home, &name))
             })?;
             println!("{}", format_probe_report(&name, &report));
+            // N1：生效 context_window + 来源标记——fallback 命中自然引导
+            // 用户显式配置（catalog 未收录的小众模型手动钉死）。
+            let probe_cfg = std::fs::read_to_string(&cfg_path)
+                .ok()
+                .and_then(|s| serde_json::from_str::<serde_json::Value>(&s).ok());
+            let probe_pricing =
+                nemesis_data::PricingStore::open(&nemesis_path::workspace_data_dir(&home)).ok();
+            let (window, source) = nemesis_agent::r#loop::resolve_context_window_tiered(
+                probe_cfg.as_ref(),
+                &name,
+                probe_pricing.as_ref(),
+            );
+            match window {
+                Some(w) => println!("生效上下文窗口: {}（来源: {}）", w, source),
+                None => println!(
+                    "生效上下文窗口: {}（来源: fallback-128k；小众本地模型建议 config.json 显式配置 context_window）",
+                    nemesis_agent::r#loop::FALLBACK_CONTEXT_WINDOW
+                ),
+            }
         }
         ModelAction::CatalogUpdate => {
             if !cfg_path.exists() {

@@ -378,7 +378,12 @@ impl SessionMgr {
 }
 
 /// Sanitize a session key for use as a filename (replace ':' with '_').
-fn sanitize_filename(key: &str) -> String {
+///
+/// H1（devtool-upgrade 阶段 2）起 pub：todowrite（nemesis-agent loop_tools）
+/// 的存储文件名 `todo_{safe_session_key}.json` 用同款规则——nemesis-agent
+/// 不依赖本 crate，那边是带互指注释的本地副本；两处语义必须一致，改一处
+/// 记得同步另一处。
+pub fn sanitize_filename(key: &str) -> String {
     key.replace(':', "_")
 }
 

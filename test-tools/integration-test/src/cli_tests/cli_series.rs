@@ -1,4 +1,4 @@
-//! DSH-series new-CLI coverage (4b layer-④ gap fill): the series added
+//! New-CLI series coverage (4b layer-④ gap fill): the series added
 //! `session list/show/fork`, `history search/reindex`, `credentials import`,
 //! `model set-effort`, `model catalog-update` — none of which had a single
 //! integration assertion (verified by full-source grep, 2026-08-24).

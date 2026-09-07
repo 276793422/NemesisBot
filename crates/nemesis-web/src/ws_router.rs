@@ -23,6 +23,15 @@ pub trait ModuleHandler: Send + Sync {
     /// The module name this handler responds to (e.g., "models", "channels").
     fn module_name(&self) -> &str;
 
+    /// L1（devtool-upgrade 阶段 6）：本模块的静态命令清单（单一真相源——
+    /// 与 `handle_cmd` 的 `match cmd` 臂保持一致，运行时 debug warn 纠偏）。
+    /// 默认空（渐进补齐）；只列**可枚举的字面量命令**——chat.send 这类走
+    /// message 帧不经 request dispatch 的、以及守卫臂动态前缀（如
+    /// `board.issue.*` 若改为前缀匹配）不进清单。
+    fn commands(&self) -> &'static [&'static str] {
+        &[]
+    }
+
     /// Handle a command within this module.
     ///
     /// Returns `Ok(Some(data))` for success with payload, `Ok(None)` for success
@@ -85,6 +94,19 @@ impl WsRouter {
             .insert(handler.module_name().to_string(), handler);
     }
 
+    /// L1：全 router 的命令注册表（module → 静态清单）。按 module 名排序——
+    /// 内部是 HashMap，迭代顺序不定；不排序则 OnceLock 快照与文档每次漂移。
+    /// `system.commands` 与文档生成的单一数据源。
+    pub fn commands_registry(&self) -> Vec<(String, Vec<&'static str>)> {
+        let mut out: Vec<(String, Vec<&'static str>)> = self
+            .handlers
+            .values()
+            .map(|h| (h.module_name().to_string(), h.commands().to_vec()))
+            .collect();
+        out.sort_by(|a, b| a.0.cmp(&b.0));
+        out
+    }
+
     /// Dispatch a request message to the appropriate handler and send the response.
     ///
     /// If no handler is found for the module, sends an error response.
@@ -97,7 +119,22 @@ impl WsRouter {
         let req_id = msg.req_id.as_deref().unwrap_or("");
 
         let result = match self.handlers.get(&msg.module) {
-            Some(handler) => handler.handle_cmd(&msg.cmd, msg.data.clone(), ctx).await,
+            Some(handler) => {
+                // L1 渐进纠偏：debug 构建下 dispatch 到清单外命令时 warn
+                //（清单与 match 臂漂移的运行时信号；release 零开销）。
+                #[cfg(debug_assertions)]
+                {
+                    let listed = handler.commands();
+                    if !listed.is_empty() && !listed.contains(&msg.cmd.as_str()) {
+                        tracing::warn!(
+                            module = %msg.module,
+                            cmd = %msg.cmd,
+                            "[WSAPI] dispatched command not in static commands() list (list drift)"
+                        );
+                    }
+                }
+                handler.handle_cmd(&msg.cmd, msg.data.clone(), ctx).await
+            }
             None => Err(format!("unknown module: {}", msg.module)),
         };
 

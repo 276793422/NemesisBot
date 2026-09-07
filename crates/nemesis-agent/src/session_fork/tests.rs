@@ -449,3 +449,37 @@ fn superseded_store_helpers_count_and_cut_correctly() {
     assert_eq!(user_turn_count(&[]), 0);
     assert_eq!(turn_cut(&[], 0), 0);
 }
+
+// --- E4 (2026-09-05): fork 成功路径写血缘 sidecar meta ---
+
+/// fork_session 在新 key 上落 `parent` + `forked_at_turn`（血缘）；随后
+/// fork endpoint 写 title（api_handlers 的 rename 臂语义）时 upsert 保留
+/// 血缘 —— E4 的验收契约「fork 后 list 返回 parent 字段」的数据侧前提。
+#[test]
+fn test_fork_writes_parent_lineage_meta() {
+    let dir = tempfile::tempdir().unwrap();
+    let store = SessionStore::new_with_storage(dir.path());
+    let src = unique_src();
+    seed_clean_log(&src);
+
+    let info = fork_session(&store, &src, None, Some(2)).unwrap();
+    assert_eq!(info.at_turn, 2);
+
+    let full =
+        crate::chat_log::read_session_meta_full(&info.new_key).expect("fork 必须落血缘 meta");
+    assert_eq!(full.parent.as_deref(), Some(src.as_str()));
+    assert_eq!(full.forked_at_turn, Some(2));
+
+    // endpoint 随后写 title —— upsert 不抹血缘。
+    crate::chat_log::write_session_meta(&info.new_key, "forked title");
+    let after = crate::chat_log::read_session_meta_full(&info.new_key).unwrap();
+    assert_eq!(after.title.as_deref(), Some("forked title"));
+    assert_eq!(after.parent.as_deref(), Some(src.as_str()));
+    assert_eq!(after.forked_at_turn, Some(2));
+
+    // 源会话不带血缘 meta（血缘只属于新分支）。
+    assert!(crate::chat_log::read_session_meta_full(&src).is_none());
+
+    delete_chat_log(&info.new_key);
+    delete_chat_log(&src);
+}

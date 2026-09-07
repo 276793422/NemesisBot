@@ -2,6 +2,7 @@
 import { ref, computed, watch } from 'vue'
 import { formatTime, formatRelative, type SessionEntry, type LlmRequestEntry } from './mockData'
 import InjectionPanel from './InjectionPanel.vue'
+import SessionChangesPanel from './SessionChangesPanel.vue'
 
 const props = defineProps<{
   sessions: SessionEntry[]
@@ -160,6 +161,10 @@ watch(
 
         <!-- G2（U9）：注入与重放可见性（折叠面板，按会话拉取台账聚合） -->
         <InjectionPanel :session="selected.id" />
+
+        <!-- M3：会话变更面板（file_changes 聚合 + 点击拉 checkpoint 基线
+             vs 现盘 diff；无变更记录不渲染） -->
+        <SessionChangesPanel :session="selected.id" :messages="selected.messages ?? []" />
 
         <!-- 对话气泡 -->
         <div class="chat-stream scrollable">

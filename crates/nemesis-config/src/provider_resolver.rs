@@ -120,8 +120,8 @@ pub fn resolve_model_config(cfg: &Config, model_ref: &str) -> Result<ProviderRes
 ///    (U15 completion; see `credentials` module).
 /// 3. Literal value — passes through unchanged (full backward compatibility).
 ///    References are resolved per-operation with NO caching: changing the env var
-///    or credentials.yaml takes effect on the next resolve, mirroring dsh's
-///    per-operation credential resolution. A reference that does not resolve
+///    or credentials.yaml takes effect on the next resolve. A reference that
+///    does not resolve
 ///    fails LOUD with the variable/alias name and remedy — never silently
 ///    degrades to an empty key (which would surface later as a confusing 401).
 pub(crate) fn resolve_api_key_value(raw: &str, model_for_error: &str) -> Result<String> {

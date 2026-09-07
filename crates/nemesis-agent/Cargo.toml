@@ -45,10 +45,20 @@ nemesis-path = { workspace = true }
 # T9（多模态 goal 2026-09-03）：URL 图片拉取走共享连接池（超时/UA/连接复用）。
 nemesis-http-pool = { workspace = true }
 parking_lot = { workspace = true }
+# I1（devtool-upgrade 阶段 3）：workspace fs watcher（跨平台递归 watch）。
+notify = "8"
+# D2（devtool-upgrade 阶段 5）：checkpoint git 影子库（default-features=false 无 openssl）。
+git2 = { workspace = true }
 sha2 = { workspace = true }
 base64 = { workspace = true }
+# J6（devtool-upgrade 阶段 6）：图片超限自动降采样（与 nemesis-desktop /
+# plugin-ui 同版本，cargo 自动统一编译单元）。
+image = "0.25"
 reqwest = { workspace = true }
 regex = { workspace = true }
+# J2b（devtool-upgrade 阶段 4）：web_fetch HTML → 可读文本提取（html5ever 解析，
+# 链接/列表/标题结构保留；默认 features 即核心渲染，css/xml 关闭）。
+html2text = "0.17"
 # U20 (sixth batch): FTS5 index for session full-text search. Same version +
 # features as nemesis-data's rusqlite — Cargo compiles the bundled SQLite once.
 rusqlite = { version = "0.34", features = ["bundled"] }

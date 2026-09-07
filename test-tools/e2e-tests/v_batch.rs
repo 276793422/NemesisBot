@@ -1,10 +1,10 @@
-//! V 批真机 e2e（dsh-closure goal 第十批，2026-08-23）。
+//! V 批真机 e2e（2026-08-23）。
 //!
 //! V1 (B1) 大输出 prune/spill 两档：测试 home + 真实 gateway（--local，独立
 //! 端口）+ 真实 WS 对话 + TestAIServer testai-8.0 脚本模型，断言：
 //!   ① 8KB-64KB 档（exec 30032 字符）→ request_log 中发给模型的是
 //!      head + 「结果过长已截断」标记 + tail，中段未发送；
-//!   ② ≥64KB 档（exec 70032 字符）→ spill 文件落盘 `<home>/logs/spill/<session>/`
+//!   ② ≥64KB 档（exec 70032 字符）→ spill 文件落盘 `<home>/workspace/logs/spill/<session>/`
 //!      且内容 = 完整工具结果；模型收到 locator；下一轮 read_file
 //!      offset/limit 取回中段切片（request_log 断言精确切片内容）。
 //!
@@ -18,8 +18,8 @@
 //! → 墙钟 ≈ 6s（串行 11s+）；三个结果全部回灌收尾轮；安全审计事件按
 //! 模型源序（6→3→2）落盘。pre-gateway 关 SSRF 层（loopback 会被拦）。
 //!
-//! V4 (B3) CC 委派真机（半边）：enable agents.claude_code_tool → testai-9.1
-//! 发 claude_code 委派 → 真实 claude CLI 子进程在 cwd 建 cc_probe.txt →
+//! V4 (B3) 委派真机（半边）：enable agents.claude_code_tool → testai-9.1
+//! 发 claude_code 委派 → 真实 claude CLI 子进程在 cwd 建 cli_probe.txt →
 //! 文件物证 + accept_edits 差分证明（非交互能写入 ⟹ --permission-mode
 //! 真传到 CLI）+ 结果回灌 AI.Request.md。Codex 半边挂账。
 //!
@@ -200,10 +200,12 @@ fn extract_between<'a>(s: &'a str, start: &str, end: &str) -> &'a str {
     }
 }
 
-/// 枚举 `<home>/logs/spill/<session>/` 下的 spill 文件。
+/// 枚举 `<home>/workspace/logs/spill/<session>/` 下的 spill 文件。
+/// 2026-08-31 spill 迁回 workspace（U4 设计位，`resolve_spill_dir_in_workspace`）
+/// ——定位器必须落 workspace 内 agent 的 file 工具才读得到全文。
 fn collect_spill_files(home: &Path) -> Vec<PathBuf> {
     let mut out = vec![];
-    let Ok(sessions) = std::fs::read_dir(home.join("logs").join("spill")) else {
+    let Ok(sessions) = std::fs::read_dir(home.join("workspace").join("logs").join("spill")) else {
         return out;
     };
     for sess in sessions.flatten() {
@@ -440,7 +442,11 @@ async fn run_v1(ws: &TestWorkspace, cfg: &serde_json::Value) -> Result<()> {
     assert!(
         !spill_files.is_empty(),
         "no spill file under {} — spill not applied?",
-        ws.home().join("logs").join("spill").display()
+        ws.home()
+            .join("workspace")
+            .join("logs")
+            .join("spill")
+            .display()
     );
     let spilled = std::fs::read_to_string(&spill_files[0])?;
     assert_eq!(
@@ -943,7 +949,7 @@ fn v4_pre_gateway(ws: &TestWorkspace) -> Result<()> {
     Ok(())
 }
 
-/// 在 `root` 下递归找名为 `name` 的文件（tempdir 树很小）。CC 的 cwd =
+/// 在 `root` 下递归找名为 `name` 的文件（tempdir 树很小）。委派子进程的 cwd =
 /// gateway 进程 cwd（delegation_cwd 对非路径 session_key 的回退），即
 /// tempdir 根——但子代理若自作主张换目录也兜得住。
 fn find_file_recursive(root: &Path, name: &str) -> Option<PathBuf> {
@@ -991,29 +997,29 @@ async fn run_v4(ws: &TestWorkspace, cfg: &serde_json::Value, web_port: u16) -> R
         .await
         .context("WS connect to test gateway failed")?;
 
-    // 触发：testai-9.1 发 claude_code 委派（prompt = 在 cwd 建 cc_probe.txt
-    // 内容 CC_SUBTASK_OK，回 DONE）→ 真实 claude CLI 子进程执行 → 结果
-    // 回灌 → 模型报 CC_DELEGATION_SUCCESS/FAILED。CC 真跑含模型往返，
+    // 触发：testai-9.1 发 claude_code 委派（prompt = 在 cwd 建 cli_probe.txt
+    // 内容 SUBTASK_OK，回 DONE）→ 真实 claude CLI 子进程执行 → 结果
+    // 回灌 → 模型报 DELEGATION_SUCCESS/FAILED。真跑含模型往返，
     // 给足 360s（工具自身 300s 超时兜底）。
-    let reply = ws_chat_until(&mut stream, "<CC_DELEGATE>", "CC_DELEGATION_", 360).await?;
+    let reply = ws_chat_until(&mut stream, "<DELEGATE>", "DELEGATION_", 360).await?;
     assert!(
-        reply.contains("CC_DELEGATION_SUCCESS"),
+        reply.contains("DELEGATION_SUCCESS"),
         "claude_code delegation must succeed end-to-end, got: {reply}"
     );
 
-    // ① 真跑的物证：CC 真创建了文件且内容精确。
-    let probe = find_file_recursive(ws.path(), "cc_probe.txt").context(
-        "cc_probe.txt not found anywhere under the test workspace — CC did not really execute",
+    // ① 真跑的物证：子进程真创建了文件且内容精确。
+    let probe = find_file_recursive(ws.path(), "cli_probe.txt").context(
+        "cli_probe.txt not found anywhere under the test workspace — the CLI did not really execute",
     )?;
     let content = std::fs::read_to_string(&probe)?;
     assert_eq!(
         content.trim(),
-        "CC_SUBTASK_OK",
-        "cc_probe.txt content must be exactly CC_SUBTASK_OK (at {})",
+        "SUBTASK_OK",
+        "cli_probe.txt content must be exactly SUBTASK_OK (at {})",
         probe.display()
     );
 
-    // ② T5 权限档真形态的差分证明：默认档 accept_edits 下 CC 能在
+    // ② T5 权限档真形态的差分证明：默认档 accept_edits 下 CLI 能在
     //    非交互 print 模式里完成文件写入（edits 自动接受）。若
     //    --permission-mode 没真传给 CLI，claude 的默认档在 print 模式
     //    会因权限提示非交互拒绝而建不出文件——①的文件成立即证明该

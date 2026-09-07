@@ -1,46 +1,46 @@
-//! CC hooks.json 方言层（K2 — U14 第七批）。
+//! hooks.json 方言层（K2 — U14 第七批）。
 //!
-//! 把 Claude Code 格式的 `hooks.json` 桥到 K1a/K1b/K2 的钩子体系上：解析
-//! CC 格式配置 → 按事件生成子进程脚本调用（协议对齐 CC：stdin JSON / env
-//! / 退出码拦放行）→ 把退出码翻译回 [`crate::hooks`] 的决策类型。
+//! 把 `hooks.json` 方言格式桥到 K1a/K1b/K2 的钩子体系上：解析方言配置 →
+//! 按事件生成子进程脚本调用（stdin JSON / env / 退出码拦放行）→ 把退出码
+//! 翻译回 [`crate::hooks`] 的决策类型。
 //!
 //! # 事件映射（goal 第七批 K2 表）
 //!
-//! | CC 事件 | 我们的钩点 | 方言语义 |
+//! | 事件 | 我们的钩点 | 方言语义 |
 //! |---|---|---|
-//! | `SessionStart` | [`LifecycleHook::on_user_prompt`]（桥内部：该 session 首条 prompt 时先跑） | 观察型（exit 2 不拦——CC 里 SessionStart 无阻断语义） |
+//! | `SessionStart` | [`LifecycleHook::on_user_prompt`]（桥内部：该 session 首条 prompt 时先跑） | 观察型（exit 2 不拦——SessionStart 无阻断语义） |
 //! | `UserPromptSubmit` | [`LifecycleHook::on_user_prompt`]（在消息进 history 之前） | exit 2 → 拦下 prompt（模型永远看不到）；exit 0 → 观察（stdout 只记日志，**不**注入上下文——诚实边界，见下） |
 //! | `PreToolUse` | [`ToolHook::pre_tool_use`]（K1a，security 固定闸之后） | exit 2 / JSON `{"decision":"block"}` → Block（stderr 作 reason 回灌模型） |
-//! | `PostToolUse` | [`ToolHook::post_tool_use`]（K1a，Forge 之前） | exit 2 → 把 stderr 以 `[hook]` 注记**追加**到结果（对齐 CC「反馈给 Claude」；不撤销已执行的操作） |
+//! | `PostToolUse` | [`ToolHook::post_tool_use`]（K1a，Forge 之前） | exit 2 → 把 stderr 以 `[hook]` 注记**追加**到结果（反馈给模型；不撤销已执行的操作） |
 //! | `Stop` | [`LifecycleHook::on_turn_end`]（最终答案被接受后、Done 前） | exit 2 → Block stopping：stderr 作 feedback 注入为 user 消息、再答一轮（`MAX_TURN_END_CONTINUES` 封顶 fail-open）；`stop_hook_active` 标志随第二次起置 true |
 //!
-//! LLM 调用级（K1b）无对应 CC 事件——CC 没有 per-LLM-call hook，不造。
+//! LLM 调用级（K1b）无对应方言事件——hooks.json 没有 per-LLM-call hook，不造。
 //!
-//! # 脚本执行协议（对齐 CC）
+//! # 脚本执行协议
 //!
 //! - **stdin**：单行紧凑 JSON。公共字段 `session_id`（=我们的 session_key）、
-//!   `cwd`、`hook_event_name`、`transcript_path`（**空串**——我们无 CC 转写
+//!   `cwd`、`hook_event_name`、`transcript_path`（**空串**——我们无转写
 //!   文件可指，诚实标注；真脚本极少依赖）。事件字段见 [`build_event_payload`]。
-//! - **env**：`CLAUDE_PROJECT_DIR`=<workspace 根>（真 CC 脚本常读它）。
+//! - **env**：`CLAUDE_PROJECT_DIR`=<workspace 根>（生态脚本常读它）。
 //! - **cwd**：workspace 根。
 //! - **退出码**：`0` = 放行（stdout 记日志；PreToolUse/Stop 还会尝试解析
 //!   stdout JSON `{"decision":"block","reason":...}`）；`2` = 拦停（stderr
 //!   作 reason/feedback）；其他/超时/启动失败 = 非阻断错误（warn 日志、放
-//!   行——CC 同款 fail-open）。
-//! - **超时**：每脚本 `timeout` 秒（CC 默认 60）；到点 kill + 放行。
+//!   行——fail-open）。
+//! - **超时**：每脚本 `timeout` 秒（默认 60）；到点 kill + 放行。
 //!
 //! # 工具名方言（真脚本能触发的前提）
 //!
-//! CC 脚本的 matcher 与 payload 用的是 CC 工具名（`Bash`/`Edit`/`Write`/
-//! `Read`/`Grep`）。我们一侧：matcher 对 **CC 别名或原始名** 任一命中即触发；
-//! stdin 的 `tool_name` 优先发 CC 别名；`tool_input` 在原 args 之上补
-//! `file_path`/`content`/`command` 等 CC 字段名别名（真 lint-on-edit 脚本
+//! 方言脚本的 matcher 与 payload 用的是方言工具名（`Bash`/`Edit`/`Write`/
+//! `Read`/`Grep`）。我们一侧：matcher 对 **方言别名或原始名** 任一命中即触发；
+//! stdin 的 `tool_name` 优先发方言别名；`tool_input` 在原 args 之上补
+//! `file_path`/`content`/`command` 等方言字段名别名（真 lint-on-edit 脚本
 //! 读 `jq .tool_input.file_path`，没这层别名永远拿不到值）。映射表见
 //! [`cc_tool_alias`]。
 //!
 //! # 诚实边界（没做的）
 //!
-//! - UserPromptSubmit exit-0 stdout 的 additionalContext 注入（CC 会把它加
+//! - UserPromptSubmit exit-0 stdout 的 additionalContext 注入（方言语义会把它加
 //!   进上下文；我们只记日志——避免在 history 之外再开一条注入通道）。
 //! - stdout JSON 的 `{"continue": false, "stopReason"}` / `permissionDecision`
 //!   / `suppressOutput` 等扩展字段：解析到但不消费。
@@ -101,14 +101,14 @@ pub fn migrate_legacy_home_hooks_config(home_config_dir: &Path, workspace_config
     }
 }
 
-/// CC 默认脚本超时（秒）。
+/// 方言默认脚本超时（秒）。
 pub const DEFAULT_TIMEOUT_SECS: u64 = 60;
 
 // ---------------------------------------------------------------------------
-// 配置解析（CC 格式）
+// 配置解析（方言格式）
 // ---------------------------------------------------------------------------
 
-/// 一条 hook 命令。CC schema：`{"type":"command","command":"...","timeout":60}`。
+/// 一条 hook 命令。方言 schema：`{"type":"command","command":"...","timeout":60}`。
 #[derive(Debug, Clone, Deserialize)]
 pub struct CcCommand {
     #[serde(default)]
@@ -129,10 +129,10 @@ pub struct CcHookGroup {
 }
 
 impl CcHookGroup {
-    /// matcher 是否命中该工具（CC 别名或原始名任一）。
+    /// matcher 是否命中该工具（方言别名或原始名任一）。
     fn matches(&self, raw_tool: &str) -> bool {
         let Some(pattern) = &self.matcher else {
-            return true; // 无 matcher = 全命中（CC 同款）
+            return true; // 无 matcher = 全命中（方言默认）
         };
         let candidates: Vec<&str> = match cc_tool_alias(raw_tool) {
             Some(alias) => vec![alias, raw_tool],
@@ -141,7 +141,7 @@ impl CcHookGroup {
         match regex::Regex::new(pattern) {
             Ok(re) => candidates.iter().any(|c| re.is_match(c)),
             Err(_) => {
-                // 无效正则（CC 里会让整个 hook 报错；我们退化成子串匹配，
+                // 无效正则（方言语义是整个 hook 报错；我们退化成子串匹配，
                 // warn 一次都不做——每次调用打日志太吵，加载时已统计）。
                 candidates.iter().any(|c| c.contains(pattern.as_str()))
             }
@@ -214,8 +214,8 @@ pub fn parse_cc_hooks(json: &str) -> Result<CcEvents, String> {
         None => root,
     };
     let mut events: CcEvents = serde_json::from_value(events_value.clone())
-        .map_err(|e| format!("not CC hooks format: {e}"))?;
-    // 只认 type=="command"（当前 CC 唯一类型）；未知的跳过并统计。
+        .map_err(|e| format!("unsupported hooks.json format: {e}"))?;
+    // 只认 type=="command"（方言唯一类型）；未知的跳过并统计。
     let mut skipped = 0usize;
     for groups in [
         &mut events.pre_tool_use,
@@ -241,7 +241,7 @@ pub fn parse_cc_hooks(json: &str) -> Result<CcEvents, String> {
 // 工具名方言映射
 // ---------------------------------------------------------------------------
 
-/// 我们的工具名 → CC 工具名。真 CC 脚本 matcher / payload 里用的是右边。
+/// 我们的工具名 → 方言工具名。方言脚本 matcher / payload 里用的是右边。
 pub fn cc_tool_alias(raw: &str) -> Option<&'static str> {
     Some(match raw {
         "exec" | "async_shell" => "Bash",
@@ -253,7 +253,7 @@ pub fn cc_tool_alias(raw: &str) -> Option<&'static str> {
     })
 }
 
-/// 在原始 args JSON 上补 CC 字段名别名（`file_path` 等），让
+/// 在原始 args JSON 上补方言字段名别名（`file_path` 等），让
 /// `jq .tool_input.file_path` 型真脚本直接可用。原字段全保留。
 fn enrich_tool_input(arguments: &str) -> Value {
     let mut input: Value = serde_json::from_str(arguments).unwrap_or(Value::Null);
@@ -280,7 +280,7 @@ fn enrich_tool_input(arguments: &str) -> Value {
 /// `extra`：事件特有字段（tool_name/tool_input/tool_response/prompt/...）。
 pub fn build_event_payload(event: &str, session_key: &str, cwd: &Path, extra: Value) -> String {
     let mut payload = serde_json::json!({
-        // CC 公共字段。session_id 用我们的 session_key；transcript_path
+        // 方言公共字段。session_id 用我们的 session_key；transcript_path
         // 无可指（诚实空串，见模块文档）。
         "session_id": session_key,
         "transcript_path": "",
@@ -295,7 +295,7 @@ pub fn build_event_payload(event: &str, session_key: &str, cwd: &Path, extra: Va
     payload.to_string()
 }
 
-/// PreToolUse 的 stdin JSON（含 CC 别名 + tool_input 别名增补）。
+/// PreToolUse 的 stdin JSON（含方言别名 + tool_input 别名增补）。
 pub fn pre_tool_use_payload(call: &HookToolCall, cwd: &Path) -> String {
     build_event_payload(
         "PreToolUse",
@@ -409,7 +409,7 @@ pub async fn run_hook_script(
 }
 
 impl ScriptOutcome {
-    /// CC 退出码语义：2 = 阻断；0 = 放行；其他（含 None/超时）= 非阻断错误。
+    /// 方言退出码语义：2 = 阻断；0 = 放行；其他（含 None/超时）= 非阻断错误。
     fn is_blocking_exit(&self) -> bool {
         self.code == Some(2)
     }
@@ -433,7 +433,7 @@ impl ScriptOutcome {
         }
     }
 
-    /// 阻断理由文本：stderr 优先（CC 语义），空则 stdout，再空则占位。
+    /// 阻断理由文本：stderr 优先（方言语义），空则 stdout，再空则占位。
     fn block_text(&self) -> String {
         let s = self.stderr.trim();
         if !s.is_empty() {
@@ -451,7 +451,7 @@ impl ScriptOutcome {
 // 桥本体
 // ---------------------------------------------------------------------------
 
-/// CC hooks.json → 钩子体系桥。实现 [`ToolHook`]（PreToolUse/PostToolUse）与
+/// hooks.json 方言 → 钩子体系桥。实现 [`ToolHook`]（PreToolUse/PostToolUse）与
 /// [`LifecycleHook`]（SessionStart/UserPromptSubmit/Stop）。
 pub struct CcHookBridge {
     events: CcEvents,
@@ -654,7 +654,7 @@ impl ToolHook for CcHookBridge {
             .await
         {
             if o.is_blocking_exit() {
-                // CC 语义：PostToolUse 阻断不撤销操作，stderr 反馈给模型。
+                // 方言语义：PostToolUse 阻断不撤销操作，stderr 反馈给模型。
                 notes.push_str(&format!("\n\n[hook] {}", o.block_text()));
             } else if let Some(reason) = o.json_block_reason() {
                 notes.push_str(&format!("\n\n[hook] {reason}"));
@@ -667,7 +667,7 @@ impl ToolHook for CcHookBridge {
         }
     }
 
-    /// CC `PostToolUseFailure`（2026-08-29 三段化扩展）：工具执行失败后触发。
+    /// 方言 `PostToolUseFailure`（2026-08-29 三段化扩展）：工具执行失败后触发。
     /// 观察型——stderr 只记日志（失败已发生，无撤销/改写语义）。
     async fn post_tool_use_failure(&self, call: &HookToolCall, err: &str) -> PostHookAction {
         let payload = build_event_payload(
@@ -773,7 +773,7 @@ impl LifecycleHook for CcHookBridge {
 }
 
 impl CcHookBridge {
-    /// CC `SessionEnd`（观察型）：会话被清理/删除时触发。exit 2 无阻断语义。
+    /// 方言 `SessionEnd`（观察型）：会话被清理/删除时触发。exit 2 无阻断语义。
     /// 固有方法而非 trait——唯一实现者是本桥，不建单实现 trait（YAGNI）。
     pub async fn on_session_end(&self, session_key: &str, reason: &str) {
         let payload = build_event_payload(
@@ -788,7 +788,7 @@ impl CcHookBridge {
 }
 
 impl CcHookBridge {
-    /// CC `PreCompact` / `PostCompact`（观察型）：压缩流水线前后触发。
+    /// 方言 `PreCompact` / `PostCompact`（观察型）：压缩流水线前后触发。
     /// exit 2 不阻止压缩（稳定性机制，诚实边界）。
     pub async fn run_compact_hooks(&self, trigger: &str, phase: &str) {
         let event = if phase == "pre" {

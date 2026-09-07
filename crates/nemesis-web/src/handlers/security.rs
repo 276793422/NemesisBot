@@ -26,6 +26,17 @@ impl ModuleHandler for SecurityHandler {
         "security"
     }
 
+    fn commands(&self) -> &'static [&'static str] {
+        &[
+            "config.get",
+            "config.save",
+            "audit",
+            "stats",
+            "approvals.list",
+            "approvals.clear",
+        ]
+    }
+
     async fn handle_cmd(
         &self,
         cmd: &str,
@@ -53,6 +64,11 @@ impl ModuleHandler for SecurityHandler {
                 self.audit(workspace, limit, offset)
             }
             "stats" => self.stats(workspace),
+            // F3: 审批记忆规则表管理（文件直读，与 config.get/audit 同形态；
+            // 运行中的 gateway 经 HotReloader mtime 在下一次审批查询时自动
+            // 感知 clear）。
+            "approvals.list" => self.approvals_list(workspace),
+            "approvals.clear" => self.approvals_clear(workspace),
             _ => Err(format!("unknown command: security.{}", cmd)),
         }
     }
@@ -61,6 +77,11 @@ impl ModuleHandler for SecurityHandler {
 fn security_config_path(workspace: &str) -> PathBuf {
     // 委托 nemesis-path 唯一拼接点。
     nemesis_path::resolve_security_config_path_in_workspace(Path::new(workspace))
+}
+
+/// F3: 审批记忆规则表管理（list/clear）。路径唯一真相源 nemesis-path。
+fn approval_rules_path(workspace: &str) -> PathBuf {
+    nemesis_path::resolve_approval_rules_path_in_workspace(Path::new(workspace))
 }
 
 fn security_log_dir(workspace: &str) -> PathBuf {
@@ -213,9 +234,52 @@ impl SecurityHandler {
             "by_level": by_level,
         })))
     }
+
+    /// F3: 列出「总是允许」规则表（纯 JSON 读——nemesis-web 不依赖
+    /// nemesis-security，规则条目原样透传给前端展示）。
+    fn approvals_list(&self, workspace: &str) -> Result<Option<serde_json::Value>, String> {
+        let path = approval_rules_path(workspace);
+        let rules: Vec<serde_json::Value> = if path.exists() {
+            let raw = std::fs::read_to_string(&path)
+                .map_err(|e| format!("failed to read approval rules: {}", e))?;
+            serde_json::from_str(&raw)
+                .map_err(|e| format!("failed to parse approval rules: {}", e))?
+        } else {
+            Vec::new()
+        };
+        Ok(Some(serde_json::json!({ "rules": rules })))
+    }
+
+    /// F3: 清空「总是允许」规则表（写回空表；文件保留 = 运行中 gateway 的
+    /// HotReloader 照常经 mtime 感知）。
+    fn approvals_clear(&self, workspace: &str) -> Result<Option<serde_json::Value>, String> {
+        let path = approval_rules_path(workspace);
+        let removed = if path.exists() {
+            let raw = std::fs::read_to_string(&path).unwrap_or_default();
+            serde_json::from_str::<Vec<serde_json::Value>>(&raw)
+                .map(|v| v.len())
+                .unwrap_or(0)
+        } else {
+            0
+        };
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent)
+                .map_err(|e| format!("failed to create config dir: {}", e))?;
+        }
+        std::fs::write(&path, "[]\n")
+            .map_err(|e| format!("failed to write approval rules: {}", e))?;
+        Ok(Some(
+            serde_json::json!({ "cleared": true, "removed": removed }),
+        ))
+    }
 }
 
 // S10b (2026-08-26, quality-hardening goal 冲刺 web 批次 2): audit paging +
 // decision normalization + flatten/extract fallback arms + config error arms.
 #[cfg(test)]
 mod s10b_tests;
+
+// F3 (2026-09-06, devtool-upgrade 阶段 5): approvals.list / approvals.clear
+// 规则表管理命令。
+#[cfg(test)]
+mod f3_tests;

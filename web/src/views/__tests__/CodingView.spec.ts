@@ -62,7 +62,8 @@ describe('CodingView 加载', () => {
     expect(requestMock).toHaveBeenCalledWith('coding', 'config')
     expect(requestMock).toHaveBeenCalledWith('coding', 'lsp_status')
 
-    expect(w.text()).toContain('2/5 可用')
+    // C6：分母改为动态 lspLangs.length（mock 3 语言 → 2/3），不再硬编码 5。
+    expect(w.text()).toContain('2/3 可用')
     expect(w.text()).toContain('Rust')
     expect(w.text()).toContain('rust-analyzer')
     expect(w.text()).toContain('已安装')
@@ -87,7 +88,7 @@ describe('CodingView 加载', () => {
 })
 
 describe('CodingView 防抖保存', () => {
-  it('切开关 → 500ms 后一次性写 5 个字段', async () => {
+  it('切开关 → 500ms 后一次性写 12 个字段（8 原有 + E2 并发模式 2 + N2 small_model + C6 auto_install）', async () => {
     const w = await mountView()
     await w.findAll('input[type="checkbox"]')[0].setValue(false)
     await w.findAll('input[type="checkbox"]')[1].setValue(false)
@@ -98,13 +99,22 @@ describe('CodingView 防抖保存', () => {
 
     await vi.advanceTimersByTimeAsync(400)
     const writes = requestMock.mock.calls.filter(c => c[1] === 'set_field')
-    expect(writes.length).toBe(5)
+    expect(writes.length).toBe(12)
     const paths = writes.map(c => c[2].path)
     expect(paths).toContain('agents.lsp_tool.enabled')
+    // C6 静默自举开关随批写入
+    expect(paths).toContain('agents.lsp_tool.auto_install')
     expect(paths).toContain('agents.claude_code_tool.enabled')
     expect(paths).toContain('agents.claude_code_tool.permission_mode')
     expect(paths).toContain('agents.codex_tool.enabled')
     expect(paths).toContain('agents.codex_tool.sandbox')
+    // C4 诊断闭环三字段（2026-09-05 防抖保存随组件扩展——旧断言 5 已过时）。
+    expect(paths).toContain('agents.defaults.diagnostics_loop.enabled')
+    expect(paths).toContain('agents.defaults.diagnostics_loop.max_errors')
+    expect(paths).toContain('agents.defaults.diagnostics_loop.wait_max_ms')
+    // E2 并发模式两字段
+    expect(paths).toContain('agents.defaults.concurrent_request_mode')
+    expect(paths).toContain('agents.defaults.queue_size')
     const lspWrite = writes.find(c => c[2].path === 'agents.lsp_tool.enabled')!
     expect(lspWrite[2].value).toBe(false)
     expect(useToast().toasts.some(t => t.type === 'success' && t.message.includes('重启 Agent'))).toBe(true)
@@ -116,7 +126,70 @@ describe('CodingView 防抖保存', () => {
     await vi.advanceTimersByTimeAsync(300)
     await w.findAll('input[type="checkbox"]')[0].setValue(true)
     await vi.advanceTimersByTimeAsync(600)
-    expect(requestMock.mock.calls.filter(c => c[1] === 'set_field').length).toBe(5)
+    expect(requestMock.mock.calls.filter(c => c[1] === 'set_field').length).toBe(12)
+  })
+})
+
+describe('CodingView 小模型杂务通道（N2）', () => {
+  it('未配置回显空、写 null（= 未配置语义）；填别名写 trim 值', async () => {
+    const w = await mountView(cfg({
+      small_model: { configured: false, model: null, model_names: ['cheap-mini', 'main-model'] },
+    }))
+    const input = w.find('[data-test="small-model"]')
+    expect((input.element as HTMLInputElement).value).toBe('')
+    // datalist 候选来自后端 model_names
+    const opts = w.findAll('#small-model-names option').map(o => (o.element as HTMLOptionElement).value)
+    expect(opts).toEqual(['cheap-mini', 'main-model'])
+
+    requestMock.mockClear()
+    await input.setValue('cheap-mini')
+    await vi.advanceTimersByTimeAsync(600)
+    let writes = requestMock.mock.calls.filter(c => c[1] === 'set_field')
+    const setWrite = writes.find(c => c[2].path === 'agents.small_model')!
+    expect(setWrite[2].value).toBe('cheap-mini')
+
+    // 清空 → 写 null（恢复未配置，serde 反序列化为 None）
+    requestMock.mockClear()
+    await input.setValue('  ')
+    await vi.advanceTimersByTimeAsync(600)
+    writes = requestMock.mock.calls.filter(c => c[1] === 'set_field')
+    const clearWrite = writes.find(c => c[2].path === 'agents.small_model')!
+    expect(clearWrite[2].value).toBe(null)
+  })
+})
+
+describe('CodingView 并发请求模式（E2）', () => {
+  it('三档回显 + reject 时容量禁用 + 切 steer 写对路径', async () => {
+    const w = await mountView(cfg({
+      concurrent: { mode: 'reject', queue_size: 4 },
+    }))
+    const modeSel = w.find('[data-test="concurrent-mode"]')
+    const sizeInput = w.find('[data-test="concurrent-queue-size"]')
+    expect((modeSel.element as HTMLSelectElement).value).toBe('reject')
+    // 三档齐全
+    const opts = modeSel.findAll('option').map(o => o.element.value)
+    expect(opts).toEqual(['reject', 'queue', 'steer'])
+    expect((sizeInput.element as HTMLInputElement).value).toBe('4')
+    expect((sizeInput.element as HTMLInputElement).disabled).toBe(true)
+
+    requestMock.mockClear()
+    await modeSel.setValue('steer')
+    await sizeInput.setValue('6')
+    await vi.advanceTimersByTimeAsync(600)
+    const writes = requestMock.mock.calls.filter(c => c[1] === 'set_field')
+    const modeWrite = writes.find(c => c[2].path === 'agents.defaults.concurrent_request_mode')!
+    const sizeWrite = writes.find(c => c[2].path === 'agents.defaults.queue_size')!
+    expect(modeWrite[2].value).toBe('steer')
+    expect(sizeWrite[2].value).toBe(6)
+  })
+
+  it('queue 档容量可编辑；缺省回显 queue/8（E1 默认）', async () => {
+    const w = await mountView(cfg({})) // 无 concurrent 段 → 前端缺省回显
+    const modeSel = w.find('[data-test="concurrent-mode"]')
+    const sizeInput = w.find('[data-test="concurrent-queue-size"]')
+    expect((modeSel.element as HTMLSelectElement).value).toBe('queue')
+    expect((sizeInput.element as HTMLInputElement).value).toBe('8')
+    expect((sizeInput.element as HTMLInputElement).disabled).toBe(false)
   })
 })
 

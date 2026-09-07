@@ -825,3 +825,236 @@ fn parse_response_truncated_json() {
     let result = McpClient::parse_response(raw);
     assert!(result.is_err());
 }
+
+// ---------------------------------------------------------------------------
+// J3 (devtool-upgrade 阶段 4)：nextCursor 分页
+// ---------------------------------------------------------------------------
+
+/// 构造带 N 页 `tools/list` 响应的客户端（每页 result 原样入队，
+/// MockTransport 对同一 method 按 FIFO 逐个弹出）。调用方自行 initialize。
+fn paged_tools_client(pages: Vec<serde_json::Value>) -> McpClient {
+    let mut mock = crate::transport::MockTransport::new_connected();
+    mock.add_success(
+        "initialize",
+        serde_json::json!({
+            "protocolVersion": PROTOCOL_VERSION,
+            "capabilities": {},
+            "serverInfo": { "name": "paged-server", "version": "1" }
+        }),
+    );
+    mock.add_success("notifications/initialized", serde_json::json!({}));
+    for page in pages {
+        mock.add_success("tools/list", page);
+    }
+    McpClient::new(Box::new(mock))
+}
+
+#[tokio::test]
+async fn list_tools_follows_next_cursor() {
+    let mut client = paged_tools_client(vec![
+        serde_json::json!({
+            "tools": [{ "name": "echo", "inputSchema": {} }],
+            "nextCursor": "c1"
+        }),
+        serde_json::json!({
+            "tools": [{ "name": "add", "inputSchema": {} }],
+        }),
+    ]);
+    client.initialize().await.unwrap();
+
+    let tools = client.list_tools().await.unwrap();
+    assert_eq!(tools.len(), 2);
+    assert_eq!(tools[0].name, "echo");
+    assert_eq!(tools[1].name, "add");
+}
+
+#[tokio::test]
+async fn list_tools_sends_cursor_param_on_second_page() {
+    // 记录型 transport：请求记录放 Arc 后面，client 持走 transport 后
+    // 测试仍能断言发出了什么（MockTransport 的记录随所有权一起被拿走）。
+    struct RecordingTransport {
+        responses: std::sync::Mutex<Vec<(&'static str, serde_json::Value)>>,
+        requests: std::sync::Arc<std::sync::Mutex<Vec<crate::transport::RecordedRequest>>>,
+    }
+
+    #[async_trait::async_trait]
+    impl crate::transport::Transport for RecordingTransport {
+        async fn connect(&mut self) -> Result<(), crate::transport::TransportError> {
+            Ok(())
+        }
+        async fn close(&mut self) -> Result<(), crate::transport::TransportError> {
+            Ok(())
+        }
+        async fn send(
+            &mut self,
+            request: &crate::transport::TransportRequest,
+            _timeout_ms: u64,
+        ) -> Result<crate::transport::TransportResponse, crate::transport::TransportError> {
+            self.requests
+                .lock()
+                .unwrap()
+                .push(crate::transport::RecordedRequest {
+                    method: request.method.clone(),
+                    params: request.params.clone(),
+                });
+            let mut responses = self.responses.lock().unwrap();
+            if let Some(pos) = responses.iter().position(|(m, _)| *m == request.method) {
+                let (_, result) = responses.remove(pos);
+                return Ok(crate::transport::TransportResponse {
+                    jsonrpc: JSONRPC_VERSION.to_string(),
+                    id: request.id.clone().unwrap_or(serde_json::Value::Null),
+                    result: Some(result),
+                    error: None,
+                });
+            }
+            Err(crate::transport::TransportError::send_failed(format!(
+                "no scripted response for {}",
+                request.method
+            )))
+        }
+        fn is_connected(&self) -> bool {
+            true
+        }
+        fn name(&self) -> &str {
+            "recording"
+        }
+    }
+
+    let requests = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+    let transport = RecordingTransport {
+        responses: std::sync::Mutex::new(vec![
+            (
+                "initialize",
+                serde_json::json!({
+                    "protocolVersion": PROTOCOL_VERSION,
+                    "capabilities": {},
+                    "serverInfo": { "name": "s", "version": "1" }
+                }),
+            ),
+            (
+                "tools/list",
+                serde_json::json!({ "tools": [], "nextCursor": "c1" }),
+            ),
+            ("tools/list", serde_json::json!({ "tools": [] })),
+        ]),
+        requests: requests.clone(),
+    };
+    let mut client = McpClient::new(Box::new(transport));
+    client.initialize().await.unwrap();
+    client.list_tools().await.unwrap();
+
+    // 第二页请求必须带 {"cursor": "c1"}（旧实现 params=None 永远只取首页）。
+    let recorded = requests.lock().unwrap().clone();
+    let pages: Vec<_> = recorded
+        .iter()
+        .filter(|r| r.method == "tools/list")
+        .collect();
+    assert_eq!(pages.len(), 2);
+    assert!(pages[0].params.is_none(), "first page carries no cursor");
+    assert_eq!(
+        pages[1]
+            .params
+            .as_ref()
+            .and_then(|p| p.get("cursor"))
+            .and_then(|c| c.as_str()),
+        Some("c1")
+    );
+}
+
+#[tokio::test]
+async fn list_tools_repeated_cursor_aborts() {
+    // 服务器翻页环：每页都返回同一 nextCursor → 第二次出现即判环终止。
+    let mut client = paged_tools_client(vec![
+        serde_json::json!({ "tools": [{ "name": "a", "inputSchema": {} }], "nextCursor": "loop" }),
+        serde_json::json!({ "tools": [{ "name": "b", "inputSchema": {} }], "nextCursor": "loop" }),
+    ]);
+    client.initialize().await.unwrap();
+
+    let err = client.list_tools().await.unwrap_err();
+    assert!(err.to_string().contains("repeated"), "{err}");
+}
+
+#[tokio::test]
+async fn list_tools_page_cap_aborts() {
+    // 33 页互不相同的 cursor：超过 MAX_LIST_PAGES=32 → 整体报错（不返回
+    // 部分清单——缺工具比失败更难排查）。
+    let pages: Vec<serde_json::Value> = (1..=33)
+        .map(|i| {
+            serde_json::json!({
+                "tools": [{ "name": format!("t{i}"), "inputSchema": {} }],
+                "nextCursor": format!("c{i}")
+            })
+        })
+        .collect();
+    let mut client = paged_tools_client(pages);
+    client.initialize().await.unwrap();
+
+    let err = client.list_tools().await.unwrap_err();
+    assert!(err.to_string().contains("32 pages"), "{err}");
+}
+
+#[tokio::test]
+async fn list_resources_follows_next_cursor() {
+    let mut mock = crate::transport::MockTransport::new_connected();
+    mock.add_success(
+        "initialize",
+        serde_json::json!({
+            "protocolVersion": PROTOCOL_VERSION,
+            "capabilities": {},
+            "serverInfo": { "name": "s", "version": "1" }
+        }),
+    );
+    mock.add_success("notifications/initialized", serde_json::json!({}));
+    mock.add_success(
+        "resources/list",
+        serde_json::json!({
+            "resources": [{ "uri": "file:///a.txt", "name": "a" }],
+            "nextCursor": "r1"
+        }),
+    );
+    mock.add_success(
+        "resources/list",
+        serde_json::json!({
+            "resources": [{ "uri": "file:///b.txt", "name": "b" }],
+        }),
+    );
+    let mut client = McpClient::new(Box::new(mock));
+    client.initialize().await.unwrap();
+
+    let resources = client.list_resources().await.unwrap();
+    assert_eq!(resources.len(), 2);
+    assert_eq!(resources[1].uri, "file:///b.txt");
+}
+
+#[tokio::test]
+async fn list_prompts_follows_next_cursor() {
+    let mut mock = crate::transport::MockTransport::new_connected();
+    mock.add_success(
+        "initialize",
+        serde_json::json!({
+            "protocolVersion": PROTOCOL_VERSION,
+            "capabilities": {},
+            "serverInfo": { "name": "s", "version": "1" }
+        }),
+    );
+    mock.add_success("notifications/initialized", serde_json::json!({}));
+    mock.add_success(
+        "prompts/list",
+        serde_json::json!({
+            "prompts": [{ "name": "greet", "arguments": [] }],
+            "nextCursor": "p1"
+        }),
+    );
+    mock.add_success(
+        "prompts/list",
+        serde_json::json!({
+            "prompts": [{ "name": "farewell", "arguments": [] }],
+        }),
+    );
+    let mut client = McpClient::new(Box::new(mock));
+    client.initialize().await.unwrap();
+
+    let prompts = client.list_prompts().await.unwrap();
+    assert_eq!(prompts.len(), 2);
+    assert_eq!(prompts[1].name, "farewell");
+}

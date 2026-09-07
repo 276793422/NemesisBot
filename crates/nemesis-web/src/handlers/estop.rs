@@ -15,6 +15,10 @@ impl ModuleHandler for EstopHandler {
         "estop"
     }
 
+    fn commands(&self) -> &'static [&'static str] {
+        &["trigger", "release", "status"]
+    }
+
     async fn handle_cmd(
         &self,
         cmd: &str,

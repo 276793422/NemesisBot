@@ -3,7 +3,7 @@
 ## 测试信息
 
 **测试日期**: 2026-03-27
-**测试人员**: Claude Code
+**测试人员**: NemesisBot 开发组
 **Skill 版本**: 1.0.0
 **Skill 位置**: C:\AI\NemesisBot\NemesisBot\Skills\wsl-operations\
 **WSL 版本**: WSL 2
@@ -373,7 +373,7 @@ root           1  4.7  0.0  23112 13248 ?        Ss   00:26   0:00 /sbin/init
 
 ## 测试签名
 
-**测试执行者**: Claude Code
+**测试执行者**: NemesisBot 开发组
 **测试日期**: 2026-03-27
 **Skill 版本**: 1.0.0
 **报告版本**: 1.0

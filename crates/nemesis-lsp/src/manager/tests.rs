@@ -22,7 +22,12 @@ fn lsp_op_parse_and_method() {
     assert_eq!(LspOp::parse("references"), Some(LspOp::References));
     assert_eq!(LspOp::parse("implementation"), Some(LspOp::Implementation));
     assert_eq!(LspOp::parse("hover"), Some(LspOp::Hover));
-    assert_eq!(LspOp::parse("rename"), None);
+    // C7：写型/列表型 op 纳入解析表（此前 rename 显式不在表内——只读时代的
+    // 断言，写型落地后翻转）。
+    assert_eq!(LspOp::parse("rename"), Some(LspOp::Rename));
+    assert_eq!(LspOp::parse("code_action"), Some(LspOp::CodeAction));
+    assert_eq!(LspOp::Rename.method(), "textDocument/rename");
+    assert_eq!(LspOp::CodeAction.method(), "textDocument/codeAction");
     assert_eq!(LspOp::Definition.method(), "textDocument/definition");
     assert_eq!(LspOp::References.method(), "textDocument/references");
 }
@@ -397,7 +402,7 @@ impl Drop for PathRestore {
 }
 
 const FAKE_SERVER_PY: &str = r#"
-import sys, os, json, time
+import sys, os, json, time, threading
 
 MODE = "default"
 for a in sys.argv[1:]:
@@ -406,6 +411,8 @@ for a in sys.argv[1:]:
 
 def here(name):
     return os.path.join(os.path.dirname(os.path.abspath(__file__)), name)
+
+send_lock = threading.Lock()
 
 def read_msg():
     length = None
@@ -424,16 +431,40 @@ def read_msg():
 
 def send(obj):
     body = json.dumps(obj).encode()
-    if MODE == "extra-header":
-        # S1: one extra header with a colon (ignored) and one bare line with
-        # no colon (skipped entirely) — the client must tolerate both.
-        sys.stdout.buffer.write(b"Content-Type: application/vscode-jsonrpc; charset=utf-8\r\n")
-        sys.stdout.buffer.write(b"X-S1-Bare-Line-No-Colon\r\n")
-    sys.stdout.buffer.write(b"Content-Length: %d\r\n\r\n" % len(body))
-    sys.stdout.buffer.write(body)
-    sys.stdout.buffer.flush()
+    # C2：diag-repeat 模式下推送线程与主线程并发写 stdout，加锁防帧交错
+    # （其余模式单线程，锁无副作用）。
+    with send_lock:
+        if MODE == "extra-header":
+            # S1: one extra header with a colon (ignored) and one bare line with
+            # no colon (skipped entirely) — the client must tolerate both.
+            sys.stdout.buffer.write(b"Content-Type: application/vscode-jsonrpc; charset=utf-8\r\n")
+            sys.stdout.buffer.write(b"X-S1-Bare-Line-No-Colon\r\n")
+        sys.stdout.buffer.write(b"Content-Length: %d\r\n\r\n" % len(body))
+        sys.stdout.buffer.write(body)
+        sys.stdout.buffer.flush()
 
 cancels_seen = 0
+last_doc_uri = [None]
+diag_counter = [0]
+
+def push_diag(uri):
+    """C2：向 uri 推一条 publishDiagnostics（编号自增，测试据此分辨第几推）。"""
+    if uri is None:
+        return
+    diag_counter[0] += 1
+    send({"jsonrpc": "2.0", "method": "textDocument/publishDiagnostics",
+          "params": {"uri": uri, "diagnostics": [
+              {"range": {"start": {"line": 1, "character": 0},
+                         "end": {"line": 1, "character": 5}},
+               "severity": 1, "source": "fake",
+               "message": "diag push #%d" % diag_counter[0]}]}})
+
+def push_empty(uri):
+    """C3：推一条**空数组** publishDiagnostics（rust-analyzer 清屏语义）。"""
+    if uri is None:
+        return
+    send({"jsonrpc": "2.0", "method": "textDocument/publishDiagnostics",
+          "params": {"uri": uri, "diagnostics": []}})
 
 def answer_hover(mid):
     global cancels_seen
@@ -476,6 +507,10 @@ def handle(msg):
     if method == "exit":
         sys.exit(0)
     if method == "textDocument/hover":
+        if MODE == "diag-on-hover":
+            # C2：在响应前先推一条诊断——request() 读循环的 Notification
+            # 臂必须把它缓存住（而非只等自己的响应）。
+            push_diag(last_doc_uri[0])
         answer_hover(mid)
         return
     if method in ("textDocument/definition", "textDocument/references", "textDocument/implementation"):
@@ -483,6 +518,68 @@ def handle(msg):
             "uri": "file:///fake/a.go",
             "range": {"start": {"line": 3, "character": 4}, "end": {"line": 3, "character": 8}},
         }]})
+        return
+    if method == "textDocument/rename":
+        # C7：canned WorkspaceEdit——主文档两处（磁盘文件真实可应用）+ 一处
+        # 指向不存在的 other.go（供 errors 路径断言）。键用服务器记住的
+        # uri（测试先 didOpen）。
+        uri = last_doc_uri[0] or "file:///fake/main.go"
+        send({"jsonrpc": "2.0", "id": mid, "result": {"changes": {
+            uri: [
+                {"range": {"start": {"line": 0, "character": 0}, "end": {"line": 0, "character": 2}}, "newText": "zz"},
+                {"range": {"start": {"line": 1, "character": 0}, "end": {"line": 1, "character": 2}}, "newText": "zz"},
+            ],
+            "file:///fake/other.go": [
+                {"range": {"start": {"line": 0, "character": 0}, "end": {"line": 0, "character": 2}}, "newText": "zz"},
+            ],
+        }}})
+        return
+    if method == "textDocument/codeAction":
+        # C7：canned quickfix 列表（只列表不执行）。
+        send({"jsonrpc": "2.0", "id": mid, "result": [
+            {"title": "fake fix", "kind": "quickfix", "isPreferred": True, "edit": {"changes": {}}},
+            {"title": "no-edit command", "kind": "quickfix"},
+        ]})
+        return
+    if method in ("textDocument/didOpen", "textDocument/didChange"):
+        # C1 补测：把文档同步通知记到 jsonl（一拍一行），测试轮询读取。
+        params = msg.get("params", {})
+        td = params.get("textDocument", {})
+        entry = {"method": method, "uri": td.get("uri")}
+        if method == "textDocument/didOpen":
+            entry["languageId"] = td.get("languageId")
+            entry["version"] = td.get("version")
+            entry["text"] = td.get("text")
+        else:
+            entry["version"] = td.get("version")
+            changes = params.get("contentChanges", [])
+            entry["text"] = changes[0].get("text") if changes else None
+        with open(here("docs_seen.jsonl"), "a") as f:
+            f.write(json.dumps(entry) + "\n")
+        # C2：记住文档 uri（推送回显它），diag-quiet 推一条后安静。
+        last_doc_uri[0] = td.get("uri")
+        if MODE == "diag-quiet":
+            push_diag(last_doc_uri[0])
+        if MODE == "cold-slow":
+            # C3 实机验证回归：冷启动服务器首推慢（0.6s >> quiet 150ms）
+            # ——drain_pushes 首推前不得按 quiet 收敛提前返回。
+            time.sleep(0.6)
+            push_diag(last_doc_uri[0])
+        if MODE == "clear-only":
+            # C3 回归：rust-analyzer 形态——工作区就绪先推空数组（清屏），
+            # 随后沉默。空推送不得解锁 quiet 收敛（否则真诊断前提前返回）。
+            push_empty(last_doc_uri[0])
+        if MODE == "uri-normalize":
+            # C3 回归（2026-09-05 实机根修）：服务器按 WHATWG 规范化回显
+            # URI——rust-analyzer 真机实锤：Windows 盘符 `C:` → `c:`。
+            # 这里做同一变换（POSIX 无盘符=恒等回显，该测试在 Windows 上
+            # 复现 miss、POSIX 上 vacuous 绿；盘符归一本身由 proto/tests
+            # 的 uri_key 单测跨平台钉住）。record/lookup 必须按规范化键
+            # 匹配，字面不同也能对上。
+            u = last_doc_uri[0] or ""
+            if len(u) > 9 and u[8].isalpha() and u[9] == ":":
+                u = u[:8] + u[8].lower() + u[9:]
+            push_diag(u)
         return
     if mid is not None:
         send({"jsonrpc": "2.0", "id": mid, "error": {"code": -32601, "message": "method not found"}})
@@ -503,6 +600,14 @@ if MODE == "die-once":
             open(here("died_once.marker"), "w").write("1")
             sys.exit(0)
 else:
+    # C2：diag-repeat 模式在文档打开后持续推诊断（60ms 一条，永不安静）
+    # ——wait_for_diagnostics 必须 quiet 不满足、被 max 兜底。
+    if MODE == "diag-repeat":
+        def repeat_loop():
+            while True:
+                time.sleep(0.06)
+                push_diag(last_doc_uri[0])
+        threading.Thread(target=repeat_loop, daemon=True).start()
     while True:
         m = read_msg()
         if m is None:
@@ -735,4 +840,422 @@ async fn s1_missing_server_on_path_yields_not_installed_error() {
     unsafe {
         std::env::set_var("PATH", &orig);
     }
+}
+
+// ---------------------------------------------------------------------------
+// C1 补测（devtool-upgrade 阶段 2）：didOpen/didChange 文档同步
+// ---------------------------------------------------------------------------
+
+/// 读 fake server 记录的文档同步通知（docs_seen.jsonl，无文件=空）。
+fn read_docs_seen(dir: &Path) -> Vec<serde_json::Value> {
+    let Ok(c) = std::fs::read_to_string(dir.join("docs_seen.jsonl")) else {
+        return vec![];
+    };
+    c.lines()
+        .filter(|l| !l.trim().is_empty())
+        .map(|l| serde_json::from_str(l).expect("fake server writes one JSON object per line"))
+        .collect()
+}
+
+/// 轮询等 fake server 落盘 N 条记录（touch 返回只保证 stdin flush，服务
+/// 进程的 jsonl append 是异步的）。
+async fn wait_docs_seen(dir: &Path, want: usize) -> Vec<serde_json::Value> {
+    for _ in 0..50 {
+        let seen = read_docs_seen(dir);
+        if seen.len() >= want {
+            return seen;
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    read_docs_seen(dir)
+}
+
+/// 首次 touch → didOpen（languageId/version/text 齐全）；再次 touch 同一
+/// 会话 → didChange（version 递增，full 文本）。
+#[tokio::test]
+async fn c1_touch_file_did_open_then_did_change() {
+    let (dir, _path) = plant_fake_gopls("default");
+    let mgr = LspManager::new(Some(Duration::from_secs(30)), None);
+    let go = dir.path().join("main.go");
+    let file_text = "package main\n\nfunc main() {}\n";
+
+    mgr.touch_file(&go).await.unwrap();
+    let seen = wait_docs_seen(dir.path(), 1).await;
+    assert_eq!(seen.len(), 1, "{seen:?}");
+    assert_eq!(seen[0]["method"], "textDocument/didOpen");
+    assert_eq!(seen[0]["languageId"], "go", "LSP languageId 不是展示 label");
+    assert_eq!(seen[0]["version"], 1);
+    assert_eq!(seen[0]["text"], file_text);
+    assert!(
+        seen[0]["uri"].as_str().unwrap().ends_with("main.go"),
+        "{seen:?}"
+    );
+
+    mgr.touch_file(&go).await.unwrap();
+    let seen = wait_docs_seen(dir.path(), 2).await;
+    assert_eq!(seen.len(), 2, "{seen:?}");
+    assert_eq!(seen[1]["method"], "textDocument/didChange", "{seen:?}");
+    assert_eq!(seen[1]["version"], 2, "didChange version 单调递增");
+    assert_eq!(seen[1]["text"], file_text, "didChange 是 full 文本同步");
+
+    assert_eq!(mgr.shutdown_all().await, 1);
+}
+
+/// notify_change：文本来自参数（工具刚写完的内容），didChange 直达。
+#[tokio::test]
+async fn c1_notify_change_sends_written_text() {
+    let (dir, _path) = plant_fake_gopls("default");
+    let mgr = LspManager::new(Some(Duration::from_secs(30)), None);
+    let go = dir.path().join("main.go");
+
+    mgr.touch_file(&go).await.unwrap();
+    let new_text = "package main\n\nfunc main() { println(\"new\") }\n";
+    mgr.notify_change(&go, new_text).await.unwrap();
+
+    let seen = wait_docs_seen(dir.path(), 2).await;
+    assert_eq!(seen[1]["method"], "textDocument/didChange", "{seen:?}");
+    assert_eq!(seen[1]["text"], new_text);
+    let _ = mgr.shutdown_all().await;
+}
+
+/// 不支持的文件类型：静默 Ok，不 spawn 会话、无通知。
+#[tokio::test]
+async fn c1_unsupported_file_is_silent_ok() {
+    let (dir, _path) = plant_fake_gopls("default");
+    let mgr = LspManager::new(Some(Duration::from_secs(30)), None);
+    let md = dir.path().join("notes.md");
+    std::fs::write(&md, "# hello\n").unwrap();
+
+    mgr.touch_file(&md).await.unwrap();
+    assert_eq!(mgr.session_count().await, 0, "不支持类型绝不 spawn");
+    assert!(read_docs_seen(dir.path()).is_empty());
+    let _ = mgr.shutdown_all().await;
+}
+
+/// 服务器不在 PATH：静默 Ok（诊断闭环尽力而为，不拖垮编辑路径）。
+#[tokio::test]
+async fn c1_missing_server_is_silent_ok() {
+    let _lock = FAKE_ENV_LOCK.lock().unwrap();
+    let orig = std::env::var("PATH").unwrap_or_default();
+    let filtered: Vec<_> = std::env::split_paths(&orig)
+        .filter(|p| {
+            ["gopls", "gopls.exe", "gopls.cmd", "gopls.bat", "gopls.com"]
+                .iter()
+                .all(|n| !p.join(n).exists())
+        })
+        .collect();
+    unsafe {
+        std::env::set_var(
+            "PATH",
+            std::env::join_paths(filtered)
+                .unwrap()
+                .to_string_lossy()
+                .to_string(),
+        );
+    }
+
+    let tmp = tempfile::tempdir().unwrap();
+    std::fs::write(tmp.path().join("go.mod"), "module c1miss\n\ngo 1.25\n").unwrap();
+    let go = tmp.path().join("main.go");
+    std::fs::write(&go, "package main\n\nfunc main() {}\n").unwrap();
+
+    let mgr = LspManager::new(Some(Duration::from_secs(5)), None);
+    mgr.touch_file(&go).await.unwrap();
+    assert_eq!(mgr.session_count().await, 0);
+
+    unsafe {
+        std::env::set_var("PATH", &orig);
+    }
+}
+
+// ---------------------------------------------------------------------------
+// C2 补测（devtool-upgrade 阶段 2）：publishDiagnostics 消费
+// ---------------------------------------------------------------------------
+
+/// 推完一条即安静：wait_for_diagnostics 在 quiet 窗口收敛后返回（远早于
+/// max 兜底），快照与 diagnostics_for 一致；无会话时等待/查询都诚实空。
+#[tokio::test]
+async fn c2_wait_for_diagnostics_quiet_returns_pushes() {
+    let (dir, _path) = plant_fake_gopls("diag-quiet");
+    let mgr = LspManager::new(Some(Duration::from_secs(30)), None);
+    let go = dir.path().join("main.go");
+
+    // 无会话：不 spawn，诚实空（等待语义只对服务器已见过的文档成立）。
+    assert!(mgr.diagnostics_for(&go).await.is_empty());
+    assert!(mgr.wait_for_diagnostics(&go, 50, 200).await.is_empty());
+    assert_eq!(mgr.session_count().await, 0, "无会话路径绝不 spawn");
+
+    mgr.touch_file(&go).await.unwrap();
+    let t0 = std::time::Instant::now();
+    let diags = mgr.wait_for_diagnostics(&go, 300, 5_000).await;
+    let elapsed = t0.elapsed();
+    assert!(!diags.is_empty(), "编辑后应等到推送的诊断");
+    assert!(
+        elapsed < Duration::from_millis(3_000),
+        "推送安静后应远早于 max=5s 返回（quiet=300ms），实际 {elapsed:?}"
+    );
+    assert_eq!(diags[0].severity, 1);
+    assert_eq!(diags[0].source.as_deref(), Some("fake"));
+    assert_eq!(diags[0].range_start, (1, 0));
+    assert!(diags[0].message.starts_with("diag push #"), "{diags:?}");
+
+    // 快照读取与等待结果一致（无新推送）。
+    assert_eq!(mgr.diagnostics_for(&go).await, diags);
+    let _ = mgr.shutdown_all().await;
+}
+
+/// C3 实机验证回归（2026-09-05）：冷启动服务器首推慢于 quiet 窗口
+/// （600ms >> 150ms）时，drain_pushes 必须跨过静默窗等到首推——首条
+/// publishDiagnostics 到达前 quiet 收敛不生效（max 兜底），不得把
+/// 「还没推」当「已收敛」返回空。真 rust-analyzer（首析秒级）在门 2
+/// 实机验证里实锤过这个缺口。
+#[tokio::test]
+async fn c3_cold_slow_first_push_still_caught() {
+    let (dir, _path) = plant_fake_gopls("cold-slow");
+    let mgr = LspManager::new(Some(Duration::from_secs(30)), None);
+    let go = dir.path().join("main.go");
+
+    mgr.touch_file(&go).await.unwrap();
+    let diags = mgr.wait_for_diagnostics(&go, 150, 5_000).await;
+    assert_eq!(diags.len(), 1, "冷启动首推必须被等到: {diags:?}");
+    assert_eq!(diags[0].severity, 1);
+    let _ = mgr.shutdown_all().await;
+}
+
+/// C3 回归（2026-09-05 实机暴露的第二个缺口）：**空数组推送（清屏语义）
+/// 不解锁 quiet 收敛**——rust-analyzer 工作区就绪先推 `n=0` 空推送、
+/// 随后沉默，若空推送也算「见过诊断」，一个 quiet 间隙就会在真诊断前
+/// 提前返回空。锁死新语义：只推空 → 等满 max 兜底（时长上界证明未提前
+/// 收敛），返回空（无错可报，等价结果）。
+#[tokio::test]
+async fn c3_empty_clear_push_does_not_converge_early() {
+    let (dir, _path) = plant_fake_gopls("clear-only");
+    let mgr = LspManager::new(Some(Duration::from_secs(30)), None);
+    let go = dir.path().join("main.go");
+
+    mgr.touch_file(&go).await.unwrap();
+    let t0 = std::time::Instant::now();
+    let diags = mgr.wait_for_diagnostics(&go, 150, 1_000).await;
+    let elapsed = t0.elapsed();
+    assert!(diags.is_empty(), "只推空数组 → 快照空: {diags:?}");
+    assert!(
+        elapsed >= Duration::from_millis(900),
+        "必须等满 max 兜底（而非空推送后 150ms 提前收敛），实际 {elapsed:?}"
+    );
+    let _ = mgr.shutdown_all().await;
+}
+
+/// C3 回归（2026-09-05 实机根修）：服务器按 WHATWG 规范化回显 URI
+/// （rust-analyzer 真机：Windows 盘符 `C:` → `c:`；fake 这里模拟编码
+/// 归一 `.` → `%2E`）——诊断 record/lookup 必须按规范化键匹配。旧实现
+/// 字面精确匹配，真机永远 miss（快照恒空、闭环静默失效）。
+#[tokio::test]
+async fn c3_normalized_uri_echo_still_matches() {
+    let (dir, _path) = plant_fake_gopls("uri-normalize");
+    let mgr = LspManager::new(Some(Duration::from_secs(30)), None);
+    let go = dir.path().join("main.go");
+
+    mgr.touch_file(&go).await.unwrap();
+    let diags = mgr.wait_for_diagnostics(&go, 150, 5_000).await;
+    assert_eq!(diags.len(), 1, "规范化回显的诊断必须被匹配到: {diags:?}");
+    assert_eq!(diags[0].severity, 1);
+    // 被动快照同键可读。
+    assert_eq!(mgr.diagnostics_for(&go).await.len(), 1);
+    let _ = mgr.shutdown_all().await;
+}
+
+/// 持续推送（60ms 一条、永不安静）：quiet 永不满足 → max 兜底返回；推送
+/// 编号 > 1 证明持续读取并整表覆盖（不是拿到第一条就收工）。
+#[tokio::test]
+async fn c2_wait_for_diagnostics_max_caps_endless_pusher() {
+    let (dir, _path) = plant_fake_gopls("diag-repeat");
+    let mgr = LspManager::new(Some(Duration::from_secs(30)), None);
+    let go = dir.path().join("main.go");
+
+    mgr.touch_file(&go).await.unwrap();
+    let t0 = std::time::Instant::now();
+    let diags = mgr.wait_for_diagnostics(&go, 150, 800).await;
+    let elapsed = t0.elapsed();
+    assert!(!diags.is_empty());
+    let n: u32 = diags[0]
+        .message
+        .trim_start_matches("diag push #")
+        .parse()
+        .unwrap();
+    assert!(
+        n >= 3,
+        "应读到多条推送的末条（整表覆盖语义），got #{n} (elapsed {elapsed:?})"
+    );
+    // max 兜底：持续推送下不会因安静提前结束（下限留足调度裕量）。
+    assert!(
+        elapsed >= Duration::from_millis(200),
+        "持续推送下应被 max=800ms 兜底而非提前返回，实际 {elapsed:?}"
+    );
+    let _ = mgr.shutdown_all().await;
+}
+
+/// 请求途中（响应之前）到达的推送也被缓存——request() 读循环的
+/// Notification 臂，不经过 wait_for_diagnostics 就能查到。
+/// C7：fake 服务器覆盖 rename + code_actions 全链路（无 rust-analyzer 的
+/// 环境/CI 也能跑）：WorkspaceEdit 解析 → 磁盘应用 → errors 路径（canned
+/// 响应里第二个文件不存在）→ 磁盘未动；codeAction 列表解析。
+#[tokio::test]
+async fn c7_fake_server_rename_and_code_action() {
+    let (dir, _path) = plant_fake_gopls("rename-fix");
+    let mgr = LspManager::new(Some(Duration::from_secs(30)), None);
+    let main = dir.path().join("main.go");
+    std::fs::write(&main, "ab cd\nef\n").unwrap();
+    // 先 didOpen（fake 服务器靠它记住 uri 作为 changes 键）。
+    mgr.touch_file(&main).await.unwrap();
+
+    let outcome = mgr.rename(&main, 0, 0, "zz").await.unwrap();
+    assert_eq!(outcome.files.len(), 1, "{:?}", outcome.errors);
+    assert_eq!(outcome.files[0].edit_count, 2);
+    assert_eq!(outcome.files[0].new_text, "zz cd\nzz\n");
+    // canned 响应里的 other.go 不在磁盘 → errors 如实上报，不拖垮主文件。
+    assert_eq!(outcome.errors.len(), 1);
+    assert!(
+        outcome.errors[0].contains("other.go"),
+        "{:?}",
+        outcome.errors
+    );
+    // manager::rename 不落盘。
+    assert_eq!(std::fs::read_to_string(&main).unwrap(), "ab cd\nef\n");
+
+    let actions = mgr.code_actions(&main, 0, 0).await.unwrap();
+    assert_eq!(actions.len(), 2);
+    assert_eq!(actions[0].title, "fake fix");
+    assert!(actions[0].is_preferred);
+    assert!(actions[0].has_edit);
+    assert_eq!(actions[1].title, "no-edit command");
+    assert!(!actions[1].has_edit);
+    let _ = mgr.shutdown_all().await;
+}
+
+#[tokio::test]
+async fn c2_pushes_during_requests_are_cached_too() {
+    let (dir, _path) = plant_fake_gopls("diag-on-hover");
+    let mgr = LspManager::new(Some(Duration::from_secs(30)), None);
+    let go = dir.path().join("main.go");
+
+    // 先 touch 让服务器知道文档（推送回显真实 uri）。
+    mgr.touch_file(&go).await.unwrap();
+    let hover = mgr.query(LspOp::Hover, &go, 0, 0).await.unwrap();
+    assert!(hover.contains("fake_hover_value"), "{hover}");
+
+    let diags = mgr.diagnostics_for(&go).await;
+    assert_eq!(diags.len(), 1, "{diags:?}");
+    assert!(diags[0].message.starts_with("diag push #"), "{diags:?}");
+    let _ = mgr.shutdown_all().await;
+}
+
+// ===========================================================================
+// C7 补测（devtool-upgrade 阶段 6）：写型 op 入口守卫 + 活体 rename
+// ===========================================================================
+
+/// query() 的写型守卫：Rename/CodeAction 必须走专用入口，不许从格式化
+/// 捷径溜过去。守卫在任何 spawn/IO 之前——无需服务器即可测。
+#[tokio::test]
+async fn c7_query_rejects_write_ops() {
+    let mgr = LspManager::new(None, None);
+    let err = mgr
+        .query(LspOp::Rename, Path::new("whatever.rs"), 0, 0)
+        .await
+        .unwrap_err();
+    assert!(err.contains("dedicated manager entry"), "{err}");
+    let err = mgr
+        .query(LspOp::CodeAction, Path::new("whatever.rs"), 0, 0)
+        .await
+        .unwrap_err();
+    assert!(err.contains("dedicated manager entry"), "{err}");
+}
+
+/// rename 的空名守卫在任何服务器交互之前。
+#[tokio::test]
+async fn c7_rename_rejects_empty_name_before_server() {
+    let mgr = LspManager::new(None, None);
+    let err = mgr
+        .rename(Path::new("whatever.rs"), 0, 0, "   ")
+        .await
+        .unwrap_err();
+    assert!(err.contains("empty"), "{err}");
+}
+
+/// C7 活体验收：真实 rust-analyzer 对 fixture 符号 rename → WorkspaceEdit
+/// 解析 → 逐位置应用后新全文恰好两处改名（定义 + 引用），且**不落盘**
+/// （manager 只算不写，落盘是 lsp_tool 过安全闸后的职责）。
+#[tokio::test]
+async fn rust_analyzer_rename_computes_new_text_without_writing() {
+    if !registry::server_available(Lang::Rust) {
+        eprintln!("SKIP: rust-analyzer not installed — live LSP rename acceptance not run");
+        return;
+    }
+    let _live = live_lock().await;
+    let dir = fixture_repo();
+    let lib = dir.path().join("src/lib.rs");
+    let before = std::fs::read_to_string(&lib).unwrap();
+
+    let mgr = LspManager::new(
+        Some(Duration::from_secs(60)),
+        Some(Duration::from_secs(600)),
+    );
+
+    // 冷启动 retry：索引完成前 rename 返回 null（我们的 "no edits" 错误）
+    // 或瞬态取消；transport 死亡同样重试。其余错误直接失败。
+    let mut outcome: Result<RenameOutcome, String> = Err("retry loop did not run".into());
+    for _ in 0..30 {
+        match mgr.rename(&lib, 10, 13, "fixture_answer_renamed").await {
+            Ok(o) => {
+                outcome = Ok(o);
+                break;
+            }
+            Err(e) => {
+                // 冷启动瞬态家族：VFS 未装载 fixture（"file not found"，
+                // -32603）；索引未完成时位置未解析（"No references found
+                // at position"，-32602）。
+                let retryable = e.contains("no edits")
+                    || e.contains("closed")
+                    || e.contains("kept cancelling")
+                    || e.contains("file not found")
+                    || e.contains("No references found at position");
+                outcome = Err(e);
+                if !retryable {
+                    break;
+                }
+                tokio::time::sleep(Duration::from_secs(1)).await;
+            }
+        }
+    }
+    let outcome = match outcome {
+        Ok(o) => o,
+        Err(e) if server_env_unusable(&format!("ERR: {e}")) => {
+            eprintln!("SKIP: rust-analyzer spawned but unusable on this machine ({e})");
+            let _ = mgr.shutdown_all().await;
+            return;
+        }
+        Err(e) => panic!("rename failed: {e}"),
+    };
+
+    assert_eq!(outcome.errors.len(), 0, "{:?}", outcome.errors);
+    assert_eq!(outcome.files.len(), 1, "single fixture file expected");
+    let f = &outcome.files[0];
+    assert!(f.path.ends_with("lib.rs"), "{}", f.path);
+    assert_eq!(f.edit_count, 2, "definition + call site");
+    assert_eq!(
+        f.new_text.matches("fixture_answer_renamed").count(),
+        2,
+        "both occurrences renamed: {}",
+        f.new_text
+    );
+    assert!(
+        !f.new_text.contains("fn fixture_answer()"),
+        "old definition must be gone"
+    );
+    // manager 不落盘（安全闸在更上层）。
+    assert_eq!(
+        std::fs::read_to_string(&lib).unwrap(),
+        before,
+        "manager::rename must not write to disk"
+    );
+    let _ = mgr.shutdown_all().await;
 }

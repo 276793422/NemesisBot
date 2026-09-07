@@ -70,7 +70,9 @@ pub fn convert_config(data: &HashMap<String, Value>) -> (Value, Vec<String>) {
                 "max_tokens": 8192,
                 "temperature": 0.7,
                 "max_tool_iterations": 100,
-                "concurrent_request_mode": "reject",
+                // E1 (2026-09-05): mirrors nemesisbot/config/config.default.json —
+                // migrated workspaces are new workspaces and get the new default.
+                "concurrent_request_mode": "queue",
                 "queue_size": 8
             }
         },

@@ -37,6 +37,8 @@ nemesis-utils = { workspace = true }
 # registry table (SERVERS / server_available). Unconditional, mirroring
 # nemesis-agent's own non-optional dependency on nemesis-lsp.
 nemesis-lsp = { workspace = true }
+# L8 PTY 内嵌终端（dashboard 终端 tab；`terminal` feature 门控）
+portable-pty = { workspace = true, optional = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 tokio = { workspace = true }
@@ -69,6 +71,7 @@ memory = ["dep:nemesis-memory"]
 workflow = ["dep:nemesis-workflow"]
 security = ["dep:nemesis-security", "nemesis-security/security"]
 sandbox = ["dep:nemesis-sandbox"]
+terminal = ["dep:portable-pty"]
 
 [dev-dependencies]
 tempfile = "3"

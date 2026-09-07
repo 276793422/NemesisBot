@@ -121,20 +121,38 @@ impl nemesis_tools::registry::Tool for AgentToolAdapter {
                     source: "workflow".to_string(),
                     metadata: HashMap::new(),
                 };
-                let (allowed, reason) = security.execute(&invocation);
+                let (allowed, deny) = security.execute(&invocation);
                 if !allowed {
-                    let reason_str =
-                        reason.unwrap_or_else(|| "operation denied by security policy".to_string());
+                    // F5 (devtool-upgrade 阶段 2): structured DenyInfo —
+                    // layer/policy 落日志，summary 原文 + suggestion 进结果。
+                    let info = deny.unwrap_or_else(|| nemesis_security::types::DenyInfo {
+                        layer: "unknown",
+                        policy: "security_pipeline".to_string(),
+                        summary: "operation denied by security policy".to_string(),
+                        suggestion: None,
+                    });
                     tracing::warn!(
                         tool = %self.name,
-                        reason = %reason_str,
+                        layer = info.layer,
+                        policy = %info.policy,
+                        reason = %info.summary,
                         "[WorkflowToolAdapter] Security blocked tool"
                     );
                     // Mirror the agent path's explicit prefix so the failure
                     // reason is unambiguous in the workflow node result.
+                    let suggestion_line = info
+                        .suggestion
+                        .as_deref()
+                        .map(|s| {
+                            format!(
+                                "
+建议：{s}"
+                            )
+                        })
+                        .unwrap_or_default();
                     return nemesis_tools::types::ToolResult::error(&format!(
-                        "⛔ SECURITY BLOCKED: {} — The security policy denied this operation.",
-                        reason_str
+                        "⛔ SECURITY BLOCKED [layer:{}|policy:{}] — The security policy denied this operation: {}{}",
+                        info.layer, info.policy, info.summary, suggestion_line
                     ));
                 }
             }

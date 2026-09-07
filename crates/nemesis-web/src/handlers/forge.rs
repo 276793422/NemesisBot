@@ -30,6 +30,23 @@ impl ModuleHandler for ForgeHandler {
         "forge"
     }
 
+    fn commands(&self) -> &'static [&'static str] {
+        &[
+            "status",
+            "stats",
+            "config.save",
+            "reflect",
+            "experiences.stats",
+            "reflections.list",
+            "reflections.latest",
+            "cycles.list",
+            "registry.list",
+            "registry.update",
+            "learning.toggle",
+            "artifacts",
+        ]
+    }
+
     async fn handle_cmd(
         &self,
         cmd: &str,

@@ -1122,6 +1122,308 @@ async fn escalation_fires_on_repeated_failing_builds() {
     );
 }
 
+// --- J5 (devtool-upgrade 阶段 6): doom-loop escalation 审批化（默认关） ---
+
+/// 测试假 asker：返回预置作答（None = Timeout），并计数被问次数。
+struct FakeDoomAsker {
+    answer: std::sync::Mutex<Option<Vec<String>>>,
+    asked: std::sync::atomic::AtomicUsize,
+}
+
+impl FakeDoomAsker {
+    fn approving() -> Self {
+        Self {
+            answer: std::sync::Mutex::new(Some(vec!["继续执行".to_string()])),
+            asked: std::sync::atomic::AtomicUsize::new(0),
+        }
+    }
+    fn denying() -> Self {
+        Self {
+            answer: std::sync::Mutex::new(Some(vec!["停止".to_string()])),
+            asked: std::sync::atomic::AtomicUsize::new(0),
+        }
+    }
+    fn timing_out() -> Self {
+        Self {
+            answer: std::sync::Mutex::new(None),
+            asked: std::sync::atomic::AtomicUsize::new(0),
+        }
+    }
+}
+
+impl nemesis_types::agent::QuestionAsker for FakeDoomAsker {
+    fn ask(
+        &self,
+        _request: nemesis_types::agent::QuestionRequest,
+    ) -> Result<nemesis_types::agent::QuestionOutcome, String> {
+        self.asked.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        match self.answer.lock().unwrap().clone() {
+            Some(sel) => Ok(nemesis_types::agent::QuestionOutcome::Answered(sel)),
+            None => Ok(nemesis_types::agent::QuestionOutcome::Timeout),
+        }
+    }
+}
+
+/// 写一个只有 `agents.doom_loop_approval` 的临时 config.json，返回路径
+/// （调用方负责删除）。后缀区分并行测试。
+fn doom_config_file(flag: bool, suffix: &str) -> std::path::PathBuf {
+    let path = std::env::temp_dir().join(format!(
+        "nemesis_test_doom_{}_{}.json",
+        std::process::id(),
+        suffix
+    ));
+    std::fs::write(
+        &path,
+        serde_json::json!({"agents": {"doom_loop_approval": flag}}).to_string(),
+    )
+    .unwrap();
+    path
+}
+
+fn failing_exec_response(id: &str) -> LlmResponse {
+    LlmResponse {
+        content: String::new(),
+        tool_calls: vec![ToolCallInfo {
+            id: id.to_string(),
+            name: "exec".to_string(),
+            arguments: r#"{"command":"cargo build"}"#.to_string(),
+        }],
+        finished: false,
+        reasoning_content: None,
+        usage: None,
+        raw_request_body: None,
+        raw_response_body: None,
+    }
+}
+
+#[tokio::test]
+async fn doom_loop_approval_approved_clears_and_continues() {
+    // Approve = 清签名计数继续：失败 6 次触发 escalation → 用户批准 →
+    // 同签名从零重数；再次撞到 6 又发卡（一次批准不等于永久豁免）。
+    // 12 次失败（两次撞顶各批准一次）后第 13 轮模型给出正常完成。
+    let fail_resp = failing_exec_response("tc_fail");
+    let ok_resp = LlmResponse {
+        content: "approved continuation finished".to_string(),
+        tool_calls: Vec::new(),
+        finished: true,
+        reasoning_content: None,
+        usage: None,
+        raw_request_body: None,
+        raw_response_body: None,
+    };
+    let mut responses: Vec<LlmResponse> = (0..12).map(|_| fail_resp.clone()).collect();
+    responses.push(ok_resp);
+    let provider = MockLlmProvider::new(responses);
+    let mut config = test_config();
+    config.max_turns = 100;
+
+    let cfg_path = doom_config_file(true, "approve");
+    let asker = std::sync::Arc::new(FakeDoomAsker::approving());
+
+    let mut agent_loop = AgentLoop::new(Box::new(provider), config.clone());
+    agent_loop.set_config_path(cfg_path.clone());
+    agent_loop.set_question_asker(asker.clone());
+    agent_loop.register_tool(
+        "exec".to_string(),
+        Box::new(MockTool {
+            result: "Exit code: 101\nstdout: \nstderr: error[E0432]: unresolved import".to_string(),
+        }),
+    );
+    let instance = AgentInstance::new(config);
+    let context = RequestContext::new("web", "chat1", "user1", "session1");
+
+    let events = agent_loop.run(&instance, "build it", &context).await;
+
+    let done_events: Vec<_> = events
+        .iter()
+        .filter_map(|e| match e {
+            AgentEvent::Done(msg) => Some(msg.clone()),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(
+        done_events,
+        vec!["approved continuation finished".to_string()],
+        "approved turn must continue past escalation to the real completion"
+    );
+    assert_eq!(
+        asker.asked.load(std::sync::atomic::Ordering::SeqCst),
+        2,
+        "card asked exactly twice (re-escalation after each clear asks again)"
+    );
+    let _ = std::fs::remove_file(&cfg_path);
+}
+
+#[tokio::test]
+async fn doom_loop_approval_denied_stops_turn() {
+    // Deny = 现行为：恰好一次 Done，文案与 escalation_check 一字不差。
+    let provider = MockLlmProvider::new(
+        (0..20)
+            .map(|i| failing_exec_response(&format!("tc_{}", i)))
+            .collect(),
+    );
+    let mut config = test_config();
+    config.max_turns = 100;
+
+    let cfg_path = doom_config_file(true, "deny");
+    let asker = std::sync::Arc::new(FakeDoomAsker::denying());
+
+    let mut agent_loop = AgentLoop::new(Box::new(provider), config.clone());
+    agent_loop.set_config_path(cfg_path.clone());
+    agent_loop.set_question_asker(asker.clone());
+    agent_loop.register_tool(
+        "exec".to_string(),
+        Box::new(MockTool {
+            result: "Exit code: 101\nstdout: \nstderr: error[E0432]: unresolved import".to_string(),
+        }),
+    );
+    let instance = AgentInstance::new(config);
+    let context = RequestContext::new("web", "chat1", "user1", "session1");
+
+    let events = agent_loop.run(&instance, "build it", &context).await;
+
+    let done_events: Vec<_> = events
+        .iter()
+        .filter_map(|e| match e {
+            AgentEvent::Done(msg) => Some(msg.clone()),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(done_events.len(), 1, "deny stops the turn once");
+    assert!(done_events[0].contains("无法打破"));
+    assert_eq!(
+        asker.asked.load(std::sync::atomic::Ordering::SeqCst),
+        1,
+        "asked once, then the denial latched the stop"
+    );
+    let _ = std::fs::remove_file(&cfg_path);
+}
+
+#[tokio::test]
+async fn doom_loop_approval_timeout_stops_turn() {
+    // 超时 = 现行为（与 deny 同臂）——无人作答不等于批准。
+    let provider = MockLlmProvider::new(
+        (0..20)
+            .map(|i| failing_exec_response(&format!("tc_{}", i)))
+            .collect(),
+    );
+    let mut config = test_config();
+    config.max_turns = 100;
+
+    let cfg_path = doom_config_file(true, "timeout");
+    let asker = std::sync::Arc::new(FakeDoomAsker::timing_out());
+
+    let mut agent_loop = AgentLoop::new(Box::new(provider), config.clone());
+    agent_loop.set_config_path(cfg_path.clone());
+    agent_loop.set_question_asker(asker.clone());
+    agent_loop.register_tool(
+        "exec".to_string(),
+        Box::new(MockTool {
+            result: "Exit code: 101\nstdout: \nstderr: error[E0432]: unresolved import".to_string(),
+        }),
+    );
+    let instance = AgentInstance::new(config);
+    let context = RequestContext::new("web", "chat1", "user1", "session1");
+
+    let events = agent_loop.run(&instance, "build it", &context).await;
+
+    let done_events: Vec<_> = events
+        .iter()
+        .filter_map(|e| match e {
+            AgentEvent::Done(msg) => Some(msg.clone()),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(done_events.len(), 1, "timeout stops the turn once");
+    assert!(done_events[0].contains("无法打破"));
+    let _ = std::fs::remove_file(&cfg_path);
+}
+
+#[tokio::test]
+async fn doom_loop_approval_without_asker_stops_turn() {
+    // Fail-closed：开关开但 asker 未装配（headless/exec 子进程形态）→
+    // 问不了人 = 不得放行，走现行为停轮。
+    let provider = MockLlmProvider::new(
+        (0..20)
+            .map(|i| failing_exec_response(&format!("tc_{}", i)))
+            .collect(),
+    );
+    let mut config = test_config();
+    config.max_turns = 100;
+
+    let cfg_path = doom_config_file(true, "noasker");
+    let mut agent_loop = AgentLoop::new(Box::new(provider), config.clone());
+    agent_loop.set_config_path(cfg_path.clone());
+    // 刻意不 set_question_asker。
+    agent_loop.register_tool(
+        "exec".to_string(),
+        Box::new(MockTool {
+            result: "Exit code: 101\nstdout: \nstderr: error[E0432]: unresolved import".to_string(),
+        }),
+    );
+    let instance = AgentInstance::new(config);
+    let context = RequestContext::new("web", "chat1", "user1", "session1");
+
+    let events = agent_loop.run(&instance, "build it", &context).await;
+
+    let done_events: Vec<_> = events
+        .iter()
+        .filter_map(|e| match e {
+            AgentEvent::Done(msg) => Some(msg.clone()),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(done_events.len(), 1, "missing asker = current behavior");
+    assert!(done_events[0].contains("无法打破"));
+    let _ = std::fs::remove_file(&cfg_path);
+}
+
+#[tokio::test]
+async fn doom_loop_approval_flag_off_ignores_asker() {
+    // 开关关（默认）：即使 asker 在且总是批准，也绝不发卡——
+    // turn_guard 现行为是安全底座，不被静默装配改变。
+    let provider = MockLlmProvider::new(
+        (0..20)
+            .map(|i| failing_exec_response(&format!("tc_{}", i)))
+            .collect(),
+    );
+    let mut config = test_config();
+    config.max_turns = 100;
+
+    let cfg_path = doom_config_file(false, "flagoff");
+    let asker = std::sync::Arc::new(FakeDoomAsker::approving());
+
+    let mut agent_loop = AgentLoop::new(Box::new(provider), config.clone());
+    agent_loop.set_config_path(cfg_path.clone());
+    agent_loop.set_question_asker(asker.clone());
+    agent_loop.register_tool(
+        "exec".to_string(),
+        Box::new(MockTool {
+            result: "Exit code: 101\nstdout: \nstderr: error[E0432]: unresolved import".to_string(),
+        }),
+    );
+    let instance = AgentInstance::new(config);
+    let context = RequestContext::new("web", "chat1", "user1", "session1");
+
+    let events = agent_loop.run(&instance, "build it", &context).await;
+
+    let done_events: Vec<_> = events
+        .iter()
+        .filter_map(|e| match e {
+            AgentEvent::Done(msg) => Some(msg.clone()),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(done_events.len(), 1, "flag off = current behavior");
+    assert!(done_events[0].contains("无法打破"));
+    assert_eq!(
+        asker.asked.load(std::sync::atomic::Ordering::SeqCst),
+        0,
+        "flag gates the ask — no card is ever sent"
+    );
+    let _ = std::fs::remove_file(&cfg_path);
+}
+
 #[tokio::test]
 async fn validation_budget_actually_stops_turn() {
     // The validation retry budget must END the turn when exhausted, not just
@@ -3347,7 +3649,7 @@ async fn test_checkpoint_e2e_write_then_rewind_restores() {
     let store = Arc::new(CheckpointStore::new(Some(root.join(".ck")), root.clone()));
     let mut agent_loop = AgentLoop::new(Box::new(MockLlmProvider::new(vec![])), test_config());
     agent_loop.set_checkpoint_store(store.clone());
-    agent_loop.register_tool("write_file".to_string(), Box::new(WriteFileTool));
+    agent_loop.register_tool("write_file".to_string(), Box::new(WriteFileTool::default()));
 
     // Pre-existing file whose turn-start content must be captured.
     let file = root.join("target.txt");
@@ -7161,6 +7463,219 @@ async fn u5_parallel_results_preserve_source_order() {
 }
 
 // ===========================================================================
+// G3 (devtool-upgrade 阶段 6): spawn joins the parallel pool
+// ===========================================================================
+
+/// G3: a fake spawn tool — NOT read-only (a real sub-agent runs = side
+/// effects) but explicitly parallel-safe, mirroring the real SpawnTool's
+/// opt-in (G0 semaphore + depth injection + isolated instances make
+/// concurrent execution safe by construction).
+struct SlowSpawnTool {
+    marker: String,
+    delay_ms: u64,
+}
+
+#[async_trait]
+impl Tool for SlowSpawnTool {
+    async fn execute(&self, _args: &str, _ctx: &RequestContext) -> Result<String, String> {
+        tokio::time::sleep(std::time::Duration::from_millis(self.delay_ms)).await;
+        Ok(format!("{} done", self.marker))
+    }
+    // is_read_only stays default false — spawning has side effects.
+    fn is_parallel_safe(&self) -> bool {
+        true
+    }
+}
+
+/// G3: records every `set_invocation_depth` value it receives — proves the
+/// pool dispatches at the invoking instance's detached depth (not 0).
+struct DepthRecorderTool {
+    seen: std::sync::Arc<std::sync::Mutex<Vec<usize>>>,
+}
+
+#[async_trait]
+impl Tool for DepthRecorderTool {
+    async fn execute(&self, _args: &str, _ctx: &RequestContext) -> Result<String, String> {
+        Ok("depth ok".to_string())
+    }
+    fn is_parallel_safe(&self) -> bool {
+        true
+    }
+    fn set_invocation_depth(&self, depth: usize) {
+        self.seen.lock().unwrap().push(depth);
+    }
+}
+
+#[tokio::test]
+async fn g3_spawn_batch_runs_concurrently_slowest_wins() {
+    // 计划验收原话：一轮 3 个 spawn 并发、总耗时≈最慢者。Delays
+    // 100/200/400ms → serial = 700ms, parallel ≈ 400ms (the slowest).
+    // Bounds: <600 proves overlap (well clear of serial 700), ≥380 proves
+    // the batch actually waited for the slowest task to finish.
+    let provider = MockLlmProvider::new(vec![
+        llm_tool_calls(&["g3s1", "g3s2", "g3s3"]),
+        llm_text("done"),
+    ]);
+    let mut agent_loop = AgentLoop::new(Box::new(provider), test_config());
+    agent_loop.register_tool(
+        "g3s1".into(),
+        Box::new(SlowSpawnTool {
+            marker: "S1".into(),
+            delay_ms: 100,
+        }),
+    );
+    agent_loop.register_tool(
+        "g3s2".into(),
+        Box::new(SlowSpawnTool {
+            marker: "S2".into(),
+            delay_ms: 200,
+        }),
+    );
+    agent_loop.register_tool(
+        "g3s3".into(),
+        Box::new(SlowSpawnTool {
+            marker: "S3".into(),
+            delay_ms: 400,
+        }),
+    );
+
+    let instance = AgentInstance::new(test_config());
+    let context = RequestContext::new("web", "c1", "u1", "g3s");
+    let start = std::time::Instant::now();
+    let events = agent_loop.run(&instance, "go", &context).await;
+    let elapsed = start.elapsed();
+    assert!(
+        elapsed < std::time::Duration::from_millis(600),
+        "3 spawns must overlap (parallel ≈ slowest 400ms, serial 700ms); took {:?}",
+        elapsed
+    );
+    assert!(
+        elapsed >= std::time::Duration::from_millis(380),
+        "batch must wait for the slowest spawn (400ms); took {:?}",
+        elapsed
+    );
+    // All three results reached the conversation (as tool results), not just
+    // the fastest ones.
+    let tool_results: Vec<String> = events
+        .iter()
+        .filter_map(|e| match e {
+            AgentEvent::ToolResult(r) => Some(r.result.clone()),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(
+        tool_results,
+        vec!["S1 done", "S2 done", "S3 done"],
+        "source order preserved across concurrent spawns"
+    );
+}
+
+#[tokio::test]
+async fn g3_mixed_spawn_and_readonly_run_concurrently() {
+    // 1 spawn + 2 read-only tools, all 300ms → parallel ≈ 300ms (serial
+    // would be 900ms). The batch is parallel-safe as a whole because every
+    // member is (read-only by default predicate, spawn by opt-in).
+    let provider = MockLlmProvider::new(vec![
+        llm_tool_calls(&["g3s1", "g3r1", "g3r2"]),
+        llm_text("done"),
+    ]);
+    let mut agent_loop = AgentLoop::new(Box::new(provider), test_config());
+    agent_loop.register_tool(
+        "g3s1".into(),
+        Box::new(SlowSpawnTool {
+            marker: "S".into(),
+            delay_ms: 300,
+        }),
+    );
+    agent_loop.register_tool(
+        "g3r1".into(),
+        Box::new(SlowReadTool {
+            marker: "A".into(),
+            delay_ms: 300,
+        }),
+    );
+    agent_loop.register_tool(
+        "g3r2".into(),
+        Box::new(SlowReadTool {
+            marker: "B".into(),
+            delay_ms: 300,
+        }),
+    );
+
+    let instance = AgentInstance::new(test_config());
+    let context = RequestContext::new("web", "c1", "u1", "g3m");
+    let start = std::time::Instant::now();
+    let _ = agent_loop.run(&instance, "go", &context).await;
+    assert!(
+        start.elapsed() < std::time::Duration::from_millis(700),
+        "spawn + read-only must overlap (≈300ms, serial 900ms); took {:?}",
+        start.elapsed()
+    );
+}
+
+#[tokio::test]
+async fn g3_spawn_plus_writer_stays_serial() {
+    // A writer (default is_parallel_safe = is_read_only = false) in the
+    // batch → NOT all-parallel-safe → serial path, fail-closed unchanged.
+    let provider = MockLlmProvider::new(vec![llm_tool_calls(&["g3s1", "g3w1"]), llm_text("done")]);
+    let mut agent_loop = AgentLoop::new(Box::new(provider), test_config());
+    agent_loop.register_tool(
+        "g3s1".into(),
+        Box::new(SlowSpawnTool {
+            marker: "S".into(),
+            delay_ms: 300,
+        }),
+    );
+    agent_loop.register_tool(
+        "g3w1".into(),
+        Box::new(SlowWriteTool {
+            marker: "W".into(),
+            delay_ms: 300,
+        }),
+    );
+
+    let instance = AgentInstance::new(test_config());
+    let context = RequestContext::new("web", "c1", "u1", "g3w");
+    let start = std::time::Instant::now();
+    let _ = agent_loop.run(&instance, "go", &context).await;
+    assert!(
+        start.elapsed() > std::time::Duration::from_millis(500),
+        "a writer forces serial (2×300ms≈600ms); took {:?}",
+        start.elapsed()
+    );
+}
+
+#[tokio::test]
+async fn g3_parallel_pool_injects_instance_depth() {
+    // The pool dispatches via handle_tool_call_at_depth with the invoking
+    // instance's detached_depth — depth-aware tools (spawn) enforce
+    // max_depth correctly even when spawned from a detached sub-agent
+    // (depth ≥ 1), and read-only tools are unaffected (no-op default).
+    let seen = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+    let provider = MockLlmProvider::new(vec![llm_tool_calls(&["g3d1", "g3d2"]), llm_text("done")]);
+    let mut agent_loop = AgentLoop::new(Box::new(provider), test_config());
+    for name in ["g3d1", "g3d2"] {
+        agent_loop.register_tool(
+            name.into(),
+            Box::new(DepthRecorderTool { seen: seen.clone() }),
+        );
+    }
+
+    let instance = AgentInstance::new(test_config());
+    instance.set_detached_depth(2);
+    let context = RequestContext::new("web", "c1", "u1", "g3d");
+    let _ = agent_loop.run(&instance, "go", &context).await;
+
+    let mut got = seen.lock().unwrap().clone();
+    got.sort_unstable();
+    assert_eq!(
+        got,
+        vec![2, 2],
+        "every pool dispatch got the instance depth 2"
+    );
+}
+
+// ===========================================================================
 // G1 (U1): summary request reuses the conversation prefix
 // ===========================================================================
 
@@ -8398,5 +8913,106 @@ fn t10_build_annotation_flag_follows_vision() {
         messages2.iter().filter(|m| !m.images.is_empty()).count(),
         2,
         "supported 下图片字节照常"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// A6（devtool-upgrade 阶段 5）：format-on-save dispatch 级集成测试——
+// handle_tool_call 瀑布内（execute 之后、PostToolUse hooks 之前）触发。
+// ---------------------------------------------------------------------------
+
+/// 写盘 mock：execute 时把烂格式内容写到固定路径（模拟 write_file 的落盘
+/// 副作用，路径从 args 读——A6 band 消费的就是 args.path）。
+struct FileWritingTool {
+    content: String,
+}
+
+#[async_trait]
+impl Tool for FileWritingTool {
+    async fn execute(&self, args: &str, _ctx: &RequestContext) -> Result<String, String> {
+        let path = serde_json::from_str::<serde_json::Value>(args)
+            .ok()
+            .and_then(|v| v.get("path").and_then(|p| p.as_str()).map(String::from))
+            .ok_or_else(|| "missing path".to_string())?;
+        std::fs::write(&path, &self.content).unwrap();
+        Ok(format!("wrote {path}"))
+    }
+}
+
+fn a6_config_json(format_on_save: serde_json::Value) -> String {
+    serde_json::json!({
+        "agents": { "defaults": { "format_on_save": format_on_save } },
+        "model_list": []
+    })
+    .to_string()
+}
+
+#[tokio::test]
+async fn a6_format_on_save_annotates_dispatch_result_for_write_tool() {
+    let dir = tempfile::tempdir().unwrap();
+    let file = dir.path().join("ugly.rs");
+    let cfg_path = dir.path().join("config.json");
+    std::fs::write(
+        &cfg_path,
+        a6_config_json(serde_json::json!({ "enabled": true })),
+    )
+    .unwrap();
+
+    let mut agent_loop = AgentLoop::new(Box::new(MockLlmProvider::new(vec![])), test_config());
+    agent_loop.set_config_path(cfg_path);
+    agent_loop.register_tool(
+        "write_file".to_string(),
+        Box::new(FileWritingTool {
+            content: "fn a(){let x=1;}\n".to_string(),
+        }),
+    );
+
+    let tc = ToolCallInfo {
+        id: "tc_a6".to_string(),
+        name: "write_file".to_string(),
+        arguments: serde_json::json!({ "path": file.to_string_lossy() }).to_string(),
+    };
+    let ctx = RequestContext::new("web", "chat1", "user1", "session1");
+    let result = agent_loop.handle_tool_call(&tc, &ctx).await;
+
+    assert!(
+        result.contains("[format] reformatted by rustfmt"),
+        "result: {result}"
+    );
+    assert!(result.contains("+fn a() {"), "result: {result}");
+    // 磁盘 = 格式化后内容（band 在 execute 之后重写了文件）。
+    let on_disk = std::fs::read_to_string(&file).unwrap();
+    assert!(on_disk.contains("fn a() {"), "on_disk: {on_disk}");
+}
+
+#[tokio::test]
+async fn a6_format_on_save_silent_when_disabled_at_dispatch() {
+    // 对照组：默认关（config 缺 format_on_save 段）→ 无注记、文件原样。
+    let dir = tempfile::tempdir().unwrap();
+    let file = dir.path().join("ugly.rs");
+    let cfg_path = dir.path().join("config.json");
+    std::fs::write(&cfg_path, a6_config_json(serde_json::json!({}))).unwrap();
+
+    let mut agent_loop = AgentLoop::new(Box::new(MockLlmProvider::new(vec![])), test_config());
+    agent_loop.set_config_path(cfg_path);
+    agent_loop.register_tool(
+        "write_file".to_string(),
+        Box::new(FileWritingTool {
+            content: "fn a(){let x=1;}\n".to_string(),
+        }),
+    );
+
+    let tc = ToolCallInfo {
+        id: "tc_a6b".to_string(),
+        name: "write_file".to_string(),
+        arguments: serde_json::json!({ "path": file.to_string_lossy() }).to_string(),
+    };
+    let ctx = RequestContext::new("web", "chat1", "user1", "session1");
+    let result = agent_loop.handle_tool_call(&tc, &ctx).await;
+
+    assert!(!result.contains("[format]"), "result: {result}");
+    assert_eq!(
+        std::fs::read_to_string(&file).unwrap(),
+        "fn a(){let x=1;}\n"
     );
 }

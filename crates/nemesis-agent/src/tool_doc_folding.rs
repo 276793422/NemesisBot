@@ -1,6 +1,6 @@
 //! Y1 (Phase4-a): semantic tool-documentation folding — PURE helpers.
 //!
-//! VCP-inspired: with a large toolset (Big tier = 40+ tools) most tool
+//! With a large toolset (Big tier = 40+ tools) most tool
 //! descriptions are irrelevant to the current conversation. When enabled
 //! (`agents.tool_doc_folding`), the loop ranks tools by cosine similarity
 //! between the latest user message and each tool description (P3.1 embed

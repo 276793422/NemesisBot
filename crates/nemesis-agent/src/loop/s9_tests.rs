@@ -11,7 +11,7 @@
 //! - 5891-6041 build_messages_with_memory_annotated（摘要 cache + memory 注入
 //!   合并 system-reminder）。
 //! - 6686-6775 emit_observer_events_around_llm（None / Some(manager)）。
-//! - 5087-5117 precompute_readonly_batch（Valid/Fixed/Invalid 三臂）。
+//! - 5087-5117 precompute_parallel_batch（Valid/Fixed/Invalid 三臂）。
 //! - 1260-1262 check_mcp_reload 的 mcp_manager=None 早退。
 //! - 2810 maybe_update_summary 的超阈值推进（长历史 + mock 摘要）。
 
@@ -357,7 +357,7 @@ async fn emit_observer_events_wraps_llm_call_both_ways() {
 }
 
 #[tokio::test]
-async fn precompute_readonly_batch_validation_arms() {
+async fn precompute_parallel_batch_validation_arms() {
     let _logs = capture_logs();
     let mut agent_loop = AgentLoop::new(Box::new(MockLlmProvider::new(vec![])), test_config());
     agent_loop.register_tool("s9echo".to_string(), Box::new(EchoTool));
@@ -392,7 +392,7 @@ async fn precompute_readonly_batch_validation_arms() {
             arguments: r#"{"other":1}"#.to_string(),
         },
     ];
-    let out = agent_loop.precompute_readonly_batch(&calls, &ctx).await;
+    let out = agent_loop.precompute_parallel_batch(&calls, &ctx, 0).await;
     assert_eq!(out.len(), 3, "one PrecomputedTool per call");
     assert!(out[0].result.contains("echo:"), "valid arm executes");
     assert!(out[1].result.contains("strict ok"), "fixed arm executes");
@@ -1839,6 +1839,16 @@ async fn bus_flow_summary_success_notice_and_persist() {
         0,
     );
     agent_loop.set_session_store(store.clone());
+    // N1 后 fallback 窗口升到 128k（摘要阈值随之抬到 96k tokens），本测试
+    // 固定走 L1 显式 context_window=32000（阈值 24k），让大历史夹具
+    // （≈30k tokens）不依赖 fallback 默认值。
+    let cfg_path = ws.path().join("config.json");
+    std::fs::write(
+        &cfg_path,
+        r#"{"model_list": [{"model_name": "test-model", "model": "test-model", "context_window": 32000}]}"#,
+    )
+    .unwrap();
+    agent_loop.set_config_path(cfg_path);
     in_tx.send(plain_msg("summarize me")).await.unwrap();
     drop(in_tx);
     agent_loop.run_bus_owned(in_rx).await;
@@ -1882,6 +1892,14 @@ async fn bus_flow_summary_failure_warns_and_keeps_cache_empty() {
         0,
     );
     agent_loop.set_session_store(store.clone());
+    // 同上：L1 显式 32000 窗口，让夹具阈值断言不依赖 N1 的 128k fallback。
+    let cfg_path = ws.path().join("config.json");
+    std::fs::write(
+        &cfg_path,
+        r#"{"model_list": [{"model_name": "test-model", "model": "test-model", "context_window": 32000}]}"#,
+    )
+    .unwrap();
+    agent_loop.set_config_path(cfg_path);
     in_tx
         .send(plain_msg("summarize me but fail"))
         .await
@@ -1971,6 +1989,88 @@ async fn bus_flow_spill_failed_and_below_threshold_both_prune() {
             .expect("final after below-threshold prune");
         assert!(out.content.contains("mid pruned done"));
     }
+}
+
+/// B3（devtool-upgrade 阶段 3）：registry 有 spawn → prune 文案带子代理
+/// 提示，且该文案不可重算 → 必须随 `tool_result_projection` 记档（与
+/// spill 同理）；无 spawn → 投影为 None（纯重算路径，回放字节稳定）。
+/// 端到端观察点：bus 流程收尾把 instance 历史落 session store（3700-3705），
+/// 从 store 读 tool 轮断言投影字段。
+struct SpawnStubTool;
+
+#[async_trait]
+impl Tool for SpawnStubTool {
+    async fn execute(&self, _args: &str, _context: &RequestContext) -> Result<String, String> {
+        Ok("spawn stub".to_string())
+    }
+}
+
+#[tokio::test]
+async fn bus_flow_prune_hint_records_projection_only_with_spawn() {
+    let _logs = capture_logs();
+    let run_case = |register_spawn: bool| {
+        let ws = tempfile::tempdir().unwrap();
+        let store = std::sync::Arc::new(crate::session::SessionStore::new_in_memory());
+        let (out_tx, mut out_rx) = tokio::sync::mpsc::channel(16);
+        let (in_tx, in_rx) = tokio::sync::mpsc::channel(16);
+        let mut agent_loop = AgentLoop::new_bus(
+            Box::new(MockLlmProvider::new(vec![
+                tc_resp(vec![s9_call("b1", "s9mid", "{}")]),
+                resp("b3 done"),
+            ])),
+            test_config(),
+            out_tx,
+            ConcurrentMode::Reject,
+            8,
+            0,
+        );
+        agent_loop.register_tool("s9mid".to_string(), Box::new(MidResultTool));
+        if register_spawn {
+            agent_loop.register_tool("spawn".to_string(), Box::new(SpawnStubTool));
+        }
+        agent_loop.set_workspace_root(ws.path().to_path_buf());
+        agent_loop.set_spill_root(ws.path().join("spill"));
+        agent_loop.set_session_store(store.clone());
+        async move {
+            in_tx.send(plain_msg("b3 prune probe")).await.unwrap();
+            drop(in_tx);
+            agent_loop.run_bus_owned(in_rx).await;
+            let out = out_rx.recv().await.expect("final after b3 prune");
+            assert!(out.content.contains("b3 done"));
+            // 40k < 65536 → prune 档（无 spill 文件）。
+            let history = store.get_history("agent:main:main");
+            let tool_turn = history
+                .iter()
+                .find(|m| m.role == "tool")
+                .expect("tool turn in history");
+            assert_eq!(tool_turn.tool_name.as_deref(), Some("s9mid"));
+            // 历史原文保全（40k 全量）；投影才是模型可见形态。
+            assert!(
+                tool_turn.content.chars().count() >= 40_000,
+                "history keeps the original result"
+            );
+            if register_spawn {
+                let proj = tool_turn
+                    .tool_result_projection
+                    .as_ref()
+                    .expect("hinted prune MUST record a projection override");
+                assert!(
+                    proj.contains("子代理") && proj.contains("spawn 工具"),
+                    "projection carries the spawn hint"
+                );
+                assert!(proj.contains("中间省略"), "prune marker intact");
+            } else {
+                assert!(
+                    tool_turn.tool_result_projection.is_none(),
+                    "unhinted prune stays on the pure recompute path (no ledger row)"
+                );
+            }
+        }
+    };
+    // 有 spawn：投影记档 + 带 hint 文案。
+    run_case(true).await;
+    // 无 spawn：投影 None（可重算，不占账本）。
+    run_case(false).await;
 }
 
 /// record_last_channel / record_last_chat_id 落盘失败 warn（2653-2655 /

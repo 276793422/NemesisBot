@@ -46,14 +46,27 @@ use crate::r#loop::{FileChange, Tool};
 /// Note: `exec_async` (background processes) is intentionally NOT here — a
 /// per-call child exits after one tool call, so a background-process handle it
 /// returned would be orphaned. It stays local until a long-lived executor model
-/// is introduced. `sleep` likewise stays local (no isolation value).
+/// is introduced. `sleep` likewise stays local (no isolation value). The B4
+/// `background_start`/`background_output`/`background_kill` trio is local for
+/// the same reason, more strictly: the job registry lives in the gateway
+/// process (`SharedResources.background_registry`) and the exec_worker child
+/// doesn't even register the tools (`SharedToolConfig.background_registry`
+/// is `None` there).
 pub const MOVE_TOOLS: &[&str] = &[
     "exec",
     "run_script",
+    // C8 (2026-09-06): run_checks spawns cargo/npm/go builds — same write
+    // surface as exec (target/, node_modules/), so executor separation and
+    // sandbox contain it identically. It waits in-call, so a per-call
+    // subprocess is safe.
+    "run_checks",
     "read_file",
     "write_file",
     "list_dir",
     "edit_file",
+    // A7 (2026-09-06): multiedit is a batch edit_file — same write surface,
+    // contained identically (in-memory apply + write-all happens in the child).
+    "multiedit",
     "append_file",
     "delete_file",
     "create_dir",

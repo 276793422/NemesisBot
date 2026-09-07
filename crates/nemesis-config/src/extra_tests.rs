@@ -798,7 +798,8 @@ fn extra_serde_default_agent_defaults_via_json() {
     assert_eq!(cfg.max_tokens, 8192);
     assert!((cfg.temperature - 0.7).abs() < f64::EPSILON);
     assert_eq!(cfg.max_tool_iterations, 100);
-    assert_eq!(cfg.concurrent_request_mode, "reject");
+    // E1 (2026-09-05): serde default flipped reject → queue.
+    assert_eq!(cfg.concurrent_request_mode, "queue");
     assert_eq!(cfg.queue_size, 8);
 }
 

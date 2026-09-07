@@ -12,6 +12,24 @@ use nemesis_config::{CommandEntry, CommandsConfig, load_commands_config, save_co
 use nemesis_path::resolve_commands_config_path_in_workspace;
 use std::path::{Path, PathBuf};
 
+/// K3：内置命令的展示元数据（描述 / 参数提示）。**名称**的单一真相源在
+/// `nemesis_types::constants::BUILTIN_SLASH_COMMANDS`；这里只是 UI 标签表，
+/// 未知名兜底「内置命令」（清单扩了没改这里也不会崩）。
+fn builtin_display_meta(name: &str) -> (&'static str, &'static str) {
+    match name {
+        "help" => ("显示帮助", ""),
+        "model" => ("查看/切换模型", "[alias]"),
+        "show" => ("显示状态", "[model|channel|agents]"),
+        "list" => ("列出资源", "[tools|models|channels|agents]"),
+        "switch" => ("切换目标", "[model|channel] to <name>"),
+        "compact" => ("压缩会话上下文", ""),
+        "clear" => ("清空会话历史", ""),
+        "plan" => ("计划模式（停用文件修改）", ""),
+        "build" => ("切回构建模式", ""),
+        _ => ("内置命令", ""),
+    }
+}
+
 pub struct CommandsHandler;
 
 impl Default for CommandsHandler {
@@ -28,12 +46,27 @@ impl CommandsHandler {
     fn config_path(&self, workspace: &str) -> PathBuf {
         resolve_commands_config_path_in_workspace(Path::new(workspace))
     }
-
     fn commands_list(&self, workspace: &str) -> Result<serde_json::Value, String> {
         let cfg = load_commands_config(&self.config_path(workspace));
+        // K3（devtool-upgrade 阶段 4）：内置命令名随清单下发（单一真相源 =
+        // nemesis_types::constants::BUILTIN_SLASH_COMMANDS，与 AgentLoop 改写
+        // 跳过名单同源）；这里只补 UI 展示元数据（描述/参数提示是标签不是
+        // 行为）。前端补全菜单把 builtins 并进菜单数据源。
+        let builtins: Vec<serde_json::Value> = nemesis_types::constants::BUILTIN_SLASH_COMMANDS
+            .iter()
+            .map(|name| {
+                let (description, argument_hint) = builtin_display_meta(name);
+                serde_json::json!({
+                    "name": name,
+                    "description": description,
+                    "argument_hint": argument_hint,
+                })
+            })
+            .collect();
         Ok(serde_json::json!({
             "commands": cfg.commands,
             "total": cfg.commands.len(),
+            "builtins": builtins,
         }))
     }
 
@@ -74,6 +107,10 @@ impl CommandsHandler {
 impl ModuleHandler for CommandsHandler {
     fn module_name(&self) -> &str {
         "commands"
+    }
+
+    fn commands(&self) -> &'static [&'static str] {
+        &["list", "save"]
     }
 
     async fn handle_cmd(

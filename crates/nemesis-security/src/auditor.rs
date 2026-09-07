@@ -100,11 +100,58 @@ impl ApprovalRequiredError {
 ///
 /// Mirrors Go's `approval.ApprovalManager` interface. The auditor calls into
 /// this when a `require_approval` decision is reached.
+/// 一次审批交互的裁决（F6，devtool-upgrade 阶段 5）。
+///
+/// v1 的 `bool` 升级为结构体：拒绝可携带用户备注（审批卡输入框），auditor
+/// 把备注拼进拒绝消息回灌给模型（纠错回喂——模型知道
+/// 为什么被拒，下一轮可改方案重试而不是盲试）。
+#[derive(Debug, Clone, PartialEq)]
+pub struct ApprovalVerdict {
+    pub approved: bool,
+    /// 拒绝备注（可选；批准时恒 `None`）。空串/纯空白视同 `None`（审计侧
+    /// 拼消息前 trim）。
+    pub note: Option<String>,
+}
+
+impl ApprovalVerdict {
+    pub fn approved() -> Self {
+        Self {
+            approved: true,
+            note: None,
+        }
+    }
+
+    pub fn denied() -> Self {
+        Self {
+            approved: false,
+            note: None,
+        }
+    }
+}
+
+/// K4 (devtool-upgrade 阶段 7): 审批请求的来源通道上下文。
+///
+/// 由 pipeline 从 `ToolInvocation.metadata` 提取（loop 在构造 invocation 时
+/// 填入 `approval_chat_id` / `approval_sender_id`；channel 取
+/// `invocation.source`）。审批管理器据此把审批卡路由回**发起操作的对话**
+/// （IM 通道卡片 + 回执），而不是只会弹 Dashboard/桌面弹窗。字段为空 =
+/// 无来源上下文（cron 直发无 chat 等），管理器自行决定回落行为。
+#[derive(Debug, Clone, Default)]
+pub struct ApprovalContext {
+    /// 来源通道名（web / telegram / feishu / ...）。
+    pub channel: String,
+    /// 来源对话 ID（审批卡送达处 + 回执校验）。
+    pub chat_id: String,
+    /// 发起人 ID（记录用；v1 群聊语义下同 chat 任一成员可批复）。
+    pub sender_id: String,
+}
+
 pub trait ApprovalManager: Send + Sync {
     /// Whether the approval manager is currently running and able to show dialogs.
     fn is_running(&self) -> bool;
 
-    /// Request interactive approval. Returns `true` if approved, `false` if denied.
+    /// Request interactive approval. Returns the user's verdict (F6: a deny
+    /// may carry the user's free-text note for model feedback).
     fn request_approval_sync(
         &self,
         request_id: &str,
@@ -113,7 +160,30 @@ pub trait ApprovalManager: Send + Sync {
         risk_level: &str,
         reason: &str,
         timeout_secs: u64,
-    ) -> Result<bool, String>;
+    ) -> Result<ApprovalVerdict, String>;
+
+    /// K4 (b): 带来源上下文的审批请求。默认实现忽略 ctx 委托旧方法——
+    /// 既有实现（桌面弹窗 / Web 卡片 / ACP）零改动保持现状；支持通道
+    /// 卡片的实现 override 本方法做路由。
+    fn request_approval_sync_ctx(
+        &self,
+        request_id: &str,
+        operation: &str,
+        target: &str,
+        risk_level: &str,
+        reason: &str,
+        timeout_secs: u64,
+        _ctx: &ApprovalContext,
+    ) -> Result<ApprovalVerdict, String> {
+        self.request_approval_sync(
+            request_id,
+            operation,
+            target,
+            risk_level,
+            reason,
+            timeout_secs,
+        )
+    }
 }
 
 /// Security auditor configuration.
@@ -195,6 +265,10 @@ pub struct SecurityAuditor {
     pending_count: AtomicI64,
     /// Optional approval manager for interactive approval dialogs.
     approval_manager: RwLock<Option<Arc<dyn ApprovalManager>>>,
+    /// F3: approval pattern memory（「总是允许」规则表热载器）。命中且层级
+    /// 安全门放行 → require_approval 自动放行（审计标注 auto_by_rule）。
+    approval_rules:
+        RwLock<Option<Arc<nemesis_config::HotReloader<Vec<crate::approval_rules::ApprovalRule>>>>>,
     /// Optional explicit log file path for audit events (date-based).
     /// When set, audit events are appended to this file in JSON format.
     log_file_path: RwLock<Option<PathBuf>>,
@@ -214,6 +288,7 @@ impl SecurityAuditor {
             approved_count: AtomicI64::new(0),
             pending_count: AtomicI64::new(0),
             approval_manager: RwLock::new(None),
+            approval_rules: RwLock::new(None),
             log_file_path: RwLock::new(None),
         }
     }
@@ -244,6 +319,15 @@ impl SecurityAuditor {
     /// Equivalent to Go's `SecurityAuditor.GetApprovalManager()`.
     pub fn get_approval_manager(&self) -> Option<Arc<dyn ApprovalManager>> {
         self.approval_manager.read().clone()
+    }
+
+    /// F3: 挂载审批记忆规则表热载器（gateway 装配；`approval_rules.json`
+    /// 磁盘变化经 `HotReloader::check()` 在每次查询前自动重读）。
+    pub fn set_approval_rules(
+        &self,
+        hot: Arc<nemesis_config::HotReloader<Vec<crate::approval_rules::ApprovalRule>>>,
+    ) {
+        *self.approval_rules.write() = Some(hot);
     }
 
     /// Cleanup old audit logs.
@@ -288,6 +372,18 @@ impl SecurityAuditor {
     /// Request permission for an operation.
     /// Returns (allowed, error_message, request_id).
     pub fn request_permission(&self, req: &OperationRequest) -> (bool, Option<String>, String) {
+        self.request_permission_with_ctx(req, None)
+    }
+
+    /// K4 (b): 带来源上下文的审批入口。`ctx` 来自 pipeline 提取的
+    /// `ToolInvocation.metadata`（来源通道/对话）；None = 无上下文（行为
+    /// 与旧路径逐字节一致）。上下文只影响 RequireApproval 臂传给审批
+    /// 管理器的路由信息，策略评估/审计事件完全不变。
+    pub fn request_permission_with_ctx(
+        &self,
+        req: &OperationRequest,
+        ctx: Option<&ApprovalContext>,
+    ) -> (bool, Option<String>, String) {
         if !self.is_enabled() {
             return (true, None, req.id.clone());
         }
@@ -295,6 +391,38 @@ impl SecurityAuditor {
         self.total_events.fetch_add(1, Ordering::SeqCst);
 
         let (decision, reason, policy) = self.evaluate_request(req);
+
+        // F3: 审批 pattern 记忆——require_approval 先查「总是允许」规则表，
+        // 命中且层级安全门放行（CRITICAL 仅 process_exec 豁免）则自动放行，
+        // 审计事件标注 auto_by_rule。查前 check() 让 approval_rules.json 的
+        // 磁盘变化（审批卡写入 / CLI 清理 / 手工编辑）即时生效。
+        if decision == SecurityDecision::RequireApproval
+            && let Some(hot) = self.approval_rules.read().clone()
+        {
+            hot.check();
+            let rules = hot.get();
+            if let Some(rule) = crate::approval_rules::find_auto_allow_rule(
+                &rules,
+                &req.op_type.to_string(),
+                &req.target,
+                &req.danger_level.to_string(),
+            ) {
+                self.allowed_count.fetch_add(1, Ordering::SeqCst);
+                let event = AuditEvent {
+                    event_id: uuid::Uuid::new_v4().to_string(),
+                    request: req.clone(),
+                    decision: "allowed".to_string(),
+                    reason: format!(
+                        "auto allowed by approval rule ({} {})",
+                        rule.op, rule.pattern
+                    ),
+                    timestamp: chrono::Local::now().to_rfc3339(),
+                    policy_rule: format!("auto_by_rule:{}", rule.pattern),
+                };
+                self.log_audit_event(&event);
+                return (true, None, req.id.clone());
+            }
+        }
 
         let decision_str = match decision {
             SecurityDecision::Allowed => "allowed",
@@ -337,33 +465,48 @@ impl SecurityAuditor {
                 if let Some(mgr) = mgr_opt
                     && mgr.is_running()
                 {
-                    // Call the approval manager synchronously
-                    match mgr.request_approval_sync(
-                        &req.id,
-                        &req.op_type.to_string(),
-                        &req.target,
-                        &req.danger_level.to_string(),
-                        &reason,
-                        self.config.approval_timeout_secs,
-                    ) {
-                        Ok(true) => {
+                    // Call the approval manager synchronously — 带来源上下文时
+                    // 走 ctx 方法（通道卡片路由），否则走旧方法（现状不变）。
+                    let verdict_res = match ctx {
+                        Some(c) => mgr.request_approval_sync_ctx(
+                            &req.id,
+                            &req.op_type.to_string(),
+                            &req.target,
+                            &req.danger_level.to_string(),
+                            &reason,
+                            self.config.approval_timeout_secs,
+                            c,
+                        ),
+                        None => mgr.request_approval_sync(
+                            &req.id,
+                            &req.op_type.to_string(),
+                            &req.target,
+                            &req.danger_level.to_string(),
+                            &reason,
+                            self.config.approval_timeout_secs,
+                        ),
+                    };
+                    match verdict_res {
+                        Ok(v) if v.approved => {
                             // User approved the operation
                             self.pending_count.fetch_sub(1, Ordering::SeqCst);
                             self.approved_count.fetch_add(1, Ordering::SeqCst);
                             return (true, None, req.id.clone());
                         }
-                        Ok(false) => {
-                            // User explicitly denied or timed out
+                        Ok(v) => {
+                            // User explicitly denied or timed out. F6: 用户备注
+                            // 拼进拒绝消息回灌（模型知道为什么被拒）。
                             self.pending_count.fetch_sub(1, Ordering::SeqCst);
                             self.denied_count.fetch_add(1, Ordering::SeqCst);
-                            return (
-                                false,
-                                Some(format!(
-                                    "User rejected {} on '{}' ({})",
-                                    req.op_type, req.target, reason
-                                )),
-                                req.id.clone(),
+                            let base = format!(
+                                "User rejected {} on '{}' ({})",
+                                req.op_type, req.target, reason
                             );
+                            let msg = match v.note.as_deref().map(str::trim) {
+                                Some(n) if !n.is_empty() => format!("{}: {}", base, n),
+                                _ => base,
+                            };
+                            return (false, Some(msg), req.id.clone());
                         }
                         Err(_) => {
                             // Dialog failed, fall through to pending request storage

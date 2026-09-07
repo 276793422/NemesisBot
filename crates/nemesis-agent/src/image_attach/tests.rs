@@ -117,7 +117,7 @@ fn named_path_outside_workspace_attaches_via_pipeline() {
         let plugin = allow_all_plugin(&dir.path().join("audit.jsonl"));
 
         let text = format!("看这张图 {}", img.display());
-        let outcome = attach_turn_images(&text, &[], Some(&ws), "web", Some(&plugin));
+        let outcome = attach_turn_images(&text, &[], Some(&ws), None, "web", Some(&plugin));
 
         assert!(
             outcome.notes.is_empty(),
@@ -139,7 +139,7 @@ fn named_path_attaches_without_pipeline() {
     let ws = dir.path().join("workspace");
 
     let text = format!("图 {}", img.display());
-    let outcome = attach_turn_images(&text, &[], Some(&ws), "web", None);
+    let outcome = attach_turn_images(&text, &[], Some(&ws), None, "web", None);
 
     assert!(outcome.notes.is_empty(), "notes: {:?}", outcome.notes);
     assert_eq!(outcome.ref_strings().len(), 1);
@@ -161,7 +161,7 @@ fn file_rules_deny_png_blocks_attach_but_jpg_passes() {
         let plugin = deny_png_plugin();
 
         let text = format!("两张图 {} 和 {}", png.display(), jpg.display());
-        let outcome = attach_turn_images(&text, &[], Some(&ws), "web", Some(&plugin));
+        let outcome = attach_turn_images(&text, &[], Some(&ws), None, "web", Some(&plugin));
 
         // png 被 Layer 3 拦 → 诚实注明；jpg 不受牵连照常附加。
         assert_eq!(outcome.attached.len(), 1, "只有 jpg 应附加");
@@ -225,6 +225,7 @@ fn audit_chain_records_path_and_sha256() {
             &text,
             &[],
             Some(&dir.path().join("ws")),
+            None,
             "web",
             Some(&plugin),
         );
@@ -272,7 +273,7 @@ fn media_path_reference_attaches_and_dedups_with_text() {
     // 文本和 media 指同一张图 → 去重后只附加一次。
     let text = format!("同图 {}", img.display());
     let media = vec![media_ref(&img.to_string_lossy())];
-    let outcome = attach_turn_images(&text, &media, Some(&ws), "web", None);
+    let outcome = attach_turn_images(&text, &media, Some(&ws), None, "web", None);
 
     assert!(outcome.notes.is_empty(), "notes: {:?}", outcome.notes);
     assert_eq!(outcome.ref_strings().len(), 1, "跨来源同图应去重");
@@ -286,6 +287,7 @@ fn media_missing_path_gets_honest_note() {
     let outcome = attach_turn_images(
         "hi",
         &[media_ref(&missing.to_string_lossy())],
+        None,
         None,
         "web",
         None,
@@ -309,6 +311,7 @@ fn media_disguised_text_file_gets_not_image_note() {
         "hi",
         &[media_ref(&fake.to_string_lossy())],
         None,
+        None,
         "web",
         None,
     );
@@ -328,6 +331,7 @@ fn media_url_without_prefetch_gets_honest_note() {
     let outcome = attach_turn_images(
         "hi",
         &[media_ref("https://example.com/pic.png")],
+        None,
         None,
         "web",
         None,
@@ -433,7 +437,7 @@ async fn t9_url_download_lands_and_attaches_to_base64() {
     assert_eq!(stored, png);
 
     // 改写后的引用走同步附加链 → 水合出同字节 base64（goal 验证口径）。
-    let outcome = attach_turn_images("看图", &kept, None, "web", None);
+    let outcome = attach_turn_images("看图", &kept, None, None, "web", None);
     assert!(outcome.notes.is_empty(), "notes: {:?}", outcome.notes);
     assert_eq!(outcome.ref_strings().len(), 1);
     let refs = outcome.ref_strings();
@@ -497,7 +501,7 @@ async fn t9_same_url_fetched_once_and_deduped() {
     assert_eq!(kept[0].url, kept[1].url);
 
     // 附加层跨来源去重：两条相同路径只附加一次。
-    let outcome = attach_turn_images("hi", &kept, None, "web", None);
+    let outcome = attach_turn_images("hi", &kept, None, None, "web", None);
     assert!(outcome.notes.is_empty(), "notes: {:?}", outcome.notes);
     assert_eq!(outcome.ref_strings().len(), 1);
 }
@@ -696,7 +700,7 @@ fn d6_per_message_cap_drops_overflow_with_aggregated_note() {
         .collect::<Vec<_>>()
         .join(" 和 ");
 
-    let outcome = attach_turn_images(&text, &[], None, "web", None);
+    let outcome = attach_turn_images(&text, &[], None, None, "web", None);
 
     assert_eq!(
         outcome.attached.len(),
@@ -753,7 +757,7 @@ fn d6_cap_covers_media_source_after_text_source() {
         .map(|p| p.display().to_string())
         .collect::<Vec<_>>()
         .join(" 和 ");
-    let outcome = attach_turn_images(&text, &media, None, "web", None);
+    let outcome = attach_turn_images(&text, &media, None, None, "web", None);
 
     assert_eq!(
         outcome.attached.len(),
@@ -794,7 +798,7 @@ fn d6_under_cap_no_note() {
         text_parts.push(p.display().to_string());
     }
 
-    let outcome = attach_turn_images(&text_parts.join(" 和 "), &[], None, "web", None);
+    let outcome = attach_turn_images(&text_parts.join(" 和 "), &[], None, None, "web", None);
 
     assert!(
         outcome.notes.is_empty(),

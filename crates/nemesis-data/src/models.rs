@@ -128,6 +128,20 @@ pub struct UsageSummary {
     pub cache_hit_rate: f64,
 }
 
+/// 单会话的用量聚合（M5 会话级 cost/context 常驻）。
+///
+/// `input_tokens` 已含 cache_read（模型实际"读到"的输入口径，与
+/// UsageStoreSlot 的统计同式）；`requests` 是落库的 LLM 请求条数。
+/// 会话无任何请求时全零（不是错误——`logs.session_usage` 对
+/// 空/外部通道会话诚实返回零值）。
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct SessionUsageAgg {
+    pub requests: i64,
+    pub input_tokens: i64,
+    pub output_tokens: i64,
+    pub total_cost_usd: f64,
+}
+
 /// A single point in a trend chart.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TrendPoint {

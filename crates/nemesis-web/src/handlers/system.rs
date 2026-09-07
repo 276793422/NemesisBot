@@ -10,6 +10,10 @@ impl ModuleHandler for SystemHandler {
         "system"
     }
 
+    fn commands(&self) -> &'static [&'static str] {
+        &["version", "status", "commands"]
+    }
+
     async fn handle_cmd(
         &self,
         cmd: &str,
@@ -19,6 +23,23 @@ impl ModuleHandler for SystemHandler {
         match cmd {
             "version" => self.version(ctx),
             "status" => self.status(ctx),
+            // L1（devtool-upgrade 阶段 6）：全量 WSAPI 命令注册表——
+            // register_all 发布的 OnceLock 快照（module → 静态清单）。
+            "commands" => {
+                let modules: Vec<serde_json::Value> = crate::handlers::commands_registry()
+                    .iter()
+                    .map(|(module, cmds)| serde_json::json!({ "module": module, "commands": cmds }))
+                    .collect();
+                let total_cmds: usize = crate::handlers::commands_registry()
+                    .iter()
+                    .map(|(_, cmds)| cmds.len())
+                    .sum();
+                Ok(Some(serde_json::json!({
+                    "modules": modules,
+                    "total_modules": modules.len(),
+                    "total_cmds": total_cmds,
+                })))
+            }
             _ => Err(format!("unknown command: system.{}", cmd)),
         }
     }

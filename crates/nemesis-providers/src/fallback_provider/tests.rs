@@ -210,7 +210,7 @@ async fn test_fallback_empty_chain() {
 #[tokio::test]
 async fn test_fallback_cooldown_skips() {
     let cooldown = Arc::new(CooldownTracker::new());
-    cooldown.mark_failure("p1", FailoverReason::RateLimit);
+    cooldown.mark_failure("p1", FailoverReason::RateLimit, None);
 
     let provider = FallbackProvider::with_cooldown(
         "test-fallback",
@@ -690,7 +690,7 @@ async fn test_execute_image_size_error_aborts() {
 #[tokio::test]
 async fn test_execute_detailed_cooldown_skips() {
     let cooldown = Arc::new(CooldownTracker::new());
-    cooldown.mark_failure("p1", FailoverReason::RateLimit);
+    cooldown.mark_failure("p1", FailoverReason::RateLimit, None);
 
     let provider = FallbackProvider::with_cooldown(
         "test-fallback",
@@ -842,8 +842,8 @@ fn w4c_msg() -> Vec<Message> {
 async fn test_w4c_execute_detailed_all_in_cooldown_falls_through_exhausted() {
     // 两个 provider 都在冷却 → 循环全部 continue → 落到尾部 exhausted 返回
     let cooldown = Arc::new(CooldownTracker::new());
-    cooldown.mark_failure("p1", FailoverReason::RateLimit);
-    cooldown.mark_failure("p2", FailoverReason::RateLimit);
+    cooldown.mark_failure("p1", FailoverReason::RateLimit, None);
+    cooldown.mark_failure("p2", FailoverReason::RateLimit, None);
 
     let provider = FallbackProvider::with_cooldown(
         "all-cooled",
@@ -944,4 +944,78 @@ async fn test_w4c_chat_trait_method_explicit_model_reaches_provider() {
         .unwrap();
     assert_eq!(resp.content, "ok");
     assert_eq!(recorder.seen.lock()[0], "trait-model");
+}
+
+// ---------------------------------------------------------------------------
+// J1: Retry-After hint 从错误流入 cooldown
+// ---------------------------------------------------------------------------
+
+/// 429 + Retry-After 的 provider：冷却应取服务端权威 30s，而非公式第 1 次
+/// 失败的 60s。
+#[tokio::test]
+async fn test_fallback_cooldown_honors_retry_after_hint() {
+    use std::time::Duration;
+
+    struct RetryAfterProvider {
+        name: String,
+    }
+
+    #[async_trait]
+    impl LLMProvider for RetryAfterProvider {
+        async fn chat(
+            &self,
+            _messages: &[Message],
+            _tools: &[ToolDefinition],
+            _model: &str,
+            _options: &ChatOptions,
+        ) -> Result<LLMResponse, FailoverError> {
+            Err(FailoverError::RateLimit {
+                provider: self.name.clone(),
+                model: "m".to_string(),
+                retry_after: Some(30),
+            })
+        }
+
+        fn default_model(&self) -> &str {
+            "m"
+        }
+
+        fn name(&self) -> &str {
+            &self.name
+        }
+    }
+
+    let cooldown = Arc::new(CooldownTracker::new());
+    let provider = FallbackProvider::with_cooldown(
+        "test-fallback",
+        vec![FallbackEntry {
+            provider: Arc::new(RetryAfterProvider {
+                name: "ra1".to_string(),
+            }),
+            model: "m".to_string(),
+        }],
+        Arc::clone(&cooldown),
+    );
+
+    let messages = vec![Message {
+        role: "user".to_string(),
+        content: "Hello".into(),
+        tool_calls: vec![],
+        tool_call_id: None,
+        timestamp: None,
+        reasoning_content: None,
+        extra: std::collections::HashMap::new(),
+    }];
+    let _ = provider
+        .chat(&messages, &[], "", &ChatOptions::default())
+        .await;
+
+    let remaining = cooldown
+        .cooldown_remaining("ra1")
+        .expect("provider should be in cooldown");
+    assert!(
+        remaining <= Duration::from_secs(30) && remaining > Duration::from_secs(28),
+        "hint 30s expected, got {:?}",
+        remaining
+    );
 }

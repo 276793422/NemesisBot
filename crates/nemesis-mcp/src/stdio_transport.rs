@@ -60,6 +60,44 @@ impl StdioTransport {
     }
 }
 
+// ---------------------------------------------------------------------------
+// J3: stdout 行分类（响应 / 通知 / 垃圾行）
+// ---------------------------------------------------------------------------
+
+/// `classify_line` 的分类结果。抽成纯函数便于单测——真实的 subprocess
+/// 读取循环没法直接构造。
+enum LineKind {
+    /// 带 `id` 的 JSON-RPC 响应（含错误响应——错误响应也带 id）。
+    Response,
+    /// progress 通知（`method` 含 "progress"）。
+    Progress(String),
+    /// 其他通知（log / cancelled / initialized 等）。
+    Notification(String),
+    /// 非 JSON 行（服务器往 stdout 打的 banner / 日志）。
+    Garbage,
+}
+
+/// 按行内容分类。判定规则：JSON 且带 `id` = 响应；JSON 无 `id` = 通知
+/// （JSON-RPC 通知就是无 id 请求）；其余 = 垃圾行。
+fn classify_line(line: &str) -> LineKind {
+    let Ok(v) = serde_json::from_str::<serde_json::Value>(line.trim()) else {
+        return LineKind::Garbage;
+    };
+    if v.get("id").is_some() {
+        return LineKind::Response;
+    }
+    let method = v
+        .get("method")
+        .and_then(|m| m.as_str())
+        .unwrap_or("unknown")
+        .to_string();
+    if method.contains("progress") {
+        LineKind::Progress(method)
+    } else {
+        LineKind::Notification(method)
+    }
+}
+
 #[async_trait]
 impl Transport for StdioTransport {
     async fn connect(&mut self) -> Result<(), TransportError> {
@@ -160,25 +198,55 @@ impl Transport for StdioTransport {
             Duration::from_millis(timeout_ms)
         };
 
+        // J3：逐行读直到拿到带 id 的响应行（整体 deadline 不变）。无 id 的
+        // JSON-RPC 通知（progress/log 是 MCP 标准行为）不是本次请求的响应，
+        // 记 trace 后跳过；非 JSON 行（服务器 banner）同样跳过。旧实现读
+        // 一行就当响应解析：服务器在响应前先发通知会让通知行反序列化失败
+        // （TransportResponse 要求 id 字段）→ 整个请求报 send_failed。
+        let deadline = tokio::time::Instant::now() + effective_timeout;
         let response_line = {
             let mut reader = stdout.lock().await;
-            let mut buf = String::new();
-            let read_future = reader.read_line(&mut buf);
+            loop {
+                let mut buf = String::new();
+                let remaining = deadline
+                    .checked_duration_since(tokio::time::Instant::now())
+                    .unwrap_or_default();
+                if remaining.is_zero() {
+                    return Err(TransportError::timeout());
+                }
+                timeout(remaining, reader.read_line(&mut buf))
+                    .await
+                    .map_err(|_| TransportError::timeout())?
+                    .map_err(|e| {
+                        TransportError::send_failed(format!("failed to read from stdout: {e}"))
+                    })?;
 
-            timeout(effective_timeout, read_future)
-                .await
-                .map_err(|_| TransportError::timeout())?
-                .map_err(|e| {
-                    TransportError::send_failed(format!("failed to read from stdout: {e}"))
-                })?;
+                if buf.is_empty() {
+                    return Err(TransportError::send_failed(
+                        "connection closed (EOF from MCP server)",
+                    ));
+                }
 
-            if buf.is_empty() {
-                return Err(TransportError::send_failed(
-                    "connection closed (EOF from MCP server)",
-                ));
+                match classify_line(&buf) {
+                    LineKind::Response => break buf,
+                    LineKind::Progress(method) => {
+                        tracing::trace!(
+                            method = %method,
+                            "[StdioTransport] MCP progress notification: {}",
+                            buf.trim()
+                        );
+                    }
+                    LineKind::Notification(method) => {
+                        tracing::trace!(
+                            method = %method,
+                            "[StdioTransport] MCP notification skipped"
+                        );
+                    }
+                    LineKind::Garbage => {
+                        tracing::trace!("[StdioTransport] MCP non-JSON stdout line skipped");
+                    }
+                }
             }
-
-            buf
         };
 
         // Parse the response.

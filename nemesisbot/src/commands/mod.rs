@@ -1,5 +1,7 @@
 //! CLI command modules.
 
+/// L7（devtool-upgrade 阶段 7）：ACP server（编辑器等客户端 stdio 接入）。
+pub mod acp;
 pub mod agent;
 #[cfg(feature = "auth")]
 pub mod auth;
@@ -32,6 +34,9 @@ pub mod memory;
 pub mod migrate;
 pub mod model;
 pub mod persona;
+/// K1（devtool-upgrade 阶段 4）：headless 单任务执行（无端口、无 gateway，
+/// 安全 9 层全量生效，跑完即退）。
+pub mod run;
 #[cfg(feature = "sandbox")]
 pub mod sandbox;
 #[cfg(feature = "security")]

@@ -516,7 +516,7 @@ mod r10 {
         backdate(&spill_file, 10 * DAY);
     }
 
-    /// CC hooks.json（K2/U14）：`{"hooks":{...}}` 包装形态 + 一条合法
+    /// hooks.json（K2/U14）：`{"hooks":{...}}` 包装形态 + 一条合法
     /// command 脚本 → load_from_dir 出 Some → bridge.register 命中。
     fn seed_hooks_json(home: &std::path::Path) {
         let cfg_dir = home.join("config");

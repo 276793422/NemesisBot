@@ -122,6 +122,7 @@ fn test_large_event_data() {
 #[test]
 fn test_event_debug_format() {
     let event = Event {
+        seq: 1,
         event_type: "test".to_string(),
         data: serde_json::json!({"key": "value"}),
     };
@@ -211,6 +212,7 @@ fn test_publish_many_events() {
 #[test]
 fn test_event_serialization_contains_event_type() {
     let event = Event {
+        seq: 1,
         event_type: "custom-type".to_string(),
         data: serde_json::json!({"payload": 123}),
     };
@@ -273,6 +275,7 @@ fn test_event_with_nested_object() {
 #[test]
 fn test_event_clone() {
     let event = Event {
+        seq: 1,
         event_type: "test".into(),
         data: serde_json::json!({"key": "value"}),
     };
@@ -341,6 +344,7 @@ fn test_subscriber_count_multiple() {
 #[test]
 fn test_event_serialization_roundtrip() {
     let event = Event {
+        seq: 1,
         event_type: "test".into(),
         data: serde_json::json!({"msg": "hello"}),
     };
@@ -352,6 +356,7 @@ fn test_event_serialization_roundtrip() {
 #[test]
 fn test_event_without_data() {
     let event = Event {
+        seq: 1,
         event_type: "nots".into(),
         data: serde_json::json!(null),
     };
@@ -370,9 +375,97 @@ fn test_hub_publish_no_subscriber_no_panic() {
 #[test]
 fn test_event_debug_output() {
     let event = Event {
+        seq: 1,
         event_type: "debug-test".into(),
         data: serde_json::json!({"key": "val"}),
     };
     let debug_str = format!("{:?}", event);
     assert!(debug_str.contains("debug-test"));
+}
+
+// --- L2（devtool-upgrade 阶段 6）：seq 盖章 + 环形重放缓冲 ---
+
+#[test]
+fn l2_publish_stamps_monotonic_seq_per_hub() {
+    let hub = EventHub::new();
+    let mut rx = hub.subscribe();
+    for i in 0..5 {
+        hub.publish("seq-test", serde_json::json!({"i": i}));
+    }
+    for expect in 1u64..=5 {
+        let event = rx.try_recv().unwrap();
+        assert_eq!(event.seq, expect, "seq must be 1-起 monotonic within a hub");
+    }
+    assert_eq!(hub.latest_seq(), 5);
+}
+
+#[test]
+fn l2_seq_counters_are_independent_across_hubs() {
+    let hub_a = EventHub::new();
+    let hub_b = EventHub::new();
+    hub_a.publish("x", serde_json::json!({}));
+    hub_a.publish("x", serde_json::json!({}));
+    hub_b.publish("x", serde_json::json!({}));
+    assert_eq!(hub_a.latest_seq(), 2);
+    assert_eq!(hub_b.latest_seq(), 1);
+}
+
+#[test]
+fn l2_replay_after_full_coverage() {
+    let hub = EventHub::new();
+    for i in 0..10 {
+        hub.publish("r", serde_json::json!({"i": i}));
+    }
+    // 追平客户端：空、无缺口
+    let (events, gap) = hub.replay_after(10);
+    assert!(events.is_empty() && !gap);
+    // 中途掉线：拿 seq 8..=10
+    let (events, gap) = hub.replay_after(7);
+    assert!(!gap);
+    assert_eq!(events.len(), 3);
+    assert_eq!(events[0].seq, 8);
+    // from-scratch：窗口内全量
+    let (events, gap) = hub.replay_after(0);
+    assert_eq!(events.len(), 10);
+    assert!(!gap);
+    // 超前（网关重启 seq 重置后的旧客户端）：诚实 gap 提示
+    let (events, gap) = hub.replay_after(999);
+    assert!(events.is_empty() && gap);
+}
+
+#[test]
+fn l2_replay_ring_cap_slides_window_with_gap() {
+    let hub = EventHub::new();
+    let total = REPLAY_BUFFER_CAP as u64 + 25;
+    for i in 0..total {
+        hub.publish("flood", serde_json::json!({"i": i}));
+    }
+    // after=0：最早 25 条已滑出窗口 → gap=true，缓冲里是后 1000 条
+    let (events, gap) = hub.replay_after(0);
+    assert!(gap);
+    assert_eq!(events.len(), REPLAY_BUFFER_CAP);
+    assert_eq!(events[0].seq, 26);
+    // 窗口内起点 → 无缺口
+    let (events, gap) = hub.replay_after(25);
+    assert!(!gap);
+    assert_eq!(events.len(), total as usize - 25);
+    assert_eq!(events[0].seq, 26);
+    assert_eq!(hub.latest_seq(), total);
+}
+
+#[test]
+fn l2_replay_events_are_ordered_and_match_live() {
+    let hub = EventHub::new();
+    let mut rx = hub.subscribe();
+    for i in 0..6 {
+        hub.publish("ord", serde_json::json!({"i": i}));
+    }
+    let live: Vec<u64> = (0..6).map(|_| rx.try_recv().unwrap().seq).collect();
+    let (replayed, gap) = hub.replay_after(0);
+    assert!(!gap);
+    let replay_seqs: Vec<u64> = replayed.iter().map(|e| e.seq).collect();
+    assert_eq!(
+        live, replay_seqs,
+        "replay window must match live order/seqs"
+    );
 }

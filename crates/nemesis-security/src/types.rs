@@ -134,6 +134,26 @@ pub struct ToolInvocation {
     pub metadata: std::collections::HashMap<String, String>,
 }
 
+/// F5 (devtool-upgrade 阶段 2): structured deny feedback from the 8-layer
+/// pipeline. Replaces the free-text `Option<String>` so consumers (agent loop
+/// replay to the model, image gate, tests) can present layer / policy /
+/// summary / suggestion separately.
+/// `summary` 保留各层原文；`policy` 与审计 JSONL 的 policy 列同标识
+/// （injection_detector / command_guard / abac / …），两处可对账。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DenyInfo {
+    /// Which layer denied: injection / command / abac / credential / dlp /
+    /// ssrf / virus.
+    pub layer: &'static str,
+    /// The policy/component that fired (same identifier as the audit
+    /// JSONL policy column).
+    pub policy: String,
+    /// Original free-text reason (unchanged from the pre-F5 message).
+    pub summary: String,
+    /// Fixed per-layer remediation hint for the model.
+    pub suggestion: Option<String>,
+}
+
 /// Security decision result.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum SecurityDecision {
@@ -286,7 +306,12 @@ pub fn tool_to_operation(tool_name: &str) -> Option<OperationType> {
         "list_directory" | "list_dir" => Some(OperationType::DirRead),
         "create_directory" | "create_dir" => Some(OperationType::DirCreate),
         "delete_directory" | "delete_dir" => Some(OperationType::DirDelete),
-        "exec" | "execute_command" | "shell" | "exec_async" | "cron" => {
+        // B4（2026-09-05）：background_start 语义等同 exec（起进程）→ 同档
+        // ProcessExec，命令本体照常过 8 层管线。background_output /
+        // background_kill 不映射：只操作本注册表内的自有任务（命令已在
+        // start 时过闸，读自有缓冲/杀自属子进程不构成新攻击面），走未知名
+        // 放行分支。
+        "exec" | "execute_command" | "shell" | "exec_async" | "background_start" | "cron" => {
             Some(OperationType::ProcessExec)
         }
         // U10 统一执行世界：`run_script` 是 workflow script 节点 + agent 的
@@ -303,6 +328,10 @@ pub fn tool_to_operation(tool_name: &str) -> Option<OperationType> {
         "http_request" | "web_request" | "web_fetch" | "web_search" | "cluster_rpc"
         | "find_skills" => Some(OperationType::NetworkRequest),
         "screen_capture" => Some(OperationType::FileWrite),
+        // H1（2026-09-05）：todowrite 本质是 workspace 内写文件（sessions/
+        // todo_*.json），归 FileWrite 走同类审查（空 target 不匹配任何
+        // ABAC 规则 → default action 兜底，默认配置放行）。
+        "todowrite" => Some(OperationType::FileWrite),
         _ => None,
     }
 }
@@ -321,7 +350,7 @@ pub fn extract_target(tool_name: &str, args: &serde_json::Value) -> String {
             .and_then(|v| v.as_str())
             .unwrap_or("")
             .to_string(),
-        "exec" | "execute_command" | "spawn" | "shell" | "exec_async" => args
+        "exec" | "execute_command" | "spawn" | "shell" | "exec_async" | "background_start" => args
             .get("command")
             .and_then(|v| v.as_str())
             .unwrap_or("")

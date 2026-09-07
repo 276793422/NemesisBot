@@ -251,7 +251,7 @@ async fn handle_tool_call_pre_blocks() {
     let result = lp.handle_tool_call(&marker_call(), &test_context()).await;
 
     assert!(
-        result.starts_with("⛔ HOOK BLOCKED:"),
+        result.starts_with("⛔ HOOK BLOCKED [layer:"),
         "blocked marker missing: {result}"
     );
     assert!(
@@ -308,7 +308,7 @@ async fn handle_tool_call_pre_fires_for_unknown_tool() {
     let result = lp.handle_tool_call(&call, &test_context()).await;
 
     assert!(
-        result.starts_with("⛔ HOOK BLOCKED:"),
+        result.starts_with("⛔ HOOK BLOCKED [layer:"),
         "pre hook must fire for unknown tools: {result}"
     );
 }

@@ -1,6 +1,6 @@
 <script setup lang="ts">
 /**
- * Session sidebar — ChatGPT-style conversation list for the Dashboard chat
+ * Session sidebar — conversation list for the Dashboard chat
  * page. Reads/writes `useSessionStore`; selecting a row flips `currentId`,
  * which ChatPanel watches to reset + reload that conversation's history.
  * UI conventions follow `components/logs/SessionList.vue` (selected highlight,
@@ -9,11 +9,65 @@
 import { onMounted, computed, ref } from 'vue'
 import { useSessionStore } from '../stores/session'
 import { useToast } from '../composables/useToast'
+// M5 (2026-09-05): 会话用量小字（sessions.list 回填的 tokens/cost）——
+// 格式化与 ChatPanel 常驻条共用同一 helper。
+import { fmtUsageLine as usage } from '../composables/useUsageFormat'
 import ForkSessionModal from './ForkSessionModal.vue'
 
 const sessionStore = useSessionStore()
 const toast = useToast()
-const sessions = computed(() => sessionStore.sessions)
+
+// ---------------------------------------------------------------------------
+// M6（devtool-upgrade 阶段 7）：会话 pin 快速槽。纯前端——pinned 集合存
+// localStorage，pinned 会话置顶显示（组内保持原排序），后端 sessions.list
+// 协议不动。删除会话时顺带清 pin，防残留 id 永久占顶。
+// ---------------------------------------------------------------------------
+const PIN_KEY = 'nb_pinned_sessions'
+
+function loadPinned(): Set<string> {
+  try {
+    const raw = JSON.parse(localStorage.getItem(PIN_KEY) || '[]')
+    return new Set(Array.isArray(raw) ? raw.filter((x: unknown) => typeof x === 'string') : [])
+  } catch {
+    return new Set()
+  }
+}
+
+const pinnedIds = ref<Set<string>>(loadPinned())
+
+function persistPinned() {
+  localStorage.setItem(PIN_KEY, JSON.stringify([...pinnedIds.value]))
+}
+
+function isPinned(id: string): boolean {
+  return pinnedIds.value.has(id)
+}
+
+function togglePin(id: string, e: Event) {
+  e.stopPropagation()
+  if (pinnedIds.value.has(id)) {
+    pinnedIds.value.delete(id)
+  } else {
+    pinnedIds.value.add(id)
+  }
+  // 换新 Set 触发 computed 重算（Set 内部变更不改变 ref 引用）。
+  pinnedIds.value = new Set(pinnedIds.value)
+  persistPinned()
+}
+
+function unpinIfDeleted(id: string) {
+  if (!pinnedIds.value.has(id)) return
+  pinnedIds.value.delete(id)
+  pinnedIds.value = new Set(pinnedIds.value)
+  persistPinned()
+}
+
+/** pinned 置顶、其余保持 sessions.list 原序（稳定分组）。 */
+const sessions = computed(() => {
+  const list = sessionStore.sessions
+  return [...list.filter(s => pinnedIds.value.has(s.id)), ...list.filter(s => !pinnedIds.value.has(s.id))]
+})
+
 const currentId = computed(() => sessionStore.currentId)
 // P3-1: fork dialog state (null = closed).
 const forkTarget = ref<{ id: string; title: string } | null>(null)
@@ -38,6 +92,7 @@ async function newChat() {
 async function del(id: string, e: Event) {
   e.stopPropagation()
   if (!confirm('删除这个会话？历史不可恢复。')) return
+  unpinIfDeleted(id)
   await sessionStore.remove(id)
 }
 
@@ -90,6 +145,33 @@ function title(s: { title?: string; firstMessage: string; id: string }): string 
   return s.title || s.firstMessage || s.id.slice(0, 8)
 }
 
+// ---------------------------------------------------------------------------
+// E4 (2026-09-05): fork 血缘标记（sessions.list 回填 parent/parentTitle/
+// forkedAtTurn）。父会话在列表里 → 可点击跳转；不在（已删/异源会话）→
+// 纯文本标记不误导。
+// ---------------------------------------------------------------------------
+
+type ForkRef = { id: string; title?: string; firstMessage: string; parent?: string; parentTitle?: string; forkedAtTurn?: number }
+
+/** 父会话 sid（`agent:main:session:{sid}` → `{sid}`；异形 key 原样返回）。 */
+function parentSid(s: ForkRef): string {
+  return s.parent?.replace(/^agent:main:session:/, '') ?? ''
+}
+
+function parentInList(s: ForkRef): boolean {
+  return !!s.parent && sessionStore.sessions.some(x => x.id === parentSid(s))
+}
+
+function forkLabel(s: ForkRef): string {
+  const base = s.parentTitle || parentSid(s)
+  return s.forkedAtTurn ? `分叉自「${base}」· 第 ${s.forkedAtTurn} 轮` : `分叉自「${base}」`
+}
+
+function goParent(s: ForkRef) {
+  if (!parentInList(s)) return
+  sessionStore.switchTo(parentSid(s))
+}
+
 function relTime(ts: string): string {
   if (!ts) return ''
   const d = new Date(ts)
@@ -115,9 +197,24 @@ function relTime(ts: string): string {
         :class="{ active: s.id === currentId }"
         @click="select(s.id)"
       >
-        <div class="session-title">{{ title(s) }}</div>
+        <div class="session-title">
+          <!-- M6: pinned 会话标题前缀标记（置顶行的视觉识别） -->
+          <span v-if="isPinned(s.id)" class="pin-flag" title="已置顶">📌</span>
+          {{ title(s) }}
+        </div>
+        <!-- E4: fork 血缘标记（父在列表可点击跳转；不在则纯文本） -->
+        <div
+          v-if="s.parent"
+          class="session-fork-line"
+          :class="{ link: parentInList(s) }"
+          :title="parentInList(s) ? '跳转到父会话' : '父会话不在列表中'"
+          @click.stop="goParent(s)"
+        >↳ {{ forkLabel(s) }}</div>
+        <!-- M5: 会话用量（tokens/cost，sessions.list 回填；无记录不占位） -->
+        <div v-if="usage(s)" class="session-usage">{{ usage(s) }}</div>
         <div class="session-meta">
           <span>{{ relTime(s.lastTime || s.startTime) }}</span>
+          <button class="del-btn pin-btn" :class="{ pinned: isPinned(s.id) }" @click="togglePin(s.id, $event)" :title="isPinned(s.id) ? '取消置顶' : '置顶会话'">📌</button>
           <button class="del-btn" @click="renameSession(s, $event)" title="重命名">✏</button>
           <button class="del-btn" @click="clearSession(s, $event)" title="清空消息">🗑</button>
           <button class="del-btn" @click="exportSession(s, $event)" title="导出">📥</button>
@@ -196,6 +293,32 @@ function relTime(ts: string): string {
   text-overflow: ellipsis;
   margin-bottom: 4px;
 }
+.session-usage {
+  font-size: 11px;
+  color: var(--text-muted);
+  opacity: 0.85;
+  margin-bottom: 4px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+/* E4: fork 血缘标记（缩进 + 弱化；父在列表时 hover 下划线示可点） */
+.session-fork-line {
+  font-size: 11px;
+  color: var(--text-muted);
+  padding-left: 8px;
+  margin-bottom: 4px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.session-fork-line.link {
+  cursor: pointer;
+}
+.session-fork-line.link:hover {
+  color: var(--accent);
+  text-decoration: underline;
+}
 .session-meta {
   display: flex;
   align-items: center;
@@ -214,6 +337,22 @@ function relTime(ts: string): string {
 }
 .del-btn:hover {
   color: #dc3545;
+}
+/* M6: 会话 pin 快速槽——置顶标记 + pin 按钮（常驻弱化、pinned 高亮） */
+.pin-flag {
+  font-size: 10px;
+  margin-right: 2px;
+}
+.pin-btn {
+  font-size: 11px;
+  opacity: 0.55;
+}
+.pin-btn.pinned {
+  opacity: 1;
+}
+.pin-btn:hover {
+  color: var(--accent);
+  opacity: 1;
 }
 .empty {
   padding: 20px 12px;

@@ -11,6 +11,70 @@ use std::fs::{self, File, OpenOptions};
 use std::io::{BufRead, Write};
 use std::path::PathBuf;
 
+use crate::r#loop::FileChange;
+
+/// D3（devtool-upgrade 阶段 5）：chat_log 条目在 `role`/`content` 之外的
+/// 可选元数据。jsonl 行 shape 的单一真相源仍是 [`write_chat_entry`]；本
+/// struct 是**写入 API** 的单一入口——扩字段只动这里，不再加位置参数
+/// （`append_chat_log_full*` 旧签名保留为薄包装，存量调用点不动）。
+#[derive(Debug, Clone, Copy, Default)]
+pub struct ChatLogMeta<'a> {
+    /// `"model"` 字段（assistant 行的「供应商·模型名」徽标）。`None` 不写。
+    pub model: Option<&'a str>,
+    /// `"cron_job_id"` 字段（定时任务来源标记）。`None` 不写。
+    pub cron_job_id: Option<&'a str>,
+    /// `"cron_job_name"` 字段。`None` 不写。
+    pub cron_job_name: Option<&'a str>,
+    /// `"images"` 字段（图片**路径引用**，不落字节）。空切片不写。
+    pub images: &'a [String],
+    /// D3：`"file_changes"` 字段——本 turn 声明式文件工具的变更清单
+    /// （`[{path, kind}]`；AgentLoop 在 dispatch 瀑布经 `preview_all`
+    /// 收集，assistant 最终回复落盘时去重随行）。消息↔文件变更映射；
+    /// M3 会话级 diff 查看器的数据源。空切片不写——旧条目/无变更解析
+    /// 不受影响。
+    pub file_changes: &'a [FileChange],
+    /// E3（devtool-upgrade 阶段 5）：`"checkpoint_turn"` 字段——本行所属
+    /// turn 的 checkpoint 序号（`turn_preamble` begin 的值随 admission 穿针
+    /// 到行落盘点）。E3 消息级回退用它把 jsonl 行精确定位回 checkpoint
+    /// turn（不靠内容/时间戳猜测）。`None` 不写——无 checkpoint store 的
+    /// 行回退时只截断对话不回滚文件。
+    pub checkpoint_turn: Option<usize>,
+}
+
+/// D3：全字段追加入口（`ChatLogMeta` 携带全部可选元数据）。
+pub fn append_chat_log_meta(session_key: &str, role: &str, content: &str, meta: &ChatLogMeta<'_>) {
+    write_chat_entry(
+        session_key,
+        role,
+        content,
+        meta.model,
+        meta.cron_job_id,
+        meta.cron_job_name,
+        meta.images,
+        meta.file_changes,
+        meta.checkpoint_turn,
+    );
+}
+
+/// D3：把本 turn 的 FileChange 流水按 `path` 去重——保留首次出现顺序，
+/// `kind` 取**最后一次**声明（同文件先 Create 后 Modify，对消息级展示的
+/// 语义就是「该文件被动过」；Create/Delete 的恢复语义由 checkpoint 保留，
+/// 不受此投影影响）。AgentLoop drain 时调用（单一投影点，M3 依赖此形状）。
+pub fn dedup_file_changes(changes: Vec<FileChange>) -> Vec<FileChange> {
+    let mut seen: std::collections::HashMap<String, usize> = std::collections::HashMap::new();
+    let mut out: Vec<FileChange> = Vec::with_capacity(changes.len());
+    for c in changes {
+        match seen.get(&c.path) {
+            Some(&i) => out[i].kind = c.kind,
+            None => {
+                seen.insert(c.path.clone(), out.len());
+                out.push(c);
+            }
+        }
+    }
+    out
+}
+
 /// Append a chat message to the JSONL log file.
 pub fn append_chat_log(session_key: &str, role: &str, content: &str) {
     append_chat_log_full(session_key, role, content, None, None, None);
@@ -53,6 +117,8 @@ pub fn append_chat_log_full(
         cron_job_id,
         cron_job_name,
         &[],
+        &[],
+        None,
     );
 }
 
@@ -79,11 +145,16 @@ pub fn append_chat_log_full_with_images(
         cron_job_id,
         cron_job_name,
         images,
+        &[],
+        None,
     );
 }
 
 /// Write core shared by all append variants (single source of truth for the
 /// jsonl entry shape). `images` non-empty → extra `"images"` array field.
+/// `file_changes` non-empty → extra `"file_changes"` array field (D3).
+/// `checkpoint_turn` Some → extra `"checkpoint_turn"` numeric field (E3).
+#[allow(clippy::too_many_arguments)]
 fn write_chat_entry(
     session_key: &str,
     role: &str,
@@ -92,6 +163,8 @@ fn write_chat_entry(
     cron_job_id: Option<&str>,
     cron_job_name: Option<&str>,
     images: &[String],
+    file_changes: &[FileChange],
+    checkpoint_turn: Option<usize>,
 ) {
     let path = log_path(session_key);
     if let Some(parent) = path.parent() {
@@ -125,6 +198,16 @@ fn write_chat_entry(
                 .map(|p| serde_json::Value::String(p.clone()))
                 .collect(),
         );
+    }
+    // D3：本 turn 声明式文件工具变更（`[{path, kind}]`）。缺字段 = 旧条目
+    // /无变更，读侧解析不受影响（与 model/cron/images 同一宽容读法）。
+    if !file_changes.is_empty() {
+        entry["file_changes"] = serde_json::to_value(file_changes).unwrap_or(Value::Null);
+    }
+    // E3：本行所属 turn 的 checkpoint 序号（消息级回退的行→turn 定位锚）。
+    // 缺字段 = 无 store 时代的行，回退只截断对话不回滚文件。
+    if let Some(t) = checkpoint_turn {
+        entry["checkpoint_turn"] = serde_json::Value::from(t);
     }
     if let Err(e) = writeln!(file, "{}", entry) {
         tracing::warn!("[chat_log] Failed to write to {}: {}", path.display(), e);
@@ -255,6 +338,59 @@ pub fn write_chat_log_rows(new_key: &str, rows: &[Value]) -> usize {
                 written += 1;
             }
         }
+    }
+    written
+}
+
+/// E3（devtool-upgrade 阶段 5）：把会话 jsonl **原位截断**为 `kept` 里
+/// 的行（VERBATIM 逐字节保留）。消息级回退/重做（`AgentLoop::rewind_to_message`
+/// / `redo_rewind`）的落盘原语。
+///
+/// 崩溃安全：先写 `.rewinding` 临时文件再 rename 覆盖原文件——中途崩溃
+/// 要么原文件完好、要么截断后完好，不会出现半截文件。与 fork 的
+/// [`write_chat_log_rows`] 同一宽容边界：不走 `history_search::index_append`
+/// （原样重写不加新词），FTS 懒索引下次全量重建时自愈。
+///
+/// 返回写入行数。`kept` 为空 = 清空文件（保留文件本身，会话仍可用）。
+pub fn truncate_chat_log_rows(session_key: &str, kept: &[Value]) -> usize {
+    let path = log_path(session_key);
+    if let Some(parent) = path.parent() {
+        let _ = fs::create_dir_all(parent);
+    }
+    let tmp = path.with_extension("jsonl.rewinding");
+    let mut written = 0usize;
+    {
+        let Ok(mut f) = OpenOptions::new()
+            .create(true)
+            .write(true)
+            .truncate(true)
+            .open(&tmp)
+        else {
+            tracing::warn!(
+                "[chat_log] Failed to open tmp {} for truncate",
+                tmp.display()
+            );
+            return 0;
+        };
+        for v in kept {
+            let Ok(line) = serde_json::to_string(v) else {
+                continue;
+            };
+            if writeln!(f, "{}", line).is_ok() {
+                written += 1;
+            }
+        }
+    }
+    // Windows 上 std::fs::rename 走 MOVEFILE_REPLACE_EXISTING，可覆盖已存在
+    // 目标；失败时保留原文件（会话不损）并清掉 tmp。
+    if let Err(e) = fs::rename(&tmp, &path) {
+        tracing::warn!(
+            "[chat_log] truncate rename failed ({}): {} — 原文件保留",
+            path.display(),
+            e
+        );
+        let _ = fs::remove_file(&tmp);
+        return 0;
     }
     written
 }
@@ -457,24 +593,137 @@ fn meta_path(session_key: &str) -> PathBuf {
 }
 
 /// Write the conversation title to the sidecar meta file.
+///
+/// E4 (2026-09-05): read-modify-write UPSERT — preserves `parent` /
+/// `forked_at_turn` already recorded by `write_session_parent` (fork writes
+/// lineage first, then the fork endpoint writes a title; a blind overwrite
+/// would erase the lineage).
 pub fn write_session_meta(session_key: &str, title: &str) {
+    upsert_meta(session_key, |m| m.title = Some(title.to_string()));
+}
+
+/// E7: 手动标题写入（rename / 建会话时用户显式命名）——置 `title_manual`
+/// 标记，自动标题（`write_session_meta_auto_title`）永不覆盖。
+pub fn write_session_meta_manual(session_key: &str, title: &str) {
+    upsert_meta(session_key, |m| {
+        m.title = Some(title.to_string());
+        m.title_manual = true;
+    });
+}
+
+/// E7: 会话侧栏的默认占位标题（sessions create 未显式命名时写入）。
+/// 自动标题允许覆盖它（占位符不是用户意志）。
+pub const DEFAULT_SESSION_TITLE: &str = "新对话";
+
+/// E7: 自动标题写入。只填充「无标题 / 仅默认占位符」的会话；手动改名或
+/// 建会话时显式命名的（`title_manual=true`）与已有真实标题的一律不动。
+/// 返回是否实际写入。
+pub fn write_session_meta_auto_title(session_key: &str, title: &str) -> bool {
+    if !auto_title_eligible(session_key) {
+        return false;
+    }
+    upsert_meta(session_key, |m| m.title = Some(title.to_string()));
+    true
+}
+
+/// E7: 自动标题资格判定——无 meta / 无标题 / 仅默认占位符，且未被手动
+/// 改名。生成端（loop 的标题任务）与写入端共用，双端一致。
+pub fn auto_title_eligible(session_key: &str) -> bool {
+    match read_meta_full(session_key) {
+        None => true,
+        Some(m) => {
+            !m.title_manual
+                && m.title
+                    .as_deref()
+                    .is_none_or(|t| t == DEFAULT_SESSION_TITLE)
+        }
+    }
+}
+
+/// E7: 本会话 chat log 中首条非空 user 消息（截到 `max_chars` 字符，
+/// char 边界安全；自动标题的输入）。
+pub fn first_user_message(session_key: &str, max_chars: usize) -> Option<String> {
+    let data = fs::read_to_string(log_path(session_key)).ok()?;
+    for line in data.lines() {
+        let Ok(v) = serde_json::from_str::<serde_json::Value>(line) else {
+            continue;
+        };
+        if v.get("role").and_then(|r| r.as_str()) != Some("user") {
+            continue;
+        }
+        let content = v.get("content").and_then(|c| c.as_str()).unwrap_or("");
+        let trimmed = content.trim();
+        if trimmed.is_empty() {
+            continue;
+        }
+        return Some(trimmed.chars().take(max_chars).collect());
+    }
+    None
+}
+
+/// E4: record fork lineage (`parent` = source session key, `forked_at_turn`
+/// = the kept-turn count) in the sidecar meta. Upsert — preserves `title`.
+pub fn write_session_parent(session_key: &str, parent: &str, forked_at_turn: usize) {
+    upsert_meta(session_key, |m| {
+        m.parent = Some(parent.to_string());
+        m.forked_at_turn = Some(forked_at_turn);
+    });
+}
+
+/// Shared read-modify-write for the sidecar meta (single fs read + write).
+fn upsert_meta(session_key: &str, f: impl FnOnce(&mut SessionMeta)) {
     let path = meta_path(session_key);
     if let Some(parent) = path.parent() {
         let _ = fs::create_dir_all(parent);
     }
-    if let Err(e) = fs::write(&path, serde_json::json!({ "title": title }).to_string()) {
+    // Corrupt / unreadable existing file → start from an empty meta (same
+    // warn-and-continue posture as before; nothing readable is lost).
+    let mut meta = read_meta_full(session_key).unwrap_or_default();
+    f(&mut meta);
+    if let Err(e) = fs::write(&path, serde_json::to_string(&meta).unwrap_or_default()) {
         tracing::warn!("[chat_log] failed to write meta {}: {}", path.display(), e);
     }
 }
 
 /// Read the conversation title from the sidecar meta file, if present.
 pub fn read_session_meta(session_key: &str) -> Option<String> {
+    read_meta_full(session_key).and_then(|m| m.title)
+}
+
+/// Read the full sidecar meta by session key. `None` when absent/unparsable.
+fn read_meta_full(session_key: &str) -> Option<SessionMeta> {
     let path = meta_path(session_key);
     let data = fs::read_to_string(&path).ok()?;
-    let v: serde_json::Value = serde_json::from_str(&data).ok()?;
-    v.get("title")
-        .and_then(|t| t.as_str())
-        .map(|s| s.to_string())
+    serde_json::from_str(&data).ok()
+}
+
+/// E4: read the full sidecar meta (title + fork lineage). `None` when the
+/// file is absent or unparsable. Legacy files (`{"title": ...}` only)
+/// deserialize with lineage fields `None` (compatible read).
+pub fn read_session_meta_full(session_key: &str) -> Option<SessionMeta> {
+    read_meta_full(session_key)
+}
+
+/// E4: full sidecar meta (`{safe_key}.meta.json`). All fields optional —
+/// pre-E4 files carry only `title`; serde defaults keep them compatible.
+#[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize, PartialEq)]
+pub struct SessionMeta {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub title: Option<String>,
+    /// Source session key this session was forked from (fork_session writes).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub parent: Option<String>,
+    /// Turn boundary the fork was taken at (user-turn count kept).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub forked_at_turn: Option<usize>,
+    /// E7: 用户手动命名过（rename / 建会话显式标题）——自动标题永不覆盖。
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub title_manual: bool,
+}
+
+/// E7: `skip_serializing_if` 助手（false 不落盘，兼容旧文件形态）。
+fn is_false(b: &bool) -> bool {
+    !*b
 }
 
 #[cfg(test)]
@@ -537,3 +786,13 @@ pub fn append_boundary_event(session_key: &str, kind: &str, detail: &str) {
 // S9 (quality-hardening goal 冲刺 S9): 独立测试文件挂载（声明式，无内联测试）。
 #[cfg(test)]
 mod s9_tests;
+
+// D3 (devtool-upgrade 阶段 5)：ChatLogMeta 全字段入口 + file_changes 字段
+// 写入 + dedup_file_changes 投影测试。
+#[cfg(test)]
+mod d3_tests;
+
+// E3 (devtool-upgrade 阶段 5)：checkpoint_turn 行标记 + truncate_chat_log_rows
+// 原位截断（消息级回退的落盘原语）测试。
+#[cfg(test)]
+mod e3_tests;

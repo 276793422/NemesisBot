@@ -154,6 +154,8 @@ async fn corrupted_persisted_checkpoint_is_skipped() {
         time: "t".into(),
         prompt: "good".into(),
         files: vec![],
+        paths: vec![],
+        tree: None,
     })
     .unwrap();
     std::fs::write(ckpt_dir.join("turn-1.json"), good).unwrap();
@@ -205,6 +207,8 @@ async fn load_skips_non_json_and_unreadable_entries() {
         time: "t".into(),
         prompt: "good".into(),
         files: vec![],
+        paths: vec![],
+        tree: None,
     })
     .unwrap();
     std::fs::write(ckpt_dir.join("turn-0.json"), good).unwrap();

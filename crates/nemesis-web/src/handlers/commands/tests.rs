@@ -25,6 +25,24 @@ fn list_missing_file_returns_empty_not_error() {
 }
 
 #[test]
+fn list_includes_builtins_from_shared_truth_source() {
+    // K3：builtins 随清单下发，名称与 nemesis-types 单一真相源一致；
+    // 展示元数据齐全（前端补全菜单直接渲染）。
+    let dir = tempfile::tempdir().unwrap();
+    let r = CommandsHandler::new().commands_list(&ws(&dir)).unwrap();
+    let builtins = r["builtins"].as_array().unwrap();
+    let names: Vec<&str> = builtins.iter().filter_map(|b| b["name"].as_str()).collect();
+    assert_eq!(
+        names,
+        nemesis_types::constants::BUILTIN_SLASH_COMMANDS.to_vec()
+    );
+    for b in builtins {
+        assert!(b["description"].as_str().is_some());
+        assert!(b["argument_hint"].as_str().is_some());
+    }
+}
+
+#[test]
 fn save_roundtrips_entries_to_disk() {
     let dir = tempfile::tempdir().unwrap();
     let h = CommandsHandler::new();

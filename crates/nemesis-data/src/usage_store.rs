@@ -6,7 +6,7 @@ use std::sync::Mutex;
 use rusqlite::{Connection, ToSql, params, params_from_iter};
 
 use crate::db;
-use crate::models::{LogFilter, RequestLog, TrendPoint, UsageSummary};
+use crate::models::{LogFilter, RequestLog, SessionUsageAgg, TrendPoint, UsageSummary};
 use crate::pricing_store::PricingStore;
 
 /// Thread-safe SQLite data store.
@@ -332,6 +332,35 @@ impl DataStore {
             Some(Err(e)) => Err(format!("get_request_log row: {e}")),
             None => Ok(None),
         }
+    }
+
+    /// 单会话用量聚合（M5 会话级 cost/context 常驻）。
+    ///
+    /// `session_key` **精确匹配**（调用方已持完整键，如
+    /// `agent:main:session:{sid}`——与 loop.rs 写入 RequestLog 的
+    /// `context.session_key` 同源，无需 LIKE 子串宽松匹配）。
+    /// 会话无请求行 → 全零聚合（不是错误）。
+    pub fn aggregate_session_usage(&self, session_key: &str) -> Result<SessionUsageAgg, String> {
+        let conn = self.conn.lock().map_err(|e| e.to_string())?;
+        let mut stmt = conn
+            .prepare(
+                "SELECT
+                    COUNT(*),
+                    COALESCE(SUM(input_tokens + cache_read_tokens), 0),
+                    COALESCE(SUM(output_tokens), 0),
+                    COALESCE(SUM(total_cost_usd), 0.0)
+                 FROM request_logs WHERE session_key = ?1",
+            )
+            .map_err(|e| format!("prepare aggregate_session_usage: {e}"))?;
+        stmt.query_row(params![session_key], |row| {
+            Ok(SessionUsageAgg {
+                requests: row.get(0)?,
+                input_tokens: row.get(1)?,
+                output_tokens: row.get(2)?,
+                total_cost_usd: row.get(3)?,
+            })
+        })
+        .map_err(|e| format!("aggregate_session_usage: {e}"))
     }
 
     /// Roll up request logs older than 30 days into daily_rollups and delete originals.

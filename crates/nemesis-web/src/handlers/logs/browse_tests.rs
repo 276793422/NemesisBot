@@ -363,6 +363,42 @@ async fn session_detail_reads_jsonl_and_passes_cron_markers() {
     assert!(msgs[0].get("cron_job_id").is_none());
 }
 
+/// D3：assistant 行的 `file_changes` 字段透传（消息↔文件变更映射；M3
+/// 会话级 diff 查看器的数据源）；无字段的消息不带该键。
+#[tokio::test]
+async fn session_detail_passes_file_changes() {
+    let dir = tempfile::tempdir().unwrap();
+    let ctx = make_ctx(&dir);
+    let ws = dir.path().to_string_lossy().to_string();
+
+    let d = dir.path().join("logs/session_logs");
+    std::fs::create_dir_all(&d).unwrap();
+    std::fs::write(
+        d.join("fc_1.jsonl"),
+        concat!(
+            r#"{"role":"user","content":"edit it","timestamp":"2026-09-06T07:00:00"}"#, "\n",
+            r#"{"role":"assistant","content":"done","timestamp":"2026-09-06T07:00:05","file_changes":[{"path":"src/lib.rs","kind":"Modify"},{"path":"src/new.rs","kind":"Create"}]}"#, "\n",
+        ),
+    )
+    .unwrap();
+
+    let out = handler()
+        .session_detail(&ctx, &ws, "fc_1")
+        .await
+        .unwrap()
+        .unwrap();
+    let msgs = out["messages"].as_array().unwrap();
+    assert_eq!(msgs.len(), 2);
+    let arr = msgs[1]["file_changes"].as_array().expect("透传数组");
+    assert_eq!(arr.len(), 2);
+    assert_eq!(arr[0]["path"], "src/lib.rs");
+    assert_eq!(arr[0]["kind"], "Modify");
+    assert_eq!(arr[1]["path"], "src/new.rs");
+    assert_eq!(arr[1]["kind"], "Create");
+    // 无字段消息不带该键。
+    assert!(msgs[0].get("file_changes").is_none());
+}
+
 // BM25 query 过滤逻辑在 session_list 内是 `#[cfg(feature = "memory")]`——
 // 无 memory 的构建里 query 不参与过滤，本测试的前提不成立，整体随 feature 门控。
 #[cfg(feature = "memory")]

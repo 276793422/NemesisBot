@@ -830,6 +830,38 @@ fn test_model_facing_tool_name_fallback() {
     assert!(projected.contains("tool"), "marker falls back to tool");
 }
 
+// ---------------------------------------------------------------------------
+// B3 (devtool-upgrade 阶段 3): recompute-stability for the spawn hint.
+// The hinted prune text is NOT recomputable (hint flag is registry state),
+// so the loop records it as `tool_result_projection`; the pure recompute
+// path must stay hint-free (byte-stable with pre-B3) so unhinted turns
+// replay identically.
+// ---------------------------------------------------------------------------
+
+/// Recompute path (no recorded projection) never emits the hint — same
+/// bytes as the pre-B3 prune.
+#[test]
+fn test_model_facing_recompute_never_carries_subagent_hint() {
+    let original: String = "z".repeat(20_000);
+    let t = x1_turn("tool", &original);
+    let projected = t.model_facing_content().into_owned();
+    assert!(
+        !projected.contains("子代理"),
+        "recompute must stay hint-free (drift guard against hinted live text)"
+    );
+    // And the recorded-override path (what loop.rs stores for hinted
+    // prunes) reproduces the hinted text verbatim.
+    let hinted =
+        crate::prune::prune_tool_result(&original, "tool", true).expect("oversized → pruned");
+    let mut t2 = x1_turn("tool", &original);
+    t2.tool_result_projection = Some(hinted.clone());
+    assert_eq!(
+        t2.model_facing_content().into_owned(),
+        hinted,
+        "recorded hinted projection wins verbatim"
+    );
+}
+
 /// ToolDefinition::default() has the "function" tool_type and empty fn def
 /// (second file-level check near other trailing defaults; kept separate from
 /// the earlier `tool_definition_default` to avoid a name collision).

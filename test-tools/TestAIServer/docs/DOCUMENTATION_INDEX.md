@@ -234,6 +234,6 @@ cat STREAMING_FIX.md
 
 ---
 
-**维护者**: Claude Code
+**维护者**: NemesisBot 开发组
 **创建日期**: 2026-03-11
 **版本**: v2.0+

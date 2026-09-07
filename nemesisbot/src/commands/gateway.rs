@@ -205,7 +205,13 @@ pub fn is_shutdown_requested() -> bool {
 // ---------------------------------------------------------------------------
 
 /// Check if plugin-ui library exists in the `plugins/` directory next to the executable.
+///
+/// M7（devtool-upgrade 阶段 5）：审批弹窗被 WebApprovalManager（Dashboard 审批卡）
+/// 同构替换，本函数仅剩 ApprovalPopupAdapter（同样停用）消费——非测试构建下
+/// dead。恢复弹窗：gateway 装配块里把 `web_mgr` 换回
+/// `Arc::new(ApprovalPopupAdapter::new(process_manager.clone()))` 即可。
 #[cfg(all(feature = "desktop", feature = "security"))]
+#[allow(dead_code)]
 fn plugin_ui_library_exists() -> bool {
     nemesis_utils::find_plugin_library("plugin_ui").is_some()
 }
@@ -238,7 +244,7 @@ impl GatewayMemoryGate {
         })
         .await
         {
-            Ok(Ok(true)) => true,
+            Ok(Ok(v)) => v.approved,
             _ => false, // denied / expired / errored → treat as not approved
         }
     }
@@ -319,12 +325,22 @@ impl nemesis_security::guardian::LlmJudge for GatewayLlmJudge {
 /// When a tool call triggers an "ask" security rule, the auditor calls
 /// `request_approval_sync()` which spawns an approval popup child process
 /// via ProcessManager and blocks until the user responds.
+///
+/// **M7（devtool-upgrade 阶段 5）已停用**：审批交互同构替换为
+/// `crate::web_approval::WebApprovalManager`（Dashboard 审批卡，SSE +
+/// WSAPI approval.respond），全平台可用。恢复方法：gateway 装配块（"Wire up
+/// ApprovalManager" 注释处）把 web_mgr 换回
+/// `Arc::new(ApprovalPopupAdapter::new(process_manager.clone()))`；本结构体
+/// 与 `plugin_ui_library_exists` 一并恢复使用。测试（gateway/tests.rs、
+/// tests_r9_live.rs）仍直接构造它，保留编译。
 #[cfg(all(feature = "desktop", feature = "security"))]
+#[allow(dead_code)]
 struct ApprovalPopupAdapter {
     process_manager: Arc<nemesis_desktop::process::ProcessManager>,
 }
 
 #[cfg(all(feature = "desktop", feature = "security"))]
+#[allow(dead_code)]
 impl ApprovalPopupAdapter {
     fn new(pm: Arc<nemesis_desktop::process::ProcessManager>) -> Self {
         Self {
@@ -347,7 +363,8 @@ impl nemesis_security::auditor::ApprovalManager for ApprovalPopupAdapter {
         risk_level: &str,
         reason: &str,
         timeout_secs: u64,
-    ) -> Result<bool, String> {
+    ) -> Result<nemesis_security::auditor::ApprovalVerdict, String> {
+        use nemesis_security::auditor::ApprovalVerdict;
         // Check if plugin-ui library exists. If not, reject immediately —
         // we cannot show an approval popup without the UI plugin, and
         // allowing the operation without user confirmation is unsafe.
@@ -358,7 +375,7 @@ impl nemesis_security::auditor::ApprovalManager for ApprovalPopupAdapter {
                  Cannot show approval popup — denying by default.",
                 label, operation, target, risk_level
             );
-            return Ok(false);
+            return Ok(ApprovalVerdict::denied());
         }
 
         let data = serde_json::json!({
@@ -418,15 +435,19 @@ impl nemesis_security::auditor::ApprovalManager for ApprovalPopupAdapter {
                     "[Gateway] Approval result: action={} for request_id={}",
                     action, request_id
                 );
-                Ok(action == "approved")
+                if action == "approved" {
+                    Ok(ApprovalVerdict::approved())
+                } else {
+                    Ok(ApprovalVerdict::denied())
+                }
             }
             Ok(Err(e)) => {
                 warn!("[Gateway] Approval channel error: {}", e);
-                Ok(false)
+                Ok(ApprovalVerdict::denied())
             }
             Err(_) => {
                 warn!("[Gateway] Approval timeout after {}s", timeout_secs);
-                Ok(false) // timeout = rejected
+                Ok(ApprovalVerdict::denied()) // timeout = rejected
             }
         }
     }
@@ -477,236 +498,9 @@ impl nemesis_forge::bridge::ClusterForgeBridge for ClusterForgeBridgeAdapter {
     }
 }
 
-/// Apply the simple layer on/off toggles (`layers.injection/command_guard/
-/// credential/ssrf.enabled`) from `config.security.json` to the constructor
-/// config.
-///
-/// Why this exists: layer components are built as `Option<T>` at
-/// `SecurityPlugin::new()` time — once constructed a layer cannot be torn
-/// down, and `reload_config` only extracts + logs these toggles (it never
-/// rebuilds layers). Startup construction is therefore the ONLY effective
-/// path; before this helper, these four toggles were dead keys (only
-/// `layers.dlp` and `audit_chain_enabled` were read). Discovered by the V3
-/// real-machine e2e: `layers.ssrf.enabled=false` was silently ignored.
-///
-/// Absent keys keep the current value (caller passes defaults), mirroring
-/// reload_config's `unwrap_or(current)` semantics.
-#[cfg(feature = "security")]
-fn apply_security_layer_switches(
-    sec_json: &serde_json::Value,
-    config: &mut nemesis_security::pipeline::SecurityPluginConfig,
-) {
-    let Some(layers) = sec_json.get("layers").and_then(|l| l.as_object()) else {
-        return;
-    };
-    let flag = |key: &str, slot: &mut bool| {
-        if let Some(b) = layers
-            .get(key)
-            .and_then(|d| d.get("enabled"))
-            .and_then(|x| x.as_bool())
-        {
-            *slot = b;
-        }
-    };
-    flag("injection", &mut config.injection_enabled);
-    flag("command_guard", &mut config.command_guard_enabled);
-    flag("credential", &mut config.credential_enabled);
-    flag("ssrf", &mut config.ssrf_enabled);
-}
-
-/// Load security rules from `config.security.json` and apply to the SecurityPlugin.
-///
-/// Parses the JSON config file's `file_rules`, `dir_rules`, `process_rules`, etc.
-/// and registers them as ABAC rules on the auditor. Also sets `default_action`.
-///
-/// Note: layer on/off toggles (`layers.*.enabled`) are NOT applied here —
-/// layers are constructed (or not) at `SecurityPlugin::new()` time, so the
-/// toggles are applied by [`apply_security_layer_switches`] before construction.
-#[cfg(feature = "security")]
-fn load_security_rules(
-    plugin: &Arc<nemesis_security::pipeline::SecurityPlugin>,
-    config_path: &std::path::Path,
-) {
-    use nemesis_security::types::{OperationType, SecurityRule};
-
-    if !config_path.exists() {
-        info!(
-            "[Gateway] Security config file not found: {}, using defaults",
-            config_path.display()
-        );
-        return;
-    }
-
-    let data = match std::fs::read_to_string(config_path) {
-        Ok(d) => d,
-        Err(e) => {
-            warn!("[Gateway] Failed to read security config: {}", e);
-            return;
-        }
-    };
-
-    let config: serde_json::Value = match serde_json::from_str(&data) {
-        Ok(v) => v,
-        Err(e) => {
-            warn!("[Gateway] Failed to parse security config JSON: {}", e);
-            return;
-        }
-    };
-
-    // Set default_action
-    if let Some(action) = config.get("default_action").and_then(|v| v.as_str()) {
-        plugin.auditor().set_default_action(action);
-        info!("[Gateway] Security default_action: {}", action);
-    }
-
-    // Helper: parse rules from JSON array of {pattern, action}
-    fn parse_rules(value: &serde_json::Value) -> Vec<SecurityRule> {
-        value
-            .as_array()
-            .map(|arr| {
-                arr.iter()
-                    .filter_map(|item| {
-                        Some(SecurityRule {
-                            pattern: item.get("pattern")?.as_str()?.to_string(),
-                            action: item.get("action")?.as_str()?.to_string(),
-                            comment: item
-                                .get("comment")
-                                .and_then(|v| v.as_str())
-                                .unwrap_or("")
-                                .to_string(),
-                        })
-                    })
-                    .collect()
-            })
-            .unwrap_or_default()
-    }
-
-    // File rules
-    if let Some(file_rules) = config.get("file_rules") {
-        let read_rules = parse_rules(file_rules.get("read").unwrap_or(&serde_json::Value::Null));
-        let write_rules = parse_rules(file_rules.get("write").unwrap_or(&serde_json::Value::Null));
-        let delete_rules =
-            parse_rules(file_rules.get("delete").unwrap_or(&serde_json::Value::Null));
-        let append_rules =
-            parse_rules(file_rules.get("append").unwrap_or(&serde_json::Value::Null));
-
-        plugin.set_rules(OperationType::FileRead, read_rules);
-        plugin.set_rules(OperationType::FileWrite, write_rules.clone());
-        plugin.set_rules(OperationType::FileDelete, delete_rules);
-        if !append_rules.is_empty() {
-            // append uses FileWrite rules as well
-            let mut combined = write_rules;
-            combined.extend(append_rules);
-            plugin.set_rules(OperationType::FileWrite, combined);
-        }
-        info!("[Gateway] Security file_rules loaded");
-    }
-
-    // Dir rules
-    if let Some(dir_rules) = config.get("dir_rules") {
-        let read_rules = parse_rules(dir_rules.get("read").unwrap_or(&serde_json::Value::Null));
-        let create_rules = parse_rules(dir_rules.get("create").unwrap_or(&serde_json::Value::Null));
-        let delete_rules = parse_rules(dir_rules.get("delete").unwrap_or(&serde_json::Value::Null));
-
-        plugin.set_rules(OperationType::DirRead, read_rules);
-        plugin.set_rules(OperationType::DirCreate, create_rules);
-        plugin.set_rules(OperationType::DirDelete, delete_rules);
-        info!("[Gateway] Security dir_rules loaded");
-    }
-
-    // Process rules
-    if let Some(proc_rules) = config.get("process_rules") {
-        let exec_rules = parse_rules(proc_rules.get("exec").unwrap_or(&serde_json::Value::Null));
-        let spawn_rules = parse_rules(proc_rules.get("spawn").unwrap_or(&serde_json::Value::Null));
-        let kill_rules = parse_rules(proc_rules.get("kill").unwrap_or(&serde_json::Value::Null));
-        let suspend_rules = parse_rules(
-            proc_rules
-                .get("suspend")
-                .unwrap_or(&serde_json::Value::Null),
-        );
-
-        plugin.set_rules(OperationType::ProcessExec, exec_rules);
-        plugin.set_rules(OperationType::ProcessSpawn, spawn_rules);
-        plugin.set_rules(OperationType::ProcessKill, kill_rules);
-        plugin.set_rules(OperationType::ProcessSuspend, suspend_rules);
-        info!("[Gateway] Security process_rules loaded");
-    }
-
-    // Network rules
-    if let Some(net_rules) = config.get("network_rules") {
-        let request_rules =
-            parse_rules(net_rules.get("request").unwrap_or(&serde_json::Value::Null));
-        let download_rules = parse_rules(
-            net_rules
-                .get("download")
-                .unwrap_or(&serde_json::Value::Null),
-        );
-        let upload_rules = parse_rules(net_rules.get("upload").unwrap_or(&serde_json::Value::Null));
-
-        plugin.set_rules(OperationType::NetworkRequest, request_rules);
-        plugin.set_rules(OperationType::NetworkDownload, download_rules);
-        plugin.set_rules(OperationType::NetworkUpload, upload_rules);
-        info!("[Gateway] Security network_rules loaded");
-    }
-
-    // Hardware rules
-    if let Some(hw_rules) = config.get("hardware_rules") {
-        let i2c_rules = parse_rules(hw_rules.get("i2c").unwrap_or(&serde_json::Value::Null));
-        let spi_rules = parse_rules(hw_rules.get("spi").unwrap_or(&serde_json::Value::Null));
-        let gpio_rules = parse_rules(hw_rules.get("gpio").unwrap_or(&serde_json::Value::Null));
-
-        plugin.set_rules(OperationType::HardwareI2C, i2c_rules);
-        plugin.set_rules(OperationType::HardwareSPI, spi_rules);
-        plugin.set_rules(OperationType::HardwareGPIO, gpio_rules);
-        info!("[Gateway] Security hardware_rules loaded");
-    }
-
-    // Registry rules
-    if let Some(reg_rules) = config.get("registry_rules") {
-        let read_rules = parse_rules(reg_rules.get("read").unwrap_or(&serde_json::Value::Null));
-        let write_rules = parse_rules(reg_rules.get("write").unwrap_or(&serde_json::Value::Null));
-        let delete_rules = parse_rules(reg_rules.get("delete").unwrap_or(&serde_json::Value::Null));
-
-        plugin.set_rules(OperationType::RegistryRead, read_rules);
-        plugin.set_rules(OperationType::RegistryWrite, write_rules);
-        plugin.set_rules(OperationType::RegistryDelete, delete_rules);
-        info!("[Gateway] Security registry_rules loaded");
-    }
-
-    info!(
-        "[Gateway] Security config loaded from {}",
-        config_path.display()
-    );
-}
-
-/// Load scanner full config from `config.scanner.json`.
-///
-/// Returns None if the file doesn't exist or can't be parsed.
-#[cfg(feature = "security")]
-fn load_scanner_full_config(
-    config_path: &std::path::Path,
-) -> Option<nemesis_security::scanner::ScannerFullConfig> {
-    let data = std::fs::read_to_string(config_path).ok()?;
-    let json: serde_json::Value = serde_json::from_str(&data).ok()?;
-
-    let enabled: Vec<String> = json
-        .get("enabled")
-        .and_then(|v| v.as_array())
-        .map(|arr| {
-            arr.iter()
-                .filter_map(|v| v.as_str().map(|s| s.to_string()))
-                .collect()
-        })
-        .unwrap_or_default();
-
-    let engines: std::collections::HashMap<String, serde_json::Value> = json
-        .get("engines")
-        .and_then(|v| v.as_object())
-        .map(|map| map.clone().into_iter().collect())
-        .unwrap_or_default();
-
-    Some(nemesis_security::scanner::ScannerFullConfig { enabled, engines })
-}
+// K1（devtool-upgrade 阶段 4）：apply_security_layer_switches /
+// load_security_rules / load_scanner_full_config 与 Step 9b 装配块整体迁往
+// `crate::security_setup`（单一真相源，headless `run` 共用）。
 
 /// Open a URL in the default browser.
 #[cfg(all(feature = "desktop", not(target_os = "android")))]
@@ -946,11 +740,13 @@ fn print_agent_startup_info(home: &std::path::Path, total_tools: usize) {
 
     println!();
     println!("  Agent Status:");
+    // saturating：注册 skew（total < default）是显示问题不是 panic 理由
+    // （回归锁：test_print_agent_startup_info_no_panic 传小总数）。
     println!(
         "    Tools: {} loaded ({} default + {} extended)",
         total_tools,
         default_count,
-        total_tools - default_count
+        total_tools.saturating_sub(default_count)
     );
     println!("    Skills: {} available", skill_count);
     info!(
@@ -2836,128 +2632,17 @@ pub async fn run(local: bool, extra_args: &[String]) -> Result<()> {
         // Channel manager injection into agent_loop is now handled by the factory function.
     }
 
-    // Step 9b: Create and inject SecurityPlugin if enabled
+    // Step 9b: Create and inject SecurityPlugin if enabled.
     // Mirrors Go's SecurityPlugin registered via PluginManager in instance.go.
     // Keep a reference to the auditor so we can wire up the approval manager later.
-    #[cfg(feature = "security")]
-    let security_plugin: Option<std::sync::Arc<nemesis_security::pipeline::SecurityPlugin>>;
-    #[cfg(feature = "security")]
-    {
-        let security_enabled = cfg.security.as_ref().map(|s| s.enabled).unwrap_or(true);
-        security_plugin = if security_enabled {
-            // Read audit_chain_enabled from `config.security.json`. The file is read raw (since the
-            // gateway already loads rules from it dynamically in `load_security_rules`); we read it
-            // once more here to avoid reordering init (the SecurityPlugin must be constructed before
-            // rules can be loaded onto it).
-            let mut security_config = nemesis_security::pipeline::SecurityPluginConfig::default();
-            let sec_config_path = common::security_config_path(&home);
-            // Read config.security.json once; pull both audit_chain and the DLP
-            // layer config from it. Previously the plugin was built from default()
-            // and the DLP layer config (`layers.dlp`) was never read anywhere — so
-            // the engine always ran every rule with action=block, with no way to
-            // configure a rule whitelist or low-confidence / inbound actions.
-            let sec_json: Option<serde_json::Value> = if sec_config_path.exists() {
-                std::fs::read_to_string(&sec_config_path)
-                    .ok()
-                    .and_then(|s| serde_json::from_str(&s).ok())
-            } else {
-                None
-            };
-            if let Some(ref v) = sec_json {
-                if let Some(dlp) = v
-                    .get("layers")
-                    .and_then(|l| l.get("dlp"))
-                    .and_then(|d| d.as_object())
-                {
-                    if let Some(b) = dlp.get("enabled").and_then(|x| x.as_bool()) {
-                        security_config.dlp_enabled = b;
-                    }
-                    if let Some(s) = dlp.get("action").and_then(|x| x.as_str()) {
-                        security_config.dlp_action = s.to_string();
-                    }
-                    if let Some(arr) = dlp.get("rules").and_then(|x| x.as_array()) {
-                        security_config.dlp_enabled_rules = arr
-                            .iter()
-                            .filter_map(|x| x.as_str().map(String::from))
-                            .collect();
-                    }
-                    if let Some(s) = dlp.get("low_confidence_action").and_then(|x| x.as_str()) {
-                        security_config.dlp_low_confidence_action = s.to_string();
-                    }
-                    if let Some(s) = dlp.get("inbound_action").and_then(|x| x.as_str()) {
-                        security_config.dlp_inbound_action = s.to_string();
-                    }
-                }
-                // 其余 layer 开关（injection/command_guard/credential/ssrf）：
-                // 构造期是唯一生效路径（reload 只打日志不重建 layer）。
-                apply_security_layer_switches(v, &mut security_config);
-            }
-            let audit_chain_enabled = sec_json
-                .as_ref()
-                .and_then(|v| v.get("audit_chain_enabled"))
-                .and_then(|f| f.as_bool())
-                .unwrap_or(false);
-            if audit_chain_enabled {
-                security_config.audit_chain_enabled = true;
-                let chain_path = format!(
-                    "{}/workspace/logs/security_logs/audit_chain.jsonl",
-                    home.display()
-                );
-                security_config.audit_chain_path = Some(chain_path.clone());
-                info!("[Gateway] Audit chain enabled at {}", chain_path);
-            }
-            let plugin = Arc::new(nemesis_security::pipeline::SecurityPlugin::new(
-                security_config,
-            ));
-
-            // Load security rules from config.security.json (mirrors Go's config loading)
-            let sec_config_path = common::security_config_path(&home);
-            load_security_rules(&plugin, &sec_config_path);
-
-            // Initialize audit log file.
-            // The JSON config field is "audit_log_file_enabled"; default is true.
-            // Log directory is always `{home}/workspace/logs/security_logs/`.
-            // 委托 nemesis-path 唯一拼接点（web Logs 页 security 源同源读取）。
-            let audit_dir =
-                nemesis_path::resolve_audit_log_dir_in_workspace(&common::workspace_path(&home))
-                    .to_string_lossy()
-                    .to_string();
-            if let Err(e) = plugin.init_audit_log_file(&audit_dir) {
-                warn!("[Gateway] Failed to initialize security audit log: {}", e);
-            } else {
-                info!("[Gateway] Security audit log initialized: {}", audit_dir);
-            }
-
-            // Security plugin injection into agent_loop is now handled by the factory function.
-            info!("[Gateway] Security plugin enabled (injection handled by factory)");
-
-            // Step 9c: Initialize scanner chain from config.scanner.json
-            // Mirrors Go's initScannerChain() which calls LoadFromConfig() + chain.Start()
-            let scanner_config_path = common::scanner_config_path(&home);
-            if scanner_config_path.exists() {
-                if let Some(full_config) = load_scanner_full_config(&scanner_config_path)
-                    && !full_config.enabled.is_empty()
-                {
-                    info!("[Gateway] Initializing scanner chain from config...");
-                    plugin.init_scanner_from_config(&full_config).await;
-                }
-            } else {
-                info!(
-                    "[Gateway] Scanner config file not found: {}, scanner chain not initialized",
-                    scanner_config_path.display()
-                );
-            }
-
-            Some(plugin)
-        } else {
-            info!("[Gateway] Security plugin disabled by configuration");
-            None
-        };
-    }
-
-    #[cfg(not(feature = "security"))]
-    #[allow(dead_code)]
-    let security_plugin: Option<()> = None;
+    // K1（devtool-upgrade 阶段 4）：装配逻辑原样迁往 `crate::security_setup`
+    // （layer 开关 + DLP + 规则 + 审计日志 + scanner 链）——headless `run`
+    // 与 gateway 共用同一构造，安全 9 层在无端口形态不降级。
+    let security_plugin = crate::security_setup::build_security_plugin(
+        &home,
+        cfg.security.as_ref().map(|s| s.enabled).unwrap_or(true),
+    )
+    .await;
 
     // Step 9d: Setup Observer Manager for conversation lifecycle events.
     // Mirrors Go's bot_service.go Phase 5: observerMgr creation + RequestLogger registration.
@@ -3036,8 +2721,45 @@ pub async fn run(local: bool, extra_args: &[String]) -> Result<()> {
     // Build SharedResources and use the factory to create the AgentLoop.
     let estop = std::sync::Arc::new(nemesis_agent::estop::EstopState::new());
     info!("[Gateway] Global e-stop (kill switch) initialized (released)");
+    // C5 (2026-09-04): ONE LspManager for the whole gateway — the LspTool
+    // registers with it (via SharedToolConfig.lsp_manager), the web server
+    // holds the same Arc, and Step-24 teardown calls shutdown_all() so
+    // language-server child processes don't outlive the gateway.
+    let lsp_manager = std::sync::Arc::new(nemesis_lsp::LspManager::new(
+        cfg.agents
+            .lsp_tool
+            .timeout_secs
+            .map(std::time::Duration::from_secs),
+        cfg.agents
+            .lsp_tool
+            .idle_secs
+            .map(std::time::Duration::from_secs),
+    ));
+    // C6（devtool-upgrade 阶段 6）：agents.lsp_tool.auto_install=true → 网关
+    // 启动期静默自举缺失的语言服务器（官方安装通道白名单目录，非交互命令
+    // 串行后台执行，结果进日志）。信任级=用户显式配置的 standing consent
+    // （同 A6 formatter / LSP spawn——基础设施装配不走 8 层管线；dashboard
+    // 一键安装按钮那条路才走）。装完需重启 Agent 重新探测注册。
+    if cfg.agents.lsp_tool.auto_install {
+        tokio::spawn(nemesis_lsp::install::auto_install_missing(
+            std::time::Duration::from_secs(600),
+        ));
+    }
+    // M1a (2026-09-05): ONE tool-event broadcast channel for the gateway —
+    // sender side goes into SharedResources (each AgentLoop gets a
+    // ToolEventHook), receiving side goes to the web server (pump routes
+    // events to Dashboard WS push + EventHub).
+    let (agent_event_tx, agent_event_rx) =
+        tokio::sync::broadcast::channel::<nemesis_types::agent::AgentEvent>(256);
+    // B4 (2026-09-05): gateway-level background-process registry singleton —
+    // construction is process-free (children spawn lazily via
+    // background_start); Drop raises kill flags so no spawned job outlives
+    // the gateway.
+    let background_registry = std::sync::Arc::new(nemesis_agent::BackgroundProcessRegistry::new());
     let shared_resources = crate::agent_factory::SharedResources {
         home: home.clone(),
+        // K1：gateway 固定 canonical 布局（显式写出，不依赖 fallback）。
+        workspace: home.join("workspace"),
         bus: bus.clone(),
         agent_outbound_tx,
         #[cfg(feature = "forge")]
@@ -3071,12 +2793,20 @@ pub async fn run(local: bool, extra_args: &[String]) -> Result<()> {
         mcp_enabled,
         estop,
         config_store: config_store.clone(),
+        lsp_manager,
+        agent_event_tx: Some(agent_event_tx),
+        background_registry,
         #[cfg(feature = "security")]
         approval_slot: std::sync::Arc::new(parking_lot::RwLock::new(
             None::<Arc<dyn nemesis_security::auditor::ApprovalManager>>,
         )),
         #[cfg(not(feature = "security"))]
         approval_slot: (),
+        // F7（2026-09-06）：question 工具 broker 槽（先建空槽，装配块晚填
+        // WebQuestionBroker；重启重建的 AgentLoop 共享同一槽 Arc）。
+        question_slot: std::sync::Arc::new(parking_lot::RwLock::new(
+            None::<Arc<dyn nemesis_types::agent::QuestionAsker>>,
+        )),
     };
 
     let shared_resources = Arc::new(shared_resources);
@@ -3227,6 +2957,16 @@ pub async fn run(local: bool, extra_args: &[String]) -> Result<()> {
     // mutates it directly — no mpsc round-trip needed, and status returns live).
     web_server.set_estop(shared_resources.estop.clone());
     info!("[Gateway] E-stop state injected into web server");
+
+    // C5: inject the shared LSP manager (same Arc the LspTool registered
+    // with) — Phase-2 diagnostics loop and future dashboard LSP ops read it.
+    web_server.set_lsp_manager(shared_resources.lsp_manager.clone());
+    info!("[Gateway] LSP manager injected into web server");
+
+    // M1a: hand the tool-event receiver to the web server — its pump (spawned
+    // in WebServer::start) routes events to Dashboard WS push + EventHub.
+    web_server.set_agent_event_rx(agent_event_rx);
+    info!("[Gateway] Agent tool-event receiver injected into web server");
 
     // Inject the runtime CronService (so tasks.cron.* calls the live scheduler)
     // and the ConvRouter (shared with the cron fire handler for Opt 2 live
@@ -4128,42 +3868,63 @@ pub async fn run(local: bool, extra_args: &[String]) -> Result<()> {
         }
     }
 
-    // Wire up ApprovalManager: ProcessManager → SecurityPlugin auditor
-    // When a tool call triggers an "ask" rule, the auditor will call
-    // request_approval_sync() which spawns an approval popup child process.
+    // Wire up ApprovalManager: WebApprovalManager → SecurityPlugin auditor
+    // M7（devtool-upgrade 阶段 5）：审批交互同构替换为 Dashboard 审批卡——
+    // auditor "ask" 规则触发时广播 SSE `approval-requested`，用户在
+    // Dashboard 点批准/拒绝 → WSAPI `approval.respond` → mpsc 解除阻塞。
+    // 全平台可用（desktop WebView 内嵌同一 Dashboard，天然生效），因此
+    // 装配移出 desktop cfg 门。恢复弹窗方案：ApprovalPopupAdapter 保留
+    // （#[allow(dead_code)]，见其头注释）。
     #[cfg(feature = "security")]
     {
         if let Some(ref plugin) = security_plugin {
             let auditor = plugin.auditor();
-            #[cfg(feature = "desktop")]
+            // F3: 审批记忆规则表热载器（auditor 查询侧 + 审批卡写入侧共用
+            // 同一磁盘文件 `<workspace>/config/approval_rules.json`）。
+            let approval_rules_path = nemesis_path::resolve_approval_rules_path_in_workspace(
+                &shared_resources.workspace_dir(),
+            );
+            let approval_rules_hot = Arc::new(nemesis_config::HotReloader::new(
+                approval_rules_path.clone(),
+                nemesis_security::approval_rules::load_rules,
+            ));
+            auditor.set_approval_rules(approval_rules_hot);
+            let web_mgr = Arc::new(crate::web_approval::WebApprovalManager::new(
+                shared_resources.agent_event_tx.clone(),
+                Some(approval_rules_path),
+            ));
+            // K4 (b)（devtool-upgrade 阶段 7）：IM 通道审批卡 + 组合分流——
+            // web/无上下文 → web_mgr（Dashboard 卡片，现状不变）；IM 通道
+            // → ChannelApprovalManager（审批卡回发起对话 + /approve|/deny
+            // 回执）。skill_manage / memory gate / responder 桥仍指 web_mgr
+            // （那三处是 dashboard 语义），只有 auditor 的 manager 换组合。
+            let channel_mgr = Arc::new(crate::channel_approval::ChannelApprovalManager::new(
+                bus.clone(),
+            ));
+            tokio::spawn(channel_mgr.clone().watcher());
+            let adapter: Arc<dyn nemesis_security::auditor::ApprovalManager> =
+                Arc::new(crate::channel_approval::CompositeApprovalManager::new(
+                    web_mgr.clone(),
+                    channel_mgr,
+                ));
+            let responder: Arc<dyn nemesis_types::agent::ApprovalResponder> = web_mgr.clone();
+            auditor.set_approval_manager(adapter.clone());
+            // Bridge the same approval manager to `skill_manage` write approval.
+            *shared_resources.approval_slot.write() = Some(adapter.clone());
+            // P2: bridge the same approval manager to the agent's memory write/forget
+            // gate — agent memory_store/forget now pop up for approval, never
+            // bypassed by YOLO/auto. No-op if no memory executor was stashed.
+            #[cfg(feature = "memory")]
             {
-                // Approval popup via ProcessManager (desktop only). When a tool
-                // call triggers an "ask" rule, the auditor spawns an approval popup
-                // child process and blocks until the user responds.
-                let adapter: Arc<dyn nemesis_security::auditor::ApprovalManager> =
-                    Arc::new(ApprovalPopupAdapter::new(process_manager.clone()));
-                auditor.set_approval_manager(adapter.clone());
-                // Bridge the same approval manager to `skill_manage` write approval.
-                *shared_resources.approval_slot.write() = Some(adapter.clone());
-                // P2: bridge the same approval manager to the agent's memory write/forget
-                // gate — agent memory_store/forget now pop up for approval, never
-                // bypassed by YOLO/auto. No-op if no memory executor was stashed.
-                #[cfg(feature = "memory")]
-                {
-                    agent_loop.set_memory_approval_gate(Arc::new(GatewayMemoryGate::new(adapter)));
-                }
-                // X2 (U8 refinement): reflect interactive-approval reachability
-                // in the merged context snapshot's `# Runtime Policy` section.
-                agent_loop.set_interactive_approval(true);
-                info!("[Gateway] Approval manager wired (popup via ProcessManager)");
+                agent_loop.set_memory_approval_gate(Arc::new(GatewayMemoryGate::new(adapter)));
             }
-            #[cfg(not(feature = "desktop"))]
-            {
-                let _ = auditor;
-                info!(
-                    "[Gateway] Approval popup disabled (desktop feature off; no interactive approval)"
-                );
-            }
+            // M7: dashboard 审批卡的响应端点经 AgentLoop 的 responder 槽触达
+            // （nemesis-web approval handler 读 agent_loop.approval_responder()）。
+            agent_loop.set_approval_responder(responder);
+            // X2 (U8 refinement): reflect interactive-approval reachability
+            // in the merged context snapshot's `# Runtime Policy` section.
+            agent_loop.set_interactive_approval(true);
+            info!("[Gateway] Approval manager wired (dashboard web approval, M7)");
             // P5: attach the LLM guardian judge for CRITICAL-op semantic review.
             plugin.set_judge(Arc::new(GatewayLlmJudge {
                 provider: llm_provider.clone(),
@@ -4171,6 +3932,27 @@ pub async fn run(local: bool, extra_args: &[String]) -> Result<()> {
             }));
             info!("[Gateway] Guardian LLM judge attached (CRITICAL-op review)");
         }
+    }
+
+    // F7（devtool-upgrade 阶段 5）：question 工具的 Dashboard 提问 broker。
+    // 与审批不同，提问是交互动作不是安全动作——不依赖 security feature，
+    // 无 cfg 门（gateway 跑起来就有 Dashboard，提问天然可答）。broker 同时
+    // 扮演两个角色：question 工具的阻塞端（SharedResources.question_slot，
+    // SharedToolConfig 建槽时已克隆同一 Arc，此处晚填即生效）+ WSAPI
+    // question.respond/pending 的响应端（AgentLoop responder 槽）。
+    // J5（devtool-upgrade 阶段 6）：同一 Arc 再挂 AgentLoop asker 槽——
+    // doom-loop escalation 审批卡（agents.doom_loop_approval，默认关）与
+    // question 工具共用同一提问通路与作答 UI，不新造审批协议。
+    {
+        let broker = Arc::new(crate::question_broker::WebQuestionBroker::new(
+            shared_resources.agent_event_tx.clone(),
+        ));
+        *shared_resources.question_slot.write() = Some(broker.clone());
+        agent_loop.set_question_responder(broker.clone());
+        agent_loop.set_question_asker(broker);
+        info!(
+            "[Gateway] Question broker wired (dashboard question card, F7 + doom-loop approval, J5)"
+        );
     }
 
     // Internal command loop: /api/internal → open_plugin_window / open_browser
@@ -4450,6 +4232,16 @@ pub async fn run(local: bool, extra_args: &[String]) -> Result<()> {
 
     // Close the message bus
     bus.close();
+
+    // C5: gracefully close every LSP session (shutdown → exit → kill) so
+    // language-server child processes never outlive the gateway. Previously
+    // the tool's sessions were only reaped lazily (idle timeout) or via
+    // kill_on_drop at process exit — an abrupt teardown could orphan them.
+    let lsp_closed = shared_resources.lsp_manager.shutdown_all().await;
+    info!(
+        "[Gateway] LSP shutdown: {} language-server session(s) closed",
+        lsp_closed
+    );
 
     // Abort background tasks
     web_handle.abort();

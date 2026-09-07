@@ -13,8 +13,12 @@
 | **Kokoro TTS 模型**（multi-lang v1.0 / v1.1） | `*/tools/voice/data/tts/kokoro-multi-lang-v1_*/` | **Apache-2.0** | 保留 LICENSE 文件与版权声明；Apache-2.0 §4 要求保留 NOTICE（如有） |
 | **eSpeak-NG 数据**（phoneme 字典） | `kokoro-*/espeak-ng-data/` | 随 Kokoro 分发（eSpeak-NG 本体为 GPL，此处仅数据；以 Kokoro 上游打包为准） | 跟随 Kokoro 的打包方式 |
 | **CppJieba 中文分词词库** | `kokoro-*/dict/` | 随 Kokoro 分发 | 跟随 Kokoro 的打包方式 |
+| **Inter 字体**（Regular/Medium/Bold woff2 子集） | `web/public/fonts/` | **SIL OFL-1.1**（© 2016 The Inter Project Authors） | 许可全文随字体分发（`web/public/fonts/LICENSE.Inter.txt`，2026-09-07 补齐）；OFL §1 要求版权声明与许可文本随字体保留 |
+| **Geist Mono 字体**（Regular woff2 子集） | `web/public/fonts/` | **SIL OFL-1.1**（© 2023 Vercel, in collaboration with basement.studio） | 许可全文随字体分发（`web/public/fonts/LICENSE.GeistMono.txt`，2026-09-07 补齐） |
 
 > **注**：Kokoro 目录下的 `LICENSE` 文件为 Apache-2.0 全文，分发时不得删除。
+>
+> **注（2026-09-07 补充）**：内置技能 `summarize` / `skill-creator`（`nemesisbot/workspace/skills/`）的 SKILL.md 源自社区 skills 仓库，上游许可证待复核；人格库 persona 在运行时按需从 GitHub `msitarzewski/agency-agents` 仓库拉取（不经本包分发，属包管理器式按需获取）。
 
 ---
 
@@ -73,15 +77,9 @@ Vue 3 + Vite 工程，全部宽松许可：
 
 ## 6. 致谢
 
-本项目借鉴了以下项目的设计理念：
-
 - [NemesisBot（Go 版）](https://github.com/276793422/NemesisBot) — 本 Rust 版的 1:1 重写蓝本
-- [OpenClaw](https://github.com/openclaw/openclaw)
-- [nanobot](https://github.com/HKUDS/nanobot)
-- [PicoClaw](https://github.com/sipeed/picoclaw)
-- [内部专项](https://github.com/RightNow-AI/内部专项)
 
-> 仓库内未发现直接拷贝/移植的上述项目源代码（审计于 2026-07-04）；如发现具体文件的署名缺失，请提 Issue，我们将补正。
+> 仓库内未发现直接拷贝/移植的第三方项目源代码（审计于 2026-07-04）；如发现具体文件的署名缺失，请提 Issue，我们将补正。
 
 ---
 

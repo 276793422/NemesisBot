@@ -70,6 +70,42 @@ impl ModuleHandler for ClusterHandler {
         "cluster"
     }
 
+    fn commands(&self) -> &'static [&'static str] {
+        &[
+            "runtime.status",
+            "runtime.start",
+            "runtime.stop",
+            "nodes.list",
+            "nodes.ping",
+            "nodes.remove",
+            "nodes.add",
+            "nodes.refresh",
+            "nodes.detail",
+            "tasks.list",
+            "tasks.cancel",
+            "tasks.detail",
+            "tasks.submit",
+            "topology",
+            "traces",
+            "events.recent",
+            "snapshots.list",
+            "snapshots.cleanup",
+            "status",
+            "config.get",
+            "config.save",
+            "config.set_master_enabled",
+            "node.update_identity",
+            "identity.get_files",
+            "identity.save_file",
+            "persona_generate",
+            "persona_apply",
+            "peers",
+            "firewall.check",
+            "firewall.add_rules",
+            "diagnostics.run",
+        ]
+    }
+
     async fn handle_cmd(
         &self,
         cmd: &str,

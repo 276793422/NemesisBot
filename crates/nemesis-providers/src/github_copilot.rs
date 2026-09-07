@@ -108,12 +108,15 @@ impl LLMProvider for GitHubCopilotProvider {
 
         let status = resp.status().as_u16();
         if status >= 400 {
+            // 先取 Retry-After 头再消费 body（text() 按值拿走 resp）。
+            let retry_after = crate::failover::retry_after_from_headers(resp.headers());
             let text = resp.text().await.unwrap_or_default();
             return Err(FailoverError::from_status(
                 "github-copilot",
                 &self.config.default_model,
                 status,
                 &text,
+                retry_after,
             ));
         }
 

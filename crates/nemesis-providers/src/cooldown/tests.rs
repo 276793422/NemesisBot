@@ -43,7 +43,7 @@ fn test_tracker_available_initially() {
 #[test]
 fn test_tracker_failure_then_available_after_cooldown() {
     let tracker = CooldownTracker::new();
-    tracker.mark_failure("openai", FailoverReason::RateLimit);
+    tracker.mark_failure("openai", FailoverReason::RateLimit, None);
     assert!(!tracker.is_available("openai"));
     assert_eq!(tracker.error_count("openai"), 1);
 }
@@ -51,7 +51,7 @@ fn test_tracker_failure_then_available_after_cooldown() {
 #[test]
 fn test_tracker_mark_success_resets() {
     let tracker = CooldownTracker::new();
-    tracker.mark_failure("openai", FailoverReason::RateLimit);
+    tracker.mark_failure("openai", FailoverReason::RateLimit, None);
     assert!(!tracker.is_available("openai"));
 
     tracker.mark_success("openai");
@@ -62,9 +62,9 @@ fn test_tracker_mark_success_resets() {
 #[test]
 fn test_tracker_failure_count_by_reason() {
     let tracker = CooldownTracker::new();
-    tracker.mark_failure("openai", FailoverReason::RateLimit);
-    tracker.mark_failure("openai", FailoverReason::RateLimit);
-    tracker.mark_failure("openai", FailoverReason::Timeout);
+    tracker.mark_failure("openai", FailoverReason::RateLimit, None);
+    tracker.mark_failure("openai", FailoverReason::RateLimit, None);
+    tracker.mark_failure("openai", FailoverReason::Timeout, None);
 
     assert_eq!(
         tracker.failure_count("openai", FailoverReason::RateLimit),
@@ -77,7 +77,7 @@ fn test_tracker_failure_count_by_reason() {
 #[test]
 fn test_billing_disables_longer() {
     let tracker = CooldownTracker::new();
-    tracker.mark_failure("openai", FailoverReason::Billing);
+    tracker.mark_failure("openai", FailoverReason::Billing, None);
     assert!(!tracker.is_available("openai"));
 }
 
@@ -95,7 +95,7 @@ fn test_cooldown_remaining_none_when_no_failure() {
 #[test]
 fn test_cooldown_remaining_some_after_failure() {
     let tracker = CooldownTracker::new();
-    tracker.mark_failure("openai", FailoverReason::RateLimit);
+    tracker.mark_failure("openai", FailoverReason::RateLimit, None);
     let remaining = tracker.cooldown_remaining("openai");
     assert!(remaining.is_some());
     let dur = remaining.unwrap();
@@ -106,7 +106,7 @@ fn test_cooldown_remaining_some_after_failure() {
 #[test]
 fn test_cooldown_remaining_none_after_success() {
     let tracker = CooldownTracker::new();
-    tracker.mark_failure("openai", FailoverReason::RateLimit);
+    tracker.mark_failure("openai", FailoverReason::RateLimit, None);
     tracker.mark_success("openai");
     assert!(tracker.cooldown_remaining("openai").is_none());
 }
@@ -125,7 +125,7 @@ fn test_tracker_default() {
 #[test]
 fn test_tracker_multiple_providers_independent() {
     let tracker = CooldownTracker::new();
-    tracker.mark_failure("openai", FailoverReason::RateLimit);
+    tracker.mark_failure("openai", FailoverReason::RateLimit, None);
     assert!(!tracker.is_available("openai"));
     assert!(tracker.is_available("anthropic")); // independent
 }
@@ -148,14 +148,14 @@ fn test_tracker_failure_count_no_failure() {
 #[test]
 fn test_tracker_multiple_failures_escalate_cooldown() {
     let tracker = CooldownTracker::new();
-    tracker.mark_failure("openai", FailoverReason::RateLimit);
+    tracker.mark_failure("openai", FailoverReason::RateLimit, None);
     assert!(!tracker.is_available("openai"));
 
     tracker.mark_success("openai");
     assert!(tracker.is_available("openai"));
 
-    tracker.mark_failure("openai", FailoverReason::RateLimit);
-    tracker.mark_failure("openai", FailoverReason::RateLimit);
+    tracker.mark_failure("openai", FailoverReason::RateLimit, None);
+    tracker.mark_failure("openai", FailoverReason::RateLimit, None);
     assert!(!tracker.is_available("openai"));
     assert_eq!(tracker.error_count("openai"), 2);
 }
@@ -163,15 +163,15 @@ fn test_tracker_multiple_failures_escalate_cooldown() {
 #[test]
 fn test_billing_disables_provider() {
     let tracker = CooldownTracker::new();
-    tracker.mark_failure("openai", FailoverReason::Billing);
+    tracker.mark_failure("openai", FailoverReason::Billing, None);
     assert!(!tracker.is_available("openai"));
 }
 
 #[test]
 fn test_billing_multiple_errors_longer_cooldown() {
     let tracker = CooldownTracker::new();
-    tracker.mark_failure("openai", FailoverReason::Billing);
-    tracker.mark_failure("openai", FailoverReason::Billing);
+    tracker.mark_failure("openai", FailoverReason::Billing, None);
+    tracker.mark_failure("openai", FailoverReason::Billing, None);
     assert!(!tracker.is_available("openai"));
     assert_eq!(tracker.failure_count("openai", FailoverReason::Billing), 2);
 }
@@ -186,7 +186,7 @@ fn test_mark_success_on_unknown_provider_no_panic() {
 #[test]
 fn test_cooldown_remaining_for_billing() {
     let tracker = CooldownTracker::new();
-    tracker.mark_failure("openai", FailoverReason::Billing);
+    tracker.mark_failure("openai", FailoverReason::Billing, None);
     let remaining = tracker.cooldown_remaining("openai");
     assert!(remaining.is_some());
     // Billing cooldown is at least 5 hours
@@ -220,7 +220,7 @@ fn test_tracker_with_custom_clock() {
     let now = std::time::Instant::now();
     let tracker = CooldownTracker::with_clock(Arc::new(FrozenClock(now)));
     assert!(tracker.is_available("openai"));
-    tracker.mark_failure("openai", FailoverReason::Timeout);
+    tracker.mark_failure("openai", FailoverReason::Timeout, None);
     assert!(!tracker.is_available("openai"));
 }
 
@@ -241,14 +241,14 @@ fn test_tracker_failure_window_reset() {
     let tracker = CooldownTracker::with_clock(clock.clone());
 
     // First failure
-    tracker.mark_failure("openai", FailoverReason::RateLimit);
+    tracker.mark_failure("openai", FailoverReason::RateLimit, None);
     assert_eq!(tracker.error_count("openai"), 1);
 
     // Advance time past failure window (24h + 1s)
     *clock.now.lock() = base + Duration::from_secs(24 * 3600 + 1);
 
     // Second failure should reset counters
-    tracker.mark_failure("openai", FailoverReason::RateLimit);
+    tracker.mark_failure("openai", FailoverReason::RateLimit, None);
     assert_eq!(tracker.error_count("openai"), 1); // Reset to 1 after window
 }
 
@@ -263,7 +263,7 @@ fn test_tracker_mark_success_noop_for_unknown() {
 #[test]
 fn test_tracker_cooldown_remaining_after_billing() {
     let tracker = CooldownTracker::new();
-    tracker.mark_failure("stripe", FailoverReason::Billing);
+    tracker.mark_failure("stripe", FailoverReason::Billing, None);
     let remaining = tracker.cooldown_remaining("stripe");
     assert!(remaining.is_some());
     // Billing cooldown is at least 5 hours
@@ -292,9 +292,9 @@ fn test_standard_cooldown_progression_values() {
 #[test]
 fn test_multiple_reasons_independent_counts() {
     let tracker = CooldownTracker::new();
-    tracker.mark_failure("svc", FailoverReason::RateLimit);
-    tracker.mark_failure("svc", FailoverReason::Timeout);
-    tracker.mark_failure("svc", FailoverReason::Auth);
+    tracker.mark_failure("svc", FailoverReason::RateLimit, None);
+    tracker.mark_failure("svc", FailoverReason::Timeout, None);
+    tracker.mark_failure("svc", FailoverReason::Auth, None);
 
     assert_eq!(tracker.failure_count("svc", FailoverReason::RateLimit), 1);
     assert_eq!(tracker.failure_count("svc", FailoverReason::Timeout), 1);
@@ -305,13 +305,89 @@ fn test_multiple_reasons_independent_counts() {
 #[test]
 fn test_tracker_mark_success_clears_all() {
     let tracker = CooldownTracker::new();
-    tracker.mark_failure("svc", FailoverReason::RateLimit);
-    tracker.mark_failure("svc", FailoverReason::Billing);
-    tracker.mark_failure("svc", FailoverReason::Timeout);
+    tracker.mark_failure("svc", FailoverReason::RateLimit, None);
+    tracker.mark_failure("svc", FailoverReason::Billing, None);
+    tracker.mark_failure("svc", FailoverReason::Timeout, None);
 
     tracker.mark_success("svc");
     assert!(tracker.is_available("svc"));
     assert_eq!(tracker.error_count("svc"), 0);
     assert_eq!(tracker.failure_count("svc", FailoverReason::RateLimit), 0);
     assert!(tracker.cooldown_remaining("svc").is_none());
+}
+
+// ---------------------------------------------------------------------------
+// J1: Retry-After hint
+// ---------------------------------------------------------------------------
+
+#[test]
+fn test_retry_after_hint_used_over_formula() {
+    struct FrozenClock(std::time::Instant);
+    impl Clock for FrozenClock {
+        fn now(&self) -> std::time::Instant {
+            self.0
+        }
+    }
+    let now = std::time::Instant::now();
+    let tracker = CooldownTracker::with_clock(Arc::new(FrozenClock(now)));
+    // 服务端权威 30s；公式第 1 次失败应为 60s——hint 优先。
+    tracker.mark_failure(
+        "openai",
+        FailoverReason::RateLimit,
+        Some(Duration::from_secs(30)),
+    );
+    assert_eq!(
+        tracker.cooldown_remaining("openai"),
+        Some(Duration::from_secs(30))
+    );
+}
+
+#[test]
+fn test_retry_after_hint_capped_at_one_hour() {
+    let tracker = CooldownTracker::new();
+    tracker.mark_failure(
+        "openai",
+        FailoverReason::RateLimit,
+        Some(Duration::from_secs(10 * 3600)),
+    );
+    let remaining = tracker.cooldown_remaining("openai").unwrap();
+    // cap 1h（实时钟先扣掉了微秒级流逝，留 5s 余量断言）。
+    assert!(
+        remaining <= Duration::from_secs(3600) && remaining > Duration::from_secs(3595),
+        "{:?}",
+        remaining
+    );
+}
+
+#[test]
+fn test_retry_after_hint_ignored_for_billing() {
+    let tracker = CooldownTracker::new();
+    tracker.mark_failure(
+        "openai",
+        FailoverReason::Billing,
+        Some(Duration::from_secs(1)),
+    );
+    let remaining = tracker.cooldown_remaining("openai").unwrap();
+    // Billing 独立量级（5h 起），hint 不适用。
+    assert!(remaining.as_secs() >= 5 * 3600 - 1);
+}
+
+#[test]
+fn test_retry_after_hint_zero_is_immediately_available() {
+    struct FrozenClock(std::time::Instant);
+    impl Clock for FrozenClock {
+        fn now(&self) -> std::time::Instant {
+            self.0
+        }
+    }
+    let now = std::time::Instant::now();
+    let tracker = CooldownTracker::with_clock(Arc::new(FrozenClock(now)));
+    tracker.mark_failure(
+        "openai",
+        FailoverReason::RateLimit,
+        Some(Duration::from_secs(0)),
+    );
+    // Retry-After: 0 = 立即可重试（cooldown_end == now → not < end）。
+    assert!(tracker.is_available("openai"));
+    assert!(tracker.cooldown_remaining("openai").is_none());
 }

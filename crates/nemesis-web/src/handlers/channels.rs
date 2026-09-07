@@ -26,6 +26,10 @@ impl ModuleHandler for ChannelsHandler {
         "channels"
     }
 
+    fn commands(&self) -> &'static [&'static str] {
+        &["list", "get", "update", "test"]
+    }
+
     async fn handle_cmd(
         &self,
         cmd: &str,

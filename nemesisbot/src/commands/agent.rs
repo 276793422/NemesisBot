@@ -42,9 +42,9 @@ pub enum AgentSetAction {
     },
     /// Set concurrent request mode
     ConcurrentMode {
-        /// Mode: reject or queue
+        /// Mode: reject, queue, or steer
         mode: String,
-        /// Queue size (only for queue mode)
+        /// Queue size (only for queue/steer mode)
         #[arg(long)]
         queue_size: Option<usize>,
     },
@@ -340,12 +340,20 @@ pub(crate) fn build_agent_loop(
         spawn: Some(nemesis_agent::loop_tools::SpawnConfig {
             default_model: model_name.clone(),
             max_concurrent: 4,
+            // G2: spawn 深度上限走 config（agents.subagent.max_depth，默认 1）。
+            max_depth: cfg.agents.subagent.max_depth,
         }),
         skills_manage_approval: cfg
             .skills
             .as_ref()
             .map(|s| s.manage_approval)
             .unwrap_or(false),
+        // B4 (2026-09-05): standalone CLI agent gets the background trio too
+        // (process lives as long as this agent run; registry Drop kills
+        // residual jobs).
+        background_registry: Some(std::sync::Arc::new(
+            nemesis_agent::BackgroundProcessRegistry::new(),
+        )),
         ..Default::default()
     };
     let shared_tools = nemesis_agent::register_shared_tools(&shared_cfg);
@@ -693,8 +701,13 @@ pub async fn run(
                 println!("Restart agent/gateway to apply changes.");
             }
             AgentSetAction::ConcurrentMode { mode, queue_size } => {
-                if mode != "reject" && mode != "queue" {
-                    anyhow::bail!("Invalid mode '{}'. Must be 'reject' or 'queue'.", mode);
+                // E2: steer accepted — the runtime has supported it since I1;
+                // this gate just forgot to allow it (loop.rs parses all three).
+                if mode != "reject" && mode != "queue" && mode != "steer" {
+                    anyhow::bail!(
+                        "Invalid mode '{}'. Must be 'reject', 'queue', or 'steer'.",
+                        mode
+                    );
                 }
                 let cfg_path = common::config_path(&home);
                 if cfg_path.exists() {
@@ -709,7 +722,9 @@ pub async fn run(
                             "concurrent_request_mode".to_string(),
                             serde_json::Value::String(mode.clone()),
                         );
-                        if mode == "queue" {
+                        // Inbox capacity applies to queue AND steer (both use
+                        // the per-session inbox; reject bounces, no inbox).
+                        if mode == "queue" || mode == "steer" {
                             defaults.insert(
                                 "queue_size".to_string(),
                                 serde_json::json!(queue_size.unwrap_or(8)),
@@ -721,7 +736,7 @@ pub async fn run(
                         serde_json::to_string_pretty(&cfg).unwrap_or_default(),
                     )?;
                 }
-                if mode == "queue" {
+                if mode == "queue" || mode == "steer" {
                     println!(
                         "Concurrent mode set to: {} (queue size: {})",
                         mode,

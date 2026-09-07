@@ -582,7 +582,7 @@ kill $PID
 
 **后台进程启动**:
 ```bash
-# Windows Git Bash: 使用 run_in_background 参数（Claude Code Bash 工具）
+# Windows Git Bash: 使用 run_in_background 参数（Bash 工具）
 cd test-tools/autotest && ./testaiserver.exe &  # 使用 Bash 工具的 run_in_background: true
 
 # ❌ 错误方式（不要使用）:
@@ -671,7 +671,7 @@ Exit code 1
 **解决方案**:
 ```bash
 # ✅ 正确：使用 Bash 工具的 run_in_background 参数
-# 在 Claude Code 中：
+# 在终端中：
 # Bash tool: command="./testaiserver.exe &", run_in_background=true
 
 # ❌ 错误：使用 Windows start 命令
@@ -788,7 +788,7 @@ cd ../..
 cd test-tools/autotest
 
 # 6. 启动 TestAIServer（后台运行）
-./testaiserver.exe &  # 使用 Claude Code Bash 工具的 run_in_background: true
+./testaiserver.exe &  # 使用 Bash 工具的 run_in_background: true
 
 # 7. 保存 TestAIServer PID
 tasklist | grep -i testaiserver.exe | head -1 | awk '{print $2}' > testaiserver.pid

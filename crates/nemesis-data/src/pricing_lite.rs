@@ -6,7 +6,7 @@
 //! 的扁平 map，**per-token 计价**——本项目 [`ModelPricing`] 是 per-million，
 //! 转换时 ×1e6。
 //!
-//! 解析纪律（参照 `feedback_verify_disk_format`）：
+//! 解析纪律（遵循 `feedback_verify_disk_format` 纪律）：
 //! - 只收 `mode == "chat"`（completion 并入 chat 语义；embedding/audio/
 //!   image/moderation/rerank 与本项目的 token 计价模型不匹配，跳过）；
 //! - `input_cost_per_token` / `output_cost_per_token` 缺失或非数值 → 跳过

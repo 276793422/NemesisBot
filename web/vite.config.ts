@@ -23,6 +23,8 @@ export default defineConfig({
         main: resolve(__dirname, 'index.html'),
         chat: resolve(__dirname, 'chat/index.html'),
         workflowChat: resolve(__dirname, 'workflow-chat/index.html'),
+        // L4 会话分享：独立只读页（token 即凭据，无登录态依赖）。
+        share: resolve(__dirname, 'share/index.html'),
       },
       output: {
         manualChunks: {

@@ -44,6 +44,11 @@ pub enum SecurityAction {
         #[command(subcommand)]
         action: RulesAction,
     },
+    /// Manage saved approval rules (F3 always-allow memory)
+    Approvals {
+        #[command(subcommand)]
+        action: ApprovalsAction,
+    },
     /// Approve a pending operation
     Approve {
         /// Operation ID to approve
@@ -133,6 +138,15 @@ pub enum RulesAction {
         /// Target to test against rules
         target: String,
     },
+}
+
+/// F3: approvals 管理动作（always-allow 规则表）。
+#[derive(clap::Subcommand)]
+pub enum ApprovalsAction {
+    /// List saved approval rules (always-allow memory)
+    List,
+    /// Clear all saved approval rules
+    Clear,
 }
 
 // ---------------------------------------------------------------------------
@@ -288,6 +302,65 @@ fn match_pattern_inner(pattern: &str, target: &str) -> bool {
 // ---------------------------------------------------------------------------
 // Rules sub-commands
 // ---------------------------------------------------------------------------
+
+/// F3: 列出「总是允许」规则表（`<workspace>/config/approval_rules.json`，
+/// 路径真相源 nemesis-path；文件缺失/为空都诚实展示空表）。
+fn cmd_approvals_list(home: &std::path::Path) -> Result<()> {
+    let path =
+        nemesis_path::resolve_approval_rules_path_in_workspace(&common::workspace_path(home));
+    println!("Approval Rules (always-allow memory)");
+    println!("=====================================");
+    println!("File: {}", path.display());
+    if !path.exists() {
+        println!("(none — no always-allow rules saved)");
+        return Ok(());
+    }
+    let raw = std::fs::read_to_string(&path)?;
+    let rules: Vec<serde_json::Value> = serde_json::from_str(&raw)?;
+    if rules.is_empty() {
+        println!("(empty)");
+        return Ok(());
+    }
+    for (i, r) in rules.iter().enumerate() {
+        let op = r.get("op").and_then(|v| v.as_str()).unwrap_or("?");
+        let pattern = r.get("pattern").and_then(|v| v.as_str()).unwrap_or("?");
+        let action = r.get("action").and_then(|v| v.as_str()).unwrap_or("?");
+        let created = r.get("created_at").and_then(|v| v.as_str()).unwrap_or("");
+        println!(
+            "  [{}] {} pattern='{}' action={} created={}",
+            i + 1,
+            op,
+            pattern,
+            action,
+            created
+        );
+    }
+    Ok(())
+}
+
+/// F3: 清空「总是允许」规则表（写回空表，文件保留；运行中 gateway 的
+/// HotReloader 经 mtime 感知）。
+fn cmd_approvals_clear(home: &std::path::Path) -> Result<()> {
+    let path =
+        nemesis_path::resolve_approval_rules_path_in_workspace(&common::workspace_path(home));
+    let removed = if path.exists() {
+        let raw = std::fs::read_to_string(&path)?;
+        serde_json::from_str::<Vec<serde_json::Value>>(&raw)
+            .map(|v| v.len())
+            .unwrap_or(0)
+    } else {
+        0
+    };
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    std::fs::write(
+        &path, "[]
+",
+    )?;
+    println!("Cleared {} approval rule(s): {}", removed, path.display());
+    Ok(())
+}
 
 fn cmd_rules_list(security_cfg: &std::path::Path, rule_type: Option<&str>) -> Result<()> {
     let cfg = read_rules_config(security_cfg)?;
@@ -1091,8 +1164,13 @@ pub async fn run(action: SecurityAction, local: bool) -> Result<()> {
                         println!("  Result: ALLOWED");
                     } else {
                         println!("  Result: BLOCKED");
-                        if let Some(e) = err {
-                            println!("  Reason: {}", e);
+                        if let Some(info) = err {
+                            // F5: DenyInfo 结构化反馈（layer/policy 与审计 JSONL 同源）。
+                            println!("  Layer: {} | Policy: {}", info.layer, info.policy);
+                            println!("  Reason: {}", info.summary);
+                            if let Some(sug) = &info.suggestion {
+                                println!("  Suggestion: {sug}");
+                            }
                         }
                     }
                 }
@@ -1101,6 +1179,10 @@ pub async fn run(action: SecurityAction, local: bool) -> Result<()> {
                 }
             }
         }
+        SecurityAction::Approvals { action } => match action {
+            ApprovalsAction::List => cmd_approvals_list(&home)?,
+            ApprovalsAction::Clear => cmd_approvals_clear(&home)?,
+        },
         SecurityAction::Rules { action } => match action {
             RulesAction::List { rule_type } => cmd_rules_list(&security_cfg, rule_type.as_deref())?,
             RulesAction::Add {

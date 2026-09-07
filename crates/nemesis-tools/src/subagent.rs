@@ -1,5 +1,14 @@
 //! Subagent tool - spawns sub-agent tasks for delegated execution.
 //!
+//! **DEPRECATED (G0, 2026-09-05)**: 生产不可用，勿接线。此异步版是空壳——
+//! 空 `ToolRegistry`（子代理无工具可调）+ `llm_callback` 生产从未设置 +
+//! 无任何生产构造点；接线还需重造全套治理（tier/args_validator/安全 8 层
+//! /checkpoint），且 nemesis-tools 无法反向依赖 nemesis-agent。生产路径=
+//! `nemesis-agent` 的 `loop_tools::SpawnTool` + `AgentLoop::run_detached`
+//! （复用主 loop 全套治理，G0）。保留本文件仅因 Go 1:1 对应关系与既有
+//! 测试（代码修改守则：禁用优先注释标注，不直接删）。若将来要移除：本
+//! 模块零外部引用，连同 `subagent/tests.rs` 与 lib.rs 声明一起删即可。
+//!
 //! Port of Go's module/tools/subagent.go.
 //!
 //! When an `llm_callback` is configured on the manager (via `set_llm_callback`),

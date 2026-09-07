@@ -1,4 +1,4 @@
-//! Skills catalog digest injection (H3 / P2.2, dsh-alignment second batch).
+//! Skills catalog digest injection (H3 / P2.2).
 //!
 //! Renders the installed-skills catalog as a compact digest (one line per
 //! skill, name + truncated description). Since I2 (U8) the digest rides the

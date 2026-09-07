@@ -5,8 +5,13 @@
 //! transport-agnostic — they read/write configuration files and workspace data.
 
 pub mod agent;
+// M7（devtool-upgrade 阶段 5）：dashboard 审批卡 WSAPI（approval.respond /
+// approval.pending）。无 feature 闸——responder 槽在 nemesis-types，未装配时
+// handler 诚实报「未装配」。
+pub mod approval;
 pub mod board;
 pub mod channels;
+pub mod chat;
 #[cfg(feature = "cluster")]
 pub mod cluster;
 #[cfg(feature = "cluster")]
@@ -17,6 +22,7 @@ pub mod config;
 pub mod estop;
 #[cfg(feature = "forge")]
 pub mod forge;
+pub mod fs;
 pub mod hooks;
 pub mod identity;
 pub mod logs;
@@ -26,6 +32,10 @@ pub mod memory;
 pub mod models;
 pub mod persona;
 pub mod plugins;
+// F7（devtool-upgrade 阶段 5）：dashboard 提问卡 WSAPI（question.respond /
+// question.pending）。无 feature 闸——responder 槽在 nemesis-types，未装配时
+// handler 诚实报「未装配」。
+pub mod question;
 #[cfg(feature = "sandbox")]
 pub mod sandbox;
 #[cfg(feature = "security")]
@@ -55,6 +65,11 @@ mod sessions_extra_tests;
 #[cfg(test)]
 mod sessions_s10b_tests;
 
+// L4 会话分享（2026-09-07）：share_create/share_list/share_revoke 三命令
+// 的 handler 层测试（存储语义在 crate::share 单元测试里）。
+#[cfg(test)]
+mod sessions_share_tests;
+
 // S10b (2026-08-26, quality-hardening goal 冲刺 web 批次 2): shared path/file
 // utility arms (absolute/traversal rejection, canonicalize fallback, atomic
 // write fallback) + ConfigHandler error arms and CORS stubs.
@@ -63,6 +78,22 @@ mod config_s10b_tests;
 #[cfg(test)]
 mod s10b_tests;
 
+// M5 (2026-09-05, devtool-upgrade 阶段 3): 会话级用量 WSAPI——
+// logs.session_usage / backfill_session_usage / chat.context_status。
+#[cfg(test)]
+mod m5_session_usage_tests;
+
+// L1 (2026-09-06, devtool-upgrade 阶段 6): WSAPI 命令注册表——结构不变量 +
+// system.commands dispatch 链路 + docs/INFO/wsapi-commands.md 文档生成 +
+// 安全子集 dispatch 冒烟。
+#[cfg(test)]
+mod l1_tests;
+
+// L2 (2026-09-06, devtool-upgrade 阶段 6): chat.sync 断线补拉 dispatch 测试
+// （record → sync 补拉 → 窗口/gap 语义；不依赖 AgentLoop）。
+#[cfg(test)]
+mod chat_sync_tests;
+
 use std::path::PathBuf;
 use std::sync::Arc;
 
@@ -70,10 +101,31 @@ use std::sync::Arc;
 // Registration
 // ---------------------------------------------------------------------------
 
+/// L1（devtool-upgrade 阶段 6）：WSAPI 命令注册表快照——`register_all`
+/// 末尾一次性发布，`system.commands` 与文档生成读取。
+///
+/// 设计偏差（vs 计划原文「AppState commands_registry 字段」）：AppState
+/// 字面量散布 69 个测试文件 105 处（M7 已核实不可动），新增字段是全库
+/// 爆破——OnceLock 模块级快照保有同一「单一真相源」性质（register_all
+/// 是唯一写点）且零爆破半径。
+static COMMANDS_REGISTRY: std::sync::OnceLock<Vec<(String, Vec<&'static str>)>> =
+    std::sync::OnceLock::new();
+
+/// L1：已发布的命令注册表（module → 命令清单，注册顺序）。`register_all`
+/// 尚未跑过时返回空切片（headless 早期诚实空表）。
+pub fn commands_registry() -> &'static [(String, Vec<&'static str>)] {
+    COMMANDS_REGISTRY.get().map(|v| v.as_slice()).unwrap_or(&[])
+}
+
 /// Register all module handlers with the given router.
 pub fn register_all(router: &mut crate::ws_router::WsRouter) {
     router.register(Arc::new(system::SystemHandler));
     router.register(Arc::new(estop::EstopHandler));
+    // M7：审批响应端点（dashboard 审批卡 → WebApprovalManager）。
+    router.register(Arc::new(approval::ApprovalHandler));
+    // F7：提问响应端点（dashboard 提问卡 → WebQuestionBroker）。
+    router.register(Arc::new(question::QuestionHandler));
+    router.register(Arc::new(chat::ChatHandler));
     router.register(Arc::new(config::ConfigHandler::new()));
     router.register(Arc::new(models::ModelsHandler::new()));
     router.register(Arc::new(channels::ChannelsHandler::new()));
@@ -107,11 +159,14 @@ pub fn register_all(router: &mut crate::ws_router::WsRouter) {
     // is an unconditional agent dependency (lsp tool itself is config-gated).
     router.register(Arc::new(coding::CodingHandler));
     // P4 (2026-08-24 UI entry gap): 设置页「Hooks」Tab — hooks.json 读写
-    // (CC 方言, nemesis-agent cc_hooks)。No feature gate — cc_hooks 无条件编译。
+    // (hooks.json 方言, nemesis-agent cc_hooks)。No feature gate — cc_hooks 无条件编译。
     router.register(Arc::new(hooks::HooksHandler));
     // 2026-08-29: 自定义 slash 命令表（快捷提示词发送器）— CommandsView CRUD。
     // AgentLoop 侧 mtime 热重载同一文件，无需重启。No feature gate。
     router.register(Arc::new(commands::CommandsHandler));
+    // I2 (2026-09-05, devtool-upgrade 阶段 3): 聊天 `@` 文件引用的路径补全
+    // 后端（fs.complete_path）。No feature gate — 遍历只读 + 有界（deadline）。
+    router.register(Arc::new(fs::FsHandler::new()));
     // 2026-08-29: 插件状态总览（只读）— PluginsView 数据源。No feature gate
     // （探测逻辑无条件编译；onnx 能力状态节内含 memory cfg 门控）。
     router.register(Arc::new(plugins::PluginsHandler));
@@ -135,6 +190,10 @@ pub fn register_all(router: &mut crate::ws_router::WsRouter) {
     {
         router.register(Arc::new(workflow::WorkflowHandler));
     }
+
+    // L1：注册完成后发布命令注册表快照（OnceLock 首写胜出——重复注册
+    // 内容一致，静默忽略后续 set 失败）。
+    let _ = COMMANDS_REGISTRY.set(router.commands_registry());
 }
 
 // ---------------------------------------------------------------------------
@@ -333,6 +392,12 @@ mod cluster_more_tests;
 // P3-web3 (2026-08-25): cluster.rs deep coverage — runtime metrics, real TCP
 // ping probes, nodes.refresh full arms, tasks log enrichment, topology real
 // connections, config fallbacks, firewall AddrInUse, persona_generate/apply.
+// H1/H2 (2026-09-05): chat.todo_get 读路径同构性测试。
+#[cfg(test)]
+mod chat_todo_tests;
+// F1 (2026-09-05): chat.set_mode / chat.get_mode（plan/build 双模式）测试。
+#[cfg(test)]
+mod chat_mode_tests;
 #[cfg(all(test, feature = "cluster"))]
 mod cluster_deep_tests;
 #[cfg(all(test, feature = "forge"))]

@@ -2,6 +2,9 @@
 //!
 //! Routes all commands to their respective handler modules.
 
+/// L7（devtool-upgrade 阶段 7）：ACP agent 侧 server——编辑器等 ACP 客户端经
+/// stdio JSON-RPC 接入；安全 8 层与 gateway 同源生效（详见模块头）。
+mod acp;
 mod adapters;
 mod agent_factory;
 #[cfg(feature = "cluster")]
@@ -23,6 +26,23 @@ mod exec_worker;
 /// U10 统一执行世界：executor 通道装配单一真相源 + workflow 引擎的
 /// ExecutionWorld 桥（world 部分 `sandbox` feature 门控）。
 mod exec_world;
+/// F7（devtool-upgrade 阶段 5）：Dashboard 结构化提问 broker——question
+/// 工具的阻塞端 + WSAPI question.respond/pending 端（同审批 broker 形态）。
+mod question_broker;
+/// K1（devtool-upgrade 阶段 4）：SecurityPlugin 构造单一真相源（gateway /
+/// headless `run` 共用，安全 9 层在无端口形态不降级）。
+mod security_setup;
+/// M7（devtool-upgrade 阶段 5）：Dashboard 审批管理器——auditor 的
+/// require_approval 走 dashboard 审批卡（AgentEvent 广播 + WSAPI respond）。
+/// 门控随消费方：唯一生产调用点在 gateway 的 security cfg 装配块内，
+/// feature off 时整块消失，本模块必须同门（--no-default-features 编译）。
+#[cfg(feature = "security")]
+mod web_approval;
+
+/// K4 (b)（devtool-upgrade 阶段 7）：IM 通道审批卡管理器 + 组合分流。
+/// web_approval 同门（依赖 nemesis_security::auditor trait）。
+#[cfg(feature = "security")]
+mod channel_approval;
 
 use anyhow::Result;
 use clap::{Parser, Subcommand};
@@ -89,6 +109,33 @@ enum Commands {
         #[arg(long)]
         no_console: bool,
     },
+    /// Run a single headless agent task and exit (no ports, no gateway; K1)
+    Run {
+        /// Task prompt. Omit (or pass `-`) to read the task from stdin.
+        task: Option<String>,
+
+        /// Workspace root for this run (default: <home>/workspace)
+        #[arg(long)]
+        workspace: Option<std::path::PathBuf>,
+
+        /// Working mode: plan (read-only, writes confined to plans/) or build
+        #[arg(long)]
+        mode: Option<String>,
+
+        /// Output format: text (default) or json (K2, not yet implemented)
+        #[arg(long)]
+        format: Option<String>,
+
+        /// Tool-turn budget for this task (0 = use config default)
+        #[arg(long)]
+        max_turns: Option<u32>,
+
+        /// Model override for this run (must exist in model_list)
+        #[arg(long)]
+        model: Option<String>,
+    },
+    /// Run the ACP agent server over stdio (ACP editors/clients; L7)
+    Acp,
     /// Interact with the agent directly
     Agent {
         #[command(subcommand)]
@@ -980,6 +1027,31 @@ async fn run_command(cli: Cli) -> Result<()> {
             common::ensure_default_logger();
             let home = common::resolve_home(cli.local);
             if let Err(e) = commands::estop::run(&home, release, status).await {
+                eprintln!("Error: {}", e);
+                std::process::exit(1);
+            }
+        }
+        Commands::Run {
+            task,
+            workspace,
+            mode,
+            format,
+            max_turns,
+            model,
+        } => {
+            common::ensure_default_logger();
+            let home = common::resolve_home(cli.local);
+            if let Err(e) =
+                commands::run::run(&home, task, workspace, mode, format, max_turns, model).await
+            {
+                eprintln!("Error: {}", e);
+                std::process::exit(1);
+            }
+        }
+        Commands::Acp => {
+            common::ensure_default_logger();
+            let home = common::resolve_home(cli.local);
+            if let Err(e) = commands::acp::run(&home).await {
                 eprintln!("Error: {}", e);
                 std::process::exit(1);
             }

@@ -20,6 +20,53 @@ pub struct InboundMessage {
     pub voice_playback: Option<bool>,
 }
 
+// ---------------------------------------------------------------------------
+// I5（devtool-upgrade 阶段 7）：客户端上报的「当前打开文件」
+// ---------------------------------------------------------------------------
+
+/// 打开文件列表条数上限。超出保留前 N 条（协议约定顺序 = 上报顺序，
+/// 首条最近活跃），其余诚实丢弃——上报是尽力而为的上下文信号，不是请求
+/// 参数，超限不报错。
+pub const MAX_OPEN_FILES: usize = 20;
+
+/// 单条路径长度上限（UTF-8 字符数）。超长条目整条丢弃而非截断——截断后的
+/// 路径指向不存在的文件，对模型是误导。
+pub const MAX_OPEN_FILE_PATH_LEN: usize = 1024;
+
+/// 清洗客户端上报的打开文件路径列表：trim / 去空 / 去重保序 /
+/// 条数与单条长度封顶。web 通道写入端与 AgentLoop 渲染端共用此单点，
+/// 两端看到的列表永远一致。
+pub fn sanitize_open_files(paths: Vec<String>) -> Vec<String> {
+    let mut seen = std::collections::HashSet::new();
+    let mut cleaned = Vec::new();
+    for p in paths {
+        let p = p.trim();
+        if p.is_empty() || p.chars().count() > MAX_OPEN_FILE_PATH_LEN {
+            continue;
+        }
+        if seen.insert(p.to_string()) {
+            cleaned.push(p.to_string());
+        }
+        if cleaned.len() >= MAX_OPEN_FILES {
+            break;
+        }
+    }
+    cleaned
+}
+
+/// 从 [`InboundMessage::metadata`] 解析 `open_files` 键（web 通道写入的
+/// JSON 字符串数组）。缺失 / 空 / 非法 JSON / 元素非字符串 → 空表（诚实
+/// 丢弃，不炸消息）；清洗走 [`sanitize_open_files`] 单点。
+pub fn open_files_from_metadata(
+    metadata: &std::collections::HashMap<String, String>,
+) -> Vec<String> {
+    metadata
+        .get("open_files")
+        .and_then(|raw| serde_json::from_str::<Vec<String>>(raw).ok())
+        .map(sanitize_open_files)
+        .unwrap_or_default()
+}
+
 /// Extensible per-delivery metadata attached to an `OutboundMessage`.
 ///
 /// Holds attributes that are optional/channel-specific (not every channel
@@ -35,6 +82,12 @@ pub struct OutboundMeta {
     /// model generated each reply. Other channels ignore it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub model: Option<String>,
+    /// L2（devtool-upgrade 阶段 6）：产生本回复的 agent 会话键
+    /// （`agent:main:session:{sid}`）。web 通道用它做 chat_event_log 断线
+    /// 补拉的环形缓冲键——chat_id 在 web 通道是**连接级** id（重连即变），
+    /// 补拉必须按**会话**跨连接寻址。其他通道忽略。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub session_key: Option<String>,
 }
 
 /// Outbound message from the agent engine to a channel.

@@ -1,4 +1,4 @@
-//! Session full-text search (U20, dsh-alignment sixth batch).
+//! Session full-text search (U20).
 //!
 //! SQLite FTS5 index over the chat-log JSONL files (`session_logs/*.jsonl`),
 //! queryable by the `history_search` agent tool and the

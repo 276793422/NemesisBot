@@ -259,6 +259,13 @@ pub async fn handle_websocket(
                         // Try to detect request-type messages for WS API Router dispatch.
                         // Parse first, check type, then decide: request -> router, else -> legacy path.
                         let parsed = ProtocolMessage::parse(raw);
+                        // minimal（无 workflow）形态下下面的 cfg 块被剥掉，外层
+                        // if let 块只剩内层 if——clippy::collapsible_if 会建议
+                        // 合并；但 full 形态外层块还挂着 workflow_chat 分支
+                        // （非 request 的解析成功消息也要走到），合并是行为改
+                        // 变。allow 而非合并（2026-09-05 远端 minimal clippy
+                        // 实录；workspace 全量 feature unification 不触发）。
+                        #[allow(clippy::collapsible_if)]
                         if let Ok(ref pm) = parsed {
                             if pm.is_request() {
                                 // Dispatch to WS API Router
@@ -491,6 +498,12 @@ fn handle_chat_send(
         /// `[{path: "<本地绝对路径>"}]`。缺省 = 纯文本（老前端零影响）。
         #[serde(default)]
         media: Option<Vec<serde_json::Value>>,
+        /// I5（devtool-upgrade 阶段 7）：客户端（IDE）上报的当前打开文件
+        /// 路径。缺省 = 无（老客户端零影响）。协议约定顺序 = 上报顺序，
+        /// 首条最近活跃。清洗与封顶走 nemesis-types::channel::sanitize_open_files
+        /// 单点，JSON 序列化进 metadata["open_files"] 全链路透传到 agent loop。
+        #[serde(default)]
+        open_files: Option<Vec<String>>,
     }
     let data: ChatData = msg.decode_data()?;
     // BUG-1（2026-09-03 二次回归）：纯图片消息合法——前端支持只传 media 不带
@@ -535,6 +548,16 @@ fn handle_chat_send(
     let mut metadata = HashMap::new();
     if let Some(sid) = data.session_id.as_ref().filter(|s| !s.is_empty()) {
         metadata.insert("session_id".to_string(), sid.clone());
+    }
+    // I5：打开文件列表清洗后进 metadata（缺失/空/全垃圾 → 不写键，老链路零影响）。
+    if let Some(of) = data.open_files {
+        let cleaned = nemesis_types::channel::sanitize_open_files(of);
+        if !cleaned.is_empty() {
+            metadata.insert(
+                "open_files".to_string(),
+                serde_json::to_string(&cleaned).unwrap_or_default(),
+            );
+        }
     }
 
     Ok(Some(IncomingMessage {
@@ -623,6 +646,10 @@ fn handle_system_module(msg: &ProtocolMessage) -> Result<Option<IncomingMessage>
 // ---------------------------------------------------------------------------
 
 /// Build a broadcast message for a session (type=message, module=chat, cmd=receive).
+///
+/// ⚠️ L2 后生产推送路径（`send_to_session` / `broadcast_to_session`）已改
+/// 自建帧盖 seq（chat.sync 补拉数据源）；本 helper 无 seq，仅测试/legacy
+/// 合成帧用。
 pub fn build_broadcast_message(role: &str, content: &str) -> Result<Vec<u8>, String> {
     let msg = ProtocolMessage::new(
         "message",
@@ -672,7 +699,21 @@ pub async fn broadcast_to_session(
         "[WebSocket] broadcast_to_session called"
     );
 
-    let data = build_broadcast_message(role, content)?;
+    // L2：同 send_to_session——帧盖会话内单调 seq 进 per-session 环形缓冲
+    //（chat.sync 补拉数据源）。不走 build_broadcast_message（它无 seq，
+    // 测试/legacy 专用）。
+    let seq = crate::chat_event_log::record(session_id, role, content, None);
+    let msg = ProtocolMessage::new(
+        "message",
+        "chat",
+        "receive",
+        Some(serde_json::json!({
+            "role": role,
+            "content": content,
+            "seq": seq,
+        })),
+    );
+    let data = msg.to_json().map_err(|e| e.to_string())?;
     session_manager
         .broadcast(session_id, &data)
         .await

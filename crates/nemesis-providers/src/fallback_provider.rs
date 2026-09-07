@@ -326,7 +326,9 @@ impl FallbackProvider {
                 }
                 Err(err) => {
                     let reason = err.reason();
-                    self.cooldown.mark_failure(provider_name, reason);
+                    // J1：服务端 Retry-After 优先于公式退避（hint 为 None 时公式生效）。
+                    self.cooldown
+                        .mark_failure(provider_name, reason, err.retry_after_hint());
                     let error_msg = format!("{}", err);
                     tracing::warn!(
                         provider = provider_name,
@@ -419,7 +421,9 @@ impl LLMProvider for FallbackProvider {
                 }
                 Err(err) => {
                     let reason = err.reason();
-                    self.cooldown.mark_failure(provider_name, reason);
+                    // J1：同 detailed 路径——Retry-After hint 优先于公式退避。
+                    self.cooldown
+                        .mark_failure(provider_name, reason, err.retry_after_hint());
 
                     // Classify the error for additional context
                     let error_msg = format!("{}", err);

@@ -4,7 +4,7 @@
 //! manager spawns (`--stdio` servers get the flag baked into `args`).
 //! The table is data — adding a language is one row, no code changes.
 //!
-//! Probe semantics follow the CC/Codex tool registration pattern: probe at
+//! Probe semantics follow the delegation-tool registration pattern: probe at
 //! registration time, no server found for a language ⇒ that language is
 //! simply unavailable (clear error on query; tool not registered at all
 //! when NO server for ANY language exists).
@@ -31,6 +31,18 @@ impl Lang {
             Lang::TypeScript => "typescript/javascript",
             Lang::Python => "python",
             Lang::C => "c/c++",
+        }
+    }
+
+    /// C1：`textDocument/didOpen` 的 `languageId` 字段值（LSP 规范要求
+    /// 语言标识符，与 [`Self::label`] 的展示形态不同——TS/C 是多语言家族）。
+    pub fn lsp_language_id(self) -> &'static str {
+        match self {
+            Lang::Rust => "rust",
+            Lang::Go => "go",
+            Lang::TypeScript => "typescript",
+            Lang::Python => "python",
+            Lang::C => "cpp",
         }
     }
 }

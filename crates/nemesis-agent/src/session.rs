@@ -915,7 +915,7 @@ impl SessionStore {
     }
 
     /// 同 [`Self::cleanup_old_sessions`]，但返回被删会话的**原始 session key**
-    /// （供 CC `SessionEnd` 钩子逐会话触发——2026-08-29 T3）。
+    /// （供方言 `SessionEnd` 钩子逐会话触发——2026-08-29 T3）。
     pub fn cleanup_old_sessions_detailed(&self, max_age_days: u64) -> Vec<String> {
         let storage_dir = match &self.storage_dir {
             Some(d) => d.clone(),

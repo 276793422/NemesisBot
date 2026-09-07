@@ -447,8 +447,10 @@ time.sleep(30)
 }
 
 #[tokio::test]
-async fn test_w4c_stdio_garbage_response_maps_parse_failure() {
-    // 服务器回一行非 JSON → 解析失败
+async fn test_w4c_stdio_garbage_line_skipped_times_out() {
+    // J3 起（devtool-upgrade 阶段 4）：服务器回一行非 JSON → 跳过继续读
+    // （旧行为=解析失败 send_failed；垃圾行当 banner 容忍是本变更语义）。
+    // 没有后续有效响应 → 按 deadline 超时。
     let script = r#"
 import sys, time
 line = sys.stdin.readline()
@@ -468,13 +470,95 @@ time.sleep(30)
         method: "x".to_string(),
         params: None,
     };
-    let err = t.send(&req, 5000).await.unwrap_err();
+    let err = t.send(&req, 2000).await.unwrap_err();
     assert!(
-        err.message.contains("failed to parse response"),
+        err.message.contains("timed out"),
         "unexpected: {}",
         err.message
     );
     t.close().await.unwrap();
+}
+
+#[tokio::test]
+async fn test_w4c_stdio_garbage_line_then_response_succeeds() {
+    // J3：垃圾行（banner/日志）之后的响应行正常被采纳——跳过逻辑不吞真响应。
+    let script = r#"
+import sys, json, time
+line = sys.stdin.readline()
+sys.stdout.write("banner line from server\n")
+sys.stdout.write(json.dumps({"jsonrpc": "2.0", "id": 1, "result": {"ok": True}}) + "\n")
+sys.stdout.flush()
+time.sleep(30)
+"#;
+    let mut t = StdioTransport::new("python", vec!["-c".to_string(), script.to_string()], vec![]);
+    if t.connect().await.is_err() {
+        eprintln!("Skipping test: python not available");
+        return;
+    }
+
+    let req = TransportRequest {
+        jsonrpc: JSONRPC_VERSION.to_string(),
+        id: Some(serde_json::Value::Number(1.into())),
+        method: "x".to_string(),
+        params: None,
+    };
+    let resp = t.send(&req, 5000).await.unwrap();
+    assert_eq!(resp.id, serde_json::Value::Number(1.into()));
+    assert_eq!(resp.result.unwrap()["ok"], true);
+    t.close().await.unwrap();
+}
+
+#[tokio::test]
+async fn test_w4c_stdio_notification_before_response_skipped() {
+    // J3：服务器先发 progress 通知（无 id）再回响应 → 通知记 trace 跳过，
+    // 响应正常返回（旧行为=通知行反序列化失败，整个请求 send_failed）。
+    let script = r#"
+import sys, json, time
+line = sys.stdin.readline()
+sys.stdout.write(json.dumps({"jsonrpc": "2.0", "method": "notifications/progress", "params": {"progress": 50, "total": 100}}) + "\n")
+sys.stdout.write(json.dumps({"jsonrpc": "2.0", "id": 1, "result": {"ok": True}}) + "\n")
+sys.stdout.flush()
+time.sleep(30)
+"#;
+    let mut t = StdioTransport::new("python", vec!["-c".to_string(), script.to_string()], vec![]);
+    if t.connect().await.is_err() {
+        eprintln!("Skipping test: python not available");
+        return;
+    }
+
+    let req = TransportRequest {
+        jsonrpc: JSONRPC_VERSION.to_string(),
+        id: Some(serde_json::Value::Number(1.into())),
+        method: "x".to_string(),
+        params: None,
+    };
+    let resp = t.send(&req, 5000).await.unwrap();
+    assert_eq!(resp.id, serde_json::Value::Number(1.into()));
+    assert_eq!(resp.result.unwrap()["ok"], true);
+    t.close().await.unwrap();
+}
+
+// classify_line 纯函数分类（响应/progress/通知/垃圾）。
+#[test]
+fn classify_line_kinds() {
+    assert!(matches!(
+        classify_line(r#"{"jsonrpc":"2.0","id":1,"result":{}}"#),
+        LineKind::Response
+    ));
+    // 错误响应也带 id → Response。
+    assert!(matches!(
+        classify_line(r#"{"jsonrpc":"2.0","id":2,"error":{"code":-1,"message":"m"}}"#),
+        LineKind::Response
+    ));
+    assert!(matches!(
+        classify_line(r#"{"jsonrpc":"2.0","method":"notifications/progress","params":{}}"#),
+        LineKind::Progress(_)
+    ));
+    assert!(matches!(
+        classify_line(r#"{"jsonrpc":"2.0","method":"notifications/message","params":{}}"#),
+        LineKind::Notification(_)
+    ));
+    assert!(matches!(classify_line("banner text"), LineKind::Garbage));
 }
 
 #[tokio::test]

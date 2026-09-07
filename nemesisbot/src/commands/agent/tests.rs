@@ -42,9 +42,10 @@ fn test_provider_adapter_new() {
 
 #[test]
 fn test_concurrent_mode_validation() {
-    let valid_modes = ["reject", "queue"];
+    let valid_modes = ["reject", "queue", "steer"];
     assert!(valid_modes.contains(&"reject"));
     assert!(valid_modes.contains(&"queue"));
+    assert!(valid_modes.contains(&"steer"));
     assert!(!valid_modes.contains(&"invalid"));
     assert!(!valid_modes.contains(&"random"));
 }
@@ -1108,6 +1109,58 @@ async fn test_s11b_run_set_concurrent_mode_reject_then_queue() {
     // queue 默认尺寸 8
     run(
         set_mode("queue", None),
+        None,
+        "s11b".to_string(),
+        false,
+        false,
+        false,
+        false,
+    )
+    .await
+    .unwrap();
+    let cfg = s11b_read_agent_config(&th.home);
+    assert_eq!(cfg["agents"]["defaults"]["queue_size"], 8);
+}
+
+// E2 (devtool-upgrade 阶段 3): steer 在运行时自 I1 起就支持（loop.rs 三个
+// 模式都解析），CLI 闸门此前漏了它——写盘行为与 queue 同型（含 queue_size）。
+#[tokio::test]
+async fn test_s11b_run_set_concurrent_mode_steer() {
+    let _guard = crate::GLOBAL_STATE_LOCK.lock().unwrap();
+    let th = s11b_agent_home_env();
+    s11b_write_agent_config(&th.home, serde_json::json!({"agents": {"defaults": {}}}));
+
+    let set_mode = |mode: &str, queue_size: Option<usize>| {
+        Some(AgentSetCommand::Set {
+            action: AgentSetAction::ConcurrentMode {
+                mode: mode.to_string(),
+                queue_size,
+            },
+        })
+    };
+
+    // steer 带尺寸：写 concurrent_request_mode + queue_size
+    run(
+        set_mode("steer", Some(5)),
+        None,
+        "s11b".to_string(),
+        false,
+        false,
+        false,
+        false,
+    )
+    .await
+    .unwrap();
+    let cfg = s11b_read_agent_config(&th.home);
+    assert_eq!(
+        cfg["agents"]["defaults"]["concurrent_request_mode"],
+        "steer"
+    );
+    assert_eq!(cfg["agents"]["defaults"]["queue_size"], 5);
+
+    // steer 默认尺寸 8
+    run(
+        set_mode("steer", None),
         None,
         "s11b".to_string(),
         false,

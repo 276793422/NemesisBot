@@ -5,11 +5,22 @@ import { useAppStore } from '../stores/app'
 import { useAuthStore } from '../stores/auth'
 import { connect, send, sendHistoryRequest, onMessage, removeMessageHandler, wsStatus } from '../composables/useWebSocket'
 import { useWSAPI } from '../composables/useWSAPI'
+// L2（devtool-upgrade 阶段 6）：SSE resync 提示 → 会话全量刷新兜底。
+import { on as onSSE, off as offSSE } from '../composables/useSSE'
 import { useInboxStatus } from '../composables/useInboxStatus'
 import { useSlashCommands, filterSlashCommands, type SlashCommand } from '../composables/useSlashCommands'
 import { useSessionStore } from '../stores/session'
 import { uploadImage, validateImageFile, type UploadedImage } from '../composables/useImageUpload'
 import { useToast } from '../composables/useToast'
+// H2 (2026-09-05): todo 清单面板（todowrite 工具的实时渲染）。
+import TodoPanel from './chat/TodoPanel.vue'
+
+import ShareModal from './ShareModal.vue'
+// M1b (2026-09-05): 工具调用卡片（M1a AgentEvent 通道的实时渲染）。
+import ToolCallCard from './chat/ToolCallCard.vue'
+import type { ToolEvent } from '../stores/chat'
+// M5 (2026-09-05): 会话级 context/cost 常驻条——cost 格式化与侧栏共用。
+import { fmtCost } from '../composables/useUsageFormat'
 import { marked } from 'marked'
 import hljs from 'highlight.js/lib/core'
 import javascript from 'highlight.js/lib/languages/javascript'
@@ -23,6 +34,8 @@ import css from 'highlight.js/lib/languages/css'
 import sql from 'highlight.js/lib/languages/sql'
 import yaml from 'highlight.js/lib/languages/yaml'
 import markdown from 'highlight.js/lib/languages/markdown'
+// M2 (2026-09-05): diff 语言高亮——A2/A5 工具回灌的 ```diff 代码块获得行级 +/- 高亮。
+import diff from 'highlight.js/lib/languages/diff'
 import 'highlight.js/styles/github-dark.min.css'
 
 hljs.registerLanguage('javascript', javascript)
@@ -37,6 +50,7 @@ hljs.registerLanguage('css', css)
 hljs.registerLanguage('sql', sql)
 hljs.registerLanguage('yaml', yaml)
 hljs.registerLanguage('markdown', markdown)
+hljs.registerLanguage('diff', diff)
 
 const props = defineProps<{
   standalone?: boolean
@@ -88,6 +102,38 @@ function syncInboxMode() {
 /** busy 时发送是否仍然有效（默认 chat + queue/steer 模式）。 */
 const canQueueWhileBusy = computed(() => isDefaultChat.value && queueEnabled.value)
 
+// --- F1: plan/build 模式徽标（chat.get_mode 对齐 + chat.set_mode 切换 +
+// ModeChanged push 实时刷新；后端模式是 loop 级全局态，徽标只做呈现） ---
+
+/** 进会话 / 重连时对齐一次真实模式（失败保持当前值，不炸 UI）。
+ *  与 refreshUsage 同款守卫：无活跃会话不发请求（徽标保持 build 默认，
+ *  ModeChanged push 对任意 web: 会话兜底刷新）。 */
+function syncAgentMode() {
+  if (!isDefaultChat.value) return
+  const sid = sessionStore.currentId
+  if (!sid) return
+  request('chat', 'get_mode', { session_id: sid })
+    .then((data) => {
+      if (sessionStore.currentId !== sid) return
+      if (data?.mode === 'plan' || data?.mode === 'build') chatStore.setAgentMode(data.mode)
+    })
+    .catch(() => {})
+}
+
+/** 点击徽标切换模式（await 回包后更新；失败 toast 不翻转）。 */
+async function toggleAgentMode() {
+  const target = chatStore.agentMode === 'plan' ? 'build' : 'plan'
+  try {
+    const data = await request('chat', 'set_mode', {
+      session_id: sessionStore.currentId || '',
+      mode: target,
+    })
+    if (data?.mode === 'plan' || data?.mode === 'build') chatStore.setAgentMode(data.mode)
+  } catch (e) {
+    toast.error(String((e as Error)?.message ?? e))
+  }
+}
+
 /** 输入以 ! 开头且处于 steer 模式 → 提示将以插队发送。 */
 const showSteerHint = computed(
   () => steerEnabled.value && /^[!！]/.test(chatStore.input.trimStart()),
@@ -100,6 +146,57 @@ function prefixSteer() {
   }
   chatInput.value?.focus()
 }
+
+// --- M1b: 工具卡片「已运行 N 个工具」折叠状态 ---
+// key = 组内首个 callId（稳定唯一）；>=3 个默认折叠，点击展开/收起。
+const toolGroupExpanded = ref<Record<string, boolean>>({})
+
+function toolGroupCollapsed(evs: ToolEvent[]): boolean {
+  const key = evs[0]?.callId ?? ''
+  return toolGroupExpanded.value[key] ?? evs.length >= 3
+}
+
+function toggleToolGroup(evs: ToolEvent[]) {
+  const key = evs[0]?.callId ?? ''
+  toolGroupExpanded.value[key] = !toolGroupCollapsed(evs)
+}
+
+// --- M5: 会话级 context/cost 常驻条 ---
+// context% 来自 chat.context_status（与压缩压力同口径的尾部 token 估算）；
+// cost 来自 logs.session_usage（request_logs 按 session_key 聚合）。
+// 刷新时机：进会话 / 响应落地（turn 完成）/ 30s 兜底轮询。
+const ctxPct = ref<number | null>(null)
+const sessCost = ref<number | null>(null)
+
+function refreshUsage() {
+  if (!isDefaultChat.value) return
+  const sid = sessionStore.currentId
+  if (!sid) return
+  // 响应可能晚于会话切换——回包时校验还是当前会话（同 TodoPanel 纪律）。
+  request('chat', 'context_status', { session_id: sid })
+    .then((data) => {
+      if (sessionStore.currentId !== sid) return
+      ctxPct.value = typeof data?.context?.pct === 'number' ? data.context.pct : null
+    })
+    .catch(() => {})
+  request('logs', 'session_usage', { session_id: sid })
+    .then((data) => {
+      if (sessionStore.currentId !== sid) return
+      sessCost.value = typeof data?.total_cost_usd === 'number' ? data.total_cost_usd : null
+    })
+    .catch(() => {})
+}
+
+const unwatchUsage = watch(
+  () => sessionStore.currentId,
+  () => {
+    ctxPct.value = null
+    sessCost.value = null
+    refreshUsage()
+  },
+)
+
+let usagePollTimer: ReturnType<typeof setInterval> | null = null
 
 // Voice toolbar state
 const sttReady = ref(false)
@@ -187,6 +284,20 @@ function modelBadge(model: string | undefined): string {
   return model.slice(0, idx) + ' · ' + model.slice(idx + 1)
 }
 
+/**
+ * E2: 并发回执徽章——识别 AgentLoop 的排队/插话回执（前缀见 loop.rs
+ * gate_inbound 的 busy 收据文案；⏳ 还有 /compact /clear 忙时拒绝回执，
+ * 语义是"已忽略"不是"已排队"，所以匹配具体前缀而非裸 emoji）。
+ * 后端文案改动时徽章退化为不显示，正文永远完整可见——纯前端装饰。
+ */
+function concurrencyBadge(msg: { role: string; content: string }): { cls: string; label: string } | null {
+  if (msg.role !== 'assistant') return null
+  if (msg.content.startsWith('⚡ 已接收为紧急插话')) return { cls: 'badge-warning', label: '插话' }
+  if (msg.content.startsWith('⏳ 当前正在处理上一条消息')) return { cls: 'badge-info', label: '已排队' }
+  if (msg.content.startsWith('⏳ 排队已满')) return { cls: 'badge-error', label: '排队满' }
+  return null
+}
+
 function scrollToBottom() {
   if (chatMessages.value) {
     chatMessages.value.scrollTop = chatMessages.value.scrollHeight
@@ -215,12 +326,46 @@ function onChatAreaClick() {
 }
 
 function handleWSMessage(data: any) {
+  // M1b: tool_event push（M1a AgentEvent 通道；无 module 字段的 push 帧）。
+  // 按当前会话 chat_id 过滤（`web:{session_id}`，M1a pump 路由键）；
+  // 无活跃会话（standalone 单会话）时接受任意 web: 前缀事件。
+  if (data.type === 'push' && data.cmd === 'tool_event') {
+    const ev = data.data
+    const p = ev?.data ?? {}
+    const expected = sessionStore.currentId ? `web:${sessionStore.currentId}` : null
+    if (expected ? p.chat_id !== expected : !String(p.chat_id ?? '').startsWith('web:')) return
+    if (ev?.kind === 'ToolStarted') {
+      chatStore.appendToolEvent({
+        callId: p.call_id,
+        tool: p.tool,
+        state: 'running',
+        argsPreview: p.args_preview,
+      })
+    } else if (ev?.kind === 'ToolFinished') {
+      chatStore.appendToolEvent({
+        callId: p.call_id,
+        tool: p.tool,
+        state: p.ok ? 'ok' : 'error',
+        durationMs: p.duration_ms,
+        resultPreview: p.result_preview,
+      })
+    } else if (ev?.kind === 'ModeChanged') {
+      // F1：模式切换事件（/plan /build slash 或 chat.set_mode 发布）——
+      // 徽标实时刷新。chat_id 过滤已在上方完成（含无活跃会话的 web: 放行）。
+      if (p.mode === 'plan' || p.mode === 'build') chatStore.setAgentMode(p.mode)
+    }
+    return
+  }
   if (data.module !== undefined) {
     const activeModule = props.module ?? 'chat'
     if (data.type === 'message' && data.module === activeModule) {
       if (data.cmd === 'receive') {
         const incomingRole = data.data.role || 'assistant'
         const incomingContent = data.data?.content
+        // L2：推送帧带会话内单调 seq——更新补拉游标（sync 去重 + 重连续传）。
+        if (typeof data.data?.seq === 'number') {
+          lastChatSeq = Math.max(lastChatSeq, data.data.seq)
+        }
         const last = chatStore.messages[chatStore.messages.length - 1]
         // Skip addMessage if the watchdog already recovered this exact
         // response from session_log (late-arriving live frame, same tail).
@@ -230,15 +375,24 @@ function handleWSMessage(data: any) {
           incomingContent != null &&
           last.content === incomingContent
         if (!isDuplicateRecovery) {
+          // M1b：assistant 响应落地时，把本轮累积的工具事件挂载到该消息
+          // （收集自 M1a push 通道；flush 即取走，避免误挂下一轮）。
+          const toolEvents =
+            incomingRole === 'assistant' && chatStore.pendingToolEvents.length
+              ? chatStore.flushPendingToolEvents()
+              : undefined
           chatStore.addMessage({
             role: incomingRole,
             content: data.data.content,
             timestamp: data.timestamp,
             model: data.data.model,
+            toolEvents,
           })
         }
         chatStore.streaming = false
         clearWatchdog()
+        // M5：turn 完成（历史已落 store）→ 刷新 context/cost 常驻条。
+        if (incomingRole === 'assistant') refreshUsage()
 
         // TTS playback: if enabled, send AI response to backend for synthesis
         if (voicePlayback.value && ttsReady.value && data.data.role !== 'user' && data.data.content) {
@@ -302,6 +456,71 @@ function handleWSMessage(data: any) {
   })
 }
 
+// --- L2（devtool-upgrade 阶段 6）：WS chat 帧断线补拉 ---
+// 后端为每个 chat 推送帧盖会话内单调 seq（chat_event_log 环形缓冲，窗口 200）。
+// 重连成功且历史已载 → chat.sync {after_seq: lastChatSeq} 补齐缺口；
+// gap=true（缺口滑出窗口/网关重启 seq 重置）→ reset + 全量重载兜底。
+// 只对默认 chat 模块生效（workflow_chat 引擎自管，帧不在补拉通道里）。
+let lastChatSeq = 0
+
+// 历史载入后对齐 seq 基线：历史帧（chat_log 路径）不带 seq，不锚基线的话
+// 首次重连补拉会从 0 起重放出已载历史。只取最新游标不渲染；本轮已有活帧
+//（lastChatSeq>0）或拿不到基线（gap/失败）则保持现状——重连补拉的
+// gap→重载兜底链仍然成立。fire-and-forget，失败静默。
+async function primeSeqBaseline() {
+  if (!isDefaultChat.value || lastChatSeq > 0) return
+  const sid = sessionStore.currentId
+  if (!sid) return
+  try {
+    const res = await request('chat', 'sync', { session_id: sid, after_seq: 0 })
+    if (!res?.gap && Array.isArray(res?.events) && res.events.length) {
+      const tail = res.events[res.events.length - 1]
+      if (typeof tail?.seq === 'number') lastChatSeq = Math.max(lastChatSeq, tail.seq)
+    }
+  } catch { /* 基线拿不到就保持 0 */ }
+}
+
+async function syncMissedChat() {
+  if (!isDefaultChat.value) return
+  const sid = sessionStore.currentId
+  if (!sid || chatStore.historyLoading) return
+  try {
+    const res = await request('chat', 'sync', { session_id: sid, after_seq: lastChatSeq })
+    if (res?.gap) {
+      chatStore.reset()
+      lastChatSeq = 0
+      loadHistory()
+      return
+    }
+    let added = false
+    for (const ev of res?.events ?? []) {
+      // 重放与活帧的赛窗：sync 在途时新帧可能已从 live 通道到达并推进游标
+      //——seq ≤ 游标的重放帧跳过，避免双渲染。
+      if (typeof ev.seq === 'number' && ev.seq <= lastChatSeq) continue
+      chatStore.addMessage({
+        role: ev.role,
+        content: ev.content,
+        timestamp: new Date().toISOString(),
+        model: ev.model,
+      })
+      if (typeof ev.seq === 'number') lastChatSeq = Math.max(lastChatSeq, ev.seq)
+      added = true
+    }
+    if (added) nextTick(() => scrollToBottomIfNear())
+  } catch {
+    // sync 失败不炸 UI——watchdog / 下轮重连兜底
+  }
+}
+
+// SSE resync 提示（缺口滑出重放窗口/网关重启）→ 全量重载兜底。
+function onSSEResync() {
+  if (!isDefaultChat.value) return
+  if (!chatStore.historyLoaded || chatStore.historyLoading) return
+  chatStore.reset()
+  lastChatSeq = 0
+  loadHistory()
+}
+
 // --- Watchdog: recover from a lost live response frame ---
 // If `streaming` stays true past WATCHDOG_MS with no receive/error frame, the
 // WS frame was likely lost (e.g. half-open connection). The response is already
@@ -348,9 +567,153 @@ function onWatchdog() {
   reloadLatest()
 }
 
+// ---------------------------------------------------------------------------
+// M6（devtool-upgrade 阶段 7）：消息级回退——E3 rewind/redo 的首个前端入口。
+// message_index = 后端 chat_log jsonl 行号（ChatMessage.rowIndex：历史批次
+// 连续推导 + live 递增；error/system 是纯前端渲染不占行）。rewind 截断语义
+// 按 turn 边界（后端从目标行之后扫到下一 user 行），checkpoint 锚存在时
+// 尽力回滚文件。仅主聊天模块可用——sessions.rewind_to_message 后端固定编
+// 址 agent:main:session:{sid}，workflow_chat 等模块会话键不同。
+// ---------------------------------------------------------------------------
+
+const rewinding = ref(false)
+/** L4：会话分享弹窗开关（工具栏 🔗 按钮）。 */
+const showShare = ref(false)
+
+/** rewind/redo 后全量重同步：无条件以 chat_log 为真相源 replace 重建视图，
+ *  并用响应 oldest_index 重建行号（与 watchdog 分支的区别：不依赖 streaming
+ *  条件——回退发生在非 streaming 态）。 */
+let pendingResync = false
+function resyncFromLog() {
+  pendingResync = true
+  sendHistoryRequest('resync_' + Date.now(), 100, null, {
+    module: props.module,
+    moduleData: activeModuleData(),
+  })
+}
+
+function rewindToastSummary(resp: any) {
+  const parts: string[] = [`撤掉 ${resp?.removed_count ?? 0} 条消息`]
+  if (resp?.file_restore === 'applied') {
+    parts.push(
+      `文件回滚：写 ${resp?.written?.length ?? 0} / 删 ${resp?.deleted?.length ?? 0}`,
+    )
+  } else if (resp?.file_restore_note) {
+    parts.push(String(resp.file_restore_note))
+  } else {
+    parts.push('文件未动')
+  }
+  toast.success(`已回退：${parts.join('；')}`)
+}
+
+/** 回退到 messageIndex 行之后（行号语义见 rewindActions 各按钮）。 */
+async function doRewind(messageIndex: number) {
+  if (rewinding.value || !isDefaultChat.value) return
+  const sid = sessionStore.currentId
+  if (!sid) return
+  rewinding.value = true
+  try {
+    const resp = await request('sessions', 'rewind_to_message', {
+      session_id: sid,
+      message_index: messageIndex,
+    })
+    rewindToastSummary(resp)
+    resyncFromLog()
+  } catch (e: any) {
+    toast.error(e?.message || String(e))
+  }
+  rewinding.value = false
+}
+
+/** E3 redo：弹本会话 undo 栈顶反向恢复（栈在网关内存态，空栈后端诚实报错）。 */
+async function doRedo() {
+  if (rewinding.value || !isDefaultChat.value) return
+  const sid = sessionStore.currentId
+  if (!sid) return
+  rewinding.value = true
+  try {
+    await request('sessions', 'redo', { session_id: sid })
+    toast.success('已重做上一次回退')
+    resyncFromLog()
+  } catch (e: any) {
+    toast.error(e?.message || String(e))
+  }
+  rewinding.value = false
+}
+
+/** 消息气泡的回退动作组（行号不可用=诚实不给入口）。 */
+function rewindActions(msg: ChatMessage) {
+  if (!isDefaultChat.value) return []
+  if (msg.role !== 'user' && msg.role !== 'assistant') return []
+  if (msg.rowIndex === undefined) return []
+  const acts: { label: string; title: string; run: () => void }[] = []
+  if (msg.role === 'user') {
+    acts.push({
+      label: '↻ 重新生成',
+      title: '撤掉这条提问的回复（保留提问）',
+      run: () => doRewind(msg.rowIndex!),
+    })
+    if (msg.rowIndex > 0) {
+      acts.push({
+        label: '⏪ 撤销此问',
+        title: '删除这条提问及其回复（文件改动尽力回滚）',
+        run: () => doRewind(msg.rowIndex! - 1),
+      })
+    }
+  } else {
+    // assistant 行的前一行是本轮 user 行（chat_log 只存 user/assistant 且
+    // 连续）：回退到 user 行 = 重新生成；回退到 user 前一行 = 删除整轮。
+    acts.push({
+      label: '↻ 重新生成',
+      title: '撤掉这条回复（保留提问）',
+      run: () => doRewind(msg.rowIndex! - 1),
+    })
+    if (msg.rowIndex > 1) {
+      acts.push({
+        label: '⏪ 删除整轮',
+        title: '删除本轮提问与回复（文件改动尽力回滚）',
+        run: () => doRewind(msg.rowIndex! - 2),
+      })
+    }
+  }
+  return acts
+}
+
+// M6：命令面板「插入不发送」——草稿追加进输入框并聚焦（消费后清空）。
+watch(
+  () => chatStore.commandDraft,
+  (d) => {
+    if (!d) return
+    chatStore.input = chatStore.input ? chatStore.input.replace(/\s*$/, '') + ' ' + d : d
+    chatStore.commandDraft = ''
+    nextTick(() => chatInput.value?.focus())
+  },
+)
+
 function handleHistoryResponse(data: any) {
   chatStore.historyLoading = false
   if (!data) return
+
+  // M6：rewind/redo 后的重同步（无条件 replace + oldest_index 重建行号）。
+  if (pendingResync) {
+    pendingResync = false
+    const rawMsgs: any[] = data.messages || []
+    const oldest = typeof data.oldest_index === 'number' ? data.oldest_index : null
+    chatStore.replaceMessages(
+      rawMsgs.map((m: any, j: number) => ({
+        role: m.role,
+        content: m.content,
+        timestamp: m.timestamp || new Date().toISOString(),
+        model: m.model,
+        imageCount: Array.isArray(m.images) ? m.images.length : undefined,
+        rowIndex: oldest !== null ? oldest + j : undefined,
+      })),
+    )
+    chatStore.streaming = false
+    clearWatchdog()
+    nextTick(() => scrollToBottom())
+    return
+  }
 
   // Watchdog-driven resync: if a genuinely new assistant message is in
   // session_log (more than at send time), the lost response landed — replace
@@ -394,7 +757,11 @@ function handleHistoryResponse(data: any) {
       model: m.model,
       imageCount: Array.isArray(m.images) ? m.images.length : undefined,
     }))
-    chatStore.prependHistory(newMessages)
+    // M6：批次行号连续——oldest_index 传给 store 逐条编号（E3 rewind 定位）。
+    chatStore.prependHistory(
+      newMessages,
+      typeof data.oldest_index === 'number' ? data.oldest_index : null,
+    )
 
     nextTick(() => {
       if (container) {
@@ -407,6 +774,8 @@ function handleHistoryResponse(data: any) {
   chatStore.hasMoreHistory = data.has_more || false
   chatStore.oldestIndex = data.oldest_index
   chatStore.historyLoaded = true
+  // L2：历史落地后对齐补拉基线（只取游标，不渲染；详见 primeSeqBaseline）。
+  primeSeqBaseline()
 
   if (chatStore.oldestIndex === 0 || !data.has_more) {
     chatStore.hasMoreHistory = false
@@ -496,7 +865,89 @@ function onPaste(e: ClipboardEvent) {
   if (files && files.length > 0) {
     e.preventDefault()
     addImageFiles(files)
+    return
   }
+  // I4（devtool-upgrade 阶段 4）：超长纯文本粘贴折叠为占位符（原文暂存本地，
+  // 发送时还原全文）。短文本不干预。
+  const text = e.clipboardData?.getData('text/plain') ?? ''
+  if (text.length > PASTE_FOLD_THRESHOLD) {
+    e.preventDefault()
+    insertPastePlaceholder(text)
+  }
+}
+
+// --- I4: 超长粘贴折叠 -------------------------------------------------------
+// >2000 字符的纯文本粘贴 → 输入区只留占位符 `[Pasted ~N lines #p1]`，原文存
+// pastedTexts 映射；chips 行点击展开预览；发送时占位符还原为全文（上行与本
+// 地回显都是全量）。纯前端，后端协议不变。
+
+const PASTE_FOLD_THRESHOLD = 2000
+
+/** 占位符文本的识别正则（插入与还原共用同一格式——单一真相源在 pastePlaceholder）。 */
+const PASTE_PLACEHOLDER_RE = /\[Pasted ~\d+ (?:lines|chars) #(p\d+)\]/g
+
+/** 占位符 → 原文映射。p 计数器组件生命周期内递增；发送后清空重来。 */
+const pastedTexts = ref(new Map<string, string>())
+const expandedPastes = ref(new Set<string>())
+let pasteSeq = 0
+
+/** 尺寸标签：多行显示行数，单行显示字符数。 */
+function pasteSizeLabel(text: string): string {
+  const lines = text.split('\n').length
+  return lines > 1 ? `~${lines} lines` : `~${text.length} chars`
+}
+
+function pastePlaceholder(id: string, text: string): string {
+  return `[Pasted ${pasteSizeLabel(text)} #${id}]`
+}
+
+/** 当前输入里仍存在的占位符 id（chips 只显示这些——手动删掉占位符，chip 即消失）。 */
+const activePasteIds = computed(() => {
+  const ids: string[] = []
+  for (const m of chatStore.input.matchAll(PASTE_PLACEHOLDER_RE)) {
+    if (pastedTexts.value.has(m[1]) && !ids.includes(m[1])) ids.push(m[1])
+  }
+  return ids
+})
+
+/** 占位符 → 原文还原；映射中不存在的 id（用户手打的同形文本）原样保留。 */
+function expandPastedPlaceholders(text: string): string {
+  return text.replace(PASTE_PLACEHOLDER_RE, (m, id: string) => pastedTexts.value.get(id) ?? m)
+}
+
+/** 把占位符插入光标处（替换选区），原文存入映射。 */
+function insertPastePlaceholder(text: string) {
+  const id = `p${++pasteSeq}`
+  pastedTexts.value.set(id, text)
+  const placeholder = pastePlaceholder(id, text)
+  const el = chatInput.value
+  const input = chatStore.input
+  const start = Math.min(el?.selectionStart ?? input.length, input.length)
+  const end = Math.min(el?.selectionEnd ?? input.length, input.length)
+  const from = Math.min(start, end)
+  const to = Math.max(start, end)
+  chatStore.input = input.slice(0, from) + placeholder + input.slice(to)
+  if (el) {
+    // 与 handleInput 同款高度自适应（折叠让输入框变矮）。
+    el.style.height = 'auto'
+    el.style.height = Math.min(el.scrollHeight, 150) + 'px'
+    nextTick(() => {
+      el.focus()
+      const pos = from + placeholder.length
+      try {
+        el.setSelectionRange(pos, pos)
+      } catch {
+        /* jsdom 等环境可能不支持——光标位置非关键路径 */
+      }
+    })
+  }
+}
+
+function togglePasteExpand(id: string) {
+  const next = new Set(expandedPastes.value)
+  if (next.has(id)) next.delete(id)
+  else next.add(id)
+  expandedPastes.value = next
 }
 
 function onDragOver(e: DragEvent) {
@@ -515,7 +966,8 @@ function onDrop(e: DragEvent) {
 }
 
 function sendMessage() {
-  const content = chatStore.input.trim()
+  // I4: 发送前把折叠占位符还原为全文（上行与本地回显都是全量）。
+  const content = expandPastedPlaceholders(chatStore.input).trim()
   const media = pendingImages.value.map(p => ({ id: p.id }))
   if (!content && media.length === 0) return
   // LO1（2026-09-04 四轮盲审）：上传未完成时发送被拒——旧行为静默 return，
@@ -537,6 +989,10 @@ function sendMessage() {
 
   chatStore.clearInput()
   pendingImages.value = []
+  // I4: 粘贴折叠状态一并清空（占位符已全部还原，映射/展开态/计数器重置）。
+  pastedTexts.value = new Map()
+  expandedPastes.value = new Set()
+  pasteSeq = 0
   chatStore.streaming = true
   startWatchdog()
 
@@ -666,6 +1122,8 @@ function handleKeydown(e: KeyboardEvent) {
   }
   // slash 命令菜单打开时接管导航键（Enter/Tab 选中，↑↓ 移动，Esc 关闭）。
   if (handleSlashKeydown(e)) return
+  // @文件引用补全菜单打开时同样接管（与 slash 互斥：'/' 开头 vs '@' 词首）。
+  if (handleAtKeydown(e)) return
 }
 
 // ---------------------------------------------------------------------------
@@ -722,6 +1180,93 @@ function handleInput(e: Event) {
   const el = e.target as HTMLTextAreaElement
   el.style.height = 'auto'
   el.style.height = Math.min(el.scrollHeight, 150) + 'px'
+}
+
+// ---------------------------------------------------------------------------
+// @文件引用补全（I2，devtool-upgrade 阶段 3）：输入尾部 `@片段` 时弹 workspace
+// 路径列表（后端 fs.complete_path，与 fs_watcher 共用忽略表，≤20 条）。
+// 选中把 @token 原位替换为 `@相对路径 `（目录带尾斜杠，续打下一层）；
+// #L 行号语法由用户手打（@src/main.rs#L10-20，后端切片）。
+// ---------------------------------------------------------------------------
+
+const atItems = ref<string[]>([])
+const atIndex = ref(0)
+const atTruncated = ref(false)
+const atOpen = computed(() => atItems.value.length > 0)
+let atDebounce: ReturnType<typeof setTimeout> | null = null
+
+/// 光标前的 `@片段` token（词首 @ 才触发：前一字符是空白/行首——邮箱
+/// user@x 不算）。与后端 token 语义同形（非空白非 @ 非反引号）。
+/// 未聚焦（含测试环境）视作光标在文本尾。
+function currentAtToken(): { prefix: string; start: number } | null {
+  const input = chatStore.input
+  const el = chatInput.value
+  const focused = !!el && document.activeElement === el
+  const pos = (focused && el.selectionStart != null) ? el.selectionStart : input.length
+  const m = input.slice(0, pos).match(/(^|\s)@([^\s@`]*)$/)
+  if (!m) return null
+  return { prefix: m[2], start: pos - m[2].length - 1 }
+}
+
+watch(() => chatStore.input, () => {
+  const tok = currentAtToken()
+  if (!tok) {
+    atItems.value = []
+    return
+  }
+  if (atDebounce) clearTimeout(atDebounce)
+  atDebounce = setTimeout(async () => {
+    try {
+      const out = await request('fs', 'complete_path', { prefix: tok.prefix })
+      atItems.value = (out?.paths as string[] | undefined) ?? []
+      atTruncated.value = !!(out?.truncated)
+      atIndex.value = 0
+    } catch {
+      atItems.value = [] // 补全失败静默——不影响输入
+    }
+  }, 150)
+})
+
+function applyAtCompletion(path: string) {
+  const tok = currentAtToken()
+  if (!tok) {
+    atItems.value = []
+    return
+  }
+  const input = chatStore.input
+  const end = tok.start + 1 + tok.prefix.length
+  chatStore.input = input.slice(0, tok.start) + '@' + path + ' ' + input.slice(end)
+  atItems.value = []
+  nextTick(() => {
+    chatInput.value?.focus()
+    const caret = tok.start + 1 + path.length + 1
+    chatInput.value?.setSelectionRange(caret, caret)
+  })
+}
+
+function handleAtKeydown(e: KeyboardEvent): boolean {
+  if (!atOpen.value) return false
+  if (e.key === 'ArrowDown') {
+    e.preventDefault()
+    atIndex.value = (atIndex.value + 1) % atItems.value.length
+    return true
+  }
+  if (e.key === 'ArrowUp') {
+    e.preventDefault()
+    atIndex.value = (atIndex.value - 1 + atItems.value.length) % atItems.value.length
+    return true
+  }
+  if (e.key === 'Enter' || e.key === 'Tab') {
+    e.preventDefault()
+    const p = atItems.value[atIndex.value]
+    if (p) applyAtCompletion(p)
+    return true
+  }
+  if (e.key === 'Escape') {
+    atItems.value = []
+    return true
+  }
+  return false
 }
 
 function renderCodeBlocks() {
@@ -786,6 +1331,9 @@ const unwatchStatus = watch(wsStatus, (val) => {
   if (props.standalone) {
     if (val === 'connected' && !chatStore.historyLoaded && !chatStore.historyLoading) {
       loadHistory()
+    } else if (val === 'connected' && chatStore.historyLoaded) {
+      // L2：重连（非首连）→ 断线补拉而非整页重载。
+      syncMissedChat()
     }
     if (val === 'disconnected' && chatStore.streaming) {
       chatStore.streaming = false
@@ -795,6 +1343,9 @@ const unwatchStatus = watch(wsStatus, (val) => {
   appStore.connected = val === 'connected'
   if (val === 'connected' && !chatStore.historyLoaded) {
     loadHistory()
+  } else if (val === 'connected' && chatStore.historyLoaded) {
+    // L2：重连（非首连）→ 断线补拉而非整页重载。
+    syncMissedChat()
   }
   // Reset streaming flag on disconnect to prevent stuck UI
   if (val === 'disconnected' && chatStore.streaming) {
@@ -803,6 +1354,7 @@ const unwatchStatus = watch(wsStatus, (val) => {
   if (val === 'connected') {
     initVoiceState()
     syncInboxMode()
+    syncAgentMode()
   }
 })
 
@@ -822,16 +1374,20 @@ const unwatchSession = watch(
   (newId, oldId) => {
     if (!isDefaultChat.value || newId === oldId) return
     chatStore.reset()
+    lastChatSeq = 0 // L2：换会话 → 补拉游标归零（seq 是会话内单调的）
     if (newId && wsStatus.value === 'connected') {
       loadHistory()
     }
     syncInboxMode()
+    syncAgentMode()
   },
 )
 
 onMounted(() => {
   onMessage(handleWSMessage)
   setupScrollListener()
+  // L2：SSE resync 提示 → 会话全量刷新兜底（缺口滑出重放窗口/网关重启）。
+  onSSE('resync', onSSEResync)
 
   // Non-default module (e.g., workflow_chat) must NOT share conversation
   // state with a prior chat session in the same tab — reset before binding.
@@ -867,6 +1423,13 @@ onMounted(() => {
 
   // U7: 挂载时拉一次 inbox 模式（失败则保守按 reject 处理）。
   syncInboxMode()
+
+  // F1: 挂载时对齐一次真实模式（徽标初值 build 是保守猜测）。
+  syncAgentMode()
+
+  // M5: 常驻条初拉 + 30s 兜底轮询（refreshUsage 内部自带 default-chat 守卫）。
+  refreshUsage()
+  usagePollTimer = setInterval(refreshUsage, 30000)
 })
 
 onUnmounted(() => {
@@ -874,9 +1437,15 @@ onUnmounted(() => {
     chatMessages.value.removeEventListener('scroll', scrollHandler)
   }
   removeMessageHandler(handleWSMessage)
+  offSSE('resync', onSSEResync)
   unwatchStatus()
   unwatchSession()
   unwatchStreaming()
+  unwatchUsage()
+  if (usagePollTimer) {
+    clearInterval(usagePollTimer)
+    usagePollTimer = null
+  }
   // 离开 chat 页时停掉活跃的 STT 会话，避免后端 orphan 后再回来 "already running" 卡死
   // （组件重挂载后 voiceDictation 是新 ref=false，但后端会话还在跑 → 重启报错 → 永远起不来）
   if (voiceDictation.value) {
@@ -893,6 +1462,9 @@ onUnmounted(() => {
 
 <template>
   <div class="page-chat">
+    <!-- H2: todo 清单面板（默认 chat 模块；todowrite 实时刷新 + 进会话拉取） -->
+    <TodoPanel v-if="isDefaultChat" :is-default-chat="isDefaultChat" />
+
     <!-- Messages -->
     <div ref="chatMessages" class="chat-messages" @click="onChatAreaClick">
       <!-- History loading indicator -->
@@ -914,6 +1486,25 @@ onUnmounted(() => {
       <div v-for="(msg, idx) in chatStore.messages" :key="idx" class="message" :class="msg.role">
         <div class="message-avatar">{{ getAvatar(msg.role) }}</div>
         <div class="message-content">
+          <!-- M1b: 本条消息关联的工具调用卡片（>=3 个默认折叠为计数条）。 -->
+          <template v-if="msg.toolEvents && msg.toolEvents.length">
+            <button
+              v-if="msg.toolEvents.length >= 3"
+              class="tool-group-toggle"
+              type="button"
+              @click="toggleToolGroup(msg.toolEvents)"
+            >
+              <span class="tool-group-icon">⚒</span>
+              已运行 {{ msg.toolEvents.length }} 个工具
+              <span class="tool-group-caret">{{ toolGroupCollapsed(msg.toolEvents) ? '▸' : '▾' }}</span>
+            </button>
+            <div
+              v-if="msg.toolEvents.length < 3 || !toolGroupCollapsed(msg.toolEvents)"
+              class="tool-cards"
+            >
+              <ToolCallCard v-for="ev in msg.toolEvents" :key="ev.callId" :event="ev" />
+            </div>
+          </template>
           <div class="message-bubble">
             <div v-if="msg.role === 'assistant'" class="markdown-body" v-html="getRenderedHtml(msg)"></div>
             <div v-else class="message-text">{{ msg.content }}</div>
@@ -922,6 +1513,22 @@ onUnmounted(() => {
           <div class="message-time">
             <span>{{ formatTime(msg.timestamp) }}</span>
             <span v-if="msg.role === 'assistant' && modelBadge(msg.model)" class="model-badge">{{ modelBadge(msg.model) }}</span>
+            <!-- E2: 并发回执徽章（排队/插话），紧跟模型徽章。
+                 用 .badge 基类不用 .model-badge——后者源码序靠后会盖掉徽章配色。 -->
+            <span v-if="concurrencyBadge(msg)" class="badge concurrency-badge" :class="concurrencyBadge(msg)!.cls">{{ concurrencyBadge(msg)!.label }}</span>
+            <!-- M6：消息级回退入口（E3 rewind）。行号不可用=诚实不给入口。 -->
+            <span v-if="rewindActions(msg).length" class="msg-actions">
+              <button
+                v-for="a in rewindActions(msg)"
+                :key="a.label"
+                class="msg-action-btn"
+                :title="a.title"
+                :disabled="rewinding"
+                @click="a.run()"
+              >
+                {{ a.label }}
+              </button>
+            </span>
           </div>
         </div>
       </div>
@@ -930,6 +1537,25 @@ onUnmounted(() => {
       <div v-if="chatStore.streaming" class="message assistant">
         <div class="message-avatar">NB</div>
         <div class="message-content">
+          <!-- M1b: 进行中轮次的工具卡片（响应落地前实时可见）。 -->
+          <template v-if="chatStore.pendingToolEvents.length">
+            <button
+              v-if="chatStore.pendingToolEvents.length >= 3"
+              class="tool-group-toggle"
+              type="button"
+              @click="toggleToolGroup(chatStore.pendingToolEvents)"
+            >
+              <span class="tool-group-icon">⚒</span>
+              已运行 {{ chatStore.pendingToolEvents.length }} 个工具
+              <span class="tool-group-caret">{{ toolGroupCollapsed(chatStore.pendingToolEvents) ? '▸' : '▾' }}</span>
+            </button>
+            <div
+              v-if="chatStore.pendingToolEvents.length < 3 || !toolGroupCollapsed(chatStore.pendingToolEvents)"
+              class="tool-cards"
+            >
+              <ToolCallCard v-for="ev in chatStore.pendingToolEvents" :key="ev.callId" :event="ev" />
+            </div>
+          </template>
           <div class="message-bubble">
             <div class="typing-indicator"><span></span><span></span><span></span></div>
           </div>
@@ -939,6 +1565,36 @@ onUnmounted(() => {
 
     <!-- Toolbar -->
     <div v-if="!toolbarCollapsed" class="voice-toolbar">
+      <button
+        v-if="isDefaultChat"
+        class="voice-btn mode-btn"
+        :class="{ 'mode-plan': chatStore.agentMode === 'plan' }"
+        :title="chatStore.agentMode === 'plan'
+          ? '计划模式：文件修改类工具已停用（plans/ 目录写入放行）。点击切回构建模式（/build）'
+          : '构建模式：全量工具。点击切换到计划模式（/plan），AI 只读代码出计划'"
+        @click="toggleAgentMode"
+      >
+        <span class="mode-mark">{{ chatStore.agentMode === 'plan' ? '📋' : '🛠' }}</span>
+        {{ chatStore.agentMode === 'plan' ? '计划' : '构建' }}
+      </button>
+      <button
+        v-if="isDefaultChat"
+        class="voice-btn redo-btn"
+        title="重做上一次回退（恢复被撤销的消息，文件尽力前向恢复；undo 栈在网关内存，重启即清）"
+        :disabled="rewinding"
+        @click="doRedo"
+      >
+        ↪ 重做
+      </button>
+      <button
+        v-if="isDefaultChat"
+        class="voice-btn share-btn"
+        title="分享本会话（只读链接，token 即凭据，可随时撤销）"
+        :disabled="rewinding"
+        @click="showShare = true"
+      >
+        🔗 分享
+      </button>
       <button
         v-if="steerEnabled"
         class="voice-btn steer-btn"
@@ -996,8 +1652,18 @@ onUnmounted(() => {
     <div v-if="chatStore.streaming && queuedTotal > 0" class="queue-chip" :class="{ full: queueFull }">
       ⏳ agent 处理中，已排队 {{ queuedTotal }} 条（其中插队 {{ inboxStatus?.next_step ?? 0 }}）<template v-if="queueFull"> · 队列已满</template>
     </div>
+    <!-- F1: 计划模式常驻条（工具栏可折叠，安全相关状态需要始终可见） -->
+    <div v-if="isDefaultChat && chatStore.agentMode === 'plan'" class="plan-strip">
+      📋 计划模式：文件修改类工具已停用（plans/ 目录写入放行）— 点击上方徽标或发送 /build 切回
+    </div>
     <div v-if="showSteerHint" class="steer-hint">
       ⚡ 将以插队（steer）模式发送，立即送达当前轮
+    </div>
+
+    <!-- M5: 会话级 context/cost 常驻条（与压缩压力同口径；turn 完成即刷 + 30s 兜底） -->
+    <div v-if="isDefaultChat && ctxPct !== null" class="usage-strip">
+      <span class="usage-ctx" :class="{ hot: ctxPct >= 80 }">{{ ctxPct }}% context</span>
+      <template v-if="sessCost !== null && sessCost > 0"> · <span class="usage-cost">{{ fmtCost(sessCost) }}</span></template>
     </div>
 
     <!-- Input -->
@@ -1019,6 +1685,22 @@ onUnmounted(() => {
           上传中…
         </span>
       </div>
+      <!-- I4: 折叠粘贴 chips（点击展开预览原文；发送时占位符还原为全文） -->
+      <div v-if="activePasteIds.length" class="paste-chips">
+        <span
+          v-for="id in activePasteIds"
+          :key="id"
+          class="paste-chip"
+          :class="{ open: expandedPastes.has(id) }"
+          :title="expandedPastes.has(id) ? '点击收起' : '点击展开查看粘贴内容'"
+          @click="togglePasteExpand(id)"
+        >
+          📋 Pasted {{ pasteSizeLabel(pastedTexts.get(id) ?? '') }} #{{ id }}
+        </span>
+      </div>
+      <template v-for="id in activePasteIds" :key="'pv-' + id">
+        <pre v-if="expandedPastes.has(id)" class="paste-preview">{{ pastedTexts.get(id) }}</pre>
+      </template>
       <!-- slash 命令补全菜单 -->
       <div v-if="slashOpen" class="slash-menu">
         <div
@@ -1032,6 +1714,20 @@ onUnmounted(() => {
           <span class="slash-item-name">/{{ c.name }}</span>
           <span class="slash-item-desc">{{ c.description }}</span>
           <span v-if="c.argument_hint" class="slash-item-hint">{{ c.argument_hint }}</span>
+        </div>
+      </div>
+      <!-- @文件引用补全菜单（I2）：复用 slash-menu 样式 -->
+      <div v-if="atOpen" class="slash-menu">
+        <div
+          v-for="(p, i) in atItems"
+          :key="p"
+          class="slash-item"
+          :class="{ active: i === atIndex }"
+          @mousedown.prevent="applyAtCompletion(p)"
+          @mouseenter="atIndex = i"
+        >
+          <span class="slash-item-name">{{ p }}</span>
+          <span v-if="atTruncated && i === atItems.length - 1" class="slash-item-hint">更多未列出…</span>
         </div>
       </div>
       <button
@@ -1096,6 +1792,12 @@ onUnmounted(() => {
         </svg>
       </button>
     </div>
+    <!-- L4 会话分享弹窗 -->
+    <ShareModal
+      v-if="showShare && sessionStore.currentId"
+      :session-id="sessionStore.currentId"
+      @close="showShare = false"
+    />
   </div>
 </template>
 
@@ -1113,6 +1815,36 @@ onUnmounted(() => {
 }
 .queue-chip.full {
   color: #dc3545;
+}
+/* F1: plan/build 模式徽标 + 计划模式常驻条 */
+.mode-btn.mode-plan {
+  color: #e6a23c;
+  border-color: #e6a23c;
+}
+.plan-strip {
+  padding: 4px 12px;
+  font-size: var(--text-xs);
+  color: #e6a23c;
+  background: var(--surface);
+  border-top: 1px solid var(--border);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+/* M5: 会话级 context/cost 常驻条 */
+.usage-strip {
+  padding: 3px 12px;
+  font-size: var(--text-xs);
+  color: var(--text-muted);
+  background: var(--surface);
+  border-top: 1px solid var(--border);
+  text-align: center;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.usage-strip .usage-ctx.hot {
+  color: #e6a23c;
 }
 .steer-hint {
   padding: 4px 12px;
@@ -1299,6 +2031,45 @@ onUnmounted(() => {
 .attach-chip-x:hover {
   color: #dc3545;
 }
+/* I4: 折叠粘贴 chips + 展开预览 */
+.paste-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  padding: 6px 12px 0;
+}
+.paste-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 3px 8px;
+  font-size: var(--text-xs);
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: var(--surface);
+  color: var(--text-secondary);
+  cursor: pointer;
+  white-space: nowrap;
+}
+.paste-chip:hover,
+.paste-chip.open {
+  color: var(--text);
+  border-color: var(--text-muted);
+}
+.paste-preview {
+  margin: 6px 12px 0;
+  padding: 8px 10px;
+  max-height: 200px;
+  overflow: auto;
+  font-size: var(--text-xs);
+  line-height: 1.5;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  white-space: pre-wrap;
+  word-break: break-word;
+  color: var(--text-secondary);
+}
 .msg-image-chip {
   display: inline-block;
   margin-top: 4px;
@@ -1308,6 +2079,76 @@ onUnmounted(() => {
   background: rgba(255, 255, 255, 0.12);
   color: inherit;
   opacity: 0.85;
+}
+
+/* E2: 并发回执徽章（时间行内，弱化不抢内容） */
+.concurrency-badge {
+  padding: 0 8px;
+  font-size: var(--text-xs);
+  line-height: 1.5;
+  opacity: 0.9;
+}
+
+/* M6: 消息级回退入口（时间行内，hover 显现不抢视觉） */
+.msg-actions {
+  display: inline-flex;
+  gap: 6px;
+  margin-left: 8px;
+  opacity: 0;
+  transition: opacity 0.12s ease;
+}
+.message:hover .msg-actions {
+  opacity: 1;
+}
+.msg-action-btn {
+  padding: 0 8px;
+  font-size: var(--text-xs);
+  line-height: 1.6;
+  color: var(--text-muted);
+  background: transparent;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  cursor: pointer;
+}
+.msg-action-btn:hover:not(:disabled) {
+  color: var(--text-primary, inherit);
+  background: var(--bg-elev, rgba(128, 128, 128, 0.1));
+}
+.msg-action-btn:disabled {
+  opacity: 0.5;
+  cursor: wait;
+}
+
+/* M1b: 工具调用卡片组（消息上方 / typing 指示上方） */
+.tool-cards {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin-bottom: 6px;
+}
+.tool-group-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  align-self: flex-start;
+  margin-bottom: 6px;
+  padding: 3px 10px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: var(--bg-elev, rgba(128, 128, 128, 0.06));
+  color: var(--text-muted);
+  font-size: var(--text-xs, 12px);
+  cursor: pointer;
+}
+.tool-group-toggle:hover {
+  color: var(--text);
+  border-color: var(--accent);
+}
+.tool-group-icon {
+  font-size: 11px;
+}
+.tool-group-caret {
+  font-size: 10px;
 }
 
 /* slash 命令补全菜单（2026-08-29） */

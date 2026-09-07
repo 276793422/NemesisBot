@@ -76,6 +76,69 @@ const COMPACT_SUMMARIZE_RATIO: usize = 75; // % (unchanged from legacy behavior)
 /// ⑩ Stuck: a summarization counts as ineffective when the prompt afterwards
 /// is still at least this fraction of its pre-summarization size.
 const COMPACT_STUCK_PLATEAU_RATIO: usize = 90; // %
+
+/// N1（devtool-upgrade 阶段 1）：context_window 三级解析链的最后一级兜底。
+/// 历史 32000 对现代 128k+ 模型意味着 24000 token 就触发压缩（编码场景过早
+/// 失忆）——未配置且价目表未命中时按 128000 猜；猜大了也有既有溢出应急链
+/// （`context_length_exceeded` → `force_compression` → 重试）自愈。
+pub const FALLBACK_CONTEXT_WINDOW: usize = 128_000;
+
+/// N1：三级 context_window 解析（纯函数，`AgentLoop` 与 CLI `model list` /
+/// `model probe` 共用同一真相源）。返回 `(窗口, 来源)`：
+/// - L1 config 显式 → `(Some(w), "config")`
+/// - L2 价目表命中（`max_input_tokens > 0`，custom > downloaded > embedded
+///   分层 + bare-suffix 匹配，`zhipu/glm-4.7`→`glm-4.7`）→ `(Some(w), "catalog")`
+/// - L3 都没有 → `(None, "fallback-128k")`，调用方用
+///   [`FALLBACK_CONTEXT_WINDOW`] 兜底。
+pub fn resolve_context_window_tiered(
+    cfg: Option<&serde_json::Value>,
+    alias: &str,
+    pricing: Option<&nemesis_data::PricingStore>,
+) -> (Option<usize>, &'static str) {
+    if let Some(cfg) = cfg
+        && let Some(w) = nemesis_types::capability::resolve_context_window(cfg, alias)
+    {
+        return (Some(w as usize), "config");
+    }
+    if let Some(store) = pricing {
+        // L2 第一轮：直接用活动别名查（standalone 形态下 alias 即 full
+        // model 名，bare-suffix 匹配在 store.lookup 内部完成）。
+        if let Some(w) = store
+            .lookup(alias)
+            .and_then(|p| p.max_input_tokens)
+            .filter(|w| *w > 0)
+        {
+            return (Some(w as usize), "catalog");
+        }
+        // L2 第二轮：config 条目把别名映射到 full model 名（如
+        // `glm`→`zhipu/glm-4.7`）时，用 full 名再查一轮——bare-suffix
+        // `glm-4.7` 命中目录条目。
+        if let Some(cfg) = cfg {
+            let full = cfg
+                .get("model_list")
+                .and_then(|v| v.as_array())
+                .and_then(|arr| {
+                    arr.iter().find(|m| {
+                        let name = m.get("model_name").and_then(|v| v.as_str()).unwrap_or("");
+                        let full_model = m.get("model").and_then(|v| v.as_str()).unwrap_or("");
+                        name == alias || full_model == alias
+                    })
+                })
+                .and_then(|m| m.get("model"))
+                .and_then(|v| v.as_str());
+            if let Some(full) = full
+                && let Some(w) = store
+                    .lookup(full)
+                    .and_then(|p| p.max_input_tokens)
+                    .filter(|w| *w > 0)
+            {
+                return (Some(w as usize), "catalog");
+            }
+        }
+    }
+    (None, "fallback-128k")
+}
+
 /// ⑩ Stuck limit: after this many consecutive ineffective summarizations,
 /// pause auto-summarization and warn.
 const COMPACT_STUCK_LIMIT: u32 = 2;
@@ -331,6 +394,13 @@ pub trait Tool: Send + Sync {
     /// context should override this method.
     fn set_context(&self, _channel: &str, _chat_id: &str) {}
 
+    /// G2 (devtool-upgrade 阶段 3): notify the tool of the invocation's
+    /// sub-agent nesting depth (0 = top-level agent, N = N levels deep).
+    /// Called by `handle_tool_call_at_depth` right before execute, same
+    /// injection pattern as `set_context`. Default no-op; depth-aware tools
+    /// (spawn — `agents.subagent.max_depth` enforcement) override.
+    fn set_invocation_depth(&self, _depth: usize) {}
+
     /// Return a human-readable description of this tool for the LLM.
     /// Mirrors Go's Tool.Description() string.
     fn description(&self) -> String {
@@ -355,6 +425,13 @@ pub trait Tool: Send + Sync {
         None
     }
 
+    /// A7（2026-09-06）：checkpoint 预检多点版——默认与 [`Tool::preview`]
+    /// 等价（单文件）；multiedit 覆盖为逐文件清单，让检查点安全网在一次
+    /// dispatch 内快照全部待改文件。调用点（K1a 瀑布）只消费本方法。
+    fn preview_all(&self, args: &str) -> Vec<FileChange> {
+        self.preview(args).into_iter().collect()
+    }
+
     /// U5 (sixth batch): whether this tool is a pure read with no side effects
     /// (filesystem read, list, search, web fetch — safe to run concurrently
     /// with other read-only calls in the same tool batch). Default `false`
@@ -363,6 +440,24 @@ pub trait Tool: Send + Sync {
     /// tools and `exec` (even `cat`) stay `false`.
     fn is_read_only(&self) -> bool {
         false
+    }
+
+    /// G3 (devtool-upgrade 阶段 6): whether this tool may join the U5
+    /// parallel pre-execution pool. Default = [`Self::is_read_only`] —
+    /// pure reads stay the only automatic joiners. Override to `true` only
+    /// for tools whose concurrent execution is safe by construction: the
+    /// spawn tool opts in because (a) every pool dispatch injects the
+    /// instance's sub-agent depth via `handle_tool_call_at_depth` (no-op
+    /// for tools that don't override `set_invocation_depth`), (b) G0's own
+    /// semaphore caps real concurrent sub-agents (`agents.subagent.
+    /// max_concurrent`) on top of the pool's 4-permit limiter, (c) the
+    /// full dispatch waterfall (estop/hidden/Plan/security/hooks) still
+    /// runs inside each `handle_tool_call_at_depth` call, and (d) detached
+    /// sub-agents own isolated instances/sessions — no shared mutable
+    /// state with sibling spawns. Writers must NOT opt in: a `false` here
+    /// keeps the whole batch serial (fail-closed, same as U5).
+    fn is_parallel_safe(&self) -> bool {
+        self.is_read_only()
     }
 }
 
@@ -397,6 +492,7 @@ pub enum ConcurrentMode {
 }
 
 /// V5 (2026-08-23): outcome of the synchronous inbound gate (`gate_inbound`).
+#[derive(Debug)]
 enum GateOutcome {
     /// `cluster_continuation` marker — the pump handles it inline via
     /// `dispatch_continuation` (serial, unchanged from the legacy loop).
@@ -404,6 +500,26 @@ enum GateOutcome {
     /// Short-circuit reply (busy receipt / busy bounce / queue-full / slash
     /// command response). No session was acquired.
     Immediate { agent_id: String, response: String },
+    /// E6 (2026-09-05): `/compact` / `/clear` — 会话维护命令。gate 的同步
+    /// 短路点拿不到 instance（LLM 摘要是 async），但会话已在此获取（防
+    /// 并发回合与压缩互相踩摘要推进）；pump/serial tail 派发到
+    /// `handle_maintenance`，回执经 `finish_message` 走正常出站路径。
+    Maintenance {
+        kind: SessionMaintenance,
+        session_key: String,
+        receipt: String,
+    },
+    /// K4 (devtool-upgrade 阶段 7): 用户直发远程编码任务派发——
+    /// `/build <task> repo:<node>`。会话已在 gate 获取（Maintenance 同款，
+    /// 防并发回合踩会话）；tail 走 `process_user_dispatch`：经
+    /// `handle_tool_call` 全管线（安全 8 层 / estop / Plan 闸）提交
+    /// `cluster_rpc`，ACK 后存自足续行快照，完成回调复用
+    /// `handle_cluster_continuation` 呈现结果并回原通道。
+    UserDispatch {
+        task_text: String,
+        node_id: String,
+        session_key: String,
+    },
     /// System (non-continuation) / history-request passthrough — async
     /// handling, no session semantics.
     Ungated,
@@ -414,10 +530,311 @@ enum GateOutcome {
 
 /// V5: admission minted by the gate — everything the turn tail needs that
 /// the gate acquired on the message's behalf.
+#[derive(Debug)]
 struct TurnAdmission {
     agent_id: String,
     session_key: String,
     cancel_token: tokio_util::sync::CancellationToken,
+    /// E3：本消息在 `turn_preamble` 里 begin 的 checkpoint turn 序号（无
+    /// store 挂载时 None）。随 admission 穿针到行落盘点——不能落盘时反查
+    /// `cur`（整 turn 的 await 间隙里可能被其他会话/steer 的 begin 翻掉）。
+    cp_turn: Option<usize>,
+}
+
+/// E6: 会话维护命令种类（`/compact` 手动压缩 / `/clear` 清空会话）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SessionMaintenance {
+    /// 手动 compaction：推进摘要覆盖、收缩逐字尾巴（`force_compression`）。
+    Compact,
+    /// 清空会话历史（chat_log 截断 + SessionStore 清除，key 保留可用）。
+    Clear,
+}
+
+/// E6: parse a session-maintenance slash command (`/compact` / `/clear`).
+/// Returns (kind, pending receipt). Extra args are ignored (no-arg commands);
+/// `None` for anything else — the caller falls through to normal handling.
+fn parse_maintenance_command(content: &str) -> Option<(SessionMaintenance, String)> {
+    let name = content.split_whitespace().next()?;
+    match name {
+        "/compact" => Some((SessionMaintenance::Compact, "⏳ 正在压缩会话…".to_string())),
+        "/clear" => Some((SessionMaintenance::Clear, "⏳ 正在清空会话…".to_string())),
+        _ => None,
+    }
+}
+
+/// K4 (devtool-upgrade 阶段 7): 用户直发远程编码任务派发语法——
+/// `/build <task> repo:<node>`（`/plan` 前缀同接受）。
+///
+/// 解析规则（可预测优先）：
+/// - 前缀必须是 `/build ` 或 `/plan `（带参数形态）；裸 `/build`（F1 模式
+///   切换）因无尾随空格天然不匹配，互不干扰；
+/// - 目标节点 = **最后一个** `repo:` 前缀的空白分隔 token；其余部分为
+///   任务文本；
+/// - 任务文本为空 / 无 `repo:` token / token 后为空 → `None`（落普通轮，
+///   不猜不做）。
+///
+/// 返回 (task_text, node_id)。
+fn parse_user_dispatch(content: &str) -> Option<(String, String)> {
+    let trimmed = content.trim();
+    let rest = trimmed
+        .strip_prefix("/build ")
+        .or_else(|| trimmed.strip_prefix("/plan "))?
+        .trim();
+    if rest.is_empty() {
+        return None;
+    }
+    let tokens: Vec<&str> = rest.split_whitespace().collect();
+    let last = tokens.last()?;
+    let node_id = last.strip_prefix("repo:").filter(|s| !s.is_empty())?;
+    let task_text = tokens[..tokens.len() - 1].join(" ");
+    if task_text.is_empty() {
+        return None;
+    }
+    Some((task_text, node_id.to_string()))
+}
+
+/// K4: 构造用户直派发的自足续行快照消息。
+///
+/// 与 LLM 发起 `cluster_rpc` 的 `__ASYNC__` 路径同构，但快照不来自
+/// instance 历史（用户派发没有 LLM 轮），而是直接合成最小合法序列：
+/// `[user(任务文本), assistant(tool_calls: [同一 tc_id])]`。完成回调到达时
+/// `merge_real_tool_result` 找不到既有 tool 槽位 → push 到末尾，得到
+/// `[user, assistant(tc), tool(result)]` ——严格 provider 接受的标准序列
+/// （tool 消息紧跟其 assistant tool_calls 消息）。续行 LLM 以自己的口吻
+/// 向用户呈现远程执行结果，还可继续多步工具链。
+fn build_dispatch_snapshot_messages(
+    task_text: &str,
+    target_node: &str,
+    tool_call_id: &str,
+) -> Vec<LlmMessage> {
+    let args = serde_json::json!({
+        "target": target_node,
+        "message": task_text,
+    })
+    .to_string();
+    vec![
+        LlmMessage {
+            role: "user".to_string(),
+            content: task_text.to_string(),
+            tool_calls: None,
+            tool_call_id: None,
+            reasoning_content: None,
+            images: Vec::new(),
+        },
+        LlmMessage {
+            role: "assistant".to_string(),
+            content: String::new(),
+            tool_calls: Some(vec![ToolCallInfo {
+                id: tool_call_id.to_string(),
+                name: "cluster_rpc".to_string(),
+                arguments: args,
+            }]),
+            tool_call_id: None,
+            reasoning_content: None,
+            images: Vec::new(),
+        },
+    ]
+}
+
+/// K4 (c): B 端 peer_chat 任务完成回报的变化摘要段。
+///
+/// B 端执行节点处理 `cluster_rpc:` 会话的最后一轮时，把本轮声明式文件
+/// 工具变更以紧凑列表追加到最终回复（chat_log 落盘与出站发布共用同一
+/// 字符串，日志与通道看到的完全一致）。上限 [`CHANGES_SUMMARY_CAP`] 条，
+/// 溢出诚实注记（不静默截断）；顺序 = drain 顺序（确定性，重放字节稳定）。
+/// 诚实边界：只覆盖**最终轮**——B 端多轮续行的历史轮变更不聚合（M3 会话
+/// 级聚合是远期项）。
+const CHANGES_SUMMARY_CAP: usize = 20;
+
+fn render_turn_changes_summary(changes: &[FileChange]) -> Option<String> {
+    if changes.is_empty() {
+        return None;
+    }
+    let kind_str = |k: FileChangeKind| match k {
+        FileChangeKind::Create => "create",
+        FileChangeKind::Modify => "modify",
+        FileChangeKind::Delete => "delete",
+    };
+    let mut s = format!("\n\n---\n📁 变更文件（本轮，共 {} 个）：", changes.len());
+    for c in changes.iter().take(CHANGES_SUMMARY_CAP) {
+        s.push_str(&format!("\n- {} ({})", c.path, kind_str(c.kind)));
+    }
+    if changes.len() > CHANGES_SUMMARY_CAP {
+        s.push_str(&format!(
+            "\n- …另有 {} 个文件未列出",
+            changes.len() - CHANGES_SUMMARY_CAP
+        ));
+    }
+    Some(s)
+}
+
+/// K4 (b): IM 审批卡回执语法——`/approve <id>` / `/deny <id>`（id 为审批
+/// 卡给出的短编号，6~12 位十六进制字符）。命中返回静态确认文案（gate
+/// Immediate 短路，不进 agent）；格式不符返回 None 落普通轮。真实裁决与
+/// 无效 id 的诚实提示由 gateway 审批回执 watcher 负责。
+fn parse_approval_reply(content: &str) -> Option<String> {
+    let trimmed = content.trim();
+    let (verb, id) = if let Some(rest) = trimmed.strip_prefix("/approve ") {
+        ("approve", rest.trim())
+    } else if let Some(rest) = trimmed.strip_prefix("/deny ") {
+        ("deny", rest.trim())
+    } else {
+        return None;
+    };
+    let id = id.trim();
+    if id.is_empty() || id.len() > 64 || !id.chars().all(|c| c.is_ascii_alphanumeric()) {
+        return None;
+    }
+    Some(match verb {
+        "approve" => format!("✓ 已收到审批回复（同意 {id}），结果另行通知。"),
+        _ => format!("✓ 已收到审批回复（拒绝 {id}），结果另行通知。"),
+    })
+}
+
+/// E3（devtool-upgrade 阶段 5）：每会话 undo 栈深度上限。超限丢最旧——
+/// 内存态栈只服务本进程内的连续 undo/redo，不设界会话泄漏无界内存。
+const REWIND_UNDO_STACK_CAP: usize = 8;
+
+/// E3：一条消息级回退的 redo 依据（`rewind_to_message` 压栈，`redo_rewind`
+/// 弹栈反向）。被截断的 jsonl 行 VERBATIM 随行保存（原时间戳/标记不动），
+/// 影子 tree 支撑文件态的前向恢复与陈旧性守卫。
+#[derive(Debug, Clone)]
+struct RewindUndoEntry {
+    /// 被 `rewind_to_message` 截掉的行（原样，`rows[cut..]`）。
+    removed_rows: Vec<serde_json::Value>,
+    /// 回退后剩余行数（= cut）。redo 守卫：期间该会话无任何新行。
+    kept_count: usize,
+    /// 截断点之后第一个 checkpoint turn（恢复/截断索引用的那个）。
+    restore_turn: Option<usize>,
+    /// undo 时刻的最新影子 tree——redo 的文件前向恢复目标。
+    forward_tree: Option<String>,
+    /// undo 完成后（`truncate_from` 之后的索引里）剩的最新 tree——redo 的
+    /// 陈旧性守卫基线（期间任何新 checkpoint turn 都会改变它）。
+    post_tree: Option<String>,
+}
+
+// -------------------------------------------------------------------------
+// K3（devtool-upgrade 阶段 4）：`` !`cmd` `` shell 注入
+// -------------------------------------------------------------------------
+
+/// K3：`` !`cmd` `` 注入的超时（秒）——模板注入是"顺手拿点上下文"，不是
+/// 长任务入口；卡死命令 3s 收尸。
+const SHELL_INJECTION_TIMEOUT_SECS: u64 = 3;
+/// K3：注入 stdout 的字符上限（超出按字符边界截断——byte 切片会在多字节
+/// 字符上 panic，见 str-slice 教训）。
+const SHELL_INJECTION_OUTPUT_CAP: usize = 4096;
+
+/// K3：扫描文本中所有 `` !`cmd` `` token，返回（token 全长 span, 命令原文
+/// trim 后）。扫描按 byte 找 `!` + `` ` ``（都是单字节 ASCII，不会落在多字
+/// 节序列内部，切片安全）；无闭合反引号的 `!` 按字面保留（不进列表）。
+fn shell_injection_spans(text: &str) -> Vec<(std::ops::Range<usize>, &str)> {
+    let mut out = Vec::new();
+    let bytes = text.as_bytes();
+    let mut i = 0;
+    while i + 1 < bytes.len() {
+        if bytes[i] == b'!'
+            && bytes[i + 1] == b'`'
+            && let Some(j) = text[i + 2..].find('`')
+        {
+            let end = i + 2 + j + 1;
+            out.push((i..end, text[i + 2..end - 1].trim()));
+            i = end;
+            continue;
+        }
+        i += 1;
+    }
+    out
+}
+
+/// K3：提取去重后的注入命令清单（首次出现序）。
+fn extract_shell_injections(text: &str) -> Vec<String> {
+    let mut out: Vec<String> = Vec::new();
+    for (_, cmd) in shell_injection_spans(text) {
+        if !cmd.is_empty() && !out.iter().any(|c| c == cmd) {
+            out.push(cmd.to_string());
+        }
+    }
+    out
+}
+
+/// K3：把每个 `` !`cmd` `` token 替换为 `resolve(cmd)` 的产物（纯函数，
+/// 测试对象）。空命令 token 与未闭合 token 保持字面不动（与
+/// [`extract_shell_injections`] 的跳过语义对齐，两边永不分歧）。
+fn substitute_shell_injections(text: &str, resolve: &dyn Fn(&str) -> String) -> String {
+    let spans = shell_injection_spans(text);
+    if spans.is_empty() {
+        return text.to_string();
+    }
+    let mut out = String::with_capacity(text.len());
+    let mut last = 0;
+    for (span, cmd) in spans {
+        out.push_str(&text[last..span.start]);
+        if cmd.is_empty() {
+            out.push_str(&text[span.start..span.end]);
+        } else {
+            out.push_str(&resolve(cmd));
+        }
+        last = span.end;
+    }
+    out.push_str(&text[last..]);
+    out
+}
+
+/// K3：执行单个注入命令并产出替换文本。成功（exit 0）→ stdout 去尾随空白
+/// 并截断（空输出给 `(no output)` 占位，让 LLM/模板有确定内容）；spawn 失败、
+/// 超时或非零退出 → `[command failed: <cmd>: <原因>]` 注记（stderr 尾部
+/// 随注记带上，≤200 字符，便于人诊断）。
+async fn exec_shell_injection(cmd: &str, cwd: Option<&std::path::Path>) -> String {
+    let (code, stdout, stderr, timed_out) =
+        crate::loop_tools::run_one_stage(cmd, cwd, SHELL_INJECTION_TIMEOUT_SECS).await;
+    if timed_out {
+        return format!("[command failed: {cmd}: timed out after {SHELL_INJECTION_TIMEOUT_SECS}s]");
+    }
+    match code {
+        Some(0) => {
+            let trimmed = stdout.trim_end();
+            if trimmed.is_empty() {
+                "(no output)".to_string()
+            } else {
+                cap_injection_output(trimmed)
+            }
+        }
+        Some(c) => {
+            let reason = tail_line(&stderr, 200);
+            if reason.is_empty() {
+                format!("[command failed: {cmd}: exit {c}]")
+            } else {
+                format!("[command failed: {cmd}: exit {c}: {reason}]")
+            }
+        }
+        None => {
+            let reason = tail_line(&stderr, 200);
+            format!("[command failed: {cmd}: {reason}]")
+        }
+    }
+}
+
+/// K3：注入输出按字符数截断（头 4096 字符 + 截断注记）。
+fn cap_injection_output(s: &str) -> String {
+    if s.chars().count() <= SHELL_INJECTION_OUTPUT_CAP {
+        return s.to_string();
+    }
+    let mut out: String = s.chars().take(SHELL_INJECTION_OUTPUT_CAP).collect();
+    out.push_str("…[truncated]");
+    out
+}
+
+/// K3：取 stderr 的最后一个非空行并按字符数截断（注记保持单行可读）。
+fn tail_line(s: &str, cap: usize) -> String {
+    let line = s.lines().rev().map(str::trim).find(|l| !l.is_empty());
+    let line = line.unwrap_or("");
+    if line.chars().count() <= cap {
+        line.to_string()
+    } else {
+        let mut out: String = line.chars().take(cap).collect();
+        out.push('…');
+        out
+    }
 }
 
 /// Parse the config string. Unknown values fall back to Reject (fail-safe
@@ -583,6 +1000,29 @@ struct PrecomputedTool {
     duration_ms: u64,
 }
 
+/// G0 (devtool-upgrade 阶段 3)：`run_detached` 选项。
+///
+/// 构造用 `Default`（全空 = 全继承主 loop）。语义详见
+/// [`AgentLoop::run_detached`]。
+#[derive(Default)]
+pub struct DetachedOpts<'a> {
+    /// 子代理可用工具白名单（工具名集合）。`None` / 空 = 继承主 loop
+    /// 全量供给（仍经 tier 过滤）。由 `effective_tool_defs` 消费。
+    pub allowed_tools: Option<&'a [&'a str]>,
+    /// 嵌套深度（0 = 顶层 spawn）。G2 消费两处：`run_detached` 把它写到
+    /// instance（`detached_depth`），SpawnTool 层执行
+    /// `agents.subagent.max_depth` 深度限制（`parent+1 > max_depth` 拒绝）；
+    /// G4 后台化续行时同值透传。
+    pub depth: usize,
+    /// 模型覆盖。**v1 边界：暂未实现切换**——子代理沿用主 loop 当前
+    /// active model（provider 选择在 run_llm_loop 深处，覆盖需独立
+    /// 通道；字段先占位，实现留 G4/后续）。
+    pub model: Option<String>,
+    /// 工具轮预算（>0 时作为 `turn_budget` 传入，REPLACE
+    /// `config.max_turns`；0 = 用主配置默认）。
+    pub max_turns: u32,
+}
+
 pub struct AgentLoop {
     // --- Standalone fields (always present) ---
     /// LLM provider for generating responses.
@@ -707,6 +1147,23 @@ pub struct AgentLoop {
     /// across sessions in this MVP — adequate for single-session deployments;
     /// multi-session isolation is a documented follow-up.
     turn_counter: std::sync::atomic::AtomicUsize,
+    /// D3（devtool-upgrade 阶段 5）：本 turn 声明式文件工具的变更流水，按
+    /// session_key 分桶。dispatch 瀑布（`preview_all` 处）顺带收集（独立于
+    /// checkpoint 是否挂载）；`run_agent_loop_internal` 在 assistant 最终
+    /// 回复落盘时 drain+去重，写进 chat_log jsonl 行的 `file_changes` 字段
+    /// （消息↔文件变更映射；M3 会话级 diff 查看器的数据源）。Arc 外壳：
+    /// dispatch 瀑布闭包是 `Fn`（'static），须经 Arc 捕获共享。清理时点 =
+    /// drain（写后即清）+ turn 开始兜底清（上轮异常短路未走到落盘也不残留
+    /// 到本轮）；steer 注入不重入 `run_agent_loop_internal`，正在跑的 turn
+    /// 缓冲不受影响。
+    turn_file_changes: Arc<parking_lot::Mutex<HashMap<String, Vec<FileChange>>>>,
+    /// E3（devtool-upgrade 阶段 5）：消息级回退的 undo 栈，按 session_key
+    /// 分栈（会话间互不干扰，栈内严格 LIFO）。`rewind_to_message` 压栈，
+    /// `redo_rewind` 弹栈反向。内存态（重启即失——redo 只对本次进程内的
+    /// undo 有效，诚实边界）；每栈上限 [`REWIND_UNDO_STACK_CAP`]，超限丢
+    /// 最旧。
+    rewind_undo_stacks:
+        parking_lot::Mutex<HashMap<String, std::collections::VecDeque<RewindUndoEntry>>>,
     /// K1a (U14): user tool hooks — pre runs after the fixed security gate,
     /// post runs after execute and before Forge. RwLock so hooks can be
     /// registered from `&self` post-construction (K2 hooks.json wiring).
@@ -719,7 +1176,7 @@ pub struct AgentLoop {
     /// K2 (U14): prompt/turn lifecycle hooks — on_user_prompt runs in
     /// `run_with_trace` BEFORE the message enters history (blocked prompts
     /// are never seen by the model), on_turn_end runs after the final
-    /// answer is accepted, before the turn ends. Primary consumer: the CC
+    /// answer is accepted, before the turn ends. Primary consumer: the
     /// hooks.json dialect bridge (`crate::cc_hooks`).
     lifecycle_hooks: parking_lot::RwLock<crate::hooks::LifecycleHookManager>,
     /// Memory tool executor reference, so the gateway can attach an approval
@@ -751,19 +1208,41 @@ pub struct AgentLoop {
     /// validation-retry budget (Phase 2), and format-repair gating (Phase 5).
     /// `RwLock` so it can be re-resolved if the active model switches at runtime.
     tier: parking_lot::RwLock<nemesis_types::capability::ModelTier>,
+    /// F1（devtool-upgrade 阶段 4）：plan/build 工作模式。Build=默认全量；
+    /// Plan=只读白名单供给（build_tool_defs 第三过滤层）+ 分发端写类拦截
+    /// （`handle_tool_call_at_depth` 入口，防 MCP/未知写工具与陈旧 defs
+    /// 漏网）+ plans/ 写放行。运行时态不持久化（重启回 Build）；
+    /// `/plan` `/build` 与 WSAPI `chat.set_mode` 双入口改同一份状态。
+    mode: parking_lot::RwLock<crate::types::AgentMode>,
+    /// F1：M1a 事件广播发送端——模式切换后发布 `ModeChanged`（前端徽标
+    /// 实时刷新；chat_id 缺省空 = 只进 SSE EventHub，不路由具体会话）。
+    /// `None`（standalone / 未注入）→ 发布静默跳过（观察者通道空转是常态）。
+    agent_event_tx: parking_lot::RwLock<
+        Option<tokio::sync::broadcast::Sender<nemesis_types::agent::AgentEvent>>,
+    >,
     /// Path to config.json — the single source of truth for per-model
     /// `model_tier`. `None` in standalone mode (no config.json to watch). Set
     /// by `agent_factory`; used by `refresh_active_tier` / `check_config_reload`
     /// so dashboard-added models and CLI `model set-tier` are picked up live,
     /// with no stale snapshot.
     config_path: parking_lot::RwLock<Option<std::path::PathBuf>>,
+    /// N1（devtool-upgrade 阶段 1）：分层价目表（workspace/data）。三级
+    /// context_window 解析链的第 L2 级——config 未显式配置 `context_window`
+    /// 时按价目表 `max_input_tokens` 猜。`None`（未注入/打开失败）→ 直接落到
+    /// L3 fallback（[`FALLBACK_CONTEXT_WINDOW`]）。
+    pricing_store: parking_lot::RwLock<Option<std::sync::Arc<nemesis_data::PricingStore>>>,
+    /// C3（devtool-upgrade 阶段 2）：共享 LspManager 单例（与 LspTool 同一
+    /// 实例，见 SharedResources.lsp_manager / C5）。编辑后诊断回灌（修复
+    /// 闭环）用它同步文档 + 等诊断。`None`（未注入 / standalone）→ 反馈
+    /// 静默跳过。Set via `set_lsp_manager` by the agent factory.
+    lsp_manager: parking_lot::RwLock<Option<Arc<nemesis_lsp::LspManager>>>,
     /// 自定义 slash 命令表路径（`config.commands.json`；主 agent 专用，集群
     /// agent 不接——命令不该跨节点复制，同 hooks 挂账决策）。
     /// 自定义命令表热重载器（HotReloader 统一收编，2026-08-29：原
     /// path/mtime/cache 三字段手写 mtime 模式收编为一行声明）。
     commands_hot:
         parking_lot::RwLock<Option<nemesis_config::HotReloader<nemesis_config::CommandsConfig>>>,
-    /// CC hooks 桥（2026-08-29 T3）：PreCompact/PostCompact 触发用。
+    /// hooks 方言桥（2026-08-29 T3）：PreCompact/PostCompact 触发用。
     /// SessionEnd 经 SessionEndHookManager（factory 清理点直接调桥）。
     cc_bridge: parking_lot::RwLock<Option<std::sync::Arc<crate::cc_hooks::CcHookBridge>>>,
     /// G4 (U4): root directory for tool-result spill files
@@ -792,6 +1271,21 @@ pub struct AgentLoop {
     /// chain. `None` disables the instructions section of the merged
     /// context digest.
     workspace_root: parking_lot::RwLock<Option<std::path::PathBuf>>,
+    /// I1 (devtool-upgrade 阶段 3): fs-watcher keep-alive handle. `None` =
+    /// not started / disabled / failed (warn-once). Callbacks hold a
+    /// Weak<AgentLoop> (handle lives INSIDE the loop — Arc would cycle).
+    fs_watcher: parking_lot::RwLock<Option<crate::fs_watcher::WatcherHandle>>,
+    /// I1: externally-changed workspace files observed since the last
+    /// build_messages drain (capped; one-shot — drained on next build).
+    external_changes: parking_lot::Mutex<Vec<String>>,
+    /// I1: agent-authored writes (write_file/edit_file) for the self-write
+    /// window — watcher events for these paths within
+    /// [`crate::fs_watcher::SELF_WRITE_WINDOW`] are dropped (the agent knows
+    /// what it just wrote). Normalized workspace-relative lowercase.
+    // I1: pub(crate) so sibling test modules (fs_watcher/tests.rs) can age
+    // entries past the self-write window without sleeping.
+    pub(crate) recent_self_writes:
+        parking_lot::Mutex<std::collections::HashMap<String, std::time::Instant>>,
     /// Full-review M4: context-snapshot message role ("user" default;
     /// "system" restores the pre-I2 shape for strict chat templates that
     /// reject adjacent user/user pairs).
@@ -803,6 +1297,15 @@ pub struct AgentLoop {
     /// reads the live capability tier — all three are state (no clocks), so
     /// the section renders deterministically: same state ⇒ same bytes.
     interactive_approval: parking_lot::RwLock<bool>,
+    /// I5（devtool-upgrade 阶段 7）：当前轮客户端上报的「当前打开文件」路径
+    /// （WSAPI `chat.send` data.open_files → metadata["open_files"] → bus 全链
+    /// 路透传，解析走 nemesis-types::channel::open_files_from_metadata 单点）。
+    /// Ephemeral per-turn：`process_admitted` 进轮前 set、出轮后 clear（词法
+    /// 配对防泄漏——cron/heartbeat/continuation 等非 process_admitted 路径
+    /// 天然读不到，无陈旧泄漏）。build_messages 渲染进 merged digest section
+    /// （空 = 无 section，字节稳定）；digest 内容随既有 InjectionRecord 台账
+    /// 落账 → 字节级回放免费一致。只存路径不读内容（annotation 语义）。
+    pending_open_files: parking_lot::RwLock<Vec<String>>,
     /// Y1 (Phase4-a): per-tool description embedding cache (tool name →
     /// (description bytes, vector)) for semantic doc folding. Entries
     /// re-embed only when a tool's description text changes, so after the
@@ -821,6 +1324,89 @@ pub struct AgentLoop {
     /// `SharedResources.estop` 重新绑定到**同一个** Arc——所以急停状态在
     /// agent 重启后自动保持。
     estop: parking_lot::RwLock<Option<Arc<crate::estop::EstopState>>>,
+    /// N2 (devtool-upgrade 阶段 4)：小模型专职杂务通道（`agents.small_model`）。
+    /// 手动 compact（E6 `/compact`）的摘要调用优先走它（省 token——摘要不需
+    /// 要旗舰档智力）；未配置 = `None`，诚实回退主模型。自动压缩（质量敏感）
+    /// 刻意不消费本字段，维持主模型。工厂在 loop 构造后从 config 解析装配；
+    /// 运行期改配置需重启 Agent（与 lsp_tool 等启动期装配项同一约定）。
+    small_model: parking_lot::RwLock<Option<SmallModelSlot>>,
+    /// M7 (devtool-upgrade 阶段 5)：审批响应端（`ApprovalResponder`）。
+    /// gateway 装配 WebApprovalManager 后挂在这里，WSAPI `approval.respond` /
+    /// `approval.pending` 经 AppState 的 agent_loop 槽触达（不经 security 依赖）。
+    /// 未装配 = `None`，approval handler 诚实报「未装配」。
+    approval_responder:
+        parking_lot::RwLock<Option<Arc<dyn nemesis_types::agent::ApprovalResponder>>>,
+    /// F7 (devtool-upgrade 阶段 5)：结构化提问响应端（`QuestionResponder`）。
+    /// gateway 装配 WebQuestionBroker 后挂在这里，WSAPI `question.respond` /
+    /// `question.pending` 经 AppState 的 agent_loop 槽触达（同审批先例）。
+    /// 未装配 = `None`，question handler 诚实报「未装配」。
+    question_responder:
+        parking_lot::RwLock<Option<Arc<dyn nemesis_types::agent::QuestionResponder>>>,
+    /// J5 (devtool-upgrade 阶段 6)：doom-loop 审批卡的提问发起端
+    /// （`QuestionAsker`）——gateway 注入与 F7 responder 同源的
+    /// WebQuestionBroker Arc 的另一半 trait。escalation 触发且
+    /// `agents.doom_loop_approval` 开时经此发卡问用户「继续吗？」。
+    /// 未装配 = `None` = 审批通路缺失，escalation 直接走现行为（停轮）。
+    question_asker: parking_lot::RwLock<Option<Arc<dyn nemesis_types::agent::QuestionAsker>>>,
+}
+
+/// N2: 小模型槽位——provider 与其模型名绑在一起换，避免两者失配。
+#[derive(Clone)]
+struct SmallModelSlot {
+    provider: Arc<dyn LlmProvider>,
+    name: String,
+}
+
+/// E7: 自动标题的输入上限（首条 user 消息截断，计划原文 ≤500 字）。
+pub(crate) const E7_TITLE_INPUT_MAX_CHARS: usize = 500;
+/// E7: 自动标题的长度上限（计划原文 ≤24 字）。
+pub(crate) const E7_TITLE_MAX_CHARS: usize = 24;
+
+/// E7: 一次性 LLM 标题生成（无工具、非流式）。失败/空输出 → None（调用
+/// 方诚实跳过，下轮回复再试）。
+pub(crate) async fn generate_title_from_first_message(
+    provider: &dyn LlmProvider,
+    model: &str,
+    first_user: &str,
+) -> Option<String> {
+    let prompt = format!(
+        "根据以下用户请求，生成一个不超过{}字的会话标题。直接输出标题本身：不要引号、不要解释、不要换行。\n\n用户请求：{}",
+        E7_TITLE_MAX_CHARS, first_user
+    );
+    let resp = provider
+        .chat(
+            model,
+            vec![LlmMessage {
+                role: "user".to_string(),
+                content: prompt,
+                tool_calls: None,
+                tool_call_id: None,
+                reasoning_content: None,
+                images: Vec::new(),
+            }],
+            None,
+            Vec::new(),
+        )
+        .await
+        .ok()?;
+    sanitize_generated_title(&resp.content)
+}
+
+/// E7: 标题清洗——取首行、剥首尾引号/反引号/空白、截到 [`E7_TITLE_MAX_CHARS`]
+/// 字符（char 边界安全，CJK 不劈半）。清洗后为空 → None。
+pub(crate) fn sanitize_generated_title(raw: &str) -> Option<String> {
+    let first_line = raw.lines().next().unwrap_or("").trim();
+    let unquoted = first_line.trim_matches(|c| {
+        matches!(
+            c,
+            '"' | '\'' | '`' | '\u{201c}' | '\u{201d}' | '\u{300c}' | '\u{300d}'
+        )
+    });
+    let cleaned = unquoted.trim();
+    if cleaned.is_empty() {
+        return None;
+    }
+    Some(cleaned.chars().take(E7_TITLE_MAX_CHARS).collect())
 }
 
 impl AgentLoop {
@@ -885,6 +1471,8 @@ impl AgentLoop {
             cancel_tokens: dashmap::DashMap::new(),
             checkpoint_store: parking_lot::RwLock::new(None),
             turn_counter: std::sync::atomic::AtomicUsize::new(0),
+            turn_file_changes: Arc::new(parking_lot::Mutex::new(HashMap::new())),
+            rewind_undo_stacks: parking_lot::Mutex::new(HashMap::new()),
             tool_hooks: parking_lot::RwLock::new(crate::hooks::ToolHookManager::new()),
             llm_hooks: parking_lot::RwLock::new(crate::hooks::LlmHookManager::new()),
             lifecycle_hooks: parking_lot::RwLock::new(crate::hooks::LifecycleHookManager::new()),
@@ -895,7 +1483,11 @@ impl AgentLoop {
             memory_inject_manager: parking_lot::RwLock::new(None),
             memory_inject_cfg: parking_lot::RwLock::new((false, 3)),
             tier: parking_lot::RwLock::new(nemesis_types::capability::ModelTier::Big),
+            mode: parking_lot::RwLock::new(crate::types::AgentMode::Build),
+            agent_event_tx: parking_lot::RwLock::new(None),
             config_path: parking_lot::RwLock::new(None),
+            pricing_store: parking_lot::RwLock::new(None),
+            lsp_manager: parking_lot::RwLock::new(None),
             commands_hot: parking_lot::RwLock::new(None),
             cc_bridge: parking_lot::RwLock::new(None),
             spill_root: parking_lot::RwLock::new(None),
@@ -904,11 +1496,19 @@ impl AgentLoop {
             inbox: std::sync::Arc::new(crate::inbox::Inbox::new(crate::inbox::DEFAULT_QUEUE_SIZE)),
             turn_task_handles: parking_lot::Mutex::new(Vec::new()),
             workspace_root: parking_lot::RwLock::new(None),
+            fs_watcher: parking_lot::RwLock::new(None),
+            external_changes: parking_lot::Mutex::new(Vec::new()),
+            recent_self_writes: parking_lot::Mutex::new(std::collections::HashMap::new()),
             snapshot_role: parking_lot::RwLock::new("user".to_string()),
             interactive_approval: parking_lot::RwLock::new(false),
+            pending_open_files: parking_lot::RwLock::new(Vec::new()),
             tool_vec_cache: parking_lot::RwLock::new(std::collections::HashMap::new()),
             config_mtime: parking_lot::RwLock::new(None),
             estop: parking_lot::RwLock::new(None),
+            small_model: parking_lot::RwLock::new(None),
+            approval_responder: parking_lot::RwLock::new(None),
+            question_responder: parking_lot::RwLock::new(None),
+            question_asker: parking_lot::RwLock::new(None),
         }
     }
 
@@ -923,6 +1523,100 @@ impl AgentLoop {
     /// 重启后自动保持（状态本体在 `SharedResources` 上，不在 loop 上）。
     pub fn set_estop(&self, estop: Arc<crate::estop::EstopState>) {
         *self.estop.write() = Some(estop);
+    }
+
+    /// N2：装配小模型杂务通道（工厂从 `agents.small_model` 解析后调用；
+    /// 重复调用覆盖前值）。传 `None` 显式清除（= 回退主模型）。
+    pub fn set_small_model(&self, provider: Option<(Arc<dyn LlmProvider>, String)>) {
+        *self.small_model.write() = provider.map(|(p, name)| SmallModelSlot { provider: p, name });
+    }
+
+    /// N2：小模型槽位只读访问（E7 自动标题消费；未配置 = `None`，诚实跳过
+    /// ——不烧主模型 token 生成标题）。
+    fn small_model_slot(&self) -> Option<(Arc<dyn LlmProvider>, String)> {
+        self.small_model
+            .read()
+            .as_ref()
+            .map(|s| (s.provider.clone(), s.name.clone()))
+    }
+
+    /// E7 (devtool-upgrade 阶段 5)：会话标题自动生成——assistant 回复落盘
+    /// 后触发；后台任务取首条 user 消息（≤500 字）→ 小模型生成 ≤24 字标题
+    /// → 写 sidecar meta（只填「无标题/仅占位符」的会话，手动改名永不覆盖，
+    /// 见 `chat_log::write_session_meta_auto_title`）。未配置
+    /// `agents.small_model` / 无资格 / 首条消息缺失 → 不 spawn（返回 None）。
+    /// 返回 JoinHandle 供测试 await；生产调用点丢弃句柄。
+    fn spawn_session_title_job(&self, session_key: &str) -> Option<tokio::task::JoinHandle<()>> {
+        let (provider, model) = self.small_model_slot()?;
+        if !crate::chat_log::auto_title_eligible(session_key) {
+            return None;
+        }
+        let first = crate::chat_log::first_user_message(session_key, E7_TITLE_INPUT_MAX_CHARS)?;
+        let key = session_key.to_string();
+        Some(tokio::spawn(async move {
+            if let Some(title) =
+                generate_title_from_first_message(provider.as_ref(), &model, &first).await
+            {
+                crate::chat_log::write_session_meta_auto_title(&key, &title);
+            }
+        }))
+    }
+
+    /// M7：装配审批响应端（gateway 把 WebApprovalManager 挂上来；重复调用
+    /// 覆盖前值）。WSAPI approval handler 经 `approval_responder()` 触达。
+    pub fn set_approval_responder(
+        &self,
+        responder: Arc<dyn nemesis_types::agent::ApprovalResponder>,
+    ) {
+        *self.approval_responder.write() = Some(responder);
+    }
+
+    /// M7：取审批响应端（未装配 = `None`——handler 诚实报「未装配」）。
+    pub fn approval_responder(&self) -> Option<Arc<dyn nemesis_types::agent::ApprovalResponder>> {
+        self.approval_responder.read().clone()
+    }
+
+    /// F7：挂结构化提问响应端（gateway 装配 WebQuestionBroker 后调用）。
+    pub fn set_question_responder(
+        &self,
+        responder: Arc<dyn nemesis_types::agent::QuestionResponder>,
+    ) {
+        *self.question_responder.write() = Some(responder);
+    }
+
+    /// F7：取提问响应端（未装配 = `None`——handler 诚实报「未装配」）。
+    pub fn question_responder(&self) -> Option<Arc<dyn nemesis_types::agent::QuestionResponder>> {
+        self.question_responder.read().clone()
+    }
+
+    /// J5：装配 doom-loop 审批提问端（gateway 与 F7 responder 注入同一
+    /// WebQuestionBroker Arc——同一 broker 的两个 trait 各挂一槽）。
+    /// 未装配 = escalation 审批化不可用（诚实回退现行为）。
+    pub fn set_question_asker(&self, asker: Arc<dyn nemesis_types::agent::QuestionAsker>) {
+        *self.question_asker.write() = Some(asker);
+    }
+
+    /// J5：取审批提问端（未装配 = `None`）。
+    pub(crate) fn question_asker(&self) -> Option<Arc<dyn nemesis_types::agent::QuestionAsker>> {
+        self.question_asker.read().clone()
+    }
+
+    /// N2：手动压缩（`compact_session`）的摘要供给解析——小模型已配置则用
+    /// 之；未配置（或 `prefer_small=false`）诚实回退主模型。锁序固定
+    /// small_model → provider → active_model，全库唯此一处取这三把锁。
+    fn resolve_summary_provider(&self, prefer_small: bool) -> (Arc<dyn LlmProvider>, String) {
+        if prefer_small {
+            if let Some(slot) = self.small_model.read().as_ref() {
+                return (slot.provider.clone(), slot.name.clone());
+            }
+            debug!(
+                "[AgentLoop] agents.small_model not configured; manual compact falls back to the main model"
+            );
+        }
+        (
+            self.provider.read().clone(),
+            self.active_model.read().clone(),
+        )
     }
 
     /// K1a (U14): 注册一个用户工具钩子。pre 在固定 security 闸之后、工具
@@ -1030,6 +1724,284 @@ impl AgentLoop {
         }
     }
 
+    /// E3 消息级回退：会话截断到 `message_index` 所在 turn 结束（该消息
+    /// 及其 turn 的回复**保留**，其后所有行截掉），文件恢复到其后第一个
+    /// checkpoint turn 开始时的状态，并压入 undo 栈供 [`Self::redo_rewind`]
+    /// 反向。
+    ///
+    /// 定位契约：`message_index` 是 [`crate::chat_log::read_chat_log`]（=
+    /// `sessions.export` / `logs.session_detail` 的行序，同一 jsonl）里该
+    /// 会话消息数组的下标。行→turn 精确定位靠 user 行的 `checkpoint_turn`
+    /// 标记（本 turn begin 序号随 admission 穿针写入）；无标记的旧行退化为
+    /// 「只截断对话不回滚文件」。
+    ///
+    /// 返回回执 JSON（kept/removed 计数 + 恢复文件清单 + redoable）。
+    pub async fn rewind_to_message(
+        &self,
+        session_key: &str,
+        message_index: usize,
+    ) -> Result<serde_json::Value, String> {
+        if self.is_session_busy(session_key) {
+            return Err("会话正在处理消息，请等当前回合完成后再回退".to_string());
+        }
+        // 全量读（回退是一次性管理操作，非热路径——fork 同款）。
+        let (rows, _total, _, _) = crate::chat_log::read_chat_log(session_key, usize::MAX, None);
+        if rows.is_empty() {
+            return Err("会话没有可回退的消息".to_string());
+        }
+        if message_index >= rows.len() {
+            return Err(format!(
+                "message_index {} 超出范围（会话共 {} 条消息）",
+                message_index,
+                rows.len()
+            ));
+        }
+
+        // 对话截断点：index 之后第一个 user 行（turn 边界——assistant 行
+        // 属于所在 turn，必须随 turn 一起保留/截掉）。
+        let cut = rows[message_index + 1..]
+            .iter()
+            .position(|r| r.get("role").and_then(|v| v.as_str()) == Some("user"))
+            .map(|p| p + message_index + 1)
+            .unwrap_or(rows.len());
+        // 文件恢复锚：cut 起第一个带 checkpoint_turn 标记的行（第一个仍在
+        // 的 checkpoint turn）——恢复到它 begin 之前 = index 所在 turn 完成
+        // 时的文件态。None = 之后没有 checkpoint turn（或全是无标记旧行）。
+        let restore_turn = rows[cut.min(rows.len())..].iter().find_map(|r| {
+            r.get("checkpoint_turn")
+                .and_then(|v| v.as_u64())
+                .map(|v| v as usize)
+        });
+        let removed: Vec<serde_json::Value> = rows[cut..].to_vec();
+
+        // undo 依据在任何突变前采集（truncate_from 会清掉 turn ≥ restore 的
+        // 索引，tree 值要趁索引还在时读）。
+        let (forward_tree, post_tree) = match self.attached_checkpoint() {
+            Some(cp) => {
+                // redo 前向恢复目标 = rewind 时刻的实时 tree（begin 树只到
+                // 各 turn 开始态，最后一个 turn 的变更只在实况里）。仅文件
+                // 恢复路径活跃（有 restore_turn 锚）时采集实时树；无锚时保
+                // 持 begin 树语义（可能 None），redo 只回填行、文件步诚实跳
+                // 过，陈旧性守卫基线不变。
+                let forward = if restore_turn.is_some() {
+                    cp.current_tree_hex().or_else(|| cp.latest_tree_hex())
+                } else {
+                    cp.latest_tree_hex()
+                };
+                // post 基线 = truncate 之后索引里剩的最新 tree（restore 无
+                // 锚 = 索引不动，基线就是现状）。
+                let post = match restore_turn {
+                    Some(t) => cp.tree_hex_before(t),
+                    None => forward.clone(),
+                };
+                (forward, post)
+            }
+            None => (None, None),
+        };
+
+        // 1) 文件恢复（先于 jsonl 截断——中途崩溃时对话完好，可重试）。
+        let mut file_restore = "skipped";
+        let mut file_note: Option<String> = None;
+        let mut written: Vec<String> = Vec::new();
+        let mut deleted: Vec<String> = Vec::new();
+        if let (Some(t), Some(cp)) = (restore_turn, self.attached_checkpoint()) {
+            let (w, d) = cp.restore_code(t).await;
+            written = w;
+            deleted = d;
+            cp.truncate_from(t);
+            file_restore = "applied";
+        } else if restore_turn.is_some() {
+            file_note = Some("checkpoint store 未挂载，文件未回滚".to_string());
+        } else if cut < rows.len() {
+            file_note = Some(
+                "之后没有 checkpoint 标记（旧行或无 store），只截断对话不回滚文件".to_string(),
+            );
+        }
+
+        // 2) jsonl 截断（tmp+rename 原子重写；verbatim 保留保留侧行）。
+        let n = crate::chat_log::truncate_chat_log_rows(session_key, &rows[..cut]);
+        if n != cut {
+            warn!(
+                "[AgentLoop] rewind 截断写回不完整（期望 {cut} 行写 {n} 行）——jsonl 保留原样，回退未生效"
+            );
+            return Err("会话日志写回失败，回退未生效（原会话完好）".to_string());
+        }
+
+        // 3) SessionStore 丢缓存（jsonl 是单一真相源，下次 get_or_create
+        // 从截断后的 jsonl 自愈重建——sessions.delete/clear 同款纪律）。
+        if let Some(store) = self.session_store() {
+            store.clear_session(session_key);
+        }
+
+        // 4) 压 undo 栈（截断成功后才压——失败路径不留脏条目）。
+        let redoable = !removed.is_empty();
+        if redoable {
+            let mut stacks = self.rewind_undo_stacks.lock();
+            let stack = stacks.entry(session_key.to_string()).or_default();
+            stack.push_back(RewindUndoEntry {
+                removed_rows: removed,
+                kept_count: cut,
+                restore_turn,
+                forward_tree,
+                post_tree,
+            });
+            while stack.len() > REWIND_UNDO_STACK_CAP {
+                stack.pop_front();
+            }
+        }
+
+        Ok(serde_json::json!({
+            "session_key": session_key,
+            "message_index": message_index,
+            "kept_count": cut,
+            "removed_count": rows.len() - cut,
+            "restore_turn": restore_turn,
+            "file_restore": file_restore,
+            "file_restore_note": file_note,
+            "restored_files": { "written": written, "deleted": deleted },
+            "redoable": redoable,
+        }))
+    }
+
+    /// E3 redo：弹本会话 undo 栈顶，反向恢复——被截断的行 VERBATIM 回填
+    /// jsonl，文件恢复到 undo 时刻的影子 tree。行数/tree 基线双重陈旧性
+    /// 守卫：undo 之后该会话有任何新消息、或任何地方有新 checkpoint turn
+    /// （工作区变过），诚实拒绝（弹出的条目作废）。
+    ///
+    /// 诚实边界：redo 不重建 checkpoint 索引（undo 时 turn-*.json 已清），
+    /// redo 过的区间无法再次 rewind；文件只恢复工作区内（tree 覆盖范围）。
+    pub async fn redo_rewind(&self, session_key: &str) -> Result<serde_json::Value, String> {
+        if self.is_session_busy(session_key) {
+            return Err("会话正在处理消息，请等当前回合完成后再重做".to_string());
+        }
+        let entry = {
+            let mut stacks = self.rewind_undo_stacks.lock();
+            stacks.get_mut(session_key).and_then(|s| s.pop_back())
+        }
+        .ok_or_else(|| "没有可重做的回退（先执行一次消息级回退）".to_string())?;
+
+        // 守卫 1：会话行数未变（undo 后没发过新消息）。
+        let (rows, _total, _, _) = crate::chat_log::read_chat_log(session_key, usize::MAX, None);
+        if rows.len() != entry.kept_count {
+            return Err(format!(
+                "回退后产生了新消息，redo 已失效（期望 {} 行，实际 {} 行）",
+                entry.kept_count,
+                rows.len()
+            ));
+        }
+        // 守卫 2：工作区 tree 基线未变（undo 后没有新 checkpoint turn）。
+        let cur_tree = self
+            .attached_checkpoint()
+            .and_then(|cp| cp.latest_tree_hex());
+        if cur_tree != entry.post_tree {
+            return Err("回退后工作区发生了新的变化，redo 已失效".to_string());
+        }
+
+        // 1) 文件前向恢复（best-effort——失败只注记，行回填照常进行）。
+        let mut file_restore = "skipped";
+        let mut file_note: Option<String> = None;
+        let mut written: Vec<String> = Vec::new();
+        let mut deleted: Vec<String> = Vec::new();
+        match (entry.forward_tree.as_deref(), self.attached_checkpoint()) {
+            (Some(hex), Some(cp)) => match cp.restore_to_tree(hex) {
+                Ok((w, d)) => {
+                    written = w;
+                    deleted = d;
+                    file_restore = "applied";
+                }
+                Err(e) => file_note = Some(e),
+            },
+            (Some(_), None) => file_note = Some("checkpoint store 未挂载，文件未恢复".to_string()),
+            (None, _) => {
+                file_note = Some("无影子 tree（JSON 形态或该区间无变更），文件未恢复".to_string())
+            }
+        }
+
+        // 2) 行回填（verbatim——原时间戳/标记原样回来）。
+        let mut all = rows;
+        all.extend(entry.removed_rows.iter().cloned());
+        let expected = all.len();
+        let n = crate::chat_log::truncate_chat_log_rows(session_key, &all);
+        if n != expected {
+            warn!("[AgentLoop] redo 回填写回不完整（期望 {expected} 行写 {n} 行）——jsonl 保留原样");
+            return Err("会话日志写回失败，重做未生效（会话保持回退态）".to_string());
+        }
+
+        // 3) SessionStore 丢缓存（同 rewind——从回填后的 jsonl 重建）。
+        if let Some(store) = self.session_store() {
+            store.clear_session(session_key);
+        }
+
+        Ok(serde_json::json!({
+            "session_key": session_key,
+            "restored_count": entry.removed_rows.len(),
+            "kept_count": entry.kept_count,
+            "restore_turn": entry.restore_turn,
+            "file_restore": file_restore,
+            "file_restore_note": file_note,
+            "restored_files": { "written": written, "deleted": deleted },
+        }))
+    }
+
+    /// E3：checkpoint store 已挂载时克隆出 Arc（`rewind_to_message` /
+    /// `redo_rewind` 的共享读法）。
+    fn attached_checkpoint(&self) -> Option<Arc<crate::checkpoint::CheckpointStore>> {
+        self.checkpoint_store.read().as_ref().cloned()
+    }
+
+    /// M3（devtool-upgrade 阶段 5）：会话级文件 diff——某文件「最早
+    /// checkpoint 基线（pre-edit 态）vs 现盘」的 unified diff。
+    ///
+    /// 基线 = checkpoint 索引里首个声明过该文件的条目（git 形态读影子
+    /// tree 的 blob；JSON 形态用快照 content；索引 store 全局——多会话
+    /// 共改同一文件时基线取更早 turn，语义是「最早已知 pre-edit 态」）。
+    /// 文件已不在磁盘 → head 视为空串（diff 呈全删）+ `head_on_disk:
+    /// false` 诚实标注；diff 为空 → note 说明（可能已被回退/手动恢复）。
+    /// `session_key` v1 只用于将来按会话收窄基线（现留参保调用形状稳定）。
+    pub async fn session_file_diff(
+        &self,
+        _session_key: &str,
+        path: &str,
+    ) -> Result<serde_json::Value, String> {
+        let cp = self
+            .attached_checkpoint()
+            .ok_or_else(|| "checkpoint 未挂载，无法对比会话文件变更".to_string())?;
+        let base = cp.base_for_path(path).ok_or_else(|| {
+            "该文件无 checkpoint 基线（未在本会话声明变更，或基线已被回退清除）".to_string()
+        })?;
+
+        // 基线内容：git 形态从影子 tree 读 blob；JSON 形态用快照 content。
+        let base_content = match &base.tree {
+            Some(tree) => cp.read_file_from_tree(tree, path)?.unwrap_or_default(),
+            None => base.content.clone().unwrap_or_default(),
+        };
+
+        // 现盘内容：缺文件 = 空 head（diff 呈全删）+ head_on_disk=false。
+        let abs = cp.root().join(path);
+        let (head_content, head_on_disk) = match tokio::fs::read(&abs).await {
+            Ok(bytes) => (String::from_utf8_lossy(&bytes).into_owned(), true),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => (String::new(), false),
+            Err(e) => return Err(format!("读取现盘文件失败: {e}")),
+        };
+
+        let diff = crate::loop_tools::edit_hint::unified_diff(path, &base_content, &head_content);
+        let note = if !head_on_disk {
+            "文件已不在磁盘（对照基线呈全删除）".to_string()
+        } else if diff.is_empty() {
+            "当前内容与基线无差异（可能已被回退或手动恢复）".to_string()
+        } else {
+            String::new()
+        };
+        Ok(serde_json::json!({
+            "path": path,
+            "backend": if base.tree.is_some() { "git" } else { "json" },
+            "base_turn": base.turn,
+            "diff": diff,
+            "head_on_disk": head_on_disk,
+            "note": note,
+        }))
+    }
+
     /// Create a new agent loop in bus-integrated mode.
     ///
     /// This mirrors Go's `NewAgentLoop()`. It sets up:
@@ -1107,6 +2079,8 @@ impl AgentLoop {
             cancel_tokens: dashmap::DashMap::new(),
             checkpoint_store: parking_lot::RwLock::new(None),
             turn_counter: std::sync::atomic::AtomicUsize::new(0),
+            turn_file_changes: Arc::new(parking_lot::Mutex::new(HashMap::new())),
+            rewind_undo_stacks: parking_lot::Mutex::new(HashMap::new()),
             tool_hooks: parking_lot::RwLock::new(crate::hooks::ToolHookManager::new()),
             llm_hooks: parking_lot::RwLock::new(crate::hooks::LlmHookManager::new()),
             lifecycle_hooks: parking_lot::RwLock::new(crate::hooks::LifecycleHookManager::new()),
@@ -1117,7 +2091,11 @@ impl AgentLoop {
             memory_inject_manager: parking_lot::RwLock::new(None),
             memory_inject_cfg: parking_lot::RwLock::new((false, 3)),
             tier: parking_lot::RwLock::new(nemesis_types::capability::ModelTier::Big),
+            mode: parking_lot::RwLock::new(crate::types::AgentMode::Build),
+            agent_event_tx: parking_lot::RwLock::new(None),
             config_path: parking_lot::RwLock::new(None),
+            pricing_store: parking_lot::RwLock::new(None),
+            lsp_manager: parking_lot::RwLock::new(None),
             commands_hot: parking_lot::RwLock::new(None),
             cc_bridge: parking_lot::RwLock::new(None),
             spill_root: parking_lot::RwLock::new(None),
@@ -1126,11 +2104,19 @@ impl AgentLoop {
             inbox: std::sync::Arc::new(crate::inbox::Inbox::new(queue_size.max(1))),
             turn_task_handles: parking_lot::Mutex::new(Vec::new()),
             workspace_root: parking_lot::RwLock::new(None),
+            fs_watcher: parking_lot::RwLock::new(None),
+            external_changes: parking_lot::Mutex::new(Vec::new()),
+            recent_self_writes: parking_lot::Mutex::new(std::collections::HashMap::new()),
             snapshot_role: parking_lot::RwLock::new("user".to_string()),
             interactive_approval: parking_lot::RwLock::new(false),
+            pending_open_files: parking_lot::RwLock::new(Vec::new()),
             tool_vec_cache: parking_lot::RwLock::new(std::collections::HashMap::new()),
             config_mtime: parking_lot::RwLock::new(None),
             estop: parking_lot::RwLock::new(None),
+            small_model: parking_lot::RwLock::new(None),
+            approval_responder: parking_lot::RwLock::new(None),
+            question_responder: parking_lot::RwLock::new(None),
+            question_asker: parking_lot::RwLock::new(None),
         }
     }
 
@@ -1239,6 +2225,37 @@ impl AgentLoop {
         self.tools.write().insert(name, Arc::from(tool));
     }
 
+    /// J3 (devtool-upgrade 阶段 4)：注册 MCP 工具——同名不再静默覆盖。
+    /// 旧路径直接 HashMap insert：sanitize 撞名的两个工具（同 server 内
+    /// `search-file`/`search_file`，或两 server 名 sanitize 后相同）后者
+    /// 无声顶掉前者，无任何痕迹。已存在时 warn 并依序改注册为
+    /// `{name}_2`、`{name}_3`…——build_tool_defs 用注册键做 LLM 可见名，
+    /// 改名后两个工具都诚实可见、可被调用（bridge 内部原始名只用于
+    /// description/parameters，不受影响）。
+    fn register_mcp_tool(&self, tool: Box<dyn nemesis_mcp::adapter::Tool>) {
+        let base = tool.definition().name.clone();
+        let mut tools = self.tools.write();
+        let name = if tools.contains_key(&base) {
+            let mut n = 2;
+            while tools.contains_key(&format!("{base}_{n}")) {
+                n += 1;
+            }
+            let renamed = format!("{base}_{n}");
+            warn!(
+                "[AgentLoop] MCP tool name collision: '{}' already registered; \
+                 duplicate registered as '{renamed}'",
+                base
+            );
+            renamed
+        } else {
+            base
+        };
+        tools.insert(
+            name,
+            Arc::from(Box::new(crate::mcp_bridge::McpToolBridge::new(tool)) as Box<dyn Tool>),
+        );
+    }
+
     // [ClusterService-Full] 完整方案预留：动态移除工具
     // 当前未启用，原因：避免影响 LLM 提示词缓存命中率
     // 启用条件：当 LLM 提供商支持按工具分组缓存或工具定义独立缓存时
@@ -1280,12 +2297,7 @@ impl AgentLoop {
                     Ok(tools) => {
                         let count = tools.len();
                         for tool in tools {
-                            let def = tool.definition();
-                            let name = def.name.clone();
-                            self.register_tool(
-                                name,
-                                Box::new(crate::mcp_bridge::McpToolBridge::new(tool)),
-                            );
+                            self.register_mcp_tool(tool);
                         }
                         info!(
                             "[AgentLoop] MCP: registered {} tools from '{}'",
@@ -1331,28 +2343,18 @@ impl AgentLoop {
             return;
         }
 
-        // Collect existing MCP tool prefixes to detect what's new
-        let registered: Vec<String> = self
-            .tools
-            .read()
-            .keys()
-            .filter(|k| k.starts_with("mcp_"))
-            .map(|k| {
-                // "mcp_<srv>_<tool>" → "mcp_<srv>_"
-                let chars: Vec<char> = k.chars().collect();
-                let underscores: Vec<usize> = chars
-                    .iter()
-                    .enumerate()
-                    .filter(|&(_, &c)| c == '_')
-                    .map(|(i, _)| i)
-                    .collect();
-                if underscores.len() >= 2 {
-                    k[..underscores[2]].to_string()
-                } else {
-                    k.clone()
-                }
-            })
-            .collect();
+        // Collect existing MCP server prefixes to detect what's new.
+        // J3：先取 mgr（锁序 mgr → tools 与下方发现循环一致），配置 server
+        // 名 + 工具键快照后交给纯函数 [`registered_server_prefixes`] 正推。
+        let (configured_servers, tool_keys) = {
+            let configured: Vec<String> = match mgr.lock() {
+                Ok(m) => m.list_servers().iter().map(|s| s.name.clone()).collect(),
+                Err(_) => return,
+            };
+            let keys: Vec<String> = self.tools.read().keys().cloned().collect();
+            (configured, keys)
+        };
+        let registered = registered_server_prefixes(&configured_servers, &tool_keys);
 
         let new_servers: Vec<_> = {
             match mgr.lock() {
@@ -1378,14 +2380,7 @@ impl AgentLoop {
                 Ok(tools) => {
                     let count = tools.len();
                     for tool in tools {
-                        let name = tool.definition().name.clone();
-                        // tools is behind Arc, need interior mutability for self.tools
-                        // Use the atomic swap pattern via tools_mut
-                        self.tools.write().insert(
-                            name,
-                            Arc::from(Box::new(crate::mcp_bridge::McpToolBridge::new(tool))
-                                as Box<dyn Tool>),
-                        );
+                        self.register_mcp_tool(tool);
                     }
                     info!(
                         "[AgentLoop] MCP reload: registered {} tools from '{}'",
@@ -1510,6 +2505,17 @@ impl AgentLoop {
         manager: Arc<crate::loop_continuation::ContinuationManager>,
     ) {
         self.continuation_manager = Some(manager);
+    }
+
+    /// G4 (devtool-upgrade 阶段 3)：列出重启时遗留在盘上的后台 subagent
+    /// pending 快照（`bg_` 前缀，只读不删）。gateway 适配器启动期以这些 id
+    /// 注入诚实丢失回执（后台任务是进程内 tokio 任务，gateway 重启即终止、
+    /// 无对端可 poll）——回灌走正常续行路径，快照由 resume 自清。
+    pub fn list_stale_bg_spawn_task_ids(&self) -> Vec<String> {
+        self.continuation_manager
+            .as_ref()
+            .map(|m| m.list_bg_spawn_pending_sync())
+            .unwrap_or_default()
     }
 
     /// Set the data store for recording LLM usage statistics.
@@ -1645,6 +2651,9 @@ impl AgentLoop {
                 message_type: String::new(),
                 meta: nemesis_types::channel::OutboundMeta {
                     model: Some(self.current_display_model()),
+                    // L2：会话键随行——web 通道 chat_event_log 按会话（非连接）
+                    // 记录，断线重连后 chat.sync 才能寻址。
+                    session_key: (!msg.session_key.is_empty()).then(|| msg.session_key.clone()),
                 },
             };
             if let Err(e) = tx.send(outbound).await {
@@ -1721,6 +2730,46 @@ impl AgentLoop {
                                 // Never touches sent_in_round (may overlap the
                                 // session's running turn; see finish_message).
                                 self.finish_message(&msg, response, None, false).await;
+                            }
+                            GateOutcome::Maintenance {
+                                kind,
+                                session_key,
+                                receipt,
+                            } => {
+                                // E6: 维护命令 — 会话已在 gate 获取，派独立
+                                // task 执行（LLM 摘要可达分钟级，不得堵泵）；
+                                // task 尾部释放会话。同串行路径：⏳ 先发、✓
+                                // 后发，均不碰 sent_in_round。
+                                let this = self.clone();
+                                let m = msg.clone();
+                                self.spawn_turn_task(async move {
+                                    this.finish_message(&m, receipt, None, false).await;
+                                    let response =
+                                        this.handle_maintenance(kind, &session_key).await;
+                                    this.release_session(&session_key);
+                                    this.finish_message(&m, response, None, false).await;
+                                });
+                            }
+                            GateOutcome::UserDispatch {
+                                task_text,
+                                node_id,
+                                session_key,
+                            } => {
+                                // K4: 用户直发远程编码任务派发 — 会话已在
+                                // gate 获取，派独立 task 执行（RPC ACK 等待
+                                // 可达分钟级，不得堵泵）；task 尾部释放会话
+                                // （process_user_dispatch 内部负责）。
+                                let this = self.clone();
+                                let m = msg.clone();
+                                self.spawn_turn_task(async move {
+                                    this.process_user_dispatch(
+                                        &m,
+                                        &task_text,
+                                        &node_id,
+                                        &session_key,
+                                    )
+                                    .await;
+                                });
                             }
                             GateOutcome::Ungated => {
                                 let this = self.clone();
@@ -2099,8 +3148,10 @@ impl AgentLoop {
         // 自定义 slash 命令改写（改写型，见 rewrite_custom_command）：在闸门
         // 之前原地展开为提示词，让消息以最终形态走正常会话/LLM 流程。内置
         // 命令不受影响（rewrite 跳过内置名，gate 内的短路检查照常先行）。
+        // K3：async 化（`` !`cmd` `` 注入 + 技能回落），模板注入命令在闸门
+        // 前执行完毕——进闸的消息永远是最终形态。
         let mut msg = msg.clone();
-        self.rewrite_custom_command(&mut msg);
+        self.rewrite_custom_command(&mut msg).await;
         // V5 (2026-08-23): gate first (sync classification + session
         // acquire), then the matching tail. Reject mode's serial pump and
         // all direct callers (heartbeat, tests, inline queue-drain fallback)
@@ -2108,6 +3159,32 @@ impl AgentLoop {
         match self.gate_inbound(&msg) {
             GateOutcome::Continuation(task_id) => ("__continuation__".to_string(), task_id, None),
             GateOutcome::Immediate { agent_id, response } => (agent_id, response, None),
+            GateOutcome::Maintenance {
+                kind,
+                session_key,
+                receipt,
+            } => {
+                // 串行路径内联执行：⏳ 回执先发（会话已获取），干活，✓ 回执
+                // 随后；返回空串让调用方的 finish_message 早退（不重复发布）。
+                self.finish_message(&msg, receipt, None, false).await;
+                let response = self.handle_maintenance(kind, &session_key).await;
+                self.release_session(&session_key);
+                self.finish_message(&msg, response, None, false).await;
+                (String::new(), String::new(), None)
+            }
+            GateOutcome::UserDispatch {
+                task_text,
+                node_id,
+                session_key,
+            } => {
+                // K4: 用户直发远程编码任务派发——串行路径内联执行（ACK 等
+                // 待可阻塞泵，与 Maintenance 的 LLM 摘要同理由）。收据/快照/
+                // 错误回复都在 process_user_dispatch 内部完成；返回空串让
+                // 调用方的 finish_message 早退。
+                self.process_user_dispatch(&msg, &task_text, &node_id, &session_key)
+                    .await;
+                (String::new(), String::new(), None)
+            }
             GateOutcome::Ungated => self.process_ungated(&msg).await,
             GateOutcome::Admitted(admission) => self.process_admitted(&msg, admission).await,
         }
@@ -2118,18 +3195,25 @@ impl AgentLoop {
     /// short-circuits — busy receipts, slash replies — behave exactly as
     /// before: the monolith opened the checkpoint turn and logged BEFORE any
     /// classification).
-    fn turn_preamble(&self, msg: &nemesis_types::channel::InboundMessage) {
+    ///
+    /// E3：返回本消息 begin 的 checkpoint turn 序号（无 store 挂载时
+    /// None）——gate 捕获后装进 [`TurnAdmission`]，随链穿针到行落盘点做
+    /// `checkpoint_turn` 行标记（消息级回退的行→turn 定位锚）。
+    fn turn_preamble(&self, msg: &nemesis_types::channel::InboundMessage) -> Option<usize> {
         // Open a checkpoint turn for the edit safety net (so writer-tool changes
         // during this message can be rewound). No-op when no store is attached.
         let cp_turn = self
             .turn_counter
             .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-        {
+        let attached = {
             let cp = self.checkpoint_store.read().as_ref().cloned();
             if let Some(cp) = cp {
                 cp.begin(cp_turn, &msg.content);
+                true
+            } else {
+                false
             }
-        }
+        };
 
         info!(
             "[AgentLoop] Processing message from {}:{}: {}",
@@ -2137,6 +3221,19 @@ impl AgentLoop {
             msg.sender_id,
             truncate(&msg.content, 80)
         );
+        attached.then_some(cp_turn)
+    }
+
+    /// D3：drain 本 session 的 turn 文件变更缓冲（取走即清 + 按 path 去重，
+    /// kind 取最后声明——投影规则见 `chat_log::dedup_file_changes`）。
+    /// assistant 最终回复落盘前调用。
+    fn drain_turn_file_changes(&self, session_key: &str) -> Vec<FileChange> {
+        let drained = self
+            .turn_file_changes
+            .lock()
+            .remove(session_key)
+            .unwrap_or_default();
+        crate::chat_log::dedup_file_changes(drained)
     }
 
     /// Resolve (agent_id, session_key) for a message (V5: extracted verbatim
@@ -2228,7 +3325,9 @@ impl AgentLoop {
     /// 本体）留给 tail。slash 命令在这里同步执行并短路（原路径在 busy
     /// 检查前同步返回；且命令可能有副作用，tail 不得重跑）。
     fn gate_inbound(&self, msg: &nemesis_types::channel::InboundMessage) -> GateOutcome {
-        self.turn_preamble(msg);
+        // E3：begin 的 turn 序号在此捕获（admitted 链穿针用；其余 outcome
+        // 不产生带 checkpoint_turn 标记的行，值自然丢弃）。
+        let cp_turn = self.turn_preamble(msg);
 
         // Route system messages.
         if msg.channel == "system" {
@@ -2245,6 +3344,21 @@ impl AgentLoop {
                 );
                 return GateOutcome::Continuation(task_id.to_string());
             }
+            // G4 (devtool-upgrade 阶段 3)：后台 subagent 完成回灌 —— 与集群
+            // 续行同构：同走 dispatch_continuation → handle_cluster_continuation
+            // （快照加载 + 续行 + 持久化 + 自清，全复用零新路径）。
+            if msg
+                .sender_id
+                .starts_with(nemesis_types::constants::SUBAGENT_CONTINUATION_PREFIX)
+            {
+                let task_id =
+                    &msg.sender_id[nemesis_types::constants::SUBAGENT_CONTINUATION_PREFIX.len()..];
+                debug!(
+                    "[AgentLoop] Background subagent continuation intercepted, task_id={}",
+                    task_id
+                );
+                return GateOutcome::Continuation(task_id.to_string());
+            }
             return GateOutcome::Ungated;
         }
 
@@ -2253,6 +3367,79 @@ impl AgentLoop {
             && request_type == "history"
         {
             return GateOutcome::Ungated;
+        }
+
+        // E6 (2026-09-05): /compact /clear — 会话维护命令。gate 同步短路点
+        // 拿不到 instance（摘要 LLM 是 async），所以 mint 一个 Maintenance
+        // outcome 交给 tail；会话在此获取（维护期间并发用户消息走 busy
+        // 闸），尾巴负责释放。先于普通 slash 检查（维护命令有副作用，不是
+        // 静态回复）。
+        if let Some((kind, receipt)) = parse_maintenance_command(&msg.content) {
+            let (_, session_key) = self.route_message(msg);
+            if !self.try_acquire_session(&session_key) {
+                return GateOutcome::Immediate {
+                    agent_id: String::new(),
+                    response: "⏳ 会话正在处理消息，本次 /compact /clear 已忽略，请稍后再试"
+                        .to_string(),
+                };
+            }
+            return GateOutcome::Maintenance {
+                kind,
+                session_key,
+                receipt,
+            };
+        }
+
+        // K4 (devtool-upgrade 阶段 7): 用户直发远程编码任务派发——
+        // `/build <task> repo:<node>`。先于 F1 精确匹配（带参形态与裸
+        // `/build` 天然互斥）；会话在此获取（Maintenance 同款，防并发回
+        // 合踩会话）。session_key 用 route_message 现取。
+        if let Some((task_text, node_id)) = parse_user_dispatch(&msg.content) {
+            let (_, session_key) = self.route_message(msg);
+            if !self.try_acquire_session(&session_key) {
+                return GateOutcome::Immediate {
+                    agent_id: String::new(),
+                    response: "⏳ 会话正在处理消息，本次远程派发已忽略，请稍后再试".to_string(),
+                };
+            }
+            return GateOutcome::UserDispatch {
+                task_text,
+                node_id,
+                session_key,
+            };
+        }
+
+        // K4 (b) (devtool-upgrade 阶段 7): IM 审批卡回执短路——
+        // `/approve <id>` / `/deny <id>`。真实裁决由 gateway 的审批回执
+        // watcher（bus 订阅方）完成；loop 侧只做静态确认，**吞掉**这条
+        // 消息不让 agent 对「同意 xxx」式回执起一轮无意义对话（裁决结果
+        // 由 watcher 以显式消息回执到同一对话）。loop 无 pending 注册表，
+        // 无效/过期 id 的诚实提示由 watcher 负责（「未找到待审批请求」）。
+        if let Some(response) = parse_approval_reply(&msg.content) {
+            return GateOutcome::Immediate {
+                agent_id: String::new(),
+                response,
+            };
+        }
+
+        // F1 (devtool-upgrade 阶段 4): /plan /build — 模式切换命令。与普通
+        // slash 同为 gate 同步短路（改的是 loop 级 RwLock，无 async），但要
+        // 先于 handle_command_with_context（那是静态回复表，不带 chat_id，
+        // 而模式切换要发布带路由信息的 ModeChanged 事件）。session_key 用
+        // route_message 现取（/compact 臂同款）；无订阅者时空转是常态。
+        if msg.content.trim() == "/plan" || msg.content.trim() == "/build" {
+            let want = if msg.content.trim() == "/plan" {
+                crate::types::AgentMode::Plan
+            } else {
+                crate::types::AgentMode::Build
+            };
+            let (agent_id, session_key) = self.route_message(msg);
+            self.set_mode_with_event(want, &session_key, &msg.chat_id);
+            let response = match want {
+                crate::types::AgentMode::Plan => "✓ 已切换到 Plan 模式：文件修改类工具已停用（plans/ 目录写放行）。请以文本形式呈现计划；完成规划后用 /build 切回。".to_string(),
+                crate::types::AgentMode::Build => "✓ 已切换回 Build 模式：全量工具恢复。".to_string(),
+            };
+            return GateOutcome::Immediate { agent_id, response };
         }
 
         // Slash commands.
@@ -2351,6 +3538,7 @@ impl AgentLoop {
             agent_id,
             session_key,
             cancel_token,
+            cp_turn,
         })
     }
 
@@ -2391,13 +3579,27 @@ impl AgentLoop {
             agent_id,
             session_key,
             cancel_token,
+            cp_turn,
         } = admission;
 
         let voice_playback = msg.voice_playback.unwrap_or(false);
-        // @file expansion: inline referenced file contents before sending to LLM.
+        // I2（@文件引用）：内联被引用文件内容。相对路径以 workspace 根为基准
+        // 解析（与 read_file 同源，不再是 cwd 漂移基准）；安全闸与图片附加
+        // 同一套管线（挂真实 SecurityPlugin 时 Layer 7 block_in_place，
+        // multi_thread runtime 为生产前提——同 T5 注释）。
+        let at_base = self
+            .workspace_root
+            .read()
+            .clone()
+            .unwrap_or_else(|| std::env::current_dir().unwrap_or_default());
         let processed_content = crate::message_preprocess::expand_at_files(
             &msg.content,
-            &std::env::current_dir().unwrap_or_default(),
+            &at_base,
+            &msg.channel,
+            #[cfg(feature = "security")]
+            self.security_plugin.as_deref(),
+            #[cfg(not(feature = "security"))]
+            None,
         );
         // T5（多模态，goal 2026-09-03）：统一图片附加——文本点名路径（T4 检测）
         // + media 引用（T7/T8/T9 落盘产物）统一过安全闸（8 层管线全跑）产出
@@ -2420,10 +3622,13 @@ impl AgentLoop {
             None,
         )
         .await;
+        // J6：超限图片降采样开关（默认开）——产物落同一 uploads 目录（TTL 复用）。
+        let downscale_dir = self.current_image_downscale().then(|| uploads_dir.clone());
         let attach = crate::image_attach::attach_turn_images(
             &processed_content,
             &media_for_attach,
             self.workspace_root.read().as_deref(),
+            downscale_dir.as_deref(),
             &msg.channel,
             #[cfg(feature = "security")]
             self.security_plugin.as_deref(),
@@ -2447,6 +3652,11 @@ impl AgentLoop {
             .get("cron_max_rounds")
             .and_then(|s| s.parse::<u32>().ok())
             .filter(|v| *v > 0);
+        // I5：本轮客户端上报的打开文件进 per-turn 状态（渲染在 build_messages
+        // 的 merged digest；出轮即清——与下方 run 后的 clear 词法配对，cron/
+        // heartbeat/continuation 等非 process_admitted 路径天然读不到）。
+        *self.pending_open_files.write() =
+            nemesis_types::channel::open_files_from_metadata(&msg.metadata);
         let result = self
             .run_agent_loop_internal(
                 &session_key,
@@ -2459,12 +3669,15 @@ impl AgentLoop {
                 cron_job_name,
                 cron_max_rounds,
                 &image_refs,
+                cp_turn,
             )
             .await;
 
         // Clean up cancellation token and release session.
         self.remove_cancel_token(&session_key);
         self.release_session(&session_key);
+        // I5：轮结束清打开文件状态（与上方 set 词法配对，防跨轮陈旧泄漏）。
+        self.pending_open_files.write().clear();
 
         // I1 (U7) post-turn inbox handling:
         //   - Unconsumed next-step (steer) messages ALWAYS transfer back to
@@ -2550,7 +3763,10 @@ impl AgentLoop {
                                 chat_id: head.msg.chat_id.clone(),
                                 content,
                                 message_type: String::new(),
-                                meta: Default::default(),
+                                meta: nemesis_types::channel::OutboundMeta {
+                                    model: None,
+                                    session_key: Some(session_key.clone()),
+                                },
                             };
                             let _ = tx.send(outbound).await;
                         }
@@ -2637,6 +3853,7 @@ impl AgentLoop {
                 cron_job_name,
                 None,
                 &[],
+                None, // E3：system 直调不经 gate/preamble，无 checkpoint 标记
             )
             .await;
 
@@ -2953,11 +4170,11 @@ impl AgentLoop {
         chat_id: &str,
     ) {
         let history = instance.get_history();
-        // U16 (sixth batch): prefer the active model's per-model
-        // `context_window` from config.json over the instance's 32000
-        // default (the S1-S7 leftover). Falls back to the instance value
-        // when unset/standalone — behavior unchanged for configs without
-        // the field.
+        // U16 (sixth batch) + N1 (devtool-upgrade 阶段 1): prefer the active
+        // model's context_window via the three-tier chain (config explicit →
+        // pricing catalog → instance default, now 128_000) over the
+        // historical 32000. Falls back to the instance value when
+        // unset/standalone.
         let context_window = self
             .current_context_window()
             .unwrap_or_else(|| instance.context_window());
@@ -3083,12 +4300,15 @@ impl AgentLoop {
                 chat_id: chat_id_owned.clone(),
                 content: "Memory threshold reached. Optimizing conversation history...".to_string(),
                 message_type: String::new(),
-                meta: Default::default(),
+                meta: nemesis_types::channel::OutboundMeta {
+                    model: None,
+                    session_key: Some(clear_key.clone()),
+                },
             };
             let _ = tx.send(outbound).await;
         }
 
-        // CC PreCompact（观察型，2026-08-29 三段化扩展）：exit 2 不阻止压缩
+        // 方言 PreCompact（观察型，2026-08-29 三段化扩展）：exit 2 不阻止压缩
         // （稳定性机制）。先 clone Arc 再 await（不持锁跨 await）。
         let bridge_pre = self.cc_bridge.read().as_ref().cloned();
         if let Some(bridge) = bridge_pre {
@@ -3125,7 +4345,7 @@ impl AgentLoop {
             );
         }
 
-        // CC PostCompact（观察型）：压缩尝试结束（成败皆触发）。
+        // 方言 PostCompact（观察型）：压缩尝试结束（成败皆触发）。
         let bridge_post = self.cc_bridge.read().as_ref().cloned();
         if let Some(bridge) = bridge_post {
             bridge.run_compact_hooks("auto", "post").await;
@@ -3149,6 +4369,13 @@ impl AgentLoop {
     /// enough (the caller will retry), the next call folds everything into the
     /// summary (tail → 0). Bounded by the caller's retry limit.
     pub async fn force_compression(&self, instance: &AgentInstance) {
+        self.force_compression_opts(instance, false).await;
+    }
+
+    /// N2：`force_compression` 的参数化形态——`prefer_small=true` 时手动
+    /// 入口（E6 `/compact`）优先用 `agents.small_model` 跑摘要；自动压缩
+    /// 路径维持 `false`（主模型，质量敏感不降档）。
+    pub async fn force_compression_opts(&self, instance: &AgentInstance, prefer_small: bool) {
         let history = instance.get_history();
         let cache = instance.get_summary_cache();
         let current_c = cache
@@ -3175,8 +4402,7 @@ impl AgentLoop {
             return;
         }
 
-        let provider = self.provider.read().clone();
-        let model = self.active_model.read().clone();
+        let (provider, model) = self.resolve_summary_provider(prefer_small);
         let observer_mgr = self.observer_manager.clone();
 
         // Fold the prefix history[..new_c] into the summary, merged with the
@@ -3217,6 +4443,257 @@ impl AgentLoop {
                 current_c
             );
         }
+    }
+
+    // -----------------------------------------------------------------------
+    // E6: manual session maintenance (/compact /clear)
+    // -----------------------------------------------------------------------
+
+    /// Dispatch a maintenance command to its implementation (shared by the
+    /// serial tail and the spawned pump task).
+    async fn handle_maintenance(&self, kind: SessionMaintenance, session_key: &str) -> String {
+        match kind {
+            SessionMaintenance::Compact => match self.compact_session(session_key).await {
+                Ok(receipt) => receipt,
+                Err(e) => format!("⚠ 压缩未完成：{e}"),
+            },
+            SessionMaintenance::Clear => match self.clear_session(session_key).await {
+                Ok(receipt) => receipt,
+                Err(e) => format!("⚠ 清空未完成：{e}"),
+            },
+        }
+    }
+
+    // -----------------------------------------------------------------------
+    // K4 (devtool-upgrade 阶段 7): 用户直发远程编码任务派发
+    // -----------------------------------------------------------------------
+
+    /// 处理 `/build <task> repo:<node>` 用户直派发（serial tail 与 spawned
+    /// pump task 共用）。会话已在 gate 获取；本 fn 结束前负责释放。
+    ///
+    /// 流程：
+    /// ① ⏳ 收据先发（ACK 等待可达分钟级，不晾用户）；
+    /// ② 会话一致性——user 行落 chat_log + session store（原命令原文），
+    ///    续行端只追加 assistant 行，两半对称；
+    /// ③ 合成 `cluster_rpc` 工具调用走 `handle_tool_call` 全管线——estop /
+    ///    hidden / Plan 闸 / 安全 8 层 / guardian 全部生效（9 层安全零降级，
+    ///    这是直接调工具对象被否决的原因）；
+    /// ④ `__ASYNC__` ACK → 存自足续行快照（`build_dispatch_snapshot_messages`
+    ///    合成最小合法序列），完成回调复用 `handle_cluster_continuation`
+    ///    全套（续行 LLM / 持久化 / 回原通道 / G5 崩溃恢复）；
+    /// ⑤ 同步结果或 Err（集群未启用 / 节点不存在 / 自调用守卫）→ 直接回复。
+    async fn process_user_dispatch(
+        &self,
+        msg: &nemesis_types::channel::InboundMessage,
+        task_text: &str,
+        node_id: &str,
+        session_key: &str,
+    ) {
+        // ① 收据先发。
+        let receipt = format!("⏳ 已把编码任务派发给节点 {node_id}，完成后自动回复结果。");
+        self.finish_message(msg, receipt, None, false).await;
+
+        // ② 会话一致性：user 行落盘（原命令原文——派发上下文可追溯）。
+        crate::chat_log::append_chat_log_meta(
+            session_key,
+            "user",
+            &msg.content,
+            &crate::chat_log::ChatLogMeta {
+                model: None,
+                cron_job_id: None,
+                cron_job_name: None,
+                images: &[],
+                file_changes: &[],
+                checkpoint_turn: None,
+            },
+        );
+        if let Some(ref store) = self.session_store {
+            store.add_message(session_key, "user", &msg.content);
+        }
+
+        // ③ 合成工具调用 → 全管线提交。
+        let tc_id = format!("ud-{}", uuid::Uuid::new_v4().simple());
+        let tool_call = ToolCallInfo {
+            id: tc_id.clone(),
+            name: "cluster_rpc".to_string(),
+            arguments: serde_json::json!({
+                "target": node_id,
+                "message": task_text,
+            })
+            .to_string(),
+        };
+        let context = RequestContext::new(&msg.channel, &msg.chat_id, &msg.sender_id, session_key);
+        let result = self.handle_tool_call(&tool_call, &context).await;
+
+        // ④ ACK → 存自足续行快照。
+        if let Some(rest) = result.strip_prefix("__ASYNC__:") {
+            let parts: Vec<&str> = rest.splitn(4, ':').collect();
+            if parts.len() >= 2 {
+                let task_id = parts[0];
+                let target_id = parts[1];
+                if let Some(ref mgr) = self.continuation_manager {
+                    let messages = build_dispatch_snapshot_messages(task_text, node_id, &tc_id);
+                    // G5：对端 ID 随快照落盘——A 侧重启后恢复轮询知道问谁。
+                    mgr.save_continuation_with_images(
+                        task_id,
+                        messages,
+                        &tc_id,
+                        &msg.channel,
+                        &msg.chat_id,
+                        session_key,
+                        target_id,
+                        &[],
+                    )
+                    .await;
+                    info!(
+                        "[AgentLoop] User dispatch accepted: task_id={}, target={}, session={}",
+                        task_id, target_id, session_key
+                    );
+                } else {
+                    // 无续行管理器（测试/独立模式）：结果无法回灌，诚实告知。
+                    warn!(
+                        "[AgentLoop] User dispatch ACK but no continuation manager; result cannot be delivered"
+                    );
+                    self.finish_message(
+                        msg,
+                        "⚠ 任务已提交但本实例不支持续行回灌（无 continuation manager），结果无法自动回复。".to_string(),
+                        None,
+                        true,
+                    )
+                    .await;
+                }
+                self.release_session(session_key);
+                return;
+            }
+            // 格式异常（段数不足）→ 落到下方按普通文本回复。
+        }
+
+        // ⑤ 同步结果或错误：直接回复（handle_tool_call 把错误编码在返回串）。
+        self.finish_message(msg, result, None, true).await;
+        self.release_session(session_key);
+    }
+
+    /// E6: 手动 compaction 入口。取（从 store 重建的）instance，调
+    /// `force_compression` 推进摘要覆盖，再把新摘要持久化回 store（顺序同
+    /// 回合末：先 summary+covers 后 history，见回合末块注释）。
+    ///
+    /// 成功回执带覆盖数（摘要覆盖前 N 条，保留近 M 条）；摘要 LLM 失败或
+    /// 无可压缩内容时返回 Err（covers 不推进——2026-08-25 静默失忆修复的
+    /// 同一契约），历史保持不变。
+    pub async fn compact_session(&self, session_key: &str) -> Result<String, String> {
+        let instance = self.get_or_create_instance(session_key);
+        let history_len = instance.get_history().len();
+        if history_len == 0 {
+            return Err("会话为空，无需压缩".to_string());
+        }
+        let before = instance
+            .get_summary_cache()
+            .map(|c| c.covers_up_to)
+            .unwrap_or(0);
+
+        // 方言 PreCompact（观察型）：手动压缩尝试开始。
+        let bridge_pre = self.cc_bridge.read().as_ref().cloned();
+        if let Some(bridge) = bridge_pre {
+            bridge.run_compact_hooks("manual", "pre").await;
+        }
+
+        // N2：手动 /compact 是 `agents.small_model` 的唯一消费点——摘要用小
+        // 省钱；自动压缩路径（context_length_exceeded 等）维持主模型。
+        self.force_compression_opts(&instance, true).await;
+
+        // 方言 PostCompact（观察型）：压缩尝试结束（成败皆触发），与 auto 路径对称。
+        let bridge_post = self.cc_bridge.read().as_ref().cloned();
+        if let Some(bridge) = bridge_post {
+            bridge.run_compact_hooks("manual", "post").await;
+        }
+
+        let Some(cache) = instance
+            .get_summary_cache()
+            .filter(|c| c.covers_up_to > before && !c.text.is_empty())
+        else {
+            return Err("摘要生成失败（LLM 调用失败或无有效内容），历史保持不变".to_string());
+        };
+
+        // Persist: summary + covers BEFORE history（set_history 的
+        // trim_to_limit 依赖 covers 判定哪些最旧消息可落盘丢弃，顺序错了会
+        // 相互踩——同回合末持久化块的既有纪律）。
+        if let Some(ref store) = self.session_store {
+            store.get_or_create(session_key);
+            store.set_summary(session_key, &cache.text);
+            store.set_summary_covers_up_to(session_key, Some(cache.covers_up_to));
+            let stored: Vec<crate::session::StoredMessage> = instance
+                .get_history()
+                .iter()
+                .map(crate::session::StoredMessage::from)
+                .collect();
+            store.set_history(session_key, stored);
+            if let Err(e) = store.save(session_key) {
+                warn!(
+                    "[AgentLoop] Failed to persist compacted session {}: {}",
+                    session_key, e
+                );
+            }
+        }
+
+        let kept = history_len - cache.covers_up_to;
+        info!(
+            "[AgentLoop] Manual compact for {}: summary covers {} msgs, verbatim tail {} msgs",
+            session_key, cache.covers_up_to, kept
+        );
+        Ok(format!(
+            "✓ 已压缩：摘要覆盖前 {} 条，保留近 {} 条",
+            cache.covers_up_to, kept
+        ))
+    }
+
+    /// E6: 手动清空会话入口。chat_log 截断（jsonl-first，令 rebuild 路径
+    /// 无旧内容可复活——sessions.clear 同纪律）+ SessionStore 清除（内存
+    /// 条目 + 磁盘 json，下一回合 get_or_create 重建空会话）。key 保留，
+    /// 会话继续可用。实例按回合从 store 重建，无驻留内存态需要清。
+    pub async fn clear_session(&self, session_key: &str) -> Result<String, String> {
+        crate::chat_log::clear_chat_log(session_key);
+        if let Some(ref store) = self.session_store {
+            store.clear_session(session_key);
+        }
+        info!("[AgentLoop] Manual clear for {}", session_key);
+        Ok("✓ 已清空会话历史".to_string())
+    }
+
+    /// M5（devtool-upgrade 阶段 3）：会话级 context 占用快照（只读）。
+    ///
+    /// 口径与 `maybe_update_summary` 的压缩压力测量**同一公式**：
+    /// `used` = 摘要覆盖点之后的逐字尾部（build_messages 实际发给 LLM 的
+    /// 部分）按 MODEL-FACING 投影估算的 token 数；`window` = 三级解析链
+    /// （config `context_window` → 价目表 → 实例默认）给出的窗口。
+    /// 这样 Dashboard 显示的百分比就是「下一轮真实占用」而不是一个
+    /// 另一套口径的近似值。
+    ///
+    /// 实例按回合从 store 重建（同 [`Self::compact_session`] 的读路径），
+    /// 无驻留状态；store 未挂（standalone 简测）时按空历史计。
+    pub fn session_context_status(&self, session_key: &str) -> serde_json::Value {
+        let instance = self.get_or_create_instance(session_key);
+        let history = instance.get_history();
+        let window = self
+            .current_context_window()
+            .unwrap_or_else(|| instance.context_window());
+        let cache = instance.get_summary_cache();
+        let covers = cache
+            .as_ref()
+            .map(|c| c.covers_up_to)
+            .filter(|&c| c >= 1)
+            .unwrap_or(0)
+            .min(history.len());
+        let used = estimate_tokens_for_turns_projected(&history[covers..]);
+        let pct = (used * 100).checked_div(window).unwrap_or(0).min(100);
+        serde_json::json!({
+            "session_key": session_key,
+            "used_tokens": used,
+            "window": window,
+            "pct": pct,
+            "history_len": history.len(),
+            "covers_up_to": covers,
+            "summarized": cache.is_some(),
+        })
     }
 
     // -----------------------------------------------------------------------
@@ -3291,6 +4768,7 @@ impl AgentLoop {
         cron_job_name: Option<&str>,
         turn_budget: Option<u32>,
         image_refs: &[String],
+        cp_turn: Option<usize>,
     ) -> Result<String, String> {
         // Round-5 fix: cron-originated turns are exempt from boundary events,
         // same as heartbeat. A recurring cron job targeting a persistent
@@ -3307,6 +4785,10 @@ impl AgentLoop {
             chrono::Local::now().timestamp_nanos_opt().unwrap_or(0)
         );
         let start_time = std::time::Instant::now();
+
+        // D3：本 turn 文件变更缓冲从空开始（正常路径上轮 drain 已清；这里
+        // 兜底上轮异常短路未走到 assistant 落盘的残留）。
+        self.turn_file_changes.lock().remove(session_key);
 
         // Emit conversation_start observer event.
         self.emit_observer_sync(crate::loop_executor::ObserverEvent::ConversationStart {
@@ -3363,7 +4845,9 @@ impl AgentLoop {
         // the "summary not injected / silent amnesia" bug this refactor fixes.)
 
         // Extract final response once (shared by session store, chat log, and observer).
-        let final_response = events
+        // K4 (c)：`mut`——`cluster_rpc:` 会话（B 端执行节点）本轮有文件变更
+        // 时，完成回报会在下方追加变更摘要段（落盘与出站共用同一字符串）。
+        let mut final_response = events
             .iter()
             .rev()
             .find_map(|e| {
@@ -3421,23 +4905,53 @@ impl AgentLoop {
 
         // Append to chat log (independent of session store).
         // T6（多模态）：user 行带图片路径引用（只存路径不落字节）。
-        crate::chat_log::append_chat_log_full_with_images(
+        // E3：user 行带 `checkpoint_turn` 标记（本 turn begin 的序号随
+        // admission 穿针而来）——消息级回退的行→turn 定位锚。
+        crate::chat_log::append_chat_log_meta(
             session_key,
             "user",
             user_message,
-            None,
-            cron_job_id,
-            cron_job_name,
-            image_refs,
+            &crate::chat_log::ChatLogMeta {
+                model: None,
+                cron_job_id,
+                cron_job_name,
+                images: image_refs,
+                file_changes: &[],
+                checkpoint_turn: cp_turn,
+            },
         );
-        crate::chat_log::append_chat_log_full(
+        // D3：本 turn 声明式文件工具变更随 assistant 行落盘（消息↔文件
+        // 变更映射；M3 会话级 diff 查看器的数据源）。drain 即清（下 turn
+        // 从空开始）；去重规则见 `chat_log::dedup_file_changes`。
+        let turn_changes = self.drain_turn_file_changes(session_key);
+        // K4 (c) (devtool-upgrade 阶段 7): B 端 peer_chat 任务完成回报带
+        // 变更摘要——`cluster_rpc:` 会话（B 端执行节点）本轮有声明式文件
+        // 变更时，把紧凑列表追加进最终回复。落盘与出站共用同一字符串：
+        // chat_log、channel 回执（含 rpc correlation 前缀包裹）看到的完全
+        // 一致，A 端用户在原通道直接看到执行节点改了哪些文件。渲染规则
+        // （上限/溢出注记/确定性顺序）见 `render_turn_changes_summary`。
+        if session_key.starts_with("cluster_rpc:")
+            && let Some(summary) = render_turn_changes_summary(&turn_changes)
+        {
+            final_response.push_str(&summary);
+        }
+        crate::chat_log::append_chat_log_meta(
             session_key,
             "assistant",
             &final_response,
-            Some(&self.current_display_model()),
-            cron_job_id,
-            cron_job_name,
+            &crate::chat_log::ChatLogMeta {
+                model: Some(&self.current_display_model()),
+                cron_job_id,
+                cron_job_name,
+                images: &[],
+                file_changes: &turn_changes,
+                checkpoint_turn: None, // E3：标记只在 user 行（turn 开始锚）
+            },
         );
+
+        // E7：会话标题自动生成（assistant 回复落盘后；无资格/未配置小模型
+        // 内部诚实跳过。通常首轮触发——meta 已有标题后不再重复）。
+        let _ = self.spawn_session_title_job(session_key);
 
         // Emit conversation_end observer event.
         let duration_ms = start_time.elapsed().as_millis() as u64;
@@ -3520,10 +5034,10 @@ impl AgentLoop {
         turn_budget: Option<u32>,
         image_refs: &[String],
     ) -> Vec<AgentEvent> {
-        // K2 (U14): prompt-level lifecycle hooks (CC SessionStart +
+        // K2 (U14): prompt-level lifecycle hooks (dialect SessionStart +
         // UserPromptSubmit dialect events). Runs BEFORE `add_user_message`
         // so a blocked prompt NEVER enters history — the model doesn't see
-        // it, matching CC's block semantics. `resume_execution` does not
+        // it, matching the dialect's block semantics. `resume_execution` does not
         // pass through here (no new user prompt → no event), by design.
         {
             let lifecycle = self.lifecycle_hooks.read().snapshot();
@@ -3541,7 +5055,7 @@ impl AgentLoop {
                         context.session_key, reason
                     );
                     return vec![AgentEvent::Done(format!(
-                        "⛔ HOOK BLOCKED: {} — A registered hook denied this prompt. Adjust the hook policy and resend.",
+                        "⛔ HOOK BLOCKED [layer:hook|policy:prompt_hook] {} — A registered hook denied this prompt. Adjust the hook policy and resend.",
                         reason
                     ))];
                 }
@@ -3561,6 +5075,78 @@ impl AgentLoop {
             voice_playback,
             cancel_token,
             turn_budget,
+        )
+        .await
+    }
+
+    /// G0 (devtool-upgrade 阶段 3)：派生一个**分离执行**的子代理回合。
+    ///
+    /// 与主路径的本质关系：不走 bus、不写 session store / chat_log（会话
+    /// 只存在于本次派生的临时 instance，跑完即弃），但**复用
+    /// `run_with_trace` 全链路**——工具调度、安全 8 层、guardian、hook、
+    /// tier 过滤、args 校验、spill、turn_guard、C3 诊断回灌全部同源生效
+    /// （这是与 legacy `nemesis-tools` 异步版的本质差异：子代理拥有与主
+    /// loop 相同的全套治理）。最终 assistant 文本从 `Done` 事件提取。
+    ///
+    /// 由 `SpawnTool` 的 spawn_slot 闭包（agent_factory 组装后注入，持
+    /// `Weak<AgentLoop>` 防 Arc 环）调用。
+    pub async fn run_detached(&self, task: &str, opts: DetachedOpts<'_>) -> Result<String, String> {
+        let events = self.run_detached_events(task, opts).await;
+        // Done 优先；Error 次之；两者皆无 = 诚实报错（不编造输出）。
+        let mut done: Option<String> = None;
+        let mut error: Option<String> = None;
+        for e in events {
+            match e {
+                AgentEvent::Done(m) => done = Some(m),
+                AgentEvent::Error(e) => error = Some(e),
+                _ => {}
+            }
+        }
+        match (done, error) {
+            (Some(m), _) => Ok(m),
+            (None, Some(e)) => Err(e),
+            (None, None) => Err("sub-agent produced no output".to_string()),
+        }
+    }
+
+    /// K1/K2（devtool-upgrade 阶段 4）：[`AgentLoop::run_detached`] 的**事件
+    /// 全集**变体。同一条 `run_with_trace` 链路（工具调度、安全 8 层、
+    /// guardian、tier、spill、turn_guard 全部同源），但把事件 `Vec` 原样
+    /// 交还调用方——headless `run` 文本模式折 Done/Error，NDJSON 模式（K2）
+    /// 逐事件序列化。会话语义同 run_detached：临时 instance 跑完即弃。
+    pub async fn run_detached_events(&self, task: &str, opts: DetachedOpts<'_>) -> Vec<AgentEvent> {
+        let session_key = format!("subagent:{}", uuid::Uuid::new_v4());
+        let instance = AgentInstance::new(self.config.clone());
+        if let Some(allowed) = opts.allowed_tools
+            && !allowed.is_empty()
+        {
+            instance
+                .set_detached_allowed_tools(Some(allowed.iter().map(|s| s.to_string()).collect()));
+        }
+        // G2: record the sub-agent nesting depth on the instance — the serial
+        // dispatch reads it back (instance.detached_depth()) and injects it
+        // into depth-aware tools so `agents.subagent.max_depth` is enforced.
+        instance.set_detached_depth(opts.depth);
+        // 注：workspace 继承由 agent_factory 的 SpawnConfig 提供（与主
+        // instance 同目录）；standalone loop（无 workspace 概念）留空。
+        let context = RequestContext {
+            channel: "subagent".to_string(),
+            chat_id: session_key.clone(),
+            user: "subagent".to_string(),
+            session_key: session_key.clone(),
+            correlation_id: None,
+            async_callback: None,
+        };
+        let trace_id = format!("subagent-{}", uuid::Uuid::new_v4().simple());
+        self.run_with_trace(
+            &instance,
+            task,
+            &context,
+            &trace_id,
+            false,
+            &tokio_util::sync::CancellationToken::new(),
+            (opts.max_turns > 0).then_some(opts.max_turns),
+            &[],
         )
         .await
     }
@@ -3658,7 +5244,7 @@ impl AgentLoop {
         // Instead of routing the broken call through the validation budget
         // (which force-stops with a misleading "args invalid" error — Big tier
         // = 0 retries), append partial content + a "continue" prompt and
-        // re-loop. Mirrors 内部专项 (MAX_CONTINUATIONS=5) / nanobot (3).
+        // re-loop.
         let mut length_continuations = 0u32;
         const MAX_LENGTH_CONTINUATIONS: u32 = 5;
         // ② Grace-round latch. When the tool-call budget is exhausted we grant
@@ -3682,7 +5268,7 @@ impl AgentLoop {
         // instead of post-hoc string sniffing (a model reply containing
         // the paused-after wording would have been misclassified).
         let mut terminal_reason: Option<&'static str> = None;
-        // K2 (U14): turn-end hook (CC Stop) continue budget. Each
+        // K2 (U14): turn-end hook (dialect Stop) continue budget. Each
         // `Continue` demand injects the hook feedback as a user message and
         // grants one more round; exhausted → stop anyway (fail-open, same
         // discipline as MAX_LLM_HOOK_RETRIES).
@@ -3791,6 +5377,22 @@ impl AgentLoop {
                     // arrive marker-free whether injected in-turn (here) or
                     // replayed post-turn (drain path).
                     let content = crate::inbox::strip_steer_marker(&m.msg.content).to_string();
+                    // I2：steer 消息与首轮同源（B1 原则延伸）——@文件引用同样
+                    // 展开（同基准/同安全闸），不因注入时点而异。
+                    let at_base = self
+                        .workspace_root
+                        .read()
+                        .clone()
+                        .unwrap_or_else(|| std::env::current_dir().unwrap_or_default());
+                    let content = crate::message_preprocess::expand_at_files(
+                        &content,
+                        &at_base,
+                        &m.msg.channel,
+                        #[cfg(feature = "security")]
+                        self.security_plugin.as_deref(),
+                        #[cfg(not(feature = "security"))]
+                        None,
+                    );
                     // B1（2026-09-03 二次回归）：steer 消息与首轮同源——同样可能
                     // 携带图片（media 引用 + 文本点名路径）。走与 process_admitted
                     // 同一附加链（URL 预取 + 统一附加 + 诚实注记 + image_refs），
@@ -3808,10 +5410,13 @@ impl AgentLoop {
                         None,
                     )
                     .await;
+                    // J6：同 process_admitted——降采样开关 fresh-read，产物落 uploads。
+                    let downscale_dir = self.current_image_downscale().then(|| uploads_dir.clone());
                     let attach = crate::image_attach::attach_turn_images(
                         &content,
                         &media_for_attach,
                         self.workspace_root.read().as_deref(),
+                        downscale_dir.as_deref(),
                         &m.msg.channel,
                         #[cfg(feature = "security")]
                         self.security_plugin.as_deref(),
@@ -3980,7 +5585,7 @@ impl AgentLoop {
                                 turns_used, reason
                             );
                             events.push(AgentEvent::Done(format!(
-                                "⛔ HOOK BLOCKED: {} — A registered LLM hook denied this round. Do NOT retry unless the user changes the hook policy.",
+                                "⛔ HOOK BLOCKED [layer:hook|policy:llm_hook] {} — A registered LLM hook denied this round. Do NOT retry unless the user changes the hook policy.",
                                 reason
                             )));
                             break;
@@ -3996,8 +5601,7 @@ impl AgentLoop {
             // variation between requests.
             // Y1 (Phase4-a): fold AFTER the tier filter — description text only,
             // byte-identical passthrough whenever folding is off/degrades.
-            let tool_defs: Vec<crate::types::ToolDefinition> =
-                self.apply_tool_doc_folding(self.build_tool_defs(), instance);
+            let tool_defs: Vec<crate::types::ToolDefinition> = self.effective_tool_defs(instance);
             debug!(
                 "[AgentLoop] Sending {} tool definitions to LLM",
                 tool_defs.len()
@@ -4397,7 +6001,7 @@ impl AgentLoop {
                                     turns_used, reason
                                 );
                                 events.push(AgentEvent::Done(format!(
-                                    "⛔ HOOK BLOCKED: {} — A registered LLM hook terminated this round. Inform the user.",
+                                    "⛔ HOOK BLOCKED [layer:hook|policy:llm_hook] {} — A registered LLM hook terminated this round. Inform the user.",
                                     reason
                                 )));
                                 break 'turn;
@@ -4427,8 +6031,7 @@ impl AgentLoop {
                                 // Y1 (Phase4-a): fold the retry call's defs with
                                 // the same gates/rendering as the main call —
                                 // same query ⇒ same fold bytes.
-                                let r_tools =
-                                    self.apply_tool_doc_folding(self.build_tool_defs(), instance);
+                                let r_tools = self.effective_tool_defs(instance);
                                 self.emit_observer_sync(
                                     crate::loop_executor::ObserverEvent::LlmRequest {
                                         trace_id: trace_id.to_string(),
@@ -4574,8 +6177,8 @@ impl AgentLoop {
                 }
             }
 
-            // Continue-generation on max_tokens truncation (内部专项/nanobot
-            // pattern). When completion hits the cap, output is cut mid-way —
+            // Continue-generation on max_tokens truncation.
+            // When completion hits the cap, output is cut mid-way —
             // often mid tool-call JSON, which args_validator would report as
             // "Arguments are not valid JSON" and burn the validation budget
             // (Big tier = 0 retries → instant force-stop with a misleading
@@ -4666,9 +6269,9 @@ impl AgentLoop {
                         // I1 (U7) turn escape hatch: the model is about to
                         // finish, but an unclaimed steer message arrived in
                         // the last moments — hand it to the model for one
-                        // more round instead of answering past it (dsh
-                        // turn-stopping semantics: pending next-step input
-                        // keeps the turn open). At most once per turn
+                        // more round instead of answering past it — pending
+                        // next-step input keeps the turn open. At most once
+                        // per turn
                         // (steer_escape_used) so `!`-spam cannot loop the
                         // turn forever.
                         if !steer_escape_used
@@ -4683,7 +6286,7 @@ impl AgentLoop {
                             // iteration injects the steer message(s).
                             continue;
                         }
-                        // K2 (U14): turn-end lifecycle hooks (CC Stop
+                        // K2 (U14): turn-end lifecycle hooks (Stop
                         // dialect event). Runs after the assistant message
                         // is recorded, before the Done event. `Continue`
                         // injects the hook feedback as a user message and
@@ -4783,14 +6386,16 @@ impl AgentLoop {
             // again — escalation fired every round without stopping (observed
             // 43× in a deployed test), and "validation stopping loop" was a lie.
             let mut force_stop: Option<AgentEvent> = None;
-            // U5 (sixth batch): precompute execution for an ALL-read-only batch
-            // (≥2 calls, every tool is_read_only). The for-loop then replays the
-            // serial guards on the precomputed results in source order — the
-            // audit chain stays ordered = model source order (roadmap risk 3).
-            // cluster_rpc/exec/writers are never read-only → this stays None for
-            // those batches → the loop below runs byte-identical to pre-U5.
-            // `None` also when a cancel/estop is already engaged at batch start
-            // (the for-loop's per-item check handles that case unchanged).
+            // U5 (sixth batch): precompute execution for an ALL-parallel-safe
+            // batch (≥2 calls, every tool read-only OR explicitly opted in —
+            // G3: spawn). The for-loop then replays the serial guards on the
+            // precomputed results in source order — the audit chain stays
+            // ordered = model source order (roadmap risk 3). cluster_rpc/exec
+            // /writers are never parallel-safe → this stays None for those
+            // batches → the loop below runs byte-identical to pre-U5.
+            // `None` also when a cancel/estop is already engaged at batch
+            // start (the for-loop's per-item check handles that case
+            // unchanged).
             let precomputed: Option<Vec<PrecomputedTool>> = if tool_calls.len() >= 2
                 && !cancel_token.is_cancelled()
                 && !self
@@ -4799,9 +6404,13 @@ impl AgentLoop {
                     .as_ref()
                     .map(|e| e.is_engaged())
                     .unwrap_or(false)
-                && tool_calls.iter().all(|tc| self.tool_is_read_only(&tc.name))
+                && tool_calls
+                    .iter()
+                    .all(|tc| self.tool_is_parallel_safe(&tc.name))
             {
-                let pc = self.precompute_readonly_batch(&tool_calls, context).await;
+                let pc = self
+                    .precompute_parallel_batch(&tool_calls, context, instance.detached_depth())
+                    .await;
                 Some(pc)
             } else {
                 None
@@ -4870,7 +6479,10 @@ impl AgentLoop {
                     let r = match self.check_tool_args(tc) {
                         crate::args_validator::Outcome::Valid => {
                             validation_failures = 0;
-                            self.handle_tool_call(tc, context).await
+                            // G2: dispatch at this instance's sub-agent depth so
+                            // depth-aware tools (spawn) enforce max_depth.
+                            self.handle_tool_call_at_depth(tc, context, instance.detached_depth())
+                                .await
                         }
                         crate::args_validator::Outcome::Fixed(fixed_args) => {
                             validation_failures = 0;
@@ -4880,7 +6492,12 @@ impl AgentLoop {
                             );
                             let mut fixed = tc.clone();
                             fixed.arguments = fixed_args;
-                            self.handle_tool_call(&fixed, context).await
+                            self.handle_tool_call_at_depth(
+                                &fixed,
+                                context,
+                                instance.detached_depth(),
+                            )
+                            .await
                         }
                         crate::args_validator::Outcome::Invalid { message, class } => {
                             validation_failures += 1;
@@ -5031,6 +6648,74 @@ impl AgentLoop {
                     }
                 }
 
+                // G4 (devtool-upgrade 阶段 3)：后台 subagent —— spawn 闭包
+                // （background=true）已在闭包侧把任务转入后台 tokio 任务并
+                // 立即返回此 marker。这里与 __ASYNC__（集群）同构：存续行
+                // 快照 + 中间消息收尾本回合；任务完成时闭包侧向 bus 发布
+                // `subagent_continuation:{task_id}`，gate_inbound 拦截后走
+                // dispatch_continuation → handle_cluster_continuation 全复用
+                // （快照加载 + 续行 + 持久化 + remove_continuation 自清）。
+                //
+                // 快照保存必须 **inline await**（不能像 __ASYNC__ 那样
+                // spawn）：后台子代理毫秒级即可完成并回灌，spawn 式保存要
+                // 等下一个 await 点才落内存，load 端扑空即静默且回复
+                // （handle_cluster_continuation 的 debug-skip 分支）。inline
+                // 消除该竞态；一次小盘写的延迟可忽略。
+                //
+                // 格式：`__BG_SPAWN__:{task_id}`（编码端 = agent_factory 注入
+                // 的 spawn 闭包）。
+                if let Some(bg_task_id) = result.strip_prefix("__BG_SPAWN__:") {
+                    let bg_task_id = bg_task_id.trim().to_string();
+                    if let Some(ref mgr) = self.continuation_manager {
+                        let messages = self.build_messages(instance);
+                        let channel = context.channel.clone();
+                        let chat_id = context.chat_id.clone();
+                        let session_key = context.session_key.clone();
+                        // T6（多模态）：快照只落图片路径引用。引用取自
+                        // instance 历史最后一条 user turn（同 __ASYNC__ 路径）。
+                        let image_refs: Vec<String> = instance
+                            .get_history()
+                            .iter()
+                            .rev()
+                            .find(|t| t.role == "user")
+                            .map(|t| t.image_refs.clone())
+                            .unwrap_or_default();
+                        // peer_id 留空：后台任务是进程内 tokio 任务，无对端
+                        // 可 poll —— cluster first_start 恢复循环对空 peer_id
+                        // 快照本就跳过（留给 TTL 清扫）；重启丢失场景由适配器
+                        // 启动期的诚实丢失注入兜底（见 nemesisbot adapters）。
+                        mgr.save_continuation_with_images(
+                            &bg_task_id,
+                            messages,
+                            &tc.id,
+                            &channel,
+                            &chat_id,
+                            &session_key,
+                            "",
+                            &image_refs,
+                        )
+                        .await;
+                        info!(
+                            "[AgentLoop] Continuation saved for background subagent: task_id={}, tool_call_id={}",
+                            bg_task_id, tc.id
+                        );
+                    }
+
+                    // 工具结果 marker：与 __CLUSTER_ASYNC__ 刻意不同名，两套
+                    // 异步路径在会话历史里互不误判。
+                    instance.add_tool_result(&tc.id, &format!(
+                        "Background sub-agent accepted. Task ID: {} | __BG_ASYNC__{{\"task_id\":\"{}\"}}",
+                        bg_task_id, bg_task_id
+                    ));
+
+                    let intermediate =
+                        "已派后台子代理任务，完成后结果会自动带回本会话~".to_string();
+                    let formatted = context.format_rpc_message(&intermediate);
+                    events.push(AgentEvent::Done(formatted));
+                    hit_async = true;
+                    break;
+                }
+
                 let tool_result = ToolCallResult {
                     tool_name: tc.name.clone(),
                     result: result.clone(),
@@ -5097,6 +6782,25 @@ impl AgentLoop {
                     result
                 };
 
+                // C3 (devtool-upgrade 阶段 2) 编辑后诊断回灌：write_file /
+                // edit_file 成功后，若该路径语言有已安装 LSP 且
+                // `agents.defaults.diagnostics_loop.enabled`，同步文档 →
+                // 等 ERROR → 把 ≤max_errors 条追加到工具结果尾部（"please
+                // fix"），让模型同轮自纠——修复闭环。插在 ⑤′ 与 spill/gate
+                // 之间：反馈与工具结果同走一条模型可见管线（gate/spill/
+                // projection 都作用于装饰后的文本）。失败路径全部静默
+                // （开关关 / 非 write|edit / 无 manager / 无服务器 /
+                // 同步失败 / 无 ERROR）——永不拖垮工具调用。
+                let result = if tool_succeeded
+                    && matches!(tc.name.as_str(), "write_file" | "edit_file")
+                    && let Ok(args_val) = serde_json::from_str::<serde_json::Value>(&tc.arguments)
+                    && let Some(path_str) = args_val.get("path").and_then(|v| v.as_str())
+                {
+                    self.diagnostics_feedback(&tc.name, path_str, &result).await
+                } else {
+                    result
+                };
+
                 // G3 (U3) + G4 (U4) + X1 (U3 projection prune): model-free
                 // size gates, computed here but applied at the PROJECTION
                 // (build_messages), not at history-write time. History keeps
@@ -5112,7 +6816,18 @@ impl AgentLoop {
                 // Spill is best-effort: a storage failure falls through to the
                 // prune tier (a spill failure must never lose a successful
                 // tool call's content outright).
+                //
+                // B3 (devtool-upgrade 阶段 3): when the registry HAS a spawn
+                // tool, both gate texts append the sub-agent hint (the elided
+                // content is unreadable inline — a spawned sub-agent can read
+                // it and return a digest). Hinted prune text is registry-
+                // state-dependent and NOT recomputable by the pure projection
+                // path, so `prune_hinted` forces the projection override
+                // (same ledger as spill/nudges); replay recomputes without
+                // hint only for unhinted turns, which are byte-stable.
+                let hint_subagent = self.tools.read().contains_key("spawn");
                 let mut spill_applied = false;
+                let mut prune_hinted = false;
                 let gate_text: String = {
                     let spill_root = self.spill_root.read().clone();
                     let spilled = spill_root.as_ref().and_then(|root| {
@@ -5124,6 +6839,7 @@ impl AgentLoop {
                             &context.session_key,
                             &stamp,
                             &tc.id,
+                            hint_subagent,
                         ) {
                             crate::spill::SpillOutcome::Spilled(text) => Some(text),
                             crate::spill::SpillOutcome::SpillFailed => {
@@ -5146,17 +6862,21 @@ impl AgentLoop {
                             spill_applied = true;
                             text
                         }
-                        None => match crate::prune::prune_tool_result(&result, &tc.name) {
-                            Some(pruned) => {
-                                info!(
-                                    "[AgentLoop] tool result pruned: '{}' result exceeded {} chars",
-                                    tc.name,
-                                    crate::prune::MAX_TOOL_RESULT_INLINE_CHARS
-                                );
-                                pruned
+                        None => {
+                            match crate::prune::prune_tool_result(&result, &tc.name, hint_subagent)
+                            {
+                                Some(pruned) => {
+                                    info!(
+                                        "[AgentLoop] tool result pruned: '{}' result exceeded {} chars",
+                                        tc.name,
+                                        crate::prune::MAX_TOOL_RESULT_INLINE_CHARS
+                                    );
+                                    prune_hinted = hint_subagent;
+                                    pruned
+                                }
+                                None => result,
                             }
-                            None => result,
-                        },
+                        }
                     }
                 };
 
@@ -5182,11 +6902,13 @@ impl AgentLoop {
                 // X1: the recorded projection override — only when the final
                 // model-facing text cannot be recomputed from the original
                 // later: the spill tier (locator path embeds a wall-clock
-                // stamp) or any guard-nudge decoration (⑤/⑤′/⑥ — dynamic
-                // per-turn state). Otherwise None and build_messages
-                // recomputes the pure prune (deterministic, ledger-free).
+                // stamp), any guard-nudge decoration (⑤/⑤′/⑥ — dynamic
+                // per-turn state), or B3's spawn-hinted prune (the hint flag
+                // is registry state, not turn data). Otherwise None and
+                // build_messages recomputes the pure prune (deterministic,
+                // ledger-free).
                 let projection: Option<String> =
-                    if spill_applied || guard_nudged || nudge6.is_some() {
+                    if spill_applied || guard_nudged || nudge6.is_some() || prune_hinted {
                         Some(match &nudge6 {
                             Some(nudge) => format!("{}\n{}", gate_text, nudge),
                             None => gate_text.clone(),
@@ -5209,6 +6931,21 @@ impl AgentLoop {
                     && let Some(path_str) = args_val.get("path").and_then(|v| v.as_str())
                 {
                     let touched = std::path::PathBuf::from(path_str);
+                    // I1 (devtool-upgrade 阶段 3): record agent-authored
+                    // writes so the fs watcher's event for the same path is
+                    // dropped inside the self-write window (the agent knows
+                    // what it just wrote — must not surface as "外部修改").
+                    if matches!(tc.name.as_str(), "write_file" | "edit_file") {
+                        self.note_self_write(path_str);
+                    }
+                    // I3 (devtool-upgrade 阶段 3): lazy sub-directory
+                    // instruction discovery on successful reads — the file's
+                    // directory may carry AGENTS.md/CLAUDE.md that was never
+                    // injected (root chain only, by default). Queued here,
+                    // injected one-shot at the next build.
+                    if tc.name == "read_file" {
+                        self.note_read_for_instructions(instance, path_str);
+                    }
                     let ws_root = self.workspace_root.read().clone();
                     if let Some(ref root) = ws_root {
                         // Chain files are <dir>/AGENTS.md or CLAUDE.md
@@ -5241,12 +6978,33 @@ impl AgentLoop {
                 // break the tool batch; the outer-scope check after this for-loop
                 // ends the turn (a bare `break` here only exits the batch, not
                 // the LLM loop).
-                if let Some(msg) = turn_guard.escalation_check() {
-                    warn!(
-                        "[AgentLoop] loop guard escalation: stopping turn to avoid burning max_turns on a stuck loop"
-                    );
-                    force_stop = Some(AgentEvent::Done(context.format_rpc_message(&msg)));
-                    break;
+                //
+                // J5 (devtool-upgrade 阶段 6)：`agents.doom_loop_approval` 开且
+                // question asker 已装配时，先发提问卡问用户「继续吗？」——
+                // approve = 清签名计数继续；deny / 超时 / 通路缺失 / 开关关 =
+                // 现行为（停轮）。turn_guard 现行为是安全底座，开关默认关。
+                if let Some((sig, count)) = turn_guard.escalating_signature() {
+                    let approved = self.current_doom_loop_approval()
+                        && self
+                            .ask_doom_loop_approval(&sig, count, context)
+                            .await
+                            .unwrap_or(false);
+                    if approved {
+                        warn!(
+                            "[AgentLoop] loop guard escalation on '{}' (x{}) — user approved, clearing signature count and continuing",
+                            sig.split('\x00').next().unwrap_or("tool"),
+                            count
+                        );
+                        turn_guard.clear_signature(&sig);
+                    } else {
+                        warn!(
+                            "[AgentLoop] loop guard escalation: stopping turn to avoid burning max_turns on a stuck loop"
+                        );
+                        force_stop = Some(AgentEvent::Done(context.format_rpc_message(
+                            &crate::turn_guard::TurnGuard::escalation_message(&sig, count),
+                        )));
+                        break;
+                    }
                 }
 
                 // Phase 2: bound consecutive validation failures so a struggling
@@ -5312,38 +7070,48 @@ impl AgentLoop {
     // Tool handling
     // -----------------------------------------------------------------------
 
-    /// U5 (sixth batch): is `name` a registered read-only tool? Looks up the
-    /// agent-side registry and asks the tool's `is_read_only()`. Fail-closed:
-    /// unknown tools and writer tools return false → never join the parallel
-    /// pool. When executor separation is ON, the MOVE_TOOLS (incl. read_file/
-    /// list_dir/grep) are `RemoteExecutorTool` instances whose `is_read_only()`
-    /// is the default `false` — so an executor-separated batch naturally
-    /// falls back to serial here, no separate check needed.
-    fn tool_is_read_only(&self, name: &str) -> bool {
+    /// U5 (sixth batch), G3-extended: is `name` eligible for the parallel
+    /// pool? Looks up the agent-side registry and asks the tool's
+    /// `is_parallel_safe()` (= `is_read_only()` by default; spawn opts in
+    /// explicitly). Fail-closed: unknown tools and writer tools return
+    /// false → never join the parallel pool. When executor separation is
+    /// ON, the MOVE_TOOLS (incl. read_file/list_dir/grep) are
+    /// `RemoteExecutorTool` instances whose `is_read_only()` is the default
+    /// `false` — so an executor-separated batch naturally falls back to
+    /// serial here, no separate check needed.
+    fn tool_is_parallel_safe(&self, name: &str) -> bool {
         match self.tools.read().get(name) {
-            Some(t) => t.is_read_only(),
+            Some(t) => t.is_parallel_safe(),
             None => false,
         }
     }
 
-    /// U5: the result of one parallel-executed read-only call, captured for
-    /// serial guard replay in source order. `validation_failed` lets the
-    /// serial loop replay the `validation_failures` counter exactly as the
-    /// serial path would (Invalid → +1; Valid/Fixed → reset to 0).
+    /// U5: the result of one parallel-executed call, captured for serial
+    /// guard replay in source order. `validation_failed` lets the serial
+    /// loop replay the `validation_failures` counter exactly as the serial
+    /// path would (Invalid → +1; Valid/Fixed → reset to 0).
     ///
-    /// U5: concurrently execute an ALL-read-only batch (validated read-only
-    /// by the caller). Each task runs the SAME execution path as the serial
-    /// loop's match (`check_tool_args` → `handle_tool_call` or synthesize an
-    /// Invalid error), gated by a 4-permit semaphore. Returns results in
-    /// SOURCE ORDER (`join_all` preserves iteration order) so the serial
-    /// guard-replay keeps the audit chain ordered = model source order
-    /// (roadmap risk 3 hard constraint). cluster_rpc/exec/writers are never
-    /// here (not read-only) → `__ASYNC__` continuation and executor paths
-    /// are structurally excluded.
-    async fn precompute_readonly_batch(
+    /// U5/G3: concurrently execute an ALL-parallel-safe batch (validated
+    /// read-only-or-opted-in by the caller). Each task runs the SAME
+    /// execution path as the serial loop's match (`check_tool_args` →
+    /// `handle_tool_call_at_depth` or synthesize an Invalid error), gated
+    /// by a 4-permit semaphore. Every dispatch goes through the depth-aware
+    /// variant with the invoking instance's `detached_depth` — behaviorally
+    /// identical to the old depth-0 dispatch for read-only tools (their
+    /// `set_invocation_depth` is the trait's default no-op) and exactly
+    /// what spawn needs for `max_depth` enforcement (G2/G3). Returns
+    /// results in SOURCE ORDER (`join_all` preserves iteration order) so
+    /// the serial guard-replay keeps the audit chain ordered = model
+    /// source order (roadmap risk 3 hard constraint). cluster_rpc/exec/
+    /// writers are never here (not parallel-safe) → the `__ASYNC__`
+    /// continuation and executor paths are structurally excluded; spawn's
+    /// own `__BG_SPAWN__` marker is handled by the unchanged inline-await
+    /// replay in the for-loop.
+    async fn precompute_parallel_batch(
         &self,
         tool_calls: &[ToolCallInfo],
         context: &RequestContext,
+        depth: usize,
     ) -> Vec<PrecomputedTool> {
         let sem = std::sync::Arc::new(tokio::sync::Semaphore::new(4));
         let futs = tool_calls.iter().map(|tc| {
@@ -5353,9 +7121,10 @@ impl AgentLoop {
                 let _permit = sem.acquire().await.ok();
                 let start = std::time::Instant::now();
                 let (result, validation_failed) = match self.check_tool_args(&tc) {
-                    crate::args_validator::Outcome::Valid => {
-                        (self.handle_tool_call(&tc, context).await, false)
-                    }
+                    crate::args_validator::Outcome::Valid => (
+                        self.handle_tool_call_at_depth(&tc, context, depth).await,
+                        false,
+                    ),
                     crate::args_validator::Outcome::Fixed(fixed_args) => {
                         info!(
                             "[AgentLoop] Auto-fixed args for tool '{}' (id={})",
@@ -5363,7 +7132,10 @@ impl AgentLoop {
                         );
                         let mut fixed = tc.clone();
                         fixed.arguments = fixed_args;
-                        (self.handle_tool_call(&fixed, context).await, false)
+                        (
+                            self.handle_tool_call_at_depth(&fixed, context, depth).await,
+                            false,
+                        )
                     }
                     crate::args_validator::Outcome::Invalid { message, .. } => {
                         warn!(
@@ -5400,11 +7172,27 @@ impl AgentLoop {
         // Empty allowed-list (Big/Auto) = show everything; Mini/Normal
         // see a restricted set to reduce small-model cognitive load.
         let allowed = nemesis_types::capability::tier_allowed_tools(*self.tier.read());
+        // F8 (devtool-upgrade 阶段 3): third filter layer — config
+        // `agents.hidden_tools` removes tools from the model's supply
+        // entirely (dispatch re-checks the same list: double gate). Read
+        // FRESH each call so dashboard/CLI edits apply from the next turn.
+        let hidden = self.current_hidden_tools();
+        // F1 (devtool-upgrade 阶段 4): Plan 模式第四过滤层——只读白名单
+        // ∩（MCP 前缀工具与 spawn 豁免：MCP 语义未知不猜；spawn 保留供给、
+        // 分发闸兜底）。与 tier 过滤正交（Mini+Plan 取交集，验收项）。
+        let plan_mode = *self.mode.read() == crate::types::AgentMode::Plan;
         let mut names: Vec<&String> = tools_guard.keys().collect();
         names.sort();
         names
             .into_iter()
             .filter(|name| allowed.is_empty() || allowed.contains(&name.as_str()))
+            .filter(|name| !tool_name_matches_hidden(&hidden, name))
+            .filter(|name| {
+                !plan_mode
+                    || Self::PLAN_MODE_TOOLS.contains(&name.as_str())
+                    || name.starts_with("mcp_")
+                    || name.as_str() == "spawn"
+            })
             .filter_map(|name| tools_guard.get(name).map(|tool| (name, tool)))
             .map(|(name, tool)| crate::types::ToolDefinition {
                 tool_type: "function".to_string(),
@@ -5415,6 +7203,22 @@ impl AgentLoop {
                 },
             })
             .collect()
+    }
+
+    /// G0 (devtool-upgrade 阶段 3)：本回合生效的工具 defs 供给链——
+    /// 全量注册 → tier 过滤 → **子代理白名单收窄**（`run_detached` 派生的
+    /// instance 才带 `detached_allowed_tools`，普通回合 None 直通）→ 文档折叠。
+    /// instance 级白名单（非 loop 级全局槽）：并发 detached 回合互不串扰。
+    fn effective_tool_defs(&self, instance: &AgentInstance) -> Vec<crate::types::ToolDefinition> {
+        let mut defs = self.build_tool_defs();
+        if let Some(allowed) = instance.detached_allowed_tools()
+            && !allowed.is_empty()
+        {
+            defs.retain(|d| allowed.contains(&d.function.name));
+        }
+        // 空白名单 = 不设限（与 run_detached 的 `!allowed.is_empty()` 守卫
+        // 同语义——否则 Some(空) 会把供给收窄到零工具，两端语义劈叉）。
+        self.apply_tool_doc_folding(defs, instance)
     }
 
     /// Y1 (Phase4-a): read `agents.tool_doc_folding` from config.json FRESH
@@ -5445,6 +7249,114 @@ impl AgentLoop {
             .map(|n| n as usize)
             .unwrap_or(crate::tool_doc_folding::DEFAULT_EXPAND_TOP_N);
         (enabled, top_n)
+    }
+
+    /// F8 (devtool-upgrade 阶段 3): read `agents.hidden_tools` from
+    /// config.json FRESH each call (same pattern as
+    /// [`Self::current_tool_doc_folding`] — dashboard/CLI edits take effect
+    /// from the next turn without restarting the loop). Absent key,
+    /// unreadable file, or a standalone loop (no config_path) → empty list
+    /// (nothing hidden).
+    pub(crate) fn current_hidden_tools(&self) -> Vec<String> {
+        let path = match self.config_path.read().clone() {
+            Some(p) => p,
+            None => return Vec::new(),
+        };
+        let v = std::fs::read_to_string(&path)
+            .ok()
+            .and_then(|s| serde_json::from_str::<serde_json::Value>(&s).ok());
+        v.and_then(|v| {
+            v.get("agents")
+                .and_then(|a| a.get("hidden_tools"))
+                .and_then(|h| h.as_array())
+                .map(|arr| {
+                    arr.iter()
+                        .filter_map(|e| e.as_str())
+                        .map(|s| s.trim().to_string())
+                        .filter(|s| !s.is_empty())
+                        .collect::<Vec<String>>()
+                })
+        })
+        .unwrap_or_default()
+    }
+
+    /// J5 (devtool-upgrade 阶段 6)：`agents.doom_loop_approval` fresh-read
+    /// （F8 `current_hidden_tools` 同款模式——config.json 是唯一真相源，每次
+    /// escalation 现读，运行时改键下一轮生效，无需重启）。无 config_path /
+    /// 解析失败 = `false`（安全底座方向）。
+    pub(crate) fn current_doom_loop_approval(&self) -> bool {
+        let path = match self.config_path.read().clone() {
+            Some(p) => p,
+            None => return false,
+        };
+        std::fs::read_to_string(&path)
+            .ok()
+            .and_then(|s| serde_json::from_str::<serde_json::Value>(&s).ok())
+            .and_then(|v| {
+                v.get("agents")
+                    .and_then(|a| a.get("doom_loop_approval"))
+                    .and_then(|b| b.as_bool())
+            })
+            .unwrap_or(false)
+    }
+
+    /// J6：超限图片自动降采样开关（F8 模式 fresh-read config.json；默认**开**，
+    /// 极性与 doom_loop_approval 相反——读不到/键缺失按开处理，保持降采样
+    /// 能力可用；读取失败不阻塞轮次）。
+    pub(crate) fn current_image_downscale(&self) -> bool {
+        let path = match self.config_path.read().clone() {
+            Some(p) => p,
+            None => return true,
+        };
+        std::fs::read_to_string(&path)
+            .ok()
+            .and_then(|s| serde_json::from_str::<serde_json::Value>(&s).ok())
+            .and_then(|v| {
+                v.get("agents")
+                    .and_then(|a| a.get("image_downscale"))
+                    .and_then(|b| b.as_bool())
+            })
+            .unwrap_or(true)
+    }
+
+    /// J5：doom-loop 审批卡。经 [`Self::question_asker`]（F7 同源 broker 的
+    /// ask 端）发结构化提问「继续吗？」，阻塞等用户作答。
+    ///
+    /// 返回：`Some(true)` = 用户选「继续」（调用方清签名计数继续）；
+    /// `Some(false)` = 拒绝或超时（调用方走现行为停轮）；`None` = asker
+    /// 未装配或 ask 通路异常（同现行为，fail-closed）。
+    async fn ask_doom_loop_approval(
+        &self,
+        sig: &str,
+        count: u32,
+        context: &RequestContext,
+    ) -> Option<bool> {
+        let asker = self.question_asker()?;
+        let tool = sig.split('\x00').next().unwrap_or("tool").to_string();
+        let request = nemesis_types::agent::QuestionRequest {
+            question_id: crate::loop_tools::next_question_id(),
+            question: format!(
+                "循环守卫拦截：{} 已连续 {} 次报相同错误且未响应纠正提示，继续执行吗？",
+                tool, count
+            ),
+            options: vec!["继续执行".to_string(), "停止".to_string()],
+            multi: false,
+            chat_id: context.chat_id.clone(),
+            session_key: context.session_key.clone(),
+            timeout_secs: crate::loop_tools::QUESTION_DEFAULT_TIMEOUT_SECS,
+        };
+        // ask 是同步阻塞（最长 120s）——与 question 工具同形：spawn_blocking
+        // 出 worker 线程，broker 内部按上下文决定 block_in_place/直等。
+        let outcome = tokio::task::spawn_blocking(move || asker.ask(request))
+            .await
+            .ok()
+            .and_then(|r| r.ok());
+        match outcome {
+            Some(nemesis_types::agent::QuestionOutcome::Answered(selected)) => {
+                Some(selected.iter().any(|s| s == "继续执行"))
+            }
+            _ => Some(false),
+        }
     }
 
     /// Y1 (Phase4-a): semantic tool-documentation folding, applied AFTER the
@@ -5576,11 +7488,30 @@ impl AgentLoop {
         }
     }
 
-    /// Execute a single tool call.
+    /// Execute a single tool call at the top-level depth (0).
+    ///
+    /// G2 thin wrapper: external callers (hooks/cc_hooks/loop tests, any
+    /// non-subagent dispatch) mean "top-level agent invoked this" — they
+    /// stay untouched and get depth 0. The production serial dispatch in
+    /// `run_llm_loop` calls [`Self::handle_tool_call_at_depth`] with the
+    /// instance's detached depth instead.
     pub async fn handle_tool_call(
         &self,
         tool_call: &ToolCallInfo,
         context: &RequestContext,
+    ) -> String {
+        self.handle_tool_call_at_depth(tool_call, context, 0).await
+    }
+
+    /// G2: depth-aware variant of [`Self::handle_tool_call`]. `depth` is the
+    /// invoking instance's sub-agent nesting depth (instance.detached_depth());
+    /// it is injected into depth-aware tools (spawn) before execution so the
+    /// `agents.subagent.max_depth` limit can reject over-deep spawns.
+    pub async fn handle_tool_call_at_depth(
+        &self,
+        tool_call: &ToolCallInfo,
+        context: &RequestContext,
+        depth: usize,
     ) -> String {
         info!(
             "[AgentLoop] Executing tool: {} (id={})",
@@ -5604,6 +7535,49 @@ impl AgentLoop {
                 .to_string();
         }
 
+        // F8 (devtool-upgrade 阶段 3): dispatch-side hidden gate — the second
+        // half of the `agents.hidden_tools` double gate. Supply-side filtering
+        // (build_tool_defs) keeps hidden tools out of the defs, but a stale
+        // prompt cache / in-flight request can still carry an old defs snapshot;
+        // re-checking the same list here (same matcher, same fresh read) makes
+        // the hidden state authoritative at execution time too. Runs BEFORE the
+        // security pipeline so a hidden tool costs no judge/scanner work.
+        {
+            let hidden = self.current_hidden_tools();
+            if tool_name_matches_hidden(&hidden, &tool_call.name) {
+                warn!(
+                    "[AgentLoop] Hidden tool {} refused (agents.hidden_tools).",
+                    tool_call.name
+                );
+                return format!(
+                    "Error: Tool '{}' is hidden by configuration (agents.hidden_tools) and cannot be executed. Inform the user; do NOT retry unless they un-hide it.",
+                    tool_call.name
+                );
+            }
+        }
+
+        // F1 (devtool-upgrade 阶段 4): Plan 模式分发闸——供给侧
+        // （build_tool_defs 白名单过滤）之外的第二道闸，与 F8 同一防御模型：
+        // 陈旧 prompt cache / 子代理 full 档（其 defs 也被 loop 级过滤，但
+        // 未知 MCP 写工具不在过滤范围）都从这里兜底。深度无关：子代理
+        // （depth ≥ 1）同样被拦——Plan 语义是「这个 loop 现在不许改文件」，
+        // 委托子代理不能成为旁路。位置在 security 之前：模式级拒绝不必
+        // 白付 judge/scanner 成本（F8 同理由）。唯一写放行 = write_file
+        // 且路径落在 `<workspace>/plans/`（计划产物落盘）。C7：lsp 的
+        // rename op 是跨文件改内容——同受 Plan 拦截（其余 lsp op 只读）。
+        if *self.mode.read() == crate::types::AgentMode::Plan
+            && ((Self::PLAN_MODE_WRITE_TOOLS.contains(&tool_call.name.as_str())
+                && !self.plan_mode_write_allowed(&tool_call.name, &tool_call.arguments))
+                || Self::is_lsp_write_call(&tool_call.name, &tool_call.arguments))
+        {
+            warn!(
+                "[AgentLoop] Plan mode: write-class tool {} refused.",
+                tool_call.name
+            );
+            return "Plan mode: file modifications are denied. Present your plan as text, or ask the user to switch with /build. (Exception: write_file under <workspace>/plans/ is allowed for saving the plan itself.)"
+                .to_string();
+        }
+
         // Pre-execution security check (mirrors Go's PluginableTool.Execute → PluginManager → SecurityPlugin).
         #[cfg(feature = "security")]
         {
@@ -5615,22 +7589,41 @@ impl AgentLoop {
                     args: args_value,
                     user: String::new(),
                     source: context.channel.clone(),
-                    metadata: std::collections::HashMap::new(),
+                    // K4 (b)（devtool-upgrade 阶段 7）：审批来源上下文随行——
+                    // pipeline 层 3 提取后传给审批管理器，IM 通道的审批卡
+                    // 路由回发起对话（web/dashboard 走原路径不受影响）。
+                    metadata: {
+                        let mut m = std::collections::HashMap::new();
+                        m.insert("approval_chat_id".to_string(), context.chat_id.clone());
+                        m.insert("approval_sender_id".to_string(), context.user.clone());
+                        m
+                    },
                 };
-                let (allowed, reason) = security.execute(&invocation);
+                let (allowed, deny) = security.execute(&invocation);
                 if !allowed {
-                    let reason_str =
-                        reason.unwrap_or_else(|| "operation denied by security policy".to_string());
+                    // F5: 结构化 deny 反馈——回灌带 layer/policy/suggestion
+                    // 三要素（summary 是各层原文），并明示模型不要原样重试。
+                    let info = deny.unwrap_or_else(|| nemesis_security::types::DenyInfo {
+                        layer: "unknown",
+                        policy: "security_pipeline".to_string(),
+                        summary: "operation denied by security policy".to_string(),
+                        suggestion: None,
+                    });
                     warn!(
-                        "[AgentLoop] Security blocked tool {}: {}",
-                        tool_call.name, reason_str
+                        "[AgentLoop] Security blocked tool {}: [{}:{}] {}",
+                        tool_call.name, info.layer, info.policy, info.summary
                     );
                     // Use a very explicit prefix so the LLM cannot misinterpret this
                     // as a generic error (e.g. "file not found"). The LLM must
                     // understand that the USER or SECURITY POLICY blocked the action.
+                    let suggestion_line = info
+                        .suggestion
+                        .as_deref()
+                        .map(|s| format!("\n建议：{s}"))
+                        .unwrap_or_default();
                     return format!(
-                        "⛔ SECURITY BLOCKED: {} — The user or security policy denied this operation. Do NOT retry. Inform the user that the operation was rejected.",
-                        reason_str
+                        "⛔ SECURITY BLOCKED [layer:{}|policy:{}] {}\nDo NOT retry the same call unchanged. Inform the user that the operation was rejected.{}",
+                        info.layer, info.policy, info.summary, suggestion_line
                     );
                 }
                 // P5: guardian (LLM safety judge) review for CRITICAL tools. Runs only
@@ -5653,7 +7646,7 @@ impl AgentLoop {
                             tool_call.name, v.rationale
                         );
                         return format!(
-                            "⛔ GUARDIAN DENIED: {} — The safety judge flagged this critical operation as unsafe. Do NOT retry. Inform the user.",
+                            "⛔ GUARDIAN DENIED [layer:guardian|policy:llm_judge] {} — The safety judge flagged this critical operation as unsafe. Do NOT retry. Inform the user.",
                             v.rationale
                         );
                     }
@@ -5667,7 +7660,7 @@ impl AgentLoop {
         // object) and BEFORE context injection / checkpoint / execute.
         // Ordered, first Block wins. Fires on every dispatch attempt,
         // including unknown tool names (a hook may deny what the model
-        // *tried* to call — mirrors CC PreToolUse).
+        // *tried* to call — mirrors the dialect's PreToolUse).
         let hook_call = crate::hooks::HookToolCall {
             name: tool_call.name.clone(),
             arguments: tool_call.arguments.clone(),
@@ -5683,7 +7676,7 @@ impl AgentLoop {
                     tool_call.name, reason
                 );
                 return format!(
-                    "⛔ HOOK BLOCKED: {} — A registered hook denied this operation. Do NOT retry unless the user changes the hook policy. Inform the user if this keeps blocking.",
+                    "⛔ HOOK BLOCKED [layer:hook|policy:tool_hook] {} — A registered hook denied this operation. Do NOT retry unless the user changes the hook policy. Inform the user if this keeps blocking.",
                     reason
                 );
             }
@@ -5691,16 +7684,21 @@ impl AgentLoop {
 
         // Inject channel/chat_id into context-aware tools before execution.
         // Mirrors loop_executor.rs:1634 which calls set_context for AgentLoopExecutor.
+        // G2: also inject the invocation depth for depth-aware tools (spawn) —
+        // the accepted set-then-read race on a shared SpawnTool only marginally
+        // misattributes depth between concurrent dispatches (same class as the
+        // pre-existing set_context race).
         {
             let guard = self.tools.read();
             if let Some(tool) = guard.get(&tool_call.name) {
                 tool.set_context(&context.channel, &context.chat_id);
+                tool.set_invocation_depth(depth);
             }
         }
 
         #[cfg(feature = "forge")]
         let tool_start = std::time::Instant::now();
-        // K1a 三段化（2026-08-29，cordis waterfall 移植）：around 链——scoped
+        // K1a 三段化（2026-08-29）：around 链——scoped
         // hooks 逆序包装真实执行，Err 分支走 post_tool_use_failure 变体
         // （PostToolUseFailure 语义挂点）。作用域过滤：主 agent 只接 None。
         let scoped_hooks: Vec<std::sync::Arc<dyn crate::hooks::ToolHook>> = {
@@ -5711,6 +7709,11 @@ impl AgentLoop {
         let tools_snapshot = std::sync::Arc::new(self.tools.read().clone());
         let checkpoint_arc = std::sync::Arc::new(self.checkpoint_store.read().as_ref().cloned());
         let hooks_arc = std::sync::Arc::new(scoped_hooks.clone());
+        // A6：format-on-save 的 config.json 路径快照（每次 dispatch 新鲜读，
+        // 同 C3 current_diagnostics_loop 模式——运行中可翻转开关）。
+        let format_cfg_path = self.config_path.read().clone();
+        // D3：本 turn 声明式文件变更的收集桶（Arc 捕获进 'static Fn 闭包）。
+        let turn_fc = Arc::clone(&self.turn_file_changes);
         type NextExec = std::sync::Arc<
             dyn Fn(
                     HookToolCall,
@@ -5724,20 +7727,38 @@ impl AgentLoop {
             let tools = tools_snapshot.clone();
             let cp = checkpoint_arc.clone();
             let hooks = hooks_arc.clone();
+            let format_cfg_path = format_cfg_path.clone();
+            let turn_fc = turn_fc.clone();
             std::sync::Arc::new(move |call: HookToolCall| {
                 // Fn 闭包：捕获的 Arc 每次调用克隆一份（不能 move 出 Fn）。
                 let ctx = ctx.clone();
                 let tools = tools.clone();
                 let cp = cp.clone();
                 let hooks = hooks.clone();
+                let format_cfg_path = format_cfg_path.clone();
+                let turn_fc = turn_fc.clone();
                 Box::pin(async move {
                     let tool_opt = tools.get(&call.name).cloned();
                     let tool_was_registered = tool_opt.is_some();
-                    if let Some(ref tool) = tool_opt
-                        && let Some(change) = tool.preview(&call.arguments)
-                        && let Some(cp) = cp.as_ref()
-                    {
-                        cp.snapshot(&change).await;
+                    // A7：preview_all = checkpoint 预检多点版（multiedit
+                    // 一次 dispatch 快照全部待改文件；单文件工具恰好一条，
+                    // 与旧 preview 行为逐字节等价）。
+                    // D3：预检清单同时喂消息级收集桶（session_key 分桶）——
+                    // 收集独立于 checkpoint 是否挂载（消息↔文件变更映射不
+                    // 依赖安全网开关）；快照仍只在挂载时发生。
+                    let previewed = tool_opt
+                        .as_ref()
+                        .map(|tool| tool.preview_all(&call.arguments))
+                        .unwrap_or_default();
+                    for change in previewed {
+                        turn_fc
+                            .lock()
+                            .entry(ctx.session_key.clone())
+                            .or_default()
+                            .push(change.clone());
+                        if let Some(cp) = cp.as_ref() {
+                            cp.snapshot(&change).await;
+                        }
                     }
                     match tool_opt {
                         Some(tool) => match tool.execute(&call.arguments, &ctx).await {
@@ -5747,6 +7768,63 @@ impl AgentLoop {
                                     call.name,
                                     result.len()
                                 );
+                                // A6（devtool-upgrade 阶段 5）format-on-save：
+                                // write_file / edit_file / multiedit（A7 批量
+                                // 版，逐文件去重依次格式化）成功后、PostToolUse
+                                // hooks **之前**跑——用户自定义 hook 看到/
+                                // 拿到的是格式化后的文件（计划明文的正交语
+                                // 义）；外层 C3 诊断带在瀑布之后，诊断同样作
+                                // 用于格式化后文件。失败/超时/开关关/无匹配
+                                // 格式化器全部静默——永不拖垮工具调用。
+                                let format_paths: Vec<String> =
+                                    if !crate::turn_guard::tool_result_indicates_error(&result)
+                                        && let Ok(args_val) =
+                                            serde_json::from_str::<serde_json::Value>(
+                                                &call.arguments,
+                                            )
+                                    {
+                                        match call.name.as_str() {
+                                            "write_file" | "edit_file" => args_val
+                                                .get("path")
+                                                .and_then(|v| v.as_str())
+                                                .map(|p| vec![p.to_string()])
+                                                .unwrap_or_default(),
+                                            "multiedit" => {
+                                                // 去重保序：同文件多条编辑只
+                                                // 格式化一次（重复跑也是 no-op，
+                                                // 省子进程）。
+                                                let mut seen = std::collections::HashSet::new();
+                                                args_val
+                                                    .get("edits")
+                                                    .and_then(|v| v.as_array())
+                                                    .map(|arr| {
+                                                        arr.iter()
+                                                            .filter_map(|e| {
+                                                                e.get("path")
+                                                                    .and_then(|p| p.as_str())
+                                                            })
+                                                            .filter(|p| {
+                                                                seen.insert((*p).to_string())
+                                                            })
+                                                            .map(|p| p.to_string())
+                                                            .collect()
+                                                    })
+                                                    .unwrap_or_default()
+                                            }
+                                            _ => Vec::new(),
+                                        }
+                                    } else {
+                                        Vec::new()
+                                    };
+                                let mut result = result;
+                                for path_str in format_paths {
+                                    result = crate::formatter::format_on_save(
+                                        format_cfg_path.clone(),
+                                        &path_str,
+                                        &result,
+                                    )
+                                    .await;
+                                }
                                 if tool_was_registered {
                                     crate::hooks::run_post_hooks(&hooks, &call, result).await
                                 } else {
@@ -5852,6 +7930,136 @@ impl AgentLoop {
         *self.tier.write() = tier;
     }
 
+    /// F1（devtool-upgrade 阶段 4）：当前工作模式。
+    pub fn mode(&self) -> crate::types::AgentMode {
+        *self.mode.read()
+    }
+
+    /// F1：注入 M1a 事件广播发送端（`SharedResources.agent_event_tx`）。
+    /// 模式切换发布 `ModeChanged` 用；`None` = 发布静默跳过。
+    pub fn set_agent_event_tx(
+        &self,
+        tx: Option<tokio::sync::broadcast::Sender<nemesis_types::agent::AgentEvent>>,
+    ) {
+        *self.agent_event_tx.write() = tx;
+    }
+
+    /// F1：翻转工作模式并广播 `ModeChanged`（session_key/chat_id 供 web
+    /// pump 路由到会话徽标；传空串 = 只进 SSE）。重复设置同一模式仍是
+    /// 幂等无害（徽标确认刷新），事件照发——调用方（/plan /build 臂）已经
+    /// 在语义上表达「我要切到 X」而非「X 变了」。
+    pub fn set_mode_with_event(
+        &self,
+        mode: crate::types::AgentMode,
+        session_key: &str,
+        chat_id: &str,
+    ) {
+        *self.mode.write() = mode;
+        info!("[AgentLoop] Agent mode set: {}", mode.as_str());
+        let event = nemesis_types::agent::AgentEvent::ModeChanged {
+            session_key: session_key.to_string(),
+            chat_id: chat_id.to_string(),
+            mode: mode.as_str().to_string(),
+        };
+        if let Some(tx) = self.agent_event_tx.read().as_ref() {
+            // 无订阅者（CLI / 无人在线）= 观察者通道空转，静默忽略。
+            let _ = tx.send(event);
+        }
+    }
+
+    /// F1：Plan 模式只读供给白名单。命中者才进 tool_defs（MCP 前缀工具与
+    /// spawn 除外——MCP 语义未知不猜，采取「plan 只 deny 已知写」
+    /// 立场；spawn 保留供给，分发闸在子代理深度同样生效=纵深）。
+    /// 曾前瞻列入的 question（F7）/multiedit（A7）均已落码（2026-09-06），
+    /// 本表沿用语义不变。
+    const PLAN_MODE_TOOLS: &'static [&'static str] = &[
+        "read_file",
+        "list_dir",
+        "grep",
+        "git",
+        "web_fetch",
+        "lsp",
+        "mcp_list",
+        "memory_search",
+        "memory_list",
+        "skills_list",
+        "skills_info",
+        "find_skills",
+        "cli_reference",
+        "cron",
+        "sleep",
+        "message",
+        "history_search",
+        "todowrite",
+        "question",
+    ];
+
+    /// F1：分发端写类集合（Plan 模式拦截对象）。**有意偏离计划字面**
+    /// （MOVE_TOOLS 全量并集会把 read_file/grep/list_dir/git 四个只读工具
+    /// 也拦掉——与计划自己的供给白名单矛盾）：取「可变更外部状态」语义集
+    /// = MOVE_TOOLS 去掉四个只读 + multiedit（A7 已落码，2026-09-06）。
+    /// exec/run_script 可落盘必拦；git 的写子命令由安全 8 层管线与 D1 自
+    /// 管，模式层不重复。
+    const PLAN_MODE_WRITE_TOOLS: &'static [&'static str] = &[
+        "exec",
+        "run_script",
+        // C8（2026-09-06）：cargo/npm/go 构建落 target//node_modules/——
+        // 「可变更外部状态」同语义，plan 模式一并拦。
+        "run_checks",
+        "write_file",
+        "edit_file",
+        "append_file",
+        "delete_file",
+        "create_dir",
+        "delete_dir",
+        "multiedit",
+    ];
+
+    /// C7：lsp 工具的 `rename` op 是写类（跨文件改内容）——plan 模式必须
+    /// 拦。lsp 不在 [`Self::PLAN_MODE_WRITE_TOOLS`] 里（其余 op 只读，整表
+    /// 拦截会误伤），故按 args 探测 op 字段特判。解析失败从严当写拦
+    /// （plan 模式拒绝成本不对称：误拒可让用户切 /build，误放行改了文件）。
+    fn is_lsp_write_call(tool_name: &str, arguments: &str) -> bool {
+        if tool_name != "lsp" {
+            return false;
+        }
+        serde_json::from_str::<serde_json::Value>(arguments)
+            .ok()
+            .and_then(|v| v.get("op").and_then(|o| o.as_str()).map(String::from))
+            .map(|op| op == "rename")
+            .unwrap_or(true)
+    }
+
+    /// F1：Plan 模式分发端唯一写放行——`write_file` 且目标路径落在
+    /// `<workspace>/plans/` 前缀内。路径解析与 [`crate::loop_tools::validate_workspace_path`]
+    /// 同构（相对路径 join 工作区根 + 双侧 `canonicalize_for_compare` 防
+    /// 8.3 短名/大小写失配；目标不存在按最长存在祖先解析）。workspace_root
+    /// 未注入（standalone）→ 无放行锚点，一律拦截（诚实从严）。
+    fn plan_mode_write_allowed(&self, tool_name: &str, arguments: &str) -> bool {
+        if tool_name != "write_file" {
+            return false;
+        }
+        let Some(root) = self.workspace_root.read().clone() else {
+            return false;
+        };
+        let Ok(args) = serde_json::from_str::<serde_json::Value>(arguments) else {
+            return false;
+        };
+        let Some(raw_path) = args.get("path").and_then(|v| v.as_str()) else {
+            return false;
+        };
+        let target = std::path::Path::new(raw_path);
+        let candidate = if target.is_absolute() {
+            target.to_path_buf()
+        } else {
+            root.join(target)
+        };
+        let plans_dir = root.join("plans");
+        let resolved = nemesis_path::paths::canonicalize_for_compare(&candidate);
+        let plans_canon = nemesis_path::paths::canonicalize_for_compare(&plans_dir);
+        resolved.starts_with(&plans_canon)
+    }
+
     /// Phase 4a: set the config.json path. After this, the tier is re-resolved
     /// live from config.json on every model switch and whenever the file's mtime
     /// changes (dashboard model add, CLI `model set-tier`). config.json is the
@@ -5861,10 +8069,141 @@ impl AgentLoop {
         *self.config_path.write() = Some(path);
     }
 
+    /// N1 (devtool-upgrade 阶段 1): inject the shared layered pricing store
+    /// (workspace/data). L2 of the three-tier `context_window` resolution —
+    /// when config.json has no explicit `context_window` for the active
+    /// model, `PricingStore::lookup` (custom > downloaded > embedded, with
+    /// bare-suffix matching) supplies `max_input_tokens`. `None` (not
+    /// injected / open failed) skips straight to L3 fallback.
+    pub fn set_pricing_store(&self, store: std::sync::Arc<nemesis_data::PricingStore>) {
+        *self.pricing_store.write() = Some(store);
+    }
+
+    /// C3（devtool-upgrade 阶段 2）：注入共享 LspManager 单例（与 LspTool
+    /// 同一实例——SharedResources.lsp_manager，见 C5）。编辑后诊断回灌
+    /// （修复闭环）消费；`None`（未注入 / standalone）→ 反馈静默跳过。
+    pub fn set_lsp_manager(&self, mgr: Arc<nemesis_lsp::LspManager>) {
+        *self.lsp_manager.write() = Some(mgr);
+    }
+
+    /// C3：读 `agents.defaults.diagnostics_loop`（config.json 每次新鲜读，
+    /// 同 [`Self::current_tool_doc_folding`] 模式——dashboard/CLI 可在网关
+    /// 运行中翻转开关）。缺段 / standalone → 全默认（enabled=false）。
+    pub(crate) fn current_diagnostics_loop(&self) -> nemesis_config::DiagnosticsLoopConfig {
+        let path = match self.config_path.read().clone() {
+            Some(p) => p,
+            None => return Default::default(),
+        };
+        let v = std::fs::read_to_string(&path)
+            .ok()
+            .and_then(|s| serde_json::from_str::<serde_json::Value>(&s).ok());
+        let Some(v) = v else {
+            return Default::default();
+        };
+        v.get("agents")
+            .and_then(|a| a.get("defaults"))
+            .and_then(|d| d.get("diagnostics_loop"))
+            .and_then(|s| {
+                serde_json::from_value::<nemesis_config::DiagnosticsLoopConfig>(s.clone()).ok()
+            })
+            .unwrap_or_default()
+    }
+
+    /// C3：编辑后诊断回灌核心（修复闭环：「落盘 → 触发诊断 → 等 ERROR →
+    /// please fix」）。调用点在工具结果
+    /// 进 spill/gate 管线**之前**——反馈与工具结果同走一条模型可见管线。
+    ///
+    /// 全部失败/未命中路径**静默原样返回**（开关关 / 非 write|edit / 无
+    /// manager / 语言无服务器 / 同步失败 / 无 ERROR）——诊断永不拖垮工具
+    /// 调用。ERROR 级取 ≤`max_errors` 条追加：
+    /// `"\n\n[LSP] {n} error(s) detected in {path}, please fix:"` + 每条
+    /// `"- L{line}:{col} {message} ({source})"`（1-based 显示，LSP 0-based
+    /// 内部转换）。
+    ///
+    /// 文档同步用 [`nemesis_lsp::LspManager::touch_file`]（读盘下发）而非
+    /// `notify_change`：edit_file 的最终内容无法从 args 重建，磁盘是唯一
+    /// 真相源；write_file 读盘等价（execute 返回即写完）。
+    pub(crate) async fn apply_diagnostics_feedback(
+        mgr: Option<&nemesis_lsp::LspManager>,
+        cfg: nemesis_config::DiagnosticsLoopConfig,
+        tool_name: &str,
+        path: &str,
+        result: &str,
+    ) -> String {
+        if !cfg.enabled || !matches!(tool_name, "write_file" | "edit_file") {
+            return result.to_string();
+        }
+        let Some(mgr) = mgr else {
+            return result.to_string();
+        };
+        let p = std::path::Path::new(path);
+        // 未注册语言 / 该语言无已安装服务器 → 原样（探测是纯 PATH 查找，
+        // 不 spawn 进程）。
+        let Some(lang) = nemesis_lsp::registry::lang_for_path(p) else {
+            return result.to_string();
+        };
+        if !nemesis_lsp::registry::server_available(lang) {
+            return result.to_string();
+        }
+        // 服务器同步失败 → 原样（best-effort）。
+        if mgr.touch_file(p).await.is_err() {
+            return result.to_string();
+        }
+        let diags = mgr.wait_for_diagnostics(p, 150, cfg.wait_max_ms).await;
+        let errors: Vec<_> = diags
+            .iter()
+            .filter(|d| d.severity == 1)
+            .take(cfg.max_errors)
+            .collect();
+        if errors.is_empty() {
+            return result.to_string();
+        }
+        let mut out = String::with_capacity(result.len() + 96 * errors.len());
+        out.push_str(result);
+        out.push_str(&format!(
+            "\n\n[LSP] {} error(s) detected in {}, please fix:",
+            errors.len(),
+            path
+        ));
+        for d in errors {
+            out.push_str(&format!(
+                "\n- L{}:{} {} ({})",
+                d.range_start.0 + 1,
+                d.range_start.1 + 1,
+                d.message,
+                d.source.as_deref().unwrap_or("lsp")
+            ));
+        }
+        out
+    }
+
+    /// C3：dispatch 现场包装——读共享 manager + 新鲜 config 后委托核心。
+    pub(crate) async fn diagnostics_feedback(
+        &self,
+        tool_name: &str,
+        path: &str,
+        result: &str,
+    ) -> String {
+        let mgr = self.lsp_manager.read().clone();
+        Self::apply_diagnostics_feedback(
+            mgr.as_deref(),
+            self.current_diagnostics_loop(),
+            tool_name,
+            path,
+            result,
+        )
+        .await
+    }
+
     /// 内置 slash 命令名（与 [`Self::handle_command_with_context`] 的 match 臂
     /// **同步维护**）：自定义命令表命中这些名字时跳过改写——内置优先。
+    /// `compact`/`clear` 是 E6 会话维护命令（gate 内 `parse_maintenance_command`
+    /// 拦截，有副作用，同样不许被自定义命令表遮蔽）；`plan`/`build` 是 F1
+    /// 模式切换（gate 内独立臂，要先拿 chat_id 发布 ModeChanged）。
+    /// K3：清单本体收敛到 `nemesis_types::constants::BUILTIN_SLASH_COMMANDS`
+    /// （dashboard `commands.list` 的 `builtins` 下发同源），这里只做转发。
     const BUILTIN_SLASH_COMMANDS: &'static [&'static str] =
-        &["help", "model", "show", "list", "switch"];
+        nemesis_types::constants::BUILTIN_SLASH_COMMANDS;
 
     /// 自定义 slash 命令表路径（主 agent 专用；集群 agent 不接——命令不该
     /// 跨节点复制，同 hooks 挂账决策）。设置时立即加载一次；mtime 变化在
@@ -5877,19 +8216,19 @@ impl AgentLoop {
         ));
     }
 
-    /// CC hooks 桥注入（PreCompact/PostCompact 触发用；工具/生命周期钩子走
+    /// hooks 方言桥注入（PreCompact/PostCompact 触发用；工具/生命周期钩子走
     /// 各自注册表，与此并存）。
     pub fn set_cc_hooks_bridge(&self, bridge: std::sync::Arc<crate::cc_hooks::CcHookBridge>) {
         *self.cc_bridge.write() = Some(bridge);
     }
 
-    /// 桥的只读访问（Dashboard 删除会话时触发 CC SessionEnd 用）。
+    /// 桥的只读访问（Dashboard 删除会话时触发方言 SessionEnd 用）。
     pub fn cc_hooks_bridge(&self) -> Option<std::sync::Arc<crate::cc_hooks::CcHookBridge>> {
         self.cc_bridge.read().clone()
     }
 
     /// 触发 SessionEnd 钩子（会话 TTL 过期清理/显式删除时由装配点调用）。
-    /// 直接走 CC 桥（唯一实现者；无桥 = no-op）。
+    /// 直接走方言桥（唯一实现者；无桥 = no-op）。
     pub async fn run_session_end_hooks(&self, session_key: &str, reason: &str) {
         // 复用 cc_hooks_bridge()（锁内 clone Arc 出来），读 guard 不得跨 await——
         // 否则 on_session_end 整个回调期间 cc_bridge 写锁全部阻塞。
@@ -5898,47 +8237,111 @@ impl AgentLoop {
         }
     }
 
-    /// 自定义 slash 命令改写（改写型，区别于内置命令的短路型）：
-    /// `/name args` → 命令表模板中的 `$ARGUMENTS` 替换为 `args` 后**原地改写
-    /// msg.content**，随后继续正常会话/LLM 流程。未命中/内置名/非 slash 一律
-    /// 不动。每消息做一次 mtime 检查（一次 stat，可忽略）。
-    pub fn rewrite_custom_command(&self, msg: &mut nemesis_types::channel::InboundMessage) {
+    /// 自定义 slash 命令改写（改写型，区别于内置命令的短路型）。K3 补齐后
+    /// 三段解析链（每段只在上一段未命中时生效）：
+    ///
+    /// 1. **自定义命令**：`/name args` → 命令表模板中的 `$ARGUMENTS` 替换为
+    ///    `args`（模板无占位符且带参数 → 追加为独立段）。
+    /// 2. **`` !`cmd` `` 注入**：对展开后的模板文本 regex 扫 `` !`cmd` `` →
+    ///    同步执行（复用 C8 exec 内核 `run_one_stage`，3s 超时，workspace 为
+    ///    cwd）→ stdout（≤4KB，字符边界截断）替换进模板；失败注记
+    ///    `[command failed: ...]`。相同命令一段模板内只执行一次（结果复用）。
+    ///    信任边界（诚实声明）：这是用户自己配置的模板/参数 = 用户本机终端
+    ///    同级信任，**不**过 9 层安全管线（管线管的是 LLM 工具调用）；且只在
+    ///    命令模板路径生效——普通消息不做注入（不放大攻击面）。
+    /// 3. **技能回落**：`/name` 未命中命令表时查已装 skills（workspace →
+    ///    global → builtin），命中则改写为 `Use the {name} skill to handle:
+    ///    {args}`（无参数则 `Use the {name} skill.`）——技能斜杠化；
+    ///    内置名/自定义命令优先级恒高于技能名。
+    ///
+    /// 未命中/内置名/非 slash 一律不动。每消息做一次 mtime 检查（一次 stat，
+    /// 可忽略）。async 的原因只有 `` !`cmd` `` 执行；调用点 `process_inbound_
+    /// message` 本就是 async，无锁跨 await（命令表读锁在 exec 前释放）。
+    pub async fn rewrite_custom_command(&self, msg: &mut nemesis_types::channel::InboundMessage) {
         let content = msg.content.trim();
         if !content.starts_with('/') {
             return;
         }
         let rest = &content[1..]; // '/' 为 1 字节 ASCII，字节切片安全
+        // 拷贝为 owned：name/args 借用自 msg.content，而技能回落要可变借
+        // msg（E0502）——slash 消息本就低频，两次小分配无所谓。
         let (name, args) = match rest.split_once(char::is_whitespace) {
-            Some((n, a)) => (n, a.trim()),
-            None => (rest, ""),
+            Some((n, a)) => (n.to_string(), a.trim().to_string()),
+            None => (rest.to_string(), String::new()),
         };
-        if name.is_empty() || Self::BUILTIN_SLASH_COMMANDS.contains(&name) {
+        if name.is_empty() || Self::BUILTIN_SLASH_COMMANDS.contains(&name.as_str()) {
             return;
         }
-        let hot = self.commands_hot.read();
-        let Some(hot) = hot.as_ref() else {
-            return;
+        // 命令表读锁 scope 严格限制在查表——技能回落走 fs 扫描，不得持锁
+        // （return 走出本块时 guard 自动释放）。
+        let expanded = {
+            let hot_guard = self.commands_hot.read();
+            let Some(hot) = hot_guard.as_ref() else {
+                return self.rewrite_skill_fallback(&name, &args, msg);
+            };
+            hot.check();
+            let commands = hot.get();
+            let Some(cmd) = commands.commands.iter().find(|c| c.name == name) else {
+                return self.rewrite_skill_fallback(&name, &args, msg);
+            };
+            // $ARGUMENTS 占位替换；模板无占位符且带参数 → 追加为独立段（对
+            // 用户更友好：模板忘写占位符时参数不至于被吞）。
+            if cmd.prompt.contains("$ARGUMENTS") {
+                cmd.prompt.replace("$ARGUMENTS", &args)
+            } else if !args.is_empty() {
+                format!("{}\n\n{}", cmd.prompt, args)
+            } else {
+                cmd.prompt.clone()
+            }
         };
-        hot.check();
-        let commands = hot.get();
-        let Some(cmd) = commands.commands.iter().find(|c| c.name == name) else {
-            return;
-        };
-        // $ARGUMENTS 占位替换；模板无占位符且带参数 → 追加为独立段（对用户
-        // 更友好：模板忘写占位符时参数不至于被吞）。
-        let expanded = if cmd.prompt.contains("$ARGUMENTS") {
-            cmd.prompt.replace("$ARGUMENTS", args)
-        } else if !args.is_empty() {
-            format!("{}\n\n{}", cmd.prompt, args)
-        } else {
-            cmd.prompt.clone()
-        };
+        // K3：`` !`cmd` `` 注入（展开后的模板文本；模板与参数都可能携带）。
+        let expanded = self.expand_shell_injections(expanded).await;
         info!(
             "[AgentLoop] custom command /{} expanded (prompt {} chars)",
             name,
             expanded.len()
         );
         msg.content = expanded;
+    }
+
+    /// K3：技能回落（只在命令表未命中时被 [`Self::rewrite_custom_command`]
+    /// 调用）。命中已装技能 → 改写为技能驱动提示词；否则不动。
+    fn rewrite_skill_fallback(
+        &self,
+        name: &str,
+        args: &str,
+        msg: &mut nemesis_types::channel::InboundMessage,
+    ) {
+        let Some(loader) = self.skills_loader.read().clone() else {
+            return;
+        };
+        let known = loader.list_skills().iter().any(|s| s.name == name);
+        if !known {
+            return;
+        }
+        msg.content = if args.is_empty() {
+            format!("Use the {name} skill.")
+        } else {
+            format!("Use the {name} skill to handle: {args}")
+        };
+        info!("[AgentLoop] /{name} resolved to installed skill");
+    }
+
+    /// K3：对文本中的 `` !`cmd` `` 逐个执行并替换（相同命令只执行一次）。
+    /// 无注入时零开销直返；cwd 取 workspace_root（未设则继承进程 cwd）。
+    async fn expand_shell_injections(&self, text: String) -> String {
+        let cmds = extract_shell_injections(&text);
+        if cmds.is_empty() {
+            return text;
+        }
+        let cwd = self.workspace_root.read().clone();
+        let mut results: std::collections::HashMap<String, String> =
+            std::collections::HashMap::new();
+        for c in &cmds {
+            let replaced = exec_shell_injection(c, cwd.as_deref()).await;
+            results.insert(c.clone(), replaced);
+        }
+        substitute_shell_injections(&text, &|c| results.get(c).cloned().unwrap_or_default())
     }
 
     /// G4 (U4): enable tool-result spill with the given root directory
@@ -5969,6 +8372,154 @@ impl AgentLoop {
     /// per-injection).
     pub fn set_workspace_root(&self, root: std::path::PathBuf) {
         *self.workspace_root.write() = Some(root);
+    }
+
+    /// I1 (devtool-upgrade 阶段 3): start the workspace fs watcher. Call
+    /// AFTER the `Arc<AgentLoop>` is finalized — the watcher handle is
+    /// stored INSIDE the loop, so its callbacks hold a `Weak<AgentLoop>`
+    /// (an Arc would cycle and leak). Requires `set_workspace_root` first;
+    /// startup failure warns once and leaves the watcher disabled (never
+    /// retries, never blocks the loop).
+    pub fn start_fs_watcher(
+        loop_arc: &std::sync::Arc<Self>,
+        cfg: &nemesis_config::FsWatcherConfig,
+    ) -> Result<(), String> {
+        let root = match loop_arc.workspace_root.read().clone() {
+            Some(r) => r,
+            None => {
+                tracing::info!("[AgentLoop] fs watcher skipped: no workspace root set");
+                return Ok(());
+            }
+        };
+        let weak = std::sync::Arc::downgrade(loop_arc);
+        let on_instruction_change: crate::fs_watcher::Callback = {
+            let weak = weak.clone();
+            std::sync::Arc::new(move || {
+                if let Some(l) = weak.upgrade() {
+                    // Round-5 note: digest state is stateless (sections
+                    // re-read from disk every build) so external instruction
+                    // edits already surface next build — this call is the
+                    // kept anchor (same shape as the dispatch path's
+                    // touch-driven H5 call) in case change-gating returns.
+                    l.invalidate_context_digests();
+                }
+            })
+        };
+        let on_external_change: crate::fs_watcher::PathCallback = {
+            let weak = weak.clone();
+            std::sync::Arc::new(move |p| {
+                if let Some(l) = weak.upgrade() {
+                    l.push_external_change(p);
+                }
+            })
+        };
+        match crate::fs_watcher::start(&root, cfg, on_instruction_change, on_external_change) {
+            Ok(Some(handle)) => {
+                tracing::info!(
+                    root = %root.display(),
+                    "[AgentLoop] fs watcher started (external changes surface next turn)"
+                );
+                *loop_arc.fs_watcher.write() = Some(handle);
+                Ok(())
+            }
+            Ok(None) => Ok(()),
+            Err(e) => {
+                tracing::warn!(
+                    "[AgentLoop] fs watcher failed to start (disabled, will not retry): {}",
+                    e
+                );
+                Err(e)
+            }
+        }
+    }
+
+    /// I1: buffer an externally-changed workspace file (workspace-relative).
+    /// Drops self-inflicted writes (the agent's own write_file/edit_file
+    /// within [`crate::fs_watcher::SELF_WRITE_WINDOW`]) and caps the buffer.
+    pub fn push_external_change(&self, rel_path: &str) {
+        let norm = crate::fs_watcher::normalize_workspace_rel(rel_path);
+        {
+            let mut writes = self.recent_self_writes.lock();
+            writes.retain(|_, t| t.elapsed() < crate::fs_watcher::SELF_WRITE_WINDOW);
+            if writes.contains_key(&norm) {
+                tracing::debug!(
+                    "[AgentLoop] fs watcher event for self-written file dropped: {}",
+                    rel_path
+                );
+                return;
+            }
+        }
+        let mut buf = self.external_changes.lock();
+        if buf.len() < crate::fs_watcher::MAX_BUFFERED_CHANGES {
+            buf.push(rel_path.to_string());
+        }
+    }
+
+    /// I1: one-shot drain for the build_messages `<external_changes>` section.
+    pub fn drain_external_changes(&self) -> Vec<String> {
+        std::mem::take(&mut *self.external_changes.lock())
+    }
+
+    /// I1: record an agent-authored write (dispatch path, successful
+    /// write_file/edit_file) so the watcher's own event for the same path is
+    /// dropped inside the self-write window.
+    pub fn note_self_write(&self, path: &str) {
+        let mut writes = self.recent_self_writes.lock();
+        // Prune expired entries opportunistically (map stays tiny).
+        writes.retain(|_, t| t.elapsed() < crate::fs_watcher::SELF_WRITE_WINDOW);
+        writes.insert(
+            crate::fs_watcher::normalize_workspace_rel(path),
+            std::time::Instant::now(),
+        );
+    }
+
+    /// I3 (devtool-upgrade 阶段 3): lazy sub-directory instruction discovery.
+    /// Called on a SUCCESSFUL read_file whose path resolves inside the
+    /// workspace: if the file's directory (≠ workspace root — the root chain
+    /// is always injected) carries AGENTS.md/CLAUDE.md and was never claimed
+    /// this session, queue its contents for the next build's one-shot
+    /// injection (same channel shape as the I1 external_changes section).
+    ///
+    /// Directories without instruction files stay UNCLAIMED so instructions
+    /// added later (agent- or user-authored) are still discovered on a later
+    /// read. Relative paths resolve against the workspace root (read_file
+    /// accepts them); outside-root paths are silently ignored. Loop-level
+    /// state is not needed — the instance owns claims+buffer (per-session
+    /// dedup, drained at build).
+    fn note_read_for_instructions(&self, instance: &AgentInstance, path: &str) {
+        use nemesis_path::paths::canonicalize_for_compare;
+        let root = match self.workspace_root.read().clone() {
+            Some(r) => r,
+            None => return,
+        };
+        let p = std::path::Path::new(path);
+        let abs = if p.is_absolute() {
+            p.to_path_buf()
+        } else {
+            root.join(p)
+        };
+        let Some(parent) = abs.parent() else {
+            return;
+        };
+        let parent_canon = canonicalize_for_compare(parent);
+        let root_canon = canonicalize_for_compare(&root);
+        // Outside the workspace, or the root itself → not a lazy subdir.
+        if !parent_canon.starts_with(&root_canon) || parent_canon == root_canon {
+            return;
+        }
+        if instance.instruction_dir_claimed(&parent_canon) {
+            return;
+        }
+        let files = crate::workspace_instructions::load_dir_instruction_files(parent);
+        if files.is_empty() {
+            return;
+        }
+        instance.claim_instruction_dir(parent_canon);
+        instance.queue_pending_instructions(files);
+        info!(
+            "[AgentLoop] I3 lazy instructions: sub-directory {} queued for next build",
+            parent.display()
+        );
     }
 
     /// Full-review M4: set the context-snapshot message role ("user" |
@@ -6084,21 +8635,33 @@ impl AgentLoop {
         // ↑ i64 (from JSON) → u32; max_output_tokens is a non-negative count
     }
 
-    /// U16 (sixth batch): resolve the active model's per-model
-    /// `context_window` (input token capacity) from config.json. Reads config
-    /// fresh each call (same pattern as `current_max_tokens`). `None` when
-    /// unset/standalone — callers keep their existing default. This closes
-    /// the S1-S7 leftover: the compaction thresholds in `maybe_summarize`
-    /// were computed against a hardcoded 32000 regardless of the model's
-    /// real window (a 200K-window model compacted 6× too early).
+    /// U16 (sixth batch) + N1 (devtool-upgrade 阶段 1)：active 模型的
+    /// context_window（input token capacity）**三级解析链**：
+    /// L1 config.json 显式 `context_window`（用户最大）→ L2 价目表
+    /// `max_input_tokens`（`PricingStore::lookup`，含 bare-suffix 匹配）→
+    /// L3 [`FALLBACK_CONTEXT_WINDOW`]（128k，由调用方
+    /// `instance.context_window()` 兜底）。读 config 每次新鲜（同
+    /// `current_max_tokens` 模式）。This closes the S1-S7 leftover: the
+    /// compaction thresholds in `maybe_summarize` were computed against a
+    /// hardcoded 32000 regardless of the model's real window (a
+    /// 200K-window model compacted 6× too early) — and N1 replaces that
+    /// fallback itself (32k → 128k + catalog lookup).
     pub(crate) fn current_context_window(&self) -> Option<usize> {
+        self.current_context_window_with_source().0
+    }
+
+    /// [`Self::current_context_window`] 带来源标记（N1 可观测）：
+    /// `Some((窗口, "config" | "catalog"))`；L3 未命中 → `(None, "fallback-128k")`
+    /// ——调用方用 `instance.context_window()`（= [`FALLBACK_CONTEXT_WINDOW`]）。
+    pub(crate) fn current_context_window_with_source(&self) -> (Option<usize>, &'static str) {
         let active = self.active_model.read().clone();
-        let path = self.config_path.read().clone()?;
-        std::fs::read_to_string(&path)
-            .ok()
-            .and_then(|s| serde_json::from_str::<serde_json::Value>(&s).ok())
-            .and_then(|v| nemesis_types::capability::resolve_context_window(&v, &active))
-            .map(|w| w as usize)
+        let cfg = self.config_path.read().clone().and_then(|path| {
+            std::fs::read_to_string(&path)
+                .ok()
+                .and_then(|s| serde_json::from_str::<serde_json::Value>(&s).ok())
+        });
+        let pricing = self.pricing_store.read().clone();
+        resolve_context_window_tiered(cfg.as_ref(), &active, pricing.as_deref())
     }
 
     /// T10（多模态 goal）：active 模型的 vision 能力（读 config.json 新鲜
@@ -6324,7 +8887,7 @@ impl AgentLoop {
         // I2 (U8): time/env becomes the FIRST section of the merged context
         // snapshot (was a standalone system-role dyn_msg). Minute granularity:
         // the timestamp truncates to the minute so a burst of calls within
-        // the same minute does not churn the digest (dsh runtime-context
+        // the same minute does not churn the digest (runtime-context
         // snapshot discipline: identical content ⇒ no re-injection).
         let now = chrono::Local::now()
             .format("%Y-%m-%d %H:%M (%A)")
@@ -6379,6 +8942,20 @@ impl AgentLoop {
                     sections.push(rendered);
                 }
             }
+            // I3 (devtool-upgrade 阶段 3): lazily discovered sub-directory
+            // instructions — one-shot section drained from the instance
+            // (same channel shape as the external_changes section below;
+            // empty between discoveries keeps the merged message
+            // byte-stable). Claims live on the instance, so dedup is
+            // session-scoped.
+            let pending_instructions = instance.drain_pending_instructions();
+            if !pending_instructions.is_empty() {
+                sections.push(
+                    crate::workspace_instructions::render_new_instructions_section(
+                        &pending_instructions,
+                    ),
+                );
+            }
             // P3.1 (sixth batch): pre-fetched memory hits as a section. The
             // caller (run_llm_loop) did the async search against the CURRENT
             // user message; here we only render. Empty/None ⇒ no section ⇒
@@ -6394,6 +8971,35 @@ impl AgentLoop {
                 sections.push(format!(
                         "# Memory Context\n{body}\n\n(以上是自动检索到的相关长期记忆，可能与当前对话有关，也可能无关——自行判断取舍。)"
                     ));
+            }
+            // I1 (devtool-upgrade 阶段 3): externally-changed workspace
+            // files since the last build — one-shot section (drained here;
+            // absent when nothing changed, keeping the message byte-stable
+            // between turns). The watcher-side ignore table + self-write
+            // window keep this quiet; ≤10 entries per flush, ≤32 buffered.
+            let external_changes = self.drain_external_changes();
+            if !external_changes.is_empty() {
+                sections.push(crate::fs_watcher::render_external_changes_section(
+                    &external_changes,
+                ));
+            }
+            // I5（devtool-upgrade 阶段 7）：当前轮客户端上报的打开文件路径
+            // —— per-turn ephemeral 状态（process_admitted set / 出轮 clear）。
+            // 只渲染路径不读内容（annotation 语义；agent 真正读文件仍走
+            // read_file 工具与安全 8 层，零新增信任面）。空 = 无 section
+            // （字节稳定）；turn 内多迭代状态不变 → 每次构建字节一致；
+            // 回放走 InjectionRecord 台账记录的 digest 内容（transient
+            // 注入既有机制，零额外回放工作）。
+            let open_files = self.pending_open_files.read().clone();
+            if !open_files.is_empty() {
+                let body = open_files
+                    .iter()
+                    .map(|p| format!("- {}", p))
+                    .collect::<Vec<_>>()
+                    .join("\n");
+                sections.push(format!(
+                    "# Open Files (client-reported)\n{body}\n\n(以上是客户端上报的当前打开文件路径，顺序=上报顺序，仅供参考——读取文件仍受安全策略约束。)"
+                ));
             }
             // X2 (U8 refinement): runtime policy facts as the LAST section.
             // All three inputs are plain state rendered without clocks —
@@ -6416,8 +9022,15 @@ impl AgentLoop {
             let guardian_on = false;
             let approval_on = *self.interactive_approval.read();
             let tier_now = *self.tier.read();
+            // F1（devtool-upgrade 阶段 4）：模式进快照——Plan 时模型当轮就
+            // 能读到「不许改文件」，与供给/分发双闸互补（提醒是软约束）。
+            let mode_now = self.mode();
+            let mode_line = match mode_now {
+                crate::types::AgentMode::Plan => "plan（PLAN mode: do not modify files. Present your plan as text; write_file under plans/ is the only write allowed. User can switch back with /build.）".to_string(),
+                crate::types::AgentMode::Build => "build（正常全量工具）".to_string(),
+            };
             sections.push(format!(
-                "# Runtime Policy\napproval: {}\nguardian: {}\nmodel_tier: {}\n(当前审批/守护/模型档位运行时策略快照；策略变更后下一次构建生效。)",
+                "# Runtime Policy\napproval: {}\nguardian: {}\nmodel_tier: {}\nmode: {}\n(当前审批/守护/模型档位/工作模式运行时策略快照；策略变更后下一次构建生效。)",
                 if approval_on {
                     "interactive（ask 规则触发弹窗审批）"
                 } else {
@@ -6429,6 +9042,7 @@ impl AgentLoop {
                     "off"
                 },
                 tier_now,
+                mode_line,
             ));
             if sections.is_empty() {
                 None
@@ -6525,7 +9139,7 @@ impl AgentLoop {
 
         match parts[0] {
             "/help" => Some(
-                "Commands: /show [model|channel|agents], /list [tools|models], /model <alias>, /help".to_string(),
+                "Commands: /show [model|channel|agents], /list [tools|models], /model <alias>, /plan (计划模式: 停用文件修改), /build (切回构建模式), /compact (压缩会话上下文), /clear (清空会话历史), /help".to_string(),
             ),
             "/model" => {
                 if parts.len() < 2 {
@@ -6733,7 +9347,7 @@ fn tool_safe_boundary(history: &[crate::types::ConversationTurn], mut new_c: usi
 /// `[system, ...original covered messages..., instruction]` — the same leading
 /// messages the main loop sends (byte-equal per message), so the provider's
 /// warm KV prefix from the last routed request is REUSED rather than
-/// invalidated (dsh compaction-basic's "genuine prefix" principle). The old
+/// invalidated ("genuine prefix" principle). The old
 /// form (single bare user message with `role: content` text concatenation)
 /// shared no prefix with real requests and destroyed structure (tool_calls
 /// flattened to text).
@@ -7495,13 +10109,106 @@ fn textwise_similar(a: &str, b: &str) -> f64 {
     inter / union
 }
 
+/// F8 (devtool-upgrade 阶段 3): wildcard-aware membership test for
+/// `agents.hidden_tools`. An entry matches a tool name either exactly or,
+/// when it ends with `*`, as a prefix (`mcp_*` hides every MCP tool). A bare
+/// `*` hides everything. Matching is case-sensitive (tool names are
+/// lowercase by convention). Shared by BOTH gates — the supply side
+/// ([`AgentLoop::build_tool_defs`]) and the dispatch side
+/// ([`AgentLoop::handle_tool_call_at_depth`]) — so the two can never
+/// disagree about what is hidden.
+pub(crate) fn tool_name_matches_hidden(entries: &[String], name: &str) -> bool {
+    entries.iter().any(|entry| {
+        if let Some(prefix) = entry.strip_suffix('*') {
+            name.starts_with(prefix)
+        } else {
+            entry == name
+        }
+    })
+}
+
+/// J3 (devtool-upgrade 阶段 4)：从「配置的 server 名 × 已注册工具键」正推
+/// 已注册前缀。与 [`nemesis_mcp::manager::McpManager::find_new_servers`] 的
+/// 前缀计算同源（`mcp_<sanitize(server)>_`），再看工具表里有没有以它开头
+/// 的键。旧实现从注册键反推切分（数下划线取 [2]）：`underscores[2]` 是
+/// 第 3 个下划线，注释声称 `mcp_<srv>_` 实则多切一段（server 或工具名含
+/// 下划线时切错 → 热重载误判 server 未注册而重复发现）；恰好 2 个下划线
+/// 的键还会越界 panic（guard `len() >= 2` 但索引 [2]）。正推天然无歧义。
+fn registered_server_prefixes(configured_servers: &[String], tool_keys: &[String]) -> Vec<String> {
+    configured_servers
+        .iter()
+        .map(|s| format!("mcp_{}_", nemesis_mcp::adapter::sanitize_name(s)))
+        .filter(|prefix| tool_keys.iter().any(|k| k.starts_with(prefix.as_str())))
+        .collect()
+}
+
 #[cfg(test)]
 mod inbox_tests;
 // 自定义 slash 命令改写（2026-08-29）：rewrite_custom_command 决策表测试。
 #[cfg(test)]
 mod commands_tests;
+// N1 (devtool-upgrade 阶段 1)：三级 context_window 解析链测试。
+#[cfg(test)]
+mod context_window_tests;
 // S9 (quality-hardening goal 冲刺 S9): 独立测试文件挂载（声明式，无内联测试）。
 #[cfg(test)]
 mod s9_tests;
+// G4 (devtool-upgrade 阶段 3)：subagent 后台化 + 完成回灌测试。
+#[cfg(test)]
+mod g4_background_spawn_tests;
+// E6 (devtool-upgrade 阶段 2)：手动会话维护（/compact /clear）测试。
+#[cfg(test)]
+mod e6_maintenance_tests;
+// C3 (devtool-upgrade 阶段 2)：编辑后诊断回灌测试（fake LSP server）。
+#[cfg(test)]
+mod diagnostics_feedback_tests;
+// G0 (devtool-upgrade 阶段 3)：SpawnTool 生产化 + run_detached 测试。
+#[cfg(test)]
+mod spawn_detached_tests;
+// F8 (devtool-upgrade 阶段 3)：hidden_tools 双闸（供给过滤 + dispatch 拦截）测试。
+#[cfg(test)]
+mod f8_hidden_tools_tests;
+// M5 (devtool-upgrade 阶段 3)：会话级 context 占用快照测试。
+#[cfg(test)]
+mod m5_context_status_tests;
+// I3 (devtool-upgrade 阶段 3)：子目录指令懒注入（发现 + 会话去重 + 一次性注入）测试。
+#[cfg(test)]
+mod i3_lazy_instructions_tests;
+// F1 (devtool-upgrade 阶段 4)：plan/build 双模式（供给过滤 + dispatch 闸 +
+// plans/ 写放行 + slash 切换 + ModeChanged 事件）测试。
+#[cfg(test)]
+mod f1_plan_mode_tests;
+// J3 (devtool-upgrade 阶段 4)：MCP 客户端补齐 agent 侧测试（前缀前向推导
+// 回归锁 + 同名冲突改名）。
+#[cfg(test)]
+mod mcp_reload_tests;
+// N2 (devtool-upgrade 阶段 4)：`agents.small_model` 小模型杂务通道测试
+// （摘要路由小模型 / 主模型零调用 / 自动压缩路径不受影响）。
+#[cfg(test)]
+mod n2_small_model_tests;
+// D3 (devtool-upgrade 阶段 5)：消息↔文件变更映射的 agent 侧测试
+// （dispatch 瀑布收集独立于 checkpoint 挂载 / drain 即清 + 去重）。
+#[cfg(test)]
+mod d3_tests;
+// E3 (devtool-upgrade 阶段 5)：消息级回退/重做编排测试
+// （turn 对齐截断 + 文件恢复 + redo 回填 + 陈旧性守卫）。
+#[cfg(test)]
+mod e3_tests;
+// M3 (devtool-upgrade 阶段 5)：会话级 diff 查看器测试（git/JSON 双形态
+// 基线对比 + 未挂载/未知路径诚实报错）。
+#[cfg(test)]
+mod m3_tests;
+// E7 (devtool-upgrade 阶段 5)：会话标题自动生成测试（清洗规则 / 端到端
+// spawn 落盘 / 无小模型与手动改名跳过）。
+#[cfg(test)]
+mod e7_tests;
+// I5 (devtool-upgrade 阶段 7)：打开文件上下文测试（digest section 渲染
+// 有/无两形态字节稳定 + per-turn set/clear 生命周期 + 解析纯函数联测）。
+#[cfg(test)]
+mod i5_open_files_tests;
+// K4 (devtool-upgrade 阶段 7)：IM 编码入口测试（派发语法解析 + 自足续行
+// 快照构造的合法消息序列 + B 端变更摘要渲染封顶/溢出注记）。
+#[cfg(test)]
+mod k4_user_dispatch_tests;
 #[cfg(test)]
 mod tests;

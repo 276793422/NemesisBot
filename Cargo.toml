@@ -136,6 +136,10 @@ tower-http = { version = "0.6", features = ["cors", "trace", "fs", "set-header"]
 # WebSocket
 tokio-tungstenite = "0.26"
 
+# D2 (devtool-upgrade): checkpoint git 影子库——只做本地 repo/index/checkout/diff，
+# 无传输需求（ssh/https 全关 = 不引 openssl），libgit2 源码捆绑编译。
+git2 = { version = "0.20", default-features = false }
+
 # Crypto
 sha2 = "0.10"
 hmac = "0.12"
@@ -156,6 +160,7 @@ socket2 = { version = "0.5", features = ["all"] }
 mockall = "0.13"
 tokio-test = "0.4"
 which = "6"
+url = "2.5"
 
 # Internal crates
 nemesis-types = { path = "crates/nemesis-types" }
@@ -199,6 +204,9 @@ nemesis-eval-proxy = { path = "crates/nemesis-eval-proxy" }
 nemesis-voice = { path = "crates/nemesis-voice" }
 nemesis-ui = { path = "crates/nemesis-ui" }
 nemesis-board = { path = "crates/nemesis-board" }
+
+# L8 PTY 内嵌终端（dashboard 终端 tab；`terminal` feature 门控，IoT 裁剪可关）
+portable-pty = "0.9"
 
 # Build-configurator (tools/nemesis-config) — TUI + manifest parsing
 ratatui = { version = "0.29", default-features = false, features = ["crossterm"] }

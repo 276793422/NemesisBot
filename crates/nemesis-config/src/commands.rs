@@ -1,6 +1,6 @@
 //! 自定义 slash 命令表（`<workspace>/config/config.commands.json`）。
 //!
-//! 命令 = 快捷提示词发送器（类 CC `/命令`）：用户在任意通道输入 `/name args`，
+//! 命令 = 快捷提示词发送器（slash `/命令` 形态）：用户在任意通道输入 `/name args`，
 //! AgentLoop 入口把模板中的 `$ARGUMENTS` 替换为 `args` 后作为用户消息进入正常
 //! LLM 轮次（改写型，区别于内置命令的短路型）。四维度：name / description /
 //! argument_hint / prompt —— schema 与作用域层级无关（单 workspace 起步，

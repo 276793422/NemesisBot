@@ -496,3 +496,66 @@ fn test_channel_user_debug() {
     let dbg = format!("{:?}", user);
     assert!(dbg.contains("u1"));
 }
+
+// ---------------------------------------------------------------------------
+// I5（devtool-upgrade 阶段 7）：打开文件上下文清洗/解析
+// ---------------------------------------------------------------------------
+
+#[test]
+fn test_sanitize_open_files_trims_and_dedupes() {
+    let cleaned = sanitize_open_files(vec![
+        "  /ws/src/main.rs  ".to_string(),
+        "/ws/src/main.rs".to_string(), // 重复（trim 后）
+        String::new(),                 // 空
+        "   ".to_string(),             // 纯空白
+        "/ws/lib.rs".to_string(),
+    ]);
+    assert_eq!(cleaned, vec!["/ws/src/main.rs", "/ws/lib.rs"]);
+}
+
+#[test]
+fn test_sanitize_open_files_count_cap_keeps_first() {
+    let input: Vec<String> = (0..(MAX_OPEN_FILES + 10))
+        .map(|i| format!("/ws/f{}.rs", i))
+        .collect();
+    let cleaned = sanitize_open_files(input);
+    assert_eq!(cleaned.len(), MAX_OPEN_FILES);
+    assert_eq!(cleaned[0], "/ws/f0.rs");
+    assert_eq!(
+        cleaned[MAX_OPEN_FILES - 1],
+        format!("/ws/f{}.rs", MAX_OPEN_FILES - 1)
+    );
+}
+
+#[test]
+fn test_sanitize_open_files_overlong_path_dropped_not_truncated() {
+    let long = "/ws/".to_string() + &"a".repeat(MAX_OPEN_FILE_PATH_LEN);
+    let ok = "/ws/ok.rs".to_string();
+    let cleaned = sanitize_open_files(vec![long, ok.clone()]);
+    assert_eq!(cleaned, vec![ok]);
+}
+
+#[test]
+fn test_open_files_from_metadata_valid_json_array() {
+    let mut md = std::collections::HashMap::new();
+    md.insert(
+        "open_files".to_string(),
+        r#"["/ws/a.rs"," /ws/b.rs ","/ws/a.rs"]"#.to_string(),
+    );
+    assert_eq!(open_files_from_metadata(&md), vec!["/ws/a.rs", "/ws/b.rs"]);
+}
+
+#[test]
+fn test_open_files_from_metadata_missing_or_garbage_is_empty() {
+    // 缺失
+    let md = std::collections::HashMap::new();
+    assert!(open_files_from_metadata(&md).is_empty());
+    // 非法 JSON
+    let mut md = std::collections::HashMap::new();
+    md.insert("open_files".to_string(), "not json".to_string());
+    assert!(open_files_from_metadata(&md).is_empty());
+    // 元素非字符串
+    let mut md = std::collections::HashMap::new();
+    md.insert("open_files".to_string(), "[1,2]".to_string());
+    assert!(open_files_from_metadata(&md).is_empty());
+}

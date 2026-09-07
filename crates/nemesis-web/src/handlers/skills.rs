@@ -26,6 +26,29 @@ impl ModuleHandler for SkillsHandler {
         "skills"
     }
 
+    fn commands(&self) -> &'static [&'static str] {
+        &[
+            "installed",
+            "detail",
+            "open_dir",
+            "uninstall",
+            "search",
+            "install",
+            "config.get",
+            "config.save",
+            "config.update",
+            "source.list",
+            "source.add",
+            "source.add.manual",
+            "source.remove",
+            "source.toggle",
+            "shop_detail",
+            "shop_code",
+            "browse",
+            "learn",
+        ]
+    }
+
     async fn handle_cmd(
         &self,
         cmd: &str,

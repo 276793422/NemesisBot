@@ -35,7 +35,7 @@
 //!
 //! See `docs/PLAN/2026-07-08_executor-separation.md` (Layer 1),
 //! `docs/PLAN/2026-07-09_sandboxie-integration.md` (Layer 2), and
-//! `docs/PLAN/2026-08-23_dsh-remaining-goal.md` W2 (U11).
+//! the 2026-08-23 remaining-goal plan doc (W2 / U11, local archive).
 
 use std::collections::HashMap;
 
@@ -161,6 +161,15 @@ async fn run_loop(workspace: &str) -> Result<()> {
     // gateway never invokes (it only sends MOVE tool names over the wire).
     let cfg = SharedToolConfig {
         workspace: Some(workspace.to_string()),
+        // A5（2026-09-04）：子进程侧同样设界——executor 工作区即边界根
+        // （restrict 恒 true：能被剥离执行的操作本就该只碰工作区），与
+        // gateway 侧纵深防御一致（8 层管线已在 dispatch 前跑过）。
+        workspace_boundary: Some(std::sync::Arc::new(
+            nemesis_agent::loop_tools::WorkspaceBoundary {
+                root: std::path::PathBuf::from(workspace),
+                restrict: true,
+            },
+        )),
         ..Default::default()
     };
     let tools: HashMap<String, Box<dyn Tool>> = register_shared_tools(&cfg);

@@ -19,9 +19,35 @@ use crate::integrity::{AuditChain, AuditChainConfig};
 use crate::scanner::{ScanChain, ScanChainConfig, SharedScanChain, StubScanner};
 use crate::ssrf::Guard as SsrfGuard;
 use crate::types::*;
+
 use parking_lot::RwLock;
 use std::fs;
 use std::path::{Path, PathBuf};
+
+/// F5: per-layer fixed remediation hints fed to the model alongside the
+/// deny summary. Keys match [`DenyInfo::layer`].
+fn layer_suggestion(layer: &str) -> Option<&'static str> {
+    match layer {
+        "injection" => Some("重新表述请求，避免指令样文本"),
+        "command" => Some("拆分命令或改用更安全的等价操作"),
+        "abac" => Some("等待批准或请管理员调整策略"),
+        "credential" => Some("从参数移除密钥，改用环境变量/凭据引用"),
+        "dlp" => Some("脱敏后重试"),
+        "ssrf" => Some("使用公网可达的 URL"),
+        "virus" => Some("更换文件来源"),
+        _ => None,
+    }
+}
+
+/// F5: build a `DenyInfo` with the layer's fixed suggestion attached.
+fn deny_info(layer: &'static str, policy: &str, summary: impl Into<String>) -> DenyInfo {
+    DenyInfo {
+        layer,
+        policy: policy.to_string(),
+        summary: summary.into(),
+        suggestion: layer_suggestion(layer).map(|s| s.to_string()),
+    }
+}
 use std::sync::Arc;
 
 /// Security plugin configuration.
@@ -517,8 +543,9 @@ impl SecurityPlugin {
     }
 
     /// Execute the 8-layer security pipeline.
-    /// Returns (allowed, error_message).
-    pub fn execute(&self, invocation: &ToolInvocation) -> (bool, Option<String>) {
+    /// Returns (allowed, deny info). `DenyInfo` carries layer / policy /
+    /// summary (original free text) / per-layer suggestion (F5).
+    pub fn execute(&self, invocation: &ToolInvocation) -> (bool, Option<DenyInfo>) {
         if !*self.enabled.read() {
             return (true, None);
         }
@@ -547,9 +574,13 @@ impl SecurityPlugin {
                 );
                 return (
                     false,
-                    Some(format!(
-                        "operation blocked: potential prompt injection detected (score: {:.2}, level: {})",
-                        result.score, result.level
+                    Some(deny_info(
+                        "injection",
+                        "injection_detector",
+                        format!(
+                            "operation blocked: potential prompt injection detected (score: {:.2}, level: {})",
+                            result.score, result.level
+                        ),
                     )),
                 );
             }
@@ -576,7 +607,11 @@ impl SecurityPlugin {
             );
             return (
                 false,
-                Some(format!("operation blocked by command guard: {}", e)),
+                Some(deny_info(
+                    "command",
+                    "command_guard",
+                    format!("operation blocked by command guard: {}", e),
+                )),
             );
         }
 
@@ -593,7 +628,25 @@ impl SecurityPlugin {
             approved_at: None,
             denied_reason: None,
         };
-        let (allowed, err, _) = self.auditor.request_permission(&req);
+        // K4 (b): 从 invocation metadata 提取审批来源上下文（loop 构造
+        // invocation 时填入）——RequireApproval 时审批卡按它路由回发起
+        // 对话（IM 通道）；缺键 = 空 ctx，管理器按现状处理。
+        let approval_ctx = crate::auditor::ApprovalContext {
+            channel: invocation.source.clone(),
+            chat_id: invocation
+                .metadata
+                .get("approval_chat_id")
+                .cloned()
+                .unwrap_or_default(),
+            sender_id: invocation
+                .metadata
+                .get("approval_sender_id")
+                .cloned()
+                .unwrap_or_default(),
+        };
+        let (allowed, err, _) = self
+            .auditor
+            .request_permission_with_ctx(&req, Some(&approval_ctx));
         if !allowed {
             self.log_audit_event(
                 "denied",
@@ -605,7 +658,12 @@ impl SecurityPlugin {
                 err.as_deref().unwrap_or("denied by policy"),
                 "abac",
             );
-            return (false, err);
+            // auditor 的 err 是自由文本策略理由：summary/policy 都携带原文，
+            // 缺失时回落固定文案（!allowed 但 err=None 的防御臂）。
+            let abac_reason = err
+                .clone()
+                .unwrap_or_else(|| "denied by policy".to_string());
+            return (false, Some(deny_info("abac", "abac", abac_reason)));
         }
 
         // Layer 4: Credential Scanner
@@ -630,9 +688,13 @@ impl SecurityPlugin {
                         );
                         return (
                             false,
-                            Some(format!(
-                                "operation blocked: potential credential leak detected ({})",
-                                result.summary
+                            Some(deny_info(
+                                "credential",
+                                "credential_scanner",
+                                format!(
+                                    "operation blocked: potential credential leak detected ({})",
+                                    result.summary
+                                ),
                             )),
                         );
                     }
@@ -680,9 +742,13 @@ impl SecurityPlugin {
                     );
                     return (
                         false,
-                        Some(format!(
-                            "operation blocked by DLP: sensitive data detected ({})",
-                            result.summary
+                        Some(deny_info(
+                            "dlp",
+                            "dlp_engine",
+                            format!(
+                                "operation blocked by DLP: sensitive data detected ({})",
+                                result.summary
+                            ),
                         )),
                     );
                 }
@@ -718,7 +784,11 @@ impl SecurityPlugin {
                 );
                 return (
                     false,
-                    Some(format!("operation blocked by SSRF guard: {}", e)),
+                    Some(deny_info(
+                        "ssrf",
+                        "ssrf_guard",
+                        format!("operation blocked by SSRF guard: {}", e),
+                    )),
                 );
             }
         }
@@ -736,7 +806,7 @@ impl SecurityPlugin {
             let user = invocation.user.clone();
             let source = invocation.source.clone();
 
-            let scan_result: Option<(bool, Option<String>)> = tokio::task::block_in_place(|| {
+            let scan_result: Option<(bool, Option<DenyInfo>)> = tokio::task::block_in_place(|| {
                 let rt = tokio::runtime::Handle::current();
                 let chain = rt.block_on(scan_chain.read());
                 if !chain.is_enabled() || chain.engine_count() == 0 {
@@ -758,9 +828,13 @@ impl SecurityPlugin {
                         if result.blocked {
                             return Some((
                                 false,
-                                Some(format!(
-                                    "operation blocked by virus scanner: threat detected in {} (engine: {})",
-                                    file_path, result.engine
+                                Some(deny_info(
+                                    "virus",
+                                    "virus_scanner",
+                                    format!(
+                                        "operation blocked by virus scanner: threat detected in {} (engine: {})",
+                                        file_path, result.engine
+                                    ),
                                 )),
                             ));
                         }
@@ -776,9 +850,13 @@ impl SecurityPlugin {
                         if result.blocked {
                             return Some((
                                 false,
-                                Some(format!(
-                                    "operation blocked by virus scanner: threat detected in {} (engine: {})",
-                                    content_key, result.engine
+                                Some(deny_info(
+                                    "virus",
+                                    "virus_scanner",
+                                    format!(
+                                        "operation blocked by virus scanner: threat detected in {} (engine: {})",
+                                        content_key, result.engine
+                                    ),
                                 )),
                             ));
                         }
@@ -793,7 +871,7 @@ impl SecurityPlugin {
             {
                 // Log the denial
                 let target = extract_target(&tool_name, &args);
-                if let Some(reason_str) = &reason {
+                if let Some(reason_info) = &reason {
                     self.log_audit_event(
                         "denied",
                         &op_type.to_string(),
@@ -801,7 +879,7 @@ impl SecurityPlugin {
                         &source,
                         &target,
                         "CRITICAL",
-                        reason_str,
+                        &reason_info.summary,
                         "virus_scanner",
                     );
                 }

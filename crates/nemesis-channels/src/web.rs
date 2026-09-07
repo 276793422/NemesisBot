@@ -28,12 +28,16 @@ pub trait WebServerOps: Send + Sync {
     /// channel's per-message "供应商·模型名" badge; `None` for non-assistant /
     /// badge-less deliveries. Implementations that don't care (test mocks)
     /// accept it via `_: Option<&str>`.
+    ///
+    /// `session_key`（L2，optional）为 agent 会话键——chat_event_log 断线补拉
+    /// 环形缓冲的记录键；`None` 回退连接级 session_id。
     fn send_to_session(
         &self,
         session_id: &str,
         role: &str,
         content: &str,
         model: Option<&str>,
+        session_key: Option<&str>,
     ) -> std::result::Result<(), String>;
 
     /// Send history content to a specific session.
@@ -317,6 +321,7 @@ impl Channel for WebChannel {
             "assistant",
             &msg.content,
             msg.meta.model.as_deref(),
+            msg.meta.session_key.as_deref(),
         ) {
             error!(
                 error = %e,

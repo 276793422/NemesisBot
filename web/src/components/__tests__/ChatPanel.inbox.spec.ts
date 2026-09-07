@@ -18,6 +18,9 @@ vi.mock('../../composables/useWebSocket', async () => {
     send: vi.fn(),
     sendHistoryRequest: vi.fn(),
     onMessage: vi.fn(),
+    // H2 把 TodoPanel 挂进 ChatPanel（addMessageHandler 的消费方）——mock
+    // 缺该导出会让所有用例 setup 即炸（2026-09-05 补）。
+    addMessageHandler: vi.fn(),
     removeMessageHandler: vi.fn(),
     wsStatus: ref('connected'),
   }

@@ -282,6 +282,46 @@ impl LifecycleService for AgentLoopServiceAdapter {
         // instead of being published raw by an inline recursion.
         agent_loop.set_reinject_tx(agent_inbound_tx.clone());
 
+        // G4 (devtool-upgrade 阶段 3)：重启丢失的后台 subagent 任务 —— 注入
+        // 诚实丢失回执。后台任务是进程内 tokio 任务，gateway 重启即终止、
+        // 无对端可 poll（cluster first_start 对空 peer_id 快照本就跳过）。
+        // 快照**保留**：回灌走正常续行路径（gate → dispatch_continuation →
+        // handle_cluster_continuation），以 error 结果续行 LLM 让卡住的会话
+        // 解锁（LLM 自行向用户说明/重派），完成后 resume 自清快照。消息在
+        // loop 起步前 try_send 进有界通道（空载必成功），保序为首批消息。
+        for task_id in agent_loop.list_stale_bg_spawn_task_ids() {
+            let mut metadata = std::collections::HashMap::new();
+            metadata.insert("status".to_string(), "error".to_string());
+            metadata.insert(
+                "error".to_string(),
+                "gateway restarted while the background sub-agent task was running; its result is lost"
+                    .to_string(),
+            );
+            metadata.insert("source".to_string(), "background_subagent".to_string());
+            let msg = nemesis_types::channel::InboundMessage {
+                channel: "system".to_string(),
+                sender_id: format!(
+                    "{}{}",
+                    nemesis_types::constants::SUBAGENT_CONTINUATION_PREFIX,
+                    task_id
+                ),
+                chat_id: String::new(),
+                content: "[后台子代理任务丢失] 网关在后台任务运行期间重启，任务结果不可用。"
+                    .to_string(),
+                media: Vec::new(),
+                session_key: String::new(),
+                correlation_id: String::new(),
+                metadata,
+                voice_playback: None,
+            };
+            if let Err(e) = agent_inbound_tx.try_send(msg) {
+                tracing::warn!(
+                    "[AgentAdapter] Failed to inject background-subagent loss note: {}",
+                    e
+                );
+            }
+        }
+
         // Bridge: bus inbound broadcast → agent inbound mpsc
         let bus_inbound = self.bus.subscribe_inbound();
         let rt = self.rt.clone();
@@ -427,11 +467,13 @@ impl WebServerOps for WebServerOpsAdapter {
         role: &str,
         content: &str,
         model: Option<&str>,
+        session_key: Option<&str>,
     ) -> std::result::Result<(), String> {
         let sm = self.session_manager.clone();
         let sid = session_id.to_string();
         let content = content.to_string();
         let model = model.map(|s| s.to_string());
+        let session_key = session_key.map(|s| s.to_string());
         tokio::task::block_in_place(|| {
             self.rt.block_on(nemesis_web::server::send_to_session(
                 &sm,
@@ -439,6 +481,7 @@ impl WebServerOps for WebServerOpsAdapter {
                 role,
                 &content,
                 model.as_deref(),
+                session_key.as_deref(),
             ))
         })
     }

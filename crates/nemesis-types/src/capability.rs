@@ -557,6 +557,9 @@ pub fn tier_allowed_tools(tier: ModelTier) -> &'static [&'static str] {
             "read_file",
             "write_file",
             "edit_file",
+            // A7（2026-09-06）：批量编辑。Mini 不给——edits 数组 schema 对
+            // 小模型是参数陷阱（数组内嵌对象），单文件场景 edit_file 已覆盖。
+            "multiedit",
             "append_file",
             "delete_file",
             "list_dir",
@@ -579,6 +582,21 @@ pub fn tier_allowed_tools(tier: ModelTier) -> &'static [&'static str] {
             "claude_code",
             "codex_delegate",
             "lsp",
+            // H1（2026-09-05）：todo 清单工具。Mini 不给——小模型把清单
+            // 更新和任务执行混在一轮里容易烧轮次。
+            "todowrite",
+            // B4（2026-09-05）：后台进程三件套。Mini 不给——job_id 跨调用
+            // 记账 + offset 分页读输出对 9-35B 模型是纯轮次消耗，exec 的
+            // 600s cap 已覆盖小模型的绝大多数场景。
+            "background_start",
+            "background_output",
+            "background_kill",
+            // C8（2026-09-06）：构建/测试运行器。Mini 不给——长构建 + 聚焦
+            // 回灌的检索（read_file spill）是小模型轮次陷阱；exec 已覆盖。
+            "run_checks",
+            // F7（2026-09-06）：结构化提问。Mini 不给——向用户发选项卡并
+            // 阻塞等答是高信任交互，小模型容易在琐碎选择上滥用。
+            "question",
         ],
         ModelTier::Big | ModelTier::Auto => &[],
     }

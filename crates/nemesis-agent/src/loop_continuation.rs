@@ -456,6 +456,12 @@ impl ContinuationStore {
 // ContinuationManager -- in-memory + disk dual-write
 // ---------------------------------------------------------------------------
 
+/// G4 (devtool-upgrade 阶段 3)：后台 subagent 任务 ID 统一前缀。
+/// 生成端 = agent_factory 注入的 spawn 闭包（`bg_{millis}_{counter}`），
+/// 恢复端 = [`ContinuationManager::list_bg_spawn_pending_sync`]（按前缀筛
+/// pending 快照）。单一真相源，防两端漂移。
+pub const BG_SPAWN_TASK_PREFIX: &str = "bg_";
+
 /// Manages continuation snapshots with the save-barrier pattern.
 ///
 /// This is the main entry point for the Phase 2 continuation system.
@@ -846,6 +852,35 @@ impl ContinuationManager {
             g.insert(task_id, data);
         }
     }
+
+    /// G4 (devtool-upgrade 阶段 3)：同步列出后台 subagent 的 pending 快照
+    /// task_id（[`BG_SPAWN_TASK_PREFIX`] 前缀）。**只读不删** —— 调用方
+    /// （gateway 适配器启动期）把这些 id 以 `subagent_continuation:{id}` 的
+    /// 诚实丢失回执注入 bus，续行路径（handle_cluster_continuation）加载
+    /// 快照、以 error 结果续行 LLM 让卡住的会话解锁，完成后自行
+    /// remove_continuation 清理。
+    ///
+    /// 同步入口（LifecycleService::start 是 sync fn）：内存 map 走
+    /// `try_lock()`（同 `has_continuation_sync` 先例 —— 启动期无争用；
+    /// 偶发争用回退磁盘清单，磁盘是真相源）。
+    pub fn list_bg_spawn_pending_sync(&self) -> Vec<String> {
+        if let Ok(g) = self.continuations.try_lock() {
+            return g
+                .keys()
+                .filter(|k| k.starts_with(BG_SPAWN_TASK_PREFIX))
+                .cloned()
+                .collect();
+        }
+        if let Some(ref store) = self.disk_store {
+            store
+                .list_pending()
+                .into_iter()
+                .filter(|k| k.starts_with(BG_SPAWN_TASK_PREFIX))
+                .collect()
+        } else {
+            Vec::new()
+        }
+    }
 }
 
 impl Default for ContinuationManager {
@@ -891,6 +926,38 @@ pub(crate) fn persist_final_reply(
         final_content,
         Some(model),
     );
+}
+
+/// 把真实任务结果合入快照消息（resume 前的最后一步装配）。
+///
+/// 快照里同 `tool_call_id` 的 tool 消息**替换**其内容（见
+/// `handle_cluster_continuation` 步骤 4 的注释：repair 合成的
+/// `[TOOL_OUTCOME_UNKNOWN]` 占位必须被替换而非追加，否则同 id 双 tool
+/// 消息被严格 provider 400 拒绝）；快照里没有同 id tool 消息（老快照/
+/// 其他存档形态）则退回末尾追加，与历史行为一致。同 id 消息已存在时
+/// 替换是幂等的（重复回灌 → 内容覆盖为最新结果）。
+pub(crate) fn merge_real_tool_result(
+    mut messages: Vec<LlmMessage>,
+    tool_call_id: &str,
+    content: String,
+) -> Vec<LlmMessage> {
+    let real = LlmMessage {
+        role: "tool".to_string(),
+        content,
+        tool_calls: None,
+        tool_call_id: Some(tool_call_id.to_string()),
+        reasoning_content: None,
+        images: Vec::new(),
+    };
+    if let Some(slot) = messages
+        .iter_mut()
+        .find(|m| m.role == "tool" && m.tool_call_id.as_deref() == Some(tool_call_id))
+    {
+        *slot = real;
+    } else {
+        messages.push(real);
+    }
+    messages
 }
 
 /// Handle a cluster continuation callback.
@@ -970,15 +1037,20 @@ pub async fn handle_cluster_continuation<T: ToolLookup>(
     manager.remove_continuation(task_id).await;
 
     // 4. Build messages: snapshot + real tool result.
-    let mut messages = cont_data.messages.clone();
-    messages.push(LlmMessage {
-        role: "tool".to_string(),
-        content: tool_result_content,
-        tool_calls: None,
-        tool_call_id: Some(cont_data.tool_call_id.clone()),
-        reasoning_content: None,
-        images: Vec::new(),
-    });
+    //
+    // 快照侧 build_messages 的 repair_tool_message_pairs 会给**未应答**的
+    // tool_call 合成 `[TOOL_OUTCOME_UNKNOWN]` 占位 tool 消息（marker 块
+    // `__ASYNC__` / `__BG_SPAWN__` 都在 add_tool_result 之前存快照——那时
+    // 本 tool_call 在历史里还没有结果）。若这里再 push 真实结果，请求里就
+    // 出现同 tool_call_id 的**两条** tool 消息，严格 provider（DeepSeek 等
+    // OpenAI 兼容实现）直接 400 拒绝（门 3 G4 实机抓到的 wire 证据）。
+    // 正解是**替换**占位：集群 __ASYNC__ 与 G4 后台两条存档路径同修，
+    // 已落盘的旧快照（含占位）同样受益。
+    let mut messages = merge_real_tool_result(
+        cont_data.messages.clone(),
+        &cont_data.tool_call_id,
+        tool_result_content,
+    );
 
     // F-F（2026-09-04 四轮盲审）：vision=no 模型接管续行时，恢复路径
     // （内存快照的已水合字节 / 磁盘重水合）绕过了 build_messages 的 T10
@@ -1113,7 +1185,12 @@ pub async fn handle_cluster_continuation<T: ToolLookup>(
                     chat_id: cont_data.chat_id.clone(),
                     content: tool_result.for_user.clone(),
                     message_type: String::new(),
-                    meta: Default::default(),
+                    meta: nemesis_types::channel::OutboundMeta {
+                        model: None,
+                        // L2：会话键随行（快照带 session_key；旧快照可能为空）
+                        session_key: (!cont_data.session_key.is_empty())
+                            .then(|| cont_data.session_key.clone()),
+                    },
                 };
                 if let Err(e) = outbound_tx.send(outbound).await {
                     warn!(
@@ -1183,6 +1260,9 @@ pub async fn handle_cluster_continuation<T: ToolLookup>(
             message_type: String::new(),
             meta: nemesis_types::channel::OutboundMeta {
                 model: Some(model.to_string()),
+                // L2：会话键随行——跨进程续行的最终回复同样要能被 chat.sync 补拉。
+                session_key: (!cont_data.session_key.is_empty())
+                    .then(|| cont_data.session_key.clone()),
             },
         };
         if let Err(e) = outbound_tx.send(outbound).await {

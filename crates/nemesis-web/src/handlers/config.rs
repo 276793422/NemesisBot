@@ -26,6 +26,18 @@ impl ModuleHandler for ConfigHandler {
         "config"
     }
 
+    fn commands(&self) -> &'static [&'static str] {
+        &[
+            "get",
+            "save",
+            "set_field",
+            "cors.list",
+            "cors.add",
+            "cors.remove",
+            "cors.toggle",
+        ]
+    }
+
     async fn handle_cmd(
         &self,
         cmd: &str,

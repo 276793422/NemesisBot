@@ -206,6 +206,26 @@ impl ModuleHandler for SandboxHandler {
         "sandbox"
     }
 
+    fn commands(&self) -> &'static [&'static str] {
+        &[
+            "status",
+            "overview",
+            "check",
+            "pending",
+            "commit",
+            "delete",
+            "install_7z",
+            "install_sandboxie",
+            "start",
+            "stop",
+            "open_box",
+            "open_explorer",
+            "set_network",
+            "set_config",
+            "self_test",
+        ]
+    }
+
     async fn handle_cmd(
         &self,
         cmd: &str,

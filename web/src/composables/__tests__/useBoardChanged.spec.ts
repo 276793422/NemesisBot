@@ -53,7 +53,7 @@ describe('useBoardChanged', () => {
     w.unmount()
   })
 
-  it('防抖窗口内连发多次 → 只在尾沿后回调一次（cc-switch 同款语义）', () => {
+  it('防抖窗口内连发多次 → 只在尾沿后回调一次', () => {
     const handler = vi.fn()
     const w = harness(handler)
 

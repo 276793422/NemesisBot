@@ -40,10 +40,17 @@ pub enum ClientError {
 
     #[error("Invalid configuration: {0}")]
     InvalidConfig(String),
+
+    #[error("MCP list pagination aborted: {0}")]
+    PaginationAborted(String),
 }
 
 /// Result alias for client operations.
 pub type ClientResult<T> = Result<T, ClientError>;
+
+/// J3 (devtool-upgrade 阶段 4)：单次 list 允许的最大翻页数——防御失控
+/// 服务器（cursor 永不终止）。正常分页远用不满 32 页。
+const MAX_LIST_PAGES: usize = 32;
 
 // ---------------------------------------------------------------------------
 // Client trait
@@ -282,6 +289,57 @@ impl McpClient {
     pub fn parse_response(raw: &str) -> ClientResult<JSONRPCResponse> {
         Ok(serde_json::from_str(raw)?)
     }
+
+    /// J3 (devtool-upgrade 阶段 4)：分页列表通用内核。
+    ///
+    /// 逐页发送 `{method, {"cursor": cur}}`，拼贴 `items_key` 字段直到响应
+    /// 缺 `nextCursor`。旧实现只发一页（params=None）且只读首页——实现
+    /// Cursor 分页的服务器（MCP 标准形态）工具表会静默缺页。
+    ///
+    /// 防失控双保险：已见 cursor 集合去重（同一 cursor 第二次出现=环）+
+    /// 页数上限 [`MAX_LIST_PAGES`]。触发即整体报错（`PaginationAborted`）：
+    /// 返回部分清单会让上层把「缺工具」误当「服务器就这些工具」，比失败
+    /// 更难排查。
+    async fn list_page<T: serde::de::DeserializeOwned>(
+        &mut self,
+        method: &str,
+        items_key: &str,
+    ) -> ClientResult<Vec<T>> {
+        let mut items: Vec<T> = Vec::new();
+        let mut cursor: Option<String> = None;
+        let mut visited: std::collections::HashSet<String> = std::collections::HashSet::new();
+        loop {
+            let params = cursor.as_ref().map(|c| serde_json::json!({ "cursor": c }));
+            let resp = self.send_request(method, params).await?;
+            if let Some(err) = &resp.error {
+                return Err(ClientError::Server(err.clone()));
+            }
+            let result = resp.result.unwrap_or(serde_json::Value::Null);
+            if let Some(batch) = result.get(items_key) {
+                items.append(&mut serde_json::from_value(batch.clone()).unwrap_or_default());
+            }
+            let next = result
+                .get("nextCursor")
+                .and_then(|v| v.as_str())
+                .map(str::to_string);
+            match next {
+                Some(c) => {
+                    if !visited.insert(c.clone()) {
+                        return Err(ClientError::PaginationAborted(format!(
+                            "cursor '{c}' repeated while paging {method} (server pagination loop)"
+                        )));
+                    }
+                    if visited.len() > MAX_LIST_PAGES {
+                        return Err(ClientError::PaginationAborted(format!(
+                            "{method} did not terminate within {MAX_LIST_PAGES} pages"
+                        )));
+                    }
+                    cursor = Some(c);
+                }
+                None => return Ok(items),
+            }
+        }
+    }
 }
 
 #[async_trait]
@@ -294,20 +352,7 @@ impl Client for McpClient {
         if !self.initialized {
             return Err(ClientError::NotInitialized);
         }
-
-        let resp = self.send_request("tools/list", None).await?;
-
-        if let Some(err) = &resp.error {
-            return Err(ClientError::Server(err.clone()));
-        }
-
-        let tools: Vec<McpTool> = resp
-            .result
-            .and_then(|r| r.get("tools").cloned())
-            .map(|v| serde_json::from_value(v).unwrap_or_default())
-            .unwrap_or_default();
-
-        Ok(tools)
+        self.list_page("tools/list", "tools").await
     }
 
     async fn call_tool(
@@ -342,20 +387,7 @@ impl Client for McpClient {
         if !self.initialized {
             return Err(ClientError::NotInitialized);
         }
-
-        let resp = self.send_request("resources/list", None).await?;
-
-        if let Some(err) = &resp.error {
-            return Err(ClientError::Server(err.clone()));
-        }
-
-        let resources: Vec<Resource> = resp
-            .result
-            .and_then(|r| r.get("resources").cloned())
-            .map(|v| serde_json::from_value(v).unwrap_or_default())
-            .unwrap_or_default();
-
-        Ok(resources)
+        self.list_page("resources/list", "resources").await
     }
 
     async fn read_resource(&mut self, uri: &str) -> ClientResult<ResourceContent> {
@@ -384,20 +416,7 @@ impl Client for McpClient {
         if !self.initialized {
             return Err(ClientError::NotInitialized);
         }
-
-        let resp = self.send_request("prompts/list", None).await?;
-
-        if let Some(err) = &resp.error {
-            return Err(ClientError::Server(err.clone()));
-        }
-
-        let prompts: Vec<Prompt> = resp
-            .result
-            .and_then(|r| r.get("prompts").cloned())
-            .map(|v| serde_json::from_value(v).unwrap_or_default())
-            .unwrap_or_default();
-
-        Ok(prompts)
+        self.list_page("prompts/list", "prompts").await
     }
 
     async fn get_prompt(

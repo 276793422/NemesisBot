@@ -55,7 +55,7 @@ CREATE TABLE IF NOT EXISTS model_pricing (
 
 /// v1 → v2（A3 请求明细增强，2026-08-31）：明细行补计价与排查字段。
 ///
-/// 与源规格（cc-switch `proxy_request_logs`）的偏差：**不单设
+/// 与源规格（`proxy_request_logs` 表）的偏差：**不单设
 /// `duration_ms`**——既有 `latency_ms` 就是该请求的真实耗时真相源
 /// （写入点语义即"一轮 LLM 调用耗时"），两列同义徒增分歧面。
 /// `first_token_ms` 留 NULL：`LLMProvider` trait 目前只有一元 `chat`

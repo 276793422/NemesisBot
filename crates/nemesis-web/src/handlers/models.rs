@@ -30,6 +30,19 @@ impl ModuleHandler for ModelsHandler {
         "models"
     }
 
+    fn commands(&self) -> &'static [&'static str] {
+        &[
+            "list",
+            "add",
+            "delete",
+            "set_default",
+            "test",
+            "update_field",
+            "catalog_info",
+            "catalog_update",
+        ]
+    }
+
     async fn handle_cmd(
         &self,
         cmd: &str,

@@ -18,6 +18,23 @@ impl ModuleHandler for SessionsHandler {
         "sessions"
     }
 
+    fn commands(&self) -> &'static [&'static str] {
+        &[
+            "list",
+            "create",
+            "rename",
+            "delete",
+            "clear",
+            "export",
+            "rewind_to_message",
+            "redo",
+            "file_diff",
+            "share_create",
+            "share_list",
+            "share_revoke",
+        ]
+    }
+
     async fn handle_cmd(
         &self,
         cmd: &str,
@@ -34,7 +51,7 @@ impl ModuleHandler for SessionsHandler {
                 // so the client gets the bare `sid` — exactly what it sends
                 // back as moduleData.session_id. (Legacy `agent_main_main`
                 // migration is Phase 2.)
-                let web: Vec<_> = all
+                let mut web: Vec<_> = all
                     .into_iter()
                     .filter_map(|mut s| {
                         let id = s["id"].as_str()?.to_string();
@@ -43,6 +60,9 @@ impl ModuleHandler for SessionsHandler {
                         Some(s)
                     })
                     .collect();
+                // M5（2026-09-05）：侧栏条目回填 tokens/cost（session_key
+                // 聚合；无记录时缺省，前端不展示）。
+                crate::handlers::logs::backfill_session_usage(ctx, &mut web);
                 Ok(Some(serde_json::json!({ "sessions": web })))
             }
             "create" => {
@@ -50,17 +70,28 @@ impl ModuleHandler for SessionsHandler {
                 // materializes in session_logs on the first message. Title is
                 // written to a sidecar meta file immediately.
                 let session_id = uuid::Uuid::new_v4().to_string();
-                let title = data
+                // E7：显式命名 = 用户意志（manual，自动标题永不覆盖）；
+                // 未带 title = 默认占位符（自动标题可覆盖）。
+                let explicit_title = data
                     .as_ref()
                     .and_then(|d| d.get("title"))
                     .and_then(|v| v.as_str())
-                    .unwrap_or("新对话")
-                    .to_string();
+                    .map(|s| s.trim().to_string())
+                    .filter(|s| {
+                        !s.is_empty() && *s != nemesis_agent::chat_log::DEFAULT_SESSION_TITLE
+                    });
+                let title = explicit_title
+                    .clone()
+                    .unwrap_or_else(|| nemesis_agent::chat_log::DEFAULT_SESSION_TITLE.to_string());
                 let session_key = format!(
                     "agent:main:session:{}",
                     nemesis_agent::session::SessionStore::sanitize_session_id(&session_id)
                 );
-                nemesis_agent::chat_log::write_session_meta(&session_key, &title);
+                if explicit_title.is_some() {
+                    nemesis_agent::chat_log::write_session_meta_manual(&session_key, &title);
+                } else {
+                    nemesis_agent::chat_log::write_session_meta(&session_key, &title);
+                }
                 Ok(Some(
                     serde_json::json!({ "session_id": session_id, "title": title }),
                 ))
@@ -82,7 +113,8 @@ impl ModuleHandler for SessionsHandler {
                     "agent:main:session:{}",
                     nemesis_agent::session::SessionStore::sanitize_session_id(&session_id)
                 );
-                nemesis_agent::chat_log::write_session_meta(&session_key, &title);
+                // E7：rename 是用户意志——置 manual 标记，自动标题永不覆盖。
+                nemesis_agent::chat_log::write_session_meta_manual(&session_key, &title);
                 Ok(Some(
                     serde_json::json!({ "session_id": session_id, "title": title }),
                 ))
@@ -108,7 +140,7 @@ impl ModuleHandler for SessionsHandler {
                         store.delete_session(&session_key);
                     }
                 }
-                // CC SessionEnd（观察型，2026-08-29 T3）：显式删除也触发
+                // 方言 SessionEnd（观察型，2026-08-29 T3）：显式删除也触发
                 // （桥经 AgentLoop 的 cc_hooks_bridge 访问；未装配 = 跳过）。
                 // 先把桥 Arc 克隆出 guard 作用域，再 await（guard 不跨 await）。
                 let session_end_bridge = {
@@ -203,6 +235,145 @@ impl ModuleHandler for SessionsHandler {
                     "messages": messages,
                     "count": total,
                 })))
+            }
+            // E3（devtool-upgrade 阶段 5）：消息级回退——会话截断到
+            // message_index 所在 turn 结束 + 文件恢复到其后第一个 checkpoint
+            // turn 开始时的状态 + 压 undo 栈。message_index 契约：本模块
+            // `export`（= logs.session_detail 的行序，同一 jsonl）里
+            // messages 数组下标。编排在 AgentLoop（checkpoint/undo 栈都住
+            // 那边），这里只做参数解析与 agent_loop 装配检查。
+            "rewind_to_message" => {
+                let session_id = data
+                    .as_ref()
+                    .and_then(|d| d.get("session_id"))
+                    .and_then(|v| v.as_str())
+                    .ok_or_else(|| "missing session_id".to_string())?
+                    .to_string();
+                let message_index = data
+                    .as_ref()
+                    .and_then(|d| d.get("message_index"))
+                    .and_then(|v| v.as_u64())
+                    .ok_or_else(|| "missing message_index".to_string())?
+                    as usize;
+                let session_key = format!(
+                    "agent:main:session:{}",
+                    nemesis_agent::session::SessionStore::sanitize_session_id(&session_id)
+                );
+                let al = ctx
+                    .state
+                    .agent_loop
+                    .read()
+                    .as_ref()
+                    .cloned()
+                    .ok_or_else(|| "agent loop 未装配".to_string())?;
+                let mut out = al.rewind_to_message(&session_key, message_index).await?;
+                // 回执带上调用方的裸 session_id（前端用它回显）。
+                out["session_id"] = serde_json::Value::String(session_id);
+                Ok(Some(out))
+            }
+            // E3 redo：弹本会话 undo 栈顶反向恢复（行回填 + 文件前向恢复；
+            // 陈旧性守卫在 AgentLoop 侧）。undo 栈是内存态，网关重启即失。
+            "redo" => {
+                let session_id = data
+                    .as_ref()
+                    .and_then(|d| d.get("session_id"))
+                    .and_then(|v| v.as_str())
+                    .ok_or_else(|| "missing session_id".to_string())?
+                    .to_string();
+                let session_key = format!(
+                    "agent:main:session:{}",
+                    nemesis_agent::session::SessionStore::sanitize_session_id(&session_id)
+                );
+                let al = ctx
+                    .state
+                    .agent_loop
+                    .read()
+                    .as_ref()
+                    .cloned()
+                    .ok_or_else(|| "agent loop 未装配".to_string())?;
+                let mut out = al.redo_rewind(&session_key).await?;
+                out["session_id"] = serde_json::Value::String(session_id);
+                Ok(Some(out))
+            }
+            // M3（devtool-upgrade 阶段 5）：会话级文件 diff——聚合侧在
+            // 前端（session_detail 行的 file_changes），这里按 (session_id,
+            // path) 取「最早 checkpoint 基线 vs 现盘」unified diff。编排
+            // 在 AgentLoop 侧（checkpoint store 住那边）。
+            "file_diff" => {
+                let session_id = data
+                    .as_ref()
+                    .and_then(|d| d.get("session_id"))
+                    .and_then(|v| v.as_str())
+                    .ok_or_else(|| "missing session_id".to_string())?
+                    .to_string();
+                let path = data
+                    .as_ref()
+                    .and_then(|d| d.get("path"))
+                    .and_then(|v| v.as_str())
+                    .ok_or_else(|| "missing path".to_string())?
+                    .to_string();
+                let session_key = format!(
+                    "agent:main:session:{}",
+                    nemesis_agent::session::SessionStore::sanitize_session_id(&session_id)
+                );
+                let al = ctx
+                    .state
+                    .agent_loop
+                    .read()
+                    .as_ref()
+                    .cloned()
+                    .ok_or_else(|| "agent loop 未装配".to_string())?;
+                let mut out = al.session_file_diff(&session_key, &path).await?;
+                out["session_id"] = serde_json::Value::String(session_id);
+                Ok(Some(out))
+            }
+            // L4（devtool-upgrade 阶段 7）：会话分享——创建/列出/撤销只读
+            // 分享 token（存储 + 白名单投影 + 公开 GET 端点都在 crate::share）。
+            "share_create" => {
+                let workspace = require_workspace(ctx)?;
+                let session_id = data
+                    .as_ref()
+                    .and_then(|d| d.get("session_id"))
+                    .and_then(|v| v.as_str())
+                    .ok_or_else(|| "missing session_id".to_string())?
+                    .to_string();
+                let entry = crate::share::create_share(workspace, &session_id)?;
+                Ok(Some(serde_json::json!({
+                    "token": entry.token,
+                    "path": format!("/share/?t={}", entry.token),
+                    "created_at": entry.created_at,
+                })))
+            }
+            "share_list" => {
+                let workspace = require_workspace(ctx)?;
+                // 标题实时解析（会话改名/删除跟随 live 语义）。
+                let shares: Vec<serde_json::Value> = crate::share::list_shares(workspace)
+                    .into_iter()
+                    .map(|s| {
+                        let title = crate::share::session_title(workspace, &s.session_id);
+                        serde_json::json!({
+                            "token": s.token,
+                            "session_id": s.session_id,
+                            "created_at": s.created_at,
+                            "revoked": s.revoked,
+                            "title": title,
+                        })
+                    })
+                    .collect();
+                Ok(Some(serde_json::json!({ "shares": shares })))
+            }
+            "share_revoke" => {
+                let workspace = require_workspace(ctx)?;
+                let token = data
+                    .as_ref()
+                    .and_then(|d| d.get("token"))
+                    .and_then(|v| v.as_str())
+                    .ok_or_else(|| "missing token".to_string())?;
+                let found = crate::share::revoke_share(workspace, token)?;
+                if !found {
+                    return Err(format!("分享不存在: {token}"));
+                }
+                Ok(Some(serde_json::json!({ "ok": true })))
             }
             _ => Err(format!("unknown sessions cmd: {}", cmd)),
         }

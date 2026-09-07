@@ -68,6 +68,25 @@ pub struct AgentInstance {
     /// Provider metadata (name, masked API key, base URL) for logging.
     /// Mirrors Go's AgentInstance.ProviderMeta.
     provider_meta: Mutex<Option<serde_json::Value>>,
+    /// G0 (devtool-upgrade 阶段 3)：子代理工具白名单（`run_detached` 派生的
+    /// instance 设置；`effective_tool_defs` 在 tier 过滤后按它收窄供给）。
+    /// None = 非子代理或全量供给。instance 级而非 loop 级——并发子代理互不
+    /// 串扰（loop 级全局槽会被并行 detached 回合互踩）。
+    detached_allowed_tools: Mutex<Option<Vec<String>>>,
+    /// G2 (devtool-upgrade 阶段 3)：本 instance 的子代理嵌套深度
+    /// （0 = 顶层 agent，N = 第 N 层子代理）。`run_detached` 派生时设置；
+    /// 工具分发（`handle_tool_call_at_depth`）读它喂给 depth-aware 工具
+    /// （spawn 由此执行 `agents.subagent.max_depth` 深度限制）。原子量即可
+    /// ——单写者（派生时一次 set）、分发路径只读。
+    detached_depth: std::sync::atomic::AtomicUsize,
+    /// I3 (devtool-upgrade 阶段 3)：本会话已认领的子目录（canonical 形态，
+    /// 含无指令文件而未入队的目录不在此列——只有确实注入过指令的目录才认
+    /// 领）。会话生命周期去重：同一子目录的指令至多注入一次。
+    instruction_claims: Mutex<Vec<PathBuf>>,
+    /// I3：已发现待注入的指令条目 (path, content)。build_messages 每轮
+    /// drain 一次性注入（I1 external_changes 同通道形态），drain 后为空
+    /// ⇒ 合并消息字节回稳。
+    pending_instructions: Mutex<Vec<(PathBuf, String)>>,
 }
 
 impl AgentInstance {
@@ -82,13 +101,19 @@ impl AgentInstance {
             state: Mutex::new(AgentState::Idle),
             metadata: Mutex::new(serde_json::Value::Null),
             summary_cache: Mutex::new(None),
-            context_window: 32000,
+            // N1 (devtool-upgrade 阶段 1)：默认窗口与三级解析链的 L3 兜底
+            // 同源——历史 32000 对 128k+ 模型触发压缩过早（编码失忆）。
+            context_window: crate::r#loop::FALLBACK_CONTEXT_WINDOW,
             workspace: PathBuf::new(),
             max_iterations: 60,
             subagents: Mutex::new(Vec::new()),
             skills_filter: Mutex::new(Vec::new()),
             fallback_candidates: Mutex::new(Vec::new()),
             provider_meta: Mutex::new(None),
+            detached_allowed_tools: Mutex::new(None),
+            detached_depth: std::sync::atomic::AtomicUsize::new(0),
+            instruction_claims: Mutex::new(Vec::new()),
+            pending_instructions: Mutex::new(Vec::new()),
         };
 
         // Inject system prompt if configured.
@@ -540,6 +565,69 @@ impl AgentInstance {
     /// Set the skills filter.
     pub fn set_skills_filter(&self, filter: Vec<String>) {
         *self.skills_filter.lock().unwrap() = filter;
+    }
+
+    // -----------------------------------------------------------------------
+    // DetachedAllowedTools (G0, devtool-upgrade 阶段 3)
+    // -----------------------------------------------------------------------
+
+    /// 子代理工具白名单快照（`None` = 非子代理 / 全量供给）。由
+    /// `AgentLoop::run_detached` 在派生时设置一次，只读不再变更。
+    pub fn detached_allowed_tools(&self) -> Option<Vec<String>> {
+        self.detached_allowed_tools.lock().unwrap().clone()
+    }
+
+    /// 设置子代理工具白名单（`run_detached` 内部使用）。
+    pub fn set_detached_allowed_tools(&self, tools: Option<Vec<String>>) {
+        *self.detached_allowed_tools.lock().unwrap() = tools;
+    }
+
+    // -----------------------------------------------------------------------
+    // DetachedDepth (G2, devtool-upgrade 阶段 3)
+    // -----------------------------------------------------------------------
+
+    /// 本 instance 的子代理嵌套深度（0 = 顶层 agent）。`run_detached`
+    /// 派生时设置一次，工具分发路径只读。
+    pub fn detached_depth(&self) -> usize {
+        self.detached_depth
+            .load(std::sync::atomic::Ordering::Relaxed)
+    }
+
+    /// 设置子代理嵌套深度（`run_detached` 内部使用）。
+    pub fn set_detached_depth(&self, depth: usize) {
+        self.detached_depth
+            .store(depth, std::sync::atomic::Ordering::Relaxed);
+    }
+
+    // -----------------------------------------------------------------------
+    // Lazy sub-directory instructions (I3, devtool-upgrade 阶段 3)
+    // -----------------------------------------------------------------------
+
+    /// 认领一个子目录（canonical 形态）。只有确实发现并排队了指令文件的
+    /// 目录才认领——空目录不认领，指令后到（agent/用户新写）仍可在后续
+    /// read 时被发现。
+    pub fn claim_instruction_dir(&self, canon: PathBuf) {
+        self.instruction_claims.lock().unwrap().push(canon);
+    }
+
+    /// 查询子目录（canonical 形态）是否已认领。
+    pub fn instruction_dir_claimed(&self, canon: &std::path::Path) -> bool {
+        self.instruction_claims
+            .lock()
+            .unwrap()
+            .iter()
+            .any(|p| p == canon)
+    }
+
+    /// 排队已发现的指令条目，等下一次 build_messages 一次性注入。
+    pub fn queue_pending_instructions(&self, entries: Vec<(PathBuf, String)>) {
+        self.pending_instructions.lock().unwrap().extend(entries);
+    }
+
+    /// 一次性 drain（build_messages 注入段用；空 buffer ⇒ 注入段缺席，
+    /// 合并消息字节回稳）。
+    pub fn drain_pending_instructions(&self) -> Vec<(PathBuf, String)> {
+        std::mem::take(&mut *self.pending_instructions.lock().unwrap())
     }
 
     // -----------------------------------------------------------------------

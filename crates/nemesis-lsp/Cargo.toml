@@ -9,6 +9,11 @@ tokio = { workspace = true }
 serde_json = { workspace = true }
 tracing = { workspace = true }
 which = { workspace = true }
+# URI 单一真相源（WHATWG 规范化）：真实语言服务器（url-crate 系，如
+# rust-analyzer）会把 file:// URI 规范化——Windows 盘符小写、百分号编码
+# 归一。发射/记录/查询三处必须与服务器同一套规范，否则按字符串精确匹配
+# 永远 miss（2026-09-05 实机闭环验证暴露）。
+url = { workspace = true }
 
 [dev-dependencies]
 tempfile = "3"

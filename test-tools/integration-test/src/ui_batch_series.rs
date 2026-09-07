@@ -159,7 +159,7 @@ fn sanitize_key(key: &str) -> String {
 // P3 session 种子（gateway 启动前调用——live store 构造时 load_from_disk）
 // ---------------------------------------------------------------------------
 
-/// 种入 2 轮会话 `agent:main:session:itui1`（dsh_series 同款格式）。
+/// 种入 2 轮会话 `agent:main:session:itui1`（cli_series 同款格式）。
 /// 在 gateway spawn 之前调（保持与旧契约相同的种子时机）。2026-08-25
 /// 第三轮起 turns/fork 直接读 chat_log jsonl（不再走 live store 的
 /// get_history），但 store json 仍种着——fork 的 store 写路径与

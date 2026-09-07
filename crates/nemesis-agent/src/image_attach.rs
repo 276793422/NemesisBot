@@ -18,6 +18,7 @@
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 
+use crate::image_downscale;
 use crate::image_path_detector::{self, CandidateStatus, ImagePathCandidate};
 
 /// 水合后的单张图片（build_messages 产出；ProviderAdapter 转 provider
@@ -106,9 +107,16 @@ fn gate_and_hash(
             source: channel.to_string(),
             metadata: std::collections::HashMap::new(),
         };
-        let (allowed, reason) = sec.execute(&invocation);
+        let (allowed, deny) = sec.execute(&invocation);
         if !allowed {
-            return Err(reason.unwrap_or_else(|| "operation denied by security policy".to_string()));
+            // F5: DenyInfo 结构化回执 → 错误串带 layer 前缀（summary 原文）。
+            let msg = match deny {
+                Some(info) => {
+                    format!("[layer:{}] {}", info.layer, info.summary)
+                }
+                None => "operation denied by security policy".to_string(),
+            };
+            return Err(msg);
         }
     }
     // 读文件 + sha256（审计记 hash 不记像素；P4.2 盲区边界同款语义）。
@@ -144,35 +152,58 @@ fn gate_and_hash(_security: Option<()>, path: &Path, _channel: &str) -> Result<S
     Ok(String::new())
 }
 
-/// 不跟随重定向的下载 client（2026-09-03 二次回归 A1）：共享池默认策略跟随
-/// 至多 10 跳重定向——SSRF 闸只校验**首跳** URL，`302 → 内网地址` 会绕过闸
-/// 直接打内网。图片下载一律用本 client：重定向响应（3xx）走 error_for_status
-/// → 诚实注明失败，不静默放行内网。
+/// 构建不跟随重定向的下载 client（2026-09-03 二次回归 A1 引入；J2a
+/// 2026-09-04 泛化为参数化构建器供 web_fetch 重定向循环复用同一语义）：
+/// 共享池默认策略跟随至多 10 跳重定向——SSRF 闸只校验**首跳** URL，
+/// `302 → 内网地址` 会绕过闸直接打内网。所有拉取外部 URL 的 client 一律
+/// 用 Policy::none（重定向响应走 error_for_status 或由上层循环手动逐跳
+/// 复查），不静默放行内网。
+pub(crate) fn build_no_redirect_client(
+    user_agent: &str,
+    connect_timeout: std::time::Duration,
+    total_timeout: std::time::Duration,
+) -> reqwest::Client {
+    reqwest::Client::builder()
+        .redirect(reqwest::redirect::Policy::none())
+        .connect_timeout(connect_timeout)
+        .timeout(total_timeout)
+        .user_agent(user_agent)
+        .build()
+        .unwrap_or_default()
+}
+
+/// 不跟随重定向的下载 client（图片预取专用：静态缓存 + 专属 UA/超时）。
 fn no_redirect_client() -> &'static reqwest::Client {
     static CLIENT: std::sync::OnceLock<reqwest::Client> = std::sync::OnceLock::new();
     CLIENT.get_or_init(|| {
-        reqwest::Client::builder()
-            .redirect(reqwest::redirect::Policy::none())
-            .connect_timeout(std::time::Duration::from_secs(10))
-            .timeout(std::time::Duration::from_secs(30))
-            .user_agent("nemesisbot-image-fetch")
-            .build()
-            .unwrap_or_default()
+        build_no_redirect_client(
+            "nemesisbot-image-fetch",
+            std::time::Duration::from_secs(10),
+            std::time::Duration::from_secs(30),
+        )
     })
 }
 
-/// 按 SSRF 闸验证过的 IP 集**钉死 DNS** 的下载 client（2026-09-04 四轮盲审
-/// S2）：闸解析验证过 ≠ reqwest 实际连接用的 IP——两次独立解析之间，rebinding
-/// 域名（攻击者控 DNS、TTL 0）可先答公网 IP 过闸、再答内网/元数据 IP 收连接。
+/// 按 SSRF 闸验证过的 IP 集**钉死 DNS** 的下载 client 构建器（2026-09-04
+/// 四轮盲审 S2；J2a 2026-09-04 参数化供 web_fetch 复用）：闸解析验证过 ≠
+/// reqwest 实际连接用的 IP——两次独立解析之间，rebinding 域名（攻击者控
+/// DNS、TTL 0）可先答公网 IP 过闸、再答内网/元数据 IP 收连接。
 /// `resolve(host, addr)` 把该 host 的全部连接钉在已验证 IP 上，reqwest 不再
 /// 发起第二次解析，TOCTOU 关闭。TLS SNI/证书校验仍按原 host（仅钉解析）。
 ///
-/// 构建失败返回 None，调用方回退 [`no_redirect_client`]（Policy::none 语义
-/// 不丢；**绝不**回退到 reqwest 默认 client——默认会跟随重定向，A1 就回来了）。
+/// 构建失败返回 None，调用方回退 [`build_no_redirect_client`]（Policy::none
+/// 语义不丢；**绝不**回退到 reqwest 默认 client——默认会跟随重定向，A1 就
+/// 回来了）。
 // 唯一调用点在 security 布防分支（S2 钉死路径）；feature 裁掉 security 时
 // 本函数随之裁掉，不留 dead-code 警告。
 #[cfg(feature = "security")]
-fn pinned_no_redirect_client(url: &str, ips: &[std::net::IpAddr]) -> Option<reqwest::Client> {
+pub(crate) fn build_pinned_no_redirect_client(
+    url: &str,
+    ips: &[std::net::IpAddr],
+    user_agent: &str,
+    connect_timeout: std::time::Duration,
+    total_timeout: std::time::Duration,
+) -> Option<reqwest::Client> {
     let parsed = reqwest::Url::parse(url).ok()?;
     let host = parsed.host_str()?.to_string();
     let port = parsed
@@ -180,13 +211,25 @@ fn pinned_no_redirect_client(url: &str, ips: &[std::net::IpAddr]) -> Option<reqw
         .unwrap_or(if parsed.scheme() == "https" { 443 } else { 80 });
     let mut builder = reqwest::Client::builder()
         .redirect(reqwest::redirect::Policy::none())
-        .connect_timeout(std::time::Duration::from_secs(10))
-        .timeout(std::time::Duration::from_secs(30))
-        .user_agent("nemesisbot-image-fetch");
+        .connect_timeout(connect_timeout)
+        .timeout(total_timeout)
+        .user_agent(user_agent);
     for ip in ips {
         builder = builder.resolve(&host, std::net::SocketAddr::new(*ip, port));
     }
     builder.build().ok()
+}
+
+/// 图片预取专用的钉死 DNS client（静态 UA/超时的薄包装）。
+#[cfg(feature = "security")]
+fn pinned_no_redirect_client(url: &str, ips: &[std::net::IpAddr]) -> Option<reqwest::Client> {
+    build_pinned_no_redirect_client(
+        url,
+        ips,
+        "nemesisbot-image-fetch",
+        std::time::Duration::from_secs(10),
+        std::time::Duration::from_secs(30),
+    )
 }
 
 /// T9（多模态 goal 2026-09-03）：URL media 预取——把 http(s) 引用改为本地
@@ -459,7 +502,7 @@ fn pick_url_ext(url: &str, content_type: &str) -> String {
     "jpg".to_string()
 }
 
-/// 轮次摄取统一附加入口（loop.rs process_admitted 调用）。
+/// 轮次摄取统一附加入口（loop.rs process_admitted / steer 路径调用）。
 ///
 /// 来源 1：文本提取路径（T4 检测器，验真已含存在性/大小/magic/去重）。
 /// 来源 2：`media` 引用——本地路径（T7 Telegram / T8 Web 上传 / T9 URL 预取
@@ -468,10 +511,16 @@ fn pick_url_ext(url: &str, content_type: &str) -> String {
 /// 两来源统一过安全闸 + 跨来源去重（解析路径大小写不敏感）。
 /// 张数上限（D6）：两来源合计 ≤[`image_path_detector::MAX_IMAGES_PER_MESSAGE`]，
 /// 超出部分不附加、聚合成一条诚实注记（先到先得：文本出现序 → media 追加序）。
+///
+/// J6（devtool-upgrade 阶段 6）：`downscale_uploads = Some(uploads 目录)` 时，
+/// 超限候选（>25MB 或最长边 >8000px）先过降采样闸（[`image_downscale`]），
+/// 产物（uploads 内容寻址 `down_*.jpg`）替代原图走后续同一验真/闸门链；
+/// `None`（`agents.image_downscale` 关）= 原 25MB 硬拒绝行为，零变化。
 pub fn attach_turn_images(
     text: &str,
     media: &[nemesis_types::channel::MediaAttachment],
     workspace_dir: Option<&Path>,
+    downscale_uploads: Option<&Path>,
     channel: &str,
     #[cfg(feature = "security")] security: Option<&nemesis_security::pipeline::SecurityPlugin>,
     #[cfg(not(feature = "security"))] security: Option<()>,
@@ -482,13 +531,42 @@ pub fn attach_turn_images(
 
     // 来源 1：文本提取路径（T4）。非 Ok 候选按 failure_reason 诚实注明。
     for candidate in image_path_detector::detect_image_paths(text, workspace_dir) {
-        if !candidate.is_attachable() {
+        // J6：降采样闸先行——超限候选在开关开时先降采样，产物替代原图走
+        // 后续同一链；不可降 = 诚实拒绝注记；开关关恒 Keep（零行为变化）。
+        let mut resolved = candidate.resolved.clone();
+        match image_downscale::downscale_gate(&candidate.resolved, downscale_uploads) {
+            Ok(image_downscale::GateVerdict::Replaced {
+                path,
+                from_bytes,
+                to_bytes,
+                longest_side,
+            }) => {
+                outcome.notes.push(format!(
+                    "[图片已降采样: {} ({}→{} 字节, 最长边 {}px)]",
+                    candidate.resolved.display(),
+                    from_bytes,
+                    to_bytes,
+                    longest_side
+                ));
+                resolved = path;
+            }
+            Ok(image_downscale::GateVerdict::Keep) => {}
+            Err(reason) => {
+                outcome
+                    .notes
+                    .push(format!("[图片未附加: {}: {}]", reason, candidate.raw));
+                continue;
+            }
+        }
+        // 降采样产物本身合法（闸内产出 ≤8MB JPEG）→ 跳过原图 attachable 判定。
+        let downsampled = resolved != candidate.resolved;
+        if !downsampled && !candidate.is_attachable() {
             if let Some(note) = candidate_note(&candidate) {
                 outcome.notes.push(note);
             }
             continue;
         }
-        let key = image_path_detector::dedup_key(&candidate.resolved);
+        let key = image_path_detector::dedup_key(&resolved);
         if !seen.insert(key) {
             continue;
         }
@@ -496,10 +574,10 @@ pub fn attach_turn_images(
             overflow.push(candidate.raw);
             continue;
         }
-        match gate_and_hash(security, &candidate.resolved, channel) {
+        match gate_and_hash(security, &resolved, channel) {
             Ok(_) => outcome.attached.push(AttachedImage {
                 raw: candidate.raw,
-                resolved: candidate.resolved,
+                resolved,
             }),
             Err(reason) => outcome.notes.push(format!("[图片未附加: {}]", reason)),
         }
@@ -522,9 +600,47 @@ pub fn attach_turn_images(
         }
         // 本地路径引用（T7/T8 落盘产物）：与文本候选同一验真 + 闸门链。
         let path = PathBuf::from(url);
-        match image_path_detector::verify(&path) {
+        // J6：降采样闸先行（同文本来源）；产物由闸产出（合法 ≤8MB JPEG），
+        // 以 best-effort 尺寸的 Ok 状态替代原图 verify 状态走既有 match。
+        let mut attached_path = path.clone();
+        let mut replaced = false;
+        match image_downscale::downscale_gate(&path, downscale_uploads) {
+            Ok(image_downscale::GateVerdict::Replaced {
+                path: product,
+                from_bytes,
+                to_bytes,
+                longest_side,
+            }) => {
+                outcome.notes.push(format!(
+                    "[图片已降采样: {} ({}→{} 字节, 最长边 {}px)]",
+                    path.display(),
+                    from_bytes,
+                    to_bytes,
+                    longest_side
+                ));
+                attached_path = product;
+                replaced = true;
+            }
+            Ok(image_downscale::GateVerdict::Keep) => {}
+            Err(reason) => {
+                outcome
+                    .notes
+                    .push(format!("[图片未附加: {}: {}]", reason, url));
+                continue;
+            }
+        }
+        let status = if replaced {
+            CandidateStatus::Ok {
+                size: std::fs::metadata(&attached_path)
+                    .map(|m| m.len())
+                    .unwrap_or(0),
+            }
+        } else {
+            image_path_detector::verify(&path)
+        };
+        match status {
             CandidateStatus::Ok { .. } => {
-                let key = image_path_detector::dedup_key(&path);
+                let key = image_path_detector::dedup_key(&attached_path);
                 if !seen.insert(key) {
                     continue;
                 }
@@ -532,10 +648,10 @@ pub fn attach_turn_images(
                     overflow.push(url.to_string());
                     continue;
                 }
-                match gate_and_hash(security, &path, channel) {
+                match gate_and_hash(security, &attached_path, channel) {
                     Ok(_) => outcome.attached.push(AttachedImage {
                         raw: url.to_string(),
-                        resolved: path,
+                        resolved: attached_path,
                     }),
                     Err(reason) => outcome.notes.push(format!("[图片未附加: {}]", reason)),
                 }

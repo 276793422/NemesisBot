@@ -20,6 +20,8 @@
 #[cfg(feature = "security")]
 pub mod approval;
 #[cfg(feature = "security")]
+pub mod approval_rules;
+#[cfg(feature = "security")]
 pub mod audit_log;
 #[cfg(feature = "security")]
 pub mod auditor;
@@ -29,6 +31,8 @@ pub mod clamav;
 pub mod classifier;
 #[cfg(feature = "security")]
 pub mod command;
+#[cfg(feature = "security")]
+pub mod command_arity;
 #[cfg(feature = "security")]
 pub mod credential;
 #[cfg(feature = "security")]

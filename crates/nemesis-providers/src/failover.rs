@@ -67,8 +67,31 @@ impl FailoverError {
         }
     }
 
+    /// Get the `retry_after` hint carried by this error (RateLimit only).
+    ///
+    /// J1：`RateLimit` 变体可携带服务端 `Retry-After` 秒数；转成 `Duration`
+    /// 供 `CooldownTracker::mark_failure` 作退避 hint（其余变体恒 None）。
+    pub fn retry_after_hint(&self) -> Option<std::time::Duration> {
+        match self {
+            FailoverError::RateLimit {
+                retry_after: Some(secs),
+                ..
+            } => Some(std::time::Duration::from_secs(*secs)),
+            _ => None,
+        }
+    }
+
     /// Create from HTTP status code.
-    pub fn from_status(provider: &str, model: &str, status: u16, body: &str) -> Self {
+    ///
+    /// `retry_after`：调用方从响应头解析的 `Retry-After` 秒数（见
+    /// [`retry_after_from_headers`]）；None = 响应未携带（退避走公式）。
+    pub fn from_status(
+        provider: &str,
+        model: &str,
+        status: u16,
+        body: &str,
+        retry_after: Option<u64>,
+    ) -> Self {
         match status {
             401 | 403 => FailoverError::Auth {
                 provider: provider.to_string(),
@@ -78,7 +101,7 @@ impl FailoverError {
             429 => FailoverError::RateLimit {
                 provider: provider.to_string(),
                 model: model.to_string(),
-                retry_after: None,
+                retry_after,
             },
             402 => FailoverError::Billing {
                 provider: provider.to_string(),
@@ -96,6 +119,34 @@ impl FailoverError {
             },
         }
     }
+}
+
+/// Parse a raw `Retry-After` header value into seconds (RFC 7231 §7.1.3).
+///
+/// 两种合法形态：延迟秒数（`"30"`）或 HTTP-date（`"Wed, 21 Oct 2026 07:28:00 GMT"`，
+/// RFC 2822 格式，按当前墙钟换算成剩余秒数，已过去的日期 → `Some(0)` 立即可重试）。
+/// 解析失败 / 值缺失 → `None`（退避走公式，不猜）。
+pub fn parse_retry_after(value: Option<&str>) -> Option<u64> {
+    let raw = value?.trim();
+    if raw.is_empty() {
+        return None;
+    }
+    // 形态 1：延迟秒数。
+    if let Ok(secs) = raw.parse::<u64>() {
+        return Some(secs);
+    }
+    // 形态 2：HTTP-date（IMF-fixdate，RFC 2822 同构）。
+    let target = chrono::DateTime::parse_from_rfc2822(raw).ok()?;
+    let now_secs = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+    Some(target.timestamp().max(0) as u64).map(|t| t.saturating_sub(now_secs))
+}
+
+/// Extract + parse the `Retry-After` header from a response header map.
+pub fn retry_after_from_headers(headers: &reqwest::header::HeaderMap) -> Option<u64> {
+    parse_retry_after(headers.get("retry-after").and_then(|v| v.to_str().ok()))
 }
 
 #[cfg(test)]

@@ -770,6 +770,41 @@ impl ModuleHandler for BoardHandler {
         "board"
     }
 
+    fn commands(&self) -> &'static [&'static str] {
+        &[
+            "issue.list",
+            "issue.get",
+            "issue.create",
+            "issue.update",
+            "issue.assign",
+            "issue.status",
+            "issue.move",
+            "issue.dispatch",
+            "issue.cancel",
+            "autopilot.list",
+            "autopilot.create",
+            "autopilot.update",
+            "autopilot.remove",
+            "autopilot.run",
+            "autopilot.runs",
+            "comment.add",
+            "comment.list",
+            "activity.list",
+            "subscriber.add",
+            "subscriber.remove",
+            "subscriber.list",
+            "project.list",
+            "project.create",
+            "project.update",
+            "attachment.add",
+            "attachment.get",
+            "inbox.list",
+            "inbox.mark_read",
+            "attachment.list",
+            "stats",
+        ]
+    }
+
     async fn handle_cmd(
         &self,
         cmd: &str,

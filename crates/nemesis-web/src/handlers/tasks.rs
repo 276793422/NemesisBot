@@ -49,6 +49,22 @@ impl ModuleHandler for TasksHandler {
         "tasks"
     }
 
+    fn commands(&self) -> &'static [&'static str] {
+        &[
+            "boot.get",
+            "boot.save",
+            "heartbeat.get",
+            "heartbeat.save",
+            "cron.list",
+            "cron.add",
+            "cron.update",
+            "cron.delete",
+            "cron.toggle",
+            "cron.run",
+            "cron.preview",
+        ]
+    }
+
     async fn handle_cmd(
         &self,
         cmd: &str,

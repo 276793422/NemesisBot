@@ -576,6 +576,7 @@ fn test_shared_tool_config_debug_with_workspace_and_cluster() {
         spawn: Some(SpawnConfig {
             default_model: "m".to_string(),
             max_concurrent: 3,
+            max_depth: 1,
         }),
         ..Default::default()
     };
@@ -1214,10 +1215,12 @@ fn test_spawn_config_clone() {
     let c = SpawnConfig {
         default_model: "model-x".to_string(),
         max_concurrent: 9,
+        max_depth: 1,
     };
     let cloned = c.clone();
     assert_eq!(cloned.default_model, "model-x");
     assert_eq!(cloned.max_concurrent, 9);
+    assert_eq!(cloned.max_depth, 1);
 }
 
 // ===========================================================================
@@ -1419,6 +1422,7 @@ fn test_register_extended_tools_all_three_provided() {
         Some(SpawnConfig {
             default_model: "m".to_string(),
             max_concurrent: 2,
+            max_depth: 1,
         }),
     );
     assert!(tools.contains_key("web_search"));

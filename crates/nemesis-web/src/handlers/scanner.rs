@@ -46,6 +46,23 @@ impl ModuleHandler for ScannerHandler {
         "scanner"
     }
 
+    fn commands(&self) -> &'static [&'static str] {
+        &[
+            "config.get",
+            "config.save",
+            "status",
+            "check",
+            "enable",
+            "disable",
+            "install",
+            "update_db",
+            "test",
+            "engine.update_config",
+            "add",
+            "cancel",
+        ]
+    }
+
     async fn handle_cmd(
         &self,
         cmd: &str,

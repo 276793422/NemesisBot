@@ -23,6 +23,29 @@ impl ModuleHandler for MemoryHandler {
         "memory"
     }
 
+    fn commands(&self) -> &'static [&'static str] {
+        &[
+            "status",
+            "documents",
+            "document.get",
+            "document.save",
+            "env.check",
+            "env.setup",
+            "config.get",
+            "config.set",
+            "stats",
+            "entries.list",
+            "entries.search",
+            "entries.store",
+            "entries.get",
+            "entries.delete",
+            "entries.update",
+            "model.install",
+            "vector.status",
+            "vector.search",
+        ]
+    }
+
     async fn handle_cmd(
         &self,
         cmd: &str,

@@ -24,7 +24,7 @@ async fn test_read_write_file_tool() {
     let file_path_str = file_path.to_string_lossy().to_string();
 
     // Write a file.
-    let write_tool = WriteFileTool;
+    let write_tool = WriteFileTool::default();
     let ctx = RequestContext::new("web", "chat1", "user1", "sess1");
     let args = serde_json::json!({
         "path": file_path_str,
@@ -73,7 +73,7 @@ async fn test_edit_file_tool() {
         .await
         .unwrap();
 
-    let tool = EditFileTool;
+    let tool = EditFileTool::default();
     let ctx = RequestContext::new("web", "chat1", "user1", "sess1");
     let args = serde_json::json!({
         "path": file_path.to_string_lossy(),
@@ -95,7 +95,7 @@ async fn test_edit_file_tool_old_text_not_found() {
     let file_path = tmp.path().join("edit_test.txt");
     tokio::fs::write(&file_path, "Hello world").await.unwrap();
 
-    let tool = EditFileTool;
+    let tool = EditFileTool::default();
     let ctx = RequestContext::new("web", "chat1", "user1", "sess1");
     let args = serde_json::json!({
         "path": file_path.to_string_lossy(),
@@ -106,7 +106,14 @@ async fn test_edit_file_tool_old_text_not_found() {
 
     let result = tool.execute(&args, &ctx).await;
     assert!(result.is_err());
-    assert!(result.unwrap_err().contains("not found in file"));
+    // A1（2026-09-04）：失败反馈升级为修复指令——文案改为
+    // "old_text not found in {path}. {hint}"（带文件预览）。
+    let err = result.unwrap_err();
+    assert!(err.contains("not found in"), "got: {err}");
+    assert!(
+        err.contains("File content preview"),
+        "error should embed the repair hint: {err}"
+    );
 }
 
 #[tokio::test]
@@ -115,7 +122,7 @@ async fn test_edit_file_tool_duplicate_old_text() {
     let file_path = tmp.path().join("edit_test.txt");
     tokio::fs::write(&file_path, "aaa bbb aaa").await.unwrap();
 
-    let tool = EditFileTool;
+    let tool = EditFileTool::default();
     let ctx = RequestContext::new("web", "chat1", "user1", "sess1");
     let args = serde_json::json!({
         "path": file_path.to_string_lossy(),
@@ -129,13 +136,70 @@ async fn test_edit_file_tool_duplicate_old_text() {
     assert!(result.unwrap_err().contains("appears 2 times"));
 }
 
+// A4（2026-09-04）：exact 未命中 → 五级模糊替换级联（EditFileTool 集成）。
+#[tokio::test]
+async fn test_edit_file_tool_fuzzy_match_reports_level() {
+    let tmp = TempDir::new().unwrap();
+    let file_path = tmp.path().join("fuzzy_edit.txt");
+    // 文件 tab 缩进；模型给空格缩进（逐行 trim 相等 → line-trimmed 级）。
+    tokio::fs::write(&file_path, "fn main() {\n\treturn 1;\n}\n")
+        .await
+        .unwrap();
+
+    let tool = EditFileTool::default();
+    let ctx = RequestContext::new("web", "chat1", "user1", "sess1");
+    let args = serde_json::json!({
+        "path": file_path.to_string_lossy(),
+        "old_text": "fn main() {\n  return 1;\n}\n",
+        "new_text": "fn main() {\n  return 2;\n}\n"
+    })
+    .to_string();
+
+    let result = tool.execute(&args, &ctx).await.unwrap();
+    // 成功回执注明命中级 + diff 呈现。
+    assert!(result.contains("matched via line-trimmed"), "got: {result}");
+    assert!(result.contains("```diff"), "got: {result}");
+
+    // 替换保留文件原缩进风格（tab），模型缩进不覆盖文件风格。
+    let content = tokio::fs::read_to_string(&file_path).await.unwrap();
+    assert_eq!(content, "fn main() {\n\treturn 2;\n}\n");
+}
+
+#[tokio::test]
+async fn test_edit_file_tool_fuzzy_total_failure_falls_back_to_not_found() {
+    let tmp = TempDir::new().unwrap();
+    let file_path = tmp.path().join("fuzzy_miss.txt");
+    tokio::fs::write(&file_path, "alpha\nbeta\ngamma\n")
+        .await
+        .unwrap();
+
+    let tool = EditFileTool::default();
+    let ctx = RequestContext::new("web", "chat1", "user1", "sess1");
+    let args = serde_json::json!({
+        "path": file_path.to_string_lossy(),
+        "old_text": "totally absent text",
+        "new_text": "x"
+    })
+    .to_string();
+
+    // 全部级 0 命中 → 回退 A1 not-found 提示（含文件预览）。
+    let result = tool.execute(&args, &ctx).await;
+    assert!(result.is_err());
+    let err = result.unwrap_err();
+    assert!(err.contains("old_text not found in"), "got: {err}");
+    assert!(err.contains("File content preview"), "got: {err}");
+    // 文件未被改动。
+    let content = tokio::fs::read_to_string(&file_path).await.unwrap();
+    assert_eq!(content, "alpha\nbeta\ngamma\n");
+}
+
 #[tokio::test]
 async fn test_append_file_tool() {
     let tmp = TempDir::new().unwrap();
     let file_path = tmp.path().join("append_test.txt");
     tokio::fs::write(&file_path, "Line 1\n").await.unwrap();
 
-    let tool = AppendFileTool;
+    let tool = AppendFileTool::default();
     let ctx = RequestContext::new("web", "chat1", "user1", "sess1");
     let args = serde_json::json!({
         "path": file_path.to_string_lossy(),
@@ -155,7 +219,7 @@ async fn test_append_file_creates_new_file() {
     let tmp = TempDir::new().unwrap();
     let file_path = tmp.path().join("new_file.txt");
 
-    let tool = AppendFileTool;
+    let tool = AppendFileTool::default();
     let ctx = RequestContext::new("web", "chat1", "user1", "sess1");
     let args = serde_json::json!({
         "path": file_path.to_string_lossy(),
@@ -285,12 +349,14 @@ async fn test_sleep_tool_zero_duration() {
 #[test]
 fn test_register_default_tools_count() {
     let tools = register_default_tools();
-    assert_eq!(tools.len(), 10);
+    // A7（2026-09-06）：+1 = multiedit。
+    assert_eq!(tools.len(), 11);
     assert!(tools.contains_key("message"));
     assert!(tools.contains_key("read_file"));
     assert!(tools.contains_key("write_file"));
     assert!(tools.contains_key("list_dir"));
     assert!(tools.contains_key("edit_file"));
+    assert!(tools.contains_key("multiedit"));
     assert!(tools.contains_key("append_file"));
     assert!(tools.contains_key("delete_file"));
     assert!(tools.contains_key("create_dir"));
@@ -428,6 +494,7 @@ async fn test_spawn_tool() {
     let config = SpawnConfig {
         default_model: "test-model".to_string(),
         max_concurrent: 5,
+        max_depth: 1,
     };
     let tool = SpawnTool::new(config);
     let ctx = RequestContext::new("web", "chat1", "user1", "sess1");
@@ -445,10 +512,18 @@ async fn test_spawn_tool_with_fn() {
     let config = SpawnConfig {
         default_model: "test-model".to_string(),
         max_concurrent: 5,
+        max_depth: 1,
     };
     let mut tool = SpawnTool::new(config);
     tool.set_spawn_fn(Arc::new(
-        |agent_id: &str, task: &str, model: &str, _channel: &str, _chat_id: &str| {
+        |agent_id: &str,
+         task: &str,
+         model: &str,
+         _channel: &str,
+         _chat_id: &str,
+         _t: &str,
+         _d: usize,
+         _bg: bool| {
             let agent_id = agent_id.to_string();
             let task = task.to_string();
             let model = model.to_string();
@@ -476,6 +551,7 @@ async fn test_spawn_tool_allowlist_denied() {
     let config = SpawnConfig {
         default_model: "test-model".to_string(),
         max_concurrent: 5,
+        max_depth: 1,
     };
     let mut tool = SpawnTool::new(config);
     tool.set_allowlist_checker(Box::new(|_id| false));
@@ -724,6 +800,7 @@ fn test_register_extended_tools_with_spawn() {
     let spawn_config = SpawnConfig {
         default_model: "test".to_string(),
         max_concurrent: 5,
+        max_depth: 1,
     };
     let tools = register_extended_tools(None, None, Some(spawn_config));
     assert!(tools.contains_key("spawn"));
@@ -878,11 +955,13 @@ fn test_extract_path_and_content_missing_path() {
 
 #[test]
 fn test_extract_edit_args_valid() {
-    let (path, old, new) =
+    let (path, old, new, replace_all) =
         extract_edit_args(r#"{"path": "/a.txt", "old_text": "foo", "new_text": "bar"}"#).unwrap();
     assert_eq!(path, "/a.txt");
     assert_eq!(old, "foo");
     assert_eq!(new, "bar");
+    // A3：replace_all 缺省 false。
+    assert!(!replace_all);
 }
 
 #[test]
@@ -1082,7 +1161,7 @@ async fn test_list_dir_empty_directory() {
 
 #[tokio::test]
 async fn test_edit_file_not_found() {
-    let tool = EditFileTool;
+    let tool = EditFileTool::default();
     let ctx = RequestContext::new("web", "chat1", "user1", "sess1");
     let result = tool
         .execute(
@@ -1146,7 +1225,7 @@ async fn test_write_file_creates_parent_dirs() {
     let tmp = TempDir::new().unwrap();
     let file_path = tmp.path().join("a").join("b").join("c").join("test.txt");
 
-    let tool = WriteFileTool;
+    let tool = WriteFileTool::default();
     let ctx = RequestContext::new("web", "chat1", "user1", "sess1");
     let args = serde_json::json!({
         "path": file_path.to_string_lossy(),
@@ -1164,7 +1243,7 @@ async fn test_append_to_new_file() {
     let tmp = TempDir::new().unwrap();
     let file_path = tmp.path().join("append_new.txt");
 
-    let tool = AppendFileTool;
+    let tool = AppendFileTool::default();
     let ctx = RequestContext::new("web", "chat1", "user1", "sess1");
     let args = serde_json::json!({
         "path": file_path.to_string_lossy(),
@@ -1455,6 +1534,7 @@ async fn test_spawn_tool_invalid_json() {
     let config = SpawnConfig {
         default_model: "test".to_string(),
         max_concurrent: 5,
+        max_depth: 1,
     };
     let tool = SpawnTool::new(config);
     let ctx = RequestContext::new("web", "chat1", "user1", "sess1");
@@ -1467,6 +1547,7 @@ async fn test_spawn_tool_missing_agent_id() {
     let config = SpawnConfig {
         default_model: "test".to_string(),
         max_concurrent: 5,
+        max_depth: 1,
     };
     let tool = SpawnTool::new(config);
     let ctx = RequestContext::new("web", "chat1", "user1", "sess1");
@@ -1479,11 +1560,19 @@ async fn test_spawn_tool_allowlist_allowed() {
     let config = SpawnConfig {
         default_model: "test".to_string(),
         max_concurrent: 5,
+        max_depth: 1,
     };
     let mut tool = SpawnTool::new(config);
     tool.set_allowlist_checker(Box::new(|id| id == "allowed-agent"));
     tool.set_spawn_fn(Arc::new(
-        |agent_id: &str, task: &str, model: &str, _ch: &str, _cid: &str| {
+        |agent_id: &str,
+         task: &str,
+         model: &str,
+         _ch: &str,
+         _cid: &str,
+         _t: &str,
+         _d: usize,
+         _bg: bool| {
             let agent_id = agent_id.to_string();
             let task = task.to_string();
             let model = model.to_string();
@@ -1552,6 +1641,7 @@ fn test_register_shared_tools_with_spawn() {
         spawn: Some(SpawnConfig {
             default_model: "test".to_string(),
             max_concurrent: 5,
+            max_depth: 1,
         }),
         ..Default::default()
     };
@@ -1960,6 +2050,7 @@ fn test_register_extended_tools_includes_spawn() {
     let spawn_config = SpawnConfig {
         default_model: "gpt-4".to_string(),
         max_concurrent: 3,
+        max_depth: 1,
     };
     let tools = register_extended_tools(None, None, Some(spawn_config));
     assert!(tools.contains_key("spawn"));
@@ -1991,9 +2082,11 @@ fn test_spawn_config_fields() {
     let config = SpawnConfig {
         default_model: "gpt-4".to_string(),
         max_concurrent: 5,
+        max_depth: 1,
     };
     assert_eq!(config.default_model, "gpt-4");
     assert_eq!(config.max_concurrent, 5);
+    assert_eq!(config.max_depth, 1, "G2 默认深度上限 1");
 }
 
 #[test]
@@ -2043,6 +2136,7 @@ fn test_spawn_config_debug() {
     let config = SpawnConfig {
         default_model: "gpt-4".to_string(),
         max_concurrent: 3,
+        max_depth: 1,
     };
     let debug = format!("{:?}", config);
     assert!(debug.contains("SpawnConfig"));
@@ -2922,6 +3016,7 @@ async fn test_spawn_tool_set_context() {
     let config = SpawnConfig {
         default_model: "test".to_string(),
         max_concurrent: 5,
+        max_depth: 1,
     };
     let tool = SpawnTool::new(config);
     tool.set_context("discord", "channel-123");
@@ -2930,10 +3025,18 @@ async fn test_spawn_tool_set_context() {
     let mut tool_with_fn = SpawnTool::new(SpawnConfig {
         default_model: "test".to_string(),
         max_concurrent: 5,
+        max_depth: 1,
     });
     tool_with_fn.set_context("stored-ch", "stored-cid");
     tool_with_fn.set_spawn_fn(Arc::new(
-        |_agent_id: &str, _task: &str, _model: &str, channel: &str, chat_id: &str| {
+        |_agent_id: &str,
+         _task: &str,
+         _model: &str,
+         channel: &str,
+         chat_id: &str,
+         _t: &str,
+         _d: usize,
+         _bg: bool| {
             let ch = channel.to_string();
             let cid = chat_id.to_string();
             Box::pin(async move { Ok(format!("ch={}, cid={}", ch, cid)) })
@@ -3039,7 +3142,7 @@ async fn test_write_file_tool_with_parent_dir_creation() {
     let tmp = TempDir::new().unwrap();
     let deep_path = tmp.path().join("a").join("b").join("c").join("deep.txt");
 
-    let tool = WriteFileTool;
+    let tool = WriteFileTool::default();
     let ctx = RequestContext::new("web", "chat1", "user1", "sess1");
     let args = serde_json::json!({
         "path": deep_path.to_string_lossy(),
@@ -3078,7 +3181,7 @@ async fn test_edit_file_tool_with_multiple_replacements() {
         .await
         .unwrap();
 
-    let tool = EditFileTool;
+    let tool = EditFileTool::default();
     let ctx = RequestContext::new("web", "chat1", "user1", "sess1");
     let args = serde_json::json!({
         "path": file_path.to_string_lossy(),
@@ -3099,7 +3202,7 @@ async fn test_append_file_tool_with_existing_content() {
     let file_path = tmp.path().join("existing_append.txt");
     tokio::fs::write(&file_path, "First line").await.unwrap();
 
-    let tool = AppendFileTool;
+    let tool = AppendFileTool::default();
     let ctx = RequestContext::new("web", "chat1", "user1", "sess1");
     let args = serde_json::json!({
         "path": file_path.to_string_lossy(),
@@ -3200,7 +3303,7 @@ fn test_extract_edit_args_success() {
         r#"{"path": "/a.txt", "old_text": "foo", "new_text": "bar", "extra": 42}"#,
     );
     assert!(result.is_ok());
-    let (path, old, new) = result.unwrap();
+    let (path, old, new, _replace_all) = result.unwrap();
     assert_eq!(path, "/a.txt");
     assert_eq!(old, "foo");
     assert_eq!(new, "bar");

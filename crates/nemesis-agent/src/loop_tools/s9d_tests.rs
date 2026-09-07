@@ -162,18 +162,18 @@ async fn write_file_tool_error_arms_and_create_preview() {
     let args =
         serde_json::json!({"path": ps(&blocker.join("sub").join("new.txt")), "content": "hi"})
             .to_string();
-    let out = super::WriteFileTool.execute(&args, &ctx()).await;
+    let out = super::WriteFileTool::default().execute(&args, &ctx()).await;
     assert!(out.unwrap_err().contains("Failed to create directories"));
 
     // 282：目标路径是目录 → 写失败。
     let args = serde_json::json!({"path": ps(&ws), "content": "hi"}).to_string();
-    let out = super::WriteFileTool.execute(&args, &ctx()).await;
+    let out = super::WriteFileTool::default().execute(&args, &ctx()).await;
     assert!(out.unwrap_err().contains("Failed to write file"));
 
     // 296：preview 对不存在文件 → Create（需要 path+content 双字段）。
     let args =
         serde_json::json!({"path": ps(&ws.join("brand_new.txt")), "content": "x"}).to_string();
-    assert!(super::WriteFileTool.preview(&args).is_some());
+    assert!(super::WriteFileTool::default().preview(&args).is_some());
     let _ = std::fs::remove_dir_all(&ws);
 }
 
@@ -192,7 +192,7 @@ async fn edit_file_tool_read_error_write_error_and_preview() {
 
     // 496：目标是目录 → 读失败。
     let args = serde_json::json!({"path": ps(&ws), "old_text": "a", "new_text": "b"}).to_string();
-    let out = super::EditFileTool.execute(&args, &ctx()).await;
+    let out = super::EditFileTool::default().execute(&args, &ctx()).await;
     assert!(out.unwrap_err().contains("Failed to read file"));
 
     // 514：readonly 文件 → 写失败（探针门控）。
@@ -205,7 +205,7 @@ async fn edit_file_tool_read_error_write_error_and_preview() {
     std::fs::set_permissions(&ro, perm).unwrap();
     let args =
         serde_json::json!({"path": ps(&ro), "old_text": "alpha", "new_text": "gamma"}).to_string();
-    let out = super::EditFileTool.execute(&args, &ctx()).await;
+    let out = super::EditFileTool::default().execute(&args, &ctx()).await;
     if enforced {
         assert!(
             out.clone().unwrap_err().contains("Failed to write file"),
@@ -219,7 +219,7 @@ async fn edit_file_tool_read_error_write_error_and_preview() {
 
     // 519-526：preview（Modify）。
     let args = serde_json::json!({"path": ps(&ro), "old_text": "a", "new_text": "b"}).to_string();
-    assert!(super::EditFileTool.preview(&args).is_some());
+    assert!(super::EditFileTool::default().preview(&args).is_some());
     let _ = std::fs::remove_dir_all(&ws);
 }
 
@@ -234,12 +234,16 @@ async fn append_file_tool_error_arms_and_preview() {
     // 550：parent 是文件 → create_dir_all 失败。
     let args =
         serde_json::json!({"path": ps(&blocker.join("leaf.txt")), "content": "hi"}).to_string();
-    let out = super::AppendFileTool.execute(&args, &ctx()).await;
+    let out = super::AppendFileTool::default()
+        .execute(&args, &ctx())
+        .await;
     assert!(out.unwrap_err().contains("Failed to create directories"));
 
     // 560：目标是目录 → 打开失败。
     let args = serde_json::json!({"path": ps(&ws), "content": "hi"}).to_string();
-    let out = super::AppendFileTool.execute(&args, &ctx()).await;
+    let out = super::AppendFileTool::default()
+        .execute(&args, &ctx())
+        .await;
     assert!(out.unwrap_err().contains("Failed to open file"));
 
     // 573-581：preview Modify（已存在）与 Create（不存在）。
@@ -247,8 +251,8 @@ async fn append_file_tool_error_arms_and_preview() {
     std::fs::write(&existing, "x").unwrap();
     let a1 = serde_json::json!({"path": ps(&existing), "content": "y"}).to_string();
     let a2 = serde_json::json!({"path": ps(&ws.join("fresh.txt")), "content": "y"}).to_string();
-    assert!(super::AppendFileTool.preview(&a1).is_some());
-    assert!(super::AppendFileTool.preview(&a2).is_some());
+    assert!(super::AppendFileTool::default().preview(&a1).is_some());
+    assert!(super::AppendFileTool::default().preview(&a2).is_some());
     let _ = std::fs::remove_dir_all(&ws);
 }
 

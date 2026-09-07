@@ -1313,8 +1313,8 @@ fn test_auditor_with_approval_manager() {
             _risk_level: &str,
             _reason: &str,
             _timeout_secs: u64,
-        ) -> Result<bool, String> {
-            Ok(true) // Always approve
+        ) -> Result<ApprovalVerdict, String> {
+            Ok(ApprovalVerdict::approved()) // Always approve
         }
     }
 
@@ -1358,8 +1358,8 @@ fn test_auditor_with_approval_manager_deny() {
             _risk_level: &str,
             _reason: &str,
             _timeout_secs: u64,
-        ) -> Result<bool, String> {
-            Ok(false) // Always deny
+        ) -> Result<ApprovalVerdict, String> {
+            Ok(ApprovalVerdict::denied()) // Always deny
         }
     }
 
@@ -1388,6 +1388,81 @@ fn test_auditor_with_approval_manager_deny() {
 }
 
 #[test]
+fn test_auditor_with_approval_manager_deny_note_in_message() {
+    // F6: 拒绝备注随 verdict 送达 → 拼进拒绝消息回灌给模型（纠错回喂）。
+    // 空备注/None 不追加冒号尾巴。
+    struct MockNoteManager {
+        note: Option<&'static str>,
+    }
+
+    impl ApprovalManager for MockNoteManager {
+        fn is_running(&self) -> bool {
+            true
+        }
+        fn request_approval_sync(
+            &self,
+            _request_id: &str,
+            _operation: &str,
+            _target: &str,
+            _risk_level: &str,
+            _reason: &str,
+            _timeout_secs: u64,
+        ) -> Result<ApprovalVerdict, String> {
+            Ok(ApprovalVerdict {
+                approved: false,
+                note: self.note.map(String::from),
+            })
+        }
+    }
+
+    let config = AuditorConfig {
+        enabled: true,
+        default_action: "ask".to_string(),
+        ..Default::default()
+    };
+    let mk_req = |id: &str| OperationRequest {
+        id: id.to_string(),
+        op_type: OperationType::FileWrite,
+        danger_level: DangerLevel::High,
+        user: "test".to_string(),
+        source: "cli".to_string(),
+        target: "/tmp/test.txt".to_string(),
+        timestamp: None,
+        ..Default::default()
+    };
+
+    // 带备注：原样拼进消息（含空白原文，不截断）。
+    let auditor = SecurityAuditor::new(config.clone());
+    auditor.set_approval_manager(Arc::new(MockNoteManager {
+        note: Some("别动生产库配置"),
+    }));
+    let (allowed, err, _) = auditor.request_permission(&mk_req("note-test"));
+    assert!(!allowed);
+    let msg = err.unwrap();
+    assert!(msg.contains("User rejected"), "got: {msg}");
+    assert!(msg.contains("别动生产库配置"), "note missing in: {msg}");
+
+    // 空白备注：视同无备注，消息不带冒号尾巴。
+    let auditor = SecurityAuditor::new(config.clone());
+    auditor.set_approval_manager(Arc::new(MockNoteManager { note: Some("   ") }));
+    let (allowed, err, _) = auditor.request_permission(&mk_req("blank-note-test"));
+    assert!(!allowed);
+    let msg = err.unwrap();
+    assert!(msg.contains("User rejected"), "got: {msg}");
+    assert!(
+        !msg.ends_with(":") && !msg.ends_with(": "),
+        "blank note leaked colon tail: {msg}"
+    );
+
+    // None 备注：基线消息形态不变。
+    let auditor = SecurityAuditor::new(config);
+    auditor.set_approval_manager(Arc::new(MockNoteManager { note: None }));
+    let (allowed, err, _) = auditor.request_permission(&mk_req("no-note-test"));
+    assert!(!allowed);
+    assert!(err.unwrap().contains("User rejected"));
+}
+
+#[test]
 fn test_auditor_with_approval_manager_error() {
     struct MockErrorManager;
 
@@ -1403,7 +1478,7 @@ fn test_auditor_with_approval_manager_error() {
             _risk_level: &str,
             _reason: &str,
             _timeout_secs: u64,
-        ) -> Result<bool, String> {
+        ) -> Result<ApprovalVerdict, String> {
             Err("dialog failed".to_string())
         }
     }
@@ -1449,8 +1524,8 @@ fn test_auditor_with_approval_manager_not_running() {
             _: &str,
             _: &str,
             _: u64,
-        ) -> Result<bool, String> {
-            Ok(true)
+        ) -> Result<ApprovalVerdict, String> {
+            Ok(ApprovalVerdict::approved())
         }
     }
 
@@ -1643,8 +1718,8 @@ fn test_auditor_get_approval_manager() {
             _: &str,
             _: &str,
             _: u64,
-        ) -> Result<bool, String> {
-            Ok(true)
+        ) -> Result<ApprovalVerdict, String> {
+            Ok(ApprovalVerdict::approved())
         }
     }
 
@@ -1930,4 +2005,162 @@ async fn test_monitor_security_status_shutdown_arm() {
         .await
         .expect("monitor must exit on shutdown")
         .unwrap();
+}
+
+// ---------------------------------------------------------------------------
+// F3（devtool-upgrade 阶段 5）：审批 pattern 记忆——自动放行 + 层级安全门
+// ---------------------------------------------------------------------------
+
+use std::sync::Arc;
+
+/// ask 默认动作的 auditor（require_approval 才会走到规则查询点）。
+fn ask_auditor() -> SecurityAuditor {
+    SecurityAuditor::new(AuditorConfig {
+        enabled: true,
+        default_action: "ask".to_string(),
+        ..Default::default()
+    })
+}
+
+/// 写一个规则文件并返回挂到 auditor 上的热载器。
+fn rules_hot(
+    dir: &tempfile::TempDir,
+    rules: &[crate::approval_rules::ApprovalRule],
+) -> Arc<nemesis_config::HotReloader<Vec<crate::approval_rules::ApprovalRule>>> {
+    let path = dir.path().join("approval_rules.json");
+    crate::approval_rules::save_rules(&path, rules).unwrap();
+    Arc::new(nemesis_config::HotReloader::new(
+        path,
+        crate::approval_rules::load_rules,
+    ))
+}
+
+fn cargo_rule() -> crate::approval_rules::ApprovalRule {
+    crate::approval_rules::ApprovalRule {
+        op: "process_exec".to_string(),
+        pattern: "cargo test *".to_string(),
+        action: "allow".to_string(),
+        created_at: "t".to_string(),
+    }
+}
+
+fn exec_request(id: &str, target: &str) -> OperationRequest {
+    OperationRequest {
+        id: id.to_string(),
+        op_type: OperationType::ProcessExec,
+        danger_level: DangerLevel::Critical,
+        user: "test".to_string(),
+        source: "cli".to_string(),
+        target: target.to_string(),
+        timestamp: None,
+        ..Default::default()
+    }
+}
+
+#[test]
+fn approval_rule_auto_allows_matching_exec_prefix() {
+    let auditor = ask_auditor();
+    let dir = tempfile::tempdir().unwrap();
+    auditor.set_approval_rules(rules_hot(&dir, &[cargo_rule()]));
+
+    // 无规则基线：require_approval → 未装配 manager → pending 存储 + 拒绝。
+    let (allowed, err, _) = auditor.request_permission(&exec_request("r0", "cargo publish"));
+    assert!(!allowed);
+    assert!(err.unwrap().contains("approval required"));
+
+    // 命中前缀：cargo test --release 自动放行（F4 验收语义）。
+    let (allowed, err, _) = auditor.request_permission(&exec_request("r1", "cargo test --release"));
+    assert!(allowed, "matching prefix must auto-allow");
+    assert!(err.is_none());
+}
+
+#[test]
+fn approval_rule_does_not_leak_to_other_commands() {
+    let auditor = ask_auditor();
+    let dir = tempfile::tempdir().unwrap();
+    auditor.set_approval_rules(rules_hot(&dir, &[cargo_rule()]));
+    let (allowed, _, _) = auditor.request_permission(&exec_request("r2", "cargo publish"));
+    assert!(!allowed, "non-matching command must not auto-allow");
+}
+
+#[test]
+fn approval_rule_critical_nonexec_op_stays_manual() {
+    // 层级安全门：CRITICAL 非 exec 操作即使有 (op, pattern) 命中也不放行。
+    let auditor = ask_auditor();
+    let dir = tempfile::tempdir().unwrap();
+    let rule = crate::approval_rules::ApprovalRule {
+        op: "file_write".to_string(),
+        pattern: "/tmp/a.txt".to_string(),
+        action: "allow".to_string(),
+        created_at: "t".to_string(),
+    };
+    auditor.set_approval_rules(rules_hot(&dir, &[rule]));
+
+    let req = OperationRequest {
+        id: "r3".to_string(),
+        op_type: OperationType::FileWrite,
+        danger_level: DangerLevel::High,
+        user: "test".to_string(),
+        source: "cli".to_string(),
+        target: "/tmp/a.txt".to_string(),
+        timestamp: None,
+        ..Default::default()
+    };
+    let (allowed_high, _, _) = auditor.request_permission(&req);
+    assert!(allowed_high, "HIGH op with exact rule auto-allows");
+
+    let req_crit = OperationRequest {
+        id: "r4".to_string(),
+        op_type: OperationType::FileWrite,
+        danger_level: DangerLevel::Critical,
+        user: "test".to_string(),
+        source: "cli".to_string(),
+        target: "/tmp/a.txt".to_string(),
+        timestamp: None,
+        ..Default::default()
+    };
+    let (allowed_crit, _, _) = auditor.request_permission(&req_crit);
+    assert!(!allowed_crit, "CRITICAL op must stay manual");
+}
+
+#[test]
+fn approval_rule_hot_reload_picks_up_disk_change() {
+    let auditor = ask_auditor();
+    let dir = tempfile::tempdir().unwrap();
+    auditor.set_approval_rules(rules_hot(&dir, &[]));
+
+    let (before, _, _) = auditor.request_permission(&exec_request("r5", "cargo test --release"));
+    assert!(!before, "empty rules must not auto-allow");
+
+    // 磁盘追加规则（模拟审批卡「总是允许」写入），HotReloader 经 mtime 感知。
+    // 先睡过 Windows mtime 量化窗口（~15.6ms 定时器中断）：两次写盘落在同
+    // 一 tick 会让 check() 看到 mtime 未变而漏载（曾实测 0.00s 内复现）。
+    std::thread::sleep(std::time::Duration::from_millis(30));
+    let path = dir.path().join("approval_rules.json");
+    let mut rules = crate::approval_rules::load_rules(&path);
+    crate::approval_rules::upsert_rule(&mut rules, "process_exec", "cargo test *");
+    crate::approval_rules::save_rules(&path, &rules).unwrap();
+
+    let (after, _, _) = auditor.request_permission(&exec_request("r6", "cargo test --release"));
+    assert!(after, "rule written to disk must hot-reload into effect");
+}
+
+#[test]
+fn approval_rule_auto_allow_is_audit_marked_auto_by_rule() {
+    let auditor = ask_auditor();
+    let dir = tempfile::tempdir().unwrap();
+    let log = dir.path().join("audit.jsonl");
+    auditor.set_log_file(log.to_str().unwrap());
+    auditor.set_approval_rules(rules_hot(&dir, &[cargo_rule()]));
+
+    let (allowed, _, _) = auditor.request_permission(&exec_request("r7", "cargo test --release"));
+    assert!(allowed);
+
+    let raw = std::fs::read_to_string(&log).unwrap();
+    assert!(
+        raw.contains("auto_by_rule"),
+        "audit event must be marked auto_by_rule, got: {}",
+        raw
+    );
+    assert!(raw.contains("cargo test *"));
 }

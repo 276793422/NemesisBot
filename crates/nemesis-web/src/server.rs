@@ -22,6 +22,7 @@ use crate::events::EventHub;
 use crate::session::SessionManager;
 use crate::websocket_handler::handle_websocket_upgrade;
 use axum::extract::State as AxumState;
+use axum::http::HeaderMap;
 use axum::response::IntoResponse;
 use axum::response::sse::{Event as SseEvent, KeepAlive, Sse};
 use axum::routing::{get, post};
@@ -265,6 +266,16 @@ pub struct WebServer {
     /// Populated on inbound in `process_messages`; read by the gateway cron
     /// fire handler to pick a live `chat_id` for the targeted conversation.
     conv_router: Option<crate::conv_router::SharedConvRouter>,
+    /// C5 (2026-09-04): shared LSP manager singleton (same Arc the LspTool
+    /// registers with). Held for the Phase-2 diagnostics loop (C1-C3) and
+    /// any dashboard-driven LSP operations; gateway shutdown_all lives in
+    /// gateway.rs Step 24.
+    lsp_manager: Option<Arc<nemesis_lsp::LspManager>>,
+    /// M1a (2026-09-05): receiving end of the agent tool-event broadcast
+    /// channel. gateway injects after creating the channel; `start` spawns
+    /// the pump that routes each event to the Dashboard WS session
+    /// (`{type:"push", cmd:"tool_event"}`) + EventHub (SSE fallback).
+    agent_event_rx: Option<tokio::sync::broadcast::Receiver<nemesis_types::agent::AgentEvent>>,
 }
 
 impl WebServer {
@@ -306,6 +317,8 @@ impl WebServer {
             cron: None,
             board: None,
             conv_router: None,
+            lsp_manager: None,
+            agent_event_rx: None,
         }
     }
 
@@ -433,10 +446,67 @@ impl WebServer {
         self.conv_router = Some(router);
     }
 
+    /// C5 (2026-09-04): hold the shared LSP manager singleton (same Arc as
+    /// the registered LspTool). Consumers: Phase-2 diagnostics loop (C1-C3);
+    /// process teardown stays in gateway.rs Step 24 (`shutdown_all`).
+    pub fn set_lsp_manager(&mut self, mgr: Arc<nemesis_lsp::LspManager>) {
+        self.lsp_manager = Some(mgr);
+    }
+
+    /// The held LSP manager, if injected (C5).
+    pub fn lsp_manager(&self) -> Option<Arc<nemesis_lsp::LspManager>> {
+        self.lsp_manager.clone()
+    }
+
+    /// M1a (2026-09-05): hold the receiving end of the agent tool-event
+    /// broadcast channel. `start`/`start_with_shutdown` spawn the pump from
+    /// it; injecting `None` (default) keeps the pump off.
+    pub fn set_agent_event_rx(
+        &mut self,
+        rx: tokio::sync::broadcast::Receiver<nemesis_types::agent::AgentEvent>,
+    ) {
+        self.agent_event_rx = Some(rx);
+    }
+
+    /// M1a: spawn the tool-event pump if a receiver was injected. Called
+    /// from `start`/`start_with_shutdown` alongside the status loop.
+    fn start_agent_event_pump(&self) {
+        let Some(rx) = self.agent_event_rx.as_ref().map(|rx| rx.resubscribe()) else {
+            return;
+        };
+        let session_manager = self.session_manager.clone();
+        let event_hub = self.event_hub.clone();
+        tokio::spawn(async move {
+            pump_agent_events(rx, session_manager, event_hub).await;
+        });
+        tracing::info!("[AgentEventPump] tool-event pump started");
+    }
+
     /// Build the Axum router with all routes.
     pub fn build_router(&self) -> Router {
         let (inbound_tx, mut inbound_rx) =
             mpsc::unbounded_channel::<crate::websocket_handler::IncomingMessage>();
+
+        // minimal（无 feature）形态下这四个槽位别名退化为 Option<()>（Copy），
+        // 字面量里 .clone() 会触发 clippy::clone_on_copy（2026-09-05 远端
+        // minimal clippy 实录；workspace 全量 feature unification 掩盖）。
+        // 按 cfg 取值：full 形态 clone Arc 槽，minimal 形态直接 Copy。
+        #[cfg(feature = "memory")]
+        let memory_manager = self.memory_manager.clone();
+        #[cfg(not(feature = "memory"))]
+        let memory_manager = self.memory_manager;
+        #[cfg(feature = "forge")]
+        let forge = self.forge.clone();
+        #[cfg(not(feature = "forge"))]
+        let forge = self.forge;
+        #[cfg(feature = "cluster")]
+        let cluster = self.cluster.clone();
+        #[cfg(not(feature = "cluster"))]
+        let cluster = self.cluster;
+        #[cfg(feature = "workflow")]
+        let workflow_engine = self.workflow_engine.clone();
+        #[cfg(not(feature = "workflow"))]
+        let workflow_engine = self.workflow_engine;
 
         let state = AppState {
             auth_token: self.config.auth_token.clone(),
@@ -460,16 +530,16 @@ impl WebServer {
             },
             agent_service: self.agent_service.clone(),
             data_store: self.data_store.clone(),
-            memory_manager: self.memory_manager.clone(),
-            forge: self.forge.clone(),
+            memory_manager,
+            forge,
             agent_loop: self
                 .agent_loop
                 .clone()
                 .unwrap_or_else(|| Arc::new(parking_lot::RwLock::new(None))),
-            cluster: self.cluster.clone(),
+            cluster,
             cluster_service: self.cluster_service.clone(),
             cluster_log_dir: self.cluster_log_dir.clone(),
-            workflow_engine: self.workflow_engine.clone(),
+            workflow_engine,
             #[cfg(feature = "workflow")]
             chat_secret_store: self.chat_secret_store.clone().unwrap_or_else(|| {
                 Arc::new(nemesis_workflow::chat_secrets::ChatSecretStore::in_memory())
@@ -484,6 +554,12 @@ impl WebServer {
         };
 
         let state = Arc::new(state);
+
+        // L8 PTY 内嵌终端：模块级会话管理器（terminal feature 门控；
+        // 幂等 OnceLock，重复 build_router 不覆盖）。cwd 取自 config
+        // 的 workspace（None = 继承进程 cwd）。
+        #[cfg(feature = "terminal")]
+        crate::pty::ensure_manager(self.config.workspace.clone());
 
         // Spawn the bus bridge: incoming WebSocket messages -> MessageBus.publish_inbound
         if let Some(ref bus) = self.message_bus {
@@ -578,7 +654,16 @@ impl WebServer {
             .route(
                 "/api/chat/sessions/{id}/fork",
                 axum::routing::post(crate::api_handlers::handle_api_chat_session_fork),
-            );
+            )
+            // L4 会话分享（2026-09-07）：公开只读端点。**故意不过
+            // verify_token** —— token 即凭据（分享链接发给无凭据的接收方），
+            // 未知/撤销/会话已删一律 404；见 crate::share 模块头。
+            .route("/api/share/{token}", get(crate::share::handle_api_share));
+
+        // L8 PTY 内嵌终端端点（terminal feature 门控；config
+        // terminal.enabled 运行闸 + token 闸在 handler 内）。
+        #[cfg(feature = "terminal")]
+        let router = router.route("/ws/pty", get(crate::pty::handle_pty_upgrade));
 
         // Workflow REST endpoints (milestone 1a-E3/E4)
         #[cfg(feature = "workflow")]
@@ -706,6 +791,9 @@ impl WebServer {
             self.start_time,
             self.running.clone(),
         );
+        // M1a: tool events → Dashboard WS push + EventHub (no-op if the
+        // gateway never injected a receiver).
+        self.start_agent_event_pump();
 
         let addr: SocketAddr = self.config.listen_addr.parse().map_err(|e| {
             tracing::error!(
@@ -753,6 +841,9 @@ impl WebServer {
             self.start_time,
             self.running.clone(),
         );
+        // M1a: tool events → Dashboard WS push + EventHub (no-op if the
+        // gateway never injected a receiver).
+        self.start_agent_event_pump();
 
         let addr: SocketAddr = self.config.listen_addr.parse().map_err(|e| {
             tracing::error!(
@@ -908,6 +999,28 @@ async fn serve_embedded_static(
     //     path 里），精确匹配两级即可；更深层 /chat/foo 不劫持。
     if (path == "chat" || path == "chat/")
         && let Some(content) = files.get_file("chat/index.html")
+    {
+        return (
+            axum::http::StatusCode::OK,
+            [
+                (
+                    http::header::CONTENT_TYPE,
+                    "text/html; charset=utf-8".to_string(),
+                ),
+                (http::header::ACCESS_CONTROL_ALLOW_ORIGIN, origin),
+                (http::header::VARY, "Origin".to_string()),
+            ],
+            content,
+        )
+            .into_response();
+    }
+
+    // 2c. 会话分享只读页（L4，2026-09-07）：`/share` 与 `/share/` 直达
+    //     share 壳（token 在 ?t= 查询参数里，无子路径语义）。不加此规则
+    //     两者都会落到 SPA fallback 的 Dashboard index.html——分享链接
+    //     打开的是错页面。资产（js/css）带 hash 后缀走规则 1 精确匹配。
+    if (path == "share" || path == "share/")
+        && let Some(content) = files.get_file("share/index.html")
     {
         return (
             axum::http::StatusCode::OK,
@@ -1082,11 +1195,39 @@ pub async fn handle_health(AxumState(state): AxumState<Arc<AppState>>) -> Json<s
 /// SSE event stream handler.
 ///
 /// Subscribes to the EventHub and streams events to the client as
-/// `event: <type>\ndata: <json>\n\n` frames. Includes an initial heartbeat.
+/// `event: <type>\ndata: <json>\nid: <seq>\n\n` frames. Includes an initial heartbeat.
+///
+/// L2（devtool-upgrade 阶段 6）断线补拉：每帧带 `id: <seq>`；浏览器
+/// EventSource 重连时**自动**回传 `Last-Event-ID` header——端点开头从
+/// EventHub 环形缓冲重放 seq>last 的事件（先重放后进 live，seq 游标去重）；
+/// 缺口已滑出缓冲 → 先发 `resync` 提示事件（前端全量刷新兜底）。
+/// broadcast `Lagged`（慢消费者丢帧）同路补偿——从缓冲回捞而非裸 continue。
 pub async fn handle_events_stream(
     AxumState(state): AxumState<Arc<AppState>>,
+    headers: HeaderMap,
 ) -> Sse<impl Stream<Item = Result<SseEvent, Infallible>>> {
+    // 浏览器 EventSource 重连自动回传的断点游标（HeaderMap 键大小写不敏感）。
     let mut receiver = state.event_hub.subscribe();
+    let last_id = headers
+        .get("last-event-id")
+        .and_then(|v| v.to_str().ok())
+        .and_then(|s| s.parse::<u64>().ok());
+
+    let mut last_sent: u64 = 0;
+    let (replay, gap) = match last_id {
+        Some(after) => state.event_hub.replay_after(after),
+        None => (Vec::new(), false),
+    };
+    if let Some(after) = last_id {
+        last_sent = after;
+    }
+    let gap_hint = gap.then(|| {
+        serde_json::json!({
+            "reason": "events_outside_replay_window",
+            "latest_seq": state.event_hub.latest_seq(),
+        })
+        .to_string()
+    });
     let _running = state.running.clone();
 
     let stream = async_stream::stream! {
@@ -1097,18 +1238,55 @@ pub async fn handle_events_stream(
             .event("heartbeat")
             .data(heartbeat_data.to_string()));
 
+        // L2 断线补拉：先重放缓冲内缺口
+        if let Some(hint) = gap_hint {
+            yield Ok(SseEvent::default().event("resync").data(hint));
+        }
+        for event in replay {
+            last_sent = last_sent.max(event.seq);
+            let data = serde_json::to_string(&event.data).unwrap_or_default();
+            yield Ok(SseEvent::default()
+                .event(event.event_type.clone())
+                .id(event.seq.to_string())
+                .data(data));
+        }
+
         // Stream events from the event hub
         loop {
             match receiver.recv().await {
                 Ok(event) => {
+                    // 重放桥接期已送达的 seq 跳过（订阅先于重放快照所致重叠）
+                    if event.seq <= last_sent {
+                        continue;
+                    }
+                    last_sent = event.seq;
                     let data = serde_json::to_string(&event.data).unwrap_or_default();
                     yield Ok(SseEvent::default()
                         .event(&event.event_type)
+                        .id(event.seq.to_string())
                         .data(data));
                 }
                 Err(tokio::sync::broadcast::error::RecvError::Lagged(n)) => {
-                    tracing::warn!("[WebServer] SSE client lagged by {} events, continuing", n);
-                    continue;
+                    // L2：慢消费者丢帧从环形缓冲回捞（原实现裸 continue=丢事件
+                    // 无补偿）；滑出缓冲才 resync。
+                    tracing::warn!("[WebServer] SSE client lagged by {} events, backfilling from replay buffer", n);
+                    let (backfill, gap) = state.event_hub.replay_after(last_sent);
+                    if gap {
+                        yield Ok(SseEvent::default()
+                            .event("resync")
+                            .data(serde_json::json!({
+                                "reason": "lag_beyond_replay_window",
+                                "latest_seq": state.event_hub.latest_seq(),
+                            }).to_string()));
+                    }
+                    for event in backfill {
+                        last_sent = last_sent.max(event.seq);
+                        let data = serde_json::to_string(&event.data).unwrap_or_default();
+                        yield Ok(SseEvent::default()
+                            .event(event.event_type.clone())
+                            .id(event.seq.to_string())
+                            .data(data));
+                    }
                 }
                 Err(tokio::sync::broadcast::error::RecvError::Closed) => {
                     tracing::debug!("[WebServer] SSE event channel closed, ending stream");
@@ -1206,12 +1384,17 @@ pub async fn process_messages_with_router(
 /// `model` (optional, `provider/name`) is forwarded into the `receive` frame
 /// so the Dashboard can render a per-message "供应商·模型名" badge; `None`
 /// omits it (non-assistant / badge-less messages).
+///
+/// `session_key`（L2，optional）是 agent 会话键——chat_event_log 环形缓冲的
+/// 记录键。缺省回退到 `session_id`（连接级 id；旧路径/无元数据帧仍可补拉，
+/// 只是跨连接补拉要靠会话键才寻址得到）。
 pub async fn send_to_session(
     session_manager: &SessionManager,
     session_id: &str,
     role: &str,
     content: &str,
     model: Option<&str>,
+    session_key: Option<&str>,
 ) -> Result<(), String> {
     tracing::debug!(
         session_id = %session_id,
@@ -1227,6 +1410,12 @@ pub async fn send_to_session(
     if let Some(m) = model {
         data["model"] = serde_json::Value::String(m.to_string());
     }
+    // L2（devtool-upgrade 阶段 6）：chat 帧盖会话内单调 seq 并进 per-session
+    // 环形缓冲——`chat.sync {session_id, after_seq}` 断线补拉的数据源。
+    // 记录键优先会话键（跨连接稳定），无元数据才退连接 id。
+    let record_key = session_key.unwrap_or(session_id);
+    let seq = crate::chat_event_log::record(record_key, role, content, model);
+    data["seq"] = serde_json::json!(seq);
     let msg = crate::protocol::ProtocolMessage::new("message", "chat", "receive", Some(data));
     let data = msg
         .to_json()
@@ -1263,6 +1452,110 @@ pub async fn send_history_to_session(
         .broadcast(session_id, &bytes)
         .await
         .map_err(|e| format!("failed to broadcast: {}", e))
+}
+
+// ---------------------------------------------------------------------------
+// Agent tool-event pump (M1a)
+// ---------------------------------------------------------------------------
+
+/// Pump agent tool-events to their consumers: every event is published to the
+/// [`EventHub`] (SSE fallback / future subscribers), and events whose
+/// `chat_id` maps to a live web session (`web:<session_id>`) are additionally
+/// delivered to that session as a WS push frame
+/// `{type:"push", cmd:"tool_event", data:{...}}`.
+///
+/// Runs until the broadcast channel closes (gateway shutdown drops the
+/// sender). Lagged receivers skip and continue — events are best-effort
+/// observability, never correctness.
+pub async fn pump_agent_events(
+    mut rx: tokio::sync::broadcast::Receiver<nemesis_types::agent::AgentEvent>,
+    session_manager: Arc<SessionManager>,
+    event_hub: Arc<EventHub>,
+) {
+    loop {
+        match rx.recv().await {
+            Ok(event) => {
+                let data = match serde_json::to_value(&event) {
+                    Ok(v) => v,
+                    Err(e) => {
+                        tracing::warn!(
+                            error = %e,
+                            "[AgentEventPump] event serialization failed; dropped"
+                        );
+                        continue;
+                    }
+                };
+                // M7（devtool-upgrade 阶段 5）：审批请求走独立 SSE 事件类型
+                // `approval-requested` 全局广播（useSSE 白名单订阅）——审批不
+                // 属于单一会话，不做 web: 定向 ws push；审批卡渲染在 App 级。
+                if matches!(
+                    event,
+                    nemesis_types::agent::AgentEvent::ApprovalRequested { .. }
+                ) {
+                    event_hub.publish("approval-requested", data);
+                    continue;
+                }
+                // F6（devtool-upgrade 阶段 5）：裁决结果同走全局广播——所有
+                // 前端窗口据此摘除本地审批卡（竞速败方不再挂到倒计时结束）。
+                if matches!(
+                    event,
+                    nemesis_types::agent::AgentEvent::ApprovalResolved { .. }
+                ) {
+                    event_hub.publish("approval-resolved", data);
+                    continue;
+                }
+                // F7（devtool-upgrade 阶段 5）：结构化提问同走全局广播——
+                // question 工具阻塞等答，QuestionCard 渲染选项卡；了结事件
+                // 让所有窗口摘卡（与 approval-resolved 同语义）。
+                if matches!(
+                    event,
+                    nemesis_types::agent::AgentEvent::QuestionAsked { .. }
+                ) {
+                    event_hub.publish("question-asked", data);
+                    continue;
+                }
+                if matches!(
+                    event,
+                    nemesis_types::agent::AgentEvent::QuestionResolved { .. }
+                ) {
+                    event_hub.publish("question-resolved", data);
+                    continue;
+                }
+                event_hub.publish("tool_event", data.clone());
+
+                let chat_id = event.chat_id().to_string();
+                if let Some(session_id) = chat_id.strip_prefix("web:") {
+                    let frame = crate::protocol::ProtocolMessage::new(
+                        "push",
+                        "chat",
+                        "tool_event",
+                        Some(data),
+                    );
+                    match frame.to_json() {
+                        Ok(bytes) => {
+                            if let Err(e) = session_manager.broadcast(session_id, &bytes).await {
+                                tracing::debug!(
+                                    session_id = %session_id,
+                                    error = %e,
+                                    "[AgentEventPump] session broadcast failed (session gone?)"
+                                );
+                            }
+                        }
+                        Err(e) => {
+                            tracing::warn!(error = %e, "[AgentEventPump] frame encode failed");
+                        }
+                    }
+                }
+            }
+            Err(tokio::sync::broadcast::error::RecvError::Lagged(n)) => {
+                tracing::warn!(skipped = n, "[AgentEventPump] lagged; events skipped");
+            }
+            Err(tokio::sync::broadcast::error::RecvError::Closed) => {
+                tracing::info!("[AgentEventPump] channel closed; pump exiting");
+                break;
+            }
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -1344,6 +1637,7 @@ pub async fn dispatch_outbound(bus: Arc<MessageBus>, session_manager: Arc<Sessio
                         "assistant",
                         &msg.content,
                         msg.meta.model.as_deref(),
+                        msg.meta.session_key.as_deref(),
                     )
                     .await
                 };
@@ -1375,6 +1669,10 @@ pub async fn dispatch_outbound(bus: Arc<MessageBus>, session_manager: Arc<Sessio
 
 #[cfg(all(test, feature = "workflow"))]
 mod tests;
+
+// M1a (2026-09-05): tool-event pump routing tests (no workflow dependency).
+#[cfg(test)]
+mod agent_event_pump_tests;
 
 #[cfg(all(test, feature = "workflow"))]
 mod extra_tests;

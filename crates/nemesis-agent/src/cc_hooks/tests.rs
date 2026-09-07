@@ -1,14 +1,14 @@
-//! Tests for `crate::cc_hooks` (K2 — U14 seventh batch, CC 方言层).
+//! Tests for `crate::cc_hooks` (K2 — U14 seventh batch, hooks.json 方言层).
 //!
 //! Acceptance mapping (goal §二 第七批 K2 / U14 原验收):
-//! - **现有 CC hook 脚本在我方会话真实触发** → 脚本级测试全部走**真子进程**
+//! - **现有方言 hook 脚本在我方会话真实触发** → 脚本级测试全部走**真子进程**
 //!   （Windows `cmd /C` / 其他 `sh -c`，与桥的执行协议完全一致）：
 //!   `pre_tool_use_exit_2_blocks_with_stderr`（lint-on-edit 形态：读
 //!   tool_input、stderr 拦停）、`loop_integration_*` 三条（经 AgentLoop 真
 //!   run/handle_tool_call 路径）。
 //! - **退出码拦停语义正确** → 2=拦（stderr 作 reason）、0=放行、JSON
 //!   decision=block=拦、超时/其他=非阻断放行，逐条钉住。
-//! - 方言别名：matcher 对 CC 名（Edit/Bash/...）与原始名都命中；
+//! - 方言别名：matcher 对方言名（Edit/Bash/...）与原始名都命中；
 //!   stdin payload 带 `tool_input.file_path`（真 `jq .tool_input.file_path`
 //!   脚本的依赖）。
 
@@ -30,7 +30,7 @@ use crate::types::{AgentConfig, ChatOptions, ToolCallInfo};
 // 平台脚本助手（hooks.json 里写的 command 字符串；桥自己负责 cmd/sh 包裹）
 // ---------------------------------------------------------------------------
 
-/// stderr 输出 msg 并 exit 2（CC 阻断形态）。
+/// stderr 输出 msg 并 exit 2（阻断形态）。
 fn block_cmd(msg: &str) -> String {
     if cfg!(windows) {
         format!("echo {msg} 1>&2 & exit 2")
@@ -44,7 +44,7 @@ fn allow_cmd() -> &'static str {
     "exit 0"
 }
 
-/// stdout 打 JSON decision=block（CC 新式阻断形态）。
+/// stdout 打 JSON decision=block（JSON 阻断形态）。
 fn json_block_cmd(reason: &str) -> String {
     if cfg!(windows) {
         // cmd 的 echo 原样打印引号与花括号。
@@ -173,7 +173,7 @@ fn matcher_hits_cc_alias_and_raw_name() {
         matcher: Some(pattern.to_string()),
         hooks: vec![],
     };
-    // CC 名 matcher 命中我们的原始工具名（经别名）。
+    // 方言名 matcher 命中我们的原始工具名（经别名）。
     assert!(mk("Edit").matches("edit"));
     assert!(mk("^Edit$").matches("edit"));
     assert!(mk("Bash").matches("exec"));
@@ -283,7 +283,7 @@ fn script_outcome_exit_semantics_pure() {
 }
 
 // ---------------------------------------------------------------------------
-// 桥 + 真子进程（CC 脚本执行协议）
+// 桥 + 真子进程（方言脚本执行协议）
 // ---------------------------------------------------------------------------
 
 fn bridge_with(json: &str, project_dir: &std::path::Path) -> CcHookBridge {
@@ -566,10 +566,10 @@ fn first_done(events: &[crate::types::AgentEvent]) -> String {
         .unwrap_or_default()
 }
 
-/// 验收（U14 原文「现有 CC hook 脚本在我方会话真实触发」）：**真·CC 形态**
+/// 验收（U14 原文「现有 hook 脚本在我方会话真实触发」）：**真·方言形态**
 /// lint-on-edit 脚本——磁盘上的 python 脚本文件 + hooks.json 按路径引用 +
 /// 脚本自己读 stdin JSON、取 `tool_input.file_path`（依赖我们的别名增补）、
-/// 对受保护文件 exit 2 + stderr。放行文件 exit 0。与现有 CC 生态脚本同形，
+/// 对受保护文件 exit 2 + stderr。放行文件 exit 0。与现有生态脚本同形，
 /// 不是合成 echo 单行。python 缺席的环境跳过（早退 + 输出说明）。
 #[tokio::test]
 async fn loop_integration_real_lint_script_blocks_protected_file() {
@@ -583,7 +583,7 @@ async fn loop_integration_real_lint_script_blocks_protected_file() {
         return;
     }
     let tmp = tempdir();
-    // 真 lint 脚本：读 stdin JSON（CC 协议），lint 规则 = bad.rs 受保护。
+    // 真 lint 脚本：读 stdin JSON（方言协议），lint 规则 = bad.rs 受保护。
     let script = tmp.join("cc_lint.py");
     std::fs::write(
         &script,
@@ -627,7 +627,7 @@ sys.exit(0)
     assert!(blocked.contains("bad.rs is protected"), "blocked={blocked}");
 }
 
-/// 验收主路径：CC 格式 PreToolUse 脚本经 AgentLoop 真 dispatch 拦下工具。
+/// 验收主路径：方言格式 PreToolUse 脚本经 AgentLoop 真 dispatch 拦下工具。
 #[tokio::test]
 async fn loop_integration_pre_tool_use_blocks_dispatch() {
     let tmp = tempdir();
@@ -688,7 +688,7 @@ async fn loop_integration_prompt_block_aborts_before_llm() {
     assert!(done.contains("⛔ HOOK BLOCKED"), "done={done}");
     assert!(done.contains("prompt denied"), "done={done}");
     assert!(recorder.calls().is_empty(), "LLM must not be called");
-    // 拦下的 prompt 不进 history（CC 语义：模型永远看不到）。
+    // 拦下的 prompt 不进 history（方言语义：模型永远看不到）。
     let hist = instance.get_history();
     assert!(
         hist.iter().all(|m| !m.content.contains("do something bad")),
@@ -790,7 +790,7 @@ fn enrich_tool_input_non_object_and_pathless() {
     let v4: serde_json::Value = serde_json::from_str(&p4).unwrap();
     assert_eq!(v4["tool_input"]["path"].as_str(), Some("a.txt"));
     assert_eq!(v4["tool_input"]["file_path"].as_str(), Some("a.txt"));
-    // edit 的 CC 别名。
+    // edit 的方言别名。
     assert_eq!(v4["tool_name"].as_str(), Some("Edit"));
 }
 

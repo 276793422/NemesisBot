@@ -1,9 +1,22 @@
 <script setup lang="ts">
+import { onMounted } from 'vue'
 import { useAppStore } from '../stores/app'
 import Sidebar from './Sidebar.vue'
 import ToastContainer from './ToastContainer.vue'
+import ApprovalCard from './ApprovalCard.vue'
+import QuestionCard from './QuestionCard.vue'
+import { useApprovals } from '../composables/useApprovals'
+import { useQuestions } from '../composables/useQuestions'
 
 const appStore = useAppStore()
+// M7：审批卡单例订阅（SSE approval-requested + pending 补拉）。
+const { initApprovals } = useApprovals()
+// F7：提问卡单例订阅（SSE question-asked + pending 补拉）。
+const { initQuestions } = useQuestions()
+onMounted(() => {
+  initApprovals()
+  initQuestions()
+})
 </script>
 
 <template>
@@ -26,5 +39,9 @@ const appStore = useAppStore()
     </main>
 
     <ToastContainer />
+    <!-- M7：安全审批卡（模态，任意页面可见） -->
+    <ApprovalCard />
+    <!-- F7：结构化提问卡（模态，任意页面可见） -->
+    <QuestionCard />
   </div>
 </template>

@@ -1,6 +1,6 @@
 package models
 
-// V-batch scripted models (dsh-closure goal V1/V3, 2026-08-23):
+// V-batch scripted models (2026-08-23):
 //
 //	testai-8.0 — big-output model: drives exec to produce 30KB/70KB tool
 //	  results so prune (8KB-64KB band) and spill (>=64KB) can be asserted
@@ -209,14 +209,14 @@ func (m *TestAI90) Process(messages []Message) string {
 
 func (m *TestAI90) Delay() time.Duration { return 0 }
 
-// TestAI91 — V4 (B3) Claude Code delegation verification model.
+// TestAI91 — V4 (B3) claude CLI delegation verification model.
 //
-// User sends <CC_DELEGATE> → ONE response with a single claude_code tool call
-// whose prompt asks the child CLI to create cc_probe.txt (content
-// CC_SUBTASK_OK) and reply DONE. When the tool result comes back (last
+// User sends <DELEGATE> → ONE response with a single claude_code tool call
+// whose prompt asks the child CLI to create cli_probe.txt (content
+// SUBTASK_OK) and reply DONE. When the tool result comes back (last
 // message role=tool) the model reports what the delegation actually produced:
-//   result mentions done / cc_probe.txt → "CC_DELEGATION_SUCCESS"
-//   otherwise                          → "CC_DELEGATION_FAILED"
+//   result mentions done / cli_probe.txt → "DELEGATION_SUCCESS"
+//   otherwise                          → "DELEGATION_FAILED"
 //
 // The authoritative assertions live in the Rust e2e (file on disk + request
 // log); this marker stream only drives the conversation.
@@ -233,14 +233,14 @@ func (m *TestAI91) Process(messages []Message) string {
 	last := messages[len(messages)-1]
 	if last.Role == "tool" {
 		c := strings.ToLower(last.Content)
-		if strings.Contains(c, "done") || strings.Contains(c, "cc_probe.txt") {
-			return "CC_DELEGATION_SUCCESS"
+		if strings.Contains(c, "done") || strings.Contains(c, "cli_probe.txt") {
+			return "DELEGATION_SUCCESS"
 		}
-		return "CC_DELEGATION_FAILED"
+		return "DELEGATION_FAILED"
 	}
-	if strings.Contains(last.Content, "<CC_DELEGATE>") {
+	if strings.Contains(last.Content, "<DELEGATE>") {
 		argsJSON, _ := json.Marshal(map[string]interface{}{
-			"prompt": "Create a plain text file named cc_probe.txt in the current working directory with exactly this content: CC_SUBTASK_OK. Then reply with just the word DONE.",
+			"prompt": "Create a plain text file named cli_probe.txt in the current working directory with exactly this content: SUBTASK_OK. Then reply with just the word DONE.",
 		})
 		response := ProcessedResponse{ToolCalls: []ToolCall{{
 			ID:   fmt.Sprintf("call-cc-%d", time.Now().UnixNano()),
@@ -253,7 +253,7 @@ func (m *TestAI91) Process(messages []Message) string {
 		b, _ := json.Marshal(response)
 		return string(b)
 	}
-	return "send <CC_DELEGATE> to trigger a claude_code delegation"
+	return "send <DELEGATE> to trigger a claude_code delegation"
 }
 
 func (m *TestAI91) Delay() time.Duration { return 0 }
@@ -353,3 +353,57 @@ func (m *TestAI92) Process(messages []Message) string {
 }
 
 func (m *TestAI92) Delay() time.Duration { return 0 }
+
+// TestAI85 — devtool-upgrade 门 7 S1-S7 通用工具驱动模型。
+//
+// User sends <TOOL>{"name":"run_checks","args":{"scope":"test"}}</TOOL> →
+// ONE response emitting exactly that tool call（一次标签 = 一次工具调用）。
+// 工具结果轮（last role=tool）→ 终端文本 "TOOL_DRIVE_DONE"。未带标签 →
+// 提示文本。S1 编码全流程冒烟的驱动器：run_checks / edit_file / exec /
+// git / web_fetch 等任意已注册工具都能逐轮驱动——现有模型的硬编码行为
+// 覆盖不到这些工具（5.0 只有 7 个 FILE_OP、8.0 只有 exec）。
+type TestAI85 struct{}
+
+func NewTestAI85() *TestAI85 { return &TestAI85{} }
+
+func (m *TestAI85) Name() string { return "testai-8.5" }
+
+func (m *TestAI85) Process(messages []Message) string {
+	if len(messages) == 0 {
+		return ""
+	}
+	last := messages[len(messages)-1]
+	if last.Role == "tool" {
+		return "TOOL_DRIVE_DONE"
+	}
+	if last.Role == "user" {
+		// <REPLY>text</REPLY> → 原样回显 text（多行支持）。视觉/前端冒烟用：
+		// 让 assistant 消息携带任意 markdown（如 ```diff 围栏）走真实管线
+		// （LLM → agent loop → chat_log → WS → 前端渲染），而不是只有固定文本。
+		if i := strings.Index(last.Content, "<REPLY>"); i >= 0 {
+			rest := last.Content[i+len("<REPLY>"):]
+			if j := strings.Index(rest, "</REPLY>"); j >= 0 {
+				return rest[:j]
+			}
+		}
+		if i := strings.Index(last.Content, "<TOOL>"); i >= 0 {
+			rest := last.Content[i+len("<TOOL>"):]
+			if j := strings.Index(rest, "</TOOL>"); j >= 0 {
+				var req struct {
+					Name string                 `json:"name"`
+					Args map[string]interface{} `json:"args"`
+				}
+				if err := json.Unmarshal([]byte(strings.TrimSpace(rest[:j])), &req); err == nil && req.Name != "" {
+					if req.Args == nil {
+						req.Args = map[string]interface{}{}
+					}
+					return buildSingleToolCall(req.Name, req.Args)
+				}
+				return "BAD_TOOL_TAG"
+			}
+		}
+	}
+	return `send <TOOL>{"name":"...","args":{...}}</TOOL> to drive any tool call`
+}
+
+func (m *TestAI85) Delay() time.Duration { return 0 }

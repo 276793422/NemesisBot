@@ -70,6 +70,7 @@ async fn spawn_tool_metadata_and_set_context() {
     let t = super::SpawnTool::new(super::SpawnConfig {
         default_model: "m".to_string(),
         max_concurrent: 2,
+        max_depth: 1,
     });
     assert!(!t.description().is_empty());
     assert!(t.parameters()["properties"]["task"].is_object());
@@ -105,8 +106,8 @@ async fn skill_manage_approval_slot_not_running_refuses_write() {
             _risk_level: &str,
             _reason: &str,
             _timeout_secs: u64,
-        ) -> Result<bool, String> {
-            Ok(false)
+        ) -> Result<nemesis_security::auditor::ApprovalVerdict, String> {
+            Ok(nemesis_security::auditor::ApprovalVerdict::denied())
         }
     }
     let slot: super::ApprovalManagerSlot = std::sync::Arc::new(parking_lot::RwLock::new(Some(

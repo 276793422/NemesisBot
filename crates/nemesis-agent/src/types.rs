@@ -73,13 +73,14 @@ pub struct ConversationTurn {
     /// X1 (U3 projection prune): the COMPLETE model-facing replacement text,
     /// recorded at tool time ONLY when it cannot be recomputed from
     /// `content` later — the spill tier (the locator path embeds a
-    /// wall-clock stamp) and any turn-guard nudge decoration (⑤/⑤′/⑥ —
-    /// dynamic per-turn state). `None` ⇒ the projection recomputes
-    /// `prune_tool_result(content, tool_name)`, a pure deterministic
-    /// function, so replay/branch rebuilds recompute rather than consult the
-    /// injection ledger. Idempotence: prune output stays under the inline
-    /// threshold, and old sessions' tool content is already pruned, so
-    /// projecting an already-projected turn is a no-op.
+    /// wall-clock stamp), any turn-guard nudge decoration (⑤/⑤′/⑥ —
+    /// dynamic per-turn state), and B3's spawn-hinted prune text (the hint
+    /// flag is registry state, not turn data). `None` ⇒ the projection
+    /// recomputes `prune_tool_result(content, tool_name, false)`, a pure
+    /// deterministic function, so replay/branch rebuilds recompute rather
+    /// than consult the injection ledger. Idempotence: prune output stays
+    /// under the inline threshold, and old sessions' tool content is
+    /// already pruned, so projecting an already-projected turn is a no-op.
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub tool_result_projection: Option<String>,
     /// T5/T6（多模态，goal 2026-09-03）：本 turn 附带的图片路径引用（路径
@@ -109,6 +110,7 @@ impl ConversationTurn {
         match crate::prune::prune_tool_result(
             &self.content,
             self.tool_name.as_deref().unwrap_or("tool"),
+            false,
         ) {
             Some(pruned) => std::borrow::Cow::Owned(pruned),
             None => std::borrow::Cow::Borrowed(&self.content),
@@ -234,6 +236,42 @@ pub enum AgentState {
     Responding,
 }
 
+/// F1（devtool-upgrade 阶段 4）：agent 工作模式。
+///
+/// Plan 模式下文件修改类工具从供给与分发
+/// 两端被拦（双闸），agent 只能读代码并以文本形式呈现计划；`{workspace}/plans/`
+/// 前缀是唯一写放行路径（计划产物落盘）。Build 是默认全量形态。
+/// 运行时态（不持久化）：重启回到 Build；`/plan` `/build` slash 与
+/// WSAPI `chat.set_mode` 两个入口改同一份状态。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub enum AgentMode {
+    /// 默认模式：全量工具（受 tier / hidden_tools 过滤）。
+    #[default]
+    Build,
+    /// 计划模式：只读工具白名单 + plans/ 写放行。
+    Plan,
+}
+
+impl AgentMode {
+    /// 线上形态（WSAPI / ModeChanged 事件 / 前端徽标共用）。
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            AgentMode::Build => "build",
+            AgentMode::Plan => "plan",
+        }
+    }
+
+    /// 从线上形态解析（大小写宽容）。未知值返回 None（调用方回灌错误，
+    /// 不静默落回默认——与 G1 未知档位 Err 同一纪律）。
+    pub fn parse(s: &str) -> Option<Self> {
+        match s.trim().to_ascii_lowercase().as_str() {
+            "build" => Some(AgentMode::Build),
+            "plan" => Some(AgentMode::Plan),
+            _ => None,
+        }
+    }
+}
+
 /// Events emitted by the agent loop during execution.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum AgentEvent {
@@ -269,10 +307,10 @@ pub enum AgentEvent {
 pub const TOOL_OUTCOME_UNKNOWN: &str = "TOOL_OUTCOME_UNKNOWN";
 
 /// Wording for the synthetic tool result injected by
-/// [`repair_tool_message_pairs`]. Deliberately ONE tier: unlike dsh (which has
-/// a durable `tool/call` event and can distinguish "started, outcome unknown"
-/// from "never started"), we have no execution-trace event, so splitting into
-/// two tiers would fabricate precision we do not have. The single message
+/// [`repair_tool_message_pairs`]. Deliberately ONE tier: there is no durable
+/// execution-trace event to distinguish "started, outcome unknown" from
+/// "never started", so splitting into two tiers would fabricate precision we
+/// do not have. The single message
 /// tells the model the outcome is unknown and how to decide on a retry.
 const TOOL_OUTCOME_UNKNOWN_TEXT: &str = "该工具调用没有记录到结果，其执行结果未知。请根据操作性质决定：仅在操作是只读或幂等时可以直接重试；若可能有副作用（写文件、执行命令、发送消息等），请先验证外部状态（读回文件 / 检查输出）或询问用户，不要盲目重试。";
 

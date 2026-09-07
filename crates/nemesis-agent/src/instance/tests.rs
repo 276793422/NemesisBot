@@ -249,7 +249,12 @@ fn instance_summary_cache_clear() {
 #[test]
 fn instance_context_window() {
     let mut instance = AgentInstance::new(test_config());
-    assert_eq!(instance.context_window(), 32000);
+    // N1：默认与 FALLBACK_CONTEXT_WINDOW 同源（原 32000 对编码场景过小）。
+    assert_eq!(
+        instance.context_window(),
+        crate::r#loop::FALLBACK_CONTEXT_WINDOW
+    );
+    assert_eq!(instance.context_window(), 128_000);
 
     instance.set_context_window(64000);
     assert_eq!(instance.context_window(), 64000);

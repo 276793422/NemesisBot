@@ -1,13 +1,12 @@
-//! Tool-result spill storage (U4, dsh-alignment first batch).
+//! Tool-result spill storage (U4).
 //!
 //! Results too large even for the pruned inline form (see `prune.rs` for the
 //! smaller tier) are written whole to a session-scoped file under
 //! `<home>/logs/spill/…`; the conversation keeps only a bounded preview plus
 //! the file locator and a retrieval hint, so the model can `read_file` the
 //! spill back with offset/limit or `grep` it when it actually needs the full
-//! text. Mirrors dsh's spill seam (SpillStore + spill-policy) at a fraction
-//! of the shape: no backend abstraction yet — local std-fs only, per the
-//! goal's no-new-dependencies constraint.
+//! text. Shape kept minimal: no backend abstraction yet — local std-fs only,
+//! per the goal's no-new-dependencies constraint.
 //!
 //! Path safety: session keys and call ids are model-influenced strings, so
 //! they are sanitized to a conservative filename character set BEFORE they
@@ -65,14 +64,17 @@ pub enum SpillOutcome {
     BelowThreshold,
     /// Spill failed (storage error). The caller keeps the ORIGINAL result —
     /// a spill failure must never turn a successful tool call into a lossy
-    /// one (best-effort semantics, same stance as dsh's spill-policy).
+    /// one (best-effort semantics).
     SpillFailed,
     /// Spilled; this is the replacement text for the conversation.
     Spilled(String),
 }
 
 /// Full-text spill with bounded preview + locator. `stamp` is the caller's
-/// sortable timestamp suffix (e.g. `20260821_153000_123`).
+/// sortable timestamp suffix (e.g. `20260821_153000_123`). `hint_subagent`
+/// (B3) appends the spawn hint to the locator when the registry has a spawn
+/// tool (see `prune::prune_tool_result` for the recomputability caveat —
+/// spill text is already projection-recorded regardless).
 pub fn spill_tool_result(
     result: &str,
     tool_name: &str,
@@ -80,6 +82,7 @@ pub fn spill_tool_result(
     session_key: &str,
     stamp: &str,
     call_id: &str,
+    hint_subagent: bool,
 ) -> SpillOutcome {
     if result.chars().count() < SPILL_THRESHOLD_CHARS {
         return SpillOutcome::BelowThreshold;
@@ -104,12 +107,43 @@ pub fn spill_tool_result(
     }
     let preview: String = result.chars().take(SPILL_PREVIEW_CHARS).collect();
     let total = result.chars().count();
+    let hint = if hint_subagent {
+        crate::prune::SUBAGENT_HINT_SUFFIX
+    } else {
+        ""
+    };
     SpillOutcome::Spilled(format!(
-        "{preview}\n[输出过大（{} 字符）已完整保存到：{}。可用 read_file 工具按 offset/limit 分段读取该文件，或用 grep 工具在其中检索关键词。]\n（工具：{}）",
+        "{preview}\n[输出过大（{} 字符）已完整保存到：{}。可用 read_file 工具按 offset/limit 分段读取该文件，或用 grep 工具在其中检索关键词。{}]\n（工具：{}）",
         total,
         path.display(),
+        hint,
         tool_name
     ))
+}
+
+/// C8（2026-09-05）：工具主动存档——**无条件**整体落盘，返回文件路径。
+///
+/// 与 [`spill_tool_result`] 的 ≥64KB 自动闸不同：run_checks 的回灌是聚焦后
+/// 的错误摘录，全量输出无论大小都要有处可查（read_file/grep 可检索），所以
+/// 由工具自己调用本函数存档。路径净化/布局与 spill 完全一致（同一
+/// `cleanup_expired` 按 mtime 兜底清扫，无新增保留策略）。失败时返回
+/// Err——调用方在回灌里诚实注明「全量未存档」，聚焦部分照常可用。
+pub fn save_tool_output(
+    content: &str,
+    spill_root: &Path,
+    session_key: &str,
+    stamp: &str,
+    call_id: &str,
+) -> Result<PathBuf, String> {
+    let path = spill_path(spill_root, session_key, stamp, call_id);
+    let dir = path
+        .parent()
+        .ok_or_else(|| "spill path has no parent".to_string())?;
+    std::fs::create_dir_all(dir).map_err(|e| format!("create spill dir failed: {e}"))?;
+    let mut file = std::fs::File::create(&path).map_err(|e| format!("create spill failed: {e}"))?;
+    file.write_all(content.as_bytes())
+        .map_err(|e| format!("write spill failed: {e}"))?;
+    Ok(path)
 }
 
 /// U4 retention cleanup: delete spill files older than `retention_days`
