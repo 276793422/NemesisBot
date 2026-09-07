@@ -55,6 +55,21 @@
 - **连接池管理** - 高效的连接复用和管理
 - **限流保护** - 防止 RPC 调用过载
 
+### 编码代理（把 Bot 当代码开发工具用）
+
+**多入口编码 agent**（2026-09 devtool-upgrade 落地），安全 8 层 + 审批 + 急停在所有新入口同源生效——headless、编辑器、IM 通道都不是安全旁路：
+
+- **headless 单任务** - `nemesisbot run "任务"` 无端口无 UI 跑完即退；`--mode plan` 只读规划（写类工具拦截，仅放行 plans/）、`--format json` NDJSON 事件流（tool_start/tool_end/turn/final/error）、`--max-turns`、`--workspace` 独立工作区、退出码可脚本化
+- **ACP 编辑器接入** - `nemesisbot acp`（stdio JSON-RPC），Zed 等 ACP 客户端直接驱动；审批桥接到编辑器 permission 请求（超时=拒绝，失败关闭）
+- **plan/build 双模式** - Dashboard 徽标 / `/plan` `/build` 斜杠命令 / WSAPI 随时切换，子代理同罩
+- **审批卡 + 结构化提问** - 高危操作弹审批卡（支持"总是允许"前缀记忆规则）；agent 可用 question 工具发选择题阻塞等答（超时交还模型自行判断）
+- **checkpoint / undo / redo / diff** - turn 边界自动快照（git 影子库零拷贝 / JSON 快照双形态）；消息级 rewind/redo；会话级文件 diff 查看器
+- **编码辅助闭环** - LSP 只读语义查询（definition/references/implementation/hover；rust-analyzer/gopls/ts-ls/pyright/clangd）、编辑后诊断回灌、格式化钩子、run_checks
+- **后台进程注册表** - `background_start/output/kill` 三件套：长跑进程查增量输出、分页读、树杀
+- **PTY 内嵌终端** - Dashboard 终端 Tab（xterm.js + ConPTY；双闸默认关：编译 feature + `terminal.enabled`）
+- **工作区面板** - 文件树（懒展开）、@路径补全、工具调用卡片实时流、断线补拉（全局 seq + SSE Last-Event-ID）
+- **会话管理** - 会话分叉（fork）、只读分享链接（token 即凭据）、自动标题、手动 /compact（小模型通道）、AGENTS.md 与 CLAUDE.md 等价兼容
+
 ---
 
 ## 今天终于四个平台都跑起来了（这块是人写的）
@@ -156,11 +171,11 @@ cargo test --workspace
 cargo test -p nemesis-agent
 cargo test -p nemesis-cluster
 
-# 运行集成测试
-cargo test -p integration-test
+# 运行 CLI 集成测试（纯 bin runner，须 cargo run；依赖拉起真实 gateway + TestAIServer）
+cargo run -p integration-test
 
-# 运行 P2P 集群测试
-cargo test -p cluster-test
+# 运行 P2P 集群测试（同为纯 bin runner）
+cargo run -p cluster-test
 ```
 
 ### 初始化
@@ -193,12 +208,12 @@ nemesisbot model default --model zhipu/glm-4.7
 **模型能力分级（小模型支持）**：每个模型在 config.json 有 `model_tier` 字段（`auto`/`mini`/`normal`/`big`），决定给它多少工具、多少次校验重试。`auto` 默认按模型名/参数量自动检测；看不出大小的 opaque 别名建议跑探针实测：
 
 ```bash
-nemesisbot model probe <name>            # 跑 7 题探针，按实测能力定档（~7 次 LLM 调用）
-nemesisbot model set-tier <name> mini    # 手动覆盖（mini=核心 13 工具 / normal=23 / big=全量 41）
+nemesisbot model probe <name>            # 跑 8 题探针（7 工具 + 1 视觉），按实测能力定档
+nemesisbot model set-tier <name> mini    # 手动覆盖（mini=核心 13 工具 / normal=33 / big=全量）
 nemesisbot model set-size <name> 30B     # 或直接告诉参数量，auto 检测会采信
 ```
 
-档位效果：**mini** 给核心 13 个工具 + 校验重试 3 次（小模型减负）；**normal** ~23 工具 + 重试 2 次；**big** 全量 41 工具 + 重试 1 次。运行中改 tier **无需重启 gateway**（下一轮 LLM 自动重解析）。完整评估方法见 `docs/INFO/2026-07-05_model-support-eval-suite.md`。
+档位效果：**mini** 给核心 13 个工具 + 校验重试 3 次（小模型减负）；**normal** 33 工具 + 重试 2 次；**big** 全量工具不限 + 重试 1 次。运行中改 tier **无需重启 gateway**（下一轮 LLM 自动重解析）。完整评估方法见 `docs/INFO/2026-07-05_model-support-eval-suite.md`。
 
 ### 启动服务
 
@@ -209,6 +224,20 @@ nemesisbot gateway
 # 访问 Web 界面
 # 浏览器打开：http://127.0.0.1:49000
 # 默认访问密钥：276793422
+```
+
+### 编码代理用法（headless / ACP）
+
+```bash
+# headless 单任务：跑完即退，stdout 只承载最终回复，退出码 0=成功 / 1=装配失败或仅 error
+nemesisbot run "修复 utils.rs 里的编译警告"
+nemesisbot run --mode plan --workspace ./myapp "分析项目结构，输出重构计划"
+
+# 事件流（NDJSON：tool_start / tool_end / turn / final / error），任务从 stdin 读
+nemesisbot run --format json - < task.txt
+
+# ACP 编辑器接入（Zed 等 ACP 客户端经 stdio JSON-RPC 驱动）
+nemesisbot acp
 ```
 
 **系统托盘**（Windows）：启动 gateway 后自动在系统托盘显示图标，右键菜单支持：
@@ -551,9 +580,9 @@ nemesisbot gateway --no-console # 仅记录到文件
 
 ```
 NemesisBot_Rust/
-├── crates/                          # 核心模块（37 个 crate）
+├── crates/                          # 核心模块（41 个 crate）
 │   ├── nemesis-agent/               # Agent 核心引擎（LLM 循环 + 工具执行）
-│   ├── nemesis-tools/               # 工具系统（32+ 工具）
+│   ├── nemesis-tools/               # 工具系统（40+ 工具）
 │   ├── nemesis-security/            # 安全审计系统（8 层安全体系）
 │   ├── nemesis-sandbox/             # Sandboxie 沙盒集成（执行体隔离 Layer 2，Windows）
 │   ├── nemesis-cluster/             # 分布式集群（RPC + 续行快照）
@@ -562,15 +591,17 @@ NemesisBot_Rust/
 │   ├── nemesis-forge/               # Forge 自学习框架
 │   ├── nemesis-memory/              # 持久化记忆（含 ONNX 嵌入）
 │   ├── nemesis-mcp/                 # MCP 协议（stdio + HTTP/SSE 传输）
+│   ├── nemesis-lsp/                 # 只读 LSP 客户端（definition/references/implementation/hover）
 │   ├── nemesis-skills/              # 技能系统
 │   ├── nemesis-workflow/            # 工作流引擎
+│   ├── nemesis-board/               # 看板（Board）issue/评论数据模型 + SQLite 存储
 │   ├── nemesis-cron/                # 定时任务（croner 解析器）
 │   ├── nemesis-config/              # 配置管理
 │   ├── nemesis-data/                # 数据处理和存储抽象
 │   ├── nemesis-bus/                 # 消息总线
 │   ├── nemesis-routing/             # 路由分发
 │   ├── nemesis-desktop/             # 桌面功能（托盘 + 子进程管理；Linux 通过 plugin-ui.so 运行时加载）
-│   ├── nemesis-web/                 # Web API + SSE（20 个 Handler）
+│   ├── nemesis-web/                 # Web API + WS + SSE（33 个 Handler）
 │   ├── nemesis-auth/                # 认证系统
 │   ├── nemesis-services/            # 服务管理器
 │   ├── nemesis-types/               # 公共类型定义
@@ -587,14 +618,19 @@ NemesisBot_Rust/
 │   ├── nemesis-state/               # 状态管理
 │   ├── nemesis-utils/               # 工具函数
 │   ├── nemesis-devices/             # 设备管理
+│   ├── nemesis-eval-proxy/          # eval 沙盒本地 LLM 代理（沙盒内调真实云端模型）
+│   ├── nemesis-injector/            # 挂起启动 + EP 注入（沙盒支撑件）
 │   ├── nemesis-verify/              # 签名验证核心（v3：DLL 验证模块 + 公钥随签名走 + 证书链，与 Authenticode 同构；独立子系统，待接入主程序）
 │   └── nemesis-ui/                  # UI 组件
 ├── plugins/                         # 插件
 │   ├── plugin-ui/                   # WebView2 窗口 DLL + Linux 系统托盘（GTK + libayatana-appindicator3）
 │   └── plugin-onnx/                 # ONNX 嵌入模型（本地记忆处理）
 ├── nemesisbot/                      # 主程序入口
-│   └── src/commands/                # CLI 命令（25 个）
+│   └── src/commands/                # CLI 命令（34 个命令模块 / 35 个 clap 子命令）
 │       ├── gateway.rs               # 网关（核心启动入口）
+│       ├── run.rs                   # headless 单任务（无端口跑完即退）
+│       ├── acp.rs                   # ACP server（编辑器接入）
+│       ├── estop.rs                 # 急停开关
 │       ├── agent.rs                 # Agent 管理
 │       ├── cluster.rs               # 集群管理
 │       ├── model.rs                 # 模型管理
@@ -606,19 +642,20 @@ NemesisBot_Rust/
 │       ├── workflow.rs              # 工作流
 │       ├── voice.rs                 # 语音管理
 │       └── ...                      # 其他命令
-├── test-tools/                      # 测试工具（25 个项目：16 workspace member + 独立项目）
-│   ├── TestAIServer/                # AI 服务器模拟器（Go，8 个测试模型）
+├── test-tools/                      # 测试工具（26 个项目：17 workspace member + 独立项目）
+│   ├── TestAIServer/                # AI 服务器模拟器（Go，20 个测试模型 + 别名表 + /slow 端点）
 │   ├── test-harness/                # 共享测试辅助库（进程生命周期/WS/断言）
-│   ├── integration-test/            # CLI 集成测试（22 命令，298 断言）
+│   ├── integration-test/            # CLI 集成测试（22 命令，492 断言；纯 bin runner 用 cargo run）
 │   ├── cluster-test/                # P2P 集群测试（12+6）
-│   ├── cluster-uat/                 # 集群 UAT（T1-T14 端到端）
+│   ├── cluster-uat/                 # 集群 UAT（T1-T18 端到端）
 │   ├── e2e-tests/                   # 端到端 AI 管线测试
 │   ├── memory-test/                 # 内存系统集成测试
 │   ├── approval-test/               # 安全审批流程测试
+│   ├── nemesis-build-config/        # 构建配置器 TUI（menuconfig 风格功能裁剪）
 │   ├── exe-sign-tool/               # 可执行文件签名/验签 CLI（v3，依赖 nemesis-verify）
 │   ├── revoke-server/               # 云端签发 + 吊销服务端（v3，axum + rusqlite）
 │   ├── verify-loader/               # 加载 nemesis_verify.dll 的签名验证测试工具
-│   └── ...                          # mcp / http-test-server / websocket-client / ws-send 等
+│   └── ...                          # mcp / http-test-server / websocket-client / ws-send / ws-api-send 等
 ├── docs/                            # 文档目录
 │   ├── BUG/                         # 已知问题和调查
 │   ├── INFO/                        # 技术信息和决策记录
@@ -640,9 +677,9 @@ NemesisBot_Rust/
 
 ## 技术特点
 
-- **800+ Rust 源文件** - 清晰的 workspace crate 架构（其中约 460 个非测试源文件，持续增长）
-- **37 个核心 crate** - 模块化设计，职责清晰
-- **17,000+ 单元测试** - 全部通过，覆盖率超过 Go 版本
+- **1200+ Rust 源文件** - 清晰的 workspace crate 架构（持续增长）
+- **41 个核心 crate** - 模块化设计，职责清晰
+- **22,000+ 单元测试** - 全部通过，覆盖率超过 Go 版本
 - **多平台支持** - Windows / Linux / macOS / Android（交叉编译）
 - **纯 Rust TLS** - 使用 rustls 替代 OpenSSL，Android 无需额外 C 库
 - **ABAC 安全引擎** - 8 层安全体系（注入→命令→ABAC→凭据→DLP→SSRF→病毒扫描→审计链）
@@ -664,6 +701,7 @@ NemesisBot_Rust/
 - **持久化记忆** - AI 持续学习和进化
 - **Skill 系统** - 远程仓库搜索 + 本地技能管理
 - **多实例部署** - 支持同一设备运行多个独立实例
+- **编码代理（devtool-upgrade）** - headless `run`（NDJSON 事件流）+ ACP 编辑器接入 + plan/build 双模式 + 审批卡/question + checkpoint/undo/redo/diff + 后台进程注册表 + PTY 内嵌终端（默认关）+ 会话分叉/分享/自动标题；安全 8 层在所有入口同源生效
 - **编译期功能裁剪** - 所有子系统（cluster/forge/memory/workflow/security/voice/desktop/各通道…）均为可选 cargo feature，默认全开，可按需关闭；提供 menuconfig 风格 TUI 配置器（`scripts/customize.{bat,sh}`）和 `iotsmall` profile（panic=abort，产物约 10MB，IoT / 低资源场景）。**前端同步裁剪**：关掉的 feature 对应的 Vue 页面也不编译（Vite tree-shake），前后端同源
 
 ---
@@ -673,11 +711,13 @@ NemesisBot_Rust/
 ```
 nemesisbot gateway          # 启动网关（Web UI + 托盘）
 nemesisbot dashboard        # 打开 Dashboard（自动启动网关如未运行）
+nemesisbot run              # headless 单任务（跑完即退；--mode plan / --format json / --workspace）
+nemesisbot acp              # ACP server（Zed 等编辑器 stdio 接入）
 nemesisbot onboard          # 初始化配置
-nemesisbot model            # 模型管理（add/list/default）
+nemesisbot model            # 模型管理（add/list/default/probe/set-tier/set-size/prices）
 nemesisbot channel          # 通道管理
 nemesisbot cluster          # 集群管理（init/status/enable/peers）
-nemesisbot security         # 安全配置（scanner/audit）
+nemesisbot security         # 安全配置（approvals/scanner/audit）
 nemesisbot scanner          # 扫描引擎管理（clamav install/enable/test）
 nemesisbot sandbox          # 沙盒管理（Sandboxie install/start/stop/pending/commit）
 nemesisbot skills           # 技能管理（search/install/add-source）
@@ -685,7 +725,14 @@ nemesisbot persona          # 人格管理（list/search/install/activate/remove
 nemesisbot forge            # 自学习管理（status/enable/reflect）
 nemesisbot cron             # 定时任务管理
 nemesisbot mcp              # MCP 协议管理（inspect/tools/resources/prompts/discover）
-nemesisbot workflow         # 工作流管理（validate/template/create）
+nemesisbot workflow         # 工作流管理（validate/template/create/run）
+nemesisbot issue            # 看板 issue 管理（create/list/get/status/comment/stats）
+nemesisbot autopilot        # 看板定时规则（cron 建单/派发）
+nemesisbot eval             # eval 沙盒安全评估（prompt/skill/rules）
+nemesisbot estop            # 急停开关（CLI/托盘/Dashboard/WSAPI 四入口）
+nemesisbot history          # 会话历史全文搜索
+nemesisbot session          # 会话管理（分叉/恢复）
+nemesisbot credentials      # 模型 API key 管理（credentials.yaml）
 nemesisbot log              # 日志管理（set-level/enable-file/disable-file）
 nemesisbot auth             # 认证管理
 nemesisbot memory           # 增强内存管理（status/enable/disable）
@@ -705,30 +752,42 @@ nemesisbot agent            # Agent 管理
 
 > **NemesisBot Rust 版本是 Go 版本的 1:1 功能替代品**
 
-在当前版本实现了完全的功能对等 —— 所有 21 个通道、32+ 工具、8 层安全体系、分布式集群、Forge 自学习、SSE 流式传输、系统托盘、桌面 GUI 窗口等功能全部一一对应，可直接作为生产替代品使用。
+在当前版本实现了完全的功能对等 —— 所有 21 个通道、42+ 工具、8 层安全体系、分布式集群、Forge 自学习、SSE 流式传输、系统托盘、桌面 GUI 窗口等功能全部一一对应，可直接作为生产替代品使用。
 
 参照 Golang 的版本是：8524282c14e86f92883933f44345ca941fd90252
 
-**最新状态**：已实现 100% 功能对等，所有 21 个通道、32+ 工具、8 层安全体系、分布式集群、Forge 自学习、SSE 流式传输、系统托盘、桌面 GUI 窗口等功能全部一一对应。Linux 系统托盘技术选型已完成，选择继续使用 libayatana-appindicator3 + GTK 以保证桌面面板兼容性（详见 `docs/INFO/2026-06-10_ksni-tray-migration.md`）。
+**最新状态**：已实现 100% 功能对等，所有 21 个通道、42+ 工具、8 层安全体系、分布式集群、Forge 自学习、SSE 流式传输、系统托盘、桌面 GUI 窗口等功能全部一一对应；并在此基础上扩展出 Go 版没有的编码代理能力（headless run / ACP / plan-build / 审批卡 / checkpoint-undo / PTY 终端）。Linux 系统托盘技术选型已完成，选择继续使用 libayatana-appindicator3 + GTK 以保证桌面面板兼容性（详见 `docs/INFO/2026-06-10_ksni-tray-migration.md`）。
 
 | 指标 | Go 版本 | Rust 版本 |
 |------|---------|----------|
 | 通道类型 | 21 | 21 |
-| CLI 命令 | 21 个顶级 | 25 个顶级（含 dashboard、persona、sandbox） |
-| 工具 | 20+ | 32+（含 mcp_discover、cli_reference、exec_async、cluster_rpc 等） |
+| CLI 命令 | 21 个顶级 | 35 个顶级（含 dashboard、persona、sandbox、estop、issue、autopilot、eval、run、acp） |
+| 工具 | 20+ | 42+（含 mcp_discover、cli_reference、cluster_rpc、background_*、lsp、claude_code/codex_delegate 等） |
 | Forge 组件 | 24 文件 | 26 文件 |
 | Web API 端点 | 7 | 17（含 SSE /api/chat/stream） |
 | SSE 流式传输 | 内置流式实现 | HttpProvider.chat_stream + /api/chat/stream |
 | 系统托盘 | fyne.io/systray | tray-icon + winit（Windows/macOS）；plugin-ui.so + GTK + libayatana-appindicator3（Linux） |
 | 桌面窗口 | Wails (WebView2) | plugin-ui DLL (wry + tao) |
-| 审批弹窗 | 有 | 有（含 DLL 缺失安全降级） |
+| 审批弹窗 | 有 | 有（含 DLL 缺失安全降级 + pattern 记忆 + 编辑器桥接） |
 | 沙盒执行 | 无 | 有（Sandboxie 集成：执行体隔离 Layer 1 + 沙盒 Layer 2） |
-| 单元测试 | ~6,500 | ~17,000 |
+| 编码代理入口 | 无 | 有（headless run + ACP + plan/build + checkpoint/undo/redo + PTY 终端） |
+| 单元测试 | ~6,500 | ~22,000 |
 | 人格系统 | 无 | 有（agency-agents 仓库 + 运行时切换） |
 | Logs Dashboard | 无 | 有（SSE 实时流 + 会话/审计/审计链） |
 | 集群请求日志 | 单文件 | 按设备+任务分目录（双向视角） |
 
 ### Rust 版本额外功能
+
+**编码代理（devtool-upgrade，2026-09）**：
+- `run` 命令 — headless 单任务（无端口跑完即退；plan 只读模式；NDJSON 事件流；退出码可脚本化）
+- `acp` 命令 — ACP server（Zed 等编辑器接入；审批桥接编辑器 permission 请求）
+- plan/build 双模式 — Dashboard/斜杠/WSAPI/headless 四路切换，写类工具 dispatch 闸拦截
+- 审批卡 + question 工具 — Dashboard/IM 通道人工审批 + "总是允许" pattern 记忆 + 结构化提问
+- checkpoint/undo/redo/diff — turn 边界影子库快照（零拷贝）、消息级 rewind/redo、会话文件 diff
+- PTY 内嵌终端 — xterm.js + ConPTY（`terminal.enabled` 默认关，双闸不暴露探测面）
+- LSP 工具 — 只读语义查询（definition/references/implementation/hover）+ 诊断回灌（`agents.lsp_tool` 默认关）
+- 后台进程注册表 — background_start/output/kill（增量输出/分页/树杀）
+- 会话分叉（Z1）+ 只读分享（share）+ 自动标题（small_model 通道）+ AGENTS.md 兼容
 
 **命令/CLI**：
 - `dashboard` 命令 — 一键打开 Dashboard UI（自动启动网关）
