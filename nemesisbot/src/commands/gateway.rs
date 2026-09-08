@@ -812,8 +812,10 @@ impl nemesis_cluster::rpc::peer_chat_handler::TaskResultPersister
     }
 
     fn delete(&self, task_id: &str) -> Result<(), String> {
-        // TaskResultStore doesn't have a delete method; this is a no-op.
-        let _ = task_id;
+        // 2026-09-08 修复：旧实现是 no-op（注释谎称 "TaskResultStore doesn't
+        // have a delete method"——remove() 明明存在）。后果：回调成功后
+        // set_running 占位文件永留 rpc_cache/results/，7 天 TTL 才清扫。
+        self.result_store.remove(task_id);
         Ok(())
     }
 }
@@ -1790,6 +1792,7 @@ pub async fn run(local: bool, extra_args: &[String]) -> Result<()> {
         Arc<nemesis_cluster::cluster::Cluster>,
         Arc<nemesis_cluster::ClusterTaskList>,
         Arc<nemesis_cluster::ClusterWorkQueue>,
+        Arc<dyn nemesis_cluster::rpc::peer_chat_handler::TaskResultPersister>,
     )> = None;
     // Always create cluster infrastructure (Cluster object, handlers, adapter refs).
     // Network components are started below only when cluster_should_start is true.
@@ -1957,11 +1960,17 @@ pub async fn run(local: bool, extra_args: &[String]) -> Result<()> {
         }
 
         // Set result persister for fallback when callback fails.
-        let persister = Arc::new(ClusterResultPersisterAdapter {
-            result_store: result_store.clone(),
-            node_id: node_id_for_handler.clone(),
-        });
-        handler.set_result_persister(persister);
+        // 2026-09-08 G1 收口：同一份 persister 同时交给 peer_chat_handler
+        // （legacy 路径）与 cluster agent work-queue 路径（经
+        // cluster_adapter_refs → ClusterServiceAdapter）。此前 work-queue
+        // 路径（生产唯一路径）不接 persister：回调失败真结果不落盘 → G5
+        // 恢复轮询只能拿到 running 占位；回调成功占位也不清理。
+        let persister: Arc<dyn nemesis_cluster::rpc::peer_chat_handler::TaskResultPersister> =
+            Arc::new(ClusterResultPersisterAdapter {
+                result_store: result_store.clone(),
+                node_id: node_id_for_handler.clone(),
+            });
+        handler.set_result_persister(persister.clone());
 
         // We'll register the handler after Arc::new(cluster) below.
         let handler_arc = Arc::new(handler);
@@ -2360,6 +2369,7 @@ pub async fn run(local: bool, extra_args: &[String]) -> Result<()> {
             cluster.clone(),
             cluster_task_list.clone(),
             cluster_work_queue.clone(),
+            persister.clone(),
         ));
     }
 
@@ -2871,7 +2881,7 @@ pub async fn run(local: bool, extra_args: &[String]) -> Result<()> {
     // --- Inject tool capabilities into cluster for discovery broadcast ---
     #[cfg(feature = "cluster")]
     {
-        if let Some((ref cluster, _, _)) = cluster_adapter_refs {
+        if let Some((ref cluster, _, _, _)) = cluster_adapter_refs {
             let tool_names = agent_loop.tool_names();
             cluster.set_capabilities(tool_names);
             info!(
@@ -2886,7 +2896,9 @@ pub async fn run(local: bool, extra_args: &[String]) -> Result<()> {
     // task recovery from disk, cluster agent loop spawn, ClusterRpcTool enable.
     #[cfg(feature = "cluster")]
     {
-        if let Some((cluster, task_list, work_queue)) = cluster_adapter_refs.take() {
+        if let Some((cluster, task_list, work_queue, result_persister)) =
+            cluster_adapter_refs.take()
+        {
             let adapter = Arc::new(crate::cluster_service::ClusterServiceAdapter::new(
                 cluster,
                 shared_resources.clone(),
@@ -2894,6 +2906,7 @@ pub async fn run(local: bool, extra_args: &[String]) -> Result<()> {
                 home.clone(),
                 task_list,
                 work_queue,
+                result_persister,
             ));
             // Only perform first start when both config flags are enabled.
             // Otherwise the adapter is created but idle — can be started from Dashboard.
@@ -3028,7 +3041,7 @@ pub async fn run(local: bool, extra_args: &[String]) -> Result<()> {
         let board_role = if cluster_should_start {
             cluster_adapter_refs
                 .as_ref()
-                .map(|(c, _, _)| nemesis_types::cluster::NodeRole::from_role_str(&c.role()))
+                .map(|(c, _, _, _)| nemesis_types::cluster::NodeRole::from_role_str(&c.role()))
                 .unwrap_or(nemesis_types::cluster::NodeRole::Coordinator)
         } else {
             nemesis_types::cluster::NodeRole::Coordinator

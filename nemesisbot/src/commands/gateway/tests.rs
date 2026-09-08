@@ -2938,7 +2938,7 @@ mod wave_b {
 
     #[cfg(feature = "cluster")]
     #[test]
-    fn wave_b_cluster_persister_running_success_error_and_delete_noop() {
+    fn wave_b_cluster_persister_running_success_error_and_delete_removes() {
         use nemesis_cluster::rpc::peer_chat_handler::TaskResultPersister;
 
         let store =
@@ -2975,13 +2975,14 @@ mod wave_b {
         assert!(!failed.success);
         assert_eq!(failed.result["error"], "远端炸了");
 
-        // delete 是有意的 no-op（回调成功后由 TaskResultStore 自己清）。
+        // delete 真删（内存+盘）。G1 收口（2026-09-08）：回调成功 = 结果已
+        // 送达 A（TaskManager 经 peer_chat_callback 拿到），占位/结果应清掉；
+        // 旧实现 no-op（注释谎称 "由 TaskResultStore 自己清"，但回调成功路径
+        // 从不发 confirm）→ 占位文件堆到 7 天 TTL。回调失败才靠 set_result
+        // 留盘给 A 端恢复轮询消费。
         adapter.delete("task-run").expect("delete 不应报错");
-        assert!(
-            store.get("task-run").is_some(),
-            "delete 为 no-op：结果保留待 A 端消费"
-        );
-        assert_eq!(store.len(), 3);
+        assert!(store.get("task-run").is_none(), "delete 应移除已送达的结果");
+        assert_eq!(store.len(), 2);
     }
 
     #[cfg(feature = "cluster")]

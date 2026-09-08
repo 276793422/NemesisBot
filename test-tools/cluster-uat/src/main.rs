@@ -2196,7 +2196,9 @@ async fn main() {
     //
     // 确定性设计：B 切 testai-1.2（固定 30s 延迟 + 固定回复「好的，
     // 我知道了」）。A 的快照文件落盘（rpc_cache/*.json 出现）后才 kill；
-    // B 的结果文件落盘（rpc_cache/results/*.json 新增）后才重启 A ——
+    // B 的真结果文件落盘（rpc_cache/results/*.json 且含非空 response/
+    // error —— set_running 占位文件不算，否则 A 会在 B 完成前重启、
+    // 回调路径短路恢复查询路径，见 has_real_result 注释）后才重启 A ——
     // 两步都以磁盘证据为闸，无 sleep 竞态。session_log 断言同文件内：
     // user 行含 marker（重启前写入，重启存活）+ assistant 行含 B 的固定
     // 回复（只可能来自恢复路径 —— A 的 testai-3.1 在 async ack 轮不会
@@ -2260,7 +2262,29 @@ async fn main() {
                     .unwrap_or(0)
             };
             let a_snapshots_before = count_json(&a_cache);
-            let b_results_before = count_json(&b_results);
+            let _b_results_before = count_json(&b_results); // 基线记录；闸用 has_real_result（内容级）
+            // 内容级判断：只认「真结果」文件（result.response / result.error
+            // 非空）。set_running 占位文件（{"status":"running"}）在任务创建
+            // 瞬间就会落盘 —— 旧闸 count_json 曾被它提前满足 → A 在 B 的 30s
+            // LLM 完成前就重启 → B 的回调重试撞上复活的 A 走回调路径成功，
+            // 恢复查询路径从未被真正验证（T19 假阳性根因，真机 R1a 发现）。
+            let has_real_result = |dir: &std::path::Path| -> bool {
+                std::fs::read_dir(dir)
+                    .map(|entries| {
+                        entries.flatten().any(|e| {
+                            let Ok(data) = std::fs::read_to_string(e.path()) else {
+                                return false;
+                            };
+                            let Ok(v) = serde_json::from_str::<serde_json::Value>(&data) else {
+                                return false;
+                            };
+                            ["response", "error"].iter().any(|k| {
+                                v["result"][k].as_str().is_some_and(|s| !s.is_empty())
+                            })
+                        })
+                    })
+                    .unwrap_or(false)
+            };
 
             // 1. 发起 peer_chat（不等待回复 —— A 即将崩溃）。
             let mut ws = match ws_connect_gateway(NODES[0].web_port).await {
@@ -2299,10 +2323,12 @@ async fn main() {
             // 3. 杀 A（此刻 B 仍在 30s LLM 延迟中）。
             gw_a.kill().await;
 
-            // 4. 等 B 在 A 宕机窗口内完成（结果文件落盘，≤90s from now）。
+            // 4. 等 B 在 A 宕机窗口内完成（真结果文件落盘，≤90s from now）。
+            //    内容级闸（见 has_real_result）：占位文件不算 —— 否则 A 会在
+            //    B 的 LLM 完成前重启，恢复查询路径被回调路径短路（假阳性）。
             let deadline = tokio::time::Instant::now() + Duration::from_secs(90);
             loop {
-                if count_json(&b_results) > b_results_before {
+                if has_real_result(&b_results) {
                     break;
                 }
                 if tokio::time::Instant::now() >= deadline {

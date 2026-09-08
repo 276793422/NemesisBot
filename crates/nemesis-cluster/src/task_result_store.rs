@@ -169,6 +169,22 @@ impl TaskResultStore {
             match std::fs::read_to_string(&path) {
                 Ok(data) => match serde_json::from_str::<TaskResult>(&data) {
                     Ok(result) => {
+                        // Bug D 修复（2026-09-08 真机 R1c 发现）：set_running
+                        // 占位条目是运行时暂态 —— 它代表的在途工作随进程死亡
+                        // 而消失（B 端 peer_chat 任务不进 ClusterTaskList，
+                        // 重启后无人重跑）。占位若随盘复活，query_task_result
+                        // 会永远回答 "running"，A 端恢复轮询被吊到 24h 安全
+                        // 网，用户既拿不到结果也拿不到诚实报错。加载时丢弃
+                        // 占位并删除残file，重启后的 B 诚实回答 not_found。
+                        if result.result.get("status").and_then(|v| v.as_str()) == Some("running")
+                        {
+                            let _ = std::fs::remove_file(&path);
+                            tracing::info!(
+                                task_id = %result.task_id,
+                                "[TaskResultStore] dropped stale running placeholder from disk"
+                            );
+                            continue;
+                        }
                         let mut results = self.results.lock();
                         // Respect max_size during restore
                         if results.len() >= self.max_size {

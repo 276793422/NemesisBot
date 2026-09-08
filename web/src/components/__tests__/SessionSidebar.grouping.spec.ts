@@ -259,3 +259,155 @@ describe('SessionSidebar 双分组 (L6++ G5)', () => {
     w.unmount()
   })
 })
+
+// ---------------------------------------------------------------------------
+// 2026-09-08 验收轮 A/B/C：会话排序键 / 项目组置顶 / 组内 Show more。
+// 三者均为纯前端视图偏好（localStorage / 内存态），零后端协议改动。
+// ---------------------------------------------------------------------------
+describe('SessionSidebar 排序 / 项目置顶 / Show more (A/B/C)', () => {
+  /** 带可选时间戳/标题的会话 fixture（sessions.list 行形）。 */
+  const S = (id: string, first: string, opts: Record<string, unknown> = {}) => ({
+    id,
+    firstMessage: first,
+    ...opts,
+  })
+
+  it('A 排序三档：recent 默认按 lastTime 降序；created 按 startTime 降序；name 按标题字典序', async () => {
+    const sessions = [
+      S('a', 'zeta 会话', { lastTime: '2026-09-02T10:00:00Z', startTime: '2026-09-01T10:00:00Z' }),
+      S('b', 'alpha 会话', { lastTime: '2026-09-03T10:00:00Z', startTime: '2026-09-02T10:00:00Z' }),
+      S('c', 'mid 会话', { lastTime: '2026-09-01T10:00:00Z', startTime: '2026-09-03T10:00:00Z' }),
+    ]
+    // recent（默认）：lastTime 降序 b(09-03) > a(09-02) > c(09-01)。
+    let w = await mountWith(sessions, [])
+    expect(titles(w)).toEqual(['alpha 会话', 'zeta 会话', 'mid 会话'])
+    w.unmount()
+
+    // created：startTime 降序 c(09-03) > b(09-02) > a(09-01)。
+    localStorage.setItem('nb_session_sort', 'created')
+    w = await mountWith(sessions, [])
+    expect(titles(w)).toEqual(['mid 会话', 'alpha 会话', 'zeta 会话'])
+    w.unmount()
+
+    // name：alpha(b) < mid(c) < zeta(a)。
+    localStorage.setItem('nb_session_sort', 'name')
+    w = await mountWith(sessions, [])
+    expect(titles(w)).toEqual(['alpha 会话', 'mid 会话', 'zeta 会话'])
+    w.unmount()
+  })
+
+  it('A 排序循环按钮：recent → created → name → recent，每步持久化 localStorage', async () => {
+    const w = await mountWith([S('a', '唯一会话')], [])
+    expect(w.find('.sort-toggle').text()).toContain('最近')
+    await w.find('.sort-toggle').trigger('click')
+    expect(localStorage.getItem('nb_session_sort')).toBe('created')
+    expect(w.find('.sort-toggle').text()).toContain('创建')
+    await w.find('.sort-toggle').trigger('click')
+    expect(localStorage.getItem('nb_session_sort')).toBe('name')
+    expect(w.find('.sort-toggle').text()).toContain('名称')
+    await w.find('.sort-toggle').trigger('click')
+    expect(localStorage.getItem('nb_session_sort')).toBe('recent')
+    w.unmount()
+  })
+
+  it('A pinned 优先于排序键：置顶会话恒在组内最前，其余按当前排序键', async () => {
+    localStorage.setItem('nb_pinned_sessions', JSON.stringify(['a']))
+    const w = await mountWith(
+      [
+        S('a', 'zeta 会话', { lastTime: '2026-09-01T10:00:00Z' }),
+        S('b', 'alpha 会话', { lastTime: '2026-09-03T10:00:00Z' }),
+        S('c', 'mid 会话', { lastTime: '2026-09-02T10:00:00Z' }),
+      ],
+      [],
+    )
+    // a 虽 lastTime 最旧仍置顶；其余按 recent：b > c。
+    expect(titles(w)).toEqual(['zeta 会话', 'alpha 会话', 'mid 会话'])
+    w.unmount()
+  })
+
+  it('B 项目置顶：预置 pin 的组排项目区最前（组间保持注册序），组头带 📌', async () => {
+    localStorage.setItem('nb_pinned_projects', JSON.stringify(['p2']))
+    const w = await mountWith(
+      [
+        S('x1', 'P1 会话', { projectId: 'p1' }),
+        S('x2', 'P2 会话', { projectId: 'p2' }),
+        S('a', '对话会话'),
+      ],
+      [P1, P2],
+    )
+    expect(groupNames(w)).toEqual(['项目二', '项目一'])
+    expect(titles(w)).toEqual(['P2 会话', 'P1 会话', '对话会话'])
+    const headers = w.findAll('.group-header')
+    expect(headers[0].find('.pin-flag').exists()).toBe(true)
+    expect(headers[1].find('.pin-flag').exists()).toBe(false)
+    w.unmount()
+  })
+
+  it('B 置顶菜单：置顶第二组 → 排到最前；「取消置顶」还原注册序', async () => {
+    const w = await mountWith([], [P1, P2])
+    // 置顶项目二（原第二）→ 排到最前。
+    let header = w.findAll('.group-header')[1]
+    await header.find('.group-more').trigger('click')
+    await clickMenuItem(w, '.group-menu', '置顶项目')
+    expect(JSON.parse(localStorage.getItem('nb_pinned_projects')!)).toEqual(['p2'])
+    await flushPromises()
+    expect(groupNames(w)).toEqual(['项目二', '项目一'])
+
+    // 取消置顶 → 回注册序，pin 清空。
+    header = w.findAll('.group-header')[0]
+    await header.find('.group-more').trigger('click')
+    await clickMenuItem(w, '.group-menu', '取消置顶')
+    expect(JSON.parse(localStorage.getItem('nb_pinned_projects')!)).toEqual([])
+    await flushPromises()
+    expect(groupNames(w)).toEqual(['项目一', '项目二'])
+    w.unmount()
+  })
+
+  it('B 移除置顶项目 → pin 顺带清理（localStorage 不残留死 id）', async () => {
+    removeProjectMock.mockResolvedValue({ removed: P1 })
+    vi.stubGlobal('confirm', () => true)
+    localStorage.setItem('nb_pinned_projects', JSON.stringify(['p1']))
+    const w = await mountWith([S('x1', 'P1 会话', { projectId: 'p1' })], [P1])
+    expect(w.findAll('.group-header')[0].find('.pin-flag').exists()).toBe(true)
+    const header = w.findAll('.group-header')[0]
+    await header.find('.group-more').trigger('click')
+    await clickMenuItem(w, '.group-menu', '移除项目')
+    await flushPromises()
+    expect(removeProjectMock).toHaveBeenCalledWith('p1')
+    expect(localStorage.getItem('nb_pinned_projects')).toBe('[]')
+    expect(groupNames(w)).toEqual(['已移除'])
+    vi.unstubAllGlobals()
+    w.unmount()
+  })
+
+  it('C Show more：>8 条默认截 8 + footer 计数（全量-8）；展开全量；收起还原', async () => {
+    const sessions = Array.from({ length: 10 }, (_, i) => S(`s${i}`, `会话 ${i}`))
+    const w = await mountWith(sessions, [])
+    expect(w.findAll('.session-item')).toHaveLength(8)
+    expect(w.findAll('.show-more')).toHaveLength(1)
+    expect(w.find('.show-more').text()).toContain('显示更多 (2)')
+    await w.find('.show-more').trigger('click')
+    expect(w.findAll('.session-item')).toHaveLength(10)
+    expect(w.find('.show-more').text()).toContain('收起')
+    await w.find('.show-more').trigger('click')
+    expect(w.findAll('.session-item')).toHaveLength(8)
+    w.unmount()
+  })
+
+  it('C Show more 作用于项目组：组头计数显示全量，行数仍截断', async () => {
+    const sessions = Array.from({ length: 10 }, (_, i) => S(`s${i}`, `P1 会话 ${i}`, { projectId: 'p1' }))
+    const w = await mountWith(sessions, [P1])
+    expect(w.findAll('.session-item')).toHaveLength(8)
+    expect(w.find('.group-count').text()).toBe('(10)')
+    expect(w.find('.show-more').text()).toContain('显示更多 (2)')
+    w.unmount()
+  })
+
+  it('C 恰 8 条：不出现 footer（独立用例——store fetchList 有 5s 缓存，同用例二次挂载会读到旧列表）', async () => {
+    const sessions = Array.from({ length: 8 }, (_, i) => S(`s${i}`, `P1 会话 ${i}`, { projectId: 'p1' }))
+    const w = await mountWith(sessions, [P1])
+    expect(w.findAll('.session-item')).toHaveLength(8)
+    expect(w.findAll('.show-more')).toHaveLength(0)
+    w.unmount()
+  })
+})

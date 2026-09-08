@@ -542,6 +542,36 @@ mod loop_e2e {
             task_list.clone(),
             None, // rpc_client=None：send_task_callback 走无客户端跳过
             None, // 无 observer
+            None, // 无 result_persister（G1 收口语义走专属用例）
+            shutdown_rx,
+        ));
+        LoopRig {
+            task_list,
+            work_queue,
+            shutdown_tx,
+            handle,
+        }
+    }
+
+
+    /// 带录制 persister 的 rig（G1 收口回归用）。
+    fn spawn_rig_with_persister(
+        agent_loop: AgentLoop,
+        config: AgentConfig,
+        data_dir: &std::path::Path,
+        persister: Arc<dyn TaskResultPersister>,
+    ) -> LoopRig {
+        let task_list = Arc::new(ClusterTaskList::new(data_dir));
+        let work_queue = Arc::new(ClusterWorkQueue::new(8));
+        let (shutdown_tx, shutdown_rx) = tokio::sync::broadcast::channel(1);
+        let handle = tokio::spawn(cluster_agent_loop(
+            Arc::new(agent_loop),
+            config,
+            work_queue.clone(),
+            task_list.clone(),
+            None,
+            None,
+            Some(persister),
             shutdown_rx,
         ));
         LoopRig {
@@ -762,6 +792,158 @@ mod loop_e2e {
 
         rig.stop().await;
     }
+
+    // -----------------------------------------------------------------------
+    // G1 收口回归（2026-09-08，真机 R1a 发现的 work-queue 路径断链）：
+    // send_task_callback 必须走 send_callback_or_persist 单一真相源 ——
+    // 回调失败（无客户端/网络断）→ persister.set_result 落盘真实结果；
+    // 回调成功 → persister.delete 清理 set_running 占位。此前 work-queue
+    // 路径直连裸 send_callback，两件事都不做 → A 端恢复轮询永远拿到
+    // running 占位，G5 恢复链在生产路径下失效。
+    // -----------------------------------------------------------------------
+
+    use nemesis_cluster::rpc::peer_chat_handler::TaskResultPersister;
+
+    // =========================================================================
+    // G1 收口回归（2026-09-08，真机 R1a 发现的 work-queue 路径断链）：
+    // send_task_callback 必须走 send_callback_or_persist 单一真相源 ——
+    // 回调失败（无客户端/网络断）→ persister.set_result 落盘真实结果；
+    // 回调成功 → persister.delete 清理 set_running 占位。
+    // 此前 work-queue 路径直连裸 send_callback，两件事都不做 → A 端恢复
+    // 轮询永远拿到 running 占位，G5 恢复链在生产路径下失效。
+    // =========================================================================
+
+
+    /// 录制型 persister：记下每个调用，供断言。
+    struct RecordingPersister {
+        set_result_calls: std::sync::Mutex<Vec<(String, String, String, String)>>,
+        delete_calls: std::sync::Mutex<Vec<String>>,
+    }
+
+    impl RecordingPersister {
+        fn new() -> Arc<Self> {
+            Arc::new(Self {
+                set_result_calls: std::sync::Mutex::new(Vec::new()),
+                delete_calls: std::sync::Mutex::new(Vec::new()),
+            })
+        }
+    }
+
+    impl TaskResultPersister for RecordingPersister {
+        fn set_running(&self, _task_id: &str, _source_node: &str) {}
+        fn set_result(
+            &self,
+            task_id: &str,
+            status: &str,
+            response: &str,
+            error: &str,
+            _source_node: &str,
+        ) -> Result<(), String> {
+            self.set_result_calls
+                .lock()
+                .unwrap()
+                .push((task_id.to_string(), status.to_string(), response.to_string(), error.to_string()));
+            Ok(())
+        }
+        fn delete(&self, task_id: &str) -> Result<(), String> {
+            self.delete_calls.lock().unwrap().push(task_id.to_string());
+            Ok(())
+        }
+    }
+
+    /// 回调失败臂（rpc_client=None → send_callback 恒 false）：任务完成后
+    /// persister.set_result 必须收到真实终态（success + 最终回复），A 端
+    /// 重启后的恢复轮询才有真实数据可查。
+    #[tokio::test]
+    async fn g1_callback_failure_persists_real_result() {
+        let tmp = tempfile::tempdir().unwrap();
+        let provider = ScriptedProvider {
+            first_tool_call: None,
+            final_text: "real-final-answer".to_string(),
+            calls: AtomicUsize::new(0),
+        };
+        let agent_loop = AgentLoop::new(Box::new(provider), base_config());
+        let persister = RecordingPersister::new();
+        let rig = spawn_rig_with_persister(agent_loop, base_config(), tmp.path(), persister.clone());
+
+        rig.task_list.create_task(make_task("g1-persist"));
+        rig.work_queue.submit("g1-persist".to_string()).unwrap();
+        wait_until(10_000, || rig.task_list.get_task("g1-persist").is_none()).await;
+        rig.stop().await;
+
+        let calls = persister.set_result_calls.lock().unwrap();
+        assert_eq!(calls.len(), 1, "callback 失败必须落盘一次真实结果");
+        let (task_id, status, response, error) = &calls[0];
+        assert_eq!(task_id, "g1-persist");
+        assert_eq!(status, "success");
+        assert_eq!(response, "real-final-answer");
+        assert_eq!(error, "");
+        assert!(
+            persister.delete_calls.lock().unwrap().is_empty(),
+            "回调失败不得误删"
+        );
+    }
+
+    /// 回调成功臂（真 RpcServer 接 peer_chat_callback）：delete 必须被调用
+    /// （清理 set_running 占位），set_result 不得被调用。
+    #[tokio::test]
+    async fn g1_callback_success_deletes_placeholder() {
+        use nemesis_cluster::rpc::client::PeerResolver;
+        use nemesis_cluster::rpc::server::{RpcServer, RpcServerConfig};
+
+        struct LoopbackResolver {
+            port: std::sync::Mutex<Option<u16>>,
+        }
+        impl PeerResolver for LoopbackResolver {
+            fn get_peer_info(&self, _peer_id: &str) -> Option<(Vec<String>, u16, bool)> {
+                let port = self.port.lock().unwrap().expect("server started");
+                Some((vec!["127.0.0.1".into()], port, true))
+            }
+            fn get_local_interfaces(&self) -> Vec<nemesis_cluster::rpc::client::LocalNetworkInterface> {
+                Vec::new()
+            }
+            fn get_node_id(&self) -> String {
+                "g1-test-client".into()
+            }
+        }
+
+        let server = Arc::new(RpcServer::new(RpcServerConfig {
+            bind_address: "127.0.0.1:0".into(),
+            ..Default::default()
+        }));
+        server.register_handler(
+            "peer_chat_callback",
+            Box::new(|_payload| Ok(serde_json::json!({"status": "accepted"}))),
+        );
+        server.start().await.unwrap();
+
+        let resolver = Arc::new(LoopbackResolver {
+            port: std::sync::Mutex::new(Some(server.port())),
+        });
+        let client = RpcClient::with_resolver(resolver);
+
+        let persister = RecordingPersister::new();
+        let task = make_task("g1-delete");
+        send_task_callback(
+            Some(&client),
+            Some(persister.as_ref()),
+            &task,
+            "success",
+            "done-work",
+            "",
+        )
+        .await;
+
+        assert_eq!(
+            persister.delete_calls.lock().unwrap().as_slice(),
+            ["g1-delete"],
+            "回调成功必须清理占位"
+        );
+        assert!(
+            persister.set_result_calls.lock().unwrap().is_empty(),
+            "回调成功不得落盘结果"
+        );
+    }
 }
 
 // =========================================================================
@@ -774,6 +956,7 @@ mod loop_e2e {
 // 写路径（403-417 / 444-447）、extract_async_info 前驱回看的两种未命中形态
 // （528-529）、count_llm_rounds 两形态（554-560）。
 // 豁免不碰：48-49（queue.next() None break——队列内部持有 tx，结构性死码）。
+
 // 本地复刻 loop_e2e 的 provider/rig（兄弟 mod 私有项不可见）。
 // =========================================================================
 
@@ -1043,6 +1226,7 @@ mod wave_b {
             task_list.clone(),
             None, // rpc_client=None：回调走无客户端跳过（无网络）
             observer,
+            None, // 无 result_persister（G1 收口语义走专属用例）
             shutdown_rx,
         ));
         WbRig {

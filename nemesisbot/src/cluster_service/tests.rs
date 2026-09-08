@@ -33,6 +33,7 @@ async fn new_adapter_reports_not_running() {
         tmp.path().to_path_buf(),
         Arc::new(ClusterTaskList::new(tmp.path().join("cluster_tasks"))),
         Arc::new(ClusterWorkQueue::new(8)),
+        test_persister(),
     );
 
     // 固有方法 + trait 实现都报未运行。
@@ -59,6 +60,7 @@ async fn stop_when_not_running_is_ok_without_side_effects() {
         tmp.path().to_path_buf(),
         Arc::new(ClusterTaskList::new(tmp.path().join("cluster_tasks"))),
         Arc::new(ClusterWorkQueue::new(8)),
+        test_persister(),
     );
 
     // 未运行时 stop() 必须短路 Ok（幂等停机），不触碰 cluster 内部。
@@ -78,6 +80,30 @@ async fn stop_when_not_running_is_ok_without_side_effects() {
 use std::sync::atomic::AtomicBool;
 
 use nemesis_cluster::cluster_task::{ClusterTask, TaskSource, TaskStatus};
+
+/// cluster_service 层测试不关心持久化语义（G1 收口语径的专属用例在
+/// cluster_agent/tests.rs）——统一 no-op persister。
+fn test_persister() -> Arc<dyn nemesis_cluster::rpc::peer_chat_handler::TaskResultPersister> {
+    struct NoopPersister;
+    impl nemesis_cluster::rpc::peer_chat_handler::TaskResultPersister for NoopPersister {
+        fn set_running(&self, _task_id: &str, _source_node: &str) {}
+        fn set_result(
+            &self,
+            _task_id: &str,
+            _status: &str,
+            _response: &str,
+            _error: &str,
+            _source_node: &str,
+        ) -> Result<(), String> {
+            Ok(())
+        }
+        fn delete(&self, _task_id: &str) -> Result<(), String> {
+            Ok(())
+        }
+    }
+    Arc::new(NoopPersister)
+}
+
 
 /// 离线可构建的迷你模型 config（与 agent_factory/tests.rs 同源形态）。
 fn write_cluster_model_config(home: &std::path::Path) {
@@ -158,6 +184,7 @@ fn make_adapter(
         home.to_path_buf(),
         task_list.clone(),
         work_queue.clone(),
+        test_persister(),
     );
     (adapter, cluster, shared, task_list, work_queue, flag)
 }
@@ -395,6 +422,7 @@ async fn wave_c_start_fails_when_rpc_port_is_already_bound() {
         home,
         task_list,
         work_queue,
+        test_persister(),
     );
 
     let err = adapter.start().expect_err("busy rpc port must fail start");
@@ -430,6 +458,7 @@ async fn wave_c_lifecycle_tolerates_flagless_shared_and_absent_agent_handle() {
         tmp.path().to_path_buf(),
         Arc::new(ClusterTaskList::new(tmp.path().join("tasks"))),
         Arc::new(ClusterWorkQueue::new(8)),
+        test_persister(),
     );
 
     // agent 构建 lenient-Ok(None) → running=true 但 handle 缺席。

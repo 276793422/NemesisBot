@@ -13,7 +13,7 @@ use nemesis_agent::types::AgentConfig;
 use nemesis_agent::types::AgentEvent;
 use nemesis_cluster::cluster_task::{ClusterTaskList, ClusterWorkQueue, TaskStatus};
 use nemesis_cluster::rpc::client::RpcClient;
-use nemesis_cluster::rpc::peer_chat_handler::send_callback;
+use nemesis_cluster::rpc::peer_chat_handler::{send_callback_or_persist, TaskResultPersister};
 
 use crate::cluster_request_logger_observer::ClusterRequestLoggerObserver;
 
@@ -35,6 +35,10 @@ pub async fn cluster_agent_loop(
     task_list: Arc<ClusterTaskList>,
     rpc_client: Option<Arc<RpcClient>>,
     cluster_observer: Option<Arc<ClusterRequestLoggerObserver>>,
+    // G1 收口（2026-09-08）：回调失败 → persister.set_result 落盘真实结果
+    // （A 端恢复轮询可查）；回调成功 → persister.delete 清理占位。生产装配
+    // 恒为 Some（gateway 传入与 peer_chat_handler 同一份 adapter）。
+    result_persister: Option<Arc<dyn TaskResultPersister>>,
     mut shutdown_rx: tokio::sync::broadcast::Receiver<()>,
 ) {
     tracing::info!("[ClusterAgent] Event loop started");
@@ -73,7 +77,14 @@ pub async fn cluster_agent_loop(
                 task_id = %task_id,
                 "[ClusterAgent] Dequeued task was cancelled, dropping"
             );
-            handle_task_error(&task_list, rpc_client.as_deref(), &task, "cancelled").await;
+            handle_task_error(
+                &task_list,
+                rpc_client.as_deref(),
+                result_persister.as_deref(),
+                &task,
+                "cancelled",
+            )
+            .await;
             continue;
         }
 
@@ -93,6 +104,7 @@ pub async fn cluster_agent_loop(
                 &task_list,
                 rpc_client.as_deref(),
                 cluster_observer.as_deref(),
+                result_persister.as_deref(),
                 &task,
             )
             .await
@@ -104,8 +116,14 @@ pub async fn cluster_agent_loop(
                         error = %e,
                         "[ClusterAgent] Resume task failed"
                     );
-                    handle_task_error(&task_list, rpc_client.as_deref(), &task, &e.to_string())
-                        .await;
+                    handle_task_error(
+                        &task_list,
+                        rpc_client.as_deref(),
+                        result_persister.as_deref(),
+                        &task,
+                        &e.to_string(),
+                    )
+                    .await;
                 }
             }
         } else {
@@ -116,6 +134,7 @@ pub async fn cluster_agent_loop(
                 &task_list,
                 rpc_client.as_deref(),
                 cluster_observer.as_deref(),
+                result_persister.as_deref(),
                 &task,
             )
             .await
@@ -127,8 +146,14 @@ pub async fn cluster_agent_loop(
                         error = %e,
                         "[ClusterAgent] Execute task failed"
                     );
-                    handle_task_error(&task_list, rpc_client.as_deref(), &task, &e.to_string())
-                        .await;
+                    handle_task_error(
+                        &task_list,
+                        rpc_client.as_deref(),
+                        result_persister.as_deref(),
+                        &task,
+                        &e.to_string(),
+                    )
+                    .await;
                 }
             }
         }
@@ -142,6 +167,7 @@ async fn execute_new_task(
     task_list: &ClusterTaskList,
     rpc_client: Option<&RpcClient>,
     cluster_observer: Option<&ClusterRequestLoggerObserver>,
+    result_persister: Option<&dyn TaskResultPersister>,
     task: &nemesis_cluster::cluster_task::ClusterTask,
 ) -> Result<(), String> {
     let content_preview = truncate_str(&task.content, 200);
@@ -217,7 +243,7 @@ async fn execute_new_task(
             "[ClusterAgent] Task was cancelled during execution"
         );
         nemesis_cluster::logger::log_task("exec_cancelled", &task.task_id, "");
-        send_task_callback(rpc_client, task, "error", "", "cancelled").await;
+        send_task_callback(rpc_client, result_persister, task, "error", "", "cancelled").await;
         task_list.complete_task(&task.task_id);
         return Ok(());
     }
@@ -255,7 +281,7 @@ async fn execute_new_task(
     // the callback. Async-path tasks skip this; they'll be persisted by
     // resume_task when the callback comes back and the task actually completes.
     persist_session_history(agent_loop, &instance, &task.source.session_key);
-    send_task_callback(rpc_client, task, "success", &result, "").await;
+    send_task_callback(rpc_client, result_persister, task, "success", &result, "").await;
     task_list.complete_task(&task.task_id);
     nemesis_cluster::logger::log_task(
         "exec_done",
@@ -272,6 +298,7 @@ async fn resume_task(
     task_list: &ClusterTaskList,
     rpc_client: Option<&RpcClient>,
     cluster_observer: Option<&ClusterRequestLoggerObserver>,
+    result_persister: Option<&dyn TaskResultPersister>,
     task: &nemesis_cluster::cluster_task::ClusterTask,
 ) -> Result<(), String> {
     nemesis_cluster::logger::log_task("exec_resume", &task.task_id, "");
@@ -344,7 +371,7 @@ async fn resume_task(
             "[ClusterAgent] Resumed task was cancelled during execution"
         );
         nemesis_cluster::logger::log_task("exec_cancelled", &task.task_id, "");
-        send_task_callback(rpc_client, task, "error", "", "cancelled").await;
+        send_task_callback(rpc_client, result_persister, task, "error", "", "cancelled").await;
         task_list.complete_task(&task.task_id);
         return Ok(());
     }
@@ -382,7 +409,7 @@ async fn resume_task(
     // the resumed turn's tool result / final response are all in the instance
     // history already, so no separate content args are needed.
     persist_session_history(agent_loop, &instance, &task.source.session_key);
-    send_task_callback(rpc_client, task, "success", &result, "").await;
+    send_task_callback(rpc_client, result_persister, task, "success", &result, "").await;
     task_list.complete_task(&task.task_id);
     nemesis_cluster::logger::log_task(
         "exec_done",
@@ -614,8 +641,15 @@ fn count_llm_rounds(events: &[AgentEvent]) -> usize {
 }
 
 /// Send a callback for a completed task.
+///
+/// G1 收口（2026-09-08）：走 [`send_callback_or_persist`] 单一真相源 ——
+/// 回调成功 → `persister.delete(task_id)` 清理 set_running 占位；回调失败
+/// （对端宕机等）→ `persister.set_result` 落盘真实结果，A 端重启后的恢复
+/// 轮询（query_task_result）才能查到。此前直连裸 send_callback，真实结果
+/// 从不落盘 → G5 恢复链在生产 work-queue 路径下失效（真机 R1a 发现）。
 async fn send_task_callback(
     rpc_client: Option<&RpcClient>,
+    result_persister: Option<&dyn TaskResultPersister>,
     task: &nemesis_cluster::cluster_task::ClusterTask,
     status: &str,
     response: &str,
@@ -628,8 +662,10 @@ async fn send_task_callback(
         "[ClusterAgent] Sending callback"
     );
 
-    send_callback(
+    send_callback_or_persist(
         rpc_client,
+        result_persister,
+        &None,
         &task.source.node_id,
         &task.task_id,
         status,
@@ -643,13 +679,14 @@ async fn send_task_callback(
 async fn handle_task_error(
     task_list: &ClusterTaskList,
     rpc_client: Option<&RpcClient>,
+    result_persister: Option<&dyn TaskResultPersister>,
     task: &nemesis_cluster::cluster_task::ClusterTask,
     error_msg: &str,
 ) {
     let error_preview = truncate_str(error_msg, 200);
     nemesis_cluster::logger::log_task("exec_failed", &task.task_id, &error_preview);
     task_list.update_status(&task.task_id, TaskStatus::Failed);
-    send_task_callback(rpc_client, task, "error", "", error_msg).await;
+    send_task_callback(rpc_client, result_persister, task, "error", "", error_msg).await;
     task_list.complete_task(&task.task_id);
 }
 

@@ -544,7 +544,14 @@ async fn process_async(
 
 /// Attempt to send the callback to the source node. If all retries fail,
 /// persist the result locally.
-async fn send_callback_or_persist(
+///
+/// 2026-09-08 G1 收口（集群韧性真机复验 R1a 发现）：本函数是「回调成功 →
+/// 删除已落盘结果 / 回调失败 → 落盘真实结果」语义的单一真相源，legacy
+/// 路径（process_async）与 work-queue 路径（cluster_agent）都必须走它。
+/// 此前 work-queue 路径直连裸 [`send_callback`]，B 端结果从不落盘、成功
+/// 后占位也不清理 → A 端恢复轮询永远拿到 running 占位，G5 恢复链在
+/// 生产路径下失效。
+pub async fn send_callback_or_persist(
     rpc_client: Option<&RpcClient>,
     result_persister: Option<&dyn TaskResultPersister>,
     _source_info: &Option<serde_json::Value>,

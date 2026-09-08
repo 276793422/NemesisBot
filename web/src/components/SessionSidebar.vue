@@ -96,9 +96,92 @@ function unpinIfDeleted(id: string) {
   persistPinned()
 }
 
-/** 组内排序：pinned 置顶、其余保持 sessions.list 原序（稳定分组）。 */
-function sortPinned(list: SessionEntry[]): SessionEntry[] {
-  return [...list.filter(s => pinnedIds.value.has(s.id)), ...list.filter(s => !pinnedIds.value.has(s.id))]
+/** 组内排序：pinned 置顶（互相对序=列表原序不变），其余按当前排序键。 */
+function sortSessions(list: SessionEntry[]): SessionEntry[] {
+  return [
+    ...list.filter(s => pinnedIds.value.has(s.id)),
+    ...list.filter(s => !pinnedIds.value.has(s.id)).sort(cmpSessions),
+  ]
+}
+
+// ---------------------------------------------------------------------------
+// 会话排序键（纯前端偏好，localStorage 持久；sessions.list 行自带
+// startTime/lastTime，零后端改动）：recent=最后活动新→旧（默认）/
+// created=创建时间新→旧 / name=标题 zh-CN 字典序。入口=对话区标题条
+// 循环按钮。
+// ---------------------------------------------------------------------------
+type SessionSort = 'recent' | 'created' | 'name'
+const SORT_KEY = 'nb_session_sort'
+const SORT_LABELS: Record<SessionSort, string> = { recent: '最近', created: '创建', name: '名称' }
+
+function loadSort(): SessionSort {
+  const v = localStorage.getItem(SORT_KEY)
+  return v === 'created' || v === 'name' ? v : 'recent'
+}
+
+const sessionSort = ref<SessionSort>(loadSort())
+
+function cycleSort() {
+  const order: SessionSort[] = ['recent', 'created', 'name']
+  sessionSort.value = order[(order.indexOf(sessionSort.value) + 1) % order.length]
+  localStorage.setItem(SORT_KEY, sessionSort.value)
+}
+
+function cmpSessions(a: SessionEntry, b: SessionEntry): number {
+  if (sessionSort.value === 'name') {
+    return title(a).localeCompare(title(b), 'zh-CN')
+  }
+  const key = sessionSort.value === 'created' ? 'startTime' : 'lastTime'
+  const ta = a[key] || ''
+  const tb = b[key] || ''
+  if (ta === tb) return 0 // 含双方皆空 → 稳定原序
+  return ta > tb ? -1 : 1 // 降序（新→旧）；空值自然沉底
+}
+
+// ---------------------------------------------------------------------------
+// B（2026-09-08 验收轮）：项目组置顶。与 M6 会话 pin 同构——纯前端偏好，
+// localStorage `nb_pinned_projects` 持久；置顶项目组排在项目区最前
+// （组间相对序保持注册表序不变）。移除项目成功后顺带清 pin，防残留 id。
+// ---------------------------------------------------------------------------
+const PROJ_PIN_KEY = 'nb_pinned_projects'
+
+function loadPinnedProjects(): Set<string> {
+  try {
+    const raw = JSON.parse(localStorage.getItem(PROJ_PIN_KEY) || '[]')
+    return new Set(Array.isArray(raw) ? raw.filter((x: unknown) => typeof x === 'string') : [])
+  } catch {
+    return new Set()
+  }
+}
+
+const pinnedProjectIds = ref<Set<string>>(loadPinnedProjects())
+
+function persistPinnedProjects() {
+  localStorage.setItem(PROJ_PIN_KEY, JSON.stringify([...pinnedProjectIds.value]))
+}
+
+function isProjectPinned(key: string): boolean {
+  return pinnedProjectIds.value.has(key)
+}
+
+function toggleProjectPin(key: string) {
+  closeMenus()
+  if (pinnedProjectIds.value.has(key)) {
+    pinnedProjectIds.value.delete(key)
+  } else {
+    pinnedProjectIds.value.add(key)
+  }
+  // 换新 Set 触发 displayGroups 重算（同 M6 注释）。
+  pinnedProjectIds.value = new Set(pinnedProjectIds.value)
+  persistPinnedProjects()
+}
+
+/** 移除项目成功后清 pin（注册表已无此 id，残留只会占位）。 */
+function unpinProjectIfRemoved(key: string) {
+  if (!pinnedProjectIds.value.has(key)) return
+  pinnedProjectIds.value.delete(key)
+  pinnedProjectIds.value = new Set(pinnedProjectIds.value)
+  persistPinnedProjects()
 }
 
 // ---------------------------------------------------------------------------
@@ -107,11 +190,11 @@ function sortPinned(list: SessionEntry[]): SessionEntry[] {
 // ——「已移除」灰组，删完全部会话后自然消失）。展示顺序：项目在上、
 // 对话在下、孤儿垫底。
 // ---------------------------------------------------------------------------
-const chatSessions = computed(() => sortPinned(sessionStore.sessions.filter(s => !s.projectId)))
+const chatSessions = computed(() => sortSessions(sessionStore.sessions.filter(s => !s.projectId)))
 
 const orphanSessions = computed(() => {
   const known = new Set(sessionStore.projects.map(p => p.id))
-  return sortPinned(sessionStore.sessions.filter(s => s.projectId && !known.has(s.projectId)))
+  return sortSessions(sessionStore.sessions.filter(s => s.projectId && !known.has(s.projectId)))
 })
 
 interface GroupRow {
@@ -121,14 +204,19 @@ interface GroupRow {
   items: SessionEntry[]
 }
 
-/** 展示顺序：项目组（注册序）→ 对话组 → 孤儿组（垫底）。对话组无组头
- *  ——区块标题条由模板按 key 注入（项目区标题条在循环外，含新建入口）。 */
+/** 展示顺序：置顶项目组（组内保持注册序）→ 未置顶项目组（注册序）→
+ *  对话组 → 孤儿组（垫底）。对话组无组头——区块标题条由模板按 key
+ *  注入（项目区标题条在循环外，含新建入口）。 */
 const displayGroups = computed<GroupRow[]>(() => {
-  const rows: GroupRow[] = sessionStore.projects.map(p => ({
+  const all: GroupRow[] = sessionStore.projects.map(p => ({
     key: p.id,
     header: { name: p.name, available: p.running !== false, orphan: false },
-    items: sortPinned(sessionStore.sessions.filter(s => s.projectId === p.id)),
+    items: sortSessions(sessionStore.sessions.filter(s => s.projectId === p.id)),
   }))
+  const rows = [
+    ...all.filter(g => pinnedProjectIds.value.has(g.key)),
+    ...all.filter(g => !pinnedProjectIds.value.has(g.key)),
+  ]
   rows.push({ key: '__chat', header: null, items: chatSessions.value })
   if (orphanSessions.value.length > 0) {
     rows.push({ key: '__orphan', header: { name: '已移除', available: false, orphan: true }, items: orphanSessions.value })
@@ -166,6 +254,34 @@ function toggleCollapse(key: string) {
   }
   collapsed.value = new Set(collapsed.value)
   persistCollapsed()
+}
+
+// ---------------------------------------------------------------------------
+// C（2026-09-08 验收轮）：组内会话折叠展示。每组默认只渲染前
+// SHOW_MORE_CAP 条（sortSessions 已置顶优先，pinned 天然占先），尾部
+// 「显示更多 (N)」展开 / 收起。纯视图状态（不持久化，重启回默认收拢），
+// expandedGroups 按组 key 记忆（含 __chat / __orphan）。
+// ---------------------------------------------------------------------------
+const SHOW_MORE_CAP = 8
+const expandedGroups = ref<Set<string>>(new Set())
+
+function isExpanded(key: string): boolean {
+  return expandedGroups.value.has(key)
+}
+
+function toggleExpanded(key: string) {
+  const next = new Set(expandedGroups.value)
+  if (next.has(key)) {
+    next.delete(key)
+  } else {
+    next.add(key)
+  }
+  expandedGroups.value = next
+}
+
+/** 组内可见行：未展开时截前 SHOW_MORE_CAP 条（计数用 grp.items 全量）。 */
+function visibleItems(grp: GroupRow): SessionEntry[] {
+  return isExpanded(grp.key) ? grp.items : grp.items.slice(0, SHOW_MORE_CAP)
 }
 
 // ---------------------------------------------------------------------------
@@ -215,6 +331,7 @@ async function removeProject(key: string, name: string) {
   if (!confirm(`移除项目「${name}」？仅解除分组，不删除会话与项目目录内的任何文件。`)) return
   try {
     await sessionStore.removeProject(key)
+    unpinProjectIfRemoved(key)
   } catch (e: any) {
     toast.error(typeof e === 'string' ? e : e?.message || '移除失败')
   }
@@ -412,9 +529,15 @@ function relTime(ts: string): string {
       <div v-if="sessionStore.projects.length === 0" class="section-empty">暂无项目——点「＋」注册一个目录</div>
 
       <template v-for="grp in displayGroups" :key="grp.key">
-        <!-- 对话组前注入区块标题条（对话组无组头） -->
+        <!-- 对话组前注入区块标题条（对话组无组头；⇅ 为排序循环按钮） -->
         <div v-if="grp.key === '__chat'" class="section-bar">
           <span class="section-label">对话</span>
+          <span class="section-spacer" />
+          <button
+            class="sort-toggle"
+            @click.stop="cycleSort"
+            :title="`会话排序：${SORT_LABELS[sessionSort]}（点击切换 最近 → 创建 → 名称）`"
+          >⇅ {{ SORT_LABELS[sessionSort] }}</button>
         </div>
         <!-- 组头：折叠 / 名称 / 计数 / 就地新建 / 溢出菜单 -->
         <div v-else-if="grp.header" class="group-header" :class="{ unavailable: !grp.header.available, orphan: grp.header.orphan }">
@@ -429,6 +552,7 @@ function relTime(ts: string): string {
             />
           </template>
           <template v-else>
+            <span v-if="isProjectPinned(grp.key)" class="pin-flag" title="已置顶">📌</span>
             <span class="group-name" :title="grp.header.name">{{ grp.header.name }}</span>
             <span
               v-if="!grp.header.available"
@@ -451,6 +575,7 @@ function relTime(ts: string): string {
             <button v-if="grp.header.available" class="menu-item" @click="newChatIn(grp.key)">＋ 新建会话</button>
             <button class="menu-item" @click="openDir(grp.key)">📂 打开目录</button>
             <button class="menu-item" @click="startRename(grp.key, grp.header.name)">✏ 重命名</button>
+            <button class="menu-item" @click="toggleProjectPin(grp.key)">{{ isProjectPinned(grp.key) ? '取消置顶' : '置顶项目' }}</button>
             <button class="menu-item danger" @click="removeProject(grp.key, grp.header.name)">移除项目</button>
           </div>
         </div>
@@ -458,7 +583,7 @@ function relTime(ts: string): string {
         <!-- 会话行（对话组 / 项目组 / 孤儿组单源复用；折叠时不渲染） -->
         <template v-if="!isCollapsed(grp.key)">
           <div
-            v-for="s in grp.items"
+            v-for="s in visibleItems(grp)"
             :key="s.id"
             class="session-item"
             :class="{ active: s.id === currentId, orphaned: grp.header?.orphan }"
@@ -493,6 +618,12 @@ function relTime(ts: string): string {
               <button class="menu-item danger" @click="del(s.id)">✕ 删除会话</button>
             </div>
           </div>
+          <!-- C：组内超出 SHOW_MORE_CAP 条时的展开/收起 footer（计数=全量-已见） -->
+          <button
+            v-if="grp.items.length > SHOW_MORE_CAP"
+            class="show-more"
+            @click.stop="toggleExpanded(grp.key)"
+          >{{ isExpanded(grp.key) ? '收起' : `显示更多 (${grp.items.length - SHOW_MORE_CAP})` }}</button>
         </template>
         <!-- 对话区空态（区块内提示，替代整列表 .empty） -->
         <div
@@ -716,10 +847,43 @@ function relTime(ts: string): string {
   color: var(--text);
   background: var(--accent-muted);
 }
-/* M6: 会话 pin——置顶标记（入口在行菜单） */
+/* M6: 会话 pin——置顶标记（入口在行菜单；B 轮项目组头复用同一标记） */
 .pin-flag {
   font-size: 10px;
   margin-right: 2px;
+}
+/* A：对话区排序循环按钮（⇅ + 当前档位，档位见 SORT_LABELS） */
+.sort-toggle {
+  background: none;
+  border: none;
+  color: var(--text-muted);
+  font-size: 11px;
+  cursor: pointer;
+  padding: 1px 6px;
+  border-radius: 4px;
+  white-space: nowrap;
+}
+.sort-toggle:hover {
+  color: var(--text);
+  background: var(--bg-primary);
+}
+/* C：组内「显示更多 (N) / 收起」footer */
+.show-more {
+  display: block;
+  width: 100%;
+  margin: 2px 0 6px;
+  padding: 4px 0;
+  font-size: 11px;
+  color: var(--text-muted);
+  background: none;
+  border: none;
+  border-radius: 6px;
+  cursor: pointer;
+  text-align: center;
+}
+.show-more:hover {
+  color: var(--text);
+  background: var(--bg-primary);
 }
 .empty {
   padding: 20px 12px;

@@ -1404,3 +1404,45 @@ fn test_sweep_no_persistence_noop() {
     assert_eq!(removed, 0, "no disk dir -> nothing removed");
     assert!(store.get("sweep-mem").is_some(), "fresh memory entry kept");
 }
+
+/// Bug D 回归（2026-09-08 真机 R1c 发现）：set_running 占位条目不随盘复活。
+/// 占位代表的在途工作随进程死亡而消失（B 端 peer_chat 任务不进
+/// ClusterTaskList，重启后无人重跑）；占位若被 load_from_disk 回载，
+/// query_task_result 永远回答 "running"，A 端恢复轮询被吊到 24h 安全网。
+/// 正确行为：加载时丢弃占位 + 删除残file（重启后的 B 诚实回答 not_found），
+/// 真结果（response/error）照常回载（G1 语义不受影响）。
+#[test]
+fn test_load_from_disk_drops_running_placeholder() {
+    let tmp = tempfile::tempdir().unwrap();
+
+    // Store 1: 落一个占位 + 一个真结果 + 一个失败结果。
+    {
+        let store = TaskResultStore::with_disk_persistence(100, tmp.path());
+        store.store_success(
+            "task-ph",
+            "peer_chat",
+            serde_json::json!({"status": "running", "from": "node-b"}),
+        );
+        store.store_success("task-real", "peer_chat", serde_json::json!({"response": "最终回复", "from": "node-b"}));
+        store.store_failure("task-fail", "peer_chat", "远端炸了");
+    }
+
+    // Store 2: 重启回载 —— 占位被丢弃，真结果/失败结果照常回载。
+    let store = TaskResultStore::with_disk_persistence(100, tmp.path());
+    let loaded = store.load_from_disk();
+    assert_eq!(loaded, 2, "placeholder 不计入加载");
+
+    assert!(
+        store.get("task-ph").is_none(),
+        "running 占位不得随盘复活"
+    );
+    let real = store.get("task-real").expect("真结果应回载");
+    assert_eq!(real.result["response"], "最终回复");
+    let fail = store.get("task-fail").expect("失败结果应回载");
+    assert_eq!(fail.result["error"], "远端炸了");
+
+    // 占位残file已从盘上删除；真结果文件保留。
+    assert!(!tmp.path().join("task-ph.json").exists(), "占位残file应删除");
+    assert!(tmp.path().join("task-real.json").exists());
+    assert!(tmp.path().join("task-fail.json").exists());
+}

@@ -42,11 +42,16 @@ pub struct ClusterServiceAdapter {
     home: std::path::PathBuf,
     cluster_task_list: Arc<ClusterTaskList>,
     cluster_work_queue: Arc<ClusterWorkQueue>,
+    // G1 收口（2026-09-08）：work-queue 路径的回调结果持久化（回调失败 →
+    // set_result 落盘真结果；成功 → delete 清占位）。与 gateway 传给
+    // peer_chat_handler 的是同一份 adapter（同一 result_store 真相源）。
+    result_persister: Arc<dyn nemesis_cluster::rpc::peer_chat_handler::TaskResultPersister>,
     shutdown_tx: tokio::sync::broadcast::Sender<()>,
 }
 
 impl ClusterServiceAdapter {
     /// Create a new adapter with references to shared resources.
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         cluster: Arc<Cluster>,
         shared: Arc<SharedResources>,
@@ -54,6 +59,7 @@ impl ClusterServiceAdapter {
         home: std::path::PathBuf,
         cluster_task_list: Arc<ClusterTaskList>,
         cluster_work_queue: Arc<ClusterWorkQueue>,
+        result_persister: Arc<dyn nemesis_cluster::rpc::peer_chat_handler::TaskResultPersister>,
     ) -> Self {
         let (shutdown_tx, _) = tokio::sync::broadcast::channel(1);
         Self {
@@ -67,6 +73,7 @@ impl ClusterServiceAdapter {
             home,
             cluster_task_list,
             cluster_work_queue,
+            result_persister,
             shutdown_tx,
         }
     }
@@ -191,6 +198,7 @@ impl ClusterServiceAdapter {
         // Build and spawn cluster agent loop
         let rpc_client = self.cluster.rpc_client_arc();
         let cluster_arc = self.cluster.clone();
+        let result_persister = self.result_persister.clone();
         let handle = match crate::agent_factory::build_cluster_agent_loop(&self.shared, cluster_arc)
         {
             Ok((cluster_agent, cluster_config, cluster_observer)) => {
@@ -205,6 +213,7 @@ impl ClusterServiceAdapter {
                         task_list,
                         rpc_client,
                         cluster_observer,
+                        Some(result_persister),
                         shutdown_rx,
                     )
                     .await;
@@ -248,6 +257,7 @@ impl LifecycleService for ClusterServiceAdapter {
                 &self.shared,
                 &self.cluster_task_list,
                 &self.cluster_work_queue,
+                &self.result_persister,
                 self.shutdown_tx.clone(),
             ))
         })?;
@@ -312,6 +322,7 @@ async fn start_cluster_components(
     shared: &Arc<SharedResources>,
     cluster_task_list: &Arc<ClusterTaskList>,
     cluster_work_queue: &Arc<ClusterWorkQueue>,
+    result_persister: &Arc<dyn nemesis_cluster::rpc::peer_chat_handler::TaskResultPersister>,
     shutdown_tx: tokio::sync::broadcast::Sender<()>,
 ) -> Result<Option<tokio::task::JoinHandle<()>>, String> {
     // 1. Start cluster (registers local node, creates RPC client, starts sync/recovery loops)
@@ -340,6 +351,7 @@ async fn start_cluster_components(
             let shutdown_rx = shutdown_tx.subscribe();
             let work_queue = cluster_work_queue.clone();
             let task_list = cluster_task_list.clone();
+            let result_persister = result_persister.clone();
             let handle = tokio::spawn(async move {
                 crate::cluster_agent::cluster_agent_loop(
                     cluster_agent,
@@ -348,6 +360,7 @@ async fn start_cluster_components(
                     task_list,
                     rpc_client,
                     cluster_observer,
+                    Some(result_persister),
                     shutdown_rx,
                 )
                 .await;
