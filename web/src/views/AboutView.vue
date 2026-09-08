@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { ref, onMounted, computed } from 'vue'
 import { useWSAPI } from '../composables/useWSAPI'
-import { marked } from 'marked'
+import { renderMarkdownHtml } from '../utils/markdown'
 
 const { request } = useWSAPI()
 const activeTab = ref('about')
@@ -40,10 +40,7 @@ function switchTab(tab: string) {
 
 const renderedReadme = computed(() => {
   if (!readmeContent.value) return ''
-  return marked.parse(readmeContent.value, {
-    gfm: true,
-    breaks: false,
-  })
+  return renderMarkdownHtml(readmeContent.value)
 })
 </script>
 

@@ -472,11 +472,15 @@
   min-width: 0;
 }
 
+/* 气泡贴内容宽度（短消息不再通栏拉伸），上限 52rem 保证长文可读行宽；
+   超宽内容（代码块）由 .markdown-body pre 的 overflow-x 横向滚动消化 */
 .message-bubble {
   padding: var(--space-3) var(--space-4);
   border-radius: var(--radius-lg);
   font-size: var(--text-sm);
   line-height: 1.6;
+  width: fit-content;
+  max-width: min(100%, 52rem);
 }
 
 /* Plain-text bubbles (user / system / error): preserve the sender's newlines
@@ -507,6 +511,9 @@
   align-items: center;
   justify-content: space-between;
   gap: var(--space-2);
+  /* 跟随气泡贴内容宽度，避免短气泡下时间行仍通栏（徽标/回退按钮漂到窗缘） */
+  width: fit-content;
+  max-width: 100%;
 }
 
 /* Per-message "供应商·模型名" badge (assistant replies only). Low-contrast so
@@ -605,10 +612,21 @@
   color: var(--text-secondary);
 }
 
-.markdown-body table {
-  border-collapse: collapse;
-  width: 100%;
+/* markdown 表格滚动容器（渲染器统一包装，见 web/src/utils/markdown.ts）：
+   宽表横向滚动而非把单元格压成每字一行。注意不能用 display:block +
+   width:max-content 直接压在 <table> 上——匿名表盒拿不到 intrinsic 宽度，
+   仍会在容器宽处换行。 */
+.markdown-body .md-table-wrap {
+  overflow-x: auto;
   margin: var(--space-3) 0;
+}
+
+.markdown-body table {
+  /* width:max-content = 自然宽度：宽表不压列（超出由包装器滚动消化），
+     窄表不拉伸通栏（与贴内容气泡同一美学）。 */
+  border-collapse: collapse;
+  width: max-content;
+  margin: 0;
   font-size: var(--text-xs);
 }
 

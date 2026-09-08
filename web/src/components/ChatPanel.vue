@@ -21,7 +21,7 @@ import ToolCallCard from './chat/ToolCallCard.vue'
 import type { ToolEvent } from '../stores/chat'
 // M5 (2026-09-05): 会话级 context/cost 常驻条——cost 格式化与侧栏共用。
 import { fmtCost } from '../composables/useUsageFormat'
-import { marked } from 'marked'
+import { renderMarkdownHtml } from '../utils/markdown'
 import hljs from 'highlight.js/lib/core'
 import javascript from 'highlight.js/lib/languages/javascript'
 import typescript from 'highlight.js/lib/languages/typescript'
@@ -217,24 +217,12 @@ const silenceTimeout = ref(3.0)
 const chatMessages = ref<HTMLDivElement | null>(null)
 const chatInput = ref<HTMLTextAreaElement | null>(null)
 
-// Configure marked
-marked.setOptions({
-  breaks: true,
-  gfm: true,
-})
-
 function renderMarkdown(text: string): string {
+  // 代码高亮不在此处：marked v15 已移除 highlight 选项（传了也是静默
+  // no-op），统一由 renderCodeBlocks() 在 DOM 插入后对 pre code 跑
+  // hljs.highlightElement。
   try {
-    return (marked as any).parse(text, {
-      highlight(code: string, lang: string) {
-        if (lang && hljs.getLanguage(lang)) {
-          try { return hljs.highlight(code, { language: lang }).value } catch {}
-        }
-        // Skip highlightAuto — too expensive for large code blocks.
-        // renderCodeBlocks() will handle untagged blocks after DOM insertion.
-        return code
-      },
-    })
+    return renderMarkdownHtml(text, { breaks: true })
   } catch {
     return text.replace(/\n/g, '<br>')
   }

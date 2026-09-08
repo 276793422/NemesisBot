@@ -164,7 +164,7 @@
 
 <script setup lang="ts">
 import { ref, computed, onMounted } from 'vue'
-import { marked } from 'marked'
+import { renderMarkdownHtml } from '../utils/markdown'
 import { useWSAPI } from '../composables/useWSAPI'
 import { useToast } from '../composables/useToast'
 
@@ -202,7 +202,7 @@ const convertedFileList = computed(() => {
 
 function renderMd(text: string): string {
   if (!text) return ''
-  return marked.parse(text, { async: false }) as string
+  return renderMarkdownHtml(text)
 }
 
 function escapeHtml(s: string): string {

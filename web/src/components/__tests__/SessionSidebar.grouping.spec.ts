@@ -95,7 +95,7 @@ describe('SessionSidebar 双分组 (L6++ G5)', () => {
     expect(createBtn).toHaveLength(1)
     // 入口点击 → modal 打开（关闭回调由组件内部管理）。
     await createBtn[0].trigger('click')
-    expect(w.find('.modal').exists()).toBe(true)
+    expect(w.find('.modal-backdrop').exists()).toBe(true)
     w.unmount()
   })
 

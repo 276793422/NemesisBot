@@ -198,6 +198,19 @@ impl ProjectsBridge for MockBridge {
         self.inner.lock().bound.get(session_key).cloned()
     }
 
+    fn display_label(&self, project_id: &str, _session_key: &str) -> String {
+        // 模拟真实 manager 三级回落的首级（注册表名）：名字语义由
+        // nemesisbot 侧 manager 测试覆盖，这里只验证 resolve 侧把它
+        // 拼进错误文案。
+        self.inner
+            .lock()
+            .projects
+            .iter()
+            .find(|p| p.id == project_id)
+            .map(|p| p.name.clone())
+            .unwrap_or_else(|| project_id.to_string())
+    }
+
     fn loop_for_session(&self, project_id: &str) -> Option<Arc<AgentLoop>> {
         let s = self.inner.lock();
         if s.missing_loops.contains(project_id) {

@@ -52,6 +52,12 @@ pub trait ProjectsBridge: Send + Sync {
     fn loop_for_session(&self, project_id: &str) -> Option<Arc<AgentLoop>>;
     /// 项目目录（fs.tree / chat.todo_get 的根切换用；None = 未注册）。
     fn project_path(&self, project_id: &str) -> Option<std::path::PathBuf>;
+    /// 不可用项目的展示名（默认 = pid 兜底；真实三级回落——注册表名 →
+    /// 会话 sidecar project_path 尾段 → pid——由 nemesisbot
+    /// ProjectLoopManager 覆写实现，bridge 侧测试假件零改动）。
+    fn display_label(&self, project_id: &str, _session_key: &str) -> String {
+        project_id.to_string()
+    }
     /// 项目会话绑定（sessions.create 带 project_id）：校验项目存在 +
     /// 目录在 → 烧 sidecar project 字段 + 登记内存索引。
     fn bind_session(&self, session_key: &str, project_id: &str) -> Result<(), String>;
@@ -114,12 +120,7 @@ pub fn resolve_session_loop(
         && let Some(pid) = bridge.owner_of(session_key)
     {
         return bridge.loop_for_session(&pid).ok_or_else(|| {
-            let name = bridge
-                .list()
-                .into_iter()
-                .find(|p| p.id == pid)
-                .map(|p| p.name)
-                .unwrap_or_else(|| pid.clone());
+            let name = bridge.display_label(&pid, session_key);
             format!("项目「{name}」当前不可用（目录缺失或已移除），无法操作该会话")
         });
     }

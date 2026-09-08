@@ -191,7 +191,7 @@ impl CheckpointStore {
         };
         match result {
             Ok(repo) => {
-                if let Err(e) = Self::ensure_alternates(&shadow, root) {
+                if let Err(e) = Self::ensure_alternates(shadow, root) {
                     warn!("[checkpoint] alternates 写失败（blob 复用降级，不影响正确性）: {e}");
                 }
                 Some(GitBackend {

@@ -351,10 +351,10 @@ impl LifecycleService for AgentLoopServiceAdapter {
                     Ok(msg) => {
                         // L6++：项目会话消息不进主 loop（项目调度器转发）。
                         // system/无归属消息照常放行（谓词只对 ToProject 命中）。
-                        if let Some(pred) = skip.as_ref() {
-                            if pred(&msg) {
-                                continue;
-                            }
+                        if let Some(pred) = skip.as_ref()
+                            && pred(&msg)
+                        {
+                            continue;
                         }
                         if agent_inbound_tx.send(msg).await.is_err() {
                             break; // Agent receiver dropped

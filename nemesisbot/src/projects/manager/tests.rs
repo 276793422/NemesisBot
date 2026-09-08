@@ -270,7 +270,7 @@ async fn manager_start_all_and_owner_index() {
     mgr.start_all();
     assert!(mgr.project_loop(&real.id).is_some(), "real project loop must run");
     assert!(
-        !mgr.running_pids().iter().any(|p| *p == gone.id),
+        !mgr.running_pids().contains(&gone.id),
         "missing-dir project must be skipped with a warning, not crash startup"
     );
 

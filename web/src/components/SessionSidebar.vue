@@ -503,7 +503,7 @@ function relTime(ts: string): string {
     </div>
 
     <!-- 会话信息只读弹窗（行菜单） -->
-    <div v-if="infoSession" class="modal" @click.self="infoSession = null">
+    <div v-if="infoSession" class="modal-backdrop" @click.self="infoSession = null">
       <div class="modal-box info-box">
         <h3>会话信息</h3>
         <div class="info-grid">
@@ -841,16 +841,14 @@ function relTime(ts: string): string {
   background: var(--bg-primary);
   color: inherit;
 }
-/* 会话信息弹窗 */
-.modal {
-  position: fixed;
-  inset: 0;
-  z-index: 100;
-  background: rgba(0, 0, 0, 0.45);
-  display: flex;
-  align-items: center;
-  justify-content: center;
+/* 重命名进行中：spacer/动作钮让位，输入框占满组头（否则 flex:1 平分自由空间只剩 ~90px 宽） */
+.rename-input ~ .group-spacer,
+.rename-input ~ .group-actions {
+  display: none;
 }
+/* 会话信息弹窗：遮罩用全局 .modal-backdrop（fixed 全视口+居中）。
+   勿用 class="modal"——components.css 的全局 .modal 是弹窗盒子样式
+   （width:90%/max-width:540px），会污染遮罩层把全视口遮罩缩成 540×720 小方块。 */
 .modal-box {
   background: var(--surface);
   border: 1px solid var(--border);

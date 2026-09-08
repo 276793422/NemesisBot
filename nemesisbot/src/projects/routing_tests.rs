@@ -312,6 +312,100 @@ async fn unroutable_project_session_gets_honest_outbound_error() {
 }
 
 // ---------------------------------------------------------------------------
+// 附加：display_label 三级回落（注册表名 → sidecar 路径尾段 → pid）
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn display_label_three_level_fallback() {
+    let (_bus, mgr, home) = fixture("label");
+    let workspace = home.join("workspace");
+    let key = "agent:main:session:lblsess";
+    let stem = super::manager::stem_from_session_key(key);
+    let logs_dir = workspace.join("logs").join("session_logs");
+    std::fs::create_dir_all(&logs_dir).unwrap();
+    // sidecar 烧绑定路径（项目已移除后名字仍可从这里恢复）。
+    let bound_dir = home.join("proj-beta-del");
+    std::fs::write(
+        logs_dir.join(format!("{stem}.meta.json")),
+        serde_json::json!({
+            "project_id": "p_removed1",
+            "project_path": bound_dir.to_string_lossy(),
+        })
+        .to_string(),
+    )
+    .unwrap();
+
+    // ① 注册表命中 → 注册表名。
+    let live_dir = home.join("proj-live");
+    std::fs::create_dir_all(&live_dir).unwrap();
+    let entry = registry::create_project(
+        &registry::registry_path(&workspace),
+        &workspace,
+        "Live 项目",
+        &live_dir.to_string_lossy(),
+        4,
+    )
+    .expect("create live project");
+    assert_eq!(
+        mgr.display_label(&entry.id, key),
+        "Live 项目",
+        "level 1: registry name wins"
+    );
+
+    // ② 注册表已移除 + sidecar 带路径 → 路径尾段。
+    assert_eq!(
+        mgr.display_label("p_removed1", key),
+        "proj-beta-del",
+        "level 2: sidecar path tail recovers a recognizable label"
+    );
+
+    // ③ 双双缺席（无 sidecar 的会话）→ pid。
+    assert_eq!(
+        mgr.display_label("p_unknown0", "agent:main:session:noside"),
+        "p_unknown0",
+        "level 3: pid is the last resort"
+    );
+}
+
+#[tokio::test]
+async fn unroutable_outbound_uses_sidecar_path_tail_label() {
+    let (bus, mgr, home) = fixture("labele2e");
+    let pid = "p_gone002";
+    let key = "agent:main:session:deadproj2";
+    // 已移除形态：注册表无条目、通道未注入，只有 sidecar 烧着路径。
+    let stem = super::manager::stem_from_session_key(key);
+    let logs_dir = home.join("workspace").join("logs").join("session_logs");
+    std::fs::create_dir_all(&logs_dir).unwrap();
+    std::fs::write(
+        logs_dir.join(format!("{stem}.meta.json")),
+        serde_json::json!({
+            "project_id": pid,
+            "project_path": home.join("proj-gamma-gone").to_string_lossy(),
+        })
+        .to_string(),
+    )
+    .unwrap();
+    mgr.start_routing();
+
+    let mut out_rx = bus.subscribe_outbound();
+    bus.publish_inbound(msg("web", key));
+    let out = tokio::time::timeout(Duration::from_secs(2), out_rx.recv())
+        .await
+        .expect("timeout waiting for error outbound")
+        .expect("outbound closed");
+    assert!(
+        out.content.contains("proj-gamma-gone"),
+        "label must come from sidecar path tail: {}",
+        out.content
+    );
+    assert!(
+        !out.content.contains(pid),
+        "raw pid must not leak when a path tail is recoverable: {}",
+        out.content
+    );
+}
+
+// ---------------------------------------------------------------------------
 // 附加：start_routing 幂等（全进程唯一 1 个项目调度订阅）
 // ---------------------------------------------------------------------------
 

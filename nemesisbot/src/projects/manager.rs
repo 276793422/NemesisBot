@@ -373,12 +373,46 @@ impl ProjectLoopManager {
     /// 刻意**不写 chat_log**：chat_log 追加走全局 path manager，而调度器
     /// 是纯路由层（消息从未进过任何 loop，用户消息行也尚未落盘——那由
     /// loop 的 turn 路径负责）。错误只做出站投递。
-    fn send_unroutable_error(&self, msg: &InboundMessage, pid: &str) {
-        let name = registry::list_projects(&self.registry_path)
+    /// 不可用项目的展示名三级回落：① 注册表名（目录消失但条目还在）→
+    /// ② 会话 sidecar 的 project_path 尾段（项目已移除、注册表名字已
+    /// 不可得时，从烧入会话的绑定路径恢复可辨识名）→ ③ pid 兜底。
+    /// bus 路由（send_unroutable_error）与 WSAPI（ProjectsBridge
+    /// display_label 覆写）共用，单一真相源。
+    pub fn display_label(&self, pid: &str, session_key: &str) -> String {
+        if let Some(p) = registry::list_projects(&self.registry_path)
             .into_iter()
             .find(|p| p.id == pid)
-            .map(|p| p.name)
-            .unwrap_or_else(|| pid.to_string());
+        {
+            return p.name;
+        }
+        if let Some(path) = self.session_project_path(session_key)
+            && let Some(tail) =
+                std::path::Path::new(&path).file_name().and_then(|n| n.to_str())
+        {
+            return tail.to_string();
+        }
+        pid.to_string()
+    }
+
+    /// 读会话 sidecar meta 的 project_path（`owner_of` 同款磁盘形态；
+    /// 只读不回填——展示名是冷路径，不值得进内存索引）。
+    fn session_project_path(&self, session_key: &str) -> Option<String> {
+        if session_key.is_empty() {
+            return None;
+        }
+        let stem = stem_from_session_key(session_key);
+        let meta_path = nemesis_path::resolve_session_logs_dir_in_workspace(&self.main_workspace)
+            .join(format!("{stem}.meta.json"));
+        let data = std::fs::read_to_string(&meta_path).ok()?;
+        serde_json::from_str::<serde_json::Value>(&data)
+            .ok()?
+            .get("project_path")?
+            .as_str()
+            .map(|s| s.to_string())
+    }
+
+    fn send_unroutable_error(&self, msg: &InboundMessage, pid: &str) {
+        let name = self.display_label(pid, &msg.session_key);
         let content =
             format!("⚠ 项目「{name}」当前不可用（目录缺失或已移除），消息未能投递。");
         warn!(
@@ -534,6 +568,11 @@ impl ProjectLoopManager {
 // ---------------------------------------------------------------------------
 
 impl nemesis_web::handlers::projects::ProjectsBridge for ProjectLoopManager {
+    fn display_label(&self, project_id: &str, session_key: &str) -> String {
+        // 三级回落真相源（注册表名 → sidecar project_path 尾段 → pid）。
+        ProjectLoopManager::display_label(self, project_id, session_key)
+    }
+
     fn list(&self) -> Vec<nemesis_web::handlers::projects::ProjectInfo> {
         registry::list_projects(&self.registry_path)
             .into_iter()

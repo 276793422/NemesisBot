@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { ref, computed, onMounted } from 'vue'
-import { marked } from 'marked'
+import { renderMarkdownHtml } from '../utils/markdown'
 
 const licenseContent = ref('')
 const loading = ref(true)
@@ -21,10 +21,7 @@ onMounted(async () => {
 
 const renderedLicense = computed(() => {
   if (!licenseContent.value) return ''
-  return marked.parse(licenseContent.value, {
-    gfm: true,
-    breaks: false,
-  })
+  return renderMarkdownHtml(licenseContent.value)
 })
 </script>
 

@@ -700,6 +700,7 @@ pub fn write_session_project(session_key: &str, project_id: &str, project_path: 
 /// - 文件缺失 = no-op（delete 路径 meta 已随 delete_chat_log 一并删除）；
 /// - 本就无归属 = no-op（不空写文件）；
 /// - 有归属 = 读改写摘除（防 owner_of 的 sidecar 兜底把绑定「复活」）。
+///
 /// 返回是否实际摘除了归属。
 pub fn clear_session_project(session_key: &str) -> bool {
     let Some(mut meta) = read_meta_full(session_key) else {
