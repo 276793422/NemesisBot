@@ -144,7 +144,7 @@ impl MockBridge {
 
     fn project_loop(&self) -> Arc<AgentLoop> {
         self.project_loop
-            .get_or_init(|| noop_agent_loop())
+            .get_or_init(noop_agent_loop)
             .clone()
     }
 }
@@ -266,7 +266,7 @@ async fn projects_cmds_without_bridge_are_honest_errors() {
     let _g = BridgeGuard::empty();
     let ctx = make_ctx(None);
     let h = ProjectsHandler;
-    for cmd in ["list", "create", "remove", "rename"] {
+    for cmd in ["list", "create", "remove", "rename", "open_dir"] {
         let data = if cmd == "list" {
             None
         } else {
@@ -275,8 +275,7 @@ async fn projects_cmds_without_bridge_are_honest_errors() {
         let err = h
             .handle_cmd(cmd, data, &ctx)
             .await
-            .err()
-            .expect("must fail without bridge");
+            .expect_err("must fail without bridge");
         assert!(
             err.contains("未装配"),
             "{cmd} must report honest not-wired error, got: {err}"
@@ -319,8 +318,7 @@ async fn projects_list_create_remove_rename_route_through_bridge() {
             &ctx,
         )
         .await
-        .err()
-        .expect("empty path must fail honestly");
+        .expect_err("empty path must fail honestly");
     assert!(err.contains("路径不能为空"), "honest create error must pass through: {err}");
 
     // rename：成功臂。
@@ -356,8 +354,7 @@ async fn projects_list_create_remove_rename_route_through_bridge() {
             &ctx,
         )
         .await
-        .err()
-        .expect("unknown project must fail honestly");
+        .expect_err("unknown project must fail honestly");
     assert!(err.contains("不存在"), "honest remove error must pass through: {err}");
     drop(g);
 }
@@ -422,6 +419,7 @@ async fn resolve_loop_bound_but_unavailable_is_honest_error() {
     }
     let ctx = make_ctx(None);
     let err = resolve_session_loop(&ctx, SENTINEL_KEY)
+        // expect_err 要求 Ok 侧 Debug（Arc<AgentLoop> 未实现）——保持 .err().expect()
         .err()
         .expect("bound-but-missing must fail honestly");
     assert!(
@@ -467,8 +465,7 @@ async fn sessions_create_with_project_id_without_bridge_is_honest_error() {
             &ctx,
         )
         .await
-        .err()
-        .expect("create with project_id must fail without bridge");
+        .expect_err("create with project_id must fail without bridge");
     assert!(
         err.contains("未装配"),
         "create with project_id must fail honestly without bridge: {err}"
@@ -487,9 +484,68 @@ async fn sessions_create_with_project_id_unknown_project_is_honest_error() {
             &ctx,
         )
         .await
-        .err()
-        .expect("unknown project must fail honestly");
+        .expect_err("unknown project must fail honestly");
     assert!(err.contains("不存在"), "unknown project must fail honestly: {err}");
+    drop(g);
+}
+
+// ---------------------------------------------------------------------------
+// open_dir：只开注册表已知项目目录（未注册/目录消失诚实报错）。
+// 真正 spawn explorer 的成功臂不做单测（副作用=弹窗口）；单测钉目标解析
+// 纯函数 + handler 错误透传（解析失败时根本不会走到 spawn）。
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn open_dir_unknown_project_is_honest_error_without_spawn() {
+    let (g, _mock) = BridgeGuard::with_mock();
+    let ctx = make_ctx(None);
+    let h = ProjectsHandler;
+    let err = h
+        .handle_cmd(
+            "open_dir",
+            Some(serde_json::json!({"project_id": "p-nope"})),
+            &ctx,
+        )
+        .await
+        .expect_err("unknown project must fail honestly");
+    assert!(err.contains("不存在"), "honest error must pass through: {err}");
+    drop(g);
+}
+
+#[tokio::test]
+async fn open_dir_missing_directory_is_honest_error() {
+    let (g, _mock) = BridgeGuard::with_mock(); // 哨兵项目路径 C:/mock/proj/dir 不存在
+    let ctx = make_ctx(None);
+    let h = ProjectsHandler;
+    let err = h
+        .handle_cmd(
+            "open_dir",
+            Some(serde_json::json!({"project_id": SENTINEL_PID})),
+            &ctx,
+        )
+        .await
+        .expect_err("missing directory must fail honestly");
+    assert!(
+        err.contains("不存在") && err.contains("哨兵项目"),
+        "error must name the project honestly: {err}"
+    );
+    drop(g);
+}
+
+#[tokio::test]
+async fn open_dir_resolves_only_registered_paths() {
+    let (g, mock) = BridgeGuard::with_mock();
+    // 注册一个真实存在的临时目录 → 解析成功且原样返回。
+    let dir = tempfile::tempdir().unwrap();
+    let created = mock.create("tmp-项目", &dir.path().to_string_lossy()).unwrap();
+    let target = super::projects::resolve_open_target(mock.as_ref(), &created.id)
+        .expect("registered existing dir must resolve");
+    assert_eq!(target, dir.path());
+
+    // 未注册 id → Err（防任意路径打开的闸门）。
+    let err = super::projects::resolve_open_target(mock.as_ref(), "p-arbitrary")
+        .expect_err("unregistered id must be rejected");
+    assert!(err.contains("不存在"), "{err}");
     drop(g);
 }
 
@@ -547,8 +603,7 @@ async fn sessions_rewind_unbound_session_keeps_main_loop() {
             &ctx,
         )
         .await
-        .err()
-        .expect("rewind on empty session must fail");
+        .expect_err("rewind on empty session must fail");
     assert!(
         err.contains("没有可回退"),
         "unbound session rewind must go through the main loop, got: {err}"

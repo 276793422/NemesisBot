@@ -2,11 +2,16 @@ import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { setActivePinia, createPinia } from 'pinia'
 import { mount, flushPromises } from '@vue/test-utils'
 
-// M6（2026-09-07）：会话 pin 快速槽——纯前端。pinned 集合存 localStorage
+// M6（2026-09-07）：会话 pin——纯前端。pinned 集合存 localStorage
 // （nb_pinned_sessions），pinned 会话置顶显示（组内保持原序）；删除会话
-// 顺带清 pin 防残留 id 永久占顶。
+// 顺带清 pin 防残留 id 永久占顶。2026-09-08 改版：入口从行内常驻 📌 按钮
+// 收进 hover「⋯」行菜单（置顶/取消置顶同一条目切换文案）。
 
 const deleteMock = vi.fn().mockResolvedValue({})
+const routerPushMock = vi.fn()
+vi.mock('vue-router', () => ({
+  useRouter: () => ({ push: (...a: any[]) => routerPushMock(...a) }),
+}))
 vi.mock('../../composables/useChatApi', () => ({
   useChatApi: () => ({
     list: (...a: any[]) => listMock(...a),
@@ -44,8 +49,22 @@ function titles(w: any): string[] {
   return w.findAll('.session-item .session-title').map((t: any) => t.text().replace('📌', '').trim())
 }
 
-describe('SessionSidebar pin 快速槽 (M6)', () => {
-  it('点击 📌 → 该会话置顶 + pin 标记 + localStorage 持久化；再点取消', async () => {
+/** 打开第 idx 行的行菜单。 */
+async function openRowMenu(w: any, idx: number) {
+  await w.findAll('.session-item')[idx].find('.row-more').trigger('click')
+}
+
+/** 在（当前打开的）行菜单里点指定文案的条目。 */
+async function clickMenuItem(w: any, text: string) {
+  const item = w
+    .findAll('.row-menu .menu-item')
+    .find((b: any) => b.text().includes(text))
+  expect(item, `menu item "${text}" must exist`).toBeTruthy()
+  await item.trigger('click')
+}
+
+describe('SessionSidebar pin（行菜单入口）', () => {
+  it('行菜单「置顶」→ 该会话置顶 + pin 标记 + localStorage 持久化；再点「取消置顶」还原', async () => {
     const w = await mountWith([
       { id: 'a', firstMessage: '会话 A' },
       { id: 'b', firstMessage: '会话 B' },
@@ -54,15 +73,15 @@ describe('SessionSidebar pin 快速槽 (M6)', () => {
     expect(titles(w)).toEqual(['会话 A', '会话 B', '会话 C'])
 
     // 置顶第三个。
-    await w.findAll('.pin-btn')[2].trigger('click')
+    await openRowMenu(w, 2)
+    await clickMenuItem(w, '置顶')
     expect(titles(w)).toEqual(['会话 C', '会话 A', '会话 B'])
     expect(JSON.parse(localStorage.getItem(PIN_KEY)!)).toEqual(['c'])
-    // pinned 行有标题前缀标记 + 按钮 pinned 态。
+    // pinned 行有标题前缀标记；行菜单条目反转为「取消置顶」。
     expect(w.find('.session-item .pin-flag').exists()).toBe(true)
-    expect(w.findAll('.pin-btn')[0].classes()).toContain('pinned')
 
-    // 再点取消 → 顺序恢复。
-    await w.findAll('.pin-btn')[0].trigger('click')
+    await openRowMenu(w, 0)
+    await clickMenuItem(w, '取消置顶')
     expect(titles(w)).toEqual(['会话 A', '会话 B', '会话 C'])
     expect(JSON.parse(localStorage.getItem(PIN_KEY)!)).toEqual([])
     w.unmount()
@@ -78,13 +97,13 @@ describe('SessionSidebar pin 快速槽 (M6)', () => {
     w.unmount()
   })
 
-  it('置顶不影响会话选择与删除按钮事件冒泡（stopPropagation）', async () => {
+  it('行菜单「置顶」不切换当前会话（菜单容器 @click.stop 阻断冒泡）', async () => {
     const w = await mountWith([
       { id: 'a', firstMessage: '会话 A' },
       { id: 'b', firstMessage: '会话 B' },
     ])
-    // 点击 pin 不切换当前会话（stopPropagation）。
-    await w.findAll('.pin-btn')[1].trigger('click')
+    await openRowMenu(w, 1)
+    await clickMenuItem(w, '置顶')
     const { useSessionStore } = await import('../../stores/session')
     expect(useSessionStore().currentId).toBeNull()
     w.unmount()
@@ -99,9 +118,9 @@ describe('SessionSidebar pin 快速槽 (M6)', () => {
     ])
     expect(titles(w)).toEqual(['会话 A', '会话 B'])
 
-    // 删掉置顶的 A（最后一个 del-btn 是删除按钮 ×）。
-    const delBtns = w.findAll('.session-item')[0].findAll('.del-btn')
-    await delBtns[delBtns.length - 1].trigger('click')
+    // 行菜单 → 删除会话。
+    await openRowMenu(w, 0)
+    await clickMenuItem(w, '删除会话')
     await flushPromises()
     expect(deleteMock).toHaveBeenCalledWith('a')
     expect(JSON.parse(localStorage.getItem(PIN_KEY)!)).toEqual([])

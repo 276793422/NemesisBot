@@ -1426,6 +1426,16 @@ onMounted(() => {
   // 登录时完成，挂载时可能已 connected（watcher 不回放旧值，这里直接查）。
   if (wsStatus.value === 'connected' && !chatStore.historyLoaded && !chatStore.historyLoading) {
     loadHistory()
+  } else if (wsStatus.value === 'connected' && chatStore.historyLoaded && isDefaultChat.value) {
+    // 路由卸载重挂载补偿：离开聊天页（如切到定时/Skills 再回来）期间
+    // ChatPanel 被卸载，messageHandler 随之移除——卸载窗口内晚到的
+    // receive 帧无人接收而丢失（后端 session_log 照常落盘）。Pinia store
+    // 是全局单例、historyLoaded 残留 true，重挂载若跳过重载，视图就停留
+    // 在旧数据（直到手动 F5 整页刷新）。重挂载即强制全量重拉（与
+    // onSSEResync 同链：reset + 补拉游标归零 + loadHistory），丢帧窗口闭合。
+    chatStore.reset()
+    lastChatSeq = 0
+    loadHistory()
   }
 
   // Initialize voice toolbar state after WS is ready

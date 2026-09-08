@@ -1,5 +1,5 @@
-//! L6++ G4（2026-09-08）— `projects.list/create/remove/rename` WSAPI +
-//! 会话归属解析（resolve）基础设施。
+//! L6++ G4（2026-09-08）— `projects.list/create/remove/rename/open_dir`
+//! WSAPI + 会话归属解析（resolve）基础设施。
 //!
 //! 依赖方向（关键）：nemesis-web 不能反向依赖 nemesisbot（项目注册表与
 //! 项目 loop 生命周期管理器 `ProjectLoopManager` 在那边），所以这里定义
@@ -110,18 +110,18 @@ pub fn resolve_session_loop(
     ctx: &RequestContext,
     session_key: &str,
 ) -> Result<Arc<AgentLoop>, String> {
-    if let Some(bridge) = projects_bridge() {
-        if let Some(pid) = bridge.owner_of(session_key) {
-            return bridge.loop_for_session(&pid).ok_or_else(|| {
-                let name = bridge
-                    .list()
-                    .into_iter()
-                    .find(|p| p.id == pid)
-                    .map(|p| p.name)
-                    .unwrap_or_else(|| pid.clone());
-                format!("项目「{name}」当前不可用（目录缺失或已移除），无法操作该会话")
-            });
-        }
+    if let Some(bridge) = projects_bridge()
+        && let Some(pid) = bridge.owner_of(session_key)
+    {
+        return bridge.loop_for_session(&pid).ok_or_else(|| {
+            let name = bridge
+                .list()
+                .into_iter()
+                .find(|p| p.id == pid)
+                .map(|p| p.name)
+                .unwrap_or_else(|| pid.clone());
+            format!("项目「{name}」当前不可用（目录缺失或已移除），无法操作该会话")
+        });
     }
     ctx.state
         .agent_loop
@@ -142,8 +142,63 @@ pub fn project_root_for_session(session_key: &str) -> Option<String> {
 }
 
 // ---------------------------------------------------------------------------
-// WSAPI handler（projects.list / create / remove / rename）
+// WSAPI handler（projects.list / create / remove / rename / open_dir）
 // ---------------------------------------------------------------------------
+
+/// `open_dir` 目标解析：**只允许打开注册表已登记的项目目录**（防任意路径
+/// 被诱导打开——打开能力虽然轻，入口也收在已知集合内）。未注册 / 目录已
+/// 消失（inactive）都诚实报错。
+pub(crate) fn resolve_open_target(
+    bridge: &dyn ProjectsBridge,
+    project_id: &str,
+) -> Result<std::path::PathBuf, String> {
+    let path = bridge
+        .project_path(project_id)
+        .ok_or_else(|| format!("项目不存在: {project_id}"))?;
+    if !path.is_dir() {
+        let name = bridge
+            .list()
+            .into_iter()
+            .find(|p| p.id == project_id)
+            .map(|p| p.name)
+            .unwrap_or_else(|| project_id.to_string());
+        return Err(format!(
+            "项目「{name}」的目录不存在或已移动：{}",
+            path.display()
+        ));
+    }
+    Ok(path)
+}
+
+/// 用系统文件管理器打开目录（Windows=explorer / macOS=open / Linux=
+/// xdg-open）。spawn 后不等待——文件管理器的生命周期不归网关管；参数经
+/// `Command::arg` 直传不经 shell，路径含空格/特殊字符安全。
+fn open_in_file_manager(path: &std::path::Path) -> Result<(), String> {
+    let spawn = || -> std::io::Result<std::process::Child> {
+        #[cfg(target_os = "windows")]
+        {
+            use std::os::windows::process::CommandExt;
+            // CREATE_NO_WINDOW：explorer 是 GUI 程序本无控制台，旗标只防
+            // 意外父控台窗口（同 Windows 后台进程纪律：绝不弹新窗口）。
+            const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+            std::process::Command::new("explorer")
+                .arg(path)
+                .creation_flags(CREATE_NO_WINDOW)
+                .spawn()
+        }
+        #[cfg(target_os = "macos")]
+        {
+            std::process::Command::new("open").arg(path).spawn()
+        }
+        #[cfg(all(unix, not(target_os = "macos")))]
+        {
+            std::process::Command::new("xdg-open").arg(path).spawn()
+        }
+    };
+    spawn()
+        .map(|_| ())
+        .map_err(|e| format!("打开目录失败: {e}"))
+}
 
 pub struct ProjectsHandler;
 
@@ -154,7 +209,7 @@ impl ModuleHandler for ProjectsHandler {
     }
 
     fn commands(&self) -> &'static [&'static str] {
-        &["list", "create", "remove", "rename"]
+        &["list", "create", "remove", "rename", "open_dir"]
     }
 
     async fn handle_cmd(
@@ -193,6 +248,13 @@ impl ModuleHandler for ProjectsHandler {
                 let name = crate::handlers::get_str(&data, "name")?;
                 let info = bridge.rename(&project_id, &name)?;
                 Ok(Some(serde_json::json!({ "project": info })))
+            }
+            "open_dir" => {
+                let data = data.ok_or("missing data")?;
+                let project_id = crate::handlers::get_str(&data, "project_id")?;
+                let path = resolve_open_target(bridge.as_ref(), &project_id)?;
+                open_in_file_manager(&path)?;
+                Ok(Some(serde_json::json!({ "opened": path.to_string_lossy() })))
             }
             _ => Err(format!("unknown projects cmd: {cmd}")),
         }

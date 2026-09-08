@@ -1,21 +1,29 @@
 <script setup lang="ts">
 /**
- * Session sidebar — conversation list for the Dashboard chat
- * page. Reads/writes `useSessionStore`; selecting a row flips `currentId`,
+ * Session sidebar — conversation list for the Dashboard chat page.
+ * Reads/writes `useSessionStore`; selecting a row flips `currentId`,
  * which ChatPanel watches to reset + reload that conversation's history.
  * UI conventions follow `components/logs/SessionList.vue` (selected highlight,
  * relative time, first-message-as-title).
  *
+ * 2026-09-08 三块布局改版：顶部功能按钮区（新建对话 / 定时 / Skills /
+ * 工作区）→ 中部项目区（项目=目录节点，组头折叠/计数/就地新建/溢出菜单）
+ * → 底部对话区（纯用户↔AI 会话）→ 末尾「已移除」灰组。会话行的全部操作
+ * 收进 hover 显现的「⋯」菜单（替代旧的 6 个常驻按钮）；项目行菜单含
+ * 打开目录（projects.open_dir，后端只放行注册表已知路径）。
+ *
  * L6++（2026-09-08）：对话/项目双分组。分组纯视图属性（会话行渲染与
- * 交互逻辑单源复用，组只是聚合键）：对话组=无 projectId（行为同现状，
- * pinned 置顶）；项目组=按 projectId 聚合（组头=折叠/计数/就地新建/
- * 溢出菜单）；孤儿组=projectId 在注册表已不存在的会话 → 隐式「已移除」
- * 灰组（纯前端派生，零后端状态：可浏览/可删，不可新建——发送由后端
- * 诚实报错）。归属不可变投影：会话行没有「移动到别的项目」操作。
+ * 交互逻辑单源复用，组只是聚合键）：对话组=无 projectId；项目组=按
+ * projectId 聚合；孤儿组=projectId 在注册表已不存在的会话 → 隐式
+ * 「已移除」灰组（纯前端派生，零后端状态：可浏览/可删，不可新建——
+ * 发送由后端诚实报错）。归属不可变投影：会话行没有「移动到别的项目」操作。
  */
 import { onMounted, computed, ref } from 'vue'
+import { useRouter } from 'vue-router'
 import { useSessionStore } from '../stores/session'
 import { useToast } from '../composables/useToast'
+import { useChatApi } from '../composables/useChatApi'
+import { useFileTreePanel } from '../composables/useFileTreePanel'
 // M5 (2026-09-05): 会话用量小字（sessions.list 回填的 tokens/cost）——
 // 格式化与 ChatPanel 常驻条共用同一 helper。
 import { fmtUsageLine as usage } from '../composables/useUsageFormat'
@@ -25,9 +33,25 @@ import type { SessionEntry } from '../composables/useChatApi'
 
 const sessionStore = useSessionStore()
 const toast = useToast()
+const router = useRouter()
+const { openProjectDir } = useChatApi()
+const fileTree = useFileTreePanel()
 
 // ---------------------------------------------------------------------------
-// M6（devtool-upgrade 阶段 7）：会话 pin 快速槽。纯前端——pinned 集合存
+// 顶部功能区：新建对话 / 定时任务 / Skills / 工作区（文件树开合开关）
+// ---------------------------------------------------------------------------
+
+async function newChat() {
+  const sid = await sessionStore.create()
+  if (!sid) toast.error('新建会话失败')
+}
+
+function gotoPage(path: string) {
+  router.push(path)
+}
+
+// ---------------------------------------------------------------------------
+// M6（devtool-upgrade 阶段 7）：会话 pin。纯前端——pinned 集合存
 // localStorage，pinned 会话置顶显示（组内保持原排序），后端 sessions.list
 // 协议不动。删除会话时顺带清 pin，防残留 id 永久占顶。
 // L6++：pin 语义=组内置顶（双分组 computed 各自内部排序，互不跨越组边界）。
@@ -53,8 +77,8 @@ function isPinned(id: string): boolean {
   return pinnedIds.value.has(id)
 }
 
-function togglePin(id: string, e: Event) {
-  e.stopPropagation()
+function togglePin(id: string) {
+  closeMenus()
   if (pinnedIds.value.has(id)) {
     pinnedIds.value.delete(id)
   } else {
@@ -78,8 +102,10 @@ function sortPinned(list: SessionEntry[]): SessionEntry[] {
 }
 
 // ---------------------------------------------------------------------------
-// L6++：双分组派生。对话组 / 项目组（按注册表聚合）/ 孤儿组（注册表已无
-// 此 pid 的残留绑定——「已移除」灰组，删完全部会话后自然消失）。
+// L6++：双分组派生。项目区（按注册表聚合，每个注册项目一个组头，含空
+// 项目）/ 对话区（无 projectId）/ 孤儿组（注册表已无此 pid 的残留绑定
+// ——「已移除」灰组，删完全部会话后自然消失）。展示顺序：项目在上、
+// 对话在下、孤儿垫底。
 // ---------------------------------------------------------------------------
 const chatSessions = computed(() => sortPinned(sessionStore.sessions.filter(s => !s.projectId)))
 
@@ -95,22 +121,22 @@ interface GroupRow {
   items: SessionEntry[]
 }
 
+/** 展示顺序：项目组（注册序）→ 对话组 → 孤儿组（垫底）。对话组无组头
+ *  ——区块标题条由模板按 key 注入（项目区标题条在循环外，含新建入口）。 */
 const displayGroups = computed<GroupRow[]>(() => {
-  const rows: GroupRow[] = [{ key: '__chat', header: null, items: chatSessions.value }]
-  for (const p of sessionStore.projects) {
-    rows.push({
-      key: p.id,
-      header: { name: p.name, available: p.running !== false, orphan: false },
-      items: sortPinned(sessionStore.sessions.filter(s => s.projectId === p.id)),
-    })
-  }
+  const rows: GroupRow[] = sessionStore.projects.map(p => ({
+    key: p.id,
+    header: { name: p.name, available: p.running !== false, orphan: false },
+    items: sortPinned(sessionStore.sessions.filter(s => s.projectId === p.id)),
+  }))
+  rows.push({ key: '__chat', header: null, items: chatSessions.value })
   if (orphanSessions.value.length > 0) {
     rows.push({ key: '__orphan', header: { name: '已移除', available: false, orphan: true }, items: orphanSessions.value })
   }
   return rows
 })
 
-// 组折叠：localStorage 持久（F-14 重启恢复）。对话组无组头不可折叠。
+// 组折叠：localStorage 持久（F-14 重启恢复）。
 const COLLAPSE_KEY = 'nb_collapsed_projects'
 
 function loadCollapsed(): Set<string> {
@@ -142,17 +168,30 @@ function toggleCollapse(key: string) {
   persistCollapsed()
 }
 
-// 组头溢出菜单（单开）+ 行内重命名。
-const menuFor = ref<string | null>(null)
+// ---------------------------------------------------------------------------
+// 溢出菜单（单开互斥）：项目行菜单 + 会话行菜单共用一个开槽。
+// ---------------------------------------------------------------------------
+type MenuRef = { kind: 'group' | 'row'; key: string } | null
+const menu = ref<MenuRef>(null)
+
+function toggleGroupMenu(key: string) {
+  menu.value = menu.value?.kind === 'group' && menu.value.key === key ? null : { kind: 'group', key }
+}
+
+function toggleRowMenu(id: string) {
+  menu.value = menu.value?.kind === 'row' && menu.value.key === id ? null : { kind: 'row', key: id }
+}
+
+function closeMenus() {
+  menu.value = null
+}
+
+// 组头行内重命名。
 const renaming = ref<string | null>(null)
 const renameBuf = ref('')
 
-function toggleMenu(key: string) {
-  menuFor.value = menuFor.value === key ? null : key
-}
-
 function startRename(key: string, currentName: string) {
-  menuFor.value = null
+  closeMenus()
   renaming.value = key
   renameBuf.value = currentName
 }
@@ -172,12 +211,22 @@ async function commitRename() {
 /** F10：移除项目——确认文案钉死「仅解除分组，不删除会话与项目目录内的
  *  任何文件」；确认后组头消失，其会话落「已移除」灰组。 */
 async function removeProject(key: string, name: string) {
-  menuFor.value = null
+  closeMenus()
   if (!confirm(`移除项目「${name}」？仅解除分组，不删除会话与项目目录内的任何文件。`)) return
   try {
     await sessionStore.removeProject(key)
   } catch (e: any) {
     toast.error(typeof e === 'string' ? e : e?.message || '移除失败')
+  }
+}
+
+/** 在系统文件管理器中打开项目目录（后端只放行注册表已知路径）。 */
+async function openDir(key: string) {
+  closeMenus()
+  try {
+    await openProjectDir(key)
+  } catch (e: any) {
+    toast.error(typeof e === 'string' ? e : e?.message || '打开目录失败')
   }
 }
 
@@ -202,27 +251,23 @@ function select(id: string) {
   sessionStore.switchTo(id)
 }
 
-async function newChat() {
-  const sid = await sessionStore.create()
-  if (!sid) toast.error('新建会话失败')
-}
-
 /** F2/F5：项目组内就地新建会话——创建时唯一表达归属的时刻（此后上行
  *  只带 session_id，归属由服务端裁决）。不可用组不渲染入口。 */
 async function newChatIn(projectId: string) {
+  closeMenus()
   const sid = await sessionStore.create(undefined, projectId)
   if (!sid) toast.error('新建会话失败')
 }
 
-async function del(id: string, e: Event) {
-  e.stopPropagation()
+async function del(id: string) {
+  closeMenus()
   if (!confirm('删除这个会话？历史不可恢复。')) return
   unpinIfDeleted(id)
   await sessionStore.remove(id)
 }
 
-async function renameSession(s: { id: string; title?: string; firstMessage: string }, e: Event) {
-  e.stopPropagation()
+async function renameSession(s: { id: string; title?: string; firstMessage: string }) {
+  closeMenus()
   const name = prompt('会话名称', s.title || s.firstMessage || '')
   if (name === null) return
   const trimmed = name.trim()
@@ -230,14 +275,14 @@ async function renameSession(s: { id: string; title?: string; firstMessage: stri
   await sessionStore.rename(s.id, trimmed)
 }
 
-async function clearSession(s: { id: string; title?: string; firstMessage: string }, e: Event) {
-  e.stopPropagation()
+async function clearSession(s: { id: string; title?: string; firstMessage: string }) {
+  closeMenus()
   if (!confirm(`清空「${s.title || s.firstMessage || s.id}」的所有消息？会话保留，历史清空。`)) return
   await sessionStore.clear(s.id)
 }
 
-async function exportSession(s: { id: string; title?: string; firstMessage: string }, e: Event) {
-  e.stopPropagation()
+async function exportSession(s: { id: string; title?: string; firstMessage: string }) {
+  closeMenus()
   try {
     const resp = await sessionStore.exportSession(s.id)
     const blob = new Blob([JSON.stringify(resp.messages, null, 2)], { type: 'application/json' })
@@ -253,8 +298,8 @@ async function exportSession(s: { id: string; title?: string; firstMessage: stri
 }
 
 /** P3-1: open the fork dialog for this session. */
-function forkSession(s: { id: string; title?: string; firstMessage: string }, e: Event) {
-  e.stopPropagation()
+function forkSession(s: { id: string; title?: string; firstMessage: string }) {
+  closeMenus()
   forkTarget.value = { id: s.id, title: s.title || s.firstMessage || s.id.slice(0, 8) }
 }
 
@@ -268,6 +313,38 @@ async function onForked(newSessionId: string) {
 
 function title(s: { title?: string; firstMessage: string; id: string }): string {
   return s.title || s.firstMessage || s.id.slice(0, 8)
+}
+
+// ---------------------------------------------------------------------------
+// 会话信息（行菜单）：sessions.list 已回填的静态信息只读展示——归属/
+// 时间/消息数/用量/模型/fork 血缘。零额外请求（消息数即 list 的
+// messageCount；逐轮明细在 Dashboard 日志视图）。
+// ---------------------------------------------------------------------------
+
+const infoSession = ref<SessionEntry | null>(null)
+
+function showInfo(s: SessionEntry) {
+  closeMenus()
+  infoSession.value = s
+}
+
+function projectOf(s: SessionEntry): string {
+  if (!s.projectId) return '对话'
+  return sessionStore.projects.find(p => p.id === s.projectId)?.name ?? '已移除'
+}
+
+function fmtTime(ts?: string): string {
+  if (!ts) return '—'
+  const d = new Date(ts)
+  return isNaN(d.getTime()) ? ts : d.toLocaleString('zh-CN', { hour12: false })
+}
+
+function fmtTokens(n?: number): string {
+  return n == null ? '—' : n.toLocaleString('zh-CN')
+}
+
+function fmtCost(c?: number): string {
+  return c == null ? '—' : `$${c.toFixed(4)}`
 }
 
 // ---------------------------------------------------------------------------
@@ -310,14 +387,37 @@ function relTime(ts: string): string {
 
 <template>
   <div class="session-sidebar">
-    <div class="sidebar-header">
-      <span>会话</span>
-      <button class="new-btn" @click="newChat" title="新对话">+ 新建</button>
+    <!-- 顶部功能区：新建对话 + 定时 / Skills / 工作区 -->
+    <div class="sidebar-functions">
+      <button class="fn-new-chat" @click="newChat" title="新对话">＋ 新建对话</button>
+      <div class="fn-row">
+        <button class="fn-btn" @click="gotoPage('/tasks')" title="定时任务">⏱ 定时</button>
+        <button class="fn-btn" @click="gotoPage('/skills')" title="Skills">⬡ Skills</button>
+        <button
+          class="fn-btn"
+          :class="{ on: !fileTree.collapsed.value }"
+          @click="fileTree.toggle()"
+          title="工作区文件树"
+        >📁 工作区</button>
+      </div>
     </div>
-    <div class="session-list" @click="menuFor = null">
+
+    <div class="session-list" @click="closeMenus">
+      <!-- 项目区标题条（循环外；零项目时入口仍可达，F1） -->
+      <div class="section-bar proj-section-bar">
+        <span class="section-label">项目</span>
+        <span class="section-spacer" />
+        <button class="project-create-btn" @click="showProjectModal = true" title="新建项目">＋</button>
+      </div>
+      <div v-if="sessionStore.projects.length === 0" class="section-empty">暂无项目——点「＋」注册一个目录</div>
+
       <template v-for="grp in displayGroups" :key="grp.key">
-        <!-- 组头（对话组无组头）：折叠 / 名称 / 计数 / 就地新建 / 溢出菜单 -->
-        <div v-if="grp.header" class="group-header" :class="{ unavailable: !grp.header.available, orphan: grp.header.orphan }">
+        <!-- 对话组前注入区块标题条（对话组无组头） -->
+        <div v-if="grp.key === '__chat'" class="section-bar">
+          <span class="section-label">对话</span>
+        </div>
+        <!-- 组头：折叠 / 名称 / 计数 / 就地新建 / 溢出菜单 -->
+        <div v-else-if="grp.header" class="group-header" :class="{ unavailable: !grp.header.available, orphan: grp.header.orphan }">
           <span class="caret" @click.stop="toggleCollapse(grp.key)">{{ isCollapsed(grp.key) ? '▸' : '▾' }}</span>
           <template v-if="renaming === grp.key">
             <input
@@ -337,25 +437,24 @@ function relTime(ts: string): string {
             >⚠</span>
             <span class="group-count">({{ grp.items.length }})</span>
           </template>
-          <span class="group-actions" @click.stop>
+          <span class="group-spacer" />
+          <span v-if="!grp.header.orphan" class="group-actions" @click.stop>
             <button
               v-if="grp.header.available"
-              class="del-btn add-in-group"
+              class="add-in-group"
               @click="newChatIn(grp.key)"
               :title="`在「${grp.header.name}」新建会话`"
             >＋</button>
-            <button
-              v-if="!grp.header.orphan"
-              class="del-btn"
-              @click="toggleMenu(grp.key)"
-              title="项目管理"
-            >⋯</button>
+            <button class="group-more" @click="toggleGroupMenu(grp.key)" title="项目菜单">⋯</button>
           </span>
-          <div v-if="menuFor === grp.key" class="group-menu" @click.stop>
-            <button @click="startRename(grp.key, grp.header.name)">重命名</button>
-            <button class="danger" @click="removeProject(grp.key, grp.header.name)">移除项目</button>
+          <div v-if="menu?.kind === 'group' && menu.key === grp.key" class="group-menu" @click.stop>
+            <button v-if="grp.header.available" class="menu-item" @click="newChatIn(grp.key)">＋ 新建会话</button>
+            <button class="menu-item" @click="openDir(grp.key)">📂 打开目录</button>
+            <button class="menu-item" @click="startRename(grp.key, grp.header.name)">✏ 重命名</button>
+            <button class="menu-item danger" @click="removeProject(grp.key, grp.header.name)">移除项目</button>
           </div>
         </div>
+
         <!-- 会话行（对话组 / 项目组 / 孤儿组单源复用；折叠时不渲染） -->
         <template v-if="!isCollapsed(grp.key)">
           <div
@@ -382,25 +481,51 @@ function relTime(ts: string): string {
             <div v-if="usage(s)" class="session-usage">{{ usage(s) }}</div>
             <div class="session-meta">
               <span>{{ relTime(s.lastTime || s.startTime) }}</span>
-              <button class="del-btn pin-btn" :class="{ pinned: isPinned(s.id) }" @click="togglePin(s.id, $event)" :title="isPinned(s.id) ? '取消置顶' : '置顶会话'">📌</button>
-              <button class="del-btn" @click="renameSession(s, $event)" title="重命名">✏</button>
-              <button class="del-btn" @click="clearSession(s, $event)" title="清空消息">🗑</button>
-              <button class="del-btn" @click="exportSession(s, $event)" title="导出">📥</button>
-              <button class="del-btn" @click="forkSession(s, $event)" title="分叉（从某一轮另开分支）">⑂</button>
-              <button class="del-btn" @click="del(s.id, $event)" title="删除会话">×</button>
+              <button class="row-more" @click.stop="toggleRowMenu(s.id)" title="会话菜单">⋯</button>
+            </div>
+            <div v-if="menu?.kind === 'row' && menu.key === s.id" class="group-menu row-menu" @click.stop>
+              <button class="menu-item" @click="showInfo(s)">ℹ 会话信息</button>
+              <button class="menu-item" @click="togglePin(s.id)">{{ isPinned(s.id) ? '取消置顶' : '置顶' }}</button>
+              <button class="menu-item" @click="renameSession(s)">✏ 重命名</button>
+              <button class="menu-item" @click="forkSession(s)">⑂ 创建分支</button>
+              <button class="menu-item" @click="clearSession(s)">🗑 清空消息</button>
+              <button class="menu-item" @click="exportSession(s)">📥 导出</button>
+              <button class="menu-item danger" @click="del(s.id)">✕ 删除会话</button>
             </div>
           </div>
         </template>
+        <!-- 对话区空态（区块内提示，替代整列表 .empty） -->
+        <div
+          v-if="grp.key === '__chat' && chatSessions.length === 0 && !sessionStore.listLoading"
+          class="section-empty"
+        >暂无会话，点上方「＋ 新建对话」开始</div>
       </template>
-      <div v-if="chatSessions.length === 0 && !sessionStore.listLoading" class="empty">
-        暂无会话，点击「新建」开始
-      </div>
-      <!-- L6++：项目区锚 + 区底新建入口（零项目时也无组头、入口仍可达，F1） -->
-      <div class="proj-section-bar">
-        <span>项目</span>
-      </div>
-      <button class="new-btn project-create-btn" @click="showProjectModal = true" title="新建项目">＋ 新建项目</button>
     </div>
+
+    <!-- 会话信息只读弹窗（行菜单） -->
+    <div v-if="infoSession" class="modal" @click.self="infoSession = null">
+      <div class="modal-box info-box">
+        <h3>会话信息</h3>
+        <div class="info-grid">
+          <span class="info-k">标题</span><span class="info-v">{{ title(infoSession) }}</span>
+          <span class="info-k">归属</span><span class="info-v">{{ projectOf(infoSession) }}</span>
+          <span class="info-k">创建时间</span><span class="info-v">{{ fmtTime(infoSession.startTime) }}</span>
+          <span class="info-k">最后活动</span><span class="info-v">{{ fmtTime(infoSession.lastTime) }}</span>
+          <span class="info-k">消息数</span><span class="info-v">{{ infoSession.messageCount }}</span>
+          <span class="info-k">Tokens</span><span class="info-v">{{ fmtTokens(infoSession.tokens) }}</span>
+          <span class="info-k">费用</span><span class="info-v">{{ fmtCost(infoSession.cost) }}</span>
+          <span class="info-k">模型</span><span class="info-v">{{ infoSession.model || '—' }}</span>
+          <template v-if="infoSession.parent">
+            <span class="info-k">父分支</span>
+            <span class="info-v">{{ infoSession.parentTitle || parentSid(infoSession) }}<template v-if="infoSession.forkedAtTurn"> · 第 {{ infoSession.forkedAtTurn }} 轮</template></span>
+          </template>
+        </div>
+        <div class="info-actions">
+          <button class="info-close" @click="infoSession = null">关闭</button>
+        </div>
+      </div>
+    </div>
+
     <!-- P3-1: session fork dialog -->
     <ForkSessionModal
       v-if="forkTarget"
@@ -424,30 +549,91 @@ function relTime(ts: string): string {
   background: var(--surface);
   height: 100%;
 }
-.sidebar-header {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  padding: 12px;
+/* 顶部功能区 */
+.sidebar-functions {
+  padding: 10px;
   border-bottom: 1px solid var(--border);
-  font-weight: 600;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
 }
-.new-btn {
-  padding: 4px 10px;
-  font-size: 12px;
+.fn-new-chat {
+  width: 100%;
+  padding: 8px 10px;
+  font-size: 13px;
+  font-weight: 600;
   border: 1px solid var(--accent);
-  border-radius: 4px;
+  border-radius: 6px;
   background: transparent;
   color: var(--accent);
   cursor: pointer;
 }
-.new-btn:hover {
+.fn-new-chat:hover {
   background: var(--accent-muted);
+}
+.fn-row {
+  display: flex;
+  gap: 6px;
+}
+.fn-btn {
+  flex: 1;
+  padding: 5px 4px;
+  font-size: 12px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: transparent;
+  color: var(--text-muted);
+  cursor: pointer;
+  white-space: nowrap;
+}
+.fn-btn:hover {
+  color: var(--text);
+  background: var(--bg-primary);
+}
+.fn-btn.on {
+  color: var(--accent);
+  border-color: var(--accent);
 }
 .session-list {
   flex: 1;
   overflow-y: auto;
   padding: 6px;
+}
+/* 区块标题条（项目 / 对话） */
+.section-bar {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 10px 6px 4px;
+  margin-top: 4px;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text-muted);
+}
+.proj-section-bar {
+  border-top: none;
+  margin-top: 0;
+}
+.section-spacer {
+  flex: 1;
+}
+.project-create-btn {
+  padding: 0 8px;
+  font-size: 14px;
+  line-height: 20px;
+  border: none;
+  background: transparent;
+  color: var(--accent);
+  cursor: pointer;
+  border-radius: 4px;
+}
+.project-create-btn:hover {
+  background: var(--accent-muted);
+}
+.section-empty {
+  padding: 4px 8px 8px;
+  color: var(--text-muted);
+  font-size: 12px;
 }
 .session-item {
   padding: 10px;
@@ -455,6 +641,7 @@ function relTime(ts: string): string {
   cursor: pointer;
   margin-bottom: 4px;
   border-left: 3px solid transparent;
+  position: relative;
 }
 .session-item:hover {
   background: var(--bg-primary);
@@ -473,6 +660,7 @@ function relTime(ts: string): string {
   overflow: hidden;
   text-overflow: ellipsis;
   margin-bottom: 4px;
+  padding-right: 18px;
 }
 .session-usage {
   font-size: 11px;
@@ -507,33 +695,31 @@ function relTime(ts: string): string {
   font-size: 11px;
   color: var(--text-muted);
 }
-.del-btn {
+/* 会话行「⋯」：hover 显现（触屏/键盘可聚焦），active 行常显 */
+.row-more {
   background: none;
   border: none;
   color: var(--text-muted);
   cursor: pointer;
-  padding: 0 4px;
-  font-size: 16px;
+  padding: 0 6px;
+  font-size: 14px;
   line-height: 1;
+  border-radius: 4px;
+  opacity: 0;
 }
-.del-btn:hover {
-  color: #dc3545;
+.session-item:hover .row-more,
+.session-item.active .row-more,
+.row-more:focus-visible {
+  opacity: 1;
 }
-/* M6: 会话 pin 快速槽——置顶标记 + pin 按钮（常驻弱化、pinned 高亮） */
+.row-more:hover {
+  color: var(--text);
+  background: var(--accent-muted);
+}
+/* M6: 会话 pin——置顶标记（入口在行菜单） */
 .pin-flag {
   font-size: 10px;
   margin-right: 2px;
-}
-.pin-btn {
-  font-size: 11px;
-  opacity: 0.55;
-}
-.pin-btn.pinned {
-  opacity: 1;
-}
-.pin-btn:hover {
-  color: var(--accent);
-  opacity: 1;
 }
 .empty {
   padding: 20px 12px;
@@ -541,23 +727,7 @@ function relTime(ts: string): string {
   font-size: 13px;
   text-align: center;
 }
-/* L6++：项目区锚 + 组头 */
-.proj-section-bar {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  padding: 10px 6px 4px;
-  margin-top: 6px;
-  border-top: 1px solid var(--border);
-  font-size: 12px;
-  font-weight: 600;
-  color: var(--text-muted);
-}
-.project-create-btn {
-  display: block;
-  width: 100%;
-  margin-top: 4px;
-}
+/* L6++：组头 */
 .group-header {
   display: flex;
   align-items: center;
@@ -576,7 +746,6 @@ function relTime(ts: string): string {
   width: 12px;
 }
 .group-header .group-name {
-  flex: 1;
   min-width: 0;
   white-space: nowrap;
   overflow: hidden;
@@ -598,12 +767,38 @@ function relTime(ts: string): string {
   font-weight: 400;
   font-size: 11px;
 }
+.group-spacer {
+  flex: 1;
+}
 .group-actions {
   display: flex;
   align-items: center;
+  opacity: 0;
+}
+.group-header:hover .group-actions,
+.group-actions:focus-within {
+  opacity: 1;
 }
 .add-in-group {
+  background: none;
+  border: none;
+  color: var(--accent);
+  cursor: pointer;
+  padding: 0 4px;
   font-size: 12px;
+  line-height: 1;
+}
+.group-more {
+  background: none;
+  border: none;
+  color: var(--text-muted);
+  cursor: pointer;
+  padding: 0 4px;
+  font-size: 14px;
+  line-height: 1;
+}
+.group-more:hover,
+.add-in-group:hover {
   color: var(--accent);
 }
 .group-menu {
@@ -611,14 +806,14 @@ function relTime(ts: string): string {
   top: 100%;
   right: 0;
   z-index: 30;
-  min-width: 96px;
+  min-width: 120px;
   background: var(--surface);
   border: 1px solid var(--border);
   border-radius: 6px;
   box-shadow: 0 4px 12px rgba(0, 0, 0, 0.25);
   overflow: hidden;
 }
-.group-menu button {
+.group-menu .menu-item {
   display: block;
   width: 100%;
   padding: 6px 10px;
@@ -628,11 +823,12 @@ function relTime(ts: string): string {
   font-size: 12px;
   color: inherit;
   cursor: pointer;
+  white-space: nowrap;
 }
-.group-menu button:hover {
+.group-menu .menu-item:hover {
   background: var(--bg-primary);
 }
-.group-menu button.danger:hover {
+.group-menu .menu-item.danger:hover {
   color: #dc3545;
 }
 .rename-input {
@@ -644,5 +840,57 @@ function relTime(ts: string): string {
   border-radius: 3px;
   background: var(--bg-primary);
   color: inherit;
+}
+/* 会话信息弹窗 */
+.modal {
+  position: fixed;
+  inset: 0;
+  z-index: 100;
+  background: rgba(0, 0, 0, 0.45);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+.modal-box {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 16px;
+  min-width: 320px;
+  max-width: 460px;
+  max-height: 80vh;
+  overflow-y: auto;
+}
+.modal-box h3 {
+  margin: 0 0 12px;
+  font-size: 14px;
+}
+.info-grid {
+  display: grid;
+  grid-template-columns: 72px 1fr;
+  gap: 6px 10px;
+  font-size: 12px;
+}
+.info-k {
+  color: var(--text-muted);
+}
+.info-v {
+  word-break: break-all;
+}
+.info-actions {
+  margin-top: 14px;
+  text-align: right;
+}
+.info-close {
+  padding: 4px 14px;
+  font-size: 12px;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  background: transparent;
+  color: inherit;
+  cursor: pointer;
+}
+.info-close:hover {
+  background: var(--bg-primary);
 }
 </style>

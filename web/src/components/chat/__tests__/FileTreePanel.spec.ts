@@ -2,9 +2,10 @@ import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { setActivePinia, createPinia } from 'pinia'
 import { mount, flushPromises } from '@vue/test-utils'
 
-// M4：FileTreePanel —— 折叠态默认（localStorage 记忆）、展开拉根树、
-// 懒展开（children:null 点目录再查一层）、点击文件 @path 进输入框、
-// 错误透出、truncated 提示。
+// M4：FileTreePanel —— 开合走 useFileTreePanel 共享单例（2026-09-08 改版：
+// 入口在会话侧栏「工作区」按钮；折叠时不渲染任何内容，旧细条 rail 已删）、
+// 展开拉根树、懒展开（children:null 点目录再查一层）、点击文件 @path 进
+// 输入框、错误透出、truncated 提示。
 
 const requestMock = vi.fn()
 vi.mock('../../../composables/useWSAPI', () => ({
@@ -13,6 +14,7 @@ vi.mock('../../../composables/useWSAPI', () => ({
 
 import FileTreePanel from '../FileTreePanel.vue'
 import { useChatStore } from '../../../stores/chat'
+import { useFileTreePanel } from '../../../composables/useFileTreePanel'
 
 function rootTree() {
   return {
@@ -25,7 +27,9 @@ function rootTree() {
   }
 }
 
-function mountPanel() {
+/** 默认（无偏好键）折叠不渲染任何东西；展开用共享单例驱动。 */
+function mountPanel(expanded = true) {
+  useFileTreePanel().setCollapsed(!expanded)
   return mount(FileTreePanel)
 }
 
@@ -36,15 +40,18 @@ beforeEach(() => {
 })
 
 describe('FileTreePanel', () => {
-  it('默认折叠成细条；点开拉 fs.tree 根', async () => {
+  it('默认折叠（无偏好键）：不渲染 rail 也不渲染面板；展开后拉 fs.tree 根', async () => {
+    localStorage.clear()
     requestMock.mockResolvedValue(rootTree())
-    const wrapper = mountPanel()
+    const wrapper = mount(FileTreePanel)
+    // 折叠态零渲染（rail 已删，开合入口在会话侧栏工作区按钮）。
     expect(wrapper.find('.filetree-panel').exists()).toBe(false)
-    expect(wrapper.find('.filetree-rail').exists()).toBe(true)
+    expect(wrapper.find('.filetree-rail').exists()).toBe(false)
     // 折叠态不请求数据。
     expect(requestMock).not.toHaveBeenCalled()
 
-    await wrapper.find('.filetree-rail').trigger('click')
+    // 共享单例开合（= 侧栏「工作区」按钮的动作）。
+    useFileTreePanel().toggle()
     await flushPromises()
 
     expect(requestMock).toHaveBeenCalledWith('fs', 'tree', {})
@@ -52,12 +59,15 @@ describe('FileTreePanel', () => {
     expect(rows.length).toBe(2)
     expect(rows[0].text()).toContain('src')
     expect(rows[1].text()).toContain('README.md')
+
+    // 开合偏好持久化（侧栏按钮下次进入仍展开）。
+    expect(localStorage.getItem('nb_filetree_collapsed')).toBe('0')
+    wrapper.unmount()
   })
 
   it('children:null 目录点击 → 懒展开查子层并原位填充', async () => {
     requestMock.mockResolvedValue(rootTree())
     const wrapper = mountPanel()
-    await wrapper.find('.filetree-rail').trigger('click')
     await flushPromises()
 
     requestMock.mockResolvedValue({
@@ -77,7 +87,6 @@ describe('FileTreePanel', () => {
   it('已展开的目录再点收起（不再请求）', async () => {
     requestMock.mockResolvedValue(rootTree())
     const wrapper = mountPanel()
-    await wrapper.find('.filetree-rail').trigger('click')
     await flushPromises()
 
     requestMock.mockResolvedValue({
@@ -98,7 +107,6 @@ describe('FileTreePanel', () => {
   it('点击文件 → 输入框追加 @path（尾带空白）', async () => {
     requestMock.mockResolvedValue(rootTree())
     const wrapper = mountPanel()
-    await wrapper.find('.filetree-rail').trigger('click')
     await flushPromises()
 
     const chat = useChatStore()
@@ -110,7 +118,6 @@ describe('FileTreePanel', () => {
   it('输入框为空/尾空白时追加不留双空格', async () => {
     requestMock.mockResolvedValue(rootTree())
     const wrapper = mountPanel()
-    await wrapper.find('.filetree-rail').trigger('click')
     await flushPromises()
 
     const chat = useChatStore()
@@ -121,7 +128,6 @@ describe('FileTreePanel', () => {
   it('根请求失败 → 错误透出 + 重试按钮', async () => {
     requestMock.mockRejectedValue(new Error('workspace not found: /x'))
     const wrapper = mountPanel()
-    await wrapper.find('.filetree-rail').trigger('click')
     await flushPromises()
 
     expect(wrapper.find('.filetree-error').text()).toContain('workspace not found')
@@ -136,7 +142,6 @@ describe('FileTreePanel', () => {
   it('truncated → 诚实提示行', async () => {
     requestMock.mockResolvedValue({ ...rootTree(), truncated: true })
     const wrapper = mountPanel()
-    await wrapper.find('.filetree-rail').trigger('click')
     await flushPromises()
 
     expect(wrapper.find('.filetree-truncated').text()).toContain('500')

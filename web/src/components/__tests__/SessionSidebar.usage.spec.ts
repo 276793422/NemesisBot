@@ -6,6 +6,9 @@ import { mount, flushPromises } from '@vue/test-utils'
 // tokens/cost 经 fmtUsageLine 渲染；无记录的条目不占位。
 
 const listMock = vi.fn()
+vi.mock('vue-router', () => ({
+  useRouter: () => ({ push: vi.fn() }),
+}))
 vi.mock('../../composables/useChatApi', () => ({
   useChatApi: () => ({
     list: (...a: any[]) => listMock(...a),

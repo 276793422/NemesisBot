@@ -7,6 +7,9 @@ import { mount, flushPromises } from '@vue/test-utils'
 // 在列表里可点击跳转（switchTo），不在（已删/异源）则纯文本不误导。
 
 const listMock = vi.fn()
+vi.mock('vue-router', () => ({
+  useRouter: () => ({ push: vi.fn() }),
+}))
 vi.mock('../../composables/useChatApi', () => ({
   useChatApi: () => ({
     list: (...a: any[]) => listMock(...a),

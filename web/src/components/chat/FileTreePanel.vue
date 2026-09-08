@@ -10,12 +10,14 @@
  *   目录是真空（展开无内容）。
  * - 点击文件 → 输入框追加 `@相对路径 `（联动 I2 补全体系；尾部带空白
  *   所以不会误触发 @ 补全弹层）。
- * - 折叠态记忆 localStorage（同 TodoPanel 的全局开合偏好约定）；默认
- *   折叠成左侧细条，不打扰窄屏。
+ * - 开合状态走 useFileTreePanel 共享单例（2026-09-08 改版：入口收编到
+ *   会话侧栏顶部功能区的「工作区」按钮；折叠时本组件不渲染任何内容——
+ *   旧的左缘细条 rail 已删除）。
  */
 import { computed, onMounted, ref, watch } from 'vue'
 import { useWSAPI } from '../../composables/useWSAPI'
 import { useChatStore } from '../../stores/chat'
+import { useFileTreePanel } from '../../composables/useFileTreePanel'
 
 interface TreeNode {
   name: string
@@ -27,9 +29,8 @@ interface TreeNode {
 
 const { request } = useWSAPI()
 const chatStore = useChatStore()
+const { collapsed, toggle: toggleCollapsed } = useFileTreePanel()
 
-/** 默认折叠（localStorage '0' = 用户偏好展开）；'1'/缺省都折叠。 */
-const collapsed = ref(localStorage.getItem('nb_filetree_collapsed') !== '0')
 const entries = ref<TreeNode[]>([])
 const truncated = ref(false)
 const error = ref('')
@@ -38,11 +39,6 @@ const loading = ref(false)
 const expanded = ref(new Set<string>())
 const loadingDirs = ref(new Set<string>())
 const loadedOnce = ref(false)
-
-function toggleCollapsed() {
-  collapsed.value = !collapsed.value
-  localStorage.setItem('nb_filetree_collapsed', collapsed.value ? '1' : '0')
-}
 
 async function loadRoot() {
   if (loading.value) return
@@ -132,20 +128,13 @@ function insertRef(node: TreeNode) {
 </script>
 
 <template>
-  <div class="filetree-wrap" :class="{ collapsed }">
-    <button
-      v-if="collapsed"
-      class="filetree-rail"
-      type="button"
-      title="展开工作区文件树"
-      @click="toggleCollapsed"
-    >📁</button>
-    <div v-else class="filetree-panel">
+  <div v-if="!collapsed" class="filetree-wrap">
+    <div class="filetree-panel">
       <div class="filetree-header">
         <span class="filetree-title">📁 工作区</span>
         <span class="filetree-spacer" />
         <button class="filetree-btn" type="button" title="刷新" @click="loadRoot">⟳</button>
-        <button class="filetree-btn" type="button" title="折叠" @click="toggleCollapsed">⟨</button>
+        <button class="filetree-btn" type="button" title="折叠（也可用侧栏「工作区」按钮）" @click="toggleCollapsed">⟨</button>
       </div>
 
       <div v-if="error" class="filetree-error">
@@ -185,20 +174,6 @@ function insertRef(node: TreeNode) {
   display: flex;
   min-width: 0;
   min-height: 0;
-}
-.filetree-rail {
-  width: 26px;
-  border: none;
-  border-right: 1px solid var(--border);
-  background: var(--bg-elev);
-  color: var(--text-muted);
-  cursor: pointer;
-  font-size: 14px;
-  padding: 8px 0;
-  align-self: stretch;
-}
-.filetree-rail:hover {
-  color: var(--text);
 }
 .filetree-panel {
   display: flex;

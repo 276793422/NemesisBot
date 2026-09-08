@@ -160,5 +160,9 @@ export function useChatApi() {
 
     renameProject: (project_id: string, name: string): Promise<{ project: ProjectInfo }> =>
       request('projects', 'rename', { project_id, name }),
+
+    /** 在系统文件管理器中打开项目目录（后端只放行注册表已知路径）。 */
+    openProjectDir: (project_id: string): Promise<{ opened: string }> =>
+      request('projects', 'open_dir', { project_id }),
   }
 }
