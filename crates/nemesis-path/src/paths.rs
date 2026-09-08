@@ -308,6 +308,12 @@ pub fn resolve_cors_config_path_in_workspace(workspace: &Path) -> PathBuf {
     workspace_config_dir(workspace).join("cors.json")
 }
 
+/// `<workspace>/config/projects.json` —— 项目注册表（L6++ Phase 1：对话/
+/// 项目双分组；注册不拥有——删项目只解除分组，单一真相源）。
+pub fn resolve_projects_registry_path_in_workspace(workspace: &Path) -> PathBuf {
+    workspace_config_dir(workspace).join("projects.json")
+}
+
 /// `<workspace>/logs/gateway/` —— 网关进程每日滚动日志目录（2026-08-30 统一
 /// 收编：`nemesisbot.YYYY-MM-DD` 产物原先散在 `logs/` 根，与 security_logs/
 /// cluster_logs/request_logs 等子目录混放）。

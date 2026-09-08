@@ -13,6 +13,7 @@
 mod cli_tests;
 mod forge_tests;
 mod gateway_tests;
+mod projects_ws_tests;
 mod scanner_tests;
 mod security_tests;
 mod subsystem_tests;
@@ -720,6 +721,15 @@ async fn main() -> Result<()> {
     all_results.extend(ui_batch_series::test_ui_p3_fork_http(&ws).await);
     all_results.extend(ui_batch_series::test_ui_p4_hooks(&ws).await);
     all_results.extend(ui_batch_series::test_ui_p5_sandbox(&ws).await);
+
+    // ---- L6++ G4: projects WSAPI series (真进程链路) ----
+    // 末位运行：不动 config，但沿「改共享状态的套件排尾」纪律（会写
+    // workspace registry / session_logs），不污染前面的默认断言。
+    println!("\n[Phase 2c] Projects WSAPI series (L6++ G4)...");
+    println!("{}", "-".repeat(60));
+    all_results.extend(projects_ws_tests::test_projects_crud_lifecycle(&ws).await);
+    all_results.extend(projects_ws_tests::test_projects_session_chat_roundtrip(&ws).await);
+    all_results.extend(projects_ws_tests::test_projects_unroutable_after_remove(&ws).await);
 
     // ---- Cleanup ----
     // Coverage-safe teardown: graceful /api/internal shutdown lets an

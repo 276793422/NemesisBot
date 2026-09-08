@@ -1802,6 +1802,8 @@ fn test_stored_session_serialization() {
         }],
         summary: "A greeting".to_string(),
         summary_covers_up_to: None,
+        project_id: None,
+        project_path: None,
         created: chrono::Local::now(),
         updated: chrono::Local::now(),
     };
@@ -1846,6 +1848,8 @@ fn test_stored_session_with_tool_calls() {
         ],
         summary: String::new(),
         summary_covers_up_to: None,
+        project_id: None,
+        project_path: None,
         created: chrono::Local::now(),
         updated: chrono::Local::now(),
     };

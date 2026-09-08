@@ -1410,6 +1410,13 @@ pub async fn send_to_session(
     if let Some(m) = model {
         data["model"] = serde_json::Value::String(m.to_string());
     }
+    // L6++：帧带 agent 会话 id（session_key=`agent:main:session:{sid}` 前缀
+    // 还原）——前端按当前会话过滤 receive 帧：异会话晚到的回复不进当前视图
+    // （后端已持久化，切到该会话时从磁盘加载），否则跨组切换时会串台。
+    // 无 session_key 的旧路径帧不带该字段，前端保持接受（legacy 兼容）。
+    if let Some(sid) = session_key.and_then(|s| s.strip_prefix("agent:main:session:")) {
+        data["session_id"] = serde_json::Value::String(sid.to_string());
+    }
     // L2（devtool-upgrade 阶段 6）：chat 帧盖会话内单调 seq 并进 per-session
     // 环形缓冲——`chat.sync {session_id, after_seq}` 断线补拉的数据源。
     // 记录键优先会话键（跨连接稳定），无元数据才退连接 id。

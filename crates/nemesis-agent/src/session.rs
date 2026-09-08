@@ -209,6 +209,13 @@ pub struct StoredSession {
     pub created: DateTime<Local>,
     /// When this session was last updated.
     pub updated: DateTime<Local>,
+    /// L6++：项目归属缓存镜像（真相源 = chat_log sidecar meta；None =
+    /// 对话组/未绑定）。旧文件无此键 → default None。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub project_id: Option<String>,
+    /// L6++：canonical 项目目录（与 project_id 同批写入的缓存镜像）。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub project_path: Option<String>,
 }
 
 /// A single message in stored session history.
@@ -393,6 +400,8 @@ impl SessionStore {
             summary_covers_up_to: None,
             created: Local::now(),
             updated: Local::now(),
+            project_id: None,
+            project_path: None,
         };
         self.sessions
             .write()
@@ -438,6 +447,9 @@ impl SessionStore {
             .and_then(|m| DateTime::parse_from_rfc3339(&m.timestamp).ok())
             .map(|dt| dt.with_timezone(&Local))
             .unwrap_or_else(Local::now);
+        // L6++：项目归属真相源在 sidecar meta——重建顺带水合缓存镜像，保证
+        // store json 与 meta 不漂移（否则 TTL 重建后归属镜像悄悄丢失）。
+        let meta = crate::chat_log::read_session_meta_full(key);
         let session = StoredSession {
             key: key.to_string(),
             messages,
@@ -445,6 +457,8 @@ impl SessionStore {
             summary_covers_up_to: None,
             created,
             updated: Local::now(),
+            project_id: meta.as_ref().and_then(|m| m.project_id.clone()),
+            project_path: meta.as_ref().and_then(|m| m.project_path.clone()),
         };
         info!(
             key = %key,
@@ -653,6 +667,28 @@ impl SessionStore {
             session.summary_covers_up_to = covers;
             session.updated = Local::now();
         }
+    }
+
+    /// L6++：设置项目归属缓存镜像（真相源在 chat_log sidecar meta；本字段
+    /// 只为免 sidecar 读）。内存变更不落盘——调用方 save（对齐
+    /// set_summary_covers_up_to 的「内存变更 + 调用方落盘」契约）。Pass
+    /// `None` to clear.
+    pub fn set_project(&self, key: &str, project_id: Option<String>, project_path: Option<String>) {
+        if let Some(session) = self.sessions.write().unwrap().get_mut(key) {
+            session.project_id = project_id;
+            session.project_path = project_path;
+            session.updated = Local::now();
+        }
+    }
+
+    /// L6++：读取项目归属缓存镜像（None, None = 对话组/未绑定/会话不存在）。
+    pub fn get_project(&self, key: &str) -> (Option<String>, Option<String>) {
+        self.sessions
+            .read()
+            .unwrap()
+            .get(key)
+            .map(|s| (s.project_id.clone(), s.project_path.clone()))
+            .unwrap_or((None, None))
     }
 
     /// Truncate the history, keeping only the last N messages.

@@ -170,6 +170,9 @@ pub struct Config {
     /// 是 `terminal` cargo feature）。
     #[serde(default)]
     pub terminal: Option<TerminalConfig>,
+    /// 项目注册表参数（L6++ 对话/项目双分组；None = 全默认——上限 4）。
+    #[serde(default)]
+    pub projects: Option<ProjectsConfig>,
 }
 
 /// PTY 内嵌终端配置（`config.json` 的 `terminal` 段；L8。交互 shell 无法
@@ -193,6 +196,22 @@ impl Default for TerminalConfig {
             max_sessions: 4,
             shell: None,
         }
+    }
+}
+
+/// 项目注册表参数（`config.json` 的 `projects` 段；L6++ Phase 1。
+/// `#[serde(default)]` 每字段全可省）。
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(default)]
+pub struct ProjectsConfig {
+    /// 项目数上限（每项目 = 一个常驻 AgentLoop，上限即可预期的资源面；
+    /// 默认 4。`config set_field projects.max` 经 typed round-trip 自动可用）。
+    pub max: usize,
+}
+
+impl Default for ProjectsConfig {
+    fn default() -> Self {
+        Self { max: 4 }
     }
 }
 
@@ -2436,6 +2455,7 @@ pub fn default_config() -> Config {
         board: None,
         usage: None,
         terminal: None,
+        projects: None,
     }
 }
 

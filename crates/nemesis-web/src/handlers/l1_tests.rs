@@ -98,11 +98,12 @@ fn cmds_of<'a>(reg: &'a [(String, Vec<&'static str>)], module: &str) -> &'a [&'s
         .unwrap_or(&[])
 }
 
-/// 无 feature 闸的 23 个模块（register_all 的无条件注册段）。
+/// 无 feature 闸的 24 个模块（register_all 的无条件注册段；L6++ G4 起
+/// 含 projects）。
 const UNCONDITIONAL_MODULES: &[&str] = &[
     "system", "estop", "approval", "question", "chat", "config", "models", "channels", "identity",
     "tools", "skills", "mcp", "tasks", "coding", "hooks", "commands", "fs", "plugins", "board",
-    "logs", "agent", "persona", "sessions",
+    "logs", "agent", "persona", "sessions", "projects",
 ];
 
 // ---------------------------------------------------------------------------
@@ -159,6 +160,7 @@ fn registry_anchor_commands_present() {
     assert!(cmds_of(&reg, "sessions").contains(&"rewind_to_message"));
     assert!(cmds_of(&reg, "sessions").contains(&"redo"));
     assert!(cmds_of(&reg, "logs").contains(&"history_search"));
+    assert!(cmds_of(&reg, "projects").contains(&"create"));
     // feature 门控模块锚点
     if cfg!(feature = "workflow") {
         let w = cmds_of(&reg, "workflow");

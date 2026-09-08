@@ -249,7 +249,24 @@ impl ModuleHandler for FsHandler {
         data: Option<serde_json::Value>,
         ctx: &RequestContext,
     ) -> Result<Option<serde_json::Value>, String> {
-        let workspace = require_workspace(ctx)?.to_string();
+        // L6++ G4（2026-09-08）：可选 session_id 项目判别——项目会话把遍历
+        // 根切到项目目录（仍只读有界遍历）；无归属/未装配 = 主 workspace。
+        let mut workspace = require_workspace(ctx)?.to_string();
+        if let Some(sid) = data
+            .as_ref()
+            .and_then(|d| d.get("session_id"))
+            .and_then(|v| v.as_str())
+            .filter(|s| !s.is_empty())
+        {
+            let session_key = format!(
+                "agent:main:session:{}",
+                nemesis_agent::session::SessionStore::sanitize_session_id(sid)
+            );
+            if let Some(root) = crate::handlers::projects::project_root_for_session(&session_key)
+            {
+                workspace = root;
+            }
+        }
         match cmd {
             // 路由按 module_name 分发后 cmd 是裸名（模块前缀已被剥掉）。
             "complete_path" => {

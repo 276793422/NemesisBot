@@ -193,6 +193,15 @@ pub fn fork_session(
     store.set_history(&new_key, messages);
     store.set_summary(&new_key, "");
     store.set_summary_covers_up_to(&new_key, None);
+    // L6++（2026-09-08）：项目归属继承——meta sidecar 是真相源（写新 key
+    // sidecar），store 缓存镜像同步，由下方 save 一并落盘。源无绑定 = 无
+    // 操作（对话组 fork 仍是对话组；绑定不可变，继承即终态）。
+    if let Some(meta) = chat_log::read_session_meta_full(source_key)
+        && let (Some(pid), Some(ppath)) = (meta.project_id.clone(), meta.project_path.clone())
+    {
+        chat_log::write_session_project(&new_key, &pid, &ppath);
+        store.set_project(&new_key, Some(pid), Some(ppath));
+    }
     store
         .save(&new_key)
         .map_err(|e| format!("写入新会话失败: {}", e))?;

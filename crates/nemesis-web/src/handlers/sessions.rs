@@ -70,6 +70,27 @@ impl ModuleHandler for SessionsHandler {
                 // materializes in session_logs on the first message. Title is
                 // written to a sidecar meta file immediately.
                 let session_id = uuid::Uuid::new_v4().to_string();
+                let session_key = format!(
+                    "agent:main:session:{}",
+                    nemesis_agent::session::SessionStore::sanitize_session_id(&session_id)
+                );
+                // L6++ G4（2026-09-08）：可选 project_id——先校验+烧归属
+                // （bridge bind_session：项目存在 + 目录在 → sidecar project
+                // 字段 + 内存索引），失败则整个 create 失败、不落任何 meta
+                // （放在 title 写入之前：归属失败不产生半途副作用）。
+                if let Some(project_id) = data
+                    .as_ref()
+                    .and_then(|d| d.get("project_id"))
+                    .and_then(|v| v.as_str())
+                    .map(|s| s.trim().to_string())
+                    .filter(|s| !s.is_empty())
+                {
+                    let bridge = crate::handlers::projects::projects_bridge()
+                        .ok_or_else(|| {
+                            "项目管理未装配（projects bridge 未接线，无法创建项目会话）".to_string()
+                        })?;
+                    bridge.bind_session(&session_key, &project_id)?;
+                }
                 // E7：显式命名 = 用户意志（manual，自动标题永不覆盖）；
                 // 未带 title = 默认占位符（自动标题可覆盖）。
                 let explicit_title = data
@@ -83,10 +104,6 @@ impl ModuleHandler for SessionsHandler {
                 let title = explicit_title
                     .clone()
                     .unwrap_or_else(|| nemesis_agent::chat_log::DEFAULT_SESSION_TITLE.to_string());
-                let session_key = format!(
-                    "agent:main:session:{}",
-                    nemesis_agent::session::SessionStore::sanitize_session_id(&session_id)
-                );
                 if explicit_title.is_some() {
                     nemesis_agent::chat_log::write_session_meta_manual(&session_key, &title);
                 } else {
@@ -185,6 +202,12 @@ impl ModuleHandler for SessionsHandler {
                         }
                     }
                 }
+                // L6++ G4（2026-09-08）：项目归属联动摘除（内存索引 + sidecar
+                // project 字段——meta 已随 delete_chat_log 删除时为 no-op）。
+                // bridge 未装配 = 无项目分组语义，跳过。
+                if let Some(bridge) = crate::handlers::projects::projects_bridge() {
+                    bridge.forget_session(&session_key);
+                }
                 Ok(Some(serde_json::json!({
                     "deleted": session_id,
                     "paused_cron_jobs": paused,
@@ -214,6 +237,13 @@ impl ModuleHandler for SessionsHandler {
                     && let Some(store) = al.session_store()
                 {
                     store.clear_session(&session_key);
+                }
+                drop(guard);
+                // L6++ G4（2026-09-08）：clear 重置会话 → 项目归属一并解除
+                // （摘索引 + sidecar project 字段，title 保留——防 owner_of
+                // 的 sidecar 兜底把绑定「复活」）。bridge 未装配 = 跳过。
+                if let Some(bridge) = crate::handlers::projects::projects_bridge() {
+                    bridge.forget_session(&session_key);
                 }
                 Ok(Some(serde_json::json!({ "cleared": session_id })))
             }
@@ -259,13 +289,11 @@ impl ModuleHandler for SessionsHandler {
                     "agent:main:session:{}",
                     nemesis_agent::session::SessionStore::sanitize_session_id(&session_id)
                 );
-                let al = ctx
-                    .state
-                    .agent_loop
-                    .read()
-                    .as_ref()
-                    .cloned()
-                    .ok_or_else(|| "agent loop 未装配".to_string())?;
+                // L6++ G6（2026-09-08）：undo 栈与 checkpoint store 都住 loop
+                // 实例——项目会话的回退必须由项目 loop 执行（此前硬编码主
+                // 槽，项目会话回退拿到主 loop 的空 checkpoint 索引，文件恢
+                // 复静默 no-op 只截对话）。无归属/bridge 未装配回主槽不变。
+                let al = crate::handlers::projects::resolve_session_loop(ctx, &session_key)?;
                 let mut out = al.rewind_to_message(&session_key, message_index).await?;
                 // 回执带上调用方的裸 session_id（前端用它回显）。
                 out["session_id"] = serde_json::Value::String(session_id);
@@ -284,13 +312,8 @@ impl ModuleHandler for SessionsHandler {
                     "agent:main:session:{}",
                     nemesis_agent::session::SessionStore::sanitize_session_id(&session_id)
                 );
-                let al = ctx
-                    .state
-                    .agent_loop
-                    .read()
-                    .as_ref()
-                    .cloned()
-                    .ok_or_else(|| "agent loop 未装配".to_string())?;
+                // L6++ G6：redo 的 undo 栈住 loop 实例，同 rewind 路由项目会话。
+                let al = crate::handlers::projects::resolve_session_loop(ctx, &session_key)?;
                 let mut out = al.redo_rewind(&session_key).await?;
                 out["session_id"] = serde_json::Value::String(session_id);
                 Ok(Some(out))
@@ -316,13 +339,8 @@ impl ModuleHandler for SessionsHandler {
                     "agent:main:session:{}",
                     nemesis_agent::session::SessionStore::sanitize_session_id(&session_id)
                 );
-                let al = ctx
-                    .state
-                    .agent_loop
-                    .read()
-                    .as_ref()
-                    .cloned()
-                    .ok_or_else(|| "agent loop 未装配".to_string())?;
+                // L6++ G6：checkpoint 索引住 loop 实例，同 rewind 路由项目会话。
+                let al = crate::handlers::projects::resolve_session_loop(ctx, &session_key)?;
                 let mut out = al.session_file_diff(&session_key, &path).await?;
                 out["session_id"] = serde_json::Value::String(session_id);
                 Ok(Some(out))

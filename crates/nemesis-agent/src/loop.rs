@@ -1519,6 +1519,13 @@ impl AgentLoop {
         *self.checkpoint_store.write() = Some(store);
     }
 
+    /// L6++（2026-09-08）：checkpoint store 只读口——项目 loop 工厂测试用
+    /// 它断言影子库落在主 workspace（`logs/project_checkpoints/{pid}`）而非
+    /// 用户项目目录。
+    pub fn checkpoint_store(&self) -> Option<Arc<crate::checkpoint::CheckpointStore>> {
+        self.checkpoint_store.read().clone()
+    }
+
     /// 绑定全局急停状态。工厂每次重建 loop 都调一次，所以急停状态在 agent
     /// 重启后自动保持（状态本体在 `SharedResources` 上，不在 loop 上）。
     pub fn set_estop(&self, estop: Arc<crate::estop::EstopState>) {
@@ -2279,6 +2286,14 @@ impl AgentLoop {
     /// Return the names of all registered tools.
     pub fn tool_names(&self) -> Vec<String> {
         self.tools.read().keys().cloned().collect()
+    }
+
+    /// L6++（2026-09-08）：按名取注册工具的 `parameters()` JSON。项目 loop
+    /// 工厂测试用它对两 loop 的共有工具逐同名比对 schema 字节一致（prompt
+    /// cache 契约——同名工具 schema 漂移会让切会话组的请求缓存全失效）。
+    /// None = 未注册。
+    pub fn tool_parameters(&self, name: &str) -> Option<serde_json::Value> {
+        self.tools.read().get(name).map(|t| t.parameters())
     }
 
     /// Enable automatic MCP tool reload via mtime-based change detection.

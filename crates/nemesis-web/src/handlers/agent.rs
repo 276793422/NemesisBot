@@ -38,7 +38,7 @@ impl ModuleHandler for AgentHandler {
             "stop" => self.stop(ctx),
             "cancel" => self.cancel(data, ctx),
             "rewind" => self.rewind(data, ctx).await,
-            "checkpoints" => self.checkpoints(ctx).await,
+            "checkpoints" => self.checkpoints(data, ctx).await,
             "inbox_status" => Self::inbox_status(data, ctx),
             _ => Err(format!("unknown command: agent.{}", cmd)),
         }
@@ -99,9 +99,11 @@ impl AgentHandler {
                 nemesis_agent::session::SessionStore::sanitize_session_id(&sid)
             )
         };
-        let loop_guard = ctx.state.agent_loop.read();
-        match loop_guard.as_ref() {
-            Some(al) => {
+        // L6++ G4（2026-09-08）：归属解析（项目会话查项目 loop 的 inbox；
+        // 不可用走既有的 available:false 降级形态，附加诚实 error 字段）。
+        let resolved = crate::handlers::projects::resolve_session_loop(ctx, &session_key);
+        match resolved {
+            Ok(al) => {
                 let s = al.inbox_status(&session_key);
                 Ok(Some(serde_json::json!({
                     "available": true,
@@ -113,7 +115,7 @@ impl AgentHandler {
                     "mode": s.mode,
                 })))
             }
-            None => Ok(Some(serde_json::json!({
+            Err(e) => Ok(Some(serde_json::json!({
                 "available": false,
                 "session_key": session_key,
                 "next_turn": 0,
@@ -121,6 +123,7 @@ impl AgentHandler {
                 "capacity": 0,
                 "busy": false,
                 "mode": "reject",
+                "error": e,
             }))),
         }
     }
@@ -150,10 +153,27 @@ impl AgentHandler {
 
     fn cancel(
         &self,
-        _data: Option<serde_json::Value>,
+        data: Option<serde_json::Value>,
         ctx: &RequestContext,
     ) -> Result<Option<serde_json::Value>, String> {
-        let agent_loop = ctx.state.agent_loop.read().clone();
+        // L6++ G4（2026-09-08）：可选 session_id——项目会话的取消落在项目
+        // loop（cancel_all_sessions 作用域 = 该 loop 的会话）；不带 = 主
+        // loop（现状不变）。
+        let agent_loop = match data
+            .as_ref()
+            .and_then(|d| d.get("session_id"))
+            .and_then(|v| v.as_str())
+            .filter(|s| !s.is_empty())
+        {
+            Some(sid) => {
+                let session_key = format!(
+                    "agent:main:session:{}",
+                    nemesis_agent::session::SessionStore::sanitize_session_id(sid)
+                );
+                Some(crate::handlers::projects::resolve_session_loop(ctx, &session_key)?)
+            }
+            None => ctx.state.agent_loop.read().clone(),
+        };
         match agent_loop {
             Some(al) => {
                 let cancelled = al.cancel_all_sessions();
@@ -166,6 +186,8 @@ impl AgentHandler {
 
     /// `agent.rewind {turn}` — restore the workspace to the start of the given
     /// turn (the edit safety net). Returns the paths written back and deleted.
+    /// L6++ G4：可选 session_id——项目会话回退项目目录文件（项目 loop 的
+    /// checkpoint 影子库在主 workspace `logs/project_checkpoints/<pid>/`）。
     async fn rewind(
         &self,
         data: Option<serde_json::Value>,
@@ -176,7 +198,20 @@ impl AgentHandler {
             .get("turn")
             .and_then(|v| v.as_u64())
             .ok_or("turn is required")? as usize;
-        let agent_loop = ctx.state.agent_loop.read().clone();
+        let agent_loop = match data
+            .get("session_id")
+            .and_then(|v| v.as_str())
+            .filter(|s| !s.is_empty())
+        {
+            Some(sid) => {
+                let session_key = format!(
+                    "agent:main:session:{}",
+                    nemesis_agent::session::SessionStore::sanitize_session_id(sid)
+                );
+                Some(crate::handlers::projects::resolve_session_loop(ctx, &session_key)?)
+            }
+            None => ctx.state.agent_loop.read().clone(),
+        };
         match agent_loop {
             Some(al) => match al.rewind(turn).await {
                 Ok((written, deleted)) => Ok(Some(serde_json::json!({
@@ -191,8 +226,23 @@ impl AgentHandler {
     }
 
     /// `agent.checkpoints` — list checkpoint turns (for a rewind picker UI).
-    async fn checkpoints(&self, ctx: &RequestContext) -> Result<Option<serde_json::Value>, String> {
-        let agent_loop = ctx.state.agent_loop.read().clone();
+    /// L6++ G4：可选 session_id——项目会话列项目 loop 的 checkpoint。
+    async fn checkpoints(&self, data: Option<serde_json::Value>, ctx: &RequestContext) -> Result<Option<serde_json::Value>, String> {
+        let agent_loop = match data
+            .as_ref()
+            .and_then(|d| d.get("session_id"))
+            .and_then(|v| v.as_str())
+            .filter(|s| !s.is_empty())
+        {
+            Some(sid) => {
+                let session_key = format!(
+                    "agent:main:session:{}",
+                    nemesis_agent::session::SessionStore::sanitize_session_id(sid)
+                );
+                Some(crate::handlers::projects::resolve_session_loop(ctx, &session_key)?)
+            }
+            None => ctx.state.agent_loop.read().clone(),
+        };
         let list: Vec<serde_json::Value> = match agent_loop {
             Some(al) => al
                 .checkpoint_list()

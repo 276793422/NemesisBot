@@ -208,6 +208,13 @@ pub struct AgentLoopServiceAdapter {
     /// Shared reference with AppState — updated on each start/stop.
     agent_loop_ref: Arc<parking_lot::RwLock<Option<Arc<nemesis_agent::r#loop::AgentLoop>>>>,
     bus: Arc<nemesis_bus::MessageBus>,
+    /// L6++（2026-09-08）：主桥 skip 谓词——命中=true 的消息**不喂主 loop**
+    /// （由项目调度器转发进对应项目 loop）。装配期 set 一次（OnceLock），
+    /// start() 每次读取 → loop stop/start 循环后谓词仍生效。默认未设置 =
+    /// 全部放行（既有行为零影响）。谓词实现 = ProjectLoopManager::
+    /// bridge_should_skip，单一裁决点在 route_decision 纯函数。
+    skip_predicate:
+        std::sync::OnceLock<Arc<dyn Fn(&nemesis_types::channel::InboundMessage) -> bool + Send + Sync>>,
     /// Tokio runtime handle captured at construction time.
     /// Needed because tray callbacks run on the winit thread (no tokio context),
     /// but `start()` needs to spawn async tasks on the tokio runtime.
@@ -232,8 +239,18 @@ impl AgentLoopServiceAdapter {
             shared,
             agent_loop_ref,
             bus,
+            skip_predicate: std::sync::OnceLock::new(),
             rt: tokio::runtime::Handle::current(),
         }
+    }
+
+    /// L6++：装配期设置主桥 skip 谓词（gateway 组装点调用一次；重复设置
+    /// 忽略后者——OnceLock 语义）。None 判定的消息照常进主 loop。
+    pub fn set_skip_predicate(
+        &self,
+        pred: Arc<dyn Fn(&nemesis_types::channel::InboundMessage) -> bool + Send + Sync>,
+    ) {
+        let _ = self.skip_predicate.set(pred);
     }
 
     /// Get the current AgentLoop (if running). Used by heartbeat and external callers.
@@ -324,6 +341,7 @@ impl LifecycleService for AgentLoopServiceAdapter {
 
         // Bridge: bus inbound broadcast → agent inbound mpsc
         let bus_inbound = self.bus.subscribe_inbound();
+        let skip = self.skip_predicate.get().cloned();
         let rt = self.rt.clone();
         let bridge = rt.spawn(async move {
             let mut rx = bus_inbound;
@@ -331,6 +349,13 @@ impl LifecycleService for AgentLoopServiceAdapter {
             loop {
                 match rx.recv().await {
                     Ok(msg) => {
+                        // L6++：项目会话消息不进主 loop（项目调度器转发）。
+                        // system/无归属消息照常放行（谓词只对 ToProject 命中）。
+                        if let Some(pred) = skip.as_ref() {
+                            if pred(&msg) {
+                                continue;
+                            }
+                        }
                         if agent_inbound_tx.send(msg).await.is_err() {
                             break; // Agent receiver dropped
                         }

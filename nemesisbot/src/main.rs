@@ -26,6 +26,12 @@ mod exec_worker;
 /// U10 统一执行世界：executor 通道装配单一真相源 + workflow 引擎的
 /// ExecutionWorld 桥（world 部分 `sandbox` feature 门控）。
 mod exec_world;
+/// L6++（2026-09-08）：项目注册表（config/projects.json）+ 项目常驻
+/// AgentLoop 管理（对话/项目双分组；注册不拥有——删项目只解除分组）。
+/// M1 中间态：registry API 尚无二进制消费方（M2 manager / G4 WSAPI 接线），
+/// allow 随接线移除。
+#[allow(dead_code)]
+mod projects;
 /// F7（devtool-upgrade 阶段 5）：Dashboard 结构化提问 broker——question
 /// 工具的阻塞端 + WSAPI question.respond/pending 端（同审批 broker 形态）。
 mod question_broker;

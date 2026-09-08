@@ -32,13 +32,14 @@ use tokio_tungstenite::tungstenite::Message;
 // ---------------------------------------------------------------------------
 
 /// 一条 WS 连接上的顺序 WSAPI 调用器。每次调用自增 reqId。
-struct WsApi {
+/// （L6++ G4 起 projects_ws_tests 复用——pub(crate)。）
+pub(crate) struct WsApi {
     stream: WsStream,
     next_id: u32,
 }
 
 impl WsApi {
-    async fn connect() -> Result<Self, String> {
+    pub(crate) async fn connect() -> Result<Self, String> {
         Ok(Self {
             stream: ws_connect(WS_PORT, AUTH_TOKEN)
                 .await
@@ -49,7 +50,7 @@ impl WsApi {
 
     /// 发一个 WSAPI 请求，等它的响应（按 reqId 匹配；忽略 push/ping）。
     /// 返回 `(data, error)` —— 恰有一个是 Some。
-    async fn call(
+    pub(crate) async fn call(
         &mut self,
         module: &str,
         cmd: &str,

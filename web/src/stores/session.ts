@@ -9,7 +9,7 @@
 
 import { defineStore } from 'pinia'
 import { ref } from 'vue'
-import { useChatApi, type SessionEntry } from '../composables/useChatApi'
+import { useChatApi, type SessionEntry, type ProjectInfo } from '../composables/useChatApi'
 import { useToast } from '../composables/useToast'
 import { useChatStore } from './chat'
 
@@ -21,6 +21,50 @@ export const useSessionStore = defineStore('session', () => {
   const listLoading = ref(false)
   const listError = ref<string | null>(null)
   const lastListFetch = ref(0)
+
+  // L6++（2026-09-08）：项目分组单一数据源（侧栏组头 + ChatPanel chip 共用）。
+  // 拉取失败静默——项目区退化为仅「＋新建项目」入口，操作错误由后端权威
+  // 回显，不与 sessions 列表的错误横幅互相污染。
+  const projects = ref<ProjectInfo[]>([])
+  const lastProjectsFetch = ref(0)
+
+  async function fetchProjects(force = false) {
+    if (!force && Date.now() - lastProjectsFetch.value < 5000 && projects.value.length > 0) {
+      return
+    }
+    try {
+      const resp = await api.listProjects()
+      projects.value = resp.projects ?? []
+      lastProjectsFetch.value = Date.now()
+    } catch {
+      // 保持既有 projects（可能为空）；操作时后端错误原文会 toast。
+    }
+  }
+
+  /** 新建项目。失败抛出（调用方 toast 错误原文，modal 不关）。 */
+  async function createProject(name: string, path: string): Promise<ProjectInfo> {
+    const resp = await api.createProject(name, path)
+    projects.value = [...projects.value, resp.project]
+    lastProjectsFetch.value = Date.now()
+    return resp.project
+  }
+
+  /** 仅解除分组（后端不删任何文件）；其会话由侧栏派生为「已移除」灰组。 */
+  async function removeProject(projectId: string): Promise<void> {
+    await api.removeProject(projectId)
+    projects.value = projects.value.filter(p => p.id !== projectId)
+  }
+
+  async function renameProject(projectId: string, name: string): Promise<void> {
+    const resp = await api.renameProject(projectId, name)
+    const p = projects.value.find(x => x.id === projectId)
+    if (p) p.name = resp.project.name
+  }
+
+  /** projectId → 显示名（注册表已无此 pid = 已移除 → null，不误导）。 */
+  function projectNameOf(projectId: string): string | null {
+    return projects.value.find(p => p.id === projectId)?.name ?? null
+  }
 
   async function fetchList(force = false) {
     if (listLoading.value) return
@@ -41,12 +85,13 @@ export const useSessionStore = defineStore('session', () => {
     }
   }
 
-  async function create(): Promise<string | null> {
+  async function create(title?: string, projectId?: string): Promise<string | null> {
     try {
-      const resp = await api.create()
+      const resp = await api.create(title, projectId)
       const sid = resp.session_id
       // Optimistically insert at top — the server-side file materializes on
-      // the first message, so this row is editable immediately.
+      // the first message, so this row is editable immediately. L6++：带
+      // projectId 的乐观行直接落对应项目组（等 list 刷新前即可见）。
       sessions.value.unshift({
         id: sid,
         channel: 'web',
@@ -55,6 +100,7 @@ export const useSessionStore = defineStore('session', () => {
         messageCount: 0,
         firstMessage: resp.title || '新对话',
         model: '',
+        ...(projectId ? { projectId } : {}),
       })
       switchTo(sid)
       return sid
@@ -125,5 +171,5 @@ export const useSessionStore = defineStore('session', () => {
     showSidebar.value = !showSidebar.value
   }
 
-  return { sessions, currentId, listLoading, listError, showSidebar, fetchList, create, rename, clear, exportSession, remove, switchTo, toggleSidebar }
+  return { sessions, currentId, listLoading, listError, showSidebar, projects, fetchList, fetchProjects, create, createProject, removeProject, renameProject, projectNameOf, rename, clear, exportSession, remove, switchTo, toggleSidebar }
 })

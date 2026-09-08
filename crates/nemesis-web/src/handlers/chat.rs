@@ -84,27 +84,26 @@ impl ModuleHandler for ChatHandler {
             "agent:main:session:{}",
             nemesis_agent::session::SessionStore::sanitize_session_id(&session_id)
         );
-        // 锁内 clone Arc 出来，不持 guard 跨 await（compact 是分钟级 LLM 调用）。
-        let agent_loop: Arc<AgentLoop> = {
-            let guard = ctx.state.agent_loop.read();
-            guard
-                .clone()
-                .ok_or_else(|| "agent loop not running".to_string())?
-        };
         // H1（2026-09-05）：todo_get 是只读文件读取，不需要 AgentLoop——
-        // 提前返回，不占用 loop 句柄。
+        // 提前返回，不占用 loop 句柄。L6++ G4（2026-09-08）：项目会话的
+        // todo 落在项目目录（TodoWriteTool 按 loop 的 workspace root 解析
+        // sessions/），先判项目根再读；无归属回落主 workspace。
         if cmd == "todo_get" {
-            let workspace = ctx
-                .workspace
-                .as_deref()
+            let workspace = crate::handlers::projects::project_root_for_session(&session_key)
+                .or_else(|| ctx.workspace.clone())
                 .ok_or_else(|| "workspace not configured".to_string())?;
-            let todos = read_session_todos(workspace, &session_id);
+            let todos = read_session_todos(&workspace, &session_id);
             return Ok(Some(serde_json::json!({
                 "session_id": session_id,
                 "session_key": session_key,
                 "todos": todos,
             })));
         }
+        // L6++ G4（2026-09-08）：归属解析单一裁决点——项目会话拿项目 loop
+        // （不可用诚实报错），其余拿主槽（不扩 AppState）。锁内 clone Arc，
+        // 不持 guard 跨 await（compact 是分钟级 LLM 调用）。
+        let agent_loop: Arc<AgentLoop> =
+            crate::handlers::projects::resolve_session_loop(ctx, &session_key)?;
         // M5（2026-09-05）：会话级 context 占用快照——只读，同走 AgentLoop
         // 的测量口径（与压缩压力同公式，见 loop.rs session_context_status）。
         if cmd == "context_status" {

@@ -685,6 +685,39 @@ fn upsert_meta(session_key: &str, f: impl FnOnce(&mut SessionMeta)) {
     }
 }
 
+/// L6++（2026-09-08）：项目归属烧入（创建项目会话时一次写入；归属不可变
+/// ——无改移 API，改归属 = 新会话，行业共识）。Upsert 语义同
+/// write_session_parent（已写过的 title 等字段保留）。
+pub fn write_session_project(session_key: &str, project_id: &str, project_path: &str) {
+    upsert_meta(session_key, |m| {
+        m.project_id = Some(project_id.to_string());
+        m.project_path = Some(project_path.to_string());
+    });
+}
+
+/// L6++（2026-09-08，M4 sessions.delete/clear 的 forget 联动）：摘除项目
+/// 归属两字段（title/血缘/manual 标记全部保留）。语义：
+/// - 文件缺失 = no-op（delete 路径 meta 已随 delete_chat_log 一并删除）；
+/// - 本就无归属 = no-op（不空写文件）；
+/// - 有归属 = 读改写摘除（防 owner_of 的 sidecar 兜底把绑定「复活」）。
+/// 返回是否实际摘除了归属。
+pub fn clear_session_project(session_key: &str) -> bool {
+    let Some(mut meta) = read_meta_full(session_key) else {
+        return false;
+    };
+    if meta.project_id.is_none() && meta.project_path.is_none() {
+        return false;
+    }
+    meta.project_id = None;
+    meta.project_path = None;
+    let path = meta_path(session_key);
+    if let Err(e) = fs::write(&path, serde_json::to_string(&meta).unwrap_or_default()) {
+        tracing::warn!("[chat_log] failed to clear session project {}: {}", path.display(), e);
+        return false;
+    }
+    true
+}
+
 /// Read the conversation title from the sidecar meta file, if present.
 pub fn read_session_meta(session_key: &str) -> Option<String> {
     read_meta_full(session_key).and_then(|m| m.title)
@@ -719,6 +752,13 @@ pub struct SessionMeta {
     /// E7: 用户手动命名过（rename / 建会话显式标题）——自动标题永不覆盖。
     #[serde(default, skip_serializing_if = "is_false")]
     pub title_manual: bool,
+    /// L6++：项目归属（创建项目会话时烧入，不可变；None = 对话组）。
+    /// 真相源 = 本 sidecar；`StoredSession` 的同名字段只是缓存镜像。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub project_id: Option<String>,
+    /// L6++：canonical 项目目录绝对路径（与 project_id 同批写入）。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub project_path: Option<String>,
 }
 
 /// E7: `skip_serializing_if` 助手（false 不落盘，兼容旧文件形态）。

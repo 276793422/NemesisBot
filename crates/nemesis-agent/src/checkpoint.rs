@@ -135,7 +135,22 @@ impl CheckpointStore {
     /// 其余（无 .git / .git 文件 / 初始化失败）→ JSON 回落。模式在构造期
     /// 固定，运行中新建 .git 不热切换（诚实边界，见模块文档）。
     pub fn new(dir: Option<PathBuf>, root: PathBuf) -> Self {
-        let git = Self::try_git_backend(&root);
+        // 默认影子库位置：logs 家族（主 loop 布局，`{root}/logs/checkpoints.git`）。
+        let shadow = nemesis_path::logs_dir_in_workspace(&root).join("checkpoints.git");
+        Self::build(dir, root, shadow)
+    }
+
+    /// L6++（2026-09-08）项目 loop 工厂用：影子库位置显式指定。项目 root =
+    /// 用户项目目录时，默认派生 `{root}/logs/checkpoints.git` 会把影子库落
+    /// 进用户项目目录（R7 禁止）；override 落主 workspace
+    /// `logs/project_checkpoints/{pid}/repo.git`，项目目录零污染。其余行为
+    /// 与 `new` 完全一致。
+    pub fn new_with_shadow(dir: Option<PathBuf>, root: PathBuf, shadow: PathBuf) -> Self {
+        Self::build(dir, root, shadow)
+    }
+
+    fn build(dir: Option<PathBuf>, root: PathBuf, shadow: PathBuf) -> Self {
+        let git = Self::try_git_backend(&root, &shadow);
         let store = Self {
             dir,
             root,
@@ -163,17 +178,16 @@ impl CheckpointStore {
     // git 影子库初始化 / 打开
     // ------------------------------------------------------------------
 
-    fn try_git_backend(root: &Path) -> Option<GitBackend> {
+    fn try_git_backend(root: &Path, shadow: &Path) -> Option<GitBackend> {
         let real_git = root.join(".git");
         // 只认目录形态的 .git；文件形态（linked worktree / submodule）→ JSON 回落。
         if !real_git.is_dir() {
             return None;
         }
-        let shadow = nemesis_path::logs_dir_in_workspace(root).join("checkpoints.git");
         let result = if shadow.exists() {
-            Self::open_shadow(&shadow, root)
+            Self::open_shadow(shadow, root)
         } else {
-            Self::init_shadow(&shadow, root)
+            Self::init_shadow(shadow, root)
         };
         match result {
             Ok(repo) => {

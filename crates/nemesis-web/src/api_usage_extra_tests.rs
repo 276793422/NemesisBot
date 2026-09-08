@@ -480,9 +480,12 @@ async fn pricing_returns_embedded_table() {
     // 无 DataStore → 仅内置表 + meta null。
     assert!(v["meta"].is_null());
     let entries = v["data"].as_array().expect("data array");
+    // 全量精简表（LiteLLM 派生，~2800 条）：钉下限防快照意外缩水，不钉
+    // 精确数（上游增减是常态）——与 nemesis-data pricing/tests.rs 的
+    // embedded_table_loads_and_is_sane 同一约定。
     assert!(
-        entries.len() >= 30,
-        "expected ~36 entries, got {}",
+        entries.len() >= 1000,
+        "expected full embedded table (>=1000), got {}",
         entries.len()
     );
     assert!(entries.iter().all(|e| e["source"] == "embedded"));
@@ -493,7 +496,9 @@ async fn pricing_returns_embedded_table() {
         .expect("gpt-4o present");
     assert_eq!(gpt["inputCostPerMillion"], 2.5);
     assert_eq!(gpt["outputCostPerMillion"], 10.0);
-    assert_eq!(gpt["displayName"], "GPT-4o");
+    // LiteLLM 派生条目的 displayName = provider 字符串（pricing_lite.rs；
+    // 2026-09-08 A2 全量表起，精选表时代的人工名 "GPT-4o" 不复存在）。
+    assert_eq!(gpt["displayName"], "openai");
     // Aliases field is always present (may be empty for OpenAI entries).
     assert!(gpt["aliases"].is_array());
 
@@ -501,9 +506,23 @@ async fn pricing_returns_embedded_table() {
         .iter()
         .find(|e| e["modelId"] == "deepseek-chat")
         .expect("deepseek-chat present");
-    assert_eq!(ds["cacheReadCostPerMillion"], 0.03);
-    let aliases = ds["aliases"].as_array().unwrap();
-    assert!(aliases.iter().any(|a| a == "deepseek/deepseek-chat"));
+    // 市场价会漂移（deepseek cache-read 0.03→0.028，快照随之更新）——
+    // 只钉字段形状：数值存在且非负，不钉精确价。
+    let ds_cache = ds["cacheReadCostPerMillion"].as_f64().expect("cache read numeric");
+    assert!(ds_cache >= 0.0, "cache read price must be non-negative");
+    // 上游 2026-09 快照已自带裸名 deepseek-chat（无 aliases，同义名靠
+    // lookup 后缀匹配）；aliases 序列化改钉 extras 精选条目（带反查别名，
+    // 与 nemesis-data pricing/tests.rs 的 aliases 钉法对齐）。
+    assert!(ds["aliases"].is_array());
+    let dsv = entries
+        .iter()
+        .find(|e| e["modelId"] == "deepseek-v3.2")
+        .expect("deepseek-v3.2 (extras) present");
+    assert!(dsv["aliases"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|a| a == "deepseek/deepseek-v3.2"));
 
     // Optional token limits round-trip as null or number.
     for e in entries {
@@ -545,12 +564,16 @@ async fn pricing_layered_view_with_store_and_custom_override() {
         .unwrap();
     let state = make_state_with_store(ds);
 
+    // 基线：无 DataStore → 纯内置表条数（全量精简表条数随快照漂移，
+    // 钉精确数必朽——用相对断言钉「覆盖不新增」这一真不变量）。
+    let Json(base) = handle_api_usage_pricing(State(make_state_no_data_store())).await;
+    let baseline = base["data"].as_array().unwrap().len();
+
     let Json(v) = handle_api_usage_pricing(State(state)).await;
     assert_eq!(v["status"], "success");
     let entries = v["data"].as_array().unwrap();
-    // 总数 = 内置 36 + 1 个自定义新条目……（gpt-4o 是覆盖不是新增）
-    // 自定义只覆盖了内置条目 → 数量不变。
-    assert_eq!(entries.len(), 36, "override must not duplicate the entry");
+    // 自定义只覆盖了内置 gpt-4o 条目 → 合并视图条数与纯内置表一致。
+    assert_eq!(entries.len(), baseline, "override must not duplicate the entry");
     let gpt = entries.iter().find(|e| e["modelId"] == "gpt-4o").unwrap();
     assert_eq!(gpt["source"], "custom");
     assert_eq!(gpt["inputCostPerMillion"], 123.0);

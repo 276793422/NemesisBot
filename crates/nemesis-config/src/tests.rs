@@ -3254,3 +3254,26 @@ fn test_diagnostics_loop_roundtrip_in_full_config() {
     // 解耦语义锚点：诊断闭环开而 lsp 工具关是合法组合（各自独立存储）。
     assert!(!parsed.agents.lsp_tool.enabled);
 }
+
+// L6++（2026-09-08）：projects 段 serde round-trip。set_field 的 typed
+// round-trip 校验（handlers/config.rs）要求数据面先通过——未知键会响亮拒绝，
+// 所以 `projects.max` 必须是 typed 字段（terminal 先例）。
+#[test]
+fn test_projects_config_serde_roundtrip() {
+    // 旧 config.json 缺段 = None（兼容）
+    let cfg: Config = serde_json::from_str("{}").unwrap();
+    assert!(cfg.projects.is_none());
+    // 显式 null 同样兼容
+    let cfg: Config = serde_json::from_str(r#"{"projects":null}"#).unwrap();
+    assert!(cfg.projects.is_none());
+    // 有段：解析 + 序列化保留（round-trip 不漂移）
+    let cfg: Config = serde_json::from_str(r#"{"projects":{"max":6}}"#).unwrap();
+    assert_eq!(cfg.projects.as_ref().unwrap().max, 6);
+    let json = serde_json::to_value(&cfg).unwrap();
+    assert_eq!(json["projects"]["max"], 6);
+    let reparsed: Config = serde_json::from_value(json).unwrap();
+    assert_eq!(reparsed.projects.as_ref().unwrap().max, 6);
+    // 段内缺字段 = Default（max=4）
+    let cfg: Config = serde_json::from_str(r#"{"projects":{}}"#).unwrap();
+    assert_eq!(cfg.projects.as_ref().unwrap().max, 4);
+}

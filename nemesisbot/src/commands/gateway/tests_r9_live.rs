@@ -9,7 +9,7 @@
 //! | 3 | cluster_rpc 工具选型 (2099-2126)   | 同上：A 模型脚本第一条即 ToolCall(cluster_rpc)，peers_fn 注入 + call_fn 异步 ack 全链路真跑（本测试与 #2 合并在同一场景）|
 //! | 4 | heartbeat 多臂 (3146-3252)         | 实例 a：BOOTSTRAP.md 在 → 零 LLM 命中；实例 b：HEARTBEAT.md 有任务行 + interval=1min → 第一拍(+1s)喂 passthrough 文本、第二拍(+60s)喂 "  HEARTBEAT_OK\n"（trim 归一命中）|
 //! | 5 | workflow message/event 触发驱动    | definitions/ 放两条 YAML：wf-r9-msg(message 触发, transform 节点零依赖) + wf-r9-event(event 触发, 匹配 workflow.completed 且 workflow_name==wf-r9-msg 防自递归)；由同一条 cron InboundMessage 广播级联点亮 2908-3078 两个订阅任务；断言 workspace/workflow/executions/*.jsonl |
-//! | 6 | approval ask 规则链 (196-274)      | config.security.json file_rules.write=[{pattern:"*",action:"ask"}] + MockAi 首条 write_file 工具调用 → dll 缺席早拒臂 Ok(false)（弹窗永不出现）；工具结果回灌后第二轮出终文本 |
+//! | 6 | approval ask 规则链 (196-274)      | config.security.json file_rules.write=[{pattern:"*",action:"ask"}] + MockAi 首条 write_file 工具调用 → WebApprovalManager 审批卡无人应答 → approval_timeout_secs=300s 到点自动 deny（M7 起 plugin-ui 早拒臂已死，2026-09-08 更名对齐）；工具结果回灌后第二轮出终文本 |
 //! | 7 | open_dashboard / shutdown 内部命令 | POST /api/internal {"cmd":"open_dashboard"}（dll 缺席守卫下无窗口风险）拿 {"status":"ok"} ack；随后每实例的优雅停机本身走 Shutdown 臂 (3601-3608) |
 //!
 //! 无 WS 说明：nemesisbot dev-deps 只有 tempfile + test-harness（tokio-tungstenite
@@ -1072,19 +1072,25 @@ async fn r9_live_heartbeat_two_ticks_passthrough_then_heartbeat_ok_match() {
 
 /// 预种子 cron 驱动一轮 agent：第一轮 LLM 脚本发出 write_file 工具调用，命中
 /// config.security.json 的 file_rules.write[{pattern:"*",action:"ask"}] →
-/// auditor RequireApproval → ApprovalPopupAdapter.request_approval_sync：
-/// - dll 缺席（常态：target/*/deps 旁没有 plugins/）→ 早拒臂 Ok(false)（196-207），
-///   不弹任何窗口；工具结果以失败回灌 → 第二轮 LLM 出终文本。
+/// auditor RequireApproval → WebApprovalManager（M7 Dashboard 审批卡）：
+/// - file_rules write=[{pattern:"*",action:"ask"}] → write_file 工具调用触发
+///   auditor ask → CompositeApprovalManager 分流 web 上下文 → WebApprovalManager
+///   广播审批卡并阻塞等 respond。
+/// - headless 测试无 Dashboard → 无人 respond → `approval_timeout_secs`（auditor
+///   默认 300s，auditor.rs AuditorConfig::default）到点自动 deny → 工具结果以
+///   失败回灌 → 第二轮 LLM 出终文本。
+/// - 判别关键：若管道错放行了，write_file 会真的在工作区创建文件 —— 因此
+///   「目标文件不存在」+「第二轮发生」二者共同锁定走的是 deny 分支。
 ///
-/// 判别关键：若管道错放行了，write_file 会真的在工作区创建文件 —— 因此
-/// 「目标文件不存在」+「第二轮发生」二者共同锁定走的是 deny 分支。
-/// 保底软检查（打印不断言）：logs 下审计痕迹。
-///
-/// 诚实边界：超时臂（272-275 recv_timeout → Ok(false)）需要真 popup 进程，
-/// 本批不改测；若检测到 exe 旁确有 plugin_ui 库，整个测试按纪律提前让步。
+/// 历史（2026-09-08 根因定责）：本测试原名 `…_via_plugin_ui_early_exit`，钉的是
+/// plugin-ui 弹窗适配器的「dll 缺席即早拒」臂；M7（devtool-upgrade 3936aa8）把
+/// auditor 的 ApprovalManager 同构替换为 WebApprovalManager/组合管理器后该臂
+/// 已死（ApprovalPopupAdapter 仅存留为恢复方案），deny 时效从「即时早拒」变为
+/// 「300s 审批超时」——原 240s 窗口在结构上不可能观测到第二轮（DIAG 证据：
+/// mock.hits=1 卡在 write_file ask 等待）。更名 + 窗口 240→420s 对齐现架构。
 #[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn r9_live_approval_ask_rule_denies_via_plugin_ui_early_exit() {
+async fn r9_live_approval_ask_rule_denies_via_web_approval_timeout() {
     let _live = live_gate().await;
     let ws = TestWorkspace::new().expect("temp workspace");
     let bin = resolve_nemesisbot_bin().expect("nemesisbot binary");
@@ -1158,10 +1164,11 @@ async fn r9_live_approval_ask_rule_denies_via_plugin_ui_early_exit() {
 
     // 第二轮发生（deny 工具结果回灌后的续轮）。
     let logs = home.join("workspace").join("logs");
-    // 240s：deny 回灌后第二轮在 workspace 满载下已三次超时（B1 第三轮 +
-    // workspace 两轮复跑），隔离绿但窗口加大无收敛 → 改带 DIAG 定责。
+    // 420s：deny 来自 approval_timeout_secs=300 的审批超时（结构定值，
+    // 见函数头注释的根因记录），第二轮在其后秒级完成；420s 留足 boot +
+    // 终轮余量。
     wait_until_diag(
-        240,
+        420,
         "second round final text after deny",
         || mock.hits() >= 2 && tree_contains(&logs, &final_text),
         || format!("mock.hits={}\n{}", mock.hits(), diag_home(&home)),

@@ -19,6 +19,9 @@
 //!       → 裁决回传（oneshot→mpsc）→ bus.publish_outbound(结果通知)
 //! ```
 //!
+//! watcher 装配纪律：**订阅先于 spawn**（`spawn_watcher`，见其文档）——
+//! 任务内订阅存在回执丢失窗口（broadcast 对不存在的订阅者不投递）。
+//!
 //! 编号 = request_id（uuid）前 8 位；冲突时逐级加长（12/16/全长）。
 //! 超时自动拒绝（与 Web 管理器同语义），并向对话发超时通知——诚实且
 //! 不悬挂。群聊语义：同 chat 任一成员可批复（v1；sender_id 仅记录）。
@@ -58,10 +61,25 @@ impl ChannelApprovalManager {
         }
     }
 
-    /// 回执 watcher：订阅 bus inbound，解析 `/approve|/deny <id>` 回执并
-    /// 裁决。gateway 在装配时 spawn（`tokio::spawn(mgr.clone().watcher())`）。
-    pub async fn watcher(self: std::sync::Arc<Self>) {
-        let mut rx = self.bus.subscribe_inbound();
+    /// 订阅 bus inbound（`spawn_watcher` / 竞态回归测试用）。**订阅必须先于
+    /// watcher 首次 poll**：`tokio::spawn` 只入队，若订阅发生在任务内，窗口
+    /// 期发布的回执对尚不存在的订阅者直接丢弃（broadcast 语义，bus 侧打
+    /// `no inbound receivers` warn）→ ask 等方等满超时被误拒（2026-09-08
+    /// 全量实证：channel_card_roundtrip_approve 120s 超时误拒，三次复发根因
+    /// 均为此竞态而非负载慢——加宽超时窗口无解）。
+    pub fn subscribe_inbound(
+        &self,
+    ) -> tokio::sync::broadcast::Receiver<nemesis_types::channel::InboundMessage> {
+        self.bus.subscribe_inbound()
+    }
+
+    /// 回执 watcher 主循环：解析 `/approve|/deny <id>` 回执并裁决。装配一律
+    /// 走 [`Self::spawn_watcher`]（订阅先于 spawn 的正确次序封装）——旧的
+    /// 「spawn 后任务内订阅」入口已删除，编译器强制所有调用点走正确次序。
+    pub async fn watcher_with_rx(
+        self: std::sync::Arc<Self>,
+        mut rx: tokio::sync::broadcast::Receiver<nemesis_types::channel::InboundMessage>,
+    ) {
         while let Ok(msg) = rx.recv().await {
             let Some((verb, id)) = parse_reply(&msg.content) else {
                 continue;
@@ -110,6 +128,15 @@ impl ChannelApprovalManager {
             self.bus
                 .publish_outbound(OutboundMessage::new(&msg.channel, &msg.chat_id, &notice));
         }
+    }
+
+    /// 装配点入口：**先订阅再 spawn**——订阅在调用线程同步完成（此刻起消息
+    /// 进 broadcast 缓冲，不会丢），主循环任务稍后从缓冲取。gateway 与测试
+    /// 统一走这里；racy 的「任务内订阅」入口已删除（见 `watcher_with_rx`）。
+    pub fn spawn_watcher(self: &std::sync::Arc<Self>) -> tokio::task::JoinHandle<()> {
+        let rx = self.subscribe_inbound();
+        let mgr = self.clone();
+        tokio::spawn(mgr.watcher_with_rx(rx))
     }
 
     /// 审批卡文本（纯函数便于测试）。

@@ -32,6 +32,10 @@ pub mod memory;
 pub mod models;
 pub mod persona;
 pub mod plugins;
+// L6++ G4（2026-09-08）：项目注册表 WSAPI（projects.list/create/remove/
+// rename）+ resolve_session_loop 会话归属解析。无 feature 闸——bridge 槽
+// 未装配时 handler 诚实报「未装配」。
+pub mod projects;
 // F7（devtool-upgrade 阶段 5）：dashboard 提问卡 WSAPI（question.respond /
 // question.pending）。无 feature 闸——responder 槽在 nemesis-types，未装配时
 // handler 诚实报「未装配」。
@@ -69,6 +73,11 @@ mod sessions_s10b_tests;
 // 的 handler 层测试（存储语义在 crate::share 单元测试里）。
 #[cfg(test)]
 mod sessions_share_tests;
+
+// L6++ G4（2026-09-08）：projects WSAPI 全命令臂（含未装配诚实报错）+
+// resolve_session_loop 两分支 + 项目根切换。
+#[cfg(test)]
+mod projects_tests;
 
 // S10b (2026-08-26, quality-hardening goal 冲刺 web 批次 2): shared path/file
 // utility arms (absolute/traversal rejection, canonicalize fallback, atomic
@@ -186,6 +195,8 @@ pub fn register_all(router: &mut crate::ws_router::WsRouter) {
     }
     router.register(Arc::new(persona::PersonaHandler::new()));
     router.register(Arc::new(sessions::SessionsHandler));
+    // L6++ G4（2026-09-08）：项目注册表 WSAPI（bridge 未装配时诚实报错）。
+    router.register(Arc::new(projects::ProjectsHandler));
     #[cfg(feature = "workflow")]
     {
         router.register(Arc::new(workflow::WorkflowHandler));

@@ -23,6 +23,12 @@ use crate::common;
 #[cfg(test)]
 mod tests;
 
+// L6++（2026-09-08）项目 loop 工厂测试（非 cluster 门控——与 tests.rs 的
+// #![cfg(feature = "cluster")] 顶部门不同，本模块默认构建必跑；模块名含
+// "projects" 对齐 goal 门命令 `cargo test -p nemesisbot projects` 的过滤词）。
+#[cfg(test)]
+mod projects_factory_tests;
+
 // ---------------------------------------------------------------------------
 // SharedResources — infrastructure that survives Agent restart
 // ---------------------------------------------------------------------------
@@ -1422,6 +1428,377 @@ fn load_cluster_system_prompt(home: &std::path::Path) -> Option<String> {
         );
         Some(parts.join("\n\n---\n\n"))
     }
+}
+
+// ---------------------------------------------------------------------------
+// build_project_agent_loop — L6++ 项目 loop 工厂（2026-09-08，对话/项目双分组）
+//
+// 每个项目一个常驻 AgentLoop（方案 B）。与主 loop 的差异面（G2 设计基线）：
+// - 工作区锚项目目录（system prompt / 指令链 / 围栏 / todo / state / fs watcher）
+// - 围栏强制 restrict=true（项目会话写入绝不越出项目目录，双分组安全底线）
+// - 剥离 skills/memory/forge/cluster_rpc/continuation（R1：项目 loop 禁异步续行）
+// - checkpoint 影子库落主 workspace（R7：不污染用户项目目录）
+// - SessionStore 共享主 loop 的同一 Arc（存储全局集中，会话隔离靠 session_key）
+// ---------------------------------------------------------------------------
+
+/// L6++：项目 loop 的 checkpoint 影子库目录——
+/// `{主workspace}/logs/project_checkpoints/{pid}`（R7：checkpoint 文件绝不
+/// 落用户项目目录、不进用户仓库）。从 resolve_checkpoints_dir_in_workspace
+/// 派生兄弟目录（logs 家族单一真相源）；parent() 不可达 None，兜底拼接保总返回。
+pub fn project_checkpoint_dir(main_workspace: &std::path::Path, project_id: &str) -> PathBuf {
+    nemesis_path::resolve_checkpoints_dir_in_workspace(main_workspace)
+        .parent()
+        .map(|logs| logs.join("project_checkpoints").join(project_id))
+        .unwrap_or_else(|| {
+            main_workspace
+                .join("logs")
+                .join("project_checkpoints")
+                .join(project_id)
+        })
+}
+
+/// Build a resident AgentLoop for one project (L6++ M2).
+///
+/// `project.path` is canonical (registry enforces it at create time; R3
+/// canonicalize-once). `session_store` is the main loop's shared Arc — the
+/// gateway extracts it via `agent_loop.session_store()`.
+pub fn build_project_agent_loop(
+    shared: &Arc<SharedResources>,
+    project: &crate::projects::registry::ProjectEntry,
+    session_store: Arc<nemesis_agent::session::SessionStore>,
+) -> Result<Arc<nemesis_agent::r#loop::AgentLoop>> {
+    use nemesis_agent::r#loop::AgentLoop;
+    use nemesis_agent::types::AgentConfig;
+
+    // R3：路径注册时已 canonicalize，这里只做存在性防御——目录消失诚实报错
+    // （manager 侧 warn + skip，不炸 gateway）。
+    if !project.path.is_dir() {
+        anyhow::bail!("项目目录不存在或不可用: {}", project.path.display());
+    }
+    let project_dir = project.path.clone();
+
+    // 1. config.json + 模型解析：与主 loop 同源（同一 config.json 唯一真相源）。
+    //    Phase 1 边界：项目 loop 模型热切不在范围，config 变更经重启生效。
+    let config_path = shared.home.join("config.json");
+    let cfg = nemesis_config::load_config(&config_path)
+        .map_err(|e| anyhow::anyhow!("Failed to load config: {}", e))?;
+    let llm_ref = nemesis_config::get_effective_llm(Some(&cfg));
+    let resolution = nemesis_config::resolve_model_config(&cfg, &llm_ref)
+        .map_err(|e| anyhow::anyhow!("Failed to resolve model '{}': {}", llm_ref, e))?;
+    let model_name = resolution.model_name.clone();
+
+    let factory_cfg = nemesis_providers::factory::FactoryConfig {
+        llm_ref: format!("{}/{}", resolution.provider_name, resolution.model_name),
+        api_key: resolution.api_key.clone(),
+        api_base: resolution.api_base.clone(),
+        workspace: project_dir.to_string_lossy().to_string(),
+        connect_mode: resolution.connect_mode,
+        account_id: String::new(),
+        headers: HashMap::new(),
+    };
+    let provider = nemesis_providers::factory::create_provider(&factory_cfg)
+        .map_err(|e| anyhow::anyhow!("Failed to create provider: {}", e))?;
+    let provider_arc: Arc<dyn nemesis_providers::router::LLMProvider> = provider;
+
+    // 2. 轻量基线 system prompt：项目目录自身的 IDENTITY/SOUL（若用户放置），
+    //    不 load_skills（skills 是主 workspace 资产，G2 边界不进项目 loop）。
+    let system_prompt =
+        nemesis_agent::context::ContextBuilder::new(&project_dir).build_system_prompt(false);
+    info!(
+        project = %project.name,
+        "[AgentFactory] project system prompt built ({} chars)",
+        system_prompt.len()
+    );
+
+    // 3. AgentConfig + tier（与主 loop 同一解析链）。
+    let cfg_json: serde_json::Value = std::fs::read_to_string(&config_path)
+        .ok()
+        .and_then(|s| serde_json::from_str(&s).ok())
+        .unwrap_or(serde_json::Value::Null);
+    let resolved_tier = nemesis_types::capability::resolve_active_tier(&cfg_json, &model_name);
+    let agent_config = AgentConfig {
+        model: model_name.clone(),
+        system_prompt: if system_prompt.is_empty() {
+            None
+        } else {
+            Some(system_prompt)
+        },
+        max_turns: if cfg.agents.defaults.max_tool_iterations <= 0 {
+            0
+        } else {
+            cfg.agents.defaults.max_tool_iterations as u32
+        },
+        tools: Vec::new(),
+        models: std::collections::HashMap::new(),
+    };
+
+    let max_continuation_permits = cfg.agents.defaults.max_continuation_permits.max(0) as usize;
+    let concurrent_mode = nemesis_agent::r#loop::parse_concurrent_mode(
+        &cfg.agents
+            .defaults
+            .concurrent_request_mode
+            .trim()
+            .to_lowercase(),
+    );
+    let queue_size = cfg.agents.defaults.queue_size.max(1) as usize;
+    let mut agent_loop = AgentLoop::new_bus(
+        Box::new(ProviderAdapter::new(provider_arc.clone(), model_name.clone())),
+        agent_config,
+        shared.agent_outbound_tx.clone(),
+        concurrent_mode,
+        queue_size,
+        max_continuation_permits,
+    );
+    agent_loop.set_tier(resolved_tier);
+    agent_loop.set_config_path(config_path.clone());
+    agent_loop.set_lsp_manager(shared.lsp_manager.clone());
+    // N1：价目表注入（context_window L2）——共享主 workspace data 目录。
+    match nemesis_data::PricingStore::open(&nemesis_path::workspace_data_dir(&shared.home)) {
+        Ok(store) => agent_loop.set_pricing_store(std::sync::Arc::new(store)),
+        Err(e) => tracing::warn!(
+            error = %e,
+            "[AgentFactory] project loop pricing store open failed; context_window L2 disabled"
+        ),
+    }
+    // 自定义 slash 命令表：用户级资产，锚主 workspace（与主 loop 同一份）。
+    agent_loop.set_commands_path(nemesis_path::resolve_commands_config_path_in_workspace(
+        &shared.workspace_dir(),
+    ));
+    // 内建示例管线插件 + 工具事件观察 hook（与主 loop 同一 broadcast 通道，
+    // Dashboard tool_event 卡片对项目会话同样可见——事件带 session 身份，
+    // 前端按会话过滤，不串台）。
+    agent_loop.add_tool_hook(nemesis_agent::hooks::metrics_plugin_slot().clone());
+    if let Some(tx) = shared.agent_event_tx.clone() {
+        agent_loop.add_tool_hook(std::sync::Arc::new(
+            nemesis_agent::tool_event_hook::ToolEventHook::new(tx),
+        ));
+    }
+    agent_loop.set_agent_event_tx(shared.agent_event_tx.clone());
+    // G4 (U4)：spill 锚主 workspace（定位器给用户看；写侧围栏只拦
+    // write/edit/append，read 不受限，跨根定位器项目 loop 也读得到）。
+    // 清扫任务不重复起——主 loop 侧唯一持有。
+    let spill_root =
+        nemesis_path::resolve_spill_dir_in_workspace(&nemesis_path::workspace_dir(&shared.home));
+    agent_loop.set_spill_root(spill_root);
+    // H5：指令链（AGENTS.md/CLAUDE.md）根锚项目目录——项目可带自己的指令
+    // 文件，与主 workspace 互不影响。
+    agent_loop.set_workspace_root(project_dir.clone());
+    agent_loop.set_snapshot_role(&cfg.agents.defaults.snapshot_role);
+    // 急停：绑同一个 Arc——estop 触发连项目 loop 一起冻结（G2 手验项）。
+    agent_loop.set_estop(shared.estop.clone());
+    // G6（2026-09-08）Class A 根修：安全 8 层管线与 gateway 同源是硬约束
+    // （headless/ACP/项目会话都不是安全旁路）。此前项目 loop 漏注入 → 工具
+    // dispatch 完全绕过管线（注入检测/ABAC/凭据/DLP/病毒扫描/审计链全跳
+    // 过，审批 ask 永不触发）。plugin 是共享 Arc：auditor 的审批 manager /
+    // guardian judge 也是 plugin 级装配，随本注入一并生效。
+    #[cfg(feature = "security")]
+    {
+        if let Some(ref plugin) = shared.security_plugin {
+            agent_loop.set_security_plugin(plugin.clone());
+        }
+    }
+    // N2：small_model 杂务通道与主 loop 同配置。
+    if let Some(small_ref) = cfg
+        .agents
+        .small_model
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+    {
+        match nemesis_config::resolve_model_config(&cfg, small_ref) {
+            Ok(resolution) => {
+                let small_factory_cfg = nemesis_providers::factory::FactoryConfig {
+                    llm_ref: format!("{}/{}", resolution.provider_name, resolution.model_name),
+                    api_key: resolution.api_key.clone(),
+                    api_base: resolution.api_base.clone(),
+                    workspace: project_dir.to_string_lossy().to_string(),
+                    connect_mode: resolution.connect_mode.clone(),
+                    account_id: String::new(),
+                    headers: HashMap::new(),
+                };
+                match nemesis_providers::factory::create_provider(&small_factory_cfg) {
+                    Ok(provider) => {
+                        let adapter = ProviderAdapter::new(provider, resolution.model_name.clone());
+                        agent_loop
+                            .set_small_model(Some((Arc::new(adapter), resolution.model_name)));
+                    }
+                    Err(e) => warn!(
+                        "[AgentFactory] project small model '{}': provider create failed ({})",
+                        small_ref, e
+                    ),
+                }
+            }
+            Err(e) => warn!(
+                "[AgentFactory] project small model '{}' not resolvable ({})",
+                small_ref, e
+            ),
+        }
+    }
+    // K2：cc_hooks 与主 loop 同一份 workspace config 目录（用户级 hook 方言
+    // 跨项目一致）；相对路径锚项目目录。
+    let ws_config_dir = nemesis_path::workspace_config_dir(&shared.workspace_dir());
+    if let Some(bridge) =
+        nemesis_agent::cc_hooks::CcHookBridge::load_from_dir(&ws_config_dir, project_dir.clone())
+    {
+        agent_loop.set_cc_hooks_bridge(std::sync::Arc::clone(&bridge));
+        bridge.register(&agent_loop);
+    }
+
+    // 4. Session store：共享主 loop 的同一 Arc（存储全局集中、会话隔离靠
+    //    session_key；清扫任务主 loop 侧唯一持有，这里不重复起）。
+    agent_loop.set_session_store(session_store);
+
+    // 5. Workspace state manager：**不装配**（保持 None——其唯一消费点是
+    //    record_last_channel/last_chat_id 崩溃恢复，主 loop 概念；装配会在
+    //    用户项目目录急切创建 {project}/state/，违反「用户仓库不容污染」。
+    //    AgentLoop 对 None 优雅降级，零风险）。
+
+    // 6. 工具注册：主配置构造后字段覆盖（项目锚 + 剥离三资产件套）。
+    let (mut tool_config, spawn_slot) = build_shared_tool_config(
+        shared,
+        &cfg,
+        &model_name,
+        Some(agent_loop.mcp_tool_snapshot()),
+    );
+    tool_config.workspace = Some(project_dir.to_string_lossy().to_string());
+    // A5 纵深防御：围栏锚项目目录且强制 restrict=true（项目模式不跟随全局
+    // restrict_to_workspace 开关——项目会话写入绝不越出项目目录）。
+    tool_config.workspace_boundary = Some(Arc::new(nemesis_agent::loop_tools::WorkspaceBoundary {
+        root: project_dir.clone(),
+        restrict: true,
+    }));
+    tool_config.todo = Some(nemesis_agent::loop_tools::TodoToolConfig {
+        workspace: project_dir.clone(),
+        event_tx: shared.agent_event_tx.clone(),
+    });
+    // G2 剥离：skills/memory/forge 不挂项目 loop（None 覆盖对 cfg 双臂类型
+    // 都成立——字段在 feature 关闭时本就是 Option<()>）。工具集差异 =
+    // 项目 prompt 更短 + 两 loop 共有工具 schema 交集字节一致（测试钉死）。
+    tool_config.skills_loader = None;
+    tool_config.skills_registry = None;
+    tool_config.forge = None;
+    tool_config.forge_executor = None;
+    tool_config.memory_executor = None;
+
+    // executor 分离通道锚项目目录（项目会话的 exec/MOVE 工具经子进程在项目
+    // cwd 执行；enabled/sandbox 开关与主 loop 同源 config）。
+    let executor_channel = crate::exec_world::build_executor_channel(
+        &shared.home,
+        &project_dir,
+        shared.config_store.handle(),
+    )?;
+    register_tools_and_mcp(
+        &mut agent_loop,
+        shared,
+        &tool_config,
+        executor_channel.as_ref(),
+    );
+
+    // Checkpoint 影子库：turn 记录 + git 影子库都落主 workspace
+    // logs/project_checkpoints/{pid}/（R7：不污染用户项目目录——项目带 .git
+    // 时 CheckpointStore 默认影子位置从 root 派生会落进项目目录，必须
+    // new_with_shadow 显式指定；root=项目目录仅作 .git 后端探测锚）。
+    {
+        let cp_dir = project_checkpoint_dir(&shared.workspace_dir(), &project.id);
+        if let Some(parent) = cp_dir.parent() {
+            let _ = std::fs::create_dir_all(parent);
+        }
+        let store = Arc::new(nemesis_agent::checkpoint::CheckpointStore::new_with_shadow(
+            Some(cp_dir.clone()),
+            project_dir.clone(),
+            cp_dir.join("repo.git"),
+        ));
+        agent_loop.set_checkpoint_store(store);
+    }
+    if let Some(ref mgr) = shared.observer_manager {
+        agent_loop.set_observer_manager(mgr.clone());
+    }
+    if let Some(ref ds) = shared.data_store {
+        agent_loop.set_data_store(ds.clone());
+    }
+    agent_loop.set_channel_manager(shared.enabled_channels.clone());
+
+    // 显式不装配（与主 loop 的差异面）：cluster_rpc 工具 / continuation
+    // manager（R1：续行快照 + 异步恢复经全局 bus，会话归属穿透 Phase 1 不做）/
+    // memory_inject（增强内存是主 workspace 资产）/ forge provider 更新（forge
+    // 不挂）/ workspace state manager（见上）/ spawn_daily_* 清扫任务
+    //（共享存储的清扫主 loop 侧唯一持有）。
+
+    info!(
+        model = %model_name,
+        tools = agent_loop.tool_count(),
+        project = %project.name,
+        "[AgentFactory] project AgentLoop built"
+    );
+
+    // Arc 定型后注入子代理 spawn 闭包（Weak 防环，与主 spawn 同理）。
+    let agent_loop = Arc::new(agent_loop);
+    inject_project_spawn_fn(&agent_loop, &spawn_slot);
+    // fs watcher 锚项目目录（外部编辑注记只看项目内变更）。
+    let _ = AgentLoop::start_fs_watcher(&agent_loop, &cfg.agents.fs_watcher);
+    Ok(agent_loop)
+}
+
+/// L6++：项目 loop 的子代理 spawn 闭包——**仅同步路径**（R1：后台续行经
+/// 全局 bus 广播 `system` 消息，Phase 1 不做会话归属穿透，项目 loop 禁
+/// 异步续行；`background=true` 诚实报错而非静默转同步）。同步路径复用
+/// run_detached（本 loop 内 detached 轮次，无 bus 参与）。Weak 捕获防环
+/// 与主 spawn 同理。
+fn inject_project_spawn_fn(
+    loop_arc: &Arc<nemesis_agent::r#loop::AgentLoop>,
+    spawn_slot: &Arc<std::sync::OnceLock<nemesis_agent::loop_tools::SpawnFn>>,
+) {
+    let weak = Arc::downgrade(loop_arc);
+    let _ = spawn_slot.set(Arc::new(
+        move |agent_id: &str,
+              task: &str,
+              _model: &str,
+              _channel: &str,
+              _chat_id: &str,
+              tools_profile: &str,
+              depth: usize,
+              background: bool| {
+            let weak = weak.clone();
+            // SpawnFn 的 Future 是 'static——&str 参数先拷贝成 owned。
+            let agent_id = agent_id.to_string();
+            let task = task.to_string();
+            let tools_profile = tools_profile.to_string();
+            Box::pin(async move {
+                // 档位 → 白名单（与主 spawn 同一映射点，防御纵深）。
+                let allowed_tools =
+                    match nemesis_agent::loop_tools::detached_tools_for_profile(&tools_profile) {
+                        Ok(a) => a,
+                        Err(e) => return Err(e),
+                    };
+                if background {
+                    return Err(
+                        "项目模式下暂不支持后台子代理（异步续行需跨项目路由，暂未支持）"
+                            .to_string(),
+                    );
+                }
+                let agent_loop = weak
+                    .upgrade()
+                    .ok_or_else(|| "agent loop is gone (shutdown in progress)".to_string())?;
+                tracing::debug!(
+                    agent_id = %agent_id,
+                    task_len = task.len(),
+                    tools_profile = %tools_profile,
+                    depth,
+                    "[SpawnTool] project loop detached sub-agent (sync-only, L6++)"
+                );
+                agent_loop
+                    .run_detached(
+                        &task,
+                        nemesis_agent::r#loop::DetachedOpts {
+                            allowed_tools,
+                            depth,
+                            ..Default::default()
+                        },
+                    )
+                    .await
+            })
+        },
+    ));
 }
 
 /// Spawn a background task that runs `cleanup_old_sessions(7)` every day at local midnight.

@@ -52,13 +52,21 @@ fn seed_clean_log(key: &str) {
     append_chat_log(key, "assistant", "turn three answer");
 }
 
+/// ⚠ 并行唯一性不能只靠时钟：Windows SystemTime 粒度粗（~15.6ms tick），
+/// 并行测试线程同 tick 会取到**完全相同**的 nanos → 同 key 交错
+/// append/delete → jsonl 行数丢失/重复（曾致本家族随机红）。追加进程内
+/// 原子计数器（真唯一）+ pid（防跨进程二进制并行复用）。
 fn unique_src() -> String {
+    static SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let seq = SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     format!(
-        "z1fork:src:{}",
+        "z1fork:src:{}:{}:{}",
+        std::process::id(),
         std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap()
-            .as_nanos()
+            .as_nanos(),
+        seq
     )
 }
 
@@ -482,4 +490,53 @@ fn test_fork_writes_parent_lineage_meta() {
 
     delete_chat_log(&info.new_key);
     delete_chat_log(&src);
+}
+
+// --- L6++（2026-09-08）：fork 继承项目归属 ---
+
+/// 源会话带项目绑定时 fork：新 key 的 sidecar meta（真相源）与 store 缓存
+/// 镜像都带同一绑定，且随 store.save 落盘（六矩阵⑥ 的数据侧前提——路由
+/// owner_of miss 时回读 sidecar 兜底）。源无绑定 = fork 后仍无绑定。
+#[test]
+fn test_fork_inherits_project_binding() {
+    let dir = tempfile::tempdir().unwrap();
+    let store = SessionStore::new_with_storage(dir.path());
+    let src = unique_src();
+    seed_clean_log(&src);
+    crate::chat_log::write_session_project(&src, "p-deadbeef", "/tmp/proj_x");
+
+    let info = fork_session(&store, &src, None, Some(1)).unwrap();
+
+    // sidecar meta（真相源）双字段就位，title/血缘共存。
+    let meta = crate::chat_log::read_session_meta_full(&info.new_key).expect("fork 落 meta");
+    assert_eq!(meta.project_id.as_deref(), Some("p-deadbeef"));
+    assert_eq!(meta.project_path.as_deref(), Some("/tmp/proj_x"));
+    assert_eq!(meta.parent.as_deref(), Some(src.as_str()), "血缘共存");
+
+    // store 缓存镜像 + 落盘（重开同目录 store 验证持久化）。
+    assert_eq!(
+        store.get_project(&info.new_key),
+        (Some("p-deadbeef".to_string()), Some("/tmp/proj_x".to_string()))
+    );
+    let reopened = SessionStore::new_with_storage(dir.path());
+    assert_eq!(
+        reopened.get_project(&info.new_key),
+        (Some("p-deadbeef".to_string()), Some("/tmp/proj_x".to_string())),
+        "绑定随 save 落盘"
+    );
+
+    // 无绑定源：fork 后仍无绑定（meta 只带 E4 血缘，project 双字段缺席）。
+    let src2 = unique_src();
+    seed_clean_log(&src2);
+    let info2 = fork_session(&store, &src2, None, None).unwrap();
+    let meta2 =
+        crate::chat_log::read_session_meta_full(&info2.new_key).expect("fork 落血缘 meta");
+    assert!(meta2.project_id.is_none(), "无绑定源 fork 不造绑定");
+    assert!(meta2.project_path.is_none());
+    assert_eq!(store.get_project(&info2.new_key), (None, None));
+
+    delete_chat_log(&info.new_key);
+    delete_chat_log(&src);
+    delete_chat_log(&info2.new_key);
+    delete_chat_log(&src2);
 }

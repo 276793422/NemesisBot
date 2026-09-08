@@ -81,6 +81,13 @@ function activeModuleData(): Record<string, unknown> {
   return md
 }
 
+// L6++（2026-09-08）：项目 chip——当前会话归属项目时，欢迎语上方显示
+// 「⟦项目名⟧」（注册表联结显示名；已移除/未知 pid 不显示，不误导）。
+const activeProjectName = computed(() => {
+  const pid = sessionStore.sessions.find(s => s.id === sessionStore.currentId)?.projectId
+  return pid ? sessionStore.projectNameOf(pid) : null
+})
+
 // U7 inbox visibility (G1): queue/steer state of the active session.
 const {
   status: inboxStatus,
@@ -360,6 +367,11 @@ function handleWSMessage(data: any) {
     const activeModule = props.module ?? 'chat'
     if (data.type === 'message' && data.module === activeModule) {
       if (data.cmd === 'receive') {
+        // L6++：帧带 agent 会话 id 时按当前会话过滤——异会话的回复不进当前
+        // 视图（后端已持久化，切到该会话时从磁盘加载），否则切走后晚到的
+        // 回复会串进当前视图。无该字段 = 旧路径帧，保持接受（legacy 兼容）。
+        const frameSid = data.data?.session_id
+        if (frameSid && sessionStore.currentId && frameSid !== sessionStore.currentId) return
         const incomingRole = data.data.role || 'assistant'
         const incomingContent = data.data?.content
         // L2：推送帧带会话内单调 seq——更新补拉游标（sync 去重 + 重连续传）。
@@ -1478,6 +1490,8 @@ onUnmounted(() => {
         <div class="message-avatar">NB</div>
         <div class="message-content">
           <div class="message-bubble">
+            <!-- L6++：项目会话欢迎语 chip（组头同源联结的项目名） -->
+            <div v-if="activeProjectName" class="project-chip">⟦{{ activeProjectName }}⟧</div>
             <p>{{ props.titleOverride || '你好！我是 NemesisBot。有什么可以帮助你的吗？' }}</p>
           </div>
         </div>
@@ -1802,6 +1816,17 @@ onUnmounted(() => {
 </template>
 
 <style scoped>
+/* L6++：项目 chip（欢迎语上方；弱化徽标，不做高亮以免与消息气泡争焦点） */
+.project-chip {
+  display: inline-block;
+  font-size: var(--text-xs);
+  color: var(--text-secondary);
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 1px 8px;
+  margin-bottom: 6px;
+}
 /* U7 inbox visibility */
 .queue-chip {
   padding: 4px 12px;

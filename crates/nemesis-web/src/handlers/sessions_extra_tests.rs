@@ -157,7 +157,8 @@ async fn file_diff_bails_on_missing_params_and_unwired_loop() {
         .unwrap_err();
     assert_eq!(err, "missing session_id");
 
-    // 参数齐但 loop 未装配。
+    // 参数齐但 loop 未装配。G6 起走 resolve_session_loop 单一裁决点，
+    // 文案随其统一为 "agent loop not running"（原 handler 内联「未装配」）。
     let err = h
         .handle_cmd(
             "file_diff",
@@ -166,5 +167,5 @@ async fn file_diff_bails_on_missing_params_and_unwired_loop() {
         )
         .await
         .unwrap_err();
-    assert_eq!(err, "agent loop 未装配");
+    assert_eq!(err, "agent loop not running");
 }

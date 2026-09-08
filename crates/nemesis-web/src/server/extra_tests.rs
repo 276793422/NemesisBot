@@ -932,6 +932,53 @@ async fn test_send_to_session_includes_model_badge() {
     );
 }
 
+/// L6++：receive 帧必须带 agent 会话 id（session_key 前缀还原），前端据此
+/// 过滤异会话晚到帧（跨组切换不串台）；无 session_key → 字段缺席（legacy
+/// 兼容，前端保持接受）。
+#[tokio::test]
+async fn test_send_to_session_stamps_agent_session_id() {
+    use crate::websocket_handler::SendQueue;
+    let mgr = Arc::new(SessionManager::with_default_timeout());
+    let session = mgr.create_session();
+
+    let (tx, mut rx) = tokio::sync::mpsc::channel::<Vec<u8>>(16);
+    let (_, done_rx) = tokio::sync::watch::channel(false);
+    let queue = Arc::new(SendQueue::from_channels(tx, done_rx));
+    mgr.set_send_queue(&session.id, queue);
+
+    // web 形态 session_key → 帧带还原出的会话 id。
+    send_to_session(
+        &mgr,
+        &session.id,
+        "assistant",
+        "stamped reply",
+        None,
+        Some("agent:main:session:abc-123"),
+    )
+    .await
+    .unwrap();
+    let bytes = tokio::time::timeout(Duration::from_millis(500), rx.recv())
+        .await
+        .unwrap()
+        .unwrap();
+    let parsed: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+    assert_eq!(parsed["data"]["session_id"], "abc-123");
+
+    // 无 session_key → 字段缺席（不序列化 null）。
+    send_to_session(&mgr, &session.id, "assistant", "plain reply", None, None)
+        .await
+        .unwrap();
+    let bytes2 = tokio::time::timeout(Duration::from_millis(500), rx.recv())
+        .await
+        .unwrap()
+        .unwrap();
+    let parsed2: serde_json::Value = serde_json::from_slice(&bytes2).unwrap();
+    assert!(
+        parsed2["data"].get("session_id").is_none(),
+        "None session_key must omit the field, not serialize null"
+    );
+}
+
 /// Bug fix: a web inbound with NO session_id (the default conversation) must
 /// map to `agent:main:session:legacy` so it shows up in the session list
 /// (sessions.list filters on `agent_main_session_*`). `process_messages` is

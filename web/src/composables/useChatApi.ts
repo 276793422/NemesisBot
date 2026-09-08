@@ -27,6 +27,21 @@ export interface SessionEntry {
   parent?: string
   parentTitle?: string
   forkedAtTurn?: number
+  /** L6++（2026-09-08）：项目归属（sidecar meta 回填；无绑定缺省 =
+   *  对话组）。显示名由前端以 projects.list 联结（后端不解析名字）。 */
+  projectId?: string
+  projectPath?: string
+}
+
+/** L6++（2026-09-08）：项目分组条目（镜像 handlers/projects.rs 的
+ *  ProjectInfo 投影）。`running` = 项目 loop 存活（目录消失/inactive 时
+ *  为 false —— 组头置灰、不可新建会话的依据）。 */
+export interface ProjectInfo {
+  id: string
+  name: string
+  path: string
+  created_at: string
+  running: boolean
 }
 
 /** P3-1 (2026-08-24 UI entry gap): fork-dialog turn row (GET /api/chat/sessions/:id/turns).
@@ -90,8 +105,17 @@ export function useChatApi() {
     list: async (): Promise<{ sessions: SessionEntry[] }> =>
       await request('sessions', 'list'),
 
-    create: async (title?: string): Promise<{ session_id: string; title: string }> =>
-      await request('sessions', 'create', title ? { title } : undefined),
+    create: async (
+      title?: string,
+      projectId?: string,
+    ): Promise<{ session_id: string; title: string }> => {
+      const data: Record<string, string> = {}
+      if (title) data.title = title
+      // L6++：项目会话创建（前端唯一表达归属的时刻；此后上行只带
+      // session_id，归属由服务端 sid 索引裁决）。
+      if (projectId) data.project_id = projectId
+      return await request('sessions', 'create', Object.keys(data).length ? data : undefined)
+    },
 
     rename: async (session_id: string, title: string): Promise<{ session_id: string; title: string }> =>
       await request('sessions', 'rename', { session_id, title }),
@@ -120,5 +144,21 @@ export function useChatApi() {
         method: 'POST',
         body: JSON.stringify(at_turn != null ? { at_turn } : {}),
       }),
+
+    // -----------------------------------------------------------------
+    // L6++（2026-09-08）：项目分组（handlers/projects.rs 同名命令）。
+    // -----------------------------------------------------------------
+    listProjects: (): Promise<{ projects: ProjectInfo[]; count: number }> =>
+      request('projects', 'list'),
+
+    createProject: (name: string, path: string): Promise<{ project: ProjectInfo }> =>
+      request('projects', 'create', { name, path }),
+
+    /** 仅解除分组——不删除会话与项目目录内的任何文件（后端 note 原文）。 */
+    removeProject: (project_id: string): Promise<{ removed: ProjectInfo; note: string }> =>
+      request('projects', 'remove', { project_id }),
+
+    renameProject: (project_id: string, name: string): Promise<{ project: ProjectInfo }> =>
+      request('projects', 'rename', { project_id, name }),
   }
 }

@@ -337,6 +337,17 @@ pub fn scan_session_logs(workspace: &str) -> Vec<serde_json::Value> {
         if let Some(t) = forked_at {
             entry["forkedAtTurn"] = serde_json::Value::from(t);
         }
+        // L6++（2026-09-08）：项目归属回填（sidecar meta 的 project_id/
+        // project_path，sessions.create / fork 继承写入）。前端以
+        // projects.list 联结显示名（注册表在 nemesisbot，后端不解析名字）。
+        // 无绑定的条目不加字段（对话组会话零增量）。
+        let (project_id, project_path) = read_meta_project(&path);
+        if let Some(pid) = project_id {
+            entry["projectId"] = serde_json::Value::String(pid);
+        }
+        if let Some(pp) = project_path {
+            entry["projectPath"] = serde_json::Value::String(pp);
+        }
         sessions.push(entry);
     }
     sessions
@@ -367,6 +378,25 @@ fn read_meta_lineage(jsonl_path: &Path) -> (Option<String>, Option<usize>) {
             v.get("forked_at_turn")
                 .and_then(|t| t.as_u64())
                 .map(|t| t as usize),
+        ),
+        None => (None, None),
+    }
+}
+
+/// L6++（2026-09-08）：项目归属 from the sidecar meta —
+/// `(project_id, project_path)`，pre-L6++ meta（只有 title/血缘）或缺席
+/// sidecar 时双 `None`。
+fn read_meta_project(jsonl_path: &Path) -> (Option<String>, Option<String>) {
+    let meta = jsonl_path.with_extension("meta.json");
+    let v = std::fs::read_to_string(&meta)
+        .ok()
+        .and_then(|d| serde_json::from_str::<serde_json::Value>(&d).ok());
+    match v {
+        Some(v) => (
+            v.get("project_id").and_then(|p| p.as_str()).map(String::from),
+            v.get("project_path")
+                .and_then(|p| p.as_str())
+                .map(String::from),
         ),
         None => (None, None),
     }
@@ -2375,3 +2405,9 @@ mod g3_tests;
 // forkedAtTurn 回填 + pre-E4 meta / 父会话已删的缺省分支。不依赖 security/memory。
 #[cfg(test)]
 mod e4_lineage_tests;
+
+// L6++（2026-09-08，项目归属回填）：scan_session_logs 的 projectId/
+// projectPath 回填 + 无绑定（对话组/pre-L6++ meta）缺省分支。不依赖
+// security/memory。
+#[cfg(test)]
+mod project_binding_tests;

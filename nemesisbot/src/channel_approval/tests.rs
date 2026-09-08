@@ -139,18 +139,19 @@ fn inbound(channel: &str, chat: &str, content: &str) -> InboundMessage {
     }
 }
 
-/// 轮询出站广播直到拿到下一条（测试用，5s 兜底超时）。
-/// 5s 而非 1s：全量 workspace 并行测试抢 CPU 时，watcher spawn → inbound
-/// 路由 → outbound 广播链路实测会超 1s（watcher_rejects_cross_chat_reply
-/// flake，2026-09-07）；隔离复跑 6/6 绿确认为负载时序非逻辑回归。
+/// 轮询出站广播直到拿到下一条（测试用，30s 兜底超时）。
+/// 30s 而非 5s：全量 nemesisbot 并行测试（630s 级满载）抢 CPU 时，
+/// watcher spawn → inbound 路由 → outbound 广播链路实测会超 5s（2026-09-07
+/// flake 加到 5s 后 2026-09-08 全量仍命中一次，watcher_rejects_cross_chat_reply
+/// panic 在本函数窗口）；隔离复跑 6/6 绿确认为负载时序非逻辑回归。
 async fn next_outbound(
     rx: &mut tokio::sync::broadcast::Receiver<OutboundMessage>,
 ) -> OutboundMessage {
     loop {
-        match tokio::time::timeout(Duration::from_secs(5), rx.recv()).await {
+        match tokio::time::timeout(Duration::from_secs(30), rx.recv()).await {
             Ok(Ok(msg)) => return msg,
             Ok(Err(tokio::sync::broadcast::error::RecvError::Lagged(_))) => continue,
-            _ => panic!("expected outbound message within 5s"),
+            _ => panic!("expected outbound message within 30s"),
         }
     }
 }
@@ -161,7 +162,7 @@ const CTX_IM: fn() -> ApprovalContext = || ctx_of("telegram", "chat-9");
 async fn channel_card_roundtrip_approve() {
     let bus = Arc::new(MessageBus::new());
     let mgr = Arc::new(ChannelApprovalManager::new(bus.clone()));
-    tokio::spawn(mgr.clone().watcher());
+    mgr.spawn_watcher();
     let mut out_rx = bus.subscribe_outbound();
 
     // 阻塞 ask 放独立线程（block_in_place 需在 runtime worker 内——线程里
@@ -175,7 +176,11 @@ async fn channel_card_roundtrip_approve() {
                 "/tmp/x",
                 "HIGH",
                 "test reason",
-                30,
+                // 120s 而非 30s：全量并行满载下 std::thread 调度 + watcher
+                // 轮询可能慢于 30s（2026-09-08 全量 flake，ask 超时自动拒绝
+                // 打穿 approved 断言）；本测试断言批复回传路径，不是超时
+                // 拒绝，放宽只影响失败时的等待时长。
+                120,
                 &CTX_IM(),
             )
             .unwrap()
@@ -240,7 +245,7 @@ async fn channel_card_timeout_denies_and_notifies() {
 async fn watcher_rejects_cross_chat_reply() {
     let bus = Arc::new(MessageBus::new());
     let mgr = Arc::new(ChannelApprovalManager::new(bus.clone()));
-    tokio::spawn(mgr.clone().watcher());
+    mgr.spawn_watcher();
     let mut out_rx = bus.subscribe_outbound();
 
     let mgr_for_ask = mgr.clone();
@@ -252,10 +257,10 @@ async fn watcher_rejects_cross_chat_reply() {
                 "/tmp/x",
                 "HIGH",
                 "test",
-                // 30s 而非 5s：全量并行负载下 std::thread 调度可能慢于
-                // next_outbound 的窗口；本测试断言的是 /deny 裁决路径，
-                // 不是超时拒绝，放宽 ask 超时只影响失败时的等待时长。
-                30,
+                // 120s 而非 30s：与 roundtrip 同理（2026-09-08 全量满载下
+                // 5s 出站窗口 flake 后全家族统一加宽）；本测试断言 /deny
+                // 裁决路径，不是超时拒绝，放宽只影响失败时的等待时长。
+                120,
                 &CTX_IM(),
             )
             .unwrap()
@@ -279,4 +284,59 @@ async fn watcher_rejects_cross_chat_reply() {
     bus.publish_inbound(inbound("telegram", "chat-9", &format!("/deny {id}")));
     let verdict = ask.join().unwrap();
     assert!(!verdict.approved);
+}
+
+// ---------------------------------------------------------------------------
+// ⑥ 订阅先于 spawn 的竞态回归（2026-09-08 全量三次复发根修）
+// ---------------------------------------------------------------------------
+
+// 回执在 watcher 首次 poll 前发布必须仍被处理。旧实现订阅在任务内进行：
+// `tokio::spawn` 只入队、订阅等首次 poll 才生效，窗口期发布的 /approve 对
+// 尚不存在的订阅者被 broadcast 直接丢弃（bus warn `no inbound receivers`），
+// ask 等满超时被误拒——加宽超时窗口无解（消息根本没进 watcher）。修后：
+// 先订阅（回执进 broadcast 缓冲）→ 发布回执 → 再启动主循环 → 缓冲回执被
+// 处理、裁决送达。接收者在 send 前创建即必达，broadcast 语义保证确定性。
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn approve_published_before_watcher_first_poll_is_delivered() {
+    let bus = Arc::new(MessageBus::new());
+    let mgr = Arc::new(ChannelApprovalManager::new(bus.clone()));
+    let mut out_rx = bus.subscribe_outbound();
+
+    // 先订阅：此刻起回执只进缓冲，不依赖 watcher 何时被 poll。
+    let rx = mgr.subscribe_inbound();
+
+    let mgr_for_ask = mgr.clone();
+    let ask = std::thread::spawn(move || {
+        mgr_for_ask
+            .request_approval_sync_ctx(
+                "req-uuid-cc33dd44",
+                "file_write",
+                "/tmp/x",
+                "HIGH",
+                "pre-subscribe race",
+                30,
+                &CTX_IM(),
+            )
+            .unwrap()
+    });
+
+    let card = next_outbound(&mut out_rx).await;
+    let id_line = card
+        .content
+        .lines()
+        .find(|l| l.starts_with("编号: "))
+        .expect("card has id line");
+    let id = id_line["编号: ".len()..].trim().to_string();
+
+    // watcher 尚未启动：此刻发布回执（旧实现在等价时序下永久丢弃此消息）。
+    bus.publish_inbound(inbound("telegram", "chat-9", &format!("/approve {id}")));
+
+    // 再启动主循环——缓冲中的回执必须被处理。
+    tokio::spawn(mgr.clone().watcher_with_rx(rx));
+
+    let verdict = ask.join().unwrap();
+    assert!(verdict.approved);
+    let notice = next_outbound(&mut out_rx).await;
+    assert!(notice.content.contains(&id));
+    assert!(notice.content.contains("已批准"));
 }

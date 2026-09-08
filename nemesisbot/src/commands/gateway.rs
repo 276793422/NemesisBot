@@ -2918,6 +2918,43 @@ pub async fn run(local: bool, extra_args: &[String]) -> Result<()> {
         agent_loop_ref.clone(),
     ));
 
+    // --- L6++（2026-09-08）：项目常驻 loop 启动（对话/项目双分组）---
+    // 共享主 loop 内建的同一 SessionStore Arc（存储全局集中、会话隔离靠
+    // session_key）；注册表缺失/损坏走 lenient 空表，目录消失的项目
+    // warn + skip 不炸 gateway。G3 起项目调度器经 manager 把项目会话消息
+    // 转发进对应项目 loop（主桥 skip 谓词同步接线）。
+    let projects_manager = {
+        let main_store = agent_loop
+            .session_store()
+            .cloned()
+            .expect("main agent loop must carry a session store");
+        let mgr = Arc::new(crate::projects::manager::ProjectLoopManager::new(
+            shared_resources.clone(),
+            main_store,
+            bus.clone(),
+        ));
+        mgr.start_all();
+        mgr
+    };
+    // G3（2026-09-08）：主桥 skip 谓词（项目会话消息不进主 loop，由项目
+    // 调度器转发）+ 全进程唯一 1 个项目调度订阅。时序在 web bind 之前，
+    // 满足「loop 订阅 bus → web bind」不变量。
+    {
+        let mgr_for_pred = projects_manager.clone();
+        agent_adapter.set_skip_predicate(Arc::new(move |msg| {
+            mgr_for_pred.bridge_should_skip(msg)
+        }));
+        projects_manager.start_routing();
+        // G4（2026-09-08）：ProjectsBridge 接线——projects.* WSAPI 与
+        // resolve_session_loop（chat/tools/approval/question/agent/fs 各
+        // handler 的归属解析）经此 trait 触达 manager（trait 在
+        // ProjectLoopManager 上直接实现，Arc 协同转换装槽）。
+        let projects_bridge: std::sync::Arc<
+            dyn nemesis_web::handlers::projects::ProjectsBridge,
+        > = projects_manager.clone();
+        nemesis_web::handlers::projects::install_projects_bridge(projects_bridge);
+    }
+
     // Step 10: Wire up WebServer (created early for WebChannel injection)
     web_server.set_message_bus(bus.clone());
     web_server.set_model_info(
@@ -3901,7 +3938,10 @@ pub async fn run(local: bool, extra_args: &[String]) -> Result<()> {
             let channel_mgr = Arc::new(crate::channel_approval::ChannelApprovalManager::new(
                 bus.clone(),
             ));
-            tokio::spawn(channel_mgr.clone().watcher());
+            // watcher 装配走 spawn_watcher（订阅先于 spawn）：任务内订阅
+            // 存在回执丢失窗口——窗口内的 /approve 被 broadcast 静默丢弃，
+            // 用户批复等满超时被误拒（2026-09-08 全量实证根因）。
+            channel_mgr.spawn_watcher();
             let adapter: Arc<dyn nemesis_security::auditor::ApprovalManager> =
                 Arc::new(crate::channel_approval::CompositeApprovalManager::new(
                     web_mgr.clone(),
@@ -4246,6 +4286,8 @@ pub async fn run(local: bool, extra_args: &[String]) -> Result<()> {
     // Abort background tasks
     web_handle.abort();
     agent_adapter.stop().ok();
+    // L6++：项目常驻 loop 收尾（镜像主 agent stop：摘表 + stop + abort 任务）。
+    projects_manager.stop_all();
     bridge_outbound_handle.abort();
     //  MSG: 同 step 16 ，目前暂时不用，所以注释掉了
     //dispatch_handle.abort();

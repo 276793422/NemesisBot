@@ -670,3 +670,102 @@ fn test_e7_first_user_message_extraction() {
     assert_eq!(first_user_message(&key, 0).as_deref(), Some(""));
     delete_chat_log(&key);
 }
+
+// --- L6++（2026-09-08）：项目归属 sidecar ---
+
+/// write_session_project 的 upsert 契约：已有 title meta 上落双字段且
+/// title 保留；重复写覆盖（幂等）；无绑定的会话读出双 None。
+#[test]
+fn test_session_meta_project_roundtrip() {
+    let key = format!(
+        "test:project:roundtrip:{}",
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    );
+    // 无绑定态。
+    crate::chat_log::write_session_meta(&key, "titled session");
+    let m0 = crate::chat_log::read_session_meta_full(&key).unwrap();
+    assert_eq!(m0.title.as_deref(), Some("titled session"));
+    assert!(m0.project_id.is_none());
+    assert!(m0.project_path.is_none());
+
+    // 绑定 upsert：title 保留，两字段就位。
+    crate::chat_log::write_session_project(&key, "p-abc12345", r"C:\proj\demo");
+    let m1 = crate::chat_log::read_session_meta_full(&key).unwrap();
+    assert_eq!(m1.title.as_deref(), Some("titled session"), "upsert 保 title");
+    assert_eq!(m1.project_id.as_deref(), Some("p-abc12345"));
+    assert_eq!(m1.project_path.as_deref(), Some(r"C:\proj\demo"));
+
+    // 重复写 = 覆盖（幂等 upsert，不残留旧值）。
+    crate::chat_log::write_session_project(&key, "p-ffffffff", "/home/zoo/proj");
+    let m2 = crate::chat_log::read_session_meta_full(&key).unwrap();
+    assert_eq!(m2.project_id.as_deref(), Some("p-ffffffff"));
+    assert_eq!(m2.project_path.as_deref(), Some("/home/zoo/proj"));
+    assert_eq!(m2.title.as_deref(), Some("titled session"));
+
+    delete_chat_log(&key);
+}
+
+/// clear_session_project 契约（M4 sessions.delete/clear 的 forget 联动）：
+/// 文件缺失 / 本就无归属 = no-op false；有归属 = true 且摘双字段保 title；
+/// 摘除后二次 clear = false（幂等，不空写）。
+#[test]
+fn test_clear_session_project_semantics() {
+    let key = format!(
+        "test:project:clear:{}",
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    );
+
+    // 文件缺失 = no-op（delete 路径 meta 已删的形态）。
+    delete_chat_log(&key);
+    assert!(!crate::chat_log::clear_session_project(&key));
+
+    // 本就无归属 = no-op false（不空写文件）。
+    crate::chat_log::write_session_meta(&key, "clear me");
+    assert!(!crate::chat_log::clear_session_project(&key));
+    assert!(
+        log_path(&key).with_extension("meta.json").exists(),
+        "no-op 不得删除或清空 meta 文件"
+    );
+
+    // 有归属 = true，双字段摘除，title 保留。
+    crate::chat_log::write_session_project(&key, "p-aaa11111", "/tmp/proj");
+    assert!(crate::chat_log::clear_session_project(&key));
+    let m = crate::chat_log::read_session_meta_full(&key).unwrap();
+    assert!(m.project_id.is_none());
+    assert!(m.project_path.is_none());
+    assert_eq!(m.title.as_deref(), Some("clear me"), "摘归属必须保 title");
+
+    // 二次 clear = false（幂等）。
+    assert!(!crate::chat_log::clear_session_project(&key));
+    delete_chat_log(&key);
+}
+
+/// 旧形态 meta（pre-L6++ 磁盘上只有 title）加载后新字段为 None——
+/// serde default 兼容，不炸不误报绑定。
+#[test]
+fn test_session_meta_legacy_without_project_loads() {
+    let key = format!(
+        "test:project:legacy:{}",
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    );
+    // 直接落一份旧形态 meta 文件（只有 title）。
+    let path = log_path(&key).with_extension("meta.json");
+    std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+    std::fs::write(&path, r#"{"title":"旧会话"}"#).unwrap();
+
+    let m = crate::chat_log::read_session_meta_full(&key).expect("legacy meta 必须可读");
+    assert_eq!(m.title.as_deref(), Some("旧会话"));
+    assert!(m.project_id.is_none());
+    assert!(m.project_path.is_none());
+
+    delete_chat_log(&key);
+}
