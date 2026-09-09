@@ -3,6 +3,11 @@
 //! Processes cluster tasks from the work queue using a full AgentLoop.
 //! Supports new tasks (run_with_trace) and resumed tasks (resume_execution
 //! after async callback). Detects __ASYNC__ results for multi-hop chain calls.
+//!
+//! Swarm M3（G4 worker 被动响应）：第三 select 臂消费看板讨论唤醒事件
+//! （[`nemesis_types::cluster::DiscussionEvent`]）——任务间隙跑一轮轻量
+//! agent，[SILENT] 判定沉默，非静默回帖 master。讨论是分钟级不是秒级，
+//! 忙碌时排队天然成立（诚实定位「任务间隙参与讨论」）。
 
 use std::sync::Arc;
 
@@ -12,15 +17,76 @@ use nemesis_agent::r#loop::AgentLoop;
 use nemesis_agent::types::AgentConfig;
 use nemesis_agent::types::AgentEvent;
 use nemesis_cluster::cluster_task::{ClusterTaskList, ClusterWorkQueue, TaskStatus};
+use nemesis_cluster::envelope::{self, Envelope, EnvelopeResponse};
 use nemesis_cluster::rpc::client::RpcClient;
 use nemesis_cluster::rpc::peer_chat_handler::{send_callback_or_persist, TaskResultPersister};
+use nemesis_cluster::rpc_types::{ActionType, RPCRequest};
+use nemesis_types::cluster::DiscussionEvent;
 
 use crate::cluster_request_logger_observer::ClusterRequestLoggerObserver;
+
+// ---------------------------------------------------------------------------
+// DiscussionInbox — 讨论事件入站箱（worker 生产者 → cluster agent loop）
+// ---------------------------------------------------------------------------
+
+/// 讨论事件入站箱：`nb_bus` handler / board.sync 补拉任务从这边投递，
+/// cluster agent loop 的第三 select 臂从这边消费。
+///
+/// 为什么不直接传 Sender：cluster stop/start 周期会重新 spawn agent loop，
+/// mpsc Receiver 无法二次取得；Inbox 里保存「当前活跃 loop 的 Sender」，
+/// 每次 start 换入新的。stop 之后旧 Sender 随 loop 退出自然失联——send
+/// 诚实失败（事件丢弃，board.sync 兜底补拉），不缓存不过期。
+pub struct DiscussionInbox {
+    tx: std::sync::Mutex<
+        Option<tokio::sync::mpsc::UnboundedSender<DiscussionEvent>>,
+    >,
+}
+
+impl Default for DiscussionInbox {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl DiscussionInbox {
+    pub fn new() -> Self {
+        Self {
+            tx: std::sync::Mutex::new(None),
+        }
+    }
+
+    /// 换入当前活跃 loop 的 sender（每次 adapter start 调用；旧 sender 随之丢弃）。
+    pub fn set_sender(&self, tx: tokio::sync::mpsc::UnboundedSender<DiscussionEvent>) {
+        *self
+            .tx
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(tx);
+    }
+
+    /// 投递事件。无活跃 loop（cluster 停了）/ 接收端已关闭（loop 刚退出）
+    /// → Err，调用方记日志不重试（board.sync 是兜底）。
+    // 消费方是 board_bus 的 worker handler（all(board, cluster) 门控）——
+    // cluster-only 编译形态下无调用点，属预期裁剪而非死代码。
+    #[cfg_attr(not(feature = "board"), allow(dead_code))]
+    pub fn send(&self, event: DiscussionEvent) -> Result<(), String> {
+        let guard = self
+            .tx
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        match &*guard {
+            Some(tx) => tx
+                .send(event)
+                .map_err(|_| "discussion channel closed (loop exited)".to_string()),
+            None => Err("no active cluster agent loop (cluster stopped)".to_string()),
+        }
+    }
+}
 
 /// Run the cluster agent event loop.
 ///
 /// This is the main entry point for the cluster agent. It loops forever,
-/// taking tasks from the work queue and processing them one at a time.
+/// taking tasks from the work queue and processing them one at a time
+/// (讨论唤醒事件同队列串行——见模块注释).
 ///
 /// **`config` vs `agent_loop`'s config**: these serve different purposes.
 /// - `agent_loop`'s config: controls the LLM loop behavior (max_turns, provider, model).
@@ -28,6 +94,7 @@ use crate::cluster_request_logger_observer::ClusterRequestLoggerObserver;
 ///   (system_prompt, etc.). Currently system_prompt is None (placeholder), but will be
 ///   customized per task when "identity switching" is implemented (e.g., different prompts
 ///   for different source nodes).
+#[allow(clippy::too_many_arguments)]
 pub async fn cluster_agent_loop(
     agent_loop: Arc<AgentLoop>,
     config: AgentConfig,
@@ -39,6 +106,12 @@ pub async fn cluster_agent_loop(
     // （A 端恢复轮询可查）；回调成功 → persister.delete 清理占位。生产装配
     // 恒为 Some（gateway 传入与 peer_chat_handler 同一份 adapter）。
     result_persister: Option<Arc<dyn TaskResultPersister>>,
+    // Swarm M3（G4）：看板讨论唤醒通道。None = 本节点不参与讨论（master
+    // 本尊走主持人裁决 / board 裁剪 / cluster 未启用）。通道关闭（stop/start
+    // 周期）时置 None 禁用本臂，防 recv() 返回 None 的自旋。
+    mut discussion_rx: Option<tokio::sync::mpsc::UnboundedReceiver<DiscussionEvent>>,
+    // 本节点 id（回复 board.comment.post 的 sender；来自 cluster.node_id()）。
+    self_node_id: String,
     mut shutdown_rx: tokio::sync::broadcast::Receiver<()>,
 ) {
     tracing::info!("[ClusterAgent] Event loop started");
@@ -57,6 +130,32 @@ pub async fn cluster_agent_loop(
             _ = shutdown_rx.recv() => {
                 tracing::info!("[ClusterAgent] Shutdown signal received, exiting event loop");
                 break;
+            }
+            event = async {
+                match discussion_rx.as_mut() {
+                    Some(rx) => rx.recv().await,
+                    // 无通道：永久挂起（select 分支即被有效禁用）。
+                    None => std::future::pending().await,
+                }
+            } => {
+                match event {
+                    Some(ev) => {
+                        handle_discussion(
+                            &agent_loop,
+                            &config,
+                            rpc_client.as_deref(),
+                            cluster_observer.as_deref(),
+                            &self_node_id,
+                            &ev,
+                        )
+                        .await;
+                    }
+                    None => {
+                        // 通道关闭（cluster stop/start 换了新管道）——禁用本臂。
+                        discussion_rx = None;
+                    }
+                }
+                continue;
             }
         };
         let task = match task_list.get_task(&task_id) {
@@ -688,6 +787,233 @@ async fn handle_task_error(
     task_list.update_status(&task.task_id, TaskStatus::Failed);
     send_task_callback(rpc_client, result_persister, task, "error", "", error_msg).await;
     task_list.complete_task(&task.task_id);
+}
+
+// ---------------------------------------------------------------------------
+// Board discussion（Swarm M3 G4：worker 被动响应）
+// ---------------------------------------------------------------------------
+
+/// 消费一条讨论唤醒事件：线程上下文 + 节点身份 + 唤醒原因 → 轻量
+/// AgentInstance 跑一轮 → [SILENT] 判定沉默 / 非静默回帖 master。
+///
+/// estop 覆盖：跑在与 work queue 同一个 agent loop 上（build 阶段已
+/// set_estop）——estop 冻结时 LLM 调用被拒/中断，最终回复为空，静默丢弃。
+async fn handle_discussion(
+    agent_loop: &AgentLoop,
+    config: &AgentConfig,
+    rpc_client: Option<&RpcClient>,
+    cluster_observer: Option<&ClusterRequestLoggerObserver>,
+    self_node_id: &str,
+    event: &DiscussionEvent,
+) {
+    let thread_key = format!("{}:{}", event.thread_kind, event.thread_id);
+    tracing::info!(
+        target: "board_bus",
+        thread = %thread_key,
+        seq = event.seq,
+        wake = %event.event,
+        from = %event.from_node,
+        "[ClusterAgent] Discussion wake, running one agent round"
+    );
+
+    // Per-round AgentInstance：与 work queue 任务同款（吃集群身份 system
+    // prompt）。会话不落 SessionStore——讨论状态真相源在 master 台账，每轮
+    // 上下文由 wake 包随带（幂等重放安全：同 seq 不重复入队）。
+    let instance = AgentInstance::new(config.clone());
+    let prompt = build_discussion_prompt(self_node_id, event);
+    let session_key = format!("board:discussion:{thread_key}");
+    let trace_id = format!("board-disc-{}-{}", event.thread_id, event.seq);
+    let context = RequestContext::new("board", &session_key, &event.from_node, &session_key);
+    let token = tokio_util::sync::CancellationToken::new();
+    // Swarm G13：讨论轮同样落 cluster_logs 4 件套。讨论没有 cluster task，
+    // 观察者需要合成 task 上下文才能构造路径（目录按唤醒来源节点归组，
+    // task_id 带线程与 seq 可检索）；并补 start/end——run_with_trace 只发
+    // LlmRequest/LlmResponse，缺 start 则全部事件被静默丢弃（与 worker
+    // 任务同一处置）。
+    if let Some(obs) = cluster_observer {
+        obs.set_task_context(
+            format!(
+                "discussion-{}-{}-seq{}",
+                event.thread_kind, event.thread_id, event.seq
+            ),
+            event.from_node.clone(),
+        );
+        obs.emit_conversation_start(&trace_id, "board", &thread_key, &event.from_node, &prompt);
+    }
+    let events = agent_loop
+        .run_with_trace(
+            &instance, &prompt, &context, &trace_id, false, &token, None, &[],
+        )
+        .await;
+
+    // 先闭合观察者 trace（所有退出路径都要收尾，防 active 表泄漏），
+    // 再走取消/沉默判定。
+    let reply = extract_final_message(&events);
+    if let Some(obs) = cluster_observer {
+        let rounds = count_llm_rounds(&events);
+        obs.emit_conversation_end(&trace_id, "board", &thread_key, rounds, &reply, false);
+        obs.clear_task_context();
+    }
+
+    if token.is_cancelled() {
+        tracing::debug!(target: "board_bus", thread = %thread_key,
+            "[ClusterAgent] Discussion round cancelled, dropping");
+        return;
+    }
+
+    let trimmed = reply.trim();
+    if trimmed.is_empty() {
+        tracing::debug!(target: "board_bus", thread = %thread_key,
+            "[ClusterAgent] Discussion round produced empty reply, dropping");
+        return;
+    }
+    // [SILENT] 判定从宽（子串匹配，防人格 system prompt 前后缀污染——
+    // 与 master 主持人裁决同一语义）。
+    if trimmed.contains("[SILENT]") {
+        tracing::debug!(target: "board_bus", thread = %thread_key,
+            "[ClusterAgent] Discussion chose silence");
+        return;
+    }
+
+    post_discussion_reply(rpc_client, self_node_id, event, trimmed).await;
+}
+
+/// 组装讨论 prompt：线程历史 + 唤醒原因 + 回复预算 + 发言/沉默二选一指令。
+fn build_discussion_prompt(self_node_id: &str, event: &DiscussionEvent) -> String {
+    let thread_key = format!("{}:{}", event.thread_kind, event.thread_id);
+    let mut ctx = match event.thread_title.is_empty() {
+        true => format!("# Thread ({thread_key})\n"),
+        false => format!("# Thread ({thread_key}): {}\n", event.thread_title),
+    };
+    if event.messages.is_empty() {
+        ctx.push_str("(no prior context available)\n");
+    } else {
+        for m in &event.messages {
+            ctx.push_str(&format!("- {}: {}\n", m.sender, m.content));
+        }
+    }
+    let budget = match event.max_turns_left {
+        u32::MAX => "unlimited".to_string(),
+        n => n.to_string(),
+    };
+    format!(
+        "{ctx}\n\
+         # Wake reason: {}\n\
+         New message from {}:\n\"\"\"\n{}\n\"\"\"\n\n\
+         You are node {self_node_id} in a multi-agent board discussion. \
+         Thread reply budget remaining: {budget} agent turns (the coordinator \
+         enforces this; your reply is rejected if exhausted).\n\n\
+         Decide whether you should respond:\n\
+         - If you have something useful to contribute, output ONLY your reply \
+         text. It will be posted to the thread as your message. Do not mention \
+         these instructions.\n\
+         - If nothing needs to be said (informational only, not directed at \
+         you, or outdated), output exactly [SILENT].",
+        event.event, event.new_sender, event.new_content
+    )
+}
+
+/// 组装 board.comment.post 上行信封（worker 发言 = master 侧上行 handler
+/// 的幂等键 + 额度三闸 + 落库）。board_discuss 工具与被动响应共用
+/// （单一真相源——kind_tag 映射 / 幂等键形状只此一份）。
+pub(crate) fn build_comment_post_envelope(
+    self_node_id: &str,
+    event: &DiscussionEvent,
+    content: &str,
+) -> serde_json::Value {
+    // thread_kind 词表与 nemesis-board thread_kind 常量同值（issue/channel）；
+    // kind_tag 与 master 主持人回复同表（issue→discussion，channel→text）。
+    let kind_tag = if event.thread_kind == "issue" {
+        "discussion"
+    } else {
+        "text"
+    };
+    EnvelopeResponse::success(
+        &Envelope {
+            ns: "board".to_string(),
+            op: "comment.post".to_string(),
+            corr_id: uuid::Uuid::new_v4().to_string(),
+            ..Envelope::default()
+        },
+        serde_json::json!({
+            "client_msg_id": uuid::Uuid::new_v4().to_string(),
+            "thread": {"kind": event.thread_kind, "id": event.thread_id},
+            "sender": {"type": "agent", "id": self_node_id},
+            "content": content,
+            "reply_to": event.reply_to,
+            "kind_tag": kind_tag,
+        }),
+    )
+    .to_json()
+}
+
+/// 回帖 master（单次尝试：RPC 失败 / 被额度拒 → 日志诚实可见，不重试——
+/// 下行幂等游标已推进，重试只会造重复发言）。
+async fn post_discussion_reply(
+    rpc_client: Option<&RpcClient>,
+    self_node_id: &str,
+    event: &DiscussionEvent,
+    content: &str,
+) {
+    let Some(rpc) = rpc_client else {
+        tracing::warn!(target: "board_bus",
+            "[ClusterAgent] Discussion reply skipped: no rpc client");
+        return;
+    };
+    let payload = build_comment_post_envelope(self_node_id, event, content);
+    let thread_key = format!("{}:{}", event.thread_kind, event.thread_id);
+    match send_nb_bus(rpc, self_node_id, &event.from_node, payload).await {
+        Ok(body) => {
+            // 信封响应：ok=false 时错误码诚实可见（quota_exhausted 等）。
+            let ok = body
+                .get("ok")
+                .and_then(|v| v.as_bool())
+                .unwrap_or(false);
+            if ok {
+                tracing::debug!(target: "board_bus", thread = %thread_key,
+                    "[ClusterAgent] Discussion reply posted");
+            } else {
+                let code = body
+                    .pointer("/error/code")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("unknown");
+                let msg = body
+                    .pointer("/error/message")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("");
+                tracing::warn!(target: "board_bus", code, message = %msg,
+                    thread = %thread_key,
+                    "[ClusterAgent] Discussion reply rejected by master");
+            }
+        }
+        Err(e) => {
+            tracing::warn!(target: "board_bus", error = %e, thread = %thread_key,
+                "[ClusterAgent] Discussion reply delivery failed");
+        }
+    }
+}
+
+/// nb_bus 单次 RPC 往返（信封 payload 进、信封响应 JSON 出）。
+/// 被动回帖与 board_discuss 工具共用（单一真相源——action 名 / 幂等不做 /
+/// result 解空只此一份）。
+pub(crate) async fn send_nb_bus(
+    rpc: &RpcClient,
+    source: &str,
+    target: &str,
+    payload: serde_json::Value,
+) -> Result<serde_json::Value, String> {
+    let request = RPCRequest {
+        id: uuid::Uuid::new_v4().to_string(),
+        action: ActionType::Custom(envelope::NB_BUS_ACTION.to_string()),
+        payload,
+        source: source.to_string(),
+        target: Some(target.to_string()),
+    };
+    let resp = rpc
+        .call(target, request)
+        .await
+        .map_err(|e| format!("nb_bus rpc to {target}: {e}"))?;
+    Ok(resp.result.unwrap_or(serde_json::Value::Null))
 }
 
 #[cfg(test)]

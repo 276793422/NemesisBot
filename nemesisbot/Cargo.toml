@@ -111,6 +111,8 @@ nemesis-utils = { workspace = true }
 # Z1 session fork: chat_log copy goes through the process-global path manager;
 # the CLI verifies it agrees with the resolved home (refuses to half-fork).
 nemesis-path = { workspace = true }
+# Swarm M3（§5.4/D-5）：board_asset 工具的 HTTP 拉取走共享连接池。
+nemesis-http-pool = { workspace = true }
 nemesis-sandbox = { workspace = true, optional = true }
 nemesis-injector = { workspace = true, optional = true }
 nemesis-eval-proxy = { workspace = true, optional = true }

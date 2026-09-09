@@ -85,6 +85,8 @@ fn test_issue_serde_roundtrip() {
             origin_type: "autopilot".into(),
             origin_id: "cron-1".into(),
         }),
+        required_role: Some("worker".into()),
+        required_tags: vec!["rust".into()],
         created_at: 1_756_000_000,
         updated_at: 1_756_500_000,
     };

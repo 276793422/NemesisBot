@@ -543,6 +543,8 @@ mod loop_e2e {
             None, // rpc_client=None：send_task_callback 走无客户端跳过
             None, // 无 observer
             None, // 无 result_persister（G1 收口语义走专属用例）
+            None, // 无讨论通道（G4 专属用例自行传入）
+            "test-node".to_string(),
             shutdown_rx,
         ));
         LoopRig {
@@ -572,6 +574,8 @@ mod loop_e2e {
             None,
             None,
             Some(persister),
+            None, // 无讨论通道（G4 专属用例自行传入）
+            "test-node".to_string(),
             shutdown_rx,
         ));
         LoopRig {
@@ -1227,6 +1231,8 @@ mod wave_b {
             None, // rpc_client=None：回调走无客户端跳过（无网络）
             observer,
             None, // 无 result_persister（G1 收口语义走专属用例）
+            None, // 无讨论通道（G4 专属用例自行传入）
+            "test-node".to_string(),
             shutdown_rx,
         ));
         WbRig {
@@ -1441,5 +1447,306 @@ mod wave_c {
         let cache = fresh.get_summary_cache().expect("cache restored");
         assert_eq!(cache.covers_up_to, 3, "999 must clamp to history length");
         assert_eq!(cache.text, "wc-ceil-summary");
+    }
+}
+
+// =========================================================================
+// Swarm M3（G4）：讨论唤醒事件消费（第三 select 臂）。
+//
+// 纯函数（prompt 组装 / 上行信封）直测；loop 冒烟走 loop_e2e 同款 rig +
+// ScriptedProvider（[SILENT] 沉默 / 正文回复两形态；rpc_client=None 时
+// post_discussion_reply 走「无客户端跳过」分支，冒烟验证不炸）。
+// =========================================================================
+
+mod swarm_g4 {
+    use super::*;
+    use nemesis_agent::r#loop::{LlmMessage, LlmProvider, LlmResponse};
+    use nemesis_agent::types::{AgentConfig, ChatOptions, ToolDefinition};
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    fn make_event(seq: i64, content: &str) -> nemesis_types::cluster::DiscussionEvent {
+        nemesis_types::cluster::DiscussionEvent {
+            thread_kind: "issue".to_string(),
+            thread_id: 42,
+            thread_title: "登录 bug".to_string(),
+            messages: vec![nemesis_types::cluster::DiscussionCtxMessage {
+                sender: "node-master".to_string(),
+                content: "先复现".to_string(),
+                at: 1,
+            }],
+            event: "mention".to_string(),
+            from_node: "node-master".to_string(),
+            new_sender: "node-master".to_string(),
+            new_content: content.to_string(),
+            new_at: 2,
+            reply_to: Some(seq),
+            max_turns_left: 5,
+            seq,
+        }
+    }
+
+    // -- build_discussion_prompt（纯函数） ----------------------------------
+
+    #[test]
+    fn g4_prompt_contains_context_wake_reason_and_choice() {
+        let event = make_event(9, "@node-a 请给结论");
+        let prompt = build_discussion_prompt("node-a", &event);
+        // 线程标题 + 历史 + 新消息 + 唤醒原因 + 自我身份 + 二选一指令。
+        assert!(prompt.contains("# Thread (issue:42): 登录 bug"), "prompt={prompt}");
+        assert!(prompt.contains("- node-master: 先复现"));
+        assert!(prompt.contains("Wake reason: mention"));
+        assert!(prompt.contains("You are node node-a"));
+        assert!(prompt.contains("[SILENT]"));
+        assert!(prompt.contains("budget remaining: 5"));
+        // 无历史线程 → 诚实注记而非空段。
+        let mut bare = make_event(10, "hi");
+        bare.messages.clear();
+        bare.thread_title.clear();
+        let p2 = build_discussion_prompt("node-a", &bare);
+        assert!(p2.contains("(no prior context available)"), "p2={p2}");
+        // 预算无限（sync 补拉形态）→ unlimited。
+        let mut inf = make_event(11, "hi");
+        inf.max_turns_left = u32::MAX;
+        assert!(build_discussion_prompt("node-a", &inf).contains("unlimited"));
+    }
+
+    // -- build_comment_post_envelope（纯函数） ------------------------------
+
+    #[test]
+    fn g4_comment_post_envelope_shape() {
+        let event = make_event(9, "question");
+        let payload = build_comment_post_envelope("node-a", &event, "我的结论");
+        assert_eq!(payload["ns"], serde_json::json!("board"));
+        assert_eq!(payload["op"], serde_json::json!("comment.post"));
+        assert_eq!(payload["ok"], serde_json::json!(true));
+        let body = &payload["body"];
+        // 上行幂等键非空（uuid）。
+        assert!(!body["client_msg_id"].as_str().unwrap().is_empty());
+        assert_eq!(body["thread"], serde_json::json!({"kind": "issue", "id": 42}));
+        assert_eq!(body["sender"], serde_json::json!({"type": "agent", "id": "node-a"}));
+        assert_eq!(body["content"], serde_json::json!("我的结论"));
+        assert_eq!(body["reply_to"], serde_json::json!(9));
+        // kind_tag 映射：issue→discussion。
+        assert_eq!(body["kind_tag"], serde_json::json!("discussion"));
+        // channel 线程 → kind_tag=text。
+        let mut ch = make_event(12, "x");
+        ch.thread_kind = "channel".to_string();
+        ch.reply_to = None;
+        let p2 = build_comment_post_envelope("node-a", &ch, "y");
+        assert_eq!(p2["body"]["kind_tag"], serde_json::json!("text"));
+        assert_eq!(p2["body"]["thread"]["kind"], serde_json::json!("channel"));
+        assert_eq!(p2["body"]["reply_to"], serde_json::json!(null));
+    }
+
+    // -- loop 冒烟：第三臂消费事件（[SILENT] / 正文回复） -------------------
+
+    /// 观察态：loop 把 provider 一起 move 进 tokio::spawn，测试侧通过
+    /// Arc 共享这份状态读调用次数与最后一次 prompt。
+    struct Obs {
+        calls: AtomicUsize,
+        last_prompt: std::sync::Mutex<String>,
+    }
+
+    /// 可脚本化 provider：固定 Done 文本 + 记录最后一次请求消息。
+    struct RecordingProvider {
+        final_text: String,
+        obs: Arc<Obs>,
+    }
+
+    #[async_trait::async_trait]
+    impl LlmProvider for RecordingProvider {
+        async fn chat(
+            &self,
+            _model: &str,
+            messages: Vec<LlmMessage>,
+            _options: Option<ChatOptions>,
+            _tools: Vec<ToolDefinition>,
+        ) -> Result<LlmResponse, String> {
+            self.obs.calls.fetch_add(1, Ordering::SeqCst);
+            let joined = messages
+                .iter()
+                .map(|m| m.content.as_str())
+                .collect::<Vec<_>>()
+                .join("\n");
+            *self.obs.last_prompt.lock().unwrap() = joined;
+            Ok(LlmResponse {
+                content: self.final_text.clone(),
+                tool_calls: Vec::new(),
+                finished: true,
+                reasoning_content: None,
+                usage: None,
+                raw_request_body: None,
+                raw_response_body: None,
+            })
+        }
+    }
+
+    fn g4_config() -> AgentConfig {
+        AgentConfig {
+            model: "test-model".to_string(),
+            system_prompt: Some("cluster g4".to_string()),
+            max_turns: 4,
+            tools: vec![],
+            ..Default::default()
+        }
+    }
+
+    async fn g4_wait_until(deadline_ms: u64, f: impl Fn() -> bool) {
+        let deadline = std::time::Instant::now() + std::time::Duration::from_millis(deadline_ms);
+        while !f() {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "condition not met within {deadline_ms}ms"
+            );
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        }
+    }
+
+    /// 起 rig + 投一条唤醒事件 + 等 LLM 被调一次 + 停机。返回观察态供断言。
+    async fn run_one_round(final_text: &str) -> Arc<Obs> {
+        let tmp = tempfile::tempdir().unwrap();
+        let obs = Arc::new(Obs {
+            calls: AtomicUsize::new(0),
+            last_prompt: std::sync::Mutex::new(String::new()),
+        });
+        let provider = RecordingProvider {
+            final_text: final_text.to_string(),
+            obs: obs.clone(),
+        };
+        let agent_loop = AgentLoop::new(Box::new(provider), g4_config());
+        let task_list = Arc::new(ClusterTaskList::new(tmp.path()));
+        let work_queue = Arc::new(ClusterWorkQueue::new(8));
+        let inbox = Arc::new(crate::cluster_agent::DiscussionInbox::new());
+        let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
+        inbox.set_sender(tx);
+        let (shutdown_tx, shutdown_rx) = tokio::sync::broadcast::channel(1);
+        let handle = tokio::spawn(cluster_agent_loop(
+            Arc::new(agent_loop),
+            g4_config(),
+            work_queue,
+            task_list,
+            None, // rpc_client=None：post_discussion_reply 走「无客户端跳过」
+            None,
+            None,
+            Some(rx),
+            "node-a".to_string(),
+            shutdown_rx,
+        ));
+
+        inbox
+            .send(make_event(9, "@node-a 请给结论"))
+            .expect("event queued");
+        g4_wait_until(10_000, || obs.calls.load(Ordering::SeqCst) >= 1).await;
+        // 一轮收尾（handle_discussion 同步走完 post 路径）后再断言 prompt。
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        let prompt = obs.last_prompt.lock().unwrap().clone();
+        assert!(prompt.contains("# Thread (issue:42)"), "prompt={prompt}");
+        assert!(prompt.contains("Wake reason: mention"), "prompt={prompt}");
+
+        let _ = shutdown_tx.send(());
+        let _ = handle.await;
+        obs
+    }
+
+    /// [SILENT] 回复：一轮跑完即静默（无 post——rpc=None 反正也跳过；
+    /// 冒烟点是整链路不炸 + prompt 进了 loop）。
+    #[tokio::test]
+    async fn g4_silent_reply_consumes_event_without_panic() {
+        run_one_round("[SILENT]").await;
+    }
+
+    /// 正文回复：跑完 post 路径（rpc=None → 诚实跳过分支），整链不炸。
+    #[tokio::test]
+    async fn g4_text_reply_consumes_event_and_posts() {
+        run_one_round("我的结论：先看日志。").await;
+    }
+
+    /// Swarm G13：讨论轮必须落 cluster_logs 4 件套。讨论没有 cluster task，
+    /// handle_discussion 需合成 task 上下文 + start/end——缺 start 则观察者
+    /// active 表永不注册 trace，LLM 调用全部不可回放。本测试锁：轮次收尾后
+    /// active 表清零（start/end 配对闭合），且磁盘出现
+    /// cluster_logs/{from_node}/…_discussion-issue-42-seq…/ 会话目录与文件。
+    #[tokio::test]
+    async fn g13_discussion_round_writes_cluster_logs_session() {
+        use nemesis_agent::request_logger::{DetailLevel, LoggingConfig as RawLoggingConfig};
+
+        let tmp = tempfile::tempdir().unwrap();
+        let obs = Arc::new(Obs {
+            calls: AtomicUsize::new(0),
+            last_prompt: std::sync::Mutex::new(String::new()),
+        });
+        let provider = RecordingProvider {
+            final_text: "我的结论：先看日志。".to_string(),
+            obs: obs.clone(),
+        };
+        let agent_loop = AgentLoop::new(Box::new(provider), g4_config());
+        let observer = Arc::new(
+            crate::cluster_request_logger_observer::ClusterRequestLoggerObserver::new(
+                RawLoggingConfig {
+                    enabled: true,
+                    detail_level: DetailLevel::Full,
+                    log_dir: "logs/cluster_logs".to_string(),
+                    save_raw: true,
+                },
+                tmp.path(),
+            ),
+        );
+        let task_list = Arc::new(ClusterTaskList::new(tmp.path()));
+        let work_queue = Arc::new(ClusterWorkQueue::new(8));
+        let inbox = Arc::new(crate::cluster_agent::DiscussionInbox::new());
+        let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
+        inbox.set_sender(tx);
+        let (shutdown_tx, shutdown_rx) = tokio::sync::broadcast::channel(1);
+        let handle = tokio::spawn(cluster_agent_loop(
+            Arc::new(agent_loop),
+            g4_config(),
+            work_queue,
+            task_list,
+            None,
+            Some(observer.clone()),
+            None,
+            Some(rx),
+            "node-a".to_string(),
+            shutdown_rx,
+        ));
+
+        inbox
+            .send(make_event(9, "@node-a 请给结论"))
+            .expect("event queued");
+        g4_wait_until(10_000, || obs.calls.load(Ordering::SeqCst) >= 1).await;
+        // start/end 配对闭合：轮次收尾后 trace 必须已从 active 表移除。
+        g4_wait_until(10_000, || observer.active_count() == 0).await;
+
+        // 磁盘：cluster_logs/{from_node}/ 下一份 discussion 会话目录，内含文件。
+        let device_dir = tmp.path().join("logs").join("cluster_logs").join("node-master");
+        let session_dirs: Vec<_> = std::fs::read_dir(&device_dir)
+            .expect("device dir must exist after the round")
+            .filter_map(|e| e.ok())
+            .filter(|e| e.file_type().is_ok_and(|ft| ft.is_dir()))
+            .collect();
+        assert_eq!(session_dirs.len(), 1, "恰好一个讨论会话目录");
+        let dir_name = session_dirs[0].file_name().to_string_lossy().to_string();
+        assert!(
+            dir_name.contains("discussion-issue-42-seq9"),
+            "task_id 必须带线程与 seq（可检索），实际: {dir_name}"
+        );
+        let files: Vec<_> = std::fs::read_dir(session_dirs[0].path())
+            .unwrap()
+            .filter_map(|e| e.ok())
+            .map(|e| e.file_name().to_string_lossy().to_string())
+            .collect();
+        assert!(
+            files.iter().any(|f| f.starts_with("00.request")),
+            "00.request.md 必须落盘，实际文件: {files:?}"
+        );
+        // mock provider 不带 raw 请求/响应体（raw_request_body=None），故只断言
+        // 明文件；raw JSON 信封由 raw_mode_writes_raw_envelope_and_response 单测覆盖。
+        assert!(
+            files.iter().any(|f| f.ends_with("response.md")),
+            "响应文件必须落盘，实际文件: {files:?}"
+        );
+
+        let _ = shutdown_tx.send(());
+        let _ = handle.await;
     }
 }

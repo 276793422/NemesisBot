@@ -116,6 +116,12 @@ pub struct Cluster {
     call_with_context_fn: Mutex<
         Option<Arc<dyn Fn(&str, &str, serde_json::Value) -> Result<Vec<u8>, String> + Send + Sync>>,
     >,
+
+    /// 节点发现回调（Swarm M2 落点）：对端节点被发现/刷新时触发
+    /// `(node_id, role, category)`。gateway 用它把新节点自动收编进看板
+    /// 频道；first-join 语义（成员零行才入）由闭包实现方裁决——cluster
+    /// 不依赖 board。未注册时为零开销 no-op。
+    on_node_discovered: Mutex<Option<Arc<dyn Fn(&str, &str, &str) + Send + Sync>>>,
 }
 
 impl Cluster {
@@ -166,6 +172,7 @@ impl Cluster {
             cluster_task_list: Mutex::new(None),
             cluster_work_queue: Mutex::new(None),
             call_with_context_fn: Mutex::new(None),
+            on_node_discovered: Mutex::new(None),
         }
     }
 
@@ -270,6 +277,7 @@ impl Cluster {
             cluster_task_list: Mutex::new(None),
             cluster_work_queue: Mutex::new(None),
             call_with_context_fn: Mutex::new(None),
+            on_node_discovered: Mutex::new(None),
         }
     }
 
@@ -816,6 +824,13 @@ impl Cluster {
         self.removed_peers.write().remove(node_id)
     }
 
+    /// Register the node-discovered callback (Swarm M2). Called once at
+    /// gateway assembly; the closure receives `(node_id, role, category)` on
+    /// every non-blacklisted discovery/refresh event.
+    pub fn set_on_node_discovered(&self, cb: Arc<dyn Fn(&str, &str, &str) + Send + Sync>) {
+        *self.on_node_discovered.lock() = Some(cb);
+    }
+
     /// Handle a discovered node (from UDP broadcast or manual config).
     pub fn handle_discovered_node(
         &self,
@@ -823,7 +838,7 @@ impl Cluster {
         name: &str,
         addresses: Vec<String>,
         rpc_port: u16,
-        _role: &str,
+        role: &str,
         category: &str,
         _tags: Vec<String>,
         capabilities: Vec<String>,
@@ -831,6 +846,21 @@ impl Cluster {
     ) -> bool {
         // Skip blacklisted nodes
         if self.removed_peers.read().contains(node_id) {
+            return false;
+        }
+
+        // G14（2026-09-09 双机混跑）：rpc_port=0 的 announce 造不出可用
+        // 记录（ip:0 永不可达）。正常路径不会出现 0——静态 peers 装载按
+        // udp+10000 派生恒 >0，新版节点 announce 恒带真实 rpc_port；0 只
+        // 来自异版本/畸形 announce。未知节点不登记（state.toml 不再存
+        // unusable 条目），已知节点不覆盖（静态条目原值保留）。异版本
+        // 混合集群靠静态 peers 显式登记，不经 UDP 发现。
+        if rpc_port == 0 {
+            tracing::debug!(
+                "[Cluster] Ignoring announce without rpc_port (legacy/malformed): {} at {:?}",
+                node_id,
+                addresses
+            );
             return false;
         }
 
@@ -846,7 +876,10 @@ impl Cluster {
             base: nemesis_types::cluster::NodeInfo {
                 id: node_id.into(),
                 name: name.into(),
-                role: nemesis_types::cluster::NodeRole::Worker,
+                // announce 携带对端自报 role（真相源=对端 peers.toml [node].role）；
+                // 曾硬编码 Worker 导致 board.sync 的 coordinator 判定在纯 UDP
+                // 发现拓扑下永远失败（补拉死循环），必须走 from_role_str 解析。
+                role: nemesis_types::cluster::NodeRole::from_role_str(role),
                 address: primary_address.clone(),
                 category: category.into(),
                 last_seen: chrono::Local::now().to_rfc3339(),
@@ -916,7 +949,9 @@ impl Cluster {
                         id: node_id.into(),
                         name: effective_name,
                         address: primary_address.clone(),
-                        role: nemesis_types::cluster::NodeRole::Worker,
+                        // 同 handle_discovered_node：role 走对端自报值解析，
+                        // 不硬编码（升级后的静态 peer 条目 role 才真实）。
+                        role: nemesis_types::cluster::NodeRole::from_role_str(role),
                         category: category.into(),
                         capabilities: Vec::new(),
                         node_type: node_type.into(),
@@ -965,6 +1000,13 @@ impl Cluster {
                 node_id,
                 primary_address,
             );
+        }
+
+        // Swarm M2: notify the discovery callback (gateway folds the node into
+        // board channels; first-join semantics are the closure's job — cluster
+        // does not depend on board).
+        if let Some(cb) = self.on_node_discovered.lock().clone() {
+            cb(node_id, role, category);
         }
         changed
     }

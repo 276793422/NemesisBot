@@ -253,6 +253,19 @@ pub struct BoardFlagConfig {
     /// `issue.assign` 指派给 worker 成功即自动走派发单一入口
     /// （dispatch_issue_core；失败不回滚指派，⛔ 系统评论留痕）。
     pub auto_dispatch: bool,
+    /// 频道讨论区配置（`board.discussion`）。
+    pub discussion: BoardDiscussionConfig,
+    /// 每日备份配置（`board.backup`）。
+    pub backup: BoardBackupConfig,
+    /// 任务拆解配置（`board.plan`；Swarm M1）。
+    pub plan: BoardPlanConfig,
+    /// in_review 自动触发验收 agent（Swarm M3+；默认 true）。删除本键即回
+    /// 「纯人工验收」。
+    pub auto_review: bool,
+    /// 验收 PASS 是否自动 done（Swarm M3+；默认 false = 人工签字放行）。
+    pub auto_accept: bool,
+    /// FAIL 重派上限，超次转 UNSURE 等人工（Swarm M4）。
+    pub max_redispatch: u32,
 }
 
 impl Default for BoardFlagConfig {
@@ -261,7 +274,62 @@ impl Default for BoardFlagConfig {
             dispatch_timeout_secs: 3600,
             dispatch_sweep_interval_secs: 20,
             auto_dispatch: false,
+            discussion: BoardDiscussionConfig::default(),
+            backup: BoardBackupConfig::default(),
+            plan: BoardPlanConfig::default(),
+            auto_review: true,
+            auto_accept: false,
+            max_redispatch: 2,
         }
+    }
+}
+
+/// 任务拆解配置（`board.plan` 段；Swarm M1）。
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
+#[serde(default)]
+pub struct BoardPlanConfig {
+    /// planner 拆解用模型别名（None = 主模型）。
+    pub model: Option<String>,
+    /// 拆解后跳过人工确认闸直接建单派发（默认 false = 拆完等人确认）。
+    pub auto_confirm: bool,
+}
+
+/// 频道讨论区配置（`board.discussion` 段；Swarm M2/M3）。
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(default)]
+pub struct BoardDiscussionConfig {
+    /// 频道消息保留天数（默认 90；0 = 永久保留）。
+    pub retention_days: i64,
+    /// 每线程 agent 发言额度（master 记账随 wake.post 下发；默认 8，0=不限）。
+    pub max_agent_turns_per_thread: u32,
+    /// 每节点每小时发言上限（默认 20，0=不限）。
+    pub hourly_budget_per_node: u32,
+    /// 每节点每分钟 board.comment.post 上行限速（默认 12，0=不限）。
+    pub rate_limit_per_min: u32,
+}
+
+impl Default for BoardDiscussionConfig {
+    fn default() -> Self {
+        Self {
+            retention_days: 90,
+            max_agent_turns_per_thread: 8,
+            hourly_budget_per_node: 20,
+            rate_limit_per_min: 12,
+        }
+    }
+}
+
+/// 看板数据库每日备份配置（`board.backup` 段；Swarm M2）。
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(default)]
+pub struct BoardBackupConfig {
+    /// 备份保留份数（默认 14 = 两周；0 = 关闭每日备份）。
+    pub keep: u32,
+}
+
+impl Default for BoardBackupConfig {
+    fn default() -> Self {
+        Self { keep: 14 }
     }
 }
 

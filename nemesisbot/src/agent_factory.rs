@@ -1102,7 +1102,8 @@ pub fn build_cluster_agent_loop(
     let mut agent_loop = AgentLoop::new(Box::new(adapter), config.clone());
 
     // 5. Set cluster reference (enables cluster_rpc tool).
-    agent_loop.set_cluster(cluster as Arc<dyn std::any::Any + Send + Sync>);
+    // （clone 而非 move：cluster Arc 还要给 board_discuss 工具持有。）
+    agent_loop.set_cluster(cluster.clone() as Arc<dyn std::any::Any + Send + Sync>);
     // 绑定全局急停状态（集群 agent 同样吃急停——peer_chat 跑完整工具链，不能漏）。
     agent_loop.set_estop(shared.estop.clone());
 
@@ -1306,6 +1307,30 @@ pub fn build_cluster_agent_loop(
     // Cluster agent does not use executor separation yet (B.0 scope: main agent
     // only). Pass None → all tools stay local.
     register_tools_and_mcp(&mut agent_loop, shared, &tool_config, None);
+
+    // Swarm M3（G4 主动发言通道）：board_discuss 仅注册进 cluster agent
+    // ——被动唤醒（第三 select 臂）之外，worker 干活途中可主动向看板线程
+    // 发言。master 本尊直写 store、主 agent 同理，都不装。tier 白名单不
+    // 收录——与 cluster_rpc 同族（Big/Unresolved 全量可见；mini/normal 不
+    // 给：跨节点发言是高信任交互）。
+    #[cfg(all(feature = "board", feature = "cluster"))]
+    {
+        agent_loop.register_tool(
+            crate::board_discuss_tool::TOOL_NAME.to_string(),
+            Box::new(crate::board_discuss_tool::BoardDiscussTool::new(cluster.clone())),
+        );
+        // G9 资产拉取/发布执行者：两端都装——worker 拉任务资产，master 的
+        // cluster agent 也能拉 worker 交付物（同一工具、同一 bundle 语义）。
+        agent_loop.register_tool(
+            crate::board_asset_tool::TOOL_NAME.to_string(),
+            Box::new(crate::board_asset_tool::BoardAssetTool::new(
+                shared.workspace_dir(),
+            )),
+        );
+        info!(
+            "[AgentFactory] board_discuss + board_asset tools registered (cluster agent only)"
+        );
+    }
 
     // D3 (2026-08-24 arch review): P3.1 auto memory injection (per-round
     // injection of relevant local user memories before each LLM call) is

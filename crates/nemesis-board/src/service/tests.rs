@@ -54,3 +54,25 @@ fn test_service_is_clone_and_shares_store() {
     assert!(cloned.store().get_issue(issue.id).is_ok());
     cleanup(&dir);
 }
+
+#[test]
+fn test_asset_secret_injection_and_default_none() {
+    // 默认无密钥（未配资产服务语义）。
+    let (svc, dir) = temp_service("nosecret", NodeRole::Coordinator);
+    assert!(svc.asset_secret().is_none());
+    cleanup(&dir);
+
+    // builder 注入后可读回；Clone 共享同一密钥。
+    let n = SEQ.fetch_add(1, Ordering::SeqCst);
+    let dir2 = std::env::temp_dir().join(format!(
+        "nemesis-board-svctest-secret-{n}",
+    ));
+    let _ = std::fs::remove_dir_all(&dir2);
+    let store = BoardStore::open(&dir2.join("board.db"), "NB").unwrap();
+    let svc2 = BoardService::new(std::sync::Arc::new(store), NodeRole::Worker)
+        .with_asset_secret(vec![1, 2, 3, 4]);
+    assert_eq!(svc2.asset_secret(), Some(&[1u8, 2, 3, 4][..]));
+    let cloned = svc2.clone();
+    assert_eq!(cloned.asset_secret(), svc2.asset_secret());
+    cleanup(&dir2);
+}

@@ -7,7 +7,7 @@ const eventHandlers: Record<string, EventHandler[]> = {}
 
 // L2（devtool-upgrade 阶段 6）：'resync' = 服务端提示缺口已滑出重放窗口
 // （或网关重启 seq 重置），订阅方应全量刷新兜底。
-const EVENT_TYPES = ['log', 'status', 'security-alert', 'scanner-progress', 'cluster-event', 'heartbeat', 'memory-setup', 'board-changed', 'usage-changed', 'approval-requested', 'approval-resolved', 'question-asked', 'question-resolved', 'resync']
+const EVENT_TYPES = ['log', 'status', 'security-alert', 'scanner-progress', 'cluster-event', 'heartbeat', 'memory-setup', 'board-changed', 'usage-changed', 'approval-requested', 'approval-resolved', 'question-asked', 'question-resolved', 'board.plan_ready', 'board.plan_failed', 'resync']
 
 function dispatch(eventType: string, data: any) {
   const handlers = eventHandlers[eventType] || []

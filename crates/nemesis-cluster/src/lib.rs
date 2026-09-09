@@ -11,6 +11,7 @@ pub mod cluster_task;
 pub mod config_loader;
 pub mod continuation_store;
 pub mod diagnostics;
+pub mod envelope;
 pub mod logger;
 pub mod network;
 pub mod registry;

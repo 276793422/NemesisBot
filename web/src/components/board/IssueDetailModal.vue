@@ -1,8 +1,9 @@
 <script setup lang="ts">
-import { ref, computed, watch } from 'vue'
+import { ref, computed, watch, onUnmounted } from 'vue'
 import { useWSAPI } from '../../composables/useWSAPI'
 import { useToast } from '../../composables/useToast'
 import { useBoardChanged } from '../../composables/useBoardChanged'
+import { on, off } from '../../composables/useSSE'
 import {
   PRIORITY_BADGE,
   PRIORITY_LABEL,
@@ -155,6 +156,32 @@ function repliesOf(parentId: number): CommentRow[] {
   return (detail.value?.comments || []).filter((c) => c.parent_id === parentId)
 }
 
+// ctype 彩色徽标（M3 批次 E）：delivery（worker 交付汇报）蓝 / question 橙 /
+// discussion 紫（badge-info 复用）/ status_change、system 机械行灰。
+const CTYPE_BADGE: Record<string, string> = {
+  delivery: 'badge-info',
+  question: 'badge-warning',
+  discussion: 'badge-info',
+  status_change: 'badge-neutral',
+  system: 'badge-neutral',
+}
+
+const CTYPE_LABEL: Record<string, string> = {
+  delivery: '交付',
+  question: '提问',
+  discussion: '讨论',
+  status_change: '状态',
+  system: '系统',
+}
+
+function ctypeBadge(c: CommentRow): string {
+  return CTYPE_BADGE[c.ctype] || 'badge-neutral'
+}
+
+function ctypeLabel(c: CommentRow): string {
+  return CTYPE_LABEL[c.ctype] || c.ctype
+}
+
 async function loadWorkerNodes() {
   try {
     const r = await request('cluster', 'nodes.list', {})
@@ -194,9 +221,102 @@ async function loadAttachments() {
   }
 }
 
+// --- AI 拆解（Swarm M1）：两段式 —— 一段 issue.plan（异步 planner，
+// plan_id 回执 + board.plan_ready/failed SSE 推送），二段 confirm:true
+// 落库 + 依赖闸派发波 + 父单联动。后端真相源：handlers/board.rs issue_plan。
+// 声明在下方 issueId watch 之前：watch immediate 首跑 dismissPlan。
+interface PlannedSub {
+  title: string
+  description: string
+  required_role: string
+  required_tags: string[]
+  acceptance_criteria: string
+  depends_on: number[]
+}
+type PlanState = 'idle' | 'planning' | 'ready' | 'failed'
+const planState = ref<PlanState>('idle')
+const planId = ref('')
+const planSubs = ref<PlannedSub[]>([])
+const planError = ref('')
+const planBusy = ref(false)
+
+function dismissPlan() {
+  planState.value = 'idle'
+  planId.value = ''
+  planSubs.value = []
+  planError.value = ''
+}
+
+async function startPlan() {
+  if (!detail.value || planBusy.value) return
+  planBusy.value = true
+  planError.value = ''
+  try {
+    const r = await request('board', 'issue.plan', { id: detail.value.id })
+    if (r?.status === 'planning' && r?.plan_id) {
+      planId.value = r.plan_id
+      planState.value = 'planning'
+    } else {
+      toast.error('拆解请求响应异常')
+    }
+  } catch (e: any) {
+    toast.error('AI 拆解失败: ' + e)
+  } finally {
+    planBusy.value = false
+  }
+}
+
+// planner 完成推送：只认当前打开 issue 的回执（异会话晚到不串台）。
+function onPlanReady(data: any) {
+  if (!detail.value || data?.issue_id !== detail.value.id) return
+  planSubs.value = data.subs || []
+  planId.value = data.plan_id || planId.value
+  planState.value = planSubs.value.length ? 'ready' : 'failed'
+  if (planState.value === 'failed') planError.value = '拆解结果为空'
+}
+
+function onPlanFailed(data: any) {
+  if (!detail.value || data?.issue_id !== detail.value.id) return
+  planError.value = data?.error || '未知错误'
+  planState.value = 'failed'
+}
+
+on('board.plan_ready', onPlanReady)
+on('board.plan_failed', onPlanFailed)
+onUnmounted(() => {
+  off('board.plan_ready', onPlanReady)
+  off('board.plan_failed', onPlanFailed)
+})
+
+async function confirmPlan() {
+  if (!detail.value || !planId.value || planBusy.value) return
+  planBusy.value = true
+  try {
+    const r = await request('board', 'issue.plan', {
+      id: detail.value.id,
+      plan_id: planId.value,
+      confirm: true,
+    })
+    const created = r?.created?.length || 0
+    const dispatched = r?.dispatched || 0
+    const deferred = r?.deferred?.length || 0
+    toast.success(
+      `已创建 ${created} 个子任务：派出 ${dispatched}，暂缓 ${deferred}（依赖满足后自动补派）`,
+    )
+    dismissPlan()
+    await loadDetail()
+    changed()
+  } catch (e: any) {
+    toast.error('确认拆解失败: ' + e)
+  } finally {
+    planBusy.value = false
+  }
+}
+
 watch(
   () => props.issueId,
   (id) => {
+    dismissPlan() // 换 issue/关闭 → 上一个拆解预览作废
     if (id != null) {
       detail.value = null
       newComment.value = ''
@@ -493,6 +613,53 @@ async function downloadAttachment(a: AttachmentRow) {
           </div>
         </div>
 
+        <!-- AI 拆解（Swarm M1：planner 两段式） -->
+        <div class="form-group">
+          <label class="form-label">AI 拆解</label>
+          <div v-if="planState === 'idle'" class="assign-row">
+            <button
+              class="btn btn-sm"
+              :disabled="busy || planBusy"
+              title="按标题/描述/验收标准单层拆解为子任务，预览确认后自动落库并按依赖派发"
+              @click="startPlan"
+            >✨ AI 拆解</button>
+            <span class="muted">拆解为子任务 → 预览确认 → 自动派发（依赖满足后自动补派）</span>
+          </div>
+          <div v-else-if="planState === 'planning'" class="assign-row">
+            <span class="muted">⏳ 拆解中…（后台运行，完成后自动展示预览）</span>
+            <button class="btn btn-xs btn-ghost" @click="dismissPlan">取消等待</button>
+          </div>
+          <div v-else-if="planState === 'failed'">
+            <p class="plan-error">⛔ 拆解失败：{{ planError }}</p>
+            <div class="assign-row">
+              <button class="btn btn-sm" @click="startPlan">重试</button>
+              <button class="btn btn-sm btn-ghost" @click="dismissPlan">关闭</button>
+            </div>
+          </div>
+          <template v-else>
+            <div class="plan-tree">
+              <div v-for="(s, i) in planSubs" :key="i" class="plan-node">
+                <div class="plan-node-head">
+                  <strong>{{ i + 1 }}. {{ s.title }}</strong>
+                  <span v-if="s.required_role" class="badge badge-neutral">角色:{{ s.required_role }}</span>
+                  <span v-for="t in s.required_tags" :key="t" class="badge badge-neutral">#{{ t }}</span>
+                </div>
+                <div v-if="s.description" class="muted">{{ s.description }}</div>
+                <div v-if="s.acceptance_criteria" class="muted">验收：{{ s.acceptance_criteria }}</div>
+                <div v-if="s.depends_on.length" class="muted">
+                  依赖：{{ s.depends_on.map(d => `#${d + 1}`).join('、') }}完成后派发
+                </div>
+              </div>
+            </div>
+            <div class="assign-row" style="margin-top: var(--space-2);">
+              <button class="btn btn-sm btn-primary" :disabled="planBusy" @click="confirmPlan">
+                ✓ 确认拆解（{{ planSubs.length }} 个子任务）并派发
+              </button>
+              <button class="btn btn-sm btn-ghost" :disabled="planBusy" @click="dismissPlan">放弃</button>
+            </div>
+          </template>
+        </div>
+
         <!-- 描述 / 验收 -->
         <div class="form-group" v-if="detail.description">
           <label class="form-label">描述</label>
@@ -510,18 +677,20 @@ async function downloadAttachment(a: AttachmentRow) {
           <div v-for="c in topLevelComments" :key="c.id" class="comment-item">
             <div class="comment-head">
               <strong>{{ c.author.kind }}/{{ c.author.id }}</strong>
-              <span v-if="c.ctype !== 'comment'" class="badge badge-neutral">{{ c.ctype }}</span>
+              <span v-if="c.ctype !== 'comment'" class="badge" :class="ctypeBadge(c)">{{ ctypeLabel(c) }}</span>
               <span class="muted">{{ fmtTime(c.created_at) }}</span>
               <button v-if="c.ctype === 'comment'" class="btn btn-xs btn-ghost" @click="startReply(c)">回复</button>
             </div>
-            <div class="comment-body">{{ c.content }}</div>
+            <div class="comment-body" :class="{ 'comment-body-report': c.ctype === 'delivery' }">{{ c.content }}</div>
             <!-- 一层回复 -->
             <div v-for="r in repliesOf(c.id)" :key="r.id" class="comment-item reply-item">
               <div class="comment-head">
                 <strong>{{ r.author.kind }}/{{ r.author.id }}</strong>
+                <span v-if="r.ctype !== 'comment'" class="badge" :class="ctypeBadge(r)">{{ ctypeLabel(r) }}</span>
                 <span class="muted">{{ fmtTime(r.created_at) }}</span>
+                <button v-if="r.ctype === 'comment'" class="btn btn-xs btn-ghost" @click="startReply(r)">回复</button>
               </div>
-              <div class="comment-body">{{ r.content }}</div>
+              <div class="comment-body" :class="{ 'comment-body-report': r.ctype === 'delivery' }">{{ r.content }}</div>
             </div>
           </div>
           <div v-if="replyTo" class="replying-hint">
@@ -623,6 +792,11 @@ async function downloadAttachment(a: AttachmentRow) {
   font-size: var(--text-sm);
   white-space: pre-wrap;
 }
+.comment-body-report {
+  background: var(--bg-secondary);
+  border-radius: var(--radius-sm);
+  padding: var(--space-2);
+}
 .replying-hint {
   font-size: var(--text-sm);
   color: var(--text-muted);
@@ -658,5 +832,26 @@ async function downloadAttachment(a: AttachmentRow) {
 }
 .activity-details {
   word-break: break-all;
+}
+.plan-error {
+  color: var(--danger, #d33);
+  font-size: var(--text-sm);
+  margin: 0 0 var(--space-2);
+}
+.plan-tree {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+.plan-node {
+  border-left: 2px solid var(--border-color, var(--border));
+  padding: var(--space-1) var(--space-3);
+  font-size: var(--text-sm);
+}
+.plan-node-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-2);
 }
 </style>

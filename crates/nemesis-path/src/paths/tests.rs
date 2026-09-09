@@ -2709,3 +2709,16 @@ fn test_resolve_spill_dir_for_home_is_legacy_location() {
         home.join("logs").join("spill")
     );
 }
+
+#[test]
+fn test_board_wake_state_path_layout() {
+    // G8（2026-09-09）：worker 唤醒水位快照落 workspace/data 派生数据区，
+    // 唯一拼接点在 paths.rs；布局不得再漂移。
+    let home = std::path::PathBuf::from("/tmp/home_x");
+    assert_eq!(
+        board_wake_state_path(&home),
+        home.join("workspace").join("data").join("board_wake_state.json")
+    );
+    // 必须在 data 区内（workspace/data = 派生数据统一目录约定）。
+    assert!(board_wake_state_path(&home).starts_with(workspace_data_dir(&home)));
+}

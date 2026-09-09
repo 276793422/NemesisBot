@@ -117,6 +117,64 @@ fn test_handle_discovered_node() {
     assert_eq!(node.capabilities.len(), 2);
 }
 
+// 回归（2026-09-09 双机 G8）：handle_discovered_node 曾把 role 硬编码 Worker，
+// announce 携带的对端自报 role 被丢弃 → 纯 UDP 发现拓扑下 board.sync 的
+// coordinator 判定永远失败（「no online coordinator known yet」补拉死循环）。
+#[test]
+fn test_handle_discovered_node_preserves_announced_role() {
+    let cluster = Cluster::new(make_config());
+    cluster.start();
+
+    cluster.handle_discovered_node(
+        "remote-coord",
+        "master-1",
+        vec!["10.0.0.9".into()],
+        21949,
+        "coordinator",
+        "development",
+        vec![],
+        vec![],
+        "agent",
+    );
+
+    let node = cluster.get_node_info("remote-coord").unwrap();
+    assert_eq!(
+        node.base.role,
+        nemesis_types::cluster::NodeRole::Coordinator,
+        "announce 自报的 coordinator role 必须保留"
+    );
+
+    // 旧词兼容：announce 带 "manager"/"master" 同样解析为 Coordinator。
+    cluster.handle_discovered_node(
+        "remote-coord-legacy",
+        "master-legacy",
+        vec!["10.0.0.10".into()],
+        21949,
+        "manager",
+        "development",
+        vec![],
+        vec![],
+        "agent",
+    );
+    let node = cluster.get_node_info("remote-coord-legacy").unwrap();
+    assert_eq!(node.base.role, nemesis_types::cluster::NodeRole::Coordinator);
+
+    // 缺失/未知 role（announce 兼容路径）回落 Worker。
+    cluster.handle_discovered_node(
+        "remote-norole",
+        "no-role",
+        vec!["10.0.0.11".into()],
+        21949,
+        "",
+        "development",
+        vec![],
+        vec![],
+        "agent",
+    );
+    let node = cluster.get_node_info("remote-norole").unwrap();
+    assert_eq!(node.base.role, nemesis_types::cluster::NodeRole::Worker);
+}
+
 #[test]
 fn test_handle_node_offline() {
     let cluster = Cluster::new(make_config());
@@ -6134,5 +6192,135 @@ fn test_query_task_result_error_and_not_found() {
     assert_eq!(
         missing.get("status").and_then(|v| v.as_str()),
         Some("not_found")
+    );
+}
+
+/// Swarm M2: on_node_discovered 回调 —— 非黑名单发现事件触发，
+/// 携带 (node_id, role, category)；黑名单节点不触发。
+#[test]
+fn test_on_node_discovered_callback_fires() {
+    let cluster = Cluster::new(make_config());
+    let seen: std::sync::Arc<std::sync::Mutex<Vec<(String, String, String)>>> =
+        std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+    let seen_clone = seen.clone();
+    cluster.set_on_node_discovered(std::sync::Arc::new(move |node_id, role, category| {
+        seen_clone
+            .lock()
+            .unwrap()
+            .push((node_id.to_string(), role.to_string(), category.to_string()));
+    }));
+
+    cluster.handle_discovered_node(
+        "cb-node-1",
+        "cb-worker",
+        vec!["10.0.0.9".into()],
+        21949,
+        "worker",
+        "qa",
+        vec![],
+        vec![],
+        "agent",
+    );
+
+    let events = seen.lock().unwrap();
+    assert_eq!(events.len(), 1, "发现一次应触发一次回调");
+    assert_eq!(events[0].0, "cb-node-1");
+    assert_eq!(events[0].1, "worker");
+    assert_eq!(events[0].2, "qa");
+}
+
+#[test]
+fn test_on_node_discovered_callback_skips_blacklisted() {
+    let cluster = Cluster::new(make_config());
+    // 时序：发现→移除（入黑名单）→挂回调→再次发现应被拦。
+    cluster.handle_discovered_node(
+        "banned-node",
+        "banned",
+        vec!["10.0.0.10".into()],
+        21949,
+        "worker",
+        "general",
+        vec![],
+        vec![],
+        "agent",
+    );
+    assert!(cluster.remove_node("banned-node"));
+    let seen: std::sync::Arc<std::sync::Mutex<Vec<String>>> =
+        std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+    let seen_clone = seen.clone();
+    cluster.set_on_node_discovered(std::sync::Arc::new(move |node_id, _role, _category| {
+        seen_clone.lock().unwrap().push(node_id.to_string());
+    }));
+    cluster.handle_discovered_node(
+        "banned-node",
+        "banned",
+        vec!["10.0.0.10".into()],
+        21949,
+        "worker",
+        "general",
+        vec![],
+        vec![],
+        "agent",
+    );
+
+    let events = seen.lock().unwrap();
+    assert!(
+        events.is_empty(),
+        "黑名单节点不应触发回调，实际: {events:?}"
+    );
+}
+
+// 回归（2026-09-09 双机 G14）：rpc_port=0 的 announce（异版本/畸形）不得
+// 产生不可达记录（曾实证 state.toml 存下 ip:0 + rpc_port=0 的 unusable 条目）。
+// 未知节点不登记；已知节点（静态 peers 条目）不被 0 覆盖。
+#[test]
+fn test_handle_discovered_node_skips_zero_rpc_port() {
+    let cluster = Cluster::new(make_config());
+    cluster.start();
+
+    // 未知节点 + rpc_port=0 → 不登记。
+    assert!(!cluster.handle_discovered_node(
+        "node-ghost",
+        "Ghost",
+        vec!["10.0.0.99".into()],
+        0,
+        "worker",
+        "development",
+        vec![],
+        vec![],
+        "agent",
+    ));
+    assert!(
+        cluster.get_node_info("node-ghost").is_none(),
+        "rpc_port=0 的 announce 不应产生节点记录"
+    );
+
+    // 已知节点（正常发现 21953）→ 随后 rpc_port=0 的 announce 不得覆盖。
+    assert!(cluster.handle_discovered_node(
+        "node-x",
+        "X",
+        vec!["10.0.0.50".into()],
+        21953,
+        "worker",
+        "development",
+        vec![],
+        vec![],
+        "agent",
+    ));
+    assert!(!cluster.handle_discovered_node(
+        "node-x",
+        "X",
+        vec!["10.0.0.50".into()],
+        0,
+        "worker",
+        "development",
+        vec![],
+        vec![],
+        "agent",
+    ));
+    let node = cluster.get_node_info("node-x").unwrap();
+    assert_eq!(
+        node.base.address, "10.0.0.50:21953",
+        "静态/正常条目的可用地址必须原值保留"
     );
 }

@@ -34,6 +34,7 @@ async fn new_adapter_reports_not_running() {
         Arc::new(ClusterTaskList::new(tmp.path().join("cluster_tasks"))),
         Arc::new(ClusterWorkQueue::new(8)),
         test_persister(),
+        None, // 无讨论通道（G4 专属用例自行传入）
     );
 
     // 固有方法 + trait 实现都报未运行。
@@ -61,6 +62,7 @@ async fn stop_when_not_running_is_ok_without_side_effects() {
         Arc::new(ClusterTaskList::new(tmp.path().join("cluster_tasks"))),
         Arc::new(ClusterWorkQueue::new(8)),
         test_persister(),
+        None, // 无讨论通道（G4 专属用例自行传入）
     );
 
     // 未运行时 stop() 必须短路 Ok（幂等停机），不触碰 cluster 内部。
@@ -185,6 +187,7 @@ fn make_adapter(
         task_list.clone(),
         work_queue.clone(),
         test_persister(),
+        None, // 无讨论通道（G4 专属用例自行传入）
     );
     (adapter, cluster, shared, task_list, work_queue, flag)
 }
@@ -423,6 +426,7 @@ async fn wave_c_start_fails_when_rpc_port_is_already_bound() {
         task_list,
         work_queue,
         test_persister(),
+        None, // 无讨论通道（G4 专属用例自行传入）
     );
 
     let err = adapter.start().expect_err("busy rpc port must fail start");
@@ -459,6 +463,7 @@ async fn wave_c_lifecycle_tolerates_flagless_shared_and_absent_agent_handle() {
         Arc::new(ClusterTaskList::new(tmp.path().join("tasks"))),
         Arc::new(ClusterWorkQueue::new(8)),
         test_persister(),
+        None, // 无讨论通道（G4 专属用例自行传入）
     );
 
     // agent 构建 lenient-Ok(None) → running=true 但 handle 缺席。

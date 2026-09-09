@@ -658,6 +658,111 @@ fn print_gateway_banner(
     println!();
 }
 
+/// G9（2026-09-09 结构修复）：web host 解析——绑定地址与展示地址分离。
+///
+/// 配置 host `"0.0.0.0"`/空 = 绑定所有网卡。集群场景必须**如实绑定**：
+/// worker 跨机拉资产走 HTTP，绑定回环则 bundle 广告出去的 LAN IP 全是
+/// 空头支票（旧逻辑无条件翻译成 127.0.0.1，逼用户手工把 host 配成
+/// LAN IP 才能跑通 G9 场景）。单机场景维持保守回环绑定，dashboard 不
+/// 无谓暴露局域网。展示地址（gateway state / banner / 浏览器 URL）永远
+/// 用可进地址栏的地址——0.0.0.0 不是合法浏览器地址。
+/// 返回 (绑定 host, 展示 host)。
+pub fn web_bind_and_display_hosts(configured: &str, cluster_starts: bool) -> (String, String) {
+    let h = configured.trim();
+    if h == "0.0.0.0" || h.is_empty() {
+        if cluster_starts {
+            ("0.0.0.0".to_string(), "127.0.0.1".to_string())
+        } else {
+            ("127.0.0.1".to_string(), "127.0.0.1".to_string())
+        }
+    } else {
+        (h.to_string(), h.to_string())
+    }
+}
+
+/// G9：对外资产基址 host 选择——只在 socket **真实监听所有网卡**（绑定
+/// unspecified 地址）时才广告 LAN IP（此时跨机可达为真，与 cluster 节点
+/// 注册挑 announce 地址同策略）；绑定回环或具体网卡时如实广告实际绑定
+/// 地址（回环绑定 + 广告 LAN IP = 承诺不可达 URL，正是 G9 病灶）。
+#[cfg_attr(
+    not(all(feature = "board", feature = "cluster")),
+    allow(dead_code) // 唯一调用点在 board+cluster 资产基址块；裁剪构建下不参与
+)]
+pub fn advertise_host_for(bound_ip: std::net::IpAddr, lan_ip: Option<String>) -> String {
+    if bound_ip.is_unspecified() {
+        lan_ip.unwrap_or_else(|| "127.0.0.1".to_string())
+    } else {
+        bound_ip.to_string()
+    }
+}
+
+/// G9：从本机 IP 列表与集群注册表已知 peer 地址推导**对外 NIC**——与任一
+/// peer 同网段的本机 IP 优先（peer 已证明在该网段内活动，本机同网段地址
+/// 即为跨机可达的最优候选），无信号回落首个非回环 IP。多重网卡机器
+/// （ICS/VPN/Hyper-V 虚拟适配器并存）靠这个选中真正连集群的网卡，而不是
+/// `get_all_local_ips` 的首猜。纯函数便于单测。
+#[cfg_attr(
+    not(all(feature = "board", feature = "cluster")),
+    allow(dead_code) // 同上
+)]
+pub fn select_advertised_lan_ip(local_ips: &[String], peer_addrs: &[String]) -> Option<String> {
+    let peer_hosts: Vec<&str> = peer_addrs
+        .iter()
+        .filter_map(|a| a.rsplit_once(':').map(|(h, _)| h))
+        .collect();
+    // 同 /24 网段的 IPv4 优先（前三个八位组一致）。
+    for ip in local_ips {
+        if ip.starts_with("127.") {
+            continue;
+        }
+        let Some((a, b, c, _)) = parse_ipv4_octets(ip) else {
+            continue;
+        };
+        for ph in &peer_hosts {
+            if let Some((x, y, z, _)) = parse_ipv4_octets(ph)
+                && (a, b, c) == (x, y, z)
+            {
+                return Some(ip.clone());
+            }
+        }
+    }
+    local_ips.iter().find(|ip| !ip.starts_with("127.")).cloned()
+}
+
+/// 解析点分 IPv4 的四个八位组；非 v4 形态返回 None。
+fn parse_ipv4_octets(s: &str) -> Option<(u8, u8, u8, u8)> {
+    let mut it = s.trim().split('.');
+    let a = it.next()?.parse().ok()?;
+    let b = it.next()?.parse().ok()?;
+    let c = it.next()?.parse().ok()?;
+    let d = it.next()?.parse().ok()?;
+    if it.next().is_some() {
+        return None;
+    }
+    Some((a, b, c, d))
+}
+
+/// G9 装配侧取数：本机 IP 列表 + 集群注册表已知 peer 地址（**排除本节点
+/// 自己**——本节点注册地址是 get_all_local_ips 首猜，可能恰是要纠正的错
+/// NIC），交给纯函数选对外 NIC。
+#[cfg_attr(
+    not(all(feature = "board", feature = "cluster")),
+    allow(dead_code) // 同上
+)]
+fn select_lan_ip_for_advertisement(
+    cluster: &nemesis_cluster::cluster::Cluster,
+) -> Option<String> {
+    let local_ips = nemesis_cluster::network::get_all_local_ips();
+    let self_id = cluster.node_id();
+    let peer_addrs: Vec<String> = cluster
+        .list_nodes()
+        .into_iter()
+        .filter(|n| n.base.id != self_id)
+        .map(|n| n.base.address)
+        .collect();
+    select_advertised_lan_ip(&local_ips, &peer_addrs)
+}
+
 #[cfg(test)]
 mod tests;
 
@@ -961,6 +1066,15 @@ fn migrate_legacy_workflow_dir(
     }
 }
 
+/// Swarm M4 批作业（§6）：写回把 issue 推进到 in_review 时携带评审触发
+/// 目标——回调闭包据此 spawn 验收 agent（`board.auto_review` 闸在评审
+/// 任务内读配置判定）。
+#[cfg(all(feature = "board", feature = "cluster"))]
+struct BoardWritebackOutcome {
+    is_board_task: bool,
+    issue_for_review: Option<i64>,
+}
+
 /// W2 P2 派发写回：board 派发（`issue.dispatch`）的 task_id 命中
 /// issue_dispatch 表 → 终结派发（幂等）+ worker 结果评论 + 状态推进
 /// （成功 → in_review 等 coordinator 验收；失败留在 in_progress）。
@@ -969,29 +1083,35 @@ fn migrate_legacy_workflow_dir(
 /// board store 未注入（打开失败）→ 恒 false，写回静默关闭。
 /// 唯一调用点在 peer_chat_callback（cluster 编译时）——board-only 构建下
 /// 该函数不可达，cfg 需同时含 cluster 以免 dead_code 告警。
+///
+/// Swarm M3 交付线程（§5.6/G5）：成功且 worker 按四段汇报格式回流 →
+/// ctype='delivery' 首评（原样保留，M4 验收 agent 同源解析）；没按格式 →
+/// 全文当普通评论（诚实降级）。汇报超 64KB → 全文落资产 + 截断内联 +
+/// 引用注记（全文走层 2 HTTP 资产拉取）。
 #[cfg(all(feature = "board", feature = "cluster"))]
 fn write_back_board_dispatch(
     board_store: &Option<std::sync::Arc<nemesis_board::BoardStore>>,
+    workspace: &std::path::Path,
     task_id: &str,
     status: &str,
     response: &str,
-) -> bool {
+) -> BoardWritebackOutcome {
     use nemesis_board::models::dispatch_state;
 
     let Some(bstore) = board_store.as_ref() else {
-        return false;
+        return BoardWritebackOutcome { is_board_task: false, issue_for_review: None };
     };
     if task_id.is_empty() {
-        return false;
+        return BoardWritebackOutcome { is_board_task: false, issue_for_review: None };
     }
     let disp = match bstore.get_dispatch(task_id) {
         Ok(Some(d)) => d,
-        Ok(None) => return false,
+        Ok(None) => return BoardWritebackOutcome { is_board_task: false, issue_for_review: None },
         Err(e) => {
             // 读失败≠非 board 任务，但也不能误吞 agent 续行——按既有路由
             // 处理（false），告警留痕。
             warn!("[Gateway] board dispatch lookup failed (task_id={task_id}): {e}");
-            return false;
+            return BoardWritebackOutcome { is_board_task: false, issue_for_review: None };
         }
     };
     if disp.state != dispatch_state::DISPATCHED {
@@ -999,7 +1119,7 @@ fn write_back_board_dispatch(
             "[Gateway] board dispatch {task_id} already terminal ({}), skip",
             disp.state
         );
-        return true;
+        return BoardWritebackOutcome { is_board_task: true, issue_for_review: None };
     }
 
     let terminal = if status == "error" {
@@ -1010,46 +1130,150 @@ fn write_back_board_dispatch(
     match bstore.finish_dispatch(task_id, terminal) {
         Ok(true) => {
             let worker_actor = nemesis_board::Actor::agent(&disp.worker_id);
-            let content = if status == "error" {
-                format!("⛔ worker 汇报失败：\n\n{response}")
+            let (ctype, content) = if status == "error" {
+                // 失败汇报不做格式判定——错误输出原样留痕。
+                (
+                    nemesis_board::CommentType::Comment,
+                    format!("⛔ worker 汇报失败：\n\n{response}"),
+                )
+            } else if nemesis_board::parse_delivery_report(response).is_some() {
+                // 结构化汇报 → 交付线程首评（G5）。超限先做截断+资产注记。
+                (
+                    nemesis_board::CommentType::Delivery,
+                    delivery_inline_or_asset(bstore, workspace, response),
+                )
             } else {
-                format!("✅ worker 汇报完成：\n\n{response}")
+                // 无格式 → 诚实降级为普通评论。
+                (
+                    nemesis_board::CommentType::Comment,
+                    format!("✅ worker 汇报完成：\n\n{response}"),
+                )
             };
             if let Err(e) = bstore.add_comment(nemesis_board::NewComment {
                 issue_id: disp.issue_id,
                 author: worker_actor.clone(),
                 content,
                 parent_id: None,
-                ctype: nemesis_board::CommentType::Comment,
+                ctype,
             }) {
                 warn!("[Gateway] board writeback comment failed (task_id={task_id}): {e}");
             }
-            // 成功 → in_review（coordinator 验收后定 done）；失败留在
-            // in_progress，失败评论已留痕（重派走 issue.dispatch）。
+            // 成功 → in_review（coordinator/验收 agent 处置）；失败留在
+            // in_progress，失败评论已留痕（重派走 issue.dispatch）。推进
+            // 成功即携带 M4 评审触发目标。
+            let mut issue_for_review = None;
             if status != "error"
                 && let Ok(issue) = bstore.get_issue(disp.issue_id)
                 && issue.status == nemesis_board::IssueStatus::InProgress
-                && let Err(e) = bstore.transition_issue(
+            {
+                match bstore.transition_issue(
                     disp.issue_id,
                     nemesis_board::IssueStatus::InReview,
                     &worker_actor,
-                )
-            {
-                warn!("[Gateway] board writeback transition failed (task_id={task_id}): {e}");
+                ) {
+                    Ok(_) => issue_for_review = Some(disp.issue_id),
+                    Err(e) => {
+                        warn!("[Gateway] board writeback transition failed (task_id={task_id}): {e}");
+                    }
+                }
             }
             info!(
                 "[Gateway] board dispatch writeback done (task_id={task_id}, issue_id={}, state={terminal})",
                 disp.issue_id
             );
+            BoardWritebackOutcome { is_board_task: true, issue_for_review }
         }
         Ok(false) => {
             info!("[Gateway] board dispatch {task_id} finished concurrently, skip writeback");
+            BoardWritebackOutcome { is_board_task: true, issue_for_review: None }
         }
         Err(e) => {
             warn!("[Gateway] board dispatch finish failed (task_id={task_id}): {e}");
+            BoardWritebackOutcome { is_board_task: true, issue_for_review: None }
         }
     }
-    true
+}
+
+/// 汇报内联策略（交付线程首评）：≤64KB 原样内联；超限 → 全文落资产
+/// （`delivery-<sha8>`）+ 截断内联 + 引用束注记（全文走层 2 HTTP）。
+/// 资产写盘/登记/签发失败时诚实给无束注记，不丢截断内容也不炸写回。
+#[cfg(all(feature = "board", feature = "cluster"))]
+fn delivery_inline_or_asset(
+    bstore: &nemesis_board::BoardStore,
+    workspace: &std::path::Path,
+    response: &str,
+) -> String {
+    use nemesis_board::report::MAX_INLINE_BYTES;
+
+    if response.len() <= MAX_INLINE_BYTES {
+        return response.to_string();
+    }
+
+    let head = floor_char_boundary(response, MAX_INLINE_BYTES);
+    let sha = nemesis_board::sha256_bytes(response.as_bytes());
+    let ref_name = format!("delivery-{}", &sha[..8]);
+
+    // 签发引用束（与 board_asset 工具 publish 同源：同一 secret 文件 + 同一
+    // node url 文件，token 在资产端点验证一致）。任一步失败 → 诚实注记，
+    // 不丢截断内容也不炸写回。
+    let bundle_json = (|| -> Option<String> {
+        let assets_dir = nemesis_path::resolve_board_assets_dir_in_workspace(workspace);
+        std::fs::create_dir_all(&assets_dir).ok()?;
+        std::fs::write(assets_dir.join(&ref_name), response).ok()?;
+        bstore
+            .register_asset(nemesis_board::NewAsset {
+                ref_name: ref_name.clone(),
+                origin_issue: None,
+                sha256: sha.clone(),
+                size: response.len() as i64,
+            })
+            .ok()?;
+        let secret = nemesis_board::load_or_create_secret(
+            &nemesis_path::resolve_asset_secret_path_in_workspace(workspace),
+        )
+        .ok()?;
+        let node_url = std::fs::read_to_string(
+            nemesis_path::resolve_asset_node_url_path_in_workspace(workspace),
+        )
+        .ok()?;
+        let node_url = node_url.trim().to_string();
+        if node_url.is_empty() {
+            return None;
+        }
+        let bundle = nemesis_board::issue_asset_bundle(
+            &secret,
+            &ref_name,
+            &sha,
+            response.len() as i64,
+            &node_url,
+            nemesis_board::DEFAULT_TOKEN_TTL_SECS,
+        );
+        serde_json::to_string(&bundle).ok()
+    })();
+
+    match bundle_json {
+        Some(json) => format!(
+            "{head}\n\n[汇报全文 {len} 字节，超过 64KB 内联上限已截断——全文下载引用：\n```json\n{json}\n```]",
+            len = response.len()
+        ),
+        None => format!(
+            "{head}\n\n[汇报全文 {len} 字节，超过 64KB 内联上限已截断；资产存档/签发失败，全文未能存档]",
+            len = response.len()
+        ),
+    }
+}
+
+/// 字节上限的安全切片（多字节字符向下取整到 char boundary）。
+#[cfg(all(feature = "board", feature = "cluster"))]
+fn floor_char_boundary(s: &str, max: usize) -> &str {
+    if s.len() <= max {
+        return s;
+    }
+    let mut i = max;
+    while i > 0 && !s.is_char_boundary(i) {
+        i -= 1;
+    }
+    &s[..i]
 }
 
 /// Run the gateway command.
@@ -1385,6 +1609,14 @@ pub async fn run(local: bool, extra_args: &[String]) -> Result<()> {
         nemesis_cron::service::CronService::new(&cron_store_path.to_string_lossy()),
     ));
 
+    // Swarm M3（§5.4）：本节点对外 web 基址槽（bind 后 set；G9 起可由
+    // 自愈任务随集群注册表知识更新——多重网卡选对 NIC、DHCP 换 IP 自动
+    // 跟随。dispatch 签发资产 bundle 时经 store 的 AssetSignContext 读取；
+    // 未 set = 基址未解析，签发诚实跳过）。
+    #[cfg(all(feature = "board", feature = "cluster"))]
+    let board_asset_url_slot: nemesis_board::AdvertisedUrl =
+        nemesis_board::AdvertisedUrl::default();
+
     // W2 P1: Managed-agent board store — open (or create) {workspace}/board/board.db.
     // Injected into the web server below; failure logs a warning and leaves the
     // board unavailable (board.* WSAPI commands return "board service not
@@ -1394,6 +1626,11 @@ pub async fn run(local: bool, extra_args: &[String]) -> Result<()> {
         let board_db = home.join("workspace").join("board").join("board.db");
         match nemesis_board::BoardStore::open(&board_db, "NB") {
             Ok(store) => {
+                // Swarm M2: 默认频道（#dev/#qa/#general）幂等种子——首启建，
+                // 已有则 no-op。
+                if let Err(e) = store.ensure_default_channels() {
+                    warn!("[Gateway] Board default channels seed failed: {}", e);
+                }
                 info!("[Gateway] Board store opened at {}", board_db.display());
                 Some(std::sync::Arc::new(store))
             }
@@ -1406,6 +1643,83 @@ pub async fn run(local: bool, extra_args: &[String]) -> Result<()> {
             }
         }
     };
+
+    // Swarm M2: board 维护循环 —— 启动即清扫一次频道消息 + 备份一次
+    // board.db，之后每 24h 重复。频道消息按 `board.discussion.retention_days`
+    // 清扫（0=永久）；备份经 VACUUM INTO 快照到 workspace/backups/
+    // （`board.backup.keep`=0 关闭备份）。
+    #[cfg(feature = "board")]
+    {
+        let maint_cfg = cfg.board.clone().unwrap_or_default();
+        let store_for_maint = board_store.clone();
+        let workspace_dir = home.join("workspace");
+        let db_path_for_maint = workspace_dir.join("board").join("board.db");
+        let backups_dir = nemesis_path::resolve_board_backups_dir_in_workspace(&workspace_dir);
+        tokio::spawn(async move {
+            let mut ticker = tokio::time::interval(std::time::Duration::from_secs(86_400));
+            ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+            loop {
+                ticker.tick().await; // 首 tick 立即返回 = 启动即维护
+                let Some(store) = store_for_maint.as_ref() else {
+                    continue;
+                };
+                let retention = maint_cfg.discussion.retention_days;
+                match store.sweep_channel_messages(retention) {
+                    Ok(0) => {}
+                    Ok(n) => info!(
+                        "[Gateway] Board channel sweep removed {} messages (retention={}d)",
+                        n, retention
+                    ),
+                    Err(e) => warn!("[Gateway] Board channel sweep failed: {}", e),
+                }
+                match nemesis_board::backup::backup_database(
+                    &db_path_for_maint,
+                    &backups_dir,
+                    maint_cfg.backup.keep as usize,
+                ) {
+                    Ok(Some(p)) => info!("[Gateway] Board backup written: {}", p.display()),
+                    Ok(None) => {}
+                    Err(e) => warn!("[Gateway] Board backup failed: {}", e),
+                }
+            }
+        });
+        info!(
+            "[Gateway] Board maintenance loop armed (retention={}d, backup keep={})",
+            maint_cfg.discussion.retention_days, maint_cfg.backup.keep
+        );
+    }
+
+    // Swarm M3: master 侧讨论额度台账（进程内存态，重启清零=诚实边界）。
+    // 配置三闸来自 board.discussion（0=该闸关闭）；经 live 句柄每次判定
+    // 现读——config.json 热改额度即时生效（与 tier/hidden_tools 同语义）。
+    #[cfg(all(feature = "board", feature = "cluster"))]
+    let board_quota: std::sync::Arc<nemesis_board::quota::QuotaLedger> = {
+        let config_handle = config_store.handle();
+        std::sync::Arc::new(nemesis_board::quota::QuotaLedger::with_provider(move || {
+            let guard = config_handle.read();
+            let disc = guard.board.clone().unwrap_or_default().discussion;
+            nemesis_board::quota::QuotaConfig {
+                max_agent_turns_per_thread: disc.max_agent_turns_per_thread,
+                hourly_budget_per_node: disc.hourly_budget_per_node,
+                rate_limit_per_min: disc.rate_limit_per_min,
+            }
+        }))
+    };
+
+    // Swarm M3: 主持人裁决用主 AgentLoop 后置装配桥（nb_bus 注册早于
+    // agent_loop 构建；build 完成后 set()）。
+    #[cfg(all(feature = "board", feature = "cluster"))]
+    let board_moderator_loop: std::sync::Arc<
+        std::sync::OnceLock<std::sync::Arc<nemesis_agent::r#loop::AgentLoop>>,
+    > = std::sync::Arc::new(std::sync::OnceLock::new());
+
+    // Swarm M3（G4/G8）：worker 侧讨论事件入站箱（本节点不是 board 权威
+    // 时创建；board feature 裁剪下恒 None——adapter 不接讨论通道）。
+    #[cfg(feature = "cluster")]
+    #[allow(unused_mut)]
+    let mut board_worker_inbox: Option<
+        std::sync::Arc<crate::cluster_agent::DiscussionInbox>,
+    > = None;
 
     // Opt 2: conversation→WS router, shared between the cron fire handler
     // (lookup, here) and process_messages (bind, in the web server). Built
@@ -1817,6 +2131,49 @@ pub async fn run(local: bool, extra_args: &[String]) -> Result<()> {
         ));
         cluster.set_node_type("agent");
 
+        // Swarm M2: 节点发现 → 自动收编进看板频道（first-join 语义：
+        // 成员在 channel_member 全表零行 = 全新节点才自动入；管理员手动
+        // 调整过的不被 announce 拉回）。role=worker 且 category 含 qa →
+        // #qa，其余 worker → #dev；coordinator / 本节点不入。注册在静态
+        // peers 装载之前 —— 启动时静态对端同样收编。
+        #[cfg(all(feature = "board", feature = "cluster"))]
+        {
+            let store_for_hook = board_store.clone();
+            let self_node_id = cluster.node_id().to_string();
+            cluster.set_on_node_discovered(Arc::new(move |node_id, role, category| {
+                let Some(store) = store_for_hook.as_ref() else {
+                    return;
+                };
+                if node_id == self_node_id || !role.eq_ignore_ascii_case("worker") {
+                    return;
+                }
+                let channel_name = if category.to_lowercase().contains("qa") {
+                    "#qa"
+                } else {
+                    "#dev"
+                };
+                let member = nemesis_board::Actor::agent(node_id);
+                match store.has_any_channel_membership(&member) {
+                    Ok(true) => {} // 已见过的成员：手动调整不被撤销
+                    Ok(false) => match store.get_channel_by_name(channel_name) {
+                        Ok(Some(ch)) => {
+                            if let Err(e) = store.join_channel(ch.id, member) {
+                                warn!("[Gateway] Board auto-join failed: {}", e);
+                            } else {
+                                info!(
+                                    "[Gateway] Board: node {} auto-joined {}",
+                                    node_id, channel_name
+                                );
+                            }
+                        }
+                        Ok(None) => {}
+                        Err(e) => warn!("[Gateway] Board auto-join lookup failed: {}", e),
+                    },
+                    Err(e) => warn!("[Gateway] Board auto-join probe failed: {}", e),
+                }
+            }));
+        }
+
         // Load static peers from peers.toml into the registry
         // The peers.toml uses [peers.Key] table format (not [[peers]] array),
         // so we parse it manually.
@@ -2000,6 +2357,61 @@ pub async fn run(local: bool, extra_args: &[String]) -> Result<()> {
         // --- Inject cluster task queue into cluster for callback routing ---
         cluster.set_cluster_task_queue(cluster_task_list.clone(), cluster_work_queue.clone());
 
+        // --- Swarm M3: nb_bus handler（board 信封协议）---
+        // master 与 worker 同名注册 `nb_bus`，按信封 ns/op 路由；本节点是
+        // master（coordinator 角色 + board_store 在手）才注册上行 op，否则装
+        // worker 侧唤醒通道 + 周期 board.sync 补拉。master 判据必须用集群
+        // 角色：board_store 是全员 open 的（每个节点都有本地 board.db 作
+        // dashboard 视图），拿它当 master 判据会让 worker 注册错 handler、
+        // 唤醒通道成死代码（2026-09-09 UAT T23 根因）。cluster 未启动时
+        // 注册失败静默（register_rpc_handler 要求 running——与 peer_chat
+        // 同款忽略策略），board.sync 兜底语义不受影响。board feature 裁剪
+        // 形态不参与讨论。（dashboard 人工发言桥在下文 board_service 装配
+        // 处接线。）
+        #[cfg(all(feature = "board", feature = "cluster"))]
+        let board_master_armed = board_store.is_some()
+            && matches!(
+                cluster.role().as_str(),
+                "coordinator" | "master" | "manager"
+            );
+        #[cfg(all(feature = "board", feature = "cluster"))]
+        if board_master_armed {
+            let deps = crate::board_bus::MasterBusDeps {
+                store: board_store.clone().expect("board_store checked above"),
+                quota: board_quota.clone(),
+                cluster: cluster.clone(),
+                moderator_loop: board_moderator_loop.clone(),
+            };
+            match cluster.register_rpc_handler(
+                nemesis_cluster::envelope::NB_BUS_ACTION,
+                crate::board_bus::build_master_nb_bus_handler(deps),
+            ) {
+                Ok(()) => info!("[Gateway] Registered nb_bus handler (board envelope protocol)"),
+                Err(e) => warn!("[Gateway] nb_bus handler registration skipped: {}", e),
+            }
+        } else {
+            let inbox = Arc::new(crate::cluster_agent::DiscussionInbox::new());
+            let deps = crate::board_bus::WorkerBusDeps {
+                self_node_id: cluster.node_id().to_string(),
+                node_name: cluster.node_name(),
+                node_role: cluster.role(),
+                node_category: cluster.category(),
+                inbox: inbox.clone(),
+                wake_state: Arc::new(crate::board_bus::WorkerWakeState::load_or_create(
+                    nemesis_path::board_wake_state_path(&home),
+                )),
+            };
+            match cluster.register_rpc_handler(
+                nemesis_cluster::envelope::NB_BUS_ACTION,
+                crate::board_bus::build_worker_nb_bus_handler(deps.clone()),
+            ) {
+                Ok(()) => info!("[Gateway] Registered worker nb_bus handler (board wake channel)"),
+                Err(e) => warn!("[Gateway] worker nb_bus registration skipped: {}", e),
+            }
+            crate::board_bus::spawn_worker_sync_loop(deps, cluster.clone());
+            board_worker_inbox = Some(inbox);
+        }
+
         // --- Register peer_chat handler (needs Arc<Cluster> to register remote nodes) ---
         {
             let handler_ref = handler_arc.clone();
@@ -2152,6 +2564,16 @@ pub async fn run(local: bool, extra_args: &[String]) -> Result<()> {
             // 写回看板。board feature 未编译时占位（拦截整体被 cfg 掉）。
             #[cfg(feature = "board")]
             let board_store_for_cb = board_store.clone();
+            // 交付线程超限汇报落资产需要 workspace 根（层 2 HTTP 资产目录）。
+            #[cfg(all(feature = "board", feature = "cluster"))]
+            let workspace_for_cb = home.join("workspace");
+            // Swarm M4 验收 agent 读 config.json 旗标需要 home 根。
+            #[cfg(all(feature = "board", feature = "cluster"))]
+            let home_for_cb = home.clone();
+            // M4 评审用主 loop 桥槽——闭包外再 clone 一份（原 Arc 稍后
+            // set(agent_loop) 还要用）。
+            #[cfg(all(feature = "board", feature = "cluster"))]
+            let moderator_loop_for_cb = board_moderator_loop.clone();
             #[cfg(not(feature = "board"))]
             #[allow(unused_variables)]
             let board_store_for_cb: Option<()> = None;
@@ -2179,11 +2601,39 @@ pub async fn run(local: bool, extra_args: &[String]) -> Result<()> {
                 // task_id 直接写回看板（结果评论 + 状态推进），且跳过 Route 2
                 // 的 agent 续行（board 派发无续行快照）；TaskManager 状态更新
                 // （Route 3）照常，board 派发也登记了本地 task。
+                // Swarm M4：推进到 in_review 的写回携带评审触发目标，下方
+                // spawn 验收 agent。
                 #[cfg(all(feature = "board", feature = "cluster"))]
-                let is_board_task =
-                    write_back_board_dispatch(&board_store_for_cb, task_id, status, response);
+                let board_writeback = write_back_board_dispatch(
+                    &board_store_for_cb,
+                    &workspace_for_cb,
+                    task_id,
+                    status,
+                    response,
+                );
+                #[cfg(all(feature = "board", feature = "cluster"))]
+                let is_board_task = board_writeback.is_board_task;
                 #[cfg(any(not(feature = "board"), not(feature = "cluster")))]
                 let is_board_task = false;
+
+                // Swarm M4 批作业：in_review 自动验收（三态处置 + FAIL 重派
+                // 保险丝）。依赖集在此快照——moderator 桥槽/board store/
+                // cluster 均为 Arc，评审任务运行时再解引用。
+                #[cfg(all(feature = "board", feature = "cluster"))]
+                if let Some(review_issue_id) = board_writeback.issue_for_review {
+                    crate::board_review::spawn_board_review(
+                        crate::board_review::BoardReviewDeps {
+                            store: board_store_for_cb.clone().expect(
+                                "board writeback armed implies store present",
+                            ),
+                            workspace: workspace_for_cb.clone(),
+                            home: home_for_cb.clone(),
+                            moderator_loop: moderator_loop_for_cb.clone(),
+                            cluster: cluster_for_cb.clone(),
+                        },
+                        review_issue_id,
+                    );
+                }
 
                 // Route 1: Check if this callback belongs to a ClusterAgent child task.
                 // When the ClusterAgent's LLM generates a nested cluster_rpc, the child
@@ -2378,14 +2828,14 @@ pub async fn run(local: bool, extra_args: &[String]) -> Result<()> {
     // start dispatch loop, call agentLoop.SetChannelManager().
 
     // Create WebServer early so we can inject SessionManager into WebChannel.
-    let web_host = {
-        let h = &cfg.channels.web.host;
-        if h == "0.0.0.0" || h.is_empty() {
-            "127.0.0.1".to_string()
-        } else {
-            h.clone()
-        }
-    };
+    // G9：绑定地址与展示地址分离（见 web_bind_and_display_hosts）——集群
+    // 场景 0.0.0.0 如实绑定所有网卡，资产 bundle 广告的 LAN IP 才为真。
+    #[cfg(feature = "cluster")]
+    let web_cluster_starts = cluster_should_start;
+    #[cfg(not(feature = "cluster"))]
+    let web_cluster_starts = false;
+    let (web_bind_host, web_display_host) =
+        web_bind_and_display_hosts(&cfg.channels.web.host, web_cluster_starts);
     let web_port = cfg.channels.web.port;
     let cors_origins = {
         let cors_path = common::cors_config_path(&home);
@@ -2420,7 +2870,7 @@ pub async fn run(local: bool, extra_args: &[String]) -> Result<()> {
     };
     let static_files = crate::embedded::resolve_static_files();
     let web_config = nemesis_web::server::WebServerConfig {
-        listen_addr: format!("{}:{}", web_host, web_port),
+        listen_addr: format!("{}:{}", web_bind_host, web_port),
         auth_token: cfg.channels.web.auth_token.clone(),
         cors_origins,
         ws_path: "/ws".to_string(),
@@ -2878,6 +3328,14 @@ pub async fn run(local: bool, extra_args: &[String]) -> Result<()> {
         }
     }
 
+    // --- Swarm M3: 主持人裁决桥填装（nb_bus 注册早于 agent_loop 构建）---
+    #[cfg(all(feature = "board", feature = "cluster"))]
+    {
+        if board_moderator_loop.set(agent_loop.clone()).is_err() {
+            warn!("[Gateway] Board moderator loop already set");
+        }
+    }
+
     // --- Inject tool capabilities into cluster for discovery broadcast ---
     #[cfg(feature = "cluster")]
     {
@@ -2894,6 +3352,11 @@ pub async fn run(local: bool, extra_args: &[String]) -> Result<()> {
     // --- Create ClusterServiceAdapter (always, for dynamic start/stop from Dashboard) ---
     // The adapter manages: cluster.start(), RPC server start, discovery start,
     // task recovery from disk, cluster agent loop spawn, ClusterRpcTool enable.
+    // 批次 E：dashboard 发言桥要用的 cluster 引用（下方 take() 会把 Arc 消耗
+    // 进 adapter，先抢一份）。
+    #[cfg(all(feature = "board", feature = "cluster"))]
+    let board_discussion_cluster: Option<std::sync::Arc<nemesis_cluster::cluster::Cluster>> =
+        cluster_adapter_refs.as_ref().map(|(c, _, _, _)| c.clone());
     #[cfg(feature = "cluster")]
     {
         if let Some((cluster, task_list, work_queue, result_persister)) =
@@ -2907,6 +3370,7 @@ pub async fn run(local: bool, extra_args: &[String]) -> Result<()> {
                 task_list,
                 work_queue,
                 result_persister,
+                board_worker_inbox.take(),
             ));
             // Only perform first start when both config flags are enabled.
             // Otherwise the adapter is created but idle — can be started from Dashboard.
@@ -2996,7 +3460,7 @@ pub async fn run(local: bool, extra_args: &[String]) -> Result<()> {
         info!("[Gateway] SSE streaming provider configured for /api/chat/stream");
     }
 
-    info!("[Gateway] Web server created for {}:{}", web_host, web_port);
+    info!("[Gateway] Web server created for {}:{}", web_bind_host, web_port);
 
     // Inject agent service into web server for start/stop control
     web_server.set_agent_service(agent_adapter.clone());
@@ -3048,7 +3512,54 @@ pub async fn run(local: bool, extra_args: &[String]) -> Result<()> {
         };
         #[cfg(not(feature = "cluster"))]
         let board_role = nemesis_types::cluster::NodeRole::Coordinator;
-        web_server.set_board(nemesis_board::BoardService::new(store.clone(), board_role));
+        // Swarm M3（§5.4/D6）：资产服务装配——密钥 load-or-create
+        // （<workspace>/config/asset_secret.key；损坏 loud 报错不重置，
+        // 重置=作废全部已签发 token）+ 资产目录 <workspace>/board/assets。
+        // 齐备后本节点就是资产提供方（公开端点 /api/board/asset/{ref} 验
+        // 自己的 secret），worker 产物反走同一条路。签发上下文挂 store
+        // （dispatch 链全部函数持有 store，零参数蔓延）；对外基址槽 bind
+        // 后 set（见下方 real_port 解析处）。
+        let mut board_service = nemesis_board::BoardService::new(store.clone(), board_role);
+        #[cfg(feature = "cluster")]
+        match nemesis_board::asset_token::load_or_create_secret(
+            &nemesis_path::resolve_asset_secret_path_in_workspace(&home.join("workspace")),
+        ) {
+            Ok(secret) => {
+                store.set_asset_signing(nemesis_board::AssetSignContext {
+                    secret: secret.clone(),
+                    node_url: board_asset_url_slot.clone(),
+                });
+                board_service = board_service
+                    .with_asset_secret(secret)
+                    .with_assets_dir(nemesis_path::resolve_board_assets_dir_in_workspace(
+                        &home.join("workspace"),
+                    ));
+                info!("[Gateway] Board asset serving armed (HMAC token endpoint)");
+            }
+            Err(e) => warn!("[Gateway] Board asset serving disabled: {}", e),
+        }
+        #[cfg(not(feature = "cluster"))]
+        let _ = &mut board_service;
+        // Swarm M3 批次 E：dashboard 人工发言桥（board.channel.post → 讨论管
+        // 线）。board+cluster 齐备且本节点持有 board_store（master 形态）时
+        // 注入——幂等/额度/裁决与 worker 上行同一条管线（单一真相）。
+        #[cfg(all(feature = "board", feature = "cluster"))]
+        if let (Some(store), Some(discussion_cluster)) =
+            (board_store.as_ref(), board_discussion_cluster.clone())
+        {
+            board_service = board_service.with_discussion(Arc::new(
+                crate::board_bus::LocalDiscussionIngress {
+                    deps: crate::board_bus::MasterBusDeps {
+                        store: store.clone(),
+                        quota: board_quota.clone(),
+                        cluster: discussion_cluster,
+                        moderator_loop: board_moderator_loop.clone(),
+                    },
+                },
+            ));
+            info!("[Gateway] Board discussion ingress armed (dashboard channel.post → nb_bus pipeline)");
+        }
+        web_server.set_board(board_service);
         info!(
             "[Gateway] Board service injected into web server (role={})",
             board_role.as_role_str()
@@ -3811,12 +4322,80 @@ pub async fn run(local: bool, extra_args: &[String]) -> Result<()> {
             error!("[Gateway] Web server error: {}", e);
         }
     });
-    info!("[Gateway] Web server starting on {}:{}", web_host, web_port);
+    info!("[Gateway] Web server starting on {}:{}", web_bind_host, web_port);
 
     // Wait for the actual bound address (sent immediately after TcpListener::bind)
     let real_port: i64 = match bound_rx.await {
         Ok(addr) => {
             info!("[Gateway] Web server bound to {}", addr);
+            // Swarm M3（§5.4）：对外资产基址落槽。G9（2026-09-09 结构修复）：
+            // ① 只在 socket 真实监听所有网卡（unspecified 绑定）时广告 LAN
+            //   IP；回环绑定如实广告 127.0.0.1——回环绑定 + 广告 LAN IP =
+            //   承诺不可达 URL（G9 病灶）。
+            // ② LAN IP 的选择走集群注册表网段匹配（select_advertised_lan_ip
+            //   ，static peers 此时已入表），并挂 30s 自愈任务——UDP 发现的
+            //   peer 稍后入表、多重网卡/DHCP 换 IP 都自动跟随，bundle 重签
+            //   即走 HTTP 老路。
+            #[cfg(all(feature = "board", feature = "cluster"))]
+            {
+                let lan_ip = cluster_adapter
+                    .as_ref()
+                    .and_then(|ca| select_lan_ip_for_advertisement(ca.cluster()));
+                let host = advertise_host_for(addr.ip(), lan_ip);
+                let base_url = format!("http://{host}:{}", addr.port());
+                board_asset_url_slot.set(base_url.clone());
+                // 落盘一份：board_asset 工具 publish 时读取（跨进程一致）。
+                let url_path = nemesis_path::resolve_asset_node_url_path_in_workspace(
+                    &home.join("workspace"),
+                );
+                if let Some(parent) = url_path.parent() {
+                    let _ = std::fs::create_dir_all(parent);
+                }
+                if let Err(e) = std::fs::write(&url_path, &base_url) {
+                    warn!("[Gateway] asset node url persist failed: {}", e);
+                }
+
+                // G9 自愈：每 30s 按最新注册表重算对外基址，变化才更新槽与
+                // 落盘（UDP 发现的 peer 入表 / 本机 IP 变化后 bundle 广告
+                // 自动修正）。槽是可更新句柄（AdvertisedUrl），刷新无碍
+                // dispatch 签发链。
+                let heal_slot = board_asset_url_slot.clone();
+                let heal_home = home.clone();
+                let heal_port = addr.port();
+                let heal_adapter = cluster_adapter.clone();
+                tokio::spawn(async move {
+                    let mut ticker = tokio::time::interval(std::time::Duration::from_secs(30));
+                    ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+                    ticker.tick().await; // 首个 tick 立即返回，跳过（bind 刚算过）
+                    loop {
+                        ticker.tick().await;
+                        let Some(ref ca) = heal_adapter else {
+                            continue;
+                        };
+                        let cluster = ca.cluster();
+                        if !cluster.is_running() {
+                            continue;
+                        }
+                        let host = select_lan_ip_for_advertisement(cluster)
+                            .unwrap_or_else(|| "127.0.0.1".to_string());
+                        let base_url = format!("http://{host}:{heal_port}");
+                        if heal_slot.get().as_deref() == Some(base_url.as_str()) {
+                            continue;
+                        }
+                        heal_slot.set(base_url.clone());
+                        let url_path = nemesis_path::resolve_asset_node_url_path_in_workspace(
+                            &heal_home.join("workspace"),
+                        );
+                        if let Some(parent) = url_path.parent() {
+                            let _ = std::fs::create_dir_all(parent);
+                        }
+                        let _ = std::fs::write(&url_path, &base_url);
+                        info!(
+                            "[Gateway] Asset base url healed: {base_url} (cluster registry changed)"
+                        );
+                    }
+                });
+            }
             addr.port() as i64
         }
         Err(_) => {
@@ -3838,7 +4417,7 @@ pub async fn run(local: bool, extra_args: &[String]) -> Result<()> {
             nemesis_path::resolve_gateway_state_path_in_workspace(&common::workspace_path(&home));
         let state_json = serde_json::json!({
             "pid": std::process::id(),
-            "web_host": web_host,
+            "web_host": web_display_host,
             "web_port": real_port,
         });
         if let Err(e) = std::fs::write(&state_path, state_json.to_string()) {
@@ -3872,13 +4451,13 @@ pub async fn run(local: bool, extra_args: &[String]) -> Result<()> {
     }
 
     // Step 20: Compute display URLs (real_port already resolved via oneshot in Step 17)
-    let _web_url = format!("http://{}:{}", web_host, real_port);
-    let _chat_url = format!("http://{}:{}/chat/", web_host, real_port);
+    let _web_url = format!("http://{}:{}", web_display_host, real_port);
+    let _chat_url = format!("http://{}:{}/chat/", web_display_host, real_port);
 
     // Step 21: Print startup banner
     let enabled_channels = count_enabled_channels(&cfg);
     print_gateway_banner(
-        &web_host,
+        &web_display_host,
         real_port,
         &cfg.channels.web.auth_token,
         enabled_channels,
@@ -3887,7 +4466,7 @@ pub async fn run(local: bool, extra_args: &[String]) -> Result<()> {
     );
 
     // Verify web server is listening
-    let listen_addr = format!("{}:{}", web_host, real_port);
+    let listen_addr = format!("{}:{}", web_display_host, real_port);
     println!("  Checking web server on {}...", listen_addr);
     match tokio::net::TcpStream::connect(&listen_addr).await {
         Ok(_) => println!("  OK Web server is listening"),
@@ -4012,7 +4591,7 @@ pub async fn run(local: bool, extra_args: &[String]) -> Result<()> {
     {
         #[cfg(all(feature = "desktop", not(target_os = "android")))]
         let pm = Arc::clone(&process_manager);
-        let url = format!("http://{}:{}", web_host, real_port);
+        let url = format!("http://{}:{}", web_display_host, real_port);
         let token = cfg.channels.web.auth_token.clone();
         let mut rx = internal_cmd_rx;
         // (BUG #31, quality-hardening goal 冲刺 S11e) `nemesisbot shutdown`

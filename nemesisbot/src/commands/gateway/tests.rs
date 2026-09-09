@@ -4217,13 +4217,14 @@ fn test_writeback_success_moves_to_in_review_with_result_comment() {
     std::fs::create_dir_all(&dir).unwrap();
     let store = dispatched_store(&dir, "task-ok");
 
-    let is_board = write_back_board_dispatch(
+    let board_writeback = write_back_board_dispatch(
         &Some(store.clone()),
+        &dir,
         "task-ok",
         "success",
         "改完了，产物在 foo.rs",
     );
-    assert!(is_board, "dispatched task must be recognized as board task");
+    assert!(board_writeback.is_board_task, "dispatched task must be recognized as board task");
 
     // 状态推进 in_progress → in_review（等 coordinator 验收）。
     let issue = store.get_issue_by_number("NB-1").unwrap();
@@ -4251,9 +4252,9 @@ fn test_writeback_error_keeps_in_progress_with_failure_comment() {
     std::fs::create_dir_all(&dir).unwrap();
     let store = dispatched_store(&dir, "task-err");
 
-    let is_board =
-        write_back_board_dispatch(&Some(store.clone()), "task-err", "error", "编译失败：…");
-    assert!(is_board);
+    let board_writeback =
+        write_back_board_dispatch(&Some(store.clone()), &dir, "task-err", "error", "编译失败：…");
+    assert!(board_writeback.is_board_task);
 
     // 失败留在 in_progress（不推 in_review），失败评论留痕。
     let issue = store.get_issue_by_number("NB-1").unwrap();
@@ -4278,17 +4279,19 @@ fn test_writeback_duplicate_callback_is_idempotent() {
 
     assert!(write_back_board_dispatch(
         &Some(store.clone()),
+        &dir,
         "task-dup",
         "success",
         "第一份"
-    ));
+    ).is_board_task);
     // 重复回调：仍识别为 board 任务（跳过续行），但不重复写评论/转移。
     assert!(write_back_board_dispatch(
         &Some(store.clone()),
+        &dir,
         "task-dup",
         "success",
         "第一份"
-    ));
+    ).is_board_task);
 
     let issue = store.get_issue_by_number("NB-1").unwrap();
     assert_eq!(issue.status, nemesis_board::IssueStatus::InReview);
@@ -4315,17 +4318,289 @@ fn test_writeback_non_board_and_unavailable_store() {
     let store = dispatched_store(&dir, "task-x");
     assert!(!write_back_board_dispatch(
         &Some(store.clone()),
+        &dir,
         "other-task",
         "success",
         "…"
-    ));
+    ).is_board_task);
     assert!(!write_back_board_dispatch(
         &Some(store.clone()),
+        &dir,
         "",
         "success",
         "…"
-    ));
+    ).is_board_task);
     // store 未注入 → 恒 false。
-    assert!(!write_back_board_dispatch(&None, "task-x", "success", "…"));
+    assert!(!write_back_board_dispatch(
+        &None,
+        &dir,
+        "task-x",
+        "success",
+        "…"
+    ).is_board_task);
     let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[cfg(all(feature = "board", feature = "cluster"))]
+#[test]
+fn test_writeback_structured_report_becomes_delivery_comment() {
+    let dir = std::env::temp_dir().join(format!(
+        "nemesisbot-gw-writeback-deliv-{}",
+        std::process::id()
+    ));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let store = dispatched_store(&dir, "task-deliv");
+
+    let response = "\
+好的，任务完成，以下是我的汇报：
+
+## 结论
+完成。修复了登录超时的 bug。
+
+## 交付物清单
+- branch: fix/login-timeout
+- commits: abc1234
+
+## 自检结果
+1. 超时用例通过 ✅
+2. 回归无超时 ✅
+
+## 风险与未尽事项
+无";
+
+    let board_writeback = write_back_board_dispatch(
+        &Some(store.clone()),
+        &dir,
+        "task-deliv",
+        "success",
+        response,
+    );
+    assert!(board_writeback.is_board_task);
+
+    // 交付线程首评：ctype=Delivery + 内容原样（M4 验收 agent 同源解析，
+    // 不加 ✅ 前缀破坏格式）。
+    let issue = store.get_issue_by_number("NB-1").unwrap();
+    assert_eq!(issue.status, nemesis_board::IssueStatus::InReview);
+    let comments = store.list_comments(issue.id).unwrap();
+    let delivery = comments
+        .iter()
+        .find(|c| matches!(c.ctype, nemesis_board::CommentType::Delivery))
+        .expect("structured report must produce a delivery comment");
+    assert_eq!(delivery.content, response, "verbatim, no ✅ prefix");
+    assert_eq!(delivery.author.kind, "agent");
+    assert_eq!(delivery.author.id, "node-b");
+    assert!(
+        !comments.iter().any(|c| c.content.starts_with("✅")),
+        "structured report must not also produce a degraded comment"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[cfg(all(feature = "board", feature = "cluster"))]
+#[test]
+fn test_writeback_oversized_report_overflows_to_asset() {
+    let dir = std::env::temp_dir().join(format!(
+        "nemesisbot-gw-writeback-big-{}",
+        std::process::id()
+    ));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    // node url 文件就位（gateway bind 后落盘的同一份）→ 引用束可签发。
+    let url_path = nemesis_path::resolve_asset_node_url_path_in_workspace(&dir);
+    std::fs::create_dir_all(url_path.parent().unwrap()).unwrap();
+    std::fs::write(&url_path, "http://127.0.0.1:46920").unwrap();
+
+    let store = dispatched_store(&dir, "task-big");
+
+    // >64KB 的结构化汇报（ASCII 填充段保证 64KB 切在字符边界上）。
+    let pad = "x".repeat(70 * 1024);
+    let response = format!(
+        "## 结论\n完成。\n\n## 交付物清单\n- big-output.txt（{pad}）\n\n## 自检结果\n全部通过。\n\n## 风险与未尽事项\n无"
+    );
+    assert!(response.len() > 64 * 1024);
+
+    let board_writeback = write_back_board_dispatch(
+        &Some(store.clone()),
+        &dir,
+        "task-big",
+        "success",
+        &response,
+    );
+    assert!(board_writeback.is_board_task);
+
+    let issue = store.get_issue_by_number("NB-1").unwrap();
+    let comments = store.list_comments(issue.id).unwrap();
+    let delivery = comments
+        .iter()
+        .find(|c| matches!(c.ctype, nemesis_board::CommentType::Delivery))
+        .expect("oversized structured report still produces a delivery comment");
+
+    // 截断内联：前 64KB 原样 + 截断注记 + 引用束。
+    assert!(
+        delivery.content.starts_with(&response[..64 * 1024]),
+        "first 64KB must be inlined verbatim"
+    );
+    assert!(delivery.content.contains("全文下载引用"));
+    assert!(delivery.content.contains("http://127.0.0.1:46920"));
+
+    // 全文落资产：索引登记 + 磁盘文件字节一致。
+    let sha = nemesis_board::sha256_bytes(response.as_bytes());
+    let ref_name = format!("delivery-{}", &sha[..8]);
+    let asset = store
+        .lookup_asset(&ref_name)
+        .expect("lookup asset")
+        .expect("asset registered");
+    assert_eq!(asset.sha256, sha);
+    assert_eq!(asset.size, response.len() as i64);
+    let asset_path = nemesis_path::resolve_board_assets_dir_in_workspace(&dir).join(&ref_name);
+    assert_eq!(std::fs::read(&asset_path).unwrap(), response.as_bytes());
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+// -------------------------------------------------------------------------
+// G9（2026-09-09）：web host 绑定/展示分离 + 资产基址广告诚实化
+// -------------------------------------------------------------------------
+
+#[test]
+fn test_web_hosts_default_config_cluster_on_binds_all() {
+    // 用户裁决后的默认集群流：host 0.0.0.0 + 集群启动 → 如实绑定所有网卡
+    // （bundle 广告的 LAN IP 为真），展示地址仍是可进地址栏的回环。
+    let (bind, display) = web_bind_and_display_hosts("0.0.0.0", true);
+    assert_eq!(bind, "0.0.0.0");
+    assert_eq!(display, "127.0.0.1");
+
+    // 空 host 等价 0.0.0.0。
+    let (bind, display) = web_bind_and_display_hosts("", true);
+    assert_eq!(bind, "0.0.0.0");
+    assert_eq!(display, "127.0.0.1");
+}
+
+#[test]
+fn test_web_hosts_default_config_cluster_off_stays_loopback() {
+    // 单机场景：维持保守回环绑定（dashboard 不无谓暴露局域网）。
+    let (bind, display) = web_bind_and_display_hosts("0.0.0.0", false);
+    assert_eq!(bind, "127.0.0.1");
+    assert_eq!(display, "127.0.0.1");
+}
+
+#[test]
+fn test_web_hosts_explicit_host_wins_both_scenarios() {
+    // 显式配置 host 恒如实生效（node-a 既有部署 host=LAN IP 不受影响）。
+    for cluster_starts in [true, false] {
+        let (bind, display) = web_bind_and_display_hosts("192.168.137.1", cluster_starts);
+        assert_eq!(bind, "192.168.137.1");
+        assert_eq!(display, "192.168.137.1");
+    }
+    let (bind, _) = web_bind_and_display_hosts(" 127.0.0.1 ", true);
+    assert_eq!(bind, "127.0.0.1", "空白环绕的 host 应 trim");
+}
+
+#[test]
+fn test_advertise_host_unspecified_bind_gets_lan_ip() {
+    // 绑定 0.0.0.0 = 真实监听所有网卡 → 广告 LAN IP 为真承诺。
+    assert_eq!(
+        advertise_host_for(
+            std::net::IpAddr::from([0, 0, 0, 0]),
+            Some("192.168.137.1".to_string())
+        ),
+        "192.168.137.1"
+    );
+    // IPv6 unspecified 同语义。
+    assert_eq!(
+        advertise_host_for(
+            std::net::IpAddr::from([0u16; 8]),
+            Some("192.168.137.1".to_string())
+        ),
+        "192.168.137.1"
+    );
+    // 拿不到 LAN IP（纯回环机）→ 回落 127.0.0.1，不编造。
+    assert_eq!(
+        advertise_host_for(std::net::IpAddr::from([0, 0, 0, 0]), None),
+        "127.0.0.1"
+    );
+}
+
+#[test]
+fn test_advertise_host_loopback_bind_is_honest() {
+    // G9 病灶回归锁：回环绑定必须如实广告 127.0.0.1——绝不再谎报
+    // LAN IP（旧逻辑回环绑定也替换成 LAN IP = 承诺不可达 URL）。
+    assert_eq!(
+        advertise_host_for(
+            std::net::IpAddr::from([127, 0, 0, 1]),
+            Some("192.168.137.1".to_string())
+        ),
+        "127.0.0.1"
+    );
+    // 显式网卡绑定同样如实。
+    assert_eq!(
+        advertise_host_for(
+            std::net::IpAddr::from([10, 0, 0, 5]),
+            Some("192.168.137.1".to_string())
+        ),
+        "10.0.0.5"
+    );
+}
+
+#[test]
+fn test_select_advertised_lan_ip_prefers_peer_subnet() {
+    // 多重网卡机器：get_all_local_ips 首猜是虚拟适配器（10.x），但集群
+    // peer 在 192.168.137.x 网段 → 应选同网段的本机 IP。
+    let local = vec![
+        "10.103.174.241".to_string(),
+        "192.168.137.1".to_string(),
+        "127.0.0.1".to_string(),
+    ];
+    // 注册表地址是纯 ip:port 形态（handle_discovered_node / 静态 peers 同）。
+    let peers = vec!["192.168.137.237:21953".to_string()];
+    assert_eq!(
+        select_advertised_lan_ip(&local, &peers),
+        Some("192.168.137.1".to_string())
+    );
+}
+
+#[test]
+fn test_select_advertised_lan_ip_falls_back_to_first_non_loopback() {
+    // 无 peer 信号（注册表还空着）→ 回落首猜（旧行为，不做更差的猜测）。
+    let local = vec![
+        "10.103.174.241".to_string(),
+        "192.168.137.1".to_string(),
+    ];
+    assert_eq!(
+        select_advertised_lan_ip(&local, &[]),
+        Some("10.103.174.241".to_string())
+    );
+    // 全是回环 → None（调用方回落 127.0.0.1）。
+    assert_eq!(
+        select_advertised_lan_ip(&["127.0.0.1".to_string()], &[]),
+        None
+    );
+}
+
+#[test]
+fn test_select_advertised_lan_ip_skips_malformed_entries() {
+    // IPv6 / 残缺地址不炸也不参与匹配，回退链仍成立。
+    let local = vec!["fe80::1".to_string(), "192.168.1.5".to_string()];
+    let peers = vec!["[::1]:21952".to_string(), "no-port".to_string()];
+    assert_eq!(
+        select_advertised_lan_ip(&local, &peers),
+        Some("fe80::1".to_string())
+    );
+    // peer 在 192.168.1.x → 命中同网段 v4。
+    let peers2 = vec!["192.168.1.99:21953".to_string()];
+    assert_eq!(
+        select_advertised_lan_ip(&local, &peers2),
+        Some("192.168.1.5".to_string())
+    );
+}
+
+#[test]
+fn test_select_advertised_lan_ip_ignores_self_lookalike_hosts() {
+    // peer 地址解析只取 host 段（host:port），残缺输入安全跳过。
+    let local = vec!["192.168.137.1".to_string()];
+    let peers = vec![":".to_string(), "192.168.137.237:21953".to_string()];
+    assert_eq!(
+        select_advertised_lan_ip(&local, &peers),
+        Some("192.168.137.1".to_string())
+    );
 }

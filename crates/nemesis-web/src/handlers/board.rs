@@ -173,21 +173,67 @@ fn build_new_issue(data: &serde_json::Value, actor: Actor) -> Result<NewIssue, S
 /// worker 端按普通任务 prompt 走自己的 agent（工具/安全层照常生效），
 /// 结尾固定要求结果汇报——最终回复是唯一回传渠道（经 callback 写回看板）。
 #[cfg(feature = "cluster")]
-fn build_dispatch_prompt(issue: &nemesis_board::Issue) -> String {
+/// 汇报格式五段真相源在 nemesis-board::report（交付线程首评 / M4 验收
+/// agent 同源解析；此处只引用）。
+use nemesis_board::report::REPORT_FORMAT_SECTION;
+
+/// 派发提示词（impl-plan §3.3 结构化 PRD 模板）：背景/验收/交付物要求/
+/// 汇报格式五段。description 是自由文本（人写）或结构化分段（planner 写），
+/// 原文放「背景」段不做二次加工。唯一调用方 dispatch_issue_core（cluster），
+/// 同 cfg 门控（REPORT_FORMAT_SECTION 是 cluster-only const）。
+#[cfg(feature = "cluster")]
+/// `review_feedback`（Swarm M4）：FAIL 重派时验收 agent 的差距意见，渲染
+/// 成「上轮验收意见」段——worker 必须知道为什么被打回，否则重派就是掷
+/// 骰子（§6.1 检视 2）。首派传 `None`。
+/// `experience_section`（Swarm M4.5）：团队过往经验注入段（注入端已渲染），
+/// 无匹配传 `None`——不塞空段，保持提示词字节与无经验时一致。
+fn build_dispatch_prompt(
+    issue: &nemesis_board::Issue,
+    assets_section: Option<&str>,
+    review_feedback: Option<&str>,
+    experience_section: Option<&str>,
+) -> String {
     let mut p = format!("# 看板任务 {}\n\n## 标题\n{}\n", issue.number, issue.title);
-    if !issue.description.trim().is_empty() {
-        p.push_str(&format!("\n## 描述\n{}\n", issue.description));
-    }
-    if let Some(ac) = issue.acceptance_criteria.as_deref()
-        && !ac.trim().is_empty()
+    p.push_str(&format!(
+        "\n## 背景\n{}\n",
+        if issue.description.trim().is_empty() {
+            "（未提供）"
+        } else {
+            issue.description.trim()
+        }
+    ));
+    p.push_str(&format!(
+        "\n## 验收标准\n{}\n",
+        match issue.acceptance_criteria.as_deref().map(str::trim) {
+            Some(ac) if !ac.is_empty() => ac,
+            _ => "（未提供——完成判据以背景描述为准，无法客观判定时在自检结果中说明）",
+        }
+    ));
+    // Swarm M4（§6.1 检视 2）：重派上下文延续——上轮验收差距原文随包走。
+    if let Some(feedback) = review_feedback
+        && !feedback.trim().is_empty()
     {
-        p.push_str(&format!("\n## 验收标准\n{}\n", ac));
+        p.push_str(&format!("\n## 上轮验收意见（本次重派原因，必须针对性整改）\n{}\n", feedback.trim()));
+    }
+    // Swarm M3（§5.4 层 1）：issue 名下资产随包走（引用+签名 token；
+    // 内容对端按需 HTTP 拉）。
+    if let Some(section) = assets_section {
+        p.push_str(section);
+    }
+    // Swarm M4.5（§6.5.2）：scope 匹配的团队经验随包走（经验段是参考，
+    // 不是验收标准——提示词里写明）。
+    if let Some(section) = experience_section {
+        p.push_str(section);
     }
     p.push_str(
-        "\n## 要求\n\
-         完成后在最终回复中汇报：做了什么、改动/产物在哪、结果如何。\n\
-         最终回复会原样写回看板任务，是唯一回传渠道。\n",
+        "\n## 交付物要求\n\
+         - 列出所有改动/新建文件的完整路径\n\
+         - 涉及代码产出时给出 branch 名与 commit 列表（如适用）\n",
     );
+    p.push_str(&format!(
+        "\n## 汇报格式（最终回复必须严格按以下五段组织，标题原样保留）\n{REPORT_FORMAT_SECTION}\n\n\
+         最终回复会原样写回看板任务，是唯一回传渠道。\n"
+    ));
     p
 }
 
@@ -224,15 +270,68 @@ async fn issue_dispatch(
     };
 
     let cluster = ctx.state.cluster.clone();
-    let out = dispatch_issue_core(store, cluster.as_ref(), id, &target, &actor)?;
+    let out = dispatch_issue_core(store, cluster.as_ref(), id, &target, &actor, None)?;
     Ok(Some(out))
+}
+
+/// dispatch prompt 的「## 任务资产」段渲染（Swarm M3 §5.4 层 1）。签发
+/// 上下文挂 store（gateway 装配 set 一次）——未注入 / issue 无资产逐级
+/// 诚实降级为 None。
+#[cfg(feature = "cluster")]
+fn render_dispatch_assets_section(
+    store: &Arc<BoardStore>,
+    issue_id: i64,
+) -> Result<Option<String>, String> {
+    let Some(signing) = store.asset_signing() else {
+        return Ok(None);
+    };
+    let assets = store.assets_for_issue(issue_id)?;
+    Ok(nemesis_board::render_assets_section(
+        &signing,
+        &assets,
+        nemesis_board::DEFAULT_TOKEN_TTL_SECS,
+    ))
+}
+
+/// 派发经验注入的检索（M4.5 §6.5.2）：查库（滤 deprecated）→ scope 对
+/// 任务文本（标题+描述+验收标准）与 required_tags 匹配 → top-N。返回
+/// （渲染好的注入段, 命中条目 id——发车成功后由调用方计 use_count）。
+/// 查库失败诚实降级为无注入（经验是增值段，任何异常都不阻断派发主线）。
+#[cfg(feature = "cluster")]
+fn render_issue_experience_section(
+    store: &Arc<BoardStore>,
+    issue: &nemesis_board::Issue,
+) -> (Option<String>, Vec<i64>) {
+    let entries = match store.list_team_memory(None, false) {
+        Ok(v) => v,
+        Err(e) => {
+            tracing::warn!("[Board] team_memory 读取失败，派发跳过经验注入：{e}");
+            return (None, Vec::new());
+        }
+    };
+    let issue_text = format!(
+        "{}\n{}\n{}",
+        issue.title,
+        issue.description,
+        issue.acceptance_criteria.as_deref().unwrap_or("")
+    );
+    let hits = nemesis_board::match_experiences(
+        &entries,
+        &issue_text,
+        &issue.required_tags,
+        nemesis_board::MAX_MATCHED_EXPERIENCES,
+    );
+    let ids: Vec<i64> = hits.iter().map(|e| e.id).collect();
+    (nemesis_board::render_dispatch_experience_section(&hits), ids)
 }
 
 /// 派发核心（W2 P4 从 `issue_dispatch` 提取，cluster 编译时）：状态/重复
 /// 派发闸 → 登记 task + 派发绑定 → 推进 in_progress → fire-and-forget 发
 /// peer_chat RPC。`issue.dispatch`（WSAPI）与 gateway 的 autopilot 定时
 /// 触发共用（单一真相源）。`cluster` 传 `None` 时本地闸先行、集群缺失
-/// 最后报（校验矩阵不依赖集群实例，可单测）。
+/// 最后报（校验矩阵不依赖集群实例，可单测）。`review_feedback`（Swarm
+/// M4）为 FAIL 重派专用——验收差距渲染进 dispatch prompt「上轮验收意见」
+/// 段；常规派发传 `None`。
 #[cfg(feature = "cluster")]
 pub fn dispatch_issue_core(
     store: &Arc<BoardStore>,
@@ -240,6 +339,7 @@ pub fn dispatch_issue_core(
     issue_id: i64,
     target: &str,
     actor: &Actor,
+    review_feedback: Option<&str>,
 ) -> Result<serde_json::Value, String> {
     let issue = store.get_issue(issue_id)?;
 
@@ -261,7 +361,15 @@ pub fn dispatch_issue_core(
     // 派发 = 给远端 worker 发 peer_chat，集群必需。
     let cluster = cluster.ok_or("集群未运行，无法派发（issue.dispatch 需要集群）")?;
 
-    let prompt = build_dispatch_prompt(&issue);
+    // M4.5：经验注入段在 prompt 组装前检索（命中计数待发车成功后落）。
+    let (experience_section, experience_ids) = render_issue_experience_section(store, &issue);
+
+    let prompt = build_dispatch_prompt(
+        &issue,
+        render_dispatch_assets_section(store, issue.id)?.as_deref(),
+        review_feedback,
+        experience_section.as_deref(),
+    );
 
     // 1. 登记本地 task（与 dashboard peer_chat 同契约），拿 task_id。
     //    worker 端会话键 = cluster_rpc:{source}/board:{number}：同 issue 多次
@@ -280,6 +388,13 @@ pub fn dispatch_issue_core(
         "board",
         &chat_id,
     )?;
+
+    // M4.5：注入计数只认实际发车的派发（提交失败不计 use_count）。
+    if !experience_ids.is_empty()
+        && let Err(e) = store.mark_team_memory_used(&experience_ids)
+    {
+        tracing::warn!("[Board] team_memory use_count 更新失败（不影响派发）：{e}");
+    }
 
     // 2. 登记派发绑定（peer_chat_callback 的写回路由键）+ 审计活动。
     store.insert_dispatch(&task_id, issue.id, target, actor)?;
@@ -354,6 +469,487 @@ async fn issue_dispatch(
     _data: Option<serde_json::Value>,
 ) -> Result<Option<serde_json::Value>, String> {
     Err("issue.dispatch 需要集群支持（cluster feature 未编译）".to_string())
+}
+
+// ---------------------------------------------------------------------------
+// Swarm M1：issue.plan 两段式 AI 拆解 + 依赖补派（2026-09-09 swarm-goal §1）
+//
+// 两段式：`issue.plan {id}`（confirm 缺省/false）异步跑 planner（裸提示词
+// detached LLM 调用，无人格/零工具），产出推送 `board.plan_ready` /
+// `board.plan_failed`（SSE/WS push），返回 plan_id；`issue.plan {id,
+// plan_id, confirm:true}` 取缓存落库（parent/required_*/origin=planner）
+// + 批内依赖边（序号→真实 id 映射）+ 依赖闸派发波 + 父单联动。
+// ---------------------------------------------------------------------------
+
+/// plan 预览缓存条目（一段产出 → 二段确认的中间态）。
+#[cfg(feature = "cluster")]
+struct PlanPreview {
+    issue_id: i64,
+    subs: Vec<nemesis_board::PlannedSubIssue>,
+    created_at: std::time::Instant,
+}
+
+/// plan 预览缓存（plan_id → 预览）。模块级 static 而非 AppState 字段：
+/// AppState 在全库有大量字面构造测试点，加字段是断点级改动；缓存是本
+/// handler 私有的进程内运行态，单例语义。插入时惰性清过期条目（无后台
+/// 清扫任务）。
+#[cfg(feature = "cluster")]
+static PLAN_CACHE: std::sync::LazyLock<
+    parking_lot::Mutex<std::collections::HashMap<String, PlanPreview>>,
+> = std::sync::LazyLock::new(|| parking_lot::Mutex::new(std::collections::HashMap::new()));
+
+/// 预览有效期：确认发车须在 10 分钟内，过期重拆（防陈旧 plan 覆盖用户
+/// 在预览期间对父单的手工编辑）。
+#[cfg(feature = "cluster")]
+const PLAN_TTL: std::time::Duration = std::time::Duration::from_secs(600);
+
+/// planner LLM 编排（一段）：裸提示词 detached 调用（max_turns=1 单轮出
+/// JSON）→ `parse_plan` 失败带 [`nemesis_board::build_retry_prompt`] 回灌
+/// 重试 ≤2 次（首跑 + 2 次自纠）。纯编排：提示词/解析/校验真相源在
+/// nemesis-board::planner。`team_experience`（M4.5）是 meta 级经验注入
+/// （调用方检索渲染后传入，空 = 不注入）。
+#[cfg(feature = "cluster")]
+async fn run_planner(
+    agent_loop: &Arc<nemesis_agent::r#loop::AgentLoop>,
+    parent: &nemesis_board::Issue,
+    team_experience: Vec<String>,
+) -> Result<Vec<nemesis_board::PlannedSubIssue>, String> {
+    let mut prompt = nemesis_board::build_planner_user_prompt(
+        &parent.title,
+        &parent.description,
+        parent.acceptance_criteria.as_deref(),
+        &team_experience,
+    );
+    let mut last_err = String::new();
+    for _ in 0..=2 {
+        let raw = agent_loop
+            .run_detached(
+                &prompt,
+                nemesis_agent::r#loop::DetachedOpts {
+                    system_prompt: Some(nemesis_board::PLANNER_SYSTEM_PROMPT),
+                    no_tools: true,
+                    max_turns: 1,
+                    label: Some("board-planner"),
+                    ..Default::default()
+                },
+            )
+            .await?;
+        match nemesis_board::parse_plan(&raw) {
+            Ok(subs) => return Ok(subs),
+            Err(e) => {
+                prompt = nemesis_board::build_retry_prompt(&raw, &e);
+                last_err = e.message;
+            }
+        }
+    }
+    Err(format!("planner 连续 3 次输出无法解析：{last_err}"))
+}
+
+/// `issue.plan` 实现（cluster 编译时）：一段异步拆解 / 二段确认落库+派发波。
+#[cfg(feature = "cluster")]
+async fn issue_plan(
+    store: &Arc<BoardStore>,
+    actor: Actor,
+    ctx: &RequestContext,
+    data: Option<serde_json::Value>,
+) -> Result<Option<serde_json::Value>, String> {
+    let data = data.ok_or("missing data")?;
+    let id = data
+        .get("id")
+        .and_then(|v| v.as_i64())
+        .ok_or("missing field: id")?;
+    let issue = store.get_issue(id)?;
+
+    if data.get("confirm").and_then(|v| v.as_bool()).unwrap_or(false) {
+        // ---- 二段：确认发车（缓存一次性消费）----
+        let plan_id = get_str(&data, "plan_id")?.to_string();
+        let preview = {
+            let mut cache = PLAN_CACHE.lock();
+            match cache.remove(plan_id.as_str()) {
+                Some(p) if p.issue_id == id && p.created_at.elapsed() <= PLAN_TTL => p,
+                Some(p) => {
+                    // 与该 issue 不匹配 → 放回（可能是用户在别的 issue
+                    // 表单里贴错了 plan_id，不应误伤那个在途预览）。
+                    cache.insert(plan_id.clone(), p);
+                    return Err("plan 与该 issue 不匹配，请重新拆解".to_string());
+                }
+                None => {
+                    return Err("plan_id 不存在或已被消费（每个 plan 只能确认一次）".to_string());
+                }
+            }
+        };
+        let cluster = ctx.state.cluster.clone();
+        let out = confirm_plan(store, cluster.as_ref(), &issue, preview.subs, &actor)?;
+        Ok(Some(out))
+    } else {
+        // ---- 一段：异步拆解（重复点按钮 = 重复 LLM 消耗，新 plan_id
+        //      覆盖旧预览；结果幂等——confirm 以 plan_id 定位）----
+        let agent_loop = ctx
+            .state
+            .agent_loop
+            .read()
+            .clone()
+            .ok_or("agent 未运行，无法执行 AI 拆解")?;
+        // M4.5：planner 的 meta 级经验注入——spawn 前同步检索渲染（发起
+        // 点定格，避免长 LLM 调用期间的经验变更串进本次拆解）。meta 注入
+        // 不计 use_count（计数只认面向 worker 的派发注入）。
+        let team_experience: Vec<String> = {
+            let entries = store.list_team_memory(None, false).unwrap_or_default();
+            let issue_text = format!(
+                "{}\n{}\n{}",
+                issue.title,
+                issue.description,
+                issue.acceptance_criteria.as_deref().unwrap_or("")
+            );
+            let hits = nemesis_board::match_experiences(
+                &entries,
+                &issue_text,
+                &issue.required_tags,
+                nemesis_board::MAX_MATCHED_EXPERIENCES,
+            );
+            nemesis_board::render_planner_experience_strings(&hits)
+        };
+        let plan_id = format!("plan-{}", uuid::Uuid::new_v4());
+        let hub = ctx.state.event_hub.clone();
+        let plan_id_for_task = plan_id.clone();
+        tokio::spawn(async move {
+            let started = std::time::Instant::now();
+            match run_planner(&agent_loop, &issue, team_experience).await {
+                Ok(subs) => {
+                    let count = subs.len();
+                    {
+                        let mut cache = PLAN_CACHE.lock();
+                        cache.retain(|_, p| p.created_at.elapsed() <= PLAN_TTL);
+                        cache.insert(
+                            plan_id_for_task.clone(),
+                            PlanPreview {
+                                issue_id: issue.id,
+                                subs: subs.clone(),
+                                created_at: std::time::Instant::now(),
+                            },
+                        );
+                    }
+                    tracing::info!(
+                        "[Board] planner done issue={} subs={count} ({}ms)",
+                        issue.id,
+                        started.elapsed().as_millis()
+                    );
+                    hub.publish(
+                        "board.plan_ready",
+                        serde_json::json!({
+                            "plan_id": plan_id_for_task,
+                            "issue_id": issue.id,
+                            "subs": subs,
+                        }),
+                    );
+                }
+                Err(e) => {
+                    tracing::warn!("[Board] planner failed issue={}: {e}", issue.id);
+                    hub.publish(
+                        "board.plan_failed",
+                        serde_json::json!({ "issue_id": issue.id, "error": e }),
+                    );
+                }
+            }
+        });
+        Ok(Some(
+            serde_json::json!({ "status": "planning", "plan_id": plan_id }),
+        ))
+    }
+}
+
+/// `issue.plan`（未编译 cluster）：planner 产物的派发语义（required_* 匹配、
+/// 依赖补派波）全依赖集群。
+#[cfg(not(feature = "cluster"))]
+async fn issue_plan(
+    _store: &Arc<BoardStore>,
+    _actor: Actor,
+    _ctx: &RequestContext,
+    _data: Option<serde_json::Value>,
+) -> Result<Option<serde_json::Value>, String> {
+    Err("issue.plan 需要集群支持（cluster feature 未编译）".to_string())
+}
+
+/// 二段确认：预览 → 落库（parent/required_*/origin=planner）→ 依赖边
+/// （批内序号 → 真实 id）→ 依赖闸派发波（无依赖的立即派，其余留 backlog
+/// 等补派触发器）→ 父单联动。单张派发失败不回滚整批（落库已成事实），
+/// 系统评论留痕继续。
+#[cfg(feature = "cluster")]
+fn confirm_plan(
+    store: &Arc<BoardStore>,
+    cluster: Option<&Arc<nemesis_cluster::cluster::Cluster>>,
+    parent: &nemesis_board::Issue,
+    subs: Vec<nemesis_board::PlannedSubIssue>,
+    actor: &Actor,
+) -> Result<serde_json::Value, String> {
+    // 1) 落库（保持批内顺序；id_by_idx 供依赖映射）。
+    let mut id_by_idx: Vec<i64> = Vec::with_capacity(subs.len());
+    for sub in &subs {
+        let ac = sub.acceptance_criteria.trim();
+        let role = sub.required_role.trim();
+        let created = store.create_issue(nemesis_board::NewIssue {
+            title: sub.title.clone(),
+            description: sub.description.clone(),
+            acceptance_criteria: (!ac.is_empty()).then(|| ac.to_string()),
+            parent_issue_id: Some(parent.id),
+            required_role: (!role.is_empty()).then(|| role.to_string()),
+            required_tags: sub.required_tags.clone(),
+            origin: Some(nemesis_board::TaskOrigin {
+                origin_type: "planner".to_string(),
+                origin_id: parent.number.clone(),
+            }),
+            creator: actor.clone(),
+            ..nemesis_board::NewIssue::default()
+        })?;
+        id_by_idx.push(created.id);
+    }
+
+    // 2) 依赖边（批内序号 → 真实 id；越界 parse_plan 已挡，防御再钳一次）。
+    for (idx, sub) in subs.iter().enumerate() {
+        let deps: Vec<i64> = sub
+            .depends_on
+            .iter()
+            .filter(|&&d| d < id_by_idx.len() && d != idx)
+            .map(|&d| id_by_idx[d])
+            .collect();
+        store.set_issue_dependencies(id_by_idx[idx], &deps)?;
+    }
+
+    // 3) 派发波：依赖闸放行的立即派，其余留 backlog 等补派触发器。
+    let mut dispatched = 0usize;
+    let mut deferred: Vec<i64> = Vec::new();
+    for &cid in &id_by_idx {
+        match dispatch_subissue_auto(store, cluster, cid, actor) {
+            Ok(Some(_)) => dispatched += 1,
+            Ok(None) => deferred.push(cid),
+            Err(e) => {
+                tracing::warn!("[Board] 子单 {cid} 自动派发失败：{e}");
+                let _ = store.add_comment(nemesis_board::NewComment {
+                    issue_id: cid,
+                    author: nemesis_board::Actor::system("board"),
+                    content: format!("⛔ 自动派发失败：{e}"),
+                    parent_id: None,
+                    ctype: nemesis_board::CommentType::System,
+                });
+            }
+        }
+    }
+
+    // 4) 父单联动（首派 → in_progress 已在 dispatch_subissue_auto 内处理）。
+    let _ = sync_parent_status(store, parent.id, actor);
+
+    Ok(serde_json::json!({
+        "created": id_by_idx,
+        "dispatched": dispatched,
+        "deferred": deferred,
+        "issue": issue_to_view(store, &store.get_issue(parent.id)?)?,
+    }))
+}
+
+/// 子单自动派发（依赖闸 + 匹配器选节点；confirm 派发波与补派触发器共用
+/// ——单一真相源）。返回：`Ok(Some(out))` 已派出；`Ok(None)` 暂缓（非待派
+/// 状态 / 已有在途派发 / 依赖未满足 / 无匹配节点——后者落系统评论留痕）；
+/// `Err` 硬错误（集群缺失、派发核心失败）。
+#[cfg(feature = "cluster")]
+pub fn dispatch_subissue_auto(
+    store: &Arc<BoardStore>,
+    cluster: Option<&Arc<nemesis_cluster::cluster::Cluster>>,
+    issue_id: i64,
+    actor: &Actor,
+) -> Result<Option<serde_json::Value>, String> {
+    let issue = store.get_issue(issue_id)?;
+
+    // 状态闸：只自动派待派态（planner 产物落 backlog；用户预排的 todo
+    // 也算）。在途/已收口/阻塞的单不动。
+    if !matches!(issue.status, IssueStatus::Backlog | IssueStatus::Todo) {
+        return Ok(None);
+    }
+    // 已有在途派发（人工先派过）→ 不重复。
+    if store.has_active_dispatch(issue.id)? {
+        return Ok(None);
+    }
+    // 依赖闸：全部依赖 done 才派；否则留待补派触发器。
+    for dep_id in store.dependencies_of(issue.id)? {
+        if store.get_issue(dep_id)?.status != IssueStatus::Done {
+            return Ok(None);
+        }
+    }
+
+    // 目标解析：显式 worker 指派 > 匹配器。
+    let target = match (&issue.assignee, &issue.assignee_id) {
+        (Some(AssignmentType::Worker), Some(wid)) => wid.clone(),
+        _ => {
+            let cluster = cluster.ok_or("集群未运行，无法自动派发")?;
+            match pick_target_by_matcher(store, cluster, &issue) {
+                Some(t) => t,
+                None => {
+                    // 诚实留痕：不悄悄留 backlog。
+                    store.add_comment(nemesis_board::NewComment {
+                        issue_id: issue.id,
+                        author: nemesis_board::Actor::system("board"),
+                        content: "⏸ 自动派发暂缓：当前在线节点无可匹配（角色/标签）节点；节点上线或要求调整后随依赖补派自动重试".to_string(),
+                        parent_id: None,
+                        ctype: nemesis_board::CommentType::System,
+                    })?;
+                    return Ok(None);
+                }
+            }
+        }
+    };
+
+    let out = dispatch_issue_core(store, cluster, issue.id, &target, actor, None)?;
+
+    // 父单联动：首张子单派出 → 父单 backlog/todo → in_progress。
+    if let Some(pid) = issue.parent_issue_id
+        && let Ok(parent) = store.get_issue(pid)
+        && matches!(parent.status, IssueStatus::Backlog | IssueStatus::Todo)
+    {
+        store.transition_issue(pid, IssueStatus::InProgress, actor)?;
+    }
+    Ok(Some(out))
+}
+
+/// 匹配器选节点：在线节点（不含本机）→ PeerCandidate 适配 →
+/// [`nemesis_board::rank_peers`] 取榜首。M1 诚实降级：per-peer tags 未进
+/// 节点注册表（announce 带了但 handle_discovered_node 未存），category 是
+/// 当前唯一的节点粒度标签，适配为 `tags := [category]`；节点角色词表只有
+/// worker/coordinator，planner 给的其他角色词（如 "qa"）转标签语义与
+/// category 匹配。M3 统一信封扩节点画像后此处换真数据，matcher 纯函数不动。
+#[cfg(feature = "cluster")]
+fn pick_target_by_matcher(
+    store: &BoardStore,
+    cluster: &nemesis_cluster::cluster::Cluster,
+    issue: &nemesis_board::Issue,
+) -> Option<String> {
+    let peers = cluster.get_online_peers_excluding_self();
+    if peers.is_empty() {
+        return None;
+    }
+    let candidates: Vec<nemesis_board::PeerCandidate> = peers
+        .iter()
+        .map(|p| nemesis_board::PeerCandidate {
+            id: p.base.id.clone(),
+            name: p.base.name.clone(),
+            role: match p.base.role {
+                nemesis_types::cluster::NodeRole::Coordinator => "coordinator",
+                nemesis_types::cluster::NodeRole::Worker => "worker",
+            }
+            .to_string(),
+            tags: {
+                let c = p.base.category.trim();
+                if c.is_empty() {
+                    Vec::new()
+                } else {
+                    vec![c.to_string()]
+                }
+            },
+            capabilities: p.capabilities.clone(),
+        })
+        .collect();
+
+    // required_role 归一：角色词表外的词转标签语义（进 required_tags）。
+    let (required_role, required_tags) = match issue.required_role.as_deref().map(str::trim) {
+        Some(r) if !r.is_empty() && r != "worker" && r != "coordinator" => {
+            let mut tags = issue.required_tags.clone();
+            tags.push(r.to_string());
+            (None, tags)
+        }
+        Some(r) if !r.is_empty() => (Some(r), issue.required_tags.clone()),
+        _ => (None, issue.required_tags.clone()),
+    };
+
+    let load = store.count_active_dispatch_by_worker().unwrap_or_default();
+    let input = nemesis_board::MatchInput {
+        required_role,
+        required_tags: &required_tags,
+        description: &issue.description,
+    };
+    nemesis_board::rank_peers(&input, &candidates, &load)
+        .into_iter()
+        .next()
+        .map(|(id, _)| id)
+}
+
+/// 父单状态联动：子单全部 done → 父单 in_review；任一子单 cancelled →
+/// 父单 in_review + 系统评论标注缺口（人工裁决重开或取消）。backlog/todo
+/// 先推 in_progress（状态机不允许跨列）。终态父单与无子单的 issue 不动。
+#[cfg(feature = "cluster")]
+pub fn sync_parent_status(
+    store: &Arc<BoardStore>,
+    parent_id: i64,
+    actor: &Actor,
+) -> Result<(), String> {
+    let parent = store.get_issue(parent_id)?;
+    if parent.status.is_terminal() {
+        return Ok(());
+    }
+    let children = store.list_children(parent_id)?;
+    if children.is_empty() {
+        return Ok(());
+    }
+    let all_done = children.iter().all(|c| c.status == IssueStatus::Done);
+    let any_cancelled = children.iter().any(|c| c.status == IssueStatus::Cancelled);
+    if !all_done && !any_cancelled {
+        return Ok(());
+    }
+
+    // backlog/todo 不能直接进 in_review，先垫 in_progress。
+    if matches!(parent.status, IssueStatus::Backlog | IssueStatus::Todo) {
+        store.transition_issue(parent_id, IssueStatus::InProgress, actor)?;
+    }
+    if all_done {
+        if parent.status != IssueStatus::InReview {
+            store.transition_issue(parent_id, IssueStatus::InReview, actor)?;
+        }
+    } else if parent.status != IssueStatus::InReview {
+        store.transition_issue(parent_id, IssueStatus::InReview, actor)?;
+        let gap: Vec<String> = children
+            .iter()
+            .filter(|c| c.status != IssueStatus::Done)
+            .map(|c| format!("{}（{}）", c.number, c.status))
+            .collect();
+        store.add_comment(nemesis_board::NewComment {
+            issue_id: parent_id,
+            author: nemesis_board::Actor::system("board"),
+            content: format!(
+                "⚠ 子任务存在未完成项，父任务收口进评审等待人工裁决：{}",
+                gap.join("、")
+            ),
+            parent_id: None,
+            ctype: nemesis_board::CommentType::System,
+        })?;
+    }
+    Ok(())
+}
+
+/// 子单落定（done/cancelled）后的联动 = M1 补派触发器 + 父单收口：扫
+/// dependents 中依赖已满足的待派子单补派（`dispatch_subissue_auto` 自带
+/// 状态/在途/依赖闸），随后父单状态联动。错误只 warn 不上抛（联动是
+/// 附加动作，不阻断落定本身）。接线点：WSAPI `issue.status` / `issue.move`
+/// 落到 done/cancelled 时（CLI 直写 store 不经此路径——M1 已知边界）。
+#[cfg(feature = "cluster")]
+pub fn on_issue_settled(
+    store: &Arc<BoardStore>,
+    cluster: Option<&Arc<nemesis_cluster::cluster::Cluster>>,
+    issue_id: i64,
+    actor: &Actor,
+) {
+    if let Ok(issue) = store.get_issue(issue_id)
+        && let Some(pid) = issue.parent_issue_id
+        && let Err(e) = sync_parent_status(store, pid, actor)
+    {
+        tracing::warn!("[Board] 父单 {pid} 联动失败：{e}");
+    }
+    match store.dependents_of(issue_id) {
+        Ok(deps) => {
+            for dep_id in deps {
+                if let Err(e) = dispatch_subissue_auto(store, cluster, dep_id, actor) {
+                    tracing::warn!("[Board] 补派子单 {dep_id} 失败：{e}");
+                }
+            }
+        }
+        Err(e) => tracing::warn!("[Board] dependents_of({issue_id}) 查询失败：{e}"),
+    }
 }
 
 /// `issue.cancel` 实现（cluster 编译时，W2 P4 per-task cancel）：终结进行中
@@ -500,7 +1096,7 @@ fn auto_dispatch_with_config(
     let Some(target) = issue.assignee_id.clone() else {
         return false;
     };
-    match dispatch_issue_core(store, cluster, issue.id, &target, actor) {
+    match dispatch_issue_core(store, cluster, issue.id, &target, actor, None) {
         Ok(_) => {
             tracing::info!(
                 "[Board] auto-dispatch: issue #{} → {target}（board.auto_dispatch）",
@@ -595,7 +1191,7 @@ pub fn fire_autopilot(
         None
     } else {
         Some(
-            dispatch_issue_core(store, cluster, issue.id, &target, actor)
+            dispatch_issue_core(store, cluster, issue.id, &target, actor, None)
                 .map_err(|e| format!("issue #{} 已创建但派发失败: {e}", issue.number))?,
         )
     };
@@ -781,6 +1377,7 @@ impl ModuleHandler for BoardHandler {
             "issue.move",
             "issue.dispatch",
             "issue.cancel",
+            "issue.plan",
             "autopilot.list",
             "autopilot.create",
             "autopilot.update",
@@ -801,6 +1398,9 @@ impl ModuleHandler for BoardHandler {
             "inbox.list",
             "inbox.mark_read",
             "attachment.list",
+            "channel.list",
+            "channel.messages",
+            "channel.post",
             "stats",
         ]
     }
@@ -892,6 +1492,11 @@ impl ModuleHandler for BoardHandler {
                     .ok_or("missing field: id")?;
                 let to = parse_status(&data)?;
                 let issue = store.transition_issue(id, to, &actor)?;
+                // M1 补派触发器 + 父单收口（子单落定后联动；错误只 warn）。
+                #[cfg(feature = "cluster")]
+                if matches!(to, IssueStatus::Done | IssueStatus::Cancelled) {
+                    on_issue_settled(&store, ctx.state.cluster.as_ref(), id, &actor);
+                }
                 Ok(Some(
                     serde_json::json!({ "changed": true, "issue": issue_to_view(&store, &issue)? }),
                 ))
@@ -910,6 +1515,11 @@ impl ModuleHandler for BoardHandler {
                     .and_then(|v| v.as_i64())
                     .ok_or("missing field: position")?;
                 let issue = store.move_issue(id, to, position, &actor)?;
+                // M1 补派触发器 + 父单收口（跨列拖到 done/cancelled 同样落定）。
+                #[cfg(feature = "cluster")]
+                if matches!(to, IssueStatus::Done | IssueStatus::Cancelled) {
+                    on_issue_settled(&store, ctx.state.cluster.as_ref(), id, &actor);
+                }
                 Ok(Some(
                     serde_json::json!({ "moved": true, "issue": issue_to_view(&store, &issue)? }),
                 ))
@@ -922,6 +1532,10 @@ impl ModuleHandler for BoardHandler {
             // task_cancel 让 worker abort。赢竞态才动账（worker 恰好回报则
             // 拒绝取消，issue 保持写回的状态）。
             "issue.cancel" => issue_cancel(&store, actor, ctx, data).await,
+            // AI 拆解（Swarm M1）：confirm 缺省/false = 异步跑 planner（返回
+            // plan_id，结果经 board.plan_ready/failed push）；confirm:true =
+            // 按 plan_id 落库 + 依赖闸派发波 + 父单联动。
+            "issue.plan" => issue_plan(&store, actor, ctx, data).await,
             // --- autopilot（W2 P4 定时派活）---
             "autopilot.list" => {
                 let autopilots = store.list_autopilots()?;
@@ -1241,6 +1855,61 @@ impl ModuleHandler for BoardHandler {
                     .ok_or("missing field: issue_id")?;
                 let attachments = store.list_attachments(issue_id)?;
                 Ok(Some(serde_json::json!({ "attachments": attachments })))
+            }
+            // --- channel（Swarm M3 批次 E：讨论频道）---
+            "channel.list" => {
+                let channels = store.list_channels()?;
+                Ok(Some(serde_json::json!({ "channels": channels })))
+            }
+            "channel.messages" => {
+                let data = data.ok_or("missing data")?;
+                let channel_id = data
+                    .get("channel_id")
+                    .and_then(|v| v.as_i64())
+                    .ok_or("missing field: channel_id")?;
+                let after_id = data
+                    .get("after_id")
+                    .and_then(|v| v.as_i64())
+                    .unwrap_or(0);
+                let limit = data
+                    .get("limit")
+                    .and_then(|v| v.as_u64())
+                    .unwrap_or(200)
+                    .clamp(1, 500) as i64;
+                let messages = store.list_channel_messages(channel_id, after_id, limit)?;
+                Ok(Some(serde_json::json!({ "messages": messages })))
+            }
+            "channel.post" => {
+                let data = data.ok_or("missing data")?;
+                // 发言走 master 讨论管线（幂等/额度三闸/裁决投递与 worker
+                // 上行同源）；桥未装配 = 讨论总线不可用，诚实拒绝。
+                let ingress = ctx
+                    .state
+                    .board
+                    .as_ref()
+                    .and_then(|svc| svc.discussion())
+                    .ok_or("讨论总线未装配（需要 board+cluster feature 且 gateway 运行中）")?;
+                let channel_id = data
+                    .get("channel_id")
+                    .and_then(|v| v.as_i64())
+                    .ok_or("missing field: channel_id")?;
+                let content = get_str(&data, "content")?;
+                if content.trim().is_empty() {
+                    return Err("content must not be empty".to_string());
+                }
+                let reply_to = data.get("reply_to").and_then(|v| v.as_i64());
+                let kind_tag = get_opt_str(&data, "kind_tag").unwrap_or_else(|| "text".to_string());
+                let client_msg_id = format!("dash-{}", uuid::Uuid::new_v4());
+                let posted = ingress.post(
+                    &actor,
+                    nemesis_board::models::thread_kind::CHANNEL,
+                    channel_id,
+                    &client_msg_id,
+                    &content,
+                    reply_to,
+                    &kind_tag,
+                )?;
+                Ok(Some(serde_json::json!({ "posted": posted })))
             }
             "stats" => {
                 let counts = store.count_by_status()?;

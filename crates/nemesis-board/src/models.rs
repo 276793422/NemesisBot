@@ -75,13 +75,18 @@ impl std::fmt::Display for IssueStatus {
     }
 }
 
-/// 评论类型：普通评论 / 状态变更痕迹 / 系统写入（autopilot、回流等）。
+/// 评论类型：普通评论 / 状态变更痕迹 / 系统写入（autopilot、回流等）；
+/// M3 扩展：讨论发言 / 提问 / 交付物回流（信封 `board.comment.post` 的
+/// `mtype` 与之对应）。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum CommentType {
     Comment,
     StatusChange,
     System,
+    Discussion,
+    Question,
+    Delivery,
 }
 
 impl CommentType {
@@ -90,6 +95,9 @@ impl CommentType {
             CommentType::Comment => "comment",
             CommentType::StatusChange => "status_change",
             CommentType::System => "system",
+            CommentType::Discussion => "discussion",
+            CommentType::Question => "question",
+            CommentType::Delivery => "delivery",
         }
     }
 
@@ -99,6 +107,9 @@ impl CommentType {
             "comment" => Some(CommentType::Comment),
             "status_change" => Some(CommentType::StatusChange),
             "system" => Some(CommentType::System),
+            "discussion" => Some(CommentType::Discussion),
+            "question" => Some(CommentType::Question),
+            "delivery" => Some(CommentType::Delivery),
             _ => None,
         }
     }
@@ -169,6 +180,12 @@ pub struct Issue {
     pub acceptance_criteria: Option<String>,
     /// 来源（autopilot/cron/channel/...；MVP 仅记录，不做路由）。
     pub origin: Option<TaskOrigin>,
+    /// Swarm M1（planner 拆解）：派发需求角色（匹配器硬条件；None=不限）。
+    #[serde(default)]
+    pub required_role: Option<String>,
+    /// Swarm M1：派发需求标签（匹配器硬条件；空=不限）。
+    #[serde(default)]
+    pub required_tags: Vec<String>,
     pub created_at: i64,
     pub updated_at: i64,
 }
@@ -306,6 +323,9 @@ pub struct NewIssue {
     pub due_date: Option<i64>,
     pub acceptance_criteria: Option<String>,
     pub origin: Option<TaskOrigin>,
+    /// Swarm M1（planner 拆解）：派发需求角色/标签（None/空 = 不限）。
+    pub required_role: Option<String>,
+    pub required_tags: Vec<String>,
 }
 
 impl Default for NewIssue {
@@ -322,6 +342,8 @@ impl Default for NewIssue {
             due_date: None,
             acceptance_criteria: None,
             origin: None,
+            required_role: None,
+            required_tags: Vec::new(),
         }
     }
 }
@@ -428,6 +450,178 @@ pub struct AutopilotPatch {
     pub project_id: Option<i64>,
     pub target: Option<String>,
     pub enabled: Option<bool>,
+}
+
+// ---------------------------------------------------------------------------
+// 讨论频道 + 任务资产（Swarm M2 本地保存；impl-plan §4.1/§4.2）
+// ---------------------------------------------------------------------------
+
+/// 频道消息种类词表（`channel_message.mtype`）。M2 先立两态；M3 信封落地
+/// 后按需扩展（如 delivery 回流卡）。
+pub mod channel_message_type {
+    /// 普通发言。
+    pub const TEXT: &str = "text";
+    /// 系统消息（入频道/离队/派发播报等，不参与发言配额）。
+    pub const SYSTEM: &str = "system";
+}
+
+/// 线程种类词表（`seq_ledger.thread_kind` + wake 包 `thread.kind` 共用）。
+pub mod thread_kind {
+    /// issue 评论线程。
+    pub const ISSUE: &str = "issue";
+    /// 频道讨论线程。
+    pub const CHANNEL: &str = "channel";
+}
+
+/// 讨论频道（表 `channel`；`name` 含 `#` 前缀存储，如 `#dev`）。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Channel {
+    pub id: i64,
+    pub name: String,
+    #[serde(default)]
+    pub topic: String,
+    pub created_at: i64,
+}
+
+/// 建频道的输入（[`crate::BoardStore::create_channel`]）。
+#[derive(Debug, Clone)]
+pub struct NewChannel {
+    pub name: String,
+    pub topic: String,
+}
+
+/// 频道成员（表 `channel_member`；成员是多态 Actor——agent 节点 / admin 人）。
+/// `last_seen_message_id` 是未读游标：`list_messages(after_id)` 补拉与前端
+/// 翻页共用同一语义。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ChannelMember {
+    pub channel_id: i64,
+    pub member: crate::assignment::Actor,
+    pub last_seen_message_id: i64,
+}
+
+/// 频道消息（表 `channel_message`；`parent_id` 引用同频道内消息构成线程）。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ChannelMessage {
+    pub id: i64,
+    pub channel_id: i64,
+    pub sender: crate::assignment::Actor,
+    pub content: String,
+    pub parent_id: Option<i64>,
+    /// [`channel_message_type`] 词表。
+    pub mtype: String,
+    pub created_at: i64,
+}
+
+/// 发频道消息的输入（[`crate::BoardStore::append_channel_message`]）。
+#[derive(Debug, Clone)]
+pub struct NewChannelMessage {
+    pub channel_id: i64,
+    pub sender: crate::assignment::Actor,
+    pub content: String,
+    pub parent_id: Option<i64>,
+    /// 空串 = [`channel_message_type::TEXT`]。
+    pub mtype: String,
+}
+
+/// 任务资产索引（表 `asset`；实体落 `workspace/board/assets/<ref>`，库只存
+/// 索引——引用与内容分离的本地侧，impl-plan §4.2）。不设 TTL：随所属 issue
+/// 删除级联清理（多 issue 引用同一 ref 时最后一个解绑才删盘）。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct BoardAsset {
+    pub id: i64,
+    /// 全局唯一引用名（如 `a3f9…-report.md`；M3 信封里以 asset_ref 流转）。
+    pub ref_name: String,
+    pub origin_issue: Option<i64>,
+    pub sha256: String,
+    pub size: i64,
+    /// 相对 `workspace/board/assets/` 的落盘文件名（= ref）。
+    pub path: String,
+    pub created_at: i64,
+}
+
+/// 登记资产的输入（[`crate::BoardStore::register_asset`]；实体文件由调用方
+/// 先落盘，store 只记索引）。
+#[derive(Debug, Clone)]
+pub struct NewAsset {
+    pub ref_name: String,
+    pub origin_issue: Option<i64>,
+    pub sha256: String,
+    pub size: i64,
+}
+
+/// seq 台账行（表 `seq_ledger`；`board.sync` 补拉返回的统一形状——issue
+/// 评论与频道消息混排，`seq` 是 master 单调序号，worker 的补拉游标）。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct LedgerEntry {
+    pub seq: i64,
+    /// [`thread_kind::ISSUE`] 或 [`thread_kind::CHANNEL`]。
+    pub thread_kind: String,
+    /// issue id 或 channel id。
+    pub thread_id: i64,
+    /// 原表行 id（comment.id / channel_message.id）。
+    pub message_id: i64,
+    pub sender_type: String,
+    pub sender_id: String,
+    pub content: String,
+    pub parent_id: Option<i64>,
+    /// comment.ctype / channel_message.mtype。
+    pub kind_tag: String,
+    pub created_at: i64,
+}
+
+/// `post_discussion_envelope` 的结果：首次落库（is_new=true，携带新行 id
+/// 与 seq）或重复请求（is_new=false，response 为缓存的首响 JSON）。
+#[derive(Debug, Clone)]
+pub struct PostedMessage {
+    pub is_new: bool,
+    pub message_id: i64,
+    pub seq: i64,
+    pub response: serde_json::Value,
+}
+
+/// 经验类别词表（team_memory.category 约定值；M4.5 §6.5.1）。落库不强制
+/// 枚举校验（评审 agent 提示词引导四类，词表外值诚实原样存）。
+pub mod team_memory_category {
+    /// 坑——踩过的雷/避免的做法。
+    pub const PITFALL: &str = "pitfall";
+    /// 模式——可复用的做法。
+    pub const PATTERN: &str = "pattern";
+    /// 约定——团队约定/规范。
+    pub const CONVENTION: &str = "convention";
+    /// 偏好——工具/风格偏好。
+    pub const PREFERENCE: &str = "preference";
+}
+
+/// 团队经验条目（表 `team_memory`；M4.5 §6.5.1 schema）。
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct TeamMemoryEntry {
+    pub id: i64,
+    /// [`team_memory_category`] 词表。
+    pub category: String,
+    /// 检索键：模块/技术栈标签（注入匹配按 scope 与任务文本比对）。
+    pub scope: String,
+    pub content: String,
+    /// 来源任务编号（如 NB-7）。
+    pub source: String,
+    /// 蒸馏者（验收 agent 节点 id）。
+    pub author: String,
+    /// 被注入次数（衰减依据；重复经验并进旧条目时 +1）。
+    pub use_count: i64,
+    /// 软删标记（旧经验与实际冲突 → 标记不覆盖，§6.5.4）。
+    pub deprecated: bool,
+    /// Unix 秒。
+    pub created_at: i64,
+}
+
+/// 新经验条目（验收蒸馏路径的唯一写入口参数）。
+#[derive(Debug, Clone)]
+pub struct NewTeamMemory {
+    pub category: String,
+    pub scope: String,
+    pub content: String,
+    pub source: String,
+    pub author: String,
 }
 
 #[cfg(test)]

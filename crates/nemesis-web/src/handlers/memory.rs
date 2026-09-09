@@ -6,8 +6,8 @@
 //!           model.install
 
 use crate::handlers::{
-    get_opt_bool_loud, get_opt_str_loud, get_opt_u64_loud, read_workspace_file, require_home,
-    require_workspace, resolve_path, write_workspace_file,
+    get_opt_bool_loud, get_opt_str, get_opt_str_loud, get_opt_u64_loud, read_workspace_file,
+    require_home, require_workspace, resolve_path, write_workspace_file,
 };
 use crate::ws_router::{ModuleHandler, RequestContext};
 use std::collections::HashSet;
@@ -16,6 +16,18 @@ use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
 
 pub struct MemoryHandler;
+
+/// team_memory 命令的 store 取用（M4.5：team_memory 表在 master board.db，
+/// 由 gateway 装配注入；board 服务缺席时诚实报错）。
+fn require_team_memory_store(
+    ctx: &RequestContext,
+) -> Result<std::sync::Arc<nemesis_board::BoardStore>, String> {
+    ctx.state
+        .board
+        .as_ref()
+        .map(|svc| svc.store().clone())
+        .ok_or_else(|| "board service not available".to_string())
+}
 
 #[async_trait::async_trait]
 impl ModuleHandler for MemoryHandler {
@@ -43,6 +55,10 @@ impl ModuleHandler for MemoryHandler {
             "model.install",
             "vector.status",
             "vector.search",
+            "team.list",
+            "team.search",
+            "team.remove",
+            "team.set_deprecated",
         ]
     }
 
@@ -134,6 +150,50 @@ impl ModuleHandler for MemoryHandler {
                 let data = data.ok_or("missing data")?;
                 let tier = crate::handlers::get_str(&data, "tier")?;
                 self.model_install(&config_dir, &tier, ctx).await
+            }
+
+            // --- Swarm M4.5：团队经验（team_memory 表，master board.db）---
+            "team.list" => {
+                let store = require_team_memory_store(ctx)?;
+                let scope = data.as_ref().and_then(|d| get_opt_str(d, "scope"));
+                let include_deprecated = data
+                    .as_ref()
+                    .and_then(|d| d.get("include_deprecated"))
+                    .and_then(|v| v.as_bool())
+                    .unwrap_or(false);
+                let entries = store.list_team_memory(scope.as_deref(), include_deprecated)?;
+                Ok(Some(serde_json::json!({ "entries": entries, "total": entries.len() })))
+            }
+            "team.search" => {
+                let store = require_team_memory_store(ctx)?;
+                let data = data.ok_or("missing data")?;
+                let query = crate::handlers::get_str(&data, "query")?;
+                let entries = store.search_team_memory(&query)?;
+                Ok(Some(serde_json::json!({ "entries": entries, "total": entries.len() })))
+            }
+            "team.remove" => {
+                let store = require_team_memory_store(ctx)?;
+                let data = data.ok_or("missing data")?;
+                let id = data
+                    .get("id")
+                    .and_then(|v| v.as_i64())
+                    .ok_or("missing field: id")?;
+                store.remove_team_memory(id)?;
+                Ok(Some(serde_json::json!({ "removed": true, "id": id })))
+            }
+            "team.set_deprecated" => {
+                let store = require_team_memory_store(ctx)?;
+                let data = data.ok_or("missing data")?;
+                let id = data
+                    .get("id")
+                    .and_then(|v| v.as_i64())
+                    .ok_or("missing field: id")?;
+                let deprecated = data
+                    .get("deprecated")
+                    .and_then(|v| v.as_bool())
+                    .unwrap_or(true);
+                store.set_team_memory_deprecated(id, deprecated)?;
+                Ok(Some(serde_json::json!({ "updated": true, "id": id, "deprecated": deprecated })))
             }
 
             // --- Legacy (kept for compatibility) ---

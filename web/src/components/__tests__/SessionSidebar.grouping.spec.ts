@@ -240,7 +240,8 @@ describe('SessionSidebar 双分组 (L6++ G5)', () => {
     w.unmount()
 
     // 确认路径：文案钉死 + removeProject 调用 + 落孤儿组。
-    const confirmSpy = vi.fn(() => true)
+    // 签名带参（实现忽略参数值）：TS 才允许 inspect calls[0][0]（TS2493）。
+    const confirmSpy = vi.fn((_message?: string) => true)
     vi.stubGlobal('confirm', confirmSpy)
     w = await mountWith([{ id: 'x', firstMessage: 'P1 会话', projectId: 'p1' }], [P1])
     header = w.findAll('.group-header')[0]

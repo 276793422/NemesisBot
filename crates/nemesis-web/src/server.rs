@@ -658,7 +658,13 @@ impl WebServer {
             // L4 会话分享（2026-09-07）：公开只读端点。**故意不过
             // verify_token** —— token 即凭据（分享链接发给无凭据的接收方），
             // 未知/撤销/会话已删一律 404；见 crate::share 模块头。
-            .route("/api/share/{token}", get(crate::share::handle_api_share));
+            .route("/api/share/{token}", get(crate::share::handle_api_share))
+            // Swarm M3（§5.4/D6）：看板资产下载——公开端点（asset_token 即
+            // 凭据，不认 dashboard token；token 随引用走，见 handlers/board_asset）。
+            .route(
+                "/api/board/asset/{ref}",
+                get(crate::handlers::board_asset::handle_board_asset_download),
+            );
 
         // L8 PTY 内嵌终端端点（terminal feature 门控；config
         // terminal.enabled 运行闸 + token 闸在 handler 内）。
@@ -893,7 +899,7 @@ impl WebServer {
 // ---------------------------------------------------------------------------
 
 /// Determine Content-Type for a static file path.
-fn content_type_for(path: &str) -> String {
+pub(crate) fn content_type_for(path: &str) -> String {
     let ext = path.rsplit('.').next().unwrap_or("").to_lowercase();
     let ct = match ext.as_str() {
         "html" | "htm" => "text/html; charset=utf-8",

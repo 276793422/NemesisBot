@@ -4,7 +4,7 @@
 use rusqlite::Connection;
 use std::path::Path;
 
-const SCHEMA_VERSION: i32 = 4;
+const SCHEMA_VERSION: i32 = 8;
 
 const SCHEMA_V1: &str = r#"
 CREATE TABLE IF NOT EXISTS board_meta (
@@ -151,6 +151,129 @@ CREATE TABLE IF NOT EXISTS autopilot (
 );
 "#;
 
+/// v5（Swarm M1 任务拆解）：issue 加 planner 派发需求两列（角色/标签，
+/// JSON 数组落 TEXT）+ 批内依赖表（补派触发器双向查询：dependents_of /
+/// dependencies_of 都走索引，不用 JSON LIKE）。ALTER 只在 user_version
+/// 升 5 时执行一次，新旧库统一路径。
+const SCHEMA_V5: &str = r#"
+ALTER TABLE issue ADD COLUMN required_role TEXT;
+ALTER TABLE issue ADD COLUMN required_tags TEXT;
+
+CREATE TABLE IF NOT EXISTS issue_dependency (
+    issue_id   INTEGER NOT NULL REFERENCES issue(id),
+    depends_on INTEGER NOT NULL REFERENCES issue(id),
+    PRIMARY KEY (issue_id, depends_on)
+);
+
+CREATE INDEX IF NOT EXISTS idx_issue_dependency_dep ON issue_dependency(depends_on);
+"#;
+
+/// v6（Swarm M2 本地保存）：讨论频道三表 + 任务资产索引。全部
+/// CREATE TABLE IF NOT EXISTS（幂等，旧库 ALTER-free）。设计：
+/// `docs/PLAN/2026-09-09_swarm-impl-plan.md` §4.1。
+///  - `channel_member.last_seen_message_id` 是未读游标：补拉与前端翻页
+///    共用同一 after_id 语义。
+///  - `channel_message.mtype`：text / system（M3 信封落地后扩展）。
+///  - `asset` 只存索引（ref/sha256/size/path），实体落
+///    `workspace/board/assets/<ref>`（§4.2）；不设 TTL，随 issue 删除
+///    级联清理（M2 清扫只管 channel_message）。
+const SCHEMA_V6: &str = r#"
+CREATE TABLE IF NOT EXISTS channel (
+    id         INTEGER PRIMARY KEY AUTOINCREMENT,
+    name       TEXT    NOT NULL UNIQUE,
+    topic      TEXT    NOT NULL DEFAULT '',
+    created_at INTEGER NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS channel_member (
+    channel_id           INTEGER NOT NULL REFERENCES channel(id),
+    member_type          TEXT    NOT NULL,
+    member_id            TEXT    NOT NULL,
+    last_seen_message_id INTEGER NOT NULL DEFAULT 0,
+    PRIMARY KEY (channel_id, member_type, member_id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_channel_member_member
+    ON channel_member(member_type, member_id);
+
+CREATE TABLE IF NOT EXISTS channel_message (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    channel_id  INTEGER NOT NULL REFERENCES channel(id),
+    sender_type TEXT    NOT NULL,
+    sender_id   TEXT    NOT NULL,
+    content     TEXT    NOT NULL,
+    parent_id   INTEGER,
+    mtype       TEXT    NOT NULL DEFAULT 'text',
+    created_at  INTEGER NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_channel_message_channel
+    ON channel_message(channel_id, id);
+
+CREATE TABLE IF NOT EXISTS asset (
+    id           INTEGER PRIMARY KEY AUTOINCREMENT,
+    ref          TEXT    NOT NULL UNIQUE,
+    origin_issue INTEGER,
+    sha256       TEXT    NOT NULL,
+    size         INTEGER NOT NULL DEFAULT 0,
+    path         TEXT    NOT NULL,
+    created_at   INTEGER NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_asset_origin ON asset(origin_issue);
+"#;
+
+/// v7（swarm M3）：上行幂等去重表 + 统一 seq 台账。
+///
+/// - `msg_dedup`：`board.comment.post` 幂等双保险的落库层（G12）——
+///   `(origin_node, client_msg_id)` 唯一；`first_response` 缓存首响
+///   JSON，重发原样返回，不重复落库。
+/// - `seq_ledger`：master 单调序号台账（wake.post 下发 + board.sync
+///   补拉的游标）。issue 评论与频道消息混排，seq 由本表 AUTOINCREMENT
+///   统一发号；`thread_kind + message_id` 指回原行取内容。
+const SCHEMA_V7: &str = r#"
+CREATE TABLE IF NOT EXISTS msg_dedup (
+    origin_node    TEXT    NOT NULL,
+    client_msg_id  TEXT    NOT NULL,
+    first_response TEXT    NOT NULL,
+    created_at     INTEGER NOT NULL,
+    PRIMARY KEY (origin_node, client_msg_id)
+);
+
+CREATE TABLE IF NOT EXISTS seq_ledger (
+    seq         INTEGER PRIMARY KEY AUTOINCREMENT,
+    thread_kind TEXT    NOT NULL,
+    thread_id   INTEGER NOT NULL,
+    message_id  INTEGER NOT NULL,
+    sender_id   TEXT    NOT NULL,
+    created_at  INTEGER NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_seq_ledger_thread
+    ON seq_ledger(thread_kind, thread_id);
+"#;
+
+/// v8（swarm M4.5 §6.5）：团队经验层——`team_memory` 表。验收 agent 蒸馏
+/// 的结构化经验条目（唯一写闸），派发/planner 注入的检索源。`scope` 是
+/// 检索键（模块/技术栈标签）；`deprecated` 走软删（旧经验与实际冲突时
+/// 标记不覆盖，§6.5.4）。
+const SCHEMA_V8: &str = r#"
+CREATE TABLE IF NOT EXISTS team_memory (
+    id         INTEGER PRIMARY KEY AUTOINCREMENT,
+    category   TEXT    NOT NULL,
+    scope      TEXT    NOT NULL,
+    content    TEXT    NOT NULL,
+    source     TEXT    NOT NULL,
+    author     TEXT    NOT NULL,
+    use_count  INTEGER NOT NULL DEFAULT 0,
+    deprecated INTEGER NOT NULL DEFAULT 0,
+    created_at INTEGER NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_team_memory_scope
+    ON team_memory(scope);
+"#;
+
 /// Open (or create) the board database at `db_path` and run pending migrations.
 pub fn init_db(db_path: &Path) -> Result<Connection, String> {
     if let Some(parent) = db_path.parent() {
@@ -199,6 +322,38 @@ pub fn init_db(db_path: &Path) -> Result<Connection, String> {
         tracing::info!(
             version = 4,
             "[BoardStore] Database migrated to v4 (autopilot)"
+        );
+    }
+    if current_version < 5 {
+        conn.execute_batch(SCHEMA_V5)
+            .map_err(|e| format!("Board schema v5 migration failed: {e}"))?;
+        tracing::info!(
+            version = 5,
+            "[BoardStore] Database migrated to v5 (planner: issue 派发需求列 + issue_dependency)"
+        );
+    }
+    if current_version < 6 {
+        conn.execute_batch(SCHEMA_V6)
+            .map_err(|e| format!("Board schema v6 migration failed: {e}"))?;
+        tracing::info!(
+            version = 6,
+            "[BoardStore] Database migrated to v6 (swarm M2: channel 三表 + asset)"
+        );
+    }
+    if current_version < 7 {
+        conn.execute_batch(SCHEMA_V7)
+            .map_err(|e| format!("Board schema v7 migration failed: {e}"))?;
+        tracing::info!(
+            version = 7,
+            "[BoardStore] Database migrated to v7 (swarm M3: msg_dedup + seq_ledger)"
+        );
+    }
+    if current_version < 8 {
+        conn.execute_batch(SCHEMA_V8)
+            .map_err(|e| format!("Board schema v8 migration failed: {e}"))?;
+        tracing::info!(
+            version = 8,
+            "[BoardStore] Database migrated to v8 (swarm M4.5: team_memory)"
         );
     }
     set_version(&conn, SCHEMA_VERSION)?;

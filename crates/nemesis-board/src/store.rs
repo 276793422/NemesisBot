@@ -14,15 +14,21 @@ use rusqlite::{Connection, OptionalExtension, params};
 use crate::assignment::{Actor, AssignmentType};
 use crate::db;
 use crate::models::{
-    ActivityLog, Attachment, Autopilot, AutopilotPatch, Comment, CommentType, DispatchRecord,
-    Issue, IssueFilter, IssuePatch, IssueStatus, NewAutopilot, NewComment, NewIssue,
-    NewNotification, Notification, Project, ProjectPatch, Subscriber, dispatch_state,
-    notification_kind,
+    ActivityLog, Attachment, Autopilot, AutopilotPatch, BoardAsset, Channel, ChannelMember,
+    ChannelMessage, Comment, CommentType, DispatchRecord, Issue, IssueFilter, IssuePatch,
+    IssueStatus, LedgerEntry, NewAsset, NewAutopilot, NewChannel, NewChannelMessage, NewComment,
+    NewIssue, NewNotification, NewTeamMemory, Notification, PostedMessage, Project, ProjectPatch,
+    Subscriber, TeamMemoryEntry, channel_message_type, dispatch_state, notification_kind,
+    thread_kind,
 };
 
 /// Thread-safe SQLite board store.
 pub struct BoardStore {
     conn: Mutex<Connection>,
+    /// Swarm M3（§5.4）：dispatch 签发上下文槽（gateway 装配时 set 一次；
+    /// 所有 dispatch 函数已持有 store，资产段渲染零参数蔓延）。None =
+    /// 本节点未配资产签发——派发 prompt 不带「## 任务资产」段。
+    asset_signing: std::sync::OnceLock<crate::asset_token::AssetSignContext>,
 }
 
 impl BoardStore {
@@ -44,7 +50,18 @@ impl BoardStore {
         .map_err(|e| format!("seed issue_counter: {e}"))?;
         Ok(Self {
             conn: Mutex::new(conn),
+            asset_signing: std::sync::OnceLock::new(),
         })
+    }
+
+    /// 注入 dispatch 签发上下文（gateway 装配时 set 一次；重复 set 忽略）。
+    pub fn set_asset_signing(&self, ctx: crate::asset_token::AssetSignContext) {
+        let _ = self.asset_signing.set(ctx);
+    }
+
+    /// dispatch 签发上下文（未注入 → None，派发 prompt 不带资产段）。
+    pub fn asset_signing(&self) -> Option<crate::asset_token::AssetSignContext> {
+        self.asset_signing.get().cloned()
     }
 
     fn now() -> i64 {
@@ -94,12 +111,19 @@ impl BoardStore {
 
         let now = Self::now();
         let status = IssueStatus::Backlog.as_str();
+        // Swarm M1：required_tags 落 JSON TEXT（空 = NULL，行上少一坨 "[]"）。
+        let required_tags_json = if new.required_tags.is_empty() {
+            None
+        } else {
+            Some(serde_json::to_string(&new.required_tags).map_err(|e| e.to_string())?)
+        };
         tx.execute(
             "INSERT INTO issue (number, title, description, status, priority,
                 assignee_type, assignee_id, creator_type, creator_id,
                 parent_issue_id, project_id, due_date, position,
-                acceptance_criteria, origin_type, origin_id, created_at, updated_at)
-             VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?17)",
+                acceptance_criteria, origin_type, origin_id,
+                required_role, required_tags, created_at, updated_at)
+             VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,?19,?19)",
             params![
                 number,
                 new.title,
@@ -117,6 +141,8 @@ impl BoardStore {
                 new.acceptance_criteria,
                 new.origin.as_ref().map(|o| o.origin_type.as_str()),
                 new.origin.as_ref().map(|o| o.origin_id.as_str()),
+                new.required_role.as_deref().filter(|s| !s.trim().is_empty()),
+                required_tags_json,
                 now,
             ],
         )
@@ -175,6 +201,63 @@ impl BoardStore {
         .optional()
         .map_err(|e| e.to_string())?
         .ok_or_else(|| format!("issue {number} not found"))
+    }
+
+    // -----------------------------------------------------------------------
+    // 依赖表（Swarm M1：批内拆解依赖边；补派触发器的双向查询）
+    // -----------------------------------------------------------------------
+
+    /// 整体替换 issue 的依赖边（planner 落库路径；空切片 = 清空）。
+    /// 引用不存在的 issue id 由 FK 约束诚实拒绝。
+    pub fn set_issue_dependencies(&self, issue_id: i64, depends_on: &[i64]) -> Result<(), String> {
+        let mut conn = self.conn.lock().map_err(|e| e.to_string())?;
+        let tx = conn.transaction().map_err(|e| e.to_string())?;
+        tx.execute("DELETE FROM issue_dependency WHERE issue_id = ?1", params![issue_id])
+            .map_err(|e| e.to_string())?;
+        for &dep in depends_on {
+            tx.execute(
+                "INSERT OR IGNORE INTO issue_dependency (issue_id, depends_on) VALUES (?1, ?2)",
+                params![issue_id, dep],
+            )
+            .map_err(|e| e.to_string())?;
+        }
+        tx.commit().map_err(|e| e.to_string())
+    }
+
+    /// 本 issue 依赖哪些 issue（派发闸：依赖未 done 不派出）。
+    pub fn dependencies_of(&self, issue_id: i64) -> Result<Vec<i64>, String> {
+        let conn = self.conn.lock().map_err(|e| e.to_string())?;
+        let mut stmt = conn
+            .prepare("SELECT depends_on FROM issue_dependency WHERE issue_id = ?1 ORDER BY depends_on")
+            .map_err(|e| e.to_string())?;
+        let rows = stmt
+            .query_map(params![issue_id], |r| r.get::<_, i64>(0))
+            .map_err(|e| e.to_string())?;
+        rows.collect::<Result<Vec<_>, _>>().map_err(|e| e.to_string())
+    }
+
+    /// 哪些 issue 依赖本 issue（补派触发器：X done 后扫它的 dependents）。
+    pub fn dependents_of(&self, issue_id: i64) -> Result<Vec<i64>, String> {
+        let conn = self.conn.lock().map_err(|e| e.to_string())?;
+        let mut stmt = conn
+            .prepare("SELECT issue_id FROM issue_dependency WHERE depends_on = ?1 ORDER BY issue_id")
+            .map_err(|e| e.to_string())?;
+        let rows = stmt
+            .query_map(params![issue_id], |r| r.get::<_, i64>(0))
+            .map_err(|e| e.to_string())?;
+        rows.collect::<Result<Vec<_>, _>>().map_err(|e| e.to_string())
+    }
+
+    /// 列出某父单的全部子单（创建顺序；无子单返回空 vec）。
+    pub fn list_children(&self, parent_id: i64) -> Result<Vec<Issue>, String> {
+        let conn = self.conn.lock().map_err(|e| e.to_string())?;
+        let mut stmt = conn
+            .prepare("SELECT * FROM issue WHERE parent_issue_id = ?1 ORDER BY id ASC")
+            .map_err(|e| e.to_string())?;
+        let rows = stmt
+            .query_map(params![parent_id], row_to_issue)
+            .map_err(|e| e.to_string())?;
+        rows.collect::<Result<Vec<_>, _>>().map_err(|e| e.to_string())
     }
 
     /// 列表（动态 WHERE + 稳定排序：position ASC, id DESC）。
@@ -549,84 +632,7 @@ impl BoardStore {
             return Err("comment content must not be empty".to_string());
         }
         let conn = self.conn.lock().map_err(|e| e.to_string())?;
-        // FK 校验 + 顺带取通知标题需要的编号/标题/指派（一次查询）。
-        let (number, title, at, aid): (String, String, Option<String>, Option<String>) = conn
-            .query_row(
-                "SELECT number, title, assignee_type, assignee_id FROM issue WHERE id = ?1",
-                params![new.issue_id],
-                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
-            )
-            .optional()
-            .map_err(|e| e.to_string())?
-            .ok_or_else(|| format!("issue {} not found", new.issue_id))?;
-        let issue_title = format!("{number} {title}");
-        let assignee = at.zip(aid).map(|(k, i)| Actor::new(&k, &i));
-
-        let now = Self::now();
-        let id = insert_comment(
-            &conn,
-            new.issue_id,
-            &new.author,
-            &new.content,
-            new.parent_id,
-            new.ctype,
-            now,
-        )?;
-        insert_subscriber(&conn, new.issue_id, &new.author, "commented")?;
-        insert_activity(&conn, new.issue_id, &new.author, "commented", None, now)?;
-
-        // 站内通知（W2 P3）：收件人 = 订阅者 ∪ 指派 − 作者；@提及优先于
-        // 普通评论通知（同一人只收一条）。
-        if new.ctype == CommentType::Comment {
-            let mut recipients = self_subscribers(&conn, new.issue_id)?;
-            if let Some(a) = &assignee
-                && !recipients.iter().any(|r| r == a)
-            {
-                recipients.push(a.clone());
-            }
-            let mentioned = extract_mentions(&new.content, &recipients);
-            for m in &mentioned {
-                if *m != new.author {
-                    insert_notification(
-                        &conn,
-                        &NewNotification {
-                            recipient: m.clone(),
-                            kind: notification_kind::MENTIONED.to_string(),
-                            title: issue_title.clone(),
-                            content: new.content.clone(),
-                            issue_id: Some(new.issue_id),
-                        },
-                        now,
-                    )?;
-                }
-            }
-            for r in &recipients {
-                if *r == new.author || mentioned.iter().any(|m| m == r) {
-                    continue;
-                }
-                insert_notification(
-                    &conn,
-                    &NewNotification {
-                        recipient: r.clone(),
-                        kind: notification_kind::COMMENTED.to_string(),
-                        title: issue_title.clone(),
-                        content: new.content.clone(),
-                        issue_id: Some(new.issue_id),
-                    },
-                    now,
-                )?;
-            }
-        }
-
-        Ok(Comment {
-            id,
-            issue_id: new.issue_id,
-            author: new.author,
-            content: new.content,
-            parent_id: new.parent_id,
-            ctype: new.ctype,
-            created_at: now,
-        })
+        add_comment_on(&conn, &new)
     }
 
     /// 评论列表（issue 内按时间升序，线程展开由前端做）。
@@ -1082,6 +1088,30 @@ impl BoardStore {
         Ok(n > 0)
     }
 
+    /// 按目标 worker 统计未完结（`dispatched`）派发数（Swarm M1 匹配器
+    /// 负载输入：同分节点选更闲者）。无派发的 worker 不在返回表里（调用方
+    /// 按 0 处理）。
+    pub fn count_active_dispatch_by_worker(&self) -> Result<std::collections::HashMap<String, usize>, String> {
+        let conn = self.conn.lock().map_err(|e| e.to_string())?;
+        let mut stmt = conn
+            .prepare(
+                "SELECT worker_id, COUNT(*) FROM issue_dispatch
+                 WHERE state = ?1 GROUP BY worker_id",
+            )
+            .map_err(|e| e.to_string())?;
+        let rows = stmt
+            .query_map(params![dispatch_state::DISPATCHED], |r| {
+                Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)? as usize))
+            })
+            .map_err(|e| e.to_string())?;
+        let mut map = std::collections::HashMap::new();
+        for row in rows {
+            let (worker, count) = row.map_err(|e| e.to_string())?;
+            map.insert(worker, count);
+        }
+        Ok(map)
+    }
+
     /// 终结派发：`done` / `failed`（P4 扩展 cancelled/timeout）。
     /// 只有 `dispatched` 态可终结——返回 `Ok(true)` 表示本次调用完成了终结
     /// （幂等：重复回调拿到 `Ok(false)`，写回方据此跳过重复评论/转移）。
@@ -1445,6 +1475,717 @@ impl BoardStore {
         rows.collect::<Result<Vec<_>, _>>()
             .map_err(|e| e.to_string())
     }
+
+    // -----------------------------------------------------------------------
+    // 讨论频道 + 任务资产（Swarm M2；impl-plan §4.1/§4.2）
+    // -----------------------------------------------------------------------
+
+    /// master 启动装配时 ensure 三个默认频道（`#dev` / `#qa` / `#general`），
+    /// `INSERT OR IGNORE` 幂等（§4.2.1）。
+    pub fn ensure_default_channels(&self) -> Result<(), String> {
+        for name in ["#dev", "#qa", "#general"] {
+            self.conn
+                .lock()
+                .map_err(|e| e.to_string())?
+                .execute(
+                    "INSERT OR IGNORE INTO channel (name, topic, created_at) VALUES (?1, '', ?2)",
+                    params![name, Self::now()],
+                )
+                .map_err(|e| e.to_string())?;
+        }
+        Ok(())
+    }
+
+    /// 建频道；名归一化（缺 `#` 前缀自动补），重名报错。
+    pub fn create_channel(&self, new: NewChannel) -> Result<Channel, String> {
+        let name = normalize_channel_name(&new.name)?;
+        let conn = self.conn.lock().map_err(|e| e.to_string())?;
+        let now = Self::now();
+        conn.execute(
+            "INSERT INTO channel (name, topic, created_at) VALUES (?1, ?2, ?3)",
+            params![name, new.topic, now],
+        )
+        .map_err(|e| {
+            if e.to_string().contains("UNIQUE") {
+                format!("channel {name} already exists")
+            } else {
+                e.to_string()
+            }
+        })?;
+        Ok(Channel {
+            id: conn.last_insert_rowid(),
+            name,
+            topic: new.topic,
+            created_at: now,
+        })
+    }
+
+    /// 频道列表（建频道序）。
+    pub fn list_channels(&self) -> Result<Vec<Channel>, String> {
+        let conn = self.conn.lock().map_err(|e| e.to_string())?;
+        let mut stmt = conn
+            .prepare("SELECT id, name, topic, created_at FROM channel ORDER BY id")
+            .map_err(|e| e.to_string())?;
+        let rows = stmt
+            .query_map([], |row| {
+                Ok(Channel {
+                    id: row.get(0)?,
+                    name: row.get(1)?,
+                    topic: row.get(2)?,
+                    created_at: row.get(3)?,
+                })
+            })
+            .map_err(|e| e.to_string())?;
+        rows.collect::<Result<Vec<_>, _>>().map_err(|e| e.to_string())
+    }
+
+    /// 按名取频道（输入同样归一化）。
+    pub fn get_channel_by_name(&self, name: &str) -> Result<Option<Channel>, String> {
+        let name = normalize_channel_name(name)?;
+        let conn = self.conn.lock().map_err(|e| e.to_string())?;
+        conn.query_row(
+            "SELECT id, name, topic, created_at FROM channel WHERE name = ?1",
+            params![name],
+            |row| {
+                Ok(Channel {
+                    id: row.get(0)?,
+                    name: row.get(1)?,
+                    topic: row.get(2)?,
+                    created_at: row.get(3)?,
+                })
+            },
+        )
+        .optional()
+        .map_err(|e| e.to_string())
+    }
+
+    /// 成员入频道（幂等 upsert；频道不存在报错——FK 之外的显式校验）。
+    pub fn join_channel(&self, channel_id: i64, member: Actor) -> Result<(), String> {
+        let conn = self.conn.lock().map_err(|e| e.to_string())?;
+        let exists: Option<i64> = conn
+            .query_row(
+                "SELECT id FROM channel WHERE id = ?1",
+                params![channel_id],
+                |r| r.get(0),
+            )
+            .optional()
+            .map_err(|e| e.to_string())?;
+        if exists.is_none() {
+            return Err(format!("channel {channel_id} not found"));
+        }
+        conn.execute(
+            "INSERT OR IGNORE INTO channel_member
+                 (channel_id, member_type, member_id, last_seen_message_id)
+             VALUES (?1, ?2, ?3, 0)",
+            params![channel_id, member.kind, member.id],
+        )
+        .map_err(|e| e.to_string())?;
+        Ok(())
+    }
+
+    /// 成员离频道（幂等；成员下线**不**调这个——回来还在，见 §4.2.1）。
+    pub fn leave_channel(&self, channel_id: i64, member: &Actor) -> Result<(), String> {
+        self.conn
+            .lock()
+            .map_err(|e| e.to_string())?
+            .execute(
+                "DELETE FROM channel_member
+                 WHERE channel_id = ?1 AND member_type = ?2 AND member_id = ?3",
+                params![channel_id, member.kind, member.id],
+            )
+            .map_err(|e| e.to_string())?;
+        Ok(())
+    }
+
+    /// 成员是否在任何频道有成员行（first-join 判据：跨全表零行 =
+    /// 全新节点，才允许自动收编；手动 join 过任一频道或被管理员
+    /// leave 出的成员不再被 announce 自动拉回）。
+    pub fn has_any_channel_membership(&self, member: &Actor) -> Result<bool, String> {
+        let n: i64 = self
+            .conn
+            .lock()
+            .map_err(|e| e.to_string())?
+            .query_row(
+                "SELECT COUNT(*) FROM channel_member WHERE member_type = ?1 AND member_id = ?2",
+                params![member.kind, member.id],
+                |row| row.get(0),
+            )
+            .map_err(|e| e.to_string())?;
+        Ok(n > 0)
+    }
+
+    /// 上行发言统一落库入口（M3 `board.comment.post` 的存储侧；impl-plan
+    /// §5.2① + G12 幂等）。单次持锁完成三步，对其他 store 调用方原子：
+    /// ① `msg_dedup` 认领（同 `(origin_node, client_msg_id)` 重复 → 直接
+    /// 返回首响，不重复落库）；② 落库（issue 评论走 [`add_comment_on`]
+    /// 全副作用 / 频道消息走 [`append_channel_message_on`]）；③ `seq_ledger`
+    /// 登记单调 seq。中途失败回滚认领行，同 id 重试不受影响。
+    /// `kind_tag`：issue → `CommentType` 词（未知归 comment）；channel →
+    /// `channel_message_type` 词。
+    #[allow(clippy::too_many_arguments)]
+    pub fn post_discussion_envelope(
+        &self,
+        origin_node: &str,
+        client_msg_id: &str,
+        target_kind: &str,
+        target_id: i64,
+        sender: &Actor,
+        content: &str,
+        reply_to: Option<i64>,
+        kind_tag: &str,
+    ) -> Result<PostedMessage, String> {
+        if content.trim().is_empty() {
+            return Err("content must not be empty".to_string());
+        }
+        if client_msg_id.trim().is_empty() {
+            return Err("client_msg_id must not be empty".to_string());
+        }
+        let conn = self.conn.lock().map_err(|e| e.to_string())?;
+        let now = BoardStore::now();
+
+        // ① 幂等认领：INSERT OR IGNORE 占位；changes()==0 → 重复请求。
+        conn.execute(
+            "INSERT OR IGNORE INTO msg_dedup (origin_node, client_msg_id, first_response, created_at)
+             VALUES (?1, ?2, '', ?3)",
+            params![origin_node, client_msg_id, now],
+        )
+        .map_err(|e| e.to_string())?;
+        if conn.changes() == 0 {
+            let cached: String = conn
+                .query_row(
+                    "SELECT first_response FROM msg_dedup
+                     WHERE origin_node = ?1 AND client_msg_id = ?2",
+                    params![origin_node, client_msg_id],
+                    |r| r.get(0),
+                )
+                .map_err(|e| e.to_string())?;
+            return Ok(PostedMessage {
+                is_new: false,
+                message_id: 0,
+                seq: 0,
+                response: serde_json::from_str(&cached).unwrap_or(serde_json::Value::Null),
+            });
+        }
+
+        // ②③ 落库 + seq 登记；失败先删认领行（回滚），同 id 可重试。
+        let posted = (|| -> Result<PostedMessage, String> {
+            let message_id = match target_kind {
+                thread_kind::ISSUE => {
+                    let ctype = CommentType::from_str(kind_tag).unwrap_or(CommentType::Comment);
+                    let comment = add_comment_on(
+                        &conn,
+                        &NewComment {
+                            issue_id: target_id,
+                            author: sender.clone(),
+                            content: content.to_string(),
+                            parent_id: reply_to,
+                            ctype,
+                        },
+                    )?;
+                    comment.id
+                }
+                thread_kind::CHANNEL => {
+                    let msg = append_channel_message_on(
+                        &conn,
+                        &NewChannelMessage {
+                            channel_id: target_id,
+                            sender: sender.clone(),
+                            content: content.to_string(),
+                            parent_id: reply_to,
+                            mtype: kind_tag.to_string(),
+                        },
+                    )?;
+                    msg.id
+                }
+                other => return Err(format!("unknown thread kind: {other}")),
+            };
+            conn.execute(
+                "INSERT INTO seq_ledger (thread_kind, thread_id, message_id, sender_id, created_at)
+                 VALUES (?1, ?2, ?3, ?4, ?5)",
+                params![target_kind, target_id, message_id, sender.id, now],
+            )
+            .map_err(|e| e.to_string())?;
+            let seq = conn.last_insert_rowid();
+            let response = if target_kind == thread_kind::ISSUE {
+                serde_json::json!({"comment_id": message_id, "seq": seq})
+            } else {
+                serde_json::json!({"message_id": message_id, "seq": seq})
+            };
+            Ok(PostedMessage {
+                is_new: true,
+                message_id,
+                seq,
+                response,
+            })
+        })();
+
+        match posted {
+            Ok(p) => {
+                conn.execute(
+                    "UPDATE msg_dedup SET first_response = ?3
+                     WHERE origin_node = ?1 AND client_msg_id = ?2",
+                    params![origin_node, client_msg_id, p.response.to_string()],
+                )
+                .map_err(|e| e.to_string())?;
+                Ok(p)
+            }
+            Err(e) => {
+                let _ = conn.execute(
+                    "DELETE FROM msg_dedup WHERE origin_node = ?1 AND client_msg_id = ?2",
+                    params![origin_node, client_msg_id],
+                );
+                Err(e)
+            }
+        }
+    }
+
+    /// 幂等预检（M3 上行 handler 用）：`(origin_node, client_msg_id)` 已
+    /// 认领过则返回缓存首响（None = 全新请求）。预检在额度扣账**之前**——
+    /// 重复请求（网络重传）不消耗讨论额度。
+    pub fn check_duplicate(
+        &self,
+        origin_node: &str,
+        client_msg_id: &str,
+    ) -> Result<Option<serde_json::Value>, String> {
+        let conn = self.conn.lock().map_err(|e| e.to_string())?;
+        let cached: Option<String> = conn
+            .query_row(
+                "SELECT first_response FROM msg_dedup
+                 WHERE origin_node = ?1 AND client_msg_id = ?2",
+                params![origin_node, client_msg_id],
+                |r| r.get(0),
+            )
+            .map(Some)
+            .or_else(|e| match e {
+                rusqlite::Error::QueryReturnedNoRows => Ok(None),
+                other => Err(other.to_string()),
+            })?;
+        Ok(cached.and_then(|s| serde_json::from_str(&s).ok()))
+    }
+
+    /// board.sync 补拉：`since_seq` 之后（不含）的台账行，按 seq 升序，
+    /// `limit` 上限。join 原表取发送者/内容（台账只存路由键）。
+    pub fn list_messages_since(&self, since_seq: i64, limit: i64) -> Result<Vec<LedgerEntry>, String> {
+        let conn = self.conn.lock().map_err(|e| e.to_string())?;
+        let mut stmt = conn
+            .prepare(
+                "SELECT l.seq, l.thread_kind, l.thread_id, l.message_id,
+                        COALESCE(c.author_type, m.sender_type, '') AS sender_type,
+                        COALESCE(c.author_id, m.sender_id, '')      AS sender_id,
+                        COALESCE(c.content, m.content, '')          AS content,
+                        CASE WHEN l.thread_kind = 'issue' THEN c.parent_id
+                             ELSE m.parent_id END                   AS parent_id,
+                        COALESCE(c.ctype, m.mtype, '')              AS kind_tag,
+                        COALESCE(c.created_at, m.created_at, l.created_at) AS created_at
+                 FROM seq_ledger l
+                 LEFT JOIN comment c
+                     ON l.thread_kind = 'issue' AND c.id = l.message_id
+                 LEFT JOIN channel_message m
+                     ON l.thread_kind = 'channel' AND m.id = l.message_id
+                 WHERE l.seq > ?1
+                 ORDER BY l.seq ASC
+                 LIMIT ?2",
+            )
+            .map_err(|e| e.to_string())?;
+        let rows = stmt
+            .query_map(params![since_seq, limit], |row| {
+                Ok(LedgerEntry {
+                    seq: row.get(0)?,
+                    thread_kind: row.get(1)?,
+                    thread_id: row.get(2)?,
+                    message_id: row.get(3)?,
+                    sender_type: row.get(4)?,
+                    sender_id: row.get(5)?,
+                    content: row.get(6)?,
+                    parent_id: row.get(7)?,
+                    kind_tag: row.get(8)?,
+                    created_at: row.get(9)?,
+                })
+            })
+            .map_err(|e| e.to_string())?;
+        rows.collect::<Result<Vec<_>, _>>().map_err(|e| e.to_string())
+    }
+
+    /// 当前全局最大 seq（worker 首次上线的 sync 基线；空表 = 0）。
+    pub fn latest_seq(&self) -> Result<i64, String> {
+        let n: i64 = self
+            .conn
+            .lock()
+            .map_err(|e| e.to_string())?
+            .query_row(
+                "SELECT COALESCE(MAX(seq), 0) FROM seq_ledger",
+                [],
+                |r| r.get(0),
+            )
+            .map_err(|e| e.to_string())?;
+        Ok(n)
+    }
+
+    /// 频道成员列表（裁决器路由查这张表，§4.2.1）。
+    pub fn list_channel_members(&self, channel_id: i64) -> Result<Vec<ChannelMember>, String> {
+        let conn = self.conn.lock().map_err(|e| e.to_string())?;
+        let mut stmt = conn
+            .prepare(
+                "SELECT channel_id, member_type, member_id, last_seen_message_id
+                 FROM channel_member WHERE channel_id = ?1 ORDER BY member_type, member_id",
+            )
+            .map_err(|e| e.to_string())?;
+        let rows = stmt
+            .query_map(params![channel_id], |row| {
+                Ok(ChannelMember {
+                    channel_id: row.get(0)?,
+                    member: Actor::new(&row.get::<_, String>(1)?, &row.get::<_, String>(2)?),
+                    last_seen_message_id: row.get(3)?,
+                })
+            })
+            .map_err(|e| e.to_string())?;
+        rows.collect::<Result<Vec<_>, _>>().map_err(|e| e.to_string())
+    }
+
+    /// 推进未读游标（只前进；`after_id` 补拉语义的写侧）。
+    pub fn mark_channel_seen(
+        &self,
+        channel_id: i64,
+        member: &Actor,
+        message_id: i64,
+    ) -> Result<(), String> {
+        self.conn
+            .lock()
+            .map_err(|e| e.to_string())?
+            .execute(
+                "UPDATE channel_member SET last_seen_message_id = MAX(last_seen_message_id, ?1)
+                 WHERE channel_id = ?2 AND member_type = ?3 AND member_id = ?4",
+                params![message_id, channel_id, member.kind, member.id],
+            )
+            .map_err(|e| e.to_string())?;
+        Ok(())
+    }
+
+    /// 追加频道消息（`mtype` 空串 = text）。
+    pub fn append_channel_message(
+        &self,
+        new: NewChannelMessage,
+    ) -> Result<ChannelMessage, String> {
+        let conn = self.conn.lock().map_err(|e| e.to_string())?;
+        append_channel_message_on(&conn, &new)
+    }
+
+    /// 增量拉取频道消息：`after_id` 游标语义（补拉与前端翻页同源，§4.1），
+    /// id 升序，`limit` 上限。
+    pub fn list_channel_messages(
+        &self,
+        channel_id: i64,
+        after_id: i64,
+        limit: i64,
+    ) -> Result<Vec<ChannelMessage>, String> {
+        let conn = self.conn.lock().map_err(|e| e.to_string())?;
+        let mut stmt = conn
+            .prepare(
+                "SELECT id, channel_id, sender_type, sender_id, content, parent_id, mtype, created_at
+                 FROM channel_message
+                 WHERE channel_id = ?1 AND id > ?2
+                 ORDER BY id ASC LIMIT ?3",
+            )
+            .map_err(|e| e.to_string())?;
+        let rows = stmt
+            .query_map(params![channel_id, after_id, limit], |row| {
+                Ok(ChannelMessage {
+                    id: row.get(0)?,
+                    channel_id: row.get(1)?,
+                    sender: Actor::new(&row.get::<_, String>(2)?, &row.get::<_, String>(3)?),
+                    content: row.get(4)?,
+                    parent_id: row.get(5)?,
+                    mtype: row.get(6)?,
+                    created_at: row.get(7)?,
+                })
+            })
+            .map_err(|e| e.to_string())?;
+        rows.collect::<Result<Vec<_>, _>>().map_err(|e| e.to_string())
+    }
+
+    /// 保留策略清扫（§4.2.2）：删除 `retention_days` 天前的频道消息，
+    /// 返回删除行数；`retention_days <= 0` = 永久保留，直接返回 0。
+    /// master 启动 + 每日备份 cron 顺带调用。
+    pub fn sweep_channel_messages(&self, retention_days: i64) -> Result<u64, String> {
+        if retention_days <= 0 {
+            return Ok(0);
+        }
+        let cutoff = Self::now() - retention_days * 24 * 3600;
+        let n = self
+            .conn
+            .lock()
+            .map_err(|e| e.to_string())?
+            .execute("DELETE FROM channel_message WHERE created_at < ?1", params![cutoff])
+            .map_err(|e| e.to_string())?;
+        Ok(n as u64)
+    }
+
+    /// 登记资产索引（实体文件由调用方先落 `assets/<ref>`，库只记索引）。
+    /// 同 ref 重登记 = 幂等 upsert（新内容覆盖索引；path 恒 = ref）。
+    pub fn register_asset(&self, new: NewAsset) -> Result<BoardAsset, String> {
+        let ref_name = new.ref_name;
+        if ref_name.trim().is_empty() {
+            return Err("asset ref must not be empty".to_string());
+        }
+        let conn = self.conn.lock().map_err(|e| e.to_string())?;
+        let now = Self::now();
+        conn.execute(
+            "INSERT INTO asset (ref, origin_issue, sha256, size, path, created_at)
+             VALUES (?1, ?2, ?3, ?4, ?1, ?5)
+             ON CONFLICT(ref) DO UPDATE SET
+                 origin_issue = excluded.origin_issue,
+                 sha256 = excluded.sha256,
+                 size = excluded.size",
+            params![ref_name, new.origin_issue, new.sha256, new.size, now],
+        )
+        .map_err(|e| e.to_string())?;
+        let id: i64 = conn
+            .query_row("SELECT id FROM asset WHERE ref = ?1", params![ref_name], |r| {
+                r.get(0)
+            })
+            .map_err(|e| e.to_string())?;
+        Ok(BoardAsset {
+            id,
+            ref_name: ref_name.clone(),
+            origin_issue: new.origin_issue,
+            sha256: new.sha256,
+            size: new.size,
+            path: ref_name,
+            created_at: now,
+        })
+    }
+
+    /// 按引用查资产（M3 下载端点前的 token 校验数据源）。
+    pub fn lookup_asset(&self, ref_name: &str) -> Result<Option<BoardAsset>, String> {
+        let conn = self.conn.lock().map_err(|e| e.to_string())?;
+        conn.query_row(
+            "SELECT id, ref, origin_issue, sha256, size, path, created_at
+             FROM asset WHERE ref = ?1",
+            params![ref_name],
+            |row| {
+                Ok(BoardAsset {
+                    id: row.get(0)?,
+                    ref_name: row.get(1)?,
+                    origin_issue: row.get(2)?,
+                    sha256: row.get(3)?,
+                    size: row.get(4)?,
+                    path: row.get(5)?,
+                    created_at: row.get(6)?,
+                })
+            },
+        )
+        .optional()
+        .map_err(|e| e.to_string())
+    }
+
+    /// 某个 issue 名下的资产列表。
+    pub fn assets_for_issue(&self, issue_id: i64) -> Result<Vec<BoardAsset>, String> {
+        let conn = self.conn.lock().map_err(|e| e.to_string())?;
+        let mut stmt = conn
+            .prepare(
+                "SELECT id, ref, origin_issue, sha256, size, path, created_at
+                 FROM asset WHERE origin_issue = ?1 ORDER BY id",
+            )
+            .map_err(|e| e.to_string())?;
+        let rows = stmt
+            .query_map(params![issue_id], row_to_asset)
+            .map_err(|e| e.to_string())?;
+        rows.collect::<Result<Vec<_>, _>>().map_err(|e| e.to_string())
+    }
+
+    /// issue 删除时解绑其名下资产：删 `origin_issue` 命中的行，返回因此
+    /// **彻底失去引用**的 ref 列表（引用计数语义——多 issue 引用同一 ref
+    /// 时最后一个解绑才删盘，§4.2.2）。调用方负责 unlink 返回的实体文件。
+    pub fn unbind_assets_for_issue(&self, issue_id: i64) -> Result<Vec<String>, String> {
+        let conn = self.conn.lock().map_err(|e| e.to_string())?;
+        let released: Vec<String> = {
+            let mut stmt = conn
+                .prepare("SELECT DISTINCT ref FROM asset WHERE origin_issue = ?1")
+                .map_err(|e| e.to_string())?;
+            let rows = stmt
+                .query_map(params![issue_id], |r| r.get::<_, String>(0))
+                .map_err(|e| e.to_string())?;
+            rows.collect::<Result<Vec<_>, _>>().map_err(|e| e.to_string())?
+        };
+        conn.execute("DELETE FROM asset WHERE origin_issue = ?1", params![issue_id])
+            .map_err(|e| e.to_string())?;
+        let mut fully_released = Vec::new();
+        for ref_name in released {
+            let remaining: i64 = conn
+                .query_row(
+                    "SELECT COUNT(*) FROM asset WHERE ref = ?1",
+                    params![ref_name],
+                    |r| r.get(0),
+                )
+                .map_err(|e| e.to_string())?;
+            if remaining == 0 {
+                fully_released.push(ref_name);
+            }
+        }
+        Ok(fully_released)
+    }
+
+    // -------------------------------------------------------------------
+    // 团队经验 team_memory（swarm M4.5 §6.5）
+    // -------------------------------------------------------------------
+
+    /// 新增经验条目（验收蒸馏唯一写闸的第二道去噪闸）：scope 归一化后与
+    /// 现存**未废弃**条目做「同 scope + 内容重复」判定——重复并进旧条目
+    /// （use_count+1，旧条目身份稳定，注入端引用不漂移），否则插入新行。
+    /// 返回（条目 id, 是否并入旧条目）。空 scope/content 的壳条目调用方
+    /// 侧拒绝（评审蒸馏纪律），此处再兜底一次。
+    pub fn add_team_memory(&self, new: NewTeamMemory) -> Result<(i64, bool), String> {
+        let scope = new.scope.trim().to_lowercase();
+        let content = new.content.trim().to_string();
+        if scope.is_empty() || content.is_empty() {
+            return Err("team memory scope/content must not be empty".to_string());
+        }
+        let conn = self.conn.lock().map_err(|e| e.to_string())?;
+        // 同 scope 且内容归一化后相同（或互为包含——同义改写从宽并入）→
+        // 重复。deprecated 条目不参与合并（修正语义：新条目可能就是取代
+        // 旧经验的）。
+        let dup: Option<i64> = conn
+            .query_row(
+                "SELECT id FROM team_memory
+                 WHERE deprecated = 0 AND scope = ?1
+                   AND (REPLACE(content, ' ', '') = ?2
+                        OR instr(REPLACE(content, ' ', ''), ?2) > 0
+                        OR instr(?2, REPLACE(content, ' ', '')) > 0)
+                 ORDER BY id LIMIT 1",
+                params![scope, content.replace(' ', "")],
+                |r| r.get(0),
+            )
+            .optional()
+            .map_err(|e| e.to_string())?;
+        if let Some(id) = dup {
+            conn.execute(
+                "UPDATE team_memory SET use_count = use_count + 1 WHERE id = ?1",
+                params![id],
+            )
+            .map_err(|e| e.to_string())?;
+            return Ok((id, true));
+        }
+        conn.execute(
+            "INSERT INTO team_memory
+                 (category, scope, content, source, author, use_count, deprecated, created_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, 0, 0, ?6)",
+            params![
+                new.category.trim(),
+                scope,
+                content,
+                new.source.trim(),
+                new.author.trim(),
+                Self::now()
+            ],
+        )
+        .map_err(|e| e.to_string())?;
+        let id = conn.last_insert_rowid();
+        Ok((id, false))
+    }
+
+    /// 经验条目列表（`include_deprecated=false` 时滤掉软删行；scope 过滤
+    /// 精确匹配小写归一化）。排序：use_count 降序 → 新者优先（注入 top-N
+    /// 与管理列表共用同一顺序）。
+    pub fn list_team_memory(
+        &self,
+        scope: Option<&str>,
+        include_deprecated: bool,
+    ) -> Result<Vec<TeamMemoryEntry>, String> {
+        let conn = self.conn.lock().map_err(|e| e.to_string())?;
+        let mut sql = String::from(
+            "SELECT id, category, scope, content, source, author, use_count, deprecated, created_at
+             FROM team_memory WHERE 1=1",
+        );
+        if let Some(s) = scope {
+            sql.push_str(&format!(" AND scope = '{}'", s.trim().to_lowercase().replace('\'', "''")));
+        }
+        if !include_deprecated {
+            sql.push_str(" AND deprecated = 0");
+        }
+        sql.push_str(" ORDER BY use_count DESC, id DESC");
+        let mut stmt = conn.prepare(&sql).map_err(|e| e.to_string())?;
+        let rows = stmt
+            .query_map([], row_to_team_memory)
+            .map_err(|e| e.to_string())?;
+        rows.collect::<Result<Vec<_>, _>>()
+            .map_err(|e| e.to_string())
+    }
+
+    /// 关键词检索（scope/content/source LIKE，大小写不敏感；管理 WSAPI 用）。
+    pub fn search_team_memory(&self, query: &str) -> Result<Vec<TeamMemoryEntry>, String> {
+        let needle = format!("%{}%", query.trim().to_lowercase().replace('%', ""));
+        let conn = self.conn.lock().map_err(|e| e.to_string())?;
+        let mut stmt = conn
+            .prepare(
+                "SELECT id, category, scope, content, source, author, use_count, deprecated, created_at
+                 FROM team_memory
+                 WHERE lower(scope) LIKE ?1 OR lower(content) LIKE ?1 OR lower(source) LIKE ?1
+                 ORDER BY use_count DESC, id DESC",
+            )
+            .map_err(|e| e.to_string())?;
+        let rows = stmt
+            .query_map(params![needle], row_to_team_memory)
+            .map_err(|e| e.to_string())?;
+        rows.collect::<Result<Vec<_>, _>>()
+            .map_err(|e| e.to_string())
+    }
+
+    /// 注入命中计数（派发注入 top-N 渲染成功后调用；衰减依据）。
+    pub fn mark_team_memory_used(&self, ids: &[i64]) -> Result<(), String> {
+        if ids.is_empty() {
+            return Ok(());
+        }
+        let conn = self.conn.lock().map_err(|e| e.to_string())?;
+        for id in ids {
+            conn.execute(
+                "UPDATE team_memory SET use_count = use_count + 1 WHERE id = ?1",
+                params![id],
+            )
+            .map_err(|e| e.to_string())?;
+        }
+        Ok(())
+    }
+
+    /// 软删/恢复 deprecated 标记（§6.5.4 修正语义：旧经验与实际冲突 →
+    /// 标记不覆盖；恢复 = 误标回滚）。
+    pub fn set_team_memory_deprecated(&self, id: i64, deprecated: bool) -> Result<(), String> {
+        let conn = self.conn.lock().map_err(|e| e.to_string())?;
+        let n = conn
+            .execute(
+                "UPDATE team_memory SET deprecated = ?1 WHERE id = ?2",
+                params![deprecated as i64, id],
+            )
+            .map_err(|e| e.to_string())?;
+        if n == 0 {
+            return Err(format!("team memory id={id} 不存在"));
+        }
+        Ok(())
+    }
+
+    /// 彻底删除条目（管理 WSAPI remove）。
+    pub fn remove_team_memory(&self, id: i64) -> Result<(), String> {
+        let conn = self.conn.lock().map_err(|e| e.to_string())?;
+        let n = conn
+            .execute("DELETE FROM team_memory WHERE id = ?1", params![id])
+            .map_err(|e| e.to_string())?;
+        if n == 0 {
+            return Err(format!("team memory id={id} 不存在"));
+        }
+        Ok(())
+    }
+}
+
+/// 频道名归一化：trim + 缺 `#` 前缀自动补 + 非空校验。
+fn normalize_channel_name(name: &str) -> Result<String, String> {
+    let trimmed = name.trim();
+    if trimmed.is_empty() {
+        return Err("channel name must not be empty".to_string());
+    }
+    Ok(if trimmed.starts_with('#') {
+        trimmed.to_string()
+    } else {
+        format!("#{trimmed}")
+    })
 }
 
 // ---------------------------------------------------------------------------
@@ -1491,6 +2232,133 @@ fn apply_set_opt<T: PartialEq + Clone>(
         }
         _ => old.clone(),
     }
+}
+
+/// 发频道消息的内核（不加锁）：空白内容拒绝 + 空 mtype 归一为 text +
+/// 插入。[`BoardStore::append_channel_message`] 与 `post_discussion_envelope`
+/// 共用——单一真相源。
+fn append_channel_message_on(
+    conn: &Connection,
+    new: &NewChannelMessage,
+) -> Result<ChannelMessage, String> {
+    if new.content.trim().is_empty() {
+        return Err("channel message content must not be empty".to_string());
+    }
+    let mtype = if new.mtype.trim().is_empty() {
+        channel_message_type::TEXT.to_string()
+    } else {
+        new.mtype.clone()
+    };
+    let now = BoardStore::now();
+    conn.execute(
+        "INSERT INTO channel_message
+             (channel_id, sender_type, sender_id, content, parent_id, mtype, created_at)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+        params![
+            new.channel_id,
+            new.sender.kind,
+            new.sender.id,
+            new.content,
+            new.parent_id,
+            mtype,
+            now
+        ],
+    )
+    .map_err(|e| e.to_string())?;
+    Ok(ChannelMessage {
+        id: conn.last_insert_rowid(),
+        channel_id: new.channel_id,
+        sender: new.sender.clone(),
+        content: new.content.clone(),
+        parent_id: new.parent_id,
+        mtype,
+        created_at: now,
+    })
+}
+
+/// 落一条 issue 评论的完整副作用（不加锁内核）：FK 校验 + 评论行 +
+/// 订阅 + activity + 站内通知（订阅者 ∪ 指派 − 作者；@提及优先）。
+/// [`BoardStore::add_comment`] 与 `post_discussion_envelope` 共用——
+/// 单一真相源，后者靠外层持同一把锁保证原子。
+fn add_comment_on(conn: &Connection, new: &NewComment) -> Result<Comment, String> {
+    // FK 校验 + 顺带取通知标题需要的编号/标题/指派（一次查询）。
+    let (number, title, at, aid): (String, String, Option<String>, Option<String>) = conn
+        .query_row(
+            "SELECT number, title, assignee_type, assignee_id FROM issue WHERE id = ?1",
+            params![new.issue_id],
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
+        )
+        .optional()
+        .map_err(|e| e.to_string())?
+        .ok_or_else(|| format!("issue {} not found", new.issue_id))?;
+    let issue_title = format!("{number} {title}");
+    let assignee = at.zip(aid).map(|(k, i)| Actor::new(&k, &i));
+
+    let now = BoardStore::now();
+    let id = insert_comment(
+        conn,
+        new.issue_id,
+        &new.author,
+        &new.content,
+        new.parent_id,
+        new.ctype,
+        now,
+    )?;
+    insert_subscriber(conn, new.issue_id, &new.author, "commented")?;
+    insert_activity(conn, new.issue_id, &new.author, "commented", None, now)?;
+
+    // 站内通知（W2 P3）：收件人 = 订阅者 ∪ 指派 − 作者；@提及优先于
+    // 普通评论通知（同一人只收一条）。
+    if new.ctype == CommentType::Comment {
+        let mut recipients = self_subscribers(conn, new.issue_id)?;
+        if let Some(a) = &assignee
+            && !recipients.iter().any(|r| r == a)
+        {
+            recipients.push(a.clone());
+        }
+        let mentioned = extract_mentions(&new.content, &recipients);
+        for m in &mentioned {
+            if *m != new.author {
+                insert_notification(
+                    conn,
+                    &NewNotification {
+                        recipient: m.clone(),
+                        kind: notification_kind::MENTIONED.to_string(),
+                        title: issue_title.clone(),
+                        content: new.content.clone(),
+                        issue_id: Some(new.issue_id),
+                    },
+                    now,
+                )?;
+            }
+        }
+        for r in &recipients {
+            if *r == new.author || mentioned.iter().any(|m| m == r) {
+                continue;
+            }
+            insert_notification(
+                conn,
+                &NewNotification {
+                    recipient: r.clone(),
+                    kind: notification_kind::COMMENTED.to_string(),
+                    title: issue_title.clone(),
+                    content: new.content.clone(),
+                    issue_id: Some(new.issue_id),
+                },
+                now,
+            )?;
+        }
+    }
+
+    Ok(Comment {
+        id,
+        issue_id: new.issue_id,
+        author: new.author.clone(),
+        content: new.content.clone(),
+        parent_id: new.parent_id,
+        ctype: new.ctype,
+        created_at: now,
+    })
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -1606,6 +2474,34 @@ fn row_to_dispatch(row: &rusqlite::Row<'_>) -> rusqlite::Result<DispatchRecord> 
     })
 }
 
+fn row_to_asset(row: &rusqlite::Row<'_>) -> rusqlite::Result<BoardAsset> {
+    Ok(BoardAsset {
+        id: row.get(0)?,
+        ref_name: row.get(1)?,
+        origin_issue: row.get(2)?,
+        sha256: row.get(3)?,
+        size: row.get(4)?,
+        path: row.get(5)?,
+        created_at: row.get(6)?,
+    })
+}
+
+/// team_memory 行映射（M4.5 §6.5.1；SELECT 列序必须与本函数一一对应）。
+fn row_to_team_memory(row: &rusqlite::Row<'_>) -> rusqlite::Result<TeamMemoryEntry> {
+    let deprecated: i64 = row.get(7)?;
+    Ok(TeamMemoryEntry {
+        id: row.get(0)?,
+        category: row.get(1)?,
+        scope: row.get(2)?,
+        content: row.get(3)?,
+        source: row.get(4)?,
+        author: row.get(5)?,
+        use_count: row.get(6)?,
+        deprecated: deprecated != 0,
+        created_at: row.get(8)?,
+    })
+}
+
 fn row_to_autopilot(row: &rusqlite::Row<'_>) -> rusqlite::Result<Autopilot> {
     let enabled: i64 = row.get("enabled")?;
     Ok(Autopilot {
@@ -1648,6 +2544,11 @@ fn row_to_issue(row: &rusqlite::Row<'_>) -> rusqlite::Result<Issue> {
     let assignee_type: Option<String> = row.get("assignee_type")?;
     let origin_type: Option<String> = row.get("origin_type")?;
     let origin_id: Option<String> = row.get("origin_id")?;
+    // Swarm M1：required_tags JSON TEXT → Vec（坏 JSON/NULL 宽容为空）。
+    let required_tags_json: Option<String> = row.get("required_tags")?;
+    let required_tags = required_tags_json
+        .and_then(|s| serde_json::from_str::<Vec<String>>(&s).ok())
+        .unwrap_or_default();
     Ok(Issue {
         id: row.get("id")?,
         number: row.get("number")?,
@@ -1673,6 +2574,10 @@ fn row_to_issue(row: &rusqlite::Row<'_>) -> rusqlite::Result<Issue> {
             }),
             _ => None,
         },
+        required_role: row
+            .get::<_, Option<String>>("required_role")?
+            .filter(|s| !s.trim().is_empty()),
+        required_tags,
         created_at: row.get("created_at")?,
         updated_at: row.get("updated_at")?,
     })

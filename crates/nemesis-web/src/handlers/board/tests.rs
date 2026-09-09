@@ -18,7 +18,11 @@ fn make_ctx_with_board(dir: &std::path::Path) -> RequestContext {
 /// Coordinator 两态钉「写权限与 role 无关」）。
 fn make_ctx_with_role(dir: &std::path::Path, role: NodeRole) -> RequestContext {
     let store = BoardStore::open(&dir.join("board.db"), "NB").expect("open store");
-    let service = nemesis_board::BoardService::new(Arc::new(store), role);
+    make_ctx_with_service(dir, nemesis_board::BoardService::new(Arc::new(store), role))
+}
+
+/// 按给定 service 构造上下文（讨论桥等 builder 注入形态的测试入口）。
+fn make_ctx_with_service(dir: &std::path::Path, service: nemesis_board::BoardService) -> RequestContext {
     let state = Arc::new(AppState {
         auth_token: String::new(),
         session_count: Arc::new(AtomicUsize::new(0)),
@@ -1321,5 +1325,595 @@ async fn auto_dispatch_on_without_cluster_leaves_trace_comment() {
         "gate off → no trace comment expected"
     );
 
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+// ---------------------------------------------------------------------------
+// Swarm M1：issue.plan 两段式拆解 + 依赖补派（cluster 编译时；无真实集群的
+// 路径全部走诚实降级断言——自动派发的正路径由真机矩阵 G1/G2 覆盖）
+// ---------------------------------------------------------------------------
+
+/// 取 ctx 里 board store 的 Arc。
+#[cfg(feature = "cluster")]
+fn store_of(ctx: &RequestContext) -> Arc<BoardStore> {
+    ctx.state.board.as_ref().unwrap().store().clone()
+}
+
+/// 把 plan 预览直接种进缓存（绕过 LLM 一段；LLM 路径由 nemesis-board
+/// planner 测试 + nemesis-agent spawn_detached 测试覆盖）。
+#[cfg(feature = "cluster")]
+fn seed_plan(plan_id: &str, issue_id: i64, subs: Vec<nemesis_board::PlannedSubIssue>) {
+    super::PLAN_CACHE.lock().insert(
+        plan_id.to_string(),
+        super::PlanPreview {
+            issue_id,
+            subs,
+            created_at: Instant::now(),
+        },
+    );
+}
+
+#[cfg(feature = "cluster")]
+fn sub(title: &str, deps: Vec<usize>) -> nemesis_board::PlannedSubIssue {
+    nemesis_board::PlannedSubIssue {
+        title: title.to_string(),
+        description: format!("{title} 的说明"),
+        required_role: String::new(),
+        required_tags: Vec::new(),
+        acceptance_criteria: format!("- [ ] {title} 验收"),
+        depends_on: deps,
+    }
+}
+
+#[cfg(feature = "cluster")]
+#[tokio::test]
+async fn issue_plan_missing_id_rejected() {
+    let dir = unique_dir("plan-miss-id");
+    let ctx = make_ctx_with_board(&dir);
+    let err = dispatch(&ctx, "issue.plan", serde_json::json!({}))
+        .await
+        .expect_err("missing id must reject");
+    assert!(err.contains("missing field: id"), "{err}");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[cfg(feature = "cluster")]
+#[tokio::test]
+async fn issue_plan_planning_requires_agent() {
+    let dir = unique_dir("plan-no-agent");
+    let ctx = make_ctx_with_board(&dir);
+    let out = dispatch(
+        &ctx,
+        "issue.create",
+        serde_json::json!({ "title": "父任务" }),
+    )
+    .await
+    .unwrap();
+    let id = out.unwrap()["issue"]["id"].as_i64().unwrap();
+
+    // agent_loop 未注入（AppState 测试臂恒 None）→ 诚实报错，不静默。
+    let err = dispatch(&ctx, "issue.plan", serde_json::json!({ "id": id }))
+        .await
+        .expect_err("no agent loop must reject");
+    assert!(err.contains("agent 未运行"), "{err}");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[cfg(feature = "cluster")]
+#[tokio::test]
+async fn issue_plan_confirm_unknown_plan_id_rejected() {
+    let dir = unique_dir("plan-unknown-id");
+    let ctx = make_ctx_with_board(&dir);
+    let out = dispatch(
+        &ctx,
+        "issue.create",
+        serde_json::json!({ "title": "父任务" }),
+    )
+    .await
+    .unwrap();
+    let id = out.unwrap()["issue"]["id"].as_i64().unwrap();
+
+    let err = dispatch(
+        &ctx,
+        "issue.plan",
+        serde_json::json!({ "id": id, "plan_id": "plan-nope", "confirm": true }),
+    )
+    .await
+    .expect_err("unknown plan_id must reject");
+    assert!(err.contains("不存在或已被消费"), "{err}");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[cfg(feature = "cluster")]
+#[tokio::test]
+async fn issue_plan_confirm_wrong_issue_preserves_cache_and_consumes_once() {
+    let dir = unique_dir("plan-mismatch");
+    let ctx = make_ctx_with_board(&dir);
+    let store = store_of(&ctx);
+    let a = store
+        .create_issue(nemesis_board::NewIssue {
+            title: "父任务 A".into(),
+            ..Default::default()
+        })
+        .unwrap();
+    let b = store
+        .create_issue(nemesis_board::NewIssue {
+            title: "父任务 B".into(),
+            ..Default::default()
+        })
+        .unwrap();
+    seed_plan("plan-t3", a.id, vec![sub("子任务", vec![])]);
+
+    // 贴错 issue → 拒绝且缓存保留（不误伤在途预览）。
+    let err = dispatch(
+        &ctx,
+        "issue.plan",
+        serde_json::json!({ "id": b.id, "plan_id": "plan-t3", "confirm": true }),
+    )
+    .await
+    .expect_err("mismatched issue must reject");
+    assert!(err.contains("不匹配"), "{err}");
+    assert!(super::PLAN_CACHE.lock().contains_key("plan-t3"));
+
+    // 正主确认 → 成功；且缓存一次性消费（重复确认拒绝）。
+    let out = dispatch(
+        &ctx,
+        "issue.plan",
+        serde_json::json!({ "id": a.id, "plan_id": "plan-t3", "confirm": true }),
+    )
+    .await
+    .unwrap();
+    let out = out.unwrap();
+    assert_eq!(out["created"].as_array().unwrap().len(), 1);
+    let err = dispatch(
+        &ctx,
+        "issue.plan",
+        serde_json::json!({ "id": a.id, "plan_id": "plan-t3", "confirm": true }),
+    )
+    .await
+    .expect_err("double confirm must reject");
+    assert!(err.contains("不存在或已被消费"), "{err}");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[cfg(feature = "cluster")]
+#[tokio::test]
+async fn issue_plan_confirm_creates_children_with_deps_origin_and_honest_degrade() {
+    let dir = unique_dir("plan-confirm");
+    let ctx = make_ctx_with_board(&dir);
+    let store = store_of(&ctx);
+    let out = dispatch(
+        &ctx,
+        "issue.create",
+        serde_json::json!({ "title": "重构存储层", "description": "拆成三步" }),
+    )
+    .await
+    .unwrap();
+    let parent_id = out.unwrap()["issue"]["id"].as_i64().unwrap();
+
+    let mut s1 = sub("步骤一：抽接口", vec![]);
+    s1.required_role = "worker".into();
+    s1.required_tags = vec!["rust".into()];
+    let s2 = sub("步骤二：换实现", vec![0]);
+    let s3 = sub("步骤三：回归验证", vec![0, 1]);
+    seed_plan("plan-t4", parent_id, vec![s1, s2, s3]);
+
+    let out = dispatch(
+        &ctx,
+        "issue.plan",
+        serde_json::json!({ "id": parent_id, "plan_id": "plan-t4", "confirm": true }),
+    )
+    .await
+    .unwrap()
+    .unwrap();
+    let created: Vec<i64> = out["created"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|v| v.as_i64().unwrap())
+        .collect();
+    assert_eq!(created.len(), 3);
+    assert_eq!(out["dispatched"], 0, "无集群 → 派发诚实降级为失败评论");
+
+    // 落库语义：parent / origin=planner / required_* / 批内序号→id 依赖边。
+    let [ia, ib, ic] = [created[0], created[1], created[2]];
+    let child_a = store.get_issue(ia).unwrap();
+    assert_eq!(child_a.parent_issue_id, Some(parent_id));
+    assert_eq!(child_a.required_role.as_deref(), Some("worker"));
+    assert_eq!(child_a.required_tags, vec!["rust".to_string()]);
+    let origin = child_a.origin.as_ref().unwrap();
+    assert_eq!(origin.origin_type, "planner");
+    assert_eq!(origin.origin_id, format!("NB-{parent_id}"));
+    assert_eq!(store.dependencies_of(ib).unwrap(), vec![ia]);
+    assert_eq!(store.dependencies_of(ic).unwrap(), vec![ia, ib]);
+    for cid in &created {
+        assert_eq!(store.get_issue(*cid).unwrap().status, IssueStatus::Backlog);
+    }
+    // 无集群 → 首张（无依赖、走到派发核心）留诚实降级评论；后两张依赖
+    // 未满足（首张没派出去）→ 走依赖闸暂缓，进响应 deferred 数组（标准
+    // 流程，不刷评论——补派触发器会在依赖 done 后重试）。
+    let deferred: Vec<i64> = out["deferred"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|v| v.as_i64().unwrap())
+        .collect();
+    assert_eq!(deferred, vec![ib, ic]);
+    let comments_a = store.list_comments(ia).unwrap();
+    assert!(
+        comments_a
+            .iter()
+            .any(|c| c.content.contains("自动派发失败")),
+        "first child should carry honest degrade comment"
+    );
+    assert!(store.list_comments(ib).unwrap().is_empty());
+    // 无派发 → 父单保持 backlog。
+    assert_eq!(
+        store.get_issue(parent_id).unwrap().status,
+        IssueStatus::Backlog
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[cfg(feature = "cluster")]
+#[tokio::test]
+async fn dispatch_subissue_auto_gates_dependency_status_and_active_dispatch() {
+    let dir = unique_dir("auto-gates");
+    let ctx = make_ctx_with_board(&dir);
+    let store = store_of(&ctx);
+    let actor = Actor::admin("test-session");
+    let parent = store
+        .create_issue(nemesis_board::NewIssue {
+            title: "父".into(),
+            ..Default::default()
+        })
+        .unwrap();
+    let a = store
+        .create_issue(nemesis_board::NewIssue {
+            title: "A".into(),
+            parent_issue_id: Some(parent.id),
+            ..Default::default()
+        })
+        .unwrap();
+    let b = store
+        .create_issue(nemesis_board::NewIssue {
+            title: "B".into(),
+            parent_issue_id: Some(parent.id),
+            ..Default::default()
+        })
+        .unwrap();
+    store.set_issue_dependencies(b.id, &[a.id]).unwrap();
+
+    // 依赖未满足 → Ok(None)（暂缓，不报错）。
+    assert_eq!(
+        super::dispatch_subissue_auto(&store, None, b.id, &actor).unwrap(),
+        None
+    );
+    // 非待派状态（在途）→ Ok(None)。
+    store
+        .transition_issue(a.id, IssueStatus::InProgress, &actor)
+        .unwrap();
+    assert_eq!(
+        super::dispatch_subissue_auto(&store, None, a.id, &actor).unwrap(),
+        None
+    );
+    // 依赖 done 后放行 → 无集群时走到派发核心，诚实报集群缺失（证明
+    // 已越过依赖闸）。
+    store
+        .transition_issue(a.id, IssueStatus::Done, &actor)
+        .unwrap();
+    let err = super::dispatch_subissue_auto(&store, None, b.id, &actor)
+        .expect_err("past dep gate + no cluster must reach dispatch core error");
+    assert!(err.contains("集群未运行"), "{err}");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[cfg(feature = "cluster")]
+#[tokio::test]
+async fn sync_parent_status_all_done_cancel_gap_and_terminal_noop() {
+    let dir = unique_dir("parent-sync");
+    let ctx = make_ctx_with_board(&dir);
+    let store = store_of(&ctx);
+    let actor = Actor::admin("test-session");
+
+    // 场景 1：backlog 父单 + 全子单 done → 垫 in_progress 后进 in_review。
+    let p1 = store
+        .create_issue(nemesis_board::NewIssue {
+            title: "父一".into(),
+            ..Default::default()
+        })
+        .unwrap();
+    let c1 = store
+        .create_issue(nemesis_board::NewIssue {
+            title: "子一".into(),
+            parent_issue_id: Some(p1.id),
+            ..Default::default()
+        })
+        .unwrap();
+    let c2 = store
+        .create_issue(nemesis_board::NewIssue {
+            title: "子二".into(),
+            parent_issue_id: Some(p1.id),
+            ..Default::default()
+        })
+        .unwrap();
+    store
+        .transition_issue(c1.id, IssueStatus::Done, &actor)
+        .unwrap();
+    store
+        .transition_issue(c2.id, IssueStatus::Done, &actor)
+        .unwrap();
+    super::sync_parent_status(&store, p1.id, &actor).unwrap();
+    assert_eq!(
+        store.get_issue(p1.id).unwrap().status,
+        IssueStatus::InReview
+    );
+
+    // 场景 2：有子单 cancelled → 收口 in_review + 系统评论标注缺口。
+    let p2 = store
+        .create_issue(nemesis_board::NewIssue {
+            title: "父二".into(),
+            ..Default::default()
+        })
+        .unwrap();
+    let d1 = store
+        .create_issue(nemesis_board::NewIssue {
+            title: "子甲".into(),
+            parent_issue_id: Some(p2.id),
+            ..Default::default()
+        })
+        .unwrap();
+    let d2 = store
+        .create_issue(nemesis_board::NewIssue {
+            title: "子乙".into(),
+            parent_issue_id: Some(p2.id),
+            ..Default::default()
+        })
+        .unwrap();
+    store
+        .transition_issue(d1.id, IssueStatus::Done, &actor)
+        .unwrap();
+    store
+        .transition_issue(d2.id, IssueStatus::Cancelled, &actor)
+        .unwrap();
+    super::sync_parent_status(&store, p2.id, &actor).unwrap();
+    assert_eq!(
+        store.get_issue(p2.id).unwrap().status,
+        IssueStatus::InReview
+    );
+    let comments = store.list_comments(p2.id).unwrap();
+    assert!(
+        comments
+            .iter()
+            .any(|c| c.content.contains("人工裁决") && c.content.contains("cancelled")),
+        "gap comment expected, got {:?}",
+        comments.iter().map(|c| &c.content).collect::<Vec<_>>()
+    );
+
+    // 场景 3：终态父单 no-op。
+    store
+        .transition_issue(p2.id, IssueStatus::Cancelled, &actor)
+        .unwrap();
+    super::sync_parent_status(&store, p2.id, &actor).unwrap();
+    assert_eq!(
+        store.get_issue(p2.id).unwrap().status,
+        IssueStatus::Cancelled
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[cfg(feature = "cluster")]
+#[tokio::test]
+async fn on_issue_settled_syncs_parent_and_attempts_redispatch() {
+    let dir = unique_dir("settled");
+    let ctx = make_ctx_with_board(&dir);
+    let store = store_of(&ctx);
+    let actor = Actor::admin("test-session");
+    let parent = store
+        .create_issue(nemesis_board::NewIssue {
+            title: "父".into(),
+            ..Default::default()
+        })
+        .unwrap();
+    let a = store
+        .create_issue(nemesis_board::NewIssue {
+            title: "A".into(),
+            parent_issue_id: Some(parent.id),
+            ..Default::default()
+        })
+        .unwrap();
+    let b = store
+        .create_issue(nemesis_board::NewIssue {
+            title: "B".into(),
+            parent_issue_id: Some(parent.id),
+            ..Default::default()
+        })
+        .unwrap();
+    store.set_issue_dependencies(b.id, &[a.id]).unwrap();
+
+    // A 落定 done：父单联动（B 未 done → 不收口）+ B 补派尝试（依赖闸
+    // 已放行，无集群 → 派发核心报错，仅 warn 留痕——集群缺失是系统性
+    // 状态，不逐单刷评论）。B 保持 backlog 等真机路径。
+    store
+        .transition_issue(a.id, IssueStatus::Done, &actor)
+        .unwrap();
+    super::on_issue_settled(&store, None, a.id, &actor);
+    assert_eq!(
+        store.get_issue(parent.id).unwrap().status,
+        IssueStatus::Backlog
+    );
+    let b_issue = store.get_issue(b.id).unwrap();
+    assert_eq!(b_issue.status, IssueStatus::Backlog);
+    assert!(store.list_comments(b.id).unwrap().is_empty());
+
+    // B 也落定 done → 父单收口 in_review。
+    store
+        .transition_issue(b.id, IssueStatus::Done, &actor)
+        .unwrap();
+    super::on_issue_settled(&store, None, b.id, &actor);
+    assert_eq!(
+        store.get_issue(parent.id).unwrap().status,
+        IssueStatus::InReview
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+// -------------------------------------------------------------------------
+// Swarm M3 批次 E：讨论频道（channel.list / channel.messages / channel.post）
+// -------------------------------------------------------------------------
+
+/// 假发言桥：记录调用并回固定首响（不写 store——web 层只负责桥接）。
+struct FakeIngress(std::sync::Mutex<Vec<(String, String, i64, String)>>);
+
+impl nemesis_board::service::DiscussionIngress for FakeIngress {
+    fn post(
+        &self,
+        sender: &Actor,
+        thread_kind: &str,
+        thread_id: i64,
+        _client_msg_id: &str,
+        content: &str,
+        _reply_to: Option<i64>,
+        _kind_tag: &str,
+    ) -> Result<serde_json::Value, String> {
+        self.0.lock().unwrap().push((
+            format!("{}/{}", sender.kind, sender.id),
+            thread_kind.to_string(),
+            thread_id,
+            content.to_string(),
+        ));
+        Ok(serde_json::json!({ "message_id": 42, "seq": 7 }))
+    }
+}
+
+#[tokio::test]
+async fn test_channel_list_and_messages_pagination() {
+    let dir = unique_dir("channel-list");
+    let store = Arc::new(BoardStore::open(&dir.join("board.db"), "NB").expect("open store"));
+    store.ensure_default_channels().unwrap();
+    let ctx = make_ctx_with_service(
+        &dir,
+        nemesis_board::BoardService::new(store.clone(), NodeRole::Coordinator),
+    );
+
+    let out = dispatch(&ctx, "channel.list", serde_json::json!({}))
+        .await
+        .unwrap()
+        .unwrap();
+    let channels = out["channels"].as_array().unwrap();
+    assert_eq!(channels.len(), 3, "default #dev/#qa/#general seeded");
+    let cid = channels[0]["id"].as_i64().unwrap();
+
+    // 直接经 store 造 3 条消息，验证 after_id 游标与 limit。
+    for i in 0..3 {
+        store
+            .append_channel_message(nemesis_board::NewChannelMessage {
+                channel_id: cid,
+                sender: Actor::agent("node-b"),
+                content: format!("msg-{i}"),
+                parent_id: None,
+                mtype: "text".to_string(),
+            })
+            .unwrap();
+    }
+    let out = dispatch(
+        &ctx,
+        "channel.messages",
+        serde_json::json!({ "channel_id": cid }),
+    )
+    .await
+    .unwrap()
+    .unwrap();
+    assert_eq!(out["messages"].as_array().unwrap().len(), 3);
+
+    let out = dispatch(
+        &ctx,
+        "channel.messages",
+        serde_json::json!({ "channel_id": cid, "after_id": 2 }),
+    )
+    .await
+    .unwrap()
+    .unwrap();
+    let msgs = out["messages"].as_array().unwrap();
+    assert_eq!(msgs.len(), 1);
+    assert_eq!(msgs[0]["id"], 3);
+
+    let out = dispatch(
+        &ctx,
+        "channel.messages",
+        serde_json::json!({ "channel_id": cid, "limit": 2 }),
+    )
+    .await
+    .unwrap()
+    .unwrap();
+    assert_eq!(out["messages"].as_array().unwrap().len(), 2);
+
+    // 缺 channel_id → 报错。
+    assert!(dispatch(&ctx, "channel.messages", serde_json::json!({}))
+        .await
+        .is_err());
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[tokio::test]
+async fn test_channel_post_routes_through_ingress() {
+    let dir = unique_dir("channel-post");
+    let store = Arc::new(BoardStore::open(&dir.join("board.db"), "NB").expect("open store"));
+    store.ensure_default_channels().unwrap();
+    let cid = store.list_channels().unwrap()[0].id;
+
+    // 桥未装配 → 诚实拒绝。
+    let ctx = make_ctx_with_service(
+        &dir,
+        nemesis_board::BoardService::new(store.clone(), NodeRole::Coordinator),
+    );
+    let err = dispatch(
+        &ctx,
+        "channel.post",
+        serde_json::json!({ "channel_id": cid, "content": "hi" }),
+    )
+    .await
+    .expect_err("no ingress → honest error");
+    assert!(err.contains("讨论总线未装配"), "got: {err}");
+
+    // 注入假桥 → 发言经桥转发（sender=dashboard admin，内容原样）。
+    let fake = Arc::new(FakeIngress(std::sync::Mutex::new(Vec::new())));
+    let ctx = make_ctx_with_service(
+        &dir,
+        nemesis_board::BoardService::new(store.clone(), NodeRole::Coordinator)
+            .with_discussion(fake.clone()),
+    );
+    let out = dispatch(
+        &ctx,
+        "channel.post",
+        serde_json::json!({ "channel_id": cid, "content": "帮我看看这个报错" }),
+    )
+    .await
+    .unwrap()
+    .unwrap();
+    assert_eq!(out["posted"]["message_id"], 42);
+    {
+        let calls = fake.0.lock().unwrap();
+        assert_eq!(calls.len(), 1);
+        assert_eq!(calls[0].0, "admin/test-session");
+        assert_eq!(calls[0].2, cid);
+        assert_eq!(calls[0].3, "帮我看看这个报错");
+    }
+
+    // 空 content / 缺参 → 报错。
+    assert!(
+        dispatch(
+            &ctx,
+            "channel.post",
+            serde_json::json!({ "channel_id": cid, "content": "  " })
+        )
+        .await
+        .is_err()
+    );
+    assert!(
+        dispatch(&ctx, "channel.post", serde_json::json!({ "content": "x" }))
+            .await
+            .is_err()
+    );
     let _ = std::fs::remove_dir_all(&dir);
 }

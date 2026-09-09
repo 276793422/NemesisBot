@@ -383,6 +383,13 @@ pub fn models_catalog_cache_path(home_dir: &Path) -> PathBuf {
     workspace_data_dir(home_dir).join("models_catalog.json")
 }
 
+/// board 讨论唤醒水位快照：`<home>/workspace/data/board_wake_state.json`。
+/// 读写方：gateway worker 分支（board_bus WorkerWakeState::load_or_create，
+/// G8：worker 重启接续水位，历史 @ 不再全量重放）。
+pub fn board_wake_state_path(home_dir: &Path) -> PathBuf {
+    workspace_data_dir(home_dir).join("board_wake_state.json")
+}
+
 /// 旧版缓存位置（2026-08-28 前直接丢 home 根；保留仅供读时迁移与测试播种）。
 pub fn legacy_models_catalog_cache_path(home_dir: &Path) -> PathBuf {
     home_dir.join("models_catalog.json")
@@ -454,6 +461,34 @@ pub fn resolve_cluster_rpc_cache_dir_in_workspace(workspace: &Path) -> PathBuf {
 /// 避免快照清理误删结果文件）。
 pub fn resolve_cluster_results_dir_in_workspace(workspace: &Path) -> PathBuf {
     resolve_cluster_rpc_cache_dir_in_workspace(workspace).join("results")
+}
+
+// --- 看板数据区（board.db + 每日备份；写方 nemesis-board / gateway 维护循环） ---
+
+/// `<workspace>/backups` —— board.db 每日备份目录（`board-YYYYMMDD.db`，
+/// 保留份数由 config `board.backup.keep` 控制）。
+pub fn resolve_board_backups_dir_in_workspace(workspace: &Path) -> PathBuf {
+    workspace.join("backups")
+}
+
+/// `<workspace>/board/assets` —— 看板任务资产实体目录（Swarm M2 §4.2：
+/// `assets/<ref>` 落盘实体、asset 表存索引；不设 TTL，随所属 issue 删除
+/// 级联清理）。写方 gateway（登记/下载端点）；§5.4 下载端点的白名单根。
+pub fn resolve_board_assets_dir_in_workspace(workspace: &Path) -> PathBuf {
+    workspace.join("board").join("assets")
+}
+
+/// `<workspace>/config/asset_secret.key` —— 本节点资产下载 HMAC 密钥
+/// （Swarm M3 §5.4；64 hex = 32 字节熵，load-or-create，损坏 loud 不重置）。
+pub fn resolve_asset_secret_path_in_workspace(workspace: &Path) -> PathBuf {
+    workspace_config_dir(workspace).join("asset_secret.key")
+}
+
+/// `<workspace>/config/asset_node_url.txt` —— 本节点对外 web 基址
+/// （如 `http://192.168.1.10:49100`）。gateway bind 后写一次；board_asset
+/// 工具 publish 时读取（跨进程一致——比进程内 OnceLock 多覆盖 CLI 场景）。
+pub fn resolve_asset_node_url_path_in_workspace(workspace: &Path) -> PathBuf {
+    workspace_config_dir(workspace).join("asset_node_url.txt")
 }
 
 // --- 子系统配置区补充（与上方 resolve_*_config_path_in_workspace 同族） ---

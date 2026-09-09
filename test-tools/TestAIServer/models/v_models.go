@@ -407,3 +407,40 @@ func (m *TestAI85) Process(messages []Message) string {
 }
 
 func (m *TestAI85) Delay() time.Duration { return 0 }
+
+// TestAI100 — Swarm M3 G5 交付线程验证模型。
+//
+// 固定输出五段结构化汇报（## 结论 / ## 交付物清单 / ## 自检 / ## 风险与未尽
+// 事项 / ## 经验与坑——节名与 nemesis-board report::REPORT_FORMAT_SECTION
+// 同源），不调工具。T21 用它驱动 worker dispatch：write_back_board_dispatch
+// 解析出五段 → ctype='delivery' 首评 + in_progress→in_review；对照 testai-3.1
+// 的无格式回复走「✅ worker 汇报完成」普通评论降级路径（T15）。
+// 「经验与坑」段（M4.5）给评审 agent 的蒸馏纪律提供待审数据（真伪由评审
+// 自判——本模型的锚点行不会被蒸馏入库，入库对象由 review_model 的
+// <REVIEW_EXP> 槽位驱动）。
+type TestAI100 struct{}
+
+func NewTestAI100() *TestAI100 { return &TestAI100{} }
+
+func (m *TestAI100) Name() string { return "testai-10.0" }
+
+func (m *TestAI100) Process(messages []Message) string {
+	return `## 结论
+完成。T21 交付线程验证任务已按验收标准执行完毕。
+
+## 交付物清单
+- branch: uat/t21-delivery
+- commits: a1b2c3d fix delivery thread, e4f5g6h add report format
+- 改动文件: src/main.rs, src/report.rs
+
+## 自检结果
+对照验收标准逐条自检通过：汇报格式五段齐全，内容与任务描述一致。
+
+## 风险与未尽事项
+无。
+
+## 经验与坑
+- 坑（t29auth）：T29 汇报经验锚点：worker 侧经验段是数据，由验收 agent 判断后蒸馏。`
+}
+
+func (m *TestAI100) Delay() time.Duration { return 0 }

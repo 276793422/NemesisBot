@@ -16,12 +16,25 @@ vi.mock('../../../composables/useWSAPI', () => ({
   initWSAPI: vi.fn(),
 }))
 
+// useSSE 打桩（连接层不在本测试范围）：记录订阅，测试内手动触发
+// board-changed 验证 DiscussionPanel 的增量拉取链路。
+const sseHandlers = new Map<string, (data?: unknown) => void>()
+vi.mock('../../../composables/useSSE', () => ({
+  on: vi.fn((type: string, handler: (data?: unknown) => void) => {
+    sseHandlers.set(type, handler)
+  }),
+  off: vi.fn((type: string) => {
+    sseHandlers.delete(type)
+  }),
+}))
+
 import BoardKanban from '../BoardKanban.vue'
 import InboxPanel from '../InboxPanel.vue'
 import ProjectPanel from '../ProjectPanel.vue'
 import IssueDetailModal from '../IssueDetailModal.vue'
 import AutopilotPanel from '../AutopilotPanel.vue'
 import BoardTabs from '../BoardTabs.vue'
+import DiscussionPanel from '../DiscussionPanel.vue'
 import IssueListView from '../../../views/IssueListView.vue'
 
 function issue(over: Record<string, unknown> = {}) {
@@ -446,11 +459,162 @@ describe('AutopilotPanel（自动化 P4）', () => {
   })
 })
 
+describe('DiscussionPanel（讨论 M3 批次 E）', () => {
+  function chan(over: Record<string, unknown> = {}) {
+    return { id: 1, name: '#dev', description: '开发协作', created_at: 1700000000, ...over }
+  }
+  function msg(over: Record<string, unknown> = {}) {
+    return {
+      id: 1,
+      channel_id: 1,
+      sender: { kind: 'agent', id: 'node-b' },
+      content: '大家好',
+      parent_id: null,
+      mtype: 'text',
+      created_at: 1700000000,
+      ...over,
+    }
+  }
+
+  it('频道列表 + 默认选第一个 + 初始拉取（after_id=0）+ sender 三色徽标 + 回复缩进', async () => {
+    requestMock.mockImplementation((_m: string, cmd: string) => {
+      if (cmd === 'channel.list')
+        return Promise.resolve({ channels: [chan(), chan({ id: 2, name: '#general' })] })
+      if (cmd === 'channel.messages')
+        return Promise.resolve({
+          messages: [
+            msg(),
+            msg({ id: 2, sender: { kind: 'admin', id: 'zoo' }, content: '收到' }),
+            msg({ id: 3, sender: { kind: 'system', id: 'board' }, content: 'NB-1 已派发', mtype: 'system' }),
+            msg({ id: 4, content: '跟进', parent_id: 1 }),
+          ],
+        })
+      return Promise.resolve({})
+    })
+    const w = mount(DiscussionPanel)
+    await flushPromises()
+    expect(
+      requestMock.mock.calls.find((c) => c[1] === 'channel.messages')![2],
+    ).toEqual({ channel_id: 1, after_id: 0, limit: 500 })
+    expect(w.text()).toContain('agent/node-b')
+    expect(w.text()).toContain('admin/zoo')
+    // 三色徽标：admin=info / agent=success / system=neutral
+    expect(w.find('.badge-info').exists()).toBe(true)
+    expect(w.find('.badge-success').exists()).toBe(true)
+    expect(w.find('.message-item.system').exists()).toBe(true)
+    // parent_id 非空 → 缩进线程行
+    expect(w.find('.message-item.reply').text()).toContain('跟进')
+  })
+
+  it('发言 → channel.post 后立即增量拉取并清空输入框', async () => {
+    let server: any[] = [msg()]
+    requestMock.mockImplementation((_m: string, cmd: string, data: any) => {
+      if (cmd === 'channel.list') return Promise.resolve({ channels: [chan()] })
+      if (cmd === 'channel.messages')
+        return Promise.resolve({ messages: server.filter((m) => m.id > data.after_id) })
+      if (cmd === 'channel.post') {
+        server = [...server, msg({ id: 4, sender: { kind: 'admin', id: 'zoo' }, content: data.content })]
+        return Promise.resolve({ posted: { message_id: 4, seq: 9 } })
+      }
+      return Promise.resolve({})
+    })
+    const w = mount(DiscussionPanel)
+    await flushPromises()
+    const ta = w.find('textarea.composer-input')
+    await ta.setValue('帮忙看下 NB-1')
+    await ta.trigger('keydown.enter')
+    await flushPromises()
+    expect(
+      requestMock.mock.calls.find((c) => c[1] === 'channel.post')![2],
+    ).toEqual({ channel_id: 1, content: '帮忙看下 NB-1' })
+    // 不等 SSE 推送：发言后立即按游标补拉（最后一次拉取 after_id=首条 id）。
+    const pulls = requestMock.mock.calls.filter((c) => c[1] === 'channel.messages')
+    expect(pulls[pulls.length - 1]![2].after_id).toBe(1)
+    expect(w.text()).toContain('帮忙看下 NB-1')
+    expect((w.find('textarea.composer-input').element as HTMLTextAreaElement).value).toBe('')
+  })
+
+  it('board-changed 推送（200ms 防抖）→ 按 lastId 游标拉增量并追加', async () => {
+    vi.useFakeTimers()
+    try {
+      let server: any[] = [msg()]
+      requestMock.mockImplementation((_m: string, cmd: string, data: any) => {
+        if (cmd === 'channel.list') return Promise.resolve({ channels: [chan()] })
+        if (cmd === 'channel.messages')
+          return Promise.resolve({ messages: server.filter((m) => m.id > data.after_id) })
+        return Promise.resolve({})
+      })
+      const w = mount(DiscussionPanel)
+      await flushPromises()
+      // worker 上行新消息落库 → SSE 广播 → 防抖 200ms 后增量拉取。
+      server = [...server, msg({ id: 2, content: '@zoo 收到，马上看' })]
+      sseHandlers.get('board-changed')!()
+      await vi.advanceTimersByTimeAsync(200)
+      const pulls = requestMock.mock.calls.filter((c) => c[1] === 'channel.messages')
+      expect(pulls).toHaveLength(2)
+      expect(pulls[1]![2].after_id).toBe(1)
+      expect(w.text()).toContain('@zoo 收到，马上看')
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('channel.post 被拒（额度）→ toast 原样透出且输入保留', async () => {
+    requestMock.mockImplementation((_m: string, cmd: string) => {
+      if (cmd === 'channel.list') return Promise.resolve({ channels: [chan()] })
+      if (cmd === 'channel.messages') return Promise.resolve({ messages: [] })
+      if (cmd === 'channel.post')
+        return Promise.reject('[quota_exhausted] 本线程发言额度已用尽')
+      return Promise.resolve({})
+    })
+    const w = mount(DiscussionPanel)
+    await flushPromises()
+    const ta = w.find('textarea.composer-input')
+    await ta.setValue('第二条')
+    await w.find('button.composer-send').trigger('click')
+    await flushPromises()
+    expect(useToast().toasts.some((t) => t.message.includes('quota_exhausted'))).toBe(true)
+    expect((w.find('textarea.composer-input').element as HTMLTextAreaElement).value).toBe('第二条')
+  })
+})
+
+describe('IssueDetailModal ctype 徽标（M3 批次 E）', () => {
+  function detailIssue(comments: any[]) {
+    return { ...issue(), comments, activity: [], subscribers: [] }
+  }
+
+  it('delivery=交付(badge-info+底色)、question=提问(badge-warning)、回复行 discussion 徽标', async () => {
+    requestMock.mockImplementation((_m: string, cmd: string) => {
+      if (cmd === 'issue.get')
+        return Promise.resolve({
+          issue: detailIssue([
+            { id: 10, author: { kind: 'worker', id: 'node-b' }, content: '## 结论\n完成', parent_id: null, ctype: 'delivery', created_at: 1700000000 },
+            { id: 11, author: { kind: 'admin', id: 'alice' }, content: '为什么选方案 X？', parent_id: null, ctype: 'question', created_at: 1700000001 },
+            { id: 12, author: { kind: 'worker', id: 'node-b' }, content: '跟进说明', parent_id: 10, ctype: 'discussion', created_at: 1700000002 },
+          ]),
+        })
+      if (cmd === 'attachment.list') return Promise.resolve({ attachments: [] })
+      if (cmd === 'nodes.list') return Promise.resolve({ nodes: [] })
+      return Promise.resolve({})
+    })
+    const w = mount(IssueDetailModal, { props: { issueId: 1 } })
+    await flushPromises()
+    expect(w.text()).toContain('交付')
+    expect(w.text()).toContain('提问')
+    const delivery = w.findAll('.comment-item').find((c) => c.text().includes('## 结论'))!
+    expect(delivery.find('.badge-info').exists()).toBe(true)
+    expect(delivery.find('.comment-body-report').exists()).toBe(true)
+    const reply = w.find('.reply-item')
+    expect(reply.text()).toContain('讨论')
+    expect(reply.find('.badge-info').exists()).toBe(true)
+  })
+})
+
 describe('BoardTabs（页签顺序）', () => {
-  it('从左到右 = 使用依赖链：项目 → 列表 → 看板 → 收件箱 → 自动化', () => {
+  it('从左到右 = 使用依赖链：项目 → 列表 → 看板 → 收件箱 → 自动化 → 讨论', () => {
     const w = mount(BoardTabs, { props: { modelValue: 'projects' } })
     const labels = w.findAll('button').map((b) => b.text())
-    expect(labels).toEqual(['项目', '列表', '看板', '收件箱', '自动化'])
+    expect(labels).toEqual(['项目', '列表', '看板', '收件箱', '自动化', '讨论'])
   })
 
   it('点击页签 emit update:modelValue', async () => {

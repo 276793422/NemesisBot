@@ -46,6 +46,9 @@ pub struct ClusterServiceAdapter {
     // set_result 落盘真结果；成功 → delete 清占位）。与 gateway 传给
     // peer_chat_handler 的是同一份 adapter（同一 result_store 真相源）。
     result_persister: Arc<dyn nemesis_cluster::rpc::peer_chat_handler::TaskResultPersister>,
+    // Swarm M3（G4）：看板讨论事件入站箱（worker 侧 Some；master/board
+    // 裁剪时 None）。每次 start 换入新管道（stop/start 周期安全）。
+    discussion_inbox: Option<Arc<crate::cluster_agent::DiscussionInbox>>,
     shutdown_tx: tokio::sync::broadcast::Sender<()>,
 }
 
@@ -60,6 +63,7 @@ impl ClusterServiceAdapter {
         cluster_task_list: Arc<ClusterTaskList>,
         cluster_work_queue: Arc<ClusterWorkQueue>,
         result_persister: Arc<dyn nemesis_cluster::rpc::peer_chat_handler::TaskResultPersister>,
+        discussion_inbox: Option<Arc<crate::cluster_agent::DiscussionInbox>>,
     ) -> Self {
         let (shutdown_tx, _) = tokio::sync::broadcast::channel(1);
         Self {
@@ -74,6 +78,7 @@ impl ClusterServiceAdapter {
             cluster_task_list,
             cluster_work_queue,
             result_persister,
+            discussion_inbox,
             shutdown_tx,
         }
     }
@@ -199,6 +204,16 @@ impl ClusterServiceAdapter {
         let rpc_client = self.cluster.rpc_client_arc();
         let cluster_arc = self.cluster.clone();
         let result_persister = self.result_persister.clone();
+        // 讨论通道：每次 start 造新管道换入 inbox（stop/start 周期安全）。
+        let discussion_rx = match &self.discussion_inbox {
+            Some(inbox) => {
+                let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
+                inbox.set_sender(tx);
+                Some(rx)
+            }
+            None => None,
+        };
+        let self_node_id = self.cluster.node_id().to_string();
         let handle = match crate::agent_factory::build_cluster_agent_loop(&self.shared, cluster_arc)
         {
             Ok((cluster_agent, cluster_config, cluster_observer)) => {
@@ -214,6 +229,8 @@ impl ClusterServiceAdapter {
                         rpc_client,
                         cluster_observer,
                         Some(result_persister),
+                        discussion_rx,
+                        self_node_id,
                         shutdown_rx,
                     )
                     .await;
@@ -258,6 +275,7 @@ impl LifecycleService for ClusterServiceAdapter {
                 &self.cluster_task_list,
                 &self.cluster_work_queue,
                 &self.result_persister,
+                self.discussion_inbox.as_ref(),
                 self.shutdown_tx.clone(),
             ))
         })?;
@@ -323,6 +341,7 @@ async fn start_cluster_components(
     cluster_task_list: &Arc<ClusterTaskList>,
     cluster_work_queue: &Arc<ClusterWorkQueue>,
     result_persister: &Arc<dyn nemesis_cluster::rpc::peer_chat_handler::TaskResultPersister>,
+    discussion_inbox: Option<&Arc<crate::cluster_agent::DiscussionInbox>>,
     shutdown_tx: tokio::sync::broadcast::Sender<()>,
 ) -> Result<Option<tokio::task::JoinHandle<()>>, String> {
     // 1. Start cluster (registers local node, creates RPC client, starts sync/recovery loops)
@@ -346,6 +365,16 @@ async fn start_cluster_components(
     // 4. Build cluster agent loop and spawn
     let rpc_client = cluster.rpc_client_arc();
     let cluster_arc = cluster.clone();
+    // 讨论通道：每次 start 造新管道换入 inbox（stop/start 周期安全）。
+    let discussion_rx = match discussion_inbox {
+        Some(inbox) => {
+            let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
+            inbox.set_sender(tx);
+            Some(rx)
+        }
+        None => None,
+    };
+    let self_node_id = cluster.node_id().to_string();
     match crate::agent_factory::build_cluster_agent_loop(shared, cluster_arc) {
         Ok((cluster_agent, cluster_config, cluster_observer)) => {
             let shutdown_rx = shutdown_tx.subscribe();
@@ -361,6 +390,8 @@ async fn start_cluster_components(
                     rpc_client,
                     cluster_observer,
                     Some(result_persister),
+                    discussion_rx,
+                    self_node_id,
                     shutdown_rx,
                 )
                 .await;

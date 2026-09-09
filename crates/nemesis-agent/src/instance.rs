@@ -73,6 +73,12 @@ pub struct AgentInstance {
     /// None = 非子代理或全量供给。instance 级而非 loop 级——并发子代理互不
     /// 串扰（loop 级全局槽会被并行 detached 回合互踩）。
     detached_allowed_tools: Mutex<Option<Vec<String>>>,
+    /// Swarm M1（裸提示词模式）：零工具供给开关。`run_detached` 派生时由
+    /// `DetachedOpts.no_tools` 设置；`effective_tool_defs` 见它立即返回空
+    /// 供给（纯文本单轮调用，board planner / 验收 / 主持人等结构化子系统
+    /// 用——不向模型暴露任何工具定义）。instance 级与白名单同理由：并发
+    /// detached 回合互不串扰。
+    detached_no_tools: Mutex<bool>,
     /// G2 (devtool-upgrade 阶段 3)：本 instance 的子代理嵌套深度
     /// （0 = 顶层 agent，N = 第 N 层子代理）。`run_detached` 派生时设置；
     /// 工具分发（`handle_tool_call_at_depth`）读它喂给 depth-aware 工具
@@ -111,6 +117,7 @@ impl AgentInstance {
             fallback_candidates: Mutex::new(Vec::new()),
             provider_meta: Mutex::new(None),
             detached_allowed_tools: Mutex::new(None),
+            detached_no_tools: Mutex::new(false),
             detached_depth: std::sync::atomic::AtomicUsize::new(0),
             instruction_claims: Mutex::new(Vec::new()),
             pending_instructions: Mutex::new(Vec::new()),
@@ -580,6 +587,21 @@ impl AgentInstance {
     /// 设置子代理工具白名单（`run_detached` 内部使用）。
     pub fn set_detached_allowed_tools(&self, tools: Option<Vec<String>>) {
         *self.detached_allowed_tools.lock().unwrap() = tools;
+    }
+
+    // -----------------------------------------------------------------------
+    // Detached bare mode (Swarm M1, 裸提示词模式)
+    // -----------------------------------------------------------------------
+
+    /// 零工具供给开关。`effective_tool_defs` 见它立即返回空供给——模型
+    /// 看不到任何工具定义，配合 max_turns=1 即纯文本单轮 LLM 调用。
+    pub fn detached_no_tools(&self) -> bool {
+        *self.detached_no_tools.lock().unwrap()
+    }
+
+    /// 设置零工具供给（`run_detached` 内部使用）。
+    pub fn set_detached_no_tools(&self, bare: bool) {
+        *self.detached_no_tools.lock().unwrap() = bare;
     }
 
     // -----------------------------------------------------------------------

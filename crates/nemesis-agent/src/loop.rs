@@ -1021,6 +1021,18 @@ pub struct DetachedOpts<'a> {
     /// 工具轮预算（>0 时作为 `turn_budget` 传入，REPLACE
     /// `config.max_turns`；0 = 用主配置默认）。
     pub max_turns: u32,
+    /// Swarm M1（裸提示词模式）：替换主 loop 人格 system_prompt（本回合
+    /// 专用）。None = 继承主 loop 人格。供 board planner / 验收 / 主持人等
+    /// 结构化子系统使用——它们需要无人格污染的纯净调用，不是"另一个
+    /// 人格的 agent"。
+    pub system_prompt: Option<&'a str>,
+    /// Swarm M1：零工具供给。true = 本回合不向模型暴露任何工具定义
+    /// （`effective_tool_defs` 直返空）；false = 正常供给链
+    /// （tier → 白名单 → hidden）。与 max_turns=1 组合即纯文本单轮调用。
+    pub no_tools: bool,
+    /// Swarm M1：会话标签，注入 session_key（`subagent:{label}:{uuid}`）与
+    /// trace_id，供日志检索与可观测（G13）。None = 维持 `subagent:{uuid}`。
+    pub label: Option<&'a str>,
 }
 
 pub struct AgentLoop {
@@ -5124,19 +5136,37 @@ impl AgentLoop {
         }
     }
 
+    /// Swarm M1：detached 会话键构造。`label` 注入段（`subagent:{label}:{uuid}`）
+    /// 供日志检索与可观测（G13）；None 维持 `subagent:{uuid}` 现状。
+    fn detached_session_key(label: Option<&str>) -> String {
+        match label {
+            Some(l) => format!("subagent:{}:{}", l, uuid::Uuid::new_v4()),
+            None => format!("subagent:{}", uuid::Uuid::new_v4()),
+        }
+    }
+
     /// K1/K2（devtool-upgrade 阶段 4）：[`AgentLoop::run_detached`] 的**事件
     /// 全集**变体。同一条 `run_with_trace` 链路（工具调度、安全 8 层、
     /// guardian、tier、spill、turn_guard 全部同源），但把事件 `Vec` 原样
     /// 交还调用方——headless `run` 文本模式折 Done/Error，NDJSON 模式（K2）
     /// 逐事件序列化。会话语义同 run_detached：临时 instance 跑完即弃。
     pub async fn run_detached_events(&self, task: &str, opts: DetachedOpts<'_>) -> Vec<AgentEvent> {
-        let session_key = format!("subagent:{}", uuid::Uuid::new_v4());
-        let instance = AgentInstance::new(self.config.clone());
+        // Swarm M1（裸提示词模式）：system_prompt 覆盖须在 AgentInstance::new
+        // 之前——构造函数把它注入为 history 首轮 system turn。
+        let mut cfg = self.config.clone();
+        if let Some(sp) = opts.system_prompt {
+            cfg.system_prompt = Some(sp.to_string());
+        }
+        let session_key = Self::detached_session_key(opts.label);
+        let instance = AgentInstance::new(cfg);
         if let Some(allowed) = opts.allowed_tools
             && !allowed.is_empty()
         {
             instance
                 .set_detached_allowed_tools(Some(allowed.iter().map(|s| s.to_string()).collect()));
+        }
+        if opts.no_tools {
+            instance.set_detached_no_tools(true);
         }
         // G2: record the sub-agent nesting depth on the instance — the serial
         // dispatch reads it back (instance.detached_depth()) and injects it
@@ -5153,17 +5183,65 @@ impl AgentLoop {
             async_callback: None,
         };
         let trace_id = format!("subagent-{}", uuid::Uuid::new_v4().simple());
-        self.run_with_trace(
-            &instance,
-            task,
-            &context,
-            &trace_id,
-            false,
-            &tokio_util::sync::CancellationToken::new(),
-            (opts.max_turns > 0).then_some(opts.max_turns),
-            &[],
-        )
-        .await
+        // Swarm G13：detached 路径补合成 ConversationStart/End。run_llm_loop
+        // 只发 LlmRequest/LlmResponse，而请求日志观察者（RequestLoggerObserver
+        // / ClusterRequestLoggerObserver）的 active 表以 start 事件注册
+        // trace_id——缺 start 则全部事件被静默丢弃，评审/子代理/无头任务的
+        // LLM 调用不可回放。与 cluster_agent worker 任务同一处置。
+        self.emit_observer_sync(crate::loop_executor::ObserverEvent::ConversationStart {
+            trace_id: trace_id.clone(),
+            session_key: session_key.clone(),
+            channel: "subagent".to_string(),
+            chat_id: session_key.clone(),
+            sender_id: "subagent".to_string(),
+            content: task.to_string(),
+        })
+        .await;
+        let start_time = std::time::Instant::now();
+        let events = self
+            .run_with_trace(
+                &instance,
+                task,
+                &context,
+                &trace_id,
+                false,
+                &tokio_util::sync::CancellationToken::new(),
+                (opts.max_turns > 0).then_some(opts.max_turns),
+                &[],
+            )
+            .await;
+        let duration_ms = start_time.elapsed().as_millis() as u64;
+        let rounds = events
+            .iter()
+            .filter(|e| matches!(e, AgentEvent::ToolCall(_)))
+            .count() as u32
+            + 1;
+        // Done 优先、Error 次之、皆无为空串——与 run_detached 的提取一致。
+        let final_response = events
+            .iter()
+            .rev()
+            .find_map(|e| match e {
+                AgentEvent::Done(m) => Some(m.clone()),
+                _ => None,
+            })
+            .or_else(|| {
+                events.iter().rev().find_map(|e| match e {
+                    AgentEvent::Error(e) => Some(e.clone()),
+                    _ => None,
+                })
+            })
+            .unwrap_or_default();
+        self.emit_observer_sync(crate::loop_executor::ObserverEvent::ConversationEnd {
+            trace_id,
+            session_key,
+            total_rounds: rounds,
+            duration_ms,
+            content: final_response,
+            channel: "subagent".to_string(),
+            chat_id: context.chat_id,
+        })
+        .await;
+        events
     }
 
     /// Resume execution from a previously saved conversation state.
@@ -7225,6 +7303,11 @@ impl AgentLoop {
     /// instance 才带 `detached_allowed_tools`，普通回合 None 直通）→ 文档折叠。
     /// instance 级白名单（非 loop 级全局槽）：并发 detached 回合互不串扰。
     fn effective_tool_defs(&self, instance: &AgentInstance) -> Vec<crate::types::ToolDefinition> {
+        // Swarm M1（裸提示词模式）：零工具供给直返空——纯文本单轮调用，
+        // 模型看不到任何工具定义（优先级高于 tier/白名单/hidden 全链）。
+        if instance.detached_no_tools() {
+            return Vec::new();
+        }
         let mut defs = self.build_tool_defs();
         if let Some(allowed) = instance.detached_allowed_tools()
             && !allowed.is_empty()

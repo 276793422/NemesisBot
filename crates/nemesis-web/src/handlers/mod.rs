@@ -10,6 +10,8 @@ pub mod agent;
 // handler 诚实报「未装配」。
 pub mod approval;
 pub mod board;
+// Swarm M3（§5.4/D6）：看板资产下载端点（HTTP，非 WSAPI；token 即凭据）。
+pub mod board_asset;
 pub mod channels;
 pub mod chat;
 #[cfg(feature = "cluster")]

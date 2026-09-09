@@ -10,6 +10,8 @@ path = "src/main.rs"
 
 [dependencies]
 test-harness = { path = "../test-harness" }
+nemesis-board = { path = "../../crates/nemesis-board" }
+nemesis-path = { path = "../../crates/nemesis-path" }
 tokio = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
@@ -17,6 +19,7 @@ tokio-tungstenite = { workspace = true }
 futures = { workspace = true }
 anyhow = { workspace = true }
 chrono = { workspace = true }
+reqwest = { workspace = true }
 
 [lints]
 workspace = true

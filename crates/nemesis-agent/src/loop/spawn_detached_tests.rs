@@ -932,3 +932,201 @@ async fn run_detached_depth_enforcement_grandchild_rejected() {
         "被拒的 spawn 不得真的跑到闭包"
     );
 }
+
+// ---------------------------------------------------------------------------
+// ⑥ 裸提示词模式（Swarm M1）：system_prompt 覆盖 + no_tools 零供给 + label
+// ---------------------------------------------------------------------------
+
+/// 捕获每次请求的 (首条 system 消息内容, 工具名列表) 的迷你 provider。
+struct BareCaptureProvider {
+    seen: std::sync::Arc<std::sync::Mutex<Vec<(String, Vec<String>)>>>,
+}
+
+#[async_trait]
+impl LlmProvider for BareCaptureProvider {
+    async fn chat(
+        &self,
+        _model: &str,
+        messages: Vec<LlmMessage>,
+        _options: Option<crate::types::ChatOptions>,
+        tools: Vec<crate::types::ToolDefinition>,
+    ) -> Result<LlmResponse, String> {
+        let system = messages
+            .first()
+            .filter(|m| m.role == "system")
+            .map(|m| m.content.clone())
+            .unwrap_or_default();
+        self.seen
+            .lock()
+            .unwrap()
+            .push((system, tools.iter().map(|d| d.function.name.clone()).collect()));
+        Ok(LlmResponse {
+            content: "{\"plan\":[]}".to_string(),
+            tool_calls: Vec::new(),
+            finished: true,
+            reasoning_content: None,
+            usage: None,
+            raw_request_body: None,
+            raw_response_body: None,
+        })
+    }
+}
+
+#[tokio::test]
+async fn bare_mode_replaces_persona_and_hides_all_tools() {
+    let seen: std::sync::Arc<std::sync::Mutex<Vec<(String, Vec<String>)>>> = Default::default();
+    let mut agent_loop = AgentLoop::new(
+        Box::new(BareCaptureProvider {
+            seen: seen.clone(),
+        }),
+        test_config(), // 人格 = "You are a test assistant."
+    );
+    agent_loop.register_tool(
+        "echo_alpha".to_string(),
+        Box::new(EchoTool {
+            result: "a".to_string(),
+        }),
+    );
+
+    let out = agent_loop
+        .run_detached(
+            "拆解这个任务",
+            DetachedOpts {
+                system_prompt: Some("You are a JSON planning machine."),
+                no_tools: true,
+                label: Some("board-planner"),
+                max_turns: 1,
+                ..DetachedOpts::default()
+            },
+        )
+        .await
+        .expect("bare 模式单轮应成功");
+    assert_eq!(out, "{\"plan\":[]}");
+
+    let captures = seen.lock().unwrap();
+    assert_eq!(
+        captures.len(),
+        1,
+        "max_turns=1 + 零工具 = 恰一次 LLM 调用，实际 {} 次",
+        captures.len()
+    );
+    let (system, tools) = &captures[0];
+    assert_eq!(
+        system, "You are a JSON planning machine.",
+        "裸提示词必须整体替换人格 system prompt，实际: {system}"
+    );
+    assert!(!system.contains("test assistant"), "人格字符串不得残留");
+    assert!(tools.is_empty(), "no_tools 必须零供给，实际 {tools:?}");
+}
+
+#[tokio::test]
+async fn default_detached_keeps_tool_supply() {
+    // 对照组：不带 no_tools（Default=false）供给链照常——防裸模式误伤常态
+    // detached 路径（spawn 工具 / headless run 都依赖全量供给）。
+    let seen: std::sync::Arc<std::sync::Mutex<Vec<(String, Vec<String>)>>> = Default::default();
+    let mut agent_loop = AgentLoop::new(
+        Box::new(BareCaptureProvider {
+            seen: seen.clone(),
+        }),
+        test_config(),
+    );
+    agent_loop.register_tool(
+        "echo_alpha".to_string(),
+        Box::new(EchoTool {
+            result: "a".to_string(),
+        }),
+    );
+
+    agent_loop
+        .run_detached("task", DetachedOpts::default())
+        .await
+        .expect("常态 detached 应成功");
+
+    let captures = seen.lock().unwrap();
+    assert!(
+        !captures.is_empty() && captures[0].1.contains(&"echo_alpha".to_string()),
+        "常态 detached 必须保留工具供给，实际 {:?}",
+        captures.first().map(|c| &c.1)
+    );
+}
+
+#[tokio::test]
+async fn detached_session_key_label_format() {
+    let labeled = AgentLoop::detached_session_key(Some("board-planner"));
+    assert!(
+        labeled.starts_with("subagent:board-planner:"),
+        "label 必须作为 session_key 中段（日志检索锚点），实际: {labeled}"
+    );
+    let plain = AgentLoop::detached_session_key(None);
+    assert!(
+        plain.starts_with("subagent:") && !plain["subagent:".len()..].contains(':'),
+        "无 label 维持 subagent:{{uuid}} 现状，实际: {plain}"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// ⑥ Swarm G13：detached 路径补合成 ConversationStart/End
+// ---------------------------------------------------------------------------
+
+/// 请求日志观察者（RequestLoggerObserver/ClusterRequestLoggerObserver）的
+/// active 表以 start 事件注册 trace_id，缺 start 则 LlmRequest/LlmResponse
+/// 全部被静默丢弃——评审/子代理/无头任务的 LLM 调用将不可回放。本测试锁：
+/// run_detached 全程发射 start → LlmRequest → LlmResponse → end 的有序闭环。
+#[tokio::test]
+async fn run_detached_emits_observer_lifecycle_for_request_logging() {
+    use nemesis_observer::{ConversationEvent, EventType, Manager, Observer};
+    use std::sync::Mutex as StdMutex;
+
+    struct RecordingObserver {
+        events: StdMutex<Vec<EventType>>,
+    }
+    #[async_trait::async_trait]
+    impl Observer for RecordingObserver {
+        fn name(&self) -> &str {
+            "recorder"
+        }
+        async fn on_event(&self, event: ConversationEvent) {
+            self.events.lock().unwrap().push(event.event_type);
+        }
+    }
+
+    let provider = DetachedMockProvider::ok(vec![LlmResponse {
+        content: "sub-agent final answer".to_string(),
+        tool_calls: Vec::new(),
+        finished: true,
+        reasoning_content: None,
+        usage: None,
+        raw_request_body: None,
+        raw_response_body: None,
+    }]);
+    let mut agent_loop = AgentLoop::new(Box::new(provider), test_config());
+    let recorder = Arc::new(RecordingObserver {
+        events: StdMutex::new(Vec::new()),
+    });
+    let mgr = Arc::new(Manager::new());
+    mgr.register(recorder.clone()).await;
+    agent_loop.set_observer_manager(mgr);
+
+    let out = agent_loop
+        .run_detached("summarize the file", DetachedOpts::default())
+        .await
+        .expect("Done 事件应提取为 Ok");
+    assert_eq!(out, "sub-agent final answer");
+
+    let seq = recorder.events.lock().unwrap().clone();
+    let pos = |t: EventType| seq.iter().position(|e| *e == t);
+    let (start, req, resp, end) = (
+        pos(EventType::ConversationStart),
+        pos(EventType::LlmRequest),
+        pos(EventType::LlmResponse),
+        pos(EventType::ConversationEnd),
+    );
+    assert!(start.is_some(), "必须发射 ConversationStart（trace 注册锚）");
+    assert!(req.is_some() && resp.is_some(), "LLM 请求/响应事件必须到达观察者");
+    assert!(end.is_some(), "必须发射 ConversationEnd（active 表收尾）");
+    assert!(
+        start.unwrap() < req.unwrap() && req.unwrap() < resp.unwrap() && resp.unwrap() < end.unwrap(),
+        "事件必须按 start → request → response → end 有序，实际顺序: {:?}",
+        seq
+    );
+}
