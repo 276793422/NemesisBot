@@ -311,3 +311,45 @@ fn test_s4_init_cluster_log_logs_dir_field() {
 
     let _ = fs::remove_dir_all(log_dir);
 }
+
+/// 集群完备性加固 2026-09-11：write_entry 收到非 object fields 不 panic——
+/// 包一层 {"payload": fields} 落盘（旧实现 expect("fields must be a JSON
+/// object") 会把生产进程打崩；日志写入是观测面，不能因调用方类型错误炸）。
+#[test]
+fn test_write_entry_non_object_fields_wrapped_not_panic() {
+    let temp_dir = tempfile::TempDir::new().unwrap();
+    let log_dir = temp_dir.path();
+    let writer = ClusterLogWriter::new(log_dir.to_path_buf());
+
+    // 传裸字符串（非 object）：旧实现此处 panic。
+    writer.write_entry("oops_event", serde_json::json!("bare-string"));
+    writer.write_entry("oops_event", serde_json::Value::Null);
+    writer.write_entry("oops_event", serde_json::json!(42));
+
+    let date_str = chrono::Local::now().format("%Y-%m-%d").to_string();
+    let log_file = log_dir.join(format!("cluster_{}.log", date_str));
+    let content = fs::read_to_string(&log_file).unwrap();
+    let lines: Vec<serde_json::Value> = content
+        .lines()
+        .map(|l| serde_json::from_str(l).unwrap())
+        .collect();
+    assert_eq!(lines.len(), 3, "三条全部落盘");
+    for entry in &lines {
+        assert_eq!(entry["event"], "oops_event");
+        assert!(
+            entry.get("payload").is_some(),
+            "非 object 字段应包在 payload 下"
+        );
+    }
+    assert_eq!(lines[0]["payload"], "bare-string");
+    assert_eq!(lines[2]["payload"], 42);
+
+    // object 调用方行为不变（不被包装）。
+    writer.write_entry("ok_event", serde_json::json!({"k": "v"}));
+    let content = fs::read_to_string(&log_file).unwrap();
+    let last: serde_json::Value = content.lines().last().unwrap().parse().unwrap();
+    assert_eq!(last["k"], "v");
+    assert!(last.get("payload").is_none(), "object 调用方不包装");
+
+    let _ = fs::remove_dir_all(log_dir);
+}

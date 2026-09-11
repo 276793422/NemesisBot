@@ -120,13 +120,34 @@ fn default_announce_expiry_secs() -> i64 {
 }
 
 /// Load app configuration from workspace/config/config.cluster.json.
+///
+/// 解析失败的文件按空配置启动（lenient，不阻断集群装配），但必须留
+/// WARN——「配置明明写了却不生效」若无日志就是无声黑洞（集群完备性
+/// 加固 2026-09-11：此前读失败/解析失败双双静默）。
 pub fn load_app_config(workspace: &Path) -> AppConfig {
     // 委托 nemesis-path 唯一拼接点。
     let config_path = nemesis_path::resolve_cluster_config_path_in_workspace(workspace);
     if config_path.exists() {
         match std::fs::read_to_string(&config_path) {
-            Ok(content) => serde_json::from_str(&content).unwrap_or_default(),
-            Err(_) => AppConfig::default(),
+            Ok(content) => match serde_json::from_str(&content) {
+                Ok(cfg) => cfg,
+                Err(e) => {
+                    tracing::warn!(
+                        path = %config_path.display(),
+                        error = %e,
+                        "[Cluster] config.cluster.json parse failed; using default app config (cluster likely disabled)"
+                    );
+                    AppConfig::default()
+                }
+            },
+            Err(e) => {
+                tracing::warn!(
+                    path = %config_path.display(),
+                    error = %e,
+                    "[Cluster] config.cluster.json unreadable; using default app config"
+                );
+                AppConfig::default()
+            }
         }
     } else {
         AppConfig::default()
@@ -134,6 +155,13 @@ pub fn load_app_config(workspace: &Path) -> AppConfig {
 }
 
 /// Save app configuration to workspace/config/config.cluster.json.
+///
+/// ⚠️ **危险**：`AppConfig` 是全量覆盖写（typed round-trip）。用它保存一个
+/// **默认构造**的 `AppConfig` 会把用户已配置的 `enabled`/`port`/`rpc_port`/
+/// `token` 等**全部抹回默认值**。新增写入方前先确认你是「读-改-写」同一份
+/// （`load_app_config` → 改字段 → 本函数），不要拿 default 直接存。
+/// （集群完备性加固 2026-09-11 审计注记；当前生产无调用方，本函数是
+/// 潜在脚枪，留 doc 而非删除——恢复/新增消费方时按上述纪律使用。）
 pub fn save_app_config(workspace: &Path, config: &AppConfig) -> Result<(), ConfigError> {
     // 委托 nemesis-path 唯一拼接点。
     let config_path = nemesis_path::resolve_cluster_config_path_in_workspace(workspace);

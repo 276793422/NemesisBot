@@ -2303,26 +2303,19 @@ pub async fn run(local: bool, extra_args: &[String]) -> Result<()> {
                 // sweep 先于 auto-join 的 self/非 worker 早退：任何非本节点
                 // announce（含身份/tags 变更刷新）都是重试信号；本节点自身
                 // 的 announce 不是（派发匹配器本就排除本机）。
-                if node_id != self_node_id
-                    && !estop_for_sweep.is_engaged()
-                    && sweep_cluster_slot.get().is_some()
-                {
+                // 触发闸（estop 短路 + 10s 节流）抽为 board_review::
+                // park_sweep_gate（可测）：estop 挂起 → 拒且不消耗节流窗口。
+                if node_id != self_node_id && sweep_cluster_slot.get().is_some() {
                     let throttle_ok = {
                         let mut last = sweep_last
                             .lock()
                             .unwrap_or_else(|e| e.into_inner());
-                        let now = std::time::Instant::now();
-                        let ok = match *last {
-                            Some(t) => {
-                                now.duration_since(t)
-                                    >= std::time::Duration::from_secs(10)
-                            }
-                            None => true,
-                        };
-                        if ok {
-                            *last = Some(now);
-                        }
-                        ok
+                        crate::board_review::park_sweep_gate(
+                            estop_for_sweep.is_engaged(),
+                            &mut last,
+                            std::time::Instant::now(),
+                            std::time::Duration::from_secs(10),
+                        )
                     };
                     if throttle_ok {
                         let store = store_for_hook.clone();
@@ -2509,11 +2502,9 @@ pub async fn run(local: bool, extra_args: &[String]) -> Result<()> {
         let mut handler = nemesis_cluster::rpc::peer_chat_handler::PeerChatHandler::new(
             node_id_for_handler.clone(),
         );
-        let llm_timeout = if cluster_app_cfg.llm_timeout_secs > 0 {
-            std::time::Duration::from_secs(cluster_app_cfg.llm_timeout_secs)
-        } else {
-            std::time::Duration::from_secs(24 * 3600)
-        };
+        let llm_timeout = nemesis_cluster::rpc::peer_chat_handler::llm_timeout_from_config_secs(
+            cluster_app_cfg.llm_timeout_secs,
+        );
         handler.set_timeout(llm_timeout);
 
         // Create cluster agent work queue and task list.

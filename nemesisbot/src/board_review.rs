@@ -1879,6 +1879,31 @@ fn estop_fuse_engaged(deps: &BoardReviewDeps, issue_id: i64, kind: ParkedKind) -
     true
 }
 
+/// 停车场 sweep 触发闸（estop × 节流；集群完备性加固 2026-09-11 从
+/// gateway 内联闭包抽取，可测）：急停挂起 → false 且**不消耗节流窗口**
+/// —— 急停期间的 announce 刷新不吃掉释放后的首次重试机会。非急停时按
+/// `min_interval` 节流（抗 announce 风暴），放行即盖章。gateway 装配的
+/// sweep 回调把「本节点 announce」与「cluster 槽位未填」两条件留在调用
+/// 侧（闭包捕获相关，与本闸正交）。
+pub(crate) fn park_sweep_gate(
+    estop_engaged: bool,
+    last: &mut Option<std::time::Instant>,
+    now: std::time::Instant,
+    min_interval: std::time::Duration,
+) -> bool {
+    if estop_engaged {
+        return false;
+    }
+    let ok = match *last {
+        Some(t) => now.duration_since(t) >= min_interval,
+        None => true,
+    };
+    if ok {
+        *last = Some(now);
+    }
+    ok
+}
+
 /// estop 释放 watcher：订阅急停状态 watch，true→false 沿（释放）把停车
 /// 队列逐条复评——无限模式循环从断点恢复（T1-6「release 后恢复」）。
 /// gateway 装配期调用一次；四入口（CLI/托盘/Dashboard/WSAPI）最终都走

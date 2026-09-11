@@ -1678,3 +1678,115 @@ async fn e1_token_breach_gate_matrix_through_moderator_loop() {
     );
     let _ = std::fs::remove_dir_all(&dir);
 }
+// ------------------------------------------------------------------
+// estop × 集群回归（集群完备性加固 2026-09-11）：
+// park_sweep_gate（estop 短路 + 节流，gateway sweep 回调的触发闸）
+// + spawn_estop_resume_watcher（release → 队列 drain → 按维路由复评）。
+// ------------------------------------------------------------------
+
+#[test]
+fn sweep_gate_estop_short_circuits_without_consuming_throttle() {
+    let base = std::time::Instant::now();
+    let mut last: Option<std::time::Instant> = None;
+
+    // 急停挂起：首信号也拒。
+    assert!(!super::park_sweep_gate(
+        true,
+        &mut last,
+        base,
+        std::time::Duration::from_secs(10)
+    ));
+    // 关键语义：拒绝**不消耗节流窗口**（last 仍为 None）——急停期间的
+    // announce 不吃掉释放后的首次重试机会。
+    assert!(last.is_none(), "estop 拒绝不得盖章节流时间戳");
+
+    // 释放后同刻重试：立即放行并盖章。
+    assert!(super::park_sweep_gate(
+        false,
+        &mut last,
+        base,
+        std::time::Duration::from_secs(10)
+    ));
+    assert_eq!(last, Some(base));
+}
+
+#[test]
+fn sweep_gate_throttle_window_boundaries() {
+    let base = std::time::Instant::now();
+    let mut last: Option<std::time::Instant> = None;
+    let win = std::time::Duration::from_secs(10);
+
+    // 首信号放行（无历史）。
+    assert!(super::park_sweep_gate(false, &mut last, base, win));
+    // 窗口内（+5s）拒绝。
+    assert!(!super::park_sweep_gate(
+        false,
+        &mut last,
+        base + std::time::Duration::from_secs(5),
+        win
+    ));
+    // 恰好等于窗口（+10s）：>= 语义放行。
+    assert!(super::park_sweep_gate(false, &mut last, base + win, win));
+    // 盖章推进到 base+win 后，窗口内再拒。
+    assert!(!super::park_sweep_gate(
+        false,
+        &mut last,
+        base + win + std::time::Duration::from_secs(3),
+        win
+    ));
+}
+
+/// release watcher 链路：estop 停车（Issue 维度入队）→ watcher 订阅 →
+/// release → 队列 drain（复评 spawn 后 loop 未就绪诚实跳过，不触 LLM）。
+#[tokio::test]
+async fn estop_release_watcher_drains_parked_queue() {
+    let (deps, dir) = review_deps("estop-release-watcher");
+    let issue = issue_in_review(&deps.store, "释放恢复", "", "交付");
+
+    // 急停中评审 → 停车入队。
+    deps.estop.trigger();
+    let reviewed = super::review_issue(&deps, issue.id, super::ReviewCtx::first_stage())
+        .await
+        .unwrap();
+    assert!(!reviewed);
+    assert_eq!(
+        deps.estop_parked.lock().unwrap().len(),
+        1,
+        "释放前停车队列应有 1 条"
+    );
+
+    // watcher 订阅后释放 → 队列必须被 drain（路由复评）。
+    super::spawn_estop_resume_watcher(deps.clone());
+    deps.estop.release();
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    while std::time::Instant::now() < deadline {
+        if deps.estop_parked.lock().unwrap().is_empty() {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+    }
+    assert!(
+        deps.estop_parked.lock().unwrap().is_empty(),
+        "release 后 watcher 必须 drain 停车队列"
+    );
+
+    // 再次急停-停车-释放：watcher 持续存活（多轮恢复）。
+    deps.estop.trigger();
+    let reviewed = super::review_issue(&deps, issue.id, super::ReviewCtx::first_stage())
+        .await
+        .unwrap();
+    assert!(!reviewed);
+    deps.estop.release();
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    while std::time::Instant::now() < deadline {
+        if deps.estop_parked.lock().unwrap().is_empty() {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+    }
+    assert!(
+        deps.estop_parked.lock().unwrap().is_empty(),
+        "第二轮 release 也必须 drain"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}

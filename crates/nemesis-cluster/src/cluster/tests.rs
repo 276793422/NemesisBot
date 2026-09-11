@@ -6422,3 +6422,181 @@ fn test_handle_discovered_node_skips_zero_rpc_port() {
         "静态/正常条目的可用地址必须原值保留"
     );
 }
+
+// ------------------------------------------------------------------
+// state.toml 回读（集群完备性加固 2026-09-11）：restore_discovered_from_state
+// 把磁盘 discovered 历史以 Offline 种回注册表（write-only 假持久化根修）。
+// ------------------------------------------------------------------
+
+/// 写一个 state.toml（PeerConfig 序列化形态由 DynamicState 决定）。
+fn write_state_toml(path: &Path, discovered: &[PeerConfig]) {
+    let state = DynamicState {
+        discovered: discovered.to_vec(),
+        last_sync: chrono::Local::now().to_rfc3339(),
+    };
+    crate::cluster_config::save_dynamic_state(path, &state).unwrap();
+}
+
+fn test_peer_config(id: &str, address: &str) -> PeerConfig {
+    PeerConfig {
+        id: id.into(),
+        name: format!("name-{id}"),
+        address: address.into(),
+        addresses: vec![],
+        rpc_port: 21949,
+        role: "worker".into(),
+        category: "development".into(),
+        tags: vec!["python".into()],
+        priority: 1,
+        enabled: true,
+        status: PeerStatus::default(),
+    }
+}
+
+#[test]
+fn restore_seeds_known_peers_as_offline() {
+    let mut cluster = Cluster::new(make_config());
+    let dir = std::env::temp_dir().join(format!("nemesis-restore-seed-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let state_path = dir.join("state.toml");
+    write_state_toml(&state_path, &[test_peer_config("node-a", "10.0.0.2:21949")]);
+    cluster.dynamic_state_path = state_path.clone();
+
+    let seeded = cluster.restore_discovered_from_state();
+    assert_eq!(seeded, 1);
+    let node = cluster
+        .get_node_info("node-a")
+        .expect("seeded 节点必须在册");
+    assert_eq!(node.status, NodeStatus::Offline, "回读绝不直接 Online");
+    assert_eq!(node.base.address, "10.0.0.2:21949");
+    assert_eq!(node.tags, vec!["python".to_string()]);
+    // 二次调用不重复种（已有条目跳过）。
+    assert_eq!(cluster.restore_discovered_from_state(), 0);
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn restore_skips_self_banned_existing_and_unusable() {
+    let mut cluster = Cluster::new(make_config()); // node_id = local-node-001
+    let dir = std::env::temp_dir().join(format!("nemesis-restore-skip-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let state_path = dir.join("state.toml");
+
+    // 预置一个「已有条目」（静态 peers 场景）。
+    cluster.register_node(ExtendedNodeInfo {
+        base: nemesis_types::cluster::NodeInfo {
+            id: "node-static".into(),
+            name: "static".into(),
+            role: nemesis_types::cluster::NodeRole::Worker,
+            address: "10.0.0.9:21949".into(),
+            category: "general".into(),
+            last_seen: chrono::Local::now().to_rfc3339(),
+        },
+        status: NodeStatus::Online,
+        capabilities: vec![],
+        tags: vec![],
+        addresses: vec![],
+        node_type: "agent".into(),
+    });
+    // 预置一个黑名单节点。
+    cluster.removed_peers.write().insert("node-banned".into());
+
+    write_state_toml(
+        &state_path,
+        &[
+            test_peer_config("local-node-001", "10.0.0.1:21949"), // 本节点 → 跳
+            test_peer_config("node-banned", "10.0.0.3:21949"),    // 黑名单 → 跳
+            test_peer_config("node-static", "10.0.0.9:21949"),    // 已有 → 跳（不覆盖）
+            test_peer_config("node-bad", "no-address"),           // 无 host:port → 跳
+            PeerConfig::default(),                                // 空 id → 跳
+            test_peer_config("node-ok", "10.0.0.4:21949"),        // 合法 → 种
+        ],
+    );
+    cluster.dynamic_state_path = state_path;
+
+    let seeded = cluster.restore_discovered_from_state();
+    assert_eq!(seeded, 1, "只有 node-ok 可种");
+    assert!(cluster.get_node_info("node-ok").is_some());
+    // 静态条目原值保留（Online 不被 Offline 覆盖）。
+    assert_eq!(
+        cluster.get_node_info("node-static").unwrap().status,
+        NodeStatus::Online
+    );
+    assert!(cluster.get_node_info("node-banned").is_none());
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+// ------------------------------------------------------------------
+// G2 探针降频（集群完备性加固 2026-09-11）：should_probe_peer 纯函数
+// + spawn 链路测试（Offline 节点只在第 5 tick 被探一次）。
+// ------------------------------------------------------------------
+
+#[test]
+fn should_probe_peer_down_frequency_matrix() {
+    // Online：每 tick 都探。
+    for tick in [1u64, 2, 3, 4, 5, 6, 9, 10, 25] {
+        assert!(
+            super::should_probe_peer(true, tick),
+            "online tick {tick} 必须探"
+        );
+    }
+    // Offline：第 5 tick 一次（降频是恢复手段不是放弃）。
+    for tick in [1u64, 2, 3, 4, 6, 7, 8, 9, 11, 14] {
+        assert!(
+            !super::should_probe_peer(false, tick),
+            "offline tick {tick} 不应探（1/5 降频）"
+        );
+    }
+    for tick in [5u64, 10, 15, 50] {
+        assert!(
+            super::should_probe_peer(false, tick),
+            "offline tick {tick}（5 的倍数）必须探"
+        );
+    }
+}
+
+/// 链路：探针循环确实按降频调度——dead-port Offline 节点在 tick 5 前零
+/// 失败计数、tick 5 后恰好 +1（其余 tick 不再 +1）。127.0.0.1:1 是保留
+/// 端口，connection refused 即刻返回。用 `start_paused` 虚拟时钟：tick
+/// 推进确定（探针真实 I/O pending 期间 runtime 空闲 → 自动推进到下一
+/// tick deadline），不依赖真实墙钟窗口，CI 慢机不 flaky。
+#[tokio::test(start_paused = true)]
+async fn health_probe_loop_probes_offline_every_fifth_tick() {
+    let cluster = Cluster::new(make_config());
+    // 死端口 Offline 节点（127.0.0.1:1 保留端口，refused 即刻返回）。
+    cluster.register_node(ExtendedNodeInfo {
+        base: nemesis_types::cluster::NodeInfo {
+            id: "node-dead".into(),
+            name: "dead".into(),
+            role: nemesis_types::cluster::NodeRole::Worker,
+            address: "127.0.0.1:1".into(),
+            category: "general".into(),
+            last_seen: chrono::Local::now().to_rfc3339(),
+        },
+        status: NodeStatus::Offline,
+        capabilities: vec![],
+        tags: vec![],
+        addresses: vec![],
+        node_type: "agent".into(),
+    });
+    // 探针循环要求 RPC client 已初始化（None 直接 return）。
+    *cluster.rpc_client.lock() = Some(Arc::new(RpcClient::new()));
+
+    // 失败阈值拉满：探测失败只累计 consecutive_failures，不翻状态。
+    cluster.start_health_check_loop(Duration::from_millis(100), u32::MAX);
+
+    let failures = || cluster.registry.probe_failure_count("node-dead");
+    // 虚拟时钟推进到 320ms：tick 1(0ms)-4(300ms) 已过，tick 5(400ms) 未到。
+    tokio::time::sleep(Duration::from_millis(320)).await;
+    let before = failures();
+    assert_eq!(
+        before, 0,
+        "tick 5 之前 Offline 节点不得被探（实得 {before}）"
+    );
+    // 推进到 520ms：tick 5(400ms) 已探恰好一次；tick 6(500ms) 不探。
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    let after = failures();
+    assert_eq!(after, 1, "tick 5 恰好探一次（实得 {after}）");
+}

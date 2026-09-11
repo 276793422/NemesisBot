@@ -121,25 +121,8 @@ impl ClusterServiceAdapter {
 
         // G1（2026-09-01 集群韧性 goal）：rpc_cache/results 7 天 TTL 清扫 +
         // 磁盘结果回载（A 崩溃前本地完成的任务结果，轮询恢复时可直接命中）。
-        let swept = self
-            .cluster
-            .result_store()
-            .sweep_older_than(chrono::Duration::days(7));
-        if swept > 0 {
-            tracing::info!(
-                count = swept,
-                "[ClusterAdapter] Swept {} stale rpc_cache result files",
-                swept
-            );
-        }
-        let loaded_results = self.cluster.result_store().load_from_disk();
-        if loaded_results > 0 {
-            tracing::info!(
-                count = loaded_results,
-                "[ClusterAdapter] Loaded {} task results from disk",
-                loaded_results
-            );
-        }
+        // 返回值 (清扫数, 回载数) 由 helper 内部日志承载，此处无需消费。
+        let _ = sweep_and_reload_stale_results(self.cluster.result_store());
 
         // G5（A 侧重启恢复链路）：把磁盘上未删除的续行快照重新登记进
         // TaskManager（Pending + peer_id），让恢复轮询（poll_stale_pending_tasks）
@@ -321,6 +304,37 @@ impl LifecycleService for ClusterServiceAdapter {
         tracing::info!("[ClusterAdapter] Cluster stopped");
         Ok(())
     }
+}
+
+// ---------------------------------------------------------------------------
+// G1: rpc_cache/results TTL sweep + disk reload
+// ---------------------------------------------------------------------------
+
+/// G1（2026-09-01 集群韧性 goal；2026-09-11 提为自由函数以便链路测试）：
+/// rpc_cache/results 7 天 TTL 清扫 + 磁盘结果回载（A 崩溃前本地完成的任务
+/// 结果，轮询恢复时可直接命中）。返回 (清扫数, 回载数)。
+///
+/// 清扫判据是文件内 JSON 的 `stored_at`（RFC3339）；解析失败 fail-open 保留。
+fn sweep_and_reload_stale_results(
+    result_store: &nemesis_cluster::task_result_store::TaskResultStore,
+) -> (usize, usize) {
+    let swept = result_store.sweep_older_than(chrono::Duration::days(7));
+    if swept > 0 {
+        tracing::info!(
+            count = swept,
+            "[ClusterAdapter] Swept {} stale rpc_cache result files",
+            swept
+        );
+    }
+    let loaded = result_store.load_from_disk();
+    if loaded > 0 {
+        tracing::info!(
+            count = loaded,
+            "[ClusterAdapter] Loaded {} task results from disk",
+            loaded
+        );
+    }
+    (swept, loaded)
 }
 
 // ---------------------------------------------------------------------------

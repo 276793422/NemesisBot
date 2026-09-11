@@ -57,9 +57,13 @@ impl ClusterLogWriter {
 
         // Build the log entry.
         let entry = {
-            let obj = fields
-                .as_object_mut()
-                .expect("fields must be a JSON object");
+            // 非 object 调用方（错误地传了 string/number 等）不 panic——包一层
+            // {"payload": fields} 落盘（集群完备性加固 2026-09-11：日志写入
+            // 是观测面，绝不能因调用方类型错误把生产进程打崩）。
+            if !fields.is_object() {
+                fields = serde_json::json!({ "payload": fields });
+            }
+            let obj = fields.as_object_mut().expect("just wrapped as object");
             obj.insert("ts".into(), serde_json::Value::String(now.to_rfc3339()));
             obj.insert("event".into(), serde_json::Value::String(event.to_string()));
             serde_json::to_string(&fields).unwrap_or_default()

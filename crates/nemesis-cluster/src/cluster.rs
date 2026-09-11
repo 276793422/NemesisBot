@@ -385,6 +385,11 @@ impl Cluster {
             );
         }
 
+        // state.toml 回读（集群完备性加固 2026-09-11）：必须在 start_sync_loop
+        // 之前——sync_loop 的 tokio interval 首 tick 即时触发，先启动会把磁盘
+        // discovered 历史（上次运行的已知节点）以「只有本节点」的注册表覆盖掉。
+        self.restore_discovered_from_state();
+
         // Start the recovery loop
         self.start_recovery_loop();
 
@@ -396,6 +401,77 @@ impl Cluster {
             &self.node_id,
             &format!("rpc_port={}", self.rpc_port),
         );
+    }
+
+    /// state.toml 回读（集群完备性加固 2026-09-11）：sync_loop 周期把注册表
+    /// 持久化到 state.toml，但重启后从未回读——discovered 历史在首个 sync
+    /// tick 就被「只有本节点」的注册表覆盖（write-only 假持久化）。本函数把
+    /// 磁盘 discovered 条目以 **Offline** 状态种回注册表（G2 探针 1/5 降频
+    /// 或 announce 到达时复活；**绝不因回读直接 Online**——诚实语义：存活
+    /// 未知）。跳过：空 id、本节点、黑名单节点（removed_peers 不复活）、
+    /// 已有条目（静态 peers 在 start() 前装载，不覆盖）、不可拨号地址
+    /// （空/无 host:port 形态，与 G14 的 rpc_port=0 同语义）。返回种入数。
+    fn restore_discovered_from_state(&self) -> usize {
+        let state = match crate::cluster_config::load_dynamic_state(&self.dynamic_state_path) {
+            Ok(s) => s,
+            Err(e) => {
+                tracing::warn!(
+                    path = %self.dynamic_state_path.display(),
+                    error = %e,
+                    "[Cluster] state.toml 回读失败（忽略，按空注册表启动）"
+                );
+                return 0;
+            }
+        };
+        let mut seeded = 0usize;
+        for pc in state.discovered {
+            if pc.id.trim().is_empty() || pc.id == self.node_id {
+                continue;
+            }
+            if self.removed_peers.read().contains(&pc.id) {
+                continue; // 用户显式移除的节点不复活
+            }
+            if self.registry.get(&pc.id).is_some() {
+                continue; // 静态 peers / 已有条目：原值保留
+            }
+            let addr = pc.address.trim();
+            if addr.is_empty() || !addr.contains(':') {
+                continue; // 不可拨号 → 不种（state.toml 不存 unusable 条目）
+            }
+            self.registry.upsert(ExtendedNodeInfo {
+                base: nemesis_types::cluster::NodeInfo {
+                    id: pc.id.clone(),
+                    name: if pc.name.trim().is_empty() {
+                        pc.id.clone()
+                    } else {
+                        pc.name.clone()
+                    },
+                    role: nemesis_types::cluster::NodeRole::from_role_str(&pc.role),
+                    address: addr.to_string(),
+                    category: pc.category.clone(),
+                    last_seen: if pc.status.last_seen.is_empty() {
+                        chrono::Local::now().to_rfc3339()
+                    } else {
+                        pc.status.last_seen.clone()
+                    },
+                },
+                status: NodeStatus::Offline,
+                capabilities: Vec::new(),
+                tags: pc.tags.clone(),
+                addresses: pc.addresses.clone(),
+                node_type: String::new(),
+            });
+            seeded += 1;
+        }
+        if seeded > 0 {
+            logger::log_discovery_info(&format!(
+                "state.toml restored: seeded {seeded} known peers (Offline, pending probe/announce)"
+            ));
+            tracing::info!(
+                "[Cluster] state.toml 回读：种入 {seeded} 个已知节点（Offline，待探针/announce 复活）"
+            );
+        }
+        seeded
     }
 
     /// Load the RPC auth token from `workspace/config/config.cluster.json`
@@ -625,7 +701,6 @@ impl Cluster {
                     }
                     _ = tick.tick() => {
                         tick_count = tick_count.wrapping_add(1);
-                        let probe_offline_too = tick_count.is_multiple_of(5);
 
                         let peers = registry.list_peers();
                         for peer in peers {
@@ -634,7 +709,7 @@ impl Cluster {
                                 continue;
                             }
                             let online = peer.status == NodeStatus::Online;
-                            if !online && !probe_offline_too {
+                            if !should_probe_peer(online, tick_count) {
                                 continue;
                             }
 
@@ -2653,6 +2728,13 @@ pub fn stale_task_safety_net(llm_timeout_secs: u64) -> chrono::Duration {
     chrono::Duration::from_std(doubled)
         .unwrap_or(FLOOR)
         .max(FLOOR)
+}
+
+/// G2: 探针调度判定（纯函数，便于单测）：Online 对端每 tick 都探；
+/// Offline 对端每 5 个 tick 探一次（1/5 降频自愈——不是放弃，是恢复手段，
+/// 一次成功立即翻回 Online）。`tick` 为 1-based tick 序号。
+fn should_probe_peer(online: bool, tick: u64) -> bool {
+    online || tick.is_multiple_of(5)
 }
 
 /// G2: 探针 timestamp 漂移 WARN 限频闸门（进程级，每节点 10 分钟冷却）。

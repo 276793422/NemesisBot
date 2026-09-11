@@ -509,3 +509,50 @@ async fn r10_first_start_recovery_info_fields_execute_with_subscriber() {
         "first_start 完成后必须置 running"
     );
 }
+
+// =========================================================================
+// G1 sweep_and_reload_stale_results 链路测试（集群完备性加固 2026-09-11：
+// 从 first_start 提为自由函数）。真实磁盘目录 + 真实 store：陈旧结果
+// （stored_at 8 天前）被 7 天 TTL 清扫删除；新鲜结果留盘并被回载进内存。
+// =========================================================================
+
+#[test]
+fn sweep_and_reload_sweeps_stale_keeps_and_loads_fresh() {
+    let dir = std::env::temp_dir().join(format!(
+        "nemesis-g1-sweep-{}-{:?}",
+        std::process::id(),
+        std::thread::current().id()
+    ));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let store = nemesis_cluster::task_result_store::TaskResultStore::with_disk_persistence(8, &dir);
+
+    // 陈旧结果：直接写盘（绕过 store 的 now() 时间戳）。
+    let stale = serde_json::json!({
+        "task_id": "task-stale",
+        "action": "peer_chat",
+        "result": {"answer": "old"},
+        "success": true,
+        "stored_at": (chrono::Local::now() - chrono::Duration::days(8)).to_rfc3339(),
+    });
+    std::fs::write(dir.join("task-stale.json"), stale.to_string()).unwrap();
+    // 新鲜结果：经 store 写（内存+盘），随后清内存让回载真正走磁盘。
+    store.store_success(
+        "task-fresh",
+        "peer_chat",
+        serde_json::json!({"answer": "new"}),
+    );
+    store.clear();
+    assert!(store.get("task-fresh").is_none(), "前置：内存已清空");
+
+    let (swept, loaded) = super::sweep_and_reload_stale_results(&store);
+
+    assert_eq!(swept, 1, "陈旧结果文件应被清扫");
+    assert_eq!(loaded, 1, "新鲜结果文件应被回载");
+    assert!(!dir.join("task-stale.json").exists(), "陈旧文件已删");
+    assert!(dir.join("task-fresh.json").exists(), "新鲜文件保留");
+    let fresh = store.get("task-fresh").expect("新鲜结果已回载进内存");
+    assert_eq!(fresh.result["answer"], "new");
+    assert!(store.get("task-stale").is_none(), "陈旧结果不复活");
+    let _ = std::fs::remove_dir_all(&dir);
+}

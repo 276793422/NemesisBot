@@ -17,6 +17,29 @@ fn test_default_timeout() {
     assert_eq!(handler.timeout_secs(), 7200);
 }
 
+// 集群完备性加固 2026-09-11：llm_timeout 单一真相源（0=不限，文档口径）。
+#[test]
+fn llm_timeout_from_config_zero_is_unlimited() {
+    assert_eq!(
+        llm_timeout_from_config_secs(0),
+        Duration::MAX,
+        "0 = 不限（tokio timeout 永不触发）"
+    );
+}
+
+#[test]
+fn llm_timeout_from_config_passthrough() {
+    assert_eq!(llm_timeout_from_config_secs(7200).as_secs(), 7200);
+    assert_eq!(llm_timeout_from_config_secs(1).as_secs(), 1);
+}
+
+#[test]
+fn set_timeout_accepts_unlimited_sentinel() {
+    let mut handler = PeerChatHandler::new("node-b".into());
+    handler.set_timeout(llm_timeout_from_config_secs(0));
+    assert_eq!(handler.timeout_secs(), u64::MAX);
+}
+
 #[test]
 fn test_validate_valid_request() {
     let handler = PeerChatHandler::new("node-b".into());

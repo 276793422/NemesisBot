@@ -244,3 +244,42 @@ fn test_s4_save_app_config_creates_config_dir() {
     let loaded = load_app_config(dir.path());
     assert!(loaded.enabled);
 }
+
+// ---------------------------------------------------------------------
+// 集群完备性加固 2026-09-11：坏 JSON 解析失败留 WARN 且按默认配置启动
+// （旧实现 unwrap_or_default 双双静默——「配置写了却不生效」无日志可查）。
+// ---------------------------------------------------------------------
+
+#[test]
+fn test_load_app_config_bad_json_falls_back_to_default() {
+    let dir = tempfile::tempdir().unwrap();
+    let cfg_path = dir.path().join("config").join("config.cluster.json");
+    std::fs::create_dir_all(cfg_path.parent().unwrap()).unwrap();
+    std::fs::write(&cfg_path, "{ not valid json !!!").unwrap();
+    let app = load_app_config(dir.path());
+    assert!(
+        !app.enabled,
+        "坏 JSON → 全默认（lenient 启动），enabled=false 绝不静默开集群"
+    );
+    assert_eq!(app.port, 11949);
+    assert_eq!(app.rpc_port, 21949);
+    assert_eq!(app.llm_timeout_secs, 7200);
+}
+
+#[test]
+fn test_load_app_config_valid_json_round_trips() {
+    let dir = tempfile::tempdir().unwrap();
+    let cfg_path = dir.path().join("config").join("config.cluster.json");
+    std::fs::create_dir_all(cfg_path.parent().unwrap()).unwrap();
+    std::fs::write(
+        &cfg_path,
+        r#"{"enabled":true,"port":13000,"rpc_port":23000,"broadcast_interval":15,"llm_timeout_secs":0}"#,
+    )
+    .unwrap();
+    let app = load_app_config(dir.path());
+    assert!(app.enabled);
+    assert_eq!(app.port, 13000);
+    assert_eq!(app.rpc_port, 23000);
+    assert_eq!(app.broadcast_interval, 15);
+    assert_eq!(app.llm_timeout_secs, 0, "0=不限语义透传到读取层");
+}

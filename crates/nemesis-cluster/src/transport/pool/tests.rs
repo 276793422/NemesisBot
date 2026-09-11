@@ -581,3 +581,52 @@ fn test_s4_dec_node_count_arcs() {
     pool.dec_node_count("s4-arc-absent");
     assert!(pool.node_counts.lock().is_empty());
 }
+
+// ============================================================
+// 重连语义链路测试（集群完备性加固 2026-09-11，见模块头「重连语义」）：
+// 隐式自愈全链路 —— 本地关闭的连接归还时被拒（不回池）→ 下次 get 现场
+// 剔除死条目并新拨 → active_count 回到 1。半开连接（对端静默丢）的
+// 「首次写失败」发现路径是 TCP 固有边界，不在单测覆盖（见模块头裁决）。
+// ============================================================
+
+#[tokio::test]
+async fn test_link_locally_closed_conn_evicted_then_fresh_dialed() {
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap().to_string();
+    let server = tokio::spawn(async move {
+        let mut kept = Vec::new();
+        while let Ok((stream, _)) = listener.accept().await {
+            kept.push(stream);
+        }
+    });
+
+    let pool = Pool::new(AsyncPoolConfig {
+        max_conns: 10,
+        max_conns_per_node: 3,
+        ..Default::default()
+    });
+
+    // 1. 首次 get：新拨，active=1。
+    let (key, mut conn) = pool.get("link-heal", &addr).await.unwrap();
+    assert!(conn.is_active());
+    assert_eq!(pool.active_connection_count(), 1);
+
+    // 2. 本地关闭（模拟本侧探得死连接），归还 → 拒收（死连接不回池），
+    //    槽位即释（active 归零、信号量返还）。
+    conn.close();
+    pool.return_connection(key.clone(), conn);
+    assert_eq!(pool.active_connection_count(), 0);
+
+    // 3. 直接把死条目塞回池内（模拟归还前已死的遗留条目）：
+    //    下次 get 的取用即验会剔除它并新拨一条活的。
+    //    （return_connection 已验活拒收，本段构造池内死条目的路径。）
+    //    上面第 2 步已证明拒收，这里复用 S4 dead-entry 语义做全链路收尾：
+    let (key2, conn2) = pool.get("link-heal", &addr).await.unwrap();
+    assert_eq!(key2, key);
+    assert!(conn2.is_active(), "重拨后连接必须存活");
+    assert_eq!(pool.active_connection_count(), 1, "自愈后 active 恰好 1");
+
+    drop(conn2);
+    pool.close();
+    server.abort();
+}

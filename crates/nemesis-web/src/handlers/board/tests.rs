@@ -2901,3 +2901,320 @@ async fn sync_parent_status_bumps_blocked_parent_before_review() {
     );
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+// ------------------------------------------------------------------
+// 停车场兜底派发开关（集群完备性加固 2026-09-11）：dispatch_fallback /
+// dispatch_fallback_target。无人匹配时任务必须能推进（用户裁决）。
+// ------------------------------------------------------------------
+
+/// 构造兜底开关配置（显式入参，测试不碰进程级全局 live config）。
+#[cfg(feature = "cluster")]
+fn fallback_cfg(on: bool, target: Option<&str>) -> nemesis_config::BoardFlagConfig {
+    nemesis_config::BoardFlagConfig {
+        dispatch_fallback: on,
+        dispatch_fallback_target: target.map(str::to_string),
+        ..Default::default()
+    }
+}
+
+/// 无父单工具：直接建一个顶层单（planner 来源，进 sweep 候选集）。
+#[cfg(feature = "cluster")]
+fn no_parent(store: &Arc<BoardStore>) -> i64 {
+    store
+        .create_issue(nemesis_board::NewIssue {
+            title: "父占位".into(),
+            origin: Some(nemesis_board::TaskOrigin {
+                origin_type: "planner".to_string(),
+                origin_id: "NB-1".to_string(),
+            }),
+            ..Default::default()
+        })
+        .unwrap()
+        .id
+}
+
+/// 开关关（默认）：无人匹配 → 原 ⏸ 停车语义原样保留（回归锚）。
+#[cfg(feature = "cluster")]
+#[tokio::test]
+async fn fallback_off_parks_as_before() {
+    let dir = unique_dir("fallback-off");
+    let ctx = make_ctx_with_board(&dir);
+    let store = store_of(&ctx);
+    let actor = Actor::admin("test-session");
+    let cluster = offline_cluster(&dir, "coord-fb0");
+    let parent = no_parent(&store);
+    let a = planner_child(&store, parent, "子A", vec!["python".to_string()]);
+
+    let out = super::dispatch_subissue_auto_with_config(
+        Some(&fallback_cfg(false, None)),
+        &store,
+        Some(&cluster),
+        a.id,
+        &actor,
+        true,
+    )
+    .unwrap();
+    assert!(out.is_none(), "开关关不得兜底派出");
+    assert_eq!(store.get_issue(a.id).unwrap().status, IssueStatus::Backlog);
+    assert!(
+        store
+            .last_system_comment(a.id)
+            .unwrap()
+            .map(|c| c.contains("⏸"))
+            .unwrap_or(false),
+        "必须落 ⏸ 停车评论"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// 开关开 + 无任何在线节点 → 仍诚实停车（兜底造不出客户端）。
+#[cfg(feature = "cluster")]
+#[tokio::test]
+async fn fallback_on_but_no_peers_still_parks() {
+    let dir = unique_dir("fallback-no-peer");
+    let ctx = make_ctx_with_board(&dir);
+    let store = store_of(&ctx);
+    let actor = Actor::admin("test-session");
+    let cluster = offline_cluster(&dir, "coord-fb1");
+    let parent = no_parent(&store);
+    let a = planner_child(&store, parent, "子A", vec!["python".to_string()]);
+
+    let out = super::dispatch_subissue_auto_with_config(
+        Some(&fallback_cfg(true, None)),
+        &store,
+        Some(&cluster),
+        a.id,
+        &actor,
+        true,
+    )
+    .unwrap();
+    assert!(out.is_none(), "无在线节点不得凭空派发");
+    assert_eq!(store.get_issue(a.id).unwrap().status, IssueStatus::Backlog);
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// 开关开 + 在线节点不带 python：松弛兜底派出 + ⚠ 评论留痕；父单不转
+/// blocked（首派即走，blocked 联动只属于停车路径）。
+#[cfg(feature = "cluster")]
+#[tokio::test]
+async fn fallback_dispatches_to_relaxed_online_peer() {
+    let dir = unique_dir("fallback-relaxed");
+    let ctx = make_ctx_with_board(&dir);
+    let store = store_of(&ctx);
+    let actor = Actor::admin("test-session");
+    let cluster = offline_cluster(&dir, "coord-fb2");
+    let parent = store
+        .create_issue(nemesis_board::NewIssue {
+            title: "父".into(),
+            ..Default::default()
+        })
+        .unwrap();
+    let a = planner_child(&store, parent.id, "子A", vec!["python".to_string()]);
+
+    // 上线节点不带 python（tags=["rust"]）——严格匹配必空。
+    cluster.set_rpc_client(Arc::new(nemesis_cluster::rpc::client::RpcClient::new()));
+    cluster.merge_real_node_info(&nemesis_cluster::cluster::RealNodeInfo {
+        id: "node-rs".into(),
+        name: "RsWorker".into(),
+        address: "127.0.0.1:19998".into(),
+        role: NodeRole::Worker,
+        category: "development".into(),
+        capabilities: vec![],
+        tags: vec!["rust".into()],
+        node_type: "agent".into(),
+    });
+
+    let out = super::dispatch_subissue_auto_with_config(
+        Some(&fallback_cfg(true, None)),
+        &store,
+        Some(&cluster),
+        a.id,
+        &actor,
+        true,
+    )
+    .unwrap();
+    assert!(out.is_some(), "兜底必须派出（任务做下去）");
+    assert_eq!(
+        store.get_issue(a.id).unwrap().status,
+        IssueStatus::InProgress
+    );
+    assert!(store.has_active_dispatch(a.id).unwrap());
+    let comments = store.list_comments(a.id).unwrap();
+    assert!(
+        comments
+            .iter()
+            .any(|c| c.content.contains('⚠') && c.content.contains("node-rs")),
+        "兜底派发必须落 ⚠ 评论并指明目标节点：{:?}",
+        comments.iter().map(|c| &c.content).collect::<Vec<_>>()
+    );
+    assert_eq!(
+        store.get_issue(parent.id).unwrap().status,
+        IssueStatus::InProgress,
+        "父单随首派进 in_progress（不走 blocked）"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// 钉住目标：按 name 匹配在线节点派发；钉住的节点不在线 = 诚实停车。
+#[cfg(feature = "cluster")]
+#[tokio::test]
+async fn fallback_pinned_target_name_match_and_offline_honesty() {
+    let dir = unique_dir("fallback-pin");
+    let ctx = make_ctx_with_board(&dir);
+    let store = store_of(&ctx);
+    let actor = Actor::admin("test-session");
+    let cluster = offline_cluster(&dir, "coord-fb3");
+    cluster.set_rpc_client(Arc::new(nemesis_cluster::rpc::client::RpcClient::new()));
+    cluster.merge_real_node_info(&nemesis_cluster::cluster::RealNodeInfo {
+        id: "node-alex".into(),
+        name: "Alex".into(),
+        address: "127.0.0.1:19997".into(),
+        role: NodeRole::Worker,
+        category: "development".into(),
+        capabilities: vec![],
+        tags: vec![],
+        node_type: "agent".into(),
+    });
+
+    // 钉住 name（大小写不敏感）→ 派给该节点。
+    let parent = no_parent(&store);
+    let a = planner_child(&store, parent, "子A", vec!["python".to_string()]);
+    let out = super::dispatch_subissue_auto_with_config(
+        Some(&fallback_cfg(true, Some("alex"))),
+        &store,
+        Some(&cluster),
+        a.id,
+        &actor,
+        true,
+    )
+    .unwrap();
+    assert!(out.is_some(), "钉住 name 命中在线节点必须派出");
+    let dispatch = store
+        .list_dispatches(a.id)
+        .unwrap()
+        .into_iter()
+        .next()
+        .expect("派出必须有派发记录");
+    assert_eq!(dispatch.worker_id, "node-alex", "必须派给钉住的节点");
+
+    // 钉住的节点不在线（另一节点在线也不换人）→ 停车。
+    let b = planner_child(&store, parent, "子B", vec!["python".to_string()]);
+    let out = super::dispatch_subissue_auto_with_config(
+        Some(&fallback_cfg(true, Some("Ghost"))),
+        &store,
+        Some(&cluster),
+        b.id,
+        &actor,
+        true,
+    )
+    .unwrap();
+    assert!(out.is_none(), "钉住目标不在线必须诚实停车");
+    assert_eq!(store.get_issue(b.id).unwrap().status, IssueStatus::Backlog);
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// 角色松弛次序：required_role=worker 的单在仅 coordinator 在线时全放开
+/// 兜底仍能派出（任务做下去优先），且评论说明「全松弛」。
+#[cfg(feature = "cluster")]
+#[tokio::test]
+async fn fallback_role_relaxed_ordering() {
+    let dir = unique_dir("fallback-role");
+    let ctx = make_ctx_with_board(&dir);
+    let store = store_of(&ctx);
+    let actor = Actor::admin("test-session");
+    let cluster = offline_cluster(&dir, "coord-fb4");
+    cluster.set_rpc_client(Arc::new(nemesis_cluster::rpc::client::RpcClient::new()));
+    // 仅 coordinator 对端在线。
+    cluster.merge_real_node_info(&nemesis_cluster::cluster::RealNodeInfo {
+        id: "node-co".into(),
+        name: "CoPeer".into(),
+        address: "127.0.0.1:19996".into(),
+        role: NodeRole::Coordinator,
+        category: "development".into(),
+        capabilities: vec![],
+        tags: vec![],
+        node_type: "agent".into(),
+    });
+
+    let parent = no_parent(&store);
+    let a = store
+        .create_issue(nemesis_board::NewIssue {
+            title: "子A".into(),
+            parent_issue_id: Some(parent),
+            required_role: Some("worker".to_string()),
+            origin: Some(nemesis_board::TaskOrigin {
+                origin_type: "planner".to_string(),
+                origin_id: "NB-1".to_string(),
+            }),
+            ..Default::default()
+        })
+        .unwrap();
+    let out = super::dispatch_subissue_auto_with_config(
+        Some(&fallback_cfg(true, None)),
+        &store,
+        Some(&cluster),
+        a.id,
+        &actor,
+        true,
+    )
+    .unwrap();
+    assert!(out.is_some(), "全松弛兜底必须派出");
+    let comments = store.list_comments(a.id).unwrap();
+    assert!(
+        comments.iter().any(|c| c.content.contains("全松弛")),
+        "全松弛兜底必须留痕说明"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// sweep 携带同一兜底配置：存量停车单被兜底复活（announce 触发路径）。
+#[cfg(feature = "cluster")]
+#[tokio::test]
+async fn fallback_sweep_revives_parked_issue() {
+    let dir = unique_dir("fallback-sweep");
+    let ctx = make_ctx_with_board(&dir);
+    let store = store_of(&ctx);
+    let actor = Actor::admin("test-session");
+    let cluster = offline_cluster(&dir, "coord-fb5");
+
+    // 开关关时先停车。
+    let parent = no_parent(&store);
+    let a = planner_child(&store, parent, "子A", vec!["python".to_string()]);
+    super::dispatch_subissue_auto_with_config(
+        Some(&fallback_cfg(false, None)),
+        &store,
+        Some(&cluster),
+        a.id,
+        &actor,
+        true,
+    )
+    .unwrap();
+    assert_eq!(store.get_issue(a.id).unwrap().status, IssueStatus::Backlog);
+
+    // 节点上线（仍无 python）+ 开关打开 → sweep 兜底复活。
+    cluster.set_rpc_client(Arc::new(nemesis_cluster::rpc::client::RpcClient::new()));
+    cluster.merge_real_node_info(&nemesis_cluster::cluster::RealNodeInfo {
+        id: "node-any".into(),
+        name: "AnyWorker".into(),
+        address: "127.0.0.1:19995".into(),
+        role: NodeRole::Worker,
+        category: "general".into(),
+        capabilities: vec![],
+        tags: vec![],
+        node_type: "agent".into(),
+    });
+    let (cands, dispatched, failed) = super::sweep_parked_dispatches_with_config(
+        Some(&fallback_cfg(true, None)),
+        &store,
+        &cluster,
+        &actor,
+    );
+    assert_eq!(failed, 0);
+    assert_eq!(dispatched, 1, "兜底开时 sweep 必须复活停车单");
+    assert_eq!(cands, 1);
+    assert_eq!(
+        store.get_issue(a.id).unwrap().status,
+        IssueStatus::InProgress
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}

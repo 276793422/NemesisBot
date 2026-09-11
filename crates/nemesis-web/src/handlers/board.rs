@@ -1026,6 +1026,7 @@ fn link_project_on_dispatch(store: &Arc<BoardStore>, project_id: Option<i64>) {
 
 /// ⏸ 暂缓评论的去重标记：单上最后一条 system 评论含此串 = 停车状态已
 /// 留痕，不再重复落同文案评论（B4 防堆叠）。
+#[cfg_attr(not(feature = "cluster"), allow(dead_code))]
 const PARK_NOTICE_MARK: &str = "自动派发暂缓";
 
 /// 子单自动派发（依赖闸 + 匹配器选节点；confirm 派发波、补派触发器与
@@ -1038,6 +1039,27 @@ const PARK_NOTICE_MARK: &str = "自动派发暂缓";
 /// false（静默，不因反复重试刷评论）。
 #[cfg(feature = "cluster")]
 pub fn dispatch_subissue_auto(
+    store: &Arc<BoardStore>,
+    cluster: Option<&Arc<nemesis_cluster::cluster::Cluster>>,
+    issue_id: i64,
+    actor: &Actor,
+    notify_park: bool,
+) -> Result<Option<serde_json::Value>, String> {
+    dispatch_subissue_auto_with_config(
+        live_board_config().as_ref(),
+        store,
+        cluster,
+        issue_id,
+        actor,
+        notify_park,
+    )
+}
+
+/// [`dispatch_subissue_auto`] 的可测内核：board 配置显式入参（测试不碰
+/// 进程级全局单例），兜底开关判定也走同一入口。
+#[cfg(feature = "cluster")]
+pub fn dispatch_subissue_auto_with_config(
+    board_cfg: Option<&nemesis_config::BoardFlagConfig>,
     store: &Arc<BoardStore>,
     cluster: Option<&Arc<nemesis_cluster::cluster::Cluster>>,
     issue_id: i64,
@@ -1062,7 +1084,7 @@ pub fn dispatch_subissue_auto(
         }
     }
 
-    // 目标解析：显式 worker 指派 > 匹配器。
+    // 目标解析：显式 worker 指派 > 匹配器 > 兜底开关。
     let target = match (&issue.assignee, &issue.assignee_id) {
         (Some(AssignmentType::Worker), Some(wid)) => wid.clone(),
         _ => {
@@ -1070,29 +1092,47 @@ pub fn dispatch_subissue_auto(
             match pick_target_by_matcher(store, cluster, &issue) {
                 Some(t) => t,
                 None => {
-                    // 诚实留痕：不悄悄留 backlog。sweep 静默路径（!notify_park）
-                    // 不落评论不动父单。
-                    if notify_park {
-                        // B4 去重：最后一条 system 评论已是暂缓说明 → 不重复落。
-                        let already_noted = store
-                            .last_system_comment(issue.id)
-                            .ok()
-                            .flatten()
-                            .map(|c| c.contains(PARK_NOTICE_MARK))
-                            .unwrap_or(false);
-                        if !already_noted {
-                            store.add_comment(nemesis_board::NewComment {
-                                issue_id: issue.id,
-                                author: nemesis_board::Actor::system("board"),
-                                content: "⏸ 自动派发暂缓：当前在线节点无可匹配（角色/标签）节点；节点上线或要求调整后系统会自动重试，也可手动指派节点后派发".to_string(),
-                                parent_id: None,
-                                ctype: nemesis_board::CommentType::System,
-                            })?;
+                    // 兜底开关（集群完备性 2026-09-11）：无人匹配但任务必须
+                    // 做下去——按配置兜底派给在线节点（派发前 ⚠ 评论留痕；
+                    // 与 ⏸ 停车评论是不同语义，不受 B4 去重约束）。
+                    if let Some((fb_target, reason)) =
+                        pick_fallback_target(board_cfg, store, cluster, &issue)
+                    {
+                        let _ = store.add_comment(nemesis_board::NewComment {
+                            issue_id: issue.id,
+                            author: nemesis_board::Actor::system("board"),
+                            content: format!(
+                                "⚠ 无人匹配（角色/标签要求）：{reason}，按兜底策略派给 {fb_target}（board.dispatch.fallback）"
+                            ),
+                            parent_id: None,
+                            ctype: nemesis_board::CommentType::System,
+                        });
+                        fb_target
+                    } else {
+                        // 诚实留痕：不悄悄留 backlog。sweep 静默路径（!notify_park）
+                        // 不落评论不动父单。
+                        if notify_park {
+                            // B4 去重：最后一条 system 评论已是暂缓说明 → 不重复落。
+                            let already_noted = store
+                                .last_system_comment(issue.id)
+                                .ok()
+                                .flatten()
+                                .map(|c| c.contains(PARK_NOTICE_MARK))
+                                .unwrap_or(false);
+                            if !already_noted {
+                                store.add_comment(nemesis_board::NewComment {
+                                    issue_id: issue.id,
+                                    author: nemesis_board::Actor::system("board"),
+                                    content: "⏸ 自动派发暂缓：当前在线节点无可匹配（角色/标签）节点；节点上线或要求调整后系统会自动重试，也可手动指派节点后派发".to_string(),
+                                    parent_id: None,
+                                    ctype: nemesis_board::CommentType::System,
+                                })?;
+                            }
+                            // B5 可见性：整条链都在等节点 → 父单转 blocked 显形。
+                            mark_parent_blocked_if_stalled(store, &issue, actor);
                         }
-                        // B5 可见性：整条链都在等节点 → 父单转 blocked 显形。
-                        mark_parent_blocked_if_stalled(store, &issue, actor);
+                        return Ok(None);
                     }
-                    return Ok(None);
                 }
             }
         }
@@ -1160,12 +1200,24 @@ fn mark_parent_blocked_if_stalled(
 }
 
 /// 停车场 sweep（A2）：对「待派态 + planner 来源或曾被自动派发暂缓」的
-/// 候选重试 [`dispatch_subissue_auto`]（其自带状态/在途/依赖/匹配闸）。
+/// 候选重试 [`dispatch_subissue_auto`]（其自带状态/在途/依赖/匹配/兜底闸）。
 /// 触发点 = 节点发现回调（gateway 装配接线）——节点上线、身份/tags 变更、
 /// 周期 announce 刷新都会触发；重试仍不满足时**静默**（notify_park=false）。
 /// 返回 `(候选数, 派出数, 失败数)`（观测用）。
 #[cfg(feature = "cluster")]
 pub fn sweep_parked_dispatches(
+    store: &Arc<BoardStore>,
+    cluster: &Arc<nemesis_cluster::cluster::Cluster>,
+    actor: &Actor,
+) -> (usize, usize, usize) {
+    sweep_parked_dispatches_with_config(live_board_config().as_ref(), store, cluster, actor)
+}
+
+/// [`sweep_parked_dispatches`] 的可测内核：board 配置显式入参。兜底开关
+/// 开时，announce 触发的 sweep 同时是存量停车单的兜底复活路径。
+#[cfg(feature = "cluster")]
+pub fn sweep_parked_dispatches_with_config(
+    board_cfg: Option<&nemesis_config::BoardFlagConfig>,
     store: &Arc<BoardStore>,
     cluster: &Arc<nemesis_cluster::cluster::Cluster>,
     actor: &Actor,
@@ -1180,7 +1232,8 @@ pub fn sweep_parked_dispatches(
     let mut dispatched = 0usize;
     let mut failed = 0usize;
     for id in &candidates {
-        match dispatch_subissue_auto(store, Some(cluster), *id, actor, false) {
+        match dispatch_subissue_auto_with_config(board_cfg, store, Some(cluster), *id, actor, false)
+        {
             Ok(Some(_)) => dispatched += 1,
             Ok(None) => {}
             Err(e) => {
@@ -1192,24 +1245,17 @@ pub fn sweep_parked_dispatches(
     (candidates.len(), dispatched, failed)
 }
 
-/// 匹配器全量排序（D3 换节点重派的候选来源 + [`pick_target_by_matcher`]
-/// 的单一真相源）：在线节点（不含本机）→ PeerCandidate 适配 →
-/// [`nemesis_board::rank_peers`] 匹配度降序全量返回。数据源 = 注册表真实
-/// tags ∪ category（A1 后 announce/静态 peers/get_info 的 tags 全链落地；
-/// 曾长期降级为 `tags := [category]`，planner 的 required_tags 天然不可
-/// 满足 → 全部停车）。节点角色词表只有 worker/coordinator，planner 给的
-/// 其他角色词（如 "qa"）转标签语义与 tags/category 匹配。
+/// 在线节点 → PeerCandidate 投影（[`rank_dispatch_candidates`] 与兜底
+/// 松弛排序 [`pick_fallback_target`] 共用的单一真相源）：数据源 = 注册表
+/// 真实 tags ∪ category（A1 后 announce/静态 peers/get_info 的 tags 全链
+/// 落地；曾长期降级为 `tags := [category]`，planner 的 required_tags 天然
+/// 不可满足 → 全部停车）。
 #[cfg(feature = "cluster")]
-pub fn rank_dispatch_candidates(
-    store: &BoardStore,
+fn project_dispatch_candidates(
     cluster: &nemesis_cluster::cluster::Cluster,
-    issue: &nemesis_board::Issue,
-) -> Vec<String> {
+) -> Vec<nemesis_board::PeerCandidate> {
     let peers = cluster.get_online_peers_excluding_self();
-    if peers.is_empty() {
-        return Vec::new();
-    }
-    let candidates: Vec<nemesis_board::PeerCandidate> = peers
+    peers
         .iter()
         .map(|p| nemesis_board::PeerCandidate {
             id: p.base.id.clone(),
@@ -1231,8 +1277,20 @@ pub fn rank_dispatch_candidates(
             },
             capabilities: p.capabilities.clone(),
         })
-        .collect();
+        .collect()
+}
 
+/// 匹配器全量排序（D3 换节点重派的候选来源 + [`pick_target_by_matcher`]
+/// 的单一真相源）：在线节点（不含本机）→ 投影 →
+/// [`nemesis_board::rank_peers`] 匹配度降序全量返回。节点角色词表只有
+/// worker/coordinator，planner 给的其他角色词（如 "qa"）转标签语义与
+/// tags/category 匹配。
+#[cfg(feature = "cluster")]
+pub fn rank_dispatch_candidates(
+    store: &BoardStore,
+    cluster: &nemesis_cluster::cluster::Cluster,
+    issue: &nemesis_board::Issue,
+) -> Vec<String> {
     // required_role 归一：角色词表外的词转标签语义（进 required_tags）。
     let (required_role, required_tags) = match issue.required_role.as_deref().map(str::trim) {
         Some(r) if !r.is_empty() && r != "worker" && r != "coordinator" => {
@@ -1250,7 +1308,7 @@ pub fn rank_dispatch_candidates(
         required_tags: &required_tags,
         description: &issue.description,
     };
-    nemesis_board::rank_peers(&input, &candidates, &load)
+    nemesis_board::rank_peers(&input, &project_dispatch_candidates(cluster), &load)
         .into_iter()
         .map(|(id, _)| id)
         .collect()
@@ -1266,6 +1324,74 @@ fn pick_target_by_matcher(
     rank_dispatch_candidates(store, cluster, issue)
         .into_iter()
         .next()
+}
+
+/// 停车场兜底目标（集群完备性加固 2026-09-11）：自动派发匹配不到节点时，
+/// 为了任务做下去由「一个客户端」推进。返回 `(节点 id, 兜底说明)`；
+/// None = 不兜底（调用方走原停车路径）。
+///
+/// 语义（用户裁决 2026-09-11）：
+/// - 开关关 / 无在线节点 → None（兜底造不出客户端，诚实停车）。
+/// - `dispatch_fallback_target` 钉住目标：按 name 或 id 精确匹配在线节点
+///   （大小写不敏感）；**钉住的不在线 = None，不悄悄换人**（钉住即点名）。
+/// - 未钉住：两级松弛排序——①保留 worker/coordinator 角色要求、去 tags；
+///   ②角色也放开全量排序。rank_peers 同分按负载↑、id 字典序，确定性。
+#[cfg(feature = "cluster")]
+fn pick_fallback_target(
+    board_cfg: Option<&nemesis_config::BoardFlagConfig>,
+    store: &BoardStore,
+    cluster: &nemesis_cluster::cluster::Cluster,
+    issue: &nemesis_board::Issue,
+) -> Option<(String, &'static str)> {
+    let cfg = board_cfg?;
+    if !cfg.dispatch_fallback {
+        return None;
+    }
+    let peers = cluster.get_online_peers_excluding_self();
+    if peers.is_empty() {
+        return None;
+    }
+
+    // 1. 钉住目标：name/id 精确匹配在线节点；不在线诚实停车。
+    if let Some(want) = cfg.dispatch_fallback_target.as_deref().map(str::trim)
+        && !want.is_empty()
+    {
+        return peers
+            .iter()
+            .find(|p| {
+                p.base.name.eq_ignore_ascii_case(want) || p.base.id.eq_ignore_ascii_case(want)
+            })
+            .map(|p| (p.base.id.clone(), "指定兜底节点"));
+    }
+
+    // 2. 松弛排序。角色保留与否沿用严格匹配的归一（词表外角色词已在
+    //    严格匹配里转 tags，这里只需认 worker/coordinator）。
+    let candidates = project_dispatch_candidates(cluster);
+    let load = store.count_active_dispatch_by_worker().unwrap_or_default();
+    let role = issue
+        .required_role
+        .as_deref()
+        .map(str::trim)
+        .filter(|r| !r.is_empty() && (*r == "worker" || *r == "coordinator"));
+    let empty: Vec<String> = Vec::new();
+    let rank = |required_role: Option<&str>| {
+        let input = nemesis_board::MatchInput {
+            required_role,
+            required_tags: &empty,
+            description: &issue.description,
+        };
+        nemesis_board::rank_peers(&input, &candidates, &load)
+            .into_iter()
+            .next()
+            .map(|(id, _)| id)
+    };
+    // ①保角色去标签 ②全放开。
+    if let Some(r) = role
+        && let Some(id) = rank(Some(r))
+    {
+        return Some((id, "无标签匹配节点，保角色松弛兜底"));
+    }
+    rank(None).map(|id| (id, "无匹配节点，全松弛兜底（角色/标签均放开）"))
 }
 
 /// 父单状态联动：子单全部 done → 父单 in_review；任一子单 cancelled →
@@ -2742,6 +2868,20 @@ fn board_config_set(
         "auto_accept" => board.auto_accept = need_bool(value)?,
         "auto_close_parent" => board.auto_close_parent = need_bool(value)?,
         "unlimited_mode" => board.unlimited_mode = need_bool(value)?,
+        "dispatch_fallback" => board.dispatch_fallback = need_bool(value)?,
+        "dispatch_fallback_target" => {
+            board.dispatch_fallback_target = if value.is_null() {
+                None
+            } else {
+                Some(
+                    value
+                        .as_str()
+                        .ok_or("dispatch_fallback_target 需要字符串或 null")?
+                        .trim()
+                        .to_string(),
+                )
+            };
+        }
         "review.selfcheck" => board.review.selfcheck = need_bool(value)?,
         "review.auto_close_project" => board.review.auto_close_project = need_bool(value)?,
         "plan.auto_confirm" => board.plan.auto_confirm = need_bool(value)?,
@@ -2837,7 +2977,8 @@ fn board_config_set(
         _ => {
             return Err(format!(
                 "未知或不允许的 board 配置键：{key}（允许：auto_review / auto_accept / \
-                 auto_close_parent / unlimited_mode / max_redispatch / dispatch_timeout_secs / \
+                 auto_close_parent / unlimited_mode / dispatch_fallback / dispatch_fallback_target / \
+                 max_redispatch / dispatch_timeout_secs / \
                  plan.auto_confirm / plan.model / review.max_turns / review.selfcheck / \
                  review.auto_close_project / review.checkers / budget.max_subissues_per_parent / \
                  budget.max_total_redispatch / budget.wall_clock_budget_secs /                  budget.max_tokens_per_parent / discussion.*）"

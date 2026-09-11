@@ -26,6 +26,21 @@ use crate::rpc::client::RpcClient;
 /// Configurable via `llm_timeout_secs` in config.cluster.json.
 pub const DEFAULT_LLM_TIMEOUT: Duration = Duration::from_secs(2 * 3600);
 
+/// `config.cluster.json` 的 `llm_timeout_secs` → B 端 LLM 等待超时
+/// （集群完备性加固 2026-09-11 单一真相源；此前 gateway 内联 0→24h、
+/// 本 handler 默认 2h、文档写「0=不限」三方不一致）。
+///
+/// 语义以文档为准：**0 = 不限**（`Duration::MAX`，tokio timeout 永不触发）；
+/// `>0` 原样透传。注意 A 端 stale 安全网（`Cluster::stale_task_safety_net`）
+/// 仍按 0→2h 推导并有 24h 下限——安全网必须有界，不能跟着「不限」走。
+pub fn llm_timeout_from_config_secs(secs: u64) -> Duration {
+    if secs == 0 {
+        Duration::MAX
+    } else {
+        Duration::from_secs(secs)
+    }
+}
+
 /// Maximum callback retry attempts.
 const MAX_CALLBACK_RETRIES: usize = 3;
 
@@ -181,7 +196,8 @@ impl PeerChatHandler {
         self.result_persister = Some(persister);
     }
 
-    /// Set the LLM request timeout.
+    /// Set the LLM request timeout（`Duration::MAX` = 不限，
+    /// 经 [`llm_timeout_from_config_secs`] 从 config 换算）。
     pub fn set_timeout(&mut self, timeout: Duration) {
         self.timeout = timeout;
     }

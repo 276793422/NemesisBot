@@ -17,6 +17,8 @@ interface BoardFlags {
   auto_accept: boolean
   auto_close_parent: boolean
   unlimited_mode: boolean
+  dispatch_fallback: boolean
+  dispatch_fallback_target: string | null
   max_redispatch: number
   dispatch_timeout_secs: number
   plan: { auto_confirm: boolean; model: string | null }
@@ -47,6 +49,8 @@ async function load() {
       auto_accept: !!r?.auto_accept,
       auto_close_parent: !!r?.auto_close_parent,
       unlimited_mode: !!r?.unlimited_mode,
+      dispatch_fallback: !!r?.dispatch_fallback,
+      dispatch_fallback_target: r?.dispatch_fallback_target ?? null,
       max_redispatch: r?.max_redispatch ?? 2,
       dispatch_timeout_secs: r?.dispatch_timeout_secs ?? 3600,
       plan: {
@@ -126,6 +130,12 @@ const toggles = computed(() =>
           desc: '验收 FAIL 无限重派（不看重派上限）、UNSURE 继续重派不转人工。预算护栏失效，急停开关随时可止血',
           value: flags.value.unlimited_mode,
         },
+        {
+          key: 'dispatch_fallback',
+          label: '无人匹配兜底派发',
+          desc: '自动派发匹配不到（角色/标签）节点时，为了任务做下去兜底派给在线节点（下方可钉住指定客户端；钉住的不在线则继续等）。派发前会留 ⚠ 评论说明',
+          value: flags.value.dispatch_fallback,
+        },
       ]
     : [],
 )
@@ -162,6 +172,11 @@ function onModel(ev: Event) {
   void setFlag('plan.model', raw === '' ? null : raw)
 }
 
+function onFallbackTarget(ev: Event) {
+  const raw = (ev.target as HTMLInputElement).value.trim()
+  void setFlag('dispatch_fallback_target', raw === '' ? null : raw)
+}
+
 onMounted(load)
 </script>
 
@@ -191,6 +206,23 @@ onMounted(load)
           </div>
           <input type="checkbox" :checked="t.value" @change="onToggle(t.key, $event)" />
         </label>
+      </div>
+
+      <!-- 兜底客户端钉住（dispatch_fallback 开时生效） -->
+      <div v-if="flags.dispatch_fallback" class="param-list" style="margin-top: calc(var(--space-2) * -1);">
+        <div class="param-row">
+          <div class="flag-text">
+            <div class="flag-label">兜底客户端</div>
+            <div class="flag-desc">钉住兜底派发的目标节点（节点名称或 ID，大小写不敏感）；留空 = 在线节点里自动选负载最低的。钉住的节点不在线时任务继续等待（不悄悄换人）</div>
+          </div>
+          <input
+            class="form-input param-input param-input-wide"
+            type="text"
+            placeholder="留空 = 自动选在线节点"
+            :value="flags.dispatch_fallback_target ?? ''"
+            @change="onFallbackTarget($event)"
+          />
+        </div>
       </div>
 
       <!-- 参数 -->

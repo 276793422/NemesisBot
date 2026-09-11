@@ -150,6 +150,15 @@ impl PeerRegistry {
         self.peers.lock().get(node_id).map(|e| e.info.clone())
     }
 
+    /// 读取对端当前连续探针失败计数（G2 降频调度观测/测试用；节点不在册返回 0）。
+    pub fn probe_failure_count(&self, node_id: &str) -> u32 {
+        self.peers
+            .lock()
+            .get(node_id)
+            .map(|e| e.consecutive_failures)
+            .unwrap_or(0)
+    }
+
     /// Find a peer by any of its addresses.
     ///
     /// Used by the remote-ID merge flow: when a manually-added peer uses a

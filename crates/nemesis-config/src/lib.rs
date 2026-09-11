@@ -277,6 +277,16 @@ pub struct BoardFlagConfig {
     /// 介入。estop 急停不受影响（保险丝非护栏）。停滞仍可观测：连续重派且
     /// 差距无变化时 WARN 告警（只告警不停）。
     pub unlimited_mode: bool,
+    /// 停车场兜底派发（集群完备性加固 2026-09-11；默认 false = 无人匹配
+    /// 即停车等节点）。true：自动派发匹配不到（角色/标签）节点时，为了
+    /// 任务做下去兜底派给在线节点（两级松弛：先保角色去标签，再全放开；
+    /// 同分按负载↑确定性兜底），派发前落 ⚠ 系统评论留痕。无任何在线节点
+    /// 时仍诚实停车（兜底造不出客户端）。estop 急停同样冻结兜底派发。
+    pub dispatch_fallback: bool,
+    /// 兜底客户端钉住（`dispatch_fallback` 开时生效；按节点 name 或 id 匹配，
+    /// 大小写不敏感）。Some 且该节点不在线 = 诚实停车**不悄悄换人**（钉住
+    /// 即点名）；None = 在线节点里松弛排序自动选。
+    pub dispatch_fallback_target: Option<String>,
     /// 验收 agent 行为配置（全自动流转 P4；`board.review` 段）。
     pub review: BoardReviewConfig,
     /// 自动流转预算保险丝（全自动流转 P4；`board.budget` 段；0 = 该项关闭）。
@@ -297,6 +307,8 @@ impl Default for BoardFlagConfig {
             max_redispatch: 2,
             auto_close_parent: false,
             unlimited_mode: false,
+            dispatch_fallback: false,
+            dispatch_fallback_target: None,
             review: BoardReviewConfig::default(),
             budget: BoardBudgetConfig::default(),
         }

@@ -4,6 +4,25 @@
 //! - `ConnectionPool` — synchronous pool for simple use cases
 //! - `Pool` — async pool with semaphore-based concurrency limits, per-node
 //!   limits, timeouts, and stats (mirrors Go's `Pool`)
+//!
+//! # 重连语义（裁决，2026-09-11 集群完备性加固）
+//!
+//! 本池**没有**后台重连任务、也没有连接保活心跳；自愈是**隐式**的，
+//! 由使用路径上的四个机制完成：
+//!
+//! 1. **取用即验**：[`Pool::get_inner`] 取到池内连接先 `is_active()`，
+//!    死连接现场剔除并改拨新连接（`dial`）——半开连接在下一次取用时被
+//!    发现并替换。
+//! 2. **caller-owned**：`get` 返回的连接归调用方所有，失败即 drop（Drop
+//!    关闭 socket），下次 `get` 自然拨新连接；不存在「复用坏连接」路径。
+//! 3. **归还验活**：[`Pool::return_connection`] 归还时再验一次，
+//!    死连接直接关闭并释放信号量槽位，**绝不把坏连接塞回池里**。
+//! 4. **兜底清扫**：[`Pool::cleanup_dead`] 回收未经 `remove()` 丢失的
+//!    池内死连接及其信号量槽位（防泄漏，非重连）。
+//!
+//! 代价语义：半开连接要到「第一次写失败/取用验活」才被发现——TCP 探活
+//! 的固有边界；主动可通信性检测由上层 G2 健康探针（frame 级 ping 过
+//! AEAD）补齐，两者职责不同、互不替代。
 
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicUsize, Ordering};

@@ -992,25 +992,20 @@ fn test_security_disabled_check() {
 // LLM timeout configuration logic
 // -------------------------------------------------------------------------
 
+// 2026-09-11 集群完备性加固：llm_timeout 语义以文档为准（0=不限），
+// gateway 内联 0→24h 回退臂删除，单一真相源 =
+// peer_chat_handler::llm_timeout_from_config_secs。旧「24h 回退」断言按新
+// 语义改写属预期。
+
 #[test]
-fn test_llm_timeout_zero_becomes_default() {
-    let llm_timeout_secs: u64 = 0;
-    let timeout = if llm_timeout_secs > 0 {
-        std::time::Duration::from_secs(llm_timeout_secs)
-    } else {
-        std::time::Duration::from_secs(24 * 3600)
-    };
-    assert_eq!(timeout.as_secs(), 24 * 3600);
+fn test_llm_timeout_zero_means_unlimited() {
+    let timeout = nemesis_cluster::rpc::peer_chat_handler::llm_timeout_from_config_secs(0);
+    assert_eq!(timeout, std::time::Duration::MAX, "0 = 不限（文档语义）");
 }
 
 #[test]
-fn test_llm_timeout_custom() {
-    let llm_timeout_secs: u64 = 7200;
-    let timeout = if llm_timeout_secs > 0 {
-        std::time::Duration::from_secs(llm_timeout_secs)
-    } else {
-        std::time::Duration::from_secs(24 * 3600)
-    };
+fn test_llm_timeout_custom_passthrough() {
+    let timeout = nemesis_cluster::rpc::peer_chat_handler::llm_timeout_from_config_secs(7200);
     assert_eq!(timeout.as_secs(), 7200);
 }
 
@@ -3397,7 +3392,8 @@ mod r9_gateway_boot_scenarios {
     ///
     /// 点亮：2540-2545 禁用臂、1597-1600 缺席 info 臂、2188-2191 dev-mode 臂、
     /// 2568-2572 非空 log_dir 臂（_=>Full 由默认 summary 已命中，仍显式给值
-    /// 保持意图）、3276-3285 DeviceService 启动成功臂、1843 的 24h 回退臂。
+    /// 保持意图）、3276-3285 DeviceService 启动成功臂、1843 的 0=不限臂
+    /// （2026-09-11 前是 24h 回退臂，语义已改写为文档口径 0=不限）。
     /// 这些分支只能靠日志文本观测，测试断言收敛到「按期就绪 + 干净退出」。
     #[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -3414,7 +3410,7 @@ mod r9_gateway_boot_scenarios {
         cfg["devices"]["enabled"] = serde_json::json!(true);
 
         // cluster 应用配置：enabled=false（不开 UDP/RPC 网络），但
-        // llm_timeout_secs=0 → 1840-1844 的 24h 回退臂。
+        // llm_timeout_secs=0 → 1840-1844 的 0=不限臂（Duration::MAX）。
         let ws_config_dir = home.join("workspace").join("config");
         std::fs::create_dir_all(&ws_config_dir).unwrap();
         std::fs::write(

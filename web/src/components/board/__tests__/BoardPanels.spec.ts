@@ -641,7 +641,7 @@ describe('BoardConfigPanel（配置 全自动流转 P1/A4）', () => {
     return w
   }
 
-  it('渲染 7 个自动化开关 + 参数默认值', async () => {
+  it('渲染 8 个自动化开关 + 参数默认值', async () => {
     const w = await mountPanel({})
     expect(w.text()).toContain('拆解自动发车')
     expect(w.text()).toContain('自动验收')
@@ -650,14 +650,37 @@ describe('BoardConfigPanel（配置 全自动流转 P1/A4）', () => {
     expect(w.text()).toContain('验收取证')
     expect(w.text()).toContain('项目自动收口')
     expect(w.text()).toContain('无限模式')
+    expect(w.text()).toContain('无人匹配兜底派发')
     expect(w.text()).toContain('验收 FAIL 重派上限')
     expect(w.text()).toContain('预算护栏')
     expect(w.text()).toContain('任务墙钟时限')
     const checked = w.findAll('input[type="checkbox"]')
-    expect(checked.length).toBe(7)
-    // fullFlags：auto_review=true 开，其余关（toggles 顺序：[0]=plan.auto_confirm、[1]=auto_review）。
+    expect(checked.length).toBe(8)
+    // fullFlags：auto_review=true 开，其余关（toggles 顺序：[0]=plan.auto_confirm、[1]=auto_review、[7]=dispatch_fallback）。
     expect((checked[0].element as HTMLInputElement).checked).toBe(false)
     expect((checked[1].element as HTMLInputElement).checked).toBe(true)
+    expect((checked[7].element as HTMLInputElement).checked).toBe(false)
+  })
+
+  it('兜底开关关 → 兜底客户端输入框不渲染；开 → 渲染并可保存目标', async () => {
+    const w = await mountPanel({})
+    expect(w.find('input[placeholder="留空 = 自动选在线节点"]').exists()).toBe(false)
+
+    const w2 = await mountPanel({ dispatch_fallback: true })
+    const target = w2.find('input[placeholder="留空 = 自动选在线节点"]')
+    expect(target.exists()).toBe(true)
+    await target.setValue('Alex')
+    await target.trigger('change')
+    await flushPromises()
+    const call = requestMock.mock.calls.find((c) => c[2]?.key === 'dispatch_fallback_target')!
+    expect(call[2]).toEqual({ key: 'dispatch_fallback_target', value: 'Alex' })
+
+    // 清空 → 保存 null（解除钉住）。
+    await target.setValue('')
+    await target.trigger('change')
+    await flushPromises()
+    const clear = requestMock.mock.calls.filter((c) => c[2]?.key === 'dispatch_fallback_target').pop()!
+    expect(clear[2]).toEqual({ key: 'dispatch_fallback_target', value: null })
   })
 
   it('开关切换 → config.set {key, value} 即时保存 + 成功 toast', async () => {
