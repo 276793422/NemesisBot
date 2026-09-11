@@ -354,3 +354,17 @@ fn test_read_side_counts_independent_of_write_side() {
     // And a genuinely write-like tool is invisible to the read side.
     assert!(g.record_read_success("edit_file", args).is_none());
 }
+
+/// P2A（2026-09-12）：escalation 文案必须以稳定前缀 [`ESCALATION_MARKER`]
+/// 开头——集群 worker 侧按此前缀识别「升级停轮」交付并按失败上报
+/// （fail_class=escalation），跨 crate 识别依赖此前缀不被改写。
+#[test]
+fn test_escalation_message_carries_stable_marker_prefix() {
+    let msg = TurnGuard::escalation_message("exec\x00boom", 6);
+    assert!(
+        msg.starts_with(ESCALATION_MARKER),
+        "escalation 文案必须以 ESCALATION_MARKER 开头: {msg}"
+    );
+    assert!(msg.contains("exec"));
+    assert!(msg.contains("6"));
+}

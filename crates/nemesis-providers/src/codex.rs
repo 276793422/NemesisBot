@@ -31,8 +31,10 @@ fn default_true() -> bool {
     true
 }
 
+// P3A 超时对齐（2026-09-12）：与 anthropic/http lane 统一 600s（原 120s，
+// 超时阶梯口径分裂的一半）。per-model 覆盖经模型条目 extra `timeout_secs`。
 fn default_timeout() -> u64 {
-    120
+    600
 }
 
 impl Default for CodexConfig {
@@ -43,7 +45,7 @@ impl Default for CodexConfig {
             default_model: CODEX_DEFAULT_MODEL.to_string(),
             base_url: CODEX_BASE_URL.to_string(),
             enable_web_search: true,
-            timeout_secs: 120,
+            timeout_secs: 600,
         }
     }
 }

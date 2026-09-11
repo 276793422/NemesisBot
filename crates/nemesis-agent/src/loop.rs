@@ -2557,6 +2557,19 @@ impl AgentLoop {
         self.data_store.clone()
     }
 
+    /// P2B（2026-09-12 NB-15 根修配套）：工具参数校验结果落账（DataStore
+    /// 天×模型 upsert，`models.health` 数据源——worker 端 validation_budget
+    /// 失败沉淀为可观测的长期趋势，供 tier 校准决策）。无 data_store 静默
+    /// 跳过；写失败只 warn——审计是增值动作，不反压轮次。
+    fn record_tool_validation_stats(&self, failed: bool) {
+        if let Some(ref ds) = self.data_store {
+            let model = self.active_model.read().clone();
+            if let Err(e) = ds.record_tool_validation(&model, failed) {
+                tracing::warn!("[AgentLoop] record_tool_validation failed: {e}");
+            }
+        }
+    }
+
     /// Set the Forge instance for experience collection.
     #[cfg(feature = "forge")]
     pub fn set_forge(&mut self, forge: Arc<nemesis_forge::forge::Forge>) {
@@ -5784,6 +5797,8 @@ impl AgentLoop {
             let request_had_images = messages.iter().any(|m| !m.images.is_empty());
 
             // Use tokio::select! to allow cancellation / e-stop during the LLM call.
+            // P3B 撞墙检测起点：首次调用的失败时长供 transient 重试链比对。
+            let first_call_start = std::time::Instant::now();
             let chat_result = tokio::select! {
                 result = active_provider.chat(&active_model, messages, Some(chat_opts.clone()), tool_defs) => result,
                 _ = cancel_token.cancelled() => {
@@ -5809,6 +5824,8 @@ impl AgentLoop {
             let mut response = match chat_result {
                 Ok(resp) => resp,
                 Err(err) => {
+                    // 首次调用从发起到失败的时长（Err 臂入口即失败点）。
+                    let first_call_failed_after = first_call_start.elapsed();
                     let err_lower = err.to_lowercase();
                     let is_context_error = ["token", "context", "length", "invalid"]
                         .iter()
@@ -5974,6 +5991,14 @@ impl AgentLoop {
                                 "[AgentLoop] LLM transient error, retrying up to {} times: {}",
                                 MAX_TRANSIENT_RETRIES, last_err
                             );
+                            // P3B 撞墙检测（2026-09-12）：prev 带入首次调用的失败
+                            // 时长——相邻两次失败几乎同时长（±1s）= 大概率固定
+                            // 超时阈值拦截（provider timeout / 上游网关 / CC
+                            // Switch 类代理的固定超时），继续盲重试只是重复烧墙。
+                            // 双端真机 S2 实证：评审 LLM 连续 4 次精确 120.01s
+                            // 超时——根因 anthropic lane 默认 120s（已另行根修
+                            // 为全 lane 600s + per-model timeout_secs 覆盖）。
+                            let mut prev_fail_after = Some(first_call_failed_after);
                             let mut retries = 0u32;
                             while retries < MAX_TRANSIENT_RETRIES {
                                 retries += 1;
@@ -5991,6 +6016,7 @@ impl AgentLoop {
                                         },
                                     })
                                     .collect();
+                                let attempt_start = std::time::Instant::now();
                                 match active_provider
                                     .chat(&active_model, r_msgs, Some(chat_opts.clone()), r_tools)
                                     .await
@@ -6001,6 +6027,19 @@ impl AgentLoop {
                                     }
                                     Err(e) => {
                                         last_err = e;
+                                        let failed_after = attempt_start.elapsed();
+                                        if let Some(prev) = prev_fail_after
+                                            && prev.abs_diff(failed_after)
+                                                <= std::time::Duration::from_secs(1)
+                                        {
+                                            warn!(
+                                                "[AgentLoop] ⚠ 疑似固定超时阈值拦截：相邻两次失败时长几乎相同（前次 {:.1}s / 本次 {:.1}s），重试大概率无效——检查模型条目 timeout_secs / provider 超时与上游可用性，而不是继续重试。最后错误: {}",
+                                                prev.as_secs_f32(),
+                                                failed_after.as_secs_f32(),
+                                                last_err
+                                            );
+                                        }
+                                        prev_fail_after = Some(failed_after);
                                         warn!(
                                             "[AgentLoop] transient retry {}/{} failed: {}",
                                             retries, MAX_TRANSIENT_RETRIES, last_err
@@ -6571,14 +6610,17 @@ impl AgentLoop {
                     let p = &pc[batch_idx];
                     if p.validation_failed {
                         validation_failures += 1;
+                        self.record_tool_validation_stats(true);
                     } else {
                         validation_failures = 0;
+                        self.record_tool_validation_stats(false);
                     }
                     (p.result.clone(), p.duration_ms)
                 } else {
                     let r = match self.check_tool_args(tc) {
                         crate::args_validator::Outcome::Valid => {
                             validation_failures = 0;
+                            self.record_tool_validation_stats(false);
                             // G2: dispatch at this instance's sub-agent depth so
                             // depth-aware tools (spawn) enforce max_depth.
                             self.handle_tool_call_at_depth(tc, context, instance.detached_depth())
@@ -6586,6 +6628,7 @@ impl AgentLoop {
                         }
                         crate::args_validator::Outcome::Fixed(fixed_args) => {
                             validation_failures = 0;
+                            self.record_tool_validation_stats(false);
                             info!(
                                 "[AgentLoop] Auto-fixed args for tool '{}' (id={})",
                                 tc.name, tc.id
@@ -6601,6 +6644,7 @@ impl AgentLoop {
                         }
                         crate::args_validator::Outcome::Invalid { message, class } => {
                             validation_failures += 1;
+                            self.record_tool_validation_stats(true);
                             warn!(
                                 "[AgentLoop] Arg validation failed for tool '{}' (id={}, class={}): {}",
                                 tc.name, tc.id, class, message
@@ -8026,7 +8070,8 @@ impl AgentLoop {
     }
 
     /// Phase 2: per-request consecutive-validation-failure budget, tier-aware.
-    /// Mini models get 3, Normal 2, Big 1.
+    /// Mini models get 3, Normal/Big 2（P2C：Big 1→2，并行工具批首个坏调用
+    /// 即烧光 budget=1，模型没机会自纠；见 capability.rs 注释）.
     fn validation_retry_budget(&self) -> u32 {
         (*self.tier.read()).validation_retry_budget()
     }

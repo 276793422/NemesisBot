@@ -468,6 +468,7 @@ async fn process_async(
                 "",
                 "rpc channel not available",
                 None,
+                Some("exec_failed"),
             )
             .await;
             return;
@@ -504,6 +505,7 @@ async fn process_async(
                 "",
                 &format!("failed to process: {}", e),
                 None,
+                Some("exec_failed"),
             )
             .await;
             return;
@@ -529,6 +531,7 @@ async fn process_async(
                 "",
                 "response channel closed",
                 None,
+                Some("exec_failed"),
             )
             .await;
             return;
@@ -546,6 +549,7 @@ async fn process_async(
                 "",
                 "LLM processing timeout",
                 None,
+                Some("llm_timeout"),
             )
             .await;
             return;
@@ -563,6 +567,7 @@ async fn process_async(
         "success",
         &response,
         "",
+        None,
         None,
     )
     .await;
@@ -588,6 +593,7 @@ pub async fn send_callback_or_persist(
     response: &str,
     error: &str,
     usage: Option<serde_json::Value>,
+    fail_class: Option<&str>,
 ) {
     let callback_ok = if !source_node_id.is_empty() {
         send_callback(
@@ -599,6 +605,7 @@ pub async fn send_callback_or_persist(
             response,
             error,
             usage,
+            fail_class,
         )
         .await
     } else {
@@ -631,6 +638,9 @@ pub async fn send_callback_or_persist(
 ///
 /// `usage`（全自动流转 P5/E1 二期）：worker 本轮 token 用量（input/output
 /// JSON，serde 兼容——旧 master 忽略未知字段；无用量 = None，字段不落）。
+/// `fail_class`（P2A，2026-09-12 双端真机 NB-15 根修）：结构化终结失败
+/// 分类（仅 error 回调携带，`None` = 不落字段——wire 兼容与 usage 同款）。
+/// A 端验收重派决策据此避免同 worker 同模型盲重派（能力类失败重派必复现）。
 pub async fn send_callback(
     rpc_client: Option<&RpcClient>,
     source_node_id: &str,
@@ -640,6 +650,7 @@ pub async fn send_callback(
     response: &str,
     error: &str,
     usage: Option<serde_json::Value>,
+    fail_class: Option<&str>,
 ) -> bool {
     let client = match rpc_client {
         Some(c) => c,
@@ -656,6 +667,9 @@ pub async fn send_callback(
     }
     if let Some(u) = usage {
         payload["usage"] = u;
+    }
+    if let Some(fc) = fail_class {
+        payload["fail_class"] = serde_json::Value::String(fc.into());
     }
 
     for attempt in 0..MAX_CALLBACK_RETRIES {

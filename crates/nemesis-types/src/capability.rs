@@ -45,11 +45,18 @@ impl ModelTier {
     /// Phase 2 validation-retry budget for this tier — how many consecutive
     /// schema-violating tool calls to tolerate before stopping the loop.
     /// Smaller models get more rope, since they stumble more often.
+    ///
+    /// Big 1→2（P2C，2026-09-12 双端真机 NB-15 根修）：并行工具调用批
+    /// （单次 LLM 响应多个 tool_calls）已成常态，批内每个畸形调用各 +1——
+    /// budget=1 时首个坏调用即停轮，模型从未见到结构化错误回灌就终结
+    /// （NB-15：glm 单响应 2 个 exec 调用全错，第一发就烧光预算）。2 给
+    /// 强模型一次「看到错误 → 下轮自纠」的机会；真正的死循环仍由
+    /// turn_guard ⑥ 兜底，不会因放宽预算而空转。
     pub fn validation_retry_budget(self) -> u32 {
         match self {
             ModelTier::Mini => 3,
             ModelTier::Normal => 2,
-            ModelTier::Big => 1,
+            ModelTier::Big => 2,
             ModelTier::Auto => 2, // pre-resolution fallback; resolve() first
         }
     }

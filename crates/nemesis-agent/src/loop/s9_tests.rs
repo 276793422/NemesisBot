@@ -1062,7 +1062,8 @@ async fn bus_flow_validator_fixed_arm_repairs_typo() {
     assert_eq!(out.content, "fixed flow done");
 }
 
-/// Invalid 臂：缺必填回灌结构化错误，tier 预算（big=1）耗尽 → 停环消息。
+/// Invalid 臂：缺必填回灌结构化错误，tier 预算（big=P2C 起 2）耗尽 → 停环
+/// 消息。预算耗尽需要**两**轮连续失败（P2C 前预算 1，一轮即停）。
 #[tokio::test]
 async fn bus_flow_validator_invalid_arm_exhausts_budget() {
     let _logs = capture_logs();
@@ -1071,6 +1072,7 @@ async fn bus_flow_validator_invalid_arm_exhausts_budget() {
     let mut agent_loop = AgentLoop::new_bus(
         Box::new(MockLlmProvider::new(vec![
             tc_resp(vec![s9_call("v2", "s9path", "{\"other\":1}")]),
+            tc_resp(vec![s9_call("v3", "s9path", "{\"other\":1}")]),
             resp("never reached"),
         ])),
         test_config(),
@@ -2166,15 +2168,17 @@ async fn parallel_readonly_batch_replays_validation_counters() {
         );
     }
     // 2) p2 缺必填 path → precompute 标 validation_failed → 重放 +1 臂
-    //    → big 档预算（1）耗尽 → 校验预算停（两个臂都要真实跑到）。
+    //    → big 档预算（P2C 起 2）连续两批失败耗尽 → 校验预算停（两个臂都
+    //    要真实跑到；P2C 前预算 1 一批即停）。批内只有失效调用——若混入
+    //    Valid 项，重放按序会先把计数器归零，单批净 +1 永远撞不到预算 2。
     {
         let (out_tx, mut out_rx) = tokio::sync::mpsc::channel(16);
         let (in_tx, in_rx) = tokio::sync::mpsc::channel(16);
         let mut agent_loop = AgentLoop::new_bus(
-            Box::new(MockLlmProvider::new(vec![tc_resp(vec![
-                s9_call("p1", "s9echo", "{}"),
-                s9_call("p2", "s9strict", "{}"),
-            ])])),
+            Box::new(MockLlmProvider::new(vec![
+                tc_resp(vec![s9_call("p2", "s9strict", "{}")]),
+                tc_resp(vec![s9_call("p4", "s9strict", "{}")]),
+            ])),
             test_config(),
             out_tx,
             ConcurrentMode::Reject,

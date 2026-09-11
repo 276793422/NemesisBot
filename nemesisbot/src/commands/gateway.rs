@@ -1155,6 +1155,7 @@ fn write_back_board_dispatch(
     task_id: &str,
     status: &str,
     response: &str,
+    fail_class: &str,
 ) -> BoardWritebackOutcome {
     use nemesis_board::models::dispatch_state;
 
@@ -1208,11 +1209,15 @@ fn write_back_board_dispatch(
         Ok(true) => {
             let worker_actor = nemesis_board::Actor::agent(&disp.worker_id);
             let (ctype, content) = if status == "error" {
-                // 失败汇报不做格式判定——错误输出原样留痕。
-                (
-                    nemesis_board::CommentType::Comment,
-                    format!("⛔ worker 汇报失败：\n\n{response}"),
-                )
+                // 失败汇报不做格式判定——错误输出原样留痕。P2A（2026-09-12
+                // NB-15）：worker 结构化失败分类（如有）落结构化标记行，
+                // review_issue 读线程后据此避免同 worker 同模型盲重派
+                //（能力类失败重派必复现）；人看也是一眼可读的分类。
+                let mut c = format!("⛔ worker 汇报失败：\n\n{response}");
+                if !fail_class.is_empty() {
+                    c.push_str(&format!("\n\nfail_class: {fail_class}"));
+                }
+                (nemesis_board::CommentType::Comment, c)
             } else if nemesis_board::parse_delivery_report(response).is_some() {
                 // 结构化汇报 → 交付线程首评（G5）。超限先做截断+资产注记。
                 (
@@ -1235,12 +1240,16 @@ fn write_back_board_dispatch(
             }) {
                 warn!("[Gateway] board writeback comment failed (task_id={task_id}): {e}");
             }
-            // 成功 → in_review（coordinator/验收 agent 处置）；失败留在
-            // in_progress，失败评论已留痕（重派走 issue.dispatch）。推进
-            // 成功即携带 M4 评审触发目标。
+            // 成功 → in_review（coordinator/验收 agent 处置）；worker 上报
+            // 失败（P1 error 回调）**同样**转 in_review 进验收决策链——
+            // 失败评论（⛔ Comment）正是 review_issue 无 Delivery 时的诚实
+            // 降级输入：锚点必然 FAIL 短路 → 走同一重派/预算/转人工漏斗。
+            // 旧实现把失败单留在 in_progress 且不触发 review，max_redispatch
+            // 预算耗不出去，单据卡死无人接手（2026-09-11 双端真机 S2 实证：
+            // NB-15 重派轮 error 回调后 90s 无任何决策动作）。推进成功与
+            // 失败均携带 M4 评审触发目标。
             let mut issue_for_review = None;
-            if status != "error"
-                && let Ok(issue) = bstore.get_issue(disp.issue_id)
+            if let Ok(issue) = bstore.get_issue(disp.issue_id)
                 && issue.status == nemesis_board::IssueStatus::InProgress
             {
                 match bstore.transition_issue(
@@ -1493,6 +1502,7 @@ pub async fn run(local: bool, extra_args: &[String]) -> Result<()> {
         workspace: home.join("workspace").to_string_lossy().to_string(),
         connect_mode: resolution.connect_mode.clone(),
         protocol: resolution.protocol.clone(),
+        timeout_secs: resolution.timeout_secs,
         account_id: String::new(),
         headers: std::collections::HashMap::new(),
     };
@@ -2852,6 +2862,13 @@ pub async fn run(local: bool, extra_args: &[String]) -> Result<()> {
                     task_id,
                     usage,
                 );
+                // P2A（2026-09-12 NB-15）：结构化失败分类（可选字段，旧
+                // worker 无此字段不炸；只认字符串形态）。随写回落到 ⛔
+                // 失败评论，验收重派决策据此避免同 worker 同模型盲重派。
+                let fail_class = payload
+                    .get("fail_class")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("");
 
                 info!("[Gateway] peer_chat_callback received: task_id={}, status={}, from={}", task_id, status, source_node);
 
@@ -2918,6 +2935,7 @@ pub async fn run(local: bool, extra_args: &[String]) -> Result<()> {
                     task_id,
                     status,
                     fail_text,
+                    fail_class,
                 );
                 #[cfg(all(feature = "board", feature = "cluster"))]
                 let is_board_task = board_writeback.is_board_task;

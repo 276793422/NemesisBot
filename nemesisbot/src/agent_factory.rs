@@ -278,6 +278,7 @@ pub fn build_agent_loop(
         workspace: shared.workspace_dir().to_string_lossy().to_string(),
         connect_mode: resolution.connect_mode,
         protocol: resolution.protocol.clone(),
+        timeout_secs: resolution.timeout_secs,
         account_id: String::new(),
         headers: HashMap::new(),
     };
@@ -456,6 +457,7 @@ pub fn build_agent_loop(
                     workspace: shared.workspace_dir().to_string_lossy().to_string(),
                     connect_mode: resolution.connect_mode.clone(),
                     protocol: resolution.protocol.clone(),
+                    timeout_secs: resolution.timeout_secs,
                     account_id: String::new(),
                     headers: HashMap::new(),
                 };
@@ -1137,6 +1139,7 @@ pub fn build_cluster_agent_loop(
         workspace: shared.workspace_dir().to_string_lossy().to_string(),
         connect_mode: resolution.connect_mode,
         protocol: resolution.protocol.clone(),
+        timeout_secs: resolution.timeout_secs,
         account_id: String::new(),
         headers: HashMap::new(),
     };
@@ -1585,6 +1588,7 @@ pub fn build_project_agent_loop(
         workspace: project_dir.to_string_lossy().to_string(),
         connect_mode: resolution.connect_mode,
         protocol: resolution.protocol.clone(),
+        timeout_secs: resolution.timeout_secs,
         account_id: String::new(),
         headers: HashMap::new(),
     };
@@ -1709,6 +1713,7 @@ pub fn build_project_agent_loop(
                     workspace: project_dir.to_string_lossy().to_string(),
                     connect_mode: resolution.connect_mode.clone(),
                     protocol: resolution.protocol.clone(),
+                    timeout_secs: resolution.timeout_secs,
                     account_id: String::new(),
                     headers: HashMap::new(),
                 };

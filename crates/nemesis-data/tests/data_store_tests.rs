@@ -779,3 +779,61 @@ fn test_large_cost_aggregation() {
 
     let _ = fs::remove_file(&db_path);
 }
+
+// ---------------------------------------------------------------------------
+// P2B 模型工具健康（tool_validation_stats，2026-09-12 NB-15 根修配套）
+// ---------------------------------------------------------------------------
+
+#[test]
+fn test_tool_validation_upsert_accumulates() {
+    let db_path = temp_db_path();
+    let store = DataStore::open(&db_path).expect("Failed to open database");
+
+    store.record_tool_validation("m1", false).unwrap();
+    store.record_tool_validation("m1", true).unwrap();
+    store.record_tool_validation("m1", true).unwrap();
+    store.record_tool_validation("m2", false).unwrap();
+
+    let rows = store.query_model_tool_health(7).unwrap();
+    assert_eq!(rows.len(), 2, "两模型两行");
+    let m1 = rows.iter().find(|r| r.model == "m1").unwrap();
+    assert_eq!(m1.tool_calls, 3);
+    assert_eq!(m1.validation_failures, 2);
+    assert!((m1.failure_rate - 2.0 / 3.0).abs() < 1e-9);
+    let m2 = rows.iter().find(|r| r.model == "m2").unwrap();
+    assert_eq!(m2.tool_calls, 1);
+    assert_eq!(m2.validation_failures, 0);
+    assert_eq!(rows[0].model, "m1", "按调用量降序");
+
+    let _ = fs::remove_file(&db_path);
+}
+
+#[test]
+fn test_tool_validation_empty_ledger_returns_empty() {
+    let db_path = temp_db_path();
+    let store = DataStore::open(&db_path).expect("Failed to open database");
+    assert!(
+        store.query_model_tool_health(7).unwrap().is_empty(),
+        "零记录 = 空列表（不是错误）"
+    );
+
+    let _ = fs::remove_file(&db_path);
+}
+
+#[test]
+fn test_tool_validation_persists_across_reopen() {
+    // schema v3 迁移 + 持久化：写 → 关 → 重开 → 可查。
+    let db_path = temp_db_path();
+    {
+        let store = DataStore::open(&db_path).expect("Failed to open database");
+        store.record_tool_validation("legacy-m", true).unwrap();
+    }
+    let reopened = DataStore::open(&db_path).expect("Failed to reopen database");
+    let rows = reopened.query_model_tool_health(7).unwrap();
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0].model, "legacy-m");
+    assert_eq!(rows[0].tool_calls, 1);
+    assert_eq!(rows[0].validation_failures, 1);
+
+    let _ = fs::remove_file(&db_path);
+}

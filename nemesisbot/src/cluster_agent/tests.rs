@@ -1838,3 +1838,71 @@ fn test_terminal_error_none_for_done_or_empty_stream() {
     // 空事件流 → None（由调用方的空结果守卫兜底）。
     assert!(super::terminal_error(&[]).is_none());
 }
+
+// ---------------------------------------------------------------------------
+// P2A（2026-09-12 NB-15）：终结失败分类（fail_class）契约
+// ---------------------------------------------------------------------------
+
+/// 校验预算耗尽停轮 → validation_budget（loop.rs 生成侧前缀与此处同步）。
+#[test]
+fn test_classify_validation_budget() {
+    let fc = super::classify_terminal_failure(
+        "error",
+        "",
+        "工具参数校验连续失败 2 次，已停止重试。最近工具：'exec'。",
+    );
+    assert_eq!(fc, Some("validation_budget"));
+}
+
+/// turn_guard 升级硬停 → escalation（稳定前缀 ESCALATION_MARKER）。
+#[test]
+fn test_classify_escalation() {
+    let fc = super::classify_terminal_failure(
+        "error",
+        "",
+        &format!(
+            "{}exec 在本任务中已 6 次报相同错误…",
+            nemesis_agent::turn_guard::ESCALATION_MARKER
+        ),
+    );
+    assert_eq!(fc, Some("escalation"));
+}
+
+/// LLM 调用终结失败：超时形态与其它形态分开。
+#[test]
+fn test_classify_llm_failure_variants() {
+    assert_eq!(
+        super::classify_terminal_failure("error", "", "Error: operation timed out"),
+        Some("llm_timeout")
+    );
+    assert_eq!(
+        super::classify_terminal_failure("error", "", "Error: 请求上游超时"),
+        Some("llm_timeout")
+    );
+    assert_eq!(
+        super::classify_terminal_failure("error", "", "Error: HTTP 401 Unauthorized"),
+        Some("llm_failure")
+    );
+}
+
+/// 空交付与兜底类；success 不分类。
+#[test]
+fn test_classify_empty_result_and_fallback() {
+    assert_eq!(
+        super::classify_terminal_failure(
+            "error",
+            "",
+            "worker 返回空结果：turn 正常结束但没有产出任何最终回复文本",
+        ),
+        Some("empty_result")
+    );
+    assert_eq!(
+        super::classify_terminal_failure("error", "", "奇怪的失败"),
+        Some("exec_failed")
+    );
+    assert_eq!(
+        super::classify_terminal_failure("success", "交付完成", ""),
+        None,
+        "success 回调不携带 fail_class"
+    );
+}

@@ -4219,6 +4219,7 @@ fn test_writeback_success_moves_to_in_review_with_result_comment() {
         "task-ok",
         "success",
         "改完了，产物在 foo.rs",
+        "",
     );
     assert!(
         board_writeback.is_board_task,
@@ -4242,7 +4243,7 @@ fn test_writeback_success_moves_to_in_review_with_result_comment() {
 
 #[cfg(all(feature = "board", feature = "cluster"))]
 #[test]
-fn test_writeback_error_keeps_in_progress_with_failure_comment() {
+fn test_writeback_error_moves_to_in_review_for_decision_chain() {
     let dir = std::env::temp_dir().join(format!(
         "nemesisbot-gw-writeback-err-{}",
         std::process::id()
@@ -4257,14 +4258,26 @@ fn test_writeback_error_keeps_in_progress_with_failure_comment() {
         "task-err",
         "error",
         "编译失败：…",
+        "",
     );
     assert!(board_writeback.is_board_task);
 
-    // 失败留在 in_progress（不推 in_review），失败评论留痕。
+    // 失败单同样转 in_review 并携带评审触发目标（2026-09-11 双端真机 S2：
+    // 旧实现留 in_progress 不触发 review → max_redispatch 预算耗不出去、
+    // 单据卡死无人接手；失败评论（⛔ Comment）正是 review_issue 降级路径
+    // 的输入，锚点 FAIL 短路后走同一重派/转人工漏斗）。
     let issue = store.get_issue_by_number("NB-1").unwrap();
-    assert_eq!(issue.status, nemesis_board::IssueStatus::InProgress);
+    assert_eq!(issue.status, nemesis_board::IssueStatus::InReview);
+    assert_eq!(
+        board_writeback.issue_for_review,
+        Some(issue.id),
+        "error callback must arm spawn_board_review"
+    );
+    // 失败评论留痕（worker actor）。
     let comments = store.list_comments(issue.id).unwrap();
-    assert!(comments.iter().any(|c| c.content.contains("编译失败：…")));
+    assert!(comments.iter().any(|c| c.author.kind == "agent"
+        && c.content.contains("编译失败：…")
+        && c.content.contains("⛔")));
     let rec = store.get_dispatch("task-err").unwrap().unwrap();
     assert_eq!(rec.state, nemesis_board::models::dispatch_state::FAILED);
     let _ = std::fs::remove_dir_all(&dir);
@@ -4282,13 +4295,27 @@ fn test_writeback_duplicate_callback_is_idempotent() {
     let store = dispatched_store(&dir, "task-dup");
 
     assert!(
-        write_back_board_dispatch(&Some(store.clone()), &dir, "task-dup", "success", "第一份")
-            .is_board_task
+        write_back_board_dispatch(
+            &Some(store.clone()),
+            &dir,
+            "task-dup",
+            "success",
+            "第一份",
+            ""
+        )
+        .is_board_task
     );
     // 重复回调：仍识别为 board 任务（跳过续行），但不重复写评论/转移。
     assert!(
-        write_back_board_dispatch(&Some(store.clone()), &dir, "task-dup", "success", "第一份")
-            .is_board_task
+        write_back_board_dispatch(
+            &Some(store.clone()),
+            &dir,
+            "task-dup",
+            "success",
+            "第一份",
+            ""
+        )
+        .is_board_task
     );
 
     let issue = store.get_issue_by_number("NB-1").unwrap();
@@ -4315,14 +4342,15 @@ fn test_writeback_non_board_and_unavailable_store() {
     std::fs::create_dir_all(&dir).unwrap();
     let store = dispatched_store(&dir, "task-x");
     assert!(
-        !write_back_board_dispatch(&Some(store.clone()), &dir, "other-task", "success", "…")
+        !write_back_board_dispatch(&Some(store.clone()), &dir, "other-task", "success", "…", "")
             .is_board_task
     );
     assert!(
-        !write_back_board_dispatch(&Some(store.clone()), &dir, "", "success", "…").is_board_task
+        !write_back_board_dispatch(&Some(store.clone()), &dir, "", "success", "…", "")
+            .is_board_task
     );
     // store 未注入 → 恒 false。
-    assert!(!write_back_board_dispatch(&None, &dir, "task-x", "success", "…").is_board_task);
+    assert!(!write_back_board_dispatch(&None, &dir, "task-x", "success", "…", "").is_board_task);
     let _ = std::fs::remove_dir_all(&dir);
 }
 
@@ -4360,6 +4388,7 @@ fn test_writeback_structured_report_becomes_delivery_comment() {
         "task-deliv",
         "success",
         response,
+        "",
     );
     assert!(board_writeback.is_board_task);
 
@@ -4405,8 +4434,14 @@ fn test_writeback_oversized_report_overflows_to_asset() {
     );
     assert!(response.len() > 64 * 1024);
 
-    let board_writeback =
-        write_back_board_dispatch(&Some(store.clone()), &dir, "task-big", "success", &response);
+    let board_writeback = write_back_board_dispatch(
+        &Some(store.clone()),
+        &dir,
+        "task-big",
+        "success",
+        &response,
+        "",
+    );
     assert!(board_writeback.is_board_task);
 
     let issue = store.get_issue_by_number("NB-1").unwrap();
@@ -4661,5 +4696,80 @@ fn test_record_cluster_usage_serde_compat_and_session_key() {
         .unwrap();
     assert_eq!(total, 2, "worker/ 前缀 LIKE 聚合命中两笔");
     assert_eq!(logs.len(), 2);
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+// ---------------------------------------------------------------------------
+// P2A（2026-09-12 NB-15）：fail_class 随 error 写回落 ⛔ 评论（结构化标记行）
+// ---------------------------------------------------------------------------
+
+#[cfg(all(feature = "board", feature = "cluster"))]
+#[test]
+fn test_writeback_error_carries_fail_class_marker() {
+    let dir =
+        std::env::temp_dir().join(format!("nemesisbot-gw-writeback-fc-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let store = dispatched_store(&dir, "task-fc");
+
+    let board_writeback = write_back_board_dispatch(
+        &Some(store.clone()),
+        &dir,
+        "task-fc",
+        "error",
+        "工具参数校验连续失败 2 次，已停止重试。最近工具：'exec'。",
+        "validation_budget",
+    );
+    assert!(board_writeback.is_board_task);
+
+    let issue = store.get_issue_by_number("NB-1").unwrap();
+    let comments = store.list_comments(issue.id).unwrap();
+    let fail_comment = comments
+        .iter()
+        .find(|c| c.content.contains("⛔ worker 汇报失败"))
+        .expect("error writeback must leave the failure comment");
+    assert!(
+        fail_comment
+            .content
+            .contains("\nfail_class: validation_budget"),
+        "失败评论必须携带结构化分类标记行: {}",
+        fail_comment.content
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[cfg(all(feature = "board", feature = "cluster"))]
+#[test]
+fn test_writeback_error_without_fail_class_omits_marker() {
+    let dir = std::env::temp_dir().join(format!(
+        "nemesisbot-gw-writeback-nofc-{}",
+        std::process::id()
+    ));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let store = dispatched_store(&dir, "task-nofc");
+
+    // 旧 worker 无 fail_class（空串）→ 不落标记行（wire 兼容）。
+    let board_writeback = write_back_board_dispatch(
+        &Some(store.clone()),
+        &dir,
+        "task-nofc",
+        "error",
+        "编译失败：…",
+        "",
+    );
+    assert!(board_writeback.is_board_task);
+
+    let issue = store.get_issue_by_number("NB-1").unwrap();
+    let comments = store.list_comments(issue.id).unwrap();
+    let fail_comment = comments
+        .iter()
+        .find(|c| c.content.contains("⛔ worker 汇报失败"))
+        .expect("error writeback must leave the failure comment");
+    assert!(
+        !fail_comment.content.contains("fail_class:"),
+        "无分类时不得落标记行: {}",
+        fail_comment.content
+    );
     let _ = std::fs::remove_dir_all(&dir);
 }

@@ -3218,3 +3218,83 @@ async fn fallback_sweep_revives_parked_issue() {
     );
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+// ---------------------------------------------------------------------------
+// P1 拓扑硬闸（2026-09-12 双端真机 S2 根修）：远端目标 + file: 锚点 = 拒绝派发
+// （被测 fn 本体 cluster-gated → 测试同守卫，无 feature 编译期消失）
+// ---------------------------------------------------------------------------
+
+#[test]
+#[cfg(feature = "cluster")]
+fn remote_file_anchor_gate_rejects_remote_target() {
+    let ac = "文件存在\n[CHECK] file:deploy_demo/index.html exists\n[CHECK] re:已创建";
+    let reason = super::reject_remote_file_anchors(Some(ac), "Node-B", "node-a-xyz", "Node-A")
+        .expect("远端目标 + file: 锚点必须拒绝");
+    assert!(reason.contains("拒绝派发"), "拒绝理由需说明闸门：{reason}");
+    assert!(
+        reason.contains("Node-B"),
+        "拒绝理由需点名目标节点：{reason}"
+    );
+    assert!(
+        reason.contains("file:deploy_demo/index.html exists"),
+        "拒绝理由需回显锚点原文：{reason}"
+    );
+    assert!(
+        reason.contains("re:"),
+        "拒绝理由需给出 re: 修正建议：{reason}"
+    );
+}
+
+#[test]
+#[cfg(feature = "cluster")]
+fn remote_file_anchor_gate_allows_content_regex_only() {
+    let ac = "[CHECK] re:已创建 index[.]html\n普通语义验收行";
+    assert!(
+        super::reject_remote_file_anchors(Some(ac), "Node-B", "node-a-xyz", "Node-A").is_none(),
+        "纯 re: 锚点跨节点安全，不得拦截"
+    );
+}
+
+#[test]
+#[cfg(feature = "cluster")]
+fn remote_file_anchor_gate_allows_local_target_by_id_and_name() {
+    let ac = "[CHECK] file:deploy_demo/index.html exists";
+    // 按 id 命中本节点。
+    assert!(
+        super::reject_remote_file_anchors(Some(ac), "node-a-xyz", "node-a-xyz", "Node-A").is_none()
+    );
+    // 按名称命中本节点。
+    assert!(
+        super::reject_remote_file_anchors(Some(ac), "Node-A", "node-a-xyz", "Node-A").is_none()
+    );
+    // 大小写不敏感。
+    assert!(
+        super::reject_remote_file_anchors(Some(ac), "node-a", "node-a-xyz", "Node-A").is_none()
+    );
+}
+
+#[test]
+#[cfg(feature = "cluster")]
+fn remote_file_anchor_gate_no_criteria_or_no_file_anchor() {
+    assert!(super::reject_remote_file_anchors(None, "Node-B", "node-a-xyz", "Node-A").is_none());
+    assert!(
+        super::reject_remote_file_anchors(Some(""), "Node-B", "node-a-xyz", "Node-A").is_none()
+    );
+    // 混合形态：有 file: 就拦（file: 是误杀源，re: 不救）。
+    let mixed = "[CHECK] re:交付完成\n[CHECK] file:info.txt contains:kangjinlong";
+    assert!(
+        super::reject_remote_file_anchors(Some(mixed), "Node-B", "node-a-xyz", "Node-A").is_some()
+    );
+}
+
+#[test]
+#[cfg(feature = "cluster")]
+fn remote_file_anchor_gate_ignores_unsafe_path_anchors() {
+    // 路径形态不安全的 file: 锚点（绝对路径）在 parse_anchors 已被拒收
+    // （回落语义项 + 告警）——不触发派发闸（那是验收标准自身的毛病，
+    // review 侧已有降级路径，不在派发面重复惩罚）。
+    let ac = r"[CHECK] file:C:\evil\x exists";
+    assert!(
+        super::reject_remote_file_anchors(Some(ac), "Node-B", "node-a-xyz", "Node-A").is_none()
+    );
+}

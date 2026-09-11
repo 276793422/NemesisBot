@@ -75,8 +75,10 @@ pub struct HttpProviderConfig {
     pub preserve_prefix: bool,
 }
 
+// P3A 超时对齐（2026-09-12）：serde 缺省与 factory 显式值统一 600s
+// （原 120s——评审 LLM 连续 120s 超时根因的 http 分支）。
 fn default_timeout() -> u64 {
-    120
+    600
 }
 
 /// OpenAI-compatible HTTP LLM provider.

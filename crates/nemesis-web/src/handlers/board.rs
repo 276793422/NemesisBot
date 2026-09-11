@@ -333,6 +333,51 @@ fn render_issue_experience_section(
     )
 }
 
+/// P1 派发硬闸（2026-09-12 双端真机 S2 拓扑误杀根修）：远端目标 +
+/// `file:` 锚点 = 拒绝派发。`file:` 锚点在派发端（看板权威端）workspace
+/// 解析实核，而任务在远端节点 workspace 执行——执行者真实交付成功也会被
+/// 假 FAIL（S2 实证：NB-16 烧光 2 轮重派预算转人工，B 端交付物早已存在）。
+/// 本闸是**模型无关**的确定性拦截（planner 提示词拓扑纪律是软防线，这是
+/// 硬防线；手动派发 / FAIL 重派 / autopilot 全走 dispatch_issue_core =
+/// 单一漏斗全覆盖）。返回 Some(拒绝理由) = 拦截。
+/// 纯函数（无 store/cluster 依赖），单测直测。
+#[cfg(feature = "cluster")]
+fn reject_remote_file_anchors(
+    acceptance_criteria: Option<&str>,
+    target: &str,
+    local_node_id: &str,
+    local_node_name: &str,
+) -> Option<String> {
+    use nemesis_board::anchor::AnchorKind;
+
+    let ac = acceptance_criteria?;
+    let (anchors, _semantic, _rejected) = nemesis_board::anchor::parse_anchors(ac);
+    let file_anchors: Vec<&str> = anchors
+        .iter()
+        .filter(|a| !matches!(a.kind, AnchorKind::ContentRegex))
+        .map(|a| a.raw.as_str())
+        .collect();
+    if file_anchors.is_empty() {
+        return None;
+    }
+    // 目标 = 本节点（id 或名称，大小写不敏感）→ 同一 workspace，file: 锚点合法。
+    let t = target.trim().to_lowercase();
+    if t == local_node_id.trim().to_lowercase() || t == local_node_name.trim().to_lowercase() {
+        return None;
+    }
+    Some(format!(
+        "⛔ 拒绝派发：目标节点「{target}」是远端节点，而验收标准包含 {} 条 file: 锚点。\
+file: 锚点在派发端 workspace 解析实核，远端任务的交付文件不在派发端 workspace——真实交付也会被误判 FAIL（拓扑误杀）。\
+请把 file: 锚点改为 `re:` 型（对交付汇报文本实核，跨节点安全）后重试，或将任务派给本节点。\n涉及锚点：\n{}",
+        file_anchors.len(),
+        file_anchors
+            .iter()
+            .map(|raw| format!("- `{raw}`"))
+            .collect::<Vec<_>>()
+            .join("\n")
+    ))
+}
+
 /// 派发核心（W2 P4 从 `issue_dispatch` 提取，cluster 编译时）：状态/重复
 /// 派发闸 → 登记 task + 派发绑定 → 推进 in_progress → fire-and-forget 发
 /// peer_chat RPC。`issue.dispatch`（WSAPI）与 gateway 的 autopilot 定时
@@ -368,6 +413,17 @@ pub fn dispatch_issue_core(
 
     // 派发 = 给远端 worker 发 peer_chat，集群必需。
     let cluster = cluster.ok_or("集群未运行，无法派发（issue.dispatch 需要集群）")?;
+
+    // P1 拓扑硬闸（模型无关）：远端目标 + file: 锚点 = 拒绝（软防线是
+    // planner 提示词拓扑纪律；手动派发/重派/autopilot 都过这道闸）。
+    if let Some(reason) = reject_remote_file_anchors(
+        issue.acceptance_criteria.as_deref(),
+        target,
+        cluster.node_id(),
+        &cluster.node_name(),
+    ) {
+        return Err(reason);
+    }
 
     // M4.5：经验注入段在 prompt 组装前检索（命中计数待发车成功后落）。
     let (experience_section, experience_ids) = render_issue_experience_section(store, &issue);

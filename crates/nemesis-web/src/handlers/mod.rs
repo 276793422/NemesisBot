@@ -94,6 +94,11 @@ mod s10b_tests;
 #[cfg(test)]
 mod m5_session_usage_tests;
 
+// P2B (2026-09-12, NB-15 根修配套): models.health 工具健康视图——
+// 阈值建议 / 窗口夹取 / 账本未装配诚实空。
+#[cfg(test)]
+mod models_health_tests;
+
 // L1 (2026-09-06, devtool-upgrade 阶段 6): WSAPI 命令注册表——结构不变量 +
 // system.commands dispatch 链路 + docs/INFO/wsapi-commands.md 文档生成 +
 // 安全子集 dispatch 冒烟。

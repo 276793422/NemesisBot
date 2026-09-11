@@ -1566,7 +1566,7 @@ fn test_http_provider_config_default_timeout() {
         base_url: "https://api.openai.com/v1".to_string(),
         api_key: "test-key".to_string(),
         default_model: "gpt-4".to_string(),
-        timeout_secs: 120, // default value
+        timeout_secs: 600, // P3A 超时对齐后的 lane 统一默认
         headers: HashMap::new(),
         proxy: None,
         preserve_prefix: false,

@@ -209,3 +209,16 @@ fn system_prompt_declares_check_anchor_instructions() {
         );
     }
 }
+
+/// P1 拓扑纪律防误删快照（2026-09-12 双端真机 S2 根修）：planner prompt
+/// 必须声明「远端任务禁止 file: 锚点」——删掉这段 planner 会继续给远端
+/// 子任务配 file: 锚点（硬闸会拦，但每次派发都炸成诚实错误，规划面劣化）。
+#[test]
+fn system_prompt_declares_anchor_topology_discipline() {
+    for marker in ["拓扑纪律", "远端", "只允许 `[CHECK] re:` 形态"] {
+        assert!(
+            PLANNER_SYSTEM_PROMPT.contains(marker),
+            "system prompt 必须含锚点拓扑纪律标记 {marker}（远端任务禁 file: 锚点）"
+        );
+    }
+}

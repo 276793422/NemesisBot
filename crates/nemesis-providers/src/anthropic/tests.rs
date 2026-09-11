@@ -134,7 +134,8 @@ fn test_anthropic_config_default() {
     let config = AnthropicConfig::default();
     assert_eq!(config.base_url, DEFAULT_BASE_URL);
     assert_eq!(config.default_model, DEFAULT_MODEL);
-    assert_eq!(config.timeout_secs, 120);
+    // P3A 超时对齐（2026-09-12）：全 lane 统一 600s（原 120s 与超时阶梯口径分裂）。
+    assert_eq!(config.timeout_secs, 600);
 }
 
 #[test]
@@ -189,7 +190,7 @@ fn test_anthropic_config_deserialization_partial() {
     assert_eq!(config.api_key, "sk-ant-test");
     assert_eq!(config.base_url, ""); // serde default = empty string
     assert_eq!(config.default_model, ""); // serde default = empty string
-    assert_eq!(config.timeout_secs, 120);
+    assert_eq!(config.timeout_secs, 600); // serde default = lane 统一默认
 }
 
 #[test]

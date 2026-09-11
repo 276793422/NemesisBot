@@ -40,6 +40,7 @@ impl ModuleHandler for ModelsHandler {
             "update_field",
             "catalog_info",
             "catalog_update",
+            "health",
         ]
     }
 
@@ -78,6 +79,9 @@ impl ModuleHandler for ModelsHandler {
             }
             "catalog_info" => self.catalog_info(home),
             "catalog_update" => self.catalog_update(home).await,
+            // P2B（2026-09-12 NB-15 根修配套）：模型工具健康（近 N 天
+            // 工具调用 / 参数校验失败 + 阈值建议）。
+            "health" => self.health(ctx, data),
             _ => Err(format!("unknown command: models.{}", cmd)),
         }
     }
@@ -147,6 +151,8 @@ struct SwapParams {
     api_base: String,
     connect_mode: String,
     protocol: String,
+    /// Per-model 单请求超时秒数（P3A 超时对齐）。0 = lane 默认 600s。
+    timeout_secs: u64,
 }
 
 impl ModelsHandler {
@@ -402,6 +408,7 @@ impl ModelsHandler {
                 workspace: String::new(),
                 connect_mode: swap.connect_mode,
                 protocol: swap.protocol,
+                timeout_secs: swap.timeout_secs,
                 account_id: String::new(),
                 headers: std::collections::HashMap::new(),
             };
@@ -453,6 +460,7 @@ impl ModelsHandler {
             api_base: resolution.api_base,
             connect_mode: resolution.connect_mode,
             protocol: resolution.protocol,
+            timeout_secs: resolution.timeout_secs,
         })
     }
 
@@ -563,6 +571,44 @@ impl ModelsHandler {
         Ok(Some(serde_json::json!({
             "updated": true, "name": name, "field": field, "value": normalized,
         })))
+    }
+
+    /// P2B（2026-09-12 NB-15 根修配套）：模型工具健康视图——近 `days` 天
+    /// 每模型 工具调用数 / 参数校验失败数 / 失败率；样本足够（tool_calls
+    /// ≥ 10）且失败率 ≥ 20% 时给 tier 校准建议（`model probe` / `model
+    /// set-tier` / 换出 worker 池）。阈值是启发式护栏（P2A 闸的长期数据
+    /// 面），不是硬闸。data.days 可覆盖窗口（1~90 夹取，默认 7）。
+    /// 账本未装配（无 DataStore）= 空列表 + note，不是错误。
+    fn health(
+        &self,
+        ctx: &RequestContext,
+        data: Option<serde_json::Value>,
+    ) -> Result<Option<serde_json::Value>, String> {
+        let Some(ref ds) = ctx.state.data_store else {
+            return Ok(Some(serde_json::json!({
+                "days": 0,
+                "models": [],
+                "note": "usage 账本未装配，无工具健康数据",
+            })));
+        };
+        let days = data
+            .as_ref()
+            .and_then(|d| d.get("days"))
+            .and_then(|v| v.as_i64())
+            .unwrap_or(7)
+            .clamp(1, 90);
+        let mut rows = ds.query_model_tool_health(days)?;
+        for r in rows.iter_mut() {
+            if r.tool_calls >= 10 && r.failure_rate >= 0.2 {
+                r.hint = Some(format!(
+                    "近 {days} 天参数校验失败率 {:.0}%（{}/{}）——模型按 schema 正确选用工具的能力可能不足。建议：跑 `model probe` 校准能力档位，或 `model set-tier` 调高档位，或将该模型换出执行节点。",
+                    r.failure_rate * 100.0,
+                    r.validation_failures,
+                    r.tool_calls
+                ));
+            }
+        }
+        Ok(Some(serde_json::json!({ "days": days, "models": rows })))
     }
 
     /// P3-2: catalog cache status for the models page header (no spawn, no

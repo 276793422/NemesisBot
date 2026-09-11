@@ -142,6 +142,20 @@ pub struct SessionUsageAgg {
     pub total_cost_usd: f64,
 }
 
+/// 单模型的工具健康聚合（P2B `models.health`，2026-09-12 NB-15 根修配套）。
+///
+/// `failure_rate` = validation_failures / tool_calls（无调用 = 0.0）。
+/// `hint` 是消费侧（WSAPI handler）按阈值追加的处置建议——数据层只出
+/// 事实（计数），不出结论。
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct ModelToolHealth {
+    pub model: String,
+    pub tool_calls: i64,
+    pub validation_failures: i64,
+    pub failure_rate: f64,
+    pub hint: Option<String>,
+}
+
 /// A single point in a trend chart.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TrendPoint {

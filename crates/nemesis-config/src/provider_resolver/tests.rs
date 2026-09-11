@@ -417,6 +417,7 @@ fn test_provider_resolution_serialization() {
         protocol: String::new(),
         workspace: String::new(),
         enabled: true,
+        timeout_secs: 0,
     };
     let json = serde_json::to_string(&pr).unwrap();
     let parsed: ProviderResolution = serde_json::from_str(&json).unwrap();
@@ -662,4 +663,79 @@ fn test_resolve_and_find_by_model_field_arm() {
     // find_model_by_name: same two-stage lookup, by-model-field arm.
     let found = find_model_by_name(&cfg, "zhipu/glm-4.7").unwrap();
     assert_eq!(found.model_name, "alias-only");
+}
+
+// ---- P3A 超时对齐（2026-09-12）：per-model timeout_secs 提取 ----
+
+#[test]
+fn test_resolve_timeout_secs_extra_key() {
+    let cfg = Config {
+        model_list: vec![ModelConfig {
+            extra: std::iter::once(("timeout_secs".to_string(), serde_json::json!(300u64)))
+                .collect(),
+            model_name: "t".to_string(),
+            model: "anthropic/claude-3".to_string(),
+            api_key: "k".to_string(),
+            ..Default::default()
+        }],
+        ..Default::default()
+    };
+    let res = resolve_model_config(&cfg, "t").unwrap();
+    assert_eq!(res.timeout_secs, 300);
+}
+
+#[test]
+fn test_resolve_timeout_alias_key() {
+    // 别名 `timeout` 兼容（dashboard attr 编辑器任意键名）。
+    let cfg = Config {
+        model_list: vec![ModelConfig {
+            extra: std::iter::once(("timeout".to_string(), serde_json::json!(90u64))).collect(),
+            model_name: "t".to_string(),
+            model: "deepseek/chat".to_string(),
+            api_key: "k".to_string(),
+            ..Default::default()
+        }],
+        ..Default::default()
+    };
+    let res = resolve_model_config(&cfg, "t").unwrap();
+    assert_eq!(res.timeout_secs, 90);
+}
+
+#[test]
+fn test_resolve_timeout_absent_is_zero() {
+    let cfg = Config {
+        model_list: vec![ModelConfig {
+            extra: Default::default(),
+            model_name: "t".to_string(),
+            model: "anthropic/claude-3".to_string(),
+            api_key: "k".to_string(),
+            ..Default::default()
+        }],
+        ..Default::default()
+    };
+    let res = resolve_model_config(&cfg, "t").unwrap();
+    assert_eq!(res.timeout_secs, 0);
+}
+
+#[test]
+fn test_resolve_timeout_non_numeric_ignored() {
+    // 字符串/负数/浮点 = 诚实按未设置处理（0），不做静默钳位。
+    for bad in [
+        serde_json::json!("300"),
+        serde_json::json!(-5),
+        serde_json::json!(1.5),
+    ] {
+        let cfg = Config {
+            model_list: vec![ModelConfig {
+                extra: std::iter::once(("timeout_secs".to_string(), bad)).collect(),
+                model_name: "t".to_string(),
+                model: "anthropic/claude-3".to_string(),
+                api_key: "k".to_string(),
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+        let res = resolve_model_config(&cfg, "t").unwrap();
+        assert_eq!(res.timeout_secs, 0);
+    }
 }

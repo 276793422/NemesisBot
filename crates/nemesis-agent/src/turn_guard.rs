@@ -29,6 +29,13 @@ pub const ALTERNATING_LOOP_THRESHOLD: u32 = 3;
 /// (failures 3, 4, 5) before we cut it off at failure 6.
 pub const ALTERNATING_LOOP_HARD_STOP: u32 = 6;
 
+/// 升级硬停文案的稳定前缀（P2A，2026-09-12）：[`TurnGuard::escalation_message`]
+/// 与集群 worker 侧（`cluster_agent`）共用同一真相源——worker 据此识别
+/// 「升级停轮」形态的终结交付并按失败上报（fail_class=escalation），A 端
+/// 验收决策不再把停止告知当工作交付评审后盲重派。改文案必须保留此前缀
+/// （跨 crate 识别依赖）。
+pub const ESCALATION_MARKER: &str = "检测到循环无法打破：";
+
 /// ④ Per-turn threshold for the storm guard: the same `(tool, error)` failing
 /// this many times **consecutively** (no intervening success or different
 /// error) is a death-spiral — nudge. Lower priority than ⑥ (consecutive is a
@@ -195,7 +202,7 @@ impl TurnGuard {
     pub fn escalation_message(sig: &str, count: u32) -> String {
         let tool = sig.split('\x00').next().unwrap_or("tool");
         format!(
-            "检测到循环无法打破：{} 在本任务中已 {} 次报相同错误，多次提示后仍未改变方向。已停止本轮以避免空耗，已完成的工作已保存。请人工介入，或换一种思路后重试。",
+            "{ESCALATION_MARKER}{} 在本任务中已 {} 次报相同错误，多次提示后仍未改变方向。已停止本轮以避免空耗，已完成的工作已保存。请人工介入，或换一种思路后重试。",
             tool, count
         )
     }

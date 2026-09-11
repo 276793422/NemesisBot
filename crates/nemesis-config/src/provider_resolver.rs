@@ -46,6 +46,13 @@ pub struct ProviderResolution {
     /// H4 (U16 half): reasoning-effort tier from the model entry ("" = unset).
     #[serde(default)]
     pub reasoning_effort: String,
+    /// Per-model 单请求超时秒数（P3A 超时对齐，2026-09-12）：模型条目 extra 的
+    /// `timeout_secs`（别名 `timeout`）。0 = 未设置 → factory 落 lane 默认
+    /// 600s（修复 anthropic/codex/http-compat lane 曾各写死 120s、与
+    /// 超时阶梯「provider 单请求 600s」口径不一致：评审 LLM 连续精确 120s
+    /// 超时的根因）。
+    #[serde(default)]
+    pub timeout_secs: u64,
 }
 
 impl Default for ProviderResolution {
@@ -54,6 +61,7 @@ impl Default for ProviderResolution {
             provider_name: String::new(),
             model_name: String::new(),
             reasoning_effort: String::new(),
+            timeout_secs: 0,
             api_key: String::new(),
             api_base: String::new(),
             proxy: String::new(),
@@ -155,6 +163,19 @@ pub(crate) fn resolve_api_key_value(raw: &str, model_for_error: &str) -> Result<
     Ok(raw.to_string())
 }
 
+/// Per-model 请求超时秒数提取（P3A 超时对齐）：读模型条目 extra（flatten
+/// 未类型化键）的 `timeout_secs`，兼容别名 `timeout`。0/缺省/非正整数 =
+/// 未设置（factory 落 lane 默认 600s）。非 u64 值（字符串/负数/浮点）诚实
+/// 忽略按未设置处理——配置层不做静默钳位。
+fn extract_timeout_secs(extra: &std::collections::BTreeMap<String, serde_json::Value>) -> u64 {
+    for key in ["timeout_secs", "timeout"] {
+        if let Some(n) = extra.get(key).and_then(|v| v.as_u64()) {
+            return n;
+        }
+    }
+    0
+}
+
 fn resolve_from_model_config(mc: &ModelConfig) -> Result<ProviderResolution> {
     let (provider_name, model_name) = if mc.model.contains('/') {
         let mut parts = mc.model.splitn(2, '/');
@@ -185,6 +206,7 @@ fn resolve_from_model_config(mc: &ModelConfig) -> Result<ProviderResolution> {
         workspace: mc.workspace.clone(),
         enabled: true,
         reasoning_effort: mc.reasoning_effort.clone(),
+        timeout_secs: extract_timeout_secs(&mc.extra),
     })
 }
 

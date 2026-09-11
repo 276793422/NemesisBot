@@ -22,8 +22,12 @@ pub struct AnthropicConfig {
     pub timeout_secs: u64,
 }
 
+// P3A 超时对齐（2026-09-12）：120s 曾与 openai 兼容 lane 的 600s 口径分裂
+// （超时阶梯「provider 单请求 600s」只对 http lane 成立）——双端真机 S2 评审
+// LLM 连续精确 120.01s 超时的根因。全 lane 统一 600s，per-model 可经模型
+// 条目 extra `timeout_secs` 覆盖（provider_resolver → FactoryConfig 透传）。
 fn default_timeout() -> u64 {
-    120
+    600
 }
 
 impl Default for AnthropicConfig {
@@ -32,7 +36,7 @@ impl Default for AnthropicConfig {
             api_key: String::new(),
             base_url: DEFAULT_BASE_URL.to_string(),
             default_model: DEFAULT_MODEL.to_string(),
-            timeout_secs: 120,
+            timeout_secs: 600,
         }
     }
 }

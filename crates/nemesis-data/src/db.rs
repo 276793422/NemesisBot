@@ -3,7 +3,7 @@
 use rusqlite::Connection;
 use std::path::Path;
 
-const SCHEMA_VERSION: i32 = 2;
+const SCHEMA_VERSION: i32 = 3;
 
 const SCHEMA_V1: &str = r#"
 CREATE TABLE IF NOT EXISTS request_logs (
@@ -76,6 +76,24 @@ CREATE INDEX IF NOT EXISTS idx_request_logs_status
     ON request_logs(status_code);
 "#;
 
+/// v2 → v3（P2B 模型工具健康，2026-09-12）：按 天×模型 聚合的工具调用 /
+/// 参数校验失败计数。NB-15 根修配套——worker 端 validation_budget 失败
+/// （A 端 fail_class 只能看到「失败了」）在此沉淀为可观测的长期趋势，
+/// `models.health`（WSAPI/Dashboard）据此给出 tier 校准建议。
+///
+/// 与 request_logs 的关系：request_logs 一行 = 一次 LLM 请求（模型维度
+/// 已有）；本表一行 = 天×模型 的工具调用累计（工具维度此前无账）。
+/// upsert 增量写（每次工具调用 ~µs，相对秒级工具耗时忽略不计）。
+const SCHEMA_V3: &str = r#"
+CREATE TABLE IF NOT EXISTS tool_validation_stats (
+    day                 TEXT    NOT NULL,
+    model               TEXT    NOT NULL,
+    tool_calls          INTEGER NOT NULL DEFAULT 0,
+    validation_failures INTEGER NOT NULL DEFAULT 0,
+    PRIMARY KEY (day, model)
+);
+"#;
+
 /// Open (or create) the database at `db_path` and run pending migrations.
 pub fn init_db(db_path: &Path) -> Result<Connection, String> {
     if let Some(parent) = db_path.parent() {
@@ -102,6 +120,11 @@ pub fn init_db(db_path: &Path) -> Result<Connection, String> {
         conn.execute_batch(SCHEMA_V2)
             .map_err(|e| format!("Schema v2 migration failed: {e}"))?;
         tracing::info!("[DataStore] Schema v2 applied (A3: pricing/session/timing columns)");
+    }
+    if current_version < 3 {
+        conn.execute_batch(SCHEMA_V3)
+            .map_err(|e| format!("Schema v3 migration failed: {e}"))?;
+        tracing::info!("[DataStore] Schema v3 applied (P2B: tool_validation_stats)");
     }
     set_version(&conn, SCHEMA_VERSION)?;
 

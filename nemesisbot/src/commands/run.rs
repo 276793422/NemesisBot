@@ -300,6 +300,7 @@ pub async fn run(
             workspace: workspace_dir.to_string_lossy().to_string(),
             connect_mode: resolution.connect_mode,
             protocol: resolution.protocol.clone(),
+            timeout_secs: resolution.timeout_secs,
             account_id: String::new(),
             headers: std::collections::HashMap::new(),
         };

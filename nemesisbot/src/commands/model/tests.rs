@@ -2352,6 +2352,7 @@ mod r9_subprocess {
             workspace: ".".into(),
             connect_mode: Default::default(),
             protocol: String::new(),
+            timeout_secs: 0,
             account_id: String::new(),
             headers: Default::default(),
         };

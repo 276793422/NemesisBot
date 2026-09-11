@@ -14,6 +14,7 @@ use std::sync::Arc;
 use nemesis_agent::context::RequestContext;
 use nemesis_agent::instance::AgentInstance;
 use nemesis_agent::r#loop::AgentLoop;
+use nemesis_agent::turn_guard::ESCALATION_MARKER;
 use nemesis_agent::types::AgentConfig;
 use nemesis_agent::types::AgentEvent;
 use nemesis_cluster::cluster_task::{ClusterTaskList, ClusterWorkQueue, TaskStatus};
@@ -401,14 +402,23 @@ async fn execute_new_task(
     // 耗尽 / 升级硬停，末事件为 Error）必须发 error 回调，不得包装成 success
     // ——此前 7/7 真机样本都是空交付 success，A 端重派链拿不到失败信号。
     // 成功终止但最终文本为空同样按 error 上报（无内容可交付）。
+    // P2A（2026-09-12）：turn_guard 升级硬停以 Done 终止（P1 语义——文案带
+    // 「已完成的工作已保存」），但交付内容只是停止告知，不是工作交付——按
+    // error 上报（classify 为 escalation），A 端据此转人工而非把停止告知当
+    // 交付评审后盲重派（同节点重放同一任务大概率复现同一循环）。
     let error_text = terminal_error(&events);
-    let status = match (&error_text, result.trim().is_empty()) {
-        (Some(err), _) => (err.clone(), "error"),
-        (None, true) => (
-            "worker 返回空结果：turn 正常结束但没有产出任何最终回复文本".to_string(),
-            "error",
-        ),
-        (None, false) => (String::new(), "success"),
+    let escalation_stop = error_text.is_none() && result.contains(ESCALATION_MARKER);
+    let status = if escalation_stop {
+        (result.clone(), "error")
+    } else {
+        match (&error_text, result.trim().is_empty()) {
+            (Some(err), _) => (err.clone(), "error"),
+            (None, true) => (
+                "worker 返回空结果：turn 正常结束但没有产出任何最终回复文本".to_string(),
+                "error",
+            ),
+            (None, false) => (String::new(), "success"),
+        }
     };
     if status.1 == "error" {
         nemesis_cluster::logger::log_task("exec_failed", &task.task_id, &status.0);
@@ -567,14 +577,21 @@ async fn resume_task(
     persist_session_history(agent_loop, &instance, &task.source.session_key);
     let usage = extract_task_usage(agent_loop, &task.source.session_key, &usage_before);
     // P1：续行轮同样按终态判定（与 execute_new_task 同一映射，见其注释）。
+    // P2A：升级硬停（Done 终止 + 稳定前缀交付文本）同样改判 error——
+    // 停止告知不是工作交付（详见 execute_new_task 同段注释）。
     let error_text = terminal_error(&events);
-    let status = match (&error_text, result.trim().is_empty()) {
-        (Some(err), _) => (err.clone(), "error"),
-        (None, true) => (
-            "worker 返回空结果：续行正常结束但没有产出任何最终回复文本".to_string(),
-            "error",
-        ),
-        (None, false) => (String::new(), "success"),
+    let escalation_stop = error_text.is_none() && result.contains(ESCALATION_MARKER);
+    let status = if escalation_stop {
+        (result.clone(), "error")
+    } else {
+        match (&error_text, result.trim().is_empty()) {
+            (Some(err), _) => (err.clone(), "error"),
+            (None, true) => (
+                "worker 返回空结果：续行正常结束但没有产出任何最终回复文本".to_string(),
+                "error",
+            ),
+            (None, false) => (String::new(), "success"),
+        }
     };
     if status.1 == "error" {
         nemesis_cluster::logger::log_task("exec_failed", &task.task_id, &status.0);
@@ -850,9 +867,13 @@ async fn send_task_callback(
     error: &str,
     usage: Option<serde_json::Value>,
 ) {
+    // P2A（2026-09-12 NB-15）：终结失败分类随 error 回调上行（success =
+    // None，字段不落），A 端验收重派决策据此避免同 worker 同模型盲重派。
+    let fail_class = classify_terminal_failure(status, response, error);
     tracing::info!(
         task_id = %task.task_id,
         status = %status,
+        fail_class = ?fail_class,
         target_node = %task.source.node_id,
         "[ClusterAgent] Sending callback"
     );
@@ -868,8 +889,45 @@ async fn send_task_callback(
         response,
         error,
         usage,
+        fail_class,
     )
     .await;
+}
+
+/// P2A（2026-09-12 双端真机 NB-15 根修）：终结失败分类——error 回调负载
+/// 携带结构化 `fail_class`，A 端验收重派决策据此避免同 worker 同模型盲目
+/// 重派（能力类失败重派同节点大概率原样复现：NB-15 校验预算耗尽连烧两轮
+/// 重派预算）。分类真相源 = 各终结路径的稳定文本前缀（loop.rs 生成侧与此
+/// 处消费侧同步演化，tests 钉死契约）：
+/// - `validation_budget`：工具参数校验连续失败（loop.rs 校验预算耗尽停轮）
+/// - `escalation`：turn_guard 升级硬停（稳定前缀
+///   [`nemesis_agent::turn_guard::ESCALATION_MARKER`]）
+/// - `llm_timeout` / `llm_failure`：LLM 调用终结失败（transient 重试耗尽 /
+///   非瞬态错误），超时形态单列（撞墙检测的跨端可观测面；尽力匹配——
+///   provider 错误文案不受本侧控制）
+/// - `empty_result`：turn 正常结束但无交付文本
+/// - `exec_failed`：其它失败（兜底）。success 回调返回 None（不落字段）。
+fn classify_terminal_failure(status: &str, response: &str, error: &str) -> Option<&'static str> {
+    if status != "error" {
+        return None;
+    }
+    let text = if error.is_empty() { response } else { error };
+    if text.starts_with("工具参数校验连续失败") {
+        Some("validation_budget")
+    } else if text.starts_with(nemesis_agent::turn_guard::ESCALATION_MARKER) {
+        Some("escalation")
+    } else if text.starts_with("worker 返回空结果") {
+        Some("empty_result")
+    } else if text.starts_with("Error:") {
+        let lower = text.to_ascii_lowercase();
+        if lower.contains("timed out") || lower.contains("timeout") || text.contains("超时") {
+            Some("llm_timeout")
+        } else {
+            Some("llm_failure")
+        }
+    } else {
+        Some("exec_failed")
+    }
 }
 
 /// 本轮 token 用量提取（E1 二期）：run 前后各取一次 session 聚合，差值 =

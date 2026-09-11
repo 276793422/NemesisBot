@@ -108,7 +108,9 @@ fn serde_roundtrip() {
 fn retry_budget_per_tier() {
     assert_eq!(ModelTier::Mini.validation_retry_budget(), 3);
     assert_eq!(ModelTier::Normal.validation_retry_budget(), 2);
-    assert_eq!(ModelTier::Big.validation_retry_budget(), 1);
+    // P2C（2026-09-12 NB-15）：Big 1→2——并行工具批首个坏调用即烧光
+    // budget=1，模型没机会看到回灌错误自纠；2 给一次下轮自纠机会。
+    assert_eq!(ModelTier::Big.validation_retry_budget(), 2);
 }
 
 #[test]

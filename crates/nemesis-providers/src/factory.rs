@@ -32,6 +32,8 @@ pub struct ProviderSelection {
     pub workspace: String,
     pub connect_mode: String,
     pub account_id: String,
+    /// Per-model 请求超时秒数（P3A 超时对齐）。0 = lane 默认（600s）。
+    pub timeout_secs: u64,
 }
 
 /// Factory configuration for resolving providers.
@@ -56,6 +58,23 @@ pub struct FactoryConfig {
     pub protocol: String,
     /// Additional headers for HTTP provider.
     pub headers: HashMap<String, String>,
+    /// Per-model 单请求超时秒数（P3A 超时对齐，2026-09-12）：来自模型条目
+    /// extra `timeout_secs`（provider_resolver 提取）。0 = 未设置，落 lane
+    /// 默认 600s——此前 anthropic/codex/http-compat 各自写死 120s，与
+    /// openai 兼容 lane 的 600s 口径分裂（评审 LLM 连续精确 120s 超时根因）。
+    pub timeout_secs: u64,
+}
+
+/// 全 lane 统一的单请求默认超时（超时阶梯最内层；外层链见 CLAUDE.md）。
+const DEFAULT_TIMEOUT_SECS: u64 = 600;
+
+/// 0（未设置）落 lane 默认，>0 透传用户显式配置。
+fn effective_timeout(configured: u64) -> u64 {
+    if configured > 0 {
+        configured
+    } else {
+        DEFAULT_TIMEOUT_SECS
+    }
 }
 
 /// Resolve a provider selection from factory config.
@@ -83,6 +102,7 @@ pub fn resolve_provider_selection(cfg: &FactoryConfig) -> Result<ProviderSelecti
         },
         connect_mode: cfg.connect_mode.clone(),
         account_id: cfg.account_id.clone(),
+        timeout_secs: cfg.timeout_secs,
     };
 
     // Handle special providers first（CLI 型是本地进程不是 wire 协议，
@@ -174,7 +194,7 @@ pub fn create_provider(cfg: &FactoryConfig) -> Result<Arc<dyn LLMProvider>, Stri
                 api_key: sel.api_key,
                 base_url: sel.api_base,
                 default_model: sel.model,
-                ..Default::default()
+                timeout_secs: effective_timeout(sel.timeout_secs),
             };
             Arc::new(AnthropicProvider::new(anthropic_cfg))
         }
@@ -184,6 +204,7 @@ pub fn create_provider(cfg: &FactoryConfig) -> Result<Arc<dyn LLMProvider>, Stri
                 account_id: sel.account_id,
                 default_model: sel.model,
                 base_url: sel.api_base,
+                timeout_secs: effective_timeout(sel.timeout_secs),
                 ..Default::default()
             };
             Arc::new(CodexProvider::new(codex_cfg))
@@ -217,7 +238,7 @@ pub fn create_provider(cfg: &FactoryConfig) -> Result<Arc<dyn LLMProvider>, Stri
                 base_url: sel.api_base,
                 api_key: sel.api_key,
                 default_model: sel.model,
-                timeout_secs: 120,
+                timeout_secs: effective_timeout(sel.timeout_secs),
                 headers: cfg.headers.clone(),
                 proxy: None,
                 preserve_prefix: false,

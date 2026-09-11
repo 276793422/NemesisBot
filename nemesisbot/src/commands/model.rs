@@ -1004,6 +1004,7 @@ async fn run_probe(
         workspace: home.join("workspace").to_string_lossy().to_string(),
         connect_mode: resolution.connect_mode,
         protocol: resolution.protocol.clone(),
+        timeout_secs: resolution.timeout_secs,
         account_id: String::new(),
         headers: HashMap::new(),
     };

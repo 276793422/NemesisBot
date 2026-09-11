@@ -64,6 +64,39 @@ interface CatalogInfo { exists: boolean; fetched_at: string; entries: number }
 const catalogInfo = ref<CatalogInfo | null>(null)
 const catalogUpdating = ref(false)
 
+// P2B: 模型工具健康（models.health）——近 N 天参数校验失败趋势，
+// 样本足够且失败率高时后端附 tier 校准建议（hint）。
+interface ToolHealthRow {
+  model: string
+  tool_calls: number
+  validation_failures: number
+  failure_rate: number
+  hint?: string | null
+  pct: number
+}
+const toolHealth = ref<ToolHealthRow[]>([])
+const toolHealthDays = ref(0)
+const toolHealthNote = ref('')
+const healthByName = computed<Record<string, ToolHealthRow>>(() => {
+  const map: Record<string, ToolHealthRow> = {}
+  for (const r of toolHealth.value) map[r.model] = r
+  return map
+})
+
+async function loadToolHealth() {
+  try {
+    const data = await request('models', 'health')
+    toolHealth.value = (data?.models || []).map((r: any) => ({
+      ...r,
+      pct: Math.round((r.failure_rate || 0) * 100),
+    }))
+    toolHealthDays.value = data?.days || 0
+    toolHealthNote.value = data?.note || ''
+  } catch {
+    // 健康面板是增值信息，拉取失败不打扰主列表。
+  }
+}
+
 async function loadModels() {
   try {
     const data = await request('models', 'list')
@@ -290,6 +323,7 @@ async function testModel(name: string) {
 onMounted(() => {
   loadModels()
   loadCatalogInfo()
+  loadToolHealth()
 })
 </script>
 
@@ -410,7 +444,24 @@ onMounted(() => {
               <span class="settings-value">{{ m.protocol || '自动识别' }}</span>
               <span class="settings-key">能力档</span>
               <span class="settings-value">{{ m.model_tier || 'auto（自动检测）' }}</span>
+              <span class="settings-key">工具健康<template v-if="toolHealthDays"> · 近{{ toolHealthDays }}天</template></span>
+              <span class="settings-value">
+                <template v-if="healthByName[m.model_name]">
+                  {{ healthByName[m.model_name].tool_calls }} 次调用 · 校验失败
+                  {{ healthByName[m.model_name].validation_failures }}
+                  <span
+                    class="badge"
+                    :class="(healthByName[m.model_name].pct >= 20 && healthByName[m.model_name].tool_calls >= 10) ? 'badge-warning' : 'badge-success'"
+                  >{{ healthByName[m.model_name].pct }}%</span>
+                </template>
+                <template v-else-if="toolHealthNote">{{ toolHealthNote }}</template>
+                <template v-else>暂无调用记录</template>
+              </span>
             </div>
+            <!-- P2B: 后端阈值建议（样本足够且失败率 ≥20%） -->
+            <p v-if="healthByName[m.model_name]?.hint" class="tool-health-hint">
+              💡 {{ healthByName[m.model_name].hint }}
+            </p>
           </div>
           <!-- P3-2: 属性编辑展开区（tier / effort / 参数量 / 真名 / context_window / protocol） -->
           <div v-if="expandedAttrs.has(m.model_name) && attrDrafts[m.model_name]" class="attr-editor">
@@ -530,6 +581,15 @@ onMounted(() => {
   font-size: 12px;
   color: var(--text-muted);
   margin-right: var(--space-2);
+}
+/* P2B 工具健康：后端阈值建议（tier 校准）注记 */
+.tool-health-hint {
+  margin: 0;
+  padding: 8px 16px;
+  border-top: 1px dashed var(--border);
+  font-size: 12px;
+  color: var(--text-muted);
+  white-space: pre-line;
 }
 .attr-editor {
   padding: 10px 16px;

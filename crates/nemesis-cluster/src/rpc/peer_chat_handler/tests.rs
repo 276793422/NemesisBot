@@ -1093,6 +1093,7 @@ async fn test_send_callback_or_persist_no_source() {
         "response",
         "",
         None,
+        None,
     )
     .await;
 }
@@ -1469,6 +1470,7 @@ async fn test_w3b_send_callback_real_server_success_and_error_field() {
         "done-work",
         "",
         None,
+        None,
     )
     .await;
     assert!(ok, "callback should succeed against the live server");
@@ -1500,6 +1502,7 @@ async fn test_w3b_send_callback_real_server_success_and_error_field() {
         "",
         "boom-detail",
         None,
+        None,
     )
     .await;
     assert!(ok2);
@@ -1525,6 +1528,7 @@ async fn test_w3b_send_callback_retries_exhausted_when_peer_unreachable() {
         "success",
         "r",
         "",
+        None,
         None,
     )
     .await;
@@ -1559,6 +1563,7 @@ async fn test_w3b_send_callback_or_persist_deletes_after_successful_callback() {
         "success",
         "answer",
         "",
+        None,
         None,
     )
     .await;
@@ -1712,6 +1717,7 @@ async fn test_s4_send_callback_or_persist_delete_failure_logs() {
         "answer",
         "",
         None,
+        None,
     )
     .await;
 
@@ -1756,6 +1762,7 @@ async fn test_s4_send_callback_or_persist_set_result_failure_logs() {
         "",
         "boom",
         None,
+        None,
     )
     .await;
 
@@ -1784,7 +1791,78 @@ async fn test_s4_send_callback_retry_warn_field_line() {
         "r",
         "",
         None,
+        None,
     )
     .await;
     assert!(!ok, "all callback retries should be exhausted");
+}
+
+/// P2A（2026-09-12 NB-15）：fail_class wire 契约——error 回调携带结构化
+/// 分类字段；`None` 时字段整个不落（旧 master 忽略未知字段，兼容面不变）。
+#[tokio::test]
+async fn test_p2a_fail_class_field_wire_contract() {
+    use crate::rpc::server::{RpcServer, RpcServerConfig};
+
+    let server = Arc::new(RpcServer::new(RpcServerConfig {
+        bind_address: "127.0.0.1:0".into(),
+        ..Default::default()
+    }));
+    let captured = Arc::new(std::sync::Mutex::new(Vec::<serde_json::Value>::new()));
+    let cap2 = captured.clone();
+    server.register_handler(
+        "peer_chat_callback",
+        Box::new(move |payload| {
+            cap2.lock().unwrap().push(payload.clone());
+            Ok(serde_json::json!({"status": "accepted"}))
+        }),
+    );
+    server.start().await.unwrap();
+    let port = server.port();
+
+    let client = RpcClient::with_resolver(Arc::new(StaticResolverW3b { port }));
+
+    // Error + fail_class → payload 携带结构化分类。
+    let ok = send_callback(
+        Some(&client),
+        "origin-node",
+        "node-self-p2a",
+        "p2a-cb-1",
+        "error",
+        "",
+        "工具参数校验连续失败 1 次，已停止重试。最近工具：'exec'。",
+        None,
+        Some("validation_budget"),
+    )
+    .await;
+    assert!(ok);
+
+    // Success + fail_class=None → 字段不落。
+    let ok2 = send_callback(
+        Some(&client),
+        "origin-node",
+        "node-self-p2a",
+        "p2a-cb-2",
+        "success",
+        "done",
+        "",
+        None,
+        None,
+    )
+    .await;
+    assert!(ok2);
+
+    {
+        let cap = captured.lock().unwrap();
+        assert_eq!(cap.len(), 2);
+        assert_eq!(
+            cap[0]["fail_class"], "validation_budget",
+            "error 回调必须携带 fail_class"
+        );
+        assert!(
+            cap[1].get("fail_class").is_none(),
+            "fail_class=None 时字段必须整个省略（wire 兼容）"
+        );
+    }
+
+    server.stop().unwrap();
 }

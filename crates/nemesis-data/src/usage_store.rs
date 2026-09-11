@@ -6,7 +6,9 @@ use std::sync::Mutex;
 use rusqlite::{Connection, ToSql, params, params_from_iter};
 
 use crate::db;
-use crate::models::{LogFilter, RequestLog, SessionUsageAgg, TrendPoint, UsageSummary};
+use crate::models::{
+    LogFilter, ModelToolHealth, RequestLog, SessionUsageAgg, TrendPoint, UsageSummary,
+};
 use crate::pricing_store::PricingStore;
 
 /// Thread-safe SQLite data store.
@@ -396,6 +398,67 @@ impl DataStore {
             })
         })
         .map_err(|e| format!("aggregate_session_usage_by_task: {e}"))
+    }
+
+    /// P2B（2026-09-12 NB-15 根修配套）：记一笔工具调用与参数校验结果
+    /// （天×模型 upsert 增量）。`failed` = 本次调用 args_validator 判 Invalid。
+    /// Valid/Fixed 都算成功（Fixed 已自动修复，不是模型失败证据）。
+    /// 调用方对错误只 warn——审计是增值动作，不反压轮次。
+    pub fn record_tool_validation(&self, model: &str, failed: bool) -> Result<(), String> {
+        let day = chrono::Local::now().format("%Y-%m-%d").to_string();
+        let conn = self.conn.lock().map_err(|e| e.to_string())?;
+        conn.execute(
+            "INSERT INTO tool_validation_stats (day, model, tool_calls, validation_failures)
+             VALUES (?1, ?2, 1, ?3)
+             ON CONFLICT(day, model) DO UPDATE SET
+                tool_calls = tool_calls + 1,
+                validation_failures = validation_failures + ?3",
+            params![day, model, i64::from(failed)],
+        )
+        .map_err(|e| format!("record_tool_validation: {e}"))?;
+        Ok(())
+    }
+
+    /// P2B：近 `days` 天的每模型工具健康聚合（`models.health` 数据源）。
+    /// `days <= 0` 视为 1。无记录的模型不出现（无调用即无健康问题可言）。
+    pub fn query_model_tool_health(&self, days: i64) -> Result<Vec<ModelToolHealth>, String> {
+        let cutoff = (chrono::Local::now() - chrono::Duration::days(days.max(1)))
+            .format("%Y-%m-%d")
+            .to_string();
+        let conn = self.conn.lock().map_err(|e| e.to_string())?;
+        let mut stmt = conn
+            .prepare(
+                "SELECT model,
+                        COALESCE(SUM(tool_calls), 0),
+                        COALESCE(SUM(validation_failures), 0)
+                 FROM tool_validation_stats
+                 WHERE day >= ?1
+                 GROUP BY model
+                 ORDER BY tool_calls DESC",
+            )
+            .map_err(|e| format!("prepare model tool health: {e}"))?;
+        let rows = stmt
+            .query_map(params![cutoff], |row| {
+                let model: String = row.get(0)?;
+                let calls: i64 = row.get(1)?;
+                let failures: i64 = row.get(2)?;
+                let rate = if calls > 0 {
+                    failures as f64 / calls as f64
+                } else {
+                    0.0
+                };
+                Ok(ModelToolHealth {
+                    model,
+                    tool_calls: calls,
+                    validation_failures: failures,
+                    failure_rate: rate,
+                    hint: None,
+                })
+            })
+            .map_err(|e| format!("query_model_tool_health: {e}"))?
+            .filter_map(|r| r.ok())
+            .collect();
+        Ok(rows)
     }
 
     /// Roll up request logs older than 30 days into daily_rollups and delete originals.

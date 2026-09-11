@@ -1126,7 +1126,8 @@ fn test_default_timeout_constant() {
     // default_timeout() is used via serde when timeout_secs is absent
     let json = r#"{"name":"x","base_url":"u","api_key":"k"}"#;
     let config: HttpProviderConfig = serde_json::from_str(json).unwrap();
-    assert_eq!(config.timeout_secs, 120);
+    // P3A 超时对齐（2026-09-12）：lane 统一默认 600s。
+    assert_eq!(config.timeout_secs, 600);
 }
 
 #[test]
@@ -1134,7 +1135,7 @@ fn test_http_provider_config_timeout_default_when_missing() {
     let json = r#"{"name":"x","base_url":"u","api_key":"k","default_model":"m"}"#;
     let config: HttpProviderConfig = serde_json::from_str(json).unwrap();
     // timeout_secs missing -> serde default applies
-    assert_eq!(config.timeout_secs, 120);
+    assert_eq!(config.timeout_secs, 600);
     assert_eq!(config.default_model, "m");
     // headers missing -> default empty map
     assert!(config.headers.is_empty());

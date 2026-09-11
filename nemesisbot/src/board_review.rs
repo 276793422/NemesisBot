@@ -387,6 +387,51 @@ pub(crate) fn decide_review_action(
     }
 }
 
+// ---------------------------------------------------------------------------
+// P2A 能力类失败保护（2026-09-12 双端真机 NB-15 根修）：worker 上报的结构化
+// fail_class 驱动重派决策——能力类失败（validation_budget / escalation）在
+// 同一 worker/模型上是确定性失败形态，同目标重派大概率原样复现（NB-15：
+// 校验预算耗尽连烧两轮重派预算）。
+// ---------------------------------------------------------------------------
+
+/// 能力类失败类集：这些 fail_class 同目标重派前必须换节点或人工介入。
+const CAPABILITY_FAIL_CLASSES: [&str; 2] = ["validation_budget", "escalation"];
+
+/// 从评论线程提取最新一条结构化失败分类（write_back_board_dispatch 在
+/// ⛔ 失败评论尾部落 `fail_class: <class>` 标记行，gateway.rs 唯一写入点）。
+/// 只认已知类值（防 worker 文本/人工评论误触发未知值）；找不到 = None
+///（旧 worker / 无失败评论路径）。扫描自最新评论起——重派轮次取最新失败。
+fn latest_fail_class(comments: &[nemesis_board::Comment]) -> Option<&'static str> {
+    const KNOWN: [&str; 6] = [
+        "validation_budget",
+        "llm_timeout",
+        "llm_failure",
+        "empty_result",
+        "escalation",
+        "exec_failed",
+    ];
+    comments.iter().rev().find_map(|c| {
+        c.content.lines().find_map(|line| {
+            let t = line.trim();
+            let v = t.strip_prefix("fail_class: ")?;
+            KNOWN.iter().find(|k| **k == v.trim()).copied()
+        })
+    })
+}
+
+/// 能力类失败的转人工建议文案（与类值一一对应；未知类走兜底）。
+fn capability_fail_hint(fc: &str) -> &'static str {
+    match fc {
+        "validation_budget" => {
+            "可选处置：\n- 在 Dashboard「模型」页对 worker 的模型跑 model probe 校准能力档位，或 `model set-tier` 调高档位\n- 人工改派其它节点（不同模型可能胜任）\n- 若确认是偶发，可人工直接重派原节点"
+        }
+        "escalation" => {
+            "可选处置：\n- 改写任务描述或拆小粒度后人工重派（换一种思路打破循环）\n- 人工改派其它节点尝试"
+        }
+        _ => "请人工检查 worker 状态后裁决（重派 / 换节点 / 调整模型）。",
+    }
+}
+
 /// 评审上下文（P4）：一段评审 fresh（`allow_selfcheck=true`，配置闸在
 /// review_issue 内现读）；B2b 二段评审带 evidence 且 `allow_selfcheck=false`
 /// ——取证只带一程，二段结论直接处置（防取证-评审乒乓死循环）。
@@ -764,6 +809,59 @@ async fn review_issue(
             info!("[BoardReview] issue {issue_id} PASS → 待人工确认（保持 in_review）");
         }
         ReviewAction::Redispatch => {
+            // P2A 能力类失败保护（2026-09-12 NB-15 根修）：预判重派目标——
+            // 能力类失败（validation_budget / escalation）+ 目标未换（同一
+            // worker）= 同模型同环境大概率原样复现。非无限模式不盲派，转
+            // 人工并给模型/档位建议；无限模式（无条件流转契约，estop 是
+            // 保险丝）仅 WARN 留痕继续。目标预判放在 ❌ 评论/审计之前
+            //（pick 纯读无副作用）；下方既有决策点原样保留，通过闸后再走
+            // 正常重派（届时二次调用读同一派发历史，结果一致——本闸是
+            // 启发式护栏，非正确性不变量）。
+            let preview_target = pick_redispatch_target(deps, &issue, &dispatches).ok();
+            let capability_fail = (!preview_target.as_ref().is_some_and(|c| c.is_switch()))
+                .then(|| latest_fail_class(&comments))
+                .flatten()
+                .filter(|fc| CAPABILITY_FAIL_CLASSES.contains(fc));
+            if let Some(fc) = capability_fail {
+                if unlimited {
+                    let note = format!(
+                        "⚠ 能力类失败（fail_class: {fc}）且重派目标未换——同节点重放大概率原样复现（unlimited_mode 仅告警继续，estop 可随时止血）"
+                    );
+                    let _ = post_review_comment(store, issue_id, &deps.cluster, &note);
+                    warn!(
+                        "[BoardReview] issue {issue_id} 能力类失败（{fc}）+ 同目标重派（unlimited_mode 告警继续）"
+                    );
+                } else {
+                    let comment = format!(
+                        "{}🤖 能力类失败保护（fail_class: {fc}）：worker 在同一节点反复以相同方式失败，自动重派同节点大概率原样复现，已停止自动重派，请人工裁决。\n\n{}",
+                        human_mention,
+                        capability_fail_hint(fc)
+                    );
+                    store.add_comment(NewComment {
+                        issue_id,
+                        author: reviewer.clone(),
+                        content: comment,
+                        parent_id: None,
+                        ctype: CommentType::Comment,
+                    })?;
+                    record_auto_decide(
+                        store,
+                        issue_id,
+                        deps.cluster.node_id(),
+                        "escalate_human",
+                        output.verdict.as_str(),
+                        serde_json::json!({
+                            "round": round,
+                            "fail_class": fc,
+                            "reason": "capability_fail_same_target"
+                        }),
+                    );
+                    info!(
+                        "[BoardReview] issue {issue_id} 能力类失败（{fc}）+ 同目标 → 转人工（保持 in_review）"
+                    );
+                    return Ok(true);
+                }
+            }
             // UNSURE（无限模式）无 gap——给诚实占位意见，重派 prompt 不空转。
             let gap_raw = output.gap.trim();
             let gap = if gap_raw.is_empty() {
@@ -902,7 +1000,7 @@ async fn review_issue(
                     output.gap.trim()
                 ));
             }
-            comment.push_str(&render_reasons(&output.reasons));
+            append_reasons_unless_gapped(&mut comment, &output);
             store.add_comment(NewComment {
                 issue_id,
                 author: reviewer.clone(),
@@ -1092,6 +1190,11 @@ fn aggregate_verdicts(
 /// F3 项目收口验收标准聚合（纯函数）：项目级 AC 排首段（【项目级】标注），
 /// 各顶层父单非空 AC 依序拼接（【父单号】标注），段间 `---` 分隔。空白段
 /// 跳过（无 AC 的项目/父单不产生空段）。
+/// 【label】必须独立成行（2026-09-12 根修）：旧实现拼进 AC 首行
+/// （`【项目级】[CHECK] …`），首行不再以 `[CHECK]` 顶格 → 每段第一条
+/// 锚点被 parse_anchors 静默吞掉回落语义项（双端真机 S2 实证：项目级
+/// AC 的 re:index.html 锚点从未参与客观核验；单行 AC 项目整个锚点面
+/// 失效）。
 fn join_project_review_ac(project_ac: Option<&str>, parents: &[nemesis_board::Issue]) -> String {
     let mut joined = String::new();
     let mut push = |label: String, ac: &str| {
@@ -1102,7 +1205,7 @@ fn join_project_review_ac(project_ac: Option<&str>, parents: &[nemesis_board::Is
         if !joined.is_empty() {
             joined.push_str("\n---\n");
         }
-        joined.push_str(&format!("【{label}】{ac}\n"));
+        joined.push_str(&format!("【{label}】\n{ac}\n"));
     };
     if let Some(ac) = project_ac {
         push("项目级".to_string(), ac);
@@ -1135,6 +1238,19 @@ fn render_reasons(reasons: &[String]) -> String {
         s.push_str(&format!("- {}\n", r.trim()));
     }
     s
+}
+
+/// gap 与 reasons 的内容重叠守卫（2026-09-12 根修，横扫三处转人工/收口
+/// 评论拼装）：锚点短路 FAIL 路径上 `output.gap` 与 `output.reasons` 同源
+/// 同构（reasons 每条 = "锚点失败: …"，gap = render_anchor_failures 明细
+/// 渲染），两处都拼进评论就是同一条失败锚点重复出现两遍（双端真机 S2
+/// 实证：项目收口转人工评论每条失败锚点列出两次）。gap 非空只拼 gap；
+/// gap 空（LLM FAIL 未填差距原文的诚实降级）reasons 仍是唯一理由来源，
+/// 照常渲染。
+fn append_reasons_unless_gapped(comment: &mut String, output: &nemesis_board::ReviewOutput) {
+    if output.gap.trim().is_empty() {
+        comment.push_str(&render_reasons(&output.reasons));
+    }
 }
 
 /// E2 决策审计：`auto_decide` 活动落库（决策流视图 `board.audit.list` 的
@@ -1406,7 +1522,7 @@ async fn review_parent_issue(deps: &BoardReviewDeps, parent_id: i64) -> Result<b
             if verdict == nemesis_board::ReviewVerdict::Fail {
                 comment.push_str(&format!("\n差距：\n{}\n", output.gap.trim()));
             }
-            comment.push_str(&render_reasons(&output.reasons));
+            append_reasons_unless_gapped(&mut comment, &output);
             comment.push_str(
                 "\n（父单不派发、无重派承接单位——请检查各子单结论后人工定 done 或重开子单）",
             );
@@ -1606,24 +1722,51 @@ async fn review_project_completion(
         }
     }
 
-    // ---- 组装汇总输入：每顶层父单 + 最新交付摘要（截断防 prompt 爆炸）----
+    // ---- 组装汇总输入：每顶层父单段 = 自身最新交付（若有）+ 子单交付
+    // 摘要（截断防 prompt 爆炸）。2026-09-12 根修：旧实现只取父单**自身**
+    // 最新 Delivery——实际数据流中 worker 交付评论落在叶子子单上（对比
+    // review_parent_issue：它遍历的就是子单），父单自身常无 Delivery，
+    // 聚合到空集 → 项目级锚点对「（无结构化交付汇报）」实核必然全 FAIL
+    // （双端真机 S2 实证：三条 re: 锚点全败，子单真实交付从未进入实核
+    // 文本）。聚合深度对齐 review_parent_issue（单层子单——planner 拆解
+    // 纪律即单层），不引入新的嵌套深度语义。
     let mut summary = format!("## 顶层任务完成情况汇总（共 {} 个）\n", parents.len());
     for p in &parents {
-        let latest_delivery = store
+        let children = store.list_children(p.id)?;
+        summary.push_str(&format!(
+            "### 任务 {}「{}」状态={}（子单 {} 个）\n",
+            p.number,
+            p.title,
+            p.status,
+            children.len(),
+        ));
+        if let Some(cm) = store
             .list_comments(p.id)?
             .iter()
             .rev()
             .find(|cm| cm.ctype == CommentType::Delivery)
-            .map(|cm| nemesis_utils::truncate(cm.content.trim(), 1500))
-            .unwrap_or_else(|| "（无结构化交付汇报）".to_string());
-        summary.push_str(&format!(
-            "### 任务 {}「{}」状态={}（子单 {} 个）最新交付摘要：\n{}\n\n",
-            p.number,
-            p.title,
-            p.status,
-            store.list_children(p.id).map(|c| c.len()).unwrap_or(0),
-            latest_delivery
-        ));
+        {
+            summary.push_str(&format!(
+                "父单最新交付摘要：\n{}\n\n",
+                nemesis_utils::truncate(cm.content.trim(), 1500)
+            ));
+        }
+        if children.is_empty() {
+            summary.push_str("（无子单）\n\n");
+        }
+        for c in &children {
+            let latest_delivery = store
+                .list_comments(c.id)?
+                .iter()
+                .rev()
+                .find(|cm| cm.ctype == CommentType::Delivery)
+                .map(|cm| nemesis_utils::truncate(cm.content.trim(), 1500))
+                .unwrap_or_else(|| "（无结构化交付汇报）".to_string());
+            summary.push_str(&format!(
+                "- 子任务 {}「{}」状态={} 最新交付摘要：\n{}\n\n",
+                c.number, c.title, c.status, latest_delivery
+            ));
+        }
     }
 
     // 验收标准聚合（F3 项目收口判定依据）：项目级 AC 在前（v10 列——此前
@@ -1793,7 +1936,7 @@ fn apply_project_review_outcome(
             if output.verdict == nemesis_board::ReviewVerdict::Fail {
                 comment.push_str(&format!("\n差距：\n{}\n", output.gap.trim()));
             }
-            comment.push_str(&render_reasons(&output.reasons));
+            append_reasons_unless_gapped(&mut comment, output);
             comment.push_str(
                 "\n（项目级验收不自动重开父单、不重派——请检查各任务结论后人工处置；\
 处置完成后项目可人工设 completed）",

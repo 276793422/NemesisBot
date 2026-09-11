@@ -401,6 +401,7 @@ fn test_provider_selection_debug_format() {
         workspace: ".".to_string(),
         connect_mode: String::new(),
         account_id: String::new(),
+        timeout_secs: 0,
     };
     let debug = format!("{:?}", sel);
     assert!(debug.contains("Anthropic"));
@@ -551,4 +552,37 @@ fn test_explicit_protocol_case_insensitive() {
     };
     let sel = resolve_provider_selection(&cfg).unwrap();
     assert_eq!(sel.provider_type, ProviderType::Anthropic);
+}
+
+// --- P3A 超时对齐（2026-09-12）：per-model timeout 透传链 ---
+
+#[test]
+fn test_timeout_passthrough_to_selection() {
+    let cfg = FactoryConfig {
+        llm_ref: "anthropic/claude-sonnet".to_string(),
+        api_key: "key".to_string(),
+        timeout_secs: 300,
+        ..Default::default()
+    };
+    let sel = resolve_provider_selection(&cfg).unwrap();
+    assert_eq!(sel.timeout_secs, 300);
+}
+
+#[test]
+fn test_timeout_unset_is_zero() {
+    // 0 = 未设置 → create_provider 落 lane 默认（effective_timeout）。
+    let cfg = FactoryConfig {
+        llm_ref: "anthropic/claude-sonnet".to_string(),
+        api_key: "key".to_string(),
+        ..Default::default()
+    };
+    let sel = resolve_provider_selection(&cfg).unwrap();
+    assert_eq!(sel.timeout_secs, 0);
+}
+
+#[test]
+fn test_effective_timeout_lane_default_and_override() {
+    assert_eq!(super::effective_timeout(0), 600);
+    assert_eq!(super::effective_timeout(300), 300);
+    assert_eq!(super::effective_timeout(1), 1);
 }

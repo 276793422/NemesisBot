@@ -365,14 +365,16 @@ async fn anchor_fail_short_circuits_llm_and_redispatches() {
     use nemesis_board::IssueStatus;
 
     let (deps, ws) = review_deps("anchor-fail");
-    // 失败锚点指向 workspace 内不存在的文件；交付文本锚点应通过。
+    // 失败锚点用 re: 形态（交付文本不含该标志 → FAIL）。P1 拓扑硬闸
+    //（2026-09-12）拒绝 远端目标 + file: 锚点 派发，重派臂要真发车，
+    // 锚点集必须对远端合法。
     let issue = issue_in_review(
         &deps.store,
         "锚点失败短路",
-        "[CHECK] file:out/missing.md exists\n[CHECK] re:交付完成",
+        "[CHECK] re:验收完成标志XYZ\n[CHECK] re:交付完成",
         "## 结论\n交付完成",
     );
-    assert!(!ws.join("out").join("missing.md").exists());
+    assert!(!ws.join("out").exists());
     // 一条已完结的历史派发（worker 回报后才有验收；round = 1-1 = 0 <
     // max_redispatch=2 → FAIL 走重派臂）。must be 终态——活跃派发会被
     // dispatch_issue_core 的重复派发闸拒绝。
@@ -400,7 +402,7 @@ async fn anchor_fail_short_circuits_llm_and_redispatches() {
         .find(|c| c.content.contains("客观锚点检查失败"))
         .expect("必须有锚点失败评论（短路产物）");
     assert!(
-        fail.content.contains("out/missing.md"),
+        fail.content.contains("验收完成标志XYZ"),
         "明细须含失败锚点目标: {}",
         fail.content
     );
@@ -1430,14 +1432,37 @@ fn join_project_ac_project_first_then_parents() {
         parent_with_ac("NB-3", Some("  标准三  ")),
     ];
     let joined = join_project_review_ac(Some("项目级标准"), &parents);
+    // 【label】独立成行（2026-09-12 根修）：拼进 AC 首行会把每段第一条
+    // [CHECK] 锚点挤离行首，被 parse_anchors 静默吞掉——label 必须自成
+    // 一行，AC 原样顶格。
     assert!(
-        joined.starts_with("【项目级】项目级标准\n"),
-        "项目级 AC 排首段：{joined}"
+        joined.starts_with("【项目级】\n项目级标准\n"),
+        "项目级 AC 排首段（label 独立成行）：{joined}"
     );
-    assert!(joined.contains("【NB-1】标准一\n"));
+    assert!(joined.contains("【NB-1】\n标准一\n"));
     assert!(!joined.contains("NB-2"), "空 AC 父单不产生空段");
-    assert!(joined.contains("【NB-3】标准三\n"), "父单 AC trim 后入段");
+    assert!(joined.contains("【NB-3】\n标准三\n"), "父单 AC trim 后入段");
     assert!(joined.contains("---"), "段间分隔符");
+}
+
+/// 锚点行顶格保全：AC 内的 [CHECK] 行经聚合后必须仍在行首（否则锚点
+/// 被吞、客观核验静默失效——S2 真机实证过 re:index.html 蒸发）。
+#[test]
+fn join_project_ac_preserves_anchor_line_positions() {
+    let parents = vec![parent_with_ac(
+        "NB-1",
+        Some("[CHECK] re:子单交付词\n[CHECK] file:out/x.md exists"),
+    )];
+    let joined = join_project_review_ac(Some("[CHECK] re:项目级词"), &parents);
+    for line in joined.lines() {
+        if line.contains("[CHECK]") {
+            assert!(
+                line.trim_start().starts_with("[CHECK]"),
+                "[CHECK] 行必须顶格（label 不得拼进锚点行）: {line}"
+            );
+        }
+    }
+    assert!(joined.contains("\n[CHECK] re:项目级词"));
 }
 
 #[test]
@@ -1789,4 +1814,432 @@ async fn estop_release_watcher_drains_parked_queue() {
         "第二轮 release 也必须 drain"
     );
     let _ = std::fs::remove_dir_all(&dir);
+}
+
+// ===== 项目收口聚合下钻 + 转人工评论去重（2026-09-12 双端真机 S2 根修）=====
+
+/// 项目收口的锚点实核文本必须含叶子子单的交付评论：worker 交付落在子单、
+/// 父单自身无 Delivery 时，聚合下钻后 `re:` 锚点应 PASS（进入 LLM 臂；loop
+/// 未就绪 → 诚实跳过返回 false），不得再对空 summary 短路 FAIL 转人工
+/// （旧实现聚合到空集的症状：三条锚点对「（无结构化交付汇报）」全败）。
+#[tokio::test]
+async fn project_anchor_check_reads_leaf_subissue_deliveries() {
+    use nemesis_board::{Actor, CommentType, IssueStatus, NewComment, NewIssue};
+
+    let (deps, _ws) = review_deps("project-agg-drill");
+    // 项目收口评审受 auto_close_project 闸（默认关）——测试显式开闸，
+    // 保证走的是锚点检查链而非 config 闸提前返回（否则断言假绿）。
+    std::fs::write(
+        deps.home.join("config.json"),
+        r#"{"board":{"auto_review":true,"review":{"auto_close_project":true}}}"#,
+    )
+    .unwrap();
+    let reviewer = Actor::agent("node-a");
+    let project = deps
+        .store
+        .create_project("聚合下钻", "d", None, "", "[CHECK] re:叶子交付关键词XYZ")
+        .unwrap();
+
+    // 顶层父单：挂项目、推到 done（收口前置条件）、无任何 Delivery。
+    let parent = deps
+        .store
+        .create_issue(NewIssue {
+            title: "父单".into(),
+            description: String::new(),
+            priority: 2,
+            creator: reviewer.clone(),
+            project_id: Some(project.id),
+            ..Default::default()
+        })
+        .unwrap();
+    deps.store
+        .transition_issue(parent.id, IssueStatus::InProgress, &reviewer)
+        .unwrap();
+    deps.store
+        .transition_issue(parent.id, IssueStatus::InReview, &reviewer)
+        .unwrap();
+    deps.store
+        .transition_issue(parent.id, IssueStatus::Done, &reviewer)
+        .unwrap();
+
+    // 叶子子单：交付评论含项目级锚点关键词（真实数据流：交付在叶子）。
+    let sub = deps
+        .store
+        .create_issue(NewIssue {
+            title: "子单".into(),
+            description: String::new(),
+            priority: 2,
+            creator: reviewer.clone(),
+            parent_issue_id: Some(parent.id),
+            project_id: Some(project.id),
+            ..Default::default()
+        })
+        .unwrap();
+    deps.store
+        .add_comment(NewComment {
+            issue_id: sub.id,
+            author: Actor::agent("node-b"),
+            content: "## 结论\n完成，产出叶子交付关键词XYZ。".into(),
+            parent_id: None,
+            ctype: CommentType::Delivery,
+        })
+        .unwrap();
+
+    let reviewed = super::review_project_completion(&deps, project.id)
+        .await
+        .expect("项目收口评审必须闭环不报错");
+    // 锚点 PASS → 进 LLM 臂 → moderator_loop 未就绪 → 诚实跳过（非 FAIL
+    // 闭环；FAIL 会返回 Ok(true)）。
+    assert!(
+        !reviewed,
+        "锚点应 PASS 并止于 LLM 未就绪跳过（非短路 FAIL）"
+    );
+
+    // 无转人工评论、无 escalate 审计——聚合下钻生效的直接证据。
+    let comments = deps.store.list_comments(parent.id).unwrap();
+    assert!(
+        !comments
+            .iter()
+            .any(|c| c.content.contains("收口验收未定案")),
+        "父单不得出现转人工评论（锚点应已 PASS）"
+    );
+    let audit = deps
+        .store
+        .list_recent_activity(100, Some("project_escalate_human"))
+        .unwrap_or_default();
+    assert!(
+        !audit.iter().any(|d| d.activity.issue_id == parent.id),
+        "不得落 project_escalate_human 审计"
+    );
+    let _ = std::fs::remove_dir_all(&_ws);
+}
+
+/// 反向护栏 + 评论去重：交付真缺关键词 → 锚点 FAIL 短路 → 转人工评论落
+/// 库，且每条失败锚点在评论中只出现一次（gap/reasons 双拼根修）。
+#[tokio::test]
+async fn project_anchor_fail_escalates_with_deduped_comment() {
+    use nemesis_board::{Actor, CommentType, IssueStatus, NewComment, NewIssue};
+
+    let (deps, _ws) = review_deps("project-agg-dedup");
+    std::fs::write(
+        deps.home.join("config.json"),
+        r#"{"board":{"auto_review":true,"review":{"auto_close_project":true}}}"#,
+    )
+    .unwrap();
+    let reviewer = Actor::agent("node-a");
+    let project = deps
+        .store
+        .create_project("去重", "d", None, "", "[CHECK] re:不存在关键词XYZ")
+        .unwrap();
+
+    let parent = deps
+        .store
+        .create_issue(NewIssue {
+            title: "父单".into(),
+            description: String::new(),
+            priority: 2,
+            creator: reviewer.clone(),
+            project_id: Some(project.id),
+            ..Default::default()
+        })
+        .unwrap();
+    deps.store
+        .transition_issue(parent.id, IssueStatus::InProgress, &reviewer)
+        .unwrap();
+    deps.store
+        .transition_issue(parent.id, IssueStatus::InReview, &reviewer)
+        .unwrap();
+    deps.store
+        .transition_issue(parent.id, IssueStatus::Done, &reviewer)
+        .unwrap();
+
+    let sub = deps
+        .store
+        .create_issue(NewIssue {
+            title: "子单".into(),
+            description: String::new(),
+            priority: 2,
+            creator: reviewer.clone(),
+            parent_issue_id: Some(parent.id),
+            project_id: Some(project.id),
+            ..Default::default()
+        })
+        .unwrap();
+    deps.store
+        .add_comment(NewComment {
+            issue_id: sub.id,
+            author: Actor::agent("node-b"),
+            content: "## 结论\n完成。".into(),
+            parent_id: None,
+            ctype: CommentType::Delivery,
+        })
+        .unwrap();
+
+    let reviewed = super::review_project_completion(&deps, project.id)
+        .await
+        .expect("锚点短路 FAIL 必须闭环不报错");
+    assert!(reviewed, "短路 FAIL 应完成闭环（转人工）");
+
+    let comments = deps.store.list_comments(parent.id).unwrap();
+    let esc = comments
+        .iter()
+        .find(|c| c.content.contains("收口验收未定案"))
+        .expect("必须有转人工评论");
+    assert_eq!(
+        esc.content.matches("[CHECK] re:不存在关键词XYZ").count(),
+        1,
+        "失败锚点在转人工评论中只允许出现一次（gap/reasons 双拼根修）:\n{}",
+        esc.content
+    );
+    let _ = std::fs::remove_dir_all(&_ws);
+}
+
+/// gap 非空时 reasons 不重复渲染；gap 空（LLM 未填差距）reasons 照常兜底。
+#[test]
+fn reasons_skipped_when_gap_carries_details() {
+    let mk = |gap: &str| nemesis_board::ReviewOutput {
+        verdict: nemesis_board::ReviewVerdict::Fail,
+        reasons: vec!["锚点失败: [CHECK] re:x — 未命中".into()],
+        gap: gap.to_string(),
+        experience: None,
+        need_evidence: None,
+        evidence_request: None,
+    };
+    let mut c1 = String::from("head");
+    super::append_reasons_unless_gapped(&mut c1, &mk("客观锚点检查失败（明细在场）"));
+    assert!(!c1.contains("理由："), "gap 明细在场时不得再拼 reasons");
+    let mut c2 = String::from("head");
+    super::append_reasons_unless_gapped(&mut c2, &mk(""));
+    assert!(c2.contains("理由："), "gap 空时 reasons 是唯一理由来源");
+}
+
+// ---------- P2A 能力类失败保护（2026-09-12，NB-15 根修） ----------
+
+/// 构造一条最小评论（latest_fail_class 只看 content）。
+fn p2a_comment(content: &str) -> nemesis_board::Comment {
+    nemesis_board::Comment {
+        id: 1,
+        issue_id: 1,
+        author: nemesis_board::Actor::agent("node-b"),
+        content: content.to_string(),
+        parent_id: None,
+        ctype: nemesis_board::CommentType::Comment,
+        created_at: 0,
+    }
+}
+
+/// ⛔ 失败评论形态（gateway.rs write_back_board_dispatch 唯一写入点）。
+fn worker_fail_comment(response: &str, fail_class: &str) -> String {
+    format!("⛔ worker 汇报失败：\n\n{response}\n\nfail_class: {fail_class}")
+}
+
+#[test]
+fn p2a_latest_fail_class_extracts_known_marker() {
+    let c = vec![p2a_comment(&worker_fail_comment(
+        "工具参数校验连续失败 2 次，已停止重试。最近工具：'write_file'。",
+        "validation_budget",
+    ))];
+    assert_eq!(latest_fail_class(&c), Some("validation_budget"));
+}
+
+#[test]
+fn p2a_latest_fail_class_scans_newest_first() {
+    // 列表顺序 = 落库时间序（旧→新）；重派轮次取最新失败分类。
+    let old = p2a_comment(&worker_fail_comment(
+        "Error: request timed out",
+        "llm_timeout",
+    ));
+    let new = p2a_comment(&worker_fail_comment(
+        "工具参数校验连续失败 2 次…",
+        "validation_budget",
+    ));
+    assert_eq!(
+        latest_fail_class(&[old.clone(), new.clone()]),
+        Some("validation_budget"),
+        "最新评论在后（rev 扫描）"
+    );
+    assert_eq!(latest_fail_class(&[new, old]), Some("llm_timeout"));
+}
+
+#[test]
+fn p2a_latest_fail_class_rejects_unknown_and_forged_values() {
+    // 未知类值不认（防 worker 文本 / 人工评论误触发闸门）。
+    let forged = vec![p2a_comment("fail_class: totally_made_up")];
+    assert_eq!(latest_fail_class(&forged), None);
+    // 非行首出现的标记不认（必须 trim 后整行匹配前缀）。
+    let inline = vec![p2a_comment("说明：见 fail_class: validation_budget 一行")];
+    assert_eq!(latest_fail_class(&inline), None);
+}
+
+#[test]
+fn p2a_latest_fail_class_none_without_marker() {
+    let plain = vec![p2a_comment("交付完成"), p2a_comment("❌ agent 验收未通过")];
+    assert_eq!(latest_fail_class(&plain), None);
+    assert_eq!(latest_fail_class(&[]), None);
+}
+
+#[test]
+fn p2a_capability_classes_and_hints_contract() {
+    // 闸门只认两类能力类失败；每类都有对应的人工处置建议。
+    assert_eq!(CAPABILITY_FAIL_CLASSES, ["validation_budget", "escalation"]);
+    let hint_budget = capability_fail_hint("validation_budget");
+    assert!(
+        hint_budget.contains("probe") && hint_budget.contains("set-tier"),
+        "validation_budget 建议应含 probe/set-tier 指引: {hint_budget}"
+    );
+    let hint_esc = capability_fail_hint("escalation");
+    assert!(
+        hint_esc.contains("改写任务") || hint_esc.contains("换一种思路"),
+        "escalation 建议应含改写/换思路指引: {hint_esc}"
+    );
+    // 未知类走兜底（非空即可读）。
+    assert!(!capability_fail_hint("exec_failed").is_empty());
+}
+
+/// 单节点历史 + 能力类失败（validation_budget）：非无限模式不盲重派，
+/// 转人工 + 审计留痕，状态保持 in_review。
+#[tokio::test]
+async fn p2a_capability_fail_blocks_blind_same_target_redispatch() {
+    use nemesis_board::{CommentType, IssueStatus, NewComment};
+
+    let (deps, _ws) = review_deps("p2a-cap-block");
+    // re: 失败锚点（远端派发合法形态，P1 拓扑硬闸不拦）——闸的拦截效果
+    // 由此可完全归因于能力类失败保护，而非拓扑硬闸误伤。
+    let issue = issue_in_review(
+        &deps.store,
+        "能力失败保护",
+        "[CHECK] re:验收完成标志XYZ\n[CHECK] re:交付完成",
+        "## 结论\n交付完成",
+    );
+    deps.store
+        .insert_dispatch(
+            "task-p2a-1",
+            issue.id,
+            "node-b",
+            &nemesis_board::Actor::agent("node-a"),
+        )
+        .unwrap();
+    deps.store
+        .finish_dispatch("task-p2a-1", nemesis_board::models::dispatch_state::DONE)
+        .unwrap();
+    // worker 失败回报（gateway writeback 形态）：⛔ 评论尾带 fail_class 标记行。
+    deps.store
+        .add_comment(NewComment {
+            issue_id: issue.id,
+            author: nemesis_board::Actor::agent("node-b"),
+            content: worker_fail_comment(
+                "工具参数校验连续失败 2 次，已停止重试。",
+                "validation_budget",
+            ),
+            parent_id: None,
+            ctype: CommentType::Comment,
+        })
+        .unwrap();
+
+    let reviewed = review_issue(&deps, issue.id, ReviewCtx::first_stage())
+        .await
+        .expect("能力类失败闸必须闭环不报错");
+    assert!(reviewed);
+
+    // 同目标（单节点历史）+ 能力类失败 → 不发车：派发数不涨，状态保持 in_review。
+    assert_eq!(
+        deps.store.list_dispatches(issue.id).unwrap().len(),
+        1,
+        "能力类失败 + 同目标：禁止盲重派"
+    );
+    assert_eq!(
+        deps.store.get_issue(issue.id).unwrap().status,
+        IssueStatus::InReview
+    );
+    // 转人工评论带 fail_class 与处置建议；闸在 ❌ 重派评论之前生效。
+    let comments = deps.store.list_comments(issue.id).unwrap();
+    let guard = comments
+        .iter()
+        .find(|c| c.content.contains("能力类失败保护"))
+        .expect("必须有保护性转人工评论");
+    assert!(guard.content.contains("validation_budget"));
+    assert!(guard.content.contains("set-tier"), "处置建议应含档位指引");
+    assert!(
+        !comments
+            .iter()
+            .any(|c| c.content.contains("❌ agent 验收未通过")),
+        "闸在 ❌ 重派评论之前生效，不得再落重派意见"
+    );
+    // 审计留痕：decision=escalate_human + reason=capability_fail_same_target。
+    let audit = deps.store.list_activity(issue.id).unwrap();
+    let decide = audit
+        .iter()
+        .find(|a| a.action == "auto_decide")
+        .expect("必须有 auto_decide 审计");
+    let details = decide.details.as_deref().unwrap_or("");
+    assert!(details.contains("escalate_human"), "{details}");
+    assert!(details.contains("capability_fail_same_target"), "{details}");
+    let _ = std::fs::remove_dir_all(&deps.home);
+}
+
+/// unlimited_mode 契约（无条件流转，estop 是保险丝）：能力类失败 + 同目标
+/// 仅 WARN 留痕继续，照常发车。
+#[tokio::test]
+async fn p2a_capability_fail_unlimited_mode_warns_but_continues() {
+    use nemesis_board::{CommentType, NewComment};
+
+    let (deps, _ws) = review_deps("p2a-cap-unlimited");
+    std::fs::write(
+        deps.home.join("config.json"),
+        r#"{"board": {"unlimited_mode": true}}"#,
+    )
+    .unwrap();
+    let issue = issue_in_review(
+        &deps.store,
+        "能力失败保护（无限模式）",
+        "[CHECK] re:验收完成标志XYZ\n[CHECK] re:交付完成",
+        "## 结论\n交付完成",
+    );
+    deps.store
+        .insert_dispatch(
+            "task-p2a-2",
+            issue.id,
+            "node-b",
+            &nemesis_board::Actor::agent("node-a"),
+        )
+        .unwrap();
+    deps.store
+        .finish_dispatch("task-p2a-2", nemesis_board::models::dispatch_state::DONE)
+        .unwrap();
+    deps.store
+        .add_comment(NewComment {
+            issue_id: issue.id,
+            author: nemesis_board::Actor::agent("node-b"),
+            content: worker_fail_comment(
+                "检测到循环无法打破：exec 已 6 次报相同错误…",
+                "escalation",
+            ),
+            parent_id: None,
+            ctype: CommentType::Comment,
+        })
+        .unwrap();
+
+    let reviewed = review_issue(&deps, issue.id, ReviewCtx::first_stage())
+        .await
+        .expect("unlimited WARN 路径必须闭环不报错");
+    assert!(reviewed);
+
+    // WARN 评论在场 + 照常发车（派发数 2）。
+    let comments = deps.store.list_comments(issue.id).unwrap();
+    assert!(
+        comments
+            .iter()
+            .any(|c| c.content.contains("能力类失败") && c.content.contains("仅告警继续")),
+        "必须有 unlimited WARN 评论: {:?}",
+        comments
+            .iter()
+            .map(|c| c.content.as_str())
+            .collect::<Vec<_>>()
+    );
+    assert_eq!(
+        deps.store.list_dispatches(issue.id).unwrap().len(),
+        2,
+        "unlimited_mode 契约：告警继续（estop 是保险丝）"
+    );
+    let _ = std::fs::remove_dir_all(&deps.home);
 }
