@@ -397,14 +397,30 @@ async fn execute_new_task(
     // resume_task when the callback comes back and the task actually completes.
     persist_session_history(agent_loop, &instance, &task.source.session_key);
     let usage = extract_task_usage(agent_loop, &task.source.session_key, &usage_before);
+    // P1（2026-09-11 真机日志分析）：失败终止的 turn（校验预算耗尽 / LLM 重试
+    // 耗尽 / 升级硬停，末事件为 Error）必须发 error 回调，不得包装成 success
+    // ——此前 7/7 真机样本都是空交付 success，A 端重派链拿不到失败信号。
+    // 成功终止但最终文本为空同样按 error 上报（无内容可交付）。
+    let error_text = terminal_error(&events);
+    let status = match (&error_text, result.trim().is_empty()) {
+        (Some(err), _) => (err.clone(), "error"),
+        (None, true) => (
+            "worker 返回空结果：turn 正常结束但没有产出任何最终回复文本".to_string(),
+            "error",
+        ),
+        (None, false) => (String::new(), "success"),
+    };
+    if status.1 == "error" {
+        nemesis_cluster::logger::log_task("exec_failed", &task.task_id, &status.0);
+    }
     send_task_callback(
         rpc_client,
         result_persister,
         task,
         self_node_id,
-        "success",
+        status.1,
         &result,
-        "",
+        &status.0,
         usage,
     )
     .await;
@@ -550,14 +566,27 @@ async fn resume_task(
     // history already, so no separate content args are needed.
     persist_session_history(agent_loop, &instance, &task.source.session_key);
     let usage = extract_task_usage(agent_loop, &task.source.session_key, &usage_before);
+    // P1：续行轮同样按终态判定（与 execute_new_task 同一映射，见其注释）。
+    let error_text = terminal_error(&events);
+    let status = match (&error_text, result.trim().is_empty()) {
+        (Some(err), _) => (err.clone(), "error"),
+        (None, true) => (
+            "worker 返回空结果：续行正常结束但没有产出任何最终回复文本".to_string(),
+            "error",
+        ),
+        (None, false) => (String::new(), "success"),
+    };
+    if status.1 == "error" {
+        nemesis_cluster::logger::log_task("exec_failed", &task.task_id, &status.0);
+    }
     send_task_callback(
         rpc_client,
         result_persister,
         task,
         self_node_id,
-        "success",
+        status.1,
         &result,
-        "",
+        &status.0,
         usage,
     )
     .await;
@@ -780,6 +809,19 @@ fn extract_final_message(events: &[AgentEvent]) -> String {
             _ => None,
         })
         .unwrap_or_default()
+}
+
+/// P1（2026-09-11 真机日志分析）：turn 终止原因 → 回调 status 映射。
+///
+/// 若事件流以 `Error` 终止（校验预算耗尽 / LLM 重试耗尽 / 升级硬停等
+/// force_stop 路径），返回该错误文本——这类 turn 是失败终止，不能包装成
+/// success 回调（真机 7/7 样本都是 0.6~1.5ms 内 success + 空交付）。
+/// 只有末事件是 `Done`（或流为空但无 Error）时返回 None。
+fn terminal_error(events: &[AgentEvent]) -> Option<String> {
+    events.last().and_then(|e| match e {
+        AgentEvent::Error(msg) => Some(msg.clone()),
+        _ => None,
+    })
 }
 
 /// Count LLM rounds from agent events (mirrors main agent's formula in loop.rs).

@@ -2815,6 +2815,20 @@ pub async fn run(local: bool, extra_args: &[String]) -> Result<()> {
                     .get("response")
                     .and_then(|v| v.as_str())
                     .unwrap_or("");
+                // P1（2026-09-11 真机日志分析）：worker 的 error 回调把错误
+                // 文本放在 `error` 字段、`response` 为空（send_callback 的
+                // 契约），此前本 handler 从不提取 error 字段——所有路由拿到
+                // 空串，错误详情全丢。合并文本：error 非空用 error，否则
+                // response（success 回调二者等价）。
+                let error_field = payload
+                    .get("error")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("");
+                let fail_text: &str = if response.is_empty() {
+                    error_field
+                } else {
+                    response
+                };
                 // worker 身份走传输层：RPC server 派发前注入 `_rpc.from`
                 //（server.rs enhancePayload 同款），payload 本体没有
                 // source_node 字段——T37 真机实证空段。优先 _rpc.from，
@@ -2875,7 +2889,7 @@ pub async fn run(local: bool, extra_args: &[String]) -> Result<()> {
                         },
                         sc_issue_id,
                         status.to_string(),
-                        response.to_string(),
+                        fail_text.to_string(),
                     );
                     // TaskManager 状态收口（同 Route 3 语义）。
                     let result_value = serde_json::json!({
@@ -2884,7 +2898,7 @@ pub async fn run(local: bool, extra_args: &[String]) -> Result<()> {
                         "source_node": source_node,
                     });
                     if status == "error" {
-                        cluster_for_cb.fail_task(task_id, response);
+                        cluster_for_cb.fail_task(task_id, fail_text);
                     } else {
                         cluster_for_cb.complete_task(task_id, result_value);
                     }
@@ -2903,7 +2917,7 @@ pub async fn run(local: bool, extra_args: &[String]) -> Result<()> {
                     &workspace_for_cb,
                     task_id,
                     status,
-                    response,
+                    fail_text,
                 );
                 #[cfg(all(feature = "board", feature = "cluster"))]
                 let is_board_task = board_writeback.is_board_task;
@@ -2942,7 +2956,9 @@ pub async fn run(local: bool, extra_args: &[String]) -> Result<()> {
                             "[Gateway] Callback for child task {} matched ClusterAgent parent task {}, injecting result",
                             task_id, parent_task_id
                         );
-                        task_list_for_cb.inject_callback(&parent_task_id, response);
+                        // P1：error 回调的文本在 error 字段——注入合并文本，
+                        // 父任务 LLM 才能看到真实失败原因。
+                        task_list_for_cb.inject_callback(&parent_task_id, fail_text);
                         if let Err(e) = work_queue_for_cb.submit(parent_task_id) {
                             warn!("[Gateway] Failed to submit resumed task to work queue: {}", e);
                         }
@@ -2955,15 +2971,15 @@ pub async fn run(local: bool, extra_args: &[String]) -> Result<()> {
                     let mut metadata = std::collections::HashMap::new();
                     metadata.insert("status".to_string(), status.to_string());
                     metadata.insert("source_node".to_string(), source_node.to_string());
-                    if status == "error" {
-                        metadata.insert("error".to_string(), response.to_string());
-                    }
+                    // P1：content 与 metadata.error 都用合并文本——B 端 error
+                    // 回调的 response 为空，续行 tool 结果须携带真实错误。
+                    metadata.insert("error".to_string(), fail_text.to_string());
 
                     let inbound = nemesis_types::channel::InboundMessage {
                         channel: "system".to_string(),
                         sender_id: format!("cluster_continuation:{}", task_id),
                         chat_id: String::new(),
-                        content: response.to_string(),
+                        content: fail_text.to_string(),
                         media: vec![],
                         session_key: String::new(),
                         correlation_id: String::new(),
@@ -2982,7 +2998,7 @@ pub async fn run(local: bool, extra_args: &[String]) -> Result<()> {
                         "source_node": source_node,
                     });
                     if status == "error" {
-                        cluster_for_cb.fail_task(task_id, response);
+                        cluster_for_cb.fail_task(task_id, fail_text);
                     } else {
                         cluster_for_cb.complete_task(task_id, result_value);
                     }

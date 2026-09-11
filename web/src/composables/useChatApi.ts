@@ -31,6 +31,9 @@ export interface SessionEntry {
    *  对话组）。显示名由前端以 projects.list 联结（后端不解析名字）。 */
   projectId?: string
   projectPath?: string
+  /** P2（2026-09-11）：未送达 assistant 回复数（推送失败时后端打点；
+   *  拉取历史经 mark_delivered 清零）。0/缺省 = 无未读。 */
+  undelivered?: number
 }
 
 /** L6++（2026-09-08）：项目分组条目（镜像 handlers/projects.rs 的
@@ -128,6 +131,10 @@ export function useChatApi() {
 
     clear: async (session_id: string): Promise<{ cleared: string }> =>
       await request('sessions', 'clear', { session_id }),
+
+    /** P2（2026-09-11）：清零未送达标记（拉取历史后调用；幂等）。 */
+    markDelivered: (session_id: string): Promise<{ cleared: boolean }> =>
+      request('sessions', 'mark_delivered', { session_id }),
 
     export: async (session_id: string): Promise<{ session_id: string; messages: unknown[]; count: number }> =>
       await request('sessions', 'export', { session_id }),

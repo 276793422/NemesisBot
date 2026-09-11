@@ -624,9 +624,10 @@ async fn review_issue(
                     }
                     let choice = pick_redispatch_target(deps, &issue, &dispatches)?;
                     let target = choice.into_target();
-                    let note = format!(
-                        "🤷 验收 agent 输出连续 3 次无法解析（unlimited_mode 继续重派，解析错误：{last_err}）"
-                    );
+                    // 发现 D：失败原因文本由 run_review_llm 自带分类前缀
+                    //（LLM 调用失败 / 连续 3 轮无法解析），此处不再重复断言轮数。
+                    let note =
+                        format!("🤷 验收评审未出结论（unlimited_mode 继续重派；{last_err}）");
                     let _ = post_review_comment(store, issue_id, &deps.cluster, &note);
                     match nemesis_web::handlers::board::dispatch_issue_core(
                         store,
@@ -652,7 +653,7 @@ async fn review_issue(
                 // 解析失败 → 当 UNSURE 诚实处置（§6.1），评论说明是评审输出
                 // 本身不合规，防误读成任务问题。
                 let comment = format!(
-                    "{}🤷 验收 agent 无法判定（评审输出连续 3 次无法解析），请人工裁决。\n\n解析错误：{last_err}",
+                    "{}🤷 验收 agent 无法判定（验收评审自身失败），请人工裁决。\n\n原因：{last_err}",
                     human_mention
                 );
                 post_review_comment(store, issue_id, &deps.cluster, &comment)?;
@@ -921,6 +922,11 @@ async fn review_issue(
 /// 裸提示词 detached 评审调用：首跑 + `parse_review` 失败回灌重试 ≤2 次
 /// （共 3 轮）。成功返回解析输出；3 轮全败返回末次错误。`mode` 控制
 /// B2a 工具面（NoTools = 历史行为字节等价）。
+///
+/// 发现 D（2026-09-11 措辞精度）：LLM **调用**失败（网络/超时/上游错误）经
+/// `run_detached` 的 Err 在首轮立即返回——不消耗解析重试轮，与本函数内
+/// **解析**失败的「连续 3 轮」是两类故障。返回值文本分别带前缀区分，
+/// 下游评论不再把调用失败误报成「连续 3 次无法解析」。
 async fn run_review_llm(
     agent_loop: &Arc<nemesis_agent::r#loop::AgentLoop>,
     prompt: &mut String,
@@ -945,7 +951,10 @@ async fn run_review_llm(
                 ..Default::default()
             },
         };
-        let raw = agent_loop.run_detached(prompt, opts).await?;
+        let raw = match agent_loop.run_detached(prompt, opts).await {
+            Ok(raw) => raw,
+            Err(e) => return Err(format!("LLM 调用失败：{e}")),
+        };
         match nemesis_board::parse_review(&raw) {
             Ok(out) => return Ok(out),
             Err(e) => {
@@ -956,7 +965,7 @@ async fn run_review_llm(
             }
         }
     }
-    Err(last_err)
+    Err(format!("评审输出连续 3 轮无法解析：{last_err}"))
 }
 
 /// 多检查员面板并发上限（P5/B3：N 路评审同时最多 4 路在飞，多余排队）。
@@ -1342,7 +1351,7 @@ async fn review_parent_issue(deps: &BoardReviewDeps, parent_id: i64) -> Result<b
             Ok(ok) => ok,
             Err(last_err) => {
                 let comment = format!(
-                    "🤷 父单收口验收无法完成（评审输出连续 3 次无法解析），请人工裁决。\n\n解析错误：{last_err}"
+                    "🤷 父单收口验收无法完成（验收评审自身失败），请人工裁决。\n\n原因：{last_err}"
                 );
                 post_review_comment(store, parent_id, &deps.cluster, &comment)?;
                 return Ok(true);
@@ -1682,7 +1691,7 @@ async fn review_project_completion(
                 // 解析失败 → 全部顶层父单写转人工评论（项目无评论表，
                 // 落在父单线程里人必然看得见）。
                 let comment = format!(
-                    "🏛 项目「{}」收口验收无法完成（评审输出连续 3 次无法解析），请人工裁决。\n\n解析错误：{last_err}",
+                    "🏛 项目「{}」收口验收无法完成（验收评审自身失败），请人工裁决。\n\n原因：{last_err}",
                     project.name
                 );
                 for p in &parents {

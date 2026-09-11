@@ -1805,3 +1805,36 @@ fn task_usage_delta_saturates_and_carries_cost() {
     assert_eq!(d2["output_tokens"], 0);
     assert_eq!(d2["requests"], 0);
 }
+
+// -- P1（2026-09-11 真机日志）：turn 终态判定 -----------------------------
+//
+// 失败终止（末事件 Error）必须映射 error 回调，不得包装成 success 空交付。
+
+#[test]
+fn test_terminal_error_detects_error_terminated_stream() {
+    let events = vec![
+        AgentEvent::Done("中间文本".to_string()),
+        AgentEvent::Error("工具参数校验连续失败 1 次，已停止重试。".to_string()),
+    ];
+    assert_eq!(
+        super::terminal_error(&events).as_deref(),
+        Some("工具参数校验连续失败 1 次，已停止重试。")
+    );
+}
+
+#[test]
+fn test_terminal_error_none_for_done_or_empty_stream() {
+    // 正常完成（末事件 Done）→ None。
+    let done_only = vec![AgentEvent::Done("最终回复".to_string())];
+    assert!(super::terminal_error(&done_only).is_none());
+
+    // Done 在后、Error 在前（错误后被正常文本覆盖）→ None。
+    let recovered = vec![
+        AgentEvent::Error("第 1 次尝试失败".to_string()),
+        AgentEvent::Done("已恢复".to_string()),
+    ];
+    assert!(super::terminal_error(&recovered).is_none());
+
+    // 空事件流 → None（由调用方的空结果守卫兜底）。
+    assert!(super::terminal_error(&[]).is_none());
+}

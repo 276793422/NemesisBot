@@ -348,6 +348,12 @@ pub fn scan_session_logs(workspace: &str) -> Vec<serde_json::Value> {
         if let Some(pp) = project_path {
             entry["projectPath"] = serde_json::Value::String(pp);
         }
+        // P2（2026-09-11）：未送达 assistant 回复数（sidecar meta）。0 不加
+        // 字段（对话组会话零增量）——前端以此渲染未读徽标。
+        let undelivered = read_meta_undelivered(&path);
+        if undelivered > 0 {
+            entry["undelivered"] = serde_json::Value::from(undelivered);
+        }
         sessions.push(entry);
     }
     sessions
@@ -402,6 +408,19 @@ fn read_meta_project(jsonl_path: &Path) -> (Option<String>, Option<String>) {
         ),
         None => (None, None),
     }
+}
+
+/// P2（2026-09-11 真机日志）：未送达 assistant 回复计数 from the sidecar
+/// meta（`mark_undelivered_reply` 打点 / `sessions.mark_delivered` 清零）。
+/// 无字段/缺席 sidecar = 0。
+fn read_meta_undelivered(jsonl_path: &Path) -> u32 {
+    let meta = jsonl_path.with_extension("meta.json");
+    std::fs::read_to_string(&meta)
+        .ok()
+        .and_then(|d| serde_json::from_str::<serde_json::Value>(&d).ok())
+        .and_then(|v| v.get("undelivered").and_then(|u| u.as_u64()))
+        .map(|u| u as u32)
+        .unwrap_or(0)
 }
 
 /// M5: 会话 id → `RequestLog.session_key`。接受 sid（`s1`，Dashboard

@@ -32,6 +32,7 @@ impl ModuleHandler for SessionsHandler {
             "share_create",
             "share_list",
             "share_revoke",
+            "mark_delivered",
         ]
     }
 
@@ -64,6 +65,21 @@ impl ModuleHandler for SessionsHandler {
                 // 聚合；无记录时缺省，前端不展示）。
                 crate::handlers::logs::backfill_session_usage(ctx, &mut web);
                 Ok(Some(serde_json::json!({ "sessions": web })))
+            }
+            "mark_delivered" => {
+                // P2（2026-09-11 真机日志）：前端拉取会话历史后清零未送达
+                // 标记（adapters 推送失败时打点）。零计数/缺席 sidecar 幂等。
+                let session_id = data
+                    .as_ref()
+                    .and_then(|d| d.get("session_id"))
+                    .and_then(|v| v.as_str())
+                    .ok_or_else(|| "missing session_id".to_string())?;
+                let session_key = format!(
+                    "agent:main:session:{}",
+                    nemesis_agent::session::SessionStore::sanitize_session_id(session_id)
+                );
+                let cleared = nemesis_agent::chat_log::clear_undelivered_replies(&session_key);
+                Ok(Some(serde_json::json!({ "cleared": cleared })))
             }
             "create" => {
                 // Backend generates the id; the conversation lazily

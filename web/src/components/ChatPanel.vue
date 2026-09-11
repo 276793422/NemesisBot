@@ -694,6 +694,11 @@ function handleHistoryResponse(data: any) {
   chatStore.historyLoading = false
   if (!data) return
 
+  // P2（2026-09-11）：历史到手 = 未读已见 → 清零未送达徽标（本地立即置 0 +
+  // 后端 sidecar 计数清除；无未读时本地短路零开销）。放在所有早退分支之前，
+  // resync/watchdog 路径同样视为已读。
+  if (sessionStore.currentId) sessionStore.markDelivered(sessionStore.currentId)
+
   // M6：rewind/redo 后的重同步（无条件 replace + oldest_index 重建行号）。
   if (pendingResync) {
     pendingResync = false

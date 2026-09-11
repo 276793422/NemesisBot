@@ -773,3 +773,43 @@ fn test_session_meta_legacy_without_project_loads() {
 
     delete_chat_log(&key);
 }
+
+/// P2（2026-09-11 真机日志）：未送达标记 round-trip——mark 累加、clear 归零
+/// 幂等、既有字段（title）保留、旧形态 meta（无 undelivered 字段）兼容。
+#[test]
+fn test_undelivered_mark_and_clear_roundtrip() {
+    let key = format!(
+        "test:undelivered:{}",
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    );
+    delete_chat_log(&key);
+
+    // 缺席 sidecar：mark 从 0 起步，clear 返回 true。
+    crate::chat_log::mark_undelivered_reply(&key);
+    crate::chat_log::mark_undelivered_reply(&key);
+    let m = crate::chat_log::read_session_meta_full(&key).unwrap();
+    assert_eq!(m.undelivered, 2, "两次 mark 必须累加");
+
+    // title 并存：先写 title 再 mark，清零不得吞掉 title。
+    crate::chat_log::write_session_meta(&key, "标题保留");
+    crate::chat_log::mark_undelivered_reply(&key);
+    assert!(crate::chat_log::clear_undelivered_replies(&key));
+    let m = crate::chat_log::read_session_meta_full(&key).unwrap();
+    assert_eq!(m.undelivered, 0);
+    assert_eq!(m.title.as_deref(), Some("标题保留"));
+
+    // 二次 clear = false（幂等，零计数不空写）。
+    assert!(!crate::chat_log::clear_undelivered_replies(&key));
+
+    // 旧形态 meta（只有 title）：读为 0，clear 幂等 false。
+    let path = log_path(&key).with_extension("meta.json");
+    std::fs::write(&path, r#"{"title":"旧形态"}"#).unwrap();
+    let m = crate::chat_log::read_session_meta_full(&key).unwrap();
+    assert_eq!(m.undelivered, 0, "旧形态 meta 必须按 0 兼容读取");
+    assert!(!crate::chat_log::clear_undelivered_replies(&key));
+
+    delete_chat_log(&key);
+}

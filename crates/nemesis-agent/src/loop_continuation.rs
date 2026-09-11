@@ -22,7 +22,7 @@ use tracing::{debug, info, warn};
 use crate::context::RequestContext;
 use crate::r#loop::{LlmMessage, LlmProvider, Tool};
 use crate::session::SessionStore;
-use crate::types::{ToolCallInfo, TOOL_OUTCOME_UNKNOWN};
+use crate::types::{TOOL_OUTCOME_UNKNOWN, ToolCallInfo};
 
 /// Trait for looking up tools by name.
 pub trait ToolLookup {
@@ -1055,9 +1055,7 @@ pub async fn handle_cluster_continuation<T: ToolLookup>(
     // 0. 单飞闸（发现 F 2026-09-11 根修）：认领处理权防重复回调双路处理。
     // 必须先于加载认领——磁盘快照保留到收口，重复回调会经盘上回退命中。
     if !manager.claim_handling(task_id).await {
-        debug!(
-            "[Continuation] task {task_id} 已有在途处理（重复回调诚实跳过）"
-        );
+        debug!("[Continuation] task {task_id} 已有在途处理（重复回调诚实跳过）");
         return;
     }
 
@@ -1132,12 +1130,15 @@ pub async fn handle_cluster_continuation<T: ToolLookup>(
             &cont_data.chat_id,
             &cont_data.session_key,
             &cont_data.peer_id,
-            &cont_data.image_refs_by_user_turn.iter().flatten().cloned().collect::<Vec<String>>(),
+            &cont_data
+                .image_refs_by_user_turn
+                .iter()
+                .flatten()
+                .cloned()
+                .collect::<Vec<String>>(),
         )
         .await;
-    debug!(
-        "[Continuation] task {task_id} 合入回调结果后快照已写回（崩溃安全网更新，发现 G）"
-    );
+    debug!("[Continuation] task {task_id} 合入回调结果后快照已写回（崩溃安全网更新，发现 G）");
 
     // F-F（2026-09-04 四轮盲审）：vision=no 模型接管续行时，恢复路径
     // （内存快照的已水合字节 / 磁盘重水合）绕过了 build_messages 的 T10

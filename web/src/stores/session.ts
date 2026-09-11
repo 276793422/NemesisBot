@@ -136,6 +136,21 @@ export const useSessionStore = defineStore('session', () => {
     return await api.export(session_id)
   }
 
+  /** P2（2026-09-11）：本地清零未送达徽标 + 通知后端清 sidecar 计数。
+   *  ChatPanel 拉取历史后调用（读到内容即视为已送达）。 */
+  async function markDelivered(session_id: string) {
+    const s = sessions.value.find(x => x.id === session_id)
+    const had = (s?.undelivered ?? 0) > 0
+    if (s) s.undelivered = 0
+    if (had) {
+      try {
+        await api.markDelivered(session_id)
+      } catch {
+        // 后端清零失败只影响下次 list 的徽标精度，不阻塞阅读。
+      }
+    }
+  }
+
   async function remove(session_id: string) {
     try {
       const res = await api.delete(session_id)
@@ -171,5 +186,5 @@ export const useSessionStore = defineStore('session', () => {
     showSidebar.value = !showSidebar.value
   }
 
-  return { sessions, currentId, listLoading, listError, showSidebar, projects, fetchList, fetchProjects, create, createProject, removeProject, renameProject, projectNameOf, rename, clear, exportSession, remove, switchTo, toggleSidebar }
+  return { sessions, currentId, listLoading, listError, showSidebar, projects, fetchList, fetchProjects, create, createProject, removeProject, renameProject, projectNameOf, rename, clear, exportSession, markDelivered, remove, switchTo, toggleSidebar }
 })

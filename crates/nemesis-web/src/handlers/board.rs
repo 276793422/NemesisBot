@@ -620,7 +620,7 @@ pub async fn run_planner(
     );
     let mut last_err = String::new();
     for _ in 0..=2 {
-        let raw = agent_loop
+        let raw = match agent_loop
             .run_detached(
                 &prompt,
                 nemesis_agent::r#loop::DetachedOpts {
@@ -631,7 +631,13 @@ pub async fn run_planner(
                     ..Default::default()
                 },
             )
-            .await?;
+            .await
+        {
+            Ok(raw) => raw,
+            // 发现 D（2026-09-11 措辞精度）：LLM 调用失败不消耗解析重试轮，
+            // 与「解析失败 3 轮」分开归类，下游评论不再误报轮数。
+            Err(e) => return Err(format!("planner LLM 调用失败：{e}")),
+        };
         match nemesis_board::parse_plan(&raw) {
             Ok(subs) => return Ok(subs),
             Err(e) => {
@@ -640,7 +646,7 @@ pub async fn run_planner(
             }
         }
     }
-    Err(format!("planner 连续 3 次输出无法解析：{last_err}"))
+    Err(format!("planner 输出连续 3 轮无法解析：{last_err}"))
 }
 
 /// 全自动流转 P3/D1：plan 链共享编排（WSAPI `issue.plan` 一段、agent 工具

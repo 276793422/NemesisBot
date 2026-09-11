@@ -728,6 +728,36 @@ pub fn read_session_meta(session_key: &str) -> Option<String> {
     read_meta_full(session_key).and_then(|m| m.title)
 }
 
+/// P2（2026-09-11 真机日志）：assistant 回复实时推送失败时 +1——会话没有
+/// 活动 WS 连接（如恢复回复回到已断开的 ws-send 驱动端）时内容仍照常落盘
+/// （chat_log 是真相源），本标记只承载「有未读」这一通知事实。
+pub fn mark_undelivered_reply(session_key: &str) {
+    upsert_meta(session_key, |m| {
+        m.undelivered = m.undelivered.saturating_add(1);
+    });
+}
+
+/// P2：前端拉取会话历史后清零未读标记。返回是否确实清掉了非零计数。
+pub fn clear_undelivered_replies(session_key: &str) -> bool {
+    let Some(mut meta) = read_meta_full(session_key) else {
+        return false;
+    };
+    if meta.undelivered == 0 {
+        return false;
+    }
+    meta.undelivered = 0;
+    let path = meta_path(session_key);
+    if let Err(e) = fs::write(&path, serde_json::to_string(&meta).unwrap_or_default()) {
+        tracing::warn!(
+            "[chat_log] failed to clear undelivered marker {}: {}",
+            path.display(),
+            e
+        );
+        return false;
+    }
+    true
+}
+
 /// Read the full sidecar meta by session key. `None` when absent/unparsable.
 fn read_meta_full(session_key: &str) -> Option<SessionMeta> {
     let path = meta_path(session_key);
@@ -764,6 +794,16 @@ pub struct SessionMeta {
     /// L6++：canonical 项目目录绝对路径（与 project_id 同批写入）。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub project_path: Option<String>,
+    /// P2（2026-09-11 真机日志）：实时推送失败（会话无活动连接，如崩溃恢复
+    /// 回复回到已断开的驱动端）的 assistant 消息条数。前端拉取历史后经
+    /// `sessions.mark_delivered` 清零。0 不落盘，兼容旧文件形态。
+    #[serde(default, skip_serializing_if = "is_zero_u32")]
+    pub undelivered: u32,
+}
+
+/// P2: `skip_serializing_if` 助手（0 不落盘）。
+fn is_zero_u32(v: &u32) -> bool {
+    *v == 0
 }
 
 /// E7: `skip_serializing_if` 助手（false 不落盘，兼容旧文件形态）。

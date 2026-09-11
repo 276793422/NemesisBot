@@ -432,6 +432,14 @@ function title(s: { title?: string; firstMessage: string; id: string }): string 
   return s.title || s.firstMessage || s.id.slice(0, 8)
 }
 
+/** P2（2026-09-11）：未送达徽标文案——无未读返回 null（不渲染），
+ *  超过 9 显示 9+。集中一处，模板免 undefined 收窄问题。 */
+function undeliveredBadge(s: { undelivered?: number }): string | null {
+  const n = s.undelivered ?? 0
+  if (n <= 0) return null
+  return n > 9 ? '9+' : String(n)
+}
+
 // ---------------------------------------------------------------------------
 // 会话信息（行菜单）：sessions.list 已回填的静态信息只读展示——归属/
 // 时间/消息数/用量/模型/fork 血缘。零额外请求（消息数即 list 的
@@ -593,6 +601,13 @@ function relTime(ts: string): string {
               <!-- M6: pinned 会话标题前缀标记（置顶行的视觉识别） -->
               <span v-if="isPinned(s.id)" class="pin-flag" title="已置顶">📌</span>
               {{ title(s) }}
+              <!-- P2（2026-09-11）: 未送达回复徽标（assistant 推送失败时后端
+                   打点；点开拉取历史后清零）。 -->
+              <span
+                v-if="undeliveredBadge(s)"
+                class="undelivered-badge"
+                :title="`有未送达的回复（已落盘，打开即见）`"
+              >{{ undeliveredBadge(s) }}</span>
             </div>
             <!-- E4: fork 血缘标记（父在列表可点击跳转；不在则纯文本） -->
             <div
@@ -851,6 +866,22 @@ function relTime(ts: string): string {
 .pin-flag {
   font-size: 10px;
   margin-right: 2px;
+}
+/* P2（2026-09-11）: 未送达回复徽标——标题右侧小圆点计数 */
+.undelivered-badge {
+  margin-left: 6px;
+  min-width: 14px;
+  height: 14px;
+  padding: 0 4px;
+  border-radius: 7px;
+  background: var(--accent, #e5484d);
+  color: #fff;
+  font-size: 10px;
+  line-height: 14px;
+  font-weight: 600;
+  text-align: center;
+  display: inline-block;
+  vertical-align: 1px;
 }
 /* A：对话区排序循环按钮（⇅ + 当前档位，档位见 SORT_LABELS） */
 .sort-toggle {

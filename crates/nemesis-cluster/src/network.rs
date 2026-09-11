@@ -261,6 +261,13 @@ pub fn get_all_local_ips() -> Vec<String> {
                         continue;
                     }
 
+                    // P3：vethernet 命名 + 172.16.0.0/12 NAT 段 = Hyper-V/WSL
+                    // 内部交换机（Windows 外部 vSwitch 挂真网卡时地址是真实
+                    // 网段，不受影响）。
+                    if is_vethernet_nat_addr(&iface.name, v4) {
+                        continue;
+                    }
+
                     let priority = get_interface_priority(&iface.name);
                     candidates.push(CandidateIp {
                         ip: v4.to_string(),
@@ -320,7 +327,24 @@ pub fn is_virtual_interface(name: &str) -> bool {
 
     // Patterns safe for substring matching (long enough to avoid false positives)
     let contains_patterns = [
-        "docker", "br-", "virbr", "vbox", "vmnet", "awdl", "anpi", "ipsec", "loopback",
+        "docker",
+        "br-",
+        "virbr",
+        "vbox",
+        "virtualbox",
+        "vmnet",
+        "vmware",
+        "awdl",
+        "anpi",
+        "ipsec",
+        "loopback",
+        // P3（2026-09-11 真机日志）：Windows Hyper-V/WSL 内部虚拟交换机——
+        // "vEthernet (WSL (Hyper-V firewall))"、"vEthernet (Default Switch)" 等。
+        // 这些地址（172.16-31.x NAT 段）对宿主机外不可达，进 announce 只会让
+        // 对端白等 dial timeout。真实网卡绑外部 vSwitch 的地址是真实网段，
+        // 由下方 vethernet∧NAT 段组合规则放行。
+        "wsl",
+        "default switch",
     ];
     if contains_patterns.iter().any(|p| lower.contains(p)) {
         return true;
@@ -346,6 +370,21 @@ pub fn is_virtual_interface(name: &str) -> bool {
     }
 
     false
+}
+
+/// P3（2026-09-11 真机日志）：vethernet 命名的接口持有 172.16.0.0/12 地址
+/// ⇒ Hyper-V/WSL 内部 NAT 交换机，宿主机外不可达。
+///
+/// 刻意不做全量 "vethernet" 名字过滤——Windows 外部 vSwitch 绑在物理网卡上
+/// 承载真实 LAN IP，一刀切会把真实地址滤掉。只按「vethernet + 私有 NAT 段」
+/// 组合判定：内部交换机（Default Switch/WSL 等）固定用 172.16-31.x；真实
+/// 网段（192.168/10.x/公网）不受影响。
+pub fn is_vethernet_nat_addr(name: &str, ip: Ipv4Addr) -> bool {
+    if !name.to_lowercase().contains("vethernet") {
+        return false;
+    }
+    let o = ip.octets();
+    o[0] == 172 && (16..=31).contains(&o[1])
 }
 
 /// Get the priority score for an interface name (lower = higher priority).

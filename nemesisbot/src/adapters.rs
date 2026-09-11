@@ -500,7 +500,7 @@ impl WebServerOps for WebServerOpsAdapter {
         let content = content.to_string();
         let model = model.map(|s| s.to_string());
         let session_key = session_key.map(|s| s.to_string());
-        tokio::task::block_in_place(|| {
+        let result = tokio::task::block_in_place(|| {
             self.rt.block_on(nemesis_web::server::send_to_session(
                 &sm,
                 &sid,
@@ -509,7 +509,17 @@ impl WebServerOps for WebServerOpsAdapter {
                 model.as_deref(),
                 session_key.as_deref(),
             ))
-        })
+        });
+        // P2（2026-09-11 真机日志）：assistant 回复推送失败（会话无活动
+        // 连接——典型如崩溃恢复回复回到已断开的驱动端）时打未读标记；
+        // 内容已照常落盘（chat_log），标记只承载「有未读」通知事实，
+        // 前端拉历史后经 sessions.mark_delivered 清零。
+        if let (Err(_), Some(key)) = (&result, session_key.as_deref())
+            && role == "assistant"
+        {
+            nemesis_agent::chat_log::mark_undelivered_reply(key);
+        }
+        result
     }
 
     fn send_history_to_session(

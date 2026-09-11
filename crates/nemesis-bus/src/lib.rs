@@ -18,6 +18,11 @@ pub struct MessageBus {
     inbound_dropped: AtomicU64,
     /// Number of outbound messages dropped because no receivers or buffer full.
     outbound_dropped: AtomicU64,
+    /// P6a（2026-09-11 日志降噪）：fan-out 警告每方向只发一次——gateway 启动
+    /// 期固定多订阅者（agent loop / web dispatch / cluster 桥各订一份）属正常
+    /// 形态，逐订阅 WARN 只是每世代 3 条启动噪音。
+    inbound_fanout_warned: AtomicBool,
+    outbound_fanout_warned: AtomicBool,
 }
 
 impl MessageBus {
@@ -36,6 +41,8 @@ impl MessageBus {
             closed: AtomicBool::new(false),
             inbound_dropped: AtomicU64::new(0),
             outbound_dropped: AtomicU64::new(0),
+            inbound_fanout_warned: AtomicBool::new(false),
+            outbound_fanout_warned: AtomicBool::new(false),
         }
     }
 
@@ -108,14 +115,18 @@ impl MessageBus {
     /// Go's point-to-point channels. Having multiple subscribers is usually
     /// unintentional and may indicate a bug where a component subscribes
     /// more than once.
+    ///
+    /// P6a：警告只发一次（每方向）——多订阅者是 gateway 启动的正常形态，
+    /// 逐次 WARN 是每世代固定启动噪音。
     pub fn subscribe_inbound(&self) -> broadcast::Receiver<InboundMessage> {
         let existing = self.inbound_tx.receiver_count();
         info!("[Bus] New inbound subscriber, total receivers={}", existing);
-        if existing > 0 {
+        if existing > 0 && !self.inbound_fanout_warned.swap(true, Ordering::Relaxed) {
             warn!(
                 existing_receivers = existing,
                 "[Bus] subscribe_inbound: additional subscriber added to broadcast channel; \
-                 each subscriber receives every message (fan-out), which may be unintentional"
+                 each subscriber receives every message (fan-out), which may be unintentional \
+                 (warned once per bus)"
             );
         }
         self.inbound_tx.subscribe()
@@ -124,18 +135,19 @@ impl MessageBus {
     /// Subscribe to outbound messages.
     ///
     /// Logs a warning if there are already existing subscribers for the same
-    /// fan-out concern as `subscribe_inbound`.
+    /// fan-out concern as `subscribe_inbound` (warn-once per bus).
     pub fn subscribe_outbound(&self) -> broadcast::Receiver<OutboundMessage> {
         let existing = self.outbound_tx.receiver_count();
         info!(
             "[Bus] New outbound subscriber, total receivers={}",
             existing
         );
-        if existing > 0 {
+        if existing > 0 && !self.outbound_fanout_warned.swap(true, Ordering::Relaxed) {
             warn!(
                 existing_receivers = existing,
                 "[Bus] subscribe_outbound: additional subscriber added to broadcast channel; \
-                 each subscriber receives every message (fan-out), which may be unintentional"
+                 each subscriber receives every message (fan-out), which may be unintentional \
+                 (warned once per bus)"
             );
         }
         self.outbound_tx.subscribe()

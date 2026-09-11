@@ -448,6 +448,75 @@ fn test_is_virtual_interface_physical() {
     assert!(!is_virtual_interface("wl0"));
 }
 
+// -----------------------------------------------------------------------
+// P3（2026-09-11 真机日志）：Hyper-V/WSL 虚拟交换机地址过滤
+// -----------------------------------------------------------------------
+
+/// Windows 内部虚拟交换机名（vethernet + WSL/Default Switch/VMware/VirtualBox）
+/// 应按名字过滤。
+#[test]
+fn test_is_virtual_interface_windows_internal_switches() {
+    assert!(is_virtual_interface("vEthernet (WSL (Hyper-V firewall))"));
+    assert!(is_virtual_interface("vEthernet (Default Switch)"));
+    assert!(is_virtual_interface("vEthernet (WSL)"));
+    assert!(is_virtual_interface(
+        "VMware Virtual Ethernet Adapter for VMnet8"
+    ));
+    assert!(is_virtual_interface("VirtualBox Host-Only Network"));
+}
+
+/// 外部 vSwitch（真实网卡绑定，名字不含 WSL/Default Switch）不得按名字
+/// 过滤——真实 LAN 地址靠它进 announce。
+#[test]
+fn test_is_virtual_interface_external_vswitch_not_name_filtered() {
+    assert!(!is_virtual_interface("vEthernet (External Switch)"));
+    assert!(!is_virtual_interface("vEthernet"));
+}
+
+/// vethernet + 172.16.0.0/12 组合判定：内部 NAT 段滤掉，真实网段放行，
+/// 非 vethernet 命名的接口即使是 172.16-31 也放行（企业内网可能是真 LAN）。
+#[test]
+fn test_is_vethernet_nat_addr() {
+    // WSL/Hyper-V 内部交换机的 NAT 段地址 → 滤
+    assert!(is_vethernet_nat_addr(
+        "vEthernet (WSL (Hyper-V firewall))",
+        Ipv4Addr::new(172, 23, 112, 1)
+    ));
+    assert!(is_vethernet_nat_addr(
+        "vEthernet (Internal)",
+        Ipv4Addr::new(172, 16, 0, 1)
+    ));
+    assert!(is_vethernet_nat_addr(
+        "vEthernet (Internal)",
+        Ipv4Addr::new(172, 31, 255, 1)
+    ));
+
+    // vethernet 但真实网段（外部 vSwitch 承载 LAN）→ 留
+    assert!(!is_vethernet_nat_addr(
+        "vEthernet (External Switch)",
+        Ipv4Addr::new(192, 168, 137, 1)
+    ));
+    assert!(!is_vethernet_nat_addr(
+        "vEthernet (External Switch)",
+        Ipv4Addr::new(10, 0, 0, 5)
+    ));
+    // 边界外：172.15 / 172.32 不属 172.16/12
+    assert!(!is_vethernet_nat_addr(
+        "vEthernet",
+        Ipv4Addr::new(172, 15, 0, 1)
+    ));
+    assert!(!is_vethernet_nat_addr(
+        "vEthernet",
+        Ipv4Addr::new(172, 32, 0, 1)
+    ));
+
+    // 非 vethernet 命名的接口即使是 172.16-31 → 留（企业内网真 LAN）
+    assert!(!is_vethernet_nat_addr(
+        "Ethernet",
+        Ipv4Addr::new(172, 20, 1, 5)
+    ));
+}
+
 #[test]
 fn test_get_interface_priority_ethernet() {
     assert_eq!(get_interface_priority("eth0"), 1);

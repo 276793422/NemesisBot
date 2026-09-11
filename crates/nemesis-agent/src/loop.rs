@@ -7101,6 +7101,9 @@ impl AgentLoop {
                         warn!(
                             "[AgentLoop] loop guard escalation: stopping turn to avoid burning max_turns on a stuck loop"
                         );
+                        // P1（2026-09-11 真机日志分析）：升级停轮也是失败终止——
+                        // 记终端原因，turn_end 边界标记不再谎报 "done"。
+                        terminal_reason = Some("escalation");
                         force_stop = Some(AgentEvent::Done(context.format_rpc_message(
                             &crate::turn_guard::TurnGuard::escalation_message(&sig, count),
                         )));
@@ -7120,6 +7123,10 @@ impl AgentLoop {
                         "[AgentLoop] Validation retry budget exhausted ({}); stopping turn.",
                         validation_failures
                     );
+                    // P1（2026-09-11 真机日志分析）：校验预算耗尽的 turn 是失败
+                    // 终止（B 端曾把它包装成 success 回调 → 空交付结构性缺陷）。
+                    // 记终端原因 + 末事件为 Error——cluster_agent 据此发 error 回调。
+                    terminal_reason = Some("validation_exhausted");
                     force_stop = Some(AgentEvent::Error(format!(
                         "工具参数校验连续失败 {} 次，已停止重试。最近工具：'{}'。",
                         validation_failures, tc.name

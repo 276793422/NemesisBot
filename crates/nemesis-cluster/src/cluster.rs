@@ -651,6 +651,10 @@ impl Cluster {
 
         handle.spawn(async move {
             let mut interval = tokio::time::interval(Duration::from_secs(120));
+            // P6b：首 tick 即时（tokio interval 语义），且绕过 2 分钟年龄闸
+            // ——重启后立即发起恢复查询，不用白等一个周期。后续 tick 恢复
+            // 常规年龄闸（避免把刚派发的任务误查）。
+            let mut first_tick = true;
             loop {
                 tokio::select! {
                     _ = stop_rx.recv() => {
@@ -666,7 +670,9 @@ impl Cluster {
                             rpc_client.as_deref(),
                             safety_net,
                             bus_snapshot.as_deref(),
+                            first_tick,
                         ).await;
+                        first_tick = false;
                     }
                 }
             }
@@ -2670,6 +2676,7 @@ impl Cluster {
             rpc_client.as_deref(),
             safety_net,
             bus_snapshot.as_deref(),
+            false,
         )
         .await;
     }
@@ -2812,6 +2819,7 @@ async fn poll_stale_pending_tasks(
     rpc_client: Option<&RpcClient>,
     safety_net: chrono::Duration,
     bus: Option<&dyn MessageBus>,
+    include_young: bool,
 ) {
     let tasks = task_manager.list_pending_tasks();
 
@@ -2827,8 +2835,11 @@ async fn poll_stale_pending_tasks(
         };
         let age = chrono::Local::now() - created;
 
-        // Skip tasks younger than 2 minutes.
-        if age < chrono::Duration::minutes(2) {
+        // Skip tasks younger than 2 minutes. P6b（2026-09-11 日志）：恢复
+        // loop 的首 tick 传 include_young=true 绕过此闸——重启后立即查询，
+        // 不用白等 2 分钟（tokio interval 首 tick 本就即时，此前被这个
+        // 年龄闸架空）。
+        if !include_young && age < chrono::Duration::minutes(2) {
             continue;
         }
 

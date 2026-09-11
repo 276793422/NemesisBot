@@ -1914,10 +1914,54 @@ async fn test_poll_stale_pending_tasks_young_task_skipped() {
     let tm = Arc::new(TaskManager::new());
     // Create a brand new task (< 2 minutes old) - should be skipped
     let _task = tm.create_task("action", serde_json::json!({}), "rpc", "ch");
-    poll_stale_pending_tasks(&tm, &None, None, poll_defaults(), None).await;
+    poll_stale_pending_tasks(&tm, &None, None, poll_defaults(), None, false).await;
     // Task should still be pending
     let pending = tm.list_pending_tasks();
     assert_eq!(pending.len(), 1);
+}
+
+/// P6b（2026-09-11 日志）：include_young=true（恢复 loop 首 tick）绕过
+/// 2 分钟年龄闸——重启后立即对年轻任务发起恢复查询。
+#[tokio::test]
+async fn test_poll_stale_pending_tasks_include_young_queries_young_task() {
+    let tm = Arc::new(TaskManager::new());
+    // Brand new task (< 2 minutes old); poll requires a peer_id to query.
+    let _task = tm.create_task_with_peer("action", serde_json::json!({}), "rpc", "ch", "remote-1");
+    let pending_before = tm.list_pending_tasks();
+    let task_id = pending_before[0].id.clone();
+
+    // call_fn answers "done" with a result — proves the young task was
+    // actually queried instead of skipped by the age gate.
+    let call_fn: Option<
+        Arc<dyn Fn(&str, &str, serde_json::Value) -> Result<Vec<u8>, String> + Send + Sync>,
+    > = Some(Arc::new(move |_peer, action, payload| {
+        if action == "query_task_result" {
+            let tid = payload
+                .get("task_id")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_string();
+            let resp = serde_json::json!({
+                "status": "done",
+                "task_id": tid,
+                "result_status": "success",
+                "response": "recovered",
+                "error": "",
+            });
+            Ok(serde_json::to_vec(&resp).unwrap())
+        } else {
+            // confirm_task_delivery
+            Ok(Vec::new())
+        }
+    }));
+
+    poll_stale_pending_tasks(&tm, &call_fn, None, poll_defaults(), None, true).await;
+    let t = tm.get_task(&task_id).expect("task should exist");
+    assert_eq!(
+        t.status,
+        TaskStatus::Completed,
+        "include_young=true must bypass the 2-minute age gate"
+    );
 }
 
 #[tokio::test]
@@ -1939,7 +1983,7 @@ async fn test_poll_stale_pending_tasks_old_task_timed_out() {
     };
     tm.submit(task).unwrap();
 
-    poll_stale_pending_tasks(&tm, &None, None, poll_defaults(), None).await;
+    poll_stale_pending_tasks(&tm, &None, None, poll_defaults(), None, false).await;
     let t = tm.get_task("stale-24h").unwrap();
     assert_eq!(t.status, TaskStatus::Failed);
 }
@@ -1971,7 +2015,7 @@ async fn test_poll_stale_pending_tasks_stale_with_call_fn() {
         Ok(serde_json::to_vec(&resp).unwrap())
     }));
 
-    poll_stale_pending_tasks(&tm, &call_fn, None, poll_defaults(), None).await;
+    poll_stale_pending_tasks(&tm, &call_fn, None, poll_defaults(), None, false).await;
     let t = tm.get_task("stale-5m").unwrap();
     assert_eq!(t.status, TaskStatus::Failed);
 }
@@ -2013,7 +2057,7 @@ async fn test_poll_stale_pending_tasks_stale_with_done_response() {
         }
     }));
 
-    poll_stale_pending_tasks(&tm, &call_fn, None, poll_defaults(), None).await;
+    poll_stale_pending_tasks(&tm, &call_fn, None, poll_defaults(), None, false).await;
     let t = tm.get_task("stale-done").unwrap();
     assert_eq!(t.status, TaskStatus::Completed);
 }
@@ -2044,7 +2088,7 @@ async fn test_poll_stale_pending_tasks_stale_with_running_response() {
         Ok(serde_json::to_vec(&resp).unwrap())
     }));
 
-    poll_stale_pending_tasks(&tm, &call_fn, None, poll_defaults(), None).await;
+    poll_stale_pending_tasks(&tm, &call_fn, None, poll_defaults(), None, false).await;
     let t = tm.get_task("stale-running").unwrap();
     assert_eq!(t.status, TaskStatus::Pending);
 }
@@ -2068,7 +2112,7 @@ async fn test_poll_stale_pending_tasks_no_peer_id() {
     };
     tm.submit(task).unwrap();
 
-    poll_stale_pending_tasks(&tm, &None, None, poll_defaults(), None).await;
+    poll_stale_pending_tasks(&tm, &None, None, poll_defaults(), None, false).await;
     let t = tm.get_task("no-peer").unwrap();
     assert_eq!(t.status, TaskStatus::Pending); // still pending
 }
@@ -2098,7 +2142,7 @@ async fn test_poll_stale_pending_tasks_call_fn_error() {
         Err("connection refused".to_string())
     }));
 
-    poll_stale_pending_tasks(&tm, &call_fn, None, poll_defaults(), None).await;
+    poll_stale_pending_tasks(&tm, &call_fn, None, poll_defaults(), None, false).await;
     let t = tm.get_task("call-error").unwrap();
     assert_eq!(t.status, TaskStatus::Pending);
 }
@@ -3256,7 +3300,7 @@ async fn test_poll_stale_pending_tasks_malformed_created_at() {
     };
     tm.submit(task).unwrap();
 
-    poll_stale_pending_tasks(&tm, &None, None, poll_defaults(), None).await;
+    poll_stale_pending_tasks(&tm, &None, None, poll_defaults(), None, false).await;
     // Task should still be pending (skipped due to malformed date)
     let t = tm.get_task("bad-date").unwrap();
     assert_eq!(t.status, TaskStatus::Pending);
@@ -3290,7 +3334,7 @@ async fn test_poll_stale_pending_tasks_unknown_status_response() {
         Ok(serde_json::to_vec(&resp).unwrap())
     }));
 
-    poll_stale_pending_tasks(&tm, &call_fn, None, poll_defaults(), None).await;
+    poll_stale_pending_tasks(&tm, &call_fn, None, poll_defaults(), None, false).await;
     let t = tm.get_task("weird-status").unwrap();
     // Unknown status -> continue -> task stays pending
     assert_eq!(t.status, TaskStatus::Pending);
@@ -3323,7 +3367,7 @@ async fn test_poll_stale_pending_tasks_invalid_json_response() {
         Ok(b"this is not valid json {{{".to_vec())
     }));
 
-    poll_stale_pending_tasks(&tm, &call_fn, None, poll_defaults(), None).await;
+    poll_stale_pending_tasks(&tm, &call_fn, None, poll_defaults(), None, false).await;
     let t = tm.get_task("invalid-json").unwrap();
     // Invalid JSON -> continue -> task stays pending
     assert_eq!(t.status, TaskStatus::Pending);
@@ -3368,7 +3412,7 @@ async fn test_poll_stale_pending_tasks_done_with_error_status() {
         }
     }));
 
-    poll_stale_pending_tasks(&tm, &call_fn, None, poll_defaults(), None).await;
+    poll_stale_pending_tasks(&tm, &call_fn, None, poll_defaults(), None, false).await;
     let t = tm.get_task("done-err").unwrap();
     // result_status "error" -> complete_callback with "error" -> should be completed (callback handled)
     assert_eq!(t.status, TaskStatus::Failed);
@@ -5388,7 +5432,15 @@ async fn test_poll_stale_pending_tasks_real_client_running_done_notfound_and_dea
         Box::new(|_p| Ok(serde_json::json!({"status": "running"}))),
     );
     submit_stale(&tm, "stale-running", "peer-b");
-    poll_stale_pending_tasks(&tm, &None, Some(client.as_ref()), poll_defaults(), None).await;
+    poll_stale_pending_tasks(
+        &tm,
+        &None,
+        Some(client.as_ref()),
+        poll_defaults(),
+        None,
+        false,
+    )
+    .await;
     assert_eq!(
         tm.get_task("stale-running").unwrap().status,
         TaskStatus::Pending
@@ -5407,7 +5459,15 @@ async fn test_poll_stale_pending_tasks_real_client_running_done_notfound_and_dea
         }),
     );
     submit_stale(&tm, "stale-done", "peer-b");
-    poll_stale_pending_tasks(&tm, &None, Some(client.as_ref()), poll_defaults(), None).await;
+    poll_stale_pending_tasks(
+        &tm,
+        &None,
+        Some(client.as_ref()),
+        poll_defaults(),
+        None,
+        false,
+    )
+    .await;
     assert_eq!(
         tm.get_task("stale-done").unwrap().status,
         TaskStatus::Completed
@@ -5419,12 +5479,28 @@ async fn test_poll_stale_pending_tasks_real_client_running_done_notfound_and_dea
         Box::new(|_p| Ok(serde_json::json!({"status": "not_found"}))),
     );
     submit_stale(&tm, "stale-nf", "peer-b");
-    poll_stale_pending_tasks(&tm, &None, Some(client.as_ref()), poll_defaults(), None).await;
+    poll_stale_pending_tasks(
+        &tm,
+        &None,
+        Some(client.as_ref()),
+        poll_defaults(),
+        None,
+        false,
+    )
+    .await;
     assert_eq!(tm.get_task("stale-nf").unwrap().status, TaskStatus::Failed);
 
     // 4. Dead peer → transport error → task stays Pending
     submit_stale(&tm, "stale-dead", "peer-dead");
-    poll_stale_pending_tasks(&tm, &None, Some(client.as_ref()), poll_defaults(), None).await;
+    poll_stale_pending_tasks(
+        &tm,
+        &None,
+        Some(client.as_ref()),
+        poll_defaults(),
+        None,
+        false,
+    )
+    .await;
     assert_eq!(
         tm.get_task("stale-dead").unwrap().status,
         TaskStatus::Pending
@@ -5956,7 +6032,7 @@ async fn test_poll_stale_24h_timeout_logs_age_under_subscriber() {
     };
     tm.submit(task).unwrap();
 
-    poll_stale_pending_tasks(&tm, &None, None, poll_defaults(), None).await;
+    poll_stale_pending_tasks(&tm, &None, None, poll_defaults(), None, false).await;
     assert_eq!(
         tm.get_task("stale-24h-s4").unwrap().status,
         TaskStatus::Failed
@@ -5984,7 +6060,7 @@ async fn test_poll_stale_no_client_no_call_fn_continues() {
     };
     tm.submit(task).unwrap();
 
-    poll_stale_pending_tasks(&tm, &None, None, poll_defaults(), None).await;
+    poll_stale_pending_tasks(&tm, &None, None, poll_defaults(), None, false).await;
     assert_eq!(
         tm.get_task("stale-5m-noclient").unwrap().status,
         TaskStatus::Pending,

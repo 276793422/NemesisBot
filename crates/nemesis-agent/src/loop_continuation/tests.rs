@@ -3267,14 +3267,21 @@ async fn test_finish_handling_defers_disk_snapshot_removal() {
 
     // 认领后、收口前：磁盘快照必须仍在（崩溃安全网——发现 F 修复点）。
     assert!(manager.claim_handling("task-defer").await);
-    let snap_path = tmp.path().join("cluster").join("rpc_cache").join("task-defer.json");
+    let snap_path = tmp
+        .path()
+        .join("cluster")
+        .join("rpc_cache")
+        .join("task-defer.json");
     assert!(snap_path.exists(), "磁盘快照应在处理期间保留");
 
     // 收口：内存条目 + 磁盘快照此刻才回收，闸位释放。
     manager.finish_handling("task-defer").await;
     assert!(!manager.has_continuation("task-defer").await);
     assert!(!snap_path.exists(), "收口后磁盘快照应被回收");
-    assert!(manager.claim_handling("task-defer").await, "收口后闸位应可重新认领");
+    assert!(
+        manager.claim_handling("task-defer").await,
+        "收口后闸位应可重新认领"
+    );
 }
 
 #[test]
@@ -3296,15 +3303,11 @@ fn merge_keeps_existing_real_result_over_late_not_found() {
         assistant_with_tool_call("call_g"),
         real,
     ];
-    let merged = super::merge_real_tool_result(
-        msgs,
-        "call_g",
-        "Error: remote task not found".to_string(),
-    );
+    let merged =
+        super::merge_real_tool_result(msgs, "call_g", "Error: remote task not found".to_string());
     assert_eq!(merged.len(), 3, "不覆盖也不追加");
     assert_eq!(
-        merged[2].content,
-        "kangjinlong\nFilesystem ... 366G",
+        merged[2].content, "kangjinlong\nFilesystem ... 366G",
         "盘上真实结果保留，not-found 被拒"
     );
 }
