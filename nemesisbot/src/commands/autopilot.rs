@@ -148,6 +148,7 @@ pub fn run(action: AutopilotAction, local: bool) -> Result<()> {
                     project_id,
                     target,
                     enabled: !disabled,
+                    auto_plan: false,
                 })
                 .map_err(err)?;
             println!(
@@ -182,6 +183,7 @@ pub fn run(action: AutopilotAction, local: bool) -> Result<()> {
                         project_id,
                         target,
                         enabled: None,
+                        auto_plan: None,
                     },
                 )
                 .map_err(err)?;
@@ -230,8 +232,9 @@ pub fn run(action: AutopilotAction, local: bool) -> Result<()> {
             let out = {
                 #[cfg(feature = "cluster")]
                 {
-                    // CLI 进程无集群连接：目标规则由 fire_autopilot 明确拒绝。
-                    nemesis_web::handlers::board::fire_autopilot(&store, None, &ap, &actor)
+                    // CLI 进程无集群连接：目标规则由 fire_autopilot 明确拒绝；
+                    // auto_plan 需 moderator/事件上下文，同样诚实降级（None）。
+                    nemesis_web::handlers::board::fire_autopilot(&store, None, &ap, &actor, None)
                         .map_err(err)?
                 }
                 #[cfg(not(feature = "cluster"))]

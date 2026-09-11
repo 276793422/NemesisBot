@@ -25,7 +25,7 @@ const projects = ref<Project[]>([])
 
 const showCreate = ref(false)
 const busy = ref(false)
-const createForm = ref({ name: '', description: '', icon: '' })
+const createForm = ref({ name: '', description: '', icon: '', acceptance_criteria: '', auto_start: false })
 
 // 编辑弹窗（改名/描述/图标）。
 const editing = ref<Project | null>(null)
@@ -51,12 +51,15 @@ async function submitCreate() {
   }
   busy.value = true
   try {
-    await request('board', 'project.create', {
+    const r = await request('board', 'project.create', {
       name: createForm.value.name.trim(),
       description: createForm.value.description,
       icon: createForm.value.icon.trim(),
+      acceptance_criteria: createForm.value.acceptance_criteria,
+      auto_start: createForm.value.auto_start,
     })
-    toast.success('已创建项目')
+    const started = r?.auto_start?.issue_number
+    toast.success(started ? `已创建项目并自动启动父单 ${started}` : '已创建项目')
     showCreate.value = false
     await load()
   } catch (e: any) {
@@ -168,6 +171,14 @@ useBoardChanged(() => load(true))
             <label class="form-label">图标（emoji，可选）</label>
             <input class="form-input" v-model="createForm.icon" placeholder="🚀" style="max-width: 120px;" />
           </div>
+          <div class="form-group">
+            <label class="form-label">验收标准（可选）</label>
+            <textarea class="form-textarea" v-model="createForm.acceptance_criteria" style="min-height: 60px;" placeholder="验收标准（一行一条；AI 拆解与完成判定会参考）"></textarea>
+          </div>
+          <label class="muted" style="display: flex; align-items: center; gap: var(--space-1); cursor: pointer; margin-bottom: var(--space-2);">
+            <input type="checkbox" v-model="createForm.auto_start" />
+            创建后自动启动（建父单 + AI 拆解）
+          </label>
         </div>
         <div class="modal-footer">
           <button class="btn" @click="showCreate = false">取消</button>

@@ -23,12 +23,12 @@ use std::collections::HashMap;
 use std::sync::{Arc, OnceLock};
 
 use axum::extract::{Path, Query, State};
-use axum::http::{header, StatusCode};
+use axum::http::{StatusCode, header};
 use axum::response::{IntoResponse, Response};
 use tokio::sync::Semaphore;
 
 use crate::api_handlers::AppState;
-use nemesis_board::asset_token::{sanitize_asset_ref, verify_asset_token, AssetTokenError};
+use nemesis_board::asset_token::{AssetTokenError, sanitize_asset_ref, verify_asset_token};
 
 /// 全局并发闸：集群互拉就几个节点，4 并发足够；失控拉取循环在这里
 /// 排队节流（进程级单例——IP 维度限速需要 ConnectInfo，当前 serve
@@ -67,7 +67,7 @@ pub async fn handle_board_asset_download(
             return err_response(
                 StatusCode::SERVICE_UNAVAILABLE,
                 "asset serving not configured on this node",
-            )
+            );
         }
     };
 
@@ -101,10 +101,10 @@ pub async fn handle_board_asset_download(
             return err_response(
                 StatusCode::FORBIDDEN,
                 "asset token expired — request a fresh reference",
-            )
+            );
         }
         Err(AssetTokenError::Invalid) => {
-            return err_response(StatusCode::FORBIDDEN, "asset token invalid")
+            return err_response(StatusCode::FORBIDDEN, "asset token invalid");
         }
     }
 

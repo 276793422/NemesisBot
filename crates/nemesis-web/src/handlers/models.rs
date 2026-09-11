@@ -138,6 +138,17 @@ fn write_raw_config(home: &str, cfg: &serde_json::Value) -> Result<(), String> {
     Ok(())
 }
 
+/// set_default 运行时热切参数（canonical_swap_params 返回值）。
+#[derive(Debug)]
+struct SwapParams {
+    llm_ref: String,
+    model: String,
+    api_key: String,
+    api_base: String,
+    connect_mode: String,
+    protocol: String,
+}
+
 impl ModelsHandler {
     fn list(&self, home: &str) -> Result<Option<serde_json::Value>, String> {
         let config = load_config(home)?;
@@ -195,6 +206,8 @@ impl ModelsHandler {
                     "key_source": nemesis_config::credentials::classify_key_source(&m.api_key),
                     "proxy": m.proxy,
                     "is_default": is_default,
+                    // LLM 协议选择器：显式协议（"" = 自动推断）。
+                    "protocol": m.protocol,
                     // Raw extras (absent in file → null; frontend treats null as unset).
                     "model_tier": raw.get("model_tier").cloned().unwrap_or(serde_json::Value::Null),
                     "reasoning_effort": raw.get("reasoning_effort").cloned().unwrap_or(serde_json::Value::Null),
@@ -218,6 +231,11 @@ impl ModelsHandler {
         let api_key = crate::handlers::get_str(data, "key")?;
         let api_base = crate::handlers::get_opt_str(data, "base_url").unwrap_or_default();
         let proxy = crate::handlers::get_opt_str(data, "proxy").unwrap_or_default();
+        // LLM 协议选择器（2026-09-11）：可选显式协议，缺省 = 自动推断（空串）。
+        // 值集校验/归一走单一真相源；未知值 loud 拒绝。
+        let protocol = nemesis_types::capability::normalize_model_protocol(
+            &crate::handlers::get_opt_str(data, "protocol").unwrap_or_default(),
+        )?;
 
         // Raw RMW (NOT typed save): preserves the tier/size/real_name/
         // context_window extras other entries may carry — the typed
@@ -246,6 +264,7 @@ impl ModelsHandler {
             "connect_mode": "",
             "workspace": "",
             "reasoning_effort": "",
+            "protocol": protocol,
             // CLI `model add` parity: tag auto-detect tier explicitly.
             "model_tier": "auto",
         });
@@ -364,54 +383,43 @@ impl ModelsHandler {
         }
         write_raw_config(home, &cfg)?;
 
-        // Runtime provider swap so the change takes effect immediately
-        // (fields read from the raw entry).
-        let g = |k: &str| {
-            entry
-                .get(k)
-                .and_then(|v| v.as_str())
-                .unwrap_or("")
-                .to_string()
-        };
-        let model_id = g("model");
-        let api_base_raw = g("api_base");
-        let api_key = g("api_key");
-        let connect_mode = g("connect_mode");
+        // Runtime provider swap so the change takes effect immediately.
+        // 与启动路径（agent_factory::build_agent_loop）同源：typed 解析 +
+        // provider 前缀化 llm_ref + 去前缀 model_name。此前直接拿裸 model
+        // 字段当 llm_ref/模型名：无斜杠名被 factory 默认 provider=openai →
+        // CodexProvider（POST {base}/responses + 模型重映射 gpt-5.2），第三方
+        // OpenAI 兼容端点全被打错路（生产实证：glm-5.3-flash →
+        // "auth failure for provider codex/gpt-5.2: status 401"）；带 yaml:/env:
+        // 引用的 api_key 也会被当字面量发送。api_base 空时默认 base 推断由
+        // resolve_from_model_config 内部完成，无需在此重复。
+        let swap = Self::canonical_swap_params(&cfg, name)?;
 
         if let Some(agent_loop) = ctx.state.agent_loop.read().as_ref() {
-            let api_base = if api_base_raw.is_empty() {
-                nemesis_config::get_default_api_base(&nemesis_config::infer_provider_from_model(
-                    &model_id,
-                ))
-                .to_string()
-            } else {
-                api_base_raw.clone()
-            };
-
             let factory_cfg = nemesis_providers::factory::FactoryConfig {
-                llm_ref: model_id.clone(),
-                api_key: api_key.clone(),
-                api_base,
+                llm_ref: swap.llm_ref,
+                api_key: swap.api_key.clone(),
+                api_base: swap.api_base,
                 workspace: String::new(),
-                connect_mode: connect_mode.clone(),
+                connect_mode: swap.connect_mode,
+                protocol: swap.protocol,
                 account_id: String::new(),
                 headers: std::collections::HashMap::new(),
             };
             match nemesis_providers::factory::create_provider(&factory_cfg) {
                 Ok(provider) => {
                     let adapter =
-                        Arc::new(ProviderAdapter::new(provider.clone(), model_id.clone()));
-                    agent_loop.set_provider_and_model(adapter, model_id.clone());
-                    tracing::info!(model = %model_id, "[Models] Runtime provider swapped");
+                        Arc::new(ProviderAdapter::new(provider.clone(), swap.model.clone()));
+                    agent_loop.set_provider_and_model(adapter, swap.model.clone());
+                    tracing::info!(model = %swap.model, "[Models] Runtime provider swapped");
 
                     // Sync Forge's LLM provider — set_provider cascades to all subsystems.
                     #[cfg(feature = "forge")]
                     {
                         if let Some(ref forge) = ctx.state.forge {
                             let bridge =
-                                ForgeProviderBridge::new(provider.clone(), model_id.clone());
+                                ForgeProviderBridge::new(provider.clone(), swap.model.clone());
                             forge.set_provider(Arc::new(bridge));
-                            tracing::info!(model = %model_id, "[Models] Forge provider updated");
+                            tracing::info!(model = %swap.model, "[Models] Forge provider updated");
                         }
                     }
                 }
@@ -424,6 +432,28 @@ impl ModelsHandler {
         Ok(Some(
             serde_json::json!({ "set_default": true, "name": name }),
         ))
+    }
+
+    /// Resolve the runtime-swap parameters for a model entry the same way the
+    /// startup path does (`agent_factory::build_agent_loop` → typed
+    /// `resolve_model_config`): provider-prefixed `llm_ref`, de-prefixed model
+    /// name, api_key 引用（yaml:/env:）解析、api_base 默认推断、显式协议。
+    fn canonical_swap_params(
+        raw_cfg: &serde_json::Value,
+        name: &str,
+    ) -> Result<SwapParams, String> {
+        let typed: nemesis_config::Config = serde_json::from_value(raw_cfg.clone())
+            .map_err(|e| format!("config.json is not a valid typed config: {}", e))?;
+        let resolution = nemesis_config::resolve_model_config(&typed, name)
+            .map_err(|e| format!("failed to resolve model '{}': {}", name, e))?;
+        Ok(SwapParams {
+            llm_ref: format!("{}/{}", resolution.provider_name, resolution.model_name),
+            model: resolution.model_name,
+            api_key: resolution.api_key,
+            api_base: resolution.api_base,
+            connect_mode: resolution.connect_mode,
+            protocol: resolution.protocol,
+        })
     }
 
     fn test(&self, _home: &str, name: &str) -> Result<Option<serde_json::Value>, String> {
@@ -494,9 +524,16 @@ impl ModelsHandler {
                 }
                 serde_json::Value::String(s.trim().to_string())
             }
+            "protocol" => {
+                // LLM 协议选择器（2026-09-11）：空串 = 清除（自动推断）；
+                // claude 别名归一为 anthropic；未知值 loud 拒绝。
+                let s = value.as_str().ok_or("protocol must be a string")?;
+                let normalized = nemesis_types::capability::normalize_model_protocol(s)?;
+                serde_json::Value::String(normalized)
+            }
             _ => {
                 return Err(format!(
-                    "unknown field '{field}'. Supported: model_tier | reasoning_effort | model_size_b | real_name | context_window"
+                    "unknown field '{field}'. Supported: model_tier | reasoning_effort | model_size_b | real_name | context_window | protocol"
                 ));
             }
         };

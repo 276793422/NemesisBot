@@ -30,7 +30,7 @@ pub async fn test_cli_model_set_effort(ws: &TestWorkspace, bin: &Path) -> Vec<Te
                 "--model",
                 "test/effort-model",
                 "--base",
-                "http://127.0.0.1:8080/v1",
+                &format!("http://127.0.0.1:{}/v1", ai_server_port()),
                 "--key",
                 "sk-plain-it123",
             ],

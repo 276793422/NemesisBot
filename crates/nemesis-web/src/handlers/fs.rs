@@ -262,8 +262,7 @@ impl ModuleHandler for FsHandler {
                 "agent:main:session:{}",
                 nemesis_agent::session::SessionStore::sanitize_session_id(sid)
             );
-            if let Some(root) = crate::handlers::projects::project_root_for_session(&session_key)
-            {
+            if let Some(root) = crate::handlers::projects::project_root_for_session(&session_key) {
                 workspace = root;
             }
         }

@@ -6979,10 +6979,19 @@ pub fn register_shared_tools(config: &SharedToolConfig) -> HashMap<String, Box<d
             };
             // C7：rename 落盘闸宿主——与 web_fetch 的 ssrf 注入同构
             // （SharedToolConfig.security 是 J2a 起的统一注入点）。
-            // clone 必需：security feature 下字段是 Option<Arc<SecurityPlugin>>；
-            // 仅 no-security 编译（字段降级 Option<()>）时 clippy 会报
-            // clone_on_copy——feature 组合差异，workspace 门禁（security 开）不触发。
-            lsp_impl.security = config.security.clone();
+            // cfg 双形态：security feature 下字段是 Option<Arc<SecurityPlugin>>
+            // （clone 增引用计数）；no-security 编译降级 Option<()>（Copy 直接
+            // 移动，clone 会吃 clone_on_copy）。此前注释「workspace 门禁不触发」
+            // 的单一 .clone() 写法在 2026-09-10 workspace clippy 实证会红
+            // （agent lib 以 security 关形态进图），双形态写法两头都合法。
+            #[cfg(feature = "security")]
+            {
+                lsp_impl.security = config.security.clone();
+            }
+            #[cfg(not(feature = "security"))]
+            {
+                lsp_impl.security = config.security;
+            }
             tools.insert("lsp".to_string(), Box::new(lsp_impl));
         }
     }

@@ -11,7 +11,7 @@
 use std::sync::Arc;
 use std::time::Duration;
 
-use super::manager::{route_decision, RouteDecision};
+use super::manager::{RouteDecision, route_decision};
 use super::registry;
 use crate::agent_factory::SharedResources;
 use crate::projects::manager::ProjectLoopManager;
@@ -181,11 +181,18 @@ async fn matrix3_system_messages_only_main_loop_even_when_project_bound() {
     // cluster_continuation 形态：channel=system，sender 带续行前缀，
     // session_key 恰好是项目绑定会话。
     let mut m = msg("system", key);
-    m.sender_id = format!("{}{}", nemesis_types::constants::CLUSTER_CONTINUATION_PREFIX, "task1");
+    m.sender_id = format!(
+        "{}{}",
+        nemesis_types::constants::CLUSTER_CONTINUATION_PREFIX,
+        "task1"
+    );
     bus.publish_inbound(m.clone());
     expect_empty(&mut rx, "matrix3 dispatcher").await;
     // 主桥不 skip（系统回灌语义只属于主 loop）；纯函数三值自洽。
-    assert!(!mgr.bridge_should_skip(&m), "matrix3: main bridge consumes system messages");
+    assert!(
+        !mgr.bridge_should_skip(&m),
+        "matrix3: main bridge consumes system messages"
+    );
     assert_eq!(
         route_decision(&m, Some(pid)),
         RouteDecision::System,
@@ -217,7 +224,10 @@ async fn matrix4_two_concurrent_sessions_same_project_queue_without_interleave()
     let second = expect_recv(&mut rx, "matrix4 second").await;
     assert_eq!(first.session_key, key_a, "matrix4: FIFO order preserved");
     assert_eq!(second.session_key, key_b);
-    assert_ne!(first.session_key, second.session_key, "matrix4: sessions stay distinct");
+    assert_ne!(
+        first.session_key, second.session_key,
+        "matrix4: sessions stay distinct"
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -268,7 +278,11 @@ async fn matrix6_sidecar_fallback_hits_and_backfills_index() {
     .unwrap();
 
     // 第一次查询：索引 miss → sidecar 回读命中。
-    assert_eq!(mgr.owner_of(key).as_deref(), Some(pid), "matrix6: fallback hits sidecar");
+    assert_eq!(
+        mgr.owner_of(key).as_deref(),
+        Some(pid),
+        "matrix6: fallback hits sidecar"
+    );
 
     // 删 sidecar 后再查：仍命中 → 证明第一次命中已回填内存索引。
     std::fs::remove_file(logs_dir.join(format!("{stem}.meta.json"))).unwrap();
@@ -279,7 +293,10 @@ async fn matrix6_sidecar_fallback_hits_and_backfills_index() {
     );
 
     // forget_session 摘除后：miss（对话组）。
-    assert!(mgr.forget_session(key), "forget must report removed binding");
+    assert!(
+        mgr.forget_session(key),
+        "forget must report removed binding"
+    );
     assert_eq!(mgr.owner_of(key), None, "after forget: unbound");
 }
 
@@ -303,7 +320,11 @@ async fn unroutable_project_session_gets_honest_outbound_error() {
         .expect("timeout waiting for error outbound")
         .expect("outbound closed");
     assert_eq!(out.channel, "web", "error goes back to the source channel");
-    assert_eq!(out.chat_id, format!("web:deadproj"), "error addresses the source chat");
+    assert_eq!(
+        out.chat_id,
+        format!("web:deadproj"),
+        "error addresses the source chat"
+    );
     assert!(
         out.content.contains("当前不可用"),
         "error text must be honest about unavailability: {}",

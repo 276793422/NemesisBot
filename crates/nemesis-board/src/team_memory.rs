@@ -89,7 +89,13 @@ fn format_experience_line(e: &TeamMemoryEntry) -> String {
     } else {
         format!("（{source}{author}")
     };
-    format!("[{}] {}：{}{}", category_label(e), e.scope.trim(), e.content, tail)
+    format!(
+        "[{}] {}：{}{}",
+        category_label(e),
+        e.scope.trim(),
+        e.content,
+        tail
+    )
 }
 
 /// 类别显示名（词表四类给中文名；未知值诚实归入泛称「经验」）。

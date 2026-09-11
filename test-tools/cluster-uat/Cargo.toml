@@ -11,6 +11,7 @@ path = "src/main.rs"
 [dependencies]
 test-harness = { path = "../test-harness" }
 nemesis-board = { path = "../../crates/nemesis-board" }
+nemesis-data = { path = "../../crates/nemesis-data" }
 nemesis-path = { path = "../../crates/nemesis-path" }
 tokio = { workspace = true }
 serde = { workspace = true }

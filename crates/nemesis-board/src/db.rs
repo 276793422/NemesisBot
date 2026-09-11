@@ -4,7 +4,7 @@
 use rusqlite::Connection;
 use std::path::Path;
 
-const SCHEMA_VERSION: i32 = 8;
+const SCHEMA_VERSION: i32 = 10;
 
 const SCHEMA_V1: &str = r#"
 CREATE TABLE IF NOT EXISTS board_meta (
@@ -274,6 +274,22 @@ CREATE INDEX IF NOT EXISTS idx_team_memory_scope
     ON team_memory(scope);
 "#;
 
+/// v9（全自动流转 P3/D2）：autopilot 加 auto_plan 列（触发建单后自动
+/// planner 拆解）。ALTER 只在 user_version 升 9 时执行一次；DEFAULT 0
+/// 让存量规则行为不变（不自动拆解）。
+const SCHEMA_V9: &str = r#"
+ALTER TABLE autopilot ADD COLUMN auto_plan INTEGER NOT NULL DEFAULT 0;
+"#;
+
+/// v10（全自动流转 P4/F3 修复）：project 加 acceptance_criteria 列。此前
+/// project.create 的 AC 只在 auto_start=true 时透传给自动拆解父单——项目
+/// 自身无处可存，F3 收口验收聚合父单 AC 时项目级标准被静默丢弃（前端表单
+/// 占位文案承诺「完成判定会参考」，属承诺与行为不符）。DEFAULT '' 让存量
+/// 项目行为不变（空 = 不参与验收聚合）。
+const SCHEMA_V10: &str = r#"
+ALTER TABLE project ADD COLUMN acceptance_criteria TEXT NOT NULL DEFAULT '';
+"#;
+
 /// Open (or create) the board database at `db_path` and run pending migrations.
 pub fn init_db(db_path: &Path) -> Result<Connection, String> {
     if let Some(parent) = db_path.parent() {
@@ -354,6 +370,22 @@ pub fn init_db(db_path: &Path) -> Result<Connection, String> {
         tracing::info!(
             version = 8,
             "[BoardStore] Database migrated to v8 (swarm M4.5: team_memory)"
+        );
+    }
+    if current_version < 9 {
+        conn.execute_batch(SCHEMA_V9)
+            .map_err(|e| format!("Board schema v9 migration failed: {e}"))?;
+        tracing::info!(
+            version = 9,
+            "[BoardStore] Database migrated to v9 (auto-flow D2: autopilot.auto_plan)"
+        );
+    }
+    if current_version < 10 {
+        conn.execute_batch(SCHEMA_V10)
+            .map_err(|e| format!("Board schema v10 migration failed: {e}"))?;
+        tracing::info!(
+            version = 10,
+            "[BoardStore] Database migrated to v10 (auto-flow F3: project.acceptance_criteria)"
         );
     }
     set_version(&conn, SCHEMA_VERSION)?;

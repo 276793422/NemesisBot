@@ -23,7 +23,9 @@
 #[path = "src/pricing_filter.rs"]
 mod pricing_filter;
 
-use pricing_filter::{filter_litellm_table, merge_extras, validate_filtered_table, PRICE_MIRROR_URLS};
+use pricing_filter::{
+    PRICE_MIRROR_URLS, filter_litellm_table, merge_extras, validate_filtered_table,
+};
 
 const SNAPSHOT_PATH: &str = "assets/model_prices_litellm.json";
 const SNAPSHOT_META_PATH: &str = "assets/model_prices_litellm.meta.txt";
@@ -55,7 +57,10 @@ fn main() {
         Some(_) => match fetch_filter_merge(&extras) {
             Ok((table, url, count)) => {
                 let date = today();
-                (table, format!("downloaded {url} ({count} entries, build {date})"))
+                (
+                    table,
+                    format!("downloaded {url} ({count} entries, build {date})"),
+                )
             }
             Err(err) => {
                 println!(
@@ -67,8 +72,7 @@ fn main() {
         },
     };
 
-    std::fs::write(&dst, &body)
-        .unwrap_or_else(|e| panic!("write {}: {e}", dst.display()));
+    std::fs::write(&dst, &body).unwrap_or_else(|e| panic!("write {}: {e}", dst.display()));
     println!("cargo:rustc-env=NEMESIS_PRICES_EMBED_SOURCE={source}");
 }
 
@@ -82,9 +86,7 @@ fn bundled_source() -> String {
 
 /// 镜像链逐条尝试：下载 → 过滤 → 合并补充 → 校验。全部失败 → Err
 /// （各镜像错误拼接）。解析/校验失败等同该镜像失败，换下一条。
-fn fetch_filter_merge(
-    extras: &str,
-) -> Result<(String, String, usize), String> {
+fn fetch_filter_merge(extras: &str) -> Result<(String, String, usize), String> {
     let client = reqwest::blocking::Client::builder()
         .user_agent(concat!("NemesisBot-build/", env!("CARGO_PKG_VERSION")))
         .timeout(std::time::Duration::from_secs(DOWNLOAD_TIMEOUT_SECS))

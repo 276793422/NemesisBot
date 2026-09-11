@@ -1064,10 +1064,12 @@ async fn test_send_callback_or_persist_no_source() {
         Some(persister.as_ref()),
         &None,
         "", // empty source_node_id
+        "node-self",
         "task-1",
         "success",
         "response",
         "",
+        None,
     )
     .await;
 }
@@ -1438,10 +1440,12 @@ async fn test_w3b_send_callback_real_server_success_and_error_field() {
     let ok = send_callback(
         Some(&client),
         "origin-node",
+        "node-self-w3b",
         "w3b-cb-1",
         "success",
         "done-work",
         "",
+        None,
     )
     .await;
     assert!(ok, "callback should succeed against the live server");
@@ -1454,16 +1458,25 @@ async fn test_w3b_send_callback_real_server_success_and_error_field() {
             cap[0].get("error").is_none(),
             "error field omitted when empty"
         );
+        // 回归（T37 真机 bug）：发送方身份必须随 wire 帧 `from` 走并在
+        // server 注入的 `_rpc.from` 落到 handler——留空会让 master 记账键
+        // `cluster_rpc:{worker}/{task_id}` 的 worker 段变空。
+        assert_eq!(
+            cap[0]["_rpc"]["from"], "node-self-w3b",
+            "wire from 必须携带发送方节点 id（server 注入 _rpc.from）"
+        );
     }
 
     // Non-empty error → payload carries it
     let ok2 = send_callback(
         Some(&client),
         "origin-node",
+        "node-self-w3b",
         "w3b-cb-2",
         "error",
         "",
         "boom-detail",
+        None,
     )
     .await;
     assert!(ok2);
@@ -1481,7 +1494,17 @@ async fn test_w3b_send_callback_retries_exhausted_when_peer_unreachable() {
     // Port 1 refuses connections; the paused clock makes the 5s/10s inter-attempt
     // backoffs instant. Three failures → false.
     let client = RpcClient::with_resolver(Arc::new(StaticResolverW3b { port: 1 }));
-    let ok = send_callback(Some(&client), "ghost-node", "w3b-t-ex", "success", "r", "").await;
+    let ok = send_callback(
+        Some(&client),
+        "ghost-node",
+        "node-self-w3b",
+        "w3b-t-ex",
+        "success",
+        "r",
+        "",
+        None,
+    )
+    .await;
     assert!(!ok, "all callback retries should be exhausted");
 }
 
@@ -1508,10 +1531,12 @@ async fn test_w3b_send_callback_or_persist_deletes_after_successful_callback() {
         Some(&persister),
         &None,
         "origin-node",
+        "node-self-w3b",
         "w3b-ds-1",
         "success",
         "answer",
         "",
+        None,
     )
     .await;
 
@@ -1658,10 +1683,12 @@ async fn test_s4_send_callback_or_persist_delete_failure_logs() {
         Some(&persister),
         &None,
         "origin-node",
+        "node-self-s4",
         "s4-del-1",
         "success",
         "answer",
         "",
+        None,
     )
     .await;
 
@@ -1700,10 +1727,12 @@ async fn test_s4_send_callback_or_persist_set_result_failure_logs() {
         Some(&persister),
         &None,
         "origin-node-2",
+        "node-self-s4",
         "s4-persist-1",
         "failed",
         "",
         "boom",
+        None,
     )
     .await;
 
@@ -1726,10 +1755,12 @@ async fn test_s4_send_callback_retry_warn_field_line() {
     let ok = send_callback(
         Some(&client),
         "ghost-node",
+        "node-self-s4",
         "s4-retry-1",
         "success",
         "r",
         "",
+        None,
     )
     .await;
     assert!(!ok, "all callback retries should be exhausted");

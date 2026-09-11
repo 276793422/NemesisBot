@@ -35,6 +35,14 @@ function listResult(models: unknown[] = [MODEL]) {
   return { models }
 }
 
+/** 按 label 找下拉（协议字段加入后 select 顺序不再稳定，禁用裸下标）。 */
+function selectByLabel(w: ReturnType<typeof mount>, label: string) {
+  const editor = w.find('.attr-editor')
+  const field = editor.findAll('.attr-field').find(f => f.find('label').text().includes(label))
+  expect(field, `attr-field with label ${label}`).toBeTruthy()
+  return field!.find('select')
+}
+
 async function mountView(models: unknown[] = [MODEL], catalog = { exists: true, fetched_at: '2026-08-24', entries: 123 }) {
   requestMock.mockImplementation((_m: string, cmd: string) => {
     if (cmd === 'list') return Promise.resolve(listResult(models))
@@ -91,7 +99,7 @@ describe('ModelsView 属性编辑', () => {
 
     const editor = w.find('.attr-editor')
     expect(editor.exists()).toBe(true)
-    expect((editor.findAll('select')[0].element as HTMLSelectElement).value).toBe('auto')
+    expect((selectByLabel(w, '能力档').element as HTMLSelectElement).value).toBe('auto')
     expect((editor.find('input[type="number"]').element as HTMLInputElement).value).toBe('30')
     // catalog_match 提供目录值
     expect(editor.text()).toContain('128,000')
@@ -105,8 +113,7 @@ describe('ModelsView 属性编辑', () => {
   it('改 tier → 只保存脏字段，值与 toast 如实', async () => {
     const w = await mountView()
     await w.findAll('button').find(b => b.text() === '属性')!.trigger('click')
-    const editor = w.find('.attr-editor')
-    await editor.findAll('select')[0].setValue('mini')
+    await selectByLabel(w, '能力档').setValue('mini')
     await w.findAll('button').find(b => b.text() === '保存属性')!.trigger('click')
     await flushPromises()
 
@@ -120,7 +127,7 @@ describe('ModelsView 属性编辑', () => {
     const w = await mountView()
     await w.findAll('button').find(b => b.text() === '属性')!.trigger('click')
     const editor = w.find('.attr-editor')
-    await editor.findAll('select')[1].setValue('low') // effort ''→low（脏）
+    await selectByLabel(w, '推理力度').setValue('low') // effort ''→low（脏）
     await editor.find('input[type="number"]').setValue('') // 30→''（脏，但落 null=跳过）
     await w.findAll('button').find(b => b.text() === '保存属性')!.trigger('click')
     await flushPromises()
@@ -141,9 +148,8 @@ describe('ModelsView 属性编辑', () => {
     const w = mount(ModelsView)
     await flushPromises()
     await w.findAll('button').find(b => b.text() === '属性')!.trigger('click')
-    const editor = w.find('.attr-editor')
-    await editor.findAll('select')[0].setValue('big')
-    await editor.find('input[placeholder="如 Qwen3-30B"]').setValue('GLM-4.7')
+    await selectByLabel(w, '能力档').setValue('big')
+    await w.find('.attr-editor').find('input[placeholder="如 Qwen3-30B"]').setValue('GLM-4.7')
     await w.findAll('button').find(b => b.text() === '保存属性')!.trigger('click')
     await flushPromises()
 
@@ -212,5 +218,63 @@ describe('ModelsView key 来源徽标（G4）', () => {
     await flushPromises()
     expect(writeText).toHaveBeenCalledWith('nemesisbot credentials import')
     expect(copyBtn.text()).toContain('已复制')
+  })
+})
+
+// LLM 协议选择器（2026-09-11）：attr 编辑 + add 表单 + 卡片显示。
+describe('ModelsView 协议选择器', () => {
+  it('attr 编辑：协议下拉默认自动识别；选 Claude → 脏字段保存 protocol=anthropic', async () => {
+    const w = await mountView()
+    await w.findAll('button').find(b => b.text() === '属性')!.trigger('click')
+    const sel = selectByLabel(w, '协议类型')
+    expect((sel.element as HTMLSelectElement).value).toBe('')
+    // 4 项：自动识别 + 三协议
+    expect(sel.findAll('option').length).toBe(4)
+    expect(sel.text()).toContain('自动识别')
+
+    await sel.setValue('anthropic')
+    expect(w.find('.attr-dirty').text()).toContain('protocol')
+    await w.findAll('button').find(b => b.text() === '保存属性')!.trigger('click')
+    await flushPromises()
+    const writes = requestMock.mock.calls.filter(c => c[1] === 'update_field')
+    expect(writes.length).toBe(1)
+    expect(writes[0][2]).toEqual({ name: 'main', field: 'protocol', value: 'anthropic' })
+  })
+
+  it('卡片显示：有协议显协议，无协议显「自动识别」', async () => {
+    const w1 = await mountView([{ ...MODEL, protocol: 'anthropic' }])
+    // settings-grid 中 key/value span 成对出现，按下标配对。
+    const pairOf = (w: ReturnType<typeof mount>) => {
+      const keys = w.findAll('.settings-key')
+      const vals = w.findAll('.settings-value')
+      const i = keys.findIndex(k => k.text() === '协议')
+      expect(i, '协议 settings-key 存在').toBeGreaterThanOrEqual(0)
+      return vals[i].text()
+    }
+    expect(pairOf(w1)).toBe('anthropic')
+    const w2 = await mountView()
+    expect(pairOf(w2)).toBe('自动识别')
+  })
+
+  it('add 表单：协议下拉默认 Claude，payload 携带 protocol', async () => {
+    const w = await mountView()
+    await w.findAll('button').find(b => b.text().includes('+ 添加模型'))!.trigger('click')
+    const form = w.find('.card .card-body')
+    const protocolSel = form.findAll('select').find(s =>
+      s.findAll('option').some(o => o.text().includes('Claude'))
+    )!
+    expect(protocolSel, 'add 表单协议下拉').toBeTruthy()
+    expect((protocolSel.element as HTMLSelectElement).value).toBe('anthropic')
+
+    const inputs = form.findAll('input')
+    await inputs.find(i => i.attributes('placeholder')?.includes('GPT4'))!.setValue('glm-cc')
+    await inputs.find(i => i.attributes('placeholder')?.includes('glm-4'))!.setValue('glm-5.3-flash')
+    await inputs.find(i => i.attributes('type') === 'password')!.setValue('GLM')
+    await form.findAll('button').find(b => b.text() === '添加')!.trigger('click')
+    await flushPromises()
+
+    const add = requestMock.mock.calls.find(c => c[1] === 'add')
+    expect(add).toBeTruthy()
+    expect(add![2]).toMatchObject({ name: 'glm-cc', model: 'glm-5.3-flash', protocol: 'anthropic' })
   })
 })

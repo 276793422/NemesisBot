@@ -18,6 +18,7 @@ fn make_test_node(
         },
         status,
         capabilities: capabilities.into_iter().map(String::from).collect(),
+        tags: Vec::new(),
         addresses: vec![],
         node_type: "agent".into(),
     }
@@ -44,6 +45,7 @@ fn test_extended_node_info_serialization() {
         },
         status: NodeStatus::Online,
         capabilities: vec!["llm".into(), "tools".into()],
+        tags: Vec::new(),
         addresses: vec![],
         node_type: "agent".into(),
     };
@@ -77,6 +79,7 @@ fn test_extended_node_info_get_uptime() {
         },
         status: NodeStatus::Online,
         capabilities: vec!["llm".into()],
+        tags: Vec::new(),
         addresses: vec![],
         node_type: "agent".into(),
     };
@@ -152,6 +155,7 @@ fn test_to_peer_config() {
         },
         status: NodeStatus::Online,
         capabilities: vec!["llm".into()],
+        tags: Vec::new(),
         addresses: vec!["10.0.0.1".into(), "192.168.1.1".into()],
         node_type: "agent".into(),
     };
@@ -194,6 +198,7 @@ fn test_addresses_field_preserved() {
         },
         status: NodeStatus::Online,
         capabilities: vec![],
+        tags: Vec::new(),
         addresses: vec!["10.0.0.1".into(), "192.168.1.1".into()],
         node_type: "agent".into(),
     };
@@ -250,6 +255,7 @@ fn test_extended_node_info_getters() {
         },
         status: NodeStatus::Online,
         capabilities: vec!["llm".into(), "tools".into()],
+        tags: Vec::new(),
         addresses: vec!["10.0.0.1".into()],
         node_type: "agent".into(),
     };
@@ -272,6 +278,7 @@ fn test_to_peer_config_coordinator_role() {
         },
         status: NodeStatus::Online,
         capabilities: vec!["llm".into()],
+        tags: Vec::new(),
         addresses: vec![],
         node_type: "agent".into(),
     };
@@ -389,6 +396,7 @@ fn test_content_eq_different_addresses() {
         },
         status: NodeStatus::Online,
         capabilities: vec![],
+        tags: Vec::new(),
         addresses: vec!["10.0.0.1".into()],
         node_type: "agent".into(),
     };
@@ -403,10 +411,54 @@ fn test_content_eq_different_addresses() {
         },
         status: NodeStatus::Online,
         capabilities: vec![],
+        tags: Vec::new(),
         addresses: vec!["10.0.0.1".into(), "192.168.1.1".into()],
         node_type: "agent".into(),
     };
     assert!(!a.content_eq(&b));
+}
+
+#[test]
+fn test_content_eq_different_tags() {
+    let a = make_test_node("node-1", NodeStatus::Online, vec![], "");
+    let mut b = make_test_node("node-1", NodeStatus::Online, vec![], "");
+    b.tags = vec!["python".into()];
+    assert!(!a.content_eq(&b), "tags 差异必须算内容变化");
+}
+
+// 旧 state.toml / 旧对端载荷缺 tags 字段 → 反序列化回落空集，不炸。
+#[test]
+fn test_deserialize_without_tags_defaults_empty() {
+    let json = r#"{
+        "id": "node-x",
+        "name": "node-x-name",
+        "role": "Worker",
+        "address": "10.0.0.1:9000",
+        "category": "development",
+        "last_seen": "",
+        "status": "Online",
+        "capabilities": [],
+        "addresses": [],
+        "node_type": "agent"
+    }"#;
+    let node: ExtendedNodeInfo = serde_json::from_str(json).unwrap();
+    assert!(node.tags.is_empty());
+
+    let with_tags = r#"{
+        "id": "node-x",
+        "name": "node-x-name",
+        "role": "Worker",
+        "address": "10.0.0.1:9000",
+        "category": "development",
+        "last_seen": "",
+        "status": "Online",
+        "capabilities": [],
+        "tags": ["python"],
+        "addresses": [],
+        "node_type": "agent"
+    }"#;
+    let node: ExtendedNodeInfo = serde_json::from_str(with_tags).unwrap();
+    assert_eq!(node.tags, vec!["python".to_string()]);
 }
 
 #[test]

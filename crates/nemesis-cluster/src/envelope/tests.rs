@@ -26,7 +26,8 @@ fn test_parse_envelope_roundtrip_and_defaults() {
 
 #[test]
 fn test_parse_envelope_rejects_version_and_missing_fields() {
-    let bad_version = serde_json::json!({"v": 99, "ns": "board", "op": "x", "corr_id": "", "body": {}});
+    let bad_version =
+        serde_json::json!({"v": 99, "ns": "board", "op": "x", "corr_id": "", "body": {}});
     let err = parse_envelope(&bad_version).unwrap_err();
     assert_eq!(err.code, error_code::BAD_ENVELOPE);
 

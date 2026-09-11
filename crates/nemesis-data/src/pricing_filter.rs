@@ -125,13 +125,11 @@ pub fn filter_litellm_table(raw: &str) -> Result<String, String> {
 /// 等裸名键换成 provider 前缀键后，这层保证 `zhipu/glm-4.7` 等裸名配置
 /// 仍可查（bare-suffix 依赖裸名键存在）。
 pub fn merge_extras(filtered_json: &str, extras_json: &str) -> Result<String, String> {
-    let mut map: std::collections::BTreeMap<String, LiteLLMEntry> = serde_json::from_str(
-        filtered_json,
-    )
-    .map_err(|e| format!("filtered table parse failed: {e}"))?;
+    let mut map: std::collections::BTreeMap<String, LiteLLMEntry> =
+        serde_json::from_str(filtered_json)
+            .map_err(|e| format!("filtered table parse failed: {e}"))?;
     let extras: std::collections::BTreeMap<String, LiteLLMEntry> =
-        serde_json::from_str(extras_json)
-            .map_err(|e| format!("extras table parse failed: {e}"))?;
+        serde_json::from_str(extras_json).map_err(|e| format!("extras table parse failed: {e}"))?;
     for (k, v) in extras {
         map.entry(k).or_insert(v);
     }
@@ -152,5 +150,11 @@ pub fn validate_filtered_table(filtered_json: &str) -> Result<usize, String> {
     Ok(n)
 }
 
+// 显式 #[path]（相对本文件目录）：本文件被 build.rs `#[path]` include，
+// rustfmt 在 build.rs 模块树里按「同名目录」规则解析本模块子模块时会落到
+// `<crate>/src/tests.rs`（不存在）→ 全库 `cargo fmt --all` 报
+// "failed to resolve mod `tests`" exit 1（205c1a9 起引入，真机实证）。
+// 钉死路径后 rustc/rustfmt 双端都解析到 src/pricing_filter/tests.rs。
 #[cfg(test)]
+#[path = "pricing_filter/tests.rs"]
 mod tests;

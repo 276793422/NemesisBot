@@ -141,7 +141,9 @@ impl BoardStore {
                 new.acceptance_criteria,
                 new.origin.as_ref().map(|o| o.origin_type.as_str()),
                 new.origin.as_ref().map(|o| o.origin_id.as_str()),
-                new.required_role.as_deref().filter(|s| !s.trim().is_empty()),
+                new.required_role
+                    .as_deref()
+                    .filter(|s| !s.trim().is_empty()),
                 required_tags_json,
                 now,
             ],
@@ -212,8 +214,11 @@ impl BoardStore {
     pub fn set_issue_dependencies(&self, issue_id: i64, depends_on: &[i64]) -> Result<(), String> {
         let mut conn = self.conn.lock().map_err(|e| e.to_string())?;
         let tx = conn.transaction().map_err(|e| e.to_string())?;
-        tx.execute("DELETE FROM issue_dependency WHERE issue_id = ?1", params![issue_id])
-            .map_err(|e| e.to_string())?;
+        tx.execute(
+            "DELETE FROM issue_dependency WHERE issue_id = ?1",
+            params![issue_id],
+        )
+        .map_err(|e| e.to_string())?;
         for &dep in depends_on {
             tx.execute(
                 "INSERT OR IGNORE INTO issue_dependency (issue_id, depends_on) VALUES (?1, ?2)",
@@ -228,24 +233,30 @@ impl BoardStore {
     pub fn dependencies_of(&self, issue_id: i64) -> Result<Vec<i64>, String> {
         let conn = self.conn.lock().map_err(|e| e.to_string())?;
         let mut stmt = conn
-            .prepare("SELECT depends_on FROM issue_dependency WHERE issue_id = ?1 ORDER BY depends_on")
+            .prepare(
+                "SELECT depends_on FROM issue_dependency WHERE issue_id = ?1 ORDER BY depends_on",
+            )
             .map_err(|e| e.to_string())?;
         let rows = stmt
             .query_map(params![issue_id], |r| r.get::<_, i64>(0))
             .map_err(|e| e.to_string())?;
-        rows.collect::<Result<Vec<_>, _>>().map_err(|e| e.to_string())
+        rows.collect::<Result<Vec<_>, _>>()
+            .map_err(|e| e.to_string())
     }
 
     /// 哪些 issue 依赖本 issue（补派触发器：X done 后扫它的 dependents）。
     pub fn dependents_of(&self, issue_id: i64) -> Result<Vec<i64>, String> {
         let conn = self.conn.lock().map_err(|e| e.to_string())?;
         let mut stmt = conn
-            .prepare("SELECT issue_id FROM issue_dependency WHERE depends_on = ?1 ORDER BY issue_id")
+            .prepare(
+                "SELECT issue_id FROM issue_dependency WHERE depends_on = ?1 ORDER BY issue_id",
+            )
             .map_err(|e| e.to_string())?;
         let rows = stmt
             .query_map(params![issue_id], |r| r.get::<_, i64>(0))
             .map_err(|e| e.to_string())?;
-        rows.collect::<Result<Vec<_>, _>>().map_err(|e| e.to_string())
+        rows.collect::<Result<Vec<_>, _>>()
+            .map_err(|e| e.to_string())
     }
 
     /// 列出某父单的全部子单（创建顺序；无子单返回空 vec）。
@@ -257,7 +268,8 @@ impl BoardStore {
         let rows = stmt
             .query_map(params![parent_id], row_to_issue)
             .map_err(|e| e.to_string())?;
-        rows.collect::<Result<Vec<_>, _>>().map_err(|e| e.to_string())
+        rows.collect::<Result<Vec<_>, _>>()
+            .map_err(|e| e.to_string())
     }
 
     /// 列表（动态 WHERE + 稳定排序：position ASC, id DESC）。
@@ -648,6 +660,43 @@ impl BoardStore {
             .map_err(|e| e.to_string())
     }
 
+    /// 该单最后一条 system 评论内容（⏸ 暂缓评论去重用）；无则 None。
+    pub fn last_system_comment(&self, issue_id: i64) -> Result<Option<String>, String> {
+        let conn = self.conn.lock().map_err(|e| e.to_string())?;
+        conn.query_row(
+            "SELECT content FROM comment
+             WHERE issue_id = ?1 AND ctype = 'system'
+             ORDER BY id DESC LIMIT 1",
+            params![issue_id],
+            |r| r.get::<_, String>(0),
+        )
+        .optional()
+        .map_err(|e| e.to_string())
+    }
+
+    /// 派发停车场候选（sweep 用）：待派态（backlog/todo）且 planner 来源
+    /// 或历史上被自动派发暂缓过（⏸ 系统评论标记）。这里只做粗筛——依赖
+    /// 闸 / 在途闸 / 匹配闸由 `dispatch_subissue_auto` 兜底。
+    pub fn list_dispatch_park_candidates(&self) -> Result<Vec<i64>, String> {
+        let conn = self.conn.lock().map_err(|e| e.to_string())?;
+        let mut stmt = conn
+            .prepare(
+                "SELECT DISTINCT i.id FROM issue i
+                 WHERE i.status IN ('backlog', 'todo')
+                   AND (i.origin_type = 'planner'
+                        OR EXISTS (SELECT 1 FROM comment c
+                                   WHERE c.issue_id = i.id AND c.ctype = 'system'
+                                     AND instr(c.content, '自动派发暂缓') > 0))
+                 ORDER BY i.id",
+            )
+            .map_err(|e| e.to_string())?;
+        let rows = stmt
+            .query_map([], |r| r.get::<_, i64>(0))
+            .map_err(|e| e.to_string())?;
+        rows.collect::<Result<Vec<_>, _>>()
+            .map_err(|e| e.to_string())
+    }
+
     /// 时间线（activity_log，升序）。
     pub fn list_activity(&self, issue_id: i64) -> Result<Vec<ActivityLog>, String> {
         let conn = self.conn.lock().map_err(|e| e.to_string())?;
@@ -659,6 +708,120 @@ impl BoardStore {
             .map_err(|e| e.to_string())?;
         rows.collect::<Result<Vec<_>, _>>()
             .map_err(|e| e.to_string())
+    }
+
+    /// 追加一条活动（P5/E2：`auto_decide` 决策审计等外部写入点共用单一
+    /// 真相源；失败语义由调用方决定——审计是增值动作，一般只 warn）。
+    pub fn add_activity(
+        &self,
+        issue_id: i64,
+        actor: &Actor,
+        action: &str,
+        details: Option<&str>,
+    ) -> Result<(), String> {
+        let conn = self.conn.lock().map_err(|e| e.to_string())?;
+        insert_activity(&conn, issue_id, actor, action, details, Self::now())
+    }
+
+    /// 最近活动流（P5/E2 决策视图数据源）：按 id 降序（插入序，不受同秒
+    /// 时间戳打平影响），可选按 action 过滤，JOIN issue 补编号/标题。
+    pub fn list_recent_activity(
+        &self,
+        limit: u32,
+        action_filter: Option<&str>,
+    ) -> Result<Vec<crate::models::AuditDecisionRow>, String> {
+        let conn = self.conn.lock().map_err(|e| e.to_string())?;
+        let mut stmt = conn
+            .prepare(
+                "SELECT a.*, i.number AS issue_number, i.title AS issue_title
+                 FROM activity_log a JOIN issue i ON i.id = a.issue_id
+                 WHERE (?1 IS NULL OR a.action = ?1)
+                 ORDER BY a.id DESC LIMIT ?2",
+            )
+            .map_err(|e| e.to_string())?;
+        let rows = stmt
+            .query_map(params![action_filter, limit], |row| {
+                Ok(crate::models::AuditDecisionRow {
+                    activity: row_to_activity(row)?,
+                    issue_number: row.get("issue_number")?,
+                    issue_title: row.get("issue_title")?,
+                })
+            })
+            .map_err(|e| e.to_string())?;
+        rows.collect::<Result<Vec<_>, _>>()
+            .map_err(|e| e.to_string())
+    }
+
+    /// 审计回滚（P5/E2 方案②）：把一条 `auto_decide` 决策对应的单据从
+    /// done 退回 in_review，绕过状态机（done 是终态——回滚是人工纠错
+    /// 特权，不进 can_transition 词表），同时落 System 评论 + status_change
+    /// 活动留痕。只对当前处于 done 的单据生效——再回滚（已在 in_review）
+    /// 在此 loud 拒绝，非收货类决策（重派/转人工）不支持回滚。
+    pub fn rollback_decision(&self, activity_id: i64) -> Result<crate::models::Issue, String> {
+        let mut conn = self.conn.lock().map_err(|e| e.to_string())?;
+        let tx = conn.transaction().map_err(|e| e.to_string())?;
+        let activity: ActivityLog = tx
+            .query_row(
+                "SELECT * FROM activity_log WHERE id = ?1",
+                params![activity_id],
+                row_to_activity,
+            )
+            .optional()
+            .map_err(|e| e.to_string())?
+            .ok_or_else(|| format!("活动 {activity_id} 不存在"))?;
+        if activity.action != "auto_decide" {
+            return Err(format!(
+                "活动 {activity_id} 不是自动决策记录（action={}），不支持回滚",
+                activity.action
+            ));
+        }
+        let mut issue: crate::models::Issue = tx
+            .query_row(
+                "SELECT * FROM issue WHERE id = ?1",
+                params![activity.issue_id],
+                row_to_issue,
+            )
+            .optional()
+            .map_err(|e| e.to_string())?
+            .ok_or_else(|| format!("issue {} 不存在", activity.issue_id))?;
+        if issue.status != crate::models::IssueStatus::Done {
+            return Err(format!(
+                "issue {} 当前状态 {}，仅支持回滚已自动收货（done）的决策",
+                issue.number, issue.status
+            ));
+        }
+        // 方案② bypass：直接 UPDATE（不走 validate_transition），状态机
+        // 词表不被"回滚"污染；审计痕迹照常全落。
+        let now = Self::now();
+        tx.execute(
+            "UPDATE issue SET status = ?1, updated_at = ?2 WHERE id = ?3",
+            params![crate::models::IssueStatus::InReview.as_str(), now, issue.id],
+        )
+        .map_err(|e| format!("rollback_decision: {e}"))?;
+        let actor = Actor::system("board-audit");
+        insert_comment(
+            &tx,
+            issue.id,
+            &actor,
+            "↩ 审计回滚：撤销此前「agent 验收通过并自动收货」的决策，单据退回 in_review 等待重新处置。",
+            None,
+            CommentType::System,
+            now,
+        )?;
+        insert_activity(
+            &tx,
+            issue.id,
+            &actor,
+            // 与 443/593 同词表（activity action 惯用字面量）。
+            "status_changed",
+            Some(&format!(
+                "audit_rollback:done→in_review:activity_id={activity_id}"
+            )),
+            now,
+        )?;
+        tx.commit().map_err(|e| e.to_string())?;
+        issue.status = crate::models::IssueStatus::InReview;
+        Ok(issue)
     }
 
     /// 订阅（幂等；reason 覆盖更新）。
@@ -710,6 +873,7 @@ impl BoardStore {
         description: &str,
         lead: Option<&Actor>,
         icon: &str,
+        acceptance_criteria: &str,
     ) -> Result<Project, String> {
         if name.trim().is_empty() {
             return Err("project name must not be empty".to_string());
@@ -717,14 +881,15 @@ impl BoardStore {
         let conn = self.conn.lock().map_err(|e| e.to_string())?;
         let now = Self::now();
         conn.execute(
-            "INSERT INTO project (name, description, status, priority, lead_type, lead_id, icon, created_at)
-             VALUES (?1, ?2, 'active', 1, ?3, ?4, ?5, ?6)",
+            "INSERT INTO project (name, description, status, priority, lead_type, lead_id, icon, acceptance_criteria, created_at)
+             VALUES (?1, ?2, 'active', 1, ?3, ?4, ?5, ?6, ?7)",
             params![
                 name,
                 description,
                 lead.as_ref().map(|l| l.kind.as_str()),
                 lead.as_ref().map(|l| l.id.as_str()),
                 icon,
+                acceptance_criteria,
                 now,
             ],
         )
@@ -766,11 +931,29 @@ impl BoardStore {
             .ok_or_else(|| format!("project {id} not found"))?;
         let name = patch.name.clone().unwrap_or(old.name);
         let description = patch.description.clone().unwrap_or(old.description);
-        let status = patch.status.clone().unwrap_or(old.status);
+        // F2 状态机收口：带 status 的 patch 必须是合法词表值 + 合法转移
+        // （old → new）。未知值/非法转移在这里 loud 拒绝——所有 project 状态
+        // 写入（WSAPI / F3 自动回退）都过这一道，读侧才有宽容的资格。
+        let status = match &patch.status {
+            Some(raw) => {
+                let new = crate::models::ProjectStatus::from_str(raw).ok_or_else(|| {
+                    format!("未知项目状态 {raw:?}（合法值：active/in_progress/completed/archived）")
+                })?;
+                let old_status = crate::models::ProjectStatus::from_str(&old.status)
+                    .unwrap_or(crate::models::ProjectStatus::Active);
+                crate::project_state::validate_transition(old_status, new)?;
+                new.as_str().to_string()
+            }
+            None => old.status,
+        };
         let icon = patch.icon.clone().unwrap_or(old.icon);
+        let acceptance_criteria = patch
+            .acceptance_criteria
+            .clone()
+            .unwrap_or(old.acceptance_criteria);
         conn.execute(
-            "UPDATE project SET name = ?1, description = ?2, status = ?3, icon = ?4 WHERE id = ?5",
-            params![name, description, status, icon, id],
+            "UPDATE project SET name = ?1, description = ?2, status = ?3, icon = ?4, acceptance_criteria = ?5 WHERE id = ?6",
+            params![name, description, status, icon, acceptance_criteria, id],
         )
         .map_err(|e| format!("update_project: {e}"))?;
         drop(conn); // 释放锁再 get_project（防持锁重入死锁）
@@ -1061,11 +1244,15 @@ impl BoardStore {
 
     /// issue 的派发历史（时间升序；UI 展示）。
     pub fn list_dispatches(&self, issue_id: i64) -> Result<Vec<DispatchRecord>, String> {
+        // 排序 = rowid（插入序）：`dispatched_at` 是秒级时间戳，同一秒内的
+        // 多次派发（快速 FAIL→重派链一秒走完多轮）会打平，旧实现以随机
+        // UUID（task_id ASC）决胜导致"最新派发"读错——D3 连续同节点判定
+        // 与回调路由都吃这个序（cluster-uat T34 实测抓到）。
         let conn = self.conn.lock().map_err(|e| e.to_string())?;
         let mut stmt = conn
             .prepare(
                 "SELECT task_id, issue_id, worker_id, state, dispatched_at, completed_at
-                 FROM issue_dispatch WHERE issue_id = ?1 ORDER BY dispatched_at ASC, task_id ASC",
+                 FROM issue_dispatch WHERE issue_id = ?1 ORDER BY rowid ASC",
             )
             .map_err(|e| e.to_string())?;
         let rows = stmt
@@ -1091,7 +1278,9 @@ impl BoardStore {
     /// 按目标 worker 统计未完结（`dispatched`）派发数（Swarm M1 匹配器
     /// 负载输入：同分节点选更闲者）。无派发的 worker 不在返回表里（调用方
     /// 按 0 处理）。
-    pub fn count_active_dispatch_by_worker(&self) -> Result<std::collections::HashMap<String, usize>, String> {
+    pub fn count_active_dispatch_by_worker(
+        &self,
+    ) -> Result<std::collections::HashMap<String, usize>, String> {
         let conn = self.conn.lock().map_err(|e| e.to_string())?;
         let mut stmt = conn
             .prepare(
@@ -1140,7 +1329,7 @@ impl BoardStore {
         conn.query_row(
             "SELECT task_id, issue_id, worker_id, state, dispatched_at, completed_at
              FROM issue_dispatch WHERE issue_id = ?1 AND state = ?2
-             ORDER BY dispatched_at DESC, task_id DESC LIMIT 1",
+             ORDER BY rowid DESC LIMIT 1",
             params![issue_id, dispatch_state::DISPATCHED],
             row_to_dispatch,
         )
@@ -1154,7 +1343,7 @@ impl BoardStore {
         let mut stmt = conn
             .prepare(
                 "SELECT task_id, issue_id, worker_id, state, dispatched_at, completed_at
-                 FROM issue_dispatch WHERE state = ?1 ORDER BY dispatched_at ASC, task_id ASC",
+                 FROM issue_dispatch WHERE state = ?1 ORDER BY rowid ASC",
             )
             .map_err(|e| e.to_string())?;
         let rows = stmt
@@ -1283,8 +1472,8 @@ impl BoardStore {
         let now = Self::now();
         conn.execute(
             "INSERT INTO autopilot
-             (name, cron, title, description, priority, project_id, target, enabled, created_at, updated_at)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?9)",
+             (name, cron, title, description, priority, project_id, target, enabled, auto_plan, created_at, updated_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?10)",
             params![
                 n.name,
                 n.cron,
@@ -1294,6 +1483,7 @@ impl BoardStore {
                 n.project_id,
                 n.target,
                 n.enabled as i64,
+                n.auto_plan as i64,
                 now,
             ],
         )
@@ -1363,10 +1553,11 @@ impl BoardStore {
         let project_id = patch.project_id.or(old.project_id);
         let target = patch.target.clone().unwrap_or(old.target);
         let enabled = patch.enabled.unwrap_or(old.enabled);
+        let auto_plan = patch.auto_plan.unwrap_or(old.auto_plan);
         conn.execute(
             "UPDATE autopilot
              SET name = ?2, cron = ?3, title = ?4, description = ?5, priority = ?6,
-                 project_id = ?7, target = ?8, enabled = ?9, updated_at = ?10
+                 project_id = ?7, target = ?8, enabled = ?9, auto_plan = ?10, updated_at = ?11
              WHERE id = ?1",
             params![
                 id,
@@ -1378,6 +1569,7 @@ impl BoardStore {
                 project_id,
                 target,
                 enabled as i64,
+                auto_plan as i64,
                 Self::now(),
             ],
         )
@@ -1536,7 +1728,8 @@ impl BoardStore {
                 })
             })
             .map_err(|e| e.to_string())?;
-        rows.collect::<Result<Vec<_>, _>>().map_err(|e| e.to_string())
+        rows.collect::<Result<Vec<_>, _>>()
+            .map_err(|e| e.to_string())
     }
 
     /// 按名取频道（输入同样归一化）。
@@ -1765,7 +1958,11 @@ impl BoardStore {
 
     /// board.sync 补拉：`since_seq` 之后（不含）的台账行，按 seq 升序，
     /// `limit` 上限。join 原表取发送者/内容（台账只存路由键）。
-    pub fn list_messages_since(&self, since_seq: i64, limit: i64) -> Result<Vec<LedgerEntry>, String> {
+    pub fn list_messages_since(
+        &self,
+        since_seq: i64,
+        limit: i64,
+    ) -> Result<Vec<LedgerEntry>, String> {
         let conn = self.conn.lock().map_err(|e| e.to_string())?;
         let mut stmt = conn
             .prepare(
@@ -1803,7 +2000,8 @@ impl BoardStore {
                 })
             })
             .map_err(|e| e.to_string())?;
-        rows.collect::<Result<Vec<_>, _>>().map_err(|e| e.to_string())
+        rows.collect::<Result<Vec<_>, _>>()
+            .map_err(|e| e.to_string())
     }
 
     /// 当前全局最大 seq（worker 首次上线的 sync 基线；空表 = 0）。
@@ -1812,11 +2010,9 @@ impl BoardStore {
             .conn
             .lock()
             .map_err(|e| e.to_string())?
-            .query_row(
-                "SELECT COALESCE(MAX(seq), 0) FROM seq_ledger",
-                [],
-                |r| r.get(0),
-            )
+            .query_row("SELECT COALESCE(MAX(seq), 0) FROM seq_ledger", [], |r| {
+                r.get(0)
+            })
             .map_err(|e| e.to_string())?;
         Ok(n)
     }
@@ -1839,7 +2035,8 @@ impl BoardStore {
                 })
             })
             .map_err(|e| e.to_string())?;
-        rows.collect::<Result<Vec<_>, _>>().map_err(|e| e.to_string())
+        rows.collect::<Result<Vec<_>, _>>()
+            .map_err(|e| e.to_string())
     }
 
     /// 推进未读游标（只前进；`after_id` 补拉语义的写侧）。
@@ -1862,10 +2059,7 @@ impl BoardStore {
     }
 
     /// 追加频道消息（`mtype` 空串 = text）。
-    pub fn append_channel_message(
-        &self,
-        new: NewChannelMessage,
-    ) -> Result<ChannelMessage, String> {
+    pub fn append_channel_message(&self, new: NewChannelMessage) -> Result<ChannelMessage, String> {
         let conn = self.conn.lock().map_err(|e| e.to_string())?;
         append_channel_message_on(&conn, &new)
     }
@@ -1900,7 +2094,8 @@ impl BoardStore {
                 })
             })
             .map_err(|e| e.to_string())?;
-        rows.collect::<Result<Vec<_>, _>>().map_err(|e| e.to_string())
+        rows.collect::<Result<Vec<_>, _>>()
+            .map_err(|e| e.to_string())
     }
 
     /// 保留策略清扫（§4.2.2）：删除 `retention_days` 天前的频道消息，
@@ -1915,7 +2110,10 @@ impl BoardStore {
             .conn
             .lock()
             .map_err(|e| e.to_string())?
-            .execute("DELETE FROM channel_message WHERE created_at < ?1", params![cutoff])
+            .execute(
+                "DELETE FROM channel_message WHERE created_at < ?1",
+                params![cutoff],
+            )
             .map_err(|e| e.to_string())?;
         Ok(n as u64)
     }
@@ -1940,9 +2138,11 @@ impl BoardStore {
         )
         .map_err(|e| e.to_string())?;
         let id: i64 = conn
-            .query_row("SELECT id FROM asset WHERE ref = ?1", params![ref_name], |r| {
-                r.get(0)
-            })
+            .query_row(
+                "SELECT id FROM asset WHERE ref = ?1",
+                params![ref_name],
+                |r| r.get(0),
+            )
             .map_err(|e| e.to_string())?;
         Ok(BoardAsset {
             id,
@@ -1990,7 +2190,8 @@ impl BoardStore {
         let rows = stmt
             .query_map(params![issue_id], row_to_asset)
             .map_err(|e| e.to_string())?;
-        rows.collect::<Result<Vec<_>, _>>().map_err(|e| e.to_string())
+        rows.collect::<Result<Vec<_>, _>>()
+            .map_err(|e| e.to_string())
     }
 
     /// issue 删除时解绑其名下资产：删 `origin_issue` 命中的行，返回因此
@@ -2005,10 +2206,14 @@ impl BoardStore {
             let rows = stmt
                 .query_map(params![issue_id], |r| r.get::<_, String>(0))
                 .map_err(|e| e.to_string())?;
-            rows.collect::<Result<Vec<_>, _>>().map_err(|e| e.to_string())?
+            rows.collect::<Result<Vec<_>, _>>()
+                .map_err(|e| e.to_string())?
         };
-        conn.execute("DELETE FROM asset WHERE origin_issue = ?1", params![issue_id])
-            .map_err(|e| e.to_string())?;
+        conn.execute(
+            "DELETE FROM asset WHERE origin_issue = ?1",
+            params![issue_id],
+        )
+        .map_err(|e| e.to_string())?;
         let mut fully_released = Vec::new();
         for ref_name in released {
             let remaining: i64 = conn
@@ -2097,7 +2302,10 @@ impl BoardStore {
              FROM team_memory WHERE 1=1",
         );
         if let Some(s) = scope {
-            sql.push_str(&format!(" AND scope = '{}'", s.trim().to_lowercase().replace('\'', "''")));
+            sql.push_str(&format!(
+                " AND scope = '{}'",
+                s.trim().to_lowercase().replace('\'', "''")
+            ));
         }
         if !include_deprecated {
             sql.push_str(" AND deprecated = 0");
@@ -2504,6 +2712,7 @@ fn row_to_team_memory(row: &rusqlite::Row<'_>) -> rusqlite::Result<TeamMemoryEnt
 
 fn row_to_autopilot(row: &rusqlite::Row<'_>) -> rusqlite::Result<Autopilot> {
     let enabled: i64 = row.get("enabled")?;
+    let auto_plan: i64 = row.get("auto_plan")?;
     Ok(Autopilot {
         id: row.get("id")?,
         name: row.get("name")?,
@@ -2514,6 +2723,7 @@ fn row_to_autopilot(row: &rusqlite::Row<'_>) -> rusqlite::Result<Autopilot> {
         project_id: row.get("project_id")?,
         target: row.get("target")?,
         enabled: enabled != 0,
+        auto_plan: auto_plan != 0,
         cron_job_id: row.get("cron_job_id")?,
         last_run_at: row.get("last_run_at")?,
         created_at: row.get("created_at")?,
@@ -2613,17 +2823,35 @@ fn row_to_activity(row: &rusqlite::Row<'_>) -> rusqlite::Result<ActivityLog> {
     })
 }
 
+/// 存量 status 宽容归一（F2 状态机兼容面）：词表内的值原样放行；词表外
+/// （手工改库 / 更早版本的脏数据）回落 `active` 并 WARN 一次——读取不炸，
+/// 但异常数据在日志里可见。一次性告警足够：这是脏数据信号，不是逐行噪音。
+fn coerce_project_status(raw: String) -> String {
+    if crate::models::ProjectStatus::from_str(&raw).is_some() {
+        return raw;
+    }
+    static WARNED: std::sync::Once = std::sync::Once::new();
+    WARNED.call_once(|| {
+        tracing::warn!(
+            "[BoardStore] project.status 存在未知值 {raw:?}（词表 active/in_progress/completed/archived），读取时按 active 处理"
+        );
+    });
+    "active".to_string()
+}
+
 fn row_to_project(row: &rusqlite::Row<'_>) -> rusqlite::Result<Project> {
     let lead_type: Option<String> = row.get("lead_type")?;
     let lead_id: Option<String> = row.get("lead_id")?;
+    let status: String = row.get("status")?;
     Ok(Project {
         id: row.get("id")?,
         name: row.get("name")?,
         description: row.get("description")?,
-        status: row.get("status")?,
+        status: coerce_project_status(status),
         priority: row.get("priority")?,
         lead: lead_type.zip(lead_id).map(|(k, i)| Actor::new(&k, &i)),
         icon: row.get("icon")?,
+        acceptance_criteria: row.get("acceptance_criteria")?,
         created_at: row.get("created_at")?,
     })
 }

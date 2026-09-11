@@ -44,7 +44,12 @@ fn quota(thread_cap: u32) -> Arc<QuotaLedger> {
 }
 
 /// 上行 comment.post 信封（worker 侧会构造的形状）。
-fn post_payload(client_msg_id: &str, thread_kind: &str, thread_id: i64, content: &str) -> serde_json::Value {
+fn post_payload(
+    client_msg_id: &str,
+    thread_kind: &str,
+    thread_id: i64,
+    content: &str,
+) -> serde_json::Value {
     serde_json::json!({
         "v": 1, "ns": "board", "op": "comment.post", "corr_id": "c-1",
         "body": {
@@ -58,7 +63,9 @@ fn post_payload(client_msg_id: &str, thread_kind: &str, thread_id: i64, content:
     })
 }
 
-fn parse_reply(reply: Result<serde_json::Value, String>) -> (bool, Option<String>, serde_json::Value) {
+fn parse_reply(
+    reply: Result<serde_json::Value, String>,
+) -> (bool, Option<String>, serde_json::Value) {
     let v = reply.expect("handler never errs");
     let ok = v.get("ok").and_then(|x| x.as_bool()).unwrap_or(false);
     let code = v
@@ -77,7 +84,10 @@ fn test_rejects_bad_envelope_and_unknown_routes() {
     // 缺 ns/op → bad_envelope。
     let (ok, code, _) = parse_reply(handle_nb_bus(&deps, serde_json::json!({"v": 1})));
     assert!(!ok);
-    assert_eq!(code.as_deref(), Some(nemesis_cluster::envelope::error_code::BAD_ENVELOPE));
+    assert_eq!(
+        code.as_deref(),
+        Some(nemesis_cluster::envelope::error_code::BAD_ENVELOPE)
+    );
 
     // 版本不符 → bad_envelope。
     let (ok, code, _) = parse_reply(handle_nb_bus(
@@ -85,7 +95,10 @@ fn test_rejects_bad_envelope_and_unknown_routes() {
         serde_json::json!({"v": 99, "ns": "board", "op": "sync"}),
     ));
     assert!(!ok);
-    assert_eq!(code.as_deref(), Some(nemesis_cluster::envelope::error_code::BAD_ENVELOPE));
+    assert_eq!(
+        code.as_deref(),
+        Some(nemesis_cluster::envelope::error_code::BAD_ENVELOPE)
+    );
 
     // 未知 ns / op → 各自错误码。
     let (ok, code, _) = parse_reply(handle_nb_bus(
@@ -93,14 +106,20 @@ fn test_rejects_bad_envelope_and_unknown_routes() {
         serde_json::json!({"v": 1, "ns": "file", "op": "read"}),
     ));
     assert!(!ok);
-    assert_eq!(code.as_deref(), Some(nemesis_cluster::envelope::error_code::UNKNOWN_NS));
+    assert_eq!(
+        code.as_deref(),
+        Some(nemesis_cluster::envelope::error_code::UNKNOWN_NS)
+    );
 
     let (ok, code, _) = parse_reply(handle_nb_bus(
         &deps,
         serde_json::json!({"v": 1, "ns": "board", "op": "nope"}),
     ));
     assert!(!ok);
-    assert_eq!(code.as_deref(), Some(nemesis_cluster::envelope::error_code::UNKNOWN_OP));
+    assert_eq!(
+        code.as_deref(),
+        Some(nemesis_cluster::envelope::error_code::UNKNOWN_OP)
+    );
     let _ = std::fs::remove_dir_all(&dir);
 }
 
@@ -122,7 +141,10 @@ fn test_comment_post_validation_errors() {
     ] {
         let (ok, code, _) = parse_reply(handle_nb_bus(&deps, payload));
         assert!(!ok);
-        assert_eq!(code.as_deref(), Some(nemesis_cluster::envelope::error_code::VALIDATION));
+        assert_eq!(
+            code.as_deref(),
+            Some(nemesis_cluster::envelope::error_code::VALIDATION)
+        );
     }
     let _ = std::fs::remove_dir_all(&dir);
 }
@@ -144,7 +166,10 @@ async fn test_comment_post_happy_path_and_idempotent() {
     assert_eq!(msgs[0].content, "第一条");
 
     // 同 id 重发 → 相同首响，不重复落库（G12）。
-    let (ok2, _, body2) = parse_reply(handle_nb_bus(&deps, post_payload("u-1", "channel", ch.id, "第一条")));
+    let (ok2, _, body2) = parse_reply(handle_nb_bus(
+        &deps,
+        post_payload("u-1", "channel", ch.id, "第一条"),
+    ));
     assert!(ok2);
     assert_eq!(body.get("body"), body2.get("body"));
     assert_eq!(store.list_channel_messages(ch.id, 0, 100).unwrap().len(), 1);
@@ -160,10 +185,16 @@ async fn test_comment_post_quota_denied() {
     let deps = make_deps(store.clone(), quota(1));
     let ch = store.get_channel_by_name("#dev").unwrap().unwrap();
 
-    let (ok, _, _) = parse_reply(handle_nb_bus(&deps, post_payload("q-1", "channel", ch.id, "第一条")));
+    let (ok, _, _) = parse_reply(handle_nb_bus(
+        &deps,
+        post_payload("q-1", "channel", ch.id, "第一条"),
+    ));
     assert!(ok);
     // 线程额度=1 → 第二条 quota_exhausted（消息不落库）。
-    let (ok, code, _) = parse_reply(handle_nb_bus(&deps, post_payload("q-2", "channel", ch.id, "第二条")));
+    let (ok, code, _) = parse_reply(handle_nb_bus(
+        &deps,
+        post_payload("q-2", "channel", ch.id, "第二条"),
+    ));
     assert!(!ok);
     assert_eq!(code.as_deref(), Some("quota_exhausted"));
     assert_eq!(store.list_channel_messages(ch.id, 0, 100).unwrap().len(), 1);
@@ -183,10 +214,7 @@ async fn test_sync_returns_ledger_entries() {
         })
         .unwrap();
     let _ = handle_nb_bus(&deps, post_payload("s-1", "channel", ch.id, "频道一"));
-    let _ = handle_nb_bus(
-        &deps,
-        post_payload("s-2", "issue", issue.id, "评论一"),
-    );
+    let _ = handle_nb_bus(&deps, post_payload("s-2", "issue", issue.id, "评论一"));
 
     let (ok, code, body) = parse_reply(handle_nb_bus(
         &deps,
@@ -199,7 +227,10 @@ async fn test_sync_returns_ledger_entries() {
         .and_then(|m| m.as_array())
         .expect("messages array");
     assert_eq!(messages.len(), 2);
-    assert_eq!(body["body"]["latest_seq"], body["body"]["messages"][1]["seq"]);
+    assert_eq!(
+        body["body"]["latest_seq"],
+        body["body"]["messages"][1]["seq"]
+    );
 
     // since_seq 游标：只取增量。
     let (ok, _, body) = parse_reply(handle_nb_bus(
@@ -207,13 +238,7 @@ async fn test_sync_returns_ledger_entries() {
         serde_json::json!({"v": 1, "ns": "board", "op": "sync", "body": {"since_seq": 1}}),
     ));
     assert!(ok);
-    assert_eq!(
-        body["body"]["messages"]
-            .as_array()
-            .unwrap()
-            .len(),
-        1
-    );
+    assert_eq!(body["body"]["messages"].as_array().unwrap().len(), 1);
     tokio::time::sleep(std::time::Duration::from_millis(50)).await;
     let _ = std::fs::remove_dir_all(&dir);
 }
@@ -283,7 +308,10 @@ async fn test_worker_wake_post_happy_duplicate_and_routing() {
     inbox.set_sender(tx);
 
     // happy path：ok + queued:true，事件完整落箱（含 _rpc.from 注入的 from_node）。
-    let reply = handle_worker_nb_bus(&deps, wake_payload("issue", 7, 4, "@node-b 看这个", "node-master"));
+    let reply = handle_worker_nb_bus(
+        &deps,
+        wake_payload("issue", 7, 4, "@node-b 看这个", "node-master"),
+    );
     let v = reply.expect("handler never errs");
     assert!(v.get("ok").and_then(|x| x.as_bool()).unwrap_or(false));
     assert_eq!(v["body"]["queued"], serde_json::json!(true));
@@ -299,7 +327,10 @@ async fn test_worker_wake_post_happy_duplicate_and_routing() {
     assert_eq!(event.messages.len(), 1);
 
     // 同 seq 重发（RPC 层重传）→ duplicate:true，不再入队（G12 下行侧）。
-    let reply = handle_worker_nb_bus(&deps, wake_payload("issue", 7, 4, "@node-b 看这个", "node-master"));
+    let reply = handle_worker_nb_bus(
+        &deps,
+        wake_payload("issue", 7, 4, "@node-b 看这个", "node-master"),
+    );
     let v = reply.expect("handler never errs");
     assert!(v.get("ok").and_then(|x| x.as_bool()).unwrap_or(false));
     assert_eq!(v["body"]["duplicate"], serde_json::json!(true));
@@ -317,11 +348,16 @@ async fn test_worker_wake_post_happy_duplicate_and_routing() {
         .unwrap();
         (
             v.get("ok").and_then(|x| x.as_bool()).unwrap_or(false),
-            v.pointer("/error/code").and_then(|c| c.as_str()).map(String::from),
+            v.pointer("/error/code")
+                .and_then(|c| c.as_str())
+                .map(String::from),
         )
     };
     assert!(!ok);
-    assert_eq!(code.as_deref(), Some(nemesis_cluster::envelope::error_code::UNKNOWN_NS));
+    assert_eq!(
+        code.as_deref(),
+        Some(nemesis_cluster::envelope::error_code::UNKNOWN_NS)
+    );
 }
 
 #[test]
@@ -360,7 +396,10 @@ async fn test_worker_wake_post_send_failure_not_committed() {
         v.pointer("/error/code").and_then(|c| c.as_str()),
         Some(nemesis_cluster::envelope::error_code::UNAVAILABLE)
     );
-    assert!(deps.wake_state.peek("issue:7", 4), "send failure must not commit");
+    assert!(
+        deps.wake_state.peek("issue:7", 4),
+        "send failure must not commit"
+    );
 
     // loop 起来之后同一 seq 重发 → 正常入队（证明上面确实没记账）。
     let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
@@ -376,20 +415,60 @@ fn test_sync_entry_targets_me() {
     let (deps, _inbox) = make_worker_deps("node-b");
 
     // 自己的发言永不唤醒自己。
-    assert!(!sync_entry_targets_me(&deps, "@node-b 自问自答", "node-b", "channel:1"));
+    assert!(!sync_entry_targets_me(
+        &deps,
+        "@node-b 自问自答",
+        "node-b",
+        "channel:1"
+    ));
     // 提到 id / name（大小写不敏感）→ 真。
-    assert!(sync_entry_targets_me(&deps, "请 @node-b 确认", "node-master", "channel:1"));
-    assert!(sync_entry_targets_me(&deps, "@node-alpha 帮忙看下", "node-master", "channel:1"));
+    assert!(sync_entry_targets_me(
+        &deps,
+        "请 @node-b 确认",
+        "node-master",
+        "channel:1"
+    ));
+    assert!(sync_entry_targets_me(
+        &deps,
+        "@node-alpha 帮忙看下",
+        "node-master",
+        "channel:1"
+    ));
     // @role: 命中拓扑角色（worker）或功能类别（dev）→ 真。
-    assert!(sync_entry_targets_me(&deps, "@role:worker 都来看", "node-master", "channel:1"));
-    assert!(sync_entry_targets_me(&deps, "@role:dev 集合", "node-master", "channel:1"));
+    assert!(sync_entry_targets_me(
+        &deps,
+        "@role:worker 都来看",
+        "node-master",
+        "channel:1"
+    ));
+    assert!(sync_entry_targets_me(
+        &deps,
+        "@role:dev 集合",
+        "node-master",
+        "channel:1"
+    ));
     // @role: 未命中类别 → 假。
-    assert!(!sync_entry_targets_me(&deps, "@role:qa 看这里", "node-master", "channel:1"));
+    assert!(!sync_entry_targets_me(
+        &deps,
+        "@role:qa 看这里",
+        "node-master",
+        "channel:1"
+    ));
     // 无提及且未参与 → 假。
-    assert!(!sync_entry_targets_me(&deps, "大家辛苦了", "node-master", "channel:1"));
+    assert!(!sync_entry_targets_me(
+        &deps,
+        "大家辛苦了",
+        "node-master",
+        "channel:1"
+    ));
     // 参与过的线程（wake 处理过）→ 无提及也真（G8「我参与的线程」）。
     deps.wake_state.commit("channel:2", 1);
-    assert!(sync_entry_targets_me(&deps, "后续讨论", "node-master", "channel:2"));
+    assert!(sync_entry_targets_me(
+        &deps,
+        "后续讨论",
+        "node-master",
+        "channel:2"
+    ));
 }
 
 // -------------------------------------------------------------------------
@@ -516,8 +595,14 @@ fn test_wake_state_commit_persists_and_survives_reload() {
 
     // 实例 2（模拟重启）：水位接续——旧 seq 不再当作新鲜。
     let reloaded = WorkerWakeState::load_or_create(path.clone());
-    assert!(!reloaded.peek("t1", 7), "old seq must not replay after restart");
-    assert!(!reloaded.peek("t1", 3), "older seq must not replay after restart");
+    assert!(
+        !reloaded.peek("t1", 7),
+        "old seq must not replay after restart"
+    );
+    assert!(
+        !reloaded.peek("t1", 3),
+        "older seq must not replay after restart"
+    );
     assert!(reloaded.peek("t1", 8), "newer seq is still fresh");
     assert!(!reloaded.peek("t2", 3));
     assert_eq!(reloaded.watermark(), 9, "watermark survives restart");
@@ -552,10 +637,7 @@ fn test_wake_state_corrupt_snapshot_starts_empty() {
 #[test]
 fn test_wake_state_new_is_pure_memory() {
     // new()（None 路径）：commit 不落盘、无副作用。
-    let dir = std::env::temp_dir().join(format!(
-        "nemesis-wakestate-g8-{}-mem",
-        std::process::id()
-    ));
+    let dir = std::env::temp_dir().join(format!("nemesis-wakestate-g8-{}-mem", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).unwrap();
     let path = dir.join("board_wake_state.json");

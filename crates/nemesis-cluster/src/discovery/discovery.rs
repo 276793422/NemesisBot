@@ -245,7 +245,7 @@ impl ClusterCallbacks for RegistryCallbacks {
         rpc_port: u16,
         role: &str,
         category: &str,
-        _tags: &[String],
+        tags: &[String],
         capabilities: &[String],
         node_type: &str,
     ) -> bool {
@@ -265,6 +265,7 @@ impl ClusterCallbacks for RegistryCallbacks {
             },
             status: crate::types::NodeStatus::Online,
             capabilities: capabilities.to_vec(),
+            tags: tags.to_vec(),
             addresses: addresses.to_vec(),
             node_type: node_type.to_string(),
         };

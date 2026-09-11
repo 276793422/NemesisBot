@@ -10,6 +10,7 @@
 //!   integration-test --filter <name>    # Run only matching tests
 //!   integration-test --skip-long        # Skip long-running tests
 
+mod board_ws_tests;
 mod cli_tests;
 mod forge_tests;
 mod gateway_tests;
@@ -355,7 +356,7 @@ async fn main() -> Result<()> {
 
     // Kill any existing processes on our ports
     println!("\n[1/5] Cleaning up old processes...");
-    cleanup_ports(&[AI_SERVER_PORT, WEB_PORT, HEALTH_PORT]);
+    cleanup_ports(&[ai_server_port(), WEB_PORT, HEALTH_PORT]);
 
     // ---- Phase 1: CLI tests (no gateway needed) ----
     println!("\n[Phase 1] Running comprehensive CLI tests (all commands)...");
@@ -563,7 +564,8 @@ async fn main() -> Result<()> {
             "model_list": [{
                 "model": "test/testai-1.1",
                 "name": "test/testai-1.1",
-                "base_url": "http://127.0.0.1:8080/v1",
+                "model_name": "testai-1.1",
+                "base_url": format!("http://127.0.0.1:{}/v1", ai_server_port()),
                 "api_key": "test-key",
                 "provider": "test",
                 "enabled": true
@@ -607,7 +609,7 @@ async fn main() -> Result<()> {
     let mut ai_server = ManagedProcess::spawn(
         "AI Server",
         &cfg.ai_server_bin,
-        &["--port", &AI_SERVER_PORT.to_string()],
+        &["--port", &ai_server_port().to_string()],
         ws.path(),
     )?;
 
@@ -617,17 +619,17 @@ async fn main() -> Result<()> {
         ai_server.kill().await;
         bail!(
             "AI Server process exited immediately (port {} may be in use)",
-            AI_SERVER_PORT
+            ai_server_port()
         );
     }
 
     match wait_for_http(
-        &format!("http://127.0.0.1:{}/health", AI_SERVER_PORT),
+        &format!("http://127.0.0.1:{}/health", ai_server_port()),
         Duration::from_secs(10),
     )
     .await
     {
-        Ok(_) => println!("  AI Server ready on port {}", AI_SERVER_PORT),
+        Ok(_) => println!("  AI Server ready on port {}", ai_server_port()),
         Err(e) => {
             ai_server.kill().await;
             bail!("AI Server failed to start: {}", e);
@@ -730,6 +732,29 @@ async fn main() -> Result<()> {
     all_results.extend(projects_ws_tests::test_projects_crud_lifecycle(&ws).await);
     all_results.extend(projects_ws_tests::test_projects_session_chat_roundtrip(&ws).await);
     all_results.extend(projects_ws_tests::test_projects_unroutable_after_remove(&ws).await);
+
+    // ---- P2 B1: board anchor 拆解锚点行落库（全自动流转 IT） ----
+    // 最末位：热切默认模型 + 改 board config + 写 board.db，结束后自恢复。
+    println!("\n[Phase 2d] Board anchor WSAPI series (P2 B1)...");
+    println!("{}", "-".repeat(60));
+    all_results.extend(board_ws_tests::test_board_anchor_plan_chain(&ws, &cfg.gateway_bin).await);
+
+    // ---- P3 D1: board_issue agent 工具路径（全自动流转 IT） ----
+    // 同样最末位：热切默认模型 + 改 board config + 写 board.db。
+    println!("\n[Phase 2e] Board agent tool issue flow (P3 D1)...");
+    println!("{}", "-".repeat(60));
+    all_results
+        .extend(board_ws_tests::test_board_agent_tool_issue_flow(&ws, &cfg.gateway_bin).await);
+
+    // ---- P4 E1/F3: board 配置面（全自动流转 IT；行为断言归 cluster-uat T34/T35）----
+    println!("\n[Phase 2f] Board P4 config surface (P4 E1/F3)...");
+    println!("{}", "-".repeat(60));
+    all_results.extend(board_ws_tests::test_board_p4_config_surface(&ws, &cfg.gateway_bin).await);
+
+    // ---- P5 E2: 审计（决策流）表面（全自动流转 IT；回滚 happy path 归 cluster-uat T37）----
+    println!("\n[Phase 2g] Board P5 audit surface (P5 E2)...");
+    println!("{}", "-".repeat(60));
+    all_results.extend(board_ws_tests::test_board_p5_audit_surface(&ws, &cfg.gateway_bin).await);
 
     // ---- Cleanup ----
     // Coverage-safe teardown: graceful /api/internal shutdown lets an

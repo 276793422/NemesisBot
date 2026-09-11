@@ -152,6 +152,30 @@ pub struct SharedResources {
     /// 跨 agent 重启存活；gateway 进程退出（Drop）时给残余任务发 kill 旗标。
     /// 经 SharedToolConfig 注入三件套工具（background_start/output/kill）。
     pub background_registry: Arc<nemesis_agent::BackgroundProcessRegistry>,
+
+    // ---------------- 全自动流转 P3/D1：board_issue 工具依赖 ----------------
+    // gateway 装配期注入；store=None（run/acp/测试等 headless 路径）= 工具
+    // 不注册，零影响。注册在主 agent——「对 master 说一句话建单」的入口；
+    // cluster agent（worker）不装：worker 的 board.db 是本地 dashboard 视图，
+    // 建单落不到 master 权威库（与 board_discuss 相反——发言经 RPC 上行，
+    // 建单必须直写权威 store）。
+    /// 看板权威 store（master 本地）。
+    #[cfg(all(feature = "board", feature = "cluster"))]
+    pub board_store: Option<Arc<nemesis_board::BoardStore>>,
+    /// 集群引用（单节点 cluster.enabled=false 时 None——工具仍注册，拆解
+    /// 可用，派发诚实失败落系统评论，与 WSAPI issue.plan 同语义）。
+    #[cfg(all(feature = "board", feature = "cluster"))]
+    pub board_cluster: Option<Arc<nemesis_cluster::cluster::Cluster>>,
+    /// planner moderator 槽——先建槽后填模式（agent_loop 建成后 gateway
+    /// set，与 approval_slot/question_slot 同款；重启重建的 loop 共享同一槽）。
+    #[cfg(all(feature = "board", feature = "cluster"))]
+    pub board_moderator_slot: Arc<std::sync::OnceLock<Arc<nemesis_agent::r#loop::AgentLoop>>>,
+    /// home 目录（A1 auto_confirm 旗标现读）。
+    #[cfg(all(feature = "board", feature = "cluster"))]
+    pub board_home: std::path::PathBuf,
+    /// SSE 事件 hub（plan_ready/plan_failed 推送；None = 不推）。
+    #[cfg(all(feature = "board", feature = "cluster"))]
+    pub board_event_hub: Option<Arc<nemesis_web::events::EventHub>>,
 }
 
 /// Default `SharedResources` for tests: empty/dummy infrastructure. Real
@@ -195,6 +219,16 @@ impl Default for SharedResources {
             lsp_manager: Arc::new(nemesis_lsp::LspManager::new(None, None)),
             agent_event_tx: None,
             background_registry: Arc::new(nemesis_agent::BackgroundProcessRegistry::new()),
+            #[cfg(all(feature = "board", feature = "cluster"))]
+            board_store: None,
+            #[cfg(all(feature = "board", feature = "cluster"))]
+            board_cluster: None,
+            #[cfg(all(feature = "board", feature = "cluster"))]
+            board_moderator_slot: Arc::new(std::sync::OnceLock::new()),
+            #[cfg(all(feature = "board", feature = "cluster"))]
+            board_home: PathBuf::default(),
+            #[cfg(all(feature = "board", feature = "cluster"))]
+            board_event_hub: None,
         }
     }
 }
@@ -243,6 +277,7 @@ pub fn build_agent_loop(
         api_base: resolution.api_base.clone(),
         workspace: shared.workspace_dir().to_string_lossy().to_string(),
         connect_mode: resolution.connect_mode,
+        protocol: resolution.protocol.clone(),
         account_id: String::new(),
         headers: HashMap::new(),
     };
@@ -420,6 +455,7 @@ pub fn build_agent_loop(
                     api_base: resolution.api_base.clone(),
                     workspace: shared.workspace_dir().to_string_lossy().to_string(),
                     connect_mode: resolution.connect_mode.clone(),
+                    protocol: resolution.protocol.clone(),
                     account_id: String::new(),
                     headers: HashMap::new(),
                 };
@@ -603,6 +639,25 @@ pub fn build_agent_loop(
         *shared.cluster_rpc_enabled.write() = Some(cluster_rpc_tool.enabled_arc());
         agent_loop.register_tool("cluster_rpc".to_string(), Box::new(cluster_rpc_tool));
         info!("[AgentFactory] cluster_rpc tool registered (enabled=true)");
+    }
+
+    // 8b. 全自动流转 P3/D1：board_issue 工具（主 agent 专属——「对 master
+    // 说一句话建单」入口）。store 未装配（run/acp headless、board feature
+    // 裁掉、DB 打开失败）= 不注册，零影响。worker cluster agent 不装：
+    // worker 本地 board.db 是 dashboard 视图，建单落不到 master 权威库。
+    #[cfg(all(feature = "board", feature = "cluster"))]
+    if let Some(ref board_store) = shared.board_store {
+        agent_loop.register_tool(
+            crate::board_issue_tool::TOOL_NAME.to_string(),
+            Box::new(crate::board_issue_tool::BoardIssueTool::new(
+                board_store.clone(),
+                shared.board_cluster.clone(),
+                shared.board_moderator_slot.clone(),
+                shared.board_home.clone(),
+                shared.board_event_hub.clone(),
+            )),
+        );
+        info!("[AgentFactory] board_issue tool registered (master main agent)");
     }
 
     // 9. Continuation manager (disk-persisted — new instance).
@@ -1081,6 +1136,7 @@ pub fn build_cluster_agent_loop(
         api_base: resolution.api_base.clone(),
         workspace: shared.workspace_dir().to_string_lossy().to_string(),
         connect_mode: resolution.connect_mode,
+        protocol: resolution.protocol.clone(),
         account_id: String::new(),
         headers: HashMap::new(),
     };
@@ -1106,6 +1162,16 @@ pub fn build_cluster_agent_loop(
     agent_loop.set_cluster(cluster.clone() as Arc<dyn std::any::Any + Send + Sync>);
     // 绑定全局急停状态（集群 agent 同样吃急停——peer_chat 跑完整工具链，不能漏）。
     agent_loop.set_estop(shared.estop.clone());
+
+    // 用量账本（E1 二期 token 回传的生产前提）：worker 侧 cluster agent 的
+    // LLM 调用必须落 request_logs，任务结束时 extract_task_usage 才能从
+    // 账本聚合出差值随回调回传 master。漏接线时账本恒空 → usage=None →
+    // master 诚实跳过记账（不炸，但 token 回传静默失效）。装配序上本函数
+    // 经 ClusterServiceAdapter 在 SharedResources（含 data_store）之后构建，
+    // 与 build_agent_loop 的接线（本文件 set_data_store 处）同源。
+    if let Some(ref ds) = shared.data_store {
+        agent_loop.set_data_store(ds.clone());
+    }
 
     // D1 (2026-08-24 arch review, U-list D1): the cluster agent must resolve
     // the same startup capability tier as the main agent. Before this, the
@@ -1317,7 +1383,9 @@ pub fn build_cluster_agent_loop(
     {
         agent_loop.register_tool(
             crate::board_discuss_tool::TOOL_NAME.to_string(),
-            Box::new(crate::board_discuss_tool::BoardDiscussTool::new(cluster.clone())),
+            Box::new(crate::board_discuss_tool::BoardDiscussTool::new(
+                cluster.clone(),
+            )),
         );
         // G9 资产拉取/发布执行者：两端都装——worker 拉任务资产，master 的
         // cluster agent 也能拉 worker 交付物（同一工具、同一 bundle 语义）。
@@ -1327,9 +1395,7 @@ pub fn build_cluster_agent_loop(
                 shared.workspace_dir(),
             )),
         );
-        info!(
-            "[AgentFactory] board_discuss + board_asset tools registered (cluster agent only)"
-        );
+        info!("[AgentFactory] board_discuss + board_asset tools registered (cluster agent only)");
     }
 
     // D3 (2026-08-24 arch review): P3.1 auto memory injection (per-round
@@ -1518,6 +1584,7 @@ pub fn build_project_agent_loop(
         api_base: resolution.api_base.clone(),
         workspace: project_dir.to_string_lossy().to_string(),
         connect_mode: resolution.connect_mode,
+        protocol: resolution.protocol.clone(),
         account_id: String::new(),
         headers: HashMap::new(),
     };
@@ -1567,7 +1634,10 @@ pub fn build_project_agent_loop(
     );
     let queue_size = cfg.agents.defaults.queue_size.max(1) as usize;
     let mut agent_loop = AgentLoop::new_bus(
-        Box::new(ProviderAdapter::new(provider_arc.clone(), model_name.clone())),
+        Box::new(ProviderAdapter::new(
+            provider_arc.clone(),
+            model_name.clone(),
+        )),
         agent_config,
         shared.agent_outbound_tx.clone(),
         concurrent_mode,
@@ -1638,6 +1708,7 @@ pub fn build_project_agent_loop(
                     api_base: resolution.api_base.clone(),
                     workspace: project_dir.to_string_lossy().to_string(),
                     connect_mode: resolution.connect_mode.clone(),
+                    protocol: resolution.protocol.clone(),
                     account_id: String::new(),
                     headers: HashMap::new(),
                 };

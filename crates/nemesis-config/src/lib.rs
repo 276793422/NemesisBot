@@ -266,6 +266,21 @@ pub struct BoardFlagConfig {
     pub auto_accept: bool,
     /// FAIL 重派上限，超次转 UNSURE 等人工（Swarm M4）。
     pub max_redispatch: u32,
+    /// 子单全部落定后父单自动收口（全自动流转 P1；默认 false = 停 in_review
+    /// 等人工）。true 时父单进 in_review 即触发一次汇总验收（输入=全部子单
+    /// 结论 + 各子单最新交付汇报），PASS 自动 done；FAIL/UNSURE 转人工。
+    /// 存在 cancelled 子单的父单不适用（范围缺口必须人工裁决）。
+    pub auto_close_parent: bool,
+    /// 无限模式（全自动流转 P1；用户裁定 2026-09-10；默认 false = 护栏生效）。
+    /// true：max_redispatch 视为 ∞（FAIL 无限重派）、UNSURE 不转人工（带
+    /// 「无法定案」意见继续重派）——无条件强制流程运转，最大限度减少人类
+    /// 介入。estop 急停不受影响（保险丝非护栏）。停滞仍可观测：连续重派且
+    /// 差距无变化时 WARN 告警（只告警不停）。
+    pub unlimited_mode: bool,
+    /// 验收 agent 行为配置（全自动流转 P4；`board.review` 段）。
+    pub review: BoardReviewConfig,
+    /// 自动流转预算保险丝（全自动流转 P4；`board.budget` 段；0 = 该项关闭）。
+    pub budget: BoardBudgetConfig,
 }
 
 impl Default for BoardFlagConfig {
@@ -280,6 +295,70 @@ impl Default for BoardFlagConfig {
             auto_review: true,
             auto_accept: false,
             max_redispatch: 2,
+            auto_close_parent: false,
+            unlimited_mode: false,
+            review: BoardReviewConfig::default(),
+            budget: BoardBudgetConfig::default(),
+        }
+    }
+}
+
+/// 验收 agent 行为配置（`board.review` 段；全自动流转 P4）。
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(default)]
+pub struct BoardReviewConfig {
+    /// 执行型验收轮数上限（默认 1 = 只跑一轮纯文本验收，与历史行为字节
+    /// 等价）。>1 且最近一次派发的 worker 是本机节点时，验收 agent 以只读
+    /// 工具白名单最多执行 N 轮取证后再下结论；远端 worker 一律纯文本
+    /// （B2a 安全闸）。
+    pub max_turns: u32,
+    /// 验收需要更多证据时允许向执行 worker 发起一轮自检（B2b；默认 false）。
+    /// worker 在其安全 8 层内按证据请求取证，回报后触发二段验收。
+    pub selfcheck: bool,
+    /// 项目验收（F3）：项目下全部顶层父单 done 后自动汇总验收，PASS 自动
+    /// completed（默认 false = completed 仅人工/归档脚本设置）。FAIL/UNSURE
+    /// 只写缺口评论 + 回滚 completed→in_progress，不自动重开父单。
+    pub auto_close_project: bool,
+    /// 多检查员面板（全自动流转 P5/B3）：每次验收并行发出的评审路数
+    /// （默认 1 = 单检查员，与历史行为字节等价）。>1 时 N 路独立评审多数
+    /// 投票聚合（平票/无多数 → Unsure 转人工，fail-safe 不偏向自动收货）；
+    /// 消费侧收敛上限 5，并发上限 4。
+    pub checkers: u32,
+}
+
+impl Default for BoardReviewConfig {
+    fn default() -> Self {
+        Self {
+            max_turns: 1,
+            selfcheck: false,
+            auto_close_project: false,
+            checkers: 1,
+        }
+    }
+}
+
+/// 自动流转预算保险丝（`board.budget` 段；全自动流转 P4/E1；0 = 关闭）。
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(default)]
+pub struct BoardBudgetConfig {
+    /// 单个父单最大子单数（planner 拆解超出即告警；硬性派发侧预算）。
+    pub max_subissues_per_parent: u32,
+    /// 单个父单全链累计重派次数上限（含全部子单的 dispatch 记录；0 = 关闭）。
+    pub max_total_redispatch: u32,
+    /// 单个父单从创建起的墙钟预算秒数（超时不再自动重派转人工；0 = 关闭）。
+    pub wall_clock_budget_secs: u64,
+    /// 单个父单全链 token 预算（E1 二期：worker 经回调回传的用量累计，
+    /// input+output 口径；0 = 关闭。依赖集群回传，单机路径无 token 记账）。
+    pub max_tokens_per_parent: u64,
+}
+
+impl Default for BoardBudgetConfig {
+    fn default() -> Self {
+        Self {
+            max_subissues_per_parent: 20,
+            max_total_redispatch: 0,
+            wall_clock_budget_secs: 0,
+            max_tokens_per_parent: 0,
         }
     }
 }
@@ -291,6 +370,9 @@ pub struct BoardPlanConfig {
     /// planner 拆解用模型别名（None = 主模型）。
     pub model: Option<String>,
     /// 拆解后跳过人工确认闸直接建单派发（默认 false = 拆完等人确认）。
+    /// 消费点：`issue_plan` 一段异步拆解产出 plan_ready 时现读本旗标，
+    /// true 即自动 confirm 发车（全自动流转 P1 接线；planner 失败仍转
+    /// 人工通知，不自动重试）。
     pub auto_confirm: bool,
 }
 
@@ -1145,6 +1227,15 @@ pub struct ModelConfig {
     pub auth_method: String,
     #[serde(default)]
     pub connect_mode: String,
+    /// 显式协议类型（LLM 协议选择器，2026-09-11）：`anthropic`（别名
+    /// `claude`，/v1/messages + x-api-key）/ `openai`（chat/completions +
+    /// Bearer）/ `responses`（OpenAI Responses API）。空串 = 不指定，按
+    /// provider/ 前缀与模型名关键词自动推断（现状行为，老条目零迁移）。
+    /// 显式值优先于推断（显式 > 推断）；未知值在 factory 解析时 loud 拒绝。
+    /// 只决定 wire 格式与 auth header——api_base 默认推断、价目表归属、
+    /// 显示名仍由 provider 前缀管辖。
+    #[serde(default)]
+    pub protocol: String,
     #[serde(default)]
     pub workspace: String,
     /// H4 (U16 half): reasoning-effort tier for this model ("off" | "low" |

@@ -35,9 +35,7 @@ fn scan_backfills_project_id_and_path() {
         ws.path(),
         "agent_main_session_b1",
         "bound first",
-        Some(
-            r#"{"title":"项目会话","project_id":"p-abc12345","project_path":"C:/proj/demo"}"#,
-        ),
+        Some(r#"{"title":"项目会话","project_id":"p-abc12345","project_path":"C:/proj/demo"}"#),
     );
 
     let sessions = scan_session_logs(ws.path().to_str().unwrap());

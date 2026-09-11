@@ -23,7 +23,7 @@ pub async fn test_cli_model_add(ws: &TestWorkspace, bin: &Path) -> Vec<TestResul
                 "--model",
                 "test/testai-1.1",
                 "--base",
-                "http://127.0.0.1:8080/v1",
+                &format!("http://127.0.0.1:{}/v1", ai_server_port()),
                 "--key",
                 "test-key",
                 "--default",

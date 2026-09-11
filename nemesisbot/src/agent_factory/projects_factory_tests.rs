@@ -10,7 +10,7 @@
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-use super::{build_agent_loop, build_project_agent_loop, project_checkpoint_dir, SharedResources};
+use super::{SharedResources, build_agent_loop, build_project_agent_loop, project_checkpoint_dir};
 use crate::projects::registry::ProjectEntry;
 use nemesis_agent::checkpoint::CheckpointBackend;
 
@@ -76,20 +76,28 @@ fn shared_for(home: &Path) -> Arc<SharedResources> {
                 Box::pin(async {
                     Err::<serde_json::Value, String>("offline test fixture".to_string())
                         as Result<serde_json::Value, String>
-                }) as std::pin::Pin<
-                    Box<dyn std::future::Future<Output = Result<serde_json::Value, String>> + Send>,
-                >
+                })
+                    as std::pin::Pin<
+                        Box<
+                            dyn std::future::Future<Output = Result<serde_json::Value, String>>
+                                + Send,
+                        >,
+                    >
             },
-        ) as Arc<
-            dyn Fn(
-                    &str,
-                    &str,
-                    serde_json::Value,
-                ) -> std::pin::Pin<
-                    Box<dyn std::future::Future<Output = Result<serde_json::Value, String>> + Send>,
-                > + Send
-                + Sync,
-        >),
+        )
+            as Arc<
+                dyn Fn(
+                        &str,
+                        &str,
+                        serde_json::Value,
+                    ) -> std::pin::Pin<
+                        Box<
+                            dyn std::future::Future<Output = Result<serde_json::Value, String>>
+                                + Send,
+                        >,
+                    > + Send
+                    + Sync,
+            >),
         ..Default::default()
     })
 }
@@ -208,7 +216,11 @@ async fn project_checkpoint_shadow_repo_stays_out_of_project_dir() {
     // 影子库在构造期即初始化于主 workspace（R7：绝不落用户项目目录）。
     let cp_dir = project_checkpoint_dir(&shared.workspace_dir(), "p_cpgit0001");
     let shadow = cp_dir.join("repo.git");
-    assert!(shadow.is_dir(), "shadow repo must land under main workspace: {}", shadow.display());
+    assert!(
+        shadow.is_dir(),
+        "shadow repo must land under main workspace: {}",
+        shadow.display()
+    );
     // begin 落 turn 记录（同一 cp_dir——dir 挂载正确的直接证据）。
     store.begin(1, "turn one");
     let cp_entries = dir_names(&cp_dir);
@@ -219,7 +231,11 @@ async fn project_checkpoint_shadow_repo_stays_out_of_project_dir() {
     // 用户项目目录零污染：只有自放的 .git + f.txt。
     let mut remaining = dir_names(&project_dir);
     remaining.sort();
-    assert_eq!(remaining, vec![".git", "f.txt"], "project dir must stay untouched");
+    assert_eq!(
+        remaining,
+        vec![".git", "f.txt"],
+        "project dir must stay untouched"
+    );
 
     // ── 形态二：纯目录（无 .git）→ JSON 快照回落，同样零污染 ──
     let home2 = unique_home("cp_json");

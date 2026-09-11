@@ -112,7 +112,7 @@ fn test_get_by_id_and_number_and_missing() {
 #[test]
 fn test_list_filters() {
     let (store, dir) = temp_store("filters");
-    let proj = store.create_project("P", "", None, "").unwrap();
+    let proj = store.create_project("P", "", None, "", "").unwrap();
 
     let mut assigned = new_issue("被指派的");
     assigned.assignee = Some(AssignmentType::Worker);
@@ -467,14 +467,14 @@ fn test_projects_crud() {
     let (store, dir) = temp_store("projects");
     assert!(store.list_projects().unwrap().is_empty());
     let p = store
-        .create_project("主项目", "描述", Some(&admin()), "🚀")
+        .create_project("主项目", "描述", Some(&admin()), "🚀", "")
         .unwrap();
     assert_eq!(p.name, "主项目");
     assert_eq!(p.lead, Some(admin()));
     // 重名拒绝。
-    assert!(store.create_project("主项目", "", None, "").is_err());
+    assert!(store.create_project("主项目", "", None, "", "").is_err());
     // 空名拒绝。
-    assert!(store.create_project("  ", "", None, "").is_err());
+    assert!(store.create_project("  ", "", None, "", "").is_err());
     assert_eq!(store.get_project(p.id).unwrap().icon, "🚀");
     assert_eq!(store.list_projects().unwrap().len(), 1);
     assert!(store.get_project(999).is_err());
@@ -962,7 +962,9 @@ fn test_notification_inbox_read_flow_and_admin_wildcard() {
 #[test]
 fn test_update_project_patch() {
     let (store, dir) = temp_store("project-patch");
-    let p = store.create_project("原项目", "说明", None, "🚀").unwrap();
+    let p = store
+        .create_project("原项目", "说明", None, "🚀", "")
+        .unwrap();
 
     // 部分更新：status 归档 + 改 icon；其余字段不动。
     let updated = store
@@ -1005,7 +1007,7 @@ fn test_update_project_patch() {
     assert!(store.update_project(999, &ProjectPatch::default()).is_err());
 
     // 改名撞 UNIQUE。
-    store.create_project("另一个", "", None, "").unwrap();
+    store.create_project("另一个", "", None, "", "").unwrap();
     assert!(
         store
             .update_project(
@@ -1202,6 +1204,7 @@ fn new_ap(name: &str) -> NewAutopilot {
         project_id: None,
         target: String::new(),
         enabled: true,
+        auto_plan: false,
     }
 }
 
@@ -1372,7 +1375,10 @@ fn test_required_role_and_tags_roundtrip() {
     let issue = store.create_issue(ni).unwrap();
     let back = store.get_issue(issue.id).unwrap();
     assert_eq!(back.required_role.as_deref(), Some("worker"));
-    assert_eq!(back.required_tags, vec!["rust".to_string(), "backend".to_string()]);
+    assert_eq!(
+        back.required_tags,
+        vec!["rust".to_string(), "backend".to_string()]
+    );
 
     // 未带需求的 issue：None / 空（宽容默认，不是 Option<Vec>）。
     let plain = store.create_issue(new_issue("无需求")).unwrap();
@@ -1423,8 +1429,15 @@ fn test_dependencies_replace_semantics() {
 
     store.set_issue_dependencies(c.id, &[a.id]).unwrap();
     store.set_issue_dependencies(c.id, &[b.id]).unwrap();
-    assert_eq!(store.dependencies_of(c.id).unwrap(), vec![b.id], "重设必须整体替换");
-    assert!(store.dependents_of(a.id).unwrap().is_empty(), "旧边必须清掉");
+    assert_eq!(
+        store.dependencies_of(c.id).unwrap(),
+        vec![b.id],
+        "重设必须整体替换"
+    );
+    assert!(
+        store.dependents_of(a.id).unwrap().is_empty(),
+        "旧边必须清掉"
+    );
 
     // 空切片 = 清空。
     store.set_issue_dependencies(c.id, &[]).unwrap();
@@ -1449,7 +1462,11 @@ fn test_dependencies_dedup_repeats() {
     let a = store.create_issue(new_issue("A")).unwrap();
     let c = store.create_issue(new_issue("C")).unwrap();
     store.set_issue_dependencies(c.id, &[a.id, a.id]).unwrap();
-    assert_eq!(store.dependencies_of(c.id).unwrap(), vec![a.id], "重复边去重");
+    assert_eq!(
+        store.dependencies_of(c.id).unwrap(),
+        vec![a.id],
+        "重复边去重"
+    );
     cleanup(&dir);
 }
 
@@ -1457,18 +1474,20 @@ fn test_dependencies_dedup_repeats() {
 fn test_list_children_returns_creation_order() {
     let (store, dir) = temp_store("list-children");
     let parent = store.create_issue(new_issue("父单")).unwrap();
-    let c1 = store.create_issue(NewIssue {
-        title: "子一".into(),
-        parent_issue_id: Some(parent.id),
-        ..NewIssue::default()
-    })
-    .unwrap();
-    let c2 = store.create_issue(NewIssue {
-        title: "子二".into(),
-        parent_issue_id: Some(parent.id),
-        ..NewIssue::default()
-    })
-    .unwrap();
+    let c1 = store
+        .create_issue(NewIssue {
+            title: "子一".into(),
+            parent_issue_id: Some(parent.id),
+            ..NewIssue::default()
+        })
+        .unwrap();
+    let c2 = store
+        .create_issue(NewIssue {
+            title: "子二".into(),
+            parent_issue_id: Some(parent.id),
+            ..NewIssue::default()
+        })
+        .unwrap();
     // 无关父单的 issue 不混入。
     let _other = store.create_issue(new_issue("别人家")).unwrap();
 
@@ -1529,12 +1548,14 @@ fn test_create_channel_normalizes_and_rejects_duplicates() {
         .unwrap_err();
     assert!(err.contains("already exists"), "got: {err}");
     // 空名拒绝。
-    assert!(store
-        .create_channel(NewChannel {
-            name: "   ".to_string(),
-            topic: String::new(),
-        })
-        .is_err());
+    assert!(
+        store
+            .create_channel(NewChannel {
+                name: "   ".to_string(),
+                topic: String::new(),
+            })
+            .is_err()
+    );
     // 按名查询（输入同样归一化）。
     let got = store.get_channel_by_name("design").unwrap().unwrap();
     assert_eq!(got.id, c.id);
@@ -1585,18 +1606,38 @@ fn test_has_any_channel_membership_first_join_predicate() {
     let general = store.get_channel_by_name("#general").unwrap().unwrap();
 
     // 全新节点：任何频道都无行 → 可自动收编。
-    assert!(!store.has_any_channel_membership(&Actor::agent("node-x")).unwrap());
+    assert!(
+        !store
+            .has_any_channel_membership(&Actor::agent("node-x"))
+            .unwrap()
+    );
 
     // 入了 #dev 后：不再算全新（announce 不重复收编）。
     store.join_channel(dev.id, Actor::agent("node-x")).unwrap();
-    assert!(store.has_any_channel_membership(&Actor::agent("node-x")).unwrap());
+    assert!(
+        store
+            .has_any_channel_membership(&Actor::agent("node-x"))
+            .unwrap()
+    );
 
     // 只在 #general 的成员同样判「已见」——被管理员 leave 出 #dev 的
     // 成员若在其他频道有行就不会被拉回。
-    store.join_channel(general.id, Actor::agent("node-y")).unwrap();
-    assert!(store.has_any_channel_membership(&Actor::agent("node-y")).unwrap());
-    store.leave_channel(general.id, &Actor::agent("node-y")).unwrap();
-    assert!(!store.has_any_channel_membership(&Actor::agent("node-y")).unwrap());
+    store
+        .join_channel(general.id, Actor::agent("node-y"))
+        .unwrap();
+    assert!(
+        store
+            .has_any_channel_membership(&Actor::agent("node-y"))
+            .unwrap()
+    );
+    store
+        .leave_channel(general.id, &Actor::agent("node-y"))
+        .unwrap();
+    assert!(
+        !store
+            .has_any_channel_membership(&Actor::agent("node-y"))
+            .unwrap()
+    );
     cleanup(&dir);
 }
 
@@ -1607,15 +1648,17 @@ fn test_channel_message_append_list_and_cursor() {
     let dev = store.get_channel_by_name("#dev").unwrap().unwrap();
 
     // 纯空白内容拒绝。
-    assert!(store
-        .append_channel_message(NewChannelMessage {
-            channel_id: dev.id,
-            sender: sys_actor(),
-            content: "   ".to_string(),
-            parent_id: None,
-            mtype: String::new(),
-        })
-        .is_err());
+    assert!(
+        store
+            .append_channel_message(NewChannelMessage {
+                channel_id: dev.id,
+                sender: sys_actor(),
+                content: "   ".to_string(),
+                parent_id: None,
+                mtype: String::new(),
+            })
+            .is_err()
+    );
 
     let m1 = store
         .append_channel_message(NewChannelMessage {
@@ -1698,7 +1741,10 @@ fn test_sweep_channel_messages_respects_retention() {
 
     // retention 0 = 永久保留（清扫直接 no-op）。
     assert_eq!(store.sweep_channel_messages(0).unwrap(), 0);
-    assert_eq!(store.list_channel_messages(dev.id, 0, 100).unwrap().len(), 5);
+    assert_eq!(
+        store.list_channel_messages(dev.id, 0, 100).unwrap().len(),
+        5
+    );
 
     // 全部消息都是刚写入的 → 90 天保留扫不掉。
     assert_eq!(store.sweep_channel_messages(90).unwrap(), 0);
@@ -1714,7 +1760,12 @@ fn test_sweep_channel_messages_respects_retention() {
         .unwrap();
     }
     assert_eq!(store.sweep_channel_messages(90).unwrap(), 5);
-    assert!(store.list_channel_messages(dev.id, 0, 100).unwrap().is_empty());
+    assert!(
+        store
+            .list_channel_messages(dev.id, 0, 100)
+            .unwrap()
+            .is_empty()
+    );
     cleanup(&dir);
 }
 
@@ -1752,14 +1803,16 @@ fn test_asset_register_lookup_upsert() {
     assert!(store.assets_for_issue(1).unwrap().is_empty());
 
     // 空 ref 拒绝。
-    assert!(store
-        .register_asset(NewAsset {
-            ref_name: " ".to_string(),
-            origin_issue: None,
-            sha256: String::new(),
-            size: 0,
-        })
-        .is_err());
+    assert!(
+        store
+            .register_asset(NewAsset {
+                ref_name: " ".to_string(),
+                origin_issue: None,
+                sha256: String::new(),
+                size: 0,
+            })
+            .is_err()
+    );
     cleanup(&dir);
 }
 
@@ -1881,7 +1934,10 @@ fn test_post_discussion_envelope_idempotent_both_targets() {
         .unwrap();
     assert!(!dup_ch.is_new);
     assert_eq!(dup_ch.response, first_ch.response);
-    assert_eq!(store.list_channel_messages(dev.id, 0, 100).unwrap().len(), 1);
+    assert_eq!(
+        store.list_channel_messages(dev.id, 0, 100).unwrap().len(),
+        1
+    );
 
     // 不同 origin 的同 id 不冲突（幂等键按节点隔离）。
     let other = store
@@ -2039,15 +2095,25 @@ fn test_team_memory_add_list_and_scope_normalization() {
     assert_eq!(all[0].use_count, 0);
     assert!(!all[0].deprecated);
     // scope 过滤（大小写不敏感）。
-    assert_eq!(store.list_team_memory(Some("AUTH"), false).unwrap().len(), 1);
-    assert_eq!(store.list_team_memory(Some("nope"), false).unwrap().len(), 0);
+    assert_eq!(
+        store.list_team_memory(Some("AUTH"), false).unwrap().len(),
+        1
+    );
+    assert_eq!(
+        store.list_team_memory(Some("nope"), false).unwrap().len(),
+        0
+    );
     // 空 scope/content 拒绝（蒸馏纪律兜底）。
-    assert!(store
-        .add_team_memory(new_memory("pitfall", "  ", "x"))
-        .is_err());
-    assert!(store
-        .add_team_memory(new_memory("pitfall", "auth", "   "))
-        .is_err());
+    assert!(
+        store
+            .add_team_memory(new_memory("pitfall", "  ", "x"))
+            .is_err()
+    );
+    assert!(
+        store
+            .add_team_memory(new_memory("pitfall", "auth", "   "))
+            .is_err()
+    );
     cleanup(&dir);
 }
 
@@ -2070,7 +2136,11 @@ fn test_team_memory_dedup_merges_into_old_entry() {
     assert!(merged3);
     // 内容互为包含（子串）→ 从宽并入。
     let (_, merged4) = store
-        .add_team_memory(new_memory("pitfall", "auth", "token 过期要刷新，先刷新再重试"))
+        .add_team_memory(new_memory(
+            "pitfall",
+            "auth",
+            "token 过期要刷新，先刷新再重试",
+        ))
         .unwrap();
     assert!(merged4);
     // 不同 scope 不合并。
@@ -2136,4 +2206,262 @@ fn test_team_memory_migration_preserves_existing_data() {
     assert_eq!(store2.list_team_memory(None, false).unwrap().len(), 1);
     assert!(store2.get_issue(issue.id).is_ok());
     cleanup(&dir);
+}
+
+// ---------------------------------------------------------------------------
+// 全自动流转 P3：auto_plan serde 兼容 + project.status 宽容读取
+// ---------------------------------------------------------------------------
+
+#[test]
+fn test_autopilot_serde_roundtrip_auto_plan_default() {
+    // 存量 JSON（无 auto_plan 键）→ 反序列化 false（行为不变）；显式 true
+    // 透传；序列化带键。
+    let legacy = r#"{"id":1,"name":"日报","cron":"0 9 * * *","title":"t","priority":1,
+        "project_id":null,"target":"","enabled":true,"cron_job_id":null,
+        "last_run_at":null,"created_at":0,"updated_at":0}"#;
+    let ap: Autopilot = serde_json::from_str(legacy).unwrap();
+    assert!(
+        !ap.auto_plan,
+        "缺省必须反序列化为 false（存量规则行为不变）"
+    );
+    let mut ap = ap;
+    ap.auto_plan = true;
+    let json = serde_json::to_string(&ap).unwrap();
+    assert!(
+        json.contains("\"auto_plan\":true"),
+        "序列化应带 auto_plan 键: {json}"
+    );
+}
+
+#[test]
+fn test_project_status_lenient_read_unknown_value() {
+    // 存量库里的未知 status 字符串 → 读取宽容映射 active（WARN 一次），
+    // 不炸不拒读。
+    let (store, dir) = temp_store("project-status-lenient");
+    let pid = store.create_project("老项目", "", None, "", "").unwrap().id;
+    // 直接 SQL 改成词表外的值（模拟存量的自由字符串时代遗留数据）。
+    {
+        let conn = store.conn.lock().unwrap();
+        conn.execute(
+            "UPDATE project SET status = 'frozen_weird' WHERE id = ?1",
+            params![pid],
+        )
+        .unwrap();
+    }
+    let p = store.get_project(pid).unwrap();
+    assert_eq!(p.status, "active", "未知值读取时宽容映射 active");
+    // 未知值写不进去（update_project 对词表外 loud 拒绝）。
+    assert!(
+        store
+            .update_project(
+                pid,
+                &crate::models::ProjectPatch {
+                    status: Some("another_weird".to_string()),
+                    ..Default::default()
+                }
+            )
+            .is_err()
+    );
+    cleanup(&dir);
+}
+
+// -- 回归（全自动流转 P4 UAT 抓真 bug 后钉死）--
+
+/// 同秒派发乱序回归：`dispatched_at` 秒级精度下，同一秒内连续 insert 的
+/// 多条派发必须按插入序读回（rowid 序），"最新派发"不得被随机 UUID 决胜
+/// 打乱——D3 连续同节点判定与回调路由都吃这个序（cluster-uat T34 实测）。
+#[test]
+fn test_dispatch_list_order_is_insertion_order_within_same_second() {
+    let (store, dir) = temp_store("dispatch-order");
+    let issue = store.create_issue(new_issue("同秒三连派")).unwrap();
+    store
+        .insert_dispatch("task-zzz", issue.id, "node-b", &admin())
+        .unwrap();
+    store
+        .insert_dispatch("task-aaa", issue.id, "node-c", &admin())
+        .unwrap();
+    store
+        .insert_dispatch("task-mmm", issue.id, "node-d", &admin())
+        .unwrap();
+    let list = store.list_dispatches(issue.id).unwrap();
+    let workers: Vec<&str> = list.iter().map(|d| d.worker_id.as_str()).collect();
+    assert_eq!(
+        workers,
+        vec!["node-b", "node-c", "node-d"],
+        "同秒多条派发按插入序读回（不受 task_id UUID 排序影响）"
+    );
+    // 活跃派发取最新插入的（回调写回路由语义）。
+    let active = store.get_active_dispatch(issue.id).unwrap().unwrap();
+    assert_eq!(active.worker_id, "node-d");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// 项目级验收标准（v10 列）round-trip：create 写入 → get 读回；patch 更新；
+/// 缺省为空串。
+#[test]
+fn test_project_acceptance_criteria_roundtrip() {
+    let (store, dir) = temp_store("project-ac");
+    let p = store
+        .create_project(
+            "带标准项目",
+            "说明",
+            None,
+            "🚀",
+            "交付说明文本。\n<REVIEW_FAIL>",
+        )
+        .unwrap();
+    assert_eq!(p.acceptance_criteria, "交付说明文本。\n<REVIEW_FAIL>");
+    // 缺省空串。
+    let p2 = store
+        .create_project("无标准项目", "", None, "", "")
+        .unwrap();
+    assert_eq!(p2.acceptance_criteria, "");
+    // patch 更新。
+    let updated = store
+        .update_project(
+            p.id,
+            &crate::models::ProjectPatch {
+                acceptance_criteria: Some("新标准".to_string()),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+    assert_eq!(updated.acceptance_criteria, "新标准");
+    // patch None 不动。
+    let untouched = store.get_project(p.id).unwrap();
+    assert_eq!(untouched.acceptance_criteria, "新标准");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+// -- E2 决策流审计（全自动流转 P5）--
+
+/// list_recent_activity：JOIN 补齐单号/标题、按 id 倒序、limit 截断、
+/// action 过滤只留 auto_decide 词表。
+#[test]
+fn test_audit_list_recent_activity_filter_and_limit() {
+    let (store, dir) = temp_store("audit-list");
+    let a = store.create_issue(new_issue("决策甲")).unwrap();
+    let b = store.create_issue(new_issue("决策乙")).unwrap();
+    store
+        .add_activity(
+            a.id,
+            &admin(),
+            "auto_decide",
+            Some(r#"{"decision":"auto_accept"}"#),
+        )
+        .unwrap();
+    store
+        .add_activity(
+            b.id,
+            &admin(),
+            "auto_decide",
+            Some(r#"{"decision":"redispatch"}"#),
+        )
+        .unwrap();
+    // 非 auto_decide 词表行（状态变更）不应进决策流。
+    store
+        .add_activity(a.id, &admin(), "status_change", Some("x"))
+        .unwrap();
+    store
+        .add_activity(
+            b.id,
+            &admin(),
+            "auto_decide",
+            Some(r#"{"decision":"escalate_human"}"#),
+        )
+        .unwrap();
+
+    // 全量倒序 + JOIN 字段。
+    let rows = store.list_recent_activity(500, None).unwrap();
+    let auto: Vec<_> = rows
+        .iter()
+        .filter(|r| r.activity.action == "auto_decide")
+        .collect();
+    assert_eq!(auto.len(), 3);
+    assert_eq!(auto[0].issue_title, "决策乙");
+    assert_eq!(auto[2].issue_number, a.number);
+    assert_eq!(
+        auto[0].activity.details.as_deref(),
+        Some(r#"{"decision":"escalate_human"}"#)
+    );
+
+    // limit 截断取最新。
+    let top1 = store.list_recent_activity(1, None).unwrap();
+    assert_eq!(top1.len(), 1);
+    assert_eq!(top1[0].activity.action, "auto_decide");
+    assert_eq!(top1[0].issue_title, "决策乙");
+
+    // action 过滤。
+    let filtered = store
+        .list_recent_activity(500, Some("status_change"))
+        .unwrap();
+    assert_eq!(filtered.len(), 1);
+    assert_eq!(filtered[0].activity.action, "status_change");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// rollback_decision：done 单回滚 → in_review + 系统评论 + 活动记录；
+/// 非 auto_decide 拒；已非 done 拒（再回滚防重）；activity 不存在拒。
+#[test]
+fn test_audit_rollback_done_to_in_review_and_reentry_rejected() {
+    let (store, dir) = temp_store("audit-rollback");
+    let mut issue = store.create_issue(new_issue("自动收货回滚")).unwrap();
+    store
+        .add_activity(
+            issue.id,
+            &admin(),
+            "auto_decide",
+            Some(r#"{"decision":"auto_accept","verdict":"PASS"}"#),
+        )
+        .unwrap();
+    // 非 auto_decide 活动不能回滚。
+    store
+        .add_activity(issue.id, &admin(), "status_change", Some("x"))
+        .unwrap();
+    let noise = store
+        .list_recent_activity(1, Some("status_change"))
+        .unwrap()[0]
+        .activity
+        .id;
+    assert!(store.rollback_decision(noise).is_err());
+
+    // 推到 done（模拟自动收货后的状态）。
+    store
+        .transition_issue(issue.id, IssueStatus::Done, &admin())
+        .unwrap();
+    let activity_id = store.list_recent_activity(1, Some("auto_decide")).unwrap()[0]
+        .activity
+        .id;
+
+    let rolled = store.rollback_decision(activity_id).unwrap();
+    assert_eq!(rolled.status, IssueStatus::InReview);
+    issue = store.get_issue(issue.id).unwrap();
+    assert_eq!(issue.status, IssueStatus::InReview);
+
+    // 系统评论 + 回滚活动已落。
+    let comments = store.list_comments(issue.id).unwrap();
+    assert!(
+        comments.iter().any(|c| c.content.contains("审计回滚")),
+        "回滚必须留系统评论"
+    );
+    let acts = store
+        .list_recent_activity(500, Some("status_changed"))
+        .unwrap();
+    assert!(
+        acts.iter().any(|r| r
+            .activity
+            .details
+            .as_deref()
+            .unwrap_or("")
+            .contains("audit_rollback")),
+        "回滚必须留 status_changed 活动"
+    );
+
+    // 再回滚拒：单已退回 in_review，非 done。
+    let err = store.rollback_decision(activity_id).unwrap_err();
+    assert!(err.contains("done"), "再回滚应拒绝：{err}");
+
+    // activity 不存在拒。
+    assert!(store.rollback_decision(999_999).is_err());
+    let _ = std::fs::remove_dir_all(&dir);
 }

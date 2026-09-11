@@ -4224,7 +4224,10 @@ fn test_writeback_success_moves_to_in_review_with_result_comment() {
         "success",
         "改完了，产物在 foo.rs",
     );
-    assert!(board_writeback.is_board_task, "dispatched task must be recognized as board task");
+    assert!(
+        board_writeback.is_board_task,
+        "dispatched task must be recognized as board task"
+    );
 
     // 状态推进 in_progress → in_review（等 coordinator 验收）。
     let issue = store.get_issue_by_number("NB-1").unwrap();
@@ -4252,8 +4255,13 @@ fn test_writeback_error_keeps_in_progress_with_failure_comment() {
     std::fs::create_dir_all(&dir).unwrap();
     let store = dispatched_store(&dir, "task-err");
 
-    let board_writeback =
-        write_back_board_dispatch(&Some(store.clone()), &dir, "task-err", "error", "编译失败：…");
+    let board_writeback = write_back_board_dispatch(
+        &Some(store.clone()),
+        &dir,
+        "task-err",
+        "error",
+        "编译失败：…",
+    );
     assert!(board_writeback.is_board_task);
 
     // 失败留在 in_progress（不推 in_review），失败评论留痕。
@@ -4277,21 +4285,15 @@ fn test_writeback_duplicate_callback_is_idempotent() {
     std::fs::create_dir_all(&dir).unwrap();
     let store = dispatched_store(&dir, "task-dup");
 
-    assert!(write_back_board_dispatch(
-        &Some(store.clone()),
-        &dir,
-        "task-dup",
-        "success",
-        "第一份"
-    ).is_board_task);
+    assert!(
+        write_back_board_dispatch(&Some(store.clone()), &dir, "task-dup", "success", "第一份")
+            .is_board_task
+    );
     // 重复回调：仍识别为 board 任务（跳过续行），但不重复写评论/转移。
-    assert!(write_back_board_dispatch(
-        &Some(store.clone()),
-        &dir,
-        "task-dup",
-        "success",
-        "第一份"
-    ).is_board_task);
+    assert!(
+        write_back_board_dispatch(&Some(store.clone()), &dir, "task-dup", "success", "第一份")
+            .is_board_task
+    );
 
     let issue = store.get_issue_by_number("NB-1").unwrap();
     assert_eq!(issue.status, nemesis_board::IssueStatus::InReview);
@@ -4316,28 +4318,15 @@ fn test_writeback_non_board_and_unavailable_store() {
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).unwrap();
     let store = dispatched_store(&dir, "task-x");
-    assert!(!write_back_board_dispatch(
-        &Some(store.clone()),
-        &dir,
-        "other-task",
-        "success",
-        "…"
-    ).is_board_task);
-    assert!(!write_back_board_dispatch(
-        &Some(store.clone()),
-        &dir,
-        "",
-        "success",
-        "…"
-    ).is_board_task);
+    assert!(
+        !write_back_board_dispatch(&Some(store.clone()), &dir, "other-task", "success", "…")
+            .is_board_task
+    );
+    assert!(
+        !write_back_board_dispatch(&Some(store.clone()), &dir, "", "success", "…").is_board_task
+    );
     // store 未注入 → 恒 false。
-    assert!(!write_back_board_dispatch(
-        &None,
-        &dir,
-        "task-x",
-        "success",
-        "…"
-    ).is_board_task);
+    assert!(!write_back_board_dispatch(&None, &dir, "task-x", "success", "…").is_board_task);
     let _ = std::fs::remove_dir_all(&dir);
 }
 
@@ -4420,13 +4409,8 @@ fn test_writeback_oversized_report_overflows_to_asset() {
     );
     assert!(response.len() > 64 * 1024);
 
-    let board_writeback = write_back_board_dispatch(
-        &Some(store.clone()),
-        &dir,
-        "task-big",
-        "success",
-        &response,
-    );
+    let board_writeback =
+        write_back_board_dispatch(&Some(store.clone()), &dir, "task-big", "success", &response);
     assert!(board_writeback.is_board_task);
 
     let issue = store.get_issue_by_number("NB-1").unwrap();
@@ -4562,10 +4546,7 @@ fn test_select_advertised_lan_ip_prefers_peer_subnet() {
 #[test]
 fn test_select_advertised_lan_ip_falls_back_to_first_non_loopback() {
     // 无 peer 信号（注册表还空着）→ 回落首猜（旧行为，不做更差的猜测）。
-    let local = vec![
-        "10.103.174.241".to_string(),
-        "192.168.137.1".to_string(),
-    ];
+    let local = vec!["10.103.174.241".to_string(), "192.168.137.1".to_string()];
     assert_eq!(
         select_advertised_lan_ip(&local, &[]),
         Some("10.103.174.241".to_string())
@@ -4603,4 +4584,86 @@ fn test_select_advertised_lan_ip_ignores_self_lookalike_hosts() {
         select_advertised_lan_ip(&local, &peers),
         Some("192.168.137.1".to_string())
     );
+}
+
+// -------------------------------------------------------------------------
+// E1 二期 token 回传：record_cluster_usage 记账（全自动流转 P5）
+// -------------------------------------------------------------------------
+
+fn e1_temp_ds(name: &str) -> (std::sync::Arc<nemesis_data::DataStore>, std::path::PathBuf) {
+    let dir =
+        std::env::temp_dir().join(format!("nb-gateway-e1-usage-{}-{name}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    (
+        std::sync::Arc::new(nemesis_data::DataStore::open(&dir.join("data.db")).unwrap()),
+        dir,
+    )
+}
+
+/// serde 兼容：旧 worker 回调 payload 无 `usage` 字段 → 不记账、不炸；
+/// 带 usage → 记账行 session_key = `cluster_rpc:{worker}/{task_id}`，
+/// input/output/cost 逐字段入账（token 预算闸按此键精确聚合）。
+#[test]
+fn test_record_cluster_usage_serde_compat_and_session_key() {
+    let (ds, dir) = e1_temp_ds("compat");
+
+    // 旧 payload：无 usage 字段 → 静默跳过（无行）。
+    record_cluster_usage(Some(&ds), "node-b", "task-old", None);
+    let agg = ds
+        .aggregate_session_usage("cluster_rpc:node-b/task-old")
+        .unwrap();
+    assert_eq!(agg.requests, 0, "无 usage 不得记账");
+
+    // task_id 空 → 跳过。
+    record_cluster_usage(
+        Some(&ds),
+        "node-b",
+        "",
+        Some(&serde_json::json!({"input_tokens": 1})),
+    );
+    // ds 缺失 → 跳过（None 安全）。
+    record_cluster_usage(None, "node-b", "task-x", Some(&serde_json::json!({})));
+
+    // 新 payload：带 usage（worker 侧 extract_task_usage 的形状）。
+    record_cluster_usage(
+        Some(&ds),
+        "node-b",
+        "task-42",
+        Some(&serde_json::json!({
+            "input_tokens": 1200,
+            "output_tokens": 340,
+            "requests": 3,
+            "cost_usd": 0.77
+        })),
+    );
+    let key = "cluster_rpc:node-b/task-42";
+    let agg = ds.aggregate_session_usage(key).unwrap();
+    assert_eq!(agg.requests, 1, "usage 记账一行");
+    assert_eq!(agg.input_tokens, 1200);
+    assert_eq!(agg.output_tokens, 340);
+    assert!((agg.total_cost_usd - 0.77).abs() < 1e-9);
+
+    // LIKE 前缀聚合（query_logs 语义）：同 worker 多任务可归并。
+    record_cluster_usage(
+        Some(&ds),
+        "node-b",
+        "task-43",
+        Some(&serde_json::json!({"input_tokens": 10, "output_tokens": 5})),
+    );
+    let (logs, total) = ds
+        .query_logs(
+            0,
+            i64::MAX,
+            1,
+            100,
+            &nemesis_data::LogFilter {
+                model: None,
+                status: None,
+                session_key: Some("cluster_rpc:node-b/".to_string()),
+            },
+        )
+        .unwrap();
+    assert_eq!(total, 2, "worker/ 前缀 LIKE 聚合命中两笔");
+    assert_eq!(logs.len(), 2);
+    let _ = std::fs::remove_dir_all(&dir);
 }

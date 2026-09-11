@@ -20,13 +20,13 @@
 use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, OnceLock};
 
-use nemesis_board::arbitrator::{
-    has_mentions, mentions_node, resolve_wake_targets, NodeCandidate, WakeInput,
-};
-use nemesis_board::models::thread_kind;
-use nemesis_board::models::PostedMessage;
-use nemesis_board::quota::{QuotaDenied, QuotaLedger};
 use nemesis_board::Actor;
+use nemesis_board::arbitrator::{
+    NodeCandidate, WakeInput, has_mentions, mentions_node, resolve_wake_targets,
+};
+use nemesis_board::models::PostedMessage;
+use nemesis_board::models::thread_kind;
+use nemesis_board::quota::{QuotaDenied, QuotaLedger};
 use nemesis_cluster::envelope::{self, Envelope, EnvelopeError, EnvelopeResponse};
 use nemesis_cluster::rpc_types::{ActionType, RPCRequest};
 use nemesis_types::cluster::{DiscussionCtxMessage, DiscussionEvent};
@@ -127,7 +127,7 @@ fn handle_comment_post(deps: &MasterBusDeps, env: &Envelope) -> EnvelopeResponse
                     envelope::error_code::VALIDATION,
                     "missing client_msg_id (upstream idempotency key)",
                 ),
-            )
+            );
         }
     };
     let Some(thread_kind) = body
@@ -177,9 +177,7 @@ fn handle_comment_post(deps: &MasterBusDeps, env: &Envelope) -> EnvelopeResponse
             EnvelopeError::new(envelope::error_code::VALIDATION, "missing content"),
         );
     };
-    let reply_to = body
-        .get("reply_to")
-        .and_then(|v| v.as_i64());
+    let reply_to = body.get("reply_to").and_then(|v| v.as_i64());
     let kind_tag = body
         .get("kind_tag")
         .and_then(|v| v.as_str())
@@ -211,14 +209,12 @@ fn handle_comment_post(deps: &MasterBusDeps, env: &Envelope) -> EnvelopeResponse
                 EnvelopeError::new(denied.error_code(), denied.message()),
             )
         }
-        Err(PostError::Store(e)) => EnvelopeResponse::failure(
-            env,
-            EnvelopeError::new(envelope::error_code::VALIDATION, e),
-        ),
-        Err(PostError::DedupCheck(e)) => EnvelopeResponse::failure(
-            env,
-            EnvelopeError::new(envelope::error_code::INTERNAL, e),
-        ),
+        Err(PostError::Store(e)) => {
+            EnvelopeResponse::failure(env, EnvelopeError::new(envelope::error_code::VALIDATION, e))
+        }
+        Err(PostError::DedupCheck(e)) => {
+            EnvelopeResponse::failure(env, EnvelopeError::new(envelope::error_code::INTERNAL, e))
+        }
     }
 }
 
@@ -255,7 +251,7 @@ fn post_discussion_core(
                 message_id: 0,
                 seq: 0,
                 response: cached,
-            })
+            });
         }
         Ok(None) => {}
         Err(e) => return Err(PostError::DedupCheck(e)),
@@ -404,10 +400,9 @@ fn handle_sync(deps: &MasterBusDeps, env: &Envelope) -> EnvelopeResponse {
                 }),
             )
         }
-        Err(e) => EnvelopeResponse::failure(
-            env,
-            EnvelopeError::new(envelope::error_code::INTERNAL, e),
-        ),
+        Err(e) => {
+            EnvelopeResponse::failure(env, EnvelopeError::new(envelope::error_code::INTERNAL, e))
+        }
     }
 }
 
@@ -527,8 +522,7 @@ async fn deliver_wakeups(deps: DepsForTask, ctx: WakeContext) {
                 need_moderator = true;
                 continue;
             }
-            let payload = match build_wake_envelope(&deps.store, &ctx, turns_left, event_label)
-            {
+            let payload = match build_wake_envelope(&deps.store, &ctx, turns_left, event_label) {
                 Ok(p) => p,
                 Err(e) => {
                     tracing::warn!(target: "board_bus", target = %target, error = %e,
@@ -558,9 +552,7 @@ async fn deliver_wakeups(deps: DepsForTask, ctx: WakeContext) {
 
     // 规则③（或主持人被直接点名）：主持人裁决（master 本地 agent；回复
     // 照常落库并定点唤醒被 @ 的节点）。额度已耗尽时不进裁决（见上方 return）。
-    if need_moderator
-        && let Err(e) = run_moderator(deps, ctx, &nodes, &self_node_id).await
-    {
+    if need_moderator && let Err(e) = run_moderator(deps, ctx, &nodes, &self_node_id).await {
         tracing::warn!(target: "board_bus", thread = %thread_key, error = %e,
             "[nb_bus] moderator adjudication failed");
     }
@@ -591,7 +583,10 @@ async fn run_moderator(
          - If nothing needs to be said, reply exactly [SILENT].",
         ctx.sender.id, ctx.content
     );
-    let session_key = format!("board:moderator:{thread_kind}", thread_kind = ctx.thread_kind);
+    let session_key = format!(
+        "board:moderator:{thread_kind}",
+        thread_kind = ctx.thread_kind
+    );
     let reply = agent_loop.process_direct(&prompt, &session_key).await?;
     let trimmed = reply.trim();
 
@@ -641,7 +636,9 @@ async fn run_moderator(
     if plan.targets.is_empty() {
         return Ok(());
     }
-    let turns_left = deps.quota.turns_left(&format!("{}:{}", ctx.thread_kind, ctx.thread_id));
+    let turns_left = deps
+        .quota
+        .turns_left(&format!("{}:{}", ctx.thread_kind, ctx.thread_id));
     if turns_left == 0 {
         return Ok(()); // 已在 warn 日志里（外层调用点），此处静默收敛。
     }
@@ -677,10 +674,7 @@ fn build_wake_envelope(
     let messages = thread_context_json(store, ctx)?;
     let (title, prd_summary) = if ctx.thread_kind == thread_kind::ISSUE {
         match store.get_issue(ctx.thread_id) {
-            Ok(issue) => (
-                issue.title.clone(),
-                truncate_chars(&issue.description, 500),
-            ),
+            Ok(issue) => (issue.title.clone(), truncate_chars(&issue.description, 500)),
             Err(_) => (String::new(), String::new()),
         }
     } else {
@@ -928,13 +922,14 @@ impl WorkerWakeState {
             return;
         };
         let tmp = path.with_extension("json.tmp");
-        if let Err(e) = std::fs::create_dir_all(
-            path.parent().unwrap_or(std::path::Path::new(".")),
-        )
-        .and_then(|_| std::fs::write(&tmp, json))
-        .and_then(|_| std::fs::rename(&tmp, path))
+        if let Err(e) = std::fs::create_dir_all(path.parent().unwrap_or(std::path::Path::new(".")))
+            .and_then(|_| std::fs::write(&tmp, json))
+            .and_then(|_| std::fs::rename(&tmp, path))
         {
-            tracing::warn!("[BoardBus] wake state persist failed: {} (continuing in-memory)", e);
+            tracing::warn!(
+                "[BoardBus] wake state persist failed: {} (continuing in-memory)",
+                e
+            );
         }
     }
 
@@ -1021,7 +1016,7 @@ fn handle_wake_post(deps: &WorkerBusDeps, env: &Envelope, from_node: &str) -> En
             return EnvelopeResponse::failure(
                 env,
                 EnvelopeError::new(envelope::error_code::VALIDATION, msg),
-            )
+            );
         }
     };
     let thread_key = format!("{}:{}", event.thread_kind, event.thread_id);
@@ -1109,7 +1104,9 @@ fn parse_wake_body(env: &Envelope, from_node: &str) -> Result<DiscussionEvent, S
             .pointer("/new_message/at")
             .and_then(|v| v.as_i64())
             .unwrap_or(0),
-        reply_to: body.pointer("/reply_hint/reply_to").and_then(|v| v.as_i64()),
+        reply_to: body
+            .pointer("/reply_hint/reply_to")
+            .and_then(|v| v.as_i64()),
         max_turns_left: body
             .pointer("/reply_hint/max_turns_left")
             .and_then(|v| v.as_u64())
@@ -1132,9 +1129,8 @@ pub fn spawn_worker_sync_loop(
     cluster: Arc<nemesis_cluster::cluster::Cluster>,
 ) {
     tokio::spawn(async move {
-        let mut ticker = tokio::time::interval(std::time::Duration::from_secs(
-            BOARD_SYNC_INTERVAL_SECS,
-        ));
+        let mut ticker =
+            tokio::time::interval(std::time::Duration::from_secs(BOARD_SYNC_INTERVAL_SECS));
         ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
         loop {
             ticker.tick().await;
@@ -1223,10 +1219,7 @@ async fn worker_sync_once(
             .get("sender_id")
             .and_then(|v| v.as_str())
             .unwrap_or("");
-        let content = entry
-            .get("content")
-            .and_then(|v| v.as_str())
-            .unwrap_or("");
+        let content = entry.get("content").and_then(|v| v.as_str()).unwrap_or("");
         let at = entry
             .get("created_at")
             .and_then(|v| v.as_i64())

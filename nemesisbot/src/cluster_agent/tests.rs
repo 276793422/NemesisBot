@@ -555,7 +555,6 @@ mod loop_e2e {
         }
     }
 
-
     /// 带录制 persister 的 rig（G1 收口回归用）。
     fn spawn_rig_with_persister(
         agent_loop: AgentLoop,
@@ -817,7 +816,6 @@ mod loop_e2e {
     // 轮询永远拿到 running 占位，G5 恢复链在生产路径下失效。
     // =========================================================================
 
-
     /// 录制型 persister：记下每个调用，供断言。
     struct RecordingPersister {
         set_result_calls: std::sync::Mutex<Vec<(String, String, String, String)>>,
@@ -843,10 +841,12 @@ mod loop_e2e {
             error: &str,
             _source_node: &str,
         ) -> Result<(), String> {
-            self.set_result_calls
-                .lock()
-                .unwrap()
-                .push((task_id.to_string(), status.to_string(), response.to_string(), error.to_string()));
+            self.set_result_calls.lock().unwrap().push((
+                task_id.to_string(),
+                status.to_string(),
+                response.to_string(),
+                error.to_string(),
+            ));
             Ok(())
         }
         fn delete(&self, task_id: &str) -> Result<(), String> {
@@ -868,7 +868,8 @@ mod loop_e2e {
         };
         let agent_loop = AgentLoop::new(Box::new(provider), base_config());
         let persister = RecordingPersister::new();
-        let rig = spawn_rig_with_persister(agent_loop, base_config(), tmp.path(), persister.clone());
+        let rig =
+            spawn_rig_with_persister(agent_loop, base_config(), tmp.path(), persister.clone());
 
         rig.task_list.create_task(make_task("g1-persist"));
         rig.work_queue.submit("g1-persist".to_string()).unwrap();
@@ -903,7 +904,9 @@ mod loop_e2e {
                 let port = self.port.lock().unwrap().expect("server started");
                 Some((vec!["127.0.0.1".into()], port, true))
             }
-            fn get_local_interfaces(&self) -> Vec<nemesis_cluster::rpc::client::LocalNetworkInterface> {
+            fn get_local_interfaces(
+                &self,
+            ) -> Vec<nemesis_cluster::rpc::client::LocalNetworkInterface> {
                 Vec::new()
             }
             fn get_node_id(&self) -> String {
@@ -932,9 +935,11 @@ mod loop_e2e {
             Some(&client),
             Some(persister.as_ref()),
             &task,
+            "self-node-g1",
             "success",
             "done-work",
             "",
+            None,
         )
         .await;
 
@@ -1492,7 +1497,10 @@ mod swarm_g4 {
         let event = make_event(9, "@node-a 请给结论");
         let prompt = build_discussion_prompt("node-a", &event);
         // 线程标题 + 历史 + 新消息 + 唤醒原因 + 自我身份 + 二选一指令。
-        assert!(prompt.contains("# Thread (issue:42): 登录 bug"), "prompt={prompt}");
+        assert!(
+            prompt.contains("# Thread (issue:42): 登录 bug"),
+            "prompt={prompt}"
+        );
         assert!(prompt.contains("- node-master: 先复现"));
         assert!(prompt.contains("Wake reason: mention"));
         assert!(prompt.contains("You are node node-a"));
@@ -1522,8 +1530,14 @@ mod swarm_g4 {
         let body = &payload["body"];
         // 上行幂等键非空（uuid）。
         assert!(!body["client_msg_id"].as_str().unwrap().is_empty());
-        assert_eq!(body["thread"], serde_json::json!({"kind": "issue", "id": 42}));
-        assert_eq!(body["sender"], serde_json::json!({"type": "agent", "id": "node-a"}));
+        assert_eq!(
+            body["thread"],
+            serde_json::json!({"kind": "issue", "id": 42})
+        );
+        assert_eq!(
+            body["sender"],
+            serde_json::json!({"type": "agent", "id": "node-a"})
+        );
         assert_eq!(body["content"], serde_json::json!("我的结论"));
         assert_eq!(body["reply_to"], serde_json::json!(9));
         // kind_tag 映射：issue→discussion。
@@ -1718,7 +1732,11 @@ mod swarm_g4 {
         g4_wait_until(10_000, || observer.active_count() == 0).await;
 
         // 磁盘：cluster_logs/{from_node}/ 下一份 discussion 会话目录，内含文件。
-        let device_dir = tmp.path().join("logs").join("cluster_logs").join("node-master");
+        let device_dir = tmp
+            .path()
+            .join("logs")
+            .join("cluster_logs")
+            .join("node-master");
         let session_dirs: Vec<_> = std::fs::read_dir(&device_dir)
             .expect("device dir must exist after the round")
             .filter_map(|e| e.ok())
@@ -1749,4 +1767,41 @@ mod swarm_g4 {
         let _ = shutdown_tx.send(());
         let _ = handle.await;
     }
+}
+
+// ---------- E1 二期：task_usage_delta 纯差值 ----------
+
+/// after - before 饱和减法：负差（retention 清扫/rollup 削行）钳 0，
+/// cost 允许浮点直减。
+#[test]
+fn task_usage_delta_saturates_and_carries_cost() {
+    let before = nemesis_data::SessionUsageAgg {
+        requests: 5,
+        input_tokens: 1000,
+        output_tokens: 200,
+        total_cost_usd: 0.5,
+    };
+    let after = nemesis_data::SessionUsageAgg {
+        requests: 8,
+        input_tokens: 1500,
+        output_tokens: 350,
+        total_cost_usd: 0.8,
+    };
+    let d: serde_json::Value = super::task_usage_delta(&before, &after);
+    assert_eq!(d["input_tokens"], 500);
+    assert_eq!(d["output_tokens"], 150);
+    assert_eq!(d["requests"], 3);
+    assert!((d["cost_usd"].as_f64().unwrap() - 0.3).abs() < 1e-9);
+
+    // 削行场景：after < before → 饱和 0，不 panic 不回绕。
+    let shrunk = nemesis_data::SessionUsageAgg {
+        requests: 1,
+        input_tokens: 10,
+        output_tokens: 5,
+        total_cost_usd: 0.0,
+    };
+    let d2: serde_json::Value = super::task_usage_delta(&before, &shrunk);
+    assert_eq!(d2["input_tokens"], 0);
+    assert_eq!(d2["output_tokens"], 0);
+    assert_eq!(d2["requests"], 0);
 }

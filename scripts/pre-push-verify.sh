@@ -95,20 +95,36 @@ if [ -n "${BASE:-}" ]; then
     fi
 
     # --- 未提交改动（patch）：独立于是否有新提交；无则清远程旧残留 ---
-    if git diff --quiet "${BRANCH}" 2>/dev/null; then
+    # 「干净」判定必须同时看已跟踪 diff 与未跟踪新文件——只查 git diff 会漏
+    if git diff --quiet "${BRANCH}" 2>/dev/null \
+        && [ -z "$(git ls-files --others --exclude-standard --exclude='*.exe' --exclude='*.pid' --exclude='*.log')" ]; then
         echo "本地工作区干净，无 patch"
         net_retry ssh -o ConnectTimeout=10 "$REMOTE" "rm -f /home/zoo/nb-pre-push.patch" || FAIL=1
     else
         git diff "${BRANCH}" > "$PATCH"
+        # 未跟踪新文件单独补进 patch：git diff 只覆盖已跟踪文件，漏带会导致
+        # 远端「lib.rs 已声明 mod anchor; 而文件缺失」E0583 假红灯（2026-09-10）。
+        # --no-index /dev/null 产出标准 new file 补丁；构建产物（exe/pid/log）不
+        # 同步——clippy/测试不需要，白耗 scp。
+        while IFS= read -r -d '' f; do
+            git diff --no-index --binary /dev/null "$f" >> "$PATCH" || true
+        done < <(git ls-files --others --exclude-standard -z \
+                 --exclude='*.exe' --exclude='*.pid' --exclude='*.log')
         echo "同步未提交改动（$(wc -l < "$PATCH") 行 diff）"
         net_retry scp -o ConnectTimeout=10 "$PATCH" "$REMOTE:/home/zoo/nb-pre-push.patch" || FAIL=1
     fi
 
     # --- worktree 对齐 + apply patch ---
     # checkout --force 清上次 apply 的脏改动：worktree 是验证替身，以本地真实状态为准
+    # clean -fd 清孤儿：checkout --force 只重置已跟踪文件，上次 apply 过的「新增
+    # 文件」残留为孤儿 untracked；下次 patch 再建同路径 → git apply 原子失败整包
+    # 不生效 → 远端编译「基线+孤儿」拼树假红灯（2026-09-10 实证：基线
+    # team_memory/tests.rs 的 useless_vec 被 -D warnings 点燃，而待推版本早已重写）。
+    # -fd 不碰 ignored 文件，static/ 与 target/ 缓存保留。
     net_retry ssh -o ConnectTimeout=10 "$REMOTE" "set -e
     if [ -d '${WORKTREE}' ]; then
         git -C '${WORKTREE}' checkout --detach --force $( [ "${AHEAD}" -eq 0 ] && echo HEAD || echo bundle/pre-push ) 2>&1 | tail -1
+        git -C '${WORKTREE}' clean -fd
     else
         git -C '${REPO_DIR}' worktree add '${WORKTREE}' bundle/pre-push 2>&1 | tail -1
     fi

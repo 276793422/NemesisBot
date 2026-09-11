@@ -200,8 +200,7 @@ pub fn load_or_create_secret(path: &std::path::Path) -> Result<Vec<u8>, String> 
     getrandom::getrandom(&mut bytes).map_err(|e| format!("generate asset secret: {e}"))?;
     let hex = hex_encode(&bytes);
     if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent)
-            .map_err(|e| format!("create {}: {e}", parent.display()))?;
+        std::fs::create_dir_all(parent).map_err(|e| format!("create {}: {e}", parent.display()))?;
     }
     std::fs::write(path, &hex).map_err(|e| format!("write {}: {e}", path.display()))?;
     Ok(bytes.to_vec())
@@ -250,7 +249,12 @@ impl AssetSignContext {
     ) -> Option<AssetTokenBundle> {
         let url = self.node_url.get()?;
         Some(issue_asset_bundle(
-            &self.secret, ref_name, sha256, size, &url, ttl_secs,
+            &self.secret,
+            ref_name,
+            sha256,
+            size,
+            &url,
+            ttl_secs,
         ))
     }
 

@@ -244,7 +244,9 @@ fn test_migration_v6_to_v7_adds_dedup_and_ledger() {
     std::fs::create_dir_all(&dir).unwrap();
     {
         let conn = Connection::open(&path).unwrap();
-        for schema in [SCHEMA_V1, SCHEMA_V2, SCHEMA_V3, SCHEMA_V4, SCHEMA_V5, SCHEMA_V6] {
+        for schema in [
+            SCHEMA_V1, SCHEMA_V2, SCHEMA_V3, SCHEMA_V4, SCHEMA_V5, SCHEMA_V6,
+        ] {
             conn.execute_batch(schema).unwrap();
         }
         conn.pragma_update(None, "user_version", 6).unwrap();

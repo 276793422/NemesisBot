@@ -32,13 +32,19 @@ fn parse_plan_tolerates_markdown_fence_and_prose() {
 #[test]
 fn parse_plan_missing_array_is_error() {
     let err = parse_plan("我觉得这个任务不需要拆解。").expect_err("无 JSON 数组必须报错");
-    assert!(err.message.contains("JSON 数组"), "回灌文本须指明问题: {err}");
+    assert!(
+        err.message.contains("JSON 数组"),
+        "回灌文本须指明问题: {err}"
+    );
 }
 
 #[test]
 fn parse_plan_broken_json_is_error() {
     let err = parse_plan(r#"[{"title":"A",}]"#).expect_err("坏 JSON 必须报错");
-    assert!(err.message.contains("JSON 解析失败"), "回灌文本须可自纠: {err}");
+    assert!(
+        err.message.contains("JSON 解析失败"),
+        "回灌文本须可自纠: {err}"
+    );
 }
 
 #[test]
@@ -79,13 +85,19 @@ fn parse_plan_rejects_empty_title() {
 #[test]
 fn parse_plan_rejects_out_of_range_dep() {
     let err = parse_plan(r#"[{"title":"A","depends_on":[5]}]"#).expect_err("越界依赖必须报错");
-    assert!(err.message.contains("序号 5"), "回灌文本须指明越界序号: {err}");
+    assert!(
+        err.message.contains("序号 5"),
+        "回灌文本须指明越界序号: {err}"
+    );
 }
 
 #[test]
 fn parse_plan_rejects_self_dependency() {
     let err = parse_plan(r#"[{"title":"A","depends_on":[0]}]"#).expect_err("自引用必须报错");
-    assert!(err.message.contains("自引用"), "回灌文本须指明自引用: {err}");
+    assert!(
+        err.message.contains("自引用"),
+        "回灌文本须指明自引用: {err}"
+    );
 }
 
 #[test]
@@ -183,4 +195,17 @@ fn system_prompt_declares_the_schema_fields() {
         PLANNER_SYSTEM_PROMPT.contains(&format!("不超过 {MAX_SUBISSUES} 个")),
         "system prompt 的数量上限声明须与 MAX_SUBISSUES 常量同步"
     );
+}
+
+/// P2（B1）防误删快照：planner prompt 必须携带 `[CHECK]` 锚点指令段
+/// （与 `crate::anchor::ANCHOR_PREFIX` 及 anchor 解析器同步演化——删段
+/// 则 planner 不再产出锚点，P2 双检退化回纯语义）。
+#[test]
+fn system_prompt_declares_check_anchor_instructions() {
+    for marker in ["[CHECK]", "file:", "contains:", "re:", "相对路径"] {
+        assert!(
+            PLANNER_SYSTEM_PROMPT.contains(marker),
+            "system prompt 必须含锚点指令标记 {marker}（与 anchor 模块同步）"
+        );
+    }
 }

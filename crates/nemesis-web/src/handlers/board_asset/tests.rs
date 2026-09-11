@@ -6,12 +6,12 @@ use super::*;
 use crate::api_handlers::AppState;
 use crate::events::EventHub;
 use crate::session::SessionManager;
-use axum::http::StatusCode;
 use axum::body::Body;
+use axum::http::StatusCode;
 use http_body_util::BodyExt;
-use tower::ServiceExt;
 use std::sync::atomic::{AtomicBool, AtomicUsize};
 use std::time::Instant;
+use tower::ServiceExt;
 
 const SECRET: &[u8] = b"asset-endpoint-test-secret-0123456789";
 
@@ -29,17 +29,16 @@ impl Drop for AssetFixture {
 
 fn make_state(with_asset_cfg: bool) -> AssetFixture {
     let n = ASSET_TEST_SEQ.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-    let dir = std::env::temp_dir().join(format!(
-        "nemesis-web-asset-ep-{}-{n}",
-        std::process::id()
-    ));
+    let dir = std::env::temp_dir().join(format!("nemesis-web-asset-ep-{}-{n}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(dir.join("board")).expect("create board dir");
 
     let store = nemesis_board::BoardStore::open(&dir.join("board").join("board.db"), "NB")
         .expect("open store");
-    let mut service =
-        nemesis_board::BoardService::new(std::sync::Arc::new(store), nemesis_types::cluster::NodeRole::Coordinator);
+    let mut service = nemesis_board::BoardService::new(
+        std::sync::Arc::new(store),
+        nemesis_types::cluster::NodeRole::Coordinator,
+    );
     if with_asset_cfg {
         let assets_dir = nemesis_path::resolve_board_assets_dir_in_workspace(&dir);
         std::fs::create_dir_all(&assets_dir).expect("create assets dir");
@@ -80,7 +79,9 @@ fn make_state(with_asset_cfg: bool) -> AssetFixture {
         #[cfg(not(feature = "workflow"))]
         chat_secret_store: std::sync::Arc::new(()),
         #[cfg(feature = "workflow")]
-        webhook_rate_limiter: std::sync::Arc::new(crate::handlers::workflow::WebhookRateLimiter::new()),
+        webhook_rate_limiter: std::sync::Arc::new(
+            crate::handlers::workflow::WebhookRateLimiter::new(),
+        ),
         #[cfg(not(feature = "workflow"))]
         webhook_rate_limiter: std::sync::Arc::new(()),
         internal_cmd_tx: None,
@@ -99,10 +100,12 @@ async fn request(
     ref_name: &str,
     query: &str,
 ) -> (StatusCode, bytes::Bytes, Option<String>) {
-    let router = axum::Router::new().route(
-        "/api/board/asset/{ref}",
-        axum::routing::get(handle_board_asset_download),
-    ).with_state(state.clone());
+    let router = axum::Router::new()
+        .route(
+            "/api/board/asset/{ref}",
+            axum::routing::get(handle_board_asset_download),
+        )
+        .with_state(state.clone());
     let uri = format!("/api/board/asset/{ref_name}{query}");
     let resp = router
         .oneshot(
@@ -119,7 +122,12 @@ async fn request(
         .get("x-asset-sha256")
         .and_then(|v| v.to_str().ok())
         .map(str::to_string);
-    let body = resp.into_body().collect().await.expect("collect body").to_bytes();
+    let body = resp
+        .into_body()
+        .collect()
+        .await
+        .expect("collect body")
+        .to_bytes();
     (status, body, sha)
 }
 
@@ -216,8 +224,12 @@ async fn tampered_and_expired_tokens_403() {
     let past = 1i64;
 
     // 篡改 token → 403 invalid。
-    let (status, body, _) =
-        request(&fx.state, "spec.md", &format!("?asset_token=deadbeef&expires_at={far}")).await;
+    let (status, body, _) = request(
+        &fx.state,
+        "spec.md",
+        &format!("?asset_token=deadbeef&expires_at={far}"),
+    )
+    .await;
     assert_eq!(status, StatusCode::FORBIDDEN);
     assert!(String::from_utf8_lossy(&body).contains("invalid"));
 
@@ -233,8 +245,12 @@ async fn valid_bundle_streams_content_with_sha() {
     let content = b"hello asset content \xf0\x9f\x98\x80 binary-safe".to_vec();
     register_and_write(&fx, "report-v1.md", &content);
     let far = 4_102_444_800i64;
-    let (status, body, sha) =
-        request(&fx.state, "report-v1.md", &signed_query("report-v1.md", far)).await;
+    let (status, body, sha) = request(
+        &fx.state,
+        "report-v1.md",
+        &signed_query("report-v1.md", far),
+    )
+    .await;
     assert_eq!(status, StatusCode::OK);
     assert_eq!(body.as_ref(), content.as_slice(), "bytes must round-trip");
     assert_eq!(sha.unwrap().len(), 64, "sha256 header must be 64 hex");

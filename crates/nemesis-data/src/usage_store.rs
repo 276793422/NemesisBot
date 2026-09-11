@@ -363,6 +363,41 @@ impl DataStore {
         .map_err(|e| format!("aggregate_session_usage: {e}"))
     }
 
+    /// 按任务后缀聚合集群委派用量（E1 维度 4 全链 token 聚合专用）。
+    ///
+    /// master 记账键 `cluster_rpc:{worker}/{task_id}` 的 worker 段是**传输层
+    /// 运行时节点 id**（回调帧 `_rpc.from`），而派发行 `issue_dispatch.worker_id`
+    /// 存的是**派发时 peer 名**（如 `Node-B`）——两者不同源，精确键匹配必落空
+    /// （T37 真机 run 4 实证：聚合恒 0 → token 闸永不熔断）。task_id（UUID）
+    /// 是 per-dispatch 唯一锚，按 `/{task_id}` 后缀匹配对两种身份形态都稳。
+    /// 无请求行 → 全零聚合（不是错误）。
+    pub fn aggregate_session_usage_by_task(
+        &self,
+        task_id: &str,
+    ) -> Result<SessionUsageAgg, String> {
+        let conn = self.conn.lock().map_err(|e| e.to_string())?;
+        let pattern = format!("%/{task_id}");
+        let mut stmt = conn
+            .prepare(
+                "SELECT
+                    COUNT(*),
+                    COALESCE(SUM(input_tokens + cache_read_tokens), 0),
+                    COALESCE(SUM(output_tokens), 0),
+                    COALESCE(SUM(total_cost_usd), 0.0)
+                 FROM request_logs WHERE session_key LIKE ?1",
+            )
+            .map_err(|e| format!("prepare aggregate_session_usage_by_task: {e}"))?;
+        stmt.query_row(params![pattern], |row| {
+            Ok(SessionUsageAgg {
+                requests: row.get(0)?,
+                input_tokens: row.get(1)?,
+                output_tokens: row.get(2)?,
+                total_cost_usd: row.get(3)?,
+            })
+        })
+        .map_err(|e| format!("aggregate_session_usage_by_task: {e}"))
+    }
+
     /// Roll up request logs older than 30 days into daily_rollups and delete originals.
     /// Retention sweep（A3 保留策略，可配置）：把 `retention_days` 天前的
     /// 明细行 rollup 进 `daily_rollups` 后删除（`None` = 跳过按天清理，

@@ -414,6 +414,7 @@ fn test_provider_resolution_serialization() {
         auth_method: String::new(),
         reasoning_effort: String::new(),
         connect_mode: String::new(),
+        protocol: String::new(),
         workspace: String::new(),
         enabled: true,
     };

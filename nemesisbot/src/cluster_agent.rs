@@ -19,7 +19,7 @@ use nemesis_agent::types::AgentEvent;
 use nemesis_cluster::cluster_task::{ClusterTaskList, ClusterWorkQueue, TaskStatus};
 use nemesis_cluster::envelope::{self, Envelope, EnvelopeResponse};
 use nemesis_cluster::rpc::client::RpcClient;
-use nemesis_cluster::rpc::peer_chat_handler::{send_callback_or_persist, TaskResultPersister};
+use nemesis_cluster::rpc::peer_chat_handler::{TaskResultPersister, send_callback_or_persist};
 use nemesis_cluster::rpc_types::{ActionType, RPCRequest};
 use nemesis_types::cluster::DiscussionEvent;
 
@@ -37,9 +37,7 @@ use crate::cluster_request_logger_observer::ClusterRequestLoggerObserver;
 /// 每次 start 换入新的。stop 之后旧 Sender 随 loop 退出自然失联——send
 /// 诚实失败（事件丢弃，board.sync 兜底补拉），不缓存不过期。
 pub struct DiscussionInbox {
-    tx: std::sync::Mutex<
-        Option<tokio::sync::mpsc::UnboundedSender<DiscussionEvent>>,
-    >,
+    tx: std::sync::Mutex<Option<tokio::sync::mpsc::UnboundedSender<DiscussionEvent>>>,
 }
 
 impl Default for DiscussionInbox {
@@ -181,6 +179,7 @@ pub async fn cluster_agent_loop(
                 rpc_client.as_deref(),
                 result_persister.as_deref(),
                 &task,
+                &self_node_id,
                 "cancelled",
             )
             .await;
@@ -205,6 +204,7 @@ pub async fn cluster_agent_loop(
                 cluster_observer.as_deref(),
                 result_persister.as_deref(),
                 &task,
+                &self_node_id,
             )
             .await
             {
@@ -220,6 +220,7 @@ pub async fn cluster_agent_loop(
                         rpc_client.as_deref(),
                         result_persister.as_deref(),
                         &task,
+                        &self_node_id,
                         &e.to_string(),
                     )
                     .await;
@@ -235,6 +236,7 @@ pub async fn cluster_agent_loop(
                 cluster_observer.as_deref(),
                 result_persister.as_deref(),
                 &task,
+                &self_node_id,
             )
             .await
             {
@@ -250,6 +252,7 @@ pub async fn cluster_agent_loop(
                         rpc_client.as_deref(),
                         result_persister.as_deref(),
                         &task,
+                        &self_node_id,
                         &e.to_string(),
                     )
                     .await;
@@ -268,6 +271,7 @@ async fn execute_new_task(
     cluster_observer: Option<&ClusterRequestLoggerObserver>,
     result_persister: Option<&dyn TaskResultPersister>,
     task: &nemesis_cluster::cluster_task::ClusterTask,
+    self_node_id: &str,
 ) -> Result<(), String> {
     let content_preview = truncate_str(&task.content, 200);
     nemesis_cluster::logger::log_task("exec_start", &task.task_id, &content_preview);
@@ -306,6 +310,8 @@ async fn execute_new_task(
             &task.content,
         );
     }
+    // E1 二期：执行前快照 session 用量（成功回调时取差值 = 本任务消耗）。
+    let usage_before = snapshot_session_usage(agent_loop, &task.source.session_key);
     let events = agent_loop
         .run_with_trace(
             &instance,
@@ -342,7 +348,17 @@ async fn execute_new_task(
             "[ClusterAgent] Task was cancelled during execution"
         );
         nemesis_cluster::logger::log_task("exec_cancelled", &task.task_id, "");
-        send_task_callback(rpc_client, result_persister, task, "error", "", "cancelled").await;
+        send_task_callback(
+            rpc_client,
+            result_persister,
+            task,
+            self_node_id,
+            "error",
+            "",
+            "cancelled",
+            None,
+        )
+        .await;
         task_list.complete_task(&task.task_id);
         return Ok(());
     }
@@ -380,7 +396,18 @@ async fn execute_new_task(
     // the callback. Async-path tasks skip this; they'll be persisted by
     // resume_task when the callback comes back and the task actually completes.
     persist_session_history(agent_loop, &instance, &task.source.session_key);
-    send_task_callback(rpc_client, result_persister, task, "success", &result, "").await;
+    let usage = extract_task_usage(agent_loop, &task.source.session_key, &usage_before);
+    send_task_callback(
+        rpc_client,
+        result_persister,
+        task,
+        self_node_id,
+        "success",
+        &result,
+        "",
+        usage,
+    )
+    .await;
     task_list.complete_task(&task.task_id);
     nemesis_cluster::logger::log_task(
         "exec_done",
@@ -399,6 +426,7 @@ async fn resume_task(
     cluster_observer: Option<&ClusterRequestLoggerObserver>,
     result_persister: Option<&dyn TaskResultPersister>,
     task: &nemesis_cluster::cluster_task::ClusterTask,
+    self_node_id: &str,
 ) -> Result<(), String> {
     nemesis_cluster::logger::log_task("exec_resume", &task.task_id, "");
     // Per-task AgentInstance. Same rationale as execute_new_task — see its comment.
@@ -445,6 +473,9 @@ async fn resume_task(
             "(resume)",
         );
     }
+    // E1 二期：续行前快照（差值 = 本续行轮消耗；原任务用量已在
+    // execute_new_task 成功回调时报过，不重复计）。
+    let usage_before = snapshot_session_usage(agent_loop, &task.source.session_key);
     let events = agent_loop
         .resume_execution_with_token(&instance, &context, &trace_id, &token)
         .await;
@@ -470,7 +501,17 @@ async fn resume_task(
             "[ClusterAgent] Resumed task was cancelled during execution"
         );
         nemesis_cluster::logger::log_task("exec_cancelled", &task.task_id, "");
-        send_task_callback(rpc_client, result_persister, task, "error", "", "cancelled").await;
+        send_task_callback(
+            rpc_client,
+            result_persister,
+            task,
+            self_node_id,
+            "error",
+            "",
+            "cancelled",
+            None,
+        )
+        .await;
         task_list.complete_task(&task.task_id);
         return Ok(());
     }
@@ -508,7 +549,18 @@ async fn resume_task(
     // the resumed turn's tool result / final response are all in the instance
     // history already, so no separate content args are needed.
     persist_session_history(agent_loop, &instance, &task.source.session_key);
-    send_task_callback(rpc_client, result_persister, task, "success", &result, "").await;
+    let usage = extract_task_usage(agent_loop, &task.source.session_key, &usage_before);
+    send_task_callback(
+        rpc_client,
+        result_persister,
+        task,
+        self_node_id,
+        "success",
+        &result,
+        "",
+        usage,
+    )
+    .await;
     task_list.complete_task(&task.task_id);
     nemesis_cluster::logger::log_task(
         "exec_done",
@@ -750,9 +802,11 @@ async fn send_task_callback(
     rpc_client: Option<&RpcClient>,
     result_persister: Option<&dyn TaskResultPersister>,
     task: &nemesis_cluster::cluster_task::ClusterTask,
+    self_node_id: &str,
     status: &str,
     response: &str,
     error: &str,
+    usage: Option<serde_json::Value>,
 ) {
     tracing::info!(
         task_id = %task.task_id,
@@ -766,12 +820,55 @@ async fn send_task_callback(
         result_persister,
         &None,
         &task.source.node_id,
+        self_node_id,
         &task.task_id,
         status,
         response,
         error,
+        usage,
     )
     .await;
+}
+
+/// 本轮 token 用量提取（E1 二期）：run 前后各取一次 session 聚合，差值 =
+/// 本任务消耗（饱和减法防下溢——并发清扫/rollup 可能削行）。设计裁决：
+/// AgentEvent 事件流目前不携带 usage，走 goal 钦定的 fallback 查
+/// data_store（两次聚合查询代价可忽略）；未装配 data_store = None。
+fn extract_task_usage(
+    agent_loop: &AgentLoop,
+    session_key: &str,
+    before: &nemesis_data::SessionUsageAgg,
+) -> Option<serde_json::Value> {
+    let ds = agent_loop.data_store()?;
+    let after = ds.aggregate_session_usage(session_key).ok()?;
+    Some(task_usage_delta(before, &after))
+}
+
+/// 纯差值（单测钉死）：after - before 逐字段饱和减法（防下溢——retention
+/// 清扫 / rollup 可能在任务执行窗口削行）。
+fn task_usage_delta(
+    before: &nemesis_data::SessionUsageAgg,
+    after: &nemesis_data::SessionUsageAgg,
+) -> serde_json::Value {
+    serde_json::json!({
+        // 负差钳 0（saturating_sub 只防 i64 下溢，不防语义负值——retention
+        // 清扫/rollup 削行时 after 可能小于 before）。
+        "input_tokens": (after.input_tokens - before.input_tokens).max(0),
+        "output_tokens": (after.output_tokens - before.output_tokens).max(0),
+        "requests": (after.requests - before.requests).max(0),
+        "cost_usd": (after.total_cost_usd - before.total_cost_usd).max(0.0),
+    })
+}
+
+/// 执行前快照 session 用量（[`extract_task_usage`] 的前半；未装配 = 全零）。
+fn snapshot_session_usage(
+    agent_loop: &AgentLoop,
+    session_key: &str,
+) -> nemesis_data::SessionUsageAgg {
+    agent_loop
+        .data_store()
+        .and_then(|ds| ds.aggregate_session_usage(session_key).ok())
+        .unwrap_or_default()
 }
 
 /// Handle task execution error: mark as failed and send error callback.
@@ -780,12 +877,23 @@ async fn handle_task_error(
     rpc_client: Option<&RpcClient>,
     result_persister: Option<&dyn TaskResultPersister>,
     task: &nemesis_cluster::cluster_task::ClusterTask,
+    self_node_id: &str,
     error_msg: &str,
 ) {
     let error_preview = truncate_str(error_msg, 200);
     nemesis_cluster::logger::log_task("exec_failed", &task.task_id, &error_preview);
     task_list.update_status(&task.task_id, TaskStatus::Failed);
-    send_task_callback(rpc_client, result_persister, task, "error", "", error_msg).await;
+    send_task_callback(
+        rpc_client,
+        result_persister,
+        task,
+        self_node_id,
+        "error",
+        "",
+        error_msg,
+        None,
+    )
+    .await;
     task_list.complete_task(&task.task_id);
 }
 
@@ -842,7 +950,14 @@ async fn handle_discussion(
     }
     let events = agent_loop
         .run_with_trace(
-            &instance, &prompt, &context, &trace_id, false, &token, None, &[],
+            &instance,
+            &prompt,
+            &context,
+            &trace_id,
+            false,
+            &token,
+            None,
+            &[],
         )
         .await;
 
@@ -965,10 +1080,7 @@ async fn post_discussion_reply(
     match send_nb_bus(rpc, self_node_id, &event.from_node, payload).await {
         Ok(body) => {
             // 信封响应：ok=false 时错误码诚实可见（quota_exhausted 等）。
-            let ok = body
-                .get("ok")
-                .and_then(|v| v.as_bool())
-                .unwrap_or(false);
+            let ok = body.get("ok").and_then(|v| v.as_bool()).unwrap_or(false);
             if ok {
                 tracing::debug!(target: "board_bus", thread = %thread_key,
                     "[ClusterAgent] Discussion reply posted");

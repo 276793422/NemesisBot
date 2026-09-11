@@ -22,6 +22,7 @@ interface Autopilot {
   priority: number
   project_id: number | null
   target: string
+  auto_plan: boolean
   enabled: boolean
   cron_job_id: string | null
   last_run_at: number | null
@@ -51,6 +52,7 @@ const form = ref({
   description: '',
   priority: 1,
   target: '',
+  auto_plan: false,
   enabled: true,
 })
 
@@ -74,7 +76,7 @@ async function load(silent = false) {
 
 function openCreate() {
   editing.value = null
-  form.value = { name: '', cron: '', title: '', description: '', priority: 1, target: '', enabled: true }
+  form.value = { name: '', cron: '', title: '', description: '', priority: 1, target: '', auto_plan: false, enabled: true }
   showForm.value = true
 }
 
@@ -87,6 +89,7 @@ function openEdit(ap: Autopilot) {
     description: ap.description || '',
     priority: ap.priority,
     target: ap.target || '',
+    auto_plan: !!ap.auto_plan,
     enabled: ap.enabled,
   }
   showForm.value = true
@@ -217,6 +220,7 @@ useBoardChanged(() => load(true))
             </td>
             <td>
               <span v-if="ap.target" class="badge badge-info">{{ ap.target }}</span>
+              <span v-else-if="ap.auto_plan" class="badge badge-info">建单 + 自动拆解</span>
               <span v-else class="muted">仅建单</span>
             </td>
             <td>
@@ -273,6 +277,13 @@ useBoardChanged(() => load(true))
             <label class="form-label">派发目标（worker 节点名，可空）</label>
             <input class="form-input" v-model="form.target" placeholder="留空 = 只建单不派发" />
             <div class="muted" style="margin-top: var(--space-1);">配置后每次触发会把 issue 自动派发给该节点执行（需集群运行）</div>
+          </div>
+          <label class="muted" style="display: flex; align-items: center; gap: var(--space-1); cursor: pointer;">
+            <input type="checkbox" v-model="form.auto_plan" :disabled="!!form.target.trim()" />
+            建单后自动 AI 拆解（auto_plan）
+          </label>
+          <div class="muted" style="margin-top: var(--space-1); margin-bottom: var(--space-2);">
+            配置了派发目标时拆解无意义（直接派给指定节点）；拆解后是否自动发车由「配置」页 board.plan.auto_confirm 控制
           </div>
           <label class="muted" style="display: flex; align-items: center; gap: var(--space-1); cursor: pointer;">
             <input type="checkbox" v-model="form.enabled" />

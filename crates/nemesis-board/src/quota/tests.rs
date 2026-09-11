@@ -101,7 +101,10 @@ fn test_denial_leaves_no_side_effect() {
     );
     assert_eq!(ledger.turns_left("t"), 3);
     // 拒绝原因映射信封错误码。
-    assert_eq!(QuotaDenied::HourlyBudgetExhausted.error_code(), "quota_exhausted");
+    assert_eq!(
+        QuotaDenied::HourlyBudgetExhausted.error_code(),
+        "quota_exhausted"
+    );
     assert_eq!(QuotaDenied::RateLimited.error_code(), "rate_limited");
 }
 

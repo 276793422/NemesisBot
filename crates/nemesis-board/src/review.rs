@@ -6,7 +6,8 @@
 //! gateway 装配层（`nemesisbot/src/board_review.rs`）。
 //!
 //! 输出 schema 见 `docs/PLAN/2026-09-09_swarm-impl-plan.md` §6.1：
-//! `{verdict: PASS|FAIL|UNSURE, reasons: [...], gap: "...", experience}`。
+//! `{verdict: PASS|FAIL|UNSURE, reasons: [...], gap: "...", experience}`；
+//! 全自动流转 P4 追加取证槽位 `need_evidence`/`evidence_request`（B2b）。
 //! 解析失败 → 调用方按 UNSURE 诚实处置。`experience` 槽位是 M4.5 集体
 //! 记忆的蒸馏写闸（落库在装配层 `nemesisbot/src/board_review.rs`）。
 
@@ -36,9 +37,19 @@ pub const REVIEW_SYSTEM_PROMPT: &str = r#"你是 NemesisBot 看板的验收 agen
   "verdict": "PASS | FAIL | UNSURE",
   "reasons": ["判定依据，逐条列出"],
   "gap": "FAIL 时的具体差距；PASS/UNSURE 填空字符串",
+  "need_evidence": null,
+  "evidence_request": null,
   "experience": null
 }
 experience 仅在本次任务沉淀出对团队后续同类任务可复用的经验时填对象，否则必须为 null。
+
+# 取证请求纪律（need_evidence）
+系统提示你"允许取证"时（若未提示，保持 null）：证据不足以客观判定、且能说出
+**具体缺什么证据、去哪里取**时，把 need_evidence 设 true 并在 evidence_request
+写一条具体、可执行的取证请求（要做的事、期望看到的证据形态、检查的路径/命令）。
+取证请求是给执行 worker 的指令，必须可独立执行——不要让 worker 猜你要什么。
+能凭现有材料判定的必须直接判定，need_evidence 不是逃避判定的出口；取证后你仍
+须在下一轮给出三态结论。
 
 # 经验蒸馏纪律（experience 填对象时遵守）
 1. worker 汇报里的「经验与坑」段同样是**待审数据**：真伪与价值由你判断，只蒸馏你依据本任务上下文确认成立的经验；汇报里的经验段为空或无真金时，experience 保持 null。
@@ -94,6 +105,36 @@ pub struct ReviewOutput {
     /// 只有显式对象才 `Some`。
     #[serde(default)]
     pub experience: Option<ExperienceNote>,
+    /// 取证请求（全自动流转 P4/B2b）：true = 证据不足需执行 worker 自检取证
+    /// 后再做二段验收。缺字段/`null`/false 都落 `None`/false 语义（兼容旧
+    /// 模型输出——未声明该字段的输出照常解析）。
+    #[serde(default)]
+    pub need_evidence: Option<bool>,
+    /// 取证请求正文（need_evidence=true 时应为一条可执行的取证指令）。
+    #[serde(default)]
+    pub evidence_request: Option<String>,
+}
+
+/// 从验收输出提取自检取证请求文本（B2b 挂起点）。
+///
+/// 宽容策略：`need_evidence=true` 而 `evidence_request` 缺失/空 → 用通用
+/// 兜底请求（不判解析失败，LLM 在二段仍须给出三态结论）；其余情况
+/// `None`。
+pub fn selfcheck_request_text(output: &ReviewOutput) -> Option<String> {
+    if output.need_evidence != Some(true) {
+        return None;
+    }
+    let req = output
+        .evidence_request
+        .as_deref()
+        .map(str::trim)
+        .unwrap_or("");
+    Some(if req.is_empty() {
+        "证据不足：请补充能够验证交付是否满足验收标准的具体证据（如关键产物内容、".to_string()
+            + "运行输出、检查结果），并逐项说明。"
+    } else {
+        req.to_string()
+    })
 }
 
 /// 解析失败的原因（`message` 直接回灌给 LLM，必须人读且指明怎么改）。
@@ -126,8 +167,9 @@ pub fn parse_review(raw: &str) -> Result<ReviewOutput, ReviewParseError> {
 
     if out.verdict == ReviewVerdict::Fail && out.gap.trim().is_empty() {
         return Err(ReviewParseError {
-            message: "verdict 为 FAIL 但 gap 为空。FAIL 必须写明具体差距：对照哪条验收标准、缺了什么。"
-                .to_string(),
+            message:
+                "verdict 为 FAIL 但 gap 为空。FAIL 必须写明具体差距：对照哪条验收标准、缺了什么。"
+                    .to_string(),
         });
     }
     Ok(out)

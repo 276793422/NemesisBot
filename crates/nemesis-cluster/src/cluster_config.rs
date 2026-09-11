@@ -87,6 +87,8 @@ pub struct PeerConfig {
     pub role: String,
     #[serde(default)]
     pub category: String,
+    #[serde(default)]
+    pub tags: Vec<String>,
     #[serde(default = "default_priority")]
     pub priority: u32,
     #[serde(default = "default_enabled")]
@@ -105,6 +107,7 @@ impl Default for PeerConfig {
             rpc_port: 0,
             role: String::new(),
             category: String::new(),
+            tags: Vec::new(),
             priority: default_priority(),
             enabled: default_enabled(),
             status: PeerStatus::default(),

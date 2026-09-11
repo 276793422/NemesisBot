@@ -102,8 +102,7 @@ fn lenient_i64_accepts_float_int_null_and_garbage() {
                            "max_input_tokens": "big"}
     }"#;
     let out = filter_litellm_table(raw).unwrap();
-    let map: std::collections::BTreeMap<String, LiteLLMEntry> =
-        serde_json::from_str(&out).unwrap();
+    let map: std::collections::BTreeMap<String, LiteLLMEntry> = serde_json::from_str(&out).unwrap();
     let f = &map["float_tokens"];
     assert_eq!(f.max_input_tokens, Some(2_000_000));
     assert_eq!(f.max_tokens, Some(65_536), "float truncates");

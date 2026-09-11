@@ -713,7 +713,11 @@ pub fn clear_session_project(session_key: &str) -> bool {
     meta.project_path = None;
     let path = meta_path(session_key);
     if let Err(e) = fs::write(&path, serde_json::to_string(&meta).unwrap_or_default()) {
-        tracing::warn!("[chat_log] failed to clear session project {}: {}", path.display(), e);
+        tracing::warn!(
+            "[chat_log] failed to clear session project {}: {}",
+            path.display(),
+            e
+        );
         return false;
     }
     true

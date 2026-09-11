@@ -23,8 +23,20 @@ fn entry(id: i64, category: &str, scope: &str, content: &str, use_count: i64) ->
 #[test]
 fn match_by_scope_substring_case_insensitive() {
     let entries = vec![
-        entry(1, team_memory_category::PITFALL, "auth", "token 过期要刷新", 0),
-        entry(2, team_memory_category::PATTERN, "rust", "先 cargo check 再改", 0),
+        entry(
+            1,
+            team_memory_category::PITFALL,
+            "auth",
+            "token 过期要刷新",
+            0,
+        ),
+        entry(
+            2,
+            team_memory_category::PATTERN,
+            "rust",
+            "先 cargo check 再改",
+            0,
+        ),
     ];
     let hits = match_experiences(&entries, "修复登录 bug（AUTH 模块）", &[], 5);
     assert_eq!(hits.len(), 1);
@@ -33,9 +45,20 @@ fn match_by_scope_substring_case_insensitive() {
 
 #[test]
 fn match_by_required_tag_equality() {
-    let entries = vec![entry(3, team_memory_category::PATTERN, "sqlite", "WAL 并发读安全", 0)];
+    let entries = vec![entry(
+        3,
+        team_memory_category::PATTERN,
+        "sqlite",
+        "WAL 并发读安全",
+        0,
+    )];
     // 标签大小写不敏感精确匹配；正文不命中。
-    let hits = match_experiences(&entries, " entirely unrelated text ", &[" SQLite ".to_string()], 5);
+    let hits = match_experiences(
+        &entries,
+        " entirely unrelated text ",
+        &[" SQLite ".to_string()],
+        5,
+    );
     assert_eq!(hits.len(), 1);
     assert_eq!(hits[0].id, 3);
 }
@@ -44,7 +67,10 @@ fn match_by_required_tag_equality() {
 fn match_excludes_deprecated_and_empty_scope() {
     let mut deprecated = entry(4, team_memory_category::PITFALL, "auth", "已过时的坑", 99);
     deprecated.deprecated = true;
-    let entries = vec![deprecated, entry(5, team_memory_category::PATTERN, "", "空 scope", 99)];
+    let entries = vec![
+        deprecated,
+        entry(5, team_memory_category::PATTERN, "", "空 scope", 99),
+    ];
     let hits = match_experiences(&entries, "auth 任务", &[], 5);
     assert!(hits.is_empty());
 }
@@ -74,8 +100,14 @@ fn render_dispatch_section_none_when_empty() {
 
 #[test]
 fn render_dispatch_section_has_header_and_lines() {
-    let entries = vec![
-        entry(1, team_memory_category::PITFALL, "auth", "token 过期要刷新", 0),
+    let entries = [
+        entry(
+            1,
+            team_memory_category::PITFALL,
+            "auth",
+            "token 过期要刷新",
+            0,
+        ),
         entry(2, "weird-kind", "db", "词表外类别", 0),
     ];
     let refs: Vec<&TeamMemoryEntry> = entries.iter().collect();
@@ -91,7 +123,13 @@ fn render_dispatch_section_has_header_and_lines() {
 
 #[test]
 fn render_planner_strings_no_bullet_prefix() {
-    let entries = vec![entry(1, team_memory_category::PATTERN, "rust", "先 cargo check", 0)];
+    let entries = [entry(
+        1,
+        team_memory_category::PATTERN,
+        "rust",
+        "先 cargo check",
+        0,
+    )];
     let refs: Vec<&TeamMemoryEntry> = entries.iter().collect();
     let lines = render_planner_experience_strings(&refs);
     assert_eq!(lines.len(), 1);

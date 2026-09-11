@@ -508,7 +508,9 @@ async fn pricing_returns_embedded_table() {
         .expect("deepseek-chat present");
     // 市场价会漂移（deepseek cache-read 0.03→0.028，快照随之更新）——
     // 只钉字段形状：数值存在且非负，不钉精确价。
-    let ds_cache = ds["cacheReadCostPerMillion"].as_f64().expect("cache read numeric");
+    let ds_cache = ds["cacheReadCostPerMillion"]
+        .as_f64()
+        .expect("cache read numeric");
     assert!(ds_cache >= 0.0, "cache read price must be non-negative");
     // 上游 2026-09 快照已自带裸名 deepseek-chat（无 aliases，同义名靠
     // lookup 后缀匹配）；aliases 序列化改钉 extras 精选条目（带反查别名，
@@ -518,11 +520,13 @@ async fn pricing_returns_embedded_table() {
         .iter()
         .find(|e| e["modelId"] == "deepseek-v3.2")
         .expect("deepseek-v3.2 (extras) present");
-    assert!(dsv["aliases"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .any(|a| a == "deepseek/deepseek-v3.2"));
+    assert!(
+        dsv["aliases"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|a| a == "deepseek/deepseek-v3.2")
+    );
 
     // Optional token limits round-trip as null or number.
     for e in entries {
@@ -573,7 +577,11 @@ async fn pricing_layered_view_with_store_and_custom_override() {
     assert_eq!(v["status"], "success");
     let entries = v["data"].as_array().unwrap();
     // 自定义只覆盖了内置 gpt-4o 条目 → 合并视图条数与纯内置表一致。
-    assert_eq!(entries.len(), baseline, "override must not duplicate the entry");
+    assert_eq!(
+        entries.len(),
+        baseline,
+        "override must not duplicate the entry"
+    );
     let gpt = entries.iter().find(|e| e["modelId"] == "gpt-4o").unwrap();
     assert_eq!(gpt["source"], "custom");
     assert_eq!(gpt["inputCostPerMillion"], 123.0);

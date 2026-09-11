@@ -694,7 +694,11 @@ fn test_session_meta_project_roundtrip() {
     // 绑定 upsert：title 保留，两字段就位。
     crate::chat_log::write_session_project(&key, "p-abc12345", r"C:\proj\demo");
     let m1 = crate::chat_log::read_session_meta_full(&key).unwrap();
-    assert_eq!(m1.title.as_deref(), Some("titled session"), "upsert 保 title");
+    assert_eq!(
+        m1.title.as_deref(),
+        Some("titled session"),
+        "upsert 保 title"
+    );
     assert_eq!(m1.project_id.as_deref(), Some("p-abc12345"));
     assert_eq!(m1.project_path.as_deref(), Some(r"C:\proj\demo"));
 

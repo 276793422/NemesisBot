@@ -1423,7 +1423,11 @@ fn test_load_from_disk_drops_running_placeholder() {
             "peer_chat",
             serde_json::json!({"status": "running", "from": "node-b"}),
         );
-        store.store_success("task-real", "peer_chat", serde_json::json!({"response": "最终回复", "from": "node-b"}));
+        store.store_success(
+            "task-real",
+            "peer_chat",
+            serde_json::json!({"response": "最终回复", "from": "node-b"}),
+        );
         store.store_failure("task-fail", "peer_chat", "远端炸了");
     }
 
@@ -1432,17 +1436,17 @@ fn test_load_from_disk_drops_running_placeholder() {
     let loaded = store.load_from_disk();
     assert_eq!(loaded, 2, "placeholder 不计入加载");
 
-    assert!(
-        store.get("task-ph").is_none(),
-        "running 占位不得随盘复活"
-    );
+    assert!(store.get("task-ph").is_none(), "running 占位不得随盘复活");
     let real = store.get("task-real").expect("真结果应回载");
     assert_eq!(real.result["response"], "最终回复");
     let fail = store.get("task-fail").expect("失败结果应回载");
     assert_eq!(fail.result["error"], "远端炸了");
 
     // 占位残file已从盘上删除；真结果文件保留。
-    assert!(!tmp.path().join("task-ph.json").exists(), "占位残file应删除");
+    assert!(
+        !tmp.path().join("task-ph.json").exists(),
+        "占位残file应删除"
+    );
     assert!(tmp.path().join("task-real.json").exists());
     assert!(tmp.path().join("task-fail.json").exists());
 }

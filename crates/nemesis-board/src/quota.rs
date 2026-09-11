@@ -51,7 +51,9 @@ impl QuotaDenied {
             QuotaDenied::ThreadQuotaExhausted => {
                 "thread agent-turn quota exhausted (discuss on the board, not in this thread)"
             }
-            QuotaDenied::HourlyBudgetExhausted => "hourly discussion budget exhausted for this node",
+            QuotaDenied::HourlyBudgetExhausted => {
+                "hourly discussion budget exhausted for this node"
+            }
             QuotaDenied::RateLimited => "rate limited: too many messages per minute",
         }
     }
@@ -127,13 +129,8 @@ impl QuotaLedger {
             return u32::MAX; // 不限。
         }
         let inner = self.lock();
-        let used = inner
-            .threads
-            .get(thread_key)
-            .map(|t| t.used)
-            .unwrap_or(0);
-        cfg.max_agent_turns_per_thread
-            .saturating_sub(used)
+        let used = inner.threads.get(thread_key).map(|t| t.used).unwrap_or(0);
+        cfg.max_agent_turns_per_thread.saturating_sub(used)
     }
 
     /// 记账一次 agent 上行发言。Ok(剩余线程额度)；Err(拒绝原因)。
@@ -213,11 +210,7 @@ impl QuotaLedger {
         if cap == 0 {
             return u32::MAX;
         }
-        let used = inner
-            .threads
-            .get(thread_key)
-            .map(|t| t.used)
-            .unwrap_or(0);
+        let used = inner.threads.get(thread_key).map(|t| t.used).unwrap_or(0);
         cap.saturating_sub(used)
     }
 

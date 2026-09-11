@@ -210,6 +210,7 @@ pub(crate) fn build_agent_loop(
         api_base: resolution.api_base,
         workspace: home.join("workspace").to_string_lossy().to_string(),
         connect_mode: resolution.connect_mode,
+        protocol: resolution.protocol.clone(),
         account_id: String::new(),
         headers: std::collections::HashMap::new(),
     };

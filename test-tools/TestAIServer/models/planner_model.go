@@ -21,6 +21,13 @@ import (
 //     错误文本独有锚点——system prompt 描述纪律时也会出现「循环依赖」
 //     四字，不能用作锚点，否则首轮即毒化）时继续返回循环 → 3 轮全败
 //     （验证 board.plan_failed 路径）
+//   - <PLAN_ANCHOR>：子任务验收标准带合法 [CHECK] 锚点行（文件锚点指向
+//     uat-t2/pass/subN.md，由 UAT 驱动预置；另含对交付文本的正则锚点）
+//     （验证 P2 锚点全过 → 进语义项，T2-1）
+//   - <PLAN_ANCHOR_EVIL>：子任务验收标准带路径不安全锚点行（`..` 穿越 /
+//     绝对路径）+ 一条合法锚点（验证解析期拒绝 + 告警回落语义，T2-3）
+//   - <PLAN_ANCHOR_MIXED>：子任务验收标准带无法解析的 [CHECK] 坏行（空
+//     目标）+ 合法锚点（验证坏行静默回落语义、不告警不 FAIL，T2-4）
 //
 // 确定性输出，零随机、零延迟。
 type TestAIPlanner struct{}
@@ -85,7 +92,18 @@ func (m *TestAIPlanner) Process(messages []Message) string {
 		return "抱歉，我暂时无法拆解这个任务。"
 	}
 
-	return plannerMarshal(plannerDefaultPlan(plannerExtractTitle(input), expNote))
+	// P2 锚点系列开关（T2 组 UAT）：子任务验收标准携带 [CHECK] 行。
+	title := plannerExtractTitle(input)
+	switch {
+	case strings.Contains(input, "<PLAN_ANCHOR_EVIL>"):
+		return plannerMarshal(plannerAnchorPlan(title, "evil"))
+	case strings.Contains(input, "<PLAN_ANCHOR_MIXED>"):
+		return plannerMarshal(plannerAnchorPlan(title, "mixed"))
+	case strings.Contains(input, "<PLAN_ANCHOR>"):
+		return plannerMarshal(plannerAnchorPlan(title, "pass"))
+	}
+
+	return plannerMarshal(plannerDefaultPlan(title, expNote))
 }
 
 func (m *TestAIPlanner) Delay() time.Duration {
@@ -163,4 +181,67 @@ func plannerMarshal(subs []plannerSub) string {
 		return "plan 序列化失败"
 	}
 	return string(data)
+}
+
+// plannerAnchorPlan P2 锚点系列计划（T2 组 UAT）：3 子任务链 0→1→2，
+// 验收标准 = 普通文字行 + [CHECK] 锚点行。mode：
+//   - "pass"：全部合法锚点。文件锚点指向 uat-t2/pass/subN.md（UAT 驱动
+//     在 A 端评审 workspace 预置）；子任务1 另含交付文本正则锚点（匹配
+//     测试 worker 的固定汇报文本「集群协作状态正常」）。
+//   - "evil"：每子任务带两条路径不安全锚点（`..` 穿越 / 绝对路径——跨
+//     平台都会被解析期拒绝的形态）+ 一条合法锚点（uat-t2/evil/subN.md，
+//     驱动预置）。期望：不安全行解析期拒绝 + 告警评论，合法锚点照跑，
+//     验收不炸不短路 FAIL。
+//   - "mixed"：每子任务带一条无法解析的 [CHECK] 坏行（空目标路径）+
+//     一条合法锚点（uat-t2/mixed/subN.md，驱动预置）。期望：坏行静默
+//     回落语义项（不告警），合法锚点照跑。
+func plannerAnchorPlan(parentTitle string, mode string) []plannerSub {
+	var acs [3]string
+	switch mode {
+	case "pass":
+		acs[0] = "产出包含实施要点的说明文本。\n" +
+			"[CHECK] file:uat-t2/pass/sub1.md exists\n" +
+			"[CHECK] file:uat-t2/pass/sub1.md contains:锚点测试\n" +
+			"[CHECK] re:集群协作状态正常"
+		acs[1] = "核心改动落地且实现说明写明改动点。\n" +
+			"[CHECK] file:uat-t2/pass/sub2.md exists"
+		acs[2] = "检查通过并给出结论性总结。\n" +
+			"[CHECK] file:uat-t2/pass/sub3.md exists"
+	case "evil":
+		acs[0] = "产出包含实施要点的说明文本。\n" +
+			"[CHECK] file:../outside-secret.txt exists\n" +
+			"[CHECK] file:/abs/path/probe.txt exists\n" +
+			"[CHECK] file:uat-t2/evil/sub1.md exists"
+		acs[1] = "核心改动落地且实现说明写明改动点。\n" +
+			"[CHECK] file:../outside-secret.txt exists\n" +
+			"[CHECK] file:/abs/path/probe.txt exists\n" +
+			"[CHECK] file:uat-t2/evil/sub2.md exists"
+		acs[2] = "检查通过并给出结论性总结。\n" +
+			"[CHECK] file:../outside-secret.txt exists\n" +
+			"[CHECK] file:/abs/path/probe.txt exists\n" +
+			"[CHECK] file:uat-t2/evil/sub3.md exists"
+	case "mixed":
+		acs[0] = "产出包含实施要点的说明文本。\n" +
+			"[CHECK] file: exists\n" +
+			"[CHECK] file:uat-t2/mixed/sub1.md exists"
+		acs[1] = "核心改动落地且实现说明写明改动点。\n" +
+			"[CHECK] file: exists\n" +
+			"[CHECK] file:uat-t2/mixed/sub2.md exists"
+		acs[2] = "检查通过并给出结论性总结。\n" +
+			"[CHECK] file: exists\n" +
+			"[CHECK] file:uat-t2/mixed/sub3.md exists"
+	}
+	deps := [3][]int{{}, {0}, {1}}
+	subs := make([]plannerSub, 3)
+	for i := range subs {
+		subs[i] = plannerSub{
+			Title:              parentTitle + " · 子任务" + string(rune('1'+i)),
+			Description:        "锚点测试子任务。",
+			RequiredRole:       "worker",
+			RequiredTags:       []string{},
+			AcceptanceCriteria: acs[i],
+			DependsOn:          deps[i],
+		}
+	}
+	return subs
 }

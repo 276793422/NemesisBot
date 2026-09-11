@@ -60,6 +60,11 @@ pub struct ProxyHandle {
 
 impl ProxyHandle {
     /// The `api_base` value to write into the sandboxed agent's config.
+    ///
+    /// 带 `/v1` 后缀是 HttpCompat（chat/completions）lane 的约定；Anthropic
+    /// lane（provider 拼 `/v1/messages`）与 Codex lane（拼 `/responses`）写入
+    /// 盒内 config 前必须去掉 `/v1`（否则盒内路径 `/v1/v1/messages` → 上游
+    /// 404，2026-09-11 r10 真链路红的根因）。lane 裁决见 eval.rs `box_api_base`。
     pub fn api_base(&self) -> String {
         format!("http://127.0.0.1:{}/v1", self.port)
     }

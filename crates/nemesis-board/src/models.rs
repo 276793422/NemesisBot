@@ -223,6 +223,16 @@ pub struct ActivityLog {
     pub created_at: i64,
 }
 
+/// 审计决策行（全自动流转 P5/E2 决策流视图）：`auto_decide` 活动 + 关联
+/// 单据编号/标题（JOIN 补齐，决策列表直接可读）。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AuditDecisionRow {
+    #[serde(flatten)]
+    pub activity: ActivityLog,
+    pub issue_number: String,
+    pub issue_title: String,
+}
+
 /// 订阅者（表 `issue_subscriber`；通知投递 P4 接通道）。
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Subscriber {
@@ -232,6 +242,58 @@ pub struct Subscriber {
     pub reason: String,
 }
 
+/// 项目状态（全自动流转 P3/F2）：主链 `active → in_progress → completed`，
+/// 归档旁路 `archived`。合法转移表见 [`crate::project_state`]；存量库中的
+/// 未知字符串在读取时宽容映射 `active`（[`crate::store`] row 映射统一收口）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ProjectStatus {
+    Active,
+    InProgress,
+    Completed,
+    Archived,
+}
+
+impl ProjectStatus {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            ProjectStatus::Active => "active",
+            ProjectStatus::InProgress => "in_progress",
+            ProjectStatus::Completed => "completed",
+            ProjectStatus::Archived => "archived",
+        }
+    }
+
+    /// 从库里的字符串解析（未知名回退 `None`，由调用方决定宽容/报错）。
+    #[allow(clippy::should_implement_trait)] // lenient parser with fallback; deliberately NOT std::str::FromStr (no Err semantics)
+    pub fn from_str(s: &str) -> Option<Self> {
+        match s {
+            "active" => Some(ProjectStatus::Active),
+            "in_progress" => Some(ProjectStatus::InProgress),
+            "completed" => Some(ProjectStatus::Completed),
+            "archived" => Some(ProjectStatus::Archived),
+            _ => None,
+        }
+    }
+
+    /// 人读的合法目标集（错误提示用）。
+    pub fn allowed_targets(&self) -> &'static str {
+        match self {
+            ProjectStatus::Active => "in_progress/archived",
+            ProjectStatus::InProgress => "completed/archived",
+            // completed → in_progress 为 P4 F3 项目级验收 FAIL 自动回退预留。
+            ProjectStatus::Completed => "archived/in_progress",
+            ProjectStatus::Archived => "active（重开）",
+        }
+    }
+}
+
+impl std::fmt::Display for ProjectStatus {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
 /// 项目（表 `project`；MVP 仅分组聚合用）。
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Project {
@@ -239,12 +301,19 @@ pub struct Project {
     pub name: String,
     #[serde(default)]
     pub description: String,
-    /// 自由字符串：MVP 约定 "active" / "archived"。
+    /// 状态词表：`active / in_progress / completed / archived`（F2 状态机，
+    /// 合法转移见 [`crate::project_state`]）。落库为自由字符串——前端兼容
+    /// 旧值；写入校验收口在 [`crate::store::BoardStore::update_project`]。
     pub status: String,
     pub priority: i32,
     pub lead: Option<crate::assignment::Actor>,
     #[serde(default)]
     pub icon: String,
+    /// 项目级验收标准（v10 列；空 = 无）。F3 收口验收聚合父单 AC 时本字段
+    /// 排首位——project.create/patch 写入，完成判定真实消费（此前只存父单，
+    /// 项目级标准无处安放）。
+    #[serde(default)]
+    pub acceptance_criteria: String,
     pub created_at: i64,
 }
 
@@ -392,6 +461,8 @@ pub struct ProjectPatch {
     pub description: Option<String>,
     pub status: Option<String>,
     pub icon: Option<String>,
+    /// 项目级验收标准（v10 列；F3 收口验收聚合输入首位）。None = 不改。
+    pub acceptance_criteria: Option<String>,
 }
 
 /// 自动化规则（W2 P4 autopilot；表 `autopilot`）：到点建 issue（标题支持
@@ -412,6 +483,12 @@ pub struct Autopilot {
     /// 派活目标节点 id（空 = 仅建单不派活，MVP 语义）。
     #[serde(default)]
     pub target: String,
+    /// 全自动流转 D2：触发建单后自动跑 planner 拆解（仅当 target 为空=
+    /// 未预指派 worker 时）。与 `board.plan.auto_confirm`（拆解完是否自动
+    /// 发车）正交：auto_plan 管「是否拆解」，auto_confirm 管「拆解完是否
+    /// 发车」。DB 列 v9 迁移，serde default false（存量规则行为不变）。
+    #[serde(default)]
+    pub auto_plan: bool,
     pub enabled: bool,
     /// live CronService 对应 job 的 id（`board-ap:{id}` 名字约定）。
     /// CronService 不支持指定 job id（add_job_ext 返回随机 id），只能注册
@@ -436,6 +513,8 @@ pub struct NewAutopilot {
     pub project_id: Option<i64>,
     pub target: String,
     pub enabled: bool,
+    /// 全自动流转 D2：建单后自动 planner 拆解（同 [`Autopilot::auto_plan`]）。
+    pub auto_plan: bool,
 }
 
 /// 部分更新 autopilot 字段的 patch（None = 不改；cron_job_id/last_run_at
@@ -450,6 +529,8 @@ pub struct AutopilotPatch {
     pub project_id: Option<i64>,
     pub target: Option<String>,
     pub enabled: Option<bool>,
+    /// 全自动流转 D2：`Some(v)` = 改 auto_plan（None = 不改）。
+    pub auto_plan: Option<bool>,
 }
 
 // ---------------------------------------------------------------------------

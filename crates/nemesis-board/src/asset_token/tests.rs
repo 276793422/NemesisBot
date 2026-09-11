@@ -4,7 +4,8 @@
 
 use super::*;
 
-const SECRET: &[u8] = b"test-secret-bytes-0123456789abcdef";const FAR_FUTURE: i64 = 4_102_444_800; // 2100-01-01，永不过期
+const SECRET: &[u8] = b"test-secret-bytes-0123456789abcdef";
+const FAR_FUTURE: i64 = 4_102_444_800; // 2100-01-01，永不过期
 const PAST: i64 = 1; // 1970-01-01，恒已过期
 
 #[test]
@@ -15,8 +16,7 @@ fn sign_and_verify_roundtrip() {
         token.bytes().all(|b| b.is_ascii_hexdigit()),
         "token must be lowercase-ish hex"
     );
-    verify_asset_token(SECRET, "report.md", FAR_FUTURE, &token)
-        .expect("valid token must verify");
+    verify_asset_token(SECRET, "report.md", FAR_FUTURE, &token).expect("valid token must verify");
 }
 
 #[test]
@@ -36,10 +36,7 @@ fn tampered_inputs_rejected_as_invalid() {
     // token 单字符篡改 → Invalid。
     let mut tampered = token.clone();
     let first = tampered.as_bytes()[0];
-    tampered.replace_range(
-        0..1,
-        if first == b'0' { "1" } else { "0" },
-    );
+    tampered.replace_range(0..1, if first == b'0' { "1" } else { "0" });
     assert_eq!(
         verify_asset_token(SECRET, "report.md", FAR_FUTURE, &tampered),
         Err(AssetTokenError::Invalid)
@@ -92,14 +89,22 @@ fn bundle_serde_roundtrip_and_issue_shape() {
         600,
     );
     assert_eq!(bundle.asset_ref, "spec-v2.pdf");
-    assert_eq!(bundle.sha256, sha, "integrity baseline rides with the bundle");
+    assert_eq!(
+        bundle.sha256, sha,
+        "integrity baseline rides with the bundle"
+    );
     assert_eq!(bundle.size, 4096);
     assert_eq!(
         bundle.node_url, "http://192.168.1.10:49100",
         "trailing slash trimmed"
     );
-    verify_asset_token(SECRET, &bundle.asset_ref, bundle.expires_at, &bundle.asset_token)
-        .expect("freshly issued bundle must verify");
+    verify_asset_token(
+        SECRET,
+        &bundle.asset_ref,
+        bundle.expires_at,
+        &bundle.asset_token,
+    )
+    .expect("freshly issued bundle must verify");
 
     let json = serde_json::to_string(&bundle).unwrap();
     let back: AssetTokenBundle = serde_json::from_str(&json).unwrap();
@@ -164,6 +169,9 @@ fn secret_load_create_and_corruption_semantics() {
 
     // 损坏（非 64 hex）→ 诚实 Err，不静默重置。
     std::fs::write(&path, "not-a-valid-hex").unwrap();
-    assert!(load_or_create_secret(&path).is_err(), "corrupt file must error");
+    assert!(
+        load_or_create_secret(&path).is_err(),
+        "corrupt file must error"
+    );
     let _ = std::fs::remove_dir_all(&dir);
 }

@@ -57,11 +57,14 @@ fn resolve_autopilot_job<'a>(
 /// cron on_job 的 board autopilot 分支（job 名 `board-ap:{id}`）：按规则
 /// 模板建单（target 非空时派发）并落 last_run_at；返回值进 job run 历史。
 /// disabled 规则到点跳过（启停是用户意图，不算故障）。
+/// 全自动流转 D2：auto_plan 规则经 moderator 槽自动拆解（槽晚填 OnceLock；
+/// hub 传 None——cron 装配早于 web server，诚实降级无 SSE 推送）。
 #[cfg(all(feature = "board", feature = "cluster"))]
 fn fire_board_autopilot(
     job_name: &str,
     board_store: Option<&std::sync::Arc<nemesis_board::BoardStore>>,
     cluster: Option<&std::sync::Arc<nemesis_cluster::cluster::Cluster>>,
+    auto_plan: Option<&nemesis_web::handlers::board::AutoPlanContext>,
 ) -> Result<String, String> {
     let (store, ap) = resolve_autopilot_job(job_name, board_store)?;
     if !ap.enabled {
@@ -72,6 +75,7 @@ fn fire_board_autopilot(
         cluster,
         &ap,
         &nemesis_board::Actor::system("autopilot"),
+        auto_plan,
     )
     .map_err(|e| format!("autopilot「{}」触发失败: {e}", ap.name))?;
     Ok(format!("autopilot「{}」已触发: {out}", ap.name))
@@ -749,9 +753,7 @@ fn parse_ipv4_octets(s: &str) -> Option<(u8, u8, u8, u8)> {
     not(all(feature = "board", feature = "cluster")),
     allow(dead_code) // 同上
 )]
-fn select_lan_ip_for_advertisement(
-    cluster: &nemesis_cluster::cluster::Cluster,
-) -> Option<String> {
+fn select_lan_ip_for_advertisement(cluster: &nemesis_cluster::cluster::Cluster) -> Option<String> {
     let local_ips = nemesis_cluster::network::get_all_local_ips();
     let self_id = cluster.node_id();
     let peer_addrs: Vec<String> = cluster
@@ -770,6 +772,64 @@ mod tests;
 /// 整文件 Windows 形态（11/11 live 场景走 Windows CLI 进程边界），随测试一并门控。
 #[cfg(all(test, windows))]
 mod tests_r9_live;
+
+/// E1 二期 token 回传（全自动流转 P5）：把 worker 回调携带的 `usage` 记入
+/// master 用量账本（DataStore request_logs）。记账键 = `cluster_rpc:
+/// {worker}/{task_id}`（与 worker 侧 `cluster_rpc:{A}/{chat}` 会话键同前缀
+/// 家族；per-task 粒度让 token 预算闸能按派发行精确聚合，`{worker}%` LIKE
+/// 前缀聚合同时可用）。诚实边界：无 usage（旧 worker / 错误回调）/ 无
+/// DataStore / 落库失败 → 静默跳过（warn），绝不影响回调路由。
+#[cfg(feature = "cluster")] // 唯一消费点在 peer_chat_callback（集群回调闭包内）
+fn record_cluster_usage(
+    ds: Option<&std::sync::Arc<nemesis_data::DataStore>>,
+    source_node: &str,
+    task_id: &str,
+    usage: Option<&serde_json::Value>,
+) {
+    let Some(ds) = ds else { return };
+    let Some(usage) = usage else { return };
+    if task_id.is_empty() {
+        return;
+    }
+    let get_num = |key: &str| -> i64 {
+        usage
+            .get(key)
+            .and_then(|v| v.as_i64().or_else(|| v.as_u64().map(|n| n as i64)))
+            .unwrap_or(0)
+    };
+    let input = get_num("input_tokens");
+    let output = get_num("output_tokens");
+    let cost = usage
+        .get("cost_usd")
+        .and_then(|v| v.as_f64())
+        .unwrap_or(0.0);
+    let log = nemesis_data::RequestLog {
+        id: 0,
+        trace_id: format!("cluster-callback:{task_id}"),
+        model: format!("cluster_delegate:{source_node}"),
+        provider_type: "cluster".to_string(),
+        input_tokens: input,
+        output_tokens: output,
+        cache_creation_tokens: 0,
+        cache_read_tokens: 0,
+        total_cost_usd: cost,
+        latency_ms: 0,
+        status_code: 200,
+        error_message: None,
+        is_streaming: false,
+        created_at: chrono::Local::now().timestamp(),
+        pricing_model: String::new(),
+        input_cost_usd: 0.0,
+        output_cost_usd: 0.0,
+        cache_creation_cost_usd: 0.0,
+        cache_read_cost_usd: 0.0,
+        first_token_ms: None,
+        session_key: format!("cluster_rpc:{source_node}/{task_id}"),
+    };
+    if let Err(e) = ds.insert_request_log(&log) {
+        tracing::warn!("[Gateway] Failed to record cluster callback usage: {e}");
+    }
+}
 
 /// Parse "host:port" string into (host, port).
 #[cfg(any(feature = "cluster", test))]
@@ -1099,19 +1159,33 @@ fn write_back_board_dispatch(
     use nemesis_board::models::dispatch_state;
 
     let Some(bstore) = board_store.as_ref() else {
-        return BoardWritebackOutcome { is_board_task: false, issue_for_review: None };
+        return BoardWritebackOutcome {
+            is_board_task: false,
+            issue_for_review: None,
+        };
     };
     if task_id.is_empty() {
-        return BoardWritebackOutcome { is_board_task: false, issue_for_review: None };
+        return BoardWritebackOutcome {
+            is_board_task: false,
+            issue_for_review: None,
+        };
     }
     let disp = match bstore.get_dispatch(task_id) {
         Ok(Some(d)) => d,
-        Ok(None) => return BoardWritebackOutcome { is_board_task: false, issue_for_review: None },
+        Ok(None) => {
+            return BoardWritebackOutcome {
+                is_board_task: false,
+                issue_for_review: None,
+            };
+        }
         Err(e) => {
             // 读失败≠非 board 任务，但也不能误吞 agent 续行——按既有路由
             // 处理（false），告警留痕。
             warn!("[Gateway] board dispatch lookup failed (task_id={task_id}): {e}");
-            return BoardWritebackOutcome { is_board_task: false, issue_for_review: None };
+            return BoardWritebackOutcome {
+                is_board_task: false,
+                issue_for_review: None,
+            };
         }
     };
     if disp.state != dispatch_state::DISPATCHED {
@@ -1119,7 +1193,10 @@ fn write_back_board_dispatch(
             "[Gateway] board dispatch {task_id} already terminal ({}), skip",
             disp.state
         );
-        return BoardWritebackOutcome { is_board_task: true, issue_for_review: None };
+        return BoardWritebackOutcome {
+            is_board_task: true,
+            issue_for_review: None,
+        };
     }
 
     let terminal = if status == "error" {
@@ -1173,7 +1250,9 @@ fn write_back_board_dispatch(
                 ) {
                     Ok(_) => issue_for_review = Some(disp.issue_id),
                     Err(e) => {
-                        warn!("[Gateway] board writeback transition failed (task_id={task_id}): {e}");
+                        warn!(
+                            "[Gateway] board writeback transition failed (task_id={task_id}): {e}"
+                        );
                     }
                 }
             }
@@ -1181,15 +1260,24 @@ fn write_back_board_dispatch(
                 "[Gateway] board dispatch writeback done (task_id={task_id}, issue_id={}, state={terminal})",
                 disp.issue_id
             );
-            BoardWritebackOutcome { is_board_task: true, issue_for_review }
+            BoardWritebackOutcome {
+                is_board_task: true,
+                issue_for_review,
+            }
         }
         Ok(false) => {
             info!("[Gateway] board dispatch {task_id} finished concurrently, skip writeback");
-            BoardWritebackOutcome { is_board_task: true, issue_for_review: None }
+            BoardWritebackOutcome {
+                is_board_task: true,
+                issue_for_review: None,
+            }
         }
         Err(e) => {
             warn!("[Gateway] board dispatch finish failed (task_id={task_id}): {e}");
-            BoardWritebackOutcome { is_board_task: true, issue_for_review: None }
+            BoardWritebackOutcome {
+                is_board_task: true,
+                issue_for_review: None,
+            }
         }
     }
 }
@@ -1404,6 +1492,7 @@ pub async fn run(local: bool, extra_args: &[String]) -> Result<()> {
         api_base: resolution.api_base.clone(),
         workspace: home.join("workspace").to_string_lossy().to_string(),
         connect_mode: resolution.connect_mode.clone(),
+        protocol: resolution.protocol.clone(),
         account_id: String::new(),
         headers: std::collections::HashMap::new(),
     };
@@ -1695,15 +1784,17 @@ pub async fn run(local: bool, extra_args: &[String]) -> Result<()> {
     #[cfg(all(feature = "board", feature = "cluster"))]
     let board_quota: std::sync::Arc<nemesis_board::quota::QuotaLedger> = {
         let config_handle = config_store.handle();
-        std::sync::Arc::new(nemesis_board::quota::QuotaLedger::with_provider(move || {
-            let guard = config_handle.read();
-            let disc = guard.board.clone().unwrap_or_default().discussion;
-            nemesis_board::quota::QuotaConfig {
-                max_agent_turns_per_thread: disc.max_agent_turns_per_thread,
-                hourly_budget_per_node: disc.hourly_budget_per_node,
-                rate_limit_per_min: disc.rate_limit_per_min,
-            }
-        }))
+        std::sync::Arc::new(nemesis_board::quota::QuotaLedger::with_provider(
+            move || {
+                let guard = config_handle.read();
+                let disc = guard.board.clone().unwrap_or_default().discussion;
+                nemesis_board::quota::QuotaConfig {
+                    max_agent_turns_per_thread: disc.max_agent_turns_per_thread,
+                    hourly_budget_per_node: disc.hourly_budget_per_node,
+                    rate_limit_per_min: disc.rate_limit_per_min,
+                }
+            },
+        ))
     };
 
     // Swarm M3: 主持人裁决用主 AgentLoop 后置装配桥（nb_bus 注册早于
@@ -1717,9 +1808,8 @@ pub async fn run(local: bool, extra_args: &[String]) -> Result<()> {
     // 时创建；board feature 裁剪下恒 None——adapter 不接讨论通道）。
     #[cfg(feature = "cluster")]
     #[allow(unused_mut)]
-    let mut board_worker_inbox: Option<
-        std::sync::Arc<crate::cluster_agent::DiscussionInbox>,
-    > = None;
+    let mut board_worker_inbox: Option<std::sync::Arc<crate::cluster_agent::DiscussionInbox>> =
+        None;
 
     // Opt 2: conversation→WS router, shared between the cron fire handler
     // (lookup, here) and process_messages (bind, in the web server). Built
@@ -1747,6 +1837,12 @@ pub async fn run(local: bool, extra_args: &[String]) -> Result<()> {
         let store_for_ap = board_store.clone();
         #[cfg(all(feature = "board", feature = "cluster"))]
         let slot_for_ap = autopilot_cluster_slot.clone();
+        // 全自动流转 D2：auto_plan 的 moderator 槽（board_moderator_loop 在
+        // 本闭包装配前创建、agent_loop 建成后 set——同 OnceLock 模式）。
+        #[cfg(all(feature = "board", feature = "cluster"))]
+        let mod_slot_for_ap = board_moderator_loop.clone();
+        #[cfg(all(feature = "board", feature = "cluster"))]
+        let home_for_ap = home.clone();
         cron_service
             .lock()
             .unwrap()
@@ -1758,11 +1854,22 @@ pub async fn run(local: bool, extra_args: &[String]) -> Result<()> {
                 #[cfg(feature = "board")]
                 if job.name.starts_with("board-ap:") {
                     #[cfg(feature = "cluster")]
-                    return fire_board_autopilot(
-                        &job.name,
-                        store_for_ap.as_ref(),
-                        slot_for_ap.get(),
-                    );
+                    {
+                        // auto_plan 上下文在触发时现构（槽引用 + home + 集群；
+                        // hub 传 None——闭包装配早于 web server，SSE 诚实降级）。
+                        let ap_ctx = nemesis_web::handlers::board::AutoPlanContext {
+                            moderator_slot: mod_slot_for_ap.clone(),
+                            home: home_for_ap.clone(),
+                            hub: None,
+                            cluster: slot_for_ap.get().cloned(),
+                        };
+                        return fire_board_autopilot(
+                            &job.name,
+                            store_for_ap.as_ref(),
+                            slot_for_ap.get(),
+                            Some(&ap_ctx),
+                        );
+                    }
                     #[cfg(not(feature = "cluster"))]
                     return fire_board_autopilot(&job.name, store_for_ap.as_ref());
                 }
@@ -2065,6 +2172,24 @@ pub async fn run(local: bool, extra_args: &[String]) -> Result<()> {
         if mcp_enabled { " + MCP" } else { "" }
     );
 
+    // Step 9b: Create DataStore for usage statistics（E1 二期：前移到集群回调
+    // 装配点之前——peer_chat_callback 闭包要捕获它，把 worker 回传的 usage
+    // 记入 master 用量账本）
+    let data_store = {
+        let data_dir = nemesis_path::workspace_data_dir(&home);
+        let db_path = data_dir.join("nemesisbot_data.db");
+        match nemesis_data::DataStore::open(&db_path) {
+            Ok(store) => {
+                info!("[Gateway] DataStore opened at {}", db_path.display());
+                Some(Arc::new(store))
+            }
+            Err(e) => {
+                warn!("[Gateway] Failed to open DataStore: {e}, usage statistics disabled");
+                None
+            }
+        }
+    };
+
     // Step 9a: Set up cluster.
     // Mirrors Go's bot_service.go initComponents → startCluster.
     // The Cluster object and adapter are always created for dynamic start/stop support.
@@ -2110,6 +2235,25 @@ pub async fn run(local: bool, extra_args: &[String]) -> Result<()> {
     )> = None;
     // Always create cluster infrastructure (Cluster object, handlers, adapter refs).
     // Network components are started below only when cluster_should_start is true.
+    // P1/T1-6 estop 保险丝：句柄在集群装配前创建——peer_chat_callback 里的
+    // board 评审依赖集与下方 SharedResources 共享同一 Arc（跨 agent 重启存活）。
+    let estop = std::sync::Arc::new(nemesis_agent::estop::EstopState::new());
+    info!("[Gateway] Global e-stop (kill switch) initialized (released)");
+    #[cfg_attr(
+        not(all(feature = "board", feature = "cluster")),
+        allow(dead_code, unused_variables)
+    )]
+    let board_estop_parked = std::sync::Arc::new(std::sync::Mutex::new(Vec::<(
+        crate::board_review::ParkedKind,
+        i64,
+    )>::new()));
+    // P4/B2b 自检取证路由表：selfcheck 派发不写 issue_dispatch，callback
+    // 凭本表识别取证任务并路由到二段验收（评审任务与回调闭包共享）。
+    #[cfg_attr(
+        not(all(feature = "board", feature = "cluster")),
+        allow(dead_code, unused_variables)
+    )]
+    let board_selfcheck_registry = crate::board_review::SelfcheckRegistry::new();
     #[cfg(feature = "cluster")]
     {
         // Build ClusterConfig — node_id 留空，with_workspace() 会从 peers.toml [node] 段加载真实身份
@@ -2136,11 +2280,69 @@ pub async fn run(local: bool, extra_args: &[String]) -> Result<()> {
         // 调整过的不被 announce 拉回）。role=worker 且 category 含 qa →
         // #qa，其余 worker → #dev；coordinator / 本节点不入。注册在静态
         // peers 装载之前 —— 启动时静态对端同样收编。
+        // A2 停车场 sweep：cluster 句柄经 OnceLock 回填（回调注册早于
+        // Arc::new(cluster)，同 autopilot 槽位模式）；10s 节流抗 announce
+        // 风暴；estop 挂起时不派发（急停冻结一切自动 agent 活动）。
+        // None = 从未跑过（Option 防开机窗口 Instant 下溢）。
+        #[cfg(all(feature = "board", feature = "cluster"))]
+        let (sweep_cluster_slot, sweep_last, estop_for_sweep) = {
+            let slot: Arc<std::sync::OnceLock<Arc<nemesis_cluster::cluster::Cluster>>> =
+                Arc::new(std::sync::OnceLock::new());
+            let last: Arc<std::sync::Mutex<Option<std::time::Instant>>> =
+                Arc::new(std::sync::Mutex::new(None));
+            (slot, last, estop.clone())
+        };
+
         #[cfg(all(feature = "board", feature = "cluster"))]
         {
             let store_for_hook = board_store.clone();
             let self_node_id = cluster.node_id().to_string();
+            let sweep_cluster_slot = sweep_cluster_slot.clone();
+            let sweep_last = sweep_last.clone();
             cluster.set_on_node_discovered(Arc::new(move |node_id, role, category| {
+                // sweep 先于 auto-join 的 self/非 worker 早退：任何非本节点
+                // announce（含身份/tags 变更刷新）都是重试信号；本节点自身
+                // 的 announce 不是（派发匹配器本就排除本机）。
+                if node_id != self_node_id
+                    && !estop_for_sweep.is_engaged()
+                    && sweep_cluster_slot.get().is_some()
+                {
+                    let throttle_ok = {
+                        let mut last = sweep_last
+                            .lock()
+                            .unwrap_or_else(|e| e.into_inner());
+                        let now = std::time::Instant::now();
+                        let ok = match *last {
+                            Some(t) => {
+                                now.duration_since(t)
+                                    >= std::time::Duration::from_secs(10)
+                            }
+                            None => true,
+                        };
+                        if ok {
+                            *last = Some(now);
+                        }
+                        ok
+                    };
+                    if throttle_ok {
+                        let store = store_for_hook.clone();
+                        let cluster = sweep_cluster_slot.get().unwrap().clone();
+                        let node_id = node_id.to_string();
+                        tokio::spawn(async move {
+                            if let Some(store) = store.as_ref() {
+                                let actor = nemesis_board::Actor::system("board");
+                                let (cands, dispatched, failed) =
+                                    nemesis_web::handlers::board::sweep_parked_dispatches(store, &cluster, &actor);
+                                if dispatched > 0 || failed > 0 {
+                                    info!(
+                                        "[Gateway] 停车场 sweep：候选 {cands} 派出 {dispatched} 失败 {failed}（节点 {} 上线/刷新触发）",
+                                        node_id
+                                    );
+                                }
+                            }
+                        });
+                    }
+                }
                 let Some(store) = store_for_hook.as_ref() else {
                     return;
                 };
@@ -2196,6 +2398,16 @@ pub async fn run(local: bool, extra_args: &[String]) -> Result<()> {
                     .get("category")
                     .and_then(|v| v.as_str())
                     .unwrap_or("general");
+                let tags: Vec<String> = val
+                    .get("tags")
+                    .and_then(|v| v.as_array())
+                    .map(|arr| {
+                        arr.iter()
+                            .filter_map(|v| v.as_str().map(|s| s.trim().to_string()))
+                            .filter(|s| !s.is_empty())
+                            .collect()
+                    })
+                    .unwrap_or_default();
                 if addr.is_empty() {
                     continue;
                 }
@@ -2215,7 +2427,7 @@ pub async fn run(local: bool, extra_args: &[String]) -> Result<()> {
                     rpc_port,
                     role,
                     cat,
-                    vec![],
+                    tags,
                     vec![],
                     "unknown",
                 );
@@ -2352,6 +2564,9 @@ pub async fn run(local: bool, extra_args: &[String]) -> Result<()> {
         #[cfg(all(feature = "board", feature = "cluster"))]
         {
             let _ = autopilot_cluster_slot.set(cluster.clone());
+            // A2 停车场 sweep 槽位回填（节点发现闭包经 OnceLock 取用）。
+            // 启动期 announce 早于回填也不丢：下一个 announce 周期兜底。
+            let _ = sweep_cluster_slot.set(cluster.clone());
         }
 
         // --- Inject cluster task queue into cluster for callback routing ---
@@ -2560,6 +2775,10 @@ pub async fn run(local: bool, extra_args: &[String]) -> Result<()> {
             let task_list_for_cb = cluster_task_list.clone();
             let work_queue_for_cb = cluster_work_queue.clone();
             let cluster_for_cb = cluster.clone();
+            // E1 二期 token 回传：worker 回传的 usage 记入 master 用量账本
+            //（session_key=cluster_rpc:{worker}/{task_id}，E1 token 预算闸
+            // 按派发行精确聚合）。未装配 DataStore = 记账静默跳过。
+            let ds_for_usage_cb = data_store.clone();
             // W2 P2 派发写回：board 派发的 task_id 命中 issue_dispatch →
             // 写回看板。board feature 未编译时占位（拦截整体被 cfg 掉）。
             #[cfg(feature = "board")]
@@ -2574,6 +2793,14 @@ pub async fn run(local: bool, extra_args: &[String]) -> Result<()> {
             // set(agent_loop) 还要用）。
             #[cfg(all(feature = "board", feature = "cluster"))]
             let moderator_loop_for_cb = board_moderator_loop.clone();
+            // P1/T1-6：estop 保险丝随评审依赖集进回调闭包（冻结停车用）。
+            #[cfg(all(feature = "board", feature = "cluster"))]
+            let estop_for_cb = estop.clone();
+            #[cfg(all(feature = "board", feature = "cluster"))]
+            let estop_parked_for_cb = board_estop_parked.clone();
+            // P4/B2b：取证路由表随回调闭包（selfcheck 命中判定）。
+            #[cfg(all(feature = "board", feature = "cluster"))]
+            let selfcheck_for_cb = board_selfcheck_registry.clone();
             #[cfg(not(feature = "board"))]
             #[allow(unused_variables)]
             let board_store_for_cb: Option<()> = None;
@@ -2590,12 +2817,81 @@ pub async fn run(local: bool, extra_args: &[String]) -> Result<()> {
                     .get("response")
                     .and_then(|v| v.as_str())
                     .unwrap_or("");
+                // worker 身份走传输层：RPC server 派发前注入 `_rpc.from`
+                //（server.rs enhancePayload 同款），payload 本体没有
+                // source_node 字段——T37 真机实证空段。优先 _rpc.from，
+                // 显式字段保留为前向兼容 fallback。
                 let source_node = payload
-                    .get("source_node")
+                    .get("_rpc")
+                    .and_then(|m| m.get("from"))
                     .and_then(|v| v.as_str())
+                    .or_else(|| {
+                        payload
+                            .get("source_node")
+                            .and_then(|v| v.as_str())
+                    })
                     .unwrap_or("");
+                // E1 二期：usage 可选字段（serde 兼容——旧 worker 无此字段
+                // 不炸；只认 object 形态）。
+                let usage = payload.get("usage").filter(|v| v.is_object());
+                record_cluster_usage(
+                    ds_for_usage_cb.as_ref(),
+                    source_node,
+                    task_id,
+                    usage,
+                );
 
                 info!("[Gateway] peer_chat_callback received: task_id={}, status={}, from={}", task_id, status, source_node);
+
+                // P4/B2b 自检取证拦截（先于一切路由）：命中 SelfcheckRegistry
+                // 的 task_id 是取证任务（不写 issue_dispatch——Route 0 的
+                // 写回不适用；不进 Route 2 续行 bus——无续行快照只会告警），
+                // 路由到二段验收。TaskManager 收口（Route 3）照常——取证
+                // 任务也是 submit_peer_chat 登记的，不收口留 ghost pending。
+                #[cfg(all(feature = "board", feature = "cluster"))]
+                let selfcheck_issue_id = if task_id.is_empty() {
+                    None
+                } else {
+                    selfcheck_for_cb.take(task_id)
+                };
+                #[cfg(any(not(feature = "board"), not(feature = "cluster")))]
+                let selfcheck_issue_id: Option<i64> = None;
+                #[cfg(all(feature = "board", feature = "cluster"))]
+                if let Some(sc_issue_id) = selfcheck_issue_id {
+                    info!(
+                        "[Gateway] peer_chat_callback selfcheck branch: task_id={}, issue={}",
+                        task_id, sc_issue_id
+                    );
+                    crate::board_review::spawn_selfcheck_second_stage(
+                        crate::board_review::BoardReviewDeps {
+                            store: board_store_for_cb.clone().expect(
+                                "selfcheck armed implies store present",
+                            ),
+                            workspace: workspace_for_cb.clone(),
+                            home: home_for_cb.clone(),
+                            moderator_loop: moderator_loop_for_cb.clone(),
+                            cluster: cluster_for_cb.clone(),
+                            estop: estop_for_cb.clone(),
+                            estop_parked: estop_parked_for_cb.clone(),
+                            selfcheck: selfcheck_for_cb.clone(),
+                        },
+                        sc_issue_id,
+                        status.to_string(),
+                        response.to_string(),
+                    );
+                    // TaskManager 状态收口（同 Route 3 语义）。
+                    let result_value = serde_json::json!({
+                        "status": status,
+                        "response": response,
+                        "source_node": source_node,
+                    });
+                    if status == "error" {
+                        cluster_for_cb.fail_task(task_id, response);
+                    } else {
+                        cluster_for_cb.complete_task(task_id, result_value);
+                    }
+                    return Ok(serde_json::json!({"status": "received", "task_id": task_id}));
+                }
 
                 // Route 0: Board 派发写回（W2 P2）——命中 issue_dispatch 的
                 // task_id 直接写回看板（结果评论 + 状态推进），且跳过 Route 2
@@ -2630,6 +2926,9 @@ pub async fn run(local: bool, extra_args: &[String]) -> Result<()> {
                             home: home_for_cb.clone(),
                             moderator_loop: moderator_loop_for_cb.clone(),
                             cluster: cluster_for_cb.clone(),
+                            estop: estop_for_cb.clone(),
+                            estop_parked: estop_parked_for_cb.clone(),
+                            selfcheck: selfcheck_for_cb.clone(),
                         },
                         review_issue_id,
                     );
@@ -3158,29 +3457,12 @@ pub async fn run(local: bool, extra_args: &[String]) -> Result<()> {
         }
     };
 
-    // Step 9b: Create DataStore for usage statistics
-    let data_store = {
-        let data_dir = nemesis_path::workspace_data_dir(&home);
-        let db_path = data_dir.join("nemesisbot_data.db");
-        match nemesis_data::DataStore::open(&db_path) {
-            Ok(store) => {
-                info!("[Gateway] DataStore opened at {}", db_path.display());
-                Some(Arc::new(store))
-            }
-            Err(e) => {
-                warn!("[Gateway] Failed to open DataStore: {e}, usage statistics disabled");
-                None
-            }
-        }
-    };
-
     // Note: DataStore injection into agent_loop is now handled by the factory function.
 
     // Note: Forge injection into agent_loop is now handled at creation time above.
 
     // Build SharedResources and use the factory to create the AgentLoop.
-    let estop = std::sync::Arc::new(nemesis_agent::estop::EstopState::new());
-    info!("[Gateway] Global e-stop (kill switch) initialized (released)");
+    // （estop 句柄已在集群装配块前创建——board 评审依赖集共用同一 Arc。）
     // C5 (2026-09-04): ONE LspManager for the whole gateway — the LspTool
     // registers with it (via SharedToolConfig.lsp_manager), the web server
     // holds the same Arc, and Step-24 teardown calls shutdown_all() so
@@ -3256,6 +3538,19 @@ pub async fn run(local: bool, extra_args: &[String]) -> Result<()> {
         lsp_manager,
         agent_event_tx: Some(agent_event_tx),
         background_registry,
+        // 全自动流转 P3/D1：board_issue 工具依赖（注册点在 build_agent_loop
+        // 主 agent；store=None 时工具不注册）。moderator 槽此刻还空，agent
+        // 建成后 :board_moderator_loop.set 填充——工具调用时读槽即得。
+        #[cfg(all(feature = "board", feature = "cluster"))]
+        board_store: board_store.clone(),
+        #[cfg(all(feature = "board", feature = "cluster"))]
+        board_cluster: cluster_adapter_refs.as_ref().map(|(c, _, _, _)| c.clone()),
+        #[cfg(all(feature = "board", feature = "cluster"))]
+        board_moderator_slot: board_moderator_loop.clone(),
+        #[cfg(all(feature = "board", feature = "cluster"))]
+        board_home: home.clone(),
+        #[cfg(all(feature = "board", feature = "cluster"))]
+        board_event_hub: Some(web_server.event_hub().clone()),
         #[cfg(feature = "security")]
         approval_slot: std::sync::Arc::new(parking_lot::RwLock::new(
             None::<Arc<dyn nemesis_security::auditor::ApprovalManager>>,
@@ -3333,6 +3628,122 @@ pub async fn run(local: bool, extra_args: &[String]) -> Result<()> {
     {
         if board_moderator_loop.set(agent_loop.clone()).is_err() {
             warn!("[Gateway] Board moderator loop already set");
+        }
+    }
+
+    // --- 全自动流转 P1（A3）：父单收口验收钩子注册 ---
+    // sync_parent_status 子单全 done 路径 → 本钩子（读 auto_close_parent
+    // 旗标 + master 角色闸）→ spawn_parent_review。旗标每次现读：config
+    // 热改即时生效，与 load_board_flags 同语义。worker 节点本地 board.db
+    // 是 dashboard 视图，非权威——角色闸保持与 write_back 触发链同级。
+    #[cfg(all(feature = "board", feature = "cluster"))]
+    {
+        let cluster_ok = cluster_adapter_refs
+            .as_ref()
+            .map(|(c, _, _, _)| matches!(c.role().as_str(), "coordinator" | "master" | "manager"))
+            .unwrap_or(false);
+        if cluster_ok
+            && let (Some(store), Some((cluster, _, _, _))) =
+                (board_store.clone(), cluster_adapter_refs.as_ref())
+        {
+            let deps = crate::board_review::BoardReviewDeps {
+                store,
+                workspace: home.join("workspace"),
+                home: home.clone(),
+                moderator_loop: board_moderator_loop.clone(),
+                cluster: cluster.clone(),
+                estop: shared_resources.estop.clone(),
+                estop_parked: board_estop_parked.clone(),
+                selfcheck: board_selfcheck_registry.clone(),
+            };
+            let hook_deps = std::sync::Arc::new(deps);
+            // P1/T1-6：estop 释放 watcher——把冻结停车的评审逐条复评恢复。
+            crate::board_review::spawn_estop_resume_watcher((*hook_deps).clone());
+            let hook_home = home.clone();
+            let hook_cluster = cluster.clone();
+            if let Err(e) = nemesis_web::handlers::board::set_parent_review_hook(
+                std::sync::Arc::new(move |parent_id: i64| {
+                    // 旗标现读（fail-closed：读失败不收口）。master 判定
+                    // 与 nb_bus handler 注册同款（board_store 全员 open
+                    // ≠ master 身份）。
+                    let is_master = matches!(
+                        hook_cluster.role().as_str(),
+                        "coordinator" | "master" | "manager"
+                    );
+                    if !is_master {
+                        return;
+                    }
+                    let flags = nemesis_config::load_config(&hook_home.join("config.json"))
+                        .map(|c| c.board.unwrap_or_default());
+                    match flags {
+                        Ok(f) if f.auto_close_parent => {
+                            crate::board_review::spawn_parent_review(
+                                (*hook_deps).clone(),
+                                parent_id,
+                            );
+                        }
+                        Ok(_) => {}
+                        Err(e) => {
+                            tracing::warn!(
+                                "[Gateway] 父单 {parent_id} 收口旗标读取失败（fail-closed 转人工）：{e}"
+                            );
+                        }
+                    }
+                }),
+            ) {
+                warn!("[Gateway] Board parent review hook register failed: {e}");
+            } else {
+                info!("[Gateway] Board parent review hook armed (auto_close_parent)");
+            }
+
+            // --- 全自动流转 P4（F3）：项目收口验收钩子注册 ---
+            // 全部顶层父单 done → notify 聚合预检过了才 fire；旗标
+            // `board.review.auto_close_project` 每次现读（同父单钩子语义）。
+            let proj_deps = std::sync::Arc::new(crate::board_review::BoardReviewDeps {
+                store: board_store
+                    .clone()
+                    .expect("cluster_ok arm guarantees board store present"),
+                workspace: home.join("workspace"),
+                home: home.clone(),
+                moderator_loop: board_moderator_loop.clone(),
+                cluster: cluster.clone(),
+                estop: shared_resources.estop.clone(),
+                estop_parked: board_estop_parked.clone(),
+                selfcheck: board_selfcheck_registry.clone(),
+            });
+            let proj_home = home.clone();
+            let proj_cluster = cluster.clone();
+            if let Err(e) = nemesis_web::handlers::board::set_project_review_hook(
+                std::sync::Arc::new(move |project_id: i64| {
+                    let is_master = matches!(
+                        proj_cluster.role().as_str(),
+                        "coordinator" | "master" | "manager"
+                    );
+                    if !is_master {
+                        return;
+                    }
+                    let flags = nemesis_config::load_config(&proj_home.join("config.json"))
+                        .map(|c| c.board.unwrap_or_default());
+                    match flags {
+                        Ok(f) if f.auto_review && f.review.auto_close_project => {
+                            crate::board_review::spawn_project_review(
+                                (*proj_deps).clone(),
+                                project_id,
+                            );
+                        }
+                        Ok(_) => {}
+                        Err(e) => {
+                            tracing::warn!(
+                                "[Gateway] 项目 {project_id} 收口旗标读取失败（fail-closed 转人工）：{e}"
+                            );
+                        }
+                    }
+                }),
+            ) {
+                warn!("[Gateway] Board project review hook register failed: {e}");
+            } else {
+                info!("[Gateway] Board project review hook armed (review.auto_close_project)");
+            }
         }
     }
 
@@ -3418,17 +3829,14 @@ pub async fn run(local: bool, extra_args: &[String]) -> Result<()> {
     // 满足「loop 订阅 bus → web bind」不变量。
     {
         let mgr_for_pred = projects_manager.clone();
-        agent_adapter.set_skip_predicate(Arc::new(move |msg| {
-            mgr_for_pred.bridge_should_skip(msg)
-        }));
+        agent_adapter.set_skip_predicate(Arc::new(move |msg| mgr_for_pred.bridge_should_skip(msg)));
         projects_manager.start_routing();
         // G4（2026-09-08）：ProjectsBridge 接线——projects.* WSAPI 与
         // resolve_session_loop（chat/tools/approval/question/agent/fs 各
         // handler 的归属解析）经此 trait 触达 manager（trait 在
         // ProjectLoopManager 上直接实现，Arc 协同转换装槽）。
-        let projects_bridge: std::sync::Arc<
-            dyn nemesis_web::handlers::projects::ProjectsBridge,
-        > = projects_manager.clone();
+        let projects_bridge: std::sync::Arc<dyn nemesis_web::handlers::projects::ProjectsBridge> =
+            projects_manager.clone();
         nemesis_web::handlers::projects::install_projects_bridge(projects_bridge);
     }
 
@@ -3460,7 +3868,10 @@ pub async fn run(local: bool, extra_args: &[String]) -> Result<()> {
         info!("[Gateway] SSE streaming provider configured for /api/chat/stream");
     }
 
-    info!("[Gateway] Web server created for {}:{}", web_bind_host, web_port);
+    info!(
+        "[Gateway] Web server created for {}:{}",
+        web_bind_host, web_port
+    );
 
     // Inject agent service into web server for start/stop control
     web_server.set_agent_service(agent_adapter.clone());
@@ -3529,11 +3940,9 @@ pub async fn run(local: bool, extra_args: &[String]) -> Result<()> {
                     secret: secret.clone(),
                     node_url: board_asset_url_slot.clone(),
                 });
-                board_service = board_service
-                    .with_asset_secret(secret)
-                    .with_assets_dir(nemesis_path::resolve_board_assets_dir_in_workspace(
-                        &home.join("workspace"),
-                    ));
+                board_service = board_service.with_asset_secret(secret).with_assets_dir(
+                    nemesis_path::resolve_board_assets_dir_in_workspace(&home.join("workspace")),
+                );
                 info!("[Gateway] Board asset serving armed (HMAC token endpoint)");
             }
             Err(e) => warn!("[Gateway] Board asset serving disabled: {}", e),
@@ -3547,17 +3956,18 @@ pub async fn run(local: bool, extra_args: &[String]) -> Result<()> {
         if let (Some(store), Some(discussion_cluster)) =
             (board_store.as_ref(), board_discussion_cluster.clone())
         {
-            board_service = board_service.with_discussion(Arc::new(
-                crate::board_bus::LocalDiscussionIngress {
+            board_service =
+                board_service.with_discussion(Arc::new(crate::board_bus::LocalDiscussionIngress {
                     deps: crate::board_bus::MasterBusDeps {
                         store: store.clone(),
                         quota: board_quota.clone(),
                         cluster: discussion_cluster,
                         moderator_loop: board_moderator_loop.clone(),
                     },
-                },
-            ));
-            info!("[Gateway] Board discussion ingress armed (dashboard channel.post → nb_bus pipeline)");
+                }));
+            info!(
+                "[Gateway] Board discussion ingress armed (dashboard channel.post → nb_bus pipeline)"
+            );
         }
         web_server.set_board(board_service);
         info!(
@@ -4322,7 +4732,10 @@ pub async fn run(local: bool, extra_args: &[String]) -> Result<()> {
             error!("[Gateway] Web server error: {}", e);
         }
     });
-    info!("[Gateway] Web server starting on {}:{}", web_bind_host, web_port);
+    info!(
+        "[Gateway] Web server starting on {}:{}",
+        web_bind_host, web_port
+    );
 
     // Wait for the actual bound address (sent immediately after TcpListener::bind)
     let real_port: i64 = match bound_rx.await {
@@ -4345,9 +4758,8 @@ pub async fn run(local: bool, extra_args: &[String]) -> Result<()> {
                 let base_url = format!("http://{host}:{}", addr.port());
                 board_asset_url_slot.set(base_url.clone());
                 // 落盘一份：board_asset 工具 publish 时读取（跨进程一致）。
-                let url_path = nemesis_path::resolve_asset_node_url_path_in_workspace(
-                    &home.join("workspace"),
-                );
+                let url_path =
+                    nemesis_path::resolve_asset_node_url_path_in_workspace(&home.join("workspace"));
                 if let Some(parent) = url_path.parent() {
                     let _ = std::fs::create_dir_all(parent);
                 }

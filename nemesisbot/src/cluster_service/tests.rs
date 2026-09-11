@@ -106,7 +106,6 @@ fn test_persister() -> Arc<dyn nemesis_cluster::rpc::peer_chat_handler::TaskResu
     Arc::new(NoopPersister)
 }
 
-
 /// 离线可构建的迷你模型 config（与 agent_factory/tests.rs 同源形态）。
 fn write_cluster_model_config(home: &std::path::Path) {
     let cfg = serde_json::json!({

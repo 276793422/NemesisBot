@@ -92,6 +92,69 @@ async fn cluster_agent_resolves_tier_and_spill_root_from_config() {
     );
 }
 
+/// E1 二期（全自动流转 P5）回归：cluster agent loop 必须接上用量账本。
+///
+/// T37① 真机抓到的产品 bug：`build_cluster_agent_loop` 漏了
+/// `set_data_store`——B 端 LLM 调用不落 request_logs → 任务收尾
+/// `extract_task_usage` 聚合恒零 → 回调 usage=None → master 诚实跳过
+/// 记账，token 回传整链静默失效。修复后与 build_agent_loop 同源接线。
+#[tokio::test]
+async fn cluster_agent_loop_wires_usage_ledger_from_shared() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    let home = tmp.path().to_path_buf();
+    write_mini_model_config(&home);
+
+    let cluster = Arc::new(nemesis_cluster::cluster::Cluster::new(ClusterConfig {
+        node_id: "test-node".to_string(),
+        bind_address: "127.0.0.1:0".to_string(),
+        peers: Vec::new(),
+    }));
+
+    // 有账本：shared.data_store=Some → loop 必须拿到同一份。
+    let ds = Arc::new(
+        nemesis_data::DataStore::open(
+            &home
+                .join("workspace")
+                .join("data")
+                .join("nemesisbot_data.db"),
+        )
+        .expect("open ledger"),
+    );
+    let (outbound_tx, _rx) = tokio::sync::mpsc::channel(16);
+    let shared = Arc::new(SharedResources {
+        home: home.clone(),
+        agent_outbound_tx: outbound_tx,
+        cron_service: Arc::new(std::sync::Mutex::new(
+            nemesis_cron::service::CronService::new(""),
+        )),
+        mcp_config_path: home.join("nonexistent-mcp.json"),
+        data_store: Some(ds.clone()),
+        ..Default::default()
+    });
+    let (agent_loop, _config, _observer) =
+        build_cluster_agent_loop(&shared, cluster.clone()).expect("factory must succeed");
+    assert!(
+        agent_loop.data_store().is_some(),
+        "cluster loop 必须接上用量账本（E1 二期 usage 提取的生产前提）"
+    );
+
+    // 无账本（DataStore 打开失败网关给 None）：loop 不炸、诚实 None——
+    // 与 usage 提取的 honest-zero 边界一致。
+    let (outbound_tx2, _rx2) = tokio::sync::mpsc::channel(16);
+    let shared_no_ds = Arc::new(SharedResources {
+        home: home.clone(),
+        agent_outbound_tx: outbound_tx2,
+        cron_service: Arc::new(std::sync::Mutex::new(
+            nemesis_cron::service::CronService::new(""),
+        )),
+        mcp_config_path: home.join("nonexistent-mcp.json"),
+        ..Default::default()
+    });
+    let (loop_no_ds, _c2, _o2) =
+        build_cluster_agent_loop(&shared_no_ds, cluster).expect("factory must succeed");
+    assert!(loop_no_ds.data_store().is_none());
+}
+
 // ---------------------------------------------------------------------------
 // load_cluster_system_prompt —— workspace/cluster 身份文件装配
 // ---------------------------------------------------------------------------

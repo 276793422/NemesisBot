@@ -37,6 +37,10 @@ pub struct ProviderResolution {
     pub proxy: String,
     pub auth_method: String,
     pub connect_mode: String,
+    /// 显式协议类型（模型条目 protocol 字段，trim+lowercase 归一）。
+    /// 空 = 未指定，factory 按前缀推断；非空时 factory 钉死 wire 协议
+    /// （anthropic/openai/responses，显式 > 推断）。
+    pub protocol: String,
     pub workspace: String,
     pub enabled: bool,
     /// H4 (U16 half): reasoning-effort tier from the model entry ("" = unset).
@@ -55,6 +59,7 @@ impl Default for ProviderResolution {
             proxy: String::new(),
             auth_method: String::new(),
             connect_mode: String::new(),
+            protocol: String::new(),
             workspace: String::new(),
             enabled: true,
         }
@@ -175,6 +180,8 @@ fn resolve_from_model_config(mc: &ModelConfig) -> Result<ProviderResolution> {
         proxy: mc.proxy.clone(),
         auth_method: mc.auth_method.clone(),
         connect_mode: mc.connect_mode.clone(),
+        // 显式协议归一（trim + lowercase），空串保持空串 = 自动推断。
+        protocol: mc.protocol.trim().to_lowercase(),
         workspace: mc.workspace.clone(),
         enabled: true,
         reasoning_effort: mc.reasoning_effort.clone(),

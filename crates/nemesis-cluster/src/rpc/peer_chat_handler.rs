@@ -432,7 +432,7 @@ async fn process_async(
     rpc_client: Option<&RpcClient>,
     result_persister: Option<&dyn TaskResultPersister>,
     timeout: Duration,
-    _node_id: &str,
+    node_id: &str,
 ) {
     tracing::info!(task_id = %task_id, "[PeerChat] Async LLM processing started");
 
@@ -446,10 +446,12 @@ async fn process_async(
                 result_persister,
                 source_info,
                 source_node_id,
+                node_id,
                 task_id,
                 "error",
                 "",
                 "rpc channel not available",
+                None,
             )
             .await;
             return;
@@ -480,10 +482,12 @@ async fn process_async(
                 result_persister,
                 source_info,
                 source_node_id,
+                node_id,
                 task_id,
                 "error",
                 "",
                 &format!("failed to process: {}", e),
+                None,
             )
             .await;
             return;
@@ -503,10 +507,12 @@ async fn process_async(
                 result_persister,
                 source_info,
                 source_node_id,
+                node_id,
                 task_id,
                 "error",
                 "",
                 "response channel closed",
+                None,
             )
             .await;
             return;
@@ -518,10 +524,12 @@ async fn process_async(
                 result_persister,
                 source_info,
                 source_node_id,
+                node_id,
                 task_id,
                 "error",
                 "",
                 "LLM processing timeout",
+                None,
             )
             .await;
             return;
@@ -534,10 +542,12 @@ async fn process_async(
         result_persister,
         source_info,
         source_node_id,
+        node_id,
         task_id,
         "success",
         &response,
         "",
+        None,
     )
     .await;
 }
@@ -556,13 +566,25 @@ pub async fn send_callback_or_persist(
     result_persister: Option<&dyn TaskResultPersister>,
     _source_info: &Option<serde_json::Value>,
     source_node_id: &str,
+    self_node_id: &str,
     task_id: &str,
     status: &str,
     response: &str,
     error: &str,
+    usage: Option<serde_json::Value>,
 ) {
     let callback_ok = if !source_node_id.is_empty() {
-        send_callback(rpc_client, source_node_id, task_id, status, response, error).await
+        send_callback(
+            rpc_client,
+            source_node_id,
+            self_node_id,
+            task_id,
+            status,
+            response,
+            error,
+            usage,
+        )
+        .await
     } else {
         tracing::error!(task_id = %task_id, "[PeerChat] No source node_id, cannot callback");
         false
@@ -590,13 +612,18 @@ pub async fn send_callback_or_persist(
 }
 
 /// Send callback to source node with retries.
+///
+/// `usage`（全自动流转 P5/E1 二期）：worker 本轮 token 用量（input/output
+/// JSON，serde 兼容——旧 master 忽略未知字段；无用量 = None，字段不落）。
 pub async fn send_callback(
     rpc_client: Option<&RpcClient>,
     source_node_id: &str,
+    self_node_id: &str,
     task_id: &str,
     status: &str,
     response: &str,
     error: &str,
+    usage: Option<serde_json::Value>,
 ) -> bool {
     let client = match rpc_client {
         Some(c) => c,
@@ -611,6 +638,9 @@ pub async fn send_callback(
     if !error.is_empty() {
         payload["error"] = serde_json::Value::String(error.into());
     }
+    if let Some(u) = usage {
+        payload["usage"] = u;
+    }
 
     for attempt in 0..MAX_CALLBACK_RETRIES {
         let timeout = Duration::from_secs(30);
@@ -620,7 +650,11 @@ pub async fn send_callback(
                 crate::rpc_types::KnownAction::PeerChatCallback,
             ),
             payload: payload.clone(),
-            source: String::new(), // filled by client
+            // 发送方身份必须显式填：RpcClient 不代填（wire 帧 from 直接抄
+            // request.source），留空会让对端 `_rpc.from` 拿到空串——master
+            // 用量记账键 `cluster_rpc:{worker}/{task_id}` 的 worker 段就此
+            // 丢失（T37 真机实证）。旧注释「filled by client」是谎话。
+            source: self_node_id.to_string(),
             target: Some(source_node_id.into()),
         };
 

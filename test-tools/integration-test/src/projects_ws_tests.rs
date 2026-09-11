@@ -133,13 +133,19 @@ pub async fn test_projects_crud_lifecycle(ws: &TestWorkspace) -> Vec<TestResult>
         .and_then(|v| v.as_str())
         .map(String::from)
     else {
-        results.push(fail(&format!("{suite}/create"), format!("no project.id: {dat}")));
+        results.push(fail(
+            &format!("{suite}/create"),
+            format!("no project.id: {dat}"),
+        ));
         return results;
     };
     if pid.starts_with("p-") {
         results.push(pass(&format!("{suite}/create"), format!("id={pid}")));
     } else {
-        results.push(fail(&format!("{suite}/create"), format!("unexpected id shape: {pid}")));
+        results.push(fail(
+            &format!("{suite}/create"),
+            format!("unexpected id shape: {pid}"),
+        ));
     }
 
     // 2. list：带 project 字段（id/name/path/created_at/running）。
@@ -160,12 +166,20 @@ pub async fn test_projects_crud_lifecycle(ws: &TestWorkspace) -> Vec<TestResult>
                     .and_then(|v| v.as_str())
                     .map(|s| s.contains("itproj_crud"))
                     .unwrap_or(false)
-                && p.get("created_at").and_then(|v| v.as_str()).is_some_and(|s| !s.is_empty())
+                && p.get("created_at")
+                    .and_then(|v| v.as_str())
+                    .is_some_and(|s| !s.is_empty())
                 && p.get("running").and_then(|v| v.as_bool()) == Some(true);
             if fields_ok {
-                results.push(pass(&format!("{suite}/list_fields"), "all project fields present"));
+                results.push(pass(
+                    &format!("{suite}/list_fields"),
+                    "all project fields present",
+                ));
             } else {
-                results.push(fail(&format!("{suite}/list_fields"), format!("fields wrong: {p}")));
+                results.push(fail(
+                    &format!("{suite}/list_fields"),
+                    format!("fields wrong: {p}"),
+                ));
             }
         }
         None => {
@@ -192,15 +206,25 @@ pub async fn test_projects_crud_lifecycle(ws: &TestWorkspace) -> Vec<TestResult>
         ));
         return results;
     };
-    results.push(pass(&format!("{suite}/create_session"), format!("sid={sid}")));
+    results.push(pass(
+        &format!("{suite}/create_session"),
+        format!("sid={sid}"),
+    ));
 
     // 3b. 未知 project_id 的 sessions.create 必须诚实报错。
     let (_, err) = api
-        .call("sessions", "create", Some(json!({ "project_id": "p_nope000" })))
+        .call(
+            "sessions",
+            "create",
+            Some(json!({ "project_id": "p_nope000" })),
+        )
         .await;
     match err {
         Some(e) if e.contains("不存在") => {
-            results.push(pass(&format!("{suite}/create_session_unknown"), "honest error"));
+            results.push(pass(
+                &format!("{suite}/create_session_unknown"),
+                "honest error",
+            ));
         }
         other => {
             results.push(fail(
@@ -223,7 +247,10 @@ pub async fn test_projects_crud_lifecycle(ws: &TestWorkspace) -> Vec<TestResult>
             if ok {
                 results.push(pass(&format!("{suite}/remove"), "removed + honest note"));
             } else {
-                results.push(fail(&format!("{suite}/remove"), format!("shape wrong: {d}")));
+                results.push(fail(
+                    &format!("{suite}/remove"),
+                    format!("shape wrong: {d}"),
+                ));
             }
         }
         None => {
@@ -240,12 +267,21 @@ pub async fn test_projects_crud_lifecycle(ws: &TestWorkspace) -> Vec<TestResult>
         .as_ref()
         .and_then(|d| d.get("projects"))
         .and_then(|p| p.as_array())
-        .map(|arr| arr.iter().any(|p| p.get("id").and_then(|v| v.as_str()) == Some(pid.as_str())))
+        .map(|arr| {
+            arr.iter()
+                .any(|p| p.get("id").and_then(|v| v.as_str()) == Some(pid.as_str()))
+        })
         .unwrap_or(true);
     if still_there {
-        results.push(fail(&format!("{suite}/list_after_remove"), format!("{pid} still listed")));
+        results.push(fail(
+            &format!("{suite}/list_after_remove"),
+            format!("{pid} still listed"),
+        ));
     } else {
-        results.push(pass(&format!("{suite}/list_after_remove"), "gone from list"));
+        results.push(pass(
+            &format!("{suite}/list_after_remove"),
+            "gone from list",
+        ));
     }
 
     // 6. 对已移除 id 再 remove → 诚实报错。
@@ -295,7 +331,9 @@ pub async fn test_projects_session_chat_roundtrip(ws: &TestWorkspace) -> Vec<Tes
         )
         .await;
     let Some(pid) = dat.and_then(|d| {
-        d.pointer("/project/id").and_then(|v| v.as_str()).map(String::from)
+        d.pointer("/project/id")
+            .and_then(|v| v.as_str())
+            .map(String::from)
     }) else {
         results.push(fail(
             &format!("{suite}/setup"),
@@ -354,7 +392,10 @@ pub async fn test_projects_session_chat_roundtrip(ws: &TestWorkspace) -> Vec<Tes
         .join(format!("agent_main_session_{safe}.jsonl"));
     match std::fs::read_to_string(&jsonl) {
         Ok(body) if body.contains(&marker) => {
-            results.push(pass(&format!("{suite}/jsonl_sid"), "marker in project session jsonl"));
+            results.push(pass(
+                &format!("{suite}/jsonl_sid"),
+                "marker in project session jsonl",
+            ));
         }
         Ok(body) => {
             results.push(fail(
@@ -382,7 +423,10 @@ pub async fn test_projects_session_chat_roundtrip(ws: &TestWorkspace) -> Vec<Tes
         })
         .is_some_and(|v| v == pid);
     if meta_ok {
-        results.push(pass(&format!("{suite}/binding_survives"), "meta project_id intact"));
+        results.push(pass(
+            &format!("{suite}/binding_survives"),
+            "meta project_id intact",
+        ));
     } else {
         results.push(fail(
             &format!("{suite}/binding_survives"),
@@ -391,21 +435,27 @@ pub async fn test_projects_session_chat_roundtrip(ws: &TestWorkspace) -> Vec<Tes
     }
 
     // session_list 回填 projectId（logs.rs L6++ 回填）。
-    let (dat, _) = api.call("logs", "session_list", Some(json!({ "limit": 200 }))).await;
+    let (dat, _) = api
+        .call("logs", "session_list", Some(json!({ "limit": 200 })))
+        .await;
     let entry = dat
         .as_ref()
         .and_then(|d| d.get("sessions"))
         .and_then(|s| s.as_array())
         .and_then(|arr| {
             arr.iter().find(|s| {
-                s.get("id").and_then(|v| v.as_str()) == Some(format!("agent_main_session_{safe}").as_str())
+                s.get("id").and_then(|v| v.as_str())
+                    == Some(format!("agent_main_session_{safe}").as_str())
             })
         })
         .cloned();
     match entry {
         Some(e) => {
             if e.get("projectId").and_then(|v| v.as_str()) == Some(pid.as_str()) {
-                results.push(pass(&format!("{suite}/session_list_backfill"), "projectId present"));
+                results.push(pass(
+                    &format!("{suite}/session_list_backfill"),
+                    "projectId present",
+                ));
             } else {
                 results.push(fail(
                     &format!("{suite}/session_list_backfill"),
@@ -465,7 +515,9 @@ pub async fn test_projects_unroutable_after_remove(ws: &TestWorkspace) -> Vec<Te
         )
         .await;
     let Some(pid) = dat.and_then(|d| {
-        d.pointer("/project/id").and_then(|v| v.as_str()).map(String::from)
+        d.pointer("/project/id")
+            .and_then(|v| v.as_str())
+            .map(String::from)
     }) else {
         results.push(fail(
             &format!("{suite}/setup"),

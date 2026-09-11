@@ -7,23 +7,28 @@
 mod acp;
 mod adapters;
 mod agent_factory;
-/// Swarm M3：master 侧 nb_bus 装配（board 信封协议 gateway glue；
-/// 幂等/额度/裁决器/wake 下行/主持人裁决）。
-#[cfg(all(feature = "board", feature = "cluster"))]
-mod board_bus;
-/// Swarm M4：验收 agent 编排（in_review 批作业三态处置；触发挂
-/// write_back in_review 路径，评审 LLM 走主 loop 后置装配桥）。
-#[cfg(all(feature = "board", feature = "cluster"))]
-mod board_review;
-/// Swarm M3（G4 主动发言通道）：board_discuss 工具（仅注册进 cluster
-/// agent；信封/RPC 复用 cluster_agent 共用件）。
-#[cfg(all(feature = "board", feature = "cluster"))]
-mod board_discuss_tool;
 /// Swarm M3（G9 资产拉取/发布执行者）：board_asset 工具（仅注册进 cluster
 /// agent；自包含——只需 workspace 路径，fetch 纯 HTTP+sha256，publish 自开
 /// store + 幂等密钥 + 读 gateway 落盘的 node url）。
 #[cfg(all(feature = "board", feature = "cluster"))]
 mod board_asset_tool;
+/// Swarm M3：master 侧 nb_bus 装配（board 信封协议 gateway glue；
+/// 幂等/额度/裁决器/wake 下行/主持人裁决）。
+#[cfg(all(feature = "board", feature = "cluster"))]
+mod board_bus;
+/// Swarm M3（G4 主动发言通道）：board_discuss 工具（仅注册进 cluster
+/// agent；信封/RPC 复用 cluster_agent 共用件）。
+#[cfg(all(feature = "board", feature = "cluster"))]
+mod board_discuss_tool;
+/// 全自动流转 P3/D1：board_issue 工具（仅注册进主 agent——「对 master 说
+/// 一句话建单」入口；create 复用 WSAPI issue.create 解析，plan 复用
+/// execute_plan_chain 四入口单一真相源）。
+#[cfg(all(feature = "board", feature = "cluster"))]
+mod board_issue_tool;
+/// Swarm M4：验收 agent 编排（in_review 批作业三态处置；触发挂
+/// write_back in_review 路径，评审 LLM 走主 loop 后置装配桥）。
+#[cfg(all(feature = "board", feature = "cluster"))]
+mod board_review;
 #[cfg(feature = "cluster")]
 mod cluster_agent;
 #[cfg(feature = "cluster")]

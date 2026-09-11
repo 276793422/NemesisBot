@@ -26,7 +26,15 @@ use tokio_tungstenite::tungstenite::Message;
 // Constants
 // ---------------------------------------------------------------------------
 
-pub const AI_SERVER_PORT: u16 = 8080;
+/// TestAIServer 监听端口（runner 启动参数与被测 gateway 的 model base_url
+/// 共用此值，三方保持一致）。默认 8080；测试机该端口被外部程序占用时用
+/// TESTAI_PORT 环境变量整体改道（如 `TESTAI_PORT=18081 cargo run -p integration-test`）。
+pub fn ai_server_port() -> u16 {
+    std::env::var("TESTAI_PORT")
+        .ok()
+        .and_then(|v| v.parse::<u16>().ok())
+        .unwrap_or(8080)
+}
 pub const WEB_PORT: u16 = 49000;
 pub const WS_PORT: u16 = 49000;
 /// Gateway/health port for spawned gateways. NOT 18790 — that value is the

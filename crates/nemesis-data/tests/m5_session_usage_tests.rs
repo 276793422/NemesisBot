@@ -98,3 +98,46 @@ fn unknown_key_yields_zero_aggregate() {
 
     let _ = fs::remove_file(&db_path);
 }
+
+// ---------- aggregate_session_usage_by_task（E1 维度 4 集群委派聚合） ----------
+
+/// 按 `/{task_id}` 后缀聚合：worker 段不同的多行（重派/不同 worker 身份形态）
+/// 全部计入；其他任务的行不串账；无行 → 全零。
+#[test]
+fn aggregate_by_task_suffix_sums_across_worker_identities() {
+    let db_path = temp_db_path();
+    let store = DataStore::open(&db_path).expect("open db");
+
+    store
+        .insert_request_log(&log(
+            "cluster_rpc:node-laptop-runtime-b/tok-1",
+            100,
+            10,
+            20,
+            0.5,
+        ))
+        .expect("insert row 1");
+    store
+        .insert_request_log(&log("cluster_rpc:Node-B/tok-1", 30, 0, 5, 0.1))
+        .expect("insert row 2 (peer-name worker segment)");
+    // 同任务但不同行的普通请求（同后缀）也计入——键内 worker 段之后
+    // 必须恰是 /{task_id} 结尾。
+    store
+        .insert_request_log(&log("cluster_rpc:node-x/tok-99", 999, 0, 999, 9.9))
+        .expect("insert unrelated task row");
+
+    let agg = store
+        .aggregate_session_usage_by_task("tok-1")
+        .expect("aggregate by task");
+    assert_eq!(agg.requests, 2);
+    assert_eq!(agg.input_tokens, 100 + 10 + 30);
+    assert_eq!(agg.output_tokens, 20 + 5);
+    assert!((agg.total_cost_usd - 0.6).abs() < 1e-9);
+
+    let none = store
+        .aggregate_session_usage_by_task("tok-404")
+        .expect("aggregate unknown task");
+    assert_eq!(none, nemesis_data::SessionUsageAgg::default());
+
+    let _ = fs::remove_file(&db_path);
+}

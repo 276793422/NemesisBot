@@ -20,6 +20,7 @@ interface Model {
   api_key?: string
   proxy?: string
   is_default?: boolean
+  protocol?: string | null
   model_tier?: string | null
   reasoning_effort?: string | null
   model_size_b?: number | string | null
@@ -33,8 +34,16 @@ interface Model {
 const models = ref<Model[]>([])
 const loading = ref(true)
 const showAdd = ref(false)
-// Backend add expects: name, model, key, base_url?, proxy?
-const addForm = ref({ name: '', model: '', key: '', base_url: '', proxy: '' })
+// Backend add expects: name, model, key, base_url?, proxy?, protocol?
+// protocol = LLM 协议选择器：新建条目默认 Claude（anthropic）。
+const addForm = ref({ name: '', model: '', key: '', base_url: '', proxy: '', protocol: 'anthropic' })
+
+// 协议类型下拉选项（值集与后端 normalize_model_protocol 一致）。
+const PROTOCOL_OPTIONS = [
+  { value: 'anthropic', label: 'Claude（Anthropic 消息协议）' },
+  { value: 'openai', label: 'OpenAI 兼容（chat/completions）' },
+  { value: 'responses', label: 'OpenAI Responses' },
+]
 const testing = ref<string | null>(null)
 const switching = ref<string | null>(null)
 
@@ -46,6 +55,7 @@ interface AttrDraft {
   size: string
   realName: string
   ctx: string
+  protocol: string // '' = 自动识别（按名称前缀）
 }
 const attrDrafts = ref<Record<string, AttrDraft>>({})
 
@@ -122,6 +132,7 @@ function toggleAttrs(m: Model) {
       size: m.model_size_b != null ? String(m.model_size_b) : '',
       realName: m.real_name || '',
       ctx: m.context_window != null ? String(m.context_window) : '',
+      protocol: m.protocol || '',
     }
   }
   expandedAttrs.value = s
@@ -139,6 +150,7 @@ function dirtyFields(m: Model): string[] {
   if ((m.real_name || '') !== d.realName.trim()) out.push('real_name')
   const ctxStr = m.context_window != null ? String(m.context_window) : ''
   if (ctxStr !== d.ctx.trim()) out.push('context_window')
+  if ((m.protocol || '') !== d.protocol) out.push('protocol')
   return out
 }
 
@@ -151,6 +163,7 @@ const FIELD_EFFECT: Record<string, string> = {
   model_size_b: 'auto 档下即时生效（参与能力自动检测）',
   real_name: 'auto 档下即时生效（别名识别真名）',
   context_window: '保存后生效（上下文预算依据）',
+  protocol: '重新设为默认时生效；或重启后生效',
 }
 
 /** P3-2: 保存属性 — 逐字段走后端 raw-JSON RMW（保留 config.json 其余键）。 */
@@ -169,6 +182,7 @@ async function saveAttrs(m: Model) {
     model_size_b: d.size.trim() === '' ? null : Number(d.size.trim()),
     real_name: d.realName.trim(),
     context_window: d.ctx.trim() === '' ? null : Number(d.ctx.trim()),
+    protocol: d.protocol, // 空串 = 自动识别（后端接受空串清除，非 null）
   }
   // v1 不支持写 null：清空场景跳过该字段，保存名单只含真正落盘的字段，
   // toast 如实反映（不能宣称保存了实际没写的字段）。
@@ -198,6 +212,7 @@ async function saveAttrs(m: Model) {
       size: fresh.model_size_b != null ? String(fresh.model_size_b) : '',
       realName: fresh.real_name || '',
       ctx: fresh.context_window != null ? String(fresh.context_window) : '',
+      protocol: fresh.protocol || '',
     }
   }
 }
@@ -222,10 +237,11 @@ async function addModel() {
     }
     if (addForm.value.base_url) payload.base_url = addForm.value.base_url
     if (addForm.value.proxy) payload.proxy = addForm.value.proxy
+    payload.protocol = addForm.value.protocol
     await request('models', 'add', payload)
     toast.success('模型已添加')
     showAdd.value = false
-    addForm.value = { name: '', model: '', key: '', base_url: '', proxy: '' }
+    addForm.value = { name: '', model: '', key: '', base_url: '', proxy: '', protocol: 'anthropic' }
     await loadModels()
   } catch (e: any) {
     toast.error('添加失败: ' + e)
@@ -334,6 +350,12 @@ onMounted(() => {
               <label class="form-label">Base URL</label>
               <input class="form-input" v-model="addForm.base_url" placeholder="https://api.openai.com/v1">
             </div>
+            <div class="form-group">
+              <label class="form-label">协议类型</label>
+              <select class="form-input" v-model="addForm.protocol">
+                <option v-for="p in PROTOCOL_OPTIONS" :key="p.value" :value="p.value">{{ p.label }}</option>
+              </select>
+            </div>
           </div>
           <div class="form-group" style="margin-top: var(--space-3);">
             <label class="form-label">代理</label>
@@ -384,13 +406,23 @@ onMounted(() => {
               <span class="settings-value">{{ m.api_base || '--' }}</span>
               <span class="settings-key">代理</span>
               <span class="settings-value">{{ m.proxy || '--' }}</span>
+              <span class="settings-key">协议</span>
+              <span class="settings-value">{{ m.protocol || '自动识别' }}</span>
               <span class="settings-key">能力档</span>
               <span class="settings-value">{{ m.model_tier || 'auto（自动检测）' }}</span>
             </div>
           </div>
-          <!-- P3-2: 属性编辑展开区（tier / effort / 参数量 / 真名 / context_window） -->
+          <!-- P3-2: 属性编辑展开区（tier / effort / 参数量 / 真名 / context_window / protocol） -->
           <div v-if="expandedAttrs.has(m.model_name) && attrDrafts[m.model_name]" class="attr-editor">
             <div class="attr-grid">
+              <div class="attr-field">
+                <label class="form-label">协议类型</label>
+                <select class="form-input" v-model="attrDrafts[m.model_name].protocol">
+                  <option value="">自动识别（按模型名前缀）</option>
+                  <option v-for="p in PROTOCOL_OPTIONS" :key="p.value" :value="p.value">{{ p.label }}</option>
+                </select>
+                <span class="attr-effect">{{ FIELD_EFFECT['protocol'] }}</span>
+              </div>
               <div class="attr-field">
                 <label class="form-label">能力档 tier</label>
                 <select class="form-input" v-model="attrDrafts[m.model_name].tier">

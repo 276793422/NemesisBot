@@ -38,8 +38,7 @@ use std::sync::OnceLock;
 use crate::models::ModelPricing;
 
 /// Compile-time embedded price table (written by `build.rs`; LiteLLM shape).
-static PRICES_JSON: &str =
-    include_str!(concat!(env!("OUT_DIR"), "/model_prices_embedded.json"));
+static PRICES_JSON: &str = include_str!(concat!(env!("OUT_DIR"), "/model_prices_embedded.json"));
 
 /// Provenance of the embedded table (injected by `build.rs`).
 static EMBED_SOURCE: &str = env!("NEMESIS_PRICES_EMBED_SOURCE");

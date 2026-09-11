@@ -13,10 +13,7 @@ fn peer(id: &str, role: &str, tags: &[&str], caps: &[&str]) -> PeerCandidate {
 }
 
 fn load(pairs: &[(&str, usize)]) -> HashMap<String, usize> {
-    pairs
-        .iter()
-        .map(|(k, v)| (k.to_string(), *v))
-        .collect()
+    pairs.iter().map(|(k, v)| (k.to_string(), *v)).collect()
 }
 
 #[test]
@@ -187,16 +184,18 @@ fn empty_peers_yields_empty_result() {
         &load(&[]),
     );
     assert!(ranked.is_empty());
-    assert!(pick_peer(
-        &MatchInput {
-            required_role: None,
-            required_tags: &[],
-            description: "x"
-        },
-        &[],
-        &load(&[])
-    )
-    .is_none());
+    assert!(
+        pick_peer(
+            &MatchInput {
+                required_role: None,
+                required_tags: &[],
+                description: "x"
+            },
+            &[],
+            &load(&[])
+        )
+        .is_none()
+    );
 }
 
 #[test]

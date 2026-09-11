@@ -131,7 +131,10 @@ pub fn parse_envelope(payload: &serde_json::Value) -> Result<Envelope, EnvelopeE
     if env.v != ENVELOPE_VERSION {
         return Err(EnvelopeError::new(
             error_code::BAD_ENVELOPE,
-            format!("unsupported envelope version: {} (want {})", env.v, ENVELOPE_VERSION),
+            format!(
+                "unsupported envelope version: {} (want {})",
+                env.v, ENVELOPE_VERSION
+            ),
         ));
     }
     if env.ns.is_empty() || env.op.is_empty() {

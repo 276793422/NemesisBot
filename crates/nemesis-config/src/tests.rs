@@ -2181,6 +2181,7 @@ fn test_model_config_all_fields() {
         auth_method: "bearer".to_string(),
         reasoning_effort: "high".to_string(),
         connect_mode: "streaming".to_string(),
+        protocol: "anthropic".to_string(),
         workspace: "/custom/ws".to_string(),
     };
     assert_eq!(model.api_base, "https://api.test.com/v1");
@@ -3004,6 +3005,52 @@ fn test_board_flag_config_auto_dispatch_roundtrip() {
 }
 
 // ============================================================
+// 全自动流转 P4：board.review / board.budget 默认值与 round-trip
+// ============================================================
+
+#[test]
+fn test_board_review_budget_defaults_conservative() {
+    // P4 新段默认必须保守：执行型取证轮数=1（与历史行为字节等价）、自检/
+    // 项目收口关（自动 agent 活动显式 opt-in）、预算三维全关（0=不设限，
+    // 存量行为不变）。缺段 / 空段 / 段内缺字段三形态一致。
+    let empty: Config = serde_json::from_str("{}").unwrap();
+    let b = empty.board.unwrap_or_default();
+    assert_eq!(b.review.max_turns, 1);
+    assert!(!b.review.selfcheck);
+    assert!(!b.review.auto_close_project);
+    assert_eq!(b.budget.max_subissues_per_parent, 20);
+    assert_eq!(b.budget.max_total_redispatch, 0);
+    assert_eq!(b.budget.wall_clock_budget_secs, 0);
+
+    let partial: BoardFlagConfig = serde_json::from_value(serde_json::json!({
+        "auto_review": true,
+        "review": { "max_turns": 4 }
+    }))
+    .unwrap();
+    assert_eq!(partial.review.max_turns, 4);
+    assert!(!partial.review.selfcheck, "段内缺字段必须落保守默认");
+    assert_eq!(partial.budget.max_subissues_per_parent, 20);
+}
+
+#[test]
+fn test_board_review_budget_roundtrip() {
+    let cfg: BoardFlagConfig = serde_json::from_value(serde_json::json!({
+        "review": { "max_turns": 3, "selfcheck": true, "auto_close_project": true },
+        "budget": { "max_subissues_per_parent": 10, "max_total_redispatch": 5,
+                    "wall_clock_budget_secs": 3600 }
+    }))
+    .unwrap();
+    assert_eq!(cfg.review.max_turns, 3);
+    assert!(cfg.review.selfcheck && cfg.review.auto_close_project);
+    assert_eq!(cfg.budget.max_subissues_per_parent, 10);
+    assert_eq!(cfg.budget.max_total_redispatch, 5);
+    assert_eq!(cfg.budget.wall_clock_budget_secs, 3600);
+    let re: BoardFlagConfig = serde_json::from_str(&serde_json::to_string(&cfg).unwrap()).unwrap();
+    assert_eq!(re.review.max_turns, 3);
+    assert_eq!(re.budget.wall_clock_budget_secs, 3600);
+}
+
+// ============================================================
 // ModelConfig.extra passthrough（2026-09-03 二次回归根修回归锁）
 // ============================================================
 
@@ -3078,7 +3125,9 @@ fn test_typed_entry_without_unknown_keys_serializes_without_extra_noise() {
     let v = serde_json::to_value(&mc).unwrap();
     let obj = v.as_object().unwrap();
     assert!(obj.contains_key("model_name") && obj.contains_key("model"));
-    assert_eq!(obj.len(), 9, "九个类型化字段，无 extra 噪音: {obj:#?}");
+    // 10 个类型化字段（2026-09-11 LLM 协议选择器加入 protocol 后由 9→10），
+    // 无 extra 噪音。
+    assert_eq!(obj.len(), 10, "十个类型化字段，无 extra 噪音: {obj:#?}");
 }
 
 // ============================================================

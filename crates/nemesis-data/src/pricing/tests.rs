@@ -1,7 +1,9 @@
 //! Pricing table + cost-formula tests (kept out of production files).
 
 use crate::models::ModelPricing;
-use crate::pricing::{PricingTable, compute_cost_usd, cost_from_pricing, embedded_source, lookup_pricing};
+use crate::pricing::{
+    PricingTable, compute_cost_usd, cost_from_pricing, embedded_source, lookup_pricing,
+};
 use std::collections::HashMap;
 
 fn approx(a: f64, b: f64) -> bool {
@@ -13,7 +15,11 @@ fn embedded_table_loads_and_is_sane() {
     let table = PricingTable::embedded();
     // 全量精简表：过滤后 ~2800 条（快照 2026-09-07）。阈值钉在下限防
     // 快照意外缩水，不钉精确数（上游增减条目是常态）。
-    assert!(table.entries().len() >= 1000, "got {}", table.entries().len());
+    assert!(
+        table.entries().len() >= 1000,
+        "got {}",
+        table.entries().len()
+    );
     // model_id unique.
     let mut ids: Vec<&str> = table
         .entries()
@@ -34,7 +40,13 @@ fn embedded_table_loads_and_is_sane() {
     // 来源标记注入（build.rs NEMESIS_PRICES_EMBED_SOURCE）。
     assert!(!embedded_source().is_empty());
     // extras 合并生效：上游裸名缺失的国内模型在快照里可查。
-    for bare in ["glm-4.7", "qwen-max", "kimi-k2.5", "grok-4", "codestral-latest"] {
+    for bare in [
+        "glm-4.7",
+        "qwen-max",
+        "kimi-k2.5",
+        "grok-4",
+        "codestral-latest",
+    ] {
         assert!(
             lookup_pricing(bare).is_some(),
             "extras bare name {bare} must resolve"

@@ -127,7 +127,7 @@ pub async fn setup_basic_workspace(nemesisbot_bin: &Path) -> Result<TestWorkspac
 
 /// Start the TestAIServer and return a ManagedProcess.
 pub async fn start_ai_server(ai_bin: &Path, cwd: &Path) -> Result<ManagedProcess> {
-    cleanup_ports(&[AI_SERVER_PORT]);
+    cleanup_ports(&[ai_server_port()]);
     ManagedProcess::spawn("AI Server", ai_bin, &[], cwd)
 }
 

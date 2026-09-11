@@ -23,10 +23,7 @@ pub fn backup_database(
         return Ok(None);
     }
     if !db_path.exists() {
-        return Err(format!(
-            "board database not found at {}",
-            db_path.display()
-        ));
+        return Err(format!("board database not found at {}", db_path.display()));
     }
     std::fs::create_dir_all(backups_dir).map_err(|e| format!("create backups dir: {e}"))?;
 
@@ -37,11 +34,9 @@ pub fn backup_database(
         std::fs::remove_file(&target).map_err(|e| format!("remove stale backup: {e}"))?;
     }
 
-    let conn = rusqlite::Connection::open_with_flags(
-        db_path,
-        rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY,
-    )
-    .map_err(|e| format!("open board db for backup: {e}"))?;
+    let conn =
+        rusqlite::Connection::open_with_flags(db_path, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY)
+            .map_err(|e| format!("open board db for backup: {e}"))?;
     conn.execute_batch("PRAGMA busy_timeout = 5000;")
         .map_err(|e| format!("set busy_timeout: {e}"))?;
     let target_sql = target

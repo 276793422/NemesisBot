@@ -393,7 +393,9 @@ fn read_meta_project(jsonl_path: &Path) -> (Option<String>, Option<String>) {
         .and_then(|d| serde_json::from_str::<serde_json::Value>(&d).ok());
     match v {
         Some(v) => (
-            v.get("project_id").and_then(|p| p.as_str()).map(String::from),
+            v.get("project_id")
+                .and_then(|p| p.as_str())
+                .map(String::from),
             v.get("project_path")
                 .and_then(|p| p.as_str())
                 .map(String::from),

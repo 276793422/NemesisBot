@@ -43,7 +43,10 @@ impl ModuleHandler for ApprovalHandler {
                 "agent:main:session:{}",
                 nemesis_agent::session::SessionStore::sanitize_session_id(sid)
             );
-            Some(crate::handlers::projects::resolve_session_loop(ctx, &session_key)?)
+            Some(crate::handlers::projects::resolve_session_loop(
+                ctx,
+                &session_key,
+            )?)
         } else {
             None
         };

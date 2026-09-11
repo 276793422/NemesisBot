@@ -2717,7 +2717,9 @@ fn test_board_wake_state_path_layout() {
     let home = std::path::PathBuf::from("/tmp/home_x");
     assert_eq!(
         board_wake_state_path(&home),
-        home.join("workspace").join("data").join("board_wake_state.json")
+        home.join("workspace")
+            .join("data")
+            .join("board_wake_state.json")
     );
     // 必须在 data 区内（workspace/data = 派生数据统一目录约定）。
     assert!(board_wake_state_path(&home).starts_with(workspace_data_dir(&home)));

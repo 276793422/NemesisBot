@@ -130,7 +130,10 @@ fn engine_owned_with_states_matches_engine_owned() {
     let runtime = paths.runtime_dir.to_string_lossy().to_lowercase();
     let states = [
         (crate::DRIVER_SERVICE, service_state(crate::DRIVER_SERVICE)),
-        (crate::USERMODE_SERVICE, service_state(crate::USERMODE_SERVICE)),
+        (
+            crate::USERMODE_SERVICE,
+            service_state(crate::USERMODE_SERVICE),
+        ),
     ];
     assert_eq!(
         engine_owned_with_states(&runtime, &states),

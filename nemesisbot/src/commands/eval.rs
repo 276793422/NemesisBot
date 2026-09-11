@@ -195,6 +195,7 @@ async fn run_eval(
         .with_context(|| format!("resolve model '{llm_ref}'"))?;
     let real_base = resolution
         .api_base
+        .trim()
         .trim_end_matches('/')
         .trim_end_matches("/v1")
         .to_string();
@@ -363,7 +364,6 @@ async fn run_eval(
             .context("start eval LLM proxy")?;
 
         let eval_result = run_phases(
-            &proxy,
             api_base_host_for_meta.as_str(),
             &real_home,
             kind,
@@ -371,6 +371,8 @@ async fn run_eval(
             &workspace,
             &model_name,
             &model_ref,
+            &box_api_base(proxy.api_base().as_str(), &model_ref, &resolution.protocol),
+            &resolution.protocol,
             &sbieini,
             &eval_box,
             &eval_box_root,
@@ -540,7 +542,6 @@ fn pid_alive(pid: u32) -> bool {
 #[cfg(target_os = "windows")]
 #[allow(clippy::too_many_arguments)]
 async fn run_phases(
-    proxy: &nemesis_eval_proxy::ProxyHandle,
     real_base: &str,
     real_home: &Path,
     kind: &str,
@@ -548,6 +549,8 @@ async fn run_phases(
     workspace: &Path,
     model_name: &str,
     model_ref: &str,
+    box_api_base: &str,
+    protocol: &str,
     sbieini: &Path,
     eval_box: &str,
     eval_box_root: &Path,
@@ -559,8 +562,6 @@ async fn run_phases(
     prompt_text: &str,
     agent_exe: &Path,
 ) -> Result<()> {
-    let proxy_port = proxy.port;
-
     // Minimal sanitized config (see agent_factory read-points):
     // model list with fake key + proxy base; everything else defaults.
     // NOTE agents.defaults.llm selects the model (get_effective_llm) — without
@@ -570,7 +571,14 @@ async fn run_phases(
             "model_name": model_name,
             "model": model_ref,
             "api_key": "eval-fake-key",
-            "api_base": format!("http://127.0.0.1:{proxy_port}/v1"),
+            // lane 随 wire 协议而异：HttpCompat 带 /v1（provider 拼
+            // /chat/completions），Anthropic/Codex base 裸（provider 自己拼
+            // /v1/messages、/responses）。此前无条件 /v1 → claude lane 盒内
+            // 路径 /v1/v1/messages → 上游 404。见 box_api_base 文档。
+            "api_base": box_api_base,
+            // 显式协议透传（空 = 自动）：裸名 + protocol 条目在盒内也要走
+            // 同一 lane；旧二进制不识别此键（flatten extra 吞掉，零影响）。
+            "protocol": protocol,
         }],
         "agents": { "defaults": {
             "llm": model_name,
@@ -1170,6 +1178,32 @@ fn proxy_target_host(real_base: &str) -> String {
         .map(|(_, r)| r)
         .unwrap_or(real_base);
     rest.split(['/', '?', ':']).next().unwrap_or("").to_string()
+}
+
+/// 盒内 agent 的 api_base（6d 写入盒内 config.json）。后缀随 wire lane
+/// 而异：HttpCompat 约定 base 带 `/v1`（provider 拼 `/chat/completions`）；
+/// Anthropic 拼 `/v1/messages`、Codex 拼 `/responses`——这两种 base 不带
+/// `/v1`。此前无条件带 `/v1`，claude lane 下盒内路径变成 `/v1/v1/messages`
+/// → 上游 404（2026-09-11 r10 真链路测试红的根因）。lane 判定与盒内
+/// factory 同源：直接问 `resolve_provider_selection`（前缀 + 显式 protocol
+/// 一起算），不在本地复制推断逻辑。解析失败兜底 HttpCompat 形态（保持
+/// 旧行为；盒内 factory 对同类输入会 loud 报错，不会静默走错协议）。
+#[cfg(target_os = "windows")]
+fn box_api_base(proxy_base: &str, llm_ref: &str, protocol: &str) -> String {
+    let provider_type = nemesis_providers::factory::resolve_provider_selection(
+        &nemesis_providers::factory::FactoryConfig {
+            llm_ref: llm_ref.to_string(),
+            protocol: protocol.to_string(),
+            ..Default::default()
+        },
+    )
+    .map(|sel| sel.provider_type)
+    .unwrap_or(nemesis_providers::factory::ProviderType::HttpCompat);
+    match provider_type {
+        nemesis_providers::factory::ProviderType::HttpCompat => proxy_base.to_string(),
+        // Anthropic /v1/messages、Codex /responses：base 不能带 /v1。
+        _ => proxy_base.trim_end_matches("/v1").to_string(),
+    }
 }
 
 #[cfg(target_os = "windows")]

@@ -2550,6 +2550,13 @@ impl AgentLoop {
         self.data_store = Some(store);
     }
 
+    /// 用量记账存储只读访问（全自动流转 P5/E1 二期 token 回传：cluster
+    /// agent 执行完 peer_chat 任务后，以 session 聚合差值提取本轮 token
+    /// 用量并随回调回传 master 记账）。未装配 = None。
+    pub fn data_store(&self) -> Option<Arc<nemesis_data::DataStore>> {
+        self.data_store.clone()
+    }
+
     /// Set the Forge instance for experience collection.
     #[cfg(feature = "forge")]
     pub fn set_forge(&mut self, forge: Arc<nemesis_forge::forge::Forge>) {

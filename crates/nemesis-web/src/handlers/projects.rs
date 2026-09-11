@@ -90,8 +90,9 @@ pub fn projects_bridge() -> Option<Arc<dyn ProjectsBridge>> {
 }
 
 fn require_bridge() -> Result<Arc<dyn ProjectsBridge>, String> {
-    projects_bridge()
-        .ok_or_else(|| "项目管理未装配（projects bridge 未接线，网关需为装配 gateway 模式）".to_string())
+    projects_bridge().ok_or_else(|| {
+        "项目管理未装配（projects bridge 未接线，网关需为装配 gateway 模式）".to_string()
+    })
 }
 
 #[cfg(test)]
@@ -224,7 +225,9 @@ impl ModuleHandler for ProjectsHandler {
             "list" => {
                 let projects = bridge.list();
                 let count = projects.len();
-                Ok(Some(serde_json::json!({ "projects": projects, "count": count })))
+                Ok(Some(
+                    serde_json::json!({ "projects": projects, "count": count }),
+                ))
             }
             "create" => {
                 let data = data.ok_or("missing data")?;
@@ -255,7 +258,9 @@ impl ModuleHandler for ProjectsHandler {
                 let project_id = crate::handlers::get_str(&data, "project_id")?;
                 let path = resolve_open_target(bridge.as_ref(), &project_id)?;
                 open_in_file_manager(&path)?;
-                Ok(Some(serde_json::json!({ "opened": path.to_string_lossy() })))
+                Ok(Some(
+                    serde_json::json!({ "opened": path.to_string_lossy() }),
+                ))
             }
             _ => Err(format!("unknown projects cmd: {cmd}")),
         }

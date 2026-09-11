@@ -54,7 +54,10 @@ pub(crate) enum AssetArgs {
         sha256: String,
     },
     /// 发布：workspace 内文件 → 资产（ref 缺省取文件名）。
-    Publish { path: String, ref_name: Option<String> },
+    Publish {
+        path: String,
+        ref_name: Option<String>,
+    },
 }
 
 /// args JSON → 结构化参数（缺字段 / action 词表外 / 空值一律诚实报错
@@ -126,7 +129,9 @@ pub(crate) fn validate_fetch_params(
         ));
     }
     let base = node_url.trim_end_matches('/');
-    let url = format!("{base}/api/board/asset/{asset_ref}?asset_token={asset_token}&expires_at={expires_at}");
+    let url = format!(
+        "{base}/api/board/asset/{asset_ref}?asset_token={asset_token}&expires_at={expires_at}"
+    );
     Ok((url, sha))
 }
 
@@ -192,9 +197,7 @@ impl BoardAssetTool {
         let final_path = self.assets_dir().join(asset_ref);
         std::fs::rename(&dest, &final_path)
             .map_err(|e| format!("finalize {}: {e}", final_path.display()))?;
-        let size = std::fs::metadata(&final_path)
-            .map(|m| m.len())
-            .unwrap_or(0);
+        let size = std::fs::metadata(&final_path).map(|m| m.len()).unwrap_or(0);
         Ok(format!(
             "Asset `{asset_ref}` downloaded and sha256-verified ({size} bytes) → {}",
             final_path.display()
@@ -207,8 +210,8 @@ impl BoardAssetTool {
     /// 才带 issue 绑定）。
     async fn do_publish(&self, path: &str, ref_name: Option<&str>) -> Result<String, String> {
         let source = self.resolve_workspace_path(path)?;
-        let meta = std::fs::metadata(&source)
-            .map_err(|e| format!("source {}: {e}", source.display()))?;
+        let meta =
+            std::fs::metadata(&source).map_err(|e| format!("source {}: {e}", source.display()))?;
         if !meta.is_file() {
             return Err(format!("source {} is not a regular file", source.display()));
         }
@@ -225,7 +228,8 @@ impl BoardAssetTool {
         nemesis_board::sanitize_asset_ref(&ref_name)?;
 
         let assets_dir = self.assets_dir();
-        std::fs::create_dir_all(&assets_dir).map_err(|e| format!("mkdir {}: {e}", assets_dir.display()))?;
+        std::fs::create_dir_all(&assets_dir)
+            .map_err(|e| format!("mkdir {}: {e}", assets_dir.display()))?;
         let dest = assets_dir.join(&ref_name);
         std::fs::copy(&source, &dest).map_err(|e| format!("copy to {}: {e}", dest.display()))?;
         let sha = nemesis_board::sha256_file(&dest)?;
@@ -266,8 +270,8 @@ impl BoardAssetTool {
             &node_url,
             nemesis_board::DEFAULT_TOKEN_TTL_SECS,
         );
-        let bundle_json = serde_json::to_string(&bundle)
-            .map_err(|e| format!("serialize bundle: {e}"))?;
+        let bundle_json =
+            serde_json::to_string(&bundle).map_err(|e| format!("serialize bundle: {e}"))?;
         Ok(format!(
             "Asset `{ref_name}` published ({size} bytes, sha256 {sha}).\n\
              Reference bundle (valid {}s):\n{bundle_json}\n\

@@ -170,7 +170,10 @@ impl AgentHandler {
                     "agent:main:session:{}",
                     nemesis_agent::session::SessionStore::sanitize_session_id(sid)
                 );
-                Some(crate::handlers::projects::resolve_session_loop(ctx, &session_key)?)
+                Some(crate::handlers::projects::resolve_session_loop(
+                    ctx,
+                    &session_key,
+                )?)
             }
             None => ctx.state.agent_loop.read().clone(),
         };
@@ -208,7 +211,10 @@ impl AgentHandler {
                     "agent:main:session:{}",
                     nemesis_agent::session::SessionStore::sanitize_session_id(sid)
                 );
-                Some(crate::handlers::projects::resolve_session_loop(ctx, &session_key)?)
+                Some(crate::handlers::projects::resolve_session_loop(
+                    ctx,
+                    &session_key,
+                )?)
             }
             None => ctx.state.agent_loop.read().clone(),
         };
@@ -227,7 +233,11 @@ impl AgentHandler {
 
     /// `agent.checkpoints` — list checkpoint turns (for a rewind picker UI).
     /// L6++ G4：可选 session_id——项目会话列项目 loop 的 checkpoint。
-    async fn checkpoints(&self, data: Option<serde_json::Value>, ctx: &RequestContext) -> Result<Option<serde_json::Value>, String> {
+    async fn checkpoints(
+        &self,
+        data: Option<serde_json::Value>,
+        ctx: &RequestContext,
+    ) -> Result<Option<serde_json::Value>, String> {
         let agent_loop = match data
             .as_ref()
             .and_then(|d| d.get("session_id"))
@@ -239,7 +249,10 @@ impl AgentHandler {
                     "agent:main:session:{}",
                     nemesis_agent::session::SessionStore::sanitize_session_id(sid)
                 );
-                Some(crate::handlers::projects::resolve_session_loop(ctx, &session_key)?)
+                Some(crate::handlers::projects::resolve_session_loop(
+                    ctx,
+                    &session_key,
+                )?)
             }
             None => ctx.state.agent_loop.read().clone(),
         };

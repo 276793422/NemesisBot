@@ -14,6 +14,7 @@ fn make_node(id: &str) -> ExtendedNodeInfo {
         },
         status: NodeStatus::Online,
         capabilities: vec!["llm".into()],
+        tags: Vec::new(),
         addresses: vec![],
         node_type: "agent".into(),
     }
@@ -31,6 +32,7 @@ fn make_node_with_caps(id: &str, caps: Vec<&str>) -> ExtendedNodeInfo {
         },
         status: NodeStatus::Online,
         capabilities: caps.into_iter().map(String::from).collect(),
+        tags: Vec::new(),
         addresses: vec![],
         node_type: "agent".into(),
     }
@@ -55,6 +57,7 @@ fn insert_peer_with_timestamp(
         },
         status,
         capabilities: capabilities.into_iter().map(String::from).collect(),
+        tags: Vec::new(),
         addresses: vec![],
         node_type: "agent".into(),
     };
@@ -803,6 +806,7 @@ fn test_upsert_if_changed_different_addresses() {
         },
         status: NodeStatus::Online,
         capabilities: vec!["llm".into()],
+        tags: Vec::new(),
         addresses: vec!["10.0.0.1".into()],
         node_type: "agent".into(),
     };
@@ -819,6 +823,7 @@ fn test_upsert_if_changed_different_addresses() {
         },
         status: NodeStatus::Online,
         capabilities: vec!["llm".into()],
+        tags: Vec::new(),
         addresses: vec!["10.0.0.1".into(), "192.168.1.1".into()],
         node_type: "agent".into(),
     };

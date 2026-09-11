@@ -103,7 +103,10 @@ pub fn pick_peer(
     peers: &[PeerCandidate],
     load: &HashMap<String, usize>,
 ) -> Option<String> {
-    rank_peers(input, peers, load).into_iter().next().map(|(id, _)| id)
+    rank_peers(input, peers, load)
+        .into_iter()
+        .next()
+        .map(|(id, _)| id)
 }
 
 #[cfg(test)]

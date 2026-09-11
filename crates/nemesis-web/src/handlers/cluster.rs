@@ -634,6 +634,7 @@ impl ClusterHandler {
                 },
                 status: nemesis_cluster::types::NodeStatus::Offline,
                 capabilities: Vec::new(),
+                tags: Vec::new(),
                 addresses: Vec::new(),
                 node_type: String::new(),
             };
@@ -733,6 +734,15 @@ impl ClusterHandler {
                     .collect()
             })
             .unwrap_or_default();
+        // A1：自报 tags 进注册表（看板派发匹配器的标签数据源）。
+        let tags: Vec<String> = resp["tags"]
+            .as_array()
+            .map(|arr| {
+                arr.iter()
+                    .filter_map(|v| v.as_str().map(String::from))
+                    .collect()
+            })
+            .unwrap_or_default();
         let node_type = resp["node_type"].as_str().unwrap_or("").to_string();
 
         let primary_address = if !addresses.is_empty() && rpc_port > 0 {
@@ -750,6 +760,7 @@ impl ClusterHandler {
             role,
             category,
             capabilities,
+            tags,
             node_type,
         };
         let canonical_id = cluster.merge_real_node_info(&info);
@@ -1137,6 +1148,10 @@ impl ClusterHandler {
                     "channel": "dashboard",
                     "chat_id": chat_id,
                 },
+                // B 端首次收到本节点 peer_chat 时按此端口注册回调地址
+                // （缺省回落 DEFAULT_RPC_PORT=21949，回调打死端口；
+                // 与 ClusterRpcTool 的 wire 契约对齐）。
+                "_source_rpc_port": cluster.rpc_port(),
             });
 
             // 3. Send peer_chat RPC to target node (fire-and-forget style)

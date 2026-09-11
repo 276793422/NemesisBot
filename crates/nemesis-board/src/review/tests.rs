@@ -53,6 +53,47 @@ fn parse_rejects_no_json() {
 }
 
 #[test]
+fn parse_need_evidence_true_with_request() {
+    let raw = r#"{"verdict":"UNSURE","reasons":["未看到运行输出"],
+        "gap":"","need_evidence":true,
+        "evidence_request":"运行 cargo test -p x 并回报通过数"}"#;
+    let out = parse_review(raw).unwrap();
+    assert_eq!(out.need_evidence, Some(true));
+    let req = selfcheck_request_text(&out).expect("request expected");
+    assert!(req.contains("cargo test"), "{req}");
+}
+
+#[test]
+fn parse_need_evidence_absent_is_none_and_back_compat() {
+    // 旧模型输出不含新字段 → 照常解析，取证槽位为空（B2b 兼容性闸）。
+    let out = parse_review(r#"{"verdict":"PASS","reasons":[],"gap":""}"#).unwrap();
+    assert_eq!(out.need_evidence, None);
+    assert_eq!(out.evidence_request, None);
+    assert_eq!(selfcheck_request_text(&out), None);
+}
+
+#[test]
+fn selfcheck_request_falls_back_when_request_missing_or_blank() {
+    let mut out = parse_review(r#"{"verdict":"UNSURE","need_evidence":true}"#).unwrap();
+    let req = selfcheck_request_text(&out).expect("fallback expected");
+    assert!(req.contains("证据不足"), "{req}");
+    out.evidence_request = Some("   ".to_string());
+    assert!(selfcheck_request_text(&out).unwrap().contains("证据不足"));
+    // need_evidence=false 即使带 request 也不挂起。
+    out.need_evidence = Some(false);
+    out.evidence_request = Some("x".to_string());
+    assert_eq!(selfcheck_request_text(&out), None);
+}
+
+#[test]
+fn system_prompt_carries_evidence_request_discipline() {
+    // P4/B2b：取证请求纪律段必须在场，schema 含 need_evidence/evidence_request。
+    assert!(REVIEW_SYSTEM_PROMPT.contains("取证请求纪律"));
+    assert!(REVIEW_SYSTEM_PROMPT.contains("need_evidence"));
+    assert!(REVIEW_SYSTEM_PROMPT.contains("evidence_request"));
+}
+
+#[test]
 fn parse_rejects_unknown_verdict() {
     let err = parse_review(r#"{"verdict":"MAYBE","reasons":[]}"#).unwrap_err();
     assert!(err.message.contains("JSON 解析失败"), "{err}");

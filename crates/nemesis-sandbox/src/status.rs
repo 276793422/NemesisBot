@@ -74,7 +74,10 @@ pub fn engine_owned(paths: &crate::SandboxPaths) -> bool {
         &runtime,
         &[
             (crate::DRIVER_SERVICE, service_state(crate::DRIVER_SERVICE)),
-            (crate::USERMODE_SERVICE, service_state(crate::USERMODE_SERVICE)),
+            (
+                crate::USERMODE_SERVICE,
+                service_state(crate::USERMODE_SERVICE),
+            ),
         ],
     )
 }

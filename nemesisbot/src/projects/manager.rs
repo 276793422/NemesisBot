@@ -137,10 +137,7 @@ impl ProjectLoopManager {
         if entries.is_empty() {
             return;
         }
-        info!(
-            "[ProjectLoops] starting {} project loop(s)",
-            entries.len()
-        );
+        info!("[ProjectLoops] starting {} project loop(s)", entries.len());
         for entry in &entries {
             if let Err(e) = self.spawn_project(entry) {
                 warn!(
@@ -294,10 +291,7 @@ impl ProjectLoopManager {
     }
 
     /// 取运行中项目 loop 的 Arc（G3 项目调度 / G4 WSAPI 消费）。
-    pub fn project_loop(
-        &self,
-        project_id: &str,
-    ) -> Option<Arc<nemesis_agent::r#loop::AgentLoop>> {
+    pub fn project_loop(&self, project_id: &str) -> Option<Arc<nemesis_agent::r#loop::AgentLoop>> {
         self.state
             .lock()
             .unwrap()
@@ -386,8 +380,9 @@ impl ProjectLoopManager {
             return p.name;
         }
         if let Some(path) = self.session_project_path(session_key)
-            && let Some(tail) =
-                std::path::Path::new(&path).file_name().and_then(|n| n.to_str())
+            && let Some(tail) = std::path::Path::new(&path)
+                .file_name()
+                .and_then(|n| n.to_str())
         {
             return tail.to_string();
         }
@@ -413,8 +408,7 @@ impl ProjectLoopManager {
 
     fn send_unroutable_error(&self, msg: &InboundMessage, pid: &str) {
         let name = self.display_label(pid, &msg.session_key);
-        let content =
-            format!("⚠ 项目「{name}」当前不可用（目录缺失或已移除），消息未能投递。");
+        let content = format!("⚠ 项目「{name}」当前不可用（目录缺失或已移除），消息未能投递。");
         warn!(
             project = %pid,
             channel = %msg.channel,
@@ -457,8 +451,7 @@ impl ProjectLoopManager {
     /// 读同名 `.meta.json` sidecar 的 project_id。损坏/半写文件静默跳过
     /// （lenient——启动不因个别坏文件失败）。
     pub fn reload_owner_index(&self) {
-        let dir =
-            nemesis_path::resolve_session_logs_dir_in_workspace(&self.main_workspace);
+        let dir = nemesis_path::resolve_session_logs_dir_in_workspace(&self.main_workspace);
         let entries = match std::fs::read_dir(&dir) {
             Ok(e) => e,
             Err(_) => return, // 目录不存在 = 零会话，索引为空
@@ -636,9 +629,8 @@ impl nemesis_web::handlers::projects::ProjectsBridge for ProjectLoopManager {
         project_id: &str,
         new_name: &str,
     ) -> Result<nemesis_web::handlers::projects::ProjectInfo, String> {
-        let entry =
-            registry::rename_project(&self.registry_path, project_id, new_name)
-                .map_err(|e| format!("{e:#}"))?;
+        let entry = registry::rename_project(&self.registry_path, project_id, new_name)
+            .map_err(|e| format!("{e:#}"))?;
         Ok(nemesis_web::handlers::projects::ProjectInfo {
             running: self.is_running(project_id),
             id: entry.id,

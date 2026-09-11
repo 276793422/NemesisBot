@@ -406,3 +406,149 @@ fn test_provider_selection_debug_format() {
     assert!(debug.contains("Anthropic"));
     assert!(debug.contains("claude-3"));
 }
+
+// --- 回归锁（2026-09-11 生产实证）：裸模型名不再默认路由 Codex ---
+//
+// dashboard 曾把裸 model 字段直接当 llm_ref 传入 factory；factory 又把无前缀
+// 名默认成 provider=openai → CodexProvider（POST {base}/responses + 模型重映射
+// gpt-5.2），第三方 OpenAI 兼容端点全被打错路。现在裸名（含 provider 解析为空
+// 的 "/name" 形态）默认 HttpCompat；显式 "openai/x" 前缀行为不变。
+
+#[test]
+fn test_resolve_bare_model_name_is_http_compat() {
+    let cfg = FactoryConfig {
+        llm_ref: "glm-5.3-flash".to_string(),
+        api_key: "k".to_string(),
+        api_base: "http://127.0.0.1:15721".to_string(),
+        ..Default::default()
+    };
+    let sel = resolve_provider_selection(&cfg).unwrap();
+    assert_eq!(sel.provider_type, ProviderType::HttpCompat);
+    assert_eq!(sel.model, "glm-5.3-flash");
+    assert_eq!(sel.api_base, "http://127.0.0.1:15721");
+}
+
+#[test]
+fn test_resolve_leading_slash_ref_is_http_compat() {
+    // provider_name 解析为空时启动路径会拼出 "/name"——同样必须落 HttpCompat。
+    let cfg = FactoryConfig {
+        llm_ref: "/my-fine-tune".to_string(),
+        api_key: "k".to_string(),
+        ..Default::default()
+    };
+    let sel = resolve_provider_selection(&cfg).unwrap();
+    assert_eq!(sel.provider_type, ProviderType::HttpCompat);
+}
+
+#[test]
+fn test_resolve_openai_prefixed_still_codex() {
+    let cfg = FactoryConfig {
+        llm_ref: "openai/gpt-5.2".to_string(),
+        api_key: "k".to_string(),
+        ..Default::default()
+    };
+    let sel = resolve_provider_selection(&cfg).unwrap();
+    assert_eq!(sel.provider_type, ProviderType::Codex);
+}
+
+// --- LLM 协议选择器（2026-09-11）：显式 protocol 钉死 wire 协议，显式 > 推断 ---
+
+#[test]
+fn test_explicit_protocol_anthropic_overrides_openai_prefix() {
+    // 条目写 "openai/gpt-x" 但显式 protocol=anthropic → 必须走 Claude 消息协议。
+    let cfg = FactoryConfig {
+        llm_ref: "openai/gpt-x".to_string(),
+        api_key: "k".to_string(),
+        protocol: "anthropic".to_string(),
+        ..Default::default()
+    };
+    let sel = resolve_provider_selection(&cfg).unwrap();
+    assert_eq!(sel.provider_type, ProviderType::Anthropic);
+    assert_eq!(
+        sel.api_base, "https://api.anthropic.com",
+        "空 base 补 anthropic 默认"
+    );
+}
+
+#[test]
+fn test_explicit_protocol_openai_is_chat_completions_not_codex() {
+    // 拍板语义（2026-09-11）：显式 openai = chat/completions（业界通行），
+    // 与旧前缀 openai/→Codex 的分歧是刻意的。
+    let cfg = FactoryConfig {
+        llm_ref: "glm-5.3-flash".to_string(),
+        api_key: "GLM".to_string(),
+        api_base: "http://127.0.0.1:15721".to_string(),
+        protocol: "openai".to_string(),
+        ..Default::default()
+    };
+    let sel = resolve_provider_selection(&cfg).unwrap();
+    assert_eq!(sel.provider_type, ProviderType::HttpCompat);
+    assert_eq!(sel.api_base, "http://127.0.0.1:15721", "显式 base 原样保留");
+    assert_eq!(sel.model, "glm-5.3-flash", "模型名不被重映射");
+}
+
+#[test]
+fn test_explicit_protocol_responses_is_codex() {
+    let cfg = FactoryConfig {
+        llm_ref: "openai/gpt-5.2".to_string(),
+        api_key: "k".to_string(),
+        protocol: "responses".to_string(),
+        ..Default::default()
+    };
+    let sel = resolve_provider_selection(&cfg).unwrap();
+    assert_eq!(sel.provider_type, ProviderType::Codex);
+    assert_eq!(
+        sel.api_base, "https://chatgpt.com/backend-api/codex",
+        "空 base 补 Responses 默认"
+    );
+}
+
+#[test]
+fn test_explicit_protocol_claude_alias_normalizes() {
+    // claude 是 anthropic 的用户侧别名（下拉/CLI 都可能收到）。
+    let cfg = FactoryConfig {
+        llm_ref: "zhipu/glm-5.3-flash".to_string(),
+        api_key: "k".to_string(),
+        protocol: "claude".to_string(),
+        ..Default::default()
+    };
+    let sel = resolve_provider_selection(&cfg).unwrap();
+    assert_eq!(sel.provider_type, ProviderType::Anthropic);
+}
+
+#[test]
+fn test_explicit_protocol_unknown_errors_loud() {
+    let cfg = FactoryConfig {
+        llm_ref: "zhipu/glm-5.3-flash".to_string(),
+        api_key: "k".to_string(),
+        protocol: "grpc".to_string(),
+        ..Default::default()
+    };
+    let err = resolve_provider_selection(&cfg).unwrap_err();
+    assert!(err.contains("grpc"), "got: {err}");
+    assert!(err.contains("anthropic | openai | responses"));
+}
+
+#[test]
+fn test_explicit_protocol_does_not_override_cli_providers() {
+    // CLI 型是本地进程不是 wire 协议——protocol 对它们无意义，前缀优先。
+    let cfg = FactoryConfig {
+        llm_ref: "claude-cli/claude-code".to_string(),
+        protocol: "openai".to_string(),
+        ..Default::default()
+    };
+    let sel = resolve_provider_selection(&cfg).unwrap();
+    assert_eq!(sel.provider_type, ProviderType::ClaudeCli);
+}
+
+#[test]
+fn test_explicit_protocol_case_insensitive() {
+    let cfg = FactoryConfig {
+        llm_ref: "x/y".to_string(),
+        api_key: "k".to_string(),
+        protocol: "ANTHROPIC".to_string(),
+        ..Default::default()
+    };
+    let sel = resolve_provider_selection(&cfg).unwrap();
+    assert_eq!(sel.provider_type, ProviderType::Anthropic);
+}

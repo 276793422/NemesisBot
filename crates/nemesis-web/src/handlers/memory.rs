@@ -162,14 +162,18 @@ impl ModuleHandler for MemoryHandler {
                     .and_then(|v| v.as_bool())
                     .unwrap_or(false);
                 let entries = store.list_team_memory(scope.as_deref(), include_deprecated)?;
-                Ok(Some(serde_json::json!({ "entries": entries, "total": entries.len() })))
+                Ok(Some(
+                    serde_json::json!({ "entries": entries, "total": entries.len() }),
+                ))
             }
             "team.search" => {
                 let store = require_team_memory_store(ctx)?;
                 let data = data.ok_or("missing data")?;
                 let query = crate::handlers::get_str(&data, "query")?;
                 let entries = store.search_team_memory(&query)?;
-                Ok(Some(serde_json::json!({ "entries": entries, "total": entries.len() })))
+                Ok(Some(
+                    serde_json::json!({ "entries": entries, "total": entries.len() }),
+                ))
             }
             "team.remove" => {
                 let store = require_team_memory_store(ctx)?;
@@ -193,7 +197,9 @@ impl ModuleHandler for MemoryHandler {
                     .and_then(|v| v.as_bool())
                     .unwrap_or(true);
                 store.set_team_memory_deprecated(id, deprecated)?;
-                Ok(Some(serde_json::json!({ "updated": true, "id": id, "deprecated": deprecated })))
+                Ok(Some(
+                    serde_json::json!({ "updated": true, "id": id, "deprecated": deprecated }),
+                ))
             }
 
             // --- Legacy (kept for compatibility) ---

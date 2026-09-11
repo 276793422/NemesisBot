@@ -42,6 +42,7 @@ fn test_register_and_list_nodes() {
         },
         status: NodeStatus::Online,
         capabilities: vec!["llm".into()],
+        tags: Vec::new(),
         addresses: vec![],
         node_type: "agent".into(),
     };
@@ -157,7 +158,10 @@ fn test_handle_discovered_node_preserves_announced_role() {
         "agent",
     );
     let node = cluster.get_node_info("remote-coord-legacy").unwrap();
-    assert_eq!(node.base.role, nemesis_types::cluster::NodeRole::Coordinator);
+    assert_eq!(
+        node.base.role,
+        nemesis_types::cluster::NodeRole::Coordinator
+    );
 
     // 缺失/未知 role（announce 兼容路径）回落 Worker。
     cluster.handle_discovered_node(
@@ -173,6 +177,64 @@ fn test_handle_discovered_node_preserves_announced_role() {
     );
     let node = cluster.get_node_info("remote-norole").unwrap();
     assert_eq!(node.base.role, nemesis_types::cluster::NodeRole::Worker);
+}
+
+// 回归（2026-09-11 停车场复活 A1）：handle_discovered_node 曾把 announce
+// 携带的 tags 整体丢弃（_tags 弃参、ExtendedNodeInfo 无字段）→ 看板派发
+// 匹配器只剩 category 一个粒度，required_tags 天然不可满足 → 全部停车。
+#[test]
+fn test_handle_discovered_node_stores_tags() {
+    let cluster = Cluster::new(make_config());
+    cluster.start();
+
+    cluster.handle_discovered_node(
+        "remote-tags",
+        "worker-tags",
+        vec!["10.0.0.12".into()],
+        21949,
+        "worker",
+        "general",
+        vec!["python".into(), "ml".into()],
+        vec!["llm".into()],
+        "agent",
+    );
+
+    let node = cluster.get_node_info("remote-tags").unwrap();
+    assert_eq!(node.tags, vec!["python".to_string(), "ml".to_string()]);
+
+    // tags 变化必须算 changed（content_eq 纳入 tags 比较）：
+    // 对端改了 tags 后旧记录不更新会导致匹配器用到过期画像。
+    let changed = cluster.handle_discovered_node(
+        "remote-tags",
+        "worker-tags",
+        vec!["10.0.0.12".into()],
+        21949,
+        "worker",
+        "general",
+        vec!["rust".into()],
+        vec!["llm".into()],
+        "agent",
+    );
+    assert!(changed, "tags 变化应判定为 changed");
+    let node = cluster.get_node_info("remote-tags").unwrap();
+    assert_eq!(node.tags, vec!["rust".to_string()]);
+
+    // 内容完全相同（含 tags）→ 不算 changed（周期 announce 幂等）。
+    let changed = cluster.handle_discovered_node(
+        "remote-tags",
+        "worker-tags",
+        vec!["10.0.0.12".into()],
+        21949,
+        "worker",
+        "general",
+        vec!["rust".into()],
+        vec!["llm".into()],
+        "agent",
+    );
+    assert!(
+        !changed,
+        "相同内容（含 tags）的周期 announce 不应判定 changed"
+    );
 }
 
 #[test]
@@ -216,6 +278,7 @@ fn test_get_capabilities() {
         },
         status: NodeStatus::Online,
         capabilities: vec!["llm".into(), "tools".into()],
+        tags: Vec::new(),
         addresses: vec![],
         node_type: "agent".into(),
     });
@@ -485,6 +548,7 @@ fn test_cluster_peer_resolver_returns_peer_info() {
         },
         status: NodeStatus::Online,
         capabilities: vec!["llm".into()],
+        tags: Vec::new(),
         addresses: vec!["192.168.1.100".into(), "10.0.0.5".into()],
         node_type: "agent".into(),
     });
@@ -528,6 +592,7 @@ fn test_cluster_peer_resolver_offline_peer() {
         },
         status: NodeStatus::Offline,
         capabilities: vec![],
+        tags: Vec::new(),
         addresses: vec!["10.0.0.1".into()],
         node_type: "agent".into(),
     });
@@ -1107,6 +1172,7 @@ fn test_find_peers_by_capability() {
         },
         status: NodeStatus::Online,
         capabilities: vec!["llm".into(), "tools".into()],
+        tags: Vec::new(),
         addresses: vec![],
         node_type: "agent".into(),
     });
@@ -1343,6 +1409,7 @@ fn test_sync_to_disk_includes_discovered_nodes() {
         },
         status: NodeStatus::Online,
         capabilities: vec!["llm".into()],
+        tags: Vec::new(),
         addresses: vec![],
         node_type: "agent".into(),
     });
@@ -1369,6 +1436,7 @@ fn test_register_node_updates_existing() {
         },
         status: NodeStatus::Online,
         capabilities: vec![],
+        tags: Vec::new(),
         addresses: vec![],
         node_type: "agent".into(),
     });
@@ -1385,6 +1453,7 @@ fn test_register_node_updates_existing() {
         },
         status: NodeStatus::Online,
         capabilities: vec!["tools".into()],
+        tags: Vec::new(),
         addresses: vec![],
         node_type: "agent".into(),
     });
@@ -1415,6 +1484,7 @@ fn test_get_online_peers_includes_online_nodes() {
         },
         status: NodeStatus::Online,
         capabilities: vec![],
+        tags: Vec::new(),
         addresses: vec![],
         node_type: "agent".into(),
     });
@@ -1430,6 +1500,7 @@ fn test_get_online_peers_includes_online_nodes() {
         },
         status: NodeStatus::Offline,
         capabilities: vec![],
+        tags: Vec::new(),
         addresses: vec![],
         node_type: "agent".into(),
     });
@@ -1458,6 +1529,7 @@ fn test_get_capabilities_dedup() {
         },
         status: NodeStatus::Online,
         capabilities: vec!["llm".into(), "tools".into()],
+        tags: Vec::new(),
         addresses: vec![],
         node_type: "agent".into(),
     });
@@ -1473,6 +1545,7 @@ fn test_get_capabilities_dedup() {
         },
         status: NodeStatus::Online,
         capabilities: vec!["llm".into(), "forge".into()],
+        tags: Vec::new(),
         addresses: vec![],
         node_type: "agent".into(),
     });
@@ -1668,6 +1741,7 @@ fn test_find_peers_by_capability_offline_excluded() {
         },
         status: NodeStatus::Offline,
         capabilities: vec!["llm".into()],
+        tags: Vec::new(),
         addresses: vec![],
         node_type: "agent".into(),
     });
@@ -2239,6 +2313,7 @@ fn test_cluster_peer_resolver_empty_addresses() {
         },
         status: NodeStatus::Online,
         capabilities: vec![],
+        tags: Vec::new(),
         addresses: vec![],
         node_type: "agent".into(),
     });
@@ -2273,6 +2348,7 @@ fn test_cluster_peer_resolver_empty_primary_address() {
         },
         status: NodeStatus::Online,
         capabilities: vec![],
+        tags: Vec::new(),
         addresses: vec![],
         node_type: "agent".into(),
     });
@@ -2559,6 +2635,7 @@ fn test_get_peer_after_register() {
         },
         status: NodeStatus::Online,
         capabilities: vec!["llm".into()],
+        tags: Vec::new(),
         addresses: vec!["10.0.0.10".into()],
         node_type: "agent".into(),
     });
@@ -2667,6 +2744,7 @@ fn test_cluster_peer_resolver_with_empty_primary_address() {
         },
         status: NodeStatus::Online,
         capabilities: vec![],
+        tags: Vec::new(),
         addresses: vec![],
         node_type: "agent".into(),
     });
@@ -2698,6 +2776,7 @@ fn test_cluster_peer_resolver_uses_stored_addresses() {
         },
         status: NodeStatus::Online,
         capabilities: vec![],
+        tags: Vec::new(),
         addresses: vec!["192.168.1.1".into(), "10.0.0.1".into()],
         node_type: "agent".into(),
     });
@@ -3068,6 +3147,7 @@ fn test_sync_to_disk_with_connecting_status() {
         },
         status: NodeStatus::Connecting,
         capabilities: vec!["llm".into()],
+        tags: Vec::new(),
         addresses: vec![],
         node_type: "agent".into(),
     });
@@ -3662,6 +3742,7 @@ fn test_cluster_peer_resolver_fallback_scan_by_name() {
         },
         status: NodeStatus::Online,
         capabilities: vec!["llm".into()],
+        tags: Vec::new(),
         addresses: vec!["192.168.1.50".into()],
         node_type: "agent".into(),
     });
@@ -3706,6 +3787,7 @@ fn test_cluster_peer_resolver_offline_peer_is_online_false() {
         },
         status: NodeStatus::Offline,
         capabilities: vec![],
+        tags: Vec::new(),
         addresses: vec!["10.0.0.1".into()],
         node_type: "agent".into(),
     });
@@ -3859,6 +3941,7 @@ fn make_real_node_info(id: &str, name: &str, addr: &str) -> RealNodeInfo {
         role: nemesis_types::cluster::NodeRole::Worker,
         category: "development".into(),
         capabilities: vec!["llm".into()],
+        tags: Vec::new(),
         node_type: "agent".into(),
     }
 }
@@ -3912,6 +3995,7 @@ fn test_merge_real_node_info_updates_existing_entry_with_real_id() {
         role: nemesis_types::cluster::NodeRole::Coordinator,
         category: "new_cat".into(),
         capabilities: vec!["new_cap".into()],
+        tags: Vec::new(),
         node_type: "new_type".into(),
     });
 
@@ -3943,6 +4027,7 @@ fn test_merge_real_node_info_upgrades_placeholder_by_address() {
         },
         status: NodeStatus::Offline,
         capabilities: Vec::new(),
+        tags: Vec::new(),
         addresses: Vec::new(),
         node_type: String::new(),
     });
@@ -4015,6 +4100,7 @@ fn test_merge_real_node_info_upgrades_placeholder_in_toml() {
         },
         status: NodeStatus::Offline,
         capabilities: Vec::new(),
+        tags: Vec::new(),
         addresses: Vec::new(),
         node_type: String::new(),
     });
@@ -4061,6 +4147,7 @@ fn test_handle_discovered_node_upgrades_placeholder_via_udp() {
         },
         status: NodeStatus::Offline,
         capabilities: Vec::new(),
+        tags: Vec::new(),
         addresses: Vec::new(),
         node_type: String::new(),
     });
@@ -4109,6 +4196,7 @@ fn test_mark_peer_online_for_refresh_flips_offline_to_online() {
         },
         status: NodeStatus::Offline,
         capabilities: Vec::new(),
+        tags: Vec::new(),
         addresses: Vec::new(),
         node_type: String::new(),
     });
@@ -4142,6 +4230,7 @@ fn test_set_peer_status_restores_offline() {
         },
         status: NodeStatus::Online,
         capabilities: Vec::new(),
+        tags: Vec::new(),
         addresses: Vec::new(),
         node_type: String::new(),
     });
@@ -4332,6 +4421,7 @@ fn make_w3b_node(id: &str, name: &str, address: &str, status: NodeStatus) -> Ext
         },
         status,
         capabilities: vec![],
+        tags: Vec::new(),
         addresses: vec![],
         node_type: "agent".into(),
     }
@@ -4720,6 +4810,7 @@ fn test_upgrade_peer_in_peers_toml_same_sanitized_key_writes_real_id() {
             role: nemesis_types::cluster::NodeRole::Worker,
             category: "test".into(),
             capabilities: vec![],
+            tags: Vec::new(),
             node_type: "agent".into(),
         },
     );
@@ -4750,6 +4841,7 @@ fn test_upgrade_peer_in_peers_toml_read_error_skips() {
             role: nemesis_types::cluster::NodeRole::Worker,
             category: "test".into(),
             capabilities: vec![],
+            tags: Vec::new(),
             node_type: "agent".into(),
         },
     );
@@ -4780,6 +4872,7 @@ fn test_upgrade_peer_in_peers_toml_without_peers_table_persists_directly() {
             role: nemesis_types::cluster::NodeRole::Worker,
             category: "test".into(),
             capabilities: vec![],
+            tags: Vec::new(),
             node_type: "agent".into(),
         },
     );
@@ -4817,6 +4910,7 @@ fn test_upgrade_peer_in_peers_toml_write_error_after_removal() {
             role: nemesis_types::cluster::NodeRole::Worker,
             category: "test".into(),
             capabilities: vec![],
+            tags: Vec::new(),
             node_type: "agent".into(),
         },
     );
@@ -4844,6 +4938,7 @@ fn test_merge_real_node_info_master_role_with_write_error() {
         role: nemesis_types::cluster::NodeRole::Coordinator,
         category: "prod".into(),
         capabilities: vec!["llm".into()],
+        tags: Vec::new(),
         node_type: "agent".into(),
     });
     assert_eq!(merged, "master-1");
@@ -5654,6 +5749,7 @@ fn test_upgrade_peer_in_peers_toml_no_file_and_missing_key() {
         role: nemesis_types::cluster::NodeRole::Worker,
         category: "test".into(),
         capabilities: vec![],
+        tags: Vec::new(),
         node_type: "agent".into(),
     };
 
@@ -5691,6 +5787,7 @@ fn test_upgrade_peer_in_peers_toml_no_file_and_missing_key() {
         role: nemesis_types::cluster::NodeRole::Worker,
         category: "test".into(),
         capabilities: vec![],
+        tags: Vec::new(),
         node_type: "agent".into(),
     };
     cluster2.upgrade_peer_in_peers_toml("ph-b", "real-b", &info_b);
@@ -6204,10 +6301,11 @@ fn test_on_node_discovered_callback_fires() {
         std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
     let seen_clone = seen.clone();
     cluster.set_on_node_discovered(std::sync::Arc::new(move |node_id, role, category| {
-        seen_clone
-            .lock()
-            .unwrap()
-            .push((node_id.to_string(), role.to_string(), category.to_string()));
+        seen_clone.lock().unwrap().push((
+            node_id.to_string(),
+            role.to_string(),
+            category.to_string(),
+        ));
     }));
 
     cluster.handle_discovered_node(

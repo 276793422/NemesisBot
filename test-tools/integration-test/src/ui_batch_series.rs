@@ -630,7 +630,7 @@ pub async fn test_ui_p3_models_update_field(ws: &TestWorkspace) -> Vec<TestResul
                 "name": "ui-p3-model",
                 "model": "test/ui-p3-model",
                 "key": "test-key",
-                "base_url": "http://127.0.0.1:8080/v1",
+                "base_url": format!("http://127.0.0.1:{}/v1", ai_server_port()),
             })),
         )
         .await;

@@ -15,7 +15,10 @@ fn parses_full_five_section_report() {
     );
     assert_eq!(r.self_check, "（对照上面的验收标准逐条自检）");
     assert_eq!(r.risks, "（没有则写\"无\"）");
-    assert_eq!(r.experience, "（本次踩过的坑/可复用的做法，写清适用范围；没有则写\"无\"）");
+    assert_eq!(
+        r.experience,
+        "（本次踩过的坑/可复用的做法，写清适用范围；没有则写\"无\"）"
+    );
 }
 
 #[test]

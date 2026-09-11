@@ -331,6 +331,7 @@ impl Cluster {
             },
             status: NodeStatus::Online,
             capabilities: local_caps.clone(),
+            tags: self.tags.read().clone(),
             addresses: vec![],
             node_type: self.node_type.clone(),
         };
@@ -840,7 +841,7 @@ impl Cluster {
         rpc_port: u16,
         role: &str,
         category: &str,
-        _tags: Vec<String>,
+        tags: Vec<String>,
         capabilities: Vec<String>,
         node_type: &str,
     ) -> bool {
@@ -886,6 +887,7 @@ impl Cluster {
             },
             status: NodeStatus::Online,
             capabilities,
+            tags: tags.clone(),
             addresses, // Preserve all addresses for multi-address failover
             node_type: node_type.to_string(),
         };
@@ -954,6 +956,7 @@ impl Cluster {
                         role: nemesis_types::cluster::NodeRole::from_role_str(role),
                         category: category.into(),
                         capabilities: Vec::new(),
+                        tags: tags.to_vec(),
                         node_type: node_type.into(),
                     },
                 );
@@ -1071,6 +1074,7 @@ impl Cluster {
             }
             existing.base.last_seen = chrono::Local::now().to_rfc3339();
             existing.capabilities = info.capabilities.clone();
+            existing.tags = info.tags.clone();
             existing.node_type = info.node_type.clone();
             self.registry.upsert(existing);
             self.persist_real_peer_to_toml(&info.id, info);
@@ -1094,6 +1098,7 @@ impl Cluster {
             },
             status: NodeStatus::Online,
             capabilities: info.capabilities.clone(),
+            tags: info.tags.clone(),
             addresses: Vec::new(),
             node_type: info.node_type.clone(),
         };
@@ -1833,6 +1838,7 @@ impl Cluster {
             },
             status: NodeStatus::Online,
             capabilities: caps,
+            tags: self.tags.read().clone(),
             addresses: vec![],
             node_type: self.node_type.clone(),
         };
@@ -1855,6 +1861,7 @@ impl Cluster {
                 rpc_port: 0,
                 role: String::new(),
                 category: node.base.category.clone(),
+                tags: node.tags.clone(),
                 priority: 1,
                 enabled: true,
                 status: PeerStatus {
@@ -3105,6 +3112,7 @@ pub struct RealNodeInfo {
     pub role: nemesis_types::cluster::NodeRole,
     pub category: String,
     pub capabilities: Vec<String>,
+    pub tags: Vec<String>,
     pub node_type: String,
 }
 

@@ -11,8 +11,8 @@
 //! 绑定覆盖在 nemesisbot manager 测试 + integration-test。
 
 use std::collections::{HashMap, HashSet};
-use std::sync::atomic::{AtomicBool, AtomicUsize};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, AtomicUsize};
 use std::time::Instant;
 
 use crate::api_handlers::AppState;
@@ -102,7 +102,10 @@ impl LlmProvider for NoopProvider {
 }
 
 fn noop_agent_loop() -> Arc<AgentLoop> {
-    Arc::new(AgentLoop::new(Box::new(NoopProvider), AgentConfig::default()))
+    Arc::new(AgentLoop::new(
+        Box::new(NoopProvider),
+        AgentConfig::default(),
+    ))
 }
 
 /// 哨兵归属键（唯一，防与并行测试的实际会话撞键）。
@@ -143,9 +146,7 @@ impl MockBridge {
     }
 
     fn project_loop(&self) -> Arc<AgentLoop> {
-        self.project_loop
-            .get_or_init(noop_agent_loop)
-            .clone()
+        self.project_loop.get_or_init(noop_agent_loop).clone()
     }
 }
 
@@ -235,7 +236,8 @@ impl ProjectsBridge for MockBridge {
         if !s.projects.iter().any(|p| p.id == project_id) {
             return Err(format!("项目不存在: {project_id}"));
         }
-        s.bound.insert(session_key.to_string(), project_id.to_string());
+        s.bound
+            .insert(session_key.to_string(), project_id.to_string());
         Ok(())
     }
 
@@ -332,7 +334,10 @@ async fn projects_list_create_remove_rename_route_through_bridge() {
         )
         .await
         .expect_err("empty path must fail honestly");
-    assert!(err.contains("路径不能为空"), "honest create error must pass through: {err}");
+    assert!(
+        err.contains("路径不能为空"),
+        "honest create error must pass through: {err}"
+    );
 
     // rename：成功臂。
     let out = h
@@ -368,7 +373,10 @@ async fn projects_list_create_remove_rename_route_through_bridge() {
         )
         .await
         .expect_err("unknown project must fail honestly");
-    assert!(err.contains("不存在"), "honest remove error must pass through: {err}");
+    assert!(
+        err.contains("不存在"),
+        "honest remove error must pass through: {err}"
+    );
     drop(g);
 }
 
@@ -404,8 +412,8 @@ async fn resolve_loop_unbound_session_falls_back_to_main() {
     let main_loop = noop_agent_loop();
     let ctx = make_ctx(Some(main_loop.clone()));
 
-    let resolved = resolve_session_loop(&ctx, "agent:main:session:unbound_g4")
-        .expect("main loop resolves");
+    let resolved =
+        resolve_session_loop(&ctx, "agent:main:session:unbound_g4").expect("main loop resolves");
     assert!(
         Arc::ptr_eq(&resolved, &main_loop),
         "unbound session must resolve to the main loop"
@@ -427,7 +435,8 @@ async fn resolve_loop_bound_but_unavailable_is_honest_error() {
     let (g, mock) = BridgeGuard::with_mock();
     {
         let mut s = mock.inner.lock();
-        s.bound.insert(SENTINEL_KEY.to_string(), SENTINEL_PID.to_string());
+        s.bound
+            .insert(SENTINEL_KEY.to_string(), SENTINEL_PID.to_string());
         s.missing_loops.insert(SENTINEL_PID.to_string());
     }
     let ctx = make_ctx(None);
@@ -449,7 +458,11 @@ async fn resolve_loop_bound_but_unavailable_is_honest_error() {
 #[tokio::test]
 async fn project_root_switches_only_for_bound_sessions() {
     let (g, mock) = BridgeGuard::with_mock();
-    assert_eq!(project_root_for_session(SENTINEL_KEY), None, "未绑定 = None");
+    assert_eq!(
+        project_root_for_session(SENTINEL_KEY),
+        None,
+        "未绑定 = None"
+    );
     mock.inner
         .lock()
         .bound
@@ -498,7 +511,10 @@ async fn sessions_create_with_project_id_unknown_project_is_honest_error() {
         )
         .await
         .expect_err("unknown project must fail honestly");
-    assert!(err.contains("不存在"), "unknown project must fail honestly: {err}");
+    assert!(
+        err.contains("不存在"),
+        "unknown project must fail honestly: {err}"
+    );
     drop(g);
 }
 
@@ -521,7 +537,10 @@ async fn open_dir_unknown_project_is_honest_error_without_spawn() {
         )
         .await
         .expect_err("unknown project must fail honestly");
-    assert!(err.contains("不存在"), "honest error must pass through: {err}");
+    assert!(
+        err.contains("不存在"),
+        "honest error must pass through: {err}"
+    );
     drop(g);
 }
 
@@ -550,7 +569,9 @@ async fn open_dir_resolves_only_registered_paths() {
     let (g, mock) = BridgeGuard::with_mock();
     // 注册一个真实存在的临时目录 → 解析成功且原样返回。
     let dir = tempfile::tempdir().unwrap();
-    let created = mock.create("tmp-项目", &dir.path().to_string_lossy()).unwrap();
+    let created = mock
+        .create("tmp-项目", &dir.path().to_string_lossy())
+        .unwrap();
     let target = super::projects::resolve_open_target(mock.as_ref(), &created.id)
         .expect("registered existing dir must resolve");
     assert_eq!(target, dir.path());
@@ -576,7 +597,8 @@ async fn sessions_rewind_redo_filediff_bound_session_route_to_project_loop() {
     let (g, mock) = BridgeGuard::with_mock();
     {
         let mut s = mock.inner.lock();
-        s.bound.insert(SENTINEL_KEY.to_string(), SENTINEL_PID.to_string());
+        s.bound
+            .insert(SENTINEL_KEY.to_string(), SENTINEL_PID.to_string());
         s.missing_loops.insert(SENTINEL_PID.to_string());
     }
     // 主槽在场——若命令仍走主槽，错误会是「未装配」而非「项目不可用」。
@@ -584,9 +606,15 @@ async fn sessions_rewind_redo_filediff_bound_session_route_to_project_loop() {
     let h = super::sessions::SessionsHandler;
     let sid = SENTINEL_KEY.strip_prefix("agent:main:session:").unwrap();
     let cases: Vec<(&str, serde_json::Value)> = vec![
-        ("rewind_to_message", serde_json::json!({"session_id": sid, "message_index": 0})),
+        (
+            "rewind_to_message",
+            serde_json::json!({"session_id": sid, "message_index": 0}),
+        ),
         ("redo", serde_json::json!({"session_id": sid})),
-        ("file_diff", serde_json::json!({"session_id": sid, "path": "x.txt"})),
+        (
+            "file_diff",
+            serde_json::json!({"session_id": sid, "path": "x.txt"}),
+        ),
     ];
     for (cmd, data) in cases {
         let err = h

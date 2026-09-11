@@ -516,12 +516,18 @@ fn test_fork_inherits_project_binding() {
     // store 缓存镜像 + 落盘（重开同目录 store 验证持久化）。
     assert_eq!(
         store.get_project(&info.new_key),
-        (Some("p-deadbeef".to_string()), Some("/tmp/proj_x".to_string()))
+        (
+            Some("p-deadbeef".to_string()),
+            Some("/tmp/proj_x".to_string())
+        )
     );
     let reopened = SessionStore::new_with_storage(dir.path());
     assert_eq!(
         reopened.get_project(&info.new_key),
-        (Some("p-deadbeef".to_string()), Some("/tmp/proj_x".to_string())),
+        (
+            Some("p-deadbeef".to_string()),
+            Some("/tmp/proj_x".to_string())
+        ),
         "绑定随 save 落盘"
     );
 
@@ -529,8 +535,7 @@ fn test_fork_inherits_project_binding() {
     let src2 = unique_src();
     seed_clean_log(&src2);
     let info2 = fork_session(&store, &src2, None, None).unwrap();
-    let meta2 =
-        crate::chat_log::read_session_meta_full(&info2.new_key).expect("fork 落血缘 meta");
+    let meta2 = crate::chat_log::read_session_meta_full(&info2.new_key).expect("fork 落血缘 meta");
     assert!(meta2.project_id.is_none(), "无绑定源 fork 不造绑定");
     assert!(meta2.project_path.is_none());
     assert_eq!(store.get_project(&info2.new_key), (None, None));

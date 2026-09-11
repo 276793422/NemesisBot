@@ -24,6 +24,11 @@ pub enum ModelAction {
         /// Authentication method (e.g., "oauth", "token")
         #[arg(long)]
         auth: Option<String>,
+        /// Explicit wire protocol (LLM protocol selector): anthropic | openai | responses.
+        /// Omit = auto-infer from the provider/ prefix (legacy behavior).
+        /// "claude" is accepted as an alias of "anthropic".
+        #[arg(long)]
+        protocol: Option<String>,
         /// Set as default model
         #[arg(long, default_value_t = false)]
         default: bool,
@@ -145,6 +150,7 @@ pub async fn run(action: ModelAction, local: bool) -> Result<()> {
             base,
             proxy,
             auth,
+            protocol,
             default,
         } => {
             if !cfg_path.exists() {
@@ -198,6 +204,13 @@ pub async fn run(action: ModelAction, local: bool) -> Result<()> {
             }
             if let Some(a) = &auth {
                 entry["auth_method"] = serde_json::Value::String(a.clone());
+            }
+            // LLM 协议选择器（2026-09-11）：显式协议写盘；校验/归一走单一
+            // 真相源（claude→anthropic），未知值 loud 报错退出。
+            if let Some(p) = &protocol {
+                let normalized = nemesis_types::capability::normalize_model_protocol(p)
+                    .map_err(anyhow::Error::msg)?;
+                entry["protocol"] = serde_json::Value::String(normalized);
             }
 
             // Phase 4a (small-model-tool-robustness): tag with an auto-detect
@@ -854,10 +867,7 @@ async fn run_prices(action: PricesAction, home: &Path) -> Result<()> {
         PricesAction::Update { url } => {
             let shown = match &url {
                 Some(u) => u.clone(),
-                None => format!(
-                    "镜像链：{}",
-                    nemesis_data::PRICE_MIRROR_URLS.join(" → ")
-                ),
+                None => format!("镜像链：{}", nemesis_data::PRICE_MIRROR_URLS.join(" → ")),
             };
             println!("正在拉取价目表（{shown}）...");
             match nemesis_web::pricing_sync::fetch_and_replace(pricing, url.as_deref()).await {
@@ -993,6 +1003,7 @@ async fn run_probe(
         api_base: resolution.api_base.clone(),
         workspace: home.join("workspace").to_string_lossy().to_string(),
         connect_mode: resolution.connect_mode,
+        protocol: resolution.protocol.clone(),
         account_id: String::new(),
         headers: HashMap::new(),
     };

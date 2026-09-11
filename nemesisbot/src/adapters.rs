@@ -213,8 +213,9 @@ pub struct AgentLoopServiceAdapter {
     /// start() 每次读取 → loop stop/start 循环后谓词仍生效。默认未设置 =
     /// 全部放行（既有行为零影响）。谓词实现 = ProjectLoopManager::
     /// bridge_should_skip，单一裁决点在 route_decision 纯函数。
-    skip_predicate:
-        std::sync::OnceLock<Arc<dyn Fn(&nemesis_types::channel::InboundMessage) -> bool + Send + Sync>>,
+    skip_predicate: std::sync::OnceLock<
+        Arc<dyn Fn(&nemesis_types::channel::InboundMessage) -> bool + Send + Sync>,
+    >,
     /// Tokio runtime handle captured at construction time.
     /// Needed because tray callbacks run on the winit thread (no tokio context),
     /// but `start()` needs to spawn async tasks on the tokio runtime.

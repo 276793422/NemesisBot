@@ -956,10 +956,10 @@ impl LlmProvider for BareCaptureProvider {
             .filter(|m| m.role == "system")
             .map(|m| m.content.clone())
             .unwrap_or_default();
-        self.seen
-            .lock()
-            .unwrap()
-            .push((system, tools.iter().map(|d| d.function.name.clone()).collect()));
+        self.seen.lock().unwrap().push((
+            system,
+            tools.iter().map(|d| d.function.name.clone()).collect(),
+        ));
         Ok(LlmResponse {
             content: "{\"plan\":[]}".to_string(),
             tool_calls: Vec::new(),
@@ -976,9 +976,7 @@ impl LlmProvider for BareCaptureProvider {
 async fn bare_mode_replaces_persona_and_hides_all_tools() {
     let seen: std::sync::Arc<std::sync::Mutex<Vec<(String, Vec<String>)>>> = Default::default();
     let mut agent_loop = AgentLoop::new(
-        Box::new(BareCaptureProvider {
-            seen: seen.clone(),
-        }),
+        Box::new(BareCaptureProvider { seen: seen.clone() }),
         test_config(), // 人格 = "You are a test assistant."
     );
     agent_loop.register_tool(
@@ -1025,9 +1023,7 @@ async fn default_detached_keeps_tool_supply() {
     // detached 路径（spawn 工具 / headless run 都依赖全量供给）。
     let seen: std::sync::Arc<std::sync::Mutex<Vec<(String, Vec<String>)>>> = Default::default();
     let mut agent_loop = AgentLoop::new(
-        Box::new(BareCaptureProvider {
-            seen: seen.clone(),
-        }),
+        Box::new(BareCaptureProvider { seen: seen.clone() }),
         test_config(),
     );
     agent_loop.register_tool(
@@ -1121,11 +1117,19 @@ async fn run_detached_emits_observer_lifecycle_for_request_logging() {
         pos(EventType::LlmResponse),
         pos(EventType::ConversationEnd),
     );
-    assert!(start.is_some(), "必须发射 ConversationStart（trace 注册锚）");
-    assert!(req.is_some() && resp.is_some(), "LLM 请求/响应事件必须到达观察者");
+    assert!(
+        start.is_some(),
+        "必须发射 ConversationStart（trace 注册锚）"
+    );
+    assert!(
+        req.is_some() && resp.is_some(),
+        "LLM 请求/响应事件必须到达观察者"
+    );
     assert!(end.is_some(), "必须发射 ConversationEnd（active 表收尾）");
     assert!(
-        start.unwrap() < req.unwrap() && req.unwrap() < resp.unwrap() && resp.unwrap() < end.unwrap(),
+        start.unwrap() < req.unwrap()
+            && req.unwrap() < resp.unwrap()
+            && resp.unwrap() < end.unwrap(),
         "事件必须按 start → request → response → end 有序，实际顺序: {:?}",
         seq
     );

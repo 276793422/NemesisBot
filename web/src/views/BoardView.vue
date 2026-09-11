@@ -7,10 +7,13 @@ import ProjectPanel from '../components/board/ProjectPanel.vue'
 import InboxPanel from '../components/board/InboxPanel.vue'
 import AutopilotPanel from '../components/board/AutopilotPanel.vue'
 import DiscussionPanel from '../components/board/DiscussionPanel.vue'
+import AuditPanel from '../components/board/AuditPanel.vue'
+import BoardConfigPanel from '../components/board/BoardConfigPanel.vue'
 
 // 托管 Agent 看板容器（W2 P3/P4）：项目 / 列表 / 看板（Kanban 拖拽） /
-// 收件箱 / 自动化 / 讨论 六个页签（顺序=使用依赖链，见 BoardTabs.vue）。
-// 结构同 ClusterView（页签容器 + components/board/ 子组件）。
+// 收件箱 / 自动化 / 讨论 / 决策流（P5/E2） / 配置 八个页签（顺序=使用依赖
+// 链，见 BoardTabs.vue）。结构同 ClusterView（页签容器 + components/board/
+// 子组件）。
 
 // 默认落「项目」页签——排序即依赖链：没有项目就没有列表/看板可看。
 const activeTab = ref('projects')
@@ -22,6 +25,8 @@ const tabMap: Record<string, any> = {
   inbox: InboxPanel,
   autopilot: AutopilotPanel,
   discussion: DiscussionPanel,
+  audit: AuditPanel,
+  config: BoardConfigPanel,
 }
 </script>
 

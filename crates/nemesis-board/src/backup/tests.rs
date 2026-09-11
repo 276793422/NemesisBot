@@ -46,7 +46,14 @@ fn test_backup_creates_snapshot_and_recovers() {
         .unwrap()
         .expect("keep>0 应产生备份文件");
     assert!(target.exists());
-    assert!(target.file_name().unwrap().to_str().unwrap().starts_with("board-"));
+    assert!(
+        target
+            .file_name()
+            .unwrap()
+            .to_str()
+            .unwrap()
+            .starts_with("board-")
+    );
 
     // 恢复演练：备份是完整可打开的库，数据在场。
     assert_eq!(count_issues(&target), 1);
@@ -104,11 +111,7 @@ fn test_backup_prunes_beyond_keep() {
         .map(|e| e.file_name().to_str().unwrap().to_string())
         .collect();
     names.sort();
-    assert_eq!(
-        names.len(),
-        2,
-        "keep=2 应裁剪到只剩 2 份，实际: {names:?}"
-    );
+    assert_eq!(names.len(), 2, "keep=2 应裁剪到只剩 2 份，实际: {names:?}");
     // 剩的是最新的「今日」备份（升序在末尾）+ 次新的 20260104。
     let today = chrono::Local::now().format("%Y%m%d").to_string();
     assert_eq!(names[0], "board-20260104.db");
@@ -124,7 +127,11 @@ fn test_backup_disabled_when_keep_zero_and_missing_db_errors() {
     let backups_dir = dir.join("backups");
 
     // keep=0 = 备份关闭，不做任何 IO。
-    assert!(backup_database(&db_path, &backups_dir, 0).unwrap().is_none());
+    assert!(
+        backup_database(&db_path, &backups_dir, 0)
+            .unwrap()
+            .is_none()
+    );
     assert!(!backups_dir.exists(), "关闭时不应创建备份目录");
 
     // 主库缺失 = 诚实报错（不静默产出空备份）。

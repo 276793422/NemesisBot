@@ -62,7 +62,11 @@ fn test_rule2_role_mention_fans_out() {
         node("qa-3", "QA Offline", "qa", false),
     ];
     let plan = resolve_wake_targets(&input("channel", "@role:QA 都过一遍", "admin"), &nodes);
-    assert_eq!(plan.targets, vec!["qa-1", "qa-2"], "角色全投（大小写不敏感）");
+    assert_eq!(
+        plan.targets,
+        vec!["qa-1", "qa-2"],
+        "角色全投（大小写不敏感）"
+    );
     assert_eq!(
         plan.skipped,
         vec![SkipRecord {
@@ -145,7 +149,11 @@ fn test_mixed_mentions_dedupe_and_skip_sender() {
     // 同一节点被 @ 两次只投一次；发送者本人不唤醒；@role:worker 命中
     // 两个 worker 之一已在 targets（去重）、另一个是 sender（跳过）。
     let plan = resolve_wake_targets(
-        &input("channel", "@node-b @Builder @node-s @role:worker 来", "node-s"),
+        &input(
+            "channel",
+            "@node-b @Builder @node-s @role:worker 来",
+            "node-s",
+        ),
         &nodes,
     );
     assert_eq!(plan.targets, vec!["node-b"]);
@@ -186,18 +194,66 @@ fn test_mention_extraction_edges() {
 #[test]
 fn test_mentions_node_and_has_mentions() {
     // @id / @name 大小写不敏感。
-    assert!(mentions_node("请 @Node-B 看下", "node-b", "Builder", "worker", "dev"));
-    assert!(mentions_node("@BUILDER 在吗", "node-b", "Builder", "worker", "dev"));
+    assert!(mentions_node(
+        "请 @Node-B 看下",
+        "node-b",
+        "Builder",
+        "worker",
+        "dev"
+    ));
+    assert!(mentions_node(
+        "@BUILDER 在吗",
+        "node-b",
+        "Builder",
+        "worker",
+        "dev"
+    ));
     // 未点名的他人不命中。
-    assert!(!mentions_node("@node-c 看下", "node-b", "Builder", "worker", "dev"));
+    assert!(!mentions_node(
+        "@node-c 看下",
+        "node-b",
+        "Builder",
+        "worker",
+        "dev"
+    ));
     // @role: 命中拓扑角色或功能类别。
-    assert!(mentions_node("@role:worker 集合", "node-b", "Builder", "worker", "dev"));
-    assert!(mentions_node("@role:DEV 集合", "node-b", "Builder", "worker", "dev"));
-    assert!(!mentions_node("@role:qa 集合", "node-b", "Builder", "worker", "dev"));
+    assert!(mentions_node(
+        "@role:worker 集合",
+        "node-b",
+        "Builder",
+        "worker",
+        "dev"
+    ));
+    assert!(mentions_node(
+        "@role:DEV 集合",
+        "node-b",
+        "Builder",
+        "worker",
+        "dev"
+    ));
+    assert!(!mentions_node(
+        "@role:qa 集合",
+        "node-b",
+        "Builder",
+        "worker",
+        "dev"
+    ));
     // @role: 空角色不命中（不是无条件真）。
-    assert!(!mentions_node("@role: 看下", "node-b", "Builder", "worker", "dev"));
+    assert!(!mentions_node(
+        "@role: 看下",
+        "node-b",
+        "Builder",
+        "worker",
+        "dev"
+    ));
     // 邮箱形态不算点名。
-    assert!(!mentions_node("发给 b@node-b.com", "node-b", "Builder", "worker", "dev"));
+    assert!(!mentions_node(
+        "发给 b@node-b.com",
+        "node-b",
+        "Builder",
+        "worker",
+        "dev"
+    ));
     // has_mentions：@ 存在性（master 决定 wake 事件标签）。
     assert!(has_mentions("@node-b 看下"));
     assert!(has_mentions("@role:qa 过一遍"));

@@ -107,13 +107,14 @@ fn test_name_validation_shared_by_create_and_rename() {
 
     // rename 共用同一校验真相源；trim 生效；path/id 不动。
     let e = create_project(&reg, ws.path(), "demo", proj.to_str().unwrap(), 4).unwrap();
-    let err = rename_project(&reg, &e.id, "  ")
-        .unwrap_err()
-        .to_string();
+    let err = rename_project(&reg, &e.id, "  ").unwrap_err().to_string();
     assert!(err.contains("名称不能为空"));
     let renamed = rename_project(&reg, &e.id, "  新名字  ").unwrap();
     assert_eq!(renamed.name, "新名字");
-    assert_eq!(renamed.path, e.path, "rename 不改 path（改路径=移除后重建）");
+    assert_eq!(
+        renamed.path, e.path,
+        "rename 不改 path（改路径=移除后重建）"
+    );
     assert_eq!(renamed.id, e.id);
 }
 
@@ -131,7 +132,10 @@ fn test_cap_rejects_with_actionable_message() {
     let err = create_project(&reg, ws.path(), "two", p2.to_str().unwrap(), 1)
         .unwrap_err()
         .to_string();
-    assert!(err.contains("上限") && err.contains('1'), "unexpected: {err}");
+    assert!(
+        err.contains("上限") && err.contains('1'),
+        "unexpected: {err}"
+    );
     assert_eq!(list_projects(&reg).len(), 1, "被拒条目不落盘");
 }
 
@@ -219,7 +223,9 @@ fn test_remove_unbinds_only_and_missing_errors() {
     // 不存在：remove/rename 同报错语义（对齐 eval_rules 家族）。
     for err in [
         remove_project(&reg, "p-ffffffff").unwrap_err().to_string(),
-        rename_project(&reg, "p-ffffffff", "n").unwrap_err().to_string(),
+        rename_project(&reg, "p-ffffffff", "n")
+            .unwrap_err()
+            .to_string(),
     ] {
         assert!(err.contains("项目不存在"), "unexpected: {err}");
     }

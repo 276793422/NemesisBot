@@ -494,3 +494,46 @@ fn vision_resolution_name_and_default() {
         vision_default_allow()
     );
 }
+
+#[test]
+fn protocol_normalization_canonical_set() {
+    assert_eq!(normalize_model_protocol("anthropic").unwrap(), "anthropic");
+    assert_eq!(
+        normalize_model_protocol("claude").unwrap(),
+        "anthropic",
+        "claude 是用户侧别名"
+    );
+    assert_eq!(normalize_model_protocol("openai").unwrap(), "openai");
+    assert_eq!(
+        normalize_model_protocol("chat-completions").unwrap(),
+        "openai",
+        "chat-completions 是 openai 的显式别名"
+    );
+    assert_eq!(normalize_model_protocol("responses").unwrap(), "responses");
+}
+
+#[test]
+fn protocol_normalization_empty_and_trim() {
+    assert_eq!(
+        normalize_model_protocol("").unwrap(),
+        "",
+        "空 = 清除（自动推断）"
+    );
+    assert_eq!(
+        normalize_model_protocol("  ").unwrap(),
+        "",
+        "纯空白等价清除"
+    );
+    assert_eq!(
+        normalize_model_protocol("  Claude \n").unwrap(),
+        "anthropic",
+        "trim + 大小写不敏感"
+    );
+}
+
+#[test]
+fn protocol_normalization_unknown_loud() {
+    let err = normalize_model_protocol("grpc").unwrap_err();
+    assert!(err.contains("grpc"));
+    assert!(err.contains("anthropic | openai | responses"));
+}

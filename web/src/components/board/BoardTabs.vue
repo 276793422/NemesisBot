@@ -8,7 +8,8 @@ const emit = defineEmits<{
 }>()
 
 // 排序即使用依赖链（2026-08-31 用户定义）：先建项目 → 项目下配任务列表
-// → 列表内容上看板 → 收件箱接收回流 → 自动化定时建单收尾 → 讨论跨节点沟通。
+// → 列表内容上看板 → 收件箱接收回流 → 自动化定时建单收尾 → 讨论跨节点沟通
+// → 决策流审计（全自动流转 P5/E2，回滚误判）→ 配置调自动化开关（P1/A4）。
 const tabs = [
   { id: 'projects', label: '项目' },
   { id: 'list', label: '列表' },
@@ -16,6 +17,8 @@ const tabs = [
   { id: 'inbox', label: '收件箱' },
   { id: 'autopilot', label: '自动化' },
   { id: 'discussion', label: '讨论' },
+  { id: 'audit', label: '决策流' },
+  { id: 'config', label: '配置' },
 ]
 </script>
 

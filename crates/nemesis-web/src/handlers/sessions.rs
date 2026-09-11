@@ -85,10 +85,9 @@ impl ModuleHandler for SessionsHandler {
                     .map(|s| s.trim().to_string())
                     .filter(|s| !s.is_empty())
                 {
-                    let bridge = crate::handlers::projects::projects_bridge()
-                        .ok_or_else(|| {
-                            "项目管理未装配（projects bridge 未接线，无法创建项目会话）".to_string()
-                        })?;
+                    let bridge = crate::handlers::projects::projects_bridge().ok_or_else(|| {
+                        "项目管理未装配（projects bridge 未接线，无法创建项目会话）".to_string()
+                    })?;
                     bridge.bind_session(&session_key, &project_id)?;
                 }
                 // E7：显式命名 = 用户意志（manual，自动标题永不覆盖）；

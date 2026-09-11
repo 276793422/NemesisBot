@@ -7,7 +7,7 @@
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use super::{route_decision, session_key_from_stem, ProjectLoopManager};
+use super::{ProjectLoopManager, route_decision, session_key_from_stem};
 use crate::agent_factory::SharedResources;
 use crate::projects::registry;
 use nemesis_types::channel::InboundMessage;
@@ -207,11 +207,7 @@ async fn manager_start_all_and_owner_index() {
     let store = Arc::new(nemesis_agent::session::SessionStore::new_with_storage(
         &sess_dir,
     ));
-    let mgr = ProjectLoopManager::new(
-        shared,
-        store,
-        Arc::new(nemesis_bus::MessageBus::new()),
-    );
+    let mgr = ProjectLoopManager::new(shared, store, Arc::new(nemesis_bus::MessageBus::new()));
     assert_eq!(
         mgr.registry_path(),
         registry::registry_path(&main_ws).as_path(),
@@ -268,7 +264,10 @@ async fn manager_start_all_and_owner_index() {
 
     // start_all：真实项目拉起、消失项目 warn 跳过、索引建好。
     mgr.start_all();
-    assert!(mgr.project_loop(&real.id).is_some(), "real project loop must run");
+    assert!(
+        mgr.project_loop(&real.id).is_some(),
+        "real project loop must run"
+    );
     assert!(
         !mgr.running_pids().contains(&gone.id),
         "missing-dir project must be skipped with a warning, not crash startup"
@@ -284,7 +283,10 @@ async fn manager_start_all_and_owner_index() {
 
     // 增量登记 + 查询。
     mgr.remember_session("agent:main:session:new1", &real.id);
-    assert_eq!(mgr.owner_of("agent:main:session:new1").as_deref(), Some(real.id.as_str()));
+    assert_eq!(
+        mgr.owner_of("agent:main:session:new1").as_deref(),
+        Some(real.id.as_str())
+    );
 
     mgr.stop_all();
     assert!(mgr.running_pids().is_empty());
@@ -320,7 +322,10 @@ async fn bind_and_forget_session_roundtrip_with_sidecar() {
     // bind：unknown id / 注册后删目录（inactive 形态）→ 诚实报错
     // （此两臂不触 sidecar）。
     let err = mgr.bind_session(key, "p_nope000").unwrap_err();
-    assert!(err.contains("不存在"), "unknown id must fail honestly: {err}");
+    assert!(
+        err.contains("不存在"),
+        "unknown id must fail honestly: {err}"
+    );
     let ghost_dir = home.join("proj_bindghost");
     std::fs::create_dir_all(&ghost_dir).unwrap();
     let ghost = registry::create_project(
@@ -344,10 +349,7 @@ async fn bind_and_forget_session_roundtrip_with_sidecar() {
     mgr.bind_session(key, &entry.id).expect("bind succeeds");
     assert_eq!(mgr.owner_of(key).as_deref(), Some(entry.id.as_str()));
     let meta_path = nemesis_path::resolve_session_logs_dir_in_workspace(&main_ws)
-        .join(format!(
-            "{}.meta.json",
-            key.replace(':', "_")
-        ));
+        .join(format!("{}.meta.json", key.replace(':', "_")));
     let meta: serde_json::Value =
         serde_json::from_str(&std::fs::read_to_string(&meta_path).unwrap()).unwrap();
     assert_eq!(meta["project_id"], entry.id.as_str());

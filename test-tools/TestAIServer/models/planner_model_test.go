@@ -232,3 +232,57 @@ func TestPlannerMultimodalPartsIgnored(t *testing.T) {
 	raw := m.Process([]Message{msg})
 	plannerMirrorValidate(t, raw)
 }
+
+// TestPlannerAnchorMarkers P2 锚点系列开关（T2 组 UAT 夹具契约）：
+// <PLAN_ANCHOR>/<PLAN_ANCHOR_EVIL>/<PLAN_ANCHOR_MIXED> 三标记的输出形态
+// 钉死——合法锚点行 / 不安全锚点行（`..`、绝对路径）/ 坏行（空目标）。
+func TestPlannerAnchorMarkers(t *testing.T) {
+	m := NewTestAIPlanner()
+	cases := []struct {
+		marker      string
+		wantCheckLn int // 每子任务 [CHECK] 行数（普通文字行不计）
+	}{
+		{"<PLAN_ANCHOR>", 0}, // 子任务1=3 条、子任务2/3=1 条 → 特判在下方
+		{"<PLAN_ANCHOR_EVIL>", 3},
+		{"<PLAN_ANCHOR_MIXED>", 2},
+	}
+	for _, tc := range cases {
+		raw := m.Process([]Message{{Role: "user", Content: plannerPromptFixture("锚点任务 " + tc.marker)}})
+		start := strings.Index(raw, "[")
+		end := strings.LastIndex(raw, "]")
+		if start < 0 || end < start {
+			t.Fatalf("%s output has no JSON array: %s", tc.marker, raw)
+		}
+		var subs []map[string]interface{}
+		if err := json.Unmarshal([]byte(raw[start:end+1]), &subs); err != nil {
+			t.Fatalf("%s output not JSON: %v", tc.marker, err)
+		}
+		if len(subs) != 3 {
+			t.Fatalf("%s plan must have 3 subs, got %d", tc.marker, len(subs))
+		}
+		if tc.marker == "<PLAN_ANCHOR>" {
+			// 子任务1：2 文件锚点 + 1 交付正则；子任务2/3：各 1 文件锚点。
+			ac0, _ := subs[0]["acceptance_criteria"].(string)
+			ac1, _ := subs[1]["acceptance_criteria"].(string)
+			if strings.Count(ac0, "[CHECK]") != 3 || !strings.Contains(ac0, "uat-t2/pass/sub1.md") {
+				t.Fatalf("sub1 anchors unexpected: %s", ac0)
+			}
+			if strings.Count(ac1, "[CHECK]") != 1 || !strings.Contains(ac1, "uat-t2/pass/sub2.md") {
+				t.Fatalf("sub2 anchors unexpected: %s", ac1)
+			}
+			continue
+		}
+		ac0, _ := subs[0]["acceptance_criteria"].(string)
+		if strings.Count(ac0, "[CHECK]") != tc.wantCheckLn {
+			t.Fatalf("%s sub1 [CHECK] lines = %d, want %d: %s", tc.marker, strings.Count(ac0, "[CHECK]"), tc.wantCheckLn, ac0)
+		}
+		if tc.marker == "<PLAN_ANCHOR_EVIL>" {
+			if !strings.Contains(ac0, "../outside-secret.txt") || !strings.Contains(ac0, "/abs/path/probe.txt") {
+				t.Fatalf("evil anchors missing unsafe forms: %s", ac0)
+			}
+		}
+		if tc.marker == "<PLAN_ANCHOR_MIXED>" && !strings.Contains(ac0, "[CHECK] file: exists") {
+			t.Fatalf("mixed anchor missing empty-target bad line: %s", ac0)
+		}
+	}
+}

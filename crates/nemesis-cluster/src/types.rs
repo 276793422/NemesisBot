@@ -43,6 +43,10 @@ pub struct ExtendedNodeInfo {
     pub base: NodeInfo,
     pub status: NodeStatus,
     pub capabilities: Vec<String>,
+    /// 自报标签（announce 携带；看板派发匹配器的标签数据源）。
+    /// serde default 兼容缺字段的旧 state.toml。
+    #[serde(default)]
+    pub tags: Vec<String>,
     /// All known addresses for this node (for multi-address failover).
     /// The primary address is stored in `base.address`.
     #[serde(default)]
@@ -114,6 +118,7 @@ impl ExtendedNodeInfo {
             rpc_port: 0,
             role: self.base.role.as_role_str().into(),
             category: self.base.category.clone(),
+            tags: self.tags.clone(),
             priority: 1,
             enabled: true,
             status: PeerStatus {
@@ -148,6 +153,7 @@ impl ExtendedNodeInfo {
             && self.base.category == other.base.category
             && self.status == other.status
             && self.capabilities == other.capabilities
+            && self.tags == other.tags
             && self.addresses == other.addresses
             && self.node_type == other.node_type
     }

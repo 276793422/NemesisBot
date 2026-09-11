@@ -27,7 +27,14 @@ use tokio_tungstenite::tungstenite::Message;
 // Constants
 // ---------------------------------------------------------------------------
 
-const AI_SERVER_PORT: u16 = 8080;
+/// TestAIServer 监听端口。默认 8080；被外部程序占用时用 TESTAI_PORT 环境变量
+/// 整体改道（与 test-harness::ai_server_port 同一语义，本 runner 独立装配）。
+fn ai_server_port() -> u16 {
+    std::env::var("TESTAI_PORT")
+        .ok()
+        .and_then(|v| v.parse::<u16>().ok())
+        .unwrap_or(8080)
+}
 const AUTH_TOKEN: &str = "276793422";
 // All 4 nodes MUST share the same cluster token. RPC frames are AEAD-encrypted
 // (AES-256-GCM) with the token as the key derivation input — a per-node random
@@ -322,7 +329,7 @@ async fn setup_node(ws: &TestWorkspace, bin: &Path, node: &NodeConfig) -> Result
                 "--model",
                 node.model,
                 "--base",
-                &format!("http://127.0.0.1:{}/v1", AI_SERVER_PORT),
+                &format!("http://127.0.0.1:{}/v1", ai_server_port()),
                 "--key",
                 "test-key",
                 "--default",
@@ -894,7 +901,7 @@ async fn main() {
     let all_ports: Vec<u16> = NODES
         .iter()
         .flat_map(|n| vec![n.web_port, n.health_port, n.udp_port, n.rpc_port])
-        .chain(std::iter::once(AI_SERVER_PORT))
+        .chain(std::iter::once(ai_server_port()))
         .collect();
     cleanup_ports(&all_ports);
     println!("  Cleaned {} ports", all_ports.len());
@@ -976,16 +983,22 @@ async fn main() {
     // ------------------------------------------------------------------
     println!("\n--- Phase 5: Start TestAIServer ---");
 
-    let mut ai_server = ManagedProcess::spawn("TestAIServer", &ai_server_bin, &[], &root)
-        .expect("Cannot start TestAIServer");
+    let mut ai_server = ManagedProcess::spawn(
+        "TestAIServer",
+        &ai_server_bin,
+        // 显式传端口（与 ai_server_port() 一致；此前裸启动依赖 Go 默认 8080）
+        &["--port", &ai_server_port().to_string()],
+        &root,
+    )
+    .expect("Cannot start TestAIServer");
 
     match wait_for_http(
-        &format!("http://127.0.0.1:{}/v1/models", AI_SERVER_PORT),
+        &format!("http://127.0.0.1:{}/v1/models", ai_server_port()),
         Duration::from_secs(10),
     )
     .await
     {
-        Ok(_) => println!("  TestAIServer ready on port {}", AI_SERVER_PORT),
+        Ok(_) => println!("  TestAIServer ready on port {}", ai_server_port()),
         Err(e) => {
             eprintln!("ERROR: TestAIServer not ready: {}", e);
             ai_server.kill().await;
@@ -2023,7 +2036,7 @@ async fn main() {
                         "--model",
                         "test/testai-1.2",
                         "--base",
-                        &format!("http://127.0.0.1:{}/v1", AI_SERVER_PORT),
+                        &format!("http://127.0.0.1:{}/v1", ai_server_port()),
                         "--key",
                         "test-key",
                         "--default",
@@ -2196,7 +2209,7 @@ async fn main() {
                         "--model",
                         "test/testai-1.2",
                         "--base",
-                        &format!("http://127.0.0.1:{}/v1", AI_SERVER_PORT),
+                        &format!("http://127.0.0.1:{}/v1", ai_server_port()),
                         "--key",
                         "test-key",
                         "--default",
@@ -2378,7 +2391,7 @@ async fn main() {
                         "--model",
                         "test/testai-1.2",
                         "--base",
-                        &format!("http://127.0.0.1:{}/v1", AI_SERVER_PORT),
+                        &format!("http://127.0.0.1:{}/v1", ai_server_port()),
                         "--key",
                         "test-key",
                         "--default",
@@ -2710,7 +2723,7 @@ async fn main() {
                         "--model",
                         "test/testai-planner-1.0",
                         "--base",
-                        &format!("http://127.0.0.1:{}/v1", AI_SERVER_PORT),
+                        &format!("http://127.0.0.1:{}/v1", ai_server_port()),
                         "--key",
                         "test-key",
                         "--default",
@@ -2735,17 +2748,24 @@ async fn main() {
                 Ok(s) => s,
                 Err(e) => return fail("T21", format!("WS connect to A failed: {e}")),
             };
-            let (parent_id, children, confirm) =
-                match swarm_plan_and_confirm(&mut ws, NODES[0].web_port, "T21SWARMPLANNERMARKER", 60)
-                    .await
-                {
-                    Ok(v) => v,
-                    Err(e) => return fail("T21", e),
-                };
+            let (parent_id, children, confirm) = match swarm_plan_and_confirm(
+                &mut ws,
+                NODES[0].web_port,
+                "T21SWARMPLANNERMARKER",
+                60,
+            )
+            .await
+            {
+                Ok(v) => v,
+                Err(e) => return fail("T21", e),
+            };
 
             // 1. 派发波：3 子单中只派出无依赖的子0；子1/子2 依赖闸暂缓。
             if confirm.get("dispatched").and_then(|v| v.as_u64()) != Some(1) {
-                return fail("T21", format!("派发波应派出 1 张（无依赖子任务）: {confirm}"));
+                return fail(
+                    "T21",
+                    format!("派发波应派出 1 张（无依赖子任务）: {confirm}"),
+                );
             }
             let deferred = confirm
                 .get("deferred")
@@ -2815,18 +2835,18 @@ async fn main() {
                 .and_then(|c| c.as_array())
                 .map(|arr| {
                     // delivery 首评（批次 D）或 ✅ 降级前缀，都算完成写回。
-                    arr.iter()
-                        .any(|c| {
-                            let ctype = c.get("ctype").and_then(|v| v.as_str()).unwrap_or("");
-                            let content =
-                                c.get("content").and_then(|v| v.as_str()).unwrap_or("");
-                            ctype == "delivery"
-                                || content.starts_with("✅ worker 汇报完成")
-                        })
+                    arr.iter().any(|c| {
+                        let ctype = c.get("ctype").and_then(|v| v.as_str()).unwrap_or("");
+                        let content = c.get("content").and_then(|v| v.as_str()).unwrap_or("");
+                        ctype == "delivery" || content.starts_with("✅ worker 汇报完成")
+                    })
                 })
                 .unwrap_or(false);
             if !has_report {
-                return fail("T21", format!("子0 到 in_review 但无 worker 完成评论: {comments}"));
+                return fail(
+                    "T21",
+                    format!("子0 到 in_review 但无 worker 完成评论: {comments}"),
+                );
             }
             pass(
                 "T21",
@@ -2950,10 +2970,7 @@ async fn main() {
     // ==================================================================
 
     /// 拉频道消息（board.channel.messages after_id 游标）。
-    async fn channel_messages(
-        ws: &mut WsStream,
-        channel_id: i64,
-    ) -> Result<Vec<Value>, String> {
+    async fn channel_messages(ws: &mut WsStream, channel_id: i64) -> Result<Vec<Value>, String> {
         let r = ws_api_request(
             ws,
             "board",
@@ -2998,9 +3015,7 @@ async fn main() {
                 in_node = t == "[node]";
                 continue;
             }
-            if in_node
-                && let Some(rest) = t.strip_prefix("id =")
-            {
+            if in_node && let Some(rest) = t.strip_prefix("id =") {
                 let v = rest.trim().trim_matches('"').to_string();
                 if !v.is_empty() {
                     return Some(v);
@@ -3031,7 +3046,7 @@ async fn main() {
                         "--model",
                         "test/testai-1.1",
                         "--base",
-                        &format!("http://127.0.0.1:{}/v1", AI_SERVER_PORT),
+                        &format!("http://127.0.0.1:{}/v1", ai_server_port()),
                         "--key",
                         "test-key",
                         "--default",
@@ -3180,12 +3195,11 @@ async fn main() {
                 Ok(s) => s,
                 Err(e) => return fail("T24", format!("WS connect to A failed: {}", e)),
             };
-            let channels = match ws_api_request(&mut ws, "board", "channel.list", json!({}), 10)
-                .await
-            {
-                Ok(v) => v,
-                Err(e) => return fail("T24", format!("channel.list failed: {e}")),
-            };
+            let channels =
+                match ws_api_request(&mut ws, "board", "channel.list", json!({}), 10).await {
+                    Ok(v) => v,
+                    Err(e) => return fail("T24", format!("channel.list failed: {e}")),
+                };
             let dev_id = channels
                 .get("channels")
                 .and_then(|c| c.as_array())
@@ -3249,10 +3263,7 @@ async fn main() {
                     break;
                 }
             }
-            pass(
-                "T24",
-                "排队 OK：连续两条 @Node-B 都被处理，发言无丢失",
-            )
+            pass("T24", "排队 OK：连续两条 @Node-B 都被处理，发言无丢失")
         })
         .await,
     );
@@ -3275,7 +3286,7 @@ async fn main() {
                         "--model",
                         "test/testai-10.0",
                         "--base",
-                        &format!("http://127.0.0.1:{}/v1", AI_SERVER_PORT),
+                        &format!("http://127.0.0.1:{}/v1", ai_server_port()),
                         "--key",
                         "test-key",
                         "--default",
@@ -3380,9 +3391,14 @@ async fn main() {
             match delivery {
                 Some(c) => {
                     let content = c.get("content").and_then(|v| v.as_str()).unwrap_or("");
-                    let four_sections = ["## 结论", "## 交付物清单", "## 自检结果", "## 风险与未尽事项"]
-                        .iter()
-                        .all(|s| content.contains(s));
+                    let four_sections = [
+                        "## 结论",
+                        "## 交付物清单",
+                        "## 自检结果",
+                        "## 风险与未尽事项",
+                    ]
+                    .iter()
+                    .all(|s| content.contains(s));
                     if !four_sections {
                         return fail(
                             "T25",
@@ -3403,7 +3419,10 @@ async fn main() {
                 }
                 None => fail(
                     "T25",
-                    format!("in_review 但无 ctype=delivery 评论：{}", trunc(&comments.to_string(), 400)),
+                    format!(
+                        "in_review 但无 ctype=delivery 评论：{}",
+                        trunc(&comments.to_string(), 400)
+                    ),
                 ),
             }
         })
@@ -3417,86 +3436,89 @@ async fn main() {
     // 清零，board.sync 从 0 重拉）→ 60s 节拍内补拉命中「@我」→ 入队 →
     // 上行发言。B 保持 testai-10.0（非 [SILENT]）。
     all_results.push(
-        run_test("T26: worker 离线 → 上线 board.sync 补拉（G8）", || async {
-            let mut ws = match ws_connect_gateway(NODES[0].web_port).await {
-                Ok(s) => s,
-                Err(e) => return fail("T26", format!("WS connect to A failed: {}", e)),
-            };
-            let channels = match ws_api_request(&mut ws, "board", "channel.list", json!({}), 10)
-                .await
-            {
-                Ok(v) => v,
-                Err(e) => return fail("T26", format!("channel.list failed: {e}")),
-            };
-            let ops_id = channels
-                .get("channels")
-                .and_then(|c| c.as_array())
-                .and_then(|arr| {
-                    arr.iter()
-                        .find(|c| c.get("name").and_then(|n| n.as_str()) == Some("#qa"))
-                        .and_then(|c| c.get("id").and_then(|i| i.as_i64()))
-                })
-                .ok_or_else(|| "no #qa channel".to_string());
-            let ops_id = match ops_id {
-                Ok(id) => id,
-                Err(e) => return fail("T26", e),
-            };
-            let baseline = match channel_messages(&mut ws, ops_id).await {
-                Ok(m) => m,
-                Err(e) => return fail("T26", e),
-            };
-            let b_node_id = match read_node_runtime_id(&ws_b) {
-                Some(id) => id,
-                None => return fail("T26", "无法从 B 的 peers.toml 读到 [node] id"),
-            };
-            let base_b = agent_posts_of(&baseline, &b_node_id);
-
-            // 1. 杀 B → 确认离线窗口 → @Node-B。
-            gw_b.kill().await;
-            tokio::time::sleep(Duration::from_secs(3)).await;
-            if let Err(e) = ws_api_request(
-                &mut ws,
-                "board",
-                "channel.post",
-                json!({ "channel_id": ops_id, "content": "@Node-B T26OFFLINE 离线补拉验证" }),
-                15,
-            )
-            .await
-            {
-                return fail("T26", format!("channel.post failed: {e}"));
-            }
-
-            // 2. 重启 B → board.sync 60s 节拍补拉 → 发言。
-            gw_b = match start_gateway_and_wait("Gateway-B", &gateway_bin, ws_b.path(), &NODES[1])
-                .await
-            {
-                Ok(g) => g,
-                Err(e) => return fail("T26", e),
-            };
-
-            // 预算：重启就绪 + 首 sync tick ≤60s + agent round + 上行 → 240s。
-            let deadline = tokio::time::Instant::now() + Duration::from_secs(240);
-            loop {
-                if tokio::time::Instant::now() >= deadline {
-                    return fail(
-                        "T26",
-                        "240s 内 Node-B 未补拉处理后发言——board.sync 补拉链路未走通",
-                    );
-                }
-                tokio::time::sleep(Duration::from_secs(5)).await;
-                let msgs = match channel_messages(&mut ws, ops_id).await {
+        run_test(
+            "T26: worker 离线 → 上线 board.sync 补拉（G8）",
+            || async {
+                let mut ws = match ws_connect_gateway(NODES[0].web_port).await {
+                    Ok(s) => s,
+                    Err(e) => return fail("T26", format!("WS connect to A failed: {}", e)),
+                };
+                let channels =
+                    match ws_api_request(&mut ws, "board", "channel.list", json!({}), 10).await {
+                        Ok(v) => v,
+                        Err(e) => return fail("T26", format!("channel.list failed: {e}")),
+                    };
+                let ops_id = channels
+                    .get("channels")
+                    .and_then(|c| c.as_array())
+                    .and_then(|arr| {
+                        arr.iter()
+                            .find(|c| c.get("name").and_then(|n| n.as_str()) == Some("#qa"))
+                            .and_then(|c| c.get("id").and_then(|i| i.as_i64()))
+                    })
+                    .ok_or_else(|| "no #qa channel".to_string());
+                let ops_id = match ops_id {
+                    Ok(id) => id,
+                    Err(e) => return fail("T26", e),
+                };
+                let baseline = match channel_messages(&mut ws, ops_id).await {
                     Ok(m) => m,
                     Err(e) => return fail("T26", e),
                 };
-                if agent_posts_of(&msgs, &b_node_id) > base_b {
-                    break;
+                let b_node_id = match read_node_runtime_id(&ws_b) {
+                    Some(id) => id,
+                    None => return fail("T26", "无法从 B 的 peers.toml 读到 [node] id"),
+                };
+                let base_b = agent_posts_of(&baseline, &b_node_id);
+
+                // 1. 杀 B → 确认离线窗口 → @Node-B。
+                gw_b.kill().await;
+                tokio::time::sleep(Duration::from_secs(3)).await;
+                if let Err(e) = ws_api_request(
+                    &mut ws,
+                    "board",
+                    "channel.post",
+                    json!({ "channel_id": ops_id, "content": "@Node-B T26OFFLINE 离线补拉验证" }),
+                    15,
+                )
+                .await
+                {
+                    return fail("T26", format!("channel.post failed: {e}"));
                 }
-            }
-            pass(
-                "T26",
-                "离线韧性 OK：B 下线窗口的 @ 消息在上线后由 board.sync 补拉处理",
-            )
-        })
+
+                // 2. 重启 B → board.sync 60s 节拍补拉 → 发言。
+                gw_b =
+                    match start_gateway_and_wait("Gateway-B", &gateway_bin, ws_b.path(), &NODES[1])
+                        .await
+                    {
+                        Ok(g) => g,
+                        Err(e) => return fail("T26", e),
+                    };
+
+                // 预算：重启就绪 + 首 sync tick ≤60s + agent round + 上行 → 240s。
+                let deadline = tokio::time::Instant::now() + Duration::from_secs(240);
+                loop {
+                    if tokio::time::Instant::now() >= deadline {
+                        return fail(
+                            "T26",
+                            "240s 内 Node-B 未补拉处理后发言——board.sync 补拉链路未走通",
+                        );
+                    }
+                    tokio::time::sleep(Duration::from_secs(5)).await;
+                    let msgs = match channel_messages(&mut ws, ops_id).await {
+                        Ok(m) => m,
+                        Err(e) => return fail("T26", e),
+                    };
+                    if agent_posts_of(&msgs, &b_node_id) > base_b {
+                        break;
+                    }
+                }
+                pass(
+                    "T26",
+                    "离线韧性 OK：B 下线窗口的 @ 消息在上线后由 board.sync 补拉处理",
+                )
+            },
+        )
         .await,
     );
 
@@ -3510,20 +3532,18 @@ async fn main() {
         run_test("T27: 资产下载 正向/过期/篡改（G9）", || async {
             // gateway --local 的 home = temp/.nemesisbot，workspace 在其下。
             let workspace = ws_a.home().join("workspace");
-            let secret =
-                match nemesis_board::load_or_create_secret(
-                    &nemesis_path::resolve_asset_secret_path_in_workspace(&workspace),
-                ) {
-                    Ok(s) => s,
-                    Err(e) => return fail("T27", format!("asset secret unavailable: {e}")),
-                };
-            let node_url =
-                match std::fs::read_to_string(
-                    nemesis_path::resolve_asset_node_url_path_in_workspace(&workspace),
-                ) {
-                    Ok(u) => u.trim().to_string(),
-                    Err(e) => return fail("T27", format!("node url file unavailable: {e}")),
-                };
+            let secret = match nemesis_board::load_or_create_secret(
+                &nemesis_path::resolve_asset_secret_path_in_workspace(&workspace),
+            ) {
+                Ok(s) => s,
+                Err(e) => return fail("T27", format!("asset secret unavailable: {e}")),
+            };
+            let node_url = match std::fs::read_to_string(
+                nemesis_path::resolve_asset_node_url_path_in_workspace(&workspace),
+            ) {
+                Ok(u) => u.trim().to_string(),
+                Err(e) => return fail("T27", format!("node url file unavailable: {e}")),
+            };
             if node_url.is_empty() {
                 return fail("T27", "node url file 为空（gateway 未落盘 bind 地址）");
             }
@@ -3600,7 +3620,12 @@ async fn main() {
             // 2. 过期 token：HMAC 覆盖 expires_at，须签发时即给负 TTL
             //    （签名合法但已过期 → 走 Expired 分支拒绝）。
             let expired = nemesis_board::issue_asset_bundle(
-                &secret, ref_name, &sha, body.len() as i64, &node_url, -100,
+                &secret,
+                ref_name,
+                &sha,
+                body.len() as i64,
+                &node_url,
+                -100,
             );
             let resp = match client
                 .get(url(&expired.asset_token, expired.expires_at))
@@ -3611,29 +3636,19 @@ async fn main() {
                 Err(e) => return fail("T27", format!("GET(expired) failed: {e}")),
             };
             if !resp.status().is_client_error() {
-                return fail(
-                    "T27",
-                    format!("过期 token 应被拒绝，got {}", resp.status()),
-                );
+                return fail("T27", format!("过期 token 应被拒绝，got {}", resp.status()));
             }
 
             // 3. 篡改 token：改首字符 → HMAC 失配拒绝。
             let mut tampered = bundle.asset_token.clone();
             let first = tampered.as_bytes()[0];
             tampered.replace_range(..1, if first == b'A' { "B" } else { "A" });
-            let resp = match client
-                .get(url(&tampered, bundle.expires_at))
-                .send()
-                .await
-            {
+            let resp = match client.get(url(&tampered, bundle.expires_at)).send().await {
                 Ok(r) => r,
                 Err(e) => return fail("T27", format!("GET(tampered) failed: {e}")),
             };
             if !resp.status().is_client_error() {
-                return fail(
-                    "T27",
-                    format!("篡改 token 应被拒绝，got {}", resp.status()),
-                );
+                return fail("T27", format!("篡改 token 应被拒绝，got {}", resp.status()));
             }
             pass(
                 "T27",
@@ -3670,7 +3685,7 @@ async fn main() {
                         "--model",
                         "test/testai-review-1.0",
                         "--base",
-                        &format!("http://127.0.0.1:{}/v1", AI_SERVER_PORT),
+                        &format!("http://127.0.0.1:{}/v1", ai_server_port()),
                         "--key",
                         "test-key",
                         "--default",
@@ -3984,7 +3999,7 @@ async fn main() {
                         "--model",
                         "test/testai-review-1.0",
                         "--base",
-                        &format!("http://127.0.0.1:{}/v1", AI_SERVER_PORT),
+                        &format!("http://127.0.0.1:{}/v1", ai_server_port()),
                         "--key",
                         "test-key",
                         "--default",
@@ -4010,7 +4025,7 @@ async fn main() {
                         "--model",
                         "test/testai-10.0",
                         "--base",
-                        &format!("http://127.0.0.1:{}/v1", AI_SERVER_PORT),
+                        &format!("http://127.0.0.1:{}/v1", ai_server_port()),
                         "--key",
                         "test-key",
                         "--default",
@@ -4146,7 +4161,7 @@ async fn main() {
                         "--model",
                         "test/testai-planner-1.0",
                         "--base",
-                        &format!("http://127.0.0.1:{}/v1", AI_SERVER_PORT),
+                        &format!("http://127.0.0.1:{}/v1", ai_server_port()),
                         "--key",
                         "test-key",
                         "--default",
@@ -4240,7 +4255,7 @@ async fn main() {
                         "--model",
                         "test/testai-3.1",
                         "--base",
-                        &format!("http://127.0.0.1:{}/v1", AI_SERVER_PORT),
+                        &format!("http://127.0.0.1:{}/v1", ai_server_port()),
                         "--key",
                         "test-key",
                         "--default",
@@ -4326,6 +4341,2166 @@ async fn main() {
                     "集体记忆 OK：①蒸馏入库（issue {distill_issue}，scope=t29auth/pitfall/锚点在）；\
                      ②planner 注入探针 T29PLANEXP 命中（issue {plan_issue}）；\
                      ③派发注入回显 + use_count=1（issue {inject_issue}）"
+                ),
+            )
+        })
+        .await,
+    );
+
+    // T30: 锚点双检 e2e（全自动流转 P2 B1）。
+    //
+    // 两段（模型均显式切换，不依赖前序残留态）：
+    //   ①全过正流：A/B 切 testai-board-1.0（planner/review/讨论组合桩，
+    //     完全复用 planner-1.0/review-1.0 的全部锚点分支）→ 预置 A 评审
+    //     workspace 锚点文件 → 父单标题带 <PLAN_ANCHOR>（planner 按标记
+    //     产出带 [CHECK] 行的子任务 AC）→ swarm_plan_and_confirm 人工
+    //     confirm（auto_confirm 必须为 false，否则 plan 被自动消费）→
+    //     依赖链 0→1→2 逐个派发：B 端 worker（board 模型默认分支固定
+    //     汇报文本）交付 → A 端验收锚点先于 LLM：文件锚点对 A 评审
+    //     workspace 实核、交付文本 re: 锚点对 B 端 delivery 命中 → 全过
+    //     进语义（review 桩 PASS）→ auto_accept 收货 → 父单 auto_close
+    //     收口。断言 per-anchor PASS 摘要评论（计数 + 交付文本命中明细）、
+    //     零 FAIL 评论、全家桶 done。
+    //   ②FAIL 短路：锚点文件缺失的单直接 dispatch → 验收锚点确定性短路
+    //     FAIL（评论含失败目标明细，不进 LLM）→ 重派×2 预算耗尽 → 转人工
+    //     保持 in_review（同 T28① 的处置链，触发源换成客观锚点）。
+    all_results.push(
+        run_test("T30: 锚点双检 e2e：全过正流 + FAIL 短路重派（P2 B1）", || async {
+            // 0. A 切组合模型 + 重启。
+            let out = ws_a
+                .run_cli(
+                    &gateway_bin,
+                    &[
+                        "model",
+                        "add",
+                        "--model",
+                        "test/testai-board-1.0",
+                        "--base",
+                        &format!("http://127.0.0.1:{}/v1", ai_server_port()),
+                        "--key",
+                        "test-key",
+                        "--default",
+                    ],
+                )
+                .await;
+            if !out.success() {
+                return fail("T30", format!("A board model add failed: {}", out.stderr));
+            }
+            gw_a.kill().await;
+            gw_a = match start_gateway_and_wait("Gateway-A", &gateway_bin, ws_a.path(), &NODES[0])
+                .await
+            {
+                Ok(g) => g,
+                Err(e) => return fail("T30", format!("A restart failed: {e}")),
+            };
+            // B 同款（T29③ 把 B 停在 testai-3.1 回声桩上，必须显式切走）。
+            let out = ws_b
+                .run_cli(
+                    &gateway_bin,
+                    &[
+                        "model",
+                        "add",
+                        "--model",
+                        "test/testai-board-1.0",
+                        "--base",
+                        &format!("http://127.0.0.1:{}/v1", ai_server_port()),
+                        "--key",
+                        "test-key",
+                        "--default",
+                    ],
+                )
+                .await;
+            if !out.success() {
+                return fail("T30", format!("B board model add failed: {}", out.stderr));
+            }
+            gw_b.kill().await;
+            gw_b = match start_gateway_and_wait("Gateway-B", &gateway_bin, ws_b.path(), &NODES[1])
+                .await
+            {
+                Ok(g) => g,
+                Err(e) => return fail("T30", format!("B restart failed: {e}")),
+            };
+
+            let mut ws = match ws_connect_gateway(NODES[0].web_port).await {
+                Ok(s) => s,
+                Err(e) => return fail("T30", format!("WS connect to A failed: {e}")),
+            };
+            // 派发计数权威证据（同 T28：BUSY 瞬态按 0 计，终态断言重试）。
+            let db_path = ws_a.home().join("workspace").join("board").join("board.db");
+            let board_store = match nemesis_board::BoardStore::open(&db_path, "NB") {
+                Ok(s) => s,
+                Err(e) => return fail("T30", format!("open board.db: {e}")),
+            };
+            let dispatch_count = |id: i64| -> usize {
+                board_store
+                    .list_dispatches(id)
+                    .map(|v| v.len())
+                    .unwrap_or(0)
+            };
+            async fn comments_text(ws: &mut WsStream, issue_id: i64) -> String {
+                match ws_api_request(
+                    ws,
+                    "board",
+                    "comment.list",
+                    json!({ "issue_id": issue_id }),
+                    10,
+                )
+                .await
+                {
+                    Ok(v) => v
+                        .get("comments")
+                        .and_then(|c| c.as_array())
+                        .map(|arr| {
+                            arr.iter()
+                                .filter_map(|c| c.get("content").and_then(|v| v.as_str()))
+                                .collect::<Vec<_>>()
+                                .join("\n---\n")
+                        })
+                        .unwrap_or_default(),
+                    Err(_) => String::new(),
+                }
+            }
+
+            // 0.5 开关：auto_accept/auto_close 开、auto_confirm 关（①走人工
+            // confirm 两段式；swarm_plan_and_confirm 的显式 confirm 会被
+            // auto_confirm 抢消费）。
+            for (key, value) in [
+                ("plan.auto_confirm", json!(false)),
+                ("auto_accept", json!(true)),
+                ("auto_close_parent", json!(true)),
+                ("unlimited_mode", json!(false)),
+            ] {
+                if let Err(e) = ws_api_request(
+                    &mut ws,
+                    "board",
+                    "config.set",
+                    json!({ "key": key, "value": value }),
+                    10,
+                )
+                .await
+                {
+                    return fail("T30", format!("config.set({key}) failed: {e}"));
+                }
+            }
+
+            // 0.6 预置 A 评审 workspace 锚点文件（①文件锚点实核对象；
+            //     sub1 必须含「锚点测试」——planner pass 计划的 contains 断言）。
+            let ws_root = ws_a.home().join("workspace");
+            for (rel, body) in [
+                ("uat-t2/pass/sub1.md", "# 子任务1 交付\n锚点测试：实施要点与涉及文件已整理。\n"),
+                ("uat-t2/pass/sub2.md", "# 子任务2 交付\n实现说明：核心改动点全部落地。\n"),
+                ("uat-t2/pass/sub3.md", "# 子任务3 交付\n验证结论：检查全部通过。\n"),
+            ] {
+                let p = ws_root.join(rel);
+                if let Some(parent) = p.parent() {
+                    std::fs::create_dir_all(parent).ok();
+                }
+                if let Err(e) = std::fs::write(&p, body) {
+                    return fail("T30", format!("seed {rel} failed: {e}"));
+                }
+            }
+
+            // ---- ① 全过正流：<PLAN_ANCHOR> 计划 → 依赖链 → 锚点全过 → 收口 ----
+            let (parent_id, children, _confirmed) =
+                match swarm_plan_and_confirm(&mut ws, NODES[0].web_port, "<PLAN_ANCHOR>", 60).await
+                {
+                    Ok(v) => v,
+                    Err(e) => return fail("T30", format!("① plan/confirm failed: {e}")),
+                };
+            // 等全家桶 done（3 子单 done + 父单 done）。
+            let deadline = tokio::time::Instant::now() + Duration::from_secs(600);
+            loop {
+                let list = ws_api_request(&mut ws, "board", "issue.list", json!({}), 10)
+                    .await
+                    .ok();
+                let subs_done = list
+                    .as_ref()
+                    .and_then(|d| d.get("issues"))
+                    .and_then(|v| v.as_array())
+                    .map(|arr| {
+                        let subs: Vec<&Value> = arr
+                            .iter()
+                            .filter(|i| {
+                                i.get("parent_issue_id").and_then(|v| v.as_i64())
+                                    == Some(parent_id)
+                            })
+                            .collect();
+                        let st = |i: &Value| -> bool {
+                            i.get("status").and_then(|v| v.as_str()) == Some("done")
+                        };
+                        subs.len() == 3
+                            && subs.iter().all(|i| st(i))
+                            && arr
+                                .iter()
+                                .any(|i| {
+                                    i.get("id").and_then(|v| v.as_i64()) == Some(parent_id)
+                                        && st(i)
+                                })
+                    })
+                    .unwrap_or(false);
+                if subs_done {
+                    break;
+                }
+                if tokio::time::Instant::now() >= deadline {
+                    let pst = issue_status_of(&mut ws, parent_id).await.unwrap_or_default();
+                    return fail(
+                        "T30",
+                        format!(
+                            "①600s 内全家桶未收口（parent='{pst}'）——锚点正流链未走通"
+                        ),
+                    );
+                }
+                tokio::time::sleep(Duration::from_secs(3)).await;
+            }
+            // per-anchor PASS 摘要评论 + 交付文本锚点对 B 端 delivery 命中。
+            for (idx, cid) in children.iter().enumerate() {
+                let t = comments_text(&mut ws, *cid).await;
+                if t.contains("客观锚点检查失败") {
+                    return fail("T30", format!("①子单{} 不应有锚点 FAIL 评论", cid));
+                }
+                let expected = if idx == 0 { "（3 条）" } else { "（1 条）" };
+                if !t.contains("客观锚点检查通过")
+                    || !t.contains(expected)
+                {
+                    return fail(
+                        "T30",
+                        format!("①子单{} 缺 PASS 摘要（{expected}）: {}", cid, trunc(&t, 300)),
+                    );
+                }
+                if idx == 0
+                    && !t.contains("交付文本命中 /集群协作状态正常/")
+                {
+                    return fail(
+                        "T30",
+                        format!("①子单1 交付文本锚点未对 B 端 delivery 命中: {}", trunc(&t, 300)),
+                    );
+                }
+            }
+
+            // ---- ② FAIL 短路：缺文件锚点 → 重派×2 → 预算耗尽转人工 ----
+            let created = match ws_api_request(
+                &mut ws,
+                "board",
+                "issue.create",
+                json!({
+                    "title": "T30ANCHORFAIL 锚点短路 e2e",
+                    "description": "cluster-uat T30②：锚点文件缺失，验收先锚点短路 FAIL。",
+                    "acceptance_criteria": "交付说明文本。\n[CHECK] file:uat-t2/e2e-missing.md exists\n[CHECK] re:集群协作状态正常",
+                }),
+                15,
+            )
+            .await
+            {
+                Ok(v) => v,
+                Err(e) => return fail("T30", format!("②issue.create failed: {e}")),
+            };
+            let fail_issue = created
+                .pointer("/issue/id")
+                .and_then(|v| v.as_i64())
+                .unwrap_or(0);
+            if fail_issue == 0 {
+                return fail("T30", format!("②issue.create 无 id: {created}"));
+            }
+            if let Err(e) = ws_api_request(
+                &mut ws,
+                "board",
+                "issue.dispatch",
+                json!({ "id": fail_issue, "target": "Node-B" }),
+                30,
+            )
+            .await
+            {
+                return fail("T30", format!("②issue.dispatch failed: {e}"));
+            }
+            // 短路 FAIL 评论（含失败目标）→ 预算耗尽转人工。
+            let deadline = tokio::time::Instant::now() + Duration::from_secs(600);
+            loop {
+                if tokio::time::Instant::now() >= deadline {
+                    let n = dispatch_count(fail_issue);
+                    let st = issue_status_of(&mut ws, fail_issue).await.unwrap_or_default();
+                    return fail(
+                        "T30",
+                        format!("②600s 内未收口（dispatch={n}, status='{st}'）——锚点短路或重派链未走通"),
+                    );
+                }
+                tokio::time::sleep(Duration::from_secs(3)).await;
+                let t = comments_text(&mut ws, fail_issue).await;
+                if t.contains("重派预算已耗尽") {
+                    if !t.contains("客观锚点检查失败")
+                        || !t.contains("uat-t2/e2e-missing.md")
+                    {
+                        return fail(
+                            "T30",
+                            format!("②转人工评论应携带锚点失败明细: {}", trunc(&t, 400)),
+                        );
+                    }
+                    break;
+                }
+            }
+            let mut n = dispatch_count(fail_issue);
+            for _ in 0..5 {
+                if n == 3 { break; }
+                tokio::time::sleep(Duration::from_secs(1)).await;
+                n = dispatch_count(fail_issue);
+            }
+            let status = match issue_status_of(&mut ws, fail_issue).await {
+                Ok(s) => s,
+                Err(e) => return fail("T30", format!("②issue.get failed: {e}")),
+            };
+            if n != 3 {
+                return fail("T30", format!("②应重派至 3 次派发（1+2），实际 {n}"));
+            }
+            if status != "in_review" {
+                return fail("T30", format!("②预算耗尽后应保持 in_review，实际 '{status}'"));
+            }
+
+            // 开关复位（本测试是套件末位，防御性恢复默认态）。
+            for (key, value) in [
+                ("plan.auto_confirm", json!(false)),
+                ("auto_accept", json!(false)),
+                ("auto_close_parent", json!(false)),
+                ("unlimited_mode", json!(false)),
+            ] {
+                let _ = ws_api_request(
+                    &mut ws,
+                    "board",
+                    "config.set",
+                    json!({ "key": key, "value": value }),
+                    10,
+                )
+                .await;
+            }
+            pass(
+                "T30",
+                format!(
+                    "锚点双检 OK：①<PLAN_ANCHOR> 三子单链锚点全过（交付文本锚点命中 B 端 delivery）\
+                     → 语义 → 全家桶 done（parent {parent_id}）；\
+                     ②缺文件锚点短路 FAIL → 重派×2 → 预算耗尽转人工（issue {fail_issue}）"
+                ),
+            )
+        })
+        .await,
+    );
+
+    // ==================================================================
+    // T31: autopilot auto_plan 建单→自动拆解→发车 e2e（全自动流转 P3 A1/D2）
+    // ==================================================================
+    //
+    // 前置：T30 已把 A/B 切到 testai-board-1.0（planner/review/讨论组合桩）。
+    // 流程：auto_confirm=true → 建 auto_plan=true 规则（target 空=互斥约束）
+    // → WSAPI autopilot.run（D2 路径：带 moderator 槽/home/hub/集群的
+    // AutoPlanContext）→ 模板建父单 → 后台 plan 链（planner 桩出 3 子任务）
+    // → auto_confirm 自动确认 → 派发波匹配器选节点（B 在线）→ 子单派发。
+    // 断言：run 返回 auto_plan.status=planning；父单 3 子单落库；子单状态
+    // 推进到 in_progress/in_review/done（派发+执行证据）。auto_accept 须同开：
+    // 依赖闸只在子单 done 后放行后续——auto_accept=false 时子0 验收 PASS 停
+    // in_review（人工验收池），子1/子2 永远等不到补派（T31 首跑实测假红）；
+    // 同开后链式推进 0→1→2 全部 done。
+    // 父单有 auto_confirm 发车系统评论。
+    all_results.push(
+        run_test(
+            "T31: autopilot auto_plan 建单→自动拆解→发车（P3 A1/D2）",
+            || async {
+                let mut ws = match ws_connect_gateway(NODES[0].web_port).await {
+                    Ok(s) => s,
+                    Err(e) => return fail("T31", format!("WS connect to A failed: {}", e)),
+                };
+
+                // 0. auto_confirm 开（拆解后自动发车）+ auto_accept 开（验收
+                //    PASS 自动 done，依赖闸放行后续子单——全自动链必需）。
+                for (key, value) in [
+                    ("plan.auto_confirm", json!(true)),
+                    ("auto_accept", json!(true)),
+                ] {
+                    if let Err(e) = ws_api_request(
+                        &mut ws,
+                        "board",
+                        "config.set",
+                        json!({ "key": key, "value": value }),
+                        10,
+                    )
+                    .await
+                    {
+                        return fail("T31", format!("config.set({key}) failed: {e}"));
+                    }
+                }
+
+                // 1. 建 auto_plan 规则（cron 挑远期凌晨，测试窗内不会被 cron 误触；
+                //    触发走显式 autopilot.run——确定性）。
+                let marker = "T31AUTOPLAN";
+                let created = match ws_api_request(
+                    &mut ws,
+                    "board",
+                    "autopilot.create",
+                    json!({
+                        "name": "uat-autopilot-t31",
+                        "cron": "0 3 * * *",
+                        "title": format!("{} 周期单 {{date}}", marker),
+                        "description": "cluster-uat T31 auto_plan 建单自动拆解发车",
+                        "target": "",
+                        "auto_plan": true,
+                    }),
+                    15,
+                )
+                .await
+                {
+                    Ok(v) => v,
+                    Err(e) => return fail("T31", format!("autopilot.create failed: {e}")),
+                };
+                let ap_id = created
+                    .pointer("/autopilot/id")
+                    .and_then(|v| v.as_i64())
+                    .unwrap_or(0);
+                if ap_id == 0 {
+                    return fail("T31", format!("autopilot.create 无 id: {created}"));
+                }
+                if created
+                    .pointer("/autopilot/auto_plan")
+                    .and_then(|v| v.as_bool())
+                    != Some(true)
+                {
+                    return fail(
+                        "T31",
+                        format!(
+                            "autopilot.auto_plan 未落库（应 true）: {}",
+                            trunc(&created.to_string(), 200)
+                        ),
+                    );
+                }
+
+                // 2. 显式 run：返回应带 auto_plan.status=planning（moderator 槽在
+                //    A 主 agent 装配后已填）。
+                let run_out = match ws_api_request(
+                    &mut ws,
+                    "board",
+                    "autopilot.run",
+                    json!({ "id": ap_id }),
+                    15,
+                )
+                .await
+                {
+                    Ok(v) => v,
+                    Err(e) => return fail("T31", format!("autopilot.run failed: {e}")),
+                };
+                let parent_id = run_out
+                    .pointer("/issue_id")
+                    .and_then(|v| v.as_i64())
+                    .unwrap_or(0);
+                if parent_id == 0 {
+                    return fail("T31", format!("autopilot.run 未建单: {run_out}"));
+                }
+                if run_out
+                    .pointer("/auto_plan/status")
+                    .and_then(|v| v.as_str())
+                    != Some("planning")
+                {
+                    return fail(
+                        "T31",
+                        format!(
+                            "auto_plan 应 planning（槽空会 skipped，说明上下文没接通）: {}",
+                            trunc(&run_out.to_string(), 240)
+                        ),
+                    );
+                }
+
+                // 3. 轮询 ≤300s：3 子单落库 + 状态推进（派发+执行证据）。
+                //    auto_accept 同开 → 依赖链 0→1→2 依次 done；轮询条件覆盖
+                //    中间态（in_progress/in_review）与终态（done）。
+                let deadline = tokio::time::Instant::now() + Duration::from_secs(300);
+                let mut subs_state: String;
+                loop {
+                    tokio::time::sleep(Duration::from_secs(3)).await;
+                    let list = ws_api_request(&mut ws, "board", "issue.list", json!({}), 10)
+                        .await
+                        .ok();
+                    let subs: Vec<Value> = list
+                        .as_ref()
+                        .and_then(|d| d.get("issues"))
+                        .and_then(|v| v.as_array())
+                        .map(|arr| {
+                            arr.iter()
+                                .filter(|i| {
+                                    i.get("parent_issue_id").and_then(|v| v.as_i64())
+                                        == Some(parent_id)
+                                })
+                                .cloned()
+                                .collect()
+                        })
+                        .unwrap_or_default();
+                    subs_state = subs
+                        .iter()
+                        .map(|i| {
+                            format!(
+                                "#{}:{}",
+                                i.get("id").and_then(|v| v.as_i64()).unwrap_or(0),
+                                i.get("status").and_then(|v| v.as_str()).unwrap_or("?")
+                            )
+                        })
+                        .collect::<Vec<_>>()
+                        .join(" ");
+                    let all_dispatched = subs.len() == 3
+                        && subs.iter().all(|i| {
+                            matches!(
+                                i.get("status").and_then(|v| v.as_str()),
+                                Some("in_progress") | Some("in_review") | Some("done")
+                            )
+                        });
+                    if all_dispatched {
+                        break;
+                    }
+                    if tokio::time::Instant::now() >= deadline {
+                        return fail(
+                            "T31",
+                            format!(
+                                "300s 内 3 子单未发车（当前 [{subs_state}]）——plan 链或派发波断"
+                            ),
+                        );
+                    }
+                }
+
+                // 4. 父单 auto_confirm 发车系统评论。
+                let comments = ws_api_request(
+                    &mut ws,
+                    "board",
+                    "comment.list",
+                    json!({ "issue_id": parent_id }),
+                    10,
+                )
+                .await
+                .ok()
+                .and_then(|v| v.get("comments").and_then(|c| c.as_array()).cloned())
+                .unwrap_or_default();
+                let ctext: String = comments
+                    .iter()
+                    .filter_map(|c| c.get("content").and_then(|v| v.as_str()))
+                    .collect::<Vec<_>>()
+                    .join("\n");
+                if !ctext.contains("auto_confirm") {
+                    return fail(
+                        "T31",
+                        format!("父单缺 auto_confirm 发车系统评论: {}", trunc(&ctext, 240)),
+                    );
+                }
+
+                // 5. 清理：删规则（防后续窗内 cron 误触）+ 取消全家 + 复位开关。
+                let _ = ws_api_request(
+                    &mut ws,
+                    "board",
+                    "autopilot.remove",
+                    json!({ "id": ap_id }),
+                    10,
+                )
+                .await;
+                let list = ws_api_request(&mut ws, "board", "issue.list", json!({}), 10)
+                    .await
+                    .ok();
+                let ids: Vec<i64> = list
+                    .as_ref()
+                    .and_then(|d| d.get("issues"))
+                    .and_then(|v| v.as_array())
+                    .map(|arr| {
+                        arr.iter()
+                            .filter_map(|i| {
+                                let pid = i.get("parent_issue_id").and_then(|v| v.as_i64());
+                                let id = i.get("id").and_then(|v| v.as_i64())?;
+                                if pid == Some(parent_id) || id == parent_id {
+                                    Some(id)
+                                } else {
+                                    None
+                                }
+                            })
+                            .collect()
+                    })
+                    .unwrap_or_default();
+                for id in ids {
+                    let _ =
+                        ws_api_request(&mut ws, "board", "issue.cancel", json!({ "id": id }), 10)
+                            .await;
+                }
+                for (key, value) in [
+                    ("plan.auto_confirm", json!(false)),
+                    ("auto_accept", json!(false)),
+                ] {
+                    if let Err(e) = ws_api_request(
+                        &mut ws,
+                        "board",
+                        "config.set",
+                        json!({ "key": key, "value": value }),
+                        10,
+                    )
+                    .await
+                    {
+                        return fail(
+                            "T31",
+                            format!("config.set({key}) 复位失败（污染后续）: {e}"),
+                        );
+                    }
+                }
+
+                pass(
+                    "T31",
+                    format!(
+                        "auto_plan OK：规则 {ap_id} run 建父单 {parent_id} → planning → \
+                     3 子单发车（[{subs_state}]）→ auto_confirm 发车评论在"
+                    ),
+                )
+            },
+        )
+        .await,
+    );
+
+    // ==================================================================
+    // T32: 建项目即启动 + 项目状态机 e2e（全自动流转 P3 F1/F2 = UAT-T3-4/T3-5）
+    // ==================================================================
+    //
+    // 前置：T31 后 A/B 仍在 testai-board-1.0，开关已复位。
+    // 流程：auto_confirm+auto_accept 同开（T31 教训：依赖闸要 done）→
+    // project.create（auto_start=true + 验收标准）→ 断言父单即时建出
+    // （auto_start.issue_id，project_id 绑定）且项目 active → 非法转移
+    // active→completed 被 project.update loud 拒绝（F2 转移表）→ plan 链
+    // 自动发车（3 子单派 B）→ 首派成功联动项目 active→in_progress →
+    // 依赖链 0→1→2 全 done → 项目保持 in_progress（completed 只归 F3/P4
+    // 项目级收口，P3 不越级自动 completed）→ 清理（archived 合法转移）。
+    all_results.push(
+        run_test(
+            "T32: 建项目即启动 + 项目状态机（P3 F1/F2）",
+            || async {
+                let mut ws = match ws_connect_gateway(NODES[0].web_port).await {
+                    Ok(s) => s,
+                    Err(e) => return fail("T32", format!("WS connect to A failed: {}", e)),
+                };
+
+                // 0. 开关同 T31：auto_confirm（拆解自动发车）+ auto_accept
+                //    （验收 done 放行依赖闸）。
+                for (key, value) in [
+                    ("plan.auto_confirm", json!(true)),
+                    ("auto_accept", json!(true)),
+                ] {
+                    if let Err(e) = ws_api_request(
+                        &mut ws,
+                        "board",
+                        "config.set",
+                        json!({ "key": key, "value": value }),
+                        10,
+                    )
+                    .await
+                    {
+                        return fail("T32", format!("config.set({key}) failed: {e}"));
+                    }
+                }
+
+                // 1. 建项目即启动：父单应即时返回且项目 active。
+                let created = match ws_api_request(
+                    &mut ws,
+                    "board",
+                    "project.create",
+                    json!({
+                        "name": "T32AUTOSTART 项目",
+                        "description": "cluster-uat T32 建项目自动启动 e2e",
+                        "acceptance_criteria": "全部父单完成。",
+                        "auto_start": true,
+                    }),
+                    15,
+                )
+                .await
+                {
+                    Ok(v) => v,
+                    Err(e) => return fail("T32", format!("project.create failed: {e}")),
+                };
+                let pid = created
+                    .pointer("/project/id")
+                    .and_then(|v| v.as_i64())
+                    .unwrap_or(0);
+                if pid == 0 {
+                    return fail("T32", format!("project.create 无 id: {created}"));
+                }
+                if created.pointer("/project/status").and_then(|v| v.as_str()) != Some("active") {
+                    return fail(
+                        "T32",
+                        format!("新项目应 active: {}", trunc(&created.to_string(), 200)),
+                    );
+                }
+                let parent_id = created
+                    .pointer("/auto_start/issue_id")
+                    .and_then(|v| v.as_i64())
+                    .unwrap_or(0);
+                if parent_id == 0 {
+                    return fail(
+                        "T32",
+                        format!("auto_start 未建父单: {}", trunc(&created.to_string(), 200)),
+                    );
+                }
+
+                // 2. 非法转移 live 拒绝：active→completed 必须被 loud 拒
+                //    （F2 转移表只放行 active→in_progress/archived）。
+                if let Ok(v) = ws_api_request(
+                    &mut ws,
+                    "board",
+                    "project.update",
+                    json!({ "id": pid, "status": "completed" }),
+                    10,
+                )
+                .await
+                {
+                    return fail(
+                        "T32",
+                        format!("active→completed 应被拒绝却成功: {}", trunc(&v.to_string(), 200)),
+                    );
+                }
+
+                // 3. 轮询 ≤300s：父单下 3 子单发车 + 项目 active→in_progress
+                //    （F2 首派联动）→ 依赖链推进全 done。
+                let deadline = tokio::time::Instant::now() + Duration::from_secs(300);
+                let mut subs_state: String;
+                let mut proj_status: String;
+                loop {
+                    tokio::time::sleep(Duration::from_secs(3)).await;
+                    let list = ws_api_request(&mut ws, "board", "issue.list", json!({}), 10)
+                        .await
+                        .ok();
+                    let subs: Vec<Value> = list
+                        .as_ref()
+                        .and_then(|d| d.get("issues"))
+                        .and_then(|v| v.as_array())
+                        .map(|arr| {
+                            arr.iter()
+                                .filter(|i| {
+                                    i.get("parent_issue_id").and_then(|v| v.as_i64())
+                                        == Some(parent_id)
+                                })
+                                .cloned()
+                                .collect()
+                        })
+                        .unwrap_or_default();
+                    subs_state = subs
+                        .iter()
+                        .map(|i| {
+                            format!(
+                                "#{}:{}",
+                                i.get("id").and_then(|v| v.as_i64()).unwrap_or(0),
+                                i.get("status").and_then(|v| v.as_str()).unwrap_or("?")
+                            )
+                        })
+                        .collect::<Vec<_>>()
+                        .join(" ");
+                    proj_status = ws_api_request(&mut ws, "board", "project.list", json!({}), 10)
+                        .await
+                        .ok()
+                        .and_then(|v| {
+                            v.get("projects")
+                                .and_then(|p| p.as_array())
+                                .and_then(|arr| {
+                                    arr.iter().find(|p| {
+                                        p.get("id").and_then(|v| v.as_i64()) == Some(pid)
+                                    })
+                                })
+                                .and_then(|p| {
+                                    p.get("status").and_then(|v| v.as_str()).map(String::from)
+                                })
+                        })
+                        .unwrap_or_else(|| "?".to_string());
+                    let all_done = subs.len() == 3
+                        && subs.iter().all(|i| {
+                            i.get("status").and_then(|v| v.as_str()) == Some("done")
+                        });
+                    let proj_advanced = proj_status == "in_progress" || proj_status == "completed";
+                    if all_done && proj_advanced {
+                        break;
+                    }
+                    if tokio::time::Instant::now() >= deadline {
+                        return fail(
+                            "T32",
+                            format!(
+                                "300s 内项目链未走完（subs [{subs_state}] project={proj_status}）\
+                                 ——auto_start/发车/状态联动断"
+                            ),
+                        );
+                    }
+                }
+                // completed 只归 F3/P4 项目级收口：P3 阶段全 done 后必须仍
+                // in_progress（自动越级 completed = 误判）。
+                if proj_status != "in_progress" {
+                    return fail(
+                        "T32",
+                        format!(
+                            "全 done 后项目应保持 in_progress（completed 归 P4/F3），实际 {proj_status}"
+                        ),
+                    );
+                }
+
+                // 4. 非法转移再验：in_progress→active 拒绝（合法出边只有
+                //    completed/archived）。
+                if let Ok(v) = ws_api_request(
+                    &mut ws,
+                    "board",
+                    "project.update",
+                    json!({ "id": pid, "status": "active" }),
+                    10,
+                )
+                .await
+                {
+                    return fail(
+                        "T32",
+                        format!("in_progress→active 应被拒绝却成功: {}", trunc(&v.to_string(), 200)),
+                    );
+                }
+
+                // 5. 清理：取消全家 + 项目归档（in_progress→archived 合法）
+                //    + 复位开关。
+                let list = ws_api_request(&mut ws, "board", "issue.list", json!({}), 10)
+                    .await
+                    .ok();
+                let mut cancel_ids: Vec<i64> = list
+                    .as_ref()
+                    .and_then(|d| d.get("issues"))
+                    .and_then(|v| v.as_array())
+                    .map(|arr| {
+                        arr.iter()
+                            .filter_map(|i| {
+                                let pp = i.get("parent_issue_id").and_then(|v| v.as_i64());
+                                let id = i.get("id").and_then(|v| v.as_i64())?;
+                                if pp == Some(parent_id) || id == parent_id {
+                                    Some(id)
+                                } else {
+                                    None
+                                }
+                            })
+                            .collect()
+                    })
+                    .unwrap_or_default();
+                cancel_ids.sort_unstable();
+                cancel_ids.dedup();
+                for id in cancel_ids {
+                    let _ =
+                        ws_api_request(&mut ws, "board", "issue.cancel", json!({ "id": id }), 10)
+                            .await;
+                }
+                let _ = ws_api_request(
+                    &mut ws,
+                    "board",
+                    "project.update",
+                    json!({ "id": pid, "status": "archived" }),
+                    10,
+                )
+                .await;
+                for (key, value) in [
+                    ("plan.auto_confirm", json!(false)),
+                    ("auto_accept", json!(false)),
+                ] {
+                    if let Err(e) = ws_api_request(
+                        &mut ws,
+                        "board",
+                        "config.set",
+                        json!({ "key": key, "value": value }),
+                        10,
+                    )
+                    .await
+                    {
+                        return fail(
+                            "T32",
+                            format!("config.set({key}) 复位失败（污染后续）: {e}"),
+                        );
+                    }
+                }
+
+                pass(
+                    "T32",
+                    format!(
+                        "auto_start OK：项目 {pid} 建父单 {parent_id} → 非法转移两次拒绝 → \
+                     3 子单发车全 done（[{subs_state}]）→ 项目 active→in_progress 联动 → \
+                     归档收尾"
+                    ),
+                )
+            },
+        )
+        .await,
+    );
+
+    // ==================================================================
+    // T33: 验收取证二段验收 e2e（全自动流转 P4 B2b）
+    // ==================================================================
+    //
+    // 前置：T30 起 A/B 均在 testai-board-1.0（planner/review/master 组合
+    // 桩），开关已被 T32 复位。
+    // 流程：review.selfcheck + auto_accept 同开 → 建单（AC 带
+    // <REVIEW_NEED_EVIDENCE>）派 Node-B → B 固定汇报 → 自动验收一段判
+    // UNSURE + need_evidence → 评审向 B 发一轮取证（[取证请求
+    // board_selfcheck: 前缀落在 B 既有 board:{n} 会话）→ B 桩回固定取证
+    // 文本（含 <SELFCHK_EVIDENCE_OK>）→ 回调经 SelfcheckRegistry 路由回
+    // issue → 二段验收证据命中 PASS → auto_accept 自动收货 done。
+    // 断言：⏳ 验收暂缓 + 自动收货两条评论、终态 done、派发数恒 1
+    //（取证走 peer_chat 不产生派发行——取证链路不得被计成重派）。
+    all_results.push(
+        run_test("T33: 验收取证二段验收 e2e（P4 B2b）", || async {
+            let mut ws = match ws_connect_gateway(NODES[0].web_port).await {
+                Ok(s) => s,
+                Err(e) => return fail("T33", format!("WS connect to A failed: {e}")),
+            };
+            for (key, value) in [
+                ("review.selfcheck", json!(true)),
+                ("auto_accept", json!(true)),
+                ("unlimited_mode", json!(false)),
+            ] {
+                if let Err(e) = ws_api_request(
+                    &mut ws,
+                    "board",
+                    "config.set",
+                    json!({ "key": key, "value": value }),
+                    10,
+                )
+                .await
+                {
+                    return fail("T33", format!("config.set({key}) failed: {e}"));
+                }
+            }
+            // 派发计数权威证据（同 T30：直接读 A 侧 board.db）。
+            let db_path = ws_a.home().join("workspace").join("board").join("board.db");
+            let board_store = match nemesis_board::BoardStore::open(&db_path, "NB") {
+                Ok(s) => s,
+                Err(e) => return fail("T33", format!("open board.db: {e}")),
+            };
+            async fn comments_text(ws: &mut WsStream, issue_id: i64) -> String {
+                match ws_api_request(
+                    ws,
+                    "board",
+                    "comment.list",
+                    json!({ "issue_id": issue_id }),
+                    10,
+                )
+                .await
+                {
+                    Ok(v) => v
+                        .get("comments")
+                        .and_then(|c| c.as_array())
+                        .map(|arr| {
+                            arr.iter()
+                                .filter_map(|c| c.get("content").and_then(|v| v.as_str()))
+                                .collect::<Vec<_>>()
+                                .join("\n---\n")
+                        })
+                        .unwrap_or_default(),
+                    Err(_) => String::new(),
+                }
+            }
+
+            let created = match ws_api_request(
+                &mut ws,
+                "board",
+                "issue.create",
+                json!({
+                    "title": "T33SELFCHECK 验收取证 e2e",
+                    "description": "cluster-uat T33：验收证据不足 → 向执行节点取证 → 二段验收。",
+                    "acceptance_criteria": "交付说明文本。\n<REVIEW_NEED_EVIDENCE>",
+                }),
+                15,
+            )
+            .await
+            {
+                Ok(v) => v,
+                Err(e) => return fail("T33", format!("issue.create failed: {e}")),
+            };
+            let sc_issue = created
+                .pointer("/issue/id")
+                .and_then(|v| v.as_i64())
+                .unwrap_or(0);
+            if sc_issue == 0 {
+                return fail("T33", format!("issue.create 无 id: {created}"));
+            }
+            if let Err(e) = ws_api_request(
+                &mut ws,
+                "board",
+                "issue.dispatch",
+                json!({ "id": sc_issue, "target": "Node-B" }),
+                30,
+            )
+            .await
+            {
+                return fail("T33", format!("issue.dispatch failed: {e}"));
+            }
+
+            // 轮询 ≤600s：⏳ 挂起评论落 → B 取证回报 → 二段 PASS → 收货 done。
+            let deadline = tokio::time::Instant::now() + Duration::from_secs(600);
+            let (text, n_dispatch) = loop {
+                if tokio::time::Instant::now() >= deadline {
+                    let st = issue_status_of(&mut ws, sc_issue).await.unwrap_or_default();
+                    let n = board_store
+                        .list_dispatches(sc_issue)
+                        .map(|v| v.len())
+                        .unwrap_or(0);
+                    return fail(
+                        "T33",
+                        format!("600s 内取证二段链未收口（status='{st}', dispatch={n}）——取证/二段/收货链断"),
+                    );
+                }
+                tokio::time::sleep(Duration::from_secs(3)).await;
+                let text = comments_text(&mut ws, sc_issue).await;
+                if !text.contains("⏳ 验收暂缓（board.review.selfcheck）") {
+                    continue; // 一段 UNSURE 挂起还没落
+                }
+                let status = issue_status_of(&mut ws, sc_issue).await.unwrap_or_default();
+                if status == "done" {
+                    break (
+                        text,
+                        board_store
+                            .list_dispatches(sc_issue)
+                            .map(|v| v.len())
+                            .unwrap_or(0),
+                    );
+                }
+            };
+            if !text.contains("自动收货") {
+                return fail(
+                    "T33",
+                    format!("终态 done 但缺 auto_accept 收货评论: {}", trunc(&text, 400)),
+                );
+            }
+            if n_dispatch != 1 {
+                return fail(
+                    "T33",
+                    format!("取证链不应产生重派（派发数应恒 1），实际 {n_dispatch}"),
+                );
+            }
+
+            // 复位（T34/T35 不用 selfcheck）。
+            for (key, value) in
+                [("review.selfcheck", json!(false)), ("auto_accept", json!(false))]
+            {
+                let _ = ws_api_request(
+                    &mut ws,
+                    "board",
+                    "config.set",
+                    json!({ "key": key, "value": value }),
+                    10,
+                )
+                .await;
+            }
+            pass(
+                "T33",
+                format!(
+                    "验收取证 OK：issue {sc_issue} 一段 UNSURE+need_evidence → ⏳ 向 Node-B 取证 → \
+                     证据回报（SELFCHK_EVIDENCE_OK）→ 二段 PASS → 自动收货 done（派发数恒 1）"
+                ),
+            )
+        })
+        .await,
+    );
+
+    // ==================================================================
+    // T34: 连续同节点 FAIL 换节点重派 e2e（全自动流转 P4 D3）
+    // ==================================================================
+    //
+    // 前置：A/B 在 testai-board-1.0，C/D 在 testai-3.1 回声桩（对任意输入
+    // 回声——FAIL 由 AC 锚点决定，交付内容与断言无关，能触发写回即可）。
+    // 流程：建单（AC 带 <REVIEW_FAIL>）派 Node-B → FAIL(第 1/2 次重派)
+    // 连续=1 维持同节点重派 B → FAIL(第 2/2 次重派) 连续=2 → 换历史未用过
+    // 的次优节点（C/D 择一）→ FAIL 第 3 轮重派预算(2)耗尽 → 转人工。
+    // 断言：🔁 换节点评论、第 1/2 + 第 2/2 次重派评论、转人工评论、派发
+    // 数=3、末次派发 worker != Node-B、状态 in_review。
+    all_results.push(
+        run_test("T34: 连续同节点 FAIL 换节点重派 e2e（P4 D3）", || async {
+            let mut ws = match ws_connect_gateway(NODES[0].web_port).await {
+                Ok(s) => s,
+                Err(e) => return fail("T34", format!("WS connect to A failed: {e}")),
+            };
+            for (key, value) in
+                [("unlimited_mode", json!(false)), ("auto_accept", json!(false))]
+            {
+                if let Err(e) = ws_api_request(
+                    &mut ws,
+                    "board",
+                    "config.set",
+                    json!({ "key": key, "value": value }),
+                    10,
+                )
+                .await
+                {
+                    return fail("T34", format!("config.set({key}) failed: {e}"));
+                }
+            }
+            let db_path = ws_a.home().join("workspace").join("board").join("board.db");
+            let board_store = match nemesis_board::BoardStore::open(&db_path, "NB") {
+                Ok(s) => s,
+                Err(e) => return fail("T34", format!("open board.db: {e}")),
+            };
+            async fn comments_text(ws: &mut WsStream, issue_id: i64) -> String {
+                match ws_api_request(
+                    ws,
+                    "board",
+                    "comment.list",
+                    json!({ "issue_id": issue_id }),
+                    10,
+                )
+                .await
+                {
+                    Ok(v) => v
+                        .get("comments")
+                        .and_then(|c| c.as_array())
+                        .map(|arr| {
+                            arr.iter()
+                                .filter_map(|c| c.get("content").and_then(|v| v.as_str()))
+                                .collect::<Vec<_>>()
+                                .join("\n---\n")
+                        })
+                        .unwrap_or_default(),
+                    Err(_) => String::new(),
+                }
+            }
+
+            let created = match ws_api_request(
+                &mut ws,
+                "board",
+                "issue.create",
+                json!({
+                    "title": "T34SWITCH 换节点重派 e2e",
+                    "description": "cluster-uat T34：连续同节点 FAIL → 换节点重派。",
+                    "acceptance_criteria": "交付说明文本。\n<REVIEW_FAIL>",
+                }),
+                15,
+            )
+            .await
+            {
+                Ok(v) => v,
+                Err(e) => return fail("T34", format!("issue.create failed: {e}")),
+            };
+            let d3_issue = created
+                .pointer("/issue/id")
+                .and_then(|v| v.as_i64())
+                .unwrap_or(0);
+            if d3_issue == 0 {
+                return fail("T34", format!("issue.create 无 id: {created}"));
+            }
+            if let Err(e) = ws_api_request(
+                &mut ws,
+                "board",
+                "issue.dispatch",
+                json!({ "id": d3_issue, "target": "Node-B" }),
+                30,
+            )
+            .await
+            {
+                return fail("T34", format!("issue.dispatch failed: {e}"));
+            }
+
+            // 轮询 ≤600s：直到重派预算耗尽转人工。
+            let deadline = tokio::time::Instant::now() + Duration::from_secs(600);
+            let text = loop {
+                if tokio::time::Instant::now() >= deadline {
+                    let st = issue_status_of(&mut ws, d3_issue).await.unwrap_or_default();
+                    let n = board_store
+                        .list_dispatches(d3_issue)
+                        .map(|v| v.len())
+                        .unwrap_or(0);
+                    return fail(
+                        "T34",
+                        format!("600s 内未走到预算耗尽转人工（status='{st}', dispatch={n}）——重派链断"),
+                    );
+                }
+                tokio::time::sleep(Duration::from_secs(3)).await;
+                let t = comments_text(&mut ws, d3_issue).await;
+                if t.contains("重派预算已耗尽") {
+                    break t;
+                }
+            };
+            if !text.contains("🔁 连续多轮未通过，本次重派换节点执行 → ") {
+                return fail(
+                    "T34",
+                    format!("连续 2 轮 FAIL 应触发换节点评论: {}", trunc(&text, 400)),
+                );
+            }
+            if !text.contains("第 1/2 次重派") || !text.contains("第 2/2 次重派") {
+                return fail(
+                    "T34",
+                    format!("缺两轮 FAIL 重派评论（第 1/2 + 第 2/2）: {}", trunc(&text, 400)),
+                );
+            }
+            if !text.contains("🤷 验收 agent 无法定案，请人工裁决") {
+                return fail(
+                    "T34",
+                    format!("预算耗尽后应转人工: {}", trunc(&text, 400)),
+                );
+            }
+            let dispatches = board_store.list_dispatches(d3_issue).unwrap_or_default();
+            if dispatches.len() != 3 {
+                return fail(
+                    "T34",
+                    format!("应恰好 3 次派发（1 首派 + 2 重派），实际 {}", dispatches.len()),
+                );
+            }
+            let last_worker = dispatches
+                .last()
+                .map(|d| d.worker_id.clone())
+                .unwrap_or_default();
+            if last_worker == "Node-B" {
+                return fail(
+                    "T34",
+                    format!("连续 2 轮 FAIL 后应换节点执行，末次派发仍落在 Node-B（{last_worker}）"),
+                );
+            }
+            let status = issue_status_of(&mut ws, d3_issue).await.unwrap_or_default();
+            if status != "in_review" {
+                return fail("T34", format!("转人工后应保持 in_review，实际 '{status}'"));
+            }
+            pass(
+                "T34",
+                format!(
+                    "换节点重派 OK：issue {d3_issue} FAIL×2 落 Node-B（第 1/2+第 2/2 次重派）→ \
+                     🔁 换节点 → {last_worker} → 第 3 轮预算耗尽转人工（派发数 3，in_review）"
+                ),
+            )
+        })
+        .await,
+    );
+
+    // ==================================================================
+    // T35: 预算保险丝 e2e（全自动流转 P4 E1）
+    // ==================================================================
+    //
+    // 两段（budget.wall_clock_budget_secs=1 秒墙钟闸贯穿）：
+    //   ①默认模式熔断：建单（AC 带 <REVIEW_FAIL>）→ 建后停 2s 保证墙钟
+    //     必超 → 派 Node-B → 首轮 FAIL 即超预算 → 🛑 停止自动重派转人工。
+    //     断言：🛑 + 超限项 评论、派发数恒 1、状态 in_review。
+    //   ②无限模式降级：unlimited_mode=true → 预算超限降级为 WARN 继续
+    //     （不落 🛑 评论）→ 重派持续；用 auto_review=false 停链（已过闸的
+    //     在飞轮次至多再派 1 次，按计数稳定判定）。断言：派发数 ≥3 且稳定
+    //     不涨、全程无 🛑 评论。
+    all_results.push(
+        run_test("T35: 预算保险丝 e2e（P4 E1）", || async {
+            let mut ws = match ws_connect_gateway(NODES[0].web_port).await {
+                Ok(s) => s,
+                Err(e) => return fail("T35", format!("WS connect to A failed: {e}")),
+            };
+            for (key, value) in [
+                ("budget.wall_clock_budget_secs", json!(1)),
+                ("unlimited_mode", json!(false)),
+                ("auto_accept", json!(false)),
+            ] {
+                if let Err(e) = ws_api_request(
+                    &mut ws,
+                    "board",
+                    "config.set",
+                    json!({ "key": key, "value": value }),
+                    10,
+                )
+                .await
+                {
+                    return fail("T35", format!("config.set({key}) failed: {e}"));
+                }
+            }
+            let db_path = ws_a.home().join("workspace").join("board").join("board.db");
+            let board_store = match nemesis_board::BoardStore::open(&db_path, "NB") {
+                Ok(s) => s,
+                Err(e) => return fail("T35", format!("open board.db: {e}")),
+            };
+            async fn comments_text(ws: &mut WsStream, issue_id: i64) -> String {
+                match ws_api_request(
+                    ws,
+                    "board",
+                    "comment.list",
+                    json!({ "issue_id": issue_id }),
+                    10,
+                )
+                .await
+                {
+                    Ok(v) => v
+                        .get("comments")
+                        .and_then(|c| c.as_array())
+                        .map(|arr| {
+                            arr.iter()
+                                .filter_map(|c| c.get("content").and_then(|v| v.as_str()))
+                                .collect::<Vec<_>>()
+                                .join("\n---\n")
+                        })
+                        .unwrap_or_default(),
+                    Err(_) => String::new(),
+                }
+            }
+            let dispatch_count = |id: i64| -> usize {
+                board_store
+                    .list_dispatches(id)
+                    .map(|v| v.len())
+                    .unwrap_or(0)
+            };
+
+            // ---- ① 墙钟熔断（默认模式）----
+            let created = match ws_api_request(
+                &mut ws,
+                "board",
+                "issue.create",
+                json!({
+                    "title": "T35FUSE1 预算熔断 e2e",
+                    "description": "cluster-uat T35①：墙钟预算超限停止自动重派。",
+                    "acceptance_criteria": "交付说明文本。\n<REVIEW_FAIL>",
+                }),
+                15,
+            )
+            .await
+            {
+                Ok(v) => v,
+                Err(e) => return fail("T35", format!("①issue.create failed: {e}")),
+            };
+            let fuse1 = created
+                .pointer("/issue/id")
+                .and_then(|v| v.as_i64())
+                .unwrap_or(0);
+            if fuse1 == 0 {
+                return fail("T35", format!("①issue.create 无 id: {created}"));
+            }
+            // 建后停 2s：保证评审时 issue 存活必超 1s 墙钟（本地桩链路可能
+            // 秒级走完，不能赌传输耗时）。
+            tokio::time::sleep(Duration::from_secs(2)).await;
+            if let Err(e) = ws_api_request(
+                &mut ws,
+                "board",
+                "issue.dispatch",
+                json!({ "id": fuse1, "target": "Node-B" }),
+                30,
+            )
+            .await
+            {
+                return fail("T35", format!("①issue.dispatch failed: {e}"));
+            }
+            let deadline = tokio::time::Instant::now() + Duration::from_secs(300);
+            loop {
+                if tokio::time::Instant::now() >= deadline {
+                    let st = issue_status_of(&mut ws, fuse1).await.unwrap_or_default();
+                    return fail(
+                        "T35",
+                        format!("①300s 内未熔断（status='{st}', dispatch={}）——预算保险丝未生效", dispatch_count(fuse1)),
+                    );
+                }
+                tokio::time::sleep(Duration::from_secs(3)).await;
+                let t = comments_text(&mut ws, fuse1).await;
+                if t.contains("🛑 自动重派预算超限") {
+                    if !t.contains("超限项：") || !t.contains("wall_clock_budget_secs") {
+                        return fail(
+                            "T35",
+                            format!("①熔断评论应携带超限项明细（墙钟）: {}", trunc(&t, 400)),
+                        );
+                    }
+                    break;
+                }
+            }
+            if dispatch_count(fuse1) != 1 {
+                return fail(
+                    "T35",
+                    format!("①熔断后不应发生重派（派发数应恒 1），实际 {}", dispatch_count(fuse1)),
+                );
+            }
+            let status = issue_status_of(&mut ws, fuse1).await.unwrap_or_default();
+            if status != "in_review" {
+                return fail("T35", format!("①熔断转人工应保持 in_review，实际 '{status}'"));
+            }
+
+            // ---- ② 无限模式：超限降级 WARN 继续，auto_review=false 停链 ----
+            if let Err(e) = ws_api_request(
+                &mut ws,
+                "board",
+                "config.set",
+                json!({ "key": "unlimited_mode", "value": true }),
+                10,
+            )
+            .await
+            {
+                return fail("T35", format!("②config.set(unlimited_mode) failed: {e}"));
+            }
+            let created = match ws_api_request(
+                &mut ws,
+                "board",
+                "issue.create",
+                json!({
+                    "title": "T35FUSE2 无限模式预算降级 e2e",
+                    "description": "cluster-uat T35②：预算超限 WARN 继续重派，无 🛑 评论。",
+                    "acceptance_criteria": "交付说明文本。\n<REVIEW_FAIL>",
+                }),
+                15,
+            )
+            .await
+            {
+                Ok(v) => v,
+                Err(e) => return fail("T35", format!("②issue.create failed: {e}")),
+            };
+            let fuse2 = created
+                .pointer("/issue/id")
+                .and_then(|v| v.as_i64())
+                .unwrap_or(0);
+            if fuse2 == 0 {
+                return fail("T35", format!("②issue.create 无 id: {created}"));
+            }
+            if let Err(e) = ws_api_request(
+                &mut ws,
+                "board",
+                "issue.dispatch",
+                json!({ "id": fuse2, "target": "Node-B" }),
+                30,
+            )
+            .await
+            {
+                return fail("T35", format!("②issue.dispatch failed: {e}"));
+            }
+            // 等重派持续发生（≥3 次派发），然后关 auto_review 停链。
+            let deadline = tokio::time::Instant::now() + Duration::from_secs(600);
+            loop {
+                if tokio::time::Instant::now() >= deadline {
+                    return fail(
+                        "T35",
+                        format!("②600s 内未达 3 次派发（实际 {}）——超限 WARN 继续路径断", dispatch_count(fuse2)),
+                    );
+                }
+                if dispatch_count(fuse2) >= 3 {
+                    break;
+                }
+                tokio::time::sleep(Duration::from_secs(3)).await;
+            }
+            if let Err(e) = ws_api_request(
+                &mut ws,
+                "board",
+                "config.set",
+                json!({ "key": "auto_review", "value": false }),
+                10,
+            )
+            .await
+            {
+                return fail("T35", format!("②config.set(auto_review=false) failed: {e}"));
+            }
+            // 计数稳定判定（在飞轮次至多再派 1 次；连续两采样相等即停稳）。
+            let mut stable = 0;
+            for _ in 0..10 {
+                tokio::time::sleep(Duration::from_secs(6)).await;
+                if dispatch_count(fuse2) == stable {
+                    break;
+                }
+                stable = dispatch_count(fuse2);
+            }
+            let final_n = dispatch_count(fuse2);
+            if final_n < 3 {
+                return fail("T35", format!("②停链后派发数应 ≥3，实际 {final_n}"));
+            }
+            let text = comments_text(&mut ws, fuse2).await;
+            if text.contains("🛑 自动重派预算超限") {
+                return fail(
+                    "T35",
+                    format!("②无限模式下超限应降级 WARN 继续（不落 🛑 评论）: {}", trunc(&text, 400)),
+                );
+            }
+
+            // 复位（套件末位测试，防御性恢复默认态）。
+            for (key, value) in [
+                ("unlimited_mode", json!(false)),
+                ("auto_review", json!(true)),
+                ("budget.wall_clock_budget_secs", json!(0)),
+            ] {
+                let _ = ws_api_request(
+                    &mut ws,
+                    "board",
+                    "config.set",
+                    json!({ "key": key, "value": value }),
+                    10,
+                )
+                .await;
+            }
+            pass(
+                "T35",
+                format!(
+                    "预算保险丝 OK：①墙钟超限即熔断（issue {fuse1} 派发数恒 1，🛑+超限项，in_review）；\
+                     ②无限模式超限 WARN 继续（issue {fuse2} 派发 {final_n} 次无 🛑，auto_review 停链）"
+                ),
+            )
+        })
+        .await,
+    );
+
+    // ==================================================================
+    // T36: 项目级收口验收 e2e（全自动流转 P4 F3 = UAT-T4-5）
+    // ==================================================================
+    //
+    // 两段（auto_close_project=true 贯穿；A/B 在 testai-board-1.0，验收
+    // 桩按 AC 锚点出三态）：
+    //   ①PASS 收口：建项目（AC 无 FAIL 锚点，auto_start=false 手工建单）→
+    //     2 张顶层父单逐一 issue.status=done（backlog→done 合法转移）→
+    //     末张落定时聚合触发 → 汇总验收 PASS → 项目 completed。
+    //   ②FAIL 留痕：建项目（AC 带 <REVIEW_FAIL>）→ 1 张父单 done → 汇总
+    //     验收 FAIL → 缺口评论落父单（🏛 未定案 + 差距）；父单保持 done
+    //     （不自动重开——F3 边界）、项目保持 active（completed→in_progress
+    //     回退臂单测钉死，active 本就不动）。
+    all_results.push(
+        run_test("T36: 项目级收口验收 e2e（P4 F3）", || async {
+            let mut ws = match ws_connect_gateway(NODES[0].web_port).await {
+                Ok(s) => s,
+                Err(e) => return fail("T36", format!("WS connect to A failed: {e}")),
+            };
+            for (key, value) in [
+                ("review.auto_close_project", json!(true)),
+                ("unlimited_mode", json!(false)),
+                ("auto_accept", json!(false)),
+            ] {
+                if let Err(e) = ws_api_request(
+                    &mut ws,
+                    "board",
+                    "config.set",
+                    json!({ "key": key, "value": value }),
+                    10,
+                )
+                .await
+                {
+                    return fail("T36", format!("config.set({key}) failed: {e}"));
+                }
+            }
+            async fn project_status_of(ws: &mut WsStream, pid: i64) -> String {
+                ws_api_request(ws, "board", "project.list", json!({}), 10)
+                    .await
+                    .ok()
+                    .and_then(|v| {
+                        v.get("projects")
+                            .and_then(|p| p.as_array())
+                            .and_then(|arr| {
+                                arr.iter()
+                                    .find(|p| p.get("id").and_then(|v| v.as_i64()) == Some(pid))
+                            })
+                            .and_then(|p| p.get("status").and_then(|v| v.as_str()))
+                            .map(String::from)
+                    })
+                    .unwrap_or_else(|| "?".to_string())
+            }
+
+            // ---- ① PASS 收口 ----
+            let created = match ws_api_request(
+                &mut ws,
+                "board",
+                "project.create",
+                json!({
+                    "name": "T36PASS 项目",
+                    "description": "cluster-uat T36①：全部父单 done → 汇总验收 PASS → completed。",
+                    "acceptance_criteria": "全部父单完成。",
+                    "auto_start": false,
+                }),
+                15,
+            )
+            .await
+            {
+                Ok(v) => v,
+                Err(e) => return fail("T36", format!("①project.create failed: {e}")),
+            };
+            let pid_pass = created
+                .pointer("/project/id")
+                .and_then(|v| v.as_i64())
+                .unwrap_or(0);
+            if pid_pass == 0 {
+                return fail("T36", format!("①project.create 无 id: {created}"));
+            }
+            let mut parents_pass = Vec::new();
+            for k in 1..=2 {
+                let created = match ws_api_request(
+                    &mut ws,
+                    "board",
+                    "issue.create",
+                    json!({
+                        "title": format!("T36PASS 父单{k}"),
+                        "description": "cluster-uat T36① 手工父单。",
+                        "project_id": pid_pass,
+                    }),
+                    15,
+                )
+                .await
+                {
+                    Ok(v) => v,
+                    Err(e) => return fail("T36", format!("①issue.create({k}) failed: {e}")),
+                };
+                let id = created
+                    .pointer("/issue/id")
+                    .and_then(|v| v.as_i64())
+                    .unwrap_or(0);
+                if id == 0 {
+                    return fail("T36", format!("①issue.create({k}) 无 id: {created}"));
+                }
+                parents_pass.push(id);
+            }
+            for id in &parents_pass {
+                if let Err(e) = ws_api_request(
+                    &mut ws,
+                    "board",
+                    "issue.status",
+                    json!({ "id": id, "status": "done" }),
+                    10,
+                )
+                .await
+                {
+                    return fail("T36", format!("①issue.status({id}) failed: {e}"));
+                }
+            }
+            // 轮询 ≤300s：项目 completed（聚合触发 → 汇总 PASS）。
+            let deadline = tokio::time::Instant::now() + Duration::from_secs(300);
+            loop {
+                if tokio::time::Instant::now() >= deadline {
+                    return fail(
+                        "T36",
+                        format!(
+                            "①300s 内项目未 completed（实际 '{}'）——F3 聚合触发/汇总验收断",
+                            project_status_of(&mut ws, pid_pass).await
+                        ),
+                    );
+                }
+                tokio::time::sleep(Duration::from_secs(3)).await;
+                if project_status_of(&mut ws, pid_pass).await == "completed" {
+                    break;
+                }
+            }
+
+            // ---- ② FAIL 留痕不回开 ----
+            let created = match ws_api_request(
+                &mut ws,
+                "board",
+                "project.create",
+                json!({
+                    "name": "T36FAIL 项目",
+                    "description": "cluster-uat T36②：汇总验收 FAIL → 缺口评论，不自动重开父单。",
+                    "acceptance_criteria": "交付说明文本。\n<REVIEW_FAIL>",
+                    "auto_start": false,
+                }),
+                15,
+            )
+            .await
+            {
+                Ok(v) => v,
+                Err(e) => return fail("T36", format!("②project.create failed: {e}")),
+            };
+            let pid_fail = created
+                .pointer("/project/id")
+                .and_then(|v| v.as_i64())
+                .unwrap_or(0);
+            if pid_fail == 0 {
+                return fail("T36", format!("②project.create 无 id: {created}"));
+            }
+            let created = match ws_api_request(
+                &mut ws,
+                "board",
+                "issue.create",
+                json!({
+                    "title": "T36FAIL 父单1",
+                    "description": "cluster-uat T36② 手工父单。",
+                    "project_id": pid_fail,
+                }),
+                15,
+            )
+            .await
+            {
+                Ok(v) => v,
+                Err(e) => return fail("T36", format!("②issue.create failed: {e}")),
+            };
+            let parent_fail = created
+                .pointer("/issue/id")
+                .and_then(|v| v.as_i64())
+                .unwrap_or(0);
+            if parent_fail == 0 {
+                return fail("T36", format!("②issue.create 无 id: {created}"));
+            }
+            if let Err(e) = ws_api_request(
+                &mut ws,
+                "board",
+                "issue.status",
+                json!({ "id": parent_fail, "status": "done" }),
+                10,
+            )
+            .await
+            {
+                return fail("T36", format!("②issue.status failed: {e}"));
+            }
+            // 轮询 ≤300s：缺口评论（🏛 未定案 + 差距）落父单。
+            let deadline = tokio::time::Instant::now() + Duration::from_secs(300);
+            loop {
+                if tokio::time::Instant::now() >= deadline {
+                    return fail("T36", "②300s 内缺口评论未落父单——F3 FAIL 留痕断");
+                }
+                tokio::time::sleep(Duration::from_secs(3)).await;
+                let got = ws_api_request(
+                    &mut ws,
+                    "board",
+                    "comment.list",
+                    json!({ "issue_id": parent_fail }),
+                    10,
+                )
+                .await
+                .ok()
+                .and_then(|v| {
+                    v.get("comments")
+                        .and_then(|c| c.as_array())
+                        .map(|arr| {
+                            arr.iter()
+                                .filter_map(|c| c.get("content").and_then(|v| v.as_str()))
+                                .collect::<Vec<_>>()
+                                .join("\n---\n")
+                        })
+                })
+                .unwrap_or_default();
+                if got.contains("收口验收未定案") {
+                    if !got.contains("差距：") || !got.contains("T28 差距锚点") {
+                        return fail(
+                            "T36",
+                            format!("②缺口评论应携带差距明细: {}", trunc(&got, 400)),
+                        );
+                    }
+                    break;
+                }
+            }
+            // 不自动重开：父单保持 done；项目 active 不回退（completed 才回
+            // 退，回退臂单测钉死）。
+            let pst = issue_status_of(&mut ws, parent_fail).await.unwrap_or_default();
+            if pst != "done" {
+                return fail("T36", format!("②父单应保持 done（F3 不自动重开），实际 '{pst}'"));
+            }
+            let proj = project_status_of(&mut ws, pid_fail).await;
+            if proj != "active" {
+                return fail("T36", format!("②FAIL 后项目应保持 active，实际 '{proj}'"));
+            }
+
+            // 复位。
+            let _ = ws_api_request(
+                &mut ws,
+                "board",
+                "config.set",
+                json!({ "key": "review.auto_close_project", "value": false }),
+                10,
+            )
+            .await;
+            pass(
+                "T36",
+                format!(
+                    "项目收口 OK：①项目 {pid_pass} 全父单 done → 汇总 PASS → completed；\
+                     ②项目 {pid_fail} FAIL → 缺口评论落父单（差距锚点命中），父单保持 done、项目保持 active"
+                ),
+            )
+        })
+        .await,
+    );
+
+    // ==================================================================
+    // T37: worker 用量回传 + 审计回滚 + token 预算闸 e2e（全自动流转 P5 E1 二期/E2）
+    // ==================================================================
+    //
+    // 前置：A/B 在 testai-board-10 组合桩（同 T33-T36 尾态）；桩非流式
+    // 响应带真实 usage（prompt=countTokens>0）→ B 端 request_logs 有
+    // 非零 token → 回传 delta 非零。
+    // ①usage 回传：普通单派 Node-B → B 执行 → 回调带 usage → master
+    //   记账（session_key=cluster_rpc:{worker}/{task_id} 精确键、
+    //   model=cluster_delegate:*、provider=cluster、input+output>0）。
+    //   断言直读 A 侧账本（workspace/data/nemesisbot_data.db，同 T33
+    //   直读 board.db 的权威证据纪律）。
+    // ②审计回滚 happy path：auto_accept 开 → PASS 自动收货 done →
+    //   audit.list 过滤 auto_decide → audit.rollback done→in_review +
+    //   系统评论 → 再回滚诚实拒绝（仅 done 可回滚）。
+    // ③token 预算闸跨机：budget.max_tokens_per_parent=1 + <REVIEW_FAIL>
+    //   → 首轮 FAIL 进重派路径 → token 维超限 → 🛑 停转人工，不重派
+    //   （派发数恒 1）。
+    all_results.push(
+        run_test("T37: 用量回传+审计回滚+token 预算闸 e2e（P5 E1 二期/E2）", || async {
+            let mut ws = match ws_connect_gateway(NODES[0].web_port).await {
+                Ok(s) => s,
+                Err(e) => return fail("T37", format!("WS connect to A failed: {e}")),
+            };
+            for (key, value) in [
+                ("auto_accept", json!(false)),
+                ("unlimited_mode", json!(false)),
+                ("budget.max_tokens_per_parent", json!(0)),
+            ] {
+                if let Err(e) = ws_api_request(
+                    &mut ws,
+                    "board",
+                    "config.set",
+                    json!({ "key": key, "value": value }),
+                    10,
+                )
+                .await
+                {
+                    return fail("T37", format!("config.set({key}) failed: {e}"));
+                }
+            }
+            let db_path = ws_a.home().join("workspace").join("board").join("board.db");
+            let board_store = match nemesis_board::BoardStore::open(&db_path, "NB") {
+                Ok(s) => s,
+                Err(e) => return fail("T37", format!("open board.db: {e}")),
+            };
+            // A 侧用量账本（master 记账落点；gateway Step 9b 同一路径）。
+            let ledger_path = ws_a
+                .home()
+                .join("workspace")
+                .join("data")
+                .join("nemesisbot_data.db");
+            let ledger = match nemesis_data::DataStore::open(&ledger_path) {
+                Ok(s) => s,
+                Err(e) => return fail("T37", format!("open nemesisbot_data.db: {e}")),
+            };
+
+            // ---- ① usage 回传 + master 记账 ----
+            let created = match ws_api_request(
+                &mut ws,
+                "board",
+                "issue.create",
+                json!({
+                    "title": "T37USAGE 用量回传",
+                    "description": "cluster-uat T37①：worker 回调携带 usage，master 记账可查。"
+                }),
+                15,
+            )
+            .await
+            {
+                Ok(v) => v,
+                Err(e) => return fail("T37", format!("①issue.create failed: {e}")),
+            };
+            let usage_issue = created
+                .pointer("/issue/id")
+                .and_then(|v| v.as_i64())
+                .unwrap_or(0);
+            if usage_issue == 0 {
+                return fail("T37", format!("①issue.create 无 id: {created}"));
+            }
+            if let Err(e) = ws_api_request(
+                &mut ws,
+                "board",
+                "issue.dispatch",
+                json!({ "id": usage_issue, "target": "Node-B" }),
+                30,
+            )
+            .await
+            {
+                return fail("T37", format!("①issue.dispatch failed: {e}"));
+            }
+            // 轮询 ≤300s 等 B 完成回调（写回 in_review 即回调已收）。
+            let deadline = tokio::time::Instant::now() + Duration::from_secs(300);
+            loop {
+                if tokio::time::Instant::now() >= deadline {
+                    let st = issue_status_of(&mut ws, usage_issue).await.unwrap_or_default();
+                    return fail("T37", format!("①300s 内回调未收（status='{st}'）——回传链断"));
+                }
+                tokio::time::sleep(Duration::from_secs(3)).await;
+                if issue_status_of(&mut ws, usage_issue).await.unwrap_or_default() == "in_review" {
+                    break;
+                }
+            }
+            let dispatches = board_store
+                .list_dispatches(usage_issue)
+                .unwrap_or_default();
+            let Some(disp) = dispatches.last() else {
+                return fail("T37", "①无派发记录");
+            };
+            // 记账键形态 `cluster_rpc:{worker}/{task_id}`：worker 段 = 运行时
+            // 节点 id（传输层 _rpc.from），派发记录存的是 peer 名（Node-B）——
+            // 两者不同源，per-task 唯一性锚定 task_id（UUID），worker 段只断
+            // 非空（首跑空段 bug 的回归位）。
+            let task_suffix = format!("/{}", disp.task_id);
+            let min_key_len = "cluster_rpc:".len() + 1 + task_suffix.len();
+            let filter = nemesis_data::LogFilter {
+                model: None,
+                status: None,
+                session_key: Some(disp.task_id.clone()),
+            };
+            let (logs, total) = ledger
+                .query_logs(0, i64::MAX, 1, 100, &filter)
+                .unwrap_or((Vec::new(), 0));
+            let hit = logs.iter().find(|l| {
+                l.session_key.starts_with("cluster_rpc:")
+                    && l.session_key.len() >= min_key_len
+                    && l.session_key.ends_with(&task_suffix)
+            });
+            match hit {
+                Some(l)
+                    if l.model.starts_with("cluster_delegate:")
+                        && l.provider_type == "cluster"
+                        && l.input_tokens + l.output_tokens > 0 =>
+                {
+                    pass(
+                        "T37",
+                        format!(
+                            "①用量回传 OK：{} → model={} in={} out={}（账本共 {total} 条命中 task_id）",
+                            l.session_key, l.model, l.input_tokens, l.output_tokens
+                        ),
+                    );
+                }
+                Some(l) => {
+                    return fail(
+                        "T37",
+                        format!(
+                            "①记账行字段不符：key={} model={} provider={} in={} out={}",
+                            l.session_key, l.model, l.provider_type, l.input_tokens, l.output_tokens
+                        ),
+                    );
+                }
+                None => {
+                    return fail(
+                        "T37",
+                        format!("①master 账本无 cluster_rpc:*{task_suffix} 形态记账行（命中 {total} 条 task_id 子串）——回传/记账断"),
+                    );
+                }
+            }
+
+            // ---- ② 审计回滚 happy path ----
+            if let Err(e) = ws_api_request(
+                &mut ws,
+                "board",
+                "config.set",
+                json!({ "key": "auto_accept", "value": true }),
+                10,
+            )
+            .await
+            {
+                return fail("T37", format!("②config.set(auto_accept) failed: {e}"));
+            }
+            let created = match ws_api_request(
+                &mut ws,
+                "board",
+                "issue.create",
+                json!({
+                    "title": "T37AUDIT 审计回滚",
+                    "description": "cluster-uat T37②：PASS 自动收货 → 决策流可回滚。"
+                }),
+                15,
+            )
+            .await
+            {
+                Ok(v) => v,
+                Err(e) => return fail("T37", format!("②issue.create failed: {e}")),
+            };
+            let audit_issue = created
+                .pointer("/issue/id")
+                .and_then(|v| v.as_i64())
+                .unwrap_or(0);
+            if audit_issue == 0 {
+                return fail("T37", format!("②issue.create 无 id: {created}"));
+            }
+            if let Err(e) = ws_api_request(
+                &mut ws,
+                "board",
+                "issue.dispatch",
+                json!({ "id": audit_issue, "target": "Node-B" }),
+                30,
+            )
+            .await
+            {
+                return fail("T37", format!("②issue.dispatch failed: {e}"));
+            }
+            // 轮询 ≤600s 等 PASS 自动收货 done。
+            let deadline = tokio::time::Instant::now() + Duration::from_secs(600);
+            loop {
+                if tokio::time::Instant::now() >= deadline {
+                    let st = issue_status_of(&mut ws, audit_issue).await.unwrap_or_default();
+                    return fail("T37", format!("②600s 内未自动收货（status='{st}'）——验收/收货链断"));
+                }
+                tokio::time::sleep(Duration::from_secs(3)).await;
+                if issue_status_of(&mut ws, audit_issue).await.unwrap_or_default() == "done" {
+                    break;
+                }
+            }
+            // 决策流里找本单的 auto_accept 决策。
+            let audit_list = ws_api_request(
+                &mut ws,
+                "board",
+                "audit.list",
+                json!({ "limit": 50, "action": "auto_decide" }),
+                10,
+            )
+            .await
+            .ok()
+            .unwrap_or_default();
+            let activity_id = audit_list
+                .get("decisions")
+                .and_then(|v| v.as_array())
+                .and_then(|rows| {
+                    rows.iter()
+                        .find(|r| {
+                            r.get("issue_id").and_then(|v| v.as_i64()) == Some(audit_issue)
+                                && r.get("details")
+                                    .and_then(|v| v.as_str())
+                                    .is_some_and(|s| s.contains("auto_accept"))
+                        })
+                        .and_then(|r| r.get("id").and_then(|v| v.as_i64()))
+                });
+            let Some(activity_id) = activity_id else {
+                return fail(
+                    "T37",
+                    format!("②决策流无本单 auto_accept 决策: {audit_list}"),
+                );
+            };
+            // 回滚：done → in_review + 系统评论。
+            let rolled = match ws_api_request(
+                &mut ws,
+                "board",
+                "audit.rollback",
+                json!({ "activity_id": activity_id }),
+                10,
+            )
+            .await
+            {
+                Ok(v) => v,
+                Err(e) => return fail("T37", format!("②audit.rollback failed: {e}")),
+            };
+            if rolled.get("rolled_back").and_then(|v| v.as_bool()) != Some(true) {
+                return fail("T37", format!("②rollback 未生效: {rolled}"));
+            }
+            let st = issue_status_of(&mut ws, audit_issue).await.unwrap_or_default();
+            if st != "in_review" {
+                return fail("T37", format!("②回滚后应 in_review，实际 '{st}'"));
+            }
+            let comments = ws_api_request(
+                &mut ws,
+                "board",
+                "comment.list",
+                json!({ "issue_id": audit_issue }),
+                10,
+            )
+            .await
+            .ok()
+            .and_then(|v| {
+                v.get("comments")
+                    .and_then(|c| c.as_array())
+                    .map(|arr| {
+                        arr.iter()
+                            .filter_map(|c| c.get("content").and_then(|v| v.as_str()))
+                            .collect::<Vec<_>>()
+                            .join("\n---\n")
+                    })
+            })
+            .unwrap_or_default();
+            if !comments.contains("审计回滚") {
+                return fail("T37", format!("②缺审计回滚系统评论: {}", trunc(&comments, 300)));
+            }
+            // 再回滚：已非 done → 诚实拒绝。
+            let roll_again = ws_api_request(
+                &mut ws,
+                "board",
+                "audit.rollback",
+                json!({ "activity_id": activity_id }),
+                10,
+            )
+            .await;
+            match roll_again {
+                Err(e) if e.to_string().contains("仅支持回滚已自动收货") => {}
+                other => {
+                    return fail(
+                        "T37",
+                        format!("②再回滚应拒绝（仅 done 可回滚），实际 {other:?}"),
+                    );
+                }
+            }
+            let _ = ws_api_request(
+                &mut ws,
+                "board",
+                "config.set",
+                json!({ "key": "auto_accept", "value": false }),
+                10,
+            )
+            .await;
+            pass(
+                "T37",
+                format!(
+                    "②审计回滚 OK：issue {audit_issue} auto_accept 决策（activity {activity_id}）\
+                     → 回滚 in_review + 系统评论 → 再回滚诚实拒绝"
+                ),
+            );
+
+            // ---- ③ token 预算闸跨机 ----
+            if let Err(e) = ws_api_request(
+                &mut ws,
+                "board",
+                "config.set",
+                json!({ "key": "budget.max_tokens_per_parent", "value": 1 }),
+                10,
+            )
+            .await
+            {
+                return fail("T37", format!("③config.set(max_tokens) failed: {e}"));
+            }
+            let created = match ws_api_request(
+                &mut ws,
+                "board",
+                "issue.create",
+                json!({
+                    "title": "T37BUDGET token 预算闸",
+                    "description": "cluster-uat T37③：FAIL 重派路径上 token 维超限 → 停转人工。",
+                    "acceptance_criteria": "交付说明文本。\n<REVIEW_FAIL>"
+                }),
+                15,
+            )
+            .await
+            {
+                Ok(v) => v,
+                Err(e) => return fail("T37", format!("③issue.create failed: {e}")),
+            };
+            let budget_issue = created
+                .pointer("/issue/id")
+                .and_then(|v| v.as_i64())
+                .unwrap_or(0);
+            if budget_issue == 0 {
+                return fail("T37", format!("③issue.create 无 id: {created}"));
+            }
+            if let Err(e) = ws_api_request(
+                &mut ws,
+                "board",
+                "issue.dispatch",
+                json!({ "id": budget_issue, "target": "Node-B" }),
+                30,
+            )
+            .await
+            {
+                return fail("T37", format!("③issue.dispatch failed: {e}"));
+            }
+            // 轮询 ≤300s：🛑 预算超限评论落单（FAIL → 重派路径 → token 维熔断）。
+            let deadline = tokio::time::Instant::now() + Duration::from_secs(300);
+            loop {
+                if tokio::time::Instant::now() >= deadline {
+                    let n = board_store
+                        .list_dispatches(budget_issue)
+                        .map(|v| v.len())
+                        .unwrap_or(0);
+                    return fail(
+                        "T37",
+                        format!("③300s 内预算超限评论未落——token 闸断（dispatch={n}）"),
+                    );
+                }
+                tokio::time::sleep(Duration::from_secs(3)).await;
+                let got = ws_api_request(
+                    &mut ws,
+                    "board",
+                    "comment.list",
+                    json!({ "issue_id": budget_issue }),
+                    10,
+                )
+                .await
+                .ok()
+                .and_then(|v| {
+                    v.get("comments")
+                        .and_then(|c| c.as_array())
+                        .map(|arr| {
+                            arr.iter()
+                                .filter_map(|c| c.get("content").and_then(|v| v.as_str()))
+                                .collect::<Vec<_>>()
+                                .join("\n---\n")
+                        })
+                })
+                .unwrap_or_default();
+                if got.contains("自动重派预算超限") && got.contains("max_tokens_per_parent") {
+                    let n = board_store
+                        .list_dispatches(budget_issue)
+                        .map(|v| v.len())
+                        .unwrap_or(0);
+                    if n != 1 {
+                        return fail(
+                            "T37",
+                            format!("③token 闸熔断后不应重派（派发数应恒 1），实际 {n}"),
+                        );
+                    }
+                    break;
+                }
+            }
+            let _ = ws_api_request(
+                &mut ws,
+                "board",
+                "config.set",
+                json!({ "key": "budget.max_tokens_per_parent", "value": 0 }),
+                10,
+            )
+            .await;
+            pass(
+                "T37",
+                format!(
+                    "T37 全链 OK：worker usage 跨机回传记账 + 审计回滚 happy path + token 预算闸熔断（issue {budget_issue} 派发数恒 1）"
                 ),
             )
         })

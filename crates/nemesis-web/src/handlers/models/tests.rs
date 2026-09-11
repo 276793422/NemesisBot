@@ -281,6 +281,7 @@ fn list_attaches_extras_and_catalog_match() {
         proxy: String::new(),
         auth_method: String::new(),
         connect_mode: String::new(),
+        protocol: String::new(),
         workspace: String::new(),
         reasoning_effort: String::new(),
         extra: Default::default(),
@@ -293,6 +294,7 @@ fn list_attaches_extras_and_catalog_match() {
         proxy: String::new(),
         auth_method: String::new(),
         connect_mode: String::new(),
+        protocol: String::new(),
         workspace: String::new(),
         reasoning_effort: String::new(),
         extra: Default::default(),
@@ -731,4 +733,204 @@ fn list_key_source_covers_all_four_kinds() {
     // ref 字段不能叫 "reference"（serde rename 钉住 wire 契约）。
     assert!(models[0]["key_source"].get("ref").is_some());
     assert!(models[0]["key_source"].get("reference").is_none());
+}
+
+// --- 回归锁（2026-09-11 生产实证）：set_default 运行时热切参数与启动路径同源 ---
+//
+// 此前直接拿裸 model 字段当 llm_ref/模型名：无斜杠名被 factory 默认
+// provider=openai → CodexProvider（POST /responses + 重映射 gpt-5.2，
+// 第三方 OpenAI 兼容端点全灭）；带 yaml:/env: 引用的 api_key 被当字面量
+// 发送。canonical_swap_params 现在统一走 resolve_model_config（provider
+// 前缀化 + 去前缀模型名 + 引用解析 + api_base 默认推断）。
+
+#[test]
+fn canonical_swap_params_bare_model_name_gets_provider_prefix() {
+    let dir = tempfile::tempdir().unwrap();
+    write_config(
+        dir.path(),
+        r#"{ "model_list": [
+            { "model_name": "bm", "model": "glm-5.3-flash", "api_key": "GLM", "api_base": "http://127.0.0.1:15721" }
+        ] }"#,
+    );
+    let raw = read_config_raw(dir.path());
+    let swap = ModelsHandler::canonical_swap_params(&raw, "bm").unwrap();
+    // 裸名按 infer 补前缀 → factory 落 HttpCompat（chat/completions）而非 Codex。
+    assert_eq!(swap.llm_ref, "zhipu/glm-5.3-flash");
+    assert_eq!(swap.model, "glm-5.3-flash");
+    assert_eq!(swap.api_key, "GLM");
+    assert_eq!(
+        swap.api_base, "http://127.0.0.1:15721",
+        "显式 api_base 原样保留"
+    );
+    assert_eq!(swap.protocol, "", "条目未写 protocol → 空 = 自动推断");
+}
+
+#[test]
+fn canonical_swap_params_prefixed_model_strips_provider() {
+    let dir = tempfile::tempdir().unwrap();
+    write_config(
+        dir.path(),
+        r#"{ "model_list": [
+            { "model_name": "pm", "model": "deepseek/deepseek-v4-flash", "api_key": "sk" }
+        ] }"#,
+    );
+    let raw = read_config_raw(dir.path());
+    let swap = ModelsHandler::canonical_swap_params(&raw, "pm").unwrap();
+    assert_eq!(swap.llm_ref, "deepseek/deepseek-v4-flash");
+    // 请求体模型名必须是去前缀形态（与启动路径同源），不是 "deepseek/..."。
+    assert_eq!(swap.model, "deepseek-v4-flash");
+    assert_eq!(
+        swap.api_base, "https://api.deepseek.com/v1",
+        "api_base 空时按 provider 推断默认 base"
+    );
+}
+
+#[test]
+fn canonical_swap_params_passes_explicit_protocol() {
+    let dir = tempfile::tempdir().unwrap();
+    write_config(
+        dir.path(),
+        r#"{ "model_list": [
+            { "model_name": "glm", "model": "glm-5.3-flash", "api_key": "GLM", "api_base": "http://127.0.0.1:15721", "protocol": " Claude " }
+        ] }"#,
+    );
+    let raw = read_config_raw(dir.path());
+    let swap = ModelsHandler::canonical_swap_params(&raw, "glm").unwrap();
+    // 显式协议归一（trim+lowercase）透传——LLM 协议选择器的核心链路。
+    assert_eq!(swap.protocol, "claude");
+    // provider 前缀推断照旧（glm→zhipu），protocol 只钉 wire 协议。
+    assert_eq!(swap.llm_ref, "zhipu/glm-5.3-flash");
+}
+
+#[test]
+fn canonical_swap_params_unknown_name_errors_loud() {
+    let dir = tempfile::tempdir().unwrap();
+    write_config(
+        dir.path(),
+        r#"{ "model_list": [
+            { "model_name": "bm", "model": "glm-5.3-flash", "api_key": "GLM" }
+        ] }"#,
+    );
+    let raw = read_config_raw(dir.path());
+    let err = ModelsHandler::canonical_swap_params(&raw, "nope").unwrap_err();
+    assert!(err.contains("nope"), "got: {err}");
+}
+
+// --- LLM 协议选择器（2026-09-11）：add / update_field 的 protocol 契约 ---
+
+#[test]
+fn add_persists_protocol_and_normalizes_alias() {
+    let dir = tempfile::tempdir().unwrap();
+    write_config(dir.path(), SEED);
+    let h = ModelsHandler::new();
+
+    // claude 别名归一为 anthropic。
+    h.add(
+        &home_str(&dir),
+        &serde_json::json!({
+            "name": "glm", "model": "glm-5.3-flash", "key": "GLM",
+            "base_url": "http://127.0.0.1:15721", "protocol": "claude"
+        }),
+    )
+    .unwrap()
+    .unwrap();
+    let new = read_config_raw(dir.path())["model_list"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|m| m["model_name"] == "glm")
+        .unwrap()
+        .clone();
+    assert_eq!(new["protocol"], "anthropic", "claude 别名必须归一");
+    // 兄弟条目不被塞 protocol 键。
+    assert!(
+        read_config_raw(dir.path())["model_list"][0]
+            .get("protocol")
+            .is_none()
+    );
+}
+
+#[test]
+fn add_without_protocol_stays_empty_and_invalid_rejected() {
+    let dir = tempfile::tempdir().unwrap();
+    write_config(dir.path(), SEED);
+    let h = ModelsHandler::new();
+
+    // 缺省 = 自动推断（空串落盘，与其他默认空字段一致）。
+    h.add(
+        &home_str(&dir),
+        &serde_json::json!({ "name": "auto1", "model": "zhipu/glm-4.7", "key": "k" }),
+    )
+    .unwrap()
+    .unwrap();
+    let new = read_config_raw(dir.path())["model_list"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|m| m["model_name"] == "auto1")
+        .unwrap()
+        .clone();
+    assert_eq!(new["protocol"], "");
+
+    // 未知值 loud 拒绝，不落盘。
+    let err = h
+        .add(
+            &home_str(&dir),
+            &serde_json::json!({ "name": "bad", "model": "x/y", "key": "k", "protocol": "grpc" }),
+        )
+        .unwrap_err();
+    assert!(err.contains("grpc"), "got: {err}");
+    assert!(
+        read_config_raw(dir.path())["model_list"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|m| m["model_name"] != "bad")
+    );
+}
+
+#[test]
+fn update_field_protocol_set_clear_alias_and_reject() {
+    let dir = tempfile::tempdir().unwrap();
+    write_config(dir.path(), SEED);
+    let h = ModelsHandler::new();
+
+    // 设（走别名）。
+    h.update_field(
+        &home_str(&dir),
+        &serde_json::json!({ "name": "m1", "field": "protocol", "value": "Claude" }),
+    )
+    .unwrap()
+    .unwrap();
+    assert_eq!(
+        read_config_raw(dir.path())["model_list"][0]["protocol"],
+        "anthropic"
+    );
+
+    // 清除（空串 = 自动推断）。
+    h.update_field(
+        &home_str(&dir),
+        &serde_json::json!({ "name": "m1", "field": "protocol", "value": "" }),
+    )
+    .unwrap()
+    .unwrap();
+    assert_eq!(read_config_raw(dir.path())["model_list"][0]["protocol"], "");
+
+    // 未知值 loud 拒绝 + 错误信息带值集。
+    let err = h
+        .update_field(
+            &home_str(&dir),
+            &serde_json::json!({ "name": "m1", "field": "protocol", "value": "grpc" }),
+        )
+        .unwrap_err();
+    assert!(
+        err.contains("grpc") && err.contains("responses"),
+        "got: {err}"
+    );
+
+    // 兄弟 extra 在 protocol 写入后仍然完好。
+    assert_eq!(
+        read_config_raw(dir.path())["model_list"][0]["real_name"],
+        "Qwen3-30B"
+    );
 }

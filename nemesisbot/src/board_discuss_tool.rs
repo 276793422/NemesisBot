@@ -161,8 +161,14 @@ impl nemesis_agent::r#loop::Tool for BoardDiscussTool {
         if ok {
             let seq = body.pointer("/body/seq").and_then(|v| v.as_i64());
             Ok(match seq {
-                Some(s) => format!("Posted to {}:{} (seq {s}); coordinator acknowledged.", parsed.thread_kind, parsed.thread_id),
-                None => format!("Posted to {}:{}; coordinator acknowledged.", parsed.thread_kind, parsed.thread_id),
+                Some(s) => format!(
+                    "Posted to {}:{} (seq {s}); coordinator acknowledged.",
+                    parsed.thread_kind, parsed.thread_id
+                ),
+                None => format!(
+                    "Posted to {}:{}; coordinator acknowledged.",
+                    parsed.thread_kind, parsed.thread_id
+                ),
             })
         } else {
             let code = body

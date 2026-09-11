@@ -64,9 +64,7 @@ fn test_asset_secret_injection_and_default_none() {
 
     // builder 注入后可读回；Clone 共享同一密钥。
     let n = SEQ.fetch_add(1, Ordering::SeqCst);
-    let dir2 = std::env::temp_dir().join(format!(
-        "nemesis-board-svctest-secret-{n}",
-    ));
+    let dir2 = std::env::temp_dir().join(format!("nemesis-board-svctest-secret-{n}",));
     let _ = std::fs::remove_dir_all(&dir2);
     let store = BoardStore::open(&dir2.join("board.db"), "NB").unwrap();
     let svc2 = BoardService::new(std::sync::Arc::new(store), NodeRole::Worker)

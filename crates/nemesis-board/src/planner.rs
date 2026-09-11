@@ -15,6 +15,8 @@ pub const MAX_SUBISSUES: usize = 20;
 
 /// planner 系统提示词（裸提示词模式的 system 段；经
 /// `DetachedOpts.system_prompt` 注入，与主 agent 人格完全隔离）。
+/// 其中 `[CHECK]` 锚点指令段与 `crate::anchor` 解析器同步演化
+/// （同 `REPORT_FORMAT_SECTION` 契约；防误删快照见 planner/tests.rs）。
 pub const PLANNER_SYSTEM_PROMPT: &str = r#"你是 NemesisBot 看板的任务拆解规划器（planner）。你的唯一职责是把一个父任务拆解为一组可独立执行、可独立验收的子任务。
 
 # 输出格式（严格遵守）
@@ -36,7 +38,16 @@ pub const PLANNER_SYSTEM_PROMPT: &str = r#"你是 NemesisBot 看板的任务拆�
 2. 每个子任务必须能独立交付、独立验收；标题自包含。
 3. depends_on 只允许引用本数组内的序号，且不得形成循环依赖。
 4. 子任务总数不超过 20 个，3-7 个为佳；宁少勿滥。
-5. 子任务之间有执行顺序要求（如先修编译再跑测试）用 depends_on 表达；相互独立则并行。"#;
+5. 子任务之间有执行顺序要求（如先修编译再跑测试）用 depends_on 表达；相互独立则并行。
+
+# 验收锚点（[CHECK] 行，鼓励但不强制）
+对能**客观判定**的验收点，在子任务的 acceptance_criteria 里用 `[CHECK]` 锚点行表达（每行一条，可与普通文字验收标准混写）。锚点由系统零成本自动核验，全部通过后才进入 AI 语义评审。四种形态：
+- `[CHECK] file:<工作区相对路径> exists` —— 文件存在
+- `[CHECK] file:<路径> contains:<关键词>` —— 文件内容包含关键词
+- `[CHECK] file:<路径> re:<正则>` —— 文件内容匹配正则
+- `[CHECK] re:<正则>` —— 对执行者的交付汇报文本匹配正则
+示例：`[CHECK] file:src/auth.rs exists`、`[CHECK] file:docs/api.md contains:鉴权`、`[CHECK] re:交付完成`。
+路径必须是工作区内相对路径（不得用绝对路径或 ..）；只对确定能客观判定的点使用，主观质量描述仍用普通文字。"#;
 
 /// planner 输出的单个子单（§3.1 schema；serde 宽容：缺字段用默认值）。
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -77,11 +88,10 @@ pub fn parse_plan(raw: &str) -> Result<Vec<PlannedSubIssue>, PlanParseError> {
             .to_string(),
     })?;
 
-    let plan: Vec<PlannedSubIssue> = serde_json::from_str(&json_text).map_err(|e| {
-        PlanParseError {
+    let plan: Vec<PlannedSubIssue> =
+        serde_json::from_str(&json_text).map_err(|e| PlanParseError {
             message: format!("JSON 解析失败：{e}。请检查引号/逗号/字段类型，只输出 JSON 数组。"),
-        }
-    })?;
+        })?;
 
     if plan.is_empty() {
         return Err(PlanParseError {
@@ -114,7 +124,9 @@ pub fn parse_plan(raw: &str) -> Result<Vec<PlannedSubIssue>, PlanParseError> {
             }
             if dep == i {
                 return Err(PlanParseError {
-                    message: format!("第 {i} 个子任务的 depends_on 包含自身（{dep}），不允许自引用。"),
+                    message: format!(
+                        "第 {i} 个子任务的 depends_on 包含自身（{dep}），不允许自引用。"
+                    ),
                 });
             }
         }

@@ -27,36 +27,43 @@ fn test_parse_args_ok_and_defaults() {
 #[test]
 fn test_parse_args_semantic_rejections() {
     // 词表外 thread_kind → Err；"Issue" 大小写宽容归一为合法（→ issue）。
-    assert!(parse_discuss_args(r#"{"thread_kind": "file", "thread_id": 1, "content": "x"}"#)
-        .unwrap_err()
-        .contains("thread_kind"));
-    assert!(parse_discuss_args(r#"{"thread_id": 1, "content": "x"}"#)
-        .unwrap_err()
-        .contains("thread_kind"));
-    assert!(parse_discuss_args(
-        r#"{"thread_kind": "Issue", "thread_id": 1, "content": "x"}"#
-    )
-    .is_ok());
+    assert!(
+        parse_discuss_args(r#"{"thread_kind": "file", "thread_id": 1, "content": "x"}"#)
+            .unwrap_err()
+            .contains("thread_kind")
+    );
+    assert!(
+        parse_discuss_args(r#"{"thread_id": 1, "content": "x"}"#)
+            .unwrap_err()
+            .contains("thread_kind")
+    );
+    assert!(
+        parse_discuss_args(r#"{"thread_kind": "Issue", "thread_id": 1, "content": "x"}"#).is_ok()
+    );
 
     // 缺 thread_id / thread_id 非整数。
-    assert!(parse_discuss_args(r#"{"thread_kind": "issue", "content": "x"}"#)
-        .unwrap_err()
-        .contains("thread_id"));
-    assert!(parse_discuss_args(
-        r#"{"thread_kind": "issue", "thread_id": "42", "content": "x"}"#
-    )
-    .unwrap_err()
-    .contains("thread_id"));
+    assert!(
+        parse_discuss_args(r#"{"thread_kind": "issue", "content": "x"}"#)
+            .unwrap_err()
+            .contains("thread_id")
+    );
+    assert!(
+        parse_discuss_args(r#"{"thread_kind": "issue", "thread_id": "42", "content": "x"}"#)
+            .unwrap_err()
+            .contains("thread_id")
+    );
 
     // 空 / 纯空白 content。
-    assert!(parse_discuss_args(r#"{"thread_kind": "issue", "thread_id": 1}"#)
-        .unwrap_err()
-        .contains("content"));
-    assert!(parse_discuss_args(
-        r#"{"thread_kind": "issue", "thread_id": 1, "content": "   "}"#
-    )
-    .unwrap_err()
-    .contains("content"));
+    assert!(
+        parse_discuss_args(r#"{"thread_kind": "issue", "thread_id": 1}"#)
+            .unwrap_err()
+            .contains("content")
+    );
+    assert!(
+        parse_discuss_args(r#"{"thread_kind": "issue", "thread_id": 1, "content": "   "}"#)
+            .unwrap_err()
+            .contains("content")
+    );
 
     // 非 JSON。
     assert!(parse_discuss_args("not json").unwrap_err().contains("JSON"));

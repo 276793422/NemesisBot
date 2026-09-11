@@ -234,15 +234,9 @@ async fn mirror_chain_falls_back_to_next_mirror() {
     let store = tmp_store("chain-fallback");
 
     // 主镜像 500 → 回落到备用镜像 → 成功替换。
-    let r = fetch_chain(
-        &store,
-        &[
-            &format!("{base}/err"),
-            &format!("{base}/table"),
-        ],
-    )
-    .await
-    .unwrap();
+    let r = fetch_chain(&store, &[&format!("{base}/err"), &format!("{base}/table")])
+        .await
+        .unwrap();
     assert!(r.updated);
     assert_eq!(r.entry_count, 2);
     assert!(r.source_url.ends_with("/table"), "source = winning mirror");
@@ -254,15 +248,9 @@ async fn mirror_chain_all_fail_reports_every_mirror() {
     let base = spawn_server().await;
     let store = tmp_store("chain-allfail");
 
-    let err = fetch_chain(
-        &store,
-        &[
-            &format!("{base}/err"),
-            &format!("{base}/broken"),
-        ],
-    )
-    .await
-    .unwrap_err();
+    let err = fetch_chain(&store, &[&format!("{base}/err"), &format!("{base}/broken")])
+        .await
+        .unwrap_err();
     // 聚合报错必须点名每一条镜像（诊断友好），旧表保持未动。
     assert!(err.contains("/err"), "err: {err}");
     assert!(err.contains("/broken"), "err: {err}");

@@ -2300,3 +2300,60 @@ mod r10_exit_two_and_output {
         drop(_swap);
     }
 }
+
+// ---------------------------------------------------------------------------
+// box_api_base —— 盒内 api_base 的 lane 后缀（2026-09-11 r10 真链路红根因钉）
+// ---------------------------------------------------------------------------
+// 此前盒内 api_base 无条件带 /v1；Anthropic lane（provider 自己拼
+// /v1/messages）下盒内路径变成 /v1/v1/messages → 上游 404 → 评估结论
+// Unknown → exit 0 ≠ 2。lane 判定必须与盒内 factory 同源（前缀 + 显式
+// protocol）。
+
+#[test]
+fn box_api_base_anthropic_prefix_lane_drops_v1() {
+    let base = box_api_base("http://127.0.0.1:12345/v1", "anthropic/glm-5.3-flash", "");
+    assert_eq!(
+        base, "http://127.0.0.1:12345",
+        "Anthropic lane 盒内 base 必须裸（provider 拼 /v1/messages）"
+    );
+}
+
+#[test]
+fn box_api_base_claude_alias_prefix_lane_drops_v1() {
+    let base = box_api_base("http://127.0.0.1:12345/v1", "claude/some-model", "");
+    assert_eq!(base, "http://127.0.0.1:12345");
+}
+
+#[test]
+fn box_api_base_openai_compat_lane_keeps_v1() {
+    let base = box_api_base(
+        "http://127.0.0.1:12345/v1",
+        "deepseek/deepseek-v4-flash",
+        "",
+    );
+    assert_eq!(
+        base, "http://127.0.0.1:12345/v1",
+        "HttpCompat lane 盒内 base 必须带 /v1（provider 拼 /chat/completions）"
+    );
+}
+
+#[test]
+fn box_api_base_bare_name_keeps_v1() {
+    // 裸名默认 HttpCompat（Request B 根修语义）→ /v1 保留。
+    let base = box_api_base("http://127.0.0.1:12345/v1", "glm-5.3-flash", "");
+    assert_eq!(base, "http://127.0.0.1:12345/v1");
+}
+
+#[test]
+fn box_api_base_explicit_protocol_anthropic_drops_v1() {
+    // 显式 protocol 优先于前缀推断（LLM 协议选择器语义）：裸名 + anthropic。
+    let base = box_api_base("http://127.0.0.1:12345/v1", "glm-5.3-flash", "anthropic");
+    assert_eq!(base, "http://127.0.0.1:12345");
+}
+
+#[test]
+fn box_api_base_legacy_openai_prefix_is_codex_drops_v1() {
+    // 旧前缀语义刻意保留：显式 "openai/x" → Codex（拼 /responses）→ base 裸。
+    let base = box_api_base("http://127.0.0.1:12345/v1", "openai/gpt-5.2", "");
+    assert_eq!(base, "http://127.0.0.1:12345");
+}

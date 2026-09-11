@@ -26,7 +26,7 @@ pub async fn test_gateway_full_lifecycle(
     let mut ai_server = match ManagedProcess::spawn(
         "AI Server",
         ai_server_bin,
-        &["--port", &AI_SERVER_PORT.to_string()],
+        &["--port", &ai_server_port().to_string()],
         ws.path(),
     ) {
         Ok(p) => p,
@@ -38,7 +38,7 @@ pub async fn test_gateway_full_lifecycle(
 
     // Wait for AI server
     match wait_for_http(
-        &format!("http://127.0.0.1:{}/health", AI_SERVER_PORT),
+        &format!("http://127.0.0.1:{}/health", ai_server_port()),
         Duration::from_secs(10),
     )
     .await

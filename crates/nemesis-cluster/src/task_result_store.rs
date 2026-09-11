@@ -176,8 +176,7 @@ impl TaskResultStore {
                         // 会永远回答 "running"，A 端恢复轮询被吊到 24h 安全
                         // 网，用户既拿不到结果也拿不到诚实报错。加载时丢弃
                         // 占位并删除残file，重启后的 B 诚实回答 not_found。
-                        if result.result.get("status").and_then(|v| v.as_str()) == Some("running")
-                        {
+                        if result.result.get("status").and_then(|v| v.as_str()) == Some("running") {
                             let _ = std::fs::remove_file(&path);
                             tracing::info!(
                                 task_id = %result.task_id,

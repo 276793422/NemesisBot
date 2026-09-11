@@ -602,5 +602,25 @@ pub fn tier_allowed_tools(tier: ModelTier) -> &'static [&'static str] {
     }
 }
 
+/// LLM 协议选择器（2026-09-11）：模型条目 `protocol` 字段的 canonical 值集
+/// 与归一。单一真相源——写入侧（dashboard models handler / CLI `model add
+/// --protocol`）用它校验归一，factory 消费同值集钉死 wire 协议：
+/// - `anthropic`（用户可写别名 `claude`）：Claude 消息协议（POST /v1/messages + x-api-key）
+/// - `openai`（别名 `chat-completions`）：OpenAI 兼容（POST /chat/completions + Bearer）
+/// - `responses`：OpenAI Responses API
+///
+/// 空输入 = 清除（按 provider 前缀/模型名自动推断，现状行为）；未知值 loud 拒绝。
+pub fn normalize_model_protocol(input: &str) -> Result<String, String> {
+    match input.trim().to_lowercase().as_str() {
+        "" => Ok(String::new()),
+        "anthropic" | "claude" => Ok("anthropic".to_string()),
+        "openai" | "chat-completions" => Ok("openai".to_string()),
+        "responses" => Ok("responses".to_string()),
+        other => Err(format!(
+            "unknown protocol '{other}'. Supported: anthropic | openai | responses"
+        )),
+    }
+}
+
 #[cfg(test)]
 mod tests;

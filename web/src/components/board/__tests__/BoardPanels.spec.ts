@@ -35,6 +35,8 @@ import IssueDetailModal from '../IssueDetailModal.vue'
 import AutopilotPanel from '../AutopilotPanel.vue'
 import BoardTabs from '../BoardTabs.vue'
 import DiscussionPanel from '../DiscussionPanel.vue'
+import BoardConfigPanel from '../BoardConfigPanel.vue'
+import AuditPanel from '../AuditPanel.vue'
 import IssueListView from '../../../views/IssueListView.vue'
 
 function issue(over: Record<string, unknown> = {}) {
@@ -610,11 +612,132 @@ describe('IssueDetailModal ctype 徽标（M3 批次 E）', () => {
   })
 })
 
+describe('BoardConfigPanel（配置 全自动流转 P1/A4）', () => {
+  const fullFlags = {
+    auto_review: true,
+    auto_accept: false,
+    auto_close_parent: false,
+    unlimited_mode: false,
+    max_redispatch: 2,
+    dispatch_timeout_secs: 3600,
+    plan: { auto_confirm: false, model: null },
+    review: { max_turns: 1, selfcheck: false, auto_close_project: false },
+    budget: { max_subissues_per_parent: 20, max_total_redispatch: 0, wall_clock_budget_secs: 0 },
+    discussion: {
+      retention_days: 30,
+      max_agent_turns_per_thread: 12,
+      hourly_budget_per_node: 20,
+      rate_limit_per_min: 6,
+    },
+  }
+
+  async function mountPanel(flags: Record<string, unknown>) {
+    requestMock.mockImplementation((_m: string, cmd: string) => {
+      if (cmd === 'config.get') return Promise.resolve({ ...fullFlags, ...flags })
+      return Promise.resolve({ updated: true })
+    })
+    const w = mount(BoardConfigPanel)
+    await flushPromises()
+    return w
+  }
+
+  it('渲染 7 个自动化开关 + 参数默认值', async () => {
+    const w = await mountPanel({})
+    expect(w.text()).toContain('拆解自动发车')
+    expect(w.text()).toContain('自动验收')
+    expect(w.text()).toContain('PASS 自动收货')
+    expect(w.text()).toContain('父单自动收口')
+    expect(w.text()).toContain('验收取证')
+    expect(w.text()).toContain('项目自动收口')
+    expect(w.text()).toContain('无限模式')
+    expect(w.text()).toContain('验收 FAIL 重派上限')
+    expect(w.text()).toContain('预算护栏')
+    expect(w.text()).toContain('任务墙钟时限')
+    const checked = w.findAll('input[type="checkbox"]')
+    expect(checked.length).toBe(7)
+    // fullFlags：auto_review=true 开，其余关（toggles 顺序：[0]=plan.auto_confirm、[1]=auto_review）。
+    expect((checked[0].element as HTMLInputElement).checked).toBe(false)
+    expect((checked[1].element as HTMLInputElement).checked).toBe(true)
+  })
+
+  it('开关切换 → config.set {key, value} 即时保存 + 成功 toast', async () => {
+    const w = await mountPanel({})
+    await w.findAll('input[type="checkbox"]')[2].setValue(true) // auto_accept
+    await flushPromises()
+    const call = requestMock.mock.calls.find((c) => c[1] === 'config.set')!
+    expect(call[2]).toEqual({ key: 'auto_accept', value: true })
+    expect(useToast().toasts.some((t) => t.type === 'success')).toBe(true)
+  })
+
+  it('保存失败 → error toast + 重新 config.get 回滚显示', async () => {
+    requestMock.mockImplementation((_m: string, cmd: string) => {
+      if (cmd === 'config.get') return Promise.resolve({ ...fullFlags })
+      if (cmd === 'config.set') return Promise.reject('未知或不允许的 board 配置键')
+      return Promise.resolve({})
+    })
+    const w = mount(BoardConfigPanel)
+    await flushPromises()
+    await w.findAll('input[type="checkbox"]')[1].setValue(false) // auto_review → false 被拒
+    await flushPromises()
+    expect(useToast().toasts.some((t) => t.type === 'error')).toBe(true)
+    // 失败后重拉，开关回滚为服务端真实值 true。
+    const gets = requestMock.mock.calls.filter((c) => c[1] === 'config.get')
+    expect(gets.length).toBe(2)
+    expect((w.findAll('input[type="checkbox"]')[1].element as HTMLInputElement).checked).toBe(true)
+  })
+
+  it('无限模式开 → 警示条出现；auto_accept 关附 PASS 仍等人工提示', async () => {
+    const w = await mountPanel({ unlimited_mode: true })
+    expect(w.text()).toContain('无限模式已开启')
+    expect(w.text()).toContain('PASS 自动收货未开启')
+  })
+
+  it('无限模式开且 auto_accept 开 → 警示条无「未开启」提示', async () => {
+    const w = await mountPanel({ unlimited_mode: true, auto_accept: true })
+    expect(w.text()).toContain('无限模式已开启')
+    expect(w.text()).not.toContain('PASS 自动收货未开启')
+  })
+
+  it('数字参数修改 → config.set 提交数值', async () => {
+    const w = await mountPanel({})
+    const numInput = w.findAll('input[type="number"]')[0] // max_redispatch
+    await numInput.setValue('5')
+    await numInput.trigger('change')
+    await flushPromises()
+    const call = requestMock.mock.calls.find((c) => c[1] === 'config.set')!
+    expect(call[2]).toEqual({ key: 'max_redispatch', value: 5 })
+  })
+
+  it('数字参数非法（负数）→ warn toast 不发 config.set', async () => {
+    const w = await mountPanel({})
+    const numInput = w.findAll('input[type="number"]')[0]
+    await numInput.setValue('-1')
+    await numInput.trigger('change')
+    await flushPromises()
+    expect(requestMock.mock.calls.some((c) => c[1] === 'config.set')).toBe(false)
+    expect(useToast().toasts.some((t) => t.type === 'warn')).toBe(true)
+  })
+
+  it('模型别名清空 → config.set plan.model=null；填值 → 字符串', async () => {
+    const w = await mountPanel({ plan: { auto_confirm: false, model: 'glm-4.7' } })
+    const modelInput = w.findAll('input[type="text"]').find((i) =>
+      (i.element as HTMLInputElement).value === 'glm-4.7',
+    )!
+    await modelInput.setValue('')
+    await modelInput.trigger('change')
+    await flushPromises()
+    expect(requestMock.mock.calls.find((c) => c[1] === 'config.set')![2]).toEqual({
+      key: 'plan.model',
+      value: null,
+    })
+  })
+})
+
 describe('BoardTabs（页签顺序）', () => {
-  it('从左到右 = 使用依赖链：项目 → 列表 → 看板 → 收件箱 → 自动化 → 讨论', () => {
+  it('从左到右 = 使用依赖链：项目 → 列表 → 看板 → 收件箱 → 自动化 → 讨论 → 决策流 → 配置', () => {
     const w = mount(BoardTabs, { props: { modelValue: 'projects' } })
     const labels = w.findAll('button').map((b) => b.text())
-    expect(labels).toEqual(['项目', '列表', '看板', '收件箱', '自动化', '讨论'])
+    expect(labels).toEqual(['项目', '列表', '看板', '收件箱', '自动化', '讨论', '决策流', '配置'])
   })
 
   it('点击页签 emit update:modelValue', async () => {
@@ -726,5 +849,221 @@ describe('IssueListView（列表）', () => {
     await w.findAll('button').find((b) => b.text() === '创建')!.trigger('click')
     await flushPromises()
     expect(requestMock.mock.calls.some((c) => c[1] === 'issue.dispatch')).toBe(false) // 只指派，不自动派发
+  })
+})
+
+// ---------------------------------------------------------------------------
+// 全自动流转 P3 前端：项目「验收标准 + 自动启动」/ autopilot「auto_plan」
+// ---------------------------------------------------------------------------
+
+describe('P3 全自动流转表单字段', () => {
+  it('ProjectPanel：验收标准 + 自动启动 → project.create payload', async () => {
+    requestMock.mockImplementation((_m: string, cmd: string) => {
+      if (cmd === 'project.list') return Promise.resolve({ projects: [] })
+      if (cmd === 'project.create')
+        return Promise.resolve({ project: { id: 1 }, auto_start: { issue_id: 9, issue_number: 'NB-9' } })
+      return Promise.resolve({})
+    })
+    const w = mount(ProjectPanel)
+    await flushPromises()
+    await w.findAll('button').find((b) => b.text().includes('新建项目'))!.trigger('click')
+    await w.findAll('input.form-input').find((i) => i.attributes('placeholder')?.includes('项目名'))!.setValue('自动启动项目')
+    await w.findAll('textarea').find((t) => t.attributes('placeholder')?.includes('验收标准'))!.setValue('1. 父单自动建\n2. 拆解可发车')
+    const autoStartBox = w.findAll('input[type="checkbox"]').find((c) => c.element.parentElement?.textContent?.includes('自动启动'))!
+    expect(autoStartBox.attributes('disabled')).toBeUndefined()
+    await autoStartBox.setValue(true)
+    await w.findAll('button').find((b) => b.text() === '创建')!.trigger('click')
+    await flushPromises()
+    const call = requestMock.mock.calls.find((c) => c[1] === 'project.create')!
+    expect(call[2].acceptance_criteria).toBe('1. 父单自动建\n2. 拆解可发车')
+    expect(call[2].auto_start).toBe(true)
+    // 后端返回 auto_start.issue_number → toast 明示父单号。
+    const toasts = useToast().toasts.map((t) => t.message).join('\n')
+    expect(toasts).toContain('NB-9')
+  })
+
+  it('ProjectPanel：默认不勾自动启动 → auto_start=false（保守默认）', async () => {
+    const w = mount(ProjectPanel)
+    await flushPromises()
+    await w.findAll('button').find((b) => b.text().includes('新建项目'))!.trigger('click')
+    await w.findAll('input.form-input').find((i) => i.attributes('placeholder')?.includes('项目名'))!.setValue('普通项目')
+    await w.findAll('button').find((b) => b.text() === '创建')!.trigger('click')
+    await flushPromises()
+    const call = requestMock.mock.calls.find((c) => c[1] === 'project.create')!
+    expect(call[2].auto_start).toBe(false)
+    expect(call[2].acceptance_criteria).toBe('')
+  })
+
+  it('AutopilotPanel：勾选 auto_plan → autopilot.create payload 带字段；列表显示「建单 + 自动拆解」', async () => {
+    function ap(over: Record<string, unknown> = {}) {
+      return {
+        id: 1, name: '每日站会', title: '每日站会 {date}', cron: '0 9 * * *',
+        description: '', priority: 1, project_id: null, target: '',
+        auto_plan: false, enabled: true, cron_job_id: 'job-1',
+        last_run_at: null, created_at: 1700000000, updated_at: 1700000000,
+        ...over,
+      }
+    }
+    requestMock.mockImplementation((_m: string, cmd: string) => {
+      if (cmd === 'autopilot.list') return Promise.resolve({ autopilots: [ap({ auto_plan: true })] })
+      return Promise.resolve({})
+    })
+    const w = mount(AutopilotPanel)
+    await flushPromises()
+    // 列表徽标：auto_plan 规则的派发目标列。
+    expect(w.text()).toContain('建单 + 自动拆解')
+
+    // 创建表单：填必填项 + 勾选 auto_plan → payload。
+    await w.findAll('button').find((b) => b.text().includes('新建规则'))!.trigger('click')
+    const inputs = w.findAll('input.form-input')
+    await inputs[0].setValue('拆解规则')
+    await inputs[1].setValue('0 9 * * *')
+    await inputs[2].setValue('拆解任务 {date}')
+    const planBox = w.findAll('input[type="checkbox"]').find((c) => c.element.parentElement?.textContent?.includes('auto_plan'))!
+    await planBox.setValue(true)
+    // 配置派发目标后 auto_plan 应禁用（互斥：直接派发时拆解无意义）。
+    await inputs[3].setValue('node-b')
+    expect(planBox.attributes('disabled')).toBeDefined()
+    await inputs[3].setValue('')
+    await w.findAll('button').find((b) => b.text() === '创建')!.trigger('click')
+    await flushPromises()
+    const call = requestMock.mock.calls.find((c) => c[1] === 'autopilot.create')!
+    expect(call[2].auto_plan).toBe(true)
+  })
+})
+
+describe('AuditPanel（决策流 全自动流转 P5/E2）', () => {
+  function auditRow(over: Record<string, unknown> = {}) {
+    return {
+      id: 1,
+      issue_id: 11,
+      actor: { kind: 'agent', id: 'node-review' },
+      action: 'auto_decide',
+      details: JSON.stringify({ decision: 'auto_accept', verdict: 'PASS', note: '锚点全过' }),
+      created_at: 1700000000,
+      issue_number: 'NB-11',
+      issue_title: '任务十一',
+      ...over,
+    }
+  }
+
+  async function mountAudit(rows: any[], extra: Record<string, any> = {}) {
+    requestMock.mockImplementation((_m: string, cmd: string) => {
+      if (cmd === 'audit.list') return Promise.resolve({ decisions: rows })
+      return Promise.resolve(extra[cmd] ?? {})
+    })
+    const w = mount(AuditPanel)
+    await flushPromises()
+    return w
+  }
+
+  it('列表渲染：决策词人话标签 + 单号标题 + actor + 时间（新→旧流水）', async () => {
+    const w = await mountAudit([
+      auditRow(),
+      auditRow({
+        id: 2,
+        issue_number: 'NB-12',
+        issue_title: '任务十二',
+        details: JSON.stringify({ decision: 'redispatch', verdict: 'FAIL', round: 1 }),
+      }),
+    ])
+    const items = w.findAll('.audit-item')
+    expect(items.length).toBe(2)
+    expect(items[0].text()).toContain('验收 PASS · 自动收货')
+    expect(items[0].text()).toContain('NB-11')
+    expect(items[0].text()).toContain('任务十一')
+    expect(items[0].text()).toContain('@node-review')
+    expect(items[1].text()).toContain('验收 FAIL · 自动重派')
+    // 每行都有回滚按钮。
+    expect(w.findAll('.rollback-btn').length).toBe(2)
+    // details 请求带 limit + 无过滤。
+    const call = requestMock.mock.calls.find((c) => c[1] === 'audit.list')!
+    expect(call[2]).toEqual({ limit: 200, action: undefined })
+  })
+
+  it('未知决策词回退原文 + details 解析失败不炸渲染', async () => {
+    const w = await mountAudit([
+      auditRow({ details: JSON.stringify({ decision: 'future_word' }) }),
+      auditRow({ id: 2, details: 'not-json{{{' }),
+    ])
+    const items = w.findAll('.audit-item')
+    expect(items[0].text()).toContain('future_word')
+    // 非 JSON details：无详情按钮、无标签崩溃，行仍渲染。
+    expect(items[1].text()).toContain('NB-11')
+    expect(items[1].findAll('.expand-btn').length).toBe(0)
+  })
+
+  it('详情展开：点击切换显示格式化 JSON', async () => {
+    const w = await mountAudit([auditRow()])
+    expect(w.find('.audit-details').exists()).toBe(false)
+    await w.find('.expand-btn').trigger('click')
+    const pre = w.find('.audit-details')
+    expect(pre.exists()).toBe(true)
+    expect(pre.text()).toContain('"decision": "auto_accept"')
+    await w.find('.expand-btn').trigger('click')
+    expect(w.find('.audit-details').exists()).toBe(false)
+  })
+
+  it('回滚确认流：点回滚 → 弹窗确认 → audit.rollback（带 activity_id）→ 重拉列表', async () => {
+    let rollbackPayload: any = null
+    const w = await mountAudit([auditRow()], {
+      'audit.rollback': Promise.resolve({ rolled_back: true }),
+    })
+    // 拦截 rollback 调用记录 payload。
+    requestMock.mockImplementation((_m: string, cmd: string, data: any) => {
+      if (cmd === 'audit.list') return Promise.resolve({ decisions: [auditRow()] })
+      if (cmd === 'audit.rollback') {
+        rollbackPayload = data
+        return Promise.resolve({ rolled_back: true })
+      }
+      return Promise.resolve({})
+    })
+    await w.find('.rollback-btn').trigger('click')
+    const modal = w.find('.modal-backdrop')
+    expect(modal.exists()).toBe(true)
+    expect(modal.text()).toContain('NB-11')
+    expect(modal.text()).toContain('验收 PASS · 自动收货')
+    // 取消不调后端。
+    await modal.findAll('button').find((b) => b.text() === '取消')!.trigger('click')
+    expect(w.find('.modal-backdrop').exists()).toBe(false)
+    expect(rollbackPayload).toBeNull()
+
+    // 再开 → 确认 → rollback 调用带 activity_id。
+    await w.find('.rollback-btn').trigger('click')
+    await w.findAll('button').find((b) => b.text() === '确认回滚')!.trigger('click')
+    await flushPromises()
+    expect(rollbackPayload).toEqual({ activity_id: 1 })
+    expect(w.find('.modal-backdrop').exists()).toBe(false)
+    // 确认后重拉了列表（audit.list 第二次调用）。
+    const listCalls = requestMock.mock.calls.filter((c) => c[1] === 'audit.list')
+    expect(listCalls.length).toBeGreaterThanOrEqual(2)
+  })
+
+  it('回滚失败：后端拒绝（非 done/已回滚）→ toast 报错，弹窗保留', async () => {
+    const w = await mountAudit([auditRow()])
+    requestMock.mockImplementation((_m: string, cmd: string) => {
+      if (cmd === 'audit.list') return Promise.resolve({ decisions: [auditRow()] })
+      if (cmd === 'audit.rollback') return Promise.reject(new Error('仅支持回滚已自动收货（done）的决策'))
+      return Promise.resolve({})
+    })
+    await w.find('.rollback-btn').trigger('click')
+    await w.findAll('button').find((b) => b.text() === '确认回滚')!.trigger('click')
+    await flushPromises()
+    const toasts = useToast().toasts
+    expect(toasts.some((t: any) => t.type === 'error' && t.message.includes('回滚失败'))).toBe(true)
+    expect(w.find('.modal-backdrop').exists()).toBe(true)
+  })
+
+  it('空态 + action 过滤参数透传', async () => {
+    const w = await mountAudit([])
+    expect(w.text()).toContain('暂无自动决策记录')
+    // 换过滤选项 → audit.list 带 action。
+    await w.find('select.filter-select').setValue('auto_confirm_dispatch')
+    await flushPromises()
+    const calls = requestMock.mock.calls.filter((c) => c[1] === 'audit.list')
+    expect(calls[calls.length - 1][2]).toEqual({
+      limit: 200,
+      action: 'auto_confirm_dispatch',
+    })
   })
 })

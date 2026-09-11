@@ -166,6 +166,7 @@ fn node(id: &str, name: &str, role: NodeRole, online: bool, address: &str) -> Ex
             NodeStatus::Offline
         },
         capabilities: vec!["cluster".to_string()],
+        tags: Vec::new(),
         addresses: vec![address.to_string()],
         node_type: "agent".to_string(),
     }

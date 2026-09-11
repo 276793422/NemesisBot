@@ -75,7 +75,12 @@ impl ToolsHandler {
                 );
                 crate::handlers::projects::resolve_session_loop(ctx, &session_key)?
             }
-            None => ctx.state.agent_loop.read().clone().ok_or("agent not running")?,
+            None => ctx
+                .state
+                .agent_loop
+                .read()
+                .clone()
+                .ok_or("agent not running")?,
         };
         let tools = al.tools();
         let rows: Vec<serde_json::Value> = tools

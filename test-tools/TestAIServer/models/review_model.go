@@ -18,6 +18,13 @@ import (
 //     UNSURE 诚实处置（回灌重试输入仍含 <REVIEW_BAD> → 3 轮全败）
 //   - <REVIEW_EXP>（M4.5）：PASS + experience 槽位带固定经验对象
 //     （pitfall / t29auth / "T29 经验锚点…"）——驱动验收蒸馏入库链路
+//   - <SELFCHK_EVIDENCE_OK>（P4 B2b，二段验收）：必须先于
+//     <REVIEW_NEED_EVIDENCE> 判定——二段输入同时携带原验收标准（含
+//     <REVIEW_NEED_EVIDENCE>）与取证回报证据（含本锚点），先命中即 PASS，
+//     驱动「取证回报 → 二段验收 → 自动收货」闭环
+//   - <REVIEW_NEED_EVIDENCE>（P4 B2b，一段验收）：UNSURE +
+//     need_evidence=true + evidence_request 指示 worker 回报时携带
+//     <SELFCHK_EVIDENCE_OK>——驱动「验收暂缓 → 向执行节点取证」挂起链路
 //
 // 回灌重试提示词含「修正后重新输出」+原输出；FAIL/UNSURE 分支靠锚点
 // 稳定复现，不受重试影响。确定性输出，零随机、零延迟。
@@ -32,6 +39,8 @@ type reviewOutput struct {
 		Scope    string `json:"scope"`
 		Content  string `json:"content"`
 	} `json:"experience"`
+	NeedEvidence    *bool  `json:"need_evidence,omitempty"`
+	EvidenceRequest string `json:"evidence_request,omitempty"`
 }
 
 func NewTestAIReview() *TestAIReview { return &TestAIReview{} }
@@ -40,6 +49,17 @@ func (m *TestAIReview) Name() string { return "testai-review-1.0" }
 
 func (m *TestAIReview) Process(messages []Message) string {
 	input := reviewInputText(messages)
+
+	// P4 B2b 二段验收：取证回报证据带 <SELFCHK_EVIDENCE_OK> → 证据成立
+	// 判 PASS。必须排在 <REVIEW_NEED_EVIDENCE> 之前——二段输入同时含两个
+	// 锚点（原验收标准 + 证据），先命中证据锚点才能定案。
+	if strings.Contains(input, "<SELFCHK_EVIDENCE_OK>") {
+		return reviewMarshal(reviewOutput{
+			Verdict: "PASS",
+			Reasons: []string{"执行节点取证回报与验收标准逐项对照成立（二段验收，锚点 SELFCHK_EVIDENCE_OK）"},
+			Gap:     "",
+		})
+	}
 
 	switch {
 	case strings.Contains(input, "<REVIEW_BAD>"):
@@ -68,6 +88,17 @@ func (m *TestAIReview) Process(messages []Message) string {
 			Verdict: "UNSURE",
 			Reasons: []string{"验收标准无法客观判定（测试锚点 REVIEW_UNSURE）"},
 			Gap:     "",
+		})
+	case strings.Contains(input, "<REVIEW_NEED_EVIDENCE>"):
+		// P4 B2b 一段验收：证据不足挂起——need_evidence + 取证请求指示
+		// worker 回报携带 <SELFCHK_EVIDENCE_OK>（命中上方二段 PASS 分支）。
+		need := true
+		return reviewMarshal(reviewOutput{
+			Verdict: "UNSURE",
+			Reasons: []string{"验收标准无法从交付物清单客观判定，需要执行节点补充证据（测试锚点 REVIEW_NEED_EVIDENCE）"},
+			Gap:     "",
+			NeedEvidence:    &need,
+			EvidenceRequest: "逐项回报交付落实情况与关键输出原文，回报末尾附带标记 <SELFCHK_EVIDENCE_OK> 表示取证完成。",
 		})
 	case strings.Contains(input, "<REVIEW_FAIL>"):
 		return reviewMarshal(reviewOutput{

@@ -20,7 +20,9 @@ fn temp_workspace() -> (tempfile::TempDir, PathBuf) {
 /// 裸 TCP HTTP 服务器：无限循环 accept，读请求头后回 200 + 固定 body，
 /// 收到的请求行记进共享 Vec（测试断言 URL 拼装用）。
 async fn spawn_asset_server(body: &'static [u8]) -> (String, std::sync::Arc<Mutex<Vec<String>>>) {
-    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.expect("bind");
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("bind");
     let addr = listener.local_addr().expect("addr");
     let requests = std::sync::Arc::new(Mutex::new(Vec::<String>::new()));
     let req_sink = requests.clone();
@@ -93,7 +95,8 @@ fn parse_fetch_and_publish_happy_paths() {
         other => panic!("expected Fetch, got {other:?}"),
     }
 
-    let publish = parse_asset_args(r#"{"action":"publish","path":"out/r.md"}"#).expect("parse publish");
+    let publish =
+        parse_asset_args(r#"{"action":"publish","path":"out/r.md"}"#).expect("parse publish");
     assert_eq!(
         publish,
         AssetArgs::Publish {
@@ -102,10 +105,9 @@ fn parse_fetch_and_publish_happy_paths() {
         }
     );
 
-    let named = parse_asset_args(
-        r#"{"action":"publish","path":"r.md","ref_name":" report-final "}"#,
-    )
-    .expect("parse publish named");
+    let named =
+        parse_asset_args(r#"{"action":"publish","path":"r.md","ref_name":" report-final "}"#)
+            .expect("parse publish named");
     assert_eq!(
         named,
         AssetArgs::Publish {
@@ -212,7 +214,10 @@ async fn publish_full_flow_registers_and_signs_bundle() {
 
     // 第一跑：gateway 还没落盘 node url → 诚实失败（拷贝/登记/密钥副作用
     // 已发生且幂等，重试不需要清理）。
-    let err = tool.execute(&args, &ctx()).await.expect_err("no url file yet");
+    let err = tool
+        .execute(&args, &ctx())
+        .await
+        .expect_err("no url file yet");
     assert!(err.contains("gateway must be running"), "got: {err}");
 
     // 补上 url 文件（gateway bind 后写的同一路径），重跑成功。
@@ -301,14 +306,27 @@ async fn fetch_downloads_verifies_and_lands_file() {
     // URL 拼装语义：路径 + 两个凭据参数都在请求行上。
     let lines = requests.lock().expect("requests lock");
     assert_eq!(lines.len(), 1, "exactly one download request");
-    assert!(lines[0].contains("GET /api/board/asset/spec.md?"), "got: {}", lines[0]);
-    assert!(lines[0].contains("asset_token=cafebabe"), "got: {}", lines[0]);
+    assert!(
+        lines[0].contains("GET /api/board/asset/spec.md?"),
+        "got: {}",
+        lines[0]
+    );
+    assert!(
+        lines[0].contains("asset_token=cafebabe"),
+        "got: {}",
+        lines[0]
+    );
     assert!(lines[0].contains("expires_at="), "got: {}", lines[0]);
 
     // 落定文件内容一致，无 .part 残留。
     let final_path = ws.join("board").join("assets").join("spec.md");
     assert_eq!(std::fs::read(&final_path).expect("read final"), body);
-    assert!(!ws.join("board").join("assets").join("spec.md.part").exists());
+    assert!(
+        !ws.join("board")
+            .join("assets")
+            .join("spec.md.part")
+            .exists()
+    );
 }
 
 #[tokio::test]
@@ -328,7 +346,10 @@ async fn fetch_sha_mismatch_discards_file() {
         "sha256": wrong_sha,
     })
     .to_string();
-    let err = tool.execute(&args, &ctx()).await.expect_err("must mismatch");
+    let err = tool
+        .execute(&args, &ctx())
+        .await
+        .expect_err("must mismatch");
     assert!(err.contains("sha256 mismatch"), "got: {err}");
     let assets = ws.join("board").join("assets");
     assert!(!assets.join("spec.md").exists(), "final file must not land");

@@ -1212,6 +1212,7 @@ fn make_test_extended_node(
         },
         status,
         capabilities: caps.into_iter().map(String::from).collect(),
+        tags: Vec::new(),
         addresses: vec![],
         node_type: "agent".into(),
     }
@@ -1928,6 +1929,7 @@ fn test_extended_node_info_with_addresses() {
         },
         status: NodeStatus::Online,
         capabilities: vec![],
+        tags: Vec::new(),
         addresses: vec!["10.0.0.1".to_string(), "192.168.1.1".to_string()],
         node_type: "agent".into(),
     };
@@ -1963,6 +1965,7 @@ fn test_extended_node_info_to_peer_config_role_mapping() {
         },
         status: NodeStatus::Online,
         capabilities: vec![],
+        tags: Vec::new(),
         addresses: vec![],
         node_type: "agent".into(),
     };
@@ -1981,6 +1984,7 @@ fn test_extended_node_info_to_peer_config_role_mapping() {
         },
         status: NodeStatus::Online,
         capabilities: vec![],
+        tags: Vec::new(),
         addresses: vec![],
         node_type: "agent".into(),
     };
