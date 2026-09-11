@@ -2299,6 +2299,13 @@ pub async fn run(local: bool, extra_args: &[String]) -> Result<()> {
             let self_node_id = cluster.node_id().to_string();
             let sweep_cluster_slot = sweep_cluster_slot.clone();
             let sweep_last = sweep_last.clone();
+            // 真机缺陷（2026-09-11 双端双平台复现）：本闭包在 std 线程
+            // discovery-udp-listen 上触发——该线程无 tokio reactor，闭包内
+            // 直接 tokio::spawn 会 panic 并炸死监听线程 → announce 接收全哑
+            // （节点上线/刷新静默失联，停车场 sweep/看板收编永不触发，且
+            // health 探针走 tokio 任务所以状态看起来仍正常——高度迷惑）。
+            // 根修：组装期（tokio 上下文内）捕获 Handle，回调里用 Handle::spawn。
+            let discovery_rt = tokio::runtime::Handle::current();
             cluster.set_on_node_discovered(Arc::new(move |node_id, role, category| {
                 // sweep 先于 auto-join 的 self/非 worker 早退：任何非本节点
                 // announce（含身份/tags 变更刷新）都是重试信号；本节点自身
@@ -2321,7 +2328,7 @@ pub async fn run(local: bool, extra_args: &[String]) -> Result<()> {
                         let store = store_for_hook.clone();
                         let cluster = sweep_cluster_slot.get().unwrap().clone();
                         let node_id = node_id.to_string();
-                        tokio::spawn(async move {
+                        discovery_rt.spawn(async move {
                             if let Some(store) = store.as_ref() {
                                 let actor = nemesis_board::Actor::system("board");
                                 let (cands, dispatched, failed) =

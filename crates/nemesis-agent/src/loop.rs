@@ -6754,7 +6754,8 @@ impl AgentLoop {
                 // 快照 + 中间消息收尾本回合；任务完成时闭包侧向 bus 发布
                 // `subagent_continuation:{task_id}`，gate_inbound 拦截后走
                 // dispatch_continuation → handle_cluster_continuation 全复用
-                // （快照加载 + 续行 + 持久化 + remove_continuation 自清）。
+                // （单飞闸认领 + 快照加载 + 续行 + 持久化 + finish_handling
+                // 收口自清——磁盘快照保留到最终回复持久化后，发现 F 2026-09-11）。
                 //
                 // 快照保存必须 **inline await**（不能像 __ASYNC__ 那样
                 // spawn）：后台子代理毫秒级即可完成并回灌，spawn 式保存要

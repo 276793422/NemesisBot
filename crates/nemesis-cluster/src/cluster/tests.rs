@@ -6600,3 +6600,69 @@ async fn health_probe_loop_probes_offline_every_fifth_tick() {
     let after = failures();
     assert_eq!(after, 1, "tick 5 恰好探一次（实得 {after}）");
 }
+
+// ---------------------------------------------------------------------
+// 复活也是「节点发现」（T1 真机缺陷修复回归）：广播被隔离的拓扑里
+// announce 永远不来，Offline→Online 探针翻转是唯一上线信号——
+// on_node_discovered（停车场 sweep / 看板收编）必须同样触发。
+// ---------------------------------------------------------------------
+
+/// mark_peer_healthy：Offline→Online 翻转触发回调（role/category 取注册表），
+/// 已 Online 的重复确认不重复触发（幂等）。
+#[test]
+fn mark_peer_healthy_recovery_fires_node_discovered() {
+    let cluster = Cluster::new(make_config());
+    cluster.register_node(ExtendedNodeInfo {
+        base: nemesis_types::cluster::NodeInfo {
+            id: "node-b-test".into(),
+            name: "Node-B".into(),
+            role: nemesis_types::cluster::NodeRole::Worker,
+            address: "192.168.137.237:11958".into(),
+            category: "development".into(),
+            last_seen: chrono::Local::now().to_rfc3339(),
+        },
+        status: NodeStatus::Offline,
+        capabilities: vec![],
+        tags: vec![],
+        addresses: vec![],
+        node_type: "agent".into(),
+    });
+
+    let fired: Arc<Mutex<Vec<(String, String, String)>>> = Arc::new(Mutex::new(Vec::new()));
+    let sink = fired.clone();
+    cluster.set_on_node_discovered(Arc::new(move |id, role, category| {
+        sink.lock()
+            .push((id.to_string(), role.to_string(), category.to_string()));
+    }));
+
+    cluster.mark_peer_healthy("node-b-test");
+    {
+        let events = fired.lock();
+        assert_eq!(
+            events.len(),
+            1,
+            "Offline→Online 翻转应触发恰好一次回调（实得 {}）",
+            events.len()
+        );
+        assert_eq!(events[0].0, "node-b-test");
+        assert_eq!(events[0].1, "worker", "role 取注册表规范词表");
+        assert_eq!(events[0].2, "development");
+    }
+
+    // 已 Online：重复确认不再触发。
+    cluster.mark_peer_healthy("node-b-test");
+    assert_eq!(fired.lock().len(), 1, "已 Online 的重复确认必须幂等不触发");
+}
+
+/// 不在册节点：mark_peer_healthy 不炸、不触发回调（保守 no-op）。
+#[test]
+fn mark_peer_healthy_unknown_node_is_noop() {
+    let cluster = Cluster::new(make_config());
+    let fired: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
+    let sink = fired.clone();
+    cluster.set_on_node_discovered(Arc::new(move |id, _role, _category| {
+        sink.lock().push(id.to_string());
+    }));
+    cluster.mark_peer_healthy("ghost-node");
+    assert!(fired.lock().is_empty(), "未知节点不得触发回调");
+}

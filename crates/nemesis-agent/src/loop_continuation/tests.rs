@@ -3230,3 +3230,81 @@ fn merge_overwrites_existing_real_result_idempotently() {
     );
     assert_eq!(merged[1].content, "b 的结果");
 }
+
+// ---------------------------------------------------------------------------
+// 发现 F 2026-09-11 真机根修：单飞闸 + 快照延后回收
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn test_claim_handling_single_flight() {
+    let manager = ContinuationManager::new();
+
+    // 首次认领成功；重复认领被拒（防重复回调双路处理）。
+    assert!(manager.claim_handling("task-sf").await);
+    assert!(!manager.claim_handling("task-sf").await);
+
+    // 放行后可再次认领（新回调/恢复路径合法重入）。
+    manager.release_handling("task-sf").await;
+    assert!(manager.claim_handling("task-sf").await);
+}
+
+#[tokio::test]
+async fn test_finish_handling_defers_disk_snapshot_removal() {
+    let tmp = TempDir::new().unwrap();
+    let manager = ContinuationManager::with_disk_store(tmp.path());
+
+    manager
+        .save_continuation(
+            "task-defer",
+            vec![make_message("user", "Query")],
+            "tc_df",
+            "rpc",
+            "chat_df",
+            "sess_df",
+            "",
+        )
+        .await;
+
+    // 认领后、收口前：磁盘快照必须仍在（崩溃安全网——发现 F 修复点）。
+    assert!(manager.claim_handling("task-defer").await);
+    let snap_path = tmp.path().join("cluster").join("rpc_cache").join("task-defer.json");
+    assert!(snap_path.exists(), "磁盘快照应在处理期间保留");
+
+    // 收口：内存条目 + 磁盘快照此刻才回收，闸位释放。
+    manager.finish_handling("task-defer").await;
+    assert!(!manager.has_continuation("task-defer").await);
+    assert!(!snap_path.exists(), "收口后磁盘快照应被回收");
+    assert!(manager.claim_handling("task-defer").await, "收口后闸位应可重新认领");
+}
+
+#[test]
+fn merge_keeps_existing_real_result_over_late_not_found() {
+    // 发现 G（2026-09-11 真机根修）：崩溃恢复路径里盘上快照已带**真实结果**
+    // （step 4 合入后写回），恢复轮询 query_task_result 落在 B 端存档清理之后
+    // → 回灌 "remote task not found"——不得覆盖盘上幸存的真实结果。
+    // 只有 repair 合成的占位才可被替换。
+    let real = LlmMessage {
+        role: "tool".to_string(),
+        content: "kangjinlong\nFilesystem ... 366G".to_string(),
+        tool_calls: None,
+        tool_call_id: Some("call_g".to_string()),
+        reasoning_content: None,
+        images: Vec::new(),
+    };
+    let msgs = vec![
+        make_message("user", "查主机"),
+        assistant_with_tool_call("call_g"),
+        real,
+    ];
+    let merged = super::merge_real_tool_result(
+        msgs,
+        "call_g",
+        "Error: remote task not found".to_string(),
+    );
+    assert_eq!(merged.len(), 3, "不覆盖也不追加");
+    assert_eq!(
+        merged[2].content,
+        "kangjinlong\nFilesystem ... 366G",
+        "盘上真实结果保留，not-found 被拒"
+    );
+}

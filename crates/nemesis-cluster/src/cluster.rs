@@ -121,7 +121,11 @@ pub struct Cluster {
     /// `(node_id, role, category)`。gateway 用它把新节点自动收编进看板
     /// 频道；first-join 语义（成员零行才入）由闭包实现方裁决——cluster
     /// 不依赖 board。未注册时为零开销 no-op。
-    on_node_discovered: Mutex<Option<Arc<dyn Fn(&str, &str, &str) + Send + Sync>>>,
+    ///
+    /// Arc 包裹：G2 探针循环在 spawn 出去的任务里运行（不持 &self），
+    /// 必须能活读这个槽——探针复活也是「节点发现」（见
+    /// `fire_recovered_callback`）。
+    on_node_discovered: Arc<Mutex<Option<Arc<dyn Fn(&str, &str, &str) + Send + Sync>>>>,
 }
 
 impl Cluster {
@@ -172,7 +176,7 @@ impl Cluster {
             cluster_task_list: Mutex::new(None),
             cluster_work_queue: Mutex::new(None),
             call_with_context_fn: Mutex::new(None),
-            on_node_discovered: Mutex::new(None),
+            on_node_discovered: Arc::new(Mutex::new(None)),
         }
     }
 
@@ -277,7 +281,7 @@ impl Cluster {
             cluster_task_list: Mutex::new(None),
             cluster_work_queue: Mutex::new(None),
             call_with_context_fn: Mutex::new(None),
-            on_node_discovered: Mutex::new(None),
+            on_node_discovered: Arc::new(Mutex::new(None)),
         }
     }
 
@@ -678,6 +682,26 @@ impl Cluster {
     /// 探针走 AEAD 加密的 RPC 通道：**"TCP 通但握手/解密失败"同样计为失败**
     /// —— 探的是可通信性而非端口存活。跳过本节点；`interval=0` 不进入本循环
     /// （调用方 `start()` 已判断）。
+    /// 探针 / 手动 ping 复活对端时触发节点发现回调（单一真相源，两个调用方：
+    /// G2 探针循环任务 + `mark_peer_healthy`）。
+    ///
+    /// 广播被隔离的部署形态（多宿主主机跨网段、AP 隔离）里 announce 永远
+    /// 不来，Offline→Online 的探针翻转是唯一的「节点上线」信号——停车场
+    /// sweep / 看板收编必须同样感知，否则静态 peer 部署下停车场永不复活。
+    /// 幂等由调用方转移门保证（`record_probe_success` 只在翻转时返回 true；
+    /// `mark_peer_healthy` 自查翻转前状态）+ gateway 侧 park_sweep_gate 节流。
+    fn fire_recovered_callback(
+        on_discovered: &Mutex<Option<Arc<dyn Fn(&str, &str, &str) + Send + Sync>>>,
+        registry: &PeerRegistry,
+        node_id: &str,
+    ) {
+        if let Some(cb) = on_discovered.lock().clone()
+            && let Some(info) = registry.get(node_id)
+        {
+            cb(node_id, info.base.role.as_role_str(), &info.base.category);
+        }
+    }
+
     fn start_health_check_loop(&self, interval: Duration, failure_threshold: u32) {
         let handle = match tokio::runtime::Handle::try_current() {
             Ok(h) => h,
@@ -688,6 +712,8 @@ impl Cluster {
         let registry = self.registry.clone();
         let rpc_client = self.rpc_client.lock().clone();
         let local_node_id = self.node_id.clone();
+        // Arc 克隆进任务：探针复活时活读回调槽（gateway 组装晚于 start() 也能读到）
+        let on_discovered = self.on_node_discovered.clone();
 
         handle.spawn(async move {
             // 错过 tick 用 Delay 追赶语义（不补帧），避免卡顿后连发风暴
@@ -760,6 +786,15 @@ impl Cluster {
                                         );
                                         logger::log_discovery_info(
                                             "health probe recovered, marked Online",
+                                        );
+                                        // 复活也是「节点发现」：广播被隔离的拓扑（多宿主
+                                        // 主机跨网段、AP 隔离）里 announce 永远不来，探针
+                                        // 翻转是唯一的 Offline→Online 信号源——停车场
+                                        // sweep / 看板收编必须同样感知（T1 真机缺陷修复）。
+                                        Self::fire_recovered_callback(
+                                            &on_discovered,
+                                            &registry,
+                                            &node_id,
                                         );
                                     }
                                 }
@@ -1783,8 +1818,20 @@ impl Cluster {
     /// succeeded). Refreshes `last_health_check` to now and ensures the peer
     /// is marked Online. Use this whenever an external reachability check
     /// confirms the peer is alive — independent of the UDP discovery loop.
+    ///
+    /// Offline→Online 翻转同样触发 `on_node_discovered`（复活也是节点发现，
+    /// 与 G2 探针复活同语义，见 `fire_recovered_callback`）；已 Online 的
+    /// 重复确认不触发（幂等）。
     pub fn mark_peer_healthy(&self, node_id: &str) {
+        let was_offline = self
+            .registry
+            .get(node_id)
+            .map(|info| info.status != NodeStatus::Online)
+            .unwrap_or(false);
         self.registry.mark_healthy(node_id);
+        if was_offline {
+            Self::fire_recovered_callback(&self.on_node_discovered, &self.registry, node_id);
+        }
     }
 
     /// Record a failed connectivity probe (e.g. `nodes_ping` timed out or

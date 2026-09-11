@@ -22,7 +22,7 @@ use tracing::{debug, info, warn};
 use crate::context::RequestContext;
 use crate::r#loop::{LlmMessage, LlmProvider, Tool};
 use crate::session::SessionStore;
-use crate::types::ToolCallInfo;
+use crate::types::{ToolCallInfo, TOOL_OUTCOME_UNKNOWN};
 
 /// Trait for looking up tools by name.
 pub trait ToolLookup {
@@ -474,6 +474,11 @@ pub struct ContinuationManager {
     disk_store: Option<ContinuationStore>,
     /// Timeout for waiting on the save barrier.
     barrier_timeout: Duration,
+    /// 单飞闸（发现 F 2026-09-11 真机根修）：正在处理续行的 task_id 集合。
+    /// 进程内存态——崩溃即随进程消失，这正是期望行为：磁盘快照保留到最终
+    /// 回复持久化后，崩溃后 [`ContinuationStore::recover_to_manager`]
+    /// 仍可从盘上恢复。
+    handling: std::sync::Mutex<std::collections::HashSet<String>>,
 }
 
 impl ContinuationManager {
@@ -483,6 +488,7 @@ impl ContinuationManager {
             continuations: Mutex::new(HashMap::new()),
             disk_store: None,
             barrier_timeout: Duration::from_secs(5),
+            handling: std::sync::Mutex::new(std::collections::HashSet::new()),
         }
     }
 
@@ -497,6 +503,7 @@ impl ContinuationManager {
             continuations: Mutex::new(HashMap::new()),
             disk_store: Some(disk_store),
             barrier_timeout: Duration::from_secs(5),
+            handling: std::sync::Mutex::new(std::collections::HashSet::new()),
         };
         // Recover any pending snapshots from disk
         if let Some(ref store) = manager.disk_store {
@@ -795,6 +802,36 @@ impl ContinuationManager {
         }
     }
 
+    /// 单飞闸·认领（发现 F 2026-09-11 真机根修）：认领该任务的续行处理权。
+    /// 返回 `false` = 已有在途处理（重复回调诚实跳过）。
+    ///
+    /// 必须在加载**之前**认领：磁盘快照现在保留到收口（[`Self::finish_handling`]），
+    /// 重复回调会经 `try_load_from_disk` 盘上回退命中——没有认领闸就会双路处理、
+    /// 双份回复。闸本身是进程内存态，崩溃即消失（期望行为：磁盘快照在崩溃场景
+    /// 下必须存活，供重启后 `recover_to_manager` 捞回）。
+    pub async fn claim_handling(&self, task_id: &str) -> bool {
+        let mut set = self.handling.lock().unwrap_or_else(|e| e.into_inner());
+        set.insert(task_id.to_string())
+    }
+
+    /// 单飞闸·放行：认领后决定不处理的提前返回路径调用（如快照加载未命中）。
+    pub async fn release_handling(&self, task_id: &str) {
+        let mut set = self.handling.lock().unwrap_or_else(|e| e.into_inner());
+        set.remove(task_id);
+    }
+
+    /// 单飞闸·收口 + 快照回收（发现 F 2026-09-11 真机根修）：最终回复已持久化，
+    /// 此刻才回收内存条目与磁盘快照。
+    ///
+    /// 原实现在续行处理开头（加载完成后立即）整删内存+盘——回调到达到回复落盘
+    /// 之间的高危窗口（LLM 续行 10s-数分钟）里磁盘安全网已被自己拆掉，窗口内
+    /// 崩溃 = 续行永久丢失（真机两轮复现：快照在处理启动 0.3s 内从盘上消失，
+    /// 重启后无物可恢复）。
+    pub async fn finish_handling(&self, task_id: &str) {
+        self.release_handling(task_id).await;
+        self.remove_continuation(task_id).await;
+    }
+
     /// Check whether a continuation exists in memory.
     pub async fn has_continuation(&self, task_id: &str) -> bool {
         let conts = self.continuations.lock().await;
@@ -953,6 +990,18 @@ pub(crate) fn merge_real_tool_result(
         .iter_mut()
         .find(|m| m.role == "tool" && m.tool_call_id.as_deref() == Some(tool_call_id))
     {
+        // 发现 G（2026-09-11 真机根修）：快照里该 tool_call 已带**真实结果**
+        // （step 4 合入后写回，见下）时不得被后到的查询结果覆盖——A 崩溃恢复
+        // 轮询 query_task_result 常落在 B 端结果存档清理之后（回调成功即删，
+        // persist_result 只兜底回调失败），回灌的是 "remote task not found"；
+        // 若放行替换，盘上幸存的真实结果反被 not-found 冲掉。仅当现有内容是
+        // repair_tool_message_pairs 合成的占位时才替换。
+        let is_placeholder = slot
+            .content
+            .starts_with(&format!("[{TOOL_OUTCOME_UNKNOWN}]"));
+        if !is_placeholder {
+            return messages;
+        }
         *slot = real;
     } else {
         messages.push(real);
@@ -1003,6 +1052,15 @@ pub async fn handle_cluster_continuation<T: ToolLookup>(
         .to_conversation_event();
         mgr.emit_sync(event).await;
     }
+    // 0. 单飞闸（发现 F 2026-09-11 根修）：认领处理权防重复回调双路处理。
+    // 必须先于加载认领——磁盘快照保留到收口，重复回调会经盘上回退命中。
+    if !manager.claim_handling(task_id).await {
+        debug!(
+            "[Continuation] task {task_id} 已有在途处理（重复回调诚实跳过）"
+        );
+        return;
+    }
+
     // 1. Load continuation snapshot.
     let cont_data = match manager.load_continuation(task_id).await {
         Some(data) => data,
@@ -1015,6 +1073,7 @@ pub async fn handle_cluster_continuation<T: ToolLookup>(
             // so silently skip. Real cluster_rpc continuations survive
             // crashes via disk fallback (try_load_from_disk), so a miss
             // here means there genuinely was nothing to resume.
+            manager.release_handling(task_id).await;
             debug!(
                 "[Continuation] No continuation for task_id={} (likely dashboard-initiated peer_chat, skipping)",
                 task_id
@@ -1033,8 +1092,12 @@ pub async fn handle_cluster_continuation<T: ToolLookup>(
         task_response.to_string()
     };
 
-    // 3. Remove the continuation now that we have the data.
-    manager.remove_continuation(task_id).await;
+    // 3. 快照回收已推迟（发现 F 2026-09-11 根修）：原实现在此处立即
+    // `remove_continuation`（内存+盘整删）——回调到达到最终回复持久化之间的
+    // 高危窗口（LLM 续行 10s-数分钟）里磁盘安全网已被自己拆掉，窗口内崩溃 =
+    // 续行永久丢失（真机两轮复现）。现改为：磁盘快照保留到收口（step 6 之后的
+    // `finish_handling`），进程崩溃时 `recover_to_manager` 仍能从盘上捞回。
+    // 重复回调由 step 0 的单飞闸拦截，不依赖提前删除。
 
     // 4. Build messages: snapshot + real tool result.
     //
@@ -1050,6 +1113,30 @@ pub async fn handle_cluster_continuation<T: ToolLookup>(
         cont_data.messages.clone(),
         &cont_data.tool_call_id,
         tool_result_content,
+    );
+
+    // 发现 G（2026-09-11 真机根修）：合入真实结果后**立即写回快照**（内存 +
+    // 磁盘）。否则「回调已到、续行未完」窗口内崩溃，盘上仍是无结果的旧快照；
+    // 恢复轮询 query_task_result 又落在 B 端存档清理之后（persist_result 只
+    // 兜底回调失败，成功回调即消费删除）→ 恢复拿到的只有 "remote task not
+    // found"。写回后快照即恢复真相源：重启 → recover_to_manager → merge 因
+    // 真实结果在案不被 not-found 覆盖（见 merge_real_tool_result）→ 续行
+    // 用盘上结果照常完成。元数据（channel/chat_id/session_key/peer_id）不变，
+    // image 字节不落盘（save_continuation_with_images 的既有剥字节水合语义）。
+    manager
+        .save_continuation_with_images(
+            task_id,
+            messages.clone(),
+            &cont_data.tool_call_id,
+            &cont_data.channel,
+            &cont_data.chat_id,
+            &cont_data.session_key,
+            &cont_data.peer_id,
+            &cont_data.image_refs_by_user_turn.iter().flatten().cloned().collect::<Vec<String>>(),
+        )
+        .await;
+    debug!(
+        "[Continuation] task {task_id} 合入回调结果后快照已写回（崩溃安全网更新，发现 G）"
     );
 
     // F-F（2026-09-04 四轮盲审）：vision=no 模型接管续行时，恢复路径
@@ -1279,6 +1366,10 @@ pub async fn handle_cluster_continuation<T: ToolLookup>(
             cont_data.channel
         );
     }
+
+    // 7. 收口（发现 F 2026-09-11 根修）：最终回复已持久化/投递，此刻才回收
+    // 内存条目 + 磁盘快照（原 step 3 提前整删的替代落点）。
+    manager.finish_handling(task_id).await;
 
     // Emit conversation_end observer event.
     let duration_ms = start_time.elapsed().as_millis() as u64;
