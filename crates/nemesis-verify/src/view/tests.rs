@@ -10,7 +10,7 @@ use crate::fixtures::{V4Harness, now_secs};
 use crate::keygen;
 use crate::pe::append_certificate_table;
 use crate::verify::VerifyOutcome;
-use crate::{cert, crypto, verify};
+use crate::{GLOBAL_STATE_LOCK as TEST_LOCK, cert, crypto, verify};
 use sha2::Digest;
 
 // ===== 本地最小载体夹具（pe/envelope 的 tests 模块私有，此处独立复制口径）=====
@@ -298,6 +298,7 @@ fn crafted_footer_yields_empty_view() {
 
 #[test]
 fn view_and_verify_agree_on_primary() {
+    let _g = TEST_LOCK.lock().unwrap(); // verify_bytes 走到第⑥步（吊销读 env），必须持锁
     let h = V4Harness::new();
     let signed = h.sign_raw(b"agreement target", 42);
     assert_eq!(list_signatures(&signed).len(), 1);

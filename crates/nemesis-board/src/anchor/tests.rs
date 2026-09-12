@@ -225,9 +225,10 @@ fn path_safety_rejects_symlink_escape_at_runtime_backstop() {
 }
 
 // ---------- Windows 形态用例（盘符 / UNC / 8.3 短名）----------
+// 形态闸是 FS 无关契约：盘符/UNC 拒收在所有平台生效（2026-09-12 根修，
+// 此前生产代码 cfg(windows) 门控导致 Linux 全放行），本组测试跨平台跑。
 
 #[test]
-#[cfg(windows)]
 fn path_safety_rejects_drive_and_unc_forms_at_parse_time() {
     for raw in [
         "C:\\Windows\\system32\\cmd.exe",

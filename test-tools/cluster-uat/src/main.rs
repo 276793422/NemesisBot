@@ -177,6 +177,26 @@ impl Drop for GatewayProcess {
     }
 }
 
+/// Print the last `max_lines` lines of a gateway log to stdout (CI evidence:
+/// stdout/stderr 都重定向在这个文件里，健康检查失败时倾倒尾部，让 CI 日志
+/// 自带「为什么没起来」的直接证据，而不是无诊断价值的纯超时）。
+fn dump_log_tail(path: &Path, max_lines: usize) {
+    println!("--- gateway log tail: {} ---", path.display());
+    match std::fs::read_to_string(path) {
+        Ok(content) => {
+            let lines: Vec<&str> = content.lines().collect();
+            let skip = lines.len().saturating_sub(max_lines);
+            if skip > 0 {
+                println!("  (... {} earlier lines omitted ...)", skip);
+            }
+            for line in &lines[skip..] {
+                println!("  {}", line);
+            }
+        }
+        Err(e) => println!("  (cannot read log: {})", e),
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Configuration helpers
 // ---------------------------------------------------------------------------
@@ -265,14 +285,16 @@ async fn start_gateway_and_wait(
         .map_err(|e| format!("Cannot start {}: {}", name, e))?;
 
     // Wait for HTTP health check (gateway web server up)
+    // 30s（2026-09-12）：重启流发生在其余 3 个 gateway + 负载仍在跑时，CI
+    // runner 上 15s 偶发不够（与 Phase 7 同一族 flake；本机余量充足）。
     let health_url = format!("http://127.0.0.1:{}/health", node.health_port);
-    wait_for_http(&health_url, Duration::from_secs(15))
+    wait_for_http(&health_url, Duration::from_secs(30))
         .await
         .map_err(|e| format!("{} not healthy after start: {}", name, e))?;
 
     // Wait for the RPC server to be listening
     let rpc_addr = format!("127.0.0.1:{}", node.rpc_port);
-    let rpc_ready = tokio::time::timeout(Duration::from_secs(15), async {
+    let rpc_ready = tokio::time::timeout(Duration::from_secs(30), async {
         loop {
             if tokio::net::TcpStream::connect(&rpc_addr).await.is_ok() {
                 return true;
@@ -1025,13 +1047,25 @@ async fn main() {
     // ------------------------------------------------------------------
     println!("\n--- Phase 7: Health checks ---");
 
+    // 2026-09-12 CI flake 根修：旧的「逐节点 15s 串行窗」在 CI runner 上
+    // 偶发全灭（同 commit e139aaa 03:29 绿 / 05:25 红；4 个 debug gateway
+    // 并发装配远慢于本机，且 A 慢会吃光 B/C/D 的窗口——旧实现里 D 实际
+    // 等到 spawn 后 61s 仍未就绪）。改为 4 路并发轮询 + 共享 90s deadline；
+    // 失败时倾倒各节点 gateway.log 尾部（stdout/stderr 都在里面）+ 进程
+    // 存活状态——下一次红自带根因证据，不再是无诊断价值的纯超时。
+    let health_handles: Vec<_> = NODES
+        .iter()
+        .map(|node| {
+            let url = format!("http://127.0.0.1:{}/health", node.health_port);
+            tokio::spawn(async move { wait_for_http(&url, Duration::from_secs(90)).await })
+        })
+        .collect();
     let mut all_healthy = true;
-    for (i, _gw) in [&mut gw_a, &mut gw_b, &mut gw_c, &mut gw_d]
-        .iter_mut()
-        .enumerate()
-    {
-        let url = format!("http://127.0.0.1:{}/health", NODES[i].health_port);
-        match wait_for_http(&url, Duration::from_secs(15)).await {
+    for (i, handle) in health_handles.into_iter().enumerate() {
+        match handle
+            .await
+            .unwrap_or_else(|e| Err(anyhow::anyhow!("health task failed: {}", e)))
+        {
             Ok(_) => println!("  {} ready (health OK)", NODES[i].name),
             Err(e) => {
                 eprintln!("  {} NOT ready: {}", NODES[i].name, e);
@@ -1042,6 +1076,12 @@ async fn main() {
 
     if !all_healthy {
         eprintln!("\nERROR: Not all gateways are healthy. Aborting.");
+        // 证据倾倒（在 kill 之前）：进程退出状态（is_running 对已退出的
+        // 节点打印 exit status）+ gateway.log 尾部，直接进 CI 日志。
+        for gw in [&mut gw_a, &mut gw_b, &mut gw_c, &mut gw_d] {
+            let _ = gw.is_running();
+            dump_log_tail(&gw.log_path, 60);
+        }
         gw_d.kill().await;
         gw_c.kill().await;
         gw_b.kill().await;

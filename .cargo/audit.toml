@@ -1,0 +1,16 @@
+# cargo-audit 配置（RustSec 双闸的 cargo-audit 一侧；CI 走
+# .github/workflows/supply-chain.yml 的 cargo-audit job，裸 `cargo audit` 读取本文件）
+#
+# 与 deny.toml [advisories].ignore 保持同源同步（双闸差异说明见该文件头注释 +
+# docs/INFO/2026-08-31_dependency-rules.md 台账：deny 扫激活依赖图，audit 扫
+# lockfile 全集）。
+
+[advisories]
+ignore = [
+    # rsa 0.9.10 Marvin Attack（RUSTSEC-2023-0071，无修复版本）。传递链：cms 0.2
+    # `builder` feature 硬性捆绑 rsa ← nemesis-verify（v4 CMS SignedData）。项目侧
+    # 零 RSA 操作暴露：v4 全链路只用 ECDSA P-256（RFC 6979），Marvin Attack 需要
+    # RSA 解密/signing oracle，攻击面不可达。移除条件：cms 上游把 builder 拆出
+    # rsa，或 RustSec 出 patched 版本。（2026-09-12，与 deny.toml 豁免同源）
+    "RUSTSEC-2023-0071",
+]

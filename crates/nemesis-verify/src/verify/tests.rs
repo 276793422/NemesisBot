@@ -9,8 +9,16 @@
 //! 载体覆盖：raw（九态主载体）+ PE（证书表定位 + authenticode digest 分支，
 //! 最小 PE 手工构造，布局假设与 pe/tests.rs build_pe 同款）。ELF 载体的
 //! footer/L 契约在 envelope/tests.rs S3-4 段覆盖，本文件不重复。
+//!
+//! ⚠ env 串行契约（2026-09-12 CI Untrusted 假红根修）：**凡能走到 verify_bytes
+//! 第⑥步（吊销）的测试必须持有 crate 根 `GLOBAL_STATE_LOCK`**——revocation
+//! 测试持锁改 `NEMESIS_REVOCATION_URL`/`NEMESIS_STRICT_OFFLINE`（CI 4 核慢机
+//! 上竞态窗口内：死 URL 拉取失败 → strict → OCSP 不可达 → Untrusted 假红）。
+//! 在第⑤步及之前出结果的测试（NoSignature/Malformed/Unsupported/Untrusted/
+//! Expired/Tampered/SignatureInvalid）不触 env，无需持锁。
 
 use super::*;
+use crate::GLOBAL_STATE_LOCK as TEST_LOCK;
 use crate::envelope::{FORMAT_TAG_RAW, attach_v4};
 use crate::fixtures::{V4Harness, now_secs};
 use crate::pe::append_certificate_table;
@@ -58,6 +66,7 @@ fn foreign_leaf_sk() -> SigningKey {
 
 #[test]
 fn valid_raw_carrier() {
+    let _g = TEST_LOCK.lock().unwrap(); // 走到第⑥步（吊销读 env），必须持锁
     let h = V4Harness::new();
     let content = b"S4-1 valid raw payload".to_vec();
     let signed = h.sign_raw(&content, 1_800_000_000);
@@ -78,6 +87,7 @@ fn valid_raw_carrier() {
 
 #[test]
 fn valid_pe_certificate_table() {
+    let _g = TEST_LOCK.lock().unwrap(); // 走到第⑥步（吊销读 env），必须持锁
     let h = V4Harness::new();
     let pe = base_pe();
     // Authenticode 语义：CMS messageDigest = 整个 PE 文件的 authenticode digest
@@ -107,6 +117,7 @@ fn valid_pe_certificate_table() {
 
 #[test]
 fn sign_content_v4_raw_roundtrip_valid() {
+    let _g = TEST_LOCK.lock().unwrap(); // 走到第⑥步（吊销读 env），必须持锁
     let h = V4Harness::new();
     let signed = sign_content_v4(b"s51 raw payload", &h.h.leaf_sk, 42_000, &h.h.chain(), None)
         .expect("sign_content_v4 raw");
@@ -120,6 +131,7 @@ fn sign_content_v4_raw_roundtrip_valid() {
 fn sign_content_v4_pe_roundtrip_valid() {
     // PE 臂：helper 内部走 authenticode_digest + Certificate Table（exe-sign-tool
     // sign 的实际路径），签名文件 verify_bytes Valid 且 opus publisher 可 view 穿透。
+    let _g = TEST_LOCK.lock().unwrap(); // 走到第⑥步（吊销读 env），必须持锁
     let h = V4Harness::new();
     let pe = base_pe();
     let signed = sign_content_v4(
@@ -165,6 +177,7 @@ fn min_elf64_le() -> Vec<u8> {
 fn sign_content_v4_elf_roundtrip_valid() {
     // ELF 臂：footer 载体 + 保护域 = codec L（compute_l Some(L) 路径——raw 走
     // None 臂、PE 走 authenticode，只有 ELF 覆盖这里）。
+    let _g = TEST_LOCK.lock().unwrap(); // 走到第⑥步（吊销读 env），必须持锁
     let h = V4Harness::new();
     let elf = min_elf64_le();
     let signed = sign_content_v4(&elf, &h.h.leaf_sk, 44_000, &h.h.chain(), None)

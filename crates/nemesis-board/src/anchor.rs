@@ -283,15 +283,23 @@ pub fn validate_anchor_path_shape(raw: &str) -> Result<(), String> {
     if rel.is_absolute() {
         return Err(format!("锚点路径拒绝绝对路径：{raw}"));
     }
-    #[cfg(windows)]
-    {
-        let bytes = raw.as_bytes();
-        if raw.starts_with("\\\\") {
-            return Err(format!("锚点路径拒绝 UNC 形态：{raw}"));
-        }
-        if bytes.len() >= 2 && bytes[0].is_ascii_alphabetic() && bytes[1] == b':' {
-            return Err(format!("锚点路径拒绝盘符形态：{raw}"));
-        }
+    // Windows 形态（UNC / 盘符 / 根相对 `\foo`）在**所有平台**拒绝——本闸
+    // 契约是「解析期，FS 无关」（见函数头注释），集群是跨平台的：Linux
+    // master 审 Windows worker 形态的锚点必须同样判不安全，不能因运行平台
+    // 放空（`C:\evil` 在 Linux 上只是普通文件名字符串，is_absolute=false，
+    // 此前 cfg(windows) 门控导致 Linux 全放行——2026-09-12 CI Linux 红根修，
+    // remote_file_anchor_gate / parent_malicious_anchor 两测试实证）。
+    if raw.starts_with("\\\\") {
+        return Err(format!("锚点路径拒绝 UNC 形态：{raw}"));
+    }
+    let bytes = raw.as_bytes();
+    if bytes.len() >= 2 && bytes[0].is_ascii_alphabetic() && bytes[1] == b':' {
+        return Err(format!("锚点路径拒绝盘符形态：{raw}"));
+    }
+    if bytes.first() == Some(&b'\\') {
+        // Windows 上由下方 components() 的 RootDir 臂兜住；非 Windows 平台
+        // `\` 是普通字符，需在此显式拒绝根相对形态。
+        return Err(format!("锚点路径拒绝根相对形态（\\foo）：{raw}"));
     }
     for comp in rel.components() {
         match comp {

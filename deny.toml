@@ -44,6 +44,13 @@ ignore = [
   # 只解析本机 UI 自带字体、不解析不可信输入。等 winit/ab_glyph 生态迁移
   # skrifa 后移除本豁免。台账：docs/INFO/2026-08-31_dependency-rules.md
   { id = "RUSTSEC-2026-0192", reason = "ttf-parser unmaintained; transitive via winit UI stack, parses only bundled fonts" },
+  # rsa 0.9.10 Marvin Attack（RUSTSEC-2023-0071，无修复版本）。传递链：cms 0.2
+  # `builder` feature 硬性捆绑 rsa（feature 列表含 rsa，default-features=false 也
+  # 关不掉）← nemesis-verify（v4 CMS SignedData）。项目侧零 RSA 操作暴露：v4 全
+  # 链路只用 ECDSA P-256（RFC 6979），Marvin Attack 需要 RSA 解密/signing oracle，
+  # 攻击面不可达。移除条件：cms 上游把 builder 拆出 rsa，或 RustSec 出 patched
+  # 版本。台账：docs/INFO/2026-08-31_dependency-rules.md（2026-09-12）
+  { id = "RUSTSEC-2023-0071", reason = "rsa Marvin Attack; hard-bundled by cms builder feature, project is ECDSA-only (no RSA oracle), no upstream fix" },
 ]
 
 [licenses]

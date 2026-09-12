@@ -138,7 +138,8 @@ tokio-tungstenite = "0.26"
 
 # D2 (devtool-upgrade): checkpoint git 影子库——只做本地 repo/index/checkout/diff，
 # 无传输需求（ssh/https 全关 = 不引 openssl），libgit2 源码捆绑编译。
-git2 = { version = "0.20", default-features = false }
+# 0.21：修 RUSTSEC-2026-0183/0184（git2 unsound，0.21.0 起修复；cargo-deny 闸）
+git2 = { version = "0.21", default-features = false }
 
 # Crypto
 # oid feature：cms builder 要求 Digest 的 AssociatedOid（S0-6 坑位 5b）

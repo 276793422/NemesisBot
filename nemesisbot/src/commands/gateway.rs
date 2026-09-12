@@ -749,10 +749,10 @@ fn parse_ipv4_octets(s: &str) -> Option<(u8, u8, u8, u8)> {
 /// G9 装配侧取数：本机 IP 列表 + 集群注册表已知 peer 地址（**排除本节点
 /// 自己**——本节点注册地址是 get_all_local_ips 首猜，可能恰是要纠正的错
 /// NIC），交给纯函数选对外 NIC。
-#[cfg_attr(
-    not(all(feature = "board", feature = "cluster")),
-    allow(dead_code) // 同上
-)]
+/// `#[cfg]` 整段摘除（非 cfg_attr+dead_code）：签名/函数体引用
+/// `nemesis_cluster::`，feature 关闭时类型路径必须整体出编译（2026-09-12
+/// CI feature-matrix E0433 根修；两个调用点均在 all(board,cluster) 块内）。
+#[cfg(all(feature = "board", feature = "cluster"))]
 fn select_lan_ip_for_advertisement(cluster: &nemesis_cluster::cluster::Cluster) -> Option<String> {
     let local_ips = nemesis_cluster::network::get_all_local_ips();
     let self_id = cluster.node_id();
@@ -2249,20 +2249,17 @@ pub async fn run(local: bool, extra_args: &[String]) -> Result<()> {
     // board 评审依赖集与下方 SharedResources 共享同一 Arc（跨 agent 重启存活）。
     let estop = std::sync::Arc::new(nemesis_agent::estop::EstopState::new());
     info!("[Gateway] Global e-stop (kill switch) initialized (released)");
-    #[cfg_attr(
-        not(all(feature = "board", feature = "cluster")),
-        allow(dead_code, unused_variables)
-    )]
+    // `#[cfg]` 整段摘除（非 cfg_attr+dead_code）：类型位引用
+    // `crate::board_review::`，feature 关闭时必须整体出编译（2026-09-12
+    // CI feature-matrix E0433 根修；消费点均挂同闸）。
+    #[cfg(all(feature = "board", feature = "cluster"))]
     let board_estop_parked = std::sync::Arc::new(std::sync::Mutex::new(Vec::<(
         crate::board_review::ParkedKind,
         i64,
     )>::new()));
     // P4/B2b 自检取证路由表：selfcheck 派发不写 issue_dispatch，callback
     // 凭本表识别取证任务并路由到二段验收（评审任务与回调闭包共享）。
-    #[cfg_attr(
-        not(all(feature = "board", feature = "cluster")),
-        allow(dead_code, unused_variables)
-    )]
+    #[cfg(all(feature = "board", feature = "cluster"))]
     let board_selfcheck_registry = crate::board_review::SelfcheckRegistry::new();
     #[cfg(feature = "cluster")]
     {
