@@ -1,10 +1,10 @@
 use super::*;
 use crate::sign_response;
-use ed25519_dalek::SigningKey;
+use p256::ecdsa::SigningKey;
 
 fn keypair(seed: u8) -> (SigningKey, VerifyingKey) {
-    let sk = SigningKey::from_bytes(&[seed; 32]);
-    let vk = sk.verifying_key();
+    let sk = SigningKey::from_bytes(&[seed; 32].into()).expect("seed is a valid scalar");
+    let vk = *sk.verifying_key();
     (sk, vk)
 }
 
@@ -46,6 +46,43 @@ fn revoke_hit_key_fp() {
         o => panic!("expected Revoked, got {:?}", o),
     }
     match check_revocation(&[0xBBu8; 32], &[0u8; 32], &[0u8; 32], None, &vk) {
+        RevocationResult::NotRevoked => {}
+        o => panic!("expected NotRevoked, got {:?}", o),
+    }
+}
+
+#[test]
+fn revoke_hit_file_hash() {
+    // S4-4：四维度查序 KeyFp→SigHash→FileHash→Publisher 的 FileHash 臂
+    // （此前 FileHash 只有「不命中」旁证，无命中样本）
+    let _g = TEST_LOCK.lock().unwrap();
+    let (sk, vk) = keypair(4);
+    let target_ch = [0xCBu8; 32];
+    let signed = sign_response(
+        &Crl {
+            version: 1,
+            valid_until: u64::MAX,
+            entries: vec![CrlEntry {
+                dim: RevDim::FileHash,
+                value: hex_encode(&target_ch),
+                revoked_at: 7,
+                reason: "malware".into(),
+            }],
+        },
+        &sk,
+    )
+    .unwrap();
+    seed_cache(signed.payload);
+    // 命中 FileHash（key_fp/sig_hash 不匹配不影响）
+    match check_revocation(&[0u8; 32], &[0u8; 32], &target_ch, None, &vk) {
+        RevocationResult::Revoked(e) => {
+            assert_eq!(e.dim, RevDim::FileHash);
+            assert_eq!(e.reason, "malware");
+        }
+        o => panic!("expected Revoked(FileHash), got {:?}", o),
+    }
+    // content_hash 不匹配 → NotRevoked
+    match check_revocation(&[0u8; 32], &[0u8; 32], &[0xDDu8; 32], None, &vk) {
         RevocationResult::NotRevoked => {}
         o => panic!("expected NotRevoked, got {:?}", o),
     }
@@ -315,18 +352,19 @@ fn ocsp_check_single_all_arms() {
     clear_revocation_env();
 }
 
-// ----- verify_bytes 集成（Revoked / strict-Unknown 拒 / soft-fail 放行）-----
+// ----- verify_bytes 集成（Revoked / strict-Unknown 拒 / soft-fail 放行）
+// S4-1 起 verify_bytes 走 v4 Authenticode 管线：夹具 = V4Harness（真三级链 +
+// CMS + raw 载体）；CRL 由 harness 根私钥签（check_revocation 用链根证书公钥验）。
 
 #[test]
 fn verify_bytes_revoked_via_crl() {
     let _g = TEST_LOCK.lock().unwrap();
     clear_revocation_env();
-    let (sk, vk) = keypair(39);
-    let signed =
-        crate::verify::sign_content(b"revocation integration", &sk, 1000, None, None, None, None)
-            .unwrap();
+    let h = crate::fixtures::V4Harness::new();
+    let signed = h.sign_raw(b"revocation integration", 1_800_000_000);
     use sha2::Digest;
-    let fp: [u8; 32] = sha2::Sha256::digest(vk.to_bytes()).into();
+    let pubkey = crate::crypto::public_key_bytes(&h.h.leaf_vk());
+    let fp: [u8; 32] = sha2::Sha256::digest(pubkey).into();
     let crl = sign_response(
         &crl_with(
             2,
@@ -337,13 +375,13 @@ fn verify_bytes_revoked_via_crl() {
                 reason: "leak".into(),
             }],
         ),
-        &sk,
+        &h.h.root_sk,
     )
     .unwrap();
     let base = serve_map(vec![("/v1/crl", serde_json::to_string(&crl).unwrap())]);
     set_env_url(&base);
 
-    match crate::verify::verify_bytes(&signed, &[vk], 1000) {
+    match crate::verify::verify_bytes(&signed, &h.anchor_fps(), now_secs()) {
         crate::verify::VerifyOutcome::Revoked {
             dim, value, reason, ..
         } => {
@@ -357,15 +395,55 @@ fn verify_bytes_revoked_via_crl() {
 }
 
 #[test]
+fn verify_bytes_revoked_via_file_hash() {
+    // S4-4：FileHash 维度走完整 v4 管线——verify_bytes 传给 check_revocation 的
+    // content_hash = CMS 内嵌 content_digest（raw 载体 = SHA-256(内容)），
+    // 本测钉住该接线值端到端正确（防接成「文件 SHA」之类的错值静默漏报）。
+    let _g = TEST_LOCK.lock().unwrap();
+    clear_revocation_env();
+    let h = crate::fixtures::V4Harness::new();
+    let content = b"file hash revocation";
+    let signed = h.sign_raw(content, 1_800_000_000);
+    use sha2::Digest;
+    let content_digest: [u8; 32] = sha2::Sha256::digest(content).into();
+    let crl = sign_response(
+        &crl_with(
+            2,
+            vec![CrlEntry {
+                dim: RevDim::FileHash,
+                value: hex_encode(&content_digest),
+                revoked_at: 11,
+                reason: "malware".into(),
+            }],
+        ),
+        &h.h.root_sk,
+    )
+    .unwrap();
+    let base = serve_map(vec![("/v1/crl", serde_json::to_string(&crl).unwrap())]);
+    set_env_url(&base);
+
+    match crate::verify::verify_bytes(&signed, &h.anchor_fps(), now_secs()) {
+        crate::verify::VerifyOutcome::Revoked {
+            dim, value, reason, ..
+        } => {
+            assert_eq!(dim, RevDim::FileHash);
+            assert_eq!(value, hex_encode(&content_digest));
+            assert_eq!(reason, "malware");
+        }
+        o => panic!("expected Revoked(FileHash), got {:?}", o),
+    }
+    clear_revocation_env();
+}
+
+#[test]
 fn verify_bytes_soft_fail_unknown_still_valid() {
     let _g = TEST_LOCK.lock().unwrap();
     clear_revocation_env();
-    let (sk, vk) = keypair(40);
-    let signed =
-        crate::verify::sign_content(b"soft fail", &sk, 1000, None, None, None, None).unwrap();
+    let h = crate::fixtures::V4Harness::new();
+    let signed = h.sign_raw(b"soft fail", 1_800_000_000);
     set_env_url(&dead_url()); // CRL 不可达 + 无缓存 + 非 strict
     assert!(matches!(
-        crate::verify::verify_bytes(&signed, &[vk], 1000),
+        crate::verify::verify_bytes(&signed, &h.anchor_fps(), now_secs()),
         crate::verify::VerifyOutcome::Valid { .. }
     ));
     clear_revocation_env();
@@ -375,14 +453,13 @@ fn verify_bytes_soft_fail_unknown_still_valid() {
 fn verify_bytes_strict_unknown_rejects_as_untrusted() {
     let _g = TEST_LOCK.lock().unwrap();
     clear_revocation_env();
-    let (sk, vk) = keypair(41);
-    let signed =
-        crate::verify::sign_content(b"strict reject", &sk, 1000, None, None, None, None).unwrap();
+    let h = crate::fixtures::V4Harness::new();
+    let signed = h.sign_raw(b"strict reject", 1_800_000_000);
     set_env_url(&dead_url());
     unsafe { std::env::set_var("NEMESIS_STRICT_OFFLINE", "1") };
     // CRL 不可达 → Unknown → strict → OCSP 也不可达 → Untrusted
     assert!(matches!(
-        crate::verify::verify_bytes(&signed, &[vk], 1000),
+        crate::verify::verify_bytes(&signed, &h.anchor_fps(), now_secs()),
         crate::verify::VerifyOutcome::Untrusted
     ));
     clear_revocation_env();
@@ -392,11 +469,24 @@ fn verify_bytes_strict_unknown_rejects_as_untrusted() {
 fn verify_bytes_strict_ocsp_fallback_revoked() {
     let _g = TEST_LOCK.lock().unwrap();
     clear_revocation_env();
-    let (sk, vk) = keypair(42);
-    let signed =
-        crate::verify::sign_content(b"strict ocsp", &sk, 1000, None, None, None, None).unwrap();
+    let h = crate::fixtures::V4Harness::new();
+    let content = b"strict ocsp";
+    let signed = h.sign_raw(content, 1_800_000_000);
+    // v4 SigHash 维度 = SHA-256(SignerInfo.signature DER)
+    use sha2::Digest;
+    let cms = h.build_cms(content, 1_800_000_000, &h.h.leaf_sk, &h.h.chain());
+    let ps = crate::envelope::parse_signed_data(&cms).unwrap();
+    let sig_hash: [u8; 32] = sha2::Sha256::digest(&ps.signature).into();
+    let ocsp = crate::revocation::OcspResp {
+        code: "revoked".into(),
+        dim: Some(RevDim::SigHash),
+        value: Some(hex_encode(&sig_hash)),
+        revoked_at: Some(42),
+        reason: Some("leak".into()),
+        crl_ver: 1,
+    };
+    let ocsp = sign_response(&ocsp, &h.h.root_sk).unwrap();
     // 只注册 /v1/crl/query；/v1/crl 无路由 → 断连 → CRL 拉取失败
-    let ocsp = sign_response(&ocsp_resp("revoked"), &sk).unwrap();
     let base = serve_map(vec![(
         "/v1/crl/query",
         serde_json::to_string(&ocsp).unwrap(),
@@ -404,8 +494,11 @@ fn verify_bytes_strict_ocsp_fallback_revoked() {
     set_env_url(&base);
     unsafe { std::env::set_var("NEMESIS_STRICT_OFFLINE", "1") };
 
-    match crate::verify::verify_bytes(&signed, &[vk], 1000) {
-        crate::verify::VerifyOutcome::Revoked { dim, .. } => assert_eq!(dim, RevDim::SigHash),
+    match crate::verify::verify_bytes(&signed, &h.anchor_fps(), now_secs()) {
+        crate::verify::VerifyOutcome::Revoked { dim, value, .. } => {
+            assert_eq!(dim, RevDim::SigHash);
+            assert_eq!(value, hex_encode(&sig_hash));
+        }
         o => panic!("expected Revoked via OCSP fallback, got {:?}", o),
     }
     clear_revocation_env();

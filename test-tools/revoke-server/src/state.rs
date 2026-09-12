@@ -1,7 +1,7 @@
-//! 服务端状态：`RevocationStore`（SQLite 默认）+ 密钥体系（根/CA/发行方）。
+//! 服务端状态：`RevocationStore`（SQLite 默认）+ 密钥体系（根/发行锚/leaf）。
 //!
-//! v3：AppState 持有 `KeyHierarchy`（根私钥签云端响应/CRL + 发行方私钥签 exe + 证书链）。
-//! 取代 v1/v2 的 crkey + signing_key + sym_key（v3 去 AEAD，无 sym_key）。
+//! v4：AppState 持有 X.509 `KeyHierarchy`（根私钥签云端响应/CRL + leaf 私钥签 exe
+//! + 三级证书链）。
 
 use crate::store::{RevocationStore, SqliteStore};
 use anyhow::{Result, anyhow};
@@ -11,7 +11,7 @@ use std::sync::Arc;
 /// 服务端共享状态。
 pub struct AppState {
     pub store: Arc<dyn RevocationStore>,
-    /// 密钥体系：root_sk（签 CRL/云端响应）+ issuer_sk（签 exe）+ issuer_chain_bytes（envelope 带）。
+    /// 密钥体系：root_sk（签 CRL/云端响应）+ leaf_sk（签 exe）+ 三级 X.509 证书链。
     pub hierarchy: KeyHierarchy,
     /// admin 接口鉴权 token。
     pub admin_token: String,

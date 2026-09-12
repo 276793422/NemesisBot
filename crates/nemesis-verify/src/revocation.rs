@@ -15,7 +15,7 @@ use crate::{
     Crl, CrlEntry, RevDim, SignedResponse, crl_match, hex_util::hex_encode, verify_response,
 };
 use anyhow::Result;
-use ed25519_dalek::VerifyingKey;
+use p256::ecdsa::VerifyingKey;
 use std::sync::{Mutex, OnceLock};
 
 /// 吊销查询结果（区分"未吊销"与"无法查询"）。

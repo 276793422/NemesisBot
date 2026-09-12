@@ -14,7 +14,6 @@
 use super::*;
 use axum::extract::FromRequest;
 use nemesis_verify::TrustedKey;
-use nemesis_verify::keygen::generate_hierarchy;
 use nemesis_verify::revocation::OcspReq;
 use nemesis_verify::verify::VerifyOutcome;
 use nemesis_verify::verify_response;
@@ -38,7 +37,8 @@ fn setup_with_token(admin_token: &str) -> Arc<AppState> {
         ))
         .to_string_lossy()
         .into_owned();
-    generate_hierarchy(0, u64::MAX)
+    nemesis_verify::keygen::generate()
+        .expect("generate test key hierarchy")
         .save(&keys_path)
         .expect("save test key hierarchy");
     let state = AppState::new(":memory:", &keys_path, admin_token.to_string())
@@ -316,7 +316,7 @@ async fn verify_empty_store_returns_valid_and_signed() {
     assert_eq!(signed.payload.revoked_at, None);
     assert_eq!(signed.payload.valid_until, u64::MAX);
     // 响应被根私钥签（客户端可验，防 MITM）
-    assert!(verify_response(&signed, &state.hierarchy.root_vk).unwrap());
+    assert!(verify_response(&signed, &state.hierarchy.root_vk()).unwrap());
 }
 
 #[tokio::test]
@@ -342,7 +342,7 @@ async fn verify_handler_revoked_by_key_fp() {
     assert_eq!(signed.payload.reason.as_deref(), Some("key leaked"));
     assert_eq!(signed.payload.crl_ver, 2);
     assert_eq!(signed.payload.trusted_keys_ver, 1);
-    assert!(verify_response(&signed, &state.hierarchy.root_vk).unwrap());
+    assert!(verify_response(&signed, &state.hierarchy.root_vk()).unwrap());
     // 未吊销的其他 key → valid
     let Json(s2) = verify(
         State(state.clone()),
@@ -365,7 +365,7 @@ async fn get_crl_signed_and_versioned() {
     assert_eq!(empty.payload.version, 1);
     assert!(empty.payload.entries.is_empty());
     assert_eq!(empty.payload.valid_until, u64::MAX);
-    assert!(verify_response(&empty, &state.hierarchy.root_vk).unwrap());
+    assert!(verify_response(&empty, &state.hierarchy.root_vk()).unwrap());
     // 加一条吊销 → version +1 且带签名
     state
         .store
@@ -375,7 +375,7 @@ async fn get_crl_signed_and_versioned() {
     assert_eq!(one.payload.version, 2);
     assert_eq!(one.payload.entries.len(), 1);
     assert_eq!(one.payload.entries[0].value, "ab");
-    assert!(verify_response(&one, &state.hierarchy.root_vk).unwrap());
+    assert!(verify_response(&one, &state.hierarchy.root_vk()).unwrap());
 }
 
 #[tokio::test]
@@ -421,7 +421,7 @@ async fn crl_query_valid_then_revoked_by_multiple_dims() {
     assert_eq!(r.revoked_at, None);
     assert_eq!(r.reason, None);
     assert_eq!(r.crl_ver, 1);
-    assert!(verify_response(&signed, &state.hierarchy.root_vk).unwrap());
+    assert!(verify_response(&signed, &state.hierarchy.root_vk()).unwrap());
     // key_fp 维度命中（固定 revoked_at，确定性）
     state
         .store
@@ -571,7 +571,7 @@ async fn trusted_key_lifecycle_through_handlers() {
     assert_eq!(tkl.payload.version, 3);
     assert_eq!(tkl.payload.keys.len(), 1);
     assert_eq!(tkl.payload.keys[0].status, KeyStatus::Revoked);
-    assert!(verify_response(&tkl, &state.hierarchy.root_vk).unwrap());
+    assert!(verify_response(&tkl, &state.hierarchy.root_vk()).unwrap());
     // 审计 trust_upsert
     let Json(audit) = get_audit(State(state.clone()), admin_headers())
         .await
@@ -727,8 +727,9 @@ async fn admin_create_issuer_and_cert_chain_valid() {
     .unwrap();
     assert_eq!(v["name"], "acme");
     let issuer_pub = v["issuer_pub"].as_str().unwrap().to_string();
-    assert_eq!(issuer_pub.len(), 64);
-    // 落库字段完整 + 私钥也存（server 代签用）
+    // P-256 公钥 SEC1 uncompressed 65B → hex 130 字符
+    assert_eq!(issuer_pub.len(), 130);
+    // 落库字段完整 + 私钥也存（server 代签用；P-256 标量 32B → hex 64 字符）
     let rec = state
         .store
         .get_issuer_by_name("acme")
@@ -736,22 +737,25 @@ async fn admin_create_issuer_and_cert_chain_valid() {
         .expect("issuer stored");
     assert_eq!(rec.issuer_pub, issuer_pub);
     assert_eq!(rec.issuer_sk.len(), 64);
-    // 链可解析为 [issuer_cert, ca_cert]，且 issuer 公钥经链验到根
+    // 链可解析为 [leaf, issuing, root]（v4 含根），leaf 公钥绑定 + 全链验到根
     let chain_bytes = nemesis_verify::hex_util::hex_decode_vec(&rec.chain).unwrap();
-    let chain = nemesis_verify::cert::parse_chain(&chain_bytes).unwrap();
-    assert_eq!(chain.len(), 2);
+    let chain = nemesis_verify::cert::parse_chain_blob(&chain_bytes).unwrap();
+    assert_eq!(chain.len(), 3);
     let issuer_vk = nemesis_verify::crypto::verifying_key_from_hex(&issuer_pub).unwrap();
-    assert!(
-        nemesis_verify::cert::verify_chain(
-            &issuer_vk.to_bytes(),
-            &chain,
-            &[state.hierarchy.root_vk],
-            now_secs()
-        )
-        .is_ok()
+    // 链的 leaf 公钥 == 发行方公钥（签名键绑定）
+    assert_eq!(
+        nemesis_verify::crypto::public_key_bytes(&chain[0].subject_public_key().unwrap()),
+        nemesis_verify::crypto::public_key_bytes(&issuer_vk)
     );
-    // 证书 subject == 发行方名
-    assert_eq!(chain[0].subject_meta, b"acme".to_vec());
+    // 全链验证（叶子→发行锚→根，逐级签名/窗口/KU/EKU）
+    nemesis_verify::cert::verify_chain(&chain, &chain[2].sha256_fingerprint(), now_secs()).unwrap();
+    // 链的根 == 本服务密钥体系的根
+    assert_eq!(
+        chain[2].sha256_fingerprint(),
+        state.hierarchy.root_cert.sha256_fingerprint()
+    );
+    // 证书 subject CN == 发行方名
+    assert_eq!(chain[0].subject_cn().unwrap().as_deref(), Some("acme"));
     // 审计留痕（issuer_create，detail=公钥）
     let Json(audit) = get_audit(State(state.clone()), admin_headers())
         .await
@@ -800,7 +804,7 @@ async fn list_issuers_shape_and_no_private_key_leak() {
         let mut keys: Vec<&str> = obj.keys().map(|k| k.as_str()).collect();
         keys.sort_unstable();
         assert_eq!(keys, ["created_at", "issuer_pub", "name"]);
-        assert_eq!(obj["issuer_pub"].as_str().unwrap().len(), 64);
+        assert_eq!(obj["issuer_pub"].as_str().unwrap().len(), 130);
     }
 }
 
@@ -940,12 +944,28 @@ async fn sign_upload_default_issuer_full_circle() {
         .unwrap();
     assert!(disp.starts_with("attachment; filename="), "disp: {disp}");
     let signed = resp_bytes(resp).await;
-    // envelope 可解析出 sig_hash
-    let sig_hash = latest_sig_hash(&signed).expect("sig hash from envelope");
-    // 用根公钥验签 → Valid，且 pubkey == 默认 issuer 公钥（链有效）
-    match nemesis_verify::verify::verify_bytes(&signed, &[state.hierarchy.root_vk], now_secs()) {
-        VerifyOutcome::Valid { pubkey, .. } => {
-            assert_eq!(pubkey, state.hierarchy.issuer_vk.to_bytes());
+    // content_hash 先行（v4_content_digest 单一真相源，与 handler registry 记账
+    // 同口径——raw = SHA-256 全文件；PE 会走 authenticode digest，见 PE 专项测试）
+    let expected_ch: [u8; 32] =
+        nemesis_verify::verify::v4_content_digest(content).expect("v4_content_digest raw");
+    // v4 CMS 签发（S5-2）：sig_hash = SHA-256(SignerInfo.signature DER) 必然可解析
+    let sig_hash: [u8; 32] = latest_sig_hash(&signed).expect("v4 CMS 签名可解析出 sig_hash");
+    // 端到端 Valid：v4 验证管线（链到根锚 + digest + signedAttrs 验签）全过，
+    // pubkey = 签名者（keygen leaf）证书 SPKI
+    let t0 = now_secs();
+    match nemesis_verify::verify::verify_bytes(
+        &signed,
+        &[state.hierarchy.root_anchor_fingerprint()],
+        now_secs(),
+    ) {
+        VerifyOutcome::Valid {
+            signed_at, pubkey, ..
+        } => {
+            assert!(signed_at >= t0, "signed_at 应为服务端签发墙钟");
+            assert_eq!(
+                pubkey,
+                nemesis_verify::crypto::public_key_bytes(&state.hierarchy.leaf_vk()),
+            );
         }
         o => panic!("expected Valid, got {o:?}"),
     }
@@ -954,15 +974,14 @@ async fn sign_upload_default_issuer_full_circle() {
     assert_eq!(recs.len(), 1);
     let rec = &recs[0];
     assert_eq!(rec.sig_hash, hex_str(&sig_hash));
-    let expected_fp: [u8; 32] = Sha256::digest(state.hierarchy.issuer_vk.to_bytes()).into();
+    let expected_fp: [u8; 32] = nemesis_verify::crypto::key_fp(
+        &nemesis_verify::crypto::public_key_bytes(&state.hierarchy.leaf_vk()),
+    );
     assert_eq!(rec.key_fp, hex_str(&expected_fp));
     assert_eq!(rec.publisher.as_deref(), Some("alice-software"));
     assert_eq!(rec.user_name.as_deref(), Some("alice"));
     assert_eq!(rec.issuer_name.as_deref(), Some("default"));
     // content_hash 与 codec 直算一致
-    let codec = nemesis_verify::codec::detect_codec(content);
-    let l = codec.compute_l(content).unwrap().unwrap_or(content.len());
-    let expected_ch: [u8; 32] = codec.content_hash(content, l).unwrap();
     assert_eq!(rec.content_hash, hex_str(&expected_ch));
     // 签发记录经 admin 端点可查（401 + 200）
     assert_eq!(
@@ -1032,16 +1051,25 @@ async fn sign_upload_with_dynamic_issuer_uses_its_key_and_chain() {
         .unwrap();
     assert_eq!(resp.status(), StatusCode::OK);
     let signed = resp_bytes(resp).await;
-    // 验签 Valid 且 pubkey == 动态发行方公钥（链经 CA 到根）
+    // 验签 Valid 且 pubkey == 动态发行方公钥（链经发行锚到根）
     let issuer_vk = nemesis_verify::crypto::verifying_key_from_hex(&issuer_pub_hex).unwrap();
-    match nemesis_verify::verify::verify_bytes(&signed, &[state.hierarchy.root_vk], now_secs()) {
-        VerifyOutcome::Valid { pubkey, .. } => assert_eq!(pubkey, issuer_vk.to_bytes()),
+    match nemesis_verify::verify::verify_bytes(
+        &signed,
+        &[state.hierarchy.root_anchor_fingerprint()],
+        now_secs(),
+    ) {
+        VerifyOutcome::Valid { pubkey, .. } => assert_eq!(
+            pubkey,
+            nemesis_verify::crypto::public_key_bytes(&issuer_vk),
+            "签名者 = 动态发行方 leaf 证书 SPKI"
+        ),
         o => panic!("expected Valid, got {o:?}"),
     }
     // registry key_fp == 动态发行方公钥指纹
     let recs = state.store.list_signatures(10).unwrap();
     assert_eq!(recs.len(), 1);
-    let expected_fp: [u8; 32] = Sha256::digest(issuer_vk.to_bytes()).into();
+    let expected_fp: [u8; 32] =
+        nemesis_verify::crypto::key_fp(&nemesis_verify::crypto::public_key_bytes(&issuer_vk));
     assert_eq!(recs[0].key_fp, hex_str(&expected_fp));
     assert_eq!(recs[0].issuer_name.as_deref(), Some("acme"));
     // publisher 为 None（user 无 publisher 且无覆盖）
@@ -1064,59 +1092,66 @@ async fn sign_upload_unknown_issuer_name_400() {
 }
 
 // ===========================================================================
-// S12b batch（quality-hardening goal 冲刺）：覆盖 sign_upload 中
-// `codec.compute_l(...)` 的 Some(L) 分支。此前全部 sign 测试都用纯文本
-// payload → Raw codec → None 分支；这里手工拼一个最小合法 PE，让
-// detect_codec 选 PeCodec 且 compute_l 返回 Some。
+// PE 载体专项（S5-2）：/v1/sign 对 PE 输入产 Certificate Table 签名，registry
+// content_hash 与 CMS messageDigest 同源（authenticode digest）——FileHash 吊销
+// 维度的一致性契约。（原 S12b「compute_l Some 分支」覆盖随 v4 签发切换迁至
+// nemesis-verify `sign_content_v4_elf_roundtrip_valid`——ELF 臂才走 compute_l。）
 // ===========================================================================
 
-/// 最小合法 PE：字段偏移逐一对照 crates/nemesis-verify/src/pe.rs::parse_pe 的读取表。
-fn minimal_pe_with_section_and_overlay() -> Vec<u8> {
-    let mut b = vec![0u8; 512];
-    b[0..2].copy_from_slice(b"MZ"); // DOS magic
-    b[0x3C..0x40].copy_from_slice(&0x40u32.to_le_bytes()); // e_lfanew = 0x40
-    b[0x40..0x44].copy_from_slice(b"PE\0\0"); // PE 签名 @ P
-    b[0x46..0x48].copy_from_slice(&1u16.to_le_bytes()); // NumberOfSections @ P+6
-    b[0x54..0x56].copy_from_slice(&0xF0u16.to_le_bytes()); // SizeOfOptionalHeader @ P+20
-    b[0x58..0x5A].copy_from_slice(&0x10Bu16.to_le_bytes()); // Magic=PE32 @ P+24
-    // NumberOfRvaAndSizes @ P+116：<5 → 跳过 Security 目录 / Authenticode 区域
-    b[0xB4..0xB8].copy_from_slice(&4u32.to_le_bytes());
-    let sec_tbl: usize = 0x40 + 24 + 0xF0; // section table @ P+24+SizeOfOptionalHeader
-    b[sec_tbl + 16..sec_tbl + 20].copy_from_slice(&32u32.to_le_bytes()); // SizeOfRawData
-    b[sec_tbl + 20..sec_tbl + 24].copy_from_slice(&400u32.to_le_bytes()); // PointerToRawData
-    // L = max(400+32=432, sec_tbl_end=0x158+40=384) = 432；[432,512) 即 overlay
-    for slot in b.iter_mut().skip(432) {
-        *slot = 0xAA;
-    }
+/// 无证书表的最小 PE32+（端口自 nemesis-verify verify/tests.rs base_pe，模块私有
+/// 不可跨文件）：nrva=16（Security 项全零 = 未签名）、1 个 section（0x200 @ 0x400）。
+fn base_pe() -> Vec<u8> {
+    let p: usize = 0x40;
+    let size_of_opt: usize = 240;
+    let sec_tbl = p + 24 + size_of_opt;
+    let len = (sec_tbl + 40).max(0x400 + 0x200);
+    let mut b = vec![0u8; len];
+    b[0] = b'M';
+    b[1] = b'Z';
+    b[0x3C..0x40].copy_from_slice(&(p as u32).to_le_bytes());
+    b[p..p + 4].copy_from_slice(b"PE\0\0");
+    b[p + 6..p + 8].copy_from_slice(&1u16.to_le_bytes());
+    b[p + 20..p + 22].copy_from_slice(&(size_of_opt as u16).to_le_bytes());
+    b[p + 24..p + 26].copy_from_slice(&0x20bu16.to_le_bytes());
+    b[p + 132..p + 136].copy_from_slice(&16u32.to_le_bytes()); // NumberOfRvaAndSizes
+    b[sec_tbl + 16..sec_tbl + 20].copy_from_slice(&0x200u32.to_le_bytes());
+    b[sec_tbl + 20..sec_tbl + 24].copy_from_slice(&0x400u32.to_le_bytes());
     b
 }
 
 #[tokio::test]
-async fn sign_upload_pe_codec_takes_content_len_some_arm() {
-    let pe = minimal_pe_with_section_and_overlay();
-    // 守卫：fixture 必须被判成 PE 且 compute_l 给出 Some(L)（否则本测在测假路径）
-    let l = nemesis_verify::codec::detect_codec(&pe)
-        .compute_l(&pe)
-        .unwrap();
-    assert_eq!(l, Some(432), "fixture 应产出 PE L=432");
+async fn sign_upload_pe_carrier_full_circle_digest_consistency() {
+    let pe = base_pe();
+    // 守卫：fixture 必须被判成 PE（否则本测在测假路径）
+    assert_eq!(
+        nemesis_verify::codec::detect_format(&pe),
+        nemesis_verify::codec::FORMAT_TAG_PE,
+        "fixture 应被判成 PE"
+    );
 
     let state = setup();
     let token = create_user(&state, "pe-signer", None, None).await;
     let resp = sign_file(&state, &token, Some(&pe), None).await.unwrap();
     assert_eq!(resp.status(), StatusCode::OK);
     let signed = resp_bytes(resp).await;
-    assert!(latest_sig_hash(&signed).is_some(), "PE envelope 应带签名");
-    match nemesis_verify::verify::verify_bytes(&signed, &[state.hierarchy.root_vk], now_secs()) {
-        VerifyOutcome::Valid { .. } => {}
-        o => panic!("expected Valid, got {o:?}"),
-    }
-    // registry：content_hash 走的就是 Some(L) 值（与 codec 直算一致）
+    // v4 CMS 签名可 view 解析 + 验证管线 Valid（Certificate Table 定位 + PE
+    // authenticode digest 比对全过）
+    assert!(
+        latest_sig_hash(&signed).is_some(),
+        "PE Certificate Table 签名可解析"
+    );
+    assert!(matches!(
+        nemesis_verify::verify::verify_bytes(
+            &signed,
+            &[state.hierarchy.root_anchor_fingerprint()],
+            now_secs()
+        ),
+        VerifyOutcome::Valid { .. }
+    ));
+    // registry：content_hash == CMS 内嵌 messageDigest（authenticode digest）——
+    // 同源对账：拿 registry 值吊销 FileHash 维，verify_bytes 必须查得中
     let recs = state.store.list_signatures(10).unwrap();
     assert_eq!(recs.len(), 1);
-    let expected_hex = hex_str(
-        &nemesis_verify::codec::detect_codec(&pe)
-            .content_hash(&pe, 432)
-            .unwrap()[..],
-    );
+    let expected_hex = hex_str(&nemesis_verify::pe::authenticode_digest(&pe).unwrap()[..]);
     assert_eq!(recs[0].content_hash, expected_hex);
 }

@@ -12,7 +12,14 @@ crate-type = ["lib", "cdylib"]
 [dependencies]
 serde = { workspace = true }
 serde_json = { workspace = true }
-ed25519-dalek = { workspace = true }
+# v4：ECDSA P-256 + SHA-256（RFC 6979 确定式签名）
+p256 = { workspace = true }
+ecdsa = { workspace = true }
+# v4 X.509 证书链（声明式 ASN.1 类型，零手撸 DER）
+x509-cert = { workspace = true }
+der = { workspace = true }
+# v4 CMS SignedData（Authenticode 形态构造，S0-6 选型）
+cms = { workspace = true }
 anyhow = { workspace = true }
 sha2 = { workspace = true }
 rand = { workspace = true }

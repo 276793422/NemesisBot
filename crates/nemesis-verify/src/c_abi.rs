@@ -3,21 +3,20 @@
 //! 产物：`nemesis_verify.dll`（Win）/ `libnemesis_verify.so`（Linux/Android）/ `libnemesis_verify.dylib`（Mac）。
 //! 外部（exe/测试工具/其他语言）通过 `libloading` 或 `dlopen` 加载本库，调 `nv_*` 函数。
 //!
-//! # 当前状态（T3）
-//! - `nv_verify_target` / `nv_verify_current_exe`：验证流程完整（v3 验签 + 链验证）。
-//! - **内置根公钥占位**（全 0 → 无有效根）：待根密钥体系（R7 后续）填真值并保护。
-//!   占位期间 `nv_verify_*` 会返回 `NV_UNTRUSTED`（无根可验）。
-//! - **`nv_self_verify` 占位**：DLL 自身安全（DLL 定位自己 + 防替换 + 根公钥物理保护）
-//!   是 R7 后续独立命题，本阶段返回 0（通过）。
-//! - 查看接口（`nv_list_signatures` / `nv_get_signature`）：后续阶段。
+//! # 当前状态（S4-5）
+//! - `nv_verify_target` / `nv_verify_current_exe` / `nv_self_verify`：v4
+//!   Authenticode 管线（S4-1）——PE 载体定位走 Certificate Table（DLL 自验
+//!   同管线），ELF/raw 走 v4 footer 载体；nv_* 签名与返回码 T3 形态不变。
+//! - **根锚注入**：单一真相源 = [`crate::builtin_root_anchors`]（lib.rs，S4-2）——
+//!   编译期 `NEMESIS_BUILD_ROOT_ANCHOR`（根证书 SHA-256 指纹 hex）优先，
+//!   fallback 运行时 `NEMESIS_ROOT_ANCHOR`；两者皆缺/非法 = 空锚集 → `NV_UNTRUSTED`。
+//! - `nv_self_verify`（R7 A2）：读 DLL 字节 + `verify_bytes`（Valid→0，非
+//!   Valid→-4，无锚→-5）；防 patch/防替换等 DLL 自身安全仍是 R7 后续独立命题。
+//! - 查看接口（`nv_list_signatures` / `nv_get_signature`）：S4-3 起 v4（view
+//!   判据同源，不下结论）。
 
 use crate::verify;
-use ed25519_dalek::VerifyingKey;
 use std::os::raw::{c_char, c_int};
-
-/// 编译期固化根公钥 hex（R7 A1）：build 时 `NEMESIS_BUILD_ROOT_PUBKEY=<hex>` 注入。
-/// `None` = 未固化（占位，用运行时环境变量 fallback）。固化后不随运行时环境变量改变（防篡改）。
-const BUILTIN_ROOT_PUBKEY_HEX: Option<&str> = option_env!("NEMESIS_BUILD_ROOT_PUBKEY");
 
 // ===== 结果状态码 =====
 pub const NV_VALID: u32 = 0;
@@ -32,37 +31,25 @@ pub const NV_EXPIRED: u32 = 8;
 
 /// C 兼容的验证结果（out 参数）。
 #[repr(C)]
-#[derive(Debug, Default)]
+#[derive(Debug)]
 pub struct NvOutcome {
     /// 状态码（NV_*）。
     pub status: u32,
     pub signed_at: u64,
     pub key_fp: [u8; 32],
-    pub pubkey: [u8; 32],
+    /// 签名公钥（SEC1 uncompressed 65B）。
+    pub pubkey: [u8; 65],
 }
 
-/// 取内置根公钥列表。
-///
-/// **R7 A1**：编译期固化（`NEMESIS_BUILD_ROOT_PUBKEY` build 时注入）优先——防运行时篡改。
-/// fallback：运行时 `NEMESIS_ROOT_PUBKEY` 环境变量（部署灵活 / 测试用）。
-fn builtin_roots() -> Vec<VerifyingKey> {
-    // A1 编译期固化优先
-    if let Some(hex) = BUILTIN_ROOT_PUBKEY_HEX
-        && let Some(vk) = crate::hex_util::hex_decode_32(hex)
-            .ok()
-            .and_then(|b| VerifyingKey::from_bytes(&b).ok())
-    {
-        return vec![vk];
+impl Default for NvOutcome {
+    fn default() -> Self {
+        Self {
+            status: 0,
+            signed_at: 0,
+            key_fp: [0u8; 32],
+            pubkey: [0u8; 65],
+        }
     }
-    // 运行时环境变量 fallback（R7 过渡）
-    if let Ok(hex) = std::env::var("NEMESIS_ROOT_PUBKEY")
-        && let Some(vk) = crate::hex_util::hex_decode_32(&hex)
-            .ok()
-            .and_then(|b| VerifyingKey::from_bytes(&b).ok())
-    {
-        return vec![vk];
-    }
-    Vec::new()
 }
 
 /// 当前时间（Unix 秒）。用 std，避免依赖 chrono。
@@ -74,8 +61,8 @@ fn now_secs() -> u64 {
 }
 
 fn run_verify(bytes: &[u8]) -> NvOutcome {
-    let roots = builtin_roots();
-    let outcome = verify::verify_bytes(bytes, &roots, now_secs());
+    let anchors = crate::builtin_root_anchors();
+    let outcome = verify::verify_bytes(bytes, &anchors, now_secs());
     let status = match outcome {
         verify::VerifyOutcome::Valid { .. } => NV_VALID,
         verify::VerifyOutcome::NoSignature => NV_NO_SIGNATURE,
@@ -152,7 +139,8 @@ pub unsafe extern "C" fn nv_verify_current_exe(out: *mut NvOutcome) -> c_int {
     0
 }
 
-/// DLL 自验（R7 A2）：读 `dll_path` 字节 + 用内置根公钥验签。
+/// DLL 自验（R7 A2）：读 `dll_path` 字节 + `verify_bytes`（v4 Authenticode；
+/// PE 载体 = Certificate Table 定位）+ 内置根锚判信。
 ///
 /// 调用方传 DLL 路径（Rust cdylib 无 DllMain 存 hinstDLL，DLL 定位自身跨平台复杂——
 /// 由调用方传路径绕过）。返回：0=Valid，<0=非 Valid / 错误（-1 null, -2 utf8, -3 read,
@@ -173,11 +161,11 @@ pub unsafe extern "C" fn nv_self_verify(dll_path: *const c_char) -> c_int {
         Ok(b) => b,
         Err(_) => return -3,
     };
-    let roots = builtin_roots();
-    if roots.is_empty() {
+    let anchors = crate::builtin_root_anchors();
+    if anchors.is_empty() {
         return -5; // 未固化 + 无运行时 env
     }
-    match crate::verify::verify_bytes(&bytes, &roots, now_secs()) {
+    match crate::verify::verify_bytes(&bytes, &anchors, now_secs()) {
         crate::verify::VerifyOutcome::Valid { .. } => 0,
         _ => -4,
     }
@@ -186,30 +174,43 @@ pub unsafe extern "C" fn nv_self_verify(dll_path: *const c_char) -> c_int {
 // ===== 查看接口（离线展示签名 + 证书链，不下结论）=====
 
 #[repr(C)]
-#[derive(Default)]
 pub struct NvSigInfo {
     pub index: u32,
     pub signed_at: u64,
     pub key_fp: [u8; 32],
-    pub pubkey: [u8; 32],
+    /// 签名公钥（SEC1 uncompressed 65B）。
+    pub pubkey: [u8; 65],
+}
+
+impl Default for NvSigInfo {
+    fn default() -> Self {
+        Self {
+            index: 0,
+            signed_at: 0,
+            key_fp: [0u8; 32],
+            pubkey: [0u8; 65],
+        }
+    }
 }
 
 #[repr(C)]
 #[derive(Clone, Copy)]
 pub struct NvSigCert {
-    pub subject_pubkey: [u8; 32],
+    /// 主体公钥（SEC1 uncompressed 65B）。
+    pub subject_pubkey: [u8; 65],
+    /// 签发者 key_fp（= AKI keyIdentifier）。无 AKI 时全 0。
     pub issuer_key_fp: [u8; 32],
     pub valid_not_before: u64,
     pub valid_not_after: u64,
     pub subject_meta_len: u32,
-    /// 主体名（UTF-8，≤64B；如发行方名 "org-a" / "CA"）
+    /// 主体 CN（UTF-8，≤64B）
     pub subject_meta: [u8; 64],
 }
 
 impl Default for NvSigCert {
     fn default() -> Self {
         Self {
-            subject_pubkey: [0u8; 32],
+            subject_pubkey: [0u8; 65],
             issuer_key_fp: [0u8; 32],
             valid_not_before: 0,
             valid_not_after: 0,
@@ -224,9 +225,10 @@ pub struct NvSigDetail {
     pub index: u32,
     pub signed_at: u64,
     pub key_fp: [u8; 32],
-    pub pubkey: [u8; 32],
+    /// 签名公钥（SEC1 uncompressed 65B）。
+    pub pubkey: [u8; 65],
     pub cert_count: u32,
-    /// 最多 4 级证书（leaf + intermediates）。cert_count 为实际数（可能 < 4）。
+    /// 最多 4 级证书（leaf 在前，含根）。cert_count 为实际数（可能 < 4）。
     pub certs: [NvSigCert; 4],
     pub publisher_len: u32,
     /// publisher（签给谁/发布者，UTF-8，≤128B）
@@ -239,7 +241,7 @@ impl Default for NvSigDetail {
             index: 0,
             signed_at: 0,
             key_fp: [0u8; 32],
-            pubkey: [0u8; 32],
+            pubkey: [0u8; 65],
             cert_count: 0,
             certs: [NvSigCert::default(); 4],
             publisher_len: 0,
@@ -321,11 +323,21 @@ pub unsafe extern "C" fn nv_get_signature(
     let cert_count = detail.certs.len().min(4) as u32;
     for (i, c) in detail.certs.iter().take(4).enumerate() {
         let mut subject_meta = [0u8; 64];
-        let mlen = c.subject_meta.len().min(64);
-        subject_meta[..mlen].copy_from_slice(&c.subject_meta[..mlen]);
+        let mlen = c
+            .subject_meta
+            .as_deref()
+            .map(|s| s.len().min(64))
+            .unwrap_or(0);
+        if let Some(s) = c.subject_meta.as_deref() {
+            subject_meta[..mlen].copy_from_slice(&s.as_bytes()[..mlen]);
+        }
+        let mut issuer_key_fp = [0u8; 32];
+        if let Some(fp) = c.issuer_key_fp {
+            issuer_key_fp = fp;
+        }
         certs[i] = NvSigCert {
             subject_pubkey: c.subject_pubkey,
-            issuer_key_fp: c.issuer_key_fp,
+            issuer_key_fp,
             valid_not_before: c.valid_not_before,
             valid_not_after: c.valid_not_after,
             subject_meta_len: mlen as u32,

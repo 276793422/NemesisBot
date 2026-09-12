@@ -1,5 +1,7 @@
 #!/usr/bin/env bash
-# 签名验证体系 v3 端到端测试（全闭环回归）
+# 签名验证体系端到端测试（v4 Authenticode 全链路：verify 管线 S4-1 + 签发
+# 单一入口 sign_content_v4 S5-1/S5-3——v3 NMBSIG envelope 已整体退役，
+# S5-3 起各步「期望」恢复成立）
 # 用法：bash scripts/test-sig-e2e.sh
 # 每步打印结果，对照「期望」注释核对。
 set -uo pipefail
@@ -20,13 +22,13 @@ trap cleanup EXIT
 step "0. build 全部"
 cargo build -p nemesis-verify -p revoke-server -p verify-loader -p exe-sign-tool 2>&1 | tail -1
 
-step "1. gen-keys + build DLL 固化 root（R7 A1）"
-ROOT_PUB=$($VL gen-keys "$KEYS" | grep "^root pubkey" | awk '{print $3}')
-echo "root pub: $ROOT_PUB"
-NEMESIS_BUILD_ROOT_PUBKEY=$ROOT_PUB cargo build -p nemesis-verify 2>&1 | tail -1
+step "1. gen-keys + build DLL 固化根锚（S4-2：值 = 根证书 SHA-256 指纹）"
+ROOT_ANCHOR=$($VL gen-keys "$KEYS" | grep "^root anchor" | awk '{print $NF}')
+echo "root anchor: $ROOT_ANCHOR"
+NEMESIS_BUILD_ROOT_ANCHOR=$ROOT_ANCHOR cargo build -p nemesis-verify 2>&1 | tail -1
 
 step "2. sign + verify Raw（期望 Valid）"
-echo "e2e raw payload v3" > /tmp/sig_target.bin
+echo "e2e raw payload v4" > /tmp/sig_target.bin
 $VL sign "$KEYS" /tmp/sig_target.bin /tmp/sig_signed.bin >/dev/null
 $VL verify "$DLL" /tmp/sig_signed.bin | head -1
 
@@ -47,21 +49,25 @@ TOK=$($CURL -s -X POST http://$BIND/v1/admin/user -H "Authorization: Bearer $ADM
 $CURL -s -X POST http://$BIND/v1/sign -H "Authorization: Bearer $TOK" -F "file=@/tmp/sig_target.bin" -o /tmp/sig_http.bin
 $VL verify "$DLL" /tmp/sig_http.bin | head -1
 
-step "6. view 证书链（期望 total=1, cert_count=2）"
-$VL view "$DLL" /tmp/sig_http.bin | grep -E "total|cert_count" | head -2
+step "6. view 证书链（期望 签名数: 1、信任链 3 行 = leaf→issuing→root 含根）"
+$VL view "$DLL" /tmp/sig_http.bin | grep -E "签名数|^\s+\[[0-9]+\]"
 
 step "7. 吊销 + CRL Revoked（期望 Revoked）"
-KEY_FP=$($VL view "$DLL" /tmp/sig_http.bin | grep "key_fp=" | head -1 | sed -E 's/.*key_fp=([0-9a-f]+).*/\1/')
+KEY_FP=$($VL verify "$DLL" /tmp/sig_http.bin | grep -oE "key_fp=[0-9a-f]+" | head -1 | cut -d= -f2)
+echo "key_fp: $KEY_FP"
 $CURL -s -X POST http://$BIND/v1/admin/revoke -H "Authorization: Bearer $ADMIN" -H "Content-Type: application/json" -d "{\"dim\":\"key_fp\",\"value\":\"$KEY_FP\",\"reason\":\"e2e\"}" >/dev/null
 NEMESIS_REVOCATION_URL=http://$BIND $VL verify "$DLL" /tmp/sig_http.bin | head -1
 
-step "8. 多签名叠加（期望 total=2）"
+step "8. 已签名 PE 二次追表（v4 诚实拒绝：期望 sign 失败 + 原文件 verify 仍 Valid；多签名走 CMS 嵌套 SPC_NESTED_SIGNATURE，非二次追表）"
 $VL sign "$KEYS" ./target/debug/verify-loader.exe /tmp/sig_pe1.exe >/dev/null
-sleep 1
-$VL sign "$KEYS" /tmp/sig_pe1.exe /tmp/sig_pe2.exe >/dev/null
-$VL view "$DLL" /tmp/sig_pe2.exe | grep total | head -1
+if $VL sign "$KEYS" /tmp/sig_pe1.exe /tmp/sig_pe2.exe >/dev/null 2>&1; then
+  echo "FAIL: 已签名 PE 竟被二次追表（应诚实拒绝）"
+else
+  echo "✓ 二次追表被诚实拒绝（append_certificate_table: 已存在证书表）"
+fi
+$VL verify "$DLL" /tmp/sig_pe1.exe | head -1
 
-step "9. verify-dll 自验（R7 A2，期望 Valid）"
+step "9. verify-dll 自验（R7 A2，期望 Valid——S4-5 承诺：v4 签出的 DLL 过 nv_self_verify）"
 $VL sign "$KEYS" "$DLL" /tmp/sig_dll.dll >/dev/null
 $VL verify-dll /tmp/sig_dll.dll
 
@@ -74,11 +80,11 @@ sleep 2
 $CURL -s -X POST http://$BIND/v1/admin/revoke -H "Authorization: Bearer $ADMIN" -H "Content-Type: application/json" -d "{\"dim\":\"key_fp\",\"value\":\"$KEY_FP\",\"reason\":\"ocsp\"}" >/dev/null
 NEMESIS_REVOCATION_URL=http://$BIND NEMESIS_STRICT_OFFLINE=1 $VL verify "$DLL" /tmp/sig_http.bin | head -1
 
-step "11. 固化验证：不传 --keys（期望 Valid，纯编译期固化 root）"
-unset NEMESIS_ROOT_PUBKEY
+step "11. 固化验证：不传 --keys（期望 Valid，纯编译期固化根锚）"
+unset NEMESIS_ROOT_ANCHOR
 $VL verify "$DLL" /tmp/sig_signed.bin | head -1
 
-step "12. exe-sign-tool v3 签 + verify（期望 Valid）"
+step "12. exe-sign-tool v4 签 + verify（期望 Valid）"
 ./target/debug/exe-sign-tool sign --keys "$KEYS" /tmp/sig_target.bin --out /tmp/sig_est.bin >/dev/null
 ./target/debug/exe-sign-tool verify --keys "$KEYS" /tmp/sig_est.bin | head -1
 

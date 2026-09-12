@@ -19,15 +19,51 @@ pub mod pe;
 // 批2：v3 核心
 pub mod c_abi; // C ABI 导出（cdylib 产物：nv_* 接口）
 pub mod cert; // 证书 + 链验证（envelope.cert_chain 的解析与链到根验证）
-pub mod crypto; // Ed25519（去 AEAD/SYM_KEY）
+pub mod crypto; // v4：ECDSA P-256 + SHA-256（RFC 6979 确定式签名）
 pub mod envelope; // v3：明文 body + pubkey + cert_chain
 pub mod keygen; // 密钥体系生成（根/CA/发行方 + 证书链 + 存加载）
 pub mod revocation; // P2a：DLL 联网查 CRL（数据模式 + 根验签 + 缓存 + 四维度查）
-pub mod verify; // 验证流程（用 envelope pubkey 验签 + 可信公钥确认 + 吊销检查）
+pub mod verify; // 验证流程（v4 Authenticode 管线：链到根锚 + EKU + digest + 签名 + 吊销）
 pub mod view; // 查看接口（离线展示签名 + 证书链，不下结论）
 
+// ===== 根锚注入（S4-2 定稿：单一真相源；c_abi 与未来宿主集成同源消费）=====
+
+/// 编译期固化根锚 hex（build 时 `NEMESIS_BUILD_ROOT_ANCHOR` 注入）。
+///
+/// **值形态（S4-2 定稿）= 自签根证书 SHA-256 指纹 hex（64 字符）**——v3 的
+/// `NEMESIS_BUILD_ROOT_PUBKEY`（公钥本体 32B/65B）作废：v4 信任终止条件 = 链
+/// 根证书 SHA-256 指纹匹配（S0-5 实测：发行锚不可作信任锚，必须自签根）。
+/// `None` = 未固化（占位，运行时 env fallback）。
+pub(crate) const BUILTIN_ROOT_ANCHOR_HEX: Option<&str> = option_env!("NEMESIS_BUILD_ROOT_ANCHOR");
+
+/// 根锚解析（纯函数，三臂可测）：build 注入优先 → 运行时 env fallback → 空集。
+///
+/// - `builtin`：编译期固化值（`Some` 时 runtime 被忽略——防运行时篡改）。
+/// - `runtime`：运行时 env 值（部署灵活 / 测试用）。
+/// - **fail-closed**：固化值存在但非法（非 64 hex 字符）= 装配失败 → 空锚集，
+///   **不回落 runtime**（防固化值被废后 env 顶替信任根）；双臂皆缺/非法 → 空集
+///   = 默认不可信状态（D7：一切签名 Untrusted，`nv_self_verify` 拒 -5）。
+pub fn resolve_root_anchors(builtin: Option<&str>, runtime: Option<&str>) -> Vec<[u8; 32]> {
+    let parse = |hex: &str| hex_util::hex_decode_32(hex.trim()).ok();
+    match builtin {
+        Some(hex) => parse(hex).map(|fp| vec![fp]).unwrap_or_default(),
+        None => runtime
+            .and_then(parse)
+            .map(|fp| vec![fp])
+            .unwrap_or_default(),
+    }
+}
+
+/// 内置根锚指纹列表（DLL `nv_*` 验证与宿主集成共用的装配点）。
+///
+/// 编译期 `NEMESIS_BUILD_ROOT_ANCHOR` 优先；fallback 运行时 `NEMESIS_ROOT_ANCHOR`。
+pub fn builtin_root_anchors() -> Vec<[u8; 32]> {
+    let runtime = std::env::var("NEMESIS_ROOT_ANCHOR").ok();
+    resolve_root_anchors(BUILTIN_ROOT_ANCHOR_HEX, runtime.as_deref())
+}
+
 use anyhow::{Result, anyhow};
-use ed25519_dalek::{Signature, Signer, SigningKey, Verifier, VerifyingKey};
+use p256::ecdsa::{SigningKey, VerifyingKey};
 use serde::{Deserialize, Serialize};
 
 // ===== SC0：数据模型（云端吊销 / trusted_keys / 签名响应）=====
@@ -38,9 +74,9 @@ use serde::{Deserialize, Serialize};
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum RevDim {
-    /// 密钥级（吊销整把密钥）：value = key_fp（v3 用公钥指纹取代 v1 的 key_id）
+    /// 密钥级（吊销整把密钥）：value = key_fp = SHA-256(签名者公钥 SEC1 uncompressed 65B)
     KeyFp,
-    /// 签名级（吊销单个签名）：value = sig_hash（SHA-256(signature)）
+    /// 签名级（吊销单个签名）：value = sig_hash = SHA-256(SignerInfo.signature DER)
     SigHash,
     /// 文件级（吊销特定文件）：value = content_hash
     FileHash,
@@ -96,12 +132,12 @@ pub struct TrustedKeyList {
 
 /// 带签名的响应（云端所有响应用此包装；客户端用根公钥验签，防 MITM 伪造"未吊销"）。
 ///
-/// v3：签名方从 v1 的"吊销根密钥 crkey"改为"根私钥"（信任链顶端）。数据模式——
-/// 云端只返回被根签认证的数据，客户端本地验签 + 本地裁决，云端被破不能伪造（需根私钥）。
+/// 签名方 = "根私钥"（信任链顶端）。数据模式——云端只返回被根签认证的数据，
+/// 客户端本地验签 + 本地裁决，云端被破不能伪造（需根私钥）。
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SignedResponse<T> {
     pub payload: T,
-    /// hex Ed25519 签名（签的是 `payload` 的 canonical JSON bytes）。
+    /// hex ECDSA P-256 签名（64B r||s；签的是 `payload` 的 canonical JSON bytes）。
     pub sig: String,
 }
 
@@ -121,7 +157,7 @@ fn hex_encode(bytes: &[u8]) -> String {
     bytes.iter().map(|b| format!("{:02x}", b)).collect()
 }
 
-/// hex 解码 64 字节（Ed25519 签文）。
+/// hex 解码 64 字节（P-256 r||s 签文）。
 fn hex_decode_64(hex: &str) -> Result<[u8; 64]> {
     let hex = hex.trim();
     if hex.len() != 128 {
@@ -140,16 +176,17 @@ fn hex_decode_64(hex: &str) -> Result<[u8; 64]> {
 
 /// 用根私钥签名 `payload`，返回 [`SignedResponse`]。
 ///
-/// 签名对象 = `serde_json::to_vec(payload)`（struct 字段按定义序，确定性）。
+/// 签名对象 = `serde_json::to_vec(payload)`（struct 字段按定义序，确定性）；
+/// ECDSA P-256，RFC 6979 确定式 nonce（同 payload 两次签名 hex 一致）。
 pub fn sign_response<T: Serialize + Clone>(
     payload: &T,
     root_key: &SigningKey,
 ) -> Result<SignedResponse<T>> {
     let bytes = serde_json::to_vec(payload).map_err(|e| anyhow!("serialize payload: {}", e))?;
-    let sig = root_key.sign(&bytes);
+    let sig = crate::crypto::p256_sign(root_key, &bytes);
     Ok(SignedResponse {
         payload: payload.clone(),
-        sig: hex_encode(sig.to_bytes().as_ref()),
+        sig: hex_encode(sig.as_ref()),
     })
 }
 
@@ -164,16 +201,17 @@ pub fn verify_response<T: Serialize>(
     let bytes =
         serde_json::to_vec(&signed.payload).map_err(|e| anyhow!("serialize payload: {}", e))?;
     let sig_bytes = hex_decode_64(&signed.sig)?;
-    let sig = Signature::from_bytes(&sig_bytes);
-    Ok(root_pub.verify(&bytes, &sig).is_ok())
+    Ok(crate::crypto::p256_verify(root_pub, &bytes, &sig_bytes))
 }
 
+#[cfg(test)]
+mod fixtures; // v4 测试夹具（S4-1：verify / c_abi / revocation 共用真链签名器，无 #[test]）
 #[cfg(test)]
 mod tests;
 
 /// 跨模块共享的测试串行锁（S6 覆盖率批次引入）。
 ///
-/// env（NEMESIS_ROOT_PUBKEY / NEMESIS_REVOCATION_URL / NEMESIS_STRICT_OFFLINE）
+/// env（NEMESIS_ROOT_ANCHOR / NEMESIS_REVOCATION_URL / NEMESIS_STRICT_OFFLINE）
 /// 与全局 CRL_CACHE 是进程级可变状态：revocation / verify / c_abi / keygen 的
 /// 测试都会在 verify 流程里读到它们，各模块各一把锁挡不住跨模块并行竞争
 /// （env-test-race-lock-pattern：必须 crate 根唯一一把）。

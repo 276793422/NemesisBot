@@ -1,10 +1,11 @@
-//! revoke-server（v3：DLL 验证模块架构的云端签发 + 吊销服务）。
+//! revoke-server（v4 Authenticode：云端签发 + 吊销服务，X.509 三级链 + CMS）。
 //!
 //! 启动：`revoke-server --keys-file keys.json [--init-keys] [--bind 127.0.0.1:7878]`
 //!                     `[--db-url revoke.db] [--admin-token ...]`
 //!
-//! 首次：`--init-keys` 生成密钥体系（root/CA/issuer 私钥 + 证书链）到 `--keys-file`，打印根公钥。
-//! 后续：`--keys-file` 加载（root_sk 签云端响应/CRL；issuer_sk 签 exe，envelope 带链）。
+//! 首次：`--init-keys` 生成密钥体系（root/发行锚/leaf 私钥 + X.509 证书链）到
+//! `--keys-file`，打印根锚指纹（链终止条件，客户端/DLL 内置注入值）。
+//! 后续：`--keys-file` 加载（root_sk 签云端响应/CRL；leaf_sk / 动态发行方私钥签 exe）。
 //!
 //! API：`POST /v1/verify` | `GET /v1/crl` | `GET /v1/trusted-keys` | `POST /v1/sign`（带链签发）
 //!      `POST /v1/admin/revoke` | `POST /v1/admin/trusted-key` | `POST /v1/admin/user`
@@ -38,7 +39,7 @@ async fn admin_page() -> Html<&'static str> {
 #[command(
     name = "revoke-server",
     version,
-    about = "签名吊销服务端（v3 DLL 架构 + 证书链签发）"
+    about = "签名吊销服务端（v4 Authenticode：X.509 证书链 + CMS 签发 + 吊销）"
 )]
 struct Cli {
     /// 监听地址
@@ -47,10 +48,10 @@ struct Cli {
     /// 数据库 URL（SQLite 库文件，默认 revoke.db）
     #[arg(long, default_value = "revoke.db")]
     db_url: String,
-    /// 密钥体系 JSON 文件（root/CA/issuer 私钥 + 证书链）。
+    /// 密钥体系 JSON 文件（root/发行锚/leaf 私钥 + X.509 证书链，v2 格式）。
     #[arg(long, default_value = "keys.json")]
     keys_file: String,
-    /// 首次生成密钥体系到 --keys-file（已存在则覆盖）。打印根公钥（客户端/DLL 内置用）。
+    /// 首次生成密钥体系到 --keys-file（已存在则覆盖）。打印根锚指纹（客户端/DLL 内置注入值）。
     #[arg(long)]
     init_keys: bool,
     /// admin 接口鉴权 token
@@ -70,14 +71,17 @@ async fn main() -> Result<()> {
 /// `main()` 本体只留 argv 解析）。
 async fn run(cli: Cli) -> Result<()> {
     if cli.init_keys {
-        let h = nemesis_verify::keygen::generate_hierarchy(0, u64::MAX);
+        let h = nemesis_verify::keygen::generate()?;
         h.save(&cli.keys_file)?;
         println!("✓ generated key hierarchy → {}", cli.keys_file);
         println!(
-            "  root pubkey (内置客户端/DLL): {}",
-            hex_encode(&h.root_vk.to_bytes())
+            "  root anchor (NEMESIS_BUILD_ROOT_ANCHOR 注入值): {}",
+            hex_encode(&h.root_anchor_fingerprint())
         );
-        println!("  issuer pubkey: {}", hex_encode(&h.issuer_vk.to_bytes()));
+        println!(
+            "  leaf pubkey: {}",
+            hex_encode(&nemesis_verify::crypto::public_key_bytes(&h.leaf_vk()))
+        );
     }
 
     let state = state::AppState::new(&cli.db_url, &cli.keys_file, cli.admin_token.clone())?;

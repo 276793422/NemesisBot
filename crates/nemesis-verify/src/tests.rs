@@ -1,9 +1,10 @@
 use super::*;
 
 /// 测试用：从固定种子构造密钥（确定性，无需 rand 依赖）。
+/// 种子 ≤ 54 时为合法 P-256 标量（canonical check 拒 0 与 ≥n）。
 fn root_key(seed: u8) -> (SigningKey, VerifyingKey) {
-    let sk = SigningKey::from_bytes(&[seed; 32]);
-    let vk = sk.verifying_key();
+    let sk = SigningKey::from_bytes(&[seed; 32].into()).expect("seed is a valid scalar");
+    let vk = *sk.verifying_key();
     (sk, vk)
 }
 
@@ -128,4 +129,53 @@ fn hex_decode_64_accepts_uppercase_and_trims() {
     let (_, vk) = root_key(1);
     // sig 不匹配（全 AB 非真签名）但解析必须成功 → Ok(false)
     assert!(!verify_response::<Crl>(&via_resp, &vk).unwrap());
+}
+
+// ---------------------------------------------------------------------------
+// S4-2：根锚注入三臂（resolve_root_anchors 纯函数 + fail-closed 语义）。
+// 纯函数不触 env，无需 GLOBAL_STATE_LOCK。
+// ---------------------------------------------------------------------------
+
+#[test]
+fn root_anchor_resolution_three_arms() {
+    let (_, root_vk) = root_key(3);
+    let fp = crypto::key_fp(&crypto::public_key_bytes(&root_vk));
+    let anchor = hex_encode(&fp); // 私有 hex_encode 64 字符小写
+    assert_eq!(anchor.len(), 64);
+
+    // ① build 注入优先：builtin 合法 → 只用 builtin，runtime 被忽略（防篡改）
+    assert_eq!(
+        resolve_root_anchors(Some(&anchor), Some(&"f".repeat(64))),
+        vec![fp]
+    );
+    // runtime 缺席同样成立
+    assert_eq!(resolve_root_anchors(Some(&anchor), None), vec![fp]);
+
+    // ② env fallback：builtin 缺席 + runtime 合法 → 用 runtime
+    assert_eq!(resolve_root_anchors(None, Some(&anchor)), vec![fp]);
+
+    // ③ 双臂皆缺 → 空集（D7 默认不可信状态）
+    assert_eq!(resolve_root_anchors(None, None), Vec::<[u8; 32]>::new());
+
+    // ④ fail-closed：builtin 存在但非法 → 空集，**不回落 runtime**（防 env 顶替信任根）
+    assert_eq!(
+        resolve_root_anchors(Some("not-hex!"), Some(&anchor)),
+        Vec::<[u8; 32]>::new()
+    );
+
+    // ⑤ runtime 非法（无 builtin）→ 空集
+    assert_eq!(
+        resolve_root_anchors(None, Some("zz")),
+        Vec::<[u8; 32]>::new()
+    );
+
+    // ⑥ 容差：首尾空白可 trim（部署脚本友好），长度错/奇数长度拒绝
+    assert_eq!(
+        resolve_root_anchors(Some(&format!("  {anchor}  ")), None),
+        vec![fp]
+    );
+    assert_eq!(
+        resolve_root_anchors(Some(&anchor[..63]), None),
+        Vec::<[u8; 32]>::new()
+    );
 }

@@ -1,402 +1,410 @@
-use super::*;
+//! verify_bytes 九态全态测试（S4-1：v4 Authenticode 管线）。
+//!
+//! 判据（goal S4-1）：Valid / Tampered / NoSignature / SignatureInvalid /
+//! UnsupportedVersion / Malformed / Untrusted / Revoked / Expired 各 ≥1。
+//! Revoked 需要真 CRL 服务器 + env（NEMESIS_REVOCATION_URL）+ 全局 CRL 缓存，
+//! 位于 `revocation/tests.rs` 的 verify_bytes 集成段（与本文件共享 crate 根
+//! GLOBAL_STATE_LOCK 串行），不在本文件重复。
+//!
+//! 载体覆盖：raw（九态主载体）+ PE（证书表定位 + authenticode digest 分支，
+//! 最小 PE 手工构造，布局假设与 pe/tests.rs build_pe 同款）。ELF 载体的
+//! footer/L 契约在 envelope/tests.rs S3-4 段覆盖，本文件不重复。
 
-fn keypair(seed: u8) -> (SigningKey, VerifyingKey) {
-    let sk = SigningKey::from_bytes(&[seed; 32]);
-    let vk = sk.verifying_key();
-    (sk, vk)
+use super::*;
+use crate::envelope::{FORMAT_TAG_RAW, attach_v4};
+use crate::fixtures::{V4Harness, now_secs};
+use crate::pe::append_certificate_table;
+use p256::ecdsa::SigningKey;
+
+// ===== 最小 PE 构造（端口自 pe/tests.rs build_pe，只留 S4-1 需要的形态）=====
+
+const P: usize = 0x40; // e_lfanew
+
+fn put16(b: &mut [u8], off: usize, v: u16) {
+    b[off..off + 2].copy_from_slice(&v.to_le_bytes());
+}
+fn put32(b: &mut [u8], off: usize, v: u32) {
+    b[off..off + 4].copy_from_slice(&v.to_le_bytes());
 }
 
+/// 无证书表的最小 PE32+：1 个 section（0x200 @ 0x400），nrva=16（Security 项
+/// 全零 = 未签名）。
+fn base_pe() -> Vec<u8> {
+    let size_of_opt: usize = 240;
+    let sec_tbl = P + 24 + size_of_opt;
+    let len = (sec_tbl + 40).max(0x400 + 0x200);
+    let mut b = vec![0u8; len];
+    b[0] = b'M';
+    b[1] = b'Z';
+    put32(&mut b, 0x3C, P as u32);
+    b[P..P + 4].copy_from_slice(b"PE\0\0");
+    put16(&mut b, P + 6, 1);
+    put16(&mut b, P + 20, size_of_opt as u16);
+    put16(&mut b, P + 24, 0x20b);
+    put32(&mut b, P + 88, 0xDEADBEEF); // CheckSum 非零（digest 排除可观测）
+    put32(&mut b, P + 132, 16); // NumberOfRvaAndSizes
+    put32(&mut b, sec_tbl + 16, 0x200); // SizeOfRawData
+    put32(&mut b, sec_tbl + 20, 0x400); // PointerToRawData
+    b
+}
+
+/// 与 keygen 体系无关的另一把签名私钥（SignatureInvalid 用：sid 指向 leaf 证书、
+/// 签名却出自别把钥匙）。
+fn foreign_leaf_sk() -> SigningKey {
+    SigningKey::from_bytes(&[0x5Au8; 32].into()).expect("seed is a valid scalar")
+}
+
+// ===== Valid =====
+
 #[test]
-fn sign_verify_raw_valid() {
-    let _g = crate::GLOBAL_STATE_LOCK.lock().unwrap(); // verify 流程读 revocation env
-    let (sk, vk) = keypair(7);
-    let content = b"hello nemesis verify v3 payload";
-    let signed = sign_content(content, &sk, 1000, None, None, None, None).unwrap();
-    match verify_bytes(&signed, &[vk], 1000) {
+fn valid_raw_carrier() {
+    let h = V4Harness::new();
+    let content = b"S4-1 valid raw payload".to_vec();
+    let signed = h.sign_raw(&content, 1_800_000_000);
+    let leaf_pubkey = crypto::public_key_bytes(h.h.leaf_sk.verifying_key());
+    match verify_bytes(&signed, &h.anchor_fps(), now_secs()) {
         VerifyOutcome::Valid {
             signed_at,
             key_fp,
             pubkey,
         } => {
-            assert_eq!(signed_at, 1000);
-            assert_eq!(pubkey, vk.to_bytes());
-            let expected_fp: [u8; 32] = sha2::Sha256::digest(vk.to_bytes()).into();
-            assert_eq!(key_fp, expected_fp);
+            assert_eq!(signed_at, 1_800_000_000, "signingTime 属性穿透");
+            assert_eq!(pubkey, leaf_pubkey, "pubkey = 签名者证书 SPKI");
+            assert_eq!(key_fp, crypto::key_fp(&leaf_pubkey));
         }
-        o => panic!("expected Valid, got {:?}", o),
+        o => panic!("expected Valid, got {o:?}"),
     }
 }
 
 #[test]
-fn sign_with_chain_valid() {
-    let _g = crate::GLOBAL_STATE_LOCK.lock().unwrap();
-    // root 签 leaf cert；leaf_sk 签 content（envelope 带 leaf pubkey + chain=[leaf_cert]）
-    let (root_sk, root_vk) = keypair(1);
-    let (leaf_sk, leaf_vk) = keypair(2);
-    let leaf_cert =
-        cert::issue_certificate(&root_sk, &leaf_vk.to_bytes(), b"issuer-A", 0, u64::MAX);
-    let chain = cert::serialize_chain(&[leaf_cert]);
-    let signed = sign_content(
-        b"signed with cert chain",
-        &leaf_sk,
-        1000,
-        Some(&chain),
-        None,
+fn valid_pe_certificate_table() {
+    let h = V4Harness::new();
+    let pe = base_pe();
+    // Authenticode 语义：CMS messageDigest = 整个 PE 文件的 authenticode digest
+    // （排除 CheckSum 字段与证书表区），不是任意内容串的 SHA-256。追加证书表
+    // 只写排除区（Security 目录 + EOF 表数据），digest 前后不变。
+    let digest = crate::pe::authenticode_digest(&pe).expect("authenticode digest");
+    let cms = crate::envelope::build_signed_data(
+        &digest,
+        &h.h.leaf_sk,
+        1_800_000_000,
+        &h.h.chain(),
         None,
         None,
     )
-    .unwrap();
-    // verify: root_pubs=[root_vk]（不含 leaf_vk）；可信靠链 leaf→root
-    match verify_bytes(&signed, &[root_vk], 1000) {
-        VerifyOutcome::Valid { pubkey, .. } => assert_eq!(pubkey, leaf_vk.to_bytes()),
-        o => panic!("expected Valid, got {:?}", o),
-    }
-}
-
-#[test]
-fn sign_with_chain_wrong_root_untrusted() {
-    let _g = crate::GLOBAL_STATE_LOCK.lock().unwrap();
-    // 链到 root1，但验证端只信任 root2 → Untrusted
-    let (root1_sk, _) = keypair(1);
-    let (_, root2_vk) = keypair(9);
-    let (leaf_sk, leaf_vk) = keypair(2);
-    let leaf_cert =
-        cert::issue_certificate(&root1_sk, &leaf_vk.to_bytes(), b"issuer-A", 0, u64::MAX);
-    let chain = cert::serialize_chain(&[leaf_cert]);
-    let signed = sign_content(
-        b"chain to root1",
-        &leaf_sk,
-        1000,
-        Some(&chain),
-        None,
-        None,
-        None,
-    )
-    .unwrap();
-    match verify_bytes(&signed, &[root2_vk], 1000) {
-        VerifyOutcome::Untrusted => {}
-        o => panic!("expected Untrusted, got {:?}", o),
-    }
-}
-
-#[test]
-fn tampered_content_detected() {
-    let (sk, vk) = keypair(7);
-    let mut signed = sign_content(b"original content", &sk, 1000, None, None, None, None).unwrap();
-    signed[5] ^= 0xFF; // 篡改 content 区
-    match verify_bytes(&signed, &[vk], 1000) {
-        VerifyOutcome::Tampered(_) => {}
-        o => panic!("expected Tampered, got {:?}", o),
-    }
-}
-
-#[test]
-fn no_signature() {
-    let (_, vk) = keypair(7);
-    let plain = b"just some bytes no signature here";
-    assert_eq!(verify_bytes(plain, &[vk], 1000), VerifyOutcome::NoSignature);
-}
-
-#[test]
-fn untrusted_pubkey_rejected() {
-    let _g = crate::GLOBAL_STATE_LOCK.lock().unwrap();
-    let (sk, _) = keypair(7);
-    let (_, vk_other) = keypair(9);
-    // 用 sk7 签（无链），只信任 vk9 → Untrusted
-    let signed = sign_content(b"signed by sk7", &sk, 1000, None, None, None, None).unwrap();
-    match verify_bytes(&signed, &[vk_other], 1000) {
-        VerifyOutcome::Untrusted => {}
-        o => panic!("expected Untrusted, got {:?}", o),
-    }
-}
-
-#[test]
-fn signature_tamper_detected() {
-    let (sk7, _) = keypair(7);
-    let mut signed = sign_content(b"sig tamper test", &sk7, 1000, None, None, None, None).unwrap();
-    let sig_byte_off = 15 + 108; // body 偏移 108（envelope::BODY_OFF_SIG）；content_len=15
-    signed[sig_byte_off] ^= 0xFF;
-    match verify_bytes(&signed, &[sk7.verifying_key()], 1000) {
-        VerifyOutcome::SignatureInvalid => {}
-        o => panic!("expected SignatureInvalid, got {:?}", o),
-    }
-}
-
-// ---------------------------------------------------------------------------
-// S6 覆盖率批次（quality-hardening goal 2026-08-25）：手工改 footer / body 字节
-// 驱动 verify_bytes 的全部错误出口。这些出口全部位于吊销检查之前，不依赖 env。
-// ---------------------------------------------------------------------------
-
-/// 与 envelope::crc32 相同的 IEEE 802.3 实现（envelope 内私有不可 import，此处
-/// 镜像；一致性由「patch 后 parse_footer 必须成功」的测试钉住）。
-fn crc32(data: &[u8]) -> u32 {
-    let mut crc: u32 = 0xFFFF_FFFF;
-    for &b in data {
-        crc ^= b as u32;
-        for _ in 0..8 {
-            crc = if crc & 1 != 0 {
-                (crc >> 1) ^ 0xEDB8_8320
-            } else {
-                crc >> 1
-            };
-        }
-    }
-    !crc
-}
-
-/// 修改 footer 字段后重算 CRC（footer[24..28) = crc32(footer[0..24))）。
-fn patch_footer_crc(file: &mut [u8], footer_off: usize) {
-    let crc = crc32(&file[footer_off..footer_off + 24]);
-    file[footer_off + 24..footer_off + 28].copy_from_slice(&crc.to_le_bytes());
-}
-
-/// raw 签名文件的 footer 偏移（单 envelope，footer 在文件末尾）。
-fn footer_off_of(signed: &[u8]) -> usize {
-    signed.len() - envelope::FOOTER_LEN
-}
-
-/// 探测一个 VerifyingKey::from_bytes 拒绝的 32B 编码（确定性：SHA-256(i) 序列）。
-fn rejected_pubkey() -> [u8; 32] {
-    for i in 0u8..=255 {
-        let cand: [u8; 32] = sha2::Sha256::digest([i]).into();
-        if VerifyingKey::from_bytes(&cand).is_err() {
-            return cand;
-        }
-    }
-    panic!("SHA-256(0..=255) 中必存在被拒的非规范编码");
-}
-
-#[test]
-fn footer_crc_corrupt_is_tampered() {
-    let (sk, vk) = keypair(11);
-    let mut signed = sign_content(b"crc target", &sk, 1000, None, None, None, None).unwrap();
-    let fo = footer_off_of(&signed);
-    signed[fo + 12] ^= 0x01; // total_len 字节在 CRC 覆盖范围内，不重算 CRC
-    match verify_bytes(&signed, &[vk], 1000) {
-        VerifyOutcome::Tampered(m) => assert!(m.contains("footer"), "{m}"),
-        o => panic!("expected Tampered(footer), got {:?}", o),
-    }
-}
-
-#[test]
-fn footer_version_patch_is_unsupported_version() {
-    let (sk, vk) = keypair(12);
-    let mut signed = sign_content(b"ver target", &sk, 1000, None, None, None, None).unwrap();
-    let fo = footer_off_of(&signed);
-    signed[fo + 8] = 2; // format_ver=2（伪 v2 footer，magic 仍是 v3）
-    patch_footer_crc(&mut signed, fo);
-    assert_eq!(
-        verify_bytes(&signed, &[vk], 1000),
-        VerifyOutcome::UnsupportedVersion(2)
+    .expect("build_signed_data");
+    let signed = append_certificate_table(&pe, &cms).expect("append table");
+    assert!(
+        matches!(
+            verify_bytes(&signed, &h.anchor_fps(), now_secs()),
+            VerifyOutcome::Valid { .. }
+        ),
+        "PE 证书表主签名 → Valid"
     );
 }
 
+// ===== sign_content_v4（S5-1：v4 签发单一入口，格式分派 + digest 接线）=====
+
 #[test]
-fn body_len_overrun_is_malformed() {
-    let (sk, vk) = keypair(13);
-    let mut signed = sign_content(b"range target", &sk, 1000, None, None, None, None).unwrap();
-    let fo = footer_off_of(&signed);
-    // body_len = 0x10000 → 超界 → BUG S6-1 修复后钳成 (0,0) 空区间 →
-    // parse_body 空 body → Malformed("body: body too short")
-    signed[fo + 16..fo + 20].copy_from_slice(&0x10000u32.to_le_bytes());
-    patch_footer_crc(&mut signed, fo);
-    match verify_bytes(&signed, &[vk], 1000) {
-        VerifyOutcome::Malformed(m) => assert!(m.contains("body too short"), "{m}"),
-        o => panic!("expected Malformed(range), got {:?}", o),
+fn sign_content_v4_raw_roundtrip_valid() {
+    let h = V4Harness::new();
+    let signed = sign_content_v4(b"s51 raw payload", &h.h.leaf_sk, 42_000, &h.h.chain(), None)
+        .expect("sign_content_v4 raw");
+    match verify_bytes(&signed, &h.anchor_fps(), now_secs()) {
+        VerifyOutcome::Valid { signed_at, .. } => assert_eq!(signed_at, 42_000),
+        o => panic!("expected Valid, got {o:?}"),
     }
 }
 
 #[test]
-fn crafted_total_len_underflow_is_malformed() {
-    // BUG S6-1 回归钉：total_len > footer_offset+FOOTER_LEN 时修复前是
-    // usize 下溢（debug panic 'attempt to subtract with overflow'）。
-    let (sk, vk) = keypair(23);
-    let mut signed = sign_content(b"underflow target", &sk, 1000, None, None, None, None).unwrap();
-    let fo = footer_off_of(&signed);
-    signed[fo + 12..fo + 16].copy_from_slice(&0xFFFF_FFF0u32.to_le_bytes()); // total_len 超界
-    patch_footer_crc(&mut signed, fo);
-    match verify_bytes(&signed, &[vk], 1000) {
-        VerifyOutcome::Malformed(m) => assert!(m.contains("body too short"), "{m}"),
-        o => panic!("expected Malformed(range), got {:?}", o),
-    }
-}
-
-#[test]
-fn crafted_small_total_len_with_big_body_len_is_out_of_bounds() {
-    // BUG S6-1 钳制的边界补充钉：total_len/body_len 各自 ≤ avail 时钳制放行，
-    // 但 start+body_len 仍可越过文件末尾（total_len=FOOTER_LEN、body_len=avail
-    // → body_end = footer_off+avail > len）——bytes.get() 兜底臂必须接住，
-    // 归 Malformed("body range out of bounds")，不能 panic。
-    let (sk, vk) = keypair(24);
-    let mut signed = sign_content(b"bounds target", &sk, 1000, None, None, None, None).unwrap();
-    let fo = footer_off_of(&signed);
-    let avail = fo + crate::envelope::FOOTER_LEN;
-    signed[fo + 12..fo + 16].copy_from_slice(&(crate::envelope::FOOTER_LEN as u32).to_le_bytes()); // total_len=64
-    signed[fo + 16..fo + 20].copy_from_slice(&(avail as u32).to_le_bytes()); // body_len=avail
-    patch_footer_crc(&mut signed, fo);
-    match verify_bytes(&signed, &[vk], 1000) {
-        VerifyOutcome::Malformed(m) => assert!(m.contains("body range out of bounds"), "{m}"),
-        o => panic!("expected Malformed(out of bounds), got {:?}", o),
-    }
-}
-
-#[test]
-fn body_too_short_is_malformed() {
-    let (sk, vk) = keypair(14);
-    let mut signed = sign_content(b"short body", &sk, 1000, None, None, None, None).unwrap();
-    let fo = footer_off_of(&signed);
-    signed[fo + 16..fo + 20].copy_from_slice(&10u32.to_le_bytes()); // body_len=10 < 172
-    patch_footer_crc(&mut signed, fo);
-    match verify_bytes(&signed, &[vk], 1000) {
-        VerifyOutcome::Malformed(m) => assert!(m.contains("body too short"), "{m}"),
-        o => panic!("expected Malformed(body), got {:?}", o),
-    }
-}
-
-#[test]
-fn raw_content_len_exceeds_file_is_malformed() {
-    let (sk, vk) = keypair(15);
-    let mut signed = sign_content(b"clen target", &sk, 1000, None, None, None, None).unwrap();
-    let fo = footer_off_of(&signed);
-    let over = (signed.len() + 1000) as u32;
-    signed[fo + 20..fo + 24].copy_from_slice(&over.to_le_bytes());
-    patch_footer_crc(&mut signed, fo);
-    match verify_bytes(&signed, &[vk], 1000) {
-        VerifyOutcome::Malformed(m) => assert!(m.contains("content_len"), "{m}"),
-        o => panic!("expected Malformed(content_len), got {:?}", o),
-    }
-}
-
-#[test]
-fn broken_pe_falls_back_to_raw_then_fails_content_hash() {
-    // MZ 前缀但 PE 结构非法 → codec.compute_l Err → 按 Raw 处理（overlay_start=0）
-    // → footer 仍可定位 → body 可解析 → 但 content_hash 阶段 PeCodec 解析失败
-    // → Malformed("content_hash: ...")。同时证明 Err 分支不会 panic / NoSignature。
-    let (sk, _) = keypair(16);
-    let signed = sign_content(b"raw payload", &sk, 1000, None, None, None, None).unwrap();
-    let env_only = &signed[signed.len() - envelope::ENVELOPE_ALIGN..];
-    let mut f = b"MZ".to_vec();
-    f.extend(std::iter::repeat_n(0u8, 0x100 - 2)); // e_lfanew=0 → 无 PE 签名
-    f.extend_from_slice(env_only);
-    match verify_bytes(&f, &[sk.verifying_key()], 1000) {
-        VerifyOutcome::Malformed(m) => assert!(m.contains("content_hash"), "{m}"),
-        o => panic!("expected Malformed(content_hash), got {:?}", o),
-    }
-}
-
-#[test]
-fn noncanonical_pubkey_bytes_is_malformed() {
-    // body.pubkey 换成解不出曲线点的 32B → VerifyingKey::from_bytes Err →
-    // Malformed（发生在验签之前，无需伪造签名）。
-    let (sk, vk) = keypair(17);
-    let mut signed = sign_content(b"bad pubkey", &sk, 1000, None, None, None, None).unwrap();
-    let fo = footer_off_of(&signed);
-    let mut f = [0u8; envelope::FOOTER_LEN];
-    f.copy_from_slice(&signed[fo..]);
-    let pf = envelope::parse_footer(&f).unwrap();
-    let body_start = fo + envelope::FOOTER_LEN - pf.total_len;
-    signed[body_start + 76..body_start + 108].copy_from_slice(&rejected_pubkey());
-    match verify_bytes(&signed, &[vk], 1000) {
-        VerifyOutcome::Malformed(m) => assert!(m.contains("invalid pubkey bytes"), "{m}"),
-        o => panic!("expected Malformed(pubkey), got {:?}", o),
-    }
-}
-
-#[test]
-fn cert_chain_window_expired_is_expired() {
-    let (root_sk, root_vk) = keypair(18);
-    let (leaf_sk, leaf_vk) = keypair(19);
-    let leaf_cert = cert::issue_certificate(&root_sk, &leaf_vk.to_bytes(), b"issuer", 100, 200);
-    let chain = cert::serialize_chain(&[leaf_cert]);
-    let signed = sign_content(
-        b"expired chain",
-        &leaf_sk,
-        1000,
-        Some(&chain),
-        None,
-        None,
-        None,
+fn sign_content_v4_pe_roundtrip_valid() {
+    // PE 臂：helper 内部走 authenticode_digest + Certificate Table（exe-sign-tool
+    // sign 的实际路径），签名文件 verify_bytes Valid 且 opus publisher 可 view 穿透。
+    let h = V4Harness::new();
+    let pe = base_pe();
+    let signed = sign_content_v4(
+        &pe,
+        &h.h.leaf_sk,
+        43_000,
+        &h.h.chain(),
+        Some("org-publisher"),
     )
-    .unwrap();
-    match verify_bytes(&signed, &[root_vk], 500) {
-        VerifyOutcome::Expired(m) => assert!(m.contains("certificate expired"), "{m}"),
-        o => panic!("expected Expired(chain), got {:?}", o),
+    .expect("sign_content_v4 pe");
+    match verify_bytes(&signed, &h.anchor_fps(), now_secs()) {
+        VerifyOutcome::Valid { signed_at, .. } => assert_eq!(signed_at, 43_000),
+        o => panic!("expected Valid, got {o:?}"),
     }
+    assert!(crate::view::latest_sig_hash(&signed).is_some());
 }
 
-#[test]
-fn garbage_cert_chain_is_malformed() {
-    // 签名时就把 chain 当垃圾（签名覆盖 cert_chain_hash，自洽）→ 验签通过后
-    // parse_chain 失败 → Malformed("cert_chain parse failed")。
-    let (sk, vk) = keypair(20);
-    let garbage: &[u8] = &[0x00, 0x01]; // count=1 但无 cert_len
-    let signed =
-        sign_content(b"garbage chain", &sk, 1000, Some(garbage), None, None, None).unwrap();
-    match verify_bytes(&signed, &[vk], 1000) {
-        VerifyOutcome::Malformed(m) => assert!(m.contains("cert_chain parse failed"), "{m}"),
-        o => panic!("expected Malformed(chain), got {:?}", o),
-    }
-}
+// ===== 最小 ELF64 LE 构造（端口自 envelope/tests.rs s34_min_elf，模块私有不可跨文件）=====
 
-#[test]
-fn key_not_after_exceeded_is_expired() {
-    let (sk, vk) = keypair(21);
-    let signed = sign_content(b"kna target", &sk, 1000, None, None, Some(1500), None).unwrap();
-    match verify_bytes(&signed, &[vk], 2000) {
-        VerifyOutcome::Expired(m) => assert!(m.contains("key_not_after"), "{m}"),
-        o => panic!("expected Expired(kna), got {:?}", o),
-    }
-    // now ≤ kna → 仍 Valid
-    let _g = crate::GLOBAL_STATE_LOCK.lock().unwrap();
-    assert!(matches!(
-        verify_bytes(&signed, &[vk], 1400),
-        VerifyOutcome::Valid { .. }
-    ));
-}
-
-/// 最小合法 PE32（与 pe/tests.rs 的 build_pe 同构的紧凑版）。
-fn make_min_pe() -> Vec<u8> {
-    const P: usize = 0x40;
-    let size_of_opt = 224usize;
-    let sec_tbl = P + 24 + size_of_opt;
-    let raw_ptr = sec_tbl + 40;
-    let mut b = vec![0u8; raw_ptr + 0x100];
-    b[0] = b'M';
-    b[1] = b'Z';
-    b[0x3C..0x40].copy_from_slice(&(P as u32).to_le_bytes());
-    b[P..P + 4].copy_from_slice(b"PE\0\0");
-    b[P + 6..P + 8].copy_from_slice(&1u16.to_le_bytes()); // NumberOfSections
-    b[P + 20..P + 22].copy_from_slice(&(size_of_opt as u16).to_le_bytes());
-    b[P + 24..P + 26].copy_from_slice(&0x10bu16.to_le_bytes()); // PE32
-    b[P + 116..P + 120].copy_from_slice(&16u32.to_le_bytes()); // NumberOfRvaAndSizes
-    b[sec_tbl + 16..sec_tbl + 20].copy_from_slice(&0x100u32.to_le_bytes()); // SizeOfRawData
-    b[sec_tbl + 20..sec_tbl + 24].copy_from_slice(&(raw_ptr as u32).to_le_bytes()); // PointerToRawData
+/// PT_LOAD 全覆盖形态：codec L = 全文件长（overlay 域为空），S5-2 用它覆盖
+/// [`sign_content_v4`] ELF 臂的 `compute_l` Some(L) 路径。
+fn min_elf64_le() -> Vec<u8> {
+    let hdr: usize = 64;
+    let phe: usize = 56;
+    let l = hdr + phe;
+    let mut b = vec![0u8; l];
+    b[0..4].copy_from_slice(b"\x7fELF");
+    b[4] = 2; // ELFCLASS64
+    b[5] = 1; // ELFDATA2LSB
+    b[32..40].copy_from_slice(&(hdr as u64).to_le_bytes()); // e_phoff
+    b[40..48].copy_from_slice(&0u64.to_le_bytes()); // e_shoff = 0（无 section 表）
+    b[54..56].copy_from_slice(&(phe as u16).to_le_bytes()); // e_phentsize
+    b[56..58].copy_from_slice(&1u16.to_le_bytes()); // e_phnum
+    b[58..60].copy_from_slice(&64u16.to_le_bytes());
+    b[60..62].copy_from_slice(&0u16.to_le_bytes());
+    b[hdr..hdr + 4].copy_from_slice(&1u32.to_le_bytes()); // p_type = PT_LOAD
+    b[hdr + 8..hdr + 16].copy_from_slice(&0u64.to_le_bytes()); // p_offset
+    b[hdr + 32..hdr + 40].copy_from_slice(&(l as u64).to_le_bytes()); // p_filesz = 全长
     b
 }
 
 #[test]
-fn pe_roundtrip_valid_and_content_len_mismatch_malformed() {
-    let _g = crate::GLOBAL_STATE_LOCK.lock().unwrap();
-    let (sk, vk) = keypair(22);
-    let pe = make_min_pe();
-    let mut signed = sign_content(&pe, &sk, 1000, None, None, None, None).unwrap();
-    let l = codec::detect_codec(&signed)
-        .compute_l(&signed)
-        .unwrap()
-        .unwrap();
-
-    // PE 的 sign+verify 全链路 → Valid
-    assert!(matches!(
-        verify_bytes(&signed, &[vk], 1000),
-        VerifyOutcome::Valid { .. }
-    ));
-
-    // footer.content_len ≠ L → Malformed（PE 内容长度与结构 L 必须一致）
-    let fo = footer_off_of(&signed);
-    signed[fo + 20..fo + 24].copy_from_slice(&((l + 1) as u32).to_le_bytes());
-    patch_footer_crc(&mut signed, fo);
-    match verify_bytes(&signed, &[vk], 1000) {
-        VerifyOutcome::Malformed(m) => assert!(m.contains("content_len"), "{m}"),
-        o => panic!("expected Malformed(content_len != L), got {:?}", o),
+fn sign_content_v4_elf_roundtrip_valid() {
+    // ELF 臂：footer 载体 + 保护域 = codec L（compute_l Some(L) 路径——raw 走
+    // None 臂、PE 走 authenticode，只有 ELF 覆盖这里）。
+    let h = V4Harness::new();
+    let elf = min_elf64_le();
+    let signed = sign_content_v4(&elf, &h.h.leaf_sk, 44_000, &h.h.chain(), None)
+        .expect("sign_content_v4 elf");
+    match verify_bytes(&signed, &h.anchor_fps(), now_secs()) {
+        VerifyOutcome::Valid { signed_at, .. } => assert_eq!(signed_at, 44_000),
+        o => panic!("expected Valid, got {o:?}"),
     }
+}
+
+// ===== NoSignature =====
+
+#[test]
+fn no_signature_raw_and_pe() {
+    let h = V4Harness::new();
+    assert_eq!(
+        verify_bytes(b"plain raw bytes", &h.anchor_fps(), 1),
+        VerifyOutcome::NoSignature,
+        "raw 无 v4 footer → NoSignature"
+    );
+    assert_eq!(
+        verify_bytes(&base_pe(), &h.anchor_fps(), 1),
+        VerifyOutcome::NoSignature,
+        "PE 无证书表 → NoSignature"
+    );
+}
+
+// ===== Tampered（摘要差）=====
+
+#[test]
+fn tampered_content_detected() {
+    let h = V4Harness::new();
+    let content = b"tamper target payload".to_vec();
+    let signed = h.sign_raw(&content, 1_800_000_000);
+
+    // raw：内容域字节翻转 → 载体 content_hash 变 → Tampered
+    let mut bad = signed;
+    bad[3] ^= 0x01;
+    assert!(
+        matches!(
+            verify_bytes(&bad, &h.anchor_fps(), now_secs()),
+            VerifyOutcome::Tampered(_)
+        ),
+        "raw 内容翻转 → Tampered"
+    );
+
+    // PE：先按 authenticode digest 签出 Valid 基线，再翻转 section 内容
+    // → 重算 digest 变 → Tampered
+    let pe = base_pe();
+    let digest = crate::pe::authenticode_digest(&pe).expect("authenticode digest");
+    let cms = crate::envelope::build_signed_data(
+        &digest,
+        &h.h.leaf_sk,
+        1_800_000_000,
+        &h.h.chain(),
+        None,
+        None,
+    )
+    .expect("build_signed_data");
+    let mut pe_signed = append_certificate_table(&pe, &cms).unwrap();
+    pe_signed[0x500] ^= 0x80;
+    assert!(
+        matches!(
+            verify_bytes(&pe_signed, &h.anchor_fps(), now_secs()),
+            VerifyOutcome::Tampered(_)
+        ),
+        "PE 内容翻转 → Tampered"
+    );
+
+    // ELF：footer 载体，翻转摘要域 [0,L) 内非结构字节（e_entry@24——载体
+    // framing 只解析 L 相关字段，e_entry 不在其中）→ Tampered。结构字段
+    // 翻转（如 p_filesz）走 Malformed fail-closed，是另一条诚实路径。
+    let elf = sign_content_v4(
+        &min_elf64_le(),
+        &h.h.leaf_sk,
+        1_800_000_000,
+        &h.h.chain(),
+        None,
+    )
+    .expect("sign_content_v4 elf");
+    let mut elf_bad = elf;
+    elf_bad[24] ^= 0xFF;
+    assert!(
+        matches!(
+            verify_bytes(&elf_bad, &h.anchor_fps(), now_secs()),
+            VerifyOutcome::Tampered(_)
+        ),
+        "ELF 摘要域翻转 → Tampered"
+    );
+}
+
+// ===== SignatureInvalid =====
+
+#[test]
+fn signature_invalid_on_foreign_sk() {
+    let h = V4Harness::new();
+    let content = b"foreign key payload".to_vec();
+    // sid = leaf 证书（issuer+serial），签名却出自别把私钥 → 验签必败
+    let signed = h.sign_raw_with(&content, 1_800_000_000, &foreign_leaf_sk(), &h.h.chain());
+    assert!(
+        matches!(
+            verify_bytes(&signed, &h.anchor_fps(), now_secs()),
+            VerifyOutcome::SignatureInvalid
+        ),
+        "错配 sk → SignatureInvalid"
+    );
+}
+
+// ===== UnsupportedVersion =====
+
+#[test]
+fn unsupported_version_non_v1_signed_data() {
+    use cms::content_info::{CmsVersion, ContentInfo};
+    use cms::signed_data::SignedData;
+    use der::{Decode, Encode};
+
+    let h = V4Harness::new();
+    let content = b"version bump payload".to_vec();
+    let cms = h.build_cms(&content, 1_800_000_000, &h.h.leaf_sk, &h.h.chain());
+
+    // version 不在签名覆盖面（RFC 5652：签名只盖 signedAttrs）→ parse → 改
+    // V2 → re-encode 不破签名；Authenticode 钉 V1 → UnsupportedVersion
+    let mut ci = ContentInfo::from_der(cms.as_slice()).expect("ContentInfo parse");
+    let mut sd =
+        SignedData::from_der(ci.content.to_der().unwrap().as_slice()).expect("SignedData parse");
+    sd.version = CmsVersion::V2;
+    ci.content = der::Any::from_der(sd.to_der().unwrap().as_slice()).unwrap();
+    let signed = attach_v4(
+        &content,
+        &ci.to_der().unwrap(),
+        FORMAT_TAG_RAW,
+        content.len(),
+    );
+
+    match verify_bytes(&signed, &h.anchor_fps(), now_secs()) {
+        VerifyOutcome::UnsupportedVersion(msg) => {
+            assert!(msg.contains("unsupported SignedData"), "{msg}");
+        }
+        o => panic!("expected UnsupportedVersion, got {o:?}"),
+    }
+}
+
+// ===== Malformed =====
+
+#[test]
+fn malformed_garbage_cms() {
+    let h = V4Harness::new();
+    let content = b"garbage cms carrier".to_vec();
+
+    // 载体路径：footer 在但 CMS DER 不可解析
+    let signed = attach_v4(&content, b"not-a-der", FORMAT_TAG_RAW, content.len());
+    assert!(
+        matches!(
+            verify_bytes(&signed, &h.anchor_fps(), now_secs()),
+            VerifyOutcome::Malformed(_)
+        ),
+        "载体垃圾 CMS → Malformed"
+    );
+
+    // PE 路径：证书表条目在（PKCS 类型标记）但内容非 CMS
+    let pe_signed = append_certificate_table(&base_pe(), b"still-not-der").unwrap();
+    assert!(
+        matches!(
+            verify_bytes(&pe_signed, &h.anchor_fps(), now_secs()),
+            VerifyOutcome::Malformed(_)
+        ),
+        "PE 表垃圾 CMS → Malformed"
+    );
+}
+
+// ===== Untrusted =====
+
+#[test]
+fn untrusted_empty_anchor_set_is_default_state() {
+    let h = V4Harness::new();
+    let signed = h.sign_raw(b"default state payload", 1_800_000_000);
+    // D7：默认态（未安装任何根）→ 链验不到信任锚 → Untrusted
+    assert_eq!(
+        verify_bytes(&signed, &[], now_secs()),
+        VerifyOutcome::Untrusted,
+        "空锚集（默认态）→ Untrusted"
+    );
+}
+
+#[test]
+fn untrusted_foreign_anchor() {
+    let h = V4Harness::new();
+    let other = V4Harness::new();
+    let signed = h.sign_raw(b"foreign anchor payload", 1_800_000_000);
+    assert_eq!(
+        verify_bytes(&signed, &other.anchor_fps(), now_secs()),
+        VerifyOutcome::Untrusted,
+        "锚集只有别的根 → Untrusted"
+    );
+}
+
+#[test]
+fn untrusted_broken_chain_missing_parent() {
+    let h = V4Harness::new();
+    let content = b"broken chain payload".to_vec();
+    // 证书集只有 leaf（AKI 找不到发行锚 SKI）→ 链断 → Untrusted
+    let leaf_only: Vec<crate::cert::Certificate> = vec![h.h.leaf_cert.clone()];
+    let signed = h.sign_raw_with(&content, 1_800_000_000, &h.h.leaf_sk, &leaf_only);
+    assert!(
+        matches!(
+            verify_bytes(&signed, &h.anchor_fps(), now_secs()),
+            VerifyOutcome::Untrusted
+        ),
+        "链断（缺发行锚）→ Untrusted"
+    );
+}
+
+// ===== Expired =====
+
+#[test]
+fn expired_when_now_outside_validity() {
+    let h = V4Harness::new();
+    let signed = h.sign_raw(b"expired payload", 1_800_000_000);
+    // now = u64::MAX 必然越过证书链有效期（leaf 3y / issuing 10y / root 30y）
+    match verify_bytes(&signed, &h.anchor_fps(), u64::MAX) {
+        VerifyOutcome::Expired(msg) => assert!(msg.contains("expired"), "{msg}"),
+        o => panic!("expected Expired, got {o:?}"),
+    }
+}
+
+// ===== 破坏性变更钉死：v3 NMBSIG envelope 不再被消费 =====
+
+#[test]
+fn legacy_v3_envelope_yields_no_signature() {
+    // v3 NMBSIG footer 字节内联（v3 签名器 sign_content 已随 S5-3 删除）——
+    // v3 形态文件在 v4 管线 = 无主签名（goal S4-1 破坏性声明）。
+    let mut legacy = b"v3 legacy envelope".to_vec();
+    let mut footer = [0u8; 64];
+    footer[0..8].copy_from_slice(b"NMBSIG\x03\x00");
+    footer[8] = 3; // format_ver = 3
+    legacy.extend_from_slice(&footer);
+    let h = V4Harness::new();
+    assert_eq!(
+        verify_bytes(&legacy, &h.anchor_fps(), now_secs()),
+        VerifyOutcome::NoSignature,
+        "v3 NMBSIG envelope 在 v4 管线 = 无主签名（goal 破坏性声明）"
+    );
 }

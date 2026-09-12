@@ -1,7 +1,6 @@
 //! state 单测：AppState 组装（密钥体系加载 + store 构造）+ now_secs。
 
 use super::*;
-use nemesis_verify::keygen::generate_hierarchy;
 use nemesis_verify::{CrlEntry, RevDim};
 use std::sync::atomic::{AtomicU32, Ordering};
 
@@ -33,14 +32,23 @@ fn now_secs_sane_and_monotonic() {
 #[test]
 fn app_state_new_loads_keys_and_memory_store() {
     let path = temp_keys_path("ok");
-    let h = generate_hierarchy(0, u64::MAX);
+    let h = nemesis_verify::keygen::generate().unwrap();
     h.save(&path).unwrap();
     let state = AppState::new(":memory:", &path, "tok-123".to_string()).unwrap();
     let _ = std::fs::remove_file(&path);
-    // 密钥体系按文件加载（root/issuer 公钥 + CA 证书一致）
-    assert_eq!(state.hierarchy.root_vk, h.root_vk);
-    assert_eq!(state.hierarchy.issuer_vk, h.issuer_vk);
-    assert_eq!(state.hierarchy.ca_cert, h.ca_cert);
+    // 密钥体系按文件加载（root/leaf 公钥 + 根证书一致）
+    assert_eq!(
+        nemesis_verify::crypto::public_key_bytes(&state.hierarchy.root_vk()),
+        nemesis_verify::crypto::public_key_bytes(&h.root_vk())
+    );
+    assert_eq!(
+        nemesis_verify::crypto::public_key_bytes(&state.hierarchy.leaf_vk()),
+        nemesis_verify::crypto::public_key_bytes(&h.leaf_vk())
+    );
+    assert_eq!(
+        state.hierarchy.root_cert.sha256_fingerprint(),
+        h.root_cert.sha256_fingerprint()
+    );
     // admin token 原样持有
     assert_eq!(state.admin_token, "tok-123");
     // store 可用（内存库，独立于其他测试）
@@ -73,7 +81,10 @@ fn app_state_new_missing_keys_file_errors() {
 #[test]
 fn app_state_new_file_db_persists() {
     let keys = temp_keys_path("filedb");
-    generate_hierarchy(0, u64::MAX).save(&keys).unwrap();
+    nemesis_verify::keygen::generate()
+        .unwrap()
+        .save(&keys)
+        .unwrap();
     let db = format!("{keys}.db");
     {
         let state = AppState::new(&db, &keys, "t".to_string()).unwrap();

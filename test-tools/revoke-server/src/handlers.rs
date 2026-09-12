@@ -13,7 +13,6 @@ use nemesis_verify::{
 use rand::RngCore;
 use rand::rngs::OsRng;
 use serde::{Deserialize, Serialize};
-use sha2::{Digest, Sha256};
 use std::sync::Arc;
 
 fn internal<E: std::fmt::Display>(e: E) -> (StatusCode, String) {
@@ -318,16 +317,16 @@ pub async fn sign_upload(
 
     let signed_at = now_secs();
 
-    // 按用户关联发行方选 issuer 私钥 + 链（default=keygen 默认 issuer；其他=动态发行方）
-    let (issuer_sk, issuer_chain, issuer_pub): (
-        ed25519_dalek::SigningKey,
-        Vec<u8>,
-        ed25519_dalek::VerifyingKey,
+    // 按用户关联发行方选签名私钥 + 证书集（default=keygen leaf；其他=动态发行方）
+    let (issuer_sk, issuer_certs, issuer_pub): (
+        p256::ecdsa::SigningKey,
+        Vec<nemesis_verify::cert::Certificate>,
+        p256::ecdsa::VerifyingKey,
     ) = if user.issuer_name == "default" {
         (
-            state.hierarchy.issuer_sk.clone(),
-            state.hierarchy.issuer_chain_bytes.clone(),
-            state.hierarchy.issuer_vk,
+            state.hierarchy.leaf_sk.clone(),
+            state.hierarchy.chain(),
+            state.hierarchy.leaf_vk(),
         )
     } else {
         let issuer = state
@@ -340,38 +339,38 @@ pub async fn sign_upload(
             ))?;
         let sk =
             nemesis_verify::crypto::signing_key_from_hex(&issuer.issuer_sk).map_err(internal)?;
-        let chain = nemesis_verify::hex_util::hex_decode_vec(&issuer.chain).map_err(internal)?;
+        // chain blob（serialize_chain 形态）→ 证书集 [leaf, issuing, root]
+        let certs = nemesis_verify::cert::parse_chain_blob(
+            &nemesis_verify::hex_util::hex_decode_vec(&issuer.chain).map_err(internal)?,
+        )
+        .map_err(internal)?;
         let vk =
             nemesis_verify::crypto::verifying_key_from_hex(&issuer.issuer_pub).map_err(internal)?;
-        (sk, chain, vk)
+        (sk, certs, vk)
     };
 
-    // v3 签发：发行方私钥签 content，envelope 带 pubkey + 完整证书链（issuer→CA→root）
-    let signed_file = nemesis_verify::verify::sign_content(
+    // v4 Authenticode 签发（S5-2）：PE → CMS + Certificate Table，ELF/raw → CMS +
+    // v4 footer 载体（分派在 sign_content_v4 内，与 verify 同源）；证书集随签名走。
+    let signed_file = nemesis_verify::verify::sign_content_v4(
         &file_bytes,
         &issuer_sk,
         signed_at,
-        Some(&issuer_chain),
+        &issuer_certs,
         publisher.as_deref(),
-        None,
-        None,
     )
     .map_err(internal)?;
 
-    // registry 元数据：content_hash（codec 算）+ key_fp（发行方公钥指纹）
-    let codec = nemesis_verify::codec::detect_codec(&file_bytes);
-    let content_len = match codec.compute_l(&file_bytes).map_err(internal)? {
-        Some(l) => l,
-        None => file_bytes.len(),
-    };
-    let content_hash: [u8; 32] = codec
-        .content_hash(&file_bytes, content_len)
-        .map_err(internal)?;
-    let key_fp: [u8; 32] = Sha256::digest(issuer_pub.to_bytes()).into();
-    // sig_hash = SHA-256(signature)，从签名文件 envelope 解析（CRL 单签名吊销维度）。
-    // sign_content 刚签完 envelope 必在，失败兜底 content_hash（理论上不触发）。
+    // registry 元数据：content_hash 与 CMS messageDigest 同源（v4_content_digest
+    // 单一真相源——verify_bytes 吊销 FileHash 维传的是 CMS 内嵌 digest，记账侧
+    // 存别的口径会让该维度永远查不中）+ key_fp（发行方公钥指纹）
+    let content_hash: [u8; 32] =
+        nemesis_verify::verify::v4_content_digest(&file_bytes).map_err(internal)?;
+    let key_fp: [u8; 32] =
+        nemesis_verify::crypto::key_fp(&nemesis_verify::crypto::public_key_bytes(&issuer_pub));
+    // sig_hash = SHA-256(SignerInfo.signature DER)，从签名文件解析（CRL 单签名吊销维度）。
+    // v4 CMS 签发后 latest_sig_hash 必然可解析——解析不出 = 结构性故障，诚实失败不记账。
     let sig_hash: [u8; 32] = nemesis_verify::view::latest_sig_hash(&signed_file)
-        .unwrap_or_else(|| Sha256::digest(content_hash).into());
+        .ok_or_else(|| internal("signed file has no parseable v4 signature (sig_hash)"))?;
 
     state
         .store
@@ -456,7 +455,7 @@ pub struct CreateIssuerReq {
     pub name: String,
 }
 
-/// 创建发行方：生成 Ed25519 keypair → CA 私钥签 issuer 证书 → 存 issuers 表。
+/// 创建发行方：生成 P-256 keypair → 发行锚 CA 签 leaf 代码签名证书（v4 X.509）→ 存 issuers 表。
 /// 私钥 server 持有（开发者拿 token，签发时 server 用对应发行方私钥签）。
 pub async fn admin_create_issuer(
     State(state): State<Arc<AppState>>,
@@ -470,24 +469,38 @@ pub async fn admin_create_issuer(
     let kp = nemesis_verify::crypto::generate_key_pair();
     let issuer_vk =
         nemesis_verify::crypto::verifying_key_from_hex(&kp.public_key).map_err(internal)?;
-    // CA 签 issuer 证书（有效期 [0, MAX]）
-    let issuer_cert = nemesis_verify::cert::issue_certificate(
-        &state.hierarchy.ca_sk,
-        &issuer_vk.to_bytes(),
-        req.name.as_bytes(),
-        0,
-        u64::MAX,
-    );
-    // chain = [issuer_cert, ca_cert]（leaf 在前，不含根证书）
+    // 发行锚（issuing CA）签 leaf 代码签名证书（5y，EKU codeSigning）
+    let leaf_cert = nemesis_verify::keygen::issue_x509(
+        &issuer_vk,
+        &state.hierarchy.issuing_sk,
+        &nemesis_verify::cert::ski_value(&state.hierarchy.issuing_vk()).map_err(internal)?,
+        nemesis_verify::cert::TbsInput {
+            subject_cn: &req.name,
+            subject_org: Some(nemesis_verify::keygen::ORG),
+            issuer_cn: nemesis_verify::keygen::CN_ISSUING,
+            issuer_org: Some(nemesis_verify::keygen::ORG),
+            is_ca: false,
+            path_len: None,
+            ku_digital_signature: true,
+            ku_key_cert_sign: false,
+            ku_crl_sign: false,
+            eku_code_signing: true,
+            not_before_unix: now_secs().saturating_sub(3600),
+            not_after_unix: now_secs() + 5 * 365 * 86400,
+        },
+    )
+    .map_err(internal)?;
+    // chain = [leaf, issuing, root]（v4 含根——嵌入 ≠ 信任）
     let chain = nemesis_verify::cert::serialize_chain(&[
-        issuer_cert.clone(),
-        state.hierarchy.ca_cert.clone(),
+        leaf_cert.clone(),
+        state.hierarchy.issuing_cert.clone(),
+        state.hierarchy.root_cert.clone(),
     ]);
     let rec = IssuerRecord {
         name: req.name.clone(),
         issuer_sk: kp.private_key,
         issuer_pub: kp.public_key,
-        issuer_cert: hex_str(&issuer_cert.to_bytes()),
+        issuer_cert: hex_str(leaf_cert.to_der()),
         chain: hex_str(&chain),
         created_at: now_secs(),
     };

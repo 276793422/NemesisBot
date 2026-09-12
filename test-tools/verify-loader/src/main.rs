@@ -6,15 +6,12 @@
 //! - `verify [--keys] <dll> <target>`：加载 DLL 调 `nv_verify_target` 验证目标文件
 //! - `verify-self [--keys] <dll>`：调 `nv_verify_current_exe` 验证**本进程 exe**（DLL 自验入口测试）
 //!
-//! `--keys` 自动注入根公钥（设 `NEMESIS_ROOT_PUBKEY`，DLL 内部读——见 c_abi.rs R7 过渡）。
+//! `--keys` 自动注入根锚（设 `NEMESIS_ROOT_ANCHOR` = 根证书 SHA-256 指纹 hex，
+//! DLL 内部读 lib.rs `builtin_root_anchors`——S4-2 单一真相源）。
 
 use anyhow::Result;
 use clap::{Parser, Subcommand};
-use nemesis_verify::{
-    hex_util::hex_encode,
-    keygen::{KeyHierarchy, generate_hierarchy},
-    verify,
-};
+use nemesis_verify::{hex_util::hex_encode, keygen::KeyHierarchy, verify};
 
 #[derive(Parser)]
 #[command(name = "verify-loader", about = "DLL 签名验证测试工具")]
@@ -55,26 +52,27 @@ enum Cmd {
 fn main() -> Result<()> {
     match Cli::parse().cmd {
         Cmd::GenKeys { out } => {
-            let h = generate_hierarchy(0, u64::MAX);
-            let root_pub_hex = hex_encode(&h.root_vk.to_bytes());
-            println!("root pubkey: {}", root_pub_hex);
-            println!("issuer pubkey: {}", hex_encode(&h.issuer_vk.to_bytes()));
+            let h = nemesis_verify::keygen::generate()?;
+            let anchor_hex = hex_encode(&h.root_anchor_fingerprint());
+            println!(
+                "root anchor (NEMESIS_BUILD_ROOT_ANCHOR 注入值): {}",
+                anchor_hex
+            );
+            println!(
+                "leaf pubkey: {}",
+                hex_encode(&nemesis_verify::crypto::public_key_bytes(&h.leaf_vk()))
+            );
             h.save(&out)?;
-            std::fs::write("root.pub", &root_pub_hex)?; // 供 build 脚本读取固化进 DLL
-            println!("✓ keys → {} (+ root.pub)", out);
+            std::fs::write("root_anchor.hex", &anchor_hex)?; // 供 build 脚本读取固化进 DLL
+            println!("✓ keys → {} (+ root_anchor.hex)", out);
         }
         Cmd::Sign { keys, target, out } => {
             let h = KeyHierarchy::load(&keys)?;
             let content = std::fs::read(&target)?;
-            let signed = verify::sign_content(
-                &content,
-                &h.issuer_sk,
-                now_secs(),
-                Some(&h.issuer_chain_bytes),
-                None,
-                None,
-                None,
-            )?;
+            // v4 Authenticode（S5-3）：PE → CMS + Certificate Table，ELF/raw → CMS +
+            // v4 footer 载体（分派在 sign_content_v4 内，与 verify 管线同源）。
+            let signed =
+                verify::sign_content_v4(&content, &h.leaf_sk, now_secs(), &h.chain(), None)?;
             std::fs::write(&out, signed)?;
             println!("✓ signed → {}", out);
         }
@@ -96,13 +94,17 @@ fn main() -> Result<()> {
     Ok(())
 }
 
-/// 注入根公钥到 NEMESIS_ROOT_PUBKEY（DLL builtin_roots 读，R7 过渡）。
+/// 注入根锚到 NEMESIS_ROOT_ANCHOR（DLL 侧 lib.rs `builtin_root_anchors` 读，
+/// S4-2：值形态 = 根证书 SHA-256 指纹 hex）。
 fn inject_root(keys: Option<String>) -> Result<()> {
     if let Some(k) = keys {
         let h = KeyHierarchy::load(&k)?;
         // edition 2024: set_var 是 unsafe
         unsafe {
-            std::env::set_var("NEMESIS_ROOT_PUBKEY", hex_encode(&h.root_vk.to_bytes()));
+            std::env::set_var(
+                "NEMESIS_ROOT_ANCHOR",
+                hex_encode(&h.root_anchor_fingerprint()),
+            );
         }
     }
     Ok(())
@@ -124,12 +126,23 @@ fn status_name(s: u32) -> &'static str {
 }
 
 #[repr(C)]
-#[derive(Default)]
 struct NvOutcome {
     status: u32,
     signed_at: u64,
     key_fp: [u8; 32],
-    pubkey: [u8; 32],
+    /// 签名公钥（SEC1 uncompressed 65B，与 DLL 内 NvOutcome 布局镜像）。
+    pubkey: [u8; 65],
+}
+
+impl Default for NvOutcome {
+    fn default() -> Self {
+        Self {
+            status: 0,
+            signed_at: 0,
+            key_fp: [0u8; 32],
+            pubkey: [0u8; 65],
+        }
+    }
 }
 
 /// 加载 DLL 调 nv_verify_target 验证目标文件。
@@ -180,18 +193,31 @@ fn verify_self_via_dll(dll_path: &str) -> Result<()> {
 }
 
 #[repr(C)]
-#[derive(Default, Clone, Copy)]
+#[derive(Clone, Copy)]
 struct NvSigInfo {
     index: u32,
     signed_at: u64,
     key_fp: [u8; 32],
-    pubkey: [u8; 32],
+    /// 签名公钥（SEC1 uncompressed 65B）。
+    pubkey: [u8; 65],
+}
+
+impl Default for NvSigInfo {
+    fn default() -> Self {
+        Self {
+            index: 0,
+            signed_at: 0,
+            key_fp: [0u8; 32],
+            pubkey: [0u8; 65],
+        }
+    }
 }
 
 #[repr(C)]
 #[derive(Clone, Copy)]
 struct NvSigCert {
-    subject_pubkey: [u8; 32],
+    /// 主体公钥（SEC1 uncompressed 65B）。
+    subject_pubkey: [u8; 65],
     issuer_key_fp: [u8; 32],
     valid_not_before: u64,
     valid_not_after: u64,
@@ -202,7 +228,7 @@ struct NvSigCert {
 impl Default for NvSigCert {
     fn default() -> Self {
         Self {
-            subject_pubkey: [0u8; 32],
+            subject_pubkey: [0u8; 65],
             issuer_key_fp: [0u8; 32],
             valid_not_before: 0,
             valid_not_after: 0,
@@ -217,7 +243,8 @@ struct NvSigDetail {
     index: u32,
     signed_at: u64,
     key_fp: [u8; 32],
-    pubkey: [u8; 32],
+    /// 签名公钥（SEC1 uncompressed 65B）。
+    pubkey: [u8; 65],
     cert_count: u32,
     certs: [NvSigCert; 4],
     publisher_len: u32,
@@ -230,7 +257,7 @@ impl Default for NvSigDetail {
             index: 0,
             signed_at: 0,
             key_fp: [0u8; 32],
-            pubkey: [0u8; 32],
+            pubkey: [0u8; 65],
             cert_count: 0,
             certs: [NvSigCert::default(); 4],
             publisher_len: 0,

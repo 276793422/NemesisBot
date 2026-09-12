@@ -1,4 +1,3 @@
-#![allow(dead_code)] // users/signatures 待 T2 签发 API 接入后自然使用
 //! 存储抽象层：`RevocationStore` trait + SQLite 默认实现 + 审计记录。
 //!
 //! 多后端设计：trait 抽象存储，默认 [`SqliteStore`]（rusqlite bundled，无系统依赖）。
@@ -47,13 +46,14 @@ pub struct UserRecord {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct IssuerRecord {
     pub name: String,
-    /// hex Ed25519 发行方私钥（server 持有，签 exe 用）
+    /// hex P-256 发行方私钥标量（server 持有，签 exe 用）
     pub issuer_sk: String,
-    /// hex 发行方公钥
+    /// hex 发行方公钥（SEC1 uncompressed）
     pub issuer_pub: String,
-    /// hex 发行方证书字节（CA 签）
+    /// hex leaf 代码签名证书 DER（发行锚签；与 chain[0] 同一张，schema 稳定保留）
+    #[allow(dead_code)] // 记录冗余字段：签发走 chain blob，此列暂无读取方
     pub issuer_cert: String,
-    /// hex 完整链（issuer_cert + ca_cert 序列化，写入 envelope.cert_chain）
+    /// hex serialize_chain blob（[leaf, issuing, root] 含根，签发时 parse_chain_blob 还原）
     pub chain: String,
     pub created_at: u64,
 }

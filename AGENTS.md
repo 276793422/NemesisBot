@@ -413,41 +413,41 @@ cargo test -p memory-test
 - `export --frontend-env` 生成 `web/.env`（`VITE_FEATURE_<ID>=<bool>`）驱动前端同步裁剪
 - 详见上方「定制构建（功能裁剪 / menuconfig）」小节 + `docs/REPORT/2026-07-01_feature-trimming-and-build-configurator.md` + `docs/REPORT/2026-07-12_frontend-feature-gating.md`
 
-### nemesis-verify（签名验证核心 crate，v3 架构）
+### nemesis-verify（签名验证核心 crate，v4 = Windows Authenticode 格式对齐）
 
-`crates/nemesis-verify/` — 签名验证体系核心（**v3**：DLL 验证模块 + 公钥随签名走 + 根锚，与微软 Authenticode 同构）。**workspace member**（`lib` 供 Rust 依赖 + `cdylib` 产物 `nemesis_verify.dll`/`libnemesis_verify.so`/`.dylib`，C ABI 导出 `nv_*`）。**当前尚未接入 nemesisbot 主程序**——独立子系统，T1-T5 已端到端跑通，后续才接通 gateway。
+`crates/nemesis-verify/` — 签名验证体系核心（**v4**：「借微软的格式，不借微软的信任」——ECDSA P-256 + SHA-256（RFC 6979）+ X.509 v3 三级证书链 + CMS/PKCS#7 SignedData（SPC_INDIRECT_DATA）+ PE Certificate Table）。**workspace member**（`lib` 供 Rust 依赖 + `cdylib` 产物 `nemesis_verify.dll`/`libnemesis_verify.so`/`.dylib`，C ABI 导出 `nv_*`）。**当前尚未接入 nemesisbot 主程序**——独立子系统。微软工具（Explorer「数字签名」选项卡 / signtool / Get-AuthenticodeSignature）可解析自产签名；默认态（零安装）微软验证失败且**唯一失败 = CERT_E_UNTRUSTEDROOT**（D7 失败面质量线，`scripts/test-sig-win-trust.sh` 矩阵化）；opt-in = 用户显式装自签根（per-user，弹框确认）→ 微软全绿；**自方 verifier 锚定编译期根，两态恒 Valid**。v3 NMBSIG envelope 已整体退役（S5-3）——v3 签名文件在 v4 管线 = NoSignature。
 
-- 架构：根私钥（离线）→ CA → 发行方(leaf) 证书链；envelope 带 `pubkey` + `cert_chain`（**公钥随签名走**），验证用 envelope 自带 pubkey 验签再链到内置根公钥确认可信。envelope **去 AEAD**（明文 body，像 PKCS#7），v1 的 ChaCha20-Poly1305/SYM_KEY 全部作废。
-- 模块：`codec`（PE/ELF/Raw 多态）/ `pe`+`elf`（多源综合算原始内容末尾 L：PE section table + Certificate Table 交叉、ELF PT_LOAD + SHT）/ `envelope`（v3 明文 body + pubkey + cert_chain）/ `crypto`（Ed25519）/ `cert`（证书 + 链验证）/ `keygen`（root/CA/issuer 密钥体系生成 + 存加载）/ `revocation`（P2a 联网查 CRL + 根验签 + 缓存 + 四维度）/ `verify`（验签 + 可信确认 + 吊销）/ `view`（离线查看签名 + 证书链，不下结论）/ `c_abi`（`nv_*` 接口）
-- `VerifyOutcome`：`Valid`/`NoSignature`/`Tampered`/`SignatureInvalid`/`UnsupportedVersion`/`Malformed`/`Untrusted`/`Revoked`/`Expired`（**只验证、处置策略由调用方决定**）
+- 模块：`codec`（PE/ELF/Raw 多态 + L 上界）/ `pe`（authenticode byte-range digest：排除 CheckSum 字段 + Security Directory 表项/证书数据；Certificate Table 读写，已签名 PE 二次追表诚实拒绝——多签名走 CMS 嵌套 SPC_NESTED_SIGNATURE）/ `elf` / `envelope`（CMS SignedData 构造/解析 + ELF/raw v4 footer 载体 magic `NMBSIG\x04\x00` + 嵌套签名枚举）/ `crypto`（P-256 keypair/sign/verify + key_fp=SHA-256(65B SEC1)，RFC 6979 确定性）/ `cert`（X.509 解析 + AKI/SKI 链排序 + 有效期 + codeSigning EKU + 根指纹锚定）/ `keygen`（root 自签 30y → 发行锚 CA → leaf codeSigning EKU 三级生成 + `keys.json` v2 hex DER 含 root_cert 公钥部分）/ `revocation`（CRL 四维 + OCSP 单条 fallback + strict/soft-fail）/ `verify`（九态管线 + **`sign_content_v4` 签发单一入口**（PE→证书表/ELF+raw→footer 自动分派）+ `v4_content_digest` 摘要单一真相源（签发与吊销记账同源））/ `view`（离线查看签名 + 证书链，不下结论）/ `c_abi`（`nv_*` 接口）
+- `VerifyOutcome` 九态：`Valid`/`NoSignature`/`Tampered`/`SignatureInvalid`/`UnsupportedVersion`/`Malformed`/`Untrusted`/`Revoked`/`Expired`（**只验证、处置策略由调用方决定**）
 - 吊销四维度（`RevDim`）：`key_fp`（密钥级）/ `sig_hash`（签名级）/ `file_hash`（文件级）/ `publisher`（发布者级）
-- C ABI：`nv_verify_target` / `nv_verify_current_exe`（DLL 自验入口）/ `nv_self_verify`；根公钥编译期固化（build 时 `NEMESIS_BUILD_ROOT_PUBKEY` 注入）优先，运行时 `NEMESIS_ROOT_PUBKEY` fallback
-- 状态：T1-T5 实现完成 + 端到端跑通（Valid/Tampered/NoSig/Untrusted/Revoked/Expired 全过）；R7 后续 = 根密钥物理保护 / DLL 自身安全（防 patch/防替换）/ OCSP 实时 / 完整 view 接口 / 接入 nemesisbot。**诚实边界**：D3 防绕过有纯软件物理上限（不进系统，无内核强制 + Secure Boot），D1 密码学（Ed25519+SHA-256）与 Authenticode 平级。
-- 详见 `docs/PLAN/2026-07-20_signature-strength-hardening.md`（v2/v3 架构）+ `docs/PLAN/2026-07-18_exe-self-signature.md`（基础签名）+ `docs/PLAN/2026-07-18_signature-revocation-cloud.md`（吊销）+ `docs/PLAN/2026-07-20_cloud-signing-service.md`（云端签发）
+- C ABI：`nv_verify_target` / `nv_verify_current_exe`（DLL 自验入口）/ `nv_self_verify`；根锚 = 根证书 SHA-256 指纹，编译期固化（build 时 `NEMESIS_BUILD_ROOT_ANCHOR` 注入）优先，运行时 `NEMESIS_ROOT_ANCHOR` fallback（v3 的 `NEMESIS_BUILD_ROOT_PUBKEY`/`NEMESIS_ROOT_PUBKEY` 已作废）；两者皆缺 = 拒绝装配
+- e2e 脚本：`scripts/test-sig-e2e.sh`（自方全链路 12 步：签验/篡改/服务端签发/view 链/吊销/OCSP/固化/二次追表诚实拒绝/DLL 自验）+ `scripts/test-sig-win-trust.sh`（微软工具默认态矩阵：signtool 唯一错误 UNTRUSTEDROOT / Get-AuthenticodeSignature UnknownError+0109 / 篡改 HashMismatch / 自方 Valid）
+- 状态：v4 全量完成（P0-P6，`docs/REPORT/2026-09-12_authenticode-v4-goal.md` 总控）；后续 = 接入 nemesisbot / 根密钥物理保护 / DLL 自身防 patch。**诚实边界**：防绕过有纯软件物理上限（无内核强制 + Secure Boot）；D1 密码学（ECDSA P-256 + SHA-256 + X.509/CMS）与 Authenticode 平级。
+- 详见 `docs/REPORT/2026-09-12_authenticode-v4-goal.md`（v4 总控 + 开发记录）+ `docs/PLAN/2026-07-20_signature-strength-hardening.md`（v2/v3 历史架构）
 
 ### exe-sign-tool（可执行文件签名、验证 CLI）
 
-`test-tools/exe-sign-tool/` — PE/ELF/Raw 可执行文件签名/验签 CLI（**v3**：公钥随签名走 + 证书链）。**workspace member**（纯 bin，v3 不再自包含——lib 直接验签，依赖 `nemesis-verify`，不加载 DLL）。
+`test-tools/exe-sign-tool/` — PE/ELF/Raw 可执行文件签名/验签 CLI（**v4**：ECDSA P-256 + X.509 三级证书链 + CMS）。**workspace member**（纯 bin，lib 直接验签——依赖 `nemesis-verify`，不加载 DLL）。
 
-- 子命令：`keygen --out <keys.json>`（生成 root/CA/issuer 私钥 + 证书链，打印根公钥） / `sign --keys <keys.json> --target <F> [--out <F>]`（用发行方私钥签，envelope 带证书链） / `verify --keys <keys.json> --target <F> [--revocation-url <URL>]`（lib 直接验签；`--revocation-url` 配则联网查 CRL）
-- v3 协议：envelope 明文 body + `pubkey` + `cert_chain`（去 AEAD/去 SYM_KEY）；用 envelope 自带 pubkey 验签，链到根公钥确认可信。v1 → v3 是**破坏性升级**，旧签名全部重签。
-- 详见 `docs/PLAN/2026-07-20_signature-strength-hardening.md` + `docs/REPORT/2026-07-18_exe-self-signature_最终报告.md`
+- 子命令：`keygen --out <keys.json>`（生成 root/发行锚/leaf 私钥 + X.509 链，打印 root anchor） / `sign --keys <keys.json> --target <F> [--out <F>]`（leaf 签，PE→证书表 / ELF/raw→v4 footer；**缺省 `--out` = `{target}.signed` 新文件非原地**） / `verify --keys <keys.json> --target <F> [--revocation-url <URL>]`（lib 直接验签；`--revocation-url` 是 **base URL**，客户端自拼 `GET {base}/v1/crl`）
+- v4 协议：CMS 明文 body + 证书集含全部三级证书（含根——缺根微软报 CHAINING 非 UNTRUSTEDROOT）；v3 → v4 是**破坏性升级**，旧签名全部作废（v3 文件 → NoSignature）。
+- 详见 `docs/REPORT/2026-09-12_authenticode-v4-goal.md` + `docs/REPORT/2026-07-18_exe-self-signature_最终报告.md`
 
 ### revoke-server（云端签发 + 吊销服务端）
 
-`test-tools/revoke-server/` — v3 DLL 架构的**云端签发 + 吊销服务端**（axum + rusqlite）。**workspace member**。扮演 Authenticode 里的 CA + CRL/OCSP 分发点。
+`test-tools/revoke-server/` — v4 架构的**云端签发 + 吊销服务端**（axum + rusqlite）。**workspace member**。扮演 Authenticode 里的 CA + CRL/OCSP 分发点。
 
-- 启动：`revoke-server --keys-file keys.json [--init-keys] [--bind 127.0.0.1:7878] [--db-url revoke.db] [--admin-token ...]`；首次 `--init-keys` 生成密钥体系（root/CA/issuer 私钥 + 证书链）到 `--keys-file` 并打印根公钥（客户端/DLL 内置用），后续 `--keys-file` 加载
-- API：`POST /v1/verify`（验签）| `GET /v1/crl`（吊销列表）| `GET /v1/trusted-keys` | `POST /v1/sign`（带链签发 exe）| `POST /v1/admin/revoke`（四维度吊销）| `POST /v1/admin/trusted-key` | `POST /v1/admin/user` | `GET /v1/audit` | `GET /v1/signatures` | `GET /v1/health`
+- 启动：`revoke-server --keys-file keys.json [--init-keys] [--bind 127.0.0.1:7878] [--db-url revoke.db] [--admin-token ...]`；首次 `--init-keys` 生成密钥体系（v2 keys.json）到 `--keys-file` 并打印 root anchor（**不退出**，继续 bind+serve——后台启动读输出后 kill），后续 `--keys-file` 加载
+- API：`POST /v1/verify`（验签）| `GET /v1/crl`（吊销列表）| `GET /v1/trusted-keys` | `POST /v1/sign`（X.509+CMS 签发，记账三值同源 `v4_content_digest`/key_fp/`latest_sig_hash`）| `POST /v1/admin/revoke`（四维度吊销）| `POST /v1/admin/trusted-key` | `POST /v1/admin/user` | `GET /v1/audit` | `GET /v1/signatures` | `GET /v1/health`
 - Web UI：嵌入式单页（`web/index.html` + `web/admin.html`，登录 + CRL/吊销/trusted-keys/审计）
-- 详见 `docs/PLAN/2026-07-20_cloud-signing-service.md` + `docs/PLAN/2026-07-18_signature-revocation-cloud.md`
+- 详见 `docs/REPORT/2026-09-12_authenticode-v4-goal.md` + `docs/PLAN/2026-07-20_cloud-signing-service.md`
 
 ### verify-loader（DLL 签名验证测试工具）
 
-`test-tools/verify-loader/` — 加载 `nemesis_verify` DLL 验证目标文件的测试工具（验证 C ABI `nv_*` 通路）。**workspace member**。
+`test-tools/verify-loader/` — 加载 `nemesis_verify` DLL 验证目标文件的测试工具（验证 C ABI `nv_*` 四通路）。**workspace member**。
 
-- 子命令：`gen-keys <out>`（生成密钥体系） / `sign <keys> <target> <out>`（发行方私钥签目标，带证书链） / `verify [--keys] <dll> <target>`（加载 DLL 调 `nv_verify_target`） / `verify-self [--keys] <dll>`（调 `nv_verify_current_exe` 验**本进程 exe**，DLL 自验入口测试） / `view <dll> <target>`（列签名 + 证书链，离线不下结论） / `verify-dll <dll>`（调 `nv_self_verify` 验 DLL 自身，防替换演示）
-- `--keys` 自动注入根公钥（设 `NEMESIS_ROOT_PUBKEY`，DLL 内部读，见 `c_abi.rs` R7 过渡）
+- 子命令：`gen-keys <out>`（生成密钥体系，打印 root anchor + 落 `root_anchor.hex` 到 cwd） / `sign <keys> <target> <out>`（v4 签，PE→证书表 / ELF/raw→footer） / `verify [--keys] <dll> <target>`（调 `nv_verify_target`，Valid 时打印 signed_at/key_fp/pubkey） / `verify-self [--keys] <dll>`（调 `nv_verify_current_exe` 验**本进程 exe**——验签名副本须先 `sign` 出副本再运行它） / `view <dll> <target>`（列签名数 + 信任链，离线不下结论；**输出无 key_fp=**，key_fp 只在 verify 输出） / `verify-dll <dll>`（调 `nv_self_verify` 验 DLL 自身，防替换）
+- `--keys` 自动注入根锚（设 `NEMESIS_ROOT_ANCHOR` = 根证书 SHA-256 指纹 hex，DLL 内部读）；e2e 前显式 `cargo build -p` 各 bin（**cargo test 不重链 [[bin]] 目标**）
 
 ---
 
@@ -654,7 +654,7 @@ crates/                                    # 38 个核心 crate
 ├── nemesis-session     # 会话管理
 ├── nemesis-state       # 状态管理
 ├── nemesis-utils       # 通用工具
-├── nemesis-verify      # 签名验证核心（v3：DLL 验证模块 + 公钥随签名走 + 根锚；lib + cdylib 导出 nv_*）
+├── nemesis-verify      # 签名验证核心（v4 = Windows Authenticode 格式对齐：ECDSA P-256 + X.509 + CMS；lib + cdylib 导出 nv_*）
 ├── nemesis-voice       # 语音/音频处理
 └── nemesis-ui          # UI 组件
 
@@ -678,7 +678,7 @@ test-tools/                                 # 25 个测试工具/项目（16 个
 ├── approval-test/      # 审批流程测试
 ├── memory-test/        # 内存系统测试
 ├── nemesis-build-config/ # menuconfig 风格构建配置器（功能裁剪 TUI）
-├── exe-sign-tool/      # 可执行文件签名/验签 CLI（v3，依赖 nemesis-verify）
+├── exe-sign-tool/      # 可执行文件签名/验签 CLI（v4 Authenticode，依赖 nemesis-verify）
 ├── revoke-server/      # 云端签发 + 吊销服务端（v3，axum + rusqlite）
 ├── verify-loader/      # 加载 nemesis_verify.dll 验证的测试工具
 ├── plugin-onnx-test/   # ONNX 插件测试（非 workspace member）

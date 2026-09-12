@@ -1,131 +1,146 @@
+//! keygen v4 单测：生成 → 签名 → 链验证闭环 + keys.json v2 持久化 + D4 profile。
+//!
+//! goal S1-3 判据：keygen → 签名 → 验证闭环绿（certutil -dump 抽查见 goal §七记录）。
+
 use super::*;
 use crate::cert::verify_chain;
 
+const NOW: u64 = 1_700_000_000;
+
 #[test]
-fn hierarchy_chain_verifies_to_root() {
-    let h = generate_hierarchy(0, u64::MAX);
-    // issuer 经 [issuer_cert, ca_cert] 链到 root_vk
-    let chain = crate::cert::parse_chain(&h.issuer_chain_bytes).unwrap();
-    assert!(verify_chain(&h.issuer_vk.to_bytes(), &chain, &[h.root_vk], 1_000_000).is_ok());
+fn generate_then_chain_verifies() {
+    let kh = generate_at(NOW).unwrap();
+    let anchor = kh.root_anchor_fingerprint();
+    // 锚口径 = SHA-256(根证书 DER)（S4-2 同源）。
+    assert_eq!(anchor, kh.root_cert.sha256_fingerprint());
+    // 闭环：keygen 产物直接过 v4 链验证（起点 / leaf 尾点——链窗口被最短命
+    // 的 leaf（3y）卡住，10y/30y 时点验链诚实 Expired，另测）。
+    verify_chain(&kh.chain(), &anchor, NOW).unwrap();
+    let leaf_tail = NOW - NOT_BEFORE_BACKDATE_SECS + SPAN_LEAF_SECS;
+    verify_chain(&kh.chain(), &anchor, leaf_tail).unwrap();
+    // 超出 leaf 3y 窗口 → Expired（链有效期 = 全员交集）。
+    assert_eq!(
+        verify_chain(&kh.chain(), &anchor, leaf_tail + 1),
+        Err(crate::cert::ChainError::Expired)
+    );
 }
 
 #[test]
-fn hierarchy_save_load_roundtrip() {
-    let h = generate_hierarchy(0, u64::MAX);
-    let json = h.to_json();
-    let h2 = KeyHierarchy::from_json(&json).unwrap();
-    assert_eq!(h2.root_vk, h.root_vk);
-    assert_eq!(h2.ca_cert, h.ca_cert);
-    assert_eq!(h2.issuer_cert, h.issuer_cert);
-    assert_eq!(h2.issuer_chain_bytes, h.issuer_chain_bytes);
+fn chain_order_leaf_issuing_root() {
+    let kh = generate_at(NOW).unwrap();
+    let chain = kh.chain();
+    assert_eq!(chain.len(), 3);
+    assert_eq!(chain[0].to_der(), kh.leaf_cert.to_der());
+    assert_eq!(chain[1].to_der(), kh.issuing_cert.to_der());
+    assert_eq!(chain[2].to_der(), kh.root_cert.to_der());
+    // 逐级链接：leaf ← issuing ← root。
+    assert_eq!(chain[0].aki().unwrap(), chain[1].ski().unwrap());
+    assert_eq!(chain[1].aki().unwrap(), chain[2].ski().unwrap());
 }
 
 #[test]
-fn issuer_signs_content_verifies_via_root() {
-    // 完整闭环：issuer 签 content（带链），用 root_vk 验 → Valid
-    let _g = crate::GLOBAL_STATE_LOCK.lock().unwrap(); // verify 流程读 revocation env
-    let h = generate_hierarchy(0, u64::MAX);
-    let signed = crate::verify::sign_content(
-        b"payload",
-        &h.issuer_sk,
-        1000,
-        Some(&h.issuer_chain_bytes),
-        None,
-        None,
-        None,
-    )
-    .unwrap();
-    match crate::verify::verify_bytes(&signed, &[h.root_vk], 1000) {
-        crate::verify::VerifyOutcome::Valid { pubkey, .. } => {
-            assert_eq!(pubkey, h.issuer_vk.to_bytes());
-        }
-        o => panic!("expected Valid, got {:?}", o),
+fn d4_profile_and_spans() {
+    let kh = generate_at(NOW).unwrap();
+
+    // EKU 职责：leaf 带 codeSigning；发行锚 / 根不带。
+    assert!(kh.leaf_cert.has_code_signing_eku().unwrap());
+    assert!(!kh.issuing_cert.has_code_signing_eku().unwrap());
+    assert!(!kh.root_cert.has_code_signing_eku().unwrap());
+
+    // 自签形态：根自签；发行锚 / leaf 非自签。
+    assert!(kh.root_cert.is_self_signed().unwrap());
+    assert!(!kh.issuing_cert.is_self_signed().unwrap());
+    assert!(!kh.leaf_cert.is_self_signed().unwrap());
+
+    // CN 烧进各自 DER（s05 脚本 / certutil 抽查按这些名字找）。
+    for (cert, cn) in [
+        (&kh.root_cert, CN_ROOT),
+        (&kh.issuing_cert, CN_ISSUING),
+        (&kh.leaf_cert, CN_LEAF),
+    ] {
+        assert!(
+            cert.to_der().windows(cn.len()).any(|w| w == cn.as_bytes()),
+            "DER 应含 CN {cn}"
+        );
     }
-}
 
-// ---------------------------------------------------------------------------
-// S6 覆盖率批次（quality-hardening goal 2026-08-25）：from_json 错误臂 +
-// save/load 文件持久化往返。
-// ---------------------------------------------------------------------------
-
-#[test]
-fn from_json_reports_bad_hex_per_field() {
-    let h = generate_hierarchy(0, u64::MAX);
-    let good = h.to_json();
-    let mut j = KeyHierarchyJson {
-        root_sk: good.root_sk.clone(),
-        ca_sk: good.ca_sk.clone(),
-        ca_cert: good.ca_cert.clone(),
-        issuer_sk: good.issuer_sk.clone(),
-        issuer_cert: good.issuer_cert.clone(),
+    // D4 跨度：根 30y / 发行锚 10y / leaf 3y（回拨 1h 只影响起点）。
+    let span = |c: &Certificate| {
+        let v = &c.parsed().unwrap().tbs_certificate.validity;
+        v.not_after.to_unix_duration().as_secs() - v.not_before.to_unix_duration().as_secs()
     };
+    assert_eq!(span(&kh.root_cert), SPAN_ROOT_SECS);
+    assert_eq!(span(&kh.issuing_cert), SPAN_ISSUING_SECS);
+    assert_eq!(span(&kh.leaf_cert), SPAN_LEAF_SECS);
 
-    // 私钥 hex 长度错（root_sk / ca_sk / issuer_sk 逐个验错误消息带字段名）
-    j.root_sk = "abcd".into();
+    // 回拨：NOW-1h 起，NOW 当下有效。
+    assert!(kh.leaf_cert.is_valid_at(NOW).unwrap());
     assert!(
-        matches!(KeyHierarchy::from_json(&j), Err(ref e) if format!("{e:#}").contains("root_sk"))
+        kh.leaf_cert
+            .is_valid_at(NOW - NOT_BEFORE_BACKDATE_SECS)
+            .unwrap()
     );
-    j.root_sk = good.root_sk.clone();
-
-    j.ca_sk = "z".repeat(64);
-    assert!(
-        matches!(KeyHierarchy::from_json(&j), Err(ref e) if format!("{e:#}").contains("ca_sk"))
-    );
-    j.ca_sk = good.ca_sk.clone();
-
-    j.issuer_sk = "1234".into();
-    assert!(
-        matches!(KeyHierarchy::from_json(&j), Err(ref e) if format!("{e:#}").contains("issuer_sk"))
-    );
-    j.issuer_sk = good.issuer_sk.clone();
-
-    // 证书 hex 解不出（ca_cert 长度奇 / issuer_cert 非法字符）
-    j.ca_cert = "abc".into();
-    assert!(
-        matches!(KeyHierarchy::from_json(&j), Err(ref e) if format!("{e:#}").contains("ca_cert"))
-    );
-    j.ca_cert = good.ca_cert.clone();
-
-    j.issuer_cert = "g".repeat(64);
-    assert!(
-        matches!(KeyHierarchy::from_json(&j), Err(ref e) if format!("{e:#}").contains("issuer_cert"))
-    );
-
-    // 证书 hex 合法但字节解析失败（< 146B）→ Certificate::from_bytes 错误透传
-    // （ca_cert 与 issuer_cert 两处同一臂，各自都要走到）
-    j.ca_cert = hex_encode(&[0u8; 100]);
-    assert!(KeyHierarchy::from_json(&j).is_err());
-    j.ca_cert = good.ca_cert.clone();
-
-    j.issuer_cert = hex_encode(&[0u8; 100]);
-    assert!(KeyHierarchy::from_json(&j).is_err());
 }
 
 #[test]
-fn hierarchy_save_load_file_roundtrip() {
-    let h = generate_hierarchy(0, u64::MAX);
+fn keys_json_v2_roundtrip() {
+    let kh = generate_at(NOW).unwrap();
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("keys.json");
     let path_str = path.to_str().unwrap();
 
-    h.save(path_str).expect("save");
-    assert!(path.exists(), "save 必须落盘");
+    kh.save(path_str).unwrap();
+    let kh2 = KeyHierarchy::load(path_str).unwrap();
 
-    let h2 = KeyHierarchy::load(path_str).expect("load");
-    assert_eq!(h2.root_vk, h.root_vk);
-    assert_eq!(h2.ca_vk, h.ca_vk);
-    assert_eq!(h2.issuer_vk, h.issuer_vk);
-    assert_eq!(h2.ca_cert, h.ca_cert);
-    assert_eq!(h2.issuer_cert, h.issuer_cert);
-    assert_eq!(h2.issuer_chain_bytes, h.issuer_chain_bytes);
+    assert_eq!(kh.root_sk.to_bytes(), kh2.root_sk.to_bytes());
+    assert_eq!(kh.issuing_sk.to_bytes(), kh2.issuing_sk.to_bytes());
+    assert_eq!(kh.leaf_sk.to_bytes(), kh2.leaf_sk.to_bytes());
+    assert_eq!(kh.root_cert.to_der(), kh2.root_cert.to_der());
+    assert_eq!(kh.issuing_cert.to_der(), kh2.issuing_cert.to_der());
+    assert_eq!(kh.leaf_cert.to_der(), kh2.leaf_cert.to_der());
 
-    // 落盘内容是合法 JSON（human-readable pretty）
-    let text = std::fs::read_to_string(&path).unwrap();
-    assert!(text.contains("\"root_sk\""));
+    // 重载体系闭环仍绿、锚一致。
+    assert_eq!(kh2.root_anchor_fingerprint(), kh.root_anchor_fingerprint());
+    verify_chain(&kh2.chain(), &kh2.root_anchor_fingerprint(), NOW).unwrap();
 }
 
 #[test]
-fn hierarchy_load_missing_file_errors() {
-    let err = KeyHierarchy::load(r"Z:\definitely\missing\keys-9527.json");
-    assert!(err.is_err(), "缺文件必须 Err 而非 panic");
+fn keys_json_wrong_version_rejected() {
+    let kh = generate_at(NOW).unwrap();
+    let mut j = kh.to_json();
+    j.version = 1; // v3 文件必须走 keygen::legacy，v4 入口诚实拒绝。
+    assert!(KeyHierarchy::from_json(&j).is_err());
+}
+
+#[test]
+fn generate_smoke_real_clock() {
+    let kh = generate().unwrap();
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_secs();
+    assert!(kh.leaf_cert.is_valid_at(now).unwrap());
+    verify_chain(&kh.chain(), &kh.root_anchor_fingerprint(), now).unwrap();
+}
+
+/// 外部工具抽查导出（S1-3 判据：certutil -dump 抽查自产链字段）。
+///
+/// `#[ignore]`：有磁盘副作用，仅显式触发——
+/// `cargo test -p nemesis-verify dump_chain_for_external_inspection -- --ignored --nocapture`
+/// 导出 `%TEMP%/nb_v4_chain/{root,issuing,leaf}.der` 后用 `certutil -dump` 人审。
+#[test]
+#[ignore]
+fn dump_chain_for_external_inspection() {
+    let kh = generate().unwrap();
+    let dir = std::env::temp_dir().join("nb_v4_chain");
+    std::fs::create_dir_all(&dir).unwrap();
+    for (name, cert) in [
+        ("root.der", &kh.root_cert),
+        ("issuing.der", &kh.issuing_cert),
+        ("leaf.der", &kh.leaf_cert),
+    ] {
+        let p = dir.join(name);
+        std::fs::write(&p, cert.to_der()).unwrap();
+        println!("{}", p.display());
+    }
 }
