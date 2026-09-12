@@ -495,20 +495,29 @@ async fn review_issue(
     // worker 汇报 = **最新**一次交付（重派轮次取新汇报，不拿首轮旧账）；
     // 无结构化汇报时退最近的 agent 文本评论（诚实降级路径），再没有就
     // 空串（评审 agent 见「未提供」自判）。
+    // worker 汇报 = **最新**一次交付（重派轮次取新汇报，不拿首轮旧账）；
+    // 无结构化汇报时退最近的 agent 文本评论（诚实降级路径），再没有就
+    // 空串（评审 agent 见「未提供」自判）。
+    // 任务卡回显不是交付（2026-09-12 UAT T30 双层实证）：回显模型把派发
+    // 任务卡原样抄回当回复，文本里带着验收标准与上轮失败明细引文——锚点
+    // 行原文可剥离（anchor.rs 自指防御），但引文散文里的裸词仍会二阶自
+    // 命中。凡内容含任务卡头的评论一律不作交付输入（Delivery 与降级
+    // agent 评论同滤），回显 worker 诚实走 FAIL → 重派/预算/转人工漏斗。
+    let is_card_echo =
+        |c: &nemesis_board::Comment| c.content.contains(nemesis_board::TASK_CARD_HEADER);
     let delivery = comments
         .iter()
         .rev()
-        .find(|c| c.ctype == CommentType::Delivery)
+        .find(|c| c.ctype == CommentType::Delivery && !is_card_echo(c))
         .cloned();
     // worker 汇报 = 交付线程首评；无结构化汇报时退最近的 agent 文本评论
     // （诚实降级路径），再没有就空串（评审 agent 见「未提供」自判）。
     let (delivery_id, worker_report) = match &delivery {
         Some(c) => (Some(c.id), c.content.clone()),
         None => {
-            let latest = comments
-                .iter()
-                .rev()
-                .find(|c| c.author.kind == "agent" && c.ctype == CommentType::Comment);
+            let latest = comments.iter().rev().find(|c| {
+                c.author.kind == "agent" && c.ctype == CommentType::Comment && !is_card_echo(c)
+            });
             match latest {
                 Some(c) => (Some(c.id), c.content.clone()),
                 None => (None, String::new()),

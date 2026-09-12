@@ -133,6 +133,34 @@ fn run_content_regex_matches_delivery_text() {
     assert!(!results[0].passed);
 }
 
+// 自指防御（2026-09-12 UAT T30③ 回归锁）：交付文本逐字引用锚点行本身
+// （任务 prompt 回显）不构成满足锚点的证据；剥离引文后其余文本无命中
+// → 诚实 FAIL。
+#[test]
+fn content_regex_ignores_quoted_anchor_line_echo() {
+    let ws = temp_workspace("echo");
+    let (anchors, _, _rej) = parse_anchors("[CHECK] re:UAT30FAILNEEDLE");
+    // 重派 prompt 回显形态：任务卡头 + 验收标准引文（含锚点行原文）。
+    let echo = "# 看板任务 NB-25\n\n## 验收标准\n交付说明文本。\n[CHECK] re:UAT30FAILNEEDLE\n";
+    let results = run_anchors(&anchors, &ws, echo);
+    assert!(
+        !results[0].passed,
+        "引述锚点行不得自命中: {}",
+        results[0].detail
+    );
+}
+
+// 剥离只针对锚点行原文本身：交付文本在引文之外另有真实命中证据时照常
+// 通过（不惩罚「复述标准 + 交付」的合法汇报）。
+#[test]
+fn content_regex_still_matches_evidence_outside_quoted_line() {
+    let ws = temp_workspace("evidence");
+    let (anchors, _, _rej) = parse_anchors("[CHECK] re:UAT30PASSNEEDLE");
+    let report = "# 看板任务 NB-9\n\n## 验收标准\n[CHECK] re:UAT30PASSNEEDLE\n\n## 结论\n本任务 UAT30PASSNEEDLE 已交付。\n";
+    let results = run_anchors(&anchors, &ws, report);
+    assert!(results[0].passed, "{}", results[0].detail);
+}
+
 #[test]
 fn run_chinese_keyword_contains() {
     let ws = temp_workspace("chinese");

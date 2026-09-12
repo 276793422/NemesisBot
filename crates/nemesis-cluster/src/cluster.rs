@@ -414,7 +414,10 @@ impl Cluster {
     /// 或 announce 到达时复活；**绝不因回读直接 Online**——诚实语义：存活
     /// 未知）。跳过：空 id、本节点、黑名单节点（removed_peers 不复活）、
     /// 已有条目（静态 peers 在 start() 前装载，不覆盖）、不可拨号地址
-    /// （空/无 host:port 形态，与 G14 的 rpc_port=0 同语义）。返回种入数。
+    /// （空/无 host:port 形态，与 G14 的 rpc_port=0 同语义）、**同地址或
+    /// 同名的既有条目**（2026-09-12 T13 根修：注册表里已有该物理节点时再
+    /// 种一份会造出「同节点双条目」—— RpcClient 直接键命中离线影子就拒绝
+    /// 拨号，遮蔽同地址的运行时 id 在线条目）。返回种入数。
     fn restore_discovered_from_state(&self) -> usize {
         let state = match crate::cluster_config::load_dynamic_state(&self.dynamic_state_path) {
             Ok(s) => s,
@@ -441,6 +444,28 @@ impl Cluster {
             let addr = pc.address.trim();
             if addr.is_empty() || !addr.contains(':') {
                 continue; // 不可拨号 → 不种（state.toml 不存 unusable 条目）
+            }
+            // 同地址 / 同名既有条目 → 同一物理节点已在注册表（典型：静态
+            // peer 按运行时 id 键控，state.toml 还留着升级前的占位名条目，
+            // 如 id="Node-A"）。再种一份 = RpcClient 直接键命中离线影子拒绝
+            // 拨号（UAT T13 实证：D 重启后 D→A 全部 duration_ms=0 失败）。
+            // 跳过，让既有条目承担探针/announce 复活。
+            let name = pc.name.trim();
+            let shadows_existing = self.registry.find_by_address(addr).is_some()
+                || (!name.is_empty()
+                    && self
+                        .registry
+                        .list_peers()
+                        .iter()
+                        .any(|p| p.base.name == name));
+            if shadows_existing {
+                tracing::debug!(
+                    id = %pc.id,
+                    name = %name,
+                    address = %addr,
+                    "[Cluster] state.toml 回读跳过：同地址/同名条目已在注册表（防同节点双条目）"
+                );
+                continue;
             }
             self.registry.upsert(ExtendedNodeInfo {
                 base: nemesis_types::cluster::NodeInfo {

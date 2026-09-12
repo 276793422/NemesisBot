@@ -54,7 +54,7 @@ pub use planner::{
     MAX_SUBISSUES, PLANNER_SYSTEM_PROMPT, PlanParseError, PlannedSubIssue,
     build_planner_user_prompt, build_retry_prompt, parse_plan,
 };
-pub use report::{DeliveryReport, REPORT_FORMAT_SECTION, parse_delivery_report};
+pub use report::{DeliveryReport, REPORT_FORMAT_SECTION, TASK_CARD_HEADER, parse_delivery_report};
 pub use review::{
     ExperienceNote, REVIEW_SYSTEM_PROMPT, ReviewOutput, ReviewParseError, ReviewVerdict,
     build_review_user_prompt, parse_review, selfcheck_request_text,

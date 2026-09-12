@@ -195,7 +195,12 @@ fn build_dispatch_prompt(
     review_feedback: Option<&str>,
     experience_section: Option<&str>,
 ) -> String {
-    let mut p = format!("# 看板任务 {}\n\n## 标题\n{}\n", issue.number, issue.title);
+    let mut p = format!(
+        "{} {}\n\n## 标题\n{}\n",
+        nemesis_board::TASK_CARD_HEADER,
+        issue.number,
+        issue.title
+    );
     p.push_str(&format!(
         "\n## 背景\n{}\n",
         if issue.description.trim().is_empty() {

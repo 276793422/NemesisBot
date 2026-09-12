@@ -234,8 +234,9 @@ func TestPlannerMultimodalPartsIgnored(t *testing.T) {
 }
 
 // TestPlannerAnchorMarkers P2 锚点系列开关（T2 组 UAT 夹具契约）：
-// <PLAN_ANCHOR>/<PLAN_ANCHOR_EVIL>/<PLAN_ANCHOR_MIXED> 三标记的输出形态
-// 钉死——合法锚点行 / 不安全锚点行（`..`、绝对路径）/ 坏行（空目标）。
+// <PLAN_ANCHOR>/<PLAN_REANCHOR>/<PLAN_ANCHOR_EVIL>/<PLAN_ANCHOR_MIXED>
+// 四标记的输出形态钉死——合法锚点行 / 纯 re: 跨节点安全行 / 不安全锚点行
+// （`..`、绝对路径）/ 坏行（空目标）。
 func TestPlannerAnchorMarkers(t *testing.T) {
 	m := NewTestAIPlanner()
 	cases := []struct {
@@ -243,6 +244,7 @@ func TestPlannerAnchorMarkers(t *testing.T) {
 		wantCheckLn int // 每子任务 [CHECK] 行数（普通文字行不计）
 	}{
 		{"<PLAN_ANCHOR>", 0}, // 子任务1=3 条、子任务2/3=1 条 → 特判在下方
+		{"<PLAN_REANCHOR>", 0}, // 子任务1=2 条、子任务2/3=1 条 → 特判在下方
 		{"<PLAN_ANCHOR_EVIL>", 3},
 		{"<PLAN_ANCHOR_MIXED>", 2},
 	}
@@ -269,6 +271,25 @@ func TestPlannerAnchorMarkers(t *testing.T) {
 			}
 			if strings.Count(ac1, "[CHECK]") != 1 || !strings.Contains(ac1, "uat-t2/pass/sub2.md") {
 				t.Fatalf("sub2 anchors unexpected: %s", ac1)
+			}
+			continue
+		}
+		if tc.marker == "<PLAN_REANCHOR>" {
+			// 子任务1：2 条纯 re:；子任务2/3：各 1 条；全程无 file: 形态
+			// （P1 拓扑硬闸下远端派发的合法计划）。
+			ac0, _ := subs[0]["acceptance_criteria"].(string)
+			ac2, _ := subs[2]["acceptance_criteria"].(string)
+			if strings.Count(ac0, "[CHECK]") != 2 || !strings.Contains(ac0, "re:集群协作状态正常") || !strings.Contains(ac0, "re:收到") {
+				t.Fatalf("reanchor sub1 anchors unexpected: %s", ac0)
+			}
+			if strings.Count(ac2, "[CHECK]") != 1 {
+				t.Fatalf("reanchor sub3 anchors unexpected: %s", ac2)
+			}
+			for i, sub := range subs {
+				ac, _ := sub["acceptance_criteria"].(string)
+				if strings.Contains(ac, "file:") {
+					t.Fatalf("reanchor sub%d must not carry file: anchors: %s", i+1, ac)
+				}
 			}
 			continue
 		}

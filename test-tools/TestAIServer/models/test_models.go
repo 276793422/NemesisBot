@@ -250,6 +250,17 @@ func (m *TestAI31) Process(messages []Message) string {
 		}
 	}
 
+	// 看板任务卡分级（2026-09-13 T30①/T15/T29③ 三方实证）：
+	// - 带 [CHECK] 客观锚点的任务卡：不回显，返回已完成 worker 的固定
+	//   汇报（boardAckText，与 board-1.0 worker 分支同款）。原样抄回会
+	//   被产品层锚点自指防线判为回显诚实 FAIL（重派链空转），T30① 全过
+	//   正流要求锚点对交付文本命中。
+	// - 无锚点任务卡与普通消息：保持终端回显契约——T15（marker 端到端
+	//   数据流证明）与 T29③（经验注入段回显断言）都依赖整卡回显。
+	if strings.Contains(content, "# 看板任务") && strings.Contains(content, "[CHECK]") {
+		return boardAckText
+	}
+
 	// No PEER_CHAT: echo the message (terminal node behavior)
 	return content
 }

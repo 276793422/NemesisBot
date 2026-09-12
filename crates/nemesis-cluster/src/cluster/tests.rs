@@ -6604,6 +6604,93 @@ fn restore_skips_self_banned_existing_and_unusable() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
+/// T13 根修（2026-09-12）：state.toml 的占位名条目（id="Node-A"）与注册表
+/// 里同地址的运行时 id 静态条目是**同一物理节点**，回读不得再种一份——
+/// 否则 RpcClient 直接键命中离线影子，拒绝拨号同地址在线条目（UAT T13
+/// 实证：D 重启后 D→A duration_ms=0 全灭）。
+#[test]
+fn restore_skips_address_shadow_of_existing_entry() {
+    let mut cluster = Cluster::new(make_config());
+    let dir = std::env::temp_dir().join(format!("nemesis-restore-addr-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let state_path = dir.join("state.toml");
+
+    // 注册表已有该物理节点：运行时 id 键控、同地址、Online（静态 peer）。
+    cluster.register_node(ExtendedNodeInfo {
+        base: nemesis_types::cluster::NodeInfo {
+            id: "node-real-runtime-id".into(),
+            name: "Node-A".into(),
+            role: nemesis_types::cluster::NodeRole::Coordinator,
+            address: "127.0.0.1:21949".into(),
+            category: "general".into(),
+            last_seen: chrono::Local::now().to_rfc3339(),
+        },
+        status: NodeStatus::Online,
+        capabilities: vec![],
+        tags: vec![],
+        addresses: vec![],
+        node_type: "agent".into(),
+    });
+    // state.toml 里留着占位名条目（升级前形态）：id=名字、同地址。
+    write_state_toml(
+        &state_path,
+        &[test_peer_config("Node-A", "127.0.0.1:21949")],
+    );
+    cluster.dynamic_state_path = state_path;
+
+    assert_eq!(cluster.restore_discovered_from_state(), 0, "同地址影子不种");
+    assert!(
+        cluster.get_node_info("Node-A").is_none(),
+        "占位名条目不得入册"
+    );
+    // 既有条目原值保留（Online 不被动）。
+    assert_eq!(
+        cluster
+            .get_node_info("node-real-runtime-id")
+            .unwrap()
+            .status,
+        NodeStatus::Online
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// 同名不同地址也算影子：RpcClient 名字回退扫描会命中离线重名条目，
+/// 同样遮蔽在线条目（直接键未命中时按 id/name 扫 list_peers）。
+#[test]
+fn restore_skips_name_shadow_of_existing_entry() {
+    let mut cluster = Cluster::new(make_config());
+    let dir = std::env::temp_dir().join(format!("nemesis-restore-name-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let state_path = dir.join("state.toml");
+
+    cluster.register_node(ExtendedNodeInfo {
+        base: nemesis_types::cluster::NodeInfo {
+            id: "node-real-runtime-id".into(),
+            name: "Node-A".into(),
+            role: nemesis_types::cluster::NodeRole::Coordinator,
+            address: "10.0.0.7:21949".into(),
+            category: "general".into(),
+            last_seen: chrono::Local::now().to_rfc3339(),
+        },
+        status: NodeStatus::Online,
+        capabilities: vec![],
+        tags: vec![],
+        addresses: vec![],
+        node_type: "agent".into(),
+    });
+    // id=占位名、地址不同（对端换了地址），但名字相同 → 同节点，不种。
+    let mut pc = test_peer_config("Node-A", "10.9.9.9:21949");
+    pc.name = "Node-A".into();
+    write_state_toml(&state_path, &[pc]);
+    cluster.dynamic_state_path = state_path;
+
+    assert_eq!(cluster.restore_discovered_from_state(), 0, "同名影子不种");
+    assert!(cluster.get_node_info("Node-A").is_none());
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
 // ------------------------------------------------------------------
 // G2 探针降频（集群完备性加固 2026-09-11）：should_probe_peer 纯函数
 // + spawn 链路测试（Offline 节点只在第 5 tick 被探一次）。

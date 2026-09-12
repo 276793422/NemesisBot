@@ -461,6 +461,63 @@ async fn anchor_pass_falls_through_to_semantic_gate() {
     );
 }
 
+// 任务卡回显不是交付（2026-09-12 UAT T30 回归锁）：回显评论（含任务卡头）
+// 即便锚点行剥离后，上轮失败明细引文散文里的裸词仍会二阶自命中——评审
+// 取文本必须整条排除任务卡回显，回显 worker 诚实 FAIL 走重派臂。
+#[tokio::test]
+async fn task_card_echo_is_not_delivery_evidence_for_anchors() {
+    use nemesis_board::IssueStatus;
+
+    let (deps, _ws) = review_deps("card-echo");
+    // 回显形态 = 重派任务卡原样抄回：验收标准引文（锚点行原文）+ 上轮
+    // 失败明细引文（散文含裸 needle）。若回显未被排除，锚点行剥离后裸词
+    // 仍命中 → 假 PASS；排除后 worker_report 为空 → 诚实 FAIL。
+    let echo = "# 看板任务 NB-21\n\n## 标题\n回显探针 · 子任务1\n\n## 验收标准\n交付说明文本。\n[CHECK] re:回显探针NEEDLE9\n\n## 上轮验收意见（本次重派原因，必须针对性整改）\n客观锚点检查失败（确定性核验，未进入 AI 语义评审）：\n- ❌ `[CHECK] re:回显探针NEEDLE9`（交付文本正则）：交付文本未命中 /回显探针NEEDLE9/\n";
+    let issue = issue_in_review(
+        &deps.store,
+        "任务卡回显不是交付",
+        "[CHECK] re:回显探针NEEDLE9",
+        echo,
+    );
+    // 终态历史派发（round = 1-1 = 0 < max_redispatch → FAIL 走重派臂）。
+    deps.store
+        .insert_dispatch(
+            "task-echo-1",
+            issue.id,
+            "node-c",
+            &nemesis_board::Actor::agent("node-a"),
+        )
+        .unwrap();
+    deps.store
+        .finish_dispatch("task-echo-1", nemesis_board::models::dispatch_state::DONE)
+        .unwrap();
+
+    let reviewed = review_issue(&deps, issue.id, ReviewCtx::first_stage())
+        .await
+        .expect("回显评审必须闭环不报错");
+    assert!(reviewed, "锚点 FAIL 短路应完成评审闭环");
+
+    let comments = deps.store.list_comments(issue.id).unwrap();
+    assert!(
+        comments
+            .iter()
+            .any(|c| c.content.contains("客观锚点检查失败")),
+        "回显不得满足锚点：必须落失败评论"
+    );
+    assert!(
+        !comments
+            .iter()
+            .any(|c| c.content.contains("客观锚点检查通过")),
+        "回显二阶自命中被堵后不得出现 PASS 摘要"
+    );
+    assert_eq!(
+        deps.store.get_issue(issue.id).unwrap().status,
+        IssueStatus::InProgress,
+        "锚点 FAIL = 重派臂发车"
+    );
+    assert_eq!(deps.store.list_dispatches(issue.id).unwrap().len(), 2);
+}
+
 #[tokio::test]
 async fn parent_anchor_fail_blocks_auto_close_without_llm() {
     use nemesis_board::IssueStatus;

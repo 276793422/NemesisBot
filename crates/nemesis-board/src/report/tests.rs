@@ -176,3 +176,34 @@ fn delivery_report_serde_roundtrip() {
     .expect("legacy json parses");
     assert_eq!(legacy.experience, "");
 }
+
+// 任务 prompt 回显闸（2026-09-12 UAT T30③ 回归锁）：worker 把派发任务卡
+// 原样抄回（testai-3.1 回显行为），文本里带着引述的「## 汇报格式」模板
+// 与验收标准原文——仅凭段标题出现会被误判为结构化汇报，必须 None。
+#[test]
+fn rejects_task_prompt_echo_as_report() {
+    let echo = "# 看板任务 NB-25\n\n## 标题\nT30ANCHORFAIL 锚点短路 e2e\n\n## 验收标准\n交付说明文本。\n[CHECK] re:UAT30FAILNEEDLE\n\n## 上轮验收意见（本次重派原因，必须针对性整改）\n客观锚点检查失败\n\n## 汇报格式（最终回复必须严格按以下五段组织，标题原样保留）\n## 结论\n（一句话：完成 / 部分完成 / 失败）\n## 交付物清单\n（branch、commits、改动/新建文件路径，逐条列出；没有则写\"无\"）\n## 自检结果\n（对照上面的验收标准逐条自检）\n";
+    assert!(
+        parse_delivery_report(echo).is_none(),
+        "任务 prompt 回显不得判为结构化汇报"
+    );
+    // 前导空白/引线符容差后仍以任务卡头开头 → 同样拒绝。
+    assert!(parse_delivery_report(&format!("  {echo}")).is_none());
+}
+
+// 正常汇报不受回显闸影响（不以任务卡头开头即照常解析）。
+#[test]
+fn report_mentioning_card_header_midway_still_parses() {
+    let text = "\
+## 结论
+完成。
+
+## 交付物清单
+- 报告.md
+
+## 自检结果
+对照「# 看板任务 NB-25」的验收标准逐条自检通过。
+";
+    let r = parse_delivery_report(text).expect("legit report parses");
+    assert_eq!(r.conclusion, "完成。");
+}

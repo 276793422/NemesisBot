@@ -36,6 +36,10 @@ const SECTION_HEADERS: [&str; 5] = [
 /// 全文走层 2 HTTP 资产拉取）。
 pub const MAX_INLINE_BYTES: usize = 64 * 1024;
 
+/// 任务卡头（`# 看板任务 NB-n`，`build_dispatch_prompt` / 评审 prompt 共用
+/// 形态）。worker 最终回复以此开头 = 任务 prompt 回显，不是汇报。
+pub const TASK_CARD_HEADER: &str = "# 看板任务";
+
 /// 结构化汇报（交付线程首评 / 验收 agent 输入的统一形状）。
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct DeliveryReport {
@@ -71,6 +75,14 @@ fn all_header_positions(text: &str) -> Vec<usize> {
 /// 缺失 → None。段内容 trim 后原样保留（验收 agent 要读原文）；末段
 /// 之后的尾部散文并入末段（从宽——无法区分正文与人格后缀）。
 pub fn parse_delivery_report(text: &str) -> Option<DeliveryReport> {
+    // 任务 prompt 回显闸（2026-09-12 UAT T30③ 实证）：回显文本里带着
+    // 引述的「## 汇报格式」模板（五段标题齐全）与验收标准原文，仅凭
+    // 「段标题出现」会被误判为结构化汇报——回显随 ctype='delivery' 落
+    // 交付首评后，re: 锚点在引文里自命中 → 假 PASS 自动收货。以此开头
+    // 的一律按非汇报处理（调用方诚实降级为普通评论）。
+    if text.trim_start().starts_with(TASK_CARD_HEADER) {
+        return None;
+    }
     // 核心段缺失 → 非结构化汇报（调用方诚实降级为普通评论）。
     for header in &SECTION_HEADERS[..3] {
         text.find(header)?;

@@ -201,7 +201,13 @@ fn run_one(anchor: &AnchorCheck, workspace_root: &Path, delivery_text: &str) -> 
             };
             match Regex::new(pattern) {
                 Ok(re) => {
-                    if re.is_match(delivery_text) {
+                    // 自指防御（2026-09-12 UAT T30③ 实证）：交付文本逐字
+                    // 引用锚点行本身（重派 prompt 回显、复述验收标准的汇报）
+                    // 不构成满足锚点的证据——剥离全部锚点行原文后再匹配。
+                    // 否则 worker 只要把任务卡原样抄回来，re: 锚点就在引文
+                    // 里自命中 → 假 PASS → 自动收货。
+                    let cleaned = delivery_text.replace(&anchor.raw, "");
+                    if re.is_match(&cleaned) {
                         (true, format!("交付文本命中 /{pattern}/"))
                     } else {
                         (false, format!("交付文本未命中 /{pattern}/"))

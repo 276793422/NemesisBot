@@ -24,6 +24,9 @@ import (
 //   - <PLAN_ANCHOR>：子任务验收标准带合法 [CHECK] 锚点行（文件锚点指向
 //     uat-t2/pass/subN.md，由 UAT 驱动预置；另含对交付文本的正则锚点）
 //     （验证 P2 锚点全过 → 进语义项，T2-1）
+//   - <PLAN_REANCHOR>：子任务验收标准只带 re: 型交付文本正则锚点（跨节点
+//     安全）。P1 拓扑硬闸（reject_remote_file_anchors）上线后 file: 锚点
+//     不可远端派发，本形态是远端锚点链路 e2e 的合法计划（T30① 全过正流）
 //   - <PLAN_ANCHOR_EVIL>：子任务验收标准带路径不安全锚点行（`..` 穿越 /
 //     绝对路径）+ 一条合法锚点（验证解析期拒绝 + 告警回落语义，T2-3）
 //   - <PLAN_ANCHOR_MIXED>：子任务验收标准带无法解析的 [CHECK] 坏行（空
@@ -99,6 +102,8 @@ func (m *TestAIPlanner) Process(messages []Message) string {
 		return plannerMarshal(plannerAnchorPlan(title, "evil"))
 	case strings.Contains(input, "<PLAN_ANCHOR_MIXED>"):
 		return plannerMarshal(plannerAnchorPlan(title, "mixed"))
+	case strings.Contains(input, "<PLAN_REANCHOR>"):
+		return plannerMarshal(plannerAnchorPlan(title, "reanchor"))
 	case strings.Contains(input, "<PLAN_ANCHOR>"):
 		return plannerMarshal(plannerAnchorPlan(title, "pass"))
 	}
@@ -188,6 +193,9 @@ func plannerMarshal(subs []plannerSub) string {
 //   - "pass"：全部合法锚点。文件锚点指向 uat-t2/pass/subN.md（UAT 驱动
 //     在 A 端评审 workspace 预置）；子任务1 另含交付文本正则锚点（匹配
 //     测试 worker 的固定汇报文本「集群协作状态正常」）。
+//   - "reanchor"：纯 re: 型交付文本正则锚点（无 file:，跨节点安全——
+//     P1 拓扑硬闸下远端派发的合法形态）。子任务1 两条（集群协作状态正常
+//     + 收到），子任务2/3 各一条；全部命中测试 worker 固定汇报文本。
 //   - "evil"：每子任务带两条路径不安全锚点（`..` 穿越 / 绝对路径——跨
 //     平台都会被解析期拒绝的形态）+ 一条合法锚点（uat-t2/evil/subN.md，
 //     驱动预置）。期望：不安全行解析期拒绝 + 告警评论，合法锚点照跑，
@@ -198,6 +206,14 @@ func plannerMarshal(subs []plannerSub) string {
 func plannerAnchorPlan(parentTitle string, mode string) []plannerSub {
 	var acs [3]string
 	switch mode {
+	case "reanchor":
+		acs[0] = "产出包含实施要点的说明文本。\n" +
+			"[CHECK] re:集群协作状态正常\n" +
+			"[CHECK] re:收到"
+		acs[1] = "核心改动落地且实现说明写明改动点。\n" +
+			"[CHECK] re:集群协作状态正常"
+		acs[2] = "检查通过并给出结论性总结。\n" +
+			"[CHECK] re:收到"
 	case "pass":
 		acs[0] = "产出包含实施要点的说明文本。\n" +
 			"[CHECK] file:uat-t2/pass/sub1.md exists\n" +

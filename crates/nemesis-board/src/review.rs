@@ -235,7 +235,7 @@ pub fn build_review_user_prompt(
     thread: &[(String, String)],
 ) -> String {
     let mut prompt = String::new();
-    prompt.push_str(&format!("# 看板任务 {number}\n"));
+    prompt.push_str(&format!("{} {number}\n", crate::report::TASK_CARD_HEADER));
     prompt.push_str(&format!("标题：{title}\n"));
     prompt.push_str(&format!(
         "\n## 背景\n{}\n",

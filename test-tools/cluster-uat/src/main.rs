@@ -2063,6 +2063,8 @@ async fn main() {
     // 之后等过 sweep 截止线（15s 超时 + 2s 间隔）：cancelled 记录不得被
     // sweep 误标（无"派发超时"评论）。送达失败 ⛔ 评论路径由单测覆盖，
     // 本 e2e 送达成功（B 活着），不断言。
+    // 步骤 3：重复取消幂等（B2/B3 停车场复活语义）——Ok{cancelled:true,
+    // task_id:null}，不再断言旧契约的「没有进行中的派发」报错。
     // 注：T17 后 B 保持 testai-1.2（套件后续无测试使用 B 的 LLM）。
     all_results.push(
         run_test("T17: board cancel 下行 (issue.cancel)", || async {
@@ -2165,8 +2167,10 @@ async fn main() {
                 );
             }
 
-            // 3. 重复取消被竞态守卫诚实拒绝（dispatch 已终结）。
-            match ws_api_request(
+            // 3. 重复取消幂等（B2/B3 停车场复活语义，2026-09-11）：已终态 +
+            //    无在途派发 → Ok{cancelled:true, task_id:null, status 抵达
+            //    cancelled}，不再报「没有进行中的派发」。
+            let again = match ws_api_request(
                 &mut ws,
                 "board",
                 "issue.cancel",
@@ -2175,14 +2179,28 @@ async fn main() {
             )
             .await
             {
-                Ok(_) => return fail("T17", "second cancel unexpectedly succeeded"),
-                Err(e) => {
-                    let msg = e.to_string();
-                    if !(msg.contains("没有进行中的派发") || msg.contains("派发已终结"))
-                    {
-                        return fail("T17", format!("second cancel wrong error: {}", msg));
-                    }
-                }
+                Ok(v) => v,
+                Err(e) => return fail("T17", format!("second cancel not idempotent: {}", e)),
+            };
+            if again.get("cancelled").and_then(|v| v.as_bool()) != Some(true) {
+                return fail("T17", format!("second cancel unexpected: {}", again));
+            }
+            let again_task = again.get("task_id").map(|v| v.is_null());
+            if again_task != Some(true) {
+                return fail(
+                    "T17",
+                    format!("second cancel task_id should be null: {}", again),
+                );
+            }
+            let again_status = again
+                .pointer("/issue/status")
+                .and_then(|v| v.as_str())
+                .unwrap_or("");
+            if again_status != "cancelled" {
+                return fail(
+                    "T17",
+                    format!("second cancel issue status '{}' != cancelled", again_status),
+                );
             }
 
             // 4. 等过 sweep 截止线（15s 超时 + 2s 间隔 → 25s 轮询覆盖）：
@@ -2217,7 +2235,7 @@ async fn main() {
             pass(
                 "T17",
                 format!(
-                    "cancel 下行 OK：issue {} → cancelled；重复取消被竞态守卫拒绝；\
+                    "cancel 下行 OK：issue {} → cancelled；重复取消幂等（task_id=null）；\
                      过 sweep 截止线无派发超时误标",
                     issue_id
                 ),
@@ -4387,23 +4405,26 @@ async fn main() {
         .await,
     );
 
-    // T30: 锚点双检 e2e（全自动流转 P2 B1）。
+    // T30: 锚点双检 e2e（全自动流转 P2 B1 + P1 拓扑硬闸）。
     //
-    // 两段（模型均显式切换，不依赖前序残留态）：
+    // 三段（模型均显式切换，不依赖前序残留态）：
     //   ①全过正流：A/B 切 testai-board-1.0（planner/review/讨论组合桩，
-    //     完全复用 planner-1.0/review-1.0 的全部锚点分支）→ 预置 A 评审
-    //     workspace 锚点文件 → 父单标题带 <PLAN_ANCHOR>（planner 按标记
-    //     产出带 [CHECK] 行的子任务 AC）→ swarm_plan_and_confirm 人工
-    //     confirm（auto_confirm 必须为 false，否则 plan 被自动消费）→
-    //     依赖链 0→1→2 逐个派发：B 端 worker（board 模型默认分支固定
-    //     汇报文本）交付 → A 端验收锚点先于 LLM：文件锚点对 A 评审
-    //     workspace 实核、交付文本 re: 锚点对 B 端 delivery 命中 → 全过
-    //     进语义（review 桩 PASS）→ auto_accept 收货 → 父单 auto_close
-    //     收口。断言 per-anchor PASS 摘要评论（计数 + 交付文本命中明细）、
-    //     零 FAIL 评论、全家桶 done。
-    //   ②FAIL 短路：锚点文件缺失的单直接 dispatch → 验收锚点确定性短路
-    //     FAIL（评论含失败目标明细，不进 LLM）→ 重派×2 预算耗尽 → 转人工
-    //     保持 in_review（同 T28① 的处置链，触发源换成客观锚点）。
+    //     完全复用 planner-1.0/review-1.0 的全部锚点分支）→ 父单标题带
+    //     <PLAN_REANCHOR>（planner 按标记产出**纯 re: 型**锚点子任务 AC
+    //     ——P1 拓扑硬闸拒绝 file: 锚点远端派发，re: 型对 B 端 delivery
+    //     文本实核、跨节点安全）→ swarm_plan_and_confirm 人工 confirm
+    //     （auto_confirm 必须为 false，否则 plan 被自动消费）→ 依赖链
+    //     0→1→2 逐个派发：B 端 worker 固定汇报文本交付 → A 端验收锚点
+    //     先于 LLM：re: 锚点对 B 端 delivery 命中 → 全过进语义（review
+    //     桩 PASS）→ auto_accept 收货 → 父单 auto_close 收口。断言
+    //     per-anchor PASS 摘要评论（计数 + 交付文本命中明细）、零 FAIL
+    //     评论、全家桶 done。
+    //   ②拓扑硬闸契约：file: 锚点 + 远端目标 = issue.dispatch 诚实拒绝
+    //     （⛔ 拒绝派发），不产生派发记录、issue 保持 backlog。
+    //   ③FAIL 短路：re: 型不可能命中的锚点（FAIL needle）单直接 dispatch
+    //     → 验收锚点确定性短路 FAIL（评论含失败锚点原文，不进 LLM）→
+    //     重派×2 预算耗尽 → 转人工保持 in_review（同 T28① 的处置链，
+    //     触发源换成客观锚点）。
     all_results.push(
         run_test("T30: 锚点双检 e2e：全过正流 + FAIL 短路重派（P2 B1）", || async {
             // 0. A 切组合模型 + 重启。
@@ -4523,26 +4544,12 @@ async fn main() {
                 }
             }
 
-            // 0.6 预置 A 评审 workspace 锚点文件（①文件锚点实核对象；
-            //     sub1 必须含「锚点测试」——planner pass 计划的 contains 断言）。
-            let ws_root = ws_a.home().join("workspace");
-            for (rel, body) in [
-                ("uat-t2/pass/sub1.md", "# 子任务1 交付\n锚点测试：实施要点与涉及文件已整理。\n"),
-                ("uat-t2/pass/sub2.md", "# 子任务2 交付\n实现说明：核心改动点全部落地。\n"),
-                ("uat-t2/pass/sub3.md", "# 子任务3 交付\n验证结论：检查全部通过。\n"),
-            ] {
-                let p = ws_root.join(rel);
-                if let Some(parent) = p.parent() {
-                    std::fs::create_dir_all(parent).ok();
-                }
-                if let Err(e) = std::fs::write(&p, body) {
-                    return fail("T30", format!("seed {rel} failed: {e}"));
-                }
-            }
+            // ① 全纯 re: 锚点：无需预置 workspace 锚点文件（P1 拓扑硬闸
+            //    下 file: 锚点本就不可远端派发）。
 
-            // ---- ① 全过正流：<PLAN_ANCHOR> 计划 → 依赖链 → 锚点全过 → 收口 ----
+            // ---- ① 全过正流：<PLAN_REANCHOR> 计划 → 依赖链 → 锚点全过 → 收口 ----
             let (parent_id, children, _confirmed) =
-                match swarm_plan_and_confirm(&mut ws, NODES[0].web_port, "<PLAN_ANCHOR>", 60).await
+                match swarm_plan_and_confirm(&mut ws, NODES[0].web_port, "<PLAN_REANCHOR>", 60).await
                 {
                     Ok(v) => v,
                     Err(e) => return fail("T30", format!("① plan/confirm failed: {e}")),
@@ -4593,12 +4600,14 @@ async fn main() {
                 tokio::time::sleep(Duration::from_secs(3)).await;
             }
             // per-anchor PASS 摘要评论 + 交付文本锚点对 B 端 delivery 命中。
+            // REANCHOR 计划锚点数：子单1 = 2 条（集群协作状态正常 + 收到），
+            // 子单2/3 各 1 条。
             for (idx, cid) in children.iter().enumerate() {
                 let t = comments_text(&mut ws, *cid).await;
                 if t.contains("客观锚点检查失败") {
                     return fail("T30", format!("①子单{} 不应有锚点 FAIL 评论", cid));
                 }
-                let expected = if idx == 0 { "（3 条）" } else { "（1 条）" };
+                let expected = if idx == 0 { "（2 条）" } else { "（1 条）" };
                 if !t.contains("客观锚点检查通过")
                     || !t.contains(expected)
                 {
@@ -4617,14 +4626,14 @@ async fn main() {
                 }
             }
 
-            // ---- ② FAIL 短路：缺文件锚点 → 重派×2 → 预算耗尽转人工 ----
+            // ---- ② 拓扑硬闸契约：file: 锚点 + 远端目标 = 诚实拒绝 ----
             let created = match ws_api_request(
                 &mut ws,
                 "board",
                 "issue.create",
                 json!({
-                    "title": "T30ANCHORFAIL 锚点短路 e2e",
-                    "description": "cluster-uat T30②：锚点文件缺失，验收先锚点短路 FAIL。",
+                    "title": "T30GATE 拓扑硬闸 e2e",
+                    "description": "cluster-uat T30②：file: 锚点远端派发必须被 P1 硬闸拒绝。",
                     "acceptance_criteria": "交付说明文本。\n[CHECK] file:uat-t2/e2e-missing.md exists\n[CHECK] re:集群协作状态正常",
                 }),
                 15,
@@ -4634,12 +4643,72 @@ async fn main() {
                 Ok(v) => v,
                 Err(e) => return fail("T30", format!("②issue.create failed: {e}")),
             };
+            let gate_issue = created
+                .pointer("/issue/id")
+                .and_then(|v| v.as_i64())
+                .unwrap_or(0);
+            if gate_issue == 0 {
+                return fail("T30", format!("②issue.create 无 id: {created}"));
+            }
+            match ws_api_request(
+                &mut ws,
+                "board",
+                "issue.dispatch",
+                json!({ "id": gate_issue, "target": "Node-B" }),
+                30,
+            )
+            .await
+            {
+                Ok(v) => {
+                    return fail("T30", format!("②file: 锚点远端派发应被拒绝，实际成功: {v}"));
+                }
+                Err(e) => {
+                    let msg = e.to_string();
+                    if !msg.contains("拒绝派发") || !msg.contains("file:") {
+                        return fail("T30", format!("②拒绝理由应携带硬闸语义: {msg}"));
+                    }
+                }
+            }
+            if dispatch_count(gate_issue) != 0 {
+                return fail(
+                    "T30",
+                    format!("②被拒派发不得产生派发记录，实际 {} 条", dispatch_count(gate_issue)),
+                );
+            }
+            let gate_status = match issue_status_of(&mut ws, gate_issue).await {
+                Ok(s) => s,
+                Err(e) => return fail("T30", format!("②issue.get failed: {e}")),
+            };
+            if gate_status != "backlog" {
+                return fail(
+                    "T30",
+                    format!("②被拒后 issue 应保持 backlog，实际 '{gate_status}'"),
+                );
+            }
+
+            // ---- ③ FAIL 短路：re: 型不可能命中的锚点 → 重派×2 → 预算耗尽转人工 ----
+            let created = match ws_api_request(
+                &mut ws,
+                "board",
+                "issue.create",
+                json!({
+                    "title": "T30ANCHORFAIL 锚点短路 e2e",
+                    "description": "cluster-uat T30③：交付文本锚点必不命中，验收先锚点短路 FAIL。",
+                    "acceptance_criteria": "交付说明文本。\n[CHECK] re:UAT30FAILNEEDLE",
+                }),
+                15,
+            )
+            .await
+            {
+                Ok(v) => v,
+                Err(e) => return fail("T30", format!("③issue.create failed: {e}")),
+            };
             let fail_issue = created
                 .pointer("/issue/id")
                 .and_then(|v| v.as_i64())
                 .unwrap_or(0);
             if fail_issue == 0 {
-                return fail("T30", format!("②issue.create 无 id: {created}"));
+                return fail("T30", format!("③issue.create 无 id: {created}"));
             }
             if let Err(e) = ws_api_request(
                 &mut ws,
@@ -4650,9 +4719,9 @@ async fn main() {
             )
             .await
             {
-                return fail("T30", format!("②issue.dispatch failed: {e}"));
+                return fail("T30", format!("③issue.dispatch failed: {e}"));
             }
-            // 短路 FAIL 评论（含失败目标）→ 预算耗尽转人工。
+            // 短路 FAIL 评论（含失败锚点原文）→ 预算耗尽转人工。
             let deadline = tokio::time::Instant::now() + Duration::from_secs(600);
             loop {
                 if tokio::time::Instant::now() >= deadline {
@@ -4660,18 +4729,18 @@ async fn main() {
                     let st = issue_status_of(&mut ws, fail_issue).await.unwrap_or_default();
                     return fail(
                         "T30",
-                        format!("②600s 内未收口（dispatch={n}, status='{st}'）——锚点短路或重派链未走通"),
+                        format!("③600s 内未收口（dispatch={n}, status='{st}'）——锚点短路或重派链未走通"),
                     );
                 }
                 tokio::time::sleep(Duration::from_secs(3)).await;
                 let t = comments_text(&mut ws, fail_issue).await;
                 if t.contains("重派预算已耗尽") {
                     if !t.contains("客观锚点检查失败")
-                        || !t.contains("uat-t2/e2e-missing.md")
+                        || !t.contains("UAT30FAILNEEDLE")
                     {
                         return fail(
                             "T30",
-                            format!("②转人工评论应携带锚点失败明细: {}", trunc(&t, 400)),
+                            format!("③转人工评论应携带锚点失败明细: {}", trunc(&t, 400)),
                         );
                     }
                     break;
@@ -4685,13 +4754,13 @@ async fn main() {
             }
             let status = match issue_status_of(&mut ws, fail_issue).await {
                 Ok(s) => s,
-                Err(e) => return fail("T30", format!("②issue.get failed: {e}")),
+                Err(e) => return fail("T30", format!("③issue.get failed: {e}")),
             };
             if n != 3 {
-                return fail("T30", format!("②应重派至 3 次派发（1+2），实际 {n}"));
+                return fail("T30", format!("③应重派至 3 次派发（1+2），实际 {n}"));
             }
             if status != "in_review" {
-                return fail("T30", format!("②预算耗尽后应保持 in_review，实际 '{status}'"));
+                return fail("T30", format!("③预算耗尽后应保持 in_review，实际 '{status}'"));
             }
 
             // 开关复位（本测试是套件末位，防御性恢复默认态）。
@@ -4713,9 +4782,10 @@ async fn main() {
             pass(
                 "T30",
                 format!(
-                    "锚点双检 OK：①<PLAN_ANCHOR> 三子单链锚点全过（交付文本锚点命中 B 端 delivery）\
+                    "锚点双检 OK：①<PLAN_REANCHOR> 三子单链纯 re: 锚点全过（交付文本锚点命中 B 端 delivery）\
                      → 语义 → 全家桶 done（parent {parent_id}）；\
-                     ②缺文件锚点短路 FAIL → 重派×2 → 预算耗尽转人工（issue {fail_issue}）"
+                     ②file: 锚点远端派发被拓扑硬闸拒绝（issue {gate_issue} 保持 backlog）；\
+                     ③re: FAIL 短路 → 重派×2 → 预算耗尽转人工（issue {fail_issue}）"
                 ),
             )
         })
