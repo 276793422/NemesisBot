@@ -293,6 +293,61 @@ fn test_migration_v6_to_v7_adds_dedup_and_ledger() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
+/// v11 库 → init_db 迁移 v12（project.directory 列补建；存量项目 directory
+/// 保持 NULL = 不参与档案管线，goal §一 Out 不回填）。
+#[test]
+fn test_migration_v11_to_v12_adds_project_directory() {
+    let dir = unique_dir("migrate-v11-v12");
+    let path = dir.join("board.db");
+    std::fs::create_dir_all(&dir).unwrap();
+    {
+        let conn = Connection::open(&path).unwrap();
+        for v in 1..=11 {
+            let schema = match v {
+                1 => SCHEMA_V1,
+                2 => SCHEMA_V2,
+                3 => SCHEMA_V3,
+                4 => SCHEMA_V4,
+                5 => SCHEMA_V5,
+                6 => SCHEMA_V6,
+                7 => SCHEMA_V7,
+                8 => SCHEMA_V8,
+                9 => SCHEMA_V9,
+                10 => SCHEMA_V10,
+                11 => SCHEMA_V11,
+                _ => unreachable!(),
+            };
+            conn.execute_batch(schema).unwrap();
+            conn.pragma_update(None, "user_version", v).unwrap();
+        }
+        // v11 期已有项目（无 directory 列概念）。
+        conn.execute(
+            "INSERT INTO project (name, description, status, priority, icon, acceptance_criteria, created_at)
+             VALUES('老项目', '', 'active', 1, '', '', 1700000000)",
+            [],
+        )
+        .unwrap();
+    }
+    let conn = init_db(&path).unwrap();
+    let v: i32 = conn
+        .pragma_query_value(None, "user_version", |r| r.get(0))
+        .unwrap();
+    assert_eq!(v, SCHEMA_VERSION);
+    // 存量项目 directory = NULL（不参与档案管线）。
+    let directory: Option<String> = conn
+        .query_row(
+            "SELECT directory FROM project WHERE name='老项目'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(
+        directory, None,
+        "存量项目 directory 必须保持 NULL（不回填）"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
 fn unique_dir(name: &str) -> std::path::PathBuf {
     let dir = std::env::temp_dir().join(format!(
         "nemesis-board-dbtest-{}-{name}",

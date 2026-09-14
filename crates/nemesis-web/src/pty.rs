@@ -420,8 +420,19 @@ async fn handle_pty_socket(
     // estop 订阅：急停触发 → 立即 kill 本会话。
     let mut estop_rx: Option<tokio::sync::watch::Receiver<bool>> =
         state.estop.as_ref().map(|e| e.subscribe());
+    // 订阅竞态封口：upgrade 闸（estop 已触发 → 503 拒升级）之后、订阅落定
+    // 之前 estop 仍可能触发——watch 新接收端的初始标记就是当前值，
+    // changed() 对「订阅前已发生的触发」永不再通知，会话会漏杀。急停语义
+    // =冻结一切执行体，晚到的会话也要杀：入口显式查一次当前值作种子。
+    let mut estop_kill = estop_rx.as_ref().is_some_and(|rx| *rx.borrow());
 
     loop {
+        if estop_kill {
+            tracing::info!("[Pty] estop engaged — killing session {conn_id}");
+            audit.frame(b"E", b"estop");
+            let _ = child.kill();
+            break;
+        }
         tokio::select! {
             biased;
             // estop 优先（急停语义 = 冻结一切执行体）。
@@ -436,10 +447,8 @@ async fn handle_pty_socket(
                     .map(|rx| *rx.borrow())
                     .unwrap_or(false);
                 if maybe.is_some() && engaged {
-                    tracing::info!("[Pty] estop engaged — killing session {conn_id}");
-                    audit.frame(b"E", b"estop");
-                    let _ = child.kill();
-                    break;
+                    estop_kill = true;
+                    continue;
                 }
                 // release（engaged=false）不打断会话。
             }

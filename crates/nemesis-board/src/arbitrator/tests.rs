@@ -260,3 +260,65 @@ fn test_mentions_node_and_has_mentions() {
     assert!(!has_mentions("大家辛苦了"));
     assert!(!has_mentions("邮箱 a@b.com 就好"));
 }
+
+// ---------------------------------------------------------------------------
+// goal P1/F2：@all 群发（用户拍板计入）。
+// ---------------------------------------------------------------------------
+
+/// @all：唤醒全部在线其他节点；发送者本人排除；离线 → skipped(offline)。
+#[test]
+fn test_at_all_wakes_online_others_excludes_sender_and_offline() {
+    let nodes = vec![
+        node("master", "Zoo", "manager", true),
+        node("node-b", "Alex", "worker", true),
+        node("node-c", "Bob", "worker", false),
+    ];
+    let plan = resolve_wake_targets(&input("channel", "@all 注意一下", "master"), &nodes);
+    // 在线其他节点全部唤醒（大小写无关，大小写不敏感解析后 token="all"）。
+    assert_eq!(plan.targets, vec!["node-b"]);
+    assert!(!plan.to_moderator);
+    // 离线节点进 skipped（offline），发送者进 skipped（sender）。
+    assert!(
+        plan.skipped
+            .iter()
+            .any(|s| s.node_id == "node-c" && s.reason == "offline")
+    );
+    assert!(
+        plan.skipped
+            .iter()
+            .any(|s| s.node_id == "master" && s.reason == "sender")
+    );
+}
+
+/// @all 大小写不敏感（@ALL 同样命中）。
+#[test]
+fn test_at_all_case_insensitive() {
+    let nodes = vec![
+        node("master", "Zoo", "manager", true),
+        node("node-b", "Alex", "worker", true),
+    ];
+    let plan = resolve_wake_targets(&input("channel", "@ALL 集合", "master"), &nodes);
+    assert_eq!(plan.targets, vec!["node-b"]);
+}
+
+/// mentions_node 对 @all 恒真（board.sync 补拉兜底的同源匹配：离线期间
+/// 错过的 @all，上线补拉时按此过滤入队）。
+#[test]
+fn test_mentions_node_at_all_matches_any_node() {
+    assert!(mentions_node(
+        "@all 集合",
+        "node-b",
+        "Alex",
+        "worker",
+        "general"
+    ));
+    assert!(mentions_node("@All 集合", "node-c", "Bob", "worker", "qa"));
+    // 非 @all 消息不误命中。
+    assert!(!mentions_node(
+        "大家注意",
+        "node-b",
+        "Alex",
+        "worker",
+        "general"
+    ));
+}

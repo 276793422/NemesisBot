@@ -122,6 +122,19 @@ pub trait TaskResultPersister: Send + Sync {
     ) -> Result<(), String>;
     /// Delete a task result (after successful callback).
     fn delete(&self, task_id: &str) -> Result<(), String>;
+    /// 任务到达终态钩子（看板项目档案 goal P3/D2；默认 no-op 兼容既有
+    /// 实现与测试 fake）。无论回调成功/失败、无论 legacy/work-queue 路径，
+    /// 任务终结时都会被调用——gateway 侧适配器在此触发执行档案入队
+    /// （TransferOutbox::enqueue）。
+    fn on_task_terminal(&self, _task_id: &str, _source_node_id: &str) {}
+}
+
+/// 任务接收钩子（看板项目档案 goal P4/E3 worker 侧档案工作副本）。work-queue
+/// 路径在 `handle()` 收到任务时调用：payload 带 `_baseline_commit`（档案
+/// 管线派发）= 解包基线工作副本并返回 prompt 工作目录段（追加进任务
+/// content）；`None` = 非档案任务，既有行为零改动。
+pub trait TaskReceiveHook: Send + Sync {
+    fn on_task_received(&self, task_id: &str, payload: &serde_json::Value) -> Option<String>;
 }
 
 // ---------------------------------------------------------------------------
@@ -138,6 +151,8 @@ pub struct PeerChatHandler {
     llm_channel: Option<Arc<dyn LlmChannel>>,
     rpc_client: Option<Arc<RpcClient>>,
     result_persister: Option<Arc<dyn TaskResultPersister>>,
+    /// P4/E3 任务接收钩子（档案工作副本；None = 无档案语义）。
+    task_receive_hook: Option<Arc<dyn TaskReceiveHook>>,
     /// Cluster agent work queue (preferred over llm_channel).
     cluster_task_list: Option<Arc<ClusterTaskList>>,
     cluster_work_queue: Option<Arc<ClusterWorkQueue>>,
@@ -157,6 +172,7 @@ impl PeerChatHandler {
             llm_channel: None,
             rpc_client: None,
             result_persister: None,
+            task_receive_hook: None,
             cluster_task_list: None,
             cluster_work_queue: None,
             active_tasks: Arc::new(Mutex::new(Vec::new())),
@@ -167,6 +183,7 @@ impl PeerChatHandler {
     pub fn with_timeout(node_id: String, timeout: Duration) -> Self {
         Self {
             timeout,
+            task_receive_hook: None,
             ..Self::new(node_id)
         }
     }
@@ -194,6 +211,11 @@ impl PeerChatHandler {
     /// Set the task result persister.
     pub fn set_result_persister(&mut self, persister: Arc<dyn TaskResultPersister>) {
         self.result_persister = Some(persister);
+    }
+
+    /// Set the task receive hook（P4/E3 档案工作副本；gateway 装配期一次）。
+    pub fn set_task_receive_hook(&mut self, hook: Arc<dyn TaskReceiveHook>) {
+        self.task_receive_hook = Some(hook);
     }
 
     /// Set the LLM request timeout（`Duration::MAX` = 不限，
@@ -306,6 +328,17 @@ impl PeerChatHandler {
         let cluster_work_queue = self.cluster_work_queue.clone();
         if let (Some(ref task_list), Some(ref work_queue)) = (cluster_task_list, cluster_work_queue)
         {
+            // P4/E3（看板项目档案 goal）：接收钩子——payload 带
+            // `_baseline_commit` = 解包基线工作副本 + prompt 工作目录段。
+            // legacy LLM 路径不接钩子（裸通道无文件工具，档案语义无从谈起）。
+            let content = match self
+                .task_receive_hook
+                .as_ref()
+                .and_then(|h| h.on_task_received(&task_id, &payload))
+            {
+                Some(appendix) => format!("{}{appendix}", req.content),
+                None => req.content.clone(),
+            };
             // Create a cluster task and enqueue to the work queue.
             let cluster_task = ClusterTask {
                 task_id: task_id.clone(),
@@ -315,7 +348,7 @@ impl PeerChatHandler {
                     session_key: format!("cluster_rpc:{}", sender_id),
                 },
                 status: TaskStatus::Pending,
-                content: req.content.clone(),
+                content,
                 conversation: None,
                 waiting_for_task_id: None,
                 waiting_tool_call_id: None,
@@ -631,6 +664,12 @@ pub async fn send_callback_or_persist(
                 tracing::info!(task_id = %task_id, "[PeerChat] Task result persisted for recovery");
             }
         }
+    }
+
+    // 任务终态钩子（P3/D2 执行档案入队）：回调成功与否无关紧要——worker 侧
+    // 档案推送不依赖 A 端是否收到本轮结果。source 为空时钩子内部诚实跳过。
+    if let Some(persister) = result_persister {
+        persister.on_task_terminal(task_id, source_node_id);
     }
 }
 

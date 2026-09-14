@@ -195,6 +195,11 @@ pub async fn cluster_agent_loop(
 
         task_list.update_status(&task_id, TaskStatus::Running);
 
+        // D0b（goal P2）：出队开跑上报——master 把 dispatch 标 running
+        // （queued vs executing 分界；重平衡只挪 queued 单）。fire-and-forget：
+        // 失败只 debug（master 保守方向=不挪已标记的单，安全侧）。
+        notify_task_started(rpc_client.as_deref(), &task, &self_node_id).await;
+
         if task.conversation.is_some() && task.callback_result.is_some() {
             // Resume a task that was waiting for a remote callback.
             match resume_task(
@@ -264,6 +269,37 @@ pub async fn cluster_agent_loop(
 }
 
 /// Execute a new task using run_with_trace().
+/// D0b（goal P2）：出队开跑上报（nb_bus ns="task" op="started"，目标=
+/// 任务来源 master）。master 据此把 dispatch 标 running——重平衡只挪
+/// queued 单。fire-and-forget：RPC 失败只 debug（重平衡保守方向=不挪）。
+async fn notify_task_started(
+    rpc_client: Option<&RpcClient>,
+    task: &nemesis_cluster::cluster_task::ClusterTask,
+    self_node_id: &str,
+) {
+    let Some(rpc) = rpc_client else {
+        return;
+    };
+    let payload = serde_json::json!({
+        "v": nemesis_cluster::envelope::ENVELOPE_VERSION,
+        "ns": "task",
+        "op": "started",
+        "corr_id": uuid::Uuid::new_v4().to_string(),
+        "body": { "task_id": task.task_id },
+    });
+    let request = RPCRequest {
+        id: uuid::Uuid::new_v4().to_string(),
+        action: ActionType::Custom(nemesis_cluster::envelope::NB_BUS_ACTION.to_string()),
+        payload,
+        source: self_node_id.to_string(),
+        target: Some(task.source.node_id.clone()),
+    };
+    if let Err(e) = rpc.call(&task.source.node_id, request).await {
+        tracing::debug!(task_id = %task.task_id, error = %e,
+            "[ClusterAgent] task.started notify skipped");
+    }
+}
+
 async fn execute_new_task(
     agent_loop: &AgentLoop,
     config: &AgentConfig,
@@ -892,6 +928,92 @@ async fn send_task_callback(
         fail_class,
     )
     .await;
+
+    // G（goal P3）：成功交付 → 解析交付文本中的文件路径回传 master
+    // （失败/取消不回传；解析/读取失败诚实降级——交付评论内联源码兜底）。
+    if status == "success" {
+        deliver_files_back(rpc_client, task, self_node_id, response).await;
+    }
+}
+
+/// G（goal P3）交付文件回传：解析交付文本反引号里的路径（五段式「改动
+/// 文件路径」清单），逐个（≤20 个、单文件 ≤8MB、需存在）base64 后经
+/// nb_bus ns="task" op="delivery.files" 推给 master 落资产。fire-and-forget：
+/// 失败只 debug（master 侧溯源线索=交付评论里的内联源码与路径）。
+async fn deliver_files_back(
+    rpc_client: Option<&RpcClient>,
+    task: &nemesis_cluster::cluster_task::ClusterTask,
+    self_node_id: &str,
+    delivery_text: &str,
+) {
+    use base64::Engine as _;
+    const MAX_FILES: usize = 20;
+    const MAX_FILE_BYTES: usize = 8 * 1024 * 1024;
+
+    let mut paths: Vec<String> = Vec::new();
+    for seg in delivery_text.split('`') {
+        let t = seg.trim();
+        // 路径形态启发：含分隔符、无空白、非纯词（回退靠内联源码）。
+        if (t.contains('/') || t.contains('\\'))
+            && !t.contains(' ')
+            && t.len() > 3
+            && !paths.iter().any(|x| x == t)
+        {
+            paths.push(t.to_string());
+            if paths.len() >= MAX_FILES {
+                break;
+            }
+        }
+    }
+    if paths.is_empty() {
+        return;
+    }
+    let Some(rpc) = rpc_client else {
+        return;
+    };
+
+    let mut files = Vec::new();
+    for p in &paths {
+        let Ok(meta) = std::fs::metadata(p) else {
+            continue;
+        };
+        if !meta.is_file() || meta.len() as usize > MAX_FILE_BYTES {
+            continue;
+        }
+        let Ok(bytes) = std::fs::read(p) else {
+            continue;
+        };
+        let name = p.rsplit(['/', '\\']).next().unwrap_or("file").to_string();
+        files.push(serde_json::json!({
+            "name": name,
+            "content_b64": base64::engine::general_purpose::STANDARD.encode(&bytes),
+        }));
+    }
+    if files.is_empty() {
+        return;
+    }
+
+    let payload = serde_json::json!({
+        "v": nemesis_cluster::envelope::ENVELOPE_VERSION,
+        "ns": "task",
+        "op": "delivery.files",
+        "corr_id": uuid::Uuid::new_v4().to_string(),
+        "body": { "task_id": task.task_id, "files": files },
+    });
+    let request = RPCRequest {
+        id: uuid::Uuid::new_v4().to_string(),
+        action: ActionType::Custom(nemesis_cluster::envelope::NB_BUS_ACTION.to_string()),
+        payload,
+        source: self_node_id.to_string(),
+        target: Some(task.source.node_id.clone()),
+    };
+    if let Err(e) = rpc.call(&task.source.node_id, request).await {
+        tracing::debug!(task_id = %task.task_id, error = %e,
+            "[ClusterAgent] 交付文件回传失败（交付评论内联源码兜底）");
+    } else {
+        tracing::info!(task_id = %task.task_id, count = files.len(),
+            "[ClusterAgent] 交付文件已回传 master");
+    }
 }
 
 /// P2A（2026-09-12 双端真机 NB-15 根修）：终结失败分类——error 回调负载

@@ -1210,7 +1210,13 @@ impl Cluster {
             existing.base.name = info.name.clone();
             existing.base.role = info.role;
             existing.base.category = info.category.clone();
-            if !info.address.is_empty() {
+            // 静态 peer（peers.toml 显式配置）的地址不被对端自报覆盖：
+            // 对端自报的 primary 是它 addresses[0]（网卡优先级决定），多网卡
+            // 跨网段环境下对本地常不可达（真机三节点实证：master primary=
+            // 10.103.x，worker 按它拨号必败 → G2 探针失败 → Offline →
+            // online 门禁拒 transfer）。静态语义=用户显式配置优先，地址
+            // 与 mark_static 的免过期保护同源；动态发现节点仍照常更新。
+            if !info.address.is_empty() && !self.registry.is_peer_static(&info.id) {
                 existing.base.address = info.address.clone();
             }
             existing.base.last_seen = chrono::Local::now().to_rfc3339();
@@ -1826,6 +1832,26 @@ impl Cluster {
         self.registry.get(peer_id)
     }
 
+    /// 把调用方给的 target（peer 名或节点 id，人读/机读两种形态都收）归一化
+    /// 为注册表权威节点 id（`base.id`，即 worker 侧 `_rpc.from` 的形态）。
+    ///
+    /// 单一真相源纪律（T37 双身份失配第三处落点，2026-09-13）：派发账本
+    /// `issue_dispatch.worker_id` 与 worker 上报的传输层身份必须是同一形态
+    /// ——matcher 产出本来就是节点 id，人工指派/兜底路径可能给 peer 名
+    /// （如 "Alex"），不归一化则 `task.started`/`delivery.files` 的
+    /// worker 校验永远失配（名字 ≠ 节点 id）。解析失败（未知 target）返回
+    /// None，调用方保留原值（RPC resolver 自身还有 name/id 兜底扫描）。
+    pub fn canonical_peer_id(&self, target: &str) -> Option<String> {
+        if let Some(info) = self.registry.get(target) {
+            return Some(info.base.id);
+        }
+        self.registry
+            .list_peers()
+            .into_iter()
+            .find(|p| p.base.id == target || p.base.name == target)
+            .map(|p| p.base.id)
+    }
+
     /// Temporarily mark a peer as Online so the RPC resolver doesn't block
     /// the call. Used by `nodes.refresh` to bypass the offline-check before
     /// attempting a `get_info` RPC; the caller should restore the original
@@ -1873,6 +1899,39 @@ impl Cluster {
     pub fn mark_peer_offline(&self, node_id: &str, reason: &str) {
         self.registry.mark_offline(node_id, reason);
         crate::logger::log_discovery("offline", reason, Some(node_id));
+    }
+
+    /// On-demand frame-level connectivity probe of a single peer（G2 探针
+    /// 同款形态：`Custom("ping")` + 5s 超时，`require_online=false`——对端
+    /// 被标 Offline 也能探到真话）。返回对端是否帧级应答。
+    ///
+    /// 与健康检查循环的分工：本方法**不**因单次失败翻转注册表状态（那是
+    /// G2 连败累计的职责，单次失败可能是瞬态抖动）；成功侧顺带
+    /// [`Self::mark_peer_healthy`]（幂等，Offline→Online 复活广播照常触发
+    /// ——看板停车场 sweep 依赖该信号，业务流主动接触到的复活不该被
+    /// sweep 晚一轮才看见）。消费方：看板冲突硬解重派前的三轮主动接触
+    ///（board conflict_resolver）。
+    pub async fn probe_peer(&self, node_id: &str) -> bool {
+        let Some(client) = self.rpc_client_arc() else {
+            return false;
+        };
+        let request = crate::rpc_types::RPCRequest {
+            id: uuid::Uuid::new_v4().to_string(),
+            action: crate::rpc_types::ActionType::Custom("ping".to_string()),
+            payload: serde_json::json!({}),
+            source: self.node_id.clone(),
+            target: Some(node_id.to_string()),
+        };
+        match client
+            .call_probe_with_timeout(node_id, request, std::time::Duration::from_secs(5))
+            .await
+        {
+            Ok(_) => {
+                self.mark_peer_healthy(node_id);
+                true
+            }
+            Err(_) => false,
+        }
     }
 
     /// Mark a peer as static/configured (loaded from peers.toml). Static peers

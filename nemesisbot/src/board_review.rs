@@ -794,7 +794,10 @@ async fn review_issue(
                 deps.cluster.node_id(),
                 "auto_accept",
                 output.verdict.as_str(),
-                serde_json::json!({ "round": round }),
+                serde_json::json!({
+                    "round": round,
+                    "reasons": render_reasons(&output.reasons),
+                }),
             );
             auto_accept_and_settle(deps, issue_id, &output.reasons)?;
         }
@@ -805,7 +808,10 @@ async fn review_issue(
                 deps.cluster.node_id(),
                 "suggest_manual",
                 output.verdict.as_str(),
-                serde_json::json!({ "round": round }),
+                serde_json::json!({
+                    "round": round,
+                    "reasons": render_reasons(&output.reasons),
+                }),
             );
             let reasons = render_reasons(&output.reasons);
             store.add_comment(NewComment {
@@ -862,7 +868,8 @@ async fn review_issue(
                         serde_json::json!({
                             "round": round,
                             "fail_class": fc,
-                            "reason": "capability_fail_same_target"
+                            "reason": "capability_fail_same_target",
+                            "reasons": render_reasons(&output.reasons),
                         }),
                     );
                     info!(
@@ -900,7 +907,11 @@ async fn review_issue(
                 deps.cluster.node_id(),
                 "redispatch",
                 output.verdict.as_str(),
-                serde_json::json!({ "round": next_round, "unlimited": unlimited }),
+                serde_json::json!({
+                    "round": next_round,
+                    "unlimited": unlimited,
+                    "reasons": render_reasons(&output.reasons),
+                }),
             );
             // 停滞可观测（E3 配套，复审补充）：连续重派且差距文本与上一轮
             // 完全相同 → WARN 告警（只告警不停流程，人可观测不干预）。
@@ -999,7 +1010,10 @@ async fn review_issue(
                 deps.cluster.node_id(),
                 "escalate_human",
                 output.verdict.as_str(),
-                serde_json::json!({ "round": round }),
+                serde_json::json!({
+                    "round": round,
+                    "reasons": render_reasons(&output.reasons),
+                }),
             );
             let mut comment = format!("{}🤷 验收 agent 无法定案，请人工裁决\n", human_mention);
             if output.verdict == nemesis_board::ReviewVerdict::Fail {
@@ -1229,8 +1243,10 @@ fn join_project_review_ac(project_ac: Option<&str>, parents: &[nemesis_board::Is
 
 /// 从 home 读 board 段旗标（auto_review/auto_accept/max_redispatch）。
 /// 配置读失败 → Err（评审诚实放弃，fail-closed 到人工验收——不拿默认值
-/// 顶替用户配置）。
-fn load_board_flags(home: &std::path::Path) -> Result<nemesis_config::BoardFlagConfig, String> {
+/// 顶替用户配置）。P5 冲突漏斗（conflict_auto_resolve）同源消费。
+pub(crate) fn load_board_flags(
+    home: &std::path::Path,
+) -> Result<nemesis_config::BoardFlagConfig, String> {
     let path = home.join("config.json");
     let cfg = nemesis_config::load_config(&path)
         .map_err(|e| format!("config.json 读取失败（{}）：{e}", path.display()))?;
@@ -1265,7 +1281,9 @@ fn append_reasons_unless_gapped(comment: &mut String, output: &nemesis_board::Re
 /// E2 决策审计：`auto_decide` 活动落库（决策流视图 `board.audit.list` 的
 /// 数据源；`rollback_decision` 只认本 action）。details = JSON：
 /// `{decision, verdict, ..extra}`。失败只 warn（审计是增值动作，不炸验收）。
-fn record_auto_decide(
+/// P5/F7 冲突四审计（conflict/conflict_auto_resolve/conflict_redispatch/
+/// conflict_switch_worker）同走本漏斗——board 冲突防线与验收共用单一审计。
+pub(crate) fn record_auto_decide(
     store: &nemesis_board::BoardStore,
     issue_id: i64,
     node_id: &str,
@@ -1286,6 +1304,13 @@ fn record_auto_decide(
         Some(&details.to_string()),
     ) {
         warn!("[BoardReview] issue {issue_id} auto_decide 活动落库失败：{e}");
+    }
+    // C 里程碑 4（看板项目档案 goal P2）：评审决策 → docs/review/NB-xx.md +
+    // timeline。写失败不阻塞评审（writer 内部 WARN+审计）；存量项目静默跳过。
+    if let Ok(issue) = store.get_issue(issue_id) {
+        nemesis_board::archive_writer::write_review_milestone(
+            store, &issue, node_id, decision, verdict, &details,
+        );
     }
 }
 
@@ -1510,7 +1535,7 @@ async fn review_parent_issue(deps: &BoardReviewDeps, parent_id: i64) -> Result<b
                 deps.cluster.node_id(),
                 "parent_auto_close",
                 output.verdict.as_str(),
-                serde_json::json!({}),
+                serde_json::json!({ "reasons": render_reasons(&output.reasons) }),
             );
             store.transition_issue(parent_id, IssueStatus::Done, &reviewer)?;
             info!("[BoardReview] 父单 {parent_id} 收口验收 PASS → done（auto_close_parent）");
@@ -1548,7 +1573,7 @@ async fn review_parent_issue(deps: &BoardReviewDeps, parent_id: i64) -> Result<b
                 deps.cluster.node_id(),
                 "parent_escalate_human",
                 verdict.as_str(),
-                serde_json::json!({}),
+                serde_json::json!({ "reasons": render_reasons(&output.reasons) }),
             );
             info!(
                 "[BoardReview] 父单 {parent_id} 收口验收 verdict={} → 转人工（保持 in_review）",
@@ -1912,9 +1937,15 @@ fn apply_project_review_outcome(
                     deps.cluster.node_id(),
                     "project_complete",
                     output.verdict.as_str(),
-                    serde_json::json!({ "project_id": project.id }),
+                    serde_json::json!({
+                        "project_id": project.id,
+                        "reasons": render_reasons(&output.reasons),
+                    }),
                 );
             }
+            // F9 收口总结（P6）：completed 落定后异步生成档案 summary.md
+            //（失败诚实留痕，不影响已落定的收口状态）。
+            crate::board_review::spawn_project_summary(deps.clone(), project.id);
         }
         verdict @ (nemesis_board::ReviewVerdict::Fail | nemesis_board::ReviewVerdict::Unsure) => {
             // completed → in_progress 回滚（合法转移）；in_progress 保持；
@@ -1977,7 +2008,10 @@ fn apply_project_review_outcome(
                     deps.cluster.node_id(),
                     "project_escalate_human",
                     verdict.as_str(),
-                    serde_json::json!({ "project_id": project.id }),
+                    serde_json::json!({
+                        "project_id": project.id,
+                        "reasons": render_reasons(&output.reasons),
+                    }),
                 );
             }
         }
@@ -2097,6 +2131,10 @@ pub(crate) fn spawn_estop_resume_watcher(deps: BoardReviewDeps) {
                     ParkedKind::Project => spawn_project_review(deps.clone(), issue_id),
                 }
             }
+            // P4/E4（看板项目档案 goal）：急停挂起的合并补跑——PLACED 注册表
+            // 里尚存的条目（estop 触发时合并被拒、条目保留）逐个重试；在途
+            // 派发自然按 Waiting* 跳过。
+            crate::board_archive_ingest::retry_placed_merges(&deps);
         }
     });
 }
@@ -2117,6 +2155,274 @@ fn post_review_comment(
             ctype: CommentType::Comment,
         })
         .map(|_| ())
+}
+
+// ---------------------------------------------------------------------------
+// 看板项目档案 P6（F9）：收口总结生成
+//
+// 项目 completed 后异步生成档案总结 `<archive>/docs/summary.md`（「AI 生成件」
+// 标注 + 生成时间 + 模型名）。复用评审通道（detached 纯文本单轮）+ tier 闸
+// （拒 mini，同冲突硬解——小模型写长文不可靠）。**生成失败诚实留痕，不阻塞
+// 收口状态机**（completed 在调用前已落定，本函数只做锦上添花）。
+// ---------------------------------------------------------------------------
+
+/// 收口总结系统提示词（自由 Markdown，不走评审 verdict JSON——与评审
+/// 通道共用的是 LLM 调用通道本身，不是输出格式）。
+const PROJECT_SUMMARY_SYSTEM_PROMPT: &str = "\
+你是 NemesisBot 看板的项目档案管理员。项目刚刚收口（completed），请依据下方事实清单写一份收口回顾总结，Markdown 输出。
+
+硬性要求：
+1. 恰好三个小节：「## 各任务做法」「## 决策流摘要」「## 最终结构」。
+2. 严格依据事实清单，不虚构清单之外的文件/决策/结论；总长不超过 600 字。
+3. 只输出 Markdown 正文，不要代码围栏，不要任何额外说明。";
+
+/// F9 触发入口：项目收口（自动 PASS / 人工 project.update → completed）
+/// 两条路径都汇到这里。异步不阻塞调用方；内部自守门（estop/tier/档案
+/// 目录缺失全部诚实跳过）。
+pub(crate) fn spawn_project_summary(deps: BoardReviewDeps, project_id: i64) {
+    tokio::spawn(async move {
+        if let Err(e) = run_project_summary(&deps, project_id).await {
+            warn!("[BoardReview] 项目 {project_id} 收口总结生成失败（不阻塞收口）: {e}");
+            summarize_fail_note(&deps, project_id, &e);
+        }
+    });
+}
+
+/// 失败留痕：顶层父单评论 + 档案 timeline（能写哪个写哪个，都失败只 log）。
+fn summarize_fail_note(deps: &BoardReviewDeps, project_id: i64, err: &str) {
+    let comment =
+        format!("📝 AI 收口总结生成失败（不阻塞收口，可人工补写档案 docs/summary.md）：{err}");
+    if let Ok(project) = deps.store.get_project(project_id) {
+        if let Ok(root) = project_archive_root(project.directory.as_deref()) {
+            let _ = nemesis_board::archive::append_timeline(
+                &root,
+                "summary",
+                None,
+                "board",
+                &format!("收口总结生成失败：{err}"),
+            );
+        }
+        if let Ok(issues) = deps.store.list_issues(&nemesis_board::models::IssueFilter {
+            project_id: Some(project_id),
+            ..Default::default()
+        }) {
+            for p in issues.iter().filter(|i| i.parent_issue_id.is_none()) {
+                let _ = deps.store.add_comment(NewComment {
+                    issue_id: p.id,
+                    author: Actor::agent(deps.cluster.node_id()),
+                    content: comment.clone(),
+                    parent_id: None,
+                    ctype: CommentType::System,
+                });
+            }
+        }
+    }
+}
+
+/// 档案目录解析：Project.directory（绝对路径）存在才可用；缺失 = 存量
+/// 项目/目录被手删——诚实跳过（None 语义）。
+fn project_archive_root(directory: Option<&str>) -> Result<std::path::PathBuf, String> {
+    let raw = directory.ok_or("项目未绑定档案目录（存量项目不参与档案管线）")?;
+    let root = std::path::PathBuf::from(raw);
+    if !root.is_dir() {
+        return Err(format!("档案目录不存在: {}", root.display()));
+    }
+    Ok(root)
+}
+
+/// F9 主体。前置检查全部通过才调 LLM；任何失败向上返回（由调用方留痕）。
+async fn run_project_summary(deps: &BoardReviewDeps, project_id: i64) -> Result<(), String> {
+    // 急停中不跑 LLM（ cosmetic 件不值得占保险丝语义，跳过即可）。
+    if deps.estop.is_engaged() {
+        return Err("急停（E-STOP）生效中，收口总结跳过".to_string());
+    }
+    let project = deps.store.get_project(project_id)?;
+    if project.status != "completed" {
+        // 触发与落定之间的竞态（人工又改回）：诚实跳过。
+        return Err(format!(
+            "项目状态已非 completed（{}），收口总结跳过",
+            project.status
+        ));
+    }
+    let root = project_archive_root(project.directory.as_deref())?;
+    let agent_loop = deps
+        .moderator_loop
+        .get()
+        .cloned()
+        .ok_or("主 agent 未就绪，收口总结跳过")?;
+    // tier 闸拒 mini（同冲突硬解；提示切模型后……无自动重试入口——下次
+    // 收口的项目会再试，本单诚实留痕）。
+    if matches!(
+        agent_loop.tier(),
+        nemesis_types::capability::ModelTier::Mini
+    ) {
+        return Err("当前模型能力档为 mini，收口总结需要 normal/big 档模型".to_string());
+    }
+
+    let issues = deps
+        .store
+        .list_issues(&nemesis_board::models::IssueFilter {
+            project_id: Some(project_id),
+            ..Default::default()
+        })?;
+    if issues.is_empty() {
+        return Err("项目无任务，无可总结内容".to_string());
+    }
+    let decisions = deps
+        .store
+        .list_recent_activity(500, Some("auto_decide"))
+        .unwrap_or_default();
+    let facts = build_summary_facts(&deps.store, &project, &issues, &decisions);
+
+    let prompt = format!(
+        "# 项目「{name}」收口事实清单\n\n{facts}",
+        name = project.name
+    );
+    let raw = agent_loop
+        .run_detached(
+            &prompt,
+            nemesis_agent::r#loop::DetachedOpts {
+                system_prompt: Some(PROJECT_SUMMARY_SYSTEM_PROMPT),
+                no_tools: true,
+                max_turns: 1,
+                label: Some("project-summary"),
+                ..Default::default()
+            },
+        )
+        .await
+        .map_err(|e| format!("LLM 调用失败：{e}"))?;
+    let text = raw.trim();
+    if text.is_empty() {
+        return Err("LLM 返回空内容".to_string());
+    }
+
+    let model = agent_loop.active_model();
+    let header = format!(
+        "> 本文件为 **AI 生成件**（NemesisBot 看板收口总结）。\n\
+         > 生成时间：{} ｜ 模型：{model} ｜ 内容由 AI 归纳，请以 records/ 执行档案为准。\n",
+        chrono::Local::now().to_rfc3339(),
+    );
+    let appendix = format!(
+        "\n\n---\n\n## 附录：档案结构\n\n{}",
+        render_archive_tree(&root, 2)
+    );
+    let doc = format!("{header}\n{text}{appendix}\n");
+    let target = root.join("docs").join("summary.md");
+    std::fs::create_dir_all(root.join("docs")).map_err(|e| format!("创建 docs/ 失败: {e}"))?;
+    std::fs::write(&target, doc).map_err(|e| format!("写 summary.md 失败: {e}"))?;
+    let _ = nemesis_board::archive::append_timeline(
+        &root,
+        "summary",
+        None,
+        "board",
+        &format!("收口总结生成（模型 {model}）"),
+    );
+    info!(
+        "[BoardReview] 项目 {}「{}」收口总结已生成 → {}",
+        project_id,
+        project.name,
+        target.display()
+    );
+    Ok(())
+}
+
+/// F9 事实清单（纯函数，单测直测）：项目行 + 逐单状态/末评摘录 + 决策流
+/// 压缩行。LLM 只看这份清单——不读盘、不猜。
+fn build_summary_facts(
+    store: &nemesis_board::BoardStore,
+    project: &nemesis_board::models::Project,
+    issues: &[nemesis_board::models::Issue],
+    decisions: &[nemesis_board::models::AuditDecisionRow],
+) -> String {
+    let ids: std::collections::HashSet<i64> = issues.iter().map(|i| i.id).collect();
+    let mut out = String::new();
+    out.push_str(&format!(
+        "- 项目：{}（状态 {}）{}\n",
+        project.name,
+        project.status,
+        if project.description.is_empty() {
+            String::new()
+        } else {
+            format!("：{}", project.description)
+        }
+    ));
+    out.push_str("\n## 任务清单\n");
+    for i in issues {
+        let depth = if i.parent_issue_id.is_some() {
+            "  - "
+        } else {
+            "- "
+        };
+        out.push_str(&format!(
+            "{depth}{} {}（状态 {}）\n",
+            i.number,
+            i.title,
+            i.status.as_str()
+        ));
+        // 末条评论摘录（交付/评审结论落点；取 300 字防清单爆炸）。
+        if let Ok(comments) = store.list_comments(i.id)
+            && let Some(last) = comments.last()
+        {
+            let excerpt: String = last.content.chars().take(300).collect();
+            out.push_str(&format!(
+                "    末评[{}/{}]: {excerpt}\n",
+                last.author.kind, last.author.id
+            ));
+        }
+    }
+    out.push_str("\n## 决策流（自动化决策）\n");
+    let mut n = 0usize;
+    for d in decisions {
+        if !ids.contains(&d.activity.issue_id) {
+            continue;
+        }
+        let kind =
+            serde_json::from_str::<serde_json::Value>(d.activity.details.as_deref().unwrap_or(""))
+                .ok()
+                .and_then(|v| {
+                    v.get("decision")
+                        .and_then(|x| x.as_str())
+                        .map(str::to_string)
+                })
+                .unwrap_or_else(|| "auto_decide".to_string());
+        out.push_str(&format!("- {} {}：{kind}\n", d.issue_number, d.issue_title));
+        n += 1;
+    }
+    if n == 0 {
+        out.push_str("（无自动化决策记录）\n");
+    }
+    out
+}
+
+/// 档案结构树（确定性附录；depth 层目录 + 文件行，超深目录以 … 截断）。
+fn render_archive_tree(root: &std::path::Path, depth: usize) -> String {
+    let mut out = String::new();
+    fn walk(dir: &std::path::Path, prefix: &str, depth: usize, out: &mut String) {
+        let Ok(entries) = std::fs::read_dir(dir) else {
+            return;
+        };
+        let mut entries: Vec<_> = entries.filter_map(|e| e.ok()).collect();
+        entries.sort_by_key(|e| e.file_name());
+        for e in entries {
+            let name = e.file_name();
+            let name = name.to_string_lossy();
+            if name.starts_with('.') {
+                continue;
+            }
+            let is_dir = e.file_type().map(|t| t.is_dir()).unwrap_or(false);
+            out.push_str(&format!(
+                "{prefix}{}{}\n",
+                name,
+                if is_dir { "/" } else { "" }
+            ));
+            if is_dir && depth > 1 {
+                walk(&e.path(), &format!("{prefix}  "), depth - 1, out);
+            }
+        }
+    }
+    out.push_str("archive/\n");
+    walk(root, "  ", depth, &mut out);
+    out
 }
 
 #[cfg(test)]

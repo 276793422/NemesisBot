@@ -287,10 +287,25 @@ pub struct BoardFlagConfig {
     /// 大小写不敏感）。Some 且该节点不在线 = 诚实停车**不悄悄换人**（钉住
     /// 即点名）；None = 在线节点里松弛排序自动选。
     pub dispatch_fallback_target: Option<String>,
+    /// 派发准入控制（goal P2/D0；默认 1）：自动派发链里，目标 worker 的
+    /// 在途派发数达到该上限 → 本单不派、留 backlog——新节点上线后由 sweep
+    /// 自然承接（防「同波多就绪单全挤单 worker、后上线的设备接不到活」）。
+    /// 0 = 不限（旧行为）。人工 `issue.dispatch` 显式派发不受此闸（人类明确
+    /// 意图，后果自担）。
+    #[serde(default = "default_worker_max_inflight")]
+    pub worker_max_inflight: i64,
     /// 验收 agent 行为配置（全自动流转 P4；`board.review` 段）。
     pub review: BoardReviewConfig,
     /// 自动流转预算保险丝（全自动流转 P4；`board.budget` 段；0 = 该项关闭）。
     pub budget: BoardBudgetConfig,
+    /// 项目档案传输护栏（看板项目档案 goal P3/D4；`board.archive` 段）。
+    pub archive: BoardArchiveConfig,
+    /// 合并冲突自动处置（看板项目档案 goal P5/F1；默认 false = human 档：
+    /// 项目域冻结等人工解，`project.resume` 续行）。true = auto 档：AI 硬解
+    /// →机械失败重派原 worker→离线三轮接触→换人——项目不停摆为第一原则，
+    /// 重派循环套既有预算保险丝打满转人工。开关只控制冲突处置策略，不改
+    /// 变影响域（冻结始终限本项目，不株连其他项目）。
+    pub conflict_auto_resolve: bool,
 }
 
 impl Default for BoardFlagConfig {
@@ -309,8 +324,11 @@ impl Default for BoardFlagConfig {
             unlimited_mode: false,
             dispatch_fallback: false,
             dispatch_fallback_target: None,
+            worker_max_inflight: 1,
             review: BoardReviewConfig::default(),
             budget: BoardBudgetConfig::default(),
+            archive: BoardArchiveConfig::default(),
+            conflict_auto_resolve: false,
         }
     }
 }
@@ -371,6 +389,25 @@ impl Default for BoardBudgetConfig {
             max_total_redispatch: 0,
             wall_clock_budget_secs: 0,
             max_tokens_per_parent: 0,
+        }
+    }
+}
+
+/// 项目档案传输护栏（`board.archive` 段；看板项目档案 goal P3/D4）。
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(default)]
+pub struct BoardArchiveConfig {
+    /// 单次档案传输最大字节数（worker 与 master 双侧同源护栏）。超限诚实
+    /// 失败：worker 侧标记 over_limit 停推 + 通知 master 出决策流/收件箱卡，
+    /// 评审转人工；**绝不截断、绝不只回索引**。0 = 不限（不建议）。
+    /// 默认 2 GiB。
+    pub max_transfer_bytes: u64,
+}
+
+impl Default for BoardArchiveConfig {
+    fn default() -> Self {
+        Self {
+            max_transfer_bytes: 2 * 1024 * 1024 * 1024, // 2 GiB
         }
     }
 }
@@ -581,6 +618,11 @@ pub struct FsWatcherConfig {
     /// component (workspace-relative); `*.ext` matches by extension.
     #[serde(default)]
     pub ignore: Vec<String>,
+}
+
+/// goal P2/D0：派发准入默认上限（单 worker 在途 1 单；0=不限）。
+fn default_worker_max_inflight() -> i64 {
+    1
 }
 
 fn default_fs_watcher_enabled() -> bool {

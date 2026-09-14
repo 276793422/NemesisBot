@@ -87,6 +87,7 @@ fn test_issue_serde_roundtrip() {
         }),
         required_role: Some("worker".into()),
         required_tags: vec!["rust".into()],
+        hidden: false,
         created_at: 1_756_000_000,
         updated_at: 1_756_500_000,
     };

@@ -119,18 +119,33 @@ struct GatewayProcess {
 
 impl GatewayProcess {
     fn spawn(name: &'static str, bin: &Path, cwd: &Path) -> Result<Self> {
+        Self::spawn_with_env(name, bin, cwd, &[])
+    }
+
+    /// Spawn with extra process env vars（T-XFER 用 `NEMESISBOT_TRANSFER_CHUNK_BYTES`
+    /// 压小块大小制造多块传输/续传窗口；空切片 = 与 spawn 完全同语义）。
+    fn spawn_with_env(
+        name: &'static str,
+        bin: &Path,
+        cwd: &Path,
+        envs: &[(&str, &str)],
+    ) -> Result<Self> {
         println!("  Starting {}...", name);
         // Redirect stderr to a log file for debugging.
         let log_path = cwd.join("gateway.log");
         let log_file = std::fs::File::create(&log_path)
             .with_context(|| format!("Cannot create log file for {}", name))?;
-        let child = tokio::process::Command::new(bin)
-            .args(["--local", "gateway", "--debug"])
+        let mut cmd = tokio::process::Command::new(bin);
+        cmd.args(["--local", "gateway", "--debug"])
             .env("RUST_LOG", "debug")
             .current_dir(cwd)
             .stdout(Stdio::from(log_file.try_clone()?))
             .stderr(Stdio::from(log_file))
-            .kill_on_drop(true)
+            .kill_on_drop(true);
+        for (k, v) in envs {
+            cmd.env(k, v);
+        }
+        let child = cmd
             .spawn()
             .with_context(|| format!("Failed to spawn {}", name))?;
         println!(
@@ -234,17 +249,22 @@ fn configure_ports(home: &Path, web_port: u16, health_port: u16) -> Result<()> {
         {
             gw.insert("port".to_string(), json!(health_port));
         }
-        // Enable DEBUG level logging for detailed traces
-        obj.insert(
-            "logging".to_string(),
-            json!({
-                "general": {
+        // Enable DEBUG level logging for detailed traces.
+        // 2026-09-14 根修（T-XFER-1~6 全败）：此前整段替换 `logging`，把
+        // config 模板里的 `logging.llm` 静默抹掉——cluster 请求日志（执行
+        // 档案数据源）随之关闭，档案回传全链死。改为**合并**：只覆盖
+        // general 段，llm 段原样保留。
+        let logging = obj.entry("logging".to_string()).or_insert(json!({}));
+        if let Some(l) = logging.as_object_mut() {
+            l.insert(
+                "general".to_string(),
+                json!({
                     "level": "DEBUG",
                     "enable_console": true,
                     "file": ""
-                }
-            }),
-        );
+                }),
+            );
+        }
     }
 
     std::fs::write(&config_path, serde_json::to_string_pretty(&config)?)?;
@@ -281,7 +301,18 @@ async fn start_gateway_and_wait(
     ws_path: &Path,
     node: &NodeConfig,
 ) -> Result<GatewayProcess, String> {
-    let gw = GatewayProcess::spawn(name, bin, ws_path)
+    start_gateway_and_wait_with_env(name, bin, ws_path, node, &[]).await
+}
+
+/// 同 [`start_gateway_and_wait`]，额外注入进程环境变量（T-XFER 块大小实验）。
+async fn start_gateway_and_wait_with_env(
+    name: &'static str,
+    bin: &Path,
+    ws_path: &Path,
+    node: &NodeConfig,
+    envs: &[(&str, &str)],
+) -> Result<GatewayProcess, String> {
+    let gw = GatewayProcess::spawn_with_env(name, bin, ws_path, envs)
         .map_err(|e| format!("Cannot start {}: {}", name, e))?;
 
     // Wait for HTTP health check (gateway web server up)
@@ -568,6 +599,25 @@ async fn node_online(stream: &mut WsStream, target: &str) -> Result<bool> {
         .ok_or_else(|| anyhow::anyhow!("node {} not in nodes.list", target))
 }
 
+/// Query `cluster.nodes.list` and return one node's runtime `id`
+/// （`node-<host>-<uuid>` 形态）。D0 单一真相源统一（2026-09-13）后，派发
+/// 账本 `worker_id` 与写回评论 author 都存运行时节点 id（dispatch target
+/// 经 `canonical_peer_id` 归一化）——断言 worker 评论作者身份前，先用本
+/// 辅助把人读名（"Node-B"）解析成运行时 id。
+async fn node_runtime_id(stream: &mut WsStream, target: &str) -> Result<String> {
+    let nodes = ws_api_request(stream, "cluster", "nodes.list", json!({}), 10).await?;
+    nodes
+        .pointer("/nodes")
+        .and_then(|v| v.as_array())
+        .and_then(|arr| {
+            arr.iter()
+                .find(|n| n.get("name").and_then(|i| i.as_str()) == Some(target))
+                .and_then(|n| n.get("id").and_then(|i| i.as_str()))
+                .map(|s| s.to_string())
+        })
+        .ok_or_else(|| anyhow::anyhow!("node {} not in nodes.list", target))
+}
+
 /// Send a WS API request (`type=request`) and wait for the matching response
 /// (correlated by `reqId`; non-matching frames — chat.receive, pushes — are
 /// skipped). Returns the response `data` payload. A non-null `error` field is
@@ -790,6 +840,513 @@ async fn swarm_plan_and_confirm(
         return Err(format!("confirm 应创建 3 个子任务: {confirmed}"));
     }
     Ok((parent_id, children, confirmed))
+}
+
+// ---------------------------------------------------------------------------
+// Board archive transfer (T-XFER，P3 执行档案回传) helpers
+// ---------------------------------------------------------------------------
+
+/// T-XFER 共用发车流：建项目（可选）→ 建单 → 派发 Node-B → 直读 board.db
+/// 取 task_id。返回 (issue_id, issue_number, project_dir（无项目=空串）, task_id)。
+#[allow(clippy::too_many_arguments)]
+async fn xfer_dispatch_to_b(
+    ws: &mut WsStream,
+    ws_a: &TestWorkspace,
+    project_name: Option<&str>,
+    title: &str,
+    description: &str,
+) -> Result<(i64, String, String, String)> {
+    let mut project_id: Option<i64> = None;
+    let mut project_dir = String::new();
+    if let Some(pname) = project_name {
+        let created = ws_api_request(
+            ws,
+            "board",
+            "project.create",
+            json!({ "name": pname, "auto_start": false }),
+            15,
+        )
+        .await?;
+        project_id = created.pointer("/project/id").and_then(|v| v.as_i64());
+        project_dir = created
+            .pointer("/directory")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .to_string();
+        if project_id.unwrap_or(0) == 0 || project_dir.is_empty() {
+            anyhow::bail!("project.create 无 id/directory: {created}");
+        }
+    }
+    let mut issue_data = json!({ "title": title, "description": description });
+    if let Some(pid) = project_id {
+        issue_data["project_id"] = json!(pid);
+    }
+    let created = ws_api_request(ws, "board", "issue.create", issue_data, 15).await?;
+    let issue_id = created
+        .pointer("/issue/id")
+        .and_then(|v| v.as_i64())
+        .unwrap_or(0);
+    let issue_number = created
+        .pointer("/issue/number")
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .to_string();
+    if issue_id == 0 || issue_number.is_empty() {
+        anyhow::bail!("issue.create 无 id/number: {created}");
+    }
+    ws_api_request(
+        ws,
+        "board",
+        "issue.dispatch",
+        json!({ "id": issue_id, "target": "Node-B" }),
+        30,
+    )
+    .await?;
+    // task_id 从派发账本取（board.db 权威证据；派发记录随 WSAPI 同步落库，
+    // 少量重试只兜并发写延迟）。
+    let db = ws_a.home().join("workspace").join("board").join("board.db");
+    let store = nemesis_board::BoardStore::open(&db, "NB")
+        .map_err(|e| anyhow::anyhow!("open board.db: {e}"))?;
+    let mut task_id = String::new();
+    for _ in 0..40 {
+        if let Ok(ds) = store.list_dispatches(issue_id)
+            && let Some(d) = ds.last()
+        {
+            task_id = d.task_id.clone();
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(500)).await;
+    }
+    if task_id.is_empty() {
+        anyhow::bail!("派发记录 20s 未落库 issue={issue_id}");
+    }
+    Ok((issue_id, issue_number, project_dir, task_id))
+}
+
+/// B 侧发件箱条目在场（entry.json 存在 = 载荷复制完整、待推/推中/暂停留）。
+fn b_outbox_entry(ws_b: &TestWorkspace, task_id: &str) -> Option<std::path::PathBuf> {
+    let dir = ws_b
+        .home()
+        .join("workspace")
+        .join("cluster")
+        .join("outbox")
+        .join(task_id);
+    dir.join("entry.json").exists().then_some(dir)
+}
+
+/// 发件箱 entry.json 的 state 字段（读不到 = 空串）。
+fn b_outbox_state(ws_b: &TestWorkspace, task_id: &str) -> String {
+    b_outbox_entry(ws_b, task_id)
+        .and_then(|dir| std::fs::read_to_string(dir.join("entry.json")).ok())
+        .and_then(|raw| serde_json::from_str::<Value>(&raw).ok())
+        .and_then(|v| v.get("state").and_then(|s| s.as_str()).map(str::to_string))
+        .unwrap_or_default()
+}
+
+/// A 侧收件箱条目在场（landed.json 存在 = 完整落地未安置）。
+fn a_inbox_entry(ws_a: &TestWorkspace, task_id: &str) -> Option<std::path::PathBuf> {
+    let dir = ws_a
+        .home()
+        .join("workspace")
+        .join("cluster")
+        .join("inbox")
+        .join(task_id);
+    dir.join("landed.json").exists().then_some(dir)
+}
+
+/// A 侧 .staging 下属于该 task 的传输暂存目录（transfer_id 以 task_id 开头）。
+fn a_staging_dirs(ws_a: &TestWorkspace, task_id: &str) -> Vec<std::path::PathBuf> {
+    let root = ws_a
+        .home()
+        .join("workspace")
+        .join("cluster")
+        .join("inbox")
+        .join(".staging");
+    std::fs::read_dir(&root)
+        .map(|rd| {
+            rd.flatten()
+                .map(|e| e.path())
+                .filter(|p| {
+                    p.is_dir()
+                        && p.file_name()
+                            .map(|n| n.to_string_lossy().starts_with(task_id))
+                            .unwrap_or(false)
+                })
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+/// B 侧 cluster_logs 任务执行记录目录（任意设备段下，目录名以 `_{task_id}` 结尾）。
+fn b_task_records(ws_b: &TestWorkspace, task_id: &str) -> Option<std::path::PathBuf> {
+    let root = ws_b
+        .home()
+        .join("workspace")
+        .join("logs")
+        .join("cluster_logs");
+    let devices = std::fs::read_dir(root).ok()?;
+    for dev in devices.flatten() {
+        if !dev.path().is_dir() {
+            continue;
+        }
+        let Ok(tasks) = std::fs::read_dir(dev.path()) else {
+            continue;
+        };
+        for t in tasks.flatten() {
+            let name = t.file_name().to_string_lossy().to_string();
+            if t.path().is_dir() && name.ends_with(&format!("_{task_id}")) {
+                return Some(t.path());
+            }
+        }
+    }
+    None
+}
+
+/// 项目档案 execution 落地目录列表（records/<number>/execution/<ts>/）。
+fn execution_dirs(project_dir: &str, issue_number: &str) -> Vec<std::path::PathBuf> {
+    let root = std::path::Path::new(project_dir)
+        .join("records")
+        .join(issue_number)
+        .join("execution");
+    std::fs::read_dir(&root)
+        .map(|rd| rd.flatten().map(|e| e.path()).collect())
+        .unwrap_or_default()
+}
+
+/// 直接改 B 的 config.json `board.archive.max_transfer_bytes`（该键不在
+/// board.config.set WSAPI 白名单——D4 护栏属部署级配置）。
+fn patch_board_archive_limit(home: &Path, value: u64) -> Result<()> {
+    let p = home.join("config.json");
+    let raw = std::fs::read_to_string(&p)?;
+    let mut cfg: Value = serde_json::from_str(&raw)?;
+    let obj = cfg
+        .as_object_mut()
+        .ok_or_else(|| anyhow::anyhow!("config.json 非对象"))?;
+    let board = obj.entry("board").or_insert_with(|| json!({}));
+    board
+        .as_object_mut()
+        .ok_or_else(|| anyhow::anyhow!("board 段非对象"))?
+        .insert(
+            "archive".to_string(),
+            json!({ "max_transfer_bytes": value }),
+        );
+    std::fs::write(&p, serde_json::to_string_pretty(&cfg)?)?;
+    Ok(())
+}
+
+/// 切换 B 的默认模型（testai-board-1.0 ↔ testai-1.2；T5 用 30s 延迟模型
+/// 制造确定性的「执行中」窗口）。只写配置，重启后生效。
+async fn b_switch_model(ws_b: &TestWorkspace, gateway_bin: &Path, model: &str) -> Result<()> {
+    let out = ws_b
+        .run_cli(
+            gateway_bin,
+            &[
+                "model",
+                "add",
+                "--model",
+                model,
+                "--base",
+                &format!("http://127.0.0.1:{}/v1", ai_server_port()),
+                "--key",
+                "test-key",
+                "--default",
+            ],
+        )
+        .await;
+    if !out.success() {
+        anyhow::bail!("model add {model} failed: {}", out.stderr);
+    }
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// P5 冲突漏斗 UAT 辅助（T-MRG-2~7 共用）
+// ---------------------------------------------------------------------------
+
+/// 读项目冻结态与待补合并队列长度（project.list 单一投影；Project serde
+/// 直出 conflict_frozen / pending_merges）。返回 (frozen, pending 数)。
+async fn project_freeze_state(ws: &mut WsStream, project_id: i64) -> anyhow::Result<(bool, usize)> {
+    let got = ws_api_request(ws, "board", "project.list", json!({}), 10).await?;
+    let projects = got
+        .get("projects")
+        .and_then(|v| v.as_array())
+        .ok_or_else(|| anyhow::anyhow!("project.list 无 projects: {got}"))?;
+    let p = projects
+        .iter()
+        .find(|p| p.get("id").and_then(|v| v.as_i64()) == Some(project_id))
+        .ok_or_else(|| anyhow::anyhow!("project.list 缺项目 {project_id}"))?;
+    Ok((
+        p.get("conflict_frozen")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false),
+        p.get("pending_merges")
+            .and_then(|v| v.as_array())
+            .map(|a| a.len())
+            .unwrap_or(0),
+    ))
+}
+
+/// 轮询决策流直到 issue 出现指定 decision（details 精确匹配
+/// `"decision":"<kind>"`——`conflict` 与 `conflict_auto_resolve` 等前缀族
+/// 靠闭合引号区分），返回 details 原文供 further 断言（mode/new_target…）。
+async fn wait_audit_decision(
+    ws: &mut WsStream,
+    issue_id: i64,
+    kind: &str,
+    timeout_secs: u64,
+) -> anyhow::Result<String> {
+    let needle = format!("\"decision\":\"{kind}\"");
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(timeout_secs);
+    loop {
+        if tokio::time::Instant::now() >= deadline {
+            anyhow::bail!("audit.list 等待 issue {issue_id} 的 {kind} 决策超时（{timeout_secs}s）");
+        }
+        tokio::time::sleep(Duration::from_secs(2)).await;
+        let got = ws_api_request(
+            ws,
+            "board",
+            "audit.list",
+            json!({ "limit": 300, "action": "auto_decide" }),
+            10,
+        )
+        .await?;
+        let hit = got
+            .get("decisions")
+            .and_then(|v| v.as_array())
+            .and_then(|rows| {
+                rows.iter()
+                    .find(|r| {
+                        r.get("issue_id").and_then(|v| v.as_i64()) == Some(issue_id)
+                            && r.get("details")
+                                .and_then(|v| v.as_str())
+                                .is_some_and(|s| s.contains(&needle))
+                    })
+                    .and_then(|r| {
+                        r.get("details")
+                            .and_then(|v| v.as_str())
+                            .map(str::to_string)
+                    })
+            });
+        if let Some(details) = hit {
+            return Ok(details);
+        }
+    }
+}
+
+/// 冲突测试建单：项目单 + 编辑桩标记直插 description。返回 (id, number)。
+async fn create_conflict_issue(
+    ws: &mut WsStream,
+    project_id: i64,
+    title: &str,
+    markers: &str,
+    acceptance_criteria: &str,
+) -> anyhow::Result<(i64, String)> {
+    let r = ws_api_request(
+        ws,
+        "board",
+        "issue.create",
+        json!({
+            "title": title,
+            "project_id": project_id,
+            "description": format!("在工作副本内完成指定编辑：{markers}"),
+            "acceptance_criteria": acceptance_criteria,
+        }),
+        15,
+    )
+    .await?;
+    let id = r.pointer("/issue/id").and_then(|v| v.as_i64()).unwrap_or(0);
+    let number = r
+        .pointer("/issue/number")
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .to_string();
+    if id == 0 {
+        anyhow::bail!("issue.create 无 id: {r}");
+    }
+    Ok((id, number))
+}
+
+/// 等待两单分流成「胜者/败者」：恰好一单进入 {in_review, done}（先合并方）
+/// 且另一单仍 in_progress（冲突被闸）。返回 (winner_id, loser_id)。
+async fn wait_conflict_split(
+    ws: &mut WsStream,
+    id_a: i64,
+    id_b: i64,
+    timeout_secs: u64,
+) -> anyhow::Result<(i64, i64)> {
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(timeout_secs);
+    loop {
+        if tokio::time::Instant::now() >= deadline {
+            anyhow::bail!(
+                "等待冲突分流超时：{id_a}='{}' {id_b}='{}'",
+                issue_status_of(ws, id_a).await.unwrap_or_default(),
+                issue_status_of(ws, id_b).await.unwrap_or_default(),
+            );
+        }
+        tokio::time::sleep(Duration::from_secs(1)).await;
+        let sa = issue_status_of(ws, id_a).await.unwrap_or_default();
+        let sb = issue_status_of(ws, id_b).await.unwrap_or_default();
+        let advanced = |s: &str| matches!(s, "in_review" | "done");
+        if (advanced(&sa) && sb == "in_progress") || (advanced(&sb) && sa == "in_progress") {
+            let winner = if advanced(&sa) { id_a } else { id_b };
+            let loser = if advanced(&sa) { id_b } else { id_a };
+            return Ok((winner, loser));
+        }
+    }
+}
+
+/// 等待单据到达 done（轮询；异常终态立即 bail）。超时附诊断现场：单据
+/// 评论（评审结论/转人工注释落点）+ 决策流该单行——失败免二次翻日志。
+async fn wait_issue_done(
+    ws: &mut WsStream,
+    id: i64,
+    number: &str,
+    timeout_secs: u64,
+) -> anyhow::Result<()> {
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(timeout_secs);
+    loop {
+        if tokio::time::Instant::now() >= deadline {
+            let status = issue_status_of(ws, id).await.unwrap_or_default();
+            let comments =
+                ws_api_request(ws, "board", "comment.list", json!({ "issue_id": id }), 10)
+                    .await
+                    .ok()
+                    .and_then(|r| r.get("comments").and_then(|v| v.as_array()).cloned())
+                    .map(|arr| {
+                        arr.iter()
+                            .filter_map(|c| serde_json::to_string(c).ok())
+                            .map(|s| format!("      {}", s.chars().take(260).collect::<String>()))
+                            .collect::<Vec<_>>()
+                            .join("\n")
+                    })
+                    .unwrap_or_else(|| "      （comment.list 拉取失败）".to_string());
+            let audit = ws_api_request(
+                ws,
+                "board",
+                "audit.list",
+                json!({ "limit": 300, "action": "auto_decide" }),
+                10,
+            )
+            .await
+            .ok()
+            .and_then(|r| r.get("decisions").and_then(|v| v.as_array()).cloned())
+            .map(|rows| {
+                rows.iter()
+                    .filter(|r| r.get("issue_id").and_then(|v| v.as_i64()) == Some(id))
+                    .filter_map(|r| {
+                        r.get("details")
+                            .and_then(|v| v.as_str())
+                            .map(|d| format!("      {}", d.chars().take(260).collect::<String>()))
+                    })
+                    .collect::<Vec<_>>()
+                    .join("\n")
+            })
+            .unwrap_or_else(|| "      （audit.list 拉取失败）".to_string());
+            anyhow::bail!(
+                "{timeout_secs}s 内单据 {number} 未 done（现状='{status}'）\n    --- 评论现场 ---\n{comments}\n    --- 决策流现场 ---\n{audit}"
+            );
+        }
+        tokio::time::sleep(Duration::from_secs(3)).await;
+        match issue_status_of(ws, id).await.unwrap_or_default().as_str() {
+            "done" => return Ok(()),
+            "cancelled" => anyhow::bail!("单据 {number} 被取消"),
+            _ => {}
+        }
+    }
+}
+
+/// 轮询等待项目档案 execution 落地（返回首个含 manifest.json 的 ts 目录；
+/// 失败消息自带两侧传输状态现场，免二次翻日志）。
+async fn wait_execution_landed(
+    project_dir: &str,
+    issue_number: &str,
+    task_id: &str,
+    ws_a: &TestWorkspace,
+    ws_b: &TestWorkspace,
+    timeout: Duration,
+) -> Result<std::path::PathBuf, String> {
+    let deadline = tokio::time::Instant::now() + timeout;
+    loop {
+        if tokio::time::Instant::now() >= deadline {
+            return Err(format!(
+                "{}s 内档案未落地 task={task_id}（B 发件箱 state='{}'，A 收件箱在场={}）",
+                timeout.as_secs(),
+                b_outbox_state(ws_b, task_id),
+                a_inbox_entry(ws_a, task_id).is_some(),
+            ));
+        }
+        tokio::time::sleep(Duration::from_secs(2)).await;
+        if let Some(exec) = execution_dirs(project_dir, issue_number)
+            .into_iter()
+            .find(|d| d.join("manifest.json").exists())
+        {
+            return Ok(exec);
+        }
+    }
+}
+
+/// D6 落地凭据核验：manifest 字段自洽（chunk_count == ⌈total/chunk⌉）+
+/// files/ 逐文件字节量与 sha256 一致。返回 (total, chunk_size, chunk_count, 文件数)。
+fn verify_landed_manifest(exec_dir: &Path) -> Result<(u64, u64, u64, usize), String> {
+    let raw = std::fs::read_to_string(exec_dir.join("manifest.json"))
+        .map_err(|e| format!("manifest.json 不可读: {e}"))?;
+    let mv: Value =
+        serde_json::from_str(&raw).map_err(|e| format!("manifest.json 非法 JSON: {e}"))?;
+    let total = mv.get("total_bytes").and_then(|v| v.as_u64()).unwrap_or(0);
+    let chunk_size = mv.get("chunk_size").and_then(|v| v.as_u64()).unwrap_or(0);
+    let chunk_count = mv.get("chunk_count").and_then(|v| v.as_u64()).unwrap_or(0);
+    if chunk_size == 0 || chunk_count == 0 {
+        return Err(format!(
+            "manifest 分块字段非法（size={chunk_size} count={chunk_count}）"
+        ));
+    }
+    let files = mv
+        .get("files")
+        .and_then(|v| v.as_array())
+        .cloned()
+        .unwrap_or_default();
+    if files.is_empty() {
+        return Err("manifest 无文件清单".to_string());
+    }
+    // 分块按文件独立切（块不跨文件）：chunk_count == Σ ⌈size_i / chunk⌉。
+    let expected: u64 = files
+        .iter()
+        .map(|f| {
+            f.get("size")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(0)
+                .div_ceil(chunk_size)
+        })
+        .sum();
+    if chunk_count != expected {
+        return Err(format!(
+            "chunk_count={chunk_count} 与 Σ⌈file/chunk⌉ 推导 {expected} 不符"
+        ));
+    }
+    for f in &files {
+        let rel = f.get("path").and_then(|v| v.as_str()).unwrap_or_default();
+        let size = f.get("size").and_then(|v| v.as_u64()).unwrap_or(0);
+        let sha = f.get("sha256").and_then(|v| v.as_str()).unwrap_or_default();
+        // 安置布局是**平面**的（ingest_landed 契约：execution/<ts>/ 下直接
+        // 是执行记录文件 + manifest.json + landed.json，无 files/ 夹层——
+        // 夹层只存在于落地收件箱 inbox/<task>/files/）。
+        let data = std::fs::read(exec_dir.join(rel.replace('/', "\\")))
+            .map_err(|e| format!("文件 {rel} 不可读: {e}"))?;
+        if data.len() as u64 != size {
+            return Err(format!(
+                "文件 {rel} 大小不符（盘 {} / 账 {size}）",
+                data.len()
+            ));
+        }
+        use sha2::Digest;
+        let mut h = sha2::Sha256::new();
+        h.update(&data);
+        let got: String = h.finalize().iter().map(|b| format!("{b:02x}")).collect();
+        if got != sha {
+            return Err(format!("文件 {rel} sha256 不符（D6 核验失败）"));
+        }
+    }
+    Ok((total, chunk_size, chunk_count, files.len()))
 }
 
 // ---------------------------------------------------------------------------
@@ -1751,6 +2308,13 @@ async fn main() {
                 Ok(s) => s,
                 Err(e) => return fail("T15", format!("WS connect to A failed: {}", e)),
             };
+            // D0 单一真相源（2026-09-13）：写回评论 author = 运行时节点 id
+            // （dispatch target 经 canonical_peer_id 归一化），先把人读名
+            // 解析成 id 再断言。
+            let b_worker_id = match node_runtime_id(&mut ws, "Node-B").await {
+                Ok(id) => id,
+                Err(e) => return fail("T15", format!("resolve Node-B runtime id failed: {}", e)),
+            };
 
             // 1. Create the issue on the coordinator (letters-only marker —
             //    digit-heavy strings trip the DLP credit_card rule, see T14).
@@ -1900,7 +2464,7 @@ async fn main() {
                     // delivery——内容关联性由 marker 断言兜住）。
                     let ctype = c.get("ctype").and_then(|v| v.as_str()).unwrap_or("");
                     if kind == "agent"
-                        && id == "Node-B"
+                        && id == b_worker_id
                         && (ctype == "delivery" || content.starts_with("✅ worker 汇报完成"))
                         && content.contains(marker)
                     {
@@ -3366,6 +3930,12 @@ async fn main() {
                 Ok(s) => s,
                 Err(e) => return fail("T25", format!("WS connect to A failed: {}", e)),
             };
+            // D0 单一真相源（2026-09-13）：delivery 首评 author = 运行时
+            // 节点 id（同 T15），先把人读名解析成 id 再断言。
+            let b_worker_id = match node_runtime_id(&mut ws, "Node-B").await {
+                Ok(id) => id,
+                Err(e) => return fail("T25", format!("resolve Node-B runtime id failed: {}", e)),
+            };
 
             let marker = "T25DELIVERYREPORT";
             let created = match ws_api_request(
@@ -3442,7 +4012,9 @@ async fn main() {
                 .and_then(|arr| {
                     arr.iter().find(|c| {
                         c.get("ctype").and_then(|t| t.as_str()) == Some("delivery")
-                            && c.pointer("/author/id").and_then(|v| v.as_str()) == Some("Node-B")
+                            && c.pointer("/author/id")
+                                .and_then(|v| v.as_str())
+                                .is_some_and(|id| id == b_worker_id)
                     })
                 })
                 .cloned();
@@ -6613,6 +7185,1445 @@ async fn main() {
                     "T37 全链 OK：worker usage 跨机回传记账 + 审计回滚 happy path + token 预算闸熔断（issue {budget_issue} 派发数恒 1）"
                 ),
             )
+        })
+        .await,
+    );
+
+    // T-XFER-1: 执行档案分块回传正流（P3/D1 分块 + D3 双删 + D6 凭据核验）。
+    all_results.push(
+        run_test("T-XFER-1: 执行档案分块回传正流（4KiB 多块 + D6 逐字节核验 + 双删）", || async {
+            // B 带 4KiB 块大小重启：压小块制造多块传输（默认 1MiB 时档案单块，
+            // 测不出分块/续传语义）。
+            gw_b.kill().await;
+            gw_b = match start_gateway_and_wait_with_env(
+                "Gateway-B",
+                &gateway_bin,
+                ws_b.path(),
+                &NODES[1],
+                &[("NEMESISBOT_TRANSFER_CHUNK_BYTES", "4096")],
+            )
+            .await
+            {
+                Ok(g) => g,
+                Err(e) => return fail("T-XFER-1", format!("B 重启失败: {e}")),
+            };
+            let mut ws = match ws_connect_gateway(NODES[0].web_port).await {
+                Ok(s) => s,
+                Err(e) => return fail("T-XFER-1", format!("WS connect to A failed: {e}")),
+            };
+            let (issue_id, issue_number, project_dir, task_id) = match xfer_dispatch_to_b(
+                &mut ws,
+                &ws_a,
+                Some("T-XFER1 分块回传"),
+                "T-XFER1 执行档案分块回传",
+                "派发后 B 的执行档案（cluster_logs）经分块通道回传 A，落入项目档案 records。",
+            )
+            .await
+            {
+                Ok(v) => v,
+                Err(e) => return fail("T-XFER-1", format!("发车流失败: {e}")),
+            };
+            let _ = issue_id;
+            println!("\n         issue={issue_number} task={task_id}");
+
+            // 轮询 ≤240s：execution 落地（B 推送受 ~3 RPC/s 限速 + 回调排队）。
+            let exec = match wait_execution_landed(
+                &project_dir,
+                &issue_number,
+                &task_id,
+                &ws_a,
+                &ws_b,
+                Duration::from_secs(240),
+            )
+            .await
+            {
+                Ok(d) => d,
+                Err(e) => return fail("T-XFER-1", e),
+            };
+            // D6 凭据核验 + 分块确实发生（chunk_size 4096 且 ≥2 块）。
+            let (total, chunk_size, chunk_count, file_count) = match verify_landed_manifest(&exec) {
+                Ok(v) => v,
+                Err(e) => return fail("T-XFER-1", e),
+            };
+            if chunk_size != 4096 {
+                return fail("T-XFER-1", format!("chunk_size 应为 4096（env 注入），实际 {chunk_size}"));
+            }
+            if chunk_count < 2 {
+                return fail("T-XFER-1", format!("分块未发生：chunk_count={chunk_count} total={total}"));
+            }
+            // 双删：A 收件箱已清（ingest 安置）、B 发件箱已删（收到 end ACK）。
+            if a_inbox_entry(&ws_a, &task_id).is_some() {
+                return fail("T-XFER-1", "A 收件箱未清（ingest 未安置）");
+            }
+            if b_outbox_entry(&ws_b, &task_id).is_some() {
+                return fail(
+                    "T-XFER-1",
+                    format!("B 发件箱未删（state='{}'）", b_outbox_state(&ws_b, &task_id)),
+                );
+            }
+            pass(
+                "T-XFER-1",
+                format!(
+                    "正流 OK：issue {issue_number} task {task_id} 档案 {total}B / {chunk_count} 块（4KiB）落 execution，{file_count} 文件 D6 逐字节核验过，收件箱/发件箱双删"
+                ),
+            )
+        })
+        .await,
+    );
+
+    // T-XFER-2: worker 中途 kill 重启续推（P3/D2 发件箱持久化 + 断点续传）。
+    all_results.push(
+        run_test("T-XFER-2: worker kill 重启续推（D2 发件箱持久化）", || async {
+            // B 仍带 4KiB 块（T-XFER-1 的 env 重启注入）：续传 transfer_id 嵌
+            // 块大小，保持同块大小才能命中 master 侧 staging 续传。
+            let mut ws = match ws_connect_gateway(NODES[0].web_port).await {
+                Ok(s) => s,
+                Err(e) => return fail("T-XFER-2", format!("WS connect to A failed: {e}")),
+            };
+            let (issue_id, issue_number, project_dir, task_id) = match xfer_dispatch_to_b(
+                &mut ws,
+                &ws_a,
+                Some("T-XFER2 worker 续推"),
+                "T-XFER2 worker 中途 kill 重启续推",
+                "入队后强杀 worker，重启靠持久化发件箱续推完成回传。",
+            )
+            .await
+            {
+                Ok(v) => v,
+                Err(e) => return fail("T-XFER-2", format!("发车流失败: {e}")),
+            };
+            // 等 in_review（回调已收 ≈ 档案已入队），立即 kill B——无论撞上
+            // 推送中（pushing→pending 重置）还是已推完（cluster_logs 残留
+            // 回填），重启都必须续上。
+            let deadline = tokio::time::Instant::now() + Duration::from_secs(120);
+            loop {
+                if tokio::time::Instant::now() >= deadline {
+                    let st = issue_status_of(&mut ws, issue_id).await.unwrap_or_default();
+                    return fail("T-XFER-2", format!("120s 内未 in_review（status='{st}'）——回调链断"));
+                }
+                tokio::time::sleep(Duration::from_secs(3)).await;
+                if issue_status_of(&mut ws, issue_id).await.unwrap_or_default() == "in_review" {
+                    break;
+                }
+            }
+            gw_b.kill().await;
+            println!("         killed B mid-flow (outbox state='{}')", b_outbox_state(&ws_b, &task_id));
+            gw_b = match start_gateway_and_wait_with_env(
+                "Gateway-B",
+                &gateway_bin,
+                ws_b.path(),
+                &NODES[1],
+                &[("NEMESISBOT_TRANSFER_CHUNK_BYTES", "4096")],
+            )
+            .await
+            {
+                Ok(g) => g,
+                Err(e) => return fail("T-XFER-2", format!("B 重启失败: {e}")),
+            };
+            // 轮询 ≤240s：档案落地（重启清扫入队 → 续推/重推 → 落地）。
+            let exec = match wait_execution_landed(
+                &project_dir,
+                &issue_number,
+                &task_id,
+                &ws_a,
+                &ws_b,
+                Duration::from_secs(240),
+            )
+            .await
+            {
+                Ok(d) => d,
+                Err(e) => return fail("T-XFER-2", e),
+            };
+            if let Err(e) = verify_landed_manifest(&exec) {
+                return fail("T-XFER-2", e);
+            }
+            // 回填竞态容忍（P4 实测修正）：重启 sweep_startup 会把 cluster_logs
+            // 残留（含本任务已交付记录）重新入队（D2 设计语义），条目会短暂
+            // 重现——续推 + master 宽容接收后才再次删除。P4 起档案在 kill 前已
+            // 落地合并，wait_execution_landed 瞬间通过，快照式断言会跑在回填
+            // 重推收敛之前 → 假红。轮询等它删除（120s），超时才是真断链。
+            let outbox_dl = tokio::time::Instant::now() + Duration::from_secs(120);
+            loop {
+                if b_outbox_entry(&ws_b, &task_id).is_none() {
+                    break;
+                }
+                if tokio::time::Instant::now() >= outbox_dl {
+                    return fail(
+                        "T-XFER-2",
+                        format!(
+                            "120s 内 B 发件箱未收敛删除（state='{}'）——续推链断",
+                            b_outbox_state(&ws_b, &task_id)
+                        ),
+                    );
+                }
+                tokio::time::sleep(Duration::from_secs(3)).await;
+            }
+            if a_inbox_entry(&ws_a, &task_id).is_some() {
+                return fail("T-XFER-2", "A 收件箱未清");
+            }
+            pass(
+                "T-XFER-2",
+                format!(
+                    "续推 OK：issue {issue_number} task {task_id} kill 后重启档案落地且凭据核验过，发件箱/收件箱双删"
+                ),
+            )
+        })
+        .await,
+    );
+
+    // T-XFER-3: master 中途 kill 重启续收（P3/D3 先落盘后 ACK）。
+    all_results.push(
+        run_test("T-XFER-3: master kill 重启续收（D3 staging 持久 + 续传合并）", || async {
+            let mut ws = match ws_connect_gateway(NODES[0].web_port).await {
+                Ok(s) => s,
+                Err(e) => return fail("T-XFER-3", format!("WS connect to A failed: {e}")),
+            };
+            let (issue_id, issue_number, project_dir, task_id) = match xfer_dispatch_to_b(
+                &mut ws,
+                &ws_a,
+                Some("T-XFER3 master 续收"),
+                "T-XFER3 master 中途 kill 重启续收",
+                "master 收块半程被杀，重启后 worker 续推剩余块完成落地。",
+            )
+            .await
+            {
+                Ok(v) => v,
+                Err(e) => return fail("T-XFER-3", format!("发车流失败: {e}")),
+            };
+            let _ = issue_id;
+            // 轮询 ≤120s：A 的 .staging 出现本任务且 ≥1 块落盘（推送已开跑；
+            // 4KiB 块 + ~3 RPC/s 限速给足 kill 窗口）。
+            let deadline = tokio::time::Instant::now() + Duration::from_secs(120);
+            loop {
+                if tokio::time::Instant::now() >= deadline {
+                    return fail(
+                        "T-XFER-3",
+                        format!("120s 内未见 master staging 分块落盘 task={task_id}——推送未开始"),
+                    );
+                }
+                tokio::time::sleep(Duration::from_millis(500)).await;
+                let started = a_staging_dirs(&ws_a, &task_id)
+                    .iter()
+                    .any(|d| std::fs::read_dir(d).map(|rd| rd.count()).unwrap_or(0) > 0);
+                if started {
+                    break;
+                }
+            }
+            let staged = a_staging_dirs(&ws_a, &task_id)
+                .iter()
+                .map(|d| std::fs::read_dir(d).map(|rd| rd.count()).unwrap_or(0))
+                .sum::<usize>();
+            // kill A（master 半程死亡；已 ACK 的块必须已在盘上）。
+            gw_a.kill().await;
+            gw_a = match start_gateway_and_wait("Gateway-A", &gateway_bin, ws_a.path(), &NODES[0])
+                .await
+            {
+                Ok(g) => g,
+                Err(e) => return fail("T-XFER-3", format!("A 重启失败: {e}")),
+            };
+            // 轮询 ≤300s：落地（B 15s tick 重试 → begin 返回 have 续传 → end → ingest）。
+            let exec = match wait_execution_landed(
+                &project_dir,
+                &issue_number,
+                &task_id,
+                &ws_a,
+                &ws_b,
+                Duration::from_secs(300),
+            )
+            .await
+            {
+                Ok(d) => d,
+                Err(e) => return fail("T-XFER-3", e),
+            };
+            if let Err(e) = verify_landed_manifest(&exec) {
+                return fail("T-XFER-3", e);
+            }
+            if a_inbox_entry(&ws_a, &task_id).is_some() {
+                return fail("T-XFER-3", "A 收件箱未清");
+            }
+            if b_outbox_entry(&ws_b, &task_id).is_some() {
+                return fail("T-XFER-3", "B 发件箱未删（续收未闭环）");
+            }
+            pass(
+                "T-XFER-3",
+                format!(
+                    "续收 OK：issue {issue_number} task {task_id} kill 前 {staged} 项已在 staging，重启后续收落地且凭据核验过"
+                ),
+            )
+        })
+        .await,
+    );
+
+    // T-XFER-4: 重复推送去重（P3/D3 幂等：档案在场 dedup 免传）。
+    all_results.push(
+        run_test("T-XFER-4: 重复推送去重（重启回填重推 → dedup 免传删条目）", || async {
+            // B 恢复默认块（本测试不关心分块）。
+            gw_b.kill().await;
+            gw_b = match start_gateway_and_wait("Gateway-B", &gateway_bin, ws_b.path(), &NODES[1])
+                .await
+            {
+                Ok(g) => g,
+                Err(e) => return fail("T-XFER-4", format!("B 重启失败: {e}")),
+            };
+            let mut ws = match ws_connect_gateway(NODES[0].web_port).await {
+                Ok(s) => s,
+                Err(e) => return fail("T-XFER-4", format!("WS connect to A failed: {e}")),
+            };
+            // 无项目 → 档案落地后无处安置，以孤儿形态留守收件箱。
+            let (issue_id, issue_number, _project_dir, task_id) = match xfer_dispatch_to_b(
+                &mut ws,
+                &ws_a,
+                None,
+                "T-XFER4 重复推送去重",
+                "无项目绑定：档案落收件箱后 worker 重启回填重推，验证 dedup 幂等。",
+            )
+            .await
+            {
+                Ok(v) => v,
+                Err(e) => return fail("T-XFER-4", format!("发车流失败: {e}")),
+            };
+            let _ = issue_id;
+            // 轮询 ≤120s：A 收件箱出现本任务（孤儿留守）。
+            let deadline = tokio::time::Instant::now() + Duration::from_secs(120);
+            loop {
+                if tokio::time::Instant::now() >= deadline {
+                    return fail(
+                        "T-XFER-4",
+                        format!("120s 内档案未达收件箱 task={task_id}（B outbox state='{}'）", b_outbox_state(&ws_b, &task_id)),
+                    );
+                }
+                tokio::time::sleep(Duration::from_secs(2)).await;
+                if a_inbox_entry(&ws_a, &task_id).is_some() {
+                    break;
+                }
+            }
+            // B 重启 → 启动清扫回填 cluster_logs 残留 → 重推 → begin 命中
+            // dedup（同 task+content_hash 且档案实体在场）→ 免传删条目。
+            gw_b.kill().await;
+            gw_b = match start_gateway_and_wait("Gateway-B", &gateway_bin, ws_b.path(), &NODES[1])
+                .await
+            {
+                Ok(g) => g,
+                Err(e) => return fail("T-XFER-4", format!("B 重启失败: {e}")),
+            };
+            // 轮询 ≤120s：A 网关日志出现本任务的 dedup 行 + B 发件箱清空。
+            let log_path = ws_a.path().join("gateway.log");
+            let deadline = tokio::time::Instant::now() + Duration::from_secs(120);
+            loop {
+                if tokio::time::Instant::now() >= deadline {
+                    // 失败现场：倾倒 A 日志尾部含 Transfer 的行（诊断日志
+                    // 格式/链路断点，免二次翻文件）。
+                    let log = std::fs::read_to_string(&log_path).unwrap_or_default();
+                    let hits: Vec<&str> = log.lines().filter(|l| l.contains("Transfer")).collect();
+                    let start = hits.len().saturating_sub(5);
+                    let hint = hits[start..].join(" | ");
+                    return fail(
+                        "T-XFER-4",
+                        format!(
+                            "120s 内未见 dedup 免传（B outbox state='{}'，log={}，Transfer 行尾: {hint})",
+                            b_outbox_state(&ws_b, &task_id),
+                            log_path.display()
+                        ),
+                    );
+                }
+                tokio::time::sleep(Duration::from_secs(2)).await;
+                let log = std::fs::read_to_string(&log_path).unwrap_or_default();
+                if log.contains("[Transfer] dedup") && log.contains(&task_id) {
+                    break;
+                }
+            }
+            if b_outbox_entry(&ws_b, &task_id).is_some() {
+                return fail("T-XFER-4", "dedup 后 B 发件箱未清（应免传直接删条目）");
+            }
+            // 收件箱实体完好（dedup 不破坏原落地）。
+            let Some(inbox) = a_inbox_entry(&ws_a, &task_id) else {
+                return fail("T-XFER-4", "收件箱实体消失（dedup 误删原落地——D3 幂等被破坏）");
+            };
+            let files = std::fs::read_dir(inbox.join("files"))
+                .map(|rd| rd.count())
+                .unwrap_or(0);
+            if files == 0 {
+                return fail("T-XFER-4", "收件箱 files/ 为空");
+            }
+            pass(
+                "T-XFER-4",
+                format!(
+                    "去重 OK：issue {issue_number} task {task_id} 重启回填重推被 dedup 免传（{files} 文件原落地完好），worker 条目免传清空"
+                ),
+            )
+        })
+        .await,
+    );
+
+    // T-XFER-5: 超限诚实失败（P3/D4 护栏：绝不截断 + 出卡转人工）。
+    all_results.push(
+        run_test("T-XFER-5: 超限诚实失败（D4 护栏 + 决策流/收件箱出卡 + 转人工回滚）", || async {
+            // B 护栏压到 1KiB + 换 30s 延迟模型（确定性「执行中」窗口），
+            // 重启生效（archive.max_transfer_bytes 不在 board.config.set 白名单，
+            // 直接写 config.json；model add 同理须重启加载）。
+            if let Err(e) = patch_board_archive_limit(&ws_b.home(), 1024) {
+                return fail("T-XFER-5", format!("护栏写入失败: {e}"));
+            }
+            if let Err(e) = b_switch_model(&ws_b, &gateway_bin, "test/testai-1.2").await {
+                return fail("T-XFER-5", format!("B 模型切换失败: {e}"));
+            }
+            gw_b.kill().await;
+            gw_b = match start_gateway_and_wait("Gateway-B", &gateway_bin, ws_b.path(), &NODES[1])
+                .await
+            {
+                Ok(g) => g,
+                Err(e) => return fail("T-XFER-5", format!("B 重启失败: {e}")),
+            };
+            let mut ws = match ws_connect_gateway(NODES[0].web_port).await {
+                Ok(s) => s,
+                Err(e) => return fail("T-XFER-5", format!("WS connect to A failed: {e}")),
+            };
+            let (issue_id, issue_number, _project_dir, task_id) = match xfer_dispatch_to_b(
+                &mut ws,
+                &ws_a,
+                Some("T-XFER5 超限护栏"),
+                "T-XFER5 超限诚实失败",
+                "档案超护栏 → 本地拒绝传输 → overlimit 通知 master 出卡转人工。",
+            )
+            .await
+            {
+                Ok(v) => v,
+                Err(e) => return fail("T-XFER-5", format!("发车流失败: {e}")),
+            };
+            // 轮询 ≤30s：B 侧 cluster_logs 任务目录出现（LLM 已开跑，30s
+            // 延迟窗口开启）→ 手动置 done（in_progress→done 合法；写回守卫
+            // 尊重 Done 不翻转 → 完成回调照常入队发件箱）。
+            let deadline = tokio::time::Instant::now() + Duration::from_secs(30);
+            loop {
+                if tokio::time::Instant::now() >= deadline {
+                    return fail("T-XFER-5", format!("30s 内 B 侧执行记录未落 task={task_id}"));
+                }
+                tokio::time::sleep(Duration::from_millis(500)).await;
+                if b_task_records(&ws_b, &task_id).is_some() {
+                    break;
+                }
+            }
+            if let Err(e) = ws_api_request(
+                &mut ws,
+                "board",
+                "issue.status",
+                json!({ "id": issue_id, "status": "done" }),
+                10,
+            )
+            .await
+            {
+                return fail("T-XFER-5", format!("手动置 done 失败: {e}"));
+            }
+            // 轮询 ≤180s：完成回调 → 入队 → 推送 → 本地超限拒传 →
+            // overlimit RPC → note_overlimit 出卡 + done→in_review 回滚。
+            let deadline = tokio::time::Instant::now() + Duration::from_secs(180);
+            loop {
+                if tokio::time::Instant::now() >= deadline {
+                    return fail(
+                        "T-XFER-5",
+                        format!(
+                            "180s 内超护栏评论未落 task={task_id}（B outbox state='{}'）",
+                            b_outbox_state(&ws_b, &task_id)
+                        ),
+                    );
+                }
+                tokio::time::sleep(Duration::from_secs(3)).await;
+                let comments = ws_api_request(
+                    &mut ws,
+                    "board",
+                    "comment.list",
+                    json!({ "issue_id": issue_id }),
+                    10,
+                )
+                .await
+                .ok()
+                .and_then(|v| {
+                    v.get("comments")
+                        .and_then(|c| c.as_array())
+                        .map(|arr| {
+                            arr.iter()
+                                .filter_map(|c| c.get("content").and_then(|v| v.as_str()))
+                                .collect::<Vec<_>>()
+                                .join("\n---\n")
+                        })
+                })
+                .unwrap_or_default();
+                if comments.contains("超护栏") {
+                    break;
+                }
+            }
+            // 四件套断言：①回滚 in_review ②决策流卡 ③收件箱卡 ④B 暂留存。
+            let st = issue_status_of(&mut ws, issue_id).await.unwrap_or_default();
+            if st != "in_review" {
+                return fail("T-XFER-5", format!("转人工回滚后应 in_review，实际 '{st}'"));
+            }
+            let audit = ws_api_request(
+                &mut ws,
+                "board",
+                "audit.list",
+                json!({ "limit": 100, "action": "archive_overlimit" }),
+                10,
+            )
+            .await
+            .ok()
+            .unwrap_or_default();
+            let has_audit = audit
+                .get("decisions")
+                .and_then(|v| v.as_array())
+                .map(|rows| {
+                    rows.iter()
+                        .any(|r| r.get("issue_id").and_then(|v| v.as_i64()) == Some(issue_id))
+                })
+                .unwrap_or(false);
+            if !has_audit {
+                return fail("T-XFER-5", format!("决策流无 archive_overlimit 卡: {audit}"));
+            }
+            let inbox = ws_api_request(&mut ws, "board", "inbox.list", json!({}), 10)
+                .await
+                .ok()
+                .unwrap_or_default();
+            let has_notif = inbox
+                .get("notifications")
+                .and_then(|v| v.as_array())
+                .map(|rows| {
+                    rows.iter().any(|n| {
+                        n.get("kind").and_then(|k| k.as_str()) == Some("archive_overlimit")
+                            && n.get("issue_id").and_then(|v| v.as_i64()) == Some(issue_id)
+                    })
+                })
+                .unwrap_or(false);
+            if !has_notif {
+                return fail("T-XFER-5", "收件箱无 archive_overlimit 通知");
+            }
+            let b_state = b_outbox_state(&ws_b, &task_id);
+            if b_state != "over_limit" {
+                return fail("T-XFER-5", format!("B 发件箱应暂停留 over_limit，实际 '{b_state}'"));
+            }
+            // 清理：护栏还原 2GiB + 模型还原 board-1.0 + 重启——over_limit
+            // 条目重武装（total ≤ 新护栏）正常推送，落 T5 项目档案，不污染
+            // 后续测试。
+            if let Err(e) = patch_board_archive_limit(&ws_b.home(), 2_147_483_648) {
+                return fail("T-XFER-5", format!("护栏还原失败: {e}"));
+            }
+            if let Err(e) = b_switch_model(&ws_b, &gateway_bin, "test/testai-board-1.0").await {
+                return fail("T-XFER-5", format!("B 模型还原失败: {e}"));
+            }
+            gw_b.kill().await;
+            gw_b = match start_gateway_and_wait("Gateway-B", &gateway_bin, ws_b.path(), &NODES[1])
+                .await
+            {
+                Ok(g) => g,
+                Err(e) => return fail("T-XFER-5", format!("B 还原重启失败: {e}")),
+            };
+            pass(
+                "T-XFER-5",
+                format!(
+                    "超限 OK：issue {issue_number} task {task_id} 1KiB 护栏诚实拒传（未截断），决策流+收件箱出卡、done→in_review 转人工；清理后重武装推送"
+                ),
+            )
+        })
+        .await,
+    );
+
+    // T-XFER-6: D5 兜底拉取（档案丢失 → sweep 补拉 → worker 重推 → 重落）。
+    all_results.push(
+        run_test("T-XFER-6: master 档案丢失兜底拉取（D5 sweep + dedup 放行重传）", || async {
+            // 防御性再武装（T-XFER-5 若中途 fail，其清理段不会执行——B 仍带
+            // 1KiB 护栏 + 慢模型，正流载荷会被误超限）。无条件还原默认态。
+            if let Err(e) = patch_board_archive_limit(&ws_b.home(), 2_147_483_648) {
+                return fail("T-XFER-6", format!("护栏还原失败: {e}"));
+            }
+            if let Err(e) = b_switch_model(&ws_b, &gateway_bin, "test/testai-board-1.0").await {
+                return fail("T-XFER-6", format!("B 模型还原失败: {e}"));
+            }
+            gw_b.kill().await;
+            gw_b = match start_gateway_and_wait("Gateway-B", &gateway_bin, ws_b.path(), &NODES[1])
+                .await
+            {
+                Ok(g) => g,
+                Err(e) => return fail("T-XFER-6", format!("B 还原重启失败: {e}")),
+            };
+            let mut ws = match ws_connect_gateway(NODES[0].web_port).await {
+                Ok(s) => s,
+                Err(e) => return fail("T-XFER-6", format!("WS connect to A failed: {e}")),
+            };
+            let (issue_id, issue_number, project_dir, task_id) = match xfer_dispatch_to_b(
+                &mut ws,
+                &ws_a,
+                Some("T-XFER6 兜底拉取"),
+                "T-XFER6 master 档案丢失兜底拉取",
+                "落地档案被删后 D5 sweep 主动补拉，worker 重推重落。",
+            )
+            .await
+            {
+                Ok(v) => v,
+                Err(e) => return fail("T-XFER-6", format!("发车流失败: {e}")),
+            };
+            let _ = issue_id;
+            // ① 正流先落一次。
+            let _exec = match wait_execution_landed(
+                &project_dir,
+                &issue_number,
+                &task_id,
+                &ws_a,
+                &ws_b,
+                Duration::from_secs(240),
+            )
+            .await
+            {
+                Ok(d) => d,
+                Err(e) => return fail("T-XFER-6", format!("①正流落地失败: {e}")),
+            };
+            // ② B 侧执行记录必须在场（重传的物质基础）。
+            if b_task_records(&ws_b, &task_id).is_none() {
+                return fail("T-XFER-6", "B 无执行记录残留——重传无从谈起");
+            }
+            // ③ 模拟档案丢失：删 records/<number>（sweep 判据=execution 缺失）。
+            let records = std::path::Path::new(&project_dir)
+                .join("records")
+                .join(&issue_number);
+            if let Err(e) = std::fs::remove_dir_all(&records) {
+                return fail("T-XFER-6", format!("删除档案失败: {e}"));
+            }
+            // ④ 轮询 ≤300s：A sweep（60s 周期）→ transfer_pull → B 回填入队 →
+            //    重推（dedup 放行——收件箱实体已被 ingest 搬走）→ ingest 重落。
+            let deadline = tokio::time::Instant::now() + Duration::from_secs(300);
+            loop {
+                if tokio::time::Instant::now() >= deadline {
+                    return fail(
+                        "T-XFER-6",
+                        format!(
+                            "300s 内档案未补回 task={task_id}（B outbox state='{}'，A 收件箱在场={}）——D5 链断",
+                            b_outbox_state(&ws_b, &task_id),
+                            a_inbox_entry(&ws_a, &task_id).is_some()
+                        ),
+                    );
+                }
+                tokio::time::sleep(Duration::from_secs(3)).await;
+                if records.join("execution").exists()
+                    && execution_dirs(&project_dir, &issue_number)
+                        .iter()
+                        .any(|d| d.join("manifest.json").exists())
+                {
+                    break;
+                }
+            }
+            if b_outbox_entry(&ws_b, &task_id).is_some() {
+                return fail("T-XFER-6", "补拉重传后 B 发件箱未删");
+            }
+            if a_inbox_entry(&ws_a, &task_id).is_some() {
+                return fail("T-XFER-6", "A 收件箱未清");
+            }
+            pass(
+                "T-XFER-6",
+                format!(
+                    "兜底拉取 OK：issue {issue_number} task {task_id} 档案删除后 sweep 补拉重传重落，双删闭环"
+                ),
+            )
+        })
+        .await,
+    );
+
+    // T-MRG-1: common.h 自动三方合并 e2e（看板项目档案 goal P4/E4 实机判据）。
+    //
+    // 双 worker（B/C）并行改同一文件不同区域：
+    //   ① B/C 切编辑桩 testai-board-edit-1.0（emit 真实 edit_file 工具调用）；
+    //   ② 建项目（目录）→ 预置基线 common.h（10 个 SECTION 区块）；
+    //   ③ 两张**无父子关系**的项目单（同父会撞 R-9 调度互斥——本测就是要
+    //      并行）分别派 Node-B / Node-C，<EDIT_ANCHOR> 指令驱动各自在
+    //      工作副本里改不同 SECTION；
+    //   ④ 双变更集回传 → master 串行三方合并（第二笔以第一笔后的 HEAD 为
+    //      ours、首基线为 ancestor）→ 双方改动都保留；
+    //   ⑤ 断言：两单 done / common.h 双补丁齐全 + 10 区块无损 / git 历史
+    //      ≥3 commit（首 commit + 两笔 merge）/ B/C 工作副本已清扫。
+    all_results.push(
+        run_test("T-MRG-1: common.h 三方合并 e2e（双 worker 并行改不同区域→双方保留+git log）", || async {
+            let outcome: Result<String, anyhow::Error> = async {
+                // 0. B/C 切编辑桩 + 重启（A 保持组合桩负责 review PASS）。
+                b_switch_model(&ws_b, &gateway_bin, "test/testai-board-edit-1.0")
+                    .await
+                    .map_err(anyhow::Error::msg)?;
+                gw_b.kill().await;
+                gw_b = start_gateway_and_wait("Gateway-B", &gateway_bin, ws_b.path(), &NODES[1])
+                    .await
+                    .map_err(anyhow::Error::msg)?;
+                b_switch_model(&ws_c, &gateway_bin, "test/testai-board-edit-1.0")
+                    .await
+                    .map_err(anyhow::Error::msg)?;
+                gw_c.kill().await;
+                gw_c = start_gateway_and_wait("Gateway-C", &gateway_bin, ws_c.path(), &NODES[2])
+                    .await
+                    .map_err(anyhow::Error::msg)?;
+
+                let mut ws = ws_connect_gateway(NODES[0].web_port).await?;
+                // 开关：auto_accept（验收 PASS 自动收货；前序测试可能动过，防御性重设）。
+                ws_api_request(&mut ws, "board", "config.set", json!({ "key": "auto_accept", "value": true }), 10).await?;
+
+                // 1. 建项目（目录）+ 预置基线 common.h（10 区块，锚点行唯一）。
+                let created = ws_api_request(
+                    &mut ws, "board", "project.create",
+                    json!({ "name": "T-MRG1 common.h 三方合并", "auto_start": false }), 15,
+                ).await?;
+                let project_id = created.pointer("/project/id").and_then(|v| v.as_i64()).unwrap_or(0);
+                let project_dir = created.pointer("/directory").and_then(|v| v.as_str()).unwrap_or("").to_string();
+                if project_id == 0 || project_dir.is_empty() {
+                    anyhow::bail!("project.create 无 id/directory: {created}");
+                }
+                let mut baseline = String::from("// common.h baseline v1 (T-MRG1)\n#ifndef COMMON_H\n#define COMMON_H\n");
+                for i in 1..=10 {
+                    baseline.push_str(&format!("// SECTION-{i}-ANCHOR\n#define FEATURE_{i} {i}00\n"));
+                }
+                baseline.push_str("#endif\n");
+                std::fs::write(std::path::Path::new(&project_dir).join("common.h"), &baseline)
+                    .map_err(|e| anyhow::anyhow!("写基线 common.h 失败: {e}"))?;
+
+                // 2. 两张独立项目单（无父子——R-9 互斥只拦同父，不拦本测的并行），
+                //    <EDIT_ANCHOR> 指令由编辑桩解析成 edit_file 调用（改不同区块）。
+                let mk_issue = |title: &str, anchor_old: &str, anchor_new: &str| {
+                    json!({
+                        "title": title,
+                        "project_id": project_id,
+                        "description": format!(
+                            "在工作副本内完成指定编辑：<EDIT_ANCHOR>{anchor_old}|||{anchor_new}</EDIT_ANCHOR>"
+                        ),
+                        "acceptance_criteria": "[TOUCH] common.h\n[CHECK] re:FILE_EDIT_DONE",
+                    })
+                };
+                let r1 = ws_api_request(&mut ws, "board", "issue.create",
+                    mk_issue("T-MRG1 B侧：SECTION-3 加 PATCH_B", "// SECTION-3-ANCHOR", "// SECTION-3-ANCHOR\n#define PATCH_B_WORKER 303"), 15).await?;
+                let id_b = r1.pointer("/issue/id").and_then(|v| v.as_i64()).unwrap_or(0);
+                let num_b = r1.pointer("/issue/number").and_then(|v| v.as_str()).unwrap_or("").to_string();
+                let r2 = ws_api_request(&mut ws, "board", "issue.create",
+                    mk_issue("T-MRG1 C侧：SECTION-7 加 PATCH_C", "// SECTION-7-ANCHOR", "// SECTION-7-ANCHOR\n#define PATCH_C_WORKER 707"), 15).await?;
+                let id_c = r2.pointer("/issue/id").and_then(|v| v.as_i64()).unwrap_or(0);
+                let num_c = r2.pointer("/issue/number").and_then(|v| v.as_str()).unwrap_or("").to_string();
+                if id_b == 0 || id_c == 0 {
+                    anyhow::bail!("issue.create 无 id: {r1:?} / {r2:?}");
+                }
+
+                // 3. 并行派发（第二张的基线取决于时点：同 c1 或含 B 补丁的 c2——
+                //    两种时序 E8+三方合并都自洽）。
+                ws_api_request(&mut ws, "board", "issue.dispatch", json!({ "id": id_b, "target": "Node-B" }), 30).await?;
+                ws_api_request(&mut ws, "board", "issue.dispatch", json!({ "id": id_c, "target": "Node-C" }), 30).await?;
+                println!("\n         B={num_b} C={num_c} dir={project_dir}");
+
+                // 4. 轮询 ≤360s 等双单 done（worker 编辑+回传+合并+评审链）。
+                let deadline = tokio::time::Instant::now() + Duration::from_secs(360);
+                loop {
+                    if tokio::time::Instant::now() >= deadline {
+                        anyhow::bail!(
+                            "360s 内双单未 done：{num_b}='{}' {num_c}='{}'",
+                            issue_status_of(&mut ws, id_b).await.unwrap_or_default(),
+                            issue_status_of(&mut ws, id_c).await.unwrap_or_default(),
+                        );
+                    }
+                    tokio::time::sleep(Duration::from_secs(4)).await;
+                    let sb = issue_status_of(&mut ws, id_b).await.unwrap_or_default();
+                    let sc = issue_status_of(&mut ws, id_c).await.unwrap_or_default();
+                    if sb == "done" && sc == "done" {
+                        break;
+                    }
+                    if matches!(sb.as_str(), "failed" | "cancelled")
+                        || matches!(sc.as_str(), "failed" | "cancelled")
+                    {
+                        anyhow::bail!("单据异常终态：{num_b}='{sb}' {num_c}='{sc}'");
+                    }
+                }
+
+                // 5. common.h：双补丁齐全 + 10 区块无损（三方合并未吞对方改动）。
+                let merged_file = std::fs::read_to_string(std::path::Path::new(&project_dir).join("common.h"))
+                    .map_err(|e| anyhow::anyhow!("读合并后 common.h 失败: {e}"))?;
+                for needle in ["#define PATCH_B_WORKER 303", "#define PATCH_C_WORKER 707"] {
+                    if !merged_file.contains(needle) {
+                        anyhow::bail!("合并结果缺 {needle}（一方改动被吞）:\n{merged_file}");
+                    }
+                }
+                for i in 1..=10 {
+                    let anchor = format!("// SECTION-{i}-ANCHOR");
+                    if !merged_file.contains(&anchor) {
+                        anyhow::bail!("合并结果缺区块 {anchor}:\n{merged_file}");
+                    }
+                }
+
+                // 6. git 历史：≥3 commit（首 commit + ≥2 笔 merge），HEAD 消息为
+                //    merge 形态；线性可 diff。
+                let repo = git2::Repository::open(&project_dir)
+                    .map_err(|e| anyhow::anyhow!("打开项目仓库失败: {e}"))?;
+                let head = repo.head().map_err(|e| anyhow::anyhow!("仓库无 HEAD: {e}"))?
+                    .peel_to_commit()
+                    .map_err(|e| anyhow::anyhow!("HEAD peel 失败: {e}"))?;
+                let mut count = 0usize;
+                let mut oid = head.id();
+                loop {
+                    count += 1;
+                    let commit = repo.find_commit(oid)
+                        .map_err(|e| anyhow::anyhow!("find_commit 失败: {e}"))?;
+                    if commit.parent_count() == 0 {
+                        break; // 首 commit
+                    }
+                    if commit.parent_count() != 1 {
+                        anyhow::bail!("意外 multi-parent commit（merge 语义应单父线性）: {}", commit.id());
+                    }
+                    oid = commit.parent(0).map_err(|e| anyhow::anyhow!("parent 遍历失败: {e}"))?.id();
+                }
+                if count < 3 {
+                    anyhow::bail!("git 历史仅 {count} 个 commit（应 ≥3：首 commit + 两笔合并）");
+                }
+                if !head.message().unwrap_or("").contains("merge:") {
+                    anyhow::bail!("HEAD 消息非 merge 形态: {:?}", head.message());
+                }
+
+                // 7. B/C 工作副本已清扫（E3 生命周期闭环）。
+                for (wsx, label) in [(&ws_b, "B"), (&ws_c, "C")] {
+                    let exec_root = wsx.home().join("workspace").join("cluster").join("exec");
+                    if exec_root.exists()
+                        && std::fs::read_dir(&exec_root)
+                            .map(|it| it.flatten().count())
+                            .unwrap_or(0)
+                            > 0
+                    {
+                        anyhow::bail!("{label} 工作副本未清扫: {}", exec_root.display());
+                    }
+                }
+
+                let head_short = &head.id().to_string()[..12.min(head.id().to_string().len())];
+                Ok(format!(
+                    "三方合并 OK：{num_b}+{num_c} 双 done，common.h 双补丁+10 区块保全，git 历史 {count} commit（HEAD={head_short}）"
+                ))
+            }
+            .await;
+            match outcome {
+                Ok(msg) => pass("T-MRG-1", msg),
+                Err(e) => fail("T-MRG-1", format!("{e}")),
+            }
+        })
+        .await,
+    );
+
+    // T-MRG-2: 冲突漏斗 human 档 e2e（P5/F1-F4）。
+    //
+    // 双 worker 并行改同一行（MODE 0→1 / 0→2）→ 恰好一单真冲突：
+    //   ① 项目冻结 conflict_frozen + 审计 conflict(mode=human) + 冲突单停车
+    //      不进评审（保持 in_progress）；胜者照常验收 done；
+    //   ② 冻结闸：冻结项目的 issue.dispatch loud 拒绝（含「冲突冻结」）；
+    //   ③ 不株连：另一项目同窗建单派发照常 done；
+    //   ④ 人工决策：cancel 败者（其变更集已停车入档案 records/）+ 工作树
+    //      追加人工落定标记；
+    //   ⑤ resume dry_run 冻结预览 → resume 执行：manual conflict resolution
+    //      commit + 补合并回放（冻结期在途交付不丢）+ 解冻 + 恢复派发。
+    all_results.push(
+        run_test("T-MRG-2: 冲突漏斗 human 档（冻结+不株连+冻结闸+cancel 败者+resume 解冻补合并）", || async {
+            let outcome: Result<String, anyhow::Error> = async {
+                // 0. 配置：human 档（防前序测试残留）+ PASS 自动收货。
+                let mut ws = ws_connect_gateway(NODES[0].web_port).await?;
+                for (key, value) in [
+                    ("conflict_auto_resolve", json!(false)),
+                    ("auto_accept", json!(true)),
+                    ("budget.max_total_redispatch", json!(0)),
+                ] {
+                    ws_api_request(&mut ws, "board", "config.set", json!({ "key": key, "value": value }), 10).await?;
+                }
+
+                // 1. 冲突项目 P2 + 基线（MODE 行 + A/B 区块）。
+                let created = ws_api_request(
+                    &mut ws, "board", "project.create",
+                    json!({ "name": "T-MRG2 冲突冻结人工档", "auto_start": false }), 15,
+                ).await?;
+                let pid = created.pointer("/project/id").and_then(|v| v.as_i64()).unwrap_or(0);
+                let p2_dir = created.pointer("/directory").and_then(|v| v.as_str()).unwrap_or("").to_string();
+                if pid == 0 || p2_dir.is_empty() {
+                    anyhow::bail!("project.create 无 id/directory: {created}");
+                }
+                let baseline = "// common.h baseline (T-MRG2)\n#define MODE 0\n// SECTION-A-ANCHOR\n#define FEATURE_A 1\n// SECTION-B-ANCHOR\n#define FEATURE_B 2\n";
+                std::fs::write(std::path::Path::new(&p2_dir).join("common.h"), baseline)
+                    .map_err(|e| anyhow::anyhow!("写基线失败: {e}"))?;
+
+                // 2. 四张独立项目单（无父子——并行合法）：I1/I2 同行互斥（必有一冲突），
+                //    I3/I4 不同区块（验证冻结期在途交付的登记语义）。
+                let ac_h = "[TOUCH] common.h\n[CHECK] re:FILE_EDIT_DONE";
+                let (id1, num1) = create_conflict_issue(&mut ws, pid, "T-MRG2 I1：MODE 0→1",
+                    "<EDIT_ANCHOR>#define MODE 0|||#define MODE 1</EDIT_ANCHOR>", ac_h).await?;
+                let (id2, num2) = create_conflict_issue(&mut ws, pid, "T-MRG2 I2：MODE 0→2",
+                    "<EDIT_ANCHOR>#define MODE 0|||#define MODE 2</EDIT_ANCHOR>", ac_h).await?;
+                let (id3, _num3) = create_conflict_issue(&mut ws, pid, "T-MRG2 I3：A 区块追加",
+                    "<EDIT_ANCHOR>// SECTION-A-ANCHOR|||// SECTION-A-ANCHOR\n#define PATCH_A 11</EDIT_ANCHOR>", ac_h).await?;
+                let (id4, _num4) = create_conflict_issue(&mut ws, pid, "T-MRG2 I4：B 区块追加",
+                    "<EDIT_ANCHOR>// SECTION-B-ANCHOR|||// SECTION-B-ANCHOR\n#define PATCH_B 22</EDIT_ANCHOR>", ac_h).await?;
+                ws_api_request(&mut ws, "board", "issue.dispatch", json!({ "id": id1, "target": "Node-B" }), 30).await?;
+                ws_api_request(&mut ws, "board", "issue.dispatch", json!({ "id": id2, "target": "Node-C" }), 30).await?;
+                ws_api_request(&mut ws, "board", "issue.dispatch", json!({ "id": id3, "target": "Node-B" }), 30).await?;
+                ws_api_request(&mut ws, "board", "issue.dispatch", json!({ "id": id4, "target": "Node-C" }), 30).await?;
+                println!("\n         I1={num1} I2={num2} dir={p2_dir}");
+
+                // 3. 等冻结 + 冲突分流（胜者先合并进评审，败者停车保持 in_progress）。
+                let deadline = tokio::time::Instant::now() + Duration::from_secs(300);
+                loop {
+                    if tokio::time::Instant::now() >= deadline {
+                        let (f, _) = project_freeze_state(&mut ws, pid).await.unwrap_or((false, 0));
+                        anyhow::bail!("300s 内项目未冻结：{num1}='{}' {num2}='{}' frozen={f}",
+                            issue_status_of(&mut ws, id1).await.unwrap_or_default(),
+                            issue_status_of(&mut ws, id2).await.unwrap_or_default());
+                    }
+                    tokio::time::sleep(Duration::from_secs(2)).await;
+                    if project_freeze_state(&mut ws, pid).await?.0 {
+                        break;
+                    }
+                }
+                let (win_id, lose_id) = wait_conflict_split(&mut ws, id1, id2, 120).await?;
+                let lose_st = issue_status_of(&mut ws, lose_id).await.unwrap_or_default();
+                if lose_st != "in_progress" {
+                    anyhow::bail!("冲突单应停车保持 in_progress，实际 '{lose_st}'（人工档不进评审）");
+                }
+                let details = wait_audit_decision(&mut ws, lose_id, "conflict", 60).await?;
+                if !details.contains("\"mode\":\"human\"") {
+                    anyhow::bail!("conflict 审计应 mode=human: {details}");
+                }
+                // 胜者照常走完验收（solver 桩不在位——A 保持 board-1.0 组合桩 → PASS）。
+                wait_issue_done(&mut ws, win_id, "胜者", 240).await?;
+
+                // 4. 冻结闸：冻结项目的派发 loud 拒绝。
+                let (id5, _num5) = create_conflict_issue(&mut ws, pid, "T-MRG2 I5：冻结期新单",
+                    "<EDIT_ANCHOR>// SECTION-A-ANCHOR|||// SECTION-A-ANCHOR\n#define PATCH_GATE 55</EDIT_ANCHOR>", ac_h).await?;
+                let gate_err = ws_api_request(&mut ws, "board", "issue.dispatch", json!({ "id": id5, "target": "Node-B" }), 30)
+                    .await
+                    .err()
+                    .ok_or_else(|| anyhow::anyhow!("冻结期派发应被拒绝"))?;
+                if !gate_err.to_string().contains("冲突冻结") {
+                    anyhow::bail!("冻结闸报错应含「冲突冻结」: {gate_err}");
+                }
+
+                // 5. 不株连：另一项目同窗建单派发照常。
+                let created3 = ws_api_request(
+                    &mut ws, "board", "project.create",
+                    json!({ "name": "T-MRG2 孤岛项目", "auto_start": false }), 15,
+                ).await?;
+                let pid3 = created3.pointer("/project/id").and_then(|v| v.as_i64()).unwrap_or(0);
+                let p3_dir = created3.pointer("/directory").and_then(|v| v.as_str()).unwrap_or("").to_string();
+                std::fs::write(std::path::Path::new(&p3_dir).join("solo.h"), "// SOLO-ANCHOR\n#define SOLO 0\n")
+                    .map_err(|e| anyhow::anyhow!("写孤岛基线失败: {e}"))?;
+                let (id6, _num6) = create_conflict_issue(&mut ws, pid3, "T-MRG2 I6：孤岛单",
+                    // <EDIT_FILE> 必带：编辑桩目标文件缺省 common.h（T-mrg-1
+                    // 契约），不指定会把 solo.h 的锚打到不存在的 common.h 上
+                    // → FILE_EDIT_FAILED → 锚点检查 FAIL → 重派耗尽转人工。
+                    "<EDIT_FILE>/solo.h</EDIT_FILE><EDIT_ANCHOR>#define SOLO 0|||#define SOLO 1</EDIT_ANCHOR>",
+                    "[TOUCH] solo.h\n[CHECK] re:FILE_EDIT_DONE").await?;
+                ws_api_request(&mut ws, "board", "issue.dispatch", json!({ "id": id6, "target": "Node-B" }), 30).await?;
+                wait_issue_done(&mut ws, id6, "I6 孤岛单", 240).await?;
+
+                // 6. 人工决策：cancel 败者（其变更集已停车入 records/，人工放弃）。
+                ws_api_request(&mut ws, "board", "issue.cancel", json!({ "id": lose_id }), 15).await?;
+                let lose_st = issue_status_of(&mut ws, lose_id).await.unwrap_or_default();
+                if lose_st != "cancelled" {
+                    anyhow::bail!("败者应 cancelled，实际 '{lose_st}'");
+                }
+
+                // 7. resume dry_run：冻结预览，无副作用。
+                let dry = ws_api_request(&mut ws, "board", "project.resume", json!({ "project_id": pid, "dry_run": true }), 30).await?;
+                if dry.get("dry_run").and_then(|v| v.as_bool()) != Some(true)
+                    || dry.get("frozen").and_then(|v| v.as_bool()) != Some(true)
+                {
+                    anyhow::bail!("dry_run 预览应 dry_run=true+frozen=true: {dry}");
+                }
+
+                // 8. 人工落定：工作树追加标记（保证 manual commit 非空）。
+                let mut cur = std::fs::read_to_string(std::path::Path::new(&p2_dir).join("common.h"))
+                    .map_err(|e| anyhow::anyhow!("读工作树失败: {e}"))?;
+                cur.push_str("// manual-resolution (T-MRG2)\n");
+                std::fs::write(std::path::Path::new(&p2_dir).join("common.h"), cur)
+                    .map_err(|e| anyhow::anyhow!("写人工落定失败: {e}"))?;
+
+                // 9. resume 执行：manual commit + 补合并回放 + 解冻 + 恢复派发。
+                let resumed = ws_api_request(&mut ws, "board", "project.resume", json!({ "project_id": pid }), 60).await?;
+                let replay = resumed
+                    .pointer("/conflict_replay")
+                    .ok_or_else(|| anyhow::anyhow!("resume 响应缺 conflict_replay: {resumed}"))?;
+                if replay.get("unfrozen").and_then(|v| v.as_bool()) != Some(true) {
+                    anyhow::bail!("回放后应已解冻: {replay}");
+                }
+                if replay.get("manual_commit").map(|v| v.is_null()).unwrap_or(true) {
+                    anyhow::bail!("人工落定 commit 缺失（工作树改动未入库）: {replay}");
+                }
+                if resumed.get("dispatched").and_then(|v| v.as_u64()).unwrap_or(0) < 1 {
+                    anyhow::bail!("resume 应恢复派发冻结期新单 I5: {resumed}");
+                }
+
+                // 10. 余单收口：I3/I4（冻结期交付→补合并或直合并）+ I5（resume 恢复派发）。
+                for (iid, inum) in [(id3, "I3"), (id4, "I4"), (id5, "I5")] {
+                    wait_issue_done(&mut ws, iid, inum, 300).await?;
+                }
+                let (frozen, pending) = project_freeze_state(&mut ws, pid).await?;
+                if frozen || pending != 0 {
+                    anyhow::bail!("终态应解冻+队列清空，实际 frozen={frozen} pending={pending}");
+                }
+
+                Ok(format!(
+                    "human 档 OK：{num1}/{num2} 恰一冲突→冻结+mode=human 审计；冻结闸拒绝派发；孤岛项目不株连；cancel 败者 + resume 解冻补合并（merged={}）+ 恢复派发全部收口",
+                    replay.get("merged").and_then(|v| v.as_u64()).unwrap_or(0)
+                ))
+            }
+            .await;
+            match outcome {
+                Ok(msg) => pass("T-MRG-2", msg),
+                Err(e) => fail("T-MRG-2", format!("{e}")),
+            }
+        })
+        .await,
+    );
+
+    // T-MRG-3: 冲突漏斗 auto 档 AI 硬解成功 e2e（P5/F1+F5①）。
+    //
+    // A 切 testai-conflict-solver-1.0（硬解 + 评审委托双职能）：并行同行
+    // 冲突 → solver merge 确定性落定 → 冲突单走完评审 done。断言：双 done /
+    // 文件被确定性重写 / 审计 conflict_auto_resolve（resolutions 在场）/
+    // HEAD commit message 带 conflict_auto_resolve 标记。
+    all_results.push(
+        run_test("T-MRG-3: 冲突漏斗 auto 档 AI 硬解成功（solver merge 落定→冲突单 done+审计+commit 标记）", || async {
+            let outcome: Result<String, anyhow::Error> = async {
+                // 0. A 切硬解桩（评审通道由内嵌 review 桩委托 PASS）+ 重启。
+                b_switch_model(&ws_a, &gateway_bin, "test/testai-conflict-solver-1.0")
+                    .await
+                    .map_err(anyhow::Error::msg)?;
+                gw_a.kill().await;
+                gw_a = start_gateway_and_wait("Gateway-A", &gateway_bin, ws_a.path(), &NODES[0])
+                    .await
+                    .map_err(anyhow::Error::msg)?;
+
+                let mut ws = ws_connect_gateway(NODES[0].web_port).await?;
+                for (key, value) in [
+                    ("conflict_auto_resolve", json!(true)),
+                    ("auto_accept", json!(true)),
+                    ("budget.max_total_redispatch", json!(0)),
+                ] {
+                    ws_api_request(&mut ws, "board", "config.set", json!({ "key": key, "value": value }), 10).await?;
+                }
+
+                // 1. 项目 + 基线 + 并行同行双单。
+                let created = ws_api_request(
+                    &mut ws, "board", "project.create",
+                    json!({ "name": "T-MRG3 冲突AI硬解", "auto_start": false }), 15,
+                ).await?;
+                let pid = created.pointer("/project/id").and_then(|v| v.as_i64()).unwrap_or(0);
+                let pdir = created.pointer("/directory").and_then(|v| v.as_str()).unwrap_or("").to_string();
+                std::fs::write(std::path::Path::new(&pdir).join("common.h"), "// common.h baseline (T-MRG3)\n#define MODE 0\n")
+                    .map_err(|e| anyhow::anyhow!("写基线失败: {e}"))?;
+                let ac_h = "[TOUCH] common.h\n[CHECK] re:FILE_EDIT_DONE";
+                let (id1, num1) = create_conflict_issue(&mut ws, pid, "T-MRG3 I1：MODE 0→1",
+                    "<EDIT_ANCHOR>#define MODE 0|||#define MODE 1</EDIT_ANCHOR>", ac_h).await?;
+                let (id2, num2) = create_conflict_issue(&mut ws, pid, "T-MRG3 I2：MODE 0→2",
+                    "<EDIT_ANCHOR>#define MODE 0|||#define MODE 2</EDIT_ANCHOR>", ac_h).await?;
+                ws_api_request(&mut ws, "board", "issue.dispatch", json!({ "id": id1, "target": "Node-B" }), 30).await?;
+                ws_api_request(&mut ws, "board", "issue.dispatch", json!({ "id": id2, "target": "Node-C" }), 30).await?;
+
+                // 2. 分流后双单都应 done（胜者常规验收；败者硬解→评审）。
+                wait_conflict_split(&mut ws, id1, id2, 240).await?;
+                wait_issue_done(&mut ws, id1, &num1, 400).await?;
+                wait_issue_done(&mut ws, id2, &num2, 400).await?;
+
+                // 3. 恰一单带 conflict_auto_resolve 审计（败者）。
+                let a1 = wait_audit_decision(&mut ws, id1, "conflict_auto_resolve", 90).await.ok();
+                let a2 = wait_audit_decision(&mut ws, id2, "conflict_auto_resolve", 90).await.ok();
+                let details = match (&a1, &a2) {
+                    (Some(d), None) => d.clone(),
+                    (None, Some(d)) => d.clone(),
+                    _ => anyhow::bail!("conflict_auto_resolve 审计应恰在一单上: a1={a1:?} a2={a2:?}"),
+                };
+                if !details.contains("\"action\":\"merge\"") || !details.contains("resolutions") {
+                    anyhow::bail!("硬解审计应含 merge 处置与 resolutions: {details}");
+                }
+
+                // 4. 文件被确定性重写 + HEAD commit 带标记。
+                let final_file = std::fs::read_to_string(std::path::Path::new(&pdir).join("common.h"))
+                    .map_err(|e| anyhow::anyhow!("读最终文件失败: {e}"))?;
+                if !final_file.contains("resolved-by-ai-stub: common.h") {
+                    anyhow::bail!("文件应被 solver 确定性重写:\n{final_file}");
+                }
+                let repo = git2::Repository::open(&pdir).map_err(|e| anyhow::anyhow!("打开仓库失败: {e}"))?;
+                let head = repo.head().map_err(|e| anyhow::anyhow!("无 HEAD: {e}"))?
+                    .peel_to_commit().map_err(|e| anyhow::anyhow!("HEAD peel 失败: {e}"))?;
+                let head_msg = head.message().unwrap_or("").to_string();
+                if !head_msg.contains("conflict_auto_resolve") {
+                    anyhow::bail!("HEAD 消息应带 conflict_auto_resolve 标记: {head_msg}");
+                }
+
+                Ok(format!(
+                    "auto 硬解 OK：{num1}+{num2} 双 done，败者硬解落定（stub 重写+审计 resolutions），HEAD 带标记"
+                ))
+            }
+            .await;
+            match outcome {
+                Ok(msg) => pass("T-MRG-3", msg),
+                Err(e) => fail("T-MRG-3", format!("{e}")),
+            }
+        })
+        .await,
+    );
+
+    // T-MRG-4: 冲突漏斗 auto 档硬解失败 → 重派原 worker e2e（P5/F5②）。
+    //
+    // 编辑桩锚点 new_text 内嵌 <CONFLICT_SOLVE_BAD>（文件内容级标记——只有
+    // 硬解 prompt 能看到冲突三阶段文件内容，评审 prompt 不读文件 → 胜者
+    // 评审不受污染）：solver 3 轮恒败 → t0 探针原 worker 在线 →
+    // conflict_redispatch 重派 → 重派说明切 ANCHOR2（新基线重新表达意图）
+    // → 干净合并 done。断言：双 done / 最终内容为败者 ANCHOR2 目标值 /
+    // 审计 conflict_redispatch / 重派评论在场。
+    all_results.push(
+        run_test("T-MRG-4: 硬解失败重派原 worker（3 轮恒败→conflict_redispatch→ANCHOR2 干净合并）", || async {
+            let outcome: Result<String, anyhow::Error> = async {
+                let mut ws = ws_connect_gateway(NODES[0].web_port).await?;
+                for (key, value) in [
+                    ("conflict_auto_resolve", json!(true)),
+                    ("auto_accept", json!(true)),
+                    ("budget.max_total_redispatch", json!(0)),
+                ] {
+                    ws_api_request(&mut ws, "board", "config.set", json!({ "key": key, "value": value }), 10).await?;
+                }
+                let created = ws_api_request(
+                    &mut ws, "board", "project.create",
+                    json!({ "name": "T-MRG4 硬解失败重派", "auto_start": false }), 15,
+                ).await?;
+                let pid = created.pointer("/project/id").and_then(|v| v.as_i64()).unwrap_or(0);
+                let pdir = created.pointer("/directory").and_then(|v| v.as_str()).unwrap_or("").to_string();
+                std::fs::write(std::path::Path::new(&pdir).join("common.h"), "// common.h baseline (T-MRG4)\n#define MODE 0\n")
+                    .map_err(|e| anyhow::anyhow!("写基线失败: {e}"))?;
+                let ac_h = "[TOUCH] common.h\n[CHECK] re:FILE_EDIT_DONE";
+                // 双向 ANCHOR2：败者重派时新基线 = 胜者落点（带 BAD 标记行）。
+                let (id1, num1) = create_conflict_issue(&mut ws, pid, "T-MRG4 I1：MODE 0→1",
+                    "<EDIT_ANCHOR>#define MODE 0|||#define MODE 1 <CONFLICT_SOLVE_BAD></EDIT_ANCHOR>\
+                     <EDIT_ANCHOR2>#define MODE 2 <CONFLICT_SOLVE_BAD>|||#define MODE 8</EDIT_ANCHOR2>", ac_h).await?;
+                let (id2, num2) = create_conflict_issue(&mut ws, pid, "T-MRG4 I2：MODE 0→2",
+                    "<EDIT_ANCHOR>#define MODE 0|||#define MODE 2 <CONFLICT_SOLVE_BAD></EDIT_ANCHOR>\
+                     <EDIT_ANCHOR2>#define MODE 1 <CONFLICT_SOLVE_BAD>|||#define MODE 9</EDIT_ANCHOR2>", ac_h).await?;
+                ws_api_request(&mut ws, "board", "issue.dispatch", json!({ "id": id1, "target": "Node-B" }), 30).await?;
+                ws_api_request(&mut ws, "board", "issue.dispatch", json!({ "id": id2, "target": "Node-C" }), 30).await?;
+
+                wait_conflict_split(&mut ws, id1, id2, 240).await?;
+                wait_issue_done(&mut ws, id1, &num1, 480).await?;
+                wait_issue_done(&mut ws, id2, &num2, 480).await?;
+
+                // 败者审计 + 重派评论。
+                let a1 = wait_audit_decision(&mut ws, id1, "conflict_redispatch", 60).await.ok();
+                let a2 = wait_audit_decision(&mut ws, id2, "conflict_redispatch", 60).await.ok();
+                let (lose_id, details) = match (&a1, &a2) {
+                    (Some(d), None) => (id1, d.clone()),
+                    (None, Some(d)) => (id2, d.clone()),
+                    _ => anyhow::bail!("conflict_redispatch 审计应恰在一单上: a1={a1:?} a2={a2:?}"),
+                };
+                if !details.contains("\"worker\":\"Node-") {
+                    anyhow::bail!("重派审计应记录原 worker: {details}");
+                }
+                let comments = ws_api_request(&mut ws, "board", "comment.list", json!({ "issue_id": lose_id }), 10).await?;
+                let joined = comments.to_string();
+                if !joined.contains("已重派原 worker") {
+                    anyhow::bail!("败者评论应含重派说明: {joined}");
+                }
+
+                // 最终内容 = 败者 ANCHOR2 目标值（互斥），BAD 标记被覆写清除。
+                let final_file = std::fs::read_to_string(std::path::Path::new(&pdir).join("common.h"))
+                    .map_err(|e| anyhow::anyhow!("读最终文件失败: {e}"))?;
+                let has8 = final_file.contains("#define MODE 8");
+                let has9 = final_file.contains("#define MODE 9");
+                if has8 == has9 {
+                    anyhow::bail!("最终内容应恰含 MODE 8 或 MODE 9 之一:\n{final_file}");
+                }
+                if final_file.contains("CONFLICT_SOLVE_BAD") {
+                    anyhow::bail!("重派交付应覆写 BAD 标记行:\n{final_file}");
+                }
+
+                Ok(format!(
+                    "重派原 worker OK：{num1}+{num2} 双 done，3 轮恒败→conflict_redispatch→ANCHOR2 干净合并（终值 {}）",
+                    if has8 { "MODE 8" } else { "MODE 9" }
+                ))
+            }
+            .await;
+            match outcome {
+                Ok(msg) => pass("T-MRG-4", msg),
+                Err(e) => fail("T-MRG-4", format!("{e}")),
+            }
+        })
+        .await,
+    );
+
+    // T-MRG-5: 冲突漏斗 auto 档原 worker 离线 → 三轮接触 → 换人 e2e（P5/F5③）。
+    //
+    // 同 T-MRG-4 的恒败构造；胜者合并落定瞬间 kill 双 worker（solver Delay=4s
+    // 把硬解 3 轮失败窗口放大到 ~12s，覆盖轮询+kill 的操作间隙）→ t0/+60/+120
+    // 三轮帧级探针全无应答 → conflict_switch_worker 换 Node-D（预切编辑桩）
+    // → ANCHOR2 干净合并 done。E8：无迟到变更集（原 worker 已死，交付已消费）。
+    all_results.push(
+        run_test("T-MRG-5: 原 worker 离线三轮接触换人（kill B/C→probe 全败→conflict_switch_worker→Node-D 接手）", || async {
+            let outcome: Result<String, anyhow::Error> = async {
+                // 0. D 预切编辑桩 + 重启（接手节点）。
+                b_switch_model(&ws_d, &gateway_bin, "test/testai-board-edit-1.0")
+                    .await
+                    .map_err(anyhow::Error::msg)?;
+                gw_d.kill().await;
+                gw_d = start_gateway_and_wait("Gateway-D", &gateway_bin, ws_d.path(), &NODES[3])
+                    .await
+                    .map_err(anyhow::Error::msg)?;
+
+                let mut ws = ws_connect_gateway(NODES[0].web_port).await?;
+                for (key, value) in [
+                    ("conflict_auto_resolve", json!(true)),
+                    ("auto_accept", json!(true)),
+                    ("budget.max_total_redispatch", json!(0)),
+                ] {
+                    ws_api_request(&mut ws, "board", "config.set", json!({ "key": key, "value": value }), 10).await?;
+                }
+                let created = ws_api_request(
+                    &mut ws, "board", "project.create",
+                    json!({ "name": "T-MRG5 离线换人", "auto_start": false }), 15,
+                ).await?;
+                let pid = created.pointer("/project/id").and_then(|v| v.as_i64()).unwrap_or(0);
+                let pdir = created.pointer("/directory").and_then(|v| v.as_str()).unwrap_or("").to_string();
+                std::fs::write(std::path::Path::new(&pdir).join("common.h"), "// common.h baseline (T-MRG5)\n#define MODE 0\n")
+                    .map_err(|e| anyhow::anyhow!("写基线失败: {e}"))?;
+                let ac_h = "[TOUCH] common.h\n[CHECK] re:FILE_EDIT_DONE";
+                let (id1, num1) = create_conflict_issue(&mut ws, pid, "T-MRG5 I1：MODE 0→1",
+                    "<EDIT_ANCHOR>#define MODE 0|||#define MODE 1 <CONFLICT_SOLVE_BAD></EDIT_ANCHOR>\
+                     <EDIT_ANCHOR2>#define MODE 2 <CONFLICT_SOLVE_BAD>|||#define MODE 8</EDIT_ANCHOR2>", ac_h).await?;
+                let (id2, num2) = create_conflict_issue(&mut ws, pid, "T-MRG5 I2：MODE 0→2",
+                    "<EDIT_ANCHOR>#define MODE 0|||#define MODE 2 <CONFLICT_SOLVE_BAD></EDIT_ANCHOR>\
+                     <EDIT_ANCHOR2>#define MODE 1 <CONFLICT_SOLVE_BAD>|||#define MODE 9</EDIT_ANCHOR2>", ac_h).await?;
+                ws_api_request(&mut ws, "board", "issue.dispatch", json!({ "id": id1, "target": "Node-B" }), 30).await?;
+                ws_api_request(&mut ws, "board", "issue.dispatch", json!({ "id": id2, "target": "Node-C" }), 30).await?;
+
+                // 1. 胜者先合并（in_review/done）→ 立刻 kill 双 worker：在硬解
+                //    3 轮失败窗口（Delay=4s×3 ≈ 12s）内完成，t0 探针必扑空。
+                wait_conflict_split(&mut ws, id1, id2, 240).await?;
+                gw_b.kill().await;
+                gw_c.kill().await;
+
+                // 2. 换人链全程（3 轮探针 ~120s + Node-D 执行）→ 双 done。
+                wait_issue_done(&mut ws, id1, &num1, 540).await?;
+                wait_issue_done(&mut ws, id2, &num2, 540).await?;
+
+                // 3. 复活 B/C（后续测试依赖；编辑桩配置已持久化）。放在审计
+                //    断言之前——断言失败 bail 不得跳过复活毒化 T-MRG-6/7。
+                gw_b = start_gateway_and_wait("Gateway-B", &gateway_bin, ws_b.path(), &NODES[1])
+                    .await
+                    .map_err(anyhow::Error::msg)?;
+                gw_c = start_gateway_and_wait("Gateway-C", &gateway_bin, ws_c.path(), &NODES[2])
+                    .await
+                    .map_err(anyhow::Error::msg)?;
+
+                // 4. 败者审计：conflict_switch_worker 恰在一单上，new_target
+                //    非空且异于原 worker。rank_dispatch_candidates 返回节点
+                //    runtime id 而非 name（T37 双身份坑位的显形——投影取
+                //    base.id），实际接手由双 done + 终值互斥断言背书。
+                let a1 = wait_audit_decision(&mut ws, id1, "conflict_switch_worker", 60).await.ok();
+                let a2 = wait_audit_decision(&mut ws, id2, "conflict_switch_worker", 60).await.ok();
+                let details = match (&a1, &a2) {
+                    (Some(d), None) => d.clone(),
+                    (None, Some(d)) => d.clone(),
+                    _ => anyhow::bail!("conflict_switch_worker 审计应恰在一单上: a1={a1:?} a2={a2:?}"),
+                };
+                let audit_json: serde_json::Value = serde_json::from_str(&details)
+                    .map_err(|e| anyhow::anyhow!("conflict_switch_worker details 非 JSON: {e}: {details}"))?;
+                let new_target = audit_json.get("new_target").and_then(|v| v.as_str()).unwrap_or("");
+                let orig_worker = audit_json.get("worker").and_then(|v| v.as_str()).unwrap_or("");
+                if new_target.is_empty() || new_target == orig_worker {
+                    anyhow::bail!("换人审计 new_target 应非空且异于原 worker（{orig_worker}）: {details}");
+                }
+
+                // 5. 终值断言（败者 ANCHOR2 目标值互斥）。
+                let final_file = std::fs::read_to_string(std::path::Path::new(&pdir).join("common.h"))
+                    .map_err(|e| anyhow::anyhow!("读最终文件失败: {e}"))?;
+                let has8 = final_file.contains("#define MODE 8");
+                let has9 = final_file.contains("#define MODE 9");
+                if has8 == has9 || final_file.contains("CONFLICT_SOLVE_BAD") {
+                    anyhow::bail!("终值应恰为 ANCHOR2 目标（8/9 互斥）且无 BAD 残留:\n{final_file}");
+                }
+
+                Ok(format!(
+                    "离线换人 OK：{num1}+{num2} 双 done，kill 后三轮探针全败→conflict_switch_worker→{new_target} 接手（终值 {}）",
+                    if has8 { "MODE 8" } else { "MODE 9" }
+                ))
+            }
+            .await;
+            match outcome {
+                Ok(msg) => pass("T-MRG-5", msg),
+                Err(e) => fail("T-MRG-5", format!("{e}")),
+            }
+        })
+        .await,
+    );
+
+    // T-MRG-6: 冲突漏斗 auto 档二进制+锁文件混合冲突 e2e（P5/E5+F6）。
+    //
+    // 双 worker 各写一份不同字节 logo.bin（add/add 二进制冲突）+ 同行改
+    // Cargo.lock（文本冲突，BIN+锚点两步桩形态）→ 败者冲突集含双文件 →
+    // solver：Cargo.lock merge 确定性缝合 + logo.bin theirs 择边（不发明
+    // 内容）。断言：双 done / Cargo.lock==stub 缝合 / logo.bin==败者版本 /
+    // 审计 resolutions 含 theirs 择边与「建议重新生成」锁文件理由。
+    all_results.push(
+        run_test("T-MRG-6: 二进制择边+锁文件理由（add/add logo.bin theirs + Cargo.lock merge 缝合）", || async {
+            let outcome: Result<String, anyhow::Error> = async {
+                let mut ws = ws_connect_gateway(NODES[0].web_port).await?;
+                for (key, value) in [
+                    ("conflict_auto_resolve", json!(true)),
+                    ("auto_accept", json!(true)),
+                    ("budget.max_total_redispatch", json!(0)),
+                ] {
+                    ws_api_request(&mut ws, "board", "config.set", json!({ "key": key, "value": value }), 10).await?;
+                }
+                let created = ws_api_request(
+                    &mut ws, "board", "project.create",
+                    json!({ "name": "T-MRG6 二进制+锁文件", "auto_start": false }), 15,
+                ).await?;
+                let pid = created.pointer("/project/id").and_then(|v| v.as_i64()).unwrap_or(0);
+                let pdir = created.pointer("/directory").and_then(|v| v.as_str()).unwrap_or("").to_string();
+                std::fs::write(std::path::Path::new(&pdir).join("Cargo.lock"), "# T-MRG6 lockfile\nversion = 3\n")
+                    .map_err(|e| anyhow::anyhow!("写基线失败: {e}"))?;
+                let ac6 = "[TOUCH] Cargo.lock\n[TOUCH] assets/logo.bin\n[CHECK] re:FILE_EDIT_DONE";
+                let (id1, num1) = create_conflict_issue(&mut ws, pid, "T-MRG6 I1：lock 3→4 + logo V1",
+                    "<EDIT_FILE>Cargo.lock</EDIT_FILE><EDIT_ANCHOR>version = 3|||version = 4</EDIT_ANCHOR><BIN_EDIT>", ac6).await?;
+                let (id2, num2) = create_conflict_issue(&mut ws, pid, "T-MRG6 I2：lock 3→9 + logo V2",
+                    "<EDIT_FILE>Cargo.lock</EDIT_FILE><EDIT_ANCHOR>version = 3|||version = 9</EDIT_ANCHOR><BIN_EDIT_V2>", ac6).await?;
+                ws_api_request(&mut ws, "board", "issue.dispatch", json!({ "id": id1, "target": "Node-B" }), 30).await?;
+                ws_api_request(&mut ws, "board", "issue.dispatch", json!({ "id": id2, "target": "Node-C" }), 30).await?;
+
+                wait_conflict_split(&mut ws, id1, id2, 240).await?;
+                wait_issue_done(&mut ws, id1, &num1, 480).await?;
+                wait_issue_done(&mut ws, id2, &num2, 480).await?;
+
+                // 败者审计：择边 theirs + 锁文件理由含「建议重新生成」。
+                let a1 = wait_audit_decision(&mut ws, id1, "conflict_auto_resolve", 90).await.ok();
+                let a2 = wait_audit_decision(&mut ws, id2, "conflict_auto_resolve", 90).await.ok();
+                let details = match (&a1, &a2) {
+                    (Some(d), None) => d.clone(),
+                    (None, Some(d)) => d.clone(),
+                    _ => anyhow::bail!("conflict_auto_resolve 审计应恰在一单上: a1={a1:?} a2={a2:?}"),
+                };
+                if !details.contains("\"action\":\"theirs\"") || !details.contains("建议重新生成") {
+                    anyhow::bail!("硬解审计应含 theirs 择边与锁文件理由: {details}");
+                }
+
+                // 文件终态：Cargo.lock 被 stub 缝合；logo.bin 恰为 V1/V2 之一。
+                let lock = std::fs::read_to_string(std::path::Path::new(&pdir).join("Cargo.lock"))
+                    .map_err(|e| anyhow::anyhow!("读 Cargo.lock 失败: {e}"))?;
+                if !lock.contains("resolved-by-ai-stub: Cargo.lock") {
+                    anyhow::bail!("Cargo.lock 应被 stub 缝合:\n{lock}");
+                }
+                let logo = std::fs::read(std::path::Path::new(&pdir).join("assets").join("logo.bin"))
+                    .map_err(|e| anyhow::anyhow!("读 logo.bin 失败: {e}"))?;
+                if logo != b"BIN\x00STUB\x00V1\x00" && logo != b"BIN\x00STUB\x00V2\x00\x00" {
+                    anyhow::bail!("logo.bin 应为败者版本（V1/V2 之一），实际 {} 字节", logo.len());
+                }
+
+                Ok(format!(
+                    "二进制+锁文件 OK：{num1}+{num2} 双 done，Cargo.lock stub 缝合 + logo.bin 择边 {} 字节 + theirs/建议重新生成 审计",
+                    logo.len()
+                ))
+            }
+            .await;
+            match outcome {
+                Ok(msg) => pass("T-MRG-6", msg),
+                Err(e) => fail("T-MRG-6", format!("{e}")),
+            }
+        })
+        .await,
+    );
+
+    // T-MRG-7: 冲突漏斗 auto 档预算打满回落 human 档 e2e（P5/F5.5）。
+    //
+    // 父单 + 两子单（手动建子无 touch_paths → R-9 互斥不拦并行）并行同行
+    // 冲突，max_total_redispatch=1：败者硬解 3 轮恒败后预算检查 ——
+    // chain_dispatch_count = 父单链累计派发数（0+1+1=2）> 1 → breach →
+    // fallback_freeze（回落 human 档：冻结 + conflict(mode=auto_fallback)
+    // 审计 + 停车），不无限循环。断言：冻结 + 审计 mode=auto_fallback +
+    // 败者停车 in_progress + 胜者照常 done。
+    all_results.push(
+        run_test("T-MRG-7: 预算打满回落 human 档（父链派发数超限→fallback_freeze 冻结停车）", || async {
+            let outcome: Result<String, anyhow::Error> = async {
+                let mut ws = ws_connect_gateway(NODES[0].web_port).await?;
+                for (key, value) in [
+                    ("conflict_auto_resolve", json!(true)),
+                    ("auto_accept", json!(true)),
+                    ("budget.max_total_redispatch", json!(1)),
+                ] {
+                    ws_api_request(&mut ws, "board", "config.set", json!({ "key": key, "value": value }), 10).await?;
+                }
+                let created = ws_api_request(
+                    &mut ws, "board", "project.create",
+                    json!({ "name": "T-MRG7 预算保险丝", "auto_start": false }), 15,
+                ).await?;
+                let pid = created.pointer("/project/id").and_then(|v| v.as_i64()).unwrap_or(0);
+                let pdir = created.pointer("/directory").and_then(|v| v.as_str()).unwrap_or("").to_string();
+                std::fs::write(std::path::Path::new(&pdir).join("common.h"), "// common.h baseline (T-MRG7)\n#define MODE 0\n")
+                    .map_err(|e| anyhow::anyhow!("写基线失败: {e}"))?;
+                // 父单（不派发；预算链根）。
+                let rp = ws_api_request(&mut ws, "board", "issue.create",
+                    json!({ "title": "T-MRG7 父单", "project_id": pid, "description": "预算链根" }), 15).await?;
+                let parent_id = rp.pointer("/issue/id").and_then(|v| v.as_i64()).unwrap_or(0);
+                if parent_id == 0 {
+                    anyhow::bail!("父单创建失败: {rp}");
+                }
+                // 两子单：手动建无 TOUCH（R-9 互斥不拦并行）；文件级 BAD 标记。
+                let ac_plain = "[CHECK] re:FILE_EDIT_DONE";
+                let mk_child = |title: &str, new_mode: &str| {
+                    json!({
+                        "title": title,
+                        "project_id": pid,
+                        "parent_issue_id": parent_id,
+                        "description": format!("在工作副本内完成指定编辑：<EDIT_ANCHOR>#define MODE 0|||{new_mode}</EDIT_ANCHOR>"),
+                        "acceptance_criteria": ac_plain,
+                    })
+                };
+                let r1 = ws_api_request(&mut ws, "board", "issue.create",
+                    mk_child("T-MRG7 C1：MODE 0→1", "#define MODE 1 <CONFLICT_SOLVE_BAD>"), 15).await?;
+                let (id1, num1) = (r1.pointer("/issue/id").and_then(|v| v.as_i64()).unwrap_or(0),
+                    r1.pointer("/issue/number").and_then(|v| v.as_str()).unwrap_or("").to_string());
+                let r2 = ws_api_request(&mut ws, "board", "issue.create",
+                    mk_child("T-MRG7 C2：MODE 0→2", "#define MODE 2 <CONFLICT_SOLVE_BAD>"), 15).await?;
+                let (id2, num2) = (r2.pointer("/issue/id").and_then(|v| v.as_i64()).unwrap_or(0),
+                    r2.pointer("/issue/number").and_then(|v| v.as_str()).unwrap_or("").to_string());
+                if id1 == 0 || id2 == 0 {
+                    anyhow::bail!("子单创建失败: {r1:?} / {r2:?}");
+                }
+                ws_api_request(&mut ws, "board", "issue.dispatch", json!({ "id": id1, "target": "Node-B" }), 30).await?;
+                ws_api_request(&mut ws, "board", "issue.dispatch", json!({ "id": id2, "target": "Node-C" }), 30).await?;
+
+                // 败者：硬解恒败 → 预算 breach（链累计 2 > 1）→ 冻结停车。
+                // （breach 检查在探针时刻表之前——本测不付 120s 等待。）
+                let deadline = tokio::time::Instant::now() + Duration::from_secs(300);
+                loop {
+                    if tokio::time::Instant::now() >= deadline {
+                        let (f, _) = project_freeze_state(&mut ws, pid).await.unwrap_or((false, 0));
+                        anyhow::bail!("300s 内项目未冻结（预算 breach 未触发）：{num1}='{}' {num2}='{}' frozen={f}",
+                            issue_status_of(&mut ws, id1).await.unwrap_or_default(),
+                            issue_status_of(&mut ws, id2).await.unwrap_or_default());
+                    }
+                    tokio::time::sleep(Duration::from_secs(2)).await;
+                    if project_freeze_state(&mut ws, pid).await?.0 {
+                        break;
+                    }
+                }
+                let (win_id, lose_id) = wait_conflict_split(&mut ws, id1, id2, 120).await?;
+                let lose_st = issue_status_of(&mut ws, lose_id).await.unwrap_or_default();
+                if lose_st != "in_progress" {
+                    anyhow::bail!("预算停车单应保持 in_progress，实际 '{lose_st}'");
+                }
+                let details = wait_audit_decision(&mut ws, lose_id, "conflict", 60).await?;
+                if !details.contains("\"mode\":\"auto_fallback\"") {
+                    anyhow::bail!("conflict 审计应 mode=auto_fallback: {details}");
+                }
+                if !details.contains("预算超限") {
+                    anyhow::bail!("停车理由应含预算超限说明: {details}");
+                }
+                wait_issue_done(&mut ws, win_id, "胜者", 300).await?;
+
+                // 复原：预算闸归零（防污染后续 UAT 轮次）。
+                ws_api_request(&mut ws, "board", "config.set", json!({ "key": "budget.max_total_redispatch", "value": 0 }), 10).await?;
+
+                Ok(format!(
+                    "预算保险丝 OK：父链派发 2>1 → fallback_freeze 冻结 + auto_fallback 审计 + 败者停车 + 胜者 done（{num1}/{num2}）"
+                ))
+            }
+            .await;
+            match outcome {
+                Ok(msg) => pass("T-MRG-7", msg),
+                Err(e) => fail("T-MRG-7", format!("{e}")),
+            }
         })
         .await,
     );

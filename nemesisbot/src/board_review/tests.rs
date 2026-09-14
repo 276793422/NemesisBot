@@ -1015,7 +1015,7 @@ async fn estop_parks_project_review_with_kind() {
     let (deps, _ws) = review_deps("estop-project");
     let pid = deps
         .store
-        .create_project("急停项目", "", None, "", "")
+        .create_project("急停项目", "", None, "", "", None)
         .unwrap()
         .id;
     deps.estop.trigger();
@@ -1039,7 +1039,7 @@ async fn f3_config_gate_skips_project_review() {
     // 默认 false → 双保险第二闸拦住。
     let pid = deps
         .store
-        .create_project("默认关项目", "", None, "", "")
+        .create_project("默认关项目", "", None, "", "", None)
         .unwrap()
         .id;
     let reviewed = review_project_completion(&deps, pid).await.unwrap();
@@ -1068,7 +1068,7 @@ async fn f3_non_done_parent_and_cancelled_child_skip_review() {
     // ① 存在非 done 顶层父单（竞态防御复核）→ 跳过。
     let pid = deps
         .store
-        .create_project("竞态项目", "", None, "", "")
+        .create_project("竞态项目", "", None, "", "", None)
         .unwrap()
         .id;
     deps.store
@@ -1090,7 +1090,7 @@ async fn f3_non_done_parent_and_cancelled_child_skip_review() {
     // ② cancelled 子单 = 范围缺口 → 转人工跳过（即便父单全 done）。
     let pid2 = deps
         .store
-        .create_project("缺口项目", "", None, "", "")
+        .create_project("缺口项目", "", None, "", "", None)
         .unwrap()
         .id;
     let parent = deps
@@ -1133,7 +1133,7 @@ fn f3_fixture(deps: &BoardReviewDeps, name: &str) -> (i64, nemesis_board::Issue)
     use nemesis_board::NewIssue;
     let pid = deps
         .store
-        .create_project(name, "", None, "", "")
+        .create_project(name, "", None, "", "", None)
         .unwrap()
         .id;
     let parent = deps
@@ -1894,7 +1894,14 @@ async fn project_anchor_check_reads_leaf_subissue_deliveries() {
     let reviewer = Actor::agent("node-a");
     let project = deps
         .store
-        .create_project("聚合下钻", "d", None, "", "[CHECK] re:叶子交付关键词XYZ")
+        .create_project(
+            "聚合下钻",
+            "d",
+            None,
+            "",
+            "[CHECK] re:叶子交付关键词XYZ",
+            None,
+        )
         .unwrap();
 
     // 顶层父单：挂项目、推到 done（收口前置条件）、无任何 Delivery。
@@ -1986,7 +1993,7 @@ async fn project_anchor_fail_escalates_with_deduped_comment() {
     let reviewer = Actor::agent("node-a");
     let project = deps
         .store
-        .create_project("去重", "d", None, "", "[CHECK] re:不存在关键词XYZ")
+        .create_project("去重", "d", None, "", "[CHECK] re:不存在关键词XYZ", None)
         .unwrap();
 
     let parent = deps
@@ -2299,4 +2306,252 @@ async fn p2a_capability_fail_unlimited_mode_warns_but_continues() {
         "unlimited_mode 契约：告警继续（estop 是保险丝）"
     );
     let _ = std::fs::remove_dir_all(&deps.home);
+}
+
+// ---------------------------------------------------------------------------
+// 看板项目档案 P6（F9）：收口总结纯函数（facts/tree/root 守门）
+// ---------------------------------------------------------------------------
+
+#[test]
+fn test_project_archive_root_guards_none_missing_and_existing() {
+    // None（存量项目未绑定）/ 不存在路径 / 存在目录 三态。
+    assert!(super::project_archive_root(None).is_err());
+    assert!(super::project_archive_root(Some("Z:/definitely/not/here-nb")).is_err());
+    let dir = std::env::temp_dir().join(format!("nb-summary-root-{}-guard", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    assert!(super::project_archive_root(Some(dir.to_str().unwrap())).is_ok());
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn test_build_summary_facts_lists_issues_last_comment_and_decisions() {
+    let dir = std::env::temp_dir().join(format!("nb-summary-facts-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let store = nemesis_board::BoardStore::open(&dir.join("board.db"), "NB").expect("open store");
+    let project = store
+        .create_project("总结项目", "描述X", None, "", "", None)
+        .unwrap();
+    let parent = store
+        .create_issue(nemesis_board::NewIssue {
+            title: "父单A".into(),
+            project_id: Some(project.id),
+            ..Default::default()
+        })
+        .unwrap();
+    let _child = store
+        .create_issue(nemesis_board::NewIssue {
+            title: "子单B".into(),
+            project_id: Some(project.id),
+            parent_issue_id: Some(parent.id),
+            ..Default::default()
+        })
+        .unwrap();
+    store
+        .add_comment(nemesis_board::NewComment {
+            issue_id: parent.id,
+            author: nemesis_board::Actor::agent("node-x"),
+            content: "✅ worker 汇报完成：交付 FINAL-EXCERPT".into(),
+            parent_id: None,
+            ctype: nemesis_board::models::CommentType::Comment,
+        })
+        .unwrap();
+    store
+        .add_activity(
+            parent.id,
+            &nemesis_board::Actor::system("t"),
+            "auto_decide",
+            Some(&serde_json::json!({"decision": "conflict_auto_resolve"}).to_string()),
+        )
+        .unwrap();
+
+    let issues = store
+        .list_issues(&nemesis_board::models::IssueFilter {
+            project_id: Some(project.id),
+            ..Default::default()
+        })
+        .unwrap();
+    let decisions = store
+        .list_recent_activity(100, Some("auto_decide"))
+        .unwrap();
+    let facts = super::build_summary_facts(&store, &project, &issues, &decisions);
+
+    assert!(facts.contains("总结项目"), "项目名应在清单: {facts}");
+    assert!(
+        facts.contains("父单A") && facts.contains("子单B"),
+        "逐单应在清单: {facts}"
+    );
+    assert!(facts.contains("FINAL-EXCERPT"), "末评摘录应在清单: {facts}");
+    assert!(
+        facts.contains("conflict_auto_resolve"),
+        "决策流应在清单: {facts}"
+    );
+
+    // 决策流按项目过滤：他单 auto_decide 不得混入。
+    let other = store
+        .create_issue(nemesis_board::NewIssue {
+            title: "外部单".into(),
+            ..Default::default()
+        })
+        .unwrap();
+    store
+        .add_activity(
+            other.id,
+            &nemesis_board::Actor::system("t"),
+            "auto_decide",
+            Some(&serde_json::json!({"decision": "redispatch"}).to_string()),
+        )
+        .unwrap();
+    let decisions = store
+        .list_recent_activity(100, Some("auto_decide"))
+        .unwrap();
+    let facts = super::build_summary_facts(&store, &project, &issues, &decisions);
+    assert!(
+        !facts.contains("redispatch"),
+        "他单决策不得混入本项目清单: {facts}"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn test_render_archive_tree_lists_dirs_hides_dotfiles() {
+    let dir = std::env::temp_dir().join(format!("nb-summary-tree-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(dir.join("docs")).unwrap();
+    std::fs::create_dir_all(dir.join("records/NB-1/execution")).unwrap();
+    std::fs::write(dir.join("docs/summary.md"), "x").unwrap();
+    std::fs::write(dir.join("project.json"), "{}").unwrap();
+    std::fs::write(dir.join(".gitignore"), "y").unwrap();
+
+    let tree = super::render_archive_tree(&dir, 2);
+    assert!(tree.contains("docs/"), "目录应带斜杠: {tree}");
+    assert!(tree.contains("summary.md"), "文件应列出: {tree}");
+    // depth=2 语义：records/ 的子目录（NB-1/）可见，孙子（execution/）以 …
+    // 语义截断——附录只概览两层。
+    assert!(tree.contains("NB-1/"), "二层目录应列出: {tree}");
+    assert!(!tree.contains("execution/"), "三层目录应截断: {tree}");
+    assert!(
+        !tree.contains(".gitignore"),
+        "点文件不应出现在结构树: {tree}"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+// ---------- F9 收口总结：失败不阻塞收口（goal P6 判据单测）----------
+//
+// run_project_summary 的前置检查在任何 LLM 调用之前失败（本测：主 agent
+// 未就绪——moderator_loop 空槽）→ 返回 Err；summarize_fail_note 落
+// timeline「summary」失败事件 + 顶层父单 System 评论；项目状态不动
+// （completed 保持——失败不回滚收口状态机）。
+
+#[tokio::test]
+async fn summary_generation_failure_leaves_trace_and_keeps_completed() {
+    use nemesis_board::archive::ensure_scaffold;
+    use nemesis_board::models::IssueFilter;
+    use nemesis_board::{Actor, NewIssue, ProjectPatch};
+
+    let dir = std::env::temp_dir().join(format!("nb-summary-fail-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    let store =
+        Arc::new(nemesis_board::BoardStore::open(&dir.join("board.db"), "NB").expect("open store"));
+    store.ensure_default_channels().unwrap();
+
+    let archive_dir = dir.join("archive");
+    std::fs::create_dir_all(&archive_dir).unwrap();
+    ensure_scaffold(&archive_dir, 1, "收口总结失败测", "active").unwrap();
+
+    let project = store
+        .create_project(
+            "收口总结失败测",
+            "F9 失败留痕夹具",
+            None,
+            "",
+            "",
+            Some(archive_dir.to_str().unwrap()),
+        )
+        .unwrap();
+    // active → in_progress → completed（状态机两步；run_project_summary
+    // 要求 completed 才继续）。
+    store
+        .update_project(
+            project.id,
+            &ProjectPatch {
+                status: Some("in_progress".into()),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+    store
+        .update_project(
+            project.id,
+            &ProjectPatch {
+                status: Some("completed".into()),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+
+    let parent = store
+        .create_issue(NewIssue {
+            title: "父单".to_string(),
+            description: String::new(),
+            priority: 2,
+            project_id: Some(project.id),
+            creator: Actor::agent("node-a"),
+            ..Default::default()
+        })
+        .unwrap();
+
+    let deps = BoardReviewDeps {
+        store: store.clone(),
+        workspace: dir.clone(),
+        home: dir.clone(),
+        moderator_loop: Arc::new(std::sync::OnceLock::new()), // 空槽 = 主 agent 未就绪
+        cluster: Arc::new(nemesis_cluster::cluster::Cluster::new(
+            nemesis_cluster::types::ClusterConfig {
+                node_id: "node-a".to_string(),
+                bind_address: "127.0.0.1:0".to_string(),
+                peers: vec![],
+            },
+        )),
+        estop: Arc::new(nemesis_agent::estop::EstopState::new()),
+        estop_parked: Arc::new(std::sync::Mutex::new(Vec::new())),
+        selfcheck: SelfcheckRegistry::new(),
+    };
+
+    let err = super::run_project_summary(&deps, project.id)
+        .await
+        .expect_err("主 agent 未就绪必须 Err");
+    assert!(
+        err.contains("主 agent"),
+        "失败原因应指明主 agent 未就绪: {err}"
+    );
+
+    super::summarize_fail_note(&deps, project.id, &err);
+
+    // 顶层父单收到失败评论（诚实留痕）。
+    let comments = store.list_comments(parent.id).unwrap();
+    assert!(
+        comments
+            .iter()
+            .any(|c| c.content.contains("AI 收口总结生成失败") && c.content.contains(err.as_str())),
+        "父单应有失败评论: {comments:?}"
+    );
+    // 档案 timeline 落 summary 失败事件。
+    let timeline = std::fs::read_to_string(archive_dir.join("timeline.jsonl")).unwrap_or_default();
+    assert!(
+        timeline.contains("收口总结生成失败"),
+        "timeline 应有失败事件: {timeline}"
+    );
+    // 收口状态机不被失败回滚：项目保持 completed。
+    assert_eq!(store.get_project(project.id).unwrap().status, "completed");
+    // 项目单清单可正常拉取（失败路径没有弄脏过滤器语义）。
+    let _ = store
+        .list_issues(&IssueFilter {
+            project_id: Some(project.id),
+            ..Default::default()
+        })
+        .unwrap();
+    let _ = std::fs::remove_dir_all(&dir);
 }

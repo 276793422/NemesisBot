@@ -308,6 +308,22 @@ impl BoardStore {
             ));
             args.push(Box::new(format!("%{q}%")));
         }
+        // P1/A2+A2b 用户面默认排除三旗标（Default false = 全量，既有内部
+        // 调用行为不变；WSAPI issue.list 按入参映射，见 handlers/board.rs
+        // build_filter）。
+        if filter.exclude_cancelled {
+            sql.push_str(" AND status != 'cancelled'");
+        }
+        if filter.exclude_hidden {
+            sql.push_str(" AND hidden = 0");
+        }
+        if filter.exclude_archived_projects {
+            // 无项目单（project_id IS NULL）不受归档排除影响。
+            sql.push_str(
+                " AND (project_id IS NULL OR project_id NOT IN \
+                 (SELECT id FROM project WHERE status = 'archived'))",
+            );
+        }
         sql.push_str(" ORDER BY position ASC, id DESC");
 
         let mut stmt = conn.prepare(&sql).map_err(|e| e.to_string())?;
@@ -317,6 +333,60 @@ impl BoardStore {
             .map_err(|e| e.to_string())?;
         rows.collect::<Result<Vec<_>, _>>()
             .map_err(|e| e.to_string())
+    }
+
+    /// 批量给已取消单打 hidden 标记（P1/A2b 列表页「清理」出口）。
+    /// hidden 语义只属于取消单清理：非 cancelled 单**报错**（不静默跳过
+    /// ——批量调用的调用方需要知道哪个 id 不合法）；幂等（已 hidden 的
+    /// 取消单原样计入）。每单写一条 `issue_bulk_archive` 活动审计。
+    /// 返回打标后的 issue 列表（与入参同序）。
+    pub fn bulk_archive_cancelled(&self, ids: &[i64], actor: &Actor) -> Result<Vec<Issue>, String> {
+        let mut conn = self.conn.lock().map_err(|e| e.to_string())?;
+        let tx = conn.transaction().map_err(|e| e.to_string())?;
+        let now = Self::now();
+        let mut out = Vec::with_capacity(ids.len());
+        for id in ids {
+            let old: Issue = tx
+                .query_row(
+                    "SELECT * FROM issue WHERE id = ?1",
+                    params![id],
+                    row_to_issue,
+                )
+                .optional()
+                .map_err(|e| e.to_string())?
+                .ok_or_else(|| format!("issue {id} not found"))?;
+            if old.status.as_str() != "cancelled" {
+                return Err(format!(
+                    "issue {} 不是已取消单（status={}），拒绝打 hidden 标记",
+                    old.number,
+                    old.status.as_str()
+                ));
+            }
+            tx.execute(
+                "UPDATE issue SET hidden = 1, updated_at = ?2 WHERE id = ?1",
+                params![id, now],
+            )
+            .map_err(|e| e.to_string())?;
+            insert_activity(
+                &tx,
+                *id,
+                actor,
+                "issue_bulk_archive",
+                Some(&format!(
+                    "取消单清理：{}「{}」永久收起（hidden）",
+                    old.number, old.title
+                )),
+                now,
+            )?;
+            out.push(Issue {
+                hidden: true,
+                ..old
+            });
+        }
+        tx.commit().map_err(|e| e.to_string())?;
+        // 先释放连接锁再走查询（持锁重入即死锁，见 create_issue 同款注释）。
+        drop(conn);
+        Ok(out)
     }
 
     /// 字段级部分更新（status/assignee 不走这里——分别走 [`Self::transition_issue`]
@@ -824,6 +894,54 @@ impl BoardStore {
         Ok(issue)
     }
 
+    /// 终态回滚（看板项目档案 goal P3/D4 修复）：把处于 done 的单据退回
+    /// in_review。done 是状态机终态（[Self::rollback_decision] 同款裁决：
+    /// 回滚是人工/护栏纠错特权，不进 can_transition 词表），故走 bypass
+    /// 直改 + System 评论 + status_change 审计留痕。仅当前 done 生效——
+    /// 非 done 返回 `Ok(false)`（调用方按「无需回滚」处理）。
+    pub fn rollback_done_to_in_review(&self, issue_id: i64, reason: &str) -> Result<bool, String> {
+        let mut conn = self.conn.lock().map_err(|e| e.to_string())?;
+        let tx = conn.transaction().map_err(|e| e.to_string())?;
+        let status: String = tx
+            .query_row(
+                "SELECT status FROM issue WHERE id = ?1",
+                params![issue_id],
+                |r| r.get(0),
+            )
+            .optional()
+            .map_err(|e| e.to_string())?
+            .ok_or_else(|| format!("issue {issue_id} 不存在"))?;
+        if status != crate::models::IssueStatus::Done.as_str() {
+            return Ok(false);
+        }
+        let now = Self::now();
+        tx.execute(
+            "UPDATE issue SET status = ?1, updated_at = ?2 WHERE id = ?3",
+            params![crate::models::IssueStatus::InReview.as_str(), now, issue_id],
+        )
+        .map_err(|e| format!("rollback_done_to_in_review: {e}"))?;
+        let actor = Actor::system("board-archive");
+        insert_comment(
+            &tx,
+            issue_id,
+            &actor,
+            &format!("↩ 终态回滚：{reason}——单据退回 in_review 等待人工处置。"),
+            None,
+            CommentType::System,
+            now,
+        )?;
+        insert_activity(
+            &tx,
+            issue_id,
+            &actor,
+            "status_changed",
+            Some(&format!("done_rollback:done→in_review:{reason}")),
+            now,
+        )?;
+        tx.commit().map_err(|e| e.to_string())?;
+        Ok(true)
+    }
+
     /// 订阅（幂等；reason 覆盖更新）。
     pub fn subscribe(&self, issue_id: i64, who: &Actor, reason: &str) -> Result<(), String> {
         let conn = self.conn.lock().map_err(|e| e.to_string())?;
@@ -867,6 +985,11 @@ impl BoardStore {
     // 项目
     // -----------------------------------------------------------------------
 
+    /// `directory`（v12 列，看板项目档案 goal P2/B1）：项目档案目录绝对路径，
+    /// None = 不绑定（存量形态）。**绑定不可变**——解析/安全化/重叠拒绝在
+    /// `crate::archive::resolve_project_directory`（调用方先把目录落到磁盘
+    /// 再传入），store 只存字符串真相；此后无任何写入口（ProjectPatch 不含
+    /// 本字段，改名不改目录）。
     pub fn create_project(
         &self,
         name: &str,
@@ -874,6 +997,7 @@ impl BoardStore {
         lead: Option<&Actor>,
         icon: &str,
         acceptance_criteria: &str,
+        directory: Option<&str>,
     ) -> Result<Project, String> {
         if name.trim().is_empty() {
             return Err("project name must not be empty".to_string());
@@ -881,8 +1005,8 @@ impl BoardStore {
         let conn = self.conn.lock().map_err(|e| e.to_string())?;
         let now = Self::now();
         conn.execute(
-            "INSERT INTO project (name, description, status, priority, lead_type, lead_id, icon, acceptance_criteria, created_at)
-             VALUES (?1, ?2, 'active', 1, ?3, ?4, ?5, ?6, ?7)",
+            "INSERT INTO project (name, description, status, priority, lead_type, lead_id, icon, acceptance_criteria, directory, created_at)
+             VALUES (?1, ?2, 'active', 1, ?3, ?4, ?5, ?6, ?7, ?8)",
             params![
                 name,
                 description,
@@ -890,6 +1014,7 @@ impl BoardStore {
                 lead.as_ref().map(|l| l.id.as_str()),
                 icon,
                 acceptance_criteria,
+                directory,
                 now,
             ],
         )
@@ -970,6 +1095,89 @@ impl BoardStore {
             .map_err(|e| e.to_string())?;
         rows.collect::<Result<Vec<_>, _>>()
             .map_err(|e| e.to_string())
+    }
+
+    // -----------------------------------------------------------------------
+    // 冲突冻结 + 待补合并队列（看板项目档案 goal P5/F2+F3；系统管理字段，
+    // 刻意不走 ProjectPatch——无人工任意改写入口，全部经这里）
+    // -----------------------------------------------------------------------
+
+    /// 置位/解除项目冲突冻结。解除时**不清** pending_merges（队列由补合并
+    /// 流程消费后逐条出队，中途再冻结剩余条目保留）。
+    pub fn set_project_conflict_frozen(&self, id: i64, frozen: bool) -> Result<Project, String> {
+        let conn = self.conn.lock().map_err(|e| e.to_string())?;
+        conn.execute(
+            "UPDATE project SET conflict_frozen = ?1 WHERE id = ?2",
+            params![frozen as i64, id],
+        )
+        .map_err(|e| format!("set_project_conflict_frozen: {e}"))?;
+        drop(conn);
+        self.get_project(id)
+    }
+
+    /// 追加待补合并条目（按完成顺序 append；幂等键 task_id——重复登记
+    /// （冻结期重推/补跑重入）静默跳过）。
+    pub fn append_pending_merge(
+        &self,
+        id: i64,
+        entry: crate::models::PendingMerge,
+    ) -> Result<(), String> {
+        let conn = self.conn.lock().map_err(|e| e.to_string())?;
+        let raw: String = conn
+            .query_row(
+                "SELECT pending_merges FROM project WHERE id = ?1",
+                params![id],
+                |r| {
+                    r.get::<_, Option<String>>(0)
+                        .map(|v| v.unwrap_or_else(|| "[]".into()))
+                },
+            )
+            .map_err(|e| format!("append_pending_merge 读队列: {e}"))?;
+        let mut queue: Vec<crate::models::PendingMerge> =
+            serde_json::from_str(&raw).unwrap_or_default();
+        if queue.iter().any(|e| e.task_id == entry.task_id) {
+            return Ok(());
+        }
+        queue.push(entry);
+        let json = serde_json::to_string(&queue).map_err(|e| e.to_string())?;
+        conn.execute(
+            "UPDATE project SET pending_merges = ?1 WHERE id = ?2",
+            params![json, id],
+        )
+        .map_err(|e| format!("append_pending_merge: {e}"))?;
+        Ok(())
+    }
+
+    /// 弹出队首待补合并条目（补合并消费语义：成功/失败都要出队——失败时
+    /// 调用方自行决定重新登记或停车）。队空 = Ok(None)。
+    pub fn pop_pending_merge(
+        &self,
+        id: i64,
+    ) -> Result<Option<crate::models::PendingMerge>, String> {
+        let conn = self.conn.lock().map_err(|e| e.to_string())?;
+        let raw: String = conn
+            .query_row(
+                "SELECT pending_merges FROM project WHERE id = ?1",
+                params![id],
+                |r| {
+                    r.get::<_, Option<String>>(0)
+                        .map(|v| v.unwrap_or_else(|| "[]".into()))
+                },
+            )
+            .map_err(|e| format!("pop_pending_merge 读队列: {e}"))?;
+        let mut queue: Vec<crate::models::PendingMerge> =
+            serde_json::from_str(&raw).unwrap_or_default();
+        let Some(head) = queue.first().cloned() else {
+            return Ok(None);
+        };
+        queue.remove(0);
+        let json = serde_json::to_string(&queue).map_err(|e| e.to_string())?;
+        conn.execute(
+            "UPDATE project SET pending_merges = ?1 WHERE id = ?2",
+            params![json, id],
+        )
+        .map_err(|e| format!("pop_pending_merge: {e}"))?;
+        Ok(Some(head))
     }
 
     // -----------------------------------------------------------------------
@@ -1265,10 +1473,15 @@ impl BoardStore {
     /// issue 是否有未完结（`dispatched`）派发（防重复派发）。
     pub fn has_active_dispatch(&self, issue_id: i64) -> Result<bool, String> {
         let conn = self.conn.lock().map_err(|e| e.to_string())?;
+        // D0b（goal P2）：running（已开跑）同样算在途——防同单重复派发。
         let n: i64 = conn
             .query_row(
-                "SELECT COUNT(*) FROM issue_dispatch WHERE issue_id = ?1 AND state = ?2",
-                params![issue_id, dispatch_state::DISPATCHED],
+                "SELECT COUNT(*) FROM issue_dispatch WHERE issue_id = ?1 AND state IN (?2, ?3)",
+                params![
+                    issue_id,
+                    dispatch_state::DISPATCHED,
+                    dispatch_state::RUNNING
+                ],
                 |r| r.get(0),
             )
             .map_err(|e| e.to_string())?;
@@ -1285,13 +1498,14 @@ impl BoardStore {
         let mut stmt = conn
             .prepare(
                 "SELECT worker_id, COUNT(*) FROM issue_dispatch
-                 WHERE state = ?1 GROUP BY worker_id",
+                 WHERE state IN (?1, ?2) GROUP BY worker_id",
             )
             .map_err(|e| e.to_string())?;
         let rows = stmt
-            .query_map(params![dispatch_state::DISPATCHED], |r| {
-                Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)? as usize))
-            })
+            .query_map(
+                params![dispatch_state::DISPATCHED, dispatch_state::RUNNING],
+                |r| Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)? as usize)),
+            )
             .map_err(|e| e.to_string())?;
         let mut map = std::collections::HashMap::new();
         for row in rows {
@@ -1302,7 +1516,9 @@ impl BoardStore {
     }
 
     /// 终结派发：`done` / `failed`（P4 扩展 cancelled/timeout）。
-    /// 只有 `dispatched` 态可终结——返回 `Ok(true)` 表示本次调用完成了终结
+    /// `dispatched` / `running` 态可终结（D0b：已开跑的单回报同样要能落账
+    /// ——只认 dispatched 会让 running 回调写回假跳过、issue 卡死
+    /// in_progress）——返回 `Ok(true)` 表示本次调用完成了终结
     /// （幂等：重复回调拿到 `Ok(false)`，写回方据此跳过重复评论/转移）。
     pub fn finish_dispatch(&self, task_id: &str, state: &str) -> Result<bool, String> {
         if state != dispatch_state::DONE && state != dispatch_state::FAILED {
@@ -1311,26 +1527,71 @@ impl BoardStore {
             ));
         }
         let conn = self.conn.lock().map_err(|e| e.to_string())?;
+        // D0b（goal P2）：running（已开跑）的单同样要能终结——
+        // 准入/RUNNING 信号落地后，写回终结需同时命中 dispatched 与 running。
         let n = conn
             .execute(
                 "UPDATE issue_dispatch
                  SET state = ?2, completed_at = ?3
-                 WHERE task_id = ?1 AND state = ?4",
-                params![task_id, state, Self::now(), dispatch_state::DISPATCHED],
+                 WHERE task_id = ?1 AND state IN (?4, ?5)",
+                params![
+                    task_id,
+                    state,
+                    Self::now(),
+                    dispatch_state::DISPATCHED,
+                    dispatch_state::RUNNING
+                ],
             )
             .map_err(|e| e.to_string())?;
         Ok(n > 0)
+    }
+
+    /// 记录派发基线（P4/E8：基线推送成功后写；task_id → master 下发的
+    /// 档案仓库 HEAD commit hex）。worker 回传变更集时按 base_commit 对照
+    /// 本表裁决归属——无基线行的派发未参与档案管线，到达的变更集不合入。
+    /// 幂等 upsert（同 task_id 重派理论不会发生，防御性覆盖）。
+    pub fn set_dispatch_baseline(
+        &self,
+        task_id: &str,
+        baseline_commit: &str,
+    ) -> Result<(), String> {
+        let conn = self.conn.lock().map_err(|e| e.to_string())?;
+        conn.execute(
+            "INSERT INTO dispatch_baseline (task_id, baseline_commit, created_at)
+             VALUES (?1, ?2, ?3)
+             ON CONFLICT(task_id) DO UPDATE SET baseline_commit = excluded.baseline_commit",
+            params![task_id, baseline_commit, Self::now()],
+        )
+        .map_err(|e| e.to_string())?;
+        Ok(())
+    }
+
+    /// 查派发基线（变更集归属裁决：`None` = 该派发未参与档案管线）。
+    pub fn get_dispatch_baseline(&self, task_id: &str) -> Result<Option<String>, String> {
+        let conn = self.conn.lock().map_err(|e| e.to_string())?;
+        conn.query_row(
+            "SELECT baseline_commit FROM dispatch_baseline WHERE task_id = ?1",
+            params![task_id],
+            |r| r.get(0),
+        )
+        .optional()
+        .map_err(|e| e.to_string())
     }
 
     /// issue 当前活跃（`dispatched`）派发记录（P4 cancel 入口：拿到 task_id
     /// 才能下行 cancel，同时确认该 issue 确有在途派发；多条取最新）。
     pub fn get_active_dispatch(&self, issue_id: i64) -> Result<Option<DispatchRecord>, String> {
         let conn = self.conn.lock().map_err(|e| e.to_string())?;
+        // D0b（goal P2）：running（已开跑）同样算在途。
         conn.query_row(
             "SELECT task_id, issue_id, worker_id, state, dispatched_at, completed_at
-             FROM issue_dispatch WHERE issue_id = ?1 AND state = ?2
+             FROM issue_dispatch WHERE issue_id = ?1 AND state IN (?2, ?3)
              ORDER BY rowid DESC LIMIT 1",
-            params![issue_id, dispatch_state::DISPATCHED],
+            params![
+                issue_id,
+                dispatch_state::DISPATCHED,
+                dispatch_state::RUNNING
+            ],
             row_to_dispatch,
         )
         .optional()
@@ -1338,23 +1599,145 @@ impl BoardStore {
     }
 
     /// 全部在途派发（P4 超时 sweep 扫描用；时间升序——最老的先处理）。
+    /// D0b（goal P2）：running（已开跑）同样在途——worker 中途失联的
+    /// running 单必须仍能被超时 sweep 兜底终结，否则永久卡死（NB-12 型）。
     pub fn list_active_dispatches(&self) -> Result<Vec<DispatchRecord>, String> {
         let conn = self.conn.lock().map_err(|e| e.to_string())?;
         let mut stmt = conn
             .prepare(
                 "SELECT task_id, issue_id, worker_id, state, dispatched_at, completed_at
-                 FROM issue_dispatch WHERE state = ?1 ORDER BY rowid ASC",
+                 FROM issue_dispatch WHERE state IN (?1, ?2) ORDER BY rowid ASC",
             )
             .map_err(|e| e.to_string())?;
         let rows = stmt
-            .query_map(params![dispatch_state::DISPATCHED], row_to_dispatch)
+            .query_map(
+                params![dispatch_state::DISPATCHED, dispatch_state::RUNNING],
+                row_to_dispatch,
+            )
             .map_err(|e| e.to_string())?;
         rows.collect::<Result<Vec<_>, _>>()
             .map_err(|e| e.to_string())
     }
 
+    /// D0b（goal P2）：worker 出队开跑上报 → dispatched → running。
+    /// 只允许 dispatched → running（重复上报/已终态诚实返回 false）。
+    /// 返回是否发生了转移。
+    pub fn mark_dispatch_running(&self, task_id: &str, worker_id: &str) -> Result<bool, String> {
+        let conn = self.conn.lock().map_err(|e| e.to_string())?;
+        let n = conn
+            .execute(
+                "UPDATE issue_dispatch SET state = ?1
+                 WHERE task_id = ?2 AND worker_id = ?3 AND state = ?4",
+                params![
+                    dispatch_state::RUNNING,
+                    task_id,
+                    worker_id,
+                    dispatch_state::DISPATCHED
+                ],
+            )
+            .map_err(|e| format!("mark_dispatch_running: {e}"))?;
+        Ok(n > 0)
+    }
+
+    /// E（goal P2/P5）：授予标签台账（board_meta `granted_tags`，JSON
+    /// `{node_id: [tags]}`）。合并授予：节点已拥有（自报或已授予）的不重复。
+    /// 返回实际新授予的标签。兜底派发场景：master 把 relaxed 掉的缺失标签
+    /// 授予节点——同类后续任务正常匹配，降级路径越走越少。
+    pub fn grant_tags_to_node(
+        &self,
+        node_id: &str,
+        tags: &[String],
+    ) -> Result<Vec<String>, String> {
+        const KEY: &str = "granted_tags";
+        let existing = self.get_meta(KEY)?.unwrap_or_else(|| "{}".to_string());
+        let mut map: std::collections::HashMap<String, Vec<String>> =
+            serde_json::from_str(&existing).unwrap_or_default();
+        let entry = map.entry(node_id.to_string()).or_default();
+        let mut granted_new = Vec::new();
+        for t in tags {
+            let t = t.trim();
+            if t.is_empty() {
+                continue;
+            }
+            if !entry.iter().any(|x| x.eq_ignore_ascii_case(t)) {
+                entry.push(t.to_string());
+                granted_new.push(t.to_string());
+            }
+        }
+        if !granted_new.is_empty() {
+            self.set_meta(
+                KEY,
+                &serde_json::to_string(&map).map_err(|e| format!("序列化 granted_tags: {e}"))?,
+            )?;
+        }
+        Ok(granted_new)
+    }
+
+    /// 授予标签查询（node_id → tags；无授予返回空 map）。
+    pub fn granted_tags_map(
+        &self,
+    ) -> Result<std::collections::HashMap<String, Vec<String>>, String> {
+        const KEY: &str = "granted_tags";
+        let raw = self.get_meta(KEY)?.unwrap_or_else(|| "{}".to_string());
+        Ok(serde_json::from_str(&raw).unwrap_or_default())
+    }
+
+    pub fn get_meta(&self, key: &str) -> Result<Option<String>, String> {
+        let conn = self.conn.lock().map_err(|e| e.to_string())?;
+        let v: Option<String> = conn
+            .query_row(
+                "SELECT value FROM board_meta WHERE key = ?1",
+                params![key],
+                |r| r.get(0),
+            )
+            .optional()
+            .map_err(|e| format!("get_meta: {e}"))?;
+        Ok(v)
+    }
+
+    pub fn set_meta(&self, key: &str, value: &str) -> Result<(), String> {
+        let conn = self.conn.lock().map_err(|e| e.to_string())?;
+        conn.execute(
+            "INSERT INTO board_meta(key, value) VALUES(?1, ?2)
+             ON CONFLICT(key) DO UPDATE SET value = ?2",
+            params![key, value],
+        )
+        .map_err(|e| format!("set_meta: {e}"))?;
+        Ok(())
+    }
+
+    /// D0b 重平衡候选：其他 worker 上「已派未开跑」的单（queued-only）。
+    pub fn list_queued_dispatches_excluding(
+        &self,
+        exclude_worker: &str,
+    ) -> Result<Vec<DispatchRecord>, String> {
+        let conn = self.conn.lock().map_err(|e| e.to_string())?;
+        let mut stmt = conn
+            .prepare(
+                "SELECT task_id, issue_id, worker_id, state, dispatched_at, completed_at
+                 FROM issue_dispatch
+                 WHERE state = ?1 AND worker_id != ?2
+                 ORDER BY rowid ASC",
+            )
+            .map_err(|e| e.to_string())?;
+        let rows = stmt
+            .query_map(
+                params![dispatch_state::DISPATCHED, exclude_worker],
+                row_to_dispatch,
+            )
+            .map_err(|e| format!("list_queued_dispatches_excluding: {e}"))?;
+        let mut out = Vec::new();
+        for r in rows {
+            out.push(r.map_err(|e| format!("row: {e}"))?);
+        }
+        Ok(out)
+    }
+
     /// 管理端取消派发（P4 per-task cancel 的 A 侧落账）：state → cancelled +
-    /// `dispatch_cancelled` 活动（同事务）。只有 `dispatched` 态可取消——
+    /// `dispatch_cancelled` 活动（同事务）。`dispatched` / `running` 态可取消
+    /// ——running 是 D0b 的「已开跑」态，worker 侧 token cancel 支持打断
+    /// 执行中的任务（W2 P4），A 侧必须放行（否则用户无法取消在途单，
+    /// 误报「派发已终结」）；取消后迟到的回调被写回终态守卫幂等丢弃。
     /// 返回 `Ok(Some(record))` 表示本次调用赢得竞态（调用方据此才下行
     /// task_cancel RPC）；`Ok(None)` = 已终结（写回回调 / 超时 sweep 先到），
     /// 幂等跳过、不写活动。
@@ -1370,12 +1753,13 @@ impl BoardStore {
             .execute(
                 "UPDATE issue_dispatch
                  SET state = ?2, completed_at = ?3
-                 WHERE task_id = ?1 AND state = ?4",
+                 WHERE task_id = ?1 AND state IN (?4, ?5)",
                 params![
                     task_id,
                     dispatch_state::CANCELLED,
                     now,
-                    dispatch_state::DISPATCHED
+                    dispatch_state::DISPATCHED,
+                    dispatch_state::RUNNING
                 ],
             )
             .map_err(|e| e.to_string())?;
@@ -1403,9 +1787,9 @@ impl BoardStore {
     }
 
     /// 超时兜底终结（P4 sweep）：state → failed + `dispatch_timeout` 活动。
-    /// `WHERE state = 'dispatched'` 守卫与写回回调竞态——`Ok(Some(record))` =
-    /// 本次调用赢得竞态（调用方负责 ⛔ System 评论 + dispatch_failed 通知）；
-    /// `Ok(None)` = 回调已先终结，跳过。
+    /// `WHERE state IN ('dispatched','running')` 守卫与写回回调竞态——
+    /// `Ok(Some(record))` = 本次调用赢得竞态（调用方负责 ⛔ System 评论 +
+    /// dispatch_failed 通知）；`Ok(None)` = 回调已先终结，跳过。
     pub fn fail_dispatch(
         &self,
         task_id: &str,
@@ -1418,12 +1802,13 @@ impl BoardStore {
             .execute(
                 "UPDATE issue_dispatch
                  SET state = ?2, completed_at = ?3
-                 WHERE task_id = ?1 AND state = ?4",
+                 WHERE task_id = ?1 AND state IN (?4, ?5)",
                 params![
                     task_id,
                     dispatch_state::FAILED,
                     now,
-                    dispatch_state::DISPATCHED
+                    dispatch_state::DISPATCHED,
+                    dispatch_state::RUNNING
                 ],
             )
             .map_err(|e| e.to_string())?;
@@ -2788,6 +3173,7 @@ fn row_to_issue(row: &rusqlite::Row<'_>) -> rusqlite::Result<Issue> {
             .get::<_, Option<String>>("required_role")?
             .filter(|s| !s.trim().is_empty()),
         required_tags,
+        hidden: row.get::<_, i64>("hidden")? != 0,
         created_at: row.get("created_at")?,
         updated_at: row.get("updated_at")?,
     })
@@ -2843,6 +3229,9 @@ fn row_to_project(row: &rusqlite::Row<'_>) -> rusqlite::Result<Project> {
     let lead_type: Option<String> = row.get("lead_type")?;
     let lead_id: Option<String> = row.get("lead_id")?;
     let status: String = row.get("status")?;
+    let pending_raw: String = row
+        .get::<_, Option<String>>("pending_merges")?
+        .unwrap_or_else(|| "[]".to_string());
     Ok(Project {
         id: row.get("id")?,
         name: row.get("name")?,
@@ -2852,6 +3241,9 @@ fn row_to_project(row: &rusqlite::Row<'_>) -> rusqlite::Result<Project> {
         lead: lead_type.zip(lead_id).map(|(k, i)| Actor::new(&k, &i)),
         icon: row.get("icon")?,
         acceptance_criteria: row.get("acceptance_criteria")?,
+        directory: row.get("directory")?,
+        conflict_frozen: row.get::<_, Option<i64>>("conflict_frozen")?.unwrap_or(0) != 0,
+        pending_merges: serde_json::from_str(&pending_raw).unwrap_or_default(),
         created_at: row.get("created_at")?,
     })
 }

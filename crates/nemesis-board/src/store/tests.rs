@@ -112,7 +112,7 @@ fn test_get_by_id_and_number_and_missing() {
 #[test]
 fn test_list_filters() {
     let (store, dir) = temp_store("filters");
-    let proj = store.create_project("P", "", None, "", "").unwrap();
+    let proj = store.create_project("P", "", None, "", "", None).unwrap();
 
     let mut assigned = new_issue("被指派的");
     assigned.assignee = Some(AssignmentType::Worker);
@@ -467,14 +467,18 @@ fn test_projects_crud() {
     let (store, dir) = temp_store("projects");
     assert!(store.list_projects().unwrap().is_empty());
     let p = store
-        .create_project("主项目", "描述", Some(&admin()), "🚀", "")
+        .create_project("主项目", "描述", Some(&admin()), "🚀", "", None)
         .unwrap();
     assert_eq!(p.name, "主项目");
     assert_eq!(p.lead, Some(admin()));
     // 重名拒绝。
-    assert!(store.create_project("主项目", "", None, "", "").is_err());
+    assert!(
+        store
+            .create_project("主项目", "", None, "", "", None)
+            .is_err()
+    );
     // 空名拒绝。
-    assert!(store.create_project("  ", "", None, "", "").is_err());
+    assert!(store.create_project("  ", "", None, "", "", None).is_err());
     assert_eq!(store.get_project(p.id).unwrap().icon, "🚀");
     assert_eq!(store.list_projects().unwrap().len(), 1);
     assert!(store.get_project(999).is_err());
@@ -610,6 +614,40 @@ fn test_dispatch_crud_lifecycle() {
         store
             .insert_dispatch("task-1", issue.id, "node-d", &admin())
             .is_err()
+    );
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn test_dispatch_baseline_roundtrip() {
+    let (store, dir) = temp_store("dispatch-baseline");
+    let issue = store.create_issue(new_issue("基线归属")).unwrap();
+    store
+        .insert_dispatch("task-b1", issue.id, "node-b", &admin())
+        .unwrap();
+
+    // 无基线 = 未参与档案管线（归属裁决：到达的变更集不合入）。
+    assert!(store.get_dispatch_baseline("task-b1").unwrap().is_none());
+    assert!(
+        store
+            .get_dispatch_baseline("no-such-task")
+            .unwrap()
+            .is_none()
+    );
+
+    // 基线推送成功后写入 → 可查。
+    store.set_dispatch_baseline("task-b1", "0123abcd").unwrap();
+    assert_eq!(
+        store.get_dispatch_baseline("task-b1").unwrap().as_deref(),
+        Some("0123abcd")
+    );
+
+    // 幂等 upsert（防御性覆盖：同 task_id 重写取新值）。
+    store.set_dispatch_baseline("task-b1", "fedcba99").unwrap();
+    assert_eq!(
+        store.get_dispatch_baseline("task-b1").unwrap().as_deref(),
+        Some("fedcba99")
     );
 
     let _ = std::fs::remove_dir_all(&dir);
@@ -963,7 +1001,7 @@ fn test_notification_inbox_read_flow_and_admin_wildcard() {
 fn test_update_project_patch() {
     let (store, dir) = temp_store("project-patch");
     let p = store
-        .create_project("原项目", "说明", None, "🚀", "")
+        .create_project("原项目", "说明", None, "🚀", "", None)
         .unwrap();
 
     // 部分更新：status 归档 + 改 icon；其余字段不动。
@@ -1007,7 +1045,9 @@ fn test_update_project_patch() {
     assert!(store.update_project(999, &ProjectPatch::default()).is_err());
 
     // 改名撞 UNIQUE。
-    store.create_project("另一个", "", None, "", "").unwrap();
+    store
+        .create_project("另一个", "", None, "", "", None)
+        .unwrap();
     assert!(
         store
             .update_project(
@@ -1187,6 +1227,101 @@ fn test_list_active_dispatches_across_issues() {
     let active = store.list_active_dispatches().unwrap();
     assert_eq!(active.len(), 1);
     assert_eq!(active[0].task_id, "t-3");
+    cleanup(&dir);
+}
+
+// ---------------------------------------------------------------------------
+// D0b：running（已开跑）派发的在途语义（2026-09-13 NB-12/13/15 实机回归
+// ——超时 sweep / 取消 / 写回终结必须覆盖 running，否则卡死永久化）
+// ---------------------------------------------------------------------------
+
+#[test]
+fn test_running_dispatch_is_active_and_sweep_can_fail_it() {
+    let (store, dir) = temp_store("running-active");
+    let issue = store.create_issue(new_issue("执行中")).unwrap();
+    store
+        .insert_dispatch("task-r1", issue.id, "node-b", &admin())
+        .unwrap();
+    // 出队开跑：dispatched → running。
+    assert!(store.mark_dispatch_running("task-r1", "node-b").unwrap());
+
+    // running 在途：active 列表 / has_active / get_active / 负载统计都要看见。
+    let active = store.list_active_dispatches().unwrap();
+    assert_eq!(active.len(), 1);
+    assert_eq!(active[0].task_id, "task-r1");
+    assert_eq!(active[0].state, dispatch_state::RUNNING);
+    assert!(store.has_active_dispatch(issue.id).unwrap());
+    assert_eq!(
+        store
+            .get_active_dispatch(issue.id)
+            .unwrap()
+            .unwrap()
+            .task_id,
+        "task-r1"
+    );
+    assert_eq!(
+        store.count_active_dispatch_by_worker().unwrap()["node-b"],
+        1
+    );
+
+    // 超时 sweep 兜底可终结 running（worker 中途失联的唯一回收路径）。
+    let rec = store
+        .fail_dispatch("task-r1", "running 超时")
+        .unwrap()
+        .expect("sweep wins on running");
+    assert_eq!(rec.state, dispatch_state::FAILED);
+    assert!(rec.completed_at.is_some());
+    cleanup(&dir);
+}
+
+#[test]
+fn test_running_dispatch_cancellable_then_late_callback_dropped() {
+    let (store, dir) = temp_store("running-cancel");
+    let issue = store.create_issue(new_issue("取消执行中")).unwrap();
+    store
+        .insert_dispatch("task-r2", issue.id, "node-b", &admin())
+        .unwrap();
+    store.mark_dispatch_running("task-r2", "node-b").unwrap();
+
+    // 用户取消执行中的单：赢得竞态 → cancelled（D0b 前误报「派发已终结」）。
+    let rec = store
+        .cancel_dispatch("task-r2", &admin())
+        .unwrap()
+        .expect("cancel wins on running");
+    assert_eq!(rec.state, dispatch_state::CANCELLED);
+
+    // 迟到的回调（写回路径）：finish_dispatch 对 cancelled 诚实返回 false
+    // ——写回方据此幂等跳过（gateway 终态守卫同语义）。
+    assert!(
+        !store
+            .finish_dispatch("task-r2", dispatch_state::DONE)
+            .unwrap()
+    );
+    assert_eq!(
+        store.get_dispatch("task-r2").unwrap().unwrap().state,
+        dispatch_state::CANCELLED
+    );
+    cleanup(&dir);
+}
+
+#[test]
+fn test_running_dispatch_callback_writes_back() {
+    let (store, dir) = temp_store("running-writeback");
+    let issue = store.create_issue(new_issue("跑完回报")).unwrap();
+    store
+        .insert_dispatch("task-r3", issue.id, "node-b", &admin())
+        .unwrap();
+    store.mark_dispatch_running("task-r3", "node-b").unwrap();
+    // 正常回报：running → done 可终结（NB-12「already terminal (running),
+    // skip」事故的直接回归锁）。
+    assert!(
+        store
+            .finish_dispatch("task-r3", dispatch_state::DONE)
+            .unwrap()
+    );
+    let rec = store.get_dispatch("task-r3").unwrap().unwrap();
+    assert_eq!(rec.state, dispatch_state::DONE);
+    assert!(rec.completed_at.is_some());
     cleanup(&dir);
 }
 
@@ -2238,7 +2373,10 @@ fn test_project_status_lenient_read_unknown_value() {
     // 存量库里的未知 status 字符串 → 读取宽容映射 active（WARN 一次），
     // 不炸不拒读。
     let (store, dir) = temp_store("project-status-lenient");
-    let pid = store.create_project("老项目", "", None, "", "").unwrap().id;
+    let pid = store
+        .create_project("老项目", "", None, "", "", None)
+        .unwrap()
+        .id;
     // 直接 SQL 改成词表外的值（模拟存量的自由字符串时代遗留数据）。
     {
         let conn = store.conn.lock().unwrap();
@@ -2308,12 +2446,13 @@ fn test_project_acceptance_criteria_roundtrip() {
             None,
             "🚀",
             "交付说明文本。\n<REVIEW_FAIL>",
+            None,
         )
         .unwrap();
     assert_eq!(p.acceptance_criteria, "交付说明文本。\n<REVIEW_FAIL>");
     // 缺省空串。
     let p2 = store
-        .create_project("无标准项目", "", None, "", "")
+        .create_project("无标准项目", "", None, "", "", None)
         .unwrap();
     assert_eq!(p2.acceptance_criteria, "");
     // patch 更新。
@@ -2464,4 +2603,340 @@ fn test_audit_rollback_done_to_in_review_and_reentry_rejected() {
     // activity 不存在拒。
     assert!(store.rollback_decision(999_999).is_err());
     let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// rollback_done_to_in_review（P3/D4 修复）：done 单 bypass 回滚到
+/// in_review + 系统评论 + status_changed 审计；非 done 幂等返回
+/// Ok(false)（T-XFER-5 首轮实机实证：普通 transition_issue 对
+/// done→in_review loud 拒绝，回滚静默失败、单据假性收货）。
+#[test]
+fn test_done_rollback_bypass_to_in_review() {
+    let (store, dir) = temp_store("done-rollback");
+    let issue = store.create_issue(new_issue("超限转人工")).unwrap();
+
+    // 非 done：无需回滚（幂等 false，不报错）。
+    assert!(
+        !store
+            .rollback_done_to_in_review(issue.id, "测试：非 done")
+            .unwrap()
+    );
+
+    // 推到 done → bypass 回滚成功。
+    store
+        .transition_issue(issue.id, IssueStatus::Done, &admin())
+        .unwrap();
+    assert!(
+        store
+            .rollback_done_to_in_review(issue.id, "执行档案超护栏")
+            .unwrap()
+    );
+    let rolled = store.get_issue(issue.id).unwrap();
+    assert_eq!(rolled.status, IssueStatus::InReview);
+
+    // 系统评论 + status_changed 审计留痕。
+    let comments = store.list_comments(issue.id).unwrap();
+    assert!(
+        comments.iter().any(|c| c.content.contains("终态回滚")),
+        "回滚必须留系统评论"
+    );
+    let acts = store
+        .list_recent_activity(500, Some("status_changed"))
+        .unwrap();
+    assert!(
+        acts.iter().any(|r| r
+            .activity
+            .details
+            .as_deref()
+            .unwrap_or("")
+            .contains("done_rollback")),
+        "回滚必须留 status_changed 活动"
+    );
+
+    // 不存在的 issue：loud 拒。
+    assert!(store.rollback_done_to_in_review(999_999, "x").is_err());
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+// ---------------------------------------------------------------------------
+// P1/A2 + A2b（看板项目档案 goal）：IssueFilter 排除旗标 + 取消单清理
+// ---------------------------------------------------------------------------
+
+/// 三个排除旗标逐个生效 + 组合（Default=false：内部调用方全量可见）。
+#[test]
+fn test_issue_filter_exclusion_flags() {
+    let (store, dir) = temp_store("filter-exclusion");
+    let proj = store
+        .create_project("归档项目", "", None, "", "", None)
+        .unwrap();
+    let mut in_proj = new_issue("项目子单");
+    in_proj.project_id = Some(proj.id);
+    let a = store.create_issue(in_proj).unwrap().id;
+    let b = store.create_issue(new_issue("独立单")).unwrap().id;
+    let c = store.create_issue(new_issue("取消单")).unwrap().id;
+    store
+        .transition_issue(c, IssueStatus::Cancelled, &admin())
+        .unwrap();
+    store.bulk_archive_cancelled(&[c], &admin()).unwrap();
+    // 归档项目（A2）。
+    store
+        .update_project(
+            proj.id,
+            &ProjectPatch {
+                status: Some("archived".into()),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+
+    let ids_of = |f: &IssueFilter| -> Vec<i64> {
+        let mut v: Vec<i64> = store
+            .list_issues(f)
+            .unwrap()
+            .into_iter()
+            .map(|i| i.id)
+            .collect();
+        v.sort();
+        v
+    };
+
+    // Default：全量可见（内部调用方语义不变）。
+    let mut all = ids_of(&IssueFilter::default());
+    all.sort();
+    assert_eq!(all, vec![a, b, c]);
+
+    // 只排归档项目子单。
+    let f = IssueFilter {
+        exclude_archived_projects: true,
+        ..Default::default()
+    };
+    assert_eq!(ids_of(&f), vec![b, c]);
+
+    // 只排已取消单。
+    let f = IssueFilter {
+        exclude_cancelled: true,
+        ..Default::default()
+    };
+    assert_eq!(ids_of(&f), vec![a, b]);
+
+    // 只排 hidden 单（永久收起，无放行口）。
+    let f = IssueFilter {
+        exclude_hidden: true,
+        ..Default::default()
+    };
+    assert_eq!(ids_of(&f), vec![a, b]);
+
+    // 三旗标全开（WSAPI issue.list 默认形态）：只剩独立活跃单。
+    let f = IssueFilter {
+        exclude_archived_projects: true,
+        exclude_cancelled: true,
+        exclude_hidden: true,
+        ..Default::default()
+    };
+    assert_eq!(ids_of(&f), vec![b]);
+    cleanup(&dir);
+}
+
+/// bulk_archive_cancelled：取消单打 hidden → 列表消失；happy/幂等；
+/// 非取消单（含混批）整体拒绝不部分落账；逐单审计。
+#[test]
+fn test_bulk_archive_cancelled() {
+    let (store, dir) = temp_store("bulk-archive");
+    let i1 = store.create_issue(new_issue("取消甲")).unwrap();
+    let i2 = store.create_issue(new_issue("取消乙")).unwrap();
+    let live = store.create_issue(new_issue("活单")).unwrap();
+    for id in [i1.id, i2.id] {
+        store
+            .transition_issue(id, IssueStatus::Cancelled, &admin())
+            .unwrap();
+    }
+
+    // happy：两单打标。
+    let out = store
+        .bulk_archive_cancelled(&[i1.id, i2.id], &admin())
+        .unwrap();
+    assert_eq!(out.len(), 2);
+    assert!(out.iter().all(|i| i.hidden));
+    for id in [i1.id, i2.id] {
+        assert!(store.get_issue(id).unwrap().hidden);
+    }
+
+    // 列表层面：exclude_hidden 后消失，exclude_cancelled 同样消失。
+    let f = IssueFilter {
+        exclude_hidden: true,
+        ..Default::default()
+    };
+    let left: Vec<i64> = store
+        .list_issues(&f)
+        .unwrap()
+        .into_iter()
+        .map(|i| i.id)
+        .collect();
+    assert_eq!(left, vec![live.id]);
+
+    // 幂等：已 hidden 的取消单重复清理不炸。
+    let again = store.bulk_archive_cancelled(&[i1.id], &admin()).unwrap();
+    assert_eq!(again.len(), 1);
+    assert!(again[0].hidden);
+
+    // 非取消单拒绝（单发）。
+    let err = store
+        .bulk_archive_cancelled(&[live.id], &admin())
+        .unwrap_err();
+    assert!(err.contains("不是已取消单"), "拒绝文案：{err}");
+    assert!(!store.get_issue(live.id).unwrap().hidden);
+
+    // 混批整体拒绝、不部分落账（live 不被误标，i2 状态不变）。
+    let err = store
+        .bulk_archive_cancelled(&[i2.id, live.id], &admin())
+        .unwrap_err();
+    assert!(err.contains("不是已取消单"), "混批拒绝文案：{err}");
+    assert!(!store.get_issue(live.id).unwrap().hidden);
+    assert!(
+        store.get_issue(i2.id).unwrap().hidden,
+        "已清理单不受混批失败影响"
+    );
+
+    // 不存在的 id 拒绝。
+    assert!(store.bulk_archive_cancelled(&[999_999], &admin()).is_err());
+
+    // 逐单审计：happy 两次（首批 + 幂等补跑）→ i1 恰 2 条 issue_bulk_archive。
+    let acts = store
+        .list_recent_activity(100, Some("issue_bulk_archive"))
+        .unwrap();
+    let i1_acts = acts.iter().filter(|r| r.activity.issue_id == i1.id).count();
+    let i2_acts = acts.iter().filter(|r| r.activity.issue_id == i2.id).count();
+    assert_eq!(i1_acts, 2, "i1 审计条数：{i1_acts}");
+    assert_eq!(i2_acts, 1, "i2 审计条数：{i2_acts}");
+    assert!(
+        acts.iter().all(|r| r
+            .activity
+            .details
+            .as_deref()
+            .unwrap_or("")
+            .contains("永久收起")),
+        "审计 details 应带清理语义"
+    );
+    cleanup(&dir);
+}
+
+// -- 项目档案目录（看板项目档案 goal P2/B1）--
+
+#[test]
+fn test_project_directory_bind_and_readback() {
+    let (store, dir) = temp_store("project-directory");
+    // 绑定写入 + 读回（create_project 唯一写入口）。目录字符串原样存
+    // （store 不做平台化改写）。
+    let p = store
+        .create_project("档案项目", "", None, "", "", Some("X:/archives/p1"))
+        .unwrap();
+    assert_eq!(p.directory.as_deref(), Some("X:/archives/p1"));
+    let got = store.get_project(p.id).unwrap();
+    assert_eq!(got.directory.as_deref(), Some("X:/archives/p1"));
+    // list_projects 同样投影。
+    assert!(
+        store
+            .list_projects()
+            .unwrap()
+            .iter()
+            .all(|x| x.id != p.id || x.directory.is_some())
+    );
+    // None = 存量形态。
+    let legacy = store
+        .create_project("存量项目", "", None, "", "", None)
+        .unwrap();
+    assert_eq!(legacy.directory, None);
+    // 绑定不可变：update_project 改名不改目录，patch 无 directory 字段可写。
+    store
+        .update_project(
+            p.id,
+            &ProjectPatch {
+                name: Some("改名后的项目".to_string()),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+    let renamed = store.get_project(p.id).unwrap();
+    assert_eq!(renamed.name, "改名后的项目");
+    assert_eq!(
+        renamed.directory.as_deref(),
+        Some("X:/archives/p1"),
+        "改名不改目录"
+    );
+    cleanup(&dir);
+}
+
+// ---------------------------------------------------------------------------
+// P5/F2+F3：冲突冻结 + 待补合并队列
+// ---------------------------------------------------------------------------
+
+#[test]
+fn test_conflict_freeze_roundtrip_and_default_off() {
+    let (store, dir) = temp_store("conflict-freeze");
+    let p = store
+        .create_project("冻结项目", "", None, "", "", Some("X:/archives/fz"))
+        .unwrap();
+    // 默认不冻结。
+    assert!(!store.get_project(p.id).unwrap().conflict_frozen);
+    // 置位。
+    store.set_project_conflict_frozen(p.id, true).unwrap();
+    assert!(store.get_project(p.id).unwrap().conflict_frozen);
+    // 解除。
+    store.set_project_conflict_frozen(p.id, false).unwrap();
+    assert!(!store.get_project(p.id).unwrap().conflict_frozen);
+    cleanup(&dir);
+}
+
+#[test]
+fn test_unfreeze_preserves_pending_merges() {
+    // F4 关键语义：解除冻结**不清** pending_merges——队列由补合并逐条
+    // pop 消费；提前清空会让冻结期交付静默丢失。
+    let (store, dir) = temp_store("unfreeze-keeps-queue");
+    let p = store
+        .create_project("队列项目", "", None, "", "", Some("X:/archives/q"))
+        .unwrap();
+    store
+        .append_pending_merge(
+            p.id,
+            crate::models::PendingMerge {
+                task_id: "task-1".into(),
+                issue_id: 11,
+                placement_dir: "/tmp/placement-a".into(),
+                reason: "conflict_freeze".into(),
+                parked_at_ms: 1_000,
+            },
+        )
+        .unwrap();
+    store.set_project_conflict_frozen(p.id, true).unwrap();
+    store.set_project_conflict_frozen(p.id, false).unwrap();
+    let project = store.get_project(p.id).unwrap();
+    assert_eq!(project.pending_merges.len(), 1, "解冻不得清队列");
+    assert_eq!(project.pending_merges[0].task_id, "task-1");
+    cleanup(&dir);
+}
+
+#[test]
+fn test_pending_merge_append_pop_fifo() {
+    let (store, dir) = temp_store("pending-fifo");
+    let p = store
+        .create_project("FIFO 项目", "", None, "", "", Some("X:/archives/fifo"))
+        .unwrap();
+    // 空队列 pop → None。
+    assert!(store.pop_pending_merge(p.id).unwrap().is_none());
+    let mk = |tid: &str, issue: i64| crate::models::PendingMerge {
+        task_id: tid.into(),
+        issue_id: issue,
+        placement_dir: format!("/tmp/{tid}"),
+        reason: "conflict_freeze".into(),
+        parked_at_ms: 42,
+    };
+    store.append_pending_merge(p.id, mk("t-a", 1)).unwrap();
+    store.append_pending_merge(p.id, mk("t-b", 2)).unwrap();
+    // FIFO：先登记先消费。
+    let first = store.pop_pending_merge(p.id).unwrap().unwrap();
+    assert_eq!(first.task_id, "t-a");
+    let second = store.pop_pending_merge(p.id).unwrap().unwrap();
+    assert_eq!(second.task_id, "t-b");
+    // 消费完 → None。
+    assert!(store.pop_pending_merge(p.id).unwrap().is_none());
+    cleanup(&dir);
 }

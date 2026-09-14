@@ -13,6 +13,8 @@ tokio = { workspace = true }
 async-trait = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
+# 分块传输通道（P3/D1）：chunk payload base64 进 JSON（逐块有界，非整包）。
+base64 = { workspace = true }
 tracing = { workspace = true }
 thiserror = { workspace = true }
 chrono = { workspace = true }

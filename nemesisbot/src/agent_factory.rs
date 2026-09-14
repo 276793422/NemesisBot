@@ -1307,63 +1307,49 @@ pub fn build_cluster_agent_loop(
     //
     // Task context (task_id + device_id) is set/cleared by cluster_agent_loop
     // around each task execution.
+    //
+    // P3 执行档案根修（2026-09-14 T-XFER-1~6 全败实证）：cluster 请求日志是
+    // 看板档案回传的**功能数据源**（outbox 入队/启动清扫补入队/兜底拉取都按
+    // `nemesis_path` 固定的 `logs/cluster_logs` 扫），不是调试日志——与
+    // `logging.llm.enabled`/`llm.log_dir`（主 agent request_logs 的开关与
+    // 目录）完全解耦：UAT harness 改端口时整段替换 logging 曾把它静默抹掉
+    // （enabled），模板 log_dir 又指向 request_logs——两个方向都会让档案
+    // 管线全链死且无任何告警。cluster agent 路径常开（同 session_log 先例；
+    // 每 cluster 任务一个目录）+ 目录钉死 canonical 值（单一真相源）。
     let cluster_observer: Option<
         Arc<crate::cluster_request_logger_observer::ClusterRequestLoggerObserver>,
     > = {
-        let llm_cfg = cfg
-            .logging
-            .as_ref()
-            .and_then(|l| l.llm.as_ref())
-            .filter(|l| l.enabled);
+        let logging_config = nemesis_agent::request_logger::LoggingConfig {
+            enabled: true,
+            detail_level: nemesis_agent::request_logger::DetailLevel::Full,
+            log_dir: "logs/cluster_logs".to_string(),
+            save_raw: true,
+        };
+        let workspace_path = shared.workspace_dir();
+        let observer = Arc::new(
+            crate::cluster_request_logger_observer::ClusterRequestLoggerObserver::new(
+                logging_config,
+                &workspace_path,
+            ),
+        );
 
-        match llm_cfg {
-            Some(llm_cfg) => {
-                let logging_config = nemesis_agent::request_logger::LoggingConfig {
-                    enabled: true,
-                    detail_level: match llm_cfg.detail_level.as_str() {
-                        "truncated" => nemesis_agent::request_logger::DetailLevel::Truncated,
-                        _ => nemesis_agent::request_logger::DetailLevel::Full,
-                    },
-                    log_dir: if llm_cfg.log_dir.is_empty() {
-                        "logs/cluster_logs".to_string()
-                    } else {
-                        llm_cfg.log_dir.clone()
-                    },
-                    save_raw: llm_cfg.save_raw,
-                };
-                let workspace_path = shared.workspace_dir();
-                let observer = Arc::new(
-                    crate::cluster_request_logger_observer::ClusterRequestLoggerObserver::new(
-                        logging_config,
-                        &workspace_path,
-                    ),
-                );
-
-                // Create dedicated observer_manager and register the observer.
-                let mgr = Arc::new(nemesis_observer::Manager::new());
-                let mgr_clone = mgr.clone();
-                let observer_clone = observer.clone();
-                tokio::task::block_in_place(|| {
-                    tokio::runtime::Handle::current().block_on(async {
-                        mgr_clone
-                            .register(observer_clone as Arc<dyn nemesis_observer::Observer>)
-                            .await;
-                    })
-                });
-                agent_loop.set_observer_manager(mgr);
-
-                info!(
-                    "[AgentFactory] ClusterRequestLoggerObserver registered (writes to logs/cluster_logs/{{device_id}}/{{task_id}}/)"
-                );
-                Some(observer)
-            }
-            None => {
-                info!(
-                    "[AgentFactory] ClusterRequestLoggerObserver disabled (logging.llm.enabled = false)"
-                );
-                None
-            }
+        // Create dedicated observer_manager and register the observer.
+        // try_register 同步快路（manager 刚建未共享，无竞争）：factory 是
+        // sync fn，旧 block_in_place 桥接在 current-thread runtime（如
+        // #[tokio::test]）直接 panic——2026-09-14 常开注册后 4 个 factory
+        // 测试实证。锁意外被占 = 诚实装配失败，不 panic 不静默丢 observer。
+        let mgr = Arc::new(nemesis_observer::Manager::new());
+        if !mgr.try_register(observer.clone() as Arc<dyn nemesis_observer::Observer>) {
+            return Err(anyhow::anyhow!(
+                "cluster observer manager 注册锁被占（异常并发）"
+            ));
         }
+        agent_loop.set_observer_manager(mgr);
+
+        info!(
+            "[AgentFactory] ClusterRequestLoggerObserver registered (writes to logs/cluster_logs/{{device_id}}/{{task_id}}/)"
+        );
+        Some(observer)
     };
 
     // 6. Build tool config + register all tools + enable MCP.

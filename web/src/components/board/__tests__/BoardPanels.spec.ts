@@ -218,7 +218,125 @@ describe('ProjectPanel（项目）', () => {
     expect(call[2].name).toBe('新项目')
   })
 
-  it('归档 → project.update status=archived；已归档显示恢复按钮', async () => {
+  it('P2/B1：档案目录填写 → payload 带 directory；留空 → 不带该键（自动分配）', async () => {
+    const w = mount(ProjectPanel)
+    await flushPromises()
+    await w.findAll('button').find((b) => b.text().includes('新建项目'))!.trigger('click')
+    const inputs = w.findAll('input.form-input')
+    await inputs.find((i) => i.attributes('placeholder')?.includes('项目名'))!.setValue('档案项目')
+    // 显式目录路径 → payload 带 directory
+    await inputs.find((i) => i.attributes('placeholder')?.includes('board-projects'))!.setValue('X:/archives/demo')
+    await w.findAll('button').find((b) => b.text() === '创建')!.trigger('click')
+    await flushPromises()
+    const withDir = requestMock.mock.calls.find((c) => c[1] === 'project.create')!
+    expect(withDir[2].directory).toBe('X:/archives/demo')
+
+    // 留空 → payload 不含 directory 键（后端自动分配）
+    const w2 = mount(ProjectPanel)
+    await flushPromises()
+    await w2.findAll('button').find((b) => b.text().includes('新建项目'))!.trigger('click')
+    await w2.findAll('input.form-input').find((i) => i.attributes('placeholder')?.includes('项目名'))!.setValue('自动项目')
+    await w2.findAll('button').find((b) => b.text() === '创建')!.trigger('click')
+    await flushPromises()
+    const withoutDir = requestMock.mock.calls.find((c) => c[1] === 'project.create' && c[2].name === '自动项目')!
+    expect('directory' in withoutDir[2]).toBe(false)
+  })
+
+  it('P2/B1：创建成功 toast 显示后端解析出的档案目录；表单清空', async () => {
+    requestMock.mockImplementation((_m: string, cmd: string) => {
+      if (cmd === 'project.create')
+        return Promise.resolve({ created: true, project: { id: 9 }, directory: 'C:/ws/board-projects/demo' })
+      return Promise.resolve({})
+    })
+    const w = mount(ProjectPanel)
+    await flushPromises()
+    await w.findAll('button').find((b) => b.text().includes('新建项目'))!.trigger('click')
+    await w.findAll('input.form-input').find((i) => i.attributes('placeholder')?.includes('项目名'))!.setValue('demo')
+    await w.findAll('button').find((b) => b.text() === '创建')!.trigger('click')
+    await flushPromises()
+    const toasts = useToast().toasts.map((t) => t.message).join('\n')
+    expect(toasts).toContain('C:/ws/board-projects/demo')
+    // 弹窗关闭 + 表单重置（再开时目录输入为空）
+    expect(w.find('.modal-backdrop').exists()).toBe(false)
+  })
+
+  it('P2/B1：项目行显示档案目录（📁 前缀）', async () => {
+    requestMock.mockImplementation((_m: string, cmd: string) => {
+      if (cmd === 'project.list')
+        return Promise.resolve({
+          projects: [
+            proj({ id: 1, name: '带目录', directory: 'C:/archives/one' }),
+            proj({ id: 2, name: '无目录', directory: null }),
+          ],
+        })
+      return Promise.resolve({})
+    })
+    const w = mount(ProjectPanel)
+    await flushPromises()
+    expect(w.text()).toContain('C:/archives/one')
+  })
+
+  it('P6/F10：绑定目录项目显示「📂 档案」入口 → project.open_dir 只传 project_id', async () => {
+    requestMock.mockImplementation((_m: string, cmd: string) => {
+      if (cmd === 'project.list')
+        return Promise.resolve({
+          projects: [
+            proj({ id: 1, name: '带目录', directory: 'C:/archives/one' }),
+            proj({ id: 2, name: '无目录', directory: null }),
+          ],
+        })
+      return Promise.resolve({})
+    })
+    const w = mount(ProjectPanel)
+    await flushPromises()
+    // 只在绑定目录的行出现（无目录项目不显示入口）
+    const archiveBtns = w.findAll('button').filter((b) => b.text().includes('📂 档案'))
+    expect(archiveBtns.length).toBe(1)
+    await archiveBtns[0].trigger('click')
+    await flushPromises()
+    const call = requestMock.mock.calls.find((c) => c[1] === 'project.open_dir')!
+    expect(call[2]).toEqual({ project_id: 1 })
+  })
+
+  it('P6/F11：进度行显示档案完整性 ⚠（missing_blocks → 缺 N 块 + hover 明细）', async () => {
+    requestMock.mockImplementation((_m: string, cmd: string) => {
+      if (cmd === 'project.list') return Promise.resolve({ projects: [proj({ id: 1, name: '缺块项目' })] })
+      if (cmd === 'project.progress')
+        return Promise.resolve({
+          projects: [
+            {
+              project_id: 1, name: '缺块项目', status: 'in_progress',
+              total: 2, counts: { done: 2 }, stage: '已完成',
+              archive_integrity: 'ok',
+              archive_missing_blocks: ['NB-3:manifest', 'NB-4:landed'],
+            },
+          ],
+        })
+      return Promise.resolve({})
+    })
+    const w = mount(ProjectPanel)
+    await flushPromises()
+    const warn = w.findAll('.badge').find((b) => b.text().includes('⚠ 缺 2 块'))
+    expect(warn).toBeTruthy()
+    expect(warn!.attributes('title')).toContain('NB-3:manifest')
+
+    // 无缺失块 → 不显示 ⚠ 徽章
+    requestMock.mockImplementation((_m: string, cmd: string) => {
+      if (cmd === 'project.list') return Promise.resolve({ projects: [proj({ id: 1, name: '干净项目' })] })
+      if (cmd === 'project.progress')
+        return Promise.resolve({
+          projects: [
+            { project_id: 1, name: '干净项目', status: 'active', total: 0, counts: {}, stage: '未拆解', archive_integrity: 'ok', archive_missing_blocks: [] },
+          ],
+        })
+      return Promise.resolve({})
+    })
+    const w2 = mount(ProjectPanel)
+    await flushPromises()
+    expect(w2.findAll('.badge').some((b) => b.text().includes('⚠ 缺'))).toBe(false)
+  })
+
+  it('归档 → project.update status=archived；已归档分组展开后显示恢复按钮', async () => {
     requestMock.mockImplementation((_m: string, cmd: string) => {
       if (cmd === 'project.list') return Promise.resolve({ projects: [proj()] })
       return Promise.resolve({})
@@ -229,15 +347,89 @@ describe('ProjectPanel（项目）', () => {
     await flushPromises()
     expect(requestMock.mock.calls.find((c) => c[1] === 'project.update')![2]).toEqual({ id: 1, status: 'archived' })
 
-    // 已归档项目 → 恢复按钮
+    // 已归档项目 → 默认折叠；展开「已归档」分组后可见恢复按钮（C4）
     requestMock.mockImplementation((_m: string, cmd: string) => {
       if (cmd === 'project.list') return Promise.resolve({ projects: [proj({ status: 'archived' })] })
       return Promise.resolve({})
     })
     const w2 = mount(ProjectPanel)
     await flushPromises()
-    expect(w2.text()).toContain('已归档')
+    expect(w2.text()).toContain('已归档（1）')
+    // 折叠态：恢复按钮不在 DOM
+    expect(w2.findAll('button').some((b) => b.text() === '恢复')).toBe(false)
+    // 展开 → 恢复按钮出现
+    await w2.findAll('button').find((b) => b.text().includes('已归档（'))!.trigger('click')
+    await flushPromises()
     expect(w2.findAll('button').some((b) => b.text() === '恢复')).toBe(true)
+  })
+
+  it('C0：状态徽章映射 ProjectStatus 四态（completed 不再显示「进行中」）', async () => {
+    const cases = [
+      { status: 'active', label: '未启动', cls: 'badge-info' },
+      { status: 'in_progress', label: '进行中', cls: 'badge-warning' },
+      { status: 'completed', label: '已完成', cls: 'badge-success' },
+      { status: 'archived', label: '已归档', cls: 'badge-neutral' },
+    ]
+    for (const c of cases) {
+      requestMock.mockImplementation((_m: string, cmd: string) => {
+        if (cmd === 'project.list') return Promise.resolve({ projects: [proj({ status: c.status })] })
+        return Promise.resolve({})
+      })
+      const w = mount(ProjectPanel)
+      await flushPromises()
+      // 归档态在折叠组里：展开后断言（其余态在主表直接断言）
+      if (c.status === 'archived') {
+        await w.findAll('button').find((b) => b.text().includes('已归档（'))!.trigger('click')
+        await flushPromises()
+      }
+      const badge = w.find(`.badge.${c.cls}`)
+      expect(badge.exists()).toBe(true)
+      expect(badge.text()).toBe(c.label)
+      w.unmount()
+    }
+  })
+
+  it('C0：未知状态回退中性徽章原文（不炸渲染）', async () => {
+    requestMock.mockImplementation((_m: string, cmd: string) => {
+      if (cmd === 'project.list') return Promise.resolve({ projects: [proj({ status: 'legacy_state' })] })
+      return Promise.resolve({})
+    })
+    const w = mount(ProjectPanel)
+    await flushPromises()
+    const badge = w.find('.badge.badge-neutral')
+    expect(badge.exists()).toBe(true)
+    expect(badge.text()).toBe('legacy_state')
+  })
+
+  it('C4：进行中与已归档分组——归档项目默认不在主表', async () => {
+    requestMock.mockImplementation((_m: string, cmd: string) => {
+      if (cmd === 'project.list')
+        return Promise.resolve({ projects: [proj({ id: 1, name: '活跃' }), proj({ id: 2, name: '旧项目', status: 'archived' })] })
+      return Promise.resolve({})
+    })
+    const w = mount(ProjectPanel)
+    await flushPromises()
+    expect(w.text()).toContain('活跃')
+    expect(w.text()).not.toContain('旧项目') // 折叠态隐藏
+    await w.findAll('button').find((b) => b.text().includes('已归档（'))!.trigger('click')
+    await flushPromises()
+    expect(w.text()).toContain('旧项目') // 展开可见
+  })
+
+  it('C1：项目行显示进度摘要（done/total · stage）', async () => {
+    requestMock.mockImplementation((_m: string, cmd: string) => {
+      if (cmd === 'project.list') return Promise.resolve({ projects: [proj()] })
+      if (cmd === 'project.progress')
+        return Promise.resolve({
+          projects: [
+            { project_id: 1, name: '主项目', status: 'in_progress', total: 8, counts: { done: 2 }, stage: '执行中' },
+          ],
+        })
+      return Promise.resolve({})
+    })
+    const w = mount(ProjectPanel)
+    await flushPromises()
+    expect(w.text()).toContain('2/8 · 执行中')
   })
 })
 
@@ -617,6 +809,7 @@ describe('BoardConfigPanel（配置 全自动流转 P1/A4）', () => {
     auto_review: true,
     auto_accept: false,
     auto_close_parent: false,
+    conflict_auto_resolve: false,
     unlimited_mode: false,
     max_redispatch: 2,
     dispatch_timeout_secs: 3600,
@@ -641,7 +834,7 @@ describe('BoardConfigPanel（配置 全自动流转 P1/A4）', () => {
     return w
   }
 
-  it('渲染 8 个自动化开关 + 参数默认值', async () => {
+  it('渲染 9 个自动化开关 + 参数默认值', async () => {
     const w = await mountPanel({})
     expect(w.text()).toContain('拆解自动发车')
     expect(w.text()).toContain('自动验收')
@@ -649,17 +842,19 @@ describe('BoardConfigPanel（配置 全自动流转 P1/A4）', () => {
     expect(w.text()).toContain('父单自动收口')
     expect(w.text()).toContain('验收取证')
     expect(w.text()).toContain('项目自动收口')
+    expect(w.text()).toContain('合并冲突 AI 自动解决')
     expect(w.text()).toContain('无限模式')
     expect(w.text()).toContain('无人匹配兜底派发')
     expect(w.text()).toContain('验收 FAIL 重派上限')
     expect(w.text()).toContain('预算护栏')
     expect(w.text()).toContain('任务墙钟时限')
     const checked = w.findAll('input[type="checkbox"]')
-    expect(checked.length).toBe(8)
-    // fullFlags：auto_review=true 开，其余关（toggles 顺序：[0]=plan.auto_confirm、[1]=auto_review、[7]=dispatch_fallback）。
+    expect(checked.length).toBe(9)
+    // fullFlags：auto_review=true 开，其余关（toggles 顺序：[0]=plan.auto_confirm、[1]=auto_review、[6]=conflict_auto_resolve、[7]=unlimited_mode、[8]=dispatch_fallback）。
     expect((checked[0].element as HTMLInputElement).checked).toBe(false)
     expect((checked[1].element as HTMLInputElement).checked).toBe(true)
-    expect((checked[7].element as HTMLInputElement).checked).toBe(false)
+    expect((checked[6].element as HTMLInputElement).checked).toBe(false)
+    expect((checked[8].element as HTMLInputElement).checked).toBe(false)
   })
 
   it('兜底开关关 → 兜底客户端输入框不渲染；开 → 渲染并可保存目标', async () => {
@@ -873,6 +1068,80 @@ describe('IssueListView（列表）', () => {
     await flushPromises()
     expect(requestMock.mock.calls.some((c) => c[1] === 'issue.dispatch')).toBe(false) // 只指派，不自动派发
   })
+
+  // A2/A2b（看板项目档案 goal P1）：已取消单默认排除 + 勾选放行 + 清理。
+  it('A2 默认不发 include_cancelled；勾选「已取消」→ issue.list 带该参数', async () => {
+    requestMock.mockImplementation((_m: string, cmd: string) => {
+      if (cmd === 'issue.list') return Promise.resolve({ issues: [], total: 0 })
+      return Promise.resolve({})
+    })
+    const w = mount(IssueListView)
+    await flushPromises()
+    // 默认：不带 include_cancelled（后端默认排除语义生效）。
+    let call = requestMock.mock.calls.find((c) => c[1] === 'issue.list')!
+    expect(call[2]).toEqual({})
+    // 勾选 → 重拉带 include_cancelled: true。
+    await w.find('.cancelled-toggle input').setValue(true)
+    await flushPromises()
+    const calls = requestMock.mock.calls.filter((c) => c[1] === 'issue.list')
+    expect(calls[calls.length - 1][2]).toEqual({ include_cancelled: true })
+  })
+
+  it('A2b 清理：勾选放行后出现清理按钮 → 确认弹窗 → issue.bulk_archive {ids} → toast + 刷新', async () => {
+    requestMock.mockImplementation((_m: string, cmd: string, data: any) => {
+      if (cmd === 'issue.list') {
+        return Promise.resolve({
+          issues: [
+            issue({ id: 1, number: 'NB-1', status: 'cancelled' }),
+            issue({ id: 2, number: 'NB-2', status: 'cancelled' }),
+            issue({ id: 3, number: 'NB-3', status: 'in_progress' }),
+          ],
+          total: 3,
+        })
+      }
+      if (cmd === 'issue.bulk_archive') {
+        return Promise.resolve({ archived: data.ids.length, issues: [] })
+      }
+      return Promise.resolve({})
+    })
+    const w = mount(IssueListView)
+    await flushPromises()
+    // 未放行时不显示清理按钮（cancelled 行也默认不可见）。
+    expect(w.text()).not.toContain('清理已取消')
+    await w.find('.cancelled-toggle input').setValue(true)
+    await flushPromises()
+    const btn = w.findAll('button').find((b) => b.text().includes('清理已取消'))!
+    expect(btn.text()).toContain('2')
+    await btn.trigger('click')
+    const modal = w.find('.modal-backdrop')
+    expect(modal.exists()).toBe(true)
+    expect(modal.text()).toContain('永久收起')
+    await modal.findAll('button').find((b) => b.text() === '确认清理')!.trigger('click')
+    await flushPromises()
+    expect(requestMock.mock.calls.find((c) => c[1] === 'issue.bulk_archive')![2]).toEqual({
+      ids: [1, 2],
+    })
+    expect(useToast().toasts.some((t) => t.type === 'success' && t.message.includes('永久收起'))).toBe(true)
+  })
+
+  it('A2b 清理失败：后端整体拒绝 → toast 报错，弹窗保留', async () => {
+    requestMock.mockImplementation((_m: string, cmd: string) => {
+      if (cmd === 'issue.list')
+        return Promise.resolve({ issues: [issue({ id: 1, number: 'NB-1', status: 'cancelled' })], total: 1 })
+      if (cmd === 'issue.bulk_archive')
+        return Promise.reject(new Error('issue NB-1 不是已取消单（status=cancelled），拒绝打 hidden 标记'))
+      return Promise.resolve({})
+    })
+    const w = mount(IssueListView)
+    await flushPromises()
+    await w.find('.cancelled-toggle input').setValue(true)
+    await flushPromises()
+    await w.findAll('button').find((b) => b.text().includes('清理已取消'))!.trigger('click')
+    await w.findAll('button').find((b) => b.text() === '确认清理')!.trigger('click')
+    await flushPromises()
+    expect(useToast().toasts.some((t) => t.type === 'error' && t.message.includes('清理失败'))).toBe(true)
+    expect(w.find('.modal-backdrop').exists()).toBe(true)
+  })
 })
 
 // ---------------------------------------------------------------------------
@@ -990,15 +1259,20 @@ describe('AuditPanel（决策流 全自动流转 P5/E2）', () => {
         details: JSON.stringify({ decision: 'redispatch', verdict: 'FAIL', round: 1 }),
       }),
     ])
+    // A1（看板项目档案 P1）：「只看可回滚」默认开——本测看全量渲染，先关掉。
+    await w.find('.rollback-toggle input').setValue(false)
+    await flushPromises()
     const items = w.findAll('.audit-item')
     expect(items.length).toBe(2)
     expect(items[0].text()).toContain('验收 PASS · 自动收货')
     expect(items[0].text()).toContain('NB-11')
     expect(items[0].text()).toContain('任务十一')
-    expect(items[0].text()).toContain('@node-review')
+    // H1（goal P1）：actor 显示可读名（未知短 id 原样保留，不再带 @ 前缀）。
+    expect(items[0].text()).toContain('node-review')
     expect(items[1].text()).toContain('验收 FAIL · 自动重派')
-    // 每行都有回滚按钮。
-    expect(w.findAll('.rollback-btn').length).toBe(2)
+    // 回滚按钮只出现在可回滚决策上（store 校验：auto_accept + 单据 done）；
+    // 重派/发车类不显示按钮（点了也只会吃后端报错）。
+    expect(w.findAll('.rollback-btn').length).toBe(1)
     // details 请求带 limit + 无过滤。
     const call = requestMock.mock.calls.find((c) => c[1] === 'audit.list')!
     expect(call[2]).toEqual({ limit: 200, action: undefined })
@@ -1009,6 +1283,9 @@ describe('AuditPanel（决策流 全自动流转 P5/E2）', () => {
       auditRow({ details: JSON.stringify({ decision: 'future_word' }) }),
       auditRow({ id: 2, details: 'not-json{{{' }),
     ])
+    // A1：两行都不可回滚，默认「只看可回滚」下被过滤——先关掉看渲染本身。
+    await w.find('.rollback-toggle input').setValue(false)
+    await flushPromises()
     const items = w.findAll('.audit-item')
     expect(items[0].text()).toContain('future_word')
     // 非 JSON details：无详情按钮、无标签崩溃，行仍渲染。
@@ -1088,5 +1365,40 @@ describe('AuditPanel（决策流 全自动流转 P5/E2）', () => {
       limit: 200,
       action: 'auto_confirm_dispatch',
     })
+  })
+
+  // A1（看板项目档案 goal P1）：只看可回滚——默认开，纯客户端筛选。
+  it('只看可回滚默认开：非收货决策被过滤 + 计数 n/m', async () => {
+    const w = await mountAudit([
+      auditRow(),
+      auditRow({
+        id: 2,
+        details: JSON.stringify({ decision: 'redispatch', verdict: 'FAIL' }),
+      }),
+      auditRow({
+        id: 3,
+        details: JSON.stringify({ decision: 'escalate_human' }),
+      }),
+    ])
+    // 默认过滤：只剩 auto_accept 一行；计数 1/3。
+    expect(w.findAll('.audit-item').length).toBe(1)
+    expect(w.find('.panel-toolbar .muted').text()).toContain('1/3')
+    // 过滤后的行是可回滚那行（有回滚按钮）。
+    expect(w.findAll('.rollback-btn').length).toBe(1)
+  })
+
+  it('只看可回滚：零可回滚 → 提示分支；取消勾选 → 全量回归', async () => {
+    const w = await mountAudit([
+      auditRow({ details: JSON.stringify({ decision: 'redispatch', verdict: 'FAIL' }) }),
+    ])
+    // 默认开 + 无可回滚 → 专用提示（不是「暂无记录」）。
+    expect(w.text()).toContain('没有可回滚的决策')
+    expect(w.text()).not.toContain('暂无自动决策记录')
+    // 取消勾选 → 行回归 + 计数 1/1。
+    await w.find('.rollback-toggle input').setValue(false)
+    await flushPromises()
+    expect(w.findAll('.audit-item').length).toBe(1)
+    expect(w.find('.panel-toolbar .muted').text()).toContain('1/1')
+    expect(w.text()).not.toContain('没有可回滚的决策')
   })
 })

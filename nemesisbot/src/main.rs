@@ -7,6 +7,10 @@
 mod acp;
 mod adapters;
 mod agent_factory;
+/// 看板项目档案 goal P3（D3/D4 master 侧）：执行档案落地回灌 + 超限出卡
+/// （TransferSink on_landed/on_overlimit 回调入口）。
+#[cfg(all(feature = "board", feature = "cluster"))]
+mod board_archive_ingest;
 /// Swarm M3（G9 资产拉取/发布执行者）：board_asset 工具（仅注册进 cluster
 /// agent；自包含——只需 workspace 路径，fetch 纯 HTTP+sha256，publish 自开
 /// store + 幂等密钥 + 读 gateway 落盘的 node url）。
@@ -37,6 +41,10 @@ mod cluster_request_logger_observer;
 mod cluster_service;
 mod commands;
 mod common;
+/// 看板项目档案 goal P5/F5：冲突硬解执行体（auto 档——AI 硬解→机械失败
+/// 重派原 worker→离线三轮接触→换人；budget 保险丝打满回落 human 档）。
+#[cfg(all(feature = "board", feature = "cluster"))]
+mod conflict_resolver;
 mod embedded;
 /// eval 结果评估器（规则驱动三分类；纯函数读报告，无 Windows API——
 /// rules 管理命令在所有平台可用）。

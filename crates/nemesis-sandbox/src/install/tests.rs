@@ -83,21 +83,27 @@ const MISSING_SVC: &str = "NemesisS6DefinitelyMissing9527";
 
 #[test]
 fn wait_for_state_immediate_hit_and_timeout() {
-    // 立即命中：目标态 == 当前态（垃圾名 → NotFound）→ 不睡直接返回
+    // 立即命中：目标态 == 当前态（垃圾名 → NotFound）→ 不睡直接返回。
+    // 上界用「被传入的 timeout 本身」（30s）而非固定 2s：这个断言要钉住的
+    // bug 类是「命中路径睡满 timeout 才返回」（30s 睡满必暴露），而一次
+    // sc query spawn 在 workspace 全量并行测试的满载机器上可以合法地超过
+    // 任何秒级固定界（2026-09-14 实证：release 全量跑 2s 界假红，单跑
+    // 0.68s 绿——与 background_registry TEST_LOCK 教训同类的负载放大）。
     let t0 = std::time::Instant::now();
     assert_eq!(
         wait_for_state(
             MISSING_SVC,
             ServiceState::NotFound,
-            std::time::Duration::from_secs(5)
+            std::time::Duration::from_secs(30)
         ),
         ServiceState::NotFound
     );
     assert!(
-        t0.elapsed() < std::time::Duration::from_secs(2),
-        "命中态必须立即返回"
+        t0.elapsed() < std::time::Duration::from_secs(30),
+        "命中态必须在 deadline 前返回（不得睡满 timeout）"
     );
-    // 超时臂：目标态永不达成 → 睡满循环后返回当前态
+    // 超时臂：目标态永不达成 → 睡满循环后返回当前态。下界（≥300ms）对
+    // 负载单调——只会更慢不会假红。
     let t1 = std::time::Instant::now();
     assert_eq!(
         wait_for_state(

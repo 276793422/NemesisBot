@@ -175,7 +175,10 @@ pub(crate) fn resolve_open_target(
 /// 用系统文件管理器打开目录（Windows=explorer / macOS=open / Linux=
 /// xdg-open）。spawn 后不等待——文件管理器的生命周期不归网关管；参数经
 /// `Command::arg` 直传不经 shell，路径含空格/特殊字符安全。
-fn open_in_file_manager(path: &std::path::Path) -> Result<(), String> {
+/// 系统文件管理器打开目录（Windows explorer / macOS open / Linux
+/// xdg-open；CREATE_NO_WINDOW spawn 不等待）。pub(crate)：board 模块的
+/// `project.open_dir`（看板项目档案 P6/F10）同源复用，不复制第二份。
+pub(crate) fn open_in_file_manager(path: &std::path::Path) -> Result<(), String> {
     let spawn = || -> std::io::Result<std::process::Child> {
         #[cfg(target_os = "windows")]
         {

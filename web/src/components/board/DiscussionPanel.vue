@@ -1,8 +1,9 @@
 <script setup lang="ts">
-import { ref, nextTick, onMounted } from 'vue'
+import { ref, computed, nextTick, onMounted } from 'vue'
 import { useWSAPI } from '../../composables/useWSAPI'
 import { useToast } from '../../composables/useToast'
 import { useBoardChanged } from '../../composables/useBoardChanged'
+import { useBoardActors } from '../../composables/useBoardActors'
 import { fmtTime } from './boardMeta'
 
 // 讨论（M3 批次 E）：节点间多 agent 组织的沟通频道。左栏频道列表 +
@@ -14,9 +15,12 @@ import { fmtTime } from './boardMeta'
 //   master 讨论总线管线：幂等/额度/裁决器唤醒与 worker 上行同源）。
 // 实时性：复用 W2.5 board-changed SSE 推送（任何写入方落库后 2s 内广播），
 // 收到后按 lastId 游标拉增量；自己发言成功后立即拉一次（不等推送）。
+// goal P1 增强：F1 成员面板（在线/离线）+ F2 @ 补全（@名/@role:/@all）+
+// F3 唤醒结果回显 + F4/F6 发言提示 + H1 可读设备名（displayActor）。
 
 const { request } = useWSAPI()
 const toast = useToast()
+const { nodes: actorNodes, ensureNodes, displayActor, actorName } = useBoardActors()
 
 interface Actor {
   kind: string
@@ -68,7 +72,65 @@ function activeChannel(): Channel | undefined {
 }
 
 function senderLabel(m: Message): string {
-  return `${m.sender.kind}/${m.sender.id}`
+  // H1：可读设备名（agent/Alex）；未知 id 回退短 id。
+  return displayActor(m.sender.kind, m.sender.id)
+}
+
+// ---------------------------------------------------------------------------
+// F1 成员面板 + F2 @ 补全 + F4/F6 发言提示（goal P1）
+// ---------------------------------------------------------------------------
+
+// F1：集群成员名单（在线优先排序；离线灰显不隐藏——用户该知道有谁存在）。
+const roster = computed(() => {
+  const list = [...actorNodes.value.values()]
+  list.sort((a, b) => Number(b.online) - Number(a.online) || a.name.localeCompare(b.name))
+  return list
+})
+
+// F2：@ 提及补全状态（start=@ 在 draft 中的位置；query=@ 后的已输入片段）。
+const draftEl = ref<HTMLTextAreaElement | null>(null)
+const mention = ref<{ start: number; query: string } | null>(null)
+
+const MENTION_FIXED = [
+  { token: '@all', desc: '唤醒全部在线节点' },
+  { token: '@role:worker', desc: '唤醒全部在线 worker' },
+]
+
+const mentionItems = computed(() => {
+  if (!mention.value) return []
+  const q = mention.value.query.toLowerCase()
+  const nodeItems = roster.value
+    .filter((n) => n.online)
+    .map((n) => ({ token: `@${n.name}`, desc: `${n.role}/${n.category}` }))
+  const all = [...nodeItems, ...MENTION_FIXED]
+  if (!q) return all
+  return all.filter((x) => x.token.toLowerCase().includes(q))
+})
+
+function onDraftInput() {
+  const el = draftEl.value
+  if (!el) return
+  const caret = el.selectionStart ?? 0
+  const before = draft.value.slice(0, caret)
+  const at = before.lastIndexOf('@')
+  if (at >= 0) {
+    const token = before.slice(at + 1)
+    if (!/\s/.test(token)) {
+      mention.value = { start: at, query: token }
+      return
+    }
+  }
+  mention.value = null
+}
+
+function pickMention(token: string) {
+  const m = mention.value
+  const el = draftEl.value
+  if (!m) return
+  const caret = el?.selectionStart ?? m.start + m.query.length
+  draft.value = `${draft.value.slice(0, m.start)}${token} ${draft.value.slice(caret)}`
+  mention.value = null
+  nextTick(() => el?.focus())
 }
 
 async function scrollToBottom() {
@@ -123,10 +185,43 @@ async function selectChannel(ch: Channel) {
 async function send() {
   const content = draft.value.trim()
   if (!content || activeChannelId.value === null || sending.value) return
+
+  // F6（goal P1）：@ 了不认识的设备 → 诚实提示（仍可发送——后端裁决器
+  // 会如实记 not_found），附可用候选。
+  const tokens = (content.match(/(^|[\s（(])@([^\s，。、]+)/g) || [])
+    .map((s) => s.trim().slice(1))
+    .filter(Boolean)
+  if (tokens.length) {
+    const known = new Set([
+      'all',
+      ...roster.value.map((n) => n.name.toLowerCase()),
+      ...roster.value.map((n) => n.id.toLowerCase()),
+      ...roster.value.map((n) => `role:${n.role.toLowerCase()}`),
+      ...roster.value.map((n) => `role:${n.category.toLowerCase()}`),
+    ])
+    const unknown = tokens.filter((t) => !known.has(t.toLowerCase()) && !/^role:[a-z]/i.test(t))
+    if (unknown.length) {
+      toast.warn(`未找到设备: ${unknown.map((u) => `@${u}`).join(' ')}（可用：@all、@role:worker 或成员面板中的名字）`)
+      return
+    }
+  }
+
   sending.value = true
   try {
-    await request('board', 'channel.post', { channel_id: activeChannelId.value, content })
+    const r = await request('board', 'channel.post', { channel_id: activeChannelId.value, content })
     draft.value = ''
+    // F3：后端首响带 wake 摘要（谁被唤醒/仅主持人）——即时反馈。
+    const wake = r?.wake
+    if (wake) {
+      const woke: string[] = wake.woke || []
+      if (woke.length) {
+        toast.success(`已唤醒: ${woke.map((w: string) => actorName(w) || w).join('、')}`)
+      } else if (wake.to_moderator) {
+        toast.info('将由主持人回应；输入 @ 可点名设备')
+      } else {
+        toast.info('无人被唤醒（目标离线或未指派）')
+      }
+    }
     // 不等 SSE 推送，立即拉增量让发言可见（游标幂等，重复拉取无害）。
     await pullIncrement()
     scrollToBottom()
@@ -139,6 +234,8 @@ async function send() {
 }
 
 onMounted(async () => {
+  // F1/F2：节点注册表（成员面板/@ 补全）——失败不阻塞消息加载。
+  ensureNodes().catch(() => {})
   try {
     await loadChannels()
     await pullIncrement()
@@ -182,6 +279,15 @@ useBoardChanged(async () => {
           :title="c.description"
           @click="selectChannel(c)"
         >{{ c.name }}</button>
+        <!-- F1（goal P1）：成员面板——在线徽章/离线灰显，用户由此知道能 @ 谁 -->
+        <div class="member-section">
+          <div class="muted member-head">成员（{{ roster.filter((n) => n.online).length }} 在线 / {{ roster.length }}）</div>
+          <div v-for="n in roster" :key="n.id" class="member-item" :class="{ offline: !n.online }">
+            <span class="member-dot" :class="n.online ? 'on' : 'off'"></span>
+            <span class="member-name">{{ n.name }}</span>
+            <span class="muted member-role">{{ n.role }}/{{ n.category }}</span>
+          </div>
+        </div>
       </template>
     </div>
 
@@ -209,12 +315,26 @@ useBoardChanged(async () => {
             <div class="message-body">{{ m.content }}</div>
           </div>
         </div>
-        <div class="composer">
+        <div class="composer" style="position: relative;">
+          <!-- F2：@ 补全弹层 -->
+          <div v-if="mention && mentionItems.length" class="mention-popup">
+            <button
+              v-for="item in mentionItems"
+              :key="item.token"
+              class="mention-item"
+              @mousedown.prevent="pickMention(item.token)"
+            >
+              <strong>{{ item.token }}</strong>
+              <span class="muted">{{ item.desc }}</span>
+            </button>
+          </div>
           <textarea
+            ref="draftEl"
             v-model="draft"
             class="form-textarea composer-input"
             rows="2"
-            :placeholder="`发到 ${activeChannel()?.name || ''}…（Enter 发送，Shift+Enter 换行）`"
+            :placeholder="`发到 ${activeChannel()?.name || ''}…（输入 @ 点名设备；Enter 发送，Shift+Enter 换行）`"
+            @input="onDraftInput"
             @keydown.enter.exact.prevent="send"
           ></textarea>
           <button
@@ -328,6 +448,74 @@ useBoardChanged(async () => {
 }
 .composer-send {
   flex-shrink: 0;
+}
+/* F1 成员面板 */
+.member-section {
+  margin-top: var(--space-3);
+  border-top: 1px solid var(--border);
+  padding-top: var(--space-2);
+}
+.member-head {
+  font-size: var(--text-xs);
+  padding: 0 var(--space-2) var(--space-1);
+}
+.member-item {
+  display: flex;
+  align-items: center;
+  gap: var(--space-1);
+  padding: var(--space-1) var(--space-2);
+  font-size: var(--text-xs);
+}
+.member-item.offline {
+  opacity: 0.5;
+}
+.member-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  flex-shrink: 0;
+}
+.member-dot.on {
+  background: var(--success, #22c55e);
+}
+.member-dot.off {
+  background: var(--text-muted);
+}
+.member-name {
+  font-weight: 600;
+}
+.member-role {
+  margin-left: auto;
+}
+/* F2 @ 补全弹层 */
+.mention-popup {
+  position: absolute;
+  bottom: 100%;
+  left: var(--space-3);
+  right: var(--space-3);
+  background: var(--bg-primary);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  box-shadow: 0 -4px 16px rgba(0, 0, 0, 0.15);
+  max-height: 220px;
+  overflow-y: auto;
+  z-index: 10;
+}
+.mention-item {
+  display: flex;
+  gap: var(--space-2);
+  align-items: baseline;
+  width: 100%;
+  text-align: left;
+  padding: var(--space-2) var(--space-3);
+  background: transparent;
+  border: none;
+  cursor: pointer;
+  font-size: var(--text-sm);
+  color: var(--text-primary);
+}
+.mention-item:hover {
+  background: var(--bg-secondary);
 }
 @media (max-width: 720px) {
   .discussion-layout {

@@ -3,6 +3,7 @@ import { ref, computed, watch, onUnmounted } from 'vue'
 import { useWSAPI } from '../../composables/useWSAPI'
 import { useToast } from '../../composables/useToast'
 import { useBoardChanged } from '../../composables/useBoardChanged'
+import { useBoardActors } from '../../composables/useBoardActors'
 import { on, off } from '../../composables/useSSE'
 import {
   PRIORITY_BADGE,
@@ -122,6 +123,16 @@ interface ClusterNode {
 }
 const workerNodes = ref<ClusterNode[]>([])
 
+// H1（goal P1）：可读设备名——评论作者/回复提示显示 agent/Alex，未知回退短 id。
+const { ensureNodes: ensureActorNodes, displayActor, actorName } = useBoardActors()
+function authorLabel(a: Actor): string {
+  return displayActor(a.kind, a.id)
+}
+// H4：回复 @ token 用可读名（裁决器 name/id 均识别）；未知回退原 id。
+function replyToken(a: Actor): string {
+  return `@${actorName(a.id) ?? a.id} `
+}
+
 const detailAssignType = ref('')
 const detailAssignId = ref('')
 const dispatchTarget = ref('')
@@ -183,6 +194,7 @@ function ctypeLabel(c: CommentRow): string {
 }
 
 async function loadWorkerNodes() {
+  ensureActorNodes().catch(() => {})
   try {
     const r = await request('cluster', 'nodes.list', {})
     workerNodes.value = (r?.nodes || []).filter((n: any) => n.role === 'worker')
@@ -394,7 +406,8 @@ function insertMention(a: Actor) {
 function startReply(c: CommentRow) {
   replyTo.value = c
   // 回复自带 @ 作者前缀（后端 extract_mentions 产生 mentioned 通知）。
-  const token = `@${c.author.id} `
+  // H4：@ 用可读名（裁决器 name/id 均识别）。
+  const token = replyToken(c.author)
   if (!newComment.value.startsWith(token)) {
     newComment.value = token + newComment.value
   }
@@ -676,7 +689,7 @@ async function downloadAttachment(a: AttachmentRow) {
           <div v-if="topLevelComments.length === 0" class="muted" style="padding: var(--space-2) 0;">暂无评论</div>
           <div v-for="c in topLevelComments" :key="c.id" class="comment-item">
             <div class="comment-head">
-              <strong>{{ c.author.kind }}/{{ c.author.id }}</strong>
+              <strong>{{ authorLabel(c.author) }}</strong>
               <span v-if="c.ctype !== 'comment'" class="badge" :class="ctypeBadge(c)">{{ ctypeLabel(c) }}</span>
               <span class="muted">{{ fmtTime(c.created_at) }}</span>
               <button v-if="c.ctype === 'comment'" class="btn btn-xs btn-ghost" @click="startReply(c)">回复</button>
@@ -685,7 +698,7 @@ async function downloadAttachment(a: AttachmentRow) {
             <!-- 一层回复 -->
             <div v-for="r in repliesOf(c.id)" :key="r.id" class="comment-item reply-item">
               <div class="comment-head">
-                <strong>{{ r.author.kind }}/{{ r.author.id }}</strong>
+                <strong>{{ authorLabel(r.author) }}</strong>
                 <span v-if="r.ctype !== 'comment'" class="badge" :class="ctypeBadge(r)">{{ ctypeLabel(r) }}</span>
                 <span class="muted">{{ fmtTime(r.created_at) }}</span>
                 <button v-if="r.ctype === 'comment'" class="btn btn-xs btn-ghost" @click="startReply(r)">回复</button>
@@ -694,7 +707,7 @@ async function downloadAttachment(a: AttachmentRow) {
             </div>
           </div>
           <div v-if="replyTo" class="replying-hint">
-            回复 {{ replyTo.author.kind }}/{{ replyTo.author.id }}
+            回复 {{ authorLabel(replyTo.author) }}
             <button class="btn btn-xs btn-ghost" @click="cancelReply">取消</button>
           </div>
           <div v-if="mentionCandidates.length" class="mention-row">

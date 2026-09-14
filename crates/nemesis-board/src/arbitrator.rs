@@ -4,6 +4,8 @@
 //! 为什么」，投递链路可审计：
 //! - ① `@name` / `@node-id` 精准点名（id/name 均可，大小写不敏感）→ 定点投递；
 //! - ② `@role:qa` 点名角色 → 该角色**全部**在线节点投递（点名角色=该角色都该知道）；
+//! - ②' `@all` 群发（goal P1/F2）→ 全部在线其他节点投递（离线 skip，board.sync 补拉兜底；
+//!   发送者本人排除；额度三闸照常逐节点扣减）；
 //! - ③ 频道消息无 @ → 只投主持人（master 本地直调 run_direct 裁决）；
 //! - ④ issue 评论无 @ → 投该 issue 指派节点。
 //!
@@ -91,6 +93,8 @@ fn extract_mentions(content: &str) -> Vec<String> {
 /// `@role:x` 角色点名按规则②语义判定：x 匹配该节点的拓扑角色或功能类别
 /// 也算点名（master fan-out 时节点离线 → skip → board.sync 补拉靠这里兜住
 /// 「@role:qa 我在场却没被唤醒」的缺口）。
+/// `@all` 群发（goal P1/F2）：任意节点都算被点名——在线者即时 wake，离线者
+/// 经 board.sync 补拉兜底（本函数正是 sync 过滤的同源匹配）。
 ///
 /// worker 侧 board.sync 过滤与 master 裁决共用同一匹配语义（单一真相源）。
 pub fn mentions_node(
@@ -107,6 +111,9 @@ pub fn mentions_node(
                 && (node_role.to_lowercase() == role_lc || node_category.to_lowercase() == role_lc)
         } else {
             let t_lc = t.to_lowercase();
+            if t_lc == "all" {
+                return true; // @all：群发语义，任意节点命中。
+            }
             t_lc == node_id.to_lowercase() || t_lc == node_name.to_lowercase()
         }
     })
@@ -182,6 +189,13 @@ pub fn resolve_wake_targets(input: &WakeInput<'_>, nodes: &[NodeCandidate]) -> W
                     node_id: format!("@{token}"),
                     reason: "not_found",
                 });
+            }
+        } else if token.to_lowercase() == "all" {
+            // @all 群发（goal P1/F2，用户拍板计入）：唤醒全部在线其他节点；
+            // 离线节点 → skipped(offline)，board.sync 补拉兜底。发送者本人
+            // 由 push_target_or_skip 统一排除。额度三闸照常逐节点扣减。
+            for node in nodes {
+                push_target_or_skip(&mut plan, node, input.sender_id);
             }
         } else {
             // 规则①：id 或 name 精确匹配（大小写不敏感）。

@@ -1,0 +1,16 @@
+{
+  "users": [
+    {
+      "username": "zoo",
+      "display_name": "Zoo",
+      "roles": ["admin"],
+      "password_hash": "$argon2id$v=19$m=19456,t=2,p=1$+E8Ur0Mpq6k/Po6aKq/K4A$HFrtfPyYaHhTIjXYwqO1GXmm70+WiKcrC3IgqrXmpUY"
+    },
+    {
+      "username": "guest",
+      "display_name": "",
+      "roles": ["viewer"],
+      "password_hash": "$argon2id$v=19$m=19456,t=2,p=1$80D9+ddl5pKztTaZvZS7Zg$WH8gvbGEaYyRnfm0/OWoytpkZuhh0Ho0QD/P3NL2VGo"
+    }
+  ]
+}

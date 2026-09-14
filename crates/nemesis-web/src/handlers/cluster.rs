@@ -519,7 +519,7 @@ impl ClusterHandler {
                     "role": role,
                     "address": n.base.address,
                     "category": n.base.category,
-                    "tags": [],
+                    "tags": n.tags,
                     "capabilities": n.capabilities,
                     "online": n.is_online(),
                     "lastSeen": n.base.last_seen,

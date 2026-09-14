@@ -135,6 +135,7 @@ fn planner_user_prompt_renders_sections() {
         "登录接口 + 前端表单",
         Some("null 用户名返回 400"),
         &[],
+        None,
     );
     assert!(prompt.contains("# 父任务"));
     assert!(prompt.contains("标题：实现登录"));
@@ -146,7 +147,13 @@ fn planner_user_prompt_renders_sections() {
 
 #[test]
 fn planner_user_prompt_injects_team_experience() {
-    let prompt = build_planner_user_prompt("标题", "", None, &["cargo 镜像用 rsproxy".to_string()]);
+    let prompt = build_planner_user_prompt(
+        "标题",
+        "",
+        None,
+        &["cargo 镜像用 rsproxy".to_string()],
+        None,
+    );
     assert!(prompt.contains("（未提供）"), "空描述/验收须占位");
     assert!(prompt.contains("# 团队经验"));
     assert!(prompt.contains("- cargo 镜像用 rsproxy"));
@@ -221,4 +228,134 @@ fn system_prompt_declares_anchor_topology_discipline() {
             "system prompt 必须含锚点拓扑纪律标记 {marker}（远端任务禁 file: 锚点）"
         );
     }
+}
+
+/// R-10（goal P4）：集群画像注入——有画像时渲染专用段+约束语，无则不渲染。
+#[test]
+fn planner_user_prompt_renders_cluster_profile() {
+    let profile = "- Alex [role=worker tags=python]\n- Bob [role=worker tags=node]";
+    let prompt = build_planner_user_prompt("标题", "描述", None, &[], Some(profile));
+    assert!(prompt.contains("# 可用执行节点"));
+    assert!(prompt.contains("Alex"));
+    assert!(prompt.contains("拆解必须"), "约束语必须出现");
+}
+
+#[test]
+fn planner_user_prompt_no_profile_no_section() {
+    let prompt = build_planner_user_prompt("标题", "描述", None, &[], None);
+    assert!(!prompt.contains("可用执行节点"), "无画像不得渲染空段");
+}
+
+/// R-9：[TOUCH] 行解析（去重/trim/非 TOUCH 行忽略）。
+#[test]
+fn test_parse_touch_paths() {
+    let ac = "[TOUCH] client/game.js\n[TOUCH] server/server.py\n普通文字行\n[TOUCH] client/game.js";
+    let paths = super::super::parse_touch_paths(ac);
+    assert_eq!(paths, vec!["client/game.js", "server/server.py"]);
+    assert!(super::super::parse_touch_paths("no touch here").is_empty());
+}
+
+// ---------------------------------------------------------------------------
+// E6 共享文件分析（看板项目档案 goal）：并行写同路径 → 回灌重试
+// ---------------------------------------------------------------------------
+
+/// 两个子任务 [TOUCH] 同一路径且无依赖边 → 校验失败，回灌文本点名双方与路径。
+#[test]
+fn shared_touch_without_dep_edge_is_rejected() {
+    let raw = r#"[
+        {"title":"改协议头","acceptance_criteria":"[TOUCH] common.h","depends_on":[]},
+        {"title":"改实现","acceptance_criteria":"[TOUCH] common.h","depends_on":[]}
+    ]"#;
+    let err = parse_plan(raw).expect_err("并行写同文件必须拦下回灌");
+    assert!(
+        err.message.contains("共享文件冲突"),
+        "回灌须指明冲突类型: {err}"
+    );
+    assert!(
+        err.message.contains("common.h"),
+        "回灌须点名冲突路径: {err}"
+    );
+    assert!(
+        err.message.contains("第 0") && err.message.contains("第 1"),
+        "回灌须点名双方序号: {err}"
+    );
+    assert!(
+        err.message.contains("depends_on"),
+        "回灌须给出修正方向: {err}"
+    );
+}
+
+/// 同路径但有依赖边（串行链）→ 放行：后者基线已含前者合入。
+#[test]
+fn shared_touch_with_dep_edge_is_accepted() {
+    let raw = r#"[
+        {"title":"改协议头","acceptance_criteria":"[TOUCH] common.h","depends_on":[]},
+        {"title":"改实现","acceptance_criteria":"[TOUCH] common.h","depends_on":[0]}
+    ]"#;
+    let plan = parse_plan(raw).expect("有依赖边的串行写同文件应放行");
+    assert_eq!(plan.len(), 2);
+}
+
+/// 反向依赖边（后者 depend 前者）同样放行（串行即安全，方向无关）。
+#[test]
+fn shared_touch_reverse_dep_edge_is_accepted() {
+    let raw = r#"[
+        {"title":"A","acceptance_criteria":"[TOUCH] f.rs","depends_on":[1]},
+        {"title":"B","acceptance_criteria":"[TOUCH] f.rs","depends_on":[]}
+    ]"#;
+    parse_plan(raw).expect("任一方向依赖边都应放行");
+}
+
+/// 不同路径互不干扰；同子任务内重复声明同一路径不误报。
+#[test]
+fn distinct_paths_and_intra_sub_dup_are_accepted() {
+    let raw = r#"[
+        {"title":"A","acceptance_criteria":"[TOUCH] a.rs\n[TOUCH] a.rs","depends_on":[]},
+        {"title":"B","acceptance_criteria":"[TOUCH] b.rs","depends_on":[]}
+    ]"#;
+    parse_plan(raw).expect("不同路径/单内重复声明不应拦");
+}
+
+/// 多处冲突一次性全列（回灌自纠一轮修完，不挤牙膏）。
+#[test]
+fn multiple_shared_touch_violations_all_reported() {
+    let raw = r#"[
+        {"title":"A","acceptance_criteria":"[TOUCH] x.h\n[TOUCH] y.h","depends_on":[]},
+        {"title":"B","acceptance_criteria":"[TOUCH] x.h","depends_on":[]},
+        {"title":"C","acceptance_criteria":"[TOUCH] y.h","depends_on":[]}
+    ]"#;
+    let err = parse_plan(raw).expect_err("两组冲突必须全报");
+    assert!(
+        err.message.contains("x.h") && err.message.contains("y.h"),
+        "两组冲突都须点名: {err}"
+    );
+    assert_eq!(
+        err.message.matches("没有依赖边").count(),
+        2,
+        "冲突对数应全部列出: {err}"
+    );
+}
+
+/// 三方同写一路径 → 列出全部无依赖边对（3 对）。
+#[test]
+fn three_way_shared_touch_reports_all_pairs() {
+    let raw = r#"[
+        {"title":"A","acceptance_criteria":"[TOUCH] z.h","depends_on":[]},
+        {"title":"B","acceptance_criteria":"[TOUCH] z.h","depends_on":[]},
+        {"title":"C","acceptance_criteria":"[TOUCH] z.h","depends_on":[]}
+    ]"#;
+    let err = parse_plan(raw).expect_err("三方同写必须拦下");
+    assert_eq!(
+        err.message.matches("没有依赖边").count(),
+        3,
+        "0-1/0-2/1-2 三对全列: {err}"
+    );
+}
+
+/// prompt 同步声明共享文件纪律（规则 6）与锁文件/生成物独立成单。
+#[test]
+fn system_prompt_declares_shared_file_discipline() {
+    let p = PLANNER_SYSTEM_PROMPT;
+    assert!(p.contains("共享文件纪律"), "prompt 须含共享文件规则: ");
+    assert!(p.contains("锁文件"), "prompt 须含锁文件独立成单: ");
 }

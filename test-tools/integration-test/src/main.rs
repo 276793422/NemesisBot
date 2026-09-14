@@ -755,6 +755,19 @@ async fn main() -> Result<()> {
     println!("\n[Phase 2g] Board P5 audit surface (P5 E2)...");
     println!("{}", "-".repeat(60));
     all_results.extend(board_ws_tests::test_board_p5_audit_surface(&ws, &cfg.gateway_bin).await);
+    all_results.extend(board_ws_tests::test_board_p1_progress_surface(&ws, &cfg.gateway_bin).await);
+
+    // ---- P1 A2/A2b: 归档/取消排除 + 取消单清理表面（看板项目档案 goal）----
+    println!("\n[Phase 2h] Board archive filter surface (A2/A2b)...");
+    println!("{}", "-".repeat(60));
+    all_results
+        .extend(board_ws_tests::test_board_archive_filter_surface(&ws, &cfg.gateway_bin).await);
+
+    // ---- P2 B+C: 项目档案目录绑定/脚手架/防绕过/plan.md 里程碑（看板项目档案 goal）----
+    // 同样最末位：热切默认模型 + 改 board config + 写 board.db + 落盘档案目录。
+    println!("\n[Phase 2i] Board project archive surface (P2 B/C)...");
+    println!("{}", "-".repeat(60));
+    all_results.extend(board_ws_tests::test_board_project_archive(&ws, &cfg.gateway_bin).await);
 
     // ---- Cleanup ----
     // Coverage-safe teardown: graceful /api/internal shutdown lets an

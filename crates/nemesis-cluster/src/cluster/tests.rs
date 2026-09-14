@@ -4053,6 +4053,88 @@ fn test_merge_real_node_info_updates_existing_entry_with_real_id() {
 }
 
 #[test]
+fn test_merge_real_node_info_keeps_static_peer_address() {
+    // 真机三节点实证（2026-09-15）：静态 peer 的地址被对端自报 primary 覆盖
+    // 后，多网段环境下本地按不可达地址拨号 → G2 探针失败 → Offline →
+    // online 门禁拒 transfer（worker→master 全链死锁）。静态语义=用户显式
+    // 配置优先：地址不被 merge 覆盖，其余字段照常刷新。
+    let dir = tempfile::tempdir().unwrap();
+    let workspace = dir.path().to_path_buf();
+    let config = make_config();
+    let cluster = Cluster::with_workspace(config, workspace);
+
+    // Simulate gateway static-peer load: discovered entry + mark_static
+    cluster.handle_discovered_node(
+        "node-master-1",
+        "master",
+        vec!["192.168.1.1".into()],
+        9000,
+        "coordinator",
+        "development",
+        vec![],
+        vec![],
+        "unknown",
+    );
+    assert!(cluster.registry.mark_static("node-master-1"));
+
+    // Peer reports a different (unreachable) primary address
+    let canonical = cluster.merge_real_node_info(&RealNodeInfo {
+        id: "node-master-1".into(),
+        name: "master".into(),
+        address: "10.255.0.1:9000".into(),
+        role: nemesis_types::cluster::NodeRole::Coordinator,
+        category: "development".into(),
+        capabilities: vec!["exec".into()],
+        tags: Vec::new(),
+        node_type: "agent".into(),
+    });
+
+    assert_eq!(canonical, "node-master-1");
+    let p = cluster.get_peer("node-master-1").unwrap();
+    // Address stays at the user-configured value
+    assert_eq!(p.base.address, "192.168.1.1:9000");
+    // Other fields still refresh from the peer's self-report
+    assert_eq!(p.capabilities, vec!["exec".to_string()]);
+    assert_eq!(p.node_type, "agent");
+}
+
+#[test]
+fn test_merge_real_node_info_updates_address_for_dynamic_peer() {
+    // 对照组：非静态（UDP 发现）节点，merge 照常用对端自报地址更新。
+    let dir = tempfile::tempdir().unwrap();
+    let workspace = dir.path().to_path_buf();
+    let config = make_config();
+    let cluster = Cluster::with_workspace(config, workspace);
+
+    cluster.handle_discovered_node(
+        "node-dyn-1",
+        "dyn",
+        vec!["10.0.0.5".into()],
+        9000,
+        "worker",
+        "general",
+        vec![],
+        vec![],
+        "unknown",
+    );
+    assert!(!cluster.registry.is_peer_static("node-dyn-1"));
+
+    cluster.merge_real_node_info(&RealNodeInfo {
+        id: "node-dyn-1".into(),
+        name: "dyn".into(),
+        address: "10.0.0.77:9000".into(),
+        role: nemesis_types::cluster::NodeRole::Worker,
+        category: "general".into(),
+        capabilities: Vec::new(),
+        tags: Vec::new(),
+        node_type: "agent".into(),
+    });
+
+    let p = cluster.get_peer("node-dyn-1").unwrap();
+    assert_eq!(p.base.address, "10.0.0.77:9000");
+}
+
+#[test]
 fn test_merge_real_node_info_upgrades_placeholder_by_address() {
     let dir = tempfile::tempdir().unwrap();
     let workspace = dir.path().to_path_buf();
@@ -6828,4 +6910,40 @@ fn mark_peer_healthy_unknown_node_is_noop() {
     }));
     cluster.mark_peer_healthy("ghost-node");
     assert!(fired.lock().is_empty(), "未知节点不得触发回调");
+}
+
+/// canonical_peer_id（T37 双身份失配第三处落点回归，2026-09-13）：
+/// peer 名 / 节点 id 两种形态都归一化为注册表权威 `base.id`；
+/// 未知 target 返回 None（调用方保留原值交 RPC resolver 兜底）。
+#[test]
+fn canonical_peer_id_resolves_name_and_id() {
+    let cluster = Cluster::new(make_config());
+    cluster.register_node(ExtendedNodeInfo {
+        base: nemesis_types::cluster::NodeInfo {
+            id: "node-alex-uuid".into(),
+            name: "Alex".into(),
+            role: nemesis_types::cluster::NodeRole::Worker,
+            address: "10.0.0.2:9000".into(),
+            category: "development".into(),
+            last_seen: chrono::Local::now().to_rfc3339(),
+        },
+        status: NodeStatus::Online,
+        capabilities: vec![],
+        tags: vec!["python".into()],
+        addresses: vec![],
+        node_type: "agent".into(),
+    });
+
+    // 节点 id → 幂等（matcher 路径产物形态）。
+    assert_eq!(
+        cluster.canonical_peer_id("node-alex-uuid"),
+        Some("node-alex-uuid".into())
+    );
+    // peer 名 → 节点 id（人工指派/兜底路径形态）。
+    assert_eq!(
+        cluster.canonical_peer_id("Alex"),
+        Some("node-alex-uuid".into())
+    );
+    // 未知 target → None。
+    assert_eq!(cluster.canonical_peer_id("ghost"), None);
 }

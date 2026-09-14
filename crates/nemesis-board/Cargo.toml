@@ -13,7 +13,9 @@ tracing = "0.1"
 hmac = { workspace = true }
 sha2 = { workspace = true }
 getrandom = "0.2"
+git2 = { workspace = true }
 regex = { workspace = true }
+nemesis-path = { workspace = true }
 nemesis-types = { workspace = true }
 
 [lints]

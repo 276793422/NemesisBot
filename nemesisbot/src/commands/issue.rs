@@ -172,6 +172,8 @@ pub fn run(action: IssueAction, local: bool) -> Result<()> {
                 project_id,
                 priority: None,
                 query,
+                // CLI 是管理面：全量可见（含取消/hidden/归档项目单）。
+                ..Default::default()
             };
             let issues = store.list_issues(&filter).map_err(err)?;
             if issues.is_empty() {

@@ -8081,6 +8081,12 @@ impl AgentLoop {
         *self.tier.read()
     }
 
+    /// 当前活跃模型 id（解析后的模型名，非别名；审计/展示用——P5 冲突硬解
+    /// 决策流卡记「哪个模型做的硬解」）。切换走 [`Self::set_active_model`]。
+    pub fn active_model(&self) -> String {
+        self.active_model.read().clone()
+    }
+
     /// Phase 4a: override the capability tier (e.g. after resolving it from the
     /// active model config at construction, or after `model set-tier`).
     pub fn set_tier(&self, tier: nemesis_types::capability::ModelTier) {

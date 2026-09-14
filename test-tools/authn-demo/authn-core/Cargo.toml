@@ -1,0 +1,25 @@
+[package]
+name = "authn-core"
+version = "0.1.0"
+edition = "2021"
+description = "身份与访问框架 demo 内核：本地账号 / 会话 / 静态 token 兼容 / OIDC / LDAP（独立验证用，零 nemesis-* 依赖）"
+license = "MIT"
+
+[dependencies]
+# B 块（身份内核）——纯逻辑，依赖极轻
+argon2 = "0.5"
+rand = "0.8"
+base64 = "0.22"
+subtle = "2"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+thiserror = "2"
+
+# A 块（外部协议引擎）
+openidconnect = { version = "4", features = ["reqwest"] }
+ldap3 = { version = "0.11", default-features = false, features = ["tls-rustls"] }
+# ROPC helper 用（与 openidconnect 4.x 同源的 reqwest 0.12，cargo 归一到同一实例）
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
+
+# 异步运行时（协议引擎都是 async）
+tokio = { version = "1", features = ["full"] }

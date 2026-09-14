@@ -187,6 +187,19 @@ impl Manager {
         obs.push(observer);
     }
 
+    /// Register an observer synchronously（`try_write` 快路——供 sync 构造
+    /// 上下文用，如 agent_factory；不走 block_in_place，current-thread
+    /// runtime 也安全）。锁被占/有等待者时返回 false（调用方诚实处置）。
+    pub fn try_register(&self, observer: Arc<dyn Observer>) -> bool {
+        match self.observers.try_write() {
+            Ok(mut obs) => {
+                obs.push(observer);
+                true
+            }
+            Err(_) => false,
+        }
+    }
+
     /// Unregister an observer by name.
     pub async fn unregister(&self, name: &str) {
         let mut obs = self.observers.write().await;

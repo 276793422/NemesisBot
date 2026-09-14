@@ -22,7 +22,7 @@ use std::sync::{Arc, OnceLock};
 
 use nemesis_board::Actor;
 use nemesis_board::arbitrator::{
-    NodeCandidate, WakeInput, has_mentions, mentions_node, resolve_wake_targets,
+    NodeCandidate, WakeInput, WakePlan, has_mentions, mentions_node, resolve_wake_targets,
 };
 use nemesis_board::models::PostedMessage;
 use nemesis_board::models::thread_kind;
@@ -42,6 +42,9 @@ pub struct MasterBusDeps {
     /// 主 AgentLoop 后置装配桥：nb_bus 注册时 agent_loop 尚未构建
     /// （gateway 装配顺序），构建完成后 `set()` 填入；主持人裁决经它直调。
     pub moderator_loop: Arc<OnceLock<Arc<nemesis_agent::r#loop::AgentLoop>>>,
+    /// G（goal P3）：master workspace 根——交付回传文件的落盘父目录
+    /// （`board/files/issue_<id>/`，与附件通道同目录约定）。
+    pub workspace: std::path::PathBuf,
 }
 
 /// 线程上下文随 wake 包下发的条数（impl-plan §5.2②：默认 20）。
@@ -68,6 +71,23 @@ fn handle_nb_bus(
         }
     };
 
+    // D0b（goal P2）：ns="task" 路由——worker 出队开跑上报（queued vs
+    // executing 分界，重平衡只挪 queued 单）。
+    if env.ns == "task" {
+        let reply = match env.op.as_str() {
+            "started" => handle_task_started(deps, &env, rpc_from_node(&payload)),
+            "delivery.files" => handle_delivery_files(deps, &env, rpc_from_node(&payload)),
+            other => EnvelopeResponse::failure(
+                &env,
+                EnvelopeError::new(
+                    envelope::error_code::UNKNOWN_OP,
+                    format!("unknown op: {other}"),
+                ),
+            ),
+        };
+        return Ok(reply.to_json());
+    }
+
     if env.ns != "board" {
         return Ok(EnvelopeResponse::failure(
             &env,
@@ -91,6 +111,199 @@ fn handle_nb_bus(
         ),
     };
     Ok(reply.to_json())
+}
+
+/// D0b：worker 出队开跑上报（ns="task" op="started"）。`_rpc.from` 必须与
+/// 派发 worker_id 一致（防伪造）；非 dispatched 态 = 诚实 failure（重复
+/// 上报/已终态）。queued vs executing 的分界由此确立。
+fn handle_task_started(deps: &MasterBusDeps, env: &Envelope, from_node: &str) -> EnvelopeResponse {
+    let Some(task_id) = env
+        .body
+        .get("task_id")
+        .and_then(|v| v.as_str())
+        .map(String::from)
+    else {
+        return EnvelopeResponse::failure(
+            env,
+            EnvelopeError::new(envelope::error_code::VALIDATION, "missing task_id"),
+        );
+    };
+    if from_node.is_empty() {
+        return EnvelopeResponse::failure(
+            env,
+            EnvelopeError::new(
+                envelope::error_code::VALIDATION,
+                "missing _rpc.from (sender identity)",
+            ),
+        );
+    }
+    match deps.store.mark_dispatch_running(&task_id, from_node) {
+        Ok(true) => {
+            tracing::debug!(target: "board_bus", task_id = %task_id, worker = %from_node,
+                "[nb_bus] task started (dispatch → running)");
+            EnvelopeResponse::success(env, serde_json::json!({ "running": true }))
+        }
+        Ok(false) => EnvelopeResponse::failure(
+            env,
+            EnvelopeError::new(
+                envelope::error_code::VALIDATION,
+                format!("task {task_id} 不在 dispatched 态或 worker 不匹配"),
+            ),
+        ),
+        Err(e) => {
+            EnvelopeResponse::failure(env, EnvelopeError::new(envelope::error_code::INTERNAL, e))
+        }
+    }
+}
+
+/// G（goal P3）交付文件回传（ns="task" op="delivery.files"）：worker 把
+/// 交付清单里的文件（base64）推给 master，master 落盘 `board/files/issue_<id>/`
+/// 并 add_attachment 登记——前端详情弹窗附件区即可下载（与 attachment.add
+/// 同一落点）。
+///
+/// 校验：`_rpc.from` 必须与派发 worker_id 一致；单文件 ≤8MB、≤20 个；
+/// 文件名取 basename 防路径穿越。落库后系统评论留痕。
+fn handle_delivery_files(
+    deps: &MasterBusDeps,
+    env: &Envelope,
+    from_node: &str,
+) -> EnvelopeResponse {
+    use base64::Engine as _;
+    const MAX_FILE_BYTES: usize = 8 * 1024 * 1024;
+    const MAX_FILES: usize = 20;
+
+    let Some(task_id) = env
+        .body
+        .get("task_id")
+        .and_then(|v| v.as_str())
+        .map(String::from)
+    else {
+        return EnvelopeResponse::failure(
+            env,
+            EnvelopeError::new(envelope::error_code::VALIDATION, "missing task_id"),
+        );
+    };
+    // 派发记录校验：来源 worker 与登记一致（防伪造）；顺带拿 issue_id。
+    let dispatch = match deps.store.get_dispatch(&task_id) {
+        Ok(Some(d)) if d.worker_id == from_node => d,
+        _ => {
+            return EnvelopeResponse::failure(
+                env,
+                EnvelopeError::new(
+                    envelope::error_code::VALIDATION,
+                    format!("task {task_id} 无此 worker 的在途派发（或来源不匹配）"),
+                ),
+            );
+        }
+    };
+    let issue_id = dispatch.issue_id;
+    let files = env
+        .body
+        .get("files")
+        .and_then(|v| v.as_array())
+        .cloned()
+        .unwrap_or_default();
+    if files.is_empty() {
+        return EnvelopeResponse::failure(
+            env,
+            EnvelopeError::new(envelope::error_code::VALIDATION, "files 为空"),
+        );
+    }
+    if files.len() > MAX_FILES {
+        return EnvelopeResponse::failure(
+            env,
+            EnvelopeError::new(
+                envelope::error_code::VALIDATION,
+                format!("files 超上限（{}/{}）", files.len(), MAX_FILES),
+            ),
+        );
+    }
+
+    // 逐文件解码落盘（basename 防穿越；重名毫秒戳前缀防覆盖）。
+    let mut stored: Vec<String> = Vec::new();
+    for f in &files {
+        let name = f.get("name").and_then(|v| v.as_str()).unwrap_or("");
+        let b64 = f.get("content_b64").and_then(|v| v.as_str()).unwrap_or("");
+        let bytes = match base64::engine::general_purpose::STANDARD.decode(b64.trim()) {
+            Ok(b) => b,
+            Err(e) => {
+                return EnvelopeResponse::failure(
+                    env,
+                    EnvelopeError::new(
+                        envelope::error_code::VALIDATION,
+                        format!("文件 {name:?} base64 解码失败: {e}"),
+                    ),
+                );
+            }
+        };
+        if bytes.len() > MAX_FILE_BYTES {
+            return EnvelopeResponse::failure(
+                env,
+                EnvelopeError::new(
+                    envelope::error_code::VALIDATION,
+                    format!("文件 {name:?} 超过 8MB 上限"),
+                ),
+            );
+        }
+        let safe_name: String = name
+            .rsplit(['/', '\\'])
+            .next()
+            .unwrap_or("unnamed")
+            .to_string();
+        if safe_name.is_empty() || safe_name.starts_with('.') {
+            return EnvelopeResponse::failure(
+                env,
+                EnvelopeError::new(envelope::error_code::VALIDATION, "非法文件名"),
+            );
+        }
+        let dir = deps
+            .workspace
+            .join("board")
+            .join("files")
+            .join(format!("issue_{issue_id}"));
+        if let Err(e) = std::fs::create_dir_all(&dir) {
+            return EnvelopeResponse::failure(
+                env,
+                EnvelopeError::new(envelope::error_code::INTERNAL, format!("落盘失败: {e}")),
+            );
+        }
+        let stored_name = format!("{}_{}", chrono::Utc::now().timestamp_millis(), safe_name);
+        if let Err(e) = std::fs::write(dir.join(&stored_name), &bytes) {
+            return EnvelopeResponse::failure(
+                env,
+                EnvelopeError::new(envelope::error_code::INTERNAL, format!("写入失败: {e}")),
+            );
+        }
+        let rel_path = format!("board/files/issue_{issue_id}/{stored_name}");
+        if let Err(e) =
+            deps.store
+                .add_attachment(issue_id, &safe_name, &rel_path, bytes.len() as i64)
+        {
+            return EnvelopeResponse::failure(
+                env,
+                EnvelopeError::new(envelope::error_code::INTERNAL, format!("登记失败: {e}")),
+            );
+        }
+        stored.push(safe_name);
+    }
+
+    // 留痕：系统评论（附件区可见 + 决策/活动可追溯）。
+    let _ = deps.store.add_comment(nemesis_board::NewComment {
+        issue_id,
+        author: Actor::system("board"),
+        content: format!(
+            "📥 交付回传 {} 个文件（{from_node}）：{}",
+            stored.len(),
+            stored.join("、")
+        ),
+        parent_id: None,
+        ctype: nemesis_board::CommentType::System,
+    });
+
+    EnvelopeResponse::success(
+        env,
+        serde_json::json!({ "stored": stored.len(), "files": stored }),
+    )
 }
 
 /// 解析失败时的降级信封（尽力回带 ns/op/corr_id，供对端关联）。
@@ -228,6 +441,18 @@ pub enum PostError {
     DedupCheck(String),
 }
 
+/// wake 计划 → 首响摘要（goal P1/F3）。独立纯函数：幂等命中与新落库两条
+/// 路径共用同一形态——「相同首响」契约（G12）由同源生成保证。
+fn wake_summary_json(plan: &WakePlan) -> serde_json::Value {
+    serde_json::json!({
+        "woke": plan.targets,
+        "to_moderator": plan.to_moderator,
+        "skipped": plan.skipped.iter()
+            .map(|s| serde_json::json!({"node": s.node_id, "reason": s.reason}))
+            .collect::<Vec<_>>(),
+    })
+}
+
 /// 讨论管线共享核心（单一真相）：① 幂等预检（重复 → 缓存首响，不扣
 /// 额度）→ ② 额度三闸（拒绝不落库——worker/用户明确知道被护栏拦下）→
 /// ③ 落库（全副作用 + seq 台账）→ ④ 新消息异步裁决 + wake 下行（handler
@@ -243,14 +468,64 @@ fn post_discussion_core(
     reply_to: Option<i64>,
     kind_tag: &str,
 ) -> Result<PostedMessage, PostError> {
-    // ① 幂等预检（不扣额度）：重复请求直接返回缓存首响（G12）。
+    // ⓪ wake 裁决前置（goal P1/F3）：裁决器是纯函数，先于落库计算——
+    // 幂等命中与新落库的首响都带 wake 摘要，G12「相同首响」契约不破；
+    // 异步任务只做投递 + 主持人裁决。
+    let mut ctx = WakeContext {
+        thread_kind: thread_kind.to_string(),
+        thread_id,
+        sender: sender.clone(),
+        content: content.to_string(),
+        reply_to,
+        seq: 0, // 落库后回填（deliver_wakeups 的 wake 信封/审计需要真 seq）。
+        at: chrono::Utc::now().timestamp(),
+    };
+    let nodes: Vec<NodeCandidate> = deps
+        .cluster
+        .list_nodes()
+        .iter()
+        .map(|n| NodeCandidate {
+            id: n.base.id.clone(),
+            name: n.base.name.clone(),
+            role: n.base.role.as_role_str().to_string(),
+            category: n.base.category.clone(),
+            online: n.is_online(),
+        })
+        .collect();
+    let issue_assignee = if ctx.thread_kind == thread_kind::ISSUE {
+        deps.store
+            .get_issue(ctx.thread_id)
+            .ok()
+            .and_then(|issue| match issue.assignee {
+                Some(nemesis_board::AssignmentType::Worker) => issue.assignee_id,
+                _ => None,
+            })
+    } else {
+        None
+    };
+    let plan = resolve_wake_targets(
+        &WakeInput {
+            thread_kind: &ctx.thread_kind,
+            content: &ctx.content,
+            sender_id: &ctx.sender.id,
+            issue_assignee: issue_assignee.as_deref(),
+            moderator_id: deps.cluster.node_id(),
+        },
+        &nodes,
+    );
+
+    // ① 幂等预检（不扣额度）：重复请求直接返回缓存首响 + 当前 wake 摘要（G12）。
     match deps.store.check_duplicate(&sender.id, client_msg_id) {
         Ok(Some(cached)) => {
+            let mut response = cached;
+            if let Some(obj) = response.as_object_mut() {
+                obj.insert("wake".to_string(), wake_summary_json(&plan));
+            }
             return Ok(PostedMessage {
                 is_new: false,
                 message_id: 0,
                 seq: 0,
-                response: cached,
+                response,
             });
         }
         Ok(None) => {}
@@ -272,7 +547,7 @@ fn post_discussion_core(
     }
 
     // ③ 落库（全副作用 + seq 台账；幂等窗口内的并发重复由 store 层消化）。
-    let posted = deps
+    let mut posted = deps
         .store
         .post_discussion_envelope(
             &sender.id,
@@ -287,30 +562,34 @@ fn post_discussion_core(
         .map_err(PostError::Store)?;
     if !posted.is_new {
         // 预检与落库之间的并发重复：额度已多扣一次（防刷语义可接受），
-        // 响应仍是首响。
+        // 响应仍是首响（附当前 wake 摘要，保持响应形状一致）。
+        if let Some(obj) = posted.response.as_object_mut() {
+            obj.insert("wake".to_string(), wake_summary_json(&plan));
+        }
         return Ok(posted);
     }
 
-    // ④ 异步裁决 + wake 下行（调用方立即返回首响，投递不占 ACK）。
+    // ④ 异步投递 + 主持人裁决：plan/nodes 已在 ⓪ 裁决段算好（move 进任务），
+    // wake 摘要已随首响带回前端（F3）——本任务只做投递 + 主持人裁决。
+    ctx.seq = posted.seq;
+
     let deps_for_task = DepsForTask {
         store: deps.store.clone(),
         quota: deps.quota.clone(),
         cluster: deps.cluster.clone(),
         moderator_loop: deps.moderator_loop.clone(),
     };
-    let ctx = WakeContext {
-        thread_kind: thread_kind.to_string(),
-        thread_id,
-        sender: sender.clone(),
-        content: content.to_string(),
-        reply_to,
-        seq: posted.seq,
-        at: now,
-    };
+    // 首响附 wake 摘要（F3）——在 spawn 前（plan 被 move 进异步任务）。
+    let wake_summary = wake_summary_json(&plan);
     tokio::spawn(async move {
-        deliver_wakeups(deps_for_task, ctx).await;
+        deliver_wakeups(deps_for_task, ctx, plan, nodes).await;
     });
 
+    let mut response = posted.response;
+    if let Some(obj) = response.as_object_mut() {
+        obj.insert("wake".to_string(), wake_summary);
+    }
+    posted.response = response;
     Ok(posted)
 }
 
@@ -425,46 +704,16 @@ struct WakeContext {
     at: i64,
 }
 
-/// 裁决器 + wake 下行 + 主持人裁决（tokio 任务主体）。
-async fn deliver_wakeups(deps: DepsForTask, ctx: WakeContext) {
+/// wake 下行 + 主持人裁决（tokio 任务主体）。plan/nodes 由同步段算好传入
+/// （F3：裁决已随首响带回前端，本任务只做投递 + 主持人裁决）。
+async fn deliver_wakeups(
+    deps: DepsForTask,
+    ctx: WakeContext,
+    plan: WakePlan,
+    nodes: Vec<NodeCandidate>,
+) {
     let self_node_id = deps.cluster.node_id().to_string();
     let thread_key = format!("{}:{}", ctx.thread_kind, ctx.thread_id);
-
-    // 节点表投影（含离线——离线目标要出现在决策日志里，不凭空消失）。
-    let nodes: Vec<NodeCandidate> = deps
-        .cluster
-        .list_nodes()
-        .iter()
-        .map(|n| NodeCandidate {
-            id: n.base.id.clone(),
-            name: n.base.name.clone(),
-            role: n.base.role.as_role_str().to_string(),
-            category: n.base.category.clone(),
-            online: n.is_online(),
-        })
-        .collect();
-
-    // 规则④的输入：issue 指派节点（ManagerSelf = 主持人自己，不 wake）。
-    let issue_assignee = if ctx.thread_kind == thread_kind::ISSUE {
-        deps.store
-            .get_issue(ctx.thread_id)
-            .ok()
-            .and_then(|issue| match issue.assignee {
-                Some(nemesis_board::AssignmentType::Worker) => issue.assignee_id,
-                _ => None,
-            })
-    } else {
-        None
-    };
-
-    let input = WakeInput {
-        thread_kind: &ctx.thread_kind,
-        content: &ctx.content,
-        sender_id: &ctx.sender.id,
-        issue_assignee: issue_assignee.as_deref(),
-        moderator_id: &self_node_id,
-    };
-    let plan = resolve_wake_targets(&input, &nodes);
 
     // 审计日志（G3 出口：谁被唤醒 / 谁被跳过 / 为什么）。
     let skipped_summary: Vec<String> = plan
@@ -497,6 +746,17 @@ async fn deliver_wakeups(deps: DepsForTask, ctx: WakeContext) {
 
     // wake 事件标签（worker 侧 prompt 的「唤醒原因」）：无 @ + issue 指派
     // → assignee_comment；其余（含 @ 点名/角色点名）→ mention。
+    let issue_assignee = if ctx.thread_kind == thread_kind::ISSUE {
+        deps.store
+            .get_issue(ctx.thread_id)
+            .ok()
+            .and_then(|issue| match issue.assignee {
+                Some(nemesis_board::AssignmentType::Worker) => issue.assignee_id,
+                _ => None,
+            })
+    } else {
+        None
+    };
     let event_label = match ctx.thread_kind == thread_kind::ISSUE
         && issue_assignee.is_some()
         && !has_mentions(&ctx.content)
@@ -575,8 +835,24 @@ async fn run_moderator(
     };
 
     let thread_ctx = build_thread_context_text(&deps.store, &ctx)?;
+    // F5（goal P1）：节点名册注入——主持人 LLM 不知道有谁就无法做出 informed
+    // 的 @ 点名（「设备之间不会互相交互」的深层根因）。名册与裁决器投影同源。
+    let roster = nodes
+        .iter()
+        .map(|n| {
+            format!(
+                "- {} (role: {}, category: {}, {})",
+                n.name,
+                n.role,
+                n.category,
+                if n.online { "online" } else { "offline" }
+            )
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
     let prompt = format!(
         "{thread_ctx}\n\n\
+         # Node roster (you may @mention nodes by name to call on them):\n{roster}\n\n\
          # New message from {}:\n{}\n\n\
          You are the discussion moderator. Decide whether this needs your action:\n\
          - If someone should be called on, reply with your message using @node-name to mention them.\n\
@@ -672,13 +948,24 @@ fn build_wake_envelope(
     event_label: &str,
 ) -> Result<serde_json::Value, String> {
     let messages = thread_context_json(store, ctx)?;
+    // F7（goal P1）：频道名透传——channel 线程此前 title 恒空，worker 只见
+    // 不透明的 "channel:N"，不知道自己在 #dev 还是 #general。
     let (title, prd_summary) = if ctx.thread_kind == thread_kind::ISSUE {
         match store.get_issue(ctx.thread_id) {
             Ok(issue) => (issue.title.clone(), truncate_chars(&issue.description, 500)),
             Err(_) => (String::new(), String::new()),
         }
     } else {
-        (String::new(), String::new())
+        let channel_name = store
+            .list_channels()
+            .ok()
+            .and_then(|cs| {
+                cs.iter()
+                    .find(|c| c.id == ctx.thread_id)
+                    .map(|c| format!("#{}", c.name))
+            })
+            .unwrap_or_default();
+        (channel_name, String::new())
     };
     Ok(EnvelopeResponse::success(
         &Envelope {

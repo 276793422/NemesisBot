@@ -1,0 +1,46 @@
+# 首次 `docker compose up -d` 会导入 realm 和 LDAP 种子数据。
+# 若之前跑过、想重新导入：`docker compose down -v`（清卷）后再 up。
+
+services:
+  keycloak:
+    image: quay.io/keycloak/keycloak:26.0
+    container_name: authn-demo-keycloak
+    command: start-dev --import-realm --health-enabled=true
+    environment:
+      KEYCLOAK_ADMIN: admin
+      KEYCLOAK_ADMIN_PASSWORD: admin
+    ports:
+      - "8088:8080"
+    volumes:
+      - ./keycloak/realm-demo.json:/opt/keycloak/data/import/realm-demo.json:ro
+    healthcheck:
+      test: ["CMD-SHELL", "exec 3<>/dev/tcp/127.0.0.1/9000 && echo -e 'GET /health/ready HTTP/1.1\\nHost: localhost\\nConnection: close\\n\\n' >&3 && cat <&3 | grep -q '\"status\": \"UP\"'"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 40s
+
+  openldap:
+    # bitnami/* 2025-09 起迁移到 bitnamilegacy（旧 bitnami/openldap:2.6 tag 已从上游删除）。
+    # 若 docker.io 不可达：docker pull docker.1ms.run/bitnamilegacy/openldap:2.6
+    #   && docker tag docker.1ms.run/bitnamilegacy/openldap:2.6 bitnamilegacy/openldap:2.6
+    image: bitnamilegacy/openldap:2.6
+    container_name: authn-demo-openldap
+    environment:
+      LDAP_ROOT: dc=example,dc=org
+      LDAP_ADMIN_USERNAME: admin
+      LDAP_ADMIN_PASSWORD: adminpassword
+      LDAP_ENABLE_TLS: "yes"
+      LDAP_TLS_CERT_FILE: /certs/openldap.crt
+      LDAP_TLS_KEY_FILE: /certs/openldap.key
+      LDAP_TLS_CA_FILE: /certs/openldapCA.crt
+    ports:
+      - "1389:1389"
+      - "1636:1636"
+    volumes:
+      - ./ldap/bootstrap.ldif:/ldifs/00-bootstrap.ldif:ro
+      - ./ldap/tls:/certs:ro
+      - openldap_data:/bitnami/openldap
+
+volumes:
+  openldap_data:

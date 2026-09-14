@@ -1,0 +1,44 @@
+# authn-demo OpenLDAP 种子数据（bitnami/openldap 首次启动自动导入 /ldifs/）
+# 注意：bitnami 只在设置了 LDAP_USERS/LDAP_GROUP 时才创建基座树；
+# 纯自定义 LDIF 模式下基座条目必须由本文件自己提供（缺了会 No such object(32)）。
+# 组织树：dc=example,dc=org → ou=people（用户） + ou=groups（groupOfNames 组）
+# 账号：carl/carl123（operators）  dana/dana123（operators + admins）
+
+dn: dc=example,dc=org
+objectClass: dcObject
+objectClass: organization
+dc: example
+o: Example Org
+
+dn: ou=people,dc=example,dc=org
+objectClass: organizationalUnit
+ou: people
+
+dn: ou=groups,dc=example,dc=org
+objectClass: organizationalUnit
+ou: groups
+
+dn: uid=carl,ou=people,dc=example,dc=org
+objectClass: inetOrgPerson
+uid: carl
+cn: Carl Worker
+sn: Worker
+userPassword: carl123
+
+dn: uid=dana,ou=people,dc=example,dc=org
+objectClass: inetOrgPerson
+uid: dana
+cn: Dana Admin
+sn: Admin
+userPassword: dana123
+
+dn: cn=operators,ou=groups,dc=example,dc=org
+objectClass: groupOfNames
+cn: operators
+member: uid=carl,ou=people,dc=example,dc=org
+member: uid=dana,ou=people,dc=example,dc=org
+
+dn: cn=admins,ou=groups,dc=example,dc=org
+objectClass: groupOfNames
+cn: admins
+member: uid=dana,ou=people,dc=example,dc=org

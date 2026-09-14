@@ -3,6 +3,7 @@
 //! Distributed cluster with node discovery, task management, and RPC protocol types.
 
 pub mod actions_schema;
+pub mod changeset;
 pub mod cluster;
 pub mod cluster_config;
 pub mod cluster_log;
@@ -12,12 +13,15 @@ pub mod config_loader;
 pub mod continuation_store;
 pub mod diagnostics;
 pub mod envelope;
+pub mod exec_workspace;
 pub mod logger;
 pub mod network;
+pub mod outbox;
 pub mod registry;
 pub mod rpc_types;
 pub mod task_manager;
 pub mod task_result_store;
+pub mod transfer;
 pub mod types;
 
 pub mod discovery;

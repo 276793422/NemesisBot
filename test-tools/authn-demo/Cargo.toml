@@ -1,0 +1,5 @@
+# 独立 demo 项目（不属于 NemesisBot 根 workspace）——移植时整个目录拷走即可。
+# 仿 nemesis-verify 先例：crate 先在测试环境独立验证，最后才谈产品集成。
+[workspace]
+resolver = "2"
+members = ["authn-core", "demo"]

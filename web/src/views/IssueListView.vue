@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, onMounted } from 'vue'
+import { ref, computed, onMounted } from 'vue'
 import { useWSAPI } from '../composables/useWSAPI'
 import { useToast } from '../composables/useToast'
 import { useBoardChanged } from '../composables/useBoardChanged'
@@ -36,6 +36,12 @@ const filterProject = ref<number | ''>('')
 const filterPriority = ref<number | ''>('')
 // worker 指派过滤（assignee_type=worker + assignee_id；manager_self 走 'local'）。
 const filterAssignee = ref('')
+
+// A2/A2b（看板项目档案 goal P1）：已取消单默认排除（后端 issue.list 默认
+// 语义），勾选「已取消」显式放行；放行后可一键清理（打 hidden 永久收起，
+// 无放行口）。归档项目子单同为默认排除，本页不设放行口（管理走 CLI/详情）。
+const showCancelled = ref(false)
+const cancelledRows = computed(() => issues.value.filter((i) => i.status === 'cancelled'))
 
 // 集群 worker 节点（创建表单指派下拉数据源；集群不可用时空列表 → 回退手输）。
 interface ClusterNode {
@@ -86,6 +92,7 @@ async function loadIssues(silent = false) {
   if (filterQuery.value.trim()) data.query = filterQuery.value.trim()
   if (filterProject.value !== '') data.project_id = filterProject.value
   if (filterPriority.value !== '') data.priority = filterPriority.value
+  if (showCancelled.value) data.include_cancelled = true
   if (filterAssignee.value) {
     if (filterAssignee.value === 'manager_self') {
       data.assignee_type = 'manager_self'
@@ -230,6 +237,30 @@ async function submitCreate() {
   }
 }
 
+// --- 取消单清理（A2b）：批量打 hidden 永久收起（二次确认；后端对混入
+// 非取消单整体拒绝）---
+const confirmCleanup = ref(false)
+const cleanupBusy = ref(false)
+
+async function doCleanup() {
+  const ids = cancelledRows.value.map((i) => i.id)
+  if (!ids.length) {
+    confirmCleanup.value = false
+    return
+  }
+  cleanupBusy.value = true
+  try {
+    const r = await request('board', 'issue.bulk_archive', { ids })
+    toast.success(`已清理 ${r?.archived ?? ids.length} 条已取消单（永久收起）`)
+    confirmCleanup.value = false
+    await refresh()
+  } catch (e: any) {
+    toast.error('清理失败: ' + e)
+  } finally {
+    cleanupBusy.value = false
+  }
+}
+
 onMounted(refresh)
 </script>
 
@@ -271,6 +302,17 @@ onMounted(refresh)
         style="max-width: 240px;"
         @keyup.enter="loadIssues()"
       />
+      <label class="cancelled-toggle">
+        <input type="checkbox" v-model="showCancelled" @change="loadIssues()" />
+        已取消
+      </label>
+      <button
+        v-if="showCancelled && cancelledRows.length"
+        class="btn btn-sm btn-danger"
+        @click="confirmCleanup = true"
+      >
+        清理已取消（{{ cancelledRows.length }}）
+      </button>
       <button class="btn btn-sm" @click="loadIssues()">搜索</button>
       <button class="btn btn-sm" @click="refresh" title="刷新">↻</button>
       <button class="btn btn-sm btn-primary" style="margin-left: auto;" @click="openCreate">+ 新建 Issue</button>
@@ -399,6 +441,25 @@ onMounted(refresh)
         </div>
       </div>
     </div>
+
+    <!-- 取消单清理确认弹窗（A2b：hidden 无放行口，操作不可逆） -->
+    <div v-if="confirmCleanup" class="modal-backdrop" @click.self="confirmCleanup = false">
+      <div class="modal" style="max-width: 480px;">
+        <div class="modal-header"><h3>清理已取消单</h3></div>
+        <div class="modal-body">
+          <p>将把当前列表中的 <strong>{{ cancelledRows.length }}</strong> 条已取消单永久收起：</p>
+          <ul>
+            <li>收起后从列表页和看板页消失（<strong>没有取消收起的入口</strong>）</li>
+            <li>单据数据保留在库中，CLI（管理面）仍可见</li>
+            <li>操作会逐单记录审计（决策流之外的动作日志）</li>
+          </ul>
+        </div>
+        <div class="modal-footer">
+          <button class="btn" @click="confirmCleanup = false">取消</button>
+          <button class="btn btn-danger" :disabled="cleanupBusy" @click="doCleanup">确认清理</button>
+        </div>
+      </div>
+    </div>
   </div>
 </template>
 
@@ -431,5 +492,13 @@ onMounted(refresh)
   flex-wrap: wrap;
   align-items: center;
   gap: var(--space-2);
+}
+.cancelled-toggle {
+  display: flex;
+  align-items: center;
+  gap: var(--space-1);
+  font-size: var(--text-sm);
+  cursor: pointer;
+  user-select: none;
 }
 </style>

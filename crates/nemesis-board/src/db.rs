@@ -4,7 +4,7 @@
 use rusqlite::Connection;
 use std::path::Path;
 
-const SCHEMA_VERSION: i32 = 10;
+const SCHEMA_VERSION: i32 = 14;
 
 const SCHEMA_V1: &str = r#"
 CREATE TABLE IF NOT EXISTS board_meta (
@@ -290,6 +290,47 @@ const SCHEMA_V10: &str = r#"
 ALTER TABLE project ADD COLUMN acceptance_criteria TEXT NOT NULL DEFAULT '';
 "#;
 
+/// v11（看板项目档案 goal P1/A2b 取消单清理出口）：issue 加 hidden 列。
+/// hidden = 取消单「永久收起」标记（列表页「清理」批量打标；任何前端
+/// 表面都不再出现，即使「显示已取消」开关打开）——board.db 仍保留行，
+/// 审计链完整（不做物理删除，与 goal §一 Out 硬删除边界一致）。
+/// DEFAULT 0 让存量单行为不变。
+const SCHEMA_V11: &str = r#"
+ALTER TABLE issue ADD COLUMN hidden INTEGER NOT NULL DEFAULT 0;
+"#;
+
+/// v12（看板项目档案 goal P2/B1）：project 加 directory 列。项目档案目录
+/// 绝对路径（字符串原样存，比较时走 nemesis-path 的 canonicalize_for_compare）。
+/// 绑定不可变：只在 create_project 时写入，此后任何 patch 都不改它（改名
+/// 不改目录）。NULL = 存量项目/未绑定目录——不参与档案管线（不回填，
+/// goal §一 Out）。DEFAULT NULL 让存量项目行为不变。
+const SCHEMA_V12: &str = r#"
+ALTER TABLE project ADD COLUMN directory TEXT;
+"#;
+
+/// v13（看板项目档案 goal P4/E8 变更集归属）：task_id → 派发时 master 下发
+/// 的基线 commit hex。worker 回传变更集按 `base_commit` 对照本表裁决归属
+/// （≠ 活跃 dispatch 轮次的基线 = superseded 丢弃 + 审计）。基线在
+/// dispatch_issue_core 基线推送成功后写入；无基线行 = 该派发未参与档案
+/// 管线（存量项目/基线推送失败），到达的变更集一律不合入。
+const SCHEMA_V13: &str = r#"
+CREATE TABLE IF NOT EXISTS dispatch_baseline (
+    task_id        TEXT PRIMARY KEY,
+    baseline_commit TEXT   NOT NULL,
+    created_at     INTEGER NOT NULL
+);
+"#;
+
+/// v14（看板项目档案 goal P5/F2+F3 冲突漏斗）：project 加冲突冻结标志 +
+/// 待补合并队列。`conflict_frozen` = 项目域冻结（真冲突 human 档停车；冻结
+/// 只限本项目，派发闸在 dispatch_issue_core，不动 ProjectStatus 状态机）。
+/// `pending_merges` = 冻结期在途交付的未合入变更集队列（JSON 数组，按完成
+/// 顺序 append；解冻 resume 时串行补合并）。DEFAULT 让存量项目行为不变。
+const SCHEMA_V14: &str = r#"
+ALTER TABLE project ADD COLUMN conflict_frozen INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE project ADD COLUMN pending_merges TEXT NOT NULL DEFAULT '[]';
+"#;
+
 /// Open (or create) the board database at `db_path` and run pending migrations.
 pub fn init_db(db_path: &Path) -> Result<Connection, String> {
     if let Some(parent) = db_path.parent() {
@@ -386,6 +427,38 @@ pub fn init_db(db_path: &Path) -> Result<Connection, String> {
         tracing::info!(
             version = 10,
             "[BoardStore] Database migrated to v10 (auto-flow F3: project.acceptance_criteria)"
+        );
+    }
+    if current_version < 11 {
+        conn.execute_batch(SCHEMA_V11)
+            .map_err(|e| format!("Board schema v11 migration failed: {e}"))?;
+        tracing::info!(
+            version = 11,
+            "[BoardStore] Database migrated to v11 (P1/A2b: issue.hidden 取消单清理)"
+        );
+    }
+    if current_version < 12 {
+        conn.execute_batch(SCHEMA_V12)
+            .map_err(|e| format!("Board schema v12 migration failed: {e}"))?;
+        tracing::info!(
+            version = 12,
+            "[BoardStore] Database migrated to v12 (P2/B1: project.directory 项目档案目录)"
+        );
+    }
+    if current_version < 13 {
+        conn.execute_batch(SCHEMA_V13)
+            .map_err(|e| format!("Board schema v13 migration failed: {e}"))?;
+        tracing::info!(
+            version = 13,
+            "[BoardStore] Database migrated to v13 (P4/E8: dispatch_baseline 变更集归属)"
+        );
+    }
+    if current_version < 14 {
+        conn.execute_batch(SCHEMA_V14)
+            .map_err(|e| format!("Board schema v14 migration failed: {e}"))?;
+        tracing::info!(
+            version = 14,
+            "[BoardStore] Database migrated to v14 (P5/F2+F3: project.conflict_frozen + pending_merges)"
         );
     }
     set_version(&conn, SCHEMA_VERSION)?;

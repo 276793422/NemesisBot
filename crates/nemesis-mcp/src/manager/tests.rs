@@ -648,9 +648,11 @@ async fn test_w4c_discover_tools_adapter_timeout() {
     }
     let tmp = TempDir::new().unwrap();
     let mgr = McpManager::new(tmp.path().to_path_buf().join("config.mcp.json"));
-    // timeout_secs=3 → adapter 3s 超时（slow 分支睡 10s）。
-    // 注意不能太小：initialize 里的 notifications/initialized 通知固定等 1s 传输超时。
-    let cfg = w4c_fake_server_config("slow-srv", 3);
+    // timeout_secs=8 → adapter 8s 超时（slow 分支睡 10s，8 < 10 断言仍成立）。
+    // 注意不能太小：initialize 里的 notifications/initialized 通知固定等 1s
+    // 传输超时，外加 Python 子进程冷启动——workspace 并行全量负载下 3s 预算
+    // 会被握手挤爆（discover 失败假红，2026-09-14），给足余量。
+    let cfg = w4c_fake_server_config("slow-srv", 8);
     let tools = mgr.discover_tools(&cfg).await.unwrap();
     let r = tools[0].execute(serde_json::json!({"slow": true})).await;
     assert!(r.is_error);

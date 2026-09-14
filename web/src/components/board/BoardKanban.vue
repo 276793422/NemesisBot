@@ -183,6 +183,8 @@ useBoardChanged(() => load(true))
           </div>
           <div class="kanban-card-title">{{ issue.title }}</div>
           <div class="kanban-card-meta">
+            <!-- C2（goal P1）：环节徽标——后端 issue.list 附 stage（单一真相源 issue_stage） -->
+            <span v-if="issue.stage" class="badge badge-info">{{ issue.stage }}</span>
             <span v-if="projectName(issue.project_id)" class="muted">{{ projectName(issue.project_id) }}</span>
             <span v-if="assigneeShort(issue)" class="muted">{{ assigneeShort(issue) }}</span>
             <span class="muted kanban-card-time">{{ fmtTime(issue.updated_at) }}</span>

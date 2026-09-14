@@ -39,6 +39,7 @@ pub const PLANNER_SYSTEM_PROMPT: &str = r#"你是 NemesisBot 看板的任务拆�
 3. depends_on 只允许引用本数组内的序号，且不得形成循环依赖。
 4. 子任务总数不超过 20 个，3-7 个为佳；宁少勿滥。
 5. 子任务之间有执行顺序要求（如先修编译再跑测试）用 depends_on 表达；相互独立则并行。
+6. 共享文件纪律：两个子任务会写**同一个文件**时，必须用 depends_on 串成一个先后链，或合并为一个子任务——并行的子任务不允许声明写同一路径（并行改动会在合并时冲突）。锁文件（package-lock.json/Cargo.lock 等）与生成物（build 产物/编译输出）相关的变更独立成单，不与源码改动混在同一子任务里。
 
 # 验收锚点（[CHECK] 行，鼓励但不强制）
 对能**客观判定**的验收点，在子任务的 acceptance_criteria 里用 `[CHECK]` 锚点行表达（每行一条，可与普通文字验收标准混写）。锚点由系统零成本自动核验，全部通过后才进入 AI 语义评审。四种形态：
@@ -51,7 +52,10 @@ pub const PLANNER_SYSTEM_PROMPT: &str = r#"你是 NemesisBot 看板的任务拆�
 **拓扑纪律（重要）**：子任务可能被派发到**远端节点**执行，而 `file:` 锚点只在派发端（本机）工作区实核——远端任务产生的文件不在本机工作区，即使执行者真实交付成功也会被误判失败（拓扑误杀）。因此：
 - 拆解时**默认所有子任务都可能被派到远端**：只允许 `[CHECK] re:` 形态（对交付汇报文本实核，跨节点安全）。
 - 只有父任务明确限定必须本机执行时，才可对这类子任务使用 `file:` 锚点。
-路径必须是工作区内相对路径（不得用绝对路径或 ..）；只对确定能客观判定的点使用，主观质量描述仍用普通文字。"#;
+路径必须是工作区内相对路径（不得用绝对路径或 ..）；只对确定能客观判定的点使用，主观质量描述仍用普通文字。
+
+# 资源声明（[TOUCH] 行，强烈建议）
+每个子任务的 acceptance_criteria 里用 `[TOUCH] <工作区相对路径>` 行声明本任务**会写**的文件/目录（每行一条，可与 [CHECK] 行混写）。调度系统据此避免把会写同一路径的两个子任务并发派发（防互相覆盖）；只读参考的文件不用声明。示例：`[TOUCH] client/game.js`。"#;
 
 /// planner 输出的单个子单（§3.1 schema；serde 宽容：缺字段用默认值）。
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -136,8 +140,50 @@ pub fn parse_plan(raw: &str) -> Result<Vec<PlannedSubIssue>, PlanParseError> {
         }
     }
     detect_cycle(&plan)?;
+    analyze_shared_touch(&plan)?;
 
     Ok(plan)
+}
+
+/// E6 共享文件分析（看板项目档案 goal，拆解期第 1 层冲突防线）：
+/// [TOUCH] 声明聚合——两个子任务声明写同一路径且**无直接依赖边**
+/// （互不 depends_on）= 并行改同一文件，回传合并必然冲突 → 校验失败
+/// 回灌重试（复用既有 PLAN_BAD 机制与重试预算）。有依赖边=串行执行，
+/// 后者拿到的基线已含前者的合入，不拦。路径匹配与调度层 [TOUCH] 互斥
+/// 同口径：trim 后精确相等。
+fn analyze_shared_touch(plan: &[PlannedSubIssue]) -> Result<(), PlanParseError> {
+    // path -> 声明它的子任务序号列表。
+    let mut owners: std::collections::BTreeMap<String, Vec<usize>> = Default::default();
+    for (i, sub) in plan.iter().enumerate() {
+        for p in parse_touch_paths(&sub.acceptance_criteria) {
+            owners.entry(p).or_default().push(i);
+        }
+    }
+    let mut violations: Vec<String> = Vec::new();
+    for (path, subs) in &owners {
+        if subs.len() < 2 {
+            continue;
+        }
+        for (a_idx, &a) in subs.iter().enumerate() {
+            for &b in subs.iter().skip(a_idx + 1) {
+                let has_edge = plan[a].depends_on.contains(&b) || plan[b].depends_on.contains(&a);
+                if !has_edge {
+                    violations.push(format!(
+                        "第 {a} 和第 {b} 个子任务都声明写「{path}」但没有依赖边（并行执行会在合并时冲突）"
+                    ));
+                }
+            }
+        }
+    }
+    if violations.is_empty() {
+        return Ok(());
+    }
+    Err(PlanParseError {
+        message: format!(
+            "共享文件冲突：{}。请修正后重新输出：给冲突双方之一加 depends_on 串行化、或合并为一个子任务、或修正 [TOUCH] 声明使其准确反映各自实际写入范围。",
+            violations.join("；")
+        ),
+    })
 }
 
 /// 从 LLM 原始输出中提取 JSON 数组文本：剥 ``` 围栏、丢弃围栏外文字。
@@ -203,6 +249,7 @@ pub fn build_planner_user_prompt(
     description: &str,
     acceptance_criteria: Option<&str>,
     team_experience: &[String],
+    cluster_profile: Option<&str>,
 ) -> String {
     let mut prompt = String::new();
     prompt.push_str("# 父任务\n");
@@ -227,6 +274,18 @@ pub fn build_planner_user_prompt(
             prompt.push_str(&format!("- {exp}\n"));
         }
     }
+    // R-10（goal P4）：集群画像注入——拆解即按可执行者拆（技术选型/role/
+    // required_tags 与真实节点能力对齐，防「拆出无人能执行的任务」）。
+    if let Some(profile) = cluster_profile
+        && !profile.trim().is_empty()
+    {
+        prompt.push_str(&format!(
+            "\n# 可用执行节点（集群画像——拆解必须与此对齐）\n{profile}\n\
+             约束：required_tags 只能从上述节点的 tags/category 中选；技术选型\
+             （语言/运行时/工具）必须落在节点具备的能力内；每个子单的描述里\
+             写明运行环境假设。\n"
+        ));
+    }
     prompt.push_str("\n请拆解上述父任务，只输出 JSON 数组。");
     prompt
 }
@@ -246,3 +305,20 @@ pub fn build_retry_prompt(prev_output: &str, error: &PlanParseError) -> String {
 
 #[cfg(test)]
 mod tests;
+
+/// R-9（goal P4）：解析 acceptance_criteria 里的 `[TOUCH] <路径>` 行——
+/// 子单写资源声明，调度互斥与交付回传清单的素材。非 [TOUCH] 行忽略；
+/// 路径 trim 后去空；相对路径形态不做强校验（宽容解析）。
+pub fn parse_touch_paths(acceptance_criteria: &str) -> Vec<String> {
+    let mut out = Vec::new();
+    for line in acceptance_criteria.lines() {
+        let t = line.trim();
+        if let Some(p) = t.strip_prefix("[TOUCH]") {
+            let p = p.trim();
+            if !p.is_empty() && !out.iter().any(|x| x == p) {
+                out.push(p.to_string());
+            }
+        }
+    }
+    out
+}

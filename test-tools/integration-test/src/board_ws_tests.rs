@@ -1002,3 +1002,921 @@ pub async fn test_board_p5_audit_surface(ws: &TestWorkspace, bin: &Path) -> Vec<
 
     results
 }
+
+// ---------------------------------------------------------------------------
+// goal P1（可观测批）：board.project.progress 聚合投影 + issue.list stage 字段。
+// 实机验收：goal §四 T-obs-2/3/4 的后端数据面（前端渲染另有 vitest/人工）。
+// ---------------------------------------------------------------------------
+
+pub async fn test_board_p1_progress_surface(ws: &TestWorkspace, bin: &Path) -> Vec<TestResult> {
+    let suite = "board_ws/p1_progress_surface";
+    let mut results = Vec::new();
+    print_suite_header(suite);
+    let _ = (ws, bin);
+
+    let mut api = match WsApi::connect().await {
+        Ok(a) => a,
+        Err(e) => {
+            results.push(fail(suite, format!("WsApi connect failed: {e}")));
+            return results;
+        }
+    };
+
+    // ---- 1. 建项目 + 三单：done / in_progress（无在途=待重派）/ backlog。
+    let proj = match api
+        .call(
+            "board",
+            "project.create",
+            Some(json!({ "name": "P1PROG 进度聚合", "description": "IT" })),
+        )
+        .await
+    {
+        (Some(d), None) => d["project"]["id"].as_i64().unwrap_or(0),
+        _ => {
+            results.push(fail(
+                &format!("{suite}/create_project"),
+                "project.create failed",
+            ));
+            return results;
+        }
+    };
+    if proj == 0 {
+        results.push(fail(&format!("{suite}/create_project"), "project id=0"));
+        return results;
+    }
+
+    let mut ids = Vec::new();
+    for title in ["P1P done 单", "P1P 待重派单", "P1P backlog 单"] {
+        let (d, err) = api
+            .call(
+                "board",
+                "issue.create",
+                Some(json!({ "title": title, "project_id": proj })),
+            )
+            .await;
+        match (d, err) {
+            (Some(d), None) => ids.push(d["issue"]["id"].as_i64().unwrap_or(0)),
+            _ => {
+                results.push(fail(
+                    &format!("{suite}/create {title}"),
+                    "issue.create failed",
+                ));
+                return results;
+            }
+        }
+    }
+    // done 单：backlog → done（合法直达边）。
+    let (_, err) = api
+        .call(
+            "board",
+            "issue.status",
+            Some(json!({ "id": ids[0], "status": "done" })),
+        )
+        .await;
+    if err.is_some() {
+        results.push(fail(
+            &format!("{suite}/done transition"),
+            format!("{err:?}"),
+        ));
+    }
+    // 待重派单：backlog → in_progress（不派发 → 无在途）。
+    let (_, err) = api
+        .call(
+            "board",
+            "issue.status",
+            Some(json!({ "id": ids[1], "status": "in_progress" })),
+        )
+        .await;
+    if err.is_some() {
+        results.push(fail(
+            &format!("{suite}/redo transition"),
+            format!("{err:?}"),
+        ));
+    }
+
+    // ---- 2. 全项目摘要模式（无 project_id）：含本项目行且字段齐。
+    let (d, err) = api.call("board", "project.progress", None).await;
+    match (&d, &err) {
+        (Some(d), None) => {
+            let rows = d["projects"].as_array().cloned().unwrap_or_default();
+            results.push(pass(
+                &format!("{suite}/all_mode"),
+                format!("projects={}", rows.len()),
+            ));
+            let mine = rows.iter().find(|r| r["project_id"].as_i64() == Some(proj));
+            match mine {
+                Some(r) => {
+                    if r["stage"] == "待重派"
+                        && r["counts"]["done"] == 1
+                        && r["counts"]["in_progress"] == 1
+                        && r["counts"]["backlog"] == 1
+                    {
+                        results.push(pass(&format!("{suite}/all_mode_row"), "counts+stage 正确"));
+                    } else {
+                        results.push(fail(
+                            &format!("{suite}/all_mode_row"),
+                            format!("unexpected row: {r}"),
+                        ));
+                    }
+                }
+                None => results.push(fail(
+                    &format!("{suite}/all_mode_row"),
+                    format!("project {proj} 不在摘要中"),
+                )),
+            }
+        }
+        _ => results.push(fail(
+            &format!("{suite}/all_mode"),
+            "project.progress (all) failed",
+        )),
+    }
+
+    // ---- 3. 单项目模式：逐单 stage（done=已完成 / in_progress 无在途=待重派 / backlog=待派发）。
+    let (d, err) = api
+        .call(
+            "board",
+            "project.progress",
+            Some(json!({ "project_id": proj })),
+        )
+        .await;
+    match (&d, err) {
+        (Some(d), None) => {
+            let expect = [(ids[0], "已完成"), (ids[1], "待重派"), (ids[2], "待派发")];
+            let mut all_ok = true;
+            for (id, want) in expect {
+                let row = d["issues"]
+                    .as_array()
+                    .cloned()
+                    .unwrap_or_default()
+                    .into_iter()
+                    .find(|r| r["id"].as_i64() == Some(id));
+                match row {
+                    Some(r) if r["stage"] == json!(want) => {}
+                    other => {
+                        all_ok = false;
+                        results.push(fail(
+                            &format!("{suite}/stage {id}"),
+                            format!("期望 {want}，实际 {other:?}"),
+                        ));
+                    }
+                }
+            }
+            if all_ok {
+                results.push(pass(&format!("{suite}/per_issue_stage"), "逐单环节正确"));
+            }
+        }
+        _ => results.push(fail(
+            &format!("{suite}/single_mode"),
+            "project.progress failed",
+        )),
+    }
+
+    // ---- 4. issue.list 行带 stage 字段（C2 前端徽标数据源）。
+    let (d, err) = api
+        .call("board", "issue.list", Some(json!({ "project_id": proj })))
+        .await;
+    match (&d, err) {
+        (Some(d), None) => {
+            let rows = d["issues"].as_array().cloned().unwrap_or_default();
+            let with_stage = rows.iter().filter(|r| r.get("stage").is_some()).count();
+            if with_stage == rows.len() && !rows.is_empty() {
+                results.push(pass(&format!("{suite}/issue_list_stage"), "全部行带 stage"));
+            } else {
+                results.push(fail(
+                    &format!("{suite}/issue_list_stage"),
+                    format!("{with_stage}/{} 行带 stage", rows.len()),
+                ));
+            }
+        }
+        _ => results.push(fail(&format!("{suite}/issue_list"), "issue.list failed")),
+    }
+
+    results
+}
+
+/// A2 + A2b（看板项目档案 goal P1）表面契约：issue.list 默认排除归档项目
+/// 子单/已取消单/hidden 单（include_* 显式放行；hidden 无放行口）+
+/// issue.bulk_archive 批量清理（非取消单整体拒绝）+ 逐单审计。
+/// 单节点表面契约——真决策流归 cluster-uat 双节点（沿 p5 同款边界）。
+pub async fn test_board_archive_filter_surface(ws: &TestWorkspace, bin: &Path) -> Vec<TestResult> {
+    let suite = "board_ws/archive_filter_surface";
+    let mut results = Vec::new();
+    print_suite_header(suite);
+    let _ = (ws, bin);
+
+    let mut api = match WsApi::connect().await {
+        Ok(a) => a,
+        Err(e) => {
+            results.push(fail(suite, format!("WsApi connect failed: {e}")));
+            return results;
+        }
+    };
+
+    // ---- 1. 建项目 + 项目子单 ×2 + 独立单 ×1。
+    let proj = match api
+        .call(
+            "board",
+            "project.create",
+            Some(json!({ "name": "ARCHF 归档过滤", "description": "IT" })),
+        )
+        .await
+    {
+        (Some(d), None) => d["project"]["id"].as_i64().unwrap_or(0),
+        _ => {
+            results.push(fail(
+                &format!("{suite}/create_project"),
+                "project.create failed",
+            ));
+            return results;
+        }
+    };
+    let mut in_proj_ids = Vec::new();
+    for title in ["ARCHF 项目子单甲", "ARCHF 项目子单乙"] {
+        let (d, err) = api
+            .call(
+                "board",
+                "issue.create",
+                Some(json!({ "title": title, "project_id": proj })),
+            )
+            .await;
+        match (d, err) {
+            (Some(d), None) => in_proj_ids.push(d["issue"]["id"].as_i64().unwrap_or(0)),
+            _ => {
+                results.push(fail(
+                    &format!("{suite}/create {title}"),
+                    "issue.create failed",
+                ));
+                return results;
+            }
+        }
+    }
+    let (d, err) = api
+        .call(
+            "board",
+            "issue.create",
+            Some(json!({ "title": "ARCHF 独立单" })),
+        )
+        .await;
+    let standalone_id = match (d, err) {
+        (Some(d), None) => d["issue"]["id"].as_i64().unwrap_or(0),
+        _ => {
+            results.push(fail(
+                &format!("{suite}/create standalone"),
+                "issue.create failed",
+            ));
+            return results;
+        }
+    };
+
+    // ---- 2. 项目活跃期：默认列表三单全见。
+    let (d, err) = api.call("board", "issue.list", Some(json!({}))).await;
+    match (&d, err) {
+        (Some(d), None) => {
+            let ids: Vec<i64> = d["issues"]
+                .as_array()
+                .cloned()
+                .unwrap_or_default()
+                .iter()
+                .filter_map(|r| r["id"].as_i64())
+                .collect();
+            if in_proj_ids.iter().all(|i| ids.contains(i)) && ids.contains(&standalone_id) {
+                results.push(pass(
+                    &format!("{suite}/active_all_visible"),
+                    "项目活跃期三单全见",
+                ));
+            } else {
+                results.push(fail(
+                    &format!("{suite}/active_all_visible"),
+                    format!("缺单：ids={ids:?}"),
+                ));
+            }
+        }
+        _ => results.push(fail(
+            &format!("{suite}/active_all_visible"),
+            "issue.list failed",
+        )),
+    }
+
+    // ---- 3. 归档项目：默认排除子单；include_archived_projects=true 放行。
+    let (_, err) = api
+        .call(
+            "board",
+            "project.update",
+            Some(json!({ "id": proj, "status": "archived" })),
+        )
+        .await;
+    if err.is_some() {
+        results.push(fail(
+            &format!("{suite}/archive_project"),
+            format!("{err:?}"),
+        ));
+    }
+    let (d, err) = api.call("board", "issue.list", Some(json!({}))).await;
+    match (&d, err) {
+        (Some(d), None) => {
+            let ids: Vec<i64> = d["issues"]
+                .as_array()
+                .cloned()
+                .unwrap_or_default()
+                .iter()
+                .filter_map(|r| r["id"].as_i64())
+                .collect();
+            if ids.contains(&standalone_id) && in_proj_ids.iter().all(|i| !ids.contains(i)) {
+                results.push(pass(
+                    &format!("{suite}/archived_excluded"),
+                    "归档项目子单默认排除，独立单保留",
+                ));
+            } else {
+                results.push(fail(
+                    &format!("{suite}/archived_excluded"),
+                    format!("期望只余独立单：ids={ids:?}"),
+                ));
+            }
+        }
+        _ => results.push(fail(
+            &format!("{suite}/archived_excluded"),
+            "issue.list failed",
+        )),
+    }
+    let (d, err) = api
+        .call(
+            "board",
+            "issue.list",
+            Some(json!({ "include_archived_projects": true })),
+        )
+        .await;
+    match (&d, err) {
+        (Some(d), None) => {
+            let ids: Vec<i64> = d["issues"]
+                .as_array()
+                .cloned()
+                .unwrap_or_default()
+                .iter()
+                .filter_map(|r| r["id"].as_i64())
+                .collect();
+            if in_proj_ids.iter().all(|i| ids.contains(i)) {
+                results.push(pass(
+                    &format!("{suite}/archived_include"),
+                    "include_archived_projects=true 放行",
+                ));
+            } else {
+                results.push(fail(
+                    &format!("{suite}/archived_include"),
+                    format!("放行后仍缺子单：ids={ids:?}"),
+                ));
+            }
+        }
+        _ => results.push(fail(
+            &format!("{suite}/archived_include"),
+            "issue.list failed",
+        )),
+    }
+
+    // ---- 4. 取消独立单：默认排除；include_cancelled=true 放行。
+    let (_, err) = api
+        .call(
+            "board",
+            "issue.status",
+            Some(json!({ "id": standalone_id, "status": "cancelled" })),
+        )
+        .await;
+    if err.is_some() {
+        results.push(fail(
+            &format!("{suite}/cancel_standalone"),
+            format!("{err:?}"),
+        ));
+    }
+    let (d, err) = api.call("board", "issue.list", Some(json!({}))).await;
+    match (&d, err) {
+        (Some(d), None) => {
+            let ids: Vec<i64> = d["issues"]
+                .as_array()
+                .cloned()
+                .unwrap_or_default()
+                .iter()
+                .filter_map(|r| r["id"].as_i64())
+                .collect();
+            // 共享网关上有其他套件的单——只断言本套件三单全被排除。
+            let mine_clean =
+                !ids.contains(&standalone_id) && in_proj_ids.iter().all(|i| !ids.contains(i));
+            if mine_clean {
+                results.push(pass(
+                    &format!("{suite}/cancelled_excluded"),
+                    "取消单默认排除（本套件三单全不在默认面）",
+                ));
+            } else {
+                results.push(fail(
+                    &format!("{suite}/cancelled_excluded"),
+                    format!("取消/归档单未被排除：ids={ids:?}"),
+                ));
+            }
+        }
+        _ => results.push(fail(
+            &format!("{suite}/cancelled_excluded"),
+            "issue.list failed",
+        )),
+    }
+    let (d, err) = api
+        .call(
+            "board",
+            "issue.list",
+            Some(json!({ "include_cancelled": true })),
+        )
+        .await;
+    match (&d, err) {
+        (Some(d), None) => {
+            let ids: Vec<i64> = d["issues"]
+                .as_array()
+                .cloned()
+                .unwrap_or_default()
+                .iter()
+                .filter_map(|r| r["id"].as_i64())
+                .collect();
+            if ids.contains(&standalone_id) && in_proj_ids.iter().all(|i| !ids.contains(i)) {
+                results.push(pass(
+                    &format!("{suite}/cancelled_include"),
+                    "include_cancelled=true 放行取消单（归档项目子单仍排除）",
+                ));
+            } else {
+                results.push(fail(
+                    &format!("{suite}/cancelled_include"),
+                    format!("期望只余独立取消单：ids={ids:?}"),
+                ));
+            }
+        }
+        _ => results.push(fail(
+            &format!("{suite}/cancelled_include"),
+            "issue.list failed",
+        )),
+    }
+
+    // ---- 5. 清理：bulk_archive 取消单 → 默认面 + include_cancelled 面都消失。
+    let (d, err) = api
+        .call(
+            "board",
+            "issue.bulk_archive",
+            Some(json!({ "ids": [standalone_id] })),
+        )
+        .await;
+    match (&d, err) {
+        (Some(d), None) => {
+            if d["archived"].as_i64() == Some(1) {
+                results.push(pass(&format!("{suite}/bulk_archive_ok"), "archived=1"));
+            } else {
+                results.push(fail(
+                    &format!("{suite}/bulk_archive_ok"),
+                    format!("unexpected: {d}"),
+                ));
+            }
+        }
+        _ => results.push(fail(
+            &format!("{suite}/bulk_archive_ok"),
+            "issue.bulk_archive failed",
+        )),
+    }
+    let (d, err) = api
+        .call(
+            "board",
+            "issue.list",
+            Some(json!({ "include_cancelled": true })),
+        )
+        .await;
+    match (&d, err) {
+        (Some(d), None) => {
+            let ids: Vec<i64> = d["issues"]
+                .as_array()
+                .cloned()
+                .unwrap_or_default()
+                .iter()
+                .filter_map(|r| r["id"].as_i64())
+                .collect();
+            if !ids.contains(&standalone_id) {
+                results.push(pass(
+                    &format!("{suite}/hidden_no_bypass"),
+                    "hidden 无放行口：include_cancelled 面也不再可见",
+                ));
+            } else {
+                results.push(fail(
+                    &format!("{suite}/hidden_no_bypass"),
+                    "hidden 单仍在 include_cancelled 面",
+                ));
+            }
+        }
+        _ => results.push(fail(
+            &format!("{suite}/hidden_no_bypass"),
+            "issue.list failed",
+        )),
+    }
+
+    // ---- 6. 非取消单整体拒绝（用项目子单——非 cancelled 状态）。
+    let (_, err) = api
+        .call(
+            "board",
+            "issue.bulk_archive",
+            Some(json!({ "ids": [in_proj_ids[0]] })),
+        )
+        .await;
+    match err {
+        Some(e) if e.contains("不是已取消单") => {
+            results.push(pass(&format!("{suite}/reject_non_cancelled"), e));
+        }
+        other => results.push(fail(
+            &format!("{suite}/reject_non_cancelled"),
+            format!("期望「不是已取消单」拒绝，实际 {other:?}"),
+        )),
+    }
+
+    // ---- 7. 审计：action=issue_bulk_archive 的活动行存在且指向被清单。
+    let (d, err) = api
+        .call(
+            "board",
+            "audit.list",
+            Some(json!({ "limit": 100, "action": "issue_bulk_archive" })),
+        )
+        .await;
+    match (&d, err) {
+        (Some(d), None) => {
+            let rows = d["decisions"].as_array().cloned().unwrap_or_default();
+            let hit = rows
+                .iter()
+                .any(|r| r["issue_id"].as_i64() == Some(standalone_id));
+            if hit {
+                results.push(pass(&format!("{suite}/audit_row"), "逐单审计已落"));
+            } else {
+                results.push(fail(
+                    &format!("{suite}/audit_row"),
+                    format!("{} 行审计中无独立单记录", rows.len()),
+                ));
+            }
+        }
+        _ => results.push(fail(&format!("{suite}/audit_row"), "audit.list failed")),
+    }
+
+    results
+}
+
+/// 看板项目档案 P2/B+C 套件：目录绑定（显式/自动）+ 四件套脚手架 + 防绕过
+/// 拒绝面 + plan.md 拆解里程碑（代码触发）+ project.json 状态投影。
+///
+/// 运行位置：末位（改共享状态纪律）——热切默认模型（models.set_default）+
+/// 改 board config + 写 board.db + 落盘档案目录；结束时恢复默认模型与开关。
+pub async fn test_board_project_archive(ws: &TestWorkspace, bin: &Path) -> Vec<TestResult> {
+    let suite = "board_ws/project_archive";
+    let mut results = Vec::new();
+    print_suite_header(suite);
+
+    let mut api = match WsApi::connect().await {
+        Ok(a) => a,
+        Err(e) => {
+            results.push(fail(suite, format!("WsApi connect failed: {e}")));
+            return results;
+        }
+    };
+
+    // ---- 1. 显式目录建项目：绝对路径 → 落盘四件套脚手架 ----
+    let base = std::env::temp_dir().join(format!("nb-it-bproj-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&base);
+    let dir_a = base.join("PROJ-A");
+    let (d, err) = api
+        .call(
+            "board",
+            "project.create",
+            Some(json!({
+                "name": "ITP2 显式档案",
+                "description": "IT project archive suite",
+                "directory": dir_a.to_string_lossy(),
+            })),
+        )
+        .await;
+    let Some(pa) = d.as_ref().and_then(|d| d["project"]["id"].as_i64()) else {
+        results.push(fail(
+            &format!("{suite}/create_explicit"),
+            format!("project.create failed: {err:?} / {d:?}"),
+        ));
+        return results;
+    };
+    let resp_dir = d
+        .as_ref()
+        .and_then(|d| d["directory"].as_str())
+        .unwrap_or_default()
+        .to_string();
+    let root_a = std::path::PathBuf::from(&resp_dir);
+    let mut scaffold_ok = root_a.join("project.json").is_file()
+        && root_a.join("timeline.jsonl").is_file()
+        && root_a.join("docs").is_dir()
+        && root_a.join("records").is_dir();
+    if let Ok(gi) = std::fs::read_to_string(root_a.join(".gitignore")) {
+        scaffold_ok = scaffold_ok && gi.contains("/project.json") && gi.contains("/records/");
+    } else {
+        scaffold_ok = false;
+    }
+    if scaffold_ok {
+        results.push(pass(
+            &format!("{suite}/create_explicit"),
+            format!("显式目录绑定 + 四件套：{resp_dir}"),
+        ));
+    } else {
+        results.push(fail(
+            &format!("{suite}/create_explicit"),
+            format!("脚手架缺失 @ {resp_dir}"),
+        ));
+    }
+    // manifest 落库：id 回填 + status 投影（sync_project_manifest 创建即跑）。
+    match std::fs::read_to_string(root_a.join("project.json"))
+        .ok()
+        .and_then(|s| serde_json::from_str::<Value>(&s).ok())
+    {
+        Some(m) if m["project_id"].as_i64() == Some(pa) && m["status"] == "active" => {
+            results.push(pass(
+                &format!("{suite}/manifest"),
+                "project.json id 回填+status",
+            ));
+        }
+        other => results.push(fail(
+            &format!("{suite}/manifest"),
+            format!("project.json 异常: {other:?}"),
+        )),
+    }
+
+    // ---- 2. 自动分配目录：落到 <workspace>/board-projects/ 下 ----
+    let (d, err) = api
+        .call(
+            "board",
+            "project.create",
+            Some(json!({ "name": "ITP2 自动档案", "description": "IT" })),
+        )
+        .await;
+    let Some(pb) = d.as_ref().and_then(|d| d["project"]["id"].as_i64()) else {
+        results.push(fail(
+            &format!("{suite}/create_auto"),
+            format!("project.create(无目录) failed: {err:?}"),
+        ));
+        return results;
+    };
+    let resp_dir_b = d
+        .as_ref()
+        .and_then(|d| d["directory"].as_str())
+        .unwrap_or_default()
+        .to_string();
+    let ws_prefix = ws.workspace().to_string_lossy().to_string();
+    if resp_dir_b.contains("board-projects") && resp_dir_b.starts_with(&ws_prefix) {
+        results.push(pass(
+            &format!("{suite}/create_auto"),
+            format!("自动目录落 workspace 内：{resp_dir_b}"),
+        ));
+    } else {
+        results.push(fail(
+            &format!("{suite}/create_auto"),
+            format!("自动目录越界/未归位：{resp_dir_b}（workspace={ws_prefix}）"),
+        ));
+    }
+
+    // ---- 3. 防绕过拒绝面（workspace 重叠双向 / 既有项目重叠 / 相对路径 / 8.3）----
+    let rejects: Vec<(&str, Value)> = vec![
+        (
+            "ws_self",
+            json!({ "name": "ITP2 拒绝甲", "directory": ws.workspace().to_string_lossy() }),
+        ),
+        (
+            "ws_inside",
+            json!({
+                "name": "ITP2 拒绝乙",
+                "directory": ws
+                    .workspace()
+                    .parent()
+                    .map(|p| p.to_string_lossy().to_string())
+                    .unwrap_or_default(),
+            }),
+        ),
+        (
+            "proj_overlap",
+            json!({ "name": "ITP2 拒绝丙", "directory": root_a.join("docs").to_string_lossy() }),
+        ),
+        (
+            "relative",
+            json!({ "name": "ITP2 拒绝丁", "directory": "./rel-proj" }),
+        ),
+        (
+            "shortname83",
+            json!({ "name": "ITP2 拒绝戊", "directory": "X:/nb-it-8dot3~1" }),
+        ),
+    ];
+    for (tag, payload) in rejects {
+        let (_, err) = api.call("board", "project.create", Some(payload)).await;
+        if err.is_some() {
+            results.push(pass(&format!("{suite}/reject_{tag}"), "诚实拒绝"));
+        } else {
+            results.push(fail(
+                &format!("{suite}/reject_{tag}"),
+                format!("{tag} 未被拒绝（应拒）"),
+            ));
+        }
+    }
+
+    // ---- 4. 拆解里程碑：plan 链 → docs/plan.md 代码触发落盘 ----
+    let add = ws
+        .run_cli(
+            bin,
+            &[
+                "model",
+                "add",
+                "--model",
+                "test/testai-board-1.0",
+                "--base",
+                &format!("http://127.0.0.1:{}/v1", ai_server_port()),
+                "--key",
+                "test-key",
+            ],
+        )
+        .await;
+    if !add.success() {
+        results.push(fail(
+            &format!("{suite}/model_add"),
+            format!("exit={} stderr={}", add.exit_code, snip(&add.stderr)),
+        ));
+        return results;
+    }
+    let (_, err) = api
+        .call(
+            "models",
+            "set_default",
+            Some(json!({ "name": "testai-board-1.0" })),
+        )
+        .await;
+    if err.is_some() {
+        results.push(fail(&format!("{suite}/set_default"), format!("{err:?}")));
+        return results;
+    }
+    let (_, err) = api
+        .call(
+            "board",
+            "config.set",
+            Some(json!({ "key": "plan.auto_confirm", "value": true })),
+        )
+        .await;
+    if err.is_some() {
+        results.push(fail(&format!("{suite}/auto_confirm"), format!("{err:?}")));
+        return results;
+    }
+    let (d, err) = api
+        .call(
+            "board",
+            "issue.create",
+            Some(json!({
+                "title": "IT项目档案 <PLAN_ANCHOR> 拆解里程碑",
+                "description": "IT project archive：拆解里程碑落盘。",
+                "project_id": pa,
+            })),
+        )
+        .await;
+    let Some(parent_id) = d.as_ref().and_then(|d| d["issue"]["id"].as_i64()) else {
+        results.push(fail(
+            &format!("{suite}/create_parent"),
+            format!("issue.create failed: {err:?}"),
+        ));
+        return results;
+    };
+    let parent_number = d
+        .as_ref()
+        .and_then(|d| d["issue"]["number"].as_str())
+        .unwrap_or_default()
+        .to_string();
+    let (_, err) = api
+        .call("board", "issue.plan", Some(json!({ "id": parent_id })))
+        .await;
+    if err.is_some() {
+        results.push(fail(&format!("{suite}/plan"), format!("{err:?}")));
+        return results;
+    }
+    // 轮询 ≤90s 等 auto_confirm 建 3 子单（issue.list 必须传空对象）。
+    let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(90);
+    let mut last_err: Option<String>;
+    let sub_ids: Vec<i64> = loop {
+        let (dat, err) = api.call("board", "issue.list", Some(json!({}))).await;
+        last_err = err.map(|e| e.to_string());
+        let subs: Vec<i64> = dat
+            .as_ref()
+            .and_then(|d| d.get("issues"))
+            .and_then(|v| v.as_array())
+            .map(|arr| {
+                arr.iter()
+                    .filter(|i| {
+                        i.get("parent_issue_id").and_then(|v| v.as_i64()) == Some(parent_id)
+                    })
+                    .filter_map(|i| i.get("id").and_then(|v| v.as_i64()))
+                    .collect()
+            })
+            .unwrap_or_default();
+        if subs.len() == 3 {
+            break subs;
+        }
+        if tokio::time::Instant::now() >= deadline {
+            results.push(fail(
+                &format!("{suite}/subs_created"),
+                format!(
+                    "90s 内未建 3 子单（实际 {}，最后错误 {last_err:?}）",
+                    subs.len()
+                ),
+            ));
+            return results;
+        }
+        tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+    };
+    results.push(pass(&format!("{suite}/subs_created"), "3 subs created"));
+    // docs/plan.md：代码触发（confirm_plan 挂接点），含子单清单 + 依赖图。
+    let plan_md = std::fs::read_to_string(root_a.join("docs").join("plan.md")).unwrap_or_default();
+    if plan_md.contains("# 拆解计划")
+        && plan_md.contains("依赖：子0")
+        && plan_md.contains("### 子0：")
+    {
+        results.push(pass(
+            &format!("{suite}/plan_md"),
+            "docs/plan.md 落盘（子单清单+依赖图）",
+        ));
+    } else {
+        results.push(fail(
+            &format!("{suite}/plan_md"),
+            format!("plan.md 内容缺失：{}", trunc_str(&plan_md, 200)),
+        ));
+    }
+    // timeline.jsonl：kind=plan 事件 + 父单编号（number 已含 NB- 前缀）。
+    let timeline = std::fs::read_to_string(root_a.join("timeline.jsonl")).unwrap_or_default();
+    if timeline.contains("\"kind\":\"plan\"") && timeline.contains(&parent_number) {
+        results.push(pass(&format!("{suite}/timeline"), "plan 事件落 timeline"));
+    } else {
+        results.push(fail(
+            &format!("{suite}/timeline"),
+            format!("timeline 缺 plan 事件：{}", trunc_str(&timeline, 200)),
+        ));
+    }
+
+    // ---- 5. 状态投影：project.update → project.json.status 同步刷新 ----
+    let (_, err) = api
+        .call(
+            "board",
+            "project.update",
+            Some(json!({ "id": pa, "status": "archived" })),
+        )
+        .await;
+    let proj_status = std::fs::read_to_string(root_a.join("project.json"))
+        .ok()
+        .and_then(|s| serde_json::from_str::<Value>(&s).ok())
+        .and_then(|m| m["status"].as_str().map(|s| s.to_string()));
+    if err.is_none() && proj_status.as_deref() == Some("archived") {
+        results.push(pass(&format!("{suite}/manifest_sync"), "status 投影同步"));
+    } else {
+        results.push(fail(
+            &format!("{suite}/manifest_sync"),
+            format!("update err={err:?} status={proj_status:?}"),
+        ));
+    }
+    let _ = api
+        .call(
+            "board",
+            "project.update",
+            Some(json!({ "id": pa, "status": "active" })),
+        )
+        .await;
+
+    // ---- 6. 清理：取消单 + 恢复默认模型与开关（尾位纪律）+ 删临时目录 ----
+    for id in &sub_ids {
+        let _ = api
+            .call("board", "issue.cancel", Some(json!({ "id": id })))
+            .await;
+    }
+    let _ = api
+        .call("board", "issue.cancel", Some(json!({ "id": parent_id })))
+        .await;
+    let _ = api
+        .call(
+            "board",
+            "config.set",
+            Some(json!({ "key": "plan.auto_confirm", "value": false })),
+        )
+        .await;
+    let _ = api
+        .call(
+            "board",
+            "project.update",
+            Some(json!({ "id": pb, "status": "archived" })),
+        )
+        .await;
+    let (_, err) = api
+        .call(
+            "models",
+            "set_default",
+            Some(json!({ "name": "testai-1.1" })),
+        )
+        .await;
+    if err.is_none() {
+        results.push(pass(&format!("{suite}/restore"), "默认模型恢复 testai-1.1"));
+    } else {
+        results.push(fail(
+            &format!("{suite}/restore"),
+            format!("默认模型恢复失败（污染后续套件）: {err:?}"),
+        ));
+    }
+    let _ = std::fs::remove_dir_all(&base);
+
+    results
+}

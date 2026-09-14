@@ -3,11 +3,14 @@ import { ref, onMounted } from 'vue'
 import { useWSAPI } from '../../composables/useWSAPI'
 import { useToast } from '../../composables/useToast'
 import { useBoardChanged } from '../../composables/useBoardChanged'
+import IssueDetailModal from './IssueDetailModal.vue'
 import { fmtTime } from './boardMeta'
 
 // 收件箱（W2 P3）：站内通知列表。通知由后端 store 事件钩子产生（评论/
 // @提及/指派/状态变化）；MVP 单管理员语义（admin wildcard，后端 inbox.list）。
 // 未读徽标 + 单条已读 + 全部已读 + 仅看未读过滤。经通道的站外投递留 P4。
+// goal P1/H2+H3：卡片显示所属 issue 上下文（标题解析+点击打开详情弹窗
+// 看到评论原上下文）；标题与正文视觉分层（字色/字号区分）。
 
 const { request } = useWSAPI()
 const toast = useToast()
@@ -43,6 +46,35 @@ const loading = ref(true)
 const notifications = ref<Notification[]>([])
 const unread = ref(0)
 const unreadOnly = ref(false)
+// H2：issue_id → 标题解析缓存（卡片显示所属上下文）；detailIssueId 非空 =
+// 详情弹窗打开（看到评论原上下文）。
+const issueTitles = ref<Record<number, string>>({})
+const detailIssueId = ref<number | null>(null)
+
+async function resolveIssueTitles() {
+  const ids = [
+    ...new Set(
+      notifications.value
+        .map((n) => n.issue_id)
+        .filter((v): v is number => v !== null && !(v in issueTitles.value)),
+    ),
+  ]
+  for (const id of ids) {
+    try {
+      const r = await request('board', 'issue.get', { id })
+      issueTitles.value[id] = r?.issue?.title || `#${id}`
+    } catch {
+      issueTitles.value[id] = `#${id}`
+    }
+  }
+}
+
+function openContext(n: Notification) {
+  markRead(n)
+  if (n.issue_id !== null) {
+    detailIssueId.value = n.issue_id
+  }
+}
 
 async function load(silent = false) {
   if (!silent) loading.value = true
@@ -50,6 +82,7 @@ async function load(silent = false) {
     const r = await request('board', 'inbox.list', { unread_only: unreadOnly.value })
     notifications.value = r?.notifications || []
     unread.value = r?.unread || 0
+    await resolveIssueTitles()
   } catch (e: any) {
     if (silent) console.warn('[InboxPanel] silent refresh failed:', e)
     else toast.error('加载收件箱失败: ' + e)
@@ -111,19 +144,28 @@ useBoardChanged(() => load(true))
         v-for="n in notifications"
         :key="n.id"
         class="inbox-item"
-        :class="{ unread: !n.read }"
-        @click="markRead(n)"
+        :class="{ unread: !n.read, linked: n.issue_id !== null }"
+        @click="openContext(n)"
       >
         <div class="inbox-item-head">
           <span class="badge" :class="KIND_BADGE[n.kind] || 'badge-neutral'">{{ KIND_LABEL[n.kind] || n.kind }}</span>
-          <strong>{{ n.title }}</strong>
+          <strong class="inbox-item-title">{{ n.title }}</strong>
           <span v-if="!n.read" class="unread-dot" title="未读"></span>
           <span class="muted inbox-item-time">{{ fmtTime(n.created_at) }}</span>
         </div>
         <div v-if="n.content" class="inbox-item-body">{{ n.content }}</div>
-        <div v-if="n.issue_id" class="muted">关联 issue #{{ n.issue_id }}（在列表/看板中查看）</div>
+        <div v-if="n.issue_id !== null" class="inbox-item-context muted">
+          ↳ {{ issueTitles[n.issue_id] || `#${n.issue_id}` }} · 点击查看原上下文
+        </div>
       </div>
     </div>
+
+    <!-- H2：评论的原上下文 = issue 详情弹窗（完整线程/活动/订阅者） -->
+    <IssueDetailModal
+      v-if="detailIssueId !== null"
+      :issue-id="detailIssueId"
+      @close="detailIssueId = null"
+    />
   </div>
 </template>
 
@@ -162,13 +204,28 @@ useBoardChanged(() => load(true))
   gap: var(--space-2);
   margin-bottom: var(--space-1);
 }
+/* H3：标题与正文视觉分层——标题加粗主色，正文弱化灰。 */
+.inbox-item-title {
+  color: var(--text-primary);
+  font-size: var(--text-sm);
+}
 .inbox-item-time {
   margin-left: auto;
 }
 .inbox-item-body {
   font-size: var(--text-sm);
+  color: var(--text-muted);
   white-space: pre-wrap;
   margin-bottom: var(--space-1);
+}
+.inbox-item-context {
+  font-size: var(--text-xs);
+}
+.inbox-item.linked {
+  cursor: pointer;
+}
+.inbox-item.linked:hover {
+  border-color: var(--accent);
 }
 .unread-dot {
   width: 8px;

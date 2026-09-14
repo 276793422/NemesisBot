@@ -81,6 +81,12 @@ export interface IssueRow {
   origin: { origin_type: string; origin_id: string } | null
   created_at: number
   updated_at: number
+  /** C2（goal P1）：环节（待派发/执行中/待重派/验收中/已停车/已完成…）——
+   *  后端 issue.list 附带（issue_stage 单一真相源推导）。 */
+  stage?: string
+  /** A2b（看板项目档案 goal P1）：取消单清理后的永久收起标记——
+   *  issue.list 恒排除 hidden 单，此字段只在详情/CLI 全量面可见。 */
+  hidden?: boolean
   comments?: any[]
   activity?: any[]
   subscribers?: any[]

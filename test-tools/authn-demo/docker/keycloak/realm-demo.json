@@ -1,0 +1,64 @@
+{
+  "realm": "demo",
+  "enabled": true,
+  "registrationAllowed": false,
+  "loginWithEmailAllowed": false,
+  "roles": {
+    "realm": [
+      { "name": "admin" },
+      { "name": "operator" },
+      { "name": "viewer" }
+    ]
+  },
+  "users": [
+    {
+      "username": "alice",
+      "enabled": true,
+      "emailVerified": true,
+      "firstName": "Alice",
+      "lastName": "Chen",
+      "email": "alice@example.org",
+      "credentials": [
+        { "type": "password", "value": "alice123", "temporary": false }
+      ],
+      "realmRoles": ["operator", "viewer"]
+    },
+    {
+      "username": "bob",
+      "enabled": true,
+      "emailVerified": true,
+      "firstName": "Bob",
+      "lastName": "Root",
+      "email": "bob@example.org",
+      "credentials": [
+        { "type": "password", "value": "bob123", "temporary": false }
+      ],
+      "realmRoles": ["admin", "operator", "viewer"]
+    }
+  ],
+  "clients": [
+    {
+      "clientId": "authn-demo",
+      "enabled": true,
+      "protocol": "openid-connect",
+      "publicClient": true,
+      "standardFlowEnabled": true,
+      "directAccessGrantsEnabled": true,
+      "redirectUris": [
+        "http://localhost:18081/callback"
+      ],
+      "webOrigins": [
+        "http://localhost:18081"
+      ],
+      "attributes": {
+        "post.logout.redirect.uris": "+"
+      },
+      "defaultClientScopes": [
+        "profile",
+        "email",
+        "roles",
+        "web-origins"
+      ]
+    }
+  ]
+}

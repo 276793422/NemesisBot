@@ -1995,6 +1995,52 @@ async fn test_board_config_get_set_roundtrip() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
+// P5/F1：conflict_auto_resolve 在 config.set 白名单内（缺省 false=human 档；
+// 开 = AI 硬解漏斗）。这是 Dashboard 配置页切换冲突档位的唯一写入口。
+#[tokio::test]
+async fn test_board_config_set_conflict_auto_resolve_roundtrip() {
+    let dir = unique_dir("config-conflict-auto-resolve");
+    let ctx = make_ctx_with_board(&dir);
+
+    // 初始 get：缺省 false（human 档）。
+    let out = dispatch(&ctx, "config.get", serde_json::json!({}))
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(out["conflict_auto_resolve"], false);
+
+    // set true → get 回读 + 盘上真实落盘。
+    let out = dispatch(
+        &ctx,
+        "config.set",
+        serde_json::json!({ "key": "conflict_auto_resolve", "value": true }),
+    )
+    .await
+    .unwrap()
+    .unwrap();
+    assert_eq!(out["updated"], true);
+    let out = dispatch(&ctx, "config.get", serde_json::json!({}))
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(out["conflict_auto_resolve"], true);
+    let raw: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(dir.join("config.json")).unwrap()).unwrap();
+    assert_eq!(raw["board"]["conflict_auto_resolve"], true);
+
+    // 非布尔 loud 拒绝。
+    let err = dispatch(
+        &ctx,
+        "config.set",
+        serde_json::json!({ "key": "conflict_auto_resolve", "value": "yes" }),
+    )
+    .await
+    .expect_err("非布尔必须拒绝");
+    assert!(err.contains("布尔"), "got: {err}");
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
 #[tokio::test]
 async fn test_board_config_set_unknown_key_loud_rejects() {
     let dir = unique_dir("config-unknown-key");
@@ -2216,7 +2262,7 @@ async fn test_link_project_on_dispatch_transitions_and_guards() {
     let ctx = make_ctx_with_board(&dir);
     let store = ctx.state.board.as_ref().unwrap().store().clone();
     let pid = store
-        .create_project("联动项目", "", None, "", "")
+        .create_project("联动项目", "", None, "", "", None)
         .unwrap()
         .id;
     // ① project_id=None → 不联动。
@@ -2253,7 +2299,7 @@ async fn test_confirm_plan_subs_inherit_parent_project_id() {
     let ctx = make_ctx_with_board(&dir);
     let store = ctx.state.board.as_ref().unwrap().store().clone();
     let pid = store
-        .create_project("继承项目", "", None, "", "")
+        .create_project("继承项目", "", None, "", "", None)
         .unwrap()
         .id;
     let parent = store
@@ -2331,7 +2377,10 @@ fn f3_project_with_parents(
     done_parents: usize,
 ) -> i64 {
     use nemesis_board::models::IssueStatus;
-    let pid = store.create_project(name, "", None, "", "").unwrap().id;
+    let pid = store
+        .create_project(name, "", None, "", "", None)
+        .unwrap()
+        .id;
     let creator = nemesis_board::Actor::agent("node-a");
     for i in 0..parents {
         let issue = store
@@ -2365,7 +2414,10 @@ async fn test_project_completion_eligible_matrix() {
     assert!(!project_completion_eligible(&store, 999_999));
 
     // 空项目（无顶层父单）→ false。
-    let empty = store.create_project("空项目", "", None, "", "").unwrap().id;
+    let empty = store
+        .create_project("空项目", "", None, "", "", None)
+        .unwrap()
+        .id;
     assert!(!project_completion_eligible(&store, empty));
 
     // 全部顶层父单 done → true（F2 首派联动后项目已在 in_progress 主链）。
@@ -2378,7 +2430,7 @@ async fn test_project_completion_eligible_matrix() {
 
     // 子单 done 但父单未 done → false（只有顶层父单是触发面）。
     let pid = store
-        .create_project("子done项目", "", None, "", "")
+        .create_project("子done项目", "", None, "", "", None)
         .unwrap()
         .id;
     let creator = nemesis_board::Actor::agent("node-a");
@@ -3297,4 +3349,724 @@ fn remote_file_anchor_gate_ignores_unsafe_path_anchors() {
     assert!(
         super::reject_remote_file_anchors(Some(ac), "Node-B", "node-a-xyz", "Node-A").is_none()
     );
+}
+
+// ---------------------------------------------------------------------------
+// goal P1/C1+C2：board.project.progress 项目进度聚合
+// （环节计数/卡点环节/逐单环节数据——实机验收=goal §四 T-obs-2/3/4）。
+// ---------------------------------------------------------------------------
+
+#[test]
+fn test_project_progress_counts_stage_and_rows() {
+    let dir = unique_dir("project-progress");
+    let store = BoardStore::open(&dir.join("board.db"), "NB").expect("open store");
+    let actor = nemesis_board::Actor::admin("test-session");
+    let project = store
+        .create_project("进度测试", "d", None, "", "", None)
+        .unwrap();
+
+    let new = |title: &str| nemesis_board::NewIssue {
+        title: title.into(),
+        project_id: Some(project.id),
+        ..Default::default()
+    };
+    let done = store.create_issue(new("done 单")).unwrap();
+    let review = store.create_issue(new("验收中单")).unwrap();
+    let redo = store.create_issue(new("打回重做单")).unwrap();
+    let running = store.create_issue(new("执行中单")).unwrap();
+    let parked = store.create_issue(new("停车单")).unwrap();
+    let _ready = store.create_issue(new("待派发单")).unwrap();
+    let blocked = store.create_issue(new("受阻单")).unwrap();
+    let cancelled = store.create_issue(new("取消单")).unwrap();
+
+    // 各单推到目标状态（转移边均走 state_machine 合法路径）。
+    store
+        .transition_issue(done.id, nemesis_board::models::IssueStatus::Done, &actor)
+        .unwrap();
+    // 验收中：backlog → in_progress → in_review（backlog 无直达 in_review 边）。
+    store
+        .transition_issue(
+            review.id,
+            nemesis_board::models::IssueStatus::InProgress,
+            &actor,
+        )
+        .unwrap();
+    store
+        .transition_issue(
+            review.id,
+            nemesis_board::models::IssueStatus::InReview,
+            &actor,
+        )
+        .unwrap();
+    // 打回重做：in_review → in_progress（合法边），且不插在途派发 → 待重派。
+    store
+        .transition_issue(
+            redo.id,
+            nemesis_board::models::IssueStatus::InProgress,
+            &actor,
+        )
+        .unwrap();
+    store
+        .transition_issue(
+            running.id,
+            nemesis_board::models::IssueStatus::InProgress,
+            &actor,
+        )
+        .unwrap();
+    store
+        .insert_dispatch("task-running", running.id, "node-x", &actor)
+        .unwrap();
+    // 停车：backlog + ⏸ 系统评论（PARK_NOTICE_MARK 同源，sweep 判定一致）。
+    store
+        .add_comment(nemesis_board::NewComment {
+            issue_id: parked.id,
+            author: nemesis_board::Actor::system("board"),
+            content: format!(
+                "⏸ {}：当前在线节点无可匹配（角色/标签）",
+                super::PARK_NOTICE_MARK
+            ),
+            parent_id: None,
+            ctype: nemesis_board::CommentType::System,
+        })
+        .unwrap();
+    store
+        .transition_issue(
+            blocked.id,
+            nemesis_board::models::IssueStatus::Blocked,
+            &actor,
+        )
+        .unwrap();
+    store
+        .transition_issue(
+            cancelled.id,
+            nemesis_board::models::IssueStatus::Cancelled,
+            &actor,
+        )
+        .unwrap();
+
+    let out = super::project_progress(&store, project.id).unwrap();
+    assert_eq!(out["total"], 8);
+    let counts = &out["counts"];
+    assert_eq!(counts["done"], 1);
+    assert_eq!(counts["dispatched"], 1);
+    assert_eq!(
+        counts["in_progress"], 1,
+        "打回重做（无在途）单计 in_progress"
+    );
+    assert_eq!(counts["in_review"], 1);
+    assert_eq!(counts["parked"], 1);
+    assert_eq!(counts["backlog"], 1);
+    assert_eq!(counts["blocked"], 1);
+    assert_eq!(counts["cancelled"], 1);
+    // 卡点优先级：受阻 > 停车 > 执行中 > 待重派 > 验收中 > 待派发
+    assert_eq!(out["stage"], "受阻");
+
+    // 逐单环节（C2 徽标数据源）
+    let stage_of = |title: &str| -> String {
+        out["issues"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|r| r["title"].as_str() == Some(title))
+            .map(|r| r["stage"].as_str().unwrap().to_string())
+            .unwrap_or_default()
+    };
+    assert_eq!(stage_of("done 单"), "已完成");
+    assert_eq!(stage_of("验收中单"), "验收中");
+    assert_eq!(stage_of("打回重做单"), "待重派");
+    assert_eq!(stage_of("执行中单"), "执行中");
+    assert_eq!(stage_of("停车单"), "已停车");
+    assert_eq!(stage_of("待派发单"), "待派发");
+    assert_eq!(stage_of("受阻单"), "受阻");
+    assert_eq!(stage_of("取消单"), "已取消");
+}
+
+#[test]
+fn test_project_progress_empty_and_stage_priority() {
+    let dir = unique_dir("project-progress-empty");
+    let store = BoardStore::open(&dir.join("board.db"), "NB").expect("open store");
+    let actor = nemesis_board::Actor::admin("test-session");
+    let project = store
+        .create_project("空项目", "", None, "", "", None)
+        .unwrap();
+
+    // 空项目 → 未拆解
+    let out = super::project_progress(&store, project.id).unwrap();
+    assert_eq!(out["total"], 0);
+    assert_eq!(out["stage"], "未拆解");
+
+    // 卡点优先级：停车 > 执行中（混合场景 stage 取更靠前的卡点）
+    let parked = store
+        .create_issue(nemesis_board::NewIssue {
+            title: "停车单".into(),
+            project_id: Some(project.id),
+            ..Default::default()
+        })
+        .unwrap();
+    store
+        .add_comment(nemesis_board::NewComment {
+            issue_id: parked.id,
+            author: nemesis_board::Actor::system("board"),
+            content: format!("⏸ {}：无可匹配", super::PARK_NOTICE_MARK),
+            parent_id: None,
+            ctype: nemesis_board::CommentType::System,
+        })
+        .unwrap();
+    let running = store
+        .create_issue(nemesis_board::NewIssue {
+            title: "执行中单".into(),
+            project_id: Some(project.id),
+            ..Default::default()
+        })
+        .unwrap();
+    store
+        .transition_issue(
+            running.id,
+            nemesis_board::models::IssueStatus::InProgress,
+            &actor,
+        )
+        .unwrap();
+    store
+        .insert_dispatch("task-prio", running.id, "node-x", &actor)
+        .unwrap();
+
+    let out = super::project_progress(&store, project.id).unwrap();
+    assert_eq!(out["stage"], "停车待恢复");
+}
+
+// ---------------------------------------------------------------------------
+// goal P2/D0：派发准入控制（worker_max_inflight）纯函数判定。
+// （自动链集成路径由 cluster-uat 双 worker 场景覆盖——本处钉判定语义。）
+// ---------------------------------------------------------------------------
+
+#[test]
+fn test_inflight_full_semantics() {
+    let mut load = std::collections::HashMap::new();
+    load.insert("node-x".to_string(), 1usize);
+    load.insert("node-y".to_string(), 3usize);
+
+    // cap=1：node-x 在途 1 ≥ 1 = 满；node-y 在途 3 同样满；node-z 不在
+    // load（0 在途）= 不满。
+    assert!(super::inflight_full(&load, "node-x", 1));
+    assert!(super::inflight_full(&load, "node-y", 1));
+    assert!(!super::inflight_full(&load, "node-z", 1));
+
+    // cap=0 = 不限（旧行为）：再满也不拦。
+    assert!(!super::inflight_full(&load, "node-x", 0));
+
+    // cap=3：node-y 恰好触顶。
+    assert!(super::inflight_full(&load, "node-y", 3));
+
+    // cap 负数防御 = 视同不限（构造期已过滤，此处双保险）。
+    assert!(!super::inflight_full(&load, "node-x", -1));
+}
+
+// ---------------------------------------------------------------------------
+// goal P2/P5-E：标签授予台账（board_meta granted_tags）。
+// ---------------------------------------------------------------------------
+
+#[test]
+fn test_grant_tags_to_node_store() {
+    let dir = unique_dir("grant-tags");
+    let store = BoardStore::open(&dir.join("board.db"), "NB").expect("open store");
+
+    // 首次授予：python + web。
+    let g1 = store
+        .grant_tags_to_node("node-b", &["python".to_string(), "web".to_string()])
+        .unwrap();
+    assert_eq!(g1, vec!["python", "web"]);
+
+    // 重复授予 → 不重复（返回空）。
+    let g2 = store
+        .grant_tags_to_node("node-b", &["python".to_string()])
+        .unwrap();
+    assert!(g2.is_empty());
+
+    // 台账查询：node_id → tags。
+    let map = store.granted_tags_map().unwrap();
+    assert_eq!(
+        map.get("node-b").unwrap(),
+        &vec!["python".to_string(), "web".to_string()]
+    );
+}
+
+// ---------------------------------------------------------------------------
+// goal P2/D0b 回归：running 态派发的终结与在途判定（NB-12 卡死类回归防线）。
+// ---------------------------------------------------------------------------
+
+#[test]
+fn test_running_dispatch_lifecycle() {
+    let dir = unique_dir("running-dispatch");
+    let store = BoardStore::open(&dir.join("board.db"), "NB").expect("open store");
+    let actor = nemesis_board::Actor::admin("test-session");
+    let issue = store
+        .create_issue(nemesis_board::NewIssue {
+            title: "t".into(),
+            ..Default::default()
+        })
+        .unwrap();
+    store
+        .insert_dispatch("tk-r1", issue.id, "node-x", &actor)
+        .unwrap();
+
+    // 在途判定：dispatched 与 running 都算在途。
+    assert!(store.has_active_dispatch(issue.id).unwrap());
+
+    // 出队开跑上报 → running。
+    assert!(store.mark_dispatch_running("tk-r1", "node-x").unwrap());
+    // 重复上报 → false（已非 dispatched）。
+    assert!(!store.mark_dispatch_running("tk-r1", "node-x").unwrap());
+    assert!(
+        store.has_active_dispatch(issue.id).unwrap(),
+        "running 也算在途"
+    );
+
+    // finish：running → done 可终结。
+    assert!(store.finish_dispatch("tk-r1", "done").unwrap());
+    assert!(
+        !store.has_active_dispatch(issue.id).unwrap(),
+        "终结后不再在途"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// D0 × T37 身份归一化回归（2026-09-13）：auto 派发 target 必须在 D0 闸之前
+// 归一化为节点 id——人工指派给 peer 名（"Alex"）时，负载表（键=账本
+// worker_id，归一化后全为节点 id）按名字查不到 = 闸失效 + 账本/上报身份
+// 分裂（task.started / delivery.files 校验永假）。
+// ---------------------------------------------------------------------------
+
+#[cfg(feature = "cluster")]
+#[tokio::test]
+async fn inflight_gate_hits_canonical_worker_id_for_named_assignee() {
+    let dir = unique_dir("inflight-canonical");
+    let ctx = make_ctx_with_board(&dir);
+    let store = store_of(&ctx);
+    let actor = Actor::admin("test-session");
+    let cluster = offline_cluster(&dir, "coord-1");
+    cluster.register_node(nemesis_cluster::types::ExtendedNodeInfo {
+        base: nemesis_types::cluster::NodeInfo {
+            id: "node-alex-1".into(),
+            name: "Alex".into(),
+            role: NodeRole::Worker,
+            address: "10.0.0.2:9000".into(),
+            category: "development".into(),
+            last_seen: chrono::Local::now().to_rfc3339(),
+        },
+        status: nemesis_cluster::types::NodeStatus::Online,
+        capabilities: vec![],
+        tags: vec![],
+        addresses: vec![],
+        node_type: "agent".into(),
+    });
+
+    // 占满 node-alex-1 的 slot：在途派发账本形态 = 节点 id（归一化后唯一形态）。
+    let occupied = store
+        .create_issue(nemesis_board::NewIssue {
+            title: "占槽单".into(),
+            ..Default::default()
+        })
+        .unwrap();
+    store
+        .insert_dispatch("tk-full", occupied.id, "node-alex-1", &actor)
+        .unwrap();
+
+    // 待派单：人工指派给 peer 名（非节点 id）。
+    let issue = store
+        .create_issue(nemesis_board::NewIssue {
+            title: "名字指派单".into(),
+            assignee: Some(nemesis_board::AssignmentType::Worker),
+            assignee_id: Some("Alex".into()),
+            ..Default::default()
+        })
+        .unwrap();
+
+    let cfg = nemesis_config::BoardFlagConfig {
+        worker_max_inflight: 1,
+        ..Default::default()
+    };
+    let out = dispatch_subissue_auto_with_config(
+        Some(&cfg),
+        &store,
+        Some(&cluster),
+        issue.id,
+        &actor,
+        true,
+    );
+    assert!(
+        matches!(out, Ok(None)),
+        "peer 名指派必须经归一化命中负载表（node-alex-1 在途 1/1）→ 满仓停车"
+    );
+    // 停车评论按节点 id 留痕（身份口径统一）。
+    let c = store
+        .last_system_comment(issue.id)
+        .unwrap()
+        .expect("⏸ 评论必须落");
+    assert!(
+        c.contains("在途派发已达上限") && c.contains("node-alex-1"),
+        "评论应含 ⏸ 标记 + 节点 id 形态目标，got: {c}"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// R-9 互斥释放波（2026-09-13 T-sched-1 实机缺口 NB-18）：同父两 planner
+/// 子单声明同写路径（[TOUCH] shared/a.txt）——冲突单静默延后留 backlog；
+/// 冲突派发落定（finish_dispatch DONE，对应写回 settled=true）后，
+/// sweep_parked_dispatches 必须把延后单承接派出。守卫「稳态集群冲突落定
+/// 触发重估波」链路（gateway 回调点释放波的本体逻辑）。
+#[cfg(feature = "cluster")]
+#[tokio::test]
+async fn mutex_deferred_single_dispatches_after_conflict_settles() {
+    use nemesis_board::models::IssueStatus as St;
+    use nemesis_board::models::dispatch_state;
+
+    let dir = unique_dir("mutex-release-wave");
+    let ctx = make_ctx_with_board(&dir);
+    let store = store_of(&ctx);
+    let actor = Actor::admin("test-session");
+    let cluster = offline_cluster(&dir, "coord-mutex");
+
+    let parent = store
+        .create_issue(nemesis_board::NewIssue {
+            title: "父".into(),
+            ..Default::default()
+        })
+        .unwrap();
+    // 两 planner 子单声明同写路径（互斥对）；ac 里另含 [TOUCH] 行。
+    let mk_child = |title: &str| {
+        store
+            .create_issue(nemesis_board::NewIssue {
+                title: title.to_string(),
+                parent_issue_id: Some(parent.id),
+                acceptance_criteria: Some("回复包含：完成\n[TOUCH] shared/a.txt".to_string()),
+                origin: Some(nemesis_board::TaskOrigin {
+                    origin_type: "planner".to_string(),
+                    origin_id: "NB-1".to_string(),
+                }),
+                ..Default::default()
+            })
+            .unwrap()
+    };
+    let sub_a = mk_child("子A：写共享文件");
+    let sub_b = mk_child("子B：同路径后写");
+
+    // 离线 Cluster 注入空 RPC client + 单个 worker 上线。
+    cluster.set_rpc_client(Arc::new(nemesis_cluster::rpc::client::RpcClient::new()));
+    cluster.merge_real_node_info(&nemesis_cluster::cluster::RealNodeInfo {
+        id: "node-w1".into(),
+        name: "W1".into(),
+        address: "127.0.0.1:19999".into(),
+        role: NodeRole::Worker,
+        category: "development".into(),
+        capabilities: vec![],
+        tags: vec![],
+        node_type: "agent".into(),
+    });
+
+    // 子A 派出（在途）；子B 命中 R-9 互斥闸 → 静默延后留 backlog。
+    let d = super::dispatch_subissue_auto(&store, Some(&cluster), sub_a.id, &actor, true).unwrap();
+    assert!(d.is_some(), "首个无冲突单必须派出");
+    assert_eq!(store.get_issue(sub_a.id).unwrap().status, St::InProgress);
+    let out =
+        super::dispatch_subissue_auto(&store, Some(&cluster), sub_b.id, &actor, true).unwrap();
+    assert!(out.is_none(), "同路径冲突单必须被 R-9 闸静默延后");
+    assert_eq!(
+        store.get_issue(sub_b.id).unwrap().status,
+        St::Backlog,
+        "延后单保持待派态（停车场候选）"
+    );
+
+    // 冲突派发落定（= 写回 settled=true 的 store 层效果）。
+    let disp = store
+        .get_active_dispatch(sub_a.id)
+        .unwrap()
+        .expect("子A 必须有在途派发");
+    assert!(
+        store
+            .finish_dispatch(&disp.task_id, dispatch_state::DONE)
+            .unwrap()
+    );
+    let _ = store.transition_issue(sub_a.id, St::Done, &actor);
+
+    // 释放波：sweep 必须把延后的子B 承接派出。
+    let (cands, dispatched, failed) = super::sweep_parked_dispatches(&store, &cluster, &actor);
+    assert_eq!(failed, 0, "释放波不得有失败：{cands} 候选");
+    assert_eq!(dispatched, 1, "互斥释放后延后单必须被重估派出");
+    assert_eq!(store.get_issue(sub_b.id).unwrap().status, St::InProgress);
+    assert!(
+        store.has_active_dispatch(sub_b.id).unwrap(),
+        "子B 必须有新的在途派发"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+// ------------------------------------------------------------------
+// B1 匹配失败明细（2026-09-13 goal 复核补齐）：match_failure_detail
+// 纯函数直测（函数注释声称「单测直测」但首轮落地遗漏测试）+
+// project_resume 无匹配候选附 match_detail（goal P2/D 顺序依赖条款）。
+// ------------------------------------------------------------------
+
+#[cfg(feature = "cluster")]
+fn cand(id: &str, role: &str, tags: &[&str]) -> nemesis_board::PeerCandidate {
+    nemesis_board::PeerCandidate {
+        id: id.into(),
+        name: id.into(),
+        role: role.into(),
+        tags: tags.iter().map(|s| s.to_string()).collect(),
+        capabilities: vec![],
+    }
+}
+
+/// 仅 required_* 影响 detail 的最小 Issue（直接构造，钉住纯函数语义）。
+#[cfg(feature = "cluster")]
+fn bare_issue(role: Option<&str>, tags: &[&str]) -> nemesis_board::Issue {
+    nemesis_board::Issue {
+        id: 1,
+        number: "NB-1".into(),
+        title: "t".into(),
+        description: String::new(),
+        status: IssueStatus::Backlog,
+        priority: priority::MEDIUM,
+        assignee: None,
+        assignee_id: None,
+        creator: Actor::system("board"),
+        parent_issue_id: None,
+        project_id: None,
+        due_date: None,
+        hidden: false,
+        position: 0,
+        acceptance_criteria: None,
+        origin: None,
+        required_role: role.map(str::to_string),
+        required_tags: tags.iter().map(|s| s.to_string()).collect(),
+        created_at: 0,
+        updated_at: 0,
+    }
+}
+
+#[cfg(feature = "cluster")]
+#[test]
+fn match_detail_reports_role_and_tag_gaps_per_candidate() {
+    // 角色不匹配 + 缺标签：逐项列出。
+    let d = super::match_failure_detail(
+        &bare_issue(Some("worker"), &["rust", "web"]),
+        &[cand("n1", "coordinator", &["web"])],
+    );
+    assert!(d.contains("✗"), "got: {d}");
+    assert!(d.contains("role≠worker"), "got: {d}");
+    assert!(d.contains("缺标签 rust"), "got: {d}");
+    assert!(!d.contains("缺标签 web"), "已具备标签不得报缺：{d}");
+
+    // 全命中：✓ 且无「缺:」段。
+    let d = super::match_failure_detail(
+        &bare_issue(Some("worker"), &["rust"]),
+        &[cand("n1", "worker", &["rust", "extra"])],
+    );
+    assert!(d.contains("✓") && !d.contains("缺:"), "got: {d}");
+
+    // 角色词表外（如 "rust"）转 tags 语义（与 rank_dispatch_candidates
+    // 同源归一）：报缺标签而非 role≠。
+    let d = super::match_failure_detail(
+        &bare_issue(Some("rust"), &[]),
+        &[cand("n1", "worker", &["web"])],
+    );
+    assert!(d.contains("缺标签 rust"), "got: {d}");
+    assert!(!d.contains("role≠"), "got: {d}");
+
+    // 多候选逐行分号连接，各自独立判定。
+    let d = super::match_failure_detail(
+        &bare_issue(None, &["rust"]),
+        &[
+            cand("n1", "worker", &["rust"]),
+            cand("n2", "worker", &["web"]),
+        ],
+    );
+    assert!(d.contains("；"), "got: {d}");
+    assert!(d.contains("n1") && d.contains("n2"), "got: {d}");
+
+    // 无在线候选。
+    assert_eq!(
+        super::match_failure_detail(&bare_issue(None, &[]), &[]),
+        "无在线候选节点"
+    );
+}
+
+/// B1×D 接线：project_resume 无匹配候选在 dry_run 预览行与执行失败行附
+/// `match_detail`；匹配成功行不附。
+#[cfg(feature = "cluster")]
+#[tokio::test]
+async fn project_resume_no_match_carries_b1_detail() {
+    let dir = unique_dir("resume-b1-detail");
+    let ctx = make_ctx_with_board(&dir);
+    let store = store_of(&ctx);
+    let actor = Actor::admin("test-session");
+    let cluster = offline_cluster(&dir, "node-master");
+
+    let project = store
+        .create_project("恢复明细", "", None, "", "", None)
+        .unwrap();
+    let child = store
+        .create_issue(nemesis_board::NewIssue {
+            title: "无匹配子单".into(),
+            project_id: Some(project.id),
+            required_tags: vec!["rust".into()],
+            ..Default::default()
+        })
+        .unwrap();
+
+    // 离线集群：无任何候选 → dry_run 预览行附「无在线候选节点」明细。
+    let out = super::project_resume(&store, &cluster, None, project.id, true, &actor)
+        .await
+        .unwrap();
+    let row = &out["candidates"][0];
+    assert_eq!(row["issue_id"], child.id);
+    assert_eq!(row["target"], "无匹配（兜底未开或无在线节点）");
+    assert_eq!(row["match_detail"], "无在线候选节点");
+
+    // 执行路径：失败行同样附明细。
+    let out = super::project_resume(&store, &cluster, None, project.id, false, &actor)
+        .await
+        .unwrap();
+    assert_eq!(out["dispatched"], 0);
+    assert_eq!(out["failed"][0]["match_detail"], "无在线候选节点");
+
+    // 节点上线（生产路径 = merge_real_node_info）后：匹配成功行不再附
+    // 明细，target 解析为节点 id。
+    cluster.set_rpc_client(Arc::new(nemesis_cluster::rpc::client::RpcClient::new()));
+    cluster.merge_real_node_info(&nemesis_cluster::cluster::RealNodeInfo {
+        id: "node-rs".into(),
+        name: "RsWorker".into(),
+        address: "127.0.0.1:19999".into(),
+        role: NodeRole::Worker,
+        category: "development".into(),
+        capabilities: vec![],
+        tags: vec!["rust".into()],
+        node_type: "agent".into(),
+    });
+    let out = super::project_resume(&store, &cluster, None, project.id, true, &actor)
+        .await
+        .unwrap();
+    let row = &out["candidates"][0];
+    assert_eq!(row["target"], "node-rs");
+    assert!(
+        row.get("match_detail").is_none(),
+        "有匹配行不得附明细：{row}"
+    );
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+// ---------------------------------------------------------------------------
+// P5/F2：dispatch_issue_core 冲突冻结闸（派发单一入口唯一落点）
+// ---------------------------------------------------------------------------
+
+/// 冻结闸先于集群依赖校验：冻结项目的单**无论**有没有集群、有没有目标，
+/// 一律诚实拒绝且错误指向 project.resume——不因「集群未运行」混淆语义。
+#[cfg(feature = "cluster")]
+#[tokio::test]
+async fn test_dispatch_issue_core_rejects_frozen_project() {
+    let dir = unique_dir("dispatch-frozen-gate");
+    let store = Arc::new(BoardStore::open(&dir.join("board.db"), "NB").unwrap());
+    let pid = store
+        .create_project("冻结闸项目", "", None, "", "", None)
+        .unwrap()
+        .id;
+    let mut ni = nemesis_board::NewIssue {
+        title: "冻结中的单".into(),
+        ..Default::default()
+    };
+    ni.project_id = Some(pid);
+    let issue = store.create_issue(ni).unwrap();
+
+    // 冻结前：走到集群缺失报错（闸未拦）。
+    let err =
+        super::dispatch_issue_core(&store, None, issue.id, "node-b", &Actor::admin("t"), None)
+            .unwrap_err();
+    assert!(err.contains("集群未运行"), "闸未拦截时应报集群缺失：{err}");
+
+    // 置冻结 → 拒绝且错误指明解冻路径。
+    store.set_project_conflict_frozen(pid, true).unwrap();
+    let err =
+        super::dispatch_issue_core(&store, None, issue.id, "node-b", &Actor::admin("t"), None)
+            .unwrap_err();
+    assert!(err.contains("冲突冻结中"), "冻结闸必须拦：{err}");
+    assert!(
+        err.contains("project.resume"),
+        "错误必须指向唯一解冻出口：{err}"
+    );
+
+    // 解冻 → 恢复正常校验链（回到集群缺失报错）。
+    store.set_project_conflict_frozen(pid, false).unwrap();
+    let err =
+        super::dispatch_issue_core(&store, None, issue.id, "node-b", &Actor::admin("t"), None)
+            .unwrap_err();
+    assert!(err.contains("集群未运行"), "解冻后闸不再拦：{err}");
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+// ---------------------------------------------------------------------------
+// 看板项目档案 P6（F11）：project.progress 档案完整性投影
+// ---------------------------------------------------------------------------
+
+#[test]
+fn test_project_progress_projects_archive_integrity_projection() {
+    let dir = unique_dir("project-progress-integrity");
+    let store = BoardStore::open(&dir.join("board.db"), "NB").expect("open store");
+
+    // 未绑定档案目录 → archive_integrity=null（诚实缺省，前端隐藏徽章）。
+    let bare = store
+        .create_project("无档案项目", "", None, "", "", None)
+        .unwrap();
+    let out = super::project_progress(&store, bare.id).unwrap();
+    assert!(
+        out["archive_integrity"].is_null(),
+        "未绑定目录应 null: {}",
+        out["archive_integrity"]
+    );
+    assert_eq!(out["archive_missing_blocks"].as_array().unwrap().len(), 0);
+
+    // 绑定目录 + manifest 带 missing_blocks → 投影浮出（单项目臂）。
+    let archive = dir.join("archive-bound");
+    nemesis_board::archive::ensure_scaffold(&archive, 0, "档案项目", "in_progress").unwrap();
+    let mut manifest = nemesis_board::archive::read_manifest(&archive).unwrap();
+    manifest.missing_blocks.push("NB-3:manifest".into());
+    manifest.missing_blocks.push("NB-4:landed".into());
+    nemesis_board::archive::write_manifest(&archive, &manifest).unwrap();
+    let bound = store
+        .create_project(
+            "档案项目",
+            "",
+            None,
+            "",
+            "",
+            Some(archive.to_str().unwrap()),
+        )
+        .unwrap();
+    let out = super::project_progress(&store, bound.id).unwrap();
+    assert_eq!(out["archive_integrity"], "ok");
+    let missing = out["archive_missing_blocks"].as_array().unwrap();
+    assert_eq!(missing.len(), 2, "D6 缺失块应浮出到进度投影: {missing:?}");
+    assert_eq!(missing[0], "NB-3:manifest");
+
+    // 全项目摘要臂同投影（列表页 ⚠ 徽章数据源）。
+    let all = super::project_progress_all(&store).unwrap();
+    let rows = all["projects"].as_array().unwrap();
+    let bound_row = rows
+        .iter()
+        .find(|r| r["project_id"].as_i64() == Some(bound.id))
+        .unwrap();
+    assert_eq!(bound_row["archive_missing_blocks"][1], "NB-4:landed");
+    let bare_row = rows
+        .iter()
+        .find(|r| r["project_id"].as_i64() == Some(bare.id))
+        .unwrap();
+    assert!(bare_row["archive_integrity"].is_null());
+
+    // manifest 被手删 → 诚实缺省（不臆造 ok）。
+    std::fs::remove_file(archive.join("project.json")).unwrap();
+    let out = super::project_progress(&store, bound.id).unwrap();
+    assert!(out["archive_integrity"].is_null());
+
+    let _ = std::fs::remove_dir_all(&dir);
 }

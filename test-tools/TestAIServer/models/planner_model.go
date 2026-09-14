@@ -31,6 +31,10 @@ import (
 //     绝对路径）+ 一条合法锚点（验证解析期拒绝 + 告警回落语义，T2-3）
 //   - <PLAN_ANCHOR_MIXED>：子任务验收标准带无法解析的 [CHECK] 坏行（空
 //     目标）+ 合法锚点（验证坏行静默回落语义、不告警不 FAIL，T2-4）
+//   - <PLAN_PARALLEL>：3 个无依赖就绪子任务——0/1 互斥对（[TOUCH] 同一
+//     路径 shared/a.txt）、2 独立（[TOUCH] solo/c.txt）。供 T-sched-1 /
+//     T-res-2 的 D0 准入 + R-9 touch_paths 互斥多 worker 联验：互斥对不
+//     并发、独立对可分散两机
 //
 // 确定性输出，零随机、零延迟。
 type TestAIPlanner struct{}
@@ -98,6 +102,10 @@ func (m *TestAIPlanner) Process(messages []Message) string {
 	// P2 锚点系列开关（T2 组 UAT）：子任务验收标准携带 [CHECK] 行。
 	title := plannerExtractTitle(input)
 	switch {
+	case strings.Contains(input, "<PLAN_PARALLEL>"):
+		return plannerMarshal(plannerParallelPlan(title))
+	case strings.Contains(input, "<PLAN_TAGS>"):
+		return plannerMarshal(plannerTagsPlan(title))
 	case strings.Contains(input, "<PLAN_ANCHOR_EVIL>"):
 		return plannerMarshal(plannerAnchorPlan(title, "evil"))
 	case strings.Contains(input, "<PLAN_ANCHOR_MIXED>"):
@@ -174,6 +182,39 @@ func plannerDefaultPlan(parentTitle string, expNote string) []plannerSub {
 			RequiredTags:       []string{},
 			AcceptanceCriteria: "检查通过并给出结论性总结。",
 			DependsOn:          []int{1},
+		},
+	}
+}
+
+// plannerParallelPlan R-9/D0 多 worker 联验计划（<PLAN_PARALLEL>）：
+// 3 个全就绪子任务（无依赖），全部 worker 角色、空标签。0/1 是互斥对
+// （[TOUCH] shared/a.txt 同路径），2 独立（solo/c.txt）。预期调度行为：
+// 互斥对不并发（R-9 闸串行或错开）、独立单可派到另一台 worker。
+func plannerParallelPlan(parentTitle string) []plannerSub {
+	return []plannerSub{
+		{
+			Title:              parentTitle + " · 子任务1：写共享文件 A",
+			Description:        "先执行命令 sleep 90（阻塞 90 秒，模拟长任务），然后在工作区创建 shared 目录并写文件 a.txt（内容：A 完成）。",
+			RequiredRole:       "worker",
+			RequiredTags:       []string{},
+			AcceptanceCriteria: "回复包含：A完成\n[TOUCH] shared/a.txt",
+			DependsOn:          []int{},
+		},
+		{
+			Title:              parentTitle + " · 子任务2：覆盖写共享文件 A",
+			Description:        "向 shared/a.txt 追加一行（内容：B 完成）——与子任务1 写同一路径，必须等其完成后再做。",
+			RequiredRole:       "worker",
+			RequiredTags:       []string{},
+			AcceptanceCriteria: "回复包含：B完成\n[TOUCH] shared/a.txt",
+			DependsOn:          []int{},
+		},
+		{
+			Title:              parentTitle + " · 子任务3：写独立文件 C",
+			Description:        "在工作区创建 solo 目录并写文件 c.txt（内容：C 完成）。",
+			RequiredRole:       "worker",
+			RequiredTags:       []string{},
+			AcceptanceCriteria: "回复包含：C完成\n[TOUCH] solo/c.txt",
+			DependsOn:          []int{},
 		},
 	}
 }
@@ -260,4 +301,39 @@ func plannerAnchorPlan(parentTitle string, mode string) []plannerSub {
 		}
 	}
 	return subs
+}
+
+// plannerTagsPlan E 标签授予联验计划（<PLAN_TAGS>）：3 个无依赖就绪子单，
+// 子1 空标签（正常匹配基线），子2/子3 声明幽灵标签 ghost-e2e（无人持有）
+// ——确认波内：子2 匹配失败走兜底（dispatch_fallback 开）→ 派出 + 授予
+// 标签；子3 在子2 之后重估 → granted_tags 投影合并 → 正常匹配（不再走
+// 兜底）。验证 E 台账 + 同类第二单正常匹配闭环。（无依赖：链式计划会被
+// 依赖闸卡在 in_review 前序单上——auto_accept=false 时前序永不为 done。）
+func plannerTagsPlan(parentTitle string) []plannerSub {
+	return []plannerSub{
+		{
+			Title:              parentTitle + " · 子任务1：基线",
+			Description:        "回复：E1完成",
+			RequiredRole:       "worker",
+			RequiredTags:       []string{},
+			AcceptanceCriteria: "回复包含：E1完成",
+			DependsOn:          []int{},
+		},
+		{
+			Title:              parentTitle + " · 子任务2：幽灵标签单",
+			Description:        "回复：E2完成",
+			RequiredRole:       "worker",
+			RequiredTags:       []string{"ghost-e2e"},
+			AcceptanceCriteria: "回复包含：E2完成",
+			DependsOn:          []int{},
+		},
+		{
+			Title:              parentTitle + " · 子任务3：同类第二单",
+			Description:        "回复：E3完成",
+			RequiredRole:       "worker",
+			RequiredTags:       []string{"ghost-e2e"},
+			AcceptanceCriteria: "回复包含：E3完成",
+			DependsOn:          []int{},
+		},
+	}
 }

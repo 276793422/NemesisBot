@@ -18,6 +18,7 @@ fn make_deps(store: Arc<nemesis_board::BoardStore>, quota: Arc<QuotaLedger>) -> 
     });
     MasterBusDeps {
         store,
+        workspace: std::env::temp_dir().join("board-bus-test-ws"),
         quota,
         cluster: Arc::new(cluster),
         moderator_loop: Arc::new(OnceLock::new()),
@@ -648,4 +649,68 @@ fn test_wake_state_new_is_pure_memory() {
     assert!(!path.exists(), "new() must not write any file");
     assert!(!state.peek("t1", 5));
     let _ = std::fs::remove_dir_all(&dir);
+}
+
+// ---------------------------------------------------------------------------
+// goal P2/D0b：task.started 上报 → dispatch running（queued vs executing 分界）。
+// ---------------------------------------------------------------------------
+
+#[test]
+fn test_task_started_marks_dispatch_running() {
+    let (store, _dir) = temp_store("task-started");
+    let deps = make_deps(store.clone(), quota(8));
+    let actor = Actor::admin("test");
+
+    let issue = store
+        .create_issue(nemesis_board::NewIssue {
+            title: "t".into(),
+            ..Default::default()
+        })
+        .unwrap();
+    store
+        .insert_dispatch("tk-1", issue.id, "node-b", &actor)
+        .unwrap();
+
+    let payload = serde_json::json!({
+        "v": 1, "ns": "task", "op": "started", "corr_id": "c1",
+        "_rpc": { "from": "node-b" },
+        "body": { "task_id": "tk-1" }
+    });
+    let (ok, _, body) = parse_reply(handle_nb_bus(&deps, payload));
+    assert!(ok, "started 应成功");
+    assert_eq!(
+        body.pointer("/body/running"),
+        Some(&serde_json::json!(true))
+    );
+    assert_eq!(
+        store.get_dispatch("tk-1").unwrap().unwrap().state,
+        "running"
+    );
+
+    // 重复上报（已 running，非 dispatched）→ 诚实 failure。
+    let payload2 = serde_json::json!({
+        "v": 1, "ns": "task", "op": "started", "corr_id": "c2",
+        "_rpc": { "from": "node-b" },
+        "body": { "task_id": "tk-1" }
+    });
+    let (ok2, _, _) = parse_reply(handle_nb_bus(&deps, payload2));
+    assert!(!ok2, "重复上报应被拒");
+
+    // 伪造来源（worker 不匹配）→ failure。
+    let issue2 = store
+        .create_issue(nemesis_board::NewIssue {
+            title: "t2".into(),
+            ..Default::default()
+        })
+        .unwrap();
+    store
+        .insert_dispatch("tk-2", issue2.id, "node-b", &actor)
+        .unwrap();
+    let payload3 = serde_json::json!({
+        "v": 1, "ns": "task", "op": "started", "corr_id": "c3",
+        "_rpc": { "from": "node-evil" },
+        "body": { "task_id": "tk-2" }
+    });
+    let (ok3, _, _) = parse_reply(handle_nb_bus(&deps, payload3));
+    assert!(!ok3, "来源与派发 worker 不匹配应被拒");
 }

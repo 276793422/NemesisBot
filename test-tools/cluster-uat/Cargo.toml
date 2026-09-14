@@ -13,6 +13,7 @@ test-harness = { path = "../test-harness" }
 nemesis-board = { path = "../../crates/nemesis-board" }
 nemesis-data = { path = "../../crates/nemesis-data" }
 nemesis-path = { path = "../../crates/nemesis-path" }
+git2 = { workspace = true }
 tokio = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
@@ -21,6 +22,7 @@ futures = { workspace = true }
 anyhow = { workspace = true }
 chrono = { workspace = true }
 reqwest = { workspace = true }
+sha2 = { workspace = true }
 
 [lints]
 workspace = true

@@ -107,7 +107,7 @@ fn fire_board_autopilot(
 ///   ② worker 在注册表且明确离线、且距派发 ≥ 离线宽限期（600s，容忍抖动）
 ///      → 离线失败。peer 缺失不判——未发现的 worker 可能只是还没上线，
 ///      保守等超时。
-/// `fail_dispatch` 是竞态闸（只认 dispatched 态）：赢者补 ⛔ 系统评论 +
+/// `fail_dispatch` 是竞态闸（只认 dispatched/running 态）：赢者补 ⛔ 系统评论 +
 /// dispatch_failed 站内通知；输者（worker 恰好回报）不动，下一轮自然不再
 /// 列出。MVP 策略 = abort + notify + 手动重派，不自动 retry/reassign——
 /// 同一 issue 双 worker 并发执行的风险大于自动化的收益（开发日志有记）。
@@ -932,6 +932,12 @@ fn print_agent_startup_info(home: &std::path::Path, total_tools: usize) {
 struct ClusterResultPersisterAdapter {
     result_store: Arc<nemesis_cluster::task_result_store::TaskResultStore>,
     node_id: String,
+    /// P3/D2（看板项目档案 goal）：执行档案发件箱。board feature 形态才
+    /// 装配；None = 终态钩子 no-op（on_task_terminal 默认实现兜底）。
+    outbox: Option<Arc<nemesis_cluster::outbox::TransferOutbox>>,
+    /// P4/E3 worker 侧档案工作副本根（`<workspace>`；变更集组装定位 exec
+    /// 目录用）。outbox 未装配时永不消费。
+    workspace: Option<std::path::PathBuf>,
 }
 
 #[cfg(feature = "cluster")]
@@ -982,6 +988,31 @@ impl nemesis_cluster::rpc::peer_chat_handler::TaskResultPersister
         // set_running 占位文件永留 rpc_cache/results/，7 天 TTL 才清扫。
         self.result_store.remove(task_id);
         Ok(())
+    }
+
+    /// P3/D2 任务终态钩子：执行档案入发件箱（回调成功与否无关——档案
+    /// 推送不依赖 A 端是否收到本轮结果；source 为空时 enqueue 诚实拒绝）。
+    /// P4/E3：档案工作副本在场 = 先全树 diff 组装变更集随行入队（保序：
+    /// 合并不可能抢在交付前）；入队失败保留现场（启动清扫重试）。
+    fn on_task_terminal(&self, task_id: &str, source_node_id: &str) {
+        let Some(ob) = &self.outbox else { return };
+        if let Some(ws) = self.workspace.as_deref() {
+            match nemesis_cluster::exec_workspace::finish_task_exec(ws, ob, task_id, source_node_id)
+            {
+                Ok(true) => return, // 档案管线已处理（变更集随行或零差异）
+                Ok(false) => {}     // 无工作副本/sidecar → 非档案管线
+                Err(e) => {
+                    tracing::warn!(
+                        task_id = %task_id,
+                        "[Transfer] 变更集组装/入队失败（现场保留，启动清扫重试）: {e}"
+                    );
+                    return;
+                }
+            }
+        }
+        if let Err(e) = ob.enqueue(task_id, source_node_id) {
+            tracing::warn!(task_id = %task_id, "[Transfer] 执行档案入队失败: {e}");
+        }
     }
 }
 
@@ -1133,6 +1164,10 @@ fn migrate_legacy_workflow_dir(
 struct BoardWritebackOutcome {
     is_board_task: bool,
     issue_for_review: Option<i64>,
+    /// 本次回调真实终结了一条派发（finish_dispatch Ok(true)）。R-9 互斥
+    /// 释放波据此触发（见调用点「派发落定重估波」）——幂等早退/并发
+    /// 竞态/查表未中不触发。
+    settled: bool,
 }
 
 /// W2 P2 派发写回：board 派发（`issue.dispatch`）的 task_id 命中
@@ -1163,12 +1198,14 @@ fn write_back_board_dispatch(
         return BoardWritebackOutcome {
             is_board_task: false,
             issue_for_review: None,
+            settled: false,
         };
     };
     if task_id.is_empty() {
         return BoardWritebackOutcome {
             is_board_task: false,
             issue_for_review: None,
+            settled: false,
         };
     }
     let disp = match bstore.get_dispatch(task_id) {
@@ -1177,6 +1214,7 @@ fn write_back_board_dispatch(
             return BoardWritebackOutcome {
                 is_board_task: false,
                 issue_for_review: None,
+                settled: false,
             };
         }
         Err(e) => {
@@ -1186,10 +1224,17 @@ fn write_back_board_dispatch(
             return BoardWritebackOutcome {
                 is_board_task: false,
                 issue_for_review: None,
+                settled: false,
             };
         }
     };
-    if disp.state != dispatch_state::DISPATCHED {
+    // D0b 修正：写回守卫只拦真正终态（done/failed/cancelled）——
+    // RUNNING（已开跑）的派发回调必须照常写回，否则 issue 卡死 in_progress。
+    let already_terminal = matches!(
+        disp.state.as_str(),
+        dispatch_state::DONE | dispatch_state::FAILED | dispatch_state::CANCELLED
+    );
+    if already_terminal {
         info!(
             "[Gateway] board dispatch {task_id} already terminal ({}), skip",
             disp.state
@@ -1197,6 +1242,7 @@ fn write_back_board_dispatch(
         return BoardWritebackOutcome {
             is_board_task: true,
             issue_for_review: None,
+            settled: false,
         };
     }
 
@@ -1248,8 +1294,37 @@ fn write_back_board_dispatch(
             // 预算耗不出去，单据卡死无人接手（2026-09-11 双端真机 S2 实证：
             // NB-15 重派轮 error 回调后 90s 无任何决策动作）。推进成功与
             // 失败均携带 M4 评审触发目标。
+            //
+            // P4/E4（看板项目档案 goal 合并批）分流：档案管线派发（基线行
+            // 在场）且交付成功 = **合并先行**（E4 时序：交付→合并→in_review
+            // →评审）——这里不转 in_review：变更集已落地 = 立即合并（落地腿
+            // 先到），未落地 = 等 ingest 腿触发并补「📦 变更集在途」评论；
+            // 评审由合并路径 spawn（issue_for_review=None）。失败派发与非
+            // 档案管线走既有立即 in_review。
+            let archive_pipeline = terminal == dispatch_state::DONE
+                && matches!(bstore.get_dispatch_baseline(task_id), Ok(Some(_)));
             let mut issue_for_review = None;
-            if let Ok(issue) = bstore.get_issue(disp.issue_id)
+            if archive_pipeline {
+                match crate::board_archive_ingest::merge_and_maybe_review(task_id) {
+                    crate::board_archive_ingest::MergeAttempt::WaitingChangeset
+                    | crate::board_archive_ingest::MergeAttempt::WaitingDispatch => {
+                        if let Err(e) = bstore.add_comment(nemesis_board::NewComment {
+                            issue_id: disp.issue_id,
+                            author: nemesis_board::Actor::system("board"),
+                            content:
+                                "📦 交付已收，变更集在途——执行档案落地后自动合并并进入验收评审。"
+                                    .to_string(),
+                            parent_id: None,
+                            ctype: nemesis_board::CommentType::System,
+                        }) {
+                            warn!(
+                                "[Gateway] board writeback in-flight comment failed (task_id={task_id}): {e}"
+                            );
+                        }
+                    }
+                    _ => {} // 合并/丢弃/停车/急停路径各自留痕，不重复评论
+                }
+            } else if let Ok(issue) = bstore.get_issue(disp.issue_id)
                 && issue.status == nemesis_board::IssueStatus::InProgress
             {
                 match bstore.transition_issue(
@@ -1269,9 +1344,22 @@ fn write_back_board_dispatch(
                 "[Gateway] board dispatch writeback done (task_id={task_id}, issue_id={}, state={terminal})",
                 disp.issue_id
             );
+            // C 里程碑 3（看板项目档案 goal P2）：交付落定 → records/NB-xx/
+            // delivery.md + timeline。成功/失败交付都入档（零信息丢失）；
+            // 写失败不阻塞写回（writer 内部 WARN+审计）；存量项目静默跳过。
+            if let Ok(issue) = bstore.get_issue(disp.issue_id) {
+                nemesis_board::archive_writer::write_delivery_milestone(
+                    bstore,
+                    &issue,
+                    &disp.worker_id,
+                    status != "error",
+                    response,
+                );
+            }
             BoardWritebackOutcome {
                 is_board_task: true,
                 issue_for_review,
+                settled: true,
             }
         }
         Ok(false) => {
@@ -1279,6 +1367,7 @@ fn write_back_board_dispatch(
             BoardWritebackOutcome {
                 is_board_task: true,
                 issue_for_review: None,
+                settled: false,
             }
         }
         Err(e) => {
@@ -1286,6 +1375,7 @@ fn write_back_board_dispatch(
             BoardWritebackOutcome {
                 is_board_task: true,
                 issue_for_review: None,
+                settled: false,
             }
         }
     }
@@ -2346,6 +2436,23 @@ pub async fn run(local: bool, extra_args: &[String]) -> Result<()> {
                                         node_id
                                     );
                                 }
+                                // D0b（goal P2）重平衡：announce 节点有空闲 slot
+                                // 时，从超载 worker（在途 > 上限）偷排队单转派
+                                // 过来——新设备上线即有活接（准入控制留量的
+                                // 承接半环）。
+                                let moved = nemesis_web::handlers::board::rebalance_queued_to_worker(
+                                    store,
+                                    &cluster,
+                                    None,
+                                    &node_id,
+                                    &actor,
+                                )
+                                .await;
+                                if moved > 0 {
+                                    info!(
+                                        "[Gateway] D0b 重平衡：{moved} 单转派至 {node_id}"
+                                    );
+                                }
                             }
                         });
                     }
@@ -2520,6 +2627,14 @@ pub async fn run(local: bool, extra_args: &[String]) -> Result<()> {
             cluster_app_cfg.llm_timeout_secs,
         );
         handler.set_timeout(llm_timeout);
+        // P4/E3（看板项目档案 goal）：任务接收钩子——档案管线派发
+        // （payload `_baseline_commit`）解包基线工作副本到
+        // `<workspace>/cluster/exec/<task_id>/` 并注入 prompt 工作目录段。
+        // 非档案 payload 零改动；不依赖 transfer 栈装配（独立成立）。
+        #[cfg(feature = "cluster")]
+        handler.set_task_receive_hook(std::sync::Arc::new(
+            nemesis_cluster::exec_workspace::ExecReceiveHook::new(&home.join("workspace")),
+        ));
 
         // Create cluster agent work queue and task list.
         let cluster_data_dir = nemesis_path::workspace_data_dir(&home);
@@ -2533,6 +2648,108 @@ pub async fn run(local: bool, extra_args: &[String]) -> Result<()> {
             handler.set_rpc_client(client);
         }
 
+        // --- P3/D1-D5（看板项目档案 goal）：分块档案传输栈 ---
+        // 收件 sink（inbox 落地 + D6 manifest 核验 + D4 master 护栏）与发件
+        // outbox（worker 推送循环）。D4 护栏初值读 board.archive.max_transfer_bytes，
+        // 热刷新循环在 handler 注册段启动。on_landed/on_overlimit 回调 =
+        // board_archive_ingest（无处安置诚实留收件箱，不删不弃）。
+        #[cfg(all(feature = "board", feature = "cluster"))]
+        let (transfer_sink, transfer_outbox): (
+            Option<std::sync::Arc<nemesis_cluster::transfer::TransferSink>>,
+            Option<std::sync::Arc<nemesis_cluster::outbox::TransferOutbox>>,
+        ) = match rpc_client.clone() {
+            Some(rc) => {
+                let ws_dir = home.join("workspace");
+                let limit0 = cfg
+                    .board
+                    .as_ref()
+                    .map(|b| b.archive.max_transfer_bytes)
+                    .unwrap_or_else(|| {
+                        nemesis_config::BoardArchiveConfig::default().max_transfer_bytes
+                    });
+                let sink = std::sync::Arc::new(nemesis_cluster::transfer::TransferSink::new(
+                    &ws_dir, limit0,
+                ));
+                if let Some(store) = board_store.clone() {
+                    let store_landed = store.clone();
+                    sink.set_on_landed(std::sync::Arc::new(move |task_id, dir| {
+                        crate::board_archive_ingest::ingest_landed(&store_landed, task_id, dir);
+                    }));
+                    let store_ol = store;
+                    sink.set_on_overlimit(std::sync::Arc::new(move |req| {
+                        crate::board_archive_ingest::note_overlimit(&store_ol, req);
+                    }));
+                }
+                let transport = std::sync::Arc::new(
+                    nemesis_cluster::outbox::RpcTransferTransport::new(rc, node_id.clone()),
+                );
+                let limit_cell = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(limit0));
+                let provider: Box<dyn Fn() -> u64 + Send + Sync> = {
+                    let c = limit_cell.clone();
+                    Box::new(move || c.load(std::sync::atomic::Ordering::Relaxed))
+                };
+                let outbox = std::sync::Arc::new(nemesis_cluster::outbox::TransferOutbox::new(
+                    &ws_dir,
+                    node_id.clone(),
+                    transport,
+                    provider,
+                ));
+                // P4/E2（看板项目档案 goal 合并批）：基线推送器装配——board.rs
+                // 派发链（dispatch_issue_core）消费；复用既有分块传输通路
+                //（begin/chunk/end，AEAD 鉴权）+ 同一 limit 热刷新 cell（D4
+                // 护栏基线下发同源）。board store 未装配 = 不装（派发走既有
+                // 无基线路径，push_dispatch_baseline Ok(None)）。
+                if board_store.is_some()
+                    && let Some(rc) = rpc_client.clone()
+                {
+                    let push_transport = std::sync::Arc::new(
+                        nemesis_cluster::outbox::RpcTransferTransport::new(rc, node_id.clone()),
+                    );
+                    let cell = limit_cell.clone();
+                    let pusher =
+                        std::sync::Arc::new(nemesis_web::handlers::board::BaselinePusher {
+                            transport: push_transport,
+                            source_node_id: node_id.clone(),
+                            max_bytes: Box::new(move || {
+                                cell.load(std::sync::atomic::Ordering::Relaxed)
+                            }),
+                        });
+                    if nemesis_web::handlers::board::install_baseline_pusher(pusher) {
+                        info!("[Gateway] Board baseline pusher armed (E2)");
+                    }
+                }
+                // D4 热生效：30s 周期现读 config.json board.archive 段。
+                {
+                    let sink_ref = sink.clone();
+                    let cell = limit_cell.clone();
+                    let cfg_path = std::path::Path::new(&home).join("config.json");
+                    tokio::spawn(async move {
+                        let mut ticker = tokio::time::interval(std::time::Duration::from_secs(30));
+                        ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+                        loop {
+                            ticker.tick().await;
+                            if let Ok(raw) = std::fs::read_to_string(&cfg_path)
+                                && let Ok(live) =
+                                    serde_json::from_str::<nemesis_config::Config>(&raw)
+                                && let Some(b) = live.board
+                            {
+                                let v = b.archive.max_transfer_bytes;
+                                cell.store(v, std::sync::atomic::Ordering::Relaxed);
+                                sink_ref.set_max_bytes(v);
+                            }
+                        }
+                    });
+                }
+                (Some(sink), Some(outbox))
+            }
+            None => (None, None),
+        };
+        #[cfg(not(all(feature = "board", feature = "cluster")))]
+        let (transfer_sink, transfer_outbox): (
+            Option<std::sync::Arc<nemesis_cluster::transfer::TransferSink>>,
+            Option<std::sync::Arc<nemesis_cluster::outbox::TransferOutbox>>,
+        ) = (None, None);
+
         // Set result persister for fallback when callback fails.
         // 2026-09-08 G1 收口：同一份 persister 同时交给 peer_chat_handler
         // （legacy 路径）与 cluster agent work-queue 路径（经
@@ -2543,6 +2760,8 @@ pub async fn run(local: bool, extra_args: &[String]) -> Result<()> {
             Arc::new(ClusterResultPersisterAdapter {
                 result_store: result_store.clone(),
                 node_id: node_id_for_handler.clone(),
+                outbox: transfer_outbox.clone(),
+                workspace: Some(home.join("workspace")),
             });
         handler.set_result_persister(persister.clone());
 
@@ -2564,6 +2783,63 @@ pub async fn run(local: bool, extra_args: &[String]) -> Result<()> {
         }
 
         let cluster = Arc::new(cluster);
+
+        // --- P3（看板项目档案 goal）：档案传输 handler 注册 + 循环启动 ---
+        // 5 个 handler（begin/chunk/end/overlimit/pull；master 收前四，worker
+        // 收 pull——全员同注册按角色自然分流）。启动清扫补崩溃残留（pushing
+        // 重置 + cluster_logs 残留补入队）+ 推送循环（15s tick + kick）。
+        #[cfg(all(feature = "board", feature = "cluster"))]
+        if let (Some(sink), Some(outbox)) = (transfer_sink.clone(), transfer_outbox.clone()) {
+            match nemesis_cluster::outbox::register_transfer_handlers(
+                &cluster,
+                sink,
+                Some(outbox.clone()),
+            ) {
+                Ok(()) => {
+                    // E3 顺序强制：exec 残留清扫必须先于 outbox sweep_startup
+                    // ——后者会对 cluster_logs 残留补纯记录入队，条目一旦先建，
+                    // 带变更集的入队就被幂等挡死（模块头注释钦定）。
+                    let swept = nemesis_cluster::exec_workspace::sweep_exec_residual(
+                        &home.join("workspace"),
+                        &outbox,
+                    );
+                    if swept > 0 {
+                        info!(
+                            "[Gateway] Exec workspace residual swept: {swept} task(s) re-enqueued"
+                        );
+                    }
+                    outbox.sweep_startup();
+                    outbox.spawn_push_loop();
+                    info!("[Gateway] Transfer stack armed (archive inbox+outbox+5 handlers)");
+                }
+                Err(e) => warn!("[Gateway] Transfer handler registration skipped: {}", e),
+            }
+            // D5 兜底拉取 sweep（master 侧；60s 周期）。
+            if let (Some(store), Some(rc)) = (board_store.clone(), rpc_client.clone()) {
+                let transport = std::sync::Arc::new(
+                    nemesis_cluster::outbox::RpcTransferTransport::new(rc, node_id.clone()),
+                );
+                let seen = Arc::new(tokio::sync::Mutex::new(
+                    std::collections::HashSet::<String>::new(),
+                ));
+                let ws_dir = home.join("workspace");
+                tokio::spawn(async move {
+                    let mut ticker = tokio::time::interval(std::time::Duration::from_secs(60));
+                    ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+                    loop {
+                        ticker.tick().await;
+                        crate::board_archive_ingest::sweep_missing_archives(
+                            &store,
+                            &ws_dir,
+                            transport.as_ref(),
+                            &seen,
+                        )
+                        .await;
+                    }
+                });
+                info!("[Gateway] Board archive D5 sweep armed (interval=60s)");
+            }
+        }
 
         // W2 P4: 回填 autopilot 集群槽位（on_job 闭包经 OnceLock 取用）。
         #[cfg(all(feature = "board", feature = "cluster"))]
@@ -2601,6 +2877,7 @@ pub async fn run(local: bool, extra_args: &[String]) -> Result<()> {
                 quota: board_quota.clone(),
                 cluster: cluster.clone(),
                 moderator_loop: board_moderator_loop.clone(),
+                workspace: home.join("workspace"),
             };
             match cluster.register_rpc_handler(
                 nemesis_cluster::envelope::NB_BUS_ACTION,
@@ -2959,6 +3236,36 @@ pub async fn run(local: bool, extra_args: &[String]) -> Result<()> {
                         },
                         review_issue_id,
                     );
+                }
+
+                // R-9 互斥释放波（2026-09-13 T-sched-1 实机缺口）：board 派发
+                // 落定（done/failed 写回）后重估停车场——touch 互斥延后单的
+                // 「下一触发波」此前只有节点事件（上线/刷新），稳态集群中冲突
+                // 派发落定后延后单会永久滞留 backlog（NB-18 实证）。复用
+                // sweep_parked_dispatches 单一重估波：候选=planner 来源或暂缓
+                // 标记；estop/预算/准入/互斥闸全部在 dispatch_subissue_auto
+                // 内重跑（幂等；本波落定的单不满足条件时静默返回）。
+                #[cfg(all(feature = "board", feature = "cluster"))]
+                if board_writeback.settled && !estop_for_cb.is_engaged() {
+                    let sweep_store = board_store_for_cb.clone();
+                    let sweep_cluster = cluster_for_cb.clone();
+                    let sweep_task = task_id.to_string();
+                    tokio::spawn(async move {
+                        if let Some(store) = sweep_store.as_ref() {
+                            let actor = nemesis_board::Actor::system("board");
+                            let (cands, dispatched, failed) =
+                                nemesis_web::handlers::board::sweep_parked_dispatches(
+                                    store,
+                                    &sweep_cluster,
+                                    &actor,
+                                );
+                            if dispatched > 0 || failed > 0 {
+                                info!(
+                                    "[Gateway] 派发落定重估波：候选 {cands} 派出 {dispatched} 失败 {failed}（task {sweep_task} 落定触发）"
+                                );
+                            }
+                        }
+                    });
                 }
 
                 // Route 1: Check if this callback belongs to a ClusterAgent child task.
@@ -3688,6 +3995,24 @@ pub async fn run(local: bool, extra_args: &[String]) -> Result<()> {
             let hook_deps = std::sync::Arc::new(deps);
             // P1/T1-6：estop 释放 watcher——把冻结停车的评审逐条复评恢复。
             crate::board_review::spawn_estop_resume_watcher((*hook_deps).clone());
+            // P4/E4（看板项目档案 goal 合并批）：合并依赖注入——落地腿
+            //（ingest_landed）/写回腿（write_back）合并触发 + estop release
+            // 补跑共用同一份 deps。
+            if crate::board_archive_ingest::install_merge_deps((*hook_deps).clone()) {
+                info!("[Gateway] Board archive merge deps armed (E4)");
+            }
+            // P5/F4：resume 补合并回放钩子——project.resume 冻结先行段经
+            // 此回调进 board_archive_ingest::replay_pending_merges（依赖
+            // 倒置：nemesis-web 不反向依赖 nemesisbot）。
+            let replay_deps = hook_deps.clone();
+            nemesis_web::handlers::board::set_resume_replay_hook(std::sync::Arc::new(
+                move |project_id: i64| {
+                    crate::board_archive_ingest::replay_pending_merges(
+                        replay_deps.as_ref(),
+                        project_id,
+                    )
+                },
+            ));
             let hook_home = home.clone();
             let hook_cluster = cluster.clone();
             if let Err(e) = nemesis_web::handlers::board::set_parent_review_hook(
@@ -3742,6 +4067,10 @@ pub async fn run(local: bool, extra_args: &[String]) -> Result<()> {
             });
             let proj_home = home.clone();
             let proj_cluster = cluster.clone();
+            // F9 快照先行——下方 review hook 闭包会 move 同一对 Arc，
+            // 总结钩子（更下方）需要自己的副本。
+            let sum_deps = proj_deps.clone();
+            let sum_cluster = proj_cluster.clone();
             if let Err(e) = nemesis_web::handlers::board::set_project_review_hook(
                 std::sync::Arc::new(move |project_id: i64| {
                     let is_master = matches!(
@@ -3772,6 +4101,26 @@ pub async fn run(local: bool, extra_args: &[String]) -> Result<()> {
                 warn!("[Gateway] Board project review hook register failed: {e}");
             } else {
                 info!("[Gateway] Board project review hook armed (review.auto_close_project)");
+            }
+
+            // F9（看板项目档案 P6）：人工收口（project.update → completed）
+            // 触发收口总结；spawn_project_summary 内部自守门（estop/tier/
+            // 目录缺失诚实跳过），生成失败不阻塞收口。master 判定同上
+            //（非 master 节点的 board store 是只读镜像，不跑 LLM 收尾）。
+            if let Err(e) = nemesis_web::handlers::board::set_project_summary_hook(
+                std::sync::Arc::new(move |project_id: i64| {
+                    if !matches!(
+                        sum_cluster.role().as_str(),
+                        "coordinator" | "master" | "manager"
+                    ) {
+                        return;
+                    }
+                    crate::board_review::spawn_project_summary((*sum_deps).clone(), project_id);
+                }),
+            ) {
+                warn!("[Gateway] Board project summary hook register failed: {e}");
+            } else {
+                info!("[Gateway] Board project summary hook armed (archive summary.md)");
             }
         }
     }
@@ -3992,6 +4341,7 @@ pub async fn run(local: bool, extra_args: &[String]) -> Result<()> {
                         quota: board_quota.clone(),
                         cluster: discussion_cluster,
                         moderator_loop: board_moderator_loop.clone(),
+                        workspace: home.join("workspace"),
                     },
                 }));
             info!(

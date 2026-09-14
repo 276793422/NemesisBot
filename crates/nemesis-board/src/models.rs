@@ -127,6 +127,10 @@ pub mod priority {
 pub mod dispatch_state {
     /// 已派发，等 worker 回报（peer_chat_callback）。
     pub const DISPATCHED: &str = "dispatched";
+    /// worker 已出队开跑（goal P2/D0b 重平衡信号：queued vs executing 的
+    /// 分界——重平衡只挪 queued 单，running 单不可迁移）。由 worker 出队时
+    /// 经 nb_bus `task.started` 上报（信封 ns="task"）。
+    pub const RUNNING: &str = "running";
     /// worker 成功回报（写回结果评论 + issue → in_review）。
     pub const DONE: &str = "done";
     /// worker 汇报失败 / RPC 送达失败 / 超时 sweep 兜底（P4）。
@@ -186,6 +190,10 @@ pub struct Issue {
     /// Swarm M1：派发需求标签（匹配器硬条件；空=不限）。
     #[serde(default)]
     pub required_tags: Vec<String>,
+    /// 取消单「永久收起」标记（P1/A2b 清理出口）：任何前端表面都不再出现，
+    /// 即使「显示已取消」开关打开。board.db 仍保留行（审计链完整）。
+    #[serde(default)]
+    pub hidden: bool,
     pub created_at: i64,
     pub updated_at: i64,
 }
@@ -314,7 +322,40 @@ pub struct Project {
     /// 项目级标准无处安放）。
     #[serde(default)]
     pub acceptance_criteria: String,
+    /// 项目档案目录绝对路径（v12 列；看板项目档案 goal P2/B1）。None =
+    /// 存量项目/未绑定——不参与档案管线（投影/里程碑写入全部跳过，不回填）。
+    /// **绑定不可变**：仅 create_project 写入一次，此后改名不改目录；
+    /// ProjectPatch 刻意不含本字段（无任何修改入口）。
+    #[serde(default)]
+    pub directory: Option<String>,
+    /// 冲突冻结标志（v14 列；看板项目档案 goal P5/F2）。true = 项目域冻结：
+    /// 新派发被闸拒绝、合并只登记 pending_merges 不合入。只限本项目（不株连
+    /// 其他项目），不动 ProjectStatus 状态机。系统管理（冲突停车置位 /
+    /// `project.resume` 解除），ProjectPatch 刻意不含。
+    #[serde(default)]
+    pub conflict_frozen: bool,
+    /// 待补合并队列（v14 列 JSON；看板项目档案 goal P5/F3）。冻结期在途
+    /// 交付「收到→入档案→不合入」，未合入变更集按完成顺序登记于此；
+    /// 解冻后串行补合并（补合并再冲突→再走漏斗）。系统管理，ProjectPatch
+    /// 刻意不含。
+    #[serde(default)]
+    pub pending_merges: Vec<PendingMerge>,
     pub created_at: i64,
+}
+
+/// 待补合并队列条目（P5/F3）：冻结期收到但未合入的变更集登记。
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct PendingMerge {
+    /// 派发任务 id（变更集归属键）。
+    pub task_id: String,
+    /// 变更集所属 issue。
+    pub issue_id: i64,
+    /// 变更集安置目录（执行档案落地处，`changeset/` 子目录可再读）。
+    pub placement_dir: String,
+    /// 登记原因（冻结中 / 冲突停车等，人读）。
+    pub reason: String,
+    /// 登记时刻（epoch ms）。
+    pub parked_at_ms: i64,
 }
 
 /// 附件元数据（表 `attachment`；P1 只记录元数据，文件上传 P3）。
@@ -437,6 +478,17 @@ pub struct IssueFilter {
     pub priority: Option<i32>,
     /// 编号/标题子串（大小写不敏感；空串不过滤）。
     pub query: Option<String>,
+    /// 排除归档项目（status=archived）名下的子单（P1/A2）。无项目单不受
+    /// 影响。Default false = 全量（既有内部调用行为不变）；WSAPI issue.list
+    /// 按 `include_archived_projects` 入参映射（默认排除——用户面两个页签
+    /// 同享一份默认，不留「列表隐藏看板还在」的半吊子）。
+    pub exclude_archived_projects: bool,
+    /// 排除已取消单（P1/A2b）。Default false = 全量；WSAPI issue.list 按
+    /// `include_cancelled` 入参映射（默认排除，可开关显示）。
+    pub exclude_cancelled: bool,
+    /// 排除 hidden 单（P1/A2b 清理出口——永久收起，没有放行口）。Default
+    /// false = 全量（内部调用/详情可见）；WSAPI issue.list 恒置 true。
+    pub exclude_hidden: bool,
 }
 
 /// 部分更新 issue 字段的 patch（None = 不改；本 patch 不含 status/assignee，

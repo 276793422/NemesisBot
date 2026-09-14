@@ -2941,6 +2941,8 @@ mod wave_b {
         let adapter = ClusterResultPersisterAdapter {
             result_store: store.clone(),
             node_id: "node-wave-b".to_string(),
+            outbox: None,
+            workspace: None,
         };
 
         // set_running → 以 "peer_chat"/running 占位结果成功态写入。
@@ -4238,6 +4240,11 @@ fn test_writeback_success_moves_to_in_review_with_result_comment() {
     let rec = store.get_dispatch("task-ok").unwrap().unwrap();
     assert_eq!(rec.state, nemesis_board::models::dispatch_state::DONE);
     assert!(rec.completed_at.is_some());
+    // settled=true：真实终结 → R-9 释放波触发条件成立。
+    assert!(
+        board_writeback.settled,
+        "success 写回必须真实终结派发（释放波触发条件）"
+    );
     let _ = std::fs::remove_dir_all(&dir);
 }
 
@@ -4280,6 +4287,10 @@ fn test_writeback_error_moves_to_in_review_for_decision_chain() {
         && c.content.contains("⛔")));
     let rec = store.get_dispatch("task-err").unwrap().unwrap();
     assert_eq!(rec.state, nemesis_board::models::dispatch_state::FAILED);
+    assert!(
+        board_writeback.settled,
+        "error 写回同样真实终结派发（FAILED 也是落定，释放波应触发）"
+    );
     let _ = std::fs::remove_dir_all(&dir);
 }
 
@@ -4294,29 +4305,27 @@ fn test_writeback_duplicate_callback_is_idempotent() {
     std::fs::create_dir_all(&dir).unwrap();
     let store = dispatched_store(&dir, "task-dup");
 
-    assert!(
-        write_back_board_dispatch(
-            &Some(store.clone()),
-            &dir,
-            "task-dup",
-            "success",
-            "第一份",
-            ""
-        )
-        .is_board_task
+    let first = write_back_board_dispatch(
+        &Some(store.clone()),
+        &dir,
+        "task-dup",
+        "success",
+        "第一份",
+        "",
     );
-    // 重复回调：仍识别为 board 任务（跳过续行），但不重复写评论/转移。
-    assert!(
-        write_back_board_dispatch(
-            &Some(store.clone()),
-            &dir,
-            "task-dup",
-            "success",
-            "第一份",
-            ""
-        )
-        .is_board_task
+    assert!(first.is_board_task && first.settled, "首次回调必须 settled");
+    // 重复回调：仍识别为 board 任务（跳过续行），但不重复写评论/转移，
+    // 也不触发释放波（幂等早退 settled=false）。
+    let dup = write_back_board_dispatch(
+        &Some(store.clone()),
+        &dir,
+        "task-dup",
+        "success",
+        "第一份",
+        "",
     );
+    assert!(dup.is_board_task);
+    assert!(!dup.settled, "重复回调幂等早退不得再触发释放波");
 
     let issue = store.get_issue_by_number("NB-1").unwrap();
     assert_eq!(issue.status, nemesis_board::IssueStatus::InReview);
@@ -4341,16 +4350,17 @@ fn test_writeback_non_board_and_unavailable_store() {
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).unwrap();
     let store = dispatched_store(&dir, "task-x");
-    assert!(
-        !write_back_board_dispatch(&Some(store.clone()), &dir, "other-task", "success", "…", "")
-            .is_board_task
-    );
-    assert!(
-        !write_back_board_dispatch(&Some(store.clone()), &dir, "", "success", "…", "")
-            .is_board_task
-    );
+    let non_board =
+        write_back_board_dispatch(&Some(store.clone()), &dir, "other-task", "success", "…", "");
+    assert!(!non_board.is_board_task);
+    assert!(!non_board.settled, "非 board 任务不得触发释放波");
+    let empty_task = write_back_board_dispatch(&Some(store.clone()), &dir, "", "success", "…", "");
+    assert!(!empty_task.is_board_task);
+    assert!(!empty_task.settled);
     // store 未注入 → 恒 false。
-    assert!(!write_back_board_dispatch(&None, &dir, "task-x", "success", "…", "").is_board_task);
+    let no_store = write_back_board_dispatch(&None, &dir, "task-x", "success", "…", "");
+    assert!(!no_store.is_board_task);
+    assert!(!no_store.settled);
     let _ = std::fs::remove_dir_all(&dir);
 }
 

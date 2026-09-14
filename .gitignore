@@ -66,3 +66,4 @@ __pycache__/
 /.acp-*
 /.k1-*
 /logs-*
+/test-tools/resource

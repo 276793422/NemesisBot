@@ -3326,3 +3326,20 @@ fn test_projects_config_serde_roundtrip() {
     let cfg: Config = serde_json::from_str(r#"{"projects":{}}"#).unwrap();
     assert_eq!(cfg.projects.as_ref().unwrap().max, 4);
 }
+
+// 看板项目档案 P5/F1：board.conflict_auto_resolve 默认 false（human 档）
+// + round-trip 不漂移。
+#[test]
+fn test_board_conflict_auto_resolve_default_and_roundtrip() {
+    let empty: Config = serde_json::from_str("{}").unwrap();
+    assert!(
+        !empty.board.unwrap_or_default().conflict_auto_resolve,
+        "缺省必须 human 档（false）——AI 硬解是显式 opt-in"
+    );
+    let cfg: Config = serde_json::from_str(r#"{"board":{"conflict_auto_resolve":true}}"#).unwrap();
+    assert!(cfg.board.as_ref().unwrap().conflict_auto_resolve);
+    let json = serde_json::to_value(&cfg).unwrap();
+    assert_eq!(json["board"]["conflict_auto_resolve"], true);
+    let reparsed: Config = serde_json::from_value(json).unwrap();
+    assert!(reparsed.board.as_ref().unwrap().conflict_auto_resolve);
+}

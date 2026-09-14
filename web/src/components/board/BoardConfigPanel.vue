@@ -17,6 +17,7 @@ interface BoardFlags {
   auto_accept: boolean
   auto_close_parent: boolean
   unlimited_mode: boolean
+  conflict_auto_resolve: boolean
   dispatch_fallback: boolean
   dispatch_fallback_target: string | null
   max_redispatch: number
@@ -49,6 +50,7 @@ async function load() {
       auto_accept: !!r?.auto_accept,
       auto_close_parent: !!r?.auto_close_parent,
       unlimited_mode: !!r?.unlimited_mode,
+      conflict_auto_resolve: !!r?.conflict_auto_resolve,
       dispatch_fallback: !!r?.dispatch_fallback,
       dispatch_fallback_target: r?.dispatch_fallback_target ?? null,
       max_redispatch: r?.max_redispatch ?? 2,
@@ -123,6 +125,12 @@ const toggles = computed(() =>
           label: '项目自动收口',
           desc: '项目下全部顶层任务完成后 AI 汇总验收整个项目：PASS 自动 completed；FAIL/UNSURE 项目回退 in_progress 并 @创建人列缺口（不自动重开任务）',
           value: flags.value.review.auto_close_project,
+        },
+        {
+          key: 'conflict_auto_resolve',
+          label: '合并冲突 AI 自动解决',
+          desc: '多个交付改动撞车时自动尝试 AI 硬解并继续流转（失败重派/换节点，预算打满冻结转人工）；关闭 = 冲突即冻结项目转人工，人工解决后解冻补合并',
+          value: flags.value.conflict_auto_resolve,
         },
         {
           key: 'unlimited_mode',
