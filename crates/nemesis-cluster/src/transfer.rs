@@ -281,6 +281,14 @@ fn walk(root: &Path, dir: &Path, out: &mut Vec<TransferFileEntry>) -> Result<(),
             continue;
         }
         if meta.is_dir() {
+            // VCS 内部目录不进任何传输载荷（基线/执行档案/变更集）：.git
+            // 对象库不是工作文件，混入变更集会让 master 三方合并 upsert
+            // 保留路径失败（libgit2 invalid path，2026-09-16 showcase 实证
+            // ——worker 在 exec 副本 git init 后 .git/COMMIT_EDITMSG 被收进
+            // 变更集 → 合并停车）。任意层级的 .git 目录整棵跳过。
+            if normalized == ".git" || normalized.ends_with("/.git") {
+                continue;
+            }
             walk(root, &path, out)?;
         } else if meta.is_file() {
             let data =

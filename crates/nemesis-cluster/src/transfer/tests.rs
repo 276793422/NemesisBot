@@ -574,6 +574,31 @@ fn collect_dir_files_is_sorted_deterministic_and_fenced() {
 }
 
 #[test]
+fn collect_dir_files_excludes_vcs_internal_dirs() {
+    // VCS 内部目录（任意层级的 .git）不进收集产物——混入变更集会让 master
+    // 三方合并 upsert 保留路径失败（2026-09-16 showcase 实证）。
+    let root = temp_root("collect_vcs");
+    let src = root.join("src");
+    make_source(
+        &src,
+        &[
+            ("strutil.py", b"x"),
+            (".git/COMMIT_EDITMSG", b"feat: x"),
+            (".git/objects/ab/cdef", b"obj"),
+            ("pkg/.git/HEAD", b"ref: refs/heads/master"),
+            ("pkg/keep.txt", b"keep"),
+        ],
+    );
+    let files = collect_dir_files(&src).unwrap();
+    let paths: Vec<&str> = files.iter().map(|f| f.path.as_str()).collect();
+    assert_eq!(
+        paths,
+        vec!["pkg/keep.txt", "strutil.py"],
+        ".git 整棵排除，工作文件保留"
+    );
+}
+
+#[test]
 fn sanitize_transfer_id_and_chunk_size_resolution() {
     assert_eq!(sanitize_transfer_id("abc-123_X.y"), "abc-123_X.y");
     assert_eq!(sanitize_transfer_id("a/b\\c:d"), "a_b_c_d");
