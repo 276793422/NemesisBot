@@ -68,6 +68,17 @@ pub trait ClusterCallbacks: Send + Sync {
     fn handle_node_offline(&self, node_id: &str, reason: &str);
     /// Persist the current peer list to disk.
     fn sync_to_disk(&self) -> Result<(), String>;
+    /// Known peer UDP endpoints (`host:port`) for directed announce delivery.
+    ///
+    /// 子网广播的目标端口是发送者自己的监听端口（`UdpListener::broadcast` /
+    /// `send_announce_with`），UDP 端口与自身不同的 peer（同机多实例、自定义
+    /// 端口节点）永远收不到广播——真机三节点 tcpdump 实证跨机器同样失聪，
+    /// 发现层静默降级为静态 peers + RPC 探针（身份编辑传播 / announce 回线
+    /// 恢复 / bye 离线通知全部失效）。实现对异端口 peer 逐个单播补发。
+    /// 缺省空 = 纯广播（行为同旧版）。
+    fn peer_udp_endpoints(&self) -> Vec<String> {
+        Vec::new()
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -629,6 +640,11 @@ impl DiscoveryService {
         if let Err(e) = self.listener.broadcast(&bye_msg) {
             tracing::error!(error = %e, "[Discovery] Failed to broadcast bye message");
         }
+        // 异端口拓扑 bye 定向单播（U1-5 根修 2026-09-15）：广播只覆盖同
+        // 端口监听者，异端口 peer 收不到停机通知（对端只能等探针超时）。
+        for endpoint in self.cluster.peer_udp_endpoints() {
+            self.listener.send_unicast(&endpoint, &bye_msg);
+        }
 
         // Stop listener (joins receive thread)
         self.listener.stop()?;
@@ -689,6 +705,14 @@ fn send_announce_direct(listener: &UdpListener, cluster: &dyn ClusterCallbacks) 
     if let Err(e) = listener.broadcast(&msg) {
         tracing::error!(error = %e, "[Discovery] Failed to send announce");
     }
+
+    // 异端口拓扑定向单播（U1-5 根修 2026-09-15）：广播只覆盖与自身同
+    // UDP 端口的监听者，对 peers.toml 已知端点逐个补发单播。每 tick 重读
+    // 端点列表——新 pair 的 peer 无需重启即可被单播覆盖。自发自收由
+    // handler 的 self-check 丢弃。
+    for endpoint in cluster.peer_udp_endpoints() {
+        listener.send_unicast(&endpoint, &msg);
+    }
 }
 
 /// Send an announce message using a separate broadcast socket.
@@ -742,6 +766,13 @@ fn send_announce_with(
     for addr in &broadcast_addrs {
         let target = SocketAddrV4::new(*addr, port);
         let _ = socket.send_to(&send_data, target);
+    }
+
+    // 异端口拓扑定向单播（U1-5 根修 2026-09-15）：同 send_announce_direct——
+    // 广播目标端口=自身监听端口，异端口 peer 收不到；对 peers.toml 已知
+    // UDP 端点逐个补发。自发自收由 handler 的 self-check 丢弃。
+    for endpoint in cluster.peer_udp_endpoints() {
+        let _ = socket.send_to(&send_data, &endpoint);
     }
 
     tracing::debug!(

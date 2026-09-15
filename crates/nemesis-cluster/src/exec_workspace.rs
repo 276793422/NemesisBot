@@ -172,9 +172,14 @@ impl crate::rpc::peer_chat_handler::TaskReceiveHook for ExecReceiveHook {
 }
 
 /// prompt 工作目录段（追加进任务 content；告诉 LLM 在哪干活 + 契约）。
+///
+/// F-U3-2（UAT U3 实证）：原文本只说「所有文件读写必须在该目录内」，但模型
+/// 仍会用相对路径调文件工具（落点在 workspace 根而非本目录——dispatch 层
+/// 重写已根修该落点）。这里把相对路径基准的真实语义写明，模型心智模型与
+/// 系统行为对齐，不再需要模型自行推断。
 fn render_workdir_section(exec_dir: &Path, baseline_commit: &str, file_count: usize) -> String {
     format!(
-        "\n\n# Working Directory（项目档案管线）\n本任务的工作副本已预置项目基线快照（基线 commit `{baseline_commit}`，{file_count} 个文件），位于：\n`{}`\n\n所有文件读写必须在该目录内进行。任务结束后系统会自动扫描该目录生成变更集回传主控端，无需你手动提交、打包或汇报文件清单。",
+        "\n\n# Working Directory（项目档案管线）\n本任务的工作副本已预置项目基线快照（基线 commit `{baseline_commit}`，{file_count} 个文件），位于：\n`{}`\n\n所有文件读写必须在该目录内进行。write_file/edit_file/read_file 等文件工具的相对路径、以及 exec 的缺省工作目录均已指向本目录（也可直接用上面的绝对路径）。任务结束后系统会自动扫描该目录生成变更集回传主控端，无需你手动提交、打包或汇报文件清单。",
         exec_dir.display()
     )
 }

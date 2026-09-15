@@ -3982,6 +3982,8 @@ fn make_real_node_info(id: &str, name: &str, addr: &str) -> RealNodeInfo {
         id: id.into(),
         name: name.into(),
         address: addr.into(),
+        rpc_port: 0,
+        addresses: Vec::new(),
         role: nemesis_types::cluster::NodeRole::Worker,
         category: "development".into(),
         capabilities: vec!["llm".into()],
@@ -4036,6 +4038,8 @@ fn test_merge_real_node_info_updates_existing_entry_with_real_id() {
         id: "node-real-1".into(),
         name: "NewName".into(),
         address: "10.0.0.5:9000".into(),
+        rpc_port: 0,
+        addresses: Vec::new(),
         role: nemesis_types::cluster::NodeRole::Coordinator,
         category: "new_cat".into(),
         capabilities: vec!["new_cap".into()],
@@ -4082,6 +4086,9 @@ fn test_merge_real_node_info_keeps_static_peer_address() {
         id: "node-master-1".into(),
         name: "master".into(),
         address: "10.255.0.1:9000".into(),
+        rpc_port: 0,
+        // 自报全量数组含不可达 primary——静态保护仍应保留原地址。
+        addresses: vec!["10.255.0.1:9000".into(), "192.168.1.50:9000".into()],
         role: nemesis_types::cluster::NodeRole::Coordinator,
         category: "development".into(),
         capabilities: vec!["exec".into()],
@@ -4123,6 +4130,8 @@ fn test_merge_real_node_info_updates_address_for_dynamic_peer() {
         id: "node-dyn-1".into(),
         name: "dyn".into(),
         address: "10.0.0.77:9000".into(),
+        rpc_port: 0,
+        addresses: Vec::new(),
         role: nemesis_types::cluster::NodeRole::Worker,
         category: "general".into(),
         capabilities: Vec::new(),
@@ -4195,6 +4204,141 @@ fn test_merge_real_node_info_persists_to_peers_toml() {
         content
     );
     assert!(content.contains("10.0.0.7:9000"));
+}
+
+// -- 发现①/A6 回归：全量地址数组保全（2026-09-15 真机三节点） --
+
+#[test]
+fn test_merge_real_node_info_preserves_full_address_array() {
+    // 真机实证根因：RPC merge 建条目时丢弃全量数组（Vec::new()）→
+    // get_peer_info 回落单地址 → select_best_address 被 len<=1 短路，
+    // 子网匹配智能选址从未运行。本测试钉死数组保全。
+    let dir = tempfile::tempdir().unwrap();
+    let cluster = Cluster::with_workspace(make_config(), dir.path().to_path_buf());
+
+    let mut info = make_real_node_info("node-multi-1", "Multi", "10.103.174.241:9000");
+    info.addresses = vec![
+        "10.103.174.241".into(),
+        "192.168.137.1".into(),
+        "172.20.1.5".into(),
+    ];
+    cluster.merge_real_node_info(&info);
+
+    let p = cluster.get_peer("node-multi-1").unwrap();
+    assert_eq!(
+        p.addresses,
+        vec![
+            "10.103.174.241".to_string(),
+            "192.168.137.1".to_string(),
+            "172.20.1.5".to_string()
+        ],
+        "merge 必须保全对端自报的全量地址数组"
+    );
+}
+
+#[test]
+fn test_merge_real_node_info_empty_array_keeps_existing_addresses() {
+    // 空数组 = 来源未携带（旧数据）→ 不清空已有集合。
+    let dir = tempfile::tempdir().unwrap();
+    let cluster = Cluster::with_workspace(make_config(), dir.path().to_path_buf());
+
+    let mut first = make_real_node_info("node-multi-2", "Multi", "10.0.0.5:9000");
+    first.addresses = vec!["10.0.0.5".into(), "192.168.1.50".into()];
+    cluster.merge_real_node_info(&first);
+
+    let second = make_real_node_info("node-multi-2", "Multi", "10.0.0.6:9000");
+    assert_eq!(second.addresses, Vec::<String>::new());
+    cluster.merge_real_node_info(&second);
+
+    let p = cluster.get_peer("node-multi-2").unwrap();
+    assert_eq!(
+        p.addresses,
+        vec!["10.0.0.5".to_string(), "192.168.1.50".to_string()],
+        "空数组 merge 不得清空已有地址集合"
+    );
+}
+
+#[test]
+fn test_merge_placeholder_upgrade_matches_secondary_address() {
+    // 发现②/B4：占位条目配的地址可能是对端非 primary 网卡——merge 的
+    // 地址匹配必须对自报全量数组逐个比对（真机实证：placeholder 配
+    // 192.168.137.x 而自报 primary=10.103.x → 旧逻辑永不归一、双条目并存）。
+    let dir = tempfile::tempdir().unwrap();
+    let cluster = Cluster::with_workspace(make_config(), dir.path().to_path_buf());
+
+    // placeholder：手写兜底条目，地址=对端第二网卡
+    cluster.register_node(ExtendedNodeInfo {
+        base: nemesis_types::cluster::NodeInfo {
+            id: "node-alex".into(),
+            name: "node-alex".into(),
+            role: nemesis_types::cluster::NodeRole::Worker,
+            address: "192.168.137.50:9000".into(),
+            category: "general".into(),
+            last_seen: String::new(),
+        },
+        status: NodeStatus::Offline,
+        capabilities: Vec::new(),
+        tags: Vec::new(),
+        addresses: Vec::new(),
+        node_type: String::new(),
+    });
+
+    // 对端自报 primary=10.103.1.5，但全量数组含 placeholder 配的地址
+    let mut info = make_real_node_info("node-alex-real", "Alex", "10.103.1.5:9000");
+    info.addresses = vec!["10.103.1.5".into(), "192.168.137.50".into()];
+    let canonical = cluster.merge_real_node_info(&info);
+
+    assert_eq!(canonical, "node-alex-real");
+    assert!(cluster.get_peer("node-alex-real").is_some());
+    assert!(
+        cluster.get_peer("node-alex").is_none(),
+        "placeholder 命中非 primary 自报地址也必须归一"
+    );
+}
+
+#[test]
+fn test_handle_discovered_node_placeholder_upgrade_matches_secondary_address() {
+    // B4 的 UDP 路径：announce 全量数组逐个比对（不再只 primary）。
+    let dir = tempfile::tempdir().unwrap();
+    let cluster = Cluster::with_workspace(make_config(), dir.path().to_path_buf());
+
+    // placeholder：地址 = announce 数组里的第二地址
+    cluster.register_node(ExtendedNodeInfo {
+        base: nemesis_types::cluster::NodeInfo {
+            id: "node-bob".into(),
+            name: "node-bob".into(),
+            role: nemesis_types::cluster::NodeRole::Worker,
+            address: "169.254.39.174:9000".into(),
+            category: "general".into(),
+            last_seen: String::new(),
+        },
+        status: NodeStatus::Offline,
+        capabilities: Vec::new(),
+        tags: Vec::new(),
+        addresses: Vec::new(),
+        node_type: String::new(),
+    });
+
+    let changed = cluster.handle_discovered_node(
+        "node-bob-real",
+        "Bob",
+        vec!["10.103.2.9".into(), "169.254.39.174".into()],
+        9000,
+        "worker",
+        "general",
+        vec![],
+        vec![],
+        "agent",
+    );
+    assert!(changed || cluster.get_peer("node-bob-real").is_some());
+    assert!(
+        cluster.get_peer("node-bob-real").is_some(),
+        "真实条目必须建立"
+    );
+    assert!(
+        cluster.get_peer("node-bob").is_none(),
+        "placeholder 命中 announce 次地址必须被升级移除"
+    );
 }
 
 #[test]
@@ -4933,6 +5077,8 @@ fn test_upgrade_peer_in_peers_toml_same_sanitized_key_writes_real_id() {
             id: "peer:a".into(),
             name: "Peer Colon".into(),
             address: "10.0.0.1:21949".into(),
+            rpc_port: 0,
+            addresses: Vec::new(),
             role: nemesis_types::cluster::NodeRole::Worker,
             category: "test".into(),
             capabilities: vec![],
@@ -4964,6 +5110,8 @@ fn test_upgrade_peer_in_peers_toml_read_error_skips() {
             id: "real-y".into(),
             name: "Y".into(),
             address: "10.0.0.2:21949".into(),
+            rpc_port: 0,
+            addresses: Vec::new(),
             role: nemesis_types::cluster::NodeRole::Worker,
             category: "test".into(),
             capabilities: vec![],
@@ -4995,6 +5143,8 @@ fn test_upgrade_peer_in_peers_toml_without_peers_table_persists_directly() {
             id: "real-z".into(),
             name: "Z".into(),
             address: "10.0.0.3:21949".into(),
+            rpc_port: 0,
+            addresses: Vec::new(),
             role: nemesis_types::cluster::NodeRole::Worker,
             category: "test".into(),
             capabilities: vec![],
@@ -5033,6 +5183,8 @@ fn test_upgrade_peer_in_peers_toml_write_error_after_removal() {
             id: "real-w".into(),
             name: "W".into(),
             address: "10.0.0.4:21949".into(),
+            rpc_port: 0,
+            addresses: Vec::new(),
             role: nemesis_types::cluster::NodeRole::Worker,
             category: "test".into(),
             capabilities: vec![],
@@ -5061,6 +5213,8 @@ fn test_merge_real_node_info_master_role_with_write_error() {
         id: "master-1".into(),
         name: "Master One".into(),
         address: "10.5.5.5:21949".into(),
+        rpc_port: 0,
+        addresses: Vec::new(),
         role: nemesis_types::cluster::NodeRole::Coordinator,
         category: "prod".into(),
         capabilities: vec!["llm".into()],
@@ -5904,6 +6058,8 @@ fn test_upgrade_peer_in_peers_toml_no_file_and_missing_key() {
         id: "real-a".into(),
         name: "Alpha Real".into(),
         address: "10.8.8.1:21949".into(),
+        rpc_port: 0,
+        addresses: Vec::new(),
         role: nemesis_types::cluster::NodeRole::Worker,
         category: "test".into(),
         capabilities: vec![],
@@ -5942,6 +6098,8 @@ fn test_upgrade_peer_in_peers_toml_no_file_and_missing_key() {
         id: "real-b".into(),
         name: "Bee Real".into(),
         address: "10.8.8.2:21949".into(),
+        rpc_port: 0,
+        addresses: Vec::new(),
         role: nemesis_types::cluster::NodeRole::Worker,
         category: "test".into(),
         capabilities: vec![],
@@ -6946,4 +7104,49 @@ fn canonical_peer_id_resolves_name_and_id() {
     );
     // 未知 target → None。
     assert_eq!(cluster.canonical_peer_id("ghost"), None);
+}
+
+// -- peer_udp_endpoints（U1-5 根修 2026-09-15：异端口拓扑定向单播）--
+
+#[test]
+fn test_peer_udp_endpoints_reads_peers_toml() {
+    let dir = tempfile::tempdir().unwrap();
+    let workspace = dir.path().to_path_buf();
+    let cluster = Cluster::with_workspace(make_config(), workspace.clone());
+
+    // 无 peers.toml → 空端点（退化为纯广播）
+    assert!(ClusterCallbacks::peer_udp_endpoints(&cluster).is_empty());
+
+    // 写入带 [peers.*].address（UDP 形态）的 peers.toml → 逐个收集
+    let cluster_dir = workspace.join("cluster");
+    std::fs::create_dir_all(&cluster_dir).unwrap();
+    std::fs::write(
+        cluster_dir.join("peers.toml"),
+        r#"
+[node]
+id = "node-self"
+name = "self"
+
+[peers.node-b]
+address = "127.0.0.1:19423"
+name = "b"
+rpc_port = 29423
+
+[peers.node-a]
+address = "192.168.137.237:19422"
+name = "a"
+rpc_port = 29422
+"#,
+    )
+    .unwrap();
+
+    let mut eps = ClusterCallbacks::peer_udp_endpoints(&cluster);
+    eps.sort();
+    assert_eq!(
+        eps,
+        vec![
+            "127.0.0.1:19423".to_string(),
+            "192.168.137.237:19422".to_string()
+        ]
+    );
 }

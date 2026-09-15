@@ -5201,6 +5201,7 @@ impl AgentLoop {
             session_key: session_key.clone(),
             correlation_id: None,
             async_callback: None,
+            tool_path_base: None,
         };
         let trace_id = format!("subagent-{}", uuid::Uuid::new_v4().simple());
         // Swarm G13：detached 路径补合成 ConversationStart/End。run_llm_loop
@@ -7172,7 +7173,8 @@ impl AgentLoop {
                     // 记终端原因 + 末事件为 Error——cluster_agent 据此发 error 回调。
                     terminal_reason = Some("validation_exhausted");
                     force_stop = Some(AgentEvent::Error(format!(
-                        "工具参数校验连续失败 {} 次，已停止重试。最近工具：'{}'。",
+                        "工具参数校验连续失败 {} 次，已停止重试。最近工具：'{}'。\
+                         建议：换用更强的模型（model set-tier / 模型管理页）或把任务拆得更具体后重试。",
                         validation_failures, tc.name
                     )));
                     break;
@@ -7691,6 +7693,18 @@ impl AgentLoop {
             return "⛔ ESTOP: 已急停 — 工具调用已被拒绝 (e-stop engaged). 不要重试；告知用户当前处于急停状态，等待释放。"
                 .to_string();
         }
+
+        // F-U3-2（UAT U3 实证）：档案管线任务的工作副本路径基准重写。位置在
+        // 所有闸门之前——下游（Plan 闸/安全管线/审计链）看到的都是重写后的
+        // 真实落点路径。
+        let rewritten;
+        let tool_call: &ToolCallInfo = match Self::rewrite_tool_paths_for_base(tool_call, context) {
+            Some(fixed) => {
+                rewritten = fixed;
+                &rewritten
+            }
+            None => tool_call,
+        };
 
         // F8 (devtool-upgrade 阶段 3): dispatch-side hidden gate — the second
         // half of the `agents.hidden_tools` double gate. Supply-side filtering
@@ -8536,6 +8550,105 @@ impl AgentLoop {
     /// per-injection).
     pub fn set_workspace_root(&self, root: std::path::PathBuf) {
         *self.workspace_root.write() = Some(root);
+    }
+
+    /// 节点工作区根（装配时 [`Self::set_workspace_root`] 注入；未设 = None）。
+    /// F-U3-2：cluster agent 以此定位档案管线任务的工作副本目录。
+    pub fn workspace_root(&self) -> Option<std::path::PathBuf> {
+        self.workspace_root.read().clone()
+    }
+
+    /// F-U3-2（UAT U3 实证）：档案管线任务的工作副本路径基准重写。
+    ///
+    /// worker prompt 宣称「所有文件读写必须在工作副本目录内进行」，但文件
+    /// 工具的相对 `path` 以节点 workspace 根为基准、`exec` 缺省 cwd 也是
+    /// workspace 根——worker 一旦用相对路径（glm-5.3-flash 实测发生），文件
+    /// 就静默落在工作副本之外：变更集扫描只认 exec 目录，成果丢失 + 工作区
+    /// 被污染。这里按 `context.tool_path_base` 把相对路径重写进工作副本
+    /// （`exec`/`async_shell` 缺省 cwd 一并注入——缺省执行根=工作副本）；
+    /// 普通会话 base 为 None，零行为变化。仅改写参数 JSON，不触碰工具语义
+    /// 与安全管线（安全层看到的就是重写后的真实落点）。
+    fn rewrite_tool_paths_for_base(
+        call: &ToolCallInfo,
+        context: &RequestContext,
+    ) -> Option<ToolCallInfo> {
+        let base = context.tool_path_base.as_ref()?;
+        // 单 `path` 参数的文件面工具（相对 path → base.join）。
+        const PATH_ARG_TOOLS: &[&str] = &[
+            "read_file",
+            "write_file",
+            "edit_file",
+            "append_file",
+            "list_dir",
+            "file_exists",
+            "create_dir",
+            "delete_file",
+            "delete_dir",
+            "grep",
+            "multiedit",
+        ];
+        // 执行类工具：`cwd`（exec）/ `working_dir`（async_shell），缺省时注入。
+        const CWD_ARG_TOOLS: &[&str] = &["exec", "async_shell"];
+        let name = call.name.as_str();
+        let is_path = PATH_ARG_TOOLS.contains(&name);
+        let is_cwd = CWD_ARG_TOOLS.contains(&name);
+        if !is_path && !is_cwd {
+            return None;
+        }
+        // 参数不是合法 JSON（后续 args_validator 会报）——保持原样透传。
+        let Ok(mut args) = serde_json::from_str::<serde_json::Value>(&call.arguments) else {
+            return None;
+        };
+        let join = |p: &str| base.join(p).to_string_lossy().into_owned();
+        let mut changed = false;
+        let rewrite_rel = |slot: &mut serde_json::Value, changed: &mut bool| {
+            if let Some(p) = slot.as_str() {
+                let t = p.trim();
+                if !t.is_empty() && !std::path::Path::new(t).is_absolute() {
+                    *slot = serde_json::Value::String(join(t));
+                    *changed = true;
+                }
+            }
+        };
+        if is_path {
+            if let Some(slot) = args.get_mut("path") {
+                rewrite_rel(slot, &mut changed);
+            }
+            // multiedit 的批量形态：edits[].path 逐条重写。
+            if name == "multiedit"
+                && let Some(edits) = args.get_mut("edits").and_then(|v| v.as_array_mut())
+            {
+                for e in edits.iter_mut() {
+                    if let Some(slot) = e.get_mut("path") {
+                        rewrite_rel(slot, &mut changed);
+                    }
+                }
+            }
+        }
+        if is_cwd {
+            let key = if name == "exec" { "cwd" } else { "working_dir" };
+            match args.get_mut(key) {
+                Some(slot) => {
+                    // 显式传了空串 = 视同缺省（工具侧同样回退默认目录）。
+                    if slot.as_str().map(str::trim).unwrap_or("").is_empty() {
+                        *slot = serde_json::Value::String(base.to_string_lossy().into_owned());
+                        changed = true;
+                    } else {
+                        rewrite_rel(slot, &mut changed);
+                    }
+                }
+                None => {
+                    args[key] = serde_json::Value::String(base.to_string_lossy().into_owned());
+                    changed = true;
+                }
+            }
+        }
+        if !changed {
+            return None;
+        }
+        let mut out = call.clone();
+        out.arguments = args.to_string();
+        Some(out)
     }
 
     /// I1 (devtool-upgrade 阶段 3): start the workspace fs watcher. Call

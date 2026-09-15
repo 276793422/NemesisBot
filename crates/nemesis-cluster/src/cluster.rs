@@ -1029,7 +1029,9 @@ impl Cluster {
             status: NodeStatus::Online,
             capabilities,
             tags: tags.clone(),
-            addresses, // Preserve all addresses for multi-address failover
+            // Preserve all addresses for multi-address failover。clone：closure
+            // （占位全量比对）与下方 RealNodeInfo 升级构造仍要用 addresses。
+            addresses: addresses.clone(),
             node_type: node_type.to_string(),
         };
         let changed = self.registry.upsert_if_changed(node);
@@ -1054,9 +1056,27 @@ impl Cluster {
                 .list_peers()
                 .into_iter()
                 .filter(|p| {
-                    p.base.id != node_id
-                        && (addr_eq(&p.base.address, &primary_address)
-                            || p.addresses.iter().any(|a| addr_eq(a, &primary_address)))
+                    if p.base.id == node_id {
+                        return false;
+                    }
+                    // 发现②/B4 强化：占位匹配对自报**全量**地址逐个比对，
+                    // 不再只对 primary——placeholder（静态 peers 手写条目）
+                    // 配的地址可能不是自报 primary（多网卡枚举序决定），
+                    // 单地址比对会永不归一、双条目并存。
+                    let self_reported: Vec<String> = addresses
+                        .iter()
+                        .map(|a| {
+                            if a.contains(':') {
+                                a.clone()
+                            } else {
+                                format!("{}:{}", a, rpc_port)
+                            }
+                        })
+                        .collect();
+                    self_reported.iter().any(|cand| {
+                        addr_eq(&p.base.address, cand)
+                            || p.addresses.iter().any(|a| addr_eq(a, cand))
+                    })
                 })
                 .map(|p| (p.base.id.clone(), p.base.name.clone()))
                 .collect();
@@ -1092,6 +1112,11 @@ impl Cluster {
                         id: node_id.into(),
                         name: effective_name,
                         address: primary_address.clone(),
+                        // announce 携带的真实 RPC 端口随升级落盘（显式
+                        // rpc_port 字段），不再留给装载端按约定猜。
+                        rpc_port,
+                        // 发现①根修：升级路径同样保全自报全量地址。
+                        addresses: addresses.clone(),
                         // 同 handle_discovered_node：role 走对端自报值解析，
                         // 不硬编码（升级后的静态 peer 条目 role 才真实）。
                         role: nemesis_types::cluster::NodeRole::from_role_str(role),
@@ -1197,11 +1222,11 @@ impl Cluster {
     /// subtable `[peers.{placeholder}]` is removed and a new subtable
     /// `[peers.{real_id}]` is added (or the existing one updated).
     ///
-    /// `addresses` and `status` are NOT overwritten from the incoming data:
-    ///   - `addresses` is a local perspective (we may know about IPs the
-    ///     remote didn't broadcast in this payload).
-    ///   - `status` is a local observation (we may have just failed a health
-    ///     check). The caller can separately mark the node online if warranted.
+    /// `status` is NOT overwritten from the incoming data: it is a local
+    /// observation (we may have just failed a health check). `addresses` is
+    /// refreshed only when the payload carries a non-empty list (发现①：保全
+    /// 全量选址候选池；空列表不清空已有集合——旧数据不砸新数据).
+    /// The caller can separately mark the node online if warranted.
     ///
     /// Returns the canonical node_id that was written (i.e. `real_id`).
     pub fn merge_real_node_info(&self, info: &RealNodeInfo) -> String {
@@ -1219,6 +1244,12 @@ impl Cluster {
             if !info.address.is_empty() && !self.registry.is_peer_static(&info.id) {
                 existing.base.address = info.address.clone();
             }
+            // 发现①根修：全量自报数组非空才刷新（primary 保护同上——静态
+            // 语义只锁用户显式配置的 base.address；数组是选址候选池，刷新
+            // 让 select_best_address 在多网卡下始终拿到最新的可达集合）。
+            if !info.addresses.is_empty() {
+                existing.addresses = info.addresses.clone();
+            }
             existing.base.last_seen = chrono::Local::now().to_rfc3339();
             existing.capabilities = info.capabilities.clone();
             existing.tags = info.tags.clone();
@@ -1228,11 +1259,34 @@ impl Cluster {
             return info.id.clone();
         }
 
-        // 2. Placeholder by address → remove + insert under real_id
+        // 2. Placeholder by address → remove + insert under real_id.
+        // 发现②/B4 强化：占位匹配不再只比对自报 primary——对端多网卡下
+        // primary 可能不是用户静态配置的那个地址（真机实证：placeholder
+        // 配 192.168.137.x 而自报 primary=10.103.x → 永不归一，双条目
+        // 并存）。改为对自报全量地址逐个匹配，任一命中即归一。
         let placeholder_id = self
             .registry
             .find_by_address(&info.address)
-            .map(|p| p.base.id.clone());
+            .map(|p| p.base.id.clone())
+            .or_else(|| {
+                info.addresses
+                    .iter()
+                    .filter_map(|a| {
+                        let candidate = if a.contains(':') {
+                            a.clone()
+                        } else {
+                            let port = info.address.rsplit_once(':').map(|(_, p)| p.to_string());
+                            match port {
+                                Some(p) => format!("{}:{}", a, p),
+                                None => a.clone(),
+                            }
+                        };
+                        self.registry
+                            .find_by_address(&candidate)
+                            .map(|p| p.base.id.clone())
+                    })
+                    .next()
+            });
 
         let node = ExtendedNodeInfo {
             base: nemesis_types::cluster::NodeInfo {
@@ -1246,7 +1300,7 @@ impl Cluster {
             status: NodeStatus::Online,
             capabilities: info.capabilities.clone(),
             tags: info.tags.clone(),
-            addresses: Vec::new(),
+            addresses: info.addresses.clone(),
             node_type: info.node_type.clone(),
         };
         self.registry.upsert(node);
@@ -1272,19 +1326,12 @@ impl Cluster {
         info.id.clone()
     }
 
-    /// Convert an RPC address (`host:rpc_port`) to the UDP address (`host:udp_port`)
-    /// for peers.toml write-back, reversing the static loader's
-    /// `rpc_port = udp_port + 10000` convention (gateway.rs). Falls back to the
-    /// input unchanged if the port can't be parsed or is ≤ 10000 (no convention to
-    /// reverse — e.g. a non-standard port or an address without a port).
+    /// Convert an RPC address (`host:rpc_port`) to the UDP address
+    /// (`host:udp_port`) for peers.toml write-back. 委托
+    /// [`crate::cluster_config::rpc_to_udp_address`]（单一真相源，pair 配对
+    /// 写盘同源消费）。
     fn rpc_to_udp_address(rpc_addr: &str) -> String {
-        if let Some((host, port_str)) = rpc_addr.rsplit_once(':')
-            && let Ok(rpc_port) = port_str.parse::<u32>()
-            && rpc_port > 10000
-        {
-            return format!("{}:{}", host, rpc_port - 10000);
-        }
-        rpc_addr.to_string()
+        crate::cluster_config::rpc_to_udp_address(rpc_addr)
     }
 
     /// Persist the real peer info to peers.toml under `[peers.{real_id}]`.
@@ -1305,6 +1352,7 @@ impl Cluster {
             role_str,
             &info.category,
             Some(&info.name),
+            info.rpc_port,
         ) {
             tracing::warn!(
                 real_id = real_id,
@@ -1362,8 +1410,16 @@ impl Cluster {
             }
         };
 
-        let placeholder_key = crate::cluster_config::sanitize_peer_key(placeholder);
-        let removed = peers_table.remove(&placeholder_key);
+        // 发现②/B3：优先按字面 placeholder 键删（新写盘路径是字面键）；
+        // 找不到再试 sanitize 旧键（旧版代码落盘的有损键存量条目）。
+        let placeholder_key = placeholder.to_string();
+        let removed = peers_table.remove(&placeholder_key).or_else(|| {
+            let legacy = crate::cluster_config::sanitize_peer_key(placeholder);
+            if legacy == placeholder_key {
+                return None;
+            }
+            peers_table.remove(&legacy)
+        });
         if removed.is_some() {
             tracing::info!(
                 placeholder_key = %placeholder_key,
@@ -3214,6 +3270,10 @@ impl ClusterCallbacks for Cluster {
     fn sync_to_disk(&self) -> Result<(), String> {
         self.sync_to_disk().map_err(|e| e.to_string())
     }
+
+    fn peer_udp_endpoints(&self) -> Vec<String> {
+        crate::cluster_config::load_peer_udp_endpoints(&self.static_config_path)
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -3328,11 +3388,23 @@ fn write_atomic(path: &Path, data: &[u8]) -> std::io::Result<()> {
 /// `Cluster::merge_real_node_info` to upgrade placeholder peer entries
 /// (created by manual `nodes.add`) to the remote's real ID, and to refresh
 /// fields whenever the remote broadcasts a new state.
+///
+/// `addresses` 是对端自报的**全量**地址列表（网卡枚举序）。发现①根修
+/// （2026-09-15 真机三节点）：此前 RPC merge 路径建条目时丢弃该列表
+/// （`Vec::new()`），`get_peer_info` 回落单地址后 `select_best_address`
+/// 的 `len<=1` 短路使子网匹配智能选址从未运行——多网卡环境下对端只能
+/// 拿 primary（枚举运气）盲拨不可达网段。保全全量后多地址 failover
+/// 与子网优选恢复工作。
 #[derive(Debug, Clone)]
 pub struct RealNodeInfo {
     pub id: String,
     pub name: String,
     pub address: String,
+    /// 对端真实 RPC 端口（announce 携带）。>0 时随占位升级显式落盘
+    /// peers.toml（`rpc_port` 字段），不再依赖 `udp+10000` 约定推导。
+    pub rpc_port: u16,
+    /// 全量自报地址（host 形态，无端口）；空 = 来源未携带（旧行为回落单地址）。
+    pub addresses: Vec<String>,
     pub role: nemesis_types::cluster::NodeRole,
     pub category: String,
     pub capabilities: Vec<String>,

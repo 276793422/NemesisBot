@@ -260,6 +260,25 @@ fn build_dispatch_prompt(
     p
 }
 
+/// 急停发车护栏（F-U4-5，2026-09-15 真机实证）：estop 生效中一切看板
+/// 发车入口一律拒绝。与 `project.resume` 的「护栏三不变：estop 急停中
+/// 拒绝恢复发车」同族——手动发车（issue.dispatch / issue.plan /
+/// autopilot.run / project.create auto_start）都是发车面，此前唯独它们
+/// 漏网（真机实证 estop ENGAGED 时 issue.dispatch 仍成功派出）。评审/
+/// 清扫走保险丝挂起（board_review 检查点），语义不同不在此拦。
+fn refuse_dispatch_when_estopped(ctx: &RequestContext) -> Result<(), String> {
+    if ctx
+        .state
+        .estop
+        .as_ref()
+        .map(|e| e.is_engaged())
+        .unwrap_or(false)
+    {
+        return Err("⛔ 急停（E-STOP）生效中：派发被拒绝（先释放急停）".to_string());
+    }
+    Ok(())
+}
+
 /// `issue.dispatch` 实现（cluster 编译时）：解析派发目标 →
 /// [`dispatch_issue_core`]。先做纯本地校验（目标），状态/重复派发闸在
 /// core 内、集群缺失最后报——错误信息更有指向性，且校验矩阵不依赖集群
@@ -271,6 +290,8 @@ async fn issue_dispatch(
     ctx: &RequestContext,
     data: Option<serde_json::Value>,
 ) -> Result<Option<serde_json::Value>, String> {
+    // F-U4-5：急停中拒绝发车（护栏，最便宜也最根本的一闸先行）。
+    refuse_dispatch_when_estopped(ctx)?;
     let data = data.ok_or("missing data")?;
     let id = data
         .get("id")
@@ -640,7 +661,14 @@ pub fn dispatch_issue_core(
     };
 
     // 2. 登记派发绑定（peer_chat_callback 的写回路由键）+ 审计活动。
-    store.insert_dispatch(&task_id, issue.id, &target, actor)?;
+    //    原子占用闸（R5-BUG-2 根修）：claim 失败 = 并发路径（依赖闸补派
+    //    × 停车场 sweep 等）已占用该 issue → 本次 submit 的 task 诚实
+    //    取消，不写行、不留幽灵 dispatched（幽灵行会永久占满 worker
+    //    inflight，后续派发全部静默 deferred）。
+    if !store.try_claim_dispatch(&task_id, issue.id, &target, actor)? {
+        cluster.fail_task(&task_id, "并发派发竞态：该 issue 已有进行中的派发");
+        return Err("该 issue 已有进行中的派发（并发派发竞态，本次派发已取消）".to_string());
+    }
 
     // C 里程碑 2（看板项目档案 goal P2）：派发落定 → records/NB-xx/
     // dispatch.md + timeline（P4 起第 5 参填基线 commit——执行档案 merge
@@ -655,8 +683,19 @@ pub fn dispatch_issue_core(
     );
 
     // 3. 状态推进：→ in_progress（状态机转移，写 status_change 审计）。
+    //    转移失败（人工同刻挪状态 / 竞态余波）→ 回滚本次 claim 的 dispatch
+    //    行（置 failed）+ 取消 task——行生命周期与派发决策同生共死，不留
+    //    幽灵 dispatched（R5-BUG-2 对称彻底）。
     let issue = if issue.status != IssueStatus::InProgress {
-        store.transition_issue(issue.id, IssueStatus::InProgress, actor)?
+        match store.transition_issue(issue.id, IssueStatus::InProgress, actor) {
+            Ok(i) => i,
+            Err(e) => {
+                let _ =
+                    store.finish_dispatch(&task_id, nemesis_board::models::dispatch_state::FAILED);
+                cluster.fail_task(&task_id, &format!("派发中止：状态转移失败（{e}）"));
+                return Err(format!("派发中止：状态转移失败：{e}"));
+            }
+        }
     } else {
         issue
     };
@@ -1438,6 +1477,9 @@ async fn issue_plan(
     ctx: &RequestContext,
     data: Option<serde_json::Value>,
 ) -> Result<Option<serde_json::Value>, String> {
+    // F-U4-5：急停中拒绝（二段确认=派发波发车；一段拆解的 LLM 走主持人
+    // loop 同被急停冻结——两段统一在此诚实拒绝，反馈比自然失败更快更明确）。
+    refuse_dispatch_when_estopped(ctx)?;
     let data = data.ok_or("missing data")?;
     let id = data
         .get("id")
@@ -1654,6 +1696,14 @@ fn link_project_on_dispatch(store: &Arc<BoardStore>, project_id: Option<i64>) {
 /// 留痕，不再重复落同文案评论（B4 防堆叠）。
 #[cfg_attr(not(feature = "cluster"), allow(dead_code))]
 const PARK_NOTICE_MARK: &str = "自动派发暂缓";
+
+/// 三路 sweep 触发源（announce 回调 / 派发落定重估波 / 周期兜底 ticker，
+/// F-U3-4）的进程级串行锁：sweep 体是 check-then-dispatch 序列，两个
+/// wave 并发时可同时通过 `has_active_dispatch` 闸对同一单双派。同步锁
+/// 即可——sweep 体全同步（SQLite + fire-and-forget RPC spawn），持锁
+/// 毫秒级；poison 恢复沿用 `unwrap_or_else(into_inner)` 惯例。
+#[cfg(feature = "cluster")]
+static PARK_SWEEP_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 /// D0 准入停车评论标记（与 PARK_NOTICE_MARK 分开：原因不同、去重不互斥）。
 #[cfg_attr(not(feature = "cluster"), allow(dead_code))]
 const INFLIGHT_NOTICE_MARK: &str = "在途派发已达上限";
@@ -1718,6 +1768,17 @@ pub fn dispatch_subissue_auto_with_config(
         if store.get_issue(dep_id)?.status != IssueStatus::Done {
             return Ok(None);
         }
+    }
+    // 父单存活闸（F-U4-3）：父单已取消 = 任务线已死，本单不再派出——
+    // 否则补派触发器/停车场 sweep 会在父单死后继续派子单空烧 token。
+    //（reopen 侧同款校验：父单 cancelled 的子单不可单独复活。）
+    if let Some(pid) = issue.parent_issue_id
+        && store
+            .get_issue(pid)
+            .map(|p| p.status == IssueStatus::Cancelled)
+            .unwrap_or(false)
+    {
+        return Ok(None);
     }
 
     // R-9（goal P4）touch_paths 互斥：本单声明的写路径与「同父在途单」的
@@ -1927,18 +1988,41 @@ pub fn sweep_parked_dispatches(
     cluster: &Arc<nemesis_cluster::cluster::Cluster>,
     actor: &Actor,
 ) -> (usize, usize, usize) {
-    sweep_parked_dispatches_with_config(live_board_config().as_ref(), store, cluster, actor)
+    sweep_parked_dispatches_notify(store, cluster, actor, false)
 }
 
-/// [`sweep_parked_dispatches`] 的可测内核：board 配置显式入参。兜底开关
-/// 开时，announce 触发的 sweep 同时是存量停车单的兜底复活路径。
+/// 周期兜底 ticker（F-U3-4）专用入口：`notify_park=true`——首次停车落
+/// ⏸ 评论 + 父单 blocked 显形（与直派路径同语义；B4 去重保证重复 tick
+/// 不刷屏），其余行为与 [`sweep_parked_dispatches`] 完全一致。
+#[cfg(feature = "cluster")]
+pub fn sweep_parked_dispatches_notify(
+    store: &Arc<BoardStore>,
+    cluster: &Arc<nemesis_cluster::cluster::Cluster>,
+    actor: &Actor,
+    notify_park: bool,
+) -> (usize, usize, usize) {
+    sweep_parked_dispatches_with_config(
+        live_board_config().as_ref(),
+        store,
+        cluster,
+        actor,
+        notify_park,
+    )
+}
+
+/// [`sweep_parked_dispatches`] 的可测内核：board 配置显式入参（测试不碰
+/// 进程级全局单例），兜底开关判定也走同一入口。`notify_park` 透传给
+/// [`dispatch_subissue_auto_with_config`]。进程级 [`PARK_SWEEP_LOCK`]
+/// 串行三路触发源。
 #[cfg(feature = "cluster")]
 pub fn sweep_parked_dispatches_with_config(
     board_cfg: Option<&nemesis_config::BoardFlagConfig>,
     store: &Arc<BoardStore>,
     cluster: &Arc<nemesis_cluster::cluster::Cluster>,
     actor: &Actor,
+    notify_park: bool,
 ) -> (usize, usize, usize) {
+    let _serial = PARK_SWEEP_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let candidates = match store.list_dispatch_park_candidates() {
         Ok(c) => c,
         Err(e) => {
@@ -1949,8 +2033,14 @@ pub fn sweep_parked_dispatches_with_config(
     let mut dispatched = 0usize;
     let mut failed = 0usize;
     for id in &candidates {
-        match dispatch_subissue_auto_with_config(board_cfg, store, Some(cluster), *id, actor, false)
-        {
+        match dispatch_subissue_auto_with_config(
+            board_cfg,
+            store,
+            Some(cluster),
+            *id,
+            actor,
+            notify_park,
+        ) {
             Ok(Some(_)) => dispatched += 1,
             Ok(None) => {}
             Err(e) => {
@@ -2386,13 +2476,14 @@ pub fn sync_parent_status(
 /// 状态/在途/依赖闸），随后父单状态联动。错误只 warn 不上抛（联动是
 /// 附加动作，不阻断落定本身）。接线点：WSAPI `issue.status` / `issue.move`
 /// 落到 done/cancelled 时（CLI 直写 store 不经此路径——M1 已知边界）。
+/// 返回级联取消的编号列表（C3：`issue.cancel` 响应体披露）。
 #[cfg(feature = "cluster")]
 pub fn on_issue_settled(
     store: &Arc<BoardStore>,
     cluster: Option<&Arc<nemesis_cluster::cluster::Cluster>>,
     issue_id: i64,
     actor: &Actor,
-) {
+) -> Vec<String> {
     let cancelled = store
         .get_issue(issue_id)
         .map(|i| i.status == IssueStatus::Cancelled)
@@ -2409,38 +2500,111 @@ pub fn on_issue_settled(
     if cancelled {
         // B1：依赖闸只认 done 且状态机无 reopen——依赖取消后 dependents
         // 永远无法派发（死链）。级联取消让死链显形：各自留痕 + 父单经
-        // sync_parent_status 进 in_review + 缺口评论。
-        cascade_cancel_dependents(store, issue_id, actor);
-        return;
-    }
-    match store.dependents_of(issue_id) {
-        Ok(deps) => {
-            for dep_id in deps {
-                if let Err(e) = dispatch_subissue_auto(store, cluster, dep_id, actor, true) {
-                    tracing::warn!("[Board] 补派子单 {dep_id} 失败：{e}");
+        // sync_parent_status 进 in_review + 缺口评论。（reopen 已补上
+        // cancelled→backlog 出口：级联取消的单可用 issue.reopen 复活。）
+        // F-U4-3：级联边 = 依赖边 ∪ 父子边（见 cascade_cancel_dependents）。
+        cascade_cancel_dependents(store, cluster, issue_id, actor)
+    } else {
+        match store.dependents_of(issue_id) {
+            Ok(deps) => {
+                for dep_id in deps {
+                    if let Err(e) = dispatch_subissue_auto(store, cluster, dep_id, actor, true) {
+                        tracing::warn!("[Board] 补派子单 {dep_id} 失败：{e}");
+                    }
                 }
             }
+            Err(e) => tracing::warn!("[Board] dependents_of({issue_id}) 查询失败：{e}"),
         }
-        Err(e) => tracing::warn!("[Board] dependents_of({issue_id}) 查询失败：{e}"),
+        Vec::new()
     }
 }
 
-/// 级联取消（B1）：root 落 cancelled 后，其全部**非终态**传递 dependents
-/// 一并取消（BFS + visited 防环）。每单系统评论留痕（状态机自带
+/// 下行 task_cancel（fire-and-forget，30s 超时）：`issue.cancel` 在途取消
+/// 与级联取消（[`cascade_cancel_dependents`]）共用的单一出口。送达失败不
+/// 影响 A 侧终态（worker 回报被写回幂等早退兜住），评论留痕；RPC client
+/// 不可用时 warn 放弃（best-effort，不阻断取消本体）。
+#[cfg(feature = "cluster")]
+fn spawn_task_cancel(
+    store: &Arc<BoardStore>,
+    cluster: &Arc<nemesis_cluster::cluster::Cluster>,
+    issue_id: i64,
+    worker_id: &str,
+    task_id: &str,
+) {
+    let Some(rpc_client) = cluster.rpc_client_arc() else {
+        tracing::warn!("[Board] task_cancel 未下发（RPC client 不可用）：task_id={task_id}");
+        return;
+    };
+    let request = nemesis_cluster::rpc_types::RPCRequest {
+        id: format!("cancel-{task_id}"),
+        action: nemesis_cluster::rpc_types::ActionType::Custom("task_cancel".to_string()),
+        payload: serde_json::json!({ "task_id": task_id }),
+        source: cluster.node_id().to_string(),
+        target: Some(worker_id.to_string()),
+    };
+    let store = store.clone();
+    let worker_id = worker_id.to_string();
+    let task_id = task_id.to_string();
+    tokio::spawn(async move {
+        let timeout = std::time::Duration::from_secs(30);
+        match rpc_client
+            .call_with_timeout(&worker_id, request, timeout)
+            .await
+        {
+            Ok(_) => {
+                tracing::info!("[Board] task_cancel delivered (task_id={task_id})");
+            }
+            Err(e) => {
+                tracing::warn!("[Board] task_cancel send failed (task_id={task_id}): {e}");
+                let _ = store.add_comment(nemesis_board::models::NewComment {
+                    issue_id,
+                    author: nemesis_board::Actor::system("board"),
+                    content: format!("⛔ 取消指令送达失败（{e}），worker 端可能仍在执行"),
+                    parent_id: None,
+                    ctype: nemesis_board::CommentType::System,
+                });
+            }
+        }
+    });
+}
+
+/// 级联取消（B1 + F-U4-3）：root 落 cancelled 后，两条「挂在我身上就会
+/// 陪葬」的边全部级联——**依赖边**（`dependents_of`：依赖我的单，依赖闸
+/// 只认 done，死链显形）+ **父子边**（`list_children`：planner 拆解的
+/// 依赖边是兄弟链、从不指向父单，只走依赖边则 cancel 父单恒零级联，子单
+/// 沦为僵尸 backlog 且补派触发器还会继续派它们空烧 token）。全部**非终态**
+/// 传递节点取消（BFS + visited 防环）；在途派发连带取消（竞态守卫赢才动
+/// 派发行 + 集群在则下行 task_cancel）。每单系统评论留痕（状态机自带
 /// status_change 评论 + 活动 + 通知）；各父单经 [`sync_parent_status`]
 /// any_cancelled 分支进 in_review + 缺口评论。终态单（done/cancelled）不动。
+/// 返回被连带取消的编号列表（C3：cancel 响应体披露，不再无声）。
 #[cfg(feature = "cluster")]
-fn cascade_cancel_dependents(store: &Arc<BoardStore>, root_id: i64, actor: &Actor) {
+fn cascade_cancel_dependents(
+    store: &Arc<BoardStore>,
+    cluster: Option<&Arc<nemesis_cluster::cluster::Cluster>>,
+    root_id: i64,
+    actor: &Actor,
+) -> Vec<String> {
+    let mut cascaded: Vec<String> = Vec::new();
     let mut queue: Vec<i64> = vec![root_id];
     let mut visited: std::collections::HashSet<i64> = std::collections::HashSet::from([root_id]);
     while let Some(cur) = queue.pop() {
         let Ok(cur_issue) = store.get_issue(cur) else {
             continue;
         };
-        let Ok(dependents) = store.dependents_of(cur) else {
-            continue;
+        // 下一跳 = 依赖边 dependents ∪ 父子边 children。
+        let mut next: Vec<i64> = match store.dependents_of(cur) {
+            Ok(deps) => deps,
+            Err(e) => {
+                tracing::warn!("[Board] dependents_of({cur}) 查询失败：{e}");
+                Vec::new()
+            }
         };
-        for dep_id in dependents {
+        match store.list_children(cur) {
+            Ok(children) => next.extend(children.iter().map(|c| c.id)),
+            Err(e) => tracing::warn!("[Board] list_children({cur}) 查询失败：{e}"),
+        }
+        for dep_id in next {
             if !visited.insert(dep_id) {
                 continue;
             }
@@ -2454,16 +2618,33 @@ fn cascade_cancel_dependents(store: &Arc<BoardStore>, root_id: i64, actor: &Acto
                 issue_id: dep.id,
                 author: nemesis_board::Actor::system("board"),
                 content: format!(
-                    "⛔ 依赖 {} 已取消，本单级联取消（依赖闸只认 done，状态机无 reopen）",
+                    "⛔ {} 已取消，本单级联取消（父单或依赖取消即死链；可 issue.reopen 复活）",
                     cur_issue.number
                 ),
                 parent_id: None,
                 ctype: nemesis_board::CommentType::System,
             });
+            // 在途派发连带取消：竞态守卫（赢 = 终结派发行）→ 集群在则下行
+            // task_cancel（worker 不再空烧）。输给 worker 回报/超时 sweep →
+            // 不动派发行（随后的 transition 状态机会诚实拒绝）。
+            if let Ok(Some(d)) = store.get_active_dispatch(dep.id) {
+                match store.cancel_dispatch(&d.task_id, actor) {
+                    Ok(Some(_)) => {
+                        if let Some(c) = cluster {
+                            spawn_task_cancel(store, c, dep.id, &d.worker_id, &d.task_id);
+                        }
+                    }
+                    Ok(None) => {}
+                    Err(e) => {
+                        tracing::warn!("[Board] 级联取消 {} 在途派发失败：{e}", dep.number)
+                    }
+                }
+            }
             if let Err(e) = store.transition_issue(dep.id, IssueStatus::Cancelled, actor) {
                 tracing::warn!("[Board] 级联取消 {} 失败：{e}", dep.number);
                 continue;
             }
+            cascaded.push(dep.number.clone());
             if let Some(pid) = dep.parent_issue_id
                 && let Err(e) = sync_parent_status(store, pid, actor)
             {
@@ -2472,6 +2653,7 @@ fn cascade_cancel_dependents(store: &Arc<BoardStore>, root_id: i64, actor: &Acto
             queue.push(dep.id);
         }
     }
+    cascaded
 }
 
 /// `issue.cancel` 实现（cluster 编译时，W2 P4 per-task cancel + B2/B3 修复）：
@@ -2514,40 +2696,8 @@ async fn issue_cancel(
 
         // 下行取消（fire-and-forget）：B 端 gateway 收 task_cancel → abort
         // 任务。送达失败不影响 A 侧终态（worker 回报被写回幂等早退兜住），
-        // 评论留痕。
-        let rpc_client = cluster.rpc_client_arc().ok_or("RPC client not available")?;
-        let request = nemesis_cluster::rpc_types::RPCRequest {
-            id: format!("cancel-{tid}"),
-            action: nemesis_cluster::rpc_types::ActionType::Custom("task_cancel".to_string()),
-            payload: serde_json::json!({ "task_id": tid }),
-            source: cluster.node_id().to_string(),
-            target: Some(worker_id.clone()),
-        };
-        let store_for_rpc = store.clone();
-        let task_id_for_rpc = tid.clone();
-        tokio::spawn(async move {
-            let timeout = std::time::Duration::from_secs(30);
-            match rpc_client
-                .call_with_timeout(&worker_id, request, timeout)
-                .await
-            {
-                Ok(_) => {
-                    tracing::info!("[Board] task_cancel delivered (task_id={task_id_for_rpc})");
-                }
-                Err(e) => {
-                    tracing::warn!(
-                        "[Board] task_cancel send failed (task_id={task_id_for_rpc}): {e}"
-                    );
-                    let _ = store_for_rpc.add_comment(nemesis_board::models::NewComment {
-                        issue_id: id,
-                        author: nemesis_board::Actor::system("board"),
-                        content: format!("⛔ 取消指令送达失败（{e}），worker 端可能仍在执行"),
-                        parent_id: None,
-                        ctype: nemesis_board::CommentType::System,
-                    });
-                }
-            }
-        });
+        // 评论留痕。（与级联取消共用 [`spawn_task_cancel`] 单一出口。）
+        spawn_task_cancel(store, &cluster, id, &worker_id, &tid);
     }
 
     // 状态机：→ cancelled（终态）。无在途派发时直接转（B3：停车场单/
@@ -2559,12 +2709,14 @@ async fn issue_cancel(
     };
 
     // B2：落定联动（父单收口 + dependents 级联取消）——错误只 warn，
-    // 不回滚取消。
-    on_issue_settled(store, ctx.state.cluster.as_ref(), id, &actor);
+    // 不回滚取消。C3：级联清单随响应披露（被连带取消的子单编号），不再
+    // 无声——用户据此知道哪些单被连带、可用 issue.reopen 拉回。
+    let cascade_cancelled = on_issue_settled(store, ctx.state.cluster.as_ref(), id, &actor);
 
     Ok(Some(serde_json::json!({
         "cancelled": true,
         "task_id": (!task_id.is_empty()).then_some(task_id),
+        "cascade_cancelled": cascade_cancelled,
         "issue": issue_to_view(store, &issue)?,
     })))
 }
@@ -2681,6 +2833,12 @@ fn autopilot_new_issue(ap: &nemesis_board::Autopilot, actor: &Actor) -> NewIssue
     let mut ni = NewIssue {
         title: ap.title.replace("{date}", &date),
         description: ap.description.clone(),
+        // F-U5-1：验收标准透传——定时任务也要能全自动验收（空 = 不填，
+        // 评审保持「验收标准（未提供）」保守转人工语义）。
+        acceptance_criteria: ap
+            .acceptance_criteria
+            .clone()
+            .filter(|s| !s.trim().is_empty()),
         priority: ap.priority,
         project_id: ap.project_id,
         creator: actor.clone(),
@@ -3101,6 +3259,7 @@ impl ModuleHandler for BoardHandler {
             "issue.move",
             "issue.dispatch",
             "issue.cancel",
+            "issue.reopen",
             "issue.plan",
             "issue.bulk_archive",
             "autopilot.list",
@@ -3272,8 +3431,23 @@ impl ModuleHandler for BoardHandler {
             "issue.dispatch" => issue_dispatch(&store, actor, ctx, data).await,
             // 取消进行中的派发（W2 P4）：A 侧派发/issue 双终态 + 下行
             // task_cancel 让 worker abort。赢竞态才动账（worker 恰好回报则
-            // 拒绝取消，issue 保持写回的状态）。
+            // 拒绝取消，issue 保持写回的状态）。响应带 cascade_cancelled
+            //（C3：被级联取消的子单编号清单）。
             "issue.cancel" => issue_cancel(&store, actor, ctx, data).await,
+            // reopen（发现④ 2026-09-15）：cancelled → backlog 唯一终态
+            // 出口，自动追加审计评论 + 解除 hidden；与 CLI `issue reopen`
+            // 共用 store.reopen_issue 单一后端。
+            "issue.reopen" => {
+                let data = data.ok_or("missing data")?;
+                let id = data
+                    .get("id")
+                    .and_then(|v| v.as_i64())
+                    .ok_or("missing field: id")?;
+                let issue = store.reopen_issue(id, &actor)?;
+                Ok(Some(
+                    serde_json::json!({ "reopened": true, "issue": issue_to_view(&store, &issue)? }),
+                ))
+            }
             // AI 拆解（Swarm M1）：confirm 缺省/false = 异步跑 planner（返回
             // plan_id，结果经 board.plan_ready/failed push）；confirm:true =
             // 按 plan_id 落库 + 依赖闸派发波 + 父单联动。
@@ -3327,6 +3501,9 @@ impl ModuleHandler for BoardHandler {
                         .get("auto_plan")
                         .and_then(|v| v.as_bool())
                         .unwrap_or(false),
+                    // F-U5-1：验收标准（触发建单透传；空 = 不填）。
+                    acceptance_criteria: get_opt_str(&data, "acceptance_criteria")
+                        .filter(|s| !s.trim().is_empty()),
                 })?;
                 // cron 已注入 → 即时登记并回填 cron_job_id；未注入（单测/
                 // 极简构建）→ 启动同步兜底。
@@ -3360,6 +3537,8 @@ impl ModuleHandler for BoardHandler {
                         target: get_opt_str(&data, "target"),
                         enabled: data.get("enabled").and_then(|v| v.as_bool()),
                         auto_plan: data.get("auto_plan").and_then(|v| v.as_bool()),
+                        // F-U5-1：验收标准（Some("") = 清空；缺省 = 不改）。
+                        acceptance_criteria: get_opt_str(&data, "acceptance_criteria"),
                     },
                 )?;
                 arm_autopilot_job(ctx, &store, &ap)?;
@@ -3382,6 +3561,8 @@ impl ModuleHandler for BoardHandler {
             // 手动触发一次（到点自动触发走 gateway on_job → 同一
             // fire_autopilot 核心）。
             "autopilot.run" => {
+                // F-U4-5：急停中拒绝手动触发（target 非空的规则会发车）。
+                refuse_dispatch_when_estopped(ctx)?;
                 let data = data.ok_or("missing data")?;
                 let id = data
                     .get("id")
@@ -3613,6 +3794,14 @@ impl ModuleHandler for BoardHandler {
                     "directory": dir_path.to_string_lossy(),
                 });
                 if auto_start {
+                    // F-U4-5：自动开工链终点是拆解发车（plan 链 A1 波），
+                    // 急停中拒绝整段。项目照建已是事实——响应体照常返回，
+                    // auto_start 字段注明拒绝（与非 cluster 降级路径同形），
+                    // 不用 `?` 把已建项目信息吞成裸 Err。
+                    if let Err(e) = refuse_dispatch_when_estopped(ctx) {
+                        out["auto_start"] = serde_json::json!({ "error": e });
+                        return Ok(Some(out));
+                    }
                     // 自动开工链依赖集群派发（plan 链→节点执行），cluster
                     // feature 编译期裁掉时诚实降级：项目照建（已是事实），
                     // 注明未拆解，不报错不回滚——与 agent 未运行时的降级
@@ -3868,11 +4057,13 @@ impl ModuleHandler for BoardHandler {
                     .and_then(|v| v.as_u64())
                     .unwrap_or(50)
                     .clamp(1, 500) as u32;
+                // F-U6-1：offset 翻页——刷屏类记录挤占 limit 窗口时仍可翻到最新。
+                let offset = data.get("offset").and_then(|v| v.as_u64()).unwrap_or(0) as u32;
                 let action = data
                     .get("action")
                     .and_then(|v| v.as_str())
                     .filter(|s| !s.trim().is_empty());
-                let rows = store.list_recent_activity(limit, action)?;
+                let rows = store.list_recent_activity_paged(limit, offset, action)?;
                 Ok(Some(serde_json::json!({ "decisions": rows })))
             }
             "audit.rollback" => {

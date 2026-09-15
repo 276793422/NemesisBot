@@ -55,8 +55,9 @@ pub use asset_token::{
 };
 pub use assignment::{Actor, AssignmentType};
 pub use git_repo::{
-    ChangesetFile, ConflictFile, MergeInput, MergeOutcome, commit_resolution, commit_worktree,
-    ensure_repo, export_head_tree, head_commit_hex, looks_binary, merge_changeset,
+    ChangesetFile, ConflictFile, MergeInput, MergeOutcome, commit_blob_text, commit_changed_files,
+    commit_resolution, commit_worktree, ensure_repo, export_head_tree, head_commit_hex,
+    looks_binary, merge_changeset,
 };
 pub use matcher::{MatchInput, PeerCandidate, rank_peers};
 pub use models::{
@@ -72,7 +73,7 @@ pub use planner::{
 pub use report::{DeliveryReport, REPORT_FORMAT_SECTION, TASK_CARD_HEADER, parse_delivery_report};
 pub use review::{
     ExperienceNote, REVIEW_SYSTEM_PROMPT, ReviewOutput, ReviewParseError, ReviewVerdict,
-    build_review_user_prompt, parse_review, selfcheck_request_text,
+    build_review_user_prompt, parse_review, selfcheck_request_text, strip_directive_lines,
 };
 pub use service::BoardService;
 pub use state_machine::{can_transition, validate_transition};

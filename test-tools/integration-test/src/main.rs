@@ -407,6 +407,7 @@ async fn main() -> Result<()> {
     all_results.extend(cli_tests::test_cli_cluster_enable_disable(&ws, &cfg.gateway_bin).await);
     all_results.extend(cli_tests::test_cli_cluster_reset(&ws, &cfg.gateway_bin).await);
     all_results.extend(cli_tests::test_cli_cluster_peers(&ws, &cfg.gateway_bin).await);
+    all_results.extend(cli_tests::test_cli_cluster_pair(&ws, &cfg.gateway_bin).await);
     all_results.extend(cli_tests::test_cli_cluster_token(&ws, &cfg.gateway_bin).await);
 
     // --- CORS commands: list, add, remove, show, validate, dev-mode ---

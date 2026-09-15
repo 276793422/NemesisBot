@@ -37,6 +37,9 @@ pub enum AutopilotAction {
         /// 派活目标节点 id（空 = 仅建单不派活）
         #[arg(long, default_value = "")]
         target: String,
+        /// 验收标准（触发建单时透传；空 = 不填，评审将保守转人工）
+        #[arg(long, default_value = "")]
+        acceptance_criteria: String,
         /// 创建为停用状态（默认启用）
         #[arg(long)]
         disabled: bool,
@@ -59,6 +62,9 @@ pub enum AutopilotAction {
         project_id: Option<i64>,
         #[arg(long)]
         target: Option<String>,
+        /// 验收标准（提供即覆盖；`--acceptance-criteria ""` = 清空）
+        #[arg(long)]
+        acceptance_criteria: Option<String>,
     },
     /// Enable a rule
     Enable { id: i64 },
@@ -134,6 +140,7 @@ pub fn run(action: AutopilotAction, local: bool) -> Result<()> {
             priority,
             project_id,
             target,
+            acceptance_criteria,
             disabled,
         } => {
             nemesis_cron::CronService::validate_schedule(&cron)
@@ -149,6 +156,8 @@ pub fn run(action: AutopilotAction, local: bool) -> Result<()> {
                     target,
                     enabled: !disabled,
                     auto_plan: false,
+                    // F-U5-1：验收标准透传（CLI 空串 = 不填）。
+                    acceptance_criteria: Some(acceptance_criteria).filter(|s| !s.trim().is_empty()),
                 })
                 .map_err(err)?;
             println!(
@@ -166,6 +175,7 @@ pub fn run(action: AutopilotAction, local: bool) -> Result<()> {
             priority,
             project_id,
             target,
+            acceptance_criteria,
         } => {
             if let Some(c) = cron.as_deref() {
                 nemesis_cron::CronService::validate_schedule(c)
@@ -184,6 +194,7 @@ pub fn run(action: AutopilotAction, local: bool) -> Result<()> {
                         target,
                         enabled: None,
                         auto_plan: None,
+                        acceptance_criteria,
                     },
                 )
                 .map_err(err)?;

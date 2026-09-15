@@ -32,6 +32,7 @@ fn delegation_ctx() -> RequestContext {
         session_key: "agent:test/s9".to_string(),
         correlation_id: None,
         async_callback: None,
+        tool_path_base: None,
     }
 }
 

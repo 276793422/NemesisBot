@@ -540,6 +540,64 @@ impl BoardStore {
         self.get_issue(id)
     }
 
+    /// reopen（发现④ 2026-09-15）：`cancelled → backlog`，取消单回到待办，
+    /// 中断恢复从此有产品路径（此前只能 SQL 手术）。非 cancelled 来源
+    /// **loud 拒绝**（done 的重开是另一语义，本轮不做）；已 hidden 的取消单
+    /// reopen 时解除 hidden（hidden 只属于取消单清理语义，单子已复活就
+    /// 必须重新可见）；追加系统审计评论（谁/何时/从何状态）。WSAPI
+    /// `issue.reopen` 与 CLI `issue reopen` 共用本单一后端。
+    pub fn reopen_issue(&self, id: i64, actor: &Actor) -> Result<Issue, String> {
+        let old = self.get_issue(id)?;
+        if old.status != IssueStatus::Cancelled {
+            return Err(format!(
+                "{} 当前状态为 {}，只有已取消（cancelled）单可 reopen",
+                old.number, old.status
+            ));
+        }
+        // 父单存活校验（F-U4-3）：父单已取消的子单不可单独复活——任务线
+        // 还死着，复活出来的子单会被派发父单存活闸拦成永久 backlog 僵尸。
+        // 正确顺序：先 reopen 父单，再逐单复活子单。
+        if let Some(pid) = old.parent_issue_id {
+            let parent = self.get_issue(pid)?;
+            if parent.status == IssueStatus::Cancelled {
+                return Err(format!(
+                    "父单 {} 已取消：子单不可单独 reopen，请先 reopen 父单",
+                    parent.number
+                ));
+            }
+        }
+        // 状态机唯一终态出口 cancelled→backlog；transition_issue 自带
+        // status_change 评论 + activity + 指派对象通知。
+        let issue = self.transition_issue(id, IssueStatus::Backlog, actor)?;
+
+        // 附加动作：解除 hidden（若有）+ 系统审计评论。失败不回滚 reopen
+        // 本体（与 on_issue_settled 联动同语义：附加动作 warn 不阻断），
+        // 但这里直接传播错误——同一事务里两件事，失败即显形。
+        let mut conn = self.conn.lock().map_err(|e| e.to_string())?;
+        let tx = conn.transaction().map_err(|e| e.to_string())?;
+        let now = Self::now();
+        tx.execute(
+            "UPDATE issue SET hidden = 0, updated_at = ?2 WHERE id = ?1 AND hidden = 1",
+            params![id, now],
+        )
+        .map_err(|e| e.to_string())?;
+        insert_comment(
+            &tx,
+            id,
+            &Actor::system("board"),
+            &format!(
+                "♻ {}「{}」由 {}/{} reopen：cancelled → backlog（时间见本条评论时间戳）",
+                issue.number, issue.title, actor.kind, actor.id,
+            ),
+            None,
+            CommentType::System,
+            now,
+        )?;
+        tx.commit().map_err(|e| e.to_string())?;
+        drop(conn); // 释放锁再 get_issue（防持锁重入死锁）
+        self.get_issue(id)
+    }
+
     /// 指派 / 改派 / 清空指派（`assignee = None` 清空）。写 assigned 活动 +
     /// 自动订阅被指派者。
     pub fn assign_issue(
@@ -795,9 +853,22 @@ impl BoardStore {
 
     /// 最近活动流（P5/E2 决策视图数据源）：按 id 降序（插入序，不受同秒
     /// 时间戳打平影响），可选按 action 过滤，JOIN issue 补编号/标题。
+    /// 决策流最近活动（UAT U6 F-U6-1 面板查询面：默认从最新起）。
     pub fn list_recent_activity(
         &self,
         limit: u32,
+        action_filter: Option<&str>,
+    ) -> Result<Vec<crate::models::AuditDecisionRow>, String> {
+        self.list_recent_activity_paged(limit, 0, action_filter)
+    }
+
+    /// 决策流最近活动（带 offset 翻页：`ORDER BY id DESC LIMIT ? OFFSET ?`）。
+    /// 刷屏类记录（如滞留档案重复入账）会把最新决策挤出 limit 窗口——
+    /// 无 offset 时面板在最坏情况下永远翻不到新记录（U6 实测）。
+    pub fn list_recent_activity_paged(
+        &self,
+        limit: u32,
+        offset: u32,
         action_filter: Option<&str>,
     ) -> Result<Vec<crate::models::AuditDecisionRow>, String> {
         let conn = self.conn.lock().map_err(|e| e.to_string())?;
@@ -806,11 +877,11 @@ impl BoardStore {
                 "SELECT a.*, i.number AS issue_number, i.title AS issue_title
                  FROM activity_log a JOIN issue i ON i.id = a.issue_id
                  WHERE (?1 IS NULL OR a.action = ?1)
-                 ORDER BY a.id DESC LIMIT ?2",
+                 ORDER BY a.id DESC LIMIT ?2 OFFSET ?3",
             )
             .map_err(|e| e.to_string())?;
         let rows = stmt
-            .query_map(params![action_filter, limit], |row| {
+            .query_map(params![action_filter, limit, offset], |row| {
                 Ok(crate::models::AuditDecisionRow {
                     activity: row_to_activity(row)?,
                     issue_number: row.get("issue_number")?,
@@ -1403,8 +1474,46 @@ impl BoardStore {
     // 派发（W2 P2：issue ↔ peer_chat task 绑定与写回）
     // -----------------------------------------------------------------------
 
-    /// 登记派发：task_id ↔ issue 绑定 + `dispatched` 活动（审计痕迹与登记
-    /// 同事务；重复 task_id 拒绝——一个 task 只挂一个 issue）。
+    /// 登记派发（**原子占用闸**，2026-09-15 R5-BUG-2 根修）：同一 conn
+    /// 持锁内完成「在途检查 + INSERT」——单写者 Mutex 串行化下，检查与
+    /// 写入之间不可能插入其他派发，多触发源并发（依赖闸补派 × 停车场
+    /// sweep 同刻触发，真机实证 NB-18 双行 dispatched）不再能双双过闸。
+    /// 返回 `Ok(false)` = 该 issue 已有在途派发（`dispatched`/`running`），
+    /// 本行未写入——调用方诚实弃派并清理本地 task。旧实现检查与 INSERT
+    /// 分离，竞态交错留下永不完结的 `dispatched` 幽灵行 → worker inflight
+    /// 永久占满 → 后续派发全部静默 deferred。审计活动与登记同事务写入；
+    /// 重复 task_id 拒绝——一个 task 只挂一个 issue。派发入口统一走本
+    /// 方法；绕过占用闸的直接登记用 [`Self::insert_dispatch`]。
+    pub fn try_claim_dispatch(
+        &self,
+        task_id: &str,
+        issue_id: i64,
+        worker_id: &str,
+        actor: &Actor,
+    ) -> Result<bool, String> {
+        let conn = self.conn.lock().map_err(|e| e.to_string())?;
+        // D0b（goal P2）：running（已开跑）同样算在途——防同单重复派发。
+        let n: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM issue_dispatch WHERE issue_id = ?1 AND state IN (?2, ?3)",
+                params![
+                    issue_id,
+                    dispatch_state::DISPATCHED,
+                    dispatch_state::RUNNING
+                ],
+                |r| r.get(0),
+            )
+            .map_err(|e| e.to_string())?;
+        if n > 0 {
+            return Ok(false);
+        }
+        insert_dispatch_locked(&conn, task_id, issue_id, worker_id, actor)?;
+        Ok(true)
+    }
+
+    /// 直接登记派发行（无占用闸）：存储层原语，供测试 fixture / 数据
+    /// 修复构造「同 issue 多行派发历史」等合法形态；业务派发入口必须走
+    /// [`Self::try_claim_dispatch`]（原子占用，防并发幽灵行）。
     pub fn insert_dispatch(
         &self,
         task_id: &str,
@@ -1413,28 +1522,7 @@ impl BoardStore {
         actor: &Actor,
     ) -> Result<(), String> {
         let conn = self.conn.lock().map_err(|e| e.to_string())?;
-        let now = Self::now();
-        conn.execute(
-            "INSERT INTO issue_dispatch (task_id, issue_id, worker_id, state, dispatched_at)
-             VALUES (?1, ?2, ?3, ?4, ?5)",
-            params![
-                task_id,
-                issue_id,
-                worker_id,
-                dispatch_state::DISPATCHED,
-                now
-            ],
-        )
-        .map_err(|e| format!("insert_dispatch: {e}"))?;
-        insert_activity(
-            &conn,
-            issue_id,
-            actor,
-            "dispatched",
-            Some(&serde_json::json!({ "task_id": task_id, "worker_id": worker_id }).to_string()),
-            now,
-        )?;
-        Ok(())
+        insert_dispatch_locked(&conn, task_id, issue_id, worker_id, actor)
     }
 
     /// 按 task_id 查派发记录（peer_chat_callback 写回路由用）。
@@ -1857,8 +1945,8 @@ impl BoardStore {
         let now = Self::now();
         conn.execute(
             "INSERT INTO autopilot
-             (name, cron, title, description, priority, project_id, target, enabled, auto_plan, created_at, updated_at)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?10)",
+             (name, cron, title, description, priority, project_id, target, enabled, auto_plan, acceptance_criteria, created_at, updated_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?11)",
             params![
                 n.name,
                 n.cron,
@@ -1869,6 +1957,7 @@ impl BoardStore {
                 n.target,
                 n.enabled as i64,
                 n.auto_plan as i64,
+                n.acceptance_criteria.as_deref().unwrap_or(""),
                 now,
             ],
         )
@@ -1939,10 +2028,16 @@ impl BoardStore {
         let target = patch.target.clone().unwrap_or(old.target);
         let enabled = patch.enabled.unwrap_or(old.enabled);
         let auto_plan = patch.auto_plan.unwrap_or(old.auto_plan);
+        // F-U5-1：Some(v) 直接覆盖（`Some("")` = 清空 = 不填语义）；None = 保持原值。
+        let acceptance_criteria = patch
+            .acceptance_criteria
+            .clone()
+            .unwrap_or(old.acceptance_criteria.clone().unwrap_or_default());
         conn.execute(
             "UPDATE autopilot
              SET name = ?2, cron = ?3, title = ?4, description = ?5, priority = ?6,
-                 project_id = ?7, target = ?8, enabled = ?9, auto_plan = ?10, updated_at = ?11
+                 project_id = ?7, target = ?8, enabled = ?9, auto_plan = ?10,
+                 acceptance_criteria = ?11, updated_at = ?12
              WHERE id = ?1",
             params![
                 id,
@@ -1955,6 +2050,7 @@ impl BoardStore {
                 target,
                 enabled as i64,
                 auto_plan as i64,
+                acceptance_criteria,
                 Self::now(),
             ],
         )
@@ -2990,6 +3086,39 @@ fn insert_activity(
     Ok(())
 }
 
+/// 派发行写入 + `dispatched` 审计活动（调用方须已持 conn 锁——
+/// [`BoardStore::try_claim_dispatch`] 的原子性与本函数共享同一临界区）。
+fn insert_dispatch_locked(
+    conn: &Connection,
+    task_id: &str,
+    issue_id: i64,
+    worker_id: &str,
+    actor: &Actor,
+) -> Result<(), String> {
+    let now = BoardStore::now();
+    conn.execute(
+        "INSERT INTO issue_dispatch (task_id, issue_id, worker_id, state, dispatched_at)
+         VALUES (?1, ?2, ?3, ?4, ?5)",
+        params![
+            task_id,
+            issue_id,
+            worker_id,
+            dispatch_state::DISPATCHED,
+            now
+        ],
+    )
+    .map_err(|e| format!("insert_dispatch: {e}"))?;
+    insert_activity(
+        conn,
+        issue_id,
+        actor,
+        "dispatched",
+        Some(&serde_json::json!({ "task_id": task_id, "worker_id": worker_id }).to_string()),
+        now,
+    )?;
+    Ok(())
+}
+
 fn insert_subscriber(
     conn: &Connection,
     issue_id: i64,
@@ -3098,6 +3227,9 @@ fn row_to_team_memory(row: &rusqlite::Row<'_>) -> rusqlite::Result<TeamMemoryEnt
 fn row_to_autopilot(row: &rusqlite::Row<'_>) -> rusqlite::Result<Autopilot> {
     let enabled: i64 = row.get("enabled")?;
     let auto_plan: i64 = row.get("auto_plan")?;
+    // F-U5-1：列 NOT NULL DEFAULT ''——空串归一为 None（「没填」统一语义，
+    // 与 issue.acceptance_criteria 的 Option 用法对齐）。
+    let acceptance_criteria: String = row.get("acceptance_criteria")?;
     Ok(Autopilot {
         id: row.get("id")?,
         name: row.get("name")?,
@@ -3109,6 +3241,7 @@ fn row_to_autopilot(row: &rusqlite::Row<'_>) -> rusqlite::Result<Autopilot> {
         target: row.get("target")?,
         enabled: enabled != 0,
         auto_plan: auto_plan != 0,
+        acceptance_criteria: Some(acceptance_criteria).filter(|s| !s.trim().is_empty()),
         cron_job_id: row.get("cron_job_id")?,
         last_run_at: row.get("last_run_at")?,
         created_at: row.get("created_at")?,

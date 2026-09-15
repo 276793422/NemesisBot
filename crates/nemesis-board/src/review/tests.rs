@@ -208,3 +208,45 @@ fn format_section_text_parses_to_consistent_sections() {
     // 模板自身含括号说明行，核心三段标题在场即可被从宽解析（同源契约）。
     assert!(crate::report::parse_delivery_report(text).is_some());
 }
+
+// ---------- strip_directive_lines（F-U3-1 根修）----------
+
+#[test]
+fn prompt_strips_check_and_touch_directive_lines() {
+    // planner 生成的验收标准形态：语义正文 + [CHECK] 锚点行 + [TOUCH] 声明行。
+    // 语义评审 prompt 只该看到语义正文（锚点实核结果由系统段落呈现、
+    // [TOUCH] 是调度声明）——无工具的评审 LLM 不得被诱导自行核验文件落盘。
+    let criteria = "calculator.py 实现四则函数与 CLI 入口；交付汇报附运行取证。\n\
+                    [CHECK] re:calculator\\.py\n\
+                    [CHECK] re:退出码[^0-9\\n]{0,10}0\n\
+                    [TOUCH] calculator.py";
+    let p = build_review_user_prompt("NB-6", "t", "d", Some(criteria), "report", &[]);
+    assert!(p.contains("实现四则函数"), "语义正文保留");
+    assert!(!p.contains("[CHECK]"), "[CHECK] 行剥离");
+    assert!(!p.contains("[TOUCH]"), "[TOUCH] 行剥离");
+    // 缩进形态的指令行同样剥离。
+    let p2 = build_review_user_prompt(
+        "NB-6",
+        "t",
+        "d",
+        Some("正文A\n  [TOUCH] indented.py"),
+        "report",
+        &[],
+    );
+    assert!(p2.contains("正文A"));
+    assert!(!p2.contains("indented.py"), "trim 后前缀命中同样剥离");
+}
+
+#[test]
+fn strip_directive_lines_all_directives_degrades_to_unprovided() {
+    // 全部行都是指令行 → 剥离后为空 → prompt 诚实降级「未提供」。
+    let p = build_review_user_prompt(
+        "NB-1",
+        "t",
+        "d",
+        Some("[CHECK] re:x\n[TOUCH] a.py"),
+        "report",
+        &[],
+    );
+    assert!(p.contains("（未提供）"));
+}

@@ -1037,6 +1037,7 @@ impl AgentLoopExecutor {
                 Some(msg.correlation_id.clone())
             },
             async_callback: None,
+            tool_path_base: None,
         };
 
         // Check for cluster continuation prefix.

@@ -3497,13 +3497,27 @@ mod wave_r10 {
     async fn r10_enable_start_disable_stop_guards_via_cli_exit_paths() {
         let bin = require_bin();
         let ws = TestWorkspace::new().expect("temp workspace");
-        let cfg_path = crate::common::cluster_config_path(&ws.home());
+        let home = ws.home();
+        let cfg_path = crate::common::cluster_config_path(&home);
         std::fs::create_dir_all(cfg_path.parent().unwrap()).unwrap();
+        let main_cfg_path = crate::common::config_path(&home);
+        // UAT-BUG-1 修复后的幂等判定看双旗标（子系统 + 主开关）：guard 早退
+        // 场景必须两旗标同真，否则 enable 走 repaired 臂（那是失步场景的断言，
+        // 见下方追加段）。
         std::fs::write(&cfg_path, r#"{"enabled": true}"#).unwrap();
+        std::fs::create_dir_all(main_cfg_path.parent().unwrap()).unwrap();
+        std::fs::write(&main_cfg_path, r#"{"cluster": {"enabled": true}}"#).unwrap();
 
         let enabled_of = || -> bool {
             serde_json::from_str::<serde_json::Value>(&std::fs::read_to_string(&cfg_path).unwrap())
                 .unwrap()["enabled"]
+                == serde_json::json!(true)
+        };
+        let main_enabled_of = || -> bool {
+            serde_json::from_str::<serde_json::Value>(
+                &std::fs::read_to_string(&main_cfg_path).unwrap(),
+            )
+            .unwrap()["cluster"]["enabled"]
                 == serde_json::json!(true)
         };
 
@@ -3517,6 +3531,10 @@ mod wave_r10 {
                 o.stdout
             );
             assert!(enabled_of(), "{action} guard must not rewrite the flag");
+            assert!(
+                main_enabled_of(),
+                "{action} guard must not rewrite main flag"
+            );
         }
 
         // disable 真写 false（Normal 写盘路径经 CLI）；stop 再 guard 早退
@@ -3524,6 +3542,10 @@ mod wave_r10 {
         assert!(o.success(), "disable: {}", o.stderr);
         assert!(o.stdout_contains("Cluster disabled."), "{}", o.stdout);
         assert!(!enabled_of(), "disable must persist enabled=false");
+        assert!(
+            !main_enabled_of(),
+            "disable must persist main enabled=false"
+        );
         let o = ws.run_cli(&bin, &["cluster", "stop"]).await;
         assert!(o.success(), "stop: {}", o.stderr);
         assert!(
@@ -3546,6 +3568,50 @@ mod wave_r10 {
             o.stderr_contains("Cluster not initialized"),
             "bail message expected on stderr:\n{}",
             o.stderr
+        );
+    }
+
+    /// UAT-BUG-1 回归（CLI 出口层）：双旗标失步（只有子系统旗标开）时
+    /// enable 必须补写缺失的主开关并打印 repaired——旧行为只查子系统旗标
+    /// 提前早退，主开关漏写 → 网关静默无网络。
+    #[tokio::test]
+    async fn r10_enable_repairs_inconsistent_flags_via_cli_exit_path() {
+        let bin = require_bin();
+        let ws = TestWorkspace::new().expect("temp workspace");
+        let home = ws.home();
+        let cfg_path = crate::common::cluster_config_path(&home);
+        std::fs::create_dir_all(cfg_path.parent().unwrap()).unwrap();
+        // 只有子系统旗标开（用户手改 config.cluster.json 的失步形态）。
+        std::fs::write(&cfg_path, r#"{"enabled": true}"#).unwrap();
+        let main_cfg_path = crate::common::config_path(&home);
+        std::fs::create_dir_all(main_cfg_path.parent().unwrap()).unwrap();
+        std::fs::write(&main_cfg_path, r#"{}"#).unwrap();
+
+        let o = ws.run_cli(&bin, &["cluster", "enable"]).await;
+        assert!(o.success(), "enable: {}", o.stderr);
+        assert!(
+            o.stdout_contains("Detected inconsistent enable flags; repaired."),
+            "repaired print missing:\n{}",
+            o.stdout
+        );
+        let subsystem: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(&cfg_path).unwrap()).unwrap();
+        assert_eq!(subsystem["enabled"], serde_json::json!(true));
+        let main: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(&main_cfg_path).unwrap()).unwrap();
+        assert_eq!(
+            main["cluster"]["enabled"],
+            serde_json::json!(true),
+            "enable 必须补写缺失的主开关（UAT-BUG-1 核心）"
+        );
+
+        // 修复后再 enable → 双旗标同真 → 幂等早退。
+        let o = ws.run_cli(&bin, &["cluster", "enable"]).await;
+        assert!(o.success(), "re-enable: {}", o.stderr);
+        assert!(
+            o.stdout_contains("Cluster is already enabled."),
+            "second enable must be idempotent:\n{}",
+            o.stdout
         );
     }
 

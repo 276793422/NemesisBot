@@ -504,3 +504,99 @@ fn commit_resolution_rejects_traversal_paths() {
     );
     assert!(commit_resolution(&root, vec![("".into(), b"x".to_vec())], "m").is_err());
 }
+
+// ---------------------------------------------------------------------------
+// 评审证据：commit_changed_files（F-U3-1 根修）
+// ---------------------------------------------------------------------------
+
+#[test]
+fn commit_changed_files_lists_merge_diff_vs_parent() {
+    let root = seeded_repo("changed-files");
+    let base = head(&root);
+    // 变更集合并：新增 calculator.py + 修改 src/main.rs（三方合并路径）。
+    let input = MergeInput {
+        baseline_commit: base.clone(),
+        upserts: vec![
+            ChangesetFile {
+                path: "calculator.py".into(),
+                content: b"print('calc')\n".to_vec(),
+                executable: false,
+            },
+            ChangesetFile {
+                path: "src/main.rs".into(),
+                content: b"fn main() { println!(1); }\n".to_vec(),
+                executable: false,
+            },
+        ],
+        deletions: vec![],
+    };
+    let merged = match merge_changeset(&root, &input).unwrap() {
+        MergeOutcome::Merged { commit_oid } => commit_oid,
+        MergeOutcome::Conflict { files } => panic!("不应冲突: {files:?}"),
+    };
+    let mut files = commit_changed_files(&root, &merged).unwrap();
+    files.sort();
+    assert_eq!(
+        files,
+        vec![
+            ("calculator.py".to_string(), "新增".to_string()),
+            ("src/main.rs".to_string(), "修改".to_string()),
+        ],
+        "合并 commit 的变更清单 = 相对父提交的 diff"
+    );
+    // 基线 commit 本身（根提交）= 全量清单（初始种子文件）。
+    let root_files = commit_changed_files(&root, &base).unwrap();
+    assert!(
+        root_files
+            .iter()
+            .any(|(p, s)| p == "src/main.rs" && s == "新增"),
+        "根提交对空树 diff = 全量新增：{root_files:?}"
+    );
+}
+
+#[test]
+fn commit_changed_files_rejects_bad_oid_and_missing_commit() {
+    let root = seeded_repo("changed-files-bad-oid");
+    assert!(
+        commit_changed_files(&root, "not-an-oid").is_err(),
+        "非法 oid 诚实报错"
+    );
+    assert!(
+        commit_changed_files(&root, &"0".repeat(40)).is_err(),
+        "不存在的 commit 诚实报错"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// F-U3-7：commit_blob_text（评审证据段内容注入的数据源）
+// ---------------------------------------------------------------------------
+
+#[test]
+fn commit_blob_text_reads_text_and_degrades_honestly() {
+    let root = seeded_repo("blob-text");
+    write(&root, "report.md", "# 复核报告\n20 passed");
+    write(&root, "src/bin.dat", "\u{0}\u{1}\u{2}");
+    commit_worktree(&root, "add files for blob read").unwrap();
+    let oid = head(&root);
+
+    // 文本文件 → 内容原文。
+    let text = commit_blob_text(&root, &oid, "report.md", 64 * 1024).unwrap();
+    assert_eq!(text.as_deref(), Some("# 复核报告\n20 passed"));
+
+    // 二进制 → Ok(None) 诚实降级。
+    let bin = commit_blob_text(&root, &oid, "src/bin.dat", 64 * 1024).unwrap();
+    assert!(bin.is_none(), "二进制 blob 应返回 None");
+
+    // 超限 → Ok(None)。
+    let big = commit_blob_text(&root, &oid, "report.md", 4).unwrap();
+    assert!(big.is_none(), "超限 blob 应返回 None");
+
+    // 路径不存在 → Ok(None)。
+    let missing = commit_blob_text(&root, &oid, "nope/none.txt", 64 * 1024).unwrap();
+    assert!(missing.is_none(), "缺失路径应返回 None");
+
+    // 非法 commit oid → Err。
+    assert!(commit_blob_text(&root, "deadbeef", "report.md", 1024).is_err());
+
+    let _ = std::fs::remove_dir_all(&root);
+}

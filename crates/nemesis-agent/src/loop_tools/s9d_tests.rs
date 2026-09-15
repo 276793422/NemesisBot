@@ -39,6 +39,7 @@ fn ctx() -> RequestContext {
         session_key: "agent:test/s9d".to_string(),
         correlation_id: None,
         async_callback: None,
+        tool_path_base: None,
     }
 }
 
@@ -50,6 +51,7 @@ fn empty_ctx() -> RequestContext {
         session_key: "agent:test/s9d".to_string(),
         correlation_id: None,
         async_callback: None,
+        tool_path_base: None,
     }
 }
 

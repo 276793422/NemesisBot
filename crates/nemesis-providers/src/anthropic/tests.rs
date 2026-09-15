@@ -1011,3 +1011,200 @@ fn test_request_body_non_user_roles_with_parts_degrade_to_text_note() {
     let ucontent = user["content"].as_array().expect("user 位 blocks 数组");
     assert_eq!(ucontent[1]["type"], "image");
 }
+
+// ---------------------------------------------------------------------------
+// F-U3-3（UAT U3 round-2 wire 抓包实锤，2026-09-15）：历史 assistant tool_use
+// input 恒 `{}` —— LlmProvider 桥（llm_bridge::agent_message_to_provider /
+// CLI agent adapter）只填 `function.arguments`（String），`arguments`
+// （HashMap）恒 None；而 build_request_body 此前只读 HashMap 版 → 桥场景
+// 下一轮请求历史里全部 tool_use input 变 `{}`，模型模仿历史空参形态
+//（glm-5.3-flash「write_file 后 exec 空参」根因）。修后参数源优先
+// function.arguments（与 OpenAI lane 共享序列化同源），HashMap 版兜底。
+// ---------------------------------------------------------------------------
+
+/// 桥形态消息构造器：只填 function.arguments（String），HashMap 版 None ——
+/// 与 llm_bridge::agent_message_to_provider 的输出形态逐字段一致。
+fn bridged_tool_call(id: &str, name: &str, arguments_json: &str) -> ToolCall {
+    ToolCall {
+        id: id.to_string(),
+        call_type: Some("function".to_string()),
+        function: Some(FunctionCall {
+            name: name.to_string(),
+            arguments: arguments_json.to_string(),
+        }),
+        name: None,
+        arguments: None,
+    }
+}
+
+#[test]
+fn test_build_request_body_bridged_tool_call_arguments_not_lost() {
+    let provider = AnthropicProvider::new(anth_config("http://unused"));
+    let messages = vec![
+        Message {
+            role: "user".to_string(),
+            content: "run it".into(),
+            tool_calls: vec![],
+            tool_call_id: None,
+            timestamp: None,
+            reasoning_content: None,
+            extra: HashMap::new(),
+        },
+        // 桥形态 assistant 历史：参数只在 function.arguments（String）
+        Message {
+            role: "assistant".to_string(),
+            content: String::new().into(),
+            tool_calls: vec![bridged_tool_call(
+                "call_1",
+                "exec",
+                r#"{"command":"ls -la && pwd"}"#,
+            )],
+            tool_call_id: None,
+            timestamp: None,
+            reasoning_content: None,
+            extra: HashMap::new(),
+        },
+    ];
+
+    let body = provider.build_request_body(&messages, &[], "m", &ChatOptions::default());
+    let blocks = body["messages"][1]["content"].as_array().unwrap();
+    assert_eq!(blocks[0]["type"], "tool_use");
+    assert_eq!(blocks[0]["name"], "exec");
+    // 事故形态回归锁：修复前这里断言必然失败（input == {}）
+    assert_eq!(
+        blocks[0]["input"],
+        serde_json::json!({"command": "ls -la && pwd"}),
+        "桥形态（function.arguments 版）历史参数不得丢失"
+    );
+}
+
+#[test]
+fn test_build_request_body_function_arguments_takes_priority() {
+    let provider = AnthropicProvider::new(anth_config("http://unused"));
+    // 两版并存且不同：以 function.arguments（String，权威）为准
+    let tc = ToolCall {
+        id: "tc-p".to_string(),
+        call_type: None,
+        function: Some(FunctionCall {
+            name: "write_file".to_string(),
+            arguments: r#"{"path":"a.py"}"#.to_string(),
+        }),
+        name: None,
+        arguments: Some(HashMap::from([(
+            "path".to_string(),
+            serde_json::json!("stale.py"),
+        )])),
+    };
+    let messages = vec![Message {
+        role: "assistant".to_string(),
+        content: String::new().into(),
+        tool_calls: vec![tc],
+        tool_call_id: None,
+        timestamp: None,
+        reasoning_content: None,
+        extra: HashMap::new(),
+    }];
+
+    let body = provider.build_request_body(&messages, &[], "m", &ChatOptions::default());
+    let blocks = body["messages"][0]["content"].as_array().unwrap();
+    assert_eq!(blocks[0]["input"]["path"], "a.py", "String 版是权威参数源");
+}
+
+#[test]
+fn test_build_request_body_bridged_invalid_json_falls_back_to_hashmap() {
+    let provider = AnthropicProvider::new(anth_config("http://unused"));
+    // String 版非法 JSON → 回退 HashMap 版
+    let tc = ToolCall {
+        id: "tc-b".to_string(),
+        call_type: None,
+        function: Some(FunctionCall {
+            name: "exec".to_string(),
+            arguments: "{not-json".to_string(),
+        }),
+        name: None,
+        arguments: Some(HashMap::from([(
+            "command".to_string(),
+            serde_json::json!("echo hi"),
+        )])),
+    };
+    let messages = vec![Message {
+        role: "assistant".to_string(),
+        content: String::new().into(),
+        tool_calls: vec![tc],
+        tool_call_id: None,
+        timestamp: None,
+        reasoning_content: None,
+        extra: HashMap::new(),
+    }];
+
+    let body = provider.build_request_body(&messages, &[], "m", &ChatOptions::default());
+    let blocks = body["messages"][0]["content"].as_array().unwrap();
+    assert_eq!(
+        blocks[0]["input"]["command"], "echo hi",
+        "非法 String 回退 HashMap 版"
+    );
+}
+
+#[test]
+fn test_build_request_body_non_object_string_arguments_not_adopted() {
+    let provider = AnthropicProvider::new(anth_config("http://unused"));
+    // String 版解析成非 object（anthropic wire 要求 input 为 object）→
+    // 不采纳，HashMap 版兜底
+    let tc = ToolCall {
+        id: "tc-n".to_string(),
+        call_type: None,
+        function: Some(FunctionCall {
+            name: "exec".to_string(),
+            arguments: "42".to_string(),
+        }),
+        name: None,
+        arguments: Some(HashMap::from([(
+            "command".to_string(),
+            serde_json::json!("echo ok"),
+        )])),
+    };
+    let messages = vec![Message {
+        role: "assistant".to_string(),
+        content: String::new().into(),
+        tool_calls: vec![tc],
+        tool_call_id: None,
+        timestamp: None,
+        reasoning_content: None,
+        extra: HashMap::new(),
+    }];
+
+    let body = provider.build_request_body(&messages, &[], "m", &ChatOptions::default());
+    let blocks = body["messages"][0]["content"].as_array().unwrap();
+    assert_eq!(
+        blocks[0]["input"]["command"], "echo ok",
+        "非 object String 不采纳"
+    );
+}
+
+#[test]
+fn test_build_request_body_both_argument_sources_missing_stays_empty_object() {
+    let provider = AnthropicProvider::new(anth_config("http://unused"));
+    let tc = ToolCall {
+        id: "tc-e".to_string(),
+        call_type: None,
+        function: Some(FunctionCall {
+            name: "exec".to_string(),
+            arguments: "{}".to_string(),
+        }),
+        name: None,
+        arguments: None,
+    };
+    let messages = vec![Message {
+        role: "assistant".to_string(),
+        content: String::new().into(),
+        tool_calls: vec![tc],
+        tool_call_id: None,
+        timestamp: None,
+        reasoning_content: None,
+        extra: HashMap::new(),
+    }];
+
+    let body = provider.build_request_body(&messages, &[], "m", &ChatOptions::default());
+    let blocks = body["messages"][0]["content"].as_array().unwrap();
+    assert_eq!(blocks[0]["input"], serde_json::json!({}));
+}

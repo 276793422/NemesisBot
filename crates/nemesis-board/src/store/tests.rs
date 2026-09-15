@@ -299,6 +299,95 @@ fn test_self_transition_rejected() {
 }
 
 // ---------------------------------------------------------------------------
+// reopen（发现④ 2026-09-15）：cancelled 唯一终态出口
+// ---------------------------------------------------------------------------
+
+#[test]
+fn test_reopen_happy_path_audited() {
+    let (store, dir) = temp_store("reopen-happy");
+    let a = store.create_issue(new_issue("中断恢复")).unwrap();
+    store
+        .transition_issue(a.id, IssueStatus::Todo, &admin())
+        .unwrap();
+    store
+        .transition_issue(a.id, IssueStatus::Cancelled, &admin())
+        .unwrap();
+
+    let reopened = store.reopen_issue(a.id, &admin()).unwrap();
+    assert_eq!(reopened.status, IssueStatus::Backlog);
+
+    // 状态机自带 status_change 评论（cancelled → backlog）+ 审计系统评论
+    //（谁 + reopen）。
+    let comments = store.list_comments(a.id).unwrap();
+    assert!(comments.iter().any(|c| {
+        c.ctype == CommentType::StatusChange
+            && c.content.contains("cancelled")
+            && c.content.contains("backlog")
+    }));
+    let audit = comments
+        .iter()
+        .find(|c| c.ctype == CommentType::System && c.content.contains("reopen"))
+        .expect("reopen 审计评论缺失");
+    assert!(audit.content.contains("admin/admin"), "{audit:?}",);
+
+    // reopen 后可正常重新流转（重派闸 has_active_dispatch 在 web 层，此处
+    // 验证状态机不再卡死）。
+    let t = store
+        .transition_issue(a.id, IssueStatus::Todo, &admin())
+        .unwrap();
+    assert_eq!(t.status, IssueStatus::Todo);
+    cleanup(&dir);
+}
+
+#[test]
+fn test_reopen_rejects_non_cancelled_source() {
+    let (store, dir) = temp_store("reopen-reject");
+    let a = store.create_issue(new_issue("非取消单")).unwrap();
+    let err = store.reopen_issue(a.id, &admin()).unwrap_err();
+    assert!(err.contains("只有已取消"), "{err}");
+    assert_eq!(store.get_issue(a.id).unwrap().status, IssueStatus::Backlog);
+
+    // done 也不可走 reopen（另一语义，本轮不做）。
+    store
+        .transition_issue(a.id, IssueStatus::Cancelled, &admin())
+        .unwrap();
+    store.reopen_issue(a.id, &admin()).unwrap();
+    store
+        .transition_issue(a.id, IssueStatus::Done, &admin())
+        .unwrap();
+    let err = store.reopen_issue(a.id, &admin()).unwrap_err();
+    assert!(err.contains("只有已取消"), "{err}");
+    cleanup(&dir);
+}
+
+#[test]
+fn test_reopen_clears_hidden_flag() {
+    let (store, dir) = temp_store("reopen-hidden");
+    let a = store.create_issue(new_issue("被清理的取消单")).unwrap();
+    store
+        .transition_issue(a.id, IssueStatus::Cancelled, &admin())
+        .unwrap();
+    let hidden = store.bulk_archive_cancelled(&[a.id], &admin()).unwrap();
+    assert!(hidden[0].hidden);
+
+    let reopened = store.reopen_issue(a.id, &admin()).unwrap();
+    assert_eq!(reopened.status, IssueStatus::Backlog);
+    assert!(
+        !reopened.hidden,
+        "reopen 必须解除 hidden（单子已复活必须可见）"
+    );
+    cleanup(&dir);
+}
+
+#[test]
+fn test_reopen_missing_issue_errors() {
+    let (store, dir) = temp_store("reopen-missing");
+    let err = store.reopen_issue(999_999, &admin()).unwrap_err();
+    assert!(err.contains("not found"), "{err}");
+    cleanup(&dir);
+}
+
+// ---------------------------------------------------------------------------
 // 指派
 // ---------------------------------------------------------------------------
 
@@ -609,11 +698,26 @@ fn test_dispatch_crud_lifecycle() {
     // 非法终态拒绝。
     assert!(store.finish_dispatch("task-1", "cancelled").is_err());
 
-    // 重复 task_id 拒绝（一 task 挂一 issue）。
+    // 原子占用闸（R5-BUG-2）：同 issue 已有在途派发 → 二次 claim 返回
+    // Ok(false)（不写行、不报错）——多触发源并发派发的统一拒绝语义。
+    // （上一节已把 task-1/task-2 都终结，这里先重新 seed 一行 active。）
+    store
+        .insert_dispatch("task-1c", issue.id, "node-b", &admin())
+        .unwrap();
+    assert!(
+        !store
+            .try_claim_dispatch("task-1b", issue.id, "node-d", &admin())
+            .unwrap()
+    );
+    assert!(store.get_dispatch("task-1b").unwrap().is_none());
+    // 无在途 → claim 放行。
+    store
+        .finish_dispatch("task-1c", dispatch_state::FAILED)
+        .unwrap();
     assert!(
         store
-            .insert_dispatch("task-1", issue.id, "node-d", &admin())
-            .is_err()
+            .try_claim_dispatch("task-1d", issue.id, "node-d", &admin())
+            .unwrap()
     );
 
     let _ = std::fs::remove_dir_all(&dir);
@@ -1340,6 +1444,7 @@ fn new_ap(name: &str) -> NewAutopilot {
         target: String::new(),
         enabled: true,
         auto_plan: false,
+        acceptance_criteria: None,
     }
 }
 
@@ -2369,6 +2474,65 @@ fn test_autopilot_serde_roundtrip_auto_plan_default() {
 }
 
 #[test]
+fn test_autopilot_acceptance_criteria_roundtrip() {
+    // F-U5-1：验收标准字段 create/update 全链 round-trip + 空串归一 None。
+    let (store, _dir) = temp_store("autopilot-acceptance");
+
+    // create 带 → Some；不填（None）→ 读回 None（DB 存 ''）。
+    let mut n = new_ap("带标准");
+    n.acceptance_criteria = Some("报告包含三项指标".to_string());
+    let ap = store.create_autopilot(&n).unwrap();
+    assert_eq!(ap.acceptance_criteria.as_deref(), Some("报告包含三项指标"));
+    let ap_none = store.create_autopilot(&new_ap("无标准")).unwrap();
+    assert_eq!(ap_none.acceptance_criteria, None);
+
+    // update 覆盖 / 清空（Some("")）/ 不改（None）。
+    let ap = store
+        .update_autopilot(
+            ap.id,
+            &AutopilotPatch {
+                acceptance_criteria: Some("新标准".to_string()),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+    assert_eq!(ap.acceptance_criteria.as_deref(), Some("新标准"));
+    let cleared = store
+        .update_autopilot(
+            ap.id,
+            &AutopilotPatch {
+                acceptance_criteria: Some(String::new()),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+    assert_eq!(cleared.acceptance_criteria, None, "Some(\"\") = 清空");
+    let untouched = store
+        .update_autopilot(
+            cleared.id,
+            &AutopilotPatch {
+                name: Some("改名".to_string()),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+    assert_eq!(
+        untouched.acceptance_criteria, None,
+        "patch None = 不改（保持清空态）"
+    );
+
+    // 旧库迁移兼容：v14 存量行（无该列）经 ALTER DEFAULT '' 落地 → 读回 None。
+    let legacy_json = r#"{"id":9,"name":"老规则","cron":"0 9 * * *","title":"t","priority":1,
+        "project_id":null,"target":"","enabled":true,"auto_plan":false,"cron_job_id":null,
+        "last_run_at":null,"created_at":0,"updated_at":0}"#;
+    let legacy: Autopilot = serde_json::from_str(legacy_json).unwrap();
+    assert_eq!(
+        legacy.acceptance_criteria, None,
+        "存量 JSON 缺键反序列化为 None（行为不变）"
+    );
+}
+
+#[test]
 fn test_project_status_lenient_read_unknown_value() {
     // 存量库里的未知 status 字符串 → 读取宽容映射 active（WARN 一次），
     // 不炸不拒读。
@@ -2536,6 +2700,65 @@ fn test_audit_list_recent_activity_filter_and_limit() {
         .unwrap();
     assert_eq!(filtered.len(), 1);
     assert_eq!(filtered[0].activity.action, "status_change");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// list_recent_activity_paged：offset 翻页（F-U6-1 刷屏挤占窗口时仍可翻到
+/// 最新——ORDER BY id DESC LIMIT ? OFFSET ?）。
+#[test]
+fn test_audit_list_recent_activity_paged_offset() {
+    let (store, dir) = temp_store("audit-list-paged");
+    let a = store.create_issue(new_issue("翻页甲")).unwrap();
+    for i in 0..5 {
+        store
+            .add_activity(
+                a.id,
+                &admin(),
+                "auto_decide",
+                Some(&format!(r#"{{"n":{i}}}"#)),
+            )
+            .unwrap();
+    }
+    // 第 1 页（最新 2 条）+ 第 2 页（offset=2）+ 第 3 页（offset=4）拼起来
+    // 是全量倒序。
+    let page1 = store
+        .list_recent_activity_paged(2, 0, Some("auto_decide"))
+        .unwrap();
+    let page2 = store
+        .list_recent_activity_paged(2, 2, Some("auto_decide"))
+        .unwrap();
+    let page3 = store
+        .list_recent_activity_paged(2, 4, Some("auto_decide"))
+        .unwrap();
+    assert_eq!(page1.len(), 2);
+    assert_eq!(page2.len(), 2);
+    assert_eq!(page3.len(), 1);
+    let full = store
+        .list_recent_activity_paged(500, 0, Some("auto_decide"))
+        .unwrap();
+    let ids: Vec<i64> = full.iter().map(|r| r.activity.id).collect();
+    assert_eq!(
+        ids,
+        vec![
+            page1[0].activity.id,
+            page1[1].activity.id,
+            page2[0].activity.id,
+            page2[1].activity.id,
+            page3[0].activity.id,
+        ]
+    );
+    // offset 超出总量 = 空页（不炸）。
+    assert!(
+        store
+            .list_recent_activity_paged(2, 999, Some("auto_decide"))
+            .unwrap()
+            .is_empty()
+    );
+    // 旧签名（无 offset）行为不变：等价 offset=0。
+    let legacy = store
+        .list_recent_activity(500, Some("auto_decide"))
+        .unwrap();
+    assert_eq!(legacy.len(), full.len());
     let _ = std::fs::remove_dir_all(&dir);
 }
 

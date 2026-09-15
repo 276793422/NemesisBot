@@ -68,10 +68,21 @@ fn test_terminal_states_are_absorbing() {
     ];
     for s in all {
         assert!(!can_transition(Done, s), "done must be terminal (→ {s})");
-        assert!(
-            !can_transition(Cancelled, s),
-            "cancelled must be terminal (→ {s})"
-        );
+    }
+    // cancelled 唯一终态出口 = backlog（发现④ reopen，2026-09-15）；其余
+    // 目标全部非法。
+    for s in all {
+        if s == Backlog {
+            assert!(
+                can_transition(Cancelled, s),
+                "cancelled → backlog (reopen) must be legal"
+            );
+        } else {
+            assert!(
+                !can_transition(Cancelled, s),
+                "cancelled only exits to backlog (→ {s})"
+            );
+        }
     }
     assert!(Done.is_terminal());
     assert!(Cancelled.is_terminal());
@@ -86,4 +97,17 @@ fn test_validate_transition_error_lists_targets() {
         err.contains("todo/in_progress/done/blocked/cancelled"),
         "{err}"
     );
+}
+
+#[test]
+fn test_cancelled_reopen_exit_and_targets_string() {
+    // cancelled 的对外可读目标集要指向 reopen 通路（发现④）。
+    assert!(
+        Cancelled.allowed_targets().contains("backlog"),
+        "cancelled allowed_targets must mention reopen: {}",
+        Cancelled.allowed_targets()
+    );
+    assert!(Done.allowed_targets().contains("终态"));
+    // validate 路径同样放行 cancelled → backlog。
+    assert!(validate_transition(Cancelled, Backlog).is_ok());
 }

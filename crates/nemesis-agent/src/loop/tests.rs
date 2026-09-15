@@ -9016,3 +9016,157 @@ async fn a6_format_on_save_silent_when_disabled_at_dispatch() {
         "fn a(){let x=1;}\n"
     );
 }
+
+// ---------- F-U3-2：工作副本路径基准重写（rewrite_tool_paths_for_base）----------
+
+fn base_ctx(base: &std::path::Path) -> RequestContext {
+    let mut ctx = RequestContext::new("cluster", "chat1", "peer", "sess1");
+    ctx.tool_path_base = Some(base.to_path_buf());
+    ctx
+}
+
+#[test]
+fn rewrite_relative_file_paths_into_base() {
+    let base = std::path::Path::new("/ws/cluster/exec/t1");
+    let ctx = base_ctx(base);
+    for tool in [
+        "read_file",
+        "write_file",
+        "edit_file",
+        "append_file",
+        "list_dir",
+        "file_exists",
+        "create_dir",
+        "delete_file",
+        "delete_dir",
+        "grep",
+    ] {
+        let call = ToolCallInfo {
+            id: "c1".to_string(),
+            name: tool.to_string(),
+            arguments: serde_json::json!({ "path": "tests/a.py" }).to_string(),
+        };
+        let out = AgentLoop::rewrite_tool_paths_for_base(&call, &ctx)
+            .unwrap_or_else(|| panic!("{tool} 应被重写"));
+        let v: serde_json::Value = serde_json::from_str(&out.arguments).unwrap();
+        let got = v["path"].as_str().unwrap();
+        assert_eq!(
+            got,
+            base.join("tests/a.py").to_string_lossy(),
+            "{tool} 相对 path 应落在基准目录内"
+        );
+    }
+}
+
+#[test]
+fn rewrite_keeps_absolute_and_non_path_tools_untouched() {
+    let base = std::path::Path::new("/ws/exec/t1");
+    let ctx = base_ctx(base);
+    // 平台正确的绝对路径字面量（Windows 上 `/x` 不是 is_absolute——工具侧同语义）。
+    let abs = if cfg!(windows) {
+        "C:\\ws\\exec\\t1\\a.py"
+    } else {
+        "/ws/exec/t1/a.py"
+    };
+    // 绝对 path 原样保留。
+    let call = ToolCallInfo {
+        id: "c1".to_string(),
+        name: "write_file".to_string(),
+        arguments: serde_json::json!({ "path": abs, "content": "x" }).to_string(),
+    };
+    assert!(AgentLoop::rewrite_tool_paths_for_base(&call, &ctx).is_none());
+    // 不在重写面的工具原样透传。
+    let call2 = ToolCallInfo {
+        id: "c2".to_string(),
+        name: "web_search".to_string(),
+        arguments: serde_json::json!({ "query": "tests/a.py" }).to_string(),
+    };
+    assert!(AgentLoop::rewrite_tool_paths_for_base(&call2, &ctx).is_none());
+    // base 为空（普通会话）零行为变化。
+    let plain = RequestContext::new("web", "chat1", "user", "sess1");
+    let call3 = ToolCallInfo {
+        id: "c3".to_string(),
+        name: "write_file".to_string(),
+        arguments: serde_json::json!({ "path": "a.py" }).to_string(),
+    };
+    assert!(AgentLoop::rewrite_tool_paths_for_base(&call3, &plain).is_none());
+}
+
+#[test]
+fn rewrite_multiedit_entries_and_invalid_json_passthrough() {
+    let base = std::path::Path::new("/ws/exec/t2");
+    let ctx = base_ctx(base);
+    let call = ToolCallInfo {
+        id: "c1".to_string(),
+        name: "multiedit".to_string(),
+        arguments: serde_json::json!({ "edits": [
+            { "path": "a.py", "old_text": "x", "new_text": "y" },
+            { "path": if cfg!(windows) { "C:\\abs\\b.py" } else { "/abs/b.py" }, "old_text": "x", "new_text": "y" },
+            { "path": "c.py", "old_text": "x", "new_text": "y" }
+        ] })
+        .to_string(),
+    };
+    let out = AgentLoop::rewrite_tool_paths_for_base(&call, &ctx).expect("multiedit 应被重写");
+    let v: serde_json::Value = serde_json::from_str(&out.arguments).unwrap();
+    let abs_b = if cfg!(windows) {
+        "C:\\abs\\b.py"
+    } else {
+        "/abs/b.py"
+    };
+    assert_eq!(
+        v["edits"][0]["path"].as_str().unwrap(),
+        base.join("a.py").to_string_lossy()
+    );
+    assert_eq!(v["edits"][1]["path"].as_str().unwrap(), abs_b);
+    assert_eq!(
+        v["edits"][2]["path"].as_str().unwrap(),
+        base.join("c.py").to_string_lossy()
+    );
+    // 非法 JSON 参数原样透传（后续 args_validator 负责报错）。
+    let bad = ToolCallInfo {
+        id: "c2".to_string(),
+        name: "write_file".to_string(),
+        arguments: "not-json".to_string(),
+    };
+    assert!(AgentLoop::rewrite_tool_paths_for_base(&bad, &ctx).is_none());
+}
+
+#[test]
+fn rewrite_exec_cwd_injects_default_and_rewrites_relative() {
+    let base = std::path::Path::new("/ws/exec/t3");
+    let ctx = base_ctx(base);
+    // exec 缺省 cwd → 注入基准（缺省执行根=工作副本）。
+    let call = ToolCallInfo {
+        id: "c1".to_string(),
+        name: "exec".to_string(),
+        arguments: serde_json::json!({ "command": "pytest" }).to_string(),
+    };
+    let out = AgentLoop::rewrite_tool_paths_for_base(&call, &ctx).expect("缺省 cwd 应注入");
+    let v: serde_json::Value = serde_json::from_str(&out.arguments).unwrap();
+    assert_eq!(v["cwd"].as_str().unwrap(), base.to_string_lossy());
+    // async_shell 的键是 working_dir，相对值重写。
+    let call2 = ToolCallInfo {
+        id: "c2".to_string(),
+        name: "async_shell".to_string(),
+        arguments: serde_json::json!({ "command": "pytest", "working_dir": "sub" }).to_string(),
+    };
+    let out2 =
+        AgentLoop::rewrite_tool_paths_for_base(&call2, &ctx).expect("相对 working_dir 应重写");
+    let v2: serde_json::Value = serde_json::from_str(&out2.arguments).unwrap();
+    assert_eq!(
+        v2["working_dir"].as_str().unwrap(),
+        base.join("sub").to_string_lossy()
+    );
+    // exec 显式绝对 cwd 原样保留（无变化 → None）。
+    let abs_cwd = if cfg!(windows) {
+        "C:\\ws\\exec\\t3".to_string()
+    } else {
+        "/ws/exec/t3".to_string()
+    };
+    let call3 = ToolCallInfo {
+        id: "c3".to_string(),
+        name: "exec".to_string(),
+        arguments: serde_json::json!({ "command": "pytest", "cwd": abs_cwd }).to_string(),
+    };
+    assert!(AgentLoop::rewrite_tool_paths_for_base(&call3, &ctx).is_none());
+}

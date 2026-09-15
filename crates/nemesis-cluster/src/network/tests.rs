@@ -547,6 +547,27 @@ fn test_get_interface_priority_unknown() {
     assert_eq!(get_interface_priority("random"), 99);
 }
 
+// 发现①/A4（2026-09-15 真机实证）：Windows 友好名此前全落 99 → 排序退化
+// 为枚举原序 → primary=addresses[0] 选不可达网段（143 次探针风暴根因）。
+#[test]
+fn test_get_interface_priority_windows_friendly_names() {
+    // Windows 有线/无线友好名（大小写不敏感子串）
+    assert_eq!(get_interface_priority("Ethernet"), 1);
+    assert_eq!(get_interface_priority("以太网"), 1);
+    assert_eq!(get_interface_priority("以太网 3"), 1);
+    assert_eq!(get_interface_priority("本地连接"), 1);
+    assert_eq!(get_interface_priority("Local Area Connection"), 1);
+    assert_eq!(get_interface_priority("Wi-Fi"), 2);
+    assert_eq!(get_interface_priority("WLAN 2"), 2); // 仍走 wlan 前缀
+    assert_eq!(get_interface_priority("无线网络连接"), 2);
+    // Windows 虚拟接口：生产路径先过 is_virtual_interface 过滤（含
+    // vethernet/WSL/Default Switch），到不了 priority 排序——这里钉住
+    // 该前置防线，虚拟接口名含 "ethernet" 子串不构成回归。
+    assert!(is_virtual_interface("vEthernet (WSL)"));
+    assert!(is_virtual_interface("vEthernet (Default Switch)"));
+    assert!(is_virtual_interface("Loopback Pseudo-Interface 1"));
+}
+
 #[test]
 fn test_network_interface_clone_debug() {
     let iface = NetworkInterface {

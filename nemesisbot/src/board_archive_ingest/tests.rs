@@ -509,3 +509,50 @@ fn ingest_registers_and_merge_converges() {
         IssueStatus::InReview
     );
 }
+
+/// F-U6-1 orphan 去重：无处安置的滞留档案每轮 D5 sweep 重灌重试，同
+/// (task, reason) 只记首次——重复 ingest 不再重复入账（U6 实测每分钟 13
+/// 条刷屏 965 条的根修）。
+#[test]
+fn orphan_note_deduped_across_sweep_retries() {
+    let f = fixture("orphan-dedup");
+    // issue 未绑项目（project_id: None）→ ingest 走 orphan_note 路径。
+    let issue = f
+        .store
+        .create_issue(NewIssue {
+            title: "orphan dedup".to_string(),
+            description: String::new(),
+            priority: 2,
+            creator: Actor::agent("node-a"),
+            project_id: None,
+            ..Default::default()
+        })
+        .unwrap();
+    let tid = "t-orphan-dedup-1";
+    f.store
+        .insert_dispatch(tid, issue.id, "node-b", &Actor::agent("node-a"))
+        .unwrap();
+
+    // 收件箱（最小形态：只有 files/，凭据缺失只影响 missing_blocks）。
+    let inbox = f.deps.workspace.join("inbox").join(tid);
+    std::fs::create_dir_all(inbox.join("files")).unwrap();
+    std::fs::write(inbox.join("files").join("log.md"), b"x").unwrap();
+
+    // 模拟 D5 sweep 每轮重灌：同 task 连续 ingest 两次。
+    ingest_landed(&f.store, tid, &inbox);
+    ingest_landed(&f.store, tid, &inbox);
+
+    let orphans: Vec<_> = f
+        .store
+        .list_activity(issue.id)
+        .unwrap()
+        .into_iter()
+        .filter(|a| a.action == super::ACTION_ARCHIVE_ORPHANED)
+        .collect();
+    assert_eq!(orphans.len(), 1, "重复重灌只入账一次（刷屏根修）");
+    // 档案仍在收件箱（不删不弃语义不变）。
+    assert!(
+        inbox.exists(),
+        "无处安置的档案留在收件箱（后补绑项目可重灌）"
+    );
+}

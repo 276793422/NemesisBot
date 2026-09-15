@@ -2574,11 +2574,14 @@ impl Tool for TodoWriteTool {
             serde_json::from_str(args).map_err(|e| format!("invalid todowrite args: {e}"))?;
         let todos = parsed.todos;
 
-        // 存储路径：sessions/todo_{safe_session_key}.json。安全化规则与
-        // nemesis-session::sanitize_filename 同款（':' → '_'）——nemesis-agent
-        // 不依赖 nemesis-session（各自持有 SessionStore），跨 crate 引一条
-        // 一行规则不值新增依赖边；两处注释互指，漂移时一起改。
-        let safe_key = context.session_key.replace(':', "_");
+        // 存储路径：sessions/todo_{safe_session_key}.json。安全化：':' / '/'
+        // / '\\' 一律 → '_'（F-U4-4：B 端 peer_chat 复合键
+        // `cluster_rpc:{node}/{chat}` 含 '/'（peer_chat_handler 设计：chat_id
+        // 可能含 ':'，故用 '/' 分隔），只替换 ':' 会把文件名拆出中间目录 →
+        // write os error 3，2026-09-15 真机实证；nemesis-session 对 '/' 的
+        // 立场是整单拒绝，此处工具语义选择中和保可用——两处注释互指，漂移
+        // 时一起改）。
+        let safe_key = context.session_key.replace([':', '/', '\\'], "_");
         let dir = nemesis_path::resolve_sessions_dir_in_workspace(&self.workspace);
         let path = dir.join(format!("todo_{safe_key}.json"));
 

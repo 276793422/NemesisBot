@@ -370,6 +370,7 @@ async fn precompute_parallel_batch_validation_arms() {
         session_key: "agent:test/s9d".to_string(),
         correlation_id: None,
         async_callback: None,
+        tool_path_base: None,
     };
 
     let calls = vec![

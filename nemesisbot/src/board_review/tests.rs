@@ -2555,3 +2555,263 @@ async fn summary_generation_failure_leaves_trace_and_keeps_completed() {
         .unwrap();
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+// ---------- 启动重放守卫（R4-BUG-2：评审链非重启韧性） ----------
+
+/// 重放守卫夹具：建一张临时 store + 一个走到 in_review 的单据，
+/// 返回 (store, issue_id, actor)。
+fn replay_guard_fixture(name: &str) -> (Arc<nemesis_board::BoardStore>, i64, nemesis_board::Actor) {
+    use nemesis_board::{Actor, IssueStatus, NewIssue};
+    let dir = std::env::temp_dir().join(format!(
+        "nemesis-board-review-replay-{}-{name}",
+        std::process::id()
+    ));
+    let _ = std::fs::remove_dir_all(&dir);
+    let store =
+        Arc::new(nemesis_board::BoardStore::open(&dir.join("board.db"), "NB").expect("open store"));
+    let actor = Actor::agent("node-a");
+    let issue = store
+        .create_issue(NewIssue {
+            title: format!("重放守卫 {name}"),
+            description: String::new(),
+            priority: 2,
+            creator: actor.clone(),
+            ..Default::default()
+        })
+        .expect("create issue");
+    // backlog → in_progress → in_review（合法链）。
+    store
+        .transition_issue(issue.id, IssueStatus::InProgress, &actor)
+        .expect("to in_progress");
+    store
+        .transition_issue(issue.id, IssueStatus::InReview, &actor)
+        .expect("to in_review");
+    (store, issue.id, actor)
+}
+
+#[test]
+fn replay_guard_never_reviewed_replays() {
+    // in_review 但从未评审（崩溃杀掉 spawn 的典型窗口）→ 重放。
+    let (store, id, _actor) = replay_guard_fixture("never-reviewed");
+    assert!(!super::review_already_concluded(&store, id));
+}
+
+#[test]
+fn replay_guard_decided_sticks() {
+    // 转移后评审已定案（含转人工）→ sticky，不重放（重放不得翻盘）。
+    let (store, id, actor) = replay_guard_fixture("decided");
+    store
+        .add_activity(
+            id,
+            &actor,
+            "auto_decide",
+            Some(r#"{"decision":"auto_accept"}"#),
+        )
+        .unwrap();
+    assert!(super::review_already_concluded(&store, id));
+}
+
+#[test]
+fn replay_guard_stale_decide_replays() {
+    // 旧轮结论（重派回 in_progress 再交付进 in_review）→ 本轮评审还没跑 → 重放。
+    let (store, id, actor) = replay_guard_fixture("stale-decide");
+    store
+        .add_activity(
+            id,
+            &actor,
+            "auto_decide",
+            Some(r#"{"decision":"redispatch"}"#),
+        )
+        .unwrap();
+    store
+        .transition_issue(id, nemesis_board::IssueStatus::InProgress, &actor)
+        .unwrap();
+    store
+        .transition_issue(id, nemesis_board::IssueStatus::InReview, &actor)
+        .unwrap();
+    assert!(!super::review_already_concluded(&store, id));
+}
+
+#[test]
+fn replay_guard_rollback_window_sticks() {
+    // audit.rollback 的人工纠错窗口：rollback 落的 status_changed 活动
+    // details 是 audit_rollback 文本（非 JSON），不计为正常 in_review 转移
+    // → in_review 归属上一次已定案的转移 → 不重放（重放会立刻翻盘毁掉窗口）。
+    let (store, id, actor) = replay_guard_fixture("rollback");
+    store
+        .add_activity(
+            id,
+            &actor,
+            "auto_decide",
+            Some(r#"{"decision":"auto_accept"}"#),
+        )
+        .unwrap();
+    store
+        .add_activity(
+            id,
+            &actor,
+            "status_changed",
+            Some("audit_rollback:done→in_review:activity_id=1"),
+        )
+        .unwrap();
+    assert!(super::review_already_concluded(&store, id));
+}
+
+#[test]
+fn replay_guard_decide_without_transition_sticks() {
+    // 有结论但查不到正常进入转移（旧数据）→ 保守不重放。
+    let (store, id, actor) = replay_guard_fixture("no-enter");
+    // 直接插一条 auto_decide，但把它前面唯一的正常转移换成非 in_review 目标
+    // 是造不出「无进入转移」的——改用 rollback 形态把唯一转移标记为非正常。
+    store
+        .add_activity(
+            id,
+            &actor,
+            "status_changed",
+            Some("audit_rollback:done→in_review:activity_id=1"),
+        )
+        .unwrap();
+    store
+        .add_activity(
+            id,
+            &actor,
+            "auto_decide",
+            Some(r#"{"decision":"auto_accept"}"#),
+        )
+        .unwrap();
+    assert!(super::review_already_concluded(&store, id));
+}
+
+#[test]
+fn replay_guard_project_conclusion_probe() {
+    // 项目级结论探测：任一顶层父单携带本项目的 auto_decide → 已结论。
+    use nemesis_board::{Actor, NewIssue};
+    let dir = std::env::temp_dir().join(format!(
+        "nemesis-board-review-replay-proj-{}",
+        std::process::id()
+    ));
+    let _ = std::fs::remove_dir_all(&dir);
+    let store =
+        Arc::new(nemesis_board::BoardStore::open(&dir.join("board.db"), "NB").expect("open store"));
+    let actor = Actor::agent("node-a");
+    let mk = |title: &str, pid: i64| -> i64 {
+        store
+            .create_issue(NewIssue {
+                title: title.to_string(),
+                description: String::new(),
+                priority: 2,
+                creator: actor.clone(),
+                project_id: Some(pid),
+                ..Default::default()
+            })
+            .unwrap()
+            .id
+    };
+    let p1 = mk("父单1", 7);
+    let p2 = mk("父单2", 7);
+    // 无项目级结论 → 重放。
+    assert!(!super::project_review_already_concluded(
+        &store,
+        &[p1, p2],
+        7
+    ));
+    // 父单2 带项目 7 的收口结论（escalate sticky 同样算）→ 不重放。
+    store
+        .add_activity(
+            p2,
+            &actor,
+            "auto_decide",
+            Some(r#"{"decision":"project_escalate_human","verdict":"fail","project_id":7}"#),
+        )
+        .unwrap();
+    assert!(super::project_review_already_concluded(
+        &store,
+        &[p1, p2],
+        7
+    ));
+    // 结论挂在其他项目名下（project_id=9）→ 项目 7 仍视为未结论。
+    let p3 = mk("父单3", 9);
+    store
+        .add_activity(
+            p3,
+            &actor,
+            "auto_decide",
+            Some(r#"{"decision":"project_complete","verdict":"pass","project_id":9}"#),
+        )
+        .unwrap();
+    assert!(!super::project_review_already_concluded(&store, &[p1], 7));
+}
+
+// ---------- render_project_artifacts_evidence（F-U3-6，2026-09-15 U3）----------
+// 父单收口评审输入此前只有 worker Delivery 声明摘要——U3 真机实证评审员
+// 因「产物内容未随报提供」对齐全在案的产物判 UNSURE 转人工。证据段把
+// 项目目录真实清单+内容节选交给评审员，声明 vs 实物可对照。
+
+#[test]
+fn artifacts_evidence_lists_files_with_content_and_excludes_pipeline_dirs() {
+    let root = std::env::temp_dir().join(format!("u3f6-a-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&root);
+    std::fs::create_dir_all(root.join("tests")).unwrap();
+    std::fs::create_dir_all(root.join("records/NB-10/execution")).unwrap();
+    std::fs::create_dir_all(root.join("__pycache__")).unwrap();
+    std::fs::write(root.join("report.md"), "# 测试报告\n20 passed").unwrap();
+    std::fs::write(
+        root.join("tests/test_calc.py"),
+        "def test_add():\n    assert 1+1==2",
+    )
+    .unwrap();
+    std::fs::write(root.join("calculator.py"), "def add(a,b):\n    return a+b").unwrap();
+    std::fs::write(root.join(".baseline.json"), "{}").unwrap();
+    std::fs::write(root.join("records/x.txt"), "should be excluded").unwrap();
+    std::fs::write(root.join("__pycache__/c.pyc"), b"\x00\x01").unwrap();
+
+    let out = super::render_project_artifacts_evidence(&root);
+    assert!(out.contains("项目目录实物证据"), "标题在场");
+    assert!(out.contains("report.md"), "根文件在清单: {out}");
+    assert!(out.contains("tests/test_calc.py"), "子目录文件用相对路径");
+    assert!(out.contains("20 passed"), "小文本附内容节选");
+    assert!(!out.contains("records/x.txt"), "records/ 管线目录排除");
+    assert!(!out.contains(".baseline.json"), "基线戳排除");
+    assert!(!out.contains("__pycache__/c.pyc"), "__pycache__ 排除");
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+#[test]
+fn artifacts_evidence_empty_dir_and_unreadable_dir_are_honest() {
+    // 空目录 → 诚实注记「无任何交付产物」。
+    let empty = std::env::temp_dir().join(format!("u3f6-b-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&empty);
+    std::fs::create_dir_all(&empty).unwrap();
+    let out = super::render_project_artifacts_evidence(&empty);
+    assert!(out.contains("项目目录为空"), "{out}");
+    let _ = std::fs::remove_dir_all(&empty);
+
+    // 目录不可读（用文件路径冒充目录）→ 诚实注记不 panic。
+    let not_dir = std::env::temp_dir().join(format!("u3f6-c-{}", std::process::id()));
+    std::fs::write(&not_dir, "i am a file").unwrap();
+    let out = super::render_project_artifacts_evidence(&not_dir);
+    assert!(out.contains("项目目录不可读"), "{out}");
+    let _ = std::fs::remove_file(&not_dir);
+}
+
+#[test]
+fn artifacts_evidence_skips_large_and_binary_files_from_content_but_lists_them() {
+    let root = std::env::temp_dir().join(format!("u3f6-d-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&root);
+    std::fs::create_dir_all(&root).unwrap();
+    // 大文本（> 8KB）：列清单不附内容。
+    let big = "x".repeat(9 * 1024);
+    std::fs::write(root.join("big.txt"), &big).unwrap();
+    // 二进制扩展名：列清单不附内容。
+    std::fs::write(root.join("model.bin"), b"\x00\x01\x02").unwrap();
+
+    let out = super::render_project_artifacts_evidence(&root);
+    assert!(
+        out.contains("big.txt") && out.contains("9216 字节"),
+        "{out}"
+    );
+    assert!(!out.contains("xxxxx"), "大文件不附内容节选");
+    assert!(out.contains("model.bin"), "二进制也在清单");
+    assert!(out.contains("未附内容节选"), "诚实披露哪些文件没有节选");
+    let _ = std::fs::remove_dir_all(&root);
+}

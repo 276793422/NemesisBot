@@ -60,6 +60,9 @@ pub enum IssueAction {
     },
     /// Transition issue status (state machine enforced)
     Status { issue: String, status: String },
+    /// Reopen a cancelled issue back to backlog (state machine's only
+    /// terminal exit; audit comment is appended automatically)
+    Reopen { issue: String },
     /// Add a comment to an issue
     Comment { issue: String, content: String },
     /// List projects
@@ -230,6 +233,12 @@ pub fn run(action: IssueAction, local: bool) -> Result<()> {
                 .ok_or_else(|| anyhow::anyhow!("未知 status: {status}"))?;
             let issue = store.transition_issue(id, to, &actor).map_err(err)?;
             println!("状态已转移");
+            print_issue(&issue);
+        }
+        IssueAction::Reopen { issue } => {
+            let id = resolve_issue_id(&store, &issue)?;
+            let issue = store.reopen_issue(id, &actor).map_err(err)?;
+            println!("已 reopen 回 backlog");
             print_issue(&issue);
         }
         IssueAction::Comment { issue, content } => {

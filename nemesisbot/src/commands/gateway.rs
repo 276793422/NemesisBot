@@ -1918,6 +1918,13 @@ pub async fn run(local: bool, extra_args: &[String]) -> Result<()> {
     let conv_router: nemesis_web::SharedConvRouter =
         std::sync::Arc::new(nemesis_web::ConvRouter::new());
 
+    // P1/T1-6 estop 保险丝：句柄在集群装配前创建——peer_chat_callback 里的
+    // board 评审依赖集与下方 SharedResources 共享同一 Arc（跨 agent 重启存活）。
+    // F-U4-5（2026-09-15）：创建点从集群装配段上移到 cron 装配前——autopilot
+    // cron 闭包也捕获同一 Arc（急停中定时触发诚实跳过）。
+    let estop = std::sync::Arc::new(nemesis_agent::estop::EstopState::new());
+    info!("[Gateway] Global e-stop (kill switch) initialized (released)");
+
     // W2 P4: board autopilot 的集群槽位。on_job 闭包在 cluster 创建之前
     // 装配（cron 服务先于 cluster 就绪），用 OnceLock 让闭包在 cluster 建
     // 好后取用；未启用集群时保持 None（target 为空的 autopilot 规则仍可
@@ -1943,6 +1950,10 @@ pub async fn run(local: bool, extra_args: &[String]) -> Result<()> {
         let mod_slot_for_ap = board_moderator_loop.clone();
         #[cfg(all(feature = "board", feature = "cluster"))]
         let home_for_ap = home.clone();
+        // F-U4-5：急停中 autopilot 定时触发诚实跳过（与手动 autopilot.run
+        // 同一面；释放后下个周期自然恢复）。
+        #[cfg(feature = "board")]
+        let estop_for_ap = estop.clone();
         cron_service
             .lock()
             .unwrap()
@@ -1953,6 +1964,14 @@ pub async fn run(local: bool, extra_args: &[String]) -> Result<()> {
                 // deliver"。
                 #[cfg(feature = "board")]
                 if job.name.starts_with("board-ap:") {
+                    // F-U4-5：急停中定时触发跳过（记入 job run 历史，诚实
+                    // 可见；非 Err——到点跳过与 disabled 规则同语义）。
+                    if estop_for_ap.is_engaged() {
+                        return Ok(
+                            "⛔ 急停（E-STOP）生效中，autopilot 跳过本次触发（释放后自动恢复）"
+                                .to_string(),
+                        );
+                    }
                     #[cfg(feature = "cluster")]
                     {
                         // auto_plan 上下文在触发时现构（槽引用 + home + 集群；
@@ -2335,10 +2354,8 @@ pub async fn run(local: bool, extra_args: &[String]) -> Result<()> {
     )> = None;
     // Always create cluster infrastructure (Cluster object, handlers, adapter refs).
     // Network components are started below only when cluster_should_start is true.
-    // P1/T1-6 estop 保险丝：句柄在集群装配前创建——peer_chat_callback 里的
-    // board 评审依赖集与下方 SharedResources 共享同一 Arc（跨 agent 重启存活）。
-    let estop = std::sync::Arc::new(nemesis_agent::estop::EstopState::new());
-    info!("[Gateway] Global e-stop (kill switch) initialized (released)");
+    // （estop 句柄创建已上移到 cron 装配前——F-U4-5：cron 闭包与评审依赖集
+    // / SharedResources 共享同一 Arc。）
     // `#[cfg]` 整段摘除（非 cfg_attr+dead_code）：类型位引用
     // `crate::board_review::`，feature 关闭时必须整体出编译（2026-09-12
     // CI feature-matrix E0433 根修；消费点均挂同闸）。
@@ -2500,10 +2517,8 @@ pub async fn run(local: bool, extra_args: &[String]) -> Result<()> {
             && let Some(peers_table) = doc.get("peers").and_then(|v| v.as_table())
         {
             for (key, val) in peers_table {
-                // sanitize_peer_key only replaces `.` and `:` now (both are valid TOML
-                // bare key chars but ambiguous in key names). `-` and `_` are preserved
-                // as-is per TOML v1.0.0 spec, so the key IS the peer_id — no reverse
-                // mapping needed.
+                // 表键即 peer_id（发现②/B3 起写盘为字面 id，TOML 引号键保
+                // 真；旧版 sanitize 有损键的存量条目靠运行期占位升级归一）。
                 let peer_id = key.clone();
                 let addr = val.get("address").and_then(|v| v.as_str()).unwrap_or("");
                 let name = val.get("name").and_then(|v| v.as_str()).unwrap_or(&peer_id);
@@ -2526,9 +2541,12 @@ pub async fn run(local: bool, extra_args: &[String]) -> Result<()> {
                     continue;
                 }
                 // The address field contains UDP host:port (e.g., "127.0.0.1:11950").
-                // Derive RPC port by convention: UDP port + 10000 (11949→21949).
+                // RPC port resolution: explicit `rpc_port` field (written by pair /
+                // placeholder upgrade with the *probed* value) wins; fall back to
+                // the udp+10000 convention for legacy/hand-written entries.
                 let (host, udp_port) = parse_host_port(addr);
-                let rpc_port = if udp_port > 0 { udp_port + 10000 } else { 0 };
+                let rpc_port =
+                    nemesis_cluster::cluster_config::resolve_peer_rpc_port(val, udp_port);
                 let addresses = if host.is_empty() { vec![] } else { vec![host] };
                 info!(
                     "[Gateway] Loading static peer: {} ({}) addr={} rpc_port={}",
@@ -3021,6 +3039,7 @@ pub async fn run(local: bool, extra_args: &[String]) -> Result<()> {
             if sweep_cfg.dispatch_timeout_secs > 0 {
                 let store_for_sweep = board_store.clone();
                 let cluster_for_sweep = cluster.clone();
+                let home_for_sweep = home.clone();
                 tokio::spawn(async move {
                     let mut ticker = tokio::time::interval(std::time::Duration::from_secs(
                         sweep_cfg.dispatch_sweep_interval_secs.max(1),
@@ -3031,11 +3050,20 @@ pub async fn run(local: bool, extra_args: &[String]) -> Result<()> {
                         let Some(store) = store_for_sweep.as_ref() else {
                             continue;
                         };
-                        sweep_dispatch_timeouts(
-                            store,
-                            &cluster_for_sweep,
-                            sweep_cfg.dispatch_timeout_secs,
-                        );
+                        // 超时阈值每 tick 现读（2026-09-15 R4 真机实证：
+                        // config.set dispatch_timeout_secs 改值后 sweep 仍用
+                        // 启动烘焙值跑到底——与旗标类键「每次现读」语义对齐；
+                        // 0=关（运行期可关）；读取失败沿用启动值兜底不停摆。
+                        let timeout_secs =
+                            nemesis_config::load_config(&home_for_sweep.join("config.json"))
+                                .ok()
+                                .and_then(|c| c.board)
+                                .map(|b| b.dispatch_timeout_secs)
+                                .unwrap_or(sweep_cfg.dispatch_timeout_secs);
+                        if timeout_secs == 0 {
+                            continue;
+                        }
+                        sweep_dispatch_timeouts(store, &cluster_for_sweep, timeout_secs);
                     }
                 });
                 info!(
@@ -3044,6 +3072,50 @@ pub async fn run(local: bool, extra_args: &[String]) -> Result<()> {
                     sweep_cfg.dispatch_sweep_interval_secs.max(1)
                 );
             }
+        }
+
+        // --- F-U3-4（2026-09-15 U3 真机）：停车场周期兜底 sweep ticker ---
+        // 停车场 sweep 此前只有边沿触发（announce 回调 / 派发落定重估波）。
+        // 真机实证：announce 单向不可达（跨子网 UDP/防火墙不对称；G2 探针
+        // 走 RPC 让节点照常 Online——高度迷惑）+ 稳态在线（无 Offline→Online
+        // 翻转）+ 无派发落定时，停车场**永不重估**——停车单/reopen 单无限期
+        // 滞留且零反馈（NB-10 实证：reopen 后 10+ 分钟零动静）。补 30s 周期
+        // ticker：候选空时近零成本（一条 SQL）；estop 挂起不派发；
+        // notify_park=true 让首次停车落 ⏸ 评论 + 父单 blocked 显形（B4 去重
+        // 防刷屏）；三路触发源由 PARK_SWEEP_LOCK 串行防双派。ticker 首拍
+        // 立即执行——gateway 重启后存量停车单即时获得一次重估。
+        #[cfg(all(feature = "board", feature = "cluster"))]
+        {
+            let park_sweep_store = board_store.clone();
+            let park_sweep_cluster = cluster.clone();
+            let park_sweep_estop = estop.clone();
+            tokio::spawn(async move {
+                let mut ticker = tokio::time::interval(std::time::Duration::from_secs(30));
+                ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+                loop {
+                    ticker.tick().await;
+                    if park_sweep_estop.is_engaged() {
+                        continue;
+                    }
+                    let Some(store) = park_sweep_store.as_ref() else {
+                        continue;
+                    };
+                    let actor = nemesis_board::Actor::system("board");
+                    let (cands, dispatched, failed) =
+                        nemesis_web::handlers::board::sweep_parked_dispatches_notify(
+                            store,
+                            &park_sweep_cluster,
+                            &actor,
+                            true,
+                        );
+                    if cands > 0 {
+                        info!(
+                            "[Gateway] 停车场周期重估：候选 {cands} 派出 {dispatched} 失败 {failed}"
+                        );
+                    }
+                }
+            });
+            info!("[Gateway] Board park sweep ticker armed (interval=30s)");
         }
 
         // --- Now that Cluster is Arc-wrapped, wire up the real callback handler ---
@@ -3978,6 +4050,16 @@ pub async fn run(local: bool, extra_args: &[String]) -> Result<()> {
             .as_ref()
             .map(|(c, _, _, _)| matches!(c.role().as_str(), "coordinator" | "master" | "manager"))
             .unwrap_or(false);
+        // 装配缺失可观测（2026-09-15 R4 真机实证：coordinator 误配 role=worker
+        // 时本链静默不装配，档案管线派发完成后合并/评审/父单+项目收口全死、
+        // 单据卡 in_progress 无任何决策动作。worker 角色闸是有意设计，但装配
+        // 缺失必须响亮——有集群而角色不符才 warn；无集群单节点看板不噪音）。
+        if !cluster_ok && let Some((c, _, _, _)) = cluster_adapter_refs.as_ref() {
+            warn!(
+                "[Gateway] Board 合并/评审/收口钩子不装配：节点角色非 coordinator（role={}；worker 本地 board.db 仅 dashboard 视图）——档案管线合并+验收链不会运行",
+                c.role().as_str()
+            );
+        }
         if cluster_ok
             && let (Some(store), Some((cluster, _, _, _))) =
                 (board_store.clone(), cluster_adapter_refs.as_ref())
@@ -3993,6 +4075,9 @@ pub async fn run(local: bool, extra_args: &[String]) -> Result<()> {
                 selfcheck: board_selfcheck_registry.clone(),
             };
             let hook_deps = std::sync::Arc::new(deps);
+            // 启动重放（R4-BUG-2 根修）用快照——hook_deps 本体随后 move 进
+            // 父单收口钩子闭包。
+            let replay_sweep_deps = hook_deps.clone();
             // P1/T1-6：estop 释放 watcher——把冻结停车的评审逐条复评恢复。
             crate::board_review::spawn_estop_resume_watcher((*hook_deps).clone());
             // P4/E4（看板项目档案 goal 合并批）：合并依赖注入——落地腿
@@ -4122,6 +4207,12 @@ pub async fn run(local: bool, extra_args: &[String]) -> Result<()> {
             } else {
                 info!("[Gateway] Board project summary hook armed (archive summary.md)");
             }
+
+            // 启动重放（R4-BUG-2 根修）：评审 spawn 纯内存、master 重启即
+            // 丢——in_review 单据/父单/项目在重启后由这里扫描重触发。必须
+            // 在三类钩子注册完成后调用（重放验收 PASS 会级联点火上层钩子）。
+            crate::board_review::replay_stuck_reviews(&replay_sweep_deps, &[]);
+            info!("[Gateway] Board stuck-review replay sweep done");
         }
     }
 

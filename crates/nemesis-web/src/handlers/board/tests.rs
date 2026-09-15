@@ -595,6 +595,101 @@ async fn test_issue_dispatch_validation_without_cluster() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
+/// F-U4-5（2026-09-15 真机实证）：急停发车护栏——estop ENGAGED 时手动
+/// 发车面（issue.dispatch / issue.plan / autopilot.run / project.create
+/// auto_start）一律诚实拒绝；release 后放行到既有校验链（此处无集群，
+/// 落到「集群未运行」即证明护栏已过）。
+#[cfg(feature = "cluster")]
+#[tokio::test]
+async fn test_estop_blocks_dispatch_family_entries() {
+    let dir = unique_dir("estop-dispatch-gate");
+    let ctx = make_ctx_with_board(&dir);
+
+    // 建 issue（建单不是发车面，急停中放行）。
+    let out = dispatch(
+        &ctx,
+        "issue.create",
+        serde_json::json!({ "title": "急停护栏" }),
+    )
+    .await
+    .unwrap()
+    .unwrap();
+    let id = out["issue"]["id"].as_i64().unwrap();
+
+    // 挂急停（ctx.state.estop 置为 ENGAGED 态——AppState: Clone 字段换新）。
+    let estop = Arc::new(nemesis_agent::estop::EstopState::new());
+    estop.trigger();
+    assert!(estop.is_engaged());
+    let mut estopped = (*ctx.state).clone();
+    estopped.estop = Some(estop);
+    let ctx_e = RequestContext {
+        session_id: ctx.session_id.clone(),
+        chat_id: ctx.chat_id.clone(),
+        workspace: ctx.workspace.clone(),
+        home: ctx.home.clone(),
+        state: Arc::new(estopped),
+        auth_method: ctx.auth_method,
+    };
+
+    // issue.dispatch → 拒（护栏先于一切校验，连 data 都不解析）。
+    let err = dispatch(&ctx_e, "issue.dispatch", serde_json::json!({}))
+        .await
+        .expect_err("estop must refuse dispatch");
+    assert!(err.contains("急停（E-STOP）"), "{err}");
+
+    // issue.plan → 拒。
+    let err = dispatch(&ctx_e, "issue.plan", serde_json::json!({}))
+        .await
+        .expect_err("estop must refuse plan");
+    assert!(err.contains("急停（E-STOP）"), "{err}");
+
+    // autopilot.run → 拒（护栏在 id 解析前）。
+    let err = dispatch(&ctx_e, "autopilot.run", serde_json::json!({}))
+        .await
+        .expect_err("estop must refuse autopilot run");
+    assert!(err.contains("急停（E-STOP）"), "{err}");
+
+    // project.create + auto_start → 项目照建（非发车面），auto_start 拒。
+    let out = dispatch(
+        &ctx_e,
+        "project.create",
+        serde_json::json!({ "name": "急停项目", "auto_start": true }),
+    )
+    .await
+    .unwrap()
+    .unwrap();
+    assert_eq!(out["created"], true, "project itself must still be created");
+    let err = out["auto_start"]["error"].as_str().unwrap_or("");
+    assert!(
+        err.contains("急停（E-STOP）"),
+        "auto_start must be refused: {out}"
+    );
+
+    // 释放 → 同一批入口放行到既有校验链（无集群 → 「集群未运行」/
+    // missing field，均证明已过护栏）。
+    ctx_e.state.estop.as_ref().unwrap().release();
+    let err = dispatch(
+        &ctx_e,
+        "issue.dispatch",
+        serde_json::json!({ "id": id, "target": "node-b" }),
+    )
+    .await
+    .expect_err("after release must fall through to cluster check");
+    assert!(err.contains("集群未运行"), "{err}");
+
+    let err = dispatch(&ctx_e, "issue.plan", serde_json::json!({}))
+        .await
+        .expect_err("after release plan must reach its own validation");
+    assert!(err.contains("missing field: id"), "{err}");
+
+    let err = dispatch(&ctx_e, "autopilot.run", serde_json::json!({}))
+        .await
+        .expect_err("after release autopilot.run must reach id validation");
+    assert!(err.contains("missing field: id"), "{err}");
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
 #[tokio::test]
 async fn test_board_not_injected_and_unknown_cmd() {
     let dir = unique_dir("noinject");
@@ -2105,6 +2200,7 @@ fn p3_ap(store: &BoardStore, name: &str, auto_plan: bool) -> nemesis_board::Auto
             target: String::new(),
             enabled: true,
             auto_plan,
+            acceptance_criteria: None,
         })
         .expect("create autopilot")
 }
@@ -2120,6 +2216,48 @@ async fn test_fire_autopilot_auto_plan_false_unchanged() {
     let out = fire_autopilot(&store, None, &p3_ap(&store, "常规", false), &actor, None).unwrap();
     assert_eq!(out["ran"], true);
     assert!(out["auto_plan"].is_null(), "auto_plan=false → null: {out}");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[cfg(feature = "cluster")]
+#[tokio::test]
+async fn test_fire_autopilot_passes_acceptance_criteria_to_issue() {
+    // F-U5-1：规则带验收标准 → 触发建单透传给 issue（定时任务全自动验收
+    // 的前提）；规则不填 → issue 验收标准为空（保守转人工语义不变）。
+    let dir = unique_dir("ap-acceptance-passthrough");
+    let ctx = make_ctx_with_board(&dir);
+    let store = ctx.state.board.as_ref().unwrap().store().clone();
+    let actor = nemesis_board::Actor::admin("admin");
+
+    let n = nemesis_board::NewAutopilot {
+        name: "带标准".to_string(),
+        cron: "0 9 * * *".to_string(),
+        title: "周期任务 {date}".to_string(),
+        description: "P3 测试".to_string(),
+        priority: nemesis_board::models::priority::MEDIUM,
+        project_id: None,
+        target: String::new(),
+        enabled: true,
+        auto_plan: false,
+        acceptance_criteria: Some("报告含时间与磁盘空间两项".to_string()),
+    };
+    let ap = store.create_autopilot(&n).unwrap();
+    let out = fire_autopilot(&store, None, &ap, &actor, None).unwrap();
+    let issue = store.get_issue(out["issue_id"].as_i64().unwrap()).unwrap();
+    assert_eq!(
+        issue.acceptance_criteria.as_deref(),
+        Some("报告含时间与磁盘空间两项"),
+        "验收标准应透传到 issue: {:?}",
+        issue.acceptance_criteria
+    );
+
+    let ap_empty = p3_ap(&store, "不填", false);
+    let out2 = fire_autopilot(&store, None, &ap_empty, &actor, None).unwrap();
+    let issue2 = store.get_issue(out2["issue_id"].as_i64().unwrap()).unwrap();
+    assert_eq!(
+        issue2.acceptance_criteria, None,
+        "规则不填 → issue 验收标准为空"
+    );
     let _ = std::fs::remove_dir_all(&dir);
 }
 
@@ -2752,6 +2890,8 @@ async fn sweep_redispatches_when_matching_tags_peer_appears() {
         id: "node-py".into(),
         name: "PyWorker".into(),
         address: "127.0.0.1:19999".into(),
+        rpc_port: 0,
+        addresses: Vec::new(),
         role: NodeRole::Worker,
         category: "development".into(),
         capabilities: vec![],
@@ -2775,6 +2915,88 @@ async fn sweep_redispatches_when_matching_tags_peer_appears() {
         store.get_issue(parent.id).unwrap().status,
         IssueStatus::InProgress,
         "父单从 blocked 复活回 in_progress"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// F-U3-4：周期兜底 ticker 的 notify 路径——首次 sweep 停车即落 ⏸ 评论 +
+/// 父单 blocked 显形（与直派路径同语义；此前 announce 路径静默，停车零
+/// 反馈），重复 tick B4 去重不刷屏，匹配节点上线后 sweep 派出并解锁父单。
+#[cfg(feature = "cluster")]
+#[tokio::test]
+async fn periodic_sweep_notify_parks_with_notice_then_revives() {
+    let dir = unique_dir("park-ticker-notify");
+    let ctx = make_ctx_with_board(&dir);
+    let store = store_of(&ctx);
+    let actor = Actor::admin("test-session");
+    let cluster = offline_cluster(&dir, "coord-ticker");
+    let parent = store
+        .create_issue(nemesis_board::NewIssue {
+            title: "父".into(),
+            ..Default::default()
+        })
+        .unwrap();
+    let a = planner_child(&store, parent.id, "子A", vec!["rust".to_string()]);
+
+    // ticker 首拍：无匹配节点 → 停车留痕（notify=true）。
+    let (cands, dispatched, failed) =
+        super::sweep_parked_dispatches_notify(&store, &cluster, &actor, true);
+    assert_eq!(cands, 1);
+    assert_eq!(dispatched, 0);
+    assert_eq!(failed, 0);
+    let notices = |id: i64| -> usize {
+        store
+            .list_comments(id)
+            .unwrap()
+            .iter()
+            .filter(|c| c.content.contains("自动派发暂缓"))
+            .count()
+    };
+    assert_eq!(notices(a.id), 1, "ticker 路径首次停车必须留痕");
+    assert_eq!(
+        store.get_issue(parent.id).unwrap().status,
+        IssueStatus::Blocked,
+        "整条链在等节点 → 父单 blocked 显形"
+    );
+
+    // 重复 tick：B4 去重，不刷评论不动父单。
+    let (cands, dispatched, failed) =
+        super::sweep_parked_dispatches_notify(&store, &cluster, &actor, true);
+    assert_eq!((cands, dispatched, failed), (1, 0, 0));
+    assert_eq!(notices(a.id), 1, "重复 tick 不得刷评论");
+    assert_eq!(notices(parent.id), 1);
+    assert_eq!(
+        store.get_issue(parent.id).unwrap().status,
+        IssueStatus::Blocked
+    );
+
+    // 节点带 tags 上线 → sweep 派出 + 父单复活。
+    cluster.set_rpc_client(Arc::new(nemesis_cluster::rpc::client::RpcClient::new()));
+    cluster.merge_real_node_info(&nemesis_cluster::cluster::RealNodeInfo {
+        id: "node-rs".into(),
+        name: "RsWorker".into(),
+        address: "127.0.0.1:19997".into(),
+        rpc_port: 0,
+        addresses: Vec::new(),
+        role: NodeRole::Worker,
+        category: "development".into(),
+        capabilities: vec![],
+        tags: vec!["rust".into()],
+        node_type: "agent".into(),
+    });
+    let (cands, dispatched, failed) =
+        super::sweep_parked_dispatches_notify(&store, &cluster, &actor, true);
+    assert_eq!(failed, 0);
+    assert_eq!(dispatched, 1, "匹配节点上线后 ticker sweep 必须派出");
+    assert_eq!(cands, 1);
+    assert_eq!(
+        store.get_issue(a.id).unwrap().status,
+        IssueStatus::InProgress
+    );
+    assert_eq!(
+        store.get_issue(parent.id).unwrap().status,
+        IssueStatus::InProgress,
+        "父单从 blocked 复活"
     );
     let _ = std::fs::remove_dir_all(&dir);
 }
@@ -2914,6 +3136,244 @@ async fn cancel_cascades_to_dependents() {
             "级联单必须 ⛔ 留痕"
         );
     }
+    // C3：cancel 响应体必须披露级联清单（不再无声）。
+    let cascaded: Vec<&str> = out["cascade_cancelled"]
+        .as_array()
+        .expect("响应必须带 cascade_cancelled 数组")
+        .iter()
+        .map(|v| v.as_str().expect("级联清单元素应为编号字符串"))
+        .collect();
+    assert_eq!(cascaded.len(), 2, "恰好 b、g 两单被连带：{cascaded:?}");
+    assert!(cascaded.contains(&b.number.as_str()), "{cascaded:?}");
+    assert!(cascaded.contains(&g.number.as_str()), "{cascaded:?}");
+
+    // ④ reopen 通路：级联取消的单可用 issue.reopen 拉回 backlog（不再
+    // SQL 手术），审计评论落盘；reopen 后依赖闸重算（b 依赖 a——a 已
+    // 复活为 backlog 非 done，b 保持待派）。
+    for id in [a.id, b.id, g.id] {
+        let out = dispatch(&ctx, "issue.reopen", serde_json::json!({ "id": id }))
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(out["reopened"], true);
+        let issue = store.get_issue(id).unwrap();
+        assert_eq!(issue.status, IssueStatus::Backlog);
+        assert!(
+            store
+                .list_comments(id)
+                .unwrap()
+                .iter()
+                .any(|c| c.ctype == nemesis_board::CommentType::System
+                    && c.content.contains("reopen")),
+            "reopen 必须落系统审计评论"
+        );
+    }
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// F-U4-3：cancel **父单**必须经父子边级联取消子单——planner 拆解的依赖
+/// 边是兄弟链、从不指向父单，只走依赖边则父单取消恒零级联（真实 UAT
+/// 事故：三子单僵尸 backlog + 补派触发器还会继续派它们空烧 token）。
+/// 在途派发的子单连带终结派发行（竞态守卫赢），披露清单含全部子单。
+#[cfg(feature = "cluster")]
+#[tokio::test]
+async fn cancel_parent_cascades_children_via_parent_edge() {
+    let dir = unique_dir("cancel-parent-cascade");
+    let ctx = make_ctx_with_board(&dir);
+    let store = store_of(&ctx);
+    let actor = Actor::admin("test-session");
+    let parent = no_parent(&store);
+    // 三子单只有 parent_issue_id 关联（U4-3 真实夹具：零依赖边）。
+    let c1 = planner_child(&store, parent, "子甲", vec![]);
+    let c2 = planner_child(&store, parent, "子乙", vec![]);
+    let c3 = planner_child(&store, parent, "子丙", vec![]);
+
+    // 前置：子乙有在途派发（在线 peer 派出——对应真实 UAT 的 worker 执行中）。
+    let cluster = offline_cluster(&dir, "coord-pc1");
+    cluster.set_rpc_client(Arc::new(nemesis_cluster::rpc::client::RpcClient::new()));
+    cluster.merge_real_node_info(&nemesis_cluster::cluster::RealNodeInfo {
+        id: "node-w1".into(),
+        name: "W1".into(),
+        address: "127.0.0.1:19996".into(),
+        rpc_port: 0,
+        addresses: Vec::new(),
+        role: NodeRole::Worker,
+        category: "development".into(),
+        capabilities: vec![],
+        tags: vec![],
+        node_type: "agent".into(),
+    });
+    super::dispatch_subissue_auto_with_config(
+        Some(&fallback_cfg(true, None)),
+        &store,
+        Some(&cluster),
+        c2.id,
+        &actor,
+        true,
+    )
+    .unwrap();
+    assert!(
+        store.has_active_dispatch(c2.id).unwrap(),
+        "前置：子乙必须有在途派发"
+    );
+
+    let out = dispatch(&ctx, "issue.cancel", serde_json::json!({ "id": parent }))
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(out["cancelled"], true);
+    assert_eq!(
+        store.get_issue(parent).unwrap().status,
+        IssueStatus::Cancelled
+    );
+    for (id, label) in [(c1.id, "子甲"), (c2.id, "子乙"), (c3.id, "子丙")] {
+        assert_eq!(
+            store.get_issue(id).unwrap().status,
+            IssueStatus::Cancelled,
+            "{label} 必须随父单级联取消"
+        );
+        assert!(
+            store
+                .list_comments(id)
+                .unwrap()
+                .iter()
+                .any(|c| c.content.contains("级联取消")),
+            "{label} 必须 ⛔ 留痕"
+        );
+    }
+    assert!(
+        !store.has_active_dispatch(c2.id).unwrap(),
+        "子乙的在途派发必须连带终结（worker 不再空烧）"
+    );
+    let cascaded: Vec<&str> = out["cascade_cancelled"]
+        .as_array()
+        .expect("响应必须披露级联清单")
+        .iter()
+        .map(|v| v.as_str().expect("级联清单元素应为编号"))
+        .collect();
+    assert_eq!(cascaded.len(), 3, "三子单全在披露清单：{cascaded:?}");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// F-U4-3 派发侧闸：父单已取消的子单不再被派出（补派触发器/停车场
+/// sweep 都过这道闸）——否则父单死后子单还会被派发空烧 token。
+#[cfg(feature = "cluster")]
+#[tokio::test]
+async fn dispatch_skips_children_of_cancelled_parent() {
+    let dir = unique_dir("dispatch-dead-parent");
+    let ctx = make_ctx_with_board(&dir);
+    let store = store_of(&ctx);
+    let actor = Actor::admin("test-session");
+    let cluster = offline_cluster(&dir, "coord-pc2");
+    let parent = no_parent(&store);
+    let child = planner_child(&store, parent, "子A", vec!["python".to_string()]);
+    // 父单落 cancelled（直接终态：无在途派发不需要集群）。
+    store
+        .transition_issue(parent, IssueStatus::Cancelled, &actor)
+        .unwrap();
+
+    let out = super::dispatch_subissue_auto_with_config(
+        Some(&fallback_cfg(true, None)),
+        &store,
+        Some(&cluster),
+        child.id,
+        &actor,
+        true,
+    )
+    .unwrap();
+    assert!(out.is_none(), "父单已取消的子单不得派出");
+    assert_eq!(
+        store.get_issue(child.id).unwrap().status,
+        IssueStatus::Backlog
+    );
+    assert!(!store.has_active_dispatch(child.id).unwrap());
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// F-U4-3 reopen 侧闸：父单已取消的子单不可单独复活（否则被派发闸拦成
+/// 永久 backlog 僵尸）——先复活父单，再逐单复活子单。
+#[cfg(feature = "cluster")]
+#[tokio::test]
+async fn reopen_refuses_child_of_cancelled_parent() {
+    let dir = unique_dir("reopen-dead-parent");
+    let ctx = make_ctx_with_board(&dir);
+    let store = store_of(&ctx);
+    let actor = Actor::admin("test-session");
+    let parent = no_parent(&store);
+    let child = planner_child(&store, parent, "子A", vec![]);
+    store
+        .transition_issue(child.id, IssueStatus::Cancelled, &actor)
+        .unwrap();
+    store
+        .transition_issue(parent, IssueStatus::Cancelled, &actor)
+        .unwrap();
+
+    let err = dispatch(&ctx, "issue.reopen", serde_json::json!({ "id": child.id }))
+        .await
+        .unwrap_err();
+    assert!(
+        err.contains("请先 reopen 父单"),
+        "必须诚实拒绝并指路：{err}"
+    );
+    // 先复活父单 → 子单 reopen 放行。
+    dispatch(&ctx, "issue.reopen", serde_json::json!({ "id": parent }))
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        store.get_issue(parent).unwrap().status,
+        IssueStatus::Backlog
+    );
+    dispatch(&ctx, "issue.reopen", serde_json::json!({ "id": child.id }))
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        store.get_issue(child.id).unwrap().status,
+        IssueStatus::Backlog
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// ④ reopen（发现④ 2026-09-15）：非法来源 loud 拒绝（todo/done 不可走
+/// reopen），cancelled → backlog 走通且 has_active_dispatch 天然解锁
+///（无在途派发记录），可直接重新 dispatch（此处验证表面契约：reopen 后
+/// 再 cancel 不再被旧状态卡死）。
+#[cfg(feature = "cluster")]
+#[tokio::test]
+async fn issue_reopen_rejects_non_cancelled_and_restores_dispatchability() {
+    let dir = unique_dir("issue-reopen");
+    let ctx = make_ctx_with_board(&dir);
+    let store = store_of(&ctx);
+    let actor = Actor::admin("test-session");
+    let a = store
+        .create_issue(nemesis_board::NewIssue {
+            title: "待复活".into(),
+            ..Default::default()
+        })
+        .unwrap();
+
+    // 非取消来源 loud 拒绝。
+    let err = dispatch(&ctx, "issue.reopen", serde_json::json!({ "id": a.id }))
+        .await
+        .unwrap_err();
+    assert!(err.contains("只有已取消"), "{err}");
+
+    // cancelled → backlog。
+    store
+        .transition_issue(a.id, IssueStatus::Cancelled, &actor)
+        .unwrap();
+    let out = dispatch(&ctx, "issue.reopen", serde_json::json!({ "id": a.id }))
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(out["reopened"], true);
+    assert_eq!(out["issue"]["status"], "backlog");
+    assert_eq!(
+        store.get_issue(a.id).unwrap().status,
+        IssueStatus::Backlog,
+        "reopen 后单子回 backlog"
+    );
     let _ = std::fs::remove_dir_all(&dir);
 }
 
@@ -3069,6 +3529,8 @@ async fn fallback_dispatches_to_relaxed_online_peer() {
         id: "node-rs".into(),
         name: "RsWorker".into(),
         address: "127.0.0.1:19998".into(),
+        rpc_port: 0,
+        addresses: Vec::new(),
         role: NodeRole::Worker,
         category: "development".into(),
         capabilities: vec![],
@@ -3121,6 +3583,8 @@ async fn fallback_pinned_target_name_match_and_offline_honesty() {
         id: "node-alex".into(),
         name: "Alex".into(),
         address: "127.0.0.1:19997".into(),
+        rpc_port: 0,
+        addresses: Vec::new(),
         role: NodeRole::Worker,
         category: "development".into(),
         capabilities: vec![],
@@ -3181,6 +3645,8 @@ async fn fallback_role_relaxed_ordering() {
         id: "node-co".into(),
         name: "CoPeer".into(),
         address: "127.0.0.1:19996".into(),
+        rpc_port: 0,
+        addresses: Vec::new(),
         role: NodeRole::Coordinator,
         category: "development".into(),
         capabilities: vec![],
@@ -3249,6 +3715,8 @@ async fn fallback_sweep_revives_parked_issue() {
         id: "node-any".into(),
         name: "AnyWorker".into(),
         address: "127.0.0.1:19995".into(),
+        rpc_port: 0,
+        addresses: Vec::new(),
         role: NodeRole::Worker,
         category: "general".into(),
         capabilities: vec![],
@@ -3260,6 +3728,7 @@ async fn fallback_sweep_revives_parked_issue() {
         &store,
         &cluster,
         &actor,
+        false,
     );
     assert_eq!(failed, 0);
     assert_eq!(dispatched, 1, "兜底开时 sweep 必须复活停车单");
@@ -3756,6 +4225,8 @@ async fn mutex_deferred_single_dispatches_after_conflict_settles() {
         id: "node-w1".into(),
         name: "W1".into(),
         address: "127.0.0.1:19999".into(),
+        rpc_port: 0,
+        addresses: Vec::new(),
         role: NodeRole::Worker,
         category: "development".into(),
         capabilities: vec![],
@@ -3937,6 +4408,8 @@ async fn project_resume_no_match_carries_b1_detail() {
         id: "node-rs".into(),
         name: "RsWorker".into(),
         address: "127.0.0.1:19999".into(),
+        rpc_port: 0,
+        addresses: Vec::new(),
         role: NodeRole::Worker,
         category: "development".into(),
         capabilities: vec![],

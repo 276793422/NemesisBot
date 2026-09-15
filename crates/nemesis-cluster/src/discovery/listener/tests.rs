@@ -544,3 +544,42 @@ fn test_message_to_node_info_empty_name_and_category_fallbacks() {
     assert_eq!(info.base.category, "development");
     assert_eq!(info.base.address, "10.0.0.3:9000");
 }
+
+// -- send_unicast（U1-5 根修 2026-09-15：异端口拓扑定向单播载体）--
+
+#[test]
+fn test_send_unicast_delivers_plaintext_message() {
+    let rx = std::net::UdpSocket::bind("127.0.0.1:0").unwrap();
+    let rx_port = rx.local_addr().unwrap().port();
+    rx.set_read_timeout(Some(std::time::Duration::from_secs(3)))
+        .unwrap();
+
+    let listener = UdpListener::new(0, None).unwrap();
+    let msg = make_announce("unicast-node", &["127.0.0.1"], 21000);
+    listener.send_unicast(&format!("127.0.0.1:{}", rx_port), &msg);
+
+    let mut buf = [0u8; 4096];
+    let (n, _) = rx.recv_from(&mut buf).unwrap();
+    let parsed = DiscoveryMessage::from_bytes(&buf[..n]).unwrap();
+    assert_eq!(parsed.node_id, "unicast-node");
+}
+
+#[test]
+fn test_send_unicast_encrypted_roundtrip() {
+    // 加密模式单播：接收端持有同源 key 才能解开（与广播同一条加密路径）
+    let rx = std::net::UdpSocket::bind("127.0.0.1:0").unwrap();
+    let rx_port = rx.local_addr().unwrap().port();
+    rx.set_read_timeout(Some(std::time::Duration::from_secs(3)))
+        .unwrap();
+
+    let key = crate::discovery::crypto::derive_key("shared-token");
+    let listener = UdpListener::new(0, Some(key)).unwrap();
+    let msg = make_announce("enc-node", &["127.0.0.1"], 21000);
+    listener.send_unicast(&format!("127.0.0.1:{}", rx_port), &msg);
+
+    let mut buf = [0u8; 4096];
+    let (n, _) = rx.recv_from(&mut buf).unwrap();
+    let decrypted = crate::discovery::crypto::decrypt_data(&key, &buf[..n]).unwrap();
+    let parsed = DiscoveryMessage::from_bytes(&decrypted).unwrap();
+    assert_eq!(parsed.node_id, "enc-node");
+}

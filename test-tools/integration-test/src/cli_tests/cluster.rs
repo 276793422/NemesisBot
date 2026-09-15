@@ -386,3 +386,68 @@ pub async fn test_cli_cluster_token(ws: &TestWorkspace, bin: &Path) -> Vec<TestR
 
     results
 }
+
+// ---------------------------------------------------------------------------
+// cluster pair（发现② 表面契约；真配对双节点流归 cluster-uat）
+// ---------------------------------------------------------------------------
+
+/// `cluster pair` 失败面契约：不可达地址 → 非零退码 + 「无法连接」诚实
+/// 报错 + peers.toml 零写入；缺端口 → 「地址形态非法」+ 零写入。
+pub async fn test_cli_cluster_pair(ws: &TestWorkspace, bin: &Path) -> Vec<TestResult> {
+    let suite = "cli/cluster_pair";
+    let mut results = Vec::new();
+    print_suite_header(suite);
+
+    let peers_path = ws.home().join("cluster").join("peers.toml");
+    let snapshot = std::fs::read_to_string(&peers_path).unwrap_or_default();
+
+    // 不可达地址（127.0.0.1 保留段端口，双形态候选都不可达）。
+    let out = ws
+        .run_cli(bin, &["cluster", "pair", "127.0.0.1:19990"])
+        .await;
+    let honest_error =
+        out.stdout_contains("无法连接") || out.stderr_contains("无法连接") || !out.success();
+    results.push(if honest_error {
+        pass(
+            &format!("{}/unreachable_rejected", suite),
+            format!("exit={}", out.exit_code),
+        )
+    } else {
+        fail(
+            &format!("{}/unreachable_rejected", suite),
+            format!("不可达地址必须诚实失败，exit={}", out.exit_code),
+        )
+    });
+
+    // 零写入：失败后 peers.toml 不出现新 peer（文件可能因 init 存在）。
+    let after = std::fs::read_to_string(&peers_path).unwrap_or_default();
+    results.push(if after == snapshot {
+        pass(
+            &format!("{}/unreachable_zero_write", suite),
+            "peers.toml unchanged",
+        )
+    } else {
+        fail(
+            &format!("{}/unreachable_zero_write", suite),
+            "不可达配对不得写入 peers.toml",
+        )
+    });
+
+    // 缺端口形态拒绝。
+    let out2 = ws.run_cli(bin, &["cluster", "pair", "192.168.1.5"]).await;
+    let bad_addr = !out2.success()
+        && (out2.stdout_contains("地址形态非法") || out2.stderr_contains("地址形态非法"));
+    results.push(if bad_addr {
+        pass(
+            &format!("{}/missing_port_rejected", suite),
+            format!("exit={}", out2.exit_code),
+        )
+    } else {
+        fail(
+            &format!("{}/missing_port_rejected", suite),
+            format!("缺端口必须报地址形态非法，exit={}", out2.exit_code),
+        )
+    });
+
+    results
+}

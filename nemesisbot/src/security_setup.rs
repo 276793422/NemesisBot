@@ -277,8 +277,21 @@ pub(crate) fn load_security_rules(
         info!("[Security] file_rules loaded");
     }
 
-    // Dir rules
-    if let Some(dir_rules) = config.get("dir_rules") {
+    // Dir rules —— 键名真相源 `dir_rules`；`directory_rules` 是出厂模板的
+    // 历史键名。F-U4-7（2026-09-15 真机实证）：键名失配曾导致模板整段目录
+    // 规则静默失明（if let 不命中、无任何告警），叠加模板 default_action=
+    // allow 形成目录删除裸奔面（worker agent rm 掉自身 home 的真实事故）。
+    // 现读作别名并 WARN 提示改名；两者同现时 `dir_rules` 优先。
+    let dir_rules_value = config.get("dir_rules").or_else(|| {
+        let legacy = config.get("directory_rules");
+        if legacy.is_some() {
+            warn!(
+                "[Security] 安全配置使用了历史键名 directory_rules（已按 dir_rules 生效）；请将键改名为 dir_rules 以对齐——别名将在后续版本移除"
+            );
+        }
+        legacy
+    });
+    if let Some(dir_rules) = dir_rules_value {
         let read_rules = parse_rules(dir_rules.get("read").unwrap_or(&serde_json::Value::Null));
         let create_rules = parse_rules(dir_rules.get("create").unwrap_or(&serde_json::Value::Null));
         let delete_rules = parse_rules(dir_rules.get("delete").unwrap_or(&serde_json::Value::Null));

@@ -42,6 +42,7 @@ fn format_rpc_message() {
         session_key: "sess1".to_string(),
         correlation_id: Some(String::new()),
         async_callback: None,
+        tool_path_base: None,
     };
     assert_eq!(rpc_no_cid.format_rpc_message("Hello"), "Hello");
 }

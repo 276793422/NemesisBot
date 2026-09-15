@@ -257,8 +257,101 @@ fn walk_tree(
 }
 
 // ---------------------------------------------------------------------------
+// 评审证据：commit 变更文件清单（F-U3-1 根修）
+// ---------------------------------------------------------------------------
+
+/// commit 相对其首个父提交的变更文件清单（`(路径, 变更类型)`，路径 `/` 分隔）。
+///
+/// 语义评审证据注入用（UAT F-U3-1）：worker 自报的交付路径是一面之词
+/// （集群 exec 沙箱路径会让评审误判文件未落盘），系统合并 commit 的实际
+/// diff 才是「产物是否进入项目工作区」的客观数据源。根提交（无父）对空
+/// 树 diff = 全量清单。
+pub fn commit_changed_files(
+    root: &Path,
+    commit_oid: &str,
+) -> Result<Vec<(String, String)>, String> {
+    let repo =
+        Repository::open(root).map_err(|e| format!("打开项目仓库 {} 失败: {e}", root.display()))?;
+    let oid = Oid::from_str(commit_oid.trim())
+        .map_err(|e| format!("commit oid 非法（{commit_oid}）: {e}"))?;
+    let commit = repo
+        .find_commit(oid)
+        .map_err(|e| format!("commit {commit_oid} 不存在: {e}"))?;
+    let tree = commit
+        .tree()
+        .map_err(|e| format!("读 commit 树失败: {e}"))?;
+    // 父树绑定在独立绑定变量上（diff 借用树对象，生命周期须覆盖 diff）。
+    let parent_tree = match commit.parent_count() {
+        0 => None,
+        _ => {
+            let parent = commit.parent(0).map_err(|e| format!("读父提交失败: {e}"))?;
+            Some(parent.tree().map_err(|e| format!("读父树失败: {e}"))?)
+        }
+    };
+    let diff = repo
+        .diff_tree_to_tree(parent_tree.as_ref(), Some(&tree), None)
+        .map_err(|e| format!("commit diff 失败: {e}"))?;
+    let mut out = Vec::new();
+    for delta in diff.deltas() {
+        let status = match delta.status() {
+            git2::Delta::Added => "新增",
+            git2::Delta::Modified => "修改",
+            git2::Delta::Deleted => "删除",
+            git2::Delta::Renamed => "重命名",
+            _ => "类型变更",
+        };
+        let path = delta
+            .new_file()
+            .path()
+            .or_else(|| delta.old_file().path())
+            .map(|p| p.to_string_lossy().replace('\\', "/"))
+            .unwrap_or_default();
+        if !path.is_empty() {
+            out.push((path, status.to_string()));
+        }
+    }
+    Ok(out)
+}
+
+// ---------------------------------------------------------------------------
 // E4：三方合并
 // ---------------------------------------------------------------------------
+
+/// 读 commit 内指定路径的 blob 文本（F-U3-7，2026-09-15 U3 真机）：验收
+/// 评审的证据段需要文件内容实物（变更集清单只证实「落盘」，评审员无法
+/// 核对「内容」——NB-13 实证 UNSURE 转人工的直因）。二进制 / 超限 /
+/// 路径不存在 / 父 commit 删除态 = `Ok(None)` 诚实降级为只列清单。
+pub fn commit_blob_text(
+    root: &Path,
+    commit_oid: &str,
+    path: &str,
+    max_bytes: usize,
+) -> Result<Option<String>, String> {
+    let repo =
+        Repository::open(root).map_err(|e| format!("打开项目仓库 {} 失败: {e}", root.display()))?;
+    let oid = Oid::from_str(commit_oid.trim())
+        .map_err(|e| format!("commit oid 非法（{commit_oid}）: {e}"))?;
+    let commit = repo
+        .find_commit(oid)
+        .map_err(|e| format!("commit {commit_oid} 不存在: {e}"))?;
+    let tree = commit
+        .tree()
+        .map_err(|e| format!("读 commit 树失败: {e}"))?;
+    let entry = match tree.get_path(std::path::Path::new(path)) {
+        Ok(e) => e,
+        Err(_) => return Ok(None), // commit 内无此路径（删除/改名）
+    };
+    let object = entry
+        .to_object(&repo)
+        .map_err(|e| format!("读 blob 对象失败: {e}"))?;
+    let Some(blob) = object.as_blob() else {
+        return Ok(None); // 目录项非 blob（子模块等）
+    };
+    if blob.size() > max_bytes || looks_binary(blob.content()) {
+        return Ok(None);
+    }
+    Ok(Some(String::from_utf8_lossy(blob.content()).to_string()))
+}
 
 /// 空树 oid（theirs 全删/基线空时的边界）。
 fn empty_tree(repo: &Repository) -> Result<Tree<'_>, String> {

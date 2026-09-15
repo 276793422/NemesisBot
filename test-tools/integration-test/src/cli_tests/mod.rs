@@ -44,6 +44,7 @@ pub use cluster::test_cli_cluster_config;
 pub use cluster::test_cli_cluster_enable_disable;
 pub use cluster::test_cli_cluster_info;
 pub use cluster::test_cli_cluster_init;
+pub use cluster::test_cli_cluster_pair;
 pub use cluster::test_cli_cluster_peers;
 pub use cluster::test_cli_cluster_reset;
 pub use cluster::test_cli_cluster_status;

@@ -79,6 +79,7 @@ impl ModuleHandler for ClusterHandler {
             "nodes.ping",
             "nodes.remove",
             "nodes.add",
+            "pair",
             "nodes.refresh",
             "nodes.detail",
             "tasks.list",
@@ -131,6 +132,12 @@ impl ModuleHandler for ClusterHandler {
             "nodes.add" => {
                 let data = data.ok_or("missing data")?;
                 self.nodes_add(&data, ctx)
+            }
+            // cluster.pair（发现②/B5）：与 CLI `cluster pair` 同一后端
+            // （nemesis_cluster::pair::pair_with_peer）——系统代写 + 回读断言。
+            "pair" => {
+                let data = data.ok_or("missing data")?;
+                self.pair(&data, ctx).await
             }
             "nodes.refresh" => {
                 let data = data.ok_or("missing data")?;
@@ -616,8 +623,10 @@ impl ClusterHandler {
         };
 
         let ppath = peers_path(workspace);
+        // Dashboard 手工加节点：不知道对端真实 RPC 端口，rpc_port=0（不落盘，
+        // 装载端按 udp+10000 约定推导；pair/占位升级路径写实测值）。
         nemesis_cluster::cluster_config::append_peer_to_file(
-            &ppath, &peer_id, &address, &role, &category,
+            &ppath, &peer_id, &address, &role, &category, 0,
         )
         .map_err(|e| format!("failed to append peer to peers.toml: {}", e))?;
 
@@ -644,11 +653,78 @@ impl ClusterHandler {
         Ok(Some(serde_json::json!({ "added": true })))
     }
 
+    /// cluster.pair（发现②/B5，2026-09-15）：地址配对——系统代写 peers.toml。
+    ///
+    /// 与 CLI `nemesisbot cluster pair` 共用同一后端
+    /// [`nemesis_cluster::pair::pair_with_peer`]（四步：双形态探测 → 拉真实
+    /// ID → 写盘（字面键）→ 写后回读断言）。成功后若集群运行中，顺手把
+    /// 节点以 Online 注册进 registry（探测刚往返成功，在线状态是实测值），
+    /// Dashboard 节点列表即时可见。
+    async fn pair(
+        &self,
+        data: &serde_json::Value,
+        ctx: &RequestContext,
+    ) -> Result<Option<serde_json::Value>, String> {
+        let workspace = require_workspace(ctx)?;
+        let address = data["address"]
+            .as_str()
+            .ok_or("missing address")?
+            .trim()
+            .to_string();
+        // RPC 鉴权 token 与集群运行时同源（config.cluster.json `token` 字段，
+        // 见 Cluster::load_rpc_auth_token）。
+        let token = std::fs::read_to_string(cluster_config_path(workspace))
+            .ok()
+            .and_then(|d| serde_json::from_str::<serde_json::Value>(&d).ok())
+            .and_then(|cfg| cfg.get("token").and_then(|t| t.as_str()).map(String::from))
+            .filter(|t| !t.is_empty());
+
+        let ppath = peers_path(workspace);
+        let outcome = nemesis_cluster::pair::pair_with_peer(&ppath, token.as_deref(), &address)
+            .await
+            .map_err(|e| e.to_string())?;
+
+        // 集群运行中 → registry 即时注册（探测刚成功，Online 是实测值；
+        // 全量自报地址随 merge 语义保全）。
+        if let Ok(cluster) = require_cluster(ctx) {
+            let info = nemesis_cluster::types::ExtendedNodeInfo {
+                base: nemesis_types::cluster::NodeInfo {
+                    id: outcome.peer_id.clone(),
+                    name: if outcome.name.is_empty() {
+                        outcome.peer_id.clone()
+                    } else {
+                        outcome.name.clone()
+                    },
+                    role: NodeRole::Worker,
+                    address: outcome.rpc_address.clone(),
+                    category: "general".into(),
+                    last_seen: chrono::Local::now().to_rfc3339(),
+                },
+                status: nemesis_cluster::types::NodeStatus::Online,
+                capabilities: Vec::new(),
+                tags: Vec::new(),
+                addresses: outcome.addresses.clone(),
+                node_type: String::new(),
+            };
+            cluster.register_node(info);
+        }
+
+        Ok(Some(serde_json::json!({
+            "paired": true,
+            "peer_id": outcome.peer_id,
+            "name": outcome.name,
+            "rpc_address": outcome.rpc_address,
+            "udp_address": outcome.udp_address,
+            "addresses": outcome.addresses,
+            "rpc_port": outcome.rpc_port,
+            "literal_port_was_rpc": outcome.literal_port_was_rpc,
+        })))
+    }
+
     /// Phase 3: Actively fetch real node info from a peer via RPC `get_info`,
     /// then merge it into the registry and peers.toml. Used to upgrade a
     /// placeholder peer_id (e.g. user-supplied name or address) to the remote's
     /// real node ID.
-    ///
     /// Workflow:
     ///   1. Look up the peer in the registry (by node_id placeholder).
     ///   2. If currently Offline, flip to Online so the resolver doesn't block
@@ -757,6 +833,12 @@ impl ClusterHandler {
             id: real_id.clone(),
             name: name.clone(),
             address: primary_address,
+            // get_info 实测 RPC 端口，随 merge 落盘 peers.toml（显式字段）。
+            rpc_port,
+            // 发现①/A3：nodes_refresh 重建 RealNodeInfo 同样保全全量地址，
+            // 否则 RPC merge 后 get_peer_info 又回落单地址、select_best_address
+            // 被短路——多网卡选址链在 refresh 路径再次断裂。
+            addresses,
             role,
             category,
             capabilities,

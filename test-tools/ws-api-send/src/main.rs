@@ -135,7 +135,15 @@ async fn main() -> Result<()> {
                             }
                             _ => {
                                 if args.verbose {
-                                    eprintln!("[{}] {}", r#type, &text[..text.len().min(160)]);
+                                    // UTF-8 安全截断：字节索引可能落在多字节字符
+                                    // 中间（中英混排必撞），退到字符边界。
+                                    let end = (|mut n: usize| {
+                                        while n > 0 && !text.is_char_boundary(n) {
+                                            n -= 1;
+                                        }
+                                        n
+                                    })(text.len().min(160));
+                                    eprintln!("[{}] {}", r#type, &text[..end]);
                                 }
                             }
                         }

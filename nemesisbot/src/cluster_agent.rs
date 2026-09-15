@@ -312,7 +312,7 @@ async fn execute_new_task(
 ) -> Result<(), String> {
     let content_preview = truncate_str(&task.content, 200);
     nemesis_cluster::logger::log_task("exec_start", &task.task_id, &content_preview);
-    let context = build_context(task);
+    let context = build_context(agent_loop, task);
     let trace_id = format!("cluster-{}", &task.task_id);
     // Per-task AgentInstance. The config controls this instance's identity (system_prompt, model).
     // Currently uses the shared cluster agent config, but will be customized per task
@@ -518,7 +518,7 @@ async fn resume_task(
         .ok_or("No callback_result")?;
     instance.replace_tool_result(tool_call_id, callback_result);
 
-    let context = build_context(task);
+    let context = build_context(agent_loop, task);
     let trace_id = format!("cluster-resume-{}", &task.task_id);
 
     // W2 P4 per-task cancel：resume 路径同样注册令牌（token 透传给
@@ -676,13 +676,30 @@ fn truncate_str(s: &str, max_len: usize) -> String {
 /// `chat_id` 用稳定的 `session_key`（而不是 `node_id:task_id`），让同一对端节点的多次
 /// peer_chat 共享 chat_id。这样下游工具（cluster_rpc 多跳传播、cron、spawn）拿到的
 /// chat_id 不会每次变化，避免历史断裂和路由失效。
-fn build_context(task: &nemesis_cluster::cluster_task::ClusterTask) -> RequestContext {
-    RequestContext::new(
+fn build_context(
+    agent_loop: &AgentLoop,
+    task: &nemesis_cluster::cluster_task::ClusterTask,
+) -> RequestContext {
+    let mut ctx = RequestContext::new(
         "cluster",
         &task.source.session_key,
         &task.source.node_id,
         &task.source.session_key,
-    )
+    );
+    // F-U3-2（UAT U3 实证）：档案管线任务（工作副本有基线 sidecar）→ dispatch
+    // 层文件工具/执行 cwd 的相对路径基准 = 工作副本目录。worker 误用相对路径
+    // 不再静默落到工作副本之外（变更集只扫 exec 目录——落外面=成果丢失）。
+    // 非档案任务（无 sidecar）与普通会话一样 base 为空，零行为变化。
+    if let Some(ws) = agent_loop.workspace_root() {
+        let exec_dir = nemesis_cluster::exec_workspace::exec_dir_for(&ws, &task.task_id);
+        if exec_dir
+            .join(nemesis_cluster::exec_workspace::BASELINE_SIDECAR_NAME)
+            .exists()
+        {
+            ctx.tool_path_base = Some(exec_dir);
+        }
+    }
+    ctx
 }
 
 /// Restore conversation history from SessionStore into the given AgentInstance.

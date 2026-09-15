@@ -550,6 +550,8 @@ describe('AutopilotPanel（自动化 P4）', () => {
     await inputs[1].setValue('0 18 * * 5') // cron
     await inputs[2].setValue('周报整理 {date}') // 标题模板
     await inputs[3].setValue('node-b') // 派发目标
+    const areas = w.findAll('textarea.form-textarea')
+    await areas[1].setValue('报告含时间与磁盘两项') // 验收标准（F-U5-1）
     await w.findAll('button').find((b) => b.text() === '创建')!.trigger('click')
     await flushPromises()
     const call = requestMock.mock.calls.find((c) => c[1] === 'autopilot.create')!
@@ -557,6 +559,7 @@ describe('AutopilotPanel（自动化 P4）', () => {
     expect(call[2].cron).toBe('0 18 * * 5')
     expect(call[2].title).toBe('周报整理 {date}')
     expect(call[2].target).toBe('node-b')
+    expect(call[2].acceptance_criteria).toBe('报告含时间与磁盘两项')
     expect(call[2].enabled).toBe(true)
   })
 

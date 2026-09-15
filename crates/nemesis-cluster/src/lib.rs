@@ -17,6 +17,7 @@ pub mod exec_workspace;
 pub mod logger;
 pub mod network;
 pub mod outbox;
+pub mod pair;
 pub mod registry;
 pub mod rpc_types;
 pub mod task_manager;

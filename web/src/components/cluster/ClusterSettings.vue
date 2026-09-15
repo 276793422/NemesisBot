@@ -31,6 +31,31 @@ const addingRules = ref(false)
 const firewallResults = ref<any>(null)
 const ruleResult = ref<any>(null)
 
+// Pairing（发现②：地址配对，系统代写 peers.toml）
+const pairAddress = ref('')
+const pairing = ref(false)
+const pairResult = ref<any>(null)
+
+async function pairNode() {
+  const addr = pairAddress.value.trim()
+  if (!addr) {
+    toast.warn('请输入对端地址')
+    return
+  }
+  pairing.value = true
+  pairResult.value = null
+  try {
+    const res = await request('cluster', 'pair', { address: addr })
+    pairResult.value = { ok: true, ...res }
+    toast.success(`配对成功：${res?.peer_id || addr}`)
+  } catch (e: any) {
+    pairResult.value = { ok: false, message: String(e || '配对失败') }
+    toast.error('配对失败: ' + (e || '未知错误'))
+  } finally {
+    pairing.value = false
+  }
+}
+
 const testNames: Record<string, string> = {
   udp_bind: 'UDP 端口绑定',
   broadcast_flag: '广播标志',
@@ -280,6 +305,47 @@ onMounted(async () => {
               </div>
             </template>
           </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Full-width pairing card（发现②：地址配对） -->
+    <div class="card" style="margin-top:var(--space-4)">
+      <div class="card-header"><h3>配对节点</h3></div>
+      <div class="card-body">
+        <div class="form-group">
+          <label class="form-label">
+            对端地址
+            <span class="form-hint" title="填对端可达地址 host:port，UDP 或 RPC 端口皆可（系统自动探测）。配对会自动拉取对端真实 ID 并写入 peers.toml，无需手工抄写。">ⓘ</span>
+          </label>
+          <div style="display:flex;gap:var(--space-2);align-items:center">
+            <input
+              class="form-input"
+              v-model="pairAddress"
+              placeholder="例如 192.168.1.10:11950（UDP 端口）或 192.168.1.10:21950（RPC 端口）"
+              style="flex:1;font-family:var(--font-mono);font-size:var(--text-sm)"
+              @keyup.enter="pairNode"
+            />
+            <button class="btn btn-primary" :disabled="pairing" @click="pairNode">
+              {{ pairing ? '配对中...' : '配对' }}
+            </button>
+          </div>
+        </div>
+        <!-- Pair result -->
+        <div v-if="pairResult" class="fw-results" style="margin-top:var(--space-2)">
+          <template v-if="pairResult.ok">
+            <div class="fw-summary pass">✓ 已配对并写入 peers.toml（写后回读校验通过）</div>
+            <div class="fw-detail" style="margin-top:var(--space-1)">
+              <div>节点 ID：<span style="font-family:var(--font-mono)">{{ pairResult.peer_id }}</span></div>
+              <div v-if="pairResult.name">名称：{{ pairResult.name }}</div>
+              <div>RPC 地址：<span style="font-family:var(--font-mono)">{{ pairResult.rpc_address }}</span></div>
+              <div>peers.toml 地址（UDP）：<span style="font-family:var(--font-mono)">{{ pairResult.udp_address }}</span></div>
+              <div v-if="pairResult.addresses?.length">对端自报地址：{{ pairResult.addresses.join(', ') }}</div>
+            </div>
+          </template>
+          <template v-else>
+            <div class="fw-summary fail">{{ pairResult.message }}</div>
+          </template>
         </div>
       </div>
     </div>

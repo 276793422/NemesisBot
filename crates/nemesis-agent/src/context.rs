@@ -39,6 +39,13 @@ pub struct RequestContext {
     /// Skipped during serialization since closures are not serializable.
     #[serde(skip)]
     pub async_callback: Option<AsyncCallback>,
+    /// F-U3-2（UAT U3 实证）：档案管线任务的工作副本路径基准。Some 时
+    /// dispatch 层把文件类工具的相对 `path` / 执行类工具的相对（或缺省）
+    /// `cwd` 重写进该目录——worker 误用相对路径不再静默落到工作副本之外
+    /// （变更集只扫 exec 目录，落外面的文件=成果丢失+工作区污染）。普通
+    /// 会话恒 None，零行为变化。
+    #[serde(skip)]
+    pub tool_path_base: Option<PathBuf>,
 }
 
 impl std::fmt::Debug for RequestContext {
@@ -53,6 +60,7 @@ impl std::fmt::Debug for RequestContext {
                 "async_callback",
                 &self.async_callback.as_ref().map(|_| "..."),
             )
+            .field("tool_path_base", &self.tool_path_base)
             .finish()
     }
 }
@@ -67,6 +75,7 @@ impl RequestContext {
             session_key: session_key.to_string(),
             correlation_id: None,
             async_callback: None,
+            tool_path_base: None,
         }
     }
 
@@ -85,6 +94,7 @@ impl RequestContext {
             session_key: session_key.to_string(),
             correlation_id: Some(correlation_id.to_string()),
             async_callback: None,
+            tool_path_base: None,
         }
     }
 
@@ -100,6 +110,7 @@ impl RequestContext {
             session_key: session_key.to_string(),
             correlation_id: Some(correlation_id.to_string()),
             async_callback: None,
+            tool_path_base: None,
         }
     }
 

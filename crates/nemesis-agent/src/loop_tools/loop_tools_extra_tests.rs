@@ -1585,6 +1585,7 @@ async fn test_cron_create_continue_session_uses_ext() {
         session_key: "agent:convo-42".to_string(),
         correlation_id: None,
         async_callback: None,
+        tool_path_base: None,
     };
 
     // continue_session=true → job payload carries the CALLER's session_key.
@@ -1643,6 +1644,7 @@ async fn test_cron_create_continue_session_max_rounds() {
         session_key: "agent:convo-b".to_string(),
         correlation_id: None,
         async_callback: None,
+        tool_path_base: None,
     };
 
     // Explicit tier → payload carries it.

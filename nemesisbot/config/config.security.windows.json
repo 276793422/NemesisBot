@@ -104,26 +104,6 @@
       }
     ]
   },
-  "directory_rules": {
-    "read": [
-      {
-        "pattern": "/workspace/**",
-        "action": "allow"
-      }
-    ],
-    "create": [
-      {
-        "pattern": "/workspace/**",
-        "action": "allow"
-      }
-    ],
-    "delete": [
-      {
-        "pattern": "/workspace/tmp/**",
-        "action": "allow"
-      }
-    ]
-  },
   "process_rules": {
     "exec": [
       {
@@ -145,6 +125,26 @@
       {
         "pattern": "node *",
         "action": "allow"
+      },
+      {
+        "pattern": "rm -r*",
+        "action": "deny"
+      },
+      {
+        "pattern": "rm -fr*",
+        "action": "deny"
+      },
+      {
+        "pattern": "rm --recursive*",
+        "action": "deny"
+      },
+      {
+        "pattern": "Remove-Item*",
+        "action": "ask"
+      },
+      {
+        "pattern": "rd *",
+        "action": "ask"
       },
       {
         "pattern": "rm -rf *",
@@ -255,6 +255,30 @@
       {
         "pattern": "*",
         "action": "deny"
+      }
+    ]
+  },
+  "dir_rules": {
+    "read": [
+      {
+        "pattern": "/workspace/**",
+        "action": "allow"
+      }
+    ],
+    "create": [
+      {
+        "pattern": "/workspace/**",
+        "action": "allow"
+      }
+    ],
+    "delete": [
+      {
+        "pattern": "/workspace/tmp/**",
+        "action": "allow"
+      },
+      {
+        "pattern": "*",
+        "action": "ask"
       }
     ]
   }

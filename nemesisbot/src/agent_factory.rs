@@ -1176,6 +1176,12 @@ pub fn build_cluster_agent_loop(
         agent_loop.set_data_store(ds.clone());
     }
 
+    // F-U3-2 接线（UAT U3 round-2 实证，T37① 同型漏接）：cluster loop 必须
+    // 注入工作区根——缺了它 cluster_agent::build_context 的 tool_path_base
+    // 注入条件（workspace_root + exec 目录 sidecar 在场）恒 None，档案管线
+    // 任务的相对路径重写静默失效（worker 文件落 workspace 根，变更集丢失）。
+    agent_loop.set_workspace_root(shared.workspace_dir());
+
     // D1 (2026-08-24 arch review, U-list D1): the cluster agent must resolve
     // the same startup capability tier as the main agent. Before this, the
     // cluster loop always ran the AgentLoop::new default (Big = full 42-tool

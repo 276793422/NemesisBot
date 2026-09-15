@@ -416,6 +416,169 @@ fn test_load_security_rules_invalid_json() {
 }
 
 // -------------------------------------------------------------------------
+// F-U4-7（2026-09-15 真机事故）：出厂模板 `directory_rules` 死键（装配层
+// 只读 `dir_rules`，失配即整段静默失明）+ 目录删除无 catch-all + exec 递归
+// 删 deny 覆盖窄 —— 三者叠加 default_action=allow，worker agent 把自身
+// home rm 穿。以下测试钉死三层修复。
+// -------------------------------------------------------------------------
+
+/// 四平台出厂模板健康检查：键名必须是 `dir_rules`（不是历史
+/// `directory_rules`），且 `dir_rules.delete` 必须有 `*` catch-all
+/// （miss 不落 default_action 的裸奔面）。
+#[test]
+fn test_security_templates_dir_rules_key_and_catchall() {
+    // include_str! 不支持运行时拼名，逐平台展开。
+    let windows: serde_json::Value = serde_json::from_str(include_str!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/config/config.security.windows.json"
+    )))
+    .unwrap();
+    let linux: serde_json::Value = serde_json::from_str(include_str!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/config/config.security.linux.json"
+    )))
+    .unwrap();
+    let darwin: serde_json::Value = serde_json::from_str(include_str!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/config/config.security.darwin.json"
+    )))
+    .unwrap();
+    let other: serde_json::Value = serde_json::from_str(include_str!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/config/config.security.other.json"
+    )))
+    .unwrap();
+    for (plat, cfg) in [
+        ("windows", &windows),
+        ("linux", &linux),
+        ("darwin", &darwin),
+        ("other", &other),
+    ] {
+        assert!(
+            cfg.get("dir_rules").is_some(),
+            "{plat}: dir_rules key must exist"
+        );
+        assert!(
+            cfg.get("directory_rules").is_none(),
+            "{plat}: legacy directory_rules key must be renamed to dir_rules"
+        );
+        let delete = cfg["dir_rules"]["delete"]
+            .as_array()
+            .expect("{plat}: dir_rules.delete must be an array");
+        assert!(
+            delete.iter().any(|r| r["pattern"] == "*"),
+            "{plat}: dir_rules.delete must have a catch-all '*' rule"
+        );
+    }
+}
+
+/// exec 规则必须覆盖递归删除变体：`rm -rf <path>` / `rm -r <path>` /
+/// `rm -fr <path>` 在 windows/linux/darwin 模板下必须命中 deny 规则
+/// （F-U4-7：旧模板只 deny `rm -rf /*` 字面前缀，`rm -r` 直落 allow）。
+#[test]
+fn test_security_templates_exec_recursive_rm_covered() {
+    let cases: &[(&str, &str, &str)] = &[
+        (
+            "windows",
+            include_str!(concat!(
+                env!("CARGO_MANIFEST_DIR"),
+                "/config/config.security.windows.json"
+            )),
+            "deny",
+        ),
+        (
+            "linux",
+            include_str!(concat!(
+                env!("CARGO_MANIFEST_DIR"),
+                "/config/config.security.linux.json"
+            )),
+            "deny",
+        ),
+        (
+            "darwin",
+            include_str!(concat!(
+                env!("CARGO_MANIFEST_DIR"),
+                "/config/config.security.darwin.json"
+            )),
+            "deny",
+        ),
+        (
+            "other",
+            include_str!(concat!(
+                env!("CARGO_MANIFEST_DIR"),
+                "/config/config.security.other.json"
+            )),
+            "ask",
+        ),
+    ];
+    for (plat, raw, expect_action) in cases {
+        let cfg: serde_json::Value = serde_json::from_str(raw).unwrap();
+        let exec = cfg["process_rules"]["exec"].as_array().unwrap();
+        for cmd in [
+            "rm -rf /home/u/proj",
+            "rm -r /home/u/proj",
+            "rm -fr /home/u/proj",
+        ] {
+            let hit = exec
+                .iter()
+                .find(|r| {
+                    nemesis_security::matcher::match_command_pattern(
+                        r["pattern"].as_str().unwrap(),
+                        cmd,
+                    ) && r["action"] == *expect_action
+                })
+                .unwrap_or_else(|| {
+                    panic!("{plat}: exec rule must {expect_action} recursive rm ({cmd:?})")
+                });
+            assert!(!hit["pattern"].as_str().unwrap().is_empty());
+        }
+    }
+}
+
+/// 历史键名 `directory_rules` 必须按 `dir_rules` 别名生效（F-U4-7 兼容
+/// 臂：存量部署的旧模板不因改名而整段失效）。
+#[test]
+fn test_load_security_rules_directory_rules_legacy_alias() {
+    let plugin = Arc::new(nemesis_security::pipeline::SecurityPlugin::new(
+        nemesis_security::pipeline::SecurityPluginConfig::default(),
+    ));
+    let tmp = tempfile::TempDir::new().unwrap();
+    let path = tmp.path().join("config.security.json");
+    let data = serde_json::json!({
+        "default_action": "deny",
+        "directory_rules": {
+            "delete": [
+                {"pattern": "/workspace/tmp/**", "action": "allow", "comment": ""},
+                {"pattern": "C:/doomed/**", "action": "deny", "comment": ""}
+            ]
+        }
+    });
+    std::fs::write(&path, serde_json::to_string(&data).unwrap()).unwrap();
+    crate::security_setup::load_security_rules(&plugin, &path);
+
+    let mk = |target: &str| nemesis_security::auditor::OperationRequest {
+        id: uuid::Uuid::new_v4().to_string(),
+        op_type: nemesis_security::types::OperationType::DirDelete,
+        danger_level: nemesis_security::types::get_danger_level(
+            nemesis_security::types::OperationType::DirDelete,
+        ),
+        user: "test".into(),
+        source: "test".into(),
+        target: target.into(),
+        timestamp: None,
+        approver: None,
+        approved_at: None,
+        denied_reason: None,
+    };
+    // 白名单放行（证明规则真的装进了 DirDelete，而非整段失明落 default deny）。
+    let (allowed_tmp, err, _) = plugin.auditor().request_permission(&mk("/workspace/tmp/a"));
+    assert!(allowed_tmp, "workspace tmp delete must pass: {err:?}");
+    // 显式 deny 命中。
+    let (allowed_doomed, err, _) = plugin.auditor().request_permission(&mk("C:/doomed/x"));
+    assert!(!allowed_doomed, "doomed delete must be denied: {err:?}");
+}
+
+// -------------------------------------------------------------------------
 // apply_security_layer_switches tests（layer 开关构造期生效——V3 真机揭的
 // 死键 bug 的回归测试）
 // -------------------------------------------------------------------------
@@ -866,24 +1029,55 @@ fn test_cluster_result_persister_save_format() {
 
 #[test]
 fn test_peer_toml_key_sanitization() {
-    let peer_id = "node-1.example.com:11949";
-    let key_safe = peer_id.replace(['.', ':', '-'], "_");
-    assert_eq!(key_safe, "node_1_example_com_11949");
+    // 单一真相源：nemesis_cluster::cluster_config::sanitize_peer_key
+    // （域已收窄：只替换 `.`/`:`；写盘路径已字面键化，此函数只用于
+    // 旧键比对与历史残留清理）。
+    assert_eq!(
+        nemesis_cluster::cluster_config::sanitize_peer_key("node-1.example.com:11949"),
+        "node-1_example_com_11949"
+    );
+    // `-` 是合法 bare key 字符，保留。
+    assert_eq!(
+        nemesis_cluster::cluster_config::sanitize_peer_key("node-a"),
+        "node-a"
+    );
 }
 
 #[test]
 fn test_peer_rpc_port_derivation() {
-    // Convention: UDP port + 10000
-    let udp_port: u16 = 11949;
-    let rpc_port = udp_port + 10000;
-    assert_eq!(rpc_port, 21949);
+    // 单一真相源：resolve_peer_rpc_port（显式字段优先 → udp+10000 约定兜底）。
+    // 无字段条目 = 纯约定推导；带显式字段 = 实测值直通（非约定布局）。
+    let convention = toml::Value::Table(
+        [("address".to_string(), toml::Value::from("10.0.0.5:11949"))]
+            .into_iter()
+            .collect(),
+    );
+    assert_eq!(
+        nemesis_cluster::cluster_config::resolve_peer_rpc_port(&convention, 11949),
+        21949
+    );
+
+    let explicit = toml::Value::Table(
+        [
+            ("address".to_string(), toml::Value::from("10.0.0.5:19411")),
+            ("rpc_port".to_string(), toml::Value::from(29412i64)),
+        ]
+        .into_iter()
+        .collect(),
+    );
+    assert_eq!(
+        nemesis_cluster::cluster_config::resolve_peer_rpc_port(&explicit, 19411),
+        29412
+    );
 }
 
 #[test]
 fn test_peer_rpc_port_zero_base() {
-    let udp_port: u16 = 0;
-    let rpc_port = if udp_port > 0 { udp_port + 10000 } else { 0 };
-    assert_eq!(rpc_port, 0);
+    let empty = toml::Value::Table(toml::value::Table::new());
+    assert_eq!(
+        nemesis_cluster::cluster_config::resolve_peer_rpc_port(&empty, 0),
+        0
+    );
 }
 
 // -------------------------------------------------------------------------

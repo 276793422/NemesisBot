@@ -170,13 +170,32 @@ impl AnthropicProvider {
                                 .as_deref()
                                 .or_else(|| tc.function.as_ref().map(|f| f.name.as_str()))
                                 .unwrap_or("");
+                            // 参数单一真相源 = function.arguments（String JSON）：
+                            // LlmProvider 桥（llm_bridge::agent_message_to_provider /
+                            // CLI agent adapter）只填这一份（arguments: None），
+                            // OpenAI lane 的共享序列化同样只发它。此前这里只读
+                            // HashMap 版 `tc.arguments` → 桥场景历史 assistant
+                            // tool_use input 恒 `{}`，模型下一轮模仿历史空参形态
+                            //（UAT U3 glm-5.3-flash「write 后 exec 空参」根因，
+                            // 2026-09-15 wire 抓包实锤：响应参数完整、进历史即丢）。
+                            // 解析失败/缺失时回退 HashMap 版（部分内部路径直填），
+                            // 非 object 结果不采纳（anthropic wire 要求 input 为
+                            // object），两者皆缺才 {}。
                             let input = tc
-                                .arguments
+                                .function
                                 .as_ref()
-                                .map(|args| {
-                                    serde_json::Value::Object(
-                                        args.iter().map(|(k, v)| (k.clone(), v.clone())).collect(),
-                                    )
+                                .and_then(|f| {
+                                    serde_json::from_str::<serde_json::Value>(&f.arguments).ok()
+                                })
+                                .filter(|v| v.is_object())
+                                .or_else(|| {
+                                    tc.arguments.as_ref().map(|args| {
+                                        serde_json::Value::Object(
+                                            args.iter()
+                                                .map(|(k, v)| (k.clone(), v.clone()))
+                                                .collect(),
+                                        )
+                                    })
                                 })
                                 .unwrap_or(serde_json::json!({}));
                             content.push(serde_json::json!({

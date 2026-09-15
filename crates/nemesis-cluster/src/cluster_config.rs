@@ -193,19 +193,71 @@ pub fn load_static_config(path: &Path) -> Result<StaticConfig, ConfigError> {
 }
 
 /// Save static config to a TOML file using atomic write.
+///
+/// **Peer-preserving**（UAT-BUG-3 根修 2026-09-15）：`StaticConfig` 结构上
+/// 只含 `[node]`，整体序列化会把文件里已有的 `[peers.*]` 表静默抹掉
+/// （真机实证：`node.update_identity` 改一次身份 → pair 写入的静态 peers
+/// 全部消失）。因此对已存在且可解析的文件，解析旧文档后**只替换 `[node]`
+/// 表、其余内容原样保留**；新文件/不可解析文件才整体序列化。全部调用方
+/// （`node.update_identity` / persona 身份安装 / CLI 身份更新 /
+/// `cluster init`）语义都是「写本节点身份」，无一想要清 peers。
 pub fn save_static_config(path: &Path, config: &StaticConfig) -> Result<(), ConfigError> {
     // Ensure parent directory exists
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent)?;
     }
 
-    // Serialize to TOML
-    let toml_str = toml::to_string_pretty(config)
-        .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e.to_string()))?;
+    // Peer-preserving write: replace only the [node] table when the file
+    // already exists and parses as a TOML table. Any read/parse failure
+    // (missing or corrupt file) falls back to serializing `config` fresh.
+    let parsed = std::fs::read_to_string(path)
+        .ok()
+        .and_then(|content| content.parse::<toml::Value>().ok())
+        .filter(|doc| doc.is_table());
+    let toml_str = match parsed {
+        Some(mut doc) => {
+            let node_value = toml::Value::try_from(&config.node)
+                .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e.to_string()))?;
+            doc.as_table_mut()
+                .expect("filtered to a table above")
+                .insert("node".to_string(), node_value);
+            toml::to_string_pretty(&doc)
+                .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e.to_string()))?
+        }
+        None => toml::to_string_pretty(config)
+            .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e.to_string()))?,
+    };
 
     // Atomic write: write to tmp file, then rename
     atomic_write(path, toml_str.as_bytes())?;
     Ok(())
+}
+
+/// Collect known peer UDP endpoints (`host:port`) from the `[peers.*]`
+/// tables of a static config file (peers.toml).
+///
+/// `[peers.X].address` is stored UDP-form (pair 与 RPC 合并 `persist_real_peer_to_toml`
+/// 双路回写都落这个形态），是 peer UDP 发现端口的唯一权威来源——registry 里
+/// 只存 RPC 形态地址（`host:rpc_port`），答不了「这个 peer 的 UDP 监听端口是几」。
+/// 供 discovery announce 对异端口 peer 定向单播使用。
+/// 文件缺失/不可解析时返回空 vec（退化为纯广播，行为同旧版）。
+pub fn load_peer_udp_endpoints(path: &Path) -> Vec<String> {
+    let content = match std::fs::read_to_string(path) {
+        Ok(c) => c,
+        Err(_) => return Vec::new(),
+    };
+    let Ok(doc) = content.parse::<toml::Value>() else {
+        return Vec::new();
+    };
+    let Some(peers) = doc.get("peers").and_then(|v| v.as_table()) else {
+        return Vec::new();
+    };
+    peers
+        .values()
+        .filter_map(|p| p.get("address").and_then(|v| v.as_str()))
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+        .collect()
 }
 
 /// Load dynamic state from a TOML file.
@@ -255,9 +307,10 @@ pub fn create_static_config(node_id: &str, node_name: &str, address: &str) -> St
 /// - `.` is the dotted-key separator in TOML, must be replaced
 /// - `:` commonly appears in `host:port` and is reserved-style, replaced for safety
 ///
-/// TOML v1.0.0 explicitly allows `-` and `_` in bare keys (`A-Za-z0-9_-`), so
-/// both are preserved as-is. This makes the mapping user-input → key → peer_id
-/// an identity function for those characters (no round-trip loss).
+/// **域已收窄（发现②/B3，2026-09-15）**：写盘路径（`append_peer_to_file_with_name`
+/// / `remove_peer_from_file`）已改字面 id 键（TOML 引号键保真），本函数只
+/// 保留两处用途：① `upgrade_peer_in_peers_toml` 的旧键同键比对；②
+/// `remove_peer_from_file` 清理旧版代码落盘的有损键残留。新写路径不得再调用。
 pub fn sanitize_peer_key(peer_id: &str) -> String {
     peer_id.replace(['.', ':'], "_")
 }
@@ -279,14 +332,32 @@ pub fn sanitize_peer_key(peer_id: &str) -> String {
 /// If a peer with the same sanitized key already exists, a `tracing::warn!`
 /// is logged and the existing entry is overwritten. This is intentional —
 /// "add the same name twice" is the canonical update flow.
+/// `rpc_port > 0` 时写入显式 `rpc_port` 字段（pair 实测值），0 = 不写
+/// （调用方不知道真实 RPC 端口，如 Dashboard 手工加节点），装载端回落
+/// `udp+10000` 约定推导。
 pub fn append_peer_to_file(
     path: &Path,
     peer_id: &str,
     address: &str,
     role: &str,
     category: &str,
+    rpc_port: u16,
 ) -> Result<(), ConfigError> {
-    append_peer_to_file_with_name(path, peer_id, address, role, category, None)
+    append_peer_to_file_with_name(path, peer_id, address, role, category, None, rpc_port)
+}
+
+/// Resolve a static peer entry's RPC port at load time (单一真相源，gateway 与
+/// CLI node 装载器同源消费）。
+///
+/// 显式 `rpc_port` 字段（pair / 占位升级写盘的探测实测值，>0 且 ≤65535）
+/// 优先；缺字段时回落 `udp+10000` 约定推导（兼容手写/旧版条目）。
+pub fn resolve_peer_rpc_port(peer_entry: &toml::Value, udp_port: u16) -> u16 {
+    peer_entry
+        .get("rpc_port")
+        .and_then(|v| v.as_integer())
+        .filter(|v| *v > 0 && *v <= u16::MAX as i64)
+        .map(|v| v as u16)
+        .unwrap_or_else(|| if udp_port > 0 { udp_port + 10000 } else { 0 })
 }
 
 /// Like [`append_peer_to_file`] but also persists a `name` field. Used when
@@ -294,6 +365,11 @@ pub fn append_peer_to_file(
 /// (e.g. "Node-A") must be written so that after a reload the static loader
 /// recovers it (otherwise `name` falls back to the real_id key and lookups by
 /// the human name fail).
+///
+/// `rpc_port`：pair 探测到的对端真实 RPC 端口（>0 时显式落盘）。此前只写
+/// UDP `address`，装载端按 `udp+10000` 猜 RPC——非约定端口布局（如
+/// udp=19411/rpc=29412）会永久猜错，且 B4 占位升级的地址比对同样含端口
+/// 永不命中（2026-09-15 R1-7 真机实证：占位与真实 ID 双条目并存）。
 pub fn append_peer_to_file_with_name(
     path: &Path,
     peer_id: &str,
@@ -301,6 +377,7 @@ pub fn append_peer_to_file_with_name(
     role: &str,
     category: &str,
     name: Option<&str>,
+    rpc_port: u16,
 ) -> Result<(), ConfigError> {
     // Ensure parent directory exists
     if let Some(parent) = path.parent() {
@@ -343,7 +420,12 @@ pub fn append_peer_to_file_with_name(
         .expect("peers entry just ensured to be a table");
 
     // Build the new peer subtable
-    let key = sanitize_peer_key(peer_id);
+    // 发现②/B3（2026-09-15）：表键改**字面 peer_id** 写入——sanitize 把
+    // `.`/`:` 有损替换 `_`，若对端自定义 id 含这两字符，系统写出的表键
+    // ≠真实 id（静态装载「表键即 peer_id」→ 永远连不上），系统代写也会
+    // 出错。TOML 序列化器对非 bare key 自动加引号（`[peers."peer.a"]`），
+    // 字面键天然保真；gateway 装载器按表键原样读作 peer_id，全链一致。
+    let key = peer_id.to_string();
 
     // Detect duplicate and warn (do not block — overwrite is intentional)
     if peers_table.contains_key(&key) {
@@ -367,6 +449,12 @@ pub fn append_peer_to_file_with_name(
         "category".to_string(),
         toml::Value::String(category.to_string()),
     );
+    if rpc_port > 0 {
+        peer_entry.insert(
+            "rpc_port".to_string(),
+            toml::Value::Integer(rpc_port as i64),
+        );
+    }
     peers_table.insert(key, toml::Value::Table(peer_entry));
 
     // Serialize and atomic write
@@ -420,8 +508,18 @@ pub fn remove_peer_from_file(path: &Path, peer_id: &str) -> Result<(), ConfigErr
         None => return Ok(()), // no peers table → nothing to remove
     };
 
-    let key = sanitize_peer_key(peer_id);
-    if peers_table.remove(&key).is_none() {
+    // 发现②/B3：字面键删除为主；若与旧版 sanitize 键不同且存在，一并
+    // 清理——那是旧代码给同一 peer 留下的有损键残留（写盘已字面化，
+    // 这里只清历史遗留，不留双条目）。
+    let key = peer_id.to_string();
+    let legacy = sanitize_peer_key(peer_id);
+    let removed = peers_table.remove(&key).is_some();
+    let removed_legacy = if legacy != key {
+        peers_table.remove(&legacy).is_some()
+    } else {
+        false
+    };
+    if !removed && !removed_legacy {
         // Key not present — nothing was removed. Avoid the atomic rewrite.
         return Ok(());
     }
@@ -434,6 +532,24 @@ pub fn remove_peer_from_file(path: &Path, peer_id: &str) -> Result<(), ConfigErr
     })?;
     atomic_write(path, toml_str.as_bytes())?;
     Ok(())
+}
+
+/// Convert an RPC address (`host:rpc_port`) to the UDP address (`host:udp_port`)
+/// for peers.toml write-back, reversing the static loader's
+/// `rpc_port = udp_port + 10000` convention (gateway.rs). Falls back to the
+/// input unchanged if the port can't be parsed or is ≤ 10000 (no convention to
+/// reverse — e.g. a non-standard port or an address without a port).
+///
+/// 单一真相源：`Cluster::persist_real_peer_to_toml`（升级/merge 写盘）与
+/// `pair` 配对写盘共用本函数，保证 RPC↔UDP 换算只此一份。
+pub fn rpc_to_udp_address(rpc_addr: &str) -> String {
+    if let Some((host, port_str)) = rpc_addr.rsplit_once(':')
+        && let Ok(rpc_port) = port_str.parse::<u32>()
+        && rpc_port > 10000
+    {
+        return format!("{}:{}", host, rpc_port - 10000);
+    }
+    rpc_addr.to_string()
 }
 
 /// Load existing config or create a default one.

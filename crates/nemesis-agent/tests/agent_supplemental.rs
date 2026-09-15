@@ -653,6 +653,7 @@ fn test_request_context_format_rpc_empty_correlation() {
         session_key: "sess1".to_string(),
         correlation_id: Some(String::new()),
         async_callback: None,
+        tool_path_base: None,
     };
     assert_eq!(ctx.format_rpc_message("Hello"), "Hello");
 }

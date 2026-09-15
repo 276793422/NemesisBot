@@ -737,3 +737,95 @@ fn test_discovery_broadcast_thread_periodic_announce() {
     service.stop().unwrap();
     assert!(!service.is_running());
 }
+
+// -- 定向单播（U1-5 根修 2026-09-15：异端口拓扑 announce 失聪）--
+
+/// peer_udp_endpoints 缺省实现 = 空（纯广播，行为同旧版）。
+#[test]
+fn test_peer_udp_endpoints_default_empty() {
+    let cb = NullCallbacks::new("n1");
+    assert!(cb.peer_udp_endpoints().is_empty());
+}
+
+/// 最小 ClusterCallbacks：固定单播端点，验证 send_announce_with 的
+/// 异端口单播补发真的把 announce 送到目标 socket。
+struct FixedEndpointCallbacks(Vec<String>);
+
+impl ClusterCallbacks for FixedEndpointCallbacks {
+    fn node_id(&self) -> String {
+        "sender-1".into()
+    }
+    fn name(&self) -> String {
+        "sender-1".into()
+    }
+    fn address(&self) -> String {
+        "127.0.0.1:11949".into()
+    }
+    fn rpc_port(&self) -> u16 {
+        21949
+    }
+    fn all_local_ips(&self) -> Vec<String> {
+        vec!["127.0.0.1".into()]
+    }
+    fn role(&self) -> String {
+        "worker".into()
+    }
+    fn category(&self) -> String {
+        "testing".into()
+    }
+    fn tags(&self) -> Vec<String> {
+        Vec::new()
+    }
+    fn capabilities(&self) -> Vec<String> {
+        Vec::new()
+    }
+    fn handle_discovered_node(
+        &self,
+        _: &str,
+        _: &str,
+        _: &[String],
+        _: u16,
+        _: &str,
+        _: &str,
+        _: &[String],
+        _: &[String],
+        _: &str,
+    ) -> bool {
+        false
+    }
+    fn handle_node_offline(&self, _: &str, _: &str) {}
+    fn sync_to_disk(&self) -> Result<(), String> {
+        Ok(())
+    }
+    fn peer_udp_endpoints(&self) -> Vec<String> {
+        self.0.clone()
+    }
+}
+
+#[test]
+fn test_send_announce_with_unicasts_to_known_peer_endpoints() {
+    // 接收端：随机端口裸 UDP socket（模拟监听在异端口上的 peer）
+    let rx = std::net::UdpSocket::bind("127.0.0.1:0").unwrap();
+    let rx_port = rx.local_addr().unwrap().port();
+    rx.set_read_timeout(Some(Duration::from_secs(3))).unwrap();
+
+    let cb = FixedEndpointCallbacks(vec![format!("127.0.0.1:{}", rx_port)]);
+    let sock = std::net::UdpSocket::bind("0.0.0.0:0").unwrap();
+    sock.set_broadcast(true).unwrap();
+
+    send_announce_with(&sock, 11949, None, &cb);
+
+    let mut buf = [0u8; 4096];
+    let (n, _) = rx.recv_from(&mut buf).unwrap();
+    let msg = DiscoveryMessage::from_bytes(&buf[..n]).unwrap();
+    assert_eq!(msg.node_id, "sender-1");
+}
+
+#[test]
+fn test_send_announce_with_no_endpoints_no_unicast_noise() {
+    // 空端点列表（缺省实现路径）不炸、广播照常（无接收方，只验证不 panic）
+    let cb = FixedEndpointCallbacks(Vec::new());
+    let sock = std::net::UdpSocket::bind("0.0.0.0:0").unwrap();
+    sock.set_broadcast(true).unwrap();
+    send_announce_with(&sock, 11949, None, &cb);
+}

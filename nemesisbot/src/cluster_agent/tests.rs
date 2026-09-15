@@ -162,10 +162,9 @@ fn test_extract_final_message_returns_last_done() {
 
 // -- build_context -------------------------------------------------------
 
-#[test]
-fn test_build_context() {
-    let task = ClusterTask {
-        task_id: "task-001".to_string(),
+fn make_build_context_task(task_id: &str) -> ClusterTask {
+    ClusterTask {
+        task_id: task_id.to_string(),
         source: TaskSource {
             node_id: "node-b".to_string(),
             rpc_address: "192.168.1.10:9000".to_string(),
@@ -177,14 +176,47 @@ fn test_build_context() {
         waiting_for_task_id: None,
         waiting_tool_call_id: None,
         callback_result: None,
-    };
-    let ctx = build_context(&task);
+    }
+}
+
+#[test]
+fn test_build_context() {
+    let agent_loop = make_loop_without_session_store();
+    let task = make_build_context_task("task-001");
+    let ctx = build_context(&agent_loop, &task);
     assert_eq!(ctx.channel, "cluster");
     // chat_id 现在等于 session_key（稳定），不再拼 task_id
     assert_eq!(ctx.chat_id, "sess-abc");
     assert_eq!(ctx.user, "node-b");
     assert_eq!(ctx.session_key, "sess-abc");
     assert!(ctx.correlation_id.is_none());
+    // loop 未设 workspace root → 非档案任务语义，无路径基准。
+    assert!(ctx.tool_path_base.is_none());
+}
+
+// -- F-U3-2：档案管线任务的工具路径基准 ----------------------------------
+
+#[test]
+fn test_build_context_sets_tool_path_base_for_archive_task() {
+    let tmp = tempfile::tempdir().unwrap();
+    let ws = tmp.path().to_path_buf();
+    let agent_loop = make_loop_without_session_store();
+    agent_loop.set_workspace_root(ws.clone());
+
+    // 档案任务：工作副本带基线 sidecar → 基准=工作副本目录。
+    let exec_dir = nemesis_cluster::exec_workspace::exec_dir_for(&ws, "task-arch-1");
+    std::fs::create_dir_all(&exec_dir).unwrap();
+    std::fs::write(
+        exec_dir.join(nemesis_cluster::exec_workspace::BASELINE_SIDECAR_NAME),
+        "{}",
+    )
+    .unwrap();
+    let ctx = build_context(&agent_loop, &make_build_context_task("task-arch-1"));
+    assert_eq!(ctx.tool_path_base, Some(exec_dir));
+
+    // 非档案任务：无 sidecar → 不注入（普通会话语零变化）。
+    let ctx_plain = build_context(&agent_loop, &make_build_context_task("task-plain-1"));
+    assert!(ctx_plain.tool_path_base.is_none());
 }
 
 // -- restore_session_history / persist_session_history -------------------

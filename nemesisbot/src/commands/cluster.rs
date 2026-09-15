@@ -50,6 +50,12 @@ pub enum ClusterAction {
         #[command(subcommand)]
         action: Option<PeerAction>,
     },
+    /// Pair with a peer by reachable address (auto-detects UDP/RPC port,
+    /// fetches the peer's real ID via RPC get_info, writes peers.toml)
+    Pair {
+        /// Peer address in host:port form (UDP or RPC port — auto-probed)
+        address: String,
+    },
     /// Manage RPC authentication token
     Token {
         #[command(subcommand)]
@@ -459,12 +465,14 @@ pub async fn run(action: ClusterAction, local: bool) -> Result<()> {
                     display_name, id, peer_addr, peer_role, peer_cat
                 );
                 let peers_path = common::cluster_dir(&home).join("peers.toml");
+                // CLI 手工加节点：无探测，rpc_port=0（不落盘，装载端推导）。
                 match nemesis_cluster::cluster_config::append_peer_to_file(
                     &peers_path,
                     &id,
                     peer_addr,
                     peer_role,
                     peer_cat,
+                    0,
                 ) {
                     Ok(()) => println!("Peer added: {} ({})", display_name, id),
                     Err(e) => println!("  Failed to add peer: {}", e),
@@ -567,6 +575,50 @@ pub async fn run(action: ClusterAction, local: bool) -> Result<()> {
                 println!("Usage: nemesisbot cluster peers <list|add|remove>");
             }
         },
+        ClusterAction::Pair { address } => {
+            println!("Pairing with peer at {} ...", address);
+            let peers_path = common::cluster_dir(&home).join("peers.toml");
+            // RPC 鉴权 token 与集群运行时同源（config.cluster.json `token` 字段，
+            // 见 Cluster::load_rpc_auth_token）——同一把钥匙才解得开对端 AEAD 帧。
+            let token = std::fs::read_to_string(common::cluster_config_path(&home))
+                .ok()
+                .and_then(|data| serde_json::from_str::<serde_json::Value>(&data).ok())
+                .and_then(|cfg| cfg.get("token").and_then(|t| t.as_str()).map(String::from))
+                .filter(|t| !t.is_empty());
+
+            let outcome =
+                nemesis_cluster::pair::pair_with_peer(&peers_path, token.as_deref(), &address)
+                    .await;
+            match outcome {
+                Ok(o) => {
+                    println!("Paired successfully:");
+                    println!("  Peer ID (written as table key): {}", o.peer_id);
+                    if !o.name.is_empty() {
+                        println!("  Name: {}", o.name);
+                    }
+                    println!("  RPC address: {}", o.rpc_address);
+                    println!("  peers.toml address (UDP): {}", o.udp_address);
+                    if !o.addresses.is_empty() {
+                        println!("  Peer self-reported addresses: {}", o.addresses.join(", "));
+                    }
+                    if o.literal_port_was_rpc {
+                        println!("  Port probe: literal port is the RPC port");
+                    } else {
+                        println!(
+                            "  Port probe: RPC port derived as UDP+10000 ({} → {})",
+                            o.rpc_port - 10000,
+                            o.rpc_port
+                        );
+                    }
+                    println!("  Written (read-back verified): {}", peers_path.display());
+                    println!("  Restart the gateway (or wait for discovery) to activate.");
+                }
+                Err(e) => {
+                    println!("Pair failed: {}", e);
+                    anyhow::bail!("{}", e);
+                }
+            }
+        }
         ClusterAction::Token { action } => match action {
             TokenAction::Generate { length, save } => {
                 if !(16..=128).contains(&length) {
@@ -787,37 +839,44 @@ pub async fn run(action: ClusterAction, local: bool) -> Result<()> {
             println!("Enable with: nemesisbot cluster enable");
         }
         ClusterAction::Enable => {
-            let cfg_path = common::cluster_config_path(&home);
-            if cfg_path.exists()
-                && let Ok(data) = std::fs::read_to_string(&cfg_path)
-                && let Ok(cfg) = serde_json::from_str::<serde_json::Value>(&data)
-                && cfg
-                    .get("enabled")
-                    .and_then(|v| v.as_bool())
-                    .unwrap_or(false)
-            {
+            // 幂等判定必须看双旗标（UAT-U1 2026-09-15）：子系统开关
+            // （config.cluster.json）与主开关（config.json cluster.enabled）
+            // 由不同路径维护，用户手改任一文件都会失步——若只查子系统旗标
+            // 就提前返回，主开关漏写 → 网关静默无网络（RPC/discovery 不启）。
+            // 真幂等 = 两者已同真；否则只补缺失的一侧（修复失步，不盲写）。
+            let subsystem = cluster_flag(&home, "enabled").unwrap_or(false);
+            let main = main_cluster_flag(&home).unwrap_or(false);
+            if subsystem && main {
                 println!("Cluster is already enabled.");
                 return Ok(());
             }
-            update_cluster_config(&home, "enabled", true)?;
-            update_main_config_cluster(&home, true)?;
+            if !subsystem {
+                update_cluster_config(&home, "enabled", true)?;
+            }
+            if !main {
+                update_main_config_cluster(&home, true)?;
+            }
+            if subsystem != main {
+                println!("Detected inconsistent enable flags; repaired.");
+            }
             println!("Cluster enabled. Restart gateway to apply.");
         }
         ClusterAction::Disable => {
-            let cfg_path = common::cluster_config_path(&home);
-            if cfg_path.exists()
-                && let Ok(data) = std::fs::read_to_string(&cfg_path)
-                && let Ok(cfg) = serde_json::from_str::<serde_json::Value>(&data)
-                && !cfg
-                    .get("enabled")
-                    .and_then(|v| v.as_bool())
-                    .unwrap_or(false)
-            {
+            let subsystem = cluster_flag(&home, "enabled").unwrap_or(true);
+            let main = main_cluster_flag(&home).unwrap_or(true);
+            if !subsystem && !main {
                 println!("Cluster is already disabled.");
                 return Ok(());
             }
-            update_cluster_config(&home, "enabled", false)?;
-            update_main_config_cluster(&home, false)?;
+            if subsystem {
+                update_cluster_config(&home, "enabled", false)?;
+            }
+            if main {
+                update_main_config_cluster(&home, false)?;
+            }
+            if subsystem != main {
+                println!("Detected inconsistent enable flags; repaired.");
+            }
             println!("Cluster disabled. Restart gateway to apply.");
         }
         ClusterAction::Start => {
@@ -1266,7 +1325,9 @@ async fn run_node(
         && let Some(peers_table) = doc.get("peers").and_then(|v| v.as_table())
     {
         for (key, val) in peers_table {
-            let peer_id = key.replace('_', "-");
+            // B3 同款（与 gateway 装载器一致）：表键=字面 peer_id，不做有损
+            // sanitize 替换——系统写盘（pair/占位升级）落的是字面键。
+            let peer_id = key.clone();
             let addr = val.get("address").and_then(|v| v.as_str()).unwrap_or("");
             let name = val.get("name").and_then(|v| v.as_str()).unwrap_or(&peer_id);
             let role = val.get("role").and_then(|v| v.as_str()).unwrap_or("worker");
@@ -1277,8 +1338,10 @@ async fn run_node(
             if addr.is_empty() {
                 continue;
             }
+            // RPC 端口：显式 `rpc_port` 字段优先（pair/占位升级实测值），
+            // 回落 udp+10000 约定——与 gateway 装载器同源（resolve_peer_rpc_port）。
             let (host, up) = parse_host_port(addr);
-            let rp = if up > 0 { up + 10000 } else { 0 };
+            let rp = nemesis_cluster::cluster_config::resolve_peer_rpc_port(val, up);
             let addresses = if host.is_empty() { vec![] } else { vec![host] };
             info!(
                 "[Node] Loading static peer: {} ({}) addr={} rpc_port={}",
@@ -1428,6 +1491,25 @@ fn update_main_config_cluster(home: &std::path::Path, enabled: bool) -> Result<(
         )?;
     }
     Ok(())
+}
+
+/// 读子系统旗标（config.cluster.json 的 `key` 布尔值）；文件/键缺失返回
+/// `None`（由调用方决定缺省语义：enable 视 false、disable 视 true）。
+fn cluster_flag(home: &std::path::Path, key: &str) -> Option<bool> {
+    let cfg_path = common::cluster_config_path(home);
+    let data = std::fs::read_to_string(&cfg_path).ok()?;
+    let cfg: serde_json::Value = serde_json::from_str(&data).ok()?;
+    cfg.get(key).and_then(|v| v.as_bool())
+}
+
+/// 读主开关（config.json 的 `cluster.enabled`）；文件/键缺失返回 `None`。
+fn main_cluster_flag(home: &std::path::Path) -> Option<bool> {
+    let cfg_path = common::config_path(home);
+    let data = std::fs::read_to_string(&cfg_path).ok()?;
+    let cfg: serde_json::Value = serde_json::from_str(&data).ok()?;
+    cfg.get("cluster")
+        .and_then(|c| c.get("enabled"))
+        .and_then(|v| v.as_bool())
 }
 
 /// Generate a cryptographically secure random standard base64 token of the given byte length.

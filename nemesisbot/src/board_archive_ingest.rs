@@ -251,7 +251,27 @@ pub fn note_overlimit(store: &BoardStore, req: &TransferOverlimit) {
 // ---------------------------------------------------------------------------
 
 /// 档案无处安置的诚实留痕（决策流卡可见；档案留在收件箱）。
+///
+/// F-U6-1 去重（U6 实测根修）：滞留档案每轮 D5 sweep 都会重灌重试，无去重
+/// 时同 task 每分钟重复 WARN + 审计入账（965 条/数小时），并把决策流面板
+/// 的 500 条窗口完全挤占。同 (task, reason) 只记首次——重试静默（档案仍在
+/// 收件箱，后补绑项目的成功安置路径不受影响；重启清零后首个周期再记一次，
+/// 低频可接受）。
 fn orphan_note(store: &BoardStore, issue: &nemesis_board::models::Issue, task_id: &str, why: &str) {
+    static ORPHAN_NOTED: std::sync::LazyLock<Mutex<HashSet<(String, String)>>> =
+        std::sync::LazyLock::new(|| Mutex::new(HashSet::new()));
+    if !ORPHAN_NOTED
+        .lock()
+        .unwrap_or_else(|p| p.into_inner())
+        .insert((task_id.to_string(), why.to_string()))
+    {
+        tracing::debug!(
+            issue = %issue.number,
+            task_id = %task_id,
+            "[BoardArchive] 执行档案无处安置（重复，已留痕不再重复入账）：{why}"
+        );
+        return;
+    }
     tracing::warn!(
         issue = %issue.number,
         task_id = %task_id,

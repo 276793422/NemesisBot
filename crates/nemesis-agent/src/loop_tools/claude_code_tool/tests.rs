@@ -13,6 +13,7 @@ fn test_ctx() -> RequestContext {
         session_key: "agent:test/session".to_string(),
         correlation_id: None,
         async_callback: None,
+        tool_path_base: None,
     }
 }
 

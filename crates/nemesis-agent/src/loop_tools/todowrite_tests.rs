@@ -40,7 +40,8 @@ fn tool_with(ws: &std::path::Path) -> TodoWriteTool {
 }
 
 fn todo_path(ws: &std::path::Path, session_key: &str) -> std::path::PathBuf {
-    let safe = session_key.replace(':', "_");
+    // 与工具实现同款安全化（F-U4-4：':' / '/' / '\\' 一律 → '_'）。
+    let safe = session_key.replace([':', '/', '\\'], "_");
     nemesis_path::resolve_sessions_dir_in_workspace(ws).join(format!("todo_{safe}.json"))
 }
 
@@ -181,6 +182,39 @@ async fn session_key_colons_sanitized_in_filename() {
         name, "todo_agent_web_session_a_b_c.json",
         "sanitized name keeps todo_ prefix + .json suffix"
     );
+}
+
+/// F-U4-4（2026-09-15 真机实证）：B 端 peer_chat 复合 session_key
+/// `cluster_rpc:{node}/{chat}` 含 '/'（peer_chat_handler 设计），只中和
+/// ':' 会把文件名拆出中间目录 → write os error 3。修复后复合键必须
+/// 落盘为单层平铺文件。
+#[tokio::test]
+async fn composite_peer_chat_key_writes_flat_file() {
+    let ws = unique_workspace("composite");
+    let tool = tool_with(&ws);
+    let key = "cluster_rpc:node-laptop-abc/23b603a6";
+    tool.execute(&sample_todos_json(), &ctx(key))
+        .await
+        .expect("composite key must not break todowrite");
+
+    let path = todo_path(&ws, key);
+    assert!(
+        path.is_file(),
+        "flat file, no intermediate directories: {path:?}"
+    );
+    let name = path.file_name().unwrap().to_string_lossy();
+    assert_eq!(
+        name, "todo_cluster_rpc_node-laptop-abc_23b603a6.json",
+        "':' and '/' both neutralized to '_'"
+    );
+    // 无中间目录残骸（修复前会把 node 段拆成目录）。
+    let sessions_dir = nemesis_path::resolve_sessions_dir_in_workspace(&ws);
+    let stray_dirs = std::fs::read_dir(&sessions_dir)
+        .unwrap()
+        .filter_map(|e| e.ok())
+        .filter(|e| e.path().is_dir())
+        .count();
+    assert_eq!(stray_dirs, 0, "no nested dirs leaked into sessions/");
 }
 
 /// 安全管线放行：todowrite 归 FileWrite（空 target 不匹配 ABAC 规则 →

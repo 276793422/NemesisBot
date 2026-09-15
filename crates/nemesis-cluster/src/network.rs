@@ -388,20 +388,34 @@ pub fn is_vethernet_nat_addr(name: &str, ip: Ipv4Addr) -> bool {
 }
 
 /// Get the priority score for an interface name (lower = higher priority).
+///
+/// 发现①/A4（2026-09-15 真机实证）：Linux 命名（eth*/wlan*）之外补 Windows
+/// 友好名（"Wi-Fi"/"Ethernet"/"本地连接"）——此前 Windows 网卡全部落 99，
+/// 排序退化为枚举原序，primary=addresses[0] 纯属运气（多网卡下常选中
+/// worker 不可达的网段，143 次探针风暴的发送侧根因）。
 pub fn get_interface_priority(name: &str) -> u32 {
     let lower = name.to_lowercase();
 
-    // Ethernet
+    // Ethernet（Linux 前缀族 + Windows 友好名子串）
     if lower.starts_with("eth")
         || lower.starts_with("eno")
         || lower.starts_with("ens")
         || lower.starts_with("enp")
+        || lower.contains("ethernet")
+        || lower.contains("local area connection")
+        || lower.contains("以太网")
+        || lower.contains("本地连接")
     {
         return 1;
     }
 
-    // WiFi
-    if lower.starts_with("wlan") || lower.starts_with("wlp") {
+    // WiFi（Linux 前缀族 + Windows 友好名子串）
+    if lower.starts_with("wlan")
+        || lower.starts_with("wlp")
+        || lower.contains("wi-fi")
+        || lower.contains("wifi")
+        || lower.contains("无线")
+    {
         return 2;
     }
 

@@ -4,7 +4,7 @@
 use rusqlite::Connection;
 use std::path::Path;
 
-const SCHEMA_VERSION: i32 = 14;
+const SCHEMA_VERSION: i32 = 15;
 
 const SCHEMA_V1: &str = r#"
 CREATE TABLE IF NOT EXISTS board_meta (
@@ -331,6 +331,14 @@ ALTER TABLE project ADD COLUMN conflict_frozen INTEGER NOT NULL DEFAULT 0;
 ALTER TABLE project ADD COLUMN pending_merges TEXT NOT NULL DEFAULT '[]';
 "#;
 
+/// v15（UAT U5 F-U5-1：autopilot 验收标准）：定时规则加 `acceptance_criteria`
+/// 列，触发建单时透传给 issue——此前 autopilot 建的单永远无验收标准，评审
+/// 必然「验收标准（未提供）」转人工，全自动定时任务链在评审段必断。DEFAULT ''
+/// 让存量规则行为不变（空 = 不填，评审保守转人工语义不变）。
+const SCHEMA_V15: &str = r#"
+ALTER TABLE autopilot ADD COLUMN acceptance_criteria TEXT NOT NULL DEFAULT '';
+"#;
+
 /// Open (or create) the board database at `db_path` and run pending migrations.
 pub fn init_db(db_path: &Path) -> Result<Connection, String> {
     if let Some(parent) = db_path.parent() {
@@ -459,6 +467,14 @@ pub fn init_db(db_path: &Path) -> Result<Connection, String> {
         tracing::info!(
             version = 14,
             "[BoardStore] Database migrated to v14 (P5/F2+F3: project.conflict_frozen + pending_merges)"
+        );
+    }
+    if current_version < 15 {
+        conn.execute_batch(SCHEMA_V15)
+            .map_err(|e| format!("Board schema v15 migration failed: {e}"))?;
+        tracing::info!(
+            version = 15,
+            "[BoardStore] Database migrated to v15 (UAT U5 F-U5-1: autopilot.acceptance_criteria)"
         );
     }
     set_version(&conn, SCHEMA_VERSION)?;

@@ -574,6 +574,74 @@ async fn review_issue(
             nemesis_utils::truncate(ev, 8000)
         ));
     }
+    // F-U3-1 根修（UAT U3 实证）：变更集合并结果作为**系统客观数据**注入。
+    // worker 自报的交付路径是一面之词——远程 worker 经集群 exec 在沙箱目录
+    // 产文件时，汇报里的沙箱绝对路径让无工具的评审 LLM 误判「文件未落盘」
+    // → 假阳 UNSURE 转人工（实际变更集早已合并进项目工作区）。系统合并
+    // commit 的实际 diff 才是「产物是否进入项目工作区」的证据真相源。
+    // 无合并记录（非文件型任务/本机 worker）或档案目录缺失 = 诚实跳过。
+    if let Some(project_id) = issue.project_id
+        && let Ok(project) = store.get_project(project_id)
+        && let Ok(root) = project_archive_root(project.directory.as_deref())
+    {
+        let merged_commit = store.list_activity(issue_id).ok().and_then(|acts| {
+            acts.iter()
+                .rev()
+                .find(|a| a.action == crate::board_archive_ingest::ACTION_MERGED)
+                .and_then(|a| a.details.as_deref())
+                .and_then(|d| serde_json::from_str::<serde_json::Value>(d).ok())
+                .and_then(|v| v.get("commit").and_then(|c| c.as_str()).map(str::to_string))
+        });
+        if let Some(commit_oid) = merged_commit {
+            match nemesis_board::commit_changed_files(&root, &commit_oid) {
+                Ok(files) if !files.is_empty() => {
+                    // F-U3-7（2026-09-15 U3 真机 NB-13）：清单只证实「落盘」，
+                    // 评审员核对不了「内容」——变更集明明带全文却看不到，
+                    // 对「产物内容是否达标」只能 UNSURE 转人工。注入 commit
+                    // 内实际 blob 内容节选（非 worker 自述）：小文本全文
+                    // 截断呈现，二进制/超限/条数超预算的诚实注记跳过。
+                    const BLOB_READ_MAX_BYTES: usize = 64 * 1024;
+                    const BLOB_SNIPPET_CHARS: usize = 2000;
+                    const BLOB_CONTENT_MAX_FILES: usize = 8;
+                    let mut listing = String::new();
+                    let mut content_budget = BLOB_CONTENT_MAX_FILES;
+                    let mut with_content = 0usize;
+                    for (path, status) in &files {
+                        listing.push_str(&format!("- {path}（{status}）\n"));
+                        if content_budget > 0
+                            && let Ok(Some(text)) = nemesis_board::commit_blob_text(
+                                &root,
+                                &commit_oid,
+                                path,
+                                BLOB_READ_MAX_BYTES,
+                            )
+                        {
+                            let snippet = nemesis_utils::truncate(text.trim(), BLOB_SNIPPET_CHARS);
+                            listing.push_str(&format!(
+                                "  内容节选（commit 内 blob 原文）：\n```text\n{snippet}\n```\n"
+                            ));
+                            content_budget -= 1;
+                            with_content += 1;
+                        }
+                    }
+                    if files.len() > with_content {
+                        listing.push_str(&format!(
+                            "（其余 {} 个文件未附内容：二进制 / 超大 / 节选预算耗尽——仅以清单证实落盘）\n",
+                            files.len() - with_content
+                        ));
+                    }
+                    prompt.push_str(&format!(
+                        "\n## 变更集合并结果（系统客观数据）\n交付变更集已由系统合并进项目工作区（commit {}）。合并实际落盘的文件清单与内容节选：\n{listing}\n以上为系统合并记录的客观证据（清单=落盘证实；内容节选=commit 内 blob 原文，非 worker 自述）。任务验收标准涉及产物内容时，直接对照节选核对，不要因「内容未随报提供」而判证据不足。\n",
+                        &commit_oid[..12.min(commit_oid.len())]
+                    ));
+                }
+                Ok(_) => {}
+                Err(e) => {
+                    warn!("[BoardReview] issue {issue_id} 合并清单读取失败（跳过证据注入）: {e}")
+                }
+            }
+        }
+    }
 
     // ---- 客观锚点双检（P2/B1）：先便宜后昂贵，零 LLM 成本零命令执行 ----
     // acceptance_criteria 的 [CHECK] 行系统先核验：全过 → 摘要拼进 prompt
@@ -1361,6 +1429,128 @@ pub(crate) fn spawn_parent_review(deps: BoardReviewDeps, parent_id: i64) {
     });
 }
 
+/// 父单收口评审的项目目录产物证据段（F-U3-6）。清单全列（相对路径 +
+/// 大小），小文本文件附内容节选；`records/`（执行档案）、`__pycache__`
+/// 等管线目录与 `.baseline.json` 基线戳排除。内容条数 / 总条数双上限
+/// 防 prompt 爆炸，超出诚实注记。目录不可读时诚实注记（不炸评审）。
+fn render_project_artifacts_evidence(dir: &std::path::Path) -> String {
+    /// 内容节选的文件大小上限（字节）。
+    const CONTENT_MAX_BYTES: u64 = 8 * 1024;
+    /// 附内容节选的文件数上限。
+    const CONTENT_MAX_FILES: usize = 12;
+    /// 清单总条目上限（超出诚实截断）。
+    const LISTING_MAX_ENTRIES: usize = 200;
+    /// 单文件内容节选字符上限。
+    const CONTENT_SNIPPET_CHARS: usize = 2000;
+
+    fn is_pipeline_dir(name: &str) -> bool {
+        matches!(name, "records" | "__pycache__" | ".git" | "node_modules")
+    }
+
+    fn is_texty(name: &str) -> bool {
+        match name.rsplit_once('.') {
+            None => true, // 无扩展名（README、Makefile 等）当文本
+            Some((_, ext)) => {
+                let ext = ext.to_ascii_lowercase();
+                matches!(
+                    ext.as_str(),
+                    "txt"
+                        | "md"
+                        | "py"
+                        | "json"
+                        | "csv"
+                        | "log"
+                        | "toml"
+                        | "yaml"
+                        | "yml"
+                        | "sh"
+                        | "bat"
+                        | "ps1"
+                        | "rs"
+                        | "js"
+                        | "ts"
+                        | "html"
+                        | "css"
+                        | "cfg"
+                        | "ini"
+                        | "xml"
+                )
+            }
+        }
+    }
+
+    let mut files: Vec<(String, u64)> = Vec::new();
+    fn walk(dir: &std::path::Path, rel: &str, out: &mut Vec<(String, u64)>) -> std::io::Result<()> {
+        let mut entries: Vec<_> = std::fs::read_dir(dir)?.filter_map(|e| e.ok()).collect();
+        entries.sort_by_key(|e| e.file_name());
+        for e in entries {
+            let name = e.file_name().to_string_lossy().to_string();
+            let path = e.path();
+            let child_rel = if rel.is_empty() {
+                name.clone()
+            } else {
+                format!("{rel}/{name}")
+            };
+            if path.is_dir() {
+                if !is_pipeline_dir(&name) {
+                    walk(&path, &child_rel, out)?;
+                }
+            } else if name != ".baseline.json" {
+                let size = e.metadata().map(|m| m.len()).unwrap_or(0);
+                out.push((child_rel, size));
+            }
+            if out.len() > LISTING_MAX_ENTRIES {
+                return Ok(());
+            }
+        }
+        Ok(())
+    }
+
+    let mut out = String::from(
+        "\n## 项目目录实物证据（评审输入 = 本机项目档案目录真实内容，与 worker 声明对照）\n",
+    );
+    match walk(dir, "", &mut files) {
+        Ok(()) => {}
+        Err(e) => {
+            out.push_str(&format!("（项目目录不可读：{e}）\n"));
+            return out;
+        }
+    }
+    if files.is_empty() {
+        out.push_str("（项目目录为空：无任何交付产物）\n");
+        return out;
+    }
+
+    let truncated_listing = files.len() > LISTING_MAX_ENTRIES;
+    let mut content_budget = CONTENT_MAX_FILES;
+    let mut with_content = 0usize;
+    for (rel, size) in &files {
+        out.push_str(&format!("- {rel}（{size} 字节）\n"));
+        if content_budget > 0
+            && *size <= CONTENT_MAX_BYTES
+            && is_texty(rel)
+            && let Ok(text) = std::fs::read_to_string(dir.join(rel))
+        {
+            let snippet = nemesis_utils::truncate(text.trim(), CONTENT_SNIPPET_CHARS);
+            out.push_str(&format!("  内容节选：\n```text\n{snippet}\n```\n"));
+            content_budget -= 1;
+            with_content += 1;
+        } // 读失败（二进制/编码不符）：只列清单不读内容
+    }
+    if truncated_listing {
+        out.push_str(&format!(
+            "（清单超过 {LISTING_MAX_ENTRIES} 条，已诚实截断）\n"
+        ));
+    }
+    if files.len() > with_content {
+        out.push_str(&format!(
+            "（其余 {} 个文件未附内容节选：大文件 / 非文本 / 节选预算耗尽）\n",
+            files.len() - with_content
+        ));
+    }
+    out
+}
+
 /// 父单收口汇总验收：输入=父单目标/验收标准 + 全部子单状态与最新交付摘要
 /// （P1 阶段 LLM 汇总单判；P2 锚点检查器建成后自动升级双检）。三态简化：
 /// PASS → done（auto_close_parent 本身即收货授权，评论注明）；FAIL/UNSURE
@@ -1404,6 +1594,21 @@ async fn review_parent_issue(deps: &BoardReviewDeps, parent_id: i64) -> Result<b
             "### 子任务 {}「{}」状态={} 最新交付摘要：\n{}\n\n",
             c.number, c.title, c.status, latest_delivery
         ));
+    }
+
+    // ---- F-U3-6（2026-09-15 U3 真机）：项目目录产物证据段 ----
+    // 父单验收标准的核心一条 = 「产物齐全于项目目录」，但此前评审输入只有
+    // 子单 Delivery 声明摘要（worker 自述）——U3 实证：report.md /
+    // pytest_output.txt 等产物全部真实在项目目录，评审员却因「取证文件
+    // 内容未随报提供、无法客观确认产物齐全」判 UNSURE 转人工。注入真实
+    // 清单 + 内容节选后，声明 vs 实物可对照（无绑定目录的存量项目诚实跳过）。
+    if let Some(pid) = parent.project_id
+        && let Ok(project) = store.get_project(pid)
+        && let Some(dir) = project.directory.as_deref()
+    {
+        summary.push_str(&render_project_artifacts_evidence(std::path::Path::new(
+            dir,
+        )));
     }
 
     let mut prompt = nemesis_board::build_review_user_prompt(
@@ -1796,11 +2001,43 @@ async fn review_project_completion(
                 .find(|cm| cm.ctype == CommentType::Delivery)
                 .map(|cm| nemesis_utils::truncate(cm.content.trim(), 1500))
                 .unwrap_or_else(|| "（无结构化交付汇报）".to_string());
+            // F-U6-2：附子单独立验收结论（最新 auto_decide）——此前评审员
+            // 只看到「状态=done」会误读为「worker 自评」，U6 实证 UNSURE
+            // 理由即含「子单仅有自评 done、无独立验收结论」（事实错误：
+            // 每张子单都有 agent 评审 auto_accept 决策入账）。只带决策词
+            // 不带理由全文（防 prompt 爆炸）。
+            let verdict_note = store
+                .list_activity(c.id)?
+                .iter()
+                .rev()
+                .find(|a| a.action == "auto_decide")
+                .and_then(|a| a.details.as_deref())
+                .and_then(|d| serde_json::from_str::<serde_json::Value>(d).ok())
+                .and_then(|v| {
+                    v.get("decision")
+                        .and_then(|d| d.as_str())
+                        .map(|s| s.to_string())
+                })
+                .map(|d| format!("（子单评审结论：{d}）"))
+                .unwrap_or_default();
             summary.push_str(&format!(
-                "- 子任务 {}「{}」状态={} 最新交付摘要：\n{}\n\n",
-                c.number, c.title, c.status, latest_delivery
+                "- 子任务 {}「{}」状态={}{} 最新交付摘要：\n{}\n\n",
+                c.number, c.title, c.status, verdict_note, latest_delivery
             ));
         }
+    }
+
+    // ---- F-U6-2（2026-09-15 U6 真机）：项目目录实物证据段（review_parent_issue
+    // 的 F-U3-6 同款——横向扫同类补齐）。项目收口验收标准与父单同形（「项目
+    // 目录含 xxx」），但此前评审输入只有各子单 Delivery 声明摘要（worker 自述，
+    // 且 exec 工作副本路径 Linux/Windows 混杂）——U6 实证：父单收口评审凭
+    // 实物证据四条标准全过 PASS，项目收口评审却因「无项目目录实物直接取证 /
+    // 子单仅有自评」判 UNSURE 转人工，两道评审同一标准结论矛盾。注入真实
+    // 清单 + 内容节选后与父单收口同源对照（无绑定目录的存量项目诚实跳过）。
+    if let Some(dir) = project.directory.as_deref() {
+        summary.push_str(&render_project_artifacts_evidence(std::path::Path::new(
+            dir,
+        )));
     }
 
     // 验收标准聚合（F3 项目收口判定依据）：项目级 AC 在前（v10 列——此前
@@ -2100,9 +2337,11 @@ pub(crate) fn park_sweep_gate(
 }
 
 /// estop 释放 watcher：订阅急停状态 watch，true→false 沿（释放）把停车
-/// 队列逐条复评——无限模式循环从断点恢复（T1-6「release 后恢复」）。
-/// gateway 装配期调用一次；四入口（CLI/托盘/Dashboard/WSAPI）最终都走
-/// 同一 `EstopState::release()`，watch 全覆盖。
+/// 队列逐条复评——无限模式循环从断点恢复（T1-6「release 后恢复」）；再
+/// 按态补扫一轮 `replay_stuck_reviews`（R5-BUG-1：在 LLM 中途被打断的
+/// 在途评审不进停车场，release 后靠扫态兜底复活）。gateway 装配期调用
+/// 一次；四入口（CLI/托盘/Dashboard/WSAPI）最终都走同一
+/// `EstopState::release()`，watch 全覆盖。
 pub(crate) fn spawn_estop_resume_watcher(deps: BoardReviewDeps) {
     let mut rx = deps.estop.subscribe();
     tokio::spawn(async move {
@@ -2116,7 +2355,7 @@ pub(crate) fn spawn_estop_resume_watcher(deps: BoardReviewDeps) {
                 .unwrap_or_else(|poisoned| poisoned.into_inner())
                 .drain(..)
                 .collect();
-            for (kind, issue_id) in parked {
+            for (kind, issue_id) in &parked {
                 info!(
                     "[BoardReview] estop 释放 → 恢复{} {issue_id} 自动验收",
                     match kind {
@@ -2126,17 +2365,204 @@ pub(crate) fn spawn_estop_resume_watcher(deps: BoardReviewDeps) {
                     }
                 );
                 match kind {
-                    ParkedKind::Issue => spawn_board_review(deps.clone(), issue_id),
-                    ParkedKind::Parent => spawn_parent_review(deps.clone(), issue_id),
-                    ParkedKind::Project => spawn_project_review(deps.clone(), issue_id),
+                    ParkedKind::Issue => spawn_board_review(deps.clone(), *issue_id),
+                    ParkedKind::Parent => spawn_parent_review(deps.clone(), *issue_id),
+                    ParkedKind::Project => spawn_project_review(deps.clone(), *issue_id),
                 }
             }
             // P4/E4（看板项目档案 goal）：急停挂起的合并补跑——PLACED 注册表
             // 里尚存的条目（estop 触发时合并被拒、条目保留）逐个重试；在途
             // 派发自然按 Waiting* 跳过。
             crate::board_archive_ingest::retry_placed_merges(&deps);
+            // R5-BUG-1 根修：停车场只收「评审入口检查点被闸」的登记；已过
+            // 检查点、在 LLM 中途被 estop 打断的评审不进队列（直接死亡），
+            // drain 完停车场后按态补扫一遍兜底（复用启动重放/评审重放的
+            // 守卫矩阵：无结论才重放、转人工 sticky、读失败 fail-closed）。
+            // skip 刚唤醒的条目——入口竞态守卫拦不住并发双跑，必须去重。
+            replay_stuck_reviews(&deps, &parked);
         }
     });
+}
+
+/// 启动重放守卫：该单据当前 in_review 态是否已有评审结论。判据 = 最新
+/// `auto_decide` 活动 vs 最近一次**正常**进入 in_review 的转移，按
+/// activity_log 插入序（append-only 单调 id，秒级时间戳同秒不可分）比先后：
+/// - 无任何 auto_decide → 从未评审过（崩溃杀掉 spawn 的典型窗口）→ 重放；
+/// - 结论在转移之后 → 当前态已定案（含转人工——stickiness 必须保持，重放
+///   不得翻盘；含 audit.rollback 的人工纠错窗口——rollback 落的
+///   `audit_rollback:…` 活动不是 JSON、不被计为正常转移，其 in_review
+///   归属上一次已定案的转移 → 不重放）；
+/// - 结论在转移之前 → 旧轮结论（如重派后再交付），本轮评审还没跑 → 重放。
+///
+/// 读失败 fail-closed 按「已定案」处理（不重放）。
+fn review_already_concluded(store: &nemesis_board::BoardStore, issue_id: i64) -> bool {
+    let Ok(acts) = store.list_activity(issue_id) else {
+        return true;
+    };
+    let Some(last_decide) = acts.iter().rposition(|a| a.action == "auto_decide") else {
+        return false;
+    };
+    let last_enter = acts.iter().rposition(|a| {
+        a.action == "status_changed"
+            && a.details
+                .as_deref()
+                .and_then(|d| serde_json::from_str::<serde_json::Value>(d).ok())
+                .and_then(|v| {
+                    v.get("to")
+                        .and_then(|t| t.as_str())
+                        .map(|t| t == IssueStatus::InReview.as_str())
+                })
+                .unwrap_or(false)
+    });
+    match last_enter {
+        Some(pos) => last_decide >= pos,
+        // 有结论但查不到进入转移（旧数据/手工造数）→ 保守不重放。
+        None => true,
+    }
+}
+
+/// 项目级收口结论探测：任一顶层父单携带本项目的 auto_decide
+///（`project_complete` / `project_escalate_human` 记在各父单名下，details
+/// 带 `project_id`）= 项目收口评审已跑过（转人工 sticky 同样成立）→ 不重放。
+fn project_review_already_concluded(
+    store: &nemesis_board::BoardStore,
+    parent_ids: &[i64],
+    project_id: i64,
+) -> bool {
+    parent_ids.iter().any(|pid| {
+        store
+            .list_activity(*pid)
+            .map(|acts| {
+                acts.iter().any(|a| {
+                    a.action == "auto_decide"
+                        && a.details
+                            .as_deref()
+                            .and_then(|d| serde_json::from_str::<serde_json::Value>(d).ok())
+                            .and_then(|v| v.get("project_id").and_then(|p| p.as_i64()))
+                            .map(|p| p == project_id)
+                            .unwrap_or(false)
+                })
+            })
+            .unwrap_or(true) // 读失败按已结论处理（不重放）
+    })
+}
+
+/// 评审重放（2026-09-15 R4-BUG-2 根修；R5-BUG-1 扩展到 estop 释放沿）：
+/// 评审 spawn 是纯内存 fire-and-forget 任务，in-flight 评审死于两种场景
+/// 都无重触发——① master 重启杀掉（单据/父单永久卡 in_review、项目永久
+/// 卡「验收中」，真机实证：父单收口验收 spawn 15s 后 master 被杀，重启后
+/// NB-3 永卡 in_review）；② estop 在评审**入口检查点之后**打断（LLM 中途
+/// 被杀）——此路不走 `estop_fuse_engaged` 停车登记，release 后 resume
+/// watcher 的停车场队列是空的，单据同样永卡（真机实证：NB-16 收口评审
+/// LLM 中被打断，release 后 10s 零复活）。与 estop resume watcher（冻结
+/// 恢复）互补，这里管「评审死了没结论」的按态恢复：
+///
+/// - 叶子 in_review 且从未评审（有 Delivery = writeback 真发生过；人工
+///   手动挪 in_review 的纯看板单无 Delivery，不扫）→ 重放子单验收；
+/// - 父单 in_review 且全子单 done 且从未收口评审 → 重放收口（部分完成态
+///   的父单 in_review 属人工/缺口语义，不自动收口）；
+/// - 项目 active 且全顶层父单 done 且无项目级结论 → 重放项目收口。
+///
+/// 级联自愈：重放验收 PASS → on_issue_settled / notify_project_review 链
+/// 逐层点火——只要最深的断链复活，上层自动跟上；重复触发由三个评审函数
+/// 内建守卫（estop 保险丝 / auto_review 旗标现读 / status==InReview 竞态
+/// 让位 / cancelled 缺口转人工）吸收，幂等安全。两个调用点：gateway
+/// 装配期（三类钩子注册完成后，`skip` 传空）+ estop 释放沿（resume
+/// watcher drain 完停车场后，`skip` 传刚唤醒的条目防同一单双重 spawn——
+/// 入口竞态守卫拦不住并发双跑，两个 spawn 都能在写回前通过 in_review
+/// 检查）。
+pub(crate) fn replay_stuck_reviews(deps: &BoardReviewDeps, skip: &[(ParkedKind, i64)]) {
+    let store = &deps.store;
+    let parked_awake = |kind: ParkedKind, id: i64| skip.iter().any(|&(k, i)| k == kind && i == id);
+    let mut replayed = 0usize;
+    match store.list_issues(&nemesis_board::models::IssueFilter {
+        status: Some(IssueStatus::InReview),
+        ..Default::default()
+    }) {
+        Ok(issues) => {
+            for issue in issues {
+                if review_already_concluded(store, issue.id) {
+                    continue;
+                }
+                let Ok(children) = store.list_children(issue.id) else {
+                    continue;
+                };
+                if children.is_empty() {
+                    if parked_awake(ParkedKind::Issue, issue.id) {
+                        continue;
+                    }
+                    // 叶子单：仅 writeback 交付过的（有 Delivery）才重放。
+                    let delivered = store
+                        .list_comments(issue.id)
+                        .map(|cs| cs.iter().any(|c| c.ctype == CommentType::Delivery))
+                        .unwrap_or(false);
+                    if !delivered {
+                        continue;
+                    }
+                    info!(
+                        "[BoardReview] 评审重放：issue {}（{}）in_review 无评审结论 → 重放验收",
+                        issue.number, issue.title
+                    );
+                    spawn_board_review(deps.clone(), issue.id);
+                    replayed += 1;
+                } else if children.iter().all(|c| c.status == IssueStatus::Done) {
+                    if parked_awake(ParkedKind::Parent, issue.id) {
+                        continue;
+                    }
+                    info!(
+                        "[BoardReview] 评审重放：父单 {}（{}）全子单 done 无收口结论 → 重放收口验收",
+                        issue.number, issue.title
+                    );
+                    spawn_parent_review(deps.clone(), issue.id);
+                    replayed += 1;
+                }
+            }
+        }
+        Err(e) => warn!("[BoardReview] 评审重放扫描 in_review 单据失败：{e}"),
+    }
+    // 项目级：全顶层父单已 done（父单若还卡 in_review，上面的重放链会
+    // 在收口落 done 时经 notify_project_review 点火，这里不必抢跑）。
+    if let Ok(projects) = store.list_projects() {
+        for project in projects {
+            if matches!(project.status.as_str(), "completed" | "archived") {
+                continue;
+            }
+            let Ok(parents) = store.list_issues(&nemesis_board::models::IssueFilter {
+                project_id: Some(project.id),
+                ..Default::default()
+            }) else {
+                continue;
+            };
+            let tops: Vec<i64> = parents
+                .iter()
+                .filter(|i| i.parent_issue_id.is_none())
+                .map(|i| i.id)
+                .collect();
+            if tops.is_empty()
+                || parents
+                    .iter()
+                    .filter(|i| i.parent_issue_id.is_none())
+                    .any(|p| p.status != IssueStatus::Done)
+            {
+                continue;
+            }
+            if project_review_already_concluded(store, &tops, project.id) {
+                continue;
+            }
+            if parked_awake(ParkedKind::Project, project.id) {
+                continue;
+            }
+            info!(
+                "[BoardReview] 评审重放：项目 {}「{}」全父单 done 无收口结论 → 重放项目收口",
+                project.id, project.name
+            );
+            spawn_project_review(deps.clone(), project.id);
+            replayed += 1;
+        }
+    }
+    if replayed > 0 {
+        info!("[BoardReview] 评审重放完成：{replayed} 个评审/收口任务已重新触发");
+    }
 }
 
 /// 验收评论落库（作者 = master 节点 agent；失败仅 warn，不炸评审流程）。

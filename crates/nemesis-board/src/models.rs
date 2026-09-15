@@ -64,7 +64,7 @@ impl IssueStatus {
             IssueStatus::InReview => "in_progress/done/blocked/cancelled",
             IssueStatus::Blocked => "todo/in_progress/cancelled",
             IssueStatus::Done => "（终态）",
-            IssueStatus::Cancelled => "（终态）",
+            IssueStatus::Cancelled => "backlog（issue.reopen）",
         }
     }
 }
@@ -541,6 +541,10 @@ pub struct Autopilot {
     /// 发车」。DB 列 v9 迁移，serde default false（存量规则行为不变）。
     #[serde(default)]
     pub auto_plan: bool,
+    /// UAT U5 F-U5-1：验收标准（触发建单时透传给 issue）。空/缺省 = 不填，
+    /// 评审保持「验收标准（未提供）」保守转人工的既有语义。DB 列 v15 迁移。
+    #[serde(default)]
+    pub acceptance_criteria: Option<String>,
     pub enabled: bool,
     /// live CronService 对应 job 的 id（`board-ap:{id}` 名字约定）。
     /// CronService 不支持指定 job id（add_job_ext 返回随机 id），只能注册
@@ -567,6 +571,8 @@ pub struct NewAutopilot {
     pub enabled: bool,
     /// 全自动流转 D2：建单后自动 planner 拆解（同 [`Autopilot::auto_plan`]）。
     pub auto_plan: bool,
+    /// UAT U5 F-U5-1：验收标准（建单透传，同 [`Autopilot::acceptance_criteria`]）。
+    pub acceptance_criteria: Option<String>,
 }
 
 /// 部分更新 autopilot 字段的 patch（None = 不改；cron_job_id/last_run_at
@@ -583,6 +589,9 @@ pub struct AutopilotPatch {
     pub enabled: Option<bool>,
     /// 全自动流转 D2：`Some(v)` = 改 auto_plan（None = 不改）。
     pub auto_plan: Option<bool>,
+    /// UAT U5 F-U5-1：`Some(v)` = 改验收标准（`Some("")` = 清空，语义同
+    /// 不填；None = 不改）。
+    pub acceptance_criteria: Option<String>,
 }
 
 // ---------------------------------------------------------------------------

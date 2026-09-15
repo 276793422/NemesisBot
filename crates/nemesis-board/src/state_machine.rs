@@ -1,7 +1,8 @@
 //! Issue 状态机（开发计划 §1.1）。
 //!
 //! 状态集：`backlog / todo / in_progress / in_review / done / blocked / cancelled`。
-//! `done`、`cancelled` 是终态（不可再转移；MVP 不做 reopen）。非法转移由
+//! `done` 是终态；`cancelled` 唯一终态出口 = reopen 回 `backlog`（发现④
+//! 修复：cancel 级联+重派闸叠加曾导致中断恢复只能 SQL 手术）。非法转移由
 //! [`validate_transition`] 拒绝（handler 层转 422/错误返回）。
 
 use crate::models::IssueStatus;
@@ -23,7 +24,11 @@ pub fn can_transition(from: IssueStatus, to: IssueStatus) -> bool {
         (InReview, InProgress | Done | Blocked | Cancelled) => true,
         // blocked：解除阻塞回 todo / 直接开工 / 放弃。
         (Blocked, Todo | InProgress | Cancelled) => true,
-        // 终态不可转移（MVP 无 reopen）。
+        // cancelled 唯一终态出口：reopen 回 backlog（发现④；WSAPI/CLI
+        // issue.reopen 专用路径，自动追加审计评论）。done 的重开是另一
+        // 语义（重开已完成工作），本轮不做——留口待后续单独评估。
+        (Cancelled, Backlog) => true,
+        // done 及其余终态转移不可达。
         _ => false,
     }
 }

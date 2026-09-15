@@ -206,6 +206,26 @@ impl UdpListener {
 
         Ok(())
     }
+
+    /// Encrypt (if configured) and send a discovery message to a specific
+    /// unicast target (`host:port`). Best-effort companion to `broadcast()`
+    /// for peers unreachable by subnet broadcast（异端口拓扑定向单播，
+    /// 见 [`crate::discovery::ClusterCallbacks::peer_udp_endpoints`]）。
+    pub fn send_unicast(&self, target: &str, msg: &DiscoveryMessage) {
+        let data = match msg.to_bytes() {
+            Ok(d) => d,
+            Err(_) => return,
+        };
+        let send_data = if let Some(key) = self.enc_key {
+            match encrypt_data(&key, &data) {
+                Ok(encrypted) => encrypted,
+                Err(_) => return,
+            }
+        } else {
+            data
+        };
+        let _ = self.socket.send_to(&send_data, target);
+    }
 }
 
 // ---------------------------------------------------------------------------

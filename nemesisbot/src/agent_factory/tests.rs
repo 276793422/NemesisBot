@@ -155,6 +155,41 @@ async fn cluster_agent_loop_wires_usage_ledger_from_shared() {
     assert!(loop_no_ds.data_store().is_none());
 }
 
+/// F-U3-2 接线回归（UAT U3 round-2 实证，T37① 同型）：`build_cluster_agent_loop`
+/// 必须接上 `set_workspace_root`——缺了它 `cluster_agent::build_context` 的
+/// tool_path_base 注入条件恒 None，档案管线任务的相对路径重写静默失效
+/// （worker 文件落 workspace 根，变更集丢失，整条 E3 交付链空转）。
+#[tokio::test]
+async fn cluster_agent_loop_wires_workspace_root_from_shared() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    let home = tmp.path().to_path_buf();
+    write_mini_model_config(&home);
+
+    let cluster = Arc::new(nemesis_cluster::cluster::Cluster::new(ClusterConfig {
+        node_id: "test-node-wsroot".to_string(),
+        bind_address: "127.0.0.1:0".to_string(),
+        peers: Vec::new(),
+    }));
+
+    let (outbound_tx, _rx) = tokio::sync::mpsc::channel(16);
+    let shared = Arc::new(SharedResources {
+        home: home.clone(),
+        agent_outbound_tx: outbound_tx,
+        cron_service: Arc::new(std::sync::Mutex::new(
+            nemesis_cron::service::CronService::new(""),
+        )),
+        mcp_config_path: home.join("nonexistent-mcp.json"),
+        ..Default::default()
+    });
+    let (agent_loop, _config, _observer) =
+        build_cluster_agent_loop(&shared, cluster).expect("factory must succeed");
+    assert_eq!(
+        agent_loop.workspace_root().as_deref(),
+        Some(shared.workspace_dir().as_path()),
+        "cluster loop 必须接上工作区根（F-U3-2 tool_path_base 注入的生产前提）"
+    );
+}
+
 // ---------------------------------------------------------------------------
 // load_cluster_system_prompt —— workspace/cluster 身份文件装配
 // ---------------------------------------------------------------------------

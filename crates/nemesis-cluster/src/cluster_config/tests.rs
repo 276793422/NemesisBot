@@ -249,7 +249,7 @@ fn test_append_peer_to_file_creates_new() {
     let path = dir.path().join("peers.toml");
 
     // File does not exist; append_peer_to_file should create it.
-    append_peer_to_file(&path, "Node-B", "127.0.0.1:11950", "worker", "general").unwrap();
+    append_peer_to_file(&path, "Node-B", "127.0.0.1:11950", "worker", "general", 0).unwrap();
 
     assert!(path.exists());
     let content = std::fs::read_to_string(&path).unwrap();
@@ -277,7 +277,7 @@ fn test_append_peer_to_file_preserves_node_section() {
     save_static_config(&path, &initial).unwrap();
 
     // Now append a peer
-    append_peer_to_file(&path, "Node-B", "127.0.0.1:11950", "worker", "general").unwrap();
+    append_peer_to_file(&path, "Node-B", "127.0.0.1:11950", "worker", "general", 0).unwrap();
 
     // Verify [node] is preserved and [peers.Node-B] was added
     let content = std::fs::read_to_string(&path).unwrap();
@@ -295,9 +295,9 @@ fn test_append_peer_to_file_appends_multiple() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("peers.toml");
 
-    append_peer_to_file(&path, "Node-B", "127.0.0.1:11950", "worker", "general").unwrap();
-    append_peer_to_file(&path, "Node-C", "127.0.0.1:11951", "worker", "general").unwrap();
-    append_peer_to_file(&path, "Node-D", "127.0.0.1:11952", "worker", "general").unwrap();
+    append_peer_to_file(&path, "Node-B", "127.0.0.1:11950", "worker", "general", 0).unwrap();
+    append_peer_to_file(&path, "Node-C", "127.0.0.1:11951", "worker", "general", 0).unwrap();
+    append_peer_to_file(&path, "Node-D", "127.0.0.1:11952", "worker", "general", 0).unwrap();
 
     let content = std::fs::read_to_string(&path).unwrap();
     assert!(content.contains("[peers.Node-B]"));
@@ -314,7 +314,7 @@ fn test_append_peer_to_file_corrupt_fallback() {
     std::fs::write(&path, "this is [not valid {{{{toml").unwrap();
 
     // Should succeed by falling back to empty table
-    append_peer_to_file(&path, "Node-X", "10.0.0.5:11950", "worker", "general").unwrap();
+    append_peer_to_file(&path, "Node-X", "10.0.0.5:11950", "worker", "general", 0).unwrap();
 
     let content = std::fs::read_to_string(&path).unwrap();
     assert!(
@@ -332,9 +332,9 @@ fn test_append_peer_to_file_duplicate_warns_and_overwrites() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("peers.toml");
 
-    append_peer_to_file(&path, "Node-Dup", "10.0.0.1:11950", "worker", "general").unwrap();
+    append_peer_to_file(&path, "Node-Dup", "10.0.0.1:11950", "worker", "general", 0).unwrap();
     // Overwrite with different address
-    append_peer_to_file(&path, "Node-Dup", "10.0.0.2:11951", "manager", "ml").unwrap();
+    append_peer_to_file(&path, "Node-Dup", "10.0.0.2:11951", "manager", "ml", 0).unwrap();
 
     let content = std::fs::read_to_string(&path).unwrap();
     // Should have only ONE [peers.Node-Dup] section
@@ -483,9 +483,9 @@ fn test_remove_peer_from_file_removes_target_preserves_others() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("peers.toml");
 
-    append_peer_to_file(&path, "node-a", "10.0.0.1:9000", "worker", "dev").unwrap();
-    append_peer_to_file(&path, "node-b", "10.0.0.2:9000", "worker", "dev").unwrap();
-    append_peer_to_file(&path, "node-c", "10.0.0.3:9000", "worker", "dev").unwrap();
+    append_peer_to_file(&path, "node-a", "10.0.0.1:9000", "worker", "dev", 0).unwrap();
+    append_peer_to_file(&path, "node-b", "10.0.0.2:9000", "worker", "dev", 0).unwrap();
+    append_peer_to_file(&path, "node-c", "10.0.0.3:9000", "worker", "dev", 0).unwrap();
 
     remove_peer_from_file(&path, "node-b").unwrap();
 
@@ -503,7 +503,7 @@ fn test_remove_peer_from_file_idempotent_when_missing() {
     // File does not exist — should be a no-op Ok.
     remove_peer_from_file(&path, "ghost").unwrap();
 
-    append_peer_to_file(&path, "node-a", "10.0.0.1:9000", "worker", "dev").unwrap();
+    append_peer_to_file(&path, "node-a", "10.0.0.1:9000", "worker", "dev", 0).unwrap();
     // Removing a peer that was never added — Ok, file unchanged for that key.
     remove_peer_from_file(&path, "ghost").unwrap();
 
@@ -518,7 +518,7 @@ fn test_remove_peer_from_file_preserves_node_section() {
 
     // Seed [node] via ensure_node_id, then add a peer.
     ensure_node_id(&path, "this-node").unwrap();
-    append_peer_to_file(&path, "node-a", "10.0.0.1:9000", "worker", "dev").unwrap();
+    append_peer_to_file(&path, "node-a", "10.0.0.1:9000", "worker", "dev", 0).unwrap();
 
     remove_peer_from_file(&path, "node-a").unwrap();
 
@@ -617,7 +617,8 @@ fn test_w3b_append_peer_error_paths_and_legacy_peers_array() {
             "Node-B",
             "10.0.0.1:9000",
             "worker",
-            "dev"
+            "dev",
+            0
         )
         .is_err()
     );
@@ -626,14 +627,14 @@ fn test_w3b_append_peer_error_paths_and_legacy_peers_array() {
     let dir2 = tempfile::tempdir().unwrap();
     let as_dir = dir2.path().join("peers.toml");
     std::fs::create_dir_all(&as_dir).unwrap();
-    assert!(append_peer_to_file(&as_dir, "Node-B", "10.0.0.1:9000", "worker", "dev").is_err());
+    assert!(append_peer_to_file(&as_dir, "Node-B", "10.0.0.1:9000", "worker", "dev", 0).is_err());
 
     // 3. atomic_write blocked at tmp path → Err, existing file untouched
     let dir3 = tempfile::tempdir().unwrap();
     let path = dir3.path().join("peers.toml");
     std::fs::write(&path, "[node]\nid = \"keep\"\n").unwrap();
     std::fs::create_dir_all(dir3.path().join("peers.toml.tmp")).unwrap();
-    assert!(append_peer_to_file(&path, "Node-B", "10.0.0.1:9000", "worker", "dev").is_err());
+    assert!(append_peer_to_file(&path, "Node-B", "10.0.0.1:9000", "worker", "dev", 0).is_err());
     assert_eq!(
         std::fs::read_to_string(&path).unwrap(),
         "[node]\nid = \"keep\"\n",
@@ -644,7 +645,7 @@ fn test_w3b_append_peer_error_paths_and_legacy_peers_array() {
     let dir4 = tempfile::tempdir().unwrap();
     let legacy = dir4.path().join("peers.toml");
     std::fs::write(&legacy, "[[peers]]\nid = \"legacy-peer\"\n").unwrap();
-    append_peer_to_file(&legacy, "Node-B", "10.0.0.2:9000", "worker", "dev").unwrap();
+    append_peer_to_file(&legacy, "Node-B", "10.0.0.2:9000", "worker", "dev", 0).unwrap();
     let content = std::fs::read_to_string(&legacy).unwrap();
     assert!(
         content.contains("[peers.Node-B]"),
@@ -679,7 +680,7 @@ fn test_w3b_remove_peer_no_peers_table_and_error_paths() {
     // 3. atomic_write blocked at tmp path → Err after successful removal
     let dir3 = tempfile::tempdir().unwrap();
     let path3 = dir3.path().join("peers.toml");
-    append_peer_to_file(&path3, "victim", "10.0.0.1:9000", "worker", "dev").unwrap();
+    append_peer_to_file(&path3, "victim", "10.0.0.1:9000", "worker", "dev", 0).unwrap();
     std::fs::create_dir_all(dir3.path().join("peers.toml.tmp")).unwrap();
     assert!(remove_peer_from_file(&path3, "victim").is_err());
 }
@@ -701,4 +702,228 @@ fn test_w3b_atomic_write_rename_failure_cleans_tmp() {
         !tmp.exists(),
         "tmp file must be cleaned up after rename failure"
     );
+}
+
+// ---------------------------------------------------------------------------
+// 显式 rpc_port 往返（R1-7 根修，2026-09-15）
+// ---------------------------------------------------------------------------
+
+#[test]
+fn test_append_peer_with_explicit_rpc_port_roundtrip() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("peers.toml");
+
+    // pair 实测路径：rpc_port > 0 → 显式落盘
+    append_peer_to_file(
+        &path,
+        "Node-B",
+        "127.0.0.1:19411",
+        "worker",
+        "general",
+        29412,
+    )
+    .unwrap();
+    let content = std::fs::read_to_string(&path).unwrap();
+    assert!(
+        content.contains("rpc_port = 29412"),
+        "explicit rpc_port must be written, content was: {}",
+        content
+    );
+
+    // 装载端（resolve_peer_rpc_port 单一真相源）：显式值优先于 udp+10000 推导
+    let doc: toml::Value = std::fs::read_to_string(&path).unwrap().parse().unwrap();
+    let entry = &doc["peers"]["Node-B"];
+    assert_eq!(
+        resolve_peer_rpc_port(entry, 19411),
+        29412,
+        "explicit rpc_port must win over the udp+10000 convention"
+    );
+}
+
+#[test]
+fn test_append_peer_without_rpc_port_falls_back_to_convention() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("peers.toml");
+
+    // Dashboard 手工路径：rpc_port = 0 → 不写字段，装载端回落约定推导
+    append_peer_to_file(&path, "Node-C", "127.0.0.1:19411", "worker", "general", 0).unwrap();
+    let content = std::fs::read_to_string(&path).unwrap();
+    assert!(
+        !content.contains("rpc_port"),
+        "rpc_port=0 must not write the field, content was: {}",
+        content
+    );
+
+    let doc: toml::Value = std::fs::read_to_string(&path).unwrap().parse().unwrap();
+    let entry = &doc["peers"]["Node-C"];
+    assert_eq!(
+        resolve_peer_rpc_port(entry, 19411),
+        29411,
+        "missing field falls back to udp+10000"
+    );
+}
+
+#[test]
+fn test_resolve_peer_rpc_port_edge_cases() {
+    // 非 table 条目 → 纯推导
+    let scalar = toml::Value::Integer(42);
+    assert_eq!(resolve_peer_rpc_port(&scalar, 19411), 29411);
+
+    // udp_port = 0（地址无端口）→ 0（调用方按无 RPC 处理）
+    let empty = toml::Value::Table(toml::value::Table::new());
+    assert_eq!(resolve_peer_rpc_port(&empty, 0), 0);
+
+    // 非法字段值：负数 / 0 / 超出 u16 → 忽略字段，走约定推导
+    for bad in [-1i64, 0, (u16::MAX as i64) + 1] {
+        let mut t = toml::value::Table::new();
+        t.insert("rpc_port".into(), toml::Value::Integer(bad));
+        let v = toml::Value::Table(t);
+        assert_eq!(
+            resolve_peer_rpc_port(&v, 19411),
+            29411,
+            "invalid rpc_port value {bad} must be ignored"
+        );
+    }
+}
+
+// -- load_peer_udp_endpoints（U1-5 根修 2026-09-15：异端口拓扑定向单播）--
+
+#[test]
+fn test_load_peer_udp_endpoints_collects_peer_addresses() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("peers.toml");
+    std::fs::write(
+        &path,
+        r#"
+[node]
+id = "node-self"
+name = "self"
+address = ""
+role = "coordinator"
+
+[peers.node-b]
+address = "127.0.0.1:19423"
+name = "b"
+rpc_port = 29423
+
+[peers.node-a]
+address = " 192.168.137.237:19422 "
+name = "a"
+rpc_port = 29422
+"#,
+    )
+    .unwrap();
+
+    let mut eps = load_peer_udp_endpoints(&path);
+    eps.sort();
+    assert_eq!(
+        eps,
+        vec![
+            "127.0.0.1:19423".to_string(),
+            "192.168.137.237:19422".to_string()
+        ]
+    );
+}
+
+#[test]
+fn test_load_peer_udp_endpoints_missing_file_empty() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("nonexistent.toml");
+    assert!(load_peer_udp_endpoints(&path).is_empty());
+}
+
+#[test]
+fn test_load_peer_udp_endpoints_skips_empty_addresses() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("peers.toml");
+    std::fs::write(
+        &path,
+        r#"
+[node]
+id = "node-self"
+
+[peers.node-a]
+address = ""
+name = "a"
+"#,
+    )
+    .unwrap();
+    // 空 address 的 peer 被过滤，不产生垃圾端点
+    assert!(load_peer_udp_endpoints(&path).is_empty());
+}
+
+// -- save_static_config peer-preserving（UAT-BUG-3 根修 2026-09-15）--
+
+#[test]
+fn test_save_static_config_preserves_peers_section() {
+    // 真机实证场景：pair 写入 [peers.*] 后，node.update_identity 改 [node]
+    // → 旧实现整体序列化把 peers 全部抹掉（数据丢失）。
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("peers.toml");
+    std::fs::write(
+        &path,
+        r#"
+[node]
+id = "node-self"
+name = "old-name"
+role = "worker"
+category = "development"
+tags = []
+
+[peers.node-b]
+address = "127.0.0.1:19423"
+name = "b"
+rpc_port = 29423
+
+[peers.node-a]
+address = "192.168.137.237:19422"
+name = "a"
+rpc_port = 29422
+"#,
+    )
+    .unwrap();
+
+    let updated = StaticConfig {
+        node: NodeInfo {
+            id: "node-self".into(),
+            name: "new-name".into(),
+            address: String::new(),
+            role: "worker".into(),
+            category: "qa".into(),
+            tags: vec!["u1".into()],
+        },
+    };
+    save_static_config(&path, &updated).unwrap();
+
+    // [node] 更新到位
+    let loaded = load_static_config(&path).unwrap();
+    assert_eq!(loaded.node.name, "new-name");
+    assert_eq!(loaded.node.category, "qa");
+
+    // [peers.*] 原样保留（load_peer_udp_endpoints 依旧拿得到端点）
+    let eps = load_peer_udp_endpoints(&path);
+    assert_eq!(eps.len(), 2, "peers section must survive identity edit");
+}
+
+#[test]
+fn test_save_static_config_fresh_file_still_serializes() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("peers.toml");
+    let config = create_static_config("node-1", "Bot One", "0.0.0.0:21949");
+    save_static_config(&path, &config).unwrap();
+    let loaded = load_static_config(&path).unwrap();
+    assert_eq!(loaded.node.id, "node-1");
+    assert_eq!(loaded.node.name, "Bot One");
+}
+
+#[test]
+fn test_save_static_config_invalid_existing_file_overwrites() {
+    // 旧文件不可解析 → 无法保 peers，诚实整体重写（不炸）
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("peers.toml");
+    std::fs::write(&path, "not [valid {{{ toml").unwrap();
+    let config = create_static_config("node-1", "Bot", "");
+    save_static_config(&path, &config).unwrap();
+    let loaded = load_static_config(&path).unwrap();
+    assert_eq!(loaded.node.id, "node-1");
 }

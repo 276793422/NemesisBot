@@ -23,6 +23,7 @@ interface Autopilot {
   project_id: number | null
   target: string
   auto_plan: boolean
+  acceptance_criteria: string | null
   enabled: boolean
   cron_job_id: string | null
   last_run_at: number | null
@@ -53,6 +54,7 @@ const form = ref({
   priority: 1,
   target: '',
   auto_plan: false,
+  acceptance_criteria: '',
   enabled: true,
 })
 
@@ -76,7 +78,7 @@ async function load(silent = false) {
 
 function openCreate() {
   editing.value = null
-  form.value = { name: '', cron: '', title: '', description: '', priority: 1, target: '', auto_plan: false, enabled: true }
+  form.value = { name: '', cron: '', title: '', description: '', priority: 1, target: '', auto_plan: false, acceptance_criteria: '', enabled: true }
   showForm.value = true
 }
 
@@ -90,6 +92,7 @@ function openEdit(ap: Autopilot) {
     priority: ap.priority,
     target: ap.target || '',
     auto_plan: !!ap.auto_plan,
+    acceptance_criteria: ap.acceptance_criteria || '',
     enabled: ap.enabled,
   }
   showForm.value = true
@@ -263,6 +266,10 @@ useBoardChanged(() => load(true))
           <div class="form-group">
             <label class="form-label">描述</label>
             <textarea class="form-textarea" v-model="form.description" style="min-height: 60px;"></textarea>
+          </div>
+          <div class="form-group">
+            <label class="form-label">验收标准（可空；填了才能全自动验收，否则评审转人工）</label>
+            <textarea class="form-textarea" v-model="form.acceptance_criteria" style="min-height: 60px;" placeholder="如：报告包含当前时间、工作目录、磁盘剩余空间三项"></textarea>
           </div>
           <div class="form-group">
             <label class="form-label">优先级</label>

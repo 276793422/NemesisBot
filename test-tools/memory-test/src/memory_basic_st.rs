@@ -100,9 +100,17 @@ async fn st_bot_memory_store_via_ws() -> Result<()> {
         "Bot should respond to memory store command"
     );
 
+    // UTF-8 安全截断：字节索引可能落在多字节字符中间，退到字符边界。
+    let preview_end = {
+        let mut n = response.len().min(100);
+        while n > 0 && !response.is_char_boundary(n) {
+            n -= 1;
+        }
+        n
+    };
     println!(
         "[ST] Memory store via WS — PASS (response: {})",
-        &response[..response.len().min(100)]
+        &response[..preview_end]
     );
     Ok(())
 }
