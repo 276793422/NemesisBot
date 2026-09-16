@@ -238,6 +238,12 @@ pub async fn run(
         nemesis_config::credentials::credentials_path_for_home(home),
     );
 
+    // D-3（复核 2026-09-16）：会话日志平化迁移（SAN-01/D4）——headless 入口
+    // 与 gateway 同源执行。写 session_logs 的路径不止 gateway（loop 持久化/
+    // 续行回复都落盘），旧嵌套目录里的历史在任何入口都该可见。幂等 +
+    // best-effort，成本近零。
+    nemesis_agent::chat_log::migrate_nested_session_logs();
+
     // 2. 工作区：显式 --workspace 优先；缺省 canonical 布局。不存在则创建
     //    （一次性 mkdir，安全且符合「指向新目录跑任务」的直觉）。
     let workspace_dir = match &v.workspace {

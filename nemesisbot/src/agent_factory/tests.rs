@@ -822,3 +822,147 @@ mod r10 {
         );
     }
 }
+
+// ===========================================================================
+// ASM-08 装配矩阵（2026-09-16 横扫存量加固）：三 builder 关键件接线 + 断言
+// helper 触发路径。
+//
+// 双层防线：
+// ① builder 内部已调 assert_gateway_critical_wiring（漏接 = 启动即炸）——
+//    本文件所有 build_* 成功本身即证明关键件齐；
+// ② 以下测试再用 wiring_status() 直接断言 + 裸 AgentLoop::new 直测 helper
+//    的 bail 文案——防将来有人删掉 builder 内的断言调用后回归无人知晓。
+//
+// security_plugin 一致性矩阵（helper 语义，有意为之勿「修直」）：
+//   None/None（security.enabled=false 或 feature 裁剪）与 Some/Some（gateway
+//   生产形态）都是合法态；fail 的只有「shared 有而 loop 没接」。
+// =========================================================================
+
+/// ASM-08 触发路径专用 stub：chat 恒 Err（装配测试不触 LLM）。
+struct Asm08StubProvider;
+
+#[async_trait::async_trait]
+impl nemesis_agent::r#loop::LlmProvider for Asm08StubProvider {
+    async fn chat(
+        &self,
+        _model: &str,
+        _messages: Vec<nemesis_agent::r#loop::LlmMessage>,
+        _options: Option<nemesis_agent::types::ChatOptions>,
+        _tools: Vec<nemesis_agent::types::ToolDefinition>,
+    ) -> Result<nemesis_agent::r#loop::LlmResponse, String> {
+        Err("asm08 stub never chats".to_string())
+    }
+}
+
+/// 裸构造一个关键件全缺的 loop（旧 standalone 构造器：estop/workspace_root/
+/// config_path/pricing_store 全 None）——helper 触发路径的测试夹具。
+fn fresh_unwired_loop() -> nemesis_agent::r#loop::AgentLoop {
+    nemesis_agent::r#loop::AgentLoop::new(
+        Box::new(Asm08StubProvider),
+        nemesis_agent::types::AgentConfig {
+            model: "asm08-stub".to_string(),
+            ..Default::default()
+        },
+    )
+}
+
+#[tokio::test]
+async fn asm08_main_loop_critical_wiring_matrix() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    let home = tmp.path().to_path_buf();
+    write_model_config(&home, serde_json::json!({}));
+
+    let built = build_agent_loop(&make_shared(&home)).expect("factory must succeed");
+    let status: std::collections::HashMap<&str, bool> = built.wiring_status().into_iter().collect();
+    for key in ["estop", "workspace_root", "config_path", "pricing_store"] {
+        assert!(
+            status.get(key).copied().unwrap_or(false),
+            "主 loop 关键件 `{key}` 未接线（ASM-08 矩阵回归）"
+        );
+    }
+    // security_plugin 在 shared=None（默认 config）时 loop=None 合法——
+    // 一致性断言的 None 分支；Some/Some 与 Some/None 分支见集群矩阵 +
+    // helper 一致性测试。
+}
+
+#[tokio::test]
+async fn asm08_cluster_loop_critical_wiring_matrix() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    let home = tmp.path().to_path_buf();
+    write_mini_model_config(&home);
+
+    // security_plugin = Some（gateway 生产形态，ASM-01）：security feature
+    // 裁剪时字段退化为 Option<()>，Some(()) 同样走 None 分支语义。
+    #[cfg(feature = "security")]
+    let plugin = crate::security_setup::build_security_plugin(&home, true)
+        .await
+        .expect("security plugin must build offline");
+    #[cfg(not(feature = "security"))]
+    let plugin = ();
+
+    let (outbound_tx, _rx) = tokio::sync::mpsc::channel(16);
+    let shared = Arc::new(SharedResources {
+        home: home.clone(),
+        agent_outbound_tx: outbound_tx,
+        cron_service: Arc::new(std::sync::Mutex::new(
+            nemesis_cron::service::CronService::new(""),
+        )),
+        mcp_config_path: home.join("nonexistent-mcp.json"),
+        security_plugin: Some(plugin),
+        ..Default::default()
+    });
+    let cluster = Arc::new(nemesis_cluster::cluster::Cluster::new(ClusterConfig {
+        node_id: "asm08-node".to_string(),
+        bind_address: "127.0.0.1:0".to_string(),
+        peers: Vec::new(),
+    }));
+    let (agent_loop, _config, _observer) =
+        build_cluster_agent_loop(&shared, cluster).expect("cluster factory must succeed");
+
+    let status: std::collections::HashMap<&str, bool> =
+        agent_loop.wiring_status().into_iter().collect();
+    let mut keys = vec!["estop", "workspace_root", "config_path", "pricing_store"];
+    #[cfg(feature = "security")]
+    keys.push("security_plugin");
+    for key in keys {
+        assert!(
+            status.get(key).copied().unwrap_or(false),
+            "集群 loop 关键件 `{key}` 未接线（ASM-08 矩阵回归，含 ASM-01 安全管线）"
+        );
+    }
+}
+
+#[tokio::test]
+async fn asm08_assert_helper_bails_and_names_missing_keys_on_fresh_loop() {
+    let loop_ = fresh_unwired_loop();
+    let shared = SharedResources::default();
+    let err = assert_gateway_critical_wiring(&loop_, &shared, "ASM-08 矩阵")
+        .expect_err("裸构造 loop 关键件全缺，helper 必须拦下（漏接不得静默）");
+    let msg = err.to_string();
+    assert!(msg.contains("ASM-08"), "bail 文案必须带 ASM-08 标记: {msg}");
+    for key in ["estop", "workspace_root", "config_path"] {
+        assert!(msg.contains(key), "bail 文案必须点名 `{key}`: {msg}");
+    }
+}
+
+#[cfg(feature = "security")]
+#[tokio::test]
+async fn asm08_assert_helper_flags_shared_plugin_missing_on_loop() {
+    // 一致性规则第三态：shared 有而 loop 没接 = 装配漏项（fail）。
+    // （None/None 与 Some/Some 两个合法态分别由主/集群矩阵测试覆盖。）
+    let tmp = tempfile::TempDir::new().unwrap();
+    let plugin = crate::security_setup::build_security_plugin(tmp.path(), true)
+        .await
+        .expect("security plugin must build offline");
+    let loop_ = fresh_unwired_loop();
+    let shared = SharedResources {
+        security_plugin: Some(plugin),
+        ..Default::default()
+    };
+    let err = assert_gateway_critical_wiring(&loop_, &shared, "ASM-08 一致性")
+        .expect_err("shared.security_plugin 有而 loop 未接必须拦下");
+    assert!(
+        err.to_string().contains("security_plugin"),
+        "bail 必须点名 security_plugin: {err:#}"
+    );
+}

@@ -7,6 +7,11 @@
 //! - BatchOperationRequest for batched approval
 //! - Permission presets (CLI, Web, Agent)
 //! - Security status monitoring
+//!
+//! ⚠️ 状态（2026-09-16）：**未接线模块**——本模块是 Go 版 1:1 复刻的既有
+//! 平行实现，当前无任何生产消费方（安全 8 层管线走 pipeline.rs/auditor.rs）。
+//! 曾在横扫存量 BUG CMD-11③ 被整体删除，经用户指令恢复保留（代码不得随便
+//! 删）；接线、改造或删除待用户裁决，动手前先问。
 
 use crate::auditor::{AuditFilter, OperationRequest, SecurityAuditor};
 use crate::types::*;

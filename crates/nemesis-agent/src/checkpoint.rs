@@ -828,9 +828,16 @@ impl CheckpointStore {
         let _ = std::fs::write(path, bytes);
     }
 
-    /// Resolve `p` against the workspace root, rejecting traversal escapes.
-    /// Restore must never write outside the workspace, even if a snapshot path is
-    /// hostile or the project moved since the snapshot was taken.
+    /// Resolve `p` against the workspace root, rejecting `..` traversal
+    /// escapes.
+    ///
+    /// SAN-10 复核结论（2026-09-16）：**刻意不做工作区边界校验**。D2 hybrid
+    /// 是已验收的既定设计（`git_mode_hybrid_restores_out_of_workspace_paths`）：
+    /// `restrict=false` 部署下声明式工具合法写工作区外文件，undo 必须能回滚
+    /// 它们（否则 rewind 诚实性破产）。快照路径只能经 live 安全审批过的工具
+    /// 调用进入 checkpoint；restore 只是重放。checkpoint 存储本身即 restore
+    /// 的信任锚（能篡改它的人早已能改写任意快照内容），边界拦不住新增威胁
+    /// 反而砍掉合法功能。
     fn safe_path(&self, p: &str) -> Option<PathBuf> {
         if p.contains("..") {
             return None;

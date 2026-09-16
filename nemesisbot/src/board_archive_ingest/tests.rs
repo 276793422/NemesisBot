@@ -24,7 +24,7 @@ use nemesis_cluster::types::ClusterConfig;
 
 use super::{
     ACTION_ARCHIVE_SUPERSEDED, ACTION_MERGE_PARKED, ACTION_MERGED, MergeAttempt, ingest_landed,
-    merge_and_maybe_review_with, register_placed, retry_placed_merges,
+    merge_and_maybe_review_with, register_placed, retry_merge_for_issue, retry_placed_merges,
 };
 use crate::board_review::{BoardReviewDeps, SelfcheckRegistry};
 
@@ -554,5 +554,156 @@ fn orphan_note_deduped_across_sweep_retries() {
     assert!(
         inbox.exists(),
         "无处安置的档案留在收件箱（后补绑项目可重灌）"
+    );
+}
+
+// ---- S-O1 合并停车人工重试（2026-09-16 showcase 复跑实证）----
+
+/// 造真实安置形态的 placement 目录：records/<n>/execution/<ts>/ 根下直接
+/// 是 transfer manifest.json（TransferBegin 凭据）+ changeset/ + 执行记录。
+/// 与 make_placed_with_changeset 的区别：不加 placed- 子目录层（retry 扫描
+/// 的是 execution/<ts>/ 本身）。
+fn place_ts_dir(
+    project_root: &Path,
+    number: &str,
+    ts: &str,
+    task_id: &str,
+    base_commit: &str,
+    new_content: &[u8],
+) -> PathBuf {
+    use nemesis_cluster::transfer::TransferBegin;
+    let placed = project_root
+        .join("records")
+        .join(number)
+        .join("execution")
+        .join(ts);
+    std::fs::create_dir_all(&placed).unwrap();
+    std::fs::write(placed.join("log.md"), b"execution log").unwrap();
+    let manifest = ChangesetManifest {
+        version: CHANGESET_VERSION,
+        base_commit: base_commit.to_string(),
+        upserts: vec![ChangesetUpsert {
+            path: "common.h".to_string(),
+            sha256: sha256_hex(new_content),
+            size: new_content.len() as u64,
+            executable: false,
+        }],
+        deletions: vec![],
+    };
+    write_changeset(
+        &placed.join("changeset"),
+        &manifest,
+        &[ChangesetContent {
+            path: "common.h".to_string(),
+            content: new_content.to_vec(),
+            executable: false,
+        }],
+    )
+    .unwrap();
+    let begin = TransferBegin {
+        transfer_id: format!("t-{task_id}"),
+        task_id: task_id.to_string(),
+        kind: "execution_records".to_string(),
+        source_node: "node-b".to_string(),
+        total_bytes: new_content.len() as u64,
+        chunk_size: 65536,
+        chunk_count: 1,
+        files: vec![],
+        content_hash: "x".to_string(),
+    };
+    std::fs::write(
+        placed.join("manifest.json"),
+        serde_json::to_string_pretty(&begin).unwrap(),
+    )
+    .unwrap();
+    placed
+}
+
+/// 模拟重启后形态：placement 目录在档案树里（records/<n>/execution/<ts>/，
+/// 内含 transfer manifest.json 凭据 + changeset/），但 PLACED/MERGED 注册表
+/// 均为空——retry_merge_for_issue 凭凭据反查 task 重新走合并触发。
+#[test]
+fn retry_merge_recovers_parked_changeset_after_registry_loss() {
+    let f = fixture("s-o1-retry");
+    setup_done_dispatch(&f, "task-s01");
+
+    // placement 目录（真实安置形态），不登记 PLACED——模拟重启后注册表清零。
+    let new_content = b"line0
+retried!
+";
+    place_ts_dir(
+        &f.project_root,
+        "NB-1",
+        "20260916_010000_000",
+        "task-s01",
+        &f.base_commit,
+        new_content,
+    );
+
+    let issue = f.store.get_issue(f.issue_id).unwrap();
+    let out = retry_merge_for_issue(&f.deps, &issue).expect("重试必须成功返回");
+    let rows = out["retried"].as_array().unwrap();
+    assert_eq!(rows.len(), 1, "恰好扫到 1 个 placement: {out}");
+    assert!(
+        rows[0]["attempt"].as_str().unwrap().contains("Merged"),
+        "停车变更集必须经重试合并成功: {out}"
+    );
+    // 合并真实发生：MERGED 活动 + 单据进 in_review + 内容落盘。
+    assert!(actions_of(&f).contains(&ACTION_MERGED.to_string()));
+    assert_eq!(
+        f.store.get_issue(f.issue_id).unwrap().status,
+        IssueStatus::InReview
+    );
+    assert_eq!(
+        std::fs::read(f.project_root.join("common.h")).unwrap(),
+        new_content,
+        "重试合并必须真实落盘（非空集宽容）"
+    );
+
+    // 幂等：再跑一次 → 已合并跳过，不二次合并（活动不再新增 MERGED）。
+    let merged_before = actions_of(&f)
+        .iter()
+        .filter(|a| **a == ACTION_MERGED)
+        .count();
+    let out2 = retry_merge_for_issue(&f.deps, &issue).unwrap();
+    let rows2 = out2["retried"].as_array().unwrap();
+    assert!(
+        !rows2[0]["skipped"].is_null(),
+        "第二次重试必须幂等跳过: {out2}"
+    );
+    let merged_after = actions_of(&f)
+        .iter()
+        .filter(|a| **a == ACTION_MERGED)
+        .count();
+    assert_eq!(merged_before, merged_after, "幂等重试不得二次合并");
+}
+
+/// 目录串号防护：档案树里的 placement 凭据 task 绑定别的单据 → 跳过不合并。
+#[test]
+fn retry_merge_skips_foreign_task_bindings() {
+    let f = fixture("s-o1-foreign");
+    setup_done_dispatch(&f, "task-mine");
+
+    // 放一个 task_id 指向不存在派发的 placement（串号/残留形态）。
+    place_ts_dir(
+        &f.project_root,
+        "NB-1",
+        "20260916_020000_000",
+        "task-other",
+        &f.base_commit,
+        b"data",
+    );
+
+    let issue = f.store.get_issue(f.issue_id).unwrap();
+    let out = retry_merge_for_issue(&f.deps, &issue).unwrap();
+    let rows = out["retried"].as_array().unwrap();
+    assert_eq!(rows.len(), 1, "{out}");
+    assert!(
+        !rows[0]["skipped"].is_null(),
+        "外来 task 绑定必须跳过: {out}"
+    );
+    assert!(
+        !actions_of(&f).contains(&ACTION_MERGED.to_string()),
+        "串号变更集绝不能合并"
     );
 }

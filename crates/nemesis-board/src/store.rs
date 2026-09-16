@@ -31,6 +31,23 @@ pub struct BoardStore {
     asset_signing: std::sync::OnceLock<crate::asset_token::AssetSignContext>,
 }
 
+/// 后代可达的展开形态（SAN-08 单一真相源，2026-09-16 横扫加固）：一个
+/// BFS 引擎（`BoardStore::descendants`）、两种命名边集。此前三处手搓遍历
+/// 各用一种边集（级联 BFS = 依赖∪父子、`sync_parent_status`/收口缺口闸 =
+/// 单层 children）——单层盲区让 done 子单之下的 cancelled 孙单对上层不可
+/// 见（SAN-06：取消缺口被冻结，收口汇报声称完成而实际存在被取消的叶子）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DescendantEdges {
+    /// 子树闭包：只走父子边——「我的全部子孙」。`sync_parent_status`
+    /// 传递闭包与父单/项目收口缺口闸用此形态。刻意**不含**依赖边：
+    /// 跨树的在途依赖不是本单完成度的组成部分，混入会让收口被无关
+    /// 任务卡死。
+    Subtree,
+    /// 级联闭包：依赖边 ∪ 父子边——「我的全部下游」。级联取消用此
+    /// 形态（依赖取消即死链、父子取消即僵尸，两边都要追）。
+    CascadeUnion,
+}
+
 impl BoardStore {
     /// Open (or create) the board database at `db_path`.
     ///
@@ -270,6 +287,45 @@ impl BoardStore {
             .map_err(|e| e.to_string())?;
         rows.collect::<Result<Vec<_>, _>>()
             .map_err(|e| e.to_string())
+    }
+
+    /// 后代集合 BFS（SAN-08/06，2026-09-16 横扫加固）：`root_ids` 的全部
+    /// 可达后代（**不含 root 自身**），BFS 序，visited 防环（依赖图理论
+    /// 无环，手工建单可造环——防御性截断）。**所有可达节点都返回**（含
+    /// 终态单）——「穿过终态单继续下探」正是 SAN-06 需要的能力（done 子单
+    /// 之下的 cancelled 孙单）；终态过滤是调用方语义（级联取消只动非终态）。
+    /// 边查询失败按空处理 + WARN（与级联取消既有容错一致），节点读取失败
+    /// 跳过。
+    pub fn descendants(&self, root_ids: &[i64], edges: DescendantEdges) -> Vec<Issue> {
+        let mut visited: std::collections::HashSet<i64> = root_ids.iter().copied().collect();
+        let mut queue: std::collections::VecDeque<i64> = root_ids.iter().copied().collect();
+        let mut out = Vec::new();
+        while let Some(cur) = queue.pop_front() {
+            let mut next_ids: Vec<i64> = Vec::new();
+            if edges == DescendantEdges::CascadeUnion {
+                match self.dependents_of(cur) {
+                    Ok(v) => next_ids = v,
+                    Err(e) => {
+                        tracing::warn!("[Board] descendants: dependents_of({cur}) 查询失败：{e}")
+                    }
+                }
+            }
+            match self.list_children(cur) {
+                Ok(children) => next_ids.extend(children.iter().map(|c| c.id)),
+                Err(e) => {
+                    tracing::warn!("[Board] descendants: list_children({cur}) 查询失败：{e}")
+                }
+            }
+            for id in next_ids {
+                if visited.insert(id)
+                    && let Ok(issue) = self.get_issue(id)
+                {
+                    out.push(issue);
+                    queue.push_back(id);
+                }
+            }
+        }
+        out
     }
 
     /// 列表（动态 WHERE + 稳定排序：position ASC, id DESC）。
@@ -563,6 +619,19 @@ impl BoardStore {
                 return Err(format!(
                     "父单 {} 已取消：子单不可单独 reopen，请先 reopen 父单",
                     parent.number
+                ));
+            }
+        }
+        // 依赖上游存活校验（SAN-07，2026-09-16 横扫加固）：上游依赖仍是
+        // cancelled 的单不可单独复活——依赖闸（dispatch_subissue_auto_with_config）
+        // 只认上游 done，复活出来的单永远等不到发车，是隐藏更深的 backlog
+        // 僵尸。正确顺序：先恢复全部上游，再 reopen 本单。
+        for up_id in self.dependencies_of(id)? {
+            let up = self.get_issue(up_id)?;
+            if up.status == IssueStatus::Cancelled {
+                return Err(format!(
+                    "上游依赖 {} 已取消：本单不可单独 reopen，请先恢复上游",
+                    up.number
                 ));
             }
         }

@@ -281,16 +281,15 @@ fn walk(root: &Path, dir: &Path, out: &mut Vec<TransferFileEntry>) -> Result<(),
             continue;
         }
         if meta.is_dir() {
-            // VCS 内部目录不进任何传输载荷（基线/执行档案/变更集）：.git
-            // 对象库不是工作文件，混入变更集会让 master 三方合并 upsert
-            // 保留路径失败（libgit2 invalid path，2026-09-16 showcase 实证
-            // ——worker 在 exec 副本 git init 后 .git/COMMIT_EDITMSG 被收进
-            // 变更集 → 合并停车）。任意层级的 .git 目录整棵跳过。
-            if normalized == ".git" || normalized.ends_with("/.git") {
+            // 排除判定见 is_noise_dir（VCS 内部 + 无争议依赖/缓存目录）。
+            if is_noise_dir(&normalized) {
                 continue;
             }
             walk(root, &path, out)?;
         } else if meta.is_file() {
+            if is_noise_file(&normalized) {
+                continue;
+            }
             let data =
                 std::fs::read(&path).map_err(|e| format!("读文件 {}: {e}", path.display()))?;
             out.push(TransferFileEntry {
@@ -301,6 +300,43 @@ fn walk(root: &Path, dir: &Path, out: &mut Vec<TransferFileEntry>) -> Result<(),
         }
     }
     Ok(())
+}
+
+/// 目录级排除（任意层级；按归一化相对路径末段名匹配）：
+/// - VCS 内部：`.git` 对象库混入变更集会让 master 三方合并 upsert 保留
+///   路径失败（F-S1，2026-09-16 showcase 实证：worker 在 exec 副本 git
+///   init 后 `.git/COMMIT_EDITMSG` 被收进变更集 → 合并停车）；
+/// - 依赖/缓存目录（S-O3）：`__pycache__` 等生态固定名目录是运行副产物，
+///   入库是纯噪音。黑名单只收**无争议名**——`target`/`dist`/`build` 等
+///   通用名不排（静默丢真实交付比噪音入库严重；大目录交给 D4 字节护栏）。
+///
+/// SAN-09 起 pub：评审证据列举器（nemesisbot board_review）与 transfer
+/// walk 共用同一排除谓词——两处漂移会让 venv/缓存条目挤占 200 条上限、
+/// 把真实交付证据挤出评审 prompt（U3 蒙眼症状复发通道）。
+pub fn is_noise_dir(rel: &str) -> bool {
+    let last = rel.rsplit('/').next().unwrap_or(rel);
+    matches!(
+        last,
+        ".git"
+            | "__pycache__"
+            | "node_modules"
+            | ".pytest_cache"
+            | ".mypy_cache"
+            | ".ruff_cache"
+            | ".tox"
+            | ".venv"
+            | "venv"
+    )
+}
+
+/// 文件级排除（任意层级）：字节码/系统垃圾 + worktree 形态的 `.git`
+/// 指针文件（同样过不了 master 合并的保留路径校验）。SAN-09 起 pub
+/// （与评审证据列举器共用，见 [`is_noise_dir`]）。
+pub fn is_noise_file(rel: &str) -> bool {
+    let last = rel.rsplit('/').next().unwrap_or(rel);
+    matches!(last, ".git" | ".DS_Store" | "Thumbs.db")
+        || last.ends_with(".pyc")
+        || last.ends_with(".pyo")
 }
 
 /// 内容指纹：排序清单的 SHA-256（`path:size:sha256\n` 逐行拼接）。
@@ -710,22 +746,16 @@ impl TransferSink {
     }
 }
 
-/// transfer_id 安全化（目录名成分；只留文件名字符，其余折叠 `_`）。
-/// outbox 条目目录名/发件箱 transfer_id 同源复用（身份不漂移）。
+/// transfer_id 安全化（目录名成分）。SAN-03/SAN-05：委托仓内单一真相源
+/// 白名单消毒——旧实现无条件放行 `.`，`..` 作 transfer_id 会逃 staging
+/// 一级目录；公共函数补点守卫 + 80 字符上限。对真实 uuid task id /
+/// transfer id（alnum-_.）映射不变。outbox 条目目录名/发件箱 transfer_id
+/// 同源复用（身份不漂移）。
 pub fn sanitize_transfer_id(id: &str) -> String {
-    let mut out = String::with_capacity(id.len());
-    for ch in id.chars() {
-        if ch.is_ascii_alphanumeric() || matches!(ch, '-' | '_' | '.') {
-            out.push(ch);
-        } else {
-            out.push('_');
-        }
+    if id.is_empty() {
+        return "transfer".into();
     }
-    if out.is_empty() {
-        "transfer".into()
-    } else {
-        out
-    }
+    nemesis_utils::sanitize::sanitize_path_segment(id)
 }
 
 /// begin 载荷校验：全部路径过围栏 + 总量/块计划一致。

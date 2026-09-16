@@ -277,18 +277,16 @@ impl RequestLogger {
         self.enabled
     }
 
-    /// Sanitize a string for safe use as a filename component.
+    /// Sanitize a string for use as a filename component.
     ///
-    /// Replaces path separators and shell metacharacters with `_`. Used by
-    /// cluster logger to handle potentially untrusted task_id values from
-    /// remote peers (A side can pass arbitrary strings).
+    /// SAN-04/SAN-05：薄包装委托仓内单一真相源白名单消毒。原黑名单实现
+    /// （`/ \ : * ? " < > | \0` → `_`）对 `..` 不设防——远端 device_id 为
+    /// `..` 时 `base_dir.join("..")` 逃一级目录。白名单对运行时 id 族
+    /// （node id / task id，alnum+-_）映射一致，另加 80 字符上限。
+    /// Used by cluster logger to handle potentially untrusted task_id values
+    /// from remote peers (A side can pass arbitrary strings).
     pub fn sanitize_filename(s: &str) -> String {
-        s.chars()
-            .map(|c| match c {
-                '/' | '\\' | ':' | '*' | '?' | '"' | '<' | '>' | '|' | '\0' => '_',
-                _ => c,
-            })
-            .collect()
+        nemesis_utils::sanitize::sanitize_path_segment(s)
     }
 
     /// Create a new logging session directory.

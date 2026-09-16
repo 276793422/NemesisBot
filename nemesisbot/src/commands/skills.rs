@@ -1244,15 +1244,33 @@ async fn cmd_learn(home: &std::path::Path, source: &str, name: Option<&str>) -> 
     }
     let cfg = nemesis_config::load_config(&cfg_path)?;
 
-    let agent_loop = match crate::commands::agent::build_agent_loop(&cfg, home) {
-        Ok(al) => al,
-        Err(e) => {
-            anyhow::bail!(
-                "Failed to initialize agent (configure an LLM with 'nemesisbot model add'): {}",
-                e
-            );
-        }
-    };
+    // ASM-05（2026-09-16 横扫存量加固）：agent 手写装配已删除，统一走
+    // agent_factory 工厂（run.rs 同范式；安全 8 层/estop/围栏随工厂生效，
+    // 不再是安全旁路面）。
+    nemesis_config::credentials::set_global_credentials_path(
+        nemesis_config::credentials::credentials_path_for_home(home),
+    );
+    let security_enabled = cfg.security.as_ref().map(|s| s.enabled).unwrap_or(true);
+    let security_plugin =
+        crate::security_setup::build_security_plugin(home, security_enabled).await;
+    let shared = std::sync::Arc::new(crate::agent_factory::SharedResources {
+        home: home.to_path_buf(),
+        workspace: common::workspace_path(home),
+        config_store: std::sync::Arc::new(nemesis_config::ConfigStore::from_config(
+            cfg.clone(),
+            cfg_path,
+        )),
+        security_plugin,
+        mcp_enabled: cfg.mcp.as_ref().map(|m| m.enabled).unwrap_or(false),
+        mcp_config_path: common::mcp_config_path(home),
+        ..Default::default()
+    });
+    let agent_loop = crate::agent_factory::build_agent_loop(&shared).map_err(|e| {
+        anyhow::anyhow!(
+            "Failed to initialize agent (configure an LLM with 'nemesisbot model add'): {}",
+            e
+        )
+    })?;
 
     let name_hint = name
         .map(|n| format!(" Use '{}' as the skill name (hyphen-case).", n))

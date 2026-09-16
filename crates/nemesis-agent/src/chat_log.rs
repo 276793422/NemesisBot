@@ -300,7 +300,12 @@ pub fn read_boundary_events(session_key: &str) -> Vec<Value> {
 
 /// Resolve the JSONL file path for a session key.
 fn log_path(session_key: &str) -> PathBuf {
-    let safe_key = session_key.replace(':', "_");
+    // SAN-01/SAN-05：白名单消毒（单一真相源
+    // `nemesis_utils::sanitize::sanitize_path_segment`）。旧 `replace(':')`
+    // 对 B 端复合键 `{node}/{chat}` 会拆出嵌套目录（F-U4-4 同根因）；对
+    // 无 `/` 的键新旧映射一致，存量平面文件零迁移（嵌套目录由
+    // [`migrate_nested_session_logs`] 启动平化）。
+    let safe_key = nemesis_utils::sanitize::sanitize_path_segment(session_key);
     default_path_manager()
         .sessions_log_dir()
         .join(format!("{}.jsonl", safe_key))
@@ -586,7 +591,7 @@ pub fn clear_chat_log(session_key: &str) {
 /// `.jsonl`). Stores a user-editable conversation title for multi-session
 /// management without touching the lazy-created SessionStore.
 fn meta_path(session_key: &str) -> PathBuf {
-    let safe_key = session_key.replace(':', "_");
+    let safe_key = nemesis_utils::sanitize::sanitize_path_segment(session_key);
     default_path_manager()
         .sessions_log_dir()
         .join(format!("{}.meta.json", safe_key))
@@ -831,7 +836,7 @@ mod tests;
 /// inside `session_logs/`: that dir is scanned for `*.jsonl` as sessions —
 /// a sidecar there would appear as a phantom session.
 fn boundary_path(session_key: &str) -> PathBuf {
-    let safe_key = session_key.replace(':', "_");
+    let safe_key = nemesis_utils::sanitize::sanitize_path_segment(session_key);
     default_path_manager()
         .boundary_events_dir()
         .join(format!("{}.jsonl", safe_key))
@@ -865,6 +870,95 @@ pub fn append_boundary_event(session_key: &str, kind: &str, detail: &str) {
     });
     if let Ok(line) = serde_json::to_string(&entry) {
         let _ = writeln!(file, "{}", line);
+    }
+}
+
+// ---------------------------------------------------------------------------
+// SAN-01/D4 启动迁移：旧「只替换 `:`」映射产生的嵌套目录平化
+// ---------------------------------------------------------------------------
+
+/// 把 `sessions_log_dir` / `boundary_events_dir` 下旧映射写出的嵌套子目录
+/// 平化到顶层。B 端复合键 `{node}/{chat}` 在旧 `replace(':', "_")` 映射下
+/// 会落成 `<root>/{node}/{chat}.jsonl`（目录逃逸，SAN-01；2026-09-15 真机
+/// F-U4-4 同根因在 todo 路径已修、本族漏网）；白名单消毒
+/// （[`nemesis_utils::sanitize::sanitize_path_segment`]）写平面
+/// `<root>/{node}_{chat}.jsonl`。本函数按「目录名_文件名」拼接平移，与
+/// 新白名单对原始键的映射一致。
+///
+/// 语义：只平移文件；目标已存在则跳过并 WARN（不覆盖）；平移后目录为空
+/// 则顺手删除；幂等（平化后无子目录，二次运行零操作）；全程 best-effort
+/// （失败 WARN 不阻断启动——旧文件留在原地，读不到但不损坏）。
+///
+/// D-2（复核 2026-09-16）：本迁移在部分入口早于 tracing logger 装配执行
+/// （gateway Step 3-2），纯 tracing 事件会静默丢失——凡有实际动作（移动/
+/// 跳过/失败）的点同时 eprintln 到 stderr 兜底；无迁移时零输出（幂等），
+/// 不产生启动噪音。
+pub fn migrate_nested_session_logs() {
+    let pm = default_path_manager();
+    for root in [pm.sessions_log_dir(), pm.boundary_events_dir()] {
+        flatten_legacy_nested_dirs(&root);
+    }
+}
+
+/// 迁移可见性兜底（D-2）：tracing（常规日志面）+ stderr（logger 未装配时
+/// 的可见面）双写。只用于本迁移的实际动作点。
+fn migration_log(msg: &str) {
+    tracing::warn!("[chat_log] {msg}");
+    eprintln!("[chat_log] {msg}");
+}
+
+fn flatten_legacy_nested_dirs(root: &std::path::Path) {
+    let entries = match fs::read_dir(root) {
+        Ok(e) => e,
+        Err(_) => return, // 目录不存在 = 无历史，零操作
+    };
+    for entry in entries.flatten() {
+        let child = entry.path();
+        if !child.is_dir() {
+            continue;
+        }
+        let Ok(dir_name) = entry.file_name().into_string() else {
+            migration_log(&format!("平化迁移跳过非 UTF-8 目录: {}", child.display()));
+            continue;
+        };
+        let Ok(files) = fs::read_dir(&child) else {
+            continue;
+        };
+        let mut moved = 0usize;
+        for f in files.flatten() {
+            let fp = f.path();
+            if !fp.is_file() {
+                continue; // 更深的嵌套不追（现实键只一层 `/`）
+            }
+            let Some(name) = fp.file_name().and_then(|n| n.to_str()) else {
+                continue;
+            };
+            let target = root.join(format!("{dir_name}_{name}"));
+            if target.exists() {
+                migration_log(&format!(
+                    "平化迁移跳过（目标已存在，不覆盖）: {}",
+                    target.display()
+                ));
+                continue;
+            }
+            match fs::rename(&fp, &target) {
+                Ok(()) => moved += 1,
+                Err(e) => migration_log(&format!(
+                    "平化迁移失败 {} -> {}: {}",
+                    fp.display(),
+                    target.display(),
+                    e
+                )),
+            }
+        }
+        if moved > 0 {
+            migration_log(&format!(
+                "平化迁移 {}: 移动 {} 个文件（目录名={dir_name:?}）",
+                root.display(),
+                moved
+            ));
+        }
+        let _ = fs::remove_dir(&child); // 空了就删；非空（跳过/子目录）留着
     }
 }
 

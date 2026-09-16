@@ -1,5 +1,7 @@
 {
   "default_action": "allow",
+  "exec_unknown_policy": "allow",
+  "guardian_failure_policy": "ask",
   "log_all_operations": true,
   "layers": {
     "dlp": {
@@ -139,14 +141,6 @@
         "action": "deny"
       },
       {
-        "pattern": "Remove-Item*",
-        "action": "ask"
-      },
-      {
-        "pattern": "rd *",
-        "action": "ask"
-      },
-      {
         "pattern": "rm -rf *",
         "action": "deny"
       },
@@ -155,11 +149,75 @@
         "action": "deny"
       },
       {
+        "pattern": "remove-item*-recurse*",
+        "action": "deny"
+      },
+      {
+        "pattern": "rd /s*",
+        "action": "deny"
+      },
+      {
+        "pattern": "del /s*",
+        "action": "deny"
+      },
+      {
+        "pattern": "erase /s*",
+        "action": "deny"
+      },
+      {
+        "pattern": "robocopy*/mir*",
+        "action": "deny"
+      },
+      {
+        "pattern": "diskpart*",
+        "action": "deny"
+      },
+      {
+        "pattern": "cipher /w*",
+        "action": "deny"
+      },
+      {
+        "pattern": "vssadmin delete shadows*",
+        "action": "deny"
+      },
+      {
+        "pattern": "wevtutil cl*",
+        "action": "deny"
+      },
+      {
+        "pattern": "schtasks /delete*",
+        "action": "deny"
+      },
+      {
+        "pattern": "sc delete*",
+        "action": "deny"
+      },
+      {
+        "pattern": "Remove-Item*",
+        "action": "ask"
+      },
+      {
+        "pattern": "rd *",
+        "action": "ask"
+      },
+      {
         "pattern": "del *",
         "action": "ask"
       },
       {
+        "pattern": "erase *",
+        "action": "ask"
+      },
+      {
         "pattern": "rmdir *",
+        "action": "ask"
+      },
+      {
+        "pattern": "set-executionpolicy*",
+        "action": "ask"
+      },
+      {
+        "pattern": "clear-content*",
         "action": "ask"
       }
     ],

@@ -236,6 +236,7 @@ fn test_save_and_load_security_config() {
             read: vec![SecurityRule {
                 pattern: "/workspace/**".to_string(),
                 action: "allow".to_string(),
+                comment: String::new(),
             }],
             ..Default::default()
         }),
@@ -502,23 +503,24 @@ fn test_security_config_roundtrip() {
         default_action: "deny".to_string(),
         log_all_operations: true,
         approval_timeout_seconds: 600,
-        max_pending_requests: 50,
-        audit_log_retention_days: 30,
         audit_log_file_enabled: true,
-        synchronous_mode: true,
+        audit_chain_enabled: true,
         file_rules: Some(FileSecurityRules {
             read: vec![SecurityRule {
                 pattern: "/workspace/**".to_string(),
                 action: "allow".to_string(),
+                comment: String::new(),
             }],
             write: vec![
                 SecurityRule {
                     pattern: "/workspace/**".to_string(),
                     action: "allow".to_string(),
+                    comment: String::new(),
                 },
                 SecurityRule {
                     pattern: "*.key".to_string(),
                     action: "deny".to_string(),
+                    comment: String::new(),
                 },
             ],
             ..Default::default()
@@ -527,6 +529,7 @@ fn test_security_config_roundtrip() {
             exec: vec![SecurityRule {
                 pattern: "rm -rf *".to_string(),
                 action: "deny".to_string(),
+                comment: String::new(),
             }],
             ..Default::default()
         }),
@@ -549,6 +552,10 @@ fn test_security_config_roundtrip() {
     let parsed: SecurityConfig = serde_json::from_str(&json).unwrap();
     assert_eq!(parsed.default_action, "deny");
     assert_eq!(parsed.approval_timeout_seconds, 600);
+    assert!(
+        parsed.audit_chain_enabled,
+        "audit_chain_enabled 必须 round-trip 保持"
+    );
     assert!(parsed.file_rules.is_some());
     let fr = parsed.file_rules.unwrap();
     assert_eq!(fr.write.len(), 2);
@@ -583,6 +590,7 @@ fn test_skills_full_config_roundtrip() {
             enabled: true,
             timeout: 30,
         },
+        extra: std::collections::BTreeMap::new(),
     };
 
     let json = serde_json::to_string_pretty(&cfg).unwrap();
@@ -591,6 +599,31 @@ fn test_skills_full_config_roundtrip() {
     assert_eq!(parsed.search_cache.max_size, 100);
     assert_eq!(parsed.github_sources.len(), 1);
     assert_eq!(parsed.github_sources[0].name, "anthropics/skills");
+}
+
+/// CFG-08：SkillsFullConfig typed round-trip 必须保留用户手加的自定义键
+/// （ModelConfig `extra` flatten 同款先例；没有 flatten 时任何 typed save
+/// 都会静默丢掉它们）。
+#[test]
+fn test_typed_skills_save_roundtrip_preserves_user_keys() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("config.skills.json");
+    let raw = serde_json::json!({
+        "enabled": true,
+        "max_concurrent_searches": 2,
+        "my_custom_key": { "nested": [1, 2, 3] },
+        "another_future": "keep-me"
+    });
+    std::fs::write(&path, serde_json::to_string_pretty(&raw).unwrap()).unwrap();
+
+    let cfg = crate::load_skills_config(&path).unwrap();
+    crate::save_skills_config(&path, &cfg).unwrap();
+
+    let after: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+    assert_eq!(after["my_custom_key"]["nested"][2], 3);
+    assert_eq!(after["another_future"], "keep-me");
+    assert_eq!(after["enabled"], true);
 }
 
 #[test]
@@ -708,6 +741,7 @@ fn test_security_rule_serialization() {
     let rule = SecurityRule {
         pattern: "/workspace/**".to_string(),
         action: "allow".to_string(),
+        comment: String::new(),
     };
     let json = serde_json::to_string(&rule).unwrap();
     let parsed: SecurityRule = serde_json::from_str(&json).unwrap();
@@ -943,8 +977,7 @@ fn test_security_config_default_values() {
     assert_eq!(cfg.default_action, "deny");
     assert!(cfg.log_all_operations);
     assert_eq!(cfg.approval_timeout_seconds, 300);
-    assert_eq!(cfg.max_pending_requests, 100);
-    assert_eq!(cfg.audit_log_retention_days, 90);
+    assert!(!cfg.audit_chain_enabled);
 }
 
 #[test]
@@ -1247,13 +1280,6 @@ fn test_dlp_layer_config_default() {
 }
 
 #[test]
-fn test_signature_layer_config_default() {
-    let cfg = SignatureLayerConfig::default();
-    assert!(!cfg.enabled);
-    assert!(!cfg.strict);
-}
-
-#[test]
 fn test_hardware_security_rules_defaults_v2() {
     let rules = HardwareSecurityRules::default();
     assert!(rules.i2c.is_empty());
@@ -1350,8 +1376,6 @@ fn test_security_layers_config_default() {
     assert!(cfg.dlp.is_none());
     assert!(cfg.ssrf.is_none());
     assert!(cfg.credential.is_none());
-    assert!(cfg.signature.is_none());
-    assert!(cfg.audit_chain.is_none());
 }
 
 #[test]
@@ -2155,18 +2179,6 @@ fn test_dlp_layer_config_roundtrip() {
     assert!(parsed.enabled);
     assert_eq!(parsed.rules.len(), 2);
     assert_eq!(parsed.action, "block");
-}
-
-#[test]
-fn test_signature_layer_config_roundtrip() {
-    let cfg = SignatureLayerConfig {
-        enabled: true,
-        strict: true,
-    };
-    let json = serde_json::to_string(&cfg).unwrap();
-    let parsed: SignatureLayerConfig = serde_json::from_str(&json).unwrap();
-    assert!(parsed.enabled);
-    assert!(parsed.strict);
 }
 
 #[test]
@@ -3342,4 +3354,116 @@ fn test_board_conflict_auto_resolve_default_and_roundtrip() {
     assert_eq!(json["board"]["conflict_auto_resolve"], true);
     let reparsed: Config = serde_json::from_value(json).unwrap();
     assert!(reparsed.board.as_ref().unwrap().conflict_auto_resolve);
+}
+
+// ============================================================
+// CFG-01（2026-09-16 横扫存量加固）：SecurityConfig `dir_rules` rename 回归锁
+// ============================================================
+
+#[test]
+fn test_security_config_roundtrip_preserves_dir_rules() {
+    // 磁盘/出厂模板真相键名是 `dir_rules`（runtime security_setup.rs 按裸
+    // JSON 键读取）。typed 字段此前无 rename → 反序列化拿不到（None）+
+    // 序列化吐 `directory_rules`（或缺键）→ Dashboard 安全设置页保存一次即
+    // 把磁盘 `dir_rules` 整段抹掉（F-U4-7 同后果，miss 落 default allow）。
+    // rename 后 load→save 键名稳定，且反序列化本体就能拿到规则。
+    let raw = serde_json::json!({
+        "default_action": "allow",
+        "file_rules": { "delete": [ { "pattern": "*", "action": "deny" } ] },
+        "dir_rules": { "delete": [ { "pattern": "*", "action": "deny" } ] },
+        "exec_unknown_policy": "ask",
+        "guardian_failure_policy": "deny"
+    });
+    let cfg: crate::SecurityConfig = serde_json::from_value(raw).unwrap();
+    let dir_rules = cfg
+        .directory_rules
+        .as_ref()
+        .expect("`dir_rules` 必须能反序列化进 typed 字段（此前 None）");
+    assert_eq!(dir_rules.delete.len(), 1);
+    assert_eq!(dir_rules.delete[0].pattern, "*");
+
+    let out = serde_json::to_value(&cfg).unwrap();
+    assert!(
+        out.get("dir_rules").is_some(),
+        "序列化键名必须是磁盘真相 `dir_rules`（否则保存路径删键）"
+    );
+    assert!(
+        out.get("directory_rules").is_none(),
+        "不得再吐历史键名 `directory_rules`"
+    );
+    assert_eq!(out["file_rules"]["delete"][0]["pattern"], "*");
+    assert_eq!(out["exec_unknown_policy"], "ask");
+    assert_eq!(out["guardian_failure_policy"], "deny");
+
+    // D1/D2 缺键语义（A-F4 复核 2026-09-16）：typed 缺省 = **空串**（=
+    // runtime 缺键旧行为，且 skip_serializing_if 不物化），不是裁决值——
+    // 若缺省给 "allow"/"ask"，从未显式配置的部署经 Dashboard 保存一次即被
+    // 静默物化（D1 落 default_action / D2 旧 fail-open 被替换 = 语义漂移）。
+    // 裁决默认值只在前端 UI 显示层兜底（SecurityView POLICY_KEYS fallback）。
+    let cfg2: crate::SecurityConfig = serde_json::from_value(serde_json::json!({})).unwrap();
+    assert_eq!(cfg2.exec_unknown_policy, "");
+    assert_eq!(cfg2.guardian_failure_policy, "");
+    let out2 = serde_json::to_value(&cfg2).unwrap();
+    assert!(
+        out2.get("exec_unknown_policy").is_none() && out2.get("guardian_failure_policy").is_none(),
+        "缺键配置经 typed round-trip 不得物化 D1/D2 键（skip_serializing_if）"
+    );
+}
+
+/// CFG-10 ③（2026-09-16）：typed SecurityConfig round-trip 不丢键 + 幂等。
+/// 用户磁盘上的配置（含手加策略键 / D1/D2 / audit_chain_enabled /
+/// layers.injection.extra 自定义键）经 parse → serialize 后**任何用户键
+/// 不得消失**（CFG-01/CFG-09 丢键族的机械防线）；serialize → parse →
+/// serialize 必须逐字节一致（fixpoint——serde 回填的空数组/null 是首次
+/// 序列化的确定性规范化，第二跳不得再变化）。
+#[test]
+fn cfg10_security_config_typed_roundtrip_byte_preserving() {
+    let on_disk = serde_json::json!({
+        "default_action": "allow",
+        "log_all_operations": false,
+        "approval_timeout_seconds": 600,
+        "audit_log_file_enabled": false,
+        "audit_chain_enabled": true,
+        "exec_unknown_policy": "ask",
+        "guardian_failure_policy": "deny",
+        "file_rules": { "read": [ { "pattern": "C:/Windows/**", "action": "deny" } ] },
+        "dir_rules": { "delete": [ { "pattern": "*", "action": "ask" } ] },
+        "process_rules": { "exec": [ { "pattern": "git *", "action": "allow" } ] },
+        "network_rules": { "download": [ { "pattern": "*", "action": "ask" } ] },
+        "hardware_rules": { "gpio": [ { "pattern": "*", "action": "allow" } ] },
+        "registry_rules": { "write": [ { "pattern": "HKEY_LOCAL_MACHINE/**", "action": "deny" } ] },
+        "layers": {
+            "dlp": {
+                "enabled": true,
+                "action": "block",
+                "rules": ["custom_rule"],
+                "low_confidence_action": "log",
+                "inbound_action": "block"
+            },
+            "injection": {
+                "enabled": true,
+                "extra": { "threshold": 0.9 }
+            }
+        }
+    });
+
+    let parsed: SecurityConfig = serde_json::from_value(on_disk.clone()).unwrap();
+    let out = serde_json::to_value(&parsed).unwrap();
+
+    // 第一不变量：用户写的每个顶层键都必须存活（防丢键）。
+    for key in on_disk.as_object().unwrap().keys() {
+        assert!(
+            out.get(key).is_some(),
+            "round-trip 丢失用户键 `{key}`——Dashboard 保存会静默抹掉它"
+        );
+    }
+    // 深层抽查：规则条目逐字段保真。
+    assert_eq!(out["file_rules"]["read"][0]["pattern"], "C:/Windows/**");
+    assert_eq!(out["layers"]["injection"]["extra"]["threshold"], 0.9);
+    assert_eq!(out["layers"]["dlp"]["rules"][0], "custom_rule");
+
+    // 第二不变量：第二跳 fixpoint（serialize → parse → serialize 字节一致）。
+    let reparsed: SecurityConfig = serde_json::from_value(out.clone()).unwrap();
+    let out2 = serde_json::to_value(&reparsed).unwrap();
+    assert_eq!(out, out2, "二次序列化仍在变化——typed schema 非幂等");
 }

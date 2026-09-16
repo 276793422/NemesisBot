@@ -317,21 +317,24 @@ fn test_persist_silent_when_no_session_store_attached() {
 #[test]
 fn test_persist_save_failure_does_not_panic() {
     // Construct a disk-backed SessionStore, then trigger save() failure by
-    // passing an invalid session key (".." sanitizes to "." which is rejected).
-    // persist_session_history catches the Err and logs a warning instead of
-    // propagating.
+    // pointing its storage dir at a pre-created FILE (tmp write necessarily
+    // errors; persist_session_history catches the Err and logs a warning
+    // instead of propagating).
+    // SAN-05 后 ".." 会被消毒成 "__" 正常落盘，不再能充当失败注入。
     let tmp = tempfile::tempdir().unwrap();
-    let store = std::sync::Arc::new(SessionStore::new_with_storage(tmp.path()));
+    let blocker = tmp.path().join("blocker");
+    std::fs::write(&blocker, b"file").unwrap();
+    let store = std::sync::Arc::new(SessionStore::new_with_storage(&blocker));
     let mut agent_loop = AgentLoop::new(Box::new(NullLlmProvider), make_test_config());
     agent_loop.set_session_store(store.clone());
 
     let instance = AgentInstance::new(make_test_config());
 
-    // Direct save("..") fails; verify the precondition holds.
+    // Direct save fails (unwritable storage dir); verify the precondition holds.
     store.get_or_create("..");
     assert!(store.save("..").is_err());
 
-    // persist_session_history with invalid key must swallow the error.
+    // persist_session_history with the failing store must swallow the error.
     persist_session_history(&agent_loop, &instance, "..");
 
     // Instance history is untouched (persist reads instance.get_history() to

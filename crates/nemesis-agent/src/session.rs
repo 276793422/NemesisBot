@@ -619,6 +619,13 @@ impl SessionStore {
     /// Allows `[A-Za-z0-9_-]` only; everything else (incl. `:`, `/`, `\`)
     /// becomes `_`. Prevents path traversal / key injection from the WS client
     /// (the id flows into filenames: `sessions/{key}.json`, `session_logs/{key}.jsonl`).
+    ///
+    /// D-6（复核 2026-09-16）：与 `nemesis_utils::sanitize::sanitize_path_segment`
+    /// （SAN-05 真相源）是**两道串联防线**而非重复实现：本 fn 先消毒客户端
+    /// 注入的 id 段（防 session_key 结构注入——key 形如 `chan:{id}`，id 里
+    /// 混入 `:` 会伪造通道前缀），key 整体落盘前再过白名单真相源。本输出
+    /// 只含 `[A-Za-z0-9_-]`，过真相源白名单是恒等映射——两道串联后字节
+    /// 稳定，存量文件名不受影响。
     pub fn sanitize_session_id(sid: &str) -> String {
         sid.chars()
             .map(|c| {
@@ -1043,9 +1050,12 @@ impl SessionStore {
 }
 
 /// Sanitize a session key for use as a filename.
-/// Replaces ':' (volume separator on Windows) with '_'.
+///
+/// SAN-05：薄包装委托仓内单一真相源（原实现
+/// `replace([':', '\\', '/'], "_")` 对运行时键族映射一致；`..`/超长输入
+/// 由白名单公共函数兜住）。
 fn sanitize_filename(key: &str) -> String {
-    key.replace([':', '\\', '/'], "_")
+    nemesis_utils::sanitize::sanitize_path_segment(key)
 }
 
 // ---------------------------------------------------------------------------

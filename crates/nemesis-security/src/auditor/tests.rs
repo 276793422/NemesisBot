@@ -813,8 +813,7 @@ fn test_auditor_dangerous_commands_all() {
 fn test_auditor_default_config_values() {
     let config = AuditorConfig::default();
     assert!(config.enabled);
-    assert!(config.log_all_operations);
-    assert!(!config.log_denials_only);
+    assert_eq!(config.approval_timeout_secs, 300);
     assert!(!config.audit_log_file_enabled);
     assert!(config.audit_log_dir.is_none());
 }
@@ -2163,4 +2162,290 @@ fn approval_rule_auto_allow_is_audit_marked_auto_by_rule() {
         raw
     );
     assert!(raw.contains("cargo test *"));
+}
+
+// ===========================================================================
+// CMD 族修复行为测试（2026-09-16 第二批·灾难复发批）
+// deny-first 三遍扫 / 归一化 / 内层解释器载荷 / 自杀形态 / D1 / D2
+// ===========================================================================
+
+fn allow_auditor() -> SecurityAuditor {
+    SecurityAuditor::new(AuditorConfig {
+        enabled: true,
+        default_action: "allow".to_string(),
+        ..Default::default()
+    })
+}
+
+fn auditor_with_rules(op: OperationType, rules: Vec<SecurityRule>) -> SecurityAuditor {
+    let auditor = allow_auditor();
+    auditor.set_rules(op, rules);
+    auditor
+}
+
+fn rule(pattern: &str, action: &str) -> SecurityRule {
+    SecurityRule {
+        pattern: pattern.to_string(),
+        action: action.to_string(),
+        comment: String::new(),
+    }
+}
+
+#[test]
+fn deny_pass_wins_over_earlier_allow_rule() {
+    // CMD-01：allow 规则排在 deny 之前，旧的 first-match-wins 下
+    // `git *` allow 先命中即放行；deny-first 语义下 deny 必胜。
+    let auditor = auditor_with_rules(
+        OperationType::ProcessExec,
+        vec![rule("git *", "allow"), rule("git push * --force*", "deny")],
+    );
+    let (allowed, err, _) =
+        auditor.request_permission(&exec_request("df1", "git push origin main --force"));
+    assert!(
+        !allowed,
+        "deny rule must win even though allow rule is earlier"
+    );
+    assert!(err.unwrap().contains("git push * --force*"));
+}
+
+#[test]
+fn ask_pass_wins_over_later_allow_rule() {
+    let auditor = auditor_with_rules(
+        OperationType::ProcessExec,
+        vec![rule("git *", "allow"), rule("git push *", "ask")],
+    );
+    let (allowed, _, _) = auditor.request_permission(&exec_request("df2", "git push origin main"));
+    assert!(!allowed, "ask must stop execution (pending)");
+    assert_eq!(auditor.pending_count(), 1, "ask lands as pending approval");
+}
+
+#[test]
+fn normalization_closes_quote_case_whitespace_bypasses() {
+    // CMD-04/05：引号包裹旗标 / 大小写变体 / 多余空白都曾借 shell 语义绕过。
+    let auditor = auditor_with_rules(
+        OperationType::ProcessExec,
+        vec![
+            rule("rm --recursive*", "deny"),
+            rule("Remove-Item*", "deny"),
+        ],
+    );
+    for (i, cmd) in [
+        "rm --recursive build",
+        "rm \"--recursive\" build",
+        "RM --RECURSIVE build",
+        "rm   --recursive   build",
+        "remove-item -recurse c:\\tmp\\x",
+    ]
+    .iter()
+    .enumerate()
+    {
+        let (allowed, err, _) = auditor.request_permission(&exec_request(&format!("n{i}"), cmd));
+        assert!(!allowed, "`{cmd}` must be denied after normalization");
+        assert!(err.is_some());
+    }
+}
+
+#[test]
+fn interpreter_payload_deny_seen_beneath_allow_wrapper() {
+    // CMD-02/06：外层 `python *` allow 不得屏蔽内层载荷的视线。
+    let auditor = auditor_with_rules(
+        OperationType::ProcessExec,
+        vec![rule("python *", "allow"), rule("rm -r*", "deny")],
+    );
+    let (allowed, err, _) = auditor.request_permission(&exec_request(
+        "iw1",
+        "python -c \"import os; os.system('rm -rf /data')\"",
+    ));
+    assert!(!allowed, "inner payload deny must beat outer allow");
+    assert!(
+        err.unwrap().contains("interpreter payload"),
+        "audit reason must mark the inner-payload path"
+    );
+}
+
+#[test]
+fn interpreter_payload_dangerous_structure_requires_approval() {
+    // CMD-06②：`fs.rmSync` 这类 API 形态进结构词表 → RequireApproval。
+    let auditor = auditor_with_rules(OperationType::ProcessExec, vec![rule("node *", "allow")]);
+    let (allowed, _, _) = auditor.request_permission(&exec_request(
+        "iw2",
+        "node -e \"const fs=require('fs'); fs.rmSync('x',{recursive:true})\"",
+    ));
+    assert!(!allowed, "dangerous structure must require approval");
+    assert_eq!(auditor.pending_count(), 1);
+}
+
+#[test]
+fn benign_interpreter_payload_falls_through_to_allow() {
+    // 良性载荷不误伤：无 deny/ask 命中、无危险结构 → 外层 allow 生效。
+    let auditor = auditor_with_rules(OperationType::ProcessExec, vec![rule("python *", "allow")]);
+    let (allowed, _, _) =
+        auditor.request_permission(&exec_request("iw3", "python -c \"print(1)\""));
+    assert!(allowed, "benign payload must not be blocked");
+}
+
+fn auditor_with_protected(paths: &[&str]) -> SecurityAuditor {
+    let auditor = allow_auditor();
+    auditor.set_protected_paths(paths.iter().map(|s| s.to_string()).collect());
+    auditor
+}
+
+#[test]
+fn self_destruct_recursive_delete_protected_root_denied() {
+    let auditor = auditor_with_protected(&["/home/zoo", "/home/zoo/proj"]);
+    for (i, cmd) in ["rm -rf /", "rm -rf ~", "rm -rf /home/zoo", "rm -rf ."]
+        .iter()
+        .enumerate()
+    {
+        let (allowed, err, _) = auditor.request_permission(&exec_request(&format!("sd{i}"), cmd));
+        assert!(!allowed, "`{cmd}` must hit self-destruct hard block");
+        assert!(
+            err.unwrap().contains("self-destruct"),
+            "`{cmd}` reason must be self_destruct"
+        );
+    }
+}
+
+#[test]
+fn self_destruct_workspace_subpath_window_not_blocked() {
+    // 窗口逻辑：`cd ws && rm -rf build` 的删除窗口内无保护路径 → 不拦。
+    let auditor = auditor_with_protected(&["/home/zoo/proj"]);
+    let (allowed, _, _) =
+        auditor.request_permission(&exec_request("sd10", "cd /home/zoo/proj && rm -rf build"));
+    assert!(allowed, "deleting a build subdir must not be self-destruct");
+}
+
+#[test]
+fn self_destruct_single_file_delete_not_blocked() {
+    // 诚实边界：无递归旗标的单文件删除是 ABAC/D1 治理面，不进硬拦。
+    let auditor = auditor_with_protected(&["/home/zoo/proj"]);
+    let (allowed, _, _) = auditor.request_permission(&exec_request("sd11", "rm build/output.txt"));
+    assert!(allowed);
+}
+
+#[test]
+fn self_destruct_windows_forms_denied() {
+    let auditor = auditor_with_protected(&["c:/users/zoo", "c:/users/zoo/proj"]);
+    for (i, cmd) in [
+        "del /s /q c:\\users\\zoo",
+        "del \"/s\" \"/q\" \"c:\\users\\zoo\"",
+        "Remove-Item -Recurse -Force c:\\users\\zoo",
+        "rd /s c:\\users\\zoo\\proj",
+    ]
+    .iter()
+    .enumerate()
+    {
+        let (allowed, err, _) = auditor.request_permission(&exec_request(&format!("sd2{i}"), cmd));
+        assert!(!allowed, "`{cmd}` must hit self-destruct hard block");
+        assert!(err.unwrap().contains("self-destruct"));
+    }
+}
+
+fn exec_unknown_auditor(default_action: &str, policy: &str) -> SecurityAuditor {
+    let auditor = SecurityAuditor::new(AuditorConfig {
+        enabled: true,
+        default_action: default_action.to_string(),
+        ..Default::default()
+    });
+    auditor.set_exec_unknown_policy(policy);
+    auditor
+}
+
+#[test]
+fn exec_unknown_policy_ask_intercepts_unmatched() {
+    // D1=ask：无规则命中 → RequireApproval（default deny 被 ask 分支抢先）。
+    let auditor = exec_unknown_auditor("deny", "ask");
+    let (allowed, _, _) = auditor.request_permission(&exec_request("d1a", "someunknown --flag"));
+    assert!(!allowed);
+    assert_eq!(
+        auditor.pending_count(),
+        1,
+        "ask must create pending, not deny"
+    );
+}
+
+#[test]
+fn exec_unknown_policy_deny_intercepts_unmatched() {
+    let auditor = exec_unknown_auditor("allow", "deny");
+    let (allowed, err, _) = auditor.request_permission(&exec_request("d1b", "someunknown --flag"));
+    assert!(!allowed, "deny policy must beat permissive default");
+    assert!(err.unwrap().contains("exec_unknown_policy"));
+}
+
+#[test]
+fn exec_unknown_policy_allow_overrides_default_deny() {
+    let auditor = exec_unknown_auditor("deny", "allow");
+    let (allowed, _, _) = auditor.request_permission(&exec_request("d1c", "someunknown --flag"));
+    assert!(allowed, "explicit allow policy must override default deny");
+}
+
+#[test]
+fn exec_unknown_policy_unset_preserves_default_action() {
+    // 老配置兼容：策略键缺省（空串）= 旧行为，default deny 仍生效。
+    let auditor = exec_unknown_auditor("deny", "");
+    let (allowed, _, _) = auditor.request_permission(&exec_request("d1d", "someunknown --flag"));
+    assert!(!allowed);
+    assert_eq!(auditor.pending_count(), 0, "deny must not create pending");
+}
+
+struct ApprovingManager;
+impl ApprovalManager for ApprovingManager {
+    fn is_running(&self) -> bool {
+        true
+    }
+    fn request_approval_sync(
+        &self,
+        _request_id: &str,
+        _operation: &str,
+        _target: &str,
+        _risk_level: &str,
+        _reason: &str,
+        _timeout_secs: u64,
+    ) -> Result<ApprovalVerdict, String> {
+        Ok(ApprovalVerdict::approved())
+    }
+}
+
+struct DownManager;
+impl ApprovalManager for DownManager {
+    fn is_running(&self) -> bool {
+        false
+    }
+    fn request_approval_sync(
+        &self,
+        _request_id: &str,
+        _operation: &str,
+        _target: &str,
+        _risk_level: &str,
+        _reason: &str,
+        _timeout_secs: u64,
+    ) -> Result<ApprovalVerdict, String> {
+        unreachable!("down manager must never be asked");
+    }
+}
+
+#[test]
+fn guardian_failure_approval_fails_closed_without_manager() {
+    // D2 fail-closed：无 manager = Err（调用方按拒绝处理）。
+    let auditor = ask_auditor();
+    let res = auditor.request_guardian_failure_approval("exec", "guardian judge error", None);
+    assert!(res.is_err(), "no manager must fail closed");
+}
+
+#[test]
+fn guardian_failure_approval_fails_closed_when_manager_down() {
+    let auditor = ask_auditor();
+    auditor.set_approval_manager(Arc::new(DownManager));
+    let res = auditor.request_guardian_failure_approval("exec", "guardian judge error", None);
+    assert!(res.is_err(), "non-running manager must fail closed");
+}
+
+#[test]
+fn guardian_failure_approval_routes_to_running_manager() {
+    let auditor = ask_auditor();
+    auditor.set_approval_manager(Arc::new(ApprovingManager));
+    let res = auditor
+        .request_guardian_failure_approval("exec", "guardian judge error", None)
+        .expect("running manager must return verdict");
+    assert!(res.approved);
 }

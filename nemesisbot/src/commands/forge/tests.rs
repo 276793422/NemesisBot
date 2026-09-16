@@ -1,48 +1,235 @@
 use super::*;
 
-#[test]
-fn test_default_forge_config() {
-    let cfg = default_forge_config();
-    assert_eq!(
-        cfg.get("collect_interval_sec").and_then(|v| v.as_u64()),
-        Some(300)
-    );
-    assert_eq!(
-        cfg.get("reflect_interval_sec").and_then(|v| v.as_u64()),
-        Some(3600)
-    );
-    assert_eq!(cfg.get("min_experiences").and_then(|v| v.as_u64()), Some(5));
-    assert_eq!(
-        cfg.get("learning_enabled").and_then(|v| v.as_bool()),
-        Some(false)
-    );
-}
+// ── 死代码恢复区（2026-09-16 用户指令：代码不得随便删，注释保留待讨论）
+// CFG-04 曾删以下 14 个 CLI-local 死 helper（default_forge_config /
+// load_forge_config / save_forge_config，写死 <forge>/forge.json 假姿态）
+// 的测试。helper 本体在 forge.rs 注释恢复区。待用户裁决。
+// -------------------------------------------------------------------------
+// #[test]
+// fn test_default_forge_config() {
+//     let cfg = default_forge_config();
+//     assert_eq!(
+//         cfg.get("collect_interval_sec").and_then(|v| v.as_u64()),
+//         Some(300)
+//     );
+//     assert_eq!(
+//         cfg.get("reflect_interval_sec").and_then(|v| v.as_u64()),
+//         Some(3600)
+//     );
+//     assert_eq!(cfg.get("min_experiences").and_then(|v| v.as_u64()), Some(5));
+//     assert_eq!(
+//         cfg.get("learning_enabled").and_then(|v| v.as_bool()),
+//         Some(false)
+//     );
+// }
+//
+// #[test]
+// fn test_load_forge_config_missing() {
+//     let tmp = tempfile::TempDir::new().unwrap();
+//     let cfg = load_forge_config(tmp.path());
+//     assert_eq!(
+//         cfg.get("collect_interval_sec").and_then(|v| v.as_u64()),
+//         Some(300)
+//     );
+// }
+//
+// #[test]
+// fn test_save_and_load_forge_config() {
+//     let tmp = tempfile::TempDir::new().unwrap();
+//     let mut cfg = default_forge_config();
+//     if let Some(obj) = cfg.as_object_mut() {
+//         obj.insert(
+//             "learning_enabled".to_string(),
+//             serde_json::Value::Bool(true),
+//         );
+//     }
+//     save_forge_config(tmp.path(), &cfg).unwrap();
+//     let loaded = load_forge_config(tmp.path());
+//     assert_eq!(
+//         loaded.get("learning_enabled").and_then(|v| v.as_bool()),
+//         Some(true)
+//     );
+// }
+//
+// // -------------------------------------------------------------------------
+// // default_forge_config comprehensive tests
+// // -------------------------------------------------------------------------
+//
+// #[test]
+// fn test_default_forge_config_collect_interval() {
+//     let cfg = default_forge_config();
+//     assert_eq!(
+//         cfg.get("collect_interval_sec").and_then(|v| v.as_u64()),
+//         Some(300)
+//     );
+// }
+//
+// #[test]
+// fn test_default_forge_config_reflect_interval() {
+//     let cfg = default_forge_config();
+//     assert_eq!(
+//         cfg.get("reflect_interval_sec").and_then(|v| v.as_u64()),
+//         Some(3600)
+//     );
+// }
+//
+// #[test]
+// fn test_default_forge_config_min_experiences() {
+//     let cfg = default_forge_config();
+//     assert_eq!(cfg.get("min_experiences").and_then(|v| v.as_u64()), Some(5));
+// }
+//
+// #[test]
+// fn test_default_forge_config_llm_semantic_analysis() {
+//     let cfg = default_forge_config();
+//     assert_eq!(
+//         cfg.get("llm_semantic_analysis").and_then(|v| v.as_bool()),
+//         Some(true)
+//     );
+// }
+//
+// #[test]
+// fn test_default_forge_config_default_artifact_status() {
+//     let cfg = default_forge_config();
+//     assert_eq!(
+//         cfg.get("default_artifact_status").and_then(|v| v.as_str()),
+//         Some("draft")
+//     );
+// }
+//
+// #[test]
+// fn test_default_forge_config_trace_collection() {
+//     let cfg = default_forge_config();
+//     assert_eq!(
+//         cfg.get("trace_collection").and_then(|v| v.as_bool()),
+//         Some(true)
+//     );
+// }
+//
+// #[test]
+// fn test_default_forge_config_learning_enabled_false() {
+//     let cfg = default_forge_config();
+//     assert_eq!(
+//         cfg.get("learning_enabled").and_then(|v| v.as_bool()),
+//         Some(false)
+//     );
+// }
+//
+// #[test]
+// fn test_default_forge_config_learning_subsection() {
+//     let cfg = default_forge_config();
+//     let learning = cfg.get("learning").unwrap();
+//     assert_eq!(
+//         learning
+//             .get("min_pattern_frequency")
+//             .and_then(|v| v.as_u64()),
+//         Some(3)
+//     );
+//     assert_eq!(
+//         learning
+//             .get("high_confidence_threshold")
+//             .and_then(|v| v.as_f64()),
+//         Some(0.8)
+//     );
+//     assert_eq!(
+//         learning.get("max_auto_creates").and_then(|v| v.as_u64()),
+//         Some(3)
+//     );
+//     assert_eq!(
+//         learning.get("max_refine_rounds").and_then(|v| v.as_u64()),
+//         Some(3)
+//     );
+//     assert_eq!(
+//         learning.get("min_outcome_samples").and_then(|v| v.as_u64()),
+//         Some(5)
+//     );
+//     assert_eq!(
+//         learning.get("monitor_window_days").and_then(|v| v.as_u64()),
+//         Some(7)
+//     );
+//     assert_eq!(
+//         learning.get("degrade_threshold").and_then(|v| v.as_f64()),
+//         Some(-0.2)
+//     );
+//     assert_eq!(
+//         learning
+//             .get("degrade_cooldown_days")
+//             .and_then(|v| v.as_u64()),
+//         Some(7)
+//     );
+//     assert_eq!(
+//         learning.get("llm_budget_tokens").and_then(|v| v.as_u64()),
+//         Some(8000)
+//     );
+// }
+//
+// // -------------------------------------------------------------------------
+// // load_forge_config edge cases
+// // -------------------------------------------------------------------------
+//
+// #[test]
+// fn test_load_forge_config_invalid_json() {
+//     let tmp = tempfile::TempDir::new().unwrap();
+//     let forge_dir = tmp.path().join("forge");
+//     std::fs::create_dir_all(&forge_dir).unwrap();
+//     // Write invalid JSON
+//     std::fs::write(forge_dir.join("forge.json"), "not valid json {{{").unwrap();
+//     let cfg = load_forge_config(&forge_dir);
+//     // Should fall back to defaults
+//     assert_eq!(
+//         cfg.get("collect_interval_sec").and_then(|v| v.as_u64()),
+//         Some(300)
+//     );
+// }
+//
+// // -------------------------------------------------------------------------
+// // save_forge_config edge cases
+// // -------------------------------------------------------------------------
+//
+// #[test]
+// fn test_save_forge_config_creates_directory() {
+//     let tmp = tempfile::TempDir::new().unwrap();
+//     let new_dir = tmp.path().join("new_forge_dir");
+//     assert!(!new_dir.exists());
+//     save_forge_config(&new_dir, &default_forge_config()).unwrap();
+//     assert!(new_dir.exists());
+//     assert!(new_dir.join("forge.json").exists());
+// }
+//
+// #[test]
+// fn test_save_forge_config_overwrites() {
+//     let tmp = tempfile::TempDir::new().unwrap();
+//     save_forge_config(tmp.path(), &default_forge_config()).unwrap();
+//
+//     let mut custom = default_forge_config();
+//     if let Some(obj) = custom.as_object_mut() {
+//         obj.insert(
+//             "collect_interval_sec".to_string(),
+//             serde_json::Value::Number(600.into()),
+//         );
+//     }
+//     save_forge_config(tmp.path(), &custom).unwrap();
+//
+//     let loaded = load_forge_config(tmp.path());
+//     assert_eq!(
+//         loaded.get("collect_interval_sec").and_then(|v| v.as_u64()),
+//         Some(600)
+//     );
+// }
+// ── 死代码恢复区结束 ────────────────────────────────────────────────────
 
 #[test]
-fn test_load_forge_config_missing() {
+fn test_runtime_forge_config_path_derives_workspace_config() {
+    // CFG-04：CLI 与 gateway 同一真相源——<workspace>/config/config.forge.json。
     let tmp = tempfile::TempDir::new().unwrap();
-    let cfg = load_forge_config(tmp.path());
+    let forge_dir = tmp.path().join("workspace").join("forge");
+    let path = runtime_forge_config_path(&forge_dir);
     assert_eq!(
-        cfg.get("collect_interval_sec").and_then(|v| v.as_u64()),
-        Some(300)
-    );
-}
-
-#[test]
-fn test_save_and_load_forge_config() {
-    let tmp = tempfile::TempDir::new().unwrap();
-    let mut cfg = default_forge_config();
-    if let Some(obj) = cfg.as_object_mut() {
-        obj.insert(
-            "learning_enabled".to_string(),
-            serde_json::Value::Bool(true),
-        );
-    }
-    save_forge_config(tmp.path(), &cfg).unwrap();
-    let loaded = load_forge_config(tmp.path());
-    assert_eq!(
-        loaded.get("learning_enabled").and_then(|v| v.as_bool()),
-        Some(true)
+        path,
+        tmp.path()
+            .join("workspace")
+            .join("config")
+            .join("config.forge.json")
     );
 }
 
@@ -68,169 +255,18 @@ fn test_load_registry_with_data() {
 }
 
 // -------------------------------------------------------------------------
-// default_forge_config comprehensive tests
+// CFG-04（2026-09-16）：CLI 旧 default_forge_config / load_forge_config /
+// save_forge_config（raw Value 写死 <forge>/forge.json，gateway 从不读取）
+// 已删除，改用 nemesis_forge::config 的 typed load/save。typed 默认值、
+// 解析失败回退、嵌套目录创建由 crates/nemesis-forge/src/config/tests.rs
+// 钉死，不在 CLI 侧重复。
 // -------------------------------------------------------------------------
 
 #[test]
-fn test_default_forge_config_collect_interval() {
-    let cfg = default_forge_config();
-    assert_eq!(
-        cfg.get("collect_interval_sec").and_then(|v| v.as_u64()),
-        Some(300)
-    );
-}
-
-#[test]
-fn test_default_forge_config_reflect_interval() {
-    let cfg = default_forge_config();
-    assert_eq!(
-        cfg.get("reflect_interval_sec").and_then(|v| v.as_u64()),
-        Some(3600)
-    );
-}
-
-#[test]
-fn test_default_forge_config_min_experiences() {
-    let cfg = default_forge_config();
-    assert_eq!(cfg.get("min_experiences").and_then(|v| v.as_u64()), Some(5));
-}
-
-#[test]
-fn test_default_forge_config_llm_semantic_analysis() {
-    let cfg = default_forge_config();
-    assert_eq!(
-        cfg.get("llm_semantic_analysis").and_then(|v| v.as_bool()),
-        Some(true)
-    );
-}
-
-#[test]
-fn test_default_forge_config_default_artifact_status() {
-    let cfg = default_forge_config();
-    assert_eq!(
-        cfg.get("default_artifact_status").and_then(|v| v.as_str()),
-        Some("draft")
-    );
-}
-
-#[test]
-fn test_default_forge_config_trace_collection() {
-    let cfg = default_forge_config();
-    assert_eq!(
-        cfg.get("trace_collection").and_then(|v| v.as_bool()),
-        Some(true)
-    );
-}
-
-#[test]
-fn test_default_forge_config_learning_enabled_false() {
-    let cfg = default_forge_config();
-    assert_eq!(
-        cfg.get("learning_enabled").and_then(|v| v.as_bool()),
-        Some(false)
-    );
-}
-
-#[test]
-fn test_default_forge_config_learning_subsection() {
-    let cfg = default_forge_config();
-    let learning = cfg.get("learning").unwrap();
-    assert_eq!(
-        learning
-            .get("min_pattern_frequency")
-            .and_then(|v| v.as_u64()),
-        Some(3)
-    );
-    assert_eq!(
-        learning
-            .get("high_confidence_threshold")
-            .and_then(|v| v.as_f64()),
-        Some(0.8)
-    );
-    assert_eq!(
-        learning.get("max_auto_creates").and_then(|v| v.as_u64()),
-        Some(3)
-    );
-    assert_eq!(
-        learning.get("max_refine_rounds").and_then(|v| v.as_u64()),
-        Some(3)
-    );
-    assert_eq!(
-        learning.get("min_outcome_samples").and_then(|v| v.as_u64()),
-        Some(5)
-    );
-    assert_eq!(
-        learning.get("monitor_window_days").and_then(|v| v.as_u64()),
-        Some(7)
-    );
-    assert_eq!(
-        learning.get("degrade_threshold").and_then(|v| v.as_f64()),
-        Some(-0.2)
-    );
-    assert_eq!(
-        learning
-            .get("degrade_cooldown_days")
-            .and_then(|v| v.as_u64()),
-        Some(7)
-    );
-    assert_eq!(
-        learning.get("llm_budget_tokens").and_then(|v| v.as_u64()),
-        Some(8000)
-    );
-}
-
-// -------------------------------------------------------------------------
-// load_forge_config edge cases
-// -------------------------------------------------------------------------
-
-#[test]
-fn test_load_forge_config_invalid_json() {
-    let tmp = tempfile::TempDir::new().unwrap();
-    let forge_dir = tmp.path().join("forge");
-    std::fs::create_dir_all(&forge_dir).unwrap();
-    // Write invalid JSON
-    std::fs::write(forge_dir.join("forge.json"), "not valid json {{{").unwrap();
-    let cfg = load_forge_config(&forge_dir);
-    // Should fall back to defaults
-    assert_eq!(
-        cfg.get("collect_interval_sec").and_then(|v| v.as_u64()),
-        Some(300)
-    );
-}
-
-// -------------------------------------------------------------------------
-// save_forge_config edge cases
-// -------------------------------------------------------------------------
-
-#[test]
-fn test_save_forge_config_creates_directory() {
-    let tmp = tempfile::TempDir::new().unwrap();
-    let new_dir = tmp.path().join("new_forge_dir");
-    assert!(!new_dir.exists());
-    save_forge_config(&new_dir, &default_forge_config()).unwrap();
-    assert!(new_dir.exists());
-    assert!(new_dir.join("forge.json").exists());
-}
-
-#[test]
-fn test_save_forge_config_overwrites() {
-    let tmp = tempfile::TempDir::new().unwrap();
-    save_forge_config(tmp.path(), &default_forge_config()).unwrap();
-
-    let mut custom = default_forge_config();
-    if let Some(obj) = custom.as_object_mut() {
-        obj.insert(
-            "collect_interval_sec".to_string(),
-            serde_json::Value::Number(600.into()),
-        );
-    }
-    save_forge_config(tmp.path(), &custom).unwrap();
-
-    let loaded = load_forge_config(tmp.path());
-    assert_eq!(
-        loaded.get("collect_interval_sec").and_then(|v| v.as_u64()),
-        Some(600)
-    );
+fn test_runtime_forge_config_path_fallback_without_parent() {
+    // 无 parent（根路径）时回退自身，不 panic。
+    let path = runtime_forge_config_path(std::path::Path::new("/"));
+    assert!(path.ends_with("config.forge.json"));
 }
 
 // -------------------------------------------------------------------------
@@ -425,16 +461,12 @@ fn test_cmd_learning_status_defaults() {
 #[test]
 fn test_cmd_learning_status_custom_config() {
     let tmp = tempfile::TempDir::new().unwrap();
-    let forge_dir = tmp.path().join("forge");
+    let forge_dir = tmp.path().join("workspace").join("forge");
     std::fs::create_dir_all(&forge_dir).unwrap();
-    let mut cfg = default_forge_config();
-    if let Some(obj) = cfg.as_object_mut() {
-        obj.insert(
-            "learning_enabled".to_string(),
-            serde_json::Value::Bool(true),
-        );
-    }
-    save_forge_config(&forge_dir, &cfg).unwrap();
+    // CFG-04：typed 真相源——自定义 learning.enabled 写 config.forge.json。
+    let mut cfg = nemesis_forge::config::ForgeConfig::default();
+    cfg.learning.enabled = true;
+    nemesis_forge::config::save_forge_config(&runtime_forge_config_path(&forge_dir), &cfg).unwrap();
     cmd_learning_status(&forge_dir).unwrap();
 }
 
@@ -467,7 +499,8 @@ fn test_cmd_enable_creates_directories() {
         assert!(forge_dir.join(d).exists(), "Directory '{}' should exist", d);
     }
     assert!(forge_dir.join("prompts").exists());
-    assert!(forge_dir.join("forge.json").exists());
+    // CFG-04：runtime 真相源 config.forge.json（gateway 同源）。
+    assert!(runtime_forge_config_path(&forge_dir).exists());
     assert!(forge_dir.join("registry.json").exists());
 }
 
@@ -539,45 +572,30 @@ fn test_cmd_disable_sets_false() {
 #[test]
 fn test_cmd_learning_enable() {
     let tmp = tempfile::TempDir::new().unwrap();
-    let forge_dir = tmp.path().join("forge");
+    let forge_dir = tmp.path().join("workspace").join("forge");
     std::fs::create_dir_all(&forge_dir).unwrap();
-    save_forge_config(&forge_dir, &default_forge_config()).unwrap();
 
     cmd_learning_enable(&forge_dir).unwrap();
 
-    let loaded = load_forge_config(&forge_dir);
-    assert_eq!(
-        loaded.get("learning_enabled").and_then(|v| v.as_bool()),
-        Some(true)
-    );
+    let loaded = nemesis_forge::config::load_forge_config(&runtime_forge_config_path(&forge_dir));
+    assert!(loaded.learning.enabled);
     // Should also auto-enable trace collection
-    assert_eq!(
-        loaded.get("trace_collection").and_then(|v| v.as_bool()),
-        Some(true)
-    );
+    assert!(loaded.trace.enabled);
 }
 
 #[test]
 fn test_cmd_learning_disable() {
     let tmp = tempfile::TempDir::new().unwrap();
-    let forge_dir = tmp.path().join("forge");
+    let forge_dir = tmp.path().join("workspace").join("forge");
     std::fs::create_dir_all(&forge_dir).unwrap();
-    let mut cfg = default_forge_config();
-    if let Some(obj) = cfg.as_object_mut() {
-        obj.insert(
-            "learning_enabled".to_string(),
-            serde_json::Value::Bool(true),
-        );
-    }
-    save_forge_config(&forge_dir, &cfg).unwrap();
+    let mut cfg = nemesis_forge::config::ForgeConfig::default();
+    cfg.learning.enabled = true;
+    nemesis_forge::config::save_forge_config(&runtime_forge_config_path(&forge_dir), &cfg).unwrap();
 
     cmd_learning_disable(&forge_dir).unwrap();
 
-    let loaded = load_forge_config(&forge_dir);
-    assert_eq!(
-        loaded.get("learning_enabled").and_then(|v| v.as_bool()),
-        Some(false)
-    );
+    let loaded = nemesis_forge::config::load_forge_config(&runtime_forge_config_path(&forge_dir));
+    assert!(!loaded.learning.enabled);
 }
 
 // -------------------------------------------------------------------------
@@ -663,7 +681,8 @@ fn test_cmd_enable_no_existing_config_file() {
 
     // Directories should still be created
     assert!(forge_dir.join("experiences").exists());
-    assert!(forge_dir.join("forge.json").exists());
+    // CFG-04：runtime 真相源 config.forge.json。
+    assert!(runtime_forge_config_path(&forge_dir).exists());
     assert!(forge_dir.join("registry.json").exists());
 }
 
@@ -809,7 +828,6 @@ fn test_learning_enable_creates_directories() {
     let tmp = tempfile::TempDir::new().unwrap();
     let forge_dir = tmp.path().join("forge");
     std::fs::create_dir_all(&forge_dir).unwrap();
-    save_forge_config(&forge_dir, &default_forge_config()).unwrap();
 
     cmd_learning_enable(&forge_dir).unwrap();
 
@@ -820,19 +838,15 @@ fn test_learning_enable_creates_directories() {
 #[test]
 fn test_forge_config_round_trip_preserves_custom_values() {
     let tmp = tempfile::TempDir::new().unwrap();
-    let mut cfg = default_forge_config();
-    if let Some(obj) = cfg.as_object_mut() {
-        obj.insert(
-            "custom_field".to_string(),
-            serde_json::json!("custom_value"),
-        );
-        obj.insert("collect_interval_sec".to_string(), serde_json::json!(600));
-    }
-    save_forge_config(tmp.path(), &cfg).unwrap();
+    let mut cfg = nemesis_forge::config::ForgeConfig::default();
+    cfg.learning.enabled = true;
+    cfg.collection.interval_secs = 600;
+    let cfg_path = tmp.path().join("config.forge.json");
+    nemesis_forge::config::save_forge_config(&cfg_path, &cfg).unwrap();
 
-    let loaded = load_forge_config(tmp.path());
-    assert_eq!(loaded["custom_field"], "custom_value");
-    assert_eq!(loaded["collect_interval_sec"], 600);
+    let loaded = nemesis_forge::config::load_forge_config(&cfg_path);
+    assert!(loaded.learning.enabled);
+    assert_eq!(loaded.collection.interval_secs, 600);
 }
 
 // ===========================================================================
@@ -951,11 +965,12 @@ mod r7_cmd_paths {
         let forge_dir = home.join("workspace").join("forge");
         std::fs::create_dir_all(forge_dir.join("experiences")).unwrap();
         seed_registry(&forge_dir);
-        // forge.json 存在 → “Config: <path>” 臂；experiences 目录有 1 个
+        // runtime config 存在 → “Config: <path>” 臂；experiences 目录有 1 个
         // 非目录 entry（202608 子目录）→ count>0。
-        std::fs::write(
-            forge_dir.join("forge.json"),
-            serde_json::to_string(&default_forge_config()).unwrap(),
+        std::fs::create_dir_all(&forge_dir).unwrap();
+        nemesis_forge::config::save_forge_config(
+            &runtime_forge_config_path(&forge_dir),
+            &nemesis_forge::config::ForgeConfig::default(),
         )
         .unwrap();
         let r = run(ForgeAction::Status, false);
@@ -984,7 +999,8 @@ mod r7_cmd_paths {
         ] {
             assert!(forge_dir.join(d).is_dir(), "enable must create {d}");
         }
-        assert!(forge_dir.join("forge.json").exists());
+        // CFG-04：runtime 真相源 config.forge.json。
+        assert!(runtime_forge_config_path(&forge_dir).exists());
         assert!(forge_dir.join("registry.json").exists());
         let cfg: serde_json::Value =
             serde_json::from_str(&std::fs::read_to_string(home.join("config.json")).unwrap())
@@ -1220,7 +1236,7 @@ mod r7_cmd_paths {
         let _g = crate::GLOBAL_STATE_LOCK.lock().unwrap();
         let (_tmp, home) = env_home();
         let forge_dir = home.join("workspace").join("forge");
-        // status：默认配置（无 forge.json）→ 学习配置打印臂走 unwrap_or 默认。
+        // status：默认配置（无 config.forge.json）→ typed load 回默认值展示。
         run(ForgeAction::Learning { action: None }, false).expect("learning status (bare) ok");
         run(
             ForgeAction::Learning {
@@ -1230,7 +1246,7 @@ mod r7_cmd_paths {
         )
         .expect("learning status ok");
 
-        // enable → forge.json 落盘 learning_enabled=true + 目录创建。
+        // enable → config.forge.json 落盘 learning.enabled=true + 目录创建。
         run(
             ForgeAction::Learning {
                 action: Some(LearningAction::Enable),
@@ -1238,12 +1254,13 @@ mod r7_cmd_paths {
             false,
         )
         .expect("learning enable ok");
-        let cfg: serde_json::Value =
-            serde_json::from_str(&std::fs::read_to_string(forge_dir.join("forge.json")).unwrap())
-                .unwrap();
-        assert_eq!(cfg["learning_enabled"], true);
+        let cfg: serde_json::Value = serde_json::from_str(
+            &std::fs::read_to_string(runtime_forge_config_path(&forge_dir)).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(cfg["learning"]["enabled"], true);
         assert_eq!(
-            cfg["trace_collection"], true,
+            cfg["trace"]["enabled"], true,
             "auto-enable trace collection"
         );
         assert!(forge_dir.join("learning").is_dir());
@@ -1281,10 +1298,11 @@ mod r7_cmd_paths {
             false,
         )
         .expect("learning disable ok");
-        let cfg2: serde_json::Value =
-            serde_json::from_str(&std::fs::read_to_string(forge_dir.join("forge.json")).unwrap())
-                .unwrap();
-        assert_eq!(cfg2["learning_enabled"], false);
+        let cfg2: serde_json::Value = serde_json::from_str(
+            &std::fs::read_to_string(runtime_forge_config_path(&forge_dir)).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(cfg2["learning"]["enabled"], false);
         clear_env();
     }
 }
@@ -1442,18 +1460,19 @@ mod wave_b {
 
     #[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
     #[test]
-    fn wave_b_learning_enable_fails_when_forge_json_unwritable() {
+    fn wave_b_learning_enable_fails_when_config_unwritable() {
         let _g = crate::GLOBAL_STATE_LOCK.lock().unwrap();
         let g = WbEnvGuard::new();
-        // forge.json 预建成目录：load 静默回默认，save 的 fs::write 必然失败。
-        std::fs::create_dir_all(g.forge_dir().join("forge.json")).unwrap();
+        // runtime config 预建成目录：load 静默回默认，save 的 fs::write 必然失败。
+        let cfg_path = runtime_forge_config_path(&g.forge_dir());
+        std::fs::create_dir_all(&cfg_path).unwrap();
         let r = run(
             ForgeAction::Learning {
                 action: Some(LearningAction::Enable),
             },
             false,
         );
-        let err = r.expect_err("unwritable forge.json must propagate the IO error");
+        let err = r.expect_err("unwritable config.forge.json must propagate the IO error");
         assert!(!err.to_string().is_empty());
     }
 
@@ -1645,20 +1664,23 @@ mod wave_b {
 
     #[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
     #[test]
-    fn wave_b_learning_status_skips_details_without_learning_key() {
+    fn wave_b_learning_status_defaults_when_config_empty() {
         let _g = crate::GLOBAL_STATE_LOCK.lock().unwrap();
         let g = WbEnvGuard::new();
-        // forge.json 存在但无 learning 键 → 明细打印块整段跳过，
-        // trace_collection 取默认 true 的兜底打印仍要走到。
+        // CFG-04：config.forge.json 为空对象 `{}` → typed load 全默认，
+        // learning 段必有 → 明细恒展示（原「无 learning 键整块跳过」分支
+        // 随 raw Value 读取一起退役）。
         std::fs::create_dir_all(g.forge_dir()).unwrap();
-        std::fs::write(g.forge_dir().join("forge.json"), "{}").unwrap();
+        let cfg_path = runtime_forge_config_path(&g.forge_dir());
+        std::fs::create_dir_all(cfg_path.parent().unwrap()).unwrap();
+        std::fs::write(&cfg_path, "{}").unwrap();
         run(
             ForgeAction::Learning {
                 action: Some(LearningAction::Status),
             },
             false,
         )
-        .expect("status without learning key ok");
+        .expect("status with empty config ok");
     }
 
     #[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
@@ -1723,14 +1745,15 @@ fn r10_fresh_enable_writes_default_config_empty_registry_then_disable_roundtrip(
 
     cmd_enable(&cfg_path, &forge_dir).unwrap();
 
-    // forge.json 内容必须等于完整默认配置。
-    let forged: serde_json::Value =
-        serde_json::from_str(&std::fs::read_to_string(forge_dir.join("forge.json")).unwrap())
-            .unwrap();
+    // runtime config 内容必须等于完整 typed 默认配置（CFG-04）。
+    let forged: serde_json::Value = serde_json::from_str(
+        &std::fs::read_to_string(runtime_forge_config_path(&forge_dir)).unwrap(),
+    )
+    .unwrap();
     assert_eq!(
         forged,
-        serde_json::to_value(default_forge_config()).unwrap(),
-        "全新 enable 必须落一份完整默认 forge.json"
+        serde_json::to_value(nemesis_forge::config::ForgeConfig::default()).unwrap(),
+        "全新 enable 必须落一份完整默认 config.forge.json"
     );
     // registry.json 恰为空数组文本（不是缺失、不是对象）。
     let reg = std::fs::read_to_string(forge_dir.join("registry.json")).unwrap();
@@ -1740,13 +1763,13 @@ fn r10_fresh_enable_writes_default_config_empty_registry_then_disable_roundtrip(
         "全新 enable 的 registry.json 必须恰为 \"[]\""
     );
 
-    // 二次 enable 不重写既有 forge.json/registry.json（幂等保用户数据）。
-    let forged_before = std::fs::read_to_string(forge_dir.join("forge.json")).unwrap();
+    // 二次 enable 不重写既有 runtime config/registry.json（幂等保用户数据）。
+    let forged_before = std::fs::read_to_string(runtime_forge_config_path(&forge_dir)).unwrap();
     cmd_enable(&cfg_path, &forge_dir).unwrap();
     assert_eq!(
-        std::fs::read_to_string(forge_dir.join("forge.json")).unwrap(),
+        std::fs::read_to_string(runtime_forge_config_path(&forge_dir)).unwrap(),
         forged_before,
-        "再次 enable 不得覆盖已有 forge.json"
+        "再次 enable 不得覆盖已有 config.forge.json"
     );
 
     // disable 写回：enabled=false，config.json 其它键原样保留。

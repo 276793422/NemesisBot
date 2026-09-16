@@ -4543,3 +4543,180 @@ fn test_project_progress_projects_archive_integrity_projection() {
 
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+// ---------------------------------------------------------------------------
+// SAN-06/08 + EST（2026-09-16 横扫加固）：子树闭包联动 / 级联穿终态 / estop 闸内核
+// ---------------------------------------------------------------------------
+
+/// SAN-06：联动沿祖先链向上传播，且穿过终态中间层——done 父单 A 之下的
+/// 取消叶子不再对上层 P 冻结：A 保持终态 + 缺口评论显形，P 推 in_review。
+#[cfg(feature = "cluster")]
+#[tokio::test]
+async fn test_sync_parent_status_propagates_up_through_terminal() {
+    let dir = unique_dir("sync-upward");
+    let store = Arc::new(BoardStore::open(&dir.join("board.db"), "NB").unwrap());
+    let actor = nemesis_board::Actor::admin("test");
+
+    let p = store
+        .create_issue(nemesis_board::models::NewIssue {
+            title: "顶层".into(),
+            ..Default::default()
+        })
+        .unwrap();
+    let a = store
+        .create_issue(nemesis_board::models::NewIssue {
+            title: "中间层".into(),
+            parent_issue_id: Some(p.id),
+            ..Default::default()
+        })
+        .unwrap();
+    let b = store
+        .create_issue(nemesis_board::models::NewIssue {
+            title: "叶子".into(),
+            parent_issue_id: Some(a.id),
+            ..Default::default()
+        })
+        .unwrap();
+
+    // A 走到终态 done；P 置 in_progress（非终态）；B 取消。
+    for st in [
+        IssueStatus::Todo,
+        IssueStatus::InProgress,
+        IssueStatus::InReview,
+        IssueStatus::Done,
+    ] {
+        store.transition_issue(a.id, st, &actor).unwrap();
+    }
+    store
+        .transition_issue(p.id, IssueStatus::InProgress, &actor)
+        .unwrap();
+    store
+        .transition_issue(b.id, IssueStatus::Todo, &actor)
+        .unwrap();
+    store
+        .transition_issue(b.id, IssueStatus::Cancelled, &actor)
+        .unwrap();
+
+    super::sync_parent_status(&store, a.id, &actor).unwrap();
+
+    // 终态中间层不被推列，但缺口评论显形（SAN-06 冻结缺口不再沉默）。
+    assert_eq!(store.get_issue(a.id).unwrap().status, IssueStatus::Done);
+    let a_gap = store
+        .list_comments(a.id)
+        .unwrap()
+        .iter()
+        .any(|cm| cm.content.contains("子任务存在未完成项") && cm.content.contains(&b.number));
+    assert!(a_gap, "done 父单之下取消叶子必须显形");
+
+    // 上层 P 被继续重估：in_review + 缺口评论。
+    assert_eq!(store.get_issue(p.id).unwrap().status, IssueStatus::InReview);
+    let p_gap = store
+        .list_comments(p.id)
+        .unwrap()
+        .iter()
+        .any(|cm| cm.content.contains("子任务存在未完成项") && cm.content.contains(&b.number));
+    assert!(p_gap, "上层缺口评论必须列出深层叶子");
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// SAN-08：级联遍历穿过终态中间节点——done 子单之下的孙子单和依赖该
+/// done 单的下游单都必须被级联取消（旧手搓 BFS 在终态单上截断，死链
+/// 从此不可见）；终态单本身不动。
+#[cfg(feature = "cluster")]
+#[tokio::test]
+async fn test_cascade_cancels_through_terminal_middle_node() {
+    let dir = unique_dir("cascade-terminal");
+    let store = Arc::new(BoardStore::open(&dir.join("board.db"), "NB").unwrap());
+    let actor = nemesis_board::Actor::admin("test");
+
+    let r = store
+        .create_issue(nemesis_board::models::NewIssue {
+            title: "根".into(),
+            ..Default::default()
+        })
+        .unwrap();
+    let c = store
+        .create_issue(nemesis_board::models::NewIssue {
+            title: "子(done中间层)".into(),
+            parent_issue_id: Some(r.id),
+            ..Default::default()
+        })
+        .unwrap();
+    let g = store
+        .create_issue(nemesis_board::models::NewIssue {
+            title: "孙(隐藏死链)".into(),
+            parent_issue_id: Some(c.id),
+            ..Default::default()
+        })
+        .unwrap();
+    let x = store
+        .create_issue(nemesis_board::models::NewIssue {
+            title: "依赖根".into(),
+            ..Default::default()
+        })
+        .unwrap();
+    let y = store
+        .create_issue(nemesis_board::models::NewIssue {
+            title: "依赖done子单".into(),
+            ..Default::default()
+        })
+        .unwrap();
+    store.set_issue_dependencies(x.id, &[r.id]).unwrap();
+    store.set_issue_dependencies(y.id, &[c.id]).unwrap();
+
+    // C 走到 done（终态中间层）；R 取消（store 层直落，随后走联动）。
+    for st in [
+        IssueStatus::Todo,
+        IssueStatus::InProgress,
+        IssueStatus::InReview,
+        IssueStatus::Done,
+    ] {
+        store.transition_issue(c.id, st, &actor).unwrap();
+    }
+    store
+        .transition_issue(r.id, IssueStatus::Todo, &actor)
+        .unwrap();
+    store
+        .transition_issue(r.id, IssueStatus::Cancelled, &actor)
+        .unwrap();
+
+    let cascaded = super::on_issue_settled(&store, None, r.id, &actor);
+
+    // 终态单不动；其下/其依赖的下游全部取消。
+    assert_eq!(store.get_issue(c.id).unwrap().status, IssueStatus::Done);
+    for id in [g.id, x.id, y.id] {
+        assert_eq!(
+            store.get_issue(id).unwrap().status,
+            IssueStatus::Cancelled,
+            "issue {id} 必须被穿终态级联取消"
+        );
+    }
+    for num in [&g.number, &x.number, &y.number] {
+        assert!(cascaded.contains(num), "cascaded 缺 {num}: {cascaded:?}");
+    }
+    assert!(!cascaded.contains(&c.number), "终态单不得入级联列表");
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// EST 闸判定可测内核：未装配/已释放 = 不冻结（等价旧行为），engaged =
+/// 冻结；文案含释放指引。BOARD_ESTOP 全局槽的 engaged 态不在单测内联
+/// 装配（OnceLock 进程级，与并行派发测试互踩）——接线由 gateway 装配点
+/// 保证（BASELINE_PUSHER 同款先例）。
+#[cfg(feature = "cluster")]
+#[test]
+fn test_estop_dispatch_frozen_pure_helper() {
+    assert!(!super::estop_dispatch_frozen(None), "未装配 = 不冻结");
+    let estop = Arc::new(nemesis_agent::estop::EstopState::new());
+    assert!(
+        !super::estop_dispatch_frozen(Some(&estop)),
+        "released = 不冻结"
+    );
+    estop.trigger();
+    assert!(super::estop_dispatch_frozen(Some(&estop)), "engaged = 冻结");
+    estop.release();
+    assert!(!super::estop_dispatch_frozen(Some(&estop)), "释放后恢复");
+    let err = super::estop_frozen_error();
+    assert!(err.contains("estop") && err.contains("release"), "{err}");
+}

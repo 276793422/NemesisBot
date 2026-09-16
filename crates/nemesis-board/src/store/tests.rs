@@ -3163,3 +3163,112 @@ fn test_pending_merge_append_pop_fifo() {
     assert!(store.pop_pending_merge(p.id).unwrap().is_none());
     cleanup(&dir);
 }
+
+// ---------------------------------------------------------------------------
+// SAN-06/07/08（2026-09-16 横扫加固）：后代闭包 / reopen 依赖闸
+// ---------------------------------------------------------------------------
+
+/// 三层链 P→A→B（父子边）。Subtree 闭包返回全部后代；中间层置 done 后
+/// 仍穿透返回 B（终态过滤是调用方语义，不是遍历语义）。
+#[test]
+fn test_descendants_subtree_penetrates_terminal() {
+    let (store, dir) = temp_store("desc-subtree");
+    let p = store.create_issue(new_issue("父")).unwrap();
+    let a = store
+        .create_issue(NewIssue {
+            parent_issue_id: Some(p.id),
+            ..new_issue("子")
+        })
+        .unwrap();
+    let b = store
+        .create_issue(NewIssue {
+            parent_issue_id: Some(a.id),
+            ..new_issue("孙")
+        })
+        .unwrap();
+
+    let got = store.descendants(&[p.id], DescendantEdges::Subtree);
+    let mut ids: Vec<i64> = got.iter().map(|i| i.id).collect();
+    ids.sort();
+    assert_eq!(ids, vec![a.id, b.id], "Subtree = 全部父子后代");
+
+    // 穿透终态：A done 后 B 仍在闭包里（SAN-06 冻结缺口的可见性根基）。
+    store
+        .transition_issue(a.id, IssueStatus::InProgress, &admin())
+        .unwrap();
+    store
+        .transition_issue(a.id, IssueStatus::InReview, &admin())
+        .unwrap();
+    store
+        .transition_issue(a.id, IssueStatus::Done, &admin())
+        .unwrap();
+    let got = store.descendants(&[p.id], DescendantEdges::Subtree);
+    assert!(got.iter().any(|i| i.id == b.id), "done 中间层不得截断遍历");
+    cleanup(&dir);
+}
+
+/// 依赖边只在 CascadeUnion 展开：Y 的 dependent X 进级联闭包、不进子树
+/// 闭包（收口完成度不被跨树在途依赖污染）。
+#[test]
+fn test_descendants_cascade_union_includes_dependency_edges() {
+    let (store, dir) = temp_store("desc-cascade");
+    let y = store.create_issue(new_issue("上游")).unwrap();
+    let x = store.create_issue(new_issue("下游")).unwrap();
+    store.set_issue_dependencies(x.id, &[y.id]).unwrap();
+
+    let subtree = store.descendants(&[y.id], DescendantEdges::Subtree);
+    assert!(!subtree.iter().any(|i| i.id == x.id), "依赖边不进子树闭包");
+
+    let cascade = store.descendants(&[y.id], DescendantEdges::CascadeUnion);
+    assert!(cascade.iter().any(|i| i.id == x.id), "依赖边进级联闭包");
+    // root 自身不在结果里。
+    assert!(!cascade.iter().any(|i| i.id == y.id), "不含 root 自身");
+    cleanup(&dir);
+}
+
+/// 防环：双向依赖（手工建单可造）不挂死、每节点只出一次。
+#[test]
+fn test_descendants_cycle_guard() {
+    let (store, dir) = temp_store("desc-cycle");
+    let a = store.create_issue(new_issue("环A")).unwrap();
+    let b = store.create_issue(new_issue("环B")).unwrap();
+    store.set_issue_dependencies(a.id, &[b.id]).unwrap();
+    store.set_issue_dependencies(b.id, &[a.id]).unwrap();
+
+    let got = store.descendants(&[a.id], DescendantEdges::CascadeUnion);
+    assert_eq!(got.len(), 1, "环被 visited 截断");
+    assert_eq!(got[0].id, b.id);
+    cleanup(&dir);
+}
+
+/// SAN-07：上游依赖仍 cancelled 时本单不可单独 reopen；上游恢复后才放行。
+#[test]
+fn test_reopen_rejected_while_upstream_cancelled() {
+    let (store, dir) = temp_store("reopen-dep");
+    let up = store.create_issue(new_issue("上游")).unwrap();
+    let down = store.create_issue(new_issue("下游")).unwrap();
+    store.set_issue_dependencies(down.id, &[up.id]).unwrap();
+
+    // store 层直落终态（级联在 handler 层，此处构造的是「级联后残局」）。
+    store
+        .transition_issue(up.id, IssueStatus::Cancelled, &admin())
+        .unwrap();
+    store
+        .transition_issue(down.id, IssueStatus::Cancelled, &admin())
+        .unwrap();
+
+    // 下游先复活 → 拒（上游还死着，复活即永久 backlog 僵尸）。
+    let err = store
+        .reopen_issue(down.id, &admin())
+        .expect_err("upstream cancelled must block reopen");
+    assert!(err.contains("上游依赖"), "{err}");
+
+    // 先恢复上游 → 下游 reopen 放行。
+    store.reopen_issue(up.id, &admin()).unwrap();
+    store.reopen_issue(down.id, &admin()).unwrap();
+    assert_eq!(
+        store.get_issue(down.id).unwrap().status,
+        IssueStatus::Backlog
+    );
+    cleanup(&dir);
+}

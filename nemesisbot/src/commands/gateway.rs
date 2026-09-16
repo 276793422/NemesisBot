@@ -225,13 +225,15 @@ fn plugin_ui_library_exists() -> bool {
 /// up an approval dialog; approval is never bypassed by YOLO/auto. Denies on
 /// timeout/error so a memory write never silently succeeds unapproved.
 #[cfg(all(feature = "desktop", feature = "memory", feature = "security"))]
-struct GatewayMemoryGate {
+pub(crate) struct GatewayMemoryGate {
     approval: Arc<dyn nemesis_security::auditor::ApprovalManager>,
 }
 
 #[cfg(all(feature = "desktop", feature = "memory", feature = "security"))]
 impl GatewayMemoryGate {
-    fn new(approval: Arc<dyn nemesis_security::auditor::ApprovalManager>) -> Self {
+    // pub(crate)（ASM-02）：cluster loop 装配点（agent_factory）复用同一闸
+    // ——审批闸此前只接主 loop，集群 loop 的 memory_store/forget 缺省放行。
+    pub(crate) fn new(approval: Arc<dyn nemesis_security::auditor::ApprovalManager>) -> Self {
         Self { approval }
     }
 
@@ -1498,6 +1500,12 @@ pub async fn run(local: bool, extra_args: &[String]) -> Result<()> {
         eprintln!("  Run 'nemesisbot onboard default' to create configuration.");
         std::process::exit(1);
     }
+
+    // Step 3-2（SAN-01/D4）：旧「只替换 `:`」文件名映射的嵌套 session 目录
+    // 平化（B 端复合键 `{node}/{chat}` 旧写 `<logs>/{node}/{chat}.jsonl`，
+    // 白名单消毒后写平面 `{node}_{chat}.jsonl`）。幂等 + best-effort；
+    // 必须先于任何会话读写执行（放 Step 3 后、agent/web 装配前）。
+    nemesis_agent::chat_log::migrate_nested_session_logs();
 
     // Step 3a: Ensure exe directory is in PATH so LLM shell tools can find nemesisbot
     if common::ensure_exe_in_path() {
@@ -3315,8 +3323,11 @@ pub async fn run(local: bool, extra_args: &[String]) -> Result<()> {
                 // 「下一触发波」此前只有节点事件（上线/刷新），稳态集群中冲突
                 // 派发落定后延后单会永久滞留 backlog（NB-18 实证）。复用
                 // sweep_parked_dispatches 单一重估波：候选=planner 来源或暂缓
-                // 标记；estop/预算/准入/互斥闸全部在 dispatch_subissue_auto
-                // 内重跑（幂等；本波落定的单不满足条件时静默返回）。
+                // 标记。EST-05（2026-09-16 横扫修正）：此前注释谎称「estop/
+                // 预算闸都在 dispatch_subissue_auto 内重跑」——实际 estop 闸
+                // 现已下沉到 dispatch_issue_core（EST-01/02），准入/touch 互斥
+                // 闸也在其内；**预算闸（E1）只在评审侧判定点**（board_review
+                // budget_breach），不经本链路。新增触发源按此真实边界补闸。
                 #[cfg(all(feature = "board", feature = "cluster"))]
                 if board_writeback.settled && !estop_for_cb.is_engaged() {
                     let sweep_store = board_store_for_cb.clone();
@@ -3817,38 +3828,9 @@ pub async fn run(local: bool, extra_args: &[String]) -> Result<()> {
         let observer_mgr = Arc::new(nemesis_observer::Manager::new());
 
         // Register RequestLogger as Observer (if logging.llm.enabled)
-        if let Some(ref logging_cfg) = cfg.logging
-            && let Some(llm_cfg) = &logging_cfg.llm
-            && llm_cfg.enabled
-        {
-            let rl_logging_config = nemesis_agent::request_logger::LoggingConfig {
-                enabled: true,
-                detail_level: match llm_cfg.detail_level.as_str() {
-                    "truncated" => nemesis_agent::request_logger::DetailLevel::Truncated,
-                    _ => nemesis_agent::request_logger::DetailLevel::Full,
-                },
-                log_dir: if llm_cfg.log_dir.is_empty() {
-                    "logs/request_logs".to_string()
-                } else {
-                    llm_cfg.log_dir.clone()
-                },
-                save_raw: llm_cfg.save_raw,
-            };
-            let workspace_path = home.join("workspace");
-            let rl_observer = Arc::new(
-                nemesis_agent::request_logger_observer::RequestLoggerObserver::new(
-                    rl_logging_config,
-                    &workspace_path,
-                ),
-            );
-            // We need an async context to register, but observer_mgr.register is async
-            // and we're not in an async block here. Use tokio runtime handle directly.
-            let mgr = observer_mgr.clone();
-            tokio::task::block_in_place(|| {
-                tokio::runtime::Handle::current().block_on(async {
-                    mgr.register(rl_observer).await;
-                })
-            });
+        // （ASM-05：配置→LoggingConfig 映射 + 注册收敛到 agent_factory 单一
+        // 真相源，与 CLI `nemesisbot agent` 共用）。
+        if crate::agent_factory::register_request_logger_observer(&observer_mgr, &cfg, &home) {
             info!("[Gateway] RequestLoggerObserver registered (logging.llm.enabled = true)");
         }
 
@@ -4098,6 +4080,14 @@ pub async fn run(local: bool, extra_args: &[String]) -> Result<()> {
                     )
                 },
             ));
+            // S-O1：合并停车人工重试钩子——WSAPI audit.retry_merge 经此回调
+            // 进 board_archive_ingest::retry_merge_for_issue（依赖倒置同上）。
+            let retry_deps = hook_deps.clone();
+            nemesis_web::handlers::board::set_retry_merge_hook(std::sync::Arc::new(
+                move |issue: &nemesis_board::models::Issue| {
+                    crate::board_archive_ingest::retry_merge_for_issue(retry_deps.as_ref(), issue)
+                },
+            ));
             let hook_home = home.clone();
             let hook_cluster = cluster.clone();
             if let Err(e) = nemesis_web::handlers::board::set_parent_review_hook(
@@ -4254,7 +4244,12 @@ pub async fn run(local: bool, extra_args: &[String]) -> Result<()> {
             ));
             // Only perform first start when both config flags are enabled.
             // Otherwise the adapter is created but idle — can be started from Dashboard.
+            // ASM-08 复核（2026-09-16）：装配自检失败（关键件未接线=代码回归）
+            // 启动即炸（D5 裁决）；运行时故障维持 warn 降级。
             if cluster_should_start && let Err(e) = adapter.first_start() {
+                if e.contains("ASM-08") {
+                    return Err(anyhow::anyhow!("[Gateway] Cluster loop {}", e));
+                }
                 warn!("[Gateway] Cluster adapter first start failed: {}", e);
             }
             cluster_adapter = Some(adapter);
@@ -4351,6 +4346,16 @@ pub async fn run(local: bool, extra_args: &[String]) -> Result<()> {
     // mutates it directly — no mpsc round-trip needed, and status returns live).
     web_server.set_estop(shared_resources.estop.clone());
     info!("[Gateway] E-stop state injected into web server");
+
+    // EST-01/02（2026-09-16 横扫加固）：同一 estop 实例注入看板派发族闸
+    // （dispatch_issue_core 单一入口）——急停冻结全部自动/手动派发，而非
+    // 只有 agent loop。
+    #[cfg(feature = "cluster")]
+    {
+        if nemesis_web::handlers::board::install_board_estop(shared_resources.estop.clone()) {
+            info!("[Gateway] E-stop gate installed for board dispatch family");
+        }
+    }
 
     // C5: inject the shared LSP manager (same Arc the LspTool registered
     // with) — Phase-2 diagnostics loop and future dashboard LSP ops read it.

@@ -63,6 +63,7 @@ fn test_app_config_roundtrip() {
         health_check_interval_secs: 30,
         health_check_failure_threshold: 2,
         announce_expiry_secs: 180,
+        token: "cfg09-secret".to_string(),
     };
 
     save_app_config(workspace, &config).unwrap();
@@ -73,6 +74,9 @@ fn test_app_config_roundtrip() {
     assert_eq!(loaded.health_check_interval_secs, 30);
     assert_eq!(loaded.health_check_failure_threshold, 2);
     assert_eq!(loaded.announce_expiry_secs, 180);
+    // CFG-09：save 全量覆盖写不得抹掉 token（此前 typed 无此字段，
+    // 一次 save 即把用户鉴权 token 静默清空）。
+    assert_eq!(loaded.token, "cfg09-secret");
 }
 
 // ============================================================
@@ -144,6 +148,7 @@ fn test_app_config_serialization_roundtrip() {
         health_check_interval_secs: 15,
         health_check_failure_threshold: 5,
         announce_expiry_secs: 0,
+        token: "tok-xyz".to_string(),
     };
     let json = serde_json::to_string_pretty(&config).unwrap();
     let parsed: AppConfig = serde_json::from_str(&json).unwrap();
@@ -154,6 +159,7 @@ fn test_app_config_serialization_roundtrip() {
     assert_eq!(parsed.health_check_interval_secs, 15);
     assert_eq!(parsed.health_check_failure_threshold, 5);
     assert_eq!(parsed.announce_expiry_secs, 0);
+    assert_eq!(parsed.token, "tok-xyz");
 }
 
 #[test]
@@ -167,6 +173,38 @@ fn test_app_config_deserialization_defaults() {
     assert_eq!(config.health_check_interval_secs, 60);
     assert_eq!(config.health_check_failure_threshold, 3);
     assert_eq!(config.announce_expiry_secs, 120);
+    // CFG-09：旧文件缺 token → 空串（= 无鉴权，语义不变）。
+    assert!(config.token.is_empty());
+}
+
+/// CFG-09（2026-09-16）：token 的生产读取方（`Cluster::load_rpc_auth_token` /
+/// discovery）是裸 JSON 读，不走 typed。此测试钉「裸写的 config.cluster.json
+/// 带 token → typed load 拿得到 → save 回去不丢」的契约——save_app_config
+/// 此前会整行抹掉裸写的 token。
+#[test]
+fn cfg09_save_preserves_hand_written_token() {
+    let dir = tempfile::tempdir().unwrap();
+    let workspace = dir.path();
+    let cfg_path = nemesis_path::resolve_cluster_config_path_in_workspace(workspace);
+    std::fs::create_dir_all(cfg_path.parent().unwrap()).unwrap();
+    // 模拟真实部署：文件是用户/老版本手写的裸 JSON（键序任意、含 token）。
+    std::fs::write(
+        &cfg_path,
+        r#"{"enabled": true, "token": "hand-written-secret", "port": 12000}"#,
+    )
+    .unwrap();
+
+    // 读-改-写（save_app_config 唯一合法用法）
+    let mut cfg = load_app_config(workspace);
+    assert_eq!(cfg.token, "hand-written-secret");
+    cfg.broadcast_interval = 45;
+    save_app_config(workspace, &cfg).unwrap();
+
+    // 回读：token 保真 + 改动生效
+    let reloaded = load_app_config(workspace);
+    assert_eq!(reloaded.token, "hand-written-secret");
+    assert_eq!(reloaded.broadcast_interval, 45);
+    assert_eq!(reloaded.port, 12000);
 }
 
 #[test]

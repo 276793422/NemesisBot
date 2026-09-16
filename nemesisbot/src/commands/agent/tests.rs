@@ -5,6 +5,10 @@
 #![allow(clippy::await_holding_lock)]
 
 use super::*;
+// ASM-05（2026-09-16）：agent.rs 手写装配删除后，LlmMessage/ToolCallInfo 不再
+// 经 super::* 转出——测试直接从 nemesis-agent 引入（生产同源类型）。
+use nemesis_agent::r#loop::{LlmMessage, LlmProvider};
+use nemesis_agent::types::ToolCallInfo as AgentToolCallInfo;
 use tempfile::TempDir;
 
 // -------------------------------------------------------------------------
@@ -716,13 +720,21 @@ impl nemesis_providers::router::LLMProvider for S11bMockProvider {
     }
 }
 
-fn s11b_adapter(reply: S11bMockReply) -> (ProviderAdapter, std::sync::Arc<S11bMockProvider>) {
+// ASM-05（2026-09-16）：adapter 转换测试改打 nemesis_web::ProviderAdapter
+// （生产单一真相源——agent.rs 本地 adapter 是它的旧拷贝，已随手写装配删除；
+// 转换行为逐字段一致，全部断言原样保留）。
+fn s11b_adapter(
+    reply: S11bMockReply,
+) -> (
+    nemesis_web::ProviderAdapter,
+    std::sync::Arc<S11bMockProvider>,
+) {
     let inner = std::sync::Arc::new(S11bMockProvider {
         calls: std::sync::Mutex::new(Vec::new()),
         reply,
     });
     (
-        ProviderAdapter::new(inner.clone(), "mock-default-model".to_string()),
+        nemesis_web::ProviderAdapter::new(inner.clone(), "mock-default-model".to_string()),
         inner,
     )
 }
@@ -954,21 +966,30 @@ async fn test_s11b_run_agent_mode_single_message_dead_provider() {
     );
 }
 
-#[test]
-fn test_s11b_build_agent_loop_registers_default_agent() {
+#[tokio::test]
+async fn test_s11b_build_agent_loop_registers_default_agent() {
     let _guard = crate::GLOBAL_STATE_LOCK.lock().unwrap();
     let th = s11b_agent_home_env();
     s11b_write_agent_config(&th.home, s11b_dead_provider_config());
-    let cfg = nemesis_config::load_config(&th.home.join("config.json")).unwrap();
-    let agent_loop = build_agent_loop(&cfg, &th.home).expect("dead-addr provider builds fine");
-    // 共享工具注册后 tool_count 明显非零（register_shared_tools 生效）。
-    // standalone 构造路径 registry 为 None（get_registry 只在 gateway 侧装配）。
+    // ASM-05 迁移：工厂装配（SharedResources 范式，run.rs 同款；config 由
+    // 工厂从 home/config.json 重读）。
+    let shared = std::sync::Arc::new(crate::agent_factory::SharedResources {
+        home: th.home.clone(),
+        workspace: th.home.join("workspace"),
+        ..Default::default()
+    });
+    let agent_loop =
+        crate::agent_factory::build_agent_loop(&shared).expect("dead-addr provider builds fine");
+    // 工厂注册全量工具后 tool_count 明显非零。
+    // 工厂走 bus-mode 构造器（registry: Some，带默认 agent 实例）——测试名
+    // 所指的「注册了默认 agent」在工厂路径下恒真；旧手写路径 registry None
+    // 是 standalone AgentLoop::new 的实现细节，随 ASM-05 删除一并消失。
     assert!(
         agent_loop.tool_count() >= 20,
         "tools registered: {}",
         agent_loop.tool_count()
     );
-    assert!(agent_loop.get_registry().is_none());
+    assert!(agent_loop.get_registry().is_some());
 }
 
 #[tokio::test]
@@ -1298,12 +1319,13 @@ mod wave_b {
         (port, hits)
     }
 
-    #[test]
-    fn wave_b_build_loop_loads_skills_when_dir_present() {
+    #[tokio::test]
+    async fn wave_b_build_loop_loads_skills_when_dir_present() {
         let _guard = crate::GLOBAL_STATE_LOCK.lock().unwrap();
         let th = s11b_agent_home_env();
         s11b_write_agent_config(&th.home, s11b_dead_provider_config());
-        // workspace/skills 存在 → context_builder.load_skills 分支被触发。
+        // workspace/skills 存在 → 工厂 ContextBuilder.load_skills 分支被触发
+        // （ASM-05 迁移后该分支在 agent_factory.rs，行为不变）。
         let skills_dir = th.home.join("workspace").join("skills").join("wb-skill");
         std::fs::create_dir_all(&skills_dir).unwrap();
         std::fs::write(
@@ -1312,15 +1334,20 @@ mod wave_b {
         )
         .unwrap();
 
-        let cfg = nemesis_config::load_config(&th.home.join("config.json")).unwrap();
-        build_agent_loop(&cfg, &th.home).expect("skills 目录在场不影响构建 → Ok");
+        let shared = std::sync::Arc::new(crate::agent_factory::SharedResources {
+            home: th.home.clone(),
+            workspace: th.home.join("workspace"),
+            ..Default::default()
+        });
+        crate::agent_factory::build_agent_loop(&shared).expect("skills 目录在场不影响构建 → Ok");
     }
 
-    #[test]
-    fn wave_b_build_loop_zero_max_tool_iterations_maps_unlimited() {
+    #[tokio::test]
+    async fn wave_b_build_loop_zero_max_tool_iterations_maps_unlimited() {
         let _guard = crate::GLOBAL_STATE_LOCK.lock().unwrap();
         let th = s11b_agent_home_env();
-        // max_tool_iterations=0 → max_turns 映射为 0（unlimited opt-in 分支）。
+        // max_tool_iterations=0 → max_turns 映射为 0（unlimited opt-in 分支，
+        // ASM-05 迁移后归 loop/factory 消费 config 的既有语义）。
         s11b_write_agent_config(
             &th.home,
             serde_json::json!({
@@ -1333,32 +1360,43 @@ mod wave_b {
                 }]
             }),
         );
-        let cfg = nemesis_config::load_config(&th.home.join("config.json")).unwrap();
-        build_agent_loop(&cfg, &th.home).expect("unlimited 档位照常构建 → Ok");
+        let shared = std::sync::Arc::new(crate::agent_factory::SharedResources {
+            home: th.home.clone(),
+            workspace: th.home.join("workspace"),
+            ..Default::default()
+        });
+        crate::agent_factory::build_agent_loop(&shared).expect("unlimited 档位照常构建 → Ok");
     }
 
-    #[test]
-    fn wave_b_build_loop_skills_registry_from_config_skills_json() {
+    #[tokio::test]
+    async fn wave_b_build_loop_skills_registry_from_config_skills_json() {
         let _guard = crate::GLOBAL_STATE_LOCK.lock().unwrap();
         let th = s11b_agent_home_env();
         s11b_write_agent_config(&th.home, s11b_dead_provider_config());
-        // workspace/config/config.skills.json 在场 → skills_registry 解析分支；
-        // RegistryConfig 全字段 #[serde(default)]，`{}` 合法。
+        // workspace/config/config.skills.json 在场不影响工厂构建（ASM-05 迁移
+        // 后 registry 由 SharedResources.skills_registry 供给，standalone 默认
+        // None=跳过；磁盘文件在场只是不炸）。
         let cfg_dir = th.home.join("workspace").join("config");
         std::fs::create_dir_all(&cfg_dir).unwrap();
         std::fs::write(cfg_dir.join("config.skills.json"), "{}").unwrap();
 
-        let cfg = nemesis_config::load_config(&th.home.join("config.json")).unwrap();
-        build_agent_loop(&cfg, &th.home)
-            .expect("config.skills.json={} 可解析 → RegistryManager 构建成功 → Ok");
+        let shared = std::sync::Arc::new(crate::agent_factory::SharedResources {
+            home: th.home.clone(),
+            workspace: th.home.join("workspace"),
+            ..Default::default()
+        });
+        crate::agent_factory::build_agent_loop(&shared)
+            .expect("config.skills.json={} 在场工厂构建 → Ok");
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn wave_b_build_loop_request_logger_truncated_custom_logdir() {
         let _guard = crate::GLOBAL_STATE_LOCK.lock().unwrap();
         let th = s11b_agent_home_env();
-        // logging.llm{truncated,自定义 log_dir,save_raw} → DetailLevel::Truncated
-        // + 自定义目录三路匹配全命中；block_in_place 注册 observer。
+        // logging.llm{truncated,自定义 log_dir,save_raw} → helper 判定注册
+        // （ASM-05 迁移：映射逻辑收敛到 register_request_logger_observer，
+        // truncated + 自定义目录两路匹配命中 → true；须 multi_thread——
+        // helper 内 block_in_place）。
         s11b_write_agent_config(
             &th.home,
             serde_json::json!({
@@ -1378,8 +1416,19 @@ mod wave_b {
             }),
         );
         let cfg = nemesis_config::load_config(&th.home.join("config.json")).unwrap();
-        build_agent_loop(&cfg, &th.home)
-            .expect("RequestLogger(truncated+custom dir) 注册后构建 Ok");
+        let mgr = std::sync::Arc::new(nemesis_observer::Manager::new());
+        assert!(
+            crate::agent_factory::register_request_logger_observer(&mgr, &cfg, &th.home),
+            "truncated + 自定义目录 → 应判定注册"
+        );
+        // 工厂构建照常 Ok（observer 挂接经 SharedResources.observer_manager，
+        // 与构建解耦）。
+        let shared = std::sync::Arc::new(crate::agent_factory::SharedResources {
+            home: th.home.clone(),
+            workspace: th.home.join("workspace"),
+            ..Default::default()
+        });
+        crate::agent_factory::build_agent_loop(&shared).expect("RequestLogger 配置在场构建 Ok");
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -1387,7 +1436,7 @@ mod wave_b {
         let _guard = crate::GLOBAL_STATE_LOCK.lock().unwrap();
         let th = s11b_agent_home_env();
         // 只给 enabled → detail_level 兜底 Full + log_dir 空串兜底
-        // "logs/request_logs"（两条 `_ =>`/空串 else 分支）。
+        // "logs/request_logs"（两条 `_ =>`/空串 else 分支在 helper 内命中）。
         s11b_write_agent_config(
             &th.home,
             serde_json::json!({
@@ -1402,7 +1451,19 @@ mod wave_b {
             }),
         );
         let cfg = nemesis_config::load_config(&th.home.join("config.json")).unwrap();
-        build_agent_loop(&cfg, &th.home).expect("RequestLogger 默认 Full+默认目录注册后构建 Ok");
+        let mgr = std::sync::Arc::new(nemesis_observer::Manager::new());
+        assert!(
+            crate::agent_factory::register_request_logger_observer(&mgr, &cfg, &th.home),
+            "仅 enabled → 应判定注册（Full+默认目录兜底）"
+        );
+        // 反向：未开启 logging.llm → helper 判定不注册。
+        s11b_write_agent_config(&th.home, s11b_dead_provider_config());
+        let cfg = nemesis_config::load_config(&th.home.join("config.json")).unwrap();
+        let mgr = std::sync::Arc::new(nemesis_observer::Manager::new());
+        assert!(
+            !crate::agent_factory::register_request_logger_observer(&mgr, &cfg, &th.home),
+            "无 logging 配置 → 不注册"
+        );
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -1516,11 +1577,11 @@ mod wave_b {
 // stdin 无 isatty 挡路，走 readline_direct 全流程；EOF → ReadlineError::
 // Eof → Goodbye 臂（agent.rs:641-644）。
 //
-// 结构性事实（agent.rs 读码实证 + 本文件既有断言 get_registry().is_none()）：
-// standalone 构造路径 registry 为 None，三个内建 slash 命令的内层体
-// （registry Some 分支，约 38 行）结构性不可达——/history 打印空行后继续、
-// /clear 恒打印 "History cleared."、/status 恒打印 "State: no registry"。
-// 因此断言目标 = 「命令被识别且不崩、循环推进到后续输入」，不钉内层文案。
+// 结构性事实（ASM-05 退役后更新，2026-09-16）：standalone 手写装配已被
+// agent_factory 工厂装配取代，registry 恒 Some——三个内建 slash 命令的
+// registry Some 分支（/history 打印真实历史、/clear 清实例历史、/status
+// 打印 State: Idle (N messages)）成为常态路径。断言目标 = 「命令被识别、
+// 打印真实状态且不崩、循环推进到后续输入」。
 // =========================================================================
 
 // 整 mod Windows 形态（7/7 测试 + 3 个专属 helper 全走 Windows CLI 进程边界）。
@@ -1707,9 +1768,11 @@ mod r9_repl {
     #[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn r9_repl_builtin_slash_trio_recognized_loop_survives() {
-        // registry=None 下：/history 无正文输出、/clear 恒打 "History
-        // cleared."、/status 恒打 Session/State(no registry)。三者都应被
-        // 识别并继续循环直到 quit（对应结构性不可达的内层体豁免说明）。
+        // ASM-05（2026-09-16）后 REPL 走 agent_factory 工厂装配，registry
+        // 恒 Some（原「standalone 构造 registry=None」结构性事实已退役）：
+        // /history 打印真实会话历史、/clear 恒打 "History cleared."、
+        // /status 打印 Session + State: Idle（N messages）。三者都应被识别
+        // 并继续循环直到 quit。
         let srv = MockAiServer::start(vec![]).expect("mock ai server starts");
         let (ws, bin) = r9_setup_model_ws(&srv.base_url()).await;
         let out = ws
@@ -1721,8 +1784,8 @@ mod r9_repl {
             out.stdout, out.stderr
         );
         assert!(
-            out.stdout.contains("State: no registry"),
-            "/status 应打印 registry=None 兜底状态:\n{}",
+            out.stdout.contains("State: Idle"),
+            "/status 应打印工厂装配后的实例状态（Idle）:\n{}",
             out.stdout
         );
         assert!(

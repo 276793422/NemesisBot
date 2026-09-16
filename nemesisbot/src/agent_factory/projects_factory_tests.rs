@@ -291,3 +291,41 @@ async fn project_factory_rejects_missing_project_dir() {
         "error should name the missing dir, got: {err}"
     );
 }
+
+// ---------------------------------------------------------------------------
+// ASM-08 装配矩阵（2026-09-16 横扫存量加固）：项目 loop 关键件接线
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn project_loop_critical_wiring_matrix() {
+    let home = unique_home("asm08");
+    write_mini_model_config(&home);
+    let project_dir = home.join("proj");
+    std::fs::create_dir_all(&project_dir).unwrap();
+    let shared = shared_for(&home);
+
+    let main_loop = build_agent_loop(&shared).expect("main loop builds");
+    let project_loop = build_project_agent_loop(
+        &shared,
+        &entry_for("p_asm080001", &project_dir),
+        main_loop.session_store().cloned().unwrap(),
+    )
+    .expect("project loop builds");
+
+    // builder 内部已跑 assert_gateway_critical_wiring（漏接 = 启动即炸）；
+    // 这里再直接断言 wiring_status，防断言调用本身被将来误删后无人知晓。
+    let status: std::collections::HashMap<&str, bool> =
+        project_loop.wiring_status().into_iter().collect();
+    for key in ["estop", "workspace_root", "config_path", "pricing_store"] {
+        assert!(
+            status.get(key).copied().unwrap_or(false),
+            "项目 loop 关键件 `{key}` 未接线（ASM-08 矩阵回归）"
+        );
+    }
+    // workspace_root 必须指向项目目录（不是主 workspace）——围栏根（D6）。
+    assert_eq!(
+        project_loop.workspace_root().as_deref(),
+        Some(project_dir.as_path()),
+        "项目 loop 的围栏根必须是项目目录"
+    );
+}

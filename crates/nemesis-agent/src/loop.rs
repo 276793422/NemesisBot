@@ -7799,8 +7799,11 @@ impl AgentLoop {
                 }
                 // P5: guardian (LLM safety judge) review for CRITICAL tools. Runs only
                 // after the rule layers allow, and only for CRITICAL operations (cost
-                // bounded). A Deny verdict blocks; errors/Allow proceed (the guardian
-                // only escalates — rules already denied cases returned above).
+                // bounded). A Deny verdict blocks; rules already denied cases above.
+                // D2（2026-09-16 横扫存量加固）：judge **Err 不再静默落空**
+                // （fail-open 曾是裸奔面——guardian 挂了 CRITICAL 操作全放行），
+                // 按 `guardian_failure_policy` 分支：allow=显式放行 / ask=审批
+                // 直通车（fail-closed：无审批管理器=拒）/ 未配置=旧行为放行。
                 if security.is_critical_tool(&tool_call.name)
                     && let Some(judge) = security.judge()
                 {
@@ -7809,17 +7812,92 @@ impl AgentLoop {
                         risk_level: "critical".to_string(),
                         transcript: tool_call.arguments.clone(),
                     };
-                    if let Ok(v) = judge.judge(&req).await
-                        && v.outcome == nemesis_security::guardian::JudgeOutcome::Deny
-                    {
-                        warn!(
-                            "[AgentLoop] Guardian denied critical tool {}: {}",
-                            tool_call.name, v.rationale
-                        );
-                        return format!(
-                            "⛔ GUARDIAN DENIED [layer:guardian|policy:llm_judge] {} — The safety judge flagged this critical operation as unsafe. Do NOT retry. Inform the user.",
-                            v.rationale
-                        );
+                    match judge.judge(&req).await {
+                        Ok(v) if v.outcome == nemesis_security::guardian::JudgeOutcome::Deny => {
+                            warn!(
+                                "[AgentLoop] Guardian denied critical tool {}: {}",
+                                tool_call.name, v.rationale
+                            );
+                            return format!(
+                                "⛔ GUARDIAN DENIED [layer:guardian|policy:llm_judge] {} — The safety judge flagged this critical operation as unsafe. Do NOT retry. Inform the user.",
+                                v.rationale
+                            );
+                        }
+                        Ok(_) => {}
+                        Err(guardian_err) => {
+                            match security.guardian_failure_policy().as_str() {
+                                "allow" => {
+                                    warn!(
+                                        "[AgentLoop] Guardian failed on critical tool {} (guardian_failure_policy=allow, proceeding): {}",
+                                        tool_call.name, guardian_err
+                                    );
+                                }
+                                "ask" => {
+                                    let approval_ctx = nemesis_security::auditor::ApprovalContext {
+                                        channel: context.channel.clone(),
+                                        chat_id: context.chat_id.clone(),
+                                        ..Default::default()
+                                    };
+                                    match security.auditor().request_guardian_failure_approval(
+                                        &tool_call.name,
+                                        &format!(
+                                            "Guardian (LLM safety judge) failed: {}",
+                                            guardian_err
+                                        ),
+                                        Some(&approval_ctx),
+                                    ) {
+                                        Ok(v) if v.approved => {
+                                            info!(
+                                                "[AgentLoop] Guardian failed on critical tool {}: user approved",
+                                                tool_call.name
+                                            );
+                                        }
+                                        Ok(v) => {
+                                            let note = v
+                                                .note
+                                                .as_deref()
+                                                .map(str::trim)
+                                                .filter(|n| !n.is_empty())
+                                                .map(|n| format!(": {}", n))
+                                                .unwrap_or_default();
+                                            return format!(
+                                                "⛔ GUARDIAN UNAVAILABLE — USER REJECTED [layer:guardian|policy:guardian_failure_policy=ask] Safety judge failed ({}) and the user declined to approve. Do NOT retry. Inform the user.{}",
+                                                guardian_err, note
+                                            );
+                                        }
+                                        Err(e) => {
+                                            // fail-closed：无审批管理器/未运行/调用失败 = 拒绝
+                                            return format!(
+                                                "⛔ GUARDIAN UNAVAILABLE [layer:guardian|policy:guardian_failure_policy=ask] Safety judge failed ({}) and no approval channel is available ({}). Fail-closed: operation denied. Do NOT retry. Inform the user.",
+                                                guardian_err, e
+                                            );
+                                        }
+                                    }
+                                }
+                                "deny" => {
+                                    return format!(
+                                        "⛔ GUARDIAN UNAVAILABLE — DENIED BY POLICY [layer:guardian|policy:guardian_failure_policy=deny] Safety judge failed ({}). Fail-closed: operation denied by policy. Do NOT retry. Inform the user.",
+                                        guardian_err
+                                    );
+                                }
+                                // 未知值：fail-closed 优先于 fail-open（复核
+                                // 2026-09-16：此前未知值落 `_` 臂静默放行——
+                                // 用户显式选择 deny 得到与未配置相同的裸奔
+                                // 行为，D2 最严档完全失效）。
+                                other if !other.is_empty() => {
+                                    warn!(
+                                        "[AgentLoop] Unknown guardian_failure_policy {:?} (critical tool {}), treating as deny (fail-closed): {}",
+                                        other, tool_call.name, guardian_err
+                                    );
+                                    return format!(
+                                        "⛔ GUARDIAN UNAVAILABLE — DENIED BY POLICY [layer:guardian|policy:guardian_failure_policy={}] Safety judge failed ({}). Fail-closed: operation denied. Do NOT retry. Inform the user.",
+                                        other, guardian_err
+                                    );
+                                }
+                                // 未配置（空串）：旧行为——Err 落空放行
+                                _ => {}
+                            }
+                        }
                     }
                 }
             }
@@ -8556,6 +8634,28 @@ impl AgentLoop {
     /// F-U3-2：cluster agent 以此定位档案管线任务的工作副本目录。
     pub fn workspace_root(&self) -> Option<std::path::PathBuf> {
         self.workspace_root.read().clone()
+    }
+
+    /// ASM-08（2026-09-16 横扫存量加固）：关键接线面快照。
+    ///
+    /// gateway 级装配点（主/集群/项目 loop）在装配完成时用它断言「该接的
+    /// 都接了」，把 T37①/F-U3-2a/ASM-01 一族的「漏接静默」变成装配即炸
+    /// （单测自己动手装配所以永远绿，生产装配的接线缺口只能在装配点掀）。
+    /// 只报告状态不含策略——「哪些必须非空」的裁决归调用方
+    /// （`agent_factory::assert_gateway_critical_wiring`）。`security_plugin`
+    /// 条目仅 `security` feature 编入时出现。
+    pub fn wiring_status(&self) -> Vec<(&'static str, bool)> {
+        // security feature 关闭时无 push，mut 冗余——精确 cfg 门控。
+        #[cfg_attr(not(feature = "security"), allow(unused_mut))]
+        let mut status = vec![
+            ("estop", self.estop.read().is_some()),
+            ("workspace_root", self.workspace_root.read().is_some()),
+            ("config_path", self.config_path.read().is_some()),
+            ("pricing_store", self.pricing_store.read().is_some()),
+        ];
+        #[cfg(feature = "security")]
+        status.push(("security_plugin", self.security_plugin.is_some()));
+        status
     }
 
     /// F-U3-2（UAT U3 实证）：档案管线任务的工作副本路径基准重写。

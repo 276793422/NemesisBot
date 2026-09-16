@@ -111,6 +111,14 @@ impl FileEpisodicStore {
     }
 
     /// Sanitise a session key so it can be used as a file name.
+    ///
+    /// D-1（复核 2026-09-16）：刻意**不迁** `nemesis_utils::sanitize::sanitize_path_segment`
+    /// （SAN-05 真相源）——白名单会把本 store 既有文件名里的空格/非 ASCII/`@`
+    /// 等字符映射成 `_`，直接迁移 = 已落盘的 `.jsonl` 文件名对不上（记忆数据
+    /// 「消失」，比规则分歧严重）。本 9 字符 blacklist 保留面更宽但已稳定运行；
+    /// 与真相源统一的前置是带旧名 fallback 的读路径（新名优先、旧名兜底），
+    /// 需要时再做。本形态也不在 check-sanitize-discipline.sh 的 grep 覆盖内
+    /// （该脚本只守单字符/前缀冒号形态，见其头部注释）。
     fn session_file(&self, session_key: &str) -> PathBuf {
         let safe_name = session_key.replace(['/', '\\', ':', '*', '?', '"', '<', '>', '|'], "_");
         self.data_dir.join(format!("{safe_name}.jsonl"))

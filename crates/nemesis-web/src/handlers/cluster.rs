@@ -1192,6 +1192,13 @@ impl ClusterHandler {
         data: &serde_json::Value,
         ctx: &RequestContext,
     ) -> Result<Option<serde_json::Value>, String> {
+        // EST-04（2026-09-16 横扫加固）：estop 生效中诚实拒绝新任务提交
+        // ——Dashboard 任务面板不是急停旁路。
+        if ctx.state.estop.as_ref().is_some_and(|e| e.is_engaged()) {
+            return Err(
+                "⛔ 急停（estop）生效中，任务提交已冻结：`estop --release` 释放后恢复".to_string(),
+            );
+        }
         let cluster = require_cluster(ctx)?;
         let content = data["content"]
             .as_str()

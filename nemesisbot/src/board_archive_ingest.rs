@@ -905,6 +905,111 @@ pub fn retry_placed_merges(deps: &BoardReviewDeps) {
     }
 }
 
+/// S-O1 合并停车人工重试（2026-09-16 showcase 复跑实证）：park_merge 后
+/// PLACED 条目已被 `remove` 原子取走（第 5 步裁决），重启后注册表同样清零
+/// ——停车变更集（数据仍在 placement 目录）再无自动触达途径，只能人工。
+/// 本入口按 issue 扫描档案树 `records/<number>/execution/*/`，从 placement
+/// 凭据 manifest.json（TransferBegin）反查 task_id，未合并的重新登记
+/// PLACED 并重走合并触发（E8 归属校验/estop 闸/串行闸全部原样生效）。
+///
+/// 幂等：MERGED 集合已含的 task 跳过；estop 中拒绝（先释放急停）。
+/// 返回逐 task 明细（WSAPI 展示用）。
+pub fn retry_merge_for_issue(
+    deps: &BoardReviewDeps,
+    issue: &nemesis_board::models::Issue,
+) -> Result<serde_json::Value, String> {
+    if deps.estop.is_engaged() {
+        return Err("急停中，暂不重试合并（先释放急停）".to_string());
+    }
+    let store = deps.store.as_ref();
+    let project = issue
+        .project_id
+        .map(|pid| store.get_project(pid))
+        .transpose()?
+        .ok_or_else(|| "单据未绑定项目，无档案树可扫".to_string())?;
+    let root = PathBuf::from(
+        project
+            .directory
+            .as_deref()
+            .ok_or_else(|| "项目未绑定档案目录".to_string())?,
+    );
+    let exec_dir = root.join("records").join(&issue.number).join("execution");
+    let entries = std::fs::read_dir(&exec_dir)
+        .map_err(|e| format!("档案执行目录不可读（{}）: {e}", exec_dir.display()))?;
+    // 目录名 = 安置时间戳（%Y%m%d_%H%M%S%3f，字典序=时间序）；升序重试
+    // 让旧轮次先走（E8 会诚实丢弃失配基线，不猜）。
+    let mut dirs: Vec<PathBuf> = entries
+        .flatten()
+        .map(|e| e.path())
+        .filter(|p| p.is_dir())
+        .collect();
+    dirs.sort();
+
+    let mut retried: Vec<serde_json::Value> = Vec::new();
+    for dir in dirs {
+        // placement 凭据反查 task 身份（manifest.json = TransferBegin）。
+        let manifest_raw = match std::fs::read_to_string(dir.join("manifest.json")) {
+            Ok(raw) => raw,
+            Err(e) => {
+                retried.push(serde_json::json!({
+                    "dir": dir.display().to_string(),
+                    "skipped": format!("manifest.json 不可读: {e}"),
+                }));
+                continue;
+            }
+        };
+        let task_id =
+            match serde_json::from_str::<nemesis_cluster::transfer::TransferBegin>(&manifest_raw) {
+                Ok(m) => m.task_id,
+                Err(e) => {
+                    retried.push(serde_json::json!({
+                        "dir": dir.display().to_string(),
+                        "skipped": format!("manifest.json 解析失败: {e}"),
+                    }));
+                    continue;
+                }
+            };
+        // 幂等：已合并（含空集宽容路径）不再二次合并。
+        if MERGED
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .contains(&task_id)
+        {
+            retried.push(serde_json::json!({
+                "task_id": task_id,
+                "skipped": "已合并（幂等跳过）",
+            }));
+            continue;
+        }
+        // 该 task 是否真属于本 issue 的派发（防目录串号：档案树按 issue
+        // 编号组织，凭据 task_id 也必须绑回本 issue）。
+        let belongs = store
+            .get_dispatch(&task_id)
+            .ok()
+            .flatten()
+            .is_some_and(|d| d.issue_id == issue.id);
+        if !belongs {
+            retried.push(serde_json::json!({
+                "task_id": task_id,
+                "skipped": "派发绑定不属于本单据（目录串号防护）",
+            }));
+            continue;
+        }
+        register_placed(&task_id, &dir);
+        let attempt = merge_and_maybe_review_with(deps, &task_id);
+        retried.push(serde_json::json!({
+            "task_id": task_id,
+            "dir": dir.display().to_string(),
+            "attempt": format!("{attempt:?}"),
+        }));
+    }
+    Ok(serde_json::json!({
+        "issue_id": issue.id,
+        "number": issue.number,
+        "retried": retried,
+    }))
+}
+
 // ---------------------------------------------------------------------------
 // P5/F4：project.resume 解冻续行——补合并队列串行回放
 // ---------------------------------------------------------------------------

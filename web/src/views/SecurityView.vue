@@ -14,6 +14,60 @@ const loading = ref(true)
 const editing = ref(false)
 const editConfig = ref('')
 
+// D1/D2（2026-09-16 横扫存量加固）：exec/spawn 未知命令 + Guardian 失败
+// 姿态下拉。走 security.config.save 整体写回（后端 typed SecurityConfig
+// 校验），失败回滚本地显示。JSON 编辑模式下由编辑器接管，下拉禁用。
+const POLICY_KEYS = ['exec_unknown_policy', 'guardian_failure_policy'] as const
+type PolicyKey = (typeof POLICY_KEYS)[number]
+const isPolicyKey = (key: string) => (POLICY_KEYS as readonly string[]).includes(key)
+
+const POLICY_CHOICES: Record<PolicyKey, { value: string; label: string }[]> = {
+  exec_unknown_policy: [
+    { value: 'allow', label: 'allow · 放行（默认）' },
+    { value: 'ask', label: 'ask · 送审批卡' },
+    { value: 'deny', label: 'deny · 硬拦' },
+  ],
+  guardian_failure_policy: [
+    { value: 'ask', label: 'ask · 送审批卡（默认）' },
+    { value: 'allow', label: 'allow · 放行' },
+    { value: 'deny', label: 'deny · 硬拦' },
+  ],
+}
+
+const POLICY_HINTS: Record<PolicyKey, string> = {
+  exec_unknown_policy:
+    'exec / spawn 命令未命中任何规则时的姿态。allow = 放行（旧行为）；ask = 弹审批卡；deny = 硬拦。',
+  guardian_failure_policy:
+    'Guardian（LLM 语义二审）异常或不可用时的姿态。ask = 弹审批卡（不静默放行也不误伤）；allow = 放行并记录 WARN；deny = 硬拦。',
+}
+
+function policyValue(key: PolicyKey): string {
+  // 与后端 serde 默认对齐：缺键时显示默认值而非空白选项。
+  return config.value[key] || (key === 'exec_unknown_policy' ? 'allow' : 'ask')
+}
+
+const policySaving = ref('')
+
+async function savePolicy(key: PolicyKey, value: string) {
+  const prev = config.value[key]
+  if (prev === value) return
+  policySaving.value = key
+  config.value[key] = value
+  try {
+    await request('security', 'config.save', config.value)
+    toast.success('已保存')
+  } catch (e: any) {
+    config.value[key] = prev
+    toast.error('保存失败: ' + e)
+  } finally {
+    policySaving.value = ''
+  }
+}
+
+function onPolicyChange(key: PolicyKey, ev: Event) {
+  savePolicy(key, (ev.target as HTMLSelectElement).value)
+}
+
 async function loadConfig() {
   try {
     const data = await request('security', 'config.get')
@@ -76,6 +130,36 @@ onMounted(async () => {
 
         <!-- Config -->
         <div v-if="activeTab === 'config'">
+          <!-- D1/D2 策略开关 -->
+          <div class="card" style="margin-bottom: var(--space-4);">
+            <div class="card-header"><h3>策略开关</h3></div>
+            <div class="card-body">
+              <div v-if="!editing" class="settings-grid" data-test="policy-switches">
+                <template v-for="key in POLICY_KEYS" :key="key">
+                  <span class="settings-key">{{ key }}</span>
+                  <span class="settings-value">
+                    <select
+                      class="form-select"
+                      style="max-width: 260px;"
+                      :data-test="key"
+                      :value="policyValue(key)"
+                      :disabled="policySaving !== ''"
+                      @change="onPolicyChange(key, $event)"
+                    >
+                      <option v-for="c in POLICY_CHOICES[key]" :key="c.value" :value="c.value">{{ c.label }}</option>
+                    </select>
+                    <div style="font-size: var(--text-xs); color: var(--text-muted, #888); margin-top: var(--space-1); max-width: 520px;">
+                      {{ POLICY_HINTS[key] }}
+                    </div>
+                  </span>
+                </template>
+              </div>
+              <div v-else style="font-size: var(--text-xs); color: var(--text-muted, #888);">
+                JSON 编辑模式下，策略开关由下方编辑器直接控制。
+              </div>
+            </div>
+          </div>
+
           <div class="card">
             <div class="card-header">
               <h3>安全策略配置</h3>
@@ -96,7 +180,7 @@ onMounted(async () => {
               <div v-else>
                 <div class="settings-grid">
                   <template v-for="(value, key) in config" :key="key">
-                    <template v-if="typeof value !== 'object'">
+                    <template v-if="typeof value !== 'object' && !isPolicyKey(String(key))">
                       <span class="settings-key">{{ key }}</span>
                       <span class="settings-value">{{ typeof value === 'boolean' ? (value ? '是' : '否') : String(value) }}</span>
                     </template>

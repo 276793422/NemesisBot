@@ -721,7 +721,7 @@ async fn test_security_config_get_save() {
         .unwrap();
     assert_eq!(result["default_action"], "deny");
 
-    let save_data = serde_json::json!({ "default_action": "allow", "log_all_operations": true, "log_denials_only": false });
+    let save_data = serde_json::json!({ "default_action": "allow", "log_all_operations": true, "approval_timeout_seconds": 300 });
     let result = handler
         .handle_cmd("config.save", Some(save_data), &ctx)
         .await

@@ -189,38 +189,25 @@ fn test_valid_rule_types() {
 #[test]
 fn test_default_security_config_structure() {
     let cfg = default_security_config();
-    assert_eq!(cfg["default_action"], "ask");
-    assert_eq!(cfg["log_all_operations"], false);
-    assert_eq!(cfg["log_denials_only"], true);
-    assert_eq!(cfg["approval_timeout"], 300);
-    assert_eq!(cfg["max_pending_requests"], 10);
-    assert_eq!(cfg["audit_retention_days"], 30);
-    assert_eq!(cfg["audit_log_file_enabled"], true);
-    assert_eq!(cfg["synchronous_mode"], false);
-    assert!(cfg["pending"].is_array());
-    assert!(cfg["rules"].is_object());
+    // CFG-02 重写后：最小出厂骨架，与运行时默认一致（不再写死键
+    // rules/pending 等无读者字段）。
+    assert_eq!(cfg["default_action"], "allow");
+    assert_eq!(cfg["exec_unknown_policy"], "allow");
+    assert_eq!(cfg["guardian_failure_policy"], "ask");
+    assert!(cfg.get("rules").is_none());
+    assert!(cfg.get("pending").is_none());
 }
 
 #[test]
-fn test_default_rules_structure() {
-    let rules = default_rules();
-    assert!(rules["file"].is_array());
-    assert!(rules["directory"].is_array());
-    assert!(rules["process"].is_array());
-    assert!(rules["network"].is_array());
-    assert!(rules["hardware"].is_array());
-    assert!(rules["registry"].is_array());
-    // All should be empty arrays
-    for key in &[
-        "file",
-        "directory",
-        "process",
-        "network",
-        "hardware",
-        "registry",
-    ] {
-        assert!(rules[*key].as_array().unwrap().is_empty());
-    }
+fn test_section_name_for_type_mapping() {
+    // CFG-02：类型→真相源分节名映射（dir_rules 非 directory_rules）。
+    assert_eq!(section_name_for_type("file"), Some("file_rules"));
+    assert_eq!(section_name_for_type("directory"), Some("dir_rules"));
+    assert_eq!(section_name_for_type("process"), Some("process_rules"));
+    assert_eq!(section_name_for_type("network"), Some("network_rules"));
+    assert_eq!(section_name_for_type("hardware"), Some("hardware_rules"));
+    assert_eq!(section_name_for_type("registry"), Some("registry_rules"));
+    assert_eq!(section_name_for_type("unknown"), None);
 }
 
 // -------------------------------------------------------------------------
@@ -232,7 +219,7 @@ fn test_read_rules_config_no_file() {
     let tmp = tempfile::TempDir::new().unwrap();
     let path = tmp.path().join("config.security.json");
     let cfg = read_rules_config(&path).unwrap();
-    assert_eq!(cfg["default_action"], "ask");
+    assert_eq!(cfg["default_action"], "allow");
 }
 
 #[test]
@@ -241,26 +228,26 @@ fn test_read_rules_config_existing_file() {
     let path = tmp.path().join("config.security.json");
     let data = serde_json::json!({
         "default_action": "deny",
-        "rules": {
-            "file": [{"pattern": "*.exe", "operation": "write", "action": "deny"}]
+        "file_rules": {
+            "write": [{"pattern": "*.exe", "action": "deny"}]
         }
     });
     std::fs::write(&path, serde_json::to_string(&data).unwrap()).unwrap();
     let cfg = read_rules_config(&path).unwrap();
     assert_eq!(cfg["default_action"], "deny");
-    let file_rules = cfg["rules"]["file"].as_array().unwrap();
+    let file_rules = cfg["file_rules"]["write"].as_array().unwrap();
     assert_eq!(file_rules.len(), 1);
 }
 
 #[test]
-fn test_read_rules_config_adds_missing_rules() {
+fn test_read_rules_config_keeps_file_verbatim() {
+    // CFG-02：read 不再注入死键 `rules`——文件内容原样返回。
     let tmp = tempfile::TempDir::new().unwrap();
     let path = tmp.path().join("config.security.json");
     let data = serde_json::json!({"default_action": "allow"});
     std::fs::write(&path, serde_json::to_string(&data).unwrap()).unwrap();
     let cfg = read_rules_config(&path).unwrap();
-    // Should have added rules section
-    assert!(cfg["rules"].is_object());
+    assert!(cfg.get("rules").is_none());
 }
 
 #[test]
@@ -272,7 +259,7 @@ fn test_write_and_read_rules_config_roundtrip() {
     write_rules_config(&path, &cfg).unwrap();
     assert!(path.exists());
     let loaded = read_rules_config(&path).unwrap();
-    assert_eq!(loaded["default_action"], "ask");
+    assert_eq!(loaded["default_action"], "allow");
 }
 
 // -------------------------------------------------------------------------
@@ -325,10 +312,9 @@ fn test_cmd_rules_add_valid() {
     cmd_rules_add(&path, "file", "write", Some("*.exe"), Some("deny")).unwrap();
 
     let cfg = read_rules_config(&path).unwrap();
-    let file_rules = cfg["rules"]["file"].as_array().unwrap();
+    let file_rules = cfg["file_rules"]["write"].as_array().unwrap();
     assert_eq!(file_rules.len(), 1);
     assert_eq!(file_rules[0]["pattern"], "*.exe");
-    assert_eq!(file_rules[0]["operation"], "write");
     assert_eq!(file_rules[0]["action"], "deny");
 }
 
@@ -342,7 +328,7 @@ fn test_cmd_rules_add_invalid_type() {
     cmd_rules_add(&path, "invalid", "read", None, None).unwrap();
     // Should succeed (prints error) but not add a rule
     let cfg = read_rules_config(&path).unwrap();
-    assert!(cfg["rules"]["invalid"].is_null() || cfg["rules"].get("invalid").is_none());
+    assert!(cfg.get("file_rules").is_none());
 }
 
 #[test]
@@ -354,8 +340,7 @@ fn test_cmd_rules_add_invalid_operation() {
 
     cmd_rules_add(&path, "file", "launch", None, None).unwrap();
     let cfg = read_rules_config(&path).unwrap();
-    let file_rules = cfg["rules"]["file"].as_array().unwrap();
-    assert!(file_rules.is_empty());
+    assert!(cfg.get("file_rules").is_none());
 }
 
 #[test]
@@ -367,8 +352,7 @@ fn test_cmd_rules_add_invalid_action() {
 
     cmd_rules_add(&path, "file", "read", None, Some("destroy")).unwrap();
     let cfg = read_rules_config(&path).unwrap();
-    let file_rules = cfg["rules"]["file"].as_array().unwrap();
-    assert!(file_rules.is_empty());
+    assert!(cfg.get("file_rules").is_none());
 }
 
 #[test]
@@ -380,7 +364,7 @@ fn test_cmd_rules_add_allow_action() {
 
     cmd_rules_add(&path, "file", "read", Some("*.txt"), Some("allow")).unwrap();
     let cfg = read_rules_config(&path).unwrap();
-    let file_rules = cfg["rules"]["file"].as_array().unwrap();
+    let file_rules = cfg["file_rules"]["read"].as_array().unwrap();
     assert_eq!(file_rules[0]["action"], "allow");
 }
 
@@ -393,7 +377,7 @@ fn test_cmd_rules_add_ask_action() {
 
     cmd_rules_add(&path, "process", "exec", Some("rm"), Some("ask")).unwrap();
     let cfg = read_rules_config(&path).unwrap();
-    let rules = cfg["rules"]["process"].as_array().unwrap();
+    let rules = cfg["process_rules"]["exec"].as_array().unwrap();
     assert_eq!(rules[0]["action"], "ask");
 }
 
@@ -406,7 +390,7 @@ fn test_cmd_rules_add_default_pattern() {
 
     cmd_rules_add(&path, "network", "request", None, None).unwrap();
     let cfg = read_rules_config(&path).unwrap();
-    let rules = cfg["rules"]["network"].as_array().unwrap();
+    let rules = cfg["network_rules"]["request"].as_array().unwrap();
     assert_eq!(rules[0]["pattern"], "*"); // default pattern
 }
 
@@ -421,18 +405,21 @@ fn test_cmd_rules_remove_valid() {
     let path = dir.join("config.security.json");
 
     let mut cfg = default_security_config();
-    cfg["rules"]["file"] = serde_json::json!([
-        {"pattern": "*.exe", "operation": "write", "action": "deny", "comment": ""},
-        {"pattern": "*.txt", "operation": "read", "action": "allow", "comment": ""}
-    ]);
+    cfg["file_rules"] = serde_json::json!({
+        "write": [{"pattern": "*.exe", "action": "deny"}],
+        "read": [{"pattern": "*.txt", "action": "allow"}]
+    });
     write_rules_config(&path, &cfg).unwrap();
 
     cmd_rules_remove(&path, "file", "write", 0).unwrap();
 
     let loaded = read_rules_config(&path).unwrap();
-    let file_rules = loaded["rules"]["file"].as_array().unwrap();
-    assert_eq!(file_rules.len(), 1);
-    assert_eq!(file_rules[0]["operation"], "read");
+    assert!(loaded["file_rules"]["write"].as_array().unwrap().is_empty());
+    assert_eq!(
+        loaded["file_rules"]["read"].as_array().unwrap().len(),
+        1,
+        "只删目标操作数组，同节其他操作不受影响"
+    );
 }
 
 #[test]
@@ -452,15 +439,15 @@ fn test_cmd_rules_remove_out_of_range() {
     let path = dir.join("config.security.json");
 
     let mut cfg = default_security_config();
-    cfg["rules"]["file"] = serde_json::json!([
-        {"pattern": "*.exe", "operation": "write", "action": "deny", "comment": ""}
-    ]);
+    cfg["file_rules"] = serde_json::json!({
+        "write": [{"pattern": "*.exe", "action": "deny"}]
+    });
     write_rules_config(&path, &cfg).unwrap();
 
     cmd_rules_remove(&path, "file", "write", 5).unwrap();
     // No crash, no change
     let loaded = read_rules_config(&path).unwrap();
-    let file_rules = loaded["rules"]["file"].as_array().unwrap();
+    let file_rules = loaded["file_rules"]["write"].as_array().unwrap();
     assert_eq!(file_rules.len(), 1);
 }
 
@@ -475,8 +462,8 @@ fn test_cmd_rules_test_matching_rule() {
     let path = dir.join("config.security.json");
 
     let mut cfg = default_security_config();
-    cfg["rules"]["file"] = serde_json::json!([
-        {"pattern": "*.exe", "operation": "write", "action": "deny", "comment": ""}
+    cfg["file_rules"]["write"] = serde_json::json!([
+        {"pattern": "*.exe", "action": "deny"}
     ]);
     write_rules_config(&path, &cfg).unwrap();
 
@@ -490,8 +477,8 @@ fn test_cmd_rules_test_no_matching_rule() {
     let path = dir.join("config.security.json");
 
     let mut cfg = default_security_config();
-    cfg["rules"]["file"] = serde_json::json!([
-        {"pattern": "*.exe", "operation": "write", "action": "deny", "comment": ""}
+    cfg["file_rules"]["write"] = serde_json::json!([
+        {"pattern": "*.exe", "action": "deny"}
     ]);
     write_rules_config(&path, &cfg).unwrap();
 
@@ -507,20 +494,41 @@ fn test_cmd_rules_test_invalid_type() {
 }
 
 #[test]
-fn test_cmd_rules_test_wildcard_operation() {
+fn test_cmd_rules_test_same_pattern_across_operations() {
     let tmp = tempfile::TempDir::new().unwrap();
     let dir = tmp.path().join("config");
     let path = dir.join("config.security.json");
 
     let mut cfg = default_security_config();
-    cfg["rules"]["file"] = serde_json::json!([
-        {"pattern": "*.log", "operation": "*", "action": "allow", "comment": ""}
+    // 新语义：operation 由所属分节数组决定，同 pattern 可分别落在 write/read 数组
+    cfg["file_rules"]["write"] = serde_json::json!([
+        {"pattern": "*.log", "action": "allow"}
+    ]);
+    cfg["file_rules"]["read"] = serde_json::json!([
+        {"pattern": "*.log", "action": "deny"}
     ]);
     write_rules_config(&path, &cfg).unwrap();
 
-    // Should match any operation
     cmd_rules_test(&path, "file", "write", "test.log").unwrap();
     cmd_rules_test(&path, "file", "read", "test.log").unwrap();
+}
+
+#[test]
+fn test_cmd_rules_test_process_exec_normalization() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    let dir = tmp.path().join("config");
+    let path = dir.join("config.security.json");
+
+    let mut cfg = default_security_config();
+    // process exec 走 normalize_exec_command + match_command_pattern（引号/空白归一化）
+    cfg["process_rules"]["exec"] = serde_json::json!([
+        {"pattern": "rm -rf *", "action": "deny"}
+    ]);
+    write_rules_config(&path, &cfg).unwrap();
+
+    // 引号旗标变体与多余空白都应命中 deny 规则
+    cmd_rules_test(&path, "process", "exec", "rm \"-rf\" build/").unwrap();
+    cmd_rules_test(&path, "process", "exec", "rm  -rf    build/").unwrap();
 }
 
 // -------------------------------------------------------------------------
@@ -685,32 +693,9 @@ fn test_valid_operations_all_types() {
 #[test]
 fn test_default_security_config_all_fields() {
     let cfg = default_security_config();
-    assert_eq!(cfg["default_action"], "ask");
-    assert_eq!(cfg["log_all_operations"], false);
-    assert_eq!(cfg["log_denials_only"], true);
-    assert_eq!(cfg["approval_timeout"], 300);
-    assert_eq!(cfg["max_pending_requests"], 10);
-    assert_eq!(cfg["audit_retention_days"], 30);
-    assert_eq!(cfg["audit_log_file_enabled"], true);
-    assert_eq!(cfg["synchronous_mode"], false);
-    assert!(cfg["pending"].is_array());
-    assert!(cfg["pending"].as_array().unwrap().is_empty());
-}
-
-#[test]
-fn test_default_rules_all_types() {
-    let rules = default_rules();
-    for t in &[
-        "file",
-        "directory",
-        "process",
-        "network",
-        "hardware",
-        "registry",
-    ] {
-        assert!(rules[*t].is_array());
-        assert!(rules[*t].as_array().unwrap().is_empty());
-    }
+    assert_eq!(cfg["default_action"], "allow");
+    assert_eq!(cfg["exec_unknown_policy"], "allow");
+    assert_eq!(cfg["guardian_failure_policy"], "ask");
 }
 
 #[test]
@@ -719,15 +704,17 @@ fn test_read_rules_config_with_rules_present() {
     let path = tmp.path().join("config.security.json");
     let data = serde_json::json!({
         "default_action": "deny",
-        "rules": {
-            "file": [{"pattern": "*.exe", "operation": "write", "action": "deny"}],
-            "process": []
+        "file_rules": {
+            "write": [{"pattern": "*.exe", "action": "deny"}]
+        },
+        "process_rules": {
+            "exec": []
         }
     });
     std::fs::write(&path, serde_json::to_string(&data).unwrap()).unwrap();
     let cfg = read_rules_config(&path).unwrap();
     assert_eq!(cfg["default_action"], "deny");
-    assert!(cfg["rules"]["file"].as_array().unwrap().len() == 1);
+    assert!(cfg["file_rules"]["write"].as_array().unwrap().len() == 1);
 }
 
 #[test]
@@ -761,8 +748,8 @@ fn test_cmd_rules_add_multiple_rules_same_type() {
     cmd_rules_add(&path, "file", "read", Some("*.txt"), Some("allow")).unwrap();
 
     let cfg = read_rules_config(&path).unwrap();
-    let file_rules = cfg["rules"]["file"].as_array().unwrap();
-    assert_eq!(file_rules.len(), 3);
+    assert_eq!(cfg["file_rules"]["write"].as_array().unwrap().len(), 2);
+    assert_eq!(cfg["file_rules"]["read"].as_array().unwrap().len(), 1);
 }
 
 #[test]
@@ -777,8 +764,11 @@ fn test_cmd_rules_add_all_action_types() {
     cmd_rules_add(&path, "file", "delete", Some("*.tmp"), Some("ask")).unwrap();
 
     let cfg = read_rules_config(&path).unwrap();
-    let file_rules = cfg["rules"]["file"].as_array().unwrap();
-    assert_eq!(file_rules.len(), 3);
+    // 新语义：分操作数组，不再平铺在同一列表
+    assert_eq!(cfg["file_rules"]["read"].as_array().unwrap().len(), 1);
+    assert_eq!(cfg["file_rules"]["write"].as_array().unwrap().len(), 1);
+    assert_eq!(cfg["file_rules"]["delete"].as_array().unwrap().len(), 1);
+    assert_eq!(cfg["file_rules"]["delete"][0]["action"], "ask");
 }
 
 #[test]
@@ -921,28 +911,29 @@ fn test_valid_operations_for_registry() {
 // -------------------------------------------------------------------------
 
 #[test]
-fn test_default_security_config_pending_is_empty() {
+fn test_default_security_config_pending_is_absent() {
+    // CFG-02：pending 由 workspace/security/pending.json 独立承载，配置模板不再内嵌
     let cfg = default_security_config();
-    let pending = cfg["pending"].as_array().unwrap();
-    assert!(pending.is_empty());
+    assert!(cfg.get("pending").is_none());
 }
 
 #[test]
-fn test_default_security_config_rules_all_empty() {
+fn test_default_security_config_rule_sections_absent() {
+    // CFG-02：默认模板只带策略键；规则分节在用户实际写入规则时才出现
     let cfg = default_security_config();
-    let rules = &cfg["rules"];
-    for key in &[
-        "file",
-        "directory",
-        "process",
-        "network",
-        "hardware",
-        "registry",
+    for section in &[
+        "file_rules",
+        "dir_rules",
+        "process_rules",
+        "network_rules",
+        "hardware_rules",
+        "registry_rules",
+        "rules",
     ] {
         assert!(
-            rules[key].as_array().unwrap().is_empty(),
-            "Rule type '{}' should be empty",
-            key
+            cfg.get(*section).is_none(),
+            "Section '{}' should be absent from default config",
+            section
         );
     }
 }
@@ -952,19 +943,20 @@ fn test_default_security_config_rules_all_empty() {
 // -------------------------------------------------------------------------
 
 #[test]
-fn test_read_rules_config_with_partial_rules() {
+fn test_read_rules_config_with_partial_sections() {
     let tmp = tempfile::TempDir::new().unwrap();
     let path = tmp.path().join("config.security.json");
     let data = serde_json::json!({
         "default_action": "deny",
-        "rules": {
-            "file": [{"pattern": "*.exe", "operation": "write", "action": "deny"}]
-            // Missing other types
+        "file_rules": {
+            "write": [{"pattern": "*.exe", "action": "deny"}]
+            // Missing other sections
         }
     });
     std::fs::write(&path, serde_json::to_string(&data).unwrap()).unwrap();
     let cfg = read_rules_config(&path).unwrap();
-    assert_eq!(cfg["rules"]["file"].as_array().unwrap().len(), 1);
+    assert_eq!(cfg["file_rules"]["write"].as_array().unwrap().len(), 1);
+    assert!(cfg.get("process_rules").is_none());
 }
 
 // -------------------------------------------------------------------------
@@ -991,10 +983,10 @@ fn test_cmd_rules_add_for_each_type() {
         cmd_rules_add(&path, rule_type, operation, Some("*.test"), Some("deny")).unwrap();
 
         let cfg = read_rules_config(&path).unwrap();
-        let rules = cfg["rules"][*rule_type].as_array().unwrap();
+        let section = section_name_for_type(rule_type).expect("known type maps to section");
+        let rules = cfg[section][*operation].as_array().unwrap();
         assert_eq!(rules.len(), 1, "Failed for type: {}", rule_type);
         assert_eq!(rules[0]["pattern"], "*.test");
-        assert_eq!(rules[0]["operation"], *operation);
         assert_eq!(rules[0]["action"], "deny");
     }
 }
@@ -1010,17 +1002,17 @@ fn test_cmd_rules_remove_middle_index() {
     let path = dir.join("config.security.json");
 
     let mut cfg = default_security_config();
-    cfg["rules"]["network"] = serde_json::json!([
-        {"pattern": "*.com", "operation": "request", "action": "allow", "comment": ""},
-        {"pattern": "*.evil", "operation": "request", "action": "deny", "comment": "bad"},
-        {"pattern": "*.local", "operation": "request", "action": "allow", "comment": ""}
+    cfg["network_rules"]["request"] = serde_json::json!([
+        {"pattern": "*.com", "action": "allow"},
+        {"pattern": "*.evil", "action": "deny"},
+        {"pattern": "*.local", "action": "allow"}
     ]);
     write_rules_config(&path, &cfg).unwrap();
 
     cmd_rules_remove(&path, "network", "request", 1).unwrap();
 
     let loaded = read_rules_config(&path).unwrap();
-    let rules = loaded["rules"]["network"].as_array().unwrap();
+    let rules = loaded["network_rules"]["request"].as_array().unwrap();
     assert_eq!(rules.len(), 2);
     assert_eq!(rules[0]["pattern"], "*.com");
     assert_eq!(rules[1]["pattern"], "*.local");
@@ -1119,8 +1111,8 @@ fn test_cmd_rules_test_with_matching_deny_rule() {
     let path = dir.join("config.security.json");
 
     let mut cfg = default_security_config();
-    cfg["rules"]["file"] = serde_json::json!([
-        {"pattern": "*.exe", "operation": "write", "action": "deny", "comment": "block exe"}
+    cfg["file_rules"]["write"] = serde_json::json!([
+        {"pattern": "*.exe", "action": "deny"}
     ]);
     write_rules_config(&path, &cfg).unwrap();
 
@@ -1229,7 +1221,7 @@ async fn test_s11b_run_status_with_configs() {
         r#"{"security": {"enabled": false}, "agents": {"defaults": {"restrict_to_workspace": true}}}"#,
     )
     .unwrap();
-    // security cfg：scanner 段 + 带 op 计数与不带 op 计数的 rules
+    // security cfg：scanner 段 + 分节 rules（带规则与空规则混合）
     let sec_cfg = crate::common::security_config_path(&th.home);
     std::fs::write(
         &sec_cfg,
@@ -1241,10 +1233,12 @@ async fn test_s11b_run_status_with_configs() {
             "audit_retention_days": 7,
             "enabled": ["clamav"],
             "restrict_to_workspace": false,
-            "rules": {
-                "file": [{"operation": "read", "pattern": "*.txt", "action": "deny"},
-                          {"operation": "read", "pattern": "*.md", "action": "deny"}],
-                "network": [{"operation": "weird_op", "pattern": "*", "action": "deny"}]
+            "file_rules": {
+                "read": [{"pattern": "*.txt", "action": "deny"},
+                          {"pattern": "*.md", "action": "deny"}]
+            },
+            "network_rules": {
+                "request": [{"pattern": "*", "action": "deny"}]
             }
         }"#,
     )
@@ -1689,16 +1683,17 @@ mod wave_b {
     fn wave_b_rules_list_prints_indexed_entries_per_operation() {
         let tmp = tempfile::TempDir::new().unwrap();
         let path = tmp.path().join("config.security.json");
-        // file: read x2（索引 [0]/[1] 连续出现在同一 op 组），write x1，
-        // network: request x1；其余 op 打 (none)。
+        // file_rules: read x2（索引 [0]/[1] 连续出现在同一 op 组），write x1，
+        // network_rules: request x1；其余 op 打 (none)。
         wb_write_cfg(
             &path,
-            r#"{"rules": {"file": [
-                {"pattern":"*.txt","operation":"read","action":"allow"},
-                {"pattern":"secret*","operation":"read","action":"deny"},
-                {"pattern":"*.log","operation":"write","action":"ask"}
-              ],
-              "network": [{"pattern":"**","operation":"request","action":"deny"}]}}"#,
+            r#"{
+              "file_rules": {
+                "read": [{"pattern":"*.txt","action":"allow"},{"pattern":"secret*","action":"deny"}],
+                "write": [{"pattern":"*.log","action":"ask"}]
+              },
+              "network_rules": {"request": [{"pattern":"**","action":"deny"}]}
+            }"#,
         );
         cmd_rules_list(&path, None).unwrap();
         // 指定类型也过一遍过滤分支
@@ -1709,9 +1704,9 @@ mod wave_b {
     fn wave_b_rules_list_empty_rules_object_says_no_rules_defined() {
         let tmp = tempfile::TempDir::new().unwrap();
         let path = tmp.path().join("config.security.json");
-        // rules 是空对象：所有 get(rt) 都 None → found_any=false + 无 rule_type
-        // → "No rules defined."（区别于缺 rules 键——那走 default_rules 全空数组）。
-        wb_write_cfg(&path, r#"{"rules": {}}"#);
+        // 规则分节全缺：所有 section 都 None → found_any=false + 无 rule_type
+        // → "No rules defined."
+        wb_write_cfg(&path, r#"{}"#);
         cmd_rules_list(&path, None).unwrap();
     }
 
@@ -1719,17 +1714,16 @@ mod wave_b {
     fn wave_b_rules_add_creates_missing_type_key_array_then_pushes_entry() {
         let tmp = tempfile::TempDir::new().unwrap();
         let path = tmp.path().join("config.security.json");
-        wb_write_cfg(&path, r#"{"rules": {}}"#);
+        wb_write_cfg(&path, r#"{}"#);
 
         cmd_rules_add(&path, "registry", "read", Some("**HKLM**"), Some("deny")).unwrap();
 
         let cfg = read_rules_config(&path).unwrap();
-        let arr = cfg["rules"]["registry"]
+        let arr = cfg["registry_rules"]["read"]
             .as_array()
-            .expect("type key created");
+            .expect("section.op key created");
         assert_eq!(arr.len(), 1);
         assert_eq!(arr[0]["pattern"], "**HKLM**");
-        assert_eq!(arr[0]["operation"], "read");
         assert_eq!(arr[0]["action"], "deny");
     }
 
@@ -1737,15 +1731,13 @@ mod wave_b {
     fn wave_b_rules_test_operation_mismatch_continues_to_later_rules() {
         let tmp = tempfile::TempDir::new().unwrap();
         let path = tmp.path().join("config.security.json");
-        // 规则 0：pattern `*` 会匹配任意 target，但 operation=delete ≠ write
-        // → 必须被 continue 跳过；规则 1 才是命中者。若 continue 缺失/错位，
-        // 规则 0 会把 final_action 抢成 deny（本例断言只能靠行为顺序无副作用，
-        // 所以再放一个 allow 收尾规则验证「跳过后仍能继续扫」）。
+        // 规则 0：pattern `*.log` 不匹配 a.txt → 必须被 continue 跳过；
+        // 规则 1 才是命中者。若 continue 缺失/错位，final_action 行为会错。
         wb_write_cfg(
             &path,
-            r#"{"rules": {"file": [
-                {"pattern":"*","operation":"delete","action":"deny"},
-                {"pattern":"*.txt","operation":"write","action":"allow"}
+            r#"{"file_rules": {"write": [
+                {"pattern":"*.log","action":"deny"},
+                {"pattern":"*.txt","action":"allow"}
               ]}}"#,
         );
         cmd_rules_test(&path, "file", "write", "a.txt").unwrap();
@@ -1757,11 +1749,11 @@ mod wave_b {
         let path = tmp.path().join("config.security.json");
         wb_write_cfg(
             &path,
-            r#"{"rules": {"network": [
-                {"pattern":"*.evil.example","operation":"request","action":"ask"}
+            r#"{"network_rules": {"request": [
+                {"pattern":"*.evil.example","action":"ask"}
               ]}}"#,
         );
-        // ask 命中 → final_action 映射为 deny + reason 走「requires approval」臂。
+        // ask 命中 → 诚实展示「requires approval」（不再谎报 treated as deny）。
         cmd_rules_test(&path, "network", "request", "c2.evil.example").unwrap();
     }
 
@@ -1820,11 +1812,10 @@ mod wave_b {
         .unwrap();
 
         let cfg = read_rules_config(&sec_cfg).unwrap();
-        let arr = cfg["rules"]["process"]
+        let arr = cfg["process_rules"]["exec"]
             .as_array()
             .expect("run-level Add 写盘");
         assert_eq!(arr.len(), 1);
-        assert_eq!(arr[0]["operation"], "exec");
         assert_eq!(arr[0]["action"], "deny");
     }
 
@@ -1839,7 +1830,7 @@ mod wave_b {
             .join("config")
             .join("config.security.json");
 
-        // 预置两条 file.read 规则；Remove #0 应摘除第一条（matching[0]=实际 idx 0）
+        // 预置两条 file.read 规则（新语义：数组内位置索引）；Remove #0 应摘除第一条
         cmd_rules_add(&sec_cfg, "file", "read", Some("*.tmp"), Some("allow")).unwrap();
         cmd_rules_add(&sec_cfg, "file", "read", Some("keep.txt"), Some("deny")).unwrap();
 
@@ -1857,7 +1848,7 @@ mod wave_b {
         .unwrap();
 
         let cfg = read_rules_config(&sec_cfg).unwrap();
-        let arr = cfg["rules"]["file"].as_array().unwrap();
+        let arr = cfg["file_rules"]["read"].as_array().unwrap();
         assert_eq!(arr.len(), 1, "#0 已摘除");
         assert_eq!(arr[0]["pattern"], "keep.txt", "留下的是第二条");
     }
@@ -2161,7 +2152,10 @@ mod r10_arcs {
         let raw = std::fs::read_to_string(&sec_cfg).unwrap();
         assert!(!raw.contains("zz-r10-sentinel"), "旧内容被整体替换: {raw}");
         let v: serde_json::Value = serde_json::from_str(&raw).unwrap();
-        assert_eq!(v["default_action"], "ask", "reset 后默认动作是 ask: {raw}");
+        assert_eq!(
+            v["default_action"], "allow",
+            "reset 后默认动作是 allow: {raw}"
+        );
     }
 
     /// 嵌套派发：run(Config{Some(Reset)}) → 分发行 → cmd_config_reset；
@@ -2192,46 +2186,49 @@ mod r10_arcs {
 
     // --------------------- corrupt 结构直调族 ---------------------
 
-    /// 标量根 `{"rules":42}`：add 的规则表 if-let 整体跳过，但收尾仍整包重写
-    /// （cfg 值原样序列化）；Ok 不 panic、rules 仍为标量。
+    /// 标量键 `{"rules":42}`：与新分节键无关，add 正常写入 `file_rules.read`，
+    /// 无关键原样保留（root 是对象 → entry 级联创建照常工作）。
     #[test]
-    fn r10_rules_add_scalar_rules_root_skips_merge_but_keeps_value() {
+    fn r10_rules_add_scalar_unrelated_key_preserved() {
         let tmp = tempfile::tempdir().unwrap();
         let path = tmp.path().join("config.security.json");
         std::fs::write(&path, r#"{"rules":42}"#).unwrap();
 
-        cmd_rules_add(&path, "file", "read", Some("*.txt"), None)
-            .expect("标量根不算解析错误，静默跳过 merge");
+        cmd_rules_add(&path, "file", "read", Some("*.txt"), None).expect("根是对象 → 正常 merge");
 
         let v: serde_json::Value =
             serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
-        assert_eq!(v["rules"], 42, "merge 被跳过 → rules 必须仍是原标量");
+        assert_eq!(v["rules"], 42, "无关键必须原样保留");
+        assert_eq!(
+            v["file_rules"]["read"][0]["pattern"], "*.txt",
+            "规则照常写入分节数组"
+        );
     }
 
-    /// 类型槽标量 `{"rules":{"file":7}}`：remove 找不到数组 → not-found 臂
+    /// 操作槽标量 `{"file_rules":{"read":7}}`：remove 找不到数组 → not-found 臂
     /// 且**不回写**（字节级原样）。
     #[test]
-    fn r10_rules_remove_scalar_type_slot_reports_not_found_without_write() {
+    fn r10_rules_remove_scalar_op_slot_reports_not_found_without_write() {
         let tmp = tempfile::tempdir().unwrap();
         let path = tmp.path().join("config.security.json");
-        std::fs::write(&path, r#"{"rules":{"file":7}}"#).unwrap();
+        std::fs::write(&path, r#"{"file_rules":{"read":7}}"#).unwrap();
 
         cmd_rules_remove(&path, "file", "read", 0).expect("槽标量 → found=false → Ok");
 
         assert_eq!(
             std::fs::read_to_string(&path).unwrap(),
-            r#"{"rules":{"file":7}}"#,
+            r#"{"file_rules":{"read":7}}"#,
             "not-found 不得回写"
         );
     }
 
-    /// 类型槽对象 `{"rules":{"file":{"a":1}}}`：test 的 as_array 失败 →
-    /// 规则遍历跳过 → 默认 deny 结论臂。
+    /// 操作槽对象 `{"file_rules":{"read":{"a":1}}}`：test 的 as_array 失败 →
+    /// 规则遍历跳过 → default_action 结论臂。
     #[test]
-    fn r10_rules_test_object_type_slot_skips_iteration_defaults_deny() {
+    fn r10_rules_test_object_op_slot_skips_iteration_uses_default() {
         let tmp = tempfile::tempdir().unwrap();
         let path = tmp.path().join("config.security.json");
-        std::fs::write(&path, r#"{"rules":{"file":{"a":1}}}"#).unwrap();
+        std::fs::write(&path, r#"{"file_rules":{"read":{"a":1}}}"#).unwrap();
 
         cmd_rules_test(&path, "file", "read", "*.txt").expect("槽对象 → 无数组可比对 → Ok");
     }

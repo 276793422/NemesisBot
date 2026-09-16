@@ -1,5 +1,7 @@
 {
   "default_action": "allow",
+  "exec_unknown_policy": "allow",
+  "guardian_failure_policy": "ask",
   "log_all_operations": true,
   "layers": {
     "dlp": {
@@ -155,6 +157,30 @@
         "action": "deny"
       },
       {
+        "pattern": "find*-delete*",
+        "action": "deny"
+      },
+      {
+        "pattern": "find*-exec*rm*",
+        "action": "deny"
+      },
+      {
+        "pattern": "dd of=*",
+        "action": "deny"
+      },
+      {
+        "pattern": "mkfs*",
+        "action": "deny"
+      },
+      {
+        "pattern": "diskutil erasedisk*",
+        "action": "deny"
+      },
+      {
+        "pattern": "chmod -r*",
+        "action": "deny"
+      },
+      {
         "pattern": "launchctl *",
         "action": "ask"
       },
@@ -164,6 +190,10 @@
       },
       {
         "pattern": "defaults *",
+        "action": "ask"
+      },
+      {
+        "pattern": "diskutil *",
         "action": "ask"
       }
     ],

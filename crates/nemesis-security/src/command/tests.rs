@@ -170,8 +170,11 @@ fn test_simplify_command_double_slash_comment() {
 
 #[test]
 fn test_simplify_command_normalizes_quotes() {
+    // CMD-11①：归一化单一真相源 = normalize_exec_command——引号整体剥除
+    // （shell 执行前也会剥，留下的引号曾打断 pattern 两侧匹配）。
     let simplified = Guard::simplify_command(r#"echo "hello""#);
-    assert_eq!(simplified, "echo 'hello'");
+    assert_eq!(simplified, "echo hello");
+    assert_eq!(Guard::simplify_command("echo 'hello'"), "echo hello");
 }
 
 #[test]
@@ -466,4 +469,127 @@ fn strict_mode_blocks_partial_keyword_match() {
         "unexpected block reason: {msg}"
     );
     assert!(msg.contains("curl |"), "unexpected block reason: {msg}");
+}
+
+// ===========================================================================
+// CMD 族修复 Guard 层测试（2026-09-16 第二批·灾难复发批）
+// ===========================================================================
+
+#[test]
+fn new_blocklist_forms_are_blocked() {
+    let guard = Guard::new(true);
+    for cmd in [
+        // CMD-05：引号旗标借 shell 剥引号绕过（归一化候选扫出）
+        "rm \"-rf\" /",
+        "rd \"/s\" \"/q\" c:\\data",
+        // CMD-04：大小写长参变体
+        "rm --RECURSIVE build",
+        "Remove-Item -RECURSE -Force c:\\data",
+        // CMD-07：robocopy /MIR（镜像=目标目录清空）
+        "robocopy c:\\src c:\\dst /MIR",
+        "robocopy.exe src dst /mir",
+        // CMD-08：find -delete / -exec rm
+        "find . -name \"*.log\" -delete",
+        "find / -type f -exec rm {} \\;",
+        // CMD-09 词表补缺（Windows 族）
+        "rd /s /q c:\\data",
+        "erase /s c:\\data",
+        "del /f /s /q c:\\windows",
+        "vssadmin delete shadows /all",
+        "wevtutil cl Security",
+        "wevtutil clear-log Application",
+        "schtasks /delete /tn daily",
+        "sc delete NemesisSvc",
+        "cipher /w:c:\\",
+        "diskpart",
+        "Set-ExecutionPolicy Unrestricted",
+        "clear-content secret.txt",
+        // CMD-09 词表补缺（Linux 族）
+        "chmod -R 000 /",
+        "dd of=/dev/sda if=/dev/zero",
+        // CMD-02/03：解释器包装 / cmd /c 形态（strict 档 + cmd_c 正则）
+        "powershell -EncodedCommand AAAA",
+        "pwsh -enc AAAA",
+        "cmd /c rd /s /q c:\\data",
+        // CMD-11②：metadata 缺失补齐条目的行为面（pip uninstall）
+        "pip uninstall -y requests",
+    ] {
+        assert!(
+            guard.check(cmd).is_err(),
+            "`{cmd}` must be blocked by Guard blocklist"
+        );
+    }
+}
+
+#[test]
+fn benign_commands_not_blocked_by_new_patterns() {
+    let guard = Guard::new(true);
+    for cmd in [
+        // 既有误伤回归（format 正则收窄）：`\bformat\b` 曾误伤下列两者
+        "npm run format",
+        "git format-patch -1 HEAD",
+        // 开发工作流常规命令
+        "git status",
+        "python -c \"print(1)\"",
+        "robocopy src dst",     // 无 /MIR = 普通复制
+        "find . -name '*.log'", // 无 -delete
+        "sc query NemesisSvc",
+        "schtasks /query",
+        "vssadmin list shadows",
+        "wevtutil qe Application /c:1",
+        "cipher /k",
+        "chmod +x build.sh",
+        "del result.txt", // 无 /s /f /q 旗标
+        "rd empty_dir",   // 无 /s
+        "Get-ChildItem -Recurse",
+        "pip install requests",
+    ] {
+        assert!(
+            guard.check(cmd).is_ok(),
+            "`{cmd}` must not be blocked (false positive)"
+        );
+    }
+}
+
+#[test]
+fn classic_fork_bomb_still_blocked() {
+    let guard = Guard::new(true);
+    assert!(guard.check(":(){ :|:& };:").is_err());
+}
+
+#[test]
+fn named_fork_bomb_blocked_by_self_reference_scan() {
+    // CMD-10：命名函数自递归形态，catastrophic_pipe 正则打不中，
+    // 代码级自引用判定接管。
+    let guard = Guard::new(true);
+    let r = guard.check("bomb(){ bomb|bomb & };bomb");
+    assert!(r.is_err());
+    let msg = r.unwrap_err().to_string();
+    assert!(msg.contains("fork bomb"), "unexpected reason: {msg}");
+}
+
+#[test]
+fn non_self_recursive_function_passes() {
+    // 误伤面：函数体内不引用自身名 = 正常函数定义，放行。
+    let guard = Guard::new(true);
+    assert!(guard.check("hello(){ echo world; };hello").is_ok());
+}
+
+#[test]
+fn normalize_variants_hit_same_blocklist_entry() {
+    // CMD-04/05：原文小写与归一化候选双扫——任一形态都落到同一条目。
+    let guard = Guard::new(true);
+    for cmd in [
+        "rm -rf /data",
+        "RM -RF /data",
+        "rm \"-rf\" /data",
+        "rm  -rf   /data",
+    ] {
+        let r = guard.check(cmd);
+        assert!(r.is_err(), "`{cmd}` must be blocked");
+        assert!(
+            r.unwrap_err().to_string().contains("rm_rf"),
+            "`{cmd}` must hit the rm_rf entry"
+        );
+    }
 }

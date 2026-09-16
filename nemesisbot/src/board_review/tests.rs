@@ -2776,6 +2776,48 @@ fn artifacts_evidence_lists_files_with_content_and_excludes_pipeline_dirs() {
     let _ = std::fs::remove_dir_all(&root);
 }
 
+/// SAN-09：排除谓词与 transfer walk 同源（.venv 等依赖/缓存目录不挤占
+/// 评审 prompt 上限）+ symlink 不跟随（外部树不得拉进评审 prompt）。
+#[test]
+fn artifacts_evidence_excludes_noise_dirs_and_never_follows_symlinks() {
+    let root = std::env::temp_dir().join(format!("san9-a-{}", std::process::id()));
+    let outside = std::env::temp_dir().join(format!("san9-out-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&root);
+    let _ = std::fs::remove_dir_all(&outside);
+    std::fs::create_dir_all(root.join(".venv/lib")).unwrap();
+    std::fs::create_dir_all(root.join("src")).unwrap();
+    std::fs::create_dir_all(&outside).unwrap();
+    std::fs::write(root.join("delivery.md"), "# 交付").unwrap();
+    std::fs::write(root.join("src/main.py"), "print('hi')").unwrap();
+    std::fs::write(root.join(".venv/lib/pkg.py"), "noise").unwrap();
+    std::fs::write(outside.join("secret.txt"), "top secret").unwrap();
+
+    let out = super::render_project_artifacts_evidence(&root);
+    assert!(out.contains("delivery.md"), "真实交付在清单: {out}");
+    assert!(out.contains("src/main.py"), "普通子目录照常列举");
+    assert!(
+        !out.contains(".venv"),
+        "transfer walk 同源排除 .venv: {out}"
+    );
+    assert!(!out.contains("pkg.py"), ".venv 内容不进 prompt");
+
+    // symlink → 外部树（Windows 无特权可能建不出来；建不出即跳过该臂）。
+    #[cfg(unix)]
+    let link_ok = std::os::unix::fs::symlink(&outside, root.join("external")).is_ok();
+    #[cfg(windows)]
+    let link_ok = std::os::windows::fs::symlink_dir(&outside, root.join("external")).is_ok();
+    if link_ok {
+        let out = super::render_project_artifacts_evidence(&root);
+        assert!(
+            !out.contains("secret.txt"),
+            "symlink 不跟随：外部树不得进评审 prompt: {out}"
+        );
+        assert!(!out.contains("external"), "symlink 条目本身也不列举: {out}");
+    }
+    let _ = std::fs::remove_dir_all(&root);
+    let _ = std::fs::remove_dir_all(&outside);
+}
+
 #[test]
 fn artifacts_evidence_empty_dir_and_unreadable_dir_are_honest() {
     // 空目录 → 诚实注记「无任何交付产物」。
@@ -2814,4 +2856,174 @@ fn artifacts_evidence_skips_large_and_binary_files_from_content_but_lists_them()
     assert!(out.contains("model.bin"), "二进制也在清单");
     assert!(out.contains("未附内容节选"), "诚实披露哪些文件没有节选");
     let _ = std::fs::remove_dir_all(&root);
+}
+
+// ---- S-O2 迟到评审守卫（2026-09-16 showcase 复跑 NB-2 实证）----
+
+#[test]
+fn stale_review_guard_passes_in_review_and_discards_after_manual_move() {
+    let (deps, _ws) = review_deps("s-o2-guard");
+    let issue = issue_in_review(&deps.store, "守卫单测", "", "交付内容");
+    let node = deps.cluster.node_id();
+
+    // 单据仍在 in_review → 结论有效。
+    assert!(
+        super::review_still_relevant(
+            &deps.store,
+            issue.id,
+            node,
+            ReviewVerdict::Pass.as_str(),
+            "子单验收"
+        ),
+        "in_review 单据的评审结论应放行"
+    );
+
+    // 人工干预在先（cancel→reopen，NB-2 实证路径）→ 结论丢弃 + 审计留痕。
+    let reviewer = nemesis_board::Actor::agent("human-admin");
+    deps.store
+        .transition_issue(issue.id, IssueStatus::Cancelled, &reviewer)
+        .unwrap();
+    deps.store
+        .transition_issue(issue.id, IssueStatus::Backlog, &reviewer)
+        .unwrap();
+    assert!(
+        !super::review_still_relevant(
+            &deps.store,
+            issue.id,
+            node,
+            ReviewVerdict::Pass.as_str(),
+            "子单验收"
+        ),
+        "非 in_review 单据的迟到结论必须丢弃"
+    );
+    // 状态未被守卫副作用改动。
+    assert_eq!(
+        deps.store.get_issue(issue.id).unwrap().status,
+        IssueStatus::Backlog
+    );
+    // 审计留痕：stale_review_discarded 决策已入账。
+    let acts = deps.store.list_activity(issue.id).unwrap();
+    let discarded = acts
+        .iter()
+        .find(|a| {
+            a.action == "auto_decide"
+                && a.details
+                    .as_deref()
+                    .unwrap_or("")
+                    .contains("stale_review_discarded")
+        })
+        .expect("必须有 stale_review_discarded 审计条目");
+    let details: serde_json::Value =
+        serde_json::from_str(discarded.details.as_deref().unwrap_or("{}")).unwrap();
+    assert_eq!(details["current_status"], "backlog");
+    assert_eq!(details["verdict"], "PASS");
+}
+
+/// 复刻 NB-2 实证全链（2026-09-16 showcase 复跑）：mock provider 在评审
+/// LLM「在飞」期间执行人工 cancel→reopen（真实时序——起点校验时单据还在
+/// in_review，结论返回时已被人工改走），并返回合法 PASS 结论 → 迟到 PASS
+/// 必须整体让位：不落「验收通过」评论、不置 done、不重派（backlog→done
+/// 是合法边，transition_issue 不挡——这正是必须显式复查的原因）。
+#[tokio::test]
+async fn stale_review_anchor_fail_yields_to_manual_intervention() {
+    use nemesis_agent::r#loop::{AgentLoop, LlmMessage, LlmProvider, LlmResponse};
+    use nemesis_agent::types::AgentConfig;
+
+    struct StaleRaceProvider {
+        store: Arc<nemesis_board::BoardStore>,
+        issue_id: i64,
+    }
+    #[async_trait::async_trait]
+    impl LlmProvider for StaleRaceProvider {
+        async fn chat(
+            &self,
+            _model: &str,
+            _messages: Vec<LlmMessage>,
+            _options: Option<nemesis_agent::types::ChatOptions>,
+            _tools: Vec<nemesis_agent::types::ToolDefinition>,
+        ) -> Result<LlmResponse, String> {
+            // 模拟「评审在飞窗口内」的人工干预（幂等：只在仍 in_review 时改）。
+            let human = nemesis_board::Actor::agent("human-admin");
+            if self.store.get_issue(self.issue_id).unwrap().status == IssueStatus::InReview {
+                self.store
+                    .transition_issue(self.issue_id, IssueStatus::Cancelled, &human)
+                    .unwrap();
+                self.store
+                    .transition_issue(self.issue_id, IssueStatus::Backlog, &human)
+                    .unwrap();
+            }
+            // 返回合法 PASS 结论——结论本身完全成立（旧交付线程），
+            // 但单据已归人工，迟到结论必须让位。
+            Ok(LlmResponse {
+                content: r#"{"verdict":"PASS","reasons":["自检对照成立"],"gap":""}"#.to_string(),
+                tool_calls: Vec::new(),
+                finished: true,
+                reasoning_content: None,
+                usage: None,
+                raw_request_body: None,
+                raw_response_body: None,
+            })
+        }
+    }
+
+    let (mut deps, _ws) = review_deps("s-o2-fullchain");
+    let issue = issue_in_review(&deps.store, "迟到评审让位", "", "## 结论\n交付完成");
+    deps.store
+        .insert_dispatch(
+            "task-so2-1",
+            issue.id,
+            "node-b",
+            &nemesis_board::Actor::agent("node-a"),
+        )
+        .unwrap();
+    deps.store
+        .finish_dispatch("task-so2-1", nemesis_board::models::dispatch_state::DONE)
+        .unwrap();
+
+    let provider = StaleRaceProvider {
+        store: deps.store.clone(),
+        issue_id: issue.id,
+    };
+    deps.moderator_loop = Arc::new(std::sync::OnceLock::new());
+    let _ = deps.moderator_loop.set(Arc::new(AgentLoop::new(
+        Box::new(provider),
+        AgentConfig::default(),
+    )));
+
+    let reviewed = review_issue(&deps, issue.id, ReviewCtx::first_stage())
+        .await
+        .expect("守卫让位是正常闭环，不报错");
+    assert!(!reviewed, "迟到结论让位应返回未处置");
+
+    // 状态停在 backlog：迟到 PASS 不置 done（NB-2 实证的核心断言）。
+    assert_eq!(
+        deps.store.get_issue(issue.id).unwrap().status,
+        IssueStatus::Backlog,
+        "人工 reopen 后迟到评审不得动状态"
+    );
+    // 派发数不变：无重派发车。
+    assert_eq!(
+        deps.store.list_dispatches(issue.id).unwrap().len(),
+        1,
+        "迟到结论不得触发重派"
+    );
+    // 无任何处置评论（✅ 验收通过 / ❌ 重派）落库。
+    let comments = deps.store.list_comments(issue.id).unwrap();
+    assert!(
+        !comments
+            .iter()
+            .any(|c| c.content.contains("agent 验收通过") || c.content.contains("次重派")),
+        "迟到结论不得落处置评论: {:?}",
+        comments.iter().map(|c| &c.content).collect::<Vec<_>>()
+    );
+    // 审计留痕可见（决策流可解释为什么这单没人管）。
+    let acts = deps.store.list_activity(issue.id).unwrap();
+    assert!(
+        acts.iter().any(|a| a
+            .details
+            .as_deref()
+            .unwrap_or("")
+            .contains("stale_review_discarded")),
+        "必须有 stale_review_discarded 审计留痕"
+    );
 }

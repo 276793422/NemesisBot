@@ -67,11 +67,12 @@ pub fn session_key_from_stem(stem: &str) -> String {
 }
 
 /// session_key → chat_log/meta 文件 stem（[`session_key_from_stem`] 的
-/// 正向逆变换）：统一 `:`→`_`。web 形态 `agent:main:session:{sid}` 自然
-/// 还原成带 `agent_main_session_` 前缀的 stem；IM 会话 naive 还原（与
-/// chat_log 落盘约定一致）。
+/// 正向逆变换）：白名单消毒（SAN-05 单一真相源）。web 形态
+/// `agent:main:session:{sid}` 自然还原成带 `agent_main_session_` 前缀的
+/// stem；IM 会话 naive 还原（与 chat_log 落盘约定一致）；B 端含 `/` 复合
+/// 键映射为平面 stem（SAN-01——旧 `replace(':')` 会嵌套出目录）。
 pub fn stem_from_session_key(session_key: &str) -> String {
-    session_key.replace(':', "_")
+    nemesis_utils::sanitize::sanitize_path_segment(session_key)
 }
 
 // ---------------------------------------------------------------------------

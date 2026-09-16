@@ -9,8 +9,9 @@ import { fmtTime } from './boardMeta'
 // 决策流审计面板（全自动流转 P5/E2）：agent 自动决策的时间倒序流水。
 // 每行 = 一条 `auto_decide` 活动（决策词 + verdict + details JSON 展开），
 // 对已自动收货（done）的决策可一键回滚（单据退回 in_review，防重由后端
-// 仲裁）。后端唯一真相源：crates/nemesis-web/src/handlers/board.rs
-// （board.audit.list / board.audit.rollback）+ nemesis-board store。
+// 仲裁）；S-O1：合并停车（merge_parked）行可一键重试合并。后端唯一真相
+// 源：crates/nemesis-web/src/handlers/board.rs（board.audit.*）+ nemesis-board
+// store + nemesisbot::board_archive_ingest。
 
 const { request } = useWSAPI()
 const toast = useToast()
@@ -44,6 +45,15 @@ const DECISION_LABEL: Record<string, string> = {
   conflict_auto_resolve: '合并冲突 · AI 硬解落定',
   conflict_redispatch: '冲突硬解失败 · 重派原 worker',
   conflict_switch_worker: '冲突原 worker 无应答 · 换节点重派',
+  stale_review_discarded: '迟到评审结论 · 丢弃让位',
+}
+
+// 非 auto_decide 活动词 → 人话标签（S-O1：合并停车行要能被认出来）。
+const ACTION_LABEL: Record<string, string> = {
+  merge_parked: '合并停车（变更集未入库）',
+  archive_overlimit: '执行档案超护栏',
+  archive_orphaned: '执行档案无处安置',
+  archive_superseded: '变更集丢弃（基线失配）',
 }
 
 interface ParsedDetails {
@@ -83,7 +93,7 @@ function parseDetails(raw: string | null): ParsedDetails | null {
 function decisionLabel(row: AuditRow): string {
   const d = parseDetails(row.details)
   const key = d?.decision ?? ''
-  return DECISION_LABEL[key] ?? key ?? row.action
+  return DECISION_LABEL[key] ?? ACTION_LABEL[row.action] ?? key ?? row.action
 }
 
 // 回滚只对「验收 PASS · 自动收货」决策有意义（后端 store.rollback_decision
@@ -91,6 +101,37 @@ function decisionLabel(row: AuditRow): string {
 // 隐藏按钮而非点了吃报错（UX 瑕疵修复，goal H 批顺带）。
 function canRollback(row: AuditRow): boolean {
   return parseDetails(row.details)?.decision === 'auto_accept'
+}
+
+// S-O1：合并停车行可重试合并（按 issue 扫档案树未合并 placement 重走合并；
+// estop 中由后端拒绝）。
+function canRetryMerge(row: AuditRow): boolean {
+  return row.action === 'merge_parked'
+}
+
+const retryBusy = ref(false)
+
+async function doRetryMerge(row: AuditRow) {
+  retryBusy.value = true
+  try {
+    const r = await request('board', 'audit.retry_merge', { id: row.issue_id })
+    const rows: Array<{ task_id?: string; attempt?: string; skipped?: string }> = r?.retried || []
+    if (rows.length === 0) {
+      toast.info(`${row.issue_number}: 档案树无可重试的交付`)
+    } else {
+      const summary = rows
+        .map((x) => x.task_id ? `${x.task_id} → ${x.skipped ?? x.attempt ?? '?'}` : String(x.skipped ?? '跳过'))
+        .join('；')
+      const allMerged = rows.every((x) => (x.attempt ?? '').includes('Merged') || x.skipped)
+      if (allMerged) toast.success(`${row.issue_number} 重试完成：${summary}`)
+      else toast.warn(`${row.issue_number} 重试结果：${summary}`)
+    }
+    await load()
+  } catch (e: any) {
+    toast.error('重试合并失败: ' + e)
+  } finally {
+    retryBusy.value = false
+  }
 }
 
 async function load(silent = false) {
@@ -149,6 +190,7 @@ useBoardChanged(() => load(true))
         <option value="">全部决策</option>
         <option value="auto_decide">自动处置决策</option>
         <option value="auto_confirm_dispatch">拆解自动发车</option>
+        <option value="merge_parked">合并停车</option>
       </select>
       <label class="rollback-toggle">
         <input type="checkbox" v-model="onlyRollback" />
@@ -180,6 +222,7 @@ useBoardChanged(() => load(true))
           <span class="muted actor" :title="row.actor.id">{{ displayActor(row.actor.kind || 'agent', row.actor.id) }}</span>
           <span class="muted time">{{ fmtTime(row.created_at) }}</span>
               <button v-if="canRollback(row)" class="btn btn-sm btn-danger rollback-btn" @click="askRollback(row)">回滚</button>
+              <button v-if="canRetryMerge(row)" class="btn btn-sm btn-primary rollback-btn" :disabled="retryBusy" @click="doRetryMerge(row)">重试合并</button>
         </div>
         <button
           v-if="parseDetails(row.details)"

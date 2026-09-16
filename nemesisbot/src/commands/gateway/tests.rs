@@ -535,6 +535,111 @@ fn test_security_templates_exec_recursive_rm_covered() {
     }
 }
 
+/// 第二批（2026-09-16）模板契约：D1/D2 策略键 + 分节规则结构 + other
+/// 平台 file delete catch-all。
+#[test]
+fn test_security_templates_batch2_policy_keys_and_section_layout() {
+    let cases: &[(&str, &str)] = &[
+        (
+            "windows",
+            include_str!(concat!(
+                env!("CARGO_MANIFEST_DIR"),
+                "/config/config.security.windows.json"
+            )),
+        ),
+        (
+            "linux",
+            include_str!(concat!(
+                env!("CARGO_MANIFEST_DIR"),
+                "/config/config.security.linux.json"
+            )),
+        ),
+        (
+            "darwin",
+            include_str!(concat!(
+                env!("CARGO_MANIFEST_DIR"),
+                "/config/config.security.darwin.json"
+            )),
+        ),
+        (
+            "other",
+            include_str!(concat!(
+                env!("CARGO_MANIFEST_DIR"),
+                "/config/config.security.other.json"
+            )),
+        ),
+    ];
+    const SECTIONS: &[&str] = &[
+        "file_rules",
+        "dir_rules",
+        "process_rules",
+        "network_rules",
+        "hardware_rules",
+        "registry_rules",
+    ];
+    for (plat, raw) in cases {
+        let cfg: serde_json::Value = serde_json::from_str(raw).unwrap();
+
+        // D1/D2 策略键存在且值合法（四平台模板必须有明确出厂姿态）。
+        let d1 = cfg["exec_unknown_policy"]
+            .as_str()
+            .unwrap_or_else(|| panic!("{plat}: exec_unknown_policy key must exist (D1 出厂开关)"));
+        assert!(
+            ["allow", "ask", "deny"].contains(&d1),
+            "{plat}: exec_unknown_policy={d1} must be allow|ask|deny"
+        );
+        let d2 = cfg["guardian_failure_policy"].as_str().unwrap_or_else(|| {
+            panic!("{plat}: guardian_failure_policy key must exist (D2 出厂开关)")
+        });
+        assert!(
+            ["allow", "ask", "deny"].contains(&d2),
+            "{plat}: guardian_failure_policy={d2} must be allow|ask|deny"
+        );
+
+        // 死键 `rules` 不得回潮；分节规则条目只有 pattern/action/comment
+        // （operation 平铺字段是 CFG-02 已清除的旧形态）。
+        assert!(
+            cfg.get("rules").is_none(),
+            "{plat}: legacy flat `rules` key must stay deleted"
+        );
+        for section in SECTIONS {
+            let Some(obj) = cfg[section].as_object() else {
+                continue;
+            };
+            for (op, entries) in obj {
+                let arr = entries
+                    .as_array()
+                    .unwrap_or_else(|| panic!("{plat}: {section}.{op} must be an array"));
+                for r in arr {
+                    assert!(
+                        r.get("operation").is_none(),
+                        "{plat}: {section}.{op} rule must not carry legacy `operation` field"
+                    );
+                    assert!(
+                        r["pattern"].is_string() && r["action"].is_string(),
+                        "{plat}: {section}.{op} rule needs string pattern+action"
+                    );
+                }
+            }
+        }
+    }
+
+    // other 平台（未知/嵌入式系统）file delete 必须有 `*` ask 兜底
+    // （CFG-03：全放行模板的最后防线）。
+    let other: serde_json::Value = serde_json::from_str(include_str!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/config/config.security.other.json"
+    )))
+    .unwrap();
+    let delete = other["file_rules"]["delete"].as_array().unwrap();
+    assert!(
+        delete
+            .iter()
+            .any(|r| r["pattern"] == "*" && r["action"] == "ask"),
+        "other: file_rules.delete must end with a '*' ask catch-all"
+    );
+}
+
 /// 历史键名 `directory_rules` 必须按 `dir_rules` 别名生效（F-U4-7 兼容
 /// 臂：存量部署的旧模板不因改名而整段失效）。
 #[test]
@@ -634,6 +739,29 @@ fn test_apply_security_layer_switches_partial_override() {
     assert!(cfg.injection_enabled);
     assert!(cfg.command_guard_enabled);
     assert!(cfg.credential_enabled);
+}
+
+// CFG-06（2026-09-16 死键接线）：注入阈值 layers.injection.extra.threshold
+// 此前构造期从未读取（恒 Default 0.7），只在 reload 里读后丢弃。
+#[test]
+fn test_apply_security_layer_switches_injection_threshold_wired() {
+    let json = serde_json::json!({
+        "layers": {"injection": {"enabled": true, "extra": {"threshold": 0.9}}}
+    });
+    let mut cfg = nemesis_security::pipeline::SecurityPluginConfig::default();
+    crate::security_setup::apply_security_layer_switches(&json, &mut cfg);
+    assert_eq!(cfg.injection_threshold, 0.9);
+}
+
+#[test]
+fn test_apply_security_layer_switches_injection_threshold_out_of_range_rejected() {
+    let json = serde_json::json!({
+        "layers": {"injection": {"extra": {"threshold": 1.5}}}
+    });
+    let mut cfg = nemesis_security::pipeline::SecurityPluginConfig::default();
+    crate::security_setup::apply_security_layer_switches(&json, &mut cfg);
+    // 范围外值拒绝（warn），保持 Default 0.7
+    assert_eq!(cfg.injection_threshold, 0.7);
 }
 
 // -------------------------------------------------------------------------
@@ -4976,4 +5104,181 @@ fn test_writeback_error_without_fail_class_omits_marker() {
         fail_comment.content
     );
     let _ = std::fs::remove_dir_all(&dir);
+}
+
+// -------------------------------------------------------------------------
+// CFG-10（2026-09-16）：schema 对账三件套。死键 / 键名失配 / 模板漂移此前
+// 全靠人眼（F2/F3/F4/F7、CFG-01、CFG-03 都是无机械检测漏网的），以下测试
+// 把对账固化进 CI。③typed roundtrip 字节保持见 nemesis-config
+// tests.rs::cfg10_security_config_typed_roundtrip_byte_preserving。
+// -------------------------------------------------------------------------
+
+/// ①四平台 security 出厂模板结构同构：顶层键集 + 各分节子键集必须一致，
+/// 平台差异必须显式登记（当前唯一登记例外：`registry_rules` 仅 windows，
+/// 其余平台无注册表概念）。新差异 = 红灯强制评审，防 CFG-03 式模板漂移
+/// 静默复发。
+#[test]
+fn cfg10_four_platform_security_templates_isomorphic() {
+    let templates: &[(&str, &serde_json::Value)] = &[
+        (
+            "windows",
+            &serde_json::from_str::<serde_json::Value>(include_str!(concat!(
+                env!("CARGO_MANIFEST_DIR"),
+                "/config/config.security.windows.json"
+            )))
+            .unwrap(),
+        ),
+        (
+            "linux",
+            &serde_json::from_str::<serde_json::Value>(include_str!(concat!(
+                env!("CARGO_MANIFEST_DIR"),
+                "/config/config.security.linux.json"
+            )))
+            .unwrap(),
+        ),
+        (
+            "darwin",
+            &serde_json::from_str::<serde_json::Value>(include_str!(concat!(
+                env!("CARGO_MANIFEST_DIR"),
+                "/config/config.security.darwin.json"
+            )))
+            .unwrap(),
+        ),
+        (
+            "other",
+            &serde_json::from_str::<serde_json::Value>(include_str!(concat!(
+                env!("CARGO_MANIFEST_DIR"),
+                "/config/config.security.other.json"
+            )))
+            .unwrap(),
+        ),
+    ];
+
+    // 结构签名（不含 registry_rules——那是已登记的 windows 例外，单独断言）。
+    let signature = |cfg: &serde_json::Value| -> String {
+        let mut sig = String::new();
+        let mut top: Vec<&String> = cfg
+            .as_object()
+            .expect("template root must be an object")
+            .keys()
+            .filter(|k| k.as_str() != "registry_rules")
+            .collect();
+        top.sort_unstable();
+        sig.push_str(&format!("top={top:?};"));
+        for section in [
+            "file_rules",
+            "dir_rules",
+            "process_rules",
+            "network_rules",
+            "hardware_rules",
+            "layers",
+        ] {
+            if let Some(obj) = cfg[section].as_object() {
+                let mut keys: Vec<&String> = obj.keys().collect();
+                keys.sort_unstable();
+                sig.push_str(&format!("{section}={keys:?};"));
+            } else {
+                sig.push_str(&format!("{section}=ABSENT;"));
+            }
+        }
+        sig
+    };
+
+    let (baseline_plat, baseline_cfg) = &templates[0];
+    let baseline = signature(baseline_cfg);
+    for (plat, cfg) in &templates[1..] {
+        assert_eq!(
+            baseline,
+            signature(cfg),
+            "{plat}: 模板结构与 {baseline_plat} 基线漂移——新键/缺键必须四平台同布或在此登记例外"
+        );
+    }
+
+    // 登记例外本身：registry_rules 仅 windows 存在。
+    for (plat, cfg) in templates {
+        let has = cfg.get("registry_rules").is_some();
+        assert_eq!(
+            has,
+            plat == &"windows",
+            "{plat}: registry_rules 存在性偏离登记例外（仅 windows）"
+        );
+    }
+}
+
+/// ②模板键必须经得起「typed 读 → typed 写」round-trip：出厂模板的任何
+/// 顶层键必须被 `SecurityConfig` typed 承载、`layers.dlp` 子键必须被
+/// `DLPLayerConfig` 承载（否则 Dashboard 安全设置页一次保存就把该键
+/// 抹掉——CFG-01 / audit_chain_enabled 同族删键 bug 的机械防线）。
+/// 形态说明（复核 2026-09-16，A-F4 联动）：round-trip 就是 Dashboard 保存
+/// 的真实路径，比「⊆ Default 序列化键集」更贴切——skip-if-empty 字段
+/// （exec_unknown_policy / guardian_failure_policy，A-F4 语义：空串=未
+/// 设置不物化）在 Default 序列化里缺席是刻意设计；模板值非空则必须
+/// 原样存活，空串值允许消失（= 未设置）。
+#[test]
+fn cfg10_template_keys_subset_of_typed_security_config() {
+    use nemesis_config::{DLPLayerConfig, SecurityConfig};
+    use serde::Deserialize;
+
+    let must_survive =
+        |v: &serde_json::Value| !(v.is_string() && v.as_str().map(str::is_empty).unwrap_or(false));
+
+    let contents: &[(&str, &str)] = &[
+        (
+            "windows",
+            include_str!(concat!(
+                env!("CARGO_MANIFEST_DIR"),
+                "/config/config.security.windows.json"
+            )),
+        ),
+        (
+            "linux",
+            include_str!(concat!(
+                env!("CARGO_MANIFEST_DIR"),
+                "/config/config.security.linux.json"
+            )),
+        ),
+        (
+            "darwin",
+            include_str!(concat!(
+                env!("CARGO_MANIFEST_DIR"),
+                "/config/config.security.darwin.json"
+            )),
+        ),
+        (
+            "other",
+            include_str!(concat!(
+                env!("CARGO_MANIFEST_DIR"),
+                "/config/config.security.other.json"
+            )),
+        ),
+    ];
+    for (plat, content) in contents {
+        let cfg: serde_json::Value = serde_json::from_str(content).unwrap();
+        let roundtrip = match SecurityConfig::deserialize(cfg.clone()) {
+            Ok(v) => serde_json::to_value(v).expect("SecurityConfig must serialize"),
+            Err(e) => {
+                panic!("{plat}: 模板无法被 typed SecurityConfig 承载（未知键/类型漂移）: {e}")
+            }
+        };
+        for (key, val) in cfg.as_object().unwrap() {
+            assert!(
+                !(must_survive(val) && roundtrip.get(key).is_none()),
+                "{plat}: 模板顶层键 `{key}` 经 typed round-trip 丢失——Dashboard 保存会把它抹掉；进 typed 或删模板（空串键按 A-F4 语义允许不物化）"
+            );
+        }
+        if let Some(dlp) = cfg["layers"]["dlp"].as_object() {
+            let dlp_rt = match DLPLayerConfig::deserialize(dlp.clone()) {
+                Ok(v) => serde_json::to_value(v).expect("DLPLayerConfig must serialize"),
+                Err(e) => {
+                    panic!("{plat}: layers.dlp 无法被 typed DLPLayerConfig 承载: {e}")
+                }
+            };
+            for key in dlp.keys() {
+                assert!(
+                    dlp_rt.get(key).is_some(),
+                    "{plat}: layers.dlp 子键 `{key}` 经 typed round-trip 丢失——Dashboard 保存会把它抹掉"
+                );
+            }
+        }
+    }
 }

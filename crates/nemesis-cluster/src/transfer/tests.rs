@@ -599,10 +599,45 @@ fn collect_dir_files_excludes_vcs_internal_dirs() {
 }
 
 #[test]
+fn collect_dir_files_excludes_build_noise() {
+    // S-O3：无争议构建垃圾（字节码/缓存/依赖目录/系统垃圾文件）不进收集
+    // 产物——2026-09-16 showcase NB-5 变更集只剩 __pycache__/*.pyc 实证。
+    // 通用名（target/dist/build）不排——防静默丢真实交付。
+    let root = temp_root("collect_noise");
+    let src = root.join("src");
+    make_source(
+        &src,
+        &[
+            ("app.py", b"x"),
+            ("__pycache__/app.cpython-313.pyc", b"bytecode"),
+            ("pkg/__pycache__/util.cpython-313.pyc", b"bc2"),
+            ("run.pyc", b"loose pyc"),
+            ("node_modules/left-pad/index.js", b"dep"),
+            (".pytest_cache/v/cache/lastfailed", b"cache"),
+            (".venv/lib/py.py", b"venv"),
+            ("nested/.DS_Store", b"macos"),
+            ("nested/Thumbs.db", b"win"),
+            ("nested/keep.py", b"keep"),
+            ("target/output.bin", b"kept: generic name"),
+        ],
+    );
+    let files = collect_dir_files(&src).unwrap();
+    let paths: Vec<&str> = files.iter().map(|f| f.path.as_str()).collect();
+    assert_eq!(
+        paths,
+        vec!["app.py", "nested/keep.py", "target/output.bin"],
+        "构建垃圾整棵排除；通用名目录保留"
+    );
+}
+
+#[test]
 fn sanitize_transfer_id_and_chunk_size_resolution() {
     assert_eq!(sanitize_transfer_id("abc-123_X.y"), "abc-123_X.y");
     assert_eq!(sanitize_transfer_id("a/b\\c:d"), "a_b_c_d");
     assert_eq!(sanitize_transfer_id(""), "transfer");
+    // SAN-03：`..` 曾原样放行（staging 逃一级目录）——点守卫折叠。
+    assert_eq!(sanitize_transfer_id(".."), "__");
+    assert_eq!(sanitize_transfer_id("../../etc"), "______etc");
     // 块大小解析（纯函数）：合法值透传，越界/缺失回落默认。
     assert_eq!(resolve_chunk_bytes(Some(8192)), 8192);
     assert_eq!(resolve_chunk_bytes(Some(4096)), 4096);

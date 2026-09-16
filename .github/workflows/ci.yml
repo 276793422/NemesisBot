@@ -91,6 +91,11 @@ jobs:
       - name: Inline-tests discipline gate
         run: bash scripts/check-inline-tests.sh
 
+      # 路径消毒纪律闸（SAN-05：路径成分派生禁裸 replace(':')，走
+      # nemesis_utils::sanitize::sanitize_path_segment 单一真相源）
+      - name: Sanitize-discipline gate
+        run: bash scripts/check-sanitize-discipline.sh
+
       # H2 已清零（2026-08-31），此步为阻塞门禁；见文件头 clippy 门禁说明
       - name: cargo clippy -D warnings（阻塞门禁）
         run: cargo clippy --workspace --all-targets -- -D warnings

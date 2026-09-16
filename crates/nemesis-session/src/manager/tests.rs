@@ -310,39 +310,42 @@ fn test_truncate_history_nonexistent_session_silent_return() {
     mgr.truncate_history("nonexistent:key", 5);
 }
 
+// SAN-05 单一真相源契约（2026-09-16）：退化/含分隔符键不再报错，而是消毒成
+// 合法段落盘（save_chat_session 的 post-sanitize 守卫降级为不变量 tripwire）。
 #[test]
-fn test_save_chat_session_invalid_key_dot() {
+fn test_save_chat_session_invalid_key_dot_normalizes() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("sessions").to_string_lossy().to_string();
     let mgr = SessionMgr::with_storage(Duration::from_secs(3600), &path);
 
-    // Add a message to create a session, then manually try to save with bad key
     mgr.add_message(".", "user", "test");
-    // The session is in memory; save_chat_session should return Err for "." key
     let result = mgr.save_chat_session(".");
-    assert!(result.is_err());
+    assert!(result.is_ok(), "degenerate key normalizes: {result:?}");
+    assert!(dir.path().join("sessions").join("_.json").exists());
 }
 
 #[test]
-fn test_save_chat_session_invalid_key_slash() {
+fn test_save_chat_session_invalid_key_slash_normalizes() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("sessions").to_string_lossy().to_string();
     let mgr = SessionMgr::with_storage(Duration::from_secs(3600), &path);
 
     mgr.add_message("bad/key", "user", "test");
     let result = mgr.save_chat_session("bad/key");
-    assert!(result.is_err());
+    assert!(result.is_ok(), "separator collapses: {result:?}");
+    assert!(dir.path().join("sessions").join("bad_key.json").exists());
 }
 
 #[test]
-fn test_save_chat_session_invalid_key_backslash() {
+fn test_save_chat_session_invalid_key_backslash_normalizes() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("sessions").to_string_lossy().to_string();
     let mgr = SessionMgr::with_storage(Duration::from_secs(3600), &path);
 
     mgr.add_message("bad\\key", "user", "test");
     let result = mgr.save_chat_session("bad\\key");
-    assert!(result.is_err());
+    assert!(result.is_ok(), "separator collapses: {result:?}");
+    assert!(dir.path().join("sessions").join("bad_key.json").exists());
 }
 
 #[test]

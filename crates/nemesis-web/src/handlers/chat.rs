@@ -167,7 +167,9 @@ pub(crate) fn read_session_todos(
     session_id: &str,
 ) -> Vec<nemesis_types::agent::TodoItem> {
     let s = nemesis_agent::session::SessionStore::sanitize_session_id(session_id);
-    let safe_key = format!("agent:main:session:{s}").replace(':', "_");
+    // SAN-05：白名单消毒单一真相源（对 `agent:main:session:*` 键族映射不变）。
+    let safe_key =
+        nemesis_utils::sanitize::sanitize_path_segment(&format!("agent:main:session:{s}"));
     let dir = nemesis_path::resolve_sessions_dir_in_workspace(std::path::Path::new(workspace));
     let path = dir.join(format!("todo_{safe_key}.json"));
     match std::fs::read_to_string(&path) {

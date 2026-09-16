@@ -101,8 +101,51 @@ pub(crate) async fn build_security_plugin(
             "{}/workspace/logs/security_logs/audit_chain.jsonl",
             home.display()
         );
+        // 审计链目录显式自建（复核 2026-09-16）：security_logs 目录此前的
+        // 唯一创建点是 init_audit_log_file——`audit_log_file_enabled=false`
+        // + `audit_chain_enabled=true` 组合下链 append 会因目录缺失静默丢
+        // 事件（integrity.rs 写入是 `let _ =`）。两者开关独立，目录供给也
+        // 必须独立。
+        if let Some(parent) = std::path::Path::new(&chain_path).parent()
+            && let Err(e) = std::fs::create_dir_all(parent)
+        {
+            warn!(
+                "[Security] Failed to create audit chain directory {}: {}",
+                parent.display(),
+                e
+            );
+        }
         security_config.audit_chain_path = Some(chain_path.clone());
         info!("[Security] Audit chain enabled at {}", chain_path);
+    }
+    // CFG-05（2026-09-16 死键接线）：审批卡超时 + 放行事件日志开关。
+    // 两键此前在模板/typed 声明但从未被 runtime 读取（恒 Default），
+    // 属假姿态。缺键 = Default（300s / true），旧行为不变。
+    if let Some(t) = sec_json
+        .as_ref()
+        .and_then(|v| v.get("approval_timeout_seconds"))
+        .and_then(|x| x.as_u64())
+    {
+        // 0 值守卫（复核 2026-09-16）：接线前该键是死键写 0 无害；接线后
+        // 0 直通审批等待 = 所有审批卡秒超时自动拒绝（功能坏死）。拒绝
+        // 0 值并保持默认 300——「永不超时」语义将来要支持时须全链路
+        // （IM/审批卡/桌面弹窗）统一，届时显式实现。
+        if t == 0 {
+            warn!(
+                "[Security] approval_timeout_seconds=0 is invalid (would auto-deny every approval instantly); keeping default 300s"
+            );
+        } else {
+            security_config.approval_timeout_secs = t;
+            info!("[Security] approval_timeout_secs: {}", t);
+        }
+    }
+    if let Some(b) = sec_json
+        .as_ref()
+        .and_then(|v| v.get("log_all_operations"))
+        .and_then(|x| x.as_bool())
+    {
+        security_config.log_all_operations = b;
+        info!("[Security] log_all_operations: {}", b);
     }
     let plugin = Arc::new(nemesis_security::pipeline::SecurityPlugin::new(
         security_config,
@@ -112,17 +155,40 @@ pub(crate) async fn build_security_plugin(
     let sec_config_path = common::security_config_path(home);
     load_security_rules(&plugin, &sec_config_path);
 
-    // Initialize audit log file.
-    // The JSON config field is "audit_log_file_enabled"; default is true.
+    // D1 硬拦保护路径（自杀形态，2026-09-16 用户裁决：不进 exec_unknown_policy
+    // 开关）：workspace root + home + `~`。判定在 auditor（命令归一化后扫）。
+    let workspace_root = common::workspace_path(home);
+    plugin.auditor().set_protected_paths(vec![
+        home.to_string_lossy().to_string(),
+        workspace_root.to_string_lossy().to_string(),
+        "~".to_string(),
+    ]);
+
+    // Initialize audit log file (CFG-06：`audit_log_file_enabled` 此前被
+    // 无视——注释声称生效但代码无条件初始化。现诚实接线：false = 跳过
+    // JSONL 初始化；缺键 = true（默认开，旧行为）。审计链（Merkle）不受
+    // 此键影响——两者是独立通道（链目录由上方审计链分支自建，不依赖
+    // 本块执行）。
     // Log directory is always `{home}/workspace/logs/security_logs/`.
     // 委托 nemesis-path 唯一拼接点（web Logs 页 security 源同源读取）。
     let audit_dir = nemesis_path::resolve_audit_log_dir_in_workspace(&common::workspace_path(home))
         .to_string_lossy()
         .to_string();
-    if let Err(e) = plugin.init_audit_log_file(&audit_dir) {
-        warn!("[Security] Failed to initialize security audit log: {}", e);
+    let audit_file_enabled = sec_json
+        .as_ref()
+        .and_then(|v| v.get("audit_log_file_enabled"))
+        .and_then(|f| f.as_bool())
+        .unwrap_or(true);
+    if audit_file_enabled {
+        if let Err(e) = plugin.init_audit_log_file(&audit_dir) {
+            warn!("[Security] Failed to initialize security audit log: {}", e);
+        } else {
+            info!("[Security] Security audit log initialized: {}", audit_dir);
+        }
     } else {
-        info!("[Security] Security audit log initialized: {}", audit_dir);
+        info!(
+            "[Security] Security audit log file disabled by config (audit_log_file_enabled=false)"
+        );
     }
 
     info!("[Security] plugin enabled (injection handled by factory)");
@@ -187,6 +253,26 @@ pub(crate) fn apply_security_layer_switches(
     flag("command_guard", &mut config.command_guard_enabled);
     flag("credential", &mut config.credential_enabled);
     flag("ssrf", &mut config.ssrf_enabled);
+
+    // CFG-06（2026-09-16 死键接线）：注入检测阈值。原键
+    // `layers.injection.extra.threshold` 此前只在 reload 里读后丢弃
+    // （`_` 前缀），构造期从未读取——恒 Default 0.7，属假姿态。
+    // 范围外值拒绝（warn）保持 Default。
+    if let Some(t) = layers
+        .get("injection")
+        .and_then(|d| d.get("extra"))
+        .and_then(|x| x.get("threshold"))
+        .and_then(|v| v.as_f64())
+    {
+        if (0.0..=1.0).contains(&t) {
+            config.injection_threshold = t;
+        } else {
+            tracing::warn!(
+                value = t,
+                "[Security] layers.injection.extra.threshold must be within [0,1]; keeping default"
+            );
+        }
+    }
 }
 
 /// Load security rules from `config.security.json` and apply to the SecurityPlugin.
@@ -232,6 +318,24 @@ pub(crate) fn load_security_rules(
     if let Some(action) = config.get("default_action").and_then(|v| v.as_str()) {
         plugin.auditor().set_default_action(action);
         info!("[Security] default_action: {}", action);
+    }
+
+    // D1（2026-09-16 用户裁决）：exec/spawn 未知命令姿态开关。键存在才
+    // 注入——老配置缺键保持 auditor 空串（= default_action 旧行为），
+    // 不悄悄变语义。
+    if let Some(policy) = config.get("exec_unknown_policy").and_then(|v| v.as_str()) {
+        plugin.auditor().set_exec_unknown_policy(policy);
+        info!("[Security] exec_unknown_policy: {}", policy);
+    }
+
+    // D2（2026-09-16 用户裁决）：guardian（LLM judge）故障姿态开关。
+    // 键存在才注入；空串语义 = 旧行为（Err 落空放行）。
+    if let Some(policy) = config
+        .get("guardian_failure_policy")
+        .and_then(|v| v.as_str())
+    {
+        plugin.set_guardian_failure_policy(policy);
+        info!("[Security] guardian_failure_policy: {}", policy);
     }
 
     // Helper: parse rules from JSON array of {pattern, action}

@@ -61,6 +61,20 @@ pub static DEFAULT_DENY_PATTERNS: std::sync::LazyLock<HashMap<OperationType, Vec
         m
     });
 
+/// 解释器内层载荷的危险结构词表（CMD-06②，2026-09-16 横扫存量加固）。
+///
+/// 解释器包装（`python -c`/`node -e`…）的内层是代码片段，模板的命令行
+/// glob 规则表达不了 `shutil.rmtree` 这类 API 形态；命中即送审批
+/// （RequireApproval）——这是 F-U4-7（worker `python -c` 删自身 home 的
+/// 真实事故）命令类的最后一道语义闸。只收高精度结构，防误伤正常脚本。
+const INTERPRETER_DANGEROUS_STRUCTURES: &[&str] = &[
+    "shutil.rmtree", // Python 递归删树
+    "rmsync",        // node fs.rmSync / rmdirSync（小写归一后）
+    "rmdirsync",
+    "removedirectory", // .NET Directory.Delete/RemoveDirectory 族
+    "deltree",         // 经典递归删除
+];
+
 // ---------------------------------------------------------------------------
 // ApprovalRequiredError
 // ---------------------------------------------------------------------------
@@ -190,11 +204,19 @@ pub trait ApprovalManager: Send + Sync {
 #[derive(Debug, Clone)]
 pub struct AuditorConfig {
     pub enabled: bool,
-    pub log_all_operations: bool,
-    pub log_denials_only: bool,
+    // ── 死键恢复区（2026-09-16 用户指令：代码不得随便删，注释保留待讨论）
+    // ─────────────────────────────────────────────────────────────
+    // CFG-05 曾裁「确认无用直接删」（D3），现注释恢复原字段。**未接线**
+    // 说明：log_denials_only（与 log_all_operations=false 同义，接线版
+    // log_all_operations 现居 pipeline.rs SecurityPluginConfig）、
+    // max_pending_requests（无满额语义实现）、audit_log_retention_days
+    // （无保留清扫器，盲清扫会误伤审计链文件）。删除与否待用户裁决。
+    // pub log_all_operations: bool,   // 已接线迁移至 pipeline.rs（非删除，是 relocation）
+    // pub log_denials_only: bool,
+    // pub max_pending_requests: usize,
+    // pub audit_log_retention_days: u32,
+    // ── 死键恢复区结束 ──────────────────────────────────────────
     pub approval_timeout_secs: u64,
-    pub max_pending_requests: usize,
-    pub audit_log_retention_days: u32,
     pub audit_log_file_enabled: bool,
     pub audit_log_dir: Option<String>,
     pub default_action: String,
@@ -204,11 +226,8 @@ impl Default for AuditorConfig {
     fn default() -> Self {
         Self {
             enabled: true,
-            log_all_operations: true,
-            log_denials_only: false,
+            // 死键恢复区默认值（未接线，见 struct 注释）：false / 100 / 90
             approval_timeout_secs: 300,
-            max_pending_requests: 100,
-            audit_log_retention_days: 90,
             audit_log_file_enabled: false,
             audit_log_dir: None,
             default_action: "deny".to_string(),
@@ -272,6 +291,15 @@ pub struct SecurityAuditor {
     /// Optional explicit log file path for audit events (date-based).
     /// When set, audit events are appended to this file in JSON format.
     log_file_path: RwLock<Option<PathBuf>>,
+    /// D1（2026-09-16 用户裁决）：exec/spawn 未知命令（无规则命中）姿态。
+    /// "allow"/"ask"/"deny"；空串 = 未配置（落 default_action，旧行为）。
+    /// 由 security_setup 按裸 JSON 键 `exec_unknown_policy` 注入（键存在才
+    /// 注入——老配置文件缺键不得悄悄改变其 default_action 语义）。
+    exec_unknown_policy: RwLock<String>,
+    /// 自杀形态硬拦保护路径（2026-09-16 用户裁决：rm -rf 自身 home/workspace
+    /// 保持硬拦，**不进** exec_unknown_policy 开关）。由 security_setup 注入
+    /// workspace root + home（含 `~` 形态）；空 = 未注入（跳过扫描）。
+    protected_paths: RwLock<Vec<String>>,
 }
 
 impl SecurityAuditor {
@@ -290,6 +318,107 @@ impl SecurityAuditor {
             approval_manager: RwLock::new(None),
             approval_rules: RwLock::new(None),
             log_file_path: RwLock::new(None),
+            exec_unknown_policy: RwLock::new(String::new()),
+            protected_paths: RwLock::new(Vec::new()),
+        }
+    }
+
+    /// 注入自杀形态硬拦保护路径（workspace root / home / `~`）。存小写 +
+    /// 反斜杠转正斜杠形态，与命令归一化对齐。
+    pub fn set_protected_paths(&self, paths: Vec<String>) {
+        let normalized = paths
+            .into_iter()
+            .filter(|p| !p.trim().is_empty())
+            .map(|p| p.replace('\\', "/").to_lowercase())
+            .collect();
+        *self.protected_paths.write() = normalized;
+    }
+
+    /// D2（2026-09-16 用户裁决）：guardian（LLM judge）自身故障时的审批
+    /// 直通车——同步阻塞等用户裁决，reason 自由文本。**fail-closed**：
+    /// 无审批管理器 / 管理器未运行 / 调用失败 = Err（调用方按拒绝处理），
+    /// 绝不回落 allow。审批 verdict 含用户备注（F6）。
+    pub fn request_guardian_failure_approval(
+        &self,
+        tool: &str,
+        reason: &str,
+        ctx: Option<&ApprovalContext>,
+    ) -> Result<ApprovalVerdict, String> {
+        let mgr_opt = self.approval_manager.read().clone();
+        let Some(mgr) = mgr_opt.as_ref() else {
+            return Err("guardian failed and no approval manager is available".to_string());
+        };
+        if !mgr.is_running() {
+            return Err("guardian failed and the approval manager is not running".to_string());
+        }
+        let request_id = format!("guardian-{}", uuid::Uuid::new_v4());
+        let verdict = match ctx {
+            Some(c) => mgr.request_approval_sync_ctx(
+                &request_id,
+                "guardian_review",
+                tool,
+                "CRITICAL",
+                reason,
+                self.config.approval_timeout_secs,
+                c,
+            ),
+            None => mgr.request_approval_sync(
+                &request_id,
+                "guardian_review",
+                tool,
+                "CRITICAL",
+                reason,
+                self.config.approval_timeout_secs,
+            ),
+        };
+        // A-F5（复核 2026-09-16）：guardian 故障审批的用户裁决必须落审计
+        // （audit_log_event 同一 JSONL/审计链通道）——CRITICAL 工具的人为
+        // 放行/拒绝是安全链上最重的决定，此前只回调用方（approved 分支仅
+        // info log，审计无痕，事后无法回答「谁放行了这次 CRITICAL 操作」）。
+        // op_type 无 CRITICAL-工具泛型变体，取族内最常见 ProcessExec 占位；
+        // 真实工具名在 target、来源在 source，可追溯不依赖 op_type。
+        let audit_verdict = |decision: &str, why: String| {
+            self.log_audit_event(&AuditEvent {
+                event_id: uuid::Uuid::new_v4().to_string(),
+                request: OperationRequest {
+                    id: request_id.clone(),
+                    op_type: OperationType::ProcessExec,
+                    danger_level: DangerLevel::Critical,
+                    source: "guardian_failure_approval".to_string(),
+                    target: tool.to_string(),
+                    ..Default::default()
+                },
+                decision: decision.to_string(),
+                reason: why,
+                timestamp: chrono::Local::now().to_rfc3339(),
+                policy_rule: "guardian_failure_policy=ask".to_string(),
+            });
+        };
+        match verdict {
+            Ok(v) => {
+                let why = if v.approved {
+                    format!("guardian judge failed ({reason}); user approved")
+                } else {
+                    let note = v.note.as_deref().map(str::trim).filter(|n| !n.is_empty());
+                    match note {
+                        Some(n) => {
+                            format!("guardian judge failed ({reason}); user rejected: {n}")
+                        }
+                        None => format!(
+                            "guardian judge failed ({reason}); user rejected or approval timeout"
+                        ),
+                    }
+                };
+                audit_verdict(if v.approved { "approved" } else { "denied" }, why);
+                Ok(v)
+            }
+            Err(e) => {
+                audit_verdict(
+                    "denied",
+                    format!("guardian judge failed ({reason}); approval unavailable: {e}"),
+                );
+                Err(e)
+            }
         }
     }
 
@@ -350,6 +479,12 @@ impl SecurityAuditor {
     /// Set the default action for unmatched requests.
     pub fn set_default_action(&self, action: &str) {
         *self.default_action.write() = action.to_string();
+    }
+
+    /// D1：设置 exec/spawn 未知命令姿态（allow/ask/deny）。空串 = 未配置
+    /// （落 default_action 旧行为）。只在配置键真实存在时调用。
+    pub fn set_exec_unknown_policy(&self, policy: &str) {
+        *self.exec_unknown_policy.write() = policy.to_lowercase();
     }
 
     /// Check if enabled.
@@ -810,19 +945,63 @@ impl SecurityAuditor {
     fn evaluate_request(&self, req: &OperationRequest) -> (SecurityDecision, String, String) {
         let rules = self.rules.read();
         let op_rules = match rules.get(&req.op_type) {
-            Some(r) if !r.is_empty() => r,
-            _ => {
-                let action = self.default_action.read();
-                return (
-                    normalize_decision(&action),
-                    "no rules configured, using default action".to_string(),
-                    "default".to_string(),
-                );
-            }
+            Some(r) if !r.is_empty() => Some(r),
+            _ => None,
         };
 
-        for (i, rule) in op_rules.iter().enumerate() {
-            let matched = match req.op_type {
+        // CMD-01/CMD-06①（2026-09-16 横扫存量加固）：评估顺序改为
+        // **deny-first 三遍扫**（deny → ask → allow）——旧的
+        // first-match-wins 下模板的 allow 规则（`python *`/`git *`…）排在
+        // deny 之前，命中 allow 即放行，deny 永远没机会看。
+        //
+        // CMD-04/05：命令类操作匹配前对 target 做归一化（剥引号/合并空白/
+        // 统一小写）——`rm "-rf"`、`rm --Recursive` 曾借 shell 剥引号与
+        // 大小写差异同时绕过 Guard 与 ABAC。pattern 也按小写比较（模板
+        // pattern 书写大小写不再敏感，`Remove-Item*` 可命中
+        // `remove-item ...`）。审计日志保留原文。
+        let is_command_op = matches!(
+            req.op_type,
+            OperationType::ProcessExec
+                | OperationType::ProcessSpawn
+                | OperationType::ProcessKill
+                | OperationType::ProcessSuspend
+        );
+        let match_target = if is_command_op {
+            matcher::normalize_exec_command(&req.target)
+        } else {
+            req.target.clone()
+        };
+
+        // 自杀形态硬拦（2026-09-16 用户裁决，先于一切规则遍——不进
+        // exec_unknown_policy 开关）：递归删除类命令瞄准保护路径
+        // （workspace root / home / `~` / 根）即拒。
+        if matches!(
+            req.op_type,
+            OperationType::ProcessExec | OperationType::ProcessSpawn
+        ) {
+            let protected = self.protected_paths.read();
+            if !protected.is_empty()
+                && let Some(reason) = detect_self_destruct(&match_target, &protected)
+            {
+                return (
+                    SecurityDecision::Denied,
+                    reason,
+                    "self_destruct".to_string(),
+                );
+            }
+        }
+        let action_bucket = |action: &str| -> &'static str {
+            match action {
+                "deny" | "denied" => "deny",
+                "ask" | "require_approval" | "approval" | "pending" => "ask",
+                "allow" | "allowed" => "allow",
+                // 未知 action 语义 = normalize_decision 的 Denied 兜底 →
+                // 归入 deny 遍。
+                _ => "deny",
+            }
+        };
+        let rule_matches = |rule: &SecurityRule| -> bool {
+            match req.op_type {
                 OperationType::FileRead
                 | OperationType::FileWrite
                 | OperationType::FileDelete
@@ -838,7 +1017,7 @@ impl SecurityAuditor {
                 | OperationType::ProcessSpawn
                 | OperationType::ProcessKill
                 | OperationType::ProcessSuspend => {
-                    matcher::match_command_pattern(&rule.pattern, &req.target)
+                    matcher::match_command_pattern(&rule.pattern.to_lowercase(), &match_target)
                 }
                 OperationType::NetworkDownload
                 | OperationType::NetworkUpload
@@ -846,15 +1025,127 @@ impl SecurityAuditor {
                     matcher::match_domain_pattern(&rule.pattern, &req.target)
                 }
                 _ => rule.pattern == "*" || matcher::match_pattern(&rule.pattern, &req.target),
-            };
+            }
+        };
 
-            if matched {
-                let reason = format!("rule matched: pattern={}", rule.pattern);
-                return (
-                    normalize_decision(&rule.action),
-                    reason,
-                    format!("rule[{}]", i),
-                );
+        // 三遍扫的 deny/ask 两遍先行；allow 遍刻意延后到解释器拆段扫描
+        // 之后——外层 `python *` allow 若先命中就直接放行，内层载荷扫描
+        // 永远到不了（`python -c "os.system('rm -rf ...')"` 被包装放行）。
+        for want in ["deny", "ask"] {
+            if let Some(op_rules) = op_rules {
+                for (i, rule) in op_rules.iter().enumerate() {
+                    if action_bucket(&rule.action) != want {
+                        continue;
+                    }
+                    if rule_matches(rule) {
+                        let reason = format!("rule matched: pattern={}", rule.pattern);
+                        return (
+                            normalize_decision(&rule.action),
+                            reason,
+                            format!("rule[{}]", i),
+                        );
+                    }
+                }
+            }
+        }
+
+        // CMD-02/06②：解释器包装拆段——外层 allow（`python *`、
+        // `powershell *`…）不得屏蔽内层载荷（`-c`/`-e` 后的代码）的视线：
+        // 载荷独立过一遍 deny/ask 规则（glob_contains 子串语义——载荷是
+        // 代码片段，整串锚定打不中 `os.system('rm -rf /data')` 里的
+        // `rm -r`）+ 危险结构词表。内层良性载荷自然落到下面的 allow 遍，
+        // 与「内层 allow」同义不损失语义。仅 ProcessExec（spawn 的 target
+        // 是可执行体不是命令行）。
+        if req.op_type == OperationType::ProcessExec {
+            for payload in matcher::extract_interpreter_payloads(&match_target) {
+                if let Some(op_rules) = op_rules {
+                    let mut inner_hit: Option<(SecurityDecision, String, String)> = None;
+                    for want in ["deny", "ask"] {
+                        for (i, rule) in op_rules.iter().enumerate() {
+                            if action_bucket(&rule.action) != want {
+                                continue;
+                            }
+                            if matcher::glob_contains(&rule.pattern.to_lowercase(), &payload) {
+                                inner_hit = Some((
+                                    normalize_decision(&rule.action),
+                                    format!(
+                                        "interpreter payload matched rule: pattern={} (inner of wrapper)",
+                                        rule.pattern
+                                    ),
+                                    format!("rule[{}]:interpreter_inner", i),
+                                ));
+                                break;
+                            }
+                        }
+                        if inner_hit.is_some() {
+                            break;
+                        }
+                    }
+                    if let Some(hit) = inner_hit {
+                        return hit;
+                    }
+                }
+                for structure in INTERPRETER_DANGEROUS_STRUCTURES {
+                    if payload.contains(structure) {
+                        return (
+                            SecurityDecision::RequireApproval,
+                            format!(
+                                "interpreter payload contains dangerous structure `{}` (需要人工确认)",
+                                structure
+                            ),
+                            "interpreter_structure".to_string(),
+                        );
+                    }
+                }
+            }
+        }
+
+        // allow 遍（延后，见上）。
+        if let Some(op_rules) = op_rules {
+            for (i, rule) in op_rules.iter().enumerate() {
+                if action_bucket(&rule.action) != "allow" {
+                    continue;
+                }
+                if rule_matches(rule) {
+                    return (
+                        normalize_decision(&rule.action),
+                        format!("rule matched: pattern={}", rule.pattern),
+                        format!("rule[{}]", i),
+                    );
+                }
+            }
+        }
+
+        // D1：exec/spawn 未知命令（无规则命中）姿态。空串 = 未配置 →
+        // 落 default_action（旧行为；老配置文件缺键不得悄悄变语义）。
+        if matches!(
+            req.op_type,
+            OperationType::ProcessExec | OperationType::ProcessSpawn
+        ) {
+            let policy = self.exec_unknown_policy.read().clone();
+            match policy.as_str() {
+                "ask" => {
+                    return (
+                        SecurityDecision::RequireApproval,
+                        "unknown command (no rule matched), exec_unknown_policy=ask".to_string(),
+                        "exec_unknown_policy".to_string(),
+                    );
+                }
+                "deny" => {
+                    return (
+                        SecurityDecision::Denied,
+                        "unknown command (no rule matched), exec_unknown_policy=deny".to_string(),
+                        "exec_unknown_policy".to_string(),
+                    );
+                }
+                "allow" => {
+                    return (
+                        SecurityDecision::Allowed,
+                        "unknown command (no rule matched), exec_unknown_policy=allow".to_string(),
+                        "exec_unknown_policy".to_string(),
+                    );
+                }
+                _ => {}
             }
         }
 
@@ -870,6 +1161,84 @@ impl SecurityAuditor {
 // ---------------------------------------------------------------------------
 // Internal helper functions
 // ---------------------------------------------------------------------------
+
+/// 自杀形态检测（exec/spawn 专用，2026-09-16 用户裁决硬拦）：破坏性删除
+/// 动词 + 递归旗标 + 删除目标命中保护路径（workspace root / home / `~` /
+/// 根 / `.` / `..` / `*` / `.git`）。判定窗口从动词起到下一个命令边界
+/// （`&&` `;` `||` `|` `&`）——`cd <workspace> && rm -rf build` 不误伤
+/// （窗口内无保护路径），`cd <workspace> && rm -rf .` 拦截。
+/// 诚实边界：单文件 rm（无递归旗标）不拦——那是 ABAC 模板/exec_unknown_policy
+/// 的治理面；相对路径多级目标（`rm -rf src/.git`）不在保护判定内。
+fn detect_self_destruct(normalized: &str, protected: &[String]) -> Option<String> {
+    const DESTRUCTIVE_BINS: &[&str] = &[
+        "rm",
+        "del",
+        "rd",
+        "erase",
+        "rmdir",
+        "deltree",
+        "rimraf",
+        "remove-item",
+    ];
+    fn bin_key(t: &str) -> &str {
+        t.strip_suffix(".exe").unwrap_or(t)
+    }
+    let tokens: Vec<&str> = normalized.split(' ').filter(|t| !t.is_empty()).collect();
+
+    let is_hit = |t: &str| -> bool {
+        if t == "/" || t == "\\" {
+            return true; // 根
+        }
+        if t.starts_with('-') {
+            return false; // 旗标不是目标
+        }
+        // Windows 短旗标（/s /q /f /y，≤2 字符）按旗标处理；
+        // 更长的 / 开头 token 是 POSIX 绝对路径，照常判定。
+        if t.starts_with('/') && t.chars().count() <= 2 {
+            return false;
+        }
+        let tt = t.replace('\\', "/");
+        let tt = tt.trim_end_matches('/');
+        if tt.is_empty() {
+            return true; // `//` 之类退化即根
+        }
+        tt == "."
+            || tt == ".."
+            || tt == "*"
+            || tt == ".git"
+            || t.starts_with('~')
+            || protected.iter().any(|p| {
+                let p = p.trim_end_matches('/');
+                // 目标=保护路径本身；目标是保护路径的祖先（删父目录带掉
+                // 保护路径）；目标在保护路径之内（删子树同样毁灭保护内容）。
+                p == tt
+                    || (p.len() > tt.len() && p.starts_with(tt) && p.as_bytes()[tt.len()] == b'/')
+                    || (tt.len() > p.len() && tt.starts_with(p) && tt.as_bytes()[p.len()] == b'/')
+            })
+    };
+
+    for (i, token) in tokens.iter().enumerate() {
+        if !DESTRUCTIVE_BINS.contains(&bin_key(token)) {
+            continue;
+        }
+        let window: Vec<&str> = tokens[i + 1..]
+            .iter()
+            .copied()
+            .take_while(|t| !matches!(*t, "&&" | ";" | "||" | "|" | "&"))
+            .collect();
+        let recursive = window.iter().any(|t| {
+            (t.starts_with('-') && t.contains('r'))
+                || (t.starts_with('/') && t.chars().count() == 2 && t.ends_with('s'))
+        });
+        if recursive && let Some(target) = window.iter().find(|t| is_hit(t)) {
+            return Some(format!(
+                "self-destruct protection: recursive delete targeting `{}` (protected path / bot home / workspace root)",
+                target
+            ));
+        }
+    }
+    None
+}
 
 fn normalize_decision(action: &str) -> SecurityDecision {
     match action {

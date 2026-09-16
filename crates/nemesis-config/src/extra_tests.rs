@@ -757,10 +757,9 @@ fn extra_serde_default_security_action_and_constants() {
     let cfg: SecurityConfig = serde_json::from_str(json).unwrap();
     assert_eq!(cfg.default_action, "deny");
     assert_eq!(cfg.approval_timeout_seconds, 300);
-    assert_eq!(cfg.max_pending_requests, 100);
-    assert_eq!(cfg.audit_log_retention_days, 90);
     assert!(cfg.log_all_operations);
     assert!(cfg.audit_log_file_enabled);
+    assert!(!cfg.audit_chain_enabled);
 }
 
 #[test]

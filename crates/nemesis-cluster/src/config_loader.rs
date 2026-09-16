@@ -74,6 +74,13 @@ pub struct AppConfig {
     /// （WARN 限频），0 = 关闭过期丢弃。默认 120（与协议默认一致）。
     #[serde(default = "default_announce_expiry_secs")]
     pub announce_expiry_secs: i64,
+    /// CFG-09（2026-09-16）：RPC 鉴权 + discovery 加密共用 token。磁盘上
+    /// 由 `Cluster::load_rpc_auth_token` / discovery 裸 JSON 读取；此前
+    /// typed 无此字段——`save_app_config` 全量覆盖写会把用户已配置的
+    /// `token` 静默抹掉（CFG-01 同族 round-trip 删键）。纳入 typed 后
+    /// 读-改-写路径 token 保真；空串 = 无鉴权（旧行为不变）。
+    #[serde(default)]
+    pub token: String,
 }
 
 impl Default for AppConfig {
@@ -87,6 +94,7 @@ impl Default for AppConfig {
             health_check_interval_secs: default_health_check_interval_secs(),
             health_check_failure_threshold: default_health_check_failure_threshold(),
             announce_expiry_secs: default_announce_expiry_secs(),
+            token: String::new(),
         }
     }
 }

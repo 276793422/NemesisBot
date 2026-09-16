@@ -222,6 +222,15 @@ impl ClusterServiceAdapter {
                 Some(handle)
             }
             Err(e) => {
+                // ASM-08 复核（2026-09-16）：装配自检失败必须 loud——此前
+                // `running=true` 但 `agent_handle=None` 是谎报（适配器自称
+                // 在跑、B 端没有 agent loop、任务永久排队）。运行时故障
+                // （端口占用等）维持降级不炸 gateway。chain 遍历防中间
+                // context 包裹截断标记。
+                let is_asm08 = e.chain().any(|c| c.to_string().contains("ASM-08"));
+                if is_asm08 {
+                    return Err(format!("[ClusterAdapter] {e:#}"));
+                }
                 tracing::warn!("[ClusterAdapter] Failed to build cluster agent: {}", e);
                 None
             }
@@ -414,6 +423,12 @@ async fn start_cluster_components(
             Ok(Some(handle))
         }
         Err(e) => {
+            // ASM-08 复核（2026-09-16）：装配自检失败经 `?` 传播给调用方
+            // （LifecycleService::start 的 Result 通道），不再吞成 Ok(None)。
+            // 运行时故障维持降级。
+            if e.chain().any(|c| c.to_string().contains("ASM-08")) {
+                return Err(format!("[ClusterComponents] {e:#}"));
+            }
             tracing::warn!("[ClusterComponents] Failed to build cluster agent: {}", e);
             Ok(None)
         }

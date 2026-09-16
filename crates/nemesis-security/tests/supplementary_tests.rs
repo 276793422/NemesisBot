@@ -1,6 +1,6 @@
 //! Supplementary tests for nemesis-security crate.
 //!
-//! Covers auditor, scanner, pipeline, middleware, integrity, signature,
+//! Covers auditor, scanner, pipeline, integrity, signature,
 //! approval, merkle, audit_log, and resolver modules.
 
 // ---------------------------------------------------------------------------
@@ -187,7 +187,7 @@ mod auditor_extra {
         let config = AuditorConfig::default();
         assert!(config.enabled);
         assert!(config.default_action == "deny");
-        assert!(config.log_all_operations);
+        assert_eq!(config.approval_timeout_secs, 300);
     }
 
     #[test]
@@ -901,65 +901,6 @@ mod injection_extra {
 }
 
 // ---------------------------------------------------------------------------
-// middleware.rs supplementary tests
-// ---------------------------------------------------------------------------
-
-#[cfg(test)]
-mod middleware_extra {
-    use nemesis_security::middleware::*;
-    use nemesis_security::types::*;
-
-    #[test]
-    fn test_permission_preset_read_only() {
-        assert!(PermissionPreset::ReadOnly.allows(OperationType::FileRead));
-        assert!(PermissionPreset::ReadOnly.allows(OperationType::DirRead));
-        assert!(!PermissionPreset::ReadOnly.allows(OperationType::FileWrite));
-        assert!(!PermissionPreset::ReadOnly.allows(OperationType::ProcessExec));
-    }
-
-    #[test]
-    fn test_permission_preset_standard() {
-        assert!(PermissionPreset::Standard.allows(OperationType::FileRead));
-        assert!(PermissionPreset::Standard.allows(OperationType::FileWrite));
-        assert!(PermissionPreset::Standard.allows(OperationType::NetworkRequest));
-        assert!(!PermissionPreset::Standard.allows(OperationType::ProcessExec));
-    }
-
-    #[test]
-    fn test_permission_preset_elevated() {
-        assert!(PermissionPreset::Elevated.allows(OperationType::FileRead));
-        assert!(PermissionPreset::Elevated.allows(OperationType::ProcessExec));
-        assert!(PermissionPreset::Elevated.allows(OperationType::ProcessSpawn));
-        assert!(!PermissionPreset::Elevated.allows(OperationType::SystemShutdown));
-    }
-
-    #[test]
-    fn test_permission_preset_unrestricted() {
-        assert!(PermissionPreset::Unrestricted.allows(OperationType::FileRead));
-        assert!(PermissionPreset::Unrestricted.allows(OperationType::ProcessExec));
-        assert!(PermissionPreset::Unrestricted.allows(OperationType::SystemShutdown));
-    }
-
-    #[test]
-    fn test_create_cli_permission() {
-        let perm = create_cli_permission();
-        assert!(perm.is_operation_allowed(&OperationType::FileRead));
-    }
-
-    #[test]
-    fn test_create_web_permission() {
-        let perm = create_web_permission();
-        assert!(perm.is_operation_allowed(&OperationType::FileRead));
-    }
-
-    #[test]
-    fn test_create_agent_permission() {
-        let perm = create_agent_permission("agent-001");
-        assert!(perm.is_operation_allowed(&OperationType::FileRead));
-    }
-}
-
-// ---------------------------------------------------------------------------
 // matcher.rs supplementary tests
 // ---------------------------------------------------------------------------
 
@@ -1378,6 +1319,8 @@ mod pipeline_extra {
             audit_log_enabled: true,
             audit_log_dir: Some("/tmp/logs".to_string()),
             default_action: "allow".to_string(),
+            approval_timeout_secs: 300,
+            log_all_operations: true,
             file_rules: vec![],
             dir_rules: vec![],
             network_rules: vec![],

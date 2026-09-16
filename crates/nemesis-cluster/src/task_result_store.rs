@@ -19,6 +19,20 @@ use serde::{Deserialize, Serialize};
 use tokio::fs;
 use tracing;
 
+/// SAN-02：task_id 可能来自远端对端（A 端可传任意串）——落盘路径成分前
+/// 白名单消毒（`nemesis_utils::sanitize::sanitize_path_segment`，兜 `..` /
+/// 路径分隔符 / 超长）；消毒改变原值时 WARN 留痕（内存索引仍用原 id，
+/// 真实 `task_*`/`bg_*` id 映射不变）。
+fn safe_task_file_name(task_id: &str) -> String {
+    let safe = nemesis_utils::sanitize::sanitize_path_segment(task_id);
+    if safe != task_id {
+        tracing::warn!(
+            "[TaskResultStore] task_id 含不安全字符，已消毒落盘: {task_id:?} -> {safe:?}"
+        );
+    }
+    safe
+}
+
 /// A stored task result.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TaskResult {
@@ -289,7 +303,7 @@ impl TaskResultStore {
 
     fn write_to_disk(&self, result: &TaskResult) {
         if let Some(dir) = &self.cache_dir {
-            let path = dir.join(format!("{}.json", result.task_id));
+            let path = dir.join(format!("{}.json", safe_task_file_name(&result.task_id)));
             match serde_json::to_string_pretty(result) {
                 Ok(json) => {
                     // Atomic write: write to temp file, then rename.
@@ -324,7 +338,7 @@ impl TaskResultStore {
 
     fn delete_from_disk(&self, task_id: &str) {
         if let Some(dir) = &self.cache_dir {
-            let path = dir.join(format!("{}.json", task_id));
+            let path = dir.join(format!("{}.json", safe_task_file_name(task_id)));
             if path.exists()
                 && let Err(e) = std::fs::remove_file(&path)
             {
@@ -485,7 +499,8 @@ impl AsyncTaskResultStore {
                 && let Some(evicted) = results.remove(&key)
                 && let Some(dir) = self.inner.cache_dir.clone()
             {
-                evicted_path = Some(dir.join(format!("{}.json", evicted.task_id)));
+                evicted_path =
+                    Some(dir.join(format!("{}.json", safe_task_file_name(&evicted.task_id))));
             }
             results.insert(result.task_id.clone(), result.clone());
             evicted_path
@@ -500,7 +515,7 @@ impl AsyncTaskResultStore {
 
     async fn write_to_disk_async(&self, result: &TaskResult) {
         if let Some(dir) = &self.inner.cache_dir {
-            let path = dir.join(format!("{}.json", result.task_id));
+            let path = dir.join(format!("{}.json", safe_task_file_name(&result.task_id)));
             match serde_json::to_string_pretty(result) {
                 Ok(json) => {
                     let tmp_path = path.with_extension("json.tmp");
@@ -537,7 +552,7 @@ impl AsyncTaskResultStore {
 
     async fn delete_from_disk_async(&self, task_id: &str) {
         if let Some(dir) = &self.inner.cache_dir {
-            let path = dir.join(format!("{}.json", task_id));
+            let path = dir.join(format!("{}.json", safe_task_file_name(task_id)));
             if Path::new(&path).exists()
                 && let Err(e) = fs::remove_file(&path).await
             {
@@ -688,8 +703,9 @@ impl GoTaskResultStore {
         // Write data file (atomic: tmp + rename)
         let json = serde_json::to_string_pretty(&entry)
             .map_err(|e| format!("failed to marshal task result: {e}"))?;
-        let file_path = self.data_dir.join(format!("{task_id}.json"));
-        let tmp_path = self.data_dir.join(format!("{task_id}.json.tmp"));
+        let file_name = safe_task_file_name(task_id);
+        let file_path = self.data_dir.join(format!("{file_name}.json"));
+        let tmp_path = self.data_dir.join(format!("{file_name}.json.tmp"));
         std::fs::write(&tmp_path, &json).map_err(|e| format!("failed to write tmp file: {e}"))?;
         std::fs::rename(&tmp_path, &file_path)
             .map_err(|e| format!("failed to rename tmp file: {e}"))?;
@@ -732,7 +748,9 @@ impl GoTaskResultStore {
     /// Mirrors Go's `TaskResultStore.Delete()`.
     pub fn delete(&self, task_id: &str) -> std::result::Result<(), String> {
         // Delete data file (ignore errors, may not exist)
-        let file_path = self.data_dir.join(format!("{task_id}.json"));
+        let file_path = self
+            .data_dir
+            .join(format!("{}.json", safe_task_file_name(task_id)));
         let _ = std::fs::remove_file(&file_path);
 
         // Update index

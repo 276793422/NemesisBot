@@ -1819,6 +1819,16 @@ pub struct SkillsFullConfig {
     pub clawhub: SkillsClawHubConfig,
     #[serde(default)]
     pub modelscope: SkillsModelScopeConfig,
+    /// Passthrough for untyped user-defined keys（CFG-08：没有这个 flatten
+    /// 时，任何 typed save 都会静默丢掉用户手加的自定义键——与 ModelConfig
+    /// `extra` 同款先例）。BTreeMap 保 round-trip 字节稳定；空表序列化时
+    /// 跳过（输出与既有形态字节一致）。
+    #[serde(
+        flatten,
+        default,
+        skip_serializing_if = "std::collections::BTreeMap::is_empty"
+    )]
+    pub extra: std::collections::BTreeMap<String, serde_json::Value>,
 }
 
 impl Default for SkillsFullConfig {
@@ -1831,6 +1841,7 @@ impl Default for SkillsFullConfig {
             github_sources: vec![],
             clawhub: SkillsClawHubConfig::default(),
             modelscope: SkillsModelScopeConfig::default(),
+            extra: std::collections::BTreeMap::new(),
         }
     }
 }
@@ -1909,10 +1920,24 @@ impl Default for SkillsModelScopeConfig {
 pub struct SecurityConfig {
     #[serde(default = "default_security_action")]
     pub default_action: String,
+    /// CFG-05（2026-09-16 死键接线）：审计 JSONL 是否记录放行事件
+    /// （false = 只记拦截/告警）。runtime 侧 security_setup.rs 构造期读取。
     #[serde(default = "default_true")]
     pub log_all_operations: bool,
+    // ── 死键恢复区（2026-09-16 用户指令：代码不得随便删，先恢复保留待
+    // 讨论）────────────────────────────────────────────────────
+    // 以下 5 键曾在 CFG-05 被裁「确认无用直接删」（D3），现按用户指令
+    // 恢复原字段原属性。**未接线**（零 runtime 消费方，runtime 走裸 JSON
+    // 或 NemesisPath 硬拼）：log_denials_only（与 log_all_operations=false
+    // 同义）、max_pending_requests（无满额语义实现）、audit_log_retention_days
+    // （无保留清扫器，盲清扫会误伤审计链文件）、audit_log_path（gateway 经
+    // nemesis-path 硬拼安全日志目录）、synchronous_mode（无语义）。
+    // 保留原因：字段必须与出厂模板键共存（typed round-trip 不丢键），
+    // 删除与否待用户后续裁决。
     #[serde(default)]
     pub log_denials_only: bool,
+    /// CFG-05：审批卡超时秒数。runtime 侧 security_setup.rs 构造期读取，
+    /// 接入 AuditorConfig.approval_timeout_secs。
     #[serde(default = "default_approval_timeout")]
     pub approval_timeout_seconds: i64,
     #[serde(default = "default_max_pending")]
@@ -1925,9 +1950,28 @@ pub struct SecurityConfig {
     pub audit_log_file_enabled: bool,
     #[serde(default)]
     pub synchronous_mode: bool,
+    // ── 死键恢复区结束 ────────────────────────────────────────────
+    /// 审计链（Merkle append-only，第 8 层）开关。runtime 侧
+    /// security_setup.rs 按裸 JSON 顶层键读取；此前 typed 无此字段，
+    /// Dashboard 安全设置页保存一次即把用户手加的该键整行抹掉
+    /// （与 CFG-01 directory_rules 同族 round-trip 删键 bug）。
+    #[serde(default)]
+    pub audit_chain_enabled: bool,
     #[serde(default)]
     pub file_rules: Option<FileSecurityRules>,
-    #[serde(default)]
+    // CFG-01（2026-09-16 横扫存量加固）：磁盘/出厂模板真相源键名是
+    // `dir_rules`（runtime 侧 security_setup.rs 按裸 JSON 键 `dir_rules`
+    // 读取）。此前 typed 字段无 rename → 反序列化拿不到、保存时以
+    // `directory_rules` 键（或 None）整文件覆盖，磁盘 `dir_rules` 被整段
+    // 抹掉（Dashboard 安全设置页保存一次即触发）。rename 对齐后 round-trip
+    // 字节稳定；历史键名 `directory_rules` 的别名读取仍在 runtime 侧保留
+    // （security_setup.rs，WARN 提示改名）。
+    // alias（复核 2026-09-16）：存量部署文件里写的是历史键名
+    // `directory_rules`——仅 rename 时该文件经 typed 读-改-写会把规则段
+    // 变成 `"dir_rules": null`（内容丢失），且 runtime 读 `dir_rules` 得
+    // Some(Null) 连别名分支也不再触发。alias 让 legacy 键内容被读进
+    // typed、保存统一迁到 `dir_rules`，规则内容零丢失。
+    #[serde(default, rename = "dir_rules", alias = "directory_rules")]
     pub directory_rules: Option<DirectorySecurityRules>,
     #[serde(default)]
     pub process_rules: Option<ProcessSecurityRules>,
@@ -1939,6 +1983,24 @@ pub struct SecurityConfig {
     pub registry_rules: Option<RegistrySecurityRules>,
     #[serde(default)]
     pub layers: Option<SecurityLayersConfig>,
+    // D1（2026-09-16 用户裁决）：exec/spawn 未知命令（无规则命中）姿态。
+    // allow（默认=旧行为）/ ask（送审批卡）/ deny（硬拦）。runtime 侧
+    // security_setup.rs 按裸 JSON 键读取注入 auditor。
+    // A-F4（复核 2026-09-16）：typed 缺省必须是**空串**（= runtime 缺键
+    // 语义，落 auditor 旧行为），不得物化裁决值——Dashboard 保存走 typed
+    // round-trip，若 serde 缺省给 "allow"/"ask"，用户从未显式配置的部署
+    // 保存一次即被静默写入（缺键语义：D1 落 default_action、D2 旧
+    // fail-open——被替换成裁决值 = 语义漂移）。前端已按「缺键显示裁决
+    // 默认、保存不写键」实现（SecurityView POLICY_KEYS + spec 钉死），
+    // typed 侧对齐；`skip_serializing_if` 让未配置（空串）不落盘。用户
+    // 显式选择后才物化。
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub exec_unknown_policy: String,
+    // D2（2026-09-16 用户裁决）：Guardian LLM judge 失败（异常/不可用）
+    // 时的姿态。ask（默认，送审批卡）/ allow（按策略放行+WARN）/ deny。
+    // 缺省语义同上（A-F4）：空串 = runtime 缺键 = 旧行为，不物化。
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub guardian_failure_policy: String,
 }
 
 impl Default for SecurityConfig {
@@ -1946,6 +2008,7 @@ impl Default for SecurityConfig {
         Self {
             default_action: "deny".to_string(),
             log_all_operations: true,
+            // 死键恢复区（2026-09-16 用户指令恢复保留，未接线，见字段区注释）
             log_denials_only: false,
             approval_timeout_seconds: 300,
             max_pending_requests: 100,
@@ -1953,6 +2016,7 @@ impl Default for SecurityConfig {
             audit_log_path: String::new(),
             audit_log_file_enabled: true,
             synchronous_mode: false,
+            audit_chain_enabled: false,
             file_rules: None,
             directory_rules: None,
             process_rules: None,
@@ -1960,6 +2024,8 @@ impl Default for SecurityConfig {
             hardware_rules: None,
             registry_rules: None,
             layers: None,
+            exec_unknown_policy: String::new(),
+            guardian_failure_policy: String::new(),
         }
     }
 }
@@ -1976,10 +2042,23 @@ pub struct SecurityLayersConfig {
     pub ssrf: Option<SecurityLayerConfig>,
     #[serde(default)]
     pub credential: Option<SecurityLayerConfig>,
+    // ── 死键恢复区（2026-09-16 用户指令恢复保留，未接线）──────
+    // `signature`：签名验证层尚未接入管线（v4 verify 是独立子系统）；
+    // `audit_chain`：runtime 读取的是顶层 `audit_chain_enabled` 而非本键，
+    // 曾被定性误导性假开关。恢复保留待用户裁决。
     #[serde(default)]
     pub signature: Option<SignatureLayerConfig>,
     #[serde(default)]
     pub audit_chain: Option<SecurityLayerConfig>,
+    // ── 死键恢复区结束 ────────────────────────────────────────
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct SignatureLayerConfig {
+    #[serde(default)]
+    pub enabled: bool,
+    #[serde(default)]
+    pub strict: bool,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -2007,13 +2086,9 @@ pub struct DLPLayerConfig {
     pub inbound_action: String,
 }
 
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
-pub struct SignatureLayerConfig {
-    #[serde(default)]
-    pub enabled: bool,
-    #[serde(default)]
-    pub strict: bool,
-}
+// CFG-05：`SignatureLayerConfig` 已随 `SecurityLayersConfig.signature` 死键
+// 一并删除（签名验证层尚未接入安全管线；v4 verify 是独立子系统，未来接入
+// 时再补 schema）。
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct SecurityRule {
@@ -2021,6 +2096,11 @@ pub struct SecurityRule {
     pub pattern: String,
     #[serde(default)]
     pub action: String,
+    /// 规则注释（复核 2026-09-16）：CLI `security rules add` 会写入
+    /// `comment` 字段、runtime `parse_rules` 读取展示；typed 缺此字段时
+    /// Dashboard 保存一次即把手写 comment 抹掉（CFG-01 同族）。
+    #[serde(default)]
+    pub comment: String,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -2980,6 +3060,7 @@ fn default_security_action() -> String {
 fn default_approval_timeout() -> i64 {
     300
 }
+// 死键恢复区（2026-09-16 用户指令恢复保留，未接线，见 SecurityConfig 字段区注释）
 fn default_max_pending() -> i64 {
     100
 }

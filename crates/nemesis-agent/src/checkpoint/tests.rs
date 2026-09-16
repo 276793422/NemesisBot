@@ -392,3 +392,35 @@ async fn empty_turn_does_not_create_file() {
         "turn with file changes is persisted: {cp_file:?}"
     );
 }
+
+/// SAN-10 复核（2026-09-16）：工作区外声明路径**照常恢复**——这是 D2 hybrid
+/// 的既定契约（restrict=false 部署下声明式工具合法写工作区外文件，undo 必须
+/// 能回滚；见 safe_path 文档注释与 d2_tests::git_mode_hybrid_restores_out_of_
+/// workspace_paths）。此处钉 JSON 形态下的同款契约防未来误加边界；`..` 相对
+/// 逃逸仍被拒（见 path_escape_is_rejected_on_restore）。
+#[tokio::test]
+async fn out_of_workspace_declared_path_is_restored_d2_hybrid() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path().join("ws");
+    std::fs::create_dir_all(&root).unwrap();
+    let outside = dir.path().join("outside").join("o.txt");
+    std::fs::create_dir_all(outside.parent().unwrap()).unwrap();
+    std::fs::write(&outside, "outside-orig").unwrap();
+
+    let store = CheckpointStore::new(None, root);
+    store.begin(0, "hybrid-json");
+    let change = FileChange {
+        path: outside.to_string_lossy().into_owned(),
+        kind: FileChangeKind::Modify,
+    };
+    store.snapshot(&change).await;
+    std::fs::write(&outside, "clobbered").unwrap();
+
+    let (w, _) = store.restore_code(0).await;
+    assert!(
+        w.iter().any(|p| p.ends_with("o.txt")),
+        "工作区外声明路径照常恢复（D2 hybrid）: {:?}",
+        w
+    );
+    assert_eq!(std::fs::read_to_string(&outside).unwrap(), "outside-orig");
+}

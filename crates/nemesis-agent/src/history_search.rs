@@ -281,7 +281,8 @@ pub fn index_append(session_key: &str, role: &str, content: &str, timestamp: &st
     // always contains ':') the "file already indexed" check never matched
     // and the incremental hook silently never fired — masked until the
     // orphan-row purge stopped stale rows from satisfying the tests.
-    let stem = session_key.replace(':', "_");
+    // SAN-01/SAN-05：与 chat_log 落盘同源的白名单消毒（stem 即文件名）。
+    let stem = nemesis_utils::sanitize::sanitize_path_segment(session_key);
     let _ = with_conn(|conn, indexed| {
         if !indexed.contains_key(&stem) {
             return; // never full-indexed — first query reindexes everything

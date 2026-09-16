@@ -232,14 +232,11 @@ fn boundary_dir(workspace: &str) -> PathBuf {
 }
 
 /// Ledger filename for a session id, matching `replay.rs::replay_ledger_path`
-/// (`session_key.replace(':', "_")` + `.replay.jsonl`). The dashboard passes
-/// the session_logs file stem, which already has `:` replaced — both rules
-/// applied here (idempotent) so either form resolves to the same file.
+/// (sanitized stem + `.replay.jsonl`). The dashboard passes the session_logs
+/// file stem, which is already sanitized — the whitelist sanitizer is
+/// idempotent (SAN-05), so either form resolves to the same file.
 fn ledger_file_name(session: &str) -> String {
-    format!(
-        "{}.replay.jsonl",
-        sanitize_session_key(&session.replace(':', "_"))
-    )
+    format!("{}.replay.jsonl", sanitize_session_key(session))
 }
 
 /// Read all lines of a JSONL file as JSON values; malformed/blank lines skipped.
@@ -329,7 +326,7 @@ pub fn scan_session_logs(workspace: &str) -> Vec<serde_json::Value> {
         let (parent, forked_at) = read_meta_lineage(&path);
         if let Some(p) = parent {
             entry["parent"] = serde_json::Value::String(p.clone());
-            let parent_jsonl = dir.join(format!("{}.jsonl", p.replace(':', "_")));
+            let parent_jsonl = dir.join(format!("{}.jsonl", sanitize_session_key(&p)));
             if let Some(pt) = read_meta_title(&parent_jsonl) {
                 entry["parentTitle"] = serde_json::Value::String(pt);
             }
@@ -684,8 +681,10 @@ fn compute_audit_hash(ev: &AuditEvent) -> String {
     format!("{:x}", hasher.finalize())
 }
 
+/// SAN-05：薄包装委托仓内单一真相源白名单消毒（原黑名单
+/// `/\:*?\"<>|`→`_` 对运行时键族映射一致；`..`/超长由公共函数兜住）。
 fn sanitize_session_key(key: &str) -> String {
-    key.replace(['/', '\\', ':', '*', '?', '"', '<', '>', '|'], "_")
+    nemesis_utils::sanitize::sanitize_path_segment(key)
 }
 
 // ---------------------------------------------------------------------------

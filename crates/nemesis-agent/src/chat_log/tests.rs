@@ -813,3 +813,59 @@ fn test_undelivered_mark_and_clear_roundtrip() {
 
     delete_chat_log(&key);
 }
+
+// ---------------------------------------------------------------------------
+// SAN-01/D4：旧「只替换 `:`」映射的嵌套目录平化迁移
+// ---------------------------------------------------------------------------
+
+/// 嵌套产物平移 + 平面文件不动 + 空目录顺手删除。
+#[test]
+fn flatten_legacy_nested_dirs_moves_and_flattens() {
+    let tmp = tempfile::tempdir().unwrap();
+    let root = tmp.path();
+    // 旧映射嵌套产物：root/node-x/chat_123.jsonl（B 端键 `node-x/chat:123`）。
+    std::fs::create_dir_all(root.join("node-x")).unwrap();
+    std::fs::write(root.join("node-x").join("chat_123.jsonl"), "{}\n").unwrap();
+    std::fs::write(root.join("node-x").join("chat_123.meta.json"), "{}\n").unwrap();
+    // 已是平面的文件必须不动。
+    std::fs::write(root.join("flat_session.jsonl"), "{}\n").unwrap();
+
+    super::flatten_legacy_nested_dirs(root);
+
+    assert!(root.join("node-x_chat_123.jsonl").is_file());
+    assert!(root.join("node-x_chat_123.meta.json").is_file());
+    assert!(root.join("flat_session.jsonl").is_file());
+    assert!(!root.join("node-x").exists(), "搬空的目录顺手删除");
+}
+
+/// 目标已存在 → 跳过不覆盖，旧文件原地保留（不损坏任何一份）。
+#[test]
+fn flatten_legacy_nested_dirs_never_overwrites_existing_target() {
+    let tmp = tempfile::tempdir().unwrap();
+    let root = tmp.path();
+    std::fs::create_dir_all(root.join("node-x")).unwrap();
+    std::fs::write(root.join("node-x").join("chat_1.jsonl"), "nested").unwrap();
+    std::fs::write(root.join("node-x_chat_1.jsonl"), "existing").unwrap();
+
+    super::flatten_legacy_nested_dirs(root);
+
+    let content = std::fs::read_to_string(root.join("node-x_chat_1.jsonl")).unwrap();
+    assert_eq!(content, "existing", "目标已存在 → 不覆盖");
+    assert!(
+        root.join("node-x").join("chat_1.jsonl").is_file(),
+        "旧文件原地保留"
+    );
+}
+
+/// 闭环一致性：平化拼接名 == 新白名单对原始键的映射（读写同源）。
+#[test]
+fn flattened_name_matches_new_sanitized_mapping() {
+    assert_eq!(
+        nemesis_utils::sanitize::sanitize_path_segment("node-x/chat:123"),
+        "node-x_chat_123"
+    );
+    assert_eq!(
+        nemesis_utils::sanitize::sanitize_path_segment("agent:main:session:1726"),
+        "agent_main_session_1726"
+    );
+}

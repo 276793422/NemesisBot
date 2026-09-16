@@ -175,47 +175,82 @@ fn valid_operations_for_type(rule_type: &str) -> &[&str] {
     }
 }
 
-/// Read or create the security rules config.
+/// CFG-02（2026-09-16 横扫存量加固）：rules 子命令曾读写死键 `rules.*`
+/// （`{file:[],directory:[]...}` 平铺）——生产真相源是
+/// `file_rules`/`dir_rules`/`process_rules`... 分节 + 每节按操作名分组的
+/// `{pattern,action,comment}` 数组（见 security_setup::load_security_rules）。
+/// 旧实现对死键的一切增删测试都不影响运行时行为（用户以为加白实际没加）。
+/// 现全部对齐真相源；类型→分节名单一映射如下。
+fn section_name_for_type(rule_type: &str) -> Option<&'static str> {
+    match rule_type {
+        "file" => Some("file_rules"),
+        "directory" => Some("dir_rules"),
+        "process" => Some("process_rules"),
+        "network" => Some("network_rules"),
+        "hardware" => Some("hardware_rules"),
+        "registry" => Some("registry_rules"),
+        _ => None,
+    }
+}
+
+/// 取 `<分节>.<操作>` 规则数组的可变引用（缺节/缺操作时创建空数组；
+/// 已存在的 null 归一为空容器——typed 保存会为空分节写出 `null`，
+/// `or_insert_with` 不替换已有键，不归一则 push 静默落空）。
+fn op_rules_mut<'a>(
+    cfg: &'a mut serde_json::Value,
+    section: &str,
+    operation: &str,
+) -> Option<&'a mut Vec<serde_json::Value>> {
+    cfg.as_object_mut()?
+        .entry(section.to_string())
+        .and_modify(|v| {
+            if v.is_null() {
+                *v = serde_json::Value::Object(serde_json::Map::new());
+            }
+        })
+        .or_insert_with(|| serde_json::Value::Object(serde_json::Map::new()))
+        .as_object_mut()?
+        .entry(operation.to_string())
+        .and_modify(|v| {
+            if v.is_null() {
+                *v = serde_json::Value::Array(vec![]);
+            }
+        })
+        .or_insert_with(|| serde_json::Value::Array(vec![]))
+        .as_array_mut()
+}
+
+/// 取 `<分节>.<操作>` 规则数组的只读引用（缺失 = None）。
+fn op_rules<'a>(
+    cfg: &'a serde_json::Value,
+    section: &str,
+    operation: &str,
+) -> Option<&'a Vec<serde_json::Value>> {
+    cfg.get(section)?.get(operation)?.as_array()
+}
+
+/// Read the security config raw（真相源即磁盘文件；缺失时给最小骨架）。
 fn read_rules_config(security_cfg: &std::path::Path) -> Result<serde_json::Value> {
     if security_cfg.exists() {
         let data = std::fs::read_to_string(security_cfg)?;
-        let cfg: serde_json::Value = serde_json::from_str(&data)?;
-        // Ensure rules section exists
-        let mut cfg = cfg;
-        if cfg.get("rules").is_none()
-            && let Some(obj) = cfg.as_object_mut()
-        {
-            obj.insert("rules".to_string(), default_rules());
-        }
-        Ok(cfg)
+        Ok(serde_json::from_str(&data)?)
     } else {
         Ok(default_security_config())
     }
 }
 
+/// 最小出厂骨架。注意（B-F7 复核 2026-09-16）：这是「出厂模板形态」的
+/// 近似（D1/D2 用户裁决值），**不是**「缺文件时 runtime 的默认」——
+/// config.security.json 缺失时 load_security_rules 提前返回，auditor 保持
+/// 构造默认 `default_action: "deny"`；而本骨架写盘后下次启动生效的是
+/// `allow`。即：对一个缺文件系统执行 reset/写盘类命令 = 从 deny 放宽到
+/// allow，属显式的出厂姿态选择（与出厂模板 default_action=allow 一致），
+/// 非静默降级。
 fn default_security_config() -> serde_json::Value {
     serde_json::json!({
-        "default_action": "ask",
-        "log_all_operations": false,
-        "log_denials_only": true,
-        "approval_timeout": 300,
-        "max_pending_requests": 10,
-        "audit_retention_days": 30,
-        "audit_log_file_enabled": true,
-        "synchronous_mode": false,
-        "rules": default_rules(),
-        "pending": []
-    })
-}
-
-fn default_rules() -> serde_json::Value {
-    serde_json::json!({
-        "file": [],
-        "directory": [],
-        "process": [],
-        "network": [],
-        "hardware": [],
-        "registry": []
+        "default_action": "allow",
+        "exec_unknown_policy": "allow",
+        "guardian_failure_policy": "ask"
     })
 }
 
@@ -364,7 +399,6 @@ fn cmd_approvals_clear(home: &std::path::Path) -> Result<()> {
 
 fn cmd_rules_list(security_cfg: &std::path::Path, rule_type: Option<&str>) -> Result<()> {
     let cfg = read_rules_config(security_cfg)?;
-    let rules = cfg.get("rules").cloned().unwrap_or_else(default_rules);
 
     println!("Security Rules");
     println!("==============");
@@ -384,41 +418,44 @@ fn cmd_rules_list(security_cfg: &std::path::Path, rule_type: Option<&str>) -> Re
 
     let mut found_any = false;
     for rt in &types_to_show {
-        if let Some(type_rules) = rules.get(*rt).and_then(|v| v.as_array()) {
-            found_any = true;
-            println!();
-            println!("  [{}]", rt);
-
-            // Group by operation
-            let valid_ops = valid_operations_for_type(rt);
-            for op in valid_ops {
-                let op_rules: Vec<_> = type_rules
-                    .iter()
-                    .enumerate()
-                    .filter(|(_, e)| e.get("operation").and_then(|v| v.as_str()) == Some(*op))
-                    .collect();
-
-                if op_rules.is_empty() {
-                    println!("    {}: (none)", op);
-                } else {
-                    for (i, entry) in &op_rules {
-                        let pattern = entry.get("pattern").and_then(|v| v.as_str()).unwrap_or("*");
-                        let action = entry
-                            .get("action")
-                            .and_then(|v| v.as_str())
-                            .unwrap_or("deny");
-                        println!(
-                            "    [{}] {}: pattern: {:<30} action: {}",
-                            op, i, pattern, action
-                        );
-                    }
+        let Some(section) = section_name_for_type(rt) else {
+            continue;
+        };
+        let valid_ops = valid_operations_for_type(rt);
+        let mut type_has_rules = false;
+        let mut type_output = String::new();
+        for op in valid_ops {
+            if let Some(arr) = op_rules(&cfg, section, op) {
+                if arr.is_empty() {
+                    continue;
+                }
+                if !type_has_rules {
+                    type_has_rules = true;
+                    found_any = true;
+                    type_output.push_str(&format!("\n  [{}] ({})\n", rt, section));
+                }
+                for (i, entry) in arr.iter().enumerate() {
+                    let pattern = entry.get("pattern").and_then(|v| v.as_str()).unwrap_or("*");
+                    let action = entry
+                        .get("action")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("deny");
+                    type_output.push_str(&format!(
+                        "    {} [{}]: pattern: {:<30} action: {}\n",
+                        op, i, pattern, action
+                    ));
                 }
             }
         }
+        print!("{}", type_output);
     }
 
-    if !found_any && rule_type.is_none() {
-        println!("  No rules defined.");
+    if !found_any {
+        if rule_type.is_some() {
+            println!("  No rules defined for this type.");
+        } else {
+            println!("  No rules defined.");
+        }
     }
     Ok(())
 }
@@ -459,33 +496,43 @@ fn cmd_rules_add(
         return Ok(());
     }
 
+    let Some(section) = section_name_for_type(rule_type) else {
+        return Ok(());
+    };
     let mut cfg = read_rules_config(security_cfg)?;
 
-    if let Some(rules) = cfg.get_mut("rules").and_then(|v| v.as_object_mut()) {
-        if !rules.contains_key(rule_type) {
-            rules.insert(rule_type.to_string(), serde_json::Value::Array(vec![]));
-        }
-        if let Some(arr) = rules.get_mut(rule_type).and_then(|v| v.as_array_mut()) {
+    match op_rules_mut(&mut cfg, section, operation) {
+        Some(arr) => {
             arr.push(serde_json::json!({
                 "pattern": pattern.unwrap_or("*"),
-                "operation": operation,
                 "action": action_val,
                 "comment": ""
             }));
+        }
+        None => {
+            // 复核 2026-09-16：此前无条件打印成功——`op_rules_mut` 返回
+            // None（分节/操作层是 null 或类型不符）时规则根本没写进去，
+            // 「以为加白实际没加」的假姿态复发。诚实报错退出。
+            println!(
+                "Error: failed to add rule: section '{}.{}' exists but is not a rules array (malformed config?). Fix or remove the '{}' section manually.",
+                section, operation, section
+            );
+            return Ok(());
         }
     }
 
     write_rules_config(security_cfg, &cfg)?;
     println!(
-        "Rule added: [{}] {} {} -> {}",
-        rule_type,
+        "Rule added: [{} {}] {} -> {}",
+        section,
         operation,
         pattern.unwrap_or("*"),
         action_val
     );
     if action_val == "ask" {
-        println!("NOTE: The 'ask' action in rules is currently treated as 'deny' for security.");
+        println!("NOTE: 'ask' = requires interactive approval (an approval card is shown).");
     }
+    println!("NOTE: Restart the gateway (or reload config) for the change to take effect.");
     Ok(())
 }
 
@@ -503,32 +550,35 @@ fn cmd_rules_remove(
         return Ok(());
     }
 
+    let Some(section) = section_name_for_type(rule_type) else {
+        return Ok(());
+    };
     let mut cfg = read_rules_config(security_cfg)?;
-    let mut found = false;
 
-    if let Some(rules) = cfg.get_mut("rules").and_then(|v| v.as_object_mut())
-        && let Some(arr) = rules.get_mut(rule_type).and_then(|v| v.as_array_mut())
-    {
-        // Find entries matching operation at the given index
-        let matching: Vec<usize> = arr
-            .iter()
-            .enumerate()
-            .filter(|(_, e)| e.get("operation").and_then(|v| v.as_str()) == Some(operation))
-            .map(|(i, _)| i)
-            .collect();
-
-        if index < matching.len() {
-            let actual_idx = matching[index];
-            arr.remove(actual_idx);
-            found = true;
+    // index 与 `rules list` 输出的操作内序号一致（同源数组位置）。
+    let removed = op_rules_mut(&mut cfg, section, operation).and_then(|arr| {
+        if index < arr.len() {
+            Some(arr.remove(index))
+        } else {
+            None
         }
-    }
+    });
 
-    if found {
-        write_rules_config(security_cfg, &cfg)?;
-        println!("Rule removed: [{}] {} #{}", rule_type, operation, index);
-    } else {
-        println!("Rule not found: [{}] {} #{}", rule_type, operation, index);
+    match removed {
+        Some(entry) => {
+            write_rules_config(security_cfg, &cfg)?;
+            println!(
+                "Rule removed: [{} {}] #{} pattern={}",
+                section,
+                operation,
+                index,
+                entry.get("pattern").and_then(|v| v.as_str()).unwrap_or("?")
+            );
+            println!("NOTE: Restart the gateway (or reload config) for the change to take effect.");
+        }
+        None => {
+            println!("Rule not found: [{} {}] #{}", section, operation, index);
+        }
     }
     Ok(())
 }
@@ -546,85 +596,104 @@ fn cmd_rules_test(
         );
         return Ok(());
     }
+    let valid_ops = valid_operations_for_type(rule_type);
+    if !valid_ops.contains(&operation) {
+        println!(
+            "Error: Invalid {} operation '{}'. Valid: {}",
+            rule_type,
+            operation,
+            valid_ops.join(", ")
+        );
+        return Ok(());
+    }
 
-    // Validate rule type
+    let Some(section) = section_name_for_type(rule_type) else {
+        return Ok(());
+    };
     let cfg = read_rules_config(security_cfg)?;
-    let rules = cfg.get("rules");
+    let rules = op_rules(&cfg, section, operation);
 
     println!("Rule Test Result");
     println!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
-    println!("  Type:       {}", rule_type);
+    println!("  Section:    {} ({})", section, rule_type);
     println!("  Operation:  {}", operation);
     println!("  Target:     {}", target);
     println!();
 
-    let mut matched = false;
-    let mut final_action = "deny"; // default deny
-    let mut matched_rule_idx: Option<usize> = None;
-    let mut matched_pattern = String::new();
+    // CMD-01 对齐：与运行时 auditor 相同的 deny→ask→allow 三遍扫 +
+    // 匹配语义（process 类走命令归一化 + 锚定命令匹配；其余走路径
+    // 通配匹配）。无命中落 default_action。
+    let is_command_op = rule_type == "process";
+    let match_target = if is_command_op {
+        nemesis_security::matcher::normalize_exec_command(target)
+    } else {
+        target.to_string()
+    };
+    let pattern_matches = |pattern: &str| -> bool {
+        if is_command_op {
+            nemesis_security::matcher::match_command_pattern(&pattern.to_lowercase(), &match_target)
+        } else {
+            match_pattern(pattern, target)
+        }
+    };
 
-    if let Some(rules) = rules
-        .and_then(|r| r.get(rule_type))
-        .and_then(|r| r.as_array())
-    {
-        for (i, rule) in rules.iter().enumerate() {
-            let pattern = rule.get("pattern").and_then(|v| v.as_str()).unwrap_or("*");
-            let rule_op = rule
-                .get("operation")
-                .and_then(|v| v.as_str())
-                .unwrap_or("*");
-            let action = rule
-                .get("action")
-                .and_then(|v| v.as_str())
-                .unwrap_or("deny");
-
-            if rule_op != "*" && rule_op != operation {
-                continue;
+    let mut matched: Option<(usize, String, String)> = None;
+    if let Some(arr) = rules {
+        for want in ["deny", "ask", "allow"] {
+            for (i, rule) in arr.iter().enumerate() {
+                let action = rule
+                    .get("action")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("deny");
+                let bucket = match action {
+                    "deny" | "denied" => "deny",
+                    "ask" | "require_approval" | "approval" | "pending" => "ask",
+                    "allow" | "allowed" => "allow",
+                    _ => "deny",
+                };
+                if bucket != want {
+                    continue;
+                }
+                let pattern = rule.get("pattern").and_then(|v| v.as_str()).unwrap_or("*");
+                if pattern_matches(pattern) {
+                    matched = Some((i, pattern.to_string(), action.to_string()));
+                    break;
+                }
             }
-
-            if match_pattern(pattern, target) {
-                matched = true;
-                matched_rule_idx = Some(i);
-                matched_pattern = pattern.to_string();
-                // "ask" is treated as deny at runtime
-                final_action = if action == "ask" { "deny" } else { action };
-                println!("  Matched rule [{}]: {} -> {}", i, pattern, action);
+            if matched.is_some() {
+                break;
             }
         }
     }
 
-    if matched {
-        let (icon, _label) = if final_action == "allow" {
-            ("ALLOWED", "allowed")
-        } else {
-            ("DENIED", "denied")
-        };
-        let reason = if final_action == "deny"
-            && cfg
-                .get("rules")
-                .and_then(|r| r.get(rule_type))
-                .and_then(|r| r.as_array())
-                .and_then(|arr| arr.get(matched_rule_idx.unwrap()))
-                .and_then(|r| r.get("action"))
+    match matched {
+        Some((i, pattern, action)) => {
+            let (icon, label) = match action.as_str() {
+                "allow" | "allowed" => ("ALLOWED", "allowed"),
+                "ask" | "require_approval" => ("ASK", "requires approval"),
+                _ => ("DENIED", "denied"),
+            };
+            println!("  Matched rule [{}]: {} -> {}", i, pattern, action);
+            println!();
+            println!("  Result:  {}", icon);
+            println!("  Reason:  Matched rule ({})", label);
+        }
+        None => {
+            let default_action = cfg
+                .get("default_action")
                 .and_then(|v| v.as_str())
-                == Some("ask")
-        {
-            "Matched rule requires approval (treated as deny)".to_string()
-        } else {
-            format!(
-                "Matched rule [{}]: {} -> {}",
-                matched_rule_idx.unwrap(),
-                matched_pattern,
-                final_action
-            )
-        };
-        println!();
-        println!("  Result:  {}", icon);
-        println!("  Reason:  {}", reason);
-    } else {
-        println!();
-        println!("  Result:  DENIED");
-        println!("  Reason:  No matching rule found; default deny applies");
+                .unwrap_or("deny");
+            let (icon, label) = match default_action {
+                "allow" | "allowed" => ("ALLOWED", "allowed"),
+                "ask" | "require_approval" => ("ASK", "requires approval"),
+                _ => ("DENIED", "denied"),
+            };
+            println!("  Result:  {}", icon);
+            println!(
+                "  Reason:  No rule matched; default_action={} ({}) applies",
+                default_action, label
+            );
+        }
     }
 
     println!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
@@ -849,12 +918,12 @@ pub async fn run(action: SecurityAction, local: bool) -> Result<()> {
                 .and_then(|v| v.as_bool())
                 .map(|v| if v { "yes" } else { "no" })
                 .unwrap_or("no");
+            // CFG-05（2026-09-16）：键名对齐磁盘真相源。此前读
+            // `approval_timeout`/`audit_retention_days`——模板键实为
+            // `approval_timeout_seconds`/（已删）`audit_log_retention_days`，
+            // 显示恒空，属假姿态。retention 已删（无清扫器），不再显示。
             let approval_timeout = rules_cfg
-                .get("approval_timeout")
-                .and_then(|v| v.as_u64())
-                .unwrap_or(0);
-            let audit_retention = rules_cfg
-                .get("audit_retention_days")
+                .get("approval_timeout_seconds")
                 .and_then(|v| v.as_u64())
                 .unwrap_or(0);
 
@@ -863,9 +932,6 @@ pub async fn run(action: SecurityAction, local: bool) -> Result<()> {
             println!("  File log: {}", file_log);
             if approval_timeout > 0 {
                 println!("  Approval timeout: {}s", approval_timeout);
-            }
-            if audit_retention > 0 {
-                println!("  Audit retention: {} days", audit_retention);
             }
 
             // Show policy settings from main config

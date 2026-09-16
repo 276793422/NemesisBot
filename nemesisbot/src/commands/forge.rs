@@ -62,51 +62,68 @@ pub enum LearningAction {
 // Forge config helpers
 // ---------------------------------------------------------------------------
 
-/// Default forge.json configuration.
-fn default_forge_config() -> serde_json::Value {
-    serde_json::json!({
-        "collect_interval_sec": 300,
-        "reflect_interval_sec": 3600,
-        "min_experiences": 5,
-        "llm_semantic_analysis": true,
-        "default_artifact_status": "draft",
-        "trace_collection": true,
-        "learning_enabled": false,
-        "learning": {
-            "min_pattern_frequency": 3,
-            "high_confidence_threshold": 0.8,
-            "max_auto_creates": 3,
-            "max_refine_rounds": 3,
-            "min_outcome_samples": 5,
-            "monitor_window_days": 7,
-            "degrade_threshold": -0.2,
-            "degrade_cooldown_days": 7,
-            "llm_budget_tokens": 8000
-        }
-    })
-}
+// ── 死代码恢复区（2026-09-16 用户指令：代码不得随便删，注释保留待讨论）
+// ────────────────────────────────────────────────────────────────────────
+// CFG-04 曾删以下三个 CLI-local helper（写死 `<forge>/forge.json` 且键名
+// 与 runtime schema 不匹配，gateway 从不读取，属假姿态；现役实现 = 下方
+// `runtime_forge_config_path` + `nemesis_forge::config` typed 读写）。注释
+// 恢复保留；是否真删/或改造接线，待用户裁决。
+//
+// /// Default forge.json configuration.
+// fn default_forge_config() -> serde_json::Value {
+//     serde_json::json!({
+//         "collect_interval_sec": 300,
+//         "reflect_interval_sec": 3600,
+//         "min_experiences": 5,
+//         "llm_semantic_analysis": true,
+//         "default_artifact_status": "draft",
+//         "trace_collection": true,
+//         "learning_enabled": false,
+//         "learning": {
+//             "min_pattern_frequency": 3,
+//             "high_confidence_threshold": 0.8,
+//             "max_auto_creates": 3,
+//             "max_refine_rounds": 3,
+//             "min_outcome_samples": 5,
+//             "monitor_window_days": 7,
+//             "degrade_threshold": -0.2,
+//             "degrade_cooldown_days": 7,
+//             "llm_budget_tokens": 8000
+//         }
+//     })
+// }
+//
+// /// Load forge config from forge.json.
+// fn load_forge_config(forge_dir: &std::path::Path) -> serde_json::Value {
+//     let config_path = forge_dir.join("forge.json");
+//     if config_path.exists()
+//         && let Ok(data) = std::fs::read_to_string(&config_path)
+//         && let Ok(cfg) = serde_json::from_str::<serde_json::Value>(&data)
+//     {
+//         return cfg;
+//     }
+//     default_forge_config()
+// }
+//
+// /// Save forge config to forge.json.
+// fn save_forge_config(forge_dir: &std::path::Path, cfg: &serde_json::Value) -> Result<()> {
+//     let _ = std::fs::create_dir_all(forge_dir);
+//     let config_path = forge_dir.join("forge.json");
+//     std::fs::write(
+//         &config_path,
+//         serde_json::to_string_pretty(cfg).unwrap_or_default(),
+//     )?;
+//     Ok(())
+// }
+// ── 死代码恢复区结束 ────────────────────────────────────────────────────
 
-/// Load forge config from forge.json.
-fn load_forge_config(forge_dir: &std::path::Path) -> serde_json::Value {
-    let config_path = forge_dir.join("forge.json");
-    if config_path.exists()
-        && let Ok(data) = std::fs::read_to_string(&config_path)
-        && let Ok(cfg) = serde_json::from_str::<serde_json::Value>(&data)
-    {
-        return cfg;
-    }
-    default_forge_config()
-}
-
-/// Save forge config to forge.json.
-fn save_forge_config(forge_dir: &std::path::Path, cfg: &serde_json::Value) -> Result<()> {
-    let _ = std::fs::create_dir_all(forge_dir);
-    let config_path = forge_dir.join("forge.json");
-    std::fs::write(
-        &config_path,
-        serde_json::to_string_pretty(cfg).unwrap_or_default(),
-    )?;
-    Ok(())
+/// Runtime forge config path（CFG-04：与 gateway / Dashboard 同一真相源
+/// `<workspace>/config/config.forge.json`、typed `ForgeConfig`。原 CLI 写死
+/// `<forge>/forge.json` 且键名与 runtime schema 不匹配，gateway 从不读取，
+/// 属假姿态）。
+fn runtime_forge_config_path(forge_dir: &std::path::Path) -> std::path::PathBuf {
+    let workspace = forge_dir.parent().unwrap_or(forge_dir);
+    nemesis_path::resolve_forge_config_path_in_workspace(workspace)
 }
 
 /// Load forge registry from registry.json.
@@ -146,57 +163,31 @@ fn cmd_status(
     };
     println!("  Enabled: {}", enabled);
 
-    // Show forge config details
-    let forge_cfg = load_forge_config(forge_dir);
+    // Show forge config details（CFG-04：runtime 真相源 typed ForgeConfig，
+    // 缺文件时 load 回默认值——展示值与 gateway 实际消费值同源）
+    let forge_config_path = runtime_forge_config_path(forge_dir);
+    let forge_cfg = nemesis_forge::config::load_forge_config(&forge_config_path);
     println!(
         "  Collection interval: {}s",
-        forge_cfg
-            .get("collect_interval_sec")
-            .and_then(|v| v.as_u64())
-            .unwrap_or(300)
+        forge_cfg.collection.interval_secs
     );
     println!(
         "  Reflection interval: {}s",
-        forge_cfg
-            .get("reflect_interval_sec")
-            .and_then(|v| v.as_u64())
-            .unwrap_or(3600)
+        forge_cfg.reflection.interval_secs
     );
     println!(
         "  Min experiences: {}",
-        forge_cfg
-            .get("min_experiences")
-            .and_then(|v| v.as_u64())
-            .unwrap_or(5)
+        forge_cfg.reflection.min_experiences
     );
-    println!(
-        "  LLM semantic analysis: {}",
-        forge_cfg
-            .get("llm_semantic_analysis")
-            .and_then(|v| v.as_bool())
-            .unwrap_or(true)
-    );
+    println!("  LLM semantic analysis: {}", forge_cfg.reflection.use_llm);
     println!(
         "  Default artifact status: {}",
-        forge_cfg
-            .get("default_artifact_status")
-            .and_then(|v| v.as_str())
-            .unwrap_or("draft")
+        forge_cfg.artifacts.default_status
     );
-    println!(
-        "  Trace collection: {}",
-        forge_cfg
-            .get("trace_collection")
-            .and_then(|v| v.as_bool())
-            .unwrap_or(true)
-    );
+    println!("  Trace collection: {}", forge_cfg.trace.enabled);
 
     // Learning status
-    let learning_enabled = forge_cfg
-        .get("learning_enabled")
-        .and_then(|v| v.as_bool())
-        .unwrap_or(false);
-    println!("  Learning enabled: {}", learning_enabled);
+    println!("  Learning enabled: {}", forge_cfg.learning.enabled);
 
     // Show directory status (7 dirs)
     println!();
@@ -227,11 +218,10 @@ fn cmd_status(
         common::status_icon(prompts_dir.exists())
     );
 
-    // Show forge config file path
-    let forge_config = forge_dir.join("forge.json");
+    // Show forge config file path（CFG-04：runtime 真相源路径）
     println!();
-    if forge_config.exists() {
-        println!("  Config: {}", forge_config.display());
+    if forge_config_path.exists() {
+        println!("  Config: {}", forge_config_path.display());
     } else {
         println!("  Config: not created (using defaults)");
     }
@@ -307,10 +297,15 @@ fn cmd_enable(cfg_path: &std::path::Path, forge_dir: &std::path::Path) -> Result
     }
     let _ = std::fs::create_dir_all(forge_dir.join("prompts"));
 
-    // Create forge.json with defaults if not exists
-    let forge_config = forge_dir.join("forge.json");
-    if !forge_config.exists() {
-        save_forge_config(forge_dir, &default_forge_config())?;
+    // Create runtime forge config with typed defaults if not exists
+    // （CFG-04：原写死 <forge>/forge.json 且键名与 runtime schema 不匹配；
+    // 现与 gateway 同源写 typed ForgeConfig 默认值）
+    let forge_config_path = runtime_forge_config_path(forge_dir);
+    if !forge_config_path.exists() {
+        nemesis_forge::config::save_forge_config(
+            &forge_config_path,
+            &nemesis_forge::config::ForgeConfig::default(),
+        )?;
     }
 
     // Create empty registry.json if not exists
@@ -321,7 +316,7 @@ fn cmd_enable(cfg_path: &std::path::Path, forge_dir: &std::path::Path) -> Result
 
     println!("Forge module enabled.");
     println!("  Created 7 workspace directories + prompts");
-    println!("  Configuration: {}", forge_config.display());
+    println!("  Configuration: {}", forge_config_path.display());
     println!("  Restart gateway to apply.");
     Ok(())
 }
@@ -717,89 +712,51 @@ fn cmd_learning_status(forge_dir: &std::path::Path) -> Result<()> {
     println!("Learning Loop Status");
     println!("====================");
 
-    let forge_cfg = load_forge_config(forge_dir);
-    let enabled = forge_cfg
-        .get("learning_enabled")
-        .and_then(|v| v.as_bool())
-        .unwrap_or(false);
-    println!("  Enabled: {}", enabled);
+    // CFG-04：typed ForgeConfig（learning 段必有），明细始终展示。
+    let forge_cfg = nemesis_forge::config::load_forge_config(&runtime_forge_config_path(forge_dir));
+    println!("  Enabled: {}", forge_cfg.learning.enabled);
 
-    // Show detailed learning config
-    if let Some(learning) = forge_cfg.get("learning") {
-        println!();
-        println!("  Configuration:");
-        println!(
-            "    Min Pattern Frequency: {}",
-            learning
-                .get("min_pattern_frequency")
-                .and_then(|v| v.as_u64())
-                .unwrap_or(3)
-        );
-        println!(
-            "    High Confidence Threshold: {}",
-            learning
-                .get("high_confidence_threshold")
-                .and_then(|v| v.as_f64())
-                .unwrap_or(0.8)
-        );
-        println!(
-            "    Max Auto Creates: {}",
-            learning
-                .get("max_auto_creates")
-                .and_then(|v| v.as_u64())
-                .unwrap_or(3)
-        );
-        println!(
-            "    Max Refine Rounds: {}",
-            learning
-                .get("max_refine_rounds")
-                .and_then(|v| v.as_u64())
-                .unwrap_or(3)
-        );
-        println!(
-            "    Min Outcome Samples: {}",
-            learning
-                .get("min_outcome_samples")
-                .and_then(|v| v.as_u64())
-                .unwrap_or(5)
-        );
-        println!(
-            "    Monitor Window (days): {}",
-            learning
-                .get("monitor_window_days")
-                .and_then(|v| v.as_u64())
-                .unwrap_or(7)
-        );
-        println!(
-            "    Degrade Threshold: {}",
-            learning
-                .get("degrade_threshold")
-                .and_then(|v| v.as_f64())
-                .unwrap_or(-0.2)
-        );
-        println!(
-            "    Degrade Cooldown (days): {}",
-            learning
-                .get("degrade_cooldown_days")
-                .and_then(|v| v.as_u64())
-                .unwrap_or(7)
-        );
-        println!(
-            "    LLM Budget Tokens: {}",
-            learning
-                .get("llm_budget_tokens")
-                .and_then(|v| v.as_u64())
-                .unwrap_or(8000)
-        );
-    }
-
-    // Show trace collection status
-    let trace_collection = forge_cfg
-        .get("trace_collection")
-        .and_then(|v| v.as_bool())
-        .unwrap_or(true);
     println!();
-    println!("  Trace Collection: {}", trace_collection);
+    println!("  Configuration:");
+    println!(
+        "    Min Pattern Frequency: {}",
+        forge_cfg.learning.min_pattern_frequency
+    );
+    println!(
+        "    High Confidence Threshold: {}",
+        forge_cfg.learning.high_conf_threshold
+    );
+    println!(
+        "    Max Auto Creates: {}",
+        forge_cfg.learning.max_auto_creates
+    );
+    println!(
+        "    Max Refine Rounds: {}",
+        forge_cfg.learning.max_refine_rounds
+    );
+    println!(
+        "    Min Outcome Samples: {}",
+        forge_cfg.learning.min_outcome_samples
+    );
+    println!(
+        "    Monitor Window (days): {}",
+        forge_cfg.learning.monitor_window_days
+    );
+    println!(
+        "    Degrade Threshold: {}",
+        forge_cfg.learning.degrade_threshold
+    );
+    println!(
+        "    Degrade Cooldown (days): {}",
+        forge_cfg.learning.degradation_cooldown_days
+    );
+    println!(
+        "    LLM Budget Tokens: {}",
+        forge_cfg.learning.llm_budget_tokens
+    );
+
+    println!();
+    println!("  Trace Collection: {}", forge_cfg.trace.enabled);
 
     Ok(())
 }
@@ -807,24 +764,18 @@ fn cmd_learning_status(forge_dir: &std::path::Path) -> Result<()> {
 fn cmd_learning_enable(forge_dir: &std::path::Path) -> Result<()> {
     println!("Enabling learning loop...");
 
-    let mut cfg = load_forge_config(forge_dir);
-    if let Some(obj) = cfg.as_object_mut() {
-        obj.insert(
-            "learning_enabled".to_string(),
-            serde_json::Value::Bool(true),
-        );
-        // Auto-enable trace collection when learning is enabled
-        obj.insert(
-            "trace_collection".to_string(),
-            serde_json::Value::Bool(true),
-        );
-    }
+    // CFG-04：typed read-modify-write，与 gateway 同一真相源。
+    let config_path = runtime_forge_config_path(forge_dir);
+    let mut cfg = nemesis_forge::config::load_forge_config(&config_path);
+    cfg.learning.enabled = true;
+    // Auto-enable trace collection when learning is enabled
+    cfg.trace.enabled = true;
 
     // Ensure learning directory exists
     let _ = std::fs::create_dir_all(forge_dir.join("learning"));
     let _ = std::fs::create_dir_all(forge_dir.join("traces"));
 
-    save_forge_config(forge_dir, &cfg)?;
+    nemesis_forge::config::save_forge_config(&config_path, &cfg)?;
     println!("Learning loop enabled.");
     println!("  Trace collection: auto-enabled");
     println!(
@@ -838,15 +789,11 @@ fn cmd_learning_enable(forge_dir: &std::path::Path) -> Result<()> {
 fn cmd_learning_disable(forge_dir: &std::path::Path) -> Result<()> {
     println!("Disabling learning loop...");
 
-    let mut cfg = load_forge_config(forge_dir);
-    if let Some(obj) = cfg.as_object_mut() {
-        obj.insert(
-            "learning_enabled".to_string(),
-            serde_json::Value::Bool(false),
-        );
-    }
+    let config_path = runtime_forge_config_path(forge_dir);
+    let mut cfg = nemesis_forge::config::load_forge_config(&config_path);
+    cfg.learning.enabled = false;
 
-    save_forge_config(forge_dir, &cfg)?;
+    nemesis_forge::config::save_forge_config(&config_path, &cfg)?;
     println!("Learning loop disabled.");
     Ok(())
 }

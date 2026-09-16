@@ -19,6 +19,9 @@ use nemesis_board::assignment::{Actor, AssignmentType};
 use nemesis_board::models::{
     CommentType, IssueFilter, IssuePatch, IssueStatus, NewComment, NewIssue, ProjectPatch,
 };
+// 只被 cluster 门控的 sync/cascade 系函数使用（batch-3 SAN-06/08）。
+#[cfg(feature = "cluster")]
+use nemesis_board::store::DescendantEdges;
 use std::sync::Arc;
 
 pub struct BoardHandler;
@@ -445,6 +448,47 @@ pub fn install_baseline_pusher(pusher: Arc<BaselinePusher>) -> bool {
     BASELINE_PUSHER.set(pusher).is_ok()
 }
 
+// ---------------------------------------------------------------------------
+// EST-01/02（2026-09-16 横扫加固）：看板派发族的 estop 闸。
+// estop 生效时全部自动/手动派发诚实冻结，而不是照常发车（此前 board 侧
+// 完全不感知 estop——急停只冻结 agent loop，看板 cron/补派/停车场 sweep
+// 会继续向 worker 派新任务）。同 BASELINE_PUSHER 理由：AppState 全库字面
+// 构造测试点太多，加字段是断点级改动，故走模块级 OnceLock 注入。gateway
+// 装配时注册；未注册（单测/极简装配）= 闸不生效（等价旧行为）。
+// ---------------------------------------------------------------------------
+
+/// 模块级 estop 状态槽（gateway 启动注入，与 AppState.estop 同一实例）。
+#[cfg(feature = "cluster")]
+static BOARD_ESTOP: std::sync::OnceLock<Arc<nemesis_agent::estop::EstopState>> =
+    std::sync::OnceLock::new();
+
+/// 装配看板 estop 闸（gateway 启动期调用一次；重复装配保留首份）。
+#[cfg(feature = "cluster")]
+pub fn install_board_estop(estop: Arc<nemesis_agent::estop::EstopState>) -> bool {
+    BOARD_ESTOP.set(estop).is_ok()
+}
+
+/// estop 是否生效中（未装配 = false，等价旧无闸行为）。
+#[cfg(feature = "cluster")]
+fn board_estop_engaged() -> bool {
+    estop_dispatch_frozen(BOARD_ESTOP.get().map(|e| e.as_ref()))
+}
+
+/// estop 闸判定可测内核（BOARD_ESTOP 是进程级 OnceLock——engaged 态若在
+/// 单测内联装配会与并行测试的派发路径互踩，故判定逻辑走纯函数，全局接线
+/// 仅一行由 gateway 装配保证，同 BASELINE_PUSHER「单测不装配零波及」先例）。
+#[cfg(feature = "cluster")]
+fn estop_dispatch_frozen(estop: Option<&nemesis_agent::estop::EstopState>) -> bool {
+    estop.is_some_and(|e| e.is_engaged())
+}
+
+/// estop 冻结拒绝文案（EST 族统一出口）。
+#[cfg(feature = "cluster")]
+fn estop_frozen_error() -> String {
+    "⛔ 急停（estop）生效中，派发已冻结：`estop --release` 释放后恢复（定时/补派触发器会自动重派）"
+        .to_string()
+}
+
 /// 派发基线下发（E2）。项目档案仓库幂等 ensure → HEAD 树导出 staging →
 /// 分块推给 worker（对端收件箱 `<workspace>/cluster/inbox/<task_id>/`）。
 /// 返回 `Ok(Some(commit))` = 档案管线派发（基线已落地并记账）；
@@ -553,6 +597,12 @@ pub fn dispatch_issue_core(
     actor: &Actor,
     review_feedback: Option<&str>,
 ) -> Result<serde_json::Value, String> {
+    // EST-01/02（派发单一入口 = 唯一落点）：estop 生效中一律诚实拒绝——
+    // 释放后既有触发器（autopilot cron / 补派 / 停车场 sweep / 评审 fuse）
+    // 自然覆盖恢复，无新增停车机制。
+    if board_estop_engaged() {
+        return Err(estop_frozen_error());
+    }
     let issue = store.get_issue(issue_id)?;
 
     // P5/F2 冲突冻结闸（派发单一入口 = 唯一落点）：项目冲突冻结中一律
@@ -1207,6 +1257,22 @@ pub(crate) static RESUME_REPLAY_HOOK: std::sync::OnceLock<ResumeReplayHook> =
 /// gateway 安装回放钩子（幂等；重复安装以首次为准——OnceLock 语义）。
 pub fn set_resume_replay_hook(hook: ResumeReplayHook) {
     let _ = RESUME_REPLAY_HOOK.set(hook);
+}
+
+/// S-O1 合并停车人工重试钩子（依赖倒置同 [`RESUME_REPLAY_HOOK`] 先例）：
+/// 重试真相源在 nemesisbot::board_archive_ingest（`retry_merge_for_issue`，
+/// 扫档案树 placement 凭据反查 task → 重新登记 PLACED → 重走合并触发）。
+/// 入参 issue 引用，出参逐 task 重试明细 JSON。
+pub(crate) type RetryMergeHook = std::sync::Arc<
+    dyn Fn(&nemesis_board::models::Issue) -> Result<serde_json::Value, String> + Send + Sync,
+>;
+
+pub(crate) static RETRY_MERGE_HOOK: std::sync::OnceLock<RetryMergeHook> =
+    std::sync::OnceLock::new();
+
+/// gateway 安装重试钩子（幂等；OnceLock 语义）。
+pub fn set_retry_merge_hook(hook: RetryMergeHook) {
+    let _ = RETRY_MERGE_HOOK.set(hook);
 }
 
 /// plan 预览缓存（plan_id → 预览）。模块级 static 而非 AppState 字段：
@@ -2023,6 +2089,12 @@ pub fn sweep_parked_dispatches_with_config(
     notify_park: bool,
 ) -> (usize, usize, usize) {
     let _serial = PARK_SWEEP_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    // EST-02（2026-09-16 横扫加固）：estop 生效中 sweep 短路——派发核心
+    // 的 estop 闸本会逐单拒绝，这里提前收敛，避免 20s 周期对全部停车候选
+    // 的无效报错 churn。release 后（resume watcher / 定时器）自然恢复。
+    if board_estop_engaged() {
+        return (0, 0, 0);
+    }
     let candidates = match store.list_dispatch_park_candidates() {
         Ok(c) => c,
         Err(e) => {
@@ -2408,67 +2480,120 @@ fn match_failure_detail(
     lines.join("；")
 }
 
-/// 父单状态联动：子单全部 done → 父单 in_review；任一子单 cancelled →
-/// 父单 in_review + 系统评论标注缺口（人工裁决重开或取消）。backlog/todo
-/// 先推 in_progress（状态机不允许跨列）。终态父单与无子单的 issue 不动。
+/// 父单状态联动：子树（Subtree 闭包，SAN-06/08）全部 done → 父单
+/// in_review；子树任一 cancelled → 父单 in_review + 系统评论标注缺口（人工
+/// 裁决重开或取消）。backlog/todo 先推 in_progress（状态机不允许跨列）。
+/// **沿祖先链向上传播**（visited 防环）：终态父单不再早退阻断——状态机
+/// 拒绝终态转移（不强行推列）但缺口评论照写、上层继续重估。旧实现只动
+/// 直接父单且终态早退，中间层 done 之后其下取消叶子对上层永久冻结（收口
+/// 汇报声称完成而子树实际存在取消缺口）。
 #[cfg(feature = "cluster")]
 pub fn sync_parent_status(
     store: &Arc<BoardStore>,
     parent_id: i64,
     actor: &Actor,
 ) -> Result<(), String> {
+    let mut visited: std::collections::HashSet<i64> = std::collections::HashSet::new();
+    let mut cur = Some(parent_id);
+    while let Some(pid) = cur {
+        if !visited.insert(pid) {
+            break; // 数据异常 parent 自引用——防御性截断
+        }
+        cur = sync_one_parent(store, pid, actor)?;
+    }
+    Ok(())
+}
+
+/// 单层联动（[`sync_parent_status`] 内部）：评估 parent 的整棵子树并推
+/// 进状态 → 返回再上一层父单 id（None = 已到顶）。
+#[cfg(feature = "cluster")]
+fn sync_one_parent(
+    store: &Arc<BoardStore>,
+    parent_id: i64,
+    actor: &Actor,
+) -> Result<Option<i64>, String> {
     let parent = store.get_issue(parent_id)?;
-    if parent.status.is_terminal() {
-        return Ok(());
+    let next = parent.parent_issue_id;
+    let terminal = parent.status.is_terminal();
+    // 子树闭包（SAN-08 Subtree）：只走父子边，穿过中间层看全部后代。
+    let subtree = store.descendants(&[parent_id], DescendantEdges::Subtree);
+    if subtree.is_empty() {
+        return Ok(next);
     }
-    let children = store.list_children(parent_id)?;
-    if children.is_empty() {
-        return Ok(());
-    }
-    let all_done = children.iter().all(|c| c.status == IssueStatus::Done);
-    let any_cancelled = children.iter().any(|c| c.status == IssueStatus::Cancelled);
+    let all_done = subtree.iter().all(|c| c.status == IssueStatus::Done);
+    let any_cancelled = subtree.iter().any(|c| c.status == IssueStatus::Cancelled);
     if !all_done && !any_cancelled {
-        return Ok(());
+        return Ok(next);
     }
 
     // backlog/todo 不能直接进 in_review，先垫 in_progress（blocked 同理：
     // blocked→in_progress 合法而 blocked→in_review 非法——B5 停车联动的
-    // 受阻父单全子落定走这里必须先垫）。
-    if matches!(
-        parent.status,
-        IssueStatus::Backlog | IssueStatus::Todo | IssueStatus::Blocked
-    ) {
+    // 受阻父单全子落定走这里必须先垫）。终态父单跳过一切推列。
+    if !terminal
+        && matches!(
+            parent.status,
+            IssueStatus::Backlog | IssueStatus::Todo | IssueStatus::Blocked
+        )
+    {
         store.transition_issue(parent_id, IssueStatus::InProgress, actor)?;
     }
     if all_done {
-        if parent.status != IssueStatus::InReview {
+        if !terminal && parent.status != IssueStatus::InReview {
             store.transition_issue(parent_id, IssueStatus::InReview, actor)?;
         }
         // 全自动流转 P1（A3）：子单全部落定 → 触发父单收口验收钩子。
         // 旗标判定在 hook 内（未注册 / auto_close_parent=false = no-op，
-        // 等价现行为）；cancelled 缺口闸也在 hook 侧。
-        if let Some(hook) = PARENT_REVIEW_HOOK.get() {
+        // 等价现行为）；cancelled 缺口闸也在 hook 侧。终态父单已收过口，
+        // 不重复触发。
+        if !terminal && let Some(hook) = PARENT_REVIEW_HOOK.get() {
             hook(parent_id);
         }
-    } else if parent.status != IssueStatus::InReview {
+    } else if !terminal && parent.status != IssueStatus::InReview {
         store.transition_issue(parent_id, IssueStatus::InReview, actor)?;
-        let gap: Vec<String> = children
-            .iter()
-            .filter(|c| c.status != IssueStatus::Done)
-            .map(|c| format!("{}（{}）", c.number, c.status))
-            .collect();
-        store.add_comment(nemesis_board::NewComment {
-            issue_id: parent_id,
-            author: nemesis_board::Actor::system("board"),
-            content: format!(
+    }
+    if !all_done {
+        // 缺口评论列全子树非 done 项（旧实现只列直接子单——孙层缺口不可
+        // 见）。终态父单（无法推列）也写：SAN-06 冻结缺口就此显形而非
+        // 永久沉默。非终态父单维持旧防重语义（已在 in_review 不重复写）。
+        if terminal || parent.status != IssueStatus::InReview {
+            let gap: Vec<String> = subtree
+                .iter()
+                .filter(|c| c.status != IssueStatus::Done)
+                .map(|c| format!("{}（{}）", c.number, c.status))
+                .collect();
+            let content = format!(
                 "⚠ 子任务存在未完成项，父任务收口进评审等待人工裁决：{}",
                 gap.join("、")
-            ),
-            parent_id: None,
-            ctype: nemesis_board::CommentType::System,
-        })?;
+            );
+            // C-F4（复核 2026-09-16）：终态父单缺口评论去重——terminal 分支
+            // 没有状态变化可依（旧防重语义「已在 in_review 不重复写」对终态
+            // 单恒不命中），此后每次子单落定触发 sync 都会重写同款评论刷屏。
+            // 与最近一条同款系统评论逐字比较，内容未变则跳过；缺口集合变化
+            // 时仍会补写显形（SAN-06 语义不变）。
+            let duplicated = store
+                .list_comments(parent_id)
+                .map(|cs| {
+                    cs.iter()
+                        .rev()
+                        .find(|cm| {
+                            cm.ctype == nemesis_board::CommentType::System
+                                && cm.content.starts_with("⚠ 子任务存在未完成项")
+                        })
+                        .is_some_and(|cm| cm.content == content)
+                })
+                .unwrap_or(false);
+            if !duplicated {
+                store.add_comment(nemesis_board::NewComment {
+                    issue_id: parent_id,
+                    author: nemesis_board::Actor::system("board"),
+                    content,
+                    parent_id: None,
+                    ctype: nemesis_board::CommentType::System,
+                })?;
+            }
+        }
     }
-    Ok(())
+    Ok(next)
 }
 
 /// 子单落定（done/cancelled）后的联动 = M1 补派触发器 + 父单收口：扫
@@ -2568,16 +2693,21 @@ fn spawn_task_cancel(
     });
 }
 
-/// 级联取消（B1 + F-U4-3）：root 落 cancelled 后，两条「挂在我身上就会
-/// 陪葬」的边全部级联——**依赖边**（`dependents_of`：依赖我的单，依赖闸
-/// 只认 done，死链显形）+ **父子边**（`list_children`：planner 拆解的
-/// 依赖边是兄弟链、从不指向父单，只走依赖边则 cancel 父单恒零级联，子单
-/// 沦为僵尸 backlog 且补派触发器还会继续派它们空烧 token）。全部**非终态**
-/// 传递节点取消（BFS + visited 防环）；在途派发连带取消（竞态守卫赢才动
-/// 派发行 + 集群在则下行 task_cancel）。每单系统评论留痕（状态机自带
-/// status_change 评论 + 活动 + 通知）；各父单经 [`sync_parent_status`]
-/// any_cancelled 分支进 in_review + 缺口评论。终态单（done/cancelled）不动。
-/// 返回被连带取消的编号列表（C3：cancel 响应体披露，不再无声）。
+/// 级联取消（B1 + F-U4-3 + SAN-08）：root 落 cancelled 后，两条「挂在
+/// 我身上就会陪葬」的边全部级联——**依赖边**（`dependents_of`：依赖我的
+/// 单，依赖闸只认 done，死链显形）+ **父子边**（`list_children`：planner
+/// 拆解的依赖边是兄弟链、从不指向父单，只走依赖边则 cancel 父单恒零级联，
+/// 子单沦为僵尸 backlog 且补派触发器还会继续派它们空烧 token）。遍历统一
+/// 走 [`nemesis_board::store::BoardStore::descendants`]（依赖∪父子闭包，
+/// visited 防环）——**穿过终态单继续下探**：旧手搓 BFS 在终态单上直接
+/// 跳过且不入队，done/cancelled 中间节点之下的死链从此不可见（依赖链
+/// 穿不过已完成的环节）。终态过滤在动作侧：只有非终态节点被取消。
+/// 在途派发连带取消（竞态守卫赢才动派发行 + 集群在则下行 task_cancel）。
+/// 每单系统评论留痕（状态机自带 status_change 评论 + 活动 + 通知）；各
+/// 父单经 [`sync_parent_status`] any_cancelled 分支进 in_review + 缺口
+/// 评论。传导断路：某节点取消失败（竞态输给 worker 完成）则其下游不再
+/// 连带取消（与旧「失败不入队」语义等价）。返回被连带取消的编号列表
+/// （C3：cancel 响应体披露，不再无声）。
 #[cfg(feature = "cluster")]
 fn cascade_cancel_dependents(
     store: &Arc<BoardStore>,
@@ -2586,71 +2716,63 @@ fn cascade_cancel_dependents(
     actor: &Actor,
 ) -> Vec<String> {
     let mut cascaded: Vec<String> = Vec::new();
-    let mut queue: Vec<i64> = vec![root_id];
-    let mut visited: std::collections::HashSet<i64> = std::collections::HashSet::from([root_id]);
-    while let Some(cur) = queue.pop() {
-        let Ok(cur_issue) = store.get_issue(cur) else {
+    let Ok(root_issue) = store.get_issue(root_id) else {
+        return cascaded;
+    };
+    let mut stopped: std::collections::HashSet<i64> = std::collections::HashSet::new();
+    for dep in store.descendants(&[root_id], DescendantEdges::CascadeUnion) {
+        if dep.status.is_terminal() {
             continue;
-        };
-        // 下一跳 = 依赖边 dependents ∪ 父子边 children。
-        let mut next: Vec<i64> = match store.dependents_of(cur) {
-            Ok(deps) => deps,
-            Err(e) => {
-                tracing::warn!("[Board] dependents_of({cur}) 查询失败：{e}");
-                Vec::new()
-            }
-        };
-        match store.list_children(cur) {
-            Ok(children) => next.extend(children.iter().map(|c| c.id)),
-            Err(e) => tracing::warn!("[Board] list_children({cur}) 查询失败：{e}"),
         }
-        for dep_id in next {
-            if !visited.insert(dep_id) {
-                continue;
-            }
-            let Ok(dep) = store.get_issue(dep_id) else {
-                continue;
-            };
-            if dep.status.is_terminal() {
-                continue;
-            }
-            let _ = store.add_comment(nemesis_board::NewComment {
-                issue_id: dep.id,
-                author: nemesis_board::Actor::system("board"),
-                content: format!(
-                    "⛔ {} 已取消，本单级联取消（父单或依赖取消即死链；可 issue.reopen 复活）",
-                    cur_issue.number
-                ),
-                parent_id: None,
-                ctype: nemesis_board::CommentType::System,
-            });
-            // 在途派发连带取消：竞态守卫（赢 = 终结派发行）→ 集群在则下行
-            // task_cancel（worker 不再空烧）。输给 worker 回报/超时 sweep →
-            // 不动派发行（随后的 transition 状态机会诚实拒绝）。
-            if let Ok(Some(d)) = store.get_active_dispatch(dep.id) {
-                match store.cancel_dispatch(&d.task_id, actor) {
-                    Ok(Some(_)) => {
-                        if let Some(c) = cluster {
-                            spawn_task_cancel(store, c, dep.id, &d.worker_id, &d.task_id);
-                        }
-                    }
-                    Ok(None) => {}
-                    Err(e) => {
-                        tracing::warn!("[Board] 级联取消 {} 在途派发失败：{e}", dep.number)
-                    }
+        // 传导断路：任一直接上游（父单/依赖）取消失败 → 本单不再连带。
+        let mut upstream_blocked = dep.parent_issue_id.is_some_and(|p| stopped.contains(&p));
+        if !upstream_blocked {
+            match store.dependencies_of(dep.id) {
+                Ok(ups) => upstream_blocked |= ups.iter().any(|u| stopped.contains(u)),
+                Err(e) => {
+                    tracing::warn!("[Board] 级联取消 dependencies_of({}) 查询失败：{e}", dep.id)
                 }
             }
-            if let Err(e) = store.transition_issue(dep.id, IssueStatus::Cancelled, actor) {
-                tracing::warn!("[Board] 级联取消 {} 失败：{e}", dep.number);
-                continue;
+        }
+        if upstream_blocked {
+            continue;
+        }
+        let _ = store.add_comment(nemesis_board::NewComment {
+            issue_id: dep.id,
+            author: nemesis_board::Actor::system("board"),
+            content: format!(
+                "⛔ {} 已取消，本单级联取消（父单或依赖取消即死链；可 issue.reopen 复活）",
+                root_issue.number
+            ),
+            parent_id: None,
+            ctype: nemesis_board::CommentType::System,
+        });
+        // 在途派发连带取消：竞态守卫（赢 = 终结派发行）→ 集群在则下行
+        // task_cancel（worker 不再空烧）。输给 worker 回报/超时 sweep →
+        // 不动派发行（随后的 transition 状态机会诚实拒绝）。
+        if let Ok(Some(d)) = store.get_active_dispatch(dep.id) {
+            match store.cancel_dispatch(&d.task_id, actor) {
+                Ok(Some(_)) => {
+                    if let Some(c) = cluster {
+                        spawn_task_cancel(store, c, dep.id, &d.worker_id, &d.task_id);
+                    }
+                }
+                Ok(None) => {}
+                Err(e) => {
+                    tracing::warn!("[Board] 级联取消 {} 在途派发失败：{e}", dep.number)
+                }
             }
-            cascaded.push(dep.number.clone());
-            if let Some(pid) = dep.parent_issue_id
-                && let Err(e) = sync_parent_status(store, pid, actor)
-            {
-                tracing::warn!("[Board] 级联取消后父单 {pid} 联动失败：{e}");
-            }
-            queue.push(dep.id);
+        }
+        if let Err(e) = store.transition_issue(dep.id, IssueStatus::Cancelled, actor) {
+            tracing::warn!("[Board] 级联取消 {} 失败：{e}", dep.number);
+            stopped.insert(dep.id);
+            continue;
+        }
+        cascaded.push(dep.number.clone());
+        if let Some(pid) = dep.parent_issue_id
+            && let Err(e) = sync_parent_status(store, pid, actor)
+        {
+            tracing::warn!("[Board] 级联取消后父单 {pid} 联动失败：{e}");
         }
     }
     cascaded
@@ -2894,6 +3016,15 @@ pub fn fire_autopilot(
     actor: &Actor,
     auto_plan: Option<&AutoPlanContext>,
 ) -> Result<serde_json::Value, String> {
+    // EST-03（复核 2026-09-16）：入口前置闸——estop 中 autopilot 不建单。
+    // 此前闸只在下游（dispatch_issue_core / execute_plan_chain 派发点），
+    // estop 中到点的规则仍先建出单再在派发/拆解处失败，留下孤儿单 + 失败
+    // 评论噪音。前置拒绝：cron 下一轮到点自动重试（estop_frozen_error
+    // 文案已声明该语义）。非 cluster 版 fire_autopilot 只做纯建单（target
+    // 必须空、auto_plan 降级），无 agent 活动链，不设闸。
+    if board_estop_engaged() {
+        return Err(estop_frozen_error());
+    }
     let target = ap.target.trim().to_string();
     if !target.is_empty() && cluster.is_none() {
         return Err(format!(
@@ -3289,6 +3420,9 @@ impl ModuleHandler for BoardHandler {
             "channel.messages",
             "channel.post",
             "stats",
+            "audit.list",
+            "audit.rollback",
+            "audit.retry_merge",
             "config.get",
             "config.set",
         ]
@@ -4080,6 +4214,25 @@ impl ModuleHandler for BoardHandler {
                 Ok(Some(
                     serde_json::json!({ "rolled_back": true, "issue": issue }),
                 ))
+            }
+            // S-O1：合并停车人工重试（按 issue 扫档案树未合并 placement 重走合并）。
+            "audit.retry_merge" => {
+                let data = data.ok_or("missing data")?;
+                let id = data
+                    .get("id")
+                    .and_then(|v| v.as_i64())
+                    .ok_or("missing field: id")?;
+                let issue = store.get_issue(id)?;
+                let hook = RETRY_MERGE_HOOK
+                    .get()
+                    .ok_or("合并重试钩子未安装（gateway 未装配档案合并依赖）")?;
+                let result = hook(&issue)?;
+                tracing::info!(
+                    "[Board] audit.retry_merge issue={} → {}",
+                    issue.number,
+                    result
+                );
+                Ok(Some(result))
             }
             // --- config（全自动流转 P1/A4：配置 TAB 读写 board 段旗标）---
             "config.get" => {

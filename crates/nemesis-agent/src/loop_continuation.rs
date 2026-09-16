@@ -448,7 +448,12 @@ impl ContinuationStore {
     }
 
     fn snapshot_path(&self, task_id: &str) -> PathBuf {
-        self.base_dir.join(format!("{}.json", task_id))
+        // SAN-02：task_id 可能模型影响（cluster_rpc args）——路径成分前
+        // 白名单消毒（真实 `task_*`/`bg_*` id 映射不变）。
+        self.base_dir.join(format!(
+            "{}.json",
+            nemesis_utils::sanitize::sanitize_path_segment(task_id)
+        ))
     }
 }
 

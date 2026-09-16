@@ -152,7 +152,8 @@ pub struct RequestProjectionRecord {
 /// (`logs/boundary/`) with a `.replay.jsonl` suffix so it never collides with
 /// the flat `<key>.jsonl` boundary-event file (which carries no bodies).
 fn replay_ledger_path(session_key: &str) -> PathBuf {
-    let safe_key = session_key.replace(':', "_");
+    // SAN-01/SAN-05：与 chat_log 落盘同源的白名单消毒。
+    let safe_key = nemesis_utils::sanitize::sanitize_path_segment(session_key);
     default_path_manager()
         .boundary_events_dir()
         .join(format!("{}.replay.jsonl", safe_key))

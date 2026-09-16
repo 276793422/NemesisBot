@@ -1,5 +1,7 @@
 {
   "default_action": "allow",
+  "exec_unknown_policy": "allow",
+  "guardian_failure_policy": "ask",
   "log_all_operations": true,
   "layers": {
     "dlp": {
@@ -89,6 +91,10 @@
       {
         "pattern": "/Library/**",
         "action": "deny"
+      },
+      {
+        "pattern": "*",
+        "action": "ask"
       }
     ]
   },
@@ -132,6 +138,22 @@
       },
       {
         "pattern": "rm -rf *",
+        "action": "ask"
+      },
+      {
+        "pattern": "find*-delete*",
+        "action": "ask"
+      },
+      {
+        "pattern": "find*-exec*rm*",
+        "action": "ask"
+      },
+      {
+        "pattern": "dd of=*",
+        "action": "ask"
+      },
+      {
+        "pattern": "mkfs*",
         "action": "ask"
       },
       {

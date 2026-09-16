@@ -31,21 +31,12 @@ const SPILL_PREVIEW_CHARS: usize = 2000;
 /// follows an alphanumeric (so `..`, `./`, `a..` collapse). Everything else
 /// collapses to `_`; a segment that sanitizes to empty (or to a dot-form)
 /// becomes `_`.
+///
+/// SAN-05：本函数曾是仓内唯一的白名单消毒器（金标准），已晋升为
+/// `nemesis_utils::sanitize::sanitize_path_segment` 单一真相源；此处保留
+/// 薄包装维持模块内调用点与测试不动。
 fn sanitize_segment(raw: &str) -> String {
-    let mut out = String::with_capacity(raw.len());
-    for c in raw.chars() {
-        let ok = c.is_ascii_alphanumeric()
-            || c == '-'
-            || c == '_'
-            || (c == '.' && out.ends_with(|p: char| p.is_ascii_alphanumeric()));
-        out.push(if ok { c } else { '_' });
-    }
-    // Guard against `.`/`..` after sanitization and empty names.
-    if out.is_empty() || out == "." || out == ".." {
-        out.push('_');
-    }
-    // Cap length: a hostile very-long id should not blow path limits.
-    out.chars().take(80).collect()
+    nemesis_utils::sanitize::sanitize_path_segment(raw)
 }
 
 /// Where a spill file lands: `<spill_root>/<sanitized session>/<stamp>_<sanitized call_id>.txt`.

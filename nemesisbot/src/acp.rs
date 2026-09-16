@@ -936,6 +936,10 @@ impl PromptDriver for LoopDriver {
 /// （main 侧 `ensure_default_logger` 为 stderr 形态；stdout 是协议帧专用
 /// 通道，任何打印都会污染协议流）。
 pub async fn run_server(home: PathBuf) -> Result<(), String> {
+    // D-3（复核 2026-09-16）：会话日志平化迁移（SAN-01/D4）与 gateway 同源
+    // （幂等 best-effort）——ACP 每会话 K1 式装配会读写 session_logs，
+    // 旧嵌套目录历史先平化再服务。
+    nemesis_agent::chat_log::migrate_nested_session_logs();
     let factory = Arc::new(RealSessionFactory { home });
     let version = crate::common::format_version();
     serve(tokio::io::stdin(), tokio::io::stdout(), factory, version).await

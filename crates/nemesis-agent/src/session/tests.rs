@@ -196,13 +196,19 @@ fn test_session_store_disk_persistence() {
 }
 
 #[test]
-fn test_session_store_save_invalid_key() {
+fn test_session_store_save_degenerate_key_normalizes() {
     let dir = tempfile::tempdir().unwrap();
     let store = SessionStore::new_with_storage(dir.path());
-    // The key ".." should be rejected (it becomes "." after sanitize, which is rejected).
+    // SAN-05 单一真相源契约：退化键不再报错，而是消毒成合法段落盘
+    // （`..` → `__`，点守卫逐字符替换；save() 内 post-sanitize 守卫降级为
+    // 不变量 tripwire，按契约不可达）。
     store.get_or_create("..");
     let result = store.save("..");
-    assert!(result.is_err());
+    assert!(
+        result.is_ok(),
+        "degenerate key normalizes, not errors: {result:?}"
+    );
+    assert!(dir.path().join("__.json").exists());
 }
 
 #[test]

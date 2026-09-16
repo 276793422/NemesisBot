@@ -2574,14 +2574,15 @@ impl Tool for TodoWriteTool {
             serde_json::from_str(args).map_err(|e| format!("invalid todowrite args: {e}"))?;
         let todos = parsed.todos;
 
-        // 存储路径：sessions/todo_{safe_session_key}.json。安全化：':' / '/'
-        // / '\\' 一律 → '_'（F-U4-4：B 端 peer_chat 复合键
+        // 存储路径：sessions/todo_{safe_session_key}.json。安全化走仓内
+        // 单一真相源白名单消毒（SAN-05；F-U4-4：B 端 peer_chat 复合键
         // `cluster_rpc:{node}/{chat}` 含 '/'（peer_chat_handler 设计：chat_id
         // 可能含 ':'，故用 '/' 分隔），只替换 ':' 会把文件名拆出中间目录 →
-        // write os error 3，2026-09-15 真机实证；nemesis-session 对 '/' 的
-        // 立场是整单拒绝，此处工具语义选择中和保可用——两处注释互指，漂移
-        // 时一起改）。
-        let safe_key = context.session_key.replace([':', '/', '\\'], "_");
+        // write os error 3，2026-09-15 真机实证；当时本地实现
+        // `replace([':', '/', '\\'], "_")`，现升级为
+        // nemesis_utils::sanitize::sanitize_path_segment，对运行时键族映射
+        // 一致，另兜住 `..` 与超长输入）。
+        let safe_key = nemesis_utils::sanitize::sanitize_path_segment(&context.session_key);
         let dir = nemesis_path::resolve_sessions_dir_in_workspace(&self.workspace);
         let path = dir.join(format!("todo_{safe_key}.json"));
 

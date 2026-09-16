@@ -730,6 +730,17 @@ async fn review_issue(
         match run_review_panel(agent_loop, &prompt, tool_mode, cfg.review.checkers).await {
             Ok(ok) => ok,
             Err(last_err) => {
+                // S-O2 迟到评审守卫（评审自身失败路径）：评审期间单据已被
+                // 人工改状态 → 不落评论不重派，让位人工（无 verdict 可留痕）。
+                if !review_still_relevant(
+                    store,
+                    issue_id,
+                    deps.cluster.node_id(),
+                    "parse_failed",
+                    "子单验收",
+                ) {
+                    return Ok(false);
+                }
                 // 无限模式：解析失败同 UNSURE 语义——带说明继续重派（不转人工）；
                 // 差距段给诚实占位（评审系统自身故障不冒充任务差距）。
                 if cfg.unlimited_mode {
@@ -783,6 +794,19 @@ async fn review_issue(
             }
         }
     };
+
+    // S-O2 迟到评审守卫：LLM 评审期间单据被人工改状态（reopen/取消等）
+    // 则结论整体让位——取证挂起与下方任何处置分支（含最危险的迟到重派）
+    // 都不再执行。
+    if !review_still_relevant(
+        store,
+        issue_id,
+        deps.cluster.node_id(),
+        output.verdict.as_str(),
+        "子单验收",
+    ) {
+        return Ok(false);
+    }
 
     // ---- B2b 取证挂起（P4）：评审需要更多证据 → 向执行 worker 发一轮自检。
     // 挂起在经验落库之前（评审未定案不蒸馏）；锚点短路输出无 need_evidence
@@ -856,6 +880,12 @@ async fn review_issue(
         unlimited,
     ) {
         ReviewAction::AutoAccept => {
+            // EST-03（2026-09-16 横扫加固）：评审 LLM 是长跑——发起时 estop
+            // 可能尚未触发、结束时已挂起。收货落 done 前补一道检查点：挂起
+            // 即停车入队（release 复评恢复），不越过急停继续自动流转。
+            if estop_fuse_engaged(deps, issue_id, ParkedKind::Issue) {
+                return Ok(false);
+            }
             record_auto_decide(
                 store,
                 issue_id,
@@ -1382,6 +1412,52 @@ pub(crate) fn record_auto_decide(
     }
 }
 
+/// S-O2 迟到评审守卫（2026-09-16 showcase 复跑实证）：评审 LLM 异步跑数
+/// 分钟，返回时单据可能已被人工 cancel→reopen / 改状态。`transition_issue`
+/// 是纯有向边校验——`backlog→done` 是合法边，它不挡迟到结论（实证：NB-2
+/// 评审 spawn 后单据被 reopen，迟到 PASS 把 backlog 单直接置 done，依据是
+/// 旧交付线程）。结论落地前必须显式复查单据仍在 in_review（评审的法定
+/// 起点，与 review_issue 开头的 spawn 前校验对称）；已不在 = 人工干预在先，
+/// 自动结论整体让位：丢弃 + 审计留痕 + WARN。返回 false = 结论已丢弃
+/// （调用方按「未处置」收尾，与 estop 冻结同语义）。
+fn review_still_relevant(
+    store: &nemesis_board::BoardStore,
+    issue_id: i64,
+    node_id: &str,
+    verdict: &str,
+    phase: &str,
+) -> bool {
+    let current = match store.get_issue(issue_id) {
+        Ok(issue) => issue.status,
+        Err(e) => {
+            warn!(
+                "[BoardReview] {phase} issue {issue_id} 迟到结论复查状态失败（{e}），丢弃让位人工"
+            );
+            return false;
+        }
+    };
+    if current == IssueStatus::InReview {
+        return true;
+    }
+    warn!(
+        "[BoardReview] {phase} issue {issue_id} 评审期间状态已变为 {}（人工干预在先），迟到结论丢弃让位",
+        current
+    );
+    record_auto_decide(
+        store,
+        issue_id,
+        node_id,
+        "stale_review_discarded",
+        verdict,
+        serde_json::json!({
+            "phase": phase,
+            "current_status": current.as_str(),
+            "reason": "issue left in_review while review was in flight",
+        }),
+    );
+    false
+}
+
 /// 经验落库（M4.5 蒸馏写闸；子单/父单评审共用单一真相源）。空壳条目
 /// 丢弃；失败只 warn 不炸评审流程。
 fn store_experience(
@@ -1430,9 +1506,11 @@ pub(crate) fn spawn_parent_review(deps: BoardReviewDeps, parent_id: i64) {
 }
 
 /// 父单收口评审的项目目录产物证据段（F-U3-6）。清单全列（相对路径 +
-/// 大小），小文本文件附内容节选；`records/`（执行档案）、`__pycache__`
-/// 等管线目录与 `.baseline.json` 基线戳排除。内容条数 / 总条数双上限
-/// 防 prompt 爆炸，超出诚实注记。目录不可读时诚实注记（不炸评审）。
+/// 大小），小文本文件附内容节选；看板管线目录 `records/`、`.baseline.json`
+/// 基线戳与 transfer walk 同源的噪音排除集（SAN-09：venv/缓存等——两处
+/// 谓词漂移会让噪音挤占 200 条上限、把真实交付证据挤出评审 prompt）排除。
+/// symlink 不跟随（SAN-09：防外部树拉进评审 prompt）。内容条数 / 总条数
+/// 双上限防 prompt 爆炸，超出诚实注记。目录不可读时诚实注记（不炸评审）。
 fn render_project_artifacts_evidence(dir: &std::path::Path) -> String {
     /// 内容节选的文件大小上限（字节）。
     const CONTENT_MAX_BYTES: u64 = 8 * 1024;
@@ -1443,8 +1521,9 @@ fn render_project_artifacts_evidence(dir: &std::path::Path) -> String {
     /// 单文件内容节选字符上限。
     const CONTENT_SNIPPET_CHARS: usize = 2000;
 
-    fn is_pipeline_dir(name: &str) -> bool {
-        matches!(name, "records" | "__pycache__" | ".git" | "node_modules")
+    /// 看板执行档案目录（transfer walk 不知道的看板专属管线产物）。
+    fn is_board_pipeline_dir(name: &str) -> bool {
+        name == "records"
     }
 
     fn is_texty(name: &str) -> bool {
@@ -1491,12 +1570,25 @@ fn render_project_artifacts_evidence(dir: &std::path::Path) -> String {
             } else {
                 format!("{rel}/{name}")
             };
-            if path.is_dir() {
-                if !is_pipeline_dir(&name) {
+            // SAN-09：symlink 不跟随（symlink_metadata 探测；外部树不得
+            // 拉进评审 prompt——信息面外泄 + 体积攻击双防）。
+            let meta = match std::fs::symlink_metadata(&path) {
+                Ok(m) => m,
+                Err(_) => continue,
+            };
+            if meta.is_symlink() {
+                continue;
+            }
+            if meta.is_dir() {
+                if !is_board_pipeline_dir(&name)
+                    && !nemesis_cluster::transfer::is_noise_dir(&child_rel)
+                {
                     walk(&path, &child_rel, out)?;
                 }
-            } else if name != ".baseline.json" {
-                let size = e.metadata().map(|m| m.len()).unwrap_or(0);
+            } else if name != ".baseline.json"
+                && !nemesis_cluster::transfer::is_noise_file(&child_rel)
+            {
+                let size = meta.len();
                 out.push((child_rel, size));
             }
             if out.len() > LISTING_MAX_ENTRIES {
@@ -1573,12 +1665,15 @@ async fn review_parent_issue(deps: &BoardReviewDeps, parent_id: i64) -> Result<b
     if parent.status != IssueStatus::InReview {
         return Ok(false);
     }
-    let children = store.list_children(parent_id)?;
-    // 范围缺口边界：存在 cancelled 子单 → 范围缺口要人裁决，验收补不了。
-    if children.iter().any(|c| c.status == IssueStatus::Cancelled) {
-        info!("[BoardReview] 父单 {parent_id} 存在 cancelled 子单，不自动收口（转人工）");
+    // 范围缺口边界：子树（Subtree 闭包，SAN-08——旧单层 children 扫描看
+    // 不见 done 子单之下的 cancelled 孙单，收口会带着隐藏缺口宣称完成）
+    // 存在 cancelled → 范围缺口要人裁决，验收补不了。
+    let subtree = store.descendants(&[parent_id], nemesis_board::store::DescendantEdges::Subtree);
+    if subtree.iter().any(|c| c.status == IssueStatus::Cancelled) {
+        info!("[BoardReview] 父单 {parent_id} 子树存在 cancelled 单，不自动收口（转人工）");
         return Ok(false);
     }
+    let children = store.list_children(parent_id)?;
 
     // ---- 组装汇总输入：每子单状态 + 最新交付摘要（截断防 prompt 爆炸）----
     let mut summary = format!("## 子任务完成情况汇总（共 {} 个子任务）\n", children.len());
@@ -1722,6 +1817,17 @@ async fn review_parent_issue(deps: &BoardReviewDeps, parent_id: i64) -> Result<b
     );
 
     let reviewer = Actor::agent(deps.cluster.node_id());
+    // S-O2 迟到评审守卫（同子单验收）：收口评审期间父单被人工改状态则
+    // 结论整体让位（PASS 直推 done 是 backlog→done 合法边的同型竞态面）。
+    if !review_still_relevant(
+        store,
+        parent_id,
+        deps.cluster.node_id(),
+        output.verdict.as_str(),
+        "父单收口",
+    ) {
+        return Ok(false);
+    }
     match output.verdict {
         nemesis_board::ReviewVerdict::Pass => {
             store.add_comment(NewComment {
@@ -1744,9 +1850,19 @@ async fn review_parent_issue(deps: &BoardReviewDeps, parent_id: i64) -> Result<b
             );
             store.transition_issue(parent_id, IssueStatus::Done, &reviewer)?;
             info!("[BoardReview] 父单 {parent_id} 收口验收 PASS → done（auto_close_parent）");
-            // F3：顶层父单落 done 是项目收口验收的触发面之一（另一触发面
-            // 在 on_issue_settled；旗标/前置聚合检查在 notify 内）。
-            nemesis_web::handlers::board::notify_project_review_on_parent_done(store, parent_id);
+            // C-F5（复核 2026-09-16）：父单落 done 改走与子单落定同源的
+            // on_issue_settled 单一出口。此前只显式调项目收口触发
+            // （notify_project_review_on_parent_done，on_issue_settled 内部
+            // 同点调用，行为等价不重复），漏掉两条联动：多级看板沿祖先链
+            // 向上 sync_parent_status（父单的父单收口感知）+ dependents
+            // 依赖补派。收敛安全：收口 hook 是异步 spawn 无同步递归；
+            // sync 带 visited 防环；终态单 terminal 早退不重复触发收口。
+            nemesis_web::handlers::board::on_issue_settled(
+                store,
+                Some(&deps.cluster),
+                parent_id,
+                &reviewer,
+            );
         }
         verdict @ (nemesis_board::ReviewVerdict::Fail | nemesis_board::ReviewVerdict::Unsure) => {
             let human_mention = if parent.creator.kind == "admin" {
@@ -1948,13 +2064,14 @@ async fn review_project_completion(
         info!("[BoardReview] 项目 {project_id} 存在非 done 顶层父单（竞态），跳过收口验收");
         return Ok(false);
     }
-    // 范围缺口边界（与父单收口同款语义）：任何子孙 cancelled → 范围缺口
-    // 要人裁决，项目级验收补不了。
+    // 范围缺口边界（与父单收口同款语义 + SAN-08 子树闭包）：任何子孙
+    // cancelled（含 done 父单之下的隐藏缺口）→ 范围缺口要人裁决，项目级
+    // 验收补不了。
     for p in &parents {
-        let children = store.list_children(p.id)?;
-        if children.iter().any(|c| c.status == IssueStatus::Cancelled) {
+        let subtree = store.descendants(&[p.id], nemesis_board::store::DescendantEdges::Subtree);
+        if subtree.iter().any(|c| c.status == IssueStatus::Cancelled) {
             info!(
-                "[BoardReview] 项目 {project_id} 父单 {}（{}）存在 cancelled 子单，不自动收口（转人工）",
+                "[BoardReview] 项目 {project_id} 父单 {}（{}）子树存在 cancelled 单，不自动收口（转人工）",
                 p.number, p.title
             );
             return Ok(false);

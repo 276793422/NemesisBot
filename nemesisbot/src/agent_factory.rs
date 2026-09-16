@@ -250,6 +250,111 @@ impl SharedResources {
     }
 }
 
+/// ASM-08（2026-09-16 横扫存量加固，用户裁决 D5=fail）：gateway 级装配完成点
+/// 的机械自检——关键件未接线即装配失败。
+///
+/// 治 T37①（用量账本）/F-U3-2a（workspace_root）/ASM-01（security_plugin）
+/// 一族「漏接静默」：功能在组件层正确且有单测，但生产装配点漏接不报错，
+/// 直到真机才炸。单测自己动手装配所以永远绿——接线缺口只能在装配点掀。
+/// 主/集群/项目三个 builder 的收尾各调一次（headless run/acp 走主 builder，
+/// 同罩）。
+///
+/// 语义细节（有意为之，勿「修直」）：
+/// - `security_plugin` 不做恒 Some 要求——`security.enabled=false`（用户
+///   显式关安全）或 feature 裁剪时 shared 为 None 是文档化合法态；断言的
+///   是一致性：**shared 有而 loop 没接 = 装配漏项 → fail**。
+/// - `pricing_store` 只 WARN 不 fail：open 失败是磁盘环境问题（N1 的设计
+///   选择=优雅降级不阻断启动），不是接线遗漏；「是否调用过 set」由装配
+///   矩阵测试兜住（tests.rs wiring 系）。
+fn assert_gateway_critical_wiring(
+    agent_loop: &nemesis_agent::r#loop::AgentLoop,
+    shared: &SharedResources,
+    context: &str,
+) -> Result<()> {
+    let status: std::collections::HashMap<&str, bool> =
+        agent_loop.wiring_status().into_iter().collect();
+    let mut missing: Vec<&str> = Vec::new();
+    for key in ["estop", "workspace_root", "config_path"] {
+        if !status.get(key).copied().unwrap_or(false) {
+            missing.push(key);
+        }
+    }
+    #[cfg(feature = "security")]
+    if shared.security_plugin.is_some() && !status.get("security_plugin").copied().unwrap_or(false)
+    {
+        missing.push("security_plugin");
+    }
+    if !missing.is_empty() {
+        anyhow::bail!(
+            "[AgentFactory] {} 装配自检失败（ASM-08）：关键件未接线 {:?}——\
+             漏接从静默失效升级为启动即炸；若为有意排除，请改走显式注释豁免，\
+             不要绕过本断言",
+            context,
+            missing
+        );
+    }
+    if !status.get("pricing_store").copied().unwrap_or(false) {
+        tracing::warn!(
+            "[AgentFactory] {} pricing_store 未接线——context_window L2 失效\
+             （磁盘 open 失败属预期降级；否则为装配漏项）",
+            context
+        );
+    }
+    Ok(())
+}
+
+/// ASM-05（2026-09-16 横扫存量加固）：`logging.llm.enabled` →
+/// RequestLoggerObserver 注册的单一真相源。gateway Step 9d 与 CLI
+/// `nemesisbot agent` 共用（此前 agent.rs 手写装配里还有一份逐字拷贝，
+/// 随 ASM-05 迁移收敛到这里）。
+///
+/// 返回是否注册（false = 未开启或配置缺失，调用方不必装配 observer
+/// manager）。`register` 是 async 而本函数 sync——block_in_place 桥接
+/// （gateway 同款；**须在 multi_thread runtime 上调用**，current-thread
+/// 会 panic——与既有两处调用点一致的行为契约）。
+pub(crate) fn register_request_logger_observer(
+    mgr: &Arc<nemesis_observer::Manager>,
+    cfg: &nemesis_config::Config,
+    home: &std::path::Path,
+) -> bool {
+    let Some(ref logging_cfg) = cfg.logging else {
+        return false;
+    };
+    let Some(llm_cfg) = &logging_cfg.llm else {
+        return false;
+    };
+    if !llm_cfg.enabled {
+        return false;
+    }
+    let rl_logging_config = nemesis_agent::request_logger::LoggingConfig {
+        enabled: true,
+        detail_level: match llm_cfg.detail_level.as_str() {
+            "truncated" => nemesis_agent::request_logger::DetailLevel::Truncated,
+            _ => nemesis_agent::request_logger::DetailLevel::Full,
+        },
+        log_dir: if llm_cfg.log_dir.is_empty() {
+            "logs/request_logs".to_string()
+        } else {
+            llm_cfg.log_dir.clone()
+        },
+        save_raw: llm_cfg.save_raw,
+    };
+    let workspace_path = home.join("workspace");
+    let rl_observer = Arc::new(
+        nemesis_agent::request_logger_observer::RequestLoggerObserver::new(
+            rl_logging_config,
+            &workspace_path,
+        ),
+    );
+    let mgr = mgr.clone();
+    tokio::task::block_in_place(|| {
+        tokio::runtime::Handle::current().block_on(async {
+            mgr.register(rl_observer).await;
+        })
+    });
+    true
+}
+
 /// Build a fresh AgentLoop from disk config.
 ///
 /// Re-reads `config.json`, workspace files, creates new provider,
@@ -750,6 +855,8 @@ pub fn build_agent_loop(
     // 外部变更提示注入。启动失败在内部 warn 一次后放弃（不拖累 loop）。
     // 集群 agent 不挂 watcher（与 cc_hooks 同一挂账决策）。
     let _ = AgentLoop::start_fs_watcher(&agent_loop, &cfg.agents.fs_watcher);
+    // ASM-08：装配自检——关键件 None 即启动 loud fail（用户裁决 D5=甲）。
+    assert_gateway_critical_wiring(&agent_loop, shared, "主 gateway loop")?;
     Ok(agent_loop)
 }
 
@@ -1102,14 +1209,33 @@ fn register_tools_and_mcp(
 /// and the AgentConfig for creating per-task AgentInstance (carries system_prompt identity).
 ///
 /// Shares the same tool set and MCP as the main agent.
-/// Differences from the main agent:
-/// - Standalone mode (`AgentLoop::new` instead of `new_bus`)
-/// - No session store, state manager, continuation manager
-/// - No security plugin, data store, channel manager
+///
+/// 与主 agent 的差异清单（ASM-07 重写 2026-09-16——旧清单声称「不接
+/// session store / continuation manager / data store / security plugin」，
+/// 其中三项早已接线、文档烂掉失去「有意排除记录」效力，正是漏接温床）：
+/// - Standalone mode（`AgentLoop::new` 而非 `new_bus`；出站走集群回调）
+/// - **接**：security 8 层（ASM-01，与主实例共享同一 plugin Arc）/
+///   estop / workspace_root（F-U3-2a）/ tier+config_path / pricing（ASM-03）/
+///   data store（T37①）/ session store（`sessions/cluster/` 独立目录）/
+///   continuation manager（ASM-06，3-hop 链路里 B 端对下一跳就是 A 端）/
+///   memory 审批闸（ASM-02，desktop+memory+security feature 时经
+///   approval_slot）/ skills_loader / snapshot_role / spill / lsp /
+///   checkpoint / ToolEventHook / forge 依赖（ASM-07）
+/// - **有意不接**（均有因，勿当漏接「补齐」）：
+///   - state manager：唯一消费点是 record_last_channel 崩溃恢复（主 loop
+///     概念），装配只会在工作区急切建 state/
+///   - channel manager：出站不走过路通道，经集群回调回 master
+///   - commands_path（自定义 slash）：主 gateway 入口专属
+///   - memory_inject（P3.1 自动注入）：远端 peer 任务上下文不得混入本地
+///     用户私人记忆（与主 loop hooks 豁免同策略，见 D3 注释）
+///   - spawn 槽：v1 边界，sub-agent 只在主 gateway loop 开放（G0）
+///   - rpc_cache TTL 清扫 / session 清扫：主 loop 侧唯一持有，不重复起
 /// - Has its own observer_manager with ClusterRequestLoggerObserver
 ///   (writes LLM details to cluster_logs/{device_id}/{task_id}/)
 /// - Has cluster reference (for cluster_rpc tool to work)
 /// - System prompt loaded from `workspace/cluster/IDENTITY.md` + `SOUL.md`
+/// - 工作区写围栏强制 restrict=true（ASM-04，D6 裁决——B 端执行远端半可信
+///   任务，围栏不比本地可信会话松）
 #[cfg(feature = "cluster")]
 pub fn build_cluster_agent_loop(
     shared: &Arc<SharedResources>,
@@ -1181,6 +1307,74 @@ pub fn build_cluster_agent_loop(
     // 注入条件（workspace_root + exec 目录 sidecar 在场）恒 None，档案管线
     // 任务的相对路径重写静默失效（worker 文件落 workspace 根，变更集丢失）。
     agent_loop.set_workspace_root(shared.workspace_dir());
+
+    // ASM-01（2026-09-16 横扫存量加固）：集群 loop 同接安全 8 层——此前漏接
+    // 使 B 端执行远端任务时整条管线（注入/命令守卫/ABAC/凭据/DLP/SSRF/
+    // 病毒扫描/审计链）静默旁路（loop.rs dispatch 对 None=直接跳过）。G6
+    // 给项目 loop 接线时已明言「headless/ACP/项目会话都不是安全旁路」，
+    // 集群面同理：B 端跑的是远端半可信任务，恰恰是最需要管线的地方。
+    // plugin 共享同一 Arc：auditor 审批 manager / guardian judge 随注入一并
+    // 生效。security.enabled=false 时 shared 为 None = 文档化合法态（与主
+    // 实例一致），不视为漏项（ASM-08 断言按一致性裁决）。
+    #[cfg(feature = "security")]
+    if let Some(ref plugin) = shared.security_plugin {
+        agent_loop.set_security_plugin(plugin.clone());
+        info!("[AgentFactory] cluster loop security 8-layer pipeline attached (ASM-01)");
+    }
+
+    // ASM-02（2026-09-16 横扫存量加固）：memory 审批闸接集群 loop——此前闸
+    // 只在 gateway 后处理接给主 loop（commands/gateway.rs approval 装配段），
+    // 集群 loop 的 gate 保持 None = memory_tools 对 None 放行，远端任务可无
+    // 审批写/删本地记忆。approval_slot 由 gateway 装配期填（先建槽后填），
+    // cluster loop 构建于 services 启动期（first_start/start），时序在填槽
+    // 之后；槽空且 security 开启 = 时序异常，WARN 揪出来。
+    #[cfg(all(feature = "desktop", feature = "memory", feature = "security"))]
+    if let Some(adapter) = shared.approval_slot.read().clone() {
+        agent_loop.set_memory_approval_gate(Arc::new(
+            crate::commands::gateway::GatewayMemoryGate::new(adapter),
+        ));
+    } else if shared.security_plugin.is_some() {
+        tracing::warn!(
+            "[AgentFactory] cluster loop: security 开启但 approval_slot 为空——\
+             memory 审批闸缺席（gateway 装配时序异常？）"
+        );
+    }
+
+    // ASM-03（2026-09-16 横扫存量加固）：价目表注入（context_window L2）——
+    // 集群 loop 此前漏接 → 窗口恒 128k fallback，大窗口模型被提前误压缩。
+    // 与主/项目 loop 同一 workspace data 目录；open 失败诚实降级（同 N1）。
+    match nemesis_data::PricingStore::open(&nemesis_path::workspace_data_dir(&shared.home)) {
+        Ok(store) => agent_loop.set_pricing_store(std::sync::Arc::new(store)),
+        Err(e) => tracing::warn!(
+            error = %e,
+            "[AgentFactory] cluster loop pricing store open failed; context_window L2 disabled"
+        ),
+    }
+
+    // ASM-07（2026-09-16 横扫存量加固）：零散不对称补齐——
+    // - skills_loader：H3 skills 目录摘要注入，集群 agent 的 advertised
+    //   catalog 与真实工具行为对齐；
+    // - snapshot_role：与主 loop 同一 config 来源；
+    // - ToolEventHook + agent_event_tx：集群任务的工具事件上 Dashboard
+    //   tool_event 卡片（此前恒空白）。
+    if let Some(ref loader) = shared.skills_loader {
+        agent_loop.set_skills_loader(loader.clone());
+    }
+    agent_loop.set_snapshot_role(&cfg.agents.defaults.snapshot_role);
+    if let Some(tx) = shared.agent_event_tx.clone() {
+        agent_loop.add_tool_hook(std::sync::Arc::new(
+            nemesis_agent::tool_event_hook::ToolEventHook::new(tx),
+        ));
+    }
+    agent_loop.set_agent_event_tx(shared.agent_event_tx.clone());
+
+    // ASM-06（2026-09-16 横扫存量加固）：continuation manager——3-hop 链路里
+    // B 端对下一跳就是 A 端，cluster loop 发起 cluster_rpc 时续行快照必须有
+    // 处落。与主 loop 同一 {workspace}/cluster/rpc_cache 目录；TTL 清扫不
+    // 重复起——主 loop 侧唯一持有（同项目 loop 先例）。
+    agent_loop.set_continuation_manager(Arc::new(
+        nemesis_agent::ContinuationManager::with_disk_store(&shared.workspace_dir()),
+    ));
 
     // D1 (2026-08-24 arch review, U-list D1): the cluster agent must resolve
     // the same startup capability tier as the main agent. Before this, the
@@ -1363,8 +1557,17 @@ pub fn build_cluster_agent_loop(
     // 的 AgentLoop（Arc 由 Cluster 调用方创建），Weak 注入点不在此；槽留空
     // 时 SpawnTool 诚实报 "not available"。v1 边界：sub-agent 只在主
     // gateway loop 开放（cluster B 端 spawn 见 G1 后续）。
-    let (tool_config, _unused_cluster_spawn_slot) =
+    let (mut tool_config, _unused_cluster_spawn_slot) =
         build_shared_tool_config(shared, &cfg, &model_name, None);
+    // ASM-04（2026-09-16 横扫存量加固）：集群 loop 工作区围栏强制 restrict=true。
+    // 方向性事实：项目 loop（本地可信会话）强制 restrict=true，集群 loop
+    // （执行远端半可信任务）此前跟随全局开关（默认 false）——B 端 file 工具
+    // 默认无写围栏。远端任务才是最需要围栏的面，方向必须反转：强制 true，
+    // root=shared.workspace_dir()（与 estop/workspace_root 接线同一根）。
+    tool_config.workspace_boundary = Some(Arc::new(nemesis_agent::loop_tools::WorkspaceBoundary {
+        root: shared.workspace_dir(),
+        restrict: true,
+    }));
     // Cluster agent does not use executor separation yet (B.0 scope: main agent
     // only). Pass None → all tools stay local.
     register_tools_and_mcp(&mut agent_loop, shared, &tool_config, None);
@@ -1473,6 +1676,9 @@ pub fn build_cluster_agent_loop(
         agent_loop.register_tool("cluster_rpc".to_string(), Box::new(cluster_rpc_tool));
         info!("[AgentFactory] cluster_rpc tool registered for cluster agent (enabled=true)");
     }
+
+    // ASM-08：装配自检（与主/项目 loop 同一闸，D5=甲）。
+    assert_gateway_critical_wiring(&agent_loop, shared, "集群 loop")?;
 
     info!(
         model = %model_name,
@@ -1829,6 +2035,8 @@ pub fn build_project_agent_loop(
     inject_project_spawn_fn(&agent_loop, &spawn_slot);
     // fs watcher 锚项目目录（外部编辑注记只看项目内变更）。
     let _ = AgentLoop::start_fs_watcher(&agent_loop, &cfg.agents.fs_watcher);
+    // ASM-08：装配自检（与主/集群 loop 同一闸，D5=甲）。
+    assert_gateway_critical_wiring(&agent_loop, shared, "项目 loop")?;
     Ok(agent_loop)
 }
 

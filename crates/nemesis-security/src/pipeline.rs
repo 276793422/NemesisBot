@@ -75,6 +75,15 @@ pub struct SecurityPluginConfig {
     pub audit_log_enabled: bool,
     pub audit_log_dir: Option<String>,
     pub default_action: String,
+    /// CFG-05（2026-09-16 死键接线）：审批卡超时秒数。原 JSON 键
+    /// `approval_timeout_seconds` 从未接到 AuditorConfig（恒 Default 300），
+    /// 属假姿态。构造期接线（reload 不重建审批链路）。
+    pub approval_timeout_secs: u64,
+    /// CFG-05：审计 JSONL 是否记录放行事件。false = 只记拦截/告警。
+    /// 原键 `log_all_operations` 在 typed/AuditorConfig 两处声明但零消费；
+    /// 现接线到 execute() 末尾的 "passed all security layers" 事件。
+    /// 默认 true = 旧行为不变。
+    pub log_all_operations: bool,
     /// File rules: operation type -> list of (pattern, action) pairs.
     pub file_rules: Vec<SecurityRule>,
     pub dir_rules: Vec<SecurityRule>,
@@ -103,6 +112,8 @@ impl Default for SecurityPluginConfig {
             audit_log_enabled: false,
             audit_log_dir: None,
             default_action: "deny".to_string(),
+            approval_timeout_secs: 300,
+            log_all_operations: true,
             file_rules: Vec::new(),
             dir_rules: Vec::new(),
             process_rules: Vec::new(),
@@ -131,6 +142,10 @@ pub struct SecurityPlugin {
     /// When attached, CRITICAL operations that pass the rule layers get a second
     /// opinion from an LLM reading the action as evidence (anti-injection).
     judge: RwLock<Option<Arc<dyn crate::guardian::LlmJudge>>>,
+    /// D2（2026-09-16 用户裁决）：guardian（LLM judge）自身故障时姿态。
+    /// "allow"/"ask"/"deny"；空串 = 未配置（保持旧行为：Err 落空放行）。
+    /// 由 security_setup 按裸 JSON 键 `guardian_failure_policy` 注入。
+    guardian_failure_policy: RwLock<String>,
 }
 
 impl SecurityPlugin {
@@ -144,6 +159,9 @@ impl SecurityPlugin {
         let auditor_config = AuditorConfig {
             enabled: config.enabled,
             default_action: config.default_action.clone(),
+            // CFG-05（2026-09-16 死键接线）：审批卡超时从 config.security.json
+            // 的 `approval_timeout_seconds` 构造期接入（原先恒 Default 300）。
+            approval_timeout_secs: config.approval_timeout_secs,
             ..Default::default()
         };
         let auditor = Arc::new(SecurityAuditor::new(auditor_config));
@@ -247,6 +265,7 @@ impl SecurityPlugin {
             enabled: RwLock::new(enabled),
             config_path: RwLock::new(None),
             judge: RwLock::new(None),
+            guardian_failure_policy: RwLock::new(String::new()),
         };
 
         // Register rules from config
@@ -454,15 +473,6 @@ impl SecurityPlugin {
                     .and_then(|v| v.as_bool())
                     .unwrap_or(self.config.injection_enabled);
 
-                let _injection_threshold = layers
-                    .and_then(|l| l.get("injection"))
-                    .and_then(|v| v.as_object())
-                    .and_then(|o| o.get("extra"))
-                    .and_then(|v| v.as_object())
-                    .and_then(|e| e.get("threshold"))
-                    .and_then(|v| v.as_f64())
-                    .unwrap_or(self.config.injection_threshold);
-
                 let command_guard_enabled = layers
                     .and_then(|l| l.get("command_guard"))
                     .and_then(|v| v.as_object())
@@ -484,13 +494,31 @@ impl SecurityPlugin {
                     .and_then(|v| v.as_bool())
                     .unwrap_or(self.config.dlp_enabled);
 
-                let _dlp_action = layers
-                    .and_then(|l| l.get("dlp"))
-                    .and_then(|v| v.as_object())
-                    .and_then(|o| o.get("action"))
-                    .and_then(|v| v.as_str())
-                    .unwrap_or(&self.config.dlp_action)
-                    .to_string();
+                // ── 死读取恢复区（2026-09-16 用户指令：代码不得随便删，注释
+                // 保留待讨论）───────────────────────────────────────────
+                // CFG-05 曾删这三个「读后丢弃」块：层引擎构造期唯一生效，
+                // reload 不重建层，这些读取只制造"已生效"假象。注释恢复
+                // 保留；是否真删/或改造成真 reload 语义，待用户裁决。
+                // let _injection_threshold = layers
+                //     .and_then(|l| l.get("injection"))
+                //     .and_then(|v| v.as_object())
+                //     .and_then(|o| o.get("extra"))
+                //     .and_then(|e| e.get("threshold"))
+                //     .and_then(|v| v.as_f64());
+                // let _dlp_action = layers
+                //     .and_then(|l| l.get("dlp"))
+                //     .and_then(|v| v.as_object())
+                //     .and_then(|o| o.get("action"))
+                //     .and_then(|v| v.as_str())
+                //     .unwrap_or(&self.config.dlp_action)
+                //     .to_string();
+                // let _audit_chain_enabled = layers
+                //     .and_then(|l| l.get("audit_chain"))
+                //     .and_then(|v| v.as_object())
+                //     .and_then(|o| o.get("enabled"))
+                //     .and_then(|v| v.as_bool())
+                //     .unwrap_or(self.config.audit_chain_enabled);
+                // ── 死读取恢复区结束 ────────────────────────────────────
 
                 let ssrf_enabled = layers
                     .and_then(|l| l.get("ssrf"))
@@ -498,13 +526,6 @@ impl SecurityPlugin {
                     .and_then(|o| o.get("enabled"))
                     .and_then(|v| v.as_bool())
                     .unwrap_or(self.config.ssrf_enabled);
-
-                let _audit_chain_enabled = layers
-                    .and_then(|l| l.get("audit_chain"))
-                    .and_then(|v| v.as_object())
-                    .and_then(|o| o.get("enabled"))
-                    .and_then(|v| v.as_bool())
-                    .unwrap_or(self.config.audit_chain_enabled);
 
                 // Extract default_action
                 let default_action = security_obj
@@ -900,17 +921,20 @@ impl SecurityPlugin {
             );
         }
 
-        // Log allowed event
-        self.log_audit_event(
-            "allowed",
-            &op_type.to_string(),
-            &invocation.user,
-            &invocation.source,
-            &target,
-            &get_danger_level(op_type).to_string(),
-            "passed all security layers",
-            "pipeline",
-        );
+        // Log allowed event（CFG-05：`log_all_operations=false` 时只记拦截
+        // /告警事件，不记常规放行；默认 true = 旧行为）。
+        if self.config.log_all_operations {
+            self.log_audit_event(
+                "allowed",
+                &op_type.to_string(),
+                &invocation.user,
+                &invocation.source,
+                &target,
+                &get_danger_level(op_type).to_string(),
+                "passed all security layers",
+                "pipeline",
+            );
+        }
 
         (true, None)
     }
@@ -943,6 +967,17 @@ impl SecurityPlugin {
     /// Get the auditor reference.
     pub fn auditor(&self) -> Arc<SecurityAuditor> {
         Arc::clone(&self.auditor)
+    }
+
+    /// D2 存取（2026-09-16 用户裁决）：guardian（LLM judge）自身故障时的
+    /// 姿态开关。空串 = 未配置（保持旧行为：Err 落空放行）；"allow"/"ask"/
+    /// "deny" 显式生效。security_setup 按裸 JSON 键注入。
+    pub fn set_guardian_failure_policy(&self, policy: &str) {
+        *self.guardian_failure_policy.write() = policy.trim().to_lowercase();
+    }
+
+    pub fn guardian_failure_policy(&self) -> String {
+        self.guardian_failure_policy.read().clone()
     }
 
     /// Get the injection detector (for testing).
