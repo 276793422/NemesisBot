@@ -441,6 +441,143 @@ impl SecurityAuditor {
         }
     }
 
+    /// 无上下文 LLM 命令审计（2026-09-16）：verdict 全量落审计（放行也记）
+    /// ——审计的意义是事后可回答「LLM 为什么放行/拦下了这条命令」。
+    /// op_type 无 CRITICAL-工具泛型变体，取族内最常见 ProcessExec 占位
+    /// （同 A-F5 口径）；真实工具名在 target、来源在 source。
+    pub fn log_guardian_verdict(
+        &self,
+        tool: &str,
+        mode: &str,
+        verdict: &crate::guardian::JudgeVerdict,
+    ) {
+        self.log_audit_event(&AuditEvent {
+            event_id: uuid::Uuid::new_v4().to_string(),
+            request: OperationRequest {
+                id: uuid::Uuid::new_v4().to_string(),
+                op_type: OperationType::ProcessExec,
+                danger_level: DangerLevel::Critical,
+                source: "guardian_review".to_string(),
+                target: tool.to_string(),
+                ..Default::default()
+            },
+            decision: if verdict.is_allow() {
+                "allow"
+            } else {
+                "escalate"
+            }
+            .to_string(),
+            reason: format!(
+                "recommendation={} matches_rules={} risk={} intent={} rationale={}",
+                verdict.recommendation,
+                verdict.matches_rules,
+                verdict.risk_level,
+                verdict.intent,
+                verdict.rationale
+            ),
+            timestamp: chrono::Local::now().to_rfc3339(),
+            policy_rule: format!("guardian_mode={}", mode),
+        });
+    }
+
+    /// 无上下文 LLM 命令审计（2026-09-16）：verdict 升格（ask/deny）→
+    /// 人工审批卡。LLM 误报不无声硬拦（留人工通道）；审批不可用 = 调用方
+    /// fail-closed 拒绝（loop 消费端语义）。人为裁决落审计（A-F5 同款）。
+    pub fn request_guardian_verdict_approval(
+        &self,
+        tool: &str,
+        risk: &str,
+        mode: &str,
+        verdict: &crate::guardian::JudgeVerdict,
+        ctx: Option<&ApprovalContext>,
+    ) -> Result<ApprovalVerdict, String> {
+        let mgr_opt = self.approval_manager.read().clone();
+        let Some(mgr) = mgr_opt.as_ref() else {
+            return Err(
+                "guardian flagged the operation and no approval manager is available".to_string(),
+            );
+        };
+        if !mgr.is_running() {
+            return Err(
+                "guardian flagged the operation and the approval manager is not running"
+                    .to_string(),
+            );
+        }
+        let request_id = format!("guardian-{}", uuid::Uuid::new_v4());
+        let reason = format!(
+            "Guardian (LLM audit) recommendation={} (matches_rules={}): {}",
+            verdict.recommendation, verdict.matches_rules, verdict.rationale
+        );
+        let danger = {
+            let d = risk.trim().to_uppercase();
+            if d.is_empty() {
+                "UNKNOWN".to_string()
+            } else {
+                d
+            }
+        };
+        let outcome = match ctx {
+            Some(c) => mgr.request_approval_sync_ctx(
+                &request_id,
+                "guardian_review",
+                tool,
+                &danger,
+                &reason,
+                self.config.approval_timeout_secs,
+                c,
+            ),
+            None => mgr.request_approval_sync(
+                &request_id,
+                "guardian_review",
+                tool,
+                &danger,
+                &reason,
+                self.config.approval_timeout_secs,
+            ),
+        };
+        let audit_decision = |decision: &str, why: String| {
+            self.log_audit_event(&AuditEvent {
+                event_id: uuid::Uuid::new_v4().to_string(),
+                request: OperationRequest {
+                    id: request_id.clone(),
+                    op_type: OperationType::ProcessExec,
+                    danger_level: DangerLevel::Critical,
+                    source: "guardian_verdict_approval".to_string(),
+                    target: tool.to_string(),
+                    ..Default::default()
+                },
+                decision: decision.to_string(),
+                reason: why,
+                timestamp: chrono::Local::now().to_rfc3339(),
+                policy_rule: format!("guardian_mode={}", mode),
+            });
+        };
+        match outcome {
+            Ok(v) => {
+                let why = if v.approved {
+                    format!("guardian verdict ({reason}); user approved")
+                } else {
+                    let note = v.note.as_deref().map(str::trim).filter(|n| !n.is_empty());
+                    match note {
+                        Some(n) => format!("guardian verdict ({reason}); user rejected: {n}"),
+                        None => format!(
+                            "guardian verdict ({reason}); user rejected or approval timeout"
+                        ),
+                    }
+                };
+                audit_decision(if v.approved { "approved" } else { "denied" }, why);
+                Ok(v)
+            }
+            Err(e) => {
+                audit_decision(
+                    "denied",
+                    format!("guardian verdict ({reason}); approval unavailable: {e}"),
+                );
+                Err(e)
+            }
+        }
+    }
+
     /// Set the audit log file path for date-based log file output.
     ///
     /// When configured, `log_audit_event()` will append events as JSON lines

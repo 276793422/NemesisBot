@@ -146,6 +146,13 @@ pub struct SecurityPlugin {
     /// "allow"/"ask"/"deny"；空串 = 未配置（保持旧行为：Err 落空放行）。
     /// 由 security_setup 按裸 JSON 键 `guardian_failure_policy` 注入。
     guardian_failure_policy: RwLock<String>,
+    /// 覆盖面开关（2026-09-16 无上下文 LLM 命令审计，用户拍板默认 off）。
+    /// "off"（含空串/未知值）= 不装配 judge 也不审（零 LLM 成本，连旧
+    /// CRITICAL 审都不跑）；"critical" = 现状行为（CRITICAL 级工具全审）；
+    /// "high" = HIGH+CRITICAL 级工具先过破坏形态预筛词表，命中才进 LLM。
+    /// 由 security_setup 按裸 JSON 键 `guardian_mode` 注入；装配点
+    /// （gateway set_judge）与消费点（agent loop）同读此闸。
+    guardian_mode: RwLock<String>,
 }
 
 impl SecurityPlugin {
@@ -266,6 +273,7 @@ impl SecurityPlugin {
             config_path: RwLock::new(None),
             judge: RwLock::new(None),
             guardian_failure_policy: RwLock::new(String::new()),
+            guardian_mode: RwLock::new(String::new()),
         };
 
         // Register rules from config
@@ -978,6 +986,59 @@ impl SecurityPlugin {
 
     pub fn guardian_failure_policy(&self) -> String {
         self.guardian_failure_policy.read().clone()
+    }
+
+    /// 覆盖面开关存取（2026-09-16 无上下文 LLM 命令审计）。空串 = 未配置
+    /// = off。装配点（gateway set_judge）与消费点（agent loop
+    /// `guardian_should_review`）同读此值——单一真相源。
+    pub fn set_guardian_mode(&self, mode: &str) {
+        *self.guardian_mode.write() = mode.trim().to_lowercase();
+    }
+
+    pub fn guardian_mode(&self) -> String {
+        self.guardian_mode.read().clone()
+    }
+
+    /// Returns true if the tool maps to a HIGH-danger operation
+    /// (`guardian_mode=high` 扩覆盖面用；口径与 `is_critical_tool` 同源——
+    /// tool_to_operation + get_danger_level）。
+    pub fn is_high_tool(&self, tool_name: &str) -> bool {
+        match tool_to_operation(tool_name) {
+            Some(op) => get_danger_level(op).to_string() == "HIGH",
+            None => false,
+        }
+    }
+
+    /// Tool 的管线危级标签（"LOW"/"MEDIUM"/"HIGH"/"CRITICAL"；未映射工具
+    /// 返回 "unknown"）。喂给 JudgeRequest.risk_level——LLM 只拿命令 +
+    /// 危级元数据，无任何任务上下文。
+    pub fn tool_danger_level(&self, tool_name: &str) -> String {
+        match tool_to_operation(tool_name) {
+            Some(op) => get_danger_level(op).to_string(),
+            None => "unknown".to_string(),
+        }
+    }
+
+    /// Guardian 审计覆盖裁决（2026-09-16 单一决策点）：该工具调用是否应
+    /// 进 LLM 审计。agent loop 消费端唯一入口——mode 语义集中在此，不散落。
+    ///
+    /// - `off` / 空串 / 未知值 → false（judge 本就不该被装配，双保险）。
+    /// - `critical` → CRITICAL 级工具全审（现状行为：每条 exec/kill 等）。
+    /// - `high` → HIGH+CRITICAL 级工具先过破坏形态预筛词表
+    ///   （`guardian::destructive_shaped`，宽松高召回控成本；词表未命中
+    ///   不进 LLM）。注意：high 模式下普通 exec（`ls -la`）不进 LLM——
+    ///   该模式的哲学是「审破坏形态」而非「审全部 CRITICAL」，规则层
+    ///   （8 层管线）始终是地板，预筛只影响语义增益层。
+    pub fn guardian_should_review(&self, tool_name: &str, args_json: &str) -> bool {
+        let critical = self.is_critical_tool(tool_name);
+        match self.guardian_mode.read().trim().to_lowercase().as_str() {
+            "critical" => critical,
+            "high" => {
+                (critical || self.is_high_tool(tool_name))
+                    && crate::guardian::destructive_shaped(tool_name, args_json)
+            }
+            _ => false,
+        }
     }
 
     /// Get the injection detector (for testing).

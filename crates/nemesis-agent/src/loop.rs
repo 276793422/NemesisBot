@@ -7797,33 +7797,84 @@ impl AgentLoop {
                         info.layer, info.policy, info.summary, suggestion_line
                     );
                 }
-                // P5: guardian (LLM safety judge) review for CRITICAL tools. Runs only
-                // after the rule layers allow, and only for CRITICAL operations (cost
-                // bounded). A Deny verdict blocks; rules already denied cases above.
+                // P5: guardian (LLM safety judge) semantic review. Runs only
+                // after the rule layers allow; coverage is governed by
+                // `guardian_mode`（2026-09-16 无上下文 LLM 命令审计，默认
+                // off 不审）via `guardian_should_review` — the single
+                // decision point on SecurityPlugin. Request is deliberately
+                // CONTEXT-FREE（宪法）：judge 只见命令本身 + 危级元数据，
+                // 零任务/对话信息；rubric = intent/matches_rules 四元组。
                 // D2（2026-09-16 横扫存量加固）：judge **Err 不再静默落空**
                 // （fail-open 曾是裸奔面——guardian 挂了 CRITICAL 操作全放行），
                 // 按 `guardian_failure_policy` 分支：allow=显式放行 / ask=审批
                 // 直通车（fail-closed：无审批管理器=拒）/ 未配置=旧行为放行。
-                if security.is_critical_tool(&tool_call.name)
+                if security.guardian_should_review(&tool_call.name, &tool_call.arguments)
                     && let Some(judge) = security.judge()
                 {
                     let req = nemesis_security::guardian::JudgeRequest {
                         action: tool_call.name.clone(),
-                        risk_level: "critical".to_string(),
-                        transcript: tool_call.arguments.clone(),
+                        risk_level: security.tool_danger_level(&tool_call.name),
+                        command: tool_call.arguments.clone(),
                     };
                     match judge.judge(&req).await {
-                        Ok(v) if v.outcome == nemesis_security::guardian::JudgeOutcome::Deny => {
-                            warn!(
-                                "[AgentLoop] Guardian denied critical tool {}: {}",
-                                tool_call.name, v.rationale
+                        Ok(v) => {
+                            // verdict 全量落审计（放行也记）——事后可回答
+                            // 「LLM 为什么放行/拦下了这条命令」。
+                            let guardian_mode = security.guardian_mode();
+                            security.auditor().log_guardian_verdict(
+                                &tool_call.name,
+                                &guardian_mode,
+                                &v,
                             );
-                            return format!(
-                                "⛔ GUARDIAN DENIED [layer:guardian|policy:llm_judge] {} — The safety judge flagged this critical operation as unsafe. Do NOT retry. Inform the user.",
-                                v.rationale
-                            );
+                            if v.is_allow() {
+                                info!(
+                                    "[AgentLoop] Guardian allowed {} (rec={}, rules_match={})",
+                                    tool_call.name, v.recommendation, v.matches_rules
+                                );
+                            } else {
+                                // 只升格（2026-09-16 拍板）：LLM ask/deny 不
+                                // 无声硬拦——转人工审批卡（误报留人工通道）；
+                                // 无审批管理器/用户拒绝/超时 = fail-closed 拒绝。
+                                let approval_ctx = nemesis_security::auditor::ApprovalContext {
+                                    channel: context.channel.clone(),
+                                    chat_id: context.chat_id.clone(),
+                                    ..Default::default()
+                                };
+                                match security.auditor().request_guardian_verdict_approval(
+                                    &tool_call.name,
+                                    &v.risk_level,
+                                    &guardian_mode,
+                                    &v,
+                                    Some(&approval_ctx),
+                                ) {
+                                    Ok(av) if av.approved => {
+                                        info!(
+                                            "[AgentLoop] Guardian flagged {} (rec={}) but user approved",
+                                            tool_call.name, v.recommendation
+                                        );
+                                    }
+                                    Ok(av) => {
+                                        let note = av
+                                            .note
+                                            .as_deref()
+                                            .map(str::trim)
+                                            .filter(|n| !n.is_empty())
+                                            .map(|n| format!(": {}", n))
+                                            .unwrap_or_default();
+                                        return format!(
+                                            "⛔ GUARDIAN FLAGGED — USER REJECTED [layer:guardian|policy:guardian_mode={}] The safety judge flagged this operation ({}: {}) and the user declined to approve. Do NOT retry. Inform the user.{}",
+                                            guardian_mode, v.recommendation, v.rationale, note
+                                        );
+                                    }
+                                    Err(e) => {
+                                        return format!(
+                                            "⛔ GUARDIAN FLAGGED [layer:guardian|policy:guardian_mode={}] The safety judge flagged this operation ({}: {}) and no approval channel is available ({}). Fail-closed: operation denied. Do NOT retry. Inform the user.",
+                                            guardian_mode, v.recommendation, v.rationale, e
+                                        );
+                                    }
+                                }
+                            }
                         }
-                        Ok(_) => {}
                         Err(guardian_err) => {
                             match security.guardian_failure_policy().as_str() {
                                 "allow" => {

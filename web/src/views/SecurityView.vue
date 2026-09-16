@@ -17,7 +17,8 @@ const editConfig = ref('')
 // D1/D2（2026-09-16 横扫存量加固）：exec/spawn 未知命令 + Guardian 失败
 // 姿态下拉。走 security.config.save 整体写回（后端 typed SecurityConfig
 // 校验），失败回滚本地显示。JSON 编辑模式下由编辑器接管，下拉禁用。
-const POLICY_KEYS = ['exec_unknown_policy', 'guardian_failure_policy'] as const
+// guardian_mode（同日无上下文 LLM 命令审计）：覆盖面开关，默认 off。
+const POLICY_KEYS = ['exec_unknown_policy', 'guardian_failure_policy', 'guardian_mode'] as const
 type PolicyKey = (typeof POLICY_KEYS)[number]
 const isPolicyKey = (key: string) => (POLICY_KEYS as readonly string[]).includes(key)
 
@@ -32,17 +33,25 @@ const POLICY_CHOICES: Record<PolicyKey, { value: string; label: string }[]> = {
     { value: 'allow', label: 'allow · 放行' },
     { value: 'deny', label: 'deny · 硬拦' },
   ],
+  guardian_mode: [
+    { value: 'off', label: 'off · 关闭（默认）' },
+    { value: 'critical', label: 'critical · CRITICAL 级全审' },
+    { value: 'high', label: 'high · HIGH+CRITICAL 破坏形态预筛' },
+  ],
 }
 
 const POLICY_HINTS: Record<PolicyKey, string> = {
   exec_unknown_policy:
-    'exec / spawn 命令未命中任何规则时的姿态。allow = 放行（旧行为）；ask = 弹审批卡；deny = 硬拦。',
+    'exec / spawn 命令未命中任何规则时的姿态。allow = 放行（旧行为）；ask = 弹审批卡；deny = 硬拦。保存后重启网关生效。',
   guardian_failure_policy:
-    'Guardian（LLM 语义二审）异常或不可用时的姿态。ask = 弹审批卡（不静默放行也不误伤）；allow = 放行并记录 WARN；deny = 硬拦。',
+    'Guardian（LLM 语义二审）异常或不可用时的姿态。ask = 弹审批卡（不静默放行也不误伤）；allow = 放行并记录 WARN；deny = 硬拦。保存后重启网关生效。',
+  guardian_mode:
+    '无上下文 LLM 命令审计（guardian）覆盖面。off = 不审（默认，零 LLM 成本）；critical = CRITICAL 级工具全审；high = HIGH+CRITICAL 级先过破坏形态词表再进 LLM。审计模型走 agents.small_model（未配置用主模型）。保存后重启网关生效。',
 }
 
 function policyValue(key: PolicyKey): string {
   // 与后端 serde 默认对齐：缺键时显示默认值而非空白选项。
+  if (key === 'guardian_mode') return config.value[key] || 'off'
   return config.value[key] || (key === 'exec_unknown_policy' ? 'allow' : 'ask')
 }
 

@@ -344,6 +344,15 @@ pub(crate) fn load_security_rules(
         info!("[Security] guardian_failure_policy: {}", policy);
     }
 
+    // 无上下文 LLM 命令审计（2026-09-16 用户拍板默认 off）：覆盖面开关。
+    // 键存在才注入——缺键 = 空串 = off（judge 不装配，零 LLM 成本，连旧
+    // CRITICAL 审都不跑）。装配点（gateway set_judge）与消费点（agent
+    // loop guardian_should_review）同读 plugin 上这一份。
+    if let Some(mode) = config.get("guardian_mode").and_then(|v| v.as_str()) {
+        plugin.set_guardian_mode(mode);
+        info!("[Security] guardian_mode: {}", mode);
+    }
+
     // Helper: parse rules from JSON array of {pattern, action}
     fn parse_rules(value: &serde_json::Value) -> Vec<SecurityRule> {
         value

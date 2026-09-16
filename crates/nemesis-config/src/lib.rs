@@ -2001,6 +2001,13 @@ pub struct SecurityConfig {
     // 缺省语义同上（A-F4）：空串 = runtime 缺键 = 旧行为，不物化。
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub guardian_failure_policy: String,
+    // 无上下文 LLM 命令审计（2026-09-16 用户拍板默认 off）：guardian 覆盖
+    // 面开关。off（默认）= 不装配 judge（零 LLM 成本）；critical = 旧
+    // CRITICAL 全审；high = HIGH+CRITICAL 破坏形态预筛 + LLM 审。A-F4
+    // 同款：typed 缺省空串（= runtime 缺键 = off），`skip_serializing_if`
+    // 未配置不落盘，用户显式选择后才物化。
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub guardian_mode: String,
 }
 
 impl Default for SecurityConfig {
@@ -2026,6 +2033,7 @@ impl Default for SecurityConfig {
             layers: None,
             exec_unknown_policy: String::new(),
             guardian_failure_policy: String::new(),
+            guardian_mode: String::new(),
         }
     }
 }

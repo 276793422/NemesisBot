@@ -2,6 +2,7 @@
   "default_action": "allow",
   "exec_unknown_policy": "allow",
   "guardian_failure_policy": "ask",
+  "guardian_mode": "off",
   "log_all_operations": true,
   "layers": {
     "dlp": {

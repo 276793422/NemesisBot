@@ -267,9 +267,14 @@ impl nemesis_memory::memory_tools::MemoryApprovalGate for GatewayMemoryGate {
     }
 }
 
-/// LLM safety judge (guardian) backed by the gateway's LLM provider. Calls the
-/// model with GUARDIAN_PROMPT + the action as evidence, parses the JSON verdict.
-/// Used only for CRITICAL operations (cost-bounded by the agent loop).
+/// LLM safety judge (guardian) backed by a gateway-owned LLM provider. One
+/// stateless `chat()` call per audit — 独立提示词点，绝不进 agent 流程（无
+/// session、无历史、无工具）。请求构造 = 固定审计宪法 system prompt（编译期
+/// 常量，条条相同 → prompt cache 全命中）+ 仅命令本体的 user message（
+/// `<command>` 分隔符包裹，零任务信息零历史——无上下文是宪法，见
+/// nemesis-security::guardian 模块文档）。
+/// 覆盖由 `guardian_mode` 闸控制（默认 off 不装配）；模型走
+/// `agents.small_model` 杂务通道（未配置回落主模型 + warn）。
 #[cfg(feature = "security")]
 struct GatewayLlmJudge {
     provider: Arc<dyn nemesis_providers::router::LLMProvider>,
@@ -283,9 +288,11 @@ impl nemesis_security::guardian::LlmJudge for GatewayLlmJudge {
         &self,
         req: &nemesis_security::guardian::JudgeRequest,
     ) -> Result<nemesis_security::guardian::JudgeVerdict, String> {
+        // 工具名 + 管线危级是命令的元数据（非任务上下文），帮助 judge 理解
+        // 它在审什么形态（delete_file 的 args 是路径，exec 的 args 是命令）。
         let user = format!(
-            "Proposed action: {}\nAssigned risk level: {}\n\nTranscript (untrusted evidence):\n{}\n\nOutput the JSON verdict now.",
-            req.action, req.risk_level, req.transcript
+            "Tool: {}\nPipeline danger class: {}\n\n<command>\n{}\n</command>\n\nAudit the command. Output the JSON verdict now.",
+            req.action, req.risk_level, req.command
         );
         let messages = vec![
             nemesis_providers::types::Message {
@@ -5444,12 +5451,107 @@ pub async fn run(local: bool, extra_args: &[String]) -> Result<()> {
             // in the merged context snapshot's `# Runtime Policy` section.
             agent_loop.set_interactive_approval(true);
             info!("[Gateway] Approval manager wired (dashboard web approval, M7)");
-            // P5: attach the LLM guardian judge for CRITICAL-op semantic review.
-            plugin.set_judge(Arc::new(GatewayLlmJudge {
-                provider: llm_provider.clone(),
-                model: model_name.clone(),
-            }));
-            info!("[Gateway] Guardian LLM judge attached (CRITICAL-op review)");
+            // P5: guardian judge attach — `guardian_mode` 闸（2026-09-16
+            // 无上下文 LLM 命令审计，用户拍板默认 off：LLM 审计耗时且贵，
+            // 是双刃剑）。off/空/未知值 = 不装配 judge（零 LLM 成本，连旧
+            // CRITICAL 审也不跑）；critical = 旧 CRITICAL 全审；high =
+            // HIGH+CRITICAL 破坏形态预筛 + LLM 审（消费闸在
+            // SecurityPlugin::guardian_should_review 单一决策点）。
+            // 模型通道：`agents.small_model` 杂务通道优先（同 /compact 先
+            // 例——审计点独立于主对话，不烧主模型），未配置/解析失败 =
+            // 回落主模型 + warn，绝不阻断启动。
+            let guardian_mode = plugin.guardian_mode();
+            match guardian_mode.as_str() {
+                "critical" | "high" => {
+                    let (judge_provider, judge_model, judge_source) = match cfg
+                        .agents
+                        .small_model
+                        .as_deref()
+                        .map(str::trim)
+                        .filter(|s| !s.is_empty())
+                    {
+                        Some(small_ref) => {
+                            match nemesis_config::resolve_model_config(&cfg, small_ref) {
+                                Ok(resolution) => {
+                                    let judge_factory_cfg =
+                                        nemesis_providers::factory::FactoryConfig {
+                                            llm_ref: format!(
+                                                "{}/{}",
+                                                resolution.provider_name, resolution.model_name
+                                            ),
+                                            api_key: resolution.api_key.clone(),
+                                            api_base: resolution.api_base.clone(),
+                                            workspace: home
+                                                .join("workspace")
+                                                .to_string_lossy()
+                                                .to_string(),
+                                            connect_mode: resolution.connect_mode.clone(),
+                                            protocol: resolution.protocol.clone(),
+                                            timeout_secs: resolution.timeout_secs,
+                                            account_id: String::new(),
+                                            headers: std::collections::HashMap::new(),
+                                        };
+                                    match nemesis_providers::factory::create_provider(
+                                        &judge_factory_cfg,
+                                    ) {
+                                        Ok(p) => (
+                                            p,
+                                            resolution.model_name,
+                                            format!("small model '{}'", small_ref),
+                                        ),
+                                        Err(e) => {
+                                            warn!(
+                                                "[Gateway] Guardian judge: agents.small_model '{}' provider create failed ({}); falling back to the main model",
+                                                small_ref, e
+                                            );
+                                            (
+                                                llm_provider.clone(),
+                                                model_name.clone(),
+                                                "main model".to_string(),
+                                            )
+                                        }
+                                    }
+                                }
+                                Err(e) => {
+                                    warn!(
+                                        "[Gateway] Guardian judge: agents.small_model '{}' not resolvable ({}); falling back to the main model",
+                                        small_ref, e
+                                    );
+                                    (
+                                        llm_provider.clone(),
+                                        model_name.clone(),
+                                        "main model".to_string(),
+                                    )
+                                }
+                            }
+                        }
+                        None => {
+                            info!(
+                                "[Gateway] Guardian judge: agents.small_model not configured; using the main model (set agents.small_model to keep audit cost off the main model)"
+                            );
+                            (
+                                llm_provider.clone(),
+                                model_name.clone(),
+                                "main model".to_string(),
+                            )
+                        }
+                    };
+                    plugin.set_judge(Arc::new(GatewayLlmJudge {
+                        provider: judge_provider,
+                        model: judge_model,
+                    }));
+                    info!(
+                        "[Gateway] Guardian LLM judge attached (guardian_mode={}, model={})",
+                        guardian_mode, judge_source
+                    );
+                }
+                other => {
+                    info!(
+                        "[Gateway] Guardian LLM judge NOT attached (guardian_mode={:?}, default off); set \"guardian_mode\": \"critical\"|\"high\" in config.security.json to enable the context-free LLM command audit",
+                        other
+                    );
+                }
+            }
         }
     }
 

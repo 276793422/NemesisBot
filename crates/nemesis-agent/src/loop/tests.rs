@@ -3689,9 +3689,10 @@ async fn test_checkpoint_e2e_write_then_rewind_restores() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn test_guardian_e2e_critical_op_denied_by_judge() {
     // P5 AgentLoop-level e2e: a CRITICAL op that passes the rule layers is
-    // blocked by the guardian judge. Verifies: set_judge → security allow →
-    // is_critical_tool → judge → deny → block, in the real handle_tool_call path.
-    use nemesis_security::guardian::{JudgeOutcome, JudgeRequest, JudgeVerdict, LlmJudge};
+    // blocked by the guardian judge. Verifies: set_judge + guardian_mode →
+    // security allow → guardian_should_review → judge → escalate → 审批
+    // 通道不可用 = fail-closed block, in the real handle_tool_call path.
+    use nemesis_security::guardian::{JudgeRequest, JudgeVerdict, LlmJudge};
     use nemesis_security::pipeline::{SecurityPlugin, SecurityPluginConfig};
 
     struct DenyJudge;
@@ -3699,9 +3700,10 @@ async fn test_guardian_e2e_critical_op_denied_by_judge() {
     impl LlmJudge for DenyJudge {
         async fn judge(&self, _req: &JudgeRequest) -> Result<JudgeVerdict, String> {
             Ok(JudgeVerdict {
+                intent: "recursively deletes root".into(),
+                matches_rules: true,
                 risk_level: "critical".into(),
-                user_authorization: "unknown".into(),
-                outcome: JudgeOutcome::Deny,
+                recommendation: "deny".into(),
                 rationale: "destructive without explicit auth".into(),
             })
         }
@@ -3719,6 +3721,7 @@ async fn test_guardian_e2e_critical_op_denied_by_judge() {
         default_action: "allow".to_string(),
         ..Default::default()
     }));
+    plugin.set_guardian_mode("critical");
     plugin.set_judge(Arc::new(DenyJudge));
 
     let mut agent_loop = AgentLoop::new(Box::new(MockLlmProvider::new(vec![])), test_config());
@@ -3737,27 +3740,32 @@ async fn test_guardian_e2e_critical_op_denied_by_judge() {
     };
     let result = agent_loop.handle_tool_call(&tc, &context).await;
     assert!(
-        result.contains("GUARDIAN DENIED"),
-        "critical op must be blocked by guardian judge: {}",
+        result.contains("GUARDIAN FLAGGED"),
+        "escalated op must fail closed without an approval channel: {}",
         result
     );
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn test_guardian_e2e_allows_when_judge_approves() {
-    // P5 e2e counterpart: when the judge allows, the CRITICAL op proceeds.
-    use nemesis_security::guardian::{JudgeOutcome, JudgeRequest, JudgeVerdict, LlmJudge};
+async fn test_guardian_default_mode_off_skips_judge_entirely() {
+    // 2026-09-16 无上下文审计默认 off：judge 即使被（误）装配，缺省 mode
+    // 下 guardian_should_review=false → judge 不被消费 → 工具照常执行。
+    // 钉死「默认零 LLM 成本、连旧 CRITICAL 审都不跑」的拍板语义。
+    use nemesis_security::guardian::{JudgeRequest, JudgeVerdict, LlmJudge};
     use nemesis_security::pipeline::{SecurityPlugin, SecurityPluginConfig};
+    use std::sync::atomic::{AtomicUsize, Ordering};
 
-    struct AllowJudge;
+    struct CountingJudge(AtomicUsize);
     #[async_trait]
-    impl LlmJudge for AllowJudge {
+    impl LlmJudge for CountingJudge {
         async fn judge(&self, _req: &JudgeRequest) -> Result<JudgeVerdict, String> {
+            self.0.fetch_add(1, Ordering::SeqCst);
             Ok(JudgeVerdict {
-                risk_level: "high".into(),
-                user_authorization: "high".into(),
-                outcome: JudgeOutcome::Allow,
-                rationale: "user explicitly requested".into(),
+                intent: String::new(),
+                matches_rules: true,
+                risk_level: "critical".into(),
+                recommendation: "deny".into(),
+                rationale: "would deny everything".into(),
             })
         }
     }
@@ -3772,6 +3780,67 @@ async fn test_guardian_e2e_allows_when_judge_approves() {
         default_action: "allow".to_string(),
         ..Default::default()
     }));
+    let judge = Arc::new(CountingJudge(AtomicUsize::new(0)));
+    plugin.set_judge(judge.clone());
+
+    let mut agent_loop = AgentLoop::new(Box::new(MockLlmProvider::new(vec![])), test_config());
+    agent_loop.set_security_plugin(plugin);
+    agent_loop.register_tool(
+        "shell".to_string(),
+        Box::new(MockTool {
+            result: "executed".to_string(),
+        }),
+    );
+    let context = RequestContext::new("web", "chat1", "user1", "session1");
+    let tc = ToolCallInfo {
+        id: "tc1".to_string(),
+        name: "shell".to_string(),
+        arguments: r#"{"command":"rm -rf /"}"#.to_string(),
+    };
+    let result = agent_loop.handle_tool_call(&tc, &context).await;
+    assert!(
+        !result.contains("GUARDIAN"),
+        "default mode=off must not consult the judge: {}",
+        result
+    );
+    assert_eq!(
+        judge.0.load(Ordering::SeqCst),
+        0,
+        "judge must be invoked zero times under default off"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn test_guardian_e2e_allows_when_judge_approves() {
+    // P5 e2e counterpart: when the judge allows, the CRITICAL op proceeds.
+    use nemesis_security::guardian::{JudgeRequest, JudgeVerdict, LlmJudge};
+    use nemesis_security::pipeline::{SecurityPlugin, SecurityPluginConfig};
+
+    struct AllowJudge;
+    #[async_trait]
+    impl LlmJudge for AllowJudge {
+        async fn judge(&self, _req: &JudgeRequest) -> Result<JudgeVerdict, String> {
+            Ok(JudgeVerdict {
+                intent: "lists files".into(),
+                matches_rules: false,
+                risk_level: "low".into(),
+                recommendation: "allow".into(),
+                rationale: "benign listing".into(),
+            })
+        }
+    }
+
+    let plugin = Arc::new(SecurityPlugin::new(SecurityPluginConfig {
+        enabled: true,
+        command_guard_enabled: false,
+        injection_enabled: false,
+        credential_enabled: false,
+        dlp_enabled: false,
+        ssrf_enabled: false,
+        default_action: "allow".to_string(),
+        ..Default::default()
+    }));
+    plugin.set_guardian_mode("critical");
     plugin.set_judge(Arc::new(AllowJudge));
 
     let mut agent_loop = AgentLoop::new(Box::new(MockLlmProvider::new(vec![])), test_config());
@@ -3790,8 +3859,13 @@ async fn test_guardian_e2e_allows_when_judge_approves() {
     };
     let result = agent_loop.handle_tool_call(&tc, &context).await;
     assert!(
-        !result.contains("GUARDIAN DENIED"),
+        !result.contains("GUARDIAN FLAGGED"),
         "approved op must proceed: {}",
+        result
+    );
+    assert!(
+        result.contains("executed"),
+        "allowed op must actually run the tool: {}",
         result
     );
 }
@@ -8329,7 +8403,7 @@ fn test_x2_runtime_policy_state_reflected_and_deterministic() {
 
 #[test]
 fn test_x2_runtime_policy_guardian_on_reflects_live_judge() {
-    use nemesis_security::guardian::{JudgeOutcome, JudgeRequest, JudgeVerdict, LlmJudge};
+    use nemesis_security::guardian::{JudgeRequest, JudgeVerdict, LlmJudge};
     use nemesis_security::pipeline::{SecurityPlugin, SecurityPluginConfig};
 
     struct OkJudge;
@@ -8337,9 +8411,10 @@ fn test_x2_runtime_policy_guardian_on_reflects_live_judge() {
     impl LlmJudge for OkJudge {
         async fn judge(&self, _req: &JudgeRequest) -> Result<JudgeVerdict, String> {
             Ok(JudgeVerdict {
+                intent: String::new(),
+                matches_rules: false,
                 risk_level: "low".into(),
-                user_authorization: "high".into(),
-                outcome: JudgeOutcome::Allow,
+                recommendation: "allow".into(),
                 rationale: String::new(),
             })
         }

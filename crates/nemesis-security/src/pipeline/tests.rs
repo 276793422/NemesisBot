@@ -1061,9 +1061,10 @@ impl crate::guardian::LlmJudge for StubJudge {
         _req: &crate::guardian::JudgeRequest,
     ) -> Result<crate::guardian::JudgeVerdict, String> {
         Ok(crate::guardian::JudgeVerdict {
+            intent: "stub".to_string(),
+            matches_rules: false,
             risk_level: "low".to_string(),
-            user_authorization: "high".to_string(),
-            outcome: crate::guardian::JudgeOutcome::Allow,
+            recommendation: "allow".to_string(),
             rationale: "stub".to_string(),
         })
     }
@@ -1080,6 +1081,72 @@ async fn test_plugin_set_judge_and_is_critical_tool() {
     assert!(plugin.is_critical_tool("exec"));
     assert!(!plugin.is_critical_tool("read_file"));
     assert!(!plugin.is_critical_tool("totally_unknown_tool"));
+
+    // HIGH 口径（guardian_mode=high 扩覆盖面用）：write/delete/spawn → true。
+    assert!(plugin.is_high_tool("write_file"));
+    assert!(plugin.is_high_tool("delete_file"));
+    assert!(plugin.is_high_tool("spawn"));
+    assert!(!plugin.is_high_tool("read_file"));
+    assert!(!plugin.is_high_tool("exec"), "exec 是 CRITICAL 不是 HIGH");
+    assert!(!plugin.is_high_tool("totally_unknown_tool"));
+
+    // 危级标签（喂 JudgeRequest.risk_level）。
+    assert_eq!(plugin.tool_danger_level("exec"), "CRITICAL");
+    assert_eq!(plugin.tool_danger_level("write_file"), "HIGH");
+    assert_eq!(plugin.tool_danger_level("totally_unknown_tool"), "unknown");
+}
+
+// ---- guardian_mode 覆盖裁决（2026-09-16 无上下文 LLM 命令审计） ----
+
+#[test]
+fn guardian_mode_default_off_never_reviews() {
+    let plugin = make_plugin();
+    // 缺省（空串）= off：judge 即使被装配也不审（装配点同闸的双保险）。
+    assert_eq!(plugin.guardian_mode(), "");
+    assert!(!plugin.guardian_should_review("exec", r#"{"command":"rm -rf /"}"#));
+    assert!(!plugin.guardian_should_review("delete_file", r#"{"path":"/etc/passwd"}"#));
+}
+
+#[test]
+fn guardian_mode_unknown_value_treated_as_off() {
+    let plugin = make_plugin();
+    plugin.set_guardian_mode("paranoid");
+    assert!(!plugin.guardian_should_review("exec", r#"{"command":"rm -rf /"}"#));
+}
+
+#[test]
+fn guardian_mode_critical_reviews_all_critical_ops() {
+    let plugin = make_plugin();
+    plugin.set_guardian_mode("critical");
+    // 现状行为：CRITICAL 级全审，与词表无关（良性命令也进）。
+    assert!(plugin.guardian_should_review("exec", r#"{"command":"ls -la"}"#));
+    assert!(plugin.guardian_should_review("background_start", r#"{"command":"sleep 1"}"#));
+    // HIGH 级不进（critical 模式不扩覆盖）。
+    assert!(!plugin.guardian_should_review("write_file", r#"{"path":"a.txt"}"#));
+    // 大小写归一。
+    let plugin2 = make_plugin();
+    plugin2.set_guardian_mode("  CRITICAL ");
+    assert!(plugin2.guardian_should_review("exec", r#"{"command":"ls"}"#));
+}
+
+#[test]
+fn guardian_mode_high_requires_danger_and_wordlist_hit() {
+    let plugin = make_plugin();
+    plugin.set_guardian_mode("high");
+    // CRITICAL 级 + 词表命中 → 审。
+    assert!(plugin.guardian_should_review("exec", r#"{"command":"rm -rf /tmp/x"}"#));
+    // CRITICAL 级 + 词表未命中 → 不进 LLM（控成本——high 模式哲学是
+    // 「审破坏形态」）。
+    assert!(!plugin.guardian_should_review("exec", r#"{"command":"ls -la"}"#));
+    // HIGH 级 + 词表命中（删除类工具天然命中）→ 审。
+    assert!(plugin.guardian_should_review("delete_file", r#"{"path":"a.txt"}"#));
+    // HIGH 级 + 词表未命中（良性写）→ 不审。
+    assert!(!plugin.guardian_should_review(
+        "write_file",
+        r#"{"path":"src/main.rs","content":"fn main() {}"}"#
+    ));
+    // LOW 级 → 无论词表如何都不审。
+    assert!(!plugin.guardian_should_review("read_file", r#"{"path":".ssh/id_rsa"}"#));
 }
 
 // ---- 感染型 Mock 引擎：Layer 7 拦截 / stop_scanner / scan_invocation ----

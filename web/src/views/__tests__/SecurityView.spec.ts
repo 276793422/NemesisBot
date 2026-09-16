@@ -5,6 +5,7 @@ import { useToast } from '../../composables/useToast'
 // D1/D2（2026-09-16 横扫存量加固）：安全页策略开关下拉。
 // exec_unknown_policy（默认 allow）/ guardian_failure_policy（默认 ask）
 // —— 改值即整体 security.config.save 写回；保存失败回滚显示。
+// guardian_mode（同日无上下文 LLM 命令审计）：覆盖面开关，默认 off。
 
 const requestMock = vi.fn()
 vi.mock('../../composables/useWSAPI', () => ({
@@ -19,6 +20,7 @@ function configResult() {
     log_all_operations: true,
     exec_unknown_policy: 'allow',
     guardian_failure_policy: 'ask',
+    guardian_mode: 'off',
     file_rules: { read: [] },
     dir_rules: { create: [] },
   }
@@ -47,16 +49,20 @@ function policySelect(w: { find: (s: string) => any }, key: string) {
 }
 
 describe('SecurityView 策略开关（D1/D2）', () => {
-  it('渲染两个下拉：值来自 config.get，各 3 个选项', async () => {
+  it('渲染三个下拉：值来自 config.get，各 3 个选项', async () => {
     const w = await mountView()
     const exec = policySelect(w, 'exec_unknown_policy')
     const guardian = policySelect(w, 'guardian_failure_policy')
+    const mode = policySelect(w, 'guardian_mode')
     expect(exec.exists()).toBe(true)
     expect(guardian.exists()).toBe(true)
+    expect(mode.exists()).toBe(true)
     expect((exec.element as HTMLSelectElement).value).toBe('allow')
     expect((guardian.element as HTMLSelectElement).value).toBe('ask')
+    expect((mode.element as HTMLSelectElement).value).toBe('off')
     expect(exec.findAll('option').length).toBe(3)
     expect(guardian.findAll('option').length).toBe(3)
+    expect(mode.findAll('option').length).toBe(3)
     w.unmount()
   })
 
@@ -91,12 +97,13 @@ describe('SecurityView 策略开关（D1/D2）', () => {
     w.unmount()
   })
 
-  it('旧配置缺键 → 下拉显示后端 serde 默认（allow / ask），不空白', async () => {
+  it('旧配置缺键 → 下拉显示后端 serde 默认（allow / ask / off），不空白', async () => {
     requestMock.mockImplementation((_m: string, cmd: string, _d: any) => {
       if (cmd === 'config.get') {
         const c = configResult()
         delete c.exec_unknown_policy
         delete c.guardian_failure_policy
+        delete c.guardian_mode
         return Promise.resolve(c)
       }
       return Promise.resolve({})
@@ -104,6 +111,19 @@ describe('SecurityView 策略开关（D1/D2）', () => {
     const w = await mountView()
     expect((policySelect(w, 'exec_unknown_policy').element as HTMLSelectElement).value).toBe('allow')
     expect((policySelect(w, 'guardian_failure_policy').element as HTMLSelectElement).value).toBe('ask')
+    expect((policySelect(w, 'guardian_mode').element as HTMLSelectElement).value).toBe('off')
+    w.unmount()
+  })
+
+  it('guardian_mode 改值 → config.save 写回 + 成功 toast', async () => {
+    const w = await mountView()
+    requestMock.mockClear()
+    await policySelect(w, 'guardian_mode').setValue('critical')
+    await flushPromises()
+    const saveCalls = requestMock.mock.calls.filter(c => c[1] === 'config.save')
+    expect(saveCalls.length).toBe(1)
+    expect(saveCalls[0][2].guardian_mode).toBe('critical')
+    expect(useToast().toasts.some(t => t.type === 'success')).toBe(true)
     w.unmount()
   })
 

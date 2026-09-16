@@ -415,6 +415,34 @@ fn test_load_security_rules_invalid_json() {
     // Should not panic
 }
 
+/// 无上下文 LLM 命令审计（2026-09-16）：`guardian_mode` 裸 JSON 键经
+/// load_security_rules 注入 plugin——键存在才注入（缺键 = 空 = off），
+/// 大小写归一；装配点（set_judge 闸）与消费点同读这一份。
+#[test]
+fn test_load_security_rules_injects_guardian_mode() {
+    // 键存在（含大小写/空白）→ 注入 + 归一。
+    let plugin = Arc::new(nemesis_security::pipeline::SecurityPlugin::new(
+        nemesis_security::pipeline::SecurityPluginConfig::default(),
+    ));
+    let tmp = tempfile::TempDir::new().unwrap();
+    let path = tmp.path().join("config.security.json");
+    let data = serde_json::json!({ "guardian_mode": "  HIGH " });
+    std::fs::write(&path, serde_json::to_string(&data).unwrap()).unwrap();
+    crate::security_setup::load_security_rules(&plugin, &path);
+    assert_eq!(plugin.guardian_mode(), "high");
+
+    // 缺键 → 保持空串（= off），不悄悄变语义。
+    let plugin2 = Arc::new(nemesis_security::pipeline::SecurityPlugin::new(
+        nemesis_security::pipeline::SecurityPluginConfig::default(),
+    ));
+    let tmp2 = tempfile::TempDir::new().unwrap();
+    let path2 = tmp2.path().join("config.security.json");
+    std::fs::write(&path2, r#"{"default_action":"allow"}"#).unwrap();
+    crate::security_setup::load_security_rules(&plugin2, &path2);
+    assert_eq!(plugin2.guardian_mode(), "");
+    assert!(!plugin2.guardian_should_review("exec", r#"{"command":"rm -rf /"}"#));
+}
+
 // -------------------------------------------------------------------------
 // F-U4-7（2026-09-15 真机事故）：出厂模板 `directory_rules` 死键（装配层
 // 只读 `dir_rules`，失配即整段静默失明）+ 目录删除无 catch-all + exec 递归
@@ -595,6 +623,16 @@ fn test_security_templates_batch2_policy_keys_and_section_layout() {
             ["allow", "ask", "deny"].contains(&d2),
             "{plat}: guardian_failure_policy={d2} must be allow|ask|deny"
         );
+        // 无上下文 LLM 命令审计（2026-09-16 用户拍板默认 off）：出厂模板
+        // 必须显式带 guardian_mode=off（可见的文档化默认）。
+        let gm = cfg["guardian_mode"]
+            .as_str()
+            .unwrap_or_else(|| panic!("{plat}: guardian_mode key must exist (出厂开关)"));
+        assert!(
+            ["off", "critical", "high"].contains(&gm),
+            "{plat}: guardian_mode={gm} must be off|critical|high"
+        );
+        assert_eq!(gm, "off", "{plat}: guardian_mode 出厂默认必须 off");
 
         // 死键 `rules` 不得回潮；分节规则条目只有 pattern/action/comment
         // （operation 平铺字段是 CFG-02 已清除的旧形态）。
@@ -3123,10 +3161,10 @@ mod wave_b {
     async fn wave_b_guardian_judge_parses_fenced_verdict_and_builds_prompt() {
         use nemesis_security::guardian::LlmJudge;
 
-        // 带 ```json 围栏的合法裁决 → parse_verdict 容忍围栏 → Ok(Allow)。
+        // 带 ```json 围栏的合法裁决 → parse_verdict 容忍围栏 → Ok(allow)。
         let fenced = "```json\n\
-                  {\"risk_level\":\"low\",\"user_authorization\":\"high\",\
-                  \"outcome\":\"allow\",\"rationale\":\"explicitly requested\"}\n\
+                  {\"intent\":\"lists files\",\"matches_rules\":false,\
+                  \"risk_level\":\"low\",\"recommendation\":\"allow\",\"rationale\":\"benign\"}\n\
                   ```";
         let seen_user_content = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
         let judge = GatewayLlmJudge {
@@ -3138,29 +3176,27 @@ mod wave_b {
         };
         let req = nemesis_security::guardian::JudgeRequest {
             action: "process_exec".to_string(),
-            risk_level: "low".to_string(),
-            transcript: "user: please list files".to_string(),
+            risk_level: "CRITICAL".to_string(),
+            command: r#"{"command":"ls"}"#.to_string(),
         };
         let verdict = judge.judge(&req).await.expect("verdict parses");
-        assert_eq!(
-            verdict.outcome,
-            nemesis_security::guardian::JudgeOutcome::Allow
-        );
+        assert!(verdict.is_allow());
         assert_eq!(verdict.risk_level, "low");
-        assert_eq!(verdict.user_authorization, "high");
-        assert_eq!(verdict.rationale, "explicitly requested");
+        assert!(!verdict.matches_rules);
+        assert_eq!(verdict.rationale, "benign");
 
-        // 提示词组装：system 含 guardian 提示词本体，user 含动作/风险/转录。
+        // 提示词组装：system 含宪法本体，user 只含命令元数据 + <command>
+        // 数据块（无上下文宪法——零任务信息零历史）。
         let seen = seen_user_content.lock().unwrap().clone();
         assert!(
-            seen.iter().any(|c| c.contains("You are a safety gate")),
+            seen.iter().any(|c| c.contains("safety gate auditing")),
             "GUARDIAN_PROMPT 必须作为 system 消息下发，seen={seen:?}"
         );
         assert!(
-            seen.iter().any(|c| c.contains("Proposed action")
+            seen.iter().any(|c| c.contains("<command>")
                 && c.contains("process_exec")
-                && c.contains("please list files")),
-            "user 消息必须携带动作与转录证据，seen={seen:?}"
+                && c.contains(r#"{"command":"ls"}"#)),
+            "user 消息必须携带工具名 + <command> 数据块，seen={seen:?}"
         );
     }
 
@@ -3181,8 +3217,8 @@ mod wave_b {
         };
         let req = nemesis_security::guardian::JudgeRequest {
             action: "file_delete".to_string(),
-            risk_level: "critical".to_string(),
-            transcript: String::new(),
+            risk_level: "HIGH".to_string(),
+            command: String::new(),
         };
         let err = judge.judge(&req).await.expect_err("LLM 错误必须向上传播");
         assert!(
