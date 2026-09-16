@@ -157,12 +157,18 @@ pub(crate) async fn build_security_plugin(
 
     // D1 硬拦保护路径（自杀形态，2026-09-16 用户裁决：不进 exec_unknown_policy
     // 开关）：workspace root + home + `~`。判定在 auditor（命令归一化后扫）。
+    // A-F3 豁免（同日用户裁决方案 1）：workspace root 注入为豁免路径——目标
+    // 为 workspace 内严格后代时「后代臂」不硬拦（法定作业区日常删除交正常
+    // 治理）；workspace 本体/祖先/home 非工作区部分照旧硬拦。
     let workspace_root = common::workspace_path(home);
     plugin.auditor().set_protected_paths(vec![
         home.to_string_lossy().to_string(),
         workspace_root.to_string_lossy().to_string(),
         "~".to_string(),
     ]);
+    plugin
+        .auditor()
+        .set_self_destruct_exempt_path(&workspace_root.to_string_lossy());
 
     // Initialize audit log file (CFG-06：`audit_log_file_enabled` 此前被
     // 无视——注释声称生效但代码无条件初始化。现诚实接线：false = 跳过

@@ -2341,6 +2341,93 @@ fn self_destruct_windows_forms_denied() {
     }
 }
 
+fn auditor_with_protected_and_exempt(paths: &[&str], exempt: &str) -> SecurityAuditor {
+    let auditor = auditor_with_protected(paths);
+    auditor.set_self_destruct_exempt_path(exempt);
+    auditor
+}
+
+#[test]
+fn self_destruct_workspace_descendant_exempt_a_f3() {
+    // A-F3 方案 1：目标为 workspace（豁免路径）内严格后代的绝对路径不再
+    // 硬拦——`rm -rf <ws>/node_modules` 是日常重装依赖操作，交正常治理。
+    let auditor =
+        auditor_with_protected_and_exempt(&["/home/zoo", "/home/zoo/proj"], "/home/zoo/proj");
+    for (i, cmd) in [
+        "rm -rf /home/zoo/proj/node_modules",
+        "rm -rf /home/zoo/proj/node_modules/lodash",
+        "rm -rf /home/zoo/proj/target/debug",
+    ]
+    .iter()
+    .enumerate()
+    {
+        let (allowed, err, _) = auditor.request_permission(&exec_request(&format!("sdx{i}"), cmd));
+        assert!(
+            allowed,
+            "`{cmd}` inside workspace must NOT hard-block (A-F3 exempt), got {:?}",
+            err
+        );
+    }
+}
+
+#[test]
+fn self_destruct_workspace_descendant_windows_form_exempt() {
+    // Windows 反斜杠形态：豁免路径归一化（小写 + 反斜杠转正斜杠）后匹配。
+    let auditor = auditor_with_protected_and_exempt(&["c:/users/zoo/proj"], "C:\\Users\\Zoo\\Proj");
+    let (allowed, err, _) = auditor.request_permission(&exec_request(
+        "sdw0",
+        "rd /s c:\\users\\zoo\\proj\\node_modules",
+    ));
+    assert!(
+        allowed,
+        "windows-form workspace descendant must be exempt, got {:?}",
+        err
+    );
+}
+
+#[test]
+fn self_destruct_workspace_itself_still_denied() {
+    // 豁免只作用于「严格后代」：workspace 本体（含尾斜杠形态）照旧硬拦。
+    let auditor =
+        auditor_with_protected_and_exempt(&["/home/zoo", "/home/zoo/proj"], "/home/zoo/proj");
+    for (i, cmd) in ["rm -rf /home/zoo/proj", "rm -rf /home/zoo/proj/"]
+        .iter()
+        .enumerate()
+    {
+        let (allowed, err, _) = auditor.request_permission(&exec_request(&format!("sdy{i}"), cmd));
+        assert!(!allowed, "`{cmd}` (workspace itself) must still hard-block");
+        assert!(err.unwrap().contains("self-destruct"));
+    }
+}
+
+#[test]
+fn self_destruct_home_non_workspace_part_still_denied() {
+    // workspace 外的 home 内容不受豁免影响（home 仍保护）。
+    let auditor =
+        auditor_with_protected_and_exempt(&["/home/zoo", "/home/zoo/proj"], "/home/zoo/proj");
+    for (i, cmd) in ["rm -rf /home/zoo", "rm -rf /home/zoo/documents", "rm -rf /"]
+        .iter()
+        .enumerate()
+    {
+        let (allowed, err, _) = auditor.request_permission(&exec_request(&format!("sdz{i}"), cmd));
+        assert!(!allowed, "`{cmd}` outside workspace must still hard-block");
+        assert!(err.unwrap().contains("self-destruct"));
+    }
+}
+
+#[test]
+fn self_destruct_no_exempt_set_keeps_legacy_arms() {
+    // 未注入豁免路径（空 = 旧行为）：三臂全开，后代臂照旧硬拦。
+    let auditor = auditor_with_protected(&["/home/zoo/proj"]);
+    let (allowed, err, _) =
+        auditor.request_permission(&exec_request("sdn0", "rm -rf /home/zoo/proj/node_modules"));
+    assert!(
+        !allowed,
+        "without exempt path the descendant arm must still fire"
+    );
+    assert!(err.unwrap().contains("self-destruct"));
+}
+
 fn exec_unknown_auditor(default_action: &str, policy: &str) -> SecurityAuditor {
     let auditor = SecurityAuditor::new(AuditorConfig {
         enabled: true,

@@ -300,6 +300,11 @@ pub struct SecurityAuditor {
     /// 保持硬拦，**不进** exec_unknown_policy 开关）。由 security_setup 注入
     /// workspace root + home（含 `~` 形态）；空 = 未注入（跳过扫描）。
     protected_paths: RwLock<Vec<String>>,
+    /// 自杀硬拦豁免路径（A-F3 方案 1，2026-09-16 用户裁决）：workspace root。
+    /// 目标在豁免路径**之内**（不含自身）时「后代臂」不硬拦，交给正常治理
+    /// （ABAC/exec_unknown_policy/审批）；本体/祖先/根/~ 等臂不受豁免影响。
+    /// 空 = 未注入（三臂全开，旧行为）。
+    self_destruct_exempt: RwLock<String>,
 }
 
 impl SecurityAuditor {
@@ -320,6 +325,7 @@ impl SecurityAuditor {
             log_file_path: RwLock::new(None),
             exec_unknown_policy: RwLock::new(String::new()),
             protected_paths: RwLock::new(Vec::new()),
+            self_destruct_exempt: RwLock::new(String::new()),
         }
     }
 
@@ -332,6 +338,19 @@ impl SecurityAuditor {
             .map(|p| p.replace('\\', "/").to_lowercase())
             .collect();
         *self.protected_paths.write() = normalized;
+    }
+
+    /// 注入自杀硬拦豁免路径（A-F3 方案 1，2026-09-16 用户裁决）：workspace
+    /// root。目标在该路径**之内**（严格后代，不含自身）时「后代臂」不硬拦。
+    /// 归一化方式与 protected_paths 一致（小写 + 反斜杠转正斜杠 + 去尾斜杠，
+    /// 后代判定按字节前缀比较，尾斜杠残留会静默失配）。
+    pub fn set_self_destruct_exempt_path(&self, path: &str) {
+        let normalized = path
+            .trim()
+            .replace('\\', "/")
+            .trim_end_matches('/')
+            .to_lowercase();
+        *self.self_destruct_exempt.write() = normalized;
     }
 
     /// D2（2026-09-16 用户裁决）：guardian（LLM judge）自身故障时的审批
@@ -980,8 +999,9 @@ impl SecurityAuditor {
             OperationType::ProcessExec | OperationType::ProcessSpawn
         ) {
             let protected = self.protected_paths.read();
+            let exempt = self.self_destruct_exempt.read();
             if !protected.is_empty()
-                && let Some(reason) = detect_self_destruct(&match_target, &protected)
+                && let Some(reason) = detect_self_destruct(&match_target, &protected, &exempt)
             {
                 return (
                     SecurityDecision::Denied,
@@ -1167,9 +1187,16 @@ impl SecurityAuditor {
 /// 根 / `.` / `..` / `*` / `.git`）。判定窗口从动词起到下一个命令边界
 /// （`&&` `;` `||` `|` `&`）——`cd <workspace> && rm -rf build` 不误伤
 /// （窗口内无保护路径），`cd <workspace> && rm -rf .` 拦截。
+/// A-F3 豁免（2026-09-16 用户裁决方案 1）：`exempt` 非空时，目标为豁免
+/// 路径（workspace root）**严格后代**的绝对路径不再触发「后代臂」——
+/// workspace 是 agent 法定作业区，删除其中内容（node_modules/build 产物）
+/// 属日常工作，交正常治理（ABAC/exec_unknown_policy/审批）；删除豁免路径
+/// 本体、其祖先（含 home 非工作区部分）、根/~ 等臂不受影响，照旧硬拦。
 /// 诚实边界：单文件 rm（无递归旗标）不拦——那是 ABAC 模板/exec_unknown_policy
-/// 的治理面；相对路径多级目标（`rm -rf src/.git`）不在保护判定内。
-fn detect_self_destruct(normalized: &str, protected: &[String]) -> Option<String> {
+/// 的治理面；相对路径多级目标（`rm -rf src/.git`）不在保护判定内；
+/// `cd <ws> && rm -rf node_modules` 两段式相对路径形态本就在窗口外（非
+/// 本豁免引入，字符串级检测的既有边界）。
+fn detect_self_destruct(normalized: &str, protected: &[String], exempt: &str) -> Option<String> {
     const DESTRUCTIVE_BINS: &[&str] = &[
         "rm",
         "del",
@@ -1209,6 +1236,16 @@ fn detect_self_destruct(normalized: &str, protected: &[String]) -> Option<String
             || t.starts_with('~')
             || protected.iter().any(|p| {
                 let p = p.trim_end_matches('/');
+                // A-F3 豁免（方案 1）：目标在豁免路径内的严格后代不再经
+                // 「后代臂」硬拦。只豁免第三臂——本体（p==tt，如 rm 掉
+                // workspace 本身）与祖先臂照旧拦截。
+                if !exempt.is_empty()
+                    && tt.len() > exempt.len()
+                    && tt.starts_with(exempt)
+                    && tt.as_bytes()[exempt.len()] == b'/'
+                {
+                    return false;
+                }
                 // 目标=保护路径本身；目标是保护路径的祖先（删父目录带掉
                 // 保护路径）；目标在保护路径之内（删子树同样毁灭保护内容）。
                 p == tt
