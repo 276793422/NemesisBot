@@ -44,7 +44,10 @@ function projectName(id: number | null): string {
 
 function assigneeShort(i: IssueRow): string {
   if (!i.assignee) return ''
-  return i.assignee === 'manager_self' ? 'manager' : `@${i.assignee_id}`
+  if (i.assignee === 'manager_self') return 'manager'
+  // 指派目标可读名（复用本组件已拉的 nodes.list；未知 id 回退原始 id）。
+  const name = workerNodes.value.find((n) => n.id === i.assignee_id)?.name
+  return `@${name ?? i.assignee_id}`
 }
 
 async function load(silent = false) {

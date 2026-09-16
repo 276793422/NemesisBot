@@ -9,9 +9,6 @@
 //! 遗漏 = 对账缺口（可枚举、可计数），不靠人眼通读；校验主要靠程序（字面匹配）而非
 //! LLM 自觉——程序判定的硬缺口（实体没出现、整段没产出）无法被模型蒙混过关。
 
-use std::sync::Arc;
-
-use nemesis_providers::http_provider::HttpProvider;
 use nemesis_providers::router::LLMProvider;
 use nemesis_providers::types::{
     ChatOptions, LLMResponse, Message, ToolDefinition, ToolFunctionDefinition,
@@ -658,7 +655,7 @@ fn build_coverage_report(
 // ============================================================================
 
 async fn chat_json(
-    provider: &Arc<HttpProvider>,
+    provider: &dyn LLMProvider,
     model: &str,
     system: &str,
     user: String,
@@ -668,13 +665,17 @@ async fn chat_json(
     let messages = vec![mk_msg("system", system.to_string()), mk_msg("user", user)];
     let opts = ChatOptions {
         temperature: Some(temperature),
-        max_tokens: Some(8192),
+        // 16384（2026-09-17 真机根因）：glm-5.3-flash 等思考模型 thinking 先烧
+        // 2000-3000 token，人格包三阶段（抽取/创作/审计）正文再要 4000-6000；
+        // 旧 8192 会被截断 → 阶段2「缺字段/空输出」两连败（真机实锤：16384 下
+        // thinking 2878 + 完整 JSON 正文，stop=end_turn 正常收口）。
+        max_tokens: Some(16384),
         top_p: None,
         stop: None,
         reasoning_effort: None,
         extra: std::collections::HashMap::new(),
     };
-    let resp = (**provider)
+    let resp = provider
         .chat(&messages, &[tool], model, &opts)
         .await
         .map_err(|e| format!("LLM 调用失败: {:?}", e))?;
@@ -683,7 +684,7 @@ async fn chat_json(
 
 /// 阶段1：分段穷尽提取信息单元。
 async fn extract_units(
-    provider: &Arc<HttpProvider>,
+    provider: &dyn LLMProvider,
     model: &str,
     kind: &str,
     clean: &str,
@@ -702,7 +703,7 @@ async fn extract_units(
 
 /// 阶段2：基于信息单元创作人格。
 async fn author_persona(
-    provider: &Arc<HttpProvider>,
+    provider: &dyn LLMProvider,
     model: &str,
     kind: &str,
     clean: &str,
@@ -728,7 +729,7 @@ async fn author_persona(
 
 /// 阶段3-审计：对抗性 LLM 审计（找茬模式）。失败时返回空（程序校验兜底）。
 async fn audit_coverage(
-    provider: &Arc<HttpProvider>,
+    provider: &dyn LLMProvider,
     model: &str,
     units: &InformationUnits,
     pkg: &PersonaPackage,
@@ -771,7 +772,7 @@ async fn audit_coverage(
 /// 覆盖校验失败不硬 Err——返回带覆盖率报告的 pkg（report 里标清 missing/segment_gaps），
 /// 让调用方/用户审计完整性。只有 LLM 调用/解析彻底失败才 Err。
 pub async fn generate_persona(
-    provider: &Arc<HttpProvider>,
+    provider: &dyn LLMProvider,
     model: &str,
     kind: &str,
     text: &str,

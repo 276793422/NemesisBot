@@ -1777,3 +1777,153 @@ fn test_build_request_body_image_parts_openai_format() {
     assert_eq!(content[1]["type"], "image_url");
     assert_eq!(content[1]["image_url"]["url"], "https://example.com/a.png");
 }
+
+// ===========================================================================
+// B 根修补测（2026-09-17）：200-包装错误诚实化守卫。CC Switch 实测对未知
+// 路径回 HTTP 200 + 错误 JSON（{"code":500,"msg":"404 NOT_FOUND"}），旧
+// 逻辑 chat() 静默空响应 / chat_stream() 静默空流——集群人格生成 0.4s 假
+// 失败根因链的一环。这里钉死：chat() 两分支（error 键 / choices 缺失）+
+// chat_stream() 两分支（忽略 stream:true 的兼容合成 / 错误包装体报 Format）。
+// ===========================================================================
+
+use wiremock::matchers::{method, path};
+use wiremock::{Mock, MockServer, ResponseTemplate};
+
+fn b_wire_provider(base_url: String) -> HttpProvider {
+    HttpProvider::new(HttpProviderConfig {
+        name: "b-guard".to_string(),
+        base_url,
+        api_key: "k".to_string(),
+        default_model: "gpt-4".to_string(),
+        timeout_secs: 10,
+        headers: HashMap::new(),
+        proxy: None,
+        preserve_prefix: false,
+    })
+}
+
+fn b_one_message() -> Vec<Message> {
+    vec![Message {
+        role: "user".to_string(),
+        content: "hi".into(),
+        tool_calls: vec![],
+        tool_call_id: None,
+        timestamp: None,
+        reasoning_content: None,
+        extra: HashMap::new(),
+    }]
+}
+
+async fn b_collect_stream(
+    mut rx: tokio::sync::mpsc::Receiver<Result<StreamChunk, FailoverError>>,
+) -> Vec<Result<StreamChunk, FailoverError>> {
+    let mut out = vec![];
+    while let Some(v) = rx.recv().await {
+        out.push(v);
+    }
+    out
+}
+
+#[tokio::test]
+async fn test_b_chat_200_wrapped_error_no_choices_maps_format() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/chat/completions"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "code": 500, "msg": "404 NOT_FOUND", "success": false
+        })))
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let provider = b_wire_provider(server.uri());
+    let err = provider
+        .chat(&b_one_message(), &[], "gpt-4", &ChatOptions::default())
+        .await
+        .unwrap_err();
+    match &err {
+        FailoverError::Format { message, .. } => {
+            assert!(message.contains("no choices"), "{}", message);
+            assert!(message.contains("404 NOT_FOUND"), "{}", message);
+        }
+        other => panic!("expected Format, got {:?}", other),
+    }
+}
+
+#[tokio::test]
+async fn test_b_chat_200_error_key_maps_format() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/chat/completions"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "error": {"message": "invalid api key", "type": "auth"}
+        })))
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let provider = b_wire_provider(server.uri());
+    let err = provider
+        .chat(&b_one_message(), &[], "gpt-4", &ChatOptions::default())
+        .await
+        .unwrap_err();
+    match &err {
+        FailoverError::Format { message, .. } => {
+            assert!(message.contains("error body with HTTP 200"), "{}", message);
+            assert!(message.contains("invalid api key"), "{}", message);
+        }
+        other => panic!("expected Format, got {:?}", other),
+    }
+}
+
+#[tokio::test]
+async fn test_b_chat_stream_json_200_with_choices_synthesizes_stream() {
+    // 服务端忽略 stream:true 回完整 JSON（application/json）→ 合成等价流。
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/chat/completions"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "choices": [{"message": {"content": "full-text"}, "finish_reason": "stop"}],
+            "usage": {"prompt_tokens": 3, "completion_tokens": 2, "total_tokens": 5}
+        })))
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let provider = b_wire_provider(server.uri());
+    let rx = provider.chat_stream(&b_one_message(), &[], "gpt-4", &ChatOptions::default());
+    let chunks = b_collect_stream(rx).await;
+
+    assert_eq!(chunks.len(), 2);
+    assert_eq!(chunks[0].as_ref().unwrap().delta, "full-text");
+    let fin = chunks[1].as_ref().unwrap();
+    assert_eq!(fin.finish_reason.as_deref(), Some("stop"));
+    assert_eq!(fin.usage.as_ref().unwrap().total_tokens, 5);
+}
+
+#[tokio::test]
+async fn test_b_chat_stream_json_200_no_choices_maps_format() {
+    // CC Switch 错误包装体：200 + application/json + 无 choices → 亮出 body
+    // 真相的 Format 错（旧逻辑静默产出空流的根修面）。
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/chat/completions"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "code": 500, "msg": "404 NOT_FOUND", "success": false
+        })))
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let provider = b_wire_provider(server.uri());
+    let rx = provider.chat_stream(&b_one_message(), &[], "gpt-4", &ChatOptions::default());
+    let chunks = b_collect_stream(rx).await;
+
+    assert_eq!(chunks.len(), 1);
+    match chunks[0].as_ref().unwrap_err() {
+        FailoverError::Format { message, .. } => {
+            assert!(message.contains("404 NOT_FOUND"), "{}", message);
+        }
+        other => panic!("expected Format, got {:?}", other),
+    }
+}

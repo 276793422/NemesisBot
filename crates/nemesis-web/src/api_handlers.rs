@@ -62,8 +62,14 @@ pub struct AppState {
     pub session_manager: Arc<SessionManager>,
     /// Sender for forwarding incoming WebSocket messages to the bus bridge.
     pub inbound_tx: Option<mpsc::UnboundedSender<IncomingMessage>>,
-    /// Streaming LLM provider for SSE chat endpoint (optional — set via set_streaming_provider).
-    pub streaming_provider: Option<Arc<nemesis_providers::http_provider::HttpProvider>>,
+    /// Streaming LLM provider for SSE chat endpoint + persona generation
+    /// (optional — set via set_streaming_provider).
+    ///
+    /// 协议感知槽（B 根修 2026-09-17）：此前类型钉死 Arc<HttpProvider>（只讲
+    /// OpenAI wire），gateway 只能装配裸 HttpProvider——主模型切 anthropic
+    /// 协议后 persona 生成与 /api/chat/stream 整条 lane 断粮。改 dyn
+    /// LLMProvider 后 gateway 经 factory 装配（同一 resolution + protocol）。
+    pub streaming_provider: Option<Arc<dyn nemesis_providers::router::LLMProvider>>,
     /// WS API Router for request/response dispatch (optional — set during server setup).
     pub ws_router: Option<Arc<crate::ws_router::WsRouter>>,
     /// Agent loop service for start/stop/status control.

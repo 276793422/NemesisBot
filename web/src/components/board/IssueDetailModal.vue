@@ -151,7 +151,9 @@ function fmtSize(bytes: number): string {
 
 function assigneeLabel(issue: Issue): string {
   if (!issue.assignee) return '未指派'
-  return issue.assignee === 'manager_self' ? 'manager（本机）' : `worker: ${issue.assignee_id}`
+  // 指派目标可读名（H1 单一解析层；未知 id 回退原始 id）。
+  if (issue.assignee === 'manager_self') return 'manager（本机）'
+  return `worker: ${actorName(issue.assignee_id) ?? issue.assignee_id}`
 }
 
 function allowedTargets(status: string): string[] {

@@ -364,6 +364,30 @@ pub trait LLMProvider: Send + Sync {
         options: &ChatOptions,
     ) -> Result<LLMResponse, FailoverError>;
 
+    /// Send a streaming chat completion request.
+    ///
+    /// 流式协议上 trait（B 根修 2026-09-17）：此前 `chat_stream` 只是
+    /// HttpProvider 的固有方法，SSE/persona 侧槽只能装配裸 HttpProvider
+    /// （只讲 OpenAI wire），主模型切 anthropic 协议后整条 lane 断粮
+    /// （CC Switch 对 OpenAI 路径回 200 包装错误 → 空响应静默成功）。
+    /// 默认实现诚实报「不支持」——未实现流式的 provider（CLI 型等）调用方
+    /// 拿到明确错误而非静默空流。非 async（内部 spawn，返回 receiver）。
+    fn chat_stream(
+        &self,
+        messages: &[Message],
+        tools: &[ToolDefinition],
+        model: &str,
+        options: &ChatOptions,
+    ) -> tokio::sync::mpsc::Receiver<Result<crate::http_provider::StreamChunk, FailoverError>> {
+        let _ = (messages, tools, model, options);
+        let (tx, rx) = tokio::sync::mpsc::channel(1);
+        let _ = tx.try_send(Err(FailoverError::Unknown {
+            provider: self.name().to_string(),
+            message: "streaming (chat_stream) not implemented for this provider".to_string(),
+        }));
+        rx
+    }
+
     /// Get the default model for this provider.
     fn default_model(&self) -> &str;
 

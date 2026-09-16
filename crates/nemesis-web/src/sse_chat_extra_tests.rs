@@ -252,8 +252,10 @@ use std::time::Instant;
 use tower::ServiceExt;
 
 /// 复刻 fork_route_tests 的最小 AppState（全 None，除 streaming_provider
-/// 由各测试自行覆盖）。
-fn make_state(streaming_provider: Option<Arc<HttpProvider>>) -> Arc<AppState> {
+/// 由各测试自行覆盖）。槽类型 = 协议感知 dyn（B 根修 2026-09-17）。
+fn make_state(
+    streaming_provider: Option<Arc<dyn nemesis_providers::router::LLMProvider>>,
+) -> Arc<AppState> {
     Arc::new(AppState {
         auth_token: "test-token".to_string(),
         session_count: Arc::new(AtomicUsize::new(0)),

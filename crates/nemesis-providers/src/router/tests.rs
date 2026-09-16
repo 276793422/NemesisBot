@@ -1215,3 +1215,58 @@ fn test_w4c_cosine_guard_arms() {
     assert!((super::cosine(&[1.0, 0.0], &[2.0, 0.0]) - 1.0).abs() < 1e-6);
     assert!((super::cosine(&[1.0, 0.0], &[-1.0, 0.0]) + 1.0).abs() < 1e-6);
 }
+
+// ===========================================================================
+// B 根修补测（2026-09-17）：trait 默认 chat_stream「不支持」语义。streaming
+// 槽从 Arc<HttpProvider> 放宽为 Arc<dyn LLMProvider> 后，未实现流式的
+// provider（Codex/Cli 系等）必须诚实报错而非 panic/空流——默认实现预填
+// Unknown 错（receiver 立即终止），不留给上游悬挂的空流。
+// ===========================================================================
+
+#[tokio::test]
+async fn test_b_default_chat_stream_reports_not_implemented() {
+    struct NoStreamProvider;
+    #[async_trait::async_trait]
+    impl LLMProvider for NoStreamProvider {
+        async fn chat(
+            &self,
+            _: &[Message],
+            _: &[ToolDefinition],
+            _: &str,
+            _: &ChatOptions,
+        ) -> Result<LLMResponse, FailoverError> {
+            Ok(LLMResponse {
+                content: "mock".into(),
+                tool_calls: vec![],
+                finish_reason: "stop".into(),
+                usage: None,
+                reasoning_content: None,
+                extra: HashMap::new(),
+                raw_request_body: None,
+                raw_response_body: None,
+            })
+        }
+        fn default_model(&self) -> &str {
+            "m"
+        }
+        fn name(&self) -> &str {
+            "nostream"
+        }
+    }
+
+    let p = NoStreamProvider;
+    let mut rx = p.chat_stream(&[], &[], "m", &ChatOptions::default());
+    // 默认实现预填一条 Unknown 错，随后通道关闭——第一个 recv 就拿到终态。
+    let first = rx.recv().await;
+    match first {
+        Some(Err(FailoverError::Unknown { provider, message })) => {
+            assert_eq!(provider, "nostream");
+            assert!(message.contains("not implemented"), "{}", message);
+        }
+        Some(Err(other)) => panic!("expected Unknown, got {:?}", other),
+        Some(Ok(chunk)) => panic!("expected error, got chunk {:?}", chunk),
+        None => panic!("receiver closed without the pre-filled error"),
+    }
+    // 通道终止：不再有第二条。
+    assert!(rx.recv().await.is_none());
+}

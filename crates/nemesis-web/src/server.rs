@@ -203,8 +203,9 @@ pub struct WebServer {
     model_base: Arc<parking_lot::Mutex<String>>,
     /// Whether the active model has an API key configured.
     model_has_key: Arc<std::sync::atomic::AtomicBool>,
-    /// Optional streaming LLM provider for SSE chat endpoint.
-    streaming_provider: Option<Arc<nemesis_providers::http_provider::HttpProvider>>,
+    /// Optional streaming LLM provider for SSE chat endpoint + persona
+    /// generation（协议感知槽，B 根修 2026-09-17；经 factory 装配）。
+    streaming_provider: Option<Arc<dyn nemesis_providers::router::LLMProvider>>,
     /// Agent loop service for start/stop/status control.
     agent_service: Option<Arc<dyn nemesis_services::bot_service::AgentLoopService>>,
     /// Data store for usage statistics queries.
@@ -343,7 +344,7 @@ impl WebServer {
     /// Set the streaming LLM provider for the SSE chat endpoint.
     pub fn set_streaming_provider(
         &mut self,
-        provider: Arc<nemesis_providers::http_provider::HttpProvider>,
+        provider: Arc<dyn nemesis_providers::router::LLMProvider>,
     ) {
         self.streaming_provider = Some(provider);
     }

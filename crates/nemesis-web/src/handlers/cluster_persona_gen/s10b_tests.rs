@@ -153,7 +153,7 @@ async fn generate_persona_clean_run_completes_with_full_coverage() {
     .await;
 
     let provider = provider_for(&server);
-    let pkg = generate_persona(&provider, "mock-model", "jd", INPUT, 2)
+    let pkg = generate_persona(&*provider, "mock-model", "jd", INPUT, 2)
         .await
         .expect("clean run succeeds");
     assert_eq!(pkg.node_name, "node-s10b");
@@ -192,7 +192,7 @@ async fn generate_persona_retries_then_returns_pkg_with_gaps_report() {
     .await;
 
     let provider = provider_for(&server);
-    let pkg = generate_persona(&provider, "mock-model", "jd", INPUT, 2)
+    let pkg = generate_persona(&*provider, "mock-model", "jd", INPUT, 2)
         .await
         .expect("exhausted retries still return the last pkg, not Err");
     let report = pkg.coverage.expect("incomplete run attaches gap report");
@@ -238,7 +238,7 @@ async fn generate_persona_author_parse_failure_retries_and_audit_http_failure_fa
     .await;
 
     let provider = provider_for(&server);
-    let pkg = generate_persona(&provider, "mock-model", "jd", INPUT, 2)
+    let pkg = generate_persona(&*provider, "mock-model", "jd", INPUT, 2)
         .await
         .expect("second attempt completes via program check");
     let report = pkg.coverage.expect("report attached");
@@ -285,7 +285,7 @@ async fn generate_persona_validate_failure_retries_with_good_pkg() {
     .await;
 
     let provider = provider_for(&server);
-    let pkg = generate_persona(&provider, "mock-model", "jd", INPUT, 2)
+    let pkg = generate_persona(&*provider, "mock-model", "jd", INPUT, 2)
         .await
         .expect("retry after invalid pkg succeeds");
     assert_eq!(pkg.role, "worker");

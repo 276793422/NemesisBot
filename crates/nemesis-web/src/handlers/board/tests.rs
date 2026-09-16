@@ -4479,6 +4479,87 @@ async fn test_dispatch_issue_core_rejects_frozen_project() {
 }
 
 // ---------------------------------------------------------------------------
+// 派发即指派回填（2026-09-17）：dispatch_issue_core 单一入口回填 assignee
+// ---------------------------------------------------------------------------
+
+/// 派发回填 assignee=worker/目标节点；换目标重派时同点位改指。用纯内存
+/// `Cluster::new`（无 RPC client）——派发在 rpc_client_arc 诚实返回 Err，
+/// 但此刻 claim/状态转移/指派回填均已落库，正好钉住回填位置：状态转移
+/// 成功之后、RPC 依赖之前（Err 路径不回滚已提交的派发，与现行为一致）。
+#[cfg(feature = "cluster")]
+#[tokio::test]
+async fn test_dispatch_backfills_assignee() {
+    let dir = unique_dir("dispatch-assignee-backfill");
+    let store = Arc::new(BoardStore::open(&dir.join("board.db"), "NB").unwrap());
+    let cluster = Arc::new(nemesis_cluster::cluster::Cluster::new(
+        nemesis_cluster::types::ClusterConfig::default(),
+    ));
+
+    // 未指派 → 派发给 node-b：走到 RPC client 缺失诚实失败，回填已发生。
+    let issue = store
+        .create_issue(nemesis_board::NewIssue {
+            title: "回填指派的单".into(),
+            ..Default::default()
+        })
+        .unwrap();
+    let err = super::dispatch_issue_core(
+        &store,
+        Some(&cluster),
+        issue.id,
+        "node-b",
+        &Actor::admin("t"),
+        None,
+    )
+    .unwrap_err();
+    assert!(
+        err.contains("RPC client"),
+        "纯内存集群应走到 RPC client 缺失：{err}"
+    );
+    let after = store.get_issue(issue.id).unwrap();
+    assert_eq!(
+        after.assignee,
+        Some(nemesis_board::assignment::AssignmentType::Worker)
+    );
+    assert_eq!(after.assignee_id.as_deref(), Some("node-b"));
+    assert_eq!(
+        after.status,
+        nemesis_board::models::IssueStatus::InProgress,
+        "回填发生在状态转移成功之后"
+    );
+
+    // 已显式指派 node-a → 派发 target=node-c：指派跟随实际派发目标改写
+    //（D3 换节点重派同款语义——目标变了字段必须跟上）。
+    let issue2 = store
+        .create_issue(nemesis_board::NewIssue {
+            title: "改指的单".into(),
+            ..Default::default()
+        })
+        .unwrap();
+    store
+        .assign_issue(
+            issue2.id,
+            Some(nemesis_board::assignment::AssignmentType::Worker),
+            Some("node-a".into()),
+            &Actor::admin("t"),
+        )
+        .unwrap();
+    let err = super::dispatch_issue_core(
+        &store,
+        Some(&cluster),
+        issue2.id,
+        "node-c",
+        &Actor::admin("t"),
+        None,
+    )
+    .unwrap_err();
+    assert!(err.contains("RPC client"), "{err}");
+    let after2 = store.get_issue(issue2.id).unwrap();
+    assert_eq!(after2.assignee_id.as_deref(), Some("node-c"));
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+// ---------------------------------------------------------------------------
 // 看板项目档案 P6（F11）：project.progress 档案完整性投影
 // ---------------------------------------------------------------------------
 

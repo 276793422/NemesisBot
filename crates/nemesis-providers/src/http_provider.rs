@@ -329,6 +329,89 @@ impl HttpProvider {
                 return;
             }
 
+            // 200-包装错误诚实化（同 chat() 根修，2026-09-17）：显式
+            // application/json 的 200 响应不是 SSE 流——两种可能：
+            // ① 网关错误包装体（CC Switch 实测 {"code":500,"msg":"404
+            //    NOT_FOUND"}，旧逻辑静默产出空流）→ Format 错误带 body 摘要；
+            // ② 服务端忽略 stream:true 回了完整 JSON（兼容行为）→ 合成
+            //    单 delta + 终态 chunk，等价流式消费。
+            // 其余 content-type（含未标注，如部分 mock）走原 SSE 解析不变。
+            let content_type = resp
+                .headers()
+                .get("content-type")
+                .and_then(|v| v.to_str().ok())
+                .unwrap_or("")
+                .to_ascii_lowercase();
+            if content_type.contains("application/json") {
+                let body = resp.text().await.unwrap_or_default();
+                let parsed: serde_json::Value = match serde_json::from_str(&body) {
+                    Ok(v) => v,
+                    Err(e) => {
+                        let _ = tx
+                            .send(Err(FailoverError::Format {
+                                provider: provider_name.clone(),
+                                message: format!("non-SSE JSON body (model {}): {}", model, e),
+                            }))
+                            .await;
+                        return;
+                    }
+                };
+                let has_choices = parsed
+                    .get("choices")
+                    .and_then(|c| c.as_array())
+                    .is_some_and(|a| !a.is_empty());
+                if has_choices {
+                    // ② 忽略 stream 的兼容端点：完整 JSON → 合成流。
+                    let content = parsed["choices"][0]["message"]["content"]
+                        .as_str()
+                        .unwrap_or("")
+                        .to_string();
+                    let finish = parsed["choices"][0]["finish_reason"]
+                        .as_str()
+                        .unwrap_or("stop")
+                        .to_string();
+                    let usage = parsed.get("usage").map(extract_usage);
+                    if !content.is_empty() {
+                        let _ = tx
+                            .send(Ok(StreamChunk {
+                                delta: content,
+                                tool_calls: vec![],
+                                finish_reason: None,
+                                usage: None,
+                                reasoning_content: None,
+                            }))
+                            .await;
+                    }
+                    let _ = tx
+                        .send(Ok(StreamChunk {
+                            delta: String::new(),
+                            tool_calls: vec![],
+                            finish_reason: Some(finish),
+                            usage,
+                            reasoning_content: None,
+                        }))
+                        .await;
+                } else {
+                    // ① 错误包装体（或异常形态）——亮出 body 真相。
+                    tracing::error!(
+                        provider = %provider_name,
+                        model = %model,
+                        "[Provider] Streaming request got non-SSE JSON body"
+                    );
+                    let _ = tx
+                        .send(Err(FailoverError::Format {
+                            provider: provider_name.clone(),
+                            message: format!(
+                                "expected text/event-stream for model {}, got JSON body: {}",
+                                model,
+                                body.chars().take(200).collect::<String>()
+                            ),
+                        }))
+                        .await;
+                }
+                return;
+            }
+
             // Parse the SSE stream from the response body.
             let mut stream = resp.bytes_stream();
             let mut buffer = String::new();
@@ -647,6 +730,36 @@ impl LLMProvider for HttpProvider {
                 message: e.to_string(),
             })?;
 
+        // 200-包装错误诚实化（2026-09-17 根修附带）：部分网关（实测 CC Switch）
+        // 对未知路径回 HTTP 200 + 错误 JSON（如 {"code":500,"msg":"404 NOT_FOUND"}）。
+        // 旧逻辑 choices 缺失时 unwrap_or("") → 空响应静默成功，上游真相被吞
+        //（集群人格生成 0.4s 假失败根因链的一环）。现要求响应体含非空 choices
+        // 数组；OpenAI wire 的合法响应至少 1 条 choice，空/缺失即报 Format 并
+        // 带 body 摘要，把网关的 200 包装错误亮出来。
+        if data.get("error").is_some_and(|e| !e.is_null()) {
+            return Err(FailoverError::Format {
+                provider: self.config.name.clone(),
+                message: format!(
+                    "error body with HTTP 200: {}",
+                    raw_response_text.chars().take(200).collect::<String>()
+                ),
+            });
+        }
+        let choices_absent = data
+            .get("choices")
+            .and_then(|c| c.as_array())
+            .map(|a| a.is_empty())
+            .unwrap_or(true);
+        if choices_absent {
+            return Err(FailoverError::Format {
+                provider: self.config.name.clone(),
+                message: format!(
+                    "HTTP 200 but no choices in response body: {}",
+                    raw_response_text.chars().take(200).collect::<String>()
+                ),
+            });
+        }
+
         // Parse OpenAI-compatible response
         let content = data["choices"][0]["message"]["content"]
             .as_str()
@@ -722,6 +835,19 @@ impl LLMProvider for HttpProvider {
             raw_request_body: Some(body),
             raw_response_body: Some(raw_response_text),
         })
+    }
+
+    fn chat_stream(
+        &self,
+        messages: &[Message],
+        tools: &[ToolDefinition],
+        model: &str,
+        options: &ChatOptions,
+    ) -> tokio::sync::mpsc::Receiver<Result<StreamChunk, FailoverError>> {
+        // trait 投影（B 根修 2026-09-17）：trait 默认实现是「不支持」，OpenAI
+        // wire lane 在此接通真流式。完全限定调用解析到本类型固有 impl（固有
+        // 方法优先于 trait 方法）。
+        HttpProvider::chat_stream(self, messages, tools, model, options)
     }
 
     fn default_model(&self) -> &str {

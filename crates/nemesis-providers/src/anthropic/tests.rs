@@ -1208,3 +1208,234 @@ fn test_build_request_body_both_argument_sources_missing_stays_empty_object() {
     let blocks = body["messages"][0]["content"].as_array().unwrap();
     assert_eq!(blocks[0]["input"], serde_json::json!({}));
 }
+
+// ===========================================================================
+// B 根修（2026-09-17）：chat_stream 流式测试（wiremock）。persona 生成 lane
+// 此前只有 HttpProvider（OpenAI wire），主模型切 anthropic 协议后断粮——
+// 这里钉死 AnthropicProvider::chat_stream 的完整语义：SSE 事件族解析 /
+// tool_use 累积+按序 flush / 200-JSON 双守卫（忽略 stream:true 的兼容合成
+// vs CC Switch 错误包装的 Format 报错）/ error 事件 / EOF 半截流合成终态。
+// ===========================================================================
+
+use crate::http_provider::StreamChunk;
+
+/// 收干 receiver：chunk 流以 tx drop（spawn 任务 return）为终点。
+async fn collect_stream(
+    mut rx: tokio::sync::mpsc::Receiver<Result<StreamChunk, FailoverError>>,
+) -> Vec<Result<StreamChunk, FailoverError>> {
+    let mut out = vec![];
+    while let Some(v) = rx.recv().await {
+        out.push(v);
+    }
+    out
+}
+
+fn sse_response(body: &str) -> ResponseTemplate {
+    ResponseTemplate::new(200)
+        .set_body_string(body.to_string())
+        .insert_header("content-type", "text/event-stream")
+}
+
+#[tokio::test]
+async fn test_b_stream_happy_path_text_usage_stop() {
+    let server = MockServer::start().await;
+    // 请求侧钉 stream:true wire 契约。
+    Mock::given(method("POST"))
+        .and(path("/v1/messages"))
+        .and(body_partial_json(json!({"stream": true, "model": "m"})))
+        .respond_with(sse_response(concat!(
+            "event: message_start\n",
+            "data: {\"type\":\"message_start\",\"message\":{\"usage\":{\"input_tokens\":5,\"cache_read_input_tokens\":2}}}\n\n",
+            "event: content_block_start\n",
+            "data: {\"type\":\"content_block_start\",\"index\":0,\"content_block\":{\"type\":\"text\"}}\n\n",
+            "event: content_block_delta\n",
+            "data: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"Hel\"}}\n\n",
+            "event: content_block_delta\n",
+            "data: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"lo\"}}\n\n",
+            "event: content_block_stop\n",
+            "data: {\"type\":\"content_block_stop\",\"index\":0}\n\n",
+            "event: message_delta\n",
+            "data: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"end_turn\"},\"usage\":{\"output_tokens\":3}}\n\n",
+            "event: message_stop\n",
+            "data: {\"type\":\"message_stop\"}\n\n",
+        )))
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let provider = AnthropicProvider::new(anth_config(&server.uri()));
+    let rx = provider.chat_stream(&anth_messages(), &[], "m", &ChatOptions::default());
+    let chunks = collect_stream(rx).await;
+
+    assert_eq!(chunks.len(), 3);
+    // 前两块纯文本 delta。
+    assert_eq!(chunks[0].as_ref().unwrap().delta, "Hel");
+    assert_eq!(chunks[1].as_ref().unwrap().delta, "lo");
+    // 终态块：end_turn → stop；usage = message_start input + message_delta output。
+    let fin = chunks[2].as_ref().unwrap();
+    assert_eq!(fin.finish_reason.as_deref(), Some("stop"));
+    let u = fin.usage.as_ref().expect("final chunk carries usage");
+    assert_eq!(u.prompt_tokens, 5);
+    assert_eq!(u.completion_tokens, 3);
+    assert_eq!(u.total_tokens, 8);
+    assert_eq!(u.cache_read_tokens, Some(2));
+    assert!(fin.tool_calls.is_empty());
+}
+
+#[tokio::test]
+async fn test_b_stream_tool_use_accumulates_and_flushes_in_order() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/v1/messages"))
+        .respond_with(sse_response(concat!(
+            "event: message_start\n",
+            "data: {\"type\":\"message_start\",\"message\":{\"usage\":{\"input_tokens\":4}}}\n\n",
+            "event: content_block_start\n",
+            "data: {\"type\":\"content_block_start\",\"index\":0,\"content_block\":{\"type\":\"text\",\"text\":\"查一下\"}}\n\n",
+            "event: content_block_start\n",
+            "data: {\"type\":\"content_block_start\",\"index\":1,\"content_block\":{\"type\":\"tool_use\",\"id\":\"toolu_1\",\"name\":\"get_weather\"}}\n\n",
+            "event: content_block_delta\n",
+            "data: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"查一下\"}}\n\n",
+            "event: content_block_delta\n",
+            "data: {\"type\":\"content_block_delta\",\"index\":1,\"delta\":{\"type\":\"input_json_delta\",\"partial_json\":\"{\\\"city\\\":\\\"北\"}}\n\n",
+            "event: content_block_delta\n",
+            "data: {\"type\":\"content_block_delta\",\"index\":1,\"delta\":{\"type\":\"input_json_delta\",\"partial_json\":\"京\\\"}\"}}\n\n",
+            "event: content_block_stop\n",
+            "data: {\"type\":\"content_block_stop\",\"index\":1}\n\n",
+            "event: message_delta\n",
+            "data: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"tool_use\"},\"usage\":{\"output_tokens\":6}}\n\n",
+            "event: message_stop\n",
+            "data: {\"type\":\"message_stop\"}\n\n",
+        )))
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let provider = AnthropicProvider::new(anth_config(&server.uri()));
+    let rx = provider.chat_stream(&anth_messages(), &[], "m", &ChatOptions::default());
+    let chunks = collect_stream(rx).await;
+
+    // 一块文本 delta + 终态块。
+    assert_eq!(chunks.len(), 2);
+    assert_eq!(chunks[0].as_ref().unwrap().delta, "查一下");
+    let fin = chunks[1].as_ref().unwrap();
+    // stop_reason=tool_use → OpenAI 风格 tool_calls；tool_call 按 block 顺序 flush。
+    assert_eq!(fin.finish_reason.as_deref(), Some("tool_calls"));
+    assert_eq!(fin.tool_calls.len(), 1);
+    let tc = &fin.tool_calls[0];
+    assert_eq!(tc.id, "toolu_1");
+    assert_eq!(tc.call_type.as_deref(), Some("tool_use"));
+    let f = tc.function.as_ref().unwrap();
+    assert_eq!(f.name, "get_weather");
+    // 两个 partial_json 片段拼成完整 arguments。
+    assert_eq!(f.arguments, "{\"city\":\"北京\"}");
+}
+
+#[tokio::test]
+async fn test_b_stream_json_200_with_content_synthesizes_stream() {
+    // 服务端忽略 stream:true 回完整 JSON 消息（application/json）→ 合成流。
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/v1/messages"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "content": [{"type": "text", "text": "hello-full"}],
+            "stop_reason": "end_turn",
+            "usage": {"input_tokens": 2, "output_tokens": 3}
+        })))
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let provider = AnthropicProvider::new(anth_config(&server.uri()));
+    let rx = provider.chat_stream(&anth_messages(), &[], "m", &ChatOptions::default());
+    let chunks = collect_stream(rx).await;
+
+    assert_eq!(chunks.len(), 2);
+    assert_eq!(chunks[0].as_ref().unwrap().delta, "hello-full");
+    let fin = chunks[1].as_ref().unwrap();
+    assert_eq!(fin.finish_reason.as_deref(), Some("stop"));
+    assert_eq!(fin.usage.as_ref().unwrap().total_tokens, 5);
+}
+
+#[tokio::test]
+async fn test_b_stream_json_200_no_content_maps_format() {
+    // CC Switch 错误包装形态：HTTP 200 + application/json + 无 content 数组
+    // → 亮出 body 真相的 Format 错（persona 断粮根因的守卫面）。
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/v1/messages"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "code": 500, "msg": "404 NOT_FOUND", "success": false
+        })))
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let provider = AnthropicProvider::new(anth_config(&server.uri()));
+    let rx = provider.chat_stream(&anth_messages(), &[], "m", &ChatOptions::default());
+    let chunks = collect_stream(rx).await;
+
+    assert_eq!(chunks.len(), 1);
+    match chunks[0].as_ref().unwrap_err() {
+        FailoverError::Format { message, .. } => {
+            assert!(message.contains("404 NOT_FOUND"), "{}", message);
+        }
+        other => panic!("expected Format, got {:?}", other),
+    }
+}
+
+#[tokio::test]
+async fn test_b_stream_error_event_overloaded_maps_overloaded() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/v1/messages"))
+        .respond_with(sse_response(concat!(
+            "event: message_start\n",
+            "data: {\"type\":\"message_start\",\"message\":{\"usage\":{\"input_tokens\":1}}}\n\n",
+            "event: error\n",
+            "data: {\"type\":\"error\",\"error\":{\"type\":\"overloaded_error\",\"message\":\"Overloaded\"}}\n\n",
+        )))
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let provider = AnthropicProvider::new(anth_config(&server.uri()));
+    let rx = provider.chat_stream(&anth_messages(), &[], "m", &ChatOptions::default());
+    let chunks = collect_stream(rx).await;
+
+    assert_eq!(chunks.len(), 1);
+    assert!(matches!(
+        chunks[0].as_ref().unwrap_err(),
+        FailoverError::Overloaded { .. }
+    ));
+}
+
+#[tokio::test]
+async fn test_b_stream_eof_without_message_stop_synthesizes_final() {
+    // 半截流：只有 message_start + 一块文本 delta，无 message_stop 就 EOF →
+    // 合成终态 chunk（finish_reason 默认 stop），receiver 不悬挂。
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/v1/messages"))
+        .respond_with(sse_response(concat!(
+            "event: message_start\n",
+            "data: {\"type\":\"message_start\",\"message\":{\"usage\":{\"input_tokens\":9}}}\n\n",
+            "event: content_block_delta\n",
+            "data: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"partial\"}}\n\n",
+        )))
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let provider = AnthropicProvider::new(anth_config(&server.uri()));
+    let rx = provider.chat_stream(&anth_messages(), &[], "m", &ChatOptions::default());
+    let chunks = collect_stream(rx).await;
+
+    assert_eq!(chunks.len(), 2);
+    assert_eq!(chunks[0].as_ref().unwrap().delta, "partial");
+    let fin = chunks[1].as_ref().unwrap();
+    assert_eq!(fin.finish_reason.as_deref(), Some("stop"));
+    assert!(fin.delta.is_empty());
+    // message_delta 未到（output_tokens None）但 message_start 已给 input → usage 仍有。
+    assert_eq!(fin.usage.as_ref().unwrap().prompt_tokens, 9);
+}

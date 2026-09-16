@@ -1385,7 +1385,7 @@ fn ctx_ws_with_provider(
     dir: &tempfile::TempDir,
     cluster: Option<Arc<Cluster>>,
     service: Option<Arc<FakeClusterSvc>>,
-    provider: Option<Arc<HttpProvider>>,
+    provider: Option<Arc<dyn nemesis_providers::router::LLMProvider>>,
     home_config: Option<&str>,
 ) -> RequestContext {
     let ws = dir.path().to_string_lossy().to_string();

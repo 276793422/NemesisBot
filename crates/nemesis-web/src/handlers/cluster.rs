@@ -1734,7 +1734,9 @@ impl ClusterHandler {
             );
         }
 
-        let pkg = cluster_persona_gen::generate_persona(provider, &model, kind, text, 2).await?;
+        // `&Arc<dyn>` → `&dyn` 的强制转换 rustc 不接受（unsize 短路在 Arc 上），
+        // 显式双重解引用拿到 `&dyn LLMProvider`。
+        let pkg = cluster_persona_gen::generate_persona(&**provider, &model, kind, text, 2).await?;
         serde_json::to_value(&pkg)
             .map(Some)
             .map_err(|e| format!("serialize persona failed: {}", e))

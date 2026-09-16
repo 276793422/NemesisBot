@@ -8,7 +8,9 @@ use nemesis_providers::http_provider::{HttpProvider, HttpProviderConfig};
 use std::collections::HashMap;
 use std::sync::Arc;
 
-fn make_state(provider: Option<Arc<HttpProvider>>) -> Arc<crate::api_handlers::AppState> {
+fn make_state(
+    provider: Option<Arc<dyn nemesis_providers::router::LLMProvider>>,
+) -> Arc<crate::api_handlers::AppState> {
     use crate::api_handlers::AppState;
     use crate::events::EventHub;
     use crate::session::SessionManager;

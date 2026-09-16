@@ -1,6 +1,7 @@
 //! Anthropic/Claude provider (Anthropic Messages API).
 
 use crate::failover::FailoverError;
+use crate::http_provider::StreamChunk;
 use crate::router::LLMProvider;
 use crate::types::*;
 use async_trait::async_trait;
@@ -278,6 +279,437 @@ impl AnthropicProvider {
 
         body
     }
+
+    /// Anthropic Messages API 流式请求（B 根修 2026-09-17）。
+    ///
+    /// wire：POST {base}/v1/messages + `stream: true`，SSE 事件族
+    /// （message_start / content_block_start / content_block_delta /
+    /// content_block_stop / message_delta / message_stop / ping / error）。
+    /// 映射到 StreamChunk：text_delta → delta；input_json_delta 按 index
+    /// 累积、content_block_stop 定稿；message_delta.stop_reason 归一化为
+    /// OpenAI 风格 finish_reason（tool_use→tool_calls / max_tokens→length /
+    /// 其余→stop），随 message_stop 发终态 chunk 并按 block 顺序 flush
+    /// tool_calls；usage = message_start 的 input_tokens（含 cache 维度）+
+    /// message_delta 的 output_tokens。EOF 无 message_stop 合成终态 chunk
+    ///（对齐 HttpProvider 语义）；流读错误 → Timeout（可 failover，J1 同族）；
+    /// error 事件 → Format（overloaded_error → Overloaded）。
+    pub fn chat_stream(
+        &self,
+        messages: &[Message],
+        tools: &[ToolDefinition],
+        model: &str,
+        options: &ChatOptions,
+    ) -> tokio::sync::mpsc::Receiver<Result<StreamChunk, FailoverError>> {
+        let model = if model.is_empty() {
+            self.config.default_model.clone()
+        } else {
+            model.to_string()
+        };
+
+        let api_key = match self.get_api_key() {
+            Ok(k) => k,
+            Err(e) => {
+                let (tx, rx) = tokio::sync::mpsc::channel(1);
+                let _ = tx.try_send(Err(e));
+                return rx;
+            }
+        };
+
+        let url = format!("{}/v1/messages", self.config.base_url.trim_end_matches('/'));
+        let mut body = self.build_request_body(messages, tools, &model, options);
+        body["stream"] = serde_json::json!(true);
+
+        let client = self.client.clone();
+        let (tx, rx) = tokio::sync::mpsc::channel(64);
+
+        tokio::spawn(async move {
+            let resp = match client
+                .post(&url)
+                .header("x-api-key", &api_key)
+                .header("anthropic-version", "2023-06-01")
+                .header("Content-Type", "application/json")
+                .json(&body)
+                .send()
+                .await
+            {
+                Ok(r) => r,
+                Err(_) => {
+                    let _ = tx
+                        .send(Err(FailoverError::Timeout {
+                            provider: "anthropic".to_string(),
+                            model: model.clone(),
+                        }))
+                        .await;
+                    return;
+                }
+            };
+
+            let status = resp.status().as_u16();
+            if status >= 400 {
+                // 先取 Retry-After 头再消费 body（text() 按值拿走 resp）。
+                let retry_after = crate::failover::retry_after_from_headers(resp.headers());
+                let text = resp.text().await.unwrap_or_default();
+                let _ = tx
+                    .send(Err(FailoverError::from_status(
+                        "anthropic",
+                        &model,
+                        status,
+                        &text,
+                        retry_after,
+                    )))
+                    .await;
+                return;
+            }
+
+            // 200 但显式 application/json：不是 SSE 流。有 content 数组 =
+            // 服务端忽略 stream:true 回了完整消息（兼容行为）→ parse_response
+            // 合成流；否则亮出 body 真相（对齐 HttpProvider 的 200 守卫）。
+            let content_type = resp
+                .headers()
+                .get("content-type")
+                .and_then(|v| v.to_str().ok())
+                .unwrap_or("")
+                .to_ascii_lowercase();
+            if content_type.contains("application/json") {
+                let raw = resp.text().await.unwrap_or_default();
+                match serde_json::from_str::<serde_json::Value>(&raw) {
+                    Ok(v)
+                        if v.get("content")
+                            .and_then(|c| c.as_array())
+                            .is_some_and(|a| !a.is_empty()) =>
+                    {
+                        let parsed = parse_response(&v);
+                        if !parsed.content.is_empty() {
+                            let _ = tx
+                                .send(Ok(StreamChunk {
+                                    delta: parsed.content.clone(),
+                                    tool_calls: vec![],
+                                    finish_reason: None,
+                                    usage: None,
+                                    reasoning_content: None,
+                                }))
+                                .await;
+                        }
+                        let _ = tx
+                            .send(Ok(StreamChunk {
+                                delta: String::new(),
+                                tool_calls: parsed.tool_calls,
+                                finish_reason: Some(parsed.finish_reason),
+                                usage: parsed.usage,
+                                reasoning_content: None,
+                            }))
+                            .await;
+                    }
+                    Ok(_) => {
+                        let _ = tx
+                            .send(Err(FailoverError::Format {
+                                provider: "anthropic".to_string(),
+                                message: format!(
+                                    "expected text/event-stream for model {}, got JSON body: {}",
+                                    model,
+                                    raw.chars().take(200).collect::<String>()
+                                ),
+                            }))
+                            .await;
+                    }
+                    Err(e) => {
+                        let _ = tx
+                            .send(Err(FailoverError::Format {
+                                provider: "anthropic".to_string(),
+                                message: format!("non-SSE JSON body (model {}): {}", model, e),
+                            }))
+                            .await;
+                    }
+                }
+                return;
+            }
+
+            // SSE 解析。anthropic 每事件一个 data: 行（JSON 内带 type 字段，
+            // event: 行冗余不依赖）。
+            let mut stream = resp.bytes_stream();
+            use futures::StreamExt;
+            let mut buffer = String::new();
+            // index -> (tool_use id, name, 累积 partial_json)
+            let mut pending_tools: HashMap<usize, (String, String, String)> = HashMap::new();
+            // content_block 出现顺序（终态按序 flush；HashMap 无序）
+            let mut tool_order: Vec<usize> = Vec::new();
+            let mut input_tokens: Option<i64> = None;
+            let mut cache_creation: Option<i64> = None;
+            let mut cache_read: Option<i64> = None;
+            let mut output_tokens: Option<i64> = None;
+            let mut stop_reason: Option<String> = None;
+            let mut accumulated_reasoning = String::new();
+
+            while let Some(chunk_result) = stream.next().await {
+                let bytes = match chunk_result {
+                    Ok(b) => b,
+                    Err(e) => {
+                        tracing::error!(
+                            provider = "anthropic",
+                            error = %e,
+                            "[Provider] Anthropic SSE stream read error"
+                        );
+                        let _ = tx
+                            .send(Err(FailoverError::Timeout {
+                                provider: "anthropic".to_string(),
+                                model: model.clone(),
+                            }))
+                            .await;
+                        return;
+                    }
+                };
+                buffer.push_str(&String::from_utf8_lossy(&bytes));
+
+                while let Some(pos) = buffer.find("\n\n") {
+                    let block = buffer[..pos].to_string();
+                    buffer = buffer[pos + 2..].to_string();
+
+                    // 拼接 block 内全部 data: 行（稳妥；anthropic 实际单行）。
+                    let mut data = String::new();
+                    for line in block.lines() {
+                        let line = line.trim();
+                        if let Some(rest) = line.strip_prefix("data: ") {
+                            data.push_str(rest.trim());
+                        } else if let Some(rest) = line.strip_prefix("data:") {
+                            data.push_str(rest.trim());
+                        }
+                    }
+                    if data.is_empty() {
+                        continue;
+                    }
+                    let parsed: serde_json::Value = match serde_json::from_str(&data) {
+                        Ok(v) => v,
+                        Err(_) => continue,
+                    };
+                    let ev_type = parsed.get("type").and_then(|v| v.as_str()).unwrap_or("");
+
+                    match ev_type {
+                        "message_start" => {
+                            let u = parsed.pointer("/message/usage");
+                            input_tokens = u
+                                .and_then(|u| u.get("input_tokens"))
+                                .and_then(|v| v.as_i64());
+                            cache_creation = u
+                                .and_then(|u| u.get("cache_creation_input_tokens"))
+                                .and_then(|v| v.as_i64());
+                            cache_read = u
+                                .and_then(|u| u.get("cache_read_input_tokens"))
+                                .and_then(|v| v.as_i64());
+                        }
+                        "content_block_start" => {
+                            let idx =
+                                parsed.get("index").and_then(|v| v.as_u64()).unwrap_or(0) as usize;
+                            let block = parsed.get("content_block").cloned();
+                            if block
+                                .as_ref()
+                                .and_then(|b| b.get("type"))
+                                .and_then(|v| v.as_str())
+                                == Some("tool_use")
+                            {
+                                let b = block.unwrap_or_default();
+                                let id = b.get("id").and_then(|v| v.as_str()).unwrap_or("");
+                                let name = b.get("name").and_then(|v| v.as_str()).unwrap_or("");
+                                if !tool_order.contains(&idx) {
+                                    tool_order.push(idx);
+                                }
+                                pending_tools.entry(idx).or_insert_with(|| {
+                                    (id.to_string(), name.to_string(), String::new())
+                                });
+                            }
+                        }
+                        "content_block_delta" => {
+                            let idx =
+                                parsed.get("index").and_then(|v| v.as_u64()).unwrap_or(0) as usize;
+                            let delta = parsed.get("delta").cloned().unwrap_or_default();
+                            match delta.get("type").and_then(|v| v.as_str()).unwrap_or("") {
+                                "text_delta" => {
+                                    let text =
+                                        delta.get("text").and_then(|v| v.as_str()).unwrap_or("");
+                                    if !text.is_empty() {
+                                        let chunk = StreamChunk {
+                                            delta: text.to_string(),
+                                            tool_calls: vec![],
+                                            finish_reason: None,
+                                            usage: None,
+                                            reasoning_content: None,
+                                        };
+                                        if tx.send(Ok(chunk)).await.is_err() {
+                                            return;
+                                        }
+                                    }
+                                }
+                                "input_json_delta" => {
+                                    if let Some(pj) =
+                                        delta.get("partial_json").and_then(|v| v.as_str())
+                                        && let Some(entry) = pending_tools.get_mut(&idx)
+                                    {
+                                        entry.2.push_str(pj);
+                                    }
+                                }
+                                "thinking_delta" => {
+                                    if let Some(th) = delta.get("thinking").and_then(|v| v.as_str())
+                                    {
+                                        accumulated_reasoning.push_str(th);
+                                    }
+                                }
+                                _ => {}
+                            }
+                        }
+                        "message_delta" => {
+                            if let Some(sr) = parsed
+                                .pointer("/delta/stop_reason")
+                                .and_then(|v| v.as_str())
+                            {
+                                stop_reason = Some(sr.to_string());
+                            }
+                            if let Some(ot) = parsed
+                                .pointer("/usage/output_tokens")
+                                .and_then(|v| v.as_i64())
+                            {
+                                output_tokens = Some(ot);
+                            }
+                        }
+                        "message_stop" => {
+                            let chunk = anthropic_final_chunk(
+                                stop_reason.as_deref(),
+                                &tool_order,
+                                &pending_tools,
+                                input_tokens,
+                                output_tokens,
+                                cache_creation,
+                                cache_read,
+                                if accumulated_reasoning.is_empty() {
+                                    None
+                                } else {
+                                    Some(accumulated_reasoning.clone())
+                                },
+                            );
+                            let _ = tx.send(Ok(chunk)).await;
+                            return;
+                        }
+                        "error" => {
+                            let etype = parsed
+                                .pointer("/error/type")
+                                .and_then(|v| v.as_str())
+                                .unwrap_or("");
+                            let msg = parsed
+                                .pointer("/error/message")
+                                .and_then(|v| v.as_str())
+                                .unwrap_or("stream error");
+                            let err = if etype == "overloaded_error" {
+                                FailoverError::Overloaded {
+                                    provider: "anthropic".to_string(),
+                                }
+                            } else {
+                                FailoverError::Format {
+                                    provider: "anthropic".to_string(),
+                                    message: format!("{}: {}", etype, msg),
+                                }
+                            };
+                            let _ = tx.send(Err(err)).await;
+                            return;
+                        }
+                        // ping / content_block_stop / 未知事件：不产 chunk。
+                        _ => {}
+                    }
+                }
+            }
+
+            // EOF 无 message_stop（半截流）——合成终态 chunk，对齐 HttpProvider
+            // 的 EOF 语义（不悬挂 receiver，可能时 flush 已累积 tool_calls）。
+            tracing::warn!(
+                provider = "anthropic",
+                model = %model,
+                tool_call_count = tool_order.len(),
+                "[Provider] Anthropic SSE stream ended without message_stop — synthesized termination chunk"
+            );
+            let chunk = anthropic_final_chunk(
+                stop_reason.as_deref(),
+                &tool_order,
+                &pending_tools,
+                input_tokens,
+                output_tokens,
+                cache_creation,
+                cache_read,
+                if accumulated_reasoning.is_empty() {
+                    None
+                } else {
+                    Some(accumulated_reasoning)
+                },
+            );
+            let _ = tx.send(Ok(chunk)).await;
+        });
+
+        rx
+    }
+}
+
+/// anthropic 流式终态 chunk：finish_reason 归一化（tool_use→tool_calls /
+/// max_tokens→length / 其余→stop；reason 缺失但有累积 tool → tool_calls）+
+/// 按 content_block 顺序 flush tool_calls（arguments 为累积 partial_json，
+/// 空 → "{}"）+ usage 合成（input + output，含 cache 维度）。
+fn anthropic_final_chunk(
+    stop_reason: Option<&str>,
+    tool_order: &[usize],
+    pending: &HashMap<usize, (String, String, String)>,
+    input_tokens: Option<i64>,
+    output_tokens: Option<i64>,
+    cache_creation: Option<i64>,
+    cache_read: Option<i64>,
+    reasoning: Option<String>,
+) -> StreamChunk {
+    let tool_calls: Vec<ToolCall> = tool_order
+        .iter()
+        .filter_map(|i| {
+            let (id, name, args_json) = pending.get(i)?;
+            let args = if args_json.trim().is_empty() {
+                "{}".to_string()
+            } else {
+                args_json.clone()
+            };
+            Some(ToolCall {
+                id: id.clone(),
+                call_type: Some("tool_use".to_string()),
+                function: Some(FunctionCall {
+                    name: name.clone(),
+                    arguments: args,
+                }),
+                name: Some(name.clone()),
+                arguments: None,
+            })
+        })
+        .collect();
+
+    let finish_reason = match stop_reason.unwrap_or("") {
+        "tool_use" => "tool_calls",
+        "max_tokens" => "length",
+        "" if !tool_calls.is_empty() => "tool_calls",
+        _ => "stop",
+    }
+    .to_string();
+
+    let usage = if input_tokens.is_some() || output_tokens.is_some() {
+        let prompt = input_tokens.unwrap_or(0);
+        let completion = output_tokens.unwrap_or(0);
+        Some(UsageInfo {
+            prompt_tokens: prompt,
+            completion_tokens: completion,
+            total_tokens: prompt + completion,
+            cached_tokens: None,
+            cache_creation_tokens: cache_creation,
+            cache_read_tokens: cache_read,
+        })
+    } else {
+        None
+    };
+
+    StreamChunk {
+        delta: String::new(),
+        tool_calls,
+        finish_reason: Some(finish_reason),
+        usage,
+        reasoning_content: reasoning,
+    }
 }
 
 /// 单条消息 content → Anthropic Messages API content 值：
@@ -508,6 +940,19 @@ impl LLMProvider for AnthropicProvider {
         })?;
 
         Ok(parse_response(&data))
+    }
+
+    fn chat_stream(
+        &self,
+        messages: &[Message],
+        tools: &[ToolDefinition],
+        model: &str,
+        options: &ChatOptions,
+    ) -> tokio::sync::mpsc::Receiver<Result<StreamChunk, FailoverError>> {
+        // trait 投影（B 根修 2026-09-17）：trait 默认实现是「不支持」，anthropic
+        // lane 在此接通真流式（此前该协议整条 lane 无流式能力）。完全限定调用
+        // 解析到本类型固有 impl。
+        AnthropicProvider::chat_stream(self, messages, tools, model, options)
     }
 
     fn default_model(&self) -> &str {

@@ -216,8 +216,9 @@ fn report_skipped_counts_archive_and_drop() {
 // 区分首轮与重试轮，全程进程内无真实 LLM 依赖。
 // ===========================================================================
 
-use nemesis_providers::http_provider::HttpProviderConfig;
+use nemesis_providers::http_provider::{HttpProvider, HttpProviderConfig};
 use nemesis_providers::types::{FunctionCall, ToolCall};
+use std::sync::Arc;
 
 const JD_TEXT: &str = "这是一段用于测试的足够长的岗位描述文本，描述一个基于消息队列的后端架构师岗位，要求熟悉 RocketMQ 事务消息与分布式事务一致性方案，超过四十个字符。";
 
@@ -665,7 +666,7 @@ async fn generate_persona_full_flow_complete() {
     mount_stage_mock(&server, "完整性审计员", audit_args(), 200, 1, 5).await;
     let provider = mock_provider_at(server.uri()).await;
 
-    let pkg = generate_persona(&provider, "test-model", "jd", JD_TEXT, 2)
+    let pkg = generate_persona(&*provider, "test-model", "jd", JD_TEXT, 2)
         .await
         .unwrap();
     assert_eq!(pkg.node_name, "mq-architect");
@@ -706,7 +707,7 @@ async fn generate_persona_retry_after_entity_missing() {
     mount_stage_mock(&server, "完整性审计员", audit_args(), 200, 2, 5).await;
     let provider = mock_provider_at(server.uri()).await;
 
-    let pkg = generate_persona(&provider, "test-model", "resume", JD_TEXT, 2)
+    let pkg = generate_persona(&*provider, "test-model", "resume", JD_TEXT, 2)
         .await
         .unwrap();
     assert!(pkg.expertise_md.contains("RocketMQ"));
@@ -731,7 +732,7 @@ async fn generate_persona_exhausted_returns_pkg_with_report() {
     mount_stage_mock(&server, "完整性审计员", audit_args(), 200, 2, 5).await;
     let provider = mock_provider_at(server.uri()).await;
 
-    let pkg = generate_persona(&provider, "test-model", "jd", JD_TEXT, 2)
+    let pkg = generate_persona(&*provider, "test-model", "jd", JD_TEXT, 2)
         .await
         .unwrap();
     let cov = pkg.coverage.expect("exhausted flow still attaches report");
@@ -755,7 +756,7 @@ async fn generate_persona_all_author_attempts_fail() {
     .await;
     let provider = mock_provider_at(server.uri()).await;
 
-    let err = generate_persona(&provider, "test-model", "jd", JD_TEXT, 2)
+    let err = generate_persona(&*provider, "test-model", "jd", JD_TEXT, 2)
         .await
         .unwrap_err();
     assert!(err.contains("生成失败"), "{err}");
@@ -787,7 +788,7 @@ async fn generate_persona_validate_fail_then_success() {
     mount_stage_mock(&server, "完整性审计员", audit_args(), 200, 1, 5).await;
     let provider = mock_provider_at(server.uri()).await;
 
-    let pkg = generate_persona(&provider, "test-model", "jd", JD_TEXT, 2)
+    let pkg = generate_persona(&*provider, "test-model", "jd", JD_TEXT, 2)
         .await
         .unwrap();
     assert_eq!(pkg.role, "worker");
@@ -812,7 +813,7 @@ async fn generate_persona_segment_gap_hint_and_exhausted() {
     mount_stage_mock(&server, "完整性审计员", audit_args(), 200, 2, 5).await;
     let provider = mock_provider_at(server.uri()).await;
 
-    let pkg = generate_persona(&provider, "test-model", "jd", JD_TEXT, 2)
+    let pkg = generate_persona(&*provider, "test-model", "jd", JD_TEXT, 2)
         .await
         .unwrap();
     let cov = pkg.coverage.unwrap();
@@ -847,7 +848,7 @@ async fn generate_persona_tolerates_audit_failure() {
     .await;
     let provider = mock_provider_at(server.uri()).await;
 
-    let pkg = generate_persona(&provider, "test-model", "jd", JD_TEXT, 2)
+    let pkg = generate_persona(&*provider, "test-model", "jd", JD_TEXT, 2)
         .await
         .unwrap();
     let cov = pkg.coverage.unwrap();
@@ -869,7 +870,7 @@ async fn generate_persona_units_parse_fail_errors() {
     .await;
     let provider = mock_provider_at(server.uri()).await;
 
-    let err = generate_persona(&provider, "test-model", "jd", JD_TEXT, 2)
+    let err = generate_persona(&*provider, "test-model", "jd", JD_TEXT, 2)
         .await
         .unwrap_err();
     assert!(err.contains("解析信息单元失败"), "{err}");
@@ -881,7 +882,7 @@ async fn generate_persona_llm_http_error_errors() {
     mount_stage_mock(&server, "分析师", serde_json::json!({}), 500, 1, 5).await;
     let provider = mock_provider_at(server.uri()).await;
 
-    let err = generate_persona(&provider, "test-model", "jd", JD_TEXT, 2)
+    let err = generate_persona(&*provider, "test-model", "jd", JD_TEXT, 2)
         .await
         .unwrap_err();
     assert!(err.contains("LLM 调用失败"), "{err}");
@@ -892,7 +893,7 @@ async fn generate_persona_rejects_short_input_without_llm() {
     let server = MockServer::start().await;
     let provider = mock_provider_at(server.uri()).await;
 
-    let err = generate_persona(&provider, "test-model", "jd", "太短", 2)
+    let err = generate_persona(&*provider, "test-model", "jd", "太短", 2)
         .await
         .unwrap_err();
     assert!(err.contains("内容太短"), "{err}");

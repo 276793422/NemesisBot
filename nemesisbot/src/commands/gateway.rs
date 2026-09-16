@@ -4319,24 +4319,42 @@ pub async fn run(local: bool, extra_args: &[String]) -> Result<()> {
         !resolution.api_key.is_empty(),
     );
 
-    // Wire streaming provider for SSE chat endpoint.
-    // Create an HttpProvider from the same config used for the main provider.
-    // This enables /api/chat/stream for token-by-token streaming.
+    // Wire streaming provider for SSE chat endpoint + persona generation.
+    //
+    // 协议感知装配（B 根修 2026-09-17）：此前这里固定构造裸 HttpProvider（只讲
+    // OpenAI wire /chat/completions）——主模型切 anthropic 协议（如 CC Switch +
+    // glm-5.3-flash）后，persona 生成与 /api/chat/stream 把请求打到错误端点全灭，
+    // 且 CC Switch 对 OpenAI 路径回 200 包装错误 → 空响应静默成功（人格生成
+    // 0.4s 假失败根因）。改走与主 loop 同源的 factory（同一 resolution +
+    // protocol）：anthropic → AnthropicProvider（含流式）、openai → HttpCompat；
+    // CLI 型 provider 流式未实现会诚实报「不支持」。超时不再写死 120s，与 P3A
+    // 全 lane 统一口径（per-model timeout_secs，缺省 600s）。
     {
-        let streaming_cfg = nemesis_providers::http_provider::HttpProviderConfig {
-            name: "streaming".to_string(),
-            base_url: resolution.api_base.clone(),
+        let streaming_factory_cfg = nemesis_providers::factory::FactoryConfig {
+            llm_ref: format!("{}/{}", resolution.provider_name, resolution.model_name),
             api_key: resolution.api_key.clone(),
-            default_model: resolution.model_name.clone(),
-            timeout_secs: 120,
+            api_base: resolution.api_base.clone(),
+            workspace: home.join("workspace").to_string_lossy().to_string(),
+            connect_mode: resolution.connect_mode.clone(),
+            protocol: resolution.protocol.clone(),
+            timeout_secs: resolution.timeout_secs,
+            account_id: String::new(),
             headers: std::collections::HashMap::new(),
-            proxy: None,
-            preserve_prefix: false,
         };
-        web_server.set_streaming_provider(Arc::new(
-            nemesis_providers::http_provider::HttpProvider::new(streaming_cfg),
-        ));
-        info!("[Gateway] SSE streaming provider configured for /api/chat/stream");
+        match nemesis_providers::factory::create_provider(&streaming_factory_cfg) {
+            Ok(provider) => {
+                web_server.set_streaming_provider(provider);
+                info!(
+                    "[Gateway] Streaming provider configured (protocol-aware) for /api/chat/stream + persona"
+                );
+            }
+            Err(e) => {
+                warn!(
+                    "[Gateway] Streaming provider assembly failed — SSE/persona lane degraded: {}",
+                    e
+                );
+            }
+        }
     }
 
     info!(

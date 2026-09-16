@@ -753,6 +753,24 @@ pub fn dispatch_issue_core(
     // （首派语义；已在 in_progress/completed 的项目不回退不重复触发）。
     link_project_on_dispatch(store, issue.project_id);
 
+    // 派发即指派（2026-09-17）：派发目标落 assignee 字段。显式 target /
+    // 匹配器 / 兜底 / D3 换节点重派四路都汇经本单一入口——此前派发只路由
+    // 不回填，看板「指派」列在任务执行完仍显示未指派（字段与事实脱节）。
+    // 已指向同一 worker 时跳过（幂等，防重复 activity）；回填失败不阻断
+    // 派发（此刻派发已落定，字段只是显示层事实）——WARN 留痕。显式
+    // issue.assign 语义不变，仍是人工指派入口。
+    if (issue.assignee != Some(AssignmentType::Worker)
+        || issue.assignee_id.as_deref() != Some(target.as_str()))
+        && let Err(e) = store.assign_issue(
+            issue.id,
+            Some(AssignmentType::Worker),
+            Some(target.to_string()),
+            actor,
+        )
+    {
+        tracing::warn!("[Board] 派发回填指派失败（不阻断派发）：{e}");
+    }
+
     // 4. 发 RPC（fire-and-forget）：ACK 后 worker 异步处理，回报走
     //    peer_chat_callback。目标不可达时立刻终结派发 + 系统评论留痕
     //    （callback 不会再来，不留悬挂 dispatched 态）。
