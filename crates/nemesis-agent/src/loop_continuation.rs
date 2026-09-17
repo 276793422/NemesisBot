@@ -117,6 +117,12 @@ pub struct ContinuationSnapshot {
     #[serde(default)]
     pub image_refs_by_user_turn: Vec<Vec<String>>,
     pub created_at: String,
+    /// HD（2026-09-17）：续行重投递幂等闸——最终回复落库后打标（磁盘快照
+    /// 回写）。master 在「落库 ↔ 快照回收」窗口内重启会重投递本任务，见标
+    /// 直接诚实收尾，不再重跑 LLM / 重复 append（前端成对重复的后端实锤
+    /// 窗口）。`#[serde(default)]` 兼容存量快照（false = 未打标）。
+    #[serde(default)]
+    pub final_persisted: bool,
 }
 
 /// Result from a continuation tool execution.
@@ -630,6 +636,7 @@ impl ContinuationManager {
                 image_refs: image_refs.to_vec(),
                 image_refs_by_user_turn,
                 created_at: chrono::Local::now().to_rfc3339(),
+                final_persisted: false,
             };
             if let Err(e) = store.save(&snapshot) {
                 warn!(
@@ -1064,6 +1071,25 @@ pub async fn handle_cluster_continuation<T: ToolLookup>(
         return;
     }
 
+    // 0b. HD（2026-09-17）：续行重投递幂等闸——上一轮执行已把最终回复落库
+    // 并在磁盘快照打标（final_persisted，见 step 6），但进程在「落库 ↔
+    // 快照回收（finish_handling）」窗口内崩溃时，master 重启重查询会重新
+    // 投递本任务。再跑一遍 = LLM 重跑 + 回复重复 append（成对重复的后端
+    // 实锤窗口）。见标直接诚实收尾：不再续行，只回收快照。
+    // 残留窗口诚实注记：append 与打标两次落盘之间崩溃仍会重复（毫秒级，
+    // 后果与旧行为同，见修复报告）。
+    if let Some(store) = &manager.disk_store
+        && let Ok(snapshot) = store.load(task_id)
+        && snapshot.final_persisted
+    {
+        warn!(
+            task_id = %task_id,
+            "[Continuation] 快照已标记 final_persisted（崩溃前已落库），重投递跳过重复续行"
+        );
+        manager.finish_handling(task_id).await;
+        return;
+    }
+
     // 1. Load continuation snapshot.
     let cont_data = match manager.load_continuation(task_id).await {
         Some(data) => data,
@@ -1344,6 +1370,20 @@ pub async fn handle_cluster_continuation<T: ToolLookup>(
         // saved before this field existed).
         if !cont_data.session_key.is_empty() {
             persist_final_reply(session_store, &cont_data.session_key, model, &final_content);
+            // HD（2026-09-17）：落库即打标（磁盘快照回写）——此后到
+            // finish_handling 之间崩溃的重投递由 0b 幂等闸拦下。
+            if let Some(store) = &manager.disk_store
+                && let Ok(mut snapshot) = store.load(task_id)
+            {
+                snapshot.final_persisted = true;
+                if let Err(e) = store.save(&snapshot) {
+                    warn!(
+                        task_id = %task_id,
+                        error = %e,
+                        "[Continuation] final_persisted 打标落盘失败（重投递时可能重复 append）"
+                    );
+                }
+            }
         }
 
         let outbound = nemesis_types::channel::OutboundMessage {

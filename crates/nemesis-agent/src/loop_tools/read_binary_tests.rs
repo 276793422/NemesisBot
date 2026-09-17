@@ -45,7 +45,7 @@ async fn text_file_reads_normally() {
     let dir = TempDir::new("text");
     let p = dir.0.join("note.txt");
     std::fs::write(&p, "hello 世界\nsecond line\n").unwrap();
-    let out = ReadFileTool
+    let out = ReadFileTool::default()
         .execute(&args(&p, serde_json::json!({})), &ctx())
         .await
         .unwrap();
@@ -60,7 +60,7 @@ async fn png_gets_vision_attach_hint() {
     let mut bytes = vec![0x89, b'P', b'N', b'G', 0x0D, 0x0A, 0x1A, 0x0A];
     bytes.extend_from_slice(&[0xFF, 0xEE, 0xDD]);
     std::fs::write(&p, &bytes).unwrap();
-    let out = ReadFileTool
+    let out = ReadFileTool::default()
         .execute(&args(&p, serde_json::json!({})), &ctx())
         .await
         .unwrap();
@@ -80,7 +80,7 @@ async fn pdf_gets_honest_extraction_note() {
     let mut bytes = b"%PDF-1.7\n".to_vec();
     bytes.extend_from_slice(&[0x00, 0x91, 0xFF]);
     std::fs::write(&p, &bytes).unwrap();
-    let out = ReadFileTool
+    let out = ReadFileTool::default()
         .execute(&args(&p, serde_json::json!({})), &ctx())
         .await
         .unwrap();
@@ -100,7 +100,7 @@ async fn exe_gets_unknown_binary_summary() {
     let mut bytes = b"MZ\x90\x00\x03\x00\x00\x00\x04\x00\x00\x00".to_vec();
     bytes.extend_from_slice(&[0xCC; 8]);
     std::fs::write(&p, &bytes).unwrap();
-    let out = ReadFileTool
+    let out = ReadFileTool::default()
         .execute(&args(&p, serde_json::json!({})), &ctx())
         .await
         .unwrap();
@@ -119,7 +119,7 @@ async fn random_binary_gets_unknown_summary() {
     // 确定性伪随机非 UTF-8 字节，无任何已知 magic。
     let bytes: Vec<u8> = (0..64u32).map(|i| (i * 37 + 11) as u8).collect();
     std::fs::write(&p, &bytes).unwrap();
-    let out = ReadFileTool
+    let out = ReadFileTool::default()
         .execute(&args(&p, serde_json::json!({})), &ctx())
         .await
         .unwrap();
@@ -137,7 +137,7 @@ async fn non_utf8_text_without_magic_reports_unknown() {
     // latin-1 高位字节文本：非 UTF-8 但无二进制 magic。
     let bytes = vec![b'C', b'a', b'f', b'\xe9', b'\n'];
     std::fs::write(&p, &bytes).unwrap();
-    let out = ReadFileTool
+    let out = ReadFileTool::default()
         .execute(&args(&p, serde_json::json!({})), &ctx())
         .await
         .unwrap();
@@ -155,7 +155,7 @@ async fn binary_summary_ignores_offset_limit() {
     let mut bytes = vec![0xFF, 0xD8, 0xFF, 0xE0];
     bytes.extend_from_slice(&[0x00; 16]);
     std::fs::write(&p, &bytes).unwrap();
-    let out = ReadFileTool
+    let out = ReadFileTool::default()
         .execute(
             &args(&p, serde_json::json!({ "offset": 0, "limit": 10 })),
             &ctx(),
@@ -171,7 +171,7 @@ async fn binary_summary_ignores_offset_limit() {
 
 #[tokio::test]
 async fn missing_file_still_errors() {
-    let out = ReadFileTool
+    let out = ReadFileTool::default()
         .execute("{\"path\": \"Z:/definitely/not/here.txt\"}", &ctx())
         .await;
     assert!(out.is_err(), "不存在文件照常 Err");

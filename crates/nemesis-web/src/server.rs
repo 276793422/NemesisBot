@@ -1535,6 +1535,17 @@ pub async fn pump_agent_events(
                     event_hub.publish("question-resolved", data);
                     continue;
                 }
+                // SB（2026-09-17）：会话物化 → SSE `session.created` 全局广播
+                // ——前端会话列表 force 刷新（修「隐式会话不进侧栏」）。全局
+                // 语义（侧栏是跨会话面），不做 web: 定向 push。
+                if let nemesis_types::agent::AgentEvent::SessionCreated { session_id, .. } = &event
+                {
+                    event_hub.publish(
+                        "session.created",
+                        serde_json::json!({ "session_id": session_id }),
+                    );
+                    continue;
+                }
                 event_hub.publish("tool_event", data.clone());
 
                 let chat_id = event.chat_id().to_string();

@@ -38,7 +38,7 @@ async fn test_adapter_delegates_to_agent_tool() {
 /// so the workflow node marks itself Failed and the run can branch.
 #[tokio::test]
 async fn test_adapter_surfaces_agent_tool_error() {
-    let inner: Arc<dyn AgentTool> = Arc::new(crate::loop_tools::ReadFileTool);
+    let inner: Arc<dyn AgentTool> = Arc::new(crate::loop_tools::ReadFileTool::default());
     #[cfg(feature = "security")]
     let adapter = AgentToolAdapter::new("read_file".to_string(), inner, None);
     #[cfg(not(feature = "security"))]

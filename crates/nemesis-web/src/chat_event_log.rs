@@ -28,6 +28,11 @@ pub struct ChatEvent {
     pub content: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub model: Option<String>,
+    /// HD（2026-09-17 顺带修）：记录时刻（后端钟）——chat.sync 重放路径
+    /// 前端此前填本地 `new Date()`，补拉消息时间显示为拉取时刻而非真实
+    /// 发生时刻。`skip_serializing_if` 兼容：旧条目无此字段，前端回退本地钟。
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub ts: Option<String>,
 }
 
 struct SessionLog {
@@ -70,6 +75,7 @@ pub fn record(session_id: &str, role: &str, content: &str, model: Option<&str>) 
         role: role.to_string(),
         content: content.to_string(),
         model: model.map(String::from),
+        ts: Some(chrono::Local::now().to_rfc3339()),
     });
     entry.buf.push_back(Arc::clone(&event));
     while entry.buf.len() > SESSION_REPLAY_CAP {

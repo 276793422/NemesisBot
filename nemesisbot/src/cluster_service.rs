@@ -435,5 +435,102 @@ async fn start_cluster_components(
     }
 }
 
+/// CD4（2026-09-17）：master 重启后从看板在途派发行重建 TaskManager Pending。
+///
+/// 根因：TaskManager 纯内存，重启即空；board 派发无续行快照（G5 只救 chat
+/// 任务）→ 恢复轮询对 board 在途单失明，worker 落盘的真实结果无人查询
+/// （7 天 TTL 蒸发）+ 派发超时 sweep 按「超时无回报」误标（实际可能已完成）。
+///
+/// 重建后恢复轮询自然接管查询；查回结果经 CD3 恢复交付回调写回看板。
+///
+/// 身份兜底（E1 双身份教训）：新派发行 worker_id 已是 real id（T37 写前
+/// canonical 归一）；存量行可能是 peer 名——`canonical_peer_id` 先按 id 查
+/// registry、再按 name 扫描，两形态通吃；解析失败（对端不在 registry，如
+/// 只靠 UDP 发现且尚未 announce 的节点）→ 跳过 + WARN，留给既有超时 sweep
+/// 路径诚实收口。
+///
+/// 超安全网的行不登记（恢复轮询首 tick 就会判安全网失败）——留给派发超时
+/// sweep 走既有收口，避免已知死任务的查询噪音。返回重建条数（日志承载
+/// 其余计数）。
+#[cfg(all(feature = "board", feature = "cluster"))]
+pub fn rebuild_pending_from_board_dispatches(
+    cluster: &Cluster,
+    board_store: &Option<std::sync::Arc<nemesis_board::BoardStore>>,
+) -> usize {
+    let Some(store) = board_store.as_ref() else {
+        return 0;
+    };
+    let active = match store.list_active_dispatches() {
+        Ok(v) => v,
+        Err(e) => {
+            tracing::warn!("[ClusterAdapter] CD4 board 在途派发行读取失败：{e}");
+            return 0;
+        }
+    };
+    if active.is_empty() {
+        return 0;
+    }
+
+    // 安全网与恢复轮询同源（Cluster::start 推导并写入 pending_timeout）。
+    let safety_net = cluster.task_manager().pending_timeout();
+    let now = chrono::Local::now();
+    let mut rebuilt = 0usize;
+    let mut skipped_unresolvable = 0usize;
+    let mut skipped_expired = 0usize;
+
+    for record in active {
+        if cluster.task_manager().get_task(&record.task_id).is_some() {
+            continue; // 已登记（G5 续行重建同 id / 重复调用幂等）
+        }
+        // dispatched_at 是 unix 秒（BoardStore::now = Utc timestamp）。
+        let dispatched_at = match chrono::DateTime::from_timestamp(record.dispatched_at, 0) {
+            Some(dt) => dt.with_timezone(&chrono::Local),
+            None => continue,
+        };
+        let age = now - dispatched_at;
+        if age > safety_net {
+            skipped_expired += 1;
+            continue;
+        }
+        let peer_id = match cluster.canonical_peer_id(&record.worker_id) {
+            Some(id) => id,
+            None => {
+                skipped_unresolvable += 1;
+                tracing::warn!(
+                    task_id = %record.task_id,
+                    worker_id = %record.worker_id,
+                    "[ClusterAdapter] CD4 派发行 worker 身份无法解析（registry 无此节点），跳过重建"
+                );
+                continue;
+            }
+        };
+        let task = nemesis_types::cluster::Task {
+            id: record.task_id.clone(),
+            status: nemesis_types::cluster::TaskStatus::Pending,
+            action: "peer_chat".to_string(),
+            peer_id,
+            payload: serde_json::json!({}),
+            result: None,
+            original_channel: String::new(),
+            original_chat_id: String::new(),
+            created_at: dispatched_at.to_rfc3339(),
+            completed_at: None,
+        };
+        if cluster.task_manager().submit(task).is_ok() {
+            rebuilt += 1;
+        }
+    }
+
+    if rebuilt > 0 || skipped_unresolvable > 0 || skipped_expired > 0 {
+        tracing::info!(
+            rebuilt,
+            skipped_unresolvable,
+            skipped_expired,
+            "[ClusterAdapter] CD4 看板在途派发重建完成（查回结果经恢复交付回调写回看板）"
+        );
+    }
+    rebuilt
+}
+
 #[cfg(test)]
 mod tests;

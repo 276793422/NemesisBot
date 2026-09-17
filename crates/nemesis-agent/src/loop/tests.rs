@@ -9247,3 +9247,101 @@ fn rewrite_exec_cwd_injects_default_and_rewrites_relative() {
     };
     assert!(AgentLoop::rewrite_tool_paths_for_base(&call3, &ctx).is_none());
 }
+
+// HD（2026-09-17）：后端单写不变量——一轮对话 = chat_log jsonl 恰好 +2 行
+// （user+assistant 各一行）。前端成对重复 BUG 修复时钉死：后端不存在
+// 「同一轮走两条路径各落一次」的组合（收尾单一出口 run_agent_loop_internal，
+// inline/spawned 两臂互斥；/build 与续行各只补一行且不与正常收尾叠加）。
+#[tokio::test]
+async fn one_turn_appends_exactly_user_and_assistant_rows() {
+    let _lock = CHAT_LOG_INTEGRATION_LOCK.lock().unwrap();
+    // 路由规则：非 `agent:` 前缀的 session_key 会被 route_message 重写为
+    // `{channel}:{peer}`——测试键必须以 agent: 开头才会被原样保留。
+    let key = format!(
+        "agent:test:session:hd_two_rows_{}",
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_nanos()
+    );
+    cleanup_session_log(&key);
+
+    let provider = MockLlmProvider::new(vec![
+        LlmResponse {
+            content: "hd reply".to_string(),
+            tool_calls: Vec::new(),
+            finished: true,
+            reasoning_content: None,
+            usage: None,
+            raw_request_body: None,
+            raw_response_body: None,
+        },
+        LlmResponse {
+            content: "hd reply 2".to_string(),
+            tool_calls: Vec::new(),
+            finished: true,
+            reasoning_content: None,
+            usage: None,
+            raw_request_body: None,
+            raw_response_body: None,
+        },
+    ]);
+    // 走 process_inbound_message（inline 直达路径）——run_with_trace 是纯
+    // LLM 循环，落盘收尾在 gate → process_admitted → run_agent_loop_internal。
+    let agent_loop = AgentLoop::new_bus(
+        Box::new(provider),
+        test_config(),
+        {
+            let (tx, _rx) = tokio::sync::mpsc::channel(16);
+            tx
+        },
+        ConcurrentMode::Queue,
+        8,
+        0,
+    );
+
+    let msg = nemesis_types::channel::InboundMessage {
+        channel: "web".to_string(),
+        sender_id: "user1".to_string(),
+        chat_id: "chat1".to_string(),
+        content: "Hello".to_string(),
+        media: vec![],
+        session_key: key.clone(),
+        correlation_id: String::new(),
+        metadata: std::collections::HashMap::new(),
+        voice_playback: None,
+    };
+    let (_agent_id, response, err) = agent_loop.process_inbound_message(&msg).await;
+    assert!(err.is_none(), "一轮必须正常完成: {err:?}");
+    assert_eq!(response, "hd reply");
+
+    // jsonl 行数 = 恰好 2（user + assistant）。
+    let safe_key = nemesis_utils::sanitize::sanitize_path_segment(&key);
+    let path = nemesis_path::default_path_manager()
+        .sessions_log_dir()
+        .join(format!("{}.jsonl", safe_key));
+    let content = std::fs::read_to_string(&path).unwrap();
+    let rows: Vec<&str> = content.lines().filter(|l| !l.trim().is_empty()).collect();
+    assert_eq!(
+        rows.len(),
+        2,
+        "一轮 = jsonl 恰好 +2 行（user+assistant）: {content}"
+    );
+    let first: serde_json::Value = serde_json::from_str(rows[0]).unwrap();
+    let second: serde_json::Value = serde_json::from_str(rows[1]).unwrap();
+    assert_eq!(first["role"], "user");
+    assert_eq!(second["role"], "assistant");
+
+    // 第二轮 = +2 行（不是 +4）。
+    let msg2 = nemesis_types::channel::InboundMessage {
+        content: "Again".to_string(),
+        ..msg.clone()
+    };
+    let (_agent_id, _response, err2) = agent_loop.process_inbound_message(&msg2).await;
+    assert!(err2.is_none(), "第二轮必须正常完成: {err2:?}");
+    let content = std::fs::read_to_string(&path).unwrap();
+    let rows: Vec<&str> = content.lines().filter(|l| !l.trim().is_empty()).collect();
+    assert_eq!(rows.len(), 4, "两轮 = 恰好 4 行: {content}");
+
+    cleanup_session_log(&key);
+}

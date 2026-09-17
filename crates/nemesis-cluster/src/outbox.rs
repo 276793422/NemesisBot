@@ -39,6 +39,40 @@ use crate::transfer::{
 /// 推送循环空转周期（无 kick 时的兜底节拍；失败重试的天然退避）。
 const PUSH_TICK_SECS: u64 = 15;
 
+// -- CD6（2026-09-17 用户裁决⑨⑩⑪）：退避封顶 + 死信 + 日志降频 -----------
+
+/// 推送失败退避起步（秒）——15s 起步指数爬升（= PUSH_TICK_SECS）。
+const PUSH_BACKOFF_BASE_SECS: u64 = 15;
+/// 退避封顶（秒）——10 分钟（裁决⑩）。
+const PUSH_BACKOFF_CAP_SECS: u64 = 600;
+/// 死信 age 闸（秒）——7 天，对齐 task_result TTL（裁决⑨）。
+const DEAD_LETTER_AGE_SECS: i64 = 7 * 24 * 3600;
+/// 死信 attempts 闸——与 age 先到先死（裁决⑨）。
+const DEAD_LETTER_MAX_ATTEMPTS: u32 = 1000;
+/// 日志降频阈值——attempts 超过此后每 [`PUSH_WARN_EVERY`] 次一条 WARN
+/// （裁决⑪；封顶退避下 ≈ 10 分钟一条）。
+const PUSH_WARN_QUIET_AFTER: u32 = 50;
+const PUSH_WARN_EVERY: u32 = 40;
+
+/// CD6：推送失败退避秒数——15s 起步指数爬升，600s（10 分钟）封顶。
+/// `attempts` 从 1 起计（首次失败 = 第 1 次）。
+fn push_backoff_secs(attempts: u32) -> u64 {
+    let shift = attempts.saturating_sub(1).min(6);
+    PUSH_BACKOFF_BASE_SECS
+        .saturating_mul(1u64 << shift)
+        .min(PUSH_BACKOFF_CAP_SECS)
+}
+
+/// CD6：条目年龄（秒；created_at 距今）。created_at 解析失败 = None。
+fn entry_age_secs(entry: &OutboxEntry) -> Option<i64> {
+    let created = chrono::DateTime::parse_from_rfc3339(&entry.created_at).ok()?;
+    Some(
+        chrono::Local::now()
+            .signed_duration_since(created)
+            .num_seconds(),
+    )
+}
+
 /// cluster_logs 任务目录名 `{ts}_{task_id}` 的 ts 前缀定长：
 /// `%Y-%m-%d_%H-%M-%S-%3f`（23 字符）+ `_`（1）= 24。task_id 从下标 24 起。
 /// （ts 格式由 cluster_request_logger_observer 决定；变更须同步这里。）
@@ -122,13 +156,15 @@ pub enum PushDirOutcome {
 // ---------------------------------------------------------------------------
 
 /// 发件箱条目。entry.json 在场 = 载荷复制完整（enqueue 先写 payload 后写
-/// entry.json）；状态机 `pending → pushing → (删) | over_limit`。
+/// entry.json）；状态机 `pending → pushing → (删) | over_limit`，CD6 后
+/// pending 失败侧新增 `→ dead`（age 7 天 / attempts 1000 死信停车，可见
+/// + 可手动重放——与零丢失红线不冲突：死信是可见的诚实停车，不是静默丢弃）。
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct OutboxEntry {
     pub task_id: String,
     /// 推送目标（派发来源节点 id；cluster_logs device 目录名同源）。
     pub source_node: String,
-    /// pending | pushing | over_limit。
+    /// pending | pushing | over_limit | dead（CD6）。
     pub state: String,
     pub created_at: String,
     pub attempts: u32,
@@ -136,6 +172,10 @@ pub struct OutboxEntry {
     pub total_bytes: u64,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub last_error: Option<String>,
+    /// CD6：下次重试时刻（RFC3339）——退避窗口内跳过该条目。None/缺省 =
+    /// 立即可推（存量条目兼容，裁决⑦：保留原地不迁移）。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub next_retry_at: Option<String>,
 }
 
 /// 单条推送结果。
@@ -147,6 +187,71 @@ enum PushOutcome {
     NothingToSend,
     /// 超 D4 护栏 → 标记 over_limit，不删不传。
     Overlimit,
+}
+
+// ---------------------------------------------------------------------------
+// CD6：死信面（Dashboard 可见 + 手动重放口）
+//
+// 状态全在磁盘（entry.json），不需要活实例——web 层持 outbox 根路径即可
+// 操作；重放只翻状态落盘，推送循环下一 tick（≤15s）自然拾取。
+// ---------------------------------------------------------------------------
+
+/// 列举死信条目（`state == "dead"`，按 created_at 升序）。
+pub fn list_dead_letter_entries(outbox_root: &Path) -> Vec<OutboxEntry> {
+    let mut out = Vec::new();
+    let Ok(dirs) = std::fs::read_dir(outbox_root) else {
+        return out;
+    };
+    for d in dirs.flatten() {
+        let Ok(raw) = std::fs::read_to_string(d.path().join("entry.json")) else {
+            continue;
+        };
+        if let Ok(entry) = serde_json::from_str::<OutboxEntry>(&raw)
+            && entry.state == "dead"
+        {
+            out.push(entry);
+        }
+    }
+    out.sort_by(|a, b| a.created_at.cmp(&b.created_at));
+    out
+}
+
+/// 手动重放死信条目：`dead → pending`，attempts / 退避窗口 / 错误清零——
+/// 下个推送 tick 按新条目重推（零丢失闭环照常：master 落盘 ACK 才删本地）。
+/// 返回重放后的条目（task_id 未知 / 条目非 dead 态 = Err）。
+pub fn replay_dead_letter_entry(outbox_root: &Path, task_id: &str) -> Result<OutboxEntry, String> {
+    let dir = outbox_root.join(sanitize_transfer_id(task_id));
+    let raw = std::fs::read_to_string(dir.join("entry.json"))
+        .map_err(|e| format!("发件箱条目不存在或不可读: {e}"))?;
+    let mut entry: OutboxEntry =
+        serde_json::from_str(&raw).map_err(|e| format!("条目损坏: {e}"))?;
+    if entry.state != "dead" {
+        return Err(format!("条目非死信态（当前 {}）", entry.state));
+    }
+    entry.state = "pending".into();
+    entry.attempts = 0;
+    entry.next_retry_at = None;
+    entry.last_error = None;
+    // created_at 同步刷新：age 死信闸按入队时间起算，重放表达的是「现在
+    // 重新入队」——不刷新的话过闸条目下个 tick 会被 age 闸再次判死，重放
+    // 口形同虚设。
+    entry.created_at = chrono::Local::now().to_rfc3339();
+    write_entry_json(&dir, &entry)?;
+    tracing::info!(
+        task_id = %task_id,
+        "[Transfer] 死信条目已手动重放（dead → pending）"
+    );
+    Ok(entry)
+}
+
+/// 原子写 entry.json（临时文件 + rename，与 `TransferOutbox::write_entry_at`
+/// 同款时序）。
+fn write_entry_json(dir: &Path, entry: &OutboxEntry) -> Result<(), String> {
+    std::fs::create_dir_all(dir).map_err(|e| format!("建目录失败: {e}"))?;
+    let json = serde_json::to_string_pretty(entry).map_err(|e| e.to_string())?;
+    let tmp = dir.join(".entry.json.tmp");
+    std::fs::write(&tmp, json).map_err(|e| format!("写 entry 失败: {e}"))?;
+    std::fs::rename(&tmp, dir.join("entry.json")).map_err(|e| format!("entry 落盘失败: {e}"))
 }
 
 // ---------------------------------------------------------------------------
@@ -164,6 +269,12 @@ pub struct TransferOutbox {
     /// D4 护栏现读 provider（gateway 从 config 现读注入，热生效；0=不限）。
     max_bytes: Box<dyn Fn() -> u64 + Send + Sync>,
     kick: tokio::sync::Notify,
+    /// CD6（裁决）：健康联动——目标对端离线时暂停该条目（跳过本轮，不计数
+    /// 不打日志不推进退避），回 Online 后下一 tick（≤15s）自然恢复推送。
+    /// 注入口 = RpcClient 在线状态只读口（`is_peer_online`）；None = 不联动
+    /// （旧行为照发）。`Option<bool>` 语义由注入方裁决（未知节点建议 true，
+    /// 让推送 fast-fail 诚实暴露）。
+    online_check: std::sync::Mutex<Option<Box<dyn Fn(&str) -> bool + Send + Sync>>>,
 }
 
 impl TransferOutbox {
@@ -182,7 +293,13 @@ impl TransferOutbox {
             transport,
             max_bytes,
             kick: tokio::sync::Notify::new(),
+            online_check: std::sync::Mutex::new(None),
         }
+    }
+
+    /// CD6：注入健康联动查询（见字段 doc）。gateway 装配时注入一次。
+    pub fn set_online_check(&self, check: Box<dyn Fn(&str) -> bool + Send + Sync>) {
+        *self.online_check.lock().unwrap_or_else(|e| e.into_inner()) = Some(check);
     }
 
     pub fn outbox_root(&self) -> &Path {
@@ -256,6 +373,7 @@ impl TransferOutbox {
             attempts: 0,
             total_bytes: total,
             last_error: None,
+            next_retry_at: None,
         };
         self.write_entry(&entry)?;
         tracing::info!(
@@ -409,6 +527,43 @@ impl TransferOutbox {
             if entry.state != "pending" {
                 continue;
             }
+            // CD6：死信双闸（age 7 天 / attempts 1000，先到先死）——诚实转
+            // dead 停车态，不再推送。死信可见（Dashboard）+ 可手动重放，不是
+            // 静默丢弃；在推送尝试前判定，存量卡死条目下一 tick 即归位。
+            if entry.attempts >= DEAD_LETTER_MAX_ATTEMPTS || self.dead_letter_age_due(&entry) {
+                entry.state = "dead".into();
+                entry.next_retry_at = None;
+                let _ = self.write_entry_at(&dir, &entry);
+                tracing::warn!(
+                    task_id = %entry.task_id,
+                    attempts = entry.attempts,
+                    age_secs = entry_age_secs(&entry).unwrap_or(-1),
+                    "[Transfer] 条目转死信停车（age 7 天 / attempts 1000 死信闸；Dashboard 可见，可手动重放）"
+                );
+                continue;
+            }
+            // CD6：退避窗口内跳过（不计数、不打日志）。
+            if let Some(next) = entry.next_retry_at.as_deref() {
+                match chrono::DateTime::parse_from_rfc3339(next) {
+                    Ok(next) if chrono::Local::now() < next => continue,
+                    _ => {}
+                }
+            }
+            // CD6：健康联动——对端离线 → 安静跳过（不计数、不打日志、不推进
+            // 退避窗口），回 Online 后下一 tick（≤15s）自然恢复推送，省必败
+            // RPC 调用与刷屏日志。
+            let online = match self
+                .online_check
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .as_ref()
+            {
+                Some(check) => check(&entry.source_node),
+                None => true,
+            };
+            if !online {
+                continue;
+            }
             entry.state = "pushing".into();
             if self.write_entry_at(&dir, &entry).is_err() {
                 continue;
@@ -434,19 +589,36 @@ impl TransferOutbox {
                     );
                 }
                 Err(e) => {
-                    // 留 pending，下轮（≥1 tick 后）重试；attempts 记账观测。
+                    // 留 pending 重试；attempts 记账 + 退避调度（CD6：15s
+                    // 起步指数爬升、10 分钟封顶）+ 日志降频（裁决⑪）。
                     entry.state = "pending".into();
-                    entry.attempts += 1;
+                    entry.attempts = entry.attempts.saturating_add(1);
                     entry.last_error = Some(e.clone());
-                    let _ = self.write_entry_at(&dir, &entry);
-                    tracing::warn!(
-                        task_id = %entry.task_id,
-                        attempt = entry.attempts,
-                        "[Transfer] 推送失败（保留重试）: {e}"
+                    let backoff = push_backoff_secs(entry.attempts);
+                    entry.next_retry_at = Some(
+                        (chrono::Local::now() + chrono::Duration::seconds(backoff as i64))
+                            .to_rfc3339(),
                     );
+                    let _ = self.write_entry_at(&dir, &entry);
+                    if entry.attempts <= PUSH_WARN_QUIET_AFTER
+                        || entry.attempts % PUSH_WARN_EVERY == 0
+                    {
+                        tracing::warn!(
+                            task_id = %entry.task_id,
+                            attempt = entry.attempts,
+                            next_retry_in_secs = backoff,
+                            "[Transfer] 推送失败（保留重试）: {e}"
+                        );
+                    }
                 }
             }
         }
+    }
+
+    /// CD6：死信 age 闸——created_at 距今 ≥ 7 天。created_at 解析失败按
+    /// 未到期处理（条目仍受 attempts 闸兜底）。
+    fn dead_letter_age_due(&self, entry: &OutboxEntry) -> bool {
+        entry_age_secs(entry).is_some_and(|age| age >= DEAD_LETTER_AGE_SECS)
     }
 
     /// 推送单个条目：D4 护栏（+ overlimit 通知）→ [`push_transfer_dir`]

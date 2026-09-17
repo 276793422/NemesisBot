@@ -286,9 +286,12 @@ fn test_ring_buffer_get_all_throughput() {
     }
     let elapsed = start.elapsed();
 
-    // Should read 1000 times in under 500ms
+    // 阈值 5s（2026-09-17 裁决）：本测试是墙钟断言，原 500ms 在全量
+    // workspace 并行负载下被调度抖动偶发击穿（单跑实测 ~50ms，满载模拟
+    // 实测 ~500ms 压线）。5s 保留「量级回归 + 卡死报警」能力（正常耗时的
+    // 100 倍余量），只在真正的性能量级回归或死锁时触发，容忍并行抖动。
     assert!(
-        elapsed < std::time::Duration::from_millis(500),
+        elapsed < std::time::Duration::from_secs(5),
         "RingBuffer get_all too slow: {:?}",
         elapsed
     );

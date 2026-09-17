@@ -188,6 +188,17 @@ pub enum AgentEvent {
         /// 了结方式：`answered`（有人作答）/ `timeout`（超时无人答）。
         decision: String,
     },
+    /// 会话物化事件（SB，2026-09-17）。某会话的 jsonl **首行落盘**后发布
+    /// （正常轮 user 行 / 集群续行 / workflow_chat 三条物化路径）；web pump
+    /// 转 SSE `session.created` + WS push，前端据此 force 刷新会话列表
+    /// （修「隐式会话不进侧栏，须手动刷新」）。data.session_id 为裸 sid。
+    SessionCreated {
+        /// 会话键推导出的裸 session id（`agent:main:session:{sid}` 剥前缀；
+        /// 其他命名空间取 sanitize 后形态）。
+        session_id: String,
+        /// 完整会话键（web 层判别命名空间用）。
+        session_key: String,
+    },
 }
 
 /// H1（devtool-upgrade 阶段 2）：单条 todo（todowrite 全量提交语义）。
@@ -221,7 +232,9 @@ impl AgentEvent {
             // 审批不属单一会话（auditor 无 session 上下文，同 ApprovalRequested）。
             // 提问了结事件同理只带 id（全局广播）。
             AgentEvent::ApprovalResolved { .. }
-            | AgentEvent::QuestionResolved { .. } => "",
+            | AgentEvent::QuestionResolved { .. }
+            // 会话物化事件带裸 id 但无 chat 目标（全局广播语义）。
+            | AgentEvent::SessionCreated { .. } => "",
         }
     }
 
@@ -236,6 +249,7 @@ impl AgentEvent {
             AgentEvent::ApprovalResolved { .. } => "ApprovalResolved",
             AgentEvent::QuestionAsked { .. } => "QuestionAsked",
             AgentEvent::QuestionResolved { .. } => "QuestionResolved",
+            AgentEvent::SessionCreated { .. } => "SessionCreated",
         }
     }
 }

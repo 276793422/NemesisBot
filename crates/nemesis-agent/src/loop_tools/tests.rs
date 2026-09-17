@@ -36,7 +36,7 @@ async fn test_read_write_file_tool() {
     assert!(result.contains("Successfully wrote"));
 
     // Read it back.
-    let read_tool = ReadFileTool;
+    let read_tool = ReadFileTool::default();
     let args = serde_json::json!({ "path": file_path_str }).to_string();
     let result = read_tool.execute(&args, &ctx).await.unwrap();
     assert_eq!(result, "Hello from write tool!");
@@ -54,7 +54,7 @@ async fn test_list_directory_tool() {
         .await
         .unwrap();
 
-    let tool = ListDirectoryTool;
+    let tool = ListDirectoryTool::default();
     let ctx = RequestContext::new("web", "chat1", "user1", "sess1");
     let args = serde_json::json!({ "path": tmp.path().to_string_lossy() }).to_string();
 
@@ -241,7 +241,7 @@ async fn test_delete_file_tool() {
     tokio::fs::write(&file_path, "content").await.unwrap();
     assert!(file_path.exists());
 
-    let tool = DeleteFileTool;
+    let tool = DeleteFileTool::default();
     let ctx = RequestContext::new("web", "chat1", "user1", "sess1");
     let args = serde_json::json!({ "path": file_path.to_string_lossy() }).to_string();
 
@@ -255,7 +255,7 @@ async fn test_delete_file_not_found() {
     let tmp = TempDir::new().unwrap();
     let file_path = tmp.path().join("nonexistent.txt");
 
-    let tool = DeleteFileTool;
+    let tool = DeleteFileTool::default();
     let ctx = RequestContext::new("web", "chat1", "user1", "sess1");
     let args = serde_json::json!({ "path": file_path.to_string_lossy() }).to_string();
 
@@ -269,7 +269,7 @@ async fn test_create_dir_tool() {
     let tmp = TempDir::new().unwrap();
     let dir_path = tmp.path().join("new_dir").join("nested");
 
-    let tool = CreateDirTool;
+    let tool = CreateDirTool::default();
     let ctx = RequestContext::new("web", "chat1", "user1", "sess1");
     let args = serde_json::json!({ "path": dir_path.to_string_lossy() }).to_string();
 
@@ -282,7 +282,7 @@ async fn test_create_dir_tool() {
 async fn test_create_dir_already_exists() {
     let tmp = TempDir::new().unwrap();
 
-    let tool = CreateDirTool;
+    let tool = CreateDirTool::default();
     let ctx = RequestContext::new("web", "chat1", "user1", "sess1");
     let args = serde_json::json!({ "path": tmp.path().to_string_lossy() }).to_string();
 
@@ -301,7 +301,7 @@ async fn test_delete_dir_tool() {
         .unwrap();
     assert!(dir_path.exists());
 
-    let tool = DeleteDirTool;
+    let tool = DeleteDirTool::default();
     let ctx = RequestContext::new("web", "chat1", "user1", "sess1");
     let args = serde_json::json!({ "path": dir_path.to_string_lossy() }).to_string();
 
@@ -986,7 +986,7 @@ fn test_extract_edit_args_missing_new_text() {
 
 #[tokio::test]
 async fn test_read_file_not_found() {
-    let tool = ReadFileTool;
+    let tool = ReadFileTool::default();
     let ctx = RequestContext::new("web", "chat1", "user1", "sess1");
     let result = tool
         .execute(r#"{"path": "/nonexistent/file.txt"}"#, &ctx)
@@ -1004,7 +1004,7 @@ async fn test_read_file_offset_limit_slices_by_chars_not_bytes() {
     // 5 chars / 15 UTF-8 bytes: slicing must be char-based (multibyte-safe).
     tokio::fs::write(&file_path, "你好世界A").await.unwrap();
 
-    let tool = ReadFileTool;
+    let tool = ReadFileTool::default();
     let ctx = RequestContext::new("web", "chat1", "user1", "sess1");
     let args = format!(
         r#"{{"path": {:?}, "offset": 2, "limit": 3}}"#,
@@ -1032,7 +1032,7 @@ async fn test_read_file_without_offset_limit_is_byte_identical() {
     let raw = "line1\nline2\nno trailing newline";
     tokio::fs::write(&file_path, raw).await.unwrap();
 
-    let tool = ReadFileTool;
+    let tool = ReadFileTool::default();
     let ctx = RequestContext::new("web", "chat1", "user1", "sess1");
     let args = format!(r#"{{"path": {:?}}}"#, file_path.to_string_lossy());
     let out = tool.execute(&args, &ctx).await.unwrap();
@@ -1045,7 +1045,7 @@ async fn test_read_file_offset_beyond_eof_returns_empty_slice() {
     let file_path = tmp.path().join("small.txt");
     tokio::fs::write(&file_path, "abc").await.unwrap();
 
-    let tool = ReadFileTool;
+    let tool = ReadFileTool::default();
     let ctx = RequestContext::new("web", "chat1", "user1", "sess1");
     let args = format!(
         r#"{{"path": {:?}, "offset": 100, "limit": 10}}"#,
@@ -1067,7 +1067,7 @@ async fn test_read_file_rejects_malformed_offset_limit() {
     let file_path = tmp.path().join("x.txt");
     tokio::fs::write(&file_path, "abc").await.unwrap();
 
-    let tool = ReadFileTool;
+    let tool = ReadFileTool::default();
     let ctx = RequestContext::new("web", "chat1", "user1", "sess1");
     let base = file_path.to_string_lossy().to_string();
 
@@ -1112,7 +1112,7 @@ fn test_extract_offset_limit_non_json_falls_back_to_none() {
 
 #[tokio::test]
 async fn test_list_dir_not_found() {
-    let tool = ListDirectoryTool;
+    let tool = ListDirectoryTool::default();
     let ctx = RequestContext::new("web", "chat1", "user1", "sess1");
     let nonexistent = format!(
         r#"{{"path": "C:/__nonexistent_test_dir_{}"}}"#,
@@ -1129,7 +1129,7 @@ async fn test_list_dir_is_file_not_dir() {
     let file_path = tmp.path().join("file.txt");
     tokio::fs::write(&file_path, "content").await.unwrap();
 
-    let tool = ListDirectoryTool;
+    let tool = ListDirectoryTool::default();
     let ctx = RequestContext::new("web", "chat1", "user1", "sess1");
     let result = tool
         .execute(
@@ -1147,7 +1147,7 @@ async fn test_list_dir_empty_directory() {
     let empty_dir = tmp.path().join("empty");
     tokio::fs::create_dir(&empty_dir).await.unwrap();
 
-    let tool = ListDirectoryTool;
+    let tool = ListDirectoryTool::default();
     let ctx = RequestContext::new("web", "chat1", "user1", "sess1");
     let result = tool
         .execute(
@@ -1179,7 +1179,7 @@ async fn test_delete_file_is_directory() {
     let dir_path = tmp.path().join("a_dir");
     tokio::fs::create_dir(&dir_path).await.unwrap();
 
-    let tool = DeleteFileTool;
+    let tool = DeleteFileTool::default();
     let ctx = RequestContext::new("web", "chat1", "user1", "sess1");
     let result = tool
         .execute(
@@ -1193,7 +1193,7 @@ async fn test_delete_file_is_directory() {
 
 #[tokio::test]
 async fn test_delete_dir_not_found() {
-    let tool = DeleteDirTool;
+    let tool = DeleteDirTool::default();
     let ctx = RequestContext::new("web", "chat1", "user1", "sess1");
     let result = tool
         .execute(r#"{"path": "/nonexistent_dir_12345"}"#, &ctx)
@@ -1208,7 +1208,7 @@ async fn test_delete_dir_is_file() {
     let file_path = tmp.path().join("file.txt");
     tokio::fs::write(&file_path, "content").await.unwrap();
 
-    let tool = DeleteDirTool;
+    let tool = DeleteDirTool::default();
     let ctx = RequestContext::new("web", "chat1", "user1", "sess1");
     let result = tool
         .execute(
@@ -3165,7 +3165,7 @@ async fn test_read_file_tool_with_json_args() {
     let file_path = tmp.path().join("json_test.txt");
     tokio::fs::write(&file_path, "json content").await.unwrap();
 
-    let tool = ReadFileTool;
+    let tool = ReadFileTool::default();
     let ctx = RequestContext::new("web", "chat1", "user1", "sess1");
     let args = serde_json::json!({"path": file_path.to_string_lossy()}).to_string();
 
@@ -3225,7 +3225,7 @@ async fn test_delete_file_tool_success() {
         .unwrap();
     assert!(file_path.exists());
 
-    let tool = DeleteFileTool;
+    let tool = DeleteFileTool::default();
     let ctx = RequestContext::new("web", "chat1", "user1", "sess1");
     let args = serde_json::json!({"path": file_path.to_string_lossy()}).to_string();
 
@@ -3239,7 +3239,7 @@ async fn test_create_dir_tool_nested() {
     let tmp = TempDir::new().unwrap();
     let nested_path = tmp.path().join("level1").join("level2").join("level3");
 
-    let tool = CreateDirTool;
+    let tool = CreateDirTool::default();
     let ctx = RequestContext::new("web", "chat1", "user1", "sess1");
     let args = serde_json::json!({"path": nested_path.to_string_lossy()}).to_string();
 
@@ -3260,7 +3260,7 @@ async fn test_delete_dir_tool_with_contents() {
         .await
         .unwrap();
 
-    let tool = DeleteDirTool;
+    let tool = DeleteDirTool::default();
     let ctx = RequestContext::new("web", "chat1", "user1", "sess1");
     let args = serde_json::json!({"path": dir_path.to_string_lossy()}).to_string();
 
@@ -3342,7 +3342,7 @@ async fn test_list_directory_tool_with_files_and_dirs() {
         .await
         .unwrap();
 
-    let tool = ListDirectoryTool;
+    let tool = ListDirectoryTool::default();
     let ctx = RequestContext::new("web", "chat1", "user1", "sess1");
     let args = serde_json::json!({"path": tmp.path().to_string_lossy()}).to_string();
 

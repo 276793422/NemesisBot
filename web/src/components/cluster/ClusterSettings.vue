@@ -36,6 +36,32 @@ const pairAddress = ref('')
 const pairing = ref(false)
 const pairResult = ref<any>(null)
 
+// CD6（2026-09-17）：发件箱死信面（回传条目过闸后的诚实停车；可见 + 手动重放）。
+const deadLetters = ref<any[]>([])
+const deadLoading = ref(false)
+const replayingId = ref('')
+
+async function loadDeadLetters() {
+  deadLoading.value = true
+  try {
+    const data = await request('outbox', 'dead_list')
+    if (data?.dead_letters) deadLetters.value = data.dead_letters
+  } catch { /* ignore */ }
+  deadLoading.value = false
+}
+
+async function replayDead(taskId: string) {
+  replayingId.value = taskId
+  try {
+    await request('outbox', 'dead_replay', { task_id: taskId })
+    toast.success(`已重放入队：${taskId}（推送循环下一周期拾取）`)
+    await loadDeadLetters()
+  } catch (e: any) {
+    toast.error('重放失败: ' + (e || '未知错误'))
+  }
+  replayingId.value = ''
+}
+
 async function pairNode() {
   const addr = pairAddress.value.trim()
   if (!addr) {
@@ -179,7 +205,7 @@ async function addFirewallRules() {
 }
 
 onMounted(async () => {
-  await Promise.all([loadConfig(), loadSnapshots()])
+  await Promise.all([loadConfig(), loadSnapshots(), loadDeadLetters()])
   loading.value = false
 })
 </script>
@@ -346,6 +372,39 @@ onMounted(async () => {
           <template v-else>
             <div class="fw-summary fail">{{ pairResult.message }}</div>
           </template>
+        </div>
+      </div>
+    </div>
+
+    <!-- CD6：发件箱死信（回传过闸停车；可见 + 手动重放） -->
+    <div class="card" style="margin-top:var(--space-4)">
+      <div class="card-header">
+        <h3>发件箱死信</h3>
+        <button class="btn btn-sm" :disabled="deadLoading" @click="loadDeadLetters">刷新</button>
+      </div>
+      <div class="card-body">
+        <div class="form-hint" style="margin-bottom:var(--space-2)">
+          回传条目超过 7 天或重试 1000 次后诚实停车（不再推送，不丢弃）。
+          重放 = 重新入队，由推送循环按零丢失闭环重传。
+        </div>
+        <div v-if="deadLoading" style="text-align:center;padding:var(--space-2)">加载中...</div>
+        <div v-else-if="!deadLetters.length" style="color:var(--text-secondary)">暂无死信条目</div>
+        <div v-else style="display:flex;flex-direction:column;gap:var(--space-2)">
+          <div
+            v-for="d in deadLetters"
+            :key="d.task_id"
+            style="display:flex;gap:var(--space-3);align-items:center;border:1px solid var(--border-color);border-radius:6px;padding:var(--space-2)"
+          >
+            <div style="flex:1;min-width:0">
+              <div style="font-family:var(--font-mono);font-size:var(--text-sm);overflow:hidden;text-overflow:ellipsis;white-space:nowrap">{{ d.task_id }}</div>
+              <div style="font-size:var(--text-sm);color:var(--text-secondary)">
+                对端 {{ d.source_node }} · 入队 {{ d.created_at }} · 重试 {{ d.attempts }} 次<template v-if="d.last_error"> · {{ d.last_error }}</template>
+              </div>
+            </div>
+            <button class="btn btn-sm btn-primary" :disabled="replayingId === d.task_id" @click="replayDead(d.task_id)">
+              {{ replayingId === d.task_id ? '重放中...' : '重放' }}
+            </button>
+          </div>
         </div>
       </div>
     </div>

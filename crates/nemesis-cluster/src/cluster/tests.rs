@@ -403,6 +403,105 @@ fn test_handle_task_complete_with_bus() {
     assert!(msgs[0].sender_id.starts_with("cluster_continuation:"));
 }
 
+// -- CD2（2026-09-17）：安全网超时分支必须发 bus 唤醒 agent ------------------
+//
+// 根因：安全网分支此前只 complete_callback（标 Failed）不 publish，等回复
+// 的 agent 永远不知道——与 done / not_found 分支（都发 bus）不一致。
+
+#[tokio::test]
+async fn test_poll_safety_net_timeout_publishes_bus_error() {
+    let messages = Arc::new(Mutex::new(Vec::new()));
+    let bus = Arc::new(MockBus {
+        messages: messages.clone(),
+    });
+
+    let cluster = Cluster::new(make_config());
+    cluster.start();
+    cluster.set_message_bus(bus);
+
+    // 缩短安全网到 60s，构造一个 2h 前创建的 Pending 任务（年龄 > 2min
+    // 年龄闸 + > 安全网 → 命中安全网分支）。
+    cluster
+        .task_manager()
+        .set_pending_timeout(chrono::Duration::seconds(60));
+    let old_created = (chrono::Local::now() - chrono::Duration::hours(2)).to_rfc3339();
+    let task = nemesis_types::cluster::Task {
+        id: "cd2-timeout-task".into(),
+        status: TaskStatus::Pending,
+        action: "peer_chat".into(),
+        peer_id: "remote-001".into(),
+        payload: serde_json::json!({}),
+        result: None,
+        original_channel: "web".into(),
+        original_chat_id: "chat-1".into(),
+        created_at: old_created,
+        completed_at: None,
+    };
+    cluster.task_manager().submit(task).unwrap();
+
+    cluster.poll_stale_pending_tasks().await;
+
+    // 断言 1：bus 收到 error 续行帧（agent 被唤醒），metadata.error 带
+    // 安全网文案、content 为空、status=error（形状对齐 not_found 分支）。
+    let msgs = messages.lock();
+    assert_eq!(msgs.len(), 1, "安全网超时分支必须发恰好一条 bus 唤醒帧");
+    assert_eq!(msgs[0].channel, "system");
+    assert_eq!(msgs[0].sender_id, "cluster_continuation:cd2-timeout-task");
+    assert_eq!(msgs[0].content, "");
+    assert_eq!(
+        msgs[0].metadata.get("status").map(String::as_str),
+        Some("error")
+    );
+    let err = msgs[0]
+        .metadata
+        .get("error")
+        .expect("metadata.error 必须存在");
+    assert!(
+        err.contains("safety net"),
+        "metadata.error 应含安全网文案，got: {}",
+        err
+    );
+    drop(msgs);
+
+    // 断言 2：任务状态被标 Failed（complete_callback 语义不回归）。
+    let task = cluster.get_task("cd2-timeout-task").unwrap();
+    assert_eq!(task.status, TaskStatus::Failed);
+}
+
+#[tokio::test]
+async fn test_poll_young_task_does_not_hit_safety_net() {
+    let messages = Arc::new(Mutex::new(Vec::new()));
+    let bus = Arc::new(MockBus {
+        messages: messages.clone(),
+    });
+
+    let cluster = Cluster::new(make_config());
+    cluster.start();
+    cluster.set_message_bus(bus);
+    cluster
+        .task_manager()
+        .set_pending_timeout(chrono::Duration::seconds(60));
+
+    // 刚创建的任务（submit 默认 created_at = now）：不满足年龄闸也不满足
+    // 安全网 → 不发 bus、状态保持 Pending。
+    cluster.submit_task("peer_chat", serde_json::json!({}), "web", "chat-1");
+
+    cluster.poll_stale_pending_tasks().await;
+
+    assert!(
+        messages.lock().is_empty(),
+        "young 任务不得触发安全网 bus 帧"
+    );
+    let task_id = cluster
+        .task_manager()
+        .list_pending_tasks()
+        .first()
+        .map(|t| t.id.clone())
+        .expect("young 任务应保持 Pending");
+    let task = cluster.get_task(&task_id).unwrap();
+    assert_eq!(task.status, TaskStatus::Pending);
+}
+
 // -- call_with_context production path tests --------------------------------
 
 #[test]
@@ -1914,7 +2013,7 @@ async fn test_poll_stale_pending_tasks_young_task_skipped() {
     let tm = Arc::new(TaskManager::new());
     // Create a brand new task (< 2 minutes old) - should be skipped
     let _task = tm.create_task("action", serde_json::json!({}), "rpc", "ch");
-    poll_stale_pending_tasks(&tm, &None, None, poll_defaults(), None, false).await;
+    poll_stale_pending_tasks(&tm, &None, None, poll_defaults(), None, false, None).await;
     // Task should still be pending
     let pending = tm.list_pending_tasks();
     assert_eq!(pending.len(), 1);
@@ -1955,7 +2054,7 @@ async fn test_poll_stale_pending_tasks_include_young_queries_young_task() {
         }
     }));
 
-    poll_stale_pending_tasks(&tm, &call_fn, None, poll_defaults(), None, true).await;
+    poll_stale_pending_tasks(&tm, &call_fn, None, poll_defaults(), None, true, None).await;
     let t = tm.get_task(&task_id).expect("task should exist");
     assert_eq!(
         t.status,
@@ -1983,7 +2082,7 @@ async fn test_poll_stale_pending_tasks_old_task_timed_out() {
     };
     tm.submit(task).unwrap();
 
-    poll_stale_pending_tasks(&tm, &None, None, poll_defaults(), None, false).await;
+    poll_stale_pending_tasks(&tm, &None, None, poll_defaults(), None, false, None).await;
     let t = tm.get_task("stale-24h").unwrap();
     assert_eq!(t.status, TaskStatus::Failed);
 }
@@ -2015,7 +2114,7 @@ async fn test_poll_stale_pending_tasks_stale_with_call_fn() {
         Ok(serde_json::to_vec(&resp).unwrap())
     }));
 
-    poll_stale_pending_tasks(&tm, &call_fn, None, poll_defaults(), None, false).await;
+    poll_stale_pending_tasks(&tm, &call_fn, None, poll_defaults(), None, false, None).await;
     let t = tm.get_task("stale-5m").unwrap();
     assert_eq!(t.status, TaskStatus::Failed);
 }
@@ -2057,9 +2156,152 @@ async fn test_poll_stale_pending_tasks_stale_with_done_response() {
         }
     }));
 
-    poll_stale_pending_tasks(&tm, &call_fn, None, poll_defaults(), None, false).await;
+    poll_stale_pending_tasks(&tm, &call_fn, None, poll_defaults(), None, false, None).await;
     let t = tm.get_task("stale-done").unwrap();
     assert_eq!(t.status, TaskStatus::Completed);
+}
+
+// -- CD3（2026-09-17）：恢复交付回调 = confirm 前置闸 ------------------------
+//
+// done 分支：交付回调返回 true（或未注册）才向 worker 发 confirm 删除其
+// 本地副本；false 跳过 confirm（宁留勿丢，副本走 worker 端 TTL 兜底）。
+
+/// CD3 测试共用：构造一个 >2min 的 Pending 任务 + 返回 done 响应的 call_fn，
+/// call_fn 同时记录 confirm_task_delivery 调用次数。
+fn cd3_done_fixture(
+    task_id: &'static str,
+) -> (
+    Arc<TaskManager>,
+    Option<Arc<dyn Fn(&str, &str, serde_json::Value) -> Result<Vec<u8>, String> + Send + Sync>>,
+    Arc<Mutex<Vec<String>>>,
+) {
+    let tm = Arc::new(TaskManager::new());
+    let old_time = (chrono::Local::now() - chrono::Duration::minutes(5)).to_rfc3339();
+    let task = Task {
+        id: task_id.to_string(),
+        status: TaskStatus::Pending,
+        action: "peer_chat".to_string(),
+        peer_id: "remote-1".to_string(),
+        payload: serde_json::json!({}),
+        result: None,
+        original_channel: "rpc".to_string(),
+        original_chat_id: "ch".to_string(),
+        created_at: old_time,
+        completed_at: None,
+    };
+    tm.submit(task).unwrap();
+
+    let confirm_calls: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
+    let calls_clone = confirm_calls.clone();
+    let call_fn: Option<
+        Arc<dyn Fn(&str, &str, serde_json::Value) -> Result<Vec<u8>, String> + Send + Sync>,
+    > = Some(Arc::new(move |_peer, action, _payload| {
+        if action == "confirm_task_delivery" {
+            calls_clone.lock().push(action.to_string());
+            return Ok(Vec::new());
+        }
+        let resp = serde_json::json!({
+            "status": "done",
+            "task_id": task_id,
+            "result_status": "success",
+            "response": "hello",
+            "error": ""
+        });
+        Ok(serde_json::to_vec(&resp).unwrap())
+    }));
+    (tm, call_fn, confirm_calls)
+}
+
+#[tokio::test]
+async fn test_poll_recovered_delivery_cb_true_confirms() {
+    let (tm, call_fn, confirm_calls) = cd3_done_fixture("cd3-true");
+    let cb_args: Arc<Mutex<Vec<(String, String, String, Option<String>)>>> =
+        Arc::new(Mutex::new(Vec::new()));
+    let args_clone = cb_args.clone();
+    let delivery_cb: Arc<dyn Fn(&str, &str, &str, Option<&str>) -> bool + Send + Sync> =
+        Arc::new(move |task_id, status, response, error| {
+            args_clone.lock().push((
+                task_id.to_string(),
+                status.to_string(),
+                response.to_string(),
+                error.map(String::from),
+            ));
+            true
+        });
+
+    poll_stale_pending_tasks(
+        &tm,
+        &call_fn,
+        None,
+        poll_defaults(),
+        None,
+        false,
+        Some(&delivery_cb),
+    )
+    .await;
+
+    // 回调收到查询结果全量参数，error 为空 → None。
+    let args = cb_args.lock();
+    assert_eq!(args.len(), 1, "交付回调应被调用恰好一次");
+    assert_eq!(args[0].0, "cd3-true");
+    assert_eq!(args[0].1, "success");
+    assert_eq!(args[0].2, "hello");
+    assert_eq!(args[0].3, None);
+    drop(args);
+
+    // 交付成功 → confirm 被发（worker 副本可删）。
+    assert_eq!(
+        confirm_calls.lock().len(),
+        1,
+        "回调 true 必须发 confirm_task_delivery"
+    );
+    assert_eq!(
+        tm.get_task("cd3-true").unwrap().status,
+        TaskStatus::Completed
+    );
+}
+
+#[tokio::test]
+async fn test_poll_recovered_delivery_cb_false_skips_confirm() {
+    let (tm, call_fn, confirm_calls) = cd3_done_fixture("cd3-false");
+    let delivery_cb: Arc<dyn Fn(&str, &str, &str, Option<&str>) -> bool + Send + Sync> =
+        Arc::new(|_task_id, _status, _response, _error| false);
+
+    poll_stale_pending_tasks(
+        &tm,
+        &call_fn,
+        None,
+        poll_defaults(),
+        None,
+        false,
+        Some(&delivery_cb),
+    )
+    .await;
+
+    // 交付失败 → 不发 confirm（worker 端副本保留到 TTL）；任务本身照常
+    // 完成（TaskManager 状态与交付解耦）。
+    assert!(
+        confirm_calls.lock().is_empty(),
+        "回调 false 必须跳过 confirm_task_delivery"
+    );
+    assert_eq!(
+        tm.get_task("cd3-false").unwrap().status,
+        TaskStatus::Completed
+    );
+}
+
+#[tokio::test]
+async fn test_poll_recovered_delivery_cb_none_keeps_legacy_confirm() {
+    let (tm, call_fn, confirm_calls) = cd3_done_fixture("cd3-none");
+
+    // 未注册回调 = 旧行为：无条件 confirm。
+    poll_stale_pending_tasks(&tm, &call_fn, None, poll_defaults(), None, false, None).await;
+
+    assert_eq!(
+        confirm_calls.lock().len(),
+        1,
+        "无回调时保持旧行为（无条件 confirm）"
+    );
 }
 
 #[tokio::test]
@@ -2088,7 +2330,7 @@ async fn test_poll_stale_pending_tasks_stale_with_running_response() {
         Ok(serde_json::to_vec(&resp).unwrap())
     }));
 
-    poll_stale_pending_tasks(&tm, &call_fn, None, poll_defaults(), None, false).await;
+    poll_stale_pending_tasks(&tm, &call_fn, None, poll_defaults(), None, false, None).await;
     let t = tm.get_task("stale-running").unwrap();
     assert_eq!(t.status, TaskStatus::Pending);
 }
@@ -2112,7 +2354,7 @@ async fn test_poll_stale_pending_tasks_no_peer_id() {
     };
     tm.submit(task).unwrap();
 
-    poll_stale_pending_tasks(&tm, &None, None, poll_defaults(), None, false).await;
+    poll_stale_pending_tasks(&tm, &None, None, poll_defaults(), None, false, None).await;
     let t = tm.get_task("no-peer").unwrap();
     assert_eq!(t.status, TaskStatus::Pending); // still pending
 }
@@ -2142,7 +2384,7 @@ async fn test_poll_stale_pending_tasks_call_fn_error() {
         Err("connection refused".to_string())
     }));
 
-    poll_stale_pending_tasks(&tm, &call_fn, None, poll_defaults(), None, false).await;
+    poll_stale_pending_tasks(&tm, &call_fn, None, poll_defaults(), None, false, None).await;
     let t = tm.get_task("call-error").unwrap();
     assert_eq!(t.status, TaskStatus::Pending);
 }
@@ -3300,7 +3542,7 @@ async fn test_poll_stale_pending_tasks_malformed_created_at() {
     };
     tm.submit(task).unwrap();
 
-    poll_stale_pending_tasks(&tm, &None, None, poll_defaults(), None, false).await;
+    poll_stale_pending_tasks(&tm, &None, None, poll_defaults(), None, false, None).await;
     // Task should still be pending (skipped due to malformed date)
     let t = tm.get_task("bad-date").unwrap();
     assert_eq!(t.status, TaskStatus::Pending);
@@ -3334,7 +3576,7 @@ async fn test_poll_stale_pending_tasks_unknown_status_response() {
         Ok(serde_json::to_vec(&resp).unwrap())
     }));
 
-    poll_stale_pending_tasks(&tm, &call_fn, None, poll_defaults(), None, false).await;
+    poll_stale_pending_tasks(&tm, &call_fn, None, poll_defaults(), None, false, None).await;
     let t = tm.get_task("weird-status").unwrap();
     // Unknown status -> continue -> task stays pending
     assert_eq!(t.status, TaskStatus::Pending);
@@ -3367,7 +3609,7 @@ async fn test_poll_stale_pending_tasks_invalid_json_response() {
         Ok(b"this is not valid json {{{".to_vec())
     }));
 
-    poll_stale_pending_tasks(&tm, &call_fn, None, poll_defaults(), None, false).await;
+    poll_stale_pending_tasks(&tm, &call_fn, None, poll_defaults(), None, false, None).await;
     let t = tm.get_task("invalid-json").unwrap();
     // Invalid JSON -> continue -> task stays pending
     assert_eq!(t.status, TaskStatus::Pending);
@@ -3412,7 +3654,7 @@ async fn test_poll_stale_pending_tasks_done_with_error_status() {
         }
     }));
 
-    poll_stale_pending_tasks(&tm, &call_fn, None, poll_defaults(), None, false).await;
+    poll_stale_pending_tasks(&tm, &call_fn, None, poll_defaults(), None, false, None).await;
     let t = tm.get_task("done-err").unwrap();
     // result_status "error" -> complete_callback with "error" -> should be completed (callback handled)
     assert_eq!(t.status, TaskStatus::Failed);
@@ -5675,6 +5917,7 @@ async fn test_poll_stale_pending_tasks_real_client_running_done_notfound_and_dea
         poll_defaults(),
         None,
         false,
+        None,
     )
     .await;
     assert_eq!(
@@ -5702,6 +5945,7 @@ async fn test_poll_stale_pending_tasks_real_client_running_done_notfound_and_dea
         poll_defaults(),
         None,
         false,
+        None,
     )
     .await;
     assert_eq!(
@@ -5722,6 +5966,7 @@ async fn test_poll_stale_pending_tasks_real_client_running_done_notfound_and_dea
         poll_defaults(),
         None,
         false,
+        None,
     )
     .await;
     assert_eq!(tm.get_task("stale-nf").unwrap().status, TaskStatus::Failed);
@@ -5735,6 +5980,7 @@ async fn test_poll_stale_pending_tasks_real_client_running_done_notfound_and_dea
         poll_defaults(),
         None,
         false,
+        None,
     )
     .await;
     assert_eq!(
@@ -6272,7 +6518,7 @@ async fn test_poll_stale_24h_timeout_logs_age_under_subscriber() {
     };
     tm.submit(task).unwrap();
 
-    poll_stale_pending_tasks(&tm, &None, None, poll_defaults(), None, false).await;
+    poll_stale_pending_tasks(&tm, &None, None, poll_defaults(), None, false, None).await;
     assert_eq!(
         tm.get_task("stale-24h-s4").unwrap().status,
         TaskStatus::Failed
@@ -6300,7 +6546,7 @@ async fn test_poll_stale_no_client_no_call_fn_continues() {
     };
     tm.submit(task).unwrap();
 
-    poll_stale_pending_tasks(&tm, &None, None, poll_defaults(), None, false).await;
+    poll_stale_pending_tasks(&tm, &None, None, poll_defaults(), None, false, None).await;
     assert_eq!(
         tm.get_task("stale-5m-noclient").unwrap().status,
         TaskStatus::Pending,

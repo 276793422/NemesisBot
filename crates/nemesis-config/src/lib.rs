@@ -848,6 +848,11 @@ pub struct AgentDefaults {
     /// A6: format-on-save after write/edit (see [`FormatOnSaveConfig`]).
     #[serde(default)]
     pub format_on_save: FormatOnSaveConfig,
+    /// 429 重试环（2026-09-17 BUG 文档裁决④）：上游限流（HTTP 429）重试次数，
+    /// 默认 10。间隔走 10 档阶梯（5s→…→210s），上游带 Retry-After 时取
+    /// max(上游要求, 阶梯值)。0 = 关闭重试（一次失败即终局，旧行为）。
+    #[serde(default = "default_rate_limit_retries")]
+    pub rate_limit_retries: i64,
 }
 
 impl Default for AgentDefaults {
@@ -868,6 +873,7 @@ impl Default for AgentDefaults {
             spill_retention_days: default_spill_retention_days(),
             diagnostics_loop: DiagnosticsLoopConfig::default(),
             format_on_save: FormatOnSaveConfig::default(),
+            rate_limit_retries: default_rate_limit_retries(),
         }
     }
 }
@@ -3122,6 +3128,10 @@ fn default_queue_size() -> i64 {
 }
 fn default_spill_retention_days() -> i64 {
     7
+}
+/// 429 重试环默认次数（2026-09-17 裁决④：对齐业界口径，默认 10）。
+fn default_rate_limit_retries() -> i64 {
+    10
 }
 fn default_gateway_host() -> String {
     "0.0.0.0".to_string()

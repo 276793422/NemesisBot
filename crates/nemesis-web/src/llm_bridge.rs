@@ -196,7 +196,17 @@ impl nemesis_agent::r#loop::LlmProvider for ProviderAdapter {
             }
             Err(e) => {
                 warn!("[LlmBridge] LLM provider error: {}", e);
-                Err(format!("{}", e))
+                // 429 重试环（2026-09-17 BUG 文档裁决④⑧）：Retry-After 保真
+                // ——FailoverError 到 loop 层会展平成 String，此处把结构化的
+                // retry_after 折进文本（` (retry_after=Ns)` 后缀），loop 层用
+                // 子串提取后取 max(上游要求, 本地阶梯)。不引入跨 crate 依赖。
+                Err(match &e {
+                    nemesis_providers::failover::FailoverError::RateLimit {
+                        retry_after: Some(secs),
+                        ..
+                    } => format!("{} (retry_after={}s)", e, secs),
+                    _ => format!("{}", e),
+                })
             }
         }
     }

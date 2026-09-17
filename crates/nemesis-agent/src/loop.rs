@@ -49,6 +49,41 @@ const GRACE_ROUND_NUDGE: &str = "工具调用预算已用尽，不要再调用�
 /// to get a successful response.
 const MAX_TRANSIENT_RETRIES: u32 = 3;
 
+/// 429 限流重试环（2026-09-17 BUG 文档裁决④⑧）：限流重试间隔阶梯（秒）——
+/// 前 4 档翻倍爬升抓瞬时抖动，后 6 档每档 +30s 线性放宽等限流窗口过去；
+/// 总跨度 885s ≈ 14.8 分钟。上游带 Retry-After 时取 max(上游要求, 阶梯值)
+/// （裁决⑧遵从上游，但不低于本地阶梯）。
+const RATE_LIMIT_BACKOFF_LADDER: [u64; 10] = [5, 10, 20, 40, 60, 90, 120, 150, 180, 210];
+
+/// 限流分类词表：`rate limited by provider` = FailoverError::RateLimit 的
+/// Display 前缀（llm_bridge 保真展平）；`429` / `too many requests` 兜底
+/// 裸文本形态（对齐 providers 侧 error_classifier 口径）。
+const RATE_LIMIT_ERROR_KEYWORDS: [&str; 3] =
+    ["rate limited by provider", "429", "too many requests"];
+
+/// 阶梯取值（attempt 从 1 起计；超出阶梯长度取末档）。
+fn rate_limit_ladder_secs(attempt: u32) -> u64 {
+    RATE_LIMIT_BACKOFF_LADDER[(attempt as usize)
+        .saturating_sub(1)
+        .min(RATE_LIMIT_BACKOFF_LADDER.len() - 1)]
+}
+
+/// 从错误文本提取 ProviderAdapter 折进的 `(retry_after=Ns)` 后缀。
+fn extract_retry_after_secs(err: &str) -> Option<u64> {
+    let idx = err.find("(retry_after=")?;
+    let rest = &err[idx + "(retry_after=".len()..];
+    let end = rest.find(|c: char| !c.is_ascii_digit())?;
+    rest[..end].parse().ok()
+}
+
+/// 限流等待秒数：max(Retry-After, 阶梯值)——上游要求更长就等更长。
+fn rate_limit_wait_secs(err: &str, attempt: u32) -> u64 {
+    extract_retry_after_secs(err).map_or_else(
+        || rate_limit_ladder_secs(attempt),
+        |ra| ra.max(rate_limit_ladder_secs(attempt)),
+    )
+}
+
 /// ⑩ Per-session compaction tracking for graded tiers + stuck self-check.
 /// Keyed by session; lives on `AgentLoop`.
 #[derive(Default)]
@@ -3937,6 +3972,7 @@ impl AgentLoop {
                     false,
                     0,
                     0,
+                    None,
                 )
                 .await;
                 return;
@@ -3944,6 +3980,14 @@ impl AgentLoop {
         };
 
         let limit = req.limit.unwrap_or(20);
+        // HD（2026-09-17）：session_id 原样回显——前端收到后与当前选中会话
+        // 比对，快速切换会话时迟到响应按归属丢弃（防串台）。
+        let req_session_id = msg
+            .metadata
+            .get("session_id")
+            .map(|s| s.as_str())
+            .unwrap_or("")
+            .to_string();
         let agent_id = self
             .registry
             .as_ref()
@@ -3974,6 +4018,7 @@ impl AgentLoop {
             has_more,
             oldest_index,
             total_count,
+            Some(&req_session_id),
         )
         .await;
     }
@@ -3988,6 +4033,9 @@ impl AgentLoop {
         has_more: bool,
         oldest_index: usize,
         total_count: usize,
+        // HD（2026-09-17）：session_id 回显（前端会话归属校验）；None = 解析
+        // 失败路径（前端围栏按无归属放行，不因错误响应丢帧）。
+        session_id: Option<&str>,
     ) {
         let response_data = serde_json::json!({
             "request_id": request_id,
@@ -3995,6 +4043,8 @@ impl AgentLoop {
             "has_more": has_more,
             "oldest_index": oldest_index,
             "total_count": total_count,
+            // HD：会话归属回显（空串省略——前端按无归属放行）。
+            "session_id": session_id.unwrap_or(""),
         });
 
         let content = match serde_json::to_string(&response_data) {
@@ -4541,6 +4591,8 @@ impl AgentLoop {
         self.finish_message(msg, receipt, None, false).await;
 
         // ② 会话一致性：user 行落盘（原命令原文——派发上下文可追溯）。
+        // SB（2026-09-17）：同正常轮——首行落盘 = 会话物化 → 发布事件。
+        let log_existed = Self::session_log_exists_before_append(session_key);
         crate::chat_log::append_chat_log_meta(
             session_key,
             "user",
@@ -4554,6 +4606,9 @@ impl AgentLoop {
                 checkpoint_turn: None,
             },
         );
+        if !log_existed {
+            self.emit_session_created(session_key);
+        }
         if let Some(ref store) = self.session_store {
             store.add_message(session_key, "user", &msg.content);
         }
@@ -4954,6 +5009,9 @@ impl AgentLoop {
         // T6（多模态）：user 行带图片路径引用（只存路径不落字节）。
         // E3：user 行带 `checkpoint_turn` 标记（本 turn begin 的序号随
         // admission 穿针而来）——消息级回退的行→turn 定位锚。
+        // SB（2026-09-17）：首行落盘 = 会话物化 → 发布 SessionCreated 让
+        // 前端会话列表即时出现（零会话冷启动发消息场景）。
+        let log_existed = Self::session_log_exists_before_append(session_key);
         crate::chat_log::append_chat_log_meta(
             session_key,
             "user",
@@ -4967,6 +5025,9 @@ impl AgentLoop {
                 checkpoint_turn: cp_turn,
             },
         );
+        if !log_existed {
+            self.emit_session_created(session_key);
+        }
         // D3：本 turn 声明式文件工具变更随 assistant 行落盘（消息↔文件
         // 变更映射；M3 会话级 diff 查看器的数据源）。drain 即清（下 turn
         // 从空开始）；去重规则见 `chat_log::dedup_file_changes`。
@@ -5984,10 +6045,77 @@ impl AgentLoop {
                         .iter()
                         .any(|k| err_lower.contains(k));
 
+                        // ③a 429 限流重试环（2026-09-17 BUG 文档裁决④⑧）：
+                        // 分类词表对齐 provider 侧。与 context-compression 环
+                        // 互斥（限流文案不含 token/context/length/invalid），
+                        // 与 transient 词表不重叠——三环不互吞。
+                        let is_rate_limit_error = RATE_LIMIT_ERROR_KEYWORDS
+                            .iter()
+                            .any(|k| err_lower.contains(k));
+
                         let mut last_err = err.clone();
                         let mut maybe_resp: Option<LlmResponse> = None;
 
-                        if is_transient_error {
+                        if is_rate_limit_error {
+                            let max_retries = self.current_rate_limit_retries().max(0) as u32;
+                            let mut retries = 0u32;
+                            while retries < max_retries {
+                                retries += 1;
+                                let wait = rate_limit_wait_secs(&last_err, retries);
+                                // 裁决③「显式进度」：每次重试对用户可见；B 端
+                                // outbound_tx 未装配 → 静默重试。
+                                self.send_retry_progress(
+                                    context,
+                                    format!(
+                                        "⏳ 上游限流（{}），第 {retries}/{max_retries} 次重试，等待 {wait} 秒…",
+                                        self.current_display_model()
+                                    ),
+                                )
+                                .await;
+                                info!(
+                                    "[AgentLoop] LLM rate limited, retry {retries}/{max_retries} in {wait}s: {}",
+                                    last_err
+                                );
+                                tokio::time::sleep(std::time::Duration::from_secs(wait)).await;
+                                // 消息 + tool_defs 重建（首捕值已随失败调用
+                                // move，同 transient 环纪律）。
+                                let r_msgs = self.build_messages(instance);
+                                let r_tools: Vec<crate::types::ToolDefinition> = self
+                                    .tools
+                                    .read()
+                                    .iter()
+                                    .map(|(name, tool)| crate::types::ToolDefinition {
+                                        tool_type: "function".to_string(),
+                                        function: crate::types::ToolFunctionDef {
+                                            name: name.clone(),
+                                            description: tool.description(),
+                                            parameters: tool.parameters(),
+                                        },
+                                    })
+                                    .collect();
+                                match active_provider
+                                    .chat(&active_model, r_msgs, Some(chat_opts.clone()), r_tools)
+                                    .await
+                                {
+                                    Ok(resp) => {
+                                        maybe_resp = Some(resp);
+                                        break;
+                                    }
+                                    Err(e) => {
+                                        last_err = e;
+                                        warn!(
+                                            "[AgentLoop] rate-limit retry {retries}/{max_retries} failed: {}",
+                                            last_err
+                                        );
+                                    }
+                                }
+                            }
+                            if maybe_resp.is_none() {
+                                // 裁决④「终局诚实」：结构化标注，不再裸抛
+                                // 原始错误。
+                                last_err = format!("上游限流，已重试 {retries} 次：{}", last_err);
+                            }
+                        } else if is_transient_error {
                             info!(
                                 "[AgentLoop] LLM transient error, retrying up to {} times: {}",
                                 MAX_TRANSIENT_RETRIES, last_err
@@ -6003,6 +6131,14 @@ impl AgentLoop {
                             let mut retries = 0u32;
                             while retries < MAX_TRANSIENT_RETRIES {
                                 retries += 1;
+                                // 429 文档关联隐患 1（可重试类统一设计）：transient
+                                // 环加 1s/2s/4s 小退避——此前无 sleep 立即重发，
+                                // 对上游抖动基本无效。测试经 tokio start_paused
+                                // 自动推进，零等待。
+                                tokio::time::sleep(std::time::Duration::from_secs(
+                                    1u64 << (retries - 1).min(2),
+                                ))
+                                .await;
                                 let r_msgs = self.build_messages(instance);
                                 let r_tools: Vec<crate::types::ToolDefinition> = self
                                     .tools
@@ -7439,6 +7575,31 @@ impl AgentLoop {
         .unwrap_or_default()
     }
 
+    /// SB（2026-09-17）：会话物化事件——`session_key` 的 jsonl 首行落盘后
+    /// 发布 SessionCreated（web pump → SSE `session.created` + WS push），
+    /// 前端 force 刷新会话列表（修「首条消息隐式创建的会话不进侧栏，须
+    /// 手动刷新」）。调用点必须在 append **前**取 exists、append 后发布；
+    /// agent_event_tx 未装配（B 端 worker 等）为 no-op。
+    fn emit_session_created(&self, session_key: &str) {
+        if let Some(ref tx) = *self.agent_event_tx.read() {
+            let session_id = session_key
+                .rsplit(':')
+                .next()
+                .unwrap_or(session_key)
+                .to_string();
+            let _ = tx.send(nemesis_types::agent::AgentEvent::SessionCreated {
+                session_id,
+                session_key: session_key.to_string(),
+            });
+        }
+    }
+
+    /// SB：user 行落盘的标准前置——返回落盘前 jsonl 是否已存在（调用方在
+    /// append 后据 false 发布 SessionCreated）。
+    fn session_log_exists_before_append(session_key: &str) -> bool {
+        crate::chat_log::chat_log_exists(session_key)
+    }
+
     /// J5 (devtool-upgrade 阶段 6)：`agents.doom_loop_approval` fresh-read
     /// （F8 `current_hidden_tools` 同款模式——config.json 是唯一真相源，每次
     /// escalation 现读，运行时改键下一轮生效，无需重启）。无 config_path /
@@ -7476,6 +7637,49 @@ impl AgentLoop {
                     .and_then(|b| b.as_bool())
             })
             .unwrap_or(true)
+    }
+
+    /// 429 重试环（裁决④）：`agents.defaults.rate_limit_retries` fresh-read
+    /// （F8 模式——config.json 唯一真相源，改键下一轮生效）。无 config_path /
+    /// 解析失败 = 默认 10（default_rate_limit_retries 同源口径）。
+    pub(crate) fn current_rate_limit_retries(&self) -> i64 {
+        let path = match self.config_path.read().clone() {
+            Some(p) => p,
+            None => return 10,
+        };
+        std::fs::read_to_string(&path)
+            .ok()
+            .and_then(|s| serde_json::from_str::<serde_json::Value>(&s).ok())
+            .and_then(|v| {
+                v.get("agents")
+                    .and_then(|a| a.get("defaults"))
+                    .and_then(|d| d.get("rate_limit_retries"))
+                    .and_then(|n| n.as_i64())
+            })
+            .unwrap_or(10)
+    }
+
+    /// 429 重试进度对用户可见（裁决③「显式进度」）——经 outbound_tx 直发
+    /// 一条状态文本；不置 sent_in_round、不影响终局回复发布。tx 未装配
+    /// （B 端 worker 等场景）静默重试。
+    async fn send_retry_progress(&self, context: &RequestContext, text: String) {
+        if let Some(ref tx) = self.outbound_tx {
+            let outbound = nemesis_types::channel::OutboundMessage {
+                channel: context.channel.clone(),
+                chat_id: context.chat_id.clone(),
+                content: text,
+                message_type: String::new(),
+                meta: nemesis_types::channel::OutboundMeta {
+                    model: Some(self.current_display_model()),
+                    // L2：会话键随行（web 通道按会话记录，进度条也进历史）。
+                    session_key: (!context.session_key.is_empty())
+                        .then(|| context.session_key.clone()),
+                },
+            };
+            if let Err(e) = tx.send(outbound).await {
+                warn!("[AgentLoop] Failed to send retry progress: {}", e);
+            }
+        }
     }
 
     /// J5：doom-loop 审批卡。经 [`Self::question_asker`]（F7 同源 broker 的
@@ -9324,10 +9528,19 @@ impl AgentLoop {
         let env_hint = "platform: windows\ndefault_shell: cmd\ntime_cmd: use `date /t` or `echo %date% %time%` or PowerShell `Get-Date`";
         #[cfg(not(target_os = "windows"))]
         let env_hint = "platform: unix\ndefault_shell: sh\ntime_cmd: use `date`";
-        let snapshot_section = format!(
-            "# Current Time / Environment snapshot\n{}\n# Environment\n{}\n(本快照取代之前的时间/环境快照)",
+        // FT（2026-09-17）：Environment 快照注入工作区绝对路径——治「模型
+        // 不知道工作区在哪」的提示词半边（工具层相对路径锚定是另一半）。
+        // 路径整个会话不变 → 字节稳定纪律成立（不触发重注入）。
+        let mut snapshot_section = format!(
+            "# Current Time / Environment snapshot\n{}\n# Environment\n{}",
             now, env_hint
         );
+        if let Some(ref root) = *self.workspace_root.read()
+            && !root.as_os_str().is_empty()
+        {
+            snapshot_section.push_str(&format!("\nworkspace: {}", root.display()));
+        }
+        snapshot_section.push_str("\n(本快照取代之前的时间/环境快照)");
 
         // T5/T6（多模态）：turn → 请求消息统一走 `turn_to_request_message`
         // （与 replay 重建共用；image_refs 每轮水合重读，失效 → 占位文本）。
@@ -10638,5 +10851,9 @@ mod i5_open_files_tests;
 // 快照构造的合法消息序列 + B 端变更摘要渲染封顶/溢出注记）。
 #[cfg(test)]
 mod k4_user_dispatch_tests;
+// 429 限流重试环测试（2026-09-17 BUG 文档裁决④⑧：阶梯 + Retry-After 取
+// max + 显式进度 + 终局诚实 + 与 context/transient 环互斥）。
+#[cfg(test)]
+mod rate_limit_retry_tests;
 #[cfg(test)]
 mod tests;

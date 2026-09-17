@@ -18,12 +18,15 @@
  * 「已移除」灰组（纯前端派生，零后端状态：可浏览/可删，不可新建——
  * 发送由后端诚实报错）。归属不可变投影：会话行没有「移动到别的项目」操作。
  */
-import { onMounted, computed, ref } from 'vue'
+import { onMounted, onUnmounted, computed, ref } from 'vue'
 import { useRouter } from 'vue-router'
 import { useSessionStore } from '../stores/session'
 import { useToast } from '../composables/useToast'
 import { useChatApi } from '../composables/useChatApi'
 import { useFileTreePanel } from '../composables/useFileTreePanel'
+// SB（2026-09-17）：订阅 `session.created`（会话 jsonl 首行落盘）→ force
+// 刷新列表——修「零会话发消息隐式创建的会话不进侧栏，须手动刷新」。
+import { on as onSSE, off as offSSE } from '../composables/useSSE'
 // M5 (2026-09-05): 会话用量小字（sessions.list 回填的 tokens/cost）——
 // 格式化与 ChatPanel 常驻条共用同一 helper。
 import { fmtUsageLine as usage } from '../composables/useUsageFormat'
@@ -362,6 +365,17 @@ onMounted(async () => {
   await sessionStore.fetchList()
   // L6++：项目注册表（组头数据源；失败静默退化，见 store 注释）。
   await sessionStore.fetchProjects()
+  // SB（2026-09-17）：会话物化事件 → force 刷新（绕过 5s 缓存——事件就是
+  // 「列表已过期」的信号）。事件丢失由 ChatPanel 的 receive 帧兜底补拉。
+  onSSE('session.created', onSessionCreated)
+})
+
+function onSessionCreated(_data: any) {
+  void sessionStore.fetchList(true)
+}
+
+onUnmounted(() => {
+  offSSE('session.created', onSessionCreated)
 })
 
 function select(id: string) {

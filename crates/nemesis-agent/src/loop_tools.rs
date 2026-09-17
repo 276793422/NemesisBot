@@ -171,8 +171,38 @@ impl Tool for MessageTool {
     }
 }
 
+/// FT（2026-09-17）：文件工具路径解析统一入口——带界时过
+/// [`validate_workspace_path`]（相对路径 join 工作区根 + restrict 边界闸，
+/// 锚定与限制正交：restrict=false 时相对路径同样锚定到工作区根），无界时
+/// 保持旧行为（按进程 cwd 解析，基线/测试形态）。读族（read/list/delete/
+/// create_dir/delete_dir）此前不走本入口，exe 直启（cwd=部署目录）形态下
+/// 相对路径全部 File not found，且 restrict=true 时无第二道闸。
+fn resolve_tool_path(path: &str, boundary: Option<&WorkspaceBoundary>) -> Result<PathBuf, String> {
+    match boundary {
+        Some(b) => validate_workspace_path(path, b),
+        None => Ok(PathBuf::from(path)),
+    }
+}
+
 /// A tool that reads the contents of a file from disk.
-pub struct ReadFileTool;
+///
+/// FT（2026-09-17）：可携带工作区边界（`with_boundary`，生产形态）——
+/// 相对路径锚定工作区根 + restrict 时工作区外拒绝（与写族
+/// [`WriteFileTool`] 同型）。`default()` 无界（基线注册/测试形态，行为同
+/// 边界引入前）。
+#[derive(Default)]
+pub struct ReadFileTool {
+    boundary: Option<Arc<WorkspaceBoundary>>,
+}
+
+impl ReadFileTool {
+    /// 带工作区边界的生产形态。
+    pub fn with_boundary(boundary: Arc<WorkspaceBoundary>) -> Self {
+        Self {
+            boundary: Some(boundary),
+        }
+    }
+}
 
 #[async_trait]
 impl Tool for ReadFileTool {
@@ -203,19 +233,19 @@ impl Tool for ReadFileTool {
 
     async fn execute(&self, args: &str, _context: &RequestContext) -> Result<String, String> {
         let path = extract_path(args)?;
-        let path = Path::new(&path);
+        let path = resolve_tool_path(&path, self.boundary.as_deref())?;
 
         if !path.exists() {
             return Err(format!("File not found: {}", path.display()));
         }
 
-        let content = match tokio::fs::read_to_string(path).await {
+        let content = match tokio::fs::read_to_string(&path).await {
             Ok(c) => c,
             // A8（2026-09-04 devtool-upgrade）：非 UTF-8 → magic byte 二进制
             // 分支（图片提示走 vision 附加正道 / PDF 诚实说明 / 其他报字节
             // 数），不再一律报错让模型反复重试。
             Err(e) if e.kind() == std::io::ErrorKind::InvalidData => {
-                return Ok(binary_file_summary(path));
+                return Ok(binary_file_summary(&path));
             }
             Err(e) => return Err(format!("Failed to read file: {}", e)),
         };
@@ -434,7 +464,21 @@ impl Tool for WriteFileTool {
 }
 
 /// A tool that lists the contents of a directory.
-pub struct ListDirectoryTool;
+///
+/// FT（2026-09-17）：可携带工作区边界（同 [`ReadFileTool`] 注记）。
+#[derive(Default)]
+pub struct ListDirectoryTool {
+    boundary: Option<Arc<WorkspaceBoundary>>,
+}
+
+impl ListDirectoryTool {
+    /// 带工作区边界的生产形态。
+    pub fn with_boundary(boundary: Arc<WorkspaceBoundary>) -> Self {
+        Self {
+            boundary: Some(boundary),
+        }
+    }
+}
 
 #[async_trait]
 impl Tool for ListDirectoryTool {
@@ -457,7 +501,7 @@ impl Tool for ListDirectoryTool {
 
     async fn execute(&self, args: &str, _context: &RequestContext) -> Result<String, String> {
         let path = extract_path(args)?;
-        let path = Path::new(&path);
+        let path = resolve_tool_path(&path, self.boundary.as_deref())?;
 
         if !path.exists() {
             return Err(format!("Directory not found: {}", path.display()));
@@ -1134,7 +1178,22 @@ impl Tool for AppendFileTool {
 }
 
 /// A tool that deletes a file from disk.
-pub struct DeleteFileTool;
+///
+/// FT（2026-09-17）：可携带工作区边界（同 [`ReadFileTool`] 注记）——删除是
+/// 破坏性操作，restrict=true 时工作区外路径必须有第二道闸（纵深防御）。
+#[derive(Default)]
+pub struct DeleteFileTool {
+    boundary: Option<Arc<WorkspaceBoundary>>,
+}
+
+impl DeleteFileTool {
+    /// 带工作区边界的生产形态。
+    pub fn with_boundary(boundary: Arc<WorkspaceBoundary>) -> Self {
+        Self {
+            boundary: Some(boundary),
+        }
+    }
+}
 
 #[async_trait]
 impl Tool for DeleteFileTool {
@@ -1148,7 +1207,7 @@ impl Tool for DeleteFileTool {
 
     async fn execute(&self, args: &str, _context: &RequestContext) -> Result<String, String> {
         let path = extract_path(args)?;
-        let path = Path::new(&path);
+        let path = resolve_tool_path(&path, self.boundary.as_deref())?;
 
         if !path.exists() {
             return Err(format!("File not found: {}", path.display()));
@@ -1161,7 +1220,7 @@ impl Tool for DeleteFileTool {
             ));
         }
 
-        tokio::fs::remove_file(path)
+        tokio::fs::remove_file(&path)
             .await
             .map_err(|e| format!("Failed to delete file: {}", e))?;
 
@@ -1178,7 +1237,21 @@ impl Tool for DeleteFileTool {
 }
 
 /// A tool that creates a directory (and all parent directories).
-pub struct CreateDirTool;
+///
+/// FT（2026-09-17）：可携带工作区边界（同 [`ReadFileTool`] 注记）。
+#[derive(Default)]
+pub struct CreateDirTool {
+    boundary: Option<Arc<WorkspaceBoundary>>,
+}
+
+impl CreateDirTool {
+    /// 带工作区边界的生产形态。
+    pub fn with_boundary(boundary: Arc<WorkspaceBoundary>) -> Self {
+        Self {
+            boundary: Some(boundary),
+        }
+    }
+}
 
 #[async_trait]
 impl Tool for CreateDirTool {
@@ -1192,7 +1265,7 @@ impl Tool for CreateDirTool {
 
     async fn execute(&self, args: &str, _context: &RequestContext) -> Result<String, String> {
         let path = extract_path(args)?;
-        let path = Path::new(&path);
+        let path = resolve_tool_path(&path, self.boundary.as_deref())?;
 
         if path.exists() {
             return Err(format!("Path already exists: {}", path.display()));
@@ -1207,7 +1280,22 @@ impl Tool for CreateDirTool {
 }
 
 /// A tool that removes a directory.
-pub struct DeleteDirTool;
+///
+/// FT（2026-09-17）：可携带工作区边界（同 [`ReadFileTool`] 注记）——删除是
+/// 破坏性操作，restrict=true 时工作区外路径必须有第二道闸（纵深防御）。
+#[derive(Default)]
+pub struct DeleteDirTool {
+    boundary: Option<Arc<WorkspaceBoundary>>,
+}
+
+impl DeleteDirTool {
+    /// 带工作区边界的生产形态。
+    pub fn with_boundary(boundary: Arc<WorkspaceBoundary>) -> Self {
+        Self {
+            boundary: Some(boundary),
+        }
+    }
+}
 
 #[async_trait]
 impl Tool for DeleteDirTool {
@@ -1221,7 +1309,7 @@ impl Tool for DeleteDirTool {
 
     async fn execute(&self, args: &str, _context: &RequestContext) -> Result<String, String> {
         let path = extract_path(args)?;
-        let path = Path::new(&path);
+        let path = resolve_tool_path(&path, self.boundary.as_deref())?;
 
         if !path.exists() {
             return Err(format!("Directory not found: {}", path.display()));
@@ -5133,10 +5221,22 @@ impl Tool for GrepTool {
             serde_json::from_str(args).map_err(|e| format!("Invalid JSON: {}", e))?;
         let pattern = v["pattern"].as_str().ok_or("missing 'pattern'")?;
         let re = regex::Regex::new(pattern).map_err(|e| format!("invalid regex: {}", e))?;
-        let root = v["path"]
-            .as_str()
-            .map(|s| s.to_string())
-            .unwrap_or_else(|| self.workspace.clone());
+        // FT（2026-09-17）：相对 path 锚定工作区根——此前只有缺省时回退
+        // workspace，显式相对子目录按进程 cwd 解析（exe 直启形态下搜错树）。
+        let root = match v["path"].as_str() {
+            Some(s) if !s.is_empty() => {
+                let p = Path::new(s);
+                if p.is_absolute() {
+                    s.to_string()
+                } else {
+                    Path::new(&self.workspace)
+                        .join(p)
+                        .to_string_lossy()
+                        .to_string()
+                }
+            }
+            _ => self.workspace.clone(),
+        };
         let glob = v["glob"].as_str();
         let max = v["max_results"].as_u64().unwrap_or(50) as usize;
         let mut out: Vec<String> = Vec::new();
@@ -5563,18 +5663,24 @@ impl Tool for SPITool {
 pub fn register_default_tools() -> HashMap<String, Box<dyn Tool>> {
     let mut tools: HashMap<String, Box<dyn Tool>> = HashMap::new();
     tools.insert("message".to_string(), Box::new(MessageTool::new()));
-    tools.insert("read_file".to_string(), Box::new(ReadFileTool));
+    tools.insert("read_file".to_string(), Box::new(ReadFileTool::default()));
     tools.insert("write_file".to_string(), Box::new(WriteFileTool::default()));
-    tools.insert("list_dir".to_string(), Box::new(ListDirectoryTool));
+    tools.insert(
+        "list_dir".to_string(),
+        Box::new(ListDirectoryTool::default()),
+    );
     tools.insert("edit_file".to_string(), Box::new(EditFileTool::default()));
     tools.insert("multiedit".to_string(), Box::new(MultiEditTool::default()));
     tools.insert(
         "append_file".to_string(),
         Box::new(AppendFileTool::default()),
     );
-    tools.insert("delete_file".to_string(), Box::new(DeleteFileTool));
-    tools.insert("create_dir".to_string(), Box::new(CreateDirTool));
-    tools.insert("delete_dir".to_string(), Box::new(DeleteDirTool));
+    tools.insert(
+        "delete_file".to_string(),
+        Box::new(DeleteFileTool::default()),
+    );
+    tools.insert("create_dir".to_string(), Box::new(CreateDirTool::default()));
+    tools.insert("delete_dir".to_string(), Box::new(DeleteDirTool::default()));
     tools.insert("sleep".to_string(), Box::new(SleepTool));
     tools
 }
@@ -6655,6 +6761,9 @@ pub fn register_shared_tools(config: &SharedToolConfig) -> HashMap<String, Box<d
     // A5（2026-09-04）：配置了工作区边界时，write/edit/append 换成带界的
     // 生产形态（纵深防御，不单靠安全 8 层管线）。无界（测试 / 基线注册）
     // 保持 register_default_tools 的默认形态。
+    // FT（2026-09-17）：读族 5 工具（read_file/list_dir/delete_file/
+    // create_dir/delete_dir）同批换带界形态——相对路径锚定工作区根 +
+    // restrict 时第二道闸（delete 族是破坏性操作，此前完全无闸）。
     if let Some(ref boundary) = config.workspace_boundary {
         tools.insert(
             "write_file".to_string(),
@@ -6671,6 +6780,26 @@ pub fn register_shared_tools(config: &SharedToolConfig) -> HashMap<String, Box<d
         tools.insert(
             "append_file".to_string(),
             Box::new(AppendFileTool::with_boundary(boundary.clone())),
+        );
+        tools.insert(
+            "read_file".to_string(),
+            Box::new(ReadFileTool::with_boundary(boundary.clone())),
+        );
+        tools.insert(
+            "list_dir".to_string(),
+            Box::new(ListDirectoryTool::with_boundary(boundary.clone())),
+        );
+        tools.insert(
+            "delete_file".to_string(),
+            Box::new(DeleteFileTool::with_boundary(boundary.clone())),
+        );
+        tools.insert(
+            "create_dir".to_string(),
+            Box::new(CreateDirTool::with_boundary(boundary.clone())),
+        );
+        tools.insert(
+            "delete_dir".to_string(),
+            Box::new(DeleteDirTool::with_boundary(boundary.clone())),
         );
     }
 

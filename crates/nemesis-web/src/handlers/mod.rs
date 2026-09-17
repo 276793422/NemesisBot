@@ -32,6 +32,10 @@ pub mod mcp;
 #[cfg(feature = "memory")]
 pub mod memory;
 pub mod models;
+// CD6（2026-09-17）：发件箱死信面 WSAPI（dead_list / dead_replay）。状态全
+// 在磁盘，重放只需 workspace 根；feature 门随 nemesis-cluster 依赖。
+#[cfg(feature = "cluster")]
+pub mod outbox;
 pub mod persona;
 pub mod plugins;
 // L6++ G4（2026-09-08）：项目注册表 WSAPI（projects.list/create/remove/
@@ -202,6 +206,9 @@ pub fn register_all(router: &mut crate::ws_router::WsRouter) {
     }
     router.register(Arc::new(persona::PersonaHandler::new()));
     router.register(Arc::new(sessions::SessionsHandler));
+    // CD6（2026-09-17）：发件箱死信面（列表 + 手动重放）。
+    #[cfg(feature = "cluster")]
+    router.register(Arc::new(outbox::OutboxHandler));
     // L6++ G4（2026-09-08）：项目注册表 WSAPI（bridge 未装配时诚实报错）。
     router.register(Arc::new(projects::ProjectsHandler));
     #[cfg(feature = "workflow")]

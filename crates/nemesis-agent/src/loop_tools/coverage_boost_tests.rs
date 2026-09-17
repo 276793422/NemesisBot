@@ -89,7 +89,7 @@ async fn test_message_tool_rpc_formatting() {
 
 #[tokio::test]
 async fn test_read_file_not_found() {
-    let tool = ReadFileTool;
+    let tool = ReadFileTool::default();
     let ctx = RequestContext::new("web", "chat1", "user1", "sess1");
 
     let args = serde_json::json!({ "path": "/nonexistent/file.txt" }).to_string();
@@ -126,7 +126,7 @@ async fn test_list_directory_not_directory() {
     let file_path = tmp.path().join("not_a_dir.txt");
     tokio::fs::write(&file_path, "content").await.unwrap();
 
-    let tool = ListDirectoryTool;
+    let tool = ListDirectoryTool::default();
     let ctx = RequestContext::new("web", "chat1", "user1", "sess1");
 
     let args = serde_json::json!({ "path": file_path }).to_string();
@@ -138,7 +138,7 @@ async fn test_list_directory_not_directory() {
 
 #[tokio::test]
 async fn test_list_directory_not_found() {
-    let tool = ListDirectoryTool;
+    let tool = ListDirectoryTool::default();
     let ctx = RequestContext::new("web", "chat1", "user1", "sess1");
 
     let args = serde_json::json!({ "path": "/nonexistent/directory" }).to_string();
@@ -151,7 +151,7 @@ async fn test_list_directory_not_found() {
 #[tokio::test]
 async fn test_list_empty_directory() {
     let tmp = TempDir::new().unwrap();
-    let tool = ListDirectoryTool;
+    let tool = ListDirectoryTool::default();
     let ctx = RequestContext::new("web", "chat1", "user1", "sess1");
 
     let args = serde_json::json!({ "path": tmp.path() }).to_string();
@@ -328,7 +328,7 @@ mod file_tool_edge_cases {
 
     #[tokio::test]
     async fn test_read_file_permission_error() {
-        let tool = ReadFileTool;
+        let tool = ReadFileTool::default();
         let ctx = RequestContext::new("web", "chat1", "user1", "sess1");
 
         // Try to read a system directory that should be inaccessible
@@ -359,7 +359,7 @@ mod file_tool_edge_cases {
             .unwrap();
         }
 
-        let tool = ListDirectoryTool;
+        let tool = ListDirectoryTool::default();
         let ctx = RequestContext::new("web", "chat1", "user1", "sess1");
 
         let args = serde_json::json!({ "path": tmp.path() }).to_string();

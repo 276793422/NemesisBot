@@ -119,6 +119,7 @@ fn test_disk_recovery_on_startup() {
     ])
     .unwrap();
     let snapshot = ContinuationSnapshot {
+        final_persisted: false,
         task_id: "task-recover".to_string(),
         messages: messages_json,
         tool_call_id: "tc_r".to_string(),
@@ -145,6 +146,7 @@ async fn test_disk_store_save_and_load() {
     let store = ContinuationStore::new(tmp.path());
 
     let snapshot = ContinuationSnapshot {
+        final_persisted: false,
         task_id: "task-100".to_string(),
         messages: r#"[{"role":"user","content":"hello"}]"#.to_string(),
         tool_call_id: "tc_100".to_string(),
@@ -169,6 +171,7 @@ async fn test_disk_store_delete() {
     let store = ContinuationStore::new(tmp.path());
 
     let snapshot = ContinuationSnapshot {
+        final_persisted: false,
         task_id: "task-del".to_string(),
         messages: "[]".to_string(),
         tool_call_id: "tc_del".to_string(),
@@ -258,6 +261,7 @@ async fn test_overwrite_continuation() {
 #[test]
 fn test_continuation_snapshot_serialization() {
     let snapshot = ContinuationSnapshot {
+        final_persisted: false,
         task_id: "task-ser".to_string(),
         messages: r#"[{"role":"user","content":"hello"}]"#.to_string(),
         tool_call_id: "tc_ser".to_string(),
@@ -381,6 +385,7 @@ fn test_continuation_store_list_pending_with_snapshots() {
 
     for i in 0..3 {
         let snapshot = ContinuationSnapshot {
+            final_persisted: false,
             task_id: format!("task-list-{}", i),
             messages: "[]".to_string(),
             tool_call_id: format!("tc_{}", i),
@@ -406,6 +411,7 @@ fn test_continuation_store_list_pending_with_snapshots() {
 #[test]
 fn test_continuation_snapshot_clone() {
     let snapshot = ContinuationSnapshot {
+        final_persisted: false,
         task_id: "task-clone".to_string(),
         messages: r#"[]"#.to_string(),
         tool_call_id: "tc_c".to_string(),
@@ -522,6 +528,7 @@ fn test_continuation_store_save_overwrite() {
     let store = ContinuationStore::new(tmp.path());
 
     let snapshot1 = ContinuationSnapshot {
+        final_persisted: false,
         task_id: "task-ov".to_string(),
         messages: r#"[]"#.to_string(),
         tool_call_id: "tc_1".to_string(),
@@ -536,6 +543,7 @@ fn test_continuation_store_save_overwrite() {
     store.save(&snapshot1).unwrap();
 
     let snapshot2 = ContinuationSnapshot {
+        final_persisted: false,
         task_id: "task-ov".to_string(),
         messages: r#"[]"#.to_string(),
         tool_call_id: "tc_2".to_string(),
@@ -623,6 +631,7 @@ fn test_continuation_store_recover_skips_already_loaded() {
 
     // Save a snapshot
     let snapshot = ContinuationSnapshot {
+        final_persisted: false,
         task_id: "task-skip".to_string(),
         messages: r#"[{"role":"user","content":"hello"}]"#.to_string(),
         tool_call_id: "tc_skip".to_string(),
@@ -664,6 +673,7 @@ fn test_continuation_store_recover_corrupted_messages() {
 
     // Write a snapshot with invalid messages JSON
     let snapshot = ContinuationSnapshot {
+        final_persisted: false,
         task_id: "task-bad-msg".to_string(),
         messages: "not valid json array".to_string(),
         tool_call_id: "tc_bad".to_string(),
@@ -1078,6 +1088,7 @@ fn test_continuation_tool_result_fields() {
 #[test]
 fn test_continuation_snapshot_created_at() {
     let snapshot = ContinuationSnapshot {
+        final_persisted: false,
         task_id: "t1".to_string(),
         messages: "[]".to_string(),
         tool_call_id: "tc1".to_string(),
@@ -1232,6 +1243,7 @@ fn test_disk_persistence_load_from_disk() {
     let messages = vec![make_message("user", "disk test")];
     let messages_json = serde_json::to_string(&messages).unwrap();
     let snapshot = ContinuationSnapshot {
+        final_persisted: false,
         task_id: "task-disk-load".to_string(),
         messages: messages_json,
         tool_call_id: "tc_dl".to_string(),
@@ -1256,6 +1268,7 @@ async fn test_disk_store_remove_and_verify() {
     let store = ContinuationStore::new(tmp.path());
 
     let snapshot = ContinuationSnapshot {
+        final_persisted: false,
         task_id: "task-rm".to_string(),
         messages: "[]".to_string(),
         tool_call_id: "tc_rm".to_string(),
@@ -1911,6 +1924,7 @@ async fn test_load_continuation_falls_back_to_disk() {
     let store = ContinuationStore::new(tmp.path());
     let messages_json = serde_json::to_string(&vec![make_message("user", "disk")]).unwrap();
     let snap = ContinuationSnapshot {
+        final_persisted: false,
         task_id: "task-disk-only".to_string(),
         messages: messages_json,
         tool_call_id: "tc_d".to_string(),
@@ -1972,6 +1986,7 @@ async fn recover_from_disk_inside_async_runtime_does_not_panic() {
     let store = ContinuationStore::new(&workspace);
     let task_id = format!("bug45-{}", std::process::id());
     let snapshot = ContinuationSnapshot {
+        final_persisted: false,
         task_id: task_id.clone(),
         messages: r#"[{"role":"user","content":"cluster rpc in flight"}]"#.to_string(),
         tool_call_id: "tc_bug45".to_string(),
@@ -2193,6 +2208,7 @@ fn snap(task: &str) -> ContinuationSnapshot {
         peer_id: String::new(),
         image_refs: Vec::new(),
         image_refs_by_user_turn: Vec::new(), // L1
+        final_persisted: false,
     }
 }
 
@@ -2681,6 +2697,7 @@ async fn t6_disk_fallback_load_rehydrates_refs() {
         peer_id: String::new(),
         image_refs: refs.clone(),
         image_refs_by_user_turn: Vec::new(), // L1
+        final_persisted: false,
         created_at: "2026-09-03T00:00:00Z".to_string(),
     };
     ContinuationStore::new(tmp.path())
@@ -2728,6 +2745,7 @@ async fn t6_disk_load_deleted_file_degrades_to_placeholder() {
         peer_id: String::new(),
         image_refs: refs.clone(),
         image_refs_by_user_turn: Vec::new(), // L1
+        final_persisted: false,
         created_at: "2026-09-03T00:00:00Z".to_string(),
     };
     ContinuationStore::new(tmp.path())
@@ -2948,6 +2966,7 @@ async fn l1_legacy_flat_refs_still_rehydrate_last_turn() {
         peer_id: String::new(),
         image_refs: vec![png.to_string_lossy().to_string()],
         image_refs_by_user_turn: Vec::new(),
+        final_persisted: false,
         created_at: "2026-09-01T00:00:00Z".to_string(),
     };
     store.save(&snapshot).unwrap();
@@ -3309,5 +3328,85 @@ fn merge_keeps_existing_real_result_over_late_not_found() {
     assert_eq!(
         merged[2].content, "kangjinlong\nFilesystem ... 366G",
         "盘上真实结果保留，not-found 被拒"
+    );
+}
+
+// HD（2026-09-17）：续行重投递幂等闸——final_persisted 打标的磁盘快照在
+// 重投递时必须直接收尾（不重跑 LLM、不重发回复、快照回收）。
+#[tokio::test]
+async fn test_handle_cluster_continuation_final_persisted_flag_skips_rerun() {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    struct MustNotBeCalled {
+        calls: AtomicUsize,
+    }
+    #[async_trait]
+    impl LlmProvider for MustNotBeCalled {
+        async fn chat(
+            &self,
+            _model: &str,
+            _messages: Vec<LlmMessage>,
+            _options: Option<crate::types::ChatOptions>,
+            _tools: Vec<crate::types::ToolDefinition>,
+        ) -> Result<LlmResponse, String> {
+            self.calls.fetch_add(1, Ordering::SeqCst);
+            Err("provider must not be called on flagged replay".to_string())
+        }
+    }
+
+    let tmp = TempDir::new().unwrap();
+    let manager = ContinuationManager::with_disk_store(tmp.path());
+    let (outbound_tx, mut outbound_rx) = tokio::sync::mpsc::channel(16);
+
+    // 磁盘快照：final_persisted=true（模拟「已落库、崩溃在快照回收前」）。
+    let store = ContinuationStore::new(tmp.path());
+    let messages = serde_json::to_string(&vec![make_message("user", "Hello")]).unwrap();
+    let snapshot = ContinuationSnapshot {
+        task_id: "task-flagged".to_string(),
+        messages,
+        tool_call_id: "tc_f".to_string(),
+        channel: "web".to_string(),
+        chat_id: "chat1".to_string(),
+        created_at: chrono::Local::now().to_rfc3339(),
+        session_key: "test_session".to_string(),
+        peer_id: String::new(),
+        image_refs: Vec::new(),
+        image_refs_by_user_turn: Vec::new(), // L1
+        final_persisted: true,
+    };
+    store.save(&snapshot).unwrap();
+
+    let provider = MustNotBeCalled {
+        calls: AtomicUsize::new(0),
+    };
+    handle_cluster_continuation(
+        &manager,
+        "task-flagged",
+        "task response",
+        false,
+        None,
+        &provider,
+        "test-model",
+        &HashMap::<String, Arc<dyn Tool>>::new(),
+        &outbound_tx,
+        None,
+        None,
+        true, // F-F vision_supported
+    )
+    .await;
+
+    // 幂等闸生效：LLM 未被重跑、回复未重发、快照已回收。
+    assert_eq!(
+        provider.calls.load(Ordering::SeqCst),
+        0,
+        "打标快照不得重跑 LLM"
+    );
+    assert!(
+        outbound_rx.try_recv().is_err(),
+        "重投递不得重发最终回复（前端成对重复的后端窗口）"
+    );
+    assert!(
+        store.load("task-flagged").is_err(),
+        "快照应已被 finish_handling 回收"
     );
 }

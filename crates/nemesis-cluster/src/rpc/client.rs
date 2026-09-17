@@ -234,6 +234,11 @@ pub struct RpcClient {
     auth_token: Mutex<Option<String>>,
     /// Peer resolver for looking up addresses.
     resolver: Option<Arc<dyn PeerResolver>>,
+    /// CD6（2026-09-17）：失败 WARN 限频闸（per-peer 60s 一条）——持续失联
+    /// 期间探针/推送/查询的周期性失败调用此前每次都打一条
+    /// `[RpcClient] Call failed`，同一错误刷屏日志（outbox WARN 刷屏的同
+    /// 根缺陷）。状态翻转另有显式 WARN，限频只压重复噪声。
+    warn_gate: crate::discovery::AnnounceWarnGate,
 }
 
 impl RpcClient {
@@ -250,6 +255,7 @@ impl RpcClient {
             timeout: DEFAULT_RPC_TIMEOUT,
             auth_token: Mutex::new(None),
             resolver: None,
+            warn_gate: crate::discovery::AnnounceWarnGate::with_cooldown(Duration::from_secs(60)),
         }
     }
 
@@ -277,6 +283,16 @@ impl RpcClient {
     /// Return the configured timeout.
     pub fn timeout(&self) -> Duration {
         self.timeout
+    }
+
+    /// CD6（2026-09-17）：对端在线状态只读口（resolver 的 per-peer 探针
+    /// 状态）。outbox 健康联动用——离线时暂停推送，省必败 RPC 调用与刷屏
+    /// 日志。`None` = resolver 未配置或节点未知（调用方建议按可推处理，
+    /// 让 fast-fail 诚实暴露）。
+    pub fn is_peer_online(&self, peer_id: &str) -> Option<bool> {
+        let resolver = self.resolver.as_ref()?;
+        let (_, _, online) = resolver.get_peer_info(peer_id)?;
+        Some(online)
     }
 
     // -- High-level API -------------------------------------------------------
@@ -354,7 +370,11 @@ impl RpcClient {
                 })?;
 
             if require_online && !is_online {
-                tracing::warn!(peer_id = peer_id, "[RpcClient] Peer is offline",);
+                // CD6：同对端失败日志限频（60s 一条）——持续失联期间恢复
+                // 轮询/推送的周期性调用此前每次都打一条，同一错误刷屏。
+                if self.warn_gate.admit(peer_id) {
+                    tracing::warn!(peer_id = peer_id, "[RpcClient] Peer is offline",);
+                }
                 return Err(RpcClientError::Connection(format!(
                     "peer is offline: {}",
                     peer_id
@@ -439,13 +459,18 @@ impl RpcClient {
                 );
             }
             Err(e) => {
-                tracing::warn!(
-                    peer_id = peer_id,
-                    action = ?request.action,
-                    duration_ms = elapsed.as_millis() as u64,
-                    error = %e,
-                    "[RpcClient] Call failed",
-                );
+                // CD6：同对端失败日志限频（60s 一条）——持续失联期间的探针
+                // /推送失败周期性刷屏点。状态翻转（Offline/Online）另有
+                // cluster 层显式 WARN，限频只压重复噪声。
+                if self.warn_gate.admit(peer_id) {
+                    tracing::warn!(
+                        peer_id = peer_id,
+                        action = ?request.action,
+                        duration_ms = elapsed.as_millis() as u64,
+                        error = %e,
+                        "[RpcClient] Call failed",
+                    );
+                }
             }
         }
 

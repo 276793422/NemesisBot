@@ -244,13 +244,194 @@ async fn mid_push_failure_keeps_pending_and_retries() {
     assert_eq!(entry.attempts, 1);
     assert!(entry.last_error.as_deref().unwrap().contains("中断"));
 
-    // 重试（不再失败）→ 完成。
+    // CD6：退避窗口已设（15s 起步）→ 下一 tick 跳过，不再发 begin。
+    assert!(entry.next_retry_at.is_some(), "失败必须设置退避窗口（CD6）");
+    ob.process_once().await;
+    assert!(outbox_dir(&ws).join("task-1").exists(), "退避窗口内不重试");
+    assert_eq!(
+        ft.calls_of(ACTION_TRANSFER_BEGIN).len(),
+        1,
+        "退避窗口内不得再发 begin"
+    );
+
+    // 模拟退避窗口过期 → 重试成功。
+    let dir = outbox_dir(&ws).join("task-1");
+    let mut entry: OutboxEntry =
+        serde_json::from_str(&std::fs::read_to_string(dir.join("entry.json")).unwrap()).unwrap();
+    entry.next_retry_at = Some((chrono::Local::now() - chrono::Duration::seconds(1)).to_rfc3339());
+    std::fs::write(
+        dir.join("entry.json"),
+        serde_json::to_string(&entry).unwrap(),
+    )
+    .unwrap();
     ob.process_once().await;
     assert!(!outbox_dir(&ws).join("task-1").exists());
     // 确定性 transfer_id：两轮 begin 的 transfer_id 一致（同内容同块大小）。
     let begins = ft.calls_of(ACTION_TRANSFER_BEGIN);
     assert_eq!(begins.len(), 2);
     assert_eq!(begins[0]["transfer_id"], begins[1]["transfer_id"]);
+}
+
+// ---------------------------------------------------------------------------
+// CD6（2026-09-17 裁决⑨⑩⑪）：退避封顶 + 死信 + 健康联动 + 重放口
+// ---------------------------------------------------------------------------
+
+#[test]
+fn push_backoff_sequence_caps_at_ten_minutes() {
+    // 15s 起步指数爬升 → 600s（10 分钟）封顶（裁决⑩）。
+    let expect = [15u64, 30, 60, 120, 240, 480, 600];
+    for (i, want) in expect.iter().enumerate() {
+        assert_eq!(push_backoff_secs(i as u32 + 1), *want, "attempts={}", i + 1);
+    }
+    assert_eq!(push_backoff_secs(20), 600, "封顶后不再增长");
+    assert_eq!(push_backoff_secs(0), 15, "0 次按首次处理");
+}
+
+#[tokio::test]
+async fn dead_letter_age_gate_parks_entry() {
+    let ws = temp_ws("dead-age");
+    let dir = outbox_dir(&ws).join("task-old");
+    std::fs::create_dir_all(&dir).unwrap();
+    let entry = OutboxEntry {
+        task_id: "task-old".into(),
+        source_node: "node-m".into(),
+        state: "pending".into(),
+        created_at: (chrono::Local::now() - chrono::Duration::days(8)).to_rfc3339(),
+        attempts: 0,
+        total_bytes: 0,
+        last_error: None,
+        next_retry_at: None,
+    };
+    std::fs::write(
+        dir.join("entry.json"),
+        serde_json::to_string(&entry).unwrap(),
+    )
+    .unwrap();
+
+    let ft = FakeTransport::new();
+    let ob = make_outbox(&ws, ft.clone(), limit_from(&Arc::new(AtomicU64::new(0))));
+    ob.process_once().await;
+
+    // age 过 7 天闸 → 转 dead 停车，不推送（裁决⑨）。
+    let entry: OutboxEntry =
+        serde_json::from_str(&std::fs::read_to_string(dir.join("entry.json")).unwrap()).unwrap();
+    assert_eq!(entry.state, "dead");
+    assert!(ft.calls_of(ACTION_TRANSFER_BEGIN).is_empty(), "死信不推送");
+    // 死信不再被推送循环拾取。
+    ob.process_once().await;
+    let entry: OutboxEntry =
+        serde_json::from_str(&std::fs::read_to_string(dir.join("entry.json")).unwrap()).unwrap();
+    assert_eq!(entry.state, "dead");
+}
+
+#[tokio::test]
+async fn dead_letter_attempts_gate_parks_entry() {
+    let ws = temp_ws("dead-attempts");
+    let dir = outbox_dir(&ws).join("task-1000");
+    std::fs::create_dir_all(&dir).unwrap();
+    let entry = OutboxEntry {
+        task_id: "task-1000".into(),
+        source_node: "node-m".into(),
+        state: "pending".into(),
+        created_at: chrono::Local::now().to_rfc3339(),
+        attempts: 1000,
+        total_bytes: 0,
+        last_error: Some("historical".into()),
+        next_retry_at: None,
+    };
+    std::fs::write(
+        dir.join("entry.json"),
+        serde_json::to_string(&entry).unwrap(),
+    )
+    .unwrap();
+
+    let ft = FakeTransport::new();
+    let ob = make_outbox(&ws, ft, limit_from(&Arc::new(AtomicU64::new(0))));
+    ob.process_once().await;
+
+    // attempts 过 1000 闸（先到先死）→ dead。
+    let entry: OutboxEntry =
+        serde_json::from_str(&std::fs::read_to_string(dir.join("entry.json")).unwrap()).unwrap();
+    assert_eq!(entry.state, "dead");
+}
+
+#[tokio::test]
+async fn online_check_offline_skips_without_counting() {
+    let ws = temp_ws("offline-skip");
+    make_task_records(&ws, "node-m", "task-1", "payload");
+    let ft = FakeTransport::new();
+    let ob = make_outbox(&ws, ft.clone(), limit_from(&Arc::new(AtomicU64::new(0))));
+    ob.enqueue("task-1", "node-m").unwrap();
+    // 对端判离线。
+    ob.set_online_check(Box::new(|_peer| false));
+
+    ob.process_once().await;
+
+    // 安静跳过：不推送、不计数、不设退避窗口。
+    assert!(ft.calls_of(ACTION_TRANSFER_BEGIN).is_empty());
+    let dir = outbox_dir(&ws).join("task-1");
+    let entry: OutboxEntry =
+        serde_json::from_str(&std::fs::read_to_string(dir.join("entry.json")).unwrap()).unwrap();
+    assert_eq!(entry.state, "pending");
+    assert_eq!(entry.attempts, 0, "健康联动跳过不得计数");
+    assert!(entry.next_retry_at.is_none(), "健康联动跳过不得推进退避");
+
+    // 回 Online → 下一轮直接送达。
+    ob.set_online_check(Box::new(|_peer| true));
+    ob.process_once().await;
+    assert!(!dir.exists(), "Online 恢复后应正常推送");
+}
+
+#[tokio::test]
+async fn replay_dead_letter_resets_and_repushes() {
+    let ws = temp_ws("replay");
+    let dir = outbox_dir(&ws).join("task-dead");
+    std::fs::create_dir_all(dir.join("payload")).unwrap();
+    std::fs::write(dir.join("payload").join("00.request.md"), "retry-me").unwrap();
+    let entry = OutboxEntry {
+        task_id: "task-dead".into(),
+        source_node: "node-m".into(),
+        state: "dead".into(),
+        created_at: (chrono::Local::now() - chrono::Duration::days(8)).to_rfc3339(),
+        attempts: 1001,
+        total_bytes: 8,
+        last_error: Some("dead letter".into()),
+        next_retry_at: None,
+    };
+    std::fs::write(
+        dir.join("entry.json"),
+        serde_json::to_string(&entry).unwrap(),
+    )
+    .unwrap();
+
+    // 列举可见（Dashboard 死信面）。
+    let dead = list_dead_letter_entries(&outbox_dir(&ws));
+    assert_eq!(dead.len(), 1);
+    assert_eq!(dead[0].task_id, "task-dead");
+
+    // 手动重放：dead → pending，attempts/退避/错误清零。
+    let replayed = replay_dead_letter_entry(&outbox_dir(&ws), "task-dead").unwrap();
+    assert_eq!(replayed.state, "pending");
+    assert_eq!(replayed.attempts, 0);
+    assert!(replayed.next_retry_at.is_none());
+    assert!(replayed.last_error.is_none());
+
+    // 推送循环下个 tick 正常送达（零丢失闭环照常）。
+    let ft = FakeTransport::new();
+    let ob = make_outbox(&ws, ft.clone(), limit_from(&Arc::new(AtomicU64::new(0))));
+    ob.process_once().await;
+    assert!(!dir.exists(), "重放后应正常推送并双删");
+    assert_eq!(ft.calls_of(ACTION_TRANSFER_BEGIN).len(), 1);
+
+    // 非 dead 态重放诚实报错。
+    make_task_records(&ws, "node-m", "task-live", "x");
+    let ob2 = make_outbox(
+        &ws,
+        FakeTransport::new(),
+        limit_from(&Arc::new(AtomicU64::new(0))),
+    );
+    ob2.enqueue("task-live", "node-m").unwrap();
+    assert!(replay_dead_letter_entry(&outbox_dir(&ws), "task-live").is_err());
 }
 
 // ---------------------------------------------------------------------------

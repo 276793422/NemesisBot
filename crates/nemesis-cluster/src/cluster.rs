@@ -126,6 +126,19 @@ pub struct Cluster {
     /// 必须能活读这个槽——探针复活也是「节点发现」（见
     /// `fire_recovered_callback`）。
     on_node_discovered: Arc<Mutex<Option<Arc<dyn Fn(&str, &str, &str) + Send + Sync>>>>,
+
+    /// CD3（2026-09-17）：恢复交付回调。恢复轮询（poll_stale_pending_tasks）
+    /// 从 worker 查回任务结果后、向 worker 发 confirm（删除其本地副本）之前
+    /// 触发；返回 true = 交付完成（可 confirm 删副本），false = 交付失败
+    /// （跳过 confirm，worker 端副本走 7 天 TTL 兜底——宁留勿丢）。
+    ///
+    /// gateway 注入的闭包内部路由：issue_dispatch 反查命中 → 看板写回
+    /// （write_back_board_dispatch）；未命中（chat 任务）→ 交付 = 已发 bus
+    /// 续行帧。路由判断留在 gateway，cluster 不依赖 board。未注册 = 旧行为
+    /// （无条件 confirm）。参数 `(task_id, status, response, error)`，
+    /// error 为 Some 表示 result_status=error。
+    on_recovered_delivery:
+        Arc<Mutex<Option<Arc<dyn Fn(&str, &str, &str, Option<&str>) -> bool + Send + Sync>>>>,
 }
 
 impl Cluster {
@@ -177,6 +190,7 @@ impl Cluster {
             cluster_work_queue: Mutex::new(None),
             call_with_context_fn: Mutex::new(None),
             on_node_discovered: Arc::new(Mutex::new(None)),
+            on_recovered_delivery: Arc::new(Mutex::new(None)),
         }
     }
 
@@ -282,6 +296,7 @@ impl Cluster {
             cluster_work_queue: Mutex::new(None),
             call_with_context_fn: Mutex::new(None),
             on_node_discovered: Arc::new(Mutex::new(None)),
+            on_recovered_delivery: Arc::new(Mutex::new(None)),
         }
     }
 
@@ -672,6 +687,9 @@ impl Cluster {
         let call_fn = self.call_with_context_fn.lock().clone();
         let rpc_client = self.rpc_client.lock().clone();
         let bus = self.bus.clone();
+        // CD3：恢复交付回调槽与 bus 同款——每 tick 快照读取，兼容 set 在
+        // start() 之后的装配顺序。
+        let on_recovered_delivery = self.on_recovered_delivery.clone();
         let safety_net = self.task_manager.pending_timeout();
 
         handle.spawn(async move {
@@ -689,6 +707,8 @@ impl Cluster {
                         // G5: 每 tick 重新读 bus —— set_message_bus 可能在
                         // start() 之后才被调用（gateway 装配顺序）。
                         let bus_snapshot: Option<Arc<dyn MessageBus>> = bus.lock().clone();
+                        // CD3: 交付回调同款每 tick 快照。
+                        let delivery_cb = on_recovered_delivery.lock().clone();
                         poll_stale_pending_tasks(
                             &task_manager,
                             &call_fn,
@@ -696,6 +716,7 @@ impl Cluster {
                             safety_net,
                             bus_snapshot.as_deref(),
                             first_tick,
+                            delivery_cb.as_ref(),
                         ).await;
                         first_tick = false;
                     }
@@ -971,6 +992,16 @@ impl Cluster {
     /// every non-blacklisted discovery/refresh event.
     pub fn set_on_node_discovered(&self, cb: Arc<dyn Fn(&str, &str, &str) + Send + Sync>) {
         *self.on_node_discovered.lock() = Some(cb);
+    }
+
+    /// CD3（2026-09-17）：注册恢复交付回调（语义见字段 doc）。gateway 在
+    /// board+cluster 构建下装配时注入；未注入 = 恢复腿保持旧行为（无条件
+    /// confirm）。
+    pub fn set_on_recovered_delivery(
+        &self,
+        cb: Arc<dyn Fn(&str, &str, &str, Option<&str>) -> bool + Send + Sync>,
+    ) {
+        *self.on_recovered_delivery.lock() = Some(cb);
     }
 
     /// Handle a discovered node (from UDP broadcast or manual config).
@@ -2810,6 +2841,8 @@ impl Cluster {
         let rpc_client = self.rpc_client.lock().clone();
         let bus_snapshot: Option<Arc<dyn MessageBus>> = self.bus.lock().clone();
         let safety_net = self.task_manager.pending_timeout();
+        // CD3: 交付回调快照（set 可发生在 start 之后，同 bus 语义）。
+        let delivery_cb = self.on_recovered_delivery.lock().clone();
         poll_stale_pending_tasks(
             &self.task_manager,
             &call_fn,
@@ -2817,6 +2850,7 @@ impl Cluster {
             safety_net,
             bus_snapshot.as_deref(),
             false,
+            delivery_cb.as_ref(),
         )
         .await;
     }
@@ -2946,11 +2980,15 @@ fn probe_drift_gate() -> &'static crate::discovery::AnnounceWarnGate {
 /// Uses the real RPC client when available, falling back to the synchronous
 /// test override (`call_fn`).  This matches Go's `pollStalePendingTasks`
 /// which calls `c.CallWithContext()`.
+/// G5: `bus` 非空时，done / not_found / 安全网超时分支会按 gateway Route 2
+/// 的形状向总线重发 `cluster_continuation:{task_id}`（含真实响应内容 +
+/// metadata），唤醒 A 端主 agent 的续行恢复——生产装配不接
+/// TaskManager.on_complete，仅靠 complete_callback 只会更新任务状态、不会
+/// 唤醒 agent。（CD2，2026-09-17：安全网分支补齐 publish。）
 ///
-/// G5: `bus` 非空时，done / not_found 分支会按 gateway Route 2 的形状向总线
-/// 重发 `cluster_continuation:{task_id}`（含真实响应内容 + metadata），唤醒
-/// A 端主 agent 的续行恢复——生产装配不接 TaskManager.on_complete，仅靠
-/// complete_callback 只会更新任务状态、不会唤醒 agent。
+/// CD3: `delivery_cb` 非空时，done 分支先触发交付回调（看板写回 / chat
+/// 交付判定，路由在 gateway 注入的闭包里），回调返回 true 才向 worker 发
+/// confirm 删除其本地副本；false 跳过 confirm（宁留勿丢）。
 async fn poll_stale_pending_tasks(
     task_manager: &Arc<TaskManager>,
     call_fn: &Option<
@@ -2960,6 +2998,9 @@ async fn poll_stale_pending_tasks(
     safety_net: chrono::Duration,
     bus: Option<&dyn MessageBus>,
     include_young: bool,
+    // CD3（2026-09-17）：恢复交付回调——done 分支 confirm 前置闸，见
+    // Cluster::set_on_recovered_delivery。None = 旧行为（无条件 confirm）。
+    delivery_cb: Option<&Arc<dyn Fn(&str, &str, &str, Option<&str>) -> bool + Send + Sync>>,
 ) {
     let tasks = task_manager.list_pending_tasks();
 
@@ -2985,21 +3026,34 @@ async fn poll_stale_pending_tasks(
 
         // Timeout tasks past the safety net (G4: 可配置，默认 max(24h, 2×LLM超时)).
         if age > safety_net {
+            // CD2（2026-09-17）：错误文案先落变量——complete_callback 与
+            // publish_continuation_to_bus 两处共用，保证任务状态与 agent
+            // 唤醒消息里的错误一致。
+            let timeout_error = format!(
+                "task timed out: no response within {}s safety net",
+                safety_net.num_seconds()
+            );
             tracing::warn!(
                 task_id = %task.id,
                 age_secs = age.num_seconds(),
                 safety_net_secs = safety_net.num_seconds(),
                 "[Cluster] Timing out stale task after safety-net timeout",
             );
-            task_manager.complete_callback(
-                &task.id,
-                "error",
-                "",
-                &format!(
-                    "task timed out: no response within {}s safety net",
-                    safety_net.num_seconds()
-                ),
-            );
+            task_manager.complete_callback(&task.id, "error", "", &timeout_error);
+            // CD2（2026-09-17）：安全网超时同样要发 bus 唤醒 agent（error
+            // 形态，形状对齐下方 not_found 分支）。此前只 complete_callback
+            // 不 publish——任务状态标 Failed 了，但等回复的 agent 永远不知
+            // 道，续行快照悬挂到永远。
+            if let Some(bus) = bus {
+                publish_continuation_to_bus(
+                    bus,
+                    &task.id,
+                    "",
+                    "error",
+                    &task.peer_id,
+                    Some(&timeout_error),
+                );
+            }
             continue;
         }
 
@@ -3085,8 +3139,33 @@ async fn poll_stale_pending_tasks(
                         if error.is_empty() { None } else { Some(&error) },
                     );
                 }
-                // Best-effort delivery confirmation
-                confirm_delivery_with(call_fn, rpc_client, &task.peer_id, &task.id).await;
+                // CD3（2026-09-17）：交付回调成功（或未注册回调 = 旧行为）才
+                // confirm——写回成功才删 worker 端副本，宁留勿丢。回调返回
+                // false（如看板写回失败）时跳过 confirm + WARN，副本走 worker
+                // 端 7 天 TTL 兜底（TaskManager 已完成，下轮 poll 不会再查）。
+                let delivery_ok = match delivery_cb {
+                    Some(cb) => {
+                        let ok = cb(
+                            &task.id,
+                            &result_status,
+                            &response,
+                            if error.is_empty() { None } else { Some(&error) },
+                        );
+                        if !ok {
+                            tracing::warn!(
+                                task_id = %task.id,
+                                "[Cluster] recovered delivery callback reported failure; \
+                                 skipping confirm (worker copy kept until TTL)"
+                            );
+                        }
+                        ok
+                    }
+                    None => true,
+                };
+                if delivery_ok {
+                    // Best-effort delivery confirmation
+                    confirm_delivery_with(call_fn, rpc_client, &task.peer_id, &task.id).await;
+                }
             }
             "not_found" => {
                 tracing::warn!(

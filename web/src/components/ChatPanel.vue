@@ -360,6 +360,12 @@ function handleWSMessage(data: any) {
         // 回复会串进当前视图。无该字段 = 旧路径帧，保持接受（legacy 兼容）。
         const frameSid = data.data?.session_id
         if (frameSid && sessionStore.currentId && frameSid !== sessionStore.currentId) return
+        // SB（2026-09-17）兜底：帧的会话不在列表中（session.created 事件
+        // 丢失 / B 端路径无事件 / SSE 断窗）→ force 刷新列表（同 sid 3s
+        // 节流）。事件丢失时这是列表可见性的第二道闸。
+        if (frameSid && !sessionStore.sessions.some(s => s.id === frameSid)) {
+          maybeRefreshSessionsFor(frameSid)
+        }
         const incomingRole = data.data.role || 'assistant'
         const incomingContent = data.data?.content
         // L2：推送帧带会话内单调 seq——更新补拉游标（sync 去重 + 重连续传）。
@@ -463,6 +469,17 @@ function handleWSMessage(data: any) {
 // 只对默认 chat 模块生效（workflow_chat 引擎自管，帧不在补拉通道里）。
 let lastChatSeq = 0
 
+// SB（2026-09-17）兜底：receive 帧的会话不在列表 → force 刷新（同 sid 3s
+// 节流，防风暴）。这是 session.created SSE 事件丢失时的第二道闸。
+const sessionRefreshAt = new Map<string, number>()
+function maybeRefreshSessionsFor(sid: string) {
+  const now = Date.now()
+  const last = sessionRefreshAt.get(sid) ?? 0
+  if (now - last < 3000) return
+  sessionRefreshAt.set(sid, now)
+  void sessionStore.fetchList(true)
+}
+
 // 历史载入后对齐 seq 基线：历史帧（chat_log 路径）不带 seq，不锚基线的话
 // 首次重连补拉会从 0 起重放出已载历史。只取最新游标不渲染；本轮已有活帧
 //（lastChatSeq>0）或拿不到基线（gap/失败）则保持现状——重连补拉的
@@ -500,7 +517,9 @@ async function syncMissedChat() {
       chatStore.addMessage({
         role: ev.role,
         content: ev.content,
-        timestamp: new Date().toISOString(),
+        // HD（2026-09-17）：优先用后端记录时刻——重放载荷此前无时间戳，
+        // 补拉消息显示为拉取时刻而非真实发生时刻；旧条目无 ts 回退本地钟。
+        timestamp: ev.ts || new Date().toISOString(),
         model: ev.model,
       })
       if (typeof ev.seq === 'number') lastChatSeq = Math.max(lastChatSeq, ev.seq)
@@ -554,7 +573,9 @@ function startWatchdog() {
 }
 function reloadLatest() {
   pendingWatchdogReload = true
-  sendHistoryRequest('watchdog_' + Date.now(), 50, null, {
+  const requestId = 'watchdog_' + Date.now()
+  inFlightHistory.set(requestId, { kind: 'watchdog' })
+  sendHistoryRequest(requestId, 50, null, {
     module: props.module,
     moduleData: activeModuleData(),
   })
@@ -586,7 +607,9 @@ const showShare = ref(false)
 let pendingResync = false
 function resyncFromLog() {
   pendingResync = true
-  sendHistoryRequest('resync_' + Date.now(), 100, null, {
+  const requestId = 'resync_' + Date.now()
+  inFlightHistory.set(requestId, { kind: 'resync' })
+  sendHistoryRequest(requestId, 100, null, {
     module: props.module,
     moduleData: activeModuleData(),
   })
@@ -690,7 +713,29 @@ watch(
   },
 )
 
+// HD（2026-09-17）：历史请求在飞登记——request_id 路由围栏（对齐
+// useWSAPI 的 reqId 关联范式）。此前 handleHistoryResponse 从不比对
+// request_id：会话切换 reset() 清掉 historyLoading 守卫后，两个在飞
+// 请求的响应先后到达各前插一次 → 消息成对重复（U,NB,U,NB）；迟到的
+// hist_ 响应还会冒领 pendingResync / pendingWatchdogReload 标志，拿错误
+// 请求的 payload 整段替换。围栏语义：响应按 request_id 匹配在飞登记，
+// 不匹配（迟到/并行/他请求）直接丢弃；会话切换时整表作废。
+const inFlightHistory = new Map<string, { kind: 'page' | 'resync' | 'watchdog' }>()
+
 function handleHistoryResponse(data: any) {
+  // 围栏第一道：request_id 必须匹配一个在飞请求，否则丢弃（不前插、
+  // 不清 historyLoading、不冒领任何标志）。
+  const inflight = data?.request_id ? inFlightHistory.get(data.request_id) : undefined
+  if (!inflight) {
+    return
+  }
+  inFlightHistory.delete(data.request_id)
+  // 围栏第二道：会话归属——响应携带 session_id 且与当前选中不符（快速
+  // 切换会话时旧会话响应迟到）→ 丢弃，防串台。
+  if (data?.session_id && sessionStore.currentId && data.session_id !== sessionStore.currentId) {
+    return
+  }
+
   chatStore.historyLoading = false
   if (!data) return
 
@@ -792,17 +837,20 @@ function loadHistory() {
   if (chatStore.historyLoading) return
   chatStore.historyLoading = true
   const requestId = 'hist_' + Date.now()
+  inFlightHistory.set(requestId, { kind: 'page' })
   const limit = 20
   sendHistoryRequest(requestId, limit, chatStore.oldestIndex, {
     module: props.module,
     moduleData: activeModuleData(),
   })
 
-  // Safety timeout: reset loading flag if no response in 10s
+  // Safety timeout: reset loading flag if no response in 10s（超时同时作废
+  // 在飞登记——迟到的响应不再被围栏放行）。
   setTimeout(() => {
     if (chatStore.historyLoading) {
       chatStore.historyLoading = false
     }
+    inFlightHistory.delete(requestId)
   }, 10000)
 }
 
@@ -1378,6 +1426,8 @@ const unwatchSession = watch(
   () => sessionStore.currentId,
   (newId, oldId) => {
     if (!isDefaultChat.value || newId === oldId) return
+    // HD：换会话 → 作废全部在飞历史请求（旧会话响应迟到时被围栏丢弃）。
+    inFlightHistory.clear()
     chatStore.reset()
     lastChatSeq = 0 // L2：换会话 → 补拉游标归零（seq 是会话内单调的）
     if (newId && wsStatus.value === 'connected') {

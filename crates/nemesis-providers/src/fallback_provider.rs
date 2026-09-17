@@ -1,4 +1,10 @@
 //! FallbackProvider with provider chain and auto-retry.
+//!
+//! ⚠ 装配状态（2026-09-17 BUG 文档裁决）：**故障转移未启用（预留）**——
+//! 本链（含 cooldown.rs 的 J1 冷却机制）生产装配零引用，单模型配置下不
+//! 产生任何行为；429 限流重试由 nemesis-agent loop.rs 的独立重试环承担，
+//! 不经过本链。接线启用需另立 goal（多模型 failover 链装配 + Dashboard
+//! 声明），本文档声明用于消除「配了就有」的错觉。
 
 use crate::cooldown::CooldownTracker;
 use crate::error_classifier::classify_error;

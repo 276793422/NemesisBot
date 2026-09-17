@@ -1044,6 +1044,9 @@ async fn deliver_files_back(
 /// - `llm_timeout` / `llm_failure`：LLM 调用终结失败（transient 重试耗尽 /
 ///   非瞬态错误），超时形态单列（撞墙检测的跨端可观测面；尽力匹配——
 ///   provider 错误文案不受本侧控制）
+/// - `llm_rate_limit`（2026-09-17 BUG 文档裁决⑤）：上游 429 限流重试耗尽
+///   （loop.rs 重试环终局文案含「rate limited」），评审重派决策据此避免
+///   同 worker 同模型盲重派
 /// - `empty_result`：turn 正常结束但无交付文本
 /// - `exec_failed`：其它失败（兜底）。success 回调返回 None（不落字段）。
 fn classify_terminal_failure(status: &str, response: &str, error: &str) -> Option<&'static str> {
@@ -1061,6 +1064,8 @@ fn classify_terminal_failure(status: &str, response: &str, error: &str) -> Optio
         let lower = text.to_ascii_lowercase();
         if lower.contains("timed out") || lower.contains("timeout") || text.contains("超时") {
             Some("llm_timeout")
+        } else if lower.contains("rate limited") || lower.contains("429") {
+            Some("llm_rate_limit")
         } else {
             Some("llm_failure")
         }

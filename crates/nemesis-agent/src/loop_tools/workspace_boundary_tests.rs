@@ -287,3 +287,157 @@ async fn register_shared_tools_inserts_bounded_write_file() {
     let _ = std::fs::remove_dir_all(&root);
     let _ = std::fs::remove_dir_all(&other);
 }
+
+// ---------------------------------------------------------------------------
+// FT（2026-09-17）：读族 5 工具带界形态 + grep 相对路径锚定
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn read_file_boundary_anchors_relative_path() {
+    // 相对路径 join 工作区根——exe 直启（cwd=部署目录）形态下
+    // `read_file BOOT.md` 不再 File not found。
+    let root = temp_dir("ft_read");
+    std::fs::write(root.join("BOOT.md"), "hello-ft").unwrap();
+    let tool = super::ReadFileTool::with_boundary(Arc::new(boundary(&root, true)));
+    let out = tool
+        .execute(r#"{"path": "BOOT.md"}"#, &ctx())
+        .await
+        .unwrap();
+    assert_eq!(out, "hello-ft");
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+#[tokio::test]
+async fn read_file_boundary_restrict_denies_outside_absolute() {
+    let root = temp_dir("ft_read_root");
+    let other = temp_dir("ft_read_out");
+    let target = other.join("secret.txt");
+    std::fs::write(&target, "s").unwrap();
+    let tool = super::ReadFileTool::with_boundary(Arc::new(boundary(&root, true)));
+    let err = tool
+        .execute(
+            &serde_json::json!({"path": ps(&target)}).to_string(),
+            &ctx(),
+        )
+        .await
+        .unwrap_err();
+    assert!(err.contains("access denied"), "{err}");
+    // restrict=false：绝对路径照读（锚定与限制正交）。
+    let tool_open = super::ReadFileTool::with_boundary(Arc::new(boundary(&root, false)));
+    let out = tool_open
+        .execute(
+            &serde_json::json!({"path": ps(&target)}).to_string(),
+            &ctx(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(out, "s");
+    let _ = std::fs::remove_dir_all(&root);
+    let _ = std::fs::remove_dir_all(&other);
+}
+
+#[tokio::test]
+async fn list_dir_boundary_anchors_relative_path() {
+    let root = temp_dir("ft_list");
+    std::fs::create_dir_all(root.join("sub")).unwrap();
+    std::fs::write(root.join("sub").join("a.txt"), "x").unwrap();
+    let tool = super::ListDirectoryTool::with_boundary(Arc::new(boundary(&root, true)));
+    let out = tool.execute(r#"{"path": "sub"}"#, &ctx()).await.unwrap();
+    assert!(out.contains("a.txt"), "{out}");
+    // 根相对路径 `.` 列工作区根，不是进程 cwd。
+    let out_root = tool.execute(r#"{"path": "."}"#, &ctx()).await.unwrap();
+    assert!(out_root.contains("sub [dir]"), "{out_root}");
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+#[tokio::test]
+async fn delete_tools_boundary_restrict_denies_outside() {
+    let root = temp_dir("ft_del_root");
+    let other = temp_dir("ft_del_out");
+    let f = other.join("gone.txt");
+    std::fs::write(&f, "x").unwrap();
+    let d = other.join("gonedir");
+    std::fs::create_dir_all(&d).unwrap();
+
+    let del_file = super::DeleteFileTool::with_boundary(Arc::new(boundary(&root, true)));
+    let err = del_file
+        .execute(&serde_json::json!({"path": ps(&f)}).to_string(), &ctx())
+        .await
+        .unwrap_err();
+    assert!(err.contains("access denied"), "{err}");
+    assert!(f.exists(), "界外文件不得被删");
+
+    let del_dir = super::DeleteDirTool::with_boundary(Arc::new(boundary(&root, true)));
+    let err = del_dir
+        .execute(&serde_json::json!({"path": ps(&d)}).to_string(), &ctx())
+        .await
+        .unwrap_err();
+    assert!(err.contains("access denied"), "{err}");
+    assert!(d.exists(), "界外目录不得被删");
+
+    // 界内删除放行。
+    std::fs::write(root.join("inside.txt"), "x").unwrap();
+    del_file
+        .execute(
+            &serde_json::json!({"path": "inside.txt"}).to_string(),
+            &ctx(),
+        )
+        .await
+        .unwrap();
+    assert!(!root.join("inside.txt").exists());
+
+    let _ = std::fs::remove_dir_all(&root);
+    let _ = std::fs::remove_dir_all(&other);
+}
+
+#[tokio::test]
+async fn create_dir_boundary_anchors_and_denies_outside() {
+    let root = temp_dir("ft_mkdir_root");
+    let other = temp_dir("ft_mkdir_out");
+    let tool = super::CreateDirTool::with_boundary(Arc::new(boundary(&root, true)));
+    // 界外拒绝。
+    let err = tool
+        .execute(
+            &serde_json::json!({"path": ps(&other.join("d"))}).to_string(),
+            &ctx(),
+        )
+        .await
+        .unwrap_err();
+    assert!(err.contains("access denied"), "{err}");
+    // 相对路径锚定工作区根。
+    tool.execute(r#"{"path": "a/b"}"#, &ctx()).await.unwrap();
+    assert!(root.join("a").join("b").is_dir());
+    let _ = std::fs::remove_dir_all(&root);
+    let _ = std::fs::remove_dir_all(&other);
+}
+
+#[tokio::test]
+async fn register_shared_tools_inserts_bounded_read_tools() {
+    let root = temp_dir("ft_reg");
+    std::fs::write(root.join("BOOT.md"), "bootstrap").unwrap();
+    let cfg = super::SharedToolConfig {
+        workspace_boundary: Some(Arc::new(boundary(&root, true))),
+        ..Default::default()
+    };
+    let tools = super::register_shared_tools(&cfg);
+    // 注册表里的 read_file 就是带界形态：相对路径按工作区根解析成功。
+    let read = tools.get("read_file").expect("read_file 必须注册");
+    let out = read
+        .execute(r#"{"path": "BOOT.md"}"#, &ctx())
+        .await
+        .unwrap();
+    assert_eq!(out, "bootstrap");
+    // delete_file / delete_dir 同样带界（界外拒绝）。
+    let other = temp_dir("ft_reg_out");
+    let del = tools.get("delete_file").expect("delete_file 必须注册");
+    let err = del
+        .execute(
+            &serde_json::json!({"path": ps(&other.join("x.txt"))}).to_string(),
+            &ctx(),
+        )
+        .await
+        .unwrap_err();
+    assert!(err.contains("access denied"), "{err}");
+    let _ = std::fs::remove_dir_all(&root);
+    let _ = std::fs::remove_dir_all(&other);
+}

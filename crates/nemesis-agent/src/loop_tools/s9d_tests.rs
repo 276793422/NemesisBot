@@ -145,10 +145,10 @@ async fn message_tool_falls_back_to_stored_context_and_fires_callback() {
 async fn read_file_tool_directory_read_error_and_readonly_flag() {
     let ws = temp_ws("rf");
     let args = serde_json::json!({"path": ps(&ws)}).to_string();
-    let out = super::ReadFileTool.execute(&args, &ctx()).await;
+    let out = super::ReadFileTool::default().execute(&args, &ctx()).await;
     assert!(out.is_err(), "reading a directory must fail");
     assert!(out.unwrap_err().contains("Failed to read file"));
-    assert!(super::ReadFileTool.is_read_only());
+    assert!(super::ReadFileTool::default().is_read_only());
     let _ = std::fs::remove_dir_all(&ws);
 }
 
@@ -183,7 +183,7 @@ async fn write_file_tool_error_arms_and_create_preview() {
 
 #[test]
 fn list_directory_tool_readonly_flag() {
-    assert!(super::ListDirectoryTool.is_read_only());
+    assert!(super::ListDirectoryTool::default().is_read_only());
 }
 
 // ---------- EditFileTool 496/514/519-526 ----------
@@ -266,12 +266,16 @@ async fn delete_file_tool_error_arms_and_preview() {
 
     // 619：不存在。
     let args = serde_json::json!({"path": ps(&ws.join("ghost.txt"))}).to_string();
-    let out = super::DeleteFileTool.execute(&args, &ctx()).await;
+    let out = super::DeleteFileTool::default()
+        .execute(&args, &ctx())
+        .await;
     assert!(out.unwrap_err().contains("File not found"));
 
     // 621：目标是目录。
     let args = serde_json::json!({"path": ps(&ws)}).to_string();
-    let out = super::DeleteFileTool.execute(&args, &ctx()).await;
+    let out = super::DeleteFileTool::default()
+        .execute(&args, &ctx())
+        .await;
     assert!(out.unwrap_err().contains("Path is a directory"));
 
     // 614：readonly → 删除失败（探针门控）。
@@ -283,7 +287,9 @@ async fn delete_file_tool_error_arms_and_preview() {
     perm.set_readonly(true);
     std::fs::set_permissions(&ro, perm).unwrap();
     let args = serde_json::json!({"path": ps(&ro)}).to_string();
-    let out = super::DeleteFileTool.execute(&args, &ctx()).await;
+    let out = super::DeleteFileTool::default()
+        .execute(&args, &ctx())
+        .await;
     if enforced {
         assert!(
             out.clone().unwrap_err().contains("Failed to delete file"),
@@ -297,7 +303,7 @@ async fn delete_file_tool_error_arms_and_preview() {
 
     // 651：preview。
     let args = serde_json::json!({"path": ps(&ws.join("whatever.txt"))}).to_string();
-    assert!(super::DeleteFileTool.preview(&args).is_some());
+    assert!(super::DeleteFileTool::default().preview(&args).is_some());
     let _ = std::fs::remove_dir_all(&ws);
 }
 
@@ -309,14 +315,14 @@ async fn delete_dir_tool_error_arms() {
 
     // 不存在。
     let args = serde_json::json!({"path": ps(&ws.join("ghost_dir"))}).to_string();
-    let out = super::DeleteDirTool.execute(&args, &ctx()).await;
+    let out = super::DeleteDirTool::default().execute(&args, &ctx()).await;
     assert!(out.unwrap_err().contains("Directory not found"));
 
     // 非目录。
     let file_path = ws.join("plain.txt");
     std::fs::write(&file_path, "x").unwrap();
     let args = serde_json::json!({"path": ps(&file_path)}).to_string();
-    let out = super::DeleteDirTool.execute(&args, &ctx()).await;
+    let out = super::DeleteDirTool::default().execute(&args, &ctx()).await;
     assert!(out.unwrap_err().contains("Path is not a directory"));
 
     // 684：含 readonly 文件的目录 → remove_dir_all 失败（探针门控）。
@@ -330,7 +336,7 @@ async fn delete_dir_tool_error_arms() {
     perm.set_readonly(true);
     std::fs::set_permissions(&inner, perm).unwrap();
     let args = serde_json::json!({"path": ps(&victim)}).to_string();
-    let out = super::DeleteDirTool.execute(&args, &ctx()).await;
+    let out = super::DeleteDirTool::default().execute(&args, &ctx()).await;
     if enforced {
         assert!(
             out.clone()

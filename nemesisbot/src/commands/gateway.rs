@@ -2745,7 +2745,7 @@ pub async fn run(local: bool, extra_args: &[String]) -> Result<()> {
                     }));
                 }
                 let transport = std::sync::Arc::new(
-                    nemesis_cluster::outbox::RpcTransferTransport::new(rc, node_id.clone()),
+                    nemesis_cluster::outbox::RpcTransferTransport::new(rc.clone(), node_id.clone()),
                 );
                 let limit_cell = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(limit0));
                 let provider: Box<dyn Fn() -> u64 + Send + Sync> = {
@@ -2758,6 +2758,13 @@ pub async fn run(local: bool, extra_args: &[String]) -> Result<()> {
                     transport,
                     provider,
                 ));
+                // CD6（2026-09-17）：健康联动注入——RpcClient 判 Offline 的
+                // 对端暂停回传（跳过本轮，不计数不打日志），回 Online 后下
+                // 一 tick 自然恢复。节点未知按可推处理（fast-fail 诚实暴露）。
+                outbox.set_online_check(Box::new({
+                    let rc = rc.clone();
+                    move |peer| rc.is_peer_online(peer).unwrap_or(true)
+                }));
                 // P4/E2（看板项目档案 goal 合并批）：基线推送器装配——board.rs
                 // 派发链（dispatch_issue_core）消费；复用既有分块传输通路
                 //（begin/chunk/end，AEAD 鉴权）+ 同一 limit 热刷新 cell（D4
@@ -3091,6 +3098,11 @@ pub async fn run(local: bool, extra_args: &[String]) -> Result<()> {
                         sweep_cfg.dispatch_sweep_interval_secs.max(1),
                     ));
                     ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+                    // CD6（裁决⑫，2026-09-17）：mtime 缓存——config 文件未
+                    // 变化不重读，消除派发 sweep 每 20s tick 触发 load_config
+                    // 两条 INFO 刷屏；热生效语义保留（R4：改文件 → mtime 变化
+                    // → 下个 tick 重新现读）。
+                    let mut sweep_timeout_cache: Option<(std::time::SystemTime, u64)> = None;
                     loop {
                         ticker.tick().await;
                         let Some(store) = store_for_sweep.as_ref() else {
@@ -3100,12 +3112,25 @@ pub async fn run(local: bool, extra_args: &[String]) -> Result<()> {
                         // config.set dispatch_timeout_secs 改值后 sweep 仍用
                         // 启动烘焙值跑到底——与旗标类键「每次现读」语义对齐；
                         // 0=关（运行期可关）；读取失败沿用启动值兜底不停摆。
-                        let timeout_secs =
-                            nemesis_config::load_config(&home_for_sweep.join("config.json"))
-                                .ok()
-                                .and_then(|c| c.board)
-                                .map(|b| b.dispatch_timeout_secs)
-                                .unwrap_or(sweep_cfg.dispatch_timeout_secs);
+                        let timeout_secs = {
+                            let path = home_for_sweep.join("config.json");
+                            let mtime = std::fs::metadata(&path).and_then(|m| m.modified()).ok();
+                            let cached = match (mtime.as_ref(), sweep_timeout_cache.as_ref()) {
+                                (Some(t), Some((cached_t, v))) if t == cached_t => Some(*v),
+                                _ => {
+                                    let v = nemesis_config::load_config(&path)
+                                        .ok()
+                                        .and_then(|c| c.board)
+                                        .map(|b| b.dispatch_timeout_secs)
+                                        .unwrap_or(sweep_cfg.dispatch_timeout_secs);
+                                    if let Some(t) = mtime {
+                                        sweep_timeout_cache = Some((t, v));
+                                    }
+                                    Some(v)
+                                }
+                            };
+                            cached.unwrap_or(sweep_cfg.dispatch_timeout_secs)
+                        };
                         if timeout_secs == 0 {
                             continue;
                         }
@@ -3204,6 +3229,24 @@ pub async fn run(local: bool, extra_args: &[String]) -> Result<()> {
             #[cfg(not(feature = "board"))]
             #[allow(unused_variables)]
             let board_store_for_cb: Option<()> = None;
+            // CD3：恢复交付回调的依赖集——在回调闭包 move 走原值之前克隆
+            // （同一批依赖，两份闭包各自持有 Arc）。
+            #[cfg(all(feature = "board", feature = "cluster"))]
+            let delivery_store = board_store_for_cb.clone();
+            #[cfg(all(feature = "board", feature = "cluster"))]
+            let delivery_workspace = workspace_for_cb.clone();
+            #[cfg(all(feature = "board", feature = "cluster"))]
+            let delivery_home = home_for_cb.clone();
+            #[cfg(all(feature = "board", feature = "cluster"))]
+            let delivery_moderator = moderator_loop_for_cb.clone();
+            #[cfg(all(feature = "board", feature = "cluster"))]
+            let delivery_cluster = cluster_for_cb.clone();
+            #[cfg(all(feature = "board", feature = "cluster"))]
+            let delivery_estop = estop_for_cb.clone();
+            #[cfg(all(feature = "board", feature = "cluster"))]
+            let delivery_estop_parked = estop_parked_for_cb.clone();
+            #[cfg(all(feature = "board", feature = "cluster"))]
+            let delivery_selfcheck = selfcheck_for_cb.clone();
             let _ = cluster.register_rpc_handler("peer_chat_callback", Box::new(move |payload| {
                 let task_id = payload
                     .get("task_id")
@@ -3449,6 +3492,65 @@ pub async fn run(local: bool, extra_args: &[String]) -> Result<()> {
 
                 Ok(serde_json::json!({"status": "received", "task_id": task_id}))
             }));
+
+            // CD3（2026-09-17）：恢复交付回调——恢复轮询（poll_stale_pending_tasks）
+            // 查回 worker 结果后、confirm 删 worker 副本前触发。路由判断留在
+            // 本闭包（cluster 不依赖 board）：
+            // - issue_dispatch 反查命中 → write_back_board_dispatch 看板写回
+            //   （终结派发 + 结果评论 + 状态推进），并补 spawn 评审（对齐
+            //   peer_chat_callback Route 0 的完整链路，否则恢复回来的单会
+            //   卡 in_review 无人验收）；settled（真实终结）才算交付成功。
+            // - 未命中（chat 任务）→ 交付 = 恢复腿已 publish bus 续行帧，恒
+            //   true。返回 false 时 cluster 跳过 confirm，worker 副本留 TTL
+            //   兜底（宁留勿丢）。
+            // fail_class 对齐 peer_chat_callback 语义：恢复腿查询结果不携带
+            // 该字段，传空串（⛔ 评论降级为无分类文案）。
+            #[cfg(all(feature = "board", feature = "cluster"))]
+            {
+                cluster.set_on_recovered_delivery(Arc::new(
+                    move |task_id: &str, status: &str, response: &str, error: Option<&str>| {
+                        // error 非空 = result_status=error——合并文本语义对齐
+                        // peer_chat_callback 的 fail_text（error 优先，否则
+                        // 用 response）。
+                        let text = match error {
+                            Some(e) if !e.is_empty() => e,
+                            _ => response,
+                        };
+                        let outcome = write_back_board_dispatch(
+                            &delivery_store,
+                            &delivery_workspace,
+                            task_id,
+                            status,
+                            text,
+                            "",
+                        );
+                        if !outcome.is_board_task {
+                            return true; // chat 任务：交付 = 已发 bus 续行
+                        }
+                        // 对齐 Route 0：推进到 in_review 的写回补 spawn 验收
+                        // agent（spawn_board_review 自带 tokio::spawn；恢复
+                        // 腿运行在 tokio 上下文——恢复循环 spawn，可直接调）。
+                        if let Some(review_issue_id) = outcome.issue_for_review {
+                            crate::board_review::spawn_board_review(
+                                crate::board_review::BoardReviewDeps {
+                                    store: delivery_store
+                                        .clone()
+                                        .expect("board writeback armed implies store present"),
+                                    workspace: delivery_workspace.clone(),
+                                    home: delivery_home.clone(),
+                                    moderator_loop: delivery_moderator.clone(),
+                                    cluster: delivery_cluster.clone(),
+                                    estop: delivery_estop.clone(),
+                                    estop_parked: delivery_estop_parked.clone(),
+                                    selfcheck: delivery_selfcheck.clone(),
+                                },
+                                review_issue_id,
+                            );
+                        }
+                        outcome.settled
+                    },
+                ));
+            }
         }
 
         // --- Inject MessageBus into Cluster for continuation flow ---
@@ -3492,8 +3594,14 @@ pub async fn run(local: bool, extra_args: &[String]) -> Result<()> {
 
             // Wire the RPC call function to use cluster.call_with_context_async
             let cluster_weak_for_rpc = Arc::downgrade(&cluster);
+            // CD5：占位续行快照需要 workspace 根（ContinuationStore 单一
+            // 真相源路径解析在其内部）。
+            let home_for_rpc = home.clone();
             let call_fn = std::sync::Arc::new(
                 move |target: &str, action: &str, payload: serde_json::Value| {
+                    // 每次调用克隆——async move 块按值捕获，避免把环境里的
+                    // 变量移出导致闭包退化为 FnOnce（call_fn 是共享 Arc）。
+                    let home_for_rpc = home_for_rpc.clone();
                     let c = match cluster_weak_for_rpc.upgrade() {
                         Some(arc) => arc,
                         None => {
@@ -3512,7 +3620,61 @@ pub async fn run(local: bool, extra_args: &[String]) -> Result<()> {
                     let t = target.to_string();
                     let a = action.to_string();
                     Box::pin(async move {
-                        let bytes = c
+                        // CD5-a（2026-09-17）：A 端预生成 task_id——chat 派发
+                        // 此前 task_id 由 B 端 ACK 生成，「ACK 已收、正式续行
+                        // 快照未落盘」窗口崩溃即无声丢失。预生成后随 payload
+                        // 下发（B 端 peer_chat_handler 原样采用外来 id），A 端
+                        // 从发起时刻起持有同一凭据。board 路径不走本闭包
+                        // （自带登记），按 action 过滤。
+                        let mut payload = payload;
+                        let pre_task_id = if a == "peer_chat" {
+                            match payload.get("task_id").and_then(|v| v.as_str()) {
+                                Some(s) if !s.is_empty() => None, // 调用方自带
+                                _ => {
+                                    let id = format!("chat-{}", uuid::Uuid::new_v4());
+                                    if let Some(obj) = payload.as_object_mut() {
+                                        obj.insert(
+                                            "task_id".to_string(),
+                                            serde_json::Value::String(id.clone()),
+                                        );
+                                    }
+                                    Some(id)
+                                }
+                            }
+                        } else {
+                            None
+                        };
+
+                        // CD5-b：派发前落占位续行快照——崩溃后 G5 重建（扫
+                        // rpc_cache 登记 Pending）+ 恢复轮询至少能诚实收口；
+                        // peer_id 随行（恢复时才知道 poll 该问谁）。正式快照
+                        // （AgentLoop 存续行快照，同 task_id）会覆盖它。
+                        if let Some(ref task_id) = pre_task_id {
+                            let ws = home_for_rpc.join("workspace");
+                            let store = nemesis_agent::ContinuationStore::new(&ws);
+                            let placeholder = nemesis_agent::ContinuationSnapshot {
+                                task_id: task_id.clone(),
+                                messages: "[]".to_string(),
+                                tool_call_id: String::new(),
+                                channel: String::new(),
+                                chat_id: String::new(),
+                                session_key: String::new(),
+                                peer_id: t.clone(),
+                                image_refs: Vec::new(),
+                                image_refs_by_user_turn: Vec::new(),
+                                created_at: chrono::Local::now().to_rfc3339(),
+                                final_persisted: false,
+                            };
+                            if let Err(e) = store.save(&placeholder) {
+                                tracing::warn!(
+                                    task_id = %task_id,
+                                    error = %e,
+                                    "[Gateway] CD5 占位续行快照写入失败（恢复凭据缺失，不影响派发）"
+                                );
+                            }
+                        }
+
+                        let rpc_result = c
                             .call_with_context_async(
                                 &t,
                                 &a,
@@ -3520,10 +3682,77 @@ pub async fn run(local: bool, extra_args: &[String]) -> Result<()> {
                                 std::time::Duration::from_secs(3600),
                             )
                             .await
-                            .map_err(|e| e.to_string())?;
-                        // Deserialize the response bytes to JSON Value
-                        serde_json::from_slice::<serde_json::Value>(&bytes)
-                            .map_err(|e| format!("Failed to parse RPC response: {}", e))
+                            .map_err(|e| e.to_string());
+
+                        let bytes = match rpc_result {
+                            Ok(b) => b,
+                            Err(e) => {
+                                // CD5：确定未送达（对端离线 fast-fail）→ 清理
+                                // 占位快照（任务在 B 端不存在，凭据无意义）。
+                                // 其余失败（超时等）保留——B 端可能已接单执行，
+                                // 凭据留给重启后的恢复轮询查询（宁留勿丢）。
+                                if let Some(ref task_id) = pre_task_id {
+                                    if e.contains("peer is offline") {
+                                        let ws = home_for_rpc.join("workspace");
+                                        nemesis_agent::ContinuationStore::new(&ws).delete(task_id);
+                                    } else {
+                                        tracing::warn!(
+                                            task_id = %task_id,
+                                            error = %e,
+                                            "[Gateway] CD5 chat 派发失败（非离线形态），占位快照保留供恢复轮询查询"
+                                        );
+                                    }
+                                }
+                                return Err(e);
+                            }
+                        };
+
+                        let ack: serde_json::Value = serde_json::from_slice(&bytes)
+                            .map_err(|e| format!("Failed to parse RPC response: {}", e))?;
+
+                        // CD1（2026-09-17）：ACK accepted → 登记 TaskManager
+                        // Pending——恢复轮询从此接管查询（worker 死亡/分区后
+                        // 安全网诚实收尾，对话不再永久悬挂）。重复登记由
+                        // submit 同 id Err 幂等闸吸收。B 端明确拒绝（非
+                        // accepted）→ 清理占位快照（任务不存在）。
+                        if a == "peer_chat" {
+                            let accepted =
+                                ack.get("status").and_then(|v| v.as_str()) == Some("accepted");
+                            let ack_task_id =
+                                ack.get("task_id").and_then(|v| v.as_str()).unwrap_or("");
+                            if accepted && !ack_task_id.is_empty() {
+                                let task = nemesis_types::cluster::Task {
+                                    id: ack_task_id.to_string(),
+                                    status: nemesis_types::cluster::TaskStatus::Pending,
+                                    action: "peer_chat".to_string(),
+                                    peer_id: t.clone(),
+                                    payload: serde_json::json!({}),
+                                    result: None,
+                                    original_channel: String::new(),
+                                    original_chat_id: String::new(),
+                                    created_at: chrono::Local::now().to_rfc3339(),
+                                    completed_at: None,
+                                };
+                                if let Err(e) = c.task_manager().submit(task) {
+                                    tracing::debug!(
+                                        task_id = %ack_task_id,
+                                        error = %e,
+                                        "[Gateway] chat 派发登记 TaskManager 跳过（同 id 已登记）"
+                                    );
+                                } else {
+                                    tracing::info!(
+                                        task_id = %ack_task_id,
+                                        peer = %t,
+                                        "[Gateway] chat 派发已登记 TaskManager Pending（CD1 恢复接管）"
+                                    );
+                                }
+                            } else if !accepted && let Some(ref task_id) = pre_task_id {
+                                let ws = home_for_rpc.join("workspace");
+                                nemesis_agent::ContinuationStore::new(&ws).delete(task_id);
+                            }
+                        }
+
+                        Ok(ack)
                     })
                         as std::pin::Pin<
                             Box<
@@ -4291,6 +4520,20 @@ pub async fn run(local: bool, extra_args: &[String]) -> Result<()> {
                 warn!("[Gateway] Cluster adapter first start failed: {}", e);
             }
             cluster_adapter = Some(adapter);
+            // CD4（2026-09-17）：master 重启后从看板在途派发行重建
+            // TaskManager Pending——board 派发无续行快照，G5 只救 chat 任务；
+            // worker 已落盘的结果此前永远无人查询（7 天 TTL 蒸发）。重建后
+            // 恢复轮询自然接管，查回结果经 CD3 恢复交付回调写回看板。
+            #[cfg(all(feature = "board", feature = "cluster"))]
+            if cluster_should_start {
+                crate::cluster_service::rebuild_pending_from_board_dispatches(
+                    cluster_adapter
+                        .as_ref()
+                        .expect("just assigned above")
+                        .cluster(),
+                    &board_store,
+                );
+            }
         }
     }
 

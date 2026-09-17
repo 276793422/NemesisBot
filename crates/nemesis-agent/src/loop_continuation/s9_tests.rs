@@ -44,6 +44,7 @@ fn snapshot_for(task: &str) -> ContinuationSnapshot {
         peer_id: String::new(),
         image_refs: Vec::new(),
         image_refs_by_user_turn: Vec::new(), // L1
+        final_persisted: false,
     }
 }
 

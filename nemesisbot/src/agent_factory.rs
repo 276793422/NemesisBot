@@ -266,6 +266,10 @@ impl SharedResources {
 /// - `pricing_store` 只 WARN 不 fail：open 失败是磁盘环境问题（N1 的设计
 ///   选择=优雅降级不阻断启动），不是接线遗漏；「是否调用过 set」由装配
 ///   矩阵测试兜住（tests.rs wiring 系）。
+// 非 security 组合下 `shared` 的唯一消费点（security_plugin 一致性检查）
+// 整体被 cfg 掉，参数有意闲置——函数签名在两种 feature 组合下保持同一
+// 形状（装配自检的调用方无需按 feature 分叉）。
+#[cfg_attr(not(feature = "security"), allow(unused_variables))]
 fn assert_gateway_critical_wiring(
     agent_loop: &nemesis_agent::r#loop::AgentLoop,
     shared: &SharedResources,
@@ -1740,6 +1744,11 @@ pub fn build_cluster_agent_loop(
 /// Load cluster system prompt from `workspace/cluster/IDENTITY.md` + `SOUL.md`.
 ///
 /// Returns None if neither file exists (cluster agent runs without identity).
+///
+/// FT（2026-09-17）：尾部补工作区绝对路径行——B 端系统提示词此前只内嵌
+/// 人格文件**内容**不给**位置**，worker 跑任务时相对路径读文件必然按 cwd
+/// 解析（exe 直启形态读不到）。主 loop 的 identity 段已有
+/// `**Workspace**: {}`（context.rs build_identity），此处对齐。
 #[cfg(feature = "cluster")]
 fn load_cluster_system_prompt(home: &std::path::Path) -> Option<String> {
     let cluster_dir = home.join("workspace").join("cluster");
@@ -1760,6 +1769,13 @@ fn load_cluster_system_prompt(home: &std::path::Path) -> Option<String> {
         info!("[AgentFactory] No cluster identity files found, running without system prompt");
         None
     } else {
+        // 工作区根 = <home>/workspace（与装配处 set_workspace_root 同源）。
+        let workspace = home.join("workspace");
+        parts.push(format!(
+            "**Workspace**: {}\nYour workspace is located at: {}。read_file/list_dir 等文件工具的相对路径以此为根。",
+            workspace.display(),
+            workspace.display()
+        ));
         info!(
             files = parts.len(),
             "[AgentFactory] Cluster system prompt loaded from {} file(s)",

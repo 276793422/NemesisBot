@@ -201,10 +201,16 @@ async fn stdio_transport_child_exits_without_response() {
     // cmd.exe 无参启动会对管道 stdin 打交互 banner（"Microsoft Windows
     // [Version ...]"）到 stdout → 第一行非 JSON → parse 失败臂（稳定）。
     // 极端环境（AutoRun /q 抑制 banner）下落到无响应/超时臂，也一并接受。
+    // 本地化代码页变体（2026-09-17 实测）：中文 Windows 的 banner 含中文
+    // 字符（"版本"等），cmd.exe 以 OEM 代码页 CP936/GBK 写管道——严格
+    // UTF-8 解码（BufReader::lines）失败 → "valid UTF-8" 错误臂。协议是
+    // UTF-8 JSONL，非 UTF-8 输出报错是正确行为；英文 Windows（ASCII
+    // banner）走 parse 臂，两种环境都在接受集合内。
     assert!(
         err.contains("parse executor response")
             || err.contains("exited without a response")
-            || err.contains("timed out"),
+            || err.contains("timed out")
+            || err.contains("valid UTF-8"),
         "err: {err}"
     );
 }

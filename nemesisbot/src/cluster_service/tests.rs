@@ -577,3 +577,108 @@ fn sweep_and_reload_sweeps_stale_keeps_and_loads_fresh() {
     assert!(store.get("task-stale").is_none(), "陈旧结果不复活");
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+// =========================================================================
+// CD4（2026-09-17）：master 重启后从看板在途派发行重建 TaskManager Pending
+// =========================================================================
+
+/// 构造带 registry 节点（id=remote-001 / name=worker-1）的 Cluster。
+fn cd4_cluster() -> Arc<nemesis_cluster::cluster::Cluster> {
+    let cluster = Arc::new(nemesis_cluster::cluster::Cluster::new(ClusterConfig {
+        node_id: "test-node".to_string(),
+        bind_address: "127.0.0.1:0".to_string(),
+        peers: Vec::new(),
+    }));
+    cluster.register_node(nemesis_cluster::types::ExtendedNodeInfo {
+        base: nemesis_types::cluster::NodeInfo {
+            id: "remote-001".into(),
+            name: "worker-1".into(),
+            role: nemesis_types::cluster::NodeRole::Worker,
+            address: "10.0.0.2:9000".into(),
+            category: "development".into(),
+            last_seen: chrono::Local::now().to_rfc3339(),
+        },
+        status: nemesis_cluster::types::NodeStatus::Online,
+        capabilities: vec![],
+        tags: Vec::new(),
+        addresses: vec![],
+        node_type: "agent".into(),
+    });
+    cluster
+}
+
+#[cfg(all(feature = "board", feature = "cluster"))]
+#[test]
+fn cd4_rebuild_registers_pending_from_active_dispatches() {
+    let tmp = tempfile::tempdir().unwrap();
+    let cluster = cd4_cluster();
+    let store = std::sync::Arc::new(
+        nemesis_board::BoardStore::open(&tmp.path().join("board.db"), "NB").expect("open store"),
+    );
+    let actor = nemesis_board::Actor::system("test");
+    let issue = store
+        .create_issue(nemesis_board::models::NewIssue {
+            title: "cd4".into(),
+            ..Default::default()
+        })
+        .unwrap();
+    // 新行形态：worker_id 已是 real id（T37 写前归一）。
+    store
+        .insert_dispatch("task-cd4-id", issue.id, "remote-001", &actor)
+        .unwrap();
+    // 存量行形态：worker_id 是 peer 名（T37 之前的数据）——按名兜底解析。
+    store
+        .insert_dispatch("task-cd4-name", issue.id, "worker-1", &actor)
+        .unwrap();
+
+    let rebuilt =
+        super::rebuild_pending_from_board_dispatches(&cluster, &(Some(store.clone()) as _));
+
+    assert_eq!(rebuilt, 2, "两条活跃派发行都应重建");
+    let t1 = cluster.task_manager().get_task("task-cd4-id").unwrap();
+    assert_eq!(t1.status, nemesis_types::cluster::TaskStatus::Pending);
+    assert_eq!(t1.peer_id, "remote-001");
+    assert_eq!(t1.action, "peer_chat");
+    let t2 = cluster.task_manager().get_task("task-cd4-name").unwrap();
+    assert_eq!(
+        t2.peer_id, "remote-001",
+        "存量 peer 名行应经 canonical 兜底解析为 real id"
+    );
+
+    // 幂等：重复调用不重复登记。
+    let again = super::rebuild_pending_from_board_dispatches(&cluster, &(Some(store) as _));
+    assert_eq!(again, 0, "已登记的行不得重复重建");
+    let _ = std::fs::remove_dir_all(tmp.path());
+}
+
+#[cfg(all(feature = "board", feature = "cluster"))]
+#[test]
+fn cd4_rebuild_skips_unresolvable_worker_and_none_store() {
+    let tmp = tempfile::tempdir().unwrap();
+    let cluster = cd4_cluster();
+    let store = std::sync::Arc::new(
+        nemesis_board::BoardStore::open(&tmp.path().join("board.db"), "NB").expect("open store"),
+    );
+    let actor = nemesis_board::Actor::system("test");
+    let issue = store
+        .create_issue(nemesis_board::models::NewIssue {
+            title: "cd4-ghost".into(),
+            ..Default::default()
+        })
+        .unwrap();
+    // registry 无此节点的 worker_id → 跳过（留给超时 sweep 既有收口）。
+    store
+        .insert_dispatch("task-cd4-ghost", issue.id, "ghost-worker", &actor)
+        .unwrap();
+
+    // board_store None（board 打开失败形态）→ 直接 0。
+    assert_eq!(
+        super::rebuild_pending_from_board_dispatches(&cluster, &None),
+        0
+    );
+
+    let rebuilt = super::rebuild_pending_from_board_dispatches(&cluster, &(Some(store) as _));
+    assert_eq!(rebuilt, 0, "身份不可解析的行必须跳过");
+    assert!(cluster.task_manager().get_task("task-cd4-ghost").is_none());
+    let _ = std::fs::remove_dir_all(tmp.path());
+}
