@@ -153,6 +153,7 @@ fn test_codex_config_serialization_roundtrip() {
         account_id: "acct-123".into(),
         enable_web_search: false,
         timeout_secs: 120,
+        proxy: None,
     };
     let json = serde_json::to_string(&config).unwrap();
     let back: CodexConfig = serde_json::from_str(&json).unwrap();

@@ -2346,6 +2346,7 @@ mod r9_subprocess {
         .expect("mock");
 
         let cfg = nemesis_providers::factory::FactoryConfig {
+            proxy: String::new(),
             llm_ref: "r9p/repro-x".into(),
             api_key: "sk-r9".into(),
             api_base: format!("{}/v1", mock.base_url()),

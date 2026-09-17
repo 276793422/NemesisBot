@@ -51,6 +51,8 @@ const routes: RouteRecordRaw[] = [
   ...(import.meta.env.VITE_FEATURE_TERMINAL !== 'false' ? [{ path: '/terminal', name: 'terminal', component: () => import('../views/TerminalView.vue') }] : []),
   // P2-2 (2026-08-24 UI entry gap): 「二次开发」SDK 内嵌导出页。
   { path: '/sdk', name: 'sdk', component: () => import('../views/SdkView.vue') },
+  // 代理设置（2026-09-17）：per-model 代理总览 + 环境变量 + lane 支持。
+  { path: '/proxy-settings', name: 'proxy-settings', component: () => import('../views/ProxySettingsView.vue') },
   // Other
   { path: '/about', name: 'about', component: () => import('../views/AboutView.vue') },
   { path: '/license', name: 'license', component: () => import('../views/LicenseView.vue') },

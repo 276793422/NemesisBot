@@ -1488,14 +1488,24 @@ pub async fn run(local: bool, extra_args: &[String]) -> Result<()> {
     // Step 2: Check configuration file exists
     let config_path = common::config_path(&home);
     if !config_path.exists() {
-        eprintln!(
-            "Error: Configuration file not found: {}",
+        // 双击直启 goal（2026-09-17）：config 缺失不再硬退——auto-init
+        // （Seed 种子语义：一切 only-if-absent，用户已有的 workspace/人格/
+        // 子系统配置绝不被 clobber）后继续启动。显式 `nemesisbot gateway`
+        // 同样走此路径：onboard CLI 保留（老用户 re-onboard 覆盖语义），
+        // 但不再是新用户的强制前置步骤。
+        println!(
+            "[Gateway] Configuration file not found at {} — auto-initializing (seed mode)...",
             config_path.display()
         );
-        eprintln!();
-        eprintln!("  Gateway mode requires a configuration file.");
-        eprintln!("  Run 'nemesisbot onboard default' to create one.");
-        std::process::exit(1);
+        if let Err(e) = crate::commands::onboard::onboard_default(
+            &home,
+            local,
+            crate::commands::onboard::OnboardMode::Seed,
+        ) {
+            eprintln!("Error: auto-init failed: {}", e);
+            eprintln!("  Run 'nemesisbot onboard default' to initialize manually.");
+            std::process::exit(1);
+        }
     }
 
     // Step 3: Check home directory exists
@@ -1590,9 +1600,23 @@ pub async fn run(local: bool, extra_args: &[String]) -> Result<()> {
     }
 
     // Step 7: Resolve the default LLM model and create provider
+    // 双击直启 goal（2026-09-17）：resolve/create 失败不再硬退——warn + 降级
+    //（NullProvider，对话诚实报「未配置模型」），Dashboard 配好并设默认后
+    // set_default 热切恢复。一次性 CLI 入口保持严格失败（见 agent_factory 注）。
     let llm_ref = nemesis_config::get_effective_llm(Some(&cfg));
-    let resolution = nemesis_config::resolve_model_config(&cfg, &llm_ref)
-        .map_err(|e| anyhow::anyhow!("Failed to resolve model '{}': {}", llm_ref, e))?;
+    let resolution = match nemesis_config::resolve_model_config(&cfg, &llm_ref) {
+        Ok(r) => r,
+        Err(e) => {
+            warn!(
+                "[Gateway] Failed to resolve model '{}': {} — 无 LLM 降级启动（NullProvider）",
+                llm_ref, e
+            );
+            nemesis_config::ProviderResolution {
+                model_name: llm_ref.clone(),
+                ..Default::default()
+            }
+        }
+    };
 
     // Build the LLM provider once. The same Arc<dyn LLMProvider> is reused by
     // the workflow engine (milestone 1a-E1, so workflow `llm` nodes route to
@@ -1601,6 +1625,7 @@ pub async fn run(local: bool, extra_args: &[String]) -> Result<()> {
     // is enabled.
     #[cfg(any(feature = "workflow", feature = "security"))]
     let factory_cfg = nemesis_providers::factory::FactoryConfig {
+        proxy: resolution.proxy.clone(),
         llm_ref: format!("{}/{}", resolution.provider_name, resolution.model_name),
         api_key: resolution.api_key.clone(),
         api_base: resolution.api_base.clone(),
@@ -1612,11 +1637,17 @@ pub async fn run(local: bool, extra_args: &[String]) -> Result<()> {
         headers: std::collections::HashMap::new(),
     };
     #[cfg(any(feature = "workflow", feature = "security"))]
-    let llm_provider: Arc<dyn nemesis_providers::router::LLMProvider> =
-        nemesis_providers::factory::create_provider(&factory_cfg)
-            .map_err(|e| anyhow::anyhow!("Failed to create provider: {}", e))?;
+    let (llm_provider, provider_assembly_warn): (
+        Arc<dyn nemesis_providers::router::LLMProvider>,
+        Option<String>,
+    ) = nemesis_providers::factory::create_provider_or_null(&factory_cfg);
     #[cfg(any(feature = "workflow", feature = "security"))]
-    {
+    if let Some(ref e) = provider_assembly_warn {
+        warn!(
+            "[Gateway] Provider create failed: {} — workflow/security lane 走 NullProvider 降级",
+            e
+        );
+    } else {
         info!("[Gateway] Provider config validated for {}", llm_ref);
     }
 
@@ -4331,6 +4362,7 @@ pub async fn run(local: bool, extra_args: &[String]) -> Result<()> {
     // 全 lane 统一口径（per-model timeout_secs，缺省 600s）。
     {
         let streaming_factory_cfg = nemesis_providers::factory::FactoryConfig {
+            proxy: resolution.proxy.clone(),
             llm_ref: format!("{}/{}", resolution.provider_name, resolution.model_name),
             api_key: resolution.api_key.clone(),
             api_base: resolution.api_base.clone(),
@@ -4341,19 +4373,20 @@ pub async fn run(local: bool, extra_args: &[String]) -> Result<()> {
             account_id: String::new(),
             headers: std::collections::HashMap::new(),
         };
-        match nemesis_providers::factory::create_provider(&streaming_factory_cfg) {
-            Ok(provider) => {
-                web_server.set_streaming_provider(provider);
-                info!(
-                    "[Gateway] Streaming provider configured (protocol-aware) for /api/chat/stream + persona"
-                );
-            }
-            Err(e) => {
-                warn!(
-                    "[Gateway] Streaming provider assembly failed — SSE/persona lane degraded: {}",
-                    e
-                );
-            }
+        // 双击直启 goal：装配失败装 NullProvider（SSE 流诚实报「未配置模型」），
+        // 不再留空槽——空槽的报错形态对双击新用户是二级谜语。
+        let (streaming_provider, streaming_warn) =
+            nemesis_providers::factory::create_provider_or_null(&streaming_factory_cfg);
+        web_server.set_streaming_provider(streaming_provider);
+        if let Some(e) = streaming_warn {
+            warn!(
+                "[Gateway] Streaming provider assembly failed — SSE/persona lane degraded (NullProvider): {}",
+                e
+            );
+        } else {
+            info!(
+                "[Gateway] Streaming provider configured (protocol-aware) for /api/chat/stream + persona"
+            );
         }
     }
 
@@ -5493,6 +5526,7 @@ pub async fn run(local: bool, extra_args: &[String]) -> Result<()> {
                                 Ok(resolution) => {
                                     let judge_factory_cfg =
                                         nemesis_providers::factory::FactoryConfig {
+                                            proxy: resolution.proxy.clone(),
                                             llm_ref: format!(
                                                 "{}/{}",
                                                 resolution.provider_name, resolution.model_name
@@ -5634,6 +5668,29 @@ pub async fn run(local: bool, extra_args: &[String]) -> Result<()> {
             }
         });
         info!("[Gateway] Internal command listener started");
+    }
+
+    // 双击直启（2026-09-17）：无参启动（BARE_LAUNCH env，run_command 归一化
+    // 时设置）→ 启动完成自动打开 Dashboard（plugin-ui webview 窗口带 token，
+    // 缺 dll 回落浏览器；托盘图标由 Step 22 装配，与本块正交）。显式
+    // `nemesisbot gateway` 不带标记——server 语义，不弹窗口。web 已 bind
+    // （real_port 已知）；sleep 片刻给前端资源一点启动余量。
+    if std::env::var(crate::common::BARE_LAUNCH_ENV).is_ok() {
+        #[cfg(all(feature = "desktop", not(target_os = "android")))]
+        {
+            let pm = Arc::clone(&process_manager);
+            let url = format!("http://{}:{}", web_display_host, real_port);
+            let token = cfg.channels.web.auth_token.clone();
+            tokio::spawn(async move {
+                tokio::time::sleep(std::time::Duration::from_millis(800)).await;
+                info!("[Gateway] Bare launch: opening dashboard window");
+                let _ = open_plugin_window(&pm, "dashboard", &url, &token);
+            });
+        }
+        #[cfg(not(all(feature = "desktop", not(target_os = "android"))))]
+        {
+            info!("[Gateway] Bare launch detected (no desktop feature: skip dashboard auto-open)");
+        }
     }
 
     // T8（多模态 goal 2026-09-03）：uploads 暂存目录 TTL 清扫（启动扫一次 +

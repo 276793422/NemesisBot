@@ -355,25 +355,23 @@ async fn build_agent_loop_full_chain_from_disk_config() {
 }
 
 #[tokio::test]
-async fn build_agent_loop_err_when_config_missing() {
+async fn build_agent_loop_degrades_when_config_missing() {
     let tmp = tempfile::TempDir::new().unwrap();
     // 不写 config.json → load_config 走默认回落（zhipu 默认模型无 key）→
-    // 工厂在 provider 创建处失败（Err，不会 panic / 半装配）。
-    let err = match build_agent_loop(&make_shared(tmp.path())) {
-        Err(e) => e,
-        Ok(_) => panic!("missing config.json must fail the factory"),
-    };
-    assert!(
-        err.to_string().to_lowercase().contains("provider"),
-        "err: {err:#}"
-    );
+    // resolve 失败 → 无 LLM 降级装配（NullProvider，Ok 不 Err）——双击直启
+    // 语义（2026-09-17）：启动不再强制配好 LLM；对话打到 NullProvider 得到
+    // 诚实「未配置模型」报错，Dashboard 配好并设默认后热切恢复。
+    let built = build_agent_loop(&make_shared(tmp.path()))
+        .expect("missing config.json must degrade to NullProvider assembly");
+    assert!(built.tool_count() > 0);
 }
 
 #[tokio::test]
-async fn build_agent_loop_err_when_model_unresolvable() {
+async fn build_agent_loop_degrades_when_model_unresolvable() {
     let tmp = tempfile::TempDir::new().unwrap();
     let home = tmp.path().to_path_buf();
-    // agents.defaults.llm 指向不存在的条目 + model_list 为空 → resolve 失败。
+    // agents.defaults.llm 指向不存在的条目 + model_list 为空 → resolve 失败
+    // → 降级装配（Ok），不 panic / 不半装配（同 config-missing 语义）。
     std::fs::create_dir_all(&home).unwrap();
     std::fs::write(
         home.join("config.json"),
@@ -385,14 +383,9 @@ async fn build_agent_loop_err_when_model_unresolvable() {
     )
     .unwrap();
 
-    let err = match build_agent_loop(&make_shared(&home)) {
-        Err(e) => e,
-        Ok(_) => panic!("unresolvable model must fail"),
-    };
-    assert!(
-        err.to_string().contains("ghost-model"),
-        "err should name the model: {err:#}"
-    );
+    let built = build_agent_loop(&make_shared(&home))
+        .expect("unresolvable model must degrade to NullProvider assembly");
+    assert!(built.tool_count() > 0);
 }
 
 #[tokio::test]

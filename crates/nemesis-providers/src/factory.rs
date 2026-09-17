@@ -63,6 +63,13 @@ pub struct FactoryConfig {
     /// 默认 600s——此前 anthropic/codex/http-compat 各自写死 120s，与
     /// openai 兼容 lane 的 600s 口径分裂（评审 LLM 连续精确 120s 超时根因）。
     pub timeout_secs: u64,
+    /// Per-model 出站代理 URL（代理接线修复，2026-09-17）：来自模型条目
+    /// `proxy` 字段（provider_resolver 透传），支持 http/socks5（reqwest
+    /// `Proxy::all`）。空 = 不代理。此前 FactoryConfig 无此字段、HttpCompat
+    /// lane 硬编码 `proxy: None`——模型管理页填的代理是「配置可见但执行
+    /// 失效」的死配置（factory 整合期回归）。CLI 型 lane（claude-cli/
+    /// codex-cli 子进程）不消费此字段：经进程环境变量 HTTPS_PROXY 代理。
+    pub proxy: String,
 }
 
 /// 全 lane 统一的单请求默认超时（超时阶梯最内层；外层链见 CLAUDE.md）。
@@ -195,6 +202,7 @@ pub fn create_provider(cfg: &FactoryConfig) -> Result<Arc<dyn LLMProvider>, Stri
                 base_url: sel.api_base,
                 default_model: sel.model,
                 timeout_secs: effective_timeout(sel.timeout_secs),
+                proxy: opt_proxy(cfg),
             };
             Arc::new(AnthropicProvider::new(anthropic_cfg))
         }
@@ -205,6 +213,7 @@ pub fn create_provider(cfg: &FactoryConfig) -> Result<Arc<dyn LLMProvider>, Stri
                 default_model: sel.model,
                 base_url: sel.api_base,
                 timeout_secs: effective_timeout(sel.timeout_secs),
+                proxy: opt_proxy(cfg),
                 ..Default::default()
             };
             Arc::new(CodexProvider::new(codex_cfg))
@@ -240,7 +249,7 @@ pub fn create_provider(cfg: &FactoryConfig) -> Result<Arc<dyn LLMProvider>, Stri
                 default_model: sel.model,
                 timeout_secs: effective_timeout(sel.timeout_secs),
                 headers: cfg.headers.clone(),
-                proxy: None,
+                proxy: opt_proxy(cfg),
                 preserve_prefix: false,
             };
             Arc::new(HttpProvider::new(http_cfg))
@@ -248,6 +257,26 @@ pub fn create_provider(cfg: &FactoryConfig) -> Result<Arc<dyn LLMProvider>, Stri
     };
 
     Ok(provider)
+}
+
+/// 空串 → None（不代理）；非空透传。供三个 HTTP lane 共用。
+fn opt_proxy(cfg: &FactoryConfig) -> Option<String> {
+    if cfg.proxy.is_empty() {
+        None
+    } else {
+        Some(cfg.proxy.clone())
+    }
+}
+
+/// 启动装配专用：构造失败 → NullProvider（网关无 LLM 降级启动，双击直启
+/// goal 2026-09-17）。返回 (provider, 装配告警)：告警由调用方打日志——
+/// factory 层不打日志（保持纯函数）。一次性 CLI 入口（run/probe/连通性
+/// 测试）继续用 [`create_provider`]：它们就该 loud 失败。
+pub fn create_provider_or_null(cfg: &FactoryConfig) -> (Arc<dyn LLMProvider>, Option<String>) {
+    match create_provider(cfg) {
+        Ok(p) => (p, None),
+        Err(e) => (crate::null_provider::null_provider(e.clone()), Some(e)),
+    }
 }
 
 #[cfg(test)]

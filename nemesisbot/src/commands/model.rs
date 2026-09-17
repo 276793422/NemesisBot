@@ -998,6 +998,7 @@ async fn run_probe(
         .map_err(|e| anyhow::anyhow!("Failed to resolve model '{}': {}", llm_ref, e))?;
     let model_name = resolution.model_name.clone();
     let factory_cfg = nemesis_providers::factory::FactoryConfig {
+        proxy: resolution.proxy.clone(),
         llm_ref: format!("{}/{}", resolution.provider_name, resolution.model_name),
         api_key: resolution.api_key.clone(),
         api_base: resolution.api_base.clone(),

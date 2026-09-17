@@ -21,6 +21,12 @@ pub struct AnthropicConfig {
     pub default_model: String,
     #[serde(default = "default_timeout")]
     pub timeout_secs: u64,
+    /// 出站代理 URL（代理接线修复 2026-09-17）：http/socks5（reqwest
+    /// `Proxy::all`）；None = 直连。来自模型条目 `proxy` 字段，经
+    /// FactoryConfig 透传。格式非法时 warn 回落直连（与 HttpProvider 同
+    /// 策略——启动不能被一个坏代理 URL 杀死）。
+    #[serde(default)]
+    pub proxy: Option<String>,
 }
 
 // P3A 超时对齐（2026-09-12）：120s 曾与 openai 兼容 lane 的 600s 口径分裂
@@ -38,8 +44,32 @@ impl Default for AnthropicConfig {
             base_url: DEFAULT_BASE_URL.to_string(),
             default_model: DEFAULT_MODEL.to_string(),
             timeout_secs: 600,
+            proxy: None,
         }
     }
+}
+
+/// reqwest client 构造单一出口（timeout + 可选出站代理）。代理 URL 非法
+/// 时 warn 回落直连（启动不能被一个坏代理 URL 杀死——与 HttpProvider
+/// 同策略）。
+fn build_client(timeout_secs: u64, proxy: Option<&str>) -> reqwest::Client {
+    let mut builder =
+        reqwest::Client::builder().timeout(std::time::Duration::from_secs(timeout_secs));
+    if let Some(proxy_url) = proxy
+        && !proxy_url.is_empty()
+    {
+        match reqwest::Proxy::all(proxy_url) {
+            Ok(p) => builder = builder.proxy(p),
+            Err(e) => {
+                tracing::warn!(
+                    proxy = %proxy_url,
+                    error = %e,
+                    "Anthropic provider: invalid proxy URL, using direct connection"
+                );
+            }
+        }
+    }
+    builder.build().expect("failed to build HTTP client")
 }
 
 /// Anthropic Messages API provider.
@@ -51,10 +81,7 @@ pub struct AnthropicProvider {
 
 impl AnthropicProvider {
     pub fn new(config: AnthropicConfig) -> Self {
-        let client = reqwest::Client::builder()
-            .timeout(std::time::Duration::from_secs(config.timeout_secs))
-            .build()
-            .expect("failed to build HTTP client");
+        let client = build_client(config.timeout_secs, config.proxy.as_deref());
         Self {
             config,
             client,
@@ -67,10 +94,7 @@ impl AnthropicProvider {
         config: AnthropicConfig,
         token_source: Box<dyn Fn() -> Result<String, String> + Send + Sync>,
     ) -> Self {
-        let client = reqwest::Client::builder()
-            .timeout(std::time::Duration::from_secs(config.timeout_secs))
-            .build()
-            .expect("failed to build HTTP client");
+        let client = build_client(config.timeout_secs, config.proxy.as_deref());
         Self {
             config,
             client,

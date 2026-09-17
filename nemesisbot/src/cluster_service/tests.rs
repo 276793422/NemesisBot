@@ -139,6 +139,15 @@ fn make_pending_task(task_id: &str) -> ClusterTask {
     }
 }
 
+/// 双击直启降级语义（2026-09-17）后，「无 config.json」不再让 agent 构建
+/// 失败（工厂降级 NullProvider 装配 Ok，消费者真实存在）。需要确定性
+/// 「无 agent 消费者 / handle 缺席」的测试改写损坏的 config.json——
+/// load_config Err 是降级后仅存的工厂失败路径（lenient 臂照常可达）。
+fn write_corrupt_config(home: &std::path::Path) {
+    std::fs::create_dir_all(home).unwrap();
+    std::fs::write(home.join("config.json"), "{ not valid json").unwrap();
+}
+
 /// 组一个带 ClusterRpcTool 使能旗标的 shared（可观察 start/stop 的旗标翻转）。
 fn make_shared_with_flag(home: &std::path::Path) -> Arc<crate::agent_factory::SharedResources> {
     let (outbound_tx, _rx) = tokio::sync::mpsc::channel(16);
@@ -212,10 +221,13 @@ async fn first_start_with_valid_config_marks_running_and_enables_rpc_tool() {
 #[tokio::test]
 async fn first_start_with_bad_config_is_lenient_running_without_agent() {
     let tmp = tempfile::tempdir().unwrap();
-    // 不写 config.json → build_cluster_agent_loop 失败（默认模型无 key）→
-    // 现行为：handle=None 但 running=true（lenient，不回滚状态）。
+    // 损坏 config.json → build_cluster_agent_loop 失败（load_config Err 是
+    // 降级语义下仅存的构建失败路径）→ 现行为：handle=None 但 running=true
+    // （lenient，不回滚状态）。
+    let home = tmp.path().join("home");
+    write_corrupt_config(&home);
     let (adapter, _cluster, _shared, _tl, _wq, flag) =
-        make_adapter(&tmp.path().join("home"), &tmp.path().join("tasks"));
+        make_adapter(&home, &tmp.path().join("tasks"));
 
     adapter
         .first_start()
@@ -242,10 +254,11 @@ async fn first_start_recovers_persisted_tasks_and_resubmits_them() {
     seeder.persist_to_disk().expect("seed persist must succeed");
     drop(seeder);
 
-    // 用坏 config（无 config.json）让 agent 构建失败 → 没有 agent 消费队列，
-    // 恢复重提的任务会留在 work queue 里可被直接观察。
-    let (adapter, _cluster, _shared, task_list, work_queue, _flag) =
-        make_adapter(&tmp.path().join("home"), &task_dir);
+    // 用损坏 config 让 agent 构建失败（降级语义下唯一确定性构造）→ 没有
+    // agent 消费队列，恢复重提的任务会留在 work queue 里可被直接观察。
+    let home = tmp.path().join("home");
+    write_corrupt_config(&home);
+    let (adapter, _cluster, _shared, task_list, work_queue, _flag) = make_adapter(&home, &task_dir);
     adapter.first_start().expect("first_start");
 
     // WaitingRemote → Pending 归一化（恢复语义）。
@@ -333,10 +346,11 @@ async fn wave_c_first_start_lenient_when_tasks_index_is_corrupt() {
     std::fs::create_dir_all(&index_dir).unwrap();
     std::fs::write(index_dir.join("tasks.json"), "{{{ corrupt").unwrap();
 
-    // 坏 config（无 config.json）→ agent 构建走 lenient 分支；两处 lenient
-    // 叠加也不影响 Ok。
-    let (adapter, _cluster, _shared, _tl, _wq, _flag) =
-        make_adapter(&tmp.path().join("home"), &task_dir);
+    // 损坏 config → agent 构建走 lenient 分支（降级语义下唯一确定性构造）；
+    // 两处 lenient 叠加也不影响 Ok。
+    let home = tmp.path().join("home");
+    write_corrupt_config(&home);
+    let (adapter, _cluster, _shared, _tl, _wq, _flag) = make_adapter(&home, &task_dir);
     adapter
         .first_start()
         .expect("restore failure must be lenient");
@@ -356,8 +370,12 @@ async fn wave_c_first_start_resubmit_overflow_is_bounded_by_queue_capacity() {
     let id_refs: Vec<&str> = ids.iter().map(String::as_str).collect();
     seed_pending_tasks(&task_dir, &id_refs);
 
-    let (adapter, _cluster, _shared, task_list, work_queue, _flag) =
-        make_adapter(&tmp.path().join("home"), &task_dir);
+    // 损坏 config → agent 构建失败（降级语义下唯一确定性构造，无消费者）→
+    // 前 8 个入队成功、其余 submit Err（内部只 warn）。可观察结果：队列里
+    // 恰好能抽到 8 个 id。
+    let home = tmp.path().join("home");
+    write_corrupt_config(&home);
+    let (adapter, _cluster, _shared, task_list, work_queue, _flag) = make_adapter(&home, &task_dir);
     adapter.first_start().expect("first_start");
 
     // 全部恢复成 Pending。
@@ -437,12 +455,13 @@ async fn wave_c_start_fails_when_rpc_port_is_already_bound() {
     drop(blocker);
 }
 
-/// shared 没有 ClusterRpcTool 使能旗标（None）+ agent 构建失败（无
-/// config.json）→ start/stop 都要容忍：running 正常翻转，stop 在拿不到
-/// agent handle 时走 None 臂不 panic。
+/// shared 没有 ClusterRpcTool 使能旗标（None）+ agent 构建失败（损坏
+/// config.json，降级语义下唯一确定性构造）→ start/stop 都要容忍：running
+/// 正常翻转，stop 在拿不到 agent handle 时走 None 臂不 panic。
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn wave_c_lifecycle_tolerates_flagless_shared_and_absent_agent_handle() {
     let tmp = tempfile::tempdir().unwrap();
+    write_corrupt_config(tmp.path());
     let cluster = Arc::new(nemesis_cluster::cluster::Cluster::new(ClusterConfig {
         node_id: "wc-flagless".to_string(),
         bind_address: "127.0.0.1:0".to_string(),
@@ -499,9 +518,11 @@ async fn r10_first_start_recovery_info_fields_execute_with_subscriber() {
     seeder.persist_to_disk().expect("seed persist must succeed");
     drop(seeder);
 
-    // 坏 config（无 config.json）→ agent 构建失败 lenient，但恢复分支先行。
-    let (adapter, _cluster, _shared, _tl, _wq, _flag) =
-        make_adapter(&tmp.path().join("home"), &task_dir);
+    // 损坏 config → agent 构建失败 lenient（降级语义下唯一确定性构造），
+    // 但恢复分支先行。
+    let home = tmp.path().join("home");
+    write_corrupt_config(&home);
+    let (adapter, _cluster, _shared, _tl, _wq, _flag) = make_adapter(&home, &task_dir);
     adapter.first_start().expect("first_start");
 
     assert!(

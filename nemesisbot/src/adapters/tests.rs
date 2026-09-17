@@ -353,7 +353,7 @@ async fn agent_loop_adapter_full_lifecycle_with_prebuilt_loop() {
 }
 
 #[tokio::test]
-async fn agent_loop_adapter_rebuild_after_stop_and_err_on_bad_config() {
+async fn agent_loop_adapter_rebuild_after_stop_degrades_on_bad_config() {
     let tmp = tempfile::TempDir::new().unwrap();
     let home = tmp.path().to_path_buf();
     write_minimal_model_config(&home);
@@ -369,19 +369,18 @@ async fn agent_loop_adapter_rebuild_after_stop_and_err_on_bad_config() {
     adapter.stop().expect("stop before rebuild");
     assert!(adapter.current().is_none());
 
-    // 重建失败分支：删 config.json → 工厂回落默认模型（无 key）→ Err；
-    // 状态保持未启动（agent_loop 仍 None，agent_loop_ref 仍 None）。
+    // 重建降级分支（双击直启语义 2026-09-17）：删 config.json → 工厂回落
+    // 默认模型（无 key）→ resolve 失败 → NullProvider 降级装配（Ok 不
+    // Err）——无 LLM 不是启动错误；状态变为已启动。
     std::fs::remove_file(home.join("config.json")).unwrap();
-    let err = adapter.start().unwrap_err();
-    assert!(
-        err.contains("Failed to build agent loop"),
-        "err should be wrapped factory failure, got: {err}"
-    );
-    assert!(adapter.current().is_none());
-    assert!(!LifecycleService::is_running(&adapter));
-    assert!(agent_loop_ref.read().is_none());
+    adapter
+        .start()
+        .expect("degraded rebuild start (NullProvider) must succeed");
+    assert!(adapter.current().is_some());
+    assert!(LifecycleService::is_running(&adapter));
 
-    // 恢复合法 config → 重建成功（走 build_agent_loop 分支）。
+    // 恢复合法 config → stop 后重建仍成功（走 build_agent_loop 分支）。
+    adapter.stop().expect("stop before valid rebuild");
     write_minimal_model_config(&home);
     adapter
         .start()

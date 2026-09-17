@@ -781,10 +781,10 @@ async fn run_command_onboard_default_writes_full_home() {
 
     let cli = Cli {
         local: false,
-        command: Commands::Onboard {
+        command: Some(Commands::Onboard {
             default: true,
             args: vec![],
-        },
+        }),
     };
     run_command(cli)
         .await
@@ -845,10 +845,10 @@ async fn run_command_onboard_via_args_variant_also_defaults() {
 
     let cli = Cli {
         local: false,
-        command: Commands::Onboard {
+        command: Some(Commands::Onboard {
             default: false,
             args: vec!["default".to_string()],
-        },
+        }),
     };
     run_command(cli)
         .await
@@ -871,10 +871,10 @@ async fn run_command_onboard_existing_config_keeps_main_config() {
 
     let cli = Cli {
         local: false,
-        command: Commands::Onboard {
+        command: Some(Commands::Onboard {
             default: true,
             args: vec![],
-        },
+        }),
     };
     run_command(cli)
         .await
@@ -904,7 +904,7 @@ async fn run_command_version_arm_is_safe_no_op() {
     let _th = temp_home_env();
     let cli = Cli {
         local: false,
-        command: Commands::Version,
+        command: Some(Commands::Version),
     };
     run_command(cli).await.expect("version arm must succeed");
 }
@@ -995,7 +995,7 @@ mod wave_b {
     fn wb_cli(command: Commands) -> Cli {
         Cli {
             local: false,
-            command,
+            command: Some(command),
         }
     }
 

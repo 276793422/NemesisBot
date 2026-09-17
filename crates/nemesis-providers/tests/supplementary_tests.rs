@@ -1109,6 +1109,7 @@ mod factory_extra {
     #[test]
     fn test_resolve_anthropic_default_base() {
         let cfg = FactoryConfig {
+            proxy: String::new(),
             llm_ref: "anthropic/claude-sonnet".to_string(),
             api_key: "key".to_string(),
             ..Default::default()
@@ -1133,6 +1134,7 @@ mod factory_extra {
     #[test]
     fn test_resolve_openai_default_base() {
         let cfg = FactoryConfig {
+            proxy: String::new(),
             llm_ref: "openai/gpt-4o".to_string(),
             api_key: "key".to_string(),
             ..Default::default()
@@ -1145,6 +1147,7 @@ mod factory_extra {
     fn test_resolve_claude_cli_aliases() {
         for alias in &["claude-cli", "claude-code", "claudecodec"] {
             let cfg = FactoryConfig {
+                proxy: String::new(),
                 llm_ref: format!("{}/model", alias),
                 ..Default::default()
             };
@@ -1157,6 +1160,7 @@ mod factory_extra {
     fn test_resolve_codex_cli_aliases() {
         for alias in &["codex-cli", "codex-code"] {
             let cfg = FactoryConfig {
+                proxy: String::new(),
                 llm_ref: format!("{}/model", alias),
                 ..Default::default()
             };
@@ -1169,6 +1173,7 @@ mod factory_extra {
     fn test_resolve_copilot_aliases() {
         for alias in &["copilot", "github_copilot"] {
             let cfg = FactoryConfig {
+                proxy: String::new(),
                 llm_ref: format!("{}/gpt-4", alias),
                 ..Default::default()
             };
@@ -1180,6 +1185,7 @@ mod factory_extra {
     #[test]
     fn test_resolve_http_no_key_error() {
         let cfg = FactoryConfig {
+            proxy: String::new(),
             llm_ref: "deepseek/chat".to_string(),
             ..Default::default()
         };
@@ -1191,6 +1197,7 @@ mod factory_extra {
     #[test]
     fn test_resolve_empty_ref_error() {
         let cfg = FactoryConfig {
+            proxy: String::new(),
             llm_ref: "".to_string(),
             ..Default::default()
         };
@@ -1200,6 +1207,7 @@ mod factory_extra {
     #[test]
     fn test_resolve_workspace_default() {
         let cfg = FactoryConfig {
+            proxy: String::new(),
             llm_ref: "anthropic/claude".to_string(),
             api_key: "key".to_string(),
             ..Default::default()
@@ -1211,6 +1219,7 @@ mod factory_extra {
     #[test]
     fn test_resolve_workspace_custom() {
         let cfg = FactoryConfig {
+            proxy: String::new(),
             llm_ref: "anthropic/claude".to_string(),
             api_key: "key".to_string(),
             workspace: "/custom/path".to_string(),
@@ -1234,6 +1243,7 @@ mod factory_extra {
     #[test]
     fn test_create_provider_anthropic() {
         let cfg = FactoryConfig {
+            proxy: String::new(),
             llm_ref: "anthropic/claude-sonnet".to_string(),
             api_key: "test-key".to_string(),
             ..Default::default()
@@ -1245,6 +1255,7 @@ mod factory_extra {
     #[test]
     fn test_create_provider_http() {
         let cfg = FactoryConfig {
+            proxy: String::new(),
             llm_ref: "deepseek/chat".to_string(),
             api_key: "test-key".to_string(),
             api_base: "https://api.deepseek.com/v1".to_string(),
@@ -1257,6 +1268,7 @@ mod factory_extra {
     #[test]
     fn test_create_provider_claude_cli() {
         let cfg = FactoryConfig {
+            proxy: String::new(),
             llm_ref: "claude-cli/claude-code".to_string(),
             ..Default::default()
         };
@@ -1267,6 +1279,7 @@ mod factory_extra {
     #[test]
     fn test_create_provider_codex_cli() {
         let cfg = FactoryConfig {
+            proxy: String::new(),
             llm_ref: "codex-cli/default".to_string(),
             ..Default::default()
         };
@@ -1277,6 +1290,7 @@ mod factory_extra {
     #[test]
     fn test_create_provider_copilot() {
         let cfg = FactoryConfig {
+            proxy: String::new(),
             llm_ref: "copilot/gpt-4.1".to_string(),
             ..Default::default()
         };
@@ -1287,6 +1301,7 @@ mod factory_extra {
     #[test]
     fn test_create_provider_codex() {
         let cfg = FactoryConfig {
+            proxy: String::new(),
             llm_ref: "openai/gpt-4o".to_string(),
             api_key: "test-key".to_string(),
             ..Default::default()

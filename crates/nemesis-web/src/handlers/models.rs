@@ -41,6 +41,9 @@ impl ModuleHandler for ModelsHandler {
             "catalog_info",
             "catalog_update",
             "health",
+            // 代理设置页（2026-09-17）：per-model 代理总览 + 进程环境变量 +
+            // lane 支持说明。只读——编辑走模型管理 add/update_field。
+            "proxy_overview",
         ]
     }
 
@@ -82,6 +85,8 @@ impl ModuleHandler for ModelsHandler {
             // P2B（2026-09-12 NB-15 根修配套）：模型工具健康（近 N 天
             // 工具调用 / 参数校验失败 + 阈值建议）。
             "health" => self.health(ctx, data),
+            // 代理设置页（2026-09-17）：只读总览。
+            "proxy_overview" => self.proxy_overview(home),
             _ => Err(format!("unknown command: models.{}", cmd)),
         }
     }
@@ -153,6 +158,8 @@ struct SwapParams {
     protocol: String,
     /// Per-model 单请求超时秒数（P3A 超时对齐）。0 = lane 默认 600s。
     timeout_secs: u64,
+    /// Per-model 出站代理 URL（代理接线修复 2026-09-17）。空 = 不代理。
+    proxy: String,
 }
 
 impl ModelsHandler {
@@ -225,6 +232,72 @@ impl ModelsHandler {
             })
             .collect();
         Ok(Some(serde_json::json!({ "models": models })))
+    }
+
+    /// 代理设置页（2026-09-17）：per-model 代理配置总览 + 进程环境变量
+    /// 代理 + lane 支持说明。只读——编辑走模型管理 add/update_field
+    /// （proxy 字段）或 config.json，保存后 set_default 热切/下一轮
+    /// config 重读生效。
+    fn proxy_overview(&self, home: &str) -> Result<Option<serde_json::Value>, String> {
+        let config = load_config(home)?;
+        let default_llm = config.agents.defaults.llm.clone();
+        let models: Vec<_> = config
+            .model_list
+            .iter()
+            .map(|m| {
+                let alias = m.model.split('/').next_back().unwrap_or("");
+                let is_default = !default_llm.is_empty()
+                    && (m.model_name == default_llm
+                        || m.model == default_llm
+                        || (!alias.is_empty() && alias == default_llm));
+                serde_json::json!({
+                    "model_name": m.model_name,
+                    "model": m.model,
+                    // "" = 自动推断（provider 前缀）
+                    "protocol": m.protocol,
+                    // "" = 直连
+                    "proxy": m.proxy,
+                    "is_default": is_default,
+                })
+            })
+            .collect();
+
+        // reqwest 默认读的环境变量（大小写两种形态都读，展示合并值）。
+        let env_or = |keys: &[&str]| -> String {
+            for k in keys {
+                if let Ok(v) = std::env::var(k)
+                    && !v.is_empty()
+                {
+                    return v;
+                }
+            }
+            String::new()
+        };
+        Ok(Some(serde_json::json!({
+            "models": models,
+            "env": {
+                "http_proxy": env_or(&["HTTP_PROXY", "http_proxy"]),
+                "https_proxy": env_or(&["HTTPS_PROXY", "https_proxy"]),
+                "all_proxy": env_or(&["ALL_PROXY", "all_proxy"]),
+                "no_proxy": env_or(&["NO_PROXY", "no_proxy"]),
+            },
+            // 代理接线修复（2026-09-17）后各 lane 的 per-model proxy 支持：
+            // 三个 HTTP lane（factory create_provider）全接线；CLI 型 lane
+            // 是本地子进程，走进程环境变量。
+            "lane_support": [
+                {"lane": "OpenAI 兼容（chat/completions）", "per_model_proxy": true},
+                {"lane": "Anthropic Messages（/v1/messages）", "per_model_proxy": true},
+                {"lane": "OpenAI Responses（codex）", "per_model_proxy": true},
+                {"lane": "claude-cli / codex-cli（CLI 子进程）", "per_model_proxy": false,
+                 "note": "CLI 型 lane 代理走进程环境变量 HTTPS_PROXY / HTTP_PROXY"},
+            ],
+            "notes": [
+                "per-model proxy 填 http://host:port 或 socks5://host:port，留空 = 直连",
+                "非法代理 URL 在 provider 构造时 warn 回落直连（不阻断启动）",
+                "环境变量代理由 reqwest 隐式消费；per-model proxy 优先级高于环境变量",
+                "改代理后需重新设默认（set_default 热切）或重启网关生效——协议/代理在 provider 构造时消费",
+            ],
+        })))
     }
 
     fn add(
@@ -402,6 +475,7 @@ impl ModelsHandler {
 
         if let Some(agent_loop) = ctx.state.agent_loop.read().as_ref() {
             let factory_cfg = nemesis_providers::factory::FactoryConfig {
+                proxy: swap.proxy.clone(),
                 llm_ref: swap.llm_ref,
                 api_key: swap.api_key.clone(),
                 api_base: swap.api_base,
@@ -461,6 +535,7 @@ impl ModelsHandler {
             connect_mode: resolution.connect_mode,
             protocol: resolution.protocol,
             timeout_secs: resolution.timeout_secs,
+            proxy: resolution.proxy,
         })
     }
 
@@ -539,9 +614,27 @@ impl ModelsHandler {
                 let normalized = nemesis_types::capability::normalize_model_protocol(s)?;
                 serde_json::Value::String(normalized)
             }
+            "proxy" => {
+                // 代理设置页（2026-09-17）：空串 = 清除（直连）；非空做
+                // 前缀校验（reqwest Proxy::all 支持的形态），彻底校验留给
+                // provider 构造（非法 warn 回落直连，不阻断）。注意：代理
+                // 在 provider 构造时消费——改默认模型的代理后需 set_default
+                // 热切或重启网关生效（前端代理页已自动跟发 set_default）。
+                let s = value.as_str().ok_or("proxy must be a string")?.trim();
+                let valid_prefix = ["http://", "https://", "socks://", "socks5://", "socks5h://"]
+                    .iter()
+                    .any(|p| s.starts_with(p));
+                if !s.is_empty() && !valid_prefix {
+                    return Err(
+                        "proxy must start with http:// | https:// | socks:// | socks5:// | socks5h:// (or be empty to clear)"
+                            .to_string(),
+                    );
+                }
+                serde_json::Value::String(s.to_string())
+            }
             _ => {
                 return Err(format!(
-                    "unknown field '{field}'. Supported: model_tier | reasoning_effort | model_size_b | real_name | context_window | protocol"
+                    "unknown field '{field}'. Supported: model_tier | reasoning_effort | model_size_b | real_name | context_window | protocol | proxy"
                 ));
             }
         };

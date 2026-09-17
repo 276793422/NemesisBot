@@ -372,11 +372,27 @@ pub fn build_agent_loop(
 
     // 2. Resolve LLM model → create fresh provider.
     let llm_ref = nemesis_config::get_effective_llm(Some(&cfg));
-    let resolution = nemesis_config::resolve_model_config(&cfg, &llm_ref)
-        .map_err(|e| anyhow::anyhow!("Failed to resolve model '{}': {}", llm_ref, e))?;
+    let (resolution, _resolve_degraded) = match nemesis_config::resolve_model_config(&cfg, &llm_ref)
+    {
+        Ok(r) => (r, None),
+        Err(e) => {
+            warn!(
+                "[AgentFactory] Failed to resolve model '{}': {} — 无 LLM 降级装配（NullProvider，Dashboard 配好并设默认后热切恢复）",
+                llm_ref, e
+            );
+            (
+                nemesis_config::ProviderResolution {
+                    model_name: llm_ref.clone(),
+                    ..Default::default()
+                },
+                Some(e.to_string()),
+            )
+        }
+    };
     let model_name = resolution.model_name.clone();
 
     let factory_cfg = nemesis_providers::factory::FactoryConfig {
+        proxy: resolution.proxy.clone(),
         llm_ref: format!("{}/{}", resolution.provider_name, resolution.model_name),
         api_key: resolution.api_key.clone(),
         api_base: resolution.api_base.clone(),
@@ -387,8 +403,15 @@ pub fn build_agent_loop(
         account_id: String::new(),
         headers: HashMap::new(),
     };
-    let provider = nemesis_providers::factory::create_provider(&factory_cfg)
-        .map_err(|e| anyhow::anyhow!("Failed to create provider: {}", e))?;
+    // 双击直启 goal（2026-09-17）：启动装配用 or_null——全新安装没配模型时
+    // 网关必须照样起（先见 Dashboard、后配 LLM 热切）；一次性入口才 strict。
+    let (provider, create_warn) = nemesis_providers::factory::create_provider_or_null(&factory_cfg);
+    if let Some(w) = create_warn {
+        warn!(
+            "[AgentFactory] Provider create failed: {} — NullProvider 装配",
+            w
+        );
+    }
     let provider_arc: Arc<dyn nemesis_providers::router::LLMProvider> = provider;
     info!("[AgentFactory] Provider created for {}", model_name);
 
@@ -556,6 +579,7 @@ pub fn build_agent_loop(
         match nemesis_config::resolve_model_config(&cfg, small_ref) {
             Ok(resolution) => {
                 let small_factory_cfg = nemesis_providers::factory::FactoryConfig {
+                    proxy: resolution.proxy.clone(),
                     llm_ref: format!("{}/{}", resolution.provider_name, resolution.model_name),
                     api_key: resolution.api_key.clone(),
                     api_base: resolution.api_base.clone(),
@@ -1254,11 +1278,27 @@ pub fn build_cluster_agent_loop(
 
     // 2. Resolve LLM model → create provider.
     let llm_ref = nemesis_config::get_effective_llm(Some(&cfg));
-    let resolution = nemesis_config::resolve_model_config(&cfg, &llm_ref)
-        .map_err(|e| anyhow::anyhow!("Failed to resolve model '{}': {}", llm_ref, e))?;
+    let (resolution, _resolve_degraded) = match nemesis_config::resolve_model_config(&cfg, &llm_ref)
+    {
+        Ok(r) => (r, None),
+        Err(e) => {
+            warn!(
+                "[AgentFactory] Failed to resolve model '{}': {} — 无 LLM 降级装配（NullProvider）",
+                llm_ref, e
+            );
+            (
+                nemesis_config::ProviderResolution {
+                    model_name: llm_ref.clone(),
+                    ..Default::default()
+                },
+                Some(e.to_string()),
+            )
+        }
+    };
     let model_name = resolution.model_name.clone();
 
     let factory_cfg = nemesis_providers::factory::FactoryConfig {
+        proxy: resolution.proxy.clone(),
         llm_ref: format!("{}/{}", resolution.provider_name, resolution.model_name),
         api_key: resolution.api_key.clone(),
         api_base: resolution.api_base.clone(),
@@ -1269,8 +1309,15 @@ pub fn build_cluster_agent_loop(
         account_id: String::new(),
         headers: HashMap::new(),
     };
-    let provider = nemesis_providers::factory::create_provider(&factory_cfg)
-        .map_err(|e| anyhow::anyhow!("Failed to create provider: {}", e))?;
+    // 双击直启 goal：集群 agent 装配同样 or_null（worker 无模型时 loop 照建，
+    // 派来的任务诚实报错回传，节点不因缺模型掉线）。
+    let (provider, create_warn) = nemesis_providers::factory::create_provider_or_null(&factory_cfg);
+    if let Some(w) = create_warn {
+        warn!(
+            "[AgentFactory] Cluster agent provider create failed: {} — NullProvider 装配",
+            w
+        );
+    }
     let provider_arc: Arc<dyn nemesis_providers::router::LLMProvider> = provider;
 
     // 3. Load cluster system prompt from workspace/cluster/IDENTITY.md + SOUL.md.
@@ -1775,11 +1822,27 @@ pub fn build_project_agent_loop(
     let cfg = nemesis_config::load_config(&config_path)
         .map_err(|e| anyhow::anyhow!("Failed to load config: {}", e))?;
     let llm_ref = nemesis_config::get_effective_llm(Some(&cfg));
-    let resolution = nemesis_config::resolve_model_config(&cfg, &llm_ref)
-        .map_err(|e| anyhow::anyhow!("Failed to resolve model '{}': {}", llm_ref, e))?;
+    let (resolution, _resolve_degraded) = match nemesis_config::resolve_model_config(&cfg, &llm_ref)
+    {
+        Ok(r) => (r, None),
+        Err(e) => {
+            warn!(
+                "[AgentFactory] Failed to resolve model '{}': {} — 无 LLM 降级装配（NullProvider）",
+                llm_ref, e
+            );
+            (
+                nemesis_config::ProviderResolution {
+                    model_name: llm_ref.clone(),
+                    ..Default::default()
+                },
+                Some(e.to_string()),
+            )
+        }
+    };
     let model_name = resolution.model_name.clone();
 
     let factory_cfg = nemesis_providers::factory::FactoryConfig {
+        proxy: resolution.proxy.clone(),
         llm_ref: format!("{}/{}", resolution.provider_name, resolution.model_name),
         api_key: resolution.api_key.clone(),
         api_base: resolution.api_base.clone(),
@@ -1790,8 +1853,14 @@ pub fn build_project_agent_loop(
         account_id: String::new(),
         headers: HashMap::new(),
     };
-    let provider = nemesis_providers::factory::create_provider(&factory_cfg)
-        .map_err(|e| anyhow::anyhow!("Failed to create provider: {}", e))?;
+    // 双击直启 goal：项目 loop 装配 or_null（主实例无模型时项目 loop 照建）。
+    let (provider, create_warn) = nemesis_providers::factory::create_provider_or_null(&factory_cfg);
+    if let Some(w) = create_warn {
+        warn!(
+            "[AgentFactory] Project agent provider create failed: {} — NullProvider 装配",
+            w
+        );
+    }
     let provider_arc: Arc<dyn nemesis_providers::router::LLMProvider> = provider;
 
     // 2. 轻量基线 system prompt：项目目录自身的 IDENTITY/SOUL（若用户放置），
@@ -1905,6 +1974,7 @@ pub fn build_project_agent_loop(
         match nemesis_config::resolve_model_config(&cfg, small_ref) {
             Ok(resolution) => {
                 let small_factory_cfg = nemesis_providers::factory::FactoryConfig {
+                    proxy: resolution.proxy.clone(),
                     llm_ref: format!("{}/{}", resolution.provider_name, resolution.model_name),
                     api_key: resolution.api_key.clone(),
                     api_base: resolution.api_base.clone(),

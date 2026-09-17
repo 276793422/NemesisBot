@@ -174,6 +174,7 @@ fn test_anthropic_config_serialization_roundtrip() {
         base_url: "https://custom.api.com".into(),
         default_model: "claude-3-opus".into(),
         timeout_secs: 60,
+        proxy: None,
     };
     let json = serde_json::to_string(&config).unwrap();
     let back: AnthropicConfig = serde_json::from_str(&json).unwrap();
@@ -617,6 +618,7 @@ fn anth_config(base: &str) -> AnthropicConfig {
         base_url: base.to_string(),
         default_model: "claude-default".to_string(),
         timeout_secs: 10,
+        proxy: None,
     }
 }
 

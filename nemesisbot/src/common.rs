@@ -624,3 +624,85 @@ pub fn setup_cron_tool(
 
 #[cfg(test)]
 mod tests;
+
+// =========================================================================
+// 双击直启（2026-09-17）：无窗重生
+// =========================================================================
+
+/// env 标记：本进程是无窗重生出来的子进程（Windows 双击检测后
+/// respawn_detached_and_exit 设置）。子进程据此跳过二次检测。
+pub const BARE_CHILD_ENV: &str = "NEMESISBOT_BARE_CHILD";
+
+/// env 标记：双击直启（无参启动）语义——gateway 启动完成后自动打开
+/// Dashboard（plugin-ui webview 窗口，缺 dll 回落浏览器）。显式
+/// `nemesisbot gateway` 不带此标记（server 语义，不弹窗口）。
+pub const BARE_LAUNCH_ENV: &str = "NEMESISBOT_BARE_LAUNCH";
+
+/// Windows：本进程是否「独占一个新控制台」——双击 exe 的典型形态。
+///
+/// GetConsoleProcessList == 1：控制台上只挂着本进程（无父 shell）。
+/// 从既有终端（cmd/PowerShell/WT）启动时父 shell 也在列表里（≥2）→
+/// 不算双击。无控制台（重定向/已 DETACHED/服务）返回 0 → 不算。
+#[cfg(target_os = "windows")]
+pub fn console_is_solo_fresh() -> bool {
+    use windows_sys::Win32::System::Console::GetConsoleProcessList;
+    let mut buf = [0u32; 16];
+    // SAFETY: 传有效缓冲区指针与容量（win32 API 契约）。
+    let count = unsafe { GetConsoleProcessList(buf.as_mut_ptr(), 16) };
+    count == 1
+}
+
+#[cfg(not(target_os = "windows"))]
+pub fn console_is_solo_fresh() -> bool {
+    false
+}
+
+/// Windows：双击直启的无窗重生——spawn 同参数 DETACHED_PROCESS 子进程
+/// （stdio 全 NUL，防 println! 断句柄 panic；env [`BARE_CHILD_ENV`]=1），
+/// 返回 true 时调用方立即 exit(0)，父控制台（双击弹出的黑窗）随本进程
+/// 退出即灭（~100ms 闪烁是 console 子系统固有，无法避免）。
+///
+/// 重生失败（极端：exe 被移走/句柄耗尽）返回 false：保留当前控制台继续
+/// 跑，比「双击无反应」好——用户至少看得到 gateway 日志。
+///
+/// 只在「无参/gateway 语义 + 独占新控制台 + 非 BARE_CHILD」时调用
+/// （调用方判定，见 main.rs）；其他子命令保持控制台输出（短命 CLI
+/// 操作，双击场景下用户需要看到输出）。
+#[cfg(target_os = "windows")]
+pub fn try_respawn_detached() -> bool {
+    use std::os::windows::process::CommandExt;
+    use std::process::{Command, Stdio};
+
+    const DETACHED_PROCESS: u32 = 0x0000_0008;
+
+    let exe = match std::env::current_exe() {
+        Ok(p) => p,
+        Err(_) => return false,
+    };
+    // 用原始 argv（含 --local 等），子进程按同一套规则重新解析。
+    let args: Vec<String> = std::env::args().skip(1).collect();
+
+    match Command::new(&exe)
+        .args(&args)
+        .env(BARE_CHILD_ENV, "1")
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .creation_flags(DETACHED_PROCESS)
+        .spawn()
+    {
+        Ok(_) => true,
+        Err(e) => {
+            eprintln!(
+                "[nemesisbot] detached respawn failed ({}): running in this console instead",
+                e
+            );
+            false
+        }
+    }
+}
+
+#[cfg(not(target_os = "windows"))]
+pub fn try_respawn_detached() -> bool {
+    false
+}

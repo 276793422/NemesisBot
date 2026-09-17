@@ -84,25 +84,31 @@ use anyhow::Result;
 use clap::{Parser, Subcommand};
 
 // Embed all config templates at compile time (mirrors Go's //go:embed config)
-const CONFIG_DEFAULT: &str = include_str!("../config/config.default.json");
-const CONFIG_MCP_DEFAULT: &str = include_str!("../config/config.mcp.default.json");
-const CONFIG_CLUSTER_DEFAULT: &str = include_str!("../config/config.cluster.default.json");
-const CONFIG_SKILLS_DEFAULT: &str = include_str!("../config/config.skills.default.json");
-const CONFIG_SCANNER_DEFAULT: &str = include_str!("../config/config.scanner.default.json");
-const CONFIG_ENHANCED_MEMORY_DEFAULT: &str =
+// pub(crate)：onboard 提取模块（commands/onboard.rs）共用同一份嵌入常量，
+// 不二次 include_str（单一真相源）。
+pub(crate) const CONFIG_DEFAULT: &str = include_str!("../config/config.default.json");
+pub(crate) const CONFIG_MCP_DEFAULT: &str = include_str!("../config/config.mcp.default.json");
+pub(crate) const CONFIG_CLUSTER_DEFAULT: &str =
+    include_str!("../config/config.cluster.default.json");
+pub(crate) const CONFIG_SKILLS_DEFAULT: &str = include_str!("../config/config.skills.default.json");
+pub(crate) const CONFIG_SCANNER_DEFAULT: &str =
+    include_str!("../config/config.scanner.default.json");
+pub(crate) const CONFIG_ENHANCED_MEMORY_DEFAULT: &str =
     include_str!("../config/config.enhanced_memory.default.json");
-const CONFIG_CHAT_DEFAULT: &str = include_str!("../config/config.chat.default.json");
-const CONFIG_FORGE_DEFAULT: &str = include_str!("../config/config.forge.default.json");
-const CONFIG_SECURITY_WINDOWS: &str = include_str!("../config/config.security.windows.json");
-const CONFIG_SECURITY_LINUX: &str = include_str!("../config/config.security.linux.json");
-const CONFIG_SECURITY_DARWIN: &str = include_str!("../config/config.security.darwin.json");
-const CONFIG_SECURITY_OTHER: &str = include_str!("../config/config.security.other.json");
+pub(crate) const CONFIG_CHAT_DEFAULT: &str = include_str!("../config/config.chat.default.json");
+pub(crate) const CONFIG_FORGE_DEFAULT: &str = include_str!("../config/config.forge.default.json");
+pub(crate) const CONFIG_SECURITY_WINDOWS: &str =
+    include_str!("../config/config.security.windows.json");
+pub(crate) const CONFIG_SECURITY_LINUX: &str = include_str!("../config/config.security.linux.json");
+pub(crate) const CONFIG_SECURITY_DARWIN: &str =
+    include_str!("../config/config.security.darwin.json");
+pub(crate) const CONFIG_SECURITY_OTHER: &str = include_str!("../config/config.security.other.json");
 
 // Embed personality files at compile time
-const DEFAULT_IDENTITY: &str = include_str!("../default/IDENTITY.md");
-const DEFAULT_SOUL: &str = include_str!("../default/SOUL.md");
-const DEFAULT_USER: &str = include_str!("../default/USER.md");
-const DEFAULT_IDENTITY_CLUSTER: &str = include_str!("../default/IDENTITY_Cluster.md");
+pub(crate) const DEFAULT_IDENTITY: &str = include_str!("../default/IDENTITY.md");
+pub(crate) const DEFAULT_SOUL: &str = include_str!("../default/SOUL.md");
+pub(crate) const DEFAULT_USER: &str = include_str!("../default/USER.md");
+pub(crate) const DEFAULT_IDENTITY_CLUSTER: &str = include_str!("../default/IDENTITY_Cluster.md");
 #[cfg(feature = "cluster")]
 const CLUSTER_IDENTITY_TEMPLATE: &str = include_str!("../config/IDENTITY.cluster.template.md");
 
@@ -117,8 +123,11 @@ struct Cli {
     #[arg(long)]
     local: bool,
 
+    /// 无参 = 直启 gateway（双击直启语义，2026-09-17）：home 缺失自动
+    /// auto-init（种子语义，不 clobber 用户文件）、无 LLM 降级启动
+    /// （NullProvider）、双击场景无窗重生 + 托盘 + 自动开 Dashboard。
     #[command(subcommand)]
-    command: Commands,
+    command: Option<Commands>,
 }
 
 #[derive(Subcommand)]
@@ -413,6 +422,18 @@ async fn main() -> Result<()> {
         println!("Local mode enabled: using ./.nemesisbot");
     }
 
+    // 双击直启（2026-09-17）：无参/`gateway` 语义且独占新控制台（双击 exe
+    // 形态）→ 无窗重生 DETACHED_PROCESS 子进程后本进程退出；子进程带
+    // NEMESISBOT_BARE_CHILD 跳过检测继续跑。其他子命令保持控制台输出
+    // （短命 CLI 操作，双击场景用户需要看到输出）。
+    if is_gateway_launch(&cli)
+        && std::env::var(common::BARE_CHILD_ENV).is_err()
+        && common::console_is_solo_fresh()
+        && common::try_respawn_detached()
+    {
+        std::process::exit(0);
+    }
+
     // R1 真机验收修复（2026-08-28）：把 CLI 解析出的 home 同步进 nemesis-path
     // 的进程单例（default_path_manager）。该单例独立解析 home，而
     // `set_local_mode` 从未被本二进制调用 —— exe 旁存在 `.nemesisbot` 的部署
@@ -434,6 +455,12 @@ async fn main() -> Result<()> {
     // and is called by commands that don't have their own config-based init.
 
     run_command(cli).await
+}
+
+/// 双击直启判定：无参（None）或显式 gateway——都按 gateway 语义长驻，
+/// 双击独占新控制台时值得无窗重生（见 non-mac 入口的 respawn 块）。
+fn is_gateway_launch(cli: &Cli) -> bool {
+    matches!(cli.command, None | Some(Commands::Gateway { .. }))
 }
 
 /// macOS entry point.
@@ -513,7 +540,9 @@ fn main() -> Result<()> {
     nemesis_path::default_path_manager().set_home_dir(common::resolve_home(local_mode));
 
     // Only the Gateway command needs the main-thread tray handoff.
-    if matches!(&cli.command, Commands::Gateway { .. }) {
+    // 双击直启（2026-09-17）：无参（None）= gateway 语义，同样需要托盘
+    // 主线程 handoff。
+    if matches!(&cli.command, None | Some(Commands::Gateway { .. })) {
         let tray_rx = nemesis_desktop::main_thread_handoff::init();
 
         // Run the gateway on a dedicated thread. It builds its own multi-thread
@@ -573,7 +602,24 @@ async fn run_command(cli: Cli) -> Result<()> {
         );
     }
 
-    match cli.command {
+    // 双击直启（2026-09-17）：无参 = gateway 语义 + auto-init + 自动开
+    // Dashboard（BARE_LAUNCH env 标记，gateway 启动完成后消费）。显式
+    // `nemesisbot gateway` 不带标记——那是 server 语义，不弹窗口。
+    // 在 dispatch 前归一化，全部 match 臂保持原样。
+    let command = match cli.command {
+        Some(cmd) => cmd,
+        None => {
+            // SAFETY: 进程启动单线程阶段（dispatch 前），无并发读者。
+            unsafe { std::env::set_var(common::BARE_LAUNCH_ENV, "1") };
+            Commands::Gateway {
+                debug: false,
+                quiet: false,
+                no_console: false,
+            }
+        }
+    };
+
+    match command {
         Commands::Onboard { default, args } => {
             // Support both `onboard default` (Go-compatible) and `onboard --default`
             let use_default = default || args.iter().any(|a| a == "default");
@@ -585,314 +631,16 @@ async fn run_command(cli: Cli) -> Result<()> {
                 println!("Interactive configuration setup...");
             }
 
-            // Platform detection
-            let platform = if cfg!(target_os = "windows") {
-                "Windows"
-            } else if cfg!(target_os = "macos") {
-                "macOS"
-            } else if cfg!(target_os = "linux") {
-                "Linux"
-            } else {
-                "Unknown"
-            };
-            println!("  Detected platform: {}", platform);
-            println!("  Applying platform-specific security rules...");
-
-            // Create directories
-            let _ = std::fs::create_dir_all(&home);
-            let _ = std::fs::create_dir_all(home.join("workspace"));
-            let _ = std::fs::create_dir_all(home.join("workspace").join("config"));
-            let _ = std::fs::create_dir_all(common::cluster_dir(&home));
-
-            let cfg_path = common::config_path(&home);
-            let workspace_dir = home.join("workspace");
-
-            // --- Step 1: Main config from embedded default ---
-            // Determine whether to write main config (with overwrite confirmation)
-            let mut write_main_config = true;
-            if cfg_path.exists() {
-                print!(
-                    "  Config already exists at {}, overwrite? (y/N): ",
-                    cfg_path.display()
-                );
-                use std::io::{self as std_io, Write as StdWrite};
-                std_io::stdout().flush().ok();
-                let mut answer = String::new();
-                std_io::stdin().read_line(&mut answer).ok();
-                if answer.trim().to_lowercase() != "y" {
-                    println!("  Skipping main config (keeping existing).");
-                    write_main_config = false;
-                }
-            }
-
-            if write_main_config {
-                // Use compile-time embedded config (always available)
-                // [2026-08-27 R9 死码处置·简化] 原 match 的 Err(_) =>
-                // write_fallback_config 分支恒不触发：CONFIG_DEFAULT 是编译期
-                // 嵌入常量，from_str 不可能失败（若真失败，onboard 任一测试
-                // 第一跑即 panic 暴露）。恒 Ok 路径行为不变；write_fallback_config
-                // 已随之注释禁用（见文件底部）。
-                let mut cfg = serde_json::from_str::<serde_json::Value>(CONFIG_DEFAULT)
-                    .expect("embedded CONFIG_DEFAULT must be valid JSON (compile-time constant)");
-                {
-                    // Enable LLM logging
-                    if let Some(logging) = cfg.get_mut("logging").and_then(|v| v.get_mut("llm"))
-                        && let Some(obj) = logging.as_object_mut()
-                    {
-                        obj.insert("enabled".to_string(), serde_json::Value::Bool(true));
-                        obj.insert(
-                            "log_dir".to_string(),
-                            serde_json::Value::String("logs/request_logs".to_string()),
-                        );
-                        obj.insert(
-                            "detail_level".to_string(),
-                            serde_json::Value::String("full".to_string()),
-                        );
-                    }
-                    println!("  LLM logging enabled");
-
-                    // Enable security
-                    if let Some(security) = cfg.get_mut("security") {
-                        if let Some(obj) = security.as_object_mut() {
-                            obj.insert("enabled".to_string(), serde_json::Value::Bool(true));
-                        }
-                    } else {
-                        if let Some(obj) = cfg.as_object_mut() {
-                            obj.insert(
-                                "security".to_string(),
-                                serde_json::json!({"enabled": true}),
-                            );
-                        }
-                    }
-                    println!("  Security module enabled");
-
-                    // Disable workspace restriction (security module enforces rules)
-                    if let Some(agents) = cfg.get_mut("agents").and_then(|v| v.get_mut("defaults"))
-                        && let Some(obj) = agents.as_object_mut()
-                    {
-                        obj.insert(
-                            "restrict_to_workspace".to_string(),
-                            serde_json::Value::Bool(false),
-                        );
-                        if cli.local {
-                            obj.insert(
-                                "workspace".to_string(),
-                                serde_json::Value::String(".nemesisbot/workspace".to_string()),
-                            );
-                        }
-                    }
-
-                    // Set web auth token, port, websocket
-                    if let Some(web) = cfg.pointer_mut("/channels/web")
-                        && let Some(obj) = web.as_object_mut()
-                    {
-                        obj.insert(
-                            "auth_token".to_string(),
-                            serde_json::Value::String("276793422".to_string()),
-                        );
-                        obj.insert(
-                            "host".to_string(),
-                            serde_json::Value::String("127.0.0.1".to_string()),
-                        );
-                        obj.insert("port".to_string(), serde_json::Value::Number(49000.into()));
-                    }
-                    if let Some(ws) = cfg.pointer_mut("/channels/websocket")
-                        && let Some(obj) = ws.as_object_mut()
-                    {
-                        obj.insert("enabled".to_string(), serde_json::Value::Bool(true));
-                    }
-
-                    std::fs::write(
-                        &cfg_path,
-                        serde_json::to_string_pretty(&cfg).unwrap_or_default(),
-                    )?;
-                    println!("  Main config saved to .nemesisbot/config.json");
-                }
-            }
-
-            // --- Step 2: MCP config (embedded) ---
-            let mcp_cfg_path = common::mcp_config_path(&home);
-            let _ = std::fs::write(&mcp_cfg_path, CONFIG_MCP_DEFAULT);
-            println!("  MCP config created");
-
-            // --- Step 3: Security config (platform-specific, embedded) ---
-            let security_cfg_path = common::security_config_path(&home);
-            let _ = std::fs::create_dir_all(security_cfg_path.parent().unwrap());
-            let security_content = if cfg!(target_os = "windows") {
-                CONFIG_SECURITY_WINDOWS
-            } else if cfg!(target_os = "macos") {
-                CONFIG_SECURITY_DARWIN
-            } else if cfg!(target_os = "linux") {
-                CONFIG_SECURITY_LINUX
-            } else {
-                CONFIG_SECURITY_OTHER
-            };
-            let _ = std::fs::write(&security_cfg_path, security_content);
-            println!("  Security config created");
-
-            // --- Step 4: Cluster config (system params + UDP discovery token) ---
-            // config.cluster.json 不再含身份字段（name/role/node_id 等），
-            // 身份信息全部由 peers.toml 的 [node] 段承载。
-            let cluster_cfg_path = common::cluster_config_path(&home);
-            // [2026-08-27 R9 死码处置·简化] 原 match 的 Err(_) 兜底分支恒不
-            // 触发：CONFIG_CLUSTER_DEFAULT 是编译期嵌入常量，from_str 不可能
-            // 失败。恒 Ok 路径行为不变。
-            let mut cluster_cfg = serde_json::from_str::<serde_json::Value>(CONFIG_CLUSTER_DEFAULT)
-                .expect(
-                    "embedded CONFIG_CLUSTER_DEFAULT must be valid JSON (compile-time constant)",
-                );
-            {
-                if let Some(obj) = cluster_cfg.as_object_mut() {
-                    obj.insert(
-                        "token".to_string(),
-                        serde_json::Value::String(uuid::Uuid::new_v4().to_string()),
-                    );
-                }
-                let _ = std::fs::write(
-                    &cluster_cfg_path,
-                    serde_json::to_string_pretty(&cluster_cfg).unwrap_or_default(),
-                );
-            }
-            println!("  Cluster config created");
-
-            // --- Step 5: Cluster peers.toml (本节点身份) ---
-            // peers.toml 只含 [node] 段（本节点身份）+ 可选的 [peers.X] 静态条目。
-            // 不再含 [cluster] 段（cluster 元数据已下线）。
-            {
-                let cluster_dir = common::cluster_dir(&home);
-                let _ = std::fs::create_dir_all(&cluster_dir);
-                let peers_path = cluster_dir.join("peers.toml");
-                let hostname = std::env::var("COMPUTERNAME")
-                    .or_else(|_| std::env::var("HOSTNAME"))
-                    .unwrap_or_else(|_| "node".to_string());
-                let node_id = format!("node-{}-{}", hostname.to_lowercase(), uuid::Uuid::new_v4());
-                let peers_content = format!(
-                    "# Cluster peers configuration\n# Auto-generated by nemesisbot onboard\n\n[node]\nid = \"{}\"\nname = \"Bot {}\"\naddress = \"\"\nrole = \"worker\"\ncategory = \"general\"\ntags = []\ncapabilities = []\n\n# Add peer entries as [peers.Name] tables, e.g.:\n# [peers.MyPeer]\n# address = \"127.0.0.1:11950\"\n# role = \"worker\"\n# category = \"general\"\n",
-                    node_id, node_id
-                );
-                let _ = std::fs::write(&peers_path, peers_content);
-                println!("  Peers config created");
-            }
-
-            // --- Step 6: Skills config (embedded — includes GitHub sources) ---
-            let skills_cfg_path = common::skills_config_path(&home);
-            let _ = std::fs::write(&skills_cfg_path, CONFIG_SKILLS_DEFAULT);
-            println!("  Skills config created");
-
-            // --- Step 7: Scanner config (embedded) ---
-            let scanner_cfg_path = common::scanner_config_path(&home);
-            let _ = std::fs::write(&scanner_cfg_path, CONFIG_SCANNER_DEFAULT);
-
-            // --- Step 7.5: Enhanced Memory config (embedded) ---
-            let em_cfg_path = common::enhanced_memory_config_path(&home);
-            let _ = std::fs::write(&em_cfg_path, CONFIG_ENHANCED_MEMORY_DEFAULT);
-            println!("  Enhanced memory config created");
-
-            // --- Step 7.6: Chat config (embedded) ---
-            let chat_cfg_path = common::chat_config_path(&home);
-            let _ = std::fs::write(&chat_cfg_path, CONFIG_CHAT_DEFAULT);
-            println!("  Chat config created");
-
-            // --- Step 7.7: Forge config (embedded) ---
-            let forge_cfg_path = common::forge_config_path(&home);
-            let _ = std::fs::write(&forge_cfg_path, CONFIG_FORGE_DEFAULT);
-            println!("  Forge config created");
-
-            // --- Step 7.8: eval rules (embedded; seeds the assessor's rule
-            // file + its readme. Content identical to eval_assessor's
-            // include_str — same source file, no second definition) ---
-            // AA3：路径走 rules_file_path 单一真相源（手拼 workspace/config
-            // 与它是两套逻辑，一处改另一处忘改会漂移——种子到错误位置时
-            // 评估器/管理命令都找不到规则）。
-            #[cfg(feature = "eval")]
-            {
-                let rules_path = crate::eval_assessor::rules_file_path(&home);
-                if let Some(parent) = rules_path.parent() {
-                    let _ = std::fs::create_dir_all(parent);
-                }
-                // Seed only when absent — user edits survive re-onboard.
-                if !rules_path.exists() {
-                    let _ = std::fs::write(&rules_path, crate::eval_assessor::DEFAULT_RULES_JSON);
-                    println!("  Eval rules config created");
-                }
-                let readme_path = rules_path
-                    .parent()
-                    .map(|p| p.join("eval_rules.readme.md"))
-                    .unwrap_or_else(|| rules_path.clone());
-                if !readme_path.exists() {
-                    let _ = std::fs::write(
-                        &readme_path,
-                        include_str!("../config/eval_rules.readme.md"),
-                    );
-                }
-            }
-
-            // --- Step 8: Extract embedded workspace templates ---
-            // Mirrors Go's copyEmbeddedToTarget() — copies all files from
-            // embedded `workspace/` directory (skills, scripts, memory, md files).
-            // Uses overwrite mode so re-onboarding restores corrupted templates.
-            match embedded::extract_workspace_templates_overwrite(&workspace_dir) {
-                Ok(()) => println!("  Workspace templates extracted"),
-                Err(e) => println!(
-                    "  Warning: failed to extract some workspace templates: {}",
-                    e
-                ),
-            }
-
-            // --- Step 9: Override personality files from default/ (embedded) ---
-            // These always overwrite — default/ is the authoritative source for
-            // fresh installations (mirrors Go's copyDefaultFiles).
-            let _ = std::fs::write(workspace_dir.join("IDENTITY.md"), DEFAULT_IDENTITY);
-            let _ = std::fs::write(workspace_dir.join("SOUL.md"), DEFAULT_SOUL);
-            let _ = std::fs::write(workspace_dir.join("USER.md"), DEFAULT_USER);
-            // Cluster identity — extracted to workspace/cluster/IDENTITY.md.
-            let cluster_dir = nemesis_path::cluster_dir_in_workspace(&workspace_dir);
-            let _ = std::fs::create_dir_all(&cluster_dir);
-            let _ = std::fs::write(cluster_dir.join("IDENTITY.md"), DEFAULT_IDENTITY_CLUSTER);
-            println!(
-                "  Default personality files installed (IDENTITY.md, SOUL.md, USER.md, cluster/IDENTITY.md)"
-            );
-
-            // --- Step 10: Create additional directories ---
-            let _ = std::fs::create_dir_all(workspace_dir.join("logs"));
-            let _ = std::fs::create_dir_all(workspace_dir.join("forge"));
-            // Workflow subdirs: definitions/ (YAML), templates/ (starter
-            // templates), checkpoints/ (resume snapshots), executions/ (JSONL
-            // run logs). All four are created up-front so the gateway can
-            // rely on them existing without each callsite having to mkdir.
-            for sub in ["definitions", "templates", "checkpoints", "executions"] {
-                let _ = std::fs::create_dir_all(workspace_dir.join("workflow").join(sub));
-            }
-
-            // --- Step 10: Delete BOOTSTRAP.md from workspace if it exists ---
-            // BOOTSTRAP.md is the bootstrap init file; after onboard default the
-            // personality is already set up, so it must be removed (mirrors Go).
-            let bootstrap = workspace_dir.join("BOOTSTRAP.md");
-            if bootstrap.exists() {
-                let _ = std::fs::remove_file(&bootstrap);
-                println!("  BOOTSTRAP.md removed");
-            }
-
-            // --- Step 11: Web and WebSocket configuration ---
-            println!("  Web and WebSocket configuration set");
-
-            println!();
-            println!("  Initialization complete!");
-            println!();
-            println!("  Available interfaces:");
-            println!("    Web: http://127.0.0.1:49000 (access key: 276793422)");
-            println!("    WebSocket: ws://127.0.0.1:49001/ws");
-            println!();
-            println!("  Next steps:");
-            println!(
-                "    1. Add your API key: nemesisbot model add --model <vendor/model> --key <key> --default"
-            );
-            println!("    2. Start gateway:     nemesisbot gateway");
-            println!();
-            println!("  MCP servers:");
-            println!("    Add MCP servers: nemesisbot mcp add -n <name> -c <command>");
-            println!("    List MCP servers: nemesisbot mcp list");
+            // 双击直启 goal（2026-09-17）：12 步初始化序列提取到
+            // commands/onboard.rs（CLI 覆盖语义与 gateway auto-init 种子
+            // 语义共用同一实现；此处 CLI 路径行为不变）。
+            commands::onboard::onboard_default(
+                &home,
+                cli.local,
+                commands::onboard::OnboardMode::Cli,
+            )?;
         }
+
         Commands::Gateway {
             debug,
             quiet,

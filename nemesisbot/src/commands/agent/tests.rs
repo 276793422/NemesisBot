@@ -921,15 +921,18 @@ async fn test_s11b_run_agent_mode_config_missing_bails() {
 }
 
 #[tokio::test]
-async fn test_s11b_run_agent_mode_build_fail() {
+async fn test_s11b_run_agent_mode_unresolvable_model_degrades_ok() {
     let _guard = crate::GLOBAL_STATE_LOCK.lock().unwrap();
     let th = s11b_agent_home_env();
-    // llm 指向不存在的模型（无关键词可推断 provider）→ build_agent_loop Err
+    // 双击直启语义（2026-09-17）：llm 指向不存在的模型 → 工厂降级装配
+    // NullProvider（Ok 不 Err）→ 单消息模式打到 NullProvider → "Agent
+    // error" 打印后 run 返回 Ok(())（与 dead-provider 测试同款：LLM 层
+    // 失败不上抛；用户在 Dashboard 配好模型即恢复）。
     s11b_write_agent_config(
         &th.home,
         serde_json::json!({"agents": {"defaults": {"llm": "nosuchmodel-xyz"}}}),
     );
-    let err = run(
+    let res = run(
         None,
         Some("hi".to_string()),
         "s11b".to_string(),
@@ -938,9 +941,11 @@ async fn test_s11b_run_agent_mode_build_fail() {
         false,
         false,
     )
-    .await
-    .unwrap_err();
-    assert!(err.to_string().contains("Failed to resolve model"), "{err}");
+    .await;
+    assert!(
+        res.is_ok(),
+        "unresolvable model must degrade (NullProvider), not fail startup: {res:?}"
+    );
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

@@ -33,6 +33,9 @@ pub mod memory;
 #[cfg(feature = "migrate")]
 pub mod migrate;
 pub mod model;
+/// `onboard default` 初始化序列 + 双击直启 auto-init（Seed 种子模式）。
+/// 从 main.rs 内联实现提取（双击直启 goal 2026-09-17）。
+pub mod onboard;
 pub mod persona;
 /// K1（devtool-upgrade 阶段 4）：headless 单任务执行（无端口、无 gateway，
 /// 安全 9 层全量生效，跑完即退）。

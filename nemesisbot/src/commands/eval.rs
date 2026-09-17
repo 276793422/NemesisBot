@@ -1192,6 +1192,7 @@ fn proxy_target_host(real_base: &str) -> String {
 fn box_api_base(proxy_base: &str, llm_ref: &str, protocol: &str) -> String {
     let provider_type = nemesis_providers::factory::resolve_provider_selection(
         &nemesis_providers::factory::FactoryConfig {
+            proxy: String::new(),
             llm_ref: llm_ref.to_string(),
             protocol: protocol.to_string(),
             ..Default::default()

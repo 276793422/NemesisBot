@@ -1311,7 +1311,8 @@ async fn test_cmd_learn_unresolvable_model_bails() {
     let tmp = TempDir::new().unwrap();
     let home = tmp.path().join(".nemesisbot");
     std::fs::create_dir_all(&home).unwrap();
-    // 模型不可解析（未知 ref 且无关键词可推断 provider）→ agent 初始化失败
+    // 双击直启语义（2026-09-17）：模型不可解析不再让装配失败——工厂降级
+    // NullProvider（Ok），错误延迟到 LLM 调用时诚实报「未配置模型」。
     std::fs::write(
         crate::common::config_path(&home),
         serde_json::to_string(&serde_json::json!({
@@ -1322,10 +1323,7 @@ async fn test_cmd_learn_unresolvable_model_bails() {
     )
     .unwrap();
     let err = cmd_learn(&home, "some-source", None).await.unwrap_err();
-    assert!(
-        err.to_string().contains("Failed to initialize agent"),
-        "err: {err}"
-    );
+    assert!(err.to_string().contains("未配置模型"), "err: {err}");
 }
 
 // -------------------------------------------------------------------------

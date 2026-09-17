@@ -462,11 +462,15 @@ mod run_error_paths {
     }
 
     #[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
-    #[tokio::test]
-    async fn run_err_when_agent_factory_fails_writes_worker_error() {
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn run_unconfigured_model_surfaces_loop_error_writes_worker_error() {
         let tmp = tempfile::tempdir().unwrap();
-        // config.json 合法但没有可用模型（load 回落默认 zhipu 无 key）→
-        // 工厂在 provider 创建处失败（离线、快）。
+        // config.json 合法但没有可用模型（load 回落默认 zhipu 无 key）。
+        // 双击直启降级语义（2026-09-17）：工厂降级 NullProvider 装配 Ok，
+        // 错误延迟到 LLM 调用时诚实报「未配置模型」→ run() 映射为
+        // agent loop error → worker_error.txt 照常落盘（盒内唯一诊断线索）。
+        // （须多线程 flavor：observer 注册走 block_in_place，current-thread
+        // 测试 runtime 会 panic——同 wave_b 注释。）
         std::fs::write(tmp.path().join("config.json"), "{}").unwrap();
 
         // 锁必须横跨整个 run()：env 是进程级全局，并行测试互踩会让
@@ -474,14 +478,16 @@ mod run_error_paths {
         let _lock = crate::GLOBAL_STATE_LOCK.lock().unwrap();
         let _env = EvalEnvGuard::set_workspace(tmp.path());
 
-        let err = run().await.expect_err("factory failure must propagate");
+        let err = run()
+            .await
+            .expect_err("unconfigured model must surface at the LLM call");
         assert!(
-            format!("{err:#}").contains("build agent loop for eval-agent"),
+            format!("{err:#}").contains("agent loop error"),
             "err: {err:#}"
         );
         let werr = std::fs::read_to_string(tmp.path().join("worker_error.txt"))
             .expect("worker_error.txt must be written");
-        assert!(werr.contains("build agent loop"), "werr: {werr}");
+        assert!(werr.contains("agent loop error"), "werr: {werr}");
     }
 }
 

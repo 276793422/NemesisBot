@@ -300,6 +300,7 @@ pub async fn run(
             )
         })?;
         let factory_cfg = nemesis_providers::factory::FactoryConfig {
+            proxy: resolution.proxy.clone(),
             llm_ref: format!("{}/{}", resolution.provider_name, resolution.model_name),
             api_key: resolution.api_key.clone(),
             api_base: resolution.api_base.clone(),

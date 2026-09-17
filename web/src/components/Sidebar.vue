@@ -135,6 +135,8 @@ const navGroups = [
       { id: 'terminal', label: '终端', path: '/terminal', icon: 'M4 17l6-6-6-6M12 19h8' },
       { id: 'local-models', label: '本地模型', path: '/local-models', icon: 'M21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16z M3.27 6.96L12 12.01l8.73-5.05 M12 22.08V12' },
       { id: 'sdk', label: '二次开发', path: '/sdk', icon: 'M10 20l4-16m4 4l4 4-4 4M6 16l-4-4 4-4' },
+      // 代理设置（2026-09-17）：per-model 代理总览 + 环境变量 + lane 支持。
+      { id: 'proxy-settings', label: '代理设置', path: '/proxy-settings', icon: 'M12 22c5.523 0 10-4.477 10-10S17.523 2 12 2 2 6.477 2 12s4.477 10 10 10zM2 12h20M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z' },
     ],
   },
   {

@@ -25,10 +25,37 @@ pub struct CodexConfig {
     pub enable_web_search: bool,
     #[serde(default = "default_timeout")]
     pub timeout_secs: u64,
+    /// 出站代理 URL（代理接线修复 2026-09-17）：http/socks5；None = 直连。
+    /// 来自模型条目 `proxy` 字段经 FactoryConfig 透传；非法 URL warn 回落
+    /// 直连（与 HttpProvider/Anthropic 同策略）。
+    #[serde(default)]
+    pub proxy: Option<String>,
 }
 
 fn default_true() -> bool {
     true
+}
+
+/// reqwest client 构造单一出口（timeout + 可选出站代理；非法代理 warn
+/// 回落直连——与 HttpProvider/Anthropic 同策略）。
+fn build_client(timeout_secs: u64, proxy: Option<&str>) -> reqwest::Client {
+    let mut builder =
+        reqwest::Client::builder().timeout(std::time::Duration::from_secs(timeout_secs));
+    if let Some(proxy_url) = proxy
+        && !proxy_url.is_empty()
+    {
+        match reqwest::Proxy::all(proxy_url) {
+            Ok(p) => builder = builder.proxy(p),
+            Err(e) => {
+                tracing::warn!(
+                    proxy = %proxy_url,
+                    error = %e,
+                    "Codex provider: invalid proxy URL, using direct connection"
+                );
+            }
+        }
+    }
+    builder.build().expect("failed to build HTTP client")
 }
 
 // P3A 超时对齐（2026-09-12）：与 anthropic/http lane 统一 600s（原 120s，
@@ -46,6 +73,7 @@ impl Default for CodexConfig {
             base_url: CODEX_BASE_URL.to_string(),
             enable_web_search: true,
             timeout_secs: 600,
+            proxy: None,
         }
     }
 }
@@ -59,10 +87,7 @@ pub struct CodexProvider {
 
 impl CodexProvider {
     pub fn new(config: CodexConfig) -> Self {
-        let client = reqwest::Client::builder()
-            .timeout(std::time::Duration::from_secs(config.timeout_secs))
-            .build()
-            .expect("failed to build HTTP client");
+        let client = build_client(config.timeout_secs, config.proxy.as_deref());
         Self {
             config,
             client,
@@ -76,10 +101,7 @@ impl CodexProvider {
         config: CodexConfig,
         token_source: Box<dyn Fn() -> Result<(String, String), String> + Send + Sync>,
     ) -> Self {
-        let client = reqwest::Client::builder()
-            .timeout(std::time::Duration::from_secs(config.timeout_secs))
-            .build()
-            .expect("failed to build HTTP client");
+        let client = build_client(config.timeout_secs, config.proxy.as_deref());
         Self {
             config,
             client,

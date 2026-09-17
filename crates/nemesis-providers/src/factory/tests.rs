@@ -3,6 +3,7 @@ use super::*;
 #[test]
 fn test_resolve_anthropic() {
     let cfg = FactoryConfig {
+        proxy: String::new(),
         llm_ref: "anthropic/claude-sonnet-4-5".to_string(),
         api_key: "test-key".to_string(),
         ..Default::default()
@@ -16,6 +17,7 @@ fn test_resolve_anthropic() {
 #[test]
 fn test_resolve_claude_cli() {
     let cfg = FactoryConfig {
+        proxy: String::new(),
         llm_ref: "claude-cli/claude-code".to_string(),
         ..Default::default()
     };
@@ -26,6 +28,7 @@ fn test_resolve_claude_cli() {
 #[test]
 fn test_resolve_codex_cli() {
     let cfg = FactoryConfig {
+        proxy: String::new(),
         llm_ref: "codex-cli/codex".to_string(),
         ..Default::default()
     };
@@ -36,6 +39,7 @@ fn test_resolve_codex_cli() {
 #[test]
 fn test_resolve_github_copilot() {
     let cfg = FactoryConfig {
+        proxy: String::new(),
         llm_ref: "copilot/gpt-4.1".to_string(),
         ..Default::default()
     };
@@ -46,6 +50,7 @@ fn test_resolve_github_copilot() {
 #[test]
 fn test_resolve_http_compat() {
     let cfg = FactoryConfig {
+        proxy: String::new(),
         llm_ref: "deepseek/deepseek-chat".to_string(),
         api_key: "test-key".to_string(),
         api_base: "https://api.deepseek.com/v1".to_string(),
@@ -58,6 +63,7 @@ fn test_resolve_http_compat() {
 #[test]
 fn test_resolve_http_compat_no_key() {
     let cfg = FactoryConfig {
+        proxy: String::new(),
         llm_ref: "deepseek/deepseek-chat".to_string(),
         ..Default::default()
     };
@@ -69,6 +75,7 @@ fn test_resolve_http_compat_no_key() {
 #[test]
 fn test_resolve_openai() {
     let cfg = FactoryConfig {
+        proxy: String::new(),
         llm_ref: "openai/gpt-4o".to_string(),
         api_key: "test-key".to_string(),
         ..Default::default()
@@ -80,6 +87,7 @@ fn test_resolve_openai() {
 #[test]
 fn test_resolve_empty_ref() {
     let cfg = FactoryConfig {
+        proxy: String::new(),
         llm_ref: String::new(),
         ..Default::default()
     };
@@ -90,6 +98,7 @@ fn test_resolve_empty_ref() {
 #[test]
 fn test_create_provider_anthropic() {
     let cfg = FactoryConfig {
+        proxy: String::new(),
         llm_ref: "anthropic/claude-sonnet".to_string(),
         api_key: "test-key".to_string(),
         ..Default::default()
@@ -101,6 +110,7 @@ fn test_create_provider_anthropic() {
 #[test]
 fn test_create_provider_http() {
     let cfg = FactoryConfig {
+        proxy: String::new(),
         llm_ref: "deepseek/chat".to_string(),
         api_key: "test-key".to_string(),
         api_base: "https://api.deepseek.com/v1".to_string(),
@@ -113,6 +123,7 @@ fn test_create_provider_http() {
 #[test]
 fn test_create_provider_claude_cli() {
     let cfg = FactoryConfig {
+        proxy: String::new(),
         llm_ref: "claude-cli/claude-code".to_string(),
         ..Default::default()
     };
@@ -123,6 +134,7 @@ fn test_create_provider_claude_cli() {
 #[test]
 fn test_create_provider_codex_cli() {
     let cfg = FactoryConfig {
+        proxy: String::new(),
         llm_ref: "codex-cli/default".to_string(),
         ..Default::default()
     };
@@ -133,6 +145,7 @@ fn test_create_provider_codex_cli() {
 #[test]
 fn test_create_provider_copilot() {
     let cfg = FactoryConfig {
+        proxy: String::new(),
         llm_ref: "copilot/gpt-4.1".to_string(),
         ..Default::default()
     };
@@ -159,6 +172,7 @@ fn test_factory_config_default() {
 #[test]
 fn test_resolve_provider_selection_anthropic_default_base() {
     let cfg = FactoryConfig {
+        proxy: String::new(),
         llm_ref: "anthropic/claude-sonnet".to_string(),
         api_key: "key".to_string(),
         ..Default::default()
@@ -182,6 +196,7 @@ fn test_resolve_provider_selection_anthropic_custom_base() {
 #[test]
 fn test_resolve_provider_selection_openai_default_base() {
     let cfg = FactoryConfig {
+        proxy: String::new(),
         llm_ref: "openai/gpt-4o".to_string(),
         api_key: "key".to_string(),
         ..Default::default()
@@ -193,6 +208,7 @@ fn test_resolve_provider_selection_openai_default_base() {
 #[test]
 fn test_resolve_provider_selection_workspace_default() {
     let cfg = FactoryConfig {
+        proxy: String::new(),
         llm_ref: "anthropic/claude".to_string(),
         api_key: "key".to_string(),
         ..Default::default()
@@ -204,6 +220,7 @@ fn test_resolve_provider_selection_workspace_default() {
 #[test]
 fn test_resolve_provider_selection_workspace_custom() {
     let cfg = FactoryConfig {
+        proxy: String::new(),
         llm_ref: "anthropic/claude".to_string(),
         api_key: "key".to_string(),
         workspace: "/custom/workspace".to_string(),
@@ -216,6 +233,7 @@ fn test_resolve_provider_selection_workspace_custom() {
 #[test]
 fn test_resolve_claude_code_alias() {
     let cfg = FactoryConfig {
+        proxy: String::new(),
         llm_ref: "claude-code/claude".to_string(),
         ..Default::default()
     };
@@ -226,6 +244,7 @@ fn test_resolve_claude_code_alias() {
 #[test]
 fn test_resolve_claudecodec_alias() {
     let cfg = FactoryConfig {
+        proxy: String::new(),
         llm_ref: "claudecodec/default".to_string(),
         ..Default::default()
     };
@@ -236,6 +255,7 @@ fn test_resolve_claudecodec_alias() {
 #[test]
 fn test_resolve_codex_code_alias() {
     let cfg = FactoryConfig {
+        proxy: String::new(),
         llm_ref: "codex-code/default".to_string(),
         ..Default::default()
     };
@@ -246,6 +266,7 @@ fn test_resolve_codex_code_alias() {
 #[test]
 fn test_resolve_github_copilot_alias() {
     let cfg = FactoryConfig {
+        proxy: String::new(),
         llm_ref: "github_copilot/gpt-4".to_string(),
         ..Default::default()
     };
@@ -256,6 +277,7 @@ fn test_resolve_github_copilot_alias() {
 #[test]
 fn test_create_provider_codex() {
     let cfg = FactoryConfig {
+        proxy: String::new(),
         llm_ref: "openai/gpt-4o".to_string(),
         api_key: "test-key".to_string(),
         ..Default::default()
@@ -267,6 +289,7 @@ fn test_create_provider_codex() {
 #[test]
 fn test_provider_selection_debug() {
     let cfg = FactoryConfig {
+        proxy: String::new(),
         llm_ref: "anthropic/claude".to_string(),
         api_key: "key".to_string(),
         ..Default::default()
@@ -285,6 +308,7 @@ fn test_provider_type_equality() {
 #[test]
 fn test_resolve_whitespace_only_ref() {
     let cfg = FactoryConfig {
+        proxy: String::new(),
         llm_ref: "   ".to_string(),
         ..Default::default()
     };
@@ -295,6 +319,7 @@ fn test_resolve_whitespace_only_ref() {
 #[test]
 fn test_resolve_http_compat_with_key_and_base() {
     let cfg = FactoryConfig {
+        proxy: String::new(),
         llm_ref: "zhipu/glm-4".to_string(),
         api_key: "test-key".to_string(),
         api_base: "https://open.bigmodel.cn/api/paas/v4".to_string(),
@@ -309,6 +334,7 @@ fn test_resolve_http_compat_with_key_and_base() {
 #[test]
 fn test_resolve_http_compat_missing_key_error_message() {
     let cfg = FactoryConfig {
+        proxy: String::new(),
         llm_ref: "somevendor/model-x".to_string(),
         api_base: "https://api.vendor.com".to_string(),
         ..Default::default()
@@ -324,6 +350,7 @@ fn test_resolve_http_compat_missing_key_error_message() {
 #[test]
 fn test_resolve_provider_selection_preserves_api_key() {
     let cfg = FactoryConfig {
+        proxy: String::new(),
         llm_ref: "anthropic/claude-sonnet".to_string(),
         api_key: "sk-ant-test123".to_string(),
         ..Default::default()
@@ -335,6 +362,7 @@ fn test_resolve_provider_selection_preserves_api_key() {
 #[test]
 fn test_resolve_provider_selection_preserves_connect_mode() {
     let cfg = FactoryConfig {
+        proxy: String::new(),
         llm_ref: "copilot/gpt-4".to_string(),
         connect_mode: "ide".to_string(),
         ..Default::default()
@@ -346,6 +374,7 @@ fn test_resolve_provider_selection_preserves_connect_mode() {
 #[test]
 fn test_resolve_provider_selection_preserves_account_id() {
     let cfg = FactoryConfig {
+        proxy: String::new(),
         llm_ref: "openai/gpt-4o".to_string(),
         api_key: "test".to_string(),
         account_id: "org-12345".to_string(),
@@ -360,6 +389,7 @@ fn test_factory_config_with_headers() {
     let mut headers = std::collections::HashMap::new();
     headers.insert("X-Custom".to_string(), "value".to_string());
     let cfg = FactoryConfig {
+        proxy: String::new(),
         llm_ref: "deepseek/chat".to_string(),
         api_key: "test".to_string(),
         api_base: "https://api.deepseek.com".to_string(),
@@ -373,6 +403,7 @@ fn test_factory_config_with_headers() {
 #[test]
 fn test_create_provider_http_with_key() {
     let cfg = FactoryConfig {
+        proxy: String::new(),
         llm_ref: "test/testai-1.1".to_string(),
         api_key: "test-key".to_string(),
         api_base: "http://127.0.0.1:8080/v1".to_string(),
@@ -418,6 +449,7 @@ fn test_provider_selection_debug_format() {
 #[test]
 fn test_resolve_bare_model_name_is_http_compat() {
     let cfg = FactoryConfig {
+        proxy: String::new(),
         llm_ref: "glm-5.3-flash".to_string(),
         api_key: "k".to_string(),
         api_base: "http://127.0.0.1:15721".to_string(),
@@ -433,6 +465,7 @@ fn test_resolve_bare_model_name_is_http_compat() {
 fn test_resolve_leading_slash_ref_is_http_compat() {
     // provider_name 解析为空时启动路径会拼出 "/name"——同样必须落 HttpCompat。
     let cfg = FactoryConfig {
+        proxy: String::new(),
         llm_ref: "/my-fine-tune".to_string(),
         api_key: "k".to_string(),
         ..Default::default()
@@ -444,6 +477,7 @@ fn test_resolve_leading_slash_ref_is_http_compat() {
 #[test]
 fn test_resolve_openai_prefixed_still_codex() {
     let cfg = FactoryConfig {
+        proxy: String::new(),
         llm_ref: "openai/gpt-5.2".to_string(),
         api_key: "k".to_string(),
         ..Default::default()
@@ -458,6 +492,7 @@ fn test_resolve_openai_prefixed_still_codex() {
 fn test_explicit_protocol_anthropic_overrides_openai_prefix() {
     // 条目写 "openai/gpt-x" 但显式 protocol=anthropic → 必须走 Claude 消息协议。
     let cfg = FactoryConfig {
+        proxy: String::new(),
         llm_ref: "openai/gpt-x".to_string(),
         api_key: "k".to_string(),
         protocol: "anthropic".to_string(),
@@ -476,6 +511,7 @@ fn test_explicit_protocol_openai_is_chat_completions_not_codex() {
     // 拍板语义（2026-09-11）：显式 openai = chat/completions（业界通行），
     // 与旧前缀 openai/→Codex 的分歧是刻意的。
     let cfg = FactoryConfig {
+        proxy: String::new(),
         llm_ref: "glm-5.3-flash".to_string(),
         api_key: "GLM".to_string(),
         api_base: "http://127.0.0.1:15721".to_string(),
@@ -491,6 +527,7 @@ fn test_explicit_protocol_openai_is_chat_completions_not_codex() {
 #[test]
 fn test_explicit_protocol_responses_is_codex() {
     let cfg = FactoryConfig {
+        proxy: String::new(),
         llm_ref: "openai/gpt-5.2".to_string(),
         api_key: "k".to_string(),
         protocol: "responses".to_string(),
@@ -508,6 +545,7 @@ fn test_explicit_protocol_responses_is_codex() {
 fn test_explicit_protocol_claude_alias_normalizes() {
     // claude 是 anthropic 的用户侧别名（下拉/CLI 都可能收到）。
     let cfg = FactoryConfig {
+        proxy: String::new(),
         llm_ref: "zhipu/glm-5.3-flash".to_string(),
         api_key: "k".to_string(),
         protocol: "claude".to_string(),
@@ -520,6 +558,7 @@ fn test_explicit_protocol_claude_alias_normalizes() {
 #[test]
 fn test_explicit_protocol_unknown_errors_loud() {
     let cfg = FactoryConfig {
+        proxy: String::new(),
         llm_ref: "zhipu/glm-5.3-flash".to_string(),
         api_key: "k".to_string(),
         protocol: "grpc".to_string(),
@@ -534,6 +573,7 @@ fn test_explicit_protocol_unknown_errors_loud() {
 fn test_explicit_protocol_does_not_override_cli_providers() {
     // CLI 型是本地进程不是 wire 协议——protocol 对它们无意义，前缀优先。
     let cfg = FactoryConfig {
+        proxy: String::new(),
         llm_ref: "claude-cli/claude-code".to_string(),
         protocol: "openai".to_string(),
         ..Default::default()
@@ -545,6 +585,7 @@ fn test_explicit_protocol_does_not_override_cli_providers() {
 #[test]
 fn test_explicit_protocol_case_insensitive() {
     let cfg = FactoryConfig {
+        proxy: String::new(),
         llm_ref: "x/y".to_string(),
         api_key: "k".to_string(),
         protocol: "ANTHROPIC".to_string(),
@@ -559,6 +600,7 @@ fn test_explicit_protocol_case_insensitive() {
 #[test]
 fn test_timeout_passthrough_to_selection() {
     let cfg = FactoryConfig {
+        proxy: String::new(),
         llm_ref: "anthropic/claude-sonnet".to_string(),
         api_key: "key".to_string(),
         timeout_secs: 300,
@@ -572,6 +614,7 @@ fn test_timeout_passthrough_to_selection() {
 fn test_timeout_unset_is_zero() {
     // 0 = 未设置 → create_provider 落 lane 默认（effective_timeout）。
     let cfg = FactoryConfig {
+        proxy: String::new(),
         llm_ref: "anthropic/claude-sonnet".to_string(),
         api_key: "key".to_string(),
         ..Default::default()

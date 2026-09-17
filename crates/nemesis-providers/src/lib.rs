@@ -4,6 +4,7 @@
 
 pub mod failover;
 pub mod http_provider;
+pub mod null_provider;
 pub mod openai_compat;
 pub mod router;
 pub mod tool_call_repair;
