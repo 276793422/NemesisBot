@@ -153,7 +153,9 @@ function assigneeLabel(issue: Issue): string {
   if (!issue.assignee) return '未指派'
   // 指派目标可读名（H1 单一解析层；未知 id 回退原始 id）。
   if (issue.assignee === 'manager_self') return 'manager（本机）'
-  return `worker: ${actorName(issue.assignee_id) ?? issue.assignee_id}`
+  // assignee_id 可空（Issue 接口 string | null）：actorName 入参与回退值都
+  // 归一为 string（vue-tsc TS2345；id 为 null 时回退空串，不再渲染 "null"）。
+  return `worker: ${actorName(issue.assignee_id ?? '') ?? issue.assignee_id ?? ''}`
 }
 
 function allowedTargets(status: string): string[] {

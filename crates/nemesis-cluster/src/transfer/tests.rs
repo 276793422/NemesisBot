@@ -18,10 +18,23 @@ fn temp_root(name: &str) -> PathBuf {
     dir
 }
 
+/// 逻辑相对路径（`/` 分隔）→ 盘上路径（逐段 join，分隔符随平台）。
+///
+/// 不得用 `replace('/', "\\")`——`\` 只在 Windows 是分隔符，Linux 上会
+/// 把嵌套路径写成「名字带 `\` 的单个怪文件」，collect 的排除判定按组件
+/// 匹配看不到 `.git` 等目录 → 排除测试全灭（2026-09-18 CI Linux 实录）。
+fn disk_path(root: &Path, rel: &str) -> PathBuf {
+    let mut p = root.to_path_buf();
+    for seg in rel.split('/') {
+        p.push(seg);
+    }
+    p
+}
+
 /// 构造发送目录：`files/` 下写给定 (相对路径, 内容)。
 fn make_source(root: &Path, files: &[(&str, &[u8])]) {
     for (rel, data) in files {
-        let p = root.join(rel.replace('/', "\\"));
+        let p = disk_path(root, rel);
         if let Some(parent) = p.parent() {
             std::fs::create_dir_all(parent).unwrap();
         }
@@ -45,9 +58,9 @@ fn prepare_begin(src: &Path, transfer_id: &str, task_id: &str, chunk_size: usize
     }
 }
 
-/// 取文件字节（相对路径 → 实际盘上路径，Windows 分隔符翻转）。
+/// 取文件字节（逻辑相对路径 → 盘上路径，逐段 join 平台无关）。
 fn file_bytes(src: &Path, rel: &str) -> Vec<u8> {
-    std::fs::read(src.join(rel.replace('/', "\\"))).unwrap()
+    std::fs::read(disk_path(src, rel)).unwrap()
 }
 
 /// 推送一个计划块。
@@ -159,7 +172,7 @@ fn chunked_roundtrip_with_nested_dirs_and_binary() {
     // 落地内容逐字节一致（含空文件）。
     let landed = sink.inbox_root().join("task-1");
     for f in &begin.files {
-        let got = std::fs::read(landed.join("files").join(f.path.replace('/', "\\"))).unwrap();
+        let got = std::fs::read(disk_path(&landed.join("files"), &f.path)).unwrap();
         let want = file_bytes(&src, &f.path);
         assert_eq!(got, want, "文件 {} 落地不一致", f.path);
         assert_eq!(sha256_hex(&got), f.sha256);

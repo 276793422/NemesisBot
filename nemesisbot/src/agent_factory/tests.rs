@@ -217,9 +217,19 @@ fn cluster_prompt_joins_identity_and_soul_with_separator() {
     std::fs::write(dir.join("SOUL.md"), "核心原则").unwrap();
 
     let prompt = load_cluster_system_prompt(tmp.path()).expect("两文件齐 → Some");
-    assert_eq!(prompt, "我是集群节点\n\n---\n\n核心原则");
-    // 顺序：IDENTITY 在前 SOUL 在后。
-    assert!(prompt.starts_with("我是集群节点"));
+    // FT（2026-09-17）：人格段之后固定追加 Workspace 尾行（绝对路径随
+    // tempfile 落点不定 → 前缀/收尾断言，不整串比对）。
+    assert!(
+        prompt.starts_with("我是集群节点\n\n---\n\n核心原则\n\n---\n\n**Workspace**: "),
+        "{prompt}"
+    );
+    // 顺序：IDENTITY 在前 SOUL 在后，Workspace 收尾。
+    assert!(prompt.ends_with("read_file/list_dir 等文件工具的相对路径以此为根。"));
+    // Workspace 行指向 <home>/workspace（与装配处 set_workspace_root 同源）。
+    assert!(prompt.contains(&format!(
+        "**Workspace**: {}",
+        tmp.path().join("workspace").display()
+    )));
 }
 
 #[test]
@@ -227,11 +237,12 @@ fn cluster_prompt_skips_blank_files_and_single_file_works() {
     let tmp = tempfile::TempDir::new().unwrap();
     let dir = cluster_dir(tmp.path());
     std::fs::create_dir_all(&dir).unwrap();
-    // 只有 IDENTITY（SOUL 缺失）→ 单文件也 Some。
+    // 只有 IDENTITY（SOUL 缺失）→ 单文件也 Some（人格段 + Workspace 尾行）。
     std::fs::write(dir.join("IDENTITY.md"), "only identity").unwrap();
-    assert_eq!(
-        load_cluster_system_prompt(tmp.path()).as_deref(),
-        Some("only identity")
+    let prompt = load_cluster_system_prompt(tmp.path()).expect("单文件 → Some");
+    assert!(
+        prompt.starts_with("only identity\n\n---\n\n**Workspace**: "),
+        "{prompt}"
     );
 
     // 空白文件视为缺（trim 后为空跳过）→ 全空白 = None。

@@ -100,7 +100,9 @@ describe('SecurityView 策略开关（D1/D2）', () => {
   it('旧配置缺键 → 下拉显示后端 serde 默认（allow / ask / off），不空白', async () => {
     requestMock.mockImplementation((_m: string, cmd: string, _d: any) => {
       if (cmd === 'config.get') {
-        const c = configResult()
+        // Partial 化：模拟"旧配置缺键"要 delete 字段——推断类型的必有属性
+        // 不可 delete（vue-tsc TS2790），本用例语义就是缺键。
+        const c: Partial<ReturnType<typeof configResult>> = configResult()
         delete c.exec_unknown_policy
         delete c.guardian_failure_policy
         delete c.guardian_mode

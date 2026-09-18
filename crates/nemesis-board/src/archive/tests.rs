@@ -26,6 +26,12 @@ fn temp_root(name: &str) -> PathBuf {
     dir
 }
 
+// 短名链直传说明：CI Windows runner 的 %TEMP% 落在 `C:\Users\RUNNER~1\...`
+// （用户名本身是 8.3 短名形态）。2026-09-18 实录曾让 resolve 系列先撞
+// 「8.3 词法拦截」而非被测分支——archive.rs 修复后 8.3 检查先展开盘上
+// 存在的祖先链（RUNNER~1 → 真名）再匹配，因此这里**故意用 temp_root
+// 原始形态直传**：本机（无短名）与 CI（短名链）都必须按被测分支分流。
+
 // ---------------------------------------------------------------------------
 // sanitize_project_name（B2 纯函数矩阵）
 // ---------------------------------------------------------------------------
@@ -191,6 +197,8 @@ fn resolve_auto_allocates_and_creates_dir() {
     let again = resolve_project_directory(None, &ws, "gamma", &[]).unwrap();
     assert_ne!(out, again, "第二次自动分配撞已存在目录 → 序号");
     // 已存在同名【文件】拒绝（路径须在 workspace 外——否则先命中重叠拒绝）。
+    // 短名链直传（见文件头说明）：CI 的 %TEMP% 带 RUNNER~1 短名组件，
+    // 8.3 检查须展开后放行，才能到达被测的「已是文件」分支。
     let outside = temp_root("res_auto_file");
     std::fs::create_dir_all(&outside).unwrap();
     let file = outside.join("afile");

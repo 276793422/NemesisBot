@@ -6129,16 +6129,30 @@ impl AgentLoop {
                             // 为全 lane 600s + per-model timeout_secs 覆盖）。
                             let mut prev_fail_after = Some(first_call_failed_after);
                             let mut retries = 0u32;
+                            // 退避资格（2026-09-18 CI 实调）：失败耗时 <1s =
+                            // 上游**立即**拒绝（连接拒绝 / DNS / mock 类）——
+                            // sleep 无意义（门已关上，等待解决不了），立即重试；
+                            // ≥1s = 真网络等待（上游在挣扎），按 1s/2s/4s 退避
+                            // 才有效。不设门槛的副作用实锤：integration
+                            // gateway/concurrent 5 会话共享 legacy session 串行
+                            // 处理，mock 立即失败链从 40ms 膨胀到 8s，5×8s 推出
+                            // 30s 窗口（首挂实录；历史 3 连 PASS）。与 P3B 撞墙
+                            // 检测同哲学：立即失败的重试无效信号更早暴露。
+                            let mut backoff_eligible =
+                                first_call_failed_after >= std::time::Duration::from_secs(1);
                             while retries < MAX_TRANSIENT_RETRIES {
                                 retries += 1;
                                 // 429 文档关联隐患 1（可重试类统一设计）：transient
-                                // 环加 1s/2s/4s 小退避——此前无 sleep 立即重发，
-                                // 对上游抖动基本无效。测试经 tokio start_paused
-                                // 自动推进，零等待。
-                                tokio::time::sleep(std::time::Duration::from_secs(
-                                    1u64 << (retries - 1).min(2),
-                                ))
-                                .await;
+                                // 环对真网络等待加 1s/2s/4s 小退避——此前无 sleep
+                                // 立即重发，对上游抖动基本无效。立即拒绝（见
+                                // backoff_eligible）不退避。测试经 tokio
+                                // start_paused 自动推进，零等待。
+                                if backoff_eligible {
+                                    tokio::time::sleep(std::time::Duration::from_secs(
+                                        1u64 << (retries - 1).min(2),
+                                    ))
+                                    .await;
+                                }
                                 let r_msgs = self.build_messages(instance);
                                 let r_tools: Vec<crate::types::ToolDefinition> = self
                                     .tools
@@ -6165,6 +6179,10 @@ impl AgentLoop {
                                     Err(e) => {
                                         last_err = e;
                                         let failed_after = attempt_start.elapsed();
+                                        // 下一轮退避资格按本次实际耗时重判
+                                        // （立即拒绝 ↔ 真等待可能在重试间切换）。
+                                        backoff_eligible =
+                                            failed_after >= std::time::Duration::from_secs(1);
                                         if let Some(prev) = prev_fail_after
                                             && prev.abs_diff(failed_after)
                                                 <= std::time::Duration::from_secs(1)

@@ -102,8 +102,9 @@ pub fn default_directory(
 
 /// 目录解析统一入口（B2；**绑定不可变**——只在 project.create 调用一次）。
 ///
-/// - `requested = Some(abs)`：绝对路径校验 + 8.3 短名词法拒绝 + 与主
-///   workspace/其他项目目录重叠拒绝（双向 contains，canonical 域比较）；
+/// - `requested = Some(abs)`：绝对路径校验 + 8.3 短名拒绝（先展开盘上
+///   存在的祖先链，展开后仍带 `~N` 组件才拒）+ 与主 workspace/其他项目
+///   目录重叠拒绝（双向 contains，canonical 域比较）；
 /// - `requested = None`：[`default_directory`] 自动分配。
 ///
 /// 两条路都**创建时 mkdir**（存在性不要求；已存在同名目录直接使用——
@@ -122,7 +123,15 @@ pub fn resolve_project_directory(
                     "项目目录必须是绝对路径：{raw}（不填则自动分配 {BOARD_PROJECTS_DIR}/ 下目录）"
                 ));
             }
-            if p.components().any(|c| {
+            // 8.3 短名拦截 = 先展开、后词法：canonicalize_for_compare 把盘上
+            // **存在**的祖先链全部展开（`C:\Users\RUNNER~1\...` → 真名），
+            // 展开后仍带 `~N` 尾的组件才拒绝。纯词法先行会误杀合法输入——
+            // GitHub Actions Windows runner 的 %TEMP% 用户组件本身就是
+            // RUNNER~1 短名形态（2026-09-18 CI integration 实录：project.create
+            // 对 %TEMP% 子目录全灭）。不存在的短名（SOMEDI~1 等探测形态）
+            // 展不开、原样保留 → 词法兜底照旧拒绝。
+            let expanded = nemesis_path::canonicalize_for_compare(&p);
+            if expanded.components().any(|c| {
                 c.as_os_str()
                     .to_str()
                     .is_some_and(|s| short_name_re().is_match(s))
