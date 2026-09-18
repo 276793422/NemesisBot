@@ -247,9 +247,9 @@ impl RpcClient {
         Self {
             pool: Arc::new(ConnectionPool::default()),
             rate_limiter: RateLimiter::new(
-                10,                      // max_tokens
+                20,                      // max_tokens
                 Duration::from_secs(1),  // refill_interval
-                30,                      // max_requests_per_window
+                60,                      // max_requests_per_window
                 Duration::from_secs(10), // window
             ),
             timeout: DEFAULT_RPC_TIMEOUT,

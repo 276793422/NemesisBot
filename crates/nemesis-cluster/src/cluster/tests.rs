@@ -7396,3 +7396,147 @@ rpc_port = 29422
         ]
     );
 }
+
+// ---------------------------------------------------------------------------
+// register_rpc_peer（T26 根修回归：RPC 学到未知对端时继承占位身份，
+// 不再以硬编码 worker/general/127.0.0.1 覆盖 operator 配置）
+// ---------------------------------------------------------------------------
+
+/// 装载一个自键占位条目（模拟 gateway 静态 peers loader 的调用形态，
+/// 含 mark_peer_static——operator 配置的条目豁免 UDP 过期，也是占位
+/// 继承的资格标记）。
+fn load_placeholder(cluster: &Cluster, id: &str, rpc_port: u16, role: &str, category: &str) {
+    cluster.handle_discovered_node(
+        id,
+        id,
+        vec!["127.0.0.1".to_string()],
+        rpc_port,
+        role,
+        category,
+        vec![],
+        vec![],
+        "unknown",
+    );
+    cluster.mark_peer_static(id);
+}
+
+#[test]
+fn test_register_rpc_peer_inherits_placeholder_identity_with_hint() {
+    let dir = tempfile::tempdir().unwrap();
+    let cluster = Cluster::with_workspace(make_config(), dir.path().to_path_buf());
+
+    // 占位 Node-A：operator 配置 coordinator/development（T26 实况形态，
+    // base.address 被静态 loader 转成 rpc 形态 127.0.0.1:21949）。
+    load_placeholder(&cluster, "Node-A", 21949, "coordinator", "development");
+
+    // RPC 先于 announce 学到真实 id，hint=21949（peer_chat payload 携带）。
+    let changed = cluster.register_rpc_peer("node-yangjian-real-a", 21949);
+    assert!(changed);
+
+    let info = cluster
+        .get_peer("node-yangjian-real-a")
+        .expect("registered");
+    // T26 死因断言：role 必须继承占位的 coordinator，而非硬编码 worker。
+    assert_eq!(
+        info.base.role,
+        nemesis_types::cluster::NodeRole::Coordinator
+    );
+    assert_eq!(info.base.name, "Node-A");
+    assert_eq!(info.base.category, "development");
+}
+
+#[test]
+fn test_register_rpc_peer_inherits_unique_placeholder_without_hint() {
+    let dir = tempfile::tempdir().unwrap();
+    let cluster = Cluster::with_workspace(make_config(), dir.path().to_path_buf());
+
+    load_placeholder(&cluster, "Node-A", 21949, "coordinator", "development");
+
+    // payload 缺 _source_rpc_port（hint=0）：唯一占位可安全继承，rpc_port
+    // 按占位端口派生。
+    let changed = cluster.register_rpc_peer("node-yangjian-real-a", 0);
+    assert!(changed);
+
+    let info = cluster
+        .get_peer("node-yangjian-real-a")
+        .expect("registered");
+    assert_eq!(
+        info.base.role,
+        nemesis_types::cluster::NodeRole::Coordinator
+    );
+    assert_eq!(info.base.category, "development");
+}
+
+#[test]
+fn test_register_rpc_peer_multiple_placeholders_without_hint_waits() {
+    let dir = tempfile::tempdir().unwrap();
+    let cluster = Cluster::with_workspace(make_config(), dir.path().to_path_buf());
+
+    load_placeholder(&cluster, "Node-A", 21949, "coordinator", "development");
+    load_placeholder(&cluster, "Node-B", 21950, "worker", "development");
+
+    // 多占位 + 无 hint：无法判定对端身份，不猜（等 announce 修正）。
+    let changed = cluster.register_rpc_peer("node-yangjian-real-x", 0);
+    assert!(!changed);
+    assert!(cluster.get_peer("node-yangjian-real-x").is_none());
+}
+
+#[test]
+fn test_register_rpc_peer_hint_matches_udp_form_placeholder() {
+    let dir = tempfile::tempdir().unwrap();
+    let cluster = Cluster::with_workspace(make_config(), dir.path().to_path_buf());
+
+    // 直接以 udp 形态端口写入占位（peers.toml 原始形态，未经 loader 转换）。
+    load_placeholder(&cluster, "Node-A", 11949, "coordinator", "development");
+
+    // hint 是 rpc 形态（udp+10000）：端口差 10000 也算命中。
+    let changed = cluster.register_rpc_peer("node-yangjian-real-a", 21949);
+    assert!(changed);
+    let info = cluster
+        .get_peer("node-yangjian-real-a")
+        .expect("registered");
+    assert_eq!(
+        info.base.role,
+        nemesis_types::cluster::NodeRole::Coordinator
+    );
+}
+
+#[test]
+fn test_register_rpc_peer_known_peer_is_noop() {
+    let dir = tempfile::tempdir().unwrap();
+    let cluster = Cluster::with_workspace(make_config(), dir.path().to_path_buf());
+
+    // announce 已先到，真实条目已存在：register_rpc_peer 必须是 no-op，
+    // 不得覆盖（announce 是身份真相源）。
+    cluster.handle_discovered_node(
+        "node-yangjian-real-a",
+        "Node-A",
+        vec!["192.168.1.10".to_string()],
+        21949,
+        "coordinator",
+        "development",
+        vec![],
+        vec![],
+        "agent",
+    );
+    let changed = cluster.register_rpc_peer("node-yangjian-real-a", 21949);
+    assert!(!changed);
+    let info = cluster.get_peer("node-yangjian-real-a").expect("present");
+    assert_eq!(info.base.address, "192.168.1.10:21949");
+}
+
+#[test]
+fn test_register_rpc_peer_no_placeholder_conservative_fallback() {
+    let dir = tempfile::tempdir().unwrap();
+    let cluster = Cluster::with_workspace(make_config(), dir.path().to_path_buf());
+
+    // 无占位（纯 UDP 集群）+ hint 可用：保守登记（旧行为），announce
+    // 到达后由 upsert_if_changed 修正。
+    let changed = cluster.register_rpc_peer("node-yangjian-real-a", 21949);
+    assert!(changed);
+    assert!(cluster.get_peer("node-yangjian-real-a").is_some());
+
+    // 无占位 + hint=0（G14：不可达条目不如不登记）。
+    assert!(!cluster.register_rpc_peer("node-yangjian-real-b", 0));
+    assert!(cluster.get_peer("node-yangjian-real-b").is_none());
+}

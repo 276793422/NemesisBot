@@ -3001,23 +3001,20 @@ pub async fn run(local: bool, extra_args: &[String]) -> Result<()> {
                         // use peer names, not node_ids). We use the RPC port from the payload
                         // (sent by the remote node's ClusterRpcTool).
                         if cluster_ref.get_peer(&source_node_id).is_none() {
+                            // T26 根修（2026-09-18）：不再以硬编码缺省值（name=id、
+                            // 127.0.0.1、"worker"、"general"、21949 fallback）直接
+                            // 登记——RPC 先于 announce 到达时会触发地址匹配占位
+                            // 升级，把 operator 配置的 role=coordinator/category/
+                            // udp 地址整体覆盖成缺省值并落盘 peers.toml（重启复
+                            // 活，worker_sync_once 找不到 coordinator）。改为
+                            // cluster 侧继承占位身份（payload 缺端口提示时传 0，
+                            // 由占位端口派生）。
                             let remote_rpc_port = payload
                                 .get("_source_rpc_port")
                                 .and_then(|v| v.as_u64())
-                                .unwrap_or(21949)
+                                .unwrap_or(0)
                                 as u16;
-
-                            cluster_ref.handle_discovered_node(
-                                &source_node_id,
-                                &source_node_id,
-                                vec!["127.0.0.1".to_string()],
-                                remote_rpc_port,
-                                "worker",
-                                "general",
-                                vec![],
-                                vec![],
-                                "unknown",
-                            );
+                            cluster_ref.register_rpc_peer(&source_node_id, remote_rpc_port);
                         }
                     }
 

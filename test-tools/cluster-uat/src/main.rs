@@ -132,9 +132,16 @@ impl GatewayProcess {
     ) -> Result<Self> {
         println!("  Starting {}...", name);
         // Redirect stderr to a log file for debugging.
+        // 追加而非截断（2026-09-18 T26 排查教训）：File::create 语义下，
+        // 套件中途任一节点重启都会把前一窗口的日志永久抹掉——B 的 T26
+        // 窗口日志被 T-XFER 系列截断，只能靠外部快照抢救。追加后每段
+        // 有 "Starting ..." 分界行 + tracing 时间戳，混窗仍可读。
         let log_path = cwd.join("gateway.log");
-        let log_file = std::fs::File::create(&log_path)
-            .with_context(|| format!("Cannot create log file for {}", name))?;
+        let log_file = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&log_path)
+            .with_context(|| format!("Cannot open log file for {}", name))?;
         let mut cmd = tokio::process::Command::new(bin);
         cmd.args(["--local", "gateway", "--debug"])
             .env("RUST_LOG", "debug")
@@ -1360,6 +1367,16 @@ where
     Fut: std::future::Future<Output = TestResult>,
 {
     print!("\n  [TEST] {} ... ", name);
+    if let Some(Some(filt)) = TEST_FILTER.get()
+        && !name.contains(filt.as_str())
+    {
+        println!("SKIP");
+        return TestResult {
+            name: name.to_string(),
+            passed: true,
+            message: "SKIP: filtered out (--filter)".to_string(),
+        };
+    }
     let result = f().await;
     let status = if result.message.starts_with("SKIP:") {
         "SKIP"
@@ -1395,7 +1412,7 @@ fn trunc(s: &str, max: usize) -> String {
 
 struct Args {
     _skip_long: bool,
-    _filter: Option<String>,
+    filter: Option<String>,
 }
 
 fn parse_args() -> Args {
@@ -1418,9 +1435,13 @@ fn parse_args() -> Args {
     }
     Args {
         _skip_long: skip_long,
-        _filter: filter,
+        filter,
     }
 }
+
+/// --filter 接线（2026-09-18 T26 排查）：单测试定点复跑。设置后仅执行
+/// 名字含过滤串的测试，其余直接 SKIP（setup/节点装配不受影响）。
+static TEST_FILTER: std::sync::OnceLock<Option<String>> = std::sync::OnceLock::new();
 
 // ---------------------------------------------------------------------------
 // Main
@@ -1428,7 +1449,8 @@ fn parse_args() -> Args {
 
 #[tokio::main]
 async fn main() {
-    let _args = parse_args();
+    let args = parse_args();
+    let _ = TEST_FILTER.set(args.filter);
 
     println!("========================================");
     println!("  NemesisBot Cluster UAT Test Suite");
@@ -1476,6 +1498,36 @@ async fn main() {
     // Phase 2: Cleanup ports
     // ------------------------------------------------------------------
     println!("\n--- Phase 2: Cleanup ports ---");
+
+    // 进程级前置清理（2026-09-18 第四轮 T26 幽灵污染教训）：上一轮套件/
+    // 定点跑/手动实验残留的 nemesisbot.exe 若还活着，其 UDP discovery 会
+    // 与本轮节点的 UDP bind 双重绑定（Windows 默认允许 UDP 同端口双绑，
+    // TCP 则独占——所以幽灵表现为「只广播 announce、不接 RPC」的半死形态）。
+    // 幽灵广播的 announce 身份来自它自己那份（可能残缺的）配置，会把本轮
+    // 节点 registry 里的对端条目反复改写（第四轮实证：Node-A 条目在
+    // name=id/role=worker 与 name=Node-A 之间横跳），worker 侧
+    // board.sync 的 coordinator 查找因此永远落空。cleanup_ports 按 PID
+    // 只杀端口占用者，覆盖不了这种 UDP 幽灵——套件开跑前按映像名整体
+    // 清一次。测试机=独占测试环境，整体杀安全。
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        let ghost_sweep = std::process::Command::new("taskkill")
+            .args(["/IM", "nemesisbot.exe", "/F"])
+            .creation_flags(0x08000000) // CREATE_NO_WINDOW
+            .output();
+        match ghost_sweep {
+            Ok(out) if out.status.success() => {
+                println!("  Swept leftover nemesisbot.exe processes");
+            }
+            // 找不到进程（正常情况）taskkill 返回非零——静默即可。
+            Ok(_) => println!("  No leftover nemesisbot.exe processes"),
+            Err(e) => eprintln!("  WARN: ghost sweep taskkill failed: {}", e),
+        }
+        // taskkill 是异步通知式的，给内核一点回收端口/句柄的时间，
+        // 避免下面的端口探活撞上垂死进程的残留监听。
+        tokio::time::sleep(std::time::Duration::from_millis(800)).await;
+    }
 
     let all_ports: Vec<u16> = NODES
         .iter()
@@ -1733,12 +1785,30 @@ async fn main() {
                     // Per TOML v1.0.0, `-` is a legal bare key char so it's
                     // preserved as-is. Only `.` and `:` get replaced with `_`.
                     let sanitized = other.name.replace(['.', ':'], "_");
-                    if !content.contains(&format!("[peers.{}]", sanitized)) {
+                    // 占位升级（2026-09-18）：announce 到达后 [peers.人读名]
+                    // 占位键会被重写为 [peers.真实运行时id]（表键即 peer_id，
+                    // 人读名保留在 name 字段）——单机/回环拓扑下这在 T2 前
+                    // 就会发生（U1-6 名匹配坍缩使 announce 也能触发升级）。
+                    // 条目存在的判据因此是：人读名键仍在，或任一条目的
+                    // name 字段 == 人读名。
+                    let placeholder_key_present =
+                        content.contains(&format!("[peers.{}]", sanitized));
+                    let name_field_present = content
+                        .parse::<toml::Value>()
+                        .ok()
+                        .and_then(|doc| doc.get("peers").and_then(|v| v.as_table()).cloned())
+                        .map(|peers| {
+                            peers.values().any(|entry| {
+                                entry.get("name").and_then(|v| v.as_str()) == Some(other.name)
+                            })
+                        })
+                        .unwrap_or(false);
+                    if !placeholder_key_present && !name_field_present {
                         return fail(
                             "T2",
                             format!(
-                                "{} peers.toml missing entry for {} (looked for [peers.{}])",
-                                node.name, other.name, sanitized
+                                "{} peers.toml missing entry for {} (looked for [peers.{}] or name=\"{}\")",
+                                node.name, other.name, sanitized, other.name
                             ),
                         );
                     }
@@ -4100,6 +4170,33 @@ async fn main() {
                     None => return fail("T26", "无法从 B 的 peers.toml 读到 [node] id"),
                 };
                 let base_b = agent_posts_of(&baseline, &b_node_id);
+
+                // 0. B 切 testai-10.0（T23/T25 同款先例）：setup 默认的
+                //    testai-3.1 是 echo——discussion prompt 的「沉默指令」
+                //    含 [SILENT] 字样，echo 原样带回 → handle_discussion
+                //    从宽子串判定误判沉默 → worker 永不发言。定点复跑
+                //    （--filter T26，跳过 T25 的模型切换）时这里不补切
+                //    必挂。10.0 固定五段汇报、不含 [SILENT]。幂等：全套
+                //    件里 T25 已切过，重复 model add --default 无害。
+                let out = ws_b
+                    .run_cli(
+                        &gateway_bin,
+                        &[
+                            "model",
+                            "add",
+                            "--model",
+                            "test/testai-10.0",
+                            "--base",
+                            &format!("http://127.0.0.1:{}/v1", ai_server_port()),
+                            "--key",
+                            "test-key",
+                            "--default",
+                        ],
+                    )
+                    .await;
+                if !out.success() {
+                    return fail("T26", format!("B model switch failed: {}", out.stderr));
+                }
 
                 // 1. 杀 B → 确认离线窗口 → @Node-B。
                 gw_b.kill().await;
@@ -7374,6 +7471,27 @@ async fn main() {
     // T-XFER-3: master 中途 kill 重启续收（P3/D3 先落盘后 ACK）。
     all_results.push(
         run_test("T-XFER-3: master kill 重启续收（D3 staging 持久 + 续传合并）", || async {
+            // B 带双 env 重启：4KiB 块（同 T-XFER-1/2，多块传输）+
+            // CHUNK_DELAY_MS=250（chunk 间停顿钩子）。全速推 17 块仅 ~240ms，
+            // staging 非空窗口 < 500ms 轮询周期，master 半程死亡场景永远造
+            // 不出来（2026-09-18 第六轮取证：链路本身全绿，纯窗口竞争）。
+            // 250ms × 17 ≈ 4.3s 半程窗口，稳定覆盖 kill 时机。
+            gw_b.kill().await;
+            gw_b = match start_gateway_and_wait_with_env(
+                "Gateway-B",
+                &gateway_bin,
+                ws_b.path(),
+                &NODES[1],
+                &[
+                    ("NEMESISBOT_TRANSFER_CHUNK_BYTES", "4096"),
+                    ("NEMESISBOT_TRANSFER_CHUNK_DELAY_MS", "250"),
+                ],
+            )
+            .await
+            {
+                Ok(g) => g,
+                Err(e) => return fail("T-XFER-3", format!("B 重启失败: {e}")),
+            };
             let mut ws = match ws_connect_gateway(NODES[0].web_port).await {
                 Ok(s) => s,
                 Err(e) => return fail("T-XFER-3", format!("WS connect to A failed: {e}")),
@@ -7392,7 +7510,7 @@ async fn main() {
             };
             let _ = issue_id;
             // 轮询 ≤120s：A 的 .staging 出现本任务且 ≥1 块落盘（推送已开跑；
-            // 4KiB 块 + ~3 RPC/s 限速给足 kill 窗口）。
+            // 4KiB 块 + CHUNK_DELAY_MS=250 拉长的半程窗口给足 kill 时机）。
             let deadline = tokio::time::Instant::now() + Duration::from_secs(120);
             loop {
                 if tokio::time::Instant::now() >= deadline {
@@ -8308,8 +8426,19 @@ async fn main() {
                     (None, Some(d)) => (id2, d.clone()),
                     _ => anyhow::bail!("conflict_redispatch 审计应恰在一单上: a1={a1:?} a2={a2:?}"),
                 };
-                if !details.contains("\"worker\":\"Node-") {
-                    anyhow::bail!("重派审计应记录原 worker: {details}");
+                // 重派审计的 worker 身份（D0 单一真相源归一后记真实运行时
+                // id；占位兜底路径下是人读名——两形态都合法，只断言身份
+                // 非空，不再硬编码 "Node-" 前缀（CI 真实 id 是 node-<host>-uuid）。
+                let worker_recorded = serde_json::from_str::<serde_json::Value>(&details)
+                    .ok()
+                    .and_then(|v| {
+                        v.pointer("/worker")
+                            .and_then(|w| w.as_str())
+                            .map(|s| s.to_string())
+                    });
+                match worker_recorded {
+                    Some(w) if !w.is_empty() => {}
+                    _ => anyhow::bail!("重派审计应记录原 worker 身份（worker 字段非空）: {details}"),
                 }
                 let comments = ws_api_request(&mut ws, "board", "comment.list", json!({ "issue_id": lose_id }), 10).await?;
                 let joined = comments.to_string();

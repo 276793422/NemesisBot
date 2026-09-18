@@ -600,9 +600,9 @@ async fn nodes_refresh_timeout_clamped_to_one_sec() {
     // 前置原理：tokio::time::Timeout 只在「内层 future Pending 且 deadline 到」
     // 时返回 Elapsed；正常 RPC 路径内层自己的 timer 先臂先响（同一次 poll 级联
     // 里内层先臂、时长相同）→ 外层永远输。唯一能让外层赢的路径：内层卡在限流
-    // 器 acquire_async 的 100ms 睡眠重试（Pending）。为此先用 30 次快速失败
+    // 器 acquire_async 的 100ms 睡眠重试（Pending）。为此先用 60 次快速失败
     // 调用（resolver 返回 offline → 连接前即 Err，毫秒级 acquire+release）填满
-    // 滑动窗口（30 次/10s/peer），随后 refresh 的 acquire 持续被拒 → 外层 1s 到。
+    // 滑动窗口（60 次/10s/peer），随后 refresh 的 acquire 持续被拒 → 外层 1s 到。
     struct OfflineResolver;
     impl PeerResolver for OfflineResolver {
         fn get_peer_info(&self, _peer_id: &str) -> Option<(Vec<String>, u16, bool)> {
@@ -617,9 +617,12 @@ async fn nodes_refresh_timeout_clamped_to_one_sec() {
     }
 
     let client = Arc::new(RpcClient::with_resolver(Arc::new(OfflineResolver)));
-    // 预热：30 次快速失败调用 → 窗口时间戳累积到上限（release 只还 token，
-    // 不清窗口时间戳）
-    for _ in 0..30 {
+    // 预热：60 次快速失败调用 → 窗口时间戳累积到上限（release 只还 token，
+    // 不清窗口时间戳）。窗口容量 2026-09-18 随 RpcClient 限流放宽从 30 提到
+    // 60（30 req/10s = 3 req/s 会卡传输类连发），预热次数必须 ≥ 窗口容量，
+    // 否则 refresh 的 acquire 直接放行、内层毫秒级 fast-fail，外层 1s
+    // Timeout 永远输（实测回归：错误消息变 "peer is offline"）。
+    for _ in 0..60 {
         let req = RPCRequest {
             id: uuid::Uuid::new_v4().to_string(),
             action: ActionType::Custom("get_info".to_string()),

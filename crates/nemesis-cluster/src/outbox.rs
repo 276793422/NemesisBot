@@ -39,6 +39,21 @@ use crate::transfer::{
 /// 推送循环空转周期（无 kick 时的兜底节拍；失败重试的天然退避）。
 const PUSH_TICK_SECS: u64 = 15;
 
+/// UAT 测试钩子：chunk 间强制延迟（毫秒，env
+/// `NEMESISBOT_TRANSFER_CHUNK_DELAY_MS`，仅 [`push_transfer_dir`] 逐块发送
+/// 路径读取）。全速推送 17 块 ≈240ms 就完（每 RPC 仅 4-8ms，无限速），
+/// master 侧 staging 非空窗口小于 UAT 的 500ms 轮询周期，T-XFER-3 的
+/// 「master 半程死亡 → staging 持久 → 重启 have 续传」场景永远制造不出来
+/// （2026-09-18 第六轮取证：A 端档案安置/合并/B 发件箱清空全链正常，
+/// 纯测试窗口竞争）。UAT 由此拉长推送窗口；生产默认 0 = 零 sleep，行为
+/// 与钩子引入前逐字节一致。
+fn chunk_delay_ms() -> u64 {
+    std::env::var("NEMESISBOT_TRANSFER_CHUNK_DELAY_MS")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(0)
+}
+
 // -- CD6（2026-09-17 用户裁决⑨⑩⑪）：退避封顶 + 死信 + 日志降频 -----------
 
 /// 推送失败退避起步（秒）——15s 起步指数爬升（= PUSH_TICK_SECS）。
@@ -846,6 +861,11 @@ pub async fn push_transfer_dir(
                     chunk_timeout,
                 )
                 .await?;
+            // UAT 钩子（见 chunk_delay_ms）：非零时逐块停顿，拉长推送窗口。
+            let delay = chunk_delay_ms();
+            if delay > 0 {
+                tokio::time::sleep(Duration::from_millis(delay)).await;
+            }
         }
     }
     let end_val = transport

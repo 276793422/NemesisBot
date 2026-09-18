@@ -472,6 +472,23 @@ fn test_sync_entry_targets_me() {
     ));
 }
 
+/// G8 游标推进回归（2026-09-18 T26 根因）：sync 第一拍跑在 cluster agent
+/// loop 就绪之前 → inbox.send 失败。此前 advance_watermark 无条件推进
+/// latest → 该条目被跳过且永不重拉，补拉机制自己吞掉 wake 事件，离线
+/// 韧性失效。修复后失败条目前停住，下一拍重拉重试。
+#[test]
+fn test_sync_advance_target_holds_back_on_undelivered() {
+    // 无失败 → 推进到 master latest（见过的不重拉）。
+    assert_eq!(sync_advance_target(None, 10), 10);
+    assert_eq!(sync_advance_target(None, 0), 0);
+    // 有失败条目（seq=10）→ 停在它之前，下一拍 since_seq=9 重拉重试。
+    assert_eq!(sync_advance_target(Some(10), 10), 9);
+    // 多个失败条目取最小（乱序防御）。
+    assert_eq!(sync_advance_target(Some(12), 15), 11);
+    // 失败条目 seq 异常大于 latest（响应乱序）→ 不越过 latest。
+    assert_eq!(sync_advance_target(Some(15), 10), 10);
+}
+
 // -------------------------------------------------------------------------
 // 批次 E：dashboard 本地发言入口（post_discussion_locally / LocalDiscussionIngress）
 // -------------------------------------------------------------------------

@@ -1082,13 +1082,30 @@ impl Cluster {
             // (e.g. "Node-A") rather than the real node_id. Its `name` field is
             // the human-readable name the operator configured in peers.toml —
             // capture it so we can preserve it across the upgrade.
-            let placeholders: Vec<(String, String)> = self
+            //
+            // U1-6 补臂（2026-09-18，单机/回环拓扑根修）：自报地址**永不
+            // 含回环**（get_all_local_ips 跳过 loopback），而单机多实例的
+            // 静态 peer 配的恰是 127.0.0.1——纯地址比对在此拓扑下永不命中，
+            // 占位条目永不升级、与真实条目长期并存（占位 id = 人读名），
+            // 进而遮蔽 canonical_peer_id 的解析（registry.get 先命中占位 →
+            // 返回占位 id 而非运行时 id，D0 账本身份失配，UAT T15 实证）。
+            // 补名匹配臂：仅对「id==name」的自键占位条目、且本次 announce
+            // 携带非空人读名（≠ node_id）时按名归并。真实条目（id≠name）
+            // 不参与名合并——同名异 id 的两个真实节点不会被误并。
+            let announce_carries_human_name = !name.is_empty() && name != node_id;
+            let placeholders: Vec<(String, String, Vec<String>)> = self
                 .registry
                 .list_peers()
                 .into_iter()
                 .filter(|p| {
                     if p.base.id == node_id {
                         return false;
+                    }
+                    if announce_carries_human_name
+                        && p.base.id == p.base.name
+                        && p.base.name == name
+                    {
+                        return true;
                     }
                     // 发现②/B4 强化：占位匹配对自报**全量**地址逐个比对，
                     // 不再只对 primary——placeholder（静态 peers 手写条目）
@@ -1109,11 +1126,23 @@ impl Cluster {
                             || p.addresses.iter().any(|a| addr_eq(a, cand))
                     })
                 })
-                .map(|p| (p.base.id.clone(), p.base.name.clone()))
+                .map(|p| {
+                    // 占位可继承的拨号候选：地址池原样 + base.address 的
+                    // host 部分（静态 loader 装载的条目地址池常为空，拨号
+                    // 走 base.address 的 host 回退分支——不并入则升级后
+                    // 回环候选直接丢失）。
+                    let mut addrs = p.addresses.clone();
+                    let host = p.base.address.split(':').next().unwrap_or("").to_string();
+                    if !host.is_empty() && !addrs.contains(&host) {
+                        addrs.push(host);
+                    }
+                    (p.base.id.clone(), p.base.name.clone(), addrs)
+                })
                 .collect();
             let mut inherited_name: Option<String> = None;
             let mut inherited_static = false;
-            for (placeholder_id, placeholder_name) in &placeholders {
+            let mut inherited_addresses: Vec<String> = Vec::new();
+            for (placeholder_id, placeholder_name, placeholder_addrs) in &placeholders {
                 tracing::info!(
                     real_id = node_id,
                     placeholder_id = %placeholder_id,
@@ -1147,7 +1176,17 @@ impl Cluster {
                         // rpc_port 字段），不再留给装载端按约定猜。
                         rpc_port,
                         // 发现①根修：升级路径同样保全自报全量地址。
-                        addresses: addresses.clone(),
+                        // U1-6：并入占位侧地址（含回环），落盘的候选池
+                        // 才是完整选址集合——单机拓扑下回环是唯一可达地址。
+                        addresses: {
+                            let mut merged = addresses.clone();
+                            for a in placeholder_addrs {
+                                if !merged.contains(a) {
+                                    merged.push(a.clone());
+                                }
+                            }
+                            merged
+                        },
                         // 同 handle_discovered_node：role 走对端自报值解析，
                         // 不硬编码（升级后的静态 peer 条目 role 才真实）。
                         role: nemesis_types::cluster::NodeRole::from_role_str(role),
@@ -1159,6 +1198,11 @@ impl Cluster {
                 );
                 if !placeholder_name.is_empty() {
                     inherited_name = Some(placeholder_name.clone());
+                }
+                for a in placeholder_addrs {
+                    if !inherited_addresses.contains(a) {
+                        inherited_addresses.push(a.clone());
+                    }
                 }
             }
             // Preserve the human-readable name across the upgrade. The real
@@ -1173,6 +1217,26 @@ impl Cluster {
             {
                 info.base.name = human_name;
                 self.registry.upsert(info);
+            }
+            // U1-6：地址池继承。占位条目（静态 peers）配的往往是 operator
+            // 手写的可达地址（单机拓扑 = 127.0.0.1），而 announce 自报地址
+            // 永不含回环——不继承则升级后的真实条目只剩网卡 IP 候选，单机
+            // /防火墙拓扑下 RpcClient 选址全部不可达（send_and_receive 的
+            // 多地址 failover 也无从兜底，候选池里根本没有回环）。占位侧
+            // 地址去重并入真实条目候选池。
+            if !inherited_addresses.is_empty()
+                && let Some(mut info) = self.registry.get(node_id)
+            {
+                let mut changed_addr = false;
+                for a in &inherited_addresses {
+                    if !info.addresses.contains(a) {
+                        info.addresses.push(a.clone());
+                        changed_addr = true;
+                    }
+                }
+                if changed_addr {
+                    self.registry.upsert(info);
+                }
             }
             // Preserve static-ness across the upgrade so a configured peer
             // (loaded from peers.toml) doesn't suddenly become UDP-expirable
@@ -1930,6 +1994,24 @@ impl Cluster {
     /// None，调用方保留原值（RPC resolver 自身还有 name/id 兜底扫描）。
     pub fn canonical_peer_id(&self, target: &str) -> Option<String> {
         if let Some(info) = self.registry.get(target) {
+            // U1-6 占位遮蔽防护（2026-09-18）：get 命中的是「id==name」自键
+            // 占位条目（静态 peers 以人读名键控）时，注册表里可能同时存在
+            // 同一节点的真实条目（announce 已到、占位按地址升级未命中的
+            // 窗口，单机/回环拓扑下该窗口是常态）——此时必须返回真实运行
+            // 时 id（worker 侧 `_rpc.from` 的形态），否则派发账本 worker_id
+            // 落占位 id、写回评论作者身份失配（D0 单一真相源被占位击穿，
+            // UAT T15 实证：作者落 "Node-B" 而非 node-* 运行时 id）。扫描
+            // 按 name 精确匹配、排除占位自身；无真实条目 = 维持占位 id
+            //（旧行为，纯静态拓扑下这是唯一可用句柄）。
+            if info.base.id == info.base.name
+                && let Some(real) = self
+                    .registry
+                    .list_peers()
+                    .into_iter()
+                    .find(|p| p.base.id != target && p.base.name == target)
+            {
+                return Some(real.base.id);
+            }
             return Some(info.base.id);
         }
         self.registry
@@ -1937,6 +2019,148 @@ impl Cluster {
             .into_iter()
             .find(|p| p.base.id == target || p.base.name == target)
             .map(|p| p.base.id)
+    }
+
+    /// RPC 学到的未知对端登记（真实节点 id 首次出现、UDP announce 尚未
+    /// 到达时的身份补齐入口）。
+    ///
+    /// T26 根修（2026-09-18）：此前 gateway 在 peer_chat handler 里以硬
+    /// 编码缺省值（name=id、addresses=["127.0.0.1"]、role="worker"、
+    /// category="general"、rpc_port fallback 21949）直接调
+    /// handle_discovered_node。RPC 天然比 announce 先到（广播周期
+    /// broadcast_interval + 发送线程 0-5s jitter，TCP 恒抢先）：垃圾条目
+    /// 触发地址匹配占位升级臂，把占位条目 operator 配置的
+    /// role=coordinator/category/udp 地址语义整体覆盖（inherited_name 只
+    /// 救回 name），并随 upgrade_peer_in_peers_toml 落盘 peers.toml 永久
+    /// 固化——announce 的后续修正只进 registry + state.toml
+    /// （sync_to_disk 不写 peers.toml），节点每次重启装载 peers.toml 垃
+    /// 圾复活，worker_sync_once 找不到 coordinator（UAT T26 实证：B 视
+    /// 角 A 条目 = worker/general/127.0.0.1，而 A 实为
+    /// coordinator/development）。
+    ///
+    /// 正确姿势：优先继承同地址占位（静态 peers 人读名条目）的完整身份
+    /// ——role/category/name/地址池原样、rpc_port 用 hint 或占位端口派
+    /// 生——再走 handle_discovered_node 正常升级路径。继承不到时才退保
+    /// 守缺省（与旧行为一致；纯 UDP 集群无静态配置，announce 数秒内修
+    /// 正）。返回 true = 本次实际登记/升级了条目。
+    pub fn register_rpc_peer(&self, real_id: &str, rpc_port_hint: u16) -> bool {
+        if self.registry.get(real_id).is_some() {
+            return false;
+        }
+
+        // 自键占位（id==name，静态 peers 的人读名条目）。真实条目（id≠
+        // name）不参与继承——那是 announce 学来的运行时身份，不是
+        // operator 配置的原始语义。static 标记是占位资格的硬条件：保守
+        // 缺省插入的条目（name=id，无 static 标记）不得被当占位继承，
+        // 否则垃圾缺省身份会自我扩散。
+        let placeholders: Vec<crate::types::ExtendedNodeInfo> = self
+            .registry
+            .list_peers()
+            .into_iter()
+            .filter(|p| {
+                p.base.id == p.base.name
+                    && p.base.id != real_id
+                    && self.registry.is_peer_static(&p.base.id)
+            })
+            .collect();
+
+        // 端口提示匹配：占位地址的端口与 hint 同值（占位地址已被静态
+        // loader 转成 rpc 形态）或相差 10000（占位地址仍是 udp 形态）都
+        // 算命中。
+        let port_of = |addr: &str| -> Option<u16> {
+            addr.rsplit(':').next().and_then(|p| p.parse::<u16>().ok())
+        };
+        let matched = if rpc_port_hint > 0 {
+            placeholders.iter().find(|p| {
+                port_of(&p.base.address)
+                    .map(|port| {
+                        port == rpc_port_hint || Some(port) == rpc_port_hint.checked_sub(10000)
+                    })
+                    .unwrap_or(false)
+            })
+        } else {
+            None
+        };
+        // 无 hint 时的兜底：恰有一个占位才继承（单机/双节点拓扑几乎必
+        // 然正确）；多占位无法判定身份，宁可等待 announce，不猜。
+        let chosen = matched.or_else(|| {
+            if placeholders.len() == 1 {
+                placeholders.first()
+            } else {
+                None
+            }
+        });
+
+        let Some(ph) = chosen else {
+            // 无占位可继承：保守登记（旧行为，仅 hint 可用时）。announce
+            // 到达后由 upsert_if_changed 修正为真实自报身份。G14 纪律：
+            // rpc_port 未知（hint=0）登记不可达条目不如不登记。
+            if rpc_port_hint == 0 {
+                return false;
+            }
+            return self.handle_discovered_node(
+                real_id,
+                real_id,
+                vec!["127.0.0.1".to_string()],
+                rpc_port_hint,
+                "worker",
+                "general",
+                vec![],
+                vec![],
+                "unknown",
+            );
+        };
+
+        // 继承占位身份升级。role 走占位的真实角色（T26 死因 = 旧代码在
+        // 此硬编码 "worker"，覆盖了 coordinator）；rpc_port：hint 优先，
+        // 占位端口已是 rpc 形态（>10000）直接用，udp 形态按 +10000 约定
+        // 派生（与静态 loader 同源）。
+        let udp_port = port_of(&ph.base.address).unwrap_or(0);
+        let rpc_port = if rpc_port_hint > 0 {
+            rpc_port_hint
+        } else if udp_port > 10000 {
+            udp_port
+        } else if udp_port > 0 {
+            udp_port + 10000
+        } else {
+            0
+        };
+        // 占位 base.address 的 host 并入地址池（单机拓扑回环往往是唯一
+        // 可达地址，见 handle_discovered_node 升级臂 U1-6 注记）。
+        let host = ph.base.address.split(':').next().unwrap_or("").to_string();
+        let mut addresses = ph.addresses.clone();
+        if !host.is_empty() && !addresses.contains(&host) {
+            addresses.push(host);
+        }
+        let name = if ph.base.name.is_empty() {
+            real_id.to_string()
+        } else {
+            ph.base.name.clone()
+        };
+        let role_str = ph.base.role.as_role_str();
+        let category = ph.base.category.clone();
+        let changed = self.handle_discovered_node(
+            real_id,
+            &name,
+            addresses,
+            rpc_port,
+            role_str,
+            &category,
+            ph.tags.clone(),
+            vec![],
+            &ph.node_type,
+        );
+        if changed {
+            tracing::info!(
+                real_id = real_id,
+                placeholder = %ph.base.id,
+                role = role_str,
+                category = %category,
+                rpc_port,
+                "[Cluster] RPC peer registration inherited placeholder identity"
+            );
+        }
+        changed
     }
 
     /// Temporarily mark a peer as Online so the RPC resolver doesn't block

@@ -1495,6 +1495,13 @@ async fn worker_sync_once(
         .cloned()
         .unwrap_or_default();
     let mut enqueued = 0usize;
+    // 投递失败条目的最小 seq（2026-09-18 T26 根因）：sync 第一拍可能跑得
+    // 比 cluster agent loop 就绪更早（重启后 ticker 立即 tick，loop 要等
+    // 装配完成才 set_sender）→ inbox.send 失败（no active loop）。此前
+    // advance_watermark 无条件推进 latest → 该条目被跳过且永不重拉——
+    // 补拉机制自己吞掉了 wake 事件，离线韧性失效。改为游标只推进到
+    // 失败条目之前：下一拍重拉重试，loop 就绪后自然补投。
+    let mut first_undelivered_seq: Option<i64> = None;
     for entry in &entries {
         let seq = entry.get("seq").and_then(|v| v.as_i64()).unwrap_or(0);
         let kind = entry
@@ -1538,11 +1545,29 @@ async fn worker_sync_once(
         if deps.inbox.send(event).is_ok() {
             deps.wake_state.commit(&thread_key, seq);
             enqueued += 1;
+        } else {
+            first_undelivered_seq = Some(match first_undelivered_seq {
+                Some(m) => m.min(seq),
+                None => seq,
+            });
         }
     }
-    // 游标推进到 master latest_seq：见过的（含被过滤的）不重拉。
-    deps.wake_state.advance_watermark(latest);
+    // 游标推进到 master latest_seq：见过的（含被过滤的）不重拉；投递失败
+    // 的条目停在原地（min 也压住排在失败条目之后的已过滤条目——下一拍
+    // 重拉时会被同样的过滤条件跳过，只是多拉一点，语义无损）。
+    let advance_to = sync_advance_target(first_undelivered_seq, latest);
+    deps.wake_state.advance_watermark(advance_to);
     Ok(enqueued)
+}
+
+/// G8 游标推进目标：无投递失败 → 推进到 master `latest`；有失败条目 →
+/// 只推进到失败条目之前（下一拍重拉重试，agent loop 就绪后自然补投），
+/// 且永不越过 `latest`（`fail-1` 可能大于 latest 当响应乱序时）。
+fn sync_advance_target(first_undelivered_seq: Option<i64>, latest: i64) -> i64 {
+    match first_undelivered_seq {
+        Some(fail) => (fail - 1).min(latest),
+        None => latest,
+    }
 }
 
 /// G8 过滤：补拉条目只入队「@我的 / 我参与的线程」。@ 匹配与 master
