@@ -71,18 +71,68 @@ impl Tool for StrictTool {
     }
 }
 
+/// 并发重叠峰值跟踪（2026-09-18 CI Windows 实录）：execute 进入 +1 / 退出
+/// −1，CAS 维护同时在执行的峰值。wall-clock 上限断言在 CI 慢机会假红
+/// （g3_mixed：并行被调度/杀毒延迟拉到 908ms，越过 700ms 上限——纯 spawn
+/// 批与纯 read-only 批同 run 全绿，混合批的 3×300ms 并行被环境拖成
+/// 「表面串行」）。行为断言（峰值 ≥2 = 存在真实重叠；串行必然峰值 =1）
+/// 才是并行的确定性证明，零时序敏感。
+#[derive(Clone, Default)]
+struct OverlapTracker {
+    current: std::sync::Arc<std::sync::atomic::AtomicUsize>,
+    max: std::sync::Arc<std::sync::atomic::AtomicUsize>,
+}
+
+impl OverlapTracker {
+    fn enter(&self) {
+        use std::sync::atomic::Ordering;
+        let cur = self.current.fetch_add(1, Ordering::SeqCst) + 1;
+        self.max.fetch_max(cur, Ordering::SeqCst);
+    }
+    fn exit(&self) {
+        self.current
+            .fetch_sub(1, std::sync::atomic::Ordering::SeqCst);
+    }
+    fn peak(&self) -> usize {
+        self.max.load(std::sync::atomic::Ordering::SeqCst)
+    }
+}
+
 /// U5 (sixth batch): a read-only tool that sleeps a fixed duration then
-/// returns a marker — drives the concurrency wall-clock test. The delay
-/// is what the parallel pool overlaps; a serial path would sum them.
+/// returns a marker — drives the concurrency tests. The delay is what the
+/// parallel pool overlaps; a serial path would sum them.
 struct SlowReadTool {
     marker: String,
     delay_ms: u64,
+    overlap: Option<OverlapTracker>,
+}
+
+fn slow_read(marker: &str, delay_ms: u64) -> SlowReadTool {
+    SlowReadTool {
+        marker: marker.into(),
+        delay_ms,
+        overlap: None,
+    }
+}
+
+fn slow_read_tracked(marker: &str, delay_ms: u64, tracker: OverlapTracker) -> SlowReadTool {
+    SlowReadTool {
+        marker: marker.into(),
+        delay_ms,
+        overlap: Some(tracker),
+    }
 }
 
 #[async_trait]
 impl Tool for SlowReadTool {
     async fn execute(&self, _args: &str, _ctx: &RequestContext) -> Result<String, String> {
+        if let Some(t) = &self.overlap {
+            t.enter();
+        }
         tokio::time::sleep(std::time::Duration::from_millis(self.delay_ms)).await;
+        if let Some(t) = &self.overlap {
+            t.exit();
+        }
         Ok(self.marker.clone())
     }
     fn is_read_only(&self) -> bool {
@@ -7420,43 +7470,40 @@ fn llm_tool_calls(names: &[&str]) -> LlmResponse {
 
 #[tokio::test]
 async fn u5_readonly_batch_runs_concurrently() {
-    // 3 read-only tools each sleeping 300ms. Serial ≈ 900ms; parallel ≈ 300ms.
-    // Bound at 700ms to stay well clear of serial while tolerating scheduler
-    // jitter / the 4-permit semaphore (3 ≤ 4 → no queueing).
+    // 3 read-only tools each sleeping 300ms (3 ≤ 4 permits → no queueing).
+    // 并行的证明 = 重叠峰值 ≥2（串行必然峰值 =1）——wall-clock 上限在 CI
+    // 慢机会假红（调度/杀毒延迟可把 3×300ms 并行拖到逼近串行值，2026-09-18
+    // CI Windows 实录），故降级为死锁护栏。
+    let overlap = OverlapTracker::default();
     let provider =
         MockLlmProvider::new(vec![llm_tool_calls(&["r1", "r2", "r3"]), llm_text("done")]);
     let mut agent_loop = AgentLoop::new(Box::new(provider), test_config());
     agent_loop.register_tool(
         "r1".into(),
-        Box::new(SlowReadTool {
-            marker: "A".into(),
-            delay_ms: 300,
-        }),
+        Box::new(slow_read_tracked("A", 300, overlap.clone())),
     );
     agent_loop.register_tool(
         "r2".into(),
-        Box::new(SlowReadTool {
-            marker: "B".into(),
-            delay_ms: 300,
-        }),
+        Box::new(slow_read_tracked("B", 300, overlap.clone())),
     );
     agent_loop.register_tool(
         "r3".into(),
-        Box::new(SlowReadTool {
-            marker: "C".into(),
-            delay_ms: 300,
-        }),
+        Box::new(slow_read_tracked("C", 300, overlap.clone())),
     );
 
     let instance = AgentInstance::new(test_config());
     let context = RequestContext::new("web", "c1", "u1", "s1");
     let start = std::time::Instant::now();
     let _ = agent_loop.run(&instance, "go", &context).await;
-    let elapsed = start.elapsed();
     assert!(
-        elapsed < std::time::Duration::from_millis(700),
-        "3×300ms read-only should overlap (parallel); took {:?}",
-        elapsed
+        overlap.peak() >= 2,
+        "3×300ms read-only must genuinely overlap (parallel); peak={}",
+        overlap.peak()
+    );
+    assert!(
+        start.elapsed() < std::time::Duration::from_secs(5),
+        "dead-lock guard; took {:?}",
+        start.elapsed()
     );
 }
 
@@ -7468,13 +7515,7 @@ async fn u5_writer_in_batch_keeps_serial() {
     // ~300ms).
     let provider = MockLlmProvider::new(vec![llm_tool_calls(&["r1", "w1"]), llm_text("done")]);
     let mut agent_loop = AgentLoop::new(Box::new(provider), test_config());
-    agent_loop.register_tool(
-        "r1".into(),
-        Box::new(SlowReadTool {
-            marker: "A".into(),
-            delay_ms: 300,
-        }),
-    );
+    agent_loop.register_tool("r1".into(), Box::new(slow_read("A", 300)));
     agent_loop.register_tool(
         "w1".into(),
         Box::new(SlowWriteTool {
@@ -7503,27 +7544,9 @@ async fn u5_parallel_results_preserve_source_order() {
     let provider =
         MockLlmProvider::new(vec![llm_tool_calls(&["r1", "r2", "r3"]), llm_text("done")]);
     let mut agent_loop = AgentLoop::new(Box::new(provider), test_config());
-    agent_loop.register_tool(
-        "r1".into(),
-        Box::new(SlowReadTool {
-            marker: "A".into(),
-            delay_ms: 5,
-        }),
-    );
-    agent_loop.register_tool(
-        "r2".into(),
-        Box::new(SlowReadTool {
-            marker: "B".into(),
-            delay_ms: 5,
-        }),
-    );
-    agent_loop.register_tool(
-        "r3".into(),
-        Box::new(SlowReadTool {
-            marker: "C".into(),
-            delay_ms: 5,
-        }),
-    );
+    agent_loop.register_tool("r1".into(), Box::new(slow_read("A", 5)));
+    agent_loop.register_tool("r2".into(), Box::new(slow_read("B", 5)));
+    agent_loop.register_tool("r3".into(), Box::new(slow_read("C", 5)));
 
     let instance = AgentInstance::new(test_config());
     let context = RequestContext::new("web", "c1", "u1", "s3");
@@ -7549,12 +7572,35 @@ async fn u5_parallel_results_preserve_source_order() {
 struct SlowSpawnTool {
     marker: String,
     delay_ms: u64,
+    overlap: Option<OverlapTracker>,
+}
+
+fn slow_spawn(marker: &str, delay_ms: u64) -> SlowSpawnTool {
+    SlowSpawnTool {
+        marker: marker.into(),
+        delay_ms,
+        overlap: None,
+    }
+}
+
+fn slow_spawn_tracked(marker: &str, delay_ms: u64, tracker: OverlapTracker) -> SlowSpawnTool {
+    SlowSpawnTool {
+        marker: marker.into(),
+        delay_ms,
+        overlap: Some(tracker),
+    }
 }
 
 #[async_trait]
 impl Tool for SlowSpawnTool {
     async fn execute(&self, _args: &str, _ctx: &RequestContext) -> Result<String, String> {
+        if let Some(t) = &self.overlap {
+            t.enter();
+        }
         tokio::time::sleep(std::time::Duration::from_millis(self.delay_ms)).await;
+        if let Some(t) = &self.overlap {
+            t.exit();
+        }
         Ok(format!("{} done", self.marker))
     }
     // is_read_only stays default false — spawning has side effects.
@@ -7586,8 +7632,10 @@ impl Tool for DepthRecorderTool {
 async fn g3_spawn_batch_runs_concurrently_slowest_wins() {
     // 计划验收原话：一轮 3 个 spawn 并发、总耗时≈最慢者。Delays
     // 100/200/400ms → serial = 700ms, parallel ≈ 400ms (the slowest).
-    // Bounds: <600 proves overlap (well clear of serial 700), ≥380 proves
-    // the batch actually waited for the slowest task to finish.
+    // 并行的证明 = 重叠峰值 ≥2（CI 慢机 wall-clock 假红实录见
+    // OverlapTracker 注释）；≥380ms 下限证明批确实等了最慢者（400ms 的
+    // sleep 是硬延迟，快慢机都不会假红）。wall-clock 上限降级为死锁护栏。
+    let overlap = OverlapTracker::default();
     let provider = MockLlmProvider::new(vec![
         llm_tool_calls(&["g3s1", "g3s2", "g3s3"]),
         llm_text("done"),
@@ -7595,24 +7643,15 @@ async fn g3_spawn_batch_runs_concurrently_slowest_wins() {
     let mut agent_loop = AgentLoop::new(Box::new(provider), test_config());
     agent_loop.register_tool(
         "g3s1".into(),
-        Box::new(SlowSpawnTool {
-            marker: "S1".into(),
-            delay_ms: 100,
-        }),
+        Box::new(slow_spawn_tracked("S1", 100, overlap.clone())),
     );
     agent_loop.register_tool(
         "g3s2".into(),
-        Box::new(SlowSpawnTool {
-            marker: "S2".into(),
-            delay_ms: 200,
-        }),
+        Box::new(slow_spawn_tracked("S2", 200, overlap.clone())),
     );
     agent_loop.register_tool(
         "g3s3".into(),
-        Box::new(SlowSpawnTool {
-            marker: "S3".into(),
-            delay_ms: 400,
-        }),
+        Box::new(slow_spawn_tracked("S3", 400, overlap.clone())),
     );
 
     let instance = AgentInstance::new(test_config());
@@ -7621,13 +7660,18 @@ async fn g3_spawn_batch_runs_concurrently_slowest_wins() {
     let events = agent_loop.run(&instance, "go", &context).await;
     let elapsed = start.elapsed();
     assert!(
-        elapsed < std::time::Duration::from_millis(600),
-        "3 spawns must overlap (parallel ≈ slowest 400ms, serial 700ms); took {:?}",
-        elapsed
+        overlap.peak() >= 2,
+        "3 spawns must genuinely overlap; peak={}",
+        overlap.peak()
     );
     assert!(
         elapsed >= std::time::Duration::from_millis(380),
         "batch must wait for the slowest spawn (400ms); took {:?}",
+        elapsed
+    );
+    assert!(
+        elapsed < std::time::Duration::from_secs(5),
+        "dead-lock guard; took {:?}",
         elapsed
     );
     // All three results reached the conversation (as tool results), not just
@@ -7651,6 +7695,11 @@ async fn g3_mixed_spawn_and_readonly_run_concurrently() {
     // 1 spawn + 2 read-only tools, all 300ms → parallel ≈ 300ms (serial
     // would be 900ms). The batch is parallel-safe as a whole because every
     // member is (read-only by default predicate, spawn by opt-in).
+    // 并行的证明 = 重叠峰值 ≥2，且 spawn 与 read-only 共享同一 tracker
+    // （跨类型真实重叠才是本测试的语义）。wall-clock 上限在 CI Windows
+    // 慢机实录假红（并行被调度/Defender 拖到 908ms 越过 700ms 断言，
+    // 2026-09-18）——降级为死锁护栏，串行检出由峰值断言承担（串行必 =1）。
+    let overlap = OverlapTracker::default();
     let provider = MockLlmProvider::new(vec![
         llm_tool_calls(&["g3s1", "g3r1", "g3r2"]),
         llm_text("done"),
@@ -7658,24 +7707,15 @@ async fn g3_mixed_spawn_and_readonly_run_concurrently() {
     let mut agent_loop = AgentLoop::new(Box::new(provider), test_config());
     agent_loop.register_tool(
         "g3s1".into(),
-        Box::new(SlowSpawnTool {
-            marker: "S".into(),
-            delay_ms: 300,
-        }),
+        Box::new(slow_spawn_tracked("S", 300, overlap.clone())),
     );
     agent_loop.register_tool(
         "g3r1".into(),
-        Box::new(SlowReadTool {
-            marker: "A".into(),
-            delay_ms: 300,
-        }),
+        Box::new(slow_read_tracked("A", 300, overlap.clone())),
     );
     agent_loop.register_tool(
         "g3r2".into(),
-        Box::new(SlowReadTool {
-            marker: "B".into(),
-            delay_ms: 300,
-        }),
+        Box::new(slow_read_tracked("B", 300, overlap.clone())),
     );
 
     let instance = AgentInstance::new(test_config());
@@ -7683,8 +7723,13 @@ async fn g3_mixed_spawn_and_readonly_run_concurrently() {
     let start = std::time::Instant::now();
     let _ = agent_loop.run(&instance, "go", &context).await;
     assert!(
-        start.elapsed() < std::time::Duration::from_millis(700),
-        "spawn + read-only must overlap (≈300ms, serial 900ms); took {:?}",
+        overlap.peak() >= 2,
+        "spawn + read-only must genuinely overlap (parallel); peak={}",
+        overlap.peak()
+    );
+    assert!(
+        start.elapsed() < std::time::Duration::from_secs(5),
+        "dead-lock guard; took {:?}",
         start.elapsed()
     );
 }
@@ -7695,13 +7740,7 @@ async fn g3_spawn_plus_writer_stays_serial() {
     // batch → NOT all-parallel-safe → serial path, fail-closed unchanged.
     let provider = MockLlmProvider::new(vec![llm_tool_calls(&["g3s1", "g3w1"]), llm_text("done")]);
     let mut agent_loop = AgentLoop::new(Box::new(provider), test_config());
-    agent_loop.register_tool(
-        "g3s1".into(),
-        Box::new(SlowSpawnTool {
-            marker: "S".into(),
-            delay_ms: 300,
-        }),
-    );
+    agent_loop.register_tool("g3s1".into(), Box::new(slow_spawn("S", 300)));
     agent_loop.register_tool(
         "g3w1".into(),
         Box::new(SlowWriteTool {
