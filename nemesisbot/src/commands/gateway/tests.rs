@@ -3638,13 +3638,16 @@ mod r9_gateway_boot_scenarios {
     async fn r9_spawn_until_ready_then_graceful_stop(
         name: &'static str,
         ws: &test_harness::TestWorkspace,
-        cfg: serde_json::Value,
+        cfg: Option<serde_json::Value>,
     ) -> serde_json::Value {
-        // TestWorkspace::new() 只建 tempdir，.nemesisbot 子目录需显式创建，
-        // 否则 write(config.json) 直接 NotFound（channel_ladder 等直接走本 helper
+        // TestWorkspace::new() 只建 tempdir，.nemesisbot 子目录需显式创建。
+        // cfg=None = 缺 config 场景（不预写，让 gateway 走 seed auto-init）；
+        // Some(cfg) = 预写 config.json（channel_ladder 等直接走本 helper
         // 的场景没有夹具先写别的文件顺带建目录）。
         std::fs::create_dir_all(ws.home()).expect("create home dir");
-        std::fs::write(ws.config_path(), cfg.to_string()).expect("write config.json");
+        if let Some(cfg) = &cfg {
+            std::fs::write(ws.config_path(), cfg.to_string()).expect("write config.json");
+        }
 
         let bin = test_harness::resolve_nemesisbot_bin().expect("resolve nemesisbot bin");
         let mut proc = R9GatewayProc::spawn(name, &bin, ws.path());
@@ -3680,10 +3683,17 @@ mod r9_gateway_boot_scenarios {
         )
         .expect("state json");
 
-        let token = cfg["channels"]["web"]["auth_token"]
-            .as_str()
-            .unwrap_or_default()
-            .to_string();
+        // 预写 config 时按其 auth_token 关停；seed 场景（None）= onboard
+        // seed 固定写入的 token「276793422」（onboard.rs「Set web auth token,
+        // port, websocket」块：token 276793422 / host 127.0.0.1 / port 49000，
+        // 49000 被并行实例占走时 bind 冲突 walk 邻端口，helper 读 state 实际值）。
+        let token = match cfg
+            .as_ref()
+            .and_then(|c| c["channels"]["web"]["auth_token"].as_str())
+        {
+            Some(t) => t.to_string(),
+            None => "276793422".to_string(),
+        };
         test_harness::graceful_shutdown_gateway(web_port, &token)
             .await
             .expect("graceful shutdown accepted");
@@ -3693,52 +3703,44 @@ mod r9_gateway_boot_scenarios {
     }
 
     // ---------------------------------------------------------------------
-    // 场景 A：缺 config.json → 两段 eprintln + exit(1)（1017-1034）
+    // 场景 A：缺 config.json → seed auto-init 后继续装配（2026-09-17 双击
+    // 直启新语义，gateway.rs Step 2；旧行为「两段 eprintln + exit(1)」已废弃）
     // ---------------------------------------------------------------------
 
-    /// 真实子进程负向断言：cwd 下没有 `.nemesisbot`（--local 解析到的 home），
-    /// gateway 必须立刻打错误提示并以退码 1 结束，绝不进入装配流程。
+    /// 真实子进程断言：cwd 下没有 `.nemesisbot`（--local 解析到的 home），
+    /// gateway 不再硬退，而是自动 seed（onboard_default Seed 模式：一切
+    /// only-if-absent）后继续装配到 web 就绪，干净优雅关停。
+    ///
+    /// 断言核心：config.json 被 seed 落盘 + state 有真实 web 端口。
+    /// seed 默认 config：web `0.0.0.0:8080` + 空 auth_token（verify_token
+    /// 对空 expected 一律放行，graceful shutdown 可用）；8080 若被占走邻
+    /// 端口（bind conflict walk 有专项覆盖），helper 读的是 state 实际值。
+    /// 预置 cluster 关停子配置（Seed only-if-absent：已存在不覆盖）防
+    /// seed 后拉起 UDP/RPC 网络（与 quiet_flips 场景同款）。
     #[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
-    #[tokio::test]
-    async fn r9_gateway_missing_config_exits_1_with_onboard_hint() {
-        let bin = test_harness::resolve_nemesisbot_bin().expect("resolve nemesisbot bin");
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn r9_gateway_missing_config_seeds_and_boots_to_ready() {
         let ws = test_harness::TestWorkspace::new().expect("temp workspace");
-        // 故意不创建 .nemesisbot：config.json 必然缺失。
+        // 故意不创建 .nemesisbot/config.json：必然缺失 → seed auto-init。
+        let ws_config_dir = ws.home().join("workspace").join("config");
+        std::fs::create_dir_all(&ws_config_dir).unwrap();
+        std::fs::write(
+            ws_config_dir.join("config.cluster.json"),
+            r#"{"enabled":false,"port":11949,"rpc_port":21949,"broadcast_interval":30}"#,
+        )
+        .unwrap();
 
-        let mut cmd = tokio::process::Command::new(&bin);
-        cmd.args(["--local", "gateway"])
-            .current_dir(ws.path())
-            .stdin(std::process::Stdio::null())
-            .stdout(std::process::Stdio::null())
-            .stderr(std::process::Stdio::piped());
-        if let Some(profile) = r9_coverage_profile("r9_gateway_missing_config") {
-            cmd.env("LLVM_PROFILE_FILE", profile);
-        }
-        let mut child = cmd.spawn().expect("spawn negative gateway");
-
-        let status = tokio::time::timeout(std::time::Duration::from_secs(60), child.wait())
-            .await
-            .expect("must exit within 60s")
-            .expect("wait status");
-        assert_eq!(status.code(), Some(1), "缺配置必须 exit(1)");
-
-        // 管道数据在写端关闭后仍可读：校验两段用户指引文案都在。
-        let mut stderr_text = String::new();
-        {
-            use tokio::io::AsyncReadExt as _;
-            let mut err_stream = child.stderr.take().expect("stderr piped");
-            err_stream
-                .read_to_string(&mut stderr_text)
-                .await
-                .expect("read stderr");
-        }
+        let state =
+            r9_spawn_until_ready_then_graceful_stop("gateway-r9-missing-config-seed", &ws, None)
+                .await;
         assert!(
-            stderr_text.contains("Configuration file not found"),
-            "应含缺失配置报错，stderr={stderr_text}"
+            state["web_port"].as_i64().unwrap_or(0) > 0,
+            "seed 后必须装配到 web 就绪；state={state}"
         );
         assert!(
-            stderr_text.contains("onboard default"),
-            "应含修复指引，stderr={stderr_text}"
+            ws.config_path().is_file(),
+            "seed 必须落盘 config.json：{}",
+            ws.config_path().display()
         );
     }
 
@@ -3789,7 +3791,7 @@ mod r9_gateway_boot_scenarios {
         .unwrap();
 
         let state =
-            r9_spawn_until_ready_then_graceful_stop("gateway-r9-quiet-flips", &ws, cfg).await;
+            r9_spawn_until_ready_then_graceful_stop("gateway-r9-quiet-flips", &ws, Some(cfg)).await;
         assert_eq!(state["web_host"], "127.0.0.1");
         assert!(state["web_port"].as_i64().unwrap_or(0) > 0, "state={state}");
     }
@@ -3820,7 +3822,8 @@ mod r9_gateway_boot_scenarios {
         // CORSManager::load_from_file 失败 → 2201-2207 warn 臂（宽松默认继续）。
         std::fs::write(home_config_dir.join("cors.json"), "[not an object").unwrap();
 
-        let state = r9_spawn_until_ready_then_graceful_stop("gateway-r9-bad-json", &ws, cfg).await;
+        let state =
+            r9_spawn_until_ready_then_graceful_stop("gateway-r9-bad-json", &ws, Some(cfg)).await;
         assert_eq!(state["web_host"], "127.0.0.1");
         assert!(state["web_port"].as_i64().unwrap_or(0) > 0, "state={state}");
     }
@@ -3879,7 +3882,8 @@ mod r9_gateway_boot_scenarios {
         // external：exe 留默认空串 → ExternalChannel::new 返回 Err → manager
         // 记录错误并继续（恒 Ok），验证通道初始化失败不影响网关存活。
 
-        let state = r9_spawn_until_ready_then_graceful_stop("gateway-r9-channels", &ws, cfg).await;
+        let state =
+            r9_spawn_until_ready_then_graceful_stop("gateway-r9-channels", &ws, Some(cfg)).await;
         assert_eq!(state["web_host"], "127.0.0.1");
         assert!(state["web_port"].as_i64().unwrap_or(0) > 0, "state={state}");
     }
@@ -4018,7 +4022,8 @@ variables: {}
         std::fs::write(legacy.join("notes.txt"), "user data stays").unwrap();
 
         let state =
-            r9_spawn_until_ready_then_graceful_stop("gateway-r9-workflow-live", &ws, cfg).await;
+            r9_spawn_until_ready_then_graceful_stop("gateway-r9-workflow-live", &ws, Some(cfg))
+                .await;
         assert_eq!(state["web_host"], "127.0.0.1");
         assert!(state["web_port"].as_i64().unwrap_or(0) > 0, "state={state}");
 
@@ -4497,7 +4502,8 @@ variables: {}
         job["payload"]["max_rounds"] = serde_json::json!(3);
         r10_seed_cron_store(&home, vec![job]);
 
-        let state = r9_spawn_until_ready_then_graceful_stop("gateway-r10-umbrella", &ws, cfg).await;
+        let state =
+            r9_spawn_until_ready_then_graceful_stop("gateway-r10-umbrella", &ws, Some(cfg)).await;
 
         // 归一化铁证：模板 host "0.0.0.0" 只可能出现在 state 里为归一结果。
         assert_eq!(

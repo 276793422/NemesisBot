@@ -1659,7 +1659,21 @@ pub async fn test_board_project_archive(ws: &TestWorkspace, bin: &Path) -> Vec<T
         .unwrap_or_default()
         .to_string();
     let ws_prefix = ws.workspace().to_string_lossy().to_string();
-    if resp_dir_b.contains("board-projects") && resp_dir_b.starts_with(&ws_prefix) {
+    // CI Windows runner 的 %TEMP% 是 8.3 短名形态（`C:\Users\RUNNER~1\...`，
+    // 真名 runneradmin），而服务端返回的 directory 是 canonical 展开后的
+    // 真名路径——裸字符串前缀比对在短名环境必假红（2026-09-18 CI 实录）。
+    // 两侧都过 std::fs::canonicalize 归一（verbatim 前缀 + 真名，两侧一致）
+    // 后再做组件级 starts_with；canonicalize 失败（目录不存在等）回退原值。
+    let canonical_str = |p: &std::path::Path| -> String {
+        std::fs::canonicalize(p)
+            .map(|c| c.to_string_lossy().to_string())
+            .unwrap_or_else(|_| p.to_string_lossy().to_string())
+    };
+    let in_ws = std::path::Path::new(&canonical_str(std::path::Path::new(&resp_dir_b)))
+        .starts_with(std::path::Path::new(&canonical_str(
+            ws.workspace().as_path(),
+        )));
+    if resp_dir_b.contains("board-projects") && in_ws {
         results.push(pass(
             &format!("{suite}/create_auto"),
             format!("自动目录落 workspace 内：{resp_dir_b}"),
