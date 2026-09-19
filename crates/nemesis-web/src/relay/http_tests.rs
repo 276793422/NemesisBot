@@ -76,6 +76,15 @@ async fn connect_device(
         node_id: node_id.to_string(),
         name: name.to_string(),
         version: "e2e-test".to_string(),
+        cluster_node_id: None,
+        cluster_name: None,
+        role: None,
+        category: None,
+        tags: None,
+        capabilities: None,
+        node_type: None,
+        rpc_port: None,
+        addresses: None,
     };
     ws.send(TungMessage::Text(encode_frame(&hello).unwrap().into()))
         .await
@@ -83,9 +92,13 @@ async fn connect_device(
     let welcome = recv_frame(&mut ws).await;
     match welcome {
         BridgeFrame::BridgeWelcome { ok: true, .. } => Ok(ws),
-        BridgeFrame::BridgeWelcome { ok: false, reason } => {
-            Err(BridgeFrame::BridgeWelcome { ok: false, reason })
-        }
+        BridgeFrame::BridgeWelcome {
+            ok: false, reason, ..
+        } => Err(BridgeFrame::BridgeWelcome {
+            ok: false,
+            reason,
+            hub_node_id: String::new(),
+        }),
         other => panic!("期望 welcome，得到 {other:?}"),
     }
 }
@@ -98,6 +111,19 @@ async fn recv_frame(ws: &mut WebSocketStream<MaybeTlsStream<TcpStream>>) -> Brid
             Some(Ok(_)) => continue,
             Some(Err(e)) => panic!("设备收帧失败：{e}"),
             None => panic!("设备侧 ws 意外关闭"),
+        }
+    }
+}
+
+/// 收下一帧业务帧（跳过 member_sync 广播与心跳噪声——三期批次八起注册
+/// 即广播，设备 ws 流里的 MemberSync 不属业务语义，与心跳噪声同待跳过）。
+async fn recv_business_frame(ws: &mut WebSocketStream<MaybeTlsStream<TcpStream>>) -> BridgeFrame {
+    loop {
+        match recv_frame(ws).await {
+            BridgeFrame::MemberSync { .. } | BridgeFrame::Heartbeat | BridgeFrame::Pong => {
+                continue;
+            }
+            f => return f,
         }
     }
 }
@@ -208,12 +234,12 @@ async fn serve_http_request(
     dev: &mut WebSocketStream<MaybeTlsStream<TcpStream>>,
     response_bytes: &[u8],
 ) -> (u64, Vec<u8>) {
-    let open = recv_frame(dev).await;
+    let open = recv_business_frame(dev).await;
     let BridgeFrame::ConnOpen { conn_id, target } = open else {
         panic!("期望 ConnOpen，得到 {open:?}");
     };
     assert_eq!(target, "local");
-    let data = recv_frame(dev).await;
+    let data = recv_business_frame(dev).await;
     let BridgeFrame::ConnData {
         conn_id: cid,
         seq,
@@ -269,7 +295,9 @@ async fn bridge_hello_wrong_token_gets_rejected_via_ws() {
     let (addr, _relay, _shutdown) = spawn_relay_server("pair-token").await;
     let err = connect_device(addr, "node-x", "设备 X", "WRONG").await;
     match err {
-        Err(BridgeFrame::BridgeWelcome { ok: false, reason }) => {
+        Err(BridgeFrame::BridgeWelcome {
+            ok: false, reason, ..
+        }) => {
             assert!(reason.contains("token 不匹配"), "{reason}");
         }
         Ok(_) => panic!("错 token 不应接入成功"),
@@ -304,7 +332,7 @@ async fn auth_flow_end_to_end_forwards_hash_to_device() {
     // 设备侧任务：等 AccessCheck → 校验转发内容 → 回 ok=true。
     // （spawn 内直接回帧——主线 http_request 在等 AccessResult，先回再等。）
     let dev_task = tokio::spawn(async move {
-        match recv_frame(&mut dev).await {
+        match recv_business_frame(&mut dev).await {
             BridgeFrame::AccessCheck {
                 request_id,
                 node_id,
@@ -343,7 +371,7 @@ async fn auth_flow_end_to_end_forwards_hash_to_device() {
 
     // 错误哈希（64 hex 但设备回 fail）→ ok:false 无 Set-Cookie。
     let dev_task = tokio::spawn(async move {
-        match recv_frame(&mut dev).await {
+        match recv_business_frame(&mut dev).await {
             BridgeFrame::AccessCheck { request_id, .. } => {
                 send_frame(
                     &mut dev,
@@ -487,7 +515,7 @@ async fn http_tunnel_dial_failure_returns_502() {
     // 设备侧任务：收 ConnOpen + 请求后回 ConnClose（dial 失败语义）。
     // 服务端在等头阶段收到 conn 关闭 → 502。
     let dev_task = tokio::spawn(async move {
-        let open = recv_frame(&mut dev).await;
+        let open = recv_business_frame(&mut dev).await;
         let BridgeFrame::ConnOpen { conn_id, .. } = open else {
             panic!("期望 ConnOpen，得到 {open:?}");
         };
@@ -561,7 +589,7 @@ async fn http_tunnel_lengthless_response_eof_fallback() {
     let cookie = make_device_cookie(relay.as_ref(), "node-a");
 
     let dev_task = tokio::spawn(async move {
-        let open = recv_frame(&mut dev).await;
+        let open = recv_business_frame(&mut dev).await;
         let BridgeFrame::ConnOpen { conn_id, .. } = open else {
             panic!("期望 ConnOpen，得到 {open:?}");
         };
@@ -657,11 +685,11 @@ async fn ws_tunnel_upgrade_and_bidirectional_frames() {
         raw_ws_connect_write(addr, "/d/node-a/ws", &format!("{AUTH_COOKIE}={cookie}")).await;
 
     // ② 设备收 ConnOpen + 升级请求 → 校验语义头穿透 → 回 101。
-    let open = recv_frame(&mut dev).await;
+    let open = recv_business_frame(&mut dev).await;
     let BridgeFrame::ConnOpen { conn_id, .. } = open else {
         panic!("期望 ConnOpen，得到 {open:?}");
     };
-    let data = recv_frame(&mut dev).await;
+    let data = recv_business_frame(&mut dev).await;
     let BridgeFrame::ConnData { data_b64, fin, .. } = data else {
         panic!("期望 ConnData，得到 {data:?}");
     };
@@ -701,7 +729,7 @@ async fn ws_tunnel_upgrade_and_bidirectional_frames() {
         "ping-from-browser".into(),
     ));
     browser.write_all(&text_frame).await.unwrap();
-    let down = recv_frame(&mut dev).await;
+    let down = recv_business_frame(&mut dev).await;
     let BridgeFrame::ConnData { data_b64, seq, .. } = down else {
         panic!("期望下行 ConnData，得到 {down:?}");
     };
@@ -878,4 +906,101 @@ async fn two_devices_concurrent_tunnels_do_not_cross() {
     assert_eq!(r1.2, b"from-node-a");
     assert_eq!(r2.0, 200);
     assert_eq!(r2.2, b"from-node-b");
+}
+
+// ---------------------------------------------------------------------------
+// ⑧ `--relay` 纯中继形态（relay_only，2026-09-20）：dashboard 全量路由
+//    不装配——/api/* 信任边界是本机/内网，纯中继绑 0.0.0.0 公网，暴露
+//    即失守；公网只留 /health + 反向桥路由。
+// ---------------------------------------------------------------------------
+
+/// 最小静态资源 stub——证明 relay_only 即使 static_files 配了也不挂
+/// （dashboard SPA 在纯中继形态下 404）。
+struct StubStatic;
+
+impl crate::StaticFiles for StubStatic {
+    fn get_file(&self, path: &str) -> Option<Vec<u8>> {
+        (path == "index.html").then(|| b"<html>dashboard-spa</html>".to_vec())
+    }
+    fn list_files(&self) -> Vec<String> {
+        vec!["index.html".to_string()]
+    }
+}
+
+#[tokio::test]
+async fn relay_only_server_hides_dashboard_and_management_api() {
+    let relay = Arc::new(RelayServer::new("tok".to_string(), false));
+    let config = crate::WebServerConfig {
+        listen_addr: "127.0.0.1:0".to_string(),
+        version: "relay-only-test".to_string(),
+        static_files: Some(Arc::new(StubStatic)),
+        ..Default::default()
+    };
+    let mut server = crate::WebServer::new(config);
+    server.set_relay_only(true);
+    server.set_relay(relay.clone());
+    let (shutdown_tx, shutdown_rx) = tokio::sync::broadcast::channel(1);
+    let (bound_tx, bound_rx) = tokio::sync::oneshot::channel();
+    tokio::spawn(async move {
+        let _ = server
+            .start_with_shutdown(shutdown_rx, Some(bound_tx))
+            .await;
+    });
+    let addr = bound_rx.await.expect("server 应完成 bind");
+
+    // dashboard 静态资源（config 里明明有）→ 404：relay_only 不挂 fallback。
+    let (s1, _, _) = http_request(addr, "GET", "/", &[], b"").await;
+    assert_eq!(s1, 404, "relay_only 下 dashboard SPA 不装配");
+
+    // hub 自身管理 API（信任边界 = 本机/内网，公网暴露即失守）→ 404。
+    let (s2, _, _) = http_request(addr, "GET", "/api/status", &[], b"").await;
+    assert_eq!(s2, 404);
+    let (s3, _, _) = http_request(addr, "GET", "/api/config", &[], b"").await;
+    assert_eq!(s3, 404);
+    let (s4, _, _) = http_request(addr, "GET", "/api/relay/overview", &[], b"").await;
+    assert_eq!(s4, 404, "通道页端点随 dashboard 一并不装配");
+
+    // 探活保留。
+    let (s5, _, _) = http_request(addr, "GET", "/health", &[], b"").await;
+    assert_eq!(s5, 200);
+
+    // 反向桥三件套语义不变：状态页登录页 200、token 门 API 401。
+    let (s6, _, b6) = http_request(addr, "GET", "/relay", &[], b"").await;
+    assert_eq!(s6, 200);
+    assert!(String::from_utf8_lossy(&b6).contains("令牌验证"));
+    let (s7, _, _) = http_request(addr, "GET", "/api/relay/status", &[], b"").await;
+    assert_eq!(s7, 401);
+
+    shutdown_tx.send(()).ok();
+}
+
+// ---------------------------------------------------------------------------
+// ⑨ 浏览器端 SHA-256 兜底脚本：http://<公网IP> 非安全上下文下
+//    crypto.subtle 不存在（真机暴露：输令牌报 reading 'digest'）——
+//    两个门页必须内嵌纯 JS 回落实现，submit 不再裸调 WebCrypto。
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn relay_pages_embed_sha256_fallback_js() {
+    let (addr, _relay, _shutdown) = spawn_relay_server("tok").await;
+    // /relay 登录页（无 cookie）。
+    let (s1, _, b1) = http_request(addr, "GET", "/relay", &[], b"").await;
+    assert_eq!(s1, 200);
+    let html1 = String::from_utf8_lossy(&b1);
+    assert!(html1.contains("async function sha256Hex"), "{html1}");
+    assert!(
+        html1.contains("jsSha256Hex"),
+        "非安全上下文纯 JS 兜底必须内嵌"
+    );
+    assert!(html1.contains("crypto.subtle"), "WebCrypto 优先路径保留");
+    assert!(
+        !html1.contains("encode(token)"),
+        "submit 不得裸调 crypto.subtle（兜底函数内部用 encode(text)）"
+    );
+    // 设备授权页（设备不存在也渲染输入页，device_name 回落 node_id）。
+    let (s2, _, b2) = http_request(addr, "GET", "/d/node-a/__auth", &[], b"").await;
+    assert_eq!(s2, 200, "{}", String::from_utf8_lossy(&b2));
+    let html2 = String::from_utf8_lossy(&b2);
+    assert!(html2.contains("async function sha256Hex"), "{html2}");
+    assert!(html2.contains("jsSha256Hex"), "{html2}");
 }

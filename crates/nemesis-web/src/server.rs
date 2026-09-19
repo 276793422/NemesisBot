@@ -286,6 +286,13 @@ pub struct WebServer {
     /// None = 无身份（`--relay` 纯中继不服务自己的面板），前缀剥离永不
     /// 命中。`set_bridge_identity` 注入。
     bridge_node_id: Option<String>,
+    /// `--relay` 纯中继形态开关（2026-09-20，用户裁决：纯中继不暴露 hub
+    /// 自身 dashboard——`/api/*` 的信任边界是「本机/内网」，而纯中继绑
+    /// 0.0.0.0 公网，暴露即失守；dashboard 静态资源也无装配价值）。
+    /// true = build_router 丢弃 dashboard 全量路由（/ws、/api/*、静态
+    /// 资源），只保留 /health + 反向桥路由。默认 false，正常模式不变。
+    /// `set_relay_only` 打开。
+    relay_only: bool,
 }
 
 impl WebServer {
@@ -298,6 +305,7 @@ impl WebServer {
         );
         Self {
             config,
+            relay_only: false,
             event_hub: Arc::new(EventHub::new()),
             session_manager: Arc::new(SessionManager::with_default_timeout()),
             session_count: Arc::new(AtomicUsize::new(0)),
@@ -470,6 +478,13 @@ impl WebServer {
     /// `/api/relay/status`）。不注入 = 接入门不开放。
     pub fn set_relay(&mut self, relay: std::sync::Arc<crate::relay::RelayServer>) {
         self.relay = Some(relay);
+    }
+
+    /// `--relay` 纯中继形态开关（须在 `start`/`build_router` 前调用）。
+    /// true = build_router 丢弃 dashboard 全量路由（/ws、全量 /api/*、
+    /// 静态资源），公网暴露面收敛到 /health + 反向桥路由。见字段 doc。
+    pub fn set_relay_only(&mut self, relay_only: bool) {
+        self.relay_only = relay_only;
     }
 
     /// C5 (2026-09-04): hold the shared LSP manager singleton (same Arc as
@@ -692,14 +707,33 @@ impl WebServer {
                 get(crate::handlers::board_asset::handle_board_asset_download),
             );
 
+        // `--relay` 纯中继形态（set_relay_only）：丢弃上面构建的 dashboard
+        // 全量路由（/ws、全量 /api/*），只保留 /health——/api/* 的信任边界
+        // 是「本机/内网」，而纯中继绑 0.0.0.0 公网（FIX-1 绑定语义），暴露
+        // 即失守。全量链照常构建一次（AppState 槽位全空，纯内存操作无副
+        // 作用），随后整体替换——路由装配保持单链形态，零分叉回归风险。
+        let router = if self.relay_only {
+            Router::new().route("/health", get(handle_health))
+        } else {
+            router
+        };
+
         // L8 PTY 内嵌终端端点（terminal feature 门控；config
         // terminal.enabled 运行闸 + token 闸在 handler 内）。
         #[cfg(feature = "terminal")]
-        let router = router.route("/ws/pty", get(crate::pty::handle_pty_upgrade));
+        let router = if self.relay_only {
+            router
+        } else {
+            router.route("/ws/pty", get(crate::pty::handle_pty_upgrade))
+        };
 
         // Workflow REST endpoints (milestone 1a-E3/E4)
         #[cfg(feature = "workflow")]
-        let router = router.merge(crate::handlers::workflow::routes());
+        let router = if self.relay_only {
+            router
+        } else {
+            router.merge(crate::handlers::workflow::routes())
+        };
 
         // 反向桥路由（goal：反向桥与多设备汇聚）。`set_relay` 注入后才
         // 挂载——None = 接入门不开放（fail-closed：路由不存在，伪装 404
@@ -805,34 +839,45 @@ impl WebServer {
         // 客户端态与 client/reconnect 独立于服务端配置；relay 未注入时
         // overview 的 server 字段诚实回 null（enabled 端点回 400）。
         // dashboard 信任边界（与 /api/status 同语义：本机/内网）。
-        let relay_overview = self.relay.clone();
-        let relay_enabled = self.relay.clone();
-        let router = router
-            .route(
-                "/api/relay/overview",
-                get(move || {
-                    let relay = relay_overview.clone();
-                    async move { crate::relay::handle_relay_api_overview(relay).await }
-                }),
-            )
-            .route(
-                "/api/relay/enabled",
-                post(move |req: axum::extract::Request| {
-                    let relay = relay_enabled.clone();
-                    async move { crate::relay::handle_relay_api_enabled(relay, req).await }
-                }),
-            )
-            .route(
-                "/api/relay/client/reconnect",
-                post(crate::relay::handle_relay_api_client_reconnect),
-            );
+        // `--relay` 纯中继例外：无 dashboard 消费这些端点（服务端态走
+        // /relay 状态页的 /api/relay/status），不挂。
+        let router = if self.relay_only {
+            router
+        } else {
+            let relay_overview = self.relay.clone();
+            let relay_enabled = self.relay.clone();
+            router
+                .route(
+                    "/api/relay/overview",
+                    get(move || {
+                        let relay = relay_overview.clone();
+                        async move { crate::relay::handle_relay_api_overview(relay).await }
+                    }),
+                )
+                .route(
+                    "/api/relay/enabled",
+                    post(move |req: axum::extract::Request| {
+                        let relay = relay_enabled.clone();
+                        async move { crate::relay::handle_relay_api_enabled(relay, req).await }
+                    }),
+                )
+                .route(
+                    "/api/relay/client/reconnect",
+                    post(crate::relay::handle_relay_api_client_reconnect),
+                )
+        };
 
-        let mut router = router
+        let router = if self.relay_only {
+            router
+        } else {
             // Internal control endpoint (undocumented)
-            .route(
+            router.route(
                 "/api/internal",
                 axum::routing::post(crate::api_handlers::handle_api_internal),
             )
+        };
+
+        let mut router = router
             // CORS layer
             .layer(if self.config.cors_origins.is_empty() {
                 dev_cors_layer()
@@ -841,8 +886,12 @@ impl WebServer {
             })
             .with_state(state.clone());
 
-        // Add static file serving if configured
-        if let Some(ref files) = self.config.static_files {
+        // Add static file serving if configured（`--relay` 纯中继不挂——
+        // dashboard 静态资源无装配价值，未匹配路径一律 404；run_relay 侧
+        // 也不传 static_files，双保险）。
+        if self.relay_only {
+            tracing::info!("[WebServer] relay-only：dashboard 静态资源不装配（未匹配路径 404）");
+        } else if let Some(ref files) = self.config.static_files {
             // In-memory static file serving (zero disk IO)
             let files = files.clone();
             tracing::info!("[WebServer] Serving static files from embedded memory");

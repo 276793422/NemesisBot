@@ -2361,6 +2361,16 @@ impl Cluster {
         self.sync_local_node_to_registry();
     }
 
+    /// 本机能力清单快照（`set_capabilities` 注入的原值）。与
+    /// [`Self::get_capabilities`]（registry 在线节点能力**并集**）语义不同
+    /// ——桥 hello（二期身份交换）携带的是本机能力，用本方法。
+    pub fn local_capabilities(&self) -> Vec<String> {
+        self.capabilities
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone()
+    }
+
     /// Get the stop channel receiver.
     pub fn stop_receiver(&self) -> broadcast::Receiver<()> {
         self.stop_tx.subscribe()

@@ -80,6 +80,10 @@ async function toggleServer(on: boolean) {
 const cfgRelayUrl = ref('')
 const cfgToken = ref('')
 const cfgAccessToken = ref('')
+// 令牌/密码明文显示开关（默认星号遮蔽，点「显示」查看原文——原文本就
+// 存本机 config.json，此处只控制前端渲染）。
+const showToken = ref(false)
+const showAccess = ref(false)
 // 加载时的原始值（token/access_token 是遮蔽值）——保存时对比，未变不写，
 // 避免「遮蔽值覆盖真实值」（ChannelsView 已知坑，此处直接规避）。
 const _loaded = ref<{ relay_url: string; token: string; access_token: string }>({
@@ -252,10 +256,16 @@ onUnmounted(() => {
           <input class="form-input" v-model="cfgRelayUrl" placeholder="ws://vps.example.com:60600" />
 
           <span class="settings-key">接入门令牌</span>
-          <input class="form-input" type="password" v-model="cfgToken" placeholder="与远端 bridge.server.token 同值" autocomplete="new-password" />
+          <div style="display: flex; gap: var(--space-2); align-items: center;">
+            <input class="form-input" :type="showToken ? 'text' : 'password'" v-model="cfgToken" placeholder="与远端 bridge.server.token 同值" autocomplete="new-password" />
+            <button class="btn btn-sm" type="button" :title="showToken ? '隐藏令牌' : '显示令牌'" @click="showToken = !showToken">{{ showToken ? '隐藏' : '显示' }}</button>
+          </div>
 
           <span class="settings-key">面板访问密码</span>
-          <input class="form-input" type="password" v-model="cfgAccessToken" placeholder="远程打开本机面板所需（空 = 拒绝远程访问）" autocomplete="new-password" />
+          <div style="display: flex; gap: var(--space-2); align-items: center;">
+            <input class="form-input" :type="showAccess ? 'text' : 'password'" v-model="cfgAccessToken" placeholder="远程打开本机面板所需（空 = 拒绝远程访问）" autocomplete="new-password" />
+            <button class="btn btn-sm" type="button" :title="showAccess ? '隐藏密码' : '显示密码'" @click="showAccess = !showAccess">{{ showAccess ? '隐藏' : '显示' }}</button>
+          </div>
         </div>
 
         <div style="margin-top: var(--space-3); display: flex; justify-content: flex-end;">

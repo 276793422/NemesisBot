@@ -17,6 +17,14 @@
 //! 二/三期预留帧：`cluster_rpc`/`member_sync`——一期**收到即忽略 + WARN**，
 //! 协议一次定对，后续扩展不破坏性改协议。
 //!
+//! **二期身份交换（2026-09-19 启用）**：`bridge_hello` 增补集群身份字段
+//! （集群 node_id/显示名/role/category/tags/capabilities/node_type/
+//! rpc_port/addresses，全部 `Option` + serde default——缺省 = 未启用集群
+//! 身份（老版本/纯隧道设备），互连兼容）；`bridge_welcome` 增补
+//! `hub_node_id`（hub 侧集群身份，`--relay` 纯中继为空）。桥链路身份
+//! （`bridge-{hostname}`，conn 路由/顶替锚点）与集群身份（registry 锚点）
+//! 是两个空间，hello 同时携带两者。
+//!
 //! **位置注记（对 goal 的偏离）**：goal 原文把协议类型放在
 //! `nemesisbot/src/relay/protocol.rs`，但 nemesis-web 不能引用 bin crate
 //! （nemesisbot）的类型，而路由/handler/状态页都在 nemesis-web——协议类型
@@ -39,11 +47,41 @@ pub enum BridgeFrame {
     // ---- 链路控制（设备 → 服务端）----
     /// 桥接入握手：携带接入门 token + 设备身份（node_id/显示名/版本——
     /// 显示名为二期身份交换预留，一期仅记录展示）。
+    ///
+    /// 二期增补集群身份字段（全部 `Option` + serde default，缺省 = 老版本/
+    /// 未启用集群，服务端仅作隧道设备处理）。
     BridgeHello {
         token: String,
         node_id: String,
         name: String,
         version: String,
+        /// 集群身份：registry 锚点 node_id（与桥链路 `node_id` 是两个空间）。
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        cluster_node_id: Option<String>,
+        /// 集群显示名（config.cluster.node_name 或 hostname 解析链产物）。
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        cluster_name: Option<String>,
+        /// 集群角色（worker/master/...）。
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        role: Option<String>,
+        /// 集群类别。
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        category: Option<String>,
+        /// 集群标签。
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        tags: Option<Vec<String>>,
+        /// RPC 能力（工具名清单）。
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        capabilities: Option<Vec<String>>,
+        /// 节点类型（agent/node）。
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        node_type: Option<String>,
+        /// 本机 RPC server 监听端口（0 = 未启动，服务端不注册集群节点）。
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        rpc_port: Option<u16>,
+        /// 本机网卡地址清单（同网段直连仲裁用）。
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        addresses: Option<Vec<String>>,
     },
     /// 设备心跳（30s 一跳；服务端回 `Pong`）。
     Heartbeat,
@@ -53,7 +91,14 @@ pub enum BridgeFrame {
     // ---- 链路控制（服务端 → 设备）----
     /// hello 回执：`ok=false` = 拒绝接入（token 错 / 已关闭 / node_id 冲突），
     /// 服务端随后关连接；客户端据此诚实报错（区分「配对失败」与「网络断」）。
-    BridgeWelcome { ok: bool, reason: String },
+    /// `hub_node_id` = hub 侧集群身份（正常模式非空；`--relay` 纯中继为空
+    /// ——设备据此感知 hub 是否集群节点，三期跨桥寻址用）。
+    BridgeWelcome {
+        ok: bool,
+        reason: String,
+        #[serde(default)]
+        hub_node_id: String,
+    },
     /// 心跳回执。
     Pong,
 

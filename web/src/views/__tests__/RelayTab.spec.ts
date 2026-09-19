@@ -179,4 +179,21 @@ describe('RelayTab 交互', () => {
     )
     expect(setCalls.length).toBe(0)
   })
+
+  it('令牌/密码显示切换：默认 password 渲染，点「显示」转明文（内容 = 后端掩码）', async () => {
+    const w = mount(RelayTab)
+    await flushPromises()
+    const secretInputs = w.findAll('input').filter(i => i.attributes('type') === 'password')
+    expect(secretInputs.length).toBe(2)
+    // 后端 sanitize 返回掩码——「显示」展示的即掩码原文（真实值只在 config.json）。
+    expect((secretInputs[0].element as HTMLInputElement).value).toBe('abcd****1234')
+    const showBtns = w.findAll('button').filter(b => b.text() === '显示')
+    expect(showBtns.length).toBe(2)
+    await showBtns[0].trigger('click')
+    expect(w.findAll('input').filter(i => i.attributes('type') === 'password').length).toBe(1)
+    const hideBtns = w.findAll('button').filter(b => b.text() === '隐藏')
+    expect(hideBtns.length).toBe(1)
+    await hideBtns[0].trigger('click')
+    expect(w.findAll('input').filter(i => i.attributes('type') === 'password').length).toBe(2)
+  })
 })

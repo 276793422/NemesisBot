@@ -2,6 +2,7 @@
 import { ref, computed, onMounted } from 'vue'
 import { useWSAPI } from '../../composables/useWSAPI'
 import { useToast } from '../../composables/useToast'
+import { uuidv4 } from '../../lib/uuid'
 
 const { request } = useWSAPI()
 const toast = useToast()
@@ -91,7 +92,8 @@ const testNames: Record<string, string> = {
 }
 
 function regenerateAuthToken() {
-  authToken.value = crypto.randomUUID()
+  // uuidv4：crypto.randomUUID 在 http://IP 非安全上下文不存在（兜底见 lib/uuid）。
+  authToken.value = uuidv4()
 }
 
 async function loadConfig() {

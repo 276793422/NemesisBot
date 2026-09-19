@@ -6,6 +6,11 @@
 //!   判定 / 运行时开关）
 //! - [`handlers`]：HTTP/WS handlers（`/bridge` 接入、`/d/<node_id>/` 隧道、
 //!   `__auth` 输入页、`/relay` 状态页、`/api/relay/status`）
+//! - [`identity`]：桥设备集群身份交换（二期：hello 增补字段的服务端快照 +
+//!   身份事件回调槽——relay 模块零依赖集群 crate，注册动作由宿主完成）
+//! - [`cluster_frame`]：上行 `cluster_rpc` 帧出口槽（二期批次六：relay 无
+//!   差别搬运，`WireMessage` 解析与本地 RPC 分发全在宿主 sink 内；未装配
+//!   sink 时维持一期「WARN 忽略」语义）
 //! - [`ws_codec`]：WS 长泵的帧格式转换层（axum Message ↔ 原始 ws 帧字节）
 //! - [`subpath`]：设备侧子路径支持（`/d/<自身 node_id>/` 前缀剥离 +
 //!   HTML `<base href>` 注入；批次二）
@@ -18,11 +23,15 @@
 //! nemesisbot）复用 [`protocol`]。
 
 pub mod client_status;
+pub mod cluster_frame;
 pub mod handlers;
+pub mod identity;
 pub mod protocol;
 pub mod server;
 pub mod subpath;
 pub mod ws_codec;
+
+pub use cluster_frame::ClusterFrameSink;
 
 pub use client_status::{
     BridgeClientState, BridgeClientStatus, client_status, kick_reconnect, reconnect_notify,
@@ -35,6 +44,7 @@ pub use handlers::{
     handle_relay_api_overview, handle_relay_api_status, handle_relay_login,
     handle_relay_status_page,
 };
+pub use identity::{BridgeClusterIdentity, BridgeIdentityEvent, BridgeIdentitySink};
 pub use protocol::BridgeFrame;
 pub use server::{DeviceStatus, RelayServer};
 pub use subpath::BridgeSubpathService;

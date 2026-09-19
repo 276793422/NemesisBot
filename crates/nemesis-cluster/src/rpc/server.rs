@@ -358,13 +358,35 @@ impl RpcServer {
         wire_msg: &WireMessage,
         handlers: &RwLock<HashMap<String, Arc<RpcHandlerFn>>>,
     ) {
-        let action = &wire_msg.action;
         tracing::info!(
-            action = %action,
+            action = %wire_msg.action,
             from = %wire_msg.from,
             id = %wire_msg.id,
             "[RpcServer] Received RPC request"
         );
+        let resp = Self::dispatch_wire_request(wire_msg, handlers).await;
+        if let Err(e) = conn.send(&resp).await {
+            tracing::error!(error = %e, "[RpcServer] Failed to send response");
+        }
+    }
+
+    /// 二期（桥集群）：桥帧入口——外部收到集群 RPC 请求帧（经桥转来的
+    /// `WireMessage`）喂进来，走与 TCP **完全相同**的 handler 链，返回响应
+    /// 帧由调用方投递（TCP 路径写回同一 conn；桥路径封 `cluster_rpc` 帧
+    /// 回上行）。零行为分叉——同一 action 在两条路径下结果逐字节一致。
+    pub async fn handle_wire_message(&self, msg: WireMessage) -> WireMessage {
+        Self::dispatch_wire_request(&msg, &self.handlers).await
+    }
+
+    /// 纯分发：请求帧 → 响应帧（不投递）。注入 `_rpc` 元数据 → 查 live
+    /// handler 表 → 执行 → 写 cluster 审计日志 → 构造 response/error 帧。
+    /// TCP 路径（[`Self::handle_request`]）与桥路径（
+    /// [`Self::handle_wire_message`]）共用。
+    async fn dispatch_wire_request(
+        wire_msg: &WireMessage,
+        handlers: &RwLock<HashMap<String, Arc<RpcHandlerFn>>>,
+    ) -> WireMessage {
+        let action = &wire_msg.action;
 
         // Parse payload as JSON value
         let mut payload = wire_msg.payload.clone();
@@ -418,10 +440,7 @@ impl RpcServer {
                 "[RpcServer] No handler for action: {}",
                 action,
             );
-            let resp =
-                WireMessage::new_error(wire_msg, &format!("no handler for action: {}", action));
-            let _ = conn.send(&resp).await;
-            return;
+            return WireMessage::new_error(wire_msg, &format!("no handler for action: {}", action));
         }
 
         // Execute handler
@@ -449,7 +468,7 @@ impl RpcServer {
             crate::cluster_log::write_cluster_log("rpc_call", fields);
         }
 
-        // Send response
+        // 构造响应帧（发送由调用方负责）。
         match result {
             Ok(value) => {
                 tracing::info!(
@@ -460,10 +479,7 @@ impl RpcServer {
                     action,
                     wire_msg.from,
                 );
-                let resp = WireMessage::new_response(wire_msg, value);
-                if let Err(e) = conn.send(&resp).await {
-                    tracing::error!(error = %e, "[RpcServer] Failed to send response");
-                }
+                WireMessage::new_response(wire_msg, value)
             }
             Err(err) => {
                 tracing::warn!(
@@ -475,10 +491,7 @@ impl RpcServer {
                     action,
                     wire_msg.from,
                 );
-                let resp = WireMessage::new_error(wire_msg, &err);
-                if let Err(e) = conn.send(&resp).await {
-                    tracing::error!(error = %e, "[RpcServer] Failed to send error response");
-                }
+                WireMessage::new_error(wire_msg, &err)
             }
         }
     }

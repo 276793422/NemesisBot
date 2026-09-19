@@ -971,3 +971,78 @@ fn test_default_handler_list_actions_count() {
     // Should have at least ping, get_info, get_capabilities, list_actions, peer_chat, peer_chat_callback
     assert!(actions.len() >= 6);
 }
+
+// ---------------------------------------------------------------------------
+// 二期桥帧入口（goal：桥集群，批次六）——与 TCP 路径共用同一 dispatch。
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn test_handle_wire_message_round_trip() {
+    let server = make_server();
+    server.register_handler(
+        "WireAction",
+        Box::new(|payload| Ok(serde_json::json!({"echo": payload["q"]}))),
+    );
+    let req = crate::transport::conn::WireMessage {
+        version: "1.0".into(),
+        id: "w-req-1".into(),
+        msg_type: "request".into(),
+        from: "node-a".into(),
+        to: "node-b".into(),
+        action: "WireAction".into(),
+        payload: serde_json::json!({"q": 42}),
+        timestamp: 1,
+        error: String::new(),
+    };
+    let resp = server.handle_wire_message(req.clone()).await;
+    // 响应帧形态 = WireMessage::new_response（与 TCP 路径同构）。
+    assert_eq!(resp.msg_type, "response");
+    assert_eq!(resp.id, "w-req-1");
+    assert_eq!(resp.to, "node-a"); // to = 请求 from（new_response 语义）
+    assert_eq!(resp.from, "node-b"); // from = 请求 to
+    assert_eq!(resp.error, "");
+    assert_eq!(resp.payload["echo"], 42);
+}
+
+#[tokio::test]
+async fn test_handle_wire_message_handler_error_and_no_handler() {
+    let server = make_server();
+    server.register_handler(
+        "BoomAction",
+        Box::new(|_payload| Err("handler exploded".into())),
+    );
+
+    // handler Err → error 帧（msg_type="error"，error 非空，id 回显）。
+    let req = crate::transport::conn::WireMessage {
+        version: "1.0".into(),
+        id: "w-req-2".into(),
+        msg_type: "request".into(),
+        from: "node-a".into(),
+        to: "node-b".into(),
+        action: "BoomAction".into(),
+        payload: serde_json::json!({}),
+        timestamp: 1,
+        error: String::new(),
+    };
+    let resp = server.handle_wire_message(req).await;
+    assert_eq!(resp.msg_type, "error");
+    assert_eq!(resp.id, "w-req-2");
+    assert_eq!(resp.error, "handler exploded");
+
+    // 无 handler → error 帧（no handler for action）。
+    let req = crate::transport::conn::WireMessage {
+        version: "1.0".into(),
+        id: "w-req-3".into(),
+        msg_type: "request".into(),
+        from: "node-a".into(),
+        to: "node-b".into(),
+        action: "NoSuchAction".into(),
+        payload: serde_json::json!({}),
+        timestamp: 1,
+        error: String::new(),
+    };
+    let resp = server.handle_wire_message(req).await;
+    assert_eq!(resp.msg_type, "error");
+    assert_eq!(resp.id, "w-req-3");
+    assert!(resp.error.contains("no handler for action"));
+}

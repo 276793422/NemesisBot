@@ -1,4 +1,5 @@
 import { registerPendingRequest, removePendingRequest, REQUEST_TIMEOUT } from './wsResponseHandler'
+import { uuidv4 } from '../lib/uuid'
 
 /**
  * Promise-based WS API composable.
@@ -32,7 +33,8 @@ export function useWSAPI() {
         return
       }
 
-      const reqId = crypto.randomUUID()
+      // uuidv4：crypto.randomUUID 在 http://IP 非安全上下文不存在（兜底见 lib/uuid）。
+      const reqId = uuidv4()
       const effectiveTimeout = timeoutMs !== undefined ? timeoutMs : REQUEST_TIMEOUT
       const timer = effectiveTimeout > 0
         ? setTimeout(() => {

@@ -17,11 +17,37 @@ use tokio::sync::mpsc;
 #[test]
 fn frame_round_trip_all_variants() {
     let frames = vec![
+        // 老客户端形态：不带集群身份字段（serde default 兼容）。
         BridgeFrame::BridgeHello {
             token: "tok-🔐".to_string(),
             node_id: "node-abcd1234".to_string(),
             name: "我的工作站".to_string(),
             version: "0.1.0".to_string(),
+            cluster_node_id: None,
+            cluster_name: None,
+            role: None,
+            category: None,
+            tags: None,
+            capabilities: None,
+            node_type: None,
+            rpc_port: None,
+            addresses: None,
+        },
+        // 二期形态：集群身份齐备。
+        BridgeFrame::BridgeHello {
+            token: "tok".to_string(),
+            node_id: "bridge-yangjian".to_string(),
+            name: "YANGJIAN".to_string(),
+            version: "0.1.0".to_string(),
+            cluster_node_id: Some("node-yangjian-85292cf8".to_string()),
+            cluster_name: Some("DevOne-Renamed".to_string()),
+            role: Some("worker".to_string()),
+            category: Some("general".to_string()),
+            tags: Some(vec!["via-bridge".to_string()]),
+            capabilities: Some(vec!["chat".to_string(), "file.write".to_string()]),
+            node_type: Some("agent".to_string()),
+            rpc_port: Some(21949),
+            addresses: Some(vec!["192.168.1.10".to_string()]),
         },
         BridgeFrame::Heartbeat,
         BridgeFrame::BridgeClose {
@@ -30,10 +56,12 @@ fn frame_round_trip_all_variants() {
         BridgeFrame::BridgeWelcome {
             ok: true,
             reason: "welcome".to_string(),
+            hub_node_id: "node-hub-1".to_string(),
         },
         BridgeFrame::BridgeWelcome {
             ok: false,
             reason: "接入门 token 不匹配（配对失败）".to_string(),
+            hub_node_id: String::new(),
         },
         BridgeFrame::Pong,
         BridgeFrame::AccessCheck {
@@ -84,6 +112,15 @@ fn frame_tag_is_snake_case_type_field() {
         node_id: "n".into(),
         name: "n".into(),
         version: "v".into(),
+        cluster_node_id: None,
+        cluster_name: None,
+        role: None,
+        category: None,
+        tags: None,
+        capabilities: None,
+        node_type: None,
+        rpc_port: None,
+        addresses: None,
     })
     .unwrap();
     let v: serde_json::Value = serde_json::from_str(&text).unwrap();
@@ -334,9 +371,20 @@ struct FakeDevice {
 
 /// 注册假设备（构造下行 channel，接收端留在测试内消费/防队列满）。
 fn register_fake(relay: &RelayServer, node_id: &str, token: &str, name: &str) -> FakeDevice {
+    register_fake_with_identity(relay, node_id, token, name, None)
+}
+
+/// 注册假设备（带集群身份变体——二期身份事件测试用）。
+fn register_fake_with_identity(
+    relay: &RelayServer,
+    node_id: &str,
+    token: &str,
+    name: &str,
+    identity: Option<super::identity::BridgeClusterIdentity>,
+) -> FakeDevice {
     let (tx, rx) = mpsc::channel::<BridgeFrame>(256);
     let generation = relay
-        .authenticate_device(token, node_id, name, "test", tx)
+        .authenticate_device(token, node_id, name, "test", identity, tx)
         .expect("注册应成功");
     FakeDevice {
         generation,
@@ -370,7 +418,7 @@ fn authenticate_token_mismatch_rejected_with_honest_reason() {
     let relay = RelayServer::new("right-token".to_string(), true);
     let (tx, _rx) = mpsc::channel(8);
     let err = relay
-        .authenticate_device("wrong-token", "n1", "名", "v", tx)
+        .authenticate_device("wrong-token", "n1", "名", "v", None, tx)
         .expect_err("错 token 必须拒");
     assert!(err.contains("token 不匹配"), "{err}");
     assert!(relay.list_devices().is_empty());
@@ -379,7 +427,7 @@ fn authenticate_token_mismatch_rejected_with_honest_reason() {
     let (tx, _rx) = mpsc::channel(8);
     assert!(
         relay
-            .authenticate_device("right-token", "", "名", "v", tx)
+            .authenticate_device("right-token", "", "名", "v", None, tx)
             .is_err()
     );
 }
@@ -411,6 +459,10 @@ fn multi_device_concurrent_and_directed_send() {
     let mut a = register_fake(&relay, "node-aaa", "tok", "A 机");
     let mut b = register_fake(&relay, "node-bbb", "tok", "B 机");
     let mut c = register_fake(&relay, "node-ccc", "tok", "C 机");
+    // 三期批次八：注册即广播 member_sync——排空注册触发的帧再断言业务。
+    for d in [&mut a, &mut b, &mut c] {
+        while d.outbound_rx.try_recv().is_ok() {}
+    }
 
     let devices = relay.list_devices();
     assert_eq!(devices.len(), 3);
@@ -533,6 +585,8 @@ fn heartbeat_timeout_kicks_device() {
 fn reserved_frames_go_through_control_dispatch_without_effect() {
     let relay = std::sync::Arc::new(RelayServer::new("tok".to_string(), true));
     let mut d = register_fake(&relay, "node-aaa", "tok", "A 机");
+    // 三期批次八：注册即广播——先排空，再验证预留帧不产生新下行。
+    while d.outbound_rx.try_recv().is_ok() {}
     // 二/三期预留帧：一期收到即忽略（不 panic、不投递、不路由）。
     handle_control_frame(
         BridgeFrame::ClusterRpc {
@@ -555,9 +609,246 @@ fn reserved_frames_go_through_control_dispatch_without_effect() {
 fn heartbeat_control_frame_replies_pong() {
     let relay = std::sync::Arc::new(RelayServer::new("tok".to_string(), true));
     let mut d = register_fake(&relay, "node-aaa", "tok", "A 机");
+    // 三期批次八：注册即广播——排空后心跳的 Pong 才是队列首帧。
+    while d.outbound_rx.try_recv().is_ok() {}
     handle_control_frame(BridgeFrame::Heartbeat, &relay, "node-aaa");
     match d.outbound_rx.try_recv().expect("心跳应回 pong") {
         BridgeFrame::Pong => {}
         other => panic!("期望 Pong，得到 {other:?}"),
     }
+}
+
+// ---------------------------------------------------------------------------
+// C. 二期身份交换（goal 批次五）：身份事件 + 老格式兼容
+// ---------------------------------------------------------------------------
+
+use super::identity::{BridgeClusterIdentity, BridgeIdentityEvent, BridgeIdentitySink};
+
+/// mock sink：收集全部身份事件供断言。
+#[derive(Clone, Default)]
+struct EventLog(std::sync::Arc<std::sync::Mutex<Vec<BridgeIdentityEvent>>>);
+
+impl EventLog {
+    fn snapshot(&self) -> Vec<(String, bool, Option<String>)> {
+        self.0
+            .lock()
+            .unwrap()
+            .iter()
+            .map(|e| {
+                (
+                    e.bridge_node_id.clone(),
+                    e.online,
+                    e.cluster.as_ref().map(|c| c.node_id.clone()),
+                )
+            })
+            .collect()
+    }
+}
+
+impl BridgeIdentitySink for EventLog {
+    fn on_bridge_identity(&self, event: BridgeIdentityEvent) {
+        self.0.lock().unwrap().push(event);
+    }
+}
+
+fn sample_identity(node_id: &str) -> BridgeClusterIdentity {
+    BridgeClusterIdentity {
+        node_id: node_id.to_string(),
+        name: "远端机".to_string(),
+        role: "worker".to_string(),
+        category: "general".to_string(),
+        tags: vec![],
+        capabilities: vec!["chat".to_string()],
+        node_type: "agent".to_string(),
+        rpc_port: 21949,
+        addresses: vec!["10.0.0.5".to_string()],
+    }
+}
+
+#[test]
+fn legacy_hello_without_cluster_fields_still_decodes() {
+    // 老版本 hello（无集群身份字段）必须可解码（serde default 兼容），
+    // 且全部身份字段为 None = 纯隧道设备。
+    let legacy =
+        r#"{"type":"bridge_hello","token":"t","node_id":"bridge-x","name":"X","version":"0.1.0"}"#;
+    let frame = decode_frame(legacy).expect("老格式必须兼容");
+    let BridgeFrame::BridgeHello {
+        cluster_node_id,
+        rpc_port,
+        ..
+    } = frame
+    else {
+        panic!("期望 BridgeHello");
+    };
+    assert_eq!(cluster_node_id, None);
+    assert_eq!(rpc_port, None);
+}
+
+#[test]
+fn identity_events_online_offline_and_replacement_no_false_offline() {
+    let relay = std::sync::Arc::new(RelayServer::new("tok".to_string(), true));
+    let log = EventLog::default();
+    relay.set_identity_sink(std::sync::Arc::new(log.clone()));
+
+    // 上线：online 事件携带集群身份。
+    let old = register_fake_with_identity(
+        &relay,
+        "bridge-x",
+        "tok",
+        "X 机",
+        Some(sample_identity("node-x-1")),
+    );
+    // 顶替重连：新连接再报 online（宿主侧注册幂等）。
+    let new = register_fake_with_identity(
+        &relay,
+        "bridge-x",
+        "tok",
+        "X 机",
+        Some(sample_identity("node-x-1")),
+    );
+    // 旧循环退出（代际失配）：不误报 offline。
+    relay.mark_device_gone("bridge-x", old.generation);
+    // 新循环退出：报 offline。
+    relay.mark_device_gone("bridge-x", new.generation);
+
+    let events = log.snapshot();
+    assert_eq!(
+        events,
+        vec![
+            ("bridge-x".into(), true, Some("node-x-1".into())),
+            ("bridge-x".into(), true, Some("node-x-1".into())),
+            ("bridge-x".into(), false, Some("node-x-1".into())),
+        ],
+        "顶替场景：online×2 + 新连接断开 offline，旧循环不误报"
+    );
+}
+
+#[test]
+fn identity_events_on_heartbeat_kick_and_switch_off() {
+    let relay = std::sync::Arc::new(RelayServer::new("tok".to_string(), true));
+    let log = EventLog::default();
+    relay.set_identity_sink(std::sync::Arc::new(log.clone()));
+
+    // 心跳踢 → offline。
+    let d = register_fake_with_identity(
+        &relay,
+        "bridge-sleepy",
+        "tok",
+        "打盹机",
+        Some(sample_identity("node-sleepy-1")),
+    );
+    relay.backdate_device_last_seen_for_test("bridge-sleepy", 91);
+    relay.maintenance_tick();
+    assert!(relay.list_devices().is_empty());
+    drop(d);
+
+    // 开关踢（两台，一台纯隧道 None 身份）→ 逐设备 offline。
+    let _a = register_fake_with_identity(
+        &relay,
+        "bridge-a",
+        "tok",
+        "A 机",
+        Some(sample_identity("node-a-1")),
+    );
+    let _b = register_fake(&relay, "bridge-b", "tok", "B 机");
+    relay.set_enabled(false);
+
+    let events = log.snapshot();
+    assert!(
+        events.contains(&("bridge-sleepy".into(), false, Some("node-sleepy-1".into()))),
+        "心跳踢应报 offline：{events:?}"
+    );
+    assert!(
+        events.contains(&("bridge-a".into(), false, Some("node-a-1".into())))
+            && events.contains(&("bridge-b".into(), false, None)),
+        "开关踢应逐设备报 offline（纯隧道设备 cluster=None）：{events:?}"
+    );
+}
+
+#[test]
+fn hub_node_id_setter_round_trip() {
+    let relay = RelayServer::new("tok".to_string(), true);
+    assert_eq!(relay.hub_node_id(), "", "缺省空 = --relay 纯中继语义");
+    relay.set_hub_node_id("node-hub-1".to_string());
+    assert_eq!(relay.hub_node_id(), "node-hub-1");
+}
+
+// ---------------------------------------------------------------------------
+// 三期批次八：member_sync 广播（快照闭包 / --relay 设备表摘要 / gate 关跳过）
+// ---------------------------------------------------------------------------
+
+#[test]
+fn member_sync_broadcast_three_sources() {
+    // 形态一：注入快照闭包（正常模式 hub）→ 广播 registry 摘要。
+    // 快照先于注册注入——注册本身触发的广播已用该快照。
+    let relay = RelayServer::new("tok".to_string(), true);
+    relay.set_member_snapshot(std::sync::Arc::new(|| {
+        serde_json::json!({
+            "members": [
+                {"node_id": "node-hub", "name": "Hub", "online": true,
+                 "via_bridge": false, "addresses": [], "rpc_port": 21949,
+                 "role": "coordinator", "category": "general",
+                 "capabilities": [], "node_type": "agent"},
+                {"node_id": "node-x", "name": "X", "online": true,
+                 "via_bridge": true, "addresses": ["10.0.0.9"], "rpc_port": 21959,
+                 "role": "worker", "category": "general",
+                 "capabilities": [], "node_type": "agent"},
+            ]
+        })
+    }));
+    let mut dev = register_fake(&relay, "bridge-a", "tok", "A 机");
+    relay.broadcast_member_sync();
+    match dev.outbound_rx.try_recv().expect("应收到帧") {
+        BridgeFrame::MemberSync { payload } => {
+            let members = payload["members"].as_array().expect("members 数组");
+            assert_eq!(members.len(), 2);
+            assert_eq!(members[0]["node_id"], "node-hub");
+            assert_eq!(members[1]["via_bridge"], true);
+        }
+        other => panic!("应收到 MemberSync，得到 {other:?}"),
+    }
+
+    // 形态二：未注入快照（--relay）→ 广播自身桥设备表摘要。
+    let relay = RelayServer::new("tok".to_string(), true);
+    let mut dev = register_fake(&relay, "bridge-b", "tok", "B 机");
+    relay.broadcast_member_sync();
+    match dev.outbound_rx.try_recv().expect("应收到帧") {
+        BridgeFrame::MemberSync { payload } => {
+            let members = payload["members"].as_array().expect("members 数组");
+            assert_eq!(members.len(), 1, "--relay 摘要 = 桥设备表");
+            assert_eq!(members[0]["node_id"], "bridge-b");
+            assert_eq!(members[0]["role"], "device");
+            assert_eq!(members[0]["online"], true);
+        }
+        other => panic!("应收到 MemberSync，得到 {other:?}"),
+    }
+
+    // 形态三：接入门关闭 → 广播静默跳过（无帧、不 panic）。
+    let relay = RelayServer::new("tok".to_string(), true);
+    let mut dev = register_fake(&relay, "bridge-c", "tok", "C 机");
+    // 排空注册触发的那帧（注册时门还开着）。
+    let _ = dev.outbound_rx.try_recv();
+    relay.set_enabled(false);
+    relay.broadcast_member_sync();
+    assert!(dev.outbound_rx.try_recv().is_err(), "门关闭时不应广播");
+}
+
+#[test]
+fn member_sync_triggered_by_lifecycle_changes() {
+    let relay = RelayServer::new("tok".to_string(), true);
+    let mut dev = register_fake(&relay, "bridge-a", "tok", "A 机");
+
+    // 注册即触发（authenticate_device 变化点）：rx 里已有注册广播。
+    match dev.outbound_rx.try_recv().expect("注册应触发广播") {
+        BridgeFrame::MemberSync { payload } => {
+            let members = payload["members"].as_array().expect("members 数组");
+            assert_eq!(members[0]["node_id"], "bridge-a");
+        }
+        other => panic!("注册触发应发 MemberSync，得到 {other:?}"),
+    }
+
+    // 断开（代际匹配移除）→ 离线广播经 notify_identity_offline 触发——
+    // 设备已不在表，帧发不到自己（尽力而为语义：表空无收件人）。
+    relay.mark_device_gone("bridge-a", dev.generation);
+    assert!(dev.outbound_rx.try_recv().is_err(), "移除后无新帧");
 }

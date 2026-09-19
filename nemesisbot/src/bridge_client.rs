@@ -60,6 +60,63 @@ const CONN_WRITE_CAPACITY: usize = 16;
 // 参数与时序（时序参数化 = 测试可毫秒级跑完假死/退避路径）
 // ---------------------------------------------------------------------------
 
+/// 桥 RPC 枢纽句柄（二期批次六）。cluster 构建 = [`crate::bridge_rpc::
+/// DeviceBridgeRpc`]；非 cluster 构建无此子系统，别名退化 `()`——消除
+/// `BridgeClientParams` 字段类型的 cfg 门重复书写。
+#[cfg(feature = "cluster")]
+pub type BridgeRpcHandle = std::sync::Arc<crate::bridge_rpc::DeviceBridgeRpc>;
+#[cfg(not(feature = "cluster"))]
+pub type BridgeRpcHandle = ();
+
+/// 二期批次六 helper（cfg 双实现）：挂载桥 RPC 上行出口。
+/// 非 cluster 构建无此子系统，no-op。
+#[cfg(feature = "cluster")]
+fn bridge_rpc_attach(handle: &BridgeRpcHandle, tx: mpsc::UnboundedSender<BridgeFrame>) {
+    handle.attach_uplink(tx);
+}
+#[cfg(not(feature = "cluster"))]
+fn bridge_rpc_attach(handle: &BridgeRpcHandle, _tx: mpsc::UnboundedSender<BridgeFrame>) {
+    let _ = handle;
+}
+
+/// 二期批次六 helper（cfg 双实现）：摘除桥 RPC 上行出口 + 清 pending。
+#[cfg(feature = "cluster")]
+fn bridge_rpc_detach(handle: &BridgeRpcHandle) {
+    handle.detach_uplink();
+}
+#[cfg(not(feature = "cluster"))]
+fn bridge_rpc_detach(handle: &BridgeRpcHandle) {
+    let _ = handle;
+}
+
+/// 二期批次六 helper（cfg 双实现）：下行 `cluster_rpc` 帧分流。
+#[cfg(feature = "cluster")]
+async fn bridge_rpc_downstream(
+    handle: &BridgeRpcHandle,
+    payload: serde_json::Value,
+) -> Option<BridgeFrame> {
+    handle.handle_downstream(payload).await
+}
+#[cfg(not(feature = "cluster"))]
+async fn bridge_rpc_downstream(
+    handle: &BridgeRpcHandle,
+    _payload: serde_json::Value,
+) -> Option<BridgeFrame> {
+    let _ = handle;
+    None
+}
+
+/// 三期批次八 helper（cfg 双实现）：下行 `member_sync` 帧合并。
+/// 非 cluster 构建无集群 registry，no-op（维持一期忽略语义）。
+#[cfg(feature = "cluster")]
+fn bridge_rpc_member_sync(handle: &BridgeRpcHandle, payload: &serde_json::Value) {
+    handle.handle_member_sync(payload);
+}
+#[cfg(not(feature = "cluster"))]
+fn bridge_rpc_member_sync(handle: &BridgeRpcHandle, _payload: &serde_json::Value) {
+    let _ = handle;
+}
+
 /// 桥客户端启动参数（gateway 装配处构造）。
 pub struct BridgeClientParams {
     /// 中继服务端地址（如 `ws://vps.example.com:60600`；自动拼 `/bridge`）。
@@ -76,6 +133,14 @@ pub struct BridgeClientParams {
     pub web_port: u16,
     /// 面板访问密码（只存本机；`AccessCheck` 时比对 SHA-256；空 = 拒绝一切远程访问）。
     pub access_token: String,
+    /// 二期：本机集群身份快照（Some = hello 携带，hub 注册进集群 registry
+    /// 同权组网；None = 纯隧道设备语义）。gateway 装配处按 cluster 存在
+    /// 且 rpc_port>0 构造。
+    pub cluster_identity: Option<nemesis_web::relay::BridgeClusterIdentity>,
+    /// 二期批次六：桥帧 RPC 枢纽（Some = 集群构建——下行 `cluster_rpc`
+    /// 帧分流到本地 RPC 链 / pending 表；None = 一期语义，下行帧 WARN 忽略）。
+    /// gateway 装配处与 RpcClient::set_bridge_transport 同源注入。
+    pub bridge_rpc: Option<BridgeRpcHandle>,
 }
 
 /// 可调时序（默认值 = 上方常量；测试传小值毫秒级跑完）。
@@ -426,11 +491,23 @@ async fn session(ws: WsStream, params: &BridgeClientParams, timing: LoopTiming) 
     let mut welcomed = false;
 
     // ---- 阶段 1：hello + 等 welcome（有界等待，服务端收到即回）----
+    // 二期：集群身份快照展开进 hello（None = 纯隧道设备，字段省略——
+    // 服务端按缺省 None 处理，老版本互连兼容）。
+    let identity = params.cluster_identity.clone();
     let hello = match encode_frame(&BridgeFrame::BridgeHello {
         token: params.token.clone(),
         node_id: params.node_id.clone(),
         name: params.name.clone(),
         version: params.version.clone(),
+        cluster_node_id: identity.as_ref().map(|i| i.node_id.clone()),
+        cluster_name: identity.as_ref().map(|i| i.name.clone()),
+        role: identity.as_ref().map(|i| i.role.clone()),
+        category: identity.as_ref().map(|i| i.category.clone()),
+        tags: identity.as_ref().map(|i| i.tags.clone()),
+        capabilities: identity.as_ref().map(|i| i.capabilities.clone()),
+        node_type: identity.as_ref().map(|i| i.node_type.clone()),
+        rpc_port: identity.as_ref().map(|i| i.rpc_port),
+        addresses: identity.as_ref().map(|i| i.addresses.clone()),
     }) {
         Ok(s) => s,
         Err(e) => {
@@ -464,18 +541,33 @@ async fn session(ws: WsStream, params: &BridgeClientParams, timing: LoopTiming) 
                 }
             };
             match decode_frame(&text) {
-                Ok(BridgeFrame::BridgeWelcome { ok: true, .. }) => {
+                Ok(BridgeFrame::BridgeWelcome {
+                    ok: true,
+                    hub_node_id,
+                    ..
+                }) => {
                     welcomed = true;
-                    tracing::info!(
-                        "[Bridge] 配对成功，桥通道已建立（心跳 {}s）",
-                        timing.heartbeat.as_secs()
-                    );
+                    // 二期：hub 侧集群身份（正常模式非空；`--relay` 纯中继
+                    // 为空——设备据此感知 hub 是否集群节点，三期寻址用）。
+                    if hub_node_id.is_empty() {
+                        tracing::info!(
+                            "[Bridge] 配对成功，桥通道已建立（心跳 {}s；hub 为纯中继，无集群身份）",
+                            timing.heartbeat.as_secs()
+                        );
+                    } else {
+                        tracing::info!(
+                            "[Bridge] 配对成功，桥通道已建立（心跳 {}s；hub 集群节点 {hub_node_id}）",
+                            timing.heartbeat.as_secs()
+                        );
+                    }
                     nemesis_web::relay::report_client_state(
                         nemesis_web::relay::BridgeClientState::Connected,
                         None,
                     );
                 }
-                Ok(BridgeFrame::BridgeWelcome { ok: false, reason }) => {
+                Ok(BridgeFrame::BridgeWelcome {
+                    ok: false, reason, ..
+                }) => {
                     return SessionEnd::Rejected(reason);
                 }
                 _ => {
@@ -489,6 +581,11 @@ async fn session(ws: WsStream, params: &BridgeClientParams, timing: LoopTiming) 
     // ---- 阶段 2：主循环 ----
     // conn 泵上行帧统一出口（泵不持有 ws 写半——主循环单点写，串行化）。
     let (cmd_tx, mut cmd_rx) = mpsc::unbounded_channel::<BridgeFrame>();
+    // 二期批次六：挂载桥 RPC 上行出口（BridgeSend 发帧 + hub 请求的响应
+    // 回上行都经此）；会话收尾 detach（在途桥请求按链路死亡收口）。
+    if let Some(bridge_rpc) = &params.bridge_rpc {
+        bridge_rpc_attach(bridge_rpc, cmd_tx.clone());
+    }
     let mut conns: HashMap<u64, ConnHandle> = HashMap::new();
     let mut last_rx = Instant::now();
     let mut heartbeat_tick = tokio::time::interval(timing.heartbeat);
@@ -582,9 +679,35 @@ async fn session(ws: WsStream, params: &BridgeClientParams, timing: LoopTiming) 
                             | BridgeFrame::BridgeWelcome { .. } | BridgeFrame::AccessResult { .. } => {
                                 tracing::warn!("[Bridge] 收到不该由服务端发的帧，忽略");
                             }
-                            // 二/三期预留帧：一期收到即忽略 + WARN（协议注释约定）。
-                            BridgeFrame::ClusterRpc { .. } | BridgeFrame::MemberSync { .. } => {
-                                tracing::warn!("[Bridge] 收到三期预留帧（cluster_rpc/member_sync），一期忽略");
+                            // 二期批次六：下行 cluster_rpc 帧 → 桥 RPC 枢纽分流
+                            // （response → 唤醒本地 pending；request → 喂本地
+                            // RPC 链，响应回上行）。未装配枢纽（一期形态）维持
+                            // WARN 忽略。
+                            BridgeFrame::ClusterRpc { payload } => match &params.bridge_rpc {
+                                Some(bridge_rpc) => {
+                                    if let Some(up_frame) =
+                                        bridge_rpc_downstream(bridge_rpc, payload).await
+                                        && send_frame(&mut ws_write, up_frame).await.is_err()
+                                    {
+                                        break SessionEnd::Disconnected { welcomed };
+                                    }
+                                }
+                                None => {
+                                    tracing::warn!(
+                                        "[Bridge] 收到 cluster_rpc 帧但未装配桥 RPC 枢纽，忽略"
+                                    );
+                                }
+                            },
+                            BridgeFrame::MemberSync { payload } => {
+                                // 三期批次八：成员表合并（集群装配的设备才
+                                // 消费；纯设备/`--relay` 链路维持忽略语义）。
+                                if let Some(bridge_rpc) = &params.bridge_rpc {
+                                    bridge_rpc_member_sync(bridge_rpc, &payload);
+                                } else {
+                                    tracing::debug!(
+                                        "[Bridge] 收到 member_sync 但未装配集群，忽略"
+                                    );
+                                }
                             }
                         }
                     }
@@ -632,6 +755,11 @@ async fn session(ws: WsStream, params: &BridgeClientParams, timing: LoopTiming) 
     // 收尾：全部 conn 泵终止（abort 读泵；写泵随 CloseAll/Channel 关闭退出）。
     for conn_id in conns.keys().copied().collect::<Vec<_>>() {
         drop_conn(conn_id, &mut conns);
+    }
+    // 二期批次六：摘除桥 RPC 上行出口 + 清 pending（在途桥请求按链路死亡收口
+    // ——RpcClient 仲裁按「桥路径失败」走兜底/诚实报错，不悬挂）。
+    if let Some(bridge_rpc) = &params.bridge_rpc {
+        bridge_rpc_detach(bridge_rpc);
     }
     end
 }

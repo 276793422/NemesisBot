@@ -98,14 +98,47 @@ async fn bridge_socket_loop(socket: WebSocket, relay: Arc<RelayServer>) {
         node_id,
         name,
         version,
+        cluster_node_id,
+        cluster_name,
+        role,
+        category,
+        tags,
+        capabilities,
+        node_type,
+        rpc_port,
+        addresses,
     } = hello
     else {
         return; // unreachable：上面只放行 hello
     };
 
+    // 二期：hello 集群身份字段 → 组装快照（集群 node_id 与显示名齐备才
+    // 视为启用；老版本/纯隧道设备缺字段 → None，仅作隧道设备）。
+    let cluster_identity = match (&cluster_node_id, &cluster_name) {
+        (Some(cn), Some(cname)) if !cn.is_empty() => Some(super::identity::BridgeClusterIdentity {
+            node_id: cn.clone(),
+            name: cname.clone(),
+            role: role.clone().unwrap_or_else(|| "worker".to_string()),
+            category: category.clone().unwrap_or_else(|| "general".to_string()),
+            tags: tags.clone().unwrap_or_default(),
+            capabilities: capabilities.clone().unwrap_or_default(),
+            node_type: node_type.clone().unwrap_or_else(|| "node".to_string()),
+            rpc_port: rpc_port.unwrap_or(0),
+            addresses: addresses.clone().unwrap_or_default(),
+        }),
+        _ => None,
+    };
+
     // ---- 鉴权登记 ----
     let (out_tx, mut out_rx) = mpsc::channel::<BridgeFrame>(DEVICE_OUTBOUND_CAPACITY);
-    let generation = match relay.authenticate_device(&token, &node_id, &name, &version, out_tx) {
+    let generation = match relay.authenticate_device(
+        &token,
+        &node_id,
+        &name,
+        &version,
+        cluster_identity,
+        out_tx,
+    ) {
         Ok(g) => g,
         Err(reason) => {
             // 诚实拒绝：welcome{ok:false} + 关连接（客户端据此区分
@@ -113,6 +146,7 @@ async fn bridge_socket_loop(socket: WebSocket, relay: Arc<RelayServer>) {
             let welcome = BridgeFrame::BridgeWelcome {
                 ok: false,
                 reason: reason.clone(),
+                hub_node_id: relay.hub_node_id(),
             };
             if let Some(text) = encode_or_none(&welcome) {
                 let _ = ws_tx.send(Message::Text(text.into())).await;
@@ -124,6 +158,7 @@ async fn bridge_socket_loop(socket: WebSocket, relay: Arc<RelayServer>) {
     let welcome = BridgeFrame::BridgeWelcome {
         ok: true,
         reason: "welcome".to_string(),
+        hub_node_id: relay.hub_node_id(),
     };
     if let Some(text) = encode_or_none(&welcome) {
         let _ = ws_tx.send(Message::Text(text.into())).await;
@@ -210,6 +245,29 @@ async fn bridge_socket_loop(socket: WebSocket, relay: Arc<RelayServer>) {
                             BridgeFrame::ConnClose { conn_id, reason } => {
                                 // 设备侧主动关闭（dial 失败 / 本地断开等）。
                                 relay.close_conn(conn_id, &reason);
+                            }
+                            BridgeFrame::ClusterRpc { payload } => {
+                                // 二期批次六：上行集群 RPC 帧 → 宿主出口
+                                // （hub 形态：喂本地 RPC 链，响应封帧回上行）。
+                                // 未装配 sink（`--relay` / 一期形态）→ 维持
+                                // 一期「WARN 忽略」语义。
+                                match relay.cluster_frame_sink() {
+                                    Some(sink) => {
+                                        if let Some(resp_payload) =
+                                            sink.on_cluster_frame(&node_id, payload).await
+                                        {
+                                            let _ = relay.send_to_device(
+                                                &node_id,
+                                                BridgeFrame::ClusterRpc { payload: resp_payload },
+                                                0,
+                                            );
+                                        }
+                                    }
+                                    None => {
+                                        tracing::warn!(node_id = %node_id,
+                                            "[Relay] 收到 cluster_rpc 帧但未装配集群帧出口（纯中继模式），忽略");
+                                    }
+                                }
                             }
                             other => handle_control_frame(other, &relay, &node_id),
                         }
@@ -780,6 +838,68 @@ fn auth_json_response(
     resp
 }
 
+/// 浏览器端 SHA-256 兜底脚本（`/d/<id>/__auth` 授权页 + `/relay` 登录页
+/// 共用；随页面 `<script>` 注入）。
+///
+/// `crypto.subtle` 是安全上下文（HTTPS / localhost）专属——经
+/// `http://<公网IP>` 访问时为 undefined（2026-09-20 用户真机暴露：输入
+/// 令牌报 "Cannot read properties of undefined (reading 'digest')"）。
+/// `sha256Hex` 优先走 WebCrypto，非安全上下文自动回落纯 JS 实现
+/// （FIPS 180-4，标准 K/H 常量），两者输出一致；`TextEncoder` 非安全
+/// 上下文可用，负责 UTF-8 编码。
+fn sha256_fallback_js() -> &'static str {
+    r#"async function sha256Hex(text) {
+  if (window.crypto && crypto.subtle && typeof crypto.subtle.digest === 'function') {
+    const d = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(text));
+    return Array.from(new Uint8Array(d)).map(b => b.toString(16).padStart(2, '0')).join('');
+  }
+  return jsSha256Hex(new TextEncoder().encode(text));
+}
+function jsSha256Hex(bytes) {
+  function rr(v, a) { return (v >>> a) | (v << (32 - a)); }
+  const K = [0x428a2f98,0x71374491,0xb5c0fbcf,0xe9b5dba5,0x3956c25b,0x59f111f1,0x923f82a4,0xab1c5ed5,
+             0xd807aa98,0x12835b01,0x243185be,0x550c7dc3,0x72be5d74,0x80deb1fe,0x9bdc06a7,0xc19bf174,
+             0xe49b69c1,0xefbe4786,0x0fc19dc6,0x240ca1cc,0x2de92c6f,0x4a7484aa,0x5cb0a9dc,0x76f988da,
+             0x983e5152,0xa831c66d,0xb00327c8,0xbf597fc7,0xc6e00bf3,0xd5a79147,0x06ca6351,0x14292967,
+             0x27b70a85,0x2e1b2138,0x4d2c6dfc,0x53380d13,0x650a7354,0x766a0abb,0x81c2c92e,0x92722c85,
+             0xa2bfe8a1,0xa81a664b,0xc24b8b70,0xc76c51a3,0xd192e819,0xd6990624,0xf40e3585,0x106aa070,
+             0x19a4c116,0x1e376c08,0x2748774c,0x34b0bcb5,0x391c0cb3,0x4ed8aa4a,0x5b9cca4f,0x682e6ff3,
+             0x748f82ee,0x78a5636f,0x84c87814,0x8cc70208,0x90befffa,0xa4506ceb,0xbef9a3f7,0xc67178f2];
+  const H0 = [0x6a09e667,0xbb67ae85,0x3c6ef372,0xa54ff53a,0x510e527f,0x9b05688c,0x1f83d9ab,0x5be0cd19];
+  const l = bytes.length;
+  const total = Math.ceil((l + 9) / 64) * 64;
+  const buf = new Uint8Array(total);
+  buf.set(bytes);
+  buf[l] = 0x80;
+  const dv = new DataView(buf.buffer);
+  dv.setUint32(total - 8, Math.floor((l * 8) / 4294967296));
+  dv.setUint32(total - 4, (l * 8) >>> 0);
+  const w = new Array(64);
+  const H = H0.slice();
+  for (let off = 0; off < total; off += 64) {
+    for (let i = 0; i < 16; i++) w[i] = dv.getUint32(off + i * 4);
+    for (let i = 16; i < 64; i++) {
+      const s0 = rr(w[i-15],7) ^ rr(w[i-15],18) ^ (w[i-15] >>> 3);
+      const s1 = rr(w[i-2],17) ^ rr(w[i-2],19) ^ (w[i-2] >>> 10);
+      w[i] = (w[i-16] + s0 + w[i-7] + s1) | 0;
+    }
+    let a=H[0],b=H[1],c=H[2],d=H[3],e=H[4],f=H[5],g=H[6],h=H[7];
+    for (let i = 0; i < 64; i++) {
+      const S1 = rr(e,6) ^ rr(e,11) ^ rr(e,25);
+      const ch = (e & f) ^ (~e & g);
+      const t1 = (h + S1 + ch + K[i] + w[i]) | 0;
+      const S0 = rr(a,2) ^ rr(a,13) ^ rr(a,22);
+      const mj = (a & b) ^ (a & c) ^ (b & c);
+      const t2 = (S0 + mj) | 0;
+      h=g; g=f; f=e; e=(d+t1)|0; d=c; c=b; b=a; a=(t1+t2)|0;
+    }
+    H[0]=(H[0]+a)|0; H[1]=(H[1]+b)|0; H[2]=(H[2]+c)|0; H[3]=(H[3]+d)|0;
+    H[4]=(H[4]+e)|0; H[5]=(H[5]+f)|0; H[6]=(H[6]+g)|0; H[7]=(H[7]+h)|0;
+  }
+  return H.map(x => (x >>> 0).toString(16).padStart(8, '0')).join('');
+}"#
+}
+
 fn auth_page_html(device_name: &str, offline: bool) -> String {
     let offline_note = if offline {
         "<p style=\"color:#c0392b\">⚠ 设备当前不在线，校验将无法完成。</p>"
@@ -818,6 +938,7 @@ fn auth_page_html(device_name: &str, offline: bool) -> String {
   <div class="err" id="err"></div>
 </div>
 <script>
+{sha256_js}
 async function submit() {{
   const btn = document.getElementById('go');
   const err = document.getElementById('err');
@@ -826,8 +947,8 @@ async function submit() {{
   btn.disabled = true; err.textContent = '校验中…';
   try {{
     // 浏览器端先 SHA-256：令牌原文不出本机，服务端只见哈希。
-    const digest = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(token));
-    const hex = Array.from(new Uint8Array(digest)).map(b => b.toString(16).padStart(2, '0')).join('');
+    // （sha256Hex 在 http://IP 等非安全上下文自动回落纯 JS 实现。）
+    const hex = await sha256Hex(token);
     const resp = await fetch(location.pathname, {{
       method: 'POST',
       headers: {{ 'Content-Type': 'application/json' }},
@@ -852,6 +973,8 @@ document.getElementById('token').addEventListener('keydown', e => {{
 </html>"#,
         device_name = html_escape(device_name),
         offline_note = offline_note,
+        // format! 参数值不再被解释——JS 里的 `{}` 无需转义。
+        sha256_js = sha256_fallback_js(),
     )
 }
 
@@ -1122,6 +1245,7 @@ fn relay_login_html() -> String {
   <div class="err" id="err"></div>
 </div>
 <script>
+__SHA256_JS__
 async function submit() {
   const btn = document.getElementById('go');
   const err = document.getElementById('err');
@@ -1129,8 +1253,7 @@ async function submit() {
   if (!token) { err.textContent = '请输入令牌'; return; }
   btn.disabled = true; err.textContent = '校验中…';
   try {
-    const digest = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(token));
-    const hex = Array.from(new Uint8Array(digest)).map(b => b.toString(16).padStart(2, '0')).join('');
+    const hex = await sha256Hex(token);
     const resp = await fetch('/relay/login', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -1150,7 +1273,8 @@ document.getElementById('token').addEventListener('keydown', e => {
 </script>
 </body>
 </html>"#
-        .to_string()
+        // __SHA256_JS__ 占位（本模板无 format!，用 replace 注入共用脚本）。
+        .replace("__SHA256_JS__", sha256_fallback_js())
 }
 
 /// 状态页主体（JS 每 5s 轮询 /api/relay/status 渲染设备表）。

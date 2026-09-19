@@ -1499,10 +1499,12 @@ async fn run_relay(home: &std::path::Path, cfg: &nemesis_config::Config) -> Resu
     // （桥接入 /bridge + 状态页 /relay + /d/<node_id>/ 转发都在公网侧）——
     // bind_all 传 true：0.0.0.0 如实绑定所有网卡（此前传 false 使 0.0.0.0
     // 被静默回环成 127.0.0.1，VPS 真机验收暴露）。display host 不参与 relay。
-    let (web_bind_host, _web_display_host) =
-        web_bind_and_display_hosts(&cfg.channels.web.host, true);
+    let web_bind_host = web_bind_and_display_hosts(&cfg.channels.web.host, true).0;
     let web_port = cfg.channels.web.port;
-    let static_files = crate::embedded::resolve_static_files();
+    // relay_only（2026-09-20，用户裁决）：纯中继不暴露 hub 自身 dashboard
+    // ——不传静态资源 + set_relay_only(true)，/ws、全量 /api/*、SPA 静态
+    // 资源不装配（/api/* 信任边界是本机/内网，绑 0.0.0.0 公网即失守）。
+    // 公网只剩 /health + /bridge 接入 + /relay 状态页 + /d/<node_id>/ 隧道。
     let web_config = nemesis_web::server::WebServerConfig {
         listen_addr: format!("{}:{}", web_bind_host, web_port),
         auth_token: cfg.channels.web.auth_token.clone(),
@@ -1512,10 +1514,11 @@ async fn run_relay(home: &std::path::Path, cfg: &nemesis_config::Config) -> Resu
         home: Some(home.to_string_lossy().to_string()),
         version: crate::common::VERSION_INFO.version.to_string(),
         static_dir: None,
-        static_files: Some(static_files),
+        static_files: None,
         index_file: "index.html".to_string(),
     };
     let mut web_server = nemesis_web::server::WebServer::new(web_config);
+    web_server.set_relay_only(true);
     let relay_server = std::sync::Arc::new(nemesis_web::relay::RelayServer::new(
         token.to_string(),
         false,
@@ -2436,6 +2439,14 @@ pub async fn run(local: bool, relay: bool, extra_args: &[String]) -> Result<()> 
     #[cfg(feature = "cluster")]
     let cluster_should_start = cluster_master_enabled && cluster_app_cfg.enabled;
 
+    // 二期批次五（goal：桥集群）：cluster 句柄槽——Arc<Cluster> 构建在下方
+    // cfg(feature = "cluster") 块内、块后不可见；桥两处装配（hub 侧身份
+    // sink 注入 / 设备侧 hello 集群身份快照）都在块外的 relay/web 装配段，
+    // 经 OnceLock 槽位回填写取用（同 sweep_cluster_slot 模式）。
+    #[cfg(feature = "cluster")]
+    let bridge_cluster_slot: Arc<std::sync::OnceLock<Arc<nemesis_cluster::cluster::Cluster>>> =
+        Arc::new(std::sync::OnceLock::new());
+
     // Cluster RPC resources — filled inside the cluster block below, consumed by SharedResources.
     #[allow(unused_mut)] // mut only needed when feature="cluster" assigns these in the init block
     let mut cluster_rpc_call_fn: Option<
@@ -2926,6 +2937,10 @@ pub async fn run(local: bool, relay: bool, extra_args: &[String]) -> Result<()> 
         }
 
         let cluster = Arc::new(cluster);
+
+        // 二期批次五：cluster 句柄回填槽（桥身份 sink 注入 / hello 身份快照
+        // 构造，均在块外 relay/web 装配段消费）。
+        let _ = bridge_cluster_slot.set(cluster.clone());
 
         // --- P3（看板项目档案 goal）：档案传输 handler 注册 + 循环启动 ---
         // 5 个 handler（begin/chunk/end/overlimit/pull；master 收前四，worker
@@ -3947,6 +3962,93 @@ pub async fn run(local: bool, relay: bool, extra_args: &[String]) -> Result<()> 
                 true,
             ));
             relay_server.ensure_maintenance();
+            // 二期批次五（hub 侧）：正常模式全量启动 = 桥入设备注册进集群
+            // registry（同权，与 UDP 发现节点一致，不降级）+ welcome 帧告知
+            // hub 集群身份。identity sink 由宿主注入（relay 模块零集群依赖）；
+            // cluster feature 关 = 桥退化为纯隧道语义（一期行为）。
+            // `--relay` 纯中继走 run_relay 不经此路径——只转发不注册边界不动。
+            #[cfg(feature = "cluster")]
+            if let Some(hub_cluster) = bridge_cluster_slot.get() {
+                // 身份 sink 与桥 RPC 枢纽共用同一映射表（桥链路 id ↔ 集群 id）。
+                let bridge_sink = std::sync::Arc::new(
+                    crate::bridge_cluster::BridgeClusterSink::new(hub_cluster.clone()),
+                );
+                relay_server.set_identity_sink(bridge_sink.clone());
+                relay_server.set_hub_node_id(hub_cluster.node_id().to_string());
+                // 二期批次六（hub 侧）：桥帧 RPC 枢纽——设备上行 cluster_rpc
+                // 喂本地 RPC 链（与 TCP 同一 handler 链），RpcClient 桥出口
+                // 经 relay 下行投递（网段仲裁见 rpc/client.rs）。RPC server
+                // 未启动（rpc_port==0）→ 不装配，relay 维持一期忽略语义。
+                if let (Some(hub_rpc_server), Some(hub_rpc_client)) =
+                    (hub_cluster.rpc_server(), hub_cluster.rpc_client_arc())
+                {
+                    let hub_bridge = std::sync::Arc::new(crate::bridge_rpc::HubBridgeRpc::new(
+                        hub_rpc_server.clone(),
+                        hub_cluster.node_id().to_string(),
+                        bridge_sink.clone(),
+                        relay_server.clone(),
+                    ));
+                    relay_server.set_cluster_frame_sink(hub_bridge.clone());
+                    hub_rpc_client.set_bridge_transport(hub_bridge);
+                    info!("[Relay] 桥帧 RPC 枢纽已装配（上行喂本地 RPC 链 + 出口桥仲裁）");
+                }
+                // 三期批次八（hub 侧）：成员表快照闭包——relay 广播
+                // member_sync 时拉取（registry 摘要 + hub 自身条目；桥入
+                // 成员经映射反查打 via_bridge 标）。`--relay` 不经此路径，
+                // 广播回落为桥设备表摘要（relay 内建）。
+                let members_cluster = hub_cluster.clone();
+                let members_sink = bridge_sink.clone();
+                let self_node_id = hub_cluster.node_id().to_string();
+                let self_node_name = hub_cluster.node_name();
+                let self_rpc_port = hub_cluster.rpc_port();
+                relay_server.set_member_snapshot(std::sync::Arc::new(move || {
+                    let mut members = vec![serde_json::json!({
+                        "node_id": self_node_id,
+                        "name": self_node_name,
+                        "online": true,
+                        "via_bridge": false,
+                        "addresses": [],
+                        "rpc_port": self_rpc_port,
+                        "role": "coordinator",
+                        "category": "general",
+                        "capabilities": [],
+                        "node_type": "agent",
+                    })];
+                    for n in members_cluster.list_nodes() {
+                        let port = n
+                            .base
+                            .address
+                            .rsplit(':')
+                            .next()
+                            .and_then(|p| p.parse::<u16>().ok())
+                            .unwrap_or(0);
+                        let ips = if n.addresses.is_empty() {
+                            // registry 无多地址记录时从 primary "ip:port" 剥出 IP。
+                            n.base
+                                .address
+                                .rsplit_once(':')
+                                .map(|(ip, _)| ip.to_string())
+                                .into_iter()
+                                .collect()
+                        } else {
+                            n.addresses.clone()
+                        };
+                        members.push(serde_json::json!({
+                            "node_id": n.base.id,
+                            "name": n.base.name,
+                            "online": n.is_online(),
+                            "via_bridge": members_sink.bridge_of(&n.base.id).is_some(),
+                            "addresses": ips,
+                            "rpc_port": port,
+                            "role": n.base.role.as_role_str(),
+                            "category": n.base.category,
+                            "capabilities": n.capabilities,
+                            "node_type": n.node_type,
+                        }));
+                    }
+                    serde_json::json!({ "members": members })
+                }));
+            }
             web_server.set_relay(relay_server);
             info!(
                 "[Relay] 内置中继服务端已开放（/bridge 接入、/d/<node_id>/ 转发、/relay 状态页）"
@@ -5734,6 +5836,54 @@ pub async fn run(local: bool, relay: bool, extra_args: &[String]) -> Result<()> 
     // 路径只打日志），spawn 即不管，不影响主流程。`--relay` 纯中继不经过
     // 此路径（run_relay 独立启动，无客户端语义）。
     if let Some(client) = bridge_client_launch {
+        // 二期批次五（设备侧）：hello 携带本机集群身份（hub 据此把本机
+        // 注册进 registry 同权组网）。cluster rpc_port==0（RPC server 未
+        // 启动）= None——纯隧道设备语义；feature 关同。
+        #[cfg(feature = "cluster")]
+        let bridge_cluster_identity = bridge_cluster_slot.get().and_then(|c| {
+            let rpc_port = c.rpc_port();
+            if rpc_port == 0 {
+                None
+            } else {
+                Some(nemesis_web::relay::BridgeClusterIdentity {
+                    node_id: c.node_id().to_string(),
+                    name: c.node_name(),
+                    role: c.role(),
+                    category: c.category(),
+                    tags: c.tags(),
+                    capabilities: c.local_capabilities(),
+                    node_type: c.node_type().to_string(),
+                    rpc_port,
+                    addresses: c.get_all_local_ips(),
+                })
+            }
+        });
+        #[cfg(not(feature = "cluster"))]
+        let bridge_cluster_identity: Option<nemesis_web::relay::BridgeClusterIdentity> = None;
+        // 二期批次六（设备侧）：桥 RPC 枢纽——RpcClient 桥出口（经桥上行发
+        // 请求给 hub）+ 下行 cluster_rpc 分流（response 唤醒 pending / request
+        // 喂本地 RPC 链）。与身份快照同闸（rpc_port==0 = 无本地 RPC server，
+        // 桥 RPC 无意义）；bridge.client 未启用时 uplink 恒空 = bridge_online
+        // false = 仲裁纯直连（一期行为零变化，装配无害）。
+        #[cfg(feature = "cluster")]
+        let device_bridge_rpc = bridge_cluster_slot.get().and_then(|c| {
+            if c.rpc_port() == 0 {
+                return None;
+            }
+            let rpc_server = c.rpc_server()?.clone();
+            let rpc_client = c.rpc_client_arc()?;
+            let dev = std::sync::Arc::new(crate::bridge_rpc::DeviceBridgeRpc::new(
+                rpc_server,
+                c.node_id().to_string(),
+                // 三期批次八：member_sync 成员合并进本地 registry（桥成员
+                // 表的 registry 面）。
+                Some(c.clone()),
+            ));
+            rpc_client.set_bridge_transport(dev.clone());
+            Some(dev)
+        });
+        #[cfg(not(feature = "cluster"))]
+        let device_bridge_rpc: Option<crate::bridge_client::BridgeRpcHandle> = None;
         crate::bridge_client::spawn(crate::bridge_client::BridgeClientParams {
             relay_url: client.relay_url,
             token: client.token,
@@ -5742,6 +5892,8 @@ pub async fn run(local: bool, relay: bool, extra_args: &[String]) -> Result<()> 
             version: crate::common::VERSION_INFO.version.to_string(),
             web_port: real_port as u16,
             access_token: client.access_token,
+            cluster_identity: bridge_cluster_identity,
+            bridge_rpc: device_bridge_rpc,
         });
     }
 

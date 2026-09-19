@@ -6,17 +6,21 @@
 //! - Subnet-aware address selection
 //! - Connection pooling via `ConnectionPool`
 //! - 60-minute default timeout (outermost timeout for RPC calls)
+//! - 二期桥仲裁（goal：桥集群）：可选 [`BridgeSend`] 出口——peer 有桥链路
+//!   时按网段仲裁首选路径（同网段直连优先失败兜桥 / 异网段桥优先失败兜
+//!   直连）；探针与业务调用共享同一仲裁（桥节点被探针经桥触达，Online
+//!   语义自洽）
 
 use std::net::IpAddr;
 use std::sync::Arc;
 use std::time::Duration;
 
-use parking_lot::Mutex;
+use parking_lot::{Mutex, RwLock};
 use tokio::net::TcpStream;
 use tokio::time;
 
 use crate::rpc_types::{Frame, RPCRequest, RPCResponse};
-use crate::transport::conn::Connection;
+use crate::transport::conn::{Connection, WireMessage};
 use crate::transport::pool::ConnectionPool;
 
 /// Error type for RPC client operations.
@@ -215,6 +219,91 @@ pub trait PeerResolver: Send + Sync {
     fn get_node_id(&self) -> String;
 }
 
+/// 二期（BridgeTransport）：桥帧 RPC 出口抽象。
+///
+/// 宿主注入实现（hub 侧 = RelayServer 下行 + pending 匹配；设备侧 = 桥
+/// 上行 + pending 匹配）；[`RpcClient`] dispatch 经此在桥与 TCP 直连之间
+/// 仲裁。方法返回 boxed future（dyn 兼容）。
+pub trait BridgeSend: Send + Sync {
+    /// 该 peer 的桥链路是否在线（仲裁依据；peer 不在桥注册表 = false——
+    /// 纯直连语义）。
+    fn bridge_online(&self, peer_id: &str) -> bool;
+
+    /// 经桥发送 RPC 请求帧（`WireMessage` 与 TCP 路径同构——零语义分叉），
+    /// 等待响应帧。实现方负责封 `cluster_rpc` 帧、投递、按 id 匹配响应。
+    fn send_over_bridge(
+        &self,
+        peer_id: &str,
+        request: WireMessage,
+        timeout: Duration,
+    ) -> std::pin::Pin<
+        Box<dyn std::future::Future<Output = Result<WireMessage, RpcClientError>> + Send + '_>,
+    >;
+}
+
+/// `RPCRequest` → `WireMessage` 请求帧。TCP 路径与桥路径共用——同一请求
+/// 在两条路径下的线上字节语义一致（action 映射/from/to/id 全同）。
+pub(crate) fn wire_from_request(request: &RPCRequest) -> WireMessage {
+    WireMessage {
+        version: "1.0".into(),
+        id: request.id.clone(),
+        msg_type: "request".into(),
+        from: request.source.clone(),
+        to: request.target.clone().unwrap_or_default(),
+        action: match &request.action {
+            crate::rpc_types::ActionType::Known(k) => match k {
+                crate::rpc_types::KnownAction::PeerChat => "peer_chat",
+                crate::rpc_types::KnownAction::PeerChatCallback => "peer_chat_callback",
+                crate::rpc_types::KnownAction::ForgeShare => "forge_share",
+                crate::rpc_types::KnownAction::Ping => "ping",
+                crate::rpc_types::KnownAction::Status => "status",
+            },
+            crate::rpc_types::ActionType::Custom(s) => s.as_str(),
+        }
+        .into(),
+        payload: request.payload.clone(),
+        timestamp: chrono::Local::now().timestamp(),
+        error: String::new(),
+    }
+}
+
+/// 桥响应帧（`WireMessage`）→ `RPCResponse`。语义与 [`Frame::decode_response`]
+/// 的 WireMessage 分支完全一致（error 非空 = 对端 handler 错误 → RemoteError；
+/// payload → result）。pub：[`BridgeSend`] 实现方（nemesisbot 桥出口）同样
+/// 需要这一转换——转换语义单点定义，两处共用。
+pub fn rpc_response_from_wire(wire: &WireMessage) -> Result<RPCResponse, RpcClientError> {
+    let err = if wire.error.is_empty() {
+        None
+    } else {
+        Some(wire.error.clone())
+    };
+    if let Some(e) = err {
+        return Err(RpcClientError::RemoteError(e));
+    }
+    Ok(RPCResponse {
+        id: wire.id.clone(),
+        result: Some(wire.payload.clone()),
+        error: None,
+    })
+}
+
+/// 二期路径仲裁（纯函数）：peer 任一地址与本地任一网卡同网段 → true
+/// （直连优先，失败兜桥）；否则 false（桥优先，失败兜直连）。
+/// 异网段的直连注定拨不通（NAT/跨公网），桥才是活路——顺序不能反。
+pub(crate) fn peer_in_same_subnet(
+    local_interfaces: &[LocalNetworkInterface],
+    peer_addresses: &[String],
+) -> bool {
+    peer_addresses
+        .iter()
+        .filter_map(|a| extract_ip_from_addr(a))
+        .any(|ip| {
+            local_interfaces
+                .iter()
+                .any(|iface| is_same_subnet(&ip.to_string(), &iface.ip, &iface.mask))
+        })
+}
+
 // ---------------------------------------------------------------------------
 // RPC Client
 // ---------------------------------------------------------------------------
@@ -239,6 +328,10 @@ pub struct RpcClient {
     /// `[RpcClient] Call failed`，同一错误刷屏日志（outbox WARN 刷屏的同
     /// 根缺陷）。状态翻转另有显式 WARN，限频只压重复噪声。
     warn_gate: crate::discovery::AnnounceWarnGate,
+    /// 二期桥仲裁（goal：桥集群）：可选桥帧 RPC 出口。宿主（hub 侧/设备侧）
+    /// 运行期注入一次；`None` = 纯直连语义（一期行为零变化）。RwLock 因
+    /// 装配晚于构造（gateway 组装顺序：RpcClient 先建、桥出口后建）。
+    bridge_transport: RwLock<Option<Arc<dyn BridgeSend>>>,
 }
 
 impl RpcClient {
@@ -256,6 +349,7 @@ impl RpcClient {
             auth_token: Mutex::new(None),
             resolver: None,
             warn_gate: crate::discovery::AnnounceWarnGate::with_cooldown(Duration::from_secs(60)),
+            bridge_transport: RwLock::new(None),
         }
     }
 
@@ -293,6 +387,14 @@ impl RpcClient {
         let resolver = self.resolver.as_ref()?;
         let (_, _, online) = resolver.get_peer_info(peer_id)?;
         Some(online)
+    }
+
+    /// 二期桥仲裁：注入桥帧 RPC 出口（hub 侧 = relay 下行 + pending 匹配；
+    /// 设备侧 = 桥上行 + pending 匹配）。运行期装配一次；缺省 None = 纯
+    /// 直连（一期行为零变化）。限流核对：桥路径与 TCP 路径同经 dispatch
+    /// 顶部的 per-peer 限流闸，一次调用恰计数一次——桥不绕过也不重复计数。
+    pub fn set_bridge_transport(&self, bridge: Arc<dyn BridgeSend>) {
+        *self.bridge_transport.write() = Some(bridge);
     }
 
     // -- High-level API -------------------------------------------------------
@@ -381,6 +483,16 @@ impl RpcClient {
                 )));
             }
 
+            // 二期桥仲裁（goal：桥集群）：快照桥出口并检查该 peer 的桥链路
+            // 是否在线。桥不在线/未注入 → None = 纯直连（一期行为零变化）；
+            // 桥在线 → 按网段仲裁首选路径（下方步骤 5）。
+            // 注意此处只快照 Arc，不在锁内 await。
+            let bridge_impl: Option<Arc<dyn BridgeSend>> =
+                match self.bridge_transport.read().clone() {
+                    Some(b) if b.bridge_online(peer_id) => Some(b),
+                    _ => None,
+                };
+
             // 3. Build full addresses (IP:Port)
             let full_addresses: Vec<String> = addresses
                 .iter()
@@ -401,13 +513,76 @@ impl RpcClient {
                 addr = %best_addr,
                 action = ?request.action,
                 request_id = %request.id,
+                bridge = bridge_impl.is_some(),
                 "[RpcClient] Connecting to peer",
             );
 
-            // 5. Execute with timeout
+            // 5. Execute with timeout（仲裁执行整体包在外层 timeout 内——
+            // 首选失败兜备选的总耗时仍受同一 deadline 约束）
             time::timeout(timeout, async {
-                self.send_and_receive(&best_addr, &full_addresses, &request)
-                    .await
+                // 无桥出口：纯直连（一期行为，零变化）。
+                let Some(bridge_impl) = bridge_impl else {
+                    return self
+                        .send_and_receive(&best_addr, &full_addresses, &request)
+                        .await;
+                };
+
+                // 网段判定：peer 任一地址与本地任一网卡同网段 → 直连优先
+                // （同网段直连快且不经第三方），失败兜桥；异网段直连注定
+                // 拨不通（NAT/跨公网）→ 桥优先，失败兜直连。
+                let same_subnet = self
+                    .resolver
+                    .as_ref()
+                    .map(|r| peer_in_same_subnet(&r.get_local_interfaces(), &addresses))
+                    .unwrap_or(false);
+                let wire_req = wire_from_request(&request);
+
+                if same_subnet {
+                    // 同网段：直连优先。RemoteError = 对端已应答业务错误，
+                    // 换路径重发无意义（对端 handler 会给出同样结果），不兜。
+                    match self
+                        .send_and_receive(&best_addr, &full_addresses, &request)
+                        .await
+                    {
+                        Ok(resp) => Ok(resp),
+                        Err(RpcClientError::RemoteError(err)) => {
+                            Err(RpcClientError::RemoteError(err))
+                        }
+                        Err(direct_err) => {
+                            tracing::warn!(
+                                peer_id = peer_id,
+                                action = ?request.action,
+                                error = %direct_err,
+                                "[RpcClient] Direct path failed, falling back to bridge"
+                            );
+                            let wire_resp = bridge_impl
+                                .send_over_bridge(peer_id, wire_req, timeout)
+                                .await?;
+                            rpc_response_from_wire(&wire_resp)
+                        }
+                    }
+                } else {
+                    // 异网段：桥优先。RemoteError 同理不兜。
+                    match bridge_impl
+                        .send_over_bridge(peer_id, wire_req, timeout)
+                        .await
+                    {
+                        Ok(wire_resp) => rpc_response_from_wire(&wire_resp),
+                        Err(RpcClientError::RemoteError(err)) => {
+                            Err(RpcClientError::RemoteError(err))
+                        }
+                        Err(bridge_err) => {
+                            tracing::warn!(
+                                peer_id = peer_id,
+                                action = ?request.action,
+                                error = %bridge_err,
+                                "[RpcClient] Bridge path failed, falling back to direct"
+                            );
+                            self.send_and_receive(&best_addr, &full_addresses, &request)
+                                .await
+                        }
+                    }
+                }
             })
             .await
             .map_err(|_| {
@@ -630,27 +805,9 @@ impl RpcClient {
         // Connection::send adds [4-byte length][data] framing.
         // We send the (possibly encrypted) JSON bytes so the server's
         // AsyncFrameReader reads [4-byte length][payload] — single framing only.
-        let wire = crate::transport::conn::WireMessage {
-            version: "1.0".into(),
-            id: request.id.clone(),
-            msg_type: "request".into(),
-            from: request.source.clone(),
-            to: request.target.clone().unwrap_or_default(),
-            action: match &request.action {
-                crate::rpc_types::ActionType::Known(k) => match k {
-                    crate::rpc_types::KnownAction::PeerChat => "peer_chat",
-                    crate::rpc_types::KnownAction::PeerChatCallback => "peer_chat_callback",
-                    crate::rpc_types::KnownAction::ForgeShare => "forge_share",
-                    crate::rpc_types::KnownAction::Ping => "ping",
-                    crate::rpc_types::KnownAction::Status => "status",
-                },
-                crate::rpc_types::ActionType::Custom(s) => s.as_str(),
-            }
-            .into(),
-            payload: request.payload.clone(),
-            timestamp: chrono::Local::now().timestamp(),
-            error: String::new(),
-        };
+        // 二期：转换逻辑抽至 [`wire_from_request`] 与桥路径共用——同一请求
+        // 在 TCP 与桥两条路径下的线上字节语义一致。
+        let wire = wire_from_request(request);
         let json_bytes =
             serde_json::to_vec(&wire).map_err(|e| RpcClientError::Serialization(e.to_string()))?;
         let wire_bytes = if let Some(ref key) = cipher_key {

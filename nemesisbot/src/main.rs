@@ -37,6 +37,13 @@ mod board_review;
 /// 出站连远端中继、hello 握手、退避重连、conn 泵（本机 web server 字节流
 /// 搬运）、access_check 比对。旁路——任何失败不影响本机 dashboard。
 mod bridge_client;
+/// 桥集群身份注册（goal 二期批次五，hub 侧）：桥 hello 集群身份事件 →
+/// registry 同权注册 / Offline（依赖 nemesis_cluster，随 feature 门控）。
+/// `--relay` 纯中继不注入（只转发不注册边界不动）。
+#[cfg(feature = "cluster")]
+mod bridge_cluster;
+#[cfg(feature = "cluster")]
+mod bridge_rpc;
 #[cfg(feature = "cluster")]
 mod cluster_agent;
 #[cfg(feature = "cluster")]

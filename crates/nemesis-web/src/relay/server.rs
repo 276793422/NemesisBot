@@ -6,15 +6,23 @@
 //! 「已授权会话」状态，重启即失效）、运行时开关（正常模式默认开，通道页
 //! 可关，重启恢复）。
 //!
+//! 二期（批次五）：hello 携带集群身份 → 设备表存快照，上线/离线经
+//! [`BridgeIdentitySink`] 抛给宿主（宿主注册进集群 registry——relay 模块
+//! 零依赖集群 crate；`--relay` 不注入 sink = 只转发不注册）。离线上报
+//! 三点全覆盖：断开（代际匹配移除）/ 心跳踢 / 开关踢；顶替场景旧循环
+//! 代际失配不误报 offline。
+//!
 //! `--relay` 纯中继与正常启动内置中继共用本状态机（`full_mode` 只影响
 //! 状态页是否展示自身 dashboard 入口）。
 
+use std::sync::Mutex;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use dashmap::DashMap;
 use tokio::sync::{mpsc, oneshot};
 
+use super::identity::{BridgeClusterIdentity, IdentitySinkSlot};
 use super::protocol::{
     ACCESS_CHECK_TIMEOUT_SECS, BridgeFrame, HEARTBEAT_TIMEOUT_SECS, decode_frame, encode_frame,
 };
@@ -49,6 +57,9 @@ pub struct DeviceEntry {
     pub bytes_up: AtomicU64,
     /// 流量计数：设备 → 浏览器方向（响应字节）。
     pub bytes_down: AtomicU64,
+    /// 集群身份快照（二期 hello 增补字段组装；None = 纯隧道设备）。
+    /// 离线上报时随事件带给宿主 sink（宿主按此定位集群节点）。
+    pub cluster: Option<BridgeClusterIdentity>,
 }
 
 /// 面板访问授权会话（cookie 值 → 会话）。服务端只存「已授权」状态，
@@ -103,6 +114,18 @@ pub struct RelayServer {
     next_conn_id: AtomicU64,
     next_generation: AtomicU64,
     sweeper_started: AtomicBool,
+    /// 二期：集群身份事件槽（宿主注入；None = 纯隧道语义，`--relay` 即此）。
+    identity_sink: IdentitySinkSlot,
+    /// hub 侧集群身份（正常模式 = hub 集群 node_id；`--relay` 空）——
+    /// welcome 帧带给设备，三期跨桥寻址用。
+    hub_node_id: Mutex<String>,
+    /// 二期批次六：上行 `cluster_rpc` 帧出口槽（宿主注入 = hub 形态；
+    /// None = `--relay` / 一期形态，上行帧维持 WARN 忽略）。
+    cluster_frame_sink: super::cluster_frame::ClusterFrameSinkSlot,
+    /// 三期批次八：成员表快照闭包（宿主注入 = 正常模式 hub 广播集群
+    /// registry 摘要；None = `--relay` 广播自身桥设备表摘要）。广播时
+    /// 拉取最新（拉模式——registry 变化无需推钩子，relay 零集群依赖）。
+    member_snapshot: Mutex<Option<std::sync::Arc<dyn Fn() -> serde_json::Value + Send + Sync>>>,
 }
 
 impl RelayServer {
@@ -120,7 +143,114 @@ impl RelayServer {
             next_conn_id: AtomicU64::new(1),
             next_generation: AtomicU64::new(1),
             sweeper_started: AtomicBool::new(false),
+            identity_sink: IdentitySinkSlot::new(),
+            hub_node_id: Mutex::new(String::new()),
+            cluster_frame_sink: super::cluster_frame::ClusterFrameSinkSlot::default(),
+            member_snapshot: Mutex::new(None),
         }
+    }
+
+    /// 二期批次六：注入上行 `cluster_rpc` 帧出口（宿主装配处；`--relay`
+    /// 不注入——保持一期 WARN 忽略语义）。
+    pub fn set_cluster_frame_sink(
+        &self,
+        sink: std::sync::Arc<dyn super::cluster_frame::ClusterFrameSink>,
+    ) {
+        self.cluster_frame_sink.set(sink);
+    }
+
+    /// 上行 `cluster_rpc` 帧出口快照（handlers 上行分发用；None = 一期形态）。
+    pub(crate) fn cluster_frame_sink(
+        &self,
+    ) -> Option<std::sync::Arc<dyn super::cluster_frame::ClusterFrameSink>> {
+        self.cluster_frame_sink.get()
+    }
+
+    /// 三期批次八：注入成员表快照闭包（宿主装配处；正常模式 = 集群
+    /// registry 摘要。`--relay` 不注入——广播回落为自身桥设备表摘要）。
+    pub fn set_member_snapshot(
+        &self,
+        snapshot: std::sync::Arc<dyn Fn() -> serde_json::Value + Send + Sync>,
+    ) {
+        *self.member_snapshot.lock().expect("member_snapshot 锁中毒") = Some(snapshot);
+    }
+
+    /// 三期批次八：向全部在线设备广播成员表（`member_sync` 帧）。
+    ///
+    /// 摘要来源：注入了快照闭包（正常模式 hub）→ 调用拉取 registry 摘要；
+    /// 未注入（`--relay`）→ 自身桥设备表摘要（成员感知的纯中继形态）。
+    /// 尽力而为：单设备发送失败忽略（不健康连接由心跳超时路径收口）。
+    /// 接入门关闭时静默跳过（`set_enabled(false)` 清表后无需广播）。
+    pub fn broadcast_member_sync(&self) {
+        if !self.enabled.load(Ordering::SeqCst) {
+            return;
+        }
+        let payload = match self
+            .member_snapshot
+            .lock()
+            .expect("member_snapshot 锁中毒")
+            .as_ref()
+        {
+            Some(snapshot) => snapshot(),
+            None => {
+                // `--relay`：桥设备表摘要（DeviceStatus → goal 定稿字段集）。
+                let members: Vec<serde_json::Value> = self
+                    .list_devices()
+                    .iter()
+                    .map(|d| {
+                        serde_json::json!({
+                            "node_id": d.node_id,
+                            "name": d.name,
+                            "online": d.online,
+                            "via_bridge": false,
+                            "addresses": [],
+                            "rpc_port": 0,
+                            "role": "device",
+                            "category": "general",
+                            "capabilities": [],
+                            "node_type": "device",
+                        })
+                    })
+                    .collect();
+                serde_json::json!({ "members": members })
+            }
+        };
+        let frame = BridgeFrame::MemberSync { payload };
+        for entry in self.devices.iter() {
+            let _ = entry.outbound.try_send(frame.clone());
+        }
+    }
+
+    /// 二期：注入集群身份事件 sink（宿主装配处；`--relay` 不注入）。
+    pub fn set_identity_sink(&self, sink: std::sync::Arc<dyn super::identity::BridgeIdentitySink>) {
+        self.identity_sink.set(sink);
+    }
+
+    /// 二期：设置 hub 侧集群身份（welcome 帧携带；`--relay` 保持空）。
+    pub fn set_hub_node_id(&self, node_id: String) {
+        *self.hub_node_id.lock().expect("hub_node_id 锁中毒") = node_id;
+    }
+
+    /// hub 侧集群身份快照（welcome 帧构造用）。
+    pub fn hub_node_id(&self) -> String {
+        self.hub_node_id.lock().expect("hub_node_id 锁中毒").clone()
+    }
+
+    /// 上报设备离线（身份槽为空 = 静默；纯隧道设备 cluster=None 宿主跳过）。
+    fn notify_identity_offline(
+        &self,
+        bridge_node_id: &str,
+        cluster: Option<BridgeClusterIdentity>,
+    ) {
+        self.identity_sink
+            .notify(super::identity::BridgeIdentityEvent {
+                bridge_node_id: bridge_node_id.to_string(),
+                online: false,
+                cluster,
+            });
+        // 三期批次八：设备离线 = 摘要变化 → 立即广播（断开/心跳踢/开关踢
+        // 三点全覆盖；开关踢时 enabled 已关，广播内部 gate 静默跳过）。
+        self.broadcast_member_sync();
     }
 
     /// 接入门是否开放（token 已配且运行时开关为开）。
@@ -148,11 +278,20 @@ impl RelayServer {
     pub fn set_enabled(&self, on: bool) {
         self.enabled.store(on, Ordering::SeqCst);
         if !on {
-            let kicked: Vec<String> = self.devices.iter().map(|e| e.key().clone()).collect();
+            // 先收集（node_id, 集群身份）再清表——离线上报需要身份快照。
+            let kicked: Vec<(String, Option<BridgeClusterIdentity>)> = self
+                .devices
+                .iter()
+                .map(|e| (e.key().clone(), e.cluster.clone()))
+                .collect();
+            let kicked_count = kicked.len();
             // drop 全部下行 sender → 各 /bridge 写循环 recv None 退出 →
             // ws 关闭 → 读循环退出 → mark_device_gone（表已被清，幂等）。
             self.devices.clear();
-            tracing::warn!("[Relay] 中继开关已关闭，踢出 {} 台桥入设备", kicked.len());
+            for (node_id, cluster) in kicked {
+                self.notify_identity_offline(&node_id, cluster);
+            }
+            tracing::warn!("[Relay] 中继开关已关闭，踢出 {kicked_count} 台桥入设备");
         }
     }
 
@@ -164,12 +303,16 @@ impl RelayServer {
     /// 桥接入鉴权 + 设备登记。成功返回接入代际；失败返回诚实原因
     /// （`BridgeWelcome{ok:false}` 由 /bridge handler 回给设备）。
     /// 单设备重复接入 = 最新连接顶替旧连接（本地重启重连场景）。
+    ///
+    /// 二期：`identity` = hello 集群身份快照（None = 老版本/纯隧道设备）。
+    /// 登记成功后上报 online 事件（顶替重连重复上报——宿主侧注册幂等）。
     pub fn authenticate_device(
         &self,
         token: &str,
         node_id: &str,
         name: &str,
         version: &str,
+        identity: Option<BridgeClusterIdentity>,
         outbound: mpsc::Sender<BridgeFrame>,
     ) -> Result<u64, String> {
         if self.ws_token.is_empty() {
@@ -206,10 +349,12 @@ impl RelayServer {
                 outbound,
                 bytes_up: AtomicU64::new(0),
                 bytes_down: AtomicU64::new(0),
+                cluster: identity.clone(),
             },
         ) {
             // 顶替旧连接：drop 旧下行 sender → 旧写循环退出 → 旧 ws 关闭。
-            // 旧读循环发现自己代际失效后同样退出（幂等）。
+            // 旧读循环发现自己代际失效后同样退出（幂等；离线不误报——
+            // mark_device_gone 代际失配不通知）。
             tracing::info!(
                 node_id = %node_id,
                 old_generation = old.generation,
@@ -223,22 +368,33 @@ impl RelayServer {
                 "[Relay] 桥入设备接入"
             );
         }
+        // 二期：登记成功 → 上报 online（身份 None 宿主侧自然跳过注册）。
+        self.identity_sink
+            .notify(super::identity::BridgeIdentityEvent {
+                bridge_node_id: node_id.to_string(),
+                online: true,
+                cluster: identity,
+            });
+        // 三期批次八：设备上线 = 摘要变化 → 立即广播（不等 15s 兜底）。
+        self.broadcast_member_sync();
         Ok(generation)
     }
 
-    /// 设备读循环退出时调用：代际仍匹配才移除（被顶替的旧循环不动新表项）。
+    /// 设备读循环退出时调用：代际仍匹配才移除（被顶替的旧循环不动新表项，
+    /// 也不误报 offline——二期身份事件随移除一并上报）。
     pub fn mark_device_gone(&self, node_id: &str, generation: u64) {
-        let mut should_log = false;
+        let mut removed: Option<Option<BridgeClusterIdentity>> = None;
         self.devices.remove_if(node_id, |_, entry| {
             if entry.generation == generation {
-                should_log = true;
+                removed = Some(entry.cluster.clone());
                 true
             } else {
                 false
             }
         });
-        if should_log {
+        if let Some(cluster) = removed {
             tracing::info!(node_id = %node_id, "[Relay] 桥入设备连接断开");
+            self.notify_identity_offline(node_id, cluster);
         }
     }
 
@@ -453,7 +609,10 @@ impl RelayServer {
                 let _ = entry.outbound.try_send(BridgeFrame::BridgeClose {
                     reason: "heartbeat timeout".to_string(),
                 });
+                // 二期：心跳踢 = 设备离线 → 身份事件上报（与断开同语义）。
+                let cluster = entry.cluster.clone();
                 drop(entry);
+                self.notify_identity_offline(&node_id, cluster);
             }
             let _ = generation;
         }
@@ -465,6 +624,8 @@ impl RelayServer {
         self.conns.retain(|_, c| {
             now_instant().duration_since(c.created_at).as_secs() < CONN_MAX_AGE_SECS
         });
+        // 三期批次八：成员表周期兜底广播（goal：变化触发 + 15s 兜底全量）。
+        self.broadcast_member_sync();
     }
 
     /// 【仅测试用】把设备 last_seen 拨旧指定秒数，以便不等待真实时间

@@ -69,6 +69,8 @@ fn test_params(token: &str, web_port: u16) -> BridgeClientParams {
         version: "0.0.0-test".to_string(),
         web_port,
         access_token: "secret".to_string(),
+        cluster_identity: None,
+        bridge_rpc: None,
     }
 }
 
@@ -314,6 +316,7 @@ async fn test_conn_pump_roundtrip() {
             node_id,
             name,
             version,
+            ..
         } => {
             assert_eq!(token, "tok1");
             assert_eq!(node_id, "bridge-testnode");
@@ -327,6 +330,7 @@ async fn test_conn_pump_roundtrip() {
         BridgeFrame::BridgeWelcome {
             ok: true,
             reason: String::new(),
+            hub_node_id: String::new(),
         },
     )
     .await;
@@ -499,6 +503,7 @@ async fn test_fin_true_does_not_shutdown_write_half() {
         BridgeFrame::BridgeWelcome {
             ok: true,
             reason: String::new(),
+            hub_node_id: String::new(),
         },
     )
     .await;
@@ -613,6 +618,7 @@ async fn test_dial_failure_sends_conn_close() {
         BridgeFrame::BridgeWelcome {
             ok: true,
             reason: String::new(),
+            hub_node_id: String::new(),
         },
     )
     .await;
@@ -657,6 +663,7 @@ async fn test_access_check_roundtrip() {
         BridgeFrame::BridgeWelcome {
             ok: true,
             reason: String::new(),
+            hub_node_id: String::new(),
         },
     )
     .await;
@@ -727,6 +734,7 @@ async fn test_welcome_rejected_then_retry() {
         BridgeFrame::BridgeWelcome {
             ok: false,
             reason: "token mismatch".into(),
+            hub_node_id: String::new(),
         },
     )
     .await;
@@ -763,6 +771,7 @@ async fn test_dead_server_detection_and_reconnect() {
         BridgeFrame::BridgeWelcome {
             ok: true,
             reason: String::new(),
+            hub_node_id: String::new(),
         },
     )
     .await;
@@ -795,6 +804,7 @@ async fn test_heartbeat_pong_keeps_session_alive() {
         BridgeFrame::BridgeWelcome {
             ok: true,
             reason: String::new(),
+            hub_node_id: String::new(),
         },
     )
     .await;
