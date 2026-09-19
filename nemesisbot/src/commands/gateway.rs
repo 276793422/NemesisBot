@@ -1444,6 +1444,7 @@ fn delivery_inline_or_asset(
             &sha,
             response.len() as i64,
             &node_url,
+            &crate::board_asset_tool::read_asset_node_id(workspace),
             nemesis_board::DEFAULT_TOKEN_TTL_SECS,
         );
         serde_json::to_string(&bundle).ok()
@@ -3065,6 +3066,34 @@ pub async fn run(local: bool, relay: bool, extra_args: &[String]) -> Result<()> 
             }
             crate::board_bus::spawn_worker_sync_loop(deps, cluster.clone());
             board_worker_inbox = Some(inbox);
+        }
+
+        // --- Swarm M3 资产 RPC 兜底通路（2026-09-20，提供方侧）---
+        // asset.meta / asset.chunk：跨网段 HTTP 直连不可达时，消费方经集群
+        // RPC 分块拉取（验证链与 web 下载端点同构——表白名单 + HMAC 验签）。
+        // 每节点都注册（任何节点都是潜在提供方，worker 产物反走同一条路）；
+        // 集群未启动时注册失败静默（与 peer_chat 同款忽略策略——RPC 通路
+        // 是 HTTP 下载的兜底，缺它只降级不致残）。
+        #[cfg(all(feature = "board", feature = "cluster"))]
+        {
+            let deps = crate::board_asset_rpc::AssetRpcDeps {
+                workspace: home.join("workspace"),
+                board_store: board_store.clone(),
+            };
+            match cluster.register_rpc_handler(
+                crate::board_asset_rpc::ACTION_ASSET_META,
+                crate::board_asset_rpc::build_meta_handler(deps.clone()),
+            ) {
+                Ok(()) => info!("[Gateway] Registered asset.meta handler (RPC asset fallback)"),
+                Err(e) => warn!("[Gateway] asset.meta handler registration skipped: {}", e),
+            }
+            match cluster.register_rpc_handler(
+                crate::board_asset_rpc::ACTION_ASSET_CHUNK,
+                crate::board_asset_rpc::build_chunk_handler(deps),
+            ) {
+                Ok(()) => info!("[Gateway] Registered asset.chunk handler (RPC asset fallback)"),
+                Err(e) => warn!("[Gateway] asset.chunk handler registration skipped: {}", e),
+            }
         }
 
         // --- Register peer_chat handler (needs Arc<Cluster> to register remote nodes) ---
@@ -4710,6 +4739,14 @@ pub async fn run(local: bool, relay: bool, extra_args: &[String]) -> Result<()> 
     #[cfg(all(feature = "board", feature = "cluster"))]
     let board_discussion_cluster: Option<std::sync::Arc<nemesis_cluster::cluster::Cluster>> =
         cluster_adapter_refs.as_ref().map(|(c, _, _, _)| c.clone());
+    // 同理抢一份通用 cluster 引用：下方 take() 把 refs 消耗进 adapter 后
+    // refs 恒为 None——board_role 解析 / 资产签发 node_id / node_id 落盘
+    // 等任何「拿本节点 cluster 直读」的装配点都从这里取（2026-09-20 真机
+    // 验证发现：refs 在 take 之后读取恒 None，worker 的 bundle node_id
+    // 全空、RPC 兜底寻址失效）。
+    #[cfg(feature = "cluster")]
+    let cluster_arc_ref: Option<std::sync::Arc<nemesis_cluster::cluster::Cluster>> =
+        cluster_adapter_refs.as_ref().map(|(c, _, _, _)| c.clone());
     #[cfg(feature = "cluster")]
     {
         if let Some((cluster, task_list, work_queue, result_persister)) =
@@ -4905,9 +4942,9 @@ pub async fn run(local: bool, relay: bool, extra_args: &[String]) -> Result<()> 
         // board.db 是节点本地数据，写权限与 role 无关（见 BoardService 文档）。
         #[cfg(feature = "cluster")]
         let board_role = if cluster_should_start {
-            cluster_adapter_refs
+            cluster_arc_ref
                 .as_ref()
-                .map(|(c, _, _, _)| nemesis_types::cluster::NodeRole::from_role_str(&c.role()))
+                .map(|c| nemesis_types::cluster::NodeRole::from_role_str(&c.role()))
                 .unwrap_or(nemesis_types::cluster::NodeRole::Coordinator)
         } else {
             nemesis_types::cluster::NodeRole::Coordinator
@@ -4930,6 +4967,13 @@ pub async fn run(local: bool, relay: bool, extra_args: &[String]) -> Result<()> 
                 store.set_asset_signing(nemesis_board::AssetSignContext {
                     secret: secret.clone(),
                     node_url: board_asset_url_slot.clone(),
+                    // 进 bundle 的 node_id 字段（RPC 兜底寻址）。取 take()
+                    // 前抢好的 cluster 副本（refs 槽已被消耗恒 None）；
+                    // 缺失即非集群形态 → 空串。
+                    node_id: cluster_arc_ref
+                        .as_ref()
+                        .map(|c| c.node_id().to_string())
+                        .unwrap_or_default(),
                 });
                 board_service = board_service.with_asset_secret(secret).with_assets_dir(
                     nemesis_path::resolve_board_assets_dir_in_workspace(&home.join("workspace")),
@@ -5757,6 +5801,18 @@ pub async fn run(local: bool, relay: bool, extra_args: &[String]) -> Result<()> 
                 }
                 if let Err(e) = std::fs::write(&url_path, &base_url) {
                     warn!("[Gateway] asset node url persist failed: {}", e);
+                }
+                // 本节点集群 node_id 同拍落盘：publish / delivery 内联存档
+                // 签发 bundle 时读入 node_id 字段（RPC 兜底寻址）。取
+                // take() 前抢好的 cluster 副本（refs 槽已被消耗恒 None）。
+                let id_path =
+                    nemesis_path::resolve_asset_node_id_path_in_workspace(&home.join("workspace"));
+                let self_node_id = cluster_arc_ref
+                    .as_ref()
+                    .map(|c| c.node_id().to_string())
+                    .unwrap_or_default();
+                if let Err(e) = std::fs::write(&id_path, &self_node_id) {
+                    warn!("[Gateway] asset node id persist failed: {}", e);
                 }
 
                 // G9 自愈：每 30s 按最新注册表重算对外基址，变化才更新槽与

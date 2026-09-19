@@ -1638,11 +1638,14 @@ pub fn build_cluster_agent_loop(
         );
         // G9 资产拉取/发布执行者：两端都装——worker 拉任务资产，master 的
         // cluster agent 也能拉 worker 交付物（同一工具、同一 bundle 语义）。
+        // with_cluster 注入集群句柄：HTTP 直连连接级失败（跨网段）时走
+        // asset.meta/asset.chunk RPC 分块兜底（2026-09-20）。
         agent_loop.register_tool(
             crate::board_asset_tool::TOOL_NAME.to_string(),
-            Box::new(crate::board_asset_tool::BoardAssetTool::new(
-                shared.workspace_dir(),
-            )),
+            Box::new(
+                crate::board_asset_tool::BoardAssetTool::new(shared.workspace_dir())
+                    .with_cluster(cluster.clone()),
+            ),
         );
         info!("[AgentFactory] board_discuss + board_asset tools registered (cluster agent only)");
     }

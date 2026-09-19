@@ -37,6 +37,13 @@ pub struct AssetTokenBundle {
     /// 节点表只有 RPC 地址没有 HTTP 端口，bundle 自带完整寻址，
     /// 消费方拿来即用（反向对称：worker 产物 bundle 带自己地址）。
     pub node_url: String,
+    /// 提供方集群 node_id（RPC 兜底通路寻址用，2026-09-20）。跨网段
+    /// HTTP 直连不可达时，消费方凭它向提供方发 `asset.meta`/`asset.chunk`
+    /// 集群 RPC 分块拉取（复用集群连接，零新增网络设施）。serde default
+    /// 兼容存量 bundle：旧 JSON 无此字段 → 空串 → 消费方仅 HTTP 通路
+    /// （诚实退化，不报错）。
+    #[serde(default)]
+    pub node_id: String,
     /// 期望 sha256（hex 小写，64 字符）——下载后完整性校验的基准。
     pub sha256: String,
     /// 字节大小（登记值；供展示/预检，校验以 sha256 为准）。
@@ -108,6 +115,7 @@ pub fn verify_asset_token(
 }
 
 /// 签发一份引用束（dispatch attach / 评论贴引用共用的入口）。
+/// `node_id` 是提供方集群节点 id（RPC 兜底寻址；非集群形态传空串）。
 #[allow(clippy::too_many_arguments)]
 pub fn issue_asset_bundle(
     secret: &[u8],
@@ -115,6 +123,7 @@ pub fn issue_asset_bundle(
     sha256: &str,
     size: i64,
     node_url: &str,
+    node_id: &str,
     ttl_secs: i64,
 ) -> AssetTokenBundle {
     let expires_at = Utc::now().timestamp() + ttl_secs;
@@ -123,6 +132,7 @@ pub fn issue_asset_bundle(
         asset_token: sign_asset_token(secret, ref_name, expires_at),
         expires_at,
         node_url: node_url.trim_end_matches('/').to_string(),
+        node_id: node_id.trim().to_string(),
         sha256: sha256.to_string(),
         size,
     }
@@ -206,15 +216,18 @@ pub fn load_or_create_secret(path: &std::path::Path) -> Result<Vec<u8>, String> 
     Ok(bytes.to_vec())
 }
 
-/// dispatch 侧资产签发上下文：secret + 本节点对外 web 基址槽。
-/// gateway 装配时构造并 set 进 [`crate::store::BoardStore`]（dispatch 链
-/// 全部函数已持有 store——资产段渲染零参数蔓延）。
+/// dispatch 侧资产签发上下文：secret + 本节点对外 web 基址槽 + 集群
+/// node_id。gateway 装配时构造并 set 进 [`crate::store::BoardStore`]
+/// （dispatch 链全部函数已持有 store——资产段渲染零参数蔓延）。
 #[derive(Clone)]
 pub struct AssetSignContext {
     pub secret: Vec<u8>,
     /// 对外基址槽（如 `http://192.168.1.10:49100`）。未 set = web 地址
     /// 还没解析出来，签发诚实跳过该资产（不编 URL）。
     pub node_url: AdvertisedUrl,
+    /// 本节点集群 node_id（进 bundle 的 `node_id` 字段，RPC 兜底寻址；
+    /// 空串 = 非集群形态，bundle 诚实不带）。
+    pub node_id: String,
 }
 
 /// 本节点对外 web 基址句柄（可更新）。G9（2026-09-09）：基址不再是一次
@@ -254,6 +267,7 @@ impl AssetSignContext {
             sha256,
             size,
             &url,
+            &self.node_id,
             ttl_secs,
         ))
     }

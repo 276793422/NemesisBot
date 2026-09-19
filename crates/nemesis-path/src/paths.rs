@@ -491,6 +491,14 @@ pub fn resolve_asset_node_url_path_in_workspace(workspace: &Path) -> PathBuf {
     workspace_config_dir(workspace).join("asset_node_url.txt")
 }
 
+/// `<workspace>/config/asset_node_id.txt` —— 本节点集群 node_id。
+/// gateway bind 后与 node url 同拍落盘；签发引用束时读入 bundle 的
+/// `node_id` 字段——消费方 HTTP 直连不可达时凭它走集群 RPC 分块拉取
+/// 兜底（读不到 = 旧网关/非集群形态，bundle 不带该字段，诚实退化）。
+pub fn resolve_asset_node_id_path_in_workspace(workspace: &Path) -> PathBuf {
+    workspace_config_dir(workspace).join("asset_node_id.txt")
+}
+
 // --- 子系统配置区补充（与上方 resolve_*_config_path_in_workspace 同族） ---
 
 /// `<workspace>/config/config.forge.json` —— Forge 自学习配置。

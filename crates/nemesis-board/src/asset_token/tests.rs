@@ -86,6 +86,7 @@ fn bundle_serde_roundtrip_and_issue_shape() {
         &sha,
         4096,
         "http://192.168.1.10:49100/",
+        "node-abc-1",
         600,
     );
     assert_eq!(bundle.asset_ref, "spec-v2.pdf");
@@ -97,6 +98,10 @@ fn bundle_serde_roundtrip_and_issue_shape() {
     assert_eq!(
         bundle.node_url, "http://192.168.1.10:49100",
         "trailing slash trimmed"
+    );
+    assert_eq!(
+        bundle.node_id, "node-abc-1",
+        "rpc fallback address rides too"
     );
     verify_asset_token(
         SECRET,
@@ -110,18 +115,36 @@ fn bundle_serde_roundtrip_and_issue_shape() {
     let back: AssetTokenBundle = serde_json::from_str(&json).unwrap();
     assert_eq!(back, bundle, "serde roundtrip preserves all fields");
     // 字段名即信封/query 契约（§5.4：asset_ref / asset_token / expires_at
-    // + 完整性三件套 sha256 / size / node_url——fetch 参数逐字来源）。
+    // + 完整性三件套 sha256 / size / node_url——fetch 参数逐字来源；
+    // node_id 是 RPC 兜底寻址，同样随束流转）。
     let v: serde_json::Value = serde_json::from_str(&json).unwrap();
     for key in [
         "asset_ref",
         "asset_token",
         "expires_at",
         "node_url",
+        "node_id",
         "sha256",
         "size",
     ] {
         assert!(v.get(key).is_some(), "bundle JSON must carry {key}");
     }
+}
+
+// node_id 字段向后兼容（2026-09-20）：存量 bundle JSON（旧网关签发，无
+// node_id）必须照常解析——空串 = 消费方仅 HTTP 通路，诚实退化不报错。
+#[test]
+fn legacy_bundle_json_without_node_id_parses_with_default() {
+    let sha = "b".repeat(64);
+    let legacy = format!(
+        r#"{{"asset_ref":"old.md","asset_token":"{}","expires_at":9999999999,
+            "node_url":"http://10.0.0.2:49100","sha256":"{sha}","size":7}}"#,
+        "c".repeat(64)
+    );
+    let bundle: AssetTokenBundle = serde_json::from_str(&legacy).expect("legacy bundle parses");
+    assert_eq!(bundle.node_id, "", "missing node_id defaults to empty");
+    assert_eq!(bundle.asset_ref, "old.md");
+    assert_eq!(bundle.size, 7);
 }
 
 #[test]

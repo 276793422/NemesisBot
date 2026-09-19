@@ -11,6 +11,10 @@ mod agent_factory;
 /// （TransferSink on_landed/on_overlimit 回调入口）。
 #[cfg(all(feature = "board", feature = "cluster"))]
 mod board_archive_ingest;
+/// Swarm M3 资产 RPC 兜底通路（提供方侧，2026-09-20）：asset.meta /
+/// asset.chunk 两命令——跨网段 HTTP 不可达时消费方经集群 RPC 分块拉取。
+#[cfg(all(feature = "board", feature = "cluster"))]
+mod board_asset_rpc;
 /// Swarm M3（G9 资产拉取/发布执行者）：board_asset 工具（仅注册进 cluster
 /// agent；自包含——只需 workspace 路径，fetch 纯 HTTP+sha256，publish 自开
 /// store + 幂等密钥 + 读 gateway 落盘的 node url）。

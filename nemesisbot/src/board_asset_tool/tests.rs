@@ -85,13 +85,36 @@ fn parse_fetch_and_publish_happy_paths() {
             asset_token,
             expires_at,
             sha256,
+            node_id,
         } => {
             assert_eq!(node_url, "http://10.0.0.2:49100/");
             assert_eq!(asset_ref, "a.md");
             assert_eq!(asset_token, "ab12");
             assert_eq!(expires_at, 123);
             assert_eq!(sha256, "ABC");
+            // node_id 可选：缺省 None（旧 bundle 仅 HTTP 语义）。
+            assert_eq!(node_id, None);
         }
+        other => panic!("expected Fetch, got {other:?}"),
+    }
+
+    // 带 node_id（新 bundle）→ RPC 兜底可用；空白串视同缺省。
+    let with_id = parse_asset_args(
+        r#"{"action":"fetch","node_url":"http://x","asset_ref":"a","asset_token":"t",
+            "expires_at":1,"sha256":"s","node_id":" node-worker-1 "}"#,
+    )
+    .expect("parse fetch with node_id");
+    match with_id {
+        AssetArgs::Fetch { node_id, .. } => assert_eq!(node_id, Some("node-worker-1".to_string())),
+        other => panic!("expected Fetch, got {other:?}"),
+    }
+    let blank_id = parse_asset_args(
+        r#"{"action":"fetch","node_url":"http://x","asset_ref":"a","asset_token":"t",
+            "expires_at":1,"sha256":"s","node_id":"  "}"#,
+    )
+    .expect("parse fetch blank node_id");
+    match blank_id {
+        AssetArgs::Fetch { node_id, .. } => assert_eq!(node_id, None),
         other => panic!("expected Fetch, got {other:?}"),
     }
 
@@ -354,4 +377,204 @@ async fn fetch_sha_mismatch_discards_file() {
     let assets = ws.join("board").join("assets");
     assert!(!assets.join("spec.md").exists(), "final file must not land");
     assert!(!assets.join("spec.md.part").exists(), "part file cleaned");
+}
+
+// ---------------------------------------------------------------------------
+// fetch RPC 兜底（2026-09-20：HTTP 连接级失败 → 集群 RPC 分块拉取）
+// ---------------------------------------------------------------------------
+
+use std::sync::Arc as StdArc;
+use std::sync::atomic::{AtomicUsize, Ordering};
+
+/// 回 HTTP 403 的假提供方（业务错场景——验证不触发 RPC 兜底）。
+async fn spawn_403_server() -> String {
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("bind");
+    let addr = listener.local_addr().expect("addr");
+    tokio::spawn(async move {
+        loop {
+            let Ok((mut sock, _)) = listener.accept().await else {
+                break;
+            };
+            tokio::spawn(async move {
+                use tokio::io::{AsyncReadExt, AsyncWriteExt};
+                let mut buf = vec![0u8; 1024];
+                let _ = sock.read(&mut buf).await;
+                let _ = sock
+                    .write_all(
+                        b"HTTP/1.1 403 Forbidden\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
+                    )
+                    .await;
+                let _ = sock.shutdown().await;
+            });
+        }
+    });
+    format!("http://{addr}")
+}
+
+/// 构造带 RPC mock 的集群：meta/chunk 从给定资产字节出发，行为与真
+/// board_asset_rpc handler 一致（在测试里复刻语义——handler 本体的
+/// 验证链单测在 board_asset_rpc/tests.rs，此处只钉工具侧的兜底编排）。
+fn mock_cluster(
+    body: Vec<u8>,
+    provider_sha: String,
+    meta_size: u64,
+) -> (StdArc<Cluster>, StdArc<AtomicUsize>) {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let config = nemesis_cluster::types::ClusterConfig {
+        node_id: String::new(),
+        bind_address: "0.0.0.0:0".to_string(),
+        peers: vec![],
+        node_name: "MockPeer".to_string(),
+    };
+    let cluster = StdArc::new(Cluster::with_workspace(config, tmp.path().to_path_buf()));
+    let calls = StdArc::new(AtomicUsize::new(0));
+    let body = StdArc::new(body);
+    let sha_call = calls.clone();
+    cluster.set_call_with_context_fn(Box::new(move |_peer, action, payload| {
+        sha_call.fetch_add(1, Ordering::SeqCst);
+        match action {
+            "asset.meta" => Ok(serde_json::json!({
+                "size": meta_size,
+                "sha256": provider_sha,
+            })
+            .to_string()
+            .into_bytes()),
+            "asset.chunk" => {
+                let offset = payload["offset"].as_u64().expect("offset") as usize;
+                let len = payload["len"].as_u64().expect("len") as usize;
+                let end = (offset + len).min(body.len());
+                Ok(serde_json::json!({
+                    "data": nemesis_cluster::transfer::b64_encode(&body[offset..end]),
+                    "eof": end >= body.len(),
+                })
+                .to_string()
+                .into_bytes())
+            }
+            other => Err(format!("unexpected action {other}")),
+        }
+    }));
+    (cluster, calls)
+}
+
+fn fetch_args_with_node_id(base: &str, sha: &str, node_id: &str) -> String {
+    serde_json::json!({
+        "action": "fetch",
+        "node_url": base,
+        "asset_ref": "spec.md",
+        "asset_token": "cafebabe",
+        "expires_at": chrono::Utc::now().timestamp() + 600,
+        "sha256": sha,
+        "node_id": node_id,
+    })
+    .to_string()
+}
+
+fn dead_http_base() -> String {
+    // 端口 1（tcpmux）几乎必然连接拒绝——快且无副作用。
+    "http://127.0.0.1:1".to_string()
+}
+
+#[tokio::test]
+async fn connection_error_without_cluster_honestly_reports() {
+    let (_guard, ws) = temp_workspace();
+    let tool = BoardAssetTool::new(ws.clone());
+    let args = fetch_args_with_node_id(&dead_http_base(), &"a".repeat(64), "node-provider");
+    let err = tool.execute(&args, &ctx()).await.expect_err("must fail");
+    assert!(
+        err.contains("download request"),
+        "连接级失败形态，got: {err}"
+    );
+    assert!(
+        err.contains("no cluster connection"),
+        "诚实报无集群句柄，got: {err}"
+    );
+}
+
+#[tokio::test]
+async fn connection_error_without_node_id_reports_legacy_bundle() {
+    let body = b"x".to_vec();
+    let (cluster, _calls) = mock_cluster(body, "a".repeat(64), 1);
+    let (_guard, ws) = temp_workspace();
+    let tool = BoardAssetTool::new(ws.clone()).with_cluster(cluster);
+    // bundle 未带 node_id（旧格式）→ 无法兜底。
+    let args = serde_json::json!({
+        "action": "fetch",
+        "node_url": dead_http_base(),
+        "asset_ref": "spec.md",
+        "asset_token": "cafebabe",
+        "expires_at": chrono::Utc::now().timestamp() + 600,
+        "sha256": "a".repeat(64),
+    })
+    .to_string();
+    let err = tool.execute(&args, &ctx()).await.expect_err("must fail");
+    assert!(err.contains("carries no node_id"), "got: {err}");
+}
+
+#[tokio::test]
+async fn connection_error_falls_back_to_rpc_chunks() {
+    let body = b"fallback payload delivered over cluster rpc".to_vec();
+    let sha = nemesis_board::sha256_bytes(&body);
+    let (cluster, calls) = mock_cluster(body.clone(), sha.clone(), body.len() as u64);
+    let (_guard, ws) = temp_workspace();
+    let tool = BoardAssetTool::new(ws.clone()).with_cluster(cluster);
+    let args = fetch_args_with_node_id(&dead_http_base(), &sha, "node-provider");
+
+    let out = tool.execute(&args, &ctx()).await.expect("rpc fallback ok");
+    assert!(out.contains("cluster RPC"), "got: {out}");
+    assert!(out.contains("sha256-verified"), "got: {out}");
+
+    let final_path = ws.join("board").join("assets").join("spec.md");
+    assert_eq!(std::fs::read(&final_path).expect("read final"), body);
+    assert!(!final_path.with_extension("part").exists(), "part cleaned");
+    assert!(calls.load(Ordering::SeqCst) >= 2, "meta + 至少一次 chunk");
+}
+
+#[tokio::test]
+async fn rpc_fallback_reports_provider_drift_and_overlimit() {
+    let body = b"provider content".to_vec();
+    let (_guard, ws) = temp_workspace();
+
+    // 提供方文件漂移：meta 回的 sha ≠ bundle sha → 拒绝，提示要新引用。
+    let (cluster, _calls) = mock_cluster(body.clone(), "b".repeat(64), body.len() as u64);
+    let tool = BoardAssetTool::new(ws.clone()).with_cluster(cluster);
+    let args = fetch_args_with_node_id(&dead_http_base(), &"a".repeat(64), "node-provider");
+    let err = tool.execute(&args, &ctx()).await.expect_err("drift");
+    assert!(
+        err.contains("does not match the reference bundle"),
+        "got: {err}"
+    );
+
+    // 超 64MiB 上限：诚实拒绝，提示换同网段 HTTP。
+    let (cluster, _calls) = mock_cluster(body, "a".repeat(64), MAX_RPC_FETCH_BYTES + 1);
+    let tool = BoardAssetTool::new(ws.clone()).with_cluster(cluster);
+    let err = tool.execute(&args, &ctx()).await.expect_err("overlimit");
+    assert!(err.contains("too large for RPC fallback"), "got: {err}");
+}
+
+#[tokio::test]
+async fn http_business_error_does_not_trigger_fallback() {
+    let base = spawn_403_server().await;
+    let body = b"x".to_vec();
+    let (cluster, calls) = mock_cluster(body, "a".repeat(64), 1);
+    let (_guard, ws) = temp_workspace();
+    let tool = BoardAssetTool::new(ws.clone()).with_cluster(cluster);
+    let args = fetch_args_with_node_id(&base, &"a".repeat(64), "node-provider");
+    let err = tool.execute(&args, &ctx()).await.expect_err("403");
+    assert!(err.contains("HTTP 403"), "业务错原样上抛，got: {err}");
+    assert!(!err.contains("cluster RPC"), "业务错不触发兜底，got: {err}");
+    assert_eq!(calls.load(Ordering::SeqCst), 0, "mock RPC 未被调用");
+}
+
+#[test]
+fn connection_level_error_classification() {
+    // 连接级（send 阶段）→ 兜底。
+    assert!(is_connection_level_error(
+        "download request: error sending request for url (http://x): connection refused"
+    ));
+    // HTTP 状态错 / 本地 IO 错 → 不兜底。
+    assert!(!is_connection_level_error("HTTP 403 Forbidden"));
+    assert!(!is_connection_level_error("read body: channel closed"));
+    assert!(!is_connection_level_error("write: Access is denied"));
 }
