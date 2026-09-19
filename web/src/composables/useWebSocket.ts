@@ -1,6 +1,7 @@
 import { ref, onUnmounted } from 'vue'
 import { handleWSResponse } from './wsResponseHandler'
 import { initWSAPI } from './useWSAPI'
+import { wsUrl as buildBaseWsUrl, apiUrl } from '../lib/appBase'
 
 export type WSStatus = 'connecting' | 'connected' | 'disconnected'
 
@@ -25,10 +26,11 @@ const messageHandlers: MessageHandler[] = []
 
 function buildWSUrl(): string {
   if (window.__DASHBOARD_BACKEND__) {
+    // desktop（wry）形态：注入的绝对 backend 地址，不经桥子路径。
     return 'ws://' + window.__DASHBOARD_BACKEND__ + '/ws'
   }
-  const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:'
-  return protocol + '//' + window.location.host + '/ws'
+  // 经桥远程访问时加 `/d/<node_id>` 前缀（appBase 读 <base> 标签；直连为空）。
+  return buildBaseWsUrl('/ws')
 }
 
 function applyQueryParams(wsUrl: string): string {
@@ -262,7 +264,7 @@ export function testConnection(testToken: string): Promise<boolean> {
 }
 
 export function httpGet<T = any>(path: string): Promise<T> {
-  return fetch(path).then(res => {
+  return fetch(apiUrl(path)).then(res => {
     if (!res.ok) throw new Error('HTTP ' + res.status)
     return res.json()
   })

@@ -8,6 +8,7 @@ fn make_cluster_config() -> ClusterConfig {
         node_id: "test-node-001".into(),
         bind_address: "0.0.0.0:9000".into(),
         peers: vec![],
+        node_name: String::new(),
     }
 }
 

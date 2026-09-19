@@ -33,6 +33,10 @@ mod board_issue_tool;
 /// write_back in_review 路径，评审 LLM 走主 loop 后置装配桥）。
 #[cfg(all(feature = "board", feature = "cluster"))]
 mod board_review;
+/// 反向桥客户端（goal：节点显示名 + 反向桥与多设备汇聚，一期批次二）：
+/// 出站连远端中继、hello 握手、退避重连、conn 泵（本机 web server 字节流
+/// 搬运）、access_check 比对。旁路——任何失败不影响本机 dashboard。
+mod bridge_client;
 #[cfg(feature = "cluster")]
 mod cluster_agent;
 #[cfg(feature = "cluster")]
@@ -153,6 +157,11 @@ enum Commands {
         /// Disable console output (file only)
         #[arg(long)]
         no_console: bool,
+        /// 反向桥纯中继模式（goal：反向桥与多设备汇聚）：只起 web server
+        /// （状态页 + /bridge + /d/ 转发），不起本地 agent/board/集群——
+        /// 状态页即全部 UI。需要 bridge.server.token 非空（空则拒绝启动）。
+        #[arg(long)]
+        relay: bool,
     },
     /// Run a single headless agent task and exit (no ports, no gateway; K1)
     Run {
@@ -615,6 +624,7 @@ async fn run_command(cli: Cli) -> Result<()> {
                 debug: false,
                 quiet: false,
                 no_console: false,
+                relay: false,
             }
         }
     };
@@ -645,6 +655,7 @@ async fn run_command(cli: Cli) -> Result<()> {
             debug,
             quiet,
             no_console,
+            relay,
         } => {
             // Build extra args for logger from flags
             let mut gateway_args: Vec<String> = Vec::new();
@@ -657,7 +668,7 @@ async fn run_command(cli: Cli) -> Result<()> {
             if no_console {
                 gateway_args.push("--no-console".to_string());
             }
-            commands::gateway::run(cli.local, &gateway_args).await?;
+            commands::gateway::run(cli.local, relay, &gateway_args).await?;
         }
         Commands::Agent {
             subcommand,
@@ -886,5 +897,7 @@ fn write_fallback_config(cfg_path: &std::path::Path) -> anyhow::Result<()> {
 #[cfg(test)]
 static GLOBAL_STATE_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
+#[cfg(test)]
+mod bridge_client_tests;
 #[cfg(test)]
 mod tests;

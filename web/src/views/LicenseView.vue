@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { ref, computed, onMounted } from 'vue'
 import { renderMarkdownHtml } from '../utils/markdown'
+import { apiUrl } from '../lib/appBase'
 
 const licenseContent = ref('')
 const loading = ref(true)
@@ -8,7 +9,7 @@ const error = ref('')
 
 onMounted(async () => {
   try {
-    const resp = await fetch('/api/system/license')
+    const resp = await fetch(apiUrl('/api/system/license'))
     if (!resp.ok) throw new Error(`HTTP ${resp.status}`)
     const data = await resp.json()
     licenseContent.value = data.content || ''

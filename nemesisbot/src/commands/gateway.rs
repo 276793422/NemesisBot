@@ -673,17 +673,19 @@ fn print_gateway_banner(
 
 /// G9（2026-09-09 结构修复）：web host 解析——绑定地址与展示地址分离。
 ///
-/// 配置 host `"0.0.0.0"`/空 = 绑定所有网卡。集群场景必须**如实绑定**：
-/// worker 跨机拉资产走 HTTP，绑定回环则 bundle 广告出去的 LAN IP 全是
-/// 空头支票（旧逻辑无条件翻译成 127.0.0.1，逼用户手工把 host 配成
-/// LAN IP 才能跑通 G9 场景）。单机场景维持保守回环绑定，dashboard 不
-/// 无谓暴露局域网。展示地址（gateway state / banner / 浏览器 URL）永远
-/// 用可进地址栏的地址——0.0.0.0 不是合法浏览器地址。
+/// 配置 host `"0.0.0.0"`/空 + `bind_all` = 绑定所有网卡。需要远端可达的
+/// 形态（集群启动、`--relay` 纯中继服务端）必须**如实绑定**：worker 跨机
+/// 拉资产走 HTTP、桥接入与状态页走公网，绑定回环则 bundle 广告出去的
+/// LAN IP 全是空头支票（旧逻辑无条件翻译成 127.0.0.1，逼用户手工把 host
+/// 配成 LAN IP 才能跑通 G9 场景；`--relay` 传 false 曾使 VPS 上 0.0.0.0
+/// 被静默回环——2026-09-19 真机验收修正）。单机场景维持保守回环绑定，
+/// dashboard 不无谓暴露局域网。展示地址（gateway state / banner / 浏览器
+/// URL）永远用可进地址栏的地址——0.0.0.0 不是合法浏览器地址。
 /// 返回 (绑定 host, 展示 host)。
-pub fn web_bind_and_display_hosts(configured: &str, cluster_starts: bool) -> (String, String) {
+pub fn web_bind_and_display_hosts(configured: &str, bind_all: bool) -> (String, String) {
     let h = configured.trim();
     if h == "0.0.0.0" || h.is_empty() {
-        if cluster_starts {
+        if bind_all {
             ("0.0.0.0".to_string(), "127.0.0.1".to_string())
         } else {
             ("127.0.0.1".to_string(), "127.0.0.1".to_string())
@@ -1472,8 +1474,68 @@ fn floor_char_boundary(s: &str, max: usize) -> &str {
     &s[..i]
 }
 
+/// `--relay` 纯中继模式（goal：反向桥与多设备汇聚，一期批次一）：只起
+/// web server（状态页 `/relay` + `/bridge` 接入 + `/d/<node_id>/` 转发），
+/// 不起本地 agent/board/集群/discovery——状态页即全部 UI。
+/// `bridge.server.token` 空 → 拒绝启动（fail-closed，纯中继不允许裸奔）。
+async fn run_relay(home: &std::path::Path, cfg: &nemesis_config::Config) -> Result<()> {
+    let token = cfg
+        .bridge
+        .as_ref()
+        .map(|b| b.server.token.as_str())
+        .unwrap_or("");
+    if token.is_empty() {
+        eprintln!(
+            "[Relay] --relay 启动失败：config.json 未配置 bridge.server.token（接入门令牌；\
+空 = 门不开放）。请在 config.json 的 bridge.server.token 填入预共享令牌后重试。"
+        );
+        return Err(anyhow::anyhow!(
+            "--relay requires bridge.server.token to be set"
+        ));
+    }
+    info!("[Relay] 纯中继模式启动（--relay）：状态页 /relay + /bridge + /d/<node_id>/");
+
+    // 与正常模式同款绑定语义，但 relay 纯中继服务端**必然**要被远端访问
+    // （桥接入 /bridge + 状态页 /relay + /d/<node_id>/ 转发都在公网侧）——
+    // bind_all 传 true：0.0.0.0 如实绑定所有网卡（此前传 false 使 0.0.0.0
+    // 被静默回环成 127.0.0.1，VPS 真机验收暴露）。display host 不参与 relay。
+    let (web_bind_host, _web_display_host) =
+        web_bind_and_display_hosts(&cfg.channels.web.host, true);
+    let web_port = cfg.channels.web.port;
+    let static_files = crate::embedded::resolve_static_files();
+    let web_config = nemesis_web::server::WebServerConfig {
+        listen_addr: format!("{}:{}", web_bind_host, web_port),
+        auth_token: cfg.channels.web.auth_token.clone(),
+        cors_origins: vec![],
+        ws_path: "/ws".to_string(),
+        workspace: Some(home.join("workspace").to_string_lossy().to_string()),
+        home: Some(home.to_string_lossy().to_string()),
+        version: crate::common::VERSION_INFO.version.to_string(),
+        static_dir: None,
+        static_files: Some(static_files),
+        index_file: "index.html".to_string(),
+    };
+    let mut web_server = nemesis_web::server::WebServer::new(web_config);
+    let relay_server = std::sync::Arc::new(nemesis_web::relay::RelayServer::new(
+        token.to_string(),
+        false,
+    ));
+    relay_server.ensure_maintenance();
+    web_server.set_relay(relay_server);
+    info!(
+        "[Relay] 纯中继就绪：状态页 http://127.0.0.1:{}/relay（ws token 门；/bridge 接入与 \
+/d/<node_id>/ 转发同端口复用）",
+        web_port
+    );
+
+    // serve：阻塞至关停（与正常模式 web server 语义一致）。
+    let _addr = web_server.start().await.map_err(|e| anyhow::anyhow!(e))?;
+    info!("[Relay] 纯中继 web server 已停止");
+    Ok(())
+}
+
 /// Run the gateway command.
-pub async fn run(local: bool, extra_args: &[String]) -> Result<()> {
+pub async fn run(local: bool, relay: bool, extra_args: &[String]) -> Result<()> {
     // macOS: acquire the tray-handoff channel guard first, so that ANY return
     // path from this function (early `?` errors, normal completion) closes the
     // channel and unblocks the main thread waiting for the tray. See
@@ -1573,6 +1635,14 @@ pub async fn run(local: bool, extra_args: &[String]) -> Result<()> {
     let mut args: Vec<String> = std::env::args().skip(2).collect();
     args.extend(extra_args.iter().cloned());
     let _log_flags = common::init_logger_from_config(&config_path, &args);
+
+    // Step 5b（goal：反向桥与多设备汇聚，一期批次一）：`--relay` 纯中继
+    // 模式早退——只起 web server（状态页 `/relay` + `/bridge` 接入 +
+    // `/d/<node_id>/` 转发），不起本地 agent/board/集群/discovery，状态页
+    // 即全部 UI。bridge.server.token 空 → 拒绝启动（fail-closed）。
+    if relay {
+        return run_relay(&home, &cfg).await;
+    }
 
     // Step 6: Write gateway state file (PID only; web_port updated after bind)
     let pid = std::process::id();
@@ -2416,11 +2486,13 @@ pub async fn run(local: bool, extra_args: &[String]) -> Result<()> {
     let board_selfcheck_registry = crate::board_review::SelfcheckRegistry::new();
     #[cfg(feature = "cluster")]
     {
-        // Build ClusterConfig — node_id 留空，with_workspace() 会从 peers.toml [node] 段加载真实身份
+        // Build ClusterConfig — node_id 留空，with_workspace() 会从 peers.toml [node] 段加载真实身份；
+        // node_name 传 config.cluster.json 显式显示名（空 = cluster.rs 自动解析链：hostname → Bot {id8}）。
         let cluster_config = nemesis_cluster::types::ClusterConfig {
             node_id: String::new(),
             bind_address: format!("0.0.0.0:{}", cluster_app_cfg.rpc_port),
             peers: vec![],
+            node_name: cluster_app_cfg.node_name.clone(),
         };
 
         let mut cluster = nemesis_cluster::cluster::Cluster::with_workspace(
@@ -3864,6 +3936,51 @@ pub async fn run(local: bool, extra_args: &[String]) -> Result<()> {
         index_file: "index.html".to_string(),
     };
     let mut web_server = nemesis_web::server::WebServer::new(web_config);
+
+    // 反向桥中继服务端（goal：反向桥与多设备汇聚，一期批次一）：配置了
+    // bridge.server.token 才开放接入门（fail-closed）——未配置则桥路由
+    // 不存在。`--relay` 纯中继不走此路径（run_relay 独立轻量启动）。
+    if let Some(bridge) = &cfg.bridge {
+        if !bridge.server.token.is_empty() {
+            let relay_server = std::sync::Arc::new(nemesis_web::relay::RelayServer::new(
+                bridge.server.token.clone(),
+                true,
+            ));
+            relay_server.ensure_maintenance();
+            web_server.set_relay(relay_server);
+            info!(
+                "[Relay] 内置中继服务端已开放（/bridge 接入、/d/<node_id>/ 转发、/relay 状态页）"
+            );
+        } else {
+            info!("[Relay] bridge.server.token 未配置，接入门不开放");
+        }
+    }
+
+    // 反向桥客户端（goal 批次二）：client.enabled 时注入本机桥身份
+    // （/d/<node_id>/ 子路径命中本机面板——必须在 build_router 前注入），
+    // 并在 Step 17 real_port 确定后 spawn 出站连接。桥为旁路：配置不完整
+    // 只 ERROR + 不启动，绝不阻断主服务。
+    let bridge_client_launch = cfg.bridge.as_ref().and_then(|bridge| {
+        if !bridge.client.enabled {
+            return None;
+        }
+        if bridge.client.relay_url.trim().is_empty() || bridge.client.token.is_empty() {
+            tracing::error!(
+                "[Bridge] bridge.client.enabled=true 但 relay_url/token 为空，桥客户端不启动（旁路不影响主服务）"
+            );
+            return None;
+        }
+        Some(bridge.client.clone())
+    });
+    if let Some(client) = &bridge_client_launch {
+        let node_id = crate::bridge_client::hostname_node_id();
+        info!(
+            "[Bridge] 桥客户端已配置（中继 {}，身份 {}）",
+            client.relay_url, node_id
+        );
+        web_server.set_bridge_identity(node_id);
+    }
+
     let web_server_ops = std::sync::Arc::new(crate::adapters::WebServerOpsAdapter::new(
         web_server.session_manager().clone(),
     ));
@@ -5610,6 +5727,22 @@ pub async fn run(local: bool, extra_args: &[String]) -> Result<()> {
         } else {
             info!("[Gateway] Gateway state updated: port={}", real_port);
         }
+    }
+
+    // 反向桥客户端 spawn（goal 批次二）：web server real_port 已确定——
+    // conn 泵 dial 127.0.0.1:<real_port>。旁路任务（内部自重连、全部失败
+    // 路径只打日志），spawn 即不管，不影响主流程。`--relay` 纯中继不经过
+    // 此路径（run_relay 独立启动，无客户端语义）。
+    if let Some(client) = bridge_client_launch {
+        crate::bridge_client::spawn(crate::bridge_client::BridgeClientParams {
+            relay_url: client.relay_url,
+            token: client.token,
+            node_id: crate::bridge_client::hostname_node_id(),
+            name: crate::bridge_client::hostname(),
+            version: crate::common::VERSION_INFO.version.to_string(),
+            web_port: real_port as u16,
+            access_token: client.access_token,
+        });
     }
 
     // Step 17: HealthServer is started by BotService (svc_mgr.start_bot() below)

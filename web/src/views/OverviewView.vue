@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { ref, onMounted, onUnmounted } from 'vue'
 import { httpGet } from '../composables/useWebSocket'
+import { apiUrl } from '../lib/appBase'
 import { useWSAPI } from '../composables/useWSAPI'
 import { on as sseOn, off as sseOff } from '../composables/useSSE'
 import { useToast } from '../composables/useToast'
@@ -97,7 +98,7 @@ async function stopAgent() {
 
 onMounted(async () => {
   try {
-    status.value = await httpGet<StatusData>('/api/status')
+    status.value = await httpGet<StatusData>(apiUrl('/api/status'))
     if (status.value.uptime_seconds != null) {
       startUptimeTimer(status.value.uptime_seconds)
     }

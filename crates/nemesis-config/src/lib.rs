@@ -173,6 +173,49 @@ pub struct Config {
     /// 项目注册表参数（L6++ 对话/项目双分组；None = 全默认——上限 4）。
     #[serde(default)]
     pub projects: Option<ProjectsConfig>,
+    /// 反向桥配置（None = 全默认——服务端接入门不开放、客户端不连接）。
+    #[serde(default)]
+    pub bridge: Option<BridgeConfig>,
+}
+
+/// 反向桥配置（`config.json` 的 `bridge` 段；`#[serde(default)]` 每字段全可省）。
+/// 分服务端/客户端两侧：服务端 = 中继接入门（`--relay` 与正常启动共用）；
+/// 客户端 = 本机作为桥设备连远端中继服务端（goal：节点显示名 + 反向桥）。
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
+#[serde(default)]
+pub struct BridgeConfig {
+    /// 服务端角色配置（`/bridge` 接入门）。
+    pub server: BridgeServerConfig,
+    /// 客户端角色配置（桥出站连接）。
+    pub client: BridgeClientConfig,
+}
+
+/// 服务端接入门配置。
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
+#[serde(default)]
+pub struct BridgeServerConfig {
+    /// 接入门 ws token（预共享钥匙的服务端半把；与桥客户端 `client.token`
+    /// 同值——同一把钥匙的两端各自配置、永不交换、hello 帧校验、不走 URL
+    /// query）。**空 = 接入门不开放**（fail-closed：不挂 /bridge 等桥路由）；
+    /// `--relay` 启动时此处为空 → 拒绝启动并提示。
+    pub token: String,
+}
+
+/// 客户端（桥设备）配置。
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
+#[serde(default)]
+pub struct BridgeClientConfig {
+    /// 客户端总开关（false = 零行为变化，不连中继）。
+    pub enabled: bool,
+    /// 中继服务端地址（如 `ws://vps.example.com:60600`；客户端自动拼
+    /// `/bridge` 路径）。
+    pub relay_url: String,
+    /// 接入门 token（与远端服务端 `server.token` 同值）。
+    pub token: String,
+    /// 面板访问密码（**只存本机**，服务端零存储——VPS 被拿下也翻不出任何
+    /// 设备密码；远程面板访问经 access_check 帧由本机比对哈希）。空 =
+    /// 拒绝所有远程面板访问（fail-closed）。本地直连面板不受影响（两回事）。
+    pub access_token: String,
 }
 
 /// PTY 内嵌终端配置（`config.json` 的 `terminal` 段；L8。交互 shell 无法
@@ -2763,6 +2806,7 @@ pub fn default_config() -> Config {
         usage: None,
         terminal: None,
         projects: None,
+        bridge: None,
     }
 }
 
@@ -3319,6 +3363,9 @@ pub fn get_platform_info() -> serde_json::Value {
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+mod bridge_serde_tests;
 
 #[cfg(test)]
 mod extra_tests;

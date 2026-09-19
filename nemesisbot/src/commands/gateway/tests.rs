@@ -2778,7 +2778,7 @@ name = "Empty Addr Peer"
                 .enable_all()
                 .build()
                 .expect("build gateway test runtime");
-            let _ = rt.block_on(async { run(false, &[]).await });
+            let _ = rt.block_on(async { run(false, false, &[]).await });
         })
         .expect("spawn gateway thread");
 
@@ -4102,7 +4102,7 @@ variables: {}
                     .enable_all()
                     .build()
                     .expect("build gateway conflict-test runtime");
-                let _ = rt.block_on(async { run(false, &[]).await });
+                let _ = rt.block_on(async { run(false, false, &[]).await });
             })
             .expect("spawn gateway thread");
 
@@ -4871,6 +4871,17 @@ fn test_web_hosts_default_config_cluster_off_stays_loopback() {
     let (bind, display) = web_bind_and_display_hosts("0.0.0.0", false);
     assert_eq!(bind, "127.0.0.1");
     assert_eq!(display, "127.0.0.1");
+}
+
+#[test]
+fn test_web_hosts_relay_mode_binds_all() {
+    // `--relay` 纯中继服务端（2026-09-19 VPS 真机验收）：必然要被远端访问
+    // （桥接入 + 状态页 + /d/ 转发），bind_all=true 语义——0.0.0.0/空 host
+    // 如实绑定所有网卡，不得静默回环（回归：run_relay 曾传 false）。
+    let (bind, _) = web_bind_and_display_hosts("0.0.0.0", true);
+    assert_eq!(bind, "0.0.0.0");
+    let (bind, _) = web_bind_and_display_hosts("", true);
+    assert_eq!(bind, "0.0.0.0");
 }
 
 #[test]

@@ -2,6 +2,7 @@
 import { ref, onMounted, computed } from 'vue'
 import { useWSAPI } from '../composables/useWSAPI'
 import { renderMarkdownHtml } from '../utils/markdown'
+import { apiUrl } from '../lib/appBase'
 
 const { request } = useWSAPI()
 const activeTab = ref('about')
@@ -22,7 +23,7 @@ async function loadReadme() {
   readmeLoading.value = true
   readmeError.value = ''
   try {
-    const resp = await fetch('/api/system/readme')
+    const resp = await fetch(apiUrl('/api/system/readme'))
     if (!resp.ok) throw new Error(`HTTP ${resp.status}`)
     const data = await resp.json()
     readmeContent.value = data.content || ''

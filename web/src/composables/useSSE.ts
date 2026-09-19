@@ -1,4 +1,5 @@
 import { onUnmounted } from 'vue'
+import { apiUrl } from '../lib/appBase'
 
 type EventHandler = (data: any) => void
 
@@ -28,7 +29,7 @@ export function connectEvents() {
   }
 
   try {
-    eventSource = new EventSource('/api/events/stream')
+    eventSource = new EventSource(apiUrl('/api/events/stream'))
 
     eventSource.onopen = () => {
       console.log('[NemesisAPI] SSE connected')

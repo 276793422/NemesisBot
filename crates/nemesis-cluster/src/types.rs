@@ -16,6 +16,11 @@ pub struct ClusterConfig {
     pub bind_address: String,
     /// Known peer addresses.
     pub peers: Vec<String>,
+    /// 批次四：节点显示名（来自 config.cluster.json `node_name`；空 = 自动
+    /// 解析链：hostname → `Bot {id8}` 兜底）。非空时该名免疫撞名后缀
+    /// （用户显式意志优先，重名无害——唯一性靠 node_id）。
+    #[serde(default)]
+    pub node_name: String,
 }
 
 impl Default for ClusterConfig {
@@ -24,6 +29,7 @@ impl Default for ClusterConfig {
             node_id: String::new(),
             bind_address: "0.0.0.0:9000".into(),
             peers: Vec::new(),
+            node_name: String::new(),
         }
     }
 }

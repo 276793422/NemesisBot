@@ -8,6 +8,7 @@
  * 本地路径/base64/file_changes 绝不出域）。
  */
 import { ref, onMounted } from 'vue'
+import { apiUrl } from '../lib/appBase'
 
 interface ShareMessage {
   role: string
@@ -44,7 +45,7 @@ async function load() {
     return
   }
   try {
-    const resp = await fetch(`/api/share/${encodeURIComponent(t)}`)
+    const resp = await fetch(apiUrl(`/api/share/${encodeURIComponent(t)}`))
     if (!resp.ok) {
       const body = await resp.json().catch(() => ({}))
       error.value = body?.error ?? `加载失败（HTTP ${resp.status}）`

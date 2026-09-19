@@ -424,7 +424,9 @@ async fn test_build_router_embedded_static_spa_fallback() {
     let resp = app.oneshot(req).await.unwrap();
     assert_eq!(resp.status(), 200);
     let body = axum::body::to_bytes(resp.into_body(), 4096).await.unwrap();
-    assert_eq!(&body[..], b"<html>SPA</html>");
+    // 批次二（反向桥）起，嵌入式 HTML 出站统一注入 `<base href>`（此处
+    // 无身份、请求在根路径 → 注入 `href="/"`），SPA fallback 同样走改写。
+    assert_eq!(&body[..], b"<html><base href=\"/\">SPA</html>");
 }
 
 #[tokio::test]

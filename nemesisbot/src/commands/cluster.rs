@@ -1303,11 +1303,13 @@ async fn run_node(
     println!("  Broadcast:  every {}s", broadcast_interval);
     println!();
 
-    // Build ClusterConfig — node_id 留空，with_workspace() 会从 peers.toml 加载真实身份
+    // Build ClusterConfig — node_id 留空，with_workspace() 会从 peers.toml 加载真实身份；
+    // node_name 留空走自动解析链（--name override 仍最高）
     let cluster_config = nemesis_cluster::types::ClusterConfig {
         node_id: String::new(),
         bind_address: format!("0.0.0.0:{}", rpc_port),
         peers: vec![],
+        node_name: String::new(),
     };
     let mut cluster =
         nemesis_cluster::cluster::Cluster::with_workspace(cluster_config, home.join("workspace"));

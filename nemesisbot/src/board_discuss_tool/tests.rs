@@ -77,6 +77,7 @@ async fn test_execute_honest_error_without_cluster() {
         node_id: "node-b".to_string(),
         bind_address: "127.0.0.1:0".to_string(),
         peers: vec![],
+        node_name: String::new(),
     }));
     let tool = BoardDiscussTool::new(cluster);
     let ctx = nemesis_agent::context::RequestContext::new("board", "sess", "node-b", "sess");
@@ -97,6 +98,7 @@ fn test_tool_meta() {
         node_id: "node-b".to_string(),
         bind_address: "127.0.0.1:0".to_string(),
         peers: vec![],
+        node_name: String::new(),
     }));
     let tool = BoardDiscussTool::new(cluster);
     let params = tool.parameters();

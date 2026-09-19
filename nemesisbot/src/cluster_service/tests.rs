@@ -21,6 +21,7 @@ async fn new_adapter_reports_not_running() {
         node_id: "test-node".to_string(),
         bind_address: "127.0.0.1:0".to_string(),
         peers: Vec::new(),
+        node_name: String::new(),
     }));
     let shared = Arc::new(crate::agent_factory::SharedResources {
         home: tmp.path().to_path_buf(),
@@ -49,6 +50,7 @@ async fn stop_when_not_running_is_ok_without_side_effects() {
         node_id: "test-node".to_string(),
         bind_address: "127.0.0.1:0".to_string(),
         peers: Vec::new(),
+        node_name: String::new(),
     }));
     let shared = Arc::new(crate::agent_factory::SharedResources {
         home: tmp.path().to_path_buf(),
@@ -178,6 +180,7 @@ fn make_adapter(
         node_id: "test-node".to_string(),
         bind_address: "127.0.0.1:0".to_string(),
         peers: Vec::new(),
+        node_name: String::new(),
     }));
     let shared = make_shared_with_flag(home);
     let flag = shared
@@ -423,6 +426,7 @@ async fn wave_c_start_fails_when_rpc_port_is_already_bound() {
         node_id: "wc-busy-port".to_string(),
         bind_address: "127.0.0.1:0".to_string(),
         peers: Vec::new(),
+        node_name: String::new(),
     });
     cluster.set_rpc_server(Arc::new(nemesis_cluster::rpc::server::RpcServer::new(
         nemesis_cluster::rpc::server::RpcServerConfig {
@@ -466,6 +470,7 @@ async fn wave_c_lifecycle_tolerates_flagless_shared_and_absent_agent_handle() {
         node_id: "wc-flagless".to_string(),
         bind_address: "127.0.0.1:0".to_string(),
         peers: Vec::new(),
+        node_name: String::new(),
     }));
     // Default shared：cluster_rpc_enabled 为 None。
     let shared = Arc::new(crate::agent_factory::SharedResources {
@@ -588,6 +593,7 @@ fn cd4_cluster() -> Arc<nemesis_cluster::cluster::Cluster> {
         node_id: "test-node".to_string(),
         bind_address: "127.0.0.1:0".to_string(),
         peers: Vec::new(),
+        node_name: String::new(),
     }));
     cluster.register_node(nemesis_cluster::types::ExtendedNodeInfo {
         base: nemesis_types::cluster::NodeInfo {

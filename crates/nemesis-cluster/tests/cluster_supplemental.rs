@@ -1162,6 +1162,7 @@ fn test_cluster_config_custom() {
         node_id: "node-1".to_string(),
         bind_address: "0.0.0.0:8080".to_string(),
         peers: vec!["10.0.0.2:9000".to_string(), "10.0.0.3:9000".to_string()],
+        node_name: String::new(),
     };
     assert_eq!(config.node_id, "node-1");
     assert_eq!(config.peers.len(), 2);
@@ -1173,6 +1174,7 @@ fn test_cluster_config_serialization() {
         node_id: "test-node".to_string(),
         bind_address: "0.0.0.0:9999".to_string(),
         peers: vec!["peer1:9000".to_string()],
+        node_name: String::new(),
     };
     let json = serde_json::to_string(&config).unwrap();
     let back: ClusterConfig = serde_json::from_str(&json).unwrap();

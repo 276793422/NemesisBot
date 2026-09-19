@@ -64,6 +64,10 @@ pub struct Cluster {
     // -- Identity --
     node_id: String,
     node_name: parking_lot::RwLock<String>,
+    /// 批次四：显示名为显式配置（config.cluster.json `node_name` 或
+    /// peers.toml [node].name）时 = true——撞名后缀免疫（用户意志优先；
+    /// 自动名 hostname / `Bot {id8}` 才允许撞名收敛）。
+    node_name_locked: std::sync::atomic::AtomicBool,
     node_type: String,
     address: String,
     role: parking_lot::RwLock<String>,
@@ -155,12 +159,13 @@ impl Cluster {
             config.node_id.clone()
         };
 
+        // 批次四：显示名解析链（config 显式 → hostname → `Bot {id8}` 兜底）。
+        let (node_name_init, name_locked) = resolve_node_name_from_env(&config.node_name, &node_id);
+
         Self {
             node_id: node_id.clone(),
-            node_name: parking_lot::RwLock::new(format!(
-                "Bot {}",
-                &node_id[..8.min(node_id.len())]
-            )),
+            node_name: parking_lot::RwLock::new(node_name_init),
+            node_name_locked: std::sync::atomic::AtomicBool::new(name_locked),
             node_type: "agent".into(),
             address: config.bind_address.clone(),
             role: parking_lot::RwLock::new("worker".into()),
@@ -236,16 +241,19 @@ impl Cluster {
         if let Err(e) = crate::cluster_config::ensure_node_id(&peers_path, &node_id) {
             tracing::warn!("[Cluster] Failed to persist node_id to peers.toml: {}", e);
         }
-        let node_name_default = sc
+        // 批次四：显示名解析链。peers.toml [node].name（既有显式持久化位）
+        // 最优先且免疫撞名后缀；其次 config.cluster.json `node_name`（同样
+        // 显式免疫）；否则自动链 hostname → `Bot {id8}` 兜底（允许撞名收敛）。
+        let (node_name_default, name_locked) = sc
             .as_ref()
             .and_then(|s| {
                 if s.node.name.is_empty() {
                     None
                 } else {
-                    Some(s.node.name.clone())
+                    Some((s.node.name.clone(), true))
                 }
             })
-            .unwrap_or_else(|| format!("Bot {}", &node_id[..8.min(node_id.len())]));
+            .unwrap_or_else(|| resolve_node_name_from_env(&config.node_name, &node_id));
         let role_default = sc
             .as_ref()
             .map(|s| s.node.role.clone())
@@ -259,6 +267,7 @@ impl Cluster {
         Self {
             node_id: node_id.clone(),
             node_name: parking_lot::RwLock::new(node_name_default),
+            node_name_locked: std::sync::atomic::AtomicBool::new(name_locked),
             node_type: "agent".into(),
             address: config.bind_address.clone(),
             role: parking_lot::RwLock::new(role_default),
@@ -1020,6 +1029,30 @@ impl Cluster {
         // Skip blacklisted nodes
         if self.removed_peers.read().contains(node_id) {
             return false;
+        }
+
+        // 批次四：撞名后缀收敛（goal 钉死，确定性规则无需协商协议）。
+        // 对方 announce 的显示名与我本地名相同且 id 不同 → 本地名追加
+        // `-` + 自己 node_id 前 4 位（走 set_node_name 唯一写入点，下一拍
+        // announce 自然携带新名；对端同理收敛，双方各自算出同一结论）。
+        // 规则只作用于**自动名**（hostname / `Bot {id8}`）——config /
+        // peers.toml 显式名免疫（用户意志优先，重名无害，唯一性靠 node_id）。
+        if !name.is_empty()
+            && name == self.node_name()
+            && node_id != self.node_id
+            && !self
+                .node_name_locked
+                .load(std::sync::atomic::Ordering::Relaxed)
+        {
+            let suffixed = format!(
+                "{}-{}",
+                self.node_name(),
+                name_suffix_from_node_id(&self.node_id)
+            );
+            tracing::info!(
+                "[Cluster] 撞名收敛：显示名「{name}」与节点 {node_id} 重名，本地名改为「{suffixed}」"
+            );
+            self.set_node_name(suffixed);
         }
 
         // G14（2026-09-09 双机混跑）：rpc_port=0 的 announce 造不出可用
@@ -1912,6 +1945,7 @@ impl Cluster {
             node_id: String::new(),
             bind_address: "0.0.0.0:9000".into(),
             peers: Vec::new(),
+            node_name: String::new(),
         })
     }
 
@@ -3667,6 +3701,64 @@ fn generate_node_id() -> String {
     format!("node-{}-{}", hostname.to_lowercase(), uuid::Uuid::new_v4())
 }
 
+/// 批次四：显示名 hostname 链（COMPUTERNAME → HOSTNAME，与
+/// `generate_node_id` 同款）。空 / `unknown`（纯容器环境）= None——
+/// 调用方落 `Bot {id8}` 兜底。
+pub(crate) fn hostname_display_name() -> Option<String> {
+    let h = std::env::var("COMPUTERNAME")
+        .or_else(|_| std::env::var("HOSTNAME"))
+        .unwrap_or_default();
+    let h = h.trim().to_string();
+    if h.is_empty() || h.eq_ignore_ascii_case("unknown") {
+        None
+    } else {
+        Some(h)
+    }
+}
+
+/// 批次四：显示名自动解析链（goal 钉死优先级）的**纯函数核**：
+/// `config.cluster.json node_name` 非空 →（用它，显式免疫撞名后缀）；
+/// 否则 hostname 链（由调用方注入 `hostname_display_name()` 结果）；
+/// 空 / `unknown` → `Bot {id8}` 兜底（纯容器环境）。
+/// 返回 `(名字, 显式锁定)`——锁定名不被撞名后缀收敛（重名无害，唯一性
+/// 靠 node_id；后缀只作用于自动名）。
+///
+/// hostname 作为参数注入而非函数内读 env：env 是进程全局，并行测试
+/// 注入 `COMPUTERNAME` 会互相污染（且 Rust 2024 `set_var` 是 unsafe）——
+/// 三元纯函数让优先级链可零 env 依赖直测（见 `cluster/tests.rs`）。
+pub(crate) fn resolve_auto_node_name(
+    config_name: &str,
+    hostname: Option<String>,
+    node_id: &str,
+) -> (String, bool) {
+    let cn = config_name.trim();
+    if !cn.is_empty() {
+        return (cn.to_string(), true);
+    }
+    if let Some(h) = hostname {
+        return (h, false);
+    }
+    (format!("Bot {}", &node_id[..8.min(node_id.len())]), false)
+}
+
+/// 批次四：解析链的 env 薄包装——生产路径（`new` / `with_workspace`）
+/// 调这个；测试直接调 `resolve_auto_node_name` 纯函数核。
+pub(crate) fn resolve_node_name_from_env(config_name: &str, node_id: &str) -> (String, bool) {
+    resolve_auto_node_name(config_name, hostname_display_name(), node_id)
+}
+
+/// 批次四：撞名后缀来源——node_id **末段**前 4 字符。
+///
+/// goal 字面是「node_id 前 4 位」，但生产 id 形如 `node-{hostname}-{uuid}`
+/// （`generate_node_id`），前 4 位恒为 `"node"`——真机撞名双方各自算出的
+/// 后缀相同，收敛失效（2026-09-19 真机彩排实测）。末段（uuid 段）前 4
+/// 保留 goal 意图：稳定（id 不变则后缀不变，重启不变）+ 有区分度
+/// （uuid 随机段；4 hex 碰撞 ≈ 1/65536，对「显示名给人看」量级足够）。
+pub(crate) fn name_suffix_from_node_id(node_id: &str) -> String {
+    let last = node_id.rsplit('-').next().unwrap_or(node_id);
+    last.chars().take(4).collect()
+}
+
 /// Atomic write helper: write to `{path}.tmp` then rename.
 ///
 /// Mirrors the pattern in `cluster_config::atomic_write` (which is private
@@ -3749,3 +3841,6 @@ fn addr_eq(cand: &str, needle: &str) -> bool {
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+mod node_name_tests;

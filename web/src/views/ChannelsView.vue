@@ -3,6 +3,7 @@ import { ref, computed, onMounted } from 'vue'
 import { useWSAPI } from '../composables/useWSAPI'
 import { useToast } from '../composables/useToast'
 import VoiceTab from './VoiceTab.vue'
+import RelayTab from './RelayTab.vue'
 
 const { request } = useWSAPI()
 const toast = useToast()
@@ -15,7 +16,7 @@ const selectedChannel = ref<string | null>(null)
 const channelDetail = ref<any>({})
 const editConfig = ref('')
 const editing = ref(false)
-const activeTab = ref<'local' | 'cloud' | 'voice'>('local')
+const activeTab = ref<'local' | 'cloud' | 'voice' | 'relay'>('local')
 
 const channelLabels: Record<string, string> = {
   web: 'Web', websocket: 'WebSocket', telegram: 'Telegram', discord: 'Discord',
@@ -30,6 +31,7 @@ const localNames = new Set(['web', 'websocket'])
 const localChannels = computed(() => channels.value.filter(ch => localNames.has(ch.name)))
 const cloudChannels = computed(() => channels.value.filter(ch => !localNames.has(ch.name)))
 const isVoiceTab = computed(() => activeTab.value === 'voice')
+const isRelayTab = computed(() => activeTab.value === 'relay')
 
 async function loadChannels() {
   try {
@@ -83,11 +85,17 @@ onMounted(loadChannels)
           <button class="ch-tab" :class="{ active: activeTab === 'local' }" @click="activeTab = 'local'">本地通道</button>
           <button class="ch-tab" :class="{ active: activeTab === 'cloud' }" @click="activeTab = 'cloud'">云端通道</button>
           <button class="ch-tab" :class="{ active: activeTab === 'voice' }" @click="activeTab = 'voice'">语音通道</button>
+          <button class="ch-tab" :class="{ active: activeTab === 'relay' }" @click="activeTab = 'relay'">中继通道</button>
         </div>
 
         <!-- Voice TAB: full width -->
         <div v-if="isVoiceTab">
           <VoiceTab />
+        </div>
+
+        <!-- Relay TAB (goal 批次三：中继通道，语音通道右侧): full width -->
+        <div v-else-if="isRelayTab">
+          <RelayTab />
         </div>
 
         <!-- Local/Cloud TABs: two-column layout -->

@@ -60,6 +60,7 @@
 
 <script setup lang="ts">
 import { ref, onMounted } from 'vue'
+import { apiUrl } from '../lib/appBase'
 import ChatPanel from '../components/ChatPanel.vue'
 import { useWebSocket } from '../composables/useWebSocket'
 
@@ -90,7 +91,7 @@ function parseIndexFromPath(): string | null {
 
 async function fetchInfo(idx: string): Promise<void> {
   try {
-    const res = await fetch('/api/workflow/chat/info?index=' + encodeURIComponent(idx))
+    const res = await fetch(apiUrl('/api/workflow/chat/info?index=' + encodeURIComponent(idx)))
     if (!res.ok) {
       throw new Error('HTTP ' + res.status)
     }
@@ -159,7 +160,7 @@ async function doVerify() {
   verifyError.value = ''
   const idx = props.index || parseIndexFromPath() || ''
   try {
-    const res = await fetch('/api/workflow/chat/verify', {
+    const res = await fetch(apiUrl('/api/workflow/chat/verify'), {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ index: idx, password: password.value }),

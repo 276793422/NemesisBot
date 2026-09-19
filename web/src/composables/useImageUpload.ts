@@ -1,4 +1,5 @@
 import { useAuthStore } from '../stores/auth'
+import { appBase } from '../lib/appBase'
 
 /**
  * T8（多模态 goal 2026-09-03）：Dashboard 图片上传客户端。
@@ -26,7 +27,8 @@ function backendBase(): string {
   // 与 useWebSocket.buildWSUrl 同源：desktop 内嵌窗口走注入的后端地址。
   const backend = (window as any).__DASHBOARD_BACKEND__
   if (backend) return 'http://' + backend
-  return window.location.origin
+  // 经桥远程访问时页面在 `/d/<node_id>/` 子路径下（appBase 读 <base>）。
+  return window.location.origin + appBase()
 }
 
 export function extOf(name: string): string {

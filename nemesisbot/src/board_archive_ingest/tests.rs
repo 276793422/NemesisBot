@@ -73,6 +73,7 @@ fn fixture(name: &str) -> Fixture {
         node_id: "node-a".to_string(),
         bind_address: "127.0.0.1:0".to_string(),
         peers: vec![],
+        node_name: String::new(),
     }));
     let deps = BoardReviewDeps {
         store: store.clone(),

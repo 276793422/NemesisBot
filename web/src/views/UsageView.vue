@@ -2,6 +2,7 @@
 import { ref, computed, onMounted } from 'vue'
 import { useToast } from '../composables/useToast'
 import { useUsageChanged } from '../composables/useUsageChanged'
+import { apiUrl } from '../lib/appBase'
 import VChart from 'vue-echarts'
 import { use } from 'echarts/core'
 import { CanvasRenderer } from 'echarts/renderers'
@@ -289,10 +290,10 @@ async function loadPricing(force = false) {
   pricingError.value = ''
   try {
     const [status, pricingResp] = await Promise.all([
-      fetch('/api/status')
+      fetch(apiUrl('/api/status'))
         .then(r => (r.ok ? r.json() : {}))
         .catch(() => ({}) as Record<string, unknown>),
-      fetch('/api/usage/pricing').then(async r => {
+      fetch(apiUrl('/api/usage/pricing')).then(async r => {
         if (!r.ok) throw new Error(`HTTP ${r.status}`)
         const j = await r.json()
         if (j.error) throw new Error(j.error)
@@ -316,7 +317,7 @@ async function updatePricing() {
   if (pricingUpdating.value) return
   pricingUpdating.value = true
   try {
-    const r = await fetch('/api/usage/pricing/update', {
+    const r = await fetch(apiUrl('/api/usage/pricing/update'), {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: '{}',
@@ -362,7 +363,7 @@ async function saveCustom() {
   }
   customSaving.value = true
   try {
-    const r = await fetch('/api/usage/pricing/custom', {
+    const r = await fetch(apiUrl('/api/usage/pricing/custom'), {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
@@ -391,7 +392,7 @@ async function saveCustom() {
 async function removeCustom(row: PricingRow) {
   if (!confirm(`删除自定义条目 ${row.modelId}？（下载层/内置层继续兜底）`)) return
   try {
-    const r = await fetch('/api/usage/pricing/custom/remove', {
+    const r = await fetch(apiUrl('/api/usage/pricing/custom/remove'), {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ model_id: row.modelId }),
@@ -586,7 +587,7 @@ function getTimeRange(forPreset: RangePreset = preset.value): { start: number; e
 }
 
 async function fetchJSON<T>(url: string): Promise<T> {
-  const resp = await fetch(url)
+  const resp = await fetch(apiUrl(url))
   if (!resp.ok) throw new Error(`HTTP ${resp.status}`)
   const json = await resp.json()
   if (json.error) throw new Error(json.error)

@@ -15,6 +15,7 @@ fn make_deps(store: Arc<nemesis_board::BoardStore>, quota: Arc<QuotaLedger>) -> 
         node_id: "node-master".to_string(),
         bind_address: "127.0.0.1:0".to_string(),
         peers: vec![],
+        node_name: String::new(),
     });
     MasterBusDeps {
         store,

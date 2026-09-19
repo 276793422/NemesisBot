@@ -15,6 +15,7 @@ import '@xterm/xterm/css/xterm.css'
 import { useWSAPI } from '../composables/useWSAPI'
 import { useToast } from '../composables/useToast'
 import { useAuthStore } from '../stores/auth'
+import { wsUrl } from '../lib/appBase'
 
 const { request } = useWSAPI()
 const toast = useToast()
@@ -81,7 +82,7 @@ function ptyUrl(): string {
   const backend = (window as any).__DASHBOARD_BACKEND__
   const base = backend
     ? 'ws://' + backend + '/ws/pty'
-    : (location.protocol === 'https:' ? 'wss://' : 'ws://') + location.host + '/ws/pty'
+    : wsUrl('/ws/pty')
   const qs = token ? '?token=' + encodeURIComponent(token) : ''
   return base + qs
 }

@@ -2764,6 +2764,7 @@ fn offline_cluster(dir: &std::path::Path, node_id: &str) -> Arc<nemesis_cluster:
             node_id: node_id.to_string(),
             bind_address: "127.0.0.1:0".into(),
             peers: vec![],
+            node_name: String::new(),
         },
         dir.join("ws"),
     ))

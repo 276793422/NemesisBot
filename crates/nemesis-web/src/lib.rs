@@ -28,6 +28,7 @@ pub mod pricing_sync;
 pub mod protocol;
 #[cfg(feature = "terminal")]
 pub mod pty;
+pub mod relay;
 pub mod sdk_embed;
 pub mod server;
 pub mod session;

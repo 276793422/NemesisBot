@@ -81,6 +81,12 @@ pub struct AppConfig {
     /// 读-改-写路径 token 保真；空串 = 无鉴权（旧行为不变）。
     #[serde(default)]
     pub token: String,
+    /// 批次四（2026-09-19）：节点显示名。空 = 自动解析链（hostname，
+    /// 纯容器兜底 `Bot {id8}`）；显式配置时免疫撞名后缀（用户意志优先，
+    /// 重名无害——唯一性靠 node_id）。Default impl 同步补——CFG-09 同族
+    /// 防删键（typed 化防 `save_app_config` 全量覆盖写静默抹键）。
+    #[serde(default)]
+    pub node_name: String,
 }
 
 impl Default for AppConfig {
@@ -95,6 +101,7 @@ impl Default for AppConfig {
             health_check_failure_threshold: default_health_check_failure_threshold(),
             announce_expiry_secs: default_announce_expiry_secs(),
             token: String::new(),
+            node_name: String::new(),
         }
     }
 }

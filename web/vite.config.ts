@@ -4,6 +4,11 @@ import { resolve } from 'path'
 
 export default defineConfig({
   root: '.',
+  // 桥子路径相对构建（goal：反向桥与多设备汇聚，一期批次二）：产物资源
+  // 引用用相对路径（`./assets/x.js`），配合设备侧注入的 `<base href>`，
+  // 直连（base=/）与经桥（base=/d/<node_id>/）都落到正确路径。路由为
+  // hash 模式（createWebHashHistory），无 history 路径的相对解析坑。
+  base: './',
   plugins: [vue()],
   resolve: {
     alias: {

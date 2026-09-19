@@ -10,6 +10,7 @@
  */
 
 import { ref } from 'vue'
+import { apiUrl } from '../lib/appBase'
 import { useToast } from '../composables/useToast'
 import { useAuthStore } from '../stores/auth'
 
@@ -22,7 +23,7 @@ async function download(kind: 'export' | 'pip') {
   if (downloading.value) return
   downloading.value = kind
   try {
-    const resp = await fetch(`/api/sdk/${kind}`, {
+    const resp = await fetch(apiUrl(`/api/sdk/${kind}`), {
       headers: auth.token ? { 'X-Auth-Token': auth.token } : {},
     })
     if (!resp.ok) throw new Error(`HTTP ${resp.status}`)

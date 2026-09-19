@@ -25,7 +25,7 @@ use axum::extract::State as AxumState;
 use axum::http::HeaderMap;
 use axum::response::IntoResponse;
 use axum::response::sse::{Event as SseEvent, KeepAlive, Sse};
-use axum::routing::{get, post};
+use axum::routing::{any, get, post};
 use axum::{Json, Router};
 use futures::stream::Stream;
 use nemesis_bus::MessageBus;
@@ -277,6 +277,15 @@ pub struct WebServer {
     /// the pump that routes each event to the Dashboard WS session
     /// (`{type:"push", cmd:"tool_event"}`) + EventHub (SSE fallback).
     agent_event_rx: Option<tokio::sync::broadcast::Receiver<nemesis_types::agent::AgentEvent>>,
+    /// 反向桥中继服务端（goal：反向桥与多设备汇聚）。`set_relay` 注入后
+    /// build_router 挂载 `/bridge`、`/d/<node_id>/`、`/relay` 等桥路由；
+    /// None = 接入门不开放（fail-closed，路由不存在）。
+    relay: Option<std::sync::Arc<crate::relay::RelayServer>>,
+    /// 本机桥身份（goal 批次二）：桥客户端接入中继时用的 node_id。子路径
+    /// 中间件据此识别 `/d/<自身 node_id>/` 前缀（剥前缀 + base 注入）；
+    /// None = 无身份（`--relay` 纯中继不服务自己的面板），前缀剥离永不
+    /// 命中。`set_bridge_identity` 注入。
+    bridge_node_id: Option<String>,
 }
 
 impl WebServer {
@@ -320,7 +329,16 @@ impl WebServer {
             conv_router: None,
             lsp_manager: None,
             agent_event_rx: None,
+            relay: None,
+            bridge_node_id: None,
         }
+    }
+
+    /// 注入本机桥身份（goal 批次二）：子路径中间件据此识别
+    /// `/d/<自身 node_id>/` 前缀。正常启动在桥客户端装配时注入（与
+    /// bridge_client 同一身份）；`--relay` 纯中继不注入。
+    pub fn set_bridge_identity(&mut self, node_id: String) {
+        self.bridge_node_id = Some(node_id);
     }
 
     /// Set the message bus for inbound message publishing.
@@ -445,6 +463,13 @@ impl WebServer {
     /// (there, on fire) see the same table.
     pub fn set_conv_router(&mut self, router: crate::conv_router::SharedConvRouter) {
         self.conv_router = Some(router);
+    }
+
+    /// 反向桥中继服务端（goal：反向桥与多设备汇聚）。注入后 build_router
+    /// 挂载桥路由（`/bridge`、`/d/<node_id>/`、`__auth`、`/relay`、
+    /// `/api/relay/status`）。不注入 = 接入门不开放。
+    pub fn set_relay(&mut self, relay: std::sync::Arc<crate::relay::RelayServer>) {
+        self.relay = Some(relay);
     }
 
     /// C5 (2026-09-04): hold the shared LSP manager singleton (same Arc as
@@ -676,6 +701,132 @@ impl WebServer {
         #[cfg(feature = "workflow")]
         let router = router.merge(crate::handlers::workflow::routes());
 
+        // 反向桥路由（goal：反向桥与多设备汇聚）。`set_relay` 注入后才
+        // 挂载——None = 接入门不开放（fail-closed：路由不存在，伪装 404
+        // 的语义由 handler 再按开关复核）。
+        //
+        // 路由形态三条（axum 0.8.9 实测语义）：
+        // - `{*rest}` catch-all 不匹配空段 → `/d/<id>` 与 `/d/<id>/` 必须
+        //   单独注册（`/d/<id>/` 是授权后 redirect 的目标形态，主入口）；
+        // - `{*rest}` 路由含两个 path 参数，handler 闭包须以
+        //   `Path<(String, String)>` 提取（`Path<String>` 会 500
+        //   "Expected 1 but got 2"）；rest 不进 handler——转发的是原样
+        //   URI，前缀由设备侧剥离。
+        let router = if let Some(ref relay) = self.relay {
+            let relay_bridge = relay.clone();
+            let relay_dev_root = relay.clone();
+            let relay_dev_slash = relay.clone();
+            let relay_dev = relay.clone();
+            let relay_auth_get = relay.clone();
+            let relay_auth_post = relay.clone();
+            let relay_page = relay.clone();
+            let relay_login = relay.clone();
+            let relay_api = relay.clone();
+            router
+                .route(
+                    "/bridge",
+                    get(move |ws: axum::extract::ws::WebSocketUpgrade| {
+                        let relay = relay_bridge.clone();
+                        async move { crate::relay::handle_bridge_ws(ws, relay).await }
+                    }),
+                )
+                .route(
+                    "/d/{node_id}",
+                    any(move |node_id: axum::extract::Path<String>,
+                              req: axum::extract::Request| {
+                        let relay = relay_dev_root.clone();
+                        async move {
+                            crate::relay::handle_device_request(relay, node_id.0, req).await
+                        }
+                    }),
+                )
+                .route(
+                    "/d/{node_id}/",
+                    any(move |node_id: axum::extract::Path<String>,
+                              req: axum::extract::Request| {
+                        let relay = relay_dev_slash.clone();
+                        async move {
+                            crate::relay::handle_device_request(relay, node_id.0, req).await
+                        }
+                    }),
+                )
+                .route(
+                    "/d/{node_id}/{*rest}",
+                    any(move |path: axum::extract::Path<(String, String)>,
+                              req: axum::extract::Request| {
+                        let relay = relay_dev.clone();
+                        async move {
+                            crate::relay::handle_device_request(relay, path.0 .0, req).await
+                        }
+                    }),
+                )
+                .route(
+                    "/d/{node_id}/__auth",
+                    get(move |node_id: axum::extract::Path<String>, req: axum::extract::Request| {
+                        let relay = relay_auth_get.clone();
+                        async move { crate::relay::handle_auth_page(relay, node_id.0, req).await }
+                    })
+                    .post(
+                        move |node_id: axum::extract::Path<String>,
+                              req: axum::extract::Request| {
+                            let relay = relay_auth_post.clone();
+                            async move {
+                                crate::relay::handle_auth_submit(relay, node_id.0, req).await
+                            }
+                        },
+                    ),
+                )
+                .route(
+                    "/relay",
+                    get(move |req: axum::extract::Request| {
+                        let relay = relay_page.clone();
+                        async move { crate::relay::handle_relay_status_page(relay, req).await }
+                    }),
+                )
+                .route(
+                    "/relay/login",
+                    post(move |req: axum::extract::Request| {
+                        let relay = relay_login.clone();
+                        async move { crate::relay::handle_relay_login(relay, req).await }
+                    }),
+                )
+                .route(
+                    "/api/relay/status",
+                    get(move |req: axum::extract::Request| {
+                        let relay = relay_api.clone();
+                        async move { crate::relay::handle_relay_api_status(relay, req).await }
+                    }),
+                )
+        } else {
+            router
+        };
+
+        // 批次三：通道页【中继通道】端点。**无条件注册**——overview 的
+        // 客户端态与 client/reconnect 独立于服务端配置；relay 未注入时
+        // overview 的 server 字段诚实回 null（enabled 端点回 400）。
+        // dashboard 信任边界（与 /api/status 同语义：本机/内网）。
+        let relay_overview = self.relay.clone();
+        let relay_enabled = self.relay.clone();
+        let router = router
+            .route(
+                "/api/relay/overview",
+                get(move || {
+                    let relay = relay_overview.clone();
+                    async move { crate::relay::handle_relay_api_overview(relay).await }
+                }),
+            )
+            .route(
+                "/api/relay/enabled",
+                post(move |req: axum::extract::Request| {
+                    let relay = relay_enabled.clone();
+                    async move { crate::relay::handle_relay_api_enabled(relay, req).await }
+                }),
+            )
+            .route(
+                "/api/relay/client/reconnect",
+                post(crate::relay::handle_relay_api_client_reconnect),
+            );
+
         let mut router = router
             // Internal control endpoint (undocumented)
             .route(
@@ -762,8 +913,20 @@ impl WebServer {
             }
         }
 
+        // 桥子路径外壳（goal 批次二）：`/d/<自身 node_id>/` 前缀剥离 +
+        // HTML `<base href>` 注入。**不能**用 `Router::layer`——axum 0.8
+        // 的 layer 运行于路由匹配之后（routing/mod.rs `Router::layer` →
+        // path_router.layer 包装 endpoint），改 URI 来不及；外壳形态
+        // （无路由 Router + fallback_service）保证改写在匹配前发生。
+        // `/d/<他人>/` 转发请求在外壳内原样透传。无身份（--relay）时
+        // 前缀剥离永不命中，但直连 base 注入仍生效（相对构建产物在
+        // `/chat/` 等子路径入口的正确性必需）。
+        let inner = router;
         tracing::info!("[WebServer] Router built, routes registered");
-        router
+        Router::new().fallback_service(crate::relay::BridgeSubpathService::new(
+            self.bridge_node_id.clone(),
+            inner,
+        ))
     }
 
     /// Get the event hub.

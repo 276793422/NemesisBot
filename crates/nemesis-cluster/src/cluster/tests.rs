@@ -11,6 +11,9 @@ fn make_config() -> ClusterConfig {
         node_id: "local-node-001".into(),
         bind_address: "127.0.0.1:9000".into(),
         peers: vec!["127.0.0.1:9001".into()],
+        // 批次四：显式名（config.cluster.json node_name 路径）——构造期
+        // 确定化显示名，测试断言不依赖测试机 COMPUTERNAME（跨平台稳定）。
+        node_name: "local-node".into(),
     }
 }
 
@@ -861,7 +864,9 @@ fn test_string_value_with_float() {
 fn test_accessors() {
     let cluster = Cluster::new(make_config());
     assert_eq!(cluster.node_id(), "local-node-001");
-    assert!(cluster.node_name().starts_with("Bot "));
+    // 批次四：make_config 带显式 node_name="local-node"——走 config 覆盖
+    // 路径，断言不依赖测试机 COMPUTERNAME（跨平台稳定）。
+    assert_eq!(cluster.node_name(), "local-node");
     assert_eq!(cluster.address(), "127.0.0.1:9000");
     assert_eq!(cluster.role(), "worker");
     assert_eq!(cluster.category(), "general");
@@ -2790,6 +2795,7 @@ fn test_new_with_empty_node_id_generates_one() {
         node_id: String::new(),
         bind_address: "0.0.0.0:9000".into(),
         peers: vec![],
+        node_name: String::new(),
     };
     let cluster = Cluster::new(config);
     assert!(!cluster.node_id().is_empty());
@@ -2867,6 +2873,7 @@ fn test_cluster_with_empty_node_id_in_config() {
         node_id: String::new(),
         bind_address: "0.0.0.0:9000".into(),
         peers: vec![],
+        node_name: String::new(),
     };
     let cluster = Cluster::new(config);
     // Should auto-generate a node ID
@@ -3141,6 +3148,7 @@ fn test_cluster_new_generates_node_id_when_empty() {
         node_id: String::new(),
         bind_address: "0.0.0.0:9000".into(),
         peers: vec![],
+        node_name: String::new(),
     };
     let cluster = Cluster::new(config);
     assert!(!cluster.node_id().is_empty());
@@ -3164,7 +3172,8 @@ fn test_cluster_with_callback() {
 fn test_cluster_accessors() {
     let cluster = Cluster::new(make_config());
     assert_eq!(cluster.node_id(), "local-node-001");
-    assert!(cluster.node_name().contains("local-no"));
+    // 批次四：make_config 显式名回显（同 test_accessors）。
+    assert_eq!(cluster.node_name(), "local-node");
     assert_eq!(cluster.address(), "127.0.0.1:9000");
     assert_eq!(cluster.role(), "worker");
     assert_eq!(cluster.category(), "general");
@@ -3747,6 +3756,7 @@ category = "general"
         node_id: String::new(),
         bind_address: "0.0.0.0:9000".into(),
         peers: vec![],
+        node_name: String::new(),
     };
     let cluster = Cluster::with_workspace(config, dir.path().to_path_buf());
     assert_eq!(cluster.node_id(), "existing-node-42");
@@ -4119,7 +4129,8 @@ fn test_parse_host_port_no_colon_returns_default_port() {
 #[test]
 fn test_set_node_name() {
     let cluster = Cluster::new(make_config());
-    assert!(cluster.node_name().contains("local-no")); // default is "Bot local-n..."
+    // 批次四：make_config 显式名回显（config.cluster.json node_name 路径）。
+    assert_eq!(cluster.node_name(), "local-node");
 
     cluster.set_node_name("CustomNode");
     assert_eq!(cluster.node_name(), "CustomNode");
@@ -4165,6 +4176,7 @@ fn test_with_workspace_persists_runtime_id_to_peers_toml() {
         node_id: String::new(),
         bind_address: "127.0.0.1:9000".into(),
         peers: vec![],
+        node_name: String::new(),
     };
     let cluster = Cluster::with_workspace(config, workspace.clone());
 

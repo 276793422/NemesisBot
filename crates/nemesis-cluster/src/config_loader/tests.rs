@@ -9,6 +9,7 @@ fn test_save_and_load_config() {
         node_id: "test-node-001".into(),
         bind_address: "0.0.0.0:9100".into(),
         peers: vec!["10.0.0.1:9100".into(), "10.0.0.2:9100".into()],
+        node_name: String::new(),
     };
 
     save_config(&path, &config).unwrap();
@@ -64,6 +65,7 @@ fn test_app_config_roundtrip() {
         health_check_failure_threshold: 2,
         announce_expiry_secs: 180,
         token: "cfg09-secret".to_string(),
+        node_name: "batch4-name".to_string(),
     };
 
     save_app_config(workspace, &config).unwrap();
@@ -77,6 +79,8 @@ fn test_app_config_roundtrip() {
     // CFG-09：save 全量覆盖写不得抹掉 token（此前 typed 无此字段，
     // 一次 save 即把用户鉴权 token 静默清空）。
     assert_eq!(loaded.token, "cfg09-secret");
+    // 批次四：node_name 同族防删键——typed round-trip 保真。
+    assert_eq!(loaded.node_name, "batch4-name");
 }
 
 // ============================================================
@@ -129,6 +133,7 @@ fn test_load_or_default_with_valid_file() {
         node_id: "test-123".into(),
         bind_address: "0.0.0.0:9200".into(),
         peers: vec![],
+        node_name: String::new(),
     };
     save_config(&path, &config).unwrap();
 
@@ -149,6 +154,7 @@ fn test_app_config_serialization_roundtrip() {
         health_check_failure_threshold: 5,
         announce_expiry_secs: 0,
         token: "tok-xyz".to_string(),
+        node_name: String::new(),
     };
     let json = serde_json::to_string_pretty(&config).unwrap();
     let parsed: AppConfig = serde_json::from_str(&json).unwrap();
@@ -231,6 +237,7 @@ fn test_cluster_config_serialization() {
         node_id: "node-test".into(),
         bind_address: "0.0.0.0:9999".into(),
         peers: vec!["10.0.0.1:9000".into()],
+        node_name: String::new(),
     };
     let json = serde_json::to_string(&config).unwrap();
     let parsed: ClusterConfig = serde_json::from_str(&json).unwrap();

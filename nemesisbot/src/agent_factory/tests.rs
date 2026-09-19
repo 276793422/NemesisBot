@@ -65,6 +65,7 @@ async fn cluster_agent_resolves_tier_and_spill_root_from_config() {
         node_id: "test-node".to_string(),
         bind_address: "127.0.0.1:0".to_string(),
         peers: Vec::new(),
+        node_name: String::new(),
     }));
 
     let (agent_loop, _config, _observer) =
@@ -108,6 +109,7 @@ async fn cluster_agent_loop_wires_usage_ledger_from_shared() {
         node_id: "test-node".to_string(),
         bind_address: "127.0.0.1:0".to_string(),
         peers: Vec::new(),
+        node_name: String::new(),
     }));
 
     // 有账本：shared.data_store=Some → loop 必须拿到同一份。
@@ -169,6 +171,7 @@ async fn cluster_agent_loop_wires_workspace_root_from_shared() {
         node_id: "test-node-wsroot".to_string(),
         bind_address: "127.0.0.1:0".to_string(),
         peers: Vec::new(),
+        node_name: String::new(),
     }));
 
     let (outbound_tx, _rx) = tokio::sync::mpsc::channel(16);
@@ -764,6 +767,7 @@ mod r10 {
             node_id: "r10-node".to_string(),
             bind_address: "127.0.0.1:0".to_string(),
             peers: Vec::new(),
+            node_name: String::new(),
         }));
 
         let (loop_, _config, _observer) =
@@ -919,6 +923,7 @@ async fn asm08_cluster_loop_critical_wiring_matrix() {
         node_id: "asm08-node".to_string(),
         bind_address: "127.0.0.1:0".to_string(),
         peers: Vec::new(),
+        node_name: String::new(),
     }));
     let (agent_loop, _config, _observer) =
         build_cluster_agent_loop(&shared, cluster).expect("cluster factory must succeed");

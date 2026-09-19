@@ -217,6 +217,7 @@ fn test_cluster_config_custom_values() {
         node_id: "bot-42".into(),
         bind_address: "192.168.1.100:9100".into(),
         peers: vec!["10.0.0.1:9000".into(), "10.0.0.2:9000".into()],
+        node_name: String::new(),
     };
     assert_eq!(config.node_id, "bot-42");
     assert_eq!(config.bind_address, "192.168.1.100:9100");
@@ -301,6 +302,7 @@ fn test_cluster_config_serialization_roundtrip() {
         node_id: "node-abc".into(),
         bind_address: "0.0.0.0:8080".into(),
         peers: vec!["host1:9000".into(), "host2:9000".into()],
+        node_name: String::new(),
     };
     let json = serde_json::to_string(&config).unwrap();
     let back: ClusterConfig = serde_json::from_str(&json).unwrap();

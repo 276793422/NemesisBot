@@ -9,6 +9,7 @@
 
 import { useWSAPI } from './useWSAPI'
 import { useAuthStore } from '../stores/auth'
+import { apiUrl } from '../lib/appBase'
 
 export interface SessionEntry {
   id: string
@@ -89,7 +90,7 @@ export function useChatApi() {
   /** Authenticated JSON fetch against the HTTP API (same policy as SdkView:
    * X-Auth-Token header; throws with the server's error message on !ok). */
   async function apiFetch<T>(path: string, init?: RequestInit): Promise<T> {
-    const resp = await fetch(path, {
+    const resp = await fetch(apiUrl(path), {
       ...init,
       headers: {
         'Content-Type': 'application/json',

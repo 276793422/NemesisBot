@@ -167,6 +167,7 @@ fn settle_deps_with_store(
         node_id: "node-a".to_string(),
         bind_address: "127.0.0.1:0".to_string(),
         peers: vec![],
+        node_name: String::new(),
     }));
     cluster.set_rpc_client(Arc::new(nemesis_cluster::rpc::client::RpcClient::new()));
 
@@ -306,6 +307,7 @@ fn review_deps(name: &str) -> (BoardReviewDeps, std::path::PathBuf) {
         node_id: "node-a".to_string(),
         bind_address: "127.0.0.1:0".to_string(),
         peers: vec![],
+        node_name: String::new(),
     }));
     cluster.set_rpc_client(Arc::new(nemesis_cluster::rpc::client::RpcClient::new()));
 
@@ -2513,6 +2515,7 @@ async fn summary_generation_failure_leaves_trace_and_keeps_completed() {
                 node_id: "node-a".to_string(),
                 bind_address: "127.0.0.1:0".to_string(),
                 peers: vec![],
+                node_name: String::new(),
             },
         )),
         estop: Arc::new(nemesis_agent::estop::EstopState::new()),
