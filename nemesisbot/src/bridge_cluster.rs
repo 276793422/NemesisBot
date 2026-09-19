@@ -71,6 +71,16 @@ impl BridgeIdentitySink for BridgeClusterSink {
                 .lock()
                 .expect("桥↔集群映射表锁中毒")
                 .insert(event.bridge_node_id.clone(), identity.node_id.clone());
+            // via-bridge 哨兵（hub 侧对称标记，2026-09-20）：设备侧经
+            // member_sync 得知的成员已带同款哨兵（bridge_rpc
+            // handle_member_sync），hub 侧补齐 = 两侧 registry 都能回答
+            // 「这个 peer 是怎么接入的」。追加而非覆盖——设备自报 tags 保留。
+            // 同权语义不受影响：tags 是纯元数据，RPC 路径仲裁看网段判定
+            // （rpc/client.rs）不看 tags。
+            let mut tags = identity.tags.clone();
+            if !tags.iter().any(|t| t == "via-bridge") {
+                tags.push("via-bridge".to_string());
+            }
             let registered = self.cluster.handle_discovered_node(
                 &identity.node_id,
                 &identity.name,
@@ -78,7 +88,7 @@ impl BridgeIdentitySink for BridgeClusterSink {
                 identity.rpc_port,
                 &identity.role,
                 &identity.category,
-                identity.tags.clone(),
+                tags,
                 identity.capabilities.clone(),
                 &identity.node_type,
             );

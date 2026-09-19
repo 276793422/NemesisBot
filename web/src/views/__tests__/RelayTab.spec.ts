@@ -6,6 +6,8 @@
 // - 服务端开关 POST /api/relay/enabled payload
 // - 保存配置：只提交变更字段（遮蔽值原样跳过——不覆盖真实 token）
 // - 手动重连 POST /api/relay/client/reconnect
+// - 服务端设置弹层：掩码未变零写入 / 改动提交 bridge.server.token / 重新生成
+// - 打开面板：在线 window.open /d/<node_id>/，离线禁用
 import { mount, flushPromises } from '@vue/test-utils'
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 
@@ -67,6 +69,9 @@ beforeEach(() => {
             relay_url: 'ws://vps:60600',
             token: 'abcd****1234',
             access_token: 'wxyz****5678',
+          },
+          server: {
+            token: 'srv****tok',
           },
         },
       }
@@ -195,5 +200,106 @@ describe('RelayTab 交互', () => {
     expect(hideBtns.length).toBe(1)
     await hideBtns[0].trigger('click')
     expect(w.findAll('input').filter(i => i.attributes('type') === 'password').length).toBe(2)
+  })
+})
+
+describe('RelayTab 服务端设置弹层', () => {
+  async function openModal(w: any) {
+    const btn = w.findAll('button').find((b: any) => b.text() === '设置')
+    expect(btn).toBeTruthy()
+    await btn!.trigger('click')
+    await flushPromises()
+  }
+
+  it('打开弹层：渲染令牌输入（值 = 后端掩码）', async () => {
+    const w = mount(RelayTab)
+    await flushPromises()
+    await openModal(w)
+    expect(w.text()).toContain('中继服务端设置')
+    const inputs = w.findAll('.modal-card input.form-input')
+    expect(inputs.length).toBe(1)
+    expect((inputs[0].element as HTMLInputElement).value).toBe('srv****tok')
+  })
+
+  it('掩码未改直接保存 → 零 set_field，弹层关闭', async () => {
+    const w = mount(RelayTab)
+    await flushPromises()
+    await openModal(w)
+    const save = w.findAll('.modal-card button').find((b: any) => b.text() === '保存')
+    await save!.trigger('click')
+    await flushPromises()
+    const setCalls = requestMock.mock.calls.filter(
+      (c: any[]) => c[0] === 'config' && c[1] === 'set_field',
+    )
+    expect(setCalls.length).toBe(0)
+    expect(w.find('.modal-overlay').exists()).toBe(false)
+  })
+
+  it('修改令牌保存 → set_field 提交 bridge.server.token', async () => {
+    const w = mount(RelayTab)
+    await flushPromises()
+    await openModal(w)
+    await w.find('.modal-card input.form-input').setValue('new-server-token')
+    const save = w.findAll('.modal-card button').find((b: any) => b.text() === '保存')
+    await save!.trigger('click')
+    await flushPromises()
+    const setCalls = requestMock.mock.calls.filter(
+      (c: any[]) => c[0] === 'config' && c[1] === 'set_field',
+    )
+    expect(setCalls.length).toBe(1)
+    expect(setCalls[0][2]).toEqual({
+      path: 'bridge.server.token',
+      value: 'new-server-token',
+    })
+  })
+
+  it('重新生成 → 输入变为合法 UUID v4（与掩码不同）', async () => {
+    const w = mount(RelayTab)
+    await flushPromises()
+    await openModal(w)
+    const regen = w.findAll('.modal-card button').find((b: any) => b.text() === '重新生成')
+    await regen!.trigger('click')
+    const val = (w.find('.modal-card input.form-input').element as HTMLInputElement).value
+    expect(val).toMatch(/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/)
+    expect(val).not.toBe('srv****tok')
+  })
+})
+
+describe('RelayTab 打开面板', () => {
+  it('在线设备点「打开面板」→ window.open /d/<node_id>/ 新窗口', async () => {
+    const openMock = vi.fn()
+    vi.stubGlobal('open', openMock)
+    try {
+      const w = mount(RelayTab)
+      await flushPromises()
+      const btn = w.findAll('button').find((b: any) => b.text() === '打开面板')
+      expect(btn).toBeTruthy()
+      expect(btn!.attributes('disabled')).toBeUndefined()
+      await btn!.trigger('click')
+      expect(openMock).toHaveBeenCalledWith(
+        expect.stringContaining('/d/bridge-homepc/'),
+        '_blank',
+      )
+    } finally {
+      vi.unstubAllGlobals()
+    }
+  })
+
+  it('离线设备按钮禁用（点进去只有 offline 提示）', async () => {
+    httpGetMock.mockResolvedValue(overviewData({
+      server: {
+        enabled: true,
+        full_mode: true,
+        devices: [{
+          node_id: 'bridge-off', name: 'OffPC', version: '0.1.0',
+          connected_at: 1700000000, bytes_up: 0, bytes_down: 0, online: false,
+        }],
+      },
+    }))
+    const w = mount(RelayTab)
+    await flushPromises()
+    const btn = w.findAll('button').find((b: any) => b.text() === '打开面板')
+    expect(btn).toBeTruthy()
+    expect(btn!.attributes('disabled')).toBeDefined()
   })
 })

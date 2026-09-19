@@ -134,3 +134,53 @@ fn replacement_reconnect_is_idempotent() {
         "最终断开应 Offline"
     );
 }
+
+// via-bridge 哨兵（hub 侧对称标记，2026-09-20）：hub 注册的桥入设备与
+// 设备侧 member_sync 合并的成员（bridge_rpc）两侧都能回答「怎么接入的」。
+#[test]
+fn registered_node_is_tagged_via_bridge() {
+    let (cluster, _tmp) = test_cluster();
+    let sink = BridgeClusterSink::new(cluster.clone());
+
+    // 设备自报 tags 非空（"worker-pool"）——哨兵应追加而非覆盖。
+    let mut ident = identity("node-x-1", 21949);
+    ident.tags = vec!["worker-pool".to_string()];
+    sink.on_bridge_identity(BridgeIdentityEvent {
+        bridge_node_id: "bridge-x".to_string(),
+        online: true,
+        cluster: Some(ident),
+    });
+
+    let peer = cluster.get_peer("node-x-1").expect("已注册");
+    let tags = peer.tags;
+    assert!(
+        tags.contains(&"via-bridge".to_string()),
+        "hub 侧注册应带 via-bridge 哨兵，实际 {:?}",
+        tags
+    );
+    assert!(
+        tags.contains(&"worker-pool".to_string()),
+        "设备自报 tags 应保留，实际 {:?}",
+        tags
+    );
+}
+
+#[test]
+fn via_bridge_tag_not_duplicated_on_reconnect() {
+    let (cluster, _tmp) = test_cluster();
+    let sink = BridgeClusterSink::new(cluster.clone());
+
+    // 顶替重连 upsert 幂等：哨兵不重复堆叠。
+    sink.on_bridge_identity(online_event("bridge-x", "node-x-1", 21949));
+    sink.on_bridge_identity(online_event("bridge-x", "node-x-1", 21949));
+
+    let peer = cluster.get_peer("node-x-1").expect("已注册");
+    assert_eq!(
+        peer.tags
+            .iter()
+            .filter(|t| t.as_str() == "via-bridge")
+            .count(),
+        1,
+        "via-bridge 哨兵应恰好一个"
+    );
+}

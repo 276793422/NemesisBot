@@ -17,6 +17,7 @@ import { httpGet } from '../composables/useWebSocket'
 import { apiUrl } from '../lib/appBase'
 import { useWSAPI } from '../composables/useWSAPI'
 import { useToast } from '../composables/useToast'
+import { uuidv4 } from '../lib/uuid'
 
 const { request } = useWSAPI()
 const toast = useToast()
@@ -74,6 +75,61 @@ async function toggleServer(on: boolean) {
   } finally {
     toggling.value = false
   }
+}
+
+// ---- 服务端设置弹层（写 bridge.server.token，保存后重启生效） ----
+// 读到的 token 是后端 sanitize 掩码（真实值只在 config.json）——与客户端
+// 区同款规避：掩码原样 = 用户未改 → 跳过写入，不用掩码覆盖真实值。
+const showServerSettings = ref(false)
+const cfgServerToken = ref('')
+const _loadedServerToken = ref('')
+const showServerToken = ref(false)
+const savingServerCfg = ref(false)
+
+async function loadServerConfig() {
+  try {
+    const data = await request('config', 'get')
+    cfgServerToken.value = data?.bridge?.server?.token || ''
+    _loadedServerToken.value = cfgServerToken.value
+  } catch (e: any) {
+    toast.error('加载服务端配置失败: ' + e)
+  }
+}
+
+function openServerSettings() {
+  showServerSettings.value = true
+  // 打开时拉一次最新值（防他处改动后 stale）
+  loadServerConfig()
+}
+
+function regenServerToken() {
+  // uuidv4：crypto.randomUUID 在 http://IP 非安全上下文不存在（兜底见 lib/uuid）。
+  cfgServerToken.value = uuidv4()
+}
+
+async function saveServerConfig() {
+  savingServerCfg.value = true
+  try {
+    if (cfgServerToken.value !== _loadedServerToken.value) {
+      await request('config', 'set_field', {
+        path: 'bridge.server.token',
+        value: cfgServerToken.value,
+      })
+      toast.success('已保存（重启 Gateway 后生效；换令牌后桥客户端需用新令牌重连）')
+    }
+    showServerSettings.value = false
+    await loadServerConfig()
+  } catch (e: any) {
+    toast.error('保存失败: ' + e)
+  } finally {
+    savingServerCfg.value = false
+  }
+}
+
+// ---- 打开设备面板（/d/<node_id>/ 隧道入口） ----
+// 有 access_token 的设备先见授权页（fail-closed：令牌只存设备本机）。
+function openPanel(nodeId: string) {
+  window.open(apiUrl(`/d/${encodeURIComponent(nodeId)}/`), '_blank')
 }
 
 // ---- 客户端配置（config.get 读 / config.set_field 写，只提交变更字段） ----
@@ -176,7 +232,7 @@ function formatTime(unixSecs: number): string {
 }
 
 onMounted(async () => {
-  await Promise.all([loadOverview(), loadClientConfig()])
+  await Promise.all([loadOverview(), loadClientConfig(), loadServerConfig()])
   pollTimer = setInterval(loadOverview, 5000)
 })
 onUnmounted(() => {
@@ -192,6 +248,7 @@ onUnmounted(() => {
       <div class="card-header" style="display: flex; justify-content: space-between; align-items: center;">
         <h3 style="margin: 0;">中继服务端</h3>
         <div style="display: flex; align-items: center; gap: var(--space-2);">
+          <button class="btn btn-sm" @click="openServerSettings">设置</button>
           <a v-if="overview.server" href="/relay" target="_blank" class="btn btn-sm" style="text-decoration: none;">状态页</a>
           <template v-if="overview.server">
             <label style="display: flex; align-items: center; gap: var(--space-1); font-size: var(--text-sm); cursor: pointer;">
@@ -204,7 +261,7 @@ onUnmounted(() => {
       </div>
       <div class="card-body">
         <div v-if="!overview.server" class="empty-state" style="padding: var(--space-4);">
-          <p style="margin: 0; font-size: var(--text-sm);">本机未开启中继服务端（config.json → bridge.server.token 配置接入门令牌后重启生效）。</p>
+          <p style="margin: 0; font-size: var(--text-sm);">本机未开启中继服务端——点击右上角「设置」配置接入门令牌（bridge.server.token），保存并重启后生效。</p>
         </div>
         <template v-else>
           <div v-if="overview.server.devices.length === 0" class="empty-state" style="padding: var(--space-4);">
@@ -218,6 +275,7 @@ onUnmounted(() => {
                 <th style="padding: var(--space-2);">状态</th>
                 <th style="padding: var(--space-2);">接入时间</th>
                 <th style="padding: var(--space-2);">上/下行</th>
+                <th style="padding: var(--space-2);">操作</th>
               </tr>
             </thead>
             <tbody>
@@ -227,6 +285,11 @@ onUnmounted(() => {
                 <td style="padding: var(--space-2);"><span class="badge" :class="d.online ? 'badge-success' : 'badge-neutral'">{{ d.online ? '在线' : '离线' }}</span></td>
                 <td style="padding: var(--space-2);">{{ formatTime(d.connected_at) }}</td>
                 <td style="padding: var(--space-2);">{{ formatBytes(d.bytes_up) }} / {{ formatBytes(d.bytes_down) }}</td>
+                <td style="padding: var(--space-2);">
+                  <button class="btn btn-sm" :disabled="!d.online"
+                    :title="d.online ? '在新窗口打开设备面板（可能需输入设备访问密码）' : '设备离线'"
+                    @click="openPanel(d.node_id)">打开面板</button>
+                </td>
               </tr>
             </tbody>
           </table>
@@ -285,5 +348,49 @@ onUnmounted(() => {
       </div>
     </div>
 
+    <!-- ===== 服务端设置弹层（bridge.server.token；保存写 config，重启生效） ===== -->
+    <div v-if="showServerSettings" class="modal-overlay" @click.self="showServerSettings = false">
+      <div class="modal-card card">
+        <div class="card-header"><h3 style="margin: 0;">中继服务端设置</h3></div>
+        <div class="card-body">
+          <div class="settings-grid" style="grid-template-columns: 140px 1fr;">
+            <span class="settings-key">接入门令牌</span>
+            <div style="display: flex; gap: var(--space-2); align-items: center;">
+              <input class="form-input" :type="showServerToken ? 'text' : 'password'"
+                v-model="cfgServerToken" placeholder="桥客户端接入本中继所需"
+                autocomplete="new-password" spellcheck="false"
+                style="font-family: var(--font-mono); font-size: var(--text-sm);" />
+              <button class="btn btn-sm" type="button" @click="showServerToken = !showServerToken">{{ showServerToken ? '隐藏' : '显示' }}</button>
+              <button class="btn btn-sm" type="button" title="生成新的 UUID v4 令牌" @click="regenServerToken">重新生成</button>
+            </div>
+          </div>
+          <p style="margin: var(--space-3) 0 0; font-size: var(--text-xs); color: var(--text-secondary);">
+            保存写入 config.json（bridge.server.token），重启 Gateway 后生效；换令牌后所有桥客户端需改用新令牌重连。
+          </p>
+        </div>
+        <div style="padding: var(--space-3) var(--space-4); border-top: 1px solid var(--border); display: flex; justify-content: flex-end; gap: var(--space-2);">
+          <button class="btn" @click="showServerSettings = false">取消</button>
+          <button class="btn btn-primary" :disabled="savingServerCfg" @click="saveServerConfig">{{ savingServerCfg ? '保存中...' : '保存' }}</button>
+        </div>
+      </div>
+    </div>
+
   </div>
 </template>
+
+<style scoped>
+.modal-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.4);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 100;
+}
+.modal-card {
+  width: min(520px, 92vw);
+  max-height: 85vh;
+  overflow-y: auto;
+}
+</style>
