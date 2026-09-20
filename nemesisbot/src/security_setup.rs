@@ -170,7 +170,7 @@ pub(crate) async fn build_security_plugin(
         .auditor()
         .set_self_destruct_exempt_path(&workspace_root.to_string_lossy());
 
-    // Full Access 编辑器放行开关(2026-09-20 用户裁决,仿 codex):创建运行
+    // Full Access 编辑器放行开关(2026-09-20 用户裁决):创建运行
     // 时态(**双关,不持久化——进程重启一律回关,必须用户手动再开**),同一
     // Arc 双注入:auditor(evaluate_request 短路判定)+ web editor handler
     // (WSAPI editor.get/set 读写 + SSE 广播)——单一真相源。初始 roots =

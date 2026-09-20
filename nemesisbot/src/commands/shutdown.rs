@@ -27,9 +27,16 @@ pub fn run(local: bool) -> Result<()> {
         #[cfg(target_os = "windows")]
         {
             // On Windows, send CTRL_BREAK_EVENT or use taskkill
-            let result = std::process::Command::new("taskkill")
-                .args(["/PID", &pid.to_string()])
-                .output();
+            // CREATE_NO_WINDOW：gateway 托盘/无控制台运行时，console 子进程
+            // (taskkill) 会各自弹新控制台；输出经 .output() 收集，不受影响。
+            let result = {
+                use std::os::windows::process::CommandExt;
+                const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+                std::process::Command::new("taskkill")
+                    .args(["/PID", &pid.to_string()])
+                    .creation_flags(CREATE_NO_WINDOW)
+                    .output()
+            };
             match result {
                 Ok(output) if output.status.success() => {
                     println!("  Shutdown signal sent to PID {}.", pid);

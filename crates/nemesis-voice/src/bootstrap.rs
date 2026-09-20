@@ -343,15 +343,38 @@ async fn try_download_and_extract(url: &str, exe_dir: &Path, proxy_url: &str) ->
     let _ = fs::remove_dir_all(&extract_dir);
     fs::create_dir_all(&extract_dir)?;
 
-    let status = std::process::Command::new("tar")
-        .args([
-            "-xjf",
-            &archive_path.to_string_lossy(),
-            "-C",
-            &extract_dir.to_string_lossy(),
-        ])
-        .output()
-        .context("Failed to run tar command")?;
+    let status = {
+        // CREATE_NO_WINDOW：gateway 托盘/无控制台运行（release windows 子
+        // 系统，2026-09-21）时，console 子进程 tar 会各自弹新控制台（输出
+        // 经 .output() 收集，不受影响）。
+        #[cfg(target_os = "windows")]
+        {
+            use std::os::windows::process::CommandExt;
+            const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+            std::process::Command::new("tar")
+                .args([
+                    "-xjf",
+                    &archive_path.to_string_lossy(),
+                    "-C",
+                    &extract_dir.to_string_lossy(),
+                ])
+                .creation_flags(CREATE_NO_WINDOW)
+                .output()
+                .context("Failed to run tar command")?
+        }
+        #[cfg(not(target_os = "windows"))]
+        {
+            std::process::Command::new("tar")
+                .args([
+                    "-xjf",
+                    &archive_path.to_string_lossy(),
+                    "-C",
+                    &extract_dir.to_string_lossy(),
+                ])
+                .output()
+                .context("Failed to run tar command")?
+        }
+    };
 
     if !status.status.success() {
         let stderr = String::from_utf8_lossy(&status.stderr);
@@ -460,15 +483,36 @@ async fn try_download_aec(url: &str, dst_dir: &Path, proxy_url: &str) -> Result<
     let extract_dir = temp_dir.join("extracted");
     let _ = fs::remove_dir_all(&extract_dir);
     fs::create_dir_all(&extract_dir)?;
-    let status = std::process::Command::new("tar")
-        .args([
-            "-xf",
-            &archive_path.to_string_lossy(),
-            "-C",
-            &extract_dir.to_string_lossy(),
-        ])
-        .output()
-        .context("Failed to run tar command")?;
+    let status = {
+        // 同上：压掉 console 子进程 tar 的弹窗。
+        #[cfg(target_os = "windows")]
+        {
+            use std::os::windows::process::CommandExt;
+            const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+            std::process::Command::new("tar")
+                .args([
+                    "-xf",
+                    &archive_path.to_string_lossy(),
+                    "-C",
+                    &extract_dir.to_string_lossy(),
+                ])
+                .creation_flags(CREATE_NO_WINDOW)
+                .output()
+                .context("Failed to run tar command")?
+        }
+        #[cfg(not(target_os = "windows"))]
+        {
+            std::process::Command::new("tar")
+                .args([
+                    "-xf",
+                    &archive_path.to_string_lossy(),
+                    "-C",
+                    &extract_dir.to_string_lossy(),
+                ])
+                .output()
+                .context("Failed to run tar command")?
+        }
+    };
     if !status.status.success() {
         let stderr = String::from_utf8_lossy(&status.stderr);
         let _ = fs::remove_file(&archive_path);

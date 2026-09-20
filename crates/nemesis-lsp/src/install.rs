@@ -142,20 +142,22 @@ async fn run_process(
 ) -> Result<RunOutput, String> {
     use tokio::io::AsyncReadExt;
 
-    let mut child = tokio::process::Command::new(program)
-        .args(args)
+    // 安装程序（npm/cargo 等）是 console 程序；gateway 托盘/无控制台运行
+    // （release windows 子系统，2026-09-21）时压掉弹窗（stdio 走 null/管道）。
+    let mut cmd = tokio::process::Command::new(program);
+    cmd.args(args)
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::piped())
-        .stderr(std::process::Stdio::piped())
-        .kill_on_drop(true)
-        .spawn()
-        .map_err(|e| {
-            if e.kind() == std::io::ErrorKind::NotFound {
-                format!("program not found: {program}（未安装或不在 PATH）")
-            } else {
-                format!("spawn {program} failed: {e}")
-            }
-        })?;
+        .stderr(std::process::Stdio::piped());
+    #[cfg(target_os = "windows")]
+    cmd.creation_flags(0x0800_0000); // CREATE_NO_WINDOW
+    let mut child = cmd.kill_on_drop(true).spawn().map_err(|e| {
+        if e.kind() == std::io::ErrorKind::NotFound {
+            format!("program not found: {program}（未安装或不在 PATH）")
+        } else {
+            format!("spawn {program} failed: {e}")
+        }
+    })?;
 
     let mut stdout = child.stdout.take().ok_or("stdout not captured")?;
     let mut stderr = child.stderr.take().ok_or("stderr not captured")?;

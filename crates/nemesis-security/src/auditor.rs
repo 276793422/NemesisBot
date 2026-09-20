@@ -305,7 +305,7 @@ pub struct SecurityAuditor {
     /// （ABAC/exec_unknown_policy/审批）；本体/祖先/根/~ 等臂不受豁免影响。
     /// 空 = 未注入（三臂全开，旧行为）。
     self_destruct_exempt: RwLock<String>,
-    /// Full Access 编辑器放行开关（2026-09-20 用户裁决，仿 codex）：Some =
+    /// Full Access 编辑器放行开关（2026-09-20 用户裁决）：Some =
     /// evaluate_request 在自毁硬拦**之后**短路调用其 evaluate（见
     /// editor_access 模块——开关开启时规则遍/解释器扫描/exec_unknown_policy/
     /// default_action 全部绕过）；None = 未装配（旧行为）。运行时态不持久化，
@@ -1190,7 +1190,7 @@ impl SecurityAuditor {
             }
         }
 
-        // Full Access 编辑器放行（2026-09-20 用户裁决，仿 codex）：自毁硬拦
+        // Full Access 编辑器放行（2026-09-20 用户裁决）：自毁硬拦
         // **之后**、规则遍之前短路——开关开启时 deny/ask 规则、解释器内层
         // 扫描、exec_unknown_policy、default_action 全部被绕过（「全放行」
         // 字面义）；写删族项目外且开关二未开时返回 None 回落原判定（外部

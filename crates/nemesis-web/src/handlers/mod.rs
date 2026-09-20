@@ -21,7 +21,7 @@ pub mod cluster_persona_gen;
 pub mod coding;
 pub mod commands;
 pub mod config;
-// Full Access 编辑器放行开关 WSAPI（2026-09-20 用户裁决，仿 codex）——
+// Full Access 编辑器放行开关 WSAPI（2026-09-20 用户裁决）——
 // editor.get/set。security 闸：EditorAccessState 在 nemesis-security。
 #[cfg(feature = "security")]
 pub mod editor;

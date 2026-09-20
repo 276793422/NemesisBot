@@ -154,6 +154,10 @@ async fn format_file(spec: &FormatterSpec, path: &str, timeout: Duration) -> boo
         .stderr(std::process::Stdio::null())
         // 超时分支 drop Child 时兜底 kill（不留孤儿格式化进程）。
         .kill_on_drop(true);
+    // 格式化工具（prettier/black 等）是 console 程序；gateway 托盘/无控制台
+    // 运行（release windows 子系统，2026-09-21）时压掉弹窗（输出本就走 null）。
+    #[cfg(target_os = "windows")]
+    cmd.creation_flags(0x0800_0000); // CREATE_NO_WINDOW
     match tokio::time::timeout(timeout, cmd.output()).await {
         Ok(Ok(out)) => out.status.success(),
         _ => false,

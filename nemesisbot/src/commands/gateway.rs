@@ -521,7 +521,12 @@ fn open_browser(url: &str) -> Result<(), String> {
     #[cfg(target_os = "windows")]
     {
         use std::os::windows::process::CommandExt;
+        // gateway 以托盘/无控制台运行(release windows 子系统)时,console
+        // 子进程 cmd 会各自弹新控制台;输出无人收集,压掉(先例
+        // background_registry.rs CREATE_NO_WINDOW 纪律)。
+        const CREATE_NO_WINDOW: u32 = 0x0800_0000;
         std::process::Command::new("cmd")
+            .creation_flags(CREATE_NO_WINDOW)
             .raw_arg(format!("/c start {}", url))
             .spawn()
             .map_err(|e| format!("opening browser: {}", e))?;

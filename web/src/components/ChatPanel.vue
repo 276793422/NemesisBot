@@ -147,7 +147,7 @@ const showSteerHint = computed(
   () => steerEnabled.value && /^[!！]/.test(chatStore.input.trimStart()),
 )
 
-// --- Full Access 编辑器放行开关（2026-09-20 用户裁决，仿 codex）---
+// --- Full Access 编辑器放行开关（2026-09-20 用户裁决）---
 // 模块级单例（useEditorMode）：聊天框旁按钮与设置页【编辑器】TAB 同源。
 // 点击语义：关 FA 必须随关 ext（服务端联动会把 (false, true) 折回
 // full=true，前端显式双关才能真关掉）；开 ext 时确保 full 开。
@@ -1672,7 +1672,7 @@ onUnmounted(() => {
         <span class="mode-mark">{{ chatStore.agentMode === 'plan' ? '📋' : '🛠' }}</span>
         {{ chatStore.agentMode === 'plan' ? '计划' : '构建' }}
       </button>
-      <!-- Full Access 放行开关（2026-09-20 用户裁决，仿 codex；运行时态，
+      <!-- Full Access 放行开关（2026-09-20 用户裁决；运行时态，
            Agent 重启后自动关闭）——与设置页【编辑器】TAB 同一状态 -->
       <button
         v-if="isDefaultChat"

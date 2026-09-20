@@ -1,4 +1,4 @@
-//! Full Access 编辑器放行开关 WSAPI(2026-09-20 用户裁决,仿 codex)——
+//! Full Access 编辑器放行开关 WSAPI(2026-09-20 用户裁决)——
 //! `editor.get` / `editor.set`。
 //!
 //! 依赖方向(与 projects.rs 同款):`EditorAccessState` 本体在

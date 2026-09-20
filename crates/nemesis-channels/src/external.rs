@@ -124,11 +124,14 @@ impl ExternalChannel {
         *self.cancel_tx.lock() = Some(cancel_tx);
 
         tokio::spawn(async move {
-            let mut child = match Command::new(&input_exe)
-                .stdout(std::process::Stdio::piped())
-                .stderr(std::process::Stdio::piped())
-                .spawn()
-            {
+            // 通道 EXE 多为 console 程序；gateway 托盘/无控制台运行（release
+            // windows 子系统，2026-09-21）时压掉弹窗（stdout/stderr 走管道）。
+            let mut cmd = Command::new(&input_exe);
+            cmd.stdout(std::process::Stdio::piped())
+                .stderr(std::process::Stdio::piped());
+            #[cfg(target_os = "windows")]
+            cmd.creation_flags(0x0800_0000); // CREATE_NO_WINDOW
+            let mut child = match cmd.spawn() {
                 Ok(c) => c,
                 Err(e) => {
                     error!(exe = %input_exe, error = %e, "[ExternalChannel] failed to spawn input EXE");
@@ -283,10 +286,12 @@ impl Channel for ExternalChannel {
         let content = self.format_output(&msg.content);
 
         tokio::spawn(async move {
-            let mut child = match Command::new(&output_exe)
-                .stdin(std::process::Stdio::piped())
-                .spawn()
-            {
+            // 同 input EXE：压掉 console 子进程弹窗（stdin 走管道）。
+            let mut cmd = Command::new(&output_exe);
+            cmd.stdin(std::process::Stdio::piped());
+            #[cfg(target_os = "windows")]
+            cmd.creation_flags(0x0800_0000); // CREATE_NO_WINDOW
+            let mut child = match cmd.spawn() {
                 Ok(c) => c,
                 Err(e) => {
                     error!(exe = %output_exe, error = %e, "[ExternalChannel] failed to spawn output EXE");

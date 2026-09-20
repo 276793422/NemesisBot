@@ -2,7 +2,7 @@ import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { setActivePinia, createPinia } from 'pinia'
 import { mount, flushPromises } from '@vue/test-utils'
 
-// ChatPanel Full Access 放行开关（2026-09-20 用户裁决，仿 codex）：
+// ChatPanel Full Access 放行开关（2026-09-20 用户裁决）：
 // - 工具栏两按钮（⚡ Full Access / 外部写删）+ editor-strip 常驻条；
 // - 点击发 editor.set（关 FA 随关 ext；开 ext 确保 full 开）；
 // - 以服务端生效值呈现（active 态 / disabled 联动）；

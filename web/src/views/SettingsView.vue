@@ -29,7 +29,7 @@ const tabs = [
   { id: 'raw', label: '原始 JSON' },
 ]
 
-// --- Full Access 编辑器放行开关（2026-09-20 用户裁决，仿 codex）---
+// --- Full Access 编辑器放行开关（2026-09-20 用户裁决）---
 // 与聊天框旁按钮同一状态（useEditorMode 模块级单例——单一真相源）。
 // 点击语义与 ChatPanel 同款：关 FA 随关 ext（服务端联动会把 (false, true)
 // 折回 full=true，显式双关才能真关）；开 ext 确保 full 开。
@@ -289,7 +289,7 @@ onMounted(async () => {
           </div>
         </div>
 
-        <!-- 编辑器：Full Access 放行开关（2026-09-20 用户裁决，仿 codex；
+        <!-- 编辑器：Full Access 放行开关（2026-09-20 用户裁决；
              与聊天框旁按钮同源，运行时态——Agent 重启后一律回关） -->
         <div v-if="activeTab === 'editor'" class="card">
           <div class="card-header"><h3>编辑器放行开关</h3></div>

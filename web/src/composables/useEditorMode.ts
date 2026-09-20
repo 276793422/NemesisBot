@@ -4,7 +4,7 @@ import { useWSAPI } from './useWSAPI'
 import { useToast } from './useToast'
 
 /**
- * Full Access 编辑器放行开关状态（2026-09-20 用户裁决，仿 codex）。
+ * Full Access 编辑器放行开关状态（2026-09-20 用户裁决）。
  *
  * 模块级单例（同 useApprovals）：聊天框旁按钮 / 设置页【编辑器】TAB /
  * Sidebar 徽标全部读这里——单一真相源。三通道状态收敛：

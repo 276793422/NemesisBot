@@ -2,6 +2,19 @@
 //!
 //! Routes all commands to their respective handler modules.
 
+// 双击直启 = 正式桌面应用语义（2026-09-21 BUG：双击 bot 后弹出的
+// Dashboard 附带控制台黑窗）。release 构建用 windows 子系统——系统不再
+// 为进程分配控制台，双击直启只有托盘 + Dashboard。debug 构建保留 console：
+// 真机测试范式（`target/debug/nemesisbot.exe gateway > console.log` 重定向、
+// 交互调试）全依赖它，不得动。仅 Windows 生效，其它平台不触碰该属性。
+// 连带纪律：windows 子系统进程的 console 子进程会各自弹新控制台——生产
+// 路径 spawn 一律 CREATE_NO_WINDOW（remote_executor_tool.rs / background_registry.rs
+// 等既有先例，手动 CLI 命令交互场景除外）。
+#![cfg_attr(
+    all(target_os = "windows", not(debug_assertions)),
+    windows_subsystem = "windows"
+)]
+
 /// L7（devtool-upgrade 阶段 7）：ACP agent 侧 server——编辑器等 ACP 客户端经
 /// stdio JSON-RPC 接入；安全 8 层与 gateway 同源生效（详见模块头）。
 mod acp;

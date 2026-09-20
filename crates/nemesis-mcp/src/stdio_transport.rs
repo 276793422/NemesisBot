@@ -111,6 +111,13 @@ impl Transport for StdioTransport {
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());
 
+        // MCP server 多为 console 程序(node/python 等)；gateway 以托盘/
+        // 无控制台运行（release windows 子系统，2026-09-21）时，不压
+        // CREATE_NO_WINDOW 会给每个 server 弹一个新控制台窗口。stdio 全走
+        // 管道，不受影响。
+        #[cfg(target_os = "windows")]
+        cmd.creation_flags(0x0800_0000); // CREATE_NO_WINDOW
+
         // Inject environment variables.
         for pair in &self.env {
             if let Some((k, v)) = pair.split_once('=') {

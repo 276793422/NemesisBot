@@ -2097,6 +2097,11 @@ impl Tool for RunScriptTool {
         cmd.arg(script)
             .stdin(std::process::Stdio::null())
             .kill_on_drop(true);
+        // 脚本解释器（bash/python 等）是 console 程序；gateway 托盘/无控制
+        // 台运行（release windows 子系统，2026-09-21）时压掉弹窗（输出经
+        // .output() 收集，不受影响）。
+        #[cfg(target_os = "windows")]
+        cmd.creation_flags(0x0800_0000); // CREATE_NO_WINDOW
 
         let output = tokio::time::timeout(
             std::time::Duration::from_secs(timeout_secs),

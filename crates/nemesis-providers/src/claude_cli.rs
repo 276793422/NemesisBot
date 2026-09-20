@@ -246,8 +246,10 @@ impl LLMProvider for ClaudeCliProvider {
 
         args.push("-".to_string()); // read from stdin
 
-        let output = tokio::process::Command::new(&self.config.command)
-            .args(&args)
+        // CLI 子进程是 console 程序；gateway 托盘/无控制台运行（release
+        // windows 子系统，2026-09-21）时压掉弹窗（stdio 全走管道不受影响）。
+        let mut cmd = tokio::process::Command::new(&self.config.command);
+        cmd.args(&args)
             .current_dir(if self.config.workspace.is_empty() {
                 "."
             } else {
@@ -255,13 +257,13 @@ impl LLMProvider for ClaudeCliProvider {
             })
             .stdin(std::process::Stdio::piped())
             .stdout(std::process::Stdio::piped())
-            .stderr(std::process::Stdio::piped())
-            .output()
-            .await
-            .map_err(|e| FailoverError::Unknown {
-                provider: "claude-cli".to_string(),
-                message: format!("failed to execute claude cli: {}", e),
-            })?;
+            .stderr(std::process::Stdio::piped());
+        #[cfg(target_os = "windows")]
+        cmd.creation_flags(0x0800_0000); // CREATE_NO_WINDOW
+        let output = cmd.output().await.map_err(|e| FailoverError::Unknown {
+            provider: "claude-cli".to_string(),
+            message: format!("failed to execute claude cli: {}", e),
+        })?;
 
         if !output.status.success() {
             let stderr = String::from_utf8_lossy(&output.stderr);
