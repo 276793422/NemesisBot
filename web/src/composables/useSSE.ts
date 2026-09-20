@@ -10,7 +10,7 @@ const eventHandlers: Record<string, EventHandler[]> = {}
 // （或网关重启 seq 重置），订阅方应全量刷新兜底。
 // SB（2026-09-17）：'session.created' = 会话 jsonl 首行落盘（隐式物化），
 // 侧栏订阅后 force 刷新列表（修「首条消息隐式创建的会话不进侧栏」）。
-const EVENT_TYPES = ['log', 'status', 'security-alert', 'scanner-progress', 'cluster-event', 'heartbeat', 'memory-setup', 'board-changed', 'usage-changed', 'approval-requested', 'approval-resolved', 'question-asked', 'question-resolved', 'board.plan_ready', 'board.plan_failed', 'resync', 'session.created']
+const EVENT_TYPES = ['log', 'status', 'security-alert', 'scanner-progress', 'cluster-event', 'heartbeat', 'memory-setup', 'board-changed', 'usage-changed', 'approval-requested', 'approval-resolved', 'question-asked', 'question-resolved', 'board.plan_ready', 'board.plan_failed', 'resync', 'session.created', 'editor-mode']
 
 function dispatch(eventType: string, data: any) {
   const handlers = eventHandlers[eventType] || []

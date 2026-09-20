@@ -7,15 +7,19 @@ import ApprovalCard from './ApprovalCard.vue'
 import QuestionCard from './QuestionCard.vue'
 import { useApprovals } from '../composables/useApprovals'
 import { useQuestions } from '../composables/useQuestions'
+import { useEditorMode } from '../composables/useEditorMode'
 
 const appStore = useAppStore()
 // M7：审批卡单例订阅（SSE approval-requested + pending 补拉）。
 const { initApprovals } = useApprovals()
 // F7：提问卡单例订阅（SSE question-asked + pending 补拉）。
 const { initQuestions } = useQuestions()
+// Full Access 放行开关单例订阅（SSE editor-mode + editor.get seed 对齐）。
+const { initEditorMode } = useEditorMode()
 onMounted(() => {
   initApprovals()
   initQuestions()
+  initEditorMode()
 })
 </script>
 

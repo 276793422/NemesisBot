@@ -238,6 +238,24 @@ impl AgentEvent {
         }
     }
 
+    /// 该事件关联的 agent session_key（如 `agent:main:session:{sid}`）。
+    /// 末段即发起任务的 web 会话 id（`handle_chat_send` 把前端 session_id
+    /// 放 metadata，loop 派生 session_key）——web pump 据此把会话 id 注入
+    /// WS push 帧，前端按当前会话精确过滤（2026-09-20 BUG-A）。
+    /// 审批/提问了结等全局事件无会话上下文，返回 `None`。
+    pub fn session_key(&self) -> Option<&str> {
+        match self {
+            AgentEvent::ToolStarted { session_key, .. }
+            | AgentEvent::ToolFinished { session_key, .. }
+            | AgentEvent::TodoUpdated { session_key, .. }
+            | AgentEvent::ModeChanged { session_key, .. }
+            | AgentEvent::ApprovalRequested { session_key, .. }
+            | AgentEvent::QuestionAsked { session_key, .. }
+            | AgentEvent::SessionCreated { session_key, .. } => Some(session_key),
+            AgentEvent::ApprovalResolved { .. } | AgentEvent::QuestionResolved { .. } => None,
+        }
+    }
+
     /// 事件 kind 标签（日志/路由用）。
     pub fn kind(&self) -> &'static str {
         match self {

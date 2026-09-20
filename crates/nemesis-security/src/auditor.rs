@@ -305,6 +305,19 @@ pub struct SecurityAuditor {
     /// （ABAC/exec_unknown_policy/审批）；本体/祖先/根/~ 等臂不受豁免影响。
     /// 空 = 未注入（三臂全开，旧行为）。
     self_destruct_exempt: RwLock<String>,
+    /// Full Access 编辑器放行开关（2026-09-20 用户裁决，仿 codex）：Some =
+    /// evaluate_request 在自毁硬拦**之后**短路调用其 evaluate（见
+    /// editor_access 模块——开关开启时规则遍/解释器扫描/exec_unknown_policy/
+    /// default_action 全部绕过）；None = 未装配（旧行为）。运行时态不持久化，
+    /// gateway 装配处注入（与 web editor handler 共享同一 Arc——单一真相源）。
+    editor_access: RwLock<Option<Arc<crate::editor_access::EditorAccessState>>>,
+    /// JSONL 结构化审计通道的运行时接线(None = 未接线 → 回落 `config` 的
+    /// `audit_log_file_enabled`/`audit_log_dir` 既有语义,即默认不写)。
+    /// 生产此前两条通道都拿不到 policy_rule:文本通道 policy 段恒 "pipeline",
+    /// JSONL 通道无装配点(审计页 security.audit 读 security_logs/*.jsonl
+    /// 由此恒空)。装配期经 [`SecurityAuditor::set_audit_jsonl_log`] 激活,
+    /// 目录与文本通道、审计页读取三方同源。
+    audit_jsonl: RwLock<Option<(bool, String)>>,
 }
 
 impl SecurityAuditor {
@@ -326,6 +339,8 @@ impl SecurityAuditor {
             exec_unknown_policy: RwLock::new(String::new()),
             protected_paths: RwLock::new(Vec::new()),
             self_destruct_exempt: RwLock::new(String::new()),
+            editor_access: RwLock::new(None),
+            audit_jsonl: RwLock::new(None),
         }
     }
 
@@ -641,6 +656,19 @@ impl SecurityAuditor {
     /// （落 default_action 旧行为）。只在配置键真实存在时调用。
     pub fn set_exec_unknown_policy(&self, policy: &str) {
         *self.exec_unknown_policy.write() = policy.to_lowercase();
+    }
+
+    /// Full Access 编辑器放行开关注入（2026-09-20 用户裁决，gateway 装配处
+    /// 调用；同一 Arc 同时交给 web editor handler 读写——单一真相源）。
+    pub fn set_editor_access(&self, state: Arc<crate::editor_access::EditorAccessState>) {
+        *self.editor_access.write() = Some(state);
+    }
+
+    /// 接线 JSONL 结构化审计通道(每条判定含 `policy_rule`,审计页
+    /// security.audit 的数据源)。装配期调用一次;`enabled=false` = 显式
+    /// 禁用(优先于 `config` 既有字段)。
+    pub fn set_audit_jsonl_log(&self, enabled: bool, dir: String) {
+        *self.audit_jsonl.write() = Some((enabled, dir));
     }
 
     /// Check if enabled.
@@ -1029,11 +1057,25 @@ impl SecurityAuditor {
     /// log file behavior).
     pub fn log_audit_event(&self, event: &AuditEvent) {
         // Write to the configured JSONL audit log directory
-        if self.config.audit_log_file_enabled
-            && let Some(ref log_dir) = self.config.audit_log_dir
-            && !log_dir.is_empty()
-        {
-            let log_path = Path::new(log_dir).join("audit.jsonl");
+        // 目录解析:运行时接线(set_audit_jsonl_log)优先;未接线回落
+        // `config` 既有字段(生产默认 false/None = 不写,行为不变)。
+        let jsonl_dir: Option<String> = match self.audit_jsonl.read().clone() {
+            Some((true, dir)) if !dir.is_empty() => Some(dir),
+            Some((true, _)) => None,
+            Some((false, _)) => None,
+            None => {
+                // 回落 config 既有语义(生产默认 false/None = 不写);
+                // 空串 dir 沿用原 `!log_dir.is_empty()` 守卫,不得穿透成
+                // CWD 相对路径落盘。
+                if self.config.audit_log_file_enabled {
+                    self.config.audit_log_dir.clone().filter(|d| !d.is_empty())
+                } else {
+                    None
+                }
+            }
+        };
+        if let Some(log_dir) = jsonl_dir {
+            let log_path = Path::new(&log_dir).join("audit.jsonl");
 
             // Create directory if it doesn't exist
             if let Some(parent) = log_path.parent() {
@@ -1147,6 +1189,20 @@ impl SecurityAuditor {
                 );
             }
         }
+
+        // Full Access 编辑器放行（2026-09-20 用户裁决，仿 codex）：自毁硬拦
+        // **之后**、规则遍之前短路——开关开启时 deny/ask 规则、解释器内层
+        // 扫描、exec_unknown_policy、default_action 全部被绕过（「全放行」
+        // 字面义）；写删族项目外且开关二未开时返回 None 回落原判定（外部
+        // 写删保留治理）。审计零新增：正常返回三元组由外层统一落盘，
+        // policy_rule=`editor_access:*` 可过滤追溯。窄窗口读 + clone，
+        // 持锁不跨 evaluate（其内部另有 RwLock）。
+        if let Some(editor) = self.editor_access.read().clone()
+            && let Some((decision, reason, policy)) = editor.evaluate(req.op_type, &req.target)
+        {
+            return (decision, reason, policy);
+        }
+
         let action_bucket = |action: &str| -> &'static str {
             match action {
                 "deny" | "denied" => "deny",
@@ -1677,16 +1733,23 @@ pub async fn monitor_security_status(
 /// Equivalent to Go's `GetAuditLog()`.
 pub fn get_audit_log(auditor: &SecurityAuditor, filter: &AuditFilter) -> Vec<AuditEvent> {
     let config = &auditor.config;
-    if !config.audit_log_file_enabled {
-        return Vec::new();
-    }
-
-    let log_dir = match &config.audit_log_dir {
-        Some(d) if !d.is_empty() => d,
-        _ => return Vec::new(),
+    // 目录解析与 log_audit_event 同款:运行时接线优先,未接线回落 config。
+    let log_dir = match auditor.audit_jsonl.read().clone() {
+        Some((true, d)) if !d.is_empty() => d,
+        Some((true, _)) => return Vec::new(),
+        Some((false, _)) => return Vec::new(),
+        None => {
+            if !config.audit_log_file_enabled {
+                return Vec::new();
+            }
+            match &config.audit_log_dir {
+                Some(d) if !d.is_empty() => d.clone(),
+                _ => return Vec::new(),
+            }
+        }
     };
 
-    let log_path = Path::new(log_dir).join("audit.jsonl");
+    let log_path = Path::new(&log_dir).join("audit.jsonl");
     if !log_path.exists() {
         return Vec::new();
     }

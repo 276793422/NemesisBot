@@ -160,6 +160,78 @@ async fn rate_limit_exhausted_yields_structured_terminal_error() {
 }
 
 #[tokio::test(start_paused = true)]
+async fn overloaded_error_enters_rate_limit_loop_and_recovers() {
+    // 2026-09-20 BUG：`provider codex is overloaded`（FailoverError::Overloaded
+    // 展平形态，状态码已丢）此前两环都不命中 → 一次终局。词表加 overloaded
+    // 后必须按限流对待（对齐 error_classifier 既有约定）并显式进度。
+    let provider = RateLimitedThenSuccess {
+        calls: std::sync::atomic::AtomicUsize::new(0),
+        fail_times: 2,
+        err_text: "provider codex is overloaded".to_string(),
+    };
+    let (tx, mut rx) = tokio::sync::mpsc::channel(16);
+    let agent_loop = AgentLoop::new_bus(
+        Box::new(provider),
+        test_config(),
+        tx,
+        ConcurrentMode::Reject,
+        8,
+        0,
+    );
+    let instance = AgentInstance::new(test_config());
+    let context = RequestContext::new("web", "chat1", "user1", "session1");
+
+    let events = agent_loop.run(&instance, "Hello", &context).await;
+
+    assert!(
+        events
+            .iter()
+            .any(|e| matches!(e, AgentEvent::Done(m) if m == "Recovered!")),
+        "过载重试后必须恢复（不得一次终局）: {events:?}"
+    );
+    let mut progresses = Vec::new();
+    while let Ok(msg) = rx.try_recv() {
+        if msg.content.contains("重试") {
+            progresses.push(msg.content);
+        }
+    }
+    assert_eq!(progresses.len(), 2, "过载进度通知: {progresses:?}");
+    assert!(progresses[0].contains("第 1/10 次"));
+}
+
+#[tokio::test(start_paused = true)]
+async fn overloaded_exhausted_yields_structured_terminal_error() {
+    // 过载耗尽同样走结构化终局（上游限流口径），不裸抛。
+    let provider = RateLimitedThenSuccess {
+        calls: std::sync::atomic::AtomicUsize::new(0),
+        fail_times: usize::MAX,
+        err_text: "provider codex is overloaded".to_string(),
+    };
+    let agent_loop = AgentLoop::new(Box::new(provider), test_config());
+    let instance = AgentInstance::new(test_config());
+    let context = RequestContext::new("web", "chat1", "user1", "session1");
+
+    let events = agent_loop.run(&instance, "Hello", &context).await;
+
+    let errs: Vec<_> = events
+        .iter()
+        .filter_map(|e| match e {
+            AgentEvent::Error(m) => Some(m.clone()),
+            _ => None,
+        })
+        .collect();
+    assert!(
+        errs.iter().any(|m| m.contains("上游限流，已重试 10 次")),
+        "过载终局必须结构化标注: {errs:?}"
+    );
+    assert!(
+        errs.iter()
+            .any(|m| m.contains("provider codex is overloaded")),
+        "终局错误保留原始原因: {errs:?}"
+    );
+}
+
+#[tokio::test(start_paused = true)]
 async fn rate_limit_retries_config_override_takes_effect() {
     // `agents.defaults.rate_limit_retries` fresh-read（F8 模式）：设 2 →
     // 1 首捕 + 2 重试 = 3 次调用即终局。

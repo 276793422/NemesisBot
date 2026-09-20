@@ -126,7 +126,9 @@ fn registry_all_modules_nonempty_no_dupes() {
     ];
     let expected_floor = UNCONDITIONAL_MODULES.len()
         + gated_on.iter().filter(|b| **b).count()
-        + if cfg!(feature = "security") { 1 } else { 0 };
+        // security 门控附加两模块:scanner + editor(Full Access 放行开关,
+        // 2026-09-20)——security 模块本体已由 gated_on 的 security 项计入。
+        + if cfg!(feature = "security") { 2 } else { 0 };
     assert!(
         reg.len() >= expected_floor,
         "registry modules {} < floor {expected_floor}: {:?}",
@@ -176,6 +178,9 @@ fn registry_anchor_commands_present() {
     if cfg!(feature = "security") {
         assert!(cmds_of(&reg, "security").contains(&"config.get"));
         assert!(cmds_of(&reg, "scanner").contains(&"config.get"));
+        // Full Access 编辑器放行开关(2026-09-20)。
+        assert!(cmds_of(&reg, "editor").contains(&"get"));
+        assert!(cmds_of(&reg, "editor").contains(&"set"));
     }
     if cfg!(feature = "sandbox") {
         assert!(cmds_of(&reg, "sandbox").contains(&"commit"));

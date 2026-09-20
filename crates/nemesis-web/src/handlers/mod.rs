@@ -21,6 +21,10 @@ pub mod cluster_persona_gen;
 pub mod coding;
 pub mod commands;
 pub mod config;
+// Full Access 编辑器放行开关 WSAPI（2026-09-20 用户裁决，仿 codex）——
+// editor.get/set。security 闸：EditorAccessState 在 nemesis-security。
+#[cfg(feature = "security")]
+pub mod editor;
 pub mod estop;
 #[cfg(feature = "forge")]
 pub mod forge;
@@ -164,6 +168,9 @@ pub fn register_all(router: &mut crate::ws_router::WsRouter) {
     #[cfg(feature = "security")]
     {
         router.register(Arc::new(security::SecurityHandler::new()));
+        // Full Access 编辑器放行开关（2026-09-20 用户裁决）——槽未装配时
+        // handler 诚实报错，注册本身无副作用。
+        router.register(Arc::new(editor::EditorHandler));
     }
     #[cfg(feature = "sandbox")]
     {

@@ -170,6 +170,18 @@ pub(crate) async fn build_security_plugin(
         .auditor()
         .set_self_destruct_exempt_path(&workspace_root.to_string_lossy());
 
+    // Full Access 编辑器放行开关(2026-09-20 用户裁决,仿 codex):创建运行
+    // 时态(**双关,不持久化——进程重启一律回关,必须用户手动再开**),同一
+    // Arc 双注入:auditor(evaluate_request 短路判定)+ web editor handler
+    // (WSAPI editor.get/set 读写 + SSE 广播)——单一真相源。初始 roots =
+    // 主 workspace;项目 registry 全部项目根由 editor.get/set 每次刷新
+    // 纠正(运行期漂移 fail-safe)。headless `run` 共用本函数:槽安装无
+    // 端口也无害。
+    let editor_access = nemesis_security::editor_access::EditorAccessState::new();
+    plugin.auditor().set_editor_access(editor_access.clone());
+    nemesis_web::handlers::editor::install_editor_access(editor_access.clone());
+    editor_access.set_workspace_roots(vec![workspace_root.to_string_lossy().to_string()]);
+
     // Initialize audit log file (CFG-06：`audit_log_file_enabled` 此前被
     // 无视——注释声称生效但代码无条件初始化。现诚实接线：false = 跳过
     // JSONL 初始化；缺键 = true（默认开，旧行为）。审计链（Merkle）不受
@@ -186,6 +198,12 @@ pub(crate) async fn build_security_plugin(
         .and_then(|f| f.as_bool())
         .unwrap_or(true);
     if audit_file_enabled {
+        // JSONL 结构化审计同步接线(与文本通道同开关、同目录):每条判定
+        // 含 policy_rule(如 editor_access:*),审计页 security.audit 读
+        // security_logs/*.jsonl 由此有数据(此前生产从未接线,审计页恒空)。
+        plugin
+            .auditor()
+            .set_audit_jsonl_log(true, audit_dir.clone());
         if let Err(e) = plugin.init_audit_log_file(&audit_dir) {
             warn!("[Security] Failed to initialize security audit log: {}", e);
         } else {

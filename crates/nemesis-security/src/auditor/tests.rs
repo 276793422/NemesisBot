@@ -2536,3 +2536,152 @@ fn guardian_failure_approval_routes_to_running_manager() {
         .expect("running manager must return verdict");
     assert!(res.approved);
 }
+
+// ===========================================================================
+// Full Access 编辑器放行开关(2026-09-20 用户裁决,仿 codex)
+// 短路位置:自毁硬拦之后、规则遍之前——三条行为锁:
+// ① 开关关(或未注入)= 旧行为逐字节一致;② 自毁硬拦不被开关绕过;
+// ③ 开关开 = 绕过显式 deny 规则,审计 policy_rule=`editor_access:*`。
+// ===========================================================================
+
+use crate::editor_access::EditorAccessState;
+
+fn editor_auditor() -> SecurityAuditor {
+    SecurityAuditor::new(AuditorConfig {
+        enabled: true,
+        default_action: "deny".to_string(),
+        ..Default::default()
+    })
+}
+
+#[test]
+fn editor_access_off_matches_uninjected_verbatim() {
+    // 注入双关状态 vs 完全未注入:evaluate_request 三元组必须逐字节一致
+    // (装配永远存在,行为差异只允许来自开关本身)。
+    let req = OperationRequest {
+        id: "ea-0".to_string(),
+        op_type: OperationType::FileWrite,
+        danger_level: DangerLevel::High,
+        user: "test".to_string(),
+        source: "web".to_string(),
+        target: "d:/workspace/run.log".to_string(),
+        timestamp: None,
+        ..Default::default()
+    };
+
+    let plain = editor_auditor();
+    plain.set_rules(
+        OperationType::FileWrite,
+        vec![rule("*.log", "ask"), rule("*", "deny")],
+    );
+    let injected = editor_auditor();
+    injected.set_rules(
+        OperationType::FileWrite,
+        vec![rule("*.log", "ask"), rule("*", "deny")],
+    );
+    injected.set_editor_access(EditorAccessState::new()); // 双关
+
+    assert_eq!(
+        plain.evaluate_request(&req),
+        injected.evaluate_request(&req),
+        "双关注入不得改变任何判定"
+    );
+}
+
+#[test]
+fn editor_full_access_does_not_bypass_self_destruct() {
+    // 短路必须位于自毁硬拦**之后**:FA 全开下递归删除 workspace 仍 Denied
+    // (若短路插错位置,此用例将返回 Allowed + editor_access:full)。
+    let auditor = editor_auditor();
+    auditor.set_protected_paths(vec!["d:/workspace".to_string()]);
+    let editor = EditorAccessState::new();
+    editor.set_flags(true, true);
+    editor.set_workspace_roots(vec!["d:/workspace".to_string()]);
+    auditor.set_editor_access(editor);
+
+    let (decision, _, policy) =
+        auditor.evaluate_request(&exec_request("ea-sd", "rm -rf d:/workspace"));
+    assert_eq!(decision, SecurityDecision::Denied);
+    assert_eq!(policy, "self_destruct");
+}
+
+#[test]
+fn editor_full_access_short_circuits_deny_rules_with_audit_mark() {
+    // FA 开启 = 「全放行」字面义:显式 deny 规则被绕过(裁决),policy_rule
+    // 打 editor_access 标记供审计过滤。
+    let auditor = editor_auditor();
+    auditor.set_rules(OperationType::ProcessExec, vec![rule("python*", "deny")]);
+    let editor = EditorAccessState::new();
+    editor.set_flags(true, false);
+    editor.set_workspace_roots(vec!["d:/workspace".to_string()]);
+    auditor.set_editor_access(editor.clone());
+
+    let (decision, _, policy) =
+        auditor.evaluate_request(&exec_request("ea-sc", "python -c \"print(1)\""));
+    assert_eq!(decision, SecurityDecision::Allowed);
+    assert_eq!(policy, "editor_access:full");
+
+    // 关掉开关:同一请求回到规则判定(deny 命中)。
+    editor.set_flags(false, false);
+    let (decision, _, policy) =
+        auditor.evaluate_request(&exec_request("ea-sc2", "python -c \"print(1)\""));
+    assert_eq!(decision, SecurityDecision::Denied);
+    assert_eq!(policy, "rule[0]");
+}
+
+#[test]
+fn audit_jsonl_wiring_persists_editor_access_policy() {
+    // 接线 JSONL 结构化审计(装配期 set_audit_jsonl_log)后,request_permission
+    // 的每条判定连同 policy_rule(如 editor_access:*)落 {dir}/audit.jsonl
+    // ——审计页 security.audit 的数据源,「FA 放行可过滤追溯」的兑现点。
+    let dir = std::env::temp_dir().join(format!("nb-audit-jsonl-{}", uuid::Uuid::new_v4()));
+    let auditor = editor_auditor();
+    auditor.set_audit_jsonl_log(true, dir.to_string_lossy().to_string());
+    let editor = EditorAccessState::new();
+    editor.set_flags(true, false);
+    editor.set_workspace_roots(vec!["d:/workspace".to_string()]);
+    auditor.set_editor_access(editor);
+
+    let req = OperationRequest {
+        id: "ea-jsonl".to_string(),
+        op_type: OperationType::ProcessExec,
+        danger_level: DangerLevel::Critical,
+        user: "test".to_string(),
+        source: "web".to_string(),
+        target: "python --version".to_string(),
+        timestamp: None,
+        ..Default::default()
+    };
+    let (allowed, _, _) = auditor.request_permission(&req);
+    assert!(allowed, "FA 下 exec 应放行");
+
+    let jsonl = std::fs::read_to_string(dir.join("audit.jsonl")).expect("audit.jsonl 应落盘");
+    let line = jsonl.lines().last().unwrap();
+    assert!(
+        line.contains("\"policy_rule\":\"editor_access:full\""),
+        "policy_rule 应落盘可过滤,实际: {line}"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn audit_jsonl_explicit_disable_wins() {
+    // 显式禁用(enabled=false)优先于目录存在与否:不落盘、不建文件。
+    let dir = std::env::temp_dir().join(format!("nb-audit-off-{}", uuid::Uuid::new_v4()));
+    let auditor = editor_auditor();
+    auditor.set_audit_jsonl_log(false, dir.to_string_lossy().to_string());
+
+    let req = OperationRequest {
+        id: "ea-jsonl-off".to_string(),
+        op_type: OperationType::FileWrite,
+        danger_level: DangerLevel::High,
+        user: "test".to_string(),
+        source: "web".to_string(),
+        target: "d:/workspace/a.log".to_string(),
+        timestamp: None,
+        ..Default::default()
+    };
+    let _ = auditor.request_permission(&req);
+    assert!(!dir.join("audit.jsonl").exists(), "显式禁用不得落盘");
+    let _ = std::fs::remove_dir_all(&dir);
+}

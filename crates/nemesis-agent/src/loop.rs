@@ -57,9 +57,18 @@ const RATE_LIMIT_BACKOFF_LADDER: [u64; 10] = [5, 10, 20, 40, 60, 90, 120, 150, 1
 
 /// 限流分类词表：`rate limited by provider` = FailoverError::RateLimit 的
 /// Display 前缀（llm_bridge 保真展平）；`429` / `too many requests` 兜底
-/// 裸文本形态（对齐 providers 侧 error_classifier 口径）。
-const RATE_LIMIT_ERROR_KEYWORDS: [&str; 3] =
-    ["rate limited by provider", "429", "too many requests"];
+/// 裸文本形态（对齐 providers 侧 error_classifier 口径）；`overloaded` =
+/// FailoverError::Overloaded 的 Display 尾词（502/503 过载，状态码在展平
+/// 时已丢失）——providers 侧既有约定就是按限流对待（error_classifier
+/// 「Overloaded treated as rate_limit」），loop 层词表必须同步对齐，否则
+/// 过载首败即终局（2026-09-20 BUG 实证：provider codex is overloaded 一次
+/// 报死，复杂长链路任一轮踩 503 即全任务报废）。
+const RATE_LIMIT_ERROR_KEYWORDS: [&str; 4] = [
+    "rate limited by provider",
+    "429",
+    "too many requests",
+    "overloaded",
+];
 
 /// 阶梯取值（attempt 从 1 起计；超出阶梯长度取末档）。
 fn rate_limit_ladder_secs(attempt: u32) -> u64 {

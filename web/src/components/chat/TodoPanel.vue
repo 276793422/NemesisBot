@@ -4,13 +4,16 @@
  *
  * 渲染当前会话的 todo 清单（H1 `todowrite` 工具写入）：
  * - 实时：监听 WS push 帧 `{type:"push", cmd:"tool_event", data:{kind:"TodoUpdated", data}}`
- *   （M1a AgentEvent 通道），按当前会话 chat_id 过滤后刷新。
+ *   （M1a AgentEvent 通道），按当前会话过滤后刷新（2026-09-20 BUG-A：帧
+ *   data 内的 chat_id 是连接级 id、与会话 id 不同域，过滤恒不等——现优先
+ *   用 web pump 注入的 `session_id`（会话 id，末段与 currentId 同域），
+ *   旧帧无该字段时回退 chat_id 前缀匹配兜底）。
  * - 进入会话 / 断线重连：WSAPI `chat.todo_get {session_id}` 拉一次同路径
  *   json（后端读 sessions/todo_{safe}.json，与 TodoWriteTool 写路径同构）。
  * - 状态列 checkbox 样式：pending ○ / in_progress 高亮旋转 / completed ✓。
  *
- * 仅默认 chat 模块挂载（workflow_chat 等模块会话路由不同，todo 不适用）。
- * 折叠态记忆在 localStorage（每会话维度不持久化，全局开合偏好）。
+ * 挂载面：ChatPanel（默认 chat 模块；workflow_chat 等模块会话路由不同，
+ * todo 不适用）。折叠态记忆在 localStorage（每会话维度不持久化，全局开合偏好）。
  */
 import { computed, onUnmounted, ref, watch } from 'vue'
 import { addMessageHandler, removeMessageHandler, wsStatus } from '../../composables/useWebSocket'
@@ -56,14 +59,19 @@ function fetchTodos() {
     })
 }
 
-/** WS push 帧 → TodoUpdated 事件；按当前会话 chat_id 过滤。 */
+/** WS push 帧 → TodoUpdated 事件；按当前会话过滤。 */
 function onWsMessage(frame: any) {
   if (frame?.type !== 'push' || frame?.cmd !== 'tool_event') return
   const ev = frame?.data
   if (ev?.kind !== 'TodoUpdated') return
   const payload = ev.data ?? {}
-  // chat_id 形如 `web:{session_id}`（web pump 路由键）；仅当前会话刷新。
-  if (payload.chat_id !== `web:${sessionStore.currentId}`) return
+  // 2026-09-20 BUG-A：优先按 pump 注入的 session_id（会话 id 域）过滤；
+  // 旧帧无该字段时回退 chat_id（`web:{连接id}`，连接级）前缀匹配兜底。
+  if (typeof payload.session_id === 'string' && payload.session_id.length > 0) {
+    if (payload.session_id !== sessionStore.currentId) return
+  } else if (payload.chat_id !== `web:${sessionStore.currentId}`) {
+    return
+  }
   chatStore.setTodos(payload.todos ?? [])
   flashRefreshed()
 }

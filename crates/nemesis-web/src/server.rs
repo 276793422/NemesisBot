@@ -1701,7 +1701,7 @@ pub async fn pump_agent_events(
     loop {
         match rx.recv().await {
             Ok(event) => {
-                let data = match serde_json::to_value(&event) {
+                let mut data = match serde_json::to_value(&event) {
                     Ok(v) => v,
                     Err(e) => {
                         tracing::warn!(
@@ -1714,11 +1714,21 @@ pub async fn pump_agent_events(
                 // M7（devtool-upgrade 阶段 5）：审批请求走独立 SSE 事件类型
                 // `approval-requested` 全局广播（useSSE 白名单订阅）——审批不
                 // 属于单一会话，不做 web: 定向 ws push；审批卡渲染在 App 级。
+                // BUG-B（2026-09-20）：前端契约是 AgentEvent 的**内层 data**
+                // （useApprovals.upsertFromPayload 直接读 request_id 等平铺
+                // 字段），此处曾把 adjacently tagged 整体
+                // `{"kind":..,"data":{..}}` 原样 publish——前端首行类型卫
+                // 不命中静默 return，审批卡实时不弹（刷新后 seedPending 走
+                // WSAPI 平铺 entry_json 才可见，即用户实测「不刷新看不到」）。
+                // 与下方 session.created 分支的平铺先例对齐，取内层展平。
                 if matches!(
                     event,
                     nemesis_types::agent::AgentEvent::ApprovalRequested { .. }
                 ) {
-                    event_hub.publish("approval-requested", data);
+                    event_hub.publish(
+                        "approval-requested",
+                        data.get("data").cloned().unwrap_or(data),
+                    );
                     continue;
                 }
                 // F6（devtool-upgrade 阶段 5）：裁决结果同走全局广播——所有
@@ -1727,7 +1737,11 @@ pub async fn pump_agent_events(
                     event,
                     nemesis_types::agent::AgentEvent::ApprovalResolved { .. }
                 ) {
-                    event_hub.publish("approval-resolved", data);
+                    // BUG-B（2026-09-20）：同 approval-requested，展平内层。
+                    event_hub.publish(
+                        "approval-resolved",
+                        data.get("data").cloned().unwrap_or(data),
+                    );
                     continue;
                 }
                 // F7（devtool-upgrade 阶段 5）：结构化提问同走全局广播——
@@ -1737,14 +1751,21 @@ pub async fn pump_agent_events(
                     event,
                     nemesis_types::agent::AgentEvent::QuestionAsked { .. }
                 ) {
-                    event_hub.publish("question-asked", data);
+                    // BUG-B（2026-09-20）：同 approval-requested，展平内层
+                    // （useQuestions.upsertFromPayload 期望平铺 question_id 等）。
+                    event_hub.publish("question-asked", data.get("data").cloned().unwrap_or(data));
                     continue;
                 }
                 if matches!(
                     event,
                     nemesis_types::agent::AgentEvent::QuestionResolved { .. }
                 ) {
-                    event_hub.publish("question-resolved", data);
+                    // BUG-B（2026-09-20）：同族展平（前端 removeLocal 读平铺
+                    // question_id）。
+                    event_hub.publish(
+                        "question-resolved",
+                        data.get("data").cloned().unwrap_or(data),
+                    );
                     continue;
                 }
                 // SB（2026-09-17）：会话物化 → SSE `session.created` 全局广播
@@ -1757,6 +1778,21 @@ pub async fn pump_agent_events(
                         serde_json::json!({ "session_id": session_id }),
                     );
                     continue;
+                }
+                // BUG-A（2026-09-20）：帧内层注入 web 会话 id。chat_id 是
+                // 连接级（`web:{连接id}`，session.rs create_session_with_method
+                // 派生），与前端会话 id（sessionStore.currentId，create/list
+                // 返回的会话 sid）不同域——前端按 `web:${currentId}` 过滤恒
+                // 不等，工具卡/任务清单/模式徽标的实时帧全灭（2026-09-20 实
+                // 测：服务端帧全数到达浏览器、UI 零反应）。session_key 末段
+                // = 发起会话 id（handle_chat_send 把前端 session_id 放
+                // metadata，loop 派生 session_key），注入后前端可精确过滤；
+                // 无 session_key 的事件不注入（SSE 消费方按字段缺席忽略）。
+                if let Some(sk) = event.session_key()
+                    && let Some(sid) = sk.rsplit(':').next()
+                    && let Some(inner) = data.get_mut("data")
+                {
+                    inner["session_id"] = serde_json::Value::String(sid.to_string());
                 }
                 event_hub.publish("tool_event", data.clone());
 

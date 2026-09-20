@@ -12,6 +12,7 @@ import { useSlashCommands, filterSlashCommands, type SlashCommand } from '../com
 import { useSessionStore } from '../stores/session'
 import { uploadImage, validateImageFile, type UploadedImage } from '../composables/useImageUpload'
 import { useToast } from '../composables/useToast'
+import { useEditorMode } from '../composables/useEditorMode'
 // H2 (2026-09-05): todo 清单面板（todowrite 工具的实时渲染）。
 import TodoPanel from './chat/TodoPanel.vue'
 
@@ -145,6 +146,26 @@ async function toggleAgentMode() {
 const showSteerHint = computed(
   () => steerEnabled.value && /^[!！]/.test(chatStore.input.trimStart()),
 )
+
+// --- Full Access 编辑器放行开关（2026-09-20 用户裁决，仿 codex）---
+// 模块级单例（useEditorMode）：聊天框旁按钮与设置页【编辑器】TAB 同源。
+// 点击语义：关 FA 必须随关 ext（服务端联动会把 (false, true) 折回
+// full=true，前端显式双关才能真关掉）；开 ext 时确保 full 开。
+
+const { fullAccess, externalWrite, editorAvailable, setEditorAccess } = useEditorMode()
+
+async function toggleFullAccess() {
+  if (fullAccess.value) {
+    await setEditorAccess(false, false)
+  } else {
+    await setEditorAccess(true, externalWrite.value)
+  }
+}
+
+async function toggleExternalWrite() {
+  // ext 依赖 full：按钮仅在 fullAccess 时可点（disabled），此处仍显式带 full。
+  await setEditorAccess(true, !externalWrite.value)
+}
 
 /** 一键插队：给输入加 `!` 前缀（已有前缀则不动）。 */
 function prefixSteer() {
@@ -322,13 +343,20 @@ function onChatAreaClick() {
 
 function handleWSMessage(data: any) {
   // M1b: tool_event push（M1a AgentEvent 通道；无 module 字段的 push 帧）。
-  // 按当前会话 chat_id 过滤（`web:{session_id}`，M1a pump 路由键）；
-  // 无活跃会话（standalone 单会话）时接受任意 web: 前缀事件。
+  // 按当前会话过滤。2026-09-20 BUG-A：帧内层 chat_id 是连接级 id
+  // （`web:{连接id}`，session.rs 连接建立时派生），与前端会话 id 不同域，
+  // 恒不等 → 全部实时帧被丢弃（工具卡/任务清单/模式徽标零反应）。现
+  // 优先用 web pump 注入的 `session_id`（会话 id，session_key 末段，与
+  // currentId 同域）；旧帧无该字段时回退旧 chat_id 逻辑（兼容）。
   if (data.type === 'push' && data.cmd === 'tool_event') {
     const ev = data.data
     const p = ev?.data ?? {}
-    const expected = sessionStore.currentId ? `web:${sessionStore.currentId}` : null
-    if (expected ? p.chat_id !== expected : !String(p.chat_id ?? '').startsWith('web:')) return
+    if (typeof p.session_id === 'string' && p.session_id.length > 0) {
+      if (p.session_id !== sessionStore.currentId) return
+    } else {
+      const expected = sessionStore.currentId ? `web:${sessionStore.currentId}` : null
+      if (expected ? p.chat_id !== expected : !String(p.chat_id ?? '').startsWith('web:')) return
+    }
     if (ev?.kind === 'ToolStarted') {
       chatStore.appendToolEvent({
         callId: p.call_id,
@@ -1644,6 +1672,28 @@ onUnmounted(() => {
         <span class="mode-mark">{{ chatStore.agentMode === 'plan' ? '📋' : '🛠' }}</span>
         {{ chatStore.agentMode === 'plan' ? '计划' : '构建' }}
       </button>
+      <!-- Full Access 放行开关（2026-09-20 用户裁决，仿 codex；运行时态，
+           Agent 重启后自动关闭）——与设置页【编辑器】TAB 同一状态 -->
+      <button
+        v-if="isDefaultChat"
+        class="voice-btn editor-full-btn"
+        :class="{ active: fullAccess }"
+        :disabled="!editorAvailable"
+        title="Full Access（运行时开关，重启失效）：项目目录内文件操作全放行；项目目录外读/执行/网络/系统放行；项目外写删仍需审批；自毁硬拦不被绕过"
+        @click="toggleFullAccess"
+      >
+        ⚡ Full Access
+      </button>
+      <button
+        v-if="isDefaultChat"
+        class="voice-btn editor-ext-btn"
+        :class="{ active: externalWrite }"
+        :disabled="!fullAccess"
+        title="外部写删放行（依赖 Full Access）：项目目录外的写入/删除也放行。两开关全开 = 真·全放（真沙盒仍兜底）"
+        @click="toggleExternalWrite"
+      >
+        外部写删
+      </button>
       <button
         v-if="isDefaultChat"
         class="voice-btn redo-btn"
@@ -1722,6 +1772,11 @@ onUnmounted(() => {
     <!-- F1: 计划模式常驻条（工具栏可折叠，安全相关状态需要始终可见） -->
     <div v-if="isDefaultChat && chatStore.agentMode === 'plan'" class="plan-strip">
       📋 计划模式：文件修改类工具已停用（plans/ 目录写入放行）— 点击上方徽标或发送 /build 切回
+    </div>
+    <!-- Full Access 放行常驻条（安全相关状态始终可见，plan-strip 同款） -->
+    <div v-if="fullAccess" class="editor-strip">
+      <template v-if="externalWrite">⚡ Full Access + 外部写删：全放行中（exec 由真沙盒兜底；自毁硬拦仍生效）— 点击上方按钮或设置页【编辑器】关闭</template>
+      <template v-else>⚡ Full Access：项目内全放行 + 项目外读/执行/网络/系统放行（项目外写删仍审批）— Agent 重启后自动关闭</template>
     </div>
     <div v-if="showSteerHint" class="steer-hint">
       ⚡ 将以插队（steer）模式发送，立即送达当前轮
@@ -1900,6 +1955,17 @@ onUnmounted(() => {
   border-color: #e6a23c;
 }
 .plan-strip {
+  padding: 4px 12px;
+  font-size: var(--text-xs);
+  color: #e6a23c;
+  background: var(--surface);
+  border-top: 1px solid var(--border);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+/* Full Access 放行常驻条（安全相关状态始终可见，plan-strip 同款） */
+.editor-strip {
   padding: 4px 12px;
   font-size: var(--text-xs);
   color: #e6a23c;

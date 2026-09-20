@@ -38,6 +38,8 @@ pub mod credential;
 #[cfg(feature = "security")]
 pub mod dlp;
 #[cfg(feature = "security")]
+pub mod editor_access;
+#[cfg(feature = "security")]
 pub mod guardian;
 #[cfg(feature = "security")]
 pub mod injection;

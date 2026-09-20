@@ -5,12 +5,15 @@ import { useAppStore } from '../stores/app'
 import { useAuthStore } from '../stores/auth'
 import { useTheme } from '../composables/useTheme'
 import { useWSAPI } from '../composables/useWSAPI'
+import { useEditorMode } from '../composables/useEditorMode'
 
 const router = useRouter()
 const route = useRoute()
 const appStore = useAppStore()
 const auth = useAuthStore()
 const { theme, toggleTheme } = useTheme()
+// Full Access 激活徽标（只读呈现；开关本体在 useEditorMode 单例）。
+const { fullAccess } = useEditorMode()
 
 function navigate(page: string) {
   router.push(page === 'chat' ? '/' : '/' + page)
@@ -208,6 +211,15 @@ const navGroups = [
     </nav>
 
     <div class="sidebar-footer">
+      <!-- Full Access 激活徽标（2026-09-20）：放行中必须始终可见（急停旁） -->
+      <a
+        v-if="fullAccess"
+        class="nav-item editor-badge"
+        title="Full Access 放行中（运行时开关，Agent 重启后自动关闭）— 聊天工具栏或设置页【编辑器】可关闭"
+      >
+        <span class="nav-icon">⚡</span>
+        <span class="nav-label">Full Access 中</span>
+      </a>
       <a
         class="nav-item estop-btn"
         :class="{ engaged: estopEngaged }"
@@ -241,6 +253,9 @@ const navGroups = [
 </template>
 
 <style scoped>
+.editor-badge {
+  color: #e6a23c;
+}
 .estop-btn {
   cursor: pointer;
 }

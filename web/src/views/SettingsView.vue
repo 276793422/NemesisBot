@@ -2,6 +2,7 @@
 import { ref, onMounted } from 'vue'
 import { useWSAPI } from '../composables/useWSAPI'
 import { useToast } from '../composables/useToast'
+import { useEditorMode } from '../composables/useEditorMode'
 
 const { request } = useWSAPI()
 const toast = useToast()
@@ -22,10 +23,30 @@ const tabs = [
   { id: 'gateway', label: 'Gateway' },
   { id: 'tools', label: '工具' },
   { id: 'services', label: '服务开关' },
+  { id: 'editor', label: '编辑器' },
   { id: 'logging', label: '日志' },
   { id: 'cors', label: 'CORS' },
   { id: 'raw', label: '原始 JSON' },
 ]
+
+// --- Full Access 编辑器放行开关（2026-09-20 用户裁决，仿 codex）---
+// 与聊天框旁按钮同一状态（useEditorMode 模块级单例——单一真相源）。
+// 点击语义与 ChatPanel 同款：关 FA 随关 ext（服务端联动会把 (false, true)
+// 折回 full=true，显式双关才能真关）；开 ext 确保 full 开。
+const { fullAccess, externalWrite, editorAvailable, setEditorAccess } = useEditorMode()
+
+async function toggleEditorFull() {
+  if (fullAccess.value) {
+    await setEditorAccess(false, false)
+  } else {
+    await setEditorAccess(true, externalWrite.value)
+  }
+}
+
+async function toggleEditorExt() {
+  if (!fullAccess.value) return // UI 联动：依赖 Full Access
+  await setEditorAccess(true, !externalWrite.value)
+}
 
 async function loadConfig() {
   try {
@@ -264,6 +285,34 @@ onMounted(async () => {
                 <code style="font-size: var(--text-sm);">{{ origin }}</code>
                 <button class="btn btn-sm btn-danger" @click="removeCorsOrigin(origin)">移除</button>
               </div>
+            </div>
+          </div>
+        </div>
+
+        <!-- 编辑器：Full Access 放行开关（2026-09-20 用户裁决，仿 codex；
+             与聊天框旁按钮同源，运行时态——Agent 重启后一律回关） -->
+        <div v-if="activeTab === 'editor'" class="card">
+          <div class="card-header"><h3>编辑器放行开关</h3></div>
+          <div class="card-body">
+            <div v-if="!editorAvailable" style="padding: var(--space-3); margin-bottom: var(--space-4); background: var(--warning-bg, #fef3cd); border: 1px solid var(--warning, #e5a00d); border-radius: var(--radius-md); font-size: var(--text-sm); color: var(--text-secondary);">
+              编辑器放行未装配（本实例未启用 security 模块）——开关不可用。
+            </div>
+            <div class="form-group" style="display: flex; align-items: center; gap: var(--space-3);">
+              <label class="form-label" style="margin: 0;">Full Access</label>
+              <div class="toggle" :class="{ active: fullAccess }" @click="toggleEditorFull()"></div>
+            </div>
+            <div class="form-hint" style="margin-bottom: var(--space-4);">
+              项目目录内文件操作全放行；项目目录外读 / 执行 / 网络 / 系统操作放行；项目目录外的写入与删除仍需审批；自杀形态硬拦不被绕过；执行类由真沙盒兜底（第九道防护）。
+            </div>
+            <div class="form-group" style="display: flex; align-items: center; gap: var(--space-3);">
+              <label class="form-label" style="margin: 0;" :style="!fullAccess ? 'opacity: 0.4;' : ''">外部写删放行</label>
+              <div class="toggle" :class="{ active: externalWrite }" :style="!fullAccess ? 'opacity: 0.4; pointer-events: none;' : ''" @click="toggleEditorExt()"></div>
+            </div>
+            <div class="form-hint">
+              依赖 Full Access：项目目录外的写入 / 删除也放行。两个开关全开 = 真·全放（沙盒仍兜底）。
+            </div>
+            <div style="padding: var(--space-3); margin-top: var(--space-4); background: var(--bg-secondary); border: 1px solid var(--border-light); border-radius: var(--radius-md); font-size: var(--text-sm); color: var(--text-secondary); line-height: 1.8;">
+              <strong>注意</strong>：两个开关都是<strong>运行时态</strong>——Agent 进程重启后一律回到关闭，必须手动重新打开（每次重启重新授权）。开启后配置里的 deny / ask 规则与审批弹窗将被放行越过（审计照常记录，policy_rule=<code>editor_access:*</code> 可过滤）；guardian 二审（LLM 命令审计）不受影响仍可弹卡。
             </div>
           </div>
         </div>

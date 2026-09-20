@@ -159,6 +159,56 @@ describe('ChatPanel M1b 工具卡片', () => {
     wrapper.unmount()
   })
 
+  // -------------------------------------------------------------------------
+  // BUG-A（2026-09-20）：帧内层 chat_id 是连接级 id（`web:{连接id}`），与
+  // 会话 id 不同域，旧过滤恒不等 → 全部实时帧被丢弃（工具卡/任务清单/模
+  // 式徽标零反应）。修复：优先按 pump 注入的 session_id（会话 id 域）过滤。
+  // -------------------------------------------------------------------------
+
+  it('BUG-A：帧带 session_id=currentId 时通过（新帧主过滤路径）', async () => {
+    const { useSessionStore } = await import('../../stores/session')
+    useSessionStore().currentId = 'sess-42'
+    const wrapper = await mountPanel()
+    const chat = useChatStore()
+    const h = wsHandler()
+
+    // 生产形态：chat_id 是连接级（与 currentId 不同域），session_id 才是会话 id。
+    h({
+      type: 'push',
+      cmd: 'tool_event',
+      data: {
+        kind: 'ToolStarted',
+        data: { chat_id: 'web:conn-99', session_id: 'sess-42', call_id: 'c1', tool: 'exec' },
+      },
+    })
+    await flushPromises()
+
+    expect(chat.pendingToolEvents).toHaveLength(1)
+    expect(chat.pendingToolEvents[0].callId).toBe('c1')
+    wrapper.unmount()
+  })
+
+  it('BUG-A：帧带 session_id≠currentId 时丢弃（chat_id 碰巧匹配也不放行）', async () => {
+    const { useSessionStore } = await import('../../stores/session')
+    useSessionStore().currentId = 'sess-42'
+    const wrapper = await mountPanel()
+    const chat = useChatStore()
+    const h = wsHandler()
+
+    h({
+      type: 'push',
+      cmd: 'tool_event',
+      data: {
+        kind: 'ToolStarted',
+        data: { chat_id: 'web:sess-42', session_id: 'other-session', call_id: 'c9', tool: 'exec' },
+      },
+    })
+    await flushPromises()
+
+    expect(chat.pendingToolEvents).toHaveLength(0)
+    wrapper.unmount()
+  })
+
   it('>=3 个事件默认折叠为计数条，点击展开', async () => {
     const wrapper = await mountPanel()
     const chat = useChatStore()
