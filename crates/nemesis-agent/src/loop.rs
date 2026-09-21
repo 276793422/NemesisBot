@@ -93,6 +93,30 @@ fn rate_limit_wait_secs(err: &str, attempt: u32) -> u64 {
     )
 }
 
+/// BUG 2026-09-21 ②：单次上游调用超时默认 180s——429 后连接挂起（不回
+/// 响应体）时旧行为可挂任意久（实测 27 分钟缺口）。0 = 关闭超时（退回
+/// 旧行为）。`agents.defaults.provider_call_timeout_secs` 覆盖。
+pub const DEFAULT_PROVIDER_CALL_TIMEOUT_SECS: u64 = 180;
+/// BUG 2026-09-21 ②：限流重试环总预算默认 900s（等待 + 调用累计）——
+/// 10 次上限只限次数不限总时长（实测 46 分钟无熔断）。0 = 不限。
+/// `agents.defaults.rate_limit_budget_secs` 覆盖。
+pub const DEFAULT_RATE_LIMIT_BUDGET_SECS: u64 = 900;
+/// [`AgentLoop::retry_status`] 读侧过期阈值：写侧在 turn 被 abort（E-STOP
+/// /进程取消）时来不及清——快照超时未更新即视为失效，读侧顺手回收。
+pub const RETRY_STATUS_STALE_SECS: u64 = 300;
+
+/// BUG 2026-09-21 ①：单会话限流重试的实时快照（WSAPI `agent.retry_status`
+/// 读，前端切回会话后占位区显示「第 N/M 次重试」而非哑转圈）。
+#[derive(Debug, Clone)]
+pub struct RateLimitStatus {
+    pub retry: u32,
+    pub max_retries: u32,
+    pub wait_secs: u64,
+    pub model: String,
+    /// 写入时刻（读侧判过期用 [`RETRY_STATUS_STALE_SECS`]）。
+    pub updated_at: std::time::Instant,
+}
+
 /// ⑩ Per-session compaction tracking for graded tiers + stuck self-check.
 /// Keyed by session; lives on `AgentLoop`.
 #[derive(Default)]
@@ -1111,6 +1135,10 @@ pub struct AgentLoop {
     running: AtomicBool,
     /// Per-session busy state with queue length tracking.
     session_busy: parking_lot::Mutex<HashMap<String, SessionBusyState>>,
+    /// BUG 2026-09-21 ①：单会话限流重试实时快照（写侧重试环、读侧
+    /// `retry_status`/WSAPI `agent.retry_status`）。turn 收尾即清；abort
+    /// 残留由读侧过期兜底（[`RETRY_STATUS_STALE_SECS`]）。
+    rate_limit_status: parking_lot::Mutex<HashMap<String, RateLimitStatus>>,
     /// Session busy check: mode-aware I1 (U7).
     /// Concurrent request handling mode.
     concurrent_mode: ConcurrentMode,
@@ -1505,6 +1533,7 @@ impl AgentLoop {
             session_store: None,
             running: AtomicBool::new(false),
             session_busy: parking_lot::Mutex::new(HashMap::new()),
+            rate_limit_status: parking_lot::Mutex::new(HashMap::new()),
             concurrent_mode: ConcurrentMode::Reject,
             reinject_tx: parking_lot::RwLock::new(None),
             queue_size: crate::inbox::DEFAULT_QUEUE_SIZE,
@@ -2120,6 +2149,7 @@ impl AgentLoop {
             session_store: Some(session_store),
             running: AtomicBool::new(false),
             session_busy: parking_lot::Mutex::new(HashMap::new()),
+            rate_limit_status: parking_lot::Mutex::new(HashMap::new()),
             concurrent_mode,
             reinject_tx: parking_lot::RwLock::new(None),
             queue_size,
@@ -5883,8 +5913,18 @@ impl AgentLoop {
             // Use tokio::select! to allow cancellation / e-stop during the LLM call.
             // P3B 撞墙检测起点：首次调用的失败时长供 transient 重试链比对。
             let first_call_start = std::time::Instant::now();
+            // ②A：首捕同样包超时——挂死连接不再无限等（cancel/estop 臂
+            // 仍然可打断超时等待，语义只增不减）。
+            let first_call_timeout = self.current_provider_call_timeout_secs();
             let chat_result = tokio::select! {
-                result = active_provider.chat(&active_model, messages, Some(chat_opts.clone()), tool_defs) => result,
+                result = Self::chat_call_bounded(
+                    first_call_timeout,
+                    &active_provider,
+                    &active_model,
+                    messages,
+                    Some(chat_opts.clone()),
+                    tool_defs,
+                ) => result,
                 _ = cancel_token.cancelled() => {
                     info!("[AgentLoop] LLM call cancelled while waiting for response, turns_used={}", turns_used);
                     events.push(AgentEvent::Done("已取消".to_string()));
@@ -5968,14 +6008,17 @@ impl AgentLoop {
                                 })
                                 .collect();
 
-                            match active_provider
-                                .chat(
-                                    &active_model,
-                                    compressed_messages,
-                                    Some(chat_opts.clone()),
-                                    retry_tool_defs,
-                                )
-                                .await
+                            // ②A：压缩重试环内调用同样包超时（挂死连接有限
+                            // 重试后终局，不无限挂）。
+                            match Self::chat_call_bounded(
+                                self.current_provider_call_timeout_secs(),
+                                &active_provider,
+                                &active_model,
+                                compressed_messages,
+                                Some(chat_opts.clone()),
+                                retry_tool_defs,
+                            )
+                            .await
                             {
                                 Ok(resp) => {
                                     got_response = Some(resp);
@@ -6081,7 +6124,30 @@ impl AgentLoop {
                         if is_rate_limit_error {
                             let max_retries = self.current_rate_limit_retries().max(0) as u32;
                             let mut retries = 0u32;
+                            // BUG 2026-09-21 ②B：总预算（等待 + 调用累计）——
+                            // 0 = 不限；②A：单次调用超时——0 = 不设。
+                            let budget_secs = self.current_rate_limit_budget_secs();
+                            let call_timeout = self.current_provider_call_timeout_secs();
+                            // tokio 时钟（非 std Instant）：sleep/timeout 都走
+                            // tokio 定时器，预算必须同源——否则 start_paused
+                            // 测试下预算永不推进，真实场景语义不变。
+                            let budget_started = tokio::time::Instant::now();
+                            let mut budget_exhausted = false;
                             while retries < max_retries {
+                                // ②B：进入下一轮等待+调用前先看预算——预算是
+                                // 硬上限，超了直接终局（ sleep 也要算进去，
+                                // 所以检查放循环头顶部）。
+                                if budget_secs > 0
+                                    && budget_started.elapsed()
+                                        >= std::time::Duration::from_secs(budget_secs)
+                                {
+                                    budget_exhausted = true;
+                                    warn!(
+                                        "[AgentLoop] rate-limit retry budget exhausted ({}s), giving up",
+                                        budget_secs
+                                    );
+                                    break;
+                                }
                                 retries += 1;
                                 let wait = rate_limit_wait_secs(&last_err, retries);
                                 // 裁决③「显式进度」：每次重试对用户可见；B 端
@@ -6097,6 +6163,19 @@ impl AgentLoop {
                                 info!(
                                     "[AgentLoop] LLM rate limited, retry {retries}/{max_retries} in {wait}s: {}",
                                     last_err
+                                );
+                                // BUG 2026-09-21 ①：实时快照（WSAPI
+                                // agent.retry_status）——切走切回后前端占位区
+                                // 可查「第 N/M 次重试」，不再是哑转圈。
+                                self.set_rate_limit_status(
+                                    &context.session_key,
+                                    RateLimitStatus {
+                                        retry: retries,
+                                        max_retries,
+                                        wait_secs: wait,
+                                        model: self.current_display_model(),
+                                        updated_at: std::time::Instant::now(),
+                                    },
                                 );
                                 tokio::time::sleep(std::time::Duration::from_secs(wait)).await;
                                 // 消息 + tool_defs 重建（首捕值已随失败调用
@@ -6115,10 +6194,21 @@ impl AgentLoop {
                                         },
                                     })
                                     .collect();
-                                match active_provider
-                                    .chat(&active_model, r_msgs, Some(chat_opts.clone()), r_tools)
-                                    .await
-                                {
+                                // BUG 2026-09-21 ②A：单次调用包超时（统一走
+                                // chat_call_bounded）——上游 429 后连接挂起
+                                // （不回响应体）时不再无限等待（实测挂死 27
+                                // 分钟）；超时按该次重试失败计，走既有环
+                                // （次数/预算双重有界）。
+                                let call_result = Self::chat_call_bounded(
+                                    call_timeout,
+                                    &active_provider,
+                                    &active_model,
+                                    r_msgs,
+                                    Some(chat_opts.clone()),
+                                    r_tools,
+                                )
+                                .await;
+                                match call_result {
                                     Ok(resp) => {
                                         maybe_resp = Some(resp);
                                         break;
@@ -6132,10 +6222,20 @@ impl AgentLoop {
                                     }
                                 }
                             }
+                            // BUG 2026-09-21 ①：环出口统一清快照（成功 break /
+                            // 次数耗尽 / 预算终局三路都过这里；E-STOP abort
+                            // 路径由读侧过期兜底）。
+                            self.clear_rate_limit_status(&context.session_key);
                             if maybe_resp.is_none() {
                                 // 裁决④「终局诚实」：结构化标注，不再裸抛
                                 // 原始错误。
-                                last_err = format!("上游限流，已重试 {retries} 次：{}", last_err);
+                                last_err = if budget_exhausted {
+                                    format!(
+                                        "上游限流，重试总时长超过 {budget_secs} 秒预算（已重试 {retries} 次），停止重试"
+                                    )
+                                } else {
+                                    format!("上游限流，已重试 {retries} 次：{}", last_err)
+                                };
                             }
                         } else if is_transient_error {
                             info!(
@@ -6151,6 +6251,9 @@ impl AgentLoop {
                             // 为全 lane 600s + per-model timeout_secs 覆盖）。
                             let mut prev_fail_after = Some(first_call_failed_after);
                             let mut retries = 0u32;
+                            // ②A：transient 环内调用同样包超时——挂死的
+                            // 「真网络等待」形态不再把有限重试环变成无限挂。
+                            let call_timeout = self.current_provider_call_timeout_secs();
                             // 退避资格（2026-09-18 CI 实调）：失败耗时 <1s =
                             // 上游**立即**拒绝（连接拒绝 / DNS / mock 类）——
                             // sleep 无意义（门已关上，等待解决不了），立即重试；
@@ -6190,9 +6293,15 @@ impl AgentLoop {
                                     })
                                     .collect();
                                 let attempt_start = std::time::Instant::now();
-                                match active_provider
-                                    .chat(&active_model, r_msgs, Some(chat_opts.clone()), r_tools)
-                                    .await
+                                match Self::chat_call_bounded(
+                                    call_timeout,
+                                    &active_provider,
+                                    &active_model,
+                                    r_msgs,
+                                    Some(chat_opts.clone()),
+                                    r_tools,
+                                )
+                                .await
                                 {
                                     Ok(resp) => {
                                         maybe_resp = Some(resp);
@@ -6368,8 +6477,17 @@ impl AgentLoop {
                                 .await;
                                 let mut r_estop_rx =
                                     self.estop.read().as_ref().map(|e| e.subscribe());
+                                // ②A：hook 重呼同样包超时（cancel/estop 臂不
+                                // 变，仍可打断超时等待）。
                                 let r = tokio::select! {
-                                    res = active_provider.chat(&active_model, r_msgs, Some(chat_opts.clone()), r_tools) => res,
+                                    res = Self::chat_call_bounded(
+                                        self.current_provider_call_timeout_secs(),
+                                        &active_provider,
+                                        &active_model,
+                                        r_msgs,
+                                        Some(chat_opts.clone()),
+                                        r_tools,
+                                    ) => res,
                                     _ = cancel_token.cancelled() => {
                                         info!("[AgentLoop] Hook retry call cancelled, turns_used={}", turns_used);
                                         events.push(AgentEvent::Done("已取消".to_string()));
@@ -7718,6 +7836,90 @@ impl AgentLoop {
                     .and_then(|n| n.as_i64())
             })
             .unwrap_or(10)
+    }
+
+    /// BUG 2026-09-21 ②：`agents.defaults.<key>` fresh-read（F8 模式，同
+    /// [`Self::current_rate_limit_retries`] 口径）。解析失败或缺键 = 默认值。
+    fn agents_defaults_u64(&self, key: &str, default: u64) -> u64 {
+        let path = match self.config_path.read().clone() {
+            Some(p) => p,
+            None => return default,
+        };
+        std::fs::read_to_string(&path)
+            .ok()
+            .and_then(|s| serde_json::from_str::<serde_json::Value>(&s).ok())
+            .and_then(|v| {
+                v.get("agents")
+                    .and_then(|a| a.get("defaults"))
+                    .and_then(|d| d.get(key))
+                    .and_then(|n| n.as_u64())
+            })
+            .unwrap_or(default)
+    }
+
+    /// BUG 2026-09-21 ②A：单次上游调用超时（秒）。0 = 关闭（旧行为）。
+    pub(crate) fn current_provider_call_timeout_secs(&self) -> u64 {
+        self.agents_defaults_u64(
+            "provider_call_timeout_secs",
+            DEFAULT_PROVIDER_CALL_TIMEOUT_SECS,
+        )
+    }
+
+    /// BUG 2026-09-21 ②B：限流重试环总预算（秒）。0 = 不限。
+    pub(crate) fn current_rate_limit_budget_secs(&self) -> u64 {
+        self.agents_defaults_u64("rate_limit_budget_secs", DEFAULT_RATE_LIMIT_BUDGET_SECS)
+    }
+
+    /// BUG 2026-09-21 ②A：单次上游调用统一包超时——挂死连接（429/网络
+    /// 黑洞后不回响应体）按超时失败计，不再无限等待（实测挂死 27 分钟）。
+    /// 四个调用点（首捕 / 429 重试环 / transient 环 / hook 重呼）统一走
+    /// 这里；`call_timeout` = 0 关闭超时（退回旧行为）。超时文案带
+    /// "timed out"（transient 判定词表既有成员）：首捕挂死超时后自然落入
+    /// transient 环有限重试，不会一次终局也不会无限挂。
+    async fn chat_call_bounded(
+        call_timeout: u64,
+        provider: &std::sync::Arc<dyn LlmProvider>,
+        model: &str,
+        messages: Vec<LlmMessage>,
+        options: Option<crate::types::ChatOptions>,
+        tools: Vec<crate::types::ToolDefinition>,
+    ) -> Result<LlmResponse, String> {
+        let call = provider.chat(model, messages, options, tools);
+        if call_timeout == 0 {
+            return call.await;
+        }
+        match tokio::time::timeout(std::time::Duration::from_secs(call_timeout), call).await {
+            Ok(r) => r,
+            Err(_) => Err(format!(
+                "上游调用超时（{call_timeout}s 无响应，upstream timed out）"
+            )),
+        }
+    }
+
+    /// BUG 2026-09-21 ①：重试环写实时快照（每轮覆盖）。
+    fn set_rate_limit_status(&self, session_key: &str, st: RateLimitStatus) {
+        self.rate_limit_status
+            .lock()
+            .insert(session_key.to_string(), st);
+    }
+
+    /// BUG 2026-09-21 ①：turn 收尾（成功/耗尽/预算终局）清快照。
+    fn clear_rate_limit_status(&self, session_key: &str) {
+        self.rate_limit_status.lock().remove(session_key);
+    }
+
+    /// BUG 2026-09-21 ①：WSAPI 读取口。超 [`RETRY_STATUS_STALE_SECS`] 未更新
+    /// 的快照视为失效（E-STOP abort 清不掉的残留）——返回 None 并顺手回收。
+    pub fn retry_status(&self, session_key: &str) -> Option<RateLimitStatus> {
+        let map = self.rate_limit_status.lock();
+        if let Some(st) = map.get(session_key)
+            && st.updated_at.elapsed() <= std::time::Duration::from_secs(RETRY_STATUS_STALE_SECS)
+        {
+            return Some(st.clone());
+        }
+        drop(map);
+        self.clear_rate_limit_status(session_key);
+        None
     }
 
     /// 429 重试进度对用户可见（裁决③「显式进度」）——经 outbound_tx 直发

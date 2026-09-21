@@ -23,6 +23,7 @@ impl ModuleHandler for AgentHandler {
             "rewind",
             "checkpoints",
             "inbox_status",
+            "retry_status",
         ]
     }
 
@@ -40,6 +41,7 @@ impl ModuleHandler for AgentHandler {
             "rewind" => self.rewind(data, ctx).await,
             "checkpoints" => self.checkpoints(data, ctx).await,
             "inbox_status" => Self::inbox_status(data, ctx),
+            "retry_status" => Self::retry_status(data, ctx),
             _ => Err(format!("unknown command: agent.{}", cmd)),
         }
     }
@@ -123,6 +125,51 @@ impl AgentHandler {
                 "capacity": 0,
                 "busy": false,
                 "mode": "reject",
+                "error": e,
+            }))),
+        }
+    }
+
+    /// BUG 2026-09-21 ①：单会话限流重试实时快照（切走切回后前端占位区显示
+    /// 「第 N/M 次重试」而非哑转圈）。session_id 归属解析与 inbox_status
+    /// 完全同规则（同 chokepoint 的 key 构造 + 项目 loop 归属）。
+    fn retry_status(
+        data: Option<serde_json::Value>,
+        ctx: &RequestContext,
+    ) -> Result<Option<serde_json::Value>, String> {
+        let sid = data
+            .as_ref()
+            .and_then(|d| d.get("session_id"))
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .to_string();
+        let session_key = if sid.is_empty() {
+            "agent:main:session:legacy".to_string()
+        } else {
+            format!(
+                "agent:main:session:{}",
+                nemesis_agent::session::SessionStore::sanitize_session_id(&sid)
+            )
+        };
+        let resolved = crate::handlers::projects::resolve_session_loop(ctx, &session_key);
+        match resolved {
+            Ok(al) => match al.retry_status(&session_key) {
+                Some(st) => Ok(Some(serde_json::json!({
+                    "available": true,
+                    "retrying": true,
+                    "retry": st.retry,
+                    "max_retries": st.max_retries,
+                    "wait_secs": st.wait_secs,
+                    "model": st.model,
+                }))),
+                None => Ok(Some(serde_json::json!({
+                    "available": true,
+                    "retrying": false,
+                }))),
+            },
+            Err(e) => Ok(Some(serde_json::json!({
+                "available": false,
+                "retrying": false,
                 "error": e,
             }))),
         }

@@ -284,3 +284,223 @@ async fn rate_limit_retries_config_override_takes_effect() {
         "1 首捕 + 2 重试 = 恰好 3 次调用"
     );
 }
+
+// -- BUG 2026-09-21 ②A：单次调用超时 ---------------------------------------
+
+/// 永不返回的 provider（429 后连接挂起、不回响应体的形态；也是纯首捕
+/// 挂死的形态）。
+struct Hanging;
+
+#[async_trait]
+impl LlmProvider for Hanging {
+    async fn chat(
+        &self,
+        _model: &str,
+        _messages: Vec<LlmMessage>,
+        _options: Option<crate::types::ChatOptions>,
+        _tools: Vec<crate::types::ToolDefinition>,
+    ) -> Result<LlmResponse, String> {
+        std::future::pending::<Result<LlmResponse, String>>().await
+    }
+}
+
+/// 先 429 一次、之后挂死的 provider（用户实测案例 1:1：上游先回 429，
+/// 重试环内的调用建立连接后不回响应体）。
+struct RateLimitedThenHang(std::sync::atomic::AtomicUsize);
+
+#[async_trait]
+impl LlmProvider for RateLimitedThenHang {
+    async fn chat(
+        &self,
+        _model: &str,
+        _messages: Vec<LlmMessage>,
+        _options: Option<crate::types::ChatOptions>,
+        _tools: Vec<crate::types::ToolDefinition>,
+    ) -> Result<LlmResponse, String> {
+        if self.0.fetch_add(1, std::sync::atomic::Ordering::SeqCst) == 0 {
+            return Err("rate limited by provider codex/gpt-test".to_string());
+        }
+        std::future::pending::<Result<LlmResponse, String>>().await
+    }
+}
+
+#[tokio::test(start_paused = true)]
+async fn rate_limited_then_hanging_call_times_out_and_loop_stays_bounded() {
+    // ②A（用户案例形态）：首捕 429 → 重试环内调用挂死 → 按超时失败计，
+    // 走完既有环后结构化终局——不再无限等待（实测挂死 27 分钟）。预算关
+    // （0）以隔离验证超时本身。
+    let tmp = tempfile::tempdir().unwrap();
+    let cfg_path = tmp.path().join("config.json");
+    std::fs::write(
+        &cfg_path,
+        serde_json::json!({"agents": {"defaults": {
+            "rate_limit_retries": 2,
+            "provider_call_timeout_secs": 60,
+            "rate_limit_budget_secs": 0,
+        }}})
+        .to_string(),
+    )
+    .unwrap();
+
+    let agent_loop = AgentLoop::new(
+        Box::new(RateLimitedThenHang(std::sync::atomic::AtomicUsize::new(0))),
+        test_config(),
+    );
+    agent_loop.set_config_path(cfg_path);
+    let instance = AgentInstance::new(test_config());
+    let context = RequestContext::new("web", "chat1", "user1", "session1");
+
+    let events = agent_loop.run(&instance, "Hello", &context).await;
+
+    let errs: Vec<_> = events
+        .iter()
+        .filter_map(|e| match e {
+            AgentEvent::Error(m) => Some(m.clone()),
+            _ => None,
+        })
+        .collect();
+    assert!(
+        errs.iter()
+            .any(|m| m.contains("已重试 2 次") && m.contains("上游调用超时")),
+        "挂死调用必须按超时失败计并结构化终局: {errs:?}"
+    );
+}
+
+#[tokio::test(start_paused = true)]
+async fn hanging_first_call_times_out_into_transient_loop_and_terminates() {
+    // ②A（首捕挂死形态）：首捕调用统一包超时（chat_call_bounded 收口的
+    // 五个调用点之一）——超时文案含 "timed out" 落入 transient 环有限
+    // 重试（每次重试同样包超时），3 次耗尽后终局，不再无限挂。
+    let tmp = tempfile::tempdir().unwrap();
+    let cfg_path = tmp.path().join("config.json");
+    std::fs::write(
+        &cfg_path,
+        serde_json::json!({"agents": {"defaults": {
+            "provider_call_timeout_secs": 60,
+        }}})
+        .to_string(),
+    )
+    .unwrap();
+
+    let agent_loop = AgentLoop::new(Box::new(Hanging), test_config());
+    agent_loop.set_config_path(cfg_path);
+    let instance = AgentInstance::new(test_config());
+    let context = RequestContext::new("web", "chat1", "user1", "session1");
+
+    let events = agent_loop.run(&instance, "Hello", &context).await;
+
+    let errs: Vec<_> = events
+        .iter()
+        .filter_map(|e| match e {
+            AgentEvent::Error(m) => Some(m.clone()),
+            _ => None,
+        })
+        .collect();
+    assert!(
+        errs.iter().any(|m| m.contains("上游调用超时")),
+        "首捕挂死必须按超时失败计并终局: {errs:?}"
+    );
+}
+
+// -- BUG 2026-09-21 ②B：重试环总预算 ---------------------------------------
+
+#[tokio::test(start_paused = true)]
+async fn retry_budget_exhausted_yields_budget_terminal_error() {
+    // ②B：预算（等待+调用累计）超限直接终局——10 次上限只限次数不限总
+    // 时长（实测 46 分钟）的补丁。预算 30s + 单次调用超时 60s：首捕 429
+    // 后首轮调用挂满 60s，第二轮循环顶预算检查命中 → 终局「已重试 1 次」。
+    let tmp = tempfile::tempdir().unwrap();
+    let cfg_path = tmp.path().join("config.json");
+    std::fs::write(
+        &cfg_path,
+        serde_json::json!({"agents": {"defaults": {
+            "rate_limit_retries": 10,
+            "provider_call_timeout_secs": 60,
+            "rate_limit_budget_secs": 30,
+        }}})
+        .to_string(),
+    )
+    .unwrap();
+
+    let agent_loop = AgentLoop::new(
+        Box::new(RateLimitedThenHang(std::sync::atomic::AtomicUsize::new(0))),
+        test_config(),
+    );
+    agent_loop.set_config_path(cfg_path);
+    let instance = AgentInstance::new(test_config());
+    let context = RequestContext::new("web", "chat1", "user1", "session1");
+
+    let events = agent_loop.run(&instance, "Hello", &context).await;
+
+    let errs: Vec<_> = events
+        .iter()
+        .filter_map(|e| match e {
+            AgentEvent::Error(m) => Some(m.clone()),
+            _ => None,
+        })
+        .collect();
+    assert!(
+        errs.iter()
+            .any(|m| m.contains("总时长超过 30 秒预算") && m.contains("已重试 1 次")),
+        "预算耗尽必须结构化终局: {errs:?}"
+    );
+}
+
+// -- BUG 2026-09-21 ①：retry_status 快照 ------------------------------------
+
+#[test]
+fn retry_status_snapshot_roundtrip_and_expiry() {
+    let agent_loop = AgentLoop::new(Box::new(Hanging), test_config());
+    let key = "agent:main:session:s1";
+    assert!(agent_loop.retry_status(key).is_none(), "未写入 = None");
+
+    agent_loop.set_rate_limit_status(
+        key,
+        RateLimitStatus {
+            retry: 3,
+            max_retries: 10,
+            wait_secs: 40,
+            model: "gpt-test".to_string(),
+            updated_at: std::time::Instant::now(),
+        },
+    );
+    let st = agent_loop.retry_status(key).expect("新鲜快照必须可读");
+    assert_eq!(st.retry, 3);
+    assert_eq!(st.max_retries, 10);
+    assert_eq!(st.wait_secs, 40);
+    assert_eq!(st.model, "gpt-test");
+
+    // 过期快照（E-STOP abort 残留形态）读侧判失效并回收。
+    agent_loop.set_rate_limit_status(
+        key,
+        RateLimitStatus {
+            retry: 4,
+            max_retries: 10,
+            wait_secs: 60,
+            model: "gpt-test".to_string(),
+            updated_at: std::time::Instant::now()
+                - std::time::Duration::from_secs(RETRY_STATUS_STALE_SECS + 1),
+        },
+    );
+    assert!(
+        agent_loop.retry_status(key).is_none(),
+        "超 RETRY_STATUS_STALE_SECS 的快照必须视为失效"
+    );
+    assert!(
+        agent_loop.rate_limit_status.lock().is_empty(),
+        "失效快照读侧顺手回收"
+    );
+
+    agent_loop.set_rate_limit_status(
+        key,
+        RateLimitStatus {
+            retry: 1,
+            max_retries: 10,
+            wait_secs: 5,
+            model: "m".to_string(),
+            updated_at: std::time::Instant::now(),
+        },
+    );
+    agent_loop.clear_rate_limit_status(key);
+    assert!(agent_loop.retry_status(key).is_none(), "clear 后 = None");
+}
