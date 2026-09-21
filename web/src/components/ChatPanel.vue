@@ -367,6 +367,10 @@ function applyToolEventPayload(ev: any) {
     // F1：模式切换事件（/plan /build slash 或 chat.set_mode 发布）——
     // 徽标实时刷新。会话过滤由调用方完成。
     if (p.mode === 'plan' || p.mode === 'build') chatStore.setAgentMode(p.mode)
+  } else if (ev?.kind === 'RoundText') {
+    // R1（2026-09-21）：中间轮正文（模型每轮过程叙述）——执行中 pending
+    // 区展开显示，最终回复落地时 flush 折叠挂载到该消息。
+    if (typeof p.content === 'string' && p.content) chatStore.appendRoundText(p.content)
   }
 }
 
@@ -425,9 +429,14 @@ function handleWSMessage(data: any) {
         if (!isDuplicateRecovery) {
           // M1b：assistant 响应落地时，把本轮累积的工具事件挂载到该消息
           // （收集自 M1a push 通道；flush 即取走，避免误挂下一轮）。
+          // R1：中间轮正文同轮收尾——折叠挂载（roundTextsOpen 缺省收起）。
           const toolEvents =
             incomingRole === 'assistant' && chatStore.pendingToolEvents.length
               ? chatStore.flushPendingToolEvents()
+              : undefined
+          const roundTexts =
+            incomingRole === 'assistant' && chatStore.pendingRoundTexts.length
+              ? chatStore.flushPendingRoundTexts()
               : undefined
           chatStore.addMessage({
             role: incomingRole,
@@ -435,6 +444,7 @@ function handleWSMessage(data: any) {
             timestamp: data.timestamp,
             model: data.data.model,
             toolEvents,
+            roundTexts,
           })
         }
         // P8 补全（2026-09-21）：user 回声帧（后端入环回推，多端一致）不是
@@ -581,13 +591,20 @@ async function replayToolsFromRing() {
         // 该 assistant 行已由 chat_log 历史渲染——把此前累积的工具事件
         // 挂回列表中对应位置的 assistant（回放段第 j 个 assistant ↔
         // 列表倒数第 k-j 个）；列表 assistant 数不足（窗口滑出）时兜底
-        // 挂到最后一条。
-        if (chatStore.pendingToolEvents.length) {
+        // 挂到最后一条。R1：中间轮正文同位挂载（重灌后折叠块不丢）。
+        if (chatStore.pendingToolEvents.length || chatStore.pendingRoundTexts.length) {
           const assistants = chatStore.messages.filter((m: any) => m.role === 'assistant')
           const k = replayAssistants.length
           const target =
             assistants[assistants.length - (k - seen)] ?? assistants[assistants.length - 1]
-          if (target) target.toolEvents = chatStore.flushPendingToolEvents()
+          if (target) {
+            if (chatStore.pendingToolEvents.length) {
+              target.toolEvents = chatStore.flushPendingToolEvents()
+            }
+            if (chatStore.pendingRoundTexts.length) {
+              target.roundTexts = chatStore.flushPendingRoundTexts()
+            }
+          }
         }
         seen++
       }
@@ -638,10 +655,14 @@ async function syncMissedChat() {
       }
       // P1a：assistant 行落地时挂载本轮累积的工具事件（与 receive 分支
       // 同语义；此前补拉路径 addMessage 无 flush——重连补进的回复永远
-      // 裸奔，内存 pending 工具事件挂不上）。
+      // 裸奔，内存 pending 工具事件挂不上）。R1：中间轮正文同轮收尾。
       const toolEvents =
         ev.role === 'assistant' && chatStore.pendingToolEvents.length
           ? chatStore.flushPendingToolEvents()
+          : undefined
+      const roundTexts =
+        ev.role === 'assistant' && chatStore.pendingRoundTexts.length
+          ? chatStore.flushPendingRoundTexts()
           : undefined
       chatStore.addMessage({
         role: ev.role,
@@ -651,6 +672,7 @@ async function syncMissedChat() {
         timestamp: ev.ts || new Date().toISOString(),
         model: ev.model,
         toolEvents,
+        roundTexts,
       })
       if (typeof ev.seq === 'number') lastChatSeq = Math.max(lastChatSeq, ev.seq)
       added = true
@@ -1918,6 +1940,22 @@ onUnmounted(() => {
               <ToolCallCard v-for="ev in msg.toolEvents" :key="ev.callId" :event="ev" />
             </div>
           </template>
+          <!-- R1: 本条消息关联的中间轮正文（多步任务的每轮过程叙述）。
+               最终回复已落地 → 默认折叠为计数条，点击展开回看。 -->
+          <template v-if="msg.roundTexts && msg.roundTexts.length">
+            <button
+              class="round-text-toggle"
+              type="button"
+              @click="msg.roundTextsOpen = !msg.roundTextsOpen"
+            >
+              <span class="tool-group-icon">💬</span>
+              过程 · {{ msg.roundTexts.length }} 段
+              <span class="tool-group-caret">{{ msg.roundTextsOpen ? '▾' : '▸' }}</span>
+            </button>
+            <div v-if="msg.roundTextsOpen" class="round-text-body">
+              <div v-for="(rt, ri) in msg.roundTexts" :key="ri" class="round-text">{{ rt.content }}</div>
+            </div>
+          </template>
           <div class="message-bubble">
             <div v-if="msg.role === 'assistant'" class="markdown-body" v-html="getRenderedHtml(msg)"></div>
             <div v-else class="message-text">{{ msg.content }}</div>
@@ -1953,11 +1991,22 @@ onUnmounted(() => {
            多端场景下本端未发起轮次（另一端在跑工具）也能实时看到工具卡，
            否则实时 tool_event 只进 store 不渲染，直到回复落地才闪现。 -->
       <div
-        v-if="chatStore.streaming || pendingTurn || chatStore.pendingToolEvents.length"
+        v-if="chatStore.streaming || pendingTurn || chatStore.pendingToolEvents.length || chatStore.pendingRoundTexts.length"
         class="message assistant"
       >
         <div class="message-avatar">NB</div>
         <div class="message-content">
+          <!-- R1: 进行中轮次的中间正文（模型每轮过程叙述，实时展开显示；
+               回复落地时 flush 折叠挂载到该回复消息）。 -->
+          <template v-if="chatStore.pendingRoundTexts.length">
+            <div class="round-text-body">
+              <div
+                v-for="(rt, ri) in chatStore.pendingRoundTexts"
+                :key="ri"
+                class="round-text"
+              >{{ rt.content }}</div>
+            </div>
+          </template>
           <!-- M1b: 进行中轮次的工具卡片（响应落地前实时可见）。 -->
           <template v-if="chatStore.pendingToolEvents.length">
             <button
@@ -2619,6 +2668,46 @@ onUnmounted(() => {
 }
 .tool-group-caret {
   font-size: 10px;
+}
+
+/* R1（2026-09-21）：中间轮正文（模型每轮过程叙述）——折叠条复用
+   tool-group 同款胶囊风格；正文块浅字缩进，段间细分隔线。 */
+.round-text-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  align-self: flex-start;
+  margin-bottom: 6px;
+  padding: 3px 10px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: var(--bg-elev, rgba(128, 128, 128, 0.06));
+  color: var(--text-muted);
+  font-size: var(--text-xs, 12px);
+  cursor: pointer;
+}
+.round-text-toggle:hover {
+  color: var(--text);
+  border-color: var(--accent);
+}
+.round-text-body {
+  margin-bottom: 6px;
+  padding: 6px 10px;
+  border-left: 2px solid var(--border);
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.round-text {
+  color: var(--text-muted);
+  font-size: var(--text-sm, 13px);
+  line-height: 1.5;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+.round-text + .round-text {
+  padding-top: 6px;
+  border-top: 1px dashed var(--border);
 }
 
 /* slash 命令补全菜单（2026-08-29） */

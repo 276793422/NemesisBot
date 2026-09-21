@@ -65,6 +65,13 @@ async fn ws_chat_with_session(
                 let m = v.get("module").and_then(|m| m.as_str()).unwrap_or("");
                 let c = v.get("cmd").and_then(|c| c.as_str()).unwrap_or("");
                 if t == "message" && m == "chat" && c == "receive" {
+                    // user 回声帧（发送确认，server 广播给发起连接）不是
+                    // 回复——跳过继续等 assistant 帧；否则回声抢跑被误读
+                    // 为回复（Extended 5 项 E2E 失败根因：收到的「reply」
+                    // 是测试自己发的内容）。
+                    if v["data"]["role"].as_str() == Some("user") {
+                        continue;
+                    }
                     return Ok(ChatOutcome::Reply(
                         v["data"]["content"].as_str().unwrap_or("").to_string(),
                     ));

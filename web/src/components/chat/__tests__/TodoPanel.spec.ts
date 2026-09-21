@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest'
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { setActivePinia, createPinia } from 'pinia'
 import { mount, flushPromises } from '@vue/test-utils'
 import { ref } from 'vue'
@@ -150,6 +150,107 @@ describe('TodoPanel TodoUpdated 帧过滤（BUG-A）', () => {
     expect(items[1].classes()).toContain('is-in_progress')
     expect(items[2].classes()).toContain('is-pending')
     expect(wrapper.find('.todo-count').text()).toBe('1/3')
+    wrapper.unmount()
+  })
+})
+
+describe('TodoPanel 全完成自动收起（R2）', () => {
+  beforeEach(() => {
+    vi.useFakeTimers()
+  })
+  afterEach(() => {
+    vi.useRealTimers()
+  })
+
+  it('清单全部完成 3 秒后面板收起', async () => {
+    const session = useSessionStore()
+    session.currentId = 's1'
+    const wrapper = await mountPanel()
+    const h = wsHandler()
+
+    h(todoUpdated({
+      chat_id: 'web:s1',
+      session_id: 's1',
+      todos: [
+        { content: 'a', status: 'completed' },
+        { content: 'b', status: 'completed' },
+      ],
+    }))
+    await flushPromises()
+    expect(wrapper.find('.todo-panel').exists()).toBe(true)
+
+    // 3s 内仍在（让用户看到全勾瞬间），3s 后收起。
+    vi.advanceTimersByTime(2999)
+    await wrapper.vm.$nextTick()
+    expect(wrapper.find('.todo-panel').exists()).toBe(true)
+    vi.advanceTimersByTime(1)
+    await wrapper.vm.$nextTick()
+    expect(wrapper.find('.todo-panel').exists()).toBe(false)
+    wrapper.unmount()
+  })
+
+  it('含未完成项（pending / in_progress）不收起', async () => {
+    const session = useSessionStore()
+    session.currentId = 's1'
+    const wrapper = await mountPanel()
+    const h = wsHandler()
+
+    h(todoUpdated({
+      chat_id: 'web:s1',
+      session_id: 's1',
+      todos: [
+        { content: 'done', status: 'completed' },
+        { content: 'running', status: 'in_progress' },
+      ],
+    }))
+    await flushPromises()
+    vi.advanceTimersByTime(10000)
+    await wrapper.vm.$nextTick()
+    expect(wrapper.find('.todo-panel').exists()).toBe(true)
+    wrapper.unmount()
+  })
+
+  it('收起后新清单（有未完成项）立即恢复显示', async () => {
+    const session = useSessionStore()
+    session.currentId = 's1'
+    const wrapper = await mountPanel()
+    const h = wsHandler()
+
+    h(todoUpdated({ chat_id: 'web:s1', session_id: 's1', todos: [{ content: 'a', status: 'completed' }] }))
+    await flushPromises()
+    vi.advanceTimersByTime(3000)
+    await wrapper.vm.$nextTick()
+    expect(wrapper.find('.todo-panel').exists()).toBe(false)
+
+    h(todoUpdated({
+      chat_id: 'web:s1',
+      session_id: 's1',
+      todos: [
+        { content: '新任务', status: 'pending' },
+        { content: '旧任务', status: 'completed' },
+      ],
+    }))
+    await flushPromises()
+    expect(wrapper.find('.todo-panel').exists()).toBe(true)
+    expect(wrapper.text()).toContain('新任务')
+    wrapper.unmount()
+  })
+
+  it('挂载即拉到历史全完成清单，3 秒后同样收起', async () => {
+    requestMock.mockResolvedValue({
+      todos: [
+        { content: 'x', status: 'completed' },
+        { content: 'y', status: 'completed' },
+      ],
+    })
+    const session = useSessionStore()
+    session.currentId = 's1'
+    const wrapper = await mountPanel()
+    await flushPromises()
+    expect(wrapper.find('.todo-panel').exists()).toBe(true)
+    vi.advanceTimersByTime(3000)
+    await wrapper.vm.$nextTick()
+    expect(wrapper.find('.todo-panel').exists()).toBe(false)
     wrapper.unmount()
   })
 })

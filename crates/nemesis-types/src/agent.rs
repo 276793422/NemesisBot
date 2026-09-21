@@ -124,6 +124,18 @@ pub enum AgentEvent {
         chat_id: String,
         mode: String,
     },
+    /// 中间轮正文（R1，2026-09-21）：LLM 循环里带工具调用的中间轮，其正文
+    /// （模型的过程叙述，如「先查看配置文件再修改」）此前只进 history——
+    /// web 前端只见工具卡与最终回复，过程叙述完全不可见。发布后经 web pump
+    /// 默认路径走 tool_event 通道（注入 session_id + record_tool 入环），
+    /// 前端执行中展开显示、最终回复落地时折叠挂载；入环后切页/重连的
+    /// sync 回放自动恢复。
+    RoundText {
+        session_key: String,
+        chat_id: String,
+        /// 该轮正文（完整不截断——与最终回复同地位的用户可读文本）。
+        content: String,
+    },
     /// 审批请求事件（M7，devtool-upgrade 阶段 5）。安全 auditor 命中
     /// require_approval 时由 WebApprovalManager 发布；web pump 转 SSE
     /// `approval-requested` 全局广播，前端 ApprovalCard 渲染审批卡。
@@ -226,6 +238,7 @@ impl AgentEvent {
             | AgentEvent::ToolFinished { chat_id, .. }
             | AgentEvent::TodoUpdated { chat_id, .. }
             | AgentEvent::ModeChanged { chat_id, .. }
+            | AgentEvent::RoundText { chat_id, .. }
             | AgentEvent::ApprovalRequested { chat_id, .. }
             // F7: 提问有会话上下文（工具从 RequestContext 取），随事件透传。
             | AgentEvent::QuestionAsked { chat_id, .. } => chat_id,
@@ -249,6 +262,7 @@ impl AgentEvent {
             | AgentEvent::ToolFinished { session_key, .. }
             | AgentEvent::TodoUpdated { session_key, .. }
             | AgentEvent::ModeChanged { session_key, .. }
+            | AgentEvent::RoundText { session_key, .. }
             | AgentEvent::ApprovalRequested { session_key, .. }
             | AgentEvent::QuestionAsked { session_key, .. }
             | AgentEvent::SessionCreated { session_key, .. } => Some(session_key),
@@ -263,6 +277,7 @@ impl AgentEvent {
             AgentEvent::ToolFinished { .. } => "ToolFinished",
             AgentEvent::TodoUpdated { .. } => "TodoUpdated",
             AgentEvent::ModeChanged { .. } => "ModeChanged",
+            AgentEvent::RoundText { .. } => "RoundText",
             AgentEvent::ApprovalRequested { .. } => "ApprovalRequested",
             AgentEvent::ApprovalResolved { .. } => "ApprovalResolved",
             AgentEvent::QuestionAsked { .. } => "QuestionAsked",

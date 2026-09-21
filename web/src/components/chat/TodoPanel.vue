@@ -37,6 +37,28 @@ const todos = computed<TodoItem[]>(() => chatStore.todos)
 const completedCount = computed(() => todos.value.filter(t => t.status === 'completed').length)
 const inProgressIdx = computed(() => todos.value.findIndex(t => t.status === 'in_progress'))
 
+// R2（2026-09-21）：全部完成后 3s 自动收起——清单的使命是跟踪进行中的
+// 多步流程，全勾后长期驻留只占屏。留 3s 让用户看到全勾瞬间；新清单
+// 到达（含未完成项）立即恢复。挂载/进会话时 fetchTodos 拉到历史全完成
+// 清单同样走 3s 收起（immediate 覆盖「挂载即全完成」形态）。
+const allDone = computed(() => todos.value.length > 0 && todos.value.every(t => t.status === 'completed'))
+const dismissed = ref(false)
+let dismissTimer: ReturnType<typeof setTimeout> | null = null
+watch(allDone, (v) => {
+  if (dismissTimer) {
+    clearTimeout(dismissTimer)
+    dismissTimer = null
+  }
+  if (v) {
+    dismissTimer = setTimeout(() => {
+      dismissed.value = true
+      dismissTimer = null
+    }, 3000)
+  } else {
+    dismissed.value = false
+  }
+}, { immediate: true })
+
 function toggleCollapsed() {
   collapsed.value = !collapsed.value
   localStorage.setItem('nb_todo_panel_collapsed', collapsed.value ? '1' : '0')
@@ -95,12 +117,13 @@ watch(wsStatus, (val) => {
 onUnmounted(() => {
   removeMessageHandler(onWsMessage)
   if (flashTimer) clearTimeout(flashTimer)
+  if (dismissTimer) clearTimeout(dismissTimer)
 })
 </script>
 
 <template>
   <div
-    v-if="todos.length > 0"
+    v-if="todos.length > 0 && !dismissed"
     class="todo-panel"
     :class="{ 'todo-flash': justRefreshed }"
   >

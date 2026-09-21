@@ -556,6 +556,12 @@ pub async fn ws_send_and_recv(
                     let cmd = v.get("cmd").and_then(|c| c.as_str()).unwrap_or("");
 
                     if msg_type == "message" && module == "chat" && cmd == "receive" {
+                        // user 回声帧（发送确认，server 广播给发起连接）不是
+                        // 回复——跳过继续等 assistant 帧；否则回声抢跑被误读
+                        // 为回复（收到的「reply」是测试自己发的内容）。
+                        if v["data"]["role"].as_str() == Some("user") {
+                            continue;
+                        }
                         let content = v["data"]["content"].as_str().unwrap_or("").to_string();
                         return Ok(content);
                     }

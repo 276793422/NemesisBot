@@ -6689,6 +6689,12 @@ impl AgentLoop {
                 tool_calls.clone(),
                 response.reasoning_content.clone(),
             );
+            // R1（2026-09-21）：中间轮正文非空才发布——模型多步执行时每轮的
+            // 过程叙述（「我先看下 X 再改 Y」）此前只进 history，前端看不见；
+            // 空正文轮（纯工具调用）无可读内容，不发。
+            if !assistant_content.trim().is_empty() {
+                self.emit_round_text(&context.session_key, &context.chat_id, &assistant_content);
+            }
             events.push(AgentEvent::ToolCall(tool_calls.clone()));
 
             // Execute each tool call.
@@ -7613,6 +7619,21 @@ impl AgentLoop {
                 })
         })
         .unwrap_or_default()
+    }
+
+    /// R1（2026-09-21）：中间轮正文发布（[`nemesis_types::agent::AgentEvent::RoundText`]）。
+    /// web pump 的默认路径即覆盖全部投递（注入 session_id + record_tool 入环 +
+    /// tool_event 通道 WS push），本方法只负责发；agent_event_tx 未装配
+    /// （CLI / B 端 worker）为 no-op。
+    fn emit_round_text(&self, session_key: &str, chat_id: &str, content: &str) {
+        if let Some(tx) = self.agent_event_tx.read().as_ref() {
+            // 无订阅者（CLI / 无人在线）= 观察者通道空转，静默忽略。
+            let _ = tx.send(nemesis_types::agent::AgentEvent::RoundText {
+                session_key: session_key.to_string(),
+                chat_id: chat_id.to_string(),
+                content: content.to_string(),
+            });
+        }
     }
 
     /// SB（2026-09-17）：会话物化事件——`session_key` 的 jsonl 首行落盘后
@@ -10897,5 +10918,9 @@ mod k4_user_dispatch_tests;
 mod chat_log_timing_tests;
 #[cfg(test)]
 mod rate_limit_retry_tests;
+// R1 (2026-09-21)：中间轮正文事件（RoundText）发布语义测试（带叙述的
+// 中间轮逐条发布 + 观察者通道与 chat 事件 Vec 隔离 + 空正文轮不发）。
+#[cfg(test)]
+mod round_text_tests;
 #[cfg(test)]
 mod tests;

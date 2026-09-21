@@ -923,6 +923,9 @@ async fn sign_upload_default_issuer_full_circle() {
         .unwrap_err();
     assert_eq!(code, StatusCode::BAD_REQUEST);
     // 正常签发（user.publisher 生效，无 multipart publisher 覆盖）
+    // 签发墙钟下界取在签发之前——t0 若在签发后取，慢调度跨秒时
+    // signed_at（签发秒）< t0（验证秒）必假报（Linux CI 实测踩坑）。
+    let t0 = now_secs();
     let content: &[u8] = b"nemesis revoke-server sign test payload alpha";
     let resp = sign_file(&state, &token, Some(content), None)
         .await
@@ -952,7 +955,6 @@ async fn sign_upload_default_issuer_full_circle() {
     let sig_hash: [u8; 32] = latest_sig_hash(&signed).expect("v4 CMS 签名可解析出 sig_hash");
     // 端到端 Valid：v4 验证管线（链到根锚 + digest + signedAttrs 验签）全过，
     // pubkey = 签名者（keygen leaf）证书 SPKI
-    let t0 = now_secs();
     match nemesis_verify::verify::verify_bytes(
         &signed,
         &[state.hierarchy.root_anchor_fingerprint()],
@@ -962,6 +964,10 @@ async fn sign_upload_default_issuer_full_circle() {
             signed_at, pubkey, ..
         } => {
             assert!(signed_at >= t0, "signed_at 应为服务端签发墙钟");
+            assert!(
+                signed_at <= now_secs(),
+                "signed_at 不应来自未来: {signed_at}"
+            );
             assert_eq!(
                 pubkey,
                 nemesis_verify::crypto::public_key_bytes(&state.hierarchy.leaf_vk()),

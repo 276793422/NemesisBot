@@ -15,6 +15,12 @@ export interface ChatMessage {
    *  事件（M1a AgentEvent 通道实时收集，响应落地时 flush 挂载）。
    *  会话重同步（watchdog replaceMessages）后事件丢失——诚实降级为无卡片。 */
   toolEvents?: ToolEvent[]
+  /** R1（2026-09-21）：本条 assistant 消息对应的中间轮正文（多步任务的
+   *  每轮过程叙述，AgentEvent::RoundText 通道实时收集，回复落地时 flush
+   *  挂载并折叠；watchdog 重灌后由环回放重建）。 */
+  roundTexts?: RoundTextEntry[]
+  /** R1：折叠条展开态（undefined = 折叠）。挂载后的 UI 状态，不参与同步。 */
+  roundTextsOpen?: boolean
   /** M6（devtool-upgrade 阶段 7）：本条消息在后端 chat_log jsonl 里的行号
    *  （E3 rewind 的 message_index）。只有 user/assistant 行有值——error/
    *  system 消息是纯前端渲染，后端无对应行。watchdog replaceMessages 重建
@@ -40,6 +46,11 @@ export interface ToolEvent {
   resultPreview?: string
 }
 
+/** R1：单段中间轮正文（AgentEvent::RoundText 的 content，完整不截断）。 */
+export interface RoundTextEntry {
+  content: string
+}
+
 export const useChatStore = defineStore('chat', () => {
   const messages = ref<ChatMessage[]>([])
   const input = ref('')
@@ -49,6 +60,9 @@ export const useChatStore = defineStore('chat', () => {
   // M1b：进行中轮次的工具事件缓冲（响应落地时 flush 挂到 assistant 消息；
   // 会话切换 / watchdog 重同步时清空，防误挂到下一轮）。
   const pendingToolEvents = ref<ToolEvent[]>([])
+  // R1：进行中轮次的中间正文缓冲（模型每轮过程叙述；回复落地时 flush
+  // 折叠挂载；reset 清空——语义同 pendingToolEvents）。
+  const pendingRoundTexts = ref<RoundTextEntry[]>([])
   // F1（devtool-upgrade 阶段 4）：plan/build 工作模式徽标。'build' 是保守
   // 初值——真实值进会话时经 chat.get_mode 对齐；ModeChanged push（/plan
   // /build slash 或 chat.set_mode）实时刷新。注意后端模式是 loop 级全局态
@@ -118,6 +132,7 @@ export const useChatStore = defineStore('chat', () => {
     messages.value = [...msgs]
     // M1b：重同步后事件通道状态不可信，清空 pending 防止误挂到下一轮。
     pendingToolEvents.value = []
+    pendingRoundTexts.value = []
     // M6：行号锚随消息列表重推——watchdog 路径（fresh 对象无行号）归 null
     // 诚实降级；resync 路径（带 oldest_index 行号）重推出正确锚。
     recomputeNextRowIndex()
@@ -141,6 +156,19 @@ export const useChatStore = defineStore('chat', () => {
     return out
   }
 
+  /** R1：收集中间轮正文（到达序追加；RoundText 无幂等键——实时通道
+   *  broadcast 不重发，补拉通道有 seq ≤ 游标去重，不会重复入列）。 */
+  function appendRoundText(content: string) {
+    pendingRoundTexts.value.push({ content })
+  }
+
+  /** R1：取走 pending 中间正文（assistant 消息落地时折叠挂载到该消息）。 */
+  function flushPendingRoundTexts(): RoundTextEntry[] {
+    const out = pendingRoundTexts.value
+    pendingRoundTexts.value = []
+    return out
+  }
+
   function clearInput() {
     input.value = ''
   }
@@ -156,6 +184,7 @@ export const useChatStore = defineStore('chat', () => {
     streaming.value = false
     todos.value = []
     pendingToolEvents.value = []
+    pendingRoundTexts.value = []
     agentMode.value = 'build'
     historyLoading.value = false
     hasMoreHistory.value = true
@@ -177,6 +206,7 @@ export const useChatStore = defineStore('chat', () => {
     historyLoaded,
     todos,
     pendingToolEvents,
+    pendingRoundTexts,
     agentMode,
     commandDraft,
     addMessage,
@@ -184,6 +214,8 @@ export const useChatStore = defineStore('chat', () => {
     replaceMessages,
     appendToolEvent,
     flushPendingToolEvents,
+    appendRoundText,
+    flushPendingRoundTexts,
     clearInput,
     /** F1：ModeChanged push / chat.set_mode 回包 / get_mode 对齐共用。 */
     setAgentMode(m: 'build' | 'plan') {

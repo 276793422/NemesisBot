@@ -551,6 +551,11 @@ async fn ws_send_recv_until<P: Fn(&str) -> bool>(
                     let cmd = v.get("cmd").and_then(|c| c.as_str()).unwrap_or("");
 
                     if msg_type == "message" && module == "chat" && cmd == "receive" {
+                        // user 回声帧（发送确认）不是回复——跳过，防止回声
+                        // 抢跑被 predicate 误匹配。
+                        if v["data"]["role"].as_str() == Some("user") {
+                            continue;
+                        }
                         let content = v["data"]["content"].as_str().unwrap_or("").to_string();
                         if predicate(&content) {
                             return Ok(content);
