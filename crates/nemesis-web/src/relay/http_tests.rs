@@ -278,8 +278,11 @@ async fn serve_http_request(
                 assert_eq!(reason, "response complete", "正常收口原因");
                 break;
             }
-            // 心跳噪声跳过（真实桥通道里会有）。
-            BridgeFrame::Heartbeat | BridgeFrame::Pong => continue,
+            // 心跳/成员同步噪声跳过（真实桥通道里会有；MemberSync 是注册
+            // 即广播的成员快照，到达时序随平台调度漂移——Linux CI 上曾在
+            // 收口等待窗口内晚到（2026-09-20 Extended 失败实录），与
+            // recv_business_frame 的噪声清单对齐）。
+            BridgeFrame::MemberSync { .. } | BridgeFrame::Heartbeat | BridgeFrame::Pong => continue,
             other => panic!("期望 ConnClose 收口通知，实际 {other:?}"),
         }
     }
