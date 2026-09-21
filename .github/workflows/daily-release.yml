@@ -63,7 +63,7 @@ jobs:
             platform: linux
             binary: nemesisbot          # Linux 产物无后缀
             archive: nightly-linux.tar.gz
-            plugins_archive: nightly-linux-plugins.zip
+            plugins_archive: nightly-linux-plugins.tar.gz
           - os: windows-latest
             platform: windows
             binary: nemesisbot.exe      # Windows 产物带 .exe
@@ -131,6 +131,11 @@ jobs:
         run: |
           (cd plugins/plugin-ui  && cargo build --release)
           (cd plugins/plugin-onnx && cargo build --release)
+          # eval-monitor 是 Windows-only 注入 DLL（注入签名的 SbieCtrl.exe
+          # 采集 Sandboxie 事件），只在 Windows 编
+          if [ "${{ matrix.platform }}" = "windows" ]; then
+            (cd plugins/plugin-eval-monitor && cargo build --release)
+          fi
 
       - name: Stage artifacts
         shell: bash
@@ -142,11 +147,13 @@ jobs:
           # 产物在各自 plugins/<name>/target/release/ 下；crate 名连字符→下划线：
           #   plugin-ui   → libplugin_ui.so (Linux) / plugin_ui.dll (Windows)
           #   plugin-onnx → libplugin_onnx.so / plugin_onnx.dll
+          #   plugin-eval-monitor → eval_monitor_dll.dll（Windows-only 注入 DLL）
           # 编译失败（non-fatal）则文件不存在，跳过，不影响主程序发布
           cp plugins/plugin-ui/target/release/libplugin_ui.so    staging/plugins/ 2>/dev/null || true
           cp plugins/plugin-ui/target/release/plugin_ui.dll     staging/plugins/ 2>/dev/null || true
           cp plugins/plugin-onnx/target/release/libplugin_onnx.so staging/plugins/ 2>/dev/null || true
           cp plugins/plugin-onnx/target/release/plugin_onnx.dll   staging/plugins/ 2>/dev/null || true
+          cp plugins/plugin-eval-monitor/target/release/eval_monitor_dll.dll staging/plugins/ 2>/dev/null || true
           echo "=== staging 内容 ==="
           ls -la staging staging/plugins
 
@@ -179,19 +186,19 @@ jobs:
           cd staging
           7z a "../${{ matrix.archive }}" '*'
 
-      # 单独的 plugins 包（nightly-*-plugins.zip）：包内扁平放编译产物（.dll/.so），
-      # 只想要插件二进制的人免下整包。两个平台统一用 zip（Linux runner 自带 zip 命令）。
+      # 单独的 plugins 包（nightly-*-plugins.*）：包内扁平放编译产物（.dll/.so），
+      # 只想要插件二进制的人免下整包。格式随平台：Windows 用 zip（7z），
+      # Linux 用 tar.gz——与各自主包格式一致。
       # plugin 编译是 non-fatal——一个都没编出来就跳过打包（空包无意义）；
       # 主包内容不变（plugins/ 子目录仍随主包分发）。
       - name: Package plugins
         shell: bash
         run: |
           if compgen -G "staging/plugins/*" > /dev/null; then
-            if [ "${{ matrix.platform }}" = "linux" ]; then
-              (cd staging/plugins && zip "../../${{ matrix.plugins_archive }}" ./*)
-            else
-              (cd staging/plugins && 7z a "../../${{ matrix.plugins_archive }}" './*')
-            fi
+            case "${{ matrix.plugins_archive }}" in
+              *.tar.gz) (cd staging/plugins && tar -czf "../../${{ matrix.plugins_archive }}" .) ;;
+              *.zip)    (cd staging/plugins && 7z a "../../${{ matrix.plugins_archive }}" './*') ;;
+            esac
           else
             echo "无 plugin 产物（编译全失败或被跳过），跳过 plugins 包"
           fi
@@ -239,7 +246,7 @@ jobs:
           cd artifacts
           sha256sum nightly-linux.tar.gz nightly-windows.zip > SHA256SUMS.txt
           # plugins 包视 plugin 编译情况可能缺席（non-fatal），在才计入校验和
-          for f in nightly-linux-plugins.zip nightly-windows-plugins.zip; do
+          for f in nightly-linux-plugins.tar.gz nightly-windows-plugins.zip; do
             [ -f "$f" ] && sha256sum "$f" >> SHA256SUMS.txt
           done
           VERSION=$(git describe --tags --always 2>/dev/null || echo "untagged")
@@ -272,7 +279,7 @@ jobs:
           files: |
             artifacts/nightly-linux.tar.gz
             artifacts/nightly-windows.zip
-            artifacts/nightly-linux-plugins.zip
+            artifacts/nightly-linux-plugins.tar.gz
             artifacts/nightly-windows-plugins.zip
             artifacts/MANIFEST.txt
             artifacts/SHA256SUMS.txt
@@ -291,8 +298,8 @@ jobs:
             ### 下载
             - **Windows**: `nightly-windows.zip`（解压后运行 `nemesisbot.exe gateway`）
             - **Linux**: `nightly-linux.tar.gz`（解压后运行 `./nemesisbot gateway`）
-            - **Windows 插件包**: `nightly-windows-plugins.zip`（包内扁平放插件 .dll）
-            - **Linux 插件包**: `nightly-linux-plugins.zip`（包内扁平放插件 .so）
+            - **Windows 插件包**: `nightly-windows-plugins.zip`（包内扁平放插件 .dll：plugin_ui / plugin_onnx / eval_monitor_dll）
+            - **Linux 插件包**: `nightly-linux-plugins.tar.gz`（包内扁平放插件 .so）
 
             > plugins 包视 plugin 编译情况可能缺席（non-fatal）；主包内的 plugins/ 子目录不变。
 
