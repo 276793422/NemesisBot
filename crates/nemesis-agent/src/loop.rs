@@ -4901,6 +4901,38 @@ impl AgentLoop {
         // 兜底上轮异常短路未走到 assistant 落盘的残留）。
         self.turn_file_changes.lock().remove(session_key);
 
+        // 切页恢复：本 turn 的 user 行在 LLM 循环前即落盘（对齐 /build 派发
+        // process_user_dispatch 与 steer 注入的「落库先于回复」先例）——
+        // turn 进行中（分钟级）用户切走路由再切回，前端 loadHistory 从
+        // chat_log 至少能拉到本轮 user 行，不再空视图；assistant 行仍在
+        // 本函数末尾落盘。HD「一轮 = jsonl 恰好 +2 行」不变量不变：user 行
+        // 只是时点提前，行数与顺序（user 先 assistant 后）不变。
+        // T6（多模态）：user 行带图片路径引用（只存路径不落字节）。
+        // E3：user 行带 `checkpoint_turn` 标记（本 turn begin 的序号随
+        // admission 穿针而来）——消息级回退的行→turn 定位锚。
+        // SB（2026-09-17）：首行落盘 = 会话物化 → 发布 SessionCreated 让
+        // 前端会话列表即时出现（零会话冷启动发消息场景）。
+        // 取舍：session store 不提前——它是 turn 末以 instance 全量
+        // set_history 的单一真相源，提前 add_message 会被全量覆盖，无收益；
+        // chat_log 才是前端 history 的数据源（read_chat_log）。
+        let log_existed = Self::session_log_exists_before_append(session_key);
+        crate::chat_log::append_chat_log_meta(
+            session_key,
+            "user",
+            user_message,
+            &crate::chat_log::ChatLogMeta {
+                model: None,
+                cron_job_id,
+                cron_job_name,
+                images: image_refs,
+                file_changes: &[],
+                checkpoint_turn: cp_turn,
+            },
+        );
+        if !log_existed {
+            self.emit_session_created(session_key);
+        }
+
         // Emit conversation_start observer event.
         self.emit_observer_sync(crate::loop_executor::ObserverEvent::ConversationStart {
             trace_id: trace_id.clone(),
@@ -5015,28 +5047,9 @@ impl AgentLoop {
         }
 
         // Append to chat log (independent of session store).
-        // T6（多模态）：user 行带图片路径引用（只存路径不落字节）。
-        // E3：user 行带 `checkpoint_turn` 标记（本 turn begin 的序号随
-        // admission 穿针而来）——消息级回退的行→turn 定位锚。
-        // SB（2026-09-17）：首行落盘 = 会话物化 → 发布 SessionCreated 让
-        // 前端会话列表即时出现（零会话冷启动发消息场景）。
-        let log_existed = Self::session_log_exists_before_append(session_key);
-        crate::chat_log::append_chat_log_meta(
-            session_key,
-            "user",
-            user_message,
-            &crate::chat_log::ChatLogMeta {
-                model: None,
-                cron_job_id,
-                cron_job_name,
-                images: image_refs,
-                file_changes: &[],
-                checkpoint_turn: cp_turn,
-            },
-        );
-        if !log_existed {
-            self.emit_session_created(session_key);
-        }
+        // user 行已在函数开头（LLM 循环前）落盘（切页恢复，见上方注释）——
+        // 这里只补 assistant 行，HD「一轮 = jsonl 恰好 +2 行」不变量由
+        // 两处合计维持。
         // D3：本 turn 声明式文件工具变更随 assistant 行落盘（消息↔文件
         // 变更映射；M3 会话级 diff 查看器的数据源）。drain 即清（下 turn
         // 从空开始）；去重规则见 `chat_log::dedup_file_changes`。
@@ -10880,6 +10893,8 @@ mod i5_open_files_tests;
 mod k4_user_dispatch_tests;
 // 429 限流重试环测试（2026-09-17 BUG 文档裁决④⑧：阶梯 + Retry-After 取
 // max + 显式进度 + 终局诚实 + 与 context/transient 环互斥）。
+#[cfg(test)]
+mod chat_log_timing_tests;
 #[cfg(test)]
 mod rate_limit_retry_tests;
 #[cfg(test)]

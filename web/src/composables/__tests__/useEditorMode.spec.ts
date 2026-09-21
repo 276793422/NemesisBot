@@ -85,9 +85,9 @@ describe('useEditorMode', () => {
     const { initEditorMode } = useEditorMode()
     initEditorMode()
     fireEditorMode({ full_access: true })
-    expect(externalWrite.value).toBe(false, '缺 external_write 键不得翻转')
+    expect(externalWrite.value).toBe(false)
     fireEditorMode({ full_access: 'yes' })
-    expect(fullAccess.value).toBe(true, '非 bool 值不得覆盖')
+    expect(fullAccess.value).toBe(true)
   })
 
   it('setEditorAccess 以服务端响应为准（联动收口在服务端）', async () => {
@@ -104,7 +104,7 @@ describe('useEditorMode', () => {
       external_write: false,
     })
     expect(fullAccess.value).toBe(true)
-    expect(externalWrite.value).toBe(true, '以响应为准')
+    expect(externalWrite.value).toBe(true)
   })
 
   it('setEditorAccess 失败 → toast + 本地不翻转', async () => {
@@ -114,7 +114,7 @@ describe('useEditorMode', () => {
     })
     const { setEditorAccess } = useEditorMode()
     await setEditorAccess(true, false)
-    expect(fullAccess.value).toBe(false, '失败不得翻转')
+    expect(fullAccess.value).toBe(false)
     expect(toasts.some(t => t.type === 'error' && t.msg.includes('boom'))).toBe(true)
   })
 
@@ -125,7 +125,7 @@ describe('useEditorMode', () => {
     await vi.waitFor(() => {
       expect(editorAvailable.value).toBe(false)
     })
-    expect(wsapiRequest).toHaveBeenCalledTimes(1, '「未装配」是明确结论,不得重试')
+    expect(wsapiRequest).toHaveBeenCalledTimes(1)
     await setEditorAccess(true, false)
     expect(fullAccess.value).toBe(false)
     expect(editorAvailable.value).toBe(false)
@@ -149,7 +149,7 @@ describe('useEditorMode', () => {
       expect(wsapiRequest).toHaveBeenCalledTimes(3)
       expect(fullAccess.value).toBe(true)
       expect(externalWrite.value).toBe(false)
-      expect(toasts).toHaveLength(0, '重试全程静默')
+      expect(toasts).toHaveLength(0)
     } finally {
       vi.useRealTimers()
     }
@@ -165,11 +165,11 @@ describe('useEditorMode', () => {
       await vi.advanceTimersByTimeAsync(3000) // 重试1(3s)
       await vi.advanceTimersByTimeAsync(6000) // 重试2(6s)
       await vi.advanceTimersByTimeAsync(9000) // 重试3(9s)
-      expect(wsapiRequest).toHaveBeenCalledTimes(4, '1 次初始 + 3 次重试')
+      expect(wsapiRequest).toHaveBeenCalledTimes(4)
       await vi.advanceTimersByTimeAsync(60_000)
-      expect(wsapiRequest).toHaveBeenCalledTimes(4, '达上限后不再重试')
-      expect(editorAvailable.value).toBe(true, '暂时性失败不得永久禁用')
-      expect(toasts).toHaveLength(0, '放弃也静默(安全缺省双关)')
+      expect(wsapiRequest).toHaveBeenCalledTimes(4)
+      expect(editorAvailable.value).toBe(true)
+      expect(toasts).toHaveLength(0)
     } finally {
       vi.useRealTimers()
     }

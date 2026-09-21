@@ -606,8 +606,10 @@ impl WebServer {
         if let Some(ref bus) = self.message_bus {
             let bus = bus.clone();
             let conv_router = self.conv_router.clone();
+            let session_manager = self.session_manager.clone();
             tokio::spawn(async move {
-                process_messages_with_router(inbound_rx, bus, conv_router).await;
+                process_messages_with_router(inbound_rx, bus, conv_router, Some(session_manager))
+                    .await;
             });
         } else {
             // No bus configured; drain messages to avoid leaking the sender
@@ -1532,16 +1534,20 @@ pub async fn process_messages(
     rx: mpsc::UnboundedReceiver<crate::websocket_handler::IncomingMessage>,
     bus: Arc<MessageBus>,
 ) {
-    process_messages_with_router(rx, bus, None).await;
+    process_messages_with_router(rx, bus, None, None).await;
 }
 
 /// Same as [`process_messages`] but also records conversation→chat_id
 /// bindings into `conv_router` (when provided) so cron jobs can live-push
-/// replies to the targeted conversation's open tab (Opt 2).
+/// replies to the targeted conversation's open tab (Opt 2). `session_manager`
+/// (when provided) enables the P8 user-row echo: the inbound user row is
+/// recorded into the chat_event_log ring and echoed back to the sending
+/// connection (see the record block below).
 pub async fn process_messages_with_router(
     mut rx: mpsc::UnboundedReceiver<crate::websocket_handler::IncomingMessage>,
     bus: Arc<MessageBus>,
     conv_router: Option<crate::conv_router::SharedConvRouter>,
+    session_manager: Option<Arc<SessionManager>>,
 ) {
     while let Some(msg) = rx.recv().await {
         let session_key = match msg.metadata.get("session_id") {
@@ -1568,6 +1574,44 @@ pub async fn process_messages_with_router(
         // (The reply is persisted to history via session_key regardless.)
         if let Some(ref router) = conv_router {
             router.bind(&session_key, &msg.chat_id);
+        }
+
+        // P8 补全（2026-09-21）：user 行入环 + 发起连接回声帧。此前 user 行
+        // 只落 chat_log（loop.rs turn 开始时）与发送方本地视图，环形补拉窗
+        // 口里没有 user 行——多端场景（第二标签）的落后信号即便走增量 sync
+        // 也拉不到它，而「游标短路」修掉无谓全量刷新后它就没有任何到达路径
+        // （真机 F 剧本 F3 复现：tab2 只见回复不见提问）。入环后 seq 空间完
+        // 整（chat 行与工具事件交错），增量通道全覆盖；回声帧推进发送方游标
+        // （record 触发的 chat.activity 才能被同 seq 短路），发起方去重靠前
+        // 端尾行同文比对（本地已有该行）。纯图消息（content 空）不入环——
+        // 本地占位已在发送时渲染，历史恢复走 chat_log 全量，与旧行为一致。
+        // ⚠️ 咽喉点流经两类消息：chat.send（用户文本）与 chat.history_request
+        // （content 是请求 JSON、metadata 带 request_type="history"）——只对
+        // 前者入环+回声。判据用排除式（BUG 修复 2026-09-21：history_request
+        // 曾被误当 user 行入环回声，前端每个会话凭空出现一条请求 JSON「消
+        // 息」并触发悬空占位「...」）；agent 侧消费惯例即只认
+        // request_type=="history"（loop.rs 两处），其余按用户消息处理。
+        let is_history_request =
+            msg.metadata.get("request_type").map(String::as_str) == Some("history");
+        if !msg.content.is_empty() && !is_history_request {
+            let seq = crate::chat_event_log::record(&session_key, "user", &msg.content, None);
+            if let Some(ref sm) = session_manager {
+                let mut echo = serde_json::json!({
+                    "role": "user",
+                    "content": msg.content,
+                    "seq": seq,
+                });
+                if let Some(sid) = session_key.strip_prefix("agent:main:session:") {
+                    echo["session_id"] = serde_json::Value::String(sid.to_string());
+                }
+                let frame =
+                    crate::protocol::ProtocolMessage::new("message", "chat", "receive", Some(echo));
+                if let Ok(bytes) = frame.to_json() {
+                    // 失败 soft：发起连接已断（切页/关闭）——行已入环，重连
+                    // 后 sync 补拉自愈。
+                    let _ = sm.broadcast(&msg.session_id, &bytes).await;
+                }
+            }
         }
 
         let inbound = InboundMessage {
@@ -1793,6 +1837,22 @@ pub async fn pump_agent_events(
                     && let Some(inner) = data.get_mut("data")
                 {
                     inner["session_id"] = serde_json::Value::String(sid.to_string());
+                }
+                // P1（2026-09-21）：工具事件入 chat_event_log（与 chat 行同
+                // 键空间、同 seq 序列）——sync/replay 回放通道据此恢复工具卡
+                // （切页/重连/重载后「中间流程」可见，此前工具事件只走本
+                // WS 实时 push、无任何持久化）。键取 session_key，与
+                // send_to_session 的 record 同域；无 session_key 的事件不落
+                // （归属不到前端会话，回放无意义）。载荷存帧 data 原样
+                // （含上方注入的 session_id）——回放端复用实时帧同款处理。
+                // P8 精修：seq 注入实时帧（record_tool 返回值）——前端对
+                // chat 行与 tool 条目统一推进补拉游标，chat.activity 信号
+                // 的 seq ≤ 游标短路才能生效（否则本端每个工具事件都被误判
+                // 「落后」触发无谓全量刷新）。存环条目不注入 seq（回放端
+                // 用 ChatEvent.seq，实时帧多出的字段回放端不读）。
+                if let Some(sk) = event.session_key() {
+                    let tool_seq = crate::chat_event_log::record_tool(sk, data.clone());
+                    data["seq"] = serde_json::Value::from(tool_seq);
                 }
                 event_hub.publish("tool_event", data.clone());
 

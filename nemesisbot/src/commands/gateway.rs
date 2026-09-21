@@ -3986,6 +3986,13 @@ pub async fn run(local: bool, relay: bool, extra_args: &[String]) -> Result<()> 
     };
     let mut web_server = nemesis_web::server::WebServer::new(web_config);
 
+    // P8（2026-09-21）：chat_event_log 装配 EventHub——record/record_tool 落
+    // 环时同步广播 SSE `chat.activity {session_id, seq}`，让**其他**浏览器
+    // 标签/端感知到本会话有新帧（本端走 WS 实时 push，天然领先；落后端
+    // 防抖全量刷新兜底）。`--relay` 纯中继路径（run_relay）无 chat 流量，
+    // 不装配（未安装时 record 静默跳过广播，单测零开销）。
+    nemesis_web::chat_event_log::install_event_hub(web_server.event_hub().clone());
+
     // 反向桥中继服务端（goal：反向桥与多设备汇聚，一期批次一）：配置了
     // bridge.server.token 才开放接入门（fail-closed）——未配置则桥路由
     // 不存在。`--relay` 纯中继不走此路径（run_relay 独立轻量启动）。

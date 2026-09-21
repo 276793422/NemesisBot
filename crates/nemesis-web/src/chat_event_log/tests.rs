@@ -108,3 +108,114 @@ fn session_cap_eviction_does_not_evict_current_session() {
         assert_eq!(events.len(), 1, "session {sid} must survive its own record");
     }
 }
+
+// --- P1（2026-09-21）：工具事件持久化（record_tool 同 seq 序列回放） ---
+
+#[test]
+fn tool_events_share_seq_space_and_replay_interleaved() {
+    let _guard = table_guard!();
+    let sid = unique_session("tool");
+    let s1 = record(&sid, "user", "hi", None);
+    let t1 = record_tool(
+        &sid,
+        serde_json::json!({"kind": "ToolStarted", "data": {"call_id": "c1", "tool": "exec"}}),
+    );
+    let t2 = record_tool(
+        &sid,
+        serde_json::json!({"kind": "ToolFinished", "data": {"call_id": "c1", "ok": true}}),
+    );
+    let s2 = record(&sid, "assistant", "done", None);
+    // 同键空间、会话内单调：chat 行与 tool 条目交错编号。
+    assert_eq!((s1, t1, t2, s2), (1, 2, 3, 4));
+    // 回放按 seq 还原真实时序；tool 条目 kind="tool"、载荷原样、文本字段空。
+    let (events, gap) = replay_after(&sid, 0);
+    assert!(!gap);
+    assert_eq!(events.len(), 4);
+    assert_eq!(events[1].kind.as_deref(), Some("tool"));
+    assert_eq!(events[1].tool.as_ref().unwrap()["kind"], "ToolStarted");
+    assert_eq!(events[1].role, "");
+    assert!(events[1].content.is_empty());
+    assert_eq!(events[2].tool.as_ref().unwrap()["data"]["call_id"], "c1");
+    // 普通 chat 行 kind/tool 恒空（旧条目形态兼容）。
+    assert_eq!(events[0].kind, None);
+    assert_eq!(events[0].tool, None);
+    // after 游标按同一序列推进（前端 lastChatSeq 对 chat 行与 tool 条目
+    // 统一推进——这里验证 seq=3 之后的增量只含 assistant 行）。
+    let (events, gap) = replay_after(&sid, 3);
+    assert!(!gap);
+    assert_eq!(events.len(), 1);
+    assert_eq!(events[0].role, "assistant");
+}
+
+#[test]
+fn record_tool_respects_replay_window_cap() {
+    let _guard = table_guard!();
+    let sid = unique_session("tool-cap");
+    // 全 tool 条目灌满环形窗口：与 chat 行同窗约束。
+    for i in 1..=(SESSION_REPLAY_CAP + 10) {
+        record_tool(
+            &sid,
+            serde_json::json!({"kind": "ToolStarted", "data": {"n": i}}),
+        );
+    }
+    let (events, gap) = replay_after(&sid, 0);
+    assert!(gap, "滑出窗口 → gap 诚实上报");
+    assert_eq!(events.len(), SESSION_REPLAY_CAP);
+    assert_eq!(events[0].seq, 11);
+}
+
+// --- P8（2026-09-21）：record 即广播 chat.activity（多端感知信号） ---
+
+/// 并行污染免疫的信号等待：同进程其他测试（无 table_guard 的计数测试、
+/// server 层入站测试等）的 record 也会广播到已 install 的全局 hub——丢弃
+/// 异己信号，只认目标 sid 的 chat.activity（broadcast 有界，溢出丢弃亦不
+/// 致卡死：超次即 panic 带现场）。
+fn wait_own_activity(
+    rx: &mut tokio::sync::broadcast::Receiver<crate::events::Event>,
+    sid: &str,
+) -> crate::events::Event {
+    for _ in 0..200 {
+        match rx.try_recv() {
+            Ok(ev) if ev.event_type == "chat.activity" && ev.data["session_id"] == *sid => {
+                return ev;
+            }
+            Ok(_) => continue, // 他测信号，丢弃
+            Err(_) => std::thread::sleep(std::time::Duration::from_millis(5)),
+        }
+    }
+    panic!("等待 sid={sid} 的 chat.activity 超时（200 轮）");
+}
+
+#[test]
+fn record_and_record_tool_publish_activity_with_bare_sid() {
+    // OnceLock 全局：整个测试进程只此一处 install——先订阅后记录，断言
+    // 信号内容。并行他测的 record（无 guard 计数测试、server 层入站测试）
+    // 也会广播到本 hub：wait_own_activity 丢弃异己信号免疫污染。
+    let _guard = table_guard!();
+    let hub = std::sync::Arc::new(EventHub::new());
+    install_event_hub(hub.clone());
+    let mut rx = hub.subscribe();
+    // 键为完整会话键（server.rs send_to_session/pump 的 record 形态）——
+    // 信号里必须还原裸 sid 与前端 currentId 同域比对。
+    let sid = "p8-bare-sid";
+    let key = format!("agent:main:session:{sid}");
+    let seq = record(&key, "assistant", "hello", None);
+    let ev = wait_own_activity(&mut rx, sid);
+    assert_eq!(ev.event_type, "chat.activity");
+    assert_eq!(ev.data["session_id"], sid);
+    assert_eq!(ev.data["seq"], seq);
+    assert_eq!(ev.data["kind"], "chat");
+    // record_tool 同样广播（kind="tool"，落后端据此走增量 sync 而非全量）；
+    // 还原不了的键原样发（前端匹配不上自然忽略）。
+    let seq2 = record_tool(&key, serde_json::json!({"kind": "ToolStarted"}));
+    let ev2 = wait_own_activity(&mut rx, sid);
+    assert_eq!(ev2.data["session_id"], sid);
+    assert_eq!(ev2.data["seq"], seq2);
+    assert_eq!(ev2.data["kind"], "tool");
+    let web_key = "web:conn-42";
+    let seq3 = record(web_key, "assistant", "x", None);
+    let ev3 = wait_own_activity(&mut rx, "web:conn-42");
+    assert_eq!(ev3.data["session_id"], "web:conn-42");
+    assert_eq!(ev3.data["seq"], seq3);
+    assert_eq!(ev3.data["kind"], "chat");
+}

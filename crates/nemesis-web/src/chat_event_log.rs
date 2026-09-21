@@ -14,6 +14,8 @@ use std::sync::Arc;
 use std::sync::OnceLock;
 use std::sync::atomic::{AtomicU64, Ordering};
 
+use crate::events::EventHub;
+
 /// 每会话保留的最近 chat 帧条数（补拉重放窗口）。
 pub const SESSION_REPLAY_CAP: usize = 200;
 /// 最多同时跟踪的会话数（防泄漏上界；逐出会话失去补拉能力，
@@ -33,6 +35,15 @@ pub struct ChatEvent {
     /// 发生时刻。`skip_serializing_if` 兼容：旧条目无此字段，前端回退本地钟。
     #[serde(skip_serializing_if = "Option::is_none")]
     pub ts: Option<String>,
+    /// P1（2026-09-21）：条目类别。`None` = 普通 chat 行（assistant/user
+    /// 文本，兼容旧条目与旧测试）；`Some("tool")` = 工具事件——`tool` 字段
+    /// 携带完整 push 载荷（ToolStarted/ToolFinished/ModeChanged），chat.sync
+    /// 回放时前端据此恢复工具卡（切页/重连/重载后工具流程可见）。
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub kind: Option<String>,
+    /// `kind = "tool"` 条目的完整工具事件载荷（帧内层 data 原样）。
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tool: Option<serde_json::Value>,
 }
 
 struct SessionLog {
@@ -49,6 +60,34 @@ struct SessionTable {
 
 static SESSION_LOGS: OnceLock<Mutex<SessionTable>> = OnceLock::new();
 
+/// P8（2026-09-21）：EventHub 槽（chat.activity 多端感知信号的数据源）。
+/// 模块级 OnceLock——与本文件 SESSION_LOGS 同款理由：AppState 字面量散布
+/// 全库不可动，装配期 install 一次、record 路径只读。未安装时静默跳过
+/// （单测/无 SSE 场景零开销）。
+static EVENT_HUB: OnceLock<Arc<EventHub>> = OnceLock::new();
+
+/// gateway 装配期安装 EventHub（P8：record 即广播 chat.activity）。
+pub fn install_event_hub(hub: Arc<EventHub>) {
+    let _ = EVENT_HUB.set(hub);
+}
+
+/// record 成功后广播多端感知信号：`chat.activity {session_id, seq, kind}`
+/// （SSE 全局）。`record_key` 是会话键（`agent:main:session:{sid}`）——信号里
+/// 还原裸 sid 与前端 currentId 同域比对；还原不了（连接级键 `web:...`）原样
+/// 发，前端匹配不上自然忽略。`kind` 让落后端区分响应方式：`"tool"` → 增量
+/// sync 补工具卡（user 行不落环，增量可达）；`"chat"` → 全量刷新兜底。
+fn publish_activity(session_key: &str, seq: u64, kind: &str) {
+    if let Some(hub) = EVENT_HUB.get() {
+        let sid = session_key
+            .strip_prefix("agent:main:session:")
+            .unwrap_or(session_key);
+        hub.publish(
+            "chat.activity",
+            serde_json::json!({ "session_id": sid, "seq": seq, "kind": kind }),
+        );
+    }
+}
+
 fn logs() -> &'static Mutex<SessionTable> {
     SESSION_LOGS.get_or_init(|| {
         Mutex::new(SessionTable {
@@ -58,8 +97,17 @@ fn logs() -> &'static Mutex<SessionTable> {
     })
 }
 
-/// 记录一帧 chat 推送并返回其 seq（会话内单调，1 起）。
-pub fn record(session_id: &str, role: &str, content: &str, model: Option<&str>) -> u64 {
+/// 入环共用点：分配 seq（会话内单调）、插入环形缓冲、FIFO 逐出、广播
+/// chat.activity。record 与 record_tool 共用——工具事件与 chat 行落在
+/// 同一 seq 序列上，回放按 seq 交错还原真实时序；逐出规则也只有一份。
+fn insert_event(
+    session_id: &str,
+    role: &str,
+    content: &str,
+    model: Option<&str>,
+    kind: Option<String>,
+    tool: Option<serde_json::Value>,
+) -> u64 {
     let mut table = logs().lock();
     let created = !table.map.contains_key(session_id);
     let entry = table
@@ -70,12 +118,16 @@ pub fn record(session_id: &str, role: &str, content: &str, model: Option<&str>) 
             buf: VecDeque::new(),
         });
     let seq = entry.next_seq.fetch_add(1, Ordering::SeqCst) + 1;
+    // is_tool 先于 move 求值：kind 属权随后移入 ChatEvent（E0382）。
+    let is_tool = kind.is_some();
     let event = Arc::new(ChatEvent {
         seq,
         role: role.to_string(),
         content: content.to_string(),
         model: model.map(String::from),
         ts: Some(chrono::Local::now().to_rfc3339()),
+        kind,
+        tool,
     });
     entry.buf.push_back(Arc::clone(&event));
     while entry.buf.len() > SESSION_REPLAY_CAP {
@@ -100,7 +152,28 @@ pub fn record(session_id: &str, role: &str, content: &str, model: Option<&str>) 
             }
         }
     }
+    drop(table); // 广播前放锁：publish 内部可能再取全局资源，不持锁跨调用
+    publish_activity(session_id, seq, if is_tool { "tool" } else { "chat" });
     seq
+}
+
+/// 记录一帧 chat 推送并返回其 seq（会话内单调，1 起）。
+pub fn record(session_id: &str, role: &str, content: &str, model: Option<&str>) -> u64 {
+    insert_event(session_id, role, content, model, None, None)
+}
+
+/// P1（2026-09-21）：记录一条工具事件（kind="tool"，`tool` 携带完整 push
+/// 载荷）。与 `record` 同键空间、同 seq 序列——回放时工具事件与 assistant
+/// 行按 seq 交错还原真实时序。返回其 seq。
+pub fn record_tool(session_id: &str, tool: serde_json::Value) -> u64 {
+    insert_event(
+        session_id,
+        "",
+        "",
+        None,
+        Some("tool".to_string()),
+        Some(tool),
+    )
 }
 
 /// 断线补拉：返回 `seq > after` 的帧（时间序，从内部 Arc clone 出）。

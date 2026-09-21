@@ -14,6 +14,12 @@ const sessionStore = useSessionStore()
 // because the sidebar is v-if'd on showSidebar — its onMounted only fires
 // when the user opens it, which is too late for the initial auto-select.
 onMounted(async () => {
+  // P5（2026-09-21）：项目注册表提升到 ChatView 初始化。此前 fetchProjects
+  // 全工程唯一调用点在 SessionSidebar.onMounted，而侧栏默认收起（showSidebar
+  // =false → v-if 不挂载）→ 注册表恒空 → ChatPanel 的项目 chip（⟦项目名⟧）
+  // 永不显示。fetchProjects 自带 5s 缓存与静默容错（store 内 try/catch），
+  // 侧栏之后挂载时重复调用零开销。不 await：不阻塞会话列表主链。
+  void sessionStore.fetchProjects()
   await sessionStore.fetchList()
   if (!sessionStore.currentId) {
     const legacy = sessionStore.sessions.find(s => s.id === 'legacy')

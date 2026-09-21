@@ -1416,3 +1416,196 @@ async fn webserver_all_setters_assemble() {
     // 全部 setter 后 router 仍能装配（字段类型一致性信号）。
     let _router = server.build_router();
 }
+
+// ============================================================
+// P8 补全（2026-09-21）：user 行入环 + 发起连接回声帧
+//
+// 此前 user 行只落 chat_log（loop.rs turn 开始时）与发送方本地视图，环形
+// 补拉窗口里没有它——多端（第二标签）落后信号走增量 sync 拉不到，游标
+// 短路修掉无谓全量刷新后更无到达路径（真机 F 剧本 F3）。入站咽喉点
+// process_messages_with_router 现在 record + 回声（Some(session_manager)
+// 时）。
+// ============================================================
+
+#[tokio::test]
+async fn test_process_messages_records_user_row_and_echoes_to_sender() {
+    use crate::websocket_handler::SendQueue;
+    use nemesis_bus::MessageBus;
+    use tokio::sync::mpsc;
+
+    let mgr = Arc::new(SessionManager::with_default_timeout());
+    let session = mgr.create_session();
+    let (qtx, mut qrx) = tokio::sync::mpsc::channel::<Vec<u8>>(16);
+    let (_, done_rx) = tokio::sync::watch::channel(false);
+    mgr.set_send_queue(
+        &session.id,
+        Arc::new(SendQueue::from_channels(qtx, done_rx)),
+    );
+
+    let bus = Arc::new(MessageBus::new());
+    let mut inbound_sub = bus.subscribe_inbound();
+    let (tx, proc_rx) = mpsc::unbounded_channel();
+
+    // unique 会话 id：SESSION_LOGS 是进程级全局表，互不可见防串扰。
+    let conv_id = format!("p8-echo-{}", std::process::id());
+    let mut metadata = HashMap::new();
+    metadata.insert("session_id".to_string(), conv_id.clone());
+    tx.send(crate::websocket_handler::IncomingMessage {
+        session_id: session.id.clone(),
+        sender_id: "web:x".to_string(),
+        chat_id: format!("web:{}", session.id),
+        content: "echo me".to_string(),
+        metadata,
+        voice_playback: None,
+        media: Vec::new(),
+    })
+    .unwrap();
+    drop(tx);
+
+    process_messages_with_router(proc_rx, bus, None, Some(mgr)).await;
+
+    // ① user 行入环（与 chat 行/工具事件同键空间同 seq 序列）。
+    let key = format!("agent:main:session:{conv_id}");
+    let (events, gap) = crate::chat_event_log::replay_after(&key, 0);
+    assert!(!gap);
+    assert_eq!(events.len(), 1, "user 行必须入环（补拉窗口可见）");
+    assert_eq!(events[0].role, "user");
+    assert_eq!(events[0].content, "echo me");
+    assert_eq!(events[0].seq, 1);
+
+    // ② 回声帧推送到发起连接：receive 形态、带 seq 与裸 sid（前端游标
+    // 推进 + 尾行同文去重靠它）。
+    let bytes = tokio::time::timeout(Duration::from_millis(1000), qrx.recv())
+        .await
+        .expect("回声帧超时")
+        .expect("回声队列关闭");
+    let frame: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+    assert_eq!(frame["cmd"], "receive");
+    assert_eq!(frame["data"]["role"], "user");
+    assert_eq!(frame["data"]["content"], "echo me");
+    assert_eq!(frame["data"]["seq"], 1);
+    assert_eq!(frame["data"]["session_id"], conv_id);
+
+    // 入站消息照常进 bus（record/回声不截断主链路）。
+    let inbound = tokio::time::timeout(Duration::from_millis(1000), inbound_sub.recv())
+        .await
+        .expect("inbound 超时")
+        .expect("inbound 关闭");
+    assert_eq!(inbound.session_key, key);
+}
+
+#[tokio::test]
+async fn test_process_messages_empty_content_skips_record_and_echo() {
+    use crate::websocket_handler::SendQueue;
+    use nemesis_bus::MessageBus;
+    use tokio::sync::mpsc;
+
+    let mgr = Arc::new(SessionManager::with_default_timeout());
+    let session = mgr.create_session();
+    let (qtx, mut qrx) = tokio::sync::mpsc::channel::<Vec<u8>>(16);
+    let (_, done_rx) = tokio::sync::watch::channel(false);
+    mgr.set_send_queue(
+        &session.id,
+        Arc::new(SendQueue::from_channels(qtx, done_rx)),
+    );
+
+    let bus = Arc::new(MessageBus::new());
+    let mut inbound_sub = bus.subscribe_inbound();
+    let (tx, proc_rx) = mpsc::unbounded_channel();
+
+    // 纯图消息（content 空、带 media）→ 不入环不回声（前端本地占位已渲染，
+    // 历史恢复走 chat_log 全量）；主链路照常。
+    let conv_id = format!("p8-img-{}", std::process::id());
+    let mut metadata = HashMap::new();
+    metadata.insert("session_id".to_string(), conv_id.clone());
+    tx.send(crate::websocket_handler::IncomingMessage {
+        session_id: session.id.clone(),
+        sender_id: "web:x".to_string(),
+        chat_id: format!("web:{}", session.id),
+        content: String::new(),
+        metadata,
+        voice_playback: None,
+        media: Vec::new(),
+    })
+    .unwrap();
+    drop(tx);
+
+    process_messages_with_router(proc_rx, bus, None, Some(mgr)).await;
+
+    let key = format!("agent:main:session:{conv_id}");
+    let (events, gap) = crate::chat_event_log::replay_after(&key, 0);
+    assert!(!gap);
+    assert!(events.is_empty(), "纯图消息不入环");
+
+    // 回声队列必须为空：recv 立即返回 None（tx 已 drop、无消息入队）。
+    let echoed = qrx.try_recv().is_ok();
+    assert!(!echoed, "纯图消息不回声");
+
+    // 主链路照常：inbound 仍到 bus。
+    let inbound = tokio::time::timeout(Duration::from_millis(1000), inbound_sub.recv())
+        .await
+        .expect("inbound 超时")
+        .expect("inbound 关闭");
+    assert_eq!(inbound.session_key, key);
+}
+
+#[tokio::test]
+async fn test_process_messages_history_request_not_recorded_nor_echoed() {
+    use crate::websocket_handler::SendQueue;
+    use nemesis_bus::MessageBus;
+    use tokio::sync::mpsc;
+
+    let mgr = Arc::new(SessionManager::with_default_timeout());
+    let session = mgr.create_session();
+    let (qtx, mut qrx) = tokio::sync::mpsc::channel::<Vec<u8>>(16);
+    let (_, done_rx) = tokio::sync::watch::channel(false);
+    mgr.set_send_queue(
+        &session.id,
+        Arc::new(SendQueue::from_channels(qtx, done_rx)),
+    );
+
+    let bus = Arc::new(MessageBus::new());
+    let mut inbound_sub = bus.subscribe_inbound();
+    let (tx, proc_rx) = mpsc::unbounded_channel();
+
+    // history_request 形态（websocket_handler::handle_history_request 构造）：
+    // content 是请求 JSON、metadata 带 request_type="history"——不得入环/
+    // 回声（否则前端每个会话凭空出现请求 JSON「消息」+ 悬空占位）。
+    let conv_id = format!("p8-hist-{}", std::process::id());
+    let mut metadata = HashMap::new();
+    metadata.insert("request_type".to_string(), "history".to_string());
+    metadata.insert("session_id".to_string(), conv_id.clone());
+    tx.send(crate::websocket_handler::IncomingMessage {
+        session_id: session.id.clone(),
+        sender_id: "web:x".to_string(),
+        chat_id: format!("web:{}", session.id),
+        content: serde_json::json!({
+            "before_index": null,
+            "limit": 20,
+            "request_id": format!("hist_{conv_id}"),
+        })
+        .to_string(),
+        metadata,
+        voice_playback: None,
+        media: Vec::new(),
+    })
+    .unwrap();
+    drop(tx);
+
+    process_messages_with_router(proc_rx, bus, None, Some(mgr)).await;
+
+    let key = format!("agent:main:session:{conv_id}");
+    let (events, gap) = crate::chat_event_log::replay_after(&key, 0);
+    assert!(!gap);
+    assert!(events.is_empty(), "history_request 不得入环");
+
+    let echoed = qrx.try_recv().is_ok();
+    assert!(!echoed, "history_request 不得回声");
+
+    // 主链路照常：history 请求仍到 bus（agent 侧读历史依赖它）。
+    let inbound = tokio::time::timeout(Duration::from_millis(1000), inbound_sub.recv())
+        .await
+        .expect("inbound 超时")
+        .expect("inbound 关闭");
+    assert_eq!(inbound.session_key, key);
+}

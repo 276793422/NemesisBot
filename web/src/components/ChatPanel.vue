@@ -12,6 +12,7 @@ import { useSlashCommands, filterSlashCommands, type SlashCommand } from '../com
 import { useSessionStore } from '../stores/session'
 import { uploadImage, validateImageFile, type UploadedImage } from '../composables/useImageUpload'
 import { useToast } from '../composables/useToast'
+import { useApprovals } from '../composables/useApprovals'
 import { useEditorMode } from '../composables/useEditorMode'
 // H2 (2026-09-05): todo 清单面板（todowrite 工具的实时渲染）。
 import TodoPanel from './chat/TodoPanel.vue'
@@ -341,6 +342,34 @@ function onChatAreaClick() {
   chatInput.value?.focus()
 }
 
+// P1（2026-09-21）：tool_event 载荷 → store 状态的唯一转换。实时 push
+// （handleWSMessage）与 chat.sync 回放（syncMissedChat / primeSeqBaseline）
+// 共用——回放端语义与实时端完全一致，修「补拉/回放路径工具事件丢失」
+// 时不出现第二份转换逻辑漂移。appendToolEvent 按 callId upsert 幂等。
+function applyToolEventPayload(ev: any) {
+  const p = ev?.data ?? {}
+  if (ev?.kind === 'ToolStarted') {
+    chatStore.appendToolEvent({
+      callId: p.call_id,
+      tool: p.tool,
+      state: 'running',
+      argsPreview: p.args_preview,
+    })
+  } else if (ev?.kind === 'ToolFinished') {
+    chatStore.appendToolEvent({
+      callId: p.call_id,
+      tool: p.tool,
+      state: p.ok ? 'ok' : 'error',
+      durationMs: p.duration_ms,
+      resultPreview: p.result_preview,
+    })
+  } else if (ev?.kind === 'ModeChanged') {
+    // F1：模式切换事件（/plan /build slash 或 chat.set_mode 发布）——
+    // 徽标实时刷新。会话过滤由调用方完成。
+    if (p.mode === 'plan' || p.mode === 'build') chatStore.setAgentMode(p.mode)
+  }
+}
+
 function handleWSMessage(data: any) {
   // M1b: tool_event push（M1a AgentEvent 通道；无 module 字段的 push 帧）。
   // 按当前会话过滤。2026-09-20 BUG-A：帧内层 chat_id 是连接级 id
@@ -357,26 +386,11 @@ function handleWSMessage(data: any) {
       const expected = sessionStore.currentId ? `web:${sessionStore.currentId}` : null
       if (expected ? p.chat_id !== expected : !String(p.chat_id ?? '').startsWith('web:')) return
     }
-    if (ev?.kind === 'ToolStarted') {
-      chatStore.appendToolEvent({
-        callId: p.call_id,
-        tool: p.tool,
-        state: 'running',
-        argsPreview: p.args_preview,
-      })
-    } else if (ev?.kind === 'ToolFinished') {
-      chatStore.appendToolEvent({
-        callId: p.call_id,
-        tool: p.tool,
-        state: p.ok ? 'ok' : 'error',
-        durationMs: p.duration_ms,
-        resultPreview: p.result_preview,
-      })
-    } else if (ev?.kind === 'ModeChanged') {
-      // F1：模式切换事件（/plan /build slash 或 chat.set_mode 发布）——
-      // 徽标实时刷新。chat_id 过滤已在上方完成（含无活跃会话的 web: 放行）。
-      if (p.mode === 'plan' || p.mode === 'build') chatStore.setAgentMode(p.mode)
-    }
+    applyToolEventPayload(ev)
+    // P8 精修：tool 帧带环内 seq（pump 注入）——与 chat 行统一推进补拉
+    // 游标。否则本端实时收到工具事件而游标不动，chat.activity（seq 更大）
+    // 会把本端误判成「落后端」触发无谓的全量刷新。
+    if (typeof ev?.seq === 'number') lastChatSeq = Math.max(lastChatSeq, ev.seq)
     return
   }
   if (data.module !== undefined) {
@@ -423,10 +437,22 @@ function handleWSMessage(data: any) {
             toolEvents,
           })
         }
-        chatStore.streaming = false
-        clearWatchdog()
-        // M5：turn 完成（历史已落 store）→ 刷新 context/cost 常驻条。
-        if (incomingRole === 'assistant') refreshUsage()
+        // P8 补全（2026-09-21）：user 回声帧（后端入环回推，多端一致）不是
+        // 完成信号——不关 streaming、不清 watchdog（本地发送态保持到
+        // assistant 回复到场）；完成语义只属于 assistant 帧。
+        if (incomingRole === 'assistant') {
+          chatStore.streaming = false
+          clearWatchdog()
+          // M5：turn 完成（历史已落 store）→ 刷新 context/cost 常驻条。
+          refreshUsage()
+          // P2（2026-09-21）：回复已显示 → 立即 detect 停轮清占位。此前
+          // receive 分支不调 detectPendingTurn，且上方已把补拉游标推进到
+          // 回复自身 seq（此后 sync 恒 n=0）——「sync 拉到新行才停轮」
+          // 路径被 receive 自己堵死，占位只能等 busy=false 兜底节奏消失
+          //（实测残留 4.6-6.8s）。assistant 到场即 detect：尾部已是回复
+          // → 停轮，占位即时消失。
+          detectPendingTurn()
+        }
 
         // TTS playback: if enabled, send AI response to backend for synthesis
         if (voicePlayback.value && ttsReady.value && data.data.role !== 'user' && data.data.content) {
@@ -508,20 +534,71 @@ function maybeRefreshSessionsFor(sid: string) {
   void sessionStore.fetchList(true)
 }
 
-// 历史载入后对齐 seq 基线：历史帧（chat_log 路径）不带 seq，不锚基线的话
-// 首次重连补拉会从 0 起重放出已载历史。只取最新游标不渲染；本轮已有活帧
-//（lastChatSeq>0）或拿不到基线（gap/失败）则保持现状——重连补拉的
-// gap→重载兜底链仍然成立。fire-and-forget，失败静默。
-async function primeSeqBaseline() {
-  if (!isDefaultChat.value || lastChatSeq > 0) return
+// 历史载入后对齐 seq 基线 + 回放尾部工具流程：
+// 1) 基线（原 L2 逻辑）：历史帧（chat_log 路径）不带 seq，不锚基线的话
+//    首次重连补拉会从 0 起重放出已载历史。只取最新游标不渲染；本轮已有
+//    活帧（lastChatSeq>0）或拿不到基线（gap/失败）则保持现状——重连补拉
+//    的 gap→重载兜底链仍然成立。fire-and-forget，失败静默。
+// 2) P1c（2026-09-21）：chat_log 只有 user/assistant 文本行，工具事件只
+//    存在于 chat_event_log——reset+loadHistory 全量重载（SSE resync /
+//    watchdog / 换会话 / 重挂载补偿）后工具卡全部消失（用户实测「中间的
+//    流程本来也该在，但是都没了」）。此处按「倒数第二条 assistant 行之后」
+//    回放 tool 条目：覆盖最后一轮完成段（挂回历史 assistant 消息）+ 进行
+//    中段（留 pendingToolEvents 区，占位旁渲染，收尾由 receive/sync flush）。
+//    更早轮次的工具卡不重建（历史窗口有限，重放成本随深度膨胀；最近一轮
+//    + 进行中是「中间流程」的主要可见诉求）。
+// 3) 2026-09-21 watchdog 重灌复用：全量重灌分支（replaceMessages）同样
+//    只有文本行——提炼 replayToolsFromRing 供 primeSeqBaseline（挂载基线）
+//    与 watchdog 重灌后共用,重灌后最后一轮工具卡不再丢失。
+
+/** 从环回放最近一轮工具事件并挂卡（F5/重灌后「中间流程」恢复的共用主体）。
+ * 前提:视图已由 chat_log 历史渲染(user/assistant 文本行);本函数只负责
+ * tool 条目→挂载。fire-and-forget,失败静默。 */
+async function replayToolsFromRing() {
   const sid = sessionStore.currentId
   if (!sid) return
-  try {
-    const res = await request('chat', 'sync', { session_id: sid, after_seq: 0 })
-    if (!res?.gap && Array.isArray(res?.events) && res.events.length) {
-      const tail = res.events[res.events.length - 1]
-      if (typeof tail?.seq === 'number') lastChatSeq = Math.max(lastChatSeq, tail.seq)
+  const res = await request('chat', 'sync', { session_id: sid, after_seq: 0 })
+  if (!res?.gap && Array.isArray(res?.events) && res.events.length) {
+    const events = res.events
+    const tail = events[events.length - 1]
+    if (typeof tail?.seq === 'number') lastChatSeq = Math.max(lastChatSeq, tail.seq)
+    // 回放窗口起点：倒数第二条 assistant 行（含）——其后的第一个
+    // assistant 是最后一轮回复，其前的 tool 属于它；其后剩余 tool 属于
+    // 进行中轮次。assistant 不足两条则从 0 起全回放（短历史无损）。
+    const aPositions = events
+      .map((e: any, i: number) => (e.kind !== 'tool' && e.role === 'assistant' ? i : -1))
+      .filter((i: number) => i >= 0)
+    const from = aPositions.length >= 2 ? aPositions[aPositions.length - 2] : 0
+    const replayAssistants = aPositions.filter((i: number) => i >= from)
+    let seen = 0
+    for (let i = from; i < events.length; i++) {
+      const ev = events[i]
+      if (ev.kind === 'tool' && ev.tool) {
+        applyToolEventPayload(ev.tool)
+        continue
+      }
+      if (ev.role === 'assistant') {
+        // 该 assistant 行已由 chat_log 历史渲染——把此前累积的工具事件
+        // 挂回列表中对应位置的 assistant（回放段第 j 个 assistant ↔
+        // 列表倒数第 k-j 个）；列表 assistant 数不足（窗口滑出）时兜底
+        // 挂到最后一条。
+        if (chatStore.pendingToolEvents.length) {
+          const assistants = chatStore.messages.filter((m: any) => m.role === 'assistant')
+          const k = replayAssistants.length
+          const target =
+            assistants[assistants.length - (k - seen)] ?? assistants[assistants.length - 1]
+          if (target) target.toolEvents = chatStore.flushPendingToolEvents()
+        }
+        seen++
+      }
     }
+  }
+}
+
+async function primeSeqBaseline() {
+  if (!isDefaultChat.value || lastChatSeq > 0) return
+  try {
+    await replayToolsFromRing()
   } catch { /* 基线拿不到就保持 0 */ }
 }
 
@@ -542,6 +619,30 @@ async function syncMissedChat() {
       // 重放与活帧的赛窗：sync 在途时新帧可能已从 live 通道到达并推进游标
       //——seq ≤ 游标的重放帧跳过，避免双渲染。
       if (typeof ev.seq === 'number' && ev.seq <= lastChatSeq) continue
+      if (ev.kind === 'tool' && ev.tool) {
+        // P1a（2026-09-21）：补拉的 tool 条目转回工具事件（与实时帧同一
+        // 转换）——断线重连窗口内的工具流程不再丢：ToolStarted 落补拉
+        // 窗口时后续 assistant 行到场所 flush 挂载；assistant 已过、轮次
+        // 进行中则在 pendingToolEvents 区渲染（占位旁）。
+        applyToolEventPayload(ev.tool)
+        if (typeof ev.seq === 'number') lastChatSeq = Math.max(lastChatSeq, ev.seq)
+        added = true
+        continue
+      }
+      // 尾行同文比对（与 receive 分支 isDuplicateRecovery 同语义）：发送方
+      // 极端时序下自己的 user 行可能已由回声帧先落视图，补拉不重复渲染。
+      const tail = chatStore.messages[chatStore.messages.length - 1]
+      if (ev.role === 'user' && tail && tail.role === 'user' && tail.content === ev.content) {
+        if (typeof ev.seq === 'number') lastChatSeq = Math.max(lastChatSeq, ev.seq)
+        continue
+      }
+      // P1a：assistant 行落地时挂载本轮累积的工具事件（与 receive 分支
+      // 同语义；此前补拉路径 addMessage 无 flush——重连补进的回复永远
+      // 裸奔，内存 pending 工具事件挂不上）。
+      const toolEvents =
+        ev.role === 'assistant' && chatStore.pendingToolEvents.length
+          ? chatStore.flushPendingToolEvents()
+          : undefined
       chatStore.addMessage({
         role: ev.role,
         content: ev.content,
@@ -549,11 +650,17 @@ async function syncMissedChat() {
         // 补拉消息显示为拉取时刻而非真实发生时刻；旧条目无 ts 回退本地钟。
         timestamp: ev.ts || new Date().toISOString(),
         model: ev.model,
+        toolEvents,
       })
       if (typeof ev.seq === 'number') lastChatSeq = Math.max(lastChatSeq, ev.seq)
       added = true
     }
-    if (added) nextTick(() => scrollToBottomIfNear())
+    if (added) {
+      nextTick(() => scrollToBottomIfNear())
+      // 切页恢复：补拉到新行后重新评估「尾部悬空 user」——assistant 行
+      // 到达则停轮清占位；补拉后仍悬空则维持/重启占位轮询。
+      detectPendingTurn()
+    }
   } catch {
     // sync 失败不炸 UI——watchdog / 下轮重连兜底
   }
@@ -568,20 +675,68 @@ function onSSEResync() {
   loadHistory()
 }
 
+// P8（2026-09-21）：多端同会话——任一端写入新帧（chat 行/工具事件）时
+// 后端广播 SSE `chat.activity {session_id, seq, kind}`。本端自己的写入由
+// WS 实时帧先行推进 lastChatSeq → 信号 seq ≤ 游标即「自己或已追平」，零
+// 开销短路；落后（lastChatSeq < seq）才响应。P8 补全（2026-09-21）：user
+// 行入环（process_messages 入站点 record）后，user/assistant/tool 三类条
+// 目都在补拉窗口里——增量 sync 全覆盖，不再按 kind 分流（gap 缺口滑出窗
+// 口由 syncMissedChat 内部 reset+loadHistory 兜底）。此前 kind="chat" 走
+// 全量刷新的根因是 user 行只在 chat_log、增量补不到；且帧路由经
+// broadcast(chat_id) 是连接级——第二标签完全收不到本轮（user 行与回复都
+// 不出现，表现为「另一端死了」）。
+let activityLagSeq = 0
+let activityDebounce: number | null = null
+let activityLastRefreshAt = 0
+function onChatActivity(payload: any) {
+  if (!isDefaultChat.value) return
+  if (payload?.session_id !== sessionStore.currentId) return
+  const seq = typeof payload?.seq === 'number' ? payload.seq : 0
+  if (seq <= lastChatSeq) return
+  activityLagSeq = Math.max(activityLagSeq, seq)
+  // 防抖：高频信号合并为一次响应；5s 冷却防风暴循环。
+  if (activityDebounce !== null) clearTimeout(activityDebounce)
+  activityDebounce = window.setTimeout(() => {
+    activityDebounce = null
+    if (activityLagSeq <= lastChatSeq) return // 响应间隙实时帧已追平
+    activityLagSeq = 0
+    if (chatStore.streaming) return // 本端发送中：流式态自管理，不打断
+    if (Date.now() - activityLastRefreshAt < 5000) return
+    activityLastRefreshAt = Date.now()
+    // 增量补齐（user/assistant/tool 同通道）；gap → 全量兜底在函数内部。
+    syncMissedChat()
+  }, 800)
+}
+
 // --- Watchdog: recover from a lost live response frame ---
 // If `streaming` stays true past WATCHDOG_MS with no receive/error frame, the
 // WS frame was likely lost (e.g. half-open connection). The response is already
 // persisted to session_log, so resync by reloading the latest page and
 // REPLACING the message list (no dedup / stable-id needed). Default chat only
 // — workflow_chat streaming is engine-driven, not in this session_log path.
+//
+// 2026-09-21 修复(真机复现:exec 审批挂起 45s → 视图被磁盘 50 条重灌,工具
+// 卡/占位全冲掉):watchdog 只认 receive 帧,不认识「轮次活着但静默」的
+// 中段——CRITICAL 审批挂起(WebApproval 阻塞等 respond,最长 300s)与长工具
+// 执行期间天然无 receive 帧。onWatchdog 触发时先看活跃迹象(本会话审批
+// 挂起 / 本轮工具事件未收尾),有则只续期不重灌;活跃续期单独上限
+// (12 次 ≈ 9 分钟,覆盖 300s 审批超时 + 模型处理拒绝的余量),超限走原
+// 恢复路径。审批超时自动拒绝后链路自洽:拒绝理由回灌模型 → 模型产出最终
+// 回复 → receive 帧关 streaming;残留的 running 工具事件由该回复的
+// flushPendingToolEvents 挂载收尾。
 const WATCHDOG_MS = 45000
 const MAX_WATCHDOG_ATTEMPTS = 3
+const MAX_WATCHDOG_ACTIVE_EXTENDS = 12
 let watchdogTimer: ReturnType<typeof setTimeout> | null = null
 let watchdogAttempts = 0
+let watchdogActiveExtends = 0
 let pendingWatchdogReload = false
-// # of assistant messages at send time — used to detect that the lost
-// response has actually landed in session_log (vs. still running).
-let assistantCountAtSend = 0
+// 本轮发送文本——watchdog 恢复判定「回复已落」的语义锚(见响应处理分支
+// pendingWatchdogReload 的 landed 判定):从磁盘历史尾部向前找本轮 user 行,
+// 其间出现 assistant 行即已落。计数式判定(磁盘 50 条 vs 发送时视图 ~20
+// 条的 assistant 数)窗口错位,磁盘计数天然偏大,轮次还在跑也被判已落 →
+// 误重灌,已废弃。
+let watchdogSentContent = ''
 
 function clearWatchdog() {
   if (watchdogTimer) {
@@ -593,10 +748,11 @@ function armWatchdog() {
   clearWatchdog()
   watchdogTimer = setTimeout(onWatchdog, WATCHDOG_MS)
 }
-function startWatchdog() {
+function startWatchdog(sentContent = '') {
   watchdogAttempts = 0
+  watchdogActiveExtends = 0
   pendingWatchdogReload = false
-  assistantCountAtSend = chatStore.messages.filter(m => m.role === 'assistant').length
+  watchdogSentContent = sentContent
   armWatchdog()
 }
 function reloadLatest() {
@@ -612,6 +768,16 @@ function onWatchdog() {
   watchdogTimer = null
   if (!chatStore.streaming) return
   if (!isDefaultChat.value) return
+  // 轮次活跃迹象 → 续期不重灌:审批挂起(全局单例 pendingApprovals,含
+  // 其他会话的挂起——多等一个周期无害)或本轮工具事件未 flush(回复未到
+  // 即未收尾,含 running/finished 残留——它们都要等回复到场才挂载清空)。
+  if (pendingApprovals.length > 0 || chatStore.pendingToolEvents.length > 0) {
+    watchdogActiveExtends++
+    if (watchdogActiveExtends <= MAX_WATCHDOG_ACTIVE_EXTENDS) {
+      armWatchdog()
+      return
+    }
+  }
   watchdogAttempts++
   reloadLatest()
 }
@@ -771,6 +937,11 @@ function handleHistoryResponse(data: any) {
   // 后端 sidecar 计数清除；无未读时本地短路零开销）。放在所有早退分支之前，
   // resync/watchdog 路径同样视为已读。
   if (sessionStore.currentId) sessionStore.markDelivered(sessionStore.currentId)
+  // P4：本响应已通过会话归属围栏 → 视图归属当前会话，钉住（见
+  // loadedHistorySid 声明）。resync/watchdog 分支的 replace 与翻页 prepend
+  // 同样是完整视图语义，统一在此设置。
+  loadedHistorySid = sessionStore.currentId ?? null
+  loadingHistorySid = null
 
   // M6：rewind/redo 后的重同步（无条件 replace + oldest_index 重建行号）。
   if (pendingResync) {
@@ -794,14 +965,29 @@ function handleHistoryResponse(data: any) {
   }
 
   // Watchdog-driven resync: if a genuinely new assistant message is in
-  // session_log (more than at send time), the lost response landed — replace
-  // from source of truth and un-stick. Otherwise keep the current view and
-  // re-check (never drop the just-sent user message).
+  // session_log, the lost response landed — replace from source of truth and
+  // un-stick. Otherwise keep the current view and re-check (never drop the
+  // just-sent user message).
   if (pendingWatchdogReload) {
     pendingWatchdogReload = false
     const rawMsgs: any[] = data.messages || []
-    const latestAssistantCount = rawMsgs.filter((m: any) => m.role === 'assistant').length
-    if (chatStore.streaming && latestAssistantCount > assistantCountAtSend) {
+    // 「回复已落」语义化判定:磁盘历史尾部向前,遇到本轮发送文本的 user
+    // 行之前是否出现 assistant 行(行序即落盘序)。原判定
+    // latestAssistantCount > assistantCountAtSend 拿磁盘 50 条窗口的
+    // assistant 计数与发送时视图(~20 条)比较——窗口错位,磁盘计数天然
+    // 偏大,轮次还在跑(审批挂起/长工具)也被判已落 → 误重灌(真机
+    // 2026-09-21:审批挂起 45s 触发,n=22→50,工具卡/占位全冲)。
+    // 同文重发:只看最后一条同文 user 之后——更早的同文行不影响。
+    let landed = false
+    for (let i = rawMsgs.length - 1; i >= 0; i--) {
+      const m = rawMsgs[i]
+      if (m.role === 'assistant') { landed = true; break }
+      if (m.role === 'user') {
+        if ((m.content || '') === watchdogSentContent) break // 追到本轮 user,其后无 assistant → 未落
+        continue // 更早 user 行(同文重发等),继续向前
+      }
+    }
+    if (chatStore.streaming && landed) {
       chatStore.replaceMessages(
         rawMsgs.map((m: any) => ({
           role: m.role,
@@ -813,6 +999,9 @@ function handleHistoryResponse(data: any) {
       )
       chatStore.streaming = false
       clearWatchdog()
+      // 重灌只有文本行——从环回放挂回最后一轮工具卡(与 F5/切回的
+      // primeSeqBaseline 同语义;重灌丢卡 = P1 修复的同族问题)。
+      void replayToolsFromRing().catch(() => {})
       nextTick(() => scrollToBottom())
     } else if (chatStore.streaming && watchdogAttempts < MAX_WATCHDOG_ATTEMPTS) {
       // Response not landed yet (maybe still running) — re-check later.
@@ -854,6 +1043,9 @@ function handleHistoryResponse(data: any) {
   chatStore.historyLoaded = true
   // L2：历史落地后对齐补拉基线（只取游标，不渲染；详见 primeSeqBaseline）。
   primeSeqBaseline()
+  // 切页恢复：历史落地后检测「尾部悬空 user 行」→ 处理中占位 + 轮询
+  // （assistant 行落盘后下一轮重拉自动补上并停轮）。
+  detectPendingTurn()
 
   if (chatStore.oldestIndex === 0 || !data.has_more) {
     chatStore.hasMoreHistory = false
@@ -861,9 +1053,20 @@ function handleHistoryResponse(data: any) {
   }
 }
 
+// P4（2026-09-21）：全量历史的「已载会话 / 在飞目标会话」钉子——
+// loadedHistorySid：视图当前完整载入的会话（handleHistoryResponse 会话
+// 围栏通过后设置）；loadingHistorySid：在飞全量拉取的目标会话（loadHistory
+// 发起时设置，响应落地转正）。currentId watch 据此跳过「同会话重复
+// reset+重拉」：切回刚看过的会话视图即最新（保留工具卡/占位轮询状态），
+// 登录序列「WS 建连 × 默认会话选中」双触发也只剩一次真拉取。切到其他
+// 会话时两枚钉子随新会话的历史响应改写，再切回正常重拉，无陈旧风险。
+let loadedHistorySid: string | null = null
+let loadingHistorySid: string | null = null
+
 function loadHistory() {
   if (chatStore.historyLoading) return
   chatStore.historyLoading = true
+  loadingHistorySid = sessionStore.currentId
   const requestId = 'hist_' + Date.now()
   inFlightHistory.set(requestId, { kind: 'page' })
   const limit = 20
@@ -883,6 +1086,84 @@ function loadHistory() {
 }
 
 // ---------------------------------------------------------------------------
+// 切页恢复（2026-09-21 切标签页丢消息修复）：后端 user 行已在 turn 开始时
+// 落盘，但 assistant 行要等 turn 完成才落——切走再切回（loadHistory）若
+// AI 仍在处理，历史尾部是「悬空 user 行」。pendingTurn 是本组件对该形态
+// 的呈现态（不入 store）：复用 typing-indicator 显示「处理中」占位 + 定时
+// 重拉历史，assistant 行落盘后自动出现并停轮。busy=false（agent.inbox_status，
+// 与发送同规则的会话键）连续 2 次重拉仍无回复 → 轮次已死（重启/异常），
+// 诚实停轮、悬空 user 行保留展示（与 steer 悬空形态一致）；15 分钟硬上限
+// 兜底防无限轮询。
+// ---------------------------------------------------------------------------
+
+const pendingTurn = ref(false)
+let pendingTurnTimer: number | null = null
+let pendingTurnDeadPolls = 0
+let pendingTurnStartedAt = 0
+const PENDING_TURN_POLL_MS = 4000
+const PENDING_TURN_MAX_DEAD_POLLS = 2
+const PENDING_TURN_MAX_MS = 15 * 60 * 1000
+
+function stopPendingTurnPolling() {
+  if (pendingTurnTimer !== null) {
+    clearInterval(pendingTurnTimer)
+    pendingTurnTimer = null
+  }
+  if (pendingTurn.value) pendingTurn.value = false
+  pendingTurnDeadPolls = 0
+}
+
+/** 历史加载完成后检测「尾部悬空 user 行」（非本地发送态）——命中则启动
+ *  处理中占位 + 轮询；尾部已是 assistant（或空/加载中）则停轮。幂等。 */
+function detectPendingTurn() {
+  const msgs = chatStore.messages
+  const last = msgs[msgs.length - 1]
+  const dangling = !!last && last.role === 'user'
+  if (!dangling) {
+    stopPendingTurnPolling()
+    return
+  }
+  // 本地发送态（streaming）不接管——占位已由 streaming 渲染。
+  if (chatStore.streaming) {
+    stopPendingTurnPolling()
+    return
+  }
+  if (pendingTurnTimer === null) {
+    pendingTurnDeadPolls = 0
+    pendingTurnStartedAt = Date.now()
+    pendingTurn.value = true
+    pendingTurnTimer = window.setInterval(() => {
+      void pollPendingTurn()
+    }, PENDING_TURN_POLL_MS)
+  }
+}
+
+async function pollPendingTurn() {
+  if (!pendingTurn.value) return
+  if (Date.now() - pendingTurnStartedAt > PENDING_TURN_MAX_MS) {
+    stopPendingTurnPolling()
+    return
+  }
+  // busy 快照（查询失败 available:false → busy=false → 走死轮计数，
+  // 不会卡死轮询）。
+  await refreshInbox(sessionStore.currentId || '')
+  const busy = inboxStatus.value?.busy === true
+  // 重拉走 L2 增量补拉（chat.sync after_seq，append 语义）而不是
+  // loadHistory——后者是 prepend 翻页通道，重拉全量会重复插行。assistant
+  // 行落盘后 sync 返回该事件 append 到尾部，syncMissedChat 内部的
+  // detectPendingTurn 停轮清占位。
+  await syncMissedChat()
+  if (!busy) {
+    pendingTurnDeadPolls += 1
+    if (pendingTurnDeadPolls >= PENDING_TURN_MAX_DEAD_POLLS) {
+      stopPendingTurnPolling()
+    }
+  } else {
+    pendingTurnDeadPolls = 0
+  }
+}
+
+// ---------------------------------------------------------------------------
 // T8 多模态（2026-09-03）：图片附件（上传端点 /api/upload/image → chat.send
 // media）。三种入口：📎 选择文件、粘贴（clipboard files）、拖拽到输入区。
 // 上传成功后持 id 等待随消息发送；不做 canvas 压缩，超限由前置校验与后端
@@ -890,6 +1171,10 @@ function loadHistory() {
 // ---------------------------------------------------------------------------
 
 const toast = useToast()
+// 2026-09-21 watchdog 活跃续期判据:审批挂起(WebApproval 阻塞等 respond
+// 期间无 receive 帧,45s 静默不该触发恢复)。全局单例的挂起列表,含其他
+// 会话的审批——误续期一个周期无害,不做会话过滤。
+const { pendingApprovals } = useApprovals()
 type PendingImage = UploadedImage & { name: string }
 const pendingImages = ref<PendingImage[]>([])
 const uploadingImages = ref(0)
@@ -1075,7 +1360,12 @@ function sendMessage() {
   expandedPastes.value = new Set()
   pasteSeq = 0
   chatStore.streaming = true
-  startWatchdog()
+  // 本地发送接管占位——清掉可能残留的切页恢复轮询（streaming 态由
+  // watchdog 负责，两套机制不叠加）。
+  stopPendingTurnPolling()
+  // 传入本轮文本:watchdog 恢复判定「回复已落」的语义锚(见响应处理
+  // 分支 pendingWatchdogReload 的 landed 判定)。
+  startWatchdog(content)
 
   // Reset textarea height
   if (chatInput.value) chatInput.value.style.height = 'auto'
@@ -1432,6 +1722,10 @@ const unwatchStatus = watch(wsStatus, (val) => {
   if (val === 'disconnected' && chatStore.streaming) {
     chatStore.streaming = false
   }
+  // 断连期间轮询重拉无意义——停掉；重连后 loadHistory 会重新 detect。
+  if (val === 'disconnected' && pendingTurn.value) {
+    stopPendingTurnPolling()
+  }
   if (val === 'connected') {
     initVoiceState()
     syncInboxMode()
@@ -1454,8 +1748,23 @@ const unwatchSession = watch(
   () => sessionStore.currentId,
   (newId, oldId) => {
     if (!isDefaultChat.value || newId === oldId) return
+    // P4（2026-09-21）：同会话免重拉——已完整载入（newId === loadedHistorySid
+    // 且 historyLoaded）或在飞的正是本会话历史（loadingHistorySid === newId，
+    // 响应围栏与渲染目标都是 newId）：跳过 reset+重拉。会话相关的模式
+    // 徽标仍要对齐。此时不动 inFlightHistory（在飞的正是本会话，要放行）。
+    if (
+      newId &&
+      ((newId === loadedHistorySid && chatStore.historyLoaded) ||
+        newId === loadingHistorySid)
+    ) {
+      syncInboxMode()
+      syncAgentMode()
+      return
+    }
     // HD：换会话 → 作废全部在飞历史请求（旧会话响应迟到时被围栏丢弃）。
     inFlightHistory.clear()
+    // 换会话 → 旧会话的切页恢复轮询随之作废（新会话历史落地后重新 detect）。
+    stopPendingTurnPolling()
     chatStore.reset()
     lastChatSeq = 0 // L2：换会话 → 补拉游标归零（seq 是会话内单调的）
     if (newId && wsStatus.value === 'connected') {
@@ -1471,6 +1780,8 @@ onMounted(() => {
   setupScrollListener()
   // L2：SSE resync 提示 → 会话全量刷新兜底（缺口滑出重放窗口/网关重启）。
   onSSE('resync', onSSEResync)
+  // P8：多端同会话感知信号 → 落后端防抖全量刷新（见 onChatActivity）。
+  onSSE('chat.activity', onChatActivity)
 
   // Non-default module (e.g., workflow_chat) must NOT share conversation
   // state with a prior chat session in the same tab — reset before binding.
@@ -1531,10 +1842,17 @@ onUnmounted(() => {
   }
   removeMessageHandler(handleWSMessage)
   offSSE('resync', onSSEResync)
+  offSSE('chat.activity', onChatActivity)
+  if (activityDebounce !== null) {
+    clearTimeout(activityDebounce)
+    activityDebounce = null
+  }
   unwatchStatus()
   unwatchSession()
   unwatchStreaming()
   unwatchUsage()
+  // 切页恢复轮询随组件卸载终止（重挂载时 loadHistory 重新 detect）。
+  stopPendingTurnPolling()
   if (usagePollTimer) {
     clearInterval(usagePollTimer)
     usagePollTimer = null
@@ -1629,7 +1947,15 @@ onUnmounted(() => {
       </div>
 
       <!-- Typing indicator -->
-      <div v-if="chatStore.streaming" class="message assistant">
+      <!-- pendingTurn：切页恢复的「处理中」占位——历史尾部悬空 user 行时复用
+           同款 typing-indicator（AI 仍在处理，assistant 行落盘后自动补上）。
+           P8：工具卡区与 typing 气泡解耦（外层条件并入 pendingToolEvents）——
+           多端场景下本端未发起轮次（另一端在跑工具）也能实时看到工具卡，
+           否则实时 tool_event 只进 store 不渲染，直到回复落地才闪现。 -->
+      <div
+        v-if="chatStore.streaming || pendingTurn || chatStore.pendingToolEvents.length"
+        class="message assistant"
+      >
         <div class="message-avatar">NB</div>
         <div class="message-content">
           <!-- M1b: 进行中轮次的工具卡片（响应落地前实时可见）。 -->
@@ -1651,7 +1977,7 @@ onUnmounted(() => {
               <ToolCallCard v-for="ev in chatStore.pendingToolEvents" :key="ev.callId" :event="ev" />
             </div>
           </template>
-          <div class="message-bubble">
+          <div v-if="chatStore.streaming || pendingTurn" class="message-bubble">
             <div class="typing-indicator"><span></span><span></span><span></span></div>
           </div>
         </div>
