@@ -1250,6 +1250,9 @@ async fn cmd_learn(home: &std::path::Path, source: &str, name: Option<&str>) -> 
     nemesis_config::credentials::set_global_credentials_path(
         nemesis_config::credentials::credentials_path_for_home(home),
     );
+    // P0 vault（B1）：`vault:<alias>` 解析器同点注入。
+    #[cfg(feature = "security")]
+    crate::vault_runtime::install(home);
     let security_enabled = cfg.security.as_ref().map(|s| s.enabled).unwrap_or(true);
     let security_plugin =
         crate::security_setup::build_security_plugin(home, security_enabled).await;

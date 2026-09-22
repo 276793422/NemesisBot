@@ -498,6 +498,127 @@ impl SecurityAuditor {
     /// 无上下文 LLM 命令审计（2026-09-16）：verdict 升格（ask/deny）→
     /// 人工审批卡。LLM 误报不无声硬拦（留人工通道）；审批不可用 = 调用方
     /// fail-closed 拒绝（loop 消费端语义）。人为裁决落审计（A-F5 同款）。
+    /// P0 vault（D3，2026-09-22 计划 §4）：量化风险限制超限后的人工升级
+    /// 通道。复用 guardian_failure 的审批直通车形态（Web/Channel 管理器
+    /// 零改动）；审计落 `limit_review` 事件——「谁放行了这次超限调用」
+    /// 可追溯。批准 = 计数 + 放行（调用方负责 record）；拒绝/超时/
+    /// 无审批通道 = fail-closed（调用方拒绝执行）。
+    pub fn request_limit_approval(
+        &self,
+        tool: &str,
+        reason: &str,
+        ctx: Option<&ApprovalContext>,
+    ) -> Result<ApprovalVerdict, String> {
+        let mgr_opt = self.approval_manager.read().clone();
+        let Some(mgr) = mgr_opt.as_ref() else {
+            // fail-closed 也是安全决策——无通道的升级同样落审计（A-F5 语义）。
+            self.log_audit_event(&AuditEvent {
+                event_id: uuid::Uuid::new_v4().to_string(),
+                request: OperationRequest {
+                    id: format!("limit-{}", uuid::Uuid::new_v4()),
+                    op_type: OperationType::ProcessExec,
+                    danger_level: DangerLevel::High,
+                    source: "limit_review".to_string(),
+                    target: tool.to_string(),
+                    ..Default::default()
+                },
+                decision: "denied".to_string(),
+                reason: format!(
+                    "rate limit exceeded ({reason}); fail-closed: no approval manager is available"
+                ),
+                timestamp: chrono::Local::now().to_rfc3339(),
+                policy_rule: "security.limits".to_string(),
+            });
+            return Err("limit exceeded and no approval manager is available".to_string());
+        };
+        if !mgr.is_running() {
+            self.log_audit_event(&AuditEvent {
+                event_id: uuid::Uuid::new_v4().to_string(),
+                request: OperationRequest {
+                    id: format!("limit-{}", uuid::Uuid::new_v4()),
+                    op_type: OperationType::ProcessExec,
+                    danger_level: DangerLevel::High,
+                    source: "limit_review".to_string(),
+                    target: tool.to_string(),
+                    ..Default::default()
+                },
+                decision: "denied".to_string(),
+                reason: format!(
+                    "rate limit exceeded ({reason}); fail-closed: the approval manager is not running"
+                ),
+                timestamp: chrono::Local::now().to_rfc3339(),
+                policy_rule: "security.limits".to_string(),
+            });
+            return Err("limit exceeded and the approval manager is not running".to_string());
+        }
+        let request_id = format!("limit-{}", uuid::Uuid::new_v4());
+        let verdict = match ctx {
+            Some(c) => mgr.request_approval_sync_ctx(
+                &request_id,
+                "limit_review",
+                tool,
+                "HIGH",
+                reason,
+                self.config.approval_timeout_secs,
+                c,
+            ),
+            None => mgr.request_approval_sync(
+                &request_id,
+                "limit_review",
+                tool,
+                "HIGH",
+                reason,
+                self.config.approval_timeout_secs,
+            ),
+        };
+        // 审批裁决落审计（guardian_failure_approval 同款 A-F5 语义）。
+        // op_type 取族内最常见 ProcessExec 占位；真实工具名在 target、
+        // 来源在 source，可追溯不依赖 op_type。
+        let audit_verdict = |decision: &str, why: String| {
+            self.log_audit_event(&AuditEvent {
+                event_id: uuid::Uuid::new_v4().to_string(),
+                request: OperationRequest {
+                    id: request_id.clone(),
+                    op_type: OperationType::ProcessExec,
+                    danger_level: DangerLevel::High,
+                    source: "limit_review".to_string(),
+                    target: tool.to_string(),
+                    ..Default::default()
+                },
+                decision: decision.to_string(),
+                reason: why,
+                timestamp: chrono::Local::now().to_rfc3339(),
+                policy_rule: "security.limits".to_string(),
+            });
+        };
+        match verdict {
+            Ok(v) => {
+                let why = if v.approved {
+                    format!("rate limit exceeded ({reason}); user approved the override")
+                } else {
+                    let note = v.note.as_deref().map(str::trim).filter(|n| !n.is_empty());
+                    match note {
+                        Some(n) => {
+                            format!("rate limit exceeded ({reason}); user rejected: {n}")
+                        }
+                        None => format!(
+                            "rate limit exceeded ({reason}); user rejected or approval timeout"
+                        ),
+                    }
+                };
+                audit_verdict(if v.approved { "approved" } else { "denied" }, why);
+                Ok(v)
+            }
+            Err(e) => {
+                audit_verdict(
+                    "denied",
+                    format!("rate limit exceeded ({reason}); approval unavailable: {e}"),
+                );
+                Err(e)
+            }
+        }
+    }
+
     pub fn request_guardian_verdict_approval(
         &self,
         tool: &str,

@@ -90,6 +90,13 @@ pub fn classify_key_source(api_key: &str) -> KeySource {
             kind: "yaml".to_string(),
             reference: alias.to_string(),
         }
+    } else if let Some(alias) = api_key.strip_prefix(crate::vault_ref::VAULT_PREFIX) {
+        // P0 vault（B2）：models 页来源徽标——vault 别名只出现在 reference
+        // 里（与 env/yaml 同脱敏面）。
+        KeySource {
+            kind: "vault".to_string(),
+            reference: alias.to_string(),
+        }
     } else if api_key.is_empty() {
         KeySource {
             kind: "none".to_string(),
@@ -310,7 +317,12 @@ pub fn run_import(config_path: &Path, credentials_path: &Path) -> Result<ImportR
             report.skipped_empty += 1;
             continue;
         }
-        if mc.api_key.starts_with("env:") || mc.api_key.starts_with("yaml:") {
+        // P0 vault（B2 旁路修复）：vault: 已是加密引用——绝不能被当明文
+        // 搬进 credentials.yaml（那会把引用降级成 yaml:）。
+        if mc.api_key.starts_with("env:")
+            || mc.api_key.starts_with("yaml:")
+            || mc.api_key.starts_with(crate::vault_ref::VAULT_PREFIX)
+        {
             report.skipped_reference += 1;
             continue;
         }
@@ -370,7 +382,9 @@ pub fn run_import(config_path: &Path, credentials_path: &Path) -> Result<ImportR
 
 /// Turn a model name/model string into a yaml-safe alias
 /// (no `/`, `\`, `:`, whitespace).
-fn sanitize_alias(raw: &str) -> String {
+/// P0 vault（B2）：`vault migrate` 复用同一规则（vault 与 yaml 别名空间
+/// 保持一致，用户在两种存储间迁移时别名不变）。
+pub fn sanitize_alias(raw: &str) -> String {
     let cleaned: String = raw
         .chars()
         .map(|c| match c {

@@ -561,6 +561,83 @@ impl ProjectLoopManager {
 // projects.* WSAPI 与 resolve_session_loop 全部经此 trait 触达。
 // ---------------------------------------------------------------------------
 
+impl ProjectLoopManager {
+    /// 模型配置热切联动（BUG 2026-09-21）：项目 loop 在 gateway 装配期经
+    /// `start_all` 一次性 spawn，`spawn_project` 幂等永不重建——主 loop 的
+    /// `models.set_default` 热切从未触达项目 loop。典型症状：先起网关后配
+    /// LLM（对话模式热切即好），项目模式永远 NullProvider「未配置模型」。
+    ///
+    /// 本方法用**盘上 config** 重走与 `build_project_agent_loop` 同源的解析
+    /// （`get_effective_llm` → `resolve_model_config` → `create_provider`），
+    /// 对每个在跑项目 loop `set_provider_and_model` 热换（与主 loop 的
+    /// runtime swap 同构：不重建 loop、不打断会话，in-flight 走旧 provider）。
+    /// 解析/构造失败 = warn 保持现状——绝不把能用的 loop 换成 NullProvider；
+    /// 无在跑 loop = 静默 no-op（新建项目 spawn 时自会读新 config）。
+    pub fn reload_providers(&self) {
+        let config_path = self.shared.home.join("config.json");
+        let cfg = match nemesis_config::load_config(&config_path) {
+            Ok(c) => c,
+            Err(e) => {
+                warn!(
+                    "[ProjectLoops] reload_providers: config.json 读取失败，项目 loop 保持现状: {e}"
+                );
+                return;
+            }
+        };
+        let llm_ref = nemesis_config::get_effective_llm(Some(&cfg));
+        let resolution = match nemesis_config::resolve_model_config(&cfg, &llm_ref) {
+            Ok(r) => r,
+            Err(e) => {
+                warn!(
+                    "[ProjectLoops] reload_providers: 模型 '{llm_ref}' 解析失败，项目 loop 保持现状: {e}"
+                );
+                return;
+            }
+        };
+        let factory_cfg = nemesis_providers::factory::FactoryConfig {
+            proxy: resolution.proxy.clone(),
+            llm_ref: format!("{}/{}", resolution.provider_name, resolution.model_name),
+            api_key: resolution.api_key.clone(),
+            api_base: resolution.api_base.clone(),
+            // workspace 留空：provider 不消费该字段（消费方是工具层，项目
+            // loop 的工具 workspace 在装配期已锚定项目目录，与 provider 无关）。
+            workspace: String::new(),
+            connect_mode: resolution.connect_mode.clone(),
+            protocol: resolution.protocol.clone(),
+            timeout_secs: resolution.timeout_secs,
+            account_id: String::new(),
+            headers: std::collections::HashMap::new(),
+        };
+        let provider = match nemesis_providers::factory::create_provider(&factory_cfg) {
+            Ok(p) => p,
+            Err(e) => {
+                warn!(
+                    "[ProjectLoops] reload_providers: provider 构造失败，项目 loop 保持现状: {e}"
+                );
+                return;
+            }
+        };
+        let adapter = Arc::new(nemesis_web::llm_bridge::ProviderAdapter::new(
+            provider,
+            resolution.model_name.clone(),
+        ));
+        let mut swapped = 0usize;
+        for handle in self.state.lock().unwrap().values() {
+            handle
+                .agent_loop
+                .set_provider_and_model(adapter.clone(), resolution.model_name.clone());
+            swapped += 1;
+        }
+        if swapped > 0 {
+            info!(
+                model = %resolution.model_name,
+                loops = swapped,
+                "[ProjectLoops] 项目 loop provider 已随模型热切同步"
+            );
+        }
+    }
+}
+
 impl nemesis_web::handlers::projects::ProjectsBridge for ProjectLoopManager {
     fn display_label(&self, project_id: &str, session_key: &str) -> String {
         // 三级回落真相源（注册表名 → sidecar project_path 尾段 → pid）。
@@ -659,5 +736,9 @@ impl nemesis_web::handlers::projects::ProjectsBridge for ProjectLoopManager {
 
     fn forget_session(&self, session_key: &str) {
         ProjectLoopManager::forget_session(self, session_key);
+    }
+
+    fn reload_provider_all(&self) {
+        ProjectLoopManager::reload_providers(self);
     }
 }

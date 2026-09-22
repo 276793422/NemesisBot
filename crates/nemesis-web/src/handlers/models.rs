@@ -522,6 +522,14 @@ impl ModelsHandler {
             }
         }
 
+        // 模型热切联动（BUG 2026-09-21）：项目 loop 不经上面的 agent_loop
+        // 槽——gateway 装配期一次性 spawn 后永不再读 config。通知 bridge 用
+        // 盘上 config 同步全部在跑项目 loop（default no-op；未装配 / 解析
+        // 失败时项目 loop 保持现状，见 ProjectLoopManager::reload_providers）。
+        if let Some(bridge) = crate::handlers::projects::projects_bridge() {
+            bridge.reload_provider_all();
+        }
+
         Ok(Some(
             serde_json::json!({ "set_default": true, "name": name }),
         ))

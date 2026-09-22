@@ -2685,3 +2685,37 @@ fn audit_jsonl_explicit_disable_wins() {
     assert!(!dir.join("audit.jsonl").exists(), "显式禁用不得落盘");
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+/// limit 升级但无审批 manager：Err fail-closed，且拒绝决策落审计
+/// （A-F5 语义——fail-closed 也是安全决策，必须可追溯）。
+#[test]
+fn test_request_limit_approval_no_manager_fails_closed_with_audit() {
+    let dir = tempfile::tempdir().unwrap();
+    let log_path = dir.path().join("audit.jsonl");
+    let config = AuditorConfig {
+        audit_log_file_enabled: true,
+        audit_log_dir: Some(dir.path().to_str().unwrap().to_string()),
+        ..Default::default()
+    };
+    let auditor = SecurityAuditor::new(config);
+
+    let err = auditor
+        .request_limit_approval("exec", "test over-limit", None)
+        .unwrap_err();
+    assert!(err.contains("no approval manager"), "got: {err}");
+
+    let content = std::fs::read_to_string(&log_path).unwrap();
+    assert!(
+        content.contains("limit_review"),
+        "审计缺 limit_review: {content}"
+    );
+    assert!(
+        content.contains("fail-closed"),
+        "审计缺 fail-closed 标记: {content}"
+    );
+    assert!(
+        content.contains("security.limits"),
+        "审计缺策略规则: {content}"
+    );
+    assert!(content.contains("denied"), "审计应为拒绝决策: {content}");
+}

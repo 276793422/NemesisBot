@@ -117,6 +117,8 @@ nemesis-sandbox = { workspace = true, optional = true }
 nemesis-injector = { workspace = true, optional = true }
 nemesis-eval-proxy = { workspace = true, optional = true }
 serde_yaml = { workspace = true }
+# 凭据 vault CLI（P0）：隐藏输入 secret/口令（全库首个隐藏输入依赖，不回显）
+rpassword = "7"
 regex = { workspace = true }
 clap = { workspace = true }
 tokio = { workspace = true }

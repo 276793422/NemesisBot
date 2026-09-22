@@ -527,6 +527,24 @@ pub trait Tool: Send + Sync {
     fn is_parallel_safe(&self) -> bool {
         self.is_read_only()
     }
+
+    /// P0 vault（C1，2026-09-22 计划 §3）：声明本工具参数中承载凭据**别名**
+    /// 的槽位（顶层字段名，如 `"credential"`）。声明了槽位的工具，其参数
+    /// 里这些字段的 `vault:<alias>` 引用会在 dispatch 最内层、execute 前
+    /// 一刻被改写为真值（见 loop/credential_injection 模块）——工具执行的
+    /// 是真值，全部日志/历史/预览表面只见别名。默认无槽位（机制零侵入）；
+    /// 业务知识（哪个字段是凭据）只住在工具自己的声明里。
+    fn credential_arg_keys(&self) -> &[&str] {
+        &[]
+    }
+
+    /// P0 vault（D2，2026-09-22 计划 §4）：声明本工具归属的量化风险限制
+    /// 类别（与 `security.limits` 配置键对应；空 = 不参与限额）。机制不
+    /// 认识业务名词——类别语义（"exec"、"mass_message"…）由工具声明、
+    /// 由配置绑定，本 crate 只提供滑动窗口计数与超限升级。
+    fn limit_categories(&self) -> &[&str] {
+        &[]
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -1137,8 +1155,7 @@ pub struct AgentLoop {
     /// `handle_history_request` 在读取历史**之后**采样，随响应下发
     /// `last_seq`；`None`（standalone / 未注入）→ 响应不带 last_seq，
     /// 前端走尾部同文兜底（A2）。
-    chat_seq_lookup:
-        parking_lot::RwLock<Option<std::sync::Arc<dyn Fn(&str) -> u64 + Send + Sync>>>,
+    chat_seq_lookup: parking_lot::RwLock<Option<std::sync::Arc<dyn Fn(&str) -> u64 + Send + Sync>>>,
     /// Running flag for the bus consumption loop.
     running: AtomicBool,
     /// Per-session busy state with queue length tracking.
@@ -8279,6 +8296,73 @@ impl AgentLoop {
         #[cfg(feature = "security")]
         {
             if let Some(ref security) = self.security_plugin {
+                // P0 vault（D2/D3，2026-09-22 计划 §4）：声明式量化风险限
+                // 制。位置：estop 之后、安全管线之前（限额不是内容安全，
+                // 不付 judge/scanner 成本）。类别由工具声明、规则由
+                // security.limits 配置（装配层注入；缺省全关）。超限不静默
+                // 拒绝——走 auditor 审批直通车升级（Web/Channel 管理器零
+                // 改动）：批准 = 计数 + 放行；拒绝/超时/无通道 = fail-closed。
+                {
+                    let limit_categories: Vec<String> = self
+                        .tools
+                        .read()
+                        .get(&tool_call.name)
+                        .map(|t| t.limit_categories().iter().map(|s| s.to_string()).collect())
+                        .unwrap_or_default();
+                    if let Some(over) = limits::check_and_record(&limit_categories) {
+                        let approval_ctx = nemesis_security::auditor::ApprovalContext {
+                            channel: context.channel.clone(),
+                            chat_id: context.chat_id.clone(),
+                            sender_id: context.user.clone(),
+                        };
+                        match security.auditor().request_limit_approval(
+                            &tool_call.name,
+                            &over.denial_message(),
+                            Some(&approval_ctx),
+                        ) {
+                            Ok(av) if av.approved => {
+                                // 人工放行：这次调用计入配额，放行执行。
+                                limits::record(&limit_categories);
+                                info!(
+                                    "[AgentLoop] Rate limit on {} (category {}) overridden by user approval",
+                                    tool_call.name, over.category
+                                );
+                            }
+                            Ok(av) => {
+                                let note = av
+                                    .note
+                                    .as_deref()
+                                    .map(str::trim)
+                                    .filter(|n| !n.is_empty())
+                                    .map(|n| format!("用户备注: {n}"))
+                                    .unwrap_or_default();
+                                warn!(
+                                    "[AgentLoop] Rate limit on {}: user rejected override",
+                                    tool_call.name
+                                );
+                                return format!(
+                                    "⛔ RATE LIMIT — USER REJECTED [layer:limits|category:{}] {}。用户拒绝了本次超限放行。Do NOT retry. Inform the user.{}",
+                                    over.category,
+                                    over.denial_message(),
+                                    note
+                                );
+                            }
+                            Err(e) => {
+                                // 无审批通道/审批器未运行：fail-closed（与
+                                // guardian_failure 无通道同语义）。
+                                warn!(
+                                    "[AgentLoop] Rate limit on {}: no approval channel ({})",
+                                    tool_call.name, e
+                                );
+                                return format!(
+                                    "⛔ RATE LIMIT — NO APPROVAL CHANNEL [layer:limits|category:{}] {}。无可用审批通道，fail-closed 拒绝。Do NOT retry. Inform the user.",
+                                    over.category,
+                                    over.denial_message()
+                                );
+                            }
+                        }
+                    }
+                }
                 let args_value = serde_json::from_str::<serde_json::Value>(&tool_call.arguments)
                     .unwrap_or(serde_json::Value::Null);
                 let invocation = nemesis_security::types::ToolInvocation {
@@ -8587,85 +8671,100 @@ impl AgentLoop {
                         }
                     }
                     match tool_opt {
-                        Some(tool) => match tool.execute(&call.arguments, &ctx).await {
-                            Ok(result) => {
-                                debug!(
-                                    "[AgentLoop] Tool {} returned: {} bytes",
-                                    call.name,
-                                    result.len()
-                                );
-                                // A6（devtool-upgrade 阶段 5）format-on-save：
-                                // write_file / edit_file / multiedit（A7 批量
-                                // 版，逐文件去重依次格式化）成功后、PostToolUse
-                                // hooks **之前**跑——用户自定义 hook 看到/
-                                // 拿到的是格式化后的文件（计划明文的正交语
-                                // 义）；外层 C3 诊断带在瀑布之后，诊断同样作
-                                // 用于格式化后文件。失败/超时/开关关/无匹配
-                                // 格式化器全部静默——永不拖垮工具调用。
-                                let format_paths: Vec<String> =
-                                    if !crate::turn_guard::tool_result_indicates_error(&result)
-                                        && let Ok(args_val) =
-                                            serde_json::from_str::<serde_json::Value>(
-                                                &call.arguments,
-                                            )
-                                    {
-                                        match call.name.as_str() {
-                                            "write_file" | "edit_file" => args_val
-                                                .get("path")
-                                                .and_then(|v| v.as_str())
-                                                .map(|p| vec![p.to_string()])
-                                                .unwrap_or_default(),
-                                            "multiedit" => {
-                                                // 去重保序：同文件多条编辑只
-                                                // 格式化一次（重复跑也是 no-op，
-                                                // 省子进程）。
-                                                let mut seen = std::collections::HashSet::new();
-                                                args_val
-                                                    .get("edits")
-                                                    .and_then(|v| v.as_array())
-                                                    .map(|arr| {
-                                                        arr.iter()
-                                                            .filter_map(|e| {
-                                                                e.get("path")
-                                                                    .and_then(|p| p.as_str())
-                                                            })
-                                                            .filter(|p| {
-                                                                seen.insert((*p).to_string())
-                                                            })
-                                                            .map(|p| p.to_string())
-                                                            .collect()
-                                                    })
-                                                    .unwrap_or_default()
+                        // P0 vault（C2，2026-09-22 计划 §3）：凭据别名最后
+                        // 一刻注入——副本改写，上游四个表面（pre-hooks/
+                        // args_preview/会话历史/observer）全部只见别名。
+                        // 注入失败（别名不存在/vault 锁定）→ 错误串即工具
+                        // 结果，工具不执行（fail loud）。
+                        Some(tool) => {
+                            let exec_args = match credential_injection::inject_credential_aliases(
+                                tool.as_ref(),
+                                &call.arguments,
+                            ) {
+                                Ok(a) => a,
+                                Err(errmsg) => return errmsg,
+                            };
+                            match tool.execute(&exec_args, &ctx).await {
+                                Ok(result) => {
+                                    debug!(
+                                        "[AgentLoop] Tool {} returned: {} bytes",
+                                        call.name,
+                                        result.len()
+                                    );
+                                    // A6（devtool-upgrade 阶段 5）format-on-save：
+                                    // write_file / edit_file / multiedit（A7 批量
+                                    // 版，逐文件去重依次格式化）成功后、PostToolUse
+                                    // hooks **之前**跑——用户自定义 hook 看到/
+                                    // 拿到的是格式化后的文件（计划明文的正交语
+                                    // 义）；外层 C3 诊断带在瀑布之后，诊断同样作
+                                    // 用于格式化后文件。失败/超时/开关关/无匹配
+                                    // 格式化器全部静默——永不拖垮工具调用。
+                                    let format_paths: Vec<String> =
+                                        if !crate::turn_guard::tool_result_indicates_error(&result)
+                                            && let Ok(args_val) =
+                                                serde_json::from_str::<serde_json::Value>(
+                                                    &call.arguments,
+                                                )
+                                        {
+                                            match call.name.as_str() {
+                                                "write_file" | "edit_file" => args_val
+                                                    .get("path")
+                                                    .and_then(|v| v.as_str())
+                                                    .map(|p| vec![p.to_string()])
+                                                    .unwrap_or_default(),
+                                                "multiedit" => {
+                                                    // 去重保序：同文件多条编辑只
+                                                    // 格式化一次（重复跑也是 no-op，
+                                                    // 省子进程）。
+                                                    let mut seen = std::collections::HashSet::new();
+                                                    args_val
+                                                        .get("edits")
+                                                        .and_then(|v| v.as_array())
+                                                        .map(|arr| {
+                                                            arr.iter()
+                                                                .filter_map(|e| {
+                                                                    e.get("path")
+                                                                        .and_then(|p| p.as_str())
+                                                                })
+                                                                .filter(|p| {
+                                                                    seen.insert((*p).to_string())
+                                                                })
+                                                                .map(|p| p.to_string())
+                                                                .collect()
+                                                        })
+                                                        .unwrap_or_default()
+                                                }
+                                                _ => Vec::new(),
                                             }
-                                            _ => Vec::new(),
-                                        }
+                                        } else {
+                                            Vec::new()
+                                        };
+                                    let mut result = result;
+                                    for path_str in format_paths {
+                                        result = crate::formatter::format_on_save(
+                                            format_cfg_path.clone(),
+                                            &path_str,
+                                            &result,
+                                        )
+                                        .await;
+                                    }
+                                    if tool_was_registered {
+                                        crate::hooks::run_post_hooks(&hooks, &call, result).await
                                     } else {
-                                        Vec::new()
-                                    };
-                                let mut result = result;
-                                for path_str in format_paths {
-                                    result = crate::formatter::format_on_save(
-                                        format_cfg_path.clone(),
-                                        &path_str,
-                                        &result,
-                                    )
-                                    .await;
+                                        result
+                                    }
                                 }
-                                if tool_was_registered {
-                                    crate::hooks::run_post_hooks(&hooks, &call, result).await
-                                } else {
-                                    result
+                                Err(err) => {
+                                    warn!("[AgentLoop] Tool {} error: {}", call.name, err);
+                                    if tool_was_registered {
+                                        crate::hooks::run_post_failure_hooks(&hooks, &call, &err)
+                                            .await
+                                    } else {
+                                        format!("Tool error: {err}")
+                                    }
                                 }
                             }
-                            Err(err) => {
-                                warn!("[AgentLoop] Tool {} error: {}", call.name, err);
-                                if tool_was_registered {
-                                    crate::hooks::run_post_failure_hooks(&hooks, &call, &err).await
-                                } else {
-                                    format!("Tool error: {err}")
-                                }
-                            }
-                        },
+                        }
                         None => {
                             warn!("[AgentLoop] Unknown tool: {}", call.name);
                             format!("Error: Unknown tool '{}'", call.name)
@@ -11122,6 +11221,13 @@ mod commands_tests;
 // N1 (devtool-upgrade 阶段 1)：三级 context_window 解析链测试。
 #[cfg(test)]
 mod context_window_tests;
+// P0 vault（C1/C2，2026-09-22 计划 §3）：凭据别名最后一刻注入机制。
+mod credential_injection;
+// P0 vault（D2，2026-09-22 计划 §4）：声明式量化风险限制（滑动窗口 + 超限升级）。
+pub mod limits;
+// P0 vault（C3）：注入机制测试（纯函数 + loop 级四表面防泄漏）。
+#[cfg(test)]
+mod credential_injection_tests;
 // S9 (quality-hardening goal 冲刺 S9): 独立测试文件挂载（声明式，无内联测试）。
 #[cfg(test)]
 mod s9_tests;

@@ -3467,3 +3467,58 @@ fn cfg10_security_config_typed_roundtrip_byte_preserving() {
     let out2 = serde_json::to_value(&reparsed).unwrap();
     assert_eq!(out, out2, "二次序列化仍在变化——typed schema 非幂等");
 }
+
+#[test]
+fn test_typed_save_roundtrip_preserves_vault_references() {
+    // P0 vault（计划 §5 纪律项，2026-09-21 完善度检查补齐）：typed
+    // load→save round-trip 不得把 `vault:`/`env:`/`yaml:` 引用键抹掉、
+    // 改写或解析成明文。引用只在消费面（provider_resolver / gateway
+    // 装配点 / agent_factory）现解；配置层任何保存（dashboard
+    // models/config/channels、save_live、迁移）都必须把引用字符串**原样**
+    // 写回——否则一次 UI 保存就会把别名降级成空串或明文值。
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("config.json");
+    let raw = serde_json::json!({
+        "model_list": [
+            { "model_name": "vm", "model": "openai/gpt-x", "api_key": "literal-seed" }
+        ]
+    });
+    std::fs::write(&path, serde_json::to_string_pretty(&raw).unwrap()).unwrap();
+
+    // typed 字段赋值（与生产代码同路径：gateway.rs / agent_factory.rs
+    // 消费的正是这些字段）。
+    let mut cfg = crate::load_config(&path).unwrap();
+    cfg.model_list[0].api_key = "vault:openai-main".to_string();
+    cfg.channels.web.auth_token = "vault:e2e-web-token".to_string();
+    cfg.channels.line.channel_access_token = "env:LINE_TOKEN".to_string();
+    cfg.channels.line.channel_secret = "vault:line-secret".to_string();
+    cfg.tools.web.brave.api_key = "vault:brave-key".to_string();
+    cfg.tools.web.perplexity.api_key = "yaml:perp".to_string();
+    crate::save_config(&path, &mut cfg).unwrap();
+
+    let after: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+    assert_eq!(
+        after["model_list"][0]["api_key"], "vault:openai-main",
+        "模型 key 引用被抹掉/改写"
+    );
+    assert_eq!(
+        after["channels"]["web"]["auth_token"],
+        "vault:e2e-web-token"
+    );
+    assert_eq!(
+        after["channels"]["line"]["channel_access_token"],
+        "env:LINE_TOKEN"
+    );
+    assert_eq!(
+        after["channels"]["line"]["channel_secret"],
+        "vault:line-secret"
+    );
+    assert_eq!(after["tools"]["web"]["brave"]["api_key"], "vault:brave-key");
+    assert_eq!(after["tools"]["web"]["perplexity"]["api_key"], "yaml:perp");
+
+    // 再 load 一遍：引用仍在配置层原样存在（解析只发生在消费面）。
+    let reloaded = crate::load_config(&path).unwrap();
+    assert_eq!(reloaded.model_list[0].api_key, "vault:openai-main");
+    assert_eq!(reloaded.channels.web.auth_token, "vault:e2e-web-token");
+}

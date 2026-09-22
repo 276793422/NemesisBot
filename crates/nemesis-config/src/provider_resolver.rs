@@ -160,6 +160,24 @@ pub(crate) fn resolve_api_key_value(raw: &str, model_for_error: &str) -> Result<
     if let Some(alias) = raw.strip_prefix("yaml:") {
         return crate::credentials::resolve_yaml_reference(alias, model_for_error);
     }
+    // P0 vault（B1，2026-09-22 计划）：`vault:<alias>` 是链上第四层显式
+    // 前缀，位于 yaml 之后；解析器由 nemesisbot 启动时注入（依赖环约束，
+    // 见 vault_ref 模块文档）。非 vault 引用返回 None，直落字面量分支。
+    if let Some(resolved) = crate::vault_ref::resolve_vault_reference(raw) {
+        return resolved.map_err(|msg| {
+            ConfigError::Validation(format!("model '{}': {}", model_for_error, msg))
+        });
+    }
+    // B4（同计划）：明文明文 key 仍兼容，但每进程 loud warn 一次，提示
+    // 迁移到加密 vault（迁移期不强制——明文继续工作，只是不再无声）。
+    static PLAINTEXT_KEY_WARN: std::sync::Once = std::sync::Once::new();
+    PLAINTEXT_KEY_WARN.call_once(|| {
+        tracing::warn!(
+            "model '{}': api_key 为明文存储在 config.json——建议运行 `nemesisbot vault migrate` \
+             迁移到加密 vault（AES-256-GCM，DPAPI/Argon2id）；明文在迁移期继续工作",
+            model_for_error
+        );
+    });
     Ok(raw.to_string())
 }
 

@@ -706,3 +706,44 @@ pub fn try_respawn_detached() -> bool {
 pub fn try_respawn_detached() -> bool {
     false
 }
+
+/// P0 vault（B3，2026-09-22 计划）：秘密字段引用解析统一 helper。
+///
+/// vault:/env:/yaml: 前缀经 nemesis-config 全局解析器现查（vault 解析器
+/// 由 vault_runtime 在启动路径注入）；字面量原样返回。解析失败 error!
+/// （带字段名与根因）并返回空串——消费方按"凭据缺失"响亮失败，绝不把
+/// 引用字符串本身当值用。
+pub fn resolve_secret_or_empty(raw: &str, field: &str) -> String {
+    match nemesis_config::resolve_secret_field(raw, field) {
+        Ok(v) => v,
+        Err(e) => {
+            tracing::error!("[vault] {field}: 引用解析失败: {e}");
+            String::new()
+        }
+    }
+}
+
+/// 鉴权/验证类凭据解析（web.auth_token、websocket.auth_token、line
+/// channel_secret 等**用于校验入站请求**的字段）。
+///
+/// 与 [`resolve_secret_or_empty`] 的差别在失败分支：这类字段空串 =
+/// 校验直通（`verify_token` 对空期望值放行任何人）——解析失败若也回
+/// 空串，一条坏掉的 `vault:` 引用就把鉴权静默关掉了（fail-open）。这里
+/// 失败时回**随机一次性 token**：校验保持开启但无人能匹配（fail-closed），
+/// error! 日志带补救指引，用户修复别名重启即恢复。
+///
+/// 出站类凭据（line.channel_access_token、搜索 api_key）继续用
+/// [`resolve_secret_or_empty`]——空值只会让出站失败，天然 fail-closed。
+pub fn resolve_auth_token_or_random(raw: &str, field: &str) -> String {
+    match nemesis_config::resolve_secret_field(raw, field) {
+        Ok(v) => v,
+        Err(e) => {
+            let throwaway = uuid::Uuid::new_v4().to_string();
+            tracing::error!(
+                "[vault] {field}: 引用解析失败——本次启动用一次性随机 token 保持鉴权开启\
+                 （fail-closed，所有人都连不上）：{e}"
+            );
+            throwaway
+        }
+    }
+}

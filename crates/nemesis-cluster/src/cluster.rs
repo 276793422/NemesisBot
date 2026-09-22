@@ -103,6 +103,11 @@ pub struct Cluster {
     // -- State --
     running: RwLock<bool>,
     discovery_running: Arc<AtomicBool>,
+    /// P0 vault fail-closed：config.cluster.json 的 `token` 若是 vault:/env:/yaml:
+    /// 引用且解析失败，置位。RPC 绑定点据此拒绝启动（宁可没有 RPC，不可
+    /// 无认证 RPC）；start_discovery 据此拒绝无加密发现。空串/字面量/读文件
+    /// 失败不置位（维持既有语义）。
+    rpc_reference_broken: AtomicBool,
     discovery: Mutex<Option<crate::discovery::DiscoveryService>>,
     stop_tx: broadcast::Sender<()>,
     /// G5: Arc 包一层 —— 恢复循环 spawn 时克隆 Arc，之后每 tick 重新
@@ -187,6 +192,7 @@ impl Cluster {
             broadcast_interval: DEFAULT_BROADCAST_INTERVAL,
             running: RwLock::new(false),
             discovery_running: Arc::new(AtomicBool::new(false)),
+            rpc_reference_broken: AtomicBool::new(false),
             discovery: Mutex::new(None),
             stop_tx,
             bus: Arc::new(Mutex::new(None)),
@@ -297,6 +303,7 @@ impl Cluster {
             broadcast_interval: DEFAULT_BROADCAST_INTERVAL,
             running: RwLock::new(false),
             discovery_running: Arc::new(AtomicBool::new(false)),
+            rpc_reference_broken: AtomicBool::new(false),
             discovery: Mutex::new(None),
             stop_tx,
             bus: Arc::new(Mutex::new(None)),
@@ -564,6 +571,21 @@ impl Cluster {
             return;
         }
 
+        // P0 vault（B3，2026-09-22 计划）：token 支持 vault:/env:/yaml: 引用。
+        // 解析失败 = fail-closed：置位 rpc_reference_broken，RPC 绑定点据此
+        // 拒绝启动（宁可没有 RPC，不可无认证 RPC）。日志带补救指引。
+        let token = match nemesis_config::resolve_secret_field(&token, "config.cluster.json token")
+        {
+            Ok(t) => t,
+            Err(e) => {
+                self.rpc_reference_broken.store(true, Ordering::SeqCst);
+                tracing::error!(
+                    "[Cluster] RPC auth token 引用解析失败: {e} —— fail-closed：本次 RPC 服务不启动（请修复引用或运行 `nemesisbot vault set <alias>`）"
+                );
+                return;
+            }
+        };
+
         // Apply to RPC server
         if let Some(ref server) = self.rpc_server {
             server.set_auth_token(&token);
@@ -589,6 +611,15 @@ impl Cluster {
         }
 
         let secret = self.load_discovery_secret();
+
+        // P0 vault fail-closed：token 引用解析失败（load_discovery_secret 或
+        // 先前的 load_rpc_auth_token 置位）→ 拒绝无加密发现，宁可不发现。
+        if self.rpc_reference_broken.load(Ordering::SeqCst) {
+            tracing::error!(
+                "[Cluster] token 引用解析失败 —— fail-closed：UDP discovery 不启动（拒绝无加密运行；请修复引用或运行 `nemesisbot vault set <alias>`）"
+            );
+            return;
+        }
 
         // G3: 从 config.cluster.json 读取可配置 announce 过期阈值
         // （announce_expiry_secs，≤0 = 关闭过期丢弃）。
@@ -638,13 +669,37 @@ impl Cluster {
             return String::new();
         }
 
-        match std::fs::read_to_string(&cfg_path) {
+        let raw = match std::fs::read_to_string(&cfg_path) {
             Ok(data) => serde_json::from_str::<serde_json::Value>(&data)
                 .ok()
                 .and_then(|v| v.get("token").and_then(|t| t.as_str()).map(String::from))
                 .unwrap_or_default(),
             Err(_) => String::new(),
+        };
+        if raw.is_empty() {
+            return raw;
         }
+        // P0 vault（B3）：discovery 加密密钥与 RPC token 同字段，同链路解析。
+        // 解析失败 = fail-closed：置位 rpc_reference_broken（start_discovery
+        // 据此整体不启动），绝不降级为无加密发现。
+        match nemesis_config::resolve_secret_field(&raw, "config.cluster.json token (discovery)") {
+            Ok(t) => t,
+            Err(e) => {
+                self.rpc_reference_broken.store(true, Ordering::SeqCst);
+                tracing::error!(
+                    "[Cluster] discovery 加密密钥引用解析失败: {e} —— fail-closed：发现层不启动（请修复引用或运行 `nemesisbot vault set <alias>`）"
+                );
+                String::new()
+            }
+        }
+    }
+
+    /// P0 vault fail-closed：config.cluster.json 的 `token` 是否为解析失败的
+    /// 引用。RPC 绑定点（gateway / `commands/cluster.rs`）在 `start()` 之后
+    /// 检查此项——为 true 时拒绝 bind，节点以"无 RPC 服务"状态运行而非
+    /// 裸奔。空串/字面量 token 恒为 false（不改变既有语义）。
+    pub fn rpc_reference_broken(&self) -> bool {
+        self.rpc_reference_broken.load(Ordering::SeqCst)
     }
 
     /// Stop the cluster. Stops discovery (joins threads) and signals shutdown.

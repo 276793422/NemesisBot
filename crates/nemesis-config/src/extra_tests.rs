@@ -1506,3 +1506,28 @@ fn extra_save_config_local_mode_default_workspace_path() {
 
     std::env::set_current_dir(original).unwrap();
 }
+
+// ---------------------------------------------------------------------------
+// P0 vault（D1，2026-09-22 计划 §4）：security.limits serde 语义
+// ---------------------------------------------------------------------------
+
+/// limits 段 round-trip：落盘形态稳定，未配置时空表不写键（字节不变）。
+#[test]
+fn extra_security_limits_roundtrip_and_skip_empty() {
+    let _guard = GLOBAL_STATE_LOCK.lock().unwrap();
+    // 1. 未配置：空表跳过序列化（出厂模板字节不变）。
+    let cfg = SecurityConfig::default();
+    let text = serde_json::to_string(&cfg).unwrap();
+    assert!(!text.contains("\"limits\""), "空表不落盘: {text}");
+
+    // 2. 配置后：读回同值。
+    let json = r#"{"limits":{"exec":{"max":100,"window_secs":3600},"mass_message":{"max":30,"window_secs":86400}}}"#;
+    let cfg: SecurityConfig = serde_json::from_str(json).unwrap();
+    assert_eq!(cfg.limits.len(), 2);
+    let exec = cfg.limits.get("exec").unwrap();
+    assert_eq!(exec.max, 100);
+    assert_eq!(exec.window_secs, 3600);
+    let text = serde_json::to_string(&cfg).unwrap();
+    let back: SecurityConfig = serde_json::from_str(&text).unwrap();
+    assert_eq!(back.limits, cfg.limits, "typed round-trip 语义稳定");
+}

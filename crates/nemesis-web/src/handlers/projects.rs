@@ -65,6 +65,15 @@ pub trait ProjectsBridge: Send + Sync {
     /// 的 project 字段（title 等保留；sidecar 已随 delete_chat_log 删除时
     /// best-effort no-op）。
     fn forget_session(&self, session_key: &str);
+    /// 模型配置热切联动（BUG 2026-09-21）：项目 loop 在 gateway 装配期一次
+    /// 性 spawn 且模型热切"不在范围"——主 loop 的 models.set_default 换了
+    /// provider 后项目 loop 永远停在构建时的 provider（典型：先起网关后配
+    /// LLM，项目模式永远 NullProvider「未配置模型」）。实现方用**当前盘上
+    /// config** 重走解析并对每个在跑项目 loop 热换 provider（与主 loop 的
+    /// runtime swap 同构，不重建 loop、不打断会话）。解析失败 = 保持现状
+    /// （绝不把能用的 loop 换成 NullProvider）。default no-op——bridge 侧
+    /// 测试假件零改动。
+    fn reload_provider_all(&self) {}
 }
 
 /// 进程级 bridge 槽。**设计偏差说明**（vs impl plan 原文「OnceLock」）：

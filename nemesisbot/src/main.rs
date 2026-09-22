@@ -96,6 +96,11 @@ mod question_broker;
 /// K1（devtool-upgrade 阶段 4）：SecurityPlugin 构造单一真相源（gateway /
 /// headless `run` 共用，安全 9 层在无端口形态不降级）。
 mod security_setup;
+/// P0 vault（B1，2026-09-22 计划）：进程级 `vault:<alias>` 解析器注入。
+/// 门控随 nemesis-security（security feature off 时 `vault:` 引用诚实报
+/// "解析器未安装"，明文/env/yaml 链路不受影响）。
+#[cfg(feature = "security")]
+mod vault_runtime;
 /// M7（devtool-upgrade 阶段 5）：Dashboard 审批管理器——auditor 的
 /// require_approval 走 dashboard 审批卡（AgentEvent 广播 + WSAPI respond）。
 /// 门控随消费方：唯一生产调用点在 gateway 的 security cfg 装配块内，
@@ -299,6 +304,12 @@ enum Commands {
     Credentials {
         #[command(subcommand)]
         action: commands::credentials::CredentialsAction,
+    },
+    /// Encrypted credential vault（P0）：通用秘密加密存储，list 永不见值。
+    #[cfg(feature = "security")]
+    Vault {
+        #[command(subcommand)]
+        action: commands::vault::VaultAction,
     },
     /// Manage skills
     Skills {
@@ -633,6 +644,9 @@ async fn run_command(cli: Cli) -> Result<()> {
         nemesis_config::credentials::set_global_credentials_path(
             nemesis_config::credentials::credentials_path_for_home(&cred_home),
         );
+        // P0 vault（B1）：`vault:<alias>` 解析器同点注入（见 vault_runtime）。
+        #[cfg(feature = "security")]
+        crate::vault_runtime::install(&cred_home);
     }
 
     // 双击直启（2026-09-17）：无参 = gateway 语义 + auto-init + 自动开
@@ -761,6 +775,11 @@ async fn run_command(cli: Cli) -> Result<()> {
         Commands::Credentials { action } => {
             common::ensure_default_logger();
             commands::credentials::run(action, cli.local).await?;
+        }
+        #[cfg(feature = "security")]
+        Commands::Vault { action } => {
+            common::ensure_default_logger();
+            commands::vault::run(action, cli.local).await?;
         }
         Commands::Skills { action } => {
             common::ensure_default_logger();
