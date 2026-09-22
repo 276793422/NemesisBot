@@ -1853,7 +1853,10 @@ pub fn build_project_agent_loop(
     let project_dir = project.path.clone();
 
     // 1. config.json + 模型解析：与主 loop 同源（同一 config.json 唯一真相源）。
-    //    Phase 1 边界：项目 loop 模型热切不在范围，config 变更经重启生效。
+    //    模型热切（BUG 2026-09-21 修订）：spawn 后不再"重启才生效"——
+    //    models.set_default / agent start 经 ProjectsBridge::reload_provider_all
+    //    调 ProjectLoopManager::reload_providers 对在跑项目 loop 热换 provider
+    //    （与主 loop 的 runtime swap 同构）。
     let config_path = shared.home.join("config.json");
     let cfg = nemesis_config::load_config(&config_path)
         .map_err(|e| anyhow::anyhow!("Failed to load config: {}", e))?;

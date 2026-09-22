@@ -369,3 +369,89 @@ async fn bind_and_forget_session_roundtrip_with_sidecar() {
     // 幂等：再 forget = false（归属已摘，no-op 不空写）。
     assert!(!mgr.forget_session(key), "二次 forget 必须 false");
 }
+
+// ---------------------------------------------------------------------------
+// reload_providers（BUG 2026-09-21）：模型热切联动到在跑项目 loop
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn reload_providers_swaps_running_project_loop_model() {
+    let home = unique_home("reload");
+    write_mini_model_config(&home);
+    let project_dir = home.join("proj");
+    std::fs::create_dir_all(&project_dir).unwrap();
+    let mgr = manager_for(&home);
+    let entry = registry::ProjectEntry {
+        id: "p_reload01".to_string(),
+        name: "reload".to_string(),
+        path: project_dir.clone(),
+        created_at: "2026-09-21T00:00:00Z".to_string(),
+    };
+    mgr.spawn_project(&entry).expect("spawn succeeds");
+    let pid = entry.id.clone();
+
+    // 起点形态：spawn 读到的默认模型（BUG 修复前项目 loop 永远停在这里）。
+    let before = mgr.project_loop(&pid).expect("loop running").active_model();
+    assert_eq!(before, "mini-model");
+
+    // 盘上 config 换默认模型（= Dashboard set_default 写盘后的形态）。
+    let swapped = serde_json::json!({
+        "agents": { "defaults": { "llm": "fresh-model", "max_tool_iterations": 5 } },
+        "model_list": [
+            {
+                "model_name": "fresh-model",
+                "model": "testai/fresh-model",
+                "api_key": "test-key",
+                "api_base": "http://127.0.0.1:9",
+                "model_tier": "mini"
+            },
+            {
+                "model_name": "mini-model",
+                "model": "testai/mini-model",
+                "api_key": "test-key",
+                "api_base": "http://127.0.0.1:9",
+                "model_tier": "mini"
+            }
+        ]
+    });
+    std::fs::write(
+        home.join("config.json"),
+        serde_json::to_string_pretty(&swapped).unwrap(),
+    )
+    .unwrap();
+
+    mgr.reload_providers();
+    assert_eq!(
+        mgr.project_loop(&pid)
+            .expect("loop still running after swap")
+            .active_model(),
+        "fresh-model",
+        "reload must hot-swap the running loop to the new default"
+    );
+
+    // 解析失败 = 保持现状（绝不把能用的 loop 换成 NullProvider）。
+    let broken = serde_json::json!({
+        "agents": { "defaults": { "llm": "missing-model" } },
+        "model_list": []
+    });
+    std::fs::write(home.join("config.json"), broken.to_string()).unwrap();
+    mgr.reload_providers();
+    assert_eq!(
+        mgr.project_loop(&pid)
+            .expect("loop survives")
+            .active_model(),
+        "fresh-model",
+        "broken config must keep the working provider"
+    );
+
+    // config.json 整个消失（读取失败分支）：同样保持现状，不 panic。
+    std::fs::remove_file(home.join("config.json")).unwrap();
+    mgr.reload_providers();
+    assert_eq!(
+        mgr.project_loop(&pid)
+            .expect("loop survives")
+            .active_model(),
+        "fresh-model",
+        "missing config must keep the working provider"
+    );
+}

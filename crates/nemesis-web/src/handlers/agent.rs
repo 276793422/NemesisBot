@@ -181,6 +181,12 @@ impl AgentHandler {
                 svc.start()?; // Factory rebuilds AgentLoop from disk config
                 tracing::info!("[Agent] Started with fresh config");
                 update_model_info(ctx);
+                // 模型热切联动（BUG 2026-09-21）：主 loop 刚按盘上 config 重
+                // 建，项目 loop 仍停在 gateway 装配时的 provider——同步之
+                // （bridge 未装配 = no-op；解析失败项目 loop 保持现状）。
+                if let Some(bridge) = crate::handlers::projects::projects_bridge() {
+                    bridge.reload_provider_all();
+                }
                 Ok(Some(serde_json::json!({ "started": true })))
             }
             None => Err("Agent not available".to_string()),
