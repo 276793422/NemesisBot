@@ -320,9 +320,7 @@ fn migrate_model_keys(
         nemesis_config::save_config(config_path, &mut config)
             .map_err(|e| anyhow::anyhow!("写回 config.json 失败: {e}"))?;
     }
-    if creds_changed
-        && let Some(creds) = creds.as_ref()
-    {
+    if creds_changed && let Some(creds) = creds.as_ref() {
         nemesis_config::credentials::save_credentials_file(cred_path, creds)?;
     }
     Ok(report)

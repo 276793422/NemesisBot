@@ -1431,7 +1431,9 @@ async fn test_process_messages_records_user_row_and_echoes_to_sender() {
 
     let mgr = Arc::new(SessionManager::with_default_timeout());
     let session = mgr.create_session();
-    let (queue, mut qrx, _lo_rx, _done_tx) = SendQueue::test_channels(16);
+    // 回声走可丢通道（BUG 2026-09-22：qrx 须绑 lo 位；绑 hi 位时回声帧
+    // 落 lo，而 hi 随 mgr 析构关闭 → recv 恒 None，正向断言必炸）。
+    let (queue, _hi_rx, mut qrx, _done_tx) = SendQueue::test_channels(16);
     mgr.set_send_queue(&session.id, Arc::new(queue));
 
     let bus = Arc::new(MessageBus::new());
@@ -1494,7 +1496,8 @@ async fn test_process_messages_empty_content_skips_record_and_echo() {
 
     let mgr = Arc::new(SessionManager::with_default_timeout());
     let session = mgr.create_session();
-    let (queue, mut qrx, _lo_rx, _done_tx) = SendQueue::test_channels(16);
+    // 负向断言须观测 lo 位（回声真实去向）；绑 hi 位则恒过，测不出回归。
+    let (queue, _hi_rx, mut qrx, _done_tx) = SendQueue::test_channels(16);
     mgr.set_send_queue(&session.id, Arc::new(queue));
 
     let bus = Arc::new(MessageBus::new());
@@ -1545,7 +1548,8 @@ async fn test_process_messages_history_request_not_recorded_nor_echoed() {
 
     let mgr = Arc::new(SessionManager::with_default_timeout());
     let session = mgr.create_session();
-    let (queue, mut qrx, _lo_rx, _done_tx) = SendQueue::test_channels(16);
+    // 同上：负向断言观测 lo 位。
+    let (queue, _hi_rx, mut qrx, _done_tx) = SendQueue::test_channels(16);
     mgr.set_send_queue(&session.id, Arc::new(queue));
 
     let bus = Arc::new(MessageBus::new());
