@@ -219,11 +219,153 @@ jobs:
           retention-days: 7
 
   # ============================================================
-  # Job 2: 发布（等两个平台都构建完，统一发 Release）
+  # Job 1b: Android APK（Rust aarch64 交叉编译 + Gradle 壳打包 + 签名）
+  # ============================================================
+  # 对齐本地链路（scripts/build-android.bat → test-tools/android-shell/sign.bat）：
+  #   Vue 前端嵌入 → cargo ndk --release -p nemesisbot（API 36）→ jniLibs 拷贝
+  #   → gradlew assembleRelease → APK（nightly-android.apk）。
+  # 签名：nemesisbot-release.jks 不入库（S2）——仓库 Secrets 配齐
+  #   ANDROID_KEYSTORE_BASE64（.jks 的 base64）+ ANDROID_STORE_PASSWORD +
+  #   ANDROID_KEY_ALIAS + ANDROID_KEY_PASSWORD 时用正式 keystore（与本地
+  #   sign.bat 同源，可覆盖安装）；未配置时 gradle 自动落 debug 签名兜底
+  #   （可装可跑，与正式版签名不同源，覆盖安装需先卸载）。
+  build-android:
+    name: Build (android)
+    needs: gate
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v5
+        with:
+          fetch-depth: 0          # 完整历史，git describe 版本提取可用
+
+      - name: Install Rust toolchain (Android target)
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-linux-android
+
+      - name: Install cargo-ndk
+        uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-ndk
+
+      - name: Cache cargo build
+        uses: Swatinem/rust-cache@v2
+
+      - name: Setup Node.js (Vue 前端)
+        uses: actions/setup-node@v5
+        with:
+          node-version: '22'      # 与 build job 同版本（Active LTS）
+          cache: 'npm'
+          cache-dependency-path: web/package-lock.json
+
+      # 顺序关键：Vue 必须先于 cargo build——nemesisbot 编译时经 include_dir!
+      # 嵌入 crates/nemesis-web/static/（embedded.rs:17），前端没建好 = 白屏二进制。
+      - name: Build Vue frontend
+        shell: bash
+        run: |
+          cd web
+          npm ci
+          rm -rf ../crates/nemesis-web/static/assets
+          npm run build
+          echo "=== 前端产物 ==="
+          ls -la ../crates/nemesis-web/static/
+
+      - name: Locate Android NDK (预装；缺失时 sdkmanager 兜底安装)
+        run: |
+          if [ -z "$(ls -A "$ANDROID_HOME/ndk" 2>/dev/null)" ]; then
+            echo "runner 未预装 NDK，sdkmanager 安装..."
+            yes | "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" --licenses >/dev/null 2>&1 || true
+            "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" --install "ndk;27.2.12479018"
+          fi
+          echo "ANDROID_NDK_HOME=$(ls -d "$ANDROID_HOME"/ndk/* | sort -V | tail -1)" >> "$GITHUB_ENV"
+
+      - name: Build nemesisbot (release, aarch64-linux-android)
+        shell: bash
+        run: |
+          VERSION=$(git describe --tags --abbrev=0 2>/dev/null || echo "0.0.0.1")
+          GIT_COMMIT=$(git rev-parse --short HEAD)
+          export NEMESISBOT_VERSION="$VERSION"
+          export NEMESISBOT_GIT_COMMIT="$GIT_COMMIT"
+          # 编译期价目表内嵌：值随构建变化 → 绕开 target 缓存强制 build.rs 重跑
+          # （对齐 build-android.bat；下载失败自动快照兜底，见 nemesis-data/build.rs）
+          export NEMESIS_PRICES_REFRESH="${GIT_COMMIT}_${RANDOM}${RANDOM}"
+          export CARGO_TARGET_DIR=target/target_android
+          export CARGO_NDK_PLATFORM=36
+          cargo ndk -t arm64-v8a build --release -p nemesisbot
+          mkdir -p bin/bin_android/arm64-v8a
+          cp target/target_android/aarch64-linux-android/release/nemesisbot \
+             bin/bin_android/arm64-v8a/nemesisbot
+          ls -la bin/bin_android/arm64-v8a/
+
+      - name: Setup Java 17 (AGP 8.6 要求)
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Configure signing (Secrets 正式 keystore，缺省 debug 兜底)
+        shell: bash
+        working-directory: test-tools/android-shell
+        env:
+          KEYSTORE_B64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+          STORE_PASSWORD: ${{ secrets.ANDROID_STORE_PASSWORD }}
+          KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+          KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
+        run: |
+          if [ -n "$KEYSTORE_B64" ]; then
+            printf '%s' "$KEYSTORE_B64" | base64 -d > nemesisbot-release.jks
+            cat > keystore.properties <<EOF
+          storeFile=nemesisbot-release.jks
+          storePassword=$STORE_PASSWORD
+          keyAlias=$KEY_ALIAS
+          keyPassword=$KEY_PASSWORD
+          EOF
+            echo "签名模式：正式 keystore（Secrets 注入，与本地 sign.bat 同源）"
+            "$JAVA_HOME/bin/keytool" -list -keystore nemesisbot-release.jks \
+              -storepass "$STORE_PASSWORD" || true
+          else
+            echo "⚠️ 未配置 ANDROID_KEYSTORE_BASE64 等 Secrets——APK 用 debug 签名兜底"
+            echo "⚠️ （可安装运行，但与正式版签名不同源，覆盖安装需先卸载）"
+          fi
+
+      - name: Assemble signed release APK
+        shell: bash
+        working-directory: test-tools/android-shell
+        run: |
+          chmod +x gradlew            # git 索引里是 100644，Linux 上无执行位
+          mkdir -p app/src/main/jniLibs/arm64-v8a
+          cp ../../bin/bin_android/arm64-v8a/nemesisbot \
+             app/src/main/jniLibs/arm64-v8a/libnemesisbot.so
+          ./gradlew assembleRelease --no-daemon
+          mkdir -p ../../bin/bin_android_apk
+          cp app/build/outputs/apk/release/app-release.apk \
+             ../../bin/bin_android_apk/nemesisbot-arm64-release.apk
+          ls -la ../../bin/bin_android_apk/
+
+      - name: Verify APK signature
+        shell: bash
+        run: |
+          APK=bin/bin_android_apk/nemesisbot-arm64-release.apk
+          "$JAVA_HOME/bin/jarsigner" -verify "$APK" || echo "WARN jarsigner 验证未通过（见上方输出）"
+          sha256sum "$APK"
+
+      - name: Package
+        run: cp bin/bin_android_apk/nemesisbot-arm64-release.apk nightly-android.apk
+
+      - name: Upload build artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: nightly-android.apk
+          path: nightly-android.apk
+          retention-days: 7
+
+  # ============================================================
+  # Job 2: 发布（等三个平台都构建完，统一发 Release）
   # ============================================================
   release:
     name: Publish nightly release
-    needs: build
+    needs: [build, build-android]
     runs-on: ubuntu-latest
     steps:
       - name: Checkout code
@@ -244,7 +386,7 @@ jobs:
       - name: Generate manifest + SHA-256 checksums
         run: |
           cd artifacts
-          sha256sum nightly-linux.tar.gz nightly-windows.zip > SHA256SUMS.txt
+          sha256sum nightly-linux.tar.gz nightly-windows.zip nightly-android.apk > SHA256SUMS.txt
           # plugins 包视 plugin 编译情况可能缺席（non-fatal），在才计入校验和
           for f in nightly-linux-plugins.tar.gz nightly-windows-plugins.zip; do
             [ -f "$f" ] && sha256sum "$f" >> SHA256SUMS.txt
@@ -279,6 +421,7 @@ jobs:
           files: |
             artifacts/nightly-linux.tar.gz
             artifacts/nightly-windows.zip
+            artifacts/nightly-android.apk
             artifacts/nightly-linux-plugins.tar.gz
             artifacts/nightly-windows-plugins.zip
             artifacts/MANIFEST.txt
@@ -286,7 +429,7 @@ jobs:
           body: |
             ## 📦 Nightly Build
 
-            自动每日编译的开发版本（Windows + Linux）。
+            自动每日编译的开发版本（Windows + Linux + Android）。
 
             | 项 | 值 |
             |---|---|
@@ -298,6 +441,7 @@ jobs:
             ### 下载
             - **Windows**: `nightly-windows.zip`（解压后运行 `nemesisbot.exe gateway`）
             - **Linux**: `nightly-linux.tar.gz`（解压后运行 `./nemesisbot gateway`）
+            - **Android**: `nightly-android.apk`（arm64-v8a；签名模式见 build-android job 日志——配置了 ANDROID_KEYSTORE_* Secrets 为正式签名（与本地 sign.bat 同源），未配置为 debug 签名兜底（覆盖安装需先卸载））
             - **Windows 插件包**: `nightly-windows-plugins.zip`（包内扁平放插件 .dll：plugin_ui / plugin_onnx / eval_monitor_dll）
             - **Linux 插件包**: `nightly-linux-plugins.tar.gz`（包内扁平放插件 .so）
 
