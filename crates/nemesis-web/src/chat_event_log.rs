@@ -205,6 +205,22 @@ pub fn replay_after(session_id: &str, after: u64) -> (Vec<ChatEvent>, bool) {
     }
 }
 
+/// A1（2026-09-22 聊天切会话竞态修复）：当前会话环内已分配的最大 seq
+/// （无记录 = 0）。`handle_history_request` 在 `read_chat_log` **之后**
+/// 采样，随历史响应下发 `last_seq`——前端据此剔除「先于历史快照渲染、
+/// 且必然已含于历史批次」的 assistant 实时帧（assistant 入环点在
+/// chat_log 落盘之后，「seq ≤ last_seq ⟹ 已落盘」对 assistant 成立；
+/// user 行入环早于落盘，不适用——user 重复由前端尾行同文兜底）。
+/// 语义与 `replay_after` 的 `latest` 同源：`next_seq` 在 fetch_add 之后
+/// 即为最新已分配 seq（`replay_after` 的 `after >= latest` 判追平同款）。
+pub fn latest_seq(session_id: &str) -> u64 {
+    let table = logs().lock();
+    match table.map.get(session_id) {
+        None => 0,
+        Some(session) => session.next_seq.load(Ordering::SeqCst),
+    }
+}
+
 #[cfg(test)]
 pub(crate) mod test_support {
     /// 测试专用串行闸：SESSION_LOGS 是进程级全局表且带逐出——并行测试

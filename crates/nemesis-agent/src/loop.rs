@@ -1131,6 +1131,14 @@ pub struct AgentLoop {
     state_manager: Option<Arc<nemesis_state::workspace_state::WorkspaceStateManager>>,
     /// Session store for persistent history.
     session_store: Option<Arc<SessionStore>>,
+    /// A1（2026-09-22 聊天切会话竞态）：环尾 seq 查询回调（nemesis-web 的
+    /// `chat_event_log::latest_seq` 经 gateway 装配注入——crate 方向
+    /// agent←web 不可直调，走依赖注入，同 session_store 模式）。
+    /// `handle_history_request` 在读取历史**之后**采样，随响应下发
+    /// `last_seq`；`None`（standalone / 未注入）→ 响应不带 last_seq，
+    /// 前端走尾部同文兜底（A2）。
+    chat_seq_lookup:
+        parking_lot::RwLock<Option<std::sync::Arc<dyn Fn(&str) -> u64 + Send + Sync>>>,
     /// Running flag for the bus consumption loop.
     running: AtomicBool,
     /// Per-session busy state with queue length tracking.
@@ -1531,6 +1539,7 @@ impl AgentLoop {
             registry: None,
             state_manager: None,
             session_store: None,
+            chat_seq_lookup: parking_lot::RwLock::new(None),
             running: AtomicBool::new(false),
             session_busy: parking_lot::Mutex::new(HashMap::new()),
             rate_limit_status: parking_lot::Mutex::new(HashMap::new()),
@@ -2147,6 +2156,7 @@ impl AgentLoop {
             registry: Some(registry),
             state_manager: None,
             session_store: Some(session_store),
+            chat_seq_lookup: parking_lot::RwLock::new(None),
             running: AtomicBool::new(false),
             session_busy: parking_lot::Mutex::new(HashMap::new()),
             rate_limit_status: parking_lot::Mutex::new(HashMap::new()),
@@ -3704,6 +3714,40 @@ impl AgentLoop {
         } = admission;
 
         let voice_playback = msg.voice_playback.unwrap_or(false);
+
+        // B1（2026-09-22 聊天切会话竞态）：user 行落盘从 run_agent_loop_internal
+        // 开头提前到本点——预处理（expand_at_files / fetch_url_media /
+        // attach_turn_images）之前，「消息被系统接纳」即落盘。turn 进行中
+        // （分钟级）用户切走路由再切回，前端 loadHistory 立即能拉到本轮
+        // user 行；此前落盘点在预处理链之后（带图/@引用消息可达秒级），
+        // 早切回读到空历史、无悬空占位（现象 B）。
+        // 诚实取舍：此处 content 是原始文本（@ 未展开、图片未注记），
+        // images 置空——带图消息的 chat_log user 行缺 images 字段，历史
+        // 视图无图片 chip（instance / session_log 不受影响）。
+        // HD「一轮 = jsonl 恰好 +2 行」不变量保持：行数与顺序不变，仅
+        // user 行时点提前。cron 元数据在 gate 前已随 metadata 到位，照读。
+        let cron_job_id = msg.metadata.get("cron_job_id").map(|s| s.as_str());
+        let cron_job_name = msg.metadata.get("cron_job_name").map(|s| s.as_str());
+        {
+            let log_existed = Self::session_log_exists_before_append(&session_key);
+            crate::chat_log::append_chat_log_meta(
+                &session_key,
+                "user",
+                &msg.content,
+                &crate::chat_log::ChatLogMeta {
+                    model: None,
+                    cron_job_id,
+                    cron_job_name,
+                    images: &[],
+                    file_changes: &[],
+                    checkpoint_turn: cp_turn,
+                },
+            );
+            if !log_existed {
+                self.emit_session_created(&session_key);
+            }
+        }
+
         // I2（@文件引用）：内联被引用文件内容。相对路径以 workspace 根为基准
         // 解析（与 read_file 同源，不再是 cwd 漂移基准）；安全闸与图片附加
         // 同一套管线（挂真实 SecurityPlugin 时 Layer 7 block_in_place，
@@ -3763,8 +3807,6 @@ impl AgentLoop {
         }
         .merge_into_text(processed_content);
         let image_refs = attach.ref_strings();
-        let cron_job_id = msg.metadata.get("cron_job_id").map(|s| s.as_str());
-        let cron_job_name = msg.metadata.get("cron_job_name").map(|s| s.as_str());
         // T3 (U12): per-fire tool-round budget set by the gateway cron fire
         // handler from the job's max_rounds payload. Absent/unparsable → None
         // → the turn runs under the global max_turns.
@@ -3790,7 +3832,6 @@ impl AgentLoop {
                 cron_job_name,
                 cron_max_rounds,
                 &image_refs,
-                cp_turn,
             )
             .await;
 
@@ -3962,10 +4003,33 @@ impl AgentLoop {
         let cancel_token = tokio_util::sync::CancellationToken::new();
         let cron_job_id = msg.metadata.get("cron_job_id").map(|s| s.as_str());
         let cron_job_name = msg.metadata.get("cron_job_name").map(|s| s.as_str());
+        // B1（2026-09-22）：user 行落盘职责上移（原在 run_agent_loop_internal
+        // 开头）——system 路径内容 / 时点 / checkpoint 缺省保持原样，仅位置
+        // 随职责移动到调用方。
+        let sys_user_row = format!("[System: {}] {}", msg.sender_id, content);
+        {
+            let log_existed = Self::session_log_exists_before_append(&session_key);
+            crate::chat_log::append_chat_log_meta(
+                &session_key,
+                "user",
+                &sys_user_row,
+                &crate::chat_log::ChatLogMeta {
+                    model: None,
+                    cron_job_id,
+                    cron_job_name,
+                    images: &[],
+                    file_changes: &[],
+                    checkpoint_turn: None, // E3：system 直调不经 gate/preamble，无 checkpoint 标记
+                },
+            );
+            if !log_existed {
+                self.emit_session_created(&session_key);
+            }
+        }
         let result = self
             .run_agent_loop_internal(
                 &session_key,
-                &format!("[System: {}] {}", msg.sender_id, content),
+                &sys_user_row,
                 origin_channel,
                 &origin_chat_id,
                 false,
@@ -3974,7 +4038,6 @@ impl AgentLoop {
                 cron_job_name,
                 None,
                 &[],
-                None, // E3：system 直调不经 gate/preamble，无 checkpoint 标记
             )
             .await;
 
@@ -4012,6 +4075,7 @@ impl AgentLoop {
                     0,
                     0,
                     None,
+                    0,
                 )
                 .await;
                 return;
@@ -4050,6 +4114,18 @@ impl AgentLoop {
         let (page, total_count, has_more, oldest_index) =
             crate::chat_log::read_chat_log(&session_key, limit, req.before_index);
 
+        // A1（2026-09-22 聊天切会话竞态）：历史读取**之后**采样环尾 seq——
+        // 「seq ≤ last_seq 的 assistant 实时帧必已含于本批次」的推断前提是
+        // assistant 入环点在 chat_log 落盘之后（user 行入环早于落盘，前端
+        // 剔除规则只作用于 assistant 帧）。未注入回调 → 0 → 响应字段缺省，
+        // 前端跳过剔除（A2 同文兜底）。
+        let last_seq = self
+            .chat_seq_lookup
+            .read()
+            .as_ref()
+            .map(|f| f(&session_key))
+            .unwrap_or(0);
+
         self.publish_history_response(
             &msg.chat_id,
             &req.request_id,
@@ -4058,6 +4134,7 @@ impl AgentLoop {
             oldest_index,
             total_count,
             Some(&req_session_id),
+            last_seq,
         )
         .await;
     }
@@ -4075,8 +4152,11 @@ impl AgentLoop {
         // HD（2026-09-17）：session_id 回显（前端会话归属校验）；None = 解析
         // 失败路径（前端围栏按无归属放行，不因错误响应丢帧）。
         session_id: Option<&str>,
+        // A1（2026-09-22）：历史读取时刻的环尾 seq（0 = 未注入回调/环空，
+        // 序列化时省略——前端按无 last_seq 走同文兜底）。
+        last_seq: u64,
     ) {
-        let response_data = serde_json::json!({
+        let mut response_data = serde_json::json!({
             "request_id": request_id,
             "messages": messages,
             "has_more": has_more,
@@ -4085,6 +4165,10 @@ impl AgentLoop {
             // HD：会话归属回显（空串省略——前端按无归属放行）。
             "session_id": session_id.unwrap_or(""),
         });
+        // A1：last_seq 仅在有环数据时下发（0 省略，旧前端/未注入路径零影响）。
+        if last_seq > 0 {
+            response_data["last_seq"] = serde_json::Value::from(last_seq);
+        }
 
         let content = match serde_json::to_string(&response_data) {
             Ok(c) => c,
@@ -4909,7 +4993,6 @@ impl AgentLoop {
         cron_job_name: Option<&str>,
         turn_budget: Option<u32>,
         image_refs: &[String],
-        cp_turn: Option<usize>,
     ) -> Result<String, String> {
         // Round-5 fix: cron-originated turns are exempt from boundary events,
         // same as heartbeat. A recurring cron job targeting a persistent
@@ -4931,37 +5014,13 @@ impl AgentLoop {
         // 兜底上轮异常短路未走到 assistant 落盘的残留）。
         self.turn_file_changes.lock().remove(session_key);
 
-        // 切页恢复：本 turn 的 user 行在 LLM 循环前即落盘（对齐 /build 派发
-        // process_user_dispatch 与 steer 注入的「落库先于回复」先例）——
-        // turn 进行中（分钟级）用户切走路由再切回，前端 loadHistory 从
-        // chat_log 至少能拉到本轮 user 行，不再空视图；assistant 行仍在
-        // 本函数末尾落盘。HD「一轮 = jsonl 恰好 +2 行」不变量不变：user 行
-        // 只是时点提前，行数与顺序（user 先 assistant 后）不变。
-        // T6（多模态）：user 行带图片路径引用（只存路径不落字节）。
-        // E3：user 行带 `checkpoint_turn` 标记（本 turn begin 的序号随
-        // admission 穿针而来）——消息级回退的行→turn 定位锚。
-        // SB（2026-09-17）：首行落盘 = 会话物化 → 发布 SessionCreated 让
-        // 前端会话列表即时出现（零会话冷启动发消息场景）。
-        // 取舍：session store 不提前——它是 turn 末以 instance 全量
-        // set_history 的单一真相源，提前 add_message 会被全量覆盖，无收益；
-        // chat_log 才是前端 history 的数据源（read_chat_log）。
-        let log_existed = Self::session_log_exists_before_append(session_key);
-        crate::chat_log::append_chat_log_meta(
-            session_key,
-            "user",
-            user_message,
-            &crate::chat_log::ChatLogMeta {
-                model: None,
-                cron_job_id,
-                cron_job_name,
-                images: image_refs,
-                file_changes: &[],
-                checkpoint_turn: cp_turn,
-            },
-        );
-        if !log_existed {
-            self.emit_session_created(session_key);
-        }
+        // B1（2026-09-22 聊天切会话竞态）：user 行落盘职责已上移到调用方——
+        // process_admitted 在预处理链之前落原始文本（「接纳即落盘」，消除
+        // 早切回空视图），process_system_message 落 [System: ...] 行（内容
+        // 与时点保持原样）。本函数不再写 user 行；assistant 行仍在函数末尾
+        // 落盘，HD「一轮 = jsonl 恰好 +2 行」不变量由两处合计维持。
+        // 取舍（沿袭）：session store 不提前——它是 turn 末以 instance 全量
+        // set_history 的单一真相源，提前 add_message 会被全量覆盖，无收益。
 
         // Emit conversation_start observer event.
         self.emit_observer_sync(crate::loop_executor::ObserverEvent::ConversationStart {
@@ -8858,6 +8917,15 @@ impl AgentLoop {
     /// （修复闭环）消费；`None`（未注入 / standalone）→ 反馈静默跳过。
     pub fn set_lsp_manager(&self, mgr: Arc<nemesis_lsp::LspManager>) {
         *self.lsp_manager.write() = Some(mgr);
+    }
+
+    /// A1（2026-09-22 聊天切会话竞态）：注入环尾 seq 查询回调
+    /// （nemesis-web `chat_event_log::latest_seq`，gateway 装配期调用）。
+    /// `handle_history_request` 采样进历史响应 `last_seq`，前端据此剔除
+    /// 「先于历史快照渲染的 assistant 实时帧」。未注入（standalone）→
+    /// 响应不带 last_seq，前端走尾部同文兜底。
+    pub fn set_chat_seq_lookup(&self, f: std::sync::Arc<dyn Fn(&str) -> u64 + Send + Sync>) {
+        *self.chat_seq_lookup.write() = Some(f);
     }
 
     /// C3：读 `agents.defaults.diagnostics_loop`（config.json 每次新鲜读，

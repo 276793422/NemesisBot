@@ -443,6 +443,9 @@ function handleWSMessage(data: any) {
             content: data.data.content,
             timestamp: data.timestamp,
             model: data.data.model,
+            // A1：环 seq 随消息存档——历史响应 last_seq 到达后据此剔除
+            // 「先于快照渲染」的重复 assistant 帧。
+            seq: typeof data.data?.seq === 'number' ? data.data.seq : undefined,
             toolEvents,
             roundTexts,
           })
@@ -452,6 +455,8 @@ function handleWSMessage(data: any) {
         // assistant 回复到场）；完成语义只属于 assistant 帧。
         if (incomingRole === 'assistant') {
           chatStore.streaming = false
+          // B2：本会话回复到场——在飞登记完成使命。
+          chatStore.clearInflightTurn(sessionStore.currentId)
           clearWatchdog()
           // M5：turn 完成（历史已落 store）→ 刷新 context/cost 常驻条。
           refreshUsage()
@@ -480,6 +485,8 @@ function handleWSMessage(data: any) {
           timestamp: data.timestamp,
         })
         chatStore.streaming = false
+        // B2：错误帧同样终结在飞轮次（后端拒绝/装配失败等）。
+        chatStore.clearInflightTurn(sessionStore.currentId)
         clearWatchdog()
       }
     } else if (data.type === 'system' && data.module === 'error' && data.cmd === 'notify') {
@@ -634,6 +641,7 @@ async function syncMissedChat() {
       return
     }
     let added = false
+    let gotAssistant = false
     for (const ev of res?.events ?? []) {
       // 重放与活帧的赛窗：sync 在途时新帧可能已从 live 通道到达并推进游标
       //——seq ≤ 游标的重放帧跳过，避免双渲染。
@@ -673,9 +681,12 @@ async function syncMissedChat() {
         // 补拉消息显示为拉取时刻而非真实发生时刻；旧条目无 ts 回退本地钟。
         timestamp: ev.ts || new Date().toISOString(),
         model: ev.model,
+        // A1：环 seq 存档（与 receive 分支同字段——历史快照到货后剔除用）。
+        seq: typeof ev.seq === 'number' ? ev.seq : undefined,
         toolEvents,
         roundTexts,
       })
+      if (ev.role === 'assistant') gotAssistant = true
       if (typeof ev.seq === 'number') lastChatSeq = Math.max(lastChatSeq, ev.seq)
       added = true
     }
@@ -684,6 +695,10 @@ async function syncMissedChat() {
       // 切页恢复：补拉到新行后重新评估「尾部悬空 user」——assistant 行
       // 到达则停轮清占位；补拉后仍悬空则维持/重启占位轮询。
       detectPendingTurn()
+    }
+    // B2：补拉到 assistant 行 = 该会话在飞轮次已收尾。
+    if (gotAssistant) {
+      chatStore.clearInflightTurn(sid)
     }
   } catch {
     // sync 失败不炸 UI——watchdog / 下轮重连兜底
@@ -1041,6 +1056,23 @@ function handleHistoryResponse(data: any) {
   }
 
   const historyMessages = data.messages || []
+
+  // A1/A2（2026-09-22 聊天切会话竞态）：prepend 前清洗「实时帧先到的尾巴」。
+  // 切会话 reset() 清空视图的窗口内，assistant 实时帧先入列（无尾部可比），
+  // 随后历史快照前置拼接会把它重复一遍。清洗规则（顺序敏感）：
+  // ① A1 seq 剔除：历史已含回复 ⟹ 后端读取晚于其落盘 ⟹ last_seq ≥ 其环
+  //    seq（assistant 入环在落盘后）——先剔精确的；last_seq 缺省（旧网关/
+  //    未注入）自然跳过。
+  // ② A2 尾行同文兜底：剔除后的列表尾部与历史批次尾部同 role 同文则丢
+  //    尾部——覆盖 user 回声帧重复与 ① 的采样缝隙。翻页加载（scroll 顶
+  //    部）时历史批次更早，两规则天然不命中，零副作用。
+  const lastSeq = typeof data.last_seq === 'number' ? data.last_seq : 0
+  chatStore.dropAssistantBelowSeq(lastSeq)
+  if (historyMessages.length > 0) {
+    const histTail = historyMessages[historyMessages.length - 1]
+    chatStore.dropTailIfSame(String(histTail.role ?? ''), String(histTail.content ?? ''))
+  }
+
   if (historyMessages.length > 0) {
     const container = chatMessages.value
     const oldScrollHeight = container ? container.scrollHeight : 0
@@ -1206,11 +1238,23 @@ function stopPendingTurnPolling() {
 }
 
 /** 历史加载完成后检测「尾部悬空 user 行」（非本地发送态）——命中则启动
- *  处理中占位 + 轮询；尾部已是 assistant（或空/加载中）则停轮。幂等。 */
+ *  处理中占位 + 轮询；尾部已是 assistant（或空/加载中）则停轮。幂等。
+ *  B2（2026-09-22）：检测条件放宽——除悬空 user 行外，本会话有「在飞
+ *  turn 登记」（发送后切走再切回，chat_log 可能连 user 行都还没落）同样
+ *  启动占位 + 轮询，消除「纯空视图无任何反馈」的空窗。尾部已是
+ *  assistant = 回复已到场（历史渲染或实时帧），登记完成使命一并清除。 */
 function detectPendingTurn() {
   const msgs = chatStore.messages
   const last = msgs[msgs.length - 1]
-  const dangling = !!last && last.role === 'user'
+  const sid = sessionStore.currentId
+  // 尾部 assistant = 回复已到场——无论历史渲染还是实时帧，在飞登记清账。
+  if (last && last.role === 'assistant') {
+    chatStore.clearInflightTurn(sid)
+    stopPendingTurnPolling()
+    return
+  }
+  const inflight = !!chatStore.inflightTurnOf(sid)
+  const dangling = (!!last && last.role === 'user') || inflight
   if (!dangling) {
     stopPendingTurnPolling()
     return
@@ -1233,6 +1277,7 @@ function detectPendingTurn() {
 async function pollPendingTurn() {
   if (!pendingTurn.value) return
   if (Date.now() - pendingTurnStartedAt > PENDING_TURN_MAX_MS) {
+    chatStore.clearInflightTurn(sessionStore.currentId) // B2：硬上限到期清账
     stopPendingTurnPolling()
     return
   }
@@ -1258,6 +1303,9 @@ async function pollPendingTurn() {
   if (!busy) {
     pendingTurnDeadPolls += 1
     if (pendingTurnDeadPolls >= PENDING_TURN_MAX_DEAD_POLLS) {
+      // B2：轮次已死（重启/异常）——登记一并清账，悬空 user 行保留展示
+      // （诚实停轮，与 steer 悬空形态一致）。
+      chatStore.clearInflightTurn(sessionStore.currentId)
       stopPendingTurnPolling()
     }
   } else {
@@ -1462,6 +1510,9 @@ function sendMessage() {
   expandedPastes.value = new Set()
   pasteSeq = 0
   chatStore.streaming = true
+  // B2：登记在飞 turn（不被会话切换 reset 清掉）——切走再切回时占位/
+  // 轮询凭此恢复；assistant/error/sync 收尾时清除。
+  chatStore.markInflightTurn(sessionStore.currentId, content)
   // 本地发送接管占位——清掉可能残留的切页恢复轮询（streaming 态由
   // watchdog 负责，两套机制不叠加）。
   stopPendingTurnPolling()
@@ -1504,6 +1555,8 @@ function stopGeneration() {
   request('agent', 'cancel').then((res) => {
     if (res && res.cancelled > 0) {
       chatStore.streaming = false
+      // B2：主动停止 = 在飞轮次终结。
+      chatStore.clearInflightTurn(sessionStore.currentId)
       chatStore.addMessage({
         role: 'system',
         content: '已停止生成',

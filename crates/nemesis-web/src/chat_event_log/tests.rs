@@ -164,6 +164,35 @@ fn record_tool_respects_replay_window_cap() {
     assert_eq!(events[0].seq, 11);
 }
 
+// --- A1（2026-09-22 聊天切会话竞态）：latest_seq——历史响应 last_seq
+// --- 的环尾采样（read_chat_log 之后调用，前端据此剔除先于快照渲染的
+// --- assistant 实时帧）。
+
+#[test]
+fn latest_seq_unknown_session_is_zero() {
+    let _guard = table_guard!();
+    let sid = unique_session("latest-unknown");
+    // 无记录 → 0 → 序列化省略 → 前端按缺省跳过剔除（A2 兜底）。
+    assert_eq!(latest_seq(&sid), 0);
+}
+
+#[test]
+fn latest_seq_tracks_chat_and_tool_entries() {
+    let _guard = table_guard!();
+    let sid = unique_session("latest");
+    // 环内已分配最大 seq：chat 行与 tool 条目同一序列，逐条推进。
+    assert_eq!(latest_seq(&sid), 0);
+    assert_eq!(record(&sid, "user", "hi", None), 1);
+    assert_eq!(latest_seq(&sid), 1);
+    assert_eq!(
+        record_tool(&sid, serde_json::json!({"kind": "ToolStarted"})),
+        2
+    );
+    assert_eq!(latest_seq(&sid), 2);
+    assert_eq!(record(&sid, "assistant", "done", None), 3);
+    assert_eq!(latest_seq(&sid), 3);
+}
+
 // --- P8（2026-09-21）：record 即广播 chat.activity（多端感知信号） ---
 
 /// 并行污染免疫的信号等待：同进程其他测试（无 table_guard 的计数测试、

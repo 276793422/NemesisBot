@@ -198,3 +198,136 @@ describe('chat store rowIndex (M6)', () => {
     expect(store.commandDraft).toBe('')
   })
 })
+
+// A1/A2（2026-09-22 聊天切会话竞态）：历史快照与实时帧的合并语义。
+// 竞态：切会话 reset() 清空视图 → 实时帧先入列（无尾部可比）→ 历史响应
+// prependHistory 无条件前置拼接 → 同一条回复渲染两次。修法 = prepend 前
+// 清洗「实时帧先到的尾巴」：A1 seq 精确剔除（assistant）+ A2 尾行同文兜底。
+
+describe('chat store A1/A2 history-vs-live merge', () => {
+  beforeEach(() => {
+    setActivePinia(createPinia())
+  })
+
+  it('dropAssistantBelowSeq removes only assistant rows with seq <= maxSeq', () => {
+    const store = useChatStore()
+    store.addMessage({ role: 'user', content: 'q', timestamp: 't', seq: 1 })
+    store.addMessage({ role: 'assistant', content: 'a', timestamp: 't', seq: 2 })
+    store.addMessage({ role: 'assistant', content: 'no-seq', timestamp: 't' })
+    store.addMessage({ role: 'assistant', content: 'future', timestamp: 't', seq: 9 })
+    const removed = store.dropAssistantBelowSeq(5)
+    expect(removed).toBe(1)
+    // user 行不剔（入环早于落盘，推断不成立）；无 seq / 超前 seq 保留。
+    expect(store.messages.map(m => m.content)).toEqual(['q', 'no-seq', 'future'])
+  })
+
+  it('dropAssistantBelowSeq with 0 (no last_seq) is a no-op', () => {
+    const store = useChatStore()
+    store.addMessage({ role: 'assistant', content: 'a', timestamp: 't', seq: 2 })
+    expect(store.dropAssistantBelowSeq(0)).toBe(0)
+    expect(store.messages).toHaveLength(1)
+  })
+
+  it('dropTailIfSame drops the tail only on same role+content', () => {
+    const store = useChatStore()
+    store.addMessage({ role: 'user', content: 'q', timestamp: 't' })
+    store.addMessage({ role: 'assistant', content: 'dup', timestamp: 't' })
+    expect(store.dropTailIfSame('assistant', 'dup')).toBe(true)
+    expect(store.messages.map(m => m.content)).toEqual(['q'])
+    expect(store.dropTailIfSame('assistant', 'dup')).toBe(false)
+  })
+
+  it('race replay: live assistant frame lands before snapshot → prepended exactly once', () => {
+    const store = useChatStore()
+    // T3：reset 后空视图，实时帧先到（现象 A 的竞态窗口）。
+    store.reset()
+    store.addMessage({ role: 'assistant', content: 'reply', timestamp: 't', seq: 7 })
+    // T4：历史响应到达（last_seq=7 覆盖实时帧）→ seq 剔除 → prepend 快照。
+    store.dropAssistantBelowSeq(7)
+    store.prependHistory(
+      [
+        { role: 'user', content: 'q', timestamp: 't' },
+        { role: 'assistant', content: 'reply', timestamp: 't' },
+      ],
+      0,
+    )
+    expect(store.messages.map(m => m.content)).toEqual(['q', 'reply'])
+  })
+
+  it('A2 fallback: legacy gateway without last_seq → tail-same dedup catches the dup', () => {
+    const store = useChatStore()
+    store.reset()
+    store.addMessage({ role: 'assistant', content: 'reply', timestamp: 't', seq: 3 })
+    store.dropAssistantBelowSeq(0) // 旧网关无 last_seq → 0 → 不剔
+    store.dropTailIfSame('assistant', 'reply')
+    store.prependHistory(
+      [
+        { role: 'user', content: 'q', timestamp: 't' },
+        { role: 'assistant', content: 'reply', timestamp: 't' },
+      ],
+      0,
+    )
+    expect(store.messages.map(m => m.content)).toEqual(['q', 'reply'])
+  })
+
+  it('pagination prepend (older batch) is unaffected by both rules', () => {
+    const store = useChatStore()
+    store.addMessage({ role: 'user', content: 'q2', timestamp: 't' })
+    store.addMessage({ role: 'assistant', content: 'a2', timestamp: 't' })
+    // 翻页：更早的批次（尾部与列表尾部不同文）→ 不剔不丢，原样前置。
+    store.dropAssistantBelowSeq(99)
+    store.dropTailIfSame('user', 'q1')
+    store.prependHistory(
+      [
+        { role: 'user', content: 'q1', timestamp: 't' },
+        { role: 'assistant', content: 'a1', timestamp: 't' },
+      ],
+      0,
+    )
+    expect(store.messages.map(m => m.content)).toEqual(['q1', 'a1', 'q2', 'a2'])
+  })
+})
+
+// B2（2026-09-22）：在飞 turn 登记——**不被 reset 清掉**（跨会话切换存活，
+// 发送后切走再切回要靠它恢复占位/轮询）；assistant/error/sync 收尾/死轮
+// /cancel 各路径显式清账。
+
+describe('chat store inflight turns (B2)', () => {
+  beforeEach(() => {
+    setActivePinia(createPinia())
+  })
+
+  it('markInflightTurn survives reset (session switch keeps the registry)', () => {
+    const store = useChatStore()
+    store.markInflightTurn('s1', 'hello')
+    store.reset() // 切会话
+    expect(store.inflightTurnOf('s1')).toBeDefined()
+  })
+
+  it('clearInflightTurn removes the entry; inflightTurnOf null-safe', () => {
+    const store = useChatStore()
+    store.markInflightTurn('s1', 'hello')
+    expect(store.inflightTurnOf('s1')).toEqual({
+      sentAt: expect.any(Number),
+      content: 'hello',
+    })
+    store.clearInflightTurn('s1')
+    expect(store.inflightTurnOf('s1')).toBeUndefined()
+    expect(store.inflightTurnOf(null)).toBeUndefined()
+  })
+
+  it('mark with null sessionId is a no-op (no legacy-chat pollution)', () => {
+    const store = useChatStore()
+    store.markInflightTurn(null, 'x')
+    expect(Object.keys(store.inflightTurns)).toHaveLength(0)
+  })
+
+  it('multiple sessions register independently', () => {
+    const store = useChatStore()
+    store.markInflightTurn('s1', 'one')
+    store.markInflightTurn('s2', 'two')
+    store.clearInflightTurn('s1') // s1 回复到场
+    expect(store.inflightTurnOf('s1')).toBeUndefined()
+    expect(store.inflightTurnOf('s2')?.content).toBe('two')
+  })
+})

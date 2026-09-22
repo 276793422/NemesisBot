@@ -26,6 +26,11 @@ export interface ChatMessage {
    *  system 消息是纯前端渲染，后端无对应行。watchdog replaceMessages 重建
    *  后不可信，置空诚实降级（菜单入口随之隐藏）。 */
   rowIndex?: number
+  /** A1（2026-09-22 聊天切会话竞态）：本条消息在后端 chat_event_log 环里
+   *  的会话内单调 seq。只有实时 receive 帧 / chat.sync 补拉路径产生
+   *  （历史快照行不带 seq）。用于历史响应 last_seq 到达后剔除「先于
+   *  快照渲染的重复 assistant 帧」。 */
+  seq?: number
 }
 
 /** H1/H2（2026-09-05）：单条 todo（与后端 TodoItem serde snake_case 对齐）。 */
@@ -68,6 +73,32 @@ export const useChatStore = defineStore('chat', () => {
   // /build slash 或 chat.set_mode）实时刷新。注意后端模式是 loop 级全局态
   // （非 per-session），徽标只做呈现。
   const agentMode = ref<'build' | 'plan'>('build')
+
+  // B2（2026-09-22 聊天切会话竞态）：在飞 turn 登记——**不被 reset() 清掉**
+  // （跨会话切换存活）。发送时 set，assistant/error 帧 / sync 拉到回复 /
+  // 死轮 / cancel 时 clear。切回会话后即便 chat_log 尚无本轮 user 行（B1
+  // 未覆盖的极早切回）或尾部不是悬空 user，detectPendingTurn 也能凭此
+  // 启动占位 + 轮询，消除「纯空视图无任何反馈」的空窗。
+  const inflightTurns = ref<Record<string, { sentAt: number; content: string }>>({})
+
+  function markInflightTurn(sessionId: string | null, content: string) {
+    if (!sessionId) return
+    inflightTurns.value = {
+      ...inflightTurns.value,
+      [sessionId]: { sentAt: Date.now(), content },
+    }
+  }
+
+  function clearInflightTurn(sessionId: string | null) {
+    if (!sessionId || !inflightTurns.value[sessionId]) return
+    const next = { ...inflightTurns.value }
+    delete next[sessionId]
+    inflightTurns.value = next
+  }
+
+  function inflightTurnOf(sessionId: string | null) {
+    return sessionId ? inflightTurns.value[sessionId] : undefined
+  }
 
   // M6（devtool-upgrade 阶段 7）：下一行 live 消息的后端 chat_log 行号锚。
   // null = 尚无锚（历史未加载），此时 live 消息不编号（诚实降级）。派生式
@@ -138,6 +169,40 @@ export const useChatStore = defineStore('chat', () => {
     recomputeNextRowIndex()
   }
 
+  // --- A1/A2（2026-09-22 聊天切会话竞态）：历史快照与实时帧的合并语义 ---
+  // 切会话 reset() 清空视图制造了无防护窗口：窗口内到达的实时帧先入列
+  // （无尾部可比），随后历史响应 prependHistory 无条件前置拼接 → 同一条
+  // 回复渲染两次。以下两个方法在 prepend 前清洗「实时帧先到的尾巴」。
+
+  /** A1：剔除「先于历史快照渲染的 assistant 实时帧」——seq ≤ maxSeq 的
+   *  assistant 行必已含于快照（assistant 入环点在 chat_log 落盘**之后**，
+   *  历史读取又晚于落盘）。返回剔除条数。user 行入环早于落盘，「seq ≤
+   *  last_seq ⟹ 已落盘」不成立，不在此剔除（由 dropTailIfSame 同文兜底
+   *  + sync 通道既有尾行比对覆盖）。 */
+  function dropAssistantBelowSeq(maxSeq: number): number {
+    if (maxSeq <= 0) return 0
+    const before = messages.value.length
+    messages.value = messages.value.filter(
+      m => !(m.role === 'assistant' && m.seq !== undefined && m.seq <= maxSeq),
+    )
+    if (messages.value.length !== before) recomputeNextRowIndex()
+    return before - messages.value.length
+  }
+
+  /** A2：尾行同文兜底——列表尾部消息与历史批次尾部同 role 且同文则丢弃
+   *  尾部（last_seq 缺失的旧网关路径 / seq 采样与落盘的极窄缝隙）。与
+   *  receive 分支 isDuplicateRecovery 同语义同取舍（用户真发两条同文会
+   *  误伤一条——既有代码已接受该取舍）。 */
+  function dropTailIfSame(role: string, content: string): boolean {
+    const last = messages.value[messages.value.length - 1]
+    if (last && last.role === role && last.content === content) {
+      messages.value.pop()
+      recomputeNextRowIndex()
+      return true
+    }
+    return false
+  }
+
   /** M1b：收集工具事件（按 callId upsert——同一调用 Started→Finished 原地
    *  更新状态；重复推送幂等去重）。 */
   function appendToolEvent(ev: ToolEvent) {
@@ -177,6 +242,10 @@ export const useChatStore = defineStore('chat', () => {
    * Reset all conversation state. Used when ChatPanel mounts under a
    * non-default module (e.g., workflow_chat) so messages from a previous
    * chat session don't bleed into the new context.
+   *
+   * B2：**刻意不清 inflightTurns**——那是跨会话的在飞 turn 登记（发送后
+   * 切走再切回要靠它恢复占位/轮询），清了等于白登记。生命周期归
+   * markInflightTurn/clearInflightTurn 显式管理。
    */
   function reset() {
     messages.value = []
@@ -209,9 +278,15 @@ export const useChatStore = defineStore('chat', () => {
     pendingRoundTexts,
     agentMode,
     commandDraft,
+    inflightTurns,
     addMessage,
     prependHistory,
     replaceMessages,
+    dropAssistantBelowSeq,
+    dropTailIfSame,
+    markInflightTurn,
+    clearInflightTurn,
+    inflightTurnOf,
     appendToolEvent,
     flushPendingToolEvents,
     appendRoundText,

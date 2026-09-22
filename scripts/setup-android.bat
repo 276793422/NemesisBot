@@ -160,7 +160,7 @@ if "%SDK_FOUND%"=="1" (
     echo   SDK manager needed to install NDK and other components.
     echo.
     echo   Install options:
-    echo     1. Install Android Studio (includes SDK): https://developer.android.com/studio
+    echo     1. Install Android Studio (includes SDK^): https://developer.android.com/studio
     echo     2. Install SDK command-line tools only:
     echo        https://developer.android.com/studio#command-line-tools-only
     echo.
