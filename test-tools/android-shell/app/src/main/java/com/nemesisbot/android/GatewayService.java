@@ -4,7 +4,9 @@ import android.app.Notification;
 import android.app.NotificationChannel;
 import android.app.NotificationManager;
 import android.app.Service;
+import android.content.Context;
 import android.content.Intent;
+import android.net.wifi.WifiManager;
 import android.os.Build;
 import android.os.Handler;
 import android.os.IBinder;
@@ -44,6 +46,10 @@ public class GatewayService extends Service {
     private final AtomicBoolean isRunning = new AtomicBoolean(false);
     private BinaryManager binaryManager;
     private Handler mainHandler;
+    // Cluster UDP discovery: WiFi drivers filter broadcast/multicast packets by
+    // default; holding a MulticastLock for the service lifetime lets the
+    // gateway process RECEIVE discovery announces on the WiFi interface.
+    private WifiManager.MulticastLock multicastLock;
 
     // Singleton reference for activity to check status
     private static GatewayService instance;
@@ -63,6 +69,7 @@ public class GatewayService extends Service {
         binaryManager = new BinaryManager(this);
         mainHandler = new Handler(Looper.getMainLooper());
         createNotificationChannel();
+        acquireMulticastLock();
         Log.i(TAG, "GatewayService created");
     }
 
@@ -78,6 +85,7 @@ public class GatewayService extends Service {
     @Override
     public void onDestroy() {
         stopGateway();
+        releaseMulticastLock();
         instance = null;
         super.onDestroy();
     }
@@ -186,6 +194,43 @@ public class GatewayService extends Service {
         intent.putExtra(EXTRA_STATUS, status);
         intent.setPackage(getPackageName());
         sendBroadcast(intent);
+    }
+
+    /**
+     * Acquire a non-refcounted MulticastLock so the WiFi driver stops
+     * filtering broadcast/multicast packets while the gateway runs.
+     * Without it, cluster UDP discovery announces from other nodes are
+     * dropped by the driver and never reach the gateway's UDP socket.
+     */
+    private void acquireMulticastLock() {
+        try {
+            WifiManager wifi = (WifiManager) getApplicationContext().getSystemService(Context.WIFI_SERVICE);
+            if (wifi == null) {
+                broadcastLog("WARN: WifiManager unavailable, broadcast reception may be filtered");
+                return;
+            }
+            multicastLock = wifi.createMulticastLock("nemesisbot-discovery");
+            multicastLock.setReferenceCounted(false);
+            multicastLock.acquire();
+            broadcastLog("Multicast lock acquired (broadcast reception enabled)");
+        } catch (Exception e) {
+            multicastLock = null;
+            broadcastLog("ERROR: Failed to acquire multicast lock: " + e.getMessage());
+            Log.e(TAG, "acquireMulticastLock failed", e);
+        }
+    }
+
+    private void releaseMulticastLock() {
+        try {
+            if (multicastLock != null && multicastLock.isHeld()) {
+                multicastLock.release();
+                broadcastLog("Multicast lock released");
+            }
+        } catch (Exception e) {
+            Log.e(TAG, "releaseMulticastLock failed", e);
+        } finally {
+            multicastLock = null;
+        }
     }
 
     private void createNotificationChannel() {

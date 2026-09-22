@@ -406,7 +406,8 @@ public class ConfigFragment extends Fragment {
             tvStep2Summary.setTextColor(0xFF4CAF50);
         } else {
             setLightGray(lightStep2);
-            tvStep2Summary.setText("未配置");
+            // LLM 配置是可选项（gateway 可无模型启动，Dashboard 里随时补配）
+            tvStep2Summary.setText("未配置（可选）");
             tvStep2Summary.setTextColor(0xFF888888);
         }
     }
@@ -793,14 +794,8 @@ public class ConfigFragment extends Fragment {
             return;
         }
 
-        if (!isLlmConfigured()) {
-            new androidx.appcompat.app.AlertDialog.Builder(requireContext())
-                .setTitle("LLM Not Configured")
-                .setMessage("请先配置 LLM 并点击「保存并测试」")
-                .setPositiveButton("OK", null)
-                .show();
-            return;
-        }
+        // LLM 配置不再是启动前置条件——gateway 支持无 LLM 启动，
+        // 模型可事后在 Dashboard 里随时配置（下方第二步仅是快捷表单）。
 
         appendLog("Starting gateway service...");
         Intent intent = new Intent(requireContext(), GatewayService.class);
