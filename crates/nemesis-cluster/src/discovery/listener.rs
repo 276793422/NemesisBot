@@ -98,6 +98,12 @@ impl UdpListener {
             .name("discovery-udp-listen".into())
             .spawn(move || {
                 let mut buf = [0u8; 4096];
+                // Token-mismatch visibility (2026-09-22): each onboard generates
+                // a random discovery token, so independently-onboarded nodes
+                // silently drop each other's announces here forever. Warn on the
+                // first drop and periodically after so the root cause is
+                // diagnosable from logs instead of being a silent dead end.
+                let mut decrypt_drops: u64 = 0;
                 while running.load(Ordering::SeqCst) {
                     match socket.recv_from(&mut buf) {
                         Ok((n, addr)) => {
@@ -107,7 +113,21 @@ impl UdpListener {
                             let msg_data = if let Some(key) = enc_key {
                                 match decrypt_data(&key, raw_data) {
                                     Ok(decrypted) => decrypted,
-                                    Err(_) => continue, // Silently discard
+                                    Err(_) => {
+                                        decrypt_drops += 1;
+                                        if decrypt_drops == 1 || decrypt_drops % 100 == 0 {
+                                            tracing::warn!(
+                                                peer = %addr,
+                                                count = decrypt_drops,
+                                                "[Discovery] Announce failed decryption — \
+                                                 cluster token mismatch? Both nodes must share \
+                                                 the same token (config.cluster.json `token`; \
+                                                 CLI: nemesisbot cluster token set). \
+                                                 Discarding subsequent failures silently."
+                                            );
+                                        }
+                                        continue;
+                                    }
                                 }
                             } else {
                                 raw_data.to_vec()

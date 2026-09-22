@@ -6317,6 +6317,11 @@ pub async fn run(local: bool, relay: bool, extra_args: &[String]) -> Result<()> 
         use nemesis_desktop::PlatformTray;
 
         let mut tray = PlatformTray::new();
+        // Menu callbacks run on the tray thread (no tokio context). Service
+        // callbacks (agent start/stop, cluster start/stop, quit) internally
+        // tokio::spawn — hand the tray our runtime so dispatch enters it
+        // (Handle::block_on) instead of panicking and killing the tray.
+        tray.set_runtime_handle(tokio::runtime::Handle::current());
 
         // Set cluster callbacks — tray controls both config files + runtime
         #[cfg(feature = "cluster")]

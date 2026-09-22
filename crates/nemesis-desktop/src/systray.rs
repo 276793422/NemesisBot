@@ -634,6 +634,12 @@ pub struct PlatformTray {
     on_quit: Option<Box<dyn Fn() + Send + Sync>>,
     on_estop: Option<Box<dyn Fn() + Send + Sync>>,
     on_release: Option<Box<dyn Fn() + Send + Sync>>,
+    /// Gateway tokio runtime handle. Menu callbacks run on the tray thread
+    /// (no tokio context); service callbacks internally `tokio::spawn`
+    /// (agent-factory daily cleanups, cluster tasks) which panics without
+    /// one and takes the whole tray down (2026-09-22 tray-death root cause).
+    /// When set, every callback is dispatched inside `Handle::block_on`.
+    rt: Option<tokio::runtime::Handle>,
 }
 
 impl PlatformTray {
@@ -649,7 +655,30 @@ impl PlatformTray {
             on_quit: None,
             on_estop: None,
             on_release: None,
+            rt: None,
         }
+    }
+
+    /// Provide the gateway tokio runtime so menu callbacks run with a runtime
+    /// context. Must be called before [`Self::run`] (the handle is captured
+    /// when the event loop starts).
+    pub fn set_runtime_handle(&mut self, rt: tokio::runtime::Handle) {
+        self.rt = Some(rt);
+    }
+
+    /// Wrap a callback so it executes inside the runtime context (when one
+    /// was provided). Plain sync callbacks run inline under `block_on`.
+    fn marshal(
+        rt: &Option<tokio::runtime::Handle>,
+        cb: Option<Box<dyn Fn() + Send + Sync>>,
+    ) -> Option<Box<dyn Fn() + Send + Sync>> {
+        cb.map(|cb| {
+            let rt = rt.clone();
+            Box::new(move || match rt.as_ref() {
+                Some(rt) => rt.block_on(async { cb() }),
+                None => cb(),
+            }) as Box<dyn Fn() + Send + Sync>
+        })
     }
 
     /// Set callback for "Start Service" menu item.
@@ -732,16 +761,17 @@ impl PlatformTray {
         // (a trailing `return;` trips clippy::needless_return on Linux).
         #[cfg(target_os = "linux")]
         {
+            let rt = self.rt.clone();
             linux_tray::run_via_plugin_ui(
-                self.on_start,
-                self.on_stop,
-                self.on_cluster_start,
-                self.on_cluster_stop,
-                self.on_open_dashboard,
-                self.on_open_chat,
-                self.on_quit,
-                self.on_estop,
-                self.on_release,
+                Self::marshal(&rt, self.on_start),
+                Self::marshal(&rt, self.on_stop),
+                Self::marshal(&rt, self.on_cluster_start),
+                Self::marshal(&rt, self.on_cluster_stop),
+                Self::marshal(&rt, self.on_open_dashboard),
+                Self::marshal(&rt, self.on_open_chat),
+                Self::marshal(&rt, self.on_quit),
+                Self::marshal(&rt, self.on_estop),
+                Self::marshal(&rt, self.on_release),
             );
         }
 
@@ -906,15 +936,16 @@ impl PlatformTray {
         let last_click_time_clone = last_click_time.clone();
 
         // Move callbacks into the event loop closure
-        let on_start = self.on_start;
-        let on_stop = self.on_stop;
-        let on_cluster_start = self.on_cluster_start;
-        let on_cluster_stop = self.on_cluster_stop;
-        let on_open_dashboard = self.on_open_dashboard;
-        let on_open_chat = self.on_open_chat;
-        let on_quit = self.on_quit;
-        let on_estop = self.on_estop;
-        let on_release = self.on_release;
+        let rt = self.rt.clone();
+        let on_start = Self::marshal(&rt, self.on_start);
+        let on_stop = Self::marshal(&rt, self.on_stop);
+        let on_cluster_start = Self::marshal(&rt, self.on_cluster_start);
+        let on_cluster_stop = Self::marshal(&rt, self.on_cluster_stop);
+        let on_open_dashboard = Self::marshal(&rt, self.on_open_dashboard);
+        let on_open_chat = Self::marshal(&rt, self.on_open_chat);
+        let on_quit = Self::marshal(&rt, self.on_quit);
+        let on_estop = Self::marshal(&rt, self.on_estop);
+        let on_release = Self::marshal(&rt, self.on_release);
 
         #[allow(deprecated)]
         event_loop
