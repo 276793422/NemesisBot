@@ -20,8 +20,9 @@ cd /d "%~dp0"
 
 set "SCRIPT_DIR=%~dp0"
 set "APP_DIR=%SCRIPT_DIR%app"
-set "JAVA_HOME=C:\Program Files\Android\Android Studio\jbr"
-set "ANDROID_HOME=C:\Users\Zoo\AppData\Local\Android\Sdk"
+REM Same portability rule as build.bat: env vars win, portable fallbacks after.
+if not defined JAVA_HOME set "JAVA_HOME=C:\Program Files\Android\Android Studio\jbr"
+if not defined ANDROID_HOME set "ANDROID_HOME=%LOCALAPPDATA%\Android\Sdk"
 set "KEYTOOL=%JAVA_HOME%\bin\keytool.exe"
 set "JARSIGNER=%JAVA_HOME%\bin\jarsigner.exe"
 set "CONFIG_FILE=%SCRIPT_DIR%sign.json"

@@ -12,8 +12,11 @@ setlocal EnableDelayedExpansion
 
 set "SCRIPT_DIR=%~dp0"
 set "APP_DIR=%SCRIPT_DIR%app"
-set "JAVA_HOME=C:\Program Files\Android\Android Studio\jbr"
-set "ANDROID_HOME=C:\Users\Zoo\AppData\Local\Android\Sdk"
+REM Machine-specific paths: prefer pre-set env vars; fall back to the standard
+REM Android Studio JBR and per-user SDK location (%LOCALAPPDATA% works on any
+REM account, unlike a hardcoded C:\Users\<name>).
+if not defined JAVA_HOME set "JAVA_HOME=C:\Program Files\Android\Android Studio\jbr"
+if not defined ANDROID_HOME set "ANDROID_HOME=%LOCALAPPDATA%\Android\Sdk"
 
 if /i "%~1"=="clean" goto :do_clean
 if /i "%~1"=="copy-bin" goto :do_copy_bin

@@ -270,7 +270,7 @@ if "%NDK_FOUND%"=="1" (
                 echo   [WARN] sdkmanager not found in SDK directory
                 echo.
                 echo   Install options:
-                echo     1. Install via Android Studio: SDK Manager -> NDK (Side by side^)
+                echo     1. Install via Android Studio: SDK Manager -^> NDK (Side by side^)
                 echo     2. Install via command line:
                 echo        !SDK_HOME!\cmdline-tools\latest\bin\sdkmanager --install "ndk;30.0.14904198"
                 echo     3. Download manually: https://developer.android.com/ndk/downloads

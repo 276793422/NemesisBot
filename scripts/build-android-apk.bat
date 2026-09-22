@@ -94,7 +94,7 @@ if "%SKIP_RUST%"=="1" (
         echo   Run without --skip-rust first.
         exit /b 1
     )
-    echo [Phase 1/4] Skipping Rust build (--skip-rust)
+    echo [Phase 1/4] Skipping Rust build ^(--skip-rust^)
     for %%A in ("%RUST_BIN%") do echo   Using existing: %%~zA bytes
     echo.
 ) else (
@@ -129,7 +129,7 @@ if errorlevel 1 (
 )
 for %%A in ("%JNI_DIR%\libnemesisbot.so") do (
     set /a SIZE_MB=%%~zA / 1048576
-    echo   OK %%~zA bytes ^(!SIZE_MB! MB^) -> jniLibs\arm64-v8a\libnemesisbot.so
+    echo   OK %%~zA bytes ^(!SIZE_MB! MB^) -^> jniLibs\arm64-v8a\libnemesisbot.so
 )
 echo.
 
@@ -146,7 +146,9 @@ if "%RELEASE%"=="1" (
 echo [Phase 3/4] Building Android APK ^(%APK_SUFFIX%^)...
 
 pushd "%SHELL_DIR%"
-call build.bat %GRADLE_TASK%
+REM .\ prefix = path-qualified call: still resolves when
+REM NoDefaultCurrentDirectoryInExePath excludes CWD from bare-name lookup.
+call .\build.bat %GRADLE_TASK%
 if errorlevel 1 (
     popd
     echo.
