@@ -502,6 +502,50 @@ fn set_default_reorders_and_preserves_extras() {
     assert_eq!(list[1]["custom_note"], "keep-me");
 }
 
+/// 概览页同步（BUG 2026-09-21）：set_default 写 config 成功后必须同步
+/// AppState 的 model/model_base/model_has_key 快照——否则 /api/status 与
+/// 概览页永远显示网关启动时的老模型（agent 实际已热换新模型）。
+#[test]
+fn set_default_syncs_state_model_snapshot() {
+    let dir = tempfile::tempdir().unwrap();
+    write_config(
+        dir.path(),
+        r#"{ "model_list": [
+            { "model_name": "zm", "model": "zhipu/glm-4.7-flash", "api_key": "sk" },
+            { "model_name": "nk", "model": "zhipu/glm-4.7-flash" }
+        ] }"#,
+    );
+    let h = ModelsHandler::new();
+
+    // 切到有 key 的模型：三字段跟随 swap（model 去 provider 前缀，与
+    // agent start 的 update_model_info 同形态；zhipu 默认 base 推断非空）。
+    let ctx = make_ctx(&dir);
+    h.set_default(&home_str(&dir), "zm", &ctx).unwrap().unwrap();
+    assert_eq!(*ctx.state.model_name.lock(), "glm-4.7-flash");
+    assert!(
+        !ctx.state.model_base.lock().is_empty(),
+        "zhipu 默认 base 推断后非空"
+    );
+    assert!(
+        ctx.state
+            .model_has_key
+            .load(std::sync::atomic::Ordering::SeqCst)
+    );
+
+    // 切到无 key 的模型：has_key 回落 false。
+    let ctx2 = make_ctx(&dir);
+    h.set_default(&home_str(&dir), "nk", &ctx2)
+        .unwrap()
+        .unwrap();
+    assert_eq!(*ctx2.state.model_name.lock(), "glm-4.7-flash");
+    assert!(
+        !ctx2
+            .state
+            .model_has_key
+            .load(std::sync::atomic::Ordering::SeqCst)
+    );
+}
+
 // ============================================================
 // Phase 3 覆盖率补测（2026-08-25）：delete 默认模型拒绝臂、
 // set_default 的运行时 provider 热切（含 api_base 推断/显式/失败

@@ -626,6 +626,8 @@ async function syncMissedChat() {
   try {
     const res = await request('chat', 'sync', { session_id: sid, after_seq: lastChatSeq })
     if (res?.gap) {
+      // 旧在飞登记随 reset 作废——否则其迟到 timeout 误判新请求。
+      inFlightHistory.clear()
       chatStore.reset()
       lastChatSeq = 0
       loadHistory()
@@ -689,9 +691,13 @@ async function syncMissedChat() {
 }
 
 // SSE resync 提示（缺口滑出重放窗口/网关重启）→ 全量重载兜底。
+// BUG 2026-09-21 ③：历史加载失败态（historyLoaded=false）下不得拦截——
+// resync 信号本身就是「重试一次全量拉取」的天然时机。
 function onSSEResync() {
   if (!isDefaultChat.value) return
-  if (!chatStore.historyLoaded || chatStore.historyLoading) return
+  if (chatStore.historyLoading) return
+  // 旧在飞登记随 reset 作废——否则其迟到 timeout 误判新请求。
+  inFlightHistory.clear()
   chatStore.reset()
   lastChatSeq = 0
   loadHistory()
@@ -1063,6 +1069,10 @@ function handleHistoryResponse(data: any) {
   chatStore.hasMoreHistory = data.has_more || false
   chatStore.oldestIndex = data.oldest_index
   chatStore.historyLoaded = true
+  // BUG 2026-09-21 ③：本会话历史成功落地——清失败态与自动重试账目。
+  historyLoadFailed.value = false
+  historyRetryCount = 0
+  clearHistoryRetryTimer()
   // L2：历史落地后对齐补拉基线（只取游标，不渲染；详见 primeSeqBaseline）。
   primeSeqBaseline()
   // 切页恢复：历史落地后检测「尾部悬空 user 行」→ 处理中占位 + 轮询
@@ -1085,6 +1095,52 @@ function handleHistoryResponse(data: any) {
 let loadedHistorySid: string | null = null
 let loadingHistorySid: string | null = null
 
+// BUG 2026-09-21 ③：历史加载失败不再静默。失败判定 = 10s safety timeout
+// （请求蒸发/响应丢失，如重启断连窗口）；成功（handleHistoryResponse 围栏
+// 通过）即清。失败态可见 + 有限自动重试（≤2 次退避，断连中不消耗次数、
+// 交给重连补偿）；超次数后显示手动「重新加载历史」。
+const historyLoadFailed = ref(false)
+let historyRetryCount = 0
+let historyRetryTimer: number | null = null
+const HISTORY_RETRY_MAX = 2
+
+function clearHistoryRetryTimer() {
+  if (historyRetryTimer !== null) {
+    clearTimeout(historyRetryTimer)
+    historyRetryTimer = null
+  }
+}
+
+/** 换会话 / 重挂载 / 手动重载时复位失败态（旧会话的失败不带到新会话）。 */
+function resetHistoryLoadFailure() {
+  historyLoadFailed.value = false
+  historyRetryCount = 0
+  clearHistoryRetryTimer()
+}
+
+/** 有限自动重试：2s/4s 退避；WS 未连时不消耗次数（重连补偿会认失败态）。 */
+function scheduleHistoryRetry() {
+  if (historyRetryTimer !== null) return
+  if (historyRetryCount >= HISTORY_RETRY_MAX) return
+  historyRetryCount += 1
+  const delay = 2000 * historyRetryCount
+  historyRetryTimer = window.setTimeout(() => {
+    historyRetryTimer = null
+    if (wsStatus.value === 'connected') {
+      if (!chatStore.historyLoaded) loadHistory()
+    } else {
+      historyRetryCount -= 1
+      // 断连中：不再排下一拍——重连 watch 的失败态分支接管。
+    }
+  }, delay)
+}
+
+/** 手动重载（失败态按钮）——复位失败态后走常规 loadHistory。 */
+function manualReloadHistory() {
+  resetHistoryLoadFailure()
+  loadHistory()
+}
+
 function loadHistory() {
   if (chatStore.historyLoading) return
   chatStore.historyLoading = true
@@ -1098,12 +1154,21 @@ function loadHistory() {
   })
 
   // Safety timeout: reset loading flag if no response in 10s（超时同时作废
-  // 在飞登记——迟到的响应不再被围栏放行）。
+  // 在飞登记——迟到的响应不再被围栏放行）。per-request 围栏：只有本请求
+  // 仍在登记表（未被响应、未被会话切换作废）才允许动全局状态——否则
+  // 更早请求的迟到 timer 会误杀当前在飞请求（清掉别人的 loading、用别人
+  // 的 10s 到期给本请求判死），真机挂起场景实测复现。
   setTimeout(() => {
-    if (chatStore.historyLoading) {
-      chatStore.historyLoading = false
-    }
+    if (!inFlightHistory.has(requestId)) return
     inFlightHistory.delete(requestId)
+    chatStore.historyLoading = false
+    // BUG 2026-09-21 ③：历史未落地 + 请求蒸发 → 失败态可见 + 有限自动
+    // 重试。此前静默清 flag，重连补偿看到「在飞」假象跳过重拉，视图
+    // 永远空壳且与「会话本来就空」不可区分。
+    if (!chatStore.historyLoaded && isDefaultChat.value) {
+      historyLoadFailed.value = true
+      scheduleHistoryRetry()
+    }
   }, 10000)
 }
 
@@ -1119,6 +1184,10 @@ function loadHistory() {
 // ---------------------------------------------------------------------------
 
 const pendingTurn = ref(false)
+// BUG 2026-09-21 ①：占位区的限流重试实时态（agent.retry_status 轮询）——
+// 切走切回后用户看到「第 N/M 次重试」而非哑转圈；重试不落盘（既有裁决
+// 进度只走实时帧），这里是唯一的过程可见面。
+const retryStatus = ref<{ retry: number; max_retries: number; wait_secs: number; model: string } | null>(null)
 let pendingTurnTimer: number | null = null
 let pendingTurnDeadPolls = 0
 let pendingTurnStartedAt = 0
@@ -1132,6 +1201,7 @@ function stopPendingTurnPolling() {
     pendingTurnTimer = null
   }
   if (pendingTurn.value) pendingTurn.value = false
+  retryStatus.value = null
   pendingTurnDeadPolls = 0
 }
 
@@ -1170,6 +1240,16 @@ async function pollPendingTurn() {
   // 不会卡死轮询）。
   await refreshInbox(sessionStore.currentId || '')
   const busy = inboxStatus.value?.busy === true
+  // BUG 2026-09-21 ①：同拍查限流重试态——retrying 时占位区显示进度文案。
+  // 查询失败静默（retryStatus 保持旧值/空，不影响停轮判定）。
+  try {
+    const rs = await request('agent', 'retry_status', { session_id: sessionStore.currentId || '' })
+    retryStatus.value = rs?.retrying
+      ? { retry: rs.retry, max_retries: rs.max_retries, wait_secs: rs.wait_secs, model: rs.model }
+      : null
+  } catch {
+    /* 后端不可用/非 default chat——占位退化为转圈，无害 */
+  }
   // 重拉走 L2 增量补拉（chat.sync after_seq，append 语义）而不是
   // loadHistory——后者是 prepend 翻页通道，重拉全量会重复插行。assistant
   // 行落盘后 sync 返回该事件 append 到尾部，syncMissedChat 内部的
@@ -1722,7 +1802,7 @@ const unwatchStatus = watch(wsStatus, (val) => {
   // 不要历史——旧分支把整个 body 跳过，独立聊天页永远是空会话（仅新消息
   // 可见）。连接建立拉历史 + 断连复位 streaming 两态通用。
   if (props.standalone) {
-    if (val === 'connected' && !chatStore.historyLoaded && !chatStore.historyLoading) {
+    if (val === 'connected' && (!chatStore.historyLoaded || historyLoadFailed.value)) {
       loadHistory()
     } else if (val === 'connected' && chatStore.historyLoaded) {
       // L2：重连（非首连）→ 断线补拉而非整页重载。
@@ -1734,7 +1814,11 @@ const unwatchStatus = watch(wsStatus, (val) => {
     return
   }
   appStore.connected = val === 'connected'
-  if (val === 'connected' && !chatStore.historyLoaded) {
+  // BUG 2026-09-21 ③：失败态（timeout 清了 historyLoading 的在飞假象）也
+  // 触发重连重拉——此前条件只看 historyLoaded，重连时若原请求蒸发，
+  // 这里的 loadHistory 会被入口守卫挡掉（historyLoading 假象残留）或因
+  // 条件不满足而不发，空壳视图没有自愈入口。
+  if (val === 'connected' && (!chatStore.historyLoaded || historyLoadFailed.value)) {
     loadHistory()
   } else if (val === 'connected' && chatStore.historyLoaded) {
     // L2：重连（非首连）→ 断线补拉而非整页重载。
@@ -1787,6 +1871,8 @@ const unwatchSession = watch(
     inFlightHistory.clear()
     // 换会话 → 旧会话的切页恢复轮询随之作废（新会话历史落地后重新 detect）。
     stopPendingTurnPolling()
+    // BUG 2026-09-21 ③：旧会话的加载失败态不带到新会话。
+    resetHistoryLoadFailure()
     chatStore.reset()
     lastChatSeq = 0 // L2：换会话 → 补拉游标归零（seq 是会话内单调的）
     if (newId && wsStatus.value === 'connected') {
@@ -1837,6 +1923,7 @@ onMounted(() => {
     // 是全局单例、historyLoaded 残留 true，重挂载若跳过重载，视图就停留
     // 在旧数据（直到手动 F5 整页刷新）。重挂载即强制全量重拉（与
     // onSSEResync 同链：reset + 补拉游标归零 + loadHistory），丢帧窗口闭合。
+    resetHistoryLoadFailure()
     chatStore.reset()
     lastChatSeq = 0
     loadHistory()
@@ -1865,6 +1952,8 @@ onUnmounted(() => {
   removeMessageHandler(handleWSMessage)
   offSSE('resync', onSSEResync)
   offSSE('chat.activity', onChatActivity)
+  // BUG 2026-09-21 ③：卸载清自动重试定时器（残留会在下个实例外开火）。
+  clearHistoryRetryTimer()
   if (activityDebounce !== null) {
     clearTimeout(activityDebounce)
     activityDebounce = null
@@ -1907,7 +1996,19 @@ onUnmounted(() => {
       </div>
 
       <!-- Welcome message -->
-      <div v-if="chatStore.messages.length === 0" class="message assistant">
+      <!-- BUG 2026-09-21 ③：历史加载失败态优先于欢迎语——空视图与「会话本
+           来就空」不可区分是本案空壳视图的直接成因；显式给失败态 + 手动
+           重试入口（自动重试见 loadHistory 的 timeout 分支）。 -->
+      <div v-if="chatStore.messages.length === 0 && historyLoadFailed" class="message assistant">
+        <div class="message-avatar">NB</div>
+        <div class="message-content">
+          <div class="message-bubble">
+            <p>⚠️ 历史消息加载失败（网络或服务暂不可达）。数据并未丢失。</p>
+            <button class="btn btn-secondary btn-sm" type="button" @click="manualReloadHistory">重新加载历史</button>
+          </div>
+        </div>
+      </div>
+      <div v-else-if="chatStore.messages.length === 0" class="message assistant">
         <div class="message-avatar">NB</div>
         <div class="message-content">
           <div class="message-bubble">
@@ -2027,6 +2128,14 @@ onUnmounted(() => {
             </div>
           </template>
           <div v-if="chatStore.streaming || pendingTurn" class="message-bubble">
+            <!-- BUG 2026-09-21 ①：pendingTurn（切回会话）时限流重试实时态
+                 可见——文案与实时帧同口径；无快照（非限流/查询不可用）退化为
+                 转圈。streaming（本地发送）不显示——重试进度已有实时帧。 -->
+            <template v-if="pendingTurn && retryStatus">
+              <div class="retry-status-text">
+                ⏳ 上游限流（{{ retryStatus.model }}），第 {{ retryStatus.retry }}/{{ retryStatus.max_retries }} 次重试，等待 {{ retryStatus.wait_secs }} 秒…
+              </div>
+            </template>
             <div class="typing-indicator"><span></span><span></span><span></span></div>
           </div>
         </div>
@@ -2708,6 +2817,15 @@ onUnmounted(() => {
 .round-text + .round-text {
   padding-top: 6px;
   border-top: 1px dashed var(--border);
+}
+
+/* BUG 2026-09-21 ①：占位区限流重试进度文案（pendingTurn 态，切回会话后
+   与实时帧同口径的过程可见面）。 */
+.retry-status-text {
+  color: var(--text-muted);
+  font-size: var(--text-sm, 13px);
+  line-height: 1.5;
+  margin-bottom: 6px;
 }
 
 /* slash 命令补全菜单（2026-08-29） */

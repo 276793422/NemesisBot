@@ -473,6 +473,18 @@ impl ModelsHandler {
         // resolve_from_model_config 内部完成，无需在此重复。
         let swap = Self::canonical_swap_params(&cfg, name)?;
 
+        // 概览页同步（BUG 2026-09-21）：/api/status 的 model 三字段是 AppState
+        // 快照，写点只有启动 set_model_info 与 agent start 的 update_model_info
+        // ——热换 provider 后概览页仍显示老模型。config 已写成功，展示应跟着走
+        // （不依赖 agent_loop 存在）；swap 与启动路径同源解析
+        // （canonical_swap_params → resolve_model_config），形态一致。
+        *ctx.state.model_name.lock() = swap.model.clone();
+        *ctx.state.model_base.lock() = swap.api_base.clone();
+        ctx.state.model_has_key.store(
+            !swap.api_key.is_empty(),
+            std::sync::atomic::Ordering::Release,
+        );
+
         if let Some(agent_loop) = ctx.state.agent_loop.read().as_ref() {
             let factory_cfg = nemesis_providers::factory::FactoryConfig {
                 proxy: swap.proxy.clone(),
