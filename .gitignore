@@ -6,7 +6,6 @@ prd.json
 progress.txt
 /archive/
 .last-project
-/docs
 /test
 /bin
 /plugins/*/target
