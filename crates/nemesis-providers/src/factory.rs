@@ -179,10 +179,13 @@ pub fn resolve_provider_selection(cfg: &FactoryConfig) -> Result<ProviderSelecti
         _ => {
             sel.provider_type = ProviderType::HttpCompat;
             if sel.api_key.is_empty() {
+                // model_ref.model 已是 provider 前缀化串，别再拼一遍
+                // provider_name（曾产出 zhipu/zhipu/glm-4.7-flash 双前缀，
+                // 2026-09-22 集群事故报文用户亲见）。
                 return Err(format!(
                     "no API key configured for provider: {} (model: {})\n\
-                     Use: nemesisbot model add --model {}/{} --key <YOUR_KEY> --default",
-                    provider_name, model_ref.model, provider_name, model_ref.model
+                     Use: nemesisbot model add --model {} --key <YOUR_KEY> --default",
+                    provider_name, model_ref.model, model_ref.model
                 ));
             }
         }

@@ -1722,10 +1722,20 @@ pub async fn run(local: bool, relay: bool, extra_args: &[String]) -> Result<()> 
         headers: std::collections::HashMap::new(),
     };
     #[cfg(any(feature = "workflow", feature = "security"))]
-    let (llm_provider, provider_assembly_warn): (
+    let (raw_llm_provider, provider_assembly_warn): (
         Arc<dyn nemesis_providers::router::LLMProvider>,
         Option<String>,
     ) = nemesis_providers::factory::create_provider_or_null(&factory_cfg);
+    // 默认跟随 wrapper（2026-09-22 方案A）：workflow 引擎与 guardian judge
+    // 持有的这份快照不再烘焙——热切默认模型后经槽委派自动跟随，引擎无
+    // set_provider 也能换模型（捕获名判定语义见 default_slot 模块 doc）。
+    #[cfg(any(feature = "workflow", feature = "security"))]
+    let llm_provider: Arc<dyn nemesis_providers::router::LLMProvider> =
+        nemesis_providers::default_slot::default_following(
+            raw_llm_provider,
+            &resolution.model_name,
+            &factory_cfg.llm_ref,
+        );
     #[cfg(any(feature = "workflow", feature = "security"))]
     if let Some(ref e) = provider_assembly_warn {
         warn!(
@@ -4922,8 +4932,18 @@ pub async fn run(local: bool, relay: bool, extra_args: &[String]) -> Result<()> 
         };
         // 双击直启 goal：装配失败装 NullProvider（SSE 流诚实报「未配置模型」），
         // 不再留空槽——空槽的报错形态对双击新用户是二级谜语。
-        let (streaming_provider, streaming_warn) =
+        let (raw_streaming_provider, streaming_warn) =
             nemesis_providers::factory::create_provider_or_null(&streaming_factory_cfg);
+        // 默认跟随 wrapper（2026-09-22 方案A）：SSE/persona 传的是
+        // AppState.model_name（活槽文本，热切会更新）——wrapper 判据同时
+        // 比对捕获名与当前名（见 default_slot::route），否则换型后的新名
+        // 会被误判成钉扎、继续打旧 provider（「旧 provider + 新模型名」
+        // 跨厂商错配）。
+        let streaming_provider = nemesis_providers::default_slot::default_following(
+            raw_streaming_provider,
+            &resolution.model_name,
+            &streaming_factory_cfg.llm_ref,
+        );
         web_server.set_streaming_provider(streaming_provider);
         if let Some(e) = streaming_warn {
             warn!(

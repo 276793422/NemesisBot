@@ -47,6 +47,9 @@ cargo fmt --all -- --check; [ $? -ne 0 ] && FAIL=1
 step "本地内联测试门禁"
 bash scripts/check-inline-tests.sh || FAIL=1
 
+step "本地 provider 烘焙门禁（PB-1）"
+bash scripts/check-provider-bake.sh || FAIL=1
+
 step "本地 clippy --workspace --all-targets -D warnings"
 cargo clippy --workspace --all-targets -- -D warnings 2>&1 | tail -3
 [ "${PIPESTATUS[0]}" -ne 0 ] && FAIL=1

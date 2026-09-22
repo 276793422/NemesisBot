@@ -51,6 +51,7 @@ fn update_field_tier_roundtrip_preserves_raw_extras() {
         .update_field(
             &home_str(&dir),
             &serde_json::json!({ "name": "m1", "field": "model_tier", "value": "mini" }),
+            &make_ctx(&dir),
         )
         .unwrap()
         .unwrap();
@@ -79,6 +80,7 @@ fn update_field_matches_model_key_too() {
     h.update_field(
         &home_str(&dir),
         &serde_json::json!({ "name": "qwen/qwen3-30b", "field": "model_tier", "value": "big" }),
+        &make_ctx(&dir),
     )
     .unwrap()
     .unwrap();
@@ -135,6 +137,7 @@ fn update_field_validation_rejects_bad_values() {
             .update_field(
                 &home,
                 &serde_json::json!({ "name": name, "field": field, "value": value }),
+                &make_ctx(&dir),
             )
             .unwrap_err();
         assert!(
@@ -162,6 +165,7 @@ fn update_field_effort_and_size_normalization() {
     h.update_field(
         &home,
         &serde_json::json!({ "name": "m1", "field": "reasoning_effort", "value": "HIGH" }),
+        &make_ctx(&dir),
     )
     .unwrap()
     .unwrap();
@@ -173,6 +177,7 @@ fn update_field_effort_and_size_normalization() {
     h.update_field(
         &home,
         &serde_json::json!({ "name": "m1", "field": "reasoning_effort", "value": "off" }),
+        &make_ctx(&dir),
     )
     .unwrap()
     .unwrap();
@@ -184,6 +189,7 @@ fn update_field_effort_and_size_normalization() {
     h.update_field(
         &home,
         &serde_json::json!({ "name": "m1", "field": "model_size_b", "value": "30" }),
+        &make_ctx(&dir),
     )
     .unwrap()
     .unwrap();
@@ -197,6 +203,7 @@ fn update_field_effort_and_size_normalization() {
     h.update_field(
         &home,
         &serde_json::json!({ "name": "m1", "field": "context_window", "value": 131072 }),
+        &make_ctx(&dir),
     )
     .unwrap()
     .unwrap();
@@ -702,6 +709,7 @@ fn real_name_is_trimmed_on_update() {
     h.update_field(
         &home_str(&dir),
         &serde_json::json!({ "name": "m1", "field": "real_name", "value": "  Qwen3-30B  " }),
+        &make_ctx(&dir),
     )
     .unwrap()
     .unwrap();
@@ -943,6 +951,7 @@ fn update_field_protocol_set_clear_alias_and_reject() {
     h.update_field(
         &home_str(&dir),
         &serde_json::json!({ "name": "m1", "field": "protocol", "value": "Claude" }),
+        &make_ctx(&dir),
     )
     .unwrap()
     .unwrap();
@@ -955,6 +964,7 @@ fn update_field_protocol_set_clear_alias_and_reject() {
     h.update_field(
         &home_str(&dir),
         &serde_json::json!({ "name": "m1", "field": "protocol", "value": "" }),
+        &make_ctx(&dir),
     )
     .unwrap()
     .unwrap();
@@ -965,6 +975,7 @@ fn update_field_protocol_set_clear_alias_and_reject() {
         .update_field(
             &home_str(&dir),
             &serde_json::json!({ "name": "m1", "field": "protocol", "value": "grpc" }),
+            &make_ctx(&dir),
         )
         .unwrap_err();
     assert!(
@@ -976,5 +987,65 @@ fn update_field_protocol_set_clear_alias_and_reject() {
     assert_eq!(
         read_config_raw(dir.path())["model_list"][0]["real_name"],
         "Qwen3-30B"
+    );
+}
+
+// ============================================================
+// 统一默认槽联动（2026-09-22 方案A）：set_default / update_field(protocol|
+// proxy 命中当前默认) 是唯一 chokepoint，必须写
+// nemesis_providers::default_slot——集群 loop / workflow 引擎 / guardian
+// judge / SSE·persona 的 default_following wrapper 经槽跟随热切。
+// 槽是进程级单例，本测试二进制内多个 set_default 测试并行运行会互踩槽值
+// ——这里只做「槽被写」的弱断言；委派/钉扎/恢复的行为级矩阵在
+// nemesis-providers 的 default_slot/tests.rs（独立测试二进制，无互踩）。
+// ============================================================
+
+#[test]
+fn set_default_writes_default_slot() {
+    let dir = tempfile::tempdir().unwrap();
+    write_config(
+        dir.path(),
+        r#"{ "model_list": [
+            { "model_name": "zm", "model": "zhipu/glm-4.7-flash", "api_key": "sk" }
+        ] }"#,
+    );
+    let h = ModelsHandler::new();
+    let ctx = make_ctx(&dir);
+
+    h.set_default(&home_str(&dir), "zm", &ctx).unwrap().unwrap();
+    assert!(
+        nemesis_providers::default_slot::current().is_some(),
+        "set_default 必须写统一默认槽（wrapper 消费者靠它跟随热切）"
+    );
+}
+
+/// 热切钩子（update_field protocol/proxy 命中默认模型）必须用命中条目的
+/// model_name 解析：若把调用方 name（此处是无斜杠的 model 串）直接传给
+/// resolve_model_config，会走推断臂拿到**合成 resolution**（openai 默认
+/// base + 空 key，不带本条目配置）→ 坏 provider 进统一槽。判据用
+/// api_base：条目解析得显式 base，推断臂得 openai 默认 base。
+#[test]
+fn update_field_proxy_swap_resolves_by_entry_model_name() {
+    let dir = tempfile::tempdir().unwrap();
+    write_config(
+        dir.path(),
+        r#"{ "agents": { "defaults": { "llm": "dm" } }, "model_list": [
+            { "model_name": "dm", "model": "gpt-x", "api_key": "sk", "api_base": "http://127.0.0.1:9" }
+        ] }"#,
+    );
+    let h = ModelsHandler::new();
+    let ctx = make_ctx(&dir);
+
+    h.update_field(
+        &home_str(&dir),
+        &serde_json::json!({ "name": "gpt-x", "field": "proxy", "value": "" }),
+        &ctx,
+    )
+    .unwrap()
+    .unwrap();
+    assert_eq!(
+        *ctx.state.model_base.lock(),
+        "http://127.0.0.1:9",
+        "热切必须按条目自身配置解析，而非推断臂合成值"
     );
 }

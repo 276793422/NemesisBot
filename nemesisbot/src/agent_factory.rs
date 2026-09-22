@@ -1335,7 +1335,16 @@ pub fn build_cluster_agent_loop(
             w
         );
     }
-    let provider_arc: Arc<dyn nemesis_providers::router::LLMProvider> = provider;
+    // 默认跟随 wrapper（2026-09-22 方案A）：不再把装配期 provider 实例烘焙
+    // 进 loop——dashboard 热切默认模型后（含 NullProvider 配好 key 恢复），
+    // 同一 loop 经槽委派立即用新默认，无需重启。这正是 09-22 集群事故
+    // （切模型后节点仍报「启动时装配失败」）的根修点。
+    let provider_arc: Arc<dyn nemesis_providers::router::LLMProvider> =
+        nemesis_providers::default_slot::default_following(
+            provider,
+            &model_name,
+            &factory_cfg.llm_ref,
+        );
 
     // 3. Load cluster system prompt from workspace/cluster/IDENTITY.md + SOUL.md.
     let system_prompt = load_cluster_system_prompt(&shared.home);

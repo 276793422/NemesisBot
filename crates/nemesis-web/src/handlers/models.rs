@@ -78,7 +78,7 @@ impl ModuleHandler for ModelsHandler {
             // P3-2 (2026-08-24 UI entry gap): model attribute editor.
             "update_field" => {
                 let data = data.ok_or("missing data")?;
-                self.update_field(home, &data)
+                self.update_field(home, &data, ctx)
             }
             "catalog_info" => self.catalog_info(home),
             "catalog_update" => self.catalog_update(home).await,
@@ -463,15 +463,46 @@ impl ModelsHandler {
         write_raw_config(home, &cfg)?;
 
         // Runtime provider swap so the change takes effect immediately.
-        // 与启动路径（agent_factory::build_agent_loop）同源：typed 解析 +
-        // provider 前缀化 llm_ref + 去前缀 model_name。此前直接拿裸 model
-        // 字段当 llm_ref/模型名：无斜杠名被 factory 默认 provider=openai →
-        // CodexProvider（POST {base}/responses + 模型重映射 gpt-5.2），第三方
-        // OpenAI 兼容端点全被打错路（生产实证：glm-5.3-flash →
-        // "auth failure for provider codex/gpt-5.2: status 401"）；带 yaml:/env:
-        // 引用的 api_key 也会被当字面量发送。api_base 空时默认 base 推断由
-        // resolve_from_model_config 内部完成，无需在此重复。
-        let swap = Self::canonical_swap_params(&cfg, name)?;
+        // 唯一 chokepoint（2026-09-22 方案A）：展示三字段 + 统一默认槽 +
+        // 主 loop + Forge 全在 apply_runtime_swap 内。
+        Self::apply_runtime_swap(&cfg, name, ctx)?;
+
+        // 模型热切联动（BUG 2026-09-21）：项目 loop 不经上面的 agent_loop
+        // 槽——gateway 装配期一次性 spawn 后永不再读 config。通知 bridge 用
+        // 盘上 config 同步全部在跑项目 loop（default no-op；未装配 / 解析
+        // 失败时项目 loop 保持现状，见 ProjectLoopManager::reload_providers）。
+        if let Some(bridge) = crate::handlers::projects::projects_bridge() {
+            bridge.reload_provider_all();
+        }
+
+        Ok(Some(
+            serde_json::json!({ "set_default": true, "name": name }),
+        ))
+    }
+
+    /// 运行期热切（唯一 chokepoint，2026-09-22 方案A）：`set_default` 与
+    /// `update_field` 的 protocol/proxy-命中-当前默认分支共用。
+    ///
+    /// 与启动路径（agent_factory::build_agent_loop）同源：typed 解析 +
+    /// provider 前缀化 llm_ref + 去前缀 model_name。此前直接拿裸 model
+    /// 字段当 llm_ref/模型名：无斜杠名被 factory 默认 provider=openai →
+    /// CodexProvider（POST {base}/responses + 模型重映射 gpt-5.2），第三方
+    /// OpenAI 兼容端点全被打错路（生产实证：glm-5.3-flash →
+    /// "auth failure for provider codex/gpt-5.2: status 401"）；带 yaml:/env:
+    /// 引用的 api_key 也会被当字面量发送。api_base 空时默认 base 推断由
+    /// resolve_from_model_config 内部完成，无需在此重复。
+    ///
+    /// 覆盖面：AppState 展示三字段 → 统一默认槽（集群 loop / workflow
+    /// 引擎 / guardian judge / SSE·persona 经 default_following wrapper
+    /// 跟随，见 nemesis_providers::default_slot）→ 主 loop
+    /// set_provider_and_model → Forge 桥。config 落盘由调用方先行完成；
+    /// 解析失败时报 Err（config 已保存，与历史行为一致，不静默吞）。
+    fn apply_runtime_swap(
+        cfg: &serde_json::Value,
+        name: &str,
+        ctx: &RequestContext,
+    ) -> Result<(), String> {
+        let swap = Self::canonical_swap_params(cfg, name)?;
 
         // 概览页同步（BUG 2026-09-21）：/api/status 的 model 三字段是 AppState
         // 快照，写点只有启动 set_model_info 与 agent start 的 update_model_info
@@ -485,21 +516,26 @@ impl ModelsHandler {
             std::sync::atomic::Ordering::Release,
         );
 
-        if let Some(agent_loop) = ctx.state.agent_loop.read().as_ref() {
-            let factory_cfg = nemesis_providers::factory::FactoryConfig {
-                proxy: swap.proxy.clone(),
-                llm_ref: swap.llm_ref,
-                api_key: swap.api_key.clone(),
-                api_base: swap.api_base,
-                workspace: String::new(),
-                connect_mode: swap.connect_mode,
-                protocol: swap.protocol,
-                timeout_secs: swap.timeout_secs,
-                account_id: String::new(),
-                headers: std::collections::HashMap::new(),
-            };
-            match nemesis_providers::factory::create_provider(&factory_cfg) {
-                Ok(provider) => {
+        let factory_cfg = nemesis_providers::factory::FactoryConfig {
+            proxy: swap.proxy.clone(),
+            llm_ref: swap.llm_ref.clone(),
+            api_key: swap.api_key.clone(),
+            api_base: swap.api_base.clone(),
+            workspace: String::new(),
+            connect_mode: swap.connect_mode.clone(),
+            protocol: swap.protocol.clone(),
+            timeout_secs: swap.timeout_secs,
+            account_id: String::new(),
+            headers: std::collections::HashMap::new(),
+        };
+        match nemesis_providers::factory::create_provider(&factory_cfg) {
+            Ok(provider) => {
+                // 统一默认槽（方案A 核心）：与主 loop 同一 provider Arc，
+                // 槽消费者（default_following wrapper）经此自动跟随热切，
+                // 不再需要逐消费者手写联动。
+                nemesis_providers::default_slot::swap(provider.clone(), &swap.model, &swap.llm_ref);
+
+                if let Some(agent_loop) = ctx.state.agent_loop.read().as_ref() {
                     let adapter =
                         Arc::new(ProviderAdapter::new(provider.clone(), swap.model.clone()));
                     agent_loop.set_provider_and_model(adapter, swap.model.clone());
@@ -516,23 +552,12 @@ impl ModelsHandler {
                         }
                     }
                 }
-                Err(e) => {
-                    tracing::warn!(error = %e, "[Models] Failed to create provider for runtime swap, config saved anyway");
-                }
+            }
+            Err(e) => {
+                tracing::warn!(error = %e, "[Models] Failed to create provider for runtime swap, config saved anyway");
             }
         }
-
-        // 模型热切联动（BUG 2026-09-21）：项目 loop 不经上面的 agent_loop
-        // 槽——gateway 装配期一次性 spawn 后永不再读 config。通知 bridge 用
-        // 盘上 config 同步全部在跑项目 loop（default no-op；未装配 / 解析
-        // 失败时项目 loop 保持现状，见 ProjectLoopManager::reload_providers）。
-        if let Some(bridge) = crate::handlers::projects::projects_bridge() {
-            bridge.reload_provider_all();
-        }
-
-        Ok(Some(
-            serde_json::json!({ "set_default": true, "name": name }),
-        ))
+        Ok(())
     }
 
     /// Resolve the runtime-swap parameters for a model entry the same way the
@@ -583,6 +608,7 @@ impl ModelsHandler {
         &self,
         home: &str,
         data: &serde_json::Value,
+        ctx: &RequestContext,
     ) -> Result<Option<serde_json::Value>, String> {
         let name = crate::handlers::get_str(data, "name")?;
         let field = crate::handlers::get_str(data, "field")?;
@@ -660,11 +686,24 @@ impl ModelsHandler {
         };
 
         let mut cfg = read_raw_config(home)?;
+        // 默认判定（改 protocol/proxy 时的热切条件）：与 list/delete 同思路
+        // 的多形态比对（model_name / model 串 / 别名），权威是
+        // agents.defaults.llm（get_effective_llm），不含 list[0] 位置臂。
+        let default_llm = cfg
+            .pointer("/agents/defaults/llm")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .to_string();
         let list = cfg
             .get_mut("model_list")
             .and_then(|v| v.as_array_mut())
             .ok_or("config.json has no model_list")?;
         let mut updated = false;
+        let mut entry_is_default = false;
+        // 热切用命中条目的 model_name（而非调用方 name）：name 可能是 model
+        // 串命中，无斜杠时 resolve_model_config 会走推断臂拿到不带本条目
+        // key 的合成 resolution，热切会造出坏 provider。
+        let mut entry_model_name = String::new();
         for entry in list.iter_mut() {
             let model_name = entry
                 .get("model_name")
@@ -672,6 +711,12 @@ impl ModelsHandler {
                 .unwrap_or("");
             let model = entry.get("model").and_then(|v| v.as_str()).unwrap_or("");
             if model_name == name || model == name {
+                let alias = model.split('/').next_back().unwrap_or("");
+                entry_is_default = !default_llm.is_empty()
+                    && (model_name == default_llm
+                        || model == default_llm
+                        || (!alias.is_empty() && alias == default_llm));
+                entry_model_name = model_name.to_string();
                 entry[field.as_str()] = normalized.clone();
                 updated = true;
                 break;
@@ -681,6 +726,15 @@ impl ModelsHandler {
             return Err(format!("model '{name}' not found"));
         }
         write_raw_config(home, &cfg)?;
+
+        // 统一默认槽联动（2026-09-22 方案A）：protocol/proxy 在 provider
+        // 构造时消费——改的是当前默认模型时补跑运行时热切（此前只有前端
+        // 代理页自动跟发 set_default 打补丁，模型页改 protocol 后 workflow/
+        // 集群/SSE 侧槽全是旧 provider）。tier/effort/size/real_name/
+        // context_window 走 agent loop 的 config mtime 重读，不经此处。
+        if matches!(field.as_str(), "protocol" | "proxy") && entry_is_default {
+            Self::apply_runtime_swap(&cfg, &entry_model_name, ctx)?;
+        }
         Ok(Some(serde_json::json!({
             "updated": true, "name": name, "field": field, "value": normalized,
         })))

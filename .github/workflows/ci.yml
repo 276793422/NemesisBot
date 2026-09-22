@@ -96,6 +96,11 @@ jobs:
       - name: Sanitize-discipline gate
         run: bash scripts/check-sanitize-discipline.sh
 
+      # provider 烘焙纪律闸（PB-1：白名单外禁新建 create_provider 装配点，
+      # 长生命周期消费者走 default_following wrapper 随热切跟随）
+      - name: Provider-bake discipline gate
+        run: bash scripts/check-provider-bake.sh
+
       # H2 已清零（2026-08-31），此步为阻塞门禁；见文件头 clippy 门禁说明
       - name: cargo clippy -D warnings（阻塞门禁）
         run: cargo clippy --workspace --all-targets -- -D warnings

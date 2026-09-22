@@ -16,6 +16,7 @@ pub mod codex;
 pub mod codex_cli;
 pub mod codex_credentials;
 pub mod cooldown;
+pub mod default_slot;
 pub mod error_classifier;
 pub mod factory;
 pub mod fallback_provider;
