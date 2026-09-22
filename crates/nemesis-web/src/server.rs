@@ -1617,7 +1617,7 @@ pub async fn process_messages_with_router(
         let is_history_request =
             msg.metadata.get("request_type").map(String::as_str) == Some("history");
         if !msg.content.is_empty() && !is_history_request {
-            let seq = crate::chat_event_log::record(&session_key, "user", &msg.content, None);
+            let seq = crate::chat_event_log::record(&session_key, "user", &msg.content, None, None);
             if let Some(ref sm) = session_manager {
                 let mut echo = serde_json::json!({
                     "role": "user",
@@ -1683,6 +1683,7 @@ pub async fn send_to_session(
     content: &str,
     model: Option<&str>,
     session_key: Option<&str>,
+    source_node: Option<&str>,
 ) -> Result<(), String> {
     tracing::debug!(
         session_id = %session_id,
@@ -1705,11 +1706,16 @@ pub async fn send_to_session(
     if let Some(sid) = session_key.and_then(|s| s.strip_prefix("agent:main:session:")) {
         data["session_id"] = serde_json::Value::String(sid.to_string());
     }
+    // 集群续行归属（2026-09-23）：干活的是远端 worker 节点，前端据此渲染
+    // 「节点 X」徽章（与模型徽章并列）。缺省不写键——旧前端零感知。
+    if let Some(node) = source_node {
+        data["source_node"] = serde_json::Value::String(node.to_string());
+    }
     // L2（devtool-upgrade 阶段 6）：chat 帧盖会话内单调 seq 并进 per-session
     // 环形缓冲——`chat.sync {session_id, after_seq}` 断线补拉的数据源。
     // 记录键优先会话键（跨连接稳定），无元数据才退连接 id。
     let record_key = session_key.unwrap_or(session_id);
-    let seq = crate::chat_event_log::record(record_key, role, content, model);
+    let seq = crate::chat_event_log::record(record_key, role, content, model, source_node);
     data["seq"] = serde_json::json!(seq);
     let msg = crate::protocol::ProtocolMessage::new("message", "chat", "receive", Some(data));
     let data = msg
@@ -2007,6 +2013,7 @@ pub async fn dispatch_outbound(bus: Arc<MessageBus>, session_manager: Arc<Sessio
                         &msg.content,
                         msg.meta.model.as_deref(),
                         msg.meta.session_key.as_deref(),
+                        msg.meta.source_node.as_deref(),
                     )
                     .await
                 };

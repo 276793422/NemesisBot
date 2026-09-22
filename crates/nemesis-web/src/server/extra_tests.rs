@@ -871,8 +871,16 @@ async fn test_send_to_session_with_active_queue_succeeds() {
     let queue = Arc::new(queue);
     mgr.set_send_queue(&session.id, queue);
 
-    let send_result =
-        send_to_session(&mgr, &session.id, "assistant", "hello world", None, None).await;
+    let send_result = send_to_session(
+        &mgr,
+        &session.id,
+        "assistant",
+        "hello world",
+        None,
+        None,
+        None,
+    )
+    .await;
     assert!(send_result.is_ok());
 
     let received = tokio::time::timeout(Duration::from_millis(500), rx.recv()).await;
@@ -906,6 +914,7 @@ async fn test_send_to_session_includes_model_badge() {
         "badged reply",
         Some("deepseek/deepseek-v4-flash"),
         None,
+        None,
     )
     .await
     .unwrap();
@@ -918,9 +927,17 @@ async fn test_send_to_session_includes_model_badge() {
     assert_eq!(parsed["data"]["model"], "deepseek/deepseek-v4-flash");
 
     // Without a model badge → field absent (badge-less messages unchanged).
-    send_to_session(&mgr, &session.id, "assistant", "plain reply", None, None)
-        .await
-        .unwrap();
+    send_to_session(
+        &mgr,
+        &session.id,
+        "assistant",
+        "plain reply",
+        None,
+        None,
+        None,
+    )
+    .await
+    .unwrap();
     let bytes2 = tokio::time::timeout(Duration::from_millis(500), rx.recv())
         .await
         .unwrap()
@@ -929,6 +946,47 @@ async fn test_send_to_session_includes_model_badge() {
     assert!(
         parsed2["data"].get("model").is_none(),
         "None model must omit the field, not serialize null"
+    );
+
+    // 集群续行归属（2026-09-23）：带 source_node → 帧带节点键（前端渲染
+    // 「节点 X」徽章）；不带 → 字段缺席（非集群回复与历史行为逐字节一致）。
+    send_to_session(
+        &mgr,
+        &session.id,
+        "assistant",
+        "node reply",
+        None,
+        None,
+        Some("node-b"),
+    )
+    .await
+    .unwrap();
+    let bytes3 = tokio::time::timeout(Duration::from_millis(500), rx.recv())
+        .await
+        .unwrap()
+        .unwrap();
+    let parsed3: serde_json::Value = serde_json::from_slice(&bytes3).unwrap();
+    assert_eq!(parsed3["data"]["source_node"], "node-b");
+
+    send_to_session(
+        &mgr,
+        &session.id,
+        "assistant",
+        "plain reply",
+        None,
+        None,
+        None,
+    )
+    .await
+    .unwrap();
+    let bytes4 = tokio::time::timeout(Duration::from_millis(500), rx.recv())
+        .await
+        .unwrap()
+        .unwrap();
+    let parsed4: serde_json::Value = serde_json::from_slice(&bytes4).unwrap();
+    assert!(
+        parsed4["data"].get("source_node").is_none(),
+        "None source_node must omit the field, not serialize null"
     );
 }
 
@@ -953,6 +1011,7 @@ async fn test_send_to_session_stamps_agent_session_id() {
         "stamped reply",
         None,
         Some("agent:main:session:abc-123"),
+        None,
     )
     .await
     .unwrap();
@@ -964,9 +1023,17 @@ async fn test_send_to_session_stamps_agent_session_id() {
     assert_eq!(parsed["data"]["session_id"], "abc-123");
 
     // 无 session_key → 字段缺席（不序列化 null）。
-    send_to_session(&mgr, &session.id, "assistant", "plain reply", None, None)
-        .await
-        .unwrap();
+    send_to_session(
+        &mgr,
+        &session.id,
+        "assistant",
+        "plain reply",
+        None,
+        None,
+        None,
+    )
+    .await
+    .unwrap();
     let bytes2 = tokio::time::timeout(Duration::from_millis(500), rx.recv())
         .await
         .unwrap()

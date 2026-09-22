@@ -119,6 +119,12 @@ pub struct OutboundMeta {
     /// 补拉必须按**会话**跨连接寻址。其他通道忽略。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub session_key: Option<String>,
+    /// 集群续行归属（2026-09-23）：实际执行任务的 worker 节点名。集群
+    /// `cluster_rpc` 派发的续行回复由主 LLM 转述，但**干活的是远端节点**
+    /// ——web 通道据此渲染「节点 X」徽章，与模型徽章并列（各说各的真话）。
+    /// 缺席 = 非集群回复 / 旧快照，出站帧不带该键，与历史行为逐字节一致。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source_node: Option<String>,
 }
 
 /// Outbound message from the agent engine to a channel.

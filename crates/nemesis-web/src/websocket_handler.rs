@@ -816,7 +816,7 @@ pub async fn broadcast_to_session(
     // L2：同 send_to_session——帧盖会话内单调 seq 进 per-session 环形缓冲
     //（chat.sync 补拉数据源）。不走 build_broadcast_message（它无 seq，
     // 测试/legacy 专用）。
-    let seq = crate::chat_event_log::record(session_id, role, content, None);
+    let seq = crate::chat_event_log::record(session_id, role, content, None, None);
     let msg = ProtocolMessage::new(
         "message",
         "chat",

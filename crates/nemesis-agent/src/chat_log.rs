@@ -53,6 +53,7 @@ pub fn append_chat_log_meta(session_key: &str, role: &str, content: &str, meta: 
         meta.images,
         meta.file_changes,
         meta.checkpoint_turn,
+        None,
     );
 }
 
@@ -95,6 +96,33 @@ pub fn append_chat_log_with_model(
     append_chat_log_full(session_key, role, content, model, None, None);
 }
 
+/// 集群续行归属（2026-09-23）：模型徽章 + worker 节点归属的追加变体。
+///
+/// `source_node` = 实际执行任务的集群节点名（`cluster_rpc` 派发的续行回复
+/// 由主 LLM 转述，干活的是远端节点）。`Some` 时写入 `"source_node"` 字段，
+/// Dashboard 渲染「节点 X」徽章（与模型徽章并列）；`None`（普通回复）不写
+/// 该键——旧 jsonl 条目照常解析，读侧缺字段 = 无徽章。
+pub fn append_chat_log_with_model_and_node(
+    session_key: &str,
+    role: &str,
+    content: &str,
+    model: Option<&str>,
+    source_node: Option<&str>,
+) {
+    write_chat_entry(
+        session_key,
+        role,
+        content,
+        model,
+        None,
+        None,
+        &[],
+        &[],
+        None,
+        source_node,
+    );
+}
+
 /// Full append: optional model badge AND optional cron origin marker.
 ///
 /// `cron_job_id` / `cron_job_name`: when `Some`, marks this entry as
@@ -118,6 +146,7 @@ pub fn append_chat_log_full(
         cron_job_name,
         &[],
         &[],
+        None,
         None,
     );
 }
@@ -147,6 +176,7 @@ pub fn append_chat_log_full_with_images(
         images,
         &[],
         None,
+        None,
     );
 }
 
@@ -165,6 +195,7 @@ fn write_chat_entry(
     images: &[String],
     file_changes: &[FileChange],
     checkpoint_turn: Option<usize>,
+    source_node: Option<&str>,
 ) {
     let path = log_path(session_key);
     if let Some(parent) = path.parent() {
@@ -190,6 +221,9 @@ fn write_chat_entry(
     }
     if let Some(name) = cron_job_name {
         entry["cron_job_name"] = serde_json::Value::String(name.to_string());
+    }
+    if let Some(node) = source_node {
+        entry["source_node"] = serde_json::Value::String(node.to_string());
     }
     if !images.is_empty() {
         entry["images"] = serde_json::Value::Array(

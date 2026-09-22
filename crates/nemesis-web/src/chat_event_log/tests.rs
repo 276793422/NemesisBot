@@ -27,9 +27,9 @@ fn unique_session(tag: &str) -> String {
 fn record_seqs_are_monotonic_per_session() {
     let _guard = table_guard!();
     let sid = unique_session("mono");
-    let s1 = record(&sid, "assistant", "first", None);
-    let s2 = record(&sid, "assistant", "second", Some("m1"));
-    let s3 = record(&sid, "user", "third", None);
+    let s1 = record(&sid, "assistant", "first", None, None);
+    let s2 = record(&sid, "assistant", "second", Some("m1"), None);
+    let s3 = record(&sid, "user", "third", None, None);
     assert_eq!((s1, s2, s3), (1, 2, 3));
 }
 
@@ -37,9 +37,9 @@ fn record_seqs_are_monotonic_per_session() {
 fn independent_sessions_have_independent_counters() {
     let a = unique_session("a");
     let b = unique_session("b");
-    assert_eq!(record(&a, "assistant", "x", None), 1);
-    assert_eq!(record(&b, "assistant", "y", None), 1);
-    assert_eq!(record(&a, "assistant", "z", None), 2);
+    assert_eq!(record(&a, "assistant", "x", None, None), 1);
+    assert_eq!(record(&b, "assistant", "y", None, None), 1);
+    assert_eq!(record(&a, "assistant", "z", None, None), 2);
 }
 
 #[test]
@@ -47,7 +47,7 @@ fn replay_after_returns_window_in_order() {
     let _guard = table_guard!();
     let sid = unique_session("replay");
     for i in 1..=5 {
-        record(&sid, "assistant", &format!("m{i}"), None);
+        record(&sid, "assistant", &format!("m{i}"), None, None);
     }
     let (events, gap) = replay_after(&sid, 2);
     assert!(!gap);
@@ -82,7 +82,7 @@ fn ring_cap_eviction_produces_gap() {
     // 填满 + 溢出：推 SESSION_REPLAY_CAP + 50 条
     let total = SESSION_REPLAY_CAP + 50;
     for i in 1..=total {
-        record(&sid, "assistant", &format!("m{i}"), None);
+        record(&sid, "assistant", &format!("m{i}"), None, None);
     }
     // after=0：最老缓冲 seq = 51 > 1 → 缺口滑出窗口
     let (events, gap) = replay_after(&sid, 0);
@@ -103,7 +103,7 @@ fn session_cap_eviction_does_not_evict_current_session() {
     let _guard = table_guard!();
     for i in 0..(MAX_SESSIONS + 5) {
         let sid = format!("l2-sweep-{}-{i}", std::process::id());
-        assert_eq!(record(&sid, "assistant", "x", None), 1);
+        assert_eq!(record(&sid, "assistant", "x", None, None), 1);
         let (events, _) = replay_after(&sid, 0);
         assert_eq!(events.len(), 1, "session {sid} must survive its own record");
     }
@@ -115,7 +115,7 @@ fn session_cap_eviction_does_not_evict_current_session() {
 fn tool_events_share_seq_space_and_replay_interleaved() {
     let _guard = table_guard!();
     let sid = unique_session("tool");
-    let s1 = record(&sid, "user", "hi", None);
+    let s1 = record(&sid, "user", "hi", None, None);
     let t1 = record_tool(
         &sid,
         serde_json::json!({"kind": "ToolStarted", "data": {"call_id": "c1", "tool": "exec"}}),
@@ -124,7 +124,7 @@ fn tool_events_share_seq_space_and_replay_interleaved() {
         &sid,
         serde_json::json!({"kind": "ToolFinished", "data": {"call_id": "c1", "ok": true}}),
     );
-    let s2 = record(&sid, "assistant", "done", None);
+    let s2 = record(&sid, "assistant", "done", None, None);
     // 同键空间、会话内单调：chat 行与 tool 条目交错编号。
     assert_eq!((s1, t1, t2, s2), (1, 2, 3, 4));
     // 回放按 seq 还原真实时序；tool 条目 kind="tool"、载荷原样、文本字段空。
@@ -182,14 +182,14 @@ fn latest_seq_tracks_chat_and_tool_entries() {
     let sid = unique_session("latest");
     // 环内已分配最大 seq：chat 行与 tool 条目同一序列，逐条推进。
     assert_eq!(latest_seq(&sid), 0);
-    assert_eq!(record(&sid, "user", "hi", None), 1);
+    assert_eq!(record(&sid, "user", "hi", None, None), 1);
     assert_eq!(latest_seq(&sid), 1);
     assert_eq!(
         record_tool(&sid, serde_json::json!({"kind": "ToolStarted"})),
         2
     );
     assert_eq!(latest_seq(&sid), 2);
-    assert_eq!(record(&sid, "assistant", "done", None), 3);
+    assert_eq!(record(&sid, "assistant", "done", None, None), 3);
     assert_eq!(latest_seq(&sid), 3);
 }
 
@@ -228,7 +228,7 @@ fn record_and_record_tool_publish_activity_with_bare_sid() {
     // 信号里必须还原裸 sid 与前端 currentId 同域比对。
     let sid = "p8-bare-sid";
     let key = format!("agent:main:session:{sid}");
-    let seq = record(&key, "assistant", "hello", None);
+    let seq = record(&key, "assistant", "hello", None, None);
     let ev = wait_own_activity(&mut rx, sid);
     assert_eq!(ev.event_type, "chat.activity");
     assert_eq!(ev.data["session_id"], sid);
@@ -242,7 +242,7 @@ fn record_and_record_tool_publish_activity_with_bare_sid() {
     assert_eq!(ev2.data["seq"], seq2);
     assert_eq!(ev2.data["kind"], "tool");
     let web_key = "web:conn-42";
-    let seq3 = record(web_key, "assistant", "x", None);
+    let seq3 = record(web_key, "assistant", "x", None, None);
     let ev3 = wait_own_activity(&mut rx, "web:conn-42");
     assert_eq!(ev3.data["session_id"], "web:conn-42");
     assert_eq!(ev3.data["seq"], seq3);

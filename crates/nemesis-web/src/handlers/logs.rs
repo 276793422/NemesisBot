@@ -1335,6 +1335,11 @@ impl LogsHandler {
                 if let Some(name) = ln["cron_job_name"].as_str() {
                     msg["cron_job_name"] = serde_json::Value::String(name.to_string());
                 }
+                // 集群续行归属（2026-09-23）：刷新后历史重放同样显示「节点 X」
+                // 徽章。缺字段 = 旧条目/非集群，不带该键。
+                if let Some(node) = ln["source_node"].as_str() {
+                    msg["source_node"] = serde_json::Value::String(node.to_string());
+                }
                 // D3：本 turn 声明式文件工具的变更清单（消息↔文件变更映射；
                 // M3 会话级 diff 查看器的数据源）。缺字段 = 旧条目/无变更，
                 // 不带该键。

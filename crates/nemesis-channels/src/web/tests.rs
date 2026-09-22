@@ -12,6 +12,8 @@ struct MockWebServer {
     sent: Mutex<Vec<(String, String, String)>>,
     /// Model arg passed to each send_to_session call (badge pipeline).
     sent_models: Mutex<Vec<Option<String>>>,
+    /// 集群续行归属（2026-09-23）：source_node 转发链断言用。
+    sent_nodes: Mutex<Vec<Option<String>>>,
     history: Mutex<Vec<(String, String)>>,
     broadcasts: Mutex<Vec<String>>,
 }
@@ -21,6 +23,7 @@ impl MockWebServer {
         Self {
             sent: Mutex::new(Vec::new()),
             sent_models: Mutex::new(Vec::new()),
+            sent_nodes: Mutex::new(Vec::new()),
             history: Mutex::new(Vec::new()),
             broadcasts: Mutex::new(Vec::new()),
         }
@@ -39,6 +42,7 @@ impl WebServerOps for MockWebServer {
         content: &str,
         model: Option<&str>,
         _session_key: Option<&str>,
+        source_node: Option<&str>,
     ) -> std::result::Result<(), String> {
         self.sent.lock().unwrap().push((
             session_id.to_string(),
@@ -49,6 +53,10 @@ impl WebServerOps for MockWebServer {
             .lock()
             .unwrap()
             .push(model.map(|s| s.to_string()));
+        self.sent_nodes
+            .lock()
+            .unwrap()
+            .push(source_node.map(|s| s.to_string()));
         Ok(())
     }
 
@@ -168,6 +176,7 @@ async fn test_send_to_session_forwards_model_badge() {
         meta: nemesis_types::channel::OutboundMeta {
             model: Some("deepseek/deepseek-v4-flash".to_string()),
             session_key: None,
+            source_node: Some("node-b".to_string()),
         },
     };
     let result = ch.send(msg).await;
@@ -180,8 +189,17 @@ async fn test_send_to_session_forwards_model_badge() {
         Some("deepseek/deepseek-v4-flash"),
         "WebChannel::send must forward meta.model to send_to_session"
     );
+    // 集群续行归属（2026-09-23）：source_node 同链路转发。
+    let nodes = mock.sent_nodes.lock().unwrap();
+    assert_eq!(nodes.len(), 1);
+    assert_eq!(
+        nodes[0].as_deref(),
+        Some("node-b"),
+        "WebChannel::send must forward meta.source_node to send_to_session"
+    );
 
     // And a badge-less message forwards None (no panic, no badge).
+    drop(nodes);
     drop(models);
     let msg2 = OutboundMessage {
         channel: "web".to_string(),
@@ -441,6 +459,7 @@ impl WebServerOps for FailingMockServer {
         _: &str,
         _: &str,
         _: &str,
+        _: Option<&str>,
         _: Option<&str>,
         _: Option<&str>,
     ) -> std::result::Result<(), String> {
@@ -760,6 +779,7 @@ impl WebServerOps for FailStartServer {
         _: &str,
         _: &str,
         _: &str,
+        _: Option<&str>,
         _: Option<&str>,
         _: Option<&str>,
     ) -> std::result::Result<(), String> {

@@ -2461,3 +2461,54 @@ async fn steer_mode_escape_hatch_extends_turn() {
         outs
     );
 }
+
+/// 集群续行归属（2026-09-23）：wrapper 参考实现臂从 msg.metadata 提取
+/// source_node → 出站 meta 携带节点名。主循环 dispatch_continuation 的
+/// 提取逻辑同款（owned String 进 spawn 闭包，行为由此测试锚定语义）。
+#[tokio::test]
+async fn cluster_continuation_wrapper_carries_source_node() {
+    let _logs = capture_logs();
+    let (out_tx, mut out_rx) = tokio::sync::mpsc::channel(16);
+    let mut agent_loop = AgentLoop::new_bus(
+        Box::new(MockLlmProvider::new(vec![resp("node final")])),
+        test_config(),
+        out_tx,
+        ConcurrentMode::Reject,
+        8,
+        0,
+    );
+    let mgr = std::sync::Arc::new(crate::loop_continuation::ContinuationManager::new());
+    mgr.save_continuation(
+        "s9node",
+        vec![LlmMessage {
+            role: "user".to_string(),
+            content: "go".to_string(),
+            tool_calls: None,
+            tool_call_id: None,
+            reasoning_content: None,
+            images: Vec::new(),
+        }],
+        "tcN",
+        "web",
+        "chatN",
+        "s9nodesess",
+        "",
+    )
+    .await;
+    agent_loop.set_continuation_manager(mgr);
+    // gateway Route 2 发布的 metadata 形状：source_node = worker 节点名。
+    let mut metadata = std::collections::HashMap::new();
+    metadata.insert("source_node".to_string(), "node-b".to_string());
+    let msg = s9_msg(
+        "web",
+        "user1",
+        "chatN",
+        "web:chatN",
+        "callback body",
+        metadata,
+    );
+    agent_loop.handle_cluster_continuation("s9node", &msg).await;
+    let out = out_rx.recv().await.expect("node final published");
+    assert!(out.content.contains("node final"), "got: {}", out.content);
+    assert_eq!(out.meta.source_node.as_deref(), Some("node-b"));
+}

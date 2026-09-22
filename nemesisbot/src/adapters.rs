@@ -494,12 +494,14 @@ impl WebServerOps for WebServerOpsAdapter {
         content: &str,
         model: Option<&str>,
         session_key: Option<&str>,
+        source_node: Option<&str>,
     ) -> std::result::Result<(), String> {
         let sm = self.session_manager.clone();
         let sid = session_id.to_string();
         let content = content.to_string();
         let model = model.map(|s| s.to_string());
         let session_key = session_key.map(|s| s.to_string());
+        let source_node = source_node.map(|s| s.to_string());
         let result = tokio::task::block_in_place(|| {
             self.rt.block_on(nemesis_web::server::send_to_session(
                 &sm,
@@ -508,6 +510,7 @@ impl WebServerOps for WebServerOpsAdapter {
                 &content,
                 model.as_deref(),
                 session_key.as_deref(),
+                source_node.as_deref(),
             ))
         });
         // P2（2026-09-11 真机日志）：assistant 回复推送失败（会话无活动

@@ -2287,6 +2287,11 @@ impl AgentLoop {
             .get("status")
             .map(|s| s == "error")
             .unwrap_or(false);
+        // 集群续行归属（2026-09-23）：实际干活的 worker 节点名（gateway
+        // Route 2 与 G5 恢复发布的 metadata 同款键）。缺席 = 旧快照/老发布方，
+        // 出站不带节点徽章，行为与历史一致。owned String——spawn 分支闭包
+        // 要求 'static（与 task_error 同款）。
+        let task_source_node = task_metadata.get("source_node").cloned();
 
         if self.max_continuation_permits == 0 {
             // Inline: process directly in the main loop (no spawn).
@@ -2316,6 +2321,7 @@ impl AgentLoop {
                     self.session_store.as_ref().map(|v| v.as_ref()),
                     // F-F：active 模型 vision 解析（config.json 唯一真相源）。
                     self.current_vision().supported,
+                    task_source_node.as_deref(),
                 )
                 .await;
             }
@@ -2351,6 +2357,7 @@ impl AgentLoop {
                         observer_manager,
                         session_store.as_ref().map(|v| v.as_ref()),
                         vision_supported,
+                        task_source_node.as_deref(),
                     )
                     .await;
                 }
@@ -2832,6 +2839,7 @@ impl AgentLoop {
                     // L2：会话键随行——web 通道 chat_event_log 按会话（非连接）
                     // 记录，断线重连后 chat.sync 才能寻址。
                     session_key: (!msg.session_key.is_empty()).then(|| msg.session_key.clone()),
+                    source_node: None,
                 },
             };
             if let Err(e) = tx.send(outbound).await {
@@ -3090,6 +3098,7 @@ impl AgentLoop {
                 .map(|s| s == "error")
                 .unwrap_or(false);
             let task_error = original_msg.metadata.get("error").map(|s| s.as_str());
+            let task_source_node = original_msg.metadata.get("source_node").map(|s| s.as_str());
 
             // Clone provider and model before .await (RwLock guards are not Send).
             let cont_provider = self.provider.read().clone();
@@ -3109,6 +3118,7 @@ impl AgentLoop {
                     self.session_store.as_ref().map(|v| v.as_ref()),
                     // F-F：active 模型 vision 解析。
                     self.current_vision().supported,
+                    task_source_node,
                 )
                 .await;
             }
@@ -3981,6 +3991,7 @@ impl AgentLoop {
                                 meta: nemesis_types::channel::OutboundMeta {
                                     model: None,
                                     session_key: Some(session_key.clone()),
+                                    source_node: None,
                                 },
                             };
                             let _ = tx.send(outbound).await;
@@ -4578,6 +4589,7 @@ impl AgentLoop {
                 meta: nemesis_types::channel::OutboundMeta {
                     model: None,
                     session_key: Some(clear_key.clone()),
+                    source_node: None,
                 },
             };
             let _ = tx.send(outbound).await;
@@ -8051,6 +8063,7 @@ impl AgentLoop {
                     // L2：会话键随行（web 通道按会话记录，进度条也进历史）。
                     session_key: (!context.session_key.is_empty())
                         .then(|| context.session_key.clone()),
+                    source_node: None,
                 },
             };
             if let Err(e) = tx.send(outbound).await {

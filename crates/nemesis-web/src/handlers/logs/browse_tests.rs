@@ -344,6 +344,7 @@ async fn session_detail_reads_jsonl_and_passes_cron_markers() {
         concat!(
             r#"{"role":"user","content":"hi","timestamp":"2026-08-25T07:00:00"}"#, "\n",
             r#"{"role":"assistant","content":"done","timestamp":"2026-08-25T07:00:05","cron_job_id":"job-7","cron_job_name":"nightly"}"#, "\n",
+            r#"{"role":"assistant","content":"cluster work","timestamp":"2026-09-23T07:00:06","model":"m1","source_node":"node-b"}"#, "\n",
         ),
     )
     .unwrap();
@@ -354,13 +355,17 @@ async fn session_detail_reads_jsonl_and_passes_cron_markers() {
         .unwrap()
         .unwrap();
     let msgs = out["messages"].as_array().unwrap();
-    assert_eq!(msgs.len(), 2);
+    assert_eq!(msgs.len(), 3);
     assert_eq!(msgs[0]["role"], "user");
     // cron 标记必须透传到前端可见字段。
     assert_eq!(msgs[1]["cron_job_id"], "job-7");
     assert_eq!(msgs[1]["cron_job_name"], "nightly");
     // 无标记消息不得带 cron 字段。
     assert!(msgs[0].get("cron_job_id").is_none());
+    // 集群续行归属（2026-09-23）：刷新后历史重放的行同样透传节点归属；
+    // 无归属行不带该键。
+    assert_eq!(msgs[2]["source_node"], "node-b");
+    assert!(msgs[0].get("source_node").is_none());
 }
 
 /// D3：assistant 行的 `file_changes` 字段透传（消息↔文件变更映射；M3

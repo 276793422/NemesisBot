@@ -196,6 +196,7 @@ async fn continuation_final_response_logs_info_fields() {
         None,
         None,
         true, // F-F vision_supported
+        None, // source_node（归属断言见专项测试）
     )
     .await;
 

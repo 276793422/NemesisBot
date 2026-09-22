@@ -9,6 +9,10 @@ export interface ChatMessage {
    *  Rendered as a "供应商·模型名" badge; undefined for user/error/system or
    *  legacy messages persisted before the badge feature. */
   model?: string
+  /** 集群续行归属（2026-09-23）：实际执行任务的 worker 节点名（receive 帧
+   *  source_node / 历史行 source_node 透传）。渲染「节点 X」徽章，与模型
+   *  徽章并列——干活的是远端节点，写字的是主节点模型。缺省 = 非集群回复。 */
+  sourceNode?: string
   /** T8 多模态：该消息附带的图片数（本地回显 + 历史映射 m.images.length）。 */
   imageCount?: number
   /** M1b（devtool-upgrade 阶段 3）：本条 assistant 消息对应的工具调用卡片

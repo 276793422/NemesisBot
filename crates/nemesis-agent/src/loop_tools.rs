@@ -7227,7 +7227,9 @@ pub fn register_shared_tools(config: &SharedToolConfig) -> HashMap<String, Box<d
                 "workflow_capabilities".to_string(),
                 Box::new(WorkflowCapabilitiesTool),
             );
-            info!("[AgentTools] Registered workflow_run/workflow_create/workflow_capabilities tools");
+            info!(
+                "[AgentTools] Registered workflow_run/workflow_create/workflow_capabilities tools"
+            );
         }
     }
 
@@ -7448,15 +7450,16 @@ impl Tool for WorkflowCreateTool {
             return Err("definition.name must be a non-empty string".to_string());
         }
 
-        let store = nemesis_workflow::drafts::DraftStore::from_engine(&self.engine).ok_or_else(
-            || {
+        let store =
+            nemesis_workflow::drafts::DraftStore::from_engine(&self.engine).ok_or_else(|| {
                 "workflow definitions directory is not configured — cannot save drafts \
                  (workflow_defs_dir missing)"
                     .to_string()
-            },
-        )?;
+            })?;
 
-        let summary = store.save(&workflow).map_err(|e| format!("save draft: {}", e))?;
+        let summary = store
+            .save(&workflow)
+            .map_err(|e| format!("save draft: {}", e))?;
         let existing_definition = self.engine.get_workflow(&workflow.name).is_some();
 
         let mut hints: Vec<String> = Vec::new();
@@ -7476,7 +7479,8 @@ impl Tool for WorkflowCreateTool {
             hints.push(
                 "a registered workflow with this name already exists — applying the draft \
                  will replace it (the old definition is backed up to .history/). Confirm \
-                 with the user first.".to_string(),
+                 with the user first."
+                    .to_string(),
             );
         }
 

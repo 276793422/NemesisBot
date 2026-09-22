@@ -958,6 +958,7 @@ pub(crate) fn persist_final_reply(
     session_key: &str,
     model: &str,
     final_content: &str,
+    source_node: Option<&str>,
 ) {
     if let Some(store) = store {
         store.get_or_create(session_key);
@@ -969,11 +970,12 @@ pub(crate) fn persist_final_reply(
             );
         }
     }
-    crate::chat_log::append_chat_log_with_model(
+    crate::chat_log::append_chat_log_with_model_and_node(
         session_key,
         "assistant",
         final_content,
         Some(model),
+        source_node,
     );
 }
 
@@ -1042,6 +1044,9 @@ pub async fn handle_cluster_continuation<T: ToolLookup>(
     observer_manager: Option<Arc<nemesis_observer::Manager>>,
     session_store: Option<&SessionStore>,
     vision_supported: bool,
+    // 集群续行归属（2026-09-23）：实际干活的 worker 节点名（回调 metadata
+    // source_node，G5 恢复发布同款）。缺席 = 旧快照/非集群路径，出站不带。
+    source_node: Option<&str>,
 ) {
     // Generate trace_id for observer event correlation.
     let trace_id = format!(
@@ -1309,6 +1314,8 @@ pub async fn handle_cluster_continuation<T: ToolLookup>(
                         // L2：会话键随行（快照带 session_key；旧快照可能为空）
                         session_key: (!cont_data.session_key.is_empty())
                             .then(|| cont_data.session_key.clone()),
+                        // 中途工具回执不挂节点徽章——归属只在最终回复。
+                        source_node: None,
                     },
                 };
                 if let Err(e) = outbound_tx.send(outbound).await {
@@ -1369,7 +1376,13 @@ pub async fn handle_cluster_continuation<T: ToolLookup>(
         // outbound. Skip when session_key is empty (legacy on-disk snapshots
         // saved before this field existed).
         if !cont_data.session_key.is_empty() {
-            persist_final_reply(session_store, &cont_data.session_key, model, &final_content);
+            persist_final_reply(
+                session_store,
+                &cont_data.session_key,
+                model,
+                &final_content,
+                source_node,
+            );
             // HD（2026-09-17）：落库即打标（磁盘快照回写）——此后到
             // finish_handling 之间崩溃的重投递由 0b 幂等闸拦下。
             if let Some(store) = &manager.disk_store
@@ -1396,6 +1409,9 @@ pub async fn handle_cluster_continuation<T: ToolLookup>(
                 // L2：会话键随行——跨进程续行的最终回复同样要能被 chat.sync 补拉。
                 session_key: (!cont_data.session_key.is_empty())
                     .then(|| cont_data.session_key.clone()),
+                // 集群续行归属（2026-09-23）：干活的是远端节点，web 通道据此
+                // 渲染「节点 X」徽章。None = 不写键，出站帧与历史行为一致。
+                source_node: source_node.map(|s| s.to_string()),
             },
         };
         if let Err(e) = outbound_tx.send(outbound).await {

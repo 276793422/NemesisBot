@@ -737,6 +737,7 @@ async fn test_handle_cluster_continuation_no_data() {
         None,
         None,
         true, // F-F vision_supported
+        None, // source_node（归属断言见专项测试）
     )
     .await;
     // No outbound should be sent
@@ -785,6 +786,7 @@ async fn test_handle_cluster_continuation_simple_response() {
         None,
         None,
         true, // F-F vision_supported
+        None, // source_node（归属断言见专项测试）
     )
     .await;
 
@@ -837,6 +839,7 @@ async fn test_handle_cluster_continuation_failed_task() {
         None,
         None,
         true, // F-F vision_supported
+        None, // source_node（归属断言见专项测试）
     )
     .await;
 
@@ -913,6 +916,7 @@ async fn test_handle_cluster_continuation_with_tool_calls() {
         None,
         None,
         true, // F-F vision_supported
+        None, // source_node（归属断言见专项测试）
     )
     .await;
 
@@ -954,6 +958,7 @@ async fn test_handle_cluster_continuation_llm_error() {
         None,
         None,
         true, // F-F vision_supported
+        None, // source_node（归属断言见专项测试）
     )
     .await;
 
@@ -1018,6 +1023,7 @@ async fn test_handle_cluster_continuation_unknown_tool() {
         None,
         None,
         true, // F-F vision_supported
+        None, // source_node（归属断言见专项测试）
     )
     .await;
 
@@ -1329,6 +1335,7 @@ async fn test_handle_cluster_continuation_failed_task_no_error_msg() {
         None,
         None,
         true, // F-F vision_supported
+        None, // source_node（归属断言见专项测试）
     )
     .await;
 
@@ -1406,6 +1413,7 @@ async fn test_handle_cluster_continuation_writes_session_log() {
         None,
         None,
         true, // F-F vision_supported
+        None, // source_node（归属断言见专项测试）
     )
     .await;
 
@@ -1483,6 +1491,7 @@ async fn test_handle_cluster_continuation_writes_session_store_when_provided() {
         None,
         Some(store.as_ref()),
         true, // F-F vision_supported
+        None, // source_node（归属断言见专项测试）
     )
     .await;
 
@@ -1548,6 +1557,7 @@ async fn test_handle_cluster_continuation_skips_log_when_session_key_empty() {
         None,
         None,
         true, // F-F vision_supported
+        None, // source_node（归属断言见专项测试）
     )
     .await;
 
@@ -1698,6 +1708,7 @@ async fn test_disk_recovery_preserves_session_key_for_handle() {
         None,
         None,
         true, // F-F vision_supported
+        None, // source_node（归属断言见专项测试）
     )
     .await;
 
@@ -1836,6 +1847,7 @@ async fn test_handle_cluster_continuation_emits_observer_events() {
         Some(Arc::clone(&observer)),
         None,
         true, // F-F vision_supported
+        None, // source_node（归属断言见专项测试）
     )
     .await;
 
@@ -1887,6 +1899,7 @@ async fn test_handle_cluster_continuation_persists_to_session_store() {
         None,
         Some(&store),
         true, // F-F vision_supported
+        None, // source_node（归属断言见专项测试）
     )
     .await;
 
@@ -2037,7 +2050,7 @@ fn test_persist_final_reply_no_duplicate_when_store_missing() {
     let tmp = TempDir::new().unwrap();
     let store = crate::session::SessionStore::new_with_storage(tmp.path());
 
-    persist_final_reply(Some(&store), &key, "test-model", "FINAL-REPLY");
+    persist_final_reply(Some(&store), &key, "test-model", "FINAL-REPLY", None);
 
     let hist = store.get_history(&key);
     let finals = hist.iter().filter(|m| m.content == "FINAL-REPLY").count();
@@ -2074,7 +2087,7 @@ fn test_persist_final_reply_none_store_still_logs() {
     );
     crate::chat_log::delete_chat_log(&key); // clean slate
 
-    persist_final_reply(None, &key, "test-model", "ONLY-LOG");
+    persist_final_reply(None, &key, "test-model", "ONLY-LOG", None);
 
     let (rows, _, _, _) = crate::chat_log::read_chat_log(&key, 100, None);
     assert_eq!(rows.len(), 1);
@@ -2437,7 +2450,7 @@ fn persist_final_reply_save_error_warns_but_appends_chat_log() {
     );
     std::fs::create_dir_all(tmp.path().join(format!("{key}.json"))).unwrap();
 
-    persist_final_reply(Some(&store), &key, "m", "final content");
+    persist_final_reply(Some(&store), &key, "m", "final content", None);
 
     // chat_log 侧仍被追加（持久化失败只影响 store，不挡回复）。
     crate::chat_log::delete_chat_log(&key);
@@ -2483,6 +2496,7 @@ async fn final_outbound_send_error_warns_no_panic() {
         None,
         None,
         true, // F-F vision_supported
+        None, // source_node（归属断言见专项测试）
     )
     .await;
     assert!(!manager.has_continuation("task-out").await);
@@ -2538,6 +2552,7 @@ async fn handle_continuation_with_observer_manager_persists_and_sends() {
         Some(Arc::new(nemesis_observer::Manager::new())),
         Some(&store),
         true, // F-F vision_supported
+        None, // source_node（归属断言见专项测试）
     )
     .await;
 
@@ -3099,6 +3114,7 @@ async fn ff_handler_projects_images_when_vision_unsupported() {
         None,
         None,
         false, // vision_supported = false → 投影
+        None,  // source_node
     )
     .await;
     let counts = provider_no_vision.seen_image_counts();
@@ -3150,6 +3166,7 @@ async fn ff_handler_projects_images_when_vision_unsupported() {
         None,
         None,
         true, // vision_supported = true → 零改动
+        None, // source_node
     )
     .await;
     let counts = provider_vision.seen_image_counts();
@@ -3392,6 +3409,7 @@ async fn test_handle_cluster_continuation_final_persisted_flag_skips_rerun() {
         None,
         None,
         true, // F-F vision_supported
+        None, // source_node（归属断言见专项测试）
     )
     .await;
 
@@ -3409,4 +3427,163 @@ async fn test_handle_cluster_continuation_final_persisted_flag_skips_rerun() {
         store.load("task-flagged").is_err(),
         "快照应已被 finish_handling 回收"
     );
+}
+
+// -----------------------------------------------------------------------
+// 集群续行归属（2026-09-23）：source_node 从 bus metadata 流到出站 meta
+// 与 chat_log。缺席 = 逐字节历史行为（键不出现）。
+// -----------------------------------------------------------------------
+
+#[tokio::test]
+async fn test_cluster_continuation_source_node_flows_to_outbound_meta() {
+    let manager = ContinuationManager::new();
+    let (outbound_tx, mut outbound_rx) = tokio::sync::mpsc::channel(16);
+
+    let messages = vec![make_message("user", "Hello")];
+    manager
+        .save_continuation(
+            "task-node",
+            messages,
+            "tc_node",
+            "web",
+            "chat-node",
+            "node_session",
+            "",
+        )
+        .await;
+
+    let provider = MockContinuationProvider::new(vec![LlmResponse {
+        content: "worker did the work".to_string(),
+        tool_calls: Vec::new(),
+        finished: true,
+        reasoning_content: None,
+        usage: None,
+        raw_request_body: None,
+        raw_response_body: None,
+    }]);
+
+    handle_cluster_continuation(
+        &manager,
+        "task-node",
+        "worker raw output",
+        false,
+        None,
+        &provider,
+        "test-model",
+        &HashMap::<String, Arc<dyn Tool>>::new(),
+        &outbound_tx,
+        None,
+        None,
+        true,           // F-F vision_supported
+        Some("node-b"), // worker 节点名（gateway Route 2 metadata 透传）
+    )
+    .await;
+
+    let out = outbound_rx.try_recv().expect("final reply published");
+    assert_eq!(out.channel, "web");
+    assert!(out.content.contains("worker did the work"));
+    // 归属断言：干活节点随最终回复出站，模型徽章照常（主 LLM 转述）。
+    assert_eq!(out.meta.source_node.as_deref(), Some("node-b"));
+    assert_eq!(out.meta.model.as_deref(), Some("test-model"));
+}
+
+#[tokio::test]
+async fn test_cluster_continuation_no_source_node_meta_absent() {
+    let manager = ContinuationManager::new();
+    let (outbound_tx, mut outbound_rx) = tokio::sync::mpsc::channel(16);
+
+    let messages = vec![make_message("user", "Hello")];
+    manager
+        .save_continuation(
+            "task-nonode",
+            messages,
+            "tc_nonode",
+            "web",
+            "chat-nonode",
+            "nonode_session",
+            "",
+        )
+        .await;
+
+    let provider = MockContinuationProvider::new(vec![LlmResponse {
+        content: "plain reply".to_string(),
+        tool_calls: Vec::new(),
+        finished: true,
+        reasoning_content: None,
+        usage: None,
+        raw_request_body: None,
+        raw_response_body: None,
+    }]);
+
+    handle_cluster_continuation(
+        &manager,
+        "task-nonode",
+        "task response",
+        false,
+        None,
+        &provider,
+        "test-model",
+        &HashMap::<String, Arc<dyn Tool>>::new(),
+        &outbound_tx,
+        None,
+        None,
+        true, // F-F vision_supported
+        None, // 缺席 = 旧发布方/非集群 → 出站不带节点键
+    )
+    .await;
+
+    let out = outbound_rx.try_recv().expect("final reply published");
+    assert_eq!(out.meta.source_node, None, "缺席时不得出现空串归属");
+}
+
+#[test]
+fn test_persist_final_reply_source_node_written_to_chat_log() {
+    let key = format!(
+        "test:persist:node:{}",
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    );
+    crate::chat_log::delete_chat_log(&key); // clean slate
+
+    persist_final_reply(None, &key, "test-model", "NODE-REPLY", Some("node-b"));
+
+    let (rows, _, _, _) = crate::chat_log::read_chat_log(&key, 100, None);
+    assert_eq!(rows.len(), 1);
+    assert_eq!(
+        rows[0].get("source_node").and_then(|v| v.as_str()),
+        Some("node-b"),
+        "归属键必须落 jsonl（刷新后历史重放仍显示节点徽章）"
+    );
+    // 模型徽章与归属键并列共存（各说各的真话）。
+    assert_eq!(
+        rows[0].get("model").and_then(|v| v.as_str()),
+        Some("test-model")
+    );
+
+    crate::chat_log::delete_chat_log(&key);
+}
+
+#[test]
+fn test_persist_final_reply_no_source_node_omits_key() {
+    let key = format!(
+        "test:persist:nonode:{}",
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    );
+    crate::chat_log::delete_chat_log(&key); // clean slate
+
+    persist_final_reply(None, &key, "test-model", "PLAIN-REPLY", None);
+
+    let (rows, _, _, _) = crate::chat_log::read_chat_log(&key, 100, None);
+    assert_eq!(rows.len(), 1);
+    assert!(
+        rows[0].get("source_node").is_none(),
+        "缺席时键必须不出现（逐字节历史行为，serde skip 语义）"
+    );
+
+    crate::chat_log::delete_chat_log(&key);
 }

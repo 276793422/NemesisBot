@@ -3598,7 +3598,16 @@ pub async fn run(local: bool, relay: bool, extra_args: &[String]) -> Result<()> 
                 if !task_id.is_empty() && !is_board_task {
                     let mut metadata = std::collections::HashMap::new();
                     metadata.insert("status".to_string(), status.to_string());
-                    metadata.insert("source_node".to_string(), source_node.to_string());
+                    // 集群续行归属（2026-09-23）：回调 source 是节点 ID——
+                    // 徽章要人读名字，注册表在线时换名；查不到（对端已逐出/
+                    // 老恢复快照）回退原 ID（诚实显示）。G5 恢复发布点在
+                    // nemesis-cluster 内无注册表句柄，保持 ID 直传。
+                    let source_display = cluster_for_cb
+                        .get_peer(source_node)
+                        .map(|p| p.base.name)
+                        .filter(|n| !n.is_empty())
+                        .unwrap_or_else(|| source_node.to_string());
+                    metadata.insert("source_node".to_string(), source_display);
                     // P1：content 与 metadata.error 都用合并文本——B 端 error
                     // 回调的 response 为空，续行 tool 结果须携带真实错误。
                     metadata.insert("error".to_string(), fail_text.to_string());

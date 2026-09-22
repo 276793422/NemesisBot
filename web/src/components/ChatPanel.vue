@@ -443,6 +443,8 @@ function handleWSMessage(data: any) {
             content: data.data.content,
             timestamp: data.timestamp,
             model: data.data.model,
+            // 集群续行归属（2026-09-23）：worker 节点名 →「节点 X」徽章。
+            sourceNode: data.data.source_node,
             // A1：环 seq 随消息存档——历史响应 last_seq 到达后据此剔除
             // 「先于快照渲染」的重复 assistant 帧。
             seq: typeof data.data?.seq === 'number' ? data.data.seq : undefined,
@@ -681,6 +683,8 @@ async function syncMissedChat() {
         // 补拉消息显示为拉取时刻而非真实发生时刻；旧条目无 ts 回退本地钟。
         timestamp: ev.ts || new Date().toISOString(),
         model: ev.model,
+        // 集群续行归属：环帧同样带节点名（send_to_session 落环时已写键）。
+        sourceNode: ev.source_node,
         // A1：环 seq 存档（与 receive 分支同字段——历史快照到货后剔除用）。
         seq: typeof ev.seq === 'number' ? ev.seq : undefined,
         toolEvents,
@@ -997,6 +1001,7 @@ function handleHistoryResponse(data: any) {
         content: m.content,
         timestamp: m.timestamp || new Date().toISOString(),
         model: m.model,
+        sourceNode: m.source_node,
         imageCount: Array.isArray(m.images) ? m.images.length : undefined,
         rowIndex: oldest !== null ? oldest + j : undefined,
       })),
@@ -1037,6 +1042,7 @@ function handleHistoryResponse(data: any) {
           content: m.content,
           timestamp: m.timestamp || new Date().toISOString(),
           model: m.model,
+          sourceNode: m.source_node,
           imageCount: Array.isArray(m.images) ? m.images.length : undefined,
         })),
       )
@@ -1097,6 +1103,7 @@ function handleHistoryResponse(data: any) {
       content: m.content,
       timestamp: m.timestamp || new Date().toISOString(),
       model: m.model,
+      sourceNode: m.source_node,
       imageCount: Array.isArray(m.images) ? m.images.length : undefined,
     }))
     // M6：批次行号连续——oldest_index 传给 store 逐条编号（E3 rewind 定位）。
@@ -2147,6 +2154,10 @@ onUnmounted(() => {
           <div class="message-time">
             <span>{{ formatTime(msg.timestamp) }}</span>
             <span v-if="msg.role === 'assistant' && modelBadge(msg.model)" class="model-badge">{{ modelBadge(msg.model) }}</span>
+            <!-- 集群续行归属（2026-09-23）：干活的是远端 worker 节点——徽章与
+                 模型徽章并列（模型徽章说的是转述文本由哪个主节点模型生成）。
+                 复用 model-badge 低对比基调 + 降不透明度区分。 -->
+            <span v-if="msg.role === 'assistant' && msg.sourceNode" class="model-badge node-badge">节点 {{ msg.sourceNode }}</span>
             <!-- E2: 并发回执徽章（排队/插话），紧跟模型徽章。
                  用 .badge 基类不用 .model-badge——后者源码序靠后会盖掉徽章配色。 -->
             <span v-if="concurrencyBadge(msg)" class="badge concurrency-badge" :class="concurrencyBadge(msg)!.cls">{{ concurrencyBadge(msg)!.label }}</span>

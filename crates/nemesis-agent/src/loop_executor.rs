@@ -1057,6 +1057,7 @@ impl AgentLoopExecutor {
             let task_response = &msg.content;
             let task_failed = msg.metadata.contains_key("error");
             let task_error = msg.metadata.get("error").map(|s| s.as_str());
+            let task_source_node = msg.metadata.get("source_node").map(|s| s.as_str());
 
             if let Some(ref cont_mgr) = self.continuation_manager {
                 crate::loop_continuation::handle_cluster_continuation(
@@ -1074,6 +1075,7 @@ impl AgentLoopExecutor {
                     // F-F：legacy 路径无 config_path/vision 解析设施，传 true
                     //（默认放行）保持既有语义——生产实例化的是 loop.rs 侧。
                     true,
+                    task_source_node,
                 )
                 .await;
             } else {

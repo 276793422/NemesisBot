@@ -99,6 +99,7 @@ async fn sync_replays_recorded_frames_with_window_semantics() {
             "assistant",
             &format!("m{i}"),
             Some("test-model"),
+            None,
         );
     }
     // after=2 → 补 3/4/5
@@ -139,8 +140,8 @@ async fn sync_defaults_to_connection_session_and_zero() {
     let _guard = GLOBAL_TABLE_LOCK.lock().await;
     let sid = unique_session("defaults");
     let ctx = make_ctx(&sid); // 不带 session_id → 取 ctx.session_id
-    chat_event_log::record(&ring_key(&sid), "user", "hello", None);
-    chat_event_log::record(&ring_key(&sid), "assistant", "world", None);
+    chat_event_log::record(&ring_key(&sid), "user", "hello", None, None);
+    chat_event_log::record(&ring_key(&sid), "assistant", "world", None, None);
     let out = ChatHandler
         .handle_cmd("sync", None, &ctx) // data 全缺省
         .await

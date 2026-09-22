@@ -31,6 +31,10 @@ pub trait WebServerOps: Send + Sync {
     ///
     /// `session_key`（L2，optional）为 agent 会话键——chat_event_log 断线补拉
     /// 环形缓冲的记录键；`None` 回退连接级 session_id。
+    ///
+    /// `source_node`（2026-09-23，optional）为集群续行归属——实际干活的
+    /// worker 节点名，web 前端据此渲染「节点 X」徽章；`None`（非集群回复）
+    /// 不写帧键，与历史行为逐字节一致。
     fn send_to_session(
         &self,
         session_id: &str,
@@ -38,6 +42,7 @@ pub trait WebServerOps: Send + Sync {
         content: &str,
         model: Option<&str>,
         session_key: Option<&str>,
+        source_node: Option<&str>,
     ) -> std::result::Result<(), String>;
 
     /// Send history content to a specific session.
@@ -322,6 +327,7 @@ impl Channel for WebChannel {
             &msg.content,
             msg.meta.model.as_deref(),
             msg.meta.session_key.as_deref(),
+            msg.meta.source_node.as_deref(),
         ) {
             error!(
                 error = %e,

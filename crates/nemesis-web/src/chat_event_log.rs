@@ -44,6 +44,10 @@ pub struct ChatEvent {
     /// `kind = "tool"` 条目的完整工具事件载荷（帧内层 data 原样）。
     #[serde(skip_serializing_if = "Option::is_none")]
     pub tool: Option<serde_json::Value>,
+    /// 集群续行归属（2026-09-23）：实际干活的 worker 节点名——chat.sync
+    /// 断线补拉重放的帧同样携带「节点 X」徽章。缺省不写键（非集群回复）。
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub source_node: Option<String>,
 }
 
 struct SessionLog {
@@ -107,6 +111,7 @@ fn insert_event(
     model: Option<&str>,
     kind: Option<String>,
     tool: Option<serde_json::Value>,
+    source_node: Option<&str>,
 ) -> u64 {
     let mut table = logs().lock();
     let created = !table.map.contains_key(session_id);
@@ -128,6 +133,7 @@ fn insert_event(
         ts: Some(chrono::Local::now().to_rfc3339()),
         kind,
         tool,
+        source_node: source_node.map(String::from),
     });
     entry.buf.push_back(Arc::clone(&event));
     while entry.buf.len() > SESSION_REPLAY_CAP {
@@ -158,8 +164,14 @@ fn insert_event(
 }
 
 /// 记录一帧 chat 推送并返回其 seq（会话内单调，1 起）。
-pub fn record(session_id: &str, role: &str, content: &str, model: Option<&str>) -> u64 {
-    insert_event(session_id, role, content, model, None, None)
+pub fn record(
+    session_id: &str,
+    role: &str,
+    content: &str,
+    model: Option<&str>,
+    source_node: Option<&str>,
+) -> u64 {
+    insert_event(session_id, role, content, model, None, None, source_node)
 }
 
 /// P1（2026-09-21）：记录一条工具事件（kind="tool"，`tool` 携带完整 push
@@ -173,6 +185,7 @@ pub fn record_tool(session_id: &str, tool: serde_json::Value) -> u64 {
         None,
         Some("tool".to_string()),
         Some(tool),
+        None,
     )
 }
 

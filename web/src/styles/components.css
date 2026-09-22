@@ -526,6 +526,12 @@
   font-family: var(--font-mono, monospace);
 }
 
+/* 集群续行归属徽章（2026-09-23）：「节点 X」——与模型徽章并列，再降一档
+   不透明度避免两个徽章抢视线。缺省不渲染（非集群回复无该字段）。 */
+.model-badge.node-badge {
+  opacity: 0.7;
+}
+
 .message.system .message-bubble {
   background: var(--info-bg);
   color: var(--info);
