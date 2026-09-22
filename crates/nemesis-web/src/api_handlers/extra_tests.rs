@@ -1123,8 +1123,9 @@ fn test_sanitize_map_does_not_touch_empty_strings() {
 
 #[test]
 fn test_sanitize_map_recursive_into_array_values() {
-    // Arrays are not recursed (only objects), but values in arrays that are objects
-    // are not sanitized. Test that array contents remain unchanged.
+    // F2（2026-09-22 审计修复）：数组必须递归——本测试此前把漏洞钉成预期
+    // （"Array elements are not sanitized"，数组内 api_key 明文返回），
+    // 修复后反转断言：数组内对象的敏感键必须被脱敏。
     let mut map = serde_json::json!({
         "items": [
             {"api_key": "verylongsecret"},
@@ -1135,9 +1136,9 @@ fn test_sanitize_map_recursive_into_array_values() {
     .unwrap()
     .clone();
     sanitize_map(&mut map);
-    // Array elements are not sanitized
     let items = map["items"].as_array().unwrap();
-    assert_eq!(items[0]["api_key"], "verylongsecret");
+    assert_eq!(items[0]["api_key"], "very****");
+    assert_eq!(items[1]["token"], "anot****");
 }
 
 #[test]

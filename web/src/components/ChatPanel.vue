@@ -957,7 +957,7 @@ watch(
 // hist_ 响应还会冒领 pendingResync / pendingWatchdogReload 标志，拿错误
 // 请求的 payload 整段替换。围栏语义：响应按 request_id 匹配在飞登记，
 // 不匹配（迟到/并行/他请求）直接丢弃；会话切换时整表作废。
-const inFlightHistory = new Map<string, { kind: 'page' | 'resync' | 'watchdog' }>()
+const inFlightHistory = new Map<string, { kind: 'page' | 'resync' | 'watchdog'; paginated?: boolean }>()
 
 function handleHistoryResponse(data: any) {
   // 围栏第一道：request_id 必须匹配一个在飞请求，否则丢弃（不前插、
@@ -1064,13 +1064,20 @@ function handleHistoryResponse(data: any) {
   //    seq（assistant 入环在落盘后）——先剔精确的；last_seq 缺省（旧网关/
   //    未注入）自然跳过。
   // ② A2 尾行同文兜底：剔除后的列表尾部与历史批次尾部同 role 同文则丢
-  //    尾部——覆盖 user 回声帧重复与 ① 的采样缝隙。翻页加载（scroll 顶
-  //    部）时历史批次更早，两规则天然不命中，零副作用。
-  const lastSeq = typeof data.last_seq === 'number' ? data.last_seq : 0
-  chatStore.dropAssistantBelowSeq(lastSeq)
-  if (historyMessages.length > 0) {
-    const histTail = historyMessages[historyMessages.length - 1]
-    chatStore.dropTailIfSame(String(histTail.role ?? ''), String(histTail.content ?? ''))
+  //    尾部——覆盖 user 回声帧重复与 ① 的采样缝隙。
+  // W1 修正（2026-09-22 审计修复）：原注释「翻页时两规则天然不命中」对 ①
+  // 不成立——后端翻页响应同样携带**全会话最新** last_seq（采样不区分
+  // before_index），dropAssistantBelowSeq 会把视图内所有带 seq 的 assistant
+  // 实时帧删掉，而这些帧不在更旧的翻页批次里 → 直接消失，且行号重算连带
+  // 错算 rewind 锚。故翻页请求（在飞登记 paginated 钉子）跳过两规则：翻页
+  // 批次严格更旧、与尾部实时帧零交集，清洗既无必要也有害（宁可不删不错删）。
+  if (!inflight.paginated) {
+    const lastSeq = typeof data.last_seq === 'number' ? data.last_seq : 0
+    chatStore.dropAssistantBelowSeq(lastSeq)
+    if (historyMessages.length > 0) {
+      const histTail = historyMessages[historyMessages.length - 1]
+      chatStore.dropTailIfSame(String(histTail.role ?? ''), String(histTail.content ?? ''))
+    }
   }
 
   if (historyMessages.length > 0) {
@@ -1178,7 +1185,14 @@ function loadHistory() {
   chatStore.historyLoading = true
   loadingHistorySid = sessionStore.currentId
   const requestId = 'hist_' + Date.now()
-  inFlightHistory.set(requestId, { kind: 'page' })
+  inFlightHistory.set(requestId, {
+    kind: 'page',
+    // W1（2026-09-22 审计修复）：发请求时钉「本次是否翻页」。oldestIndex
+    // 初始 null（chat.ts）、切会话 reset 归 null、每次历史响应后回写——
+    // 发请求时非 null ⟺ 在翻页。翻页批次严格更旧，A1/A2 尾部清洗必须
+    // 跳过（见 handleHistoryResponse 的 W1 注释）。
+    paginated: chatStore.oldestIndex != null,
+  })
   const limit = 20
   sendHistoryRequest(requestId, limit, chatStore.oldestIndex, {
     module: props.module,

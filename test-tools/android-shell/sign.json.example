@@ -1,7 +1,7 @@
 {
   "key_alias": "nemesisbot",
-  "key_password": "NemesisZoo",
-  "store_password": "276793422",
+  "key_password": "",
+  "store_password": "",
   "validity_years": 25,
   "dname": {
     "CN": "NemesisBot",

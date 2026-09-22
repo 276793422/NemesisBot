@@ -33,6 +33,14 @@ fn test_tool_to_operation_run_script_classified() {
     );
 }
 
+/// F3（2026-09-22 审计修复）：`git`/`grep`（MOVE_TOOLS 成员）必须分类为
+/// FileRead——此前缺分类 → 管线 None 放行（fail-open），8 层全部跳过。
+#[test]
+fn test_tool_to_operation_git_grep_classified() {
+    assert_eq!(tool_to_operation("git"), Some(OperationType::FileRead));
+    assert_eq!(tool_to_operation("grep"), Some(OperationType::FileRead));
+}
+
 #[test]
 fn test_extract_target() {
     let args = serde_json::json!({"path": "/tmp/test.txt"});

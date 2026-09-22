@@ -303,3 +303,82 @@ async fn stash_push_pop_roundtrip() {
         "pop must restore the working change"
     );
 }
+
+// --- F3（2026-09-22 审计修复）：读操作选项封死 --------------------------------
+//
+// 读原语此前接受 free-form 选项：`git diff --output=<path>` 可写任意文件、
+// `--ext-diff` 可让 git 执行外部 diff 程序——读工具实为写/执行原语。
+// 规则：`--` 长选项与短选项一律拒绝，唯一例外 `-<N>` 纯数字（log 条数，
+// schema 文档化用法）。
+
+#[tokio::test]
+async fn read_actions_reject_long_options() {
+    let tmp = TempDir::new().unwrap();
+    assert!(init_repo(tmp.path()), "git must be available");
+    let tool = GitTool::new(tmp.path().to_string_lossy().to_string());
+
+    // 注入面实例：--output 写任意文件 / --ext-diff 执行外部程序 / --no-index。
+    for (action, opts) in [
+        ("diff", "--output=/tmp/pwned.txt"),
+        ("diff", "--ext-diff"),
+        ("log", "--no-index"),
+        ("show", "--output=pwned.txt"),
+    ] {
+        let err = run(
+            &tool,
+            &format!(r#"{{"action":"{action}","args":"{opts}"}}"#),
+        )
+        .await
+        .expect_err("long options must be rejected on read actions");
+        assert!(
+            err.contains("does not accept option"),
+            "{action} {opts} must hit the option rejection, got: {err}"
+        );
+    }
+}
+
+#[tokio::test]
+async fn read_actions_reject_short_options() {
+    let tmp = TempDir::new().unwrap();
+    assert!(init_repo(tmp.path()), "git must be available");
+    let tool = GitTool::new(tmp.path().to_string_lossy().to_string());
+
+    for opts in ["-u", "-w", "-a", "-"] {
+        let err = run(&tool, &format!(r#"{{"action":"diff","args":"{opts}"}}"#))
+            .await
+            .expect_err("short options must be rejected on read actions");
+        assert!(
+            err.contains("does not accept option"),
+            "short option {opts} must be rejected, got: {err}"
+        );
+    }
+}
+
+#[tokio::test]
+async fn read_actions_allow_numeric_count_and_plain_paths() {
+    let tmp = TempDir::new().unwrap();
+    assert!(init_repo(tmp.path()), "git must be available");
+    write_file(tmp.path(), "f.txt", "hello\n");
+    let tool = GitTool::new(tmp.path().to_string_lossy().to_string());
+
+    // schema 文档化的 `-<N>` 数字形态（log 条数）放行。
+    run(&tool, r#"{"action":"add","paths":"f.txt"}"#)
+        .await
+        .unwrap();
+    run(&tool, r#"{"action":"commit","message":"c1"}"#)
+        .await
+        .unwrap();
+    let log = run(&tool, r#"{"action":"log","args":"-5"}"#)
+        .await
+        .expect("-<N> numeric count must be allowed");
+    assert!(log.contains("c1"), "log -5 must return commits, got: {log}");
+
+    // 纯文件路径（schema 文档化的主用法）放行。
+    let diff = run(&tool, r#"{"action":"diff","args":"f.txt"}"#)
+        .await
+        .expect("plain path must be allowed");
+    assert!(
+        !diff.contains("does not accept"),
+        "plain path must pass through, got: {diff}"
+    );
+}

@@ -318,9 +318,14 @@ pub fn tool_to_operation(tool_name: &str) -> Option<OperationType> {
         // 脚本执行入口（MOVE_TOOLS 成员，与 `exec` 同路由到 executor 子进程/
         // Sandboxie 盒）。此前不在表内 → 8 层管线全跳直接放行（未知名放行
         // 分支），是统一路由链上唯一未分类的执行类工具。与 `exec` 同档
-        // ProcessExec。`grep`/`git` 同为 MOVE_TOOLS 但语义是读/版本库操作，
-        // 分类留给 tool-plugin 批（declared_operation_type 前置读一并落）。
+        // ProcessExec。
         "run_script" => Some(OperationType::ProcessExec),
+        // F3（2026-09-22 审计修复）：`git`/`grep` 同为 MOVE_TOOLS 但此前未
+        // 分类 → 管线 None 放行（fail-open），U10 注释承诺的 declared_
+        // operation_type 机制未落地，这里直接补表。FileRead=LOW 让 8 层
+        // 全部生效（注入检测/凭据扫描/DLP/审计链）；git 的写子命令由工具
+        // 白名单收口（只暴露 add/commit 等 D1 安全写），危险写走 exec。
+        "git" | "grep" => Some(OperationType::FileRead),
         "spawn" => Some(OperationType::ProcessSpawn),
         "kill" | "kill_process" => Some(OperationType::ProcessKill),
         "download" | "install_skill" => Some(OperationType::NetworkDownload),

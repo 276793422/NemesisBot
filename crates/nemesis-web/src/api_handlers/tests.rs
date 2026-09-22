@@ -189,6 +189,55 @@ fn test_sanitize_map_nested() {
     assert_eq!(config["port"], 8080);
 }
 
+// F2（2026-09-22 审计修复）：数组此前从不递归——model_list[] 条目的
+// api_key 明文原样返回。数组内对象、数组内嵌数组都必须可达。
+#[test]
+fn test_sanitize_map_recurses_array_entries() {
+    let mut map = serde_json::json!({
+        "model_list": [
+            { "model": "gpt-x", "api_key": "sk-secret123456" },
+            { "model": "y", "nested": [ { "token": "tok-secret123" } ] }
+        ],
+        "name": "keep-me",
+    })
+    .as_object_mut()
+    .unwrap()
+    .clone();
+
+    sanitize_map(&mut map);
+    let list = map["model_list"].as_array().unwrap();
+    assert_eq!(list[0]["api_key"], "sk-s****");
+    assert_eq!(list[1]["nested"][0]["token"], "tok-****");
+    // 非敏感字段不受影响
+    assert_eq!(list[0]["model"], "gpt-x");
+    assert_eq!(map["name"], "keep-me");
+}
+
+// F2 复核补严（2026-09-22）：敏感键的值若是**字符串数组**，元素此前落
+// 递归的 `_ => {}` 不打码——数组内字符串元素必须直接掩码。
+#[test]
+fn test_sanitize_map_masks_string_arrays_under_sensitive_keys() {
+    let mut map = serde_json::json!({
+        "api_keys": ["sk-secret123456", "abc", ""],
+        "tokens_list": [
+            "tok-secret999999",
+            { "key": "nested-key-123456" }
+        ],
+    })
+    .as_object_mut()
+    .unwrap()
+    .clone();
+
+    sanitize_map(&mut map);
+    let keys = map["api_keys"].as_array().unwrap();
+    assert_eq!(keys[0], "sk-s****");
+    assert_eq!(keys[1], "****");
+    assert_eq!(keys[2], ""); // 空串不打码（与标量语义一致）
+    let toks = map["tokens_list"].as_array().unwrap();
+    assert_eq!(toks[0], "tok-****");
+    assert_eq!(toks[1]["key"], "nest****"); // 数组内对象照旧按键递归
+}
+
 #[test]
 fn test_sanitize_map_empty_string() {
     let mut map = serde_json::json!({

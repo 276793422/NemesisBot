@@ -67,3 +67,11 @@ __pycache__/
 /logs-*
 /test-tools/resource
 /.nemesisbot
+
+# S2（2026-09-22 审计修复）：Android 签名凭据不入库。sign.json 含真实
+# store/key 口令（曾误提交，git rm --cached 移除；旧口令仍留在历史中，
+# 处置见 docs/PLAN/2026-09-22_audit-fixes-batch1-f1-f2-w1-f3-f5-s2.md）。
+# 模板见 test-tools/android-shell/sign.json.example。
+/test-tools/android-shell/sign.json
+/test-tools/android-shell/keystore.properties
+/test-tools/android-shell/*.jks

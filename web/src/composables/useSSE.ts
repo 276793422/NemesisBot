@@ -32,7 +32,13 @@ export function connectEvents() {
   }
 
   try {
-    eventSource = new EventSource(apiUrl('/api/events/stream'))
+    // F1（2026-09-22 审计修复）：服务端 REST 面挂了统一鉴权中间件，SSE 端点
+    // 同在闸内。EventSource 无法携带自定义头（X-Auth-Token 不可用），按
+    // 服务端 token 载体优先级补 `?token=` 查询参数；未配置鉴权（空 token）
+    // 时参数缺省，行为与此前一致。
+    const stored = localStorage.getItem('nemesisbot_auth_token')
+    const sseUrl = stored ? `${apiUrl('/api/events/stream')}?token=${encodeURIComponent(stored)}` : apiUrl('/api/events/stream')
+    eventSource = new EventSource(sseUrl)
 
     eventSource.onopen = () => {
       console.log('[NemesisAPI] SSE connected')

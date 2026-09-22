@@ -50,12 +50,11 @@ REM ============================================
 echo [Phase 1/6] Reading sign.json...
 
 if not exist "%CONFIG_FILE%" (
-    echo   Config not found, generating default sign.json...
-    call :write_default_config
-    echo.
-    echo   EDIT sign.json with your signing details, then re-run sign.bat
-    echo   Or run again to use defaults.
-    goto :eof
+    echo   [ERROR] sign.json not found.
+    echo   Copy sign.json.example to sign.json and fill in real passwords:
+    echo     copy /y sign.json.example sign.json
+    echo   sign.json is git-ignored (S2: real passwords must not be committed).
+    exit /b 1
 )
 
 REM Read JSON values using simple text parsing (no jq dependency)
@@ -80,8 +79,6 @@ for /f "usebackq tokens=1,* delims=:" %%a in ("%CONFIG_FILE%") do (
 
 REM Apply defaults for empty fields
 if "%KEY_ALIAS%"=="" set "KEY_ALIAS=nemesisbot"
-if "%KEY_PASSWORD%"=="" set "KEY_PASSWORD=nemesisbot"
-if "%STORE_PASSWORD%"=="" set "STORE_PASSWORD=nemesisbot"
 if "%VALIDITY_YEARS%"=="" set "VALIDITY_YEARS=25"
 if "%DNAME_CN%"=="" set "DNAME_CN=NemesisBot"
 if "%DNAME_OU%"=="" set "DNAME_OU=Dev"
@@ -91,6 +88,16 @@ if "%DNAME_ST%"=="" set "DNAME_ST=Beijing"
 if "%DNAME_C%"=="" set "DNAME_C=CN"
 if "%OUTPUT_DIR%"=="" set "OUTPUT_DIR=..\..\bin\bin_android_apk"
 if "%OUTPUT_NAME%"=="" set "OUTPUT_NAME=nemesisbot-arm64-release.apk"
+
+REM Passwords must be provided explicitly (S2: silent weak defaults removed)
+if "%KEY_PASSWORD%"=="" (
+    echo   [ERROR] key_password is empty in sign.json - set a real password.
+    exit /b 1
+)
+if "%STORE_PASSWORD%"=="" (
+    echo   [ERROR] store_password is empty in sign.json - set a real password.
+    exit /b 1
+)
 
 REM Calculate validity in days
 set /a VALIDITY_DAYS=VALIDITY_YEARS*365
@@ -315,28 +322,6 @@ if "!L!"=="\"output_dir\"" set "OUTPUT_DIR=!V!"
 if "!L!"=="\"output_name\"" set "OUTPUT_NAME=!V!"
 exit /b 0
 
-:write_default_config
-(
-    echo {
-    echo   "key_alias": "nemesisbot",
-    echo   "key_password": "",
-    echo   "store_password": "",
-    echo   "validity_years": 25,
-    echo   "dname": {
-    echo     "CN": "NemesisBot",
-    echo     "OU": "Dev",
-    echo     "O": "NemesisBot",
-    echo     "L": "",
-    echo     "ST": "",
-    echo     "C": "CN"
-    echo   },
-    echo   "output_dir": "../../bin/bin_android_apk",
-    echo   "output_name": "nemesisbot-arm64-release.apk"
-    echo }
-) > "%CONFIG_FILE%"
-echo   Default sign.json created at: %CONFIG_FILE%
-exit /b 0
-
 :check_only
 echo.
 echo ============================================
@@ -344,7 +329,8 @@ echo  Sign Config Check
 echo ============================================
 echo.
 if not exist "%CONFIG_FILE%" (
-    echo   sign.json not found. Run sign.bat to generate default config.
+    echo   sign.json not found. Copy sign.json.example to sign.json
+    echo   and fill in real passwords.
     goto :eof
 )
 echo   Config file: %CONFIG_FILE%
@@ -368,10 +354,10 @@ echo   (none)     Build signed release APK
 echo   --check    Show config without building
 echo   --help     Show this help
 echo.
-echo Config file: sign.json (edit before running)
+echo Config file: sign.json (git-ignored; copy from sign.json.example)
 echo   key_alias       - Keystore alias name
-echo   key_password    - Key password (empty = default "nemesisbot")
-echo   store_password  - Store password (empty = default "nemesisbot")
+echo   key_password    - Key password (required; empty = error)
+echo   store_password  - Store password (required; empty = error)
 echo   validity_years  - Certificate validity in years
 echo   dname.*         - Certificate distinguished name fields
 echo   output_dir      - Output directory (relative to script)

@@ -18,6 +18,29 @@ use nemesis_types::error::{NemesisError, Result};
 
 use crate::base::{BaseChannel, Channel};
 
+// F5（2026-09-22 审计修复）：SMTP/IMAP IO 超时。此前 connect/read/write 全部
+// 无超时——黑洞服务器（不回 SYN 或收包不应答）会让调用永久挂起；而
+// dispatch_loop 是单循环串行 await，一条挂死 = 全通道出站永久停摆。
+// 超时后 io::Error(TimedOut) 沿既有 map_err 通道变成诚实错误返回。
+const CONNECT_TIMEOUT_SECS: u64 = 15;
+const IO_TIMEOUT_SECS: u64 = 30;
+
+/// 包一层超时：超时映射 `io::ErrorKind::TimedOut`，调用方既有 `.map_err`
+/// 照常拿到带上下文的错误（错误面文案 = `{what} timed out after Ns`）。
+async fn io_timeout<T>(
+    what: &str,
+    dur: std::time::Duration,
+    fut: impl std::future::Future<Output = std::io::Result<T>>,
+) -> std::io::Result<T> {
+    match tokio::time::timeout(dur, fut).await {
+        Ok(r) => r,
+        Err(_) => Err(std::io::Error::new(
+            std::io::ErrorKind::TimedOut,
+            format!("{what} timed out after {}s", dur.as_secs()),
+        )),
+    }
+}
+
 /// Email channel configuration.
 #[derive(Debug, Clone)]
 pub struct EmailConfig {
@@ -298,19 +321,26 @@ impl EmailChannel {
     pub async fn smtp_send(&self, to: &str, subject: &str, body: &str) -> Result<()> {
         let addr = format!("{}:{}", self.config.smtp_host, self.config.smtp_port);
 
-        let stream = TcpStream::connect(&addr)
-            .await
-            .map_err(|e| NemesisError::Channel(format!("SMTP connect failed: {e}")))?;
+        let stream = io_timeout(
+            "SMTP connect",
+            std::time::Duration::from_secs(CONNECT_TIMEOUT_SECS),
+            TcpStream::connect(&addr),
+        )
+        .await
+        .map_err(|e| NemesisError::Channel(format!("SMTP connect failed: {e}")))?;
 
         let (reader, mut writer) = stream.into_split();
         let mut reader = BufReader::new(reader);
         let mut buf = String::new();
 
         // Read greeting
-        reader
-            .read_line(&mut buf)
-            .await
-            .map_err(|e| NemesisError::Channel(format!("SMTP read greeting failed: {e}")))?;
+        io_timeout(
+            "SMTP read greeting",
+            std::time::Duration::from_secs(IO_TIMEOUT_SECS),
+            reader.read_line(&mut buf),
+        )
+        .await
+        .map_err(|e| NemesisError::Channel(format!("SMTP read greeting failed: {e}")))?;
 
         if !buf.starts_with("220") {
             return Err(NemesisError::Channel(format!(
@@ -364,21 +394,30 @@ impl EmailChannel {
         let message = Self::build_smtp_message(self.smtp_username(), to, subject, body);
         // Escape dot-starting lines
         let message = message.replace("\r\n.", "\r\n..");
-        writer
-            .write_all(message.as_bytes())
-            .await
-            .map_err(|e| NemesisError::Channel(format!("SMTP write body failed: {e}")))?;
-        writer
-            .write_all(b"\r\n.\r\n")
-            .await
-            .map_err(|e| NemesisError::Channel(format!("SMTP write terminator failed: {e}")))?;
+        io_timeout(
+            "SMTP write body",
+            std::time::Duration::from_secs(IO_TIMEOUT_SECS),
+            writer.write_all(message.as_bytes()),
+        )
+        .await
+        .map_err(|e| NemesisError::Channel(format!("SMTP write body failed: {e}")))?;
+        io_timeout(
+            "SMTP write terminator",
+            std::time::Duration::from_secs(IO_TIMEOUT_SECS),
+            writer.write_all(b"\r\n.\r\n"),
+        )
+        .await
+        .map_err(|e| NemesisError::Channel(format!("SMTP write terminator failed: {e}")))?;
 
         // Read response
         buf.clear();
-        reader
-            .read_line(&mut buf)
-            .await
-            .map_err(|e| NemesisError::Channel(format!("SMTP read DATA response failed: {e}")))?;
+        io_timeout(
+            "SMTP read DATA response",
+            std::time::Duration::from_secs(IO_TIMEOUT_SECS),
+            reader.read_line(&mut buf),
+        )
+        .await
+        .map_err(|e| NemesisError::Channel(format!("SMTP read DATA response failed: {e}")))?;
 
         if !buf.starts_with("250") {
             return Err(NemesisError::Channel(format!("SMTP DATA rejected: {buf}")));
@@ -397,24 +436,33 @@ impl EmailChannel {
         W: AsyncWriteExt + Unpin,
         R: AsyncBufReadExt + Unpin,
     {
-        writer
-            .write_all(format!("{command}\r\n").as_bytes())
-            .await
-            .map_err(|e| NemesisError::Channel(format!("SMTP write failed: {e}")))?;
+        io_timeout(
+            "SMTP write command",
+            std::time::Duration::from_secs(IO_TIMEOUT_SECS),
+            writer.write_all(format!("{command}\r\n").as_bytes()),
+        )
+        .await
+        .map_err(|e| NemesisError::Channel(format!("SMTP write failed: {e}")))?;
 
         let mut buf = String::new();
-        reader
-            .read_line(&mut buf)
-            .await
-            .map_err(|e| NemesisError::Channel(format!("SMTP read failed: {e}")))?;
+        io_timeout(
+            "SMTP read",
+            std::time::Duration::from_secs(IO_TIMEOUT_SECS),
+            reader.read_line(&mut buf),
+        )
+        .await
+        .map_err(|e| NemesisError::Channel(format!("SMTP read failed: {e}")))?;
 
         // Check for multi-line responses (EHLO)
         while buf.len() >= 4 && buf.as_bytes()[3] == b'-' {
             buf.clear();
-            reader
-                .read_line(&mut buf)
-                .await
-                .map_err(|e| NemesisError::Channel(format!("SMTP read multi-line failed: {e}")))?;
+            io_timeout(
+                "SMTP read multi-line",
+                std::time::Duration::from_secs(IO_TIMEOUT_SECS),
+                reader.read_line(&mut buf),
+            )
+            .await
+            .map_err(|e| NemesisError::Channel(format!("SMTP read multi-line failed: {e}")))?;
         }
 
         // Check response code
@@ -436,9 +484,13 @@ impl EmailChannel {
     pub async fn imap_connect(&self) -> Result<ImapConnection> {
         let addr = format!("{}:{}", self.config.imap_host, self.config.imap_port);
 
-        let stream = TcpStream::connect(&addr)
-            .await
-            .map_err(|e| NemesisError::Channel(format!("IMAP connect failed: {e}")))?;
+        let stream = io_timeout(
+            "IMAP connect",
+            std::time::Duration::from_secs(CONNECT_TIMEOUT_SECS),
+            TcpStream::connect(&addr),
+        )
+        .await
+        .map_err(|e| NemesisError::Channel(format!("IMAP connect failed: {e}")))?;
 
         let (reader, writer) = tokio::io::split(stream);
         let mut conn = ImapConnection {
@@ -601,9 +653,17 @@ pub struct ImapConnection {
 
 impl ImapConnection {
     /// Reads a single line from the IMAP connection.
+    ///
+    /// F5：这里是全部 IMAP 读的咽喉（greeting / poll / send_command* 都走它），
+    /// 包一层超时即覆盖全部读路径。
     pub async fn read_line(&mut self) -> std::io::Result<String> {
         let mut line = String::new();
-        self.reader.read_line(&mut line).await?;
+        io_timeout(
+            "IMAP read",
+            std::time::Duration::from_secs(IO_TIMEOUT_SECS),
+            self.reader.read_line(&mut line),
+        )
+        .await?;
         // Strip CRLF
         if line.ends_with("\r\n") {
             line.truncate(line.len() - 2);
@@ -623,10 +683,13 @@ impl ImapConnection {
     pub async fn send_command(&mut self, command: &str) -> Result<()> {
         let tag = self.next_tag();
         let cmd = format!("{tag} {command}\r\n");
-        self.writer
-            .write_all(cmd.as_bytes())
-            .await
-            .map_err(|e| NemesisError::Channel(format!("IMAP write failed: {e}")))?;
+        io_timeout(
+            "IMAP write",
+            std::time::Duration::from_secs(IO_TIMEOUT_SECS),
+            self.writer.write_all(cmd.as_bytes()),
+        )
+        .await
+        .map_err(|e| NemesisError::Channel(format!("IMAP write failed: {e}")))?;
 
         loop {
             let line = self
@@ -647,10 +710,13 @@ impl ImapConnection {
     pub async fn send_command_multi(&mut self, command: &str) -> Result<Vec<String>> {
         let tag = self.next_tag();
         let cmd = format!("{tag} {command}\r\n");
-        self.writer
-            .write_all(cmd.as_bytes())
-            .await
-            .map_err(|e| NemesisError::Channel(format!("IMAP write failed: {e}")))?;
+        io_timeout(
+            "IMAP write",
+            std::time::Duration::from_secs(IO_TIMEOUT_SECS),
+            self.writer.write_all(cmd.as_bytes()),
+        )
+        .await
+        .map_err(|e| NemesisError::Channel(format!("IMAP write failed: {e}")))?;
 
         let mut responses = Vec::new();
         loop {
@@ -673,9 +739,13 @@ impl ImapConnection {
 // Static helper functions for use in the spawned poll loop
 async fn imap_connect_static(config: &EmailConfig) -> Result<ImapConnection> {
     let addr = format!("{}:{}", config.imap_host, config.imap_port);
-    let stream = TcpStream::connect(&addr)
-        .await
-        .map_err(|e| NemesisError::Channel(format!("IMAP connect failed: {e}")))?;
+    let stream = io_timeout(
+        "IMAP connect",
+        std::time::Duration::from_secs(CONNECT_TIMEOUT_SECS),
+        TcpStream::connect(&addr),
+    )
+    .await
+    .map_err(|e| NemesisError::Channel(format!("IMAP connect failed: {e}")))?;
 
     let (reader, writer) = tokio::io::split(stream);
     let mut conn = ImapConnection {
