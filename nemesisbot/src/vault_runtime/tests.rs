@@ -38,7 +38,7 @@ fn seed_vault(home: &Path, alias: &str, secret: &str) -> PathBuf {
 /// 本文件刚 install 的解析器会被并发换成名下无 vault 的他人路径——
 /// resolve 报"vault 文件不存在"且路径根本不是自己的（2026-09-21 全量
 /// 回归 3/3 失败的根因；solo/串行恒绿假象即来自缺省并行度差异）。
-
+//
 /// 全链路：install 注册全局解析器 → 引用解析出真值。
 #[test]
 fn install_and_resolve_roundtrip() {

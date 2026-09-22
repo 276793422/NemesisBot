@@ -20,6 +20,7 @@ use futures::{SinkExt, StreamExt};
 use serde::Deserialize;
 use std::collections::HashMap;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 use tokio::sync::mpsc;
 
@@ -42,71 +43,84 @@ pub struct IncomingMessage {
 }
 
 // ---------------------------------------------------------------------------
-// Send queue (thread-safe, single-writer)
+// Send queue (thread-safe, single-writer, dual-lane)
 // ---------------------------------------------------------------------------
 
 /// A thread-safe send queue that serializes all writes through a single task.
 ///
-/// This mirrors the Go `sendQueue` struct. All writes go through a bounded
-/// mpsc channel to a dedicated sender task, preventing concurrent WebSocket writes.
+/// Mirrors the Go `sendQueue` struct, extended with **dual lanes**（BUG
+/// 2026-09-22 慢客户端洪泛）: 必达帧走 hi 通道（WSAPI 响应/pong/error/chat
+/// 行/历史响应——满则背压等待，绝不丢）；可丢帧走 lo 通道（已落
+/// `chat_event_log` 环、可经 `chat.sync` 补拉自愈的 tool_event/echo 推送
+/// ——满即丢，调用方永不阻塞）。此前两类帧挤同一条 256 槽 FIFO，长流程
+/// 事件洪泛把 `chat.history` 响应压在队尾 >10s，前端误报「历史加载失败」；
+/// 单任务事件泵也被慢客户端的满队列卡死连坐全部会话。写者批量取帧合并
+/// flush（旧逐帧 feed+flush = 每帧一次系统调用，是消费速度瓶颈放大器）。
 pub struct SendQueue {
-    tx: mpsc::Sender<Vec<u8>>,
+    hi_tx: mpsc::Sender<Vec<u8>>,
+    lo_tx: mpsc::Sender<Vec<u8>>,
     done: tokio::sync::watch::Receiver<bool>,
+    dropped: Arc<AtomicU64>,
 }
+
+/// hi 通道容量（必达帧；低频，满 = 客户端极慢，背压保送达）。
+const SEND_QUEUE_HI_CAP: usize = 64;
+/// lo 通道容量（可丢帧；洪泛缓冲，满即丢靠补拉自愈）。
+const SEND_QUEUE_LO_CAP: usize = 256;
+/// 写者单轮从各通道最多取的帧数（batch flush 的批量上限）。
+const SEND_QUEUE_HI_BATCH: usize = 64;
+const SEND_QUEUE_LO_BATCH: usize = 128;
 
 impl SendQueue {
     /// Create a new send queue wrapping a WebSocket sink.
-    /// Spawns a background task that processes the send queue.
     /// `session_id` is captured only for diagnostic logging when a write
     /// fails — it is not stored, so the struct/test constructor is unchanged.
-    pub fn new(mut sink: SplitSink<WebSocket, Message>, session_id: String) -> Self {
-        let (tx, mut rx) = mpsc::channel::<Vec<u8>>(256);
+    pub fn new(sink: SplitSink<WebSocket, Message>, session_id: String) -> Self {
+        let (hi_tx, hi_rx) = mpsc::channel(SEND_QUEUE_HI_CAP);
+        let (lo_tx, lo_rx) = mpsc::channel(SEND_QUEUE_LO_CAP);
         let (done_tx, done_rx) = tokio::sync::watch::channel(false);
+        let dropped = Arc::new(AtomicU64::new(0));
 
-        tokio::spawn(async move {
-            while let Some(data) = rx.recv().await {
-                let text = String::from_utf8_lossy(&data).into_owned();
-                let msg = Message::Text(text.into());
-                if sink.feed(msg).await.is_err() {
-                    tracing::warn!(
-                        session_id = %session_id,
-                        "[WebSocket] sink feed failed; closing send queue"
-                    );
-                    break;
-                }
-                if sink.flush().await.is_err() {
-                    tracing::warn!(
-                        session_id = %session_id,
-                        "[WebSocket] sink flush failed; closing send queue"
-                    );
-                    break;
-                }
-            }
-            let _ = done_tx.send(true);
-            tracing::info!(
-                session_id = %session_id,
-                "[WebSocket] send queue task exited"
-            );
-        });
+        tokio::spawn(run_send_writer(sink, hi_rx, lo_rx, done_tx, session_id));
 
-        Self { tx, done: done_rx }
+        Self {
+            hi_tx,
+            lo_tx,
+            done: done_rx,
+            dropped,
+        }
     }
 
     /// Send data through the queue. Blocks until the data is queued.
-    /// Returns an error if the queue is full, stopped, or times out.
+    /// Returns an error if the queue is stopped (背压 = 送达保证，hi 通道).
     pub async fn send(&self, data: Vec<u8>) -> Result<(), String> {
-        self.tx
+        self.hi_tx
             .send(data)
             .await
             .map_err(|_| "send queue stopped".to_string())
     }
 
-    /// Send data without waiting for the channel capacity (non-blocking).
-    /// Returns an error immediately if the queue is full.
-    pub fn try_send(&self, data: Vec<u8>) -> Result<(), String> {
-        self.tx
-            .try_send(data)
-            .map_err(|e| format!("send queue error: {}", e))
+    /// 可丢帧入队（lo 通道，非阻塞）：**满即丢**（返回 Err），绝不等待
+    /// ——慢客户端隔离墙。调用前提：帧已落 `chat_event_log` 环（带 seq，
+    /// 丢失可经 `chat.sync` 补拉自愈）；未落环的帧必须走 [`Self::send`]。
+    pub fn send_droppable(&self, data: Vec<u8>) -> Result<(), String> {
+        match self.lo_tx.try_send(data) {
+            Ok(()) => Ok(()),
+            Err(e) => {
+                let total = self.dropped.fetch_add(1, Ordering::Relaxed) + 1;
+                tracing::debug!(
+                    dropped_total = total,
+                    error = %e,
+                    "[WebSocket] droppable frame dropped (slow client; chat.sync heals)"
+                );
+                Err(format!("send queue dropped: {e}"))
+            }
+        }
+    }
+
+    /// 可丢帧累计丢弃数（测试与可观测）。
+    pub fn dropped_count(&self) -> u64 {
+        self.dropped.load(Ordering::Relaxed)
     }
 
     /// Check if the send queue is still active.
@@ -117,11 +131,97 @@ impl SendQueue {
     /// Create a SendQueue from raw channels (for testing).
     #[cfg(test)]
     pub fn from_channels(
-        tx: mpsc::Sender<Vec<u8>>,
-        done: tokio::sync::watch::Receiver<bool>,
+        hi_tx: mpsc::Sender<Vec<u8>>,
+        lo_tx: mpsc::Sender<Vec<u8>>,
+        done_rx: tokio::sync::watch::Receiver<bool>,
+        dropped: Arc<AtomicU64>,
     ) -> Self {
-        Self { tx, done }
+        Self {
+            hi_tx,
+            lo_tx,
+            done: done_rx,
+            dropped,
+        }
     }
+
+    /// 测试构造器：建好双通道全套并返回（queue, hi_rx, lo_rx, done 发送端
+    /// ——is_done 语义用例需要手动置位）。
+    #[cfg(test)]
+    pub fn test_channels(
+        cap: usize,
+    ) -> (
+        Self,
+        mpsc::Receiver<Vec<u8>>,
+        mpsc::Receiver<Vec<u8>>,
+        tokio::sync::watch::Sender<bool>,
+    ) {
+        let (hi_tx, hi_rx) = mpsc::channel(cap);
+        let (lo_tx, lo_rx) = mpsc::channel(cap);
+        let (done_tx, done_rx) = tokio::sync::watch::channel(false);
+        (
+            Self::from_channels(hi_tx, lo_tx, done_rx, Arc::new(AtomicU64::new(0))),
+            hi_rx,
+            lo_rx,
+            done_tx,
+        )
+    }
+}
+
+/// 单写者循环：每轮 hi 优先取一批（biased select），非阻塞捎带两通道的
+/// 现成帧，合并 feed 后**单次 flush**。泛型 over sink——生产用
+/// `SplitSink<WebSocket, Message>`，测试用假 sink 验证优先级/合批语义。
+/// 两条通道的发送端同生命周期（都持在 `SendQueue` 手里），任一关闭即
+/// 结构已弃用，直接收尾（对端 socket 已死，余帧无意义）。
+async fn run_send_writer<S>(
+    mut sink: S,
+    mut hi_rx: mpsc::Receiver<Vec<u8>>,
+    mut lo_rx: mpsc::Receiver<Vec<u8>>,
+    done_tx: tokio::sync::watch::Sender<bool>,
+    session_id: String,
+) where
+    S: futures::Sink<Message> + Unpin,
+{
+    let mut hi_batch: Vec<Vec<u8>> = Vec::with_capacity(SEND_QUEUE_HI_BATCH);
+    let mut lo_batch: Vec<Vec<u8>> = Vec::with_capacity(SEND_QUEUE_LO_BATCH);
+    'writer: loop {
+        tokio::select! {
+            biased;
+            n = hi_rx.recv_many(&mut hi_batch, SEND_QUEUE_HI_BATCH) => {
+                if n == 0 {
+                    break 'writer;
+                }
+            }
+            n = lo_rx.recv_many(&mut lo_batch, SEND_QUEUE_LO_BATCH) => {
+                if n == 0 {
+                    break 'writer;
+                }
+            }
+        }
+        // 非阻塞捎带：hi 排前、lo 跟后（各自有界，单轮有限）。
+        while let Ok(frame) = hi_rx.try_recv() {
+            hi_batch.push(frame);
+        }
+        while lo_batch.len() < SEND_QUEUE_LO_BATCH {
+            match lo_rx.try_recv() {
+                Ok(frame) => lo_batch.push(frame),
+                Err(_) => break,
+            }
+        }
+        for frame in hi_batch.drain(..).chain(lo_batch.drain(..)) {
+            let text = String::from_utf8_lossy(&frame).into_owned();
+            if sink.feed(Message::Text(text.into())).await.is_err() {
+                break 'writer;
+            }
+        }
+        if sink.flush().await.is_err() {
+            break 'writer;
+        }
+    }
+    let _ = done_tx.send(true);
+    tracing::info!(
+        session_id = %session_id,
+        "[WebSocket] send queue task exited"
+    );
 }
 
 // ---------------------------------------------------------------------------

@@ -7603,7 +7603,7 @@ fn test_empty_literal_token_does_not_trip_fail_closed() {
         serde_json::json!({"token": ""}).to_string(),
     )
     .unwrap();
-    let mut cluster = Cluster::with_workspace(make_config(), dir.path().to_path_buf());
+    let cluster = Cluster::with_workspace(make_config(), dir.path().to_path_buf());
     cluster.start();
     assert!(!cluster.rpc_reference_broken());
     cluster.stop();

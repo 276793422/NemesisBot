@@ -229,8 +229,14 @@ fn write_chat_entry(
 /// exclusive upper bound — "give me items before this index". `None` means the
 /// newest batch. Messages are returned in chronological order (oldest first).
 ///
-/// Uses two-pass approach: first counts lines, then only deserializes the needed
-/// range. Avoids loading the entire file into memory.
+/// 单遍实现（BUG 2026-09-22 历史加载秒卡）：一次文件读同时完成「数行
+/// （total）」与「取窗口」——滑窗只保留 end 之前的最近 `limit` 行，不再
+/// 全文件扫两遍（几十 MB 日志在慢盘 + Defender 实时扫描下旧实现秒级）。
+/// `total`/`oldest_index` 保持 raw 行号坐标（分页契约：E3 rewind 的
+/// message_index 锚 + 前端行编号链的基准），与旧两遍实现逐字段一致。
+/// 全量读者形态（fork/rewind/export/share/CLI 传 `usize::MAX`）解析行直接
+/// 滑入窗口（`Option` 占位保持 raw 行号对齐——不可解析行也占一位），无
+/// 驱逐、内存与旧实现持平；小窗口形态存 raw 行、EOF 后只解析窗口。
 pub fn read_chat_log(
     session_key: &str,
     limit: usize,
@@ -245,38 +251,80 @@ pub fn read_chat_log(
         return (Vec::new(), 0, false, 0);
     }
 
-    // Pass 1: Count lines (no deserialization).
     let file = match File::open(&path) {
         Ok(f) => f,
         Err(_) => return (Vec::new(), 0, false, 0),
     };
-    let total = std::io::BufReader::new(file).lines().count();
-    if total == 0 {
-        return (Vec::new(), 0, false, 0);
+
+    let whole_log = limit >= 100_000;
+    let mut total = 0usize;
+    let mut raw_window: std::collections::VecDeque<String> = Default::default();
+    let mut parsed_window: std::collections::VecDeque<Option<Value>> = Default::default();
+    for item in std::io::BufReader::new(file).lines() {
+        // 计数含 Err 项（旧 count() 语义逐字节保持）；Err 后中断（旧
+        // count 照数、pass2 读不到——窗口端等价于在此截断）。
+        total += 1;
+        let Ok(line) = item else {
+            break;
+        };
+        let i = total - 1;
+        if let Some(bi) = before_index
+            && i >= bi
+        {
+            continue; // bi 之后的行只计数不进窗（bi = 排他上界）
+        }
+        if whole_log {
+            let v = serde_json::from_str::<Value>(&line)
+                .ok()
+                .filter(|v| v.get("role").and_then(Value::as_str) != Some("boundary"));
+            parsed_window.push_back(v);
+            if parsed_window.len() > limit {
+                parsed_window.pop_front();
+            }
+        } else {
+            raw_window.push_back(line);
+            if raw_window.len() > limit {
+                raw_window.pop_front();
+            }
+        }
     }
 
-    let end = before_index.map(|bi| bi.min(total)).unwrap_or(total);
+    let end = before_index.map_or(total, |bi| bi.min(total));
     let start = end.saturating_sub(limit);
-
-    // Pass 2: Read only lines in [start, end), skip the rest.
-    let file = match File::open(&path) {
-        Ok(f) => f,
-        Err(_) => return (Vec::new(), 0, false, 0),
+    let page: Vec<Value> = if whole_log {
+        parsed_window.into_iter().flatten().collect()
+    } else {
+        raw_window
+            .iter()
+            .filter_map(|l| serde_json::from_str::<Value>(l).ok())
+            // ROUND-5 FIX: boundary events moved to a sidecar file (see
+            // `boundary_path`), so the message jsonl can no longer contain them.
+            // The filter stays as a one-line guard for dev machines that ran a
+            // batch-3 build with interleaved boundaries — cheap and harmless.
+            .filter(|v| v.get("role").and_then(|r| r.as_str()) != Some("boundary"))
+            .collect()
     };
-    let page: Vec<Value> = std::io::BufReader::new(file)
-        .lines()
-        .skip(start)
-        .take(end - start)
-        .filter_map(|l| l.ok())
-        .filter_map(|l| serde_json::from_str::<Value>(&l).ok())
-        // ROUND-5 FIX: boundary events moved to a sidecar file (see
-        // `boundary_path`), so the message jsonl can no longer contain them.
-        // The filter stays as a one-line guard for dev machines that ran a
-        // batch-3 build with interleaved boundaries — cheap and harmless.
-        .filter(|v| v.get("role").and_then(|r| r.as_str()) != Some("boundary"))
-        .collect();
 
     (page, total, start > 0, start)
+}
+
+/// Async wrapper of [`read_chat_log`]（BUG 2026-09-22 历史加载秒卡的
+/// worker 占用半边）：读日志是纯同步阻塞 IO，wire 历史路径（WSAPI
+/// `chat.history`）跑在 tokio worker 上——大日志的秒级读会占住 worker、
+/// 拖慢同进程全部异步任务。`spawn_blocking` 移出（crate 内既有模式，
+/// 见 loop_tools.rs / loop.rs）。
+pub async fn read_chat_log_async(
+    session_key: &str,
+    limit: usize,
+    before_index: Option<usize>,
+) -> (Vec<Value>, usize, bool, usize) {
+    let key = session_key.to_string();
+    tokio::task::spawn_blocking(move || read_chat_log(&key, limit, before_index))
+        .await
+        .unwrap_or_else(|e| {
+            tracing::warn!("[chat_log] read_chat_log blocking task join failed: {e}");
+            (Vec::new(), 0, false, 0)
+        })
 }
 
 /// Read ONLY the boundary (audit) events of a session — replay/audit tooling

@@ -4128,8 +4128,10 @@ impl AgentLoop {
         };
 
         // Read history from chat log (separate from session store).
+        // _async（BUG 2026-09-22）：阻塞读移出 tokio worker——大日志秒级
+        // 读曾占住 worker 并把本响应拖到前端 10s 失败围栏之后。
         let (page, total_count, has_more, oldest_index) =
-            crate::chat_log::read_chat_log(&session_key, limit, req.before_index);
+            crate::chat_log::read_chat_log_async(&session_key, limit, req.before_index).await;
 
         // A1（2026-09-22 聊天切会话竞态）：历史读取**之后**采样环尾 seq——
         // 「seq ≤ last_seq 的 assistant 实时帧必已含于本批次」的推断前提是

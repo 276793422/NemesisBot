@@ -340,11 +340,8 @@ fn test_set_send_queue_for_existing_session() {
     let mgr = SessionManager::with_default_timeout();
     let session = mgr.create_session();
 
-    let (tx, _rx) = tokio::sync::mpsc::channel::<Vec<u8>>(16);
-    let (_done_tx, done_rx) = tokio::sync::watch::channel(false);
-    let queue = Arc::new(crate::websocket_handler::SendQueue::from_channels(
-        tx, done_rx,
-    ));
+    let (queue, _hi_rx, _lo_rx, _done_tx) = crate::websocket_handler::SendQueue::test_channels(16);
+    let queue = Arc::new(queue);
 
     mgr.set_send_queue(&session.id, queue);
     assert!(mgr.send_queues.contains_key(&session.id));
@@ -355,11 +352,8 @@ async fn test_broadcast_with_send_queue() {
     let mgr = SessionManager::with_default_timeout();
     let session = mgr.create_session();
 
-    let (tx, mut rx) = tokio::sync::mpsc::channel::<Vec<u8>>(16);
-    let (_done_tx, done_rx) = tokio::sync::watch::channel(false);
-    let queue = Arc::new(crate::websocket_handler::SendQueue::from_channels(
-        tx, done_rx,
-    ));
+    let (queue, mut rx, _lo_rx, _done_tx) = crate::websocket_handler::SendQueue::test_channels(16);
+    let queue = Arc::new(queue);
 
     mgr.set_send_queue(&session.id, queue);
 
@@ -370,16 +364,46 @@ async fn test_broadcast_with_send_queue() {
     assert_eq!(received, b"hello world");
 }
 
+// BUG 2026-09-22（慢客户端洪泛）：可丢广播走 lo 通道、必达通道不受扰；
+// 无队列会话诚实报错。
+#[tokio::test]
+async fn test_broadcast_droppable_delivers_on_lo_lane() {
+    let mgr = SessionManager::with_default_timeout();
+    let session = mgr.create_session();
+
+    let (queue, mut hi_rx, mut lo_rx, _done_tx) =
+        crate::websocket_handler::SendQueue::test_channels(16);
+    let queue = Arc::new(queue);
+
+    mgr.set_send_queue(&session.id, queue);
+
+    let result = mgr.broadcast_droppable(&session.id, b"droppable hello");
+    assert!(result.is_ok());
+
+    let received = lo_rx.recv().await.unwrap();
+    assert_eq!(received, b"droppable hello");
+
+    // 必达通道必须为空（可丢帧不得挤占 hi 槽位）。
+    assert!(
+        hi_rx.try_recv().is_err(),
+        "droppable frames must not land on the hi lane"
+    );
+}
+
+#[test]
+fn test_broadcast_droppable_missing_session_errors() {
+    let mgr = SessionManager::with_default_timeout();
+    let result = mgr.broadcast_droppable("no-such-session", b"x");
+    assert!(result.is_err());
+}
+
 #[tokio::test]
 async fn test_broadcast_after_session_removed() {
     let mgr = SessionManager::with_default_timeout();
     let session = mgr.create_session();
 
-    let (tx, _rx) = tokio::sync::mpsc::channel::<Vec<u8>>(16);
-    let (_done_tx, done_rx) = tokio::sync::watch::channel(false);
-    let queue = Arc::new(crate::websocket_handler::SendQueue::from_channels(
-        tx, done_rx,
-    ));
+    let (queue, _hi_rx, _lo_rx, _done_tx) = crate::websocket_handler::SendQueue::test_channels(16);
+    let queue = Arc::new(queue);
 
     mgr.set_send_queue(&session.id, queue);
     mgr.remove_session(&session.id);
@@ -421,18 +445,14 @@ fn test_set_send_queue_replaces_existing() {
     let mgr = SessionManager::with_default_timeout();
     let session = mgr.create_session();
 
-    let (tx1, _rx1) = tokio::sync::mpsc::channel::<Vec<u8>>(16);
-    let (_done_tx1, done_rx1) = tokio::sync::watch::channel(false);
-    let queue1 = Arc::new(crate::websocket_handler::SendQueue::from_channels(
-        tx1, done_rx1,
-    ));
+    let (queue1, _hi_rx1, _lo_rx1, _done_tx1) =
+        crate::websocket_handler::SendQueue::test_channels(16);
+    let queue1 = Arc::new(queue1);
     mgr.set_send_queue(&session.id, queue1);
 
-    let (tx2, _rx2) = tokio::sync::mpsc::channel::<Vec<u8>>(16);
-    let (_done_tx2, done_rx2) = tokio::sync::watch::channel(false);
-    let queue2 = Arc::new(crate::websocket_handler::SendQueue::from_channels(
-        tx2, done_rx2,
-    ));
+    let (queue2, _hi_rx2, _lo_rx2, _done_tx2) =
+        crate::websocket_handler::SendQueue::test_channels(16);
+    let queue2 = Arc::new(queue2);
     mgr.set_send_queue(&session.id, queue2);
 
     assert!(mgr.send_queues.contains_key(&session.id));

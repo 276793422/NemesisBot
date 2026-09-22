@@ -110,7 +110,7 @@ fn migrate_yaml_reference_moves_value_out_of_yaml() {
     assert!(cfg_text.contains("vault:sk-claude"));
     let creds: nemesis_config::credentials::CredentialsFile =
         nemesis_config::credentials::load_credentials_file(&cred_path).unwrap();
-    assert!(creds.keys.get("sk-claude").is_none(), "yaml 条目应已移除");
+    assert!(!creds.keys.contains_key("sk-claude"), "yaml 条目应已移除");
 }
 
 /// 幂等：第二次运行不再动已迁移条目；env: 引用保持原样。

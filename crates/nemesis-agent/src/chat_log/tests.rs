@@ -815,6 +815,183 @@ fn test_undelivered_mark_and_clear_roundtrip() {
 }
 
 // ---------------------------------------------------------------------------
+// BUG 2026-09-22（历史加载秒卡）：read_chat_log 单遍滑窗重写的契约锁。
+// 窗口切的是 raw 行号坐标（不可解析行计入 total、boundary 行占位后过滤），
+// oldest_index/has_more 与旧两遍实现逐字段一致——E3 rewind 锚与前端行编
+// 号链靠它们。
+// ---------------------------------------------------------------------------
+
+/// 造一份带「不可解析行 + boundary 行」的原始 jsonl（绕过写 API，精确控
+/// 制每行字节）。行布局：
+/// idx0 user u0 / idx1 assistant a0 / idx2 user u1 / idx3 assistant a1 /
+/// idx4 boundary（parsable 但被过滤）/ idx5 user u2 / idx6 非法 json。
+fn write_mixed_rows(key: &str) {
+    let rows = [
+        r#"{"role":"user","content":"u0","timestamp":"t"}"#,
+        r#"{"role":"assistant","content":"a0","timestamp":"t"}"#,
+        r#"{"role":"user","content":"u1","timestamp":"t"}"#,
+        r#"{"role":"assistant","content":"a1","timestamp":"t"}"#,
+        r#"{"role":"boundary","content":"audit","timestamp":"t"}"#,
+        r#"{"role":"user","content":"u2","timestamp":"t"}"#,
+        "{broken json",
+    ];
+    let path = log_path(key);
+    std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+    std::fs::write(&path, format!("{}\n", rows.join("\n"))).unwrap();
+}
+
+#[test]
+fn test_read_chat_log_window_in_raw_line_coordinates() {
+    let key = format!(
+        "test:window:coords:{}",
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    );
+    delete_chat_log(&key);
+    write_mixed_rows(&key);
+
+    // 尾窗（limit=3）：raw [4..7) = boundary(滤) + u2 + 非法(滤) → 只剩 u2；
+    // total=7 含非法行，oldest=4（raw 坐标，不是过滤后坐标）。
+    let (page, total, has_more, oldest) = read_chat_log(&key, 3, None);
+    assert_eq!(total, 7, "非法行计入 total");
+    assert_eq!(page.len(), 1);
+    assert_eq!(page[0]["content"].as_str(), Some("u2"));
+    assert!(has_more);
+    assert_eq!(oldest, 4);
+
+    // 全量小窗（limit 覆盖全部）：5 条可展示行，非法/boundary 不出现。
+    let (page, total, has_more, oldest) = read_chat_log(&key, 10, None);
+    assert_eq!(total, 7);
+    assert_eq!(page.len(), 5);
+    assert!(!has_more);
+    assert_eq!(oldest, 0);
+
+    // before_index 窗口（bi=5 排他上界）：raw [1..5) → a0,u1,a1。
+    let (page, total, has_more, oldest) = read_chat_log(&key, 4, Some(5));
+    assert_eq!(total, 7, "bi 之后只计数，total 不变");
+    assert_eq!(page.len(), 3);
+    assert_eq!(page[0]["content"].as_str(), Some("a0"));
+    assert_eq!(page[2]["content"].as_str(), Some("a1"));
+    assert!(has_more);
+    assert_eq!(oldest, 1);
+
+    // bi=0：空窗，has_more=false，oldest=0。
+    let (page, total, has_more, oldest) = read_chat_log(&key, 2, Some(0));
+    assert_eq!(page.len(), 0);
+    assert_eq!(total, 7);
+    assert!(!has_more);
+    assert_eq!(oldest, 0);
+
+    delete_chat_log(&key);
+}
+
+#[test]
+fn test_read_chat_log_whole_log_lane_same_semantics() {
+    let key = format!(
+        "test:window:whole:{}",
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    );
+    delete_chat_log(&key);
+    write_mixed_rows(&key);
+
+    // usize::MAX（fork/rewind/export/share/CLI 形态）：与全量小窗同结果。
+    let (page, total, has_more, oldest) = read_chat_log(&key, usize::MAX, None);
+    assert_eq!(total, 7);
+    assert_eq!(page.len(), 5);
+    assert!(!has_more);
+    assert_eq!(oldest, 0);
+
+    // usize::MAX + before_index：Option 占位窗口同样按 raw 坐标对齐
+    // （boundary 行占位后过滤），[0..5) → u0,a0,u1,a1。
+    let (page, _, _, oldest) = read_chat_log(&key, usize::MAX, Some(5));
+    assert_eq!(page.len(), 4);
+    assert_eq!(page[3]["content"].as_str(), Some("a1"));
+    assert_eq!(oldest, 0);
+
+    delete_chat_log(&key);
+}
+
+/// 前端分页行走形态：逐页 Some(上一页 oldest) 向历史深处走，窗口滑过
+/// 不可解析行时 oldest/total 坐标必须不错位。
+#[test]
+fn test_read_chat_log_pagination_walk() {
+    let key = format!(
+        "test:window:walk:{}",
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    );
+    delete_chat_log(&key);
+
+    // 12 行干净 user 行（content=行号）。
+    let rows: Vec<String> = (0..12)
+        .map(|i| format!(r#"{{"role":"user","content":"r{i}","timestamp":"t"}}"#))
+        .collect();
+    let path = log_path(&key);
+    std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+    std::fs::write(&path, format!("{}\n", rows.join("\n"))).unwrap();
+
+    // 页1：最新 5 行 [7..12)。
+    let (page, total, has_more, oldest) = read_chat_log(&key, 5, None);
+    assert_eq!(total, 12);
+    assert_eq!(oldest, 7);
+    assert!(has_more);
+    assert_eq!(page[0]["content"].as_str(), Some("r7"));
+    assert_eq!(page[4]["content"].as_str(), Some("r11"));
+
+    // 页2：Some(7) → [2..7)。
+    let (page, _, has_more, oldest) = read_chat_log(&key, 5, Some(7));
+    assert_eq!(oldest, 2);
+    assert!(has_more);
+    assert_eq!(page[0]["content"].as_str(), Some("r2"));
+    assert_eq!(page[4]["content"].as_str(), Some("r6"));
+
+    // 页3：Some(2) → [0..2)（不足一页），has_more=false。
+    let (page, _, has_more, oldest) = read_chat_log(&key, 5, Some(2));
+    assert_eq!(oldest, 0);
+    assert!(!has_more);
+    assert_eq!(page.len(), 2);
+    assert_eq!(page[0]["content"].as_str(), Some("r0"));
+
+    delete_chat_log(&key);
+}
+
+/// async 包装与同步版逐字段一致（wire 路径走 _async，读侧契约只有一份）。
+#[tokio::test]
+async fn test_read_chat_log_async_parity() {
+    let key = format!(
+        "test:window:async:{}",
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    );
+    delete_chat_log(&key);
+    write_mixed_rows(&key);
+
+    let sync = read_chat_log(&key, 4, Some(5));
+    let asy = crate::chat_log::read_chat_log_async(&key, 4, Some(5)).await;
+    assert_eq!(sync.0, asy.0, "page 必须一致");
+    assert_eq!(sync.1, asy.1);
+    assert_eq!(sync.2, asy.2);
+    assert_eq!(sync.3, asy.3);
+
+    // 缺失文件同样四元组全零。
+    let (page, total, has_more, oldest) =
+        crate::chat_log::read_chat_log_async("test:window:async:none", 10, None).await;
+    assert!(page.is_empty());
+    assert_eq!((total, has_more, oldest), (0, false, 0));
+
+    delete_chat_log(&key);
+}
+
+// ---------------------------------------------------------------------------
 // SAN-01/D4：旧「只替换 `:`」映射的嵌套目录平化迁移
 // ---------------------------------------------------------------------------
 

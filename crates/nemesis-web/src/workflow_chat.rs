@@ -208,10 +208,11 @@ async fn handle_history_request(
 
     let session_key = format!("wf_chat:{}", workflow_name);
     let limit = req.limit.unwrap_or(50);
-    // chat_log::read_chat_log returns (page, total, has_more, oldest_index)
-    // — same shape we need to forward to the client.
+    // chat_log::read_chat_log_async returns (page, total, has_more, oldest_index)
+    // — same shape we need to forward to the client. _async（BUG 2026-09-22）：
+    // 阻塞读移出 tokio worker。
     let (page, total_count, has_more, oldest_index) =
-        nemesis_agent::chat_log::read_chat_log(&session_key, limit, req.before_index);
+        nemesis_agent::chat_log::read_chat_log_async(&session_key, limit, req.before_index).await;
 
     let response = ProtocolMessage::new(
         "message",

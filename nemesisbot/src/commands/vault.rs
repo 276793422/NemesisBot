@@ -133,8 +133,8 @@ pub async fn run(action: VaultAction, local: bool) -> Result<()> {
                 return Ok(());
             }
             println!(
-                "{:<28} {:<14} {:<24} {:<24} {}",
-                "ALIAS", "DOMAIN", "CREATED", "ROTATED", "DESCRIPTION"
+                "{:<28} {:<14} {:<24} {:<24} DESCRIPTION",
+                "ALIAS", "DOMAIN", "CREATED", "ROTATED"
             );
             for l in &listings {
                 println!(
@@ -307,12 +307,12 @@ fn migrate_model_keys(
         config_changed = true;
         report.migrated.push((display_name, alias, "model".into()));
 
-        if let Some(removed) = yaml_alias {
-            if let Some(creds) = creds.as_mut() {
-                creds.keys.remove(&removed);
-                creds_changed = true;
-                report.yaml_aliases_removed.push(removed);
-            }
+        if let Some(removed) = yaml_alias
+            && let Some(creds) = creds.as_mut()
+        {
+            creds.keys.remove(&removed);
+            creds_changed = true;
+            report.yaml_aliases_removed.push(removed);
         }
     }
 
@@ -320,10 +320,10 @@ fn migrate_model_keys(
         nemesis_config::save_config(config_path, &mut config)
             .map_err(|e| anyhow::anyhow!("写回 config.json 失败: {e}"))?;
     }
-    if creds_changed {
-        if let Some(creds) = creds.as_ref() {
-            nemesis_config::credentials::save_credentials_file(cred_path, creds)?;
-        }
+    if creds_changed
+        && let Some(creds) = creds.as_ref()
+    {
+        nemesis_config::credentials::save_credentials_file(cred_path, creds)?;
     }
     Ok(report)
 }

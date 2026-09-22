@@ -115,7 +115,7 @@ impl UdpListener {
                                     Ok(decrypted) => decrypted,
                                     Err(_) => {
                                         decrypt_drops += 1;
-                                        if decrypt_drops == 1 || decrypt_drops % 100 == 0 {
+                                        if decrypt_drops == 1 || decrypt_drops.is_multiple_of(100) {
                                             tracing::warn!(
                                                 peer = %addr,
                                                 count = decrypt_drops,

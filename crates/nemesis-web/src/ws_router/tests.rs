@@ -4,7 +4,6 @@ use crate::events::EventHub;
 use crate::session::SessionManager;
 use std::sync::atomic::{AtomicBool, AtomicUsize};
 use std::time::Instant;
-use tokio::sync::mpsc;
 
 /// A simple test handler for the "test" module.
 struct TestHandler {
@@ -109,9 +108,7 @@ async fn test_dispatch_unknown_module() {
         auth_method: crate::session::AuthMethod::default(),
     };
 
-    let (tx, mut rx) = mpsc::channel::<Vec<u8>>(16);
-    let (_, done_rx) = tokio::sync::watch::channel(false);
-    let send_queue = SendQueue::from_channels(tx, done_rx);
+    let (send_queue, mut rx, _lo_rx, _done_tx) = SendQueue::test_channels(16);
 
     let msg = ProtocolMessage::request("nonexistent", "cmd", "req-1", None);
     router.dispatch(&msg, &ctx, &send_queue).await;
@@ -137,9 +134,7 @@ async fn test_dispatch_success() {
         auth_method: crate::session::AuthMethod::default(),
     };
 
-    let (tx, mut rx) = mpsc::channel::<Vec<u8>>(16);
-    let (_, done_rx) = tokio::sync::watch::channel(false);
-    let send_queue = SendQueue::from_channels(tx, done_rx);
+    let (send_queue, mut rx, _lo_rx, _done_tx) = SendQueue::test_channels(16);
 
     let msg = ProtocolMessage::request("test", "ping", "req-2", None);
     router.dispatch(&msg, &ctx, &send_queue).await;
@@ -166,9 +161,7 @@ async fn test_dispatch_handler_error() {
         auth_method: crate::session::AuthMethod::default(),
     };
 
-    let (tx, mut rx) = mpsc::channel::<Vec<u8>>(16);
-    let (_, done_rx) = tokio::sync::watch::channel(false);
-    let send_queue = SendQueue::from_channels(tx, done_rx);
+    let (send_queue, mut rx, _lo_rx, _done_tx) = SendQueue::test_channels(16);
 
     let msg = ProtocolMessage::request("test", "fail", "req-3", None);
     router.dispatch(&msg, &ctx, &send_queue).await;
@@ -194,9 +187,7 @@ async fn test_dispatch_no_data_response() {
         auth_method: crate::session::AuthMethod::default(),
     };
 
-    let (tx, mut rx) = mpsc::channel::<Vec<u8>>(16);
-    let (_, done_rx) = tokio::sync::watch::channel(false);
-    let send_queue = SendQueue::from_channels(tx, done_rx);
+    let (send_queue, mut rx, _lo_rx, _done_tx) = SendQueue::test_channels(16);
 
     let msg = ProtocolMessage::request("test", "noop", "req-4", None);
     router.dispatch(&msg, &ctx, &send_queue).await;
@@ -221,9 +212,7 @@ async fn test_dispatch_req_id_roundtrip() {
         auth_method: crate::session::AuthMethod::default(),
     };
 
-    let (tx, mut rx) = mpsc::channel::<Vec<u8>>(16);
-    let (_, done_rx) = tokio::sync::watch::channel(false);
-    let send_queue = SendQueue::from_channels(tx, done_rx);
+    let (send_queue, mut rx, _lo_rx, _done_tx) = SendQueue::test_channels(16);
 
     let custom_id = "uuid-abc-123-def";
     let msg = ProtocolMessage::request("mymod", "ping", custom_id, None);

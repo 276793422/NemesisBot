@@ -221,9 +221,8 @@ fn test_register_all_registers_16_handlers() {
         "skills", "mcp", "security", "forge", "tasks", "cluster", "logs", "agent",
     ];
     // Use a simple channel to capture responses
-    let (tx, mut rx) = tokio::sync::mpsc::channel::<Vec<u8>>(64);
-    let (_, done_rx) = tokio::sync::watch::channel(false);
-    let send_queue = crate::websocket_handler::SendQueue::from_channels(tx, done_rx);
+    let (send_queue, mut rx, _lo_rx, _done_tx) =
+        crate::websocket_handler::SendQueue::test_channels(64);
 
     let rt = tokio::runtime::Runtime::new().unwrap();
     rt.block_on(async {
@@ -1617,9 +1616,8 @@ impl IntegrationRouter {
         let mut router = crate::ws_router::WsRouter::new();
         register_all(&mut router);
 
-        let (tx, rx) = tokio::sync::mpsc::channel::<Vec<u8>>(64);
-        let (_, done_rx) = tokio::sync::watch::channel(false);
-        let send_queue = crate::websocket_handler::SendQueue::from_channels(tx, done_rx);
+        let (send_queue, rx, _lo_rx, _done_tx) =
+            crate::websocket_handler::SendQueue::test_channels(64);
 
         let dir = tempfile::tempdir().unwrap();
         write_config(dir.path());

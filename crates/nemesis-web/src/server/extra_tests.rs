@@ -867,9 +867,8 @@ async fn test_send_to_session_with_active_queue_succeeds() {
     let mgr = Arc::new(SessionManager::with_default_timeout());
     let session = mgr.create_session();
 
-    let (tx, mut rx) = tokio::sync::mpsc::channel::<Vec<u8>>(16);
-    let (_, done_rx) = tokio::sync::watch::channel(false);
-    let queue = Arc::new(SendQueue::from_channels(tx, done_rx));
+    let (queue, mut rx, _lo_rx, _done_tx) = SendQueue::test_channels(16);
+    let queue = Arc::new(queue);
     mgr.set_send_queue(&session.id, queue);
 
     let send_result =
@@ -895,9 +894,8 @@ async fn test_send_to_session_includes_model_badge() {
     let mgr = Arc::new(SessionManager::with_default_timeout());
     let session = mgr.create_session();
 
-    let (tx, mut rx) = tokio::sync::mpsc::channel::<Vec<u8>>(16);
-    let (_, done_rx) = tokio::sync::watch::channel(false);
-    let queue = Arc::new(SendQueue::from_channels(tx, done_rx));
+    let (queue, mut rx, _lo_rx, _done_tx) = SendQueue::test_channels(16);
+    let queue = Arc::new(queue);
     mgr.set_send_queue(&session.id, queue);
 
     // With a model badge.
@@ -943,9 +941,8 @@ async fn test_send_to_session_stamps_agent_session_id() {
     let mgr = Arc::new(SessionManager::with_default_timeout());
     let session = mgr.create_session();
 
-    let (tx, mut rx) = tokio::sync::mpsc::channel::<Vec<u8>>(16);
-    let (_, done_rx) = tokio::sync::watch::channel(false);
-    let queue = Arc::new(SendQueue::from_channels(tx, done_rx));
+    let (queue, mut rx, _lo_rx, _done_tx) = SendQueue::test_channels(16);
+    let queue = Arc::new(queue);
     mgr.set_send_queue(&session.id, queue);
 
     // web 形态 session_key → 帧带还原出的会话 id。
@@ -1030,9 +1027,8 @@ async fn test_send_history_to_session_with_active_queue_succeeds() {
     use crate::websocket_handler::SendQueue;
     let mgr = Arc::new(SessionManager::with_default_timeout());
     let session = mgr.create_session();
-    let (tx, mut rx) = tokio::sync::mpsc::channel::<Vec<u8>>(16);
-    let (_, done_rx) = tokio::sync::watch::channel(false);
-    let queue = Arc::new(SendQueue::from_channels(tx, done_rx));
+    let (queue, mut rx, _lo_rx, _done_tx) = SendQueue::test_channels(16);
+    let queue = Arc::new(queue);
     mgr.set_send_queue(&session.id, queue);
 
     let history = r#"{"messages":[{"role":"user","content":"hi"}]}"#;
@@ -1435,12 +1431,8 @@ async fn test_process_messages_records_user_row_and_echoes_to_sender() {
 
     let mgr = Arc::new(SessionManager::with_default_timeout());
     let session = mgr.create_session();
-    let (qtx, mut qrx) = tokio::sync::mpsc::channel::<Vec<u8>>(16);
-    let (_, done_rx) = tokio::sync::watch::channel(false);
-    mgr.set_send_queue(
-        &session.id,
-        Arc::new(SendQueue::from_channels(qtx, done_rx)),
-    );
+    let (queue, mut qrx, _lo_rx, _done_tx) = SendQueue::test_channels(16);
+    mgr.set_send_queue(&session.id, Arc::new(queue));
 
     let bus = Arc::new(MessageBus::new());
     let mut inbound_sub = bus.subscribe_inbound();
@@ -1502,12 +1494,8 @@ async fn test_process_messages_empty_content_skips_record_and_echo() {
 
     let mgr = Arc::new(SessionManager::with_default_timeout());
     let session = mgr.create_session();
-    let (qtx, mut qrx) = tokio::sync::mpsc::channel::<Vec<u8>>(16);
-    let (_, done_rx) = tokio::sync::watch::channel(false);
-    mgr.set_send_queue(
-        &session.id,
-        Arc::new(SendQueue::from_channels(qtx, done_rx)),
-    );
+    let (queue, mut qrx, _lo_rx, _done_tx) = SendQueue::test_channels(16);
+    mgr.set_send_queue(&session.id, Arc::new(queue));
 
     let bus = Arc::new(MessageBus::new());
     let mut inbound_sub = bus.subscribe_inbound();
@@ -1557,12 +1545,8 @@ async fn test_process_messages_history_request_not_recorded_nor_echoed() {
 
     let mgr = Arc::new(SessionManager::with_default_timeout());
     let session = mgr.create_session();
-    let (qtx, mut qrx) = tokio::sync::mpsc::channel::<Vec<u8>>(16);
-    let (_, done_rx) = tokio::sync::watch::channel(false);
-    mgr.set_send_queue(
-        &session.id,
-        Arc::new(SendQueue::from_channels(qtx, done_rx)),
-    );
+    let (queue, mut qrx, _lo_rx, _done_tx) = SendQueue::test_channels(16);
+    mgr.set_send_queue(&session.id, Arc::new(queue));
 
     let bus = Arc::new(MessageBus::new());
     let mut inbound_sub = bus.subscribe_inbound();

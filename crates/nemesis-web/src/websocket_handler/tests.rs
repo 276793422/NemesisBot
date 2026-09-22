@@ -701,62 +701,52 @@ async fn test_broadcast_to_session_empty_id() {
 
 #[tokio::test]
 async fn test_send_queue_send_success() {
-    let (tx, mut rx) = mpsc::channel::<Vec<u8>>(16);
-    let (_, done_rx) = tokio::sync::watch::channel(false);
-
-    let queue = SendQueue::from_channels(tx, done_rx);
+    let (queue, mut hi_rx, _lo_rx, _done_tx) = SendQueue::test_channels(16);
 
     // Send a message
     let result = queue.send(b"test message".to_vec()).await;
     assert!(result.is_ok());
 
     // Verify it was received
-    let received = rx.recv().await.unwrap();
+    let received = hi_rx.recv().await.unwrap();
     assert_eq!(received, b"test message".to_vec());
 }
 
 #[tokio::test]
-async fn test_send_queue_try_send_success() {
-    let (tx, _rx) = mpsc::channel::<Vec<u8>>(16);
-    let (_, done_rx) = tokio::sync::watch::channel(false);
+async fn test_send_queue_send_droppable_success() {
+    let (queue, _hi_rx, mut lo_rx, _done_tx) = SendQueue::test_channels(16);
 
-    let queue = SendQueue::from_channels(tx, done_rx);
-
-    // Try to send a message (non-blocking)
-    let result = queue.try_send(b"try message".to_vec());
+    // 可丢消息走 lo 通道（非阻塞）
+    let result = queue.send_droppable(b"try message".to_vec());
     assert!(result.is_ok());
+
+    let received = lo_rx.recv().await.unwrap();
+    assert_eq!(received, b"try message".to_vec());
+    assert_eq!(queue.dropped_count(), 0);
 }
 
 #[tokio::test]
-async fn test_send_queue_try_send_full() {
-    let (tx, _rx) = mpsc::channel::<Vec<u8>>(1);
-    let (_, done_rx) = tokio::sync::watch::channel(false);
-
-    let queue = SendQueue::from_channels(tx, done_rx);
+async fn test_send_queue_send_droppable_full() {
+    let (queue, _hi_rx, _lo_rx, _done_tx) = SendQueue::test_channels(1);
 
     // Fill the channel
-    let _ = queue.try_send(b"first".to_vec());
-    // Second send should fail (full)
-    let result = queue.try_send(b"second".to_vec());
+    let _ = queue.send_droppable(b"first".to_vec());
+    // Second send should fail immediately (full) and count as dropped
+    let result = queue.send_droppable(b"second".to_vec());
     assert!(result.is_err());
-    assert!(result.unwrap_err().contains("send queue error"));
+    assert!(result.unwrap_err().contains("send queue dropped"));
+    assert_eq!(queue.dropped_count(), 1);
 }
 
 #[test]
 fn test_send_queue_is_done_initially_false() {
-    let (tx, _rx) = mpsc::channel::<Vec<u8>>(16);
-    let (_, done_rx) = tokio::sync::watch::channel(false);
-
-    let queue = SendQueue::from_channels(tx, done_rx);
+    let (queue, _hi_rx, _lo_rx, _done_tx) = SendQueue::test_channels(16);
     assert!(!queue.is_done());
 }
 
 #[test]
 fn test_send_queue_is_done_when_signaled() {
-    let (tx, _rx) = mpsc::channel::<Vec<u8>>(16);
-    let (done_tx, done_rx) = tokio::sync::watch::channel(false);
-
-    let queue = SendQueue::from_channels(tx, done_rx);
+    let (queue, _hi_rx, _lo_rx, done_tx) = SendQueue::test_channels(16);
     assert!(!queue.is_done());
 
     // Signal done
@@ -838,18 +828,178 @@ fn test_build_error_message_with_quotes() {
 
 #[tokio::test]
 async fn test_send_queue_send_after_drop() {
-    let (tx, _) = mpsc::channel::<Vec<u8>>(16);
-    let (_, done_rx) = tokio::sync::watch::channel(false);
+    let (queue, hi_rx, _lo_rx, _done_tx) = SendQueue::test_channels(16);
 
-    let queue = SendQueue::from_channels(tx, done_rx);
-    // tx receiver is dropped since _ wasn't bound
+    // Receiver 已丢（只保留发送端）：send 应诚实报错（send queue stopped）。
+    drop(hi_rx);
+    let result = queue.send(b"hello".to_vec()).await;
+    assert!(result.is_err());
+    assert!(result.unwrap_err().contains("send queue stopped"));
+}
 
-    // This should still succeed since the channel is still open from sender side
-    // Actually, since the receiver is dropped, send should return error
-    // Wait - mpsc::Sender keeps the channel alive. Receiver being dropped
-    // means send will fail on next attempt.
-    // Let me re-think: we drop the receiver here, so send should fail
-    drop(queue); // Just test that it doesn't panic
+// ---- 写者循环语义（mock sink 直测 run_send_writer） ----
+
+/// 测试替身 sink：记录帧序与 flush 次数；可注入 feed/flush 失败。
+#[derive(Default, Clone)]
+struct MockSink {
+    frames: std::sync::Arc<std::sync::Mutex<std::collections::VecDeque<String>>>,
+    flushes: std::sync::Arc<std::sync::atomic::AtomicUsize>,
+    fail_feed: bool,
+}
+
+impl futures::Sink<axum::extract::ws::Message> for MockSink {
+    type Error = std::io::Error;
+
+    fn poll_ready(
+        self: std::pin::Pin<&mut Self>,
+        _cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<Result<(), Self::Error>> {
+        std::task::Poll::Ready(Ok(()))
+    }
+
+    fn start_send(
+        self: std::pin::Pin<&mut Self>,
+        item: axum::extract::ws::Message,
+    ) -> Result<(), Self::Error> {
+        let this = self.get_mut();
+        if this.fail_feed {
+            return Err(std::io::Error::other("mock feed failure"));
+        }
+        if let axum::extract::ws::Message::Text(t) = item {
+            this.frames.lock().unwrap().push_back(t.to_string());
+        }
+        Ok(())
+    }
+
+    fn poll_flush(
+        self: std::pin::Pin<&mut Self>,
+        _cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<Result<(), Self::Error>> {
+        self.get_mut().flushes.fetch_add(1, Ordering::SeqCst);
+        std::task::Poll::Ready(Ok(()))
+    }
+
+    fn poll_close(
+        self: std::pin::Pin<&mut Self>,
+        _cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<Result<(), Self::Error>> {
+        std::task::Poll::Ready(Ok(()))
+    }
+}
+
+/// hi 优先 + 合批：hi 与 lo 同时就绪时 hi 帧先出，且整批只 flush 一次。
+#[tokio::test]
+async fn writer_prioritizes_hi_over_lo_and_batches_flush() {
+    let (hi_tx, hi_rx) = mpsc::channel::<Vec<u8>>(16);
+    let (lo_tx, lo_rx) = mpsc::channel::<Vec<u8>>(16);
+    let (done_tx, _done_rx) = tokio::sync::watch::channel(false);
+
+    // 全部先入队再起写者：时序确定，无竞态。
+    hi_tx.send(b"hi-first".to_vec()).await.unwrap();
+    for i in 0..4 {
+        lo_tx.try_send(format!("lo-{i}").into_bytes()).unwrap();
+    }
+    drop(hi_tx);
+    drop(lo_tx);
+
+    let sink = MockSink::default();
+    let frames = sink.frames.clone();
+    let flushes = sink.flushes.clone();
+    tokio::spawn(super::run_send_writer(
+        sink,
+        hi_rx,
+        lo_rx,
+        done_tx,
+        "t".into(),
+    ));
+
+    for _ in 0..100 {
+        if frames.lock().unwrap().len() == 5 {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+    }
+    let frames = frames.lock().unwrap();
+    assert_eq!(frames.len(), 5, "全部 5 帧都要送达: {frames:?}");
+    assert_eq!(frames.front().unwrap(), "hi-first", "hi 必须越过 lo 排最前");
+    assert_eq!(
+        flushes.load(Ordering::SeqCst),
+        1,
+        "预排队的 5 帧必须合批单次 flush"
+    );
+
+    let ordered: Vec<&String> = frames.iter().collect();
+    assert_eq!(
+        ordered,
+        vec![
+            &"hi-first".to_string(),
+            &"lo-0".to_string(),
+            &"lo-1".to_string(),
+            &"lo-2".to_string(),
+            &"lo-3".to_string(),
+        ]
+    );
+}
+
+/// 两通道全关（含已排空）→ 写者退出并置 done。
+#[tokio::test]
+async fn writer_exits_when_channels_closed_and_signals_done() {
+    let (hi_tx, hi_rx) = mpsc::channel::<Vec<u8>>(4);
+    let (lo_tx, lo_rx) = mpsc::channel::<Vec<u8>>(4);
+    let (done_tx, done_rx) = tokio::sync::watch::channel(false);
+
+    drop(hi_tx);
+    drop(lo_tx);
+
+    tokio::spawn(super::run_send_writer(
+        MockSink::default(),
+        hi_rx,
+        lo_rx,
+        done_tx,
+        "t".into(),
+    ));
+
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    while !*done_rx.borrow() {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "writer must signal done after channels close"
+        );
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+    }
+}
+
+/// feed 失败 → 写者立即收尾并置 done（现行为：sink 写失败即 break）。
+#[tokio::test]
+async fn writer_feed_failure_signals_done() {
+    let (hi_tx, hi_rx) = mpsc::channel::<Vec<u8>>(4);
+    let (lo_tx, lo_rx) = mpsc::channel::<Vec<u8>>(4);
+    let (done_tx, done_rx) = tokio::sync::watch::channel(false);
+
+    hi_tx.send(b"boom".to_vec()).await.unwrap();
+    drop(hi_tx);
+    drop(lo_tx);
+
+    let sink = MockSink {
+        fail_feed: true,
+        ..Default::default()
+    };
+    tokio::spawn(super::run_send_writer(
+        sink,
+        hi_rx,
+        lo_rx,
+        done_tx,
+        "t".into(),
+    ));
+
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    while !*done_rx.borrow() {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "feed failure must close the queue"
+        );
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+    }
 }
 
 #[test]

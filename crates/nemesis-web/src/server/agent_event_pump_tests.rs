@@ -5,7 +5,7 @@
 
 use std::sync::Arc;
 
-use tokio::sync::{mpsc, watch};
+use tokio::sync::mpsc;
 
 use crate::events::EventHub;
 use crate::server::pump_agent_events;
@@ -13,13 +13,13 @@ use crate::session::SessionManager;
 use crate::websocket_handler::SendQueue;
 use nemesis_types::agent::AgentEvent;
 
-/// 挂一个测试 SendQueue 到 session（真实 WS sink 的测试替身）。
+/// 挂一个测试 SendQueue 到 session（真实 WS sink 的测试替身）。返回 lo
+/// 通道接收端：带 session_key 的 tool_event 帧已落环（带 seq）→ 走可丢
+/// 通道（BUG 2026-09-22 慢客户端洪泛修复后的路由语义）。
 fn attach_fake_queue(manager: &SessionManager, session_id: &str) -> mpsc::Receiver<Vec<u8>> {
-    let (tx, rx) = mpsc::channel::<Vec<u8>>(16);
-    let (_done_tx, done_rx) = watch::channel(false);
-    let queue = Arc::new(SendQueue::from_channels(tx, done_rx));
-    manager.set_send_queue(session_id, queue);
-    rx
+    let (queue, _hi_rx, lo_rx, _done_tx) = SendQueue::test_channels(16);
+    manager.set_send_queue(session_id, Arc::new(queue));
+    lo_rx
 }
 
 #[tokio::test]
@@ -135,6 +135,61 @@ async fn closed_channel_exits_pump() {
     drop(tx); // 关闭通道 → pump 退出（gateway 停机路径）。
     let result = tokio::time::timeout(std::time::Duration::from_secs(5), pump).await;
     assert!(result.is_ok(), "pump should exit after channel close");
+}
+
+// -------------------------------------------------------------------------
+// BUG 2026-09-22（慢客户端洪泛）：可丢通道满队不得阻塞事件泵。旧实现
+// tool_event 走 broadcast().await（满队列背压）——单个不消费的客户端把
+// 泵卡死，全部会话的实时推送连坐停摆。修复后满即丢 + dropped 计数。
+// -------------------------------------------------------------------------
+
+#[tokio::test]
+async fn pump_not_stalled_by_full_droppable_queue() {
+    let manager = SessionManager::with_default_timeout();
+    let session = manager.create_session();
+    let (queue, _hi_rx, _lo_rx, _done_tx) = SendQueue::test_channels(2); // 小容量放大
+    let queue = Arc::new(queue);
+    manager.set_send_queue(&session.id, queue.clone());
+
+    let event_hub = Arc::new(EventHub::new());
+    let mut hub_rx = event_hub.subscribe();
+
+    let (tx, rx) = tokio::sync::broadcast::channel::<AgentEvent>(64);
+    let pump = tokio::spawn(pump_agent_events(rx, Arc::new(manager), event_hub.clone()));
+
+    // 洪泛 8 个 tool 事件（lo 容量 2、无人消费）：多余者必须被丢弃，
+    // 泵继续消费直到通道关闭退出——卡死即超时失败。
+    for i in 0..8 {
+        tx.send(AgentEvent::ToolStarted {
+            session_key: format!("web:{}:main", session.id),
+            chat_id: format!("web:{}", session.id),
+            call_id: format!("c{i}"),
+            tool: "exec".into(),
+            args_preview: "{}".into(),
+        })
+        .unwrap();
+    }
+    drop(tx);
+
+    tokio::time::timeout(std::time::Duration::from_secs(5), pump)
+        .await
+        .expect("pump must not stall on a full droppable queue (slow client)")
+        .expect("pump task panicked");
+
+    // 洪泛期帧仍进 hub（SSE 面不受丢帧影响）……
+    let mut hub_count = 0usize;
+    while let Ok(ev) = hub_rx.try_recv() {
+        if ev.event_type == "tool_event" {
+            hub_count += 1;
+        }
+    }
+    assert_eq!(hub_count, 8, "all flooded events must reach the hub");
+
+    // ……而 WS 侧可丢帧按容量被丢弃并计数（丢的靠 chat.sync 补拉自愈）。
+    assert!(
+        queue.dropped_count() >= 1,
+        "overflowing droppable lane must be counted as dropped"
+    );
 }
 
 // -------------------------------------------------------------------------

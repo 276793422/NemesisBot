@@ -1608,8 +1608,10 @@ pub async fn process_messages_with_router(
                     crate::protocol::ProtocolMessage::new("message", "chat", "receive", Some(echo));
                 if let Ok(bytes) = frame.to_json() {
                     // 失败 soft：发起连接已断（切页/关闭）——行已入环，重连
-                    // 后 sync 补拉自愈。
-                    let _ = sm.broadcast(&msg.session_id, &bytes).await;
+                    // 后 sync 补拉自愈。可丢通道（BUG 2026-09-22）：帧带
+                    // seq，慢客户端满队列时丢它可被 sync 补回，不应阻塞
+                    // 入站咽喉点。
+                    let _ = sm.broadcast_droppable(&msg.session_id, &bytes);
                 }
             }
         }
@@ -1858,6 +1860,12 @@ pub async fn pump_agent_events(
 
                 let chat_id = event.chat_id().to_string();
                 if let Some(session_id) = chat_id.strip_prefix("web:") {
+                    // BUG 2026-09-22 慢客户端洪泛：带 seq = 已落
+                    // chat_event_log 环，丢帧可被前端 chat.sync 补拉自愈
+                    // → 走可丢通道（满即丢，事件泵绝不被单个慢客户端的
+                    // 满队列阻塞、连坐全部会话）；无 seq（未落环、不可
+                    // 补拉）保留必达通道（低频，非洪泛源）。
+                    let droppable = data.get("seq").is_some();
                     let frame = crate::protocol::ProtocolMessage::new(
                         "push",
                         "chat",
@@ -1866,7 +1874,12 @@ pub async fn pump_agent_events(
                     );
                     match frame.to_json() {
                         Ok(bytes) => {
-                            if let Err(e) = session_manager.broadcast(session_id, &bytes).await {
+                            let result = if droppable {
+                                session_manager.broadcast_droppable(session_id, &bytes)
+                            } else {
+                                session_manager.broadcast(session_id, &bytes).await
+                            };
+                            if let Err(e) = result {
                                 tracing::debug!(
                                     session_id = %session_id,
                                     error = %e,

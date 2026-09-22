@@ -205,6 +205,10 @@ fn tool_call_response(name: &str, args: &str) -> LlmResponse {
 /// 端到端：provider 回 vault: 别名参数 → 工具收到真值；事件流（模型上下文
 /// 的对映物）只见别名。会话历史 StoredToolCall / observer / request_logger
 /// 均派生自同一 HookToolCall.arguments 字符串——事件流干净即四表面干净。
+/// 全局 vault resolver 是进程级单槽（set/clear 全局函数），测试间必须
+/// 串行——持锁跨 await 是刻意的：锁只在本测试 runtime 线程外排队别的
+/// 测试，本 runtime 上无其他任务抢此锁（clippy 静态告警此处为误报）。
+#[allow(clippy::await_holding_lock)]
 #[tokio::test]
 async fn loop_injects_truth_but_events_carry_alias_only() {
     let _g = VAULT_SLOT_LOCK.lock();
@@ -282,6 +286,7 @@ async fn loop_injects_truth_but_events_carry_alias_only() {
 }
 
 /// 别名解析失败：工具不执行，错误串（无真值、带指引）作为工具结果回模型。
+#[allow(clippy::await_holding_lock)]
 #[tokio::test]
 async fn loop_unknown_alias_blocks_execution() {
     let _g = VAULT_SLOT_LOCK.lock();

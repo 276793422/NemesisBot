@@ -215,10 +215,10 @@ impl VaultStore {
             entries: BTreeMap::new(),
         };
         seal_dek_into(&mut file, mode, &dek, passphrase)?;
-        if let Some(dir) = path.parent() {
-            if !dir.as_os_str().is_empty() {
-                fs::create_dir_all(dir)?;
-            }
+        if let Some(dir) = path.parent()
+            && !dir.as_os_str().is_empty()
+        {
+            fs::create_dir_all(dir)?;
         }
         let store = Self {
             path: path.to_path_buf(),
@@ -551,13 +551,13 @@ mod dpapi {
     /// CryptProtectData（per-user）。`CRYPTPROTECT_UI_FORBIDDEN`：服务/无人值守形态不弹窗。
     pub fn protect(data: &[u8]) -> Result<Vec<u8>, VaultError> {
         unsafe {
-            let mut input = blob_of(data);
+            let input = blob_of(data);
             let mut output = CRYPT_INTEGER_BLOB {
                 cbData: 0,
                 pbData: std::ptr::null_mut(),
             };
             let ok = CryptProtectData(
-                &mut input,
+                &input,
                 std::ptr::null(),
                 std::ptr::null(),
                 std::ptr::null(),
@@ -576,14 +576,14 @@ mod dpapi {
     /// CryptUnprotectData。失败（跨用户/跨机/损坏）诚实报错。
     pub fn unprotect(blob: &[u8]) -> Result<Vec<u8>, VaultError> {
         unsafe {
-            let mut input = blob_of(blob);
+            let input = blob_of(blob);
             let mut output = CRYPT_INTEGER_BLOB {
                 cbData: 0,
                 pbData: std::ptr::null_mut(),
             };
             let mut descr: windows_sys::core::PWSTR = std::ptr::null_mut();
             let ok = CryptUnprotectData(
-                &mut input,
+                &input,
                 &mut descr,
                 std::ptr::null(),
                 std::ptr::null(),

@@ -188,6 +188,28 @@ impl SessionManager {
         ))
     }
 
+    /// 可丢帧广播（非阻塞）：与 [`Self::broadcast`] 同查找逻辑，但走
+    /// SendQueue 的 lo 通道——**满即丢，绝不等待**。调用前提：帧已落
+    /// `chat_event_log` 环（带 seq），丢失可被前端 `chat.sync` 补拉自愈；
+    /// 未落环的帧必须走 `broadcast`。慢客户端隔离墙（BUG 2026-09-22）。
+    pub fn broadcast_droppable(&self, session_id: &str, message: &[u8]) -> Result<(), String> {
+        if let Some(queue) = self.send_queues.get(session_id) {
+            self.touch_session(session_id);
+            return queue.send_droppable(message.to_vec());
+        }
+
+        // 无队列 = 无活跃 WS：droppable 语义下降为 debug（丢帧可补拉，
+        // 与 broadcast 的 warn 不同——单客户端断连不该刷日志）。
+        tracing::debug!(
+            session_id = %session_id,
+            "[WebSocket] droppable: session not found or no send queue"
+        );
+        Err(format!(
+            "session not found or no send queue: {}",
+            session_id
+        ))
+    }
+
     /// Get active session count.
     pub fn active_count(&self) -> usize {
         self.sessions.len()

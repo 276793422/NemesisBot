@@ -85,10 +85,8 @@ async fn dispatch_with_dead_send_queue_warns_and_survives() {
 
     // Build a SendQueue whose receiving side is already dropped → the
     // response send fails into the warn arm.
-    let (tx, rx) = tokio::sync::mpsc::channel::<Vec<u8>>(8);
-    drop(rx);
-    let (_, done_rx) = tokio::sync::watch::channel(false);
-    let queue = crate::websocket_handler::SendQueue::from_channels(tx, done_rx);
+    let (queue, hi_rx, _lo_rx, _done_tx) = crate::websocket_handler::SendQueue::test_channels(8);
+    drop(hi_rx);
 
     let msg = ProtocolMessage::request("echo", "ping", "req-9", Some(serde_json::json!({"x":1})));
 
