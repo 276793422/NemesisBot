@@ -350,6 +350,12 @@ pub fn resolve_cluster_config_path_in_workspace(workspace: &Path) -> PathBuf {
     workspace_config_dir(workspace).join("config.cluster.json")
 }
 
+/// `<workspace>/config/vault.enc` —— 凭据 vault 加密存储（P0 安全升级，
+/// `docs/PLAN/2026-09-22_credential-vault-and-risk-limits.md`；单一真相源）。
+pub fn resolve_vault_path_in_workspace(workspace: &Path) -> PathBuf {
+    workspace_config_dir(workspace).join("vault.enc")
+}
+
 /// Resolve skills config path within a specific workspace.
 pub fn resolve_skills_config_path_in_workspace(workspace: &Path) -> PathBuf {
     workspace_config_dir(workspace).join("config.skills.json")

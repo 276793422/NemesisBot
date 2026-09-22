@@ -1391,6 +1391,13 @@ async fn run_node(
     }
 
     // Start RPC server
+    // P0 vault fail-closed：token 引用解析失败 → 拒绝 bind（宁可没有 RPC，
+    // 不可无认证 RPC）。`cluster node` 整体退出，让运维当场看到错误。
+    if cluster.rpc_reference_broken() {
+        anyhow::bail!(
+            "Cluster RPC auth token 引用解析失败 —— fail-closed：RPC 服务拒绝启动（请修复引用或运行 `nemesisbot vault set <alias>` 后重试）"
+        );
+    }
     let rpc_server_ref = cluster.rpc_server().expect("rpc_server just set").clone();
     if let Err(e) = rpc_server_ref.start().await {
         anyhow::bail!("RPC server error on port {}: {}", rpc_port, e);

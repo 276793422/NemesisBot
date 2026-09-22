@@ -155,6 +155,8 @@ der = { version = "0.7", features = ["alloc", "oid"] }
 # v4 CMS SignedData（Authenticode 对齐，S0-6 选型：builder + 类型化后处理，纯 Rust）
 cms = { version = "0.2", features = ["builder"] }
 aes-gcm = "0.10"
+# 凭据 vault（2026-09-22 P0）：argon2id 口令派生 KEK（Linux/headless 模式）
+argon2 = "0.5"
 rand = "0.8"
 
 # CLI

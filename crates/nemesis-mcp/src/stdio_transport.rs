@@ -60,6 +60,24 @@ impl StdioTransport {
     }
 }
 
+/// P0 vault（B3）：解析 "KEY=VALUE" 列表中可含引用的 VALUE
+/// （vault:/env:/yaml: 前缀经 nemesis-config 全局解析器现查；字面量原样）。
+/// 解析失败的变量跳过（error! 带键名与根因），其余原序返回。
+pub(crate) fn resolved_env(env: &[String]) -> Vec<(String, String)> {
+    let mut out = Vec::with_capacity(env.len());
+    for pair in env {
+        if let Some((k, v)) = pair.split_once('=') {
+            match nemesis_config::resolve_secret_field(v, &format!("mcp.env.{k}")) {
+                Ok(value) => out.push((k.to_string(), value)),
+                Err(e) => {
+                    tracing::error!("[mcp] env {k}: 引用解析失败: {e}（变量未注入）");
+                }
+            }
+        }
+    }
+    out
+}
+
 // ---------------------------------------------------------------------------
 // J3: stdout 行分类（响应 / 通知 / 垃圾行）
 // ---------------------------------------------------------------------------
@@ -119,10 +137,12 @@ impl Transport for StdioTransport {
         cmd.creation_flags(0x0800_0000); // CREATE_NO_WINDOW
 
         // Inject environment variables.
-        for pair in &self.env {
-            if let Some((k, v)) = pair.split_once('=') {
-                cmd.env(k, v);
-            }
+        // P0 vault（B3，2026-09-22 计划）：env VALUE 支持 vault:/env:/yaml:
+        // 引用，spawn 前现查（discover 一次性路径同走本 transport，单一
+        // 消费点）。解析失败的变量跳过并 error!——server 侧会以缺凭据
+        // 响亮失败，日志带根因。解析逻辑抽纯函数便于单测。
+        for (k, value) in resolved_env(&self.env) {
+            cmd.env(k, value);
         }
 
         let mut child = cmd

@@ -639,3 +639,45 @@ time.sleep(5)
 
     let _ = t.close().await;
 }
+
+// ---------------------------------------------------------------------------
+// P0 vault（B3）：env 引用解析（纯函数 resolved_env）
+// ---------------------------------------------------------------------------
+
+/// 字面量原样、vault:/env:/yaml: 引用现查、失败变量跳过（不毒化其余变量）。
+/// 触及全局 vault 解析器槽位的测试互斥（进程单例）。
+static VAULT_SLOT_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+#[test]
+fn resolved_env_literals_references_and_skip() {
+    let _guard = VAULT_SLOT_LOCK.lock().unwrap();
+    // 字面量（含带 '=' 的值）原样通过。
+    let out = super::resolved_env(&["A=plain".into(), "B=x=y=z".into()]);
+    assert_eq!(
+        out,
+        vec![("A".into(), "plain".into()), ("B".into(), "x=y=z".into())]
+    );
+
+    // vault: 引用：装一个测试解析器后现查。
+    nemesis_config::set_global_vault_resolver(std::sync::Arc::new(|alias| {
+        if alias == "db-pass" {
+            Ok("s3cr3t".into())
+        } else {
+            Err(format!("别名不存在: {alias}"))
+        }
+    }));
+    let out = super::resolved_env(&["PASS=vault:db-pass".into(), "BAD=vault:missing".into()]);
+    nemesis_config::clear_global_vault_resolver();
+    assert_eq!(
+        out,
+        vec![("PASS".into(), "s3cr3t".into())],
+        "失败的变量应跳过"
+    );
+}
+
+/// 无 '=' 的坏行直接忽略（现状语义保持）。
+#[test]
+fn resolved_env_ignores_malformed_pair() {
+    let out = super::resolved_env(&["NOSEPARATOR".into()]);
+    assert!(out.is_empty());
+}

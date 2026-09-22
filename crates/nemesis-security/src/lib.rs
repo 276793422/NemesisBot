@@ -61,7 +61,10 @@ pub mod signature;
 #[cfg(feature = "security")]
 pub mod ssrf;
 #[cfg(feature = "security")]
+#[cfg(feature = "security")]
 pub mod types;
+#[cfg(feature = "security")]
+pub mod vault;
 
 #[cfg(feature = "security")]
 pub use approval::{ApprovalManager, ApprovalRequest, ApprovalStatus, MultiProcessApprovalManager};

@@ -52,6 +52,8 @@ pub mod skills;
 pub mod status;
 #[cfg(feature = "desktop")]
 pub mod test_cmd;
+#[cfg(feature = "security")]
+pub mod vault;
 #[cfg(feature = "voice")]
 pub mod voice;
 #[cfg(feature = "workflow")]

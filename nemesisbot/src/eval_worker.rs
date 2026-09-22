@@ -76,6 +76,9 @@ async fn run_inner() -> Result<()> {
     nemesis_config::credentials::set_global_credentials_path(
         nemesis_config::credentials::credentials_path_for_home(&workspace),
     );
+    // P0 vault（B1）：`vault:<alias>` 解析器同点注入（eval 沙箱 home 的 vault）。
+    #[cfg(feature = "security")]
+    crate::vault_runtime::install(&workspace);
     let config_store = Arc::new(nemesis_config::ConfigStore::from_config(cfg, config_path));
 
     // 2. SecurityPlugin: enabled=false → the pipeline short-circuits to allow

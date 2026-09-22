@@ -630,3 +630,39 @@ fn classify_key_source_serializes_without_plaintext() {
         "内联值绝不进序列化输出"
     );
 }
+
+// ---------------------------------------------------------------------------
+// P0 vault（B2/B3）：vault: 引用的旁路防护与来源徽标
+// ---------------------------------------------------------------------------
+
+/// classify_key_source：vault: 分支——kind=vault，reference=别名，值永不出。
+#[test]
+fn classify_key_source_vault_branch() {
+    let ks = super::classify_key_source("vault:openai-main");
+    assert_eq!(ks.kind, "vault");
+    assert_eq!(ks.reference, "openai-main");
+    // 空别名也进 vault 分支（错误形态由解析层负责，徽标只认前缀）。
+    assert_eq!(super::classify_key_source("vault:").kind, "vault");
+}
+
+/// run_import 旁路修复：vault: 引用绝不搬进 credentials.yaml。
+#[test]
+fn run_import_never_downgrades_vault_reference() {
+    let tmp = tempfile::tempdir().unwrap();
+    let config_path = tmp.path().join("config.json");
+    std::fs::write(
+        &config_path,
+        r#"{"model_list":[{"model_name":"m","model":"openai/x","api_key":"vault:keep-me"}]}"#,
+    )
+    .unwrap();
+    let cred_path = tmp.path().join("credentials.yaml");
+
+    let report = super::run_import(&config_path, &cred_path).unwrap();
+    assert_eq!(report.migrated.len(), 0, "vault: 引用不是明文，不得迁移");
+    assert_eq!(report.skipped_reference, 1);
+    // 配置未被改写（引用保持 vault:）。
+    let cfg_text = std::fs::read_to_string(&config_path).unwrap();
+    assert!(cfg_text.contains("vault:keep-me"));
+    // credentials.yaml 不应被创建/写入。
+    assert!(!cred_path.exists());
+}

@@ -105,6 +105,12 @@ impl Tool for MessageTool {
             .to_string()
     }
 
+    // P0 vault（D4）：消息发送参与 mass_message 类别限额——群发风暴的
+    // 量化刹车（配置缺省全关，声明本身零行为）。
+    fn limit_categories(&self) -> &[&str] {
+        &["mass_message"]
+    }
+
     fn parameters(&self) -> serde_json::Value {
         serde_json::json!({
             "type": "object",
@@ -1359,6 +1365,12 @@ impl ExecTool {
 impl Tool for ExecTool {
     fn description(&self) -> String {
         "Execute a shell command and wait for completion".to_string()
+    }
+
+    // P0 vault（D4，2026-09-22 计划 §4）：exec 类工具参与 `security.limits`
+    // 的 exec 类别限额（滑动窗口 + 超限审批升级，见 loop/limits）。
+    fn limit_categories(&self) -> &[&str] {
+        &["exec"]
     }
 
     fn parameters(&self) -> serde_json::Value {
@@ -3368,6 +3380,11 @@ fn extract_html_text(html: &str) -> String {
 impl Tool for WebFetchTool {
     fn description(&self) -> String {
         "Fetch a URL and extract readable content. Use this to get weather info, news, articles, or any web content.".to_string()
+    }
+
+    // P0 vault（D4）：外呼抓取参与 web_fetch 类别限额。
+    fn limit_categories(&self) -> &[&str] {
+        &["web_fetch"]
     }
 
     fn parameters(&self) -> serde_json::Value {

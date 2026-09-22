@@ -237,6 +237,9 @@ pub async fn run(
     nemesis_config::credentials::set_global_credentials_path(
         nemesis_config::credentials::credentials_path_for_home(home),
     );
+    // P0 vault（B1）：`vault:<alias>` 解析器同点注入。
+    #[cfg(feature = "security")]
+    crate::vault_runtime::install(home);
 
     // D-3（复核 2026-09-16）：会话日志平化迁移（SAN-01/D4）——headless 入口
     // 与 gateway 同源执行。写 session_logs 的路径不止 gateway（loop 持久化/

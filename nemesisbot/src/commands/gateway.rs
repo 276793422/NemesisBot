@@ -1513,7 +1513,13 @@ async fn run_relay(home: &std::path::Path, cfg: &nemesis_config::Config) -> Resu
     // 公网只剩 /health + /bridge 接入 + /relay 状态页 + /d/<node_id>/ 隧道。
     let web_config = nemesis_web::server::WebServerConfig {
         listen_addr: format!("{}:{}", web_bind_host, web_port),
-        auth_token: cfg.channels.web.auth_token.clone(),
+        // P0 vault（B3）：auth_token 支持 vault:/env:/yaml: 引用（web server
+        // 侧与 web channel 侧同源解析，两处比较值一致）。鉴权验证类字段：
+        // 解析失败回一次性随机 token（fail-closed，绝不静默回空串关鉴权）。
+        auth_token: crate::common::resolve_auth_token_or_random(
+            &cfg.channels.web.auth_token,
+            "channels.web.auth_token",
+        ),
         cors_origins: vec![],
         ws_path: "/ws".to_string(),
         workspace: Some(home.join("workspace").to_string_lossy().to_string()),
@@ -2746,24 +2752,32 @@ pub async fn run(local: bool, relay: bool, extra_args: &[String]) -> Result<()> 
 
         // Start RPC server (network operation — only when cluster is fully enabled).
         if cluster_should_start {
-            let rpc_server_ref = cluster.rpc_server().expect("rpc_server just set").clone();
-            info!(
-                "[Gateway] Starting RPC server on 0.0.0.0:{}",
-                cluster_app_cfg.rpc_port
-            );
-            // Await start() synchronously — it binds the TCP listener and spawns the
-            // accept loop, then returns. This ensures default handlers are registered
-            // before we overwrite them below.
-            if let Err(e) = rpc_server_ref.start().await {
+            // P0 vault fail-closed：token 引用解析失败 → 拒绝 bind（宁可没有
+            // RPC，不可无认证 RPC）。节点其余功能照常，日志已带补救指引。
+            if cluster.rpc_reference_broken() {
                 error!(
-                    "[Gateway] RPC server error on port {}: {}",
-                    cluster_app_cfg.rpc_port, e
+                    "[Gateway] Cluster RPC auth token 引用解析失败 —— fail-closed：RPC 服务不启动（请修复引用或运行 `nemesisbot vault set <alias>`）"
+                );
+            } else {
+                let rpc_server_ref = cluster.rpc_server().expect("rpc_server just set").clone();
+                info!(
+                    "[Gateway] Starting RPC server on 0.0.0.0:{}",
+                    cluster_app_cfg.rpc_port
+                );
+                // Await start() synchronously — it binds the TCP listener and spawns the
+                // accept loop, then returns. This ensures default handlers are registered
+                // before we overwrite them below.
+                if let Err(e) = rpc_server_ref.start().await {
+                    error!(
+                        "[Gateway] RPC server error on port {}: {}",
+                        cluster_app_cfg.rpc_port, e
+                    );
+                }
+                info!(
+                    "[Gateway] RPC server started on port {}",
+                    cluster_app_cfg.rpc_port
                 );
             }
-            info!(
-                "[Gateway] RPC server started on port {}",
-                cluster_app_cfg.rpc_port
-            );
         }
 
         // Now register custom peer_chat handler using PeerChatHandler.
@@ -3974,7 +3988,13 @@ pub async fn run(local: bool, relay: bool, extra_args: &[String]) -> Result<()> 
     let static_files = crate::embedded::resolve_static_files();
     let web_config = nemesis_web::server::WebServerConfig {
         listen_addr: format!("{}:{}", web_bind_host, web_port),
-        auth_token: cfg.channels.web.auth_token.clone(),
+        // P0 vault（B3）：auth_token 支持 vault:/env:/yaml: 引用（web server
+        // 侧与 web channel 侧同源解析，两处比较值一致）。鉴权验证类字段：
+        // 解析失败回一次性随机 token（fail-closed，绝不静默回空串关鉴权）。
+        auth_token: crate::common::resolve_auth_token_or_random(
+            &cfg.channels.web.auth_token,
+            "channels.web.auth_token",
+        ),
         cors_origins,
         ws_path: "/ws".to_string(),
         workspace: Some(home.join("workspace").to_string_lossy().to_string()),
@@ -4187,7 +4207,12 @@ pub async fn run(local: bool, relay: bool, extra_args: &[String]) -> Result<()> 
                     host: cfg.channels.web.host.clone(),
                     port: cfg.channels.web.port as u16,
                     ws_path: cfg.channels.web.path.clone(),
-                    auth_token: cfg.channels.web.auth_token.clone(),
+                    // P0 vault（B3）：auth_token 支持 vault:/env:/yaml: 引用。
+                    // 鉴权验证类：解析失败回一次性随机 token（fail-closed）。
+                    auth_token: crate::common::resolve_auth_token_or_random(
+                        &cfg.channels.web.auth_token,
+                        "channels.web.auth_token",
+                    ),
                     session_timeout_secs: cfg.channels.web.session_timeout as u64,
                     allow_from: cfg.channels.web.allow_from.clone(),
                 })
@@ -4217,8 +4242,17 @@ pub async fn run(local: bool, relay: bool, extra_args: &[String]) -> Result<()> 
             },
             line: if cfg.channels.line.enabled {
                 Some(nemesis_channels::line::LineConfig {
-                    channel_access_token: cfg.channels.line.channel_access_token.clone(),
-                    channel_secret: cfg.channels.line.channel_secret.clone(),
+                    // P0 vault（B3）：两个字段均支持 vault:/env:/yaml: 引用。
+                    // access_token 是出站调用凭据（保持空串语义）；
+                    // channel_secret 用于签名验证（鉴权验证类 → fail-closed 随机）。
+                    channel_access_token: crate::common::resolve_secret_or_empty(
+                        &cfg.channels.line.channel_access_token,
+                        "channels.line.channel_access_token",
+                    ),
+                    channel_secret: crate::common::resolve_auth_token_or_random(
+                        &cfg.channels.line.channel_secret,
+                        "channels.line.channel_secret",
+                    ),
                     webhook_port: cfg.channels.line.webhook_port as u16,
                     allow_from: cfg.channels.line.allow_from.clone(),
                 })
@@ -4230,7 +4264,12 @@ pub async fn run(local: bool, relay: bool, extra_args: &[String]) -> Result<()> 
                     host: cfg.channels.websocket.host.clone(),
                     port: cfg.channels.websocket.port as u16,
                     path: cfg.channels.websocket.path.clone(),
-                    auth_token: cfg.channels.websocket.auth_token.clone(),
+                    // P0 vault（B3）：auth_token 支持 vault:/env:/yaml: 引用。
+                    // 鉴权验证类：解析失败回一次性随机 token（fail-closed）。
+                    auth_token: crate::common::resolve_auth_token_or_random(
+                        &cfg.channels.websocket.auth_token,
+                        "channels.websocket.auth_token",
+                    ),
                     allow_from: cfg.channels.websocket.allow_from.clone(),
                     sync_to: cfg.channels.websocket.sync_to.clone(),
                 })

@@ -13,9 +13,17 @@ pub mod credentials;
 pub mod hot_reload;
 pub mod provider_resolver;
 pub mod store;
+pub mod vault_ref;
 
 pub use commands::{CommandEntry, CommandsConfig, load_commands_config, save_commands_config};
 pub use hot_reload::HotReloader;
+
+// P0 vault（B1，2026-09-22 计划）：`vault:<alias>` 引用的前缀常量、全局
+// 解析器钩子与通用秘密字段解析（channel/cluster/MCP 消费点共用）。
+pub use vault_ref::{
+    VAULT_PREFIX, VaultResolver, clear_global_vault_resolver, global_vault_resolver,
+    resolve_secret_field, resolve_vault_reference, set_global_vault_resolver,
+};
 
 // Runtime config cache (single source of truth for the live config).
 pub use store::{ConfigHandle, ConfigStore, global, load_live, save_live, set_global};
@@ -2057,6 +2065,23 @@ pub struct SecurityConfig {
     // 未配置不落盘，用户显式选择后才物化。
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub guardian_mode: String,
+    // ── P0 vault（D1，2026-09-22 计划 §4）：声明式量化风险限制 ──────
+    // 类别 → 规则。**缺省空表 = 全关**（A-F4 同款缺省语义：空表不落盘，
+    // 未配置的部署保存一次字节不变）。类别键由工具经
+    // `Tool::limit_categories()` 声明（机制不认识业务名词，工具 declares，
+    // 配置 binds）。窗口 = 滑动窗口（进程内存计数，重启清零——诚实边界，
+    // 见计划 §4）。
+    #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
+    pub limits: std::collections::BTreeMap<String, RateLimitRule>,
+}
+
+/// 单类别的滑动窗口限制规则（P0 D1）。
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct RateLimitRule {
+    /// 窗口内允许的最大次数。
+    pub max: u32,
+    /// 窗口长度（秒）。
+    pub window_secs: u64,
 }
 
 impl Default for SecurityConfig {
@@ -2083,6 +2108,8 @@ impl Default for SecurityConfig {
             exec_unknown_policy: String::new(),
             guardian_failure_policy: String::new(),
             guardian_mode: String::new(),
+            // P0 D1：缺省空表 = 限制全关。
+            limits: std::collections::BTreeMap::new(),
         }
     }
 }

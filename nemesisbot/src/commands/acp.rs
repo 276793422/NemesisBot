@@ -19,6 +19,9 @@ pub async fn run(home: &Path) -> anyhow::Result<()> {
     nemesis_config::credentials::set_global_credentials_path(
         nemesis_config::credentials::credentials_path_for_home(home),
     );
+    // P0 vault（B1）：`vault:<alias>` 解析器同点注入。
+    #[cfg(feature = "security")]
+    crate::vault_runtime::install(home);
 
     crate::acp::run_server(home.to_path_buf())
         .await

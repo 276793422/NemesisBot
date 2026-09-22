@@ -507,9 +507,7 @@ pub fn build_agent_loop(
     // 附 last_seq 供前端剔除「先于快照渲染的 assistant 实时帧」。指向
     // nemesis-web 的 chat_event_log::latest_seq（crate 方向 agent←web 不可
     // 直调，经此闭包注入；gateway.rs 的 install_event_hub 同层装配）。
-    agent_loop.set_chat_seq_lookup(std::sync::Arc::new(
-        nemesis_web::chat_event_log::latest_seq,
-    ));
+    agent_loop.set_chat_seq_lookup(std::sync::Arc::new(nemesis_web::chat_event_log::latest_seq));
     // N1 (devtool-upgrade 阶段 1)：价目表注入——三级 context_window 解析链
     // 的 L2（config 未显式配置时按 max_input_tokens 猜）。打开失败（磁盘
     // 异常）诚实降级为 None → L3 fallback-128k，不阻断 agent 启动。
@@ -958,19 +956,27 @@ fn build_shared_tool_config(
             let any_enabled = web.brave.enabled || web.duckduckgo.enabled || web.perplexity.enabled;
             if any_enabled {
                 Some(nemesis_agent::loop_tools::WebSearchConfig {
+                    // P0 vault（B3）：api_key 支持 vault:/env:/yaml: 引用。
                     brave_api_key: if web.brave.api_key.is_empty() {
                         None
                     } else {
-                        Some(web.brave.api_key.clone())
+                        Some(crate::common::resolve_secret_or_empty(
+                            &web.brave.api_key,
+                            "tools.web.brave.api_key",
+                        ))
                     },
                     brave_max_results: web.brave.max_results.max(1) as usize,
                     brave_enabled: web.brave.enabled,
                     duckduckgo_max_results: web.duckduckgo.max_results.max(1) as usize,
                     duckduckgo_enabled: web.duckduckgo.enabled,
+                    // P0 vault（B3）：api_key 支持 vault:/env:/yaml: 引用。
                     perplexity_api_key: if web.perplexity.api_key.is_empty() {
                         None
                     } else {
-                        Some(web.perplexity.api_key.clone())
+                        Some(crate::common::resolve_secret_or_empty(
+                            &web.perplexity.api_key,
+                            "tools.web.perplexity.api_key",
+                        ))
                     },
                     perplexity_max_results: web.perplexity.max_results.max(1) as usize,
                     perplexity_enabled: web.perplexity.enabled,
@@ -1460,9 +1466,7 @@ pub fn build_cluster_agent_loop(
     // A1（2026-09-22）：环尾 seq 查询注入（与主 loop 同源语义——B 端 loop
     // 虽不走 web history_request，统一注入保持装配一致性，防「这个 loop
     // 为什么没有」的漂移）。
-    agent_loop.set_chat_seq_lookup(std::sync::Arc::new(
-        nemesis_web::chat_event_log::latest_seq,
-    ));
+    agent_loop.set_chat_seq_lookup(std::sync::Arc::new(nemesis_web::chat_event_log::latest_seq));
 
     // D2 (2026-08-24 arch review, U-list D2): enable tool-result spill for
     // the cluster agent too — cluster peer_chat is exactly the long-task /
@@ -1952,9 +1956,7 @@ pub fn build_project_agent_loop(
     agent_loop.set_lsp_manager(shared.lsp_manager.clone());
     // A1（2026-09-22 聊天切会话竞态）：项目 loop 同样注入环尾 seq 查询——
     // 项目会话在 Dashboard 侧切换/轮询的竞态面与主会话完全同构。
-    agent_loop.set_chat_seq_lookup(std::sync::Arc::new(
-        nemesis_web::chat_event_log::latest_seq,
-    ));
+    agent_loop.set_chat_seq_lookup(std::sync::Arc::new(nemesis_web::chat_event_log::latest_seq));
     // N1：价目表注入（context_window L2）——共享主 workspace data 目录。
     match nemesis_data::PricingStore::open(&nemesis_path::workspace_data_dir(&shared.home)) {
         Ok(store) => agent_loop.set_pricing_store(std::sync::Arc::new(store)),

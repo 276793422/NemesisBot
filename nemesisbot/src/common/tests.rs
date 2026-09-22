@@ -1027,3 +1027,34 @@ mod r9_zero {
         );
     }
 }
+
+/// P0 复审（fail-closed，2026-09-21）：鉴权验证类凭据解析失败必须回一次性
+/// 随机 token，绝不回空串——verify_token(expected=空) 对所有请求放行。
+#[test]
+fn resolve_auth_token_or_random_fail_closed_on_broken_reference() {
+    // 本测试触及全局 vault 解析器槽位（进程单例）——持 crate 根锁，
+    // 防 wave_b 等分发测试并发 install 换槽。
+    let _root = crate::GLOBAL_STATE_LOCK.lock().unwrap();
+    nemesis_config::set_global_vault_resolver(std::sync::Arc::new(|alias| {
+        Err(format!("test resolver: {alias} 不存在"))
+    }));
+
+    // 字面量原样通过（成功路径不受影响）。
+    assert_eq!(
+        resolve_auth_token_or_random("plain-tok", "test.field"),
+        "plain-tok"
+    );
+
+    // 破损 vault 引用 → 非空随机 token（≠ 输入；两次调用互异 = 一次性）。
+    let a = resolve_auth_token_or_random("vault:nope-alias", "test.field");
+    let b = resolve_auth_token_or_random("vault:nope-alias", "test.field");
+    assert!(!a.is_empty(), "绝不回空串");
+    assert_ne!(a, "vault:nope-alias");
+    assert_ne!(a, b, "每次启动一次性，不应相同");
+
+    // env: 未设置同样算引用失败 → fail-closed。
+    let c = resolve_auth_token_or_random("env:NEMESISBOT_TEST_DEFINITELY_UNSET_VAR", "test.field");
+    assert!(!c.is_empty());
+
+    nemesis_config::clear_global_vault_resolver();
+}

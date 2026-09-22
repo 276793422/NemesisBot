@@ -7552,3 +7552,91 @@ fn test_register_rpc_peer_no_placeholder_conservative_fallback() {
     assert!(!cluster.register_rpc_peer("node-yangjian-real-b", 0));
     assert!(cluster.get_peer("node-yangjian-real-b").is_none());
 }
+
+// -- P0 vault fail-closed（2026-09-21 复审修复）：token 引用解析失败 →
+// RPC 拒绝无认证运行、discovery 拒绝无加密运行 ------------------------------
+
+/// 安装一个必然失败的解析器（保证确定性，不依赖进程内是否有别的解析器）。
+fn install_failing_vault_resolver() {
+    nemesis_config::set_global_vault_resolver(Arc::new(|alias| {
+        Err(format!("test resolver: alias '{alias}' 不存在"))
+    }));
+}
+
+/// token 是 vault: 引用且解析失败：start() 置位 fail-closed 标志，绑定层
+/// 据此拒绝启动 RPC（节点本体照常运行）。空 token 不置位（既有语义）。
+#[test]
+fn test_load_rpc_auth_token_broken_reference_sets_fail_closed_flag() {
+    install_failing_vault_resolver();
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::create_dir_all(dir.path().join("config")).unwrap();
+    std::fs::write(
+        dir.path().join("config").join("config.cluster.json"),
+        serde_json::json!({"token": "vault:broken-cluster-tok"}).to_string(),
+    )
+    .unwrap();
+    let mut cluster = Cluster::with_workspace(make_config(), dir.path().to_path_buf());
+    let server = Arc::new(crate::rpc::server::RpcServer::new(
+        crate::rpc::server::RpcServerConfig {
+            bind_address: "127.0.0.1:0".into(),
+            ..Default::default()
+        },
+    ));
+    cluster.set_rpc_server(server);
+    cluster.start();
+    assert!(
+        cluster.rpc_reference_broken(),
+        "引用解析失败必须置位 fail-closed 标志"
+    );
+    assert!(cluster.is_running(), "节点本体不受影响（只有 RPC 不 bind）");
+    cluster.stop();
+    nemesis_config::clear_global_vault_resolver();
+}
+
+/// 空字面量 token：不置位 fail-closed（维持"无 token = 无认证"既有语义）。
+#[test]
+fn test_empty_literal_token_does_not_trip_fail_closed() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::create_dir_all(dir.path().join("config")).unwrap();
+    std::fs::write(
+        dir.path().join("config").join("config.cluster.json"),
+        serde_json::json!({"token": ""}).to_string(),
+    )
+    .unwrap();
+    let mut cluster = Cluster::with_workspace(make_config(), dir.path().to_path_buf());
+    cluster.start();
+    assert!(!cluster.rpc_reference_broken());
+    cluster.stop();
+}
+
+/// discovery 密钥引用失败：start_discovery 整体不启动（不存 discovery
+/// 服务、running 标志不置位）——绝不降级为无加密发现。
+#[test]
+fn test_start_discovery_broken_reference_fails_closed() {
+    install_failing_vault_resolver();
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::create_dir_all(dir.path().join("config")).unwrap();
+    std::fs::write(
+        dir.path().join("config").join("config.cluster.json"),
+        serde_json::json!({"token": "vault:broken-disc-tok"}).to_string(),
+    )
+    .unwrap();
+    let mut cluster = Cluster::with_workspace(make_config(), dir.path().to_path_buf());
+    cluster.set_ports(0, 0);
+    cluster.set_broadcast_interval(Duration::from_secs(600));
+    cluster.start();
+    let arc: Arc<Cluster> = Arc::new(cluster);
+    let cb: Arc<dyn ClusterCallbacks> = arc.clone();
+    arc.start_discovery(cb);
+    assert!(arc.rpc_reference_broken());
+    assert!(
+        arc.discovery.lock().is_none(),
+        "fail-closed：discovery 服务不得创建"
+    );
+    assert!(
+        !arc.discovery_running
+            .load(std::sync::atomic::Ordering::SeqCst)
+    );
+    arc.stop();
+    nemesis_config::clear_global_vault_resolver();
+}

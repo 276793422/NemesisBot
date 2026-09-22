@@ -34,6 +34,11 @@ url = "2"
 ipnet = "2"
 ed25519-dalek = { workspace = true }
 rand = { workspace = true }
+# 凭据 vault（2026-09-22 P0）：AES-256-GCM 条目加密 + argon2id 口令模式
+aes-gcm = { workspace = true }
+argon2 = { workspace = true }
+# Windows DPAPI（per-user DEK 包裹）；跨平台核心逻辑与平台绑定分层，绑定仅此一处
+windows-sys = { version = "0.59", features = ["Win32_Foundation", "Win32_Security_Cryptography"] }
 reqwest = { workspace = true }
 futures-util = { version = "0.3", default-features = false, features = ["sink"] }
 tokio-util = { version = "0.7", features = ["rt"] }

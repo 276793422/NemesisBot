@@ -155,6 +155,31 @@ pub(crate) async fn build_security_plugin(
     let sec_config_path = common::security_config_path(home);
     load_security_rules(&plugin, &sec_config_path);
 
+    // P0 vault（D2/D4，2026-09-22 计划 §4）：config.security.json 的 typed
+    // `limits` 段 → agent 限额注册表。缺省空表 = 全关；进程级滑动窗口，
+    // 重启清零（计划 §4 诚实边界）。读失败按未配置处理（缺省语义一致，
+    // 不阻塞启动）。
+    let limit_rules = match nemesis_config::load_security_config(&sec_config_path) {
+        Ok(sec) => {
+            let mut rules = std::collections::BTreeMap::new();
+            for (cat, r) in &sec.limits {
+                rules.insert(
+                    cat.clone(),
+                    nemesis_agent::r#loop::limits::LimitRule {
+                        max: r.max,
+                        window_secs: r.window_secs,
+                    },
+                );
+            }
+            rules
+        }
+        Err(e) => {
+            warn!("[Security] security.limits 读取失败（按未配置处理）: {e}");
+            std::collections::BTreeMap::new()
+        }
+    };
+    nemesis_agent::r#loop::limits::set_rules(limit_rules);
+
     // D1 硬拦保护路径（自杀形态，2026-09-16 用户裁决：不进 exec_unknown_policy
     // 开关）：workspace root + home + `~`。判定在 auditor（命令归一化后扫）。
     // A-F3 豁免（同日用户裁决方案 1）：workspace root 注入为豁免路径——目标
