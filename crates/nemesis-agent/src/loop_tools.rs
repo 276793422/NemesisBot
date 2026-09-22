@@ -5482,7 +5482,27 @@ impl Tool for GitTool {
         };
         let mut cmd_args = base;
         if !extra.is_empty() {
-            cmd_args.extend(extra.split_whitespace());
+            // F3（2026-09-22 审计修复）：读操作此前接受 free-form 选项——
+            // `git diff --output=<path>` 可写任意文件、`--ext-diff` 可让 git
+            // 执行外部 diff 程序，读原语实为写/执行原语。封死规则：`--` 长
+            // 选项与短选项一律拒绝；唯一例外是 schema 文档化的 `-<N>` 纯数字
+            // 形态（log 条数）。读操作传文件路径无需选项。
+            for tok in extra.split_whitespace() {
+                if let Some(rest) = tok.strip_prefix('-')
+                    && (tok.starts_with("--")
+                        || rest.is_empty()
+                        || !rest.bytes().all(|b| b.is_ascii_digit()))
+                {
+                    return Err(format!(
+                        "git read action '{}' does not accept option '{}': read actions take \
+                         only plain file paths (--output/--ext-diff style options would turn \
+                         this read primitive into a write/exec primitive); '-<N>' (log count) \
+                         is the only allowed form",
+                        action, tok
+                    ));
+                }
+                cmd_args.push(tok);
+            }
         }
         self.run_three_state(&cmd_args, action)
     }

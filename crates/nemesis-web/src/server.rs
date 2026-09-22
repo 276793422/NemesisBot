@@ -879,14 +879,40 @@ impl WebServer {
             )
         };
 
-        let mut router = router
-            // CORS layer
-            .layer(if self.config.cors_origins.is_empty() {
-                dev_cors_layer()
-            } else {
-                crate::cors::production_cors_layer(&self.config.cors_origins)
-            })
-            .with_state(state.clone());
+        // F1（2026-09-22 审计修复）：REST 控制面统一鉴权。route_layer 只
+        // 作用于其上已注册的路由（含 /api/internal），静态文件 fallback
+        // 不受影响；豁免清单见 `auth_exempt_path`。relay-only 形态**不挂**：
+        // 其路由面（/bridge、/d/*、/relay、/relay/login、/api/relay/status、
+        // /health）是 relay 自有信任边界（设备/管理侧鉴权在 relay 模块内），
+        // dashboard token 对其无意义，挂上会把 relay 整体 401。
+        let cors = if self.config.cors_origins.is_empty() {
+            dev_cors_layer()
+        } else {
+            crate::cors::production_cors_layer(&self.config.cors_origins)
+        };
+        let mut router = if self.relay_only {
+            router.layer(cors).with_state(state.clone())
+        } else {
+            // 闭包捕获 ws_path（AppState 不携带它，且测试里 120+ 处字面量
+            // 构造 AppState，加字段会大面积破坏）——workflow_chat 豁免只对
+            // WS 路径成立，其余路径照常鉴权。
+            let ws_path = self.config.ws_path.clone();
+            let auth_state = state.clone();
+            router
+                .route_layer(axum::middleware::from_fn(
+                    move |req: axum::extract::Request,
+                          next: axum::middleware::Next| {
+                        let ws_path = ws_path.clone();
+                        let state = auth_state.clone();
+                        async move {
+                            auth_middleware(AxumState(state), req, next, &ws_path).await
+                        }
+                    },
+                ))
+                // CORS layer（外层——preflight OPTIONS 不进鉴权闸）
+                .layer(cors)
+                .with_state(state.clone())
+        };
 
         // Add static file serving if configured（`--relay` 纯中继不挂——
         // dashboard 静态资源无装配价值，未匹配路径一律 404；run_relay 侧
@@ -1997,6 +2023,94 @@ pub async fn dispatch_outbound(bus: Arc<MessageBus>, session_manager: Arc<Sessio
 }
 
 // ---------------------------------------------------------------------------
+// F1（2026-09-22 审计修复）：REST 控制面统一鉴权
+// ---------------------------------------------------------------------------
+
+/// 统一鉴权豁免路径（[`auth_middleware`] 内短路）。
+/// - `/health`、`/api/health`：探活——监控场景无凭据可达是健康检查语义的一部分；
+/// - `/api/share/`：L4 会话分享——token 即凭据（`share.rs` 模块头注释）；
+/// - `/api/board/asset/`：看板资产下载——asset_token 即凭据（`handlers/board_asset.rs` 模块头注释）；
+/// - `/api/workflow/chat/`：独立 workflow-chat 页的公共元数据 + 密码校验
+///   （`handlers/workflow.rs` 注册处注释自认 unauthenticated，凭据是 per-workflow 密码）。
+fn auth_exempt_path(path: &str) -> bool {
+    path == "/health"
+        || path == "/api/health"
+        || path.starts_with("/api/share/")
+        || path.starts_with("/api/board/asset/")
+        || path.starts_with("/api/workflow/chat/")
+}
+
+/// 从请求提取 token：`X-Auth-Token` 头 → `?token=` 查询参数 →
+/// `Authorization: Bearer`。查询参数兜底 EventSource（SSE 无法携带自定义头）。
+fn extract_request_token(req: &axum::extract::Request) -> Option<String> {
+    if let Some(v) = req
+        .headers()
+        .get("x-auth-token")
+        .and_then(|v| v.to_str().ok())
+    {
+        return Some(v.to_string());
+    }
+    #[derive(serde::Deserialize)]
+    struct TokenQuery {
+        token: Option<String>,
+    }
+    if let Ok(q) = axum::extract::Query::<TokenQuery>::try_from_uri(req.uri())
+        && let Some(t) = q.token.as_deref()
+        && !t.is_empty()
+    {
+        return Some(t.to_string());
+    }
+    if let Some(v) = req
+        .headers()
+        .get(axum::http::header::AUTHORIZATION)
+        .and_then(|v| v.to_str().ok())
+        && let Some(t) = v.strip_prefix("Bearer ")
+    {
+        return Some(t.trim().to_string());
+    }
+    None
+}
+
+/// 统一 REST 鉴权中间件（`build_router` 里 `route_layer` 挂载，覆盖其上全部
+/// 已注册路由）。空 expected token 恒放行（`verify_token` 文档化约定——默认
+/// 部署与既有测试零影响）；非空 token 时 REST 与 `/ws` 信任边界一致（此前
+/// token 只保护 `/ws`，`/api/config`、`/api/chat/stream` 等全部裸奔）。
+/// workflow-chat 的 WS 升级（`<ws_path>?workflow_chat=&pwd=`）自带
+/// per-workflow 密码闸（`websocket_handler`），不持 dashboard token——**只对
+/// WS 路径放行**；其余路径带 `workflow_chat=` 照常鉴权（否则构成查询参数
+/// 旁路，任何端点拼上该键即可绕过整个 auth 闸）。
+pub(crate) async fn auth_middleware(
+    AxumState(state): AxumState<Arc<AppState>>,
+    req: axum::extract::Request,
+    next: axum::middleware::Next,
+    ws_path: &str,
+) -> axum::response::Response {
+    let is_workflow_chat_upgrade = req.uri().path() == ws_path
+        && req
+            .uri()
+            .query()
+            .map(|q| q.split('&').any(|p| p.starts_with("workflow_chat=")))
+            .unwrap_or(false);
+    if is_workflow_chat_upgrade || auth_exempt_path(req.uri().path()) {
+        return next.run(req).await;
+    }
+    let token = extract_request_token(&req).unwrap_or_default();
+    if crate::api_handlers::verify_token(&token, &state.auth_token) {
+        next.run(req).await
+    } else {
+        tracing::warn!(
+            path = %req.uri().path(),
+            "[WebServer] REST request rejected: missing or invalid auth token"
+        );
+        (
+            axum::http::StatusCode::UNAUTHORIZED,
+            Json(serde_json::json!({ "error": "unauthorized" })),
+        )
+            .into_response()
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
 
@@ -2009,6 +2123,10 @@ mod agent_event_pump_tests;
 
 #[cfg(all(test, feature = "workflow"))]
 mod extra_tests;
+
+// F1（2026-09-22 审计修复）：统一鉴权中间件测试（无 workflow 依赖）。
+#[cfg(test)]
+mod auth_tests;
 
 // R4 覆盖率（2026-08-27）：workflow/chat/ 路径前缀静态壳 + bind-failed 错误路径。
 #[cfg(test)]

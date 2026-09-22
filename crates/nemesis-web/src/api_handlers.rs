@@ -804,6 +804,16 @@ fn read_log_entries(file_path: &str, n: usize) -> Vec<serde_json::Value> {
 ///
 /// Sensitive keys contain: key, token, secret, password, auth, credential.
 /// Values are replaced with the first 4 chars + "****", or "****" if too short.
+/// 掩码单个秘密值：前 4 字符 + "****"（≤4 字符全掩）。
+fn mask_secret(s: &str) -> String {
+    if s.len() <= 4 {
+        "****".to_string()
+    } else {
+        let end = utils::floor_char_boundary(s, 4);
+        format!("{}****", &s[..end])
+    }
+}
+
 fn sanitize_map(map: &mut serde_json::Map<String, serde_json::Value>) {
     let sensitive_keys = ["key", "token", "secret", "password", "auth", "credential"];
 
@@ -820,26 +830,46 @@ fn sanitize_map(map: &mut serde_json::Map<String, serde_json::Value>) {
         if let Some(value) = map.get_mut(&key) {
             match value {
                 serde_json::Value::String(s) if !s.is_empty() => {
-                    if s.len() <= 4 {
-                        *value = serde_json::Value::String("****".to_string());
-                    } else {
-                        let end = utils::floor_char_boundary(s, 4);
-                        *value = serde_json::Value::String(format!("{}****", &s[..end]));
+                    *value = serde_json::Value::String(mask_secret(s));
+                }
+                // F2（2026-09-22 审计修复）：敏感键下的对象**和数组**都要递归
+                // ——config 的 `model_list[]` 每项带 `api_key`，此前数组落
+                // `_ => {}` 从未被访问，明文原样返回（F2）。
+                // 复核补严（同日）：数组里的**字符串元素**直接掩码（如
+                // `api_keys: ["sk-…"]`），对象/数组元素继续按键递归。
+                serde_json::Value::Array(arr) => {
+                    for item in arr.iter_mut() {
+                        match item {
+                            serde_json::Value::String(s) if !s.is_empty() => {
+                                *item = serde_json::Value::String(mask_secret(s));
+                            }
+                            other => sanitize_value(other),
+                        }
                     }
                 }
-                serde_json::Value::Object(inner_map) => {
-                    sanitize_map(inner_map);
-                }
-                _ => {}
+                value => sanitize_value(value),
             }
         }
     }
 
-    // Also recurse into any remaining object values
+    // Also recurse into any remaining object/array values
     for value in map.values_mut() {
-        if let serde_json::Value::Object(inner_map) = value {
-            sanitize_map(inner_map);
+        sanitize_value(value);
+    }
+}
+
+/// F2（2026-09-22 审计修复）：递归脱敏任意 JSON 值——对象进 `sanitize_map`，
+/// 数组逐元素下钻。此前只下钻 `Value::Object`，数组内的对象（如
+/// `model_list[]` 条目的 `api_key`）永远不可达，明文泄露。
+fn sanitize_value(value: &mut serde_json::Value) {
+    match value {
+        serde_json::Value::Object(inner_map) => sanitize_map(inner_map),
+        serde_json::Value::Array(arr) => {
+            for item in arr.iter_mut() {
+                sanitize_value(item);
+            }
         }
+        _ => {}
     }
 }
 

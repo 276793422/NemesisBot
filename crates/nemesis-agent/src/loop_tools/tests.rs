@@ -4831,11 +4831,23 @@ async fn git_tool_log_with_extra_args_and_branch() {
     let tool = GitTool::new(cwd.clone());
     let ctx = script_ctx();
 
+    // F3（2026-09-22 审计修复）：读操作只接受 `-<N>` 数字形态与纯路径；
+    // 旧 free-form 选项（本用例此前的 `-3 --no-color`）从根上封死——
+    // `--output=`/`--ext-diff` 等会把读原语变成写/执行原语。
     let log = tool
+        .execute(r#"{"action":"log","args":"-3"}"#, &ctx)
+        .await
+        .expect("log with numeric count should run in a real repo");
+    assert!(!log.trim().is_empty(), "log output should have commits");
+
+    let rejected = tool
         .execute(r#"{"action":"log","args":"-3 --no-color"}"#, &ctx)
         .await
-        .expect("log with extra args should run in a real repo");
-    assert!(!log.trim().is_empty(), "log output should have commits");
+        .expect_err("long options must be rejected on read actions");
+    assert!(
+        rejected.contains("does not accept option"),
+        "expected option rejection, got: {rejected}"
+    );
 
     let branch = tool
         .execute(r#"{"action":"branch"}"#, &ctx)
