@@ -2106,13 +2106,17 @@ pub async fn dispatch_outbound(bus: Arc<MessageBus>, session_manager: Arc<Sessio
 /// - `/api/share/`：L4 会话分享——token 即凭据（`share.rs` 模块头注释）；
 /// - `/api/board/asset/`：看板资产下载——asset_token 即凭据（`handlers/board_asset.rs` 模块头注释）；
 /// - `/api/workflow/chat/`：独立 workflow-chat 页的公共元数据 + 密码校验
-///   （`handlers/workflow.rs` 注册处注释自认 unauthenticated，凭据是 per-workflow 密码）。
+///   （`handlers/workflow.rs` 注册处注释自认 unauthenticated，凭据是 per-workflow 密码）；
+/// - `/api/sdk/`：SDK 源码包/pip 包下载——公开静态产物（与 GitHub release 资产同性质，
+///   外部消费者没有 dashboard token，token 闸 = 端点失效；2026-09-22 统一鉴权上线
+///   时漏列，CI integration-test `ui/p2_sdk_http` 钉住的公开契约当场红）。
 fn auth_exempt_path(path: &str) -> bool {
     path == "/health"
         || path == "/api/health"
         || path.starts_with("/api/share/")
         || path.starts_with("/api/board/asset/")
         || path.starts_with("/api/workflow/chat/")
+        || path.starts_with("/api/sdk/")
 }
 
 /// 从请求提取 token：`X-Auth-Token` 头 → `?token=` 查询参数 →

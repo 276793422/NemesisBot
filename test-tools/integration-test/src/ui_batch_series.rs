@@ -568,10 +568,10 @@ pub async fn test_ui_p2_sdk_http() -> Vec<TestResult> {
 
     for path in ["/api/sdk/export", "/api/sdk/pip"] {
         let tag = path.replace('/', "_");
-        // 无 token → 200（端点按设计公开：整个 /api/* GET 面无全局鉴权层，
-        // auth 在 WS 层/个别 handler；SDK 两路由是无状态静态产物下载，与
-        // /api/version、/api/config 同级。首跑曾误断言 401 —— 预期写错，
-        // 非产品 bug，2026-08-24 修正。）
+        // 无 token → 200（端点按设计公开：SDK 两路由是无状态静态产物下载，
+        // 外部消费者没有 dashboard token——auth_exempt_path 豁免清单成员
+        // （2026-09-22 REST 统一鉴权上线当日补列）。首跑曾误断言 401 ——
+        // 预期写错，非产品 bug，2026-08-24 修正。）
         let (status, _) = http_get(path, false).await;
         results.push(if status == 200 {
             pass(&format!("{}/public_200{tag}", suite), "200")
