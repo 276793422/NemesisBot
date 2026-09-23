@@ -73,7 +73,12 @@ pub fn capabilities() -> GeneratorCapabilities {
                 "max_tokens".into(),
                 "system_prompt".into(),
             ],
-            config_notes: "prompt/system_prompt 支持 {{var}} 模板；model 缺省用当前默认模型"
+            config_notes: "prompt/system_prompt 支持 {{var}} 模板与 env:/yaml:/vault: 整值凭据引用；\
+                           max_tokens 过小会被推理模型思维链耗尽（建议 ≥2000）；\
+                           空文本输出节点会 Failed；输出字段是 text（另有 model/finish_reason/usage），\
+                           下游引用写作 {{节点id.text}}；model 缺省用当前默认模型，\
+                           若填写必须是具体模型名（vendor/model 格式，`model list` 可查），\
+                           不要填档位名（small/big 等）否则模型不存在直接失败"
                 .into(),
         },
         NodeCapability {
@@ -121,7 +126,11 @@ pub fn capabilities() -> GeneratorCapabilities {
                 "headers".into(),
                 "timeout_secs".into(),
             ],
-            config_notes: "method ∈ GET/POST/PUT/PATCH/DELETE/HEAD 缺省 GET；headers 是对象；timeout_secs 缺省 30；url/body/header 值支持 {{var}}".into(),
+            config_notes: "method ∈ GET/POST/PUT/PATCH/DELETE/HEAD 缺省 GET；headers 是对象；\
+                           timeout_secs 缺省 30；url/body/header 值支持 {{var}} 与 env:/yaml:/vault: \
+                           整值凭据引用；status ≥400 默认节点 Failed（fail_on_http_error: false 显式退出）；\
+                           输出字段是 body/status_code/headers，下游引用写作 {{节点id.body}}"
+                .into(),
         },
         NodeCapability {
             node_type: "script".into(),
@@ -214,9 +223,20 @@ pub fn capabilities() -> GeneratorCapabilities {
             .into(),
         "依赖顺序可用 depends_on 显式声明（除边之外的控制流）；两机制可并存但不要冗余"
             .into(),
-        "节点间传值用 {{节点id.字段}} 或 {{变量名}} 模板占位符（执行上下文变量）".into(),
+        "节点间传值用模板占位符：上游 http 节点字段 {{节点id.body}} / {{节点id.status_code}}，\
+         llm 节点 {{节点id.text}}，{{节点id}} 展开为该节点整个输出 JSON；\
+         工作流变量与触发器入参用 {{变量名}}。没有 .output 这个字段——\
+         写 {{节点id.output}} 不会被替换，只会把字面量发给下游"
+            .into(),
         "工作流 name 用英文标识符风格（会作为文件名落盘，sanitize 只保留安全字符）".into(),
         "triggers 可为空数组（手动运行 / workflow_run 工具 / 对话测试驱动）；trigger_type 只能取声明的四种"
+            .into(),
+        "诚实失败契约：产出文本/调用的节点空产出或应用层错误即 Failed（llm 空文本、http ≥400、agent 空响应），\
+         执行随节点失败而失败——配置要让节点有把握产出，不要依赖静默通过"
+            .into(),
+        "凭据引用是模板语言能力：所有节点字符串配置支持 env:/yaml:/vault: 整值引用（运行时现查，失败即节点 Failed）；\
+         引用必须整值（不支持内嵌如 Bearer vault:x——把 Bearer 放进被引用的值或用模板变量）；\
+         优先用引用而非明文，凭据不落工作流 YAML"
             .into(),
     ];
 

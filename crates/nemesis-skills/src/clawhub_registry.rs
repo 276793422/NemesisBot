@@ -39,10 +39,23 @@ impl ClawHubRegistry {
     }
 
     /// Create a new ClawHub registry with custom URLs.
+    ///
+    /// 空 URL 回填默认值是本函数的职责（唯一 chokepoint）：配置层
+    /// （serde 缺省空串）与 `registry.rs` 直构造两条路径都从这里过，
+    /// 避免 `new_from_config` 回填、直构造不回填的分叉——后者曾让
+    /// 空 base_url 直达 reqwest 报 "builder error"（2026-09-23 BUG 清账类 D）。
     pub fn with_urls(base_url: &str, convex_url: &str, convex_site_url: &str) -> Self {
         Self {
-            base_url: base_url.to_string(),
-            convex_url: convex_url.to_string(),
+            base_url: if base_url.is_empty() {
+                DEFAULT_CLAWHUB_URL.to_string()
+            } else {
+                base_url.to_string()
+            },
+            convex_url: if convex_url.is_empty() {
+                DEFAULT_CONVEX_URL.to_string()
+            } else {
+                convex_url.to_string()
+            },
             convex_site_url: convex_site_url.to_string(),
             client: Client::builder()
                 .timeout(Duration::from_secs(30))
@@ -53,35 +66,23 @@ impl ClawHubRegistry {
 
     /// Create a new ClawHub registry from a ClawHubConfig.
     ///
-    /// Mirrors Go's `NewClawHubRegistry(cfg)` constructor.
+    /// Mirrors Go's `NewClawHubRegistry(cfg)` constructor. URL 回填委托
+    /// `with_urls`（唯一 chokepoint），这里只保留 config 的超时覆盖。
     pub fn new_from_config(config: &crate::types::ClawHubConfig) -> Self {
-        let base_url = if config.base_url.is_empty() {
-            DEFAULT_CLAWHUB_URL.to_string()
-        } else {
-            config.base_url.clone()
-        };
+        let mut registry = Self::with_urls(
+            &config.base_url,
+            &config.convex_url,
+            &config.convex_site_url,
+        );
 
-        let convex_url = if config.convex_url.is_empty() {
-            DEFAULT_CONVEX_URL.to_string()
-        } else {
-            config.convex_url.clone()
-        };
-
-        let timeout = if config.timeout_secs > 0 {
-            Duration::from_secs(config.timeout_secs)
-        } else {
-            Duration::from_secs(30)
-        };
-
-        Self {
-            base_url,
-            convex_url,
-            convex_site_url: config.convex_site_url.clone(),
-            client: Client::builder()
-                .timeout(timeout)
+        if config.timeout_secs > 0 {
+            registry.client = Client::builder()
+                .timeout(Duration::from_secs(config.timeout_secs))
                 .build()
-                .expect("failed to build HTTP client"),
+                .expect("failed to build HTTP client");
         }
+
+        registry
     }
 
     /// Get the registry name.

@@ -4926,3 +4926,73 @@ fn history_search_tool_metadata() {
         "HistorySearchTool does not override is_read_only (trait default false)"
     );
 }
+
+#[cfg(feature = "workflow")]
+#[tokio::test]
+async fn workflow_create_tool_surfaces_lint_warnings_in_hints() {
+    // 2026-09-23 计划类 C：DraftSummary.warnings 进工具响应 hints，
+    // 生成器按「修了重存」回路当轮自纠。
+    use nemesis_providers::router::LLMProvider;
+    use nemesis_workflow::engine::WorkflowEngine;
+
+    struct NullP;
+    #[async_trait::async_trait]
+    impl LLMProvider for NullP {
+        async fn chat(
+            &self,
+            _: &[nemesis_providers::types::Message],
+            _: &[nemesis_providers::types::ToolDefinition],
+            _: &str,
+            _: &nemesis_providers::types::ChatOptions,
+        ) -> Result<nemesis_providers::types::LLMResponse, nemesis_providers::failover::FailoverError>
+        {
+            unimplemented!("create 只落草稿，不触发 LLM")
+        }
+        fn default_model(&self) -> &str {
+            "null"
+        }
+        fn name(&self) -> &str {
+            "null"
+        }
+    }
+
+    let tmp = TempDir::new().unwrap();
+    let defs = tmp.path().join("definitions");
+    std::fs::create_dir_all(&defs).unwrap();
+    let engine = WorkflowEngine::new_integrated_with_dirs(
+        std::sync::Arc::new(NullP) as std::sync::Arc<dyn LLMProvider>,
+        std::sync::Arc::new(nemesis_tools::registry::ToolRegistry::new()),
+        None,
+        None,
+    );
+    engine.set_workflow_defs_dir(defs);
+
+    let tool = WorkflowCreateTool::new(engine);
+    let ctx = RequestContext::new("web", "chat1", "user1", "sess1");
+    let args = serde_json::json!({
+        "definition": {
+            "name": "risky-wf",
+            "description": "generated",
+            "triggers": [],
+            "nodes": [
+                {"id": "n1", "node_type": "llm",
+                 "config": {"prompt": "hi", "max_tokens": 200}, "is_terminal": true}
+            ],
+            "edges": []
+        }
+    });
+
+    let raw = tool.execute(&args.to_string(), &ctx).await.unwrap();
+    let payload: serde_json::Value = serde_json::from_str(&raw).unwrap();
+
+    assert_eq!(payload["status"], "draft_saved");
+    let hints = payload["hints"].as_array().unwrap();
+    let warning_hints: Vec<&str> = hints
+        .iter()
+        .filter_map(|h| h.as_str())
+        .filter(|h| h.starts_with("warning:"))
+        .collect();
+    assert_eq!(warning_hints.len(), 2, "{hints:?}");
+    assert!(warning_hints[0].contains("max_tokens=200"));
+    assert!(warning_hints.iter().any(|h| h.contains("run_now")));
+}

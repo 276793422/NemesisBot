@@ -66,6 +66,15 @@ pub fn resolve_vault_reference(value: &str) -> Option<std::result::Result<String
     }
 }
 
+/// `value` 是否为整值秘密引用（`env:` / `yaml:` / `vault:` 前缀）。
+///
+/// 前缀清单的唯一判定点：新增前缀时只改这里与 [`resolve_secret_field`]，
+/// 消费方（如工作流模板层，2026-09-23 计划类 B）以本函数做整值识别，
+/// 不自行维护前缀列表。
+pub fn is_secret_reference(value: &str) -> bool {
+    value.starts_with("env:") || value.starts_with("yaml:") || value.starts_with(VAULT_PREFIX)
+}
+
 /// 通用秘密字段解析（P0 B3）：channel token / cluster token / MCP
 /// env、headers 等字段共用。前缀链与 `resolve_api_key_value` 对齐：
 /// `env:VAR` > `yaml:<alias>` > `vault:<alias>` > 字面量（向后兼容）。

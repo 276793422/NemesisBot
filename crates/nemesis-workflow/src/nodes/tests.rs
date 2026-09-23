@@ -1665,6 +1665,8 @@ struct StubProvider {
     default_model: String,
     response: String,
     fail_with: Option<String>,
+    finish_reason: String,
+    reasoning: Option<String>,
     last_model: std::sync::Mutex<Option<String>>,
     last_options: std::sync::Mutex<Option<ChatOptions>>,
     last_messages: std::sync::Mutex<Vec<Message>>,
@@ -1677,10 +1679,24 @@ impl StubProvider {
             default_model: model.to_string(),
             response: response.to_string(),
             fail_with: None,
+            finish_reason: "stop".to_string(),
+            reasoning: None,
             last_model: std::sync::Mutex::new(None),
             last_options: std::sync::Mutex::new(None),
             last_messages: std::sync::Mutex::new(Vec::new()),
         }
+    }
+
+    /// Override finish_reason (e.g. "length" for reasoning-budget exhaustion).
+    fn with_finish_reason(mut self, fr: &str) -> Self {
+        self.finish_reason = fr.to_string();
+        self
+    }
+
+    /// Attach reasoning_content (thinking-mode models).
+    fn with_reasoning(mut self, r: &str) -> Self {
+        self.reasoning = Some(r.to_string());
+        self
     }
 
     fn failing(name: &str, model: &str, err: &str) -> Self {
@@ -1689,6 +1705,8 @@ impl StubProvider {
             default_model: model.to_string(),
             response: String::new(),
             fail_with: Some(err.to_string()),
+            finish_reason: "stop".to_string(),
+            reasoning: None,
             last_model: std::sync::Mutex::new(None),
             last_options: std::sync::Mutex::new(None),
             last_messages: std::sync::Mutex::new(Vec::new()),
@@ -1719,14 +1737,14 @@ impl LLMProvider for StubProvider {
         Ok(LLMResponse {
             content: self.response.clone(),
             tool_calls: Vec::new(),
-            finish_reason: "stop".to_string(),
+            finish_reason: self.finish_reason.clone(),
             usage: Some(nemesis_providers::types::UsageInfo {
                 prompt_tokens: 10,
                 completion_tokens: 5,
                 total_tokens: 15,
                 ..Default::default()
             }),
-            reasoning_content: None,
+            reasoning_content: self.reasoning.clone(),
             extra: HashMap::new(),
             raw_request_body: None,
             raw_response_body: None,
@@ -4532,7 +4550,12 @@ fn w4a_script_executor_default_and_with_tools_and_world_ctors() {
 fn w4a_resolve_template_value_array_arm() {
     let mut ctx = HashMap::new();
     ctx.insert("a".to_string(), serde_json::json!("v"));
-    let out = resolve_template_value(&serde_json::json!(["{{a}}", 1, {"k": "{{a}}"}, null]), &ctx);
+    let out = resolve_template_value(
+        &serde_json::json!(["{{a}}", 1, {"k": "{{a}}"}, null]),
+        &ctx,
+        "test",
+    )
+    .unwrap();
     assert_eq!(out, serde_json::json!(["v", 1, {"k": "v"}, null]));
 }
 
@@ -5053,4 +5076,335 @@ fn w4a_is_truthy_str_arms() {
     assert!(is_truthy_str("x"));
     assert!(is_truthy_str("00"));
     assert!(is_truthy_str(" true "));
+}
+
+// ---------------------------------------------------------------------------
+// 诚实失败契约与凭据引用（2026-09-23 计划 A1/A2/A3/B）回归测试
+// ---------------------------------------------------------------------------
+
+/// 可配状态码的一次性 HTTP 服务器（A2 用）：返回 `status` 与 `body`。
+fn wf_status_http_server(
+    status: u16,
+    reason: &'static str,
+    body: &'static str,
+    conns: usize,
+) -> u16 {
+    use std::io::{Read, Write};
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = listener.local_addr().unwrap().port();
+    std::thread::spawn(move || {
+        for _ in 0..conns {
+            let Ok((mut stream, _)) = listener.accept() else {
+                return;
+            };
+            let mut buf = [0u8; 4096];
+            let _ = stream.read(&mut buf);
+            let resp = format!(
+                "HTTP/1.1 {status} {reason}\r\nContent-Type: text/plain\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                body.len(),
+                body
+            );
+            let _ = stream.write_all(resp.as_bytes());
+            let _ = stream.flush();
+        }
+    });
+    port
+}
+
+/// 记录请求头的一次性 HTTP 服务器（B 凭据引用上线验证用）：
+/// 返回端口与共享缓冲（收到的原始请求头）。
+fn wf_capture_http_server(conns: usize) -> (u16, std::sync::Arc<std::sync::Mutex<String>>) {
+    use std::io::{Read, Write};
+    use std::sync::{Arc, Mutex};
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = listener.local_addr().unwrap().port();
+    let captured: Arc<Mutex<String>> = Arc::new(Mutex::new(String::new()));
+    let sink = Arc::clone(&captured);
+    std::thread::spawn(move || {
+        for _ in 0..conns {
+            let Ok((mut stream, _)) = listener.accept() else {
+                return;
+            };
+            let mut buf = vec![0u8; 8192];
+            let n = stream.read(&mut buf).unwrap_or(0);
+            *sink.lock().unwrap() = String::from_utf8_lossy(&buf[..n]).to_string();
+            let _ = std::io::Write::write_all(
+                &mut stream,
+                b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\nok",
+            );
+            let _ = stream.flush();
+        }
+    });
+    (port, captured)
+}
+
+// ---- A1：llm 空文本三态 ----
+
+#[tokio::test]
+async fn a1_llm_empty_text_with_length_fails_naming_budget() {
+    let provider = Arc::new(
+        StubProvider::success("stub", "glm-reasoning", "")
+            .with_finish_reason("length")
+            .with_reasoning("让我想想这个问题的答案……"),
+    );
+    let exec = RealLLMNodeExecutor::new(Arc::clone(&provider) as Arc<dyn LLMProvider>);
+    let mut config = llm_config_prompt_only("Hi");
+    config.insert("max_tokens".to_string(), serde_json::json!(200u64));
+    let node = make_node("n1", "llm", config);
+
+    let result = exec
+        .execute(&node, &HashMap::new(), &empty_wf_ctx())
+        .await
+        .unwrap();
+
+    assert_eq!(result.state, ExecutionState::Failed);
+    let err = result.error.as_deref().unwrap();
+    assert!(err.contains("max_tokens=200"), "{err}");
+    assert!(err.contains("2000"), "{err}");
+    // 诊断信息保留在 output
+    assert_eq!(result.output["model"], "glm-reasoning");
+    assert_eq!(result.output["finish_reason"], "length");
+    assert!(
+        result.output["reasoning_preview"]
+            .as_str()
+            .unwrap()
+            .contains("让我想想")
+    );
+}
+
+#[tokio::test]
+async fn a1_llm_empty_text_with_stop_fails_plainly() {
+    let provider = Arc::new(StubProvider::success("stub", "m", ""));
+    let exec = RealLLMNodeExecutor::new(Arc::clone(&provider) as Arc<dyn LLMProvider>);
+    let node = make_node("n1", "llm", llm_config_prompt_only("Hi"));
+
+    let result = exec
+        .execute(&node, &HashMap::new(), &empty_wf_ctx())
+        .await
+        .unwrap();
+
+    assert_eq!(result.state, ExecutionState::Failed);
+    assert!(result.error.as_deref().unwrap().contains("空文本"));
+}
+
+#[tokio::test]
+async fn a1_llm_truncated_but_nonempty_text_stays_completed() {
+    let provider =
+        Arc::new(StubProvider::success("stub", "m", "partial answer").with_finish_reason("length"));
+    let exec = RealLLMNodeExecutor::new(Arc::clone(&provider) as Arc<dyn LLMProvider>);
+    let node = make_node("n1", "llm", llm_config_prompt_only("Hi"));
+
+    let result = exec
+        .execute(&node, &HashMap::new(), &empty_wf_ctx())
+        .await
+        .unwrap();
+
+    assert_eq!(result.state, ExecutionState::Completed);
+    assert_eq!(result.output["text"], "partial answer");
+}
+
+// ---- A3：agent 空响应 ----
+
+#[tokio::test]
+async fn a3_agent_empty_response_fails() {
+    let runner = Arc::new(StubAgentRunner::success("", &[]));
+    let exec = AgentNodeExecutor::new(Arc::clone(&runner) as Arc<dyn AgentRunner>);
+    let node = make_node("n1", "agent", agent_config("do it"));
+
+    let result = exec
+        .execute(&node, &HashMap::new(), &empty_wf_ctx())
+        .await
+        .unwrap();
+
+    assert_eq!(result.state, ExecutionState::Failed);
+    let err = result.error.as_deref().unwrap();
+    assert!(err.contains("空响应") && err.contains("agent_id"), "{err}");
+}
+
+// ---- A2：http ≥400 默认 Failed ----
+
+#[tokio::test]
+async fn a2_http_404_fails_by_default_and_keeps_output() {
+    let port = wf_status_http_server(404, "Not Found", "missing", 1);
+    let exec = HTTPNodeExecutor;
+    let mut config = HashMap::new();
+    config.insert(
+        "url".to_string(),
+        serde_json::json!(format!("http://127.0.0.1:{}/gone", port)),
+    );
+    let node = make_node("n1", "http", config);
+
+    let result = exec
+        .execute(&node, &HashMap::new(), &empty_wf_ctx())
+        .await
+        .unwrap();
+
+    assert_eq!(result.state, ExecutionState::Failed);
+    let err = result.error.as_deref().unwrap();
+    assert!(
+        err.contains("404") && err.contains("fail_on_http_error"),
+        "{err}"
+    );
+    // 完整响应保留在 output 供诊断
+    assert_eq!(result.output["status_code"].as_u64().unwrap(), 404);
+    assert_eq!(result.output["body"].as_str().unwrap(), "missing");
+}
+
+#[tokio::test]
+async fn a2_http_401_completed_with_explicit_opt_out() {
+    let port = wf_status_http_server(401, "Unauthorized", "no token", 1);
+    let exec = HTTPNodeExecutor;
+    let mut config = HashMap::new();
+    config.insert(
+        "url".to_string(),
+        serde_json::json!(format!("http://127.0.0.1:{}/auth", port)),
+    );
+    config.insert("fail_on_http_error".to_string(), serde_json::json!(false));
+    let node = make_node("n1", "http", config);
+
+    let result = exec
+        .execute(&node, &HashMap::new(), &empty_wf_ctx())
+        .await
+        .unwrap();
+
+    assert_eq!(result.state, ExecutionState::Completed);
+    assert_eq!(result.output["status_code"].as_u64().unwrap(), 401);
+}
+
+// ---- B：凭据引用 ----
+
+#[tokio::test]
+async fn b_llm_prompt_env_ref_resolves_at_runtime() {
+    const VAR: &str = "WF_B_LLM_TOKEN";
+    // SAFETY: 测试专用变量名，全仓无其他读写点；设置后立即使用并清理。
+    unsafe { std::env::set_var(VAR, "resolved-secret-42") };
+    let provider = Arc::new(StubProvider::success("stub", "m", "ok"));
+    let exec = RealLLMNodeExecutor::new(Arc::clone(&provider) as Arc<dyn LLMProvider>);
+    let node = make_node("n1", "llm", llm_config_prompt_only("env:WF_B_LLM_TOKEN"));
+
+    let result = exec
+        .execute(&node, &HashMap::new(), &empty_wf_ctx())
+        .await
+        .unwrap();
+    assert_eq!(result.state, ExecutionState::Completed);
+
+    let sent = provider
+        .last_messages
+        .lock()
+        .unwrap()
+        .last()
+        .unwrap()
+        .clone();
+    assert_eq!(sent.content, "resolved-secret-42");
+    // SAFETY: 同上。
+    unsafe { std::env::remove_var(VAR) };
+}
+
+#[tokio::test]
+async fn b_http_header_env_ref_reaches_the_wire_resolved() {
+    const VAR: &str = "WF_B_HTTP_TOKEN";
+    // SAFETY: 测试专用变量名，全仓无其他读写点。
+    unsafe { std::env::set_var(VAR, "wire-secret-7") };
+    let (port, captured) = wf_capture_http_server(1);
+    let exec = HTTPNodeExecutor;
+    let mut config = HashMap::new();
+    config.insert(
+        "url".to_string(),
+        serde_json::json!(format!("http://127.0.0.1:{}/protected", port)),
+    );
+    config.insert(
+        "headers".to_string(),
+        serde_json::json!({"Authorization": "env:WF_B_HTTP_TOKEN"}),
+    );
+    let node = make_node("n1", "http", config);
+
+    let result = exec
+        .execute(&node, &HashMap::new(), &empty_wf_ctx())
+        .await
+        .unwrap();
+    assert_eq!(result.state, ExecutionState::Completed);
+
+    let wire = captured.lock().unwrap().to_lowercase();
+    assert!(wire.contains("authorization: wire-secret-7"), "{wire}");
+    // SAFETY: 同上。
+    unsafe { std::env::remove_var(VAR) };
+}
+
+#[tokio::test]
+async fn b_http_header_env_ref_unset_fails_loud_with_field_context() {
+    const VAR: &str = "WF_B_UNSET_TOKEN";
+    // SAFETY: 测试专用变量名，全仓无其他读写点。
+    unsafe { std::env::remove_var(VAR) };
+    let exec = HTTPNodeExecutor;
+    let mut config = HashMap::new();
+    config.insert("url".to_string(), serde_json::json!("http://127.0.0.1:1/x"));
+    config.insert(
+        "headers".to_string(),
+        serde_json::json!({"Authorization": "env:WF_B_UNSET_TOKEN"}),
+    );
+    let node = make_node("n1", "http", config);
+
+    let result = exec
+        .execute(&node, &HashMap::new(), &empty_wf_ctx())
+        .await
+        .unwrap();
+
+    assert_eq!(result.state, ExecutionState::Failed);
+    let err = result.error.as_deref().unwrap();
+    assert!(err.contains("http.headers.Authorization"), "{err}");
+    assert!(err.contains("未设置"), "{err}");
+}
+
+#[tokio::test]
+async fn b_vault_ref_without_resolver_fails_loud() {
+    nemesis_config::clear_global_vault_resolver();
+    let exec = RealLLMNodeExecutor::new(
+        Arc::new(StubProvider::success("s", "m", "ok")) as Arc<dyn LLMProvider>
+    );
+    let node = make_node("n1", "llm", llm_config_prompt_only("vault:no-such-alias"));
+
+    let result = exec
+        .execute(&node, &HashMap::new(), &empty_wf_ctx())
+        .await
+        .unwrap();
+
+    assert_eq!(result.state, ExecutionState::Failed);
+    assert!(result.error.as_deref().unwrap().contains("vault"));
+}
+
+#[tokio::test]
+async fn b_data_flow_values_are_not_reinterpreted_as_credentials() {
+    // 节点输出值以 env: 开头流经 {{var}} —— 不得被二次解释成凭据引用。
+    const TRAP: &str = "WF_B_TRAP_VAR";
+    // SAFETY: 测试专用变量名，全仓无其他读写点。
+    unsafe { std::env::set_var(TRAP, "sentinel-must-not-appear") };
+    let provider = Arc::new(StubProvider::success("stub", "m", "env:WF_B_TRAP_VAR"));
+    let exec = RealLLMNodeExecutor::new(Arc::clone(&provider) as Arc<dyn LLMProvider>);
+
+    // 上游 llm 节点产出 "env:WF_B_TRAP_VAR"（有文本，Completed），
+    // 下游节点 prompt 为 "{{text}}" —— 替换后不得再走凭据解析。
+    let upstream = make_node("up", "llm", llm_config_prompt_only("produce"));
+    let up_result = exec
+        .execute(&upstream, &HashMap::new(), &empty_wf_ctx())
+        .await
+        .unwrap();
+    assert_eq!(up_result.state, ExecutionState::Completed);
+
+    let mut context = HashMap::new();
+    context.insert("text".to_string(), serde_json::json!("env:WF_B_TRAP_VAR"));
+    let downstream = make_node("down", "llm", llm_config_prompt_only("{{text}}"));
+    exec.execute(&downstream, &context, &empty_wf_ctx())
+        .await
+        .unwrap();
+
+    let sent = provider
+        .last_messages
+        .lock()
+        .unwrap()
+        .last()
+        .unwrap()
+        .clone();
+    assert_eq!(sent.content, "env:WF_B_TRAP_VAR");
+    // SAFETY: 同上。
+    unsafe { std::env::remove_var(TRAP) };
 }

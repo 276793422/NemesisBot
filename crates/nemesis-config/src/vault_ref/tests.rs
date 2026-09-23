@@ -105,3 +105,13 @@ fn secret_field_vault_and_literal() {
         "sk-literal-123"
     );
 }
+
+#[test]
+fn is_secret_reference_prefix_dispatch() {
+    assert!(super::is_secret_reference("env:HOME"));
+    assert!(super::is_secret_reference("yaml:creds"));
+    assert!(super::is_secret_reference("vault:openai-main"));
+    assert!(!super::is_secret_reference("sk-literal"));
+    assert!(!super::is_secret_reference("Bearer vault:x")); // 内嵌不算整值引用
+    assert!(!super::is_secret_reference(""));
+}
