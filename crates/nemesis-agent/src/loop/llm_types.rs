@@ -155,3 +155,69 @@ impl AgentLoop {
         }
     }
 }
+
+// ---------------------------------------------------------------------------
+// 自由函数归位（P1-c 自 loop.rs 根搬迁；仅增 pub(crate) 可见性标注）
+// ---------------------------------------------------------------------------
+
+/// Format messages for log output, truncating long content.
+///
+/// Returns a human-readable multi-line representation of the message list
+/// suitable for debug logging.
+#[cfg(test)]
+pub fn format_messages_for_log(messages: &[LlmMessage]) -> String {
+    if messages.is_empty() {
+        return "[]".to_string();
+    }
+
+    let mut result = String::from("[\n");
+    for (i, msg) in messages.iter().enumerate() {
+        result.push_str(&format!("  [{}] Role: {}\n", i, msg.role));
+
+        if let Some(ref tool_calls) = msg.tool_calls {
+            result.push_str("  ToolCalls:\n");
+            for tc in tool_calls {
+                let args_preview = truncate(&tc.arguments, 200);
+                result.push_str(&format!("    - ID: {}, Name: {}\n", tc.id, tc.name));
+                result.push_str(&format!("      Arguments: {}\n", args_preview));
+            }
+        }
+
+        if !msg.content.is_empty() {
+            let content_preview = truncate(&msg.content, 200);
+            result.push_str(&format!("  Content: {}\n", content_preview));
+        }
+
+        if let Some(ref tcid) = msg.tool_call_id {
+            result.push_str(&format!("  ToolCallID: {}\n", tcid));
+        }
+
+        result.push('\n');
+    }
+    result.push(']');
+    result
+}
+
+/// Format tools for log output.
+#[cfg(test)]
+pub fn format_tools_for_log(tools: &[ToolCallInfo]) -> String {
+    if tools.is_empty() {
+        return "[]".to_string();
+    }
+    let mut result = String::from("[\n");
+    for tc in tools {
+        let args_preview = truncate(&tc.arguments, 200);
+        result.push_str(&format!(
+            "  - ID: {}, Name: {}, Args: {}\n",
+            tc.id, tc.name, args_preview
+        ));
+    }
+    result.push(']');
+    result
+}
+
+/// Truncate a string to a maximum byte length, appending "..." if truncated.
+/// UTF-8 safe: finds the nearest char boundary before slicing.
+pub fn truncate(s: &str, max_len: usize) -> String {
+    nemesis_types::utils::truncate(s, max_len)
+}

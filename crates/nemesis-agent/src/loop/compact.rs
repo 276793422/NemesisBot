@@ -635,3 +635,485 @@ impl AgentLoop {
     // Internal agent loop execution
     // -----------------------------------------------------------------------
 }
+
+// ---------------------------------------------------------------------------
+// 自由函数归位（P1-c 自 loop.rs 根搬迁；仅增 pub(crate) 可见性标注）
+// ---------------------------------------------------------------------------
+
+/// The trailing instruction for a G1 prefix-reuse summary request. Kept in one
+/// place so the batch and multipart paths emit the identical instruction.
+const SUMMARIZE_INSTRUCTION: &str =
+    "请对以上对话片段做一份简明摘要，保留核心上下文与关键要点，供后续对话作为前情提要使用。";
+
+/// T4 (U1): pre-G1 summary shape, restored as the per-model fallback
+/// (`summarizer_prefix_reuse: false`).
+///
+/// This is the OLD request form the G1 refactor replaced: a single bare user
+/// message whose content is the covered messages flattened as
+/// `role: content` text lines, plus the instruction (and any existing-summary
+/// context). It shares NO prefix with real requests and destroys structure
+/// (tool_calls flatten to text) — which is exactly why it is NOT the default.
+/// It remains useful for cheap summarizer models whose warm-KV-prefix
+/// assumption G1 relies on does not hold (different tokenizer, no prompt
+/// caching): a shape-neutral single message is the lowest-common-denominator
+/// request those models handle reliably. The G1 prefix-reuse path
+/// (summarize_multipart_owned / summarize_batch_owned) stays the default for
+/// the main model; this function is invoked ONLY when the per-model switch
+/// opts out.
+/// Returns `Some(summary)` on a non-empty LLM reply; `None` on LLM failure or
+/// empty reply (failure must propagate — never fold history behind a failed
+/// summary; see the 2026-08-25 fix note on `summarize_prefix_owned`).
+pub(crate) async fn summarize_bare_concat_owned(
+    messages: &[&crate::types::ConversationTurn],
+    existing_summary: &str,
+    provider: &dyn LlmProvider,
+    model: &str,
+    observer_manager: Option<Arc<nemesis_observer::Manager>>,
+) -> Option<String> {
+    let mut content = String::new();
+    if !existing_summary.is_empty() {
+        content.push_str(&format!(
+            "Existing context (summary of the earlier conversation, merge with the new summary): {}\n\n",
+            existing_summary
+        ));
+    }
+    for m in messages {
+        content.push_str(&format!("{}: {}\n", m.role, m.content));
+    }
+    content.push_str(SUMMARIZE_INSTRUCTION);
+
+    let llm_messages = vec![LlmMessage {
+        role: "user".to_string(),
+        content,
+        tool_calls: None,
+        tool_call_id: None,
+        reasoning_content: None,
+        images: Vec::new(),
+    }];
+
+    let response = emit_observer_events_around_llm(
+        observer_manager.as_ref(),
+        "summarize-bare-concat",
+        model,
+        provider.chat(model, llm_messages, None, vec![]),
+    )
+    .await;
+
+    match response {
+        Some(Ok(resp)) if !resp.content.is_empty() => Some(resp.content),
+        Some(Ok(_)) => None,
+        Some(Err(e)) => {
+            warn!(
+                "[AgentLoop] summarize_bare_concat_owned LLM call failed (summary NOT produced, history stays unfolded): {}",
+                e
+            );
+            None
+        }
+        None => None,
+    }
+}
+
+/// Multi-part summarization (standalone, works in spawned task).
+///
+/// G1 (U1): each part is summarized as `[system?, ...part messages,
+/// instruction]` — a part is a contiguous slice of the covered prefix, so its
+/// message list is a true ordered prefix subset of the main request's history
+/// (prefix-cache friendly in the same way).
+///
+/// Returns `Some` only when BOTH parts produced real summaries. If either
+/// part's LLM call fails → `None` (whole summarization fails; the caller must
+/// keep the history unfolded — a half-empty merge prompt makes the merge model
+/// answer with a "you didn't paste the summaries" complaint, and storing that
+/// complaint as the summary silently amnesiates the covered prefix; this is
+/// the exact production failure found in the legacy session 2026-08-25).
+pub(crate) async fn summarize_multipart_owned(
+    system_msg: Option<&LlmMessage>,
+    messages: &[&crate::types::ConversationTurn],
+    existing_summary: &str,
+    provider: &dyn LlmProvider,
+    model: &str,
+    observer_manager: Option<Arc<nemesis_observer::Manager>>,
+) -> Option<String> {
+    let mid = messages.len() / 2;
+    let part1 = &messages[..mid];
+    let part2 = &messages[mid..];
+
+    let s1 = summarize_batch_owned(
+        system_msg,
+        part1,
+        existing_summary,
+        provider,
+        model,
+        observer_manager.clone(),
+    )
+    .await;
+    let s2 = summarize_batch_owned(
+        system_msg,
+        part2,
+        "",
+        provider,
+        model,
+        observer_manager.clone(),
+    )
+    .await;
+
+    let (s1, s2) = match (s1, s2) {
+        (Some(a), Some(b)) => (a, b),
+        (failed, _) => {
+            warn!(
+                "[AgentLoop] multipart summarization aborted: one part failed to summarize ({}); summary NOT produced, history stays unfolded",
+                if failed.is_none() { "part 1" } else { "part 2" }
+            );
+            return None;
+        }
+    };
+
+    // Merge via LLM.
+    let merge_prompt = format!(
+        "Merge these two conversation summaries into one cohesive summary:\n\n1: {}\n\n2: {}",
+        s1, s2
+    );
+
+    let llm_messages = vec![LlmMessage {
+        role: "user".to_string(),
+        content: merge_prompt,
+        tool_calls: None,
+        tool_call_id: None,
+        reasoning_content: None,
+        images: Vec::new(),
+    }];
+
+    let response = emit_observer_events_around_llm(
+        observer_manager.as_ref(),
+        "summarize-multipart-merge",
+        model,
+        provider.chat(model, llm_messages, None, vec![]),
+    )
+    .await;
+
+    match response {
+        Some(Ok(resp)) if !resp.content.is_empty() => Some(resp.content),
+        Some(Ok(_)) => {
+            // Empty merge reply: both parts are validated non-empty —
+            // concatenate them instead of losing the coverage.
+            Some(format!("{}\n\n{}", s1, s2))
+        }
+        _ => {
+            // Merge call failed: same fallback — both parts hold real
+            // summaries, so concatenation preserves the information (the
+            // next compaction round will re-fold them into a merged one).
+            warn!(
+                "[AgentLoop] multipart merge LLM call failed; falling back to concatenating the two (validated) part summaries"
+            );
+            Some(format!("{}\n\n{}", s1, s2))
+        }
+    }
+}
+
+/// Single-batch summarization (standalone, works in spawned task).
+///
+/// G1 (U1): the request is `[system?, ...covered messages (original
+/// structure), instruction]` — a genuine prefix of the conversation plus the
+/// trailing instruction, replacing the old single bare user message with
+/// `role: content` text concatenation.
+///
+/// Returns `Some` on a non-empty LLM reply; `None` on LLM failure or empty
+/// reply (failure propagates — see the 2026-08-25 fix note on
+/// `summarize_prefix_owned`).
+pub(crate) async fn summarize_batch_owned(
+    system_msg: Option<&LlmMessage>,
+    batch: &[&crate::types::ConversationTurn],
+    existing_summary: &str,
+    provider: &dyn LlmProvider,
+    model: &str,
+    observer_manager: Option<Arc<nemesis_observer::Manager>>,
+) -> Option<String> {
+    let mut messages: Vec<LlmMessage> = Vec::with_capacity(batch.len() + 2);
+    if let Some(sys) = system_msg {
+        messages.push(sys.clone());
+    }
+    for m in batch {
+        messages.push(conversation_turn_to_llm_message(m));
+    }
+    // Trailing instruction (merged with any existing-summary context so the
+    // fold still carries prior coverage).
+    let mut instruction = String::new();
+    if !existing_summary.is_empty() {
+        instruction.push_str(&format!(
+            "Existing context (summary of the earlier conversation, merge with the new summary): {}\n\n",
+            existing_summary
+        ));
+    }
+    instruction.push_str(SUMMARIZE_INSTRUCTION);
+    messages.push(LlmMessage {
+        role: "user".to_string(),
+        content: instruction,
+        tool_calls: None,
+        tool_call_id: None,
+        reasoning_content: None,
+        images: Vec::new(),
+    });
+
+    let response = emit_observer_events_around_llm(
+        observer_manager.as_ref(),
+        "summarize-batch",
+        model,
+        provider.chat(model, messages, None, vec![]),
+    )
+    .await;
+
+    match response {
+        Some(Ok(resp)) if !resp.content.is_empty() => Some(resp.content),
+        Some(Ok(_)) => None,
+        Some(Err(e)) => {
+            warn!(
+                "[AgentLoop] summarize_batch_owned LLM call failed (summary NOT produced, history stays unfolded): {}",
+                e
+            );
+            None
+        }
+        None => None,
+    }
+}
+
+/// Emit observer events (ConversationStart, LlmRequest, LlmResponse, ConversationEnd)
+/// around a synchronous LLM call closure. Used by standalone summarization functions.
+pub(crate) async fn emit_observer_events_around_llm<Fut>(
+    observer_manager: Option<&Arc<nemesis_observer::Manager>>,
+    label: &str,
+    model: &str,
+    llm_call: Fut,
+) -> Option<Result<LlmResponse, String>>
+where
+    Fut: std::future::Future<Output = Result<LlmResponse, String>>,
+{
+    use crate::loop_executor::ObserverEvent;
+
+    let trace_id = format!(
+        "{}-{}",
+        label,
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_nanos()
+    );
+
+    // Emit ConversationStart + LlmRequest before the call (await, no block_in_place).
+    if let Some(mgr) = observer_manager {
+        let start_event = ObserverEvent::ConversationStart {
+            trace_id: trace_id.clone(),
+            session_key: label.to_string(),
+            channel: String::new(),
+            chat_id: String::new(),
+            sender_id: "summarizer".to_string(),
+            content: String::new(),
+        };
+        mgr.emit(start_event.to_conversation_event()).await;
+
+        let request_event = ObserverEvent::LlmRequest {
+            trace_id: trace_id.clone(),
+            round: 0,
+            model: model.to_string(),
+            messages: vec![],
+            tools: vec![],
+            messages_count: 0,
+            tools_count: 0,
+            provider_name: String::new(),
+            api_key: String::new(),
+            api_base: String::new(),
+        };
+        mgr.emit(request_event.to_conversation_event()).await;
+    }
+
+    // Execute the LLM call (async, no block_on).
+    let start = std::time::Instant::now();
+    let mut response = llm_call.await;
+    let duration_ms = start.elapsed().as_millis() as u64;
+
+    let (response_content, raw_req, raw_resp) = match &mut response {
+        Ok(r) => {
+            let content = r.content.clone();
+            let req = r.raw_request_body.take();
+            let resp = r.raw_response_body.take();
+            (content, req, resp)
+        }
+        Err(_) => (String::new(), None, None),
+    };
+
+    // Emit LlmResponse + ConversationEnd after the call (await, sequential —
+    // LlmResponse fully processed before ConversationEnd, as the old emit_sync intended).
+    if let Some(mgr) = observer_manager {
+        let response_event = ObserverEvent::LlmResponse {
+            trace_id: trace_id.clone(),
+            round: 0,
+            duration_ms,
+            has_tool_calls: false,
+            content: response_content.clone(),
+            tool_calls: vec![],
+            tool_calls_count: 0,
+            finish_reason: Some("stop".to_string()),
+            usage: None,
+            raw_request_body: raw_req,
+            raw_response_body: raw_resp,
+        };
+        mgr.emit(response_event.to_conversation_event()).await;
+
+        let end_event = ObserverEvent::ConversationEnd {
+            trace_id,
+            session_key: label.to_string(),
+            total_rounds: 1,
+            duration_ms,
+            content: response_content,
+            channel: String::new(),
+            chat_id: String::new(),
+        };
+        mgr.emit(end_event.to_conversation_event()).await;
+    }
+
+    Some(response)
+}
+
+// ---------------------------------------------------------------------------
+// Cluster integration helpers
+// ---------------------------------------------------------------------------
+
+/// Adjust a summarize boundary so the verbatim tail `history[new_c..]` doesn't
+/// START in the middle of a tool_call/result pair.
+///
+/// `summarize_prefix_owned` only folds user/assistant `content` into the
+/// summary — tool_calls and tool results are not summarized. If the boundary
+/// landed between an assistant tool_call (covered by the summary only as text
+/// content, which is often empty for a pure tool-call turn) and its tool
+/// result, `repair_tool_message_pairs` would drop the orphan result from the
+/// tail and the whole interaction would vanish from the LLM's view. Backing
+/// `new_c` up past any leading tool messages moves the parent assistant (and
+/// sibling results) into the verbatim tail, keeping the pair intact. (The old
+/// `truncate_with_tool_pairs` did the equivalent by prepending the parent.)
+///
+/// The summary still covers `history[..returned_new_c]` and the tail is
+/// `history[returned_new_c..]` — the gap-free invariant holds; the tail just
+/// grows slightly past `K_TARGET` when a pair straddles the boundary.
+pub(crate) fn tool_safe_boundary(
+    history: &[crate::types::ConversationTurn],
+    mut new_c: usize,
+) -> usize {
+    while new_c > 0 && new_c < history.len() && history[new_c].role == "tool" {
+        new_c -= 1;
+    }
+    new_c
+}
+
+/// Summarize a contiguous prefix of the conversation, merging any existing
+/// summary.
+///
+/// Summarizes **all** of `messages` (no internal "keep last N" step) — the
+/// caller has already chosen the verbatim tail boundary (`K_TARGET`), so every
+/// message passed in is meant to be folded into the summary. Keeping a "last N"
+/// here would leave a gap between the summary and the verbatim tail. Reuses the
+/// multipart/batch machinery; merges `existing_summary` (which covers messages
+/// before this prefix) into the result.
+///
+/// G1 (U1) prefix-reuse: the summary request is built as
+/// `[system, ...original covered messages..., instruction]` — the same leading
+/// messages the main loop sends (byte-equal per message), so the provider's
+/// warm KV prefix from the last routed request is REUSED rather than
+/// invalidated ("genuine prefix" principle). The old
+/// form (single bare user message with `role: content` text concatenation)
+/// shared no prefix with real requests and destroyed structure (tool_calls
+/// flattened to text).
+///
+/// Returns `Some(summary)` if a non-empty summary was produced, `None`
+/// otherwise. **None 的两种含义都不允许调用方推进 covers_up_to**：
+/// (a) 前缀里没有可摘要的 user/assistant 内容；(b) 摘要 LLM 调用失败
+/// （2026-08-25 摘要静默失败修复：此前 batch 失败返回空字符串，multipart
+/// 拿两段空串去 merge，merge 模型回"你没把摘要贴给我"，这段**失败回复**
+/// 被当摘要存进 store、covers 照常推进——被折叠的上下文静默丢失。现在
+/// 失败一路传播为 None，调用方保持原 history 不折叠并 warn。）
+///
+/// T4 (U1) per-model switch: `prefix_reuse == false` falls back to the
+/// pre-G1 shape (`summarize_bare_concat_owned`) — per-model config
+/// `summarizer_prefix_reuse: false`, for cheap summarizer models that break
+/// the assumed warm KV prefix. Default (true) keeps the prefix-reuse shape.
+pub(crate) async fn summarize_prefix_owned(
+    messages: &[&crate::types::ConversationTurn],
+    existing_summary: &str,
+    context_window: usize,
+    prefix_reuse: bool,
+    provider: &dyn LlmProvider,
+    model: &str,
+    observer_manager: Option<Arc<nemesis_observer::Manager>>,
+) -> Option<String> {
+    // Oversized message guard.
+    let max_msg_tokens = context_window / 2;
+    let mut valid_messages: Vec<&crate::types::ConversationTurn> = Vec::new();
+    let mut omitted = false;
+
+    for m in messages {
+        if m.role != "user" && m.role != "assistant" {
+            continue;
+        }
+        let msg_tokens = crate::session::estimate_tokens(&m.content);
+        if msg_tokens > max_msg_tokens {
+            omitted = true;
+            continue;
+        }
+        valid_messages.push(m);
+    }
+
+    if valid_messages.is_empty() {
+        return None;
+    }
+
+    let final_summary = if !prefix_reuse {
+        // T4 (U1): old shape — single bare user message, no structure.
+        summarize_bare_concat_owned(
+            &valid_messages,
+            existing_summary,
+            provider,
+            model,
+            observer_manager,
+        )
+        .await
+    } else {
+        // G1: the system prompt anchoring the prefix. `messages` is
+        // history[..new_c]; history[0] is the system turn — include it verbatim
+        // (WITHOUT the summary block the main loop appends: that would leak the
+        // old summary into the prefix and change it between rounds).
+        let system_msg: Option<LlmMessage> = messages
+            .first()
+            .filter(|m| m.role == "system")
+            .map(|m| conversation_turn_to_llm_message(m));
+
+        if valid_messages.len() > 10 {
+            summarize_multipart_owned(
+                system_msg.as_ref(),
+                &valid_messages,
+                existing_summary,
+                provider,
+                model,
+                observer_manager,
+            )
+            .await
+        } else {
+            summarize_batch_owned(
+                system_msg.as_ref(),
+                &valid_messages,
+                existing_summary,
+                provider,
+                model,
+                observer_manager,
+            )
+            .await
+        }
+    };
+
+    let final_summary = match final_summary {
+        Some(s) if omitted && !s.is_empty() => Some(format!(
+            "{}\n[Note: Some oversized messages were omitted from this summary for efficiency.]",
+            s
+        )),
+        other => other,
+    };
+
+    final_summary.filter(|s| !s.is_empty())
+}

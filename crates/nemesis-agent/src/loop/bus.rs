@@ -674,3 +674,15 @@ impl AgentLoop {
     // Direct processing (bypass bus)
     // -----------------------------------------------------------------------
 }
+
+// ---------------------------------------------------------------------------
+// 自由函数归位（P1-c 自 loop.rs 根搬迁；仅增 pub(crate) 可见性标注）
+// ---------------------------------------------------------------------------
+
+/// Extract the task ID from a cluster continuation sender ID.
+///
+/// The format is `cluster_continuation:{taskID}`.
+#[cfg(test)]
+pub fn extract_continuation_task_id(sender_id: &str) -> Option<&str> {
+    sender_id.strip_prefix(nemesis_types::constants::CLUSTER_CONTINUATION_PREFIX)
+}

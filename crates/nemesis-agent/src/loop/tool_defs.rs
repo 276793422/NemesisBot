@@ -360,3 +360,25 @@ impl AgentLoop {
             .collect()
     }
 }
+
+// ---------------------------------------------------------------------------
+// 自由函数归位（P1-c 自 loop.rs 根搬迁；仅增 pub(crate) 可见性标注）
+// ---------------------------------------------------------------------------
+
+/// F8 (devtool-upgrade 阶段 3): wildcard-aware membership test for
+/// `agents.hidden_tools`. An entry matches a tool name either exactly or,
+/// when it ends with `*`, as a prefix (`mcp_*` hides every MCP tool). A bare
+/// `*` hides everything. Matching is case-sensitive (tool names are
+/// lowercase by convention). Shared by BOTH gates — the supply side
+/// ([`AgentLoop::build_tool_defs`]) and the dispatch side
+/// ([`AgentLoop::handle_tool_call_at_depth`]) — so the two can never
+/// disagree about what is hidden.
+pub(crate) fn tool_name_matches_hidden(entries: &[String], name: &str) -> bool {
+    entries.iter().any(|entry| {
+        if let Some(prefix) = entry.strip_suffix('*') {
+            name.starts_with(prefix)
+        } else {
+            entry == name
+        }
+    })
+}

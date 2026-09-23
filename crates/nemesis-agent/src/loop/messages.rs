@@ -659,3 +659,111 @@ impl AgentLoop {
     // Slash command handling
     // -----------------------------------------------------------------------
 }
+
+// ---------------------------------------------------------------------------
+// 自由函数归位（P1-c 自 loop.rs 根搬迁；仅增 pub(crate) 可见性标注）
+// ---------------------------------------------------------------------------
+
+/// P3.1 (sixth batch): cheap text similarity (char-bigram Jaccard) for the
+/// auto-inject dedup pass. Approximates "same memory, near-identical text"
+/// without another embedding call — the dedup bar (0.92) is deliberately
+/// high so only true near-duplicates are dropped.
+// Only called from the `#[cfg(feature = "memory")]` dedup pass — same gate
+// pattern as `prefetch_memory_context` above, so memory-off builds stay
+// warning-free.
+#[cfg_attr(not(feature = "memory"), allow(dead_code))]
+pub(crate) fn textwise_similar(a: &str, b: &str) -> f64 {
+    let bigrams = |s: &str| -> std::collections::HashSet<(char, char)> {
+        let t: Vec<char> = s.chars().collect();
+        t.windows(2).map(|w| (w[0], w[1])).collect()
+    };
+    let (ba, bb) = (bigrams(a), bigrams(b));
+    if ba.is_empty() && bb.is_empty() {
+        return 1.0; // both empty (or single-char) → identical
+    }
+    if ba.is_empty() || bb.is_empty() {
+        return 0.0;
+    }
+    let inter = ba.intersection(&bb).count() as f64;
+    let union = ba.union(&bb).count() as f64;
+    inter / union
+}
+
+/// G1 (U1): build an LLM wire message from a ConversationTurn preserving the
+/// original structure (role/content/tool_calls/tool_call_id/reasoning) — the
+/// same projection `build_messages`'s `turn_to_msg` performs. Shared by the
+/// summarizers so the summary request's prefix messages are byte-equal to the
+/// main loop's.
+///
+/// T6（多模态）：摘要请求**不发图片字节**（摘要模型可能是不支持视觉的廉价
+/// 档，且图片字节会破坏 G1 前缀复用的字节等价前提）——历史 turn 的
+/// `image_refs` 在此不水合，`images` 恒空。失效图片的占位文本也只出现在
+/// 主循环请求（`turn_to_request_message`）里，摘要请求保持纯文本。
+pub(crate) fn conversation_turn_to_llm_message(
+    turn: &crate::types::ConversationTurn,
+) -> LlmMessage {
+    LlmMessage {
+        role: turn.role.clone(),
+        content: turn.content.clone(),
+        tool_calls: if turn.tool_calls.is_empty() {
+            None
+        } else {
+            Some(turn.tool_calls.clone())
+        },
+        tool_call_id: turn.tool_call_id.clone(),
+        reasoning_content: turn.reasoning_content.clone(),
+        images: Vec::new(),
+    }
+}
+
+/// T5/T6（多模态）：主循环请求的 history turn → 请求消息转换（`build_messages`
+/// 与 replay 重建共用，水合语义单点）。路径引用**每轮重读**：验真通过 →
+/// base64 字节进 `LlmMessage.images`；文件已删/失效 → 占位文本行
+/// `[图片已失效: <path>]` 追加进 content（诚实降级，不静默、不炸）。
+pub(crate) fn turn_to_request_message(turn: &crate::types::ConversationTurn) -> LlmMessage {
+    let mut msg = conversation_turn_to_llm_message(turn);
+    if turn.image_refs.is_empty() {
+        return msg;
+    }
+    let (images, placeholders) = crate::image_attach::hydrate_image_refs(&turn.image_refs);
+    if !placeholders.is_empty() {
+        msg.content.push('\n');
+        msg.content.push_str(&placeholders.join("\n"));
+    }
+    msg.images = images;
+    msg
+}
+
+/// T10（多模态 D4）：vision=no 模型的 image_refs 确定性投影（纯函数，生产
+/// build 与 replay 重建共用）。带引用的 turn 一律清空 `image_refs` 并把占位
+/// 文本行追加进 content：
+/// - 最新 user 轮（本轮要发的图）→ `[图片未发送: 当前模型 vision=no（不支持
+///   图像输入），图片已忽略]`（拒绝注明，文本照常处理，与 T5 失败路径同构）；
+/// - 其余（历史）轮 → `[图片已省略: 当前模型仅支持文本]`（模型中途切换不
+///   砖会话）。
+///
+/// 同输入同输出（无时钟/无 IO）：历史前缀字节稳定保 prompt cache；占位写入
+/// 的是**投影视图**——历史持久化的 image_refs 不动，切回 vision 模型图片
+/// 原样回来。`last_user_idx` 用与 build 注入点判定完全相同的表达式。
+pub(crate) fn project_turns_for_no_vision(
+    turns: &mut [crate::types::ConversationTurn],
+    last_user_idx: Option<usize>,
+) {
+    for (i, turn) in turns.iter_mut().enumerate() {
+        if turn.image_refs.is_empty() {
+            continue;
+        }
+        turn.image_refs.clear();
+        let note = if Some(i) == last_user_idx {
+            "[图片未发送: 当前模型 vision=no（不支持图像输入），图片已忽略]"
+        } else {
+            "[图片已省略: 当前模型仅支持文本]"
+        };
+        if turn.content.trim().is_empty() {
+            turn.content.push_str(note);
+        } else {
+            turn.content.push('\n');
+            turn.content.push_str(note);
+        }
+    }
+}

@@ -1239,3 +1239,132 @@ impl AgentLoop {
     // Summarization
     // -----------------------------------------------------------------------
 }
+
+// ---------------------------------------------------------------------------
+// 自由函数归位（P1-c 自 loop.rs 根搬迁；仅增 pub(crate) 可见性标注）
+// ---------------------------------------------------------------------------
+
+/// Extract a peer identifier from an inbound message.
+///
+/// Looks at metadata fields to determine the originating peer.
+/// Mirrors Go's `extractPeer`:
+/// - If `peer_kind` is set, uses `peer_id` (falls back to sender_id for "direct", chat_id otherwise)
+/// - If no metadata, returns sender_id
+pub fn extract_peer(msg: &nemesis_types::channel::InboundMessage) -> String {
+    if let Some(peer_kind) = msg.metadata.get("peer_kind")
+        && !peer_kind.is_empty()
+    {
+        let peer_id = msg.metadata.get("peer_id").cloned().unwrap_or_else(|| {
+            if peer_kind == "direct" {
+                msg.sender_id.clone()
+            } else {
+                msg.chat_id.clone()
+            }
+        });
+        return format!("{}:{}", peer_kind, peer_id);
+    }
+    msg.sender_id.clone()
+}
+
+/// Extract the parent peer identifier from an inbound message.
+///
+/// Used for routing in nested or forwarded messages.
+/// Mirrors Go's `extractParentPeer`.
+#[cfg(test)]
+pub fn extract_parent_peer(msg: &nemesis_types::channel::InboundMessage) -> Option<String> {
+    let parent_kind = msg.metadata.get("parent_peer_kind")?;
+    let parent_id = msg.metadata.get("parent_peer_id")?;
+    if parent_kind.is_empty() || parent_id.is_empty() {
+        return None;
+    }
+    Some(format!("{}:{}", parent_kind, parent_id))
+}
+
+/// Route input for agent resolution.
+///
+/// This is a legacy compatibility type. For new code, use
+/// [`nemesis_routing::RouteInput`] directly with [`RouteResolver`].
+#[cfg(test)]
+#[derive(Debug, Clone)]
+pub struct RouteInput {
+    pub channel: String,
+    pub account_id: Option<String>,
+    pub peer: String,
+    pub parent_peer: Option<String>,
+    pub guild_id: Option<String>,
+    pub team_id: Option<String>,
+}
+
+/// Resolved route for a message.
+///
+/// This is a legacy compatibility type. For new code, use
+/// [`nemesis_routing::ResolvedRoute`] directly.
+#[cfg(test)]
+#[derive(Debug, Clone)]
+pub struct RouteOutput {
+    pub agent_id: String,
+    pub session_key: String,
+    pub matched_by: String,
+}
+
+/// Resolve the route for a message to determine which agent and session to use.
+///
+/// Uses the full `RouteResolver` with a default single-agent configuration.
+/// The peer field is parsed from the format "kind:id" to extract peer_kind and peer_id.
+/// Mirrors Go's `al.registry.ResolveRoute(routing.RouteInput{...})`.
+#[cfg(test)]
+pub fn resolve_route(input: &RouteInput) -> RouteOutput {
+    // Parse peer from "kind:id" format (as produced by extract_peer).
+    let (peer_kind, peer_id) = if let Some(colon_pos) = input.peer.find(':') {
+        let kind = input.peer[..colon_pos].to_string();
+        let id = input.peer[colon_pos + 1..].to_string();
+        (Some(kind), Some(id))
+    } else {
+        // Treat as just an ID with no kind
+        (None, Some(input.peer.clone()))
+    };
+
+    // Parse parent_peer from "kind:id" format.
+    let (parent_peer_kind, parent_peer_id) = input
+        .parent_peer
+        .as_ref()
+        .and_then(|pp| {
+            pp.find(':').map(|colon_pos| {
+                (
+                    Some(pp[..colon_pos].to_string()),
+                    Some(pp[colon_pos + 1..].to_string()),
+                )
+            })
+        })
+        .unwrap_or((None, None));
+
+    let route_input = RoutingRouteInput {
+        channel: input.channel.clone(),
+        account_id: input.account_id.clone().unwrap_or_default(),
+        peer_kind,
+        peer_id,
+        parent_peer_kind,
+        parent_peer_id,
+        guild_id: input.guild_id.clone(),
+        team_id: input.team_id.clone(),
+        identity_links: std::collections::HashMap::new(),
+    };
+
+    // Build a default resolver with a single "main" agent and no bindings.
+    let config = RouteConfig {
+        bindings: Vec::new(),
+        agents: vec![AgentDef {
+            id: "main".to_string(),
+            is_default: true,
+        }],
+        dm_scope: "main".to_string(),
+    };
+    let resolver = RouteResolver::new(config);
+    let route = resolver.resolve(&route_input);
+
+    RouteOutput {
+        agent_id: route.agent_id,
+        session_key: route.session_key,
+        matched_by: route.matched_by,
+    }
+}

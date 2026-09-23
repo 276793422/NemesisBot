@@ -376,3 +376,25 @@ impl AgentLoop {
         (*self.tier.read()).validation_retry_budget()
     }
 }
+
+// ---------------------------------------------------------------------------
+// 自由函数归位（P1-c 自 loop.rs 根搬迁；仅增 pub(crate) 可见性标注）
+// ---------------------------------------------------------------------------
+
+/// J3 (devtool-upgrade 阶段 4)：从「配置的 server 名 × 已注册工具键」正推
+/// 已注册前缀。与 [`nemesis_mcp::manager::McpManager::find_new_servers`] 的
+/// 前缀计算同源（`mcp_<sanitize(server)>_`），再看工具表里有没有以它开头
+/// 的键。旧实现从注册键反推切分（数下划线取 [2]）：`underscores[2]` 是
+/// 第 3 个下划线，注释声称 `mcp_<srv>_` 实则多切一段（server 或工具名含
+/// 下划线时切错 → 热重载误判 server 未注册而重复发现）；恰好 2 个下划线
+/// 的键还会越界 panic（guard `len() >= 2` 但索引 [2]）。正推天然无歧义。
+pub(crate) fn registered_server_prefixes(
+    configured_servers: &[String],
+    tool_keys: &[String],
+) -> Vec<String> {
+    configured_servers
+        .iter()
+        .map(|s| format!("mcp_{}_", nemesis_mcp::adapter::sanitize_name(s)))
+        .filter(|prefix| tool_keys.iter().any(|k| k.starts_with(prefix.as_str())))
+        .collect()
+}

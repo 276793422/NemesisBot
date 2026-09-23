@@ -715,3 +715,23 @@ impl AgentLoop {
         Ok(response)
     }
 }
+
+// ---------------------------------------------------------------------------
+// 自由函数归位（P1-c 自 loop.rs 根搬迁；仅增 pub(crate) 可见性标注）
+// ---------------------------------------------------------------------------
+
+/// T10（多模态 D4 ③）：provider 4xx 兜底——请求带图且本轮调用最终失败时，
+/// 把逃生通道（probe 实测 / vision=no）附加到**用户可见**错误文案。措辞条件
+/// 化（"若该错误与图像输入有关"），对无关失败（网络超时等）不误导；历史、
+/// request_log 与 observer 事件里的原始错误保持干净（不带提示）。
+fn append_vision_fallback_hint(err_text: String, request_had_images: bool) -> String {
+    if !request_had_images {
+        return err_text;
+    }
+    format!(
+        "{}\n[提示: 本次请求携带了图片。若该错误与图像输入有关（如模型不支持视觉），\
+         可运行 `model probe <模型名>` 实测视觉能力，或在 config.json 对应模型条目\
+         设置 \"vision\": \"no\" 后重试。]",
+        err_text
+    )
+}
