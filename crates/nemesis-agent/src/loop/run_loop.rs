@@ -97,400 +97,46 @@ impl AgentLoop {
         // Bare `break`s elsewhere keep targeting their nearest loop — this
         // label only ADDS a way to name the turn loop, changing nothing else.
         'turn: loop {
-            // Auto-reload MCP tools if config file changed.
-            self.check_mcp_reload();
-            // Phase 4a: re-resolve capability tier if config.json changed on
-            // disk (dashboard model add, CLI `model set-tier` while running).
-            self.check_config_reload();
-
-            // Check cancellation at the top of each iteration.
-            if cancel_token.is_cancelled() {
-                info!(
-                    "[AgentLoop] LLM loop cancelled at top of iteration, turns_used={}",
-                    turns_used
-                );
-                events.push(AgentEvent::Done("已取消".to_string()));
-                break;
-            }
-
-            // 全局急停检查：触发则立刻结束当前轮。未接线（None）时整块跳过。
-            let estop_engaged = self
-                .estop
-                .read()
-                .as_ref()
-                .map(|e| e.is_engaged())
-                .unwrap_or(false);
-            if estop_engaged {
-                info!(
-                    "[AgentLoop] E-stop engaged at top of iteration, turns_used={}",
-                    turns_used
-                );
-                events.push(AgentEvent::Done(
-                    "⛔ 已急停 (E-STOP) — 已停止当前任务。发送 `nemesisbot estop --release` 恢复。"
-                        .to_string(),
-                ));
-                break;
-            }
-
-            // ①/② max_turns cap + grace round. max_turns == 0 means unlimited
-            // (opt-in). T3 (U12): when a per-turn budget override is set
-            // (cron continuation's max_rounds), it REPLACES the global cap for
-            // this turn. On the first hit we grant one grace round (with
-            // GRACE_ROUND_NUDGE injected below) so the model can finalize from
-            // completed work; a second hit stops resumably — no work is lost.
-            let effective_max_turns = turn_budget.unwrap_or(self.config.max_turns);
-            if effective_max_turns > 0 && turns_used >= effective_max_turns {
-                if !grace_round {
-                    grace_round = true;
-                    info!(
-                        "[AgentLoop] max_turns ({}) reached after {} turns; granting one grace round to finalize",
-                        effective_max_turns, turns_used
-                    );
-                    // Fall through: this iteration runs as the grace round.
-                } else if turn_budget.is_some() {
-                    warn!(
-                        "[AgentLoop] paused after {} tool-call rounds (per-turn budget exhausted, grace round spent)",
-                        effective_max_turns
-                    );
-                    // T3 (U12): budget-driven stop. The job that fired this
-                    // turn is NOT deleted — the next fire re-budgets, so the
-                    // message says so instead of suggesting a config change.
-                    terminal_reason = Some("budget_exhausted");
-                    events.push(AgentEvent::Done(format!(
-                        "已在定时任务预算 {} 轮工具调用后暂停，已完成的工作已保存。定时任务未被删除，下次触发时会重新获得预算。",
-                        effective_max_turns
-                    )));
-                    break;
-                } else {
-                    warn!(
-                        "[AgentLoop] paused after {} tool-call rounds (grace round exhausted)",
-                        effective_max_turns
-                    );
-                    terminal_reason = Some("max_turns");
-                    events.push(AgentEvent::Done(format!(
-                        "已在 {} 轮工具调用后暂停，已完成的工作已保存。发送下一条消息可继续，或调大 max_tool_iterations（设为 0 表示不限）。",
-                        effective_max_turns
-                    )));
-                    break;
-                }
-            }
-
-            // I1 (U7): inbox claim — before EVERY LLM call of this turn, take
-            // all pending steer messages (next-step) into history as real user
-            // messages (persisted: they ARE genuine user input). Placement
-            // after the existing history = same position as the time/env
-            // injection's protected prefix zone (appended user turn), so the
-            // provider prefix stays stable.
-            //
-            // ROUND-5 EFFICIENCY FIX: claim BEFORE build_messages (it used to
-            // run after, so every steered round built the full message list
-            // twice — skills catalog scan + instruction-chain file IO + 2
-            // sha256s — and threw the first build away). One build, always.
-            let steer_batch = self.inbox.claim_next_step(&context.session_key);
-            if !steer_batch.is_empty() {
-                for m in &steer_batch {
-                    // L4 (full review) + round-5: strip the marker via the
-                    // SINGLE shared rule (inbox::strip_steer_marker) — it is a
-                    // ROUTING signal, not content, and the same message must
-                    // arrive marker-free whether injected in-turn (here) or
-                    // replayed post-turn (drain path).
-                    let content = crate::inbox::strip_steer_marker(&m.msg.content).to_string();
-                    // I2：steer 消息与首轮同源（B1 原则延伸）——@文件引用同样
-                    // 展开（同基准/同安全闸），不因注入时点而异。
-                    let at_base = self
-                        .workspace_root
-                        .read()
-                        .clone()
-                        .unwrap_or_else(|| std::env::current_dir().unwrap_or_default());
-                    let content = crate::message_preprocess::expand_at_files(
-                        &content,
-                        &at_base,
-                        &m.msg.channel,
-                        #[cfg(feature = "security")]
-                        self.security_plugin.as_deref(),
-                        #[cfg(not(feature = "security"))]
-                        None,
-                    );
-                    // B1（2026-09-03 二次回归）：steer 消息与首轮同源——同样可能
-                    // 携带图片（media 引用 + 文本点名路径）。走与 process_admitted
-                    // 同一附加链（URL 预取 + 统一附加 + 诚实注记 + image_refs），
-                    // 不静默丢图。
-                    let ws_for_uploads = self.workspace_root.read().clone();
-                    let uploads_base = ws_for_uploads
-                        .unwrap_or_else(|| nemesis_path::default_path_manager().workspace());
-                    let uploads_dir = nemesis_path::resolve_uploads_dir_in_workspace(&uploads_base);
-                    let (media_for_attach, url_notes) = crate::image_attach::fetch_url_media(
-                        &m.msg.media,
-                        &uploads_dir,
-                        #[cfg(feature = "security")]
-                        self.security_plugin.as_deref().and_then(|p| p.ssrf_guard()),
-                        #[cfg(not(feature = "security"))]
-                        None,
-                    )
-                    .await;
-                    // J6：同 process_admitted——降采样开关 fresh-read，产物落 uploads。
-                    let downscale_dir = self.current_image_downscale().then(|| uploads_dir.clone());
-                    let attach = crate::image_attach::attach_turn_images(
-                        &content,
-                        &media_for_attach,
-                        self.workspace_root.read().as_deref(),
-                        downscale_dir.as_deref(),
-                        &m.msg.channel,
-                        #[cfg(feature = "security")]
-                        self.security_plugin.as_deref(),
-                        #[cfg(not(feature = "security"))]
-                        None,
-                    );
-                    let content = attach.merge_into_text(content);
-                    let content = crate::image_attach::AttachOutcome {
-                        attached: Vec::new(),
-                        notes: url_notes,
-                    }
-                    .merge_into_text(content);
-                    instance.add_user_message_with_images(&content, &attach.ref_strings());
-                    // L3（2026-09-04 四轮盲审）：steer 的 chat_log 行也要带图片
-                    // 路径引用——首轮路径用 append_chat_log_full_with_images，
-                    // steer 路径却用 3 参变体丢掉 images → 会话浏览器/self-heal
-                    // 重建/fork 时 steer 轮的图片凭空消失（instance 里有图、
-                    // 落盘行无图，两套存储分叉）。
-                    crate::chat_log::append_chat_log_full_with_images(
-                        &context.session_key,
-                        "user",
-                        &format!("[steer] {}", content),
-                        None,
-                        None,
-                        None,
-                        &attach.ref_strings(),
-                    );
-                    info!(
-                        "[AgentLoop] steer message injected before LLM call: session_key={}, len={}",
-                        context.session_key,
-                        m.msg.content.len()
-                    );
-                    if log_boundaries {
-                        crate::chat_log::append_boundary_event(
-                            &context.session_key,
-                            "steer_injected",
-                            &format!("len={}", m.msg.content.len()),
-                        );
-                    }
-                }
-            }
-
-            // P3.1 (sixth batch): auto-inject memory prefetch — async search
-            // against the CURRENT (latest) user message, done OUTSIDE
-            // build_messages (which is sync; search is async). Per round: the
-            // latest user message changes when steer messages land, so
-            // re-prefetching per LLM round keeps the section in sync with
-            // what the model is about to see. Off (default) ⇒ None ⇒ the
-            // build is byte-identical to pre-P3.1.
-            let memory_hits: Option<Vec<String>> = self.prefetch_memory_context(instance).await;
-
-            // Build the message list from instance history (AFTER the steer
-            // claim so injected turns are already included).
-            //
-            // T8 (U9 ②): the annotated build + the injection records below
-            // form this round's projection ledger — everything a later
-            // byte-exact replay needs beyond the session store (the
-            // transient injections are never persisted). See `crate::replay`.
-            let (mut messages, build_annotation) =
-                self.build_messages_with_memory_annotated(instance, memory_hits.as_deref());
-            let mut replay_injections: Vec<crate::replay::InjectionRecord> = Vec::new();
-            if let Some(idx) = build_annotation.digest_index {
-                replay_injections.push(crate::replay::InjectionRecord {
-                    index: idx,
-                    role: messages[idx].role.clone(),
-                    source: crate::replay::INJECTION_CONTEXT_DIGEST.to_string(),
-                    content: messages[idx].content.clone(),
-                });
-            }
-            let mut replay_voice: Option<crate::replay::VoiceAppend> = None;
-
-            // Voice playback prompt injection: append to last user message (not stored in history).
-            if voice_playback && let Some(pos) = messages.iter().rposition(|m| m.role == "user") {
-                messages[pos].content.push_str(VOICE_PLAYBACK_SUFFIX);
-                replay_voice = Some(crate::replay::VoiceAppend {
-                    index: pos,
-                    suffix: VOICE_PLAYBACK_SUFFIX.to_string(),
-                });
-            }
-
-            // ② Grace-round nudge. Transient — NOT persisted to instance history
-            // or session_log; only this turn's message list carries it.
-            if grace_round {
-                messages.push(LlmMessage {
-                    role: "system".to_string(),
-                    content: GRACE_ROUND_NUDGE.to_string(),
-                    tool_calls: None,
-                    tool_call_id: None,
-                    reasoning_content: None,
-                    images: Vec::new(),
-                });
-                replay_injections.push(crate::replay::InjectionRecord {
-                    index: messages.len() - 1,
-                    role: "system".to_string(),
-                    source: crate::replay::INJECTION_GRACE_NUDGE.to_string(),
-                    content: GRACE_ROUND_NUDGE.to_string(),
-                });
-            }
-
-            // ⑦ Re-inject a pending degenerate-answer nudge (transient, like the
-            // grace nudge — never persisted to instance history / session_log).
-            if let Some(nudge) = &degenerate_nudge_pending {
-                messages.push(LlmMessage {
-                    role: "user".to_string(),
-                    content: nudge.clone(),
-                    tool_calls: None,
-                    tool_call_id: None,
-                    reasoning_content: None,
-                    images: Vec::new(),
-                });
-                replay_injections.push(crate::replay::InjectionRecord {
-                    index: messages.len() - 1,
-                    role: "user".to_string(),
-                    source: crate::replay::INJECTION_DEGENERATE_NUDGE.to_string(),
-                    content: nudge.clone(),
-                });
-            }
-
-            // ⑧ Re-inject a pending prose-repetition nudge (transient).
-            if let Some(nudge) = &repetition_nudge_pending {
-                messages.push(LlmMessage {
-                    role: "system".to_string(),
-                    content: nudge.clone(),
-                    tool_calls: None,
-                    tool_call_id: None,
-                    reasoning_content: None,
-                    images: Vec::new(),
-                });
-                replay_injections.push(crate::replay::InjectionRecord {
-                    index: messages.len() - 1,
-                    role: "system".to_string(),
-                    source: crate::replay::INJECTION_REPETITION_NUDGE.to_string(),
-                    content: nudge.clone(),
-                });
-            }
-
-            debug!("[AgentLoop] Sending {} messages to LLM", messages.len());
-
-            // K1b (U14): LLM-call-level pre hooks. Runs AFTER messages are
-            // built (nudges included) and BEFORE the LlmRequest observer
-            // event — appended messages land in request_log and in the T8
-            // replay ledger (byte-exact replay keeps holding).
+            // 器官 1（§4.2）：MCP/config 热重载 + cancel/estop 顶检 +
+            // max_turns/grace/cron 预算判定。Some = (终局事件, 终端原因)。
+            if let Some((ev, reason)) =
+                self.prepare_round(turns_used, &mut grace_round, turn_budget, cancel_token)
             {
-                let llm_hooks = self.llm_hooks.read().snapshot();
-                if !llm_hooks.is_empty() {
-                    let hook_call = crate::hooks::HookLlmCall {
-                        model: self.active_model.read().clone(),
-                        session_key: context.session_key.clone(),
-                        round: turns_used as usize + 1,
-                    };
-                    match crate::hooks::run_llm_pre_hooks(&llm_hooks, &hook_call, &messages).await {
-                        Ok(appended) => {
-                            for m in appended {
-                                replay_injections.push(crate::replay::InjectionRecord {
-                                    index: messages.len(),
-                                    role: m.role.clone(),
-                                    source: crate::replay::INJECTION_LLM_HOOK.to_string(),
-                                    content: m.content.clone(),
-                                });
-                                messages.push(m);
-                            }
-                        }
-                        Err(reason) => {
-                            warn!(
-                                "[AgentLoop] LLM hook blocked the call, turns_used={}: {}",
-                                turns_used, reason
-                            );
-                            events.push(AgentEvent::Done(format!(
-                                "⛔ HOOK BLOCKED [layer:hook|policy:llm_hook] {} — A registered LLM hook denied this round. Do NOT retry unless the user changes the hook policy.",
-                                reason
-                            )));
-                            break;
-                        }
-                    }
+                if let Some(r) = reason {
+                    terminal_reason = Some(r);
                 }
+                events.push(ev);
+                break;
             }
 
-            // Build tool definitions from registered tools for LLM function calling.
-            // Mirrors Go's ToolRegistry.ToProviderDefs() which calls tool.Description() and tool.Parameters().
-            // Sort by name so the order is stable across runs — a deterministic
-            // tool order gives reproducible behaviour and avoids unnecessary prompt
-            // variation between requests.
-            // Y1 (Phase4-a): fold AFTER the tier filter — description text only,
-            // byte-identical passthrough whenever folding is off/degrades.
-            let tool_defs: Vec<crate::types::ToolDefinition> = self.effective_tool_defs(instance);
-            debug!(
-                "[AgentLoop] Sending {} tool definitions to LLM",
-                tool_defs.len()
-            );
+            // 器官 2（§4.2）：inbox claim → @file 展开 → URL 媒体预取 →
+            // 附加链 → chat_log 落行。
+            self.claim_steer_messages(instance, context, log_boundaries)
+                .await;
 
-            // Emit LLM request observer event.
-            // F-J：经 observer_msg_values 剥掉图片 base64（见其 doc）。
-            let msg_values: Vec<serde_json::Value> = observer_msg_values(&messages);
-            let tool_values: Vec<serde_json::Value> = tool_defs
-                .iter()
-                .filter_map(|t| serde_json::to_value(t).ok())
-                .collect();
-            // Extract model string before emit so RwLockReadGuard doesn't span the await.
-            let active_model = self.active_model.read().clone();
-            self.emit_observer_sync(crate::loop_executor::ObserverEvent::LlmRequest {
-                trace_id: trace_id.to_string(),
-                round: turns_used + 1,
-                model: active_model.clone(),
-                messages_count: messages.len(),
-                tools_count: tool_defs.len(),
-                messages: msg_values,
-                tools: tool_values,
-                provider_name: String::new(),
-                api_key: String::new(),
-                api_base: String::new(),
-            })
-            .await;
-
-            // Call LLM.
-            instance.set_state(crate::types::AgentState::Thinking);
-            let round_start = std::time::Instant::now();
-
-            // I3 (U9): durable llm_request marker (model + size estimate,
-            // no bodies). Heartbeat/internal-channel exemption (see
-            // turn_start).
-            //
-            // T8 (U9 ②): projection-ledger sidecar for this round — the
-            // durable record of every non-persisted injection (full bodies),
-            // enabling byte-exact replay from the session store. Same
-            // cron/heartbeat/internal exemption as the marker above: those
-            // turns recur forever and would grow the ledger unboundedly.
-            if log_boundaries {
-                crate::chat_log::append_boundary_event(
-                    &context.session_key,
-                    "llm_request",
-                    &format!(
-                        "model={} messages={} turns_used={}",
-                        self.active_model.read(),
-                        messages.len(),
-                        turns_used
-                    ),
-                );
-                crate::replay::append_projection_record(&crate::replay::RequestProjectionRecord {
-                    trace_id: trace_id.to_string(),
-                    session_key: context.session_key.clone(),
-                    round: turns_used as usize + 1,
-                    ts: crate::replay::now_rfc3339(),
-                    messages_count: messages.len(),
-                    roles: messages.iter().map(|m| m.role.clone()).collect(),
-                    history_len_at_build: build_annotation.history_len,
-                    injections: replay_injections,
-                    voice_append: replay_voice,
-                    summary_as_of: build_annotation.summary_as_of.clone(),
-                    vision_projected: build_annotation.vision_projected,
-                });
-            }
-
-            // T10（多模态 D4 ③）：provider 兜底提示的判定输入——最终请求里
-            // 是否真的带了图片字节（vision=yes/默认放行时图才会进来；nudge/
-            // hook 注入消息恒无图）。
-            let request_had_images = messages.iter().any(|m| !m.images.is_empty());
+            // 器官 3（§4.2）：memory 预取 + annotated build + 瞬时注入族 +
+            // LLM pre-hooks + tool_defs + LlmRequest observer + boundary
+            // marker/T8 台账。Err = hook 拦截终局。
+            let (messages, tool_defs, active_model, request_had_images, round_start) = match self
+                .build_round_messages(
+                    instance,
+                    context,
+                    trace_id,
+                    voice_playback,
+                    turns_used,
+                    grace_round,
+                    &degenerate_nudge_pending,
+                    &repetition_nudge_pending,
+                    log_boundaries,
+                )
+                .await
+            {
+                Ok(v) => v,
+                Err(ev) => {
+                    events.push(ev);
+                    break;
+                }
+            };
 
             // 器官 4（§4.2）：LLM 调用 + 上下文/429/transient 三恢复环 +
             // post-hooks——P2-1 搬入 loop/recovery.rs。终局出口经 Err 返回
@@ -1078,6 +724,466 @@ impl AgentLoop {
         events
     }
 
+    // -----------------------------------------------------------------------
+    // Round organs（P2-3：§4.2 器官 1/2/3 自 run_llm_loop 内联块收编为方法，
+    // 均留本文件；TurnState 收拢归 P2-4——暂以显式参数传递）
+    // -----------------------------------------------------------------------
+
+    /// 器官 1：MCP/config 热重载 + cancel/estop 顶检 + ①/② max_turns cap +
+    /// grace round + T3 cron 预算判定。`Some((终局事件, 终端原因))` = 结束
+    /// 本 turn（骨架 push + 记 terminal_reason + break）；grace 授予经
+    /// `&mut grace_round` 带出（P2-4 收拢进 TurnState）；其余 = `None` 继续。
+    fn prepare_round(
+        &self,
+        turns_used: u32,
+        grace_round: &mut bool,
+        turn_budget: Option<u32>,
+        cancel_token: &tokio_util::sync::CancellationToken,
+    ) -> Option<(AgentEvent, Option<&'static str>)> {
+        // Auto-reload MCP tools if config file changed.
+        self.check_mcp_reload();
+        // Phase 4a: re-resolve capability tier if config.json changed on
+        // disk (dashboard model add, CLI `model set-tier` while running).
+        self.check_config_reload();
+
+        // Check cancellation at the top of each iteration.
+        if cancel_token.is_cancelled() {
+            info!(
+                "[AgentLoop] LLM loop cancelled at top of iteration, turns_used={}",
+                turns_used
+            );
+            return Some((AgentEvent::Done("已取消".to_string()), None));
+        }
+
+        // 全局急停检查：触发则立刻结束当前轮。未接线（None）时整块跳过。
+        let estop_engaged = self
+            .estop
+            .read()
+            .as_ref()
+            .map(|e| e.is_engaged())
+            .unwrap_or(false);
+        if estop_engaged {
+            info!(
+                "[AgentLoop] E-stop engaged at top of iteration, turns_used={}",
+                turns_used
+            );
+            return Some((
+                AgentEvent::Done(
+                    "⛔ 已急停 (E-STOP) — 已停止当前任务。发送 `nemesisbot estop --release` 恢复。"
+                        .to_string(),
+                ),
+                None,
+            ));
+        }
+
+        // ①/② max_turns cap + grace round. max_turns == 0 means unlimited
+        // (opt-in). T3 (U12): when a per-turn budget override is set
+        // (cron continuation's max_rounds), it REPLACES the global cap for
+        // this turn. On the first hit we grant one grace round (with
+        // GRACE_ROUND_NUDGE injected below) so the model can finalize from
+        // completed work; a second hit stops resumably — no work is lost.
+        let effective_max_turns = turn_budget.unwrap_or(self.config.max_turns);
+        if effective_max_turns > 0 && turns_used >= effective_max_turns {
+            if !*grace_round {
+                *grace_round = true;
+                info!(
+                    "[AgentLoop] max_turns ({}) reached after {} turns; granting one grace round to finalize",
+                    effective_max_turns, turns_used
+                );
+                // Fall through: this iteration runs as the grace round.
+            } else if turn_budget.is_some() {
+                warn!(
+                    "[AgentLoop] paused after {} tool-call rounds (per-turn budget exhausted, grace round spent)",
+                    effective_max_turns
+                );
+                // T3 (U12): budget-driven stop. The job that fired this
+                // turn is NOT deleted — the next fire re-budgets, so the
+                // message says so instead of suggesting a config change.
+                return Some((
+                    AgentEvent::Done(format!(
+                        "已在定时任务预算 {} 轮工具调用后暂停，已完成的工作已保存。定时任务未被删除，下次触发时会重新获得预算。",
+                        effective_max_turns
+                    )),
+                    Some("budget_exhausted"),
+                ));
+            } else {
+                warn!(
+                    "[AgentLoop] paused after {} tool-call rounds (grace round exhausted)",
+                    effective_max_turns
+                );
+                return Some((
+                    AgentEvent::Done(format!(
+                        "已在 {} 轮工具调用后暂停，已完成的工作已保存。发送下一条消息可继续，或调大 max_tool_iterations（设为 0 表示不限）。",
+                        effective_max_turns
+                    )),
+                    Some("max_turns"),
+                ));
+            }
+        }
+        None
+    }
+
+    /// 器官 2：inbox claim → @file 展开 → URL 媒体预取 → 统一附加链 →
+    /// chat_log 落行 + steer_injected 边界事件。无出口（原内联块原样）。
+    async fn claim_steer_messages(
+        &self,
+        instance: &AgentInstance,
+        context: &RequestContext,
+        log_boundaries: bool,
+    ) {
+        // I1 (U7): inbox claim — before EVERY LLM call of this turn, take
+        // all pending steer messages (next-step) into history as real user
+        // messages (persisted: they ARE genuine user input). Placement
+        // after the existing history = same position as the time/env
+        // injection's protected prefix zone (appended user turn), so the
+        // provider prefix stays stable.
+        //
+        // ROUND-5 EFFICIENCY FIX: claim BEFORE build_messages (it used to
+        // run after, so every steered round built the full message list
+        // twice — skills catalog scan + instruction-chain file IO + 2
+        // sha256s — and threw the first build away). One build, always.
+        let steer_batch = self.inbox.claim_next_step(&context.session_key);
+        if !steer_batch.is_empty() {
+            for m in &steer_batch {
+                // L4 (full review) + round-5: strip the marker via the
+                // SINGLE shared rule (inbox::strip_steer_marker) — it is a
+                // ROUTING signal, not content, and the same message must
+                // arrive marker-free whether injected in-turn (here) or
+                // replayed post-turn (drain path).
+                let content = crate::inbox::strip_steer_marker(&m.msg.content).to_string();
+                // I2：steer 消息与首轮同源（B1 原则延伸）——@文件引用同样
+                // 展开（同基准/同安全闸），不因注入时点而异。
+                let at_base = self
+                    .workspace_root
+                    .read()
+                    .clone()
+                    .unwrap_or_else(|| std::env::current_dir().unwrap_or_default());
+                let content = crate::message_preprocess::expand_at_files(
+                    &content,
+                    &at_base,
+                    &m.msg.channel,
+                    #[cfg(feature = "security")]
+                    self.security_plugin.as_deref(),
+                    #[cfg(not(feature = "security"))]
+                    None,
+                );
+                // B1（2026-09-03 二次回归）：steer 消息与首轮同源——同样可能
+                // 携带图片（media 引用 + 文本点名路径）。走与 process_admitted
+                // 同一附加链（URL 预取 + 统一附加 + 诚实注记 + image_refs），
+                // 不静默丢图。
+                let ws_for_uploads = self.workspace_root.read().clone();
+                let uploads_base = ws_for_uploads
+                    .unwrap_or_else(|| nemesis_path::default_path_manager().workspace());
+                let uploads_dir = nemesis_path::resolve_uploads_dir_in_workspace(&uploads_base);
+                let (media_for_attach, url_notes) = crate::image_attach::fetch_url_media(
+                    &m.msg.media,
+                    &uploads_dir,
+                    #[cfg(feature = "security")]
+                    self.security_plugin.as_deref().and_then(|p| p.ssrf_guard()),
+                    #[cfg(not(feature = "security"))]
+                    None,
+                )
+                .await;
+                // J6：同 process_admitted——降采样开关 fresh-read，产物落 uploads。
+                let downscale_dir = self.current_image_downscale().then(|| uploads_dir.clone());
+                let attach = crate::image_attach::attach_turn_images(
+                    &content,
+                    &media_for_attach,
+                    self.workspace_root.read().as_deref(),
+                    downscale_dir.as_deref(),
+                    &m.msg.channel,
+                    #[cfg(feature = "security")]
+                    self.security_plugin.as_deref(),
+                    #[cfg(not(feature = "security"))]
+                    None,
+                );
+                let content = attach.merge_into_text(content);
+                let content = crate::image_attach::AttachOutcome {
+                    attached: Vec::new(),
+                    notes: url_notes,
+                }
+                .merge_into_text(content);
+                instance.add_user_message_with_images(&content, &attach.ref_strings());
+                // L3（2026-09-04 四轮盲审）：steer 的 chat_log 行也要带图片
+                // 路径引用——首轮路径用 append_chat_log_full_with_images，
+                // steer 路径却用 3 参变体丢掉 images → 会话浏览器/self-heal
+                // 重建/fork 时 steer 轮的图片凭空消失（instance 里有图、
+                // 落盘行无图，两套存储分叉）。
+                crate::chat_log::append_chat_log_full_with_images(
+                    &context.session_key,
+                    "user",
+                    &format!("[steer] {}", content),
+                    None,
+                    None,
+                    None,
+                    &attach.ref_strings(),
+                );
+                info!(
+                    "[AgentLoop] steer message injected before LLM call: session_key={}, len={}",
+                    context.session_key,
+                    m.msg.content.len()
+                );
+                if log_boundaries {
+                    crate::chat_log::append_boundary_event(
+                        &context.session_key,
+                        "steer_injected",
+                        &format!("len={}", m.msg.content.len()),
+                    );
+                }
+            }
+        }
+    }
+
+    /// 器官 3：memory 预取 + annotated build + 瞬时注入族（voice/grace/
+    /// degenerate/repetition）+ K1b LLM pre-hooks + tool_defs 折叠 +
+    /// LlmRequest observer + durable llm_request marker + T8 projection
+    /// 台账（P2-3 连同 boundary marker 块一并收入——台账消费 organ 内
+    /// 产物 replay_injections/replay_voice/build_annotation）。返回
+    /// `(messages, tool_defs, active_model, request_had_images)` 供器官 4；
+    /// `Err` = hook 拦截终局事件（骨架 push + break，§4.3）。
+    #[allow(clippy::too_many_arguments)]
+    async fn build_round_messages(
+        &self,
+        instance: &AgentInstance,
+        context: &RequestContext,
+        trace_id: &str,
+        voice_playback: bool,
+        turns_used: u32,
+        grace_round: bool,
+        degenerate_nudge_pending: &Option<String>,
+        repetition_nudge_pending: &Option<String>,
+        log_boundaries: bool,
+    ) -> Result<
+        (
+            Vec<LlmMessage>,
+            Vec<crate::types::ToolDefinition>,
+            String,
+            bool,
+            std::time::Instant,
+        ),
+        AgentEvent,
+    > {
+        // P3.1 (sixth batch): auto-inject memory prefetch — async search
+        // against the CURRENT (latest) user message, done OUTSIDE
+        // build_messages (which is sync; search is async). Per round: the
+        // latest user message changes when steer messages land, so
+        // re-prefetching per LLM round keeps the section in sync with
+        // what the model is about to see. Off (default) ⇒ None ⇒ the
+        // build is byte-identical to pre-P3.1.
+        let memory_hits: Option<Vec<String>> = self.prefetch_memory_context(instance).await;
+
+        // Build the message list from instance history (AFTER the steer
+        // claim so injected turns are already included).
+        //
+        // T8 (U9 ②): the annotated build + the injection records below
+        // form this round's projection ledger — everything a later
+        // byte-exact replay needs beyond the session store (the
+        // transient injections are never persisted). See `crate::replay`.
+        let (mut messages, build_annotation) =
+            self.build_messages_with_memory_annotated(instance, memory_hits.as_deref());
+        let mut replay_injections: Vec<crate::replay::InjectionRecord> = Vec::new();
+        if let Some(idx) = build_annotation.digest_index {
+            replay_injections.push(crate::replay::InjectionRecord {
+                index: idx,
+                role: messages[idx].role.clone(),
+                source: crate::replay::INJECTION_CONTEXT_DIGEST.to_string(),
+                content: messages[idx].content.clone(),
+            });
+        }
+        let mut replay_voice: Option<crate::replay::VoiceAppend> = None;
+
+        // Voice playback prompt injection: append to last user message (not stored in history).
+        if voice_playback && let Some(pos) = messages.iter().rposition(|m| m.role == "user") {
+            messages[pos].content.push_str(VOICE_PLAYBACK_SUFFIX);
+            replay_voice = Some(crate::replay::VoiceAppend {
+                index: pos,
+                suffix: VOICE_PLAYBACK_SUFFIX.to_string(),
+            });
+        }
+
+        // ② Grace-round nudge. Transient — NOT persisted to instance history
+        // or session_log; only this turn's message list carries it.
+        if grace_round {
+            messages.push(LlmMessage {
+                role: "system".to_string(),
+                content: GRACE_ROUND_NUDGE.to_string(),
+                tool_calls: None,
+                tool_call_id: None,
+                reasoning_content: None,
+                images: Vec::new(),
+            });
+            replay_injections.push(crate::replay::InjectionRecord {
+                index: messages.len() - 1,
+                role: "system".to_string(),
+                source: crate::replay::INJECTION_GRACE_NUDGE.to_string(),
+                content: GRACE_ROUND_NUDGE.to_string(),
+            });
+        }
+
+        // ⑦ Re-inject a pending degenerate-answer nudge (transient, like the
+        // grace nudge — never persisted to instance history / session_log).
+        if let Some(nudge) = degenerate_nudge_pending {
+            messages.push(LlmMessage {
+                role: "user".to_string(),
+                content: nudge.clone(),
+                tool_calls: None,
+                tool_call_id: None,
+                reasoning_content: None,
+                images: Vec::new(),
+            });
+            replay_injections.push(crate::replay::InjectionRecord {
+                index: messages.len() - 1,
+                role: "user".to_string(),
+                source: crate::replay::INJECTION_DEGENERATE_NUDGE.to_string(),
+                content: nudge.clone(),
+            });
+        }
+
+        // ⑧ Re-inject a pending prose-repetition nudge (transient).
+        if let Some(nudge) = repetition_nudge_pending {
+            messages.push(LlmMessage {
+                role: "system".to_string(),
+                content: nudge.clone(),
+                tool_calls: None,
+                tool_call_id: None,
+                reasoning_content: None,
+                images: Vec::new(),
+            });
+            replay_injections.push(crate::replay::InjectionRecord {
+                index: messages.len() - 1,
+                role: "system".to_string(),
+                source: crate::replay::INJECTION_REPETITION_NUDGE.to_string(),
+                content: nudge.clone(),
+            });
+        }
+
+        debug!("[AgentLoop] Sending {} messages to LLM", messages.len());
+
+        // K1b (U14): LLM-call-level pre hooks. Runs AFTER messages are
+        // built (nudges included) and BEFORE the LlmRequest observer
+        // event — appended messages land in request_log and in the T8
+        // replay ledger (byte-exact replay keeps holding).
+        {
+            let llm_hooks = self.llm_hooks.read().snapshot();
+            if !llm_hooks.is_empty() {
+                let hook_call = crate::hooks::HookLlmCall {
+                    model: self.active_model.read().clone(),
+                    session_key: context.session_key.clone(),
+                    round: turns_used as usize + 1,
+                };
+                match crate::hooks::run_llm_pre_hooks(&llm_hooks, &hook_call, &messages).await {
+                    Ok(appended) => {
+                        for m in appended {
+                            replay_injections.push(crate::replay::InjectionRecord {
+                                index: messages.len(),
+                                role: m.role.clone(),
+                                source: crate::replay::INJECTION_LLM_HOOK.to_string(),
+                                content: m.content.clone(),
+                            });
+                            messages.push(m);
+                        }
+                    }
+                    Err(reason) => {
+                        warn!(
+                            "[AgentLoop] LLM hook blocked the call, turns_used={}: {}",
+                            turns_used, reason
+                        );
+                        return Err(AgentEvent::Done(format!(
+                            "⛔ HOOK BLOCKED [layer:hook|policy:llm_hook] {} — A registered LLM hook denied this round. Do NOT retry unless the user changes the hook policy.",
+                            reason
+                        )));
+                    }
+                }
+            }
+        }
+
+        // Build tool definitions from registered tools for LLM function calling.
+        // Mirrors Go's ToolRegistry.ToProviderDefs() which calls tool.Description() and tool.Parameters().
+        // Sort by name so the order is stable across runs — a deterministic
+        // tool order gives reproducible behaviour and avoids unnecessary prompt
+        // variation between requests.
+        // Y1 (Phase4-a): fold AFTER the tier filter — description text only,
+        // byte-identical passthrough whenever folding is off/degrades.
+        let tool_defs: Vec<crate::types::ToolDefinition> = self.effective_tool_defs(instance);
+        debug!(
+            "[AgentLoop] Sending {} tool definitions to LLM",
+            tool_defs.len()
+        );
+
+        // Emit LLM request observer event.
+        // F-J：经 observer_msg_values 剥掉图片 base64（见其 doc）。
+        let msg_values: Vec<serde_json::Value> = observer_msg_values(&messages);
+        let tool_values: Vec<serde_json::Value> = tool_defs
+            .iter()
+            .filter_map(|t| serde_json::to_value(t).ok())
+            .collect();
+        // Extract model string before emit so RwLockReadGuard doesn't span the await.
+        let active_model = self.active_model.read().clone();
+        self.emit_observer_sync(crate::loop_executor::ObserverEvent::LlmRequest {
+            trace_id: trace_id.to_string(),
+            round: turns_used + 1,
+            model: active_model.clone(),
+            messages_count: messages.len(),
+            tools_count: tool_defs.len(),
+            messages: msg_values,
+            tools: tool_values,
+            provider_name: String::new(),
+            api_key: String::new(),
+            api_base: String::new(),
+        })
+        .await;
+
+        // Call LLM.
+        instance.set_state(crate::types::AgentState::Thinking);
+        let round_start = std::time::Instant::now();
+
+        // I3 (U9): durable llm_request marker (model + size estimate,
+        // no bodies). Heartbeat/internal-channel exemption (see
+        // turn_start).
+        //
+        // T8 (U9 ②): projection-ledger sidecar for this round — the
+        // durable record of every non-persisted injection (full bodies),
+        // enabling byte-exact replay from the session store. Same
+        // cron/heartbeat/internal exemption as the marker above: those
+        // turns recur forever and would grow the ledger unboundedly.
+        if log_boundaries {
+            crate::chat_log::append_boundary_event(
+                &context.session_key,
+                "llm_request",
+                &format!(
+                    "model={} messages={} turns_used={}",
+                    self.active_model.read(),
+                    messages.len(),
+                    turns_used
+                ),
+            );
+            crate::replay::append_projection_record(&crate::replay::RequestProjectionRecord {
+                trace_id: trace_id.to_string(),
+                session_key: context.session_key.clone(),
+                round: turns_used as usize + 1,
+                ts: crate::replay::now_rfc3339(),
+                messages_count: messages.len(),
+                roles: messages.iter().map(|m| m.role.clone()).collect(),
+                history_len_at_build: build_annotation.history_len,
+                injections: replay_injections,
+                voice_append: replay_voice,
+                summary_as_of: build_annotation.summary_as_of.clone(),
+                vision_projected: build_annotation.vision_projected,
+            });
+        }
+
+        // T10（多模态 D4 ③）：provider 兜底提示的判定输入——最终请求里
+        // 是否真的带了图片字节（vision=yes/默认放行时图才会进来；nudge/
+        // hook 注入消息恒无图）。
+        let request_had_images = messages.iter().any(|m| !m.images.is_empty());
+        Ok((
+            messages,
+            tool_defs,
+            active_model,
+            request_had_images,
+            round_start,
+        ))
+    }
     // -----------------------------------------------------------------------
     // Tool handling
     // -----------------------------------------------------------------------
