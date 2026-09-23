@@ -786,8 +786,16 @@ mod tests;
 
 /// R9 补测批：gateway 活动场景组（live 双节点/心跳/审批/工作流，见模块头注释）。
 /// 整文件 Windows 形态（11/11 live 场景走 Windows CLI 进程边界），随测试一并门控。
+/// `pub(crate)` 仅为姊妹模块 tests_scenario 复用互斥闸与启动夹具。
 #[cfg(all(test, windows))]
-mod tests_r9_live;
+pub(crate) mod tests_r9_live;
+
+/// 场景级真机 E2E（2026-09-23 多会话并行清账批）：起真 gateway 子进程 +
+/// 可控延时 mock LLM，经持久 WS 连接逐条复现四联 BUG 的原始场景并断言修复
+/// 生效（跨会话并行 / 同会话排队不丢 / Reject 忙弹回留痕 / 绑定注册表全
+/// 生命周期）。同样 Windows 进程边界形态，与 R9 组同门控。
+#[cfg(all(test, windows))]
+mod tests_scenario;
 
 /// E1 二期 token 回传（全自动流转 P5）：把 worker 回调携带的 `usage` 记入
 /// master 用量账本（DataStore request_logs）。记账键 = `cluster_rpc:

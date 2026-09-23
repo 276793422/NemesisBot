@@ -587,6 +587,72 @@ pub async fn ws_send_and_recv(
 }
 
 // ---------------------------------------------------------------------------
+// 持久 WS 连接驱动（场景级真机测试，2026-09-23 多会话并行清账批）
+// ---------------------------------------------------------------------------
+
+/// 在**已建立的** WS 连接上发送一帧 JSON 协议消息。
+///
+/// 与 [`ws_send_and_recv`] 的「一连接一请求」形态不同，场景测试需要单连接
+/// 内交织多发（chat.send + WSAPI request）多收（echo/回执/assistant 帧/
+/// response 帧）——这里只管发送，接收方用 [`ws_recv_matching`] 按谓词取帧。
+pub async fn ws_send_json(stream: &mut WsStream, frame: &Value) -> Result<()> {
+    stream
+        .send(Message::Text(frame.to_string().into()))
+        .await
+        .map_err(|e| anyhow::anyhow!("ws send failed: {e}"))
+}
+
+/// 在持久连接上逐帧读取，直到出现谓词命中的帧或超时。
+///
+/// 命中帧返回；其余帧（user 回声、回执、无关推送、Ping/Pong）**被丢弃**——
+/// 需要保留沿途帧的断言请按真实到达次序依次调用本函数（帧序即断言序）。
+pub async fn ws_recv_matching(
+    stream: &mut WsStream,
+    timeout: Duration,
+    what: &str,
+    mut pred: impl FnMut(&Value) -> bool,
+) -> Result<Value> {
+    let deadline = tokio::time::Instant::now() + timeout;
+    loop {
+        let next = tokio::time::timeout_at(deadline, stream.next())
+            .await
+            .map_err(|_| anyhow::anyhow!("timeout ({timeout:?}) waiting for {what}"))?;
+        match next {
+            Some(Ok(Message::Text(text))) => {
+                let Ok(v) = serde_json::from_str::<Value>(&text) else {
+                    continue;
+                };
+                if pred(&v) {
+                    return Ok(v);
+                }
+            }
+            Some(Ok(Message::Ping(_))) | Some(Ok(Message::Pong(_))) => continue,
+            Some(Ok(_)) => continue,
+            Some(Err(e)) => bail!("ws error while waiting for {what}: {e}"),
+            None => bail!("ws closed while waiting for {what}"),
+        }
+    }
+}
+
+/// chat.receive 帧谓词：type=message + module=chat + cmd=receive，且
+/// （None = 不限该维度）会话 id / 角色 匹配、内容包含 `contains`。
+pub fn chat_receive_match(
+    v: &Value,
+    session_id: Option<&str>,
+    role: Option<&str>,
+    contains: &str,
+) -> bool {
+    v.get("type").and_then(|t| t.as_str()) == Some("message")
+        && v.get("module").and_then(|m| m.as_str()) == Some("chat")
+        && v.get("cmd").and_then(|c| c.as_str()) == Some("receive")
+        && role.is_none_or(|r| v["data"]["role"].as_str() == Some(r))
+        && session_id.is_none_or(|s| v["data"]["session_id"].as_str() == Some(s))
+        && v["data"]["content"]
+            .as_str()
+            .is_some_and(|c| c.contains(contains))
+}
+
+// ---------------------------------------------------------------------------
 // Test result tracking
 // ---------------------------------------------------------------------------
 

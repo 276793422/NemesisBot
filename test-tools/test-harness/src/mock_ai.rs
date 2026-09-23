@@ -31,6 +31,11 @@ pub enum MockAiReply {
     /// (connection-level failure is better simulated by pointing api_base at
     /// a dead port; this covers HTTP-level error statuses).
     Error { status: u16, body: String },
+    /// 先独占本连接线程睡 `secs` 秒，再应答内层 reply（场景级真机测试用：
+    /// 拉长单个 turn 以复现「长任务期间其他会话/后续消息」的时序场景）。
+    /// 每个请求各占一个线程（见 start 的 per-connection spawn），所以
+    /// Delay 只拖慢自己这条 LLM 请求，不阻塞 mock 服务器应答其他请求。
+    Delay { secs: u64, reply: Box<MockAiReply> },
 }
 
 /// A running scripted mock. Drop the value to shut the listener down.
@@ -137,7 +142,20 @@ fn handle_request(
         }
     };
 
+    // 解包 Delay 链：睡在本连接的专属线程里（不持脚本锁），其他连接照常
+    // 即取即答——这正是「可控延时 turn」不堵并发请求的关键。
+    let reply = {
+        let mut r = reply;
+        while let MockAiReply::Delay { secs, reply: inner } = r {
+            std::thread::sleep(std::time::Duration::from_secs(secs));
+            r = *inner;
+        }
+        r
+    };
+
     match reply {
+        // 上面的 while-let 已剥净 Delay 壳；此臂只为穷尽性。
+        MockAiReply::Delay { .. } => unreachable!("Delay chains are fully unwrapped above"),
         MockAiReply::Error { status, body } => write_json(stream, status, &body),
         MockAiReply::Text(content) => {
             if wants_stream {
