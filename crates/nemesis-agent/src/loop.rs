@@ -25,6 +25,10 @@
 // 语义零变化：子模块经 `use super::*` 取根 re-export，根经 glob re-export 保持
 // `crate::r#loop::X` 既有路径逐字节不变；字段零改动（struct 留根，impl 分居后代模块）。
 // ===========================================================================
+//
+// 锁纪律（§原则 5 / P2-6）：本模块（含全部子模块）显式固化「guard 不跨
+// await」为编译器检查——lock()/read()/write() 的 guard 持有时跨 .await 即告警。
+#![warn(clippy::await_holding_lock)]
 
 pub(crate) mod prelude {
     //! 子模块共享导入面（P1 兼容垫片；P1-c 可选溶解为各文件显式导入）。
