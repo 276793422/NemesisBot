@@ -280,7 +280,7 @@ impl AgentLoop {
             if query.trim().is_empty() {
                 return defs;
             }
-            let manager = match self.memory_inject_manager.read().clone() {
+            let manager = match self.memory.memory_inject_manager.read().clone() {
                 Some(m) => m,
                 None => {
                     debug!(
@@ -305,7 +305,7 @@ impl AgentLoop {
             {
                 // Cache guard held only for the embed-and-rank pass (the fold
                 // render itself touches no shared state).
-                let mut cache = self.tool_vec_cache.write();
+                let mut cache = self.memory.tool_vec_cache.write();
                 for d in &defs {
                     let cached = cache.get(&d.function.name);
                     let vec = match cached {

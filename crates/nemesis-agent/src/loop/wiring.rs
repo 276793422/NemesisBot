@@ -102,7 +102,7 @@ impl AgentLoop {
     /// the shared tool config.
     #[cfg(feature = "memory")]
     pub fn set_memory_executor(&self, exec: Arc<nemesis_memory::memory_tools::MemoryToolExecutor>) {
-        *self.memory_executor.write() = Some(exec);
+        *self.memory.memory_executor.write() = Some(exec);
     }
 
     /// P3.1 (sixth batch): wire the auto-inject channel — the memory manager
@@ -118,8 +118,8 @@ impl AgentLoop {
         auto_inject: bool,
         top_k: usize,
     ) {
-        *self.memory_inject_manager.write() = manager;
-        *self.memory_inject_cfg.write() = (auto_inject, top_k);
+        *self.memory.memory_inject_manager.write() = manager;
+        *self.memory.memory_inject_cfg.write() = (auto_inject, top_k);
     }
 
     /// P3.1 stub (memory feature off): accepts only the flags (the manager
@@ -128,7 +128,7 @@ impl AgentLoop {
     /// `prefetch_memory_context` returns None regardless (no manager).
     #[cfg(not(feature = "memory"))]
     pub fn set_memory_inject(&self, auto_inject: bool, top_k: usize) {
-        *self.memory_inject_cfg.write() = (auto_inject, top_k);
+        *self.memory.memory_inject_cfg.write() = (auto_inject, top_k);
     }
 
     /// Attach an approval gate to the memory executor (if one was stashed). After
@@ -138,7 +138,7 @@ impl AgentLoop {
         &self,
         gate: Arc<dyn nemesis_memory::memory_tools::MemoryApprovalGate>,
     ) {
-        if let Some(ref exec) = *self.memory_executor.read() {
+        if let Some(ref exec) = *self.memory.memory_executor.read() {
             exec.set_approval_gate(gate);
         }
     }

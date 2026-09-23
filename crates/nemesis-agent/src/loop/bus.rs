@@ -154,12 +154,16 @@ impl AgentLoop {
                 llm_hooks: parking_lot::RwLock::new(crate::hooks::LlmHookManager::new()),
                 lifecycle_hooks: parking_lot::RwLock::new(crate::hooks::LifecycleHookManager::new()),
             },
-            memory_executor: parking_lot::RwLock::new(None),
-            #[cfg(feature = "memory")]
-            memory_inject_manager: parking_lot::RwLock::new(None),
-            #[cfg(not(feature = "memory"))]
-            memory_inject_manager: parking_lot::RwLock::new(None),
-            memory_inject_cfg: parking_lot::RwLock::new((false, 3)),
+            memory: MemoryState {
+                memory_executor: parking_lot::RwLock::new(None),
+                #[cfg(feature = "memory")]
+                memory_inject_manager: parking_lot::RwLock::new(None),
+                #[cfg(not(feature = "memory"))]
+                memory_inject_manager: parking_lot::RwLock::new(None),
+                memory_inject_cfg: parking_lot::RwLock::new((false, 3)),
+                #[cfg_attr(not(feature = "memory"), allow(dead_code))]
+                tool_vec_cache: parking_lot::RwLock::new(std::collections::HashMap::new()),
+            },
             tier: parking_lot::RwLock::new(nemesis_types::capability::ModelTier::Big),
             mode: parking_lot::RwLock::new(crate::types::AgentMode::Build),
             agent_event_tx: parking_lot::RwLock::new(None),
@@ -183,7 +187,6 @@ impl AgentLoop {
             pending_workflow_edit: parking_lot::RwLock::new(None),
             #[cfg(feature = "workflow")]
             workflow_engine: parking_lot::RwLock::new(None),
-            tool_vec_cache: parking_lot::RwLock::new(std::collections::HashMap::new()),
             config_mtime: parking_lot::RwLock::new(None),
             estop: parking_lot::RwLock::new(None),
             small_model: parking_lot::RwLock::new(None),

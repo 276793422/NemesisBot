@@ -196,6 +196,48 @@ pub(crate) struct HooksState {
     pub(crate) lifecycle_hooks: parking_lot::RwLock<crate::hooks::LifecycleHookManager>,
 }
 
+/// 内存四槽收拢（P3-2，§5.1 MemoryState）：executor（store/forget 审批门
+/// 载体）/ inject manager（只读检索自动注入）/ inject cfg / tool_vec_cache
+/// （语义折叠嵌入缓存）原字段逐字迁入，cfg 门与锁类型不变；访问经
+/// `self.memory.<field>`。setter（`set_memory_executor`/`set_memory_inject`
+/// ×2/`set_memory_approval_gate`）留在 `AgentLoop` 上签名不变，体一行委托。
+pub(crate) struct MemoryState {
+    /// Memory tool executor reference, so the gateway can attach an approval
+    /// gate post-construction (memory_store/forget require interactive approval).
+    #[cfg(feature = "memory")]
+    pub(crate) memory_executor:
+        parking_lot::RwLock<Option<Arc<nemesis_memory::memory_tools::MemoryToolExecutor>>>,
+    #[cfg(not(feature = "memory"))]
+    #[allow(dead_code)] // placeholder when memory feature is off
+    pub(crate) memory_executor: parking_lot::RwLock<Option<()>>,
+    /// P3.1 (sixth batch): memory manager for the AUTO-INJECT channel —
+    /// read-only retrieval (top-K vector search over the current user
+    /// message) feeding the `# Memory Context` snapshot section. Deliberately
+    /// SEPARATE from `memory_executor`: that one gates store/forget behind
+    /// interactive approval; auto-inject is pure retrieval and must not trip
+    /// the approval gate. `None` (default) disables injection entirely.
+    #[cfg(feature = "memory")]
+    pub(crate) memory_inject_manager:
+        parking_lot::RwLock<Option<Arc<nemesis_memory::manager::MemoryManager>>>,
+    #[cfg(not(feature = "memory"))]
+    #[allow(dead_code)] // placeholder when memory feature is off
+    pub(crate) memory_inject_manager: parking_lot::RwLock<Option<()>>,
+    /// P3.1: auto_inject flag + top_k loaded from config.enhanced_memory.json
+    /// by the factory (`set_memory_inject`). Tuple so both values travel
+    /// together on the one setter. Default (false, 3) = feature off.
+    pub(crate) memory_inject_cfg: parking_lot::RwLock<(bool, usize)>,
+    /// Y1 (Phase4-a): per-tool description embedding cache (tool name →
+    /// (description bytes, vector)) for semantic doc folding. Entries
+    /// re-embed only when a tool's description text changes, so after the
+    /// first round folding adds no embed calls beyond the query itself.
+    /// Read only on the memory-feature path (the embed backend lives in
+    /// nemesis-memory); `allow(dead_code)` keeps the no-default-features
+    /// build warning-clean.
+    #[cfg_attr(not(feature = "memory"), allow(dead_code))]
+    pub(crate) tool_vec_cache:
+        parking_lot::RwLock<std::collections::HashMap<String, (String, Vec<f32>)>>,
+}
+
 pub struct AgentLoop {
     // --- Standalone fields (always present) ---
     /// LLM provider for generating responses.
@@ -358,29 +400,8 @@ pub struct AgentLoop {
         parking_lot::Mutex<HashMap<String, std::collections::VecDeque<RewindUndoEntry>>>,
     /// K1a/K1b/K2 钩子三槽（P3-1 收拢 [`HooksState`]；字段语义见该类型）。
     hooks: HooksState,
-    /// Memory tool executor reference, so the gateway can attach an approval
-    /// gate post-construction (memory_store/forget require interactive approval).
-    #[cfg(feature = "memory")]
-    memory_executor:
-        parking_lot::RwLock<Option<Arc<nemesis_memory::memory_tools::MemoryToolExecutor>>>,
-    #[cfg(not(feature = "memory"))]
-    #[allow(dead_code)] // placeholder when memory feature is off
-    memory_executor: parking_lot::RwLock<Option<()>>,
-    /// P3.1 (sixth batch): memory manager for the AUTO-INJECT channel —
-    /// read-only retrieval (top-K vector search over the current user
-    /// message) feeding the `# Memory Context` snapshot section. Deliberately
-    /// SEPARATE from `memory_executor`: that one gates store/forget behind
-    /// interactive approval; auto-inject is pure retrieval and must not trip
-    /// the approval gate. `None` (default) disables injection entirely.
-    #[cfg(feature = "memory")]
-    memory_inject_manager: parking_lot::RwLock<Option<Arc<nemesis_memory::manager::MemoryManager>>>,
-    #[cfg(not(feature = "memory"))]
-    #[allow(dead_code)] // placeholder when memory feature is off
-    memory_inject_manager: parking_lot::RwLock<Option<()>>,
-    /// P3.1: auto_inject flag + top_k loaded from config.enhanced_memory.json
-    /// by the factory (`set_memory_inject`). Tuple so both values travel
-    /// together on the one setter. Default (false, 3) = feature off.
-    memory_inject_cfg: parking_lot::RwLock<(bool, usize)>,
+    /// 内存四槽（P3-2 收拢 [`MemoryState`]；字段语义见该类型）。
+    memory: MemoryState,
     /// Capability tier (small-model-tool-robustness plan, Phase 4a). Resolved at
     /// construction from the active model's `model_tier` config (see
     /// [`nemesis_types::capability`]). Drives tool-set size (Phase 3),
@@ -498,15 +519,6 @@ pub struct AgentLoop {
     #[cfg(feature = "workflow")]
     workflow_engine:
         parking_lot::RwLock<Option<std::sync::Arc<nemesis_workflow::engine::WorkflowEngine>>>,
-    /// Y1 (Phase4-a): per-tool description embedding cache (tool name →
-    /// (description bytes, vector)) for semantic doc folding. Entries
-    /// re-embed only when a tool's description text changes, so after the
-    /// first round folding adds no embed calls beyond the query itself.
-    /// Read only on the memory-feature path (the embed backend lives in
-    /// nemesis-memory); `allow(dead_code)` keeps the no-default-features
-    /// build warning-clean.
-    #[cfg_attr(not(feature = "memory"), allow(dead_code))]
-    tool_vec_cache: parking_lot::RwLock<std::collections::HashMap<String, (String, Vec<f32>)>>,
     /// Last-seen mtime of config.json; `check_config_reload` compares against
     /// this each round to detect on-disk changes without re-reading every turn.
     config_mtime: parking_lot::RwLock<Option<std::time::SystemTime>>,
@@ -591,12 +603,16 @@ impl AgentLoop {
                 llm_hooks: parking_lot::RwLock::new(crate::hooks::LlmHookManager::new()),
                 lifecycle_hooks: parking_lot::RwLock::new(crate::hooks::LifecycleHookManager::new()),
             },
-            memory_executor: parking_lot::RwLock::new(None),
-            #[cfg(feature = "memory")]
-            memory_inject_manager: parking_lot::RwLock::new(None),
-            #[cfg(not(feature = "memory"))]
-            memory_inject_manager: parking_lot::RwLock::new(None),
-            memory_inject_cfg: parking_lot::RwLock::new((false, 3)),
+            memory: MemoryState {
+                memory_executor: parking_lot::RwLock::new(None),
+                #[cfg(feature = "memory")]
+                memory_inject_manager: parking_lot::RwLock::new(None),
+                #[cfg(not(feature = "memory"))]
+                memory_inject_manager: parking_lot::RwLock::new(None),
+                memory_inject_cfg: parking_lot::RwLock::new((false, 3)),
+                #[cfg_attr(not(feature = "memory"), allow(dead_code))]
+                tool_vec_cache: parking_lot::RwLock::new(std::collections::HashMap::new()),
+            },
             tier: parking_lot::RwLock::new(nemesis_types::capability::ModelTier::Big),
             mode: parking_lot::RwLock::new(crate::types::AgentMode::Build),
             agent_event_tx: parking_lot::RwLock::new(None),
@@ -620,7 +636,6 @@ impl AgentLoop {
             pending_workflow_edit: parking_lot::RwLock::new(None),
             #[cfg(feature = "workflow")]
             workflow_engine: parking_lot::RwLock::new(None),
-            tool_vec_cache: parking_lot::RwLock::new(std::collections::HashMap::new()),
             config_mtime: parking_lot::RwLock::new(None),
             estop: parking_lot::RwLock::new(None),
             small_model: parking_lot::RwLock::new(None),

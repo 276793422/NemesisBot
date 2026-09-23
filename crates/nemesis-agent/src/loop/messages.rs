@@ -221,7 +221,7 @@ impl AgentLoop {
     ) -> Option<Vec<String>> {
         #[cfg(feature = "memory")]
         {
-            let (auto, top_k) = *self.memory_inject_cfg.read();
+            let (auto, top_k) = *self.memory.memory_inject_cfg.read();
             if !auto {
                 return None;
             }
@@ -235,7 +235,7 @@ impl AgentLoop {
             if query.trim().is_empty() {
                 return None;
             }
-            let mgr = self.memory_inject_manager.read().clone()?;
+            let mgr = self.memory.memory_inject_manager.read().clone()?;
             // AUTO_INJECT_MIN_SCORE (0.35) gates INSIDE search_auto_inject —
             // the plain search() runs the store's 0.7 bar (memory_search
             // tuning), which silently emptied loosely-related injection hits
