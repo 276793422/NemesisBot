@@ -1,0 +1,37 @@
+{
+  "boundary": [
+    {
+      "detail": "",
+      "event": "turn_start",
+      "role": "boundary"
+    },
+    {
+      "detail": "cancelled",
+      "event": "turn_end",
+      "role": "boundary"
+    }
+  ],
+  "calls": [],
+  "chat_log": [],
+  "events": [
+    {
+      "Done": "已取消"
+    }
+  ],
+  "history": [
+    {
+      "content": "You are a test assistant.",
+      "role": "system",
+      "tool_call_id": null,
+      "tool_calls": []
+    },
+    {
+      "content": "hello",
+      "role": "user",
+      "tool_call_id": null,
+      "tool_calls": []
+    }
+  ],
+  "observer": [],
+  "scenario": "cancel_top"
+}

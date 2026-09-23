@@ -1611,5 +1611,9 @@ mod rate_limit_retry_tests;
 // 中间轮逐条发布 + 观察者通道与 chat 事件 Vec 隔离 + 空正文轮不发）。
 #[cfg(test)]
 mod round_text_tests;
+// P2-0（docs/PLAN/2026-09-23_agentloop-god-object-decomposition.md §7 T1/T2）：
+// characterization + golden transcript harness（基线在 loop/testdata/golden/）。
+#[cfg(test)]
+mod characterization_tests;
 #[cfg(test)]
 mod tests;

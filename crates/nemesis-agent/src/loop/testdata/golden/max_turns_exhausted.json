@@ -1,0 +1,403 @@
+{
+  "boundary": [
+    {
+      "detail": "",
+      "event": "turn_start",
+      "role": "boundary"
+    },
+    {
+      "detail": "model=test-model messages=3 turns_used=0",
+      "event": "llm_request",
+      "role": "boundary"
+    },
+    {
+      "detail": "model=test-model messages=6 turns_used=1",
+      "event": "llm_request",
+      "role": "boundary"
+    },
+    {
+      "detail": "max_turns",
+      "event": "turn_end",
+      "role": "boundary"
+    }
+  ],
+  "calls": [
+    {
+      "max_tokens": 8192,
+      "messages": [
+        {
+          "content": "You are a test assistant.",
+          "role": "system",
+          "tool_call_id": null,
+          "tool_calls": null
+        },
+        {
+          "content": "<system-reminder>\n# Current Time / Environment snapshot\n<TIME_SNAPSHOT>\n# Environment\nplatform: windows\ndefault_shell: cmd\ntime_cmd: use `date /t` or `echo %date% %time%` or PowerShell `Get-Date`\n(本快照取代之前的时间/环境快照)\n\n# Runtime Policy\napproval: off（无交互审批，ask 规则按默认策略处理）\nguardian: off\nmodel_tier: big\nmode: build（正常全量工具）\n(当前审批/守护/模型档位/工作模式运行时策略快照；策略变更后下一次构建生效。)\n</system-reminder>",
+          "role": "user",
+          "tool_call_id": null,
+          "tool_calls": null
+        },
+        {
+          "content": "loop forever",
+          "role": "user",
+          "tool_call_id": null,
+          "tool_calls": null
+        }
+      ],
+      "model": "test-model",
+      "reasoning_effort": null,
+      "temperature": 0.699999988079071,
+      "tools": [
+        {
+          "function": {
+            "description": "",
+            "name": "calculator",
+            "parameters": {
+              "properties": {},
+              "type": "object"
+            }
+          },
+          "type": "function"
+        }
+      ]
+    },
+    {
+      "max_tokens": 8192,
+      "messages": [
+        {
+          "content": "You are a test assistant.",
+          "role": "system",
+          "tool_call_id": null,
+          "tool_calls": null
+        },
+        {
+          "content": "<system-reminder>\n# Current Time / Environment snapshot\n<TIME_SNAPSHOT>\n# Environment\nplatform: windows\ndefault_shell: cmd\ntime_cmd: use `date /t` or `echo %date% %time%` or PowerShell `Get-Date`\n(本快照取代之前的时间/环境快照)\n\n# Runtime Policy\napproval: off（无交互审批，ask 规则按默认策略处理）\nguardian: off\nmodel_tier: big\nmode: build（正常全量工具）\n(当前审批/守护/模型档位/工作模式运行时策略快照；策略变更后下一次构建生效。)\n</system-reminder>",
+          "role": "user",
+          "tool_call_id": null,
+          "tool_calls": null
+        },
+        {
+          "content": "loop forever",
+          "role": "user",
+          "tool_call_id": null,
+          "tool_calls": null
+        },
+        {
+          "content": "",
+          "role": "assistant",
+          "tool_call_id": null,
+          "tool_calls": [
+            {
+              "arguments": "{}",
+              "id": "tc_0",
+              "name": "calculator"
+            }
+          ]
+        },
+        {
+          "content": "4",
+          "role": "tool",
+          "tool_call_id": "tc_0",
+          "tool_calls": null
+        },
+        {
+          "content": "工具调用预算已用尽，不要再调用任何工具。请基于已完成的工作给出最终答复：总结完成了什么、还有什么没做、需要用户做哪些决定。",
+          "role": "system",
+          "tool_call_id": null,
+          "tool_calls": null
+        }
+      ],
+      "model": "test-model",
+      "reasoning_effort": null,
+      "temperature": 0.699999988079071,
+      "tools": [
+        {
+          "function": {
+            "description": "",
+            "name": "calculator",
+            "parameters": {
+              "properties": {},
+              "type": "object"
+            }
+          },
+          "type": "function"
+        }
+      ]
+    }
+  ],
+  "chat_log": [],
+  "events": [
+    {
+      "ToolCall": [
+        {
+          "arguments": "{}",
+          "id": "tc_0",
+          "name": "calculator"
+        }
+      ]
+    },
+    {
+      "ToolResult": {
+        "is_error": false,
+        "result": "4",
+        "tool_name": "calculator"
+      }
+    },
+    {
+      "ToolCall": [
+        {
+          "arguments": "{}",
+          "id": "tc_1",
+          "name": "calculator"
+        }
+      ]
+    },
+    {
+      "ToolResult": {
+        "is_error": false,
+        "result": "4",
+        "tool_name": "calculator"
+      }
+    },
+    {
+      "Done": "已在 1 轮工具调用后暂停，已完成的工作已保存。发送下一条消息可继续，或调大 max_tool_iterations（设为 0 表示不限）。"
+    }
+  ],
+  "history": [
+    {
+      "content": "You are a test assistant.",
+      "role": "system",
+      "tool_call_id": null,
+      "tool_calls": []
+    },
+    {
+      "content": "loop forever",
+      "role": "user",
+      "tool_call_id": null,
+      "tool_calls": []
+    },
+    {
+      "content": "",
+      "role": "assistant",
+      "tool_call_id": null,
+      "tool_calls": [
+        {
+          "arguments": "{}",
+          "id": "tc_0",
+          "name": "calculator"
+        }
+      ]
+    },
+    {
+      "content": "4",
+      "role": "tool",
+      "tool_call_id": "tc_0",
+      "tool_calls": [],
+      "tool_name": "calculator"
+    },
+    {
+      "content": "",
+      "role": "assistant",
+      "tool_call_id": null,
+      "tool_calls": [
+        {
+          "arguments": "{}",
+          "id": "tc_1",
+          "name": "calculator"
+        }
+      ]
+    },
+    {
+      "content": "4",
+      "role": "tool",
+      "tool_call_id": "tc_1",
+      "tool_calls": [],
+      "tool_name": "calculator"
+    }
+  ],
+  "observer": [
+    {
+      "data": {
+        "api_base": "",
+        "api_key": "",
+        "messages": [
+          {
+            "content": "You are a test assistant.",
+            "role": "system",
+            "tool_call_id": null,
+            "tool_calls": null
+          },
+          {
+            "content": "<system-reminder>\n# Current Time / Environment snapshot\n<TIME_SNAPSHOT>\n# Environment\nplatform: windows\ndefault_shell: cmd\ntime_cmd: use `date /t` or `echo %date% %time%` or PowerShell `Get-Date`\n(本快照取代之前的时间/环境快照)\n\n# Runtime Policy\napproval: off（无交互审批，ask 规则按默认策略处理）\nguardian: off\nmodel_tier: big\nmode: build（正常全量工具）\n(当前审批/守护/模型档位/工作模式运行时策略快照；策略变更后下一次构建生效。)\n</system-reminder>",
+            "role": "user",
+            "tool_call_id": null,
+            "tool_calls": null
+          },
+          {
+            "content": "loop forever",
+            "role": "user",
+            "tool_call_id": null,
+            "tool_calls": null
+          }
+        ],
+        "messages_count": 3,
+        "model": "test-model",
+        "provider_name": "",
+        "round": 1,
+        "tools": [
+          {
+            "function": {
+              "description": "",
+              "name": "calculator",
+              "parameters": {
+                "properties": {},
+                "type": "object"
+              }
+            },
+            "type": "function"
+          }
+        ],
+        "tools_count": 1,
+        "trace_id": "trace-golden",
+        "type": "llm_request"
+      },
+      "event": "llm_request"
+    },
+    {
+      "data": {
+        "content": "",
+        "finish_reason": null,
+        "has_tool_calls": true,
+        "round": 1,
+        "tool_calls": [
+          {
+            "arguments": "{}",
+            "id": "tc_0",
+            "name": "calculator"
+          }
+        ],
+        "tool_calls_count": 1,
+        "trace_id": "trace-golden",
+        "type": "llm_response",
+        "usage": null
+      },
+      "event": "llm_response"
+    },
+    {
+      "data": {
+        "arguments": "{}",
+        "result": "4",
+        "round": 1,
+        "success": true,
+        "tool_name": "calculator",
+        "trace_id": "trace-golden",
+        "type": "tool_call"
+      },
+      "event": "tool_call"
+    },
+    {
+      "data": {
+        "api_base": "",
+        "api_key": "",
+        "messages": [
+          {
+            "content": "You are a test assistant.",
+            "role": "system",
+            "tool_call_id": null,
+            "tool_calls": null
+          },
+          {
+            "content": "<system-reminder>\n# Current Time / Environment snapshot\n<TIME_SNAPSHOT>\n# Environment\nplatform: windows\ndefault_shell: cmd\ntime_cmd: use `date /t` or `echo %date% %time%` or PowerShell `Get-Date`\n(本快照取代之前的时间/环境快照)\n\n# Runtime Policy\napproval: off（无交互审批，ask 规则按默认策略处理）\nguardian: off\nmodel_tier: big\nmode: build（正常全量工具）\n(当前审批/守护/模型档位/工作模式运行时策略快照；策略变更后下一次构建生效。)\n</system-reminder>",
+            "role": "user",
+            "tool_call_id": null,
+            "tool_calls": null
+          },
+          {
+            "content": "loop forever",
+            "role": "user",
+            "tool_call_id": null,
+            "tool_calls": null
+          },
+          {
+            "content": "",
+            "role": "assistant",
+            "tool_call_id": null,
+            "tool_calls": [
+              {
+                "arguments": "{}",
+                "id": "tc_0",
+                "name": "calculator"
+              }
+            ]
+          },
+          {
+            "content": "4",
+            "role": "tool",
+            "tool_call_id": "tc_0",
+            "tool_calls": null
+          },
+          {
+            "content": "工具调用预算已用尽，不要再调用任何工具。请基于已完成的工作给出最终答复：总结完成了什么、还有什么没做、需要用户做哪些决定。",
+            "role": "system",
+            "tool_call_id": null,
+            "tool_calls": null
+          }
+        ],
+        "messages_count": 6,
+        "model": "test-model",
+        "provider_name": "",
+        "round": 2,
+        "tools": [
+          {
+            "function": {
+              "description": "",
+              "name": "calculator",
+              "parameters": {
+                "properties": {},
+                "type": "object"
+              }
+            },
+            "type": "function"
+          }
+        ],
+        "tools_count": 1,
+        "trace_id": "trace-golden",
+        "type": "llm_request"
+      },
+      "event": "llm_request"
+    },
+    {
+      "data": {
+        "content": "",
+        "finish_reason": null,
+        "has_tool_calls": true,
+        "round": 2,
+        "tool_calls": [
+          {
+            "arguments": "{}",
+            "id": "tc_1",
+            "name": "calculator"
+          }
+        ],
+        "tool_calls_count": 1,
+        "trace_id": "trace-golden",
+        "type": "llm_response",
+        "usage": null
+      },
+      "event": "llm_response"
+    },
+    {
+      "data": {
+        "arguments": "{}",
+        "result": "4",
+        "round": 2,
+        "success": true,
+        "tool_name": "calculator",
+        "trace_id": "trace-golden",
+        "type": "tool_call"
+      },
+      "event": "tool_call"
+    }
+  ],
+  "scenario": "max_turns_exhausted"
+}

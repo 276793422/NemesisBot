@@ -1,0 +1,37 @@
+{
+  "boundary": [
+    {
+      "detail": "",
+      "event": "turn_start",
+      "role": "boundary"
+    },
+    {
+      "detail": "done",
+      "event": "turn_end",
+      "role": "boundary"
+    }
+  ],
+  "calls": [],
+  "chat_log": [],
+  "events": [
+    {
+      "Done": "⛔ 已急停 (E-STOP) — 已停止当前任务。发送 `nemesisbot estop --release` 恢复。"
+    }
+  ],
+  "history": [
+    {
+      "content": "You are a test assistant.",
+      "role": "system",
+      "tool_call_id": null,
+      "tool_calls": []
+    },
+    {
+      "content": "hello",
+      "role": "user",
+      "tool_call_id": null,
+      "tool_calls": []
+    }
+  ],
+  "observer": [],
+  "scenario": "estop_top"
+}
