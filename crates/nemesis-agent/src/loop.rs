@@ -114,6 +114,11 @@ mod run_loop;
 pub use run_loop::*;
 #[allow(unused_imports)]
 pub(crate) use run_loop::*;
+mod tool_batch;
+#[allow(unused_imports)]
+pub use tool_batch::*;
+#[allow(unused_imports)]
+pub(crate) use tool_batch::*;
 mod tool_defs;
 #[allow(unused_imports)]
 pub use tool_defs::*;
