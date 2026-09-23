@@ -1233,7 +1233,7 @@ pub struct OneBotConfig {
     pub sync_to: Vec<String>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Clone, Serialize, Deserialize)]
 pub struct WebChannelConfig {
     #[serde(default = "default_true")]
     pub enabled: bool,
@@ -1257,6 +1257,32 @@ pub struct WebChannelConfig {
     pub session_timeout: i64,
     #[serde(default)]
     pub sync_to: Vec<String>,
+}
+
+// SEC-002（2026-09-22 审查）：手写 Debug 替代 derive——auth_token 一律脱敏
+// （Debug/panic/错误上下文会把整个 config 打进日志）。字段名保留，值只输出
+// 形态；其余字段与 derive 输出一致。
+impl std::fmt::Debug for WebChannelConfig {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("WebChannelConfig")
+            .field("enabled", &self.enabled)
+            .field("host", &self.host)
+            .field("port", &self.port)
+            .field("path", &self.path)
+            .field(
+                "auth_token",
+                &if self.auth_token.is_empty() {
+                    "<empty>"
+                } else {
+                    "<redacted>"
+                },
+            )
+            .field("allow_from", &self.allow_from)
+            .field("heartbeat_interval", &self.heartbeat_interval)
+            .field("session_timeout", &self.session_timeout)
+            .field("sync_to", &self.sync_to)
+            .finish()
+    }
 }
 
 impl Default for WebChannelConfig {
@@ -1322,7 +1348,7 @@ pub struct ExternalConfig {
 // Model Config
 // ============================================================================
 
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[derive(Clone, Default, Serialize, Deserialize)]
 pub struct ModelConfig {
     #[serde(default)]
     pub model_name: String,
@@ -1370,6 +1396,35 @@ pub struct ModelConfig {
         skip_serializing_if = "std::collections::BTreeMap::is_empty"
     )]
     pub extra: std::collections::BTreeMap<String, serde_json::Value>,
+}
+
+// SEC-002（2026-09-22 审查）：手写 Debug 替代 derive——api_key 一律脱敏。
+// 模型列表常被 Debug/日志整段打印（agent_factory、dashboard handler 等），
+// derive 会把 key 带进日志与故障报告。extra flatten map 不含结构化 secret
+// 字段（per-model 键为 tier/vision/timeout 等开关），照常输出。
+impl std::fmt::Debug for ModelConfig {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ModelConfig")
+            .field("model_name", &self.model_name)
+            .field("model", &self.model)
+            .field("api_base", &self.api_base)
+            .field(
+                "api_key",
+                &if self.api_key.is_empty() {
+                    "<empty>"
+                } else {
+                    "<redacted>"
+                },
+            )
+            .field("proxy", &self.proxy)
+            .field("auth_method", &self.auth_method)
+            .field("connect_mode", &self.connect_mode)
+            .field("protocol", &self.protocol)
+            .field("workspace", &self.workspace)
+            .field("reasoning_effort", &self.reasoning_effort)
+            .field("extra", &self.extra)
+            .finish()
+    }
 }
 
 impl ModelConfig {

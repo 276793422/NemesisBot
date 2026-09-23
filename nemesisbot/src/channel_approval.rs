@@ -76,11 +76,26 @@ impl ChannelApprovalManager {
     /// 回执 watcher 主循环：解析 `/approve|/deny <id>` 回执并裁决。装配一律
     /// 走 [`Self::spawn_watcher`]（订阅先于 spawn 的正确次序封装）——旧的
     /// 「spawn 后任务内订阅」入口已删除，编译器强制所有调用点走正确次序。
+    /// Lagged（慢消费者丢消息）只记 warn 继续，仅 Closed 退出——watcher 是
+    /// 通道审批回执的唯一消费者，bus 存活期间必须常驻。
     pub async fn watcher_with_rx(
         self: std::sync::Arc<Self>,
         mut rx: tokio::sync::broadcast::Receiver<nemesis_types::channel::InboundMessage>,
     ) {
-        while let Ok(msg) = rx.recv().await {
+        loop {
+            let msg = match rx.recv().await {
+                Ok(msg) => msg,
+                Err(tokio::sync::broadcast::error::RecvError::Lagged(n)) => {
+                    tracing::warn!(
+                        "[ChannelApproval] inbound lagged: {n} messages lost, watcher continues"
+                    );
+                    continue;
+                }
+                Err(tokio::sync::broadcast::error::RecvError::Closed) => {
+                    tracing::info!("[ChannelApproval] inbound bus closed, watcher exiting");
+                    break;
+                }
+            };
             let Some((verb, id)) = parse_reply(&msg.content) else {
                 continue;
             };

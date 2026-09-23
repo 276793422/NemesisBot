@@ -340,3 +340,67 @@ async fn approve_published_before_watcher_first_poll_is_delivered() {
     assert!(notice.content.contains(&id));
     assert!(notice.content.contains("已批准"));
 }
+
+// ---------------------------------------------------------------------------
+// ⑦ Lagged 容错（2026-09-22 审查 REL-001）
+// ---------------------------------------------------------------------------
+
+// 旧实现 `while let Ok(msg) = rx.recv().await` 把 `Lagged` 当通道终结：缓冲
+// 冲掉未消费消息的瞬间 watcher 永久退出，此后所有 `/approve` 无人消费，审批
+// 全部等满超时误拒。修后 Lagged 记 warn 继续，仅 Closed 退出。容量 1 的 bus
+// 确定性触发 Lagged：订阅后不启动 watcher、连发 3 条噪声（容量 1 只留最后
+// 1 条，seq 缺口 ≥2）→ watcher 首次 recv 必得 Lagged，随后的 /approve 仍须
+// 被裁决。
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn watcher_survives_inbound_lag_and_keeps_resolving() {
+    let bus = Arc::new(MessageBus::with_capacity(1));
+    let mgr = Arc::new(ChannelApprovalManager::new(bus.clone()));
+    let mut out_rx = bus.subscribe_outbound();
+
+    // 先订阅（接收者在 send 前创建即必达进缓冲），此刻不启动主循环。
+    let rx = mgr.subscribe_inbound();
+
+    let mgr_for_ask = mgr.clone();
+    let ask = std::thread::spawn(move || {
+        mgr_for_ask
+            .request_approval_sync_ctx(
+                "req-uuid-l4g00001",
+                "file_write",
+                "/tmp/x",
+                "HIGH",
+                "lag regression",
+                120,
+                &CTX_IM(),
+            )
+            .unwrap()
+    });
+
+    let card = next_outbound(&mut out_rx).await;
+    let id_line = card
+        .content
+        .lines()
+        .find(|l| l.starts_with("编号: "))
+        .expect("card has id line");
+    let id = id_line["编号: ".len()..].trim().to_string();
+
+    // 3 条噪声冲爆容量 1 的缓冲（旧实现在 watcher 启动后第一条 recv 即
+    // Lagged 退出）。
+    for i in 0..3 {
+        bus.publish_inbound(inbound("telegram", "chat-9", &format!("noise-{i}")));
+    }
+
+    // 启动主循环：容量 1 下 /approve 已覆盖最后一条噪声，首次 recv 必得
+    // Lagged（旧实现在此退出 → /approve 无人消费 → ask 超时误拒），继续后
+    // 下一条 recv 直接拿到 /approve 并正常裁决。
+    bus.publish_inbound(inbound("telegram", "chat-9", &format!("/approve {id}")));
+    tokio::spawn(mgr.clone().watcher_with_rx(rx));
+
+    let verdict = ask.join().unwrap();
+    assert!(
+        verdict.approved,
+        "watcher must survive lag and resolve the reply"
+    );
+    let notice = next_outbound(&mut out_rx).await;
+    assert!(notice.content.contains(&id));
+    assert!(notice.content.contains("已批准"));
+}

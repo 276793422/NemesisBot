@@ -155,7 +155,16 @@ impl std::fmt::Debug for WebServerConfig {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("WebServerConfig")
             .field("listen_addr", &self.listen_addr)
-            .field("auth_token", &self.auth_token)
+            // SEC-002（2026-09-22 审查）：Debug/panic/错误上下文常被整段打进
+            // 日志或故障报告，令牌一律脱敏；字段名保留，值只输出形态。
+            .field(
+                "auth_token",
+                &if self.auth_token.is_empty() {
+                    "<empty>"
+                } else {
+                    "<redacted>"
+                },
+            )
             .field("cors_origins", &self.cors_origins)
             .field("ws_path", &self.ws_path)
             .field("workspace", &self.workspace)

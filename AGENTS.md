@@ -153,7 +153,9 @@ cargo test -p nemesis-cluster
 # （voice/sandbox 不带的话 voice_extra_tests / sandbox 测试会静默跳过；不带 feature
 #   只能跑基础 327 个；--workspace 全量时 feature 统一自动生效。）
 
-# 运行 workspace 全部测试
+# 运行 workspace 全部测试（前置：nemesisbot 编译依赖 web 前端产物 crates/nemesis-web/static/
+# （gitignored）——干净 clone 先 `npm --prefix web install && npm --prefix web run build`，
+# 缺失时 build.rs 报错并给出该命令）
 cargo test --workspace
 
 # 使用 release 模式运行测试（更快执行）

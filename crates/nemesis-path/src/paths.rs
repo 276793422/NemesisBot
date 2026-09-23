@@ -13,7 +13,12 @@ pub const ENV_SCANNER_CONFIG: &str = "NEMESISBOT_SCANNER_CONFIG";
 pub const DEFAULT_HOME_DIR: &str = ".nemesisbot";
 
 /// Global local mode flag.
-pub static mut LOCAL_MODE: bool = false;
+///
+/// 私有 AtomicBool（2026-09-22 审查 SAFE-001：原 `pub static mut` 读写全靠
+/// unsafe 且暴露可变本体）。唯一访问口是 [`set_local_mode`]/[`is_local_mode`]；
+/// 单 bool 标志无复合不变量，Relaxed 序足够。进程级状态：并发测试仍须持有
+/// ENV_LOCK（见 paths/tests.rs 契约注释）。
+static LOCAL_MODE: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
 /// Singleton state for `default_path_manager()`.
 static DEFAULT_MANAGER: std::sync::OnceLock<PathManager> = std::sync::OnceLock::new();
@@ -212,7 +217,7 @@ pub fn default_path_manager() -> &'static PathManager {
 /// 5. Default → `~/.nemesisbot`
 pub fn resolve_home_dir() -> Result<PathBuf, String> {
     // Priority 1: LocalMode
-    let local_mode = unsafe { LOCAL_MODE };
+    let local_mode = LOCAL_MODE.load(std::sync::atomic::Ordering::Relaxed);
     if local_mode {
         let cwd = std::env::current_dir().map_err(|e| format!("cwd: {}", e))?;
         return Ok(cwd.join(DEFAULT_HOME_DIR));
@@ -264,14 +269,12 @@ pub fn detect_local() -> bool {
 
 /// Set the local mode flag.
 pub fn set_local_mode(enabled: bool) {
-    unsafe {
-        LOCAL_MODE = enabled;
-    }
+    LOCAL_MODE.store(enabled, std::sync::atomic::Ordering::Relaxed);
 }
 
 /// Check if local mode is enabled.
 pub fn is_local_mode() -> bool {
-    unsafe { LOCAL_MODE }
+    LOCAL_MODE.load(std::sync::atomic::Ordering::Relaxed)
 }
 
 /// `<workspace>/config` —— 子系统配置区（config.*.json；用户 2026-08-28

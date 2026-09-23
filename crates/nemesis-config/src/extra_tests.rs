@@ -1531,3 +1531,43 @@ fn extra_security_limits_roundtrip_and_skip_empty() {
     let back: SecurityConfig = serde_json::from_str(&text).unwrap();
     assert_eq!(back.limits, cfg.limits, "typed round-trip 语义稳定");
 }
+
+// ============================================================================
+// SEC-002（2026-09-22 审查）：Debug 脱敏契约——secret 结构体 Debug 输出
+// 含字段名、绝不含真实值（Debug/panic/错误上下文会整段进日志）。
+// ============================================================================
+
+#[test]
+fn model_config_debug_redacts_api_key() {
+    let m = ModelConfig {
+        model_name: "gpt-x".into(),
+        model: "openai/gpt-x".into(),
+        api_key: "sk-super-secret".into(),
+        ..Default::default()
+    };
+    let s = format!("{m:?}");
+    assert!(s.contains("api_key"), "field name must survive: {s}");
+    assert!(
+        !s.contains("sk-super-secret"),
+        "api_key must be redacted: {s}"
+    );
+    assert!(s.contains("<redacted>"));
+}
+
+#[test]
+fn web_channel_config_debug_redacts_auth_token() {
+    let w = WebChannelConfig {
+        auth_token: "tok-live-secret".into(),
+        ..Default::default()
+    };
+    let s = format!("{w:?}");
+    assert!(s.contains("auth_token"), "field name must survive: {s}");
+    assert!(
+        !s.contains("tok-live-secret"),
+        "auth_token must be redacted: {s}"
+    );
+    assert!(s.contains("<redacted>"));
+    // 空值形态输出 <empty>（与 <redacted> 区分，便于排障辨认未配置态）。
+    let empty = WebChannelConfig::default();
+    assert!(format!("{empty:?}").contains("<empty>"));
+}

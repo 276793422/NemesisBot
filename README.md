@@ -163,6 +163,10 @@ cargo build --profile iotsmall -p nemesisbot --no-default-features --features "c
 
 ### 运行测试
 
+> 前置：`nemesisbot` 的编译依赖前端构建产物 `crates/nemesis-web/static/`（gitignored，不入库）。
+> 干净 clone 后先执行 `npm --prefix web install && npm --prefix web run build`，否则 `--workspace`
+> 级命令会在此处报错（错误信息含本命令）。
+
 ```bash
 # 运行所有单元测试
 cargo test --workspace

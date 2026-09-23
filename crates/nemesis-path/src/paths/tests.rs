@@ -350,7 +350,8 @@ fn test_path_manager_default_trait() {
 /// while blocking other test threads.
 ///
 /// The contract is bilateral: besides env vars it also covers the other
-/// process-global inputs the resolvers read — `LOCAL_MODE` (`static mut`,
+/// process-global inputs the resolvers read — `LOCAL_MODE` (process-global
+/// AtomicBool behind set/is_local_mode,
 /// read first by `resolve_home_dir()`: a naked `set_local_mode(true)` inside a
 /// parallel EnvGuard window short-circuits that test's env assertions) and the
 /// `default_path_manager()` OnceLock singleton (the first `get_or_init` freezes
@@ -1941,7 +1942,8 @@ fn test_path_manager_new_fallback_to_dirs_home() {
 #[test]
 fn test_resolve_home_dir_priority_local_over_env() {
     // local_mode should take priority over NEMESISBOT_HOME env.
-    // NOTE: LOCAL_MODE is a global static mut, so this test is fragile under
+    // NOTE: LOCAL_MODE is process-global (AtomicBool behind set/is_local_mode),
+    // so this test is fragile under
     // parallel execution. We can't fully serialize without external crates,
     // so we just verify local_mode=true with no env doesn't panic.
     let _g = EnvGuard::remove(ENV_HOME);
@@ -2522,7 +2524,8 @@ fn test_detect_local_without_dir() {
 
 #[test]
 fn test_resolve_home_dir_with_local_mode_in_temp_cwd() {
-    // LOCAL_MODE is a global static mut, and changing cwd races with other
+    // LOCAL_MODE is process-global (AtomicBool behind set/is_local_mode), and
+    // changing cwd races with other
     // tests. We just verify local_mode=true returns Ok without panicking.
     let _g = EnvGuard::remove(ENV_HOME);
     set_local_mode(true);

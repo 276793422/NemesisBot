@@ -1207,8 +1207,12 @@ fn test_config_debug_includes_all_fields() {
     let s = format!("{:?}", config);
     assert!(s.contains("listen_addr"));
     assert!(s.contains("127.0.0.1:9999"));
+    // SEC-002（2026-09-22）：auth_token 必须脱敏——字段名在、真实值不在。
+    // 注意不能裸断言 !contains("tok")：字段名 auth_token 本身含 "tok" 子串，
+    // 断言值形态。
     assert!(s.contains("auth_token"));
-    assert!(s.contains("tok"));
+    assert!(s.contains("<redacted>"));
+    assert!(!s.contains("\"tok\""));
     assert!(s.contains("ws_path"));
     assert!(s.contains("/ws"));
     assert!(s.contains("workspace"));
