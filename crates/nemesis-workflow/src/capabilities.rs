@@ -240,7 +240,9 @@ pub fn capabilities() -> GeneratorCapabilities {
             .into(),
         "条件边 condition 是表达式：支持比较（== != > < >= <=，如 {{n.status_code}} == 200）、\
          前导 ! 取反（如 !{{check.passed}}）、字面布尔（true/false/yes/no/1/0）；\
-         多条入边条件全过才执行（AND 语义）"
+         多条入边条件全过才执行（AND 语义）。引用的字段/变量必须真实存在——\
+         condition 节点的输出字段是 condition_result；引用不存在的字段会在草稿期被 \
+         lint 预警、运行期直接 Failed（绝不静默选边）"
             .into(),
     ];
 

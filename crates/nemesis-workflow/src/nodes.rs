@@ -498,7 +498,13 @@ fn resp_status_reason(status_code: u16) -> String {
 /// previously-executed node's output object. Missing keys resolve to empty
 /// string. The implementation is intentionally minimal — full templating
 /// belongs in the scheduler's context-builder, not here.
-fn resolve_prompt_template(template: &str, context: &HashMap<String, serde_json::Value>) -> String {
+/// 替换 `{{key}}` 占位符（键存在才替换；缺失键保留原样——调度器的条件边
+/// 语义靠这一点把「引用了不存在的字段」识别为不可解析，见
+/// `scheduler::eval_edge_conditions`）。
+pub(crate) fn resolve_prompt_template(
+    template: &str,
+    context: &HashMap<String, serde_json::Value>,
+) -> String {
     let mut out = template.to_string();
     for (k, v) in context {
         let placeholder = format!("{{{{{}}}}}", k);
@@ -507,6 +513,28 @@ fn resolve_prompt_template(template: &str, context: &HashMap<String, serde_json:
             other => other.to_string(),
         };
         out = out.replace(&placeholder, &replacement);
+    }
+    out
+}
+
+/// 提取表达式里的全部 `{{…}}` 占位符，拆成（首段, 可选字段名）。
+/// 条件边 lint（字段幻觉预警）与调度器（未解析占位符可证伪性判定）共用。
+pub(crate) fn placeholder_refs(cond: &str) -> Vec<(String, Option<String>)> {
+    let mut out = Vec::new();
+    let mut rest = cond;
+    while let Some(start) = rest.find("{{") {
+        let after = &rest[start + 2..];
+        let Some(end) = after.find("}}") else {
+            break;
+        };
+        let inner = after[..end].trim();
+        if !inner.is_empty() {
+            let mut it = inner.splitn(2, '.');
+            let head = it.next().unwrap_or("").trim().to_string();
+            let field = it.next().map(|f| f.trim().to_string());
+            out.push((head, field));
+        }
+        rest = &after[end + 2..];
     }
     out
 }

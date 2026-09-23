@@ -4095,6 +4095,43 @@ async fn s12b_condition_false_branch_dropped_but_downstream_still_completes() {
     );
 }
 
+/// 缺陷 15 端到端（2026-09-23 E 级复核实测）：条件边引用**已完成节点**
+/// 输出中不存在的字段（幻觉字段），生产 run 路径必须 Failed 且错误点名
+/// 节点与字段——不再落「非空即真」静默选边。
+#[tokio::test]
+async fn defect15_hallucinated_condition_field_fails_execution() {
+    let mut wf = make_workflow(
+        "cond_hallucinated_field_wf",
+        vec![
+            make_node("check", "transform", vec![]),
+            make_node("branch", "transform", vec!["check"]),
+        ],
+    );
+    wf.edges = vec![crate::types::Edge {
+        from_node: "check".to_string(),
+        to_node: "branch".to_string(),
+        condition: Some("{{check.passed}}".to_string()),
+    }];
+    let engine = WorkflowEngine::new();
+    engine.register_workflow(wf).unwrap();
+
+    let execution = engine
+        .run("cond_hallucinated_field_wf", HashMap::new(), None)
+        .await
+        .unwrap();
+
+    assert_eq!(execution.state, ExecutionState::Failed);
+    let err = execution.error.as_deref().unwrap_or("");
+    assert!(
+        err.contains("branch") && err.contains("check.passed"),
+        "错误必须点名节点与字段: {err}"
+    );
+    assert!(
+        !execution.node_results.contains_key("branch"),
+        "下游分支不得在条件可证伪时抢跑"
+    );
+}
+
 // ---- restore 循环迭代臂 -----------------------------------------------------
 
 /// 包裹 [`ScriptedStore`]，额外让 `list_executions` 报出“幽灵执行 id”：

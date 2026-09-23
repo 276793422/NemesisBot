@@ -305,11 +305,25 @@ async fn schedule_inner(
         // resume skip set. Skipped nodes (already-completed when resuming
         // from a checkpoint) are dropped here — their outputs were already
         // restored into wf_ctx by the caller.
-        let runnable: Vec<String> = level
-            .into_iter()
-            .filter(|id| !skip.contains(id))
-            .filter(|id| should_run_node(id, &cond_edges, wf_ctx))
-            .collect();
+        //
+        // 缺陷 15 修复（2026-09-23 E 级复核实测）：条件边引用了「已完成节点
+        // 输出里不存在的字段」（生成器把 condition 输出幻觉成 `passed`）时，
+        // 旧路径占位符原样残留落「非空即真」——正向恒放行、取反恒拦截，
+        // 路由与真实数据脱钩。该节点输出已落定、字段存在与否可证 → 升级为
+        // Err：执行 Failed 并点名节点与条件原文。引用未定义变量/未执行节点
+        // 不可证伪（可能是可选入参/被丢弃的分支）→ 整条条件按不成立处理
+        // （跳过分支，保持既有语义），绝不静默选边。
+        let mut runnable: Vec<String> = Vec::new();
+        for id in level {
+            if skip.contains(&id) {
+                continue;
+            }
+            match eval_edge_conditions(&id, &cond_edges, wf_ctx) {
+                Ok(true) => runnable.push(id),
+                Ok(false) => {}
+                Err(e) => return Err(e),
+            }
+        }
 
         if runnable.is_empty() {
             continue;
@@ -477,30 +491,58 @@ async fn schedule_inner(
 /// [`crate::nodes::evaluate_condition`] used by the ConditionNodeExecutor —
 /// it resolves `{{var}}` placeholders itself, so the documented
 /// `{{count}} > 5` style works uniformly. All incoming conditional edges
-/// must pass (AND). An edge evaluation failure of any one condition skips
-/// the node.
+/// must pass (AND). Any condition evaluating false skips the node.
 ///
-/// 缺陷 8 修复（2026-09-23）：旧实现先 `wf_ctx.resolve` 整串再比对布尔——
-/// 带模板的表达式 resolve 后（如 "200 == 200"）不再等于原文，走进
-/// 「非空即真」分支，表达式**从未被求值**，全部分支恒放行（静默错，
-/// 违反诚实失败契约）。现统一委托 `evaluate_condition`（其 Step 1 自带
-/// 模板解析，Step 2 兜底字面布尔，语义与能力表文档一致）。
-fn should_run_node(
+/// Unresolved placeholders (a `{{...}}` still present after template
+/// resolution) are split by provability:
+/// - head names a node whose result is **Completed** → its output is fully
+///   known, the referenced field provably doesn't exist → `Err`: the
+///   schedule aborts and the execution surfaces **Failed** naming the node
+///   and the condition (缺陷 15) instead of truthy-ing the leftover literal;
+/// - anything else (undefined variable, node that never ran — e.g. a branch
+///   dropped by its own false condition, optional trigger input) → the whole
+///   condition counts as **false** and the branch is skipped, preserving the
+///   historical drop semantics (s12b 挂账观察项).
+fn eval_edge_conditions(
     node_id: &str,
     cond_edges: &HashMap<String, Vec<&Edge>>,
     wf_ctx: &WorkflowContext,
-) -> bool {
-    if let Some(edges) = cond_edges.get(node_id) {
-        let ctx = build_executor_context(wf_ctx);
-        for edge in edges {
-            if let Some(ref cond) = edge.condition
-                && !crate::nodes::evaluate_condition(cond, &ctx)
-            {
-                return false;
+) -> Result<bool, String> {
+    let Some(edges) = cond_edges.get(node_id) else {
+        return Ok(true);
+    };
+    let ctx = build_executor_context(wf_ctx);
+    for edge in edges {
+        let Some(cond) = &edge.condition else {
+            continue;
+        };
+        let resolved = crate::nodes::resolve_prompt_template(cond, &ctx);
+        if resolved.contains("{{") {
+            let all_results = wf_ctx.get_all_node_results();
+            let completed: std::collections::HashSet<&str> = all_results
+                .iter()
+                .filter(|(_, r)| r.state == ExecutionState::Completed)
+                .map(|(id, _)| id.as_str())
+                .collect();
+            let provable = crate::nodes::placeholder_refs(cond)
+                .into_iter()
+                .any(|(head, _)| completed.contains(head.as_str()));
+            if provable {
+                return Err(format!(
+                    "节点 {:?} 的条件边引用了已完成节点输出中不存在的字段（模板解析后仍残留 \
+                     {{{{…}}}}）：{:?}。请核对上游节点 id 与其输出字段名（condition 节点 \
+                     的输出字段是 condition_result）",
+                    node_id, cond
+                ));
             }
+            // 引用不可证伪：变量未提供/节点未执行 → 整条条件不成立。
+            return Ok(false);
+        }
+        if !crate::nodes::evaluate_condition(cond, &ctx) {
+            return Ok(false);
         }
     }
-    true
+    Ok(true)
 }
 
 // ---------------------------------------------------------------------------
