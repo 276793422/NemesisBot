@@ -341,4 +341,22 @@ impl AgentLoop {
             defs
         }
     }
+
+    /// 器官 4e（docs/PLAN §4.2）：三处恢复环共用的**全量** tool_defs 重建（原
+    /// context 压缩环 / 429 环 / transient 环各内联一份的 map/collect 三连——
+    /// 三处合一，语义保持全量不过折叠闸）。
+    pub(crate) fn rebuild_full_tool_defs(&self) -> Vec<crate::types::ToolDefinition> {
+        self.tools
+            .read()
+            .iter()
+            .map(|(name, tool)| crate::types::ToolDefinition {
+                tool_type: "function".to_string(),
+                function: crate::types::ToolFunctionDef {
+                    name: name.clone(),
+                    description: tool.description(),
+                    parameters: tool.parameters(),
+                },
+            })
+            .collect()
+    }
 }
