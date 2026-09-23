@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { onMounted, watch } from 'vue'
+import { onMounted, onUnmounted, watch } from 'vue'
 import { storeToRefs } from 'pinia'
 import { useWorkflowStore } from '../stores/workflow'
 import WorkflowTabs from '../components/workflow/WorkflowTabs.vue'
@@ -7,12 +7,18 @@ import WorkflowList from '../components/workflow/WorkflowList.vue'
 import WorkflowCanvas from '../components/workflow/WorkflowCanvas.vue'
 import WorkflowHistory from '../components/workflow/WorkflowHistory.vue'
 import WorkflowYaml from '../components/workflow/WorkflowYaml.vue'
+import WorkflowAgentGen from '../components/workflow/WorkflowAgentGen.vue'
 
 const store = useWorkflowStore()
 const { activeTab, listLoading } = storeToRefs(store)
 
 onMounted(() => {
   store.fetchList()
+})
+
+// 离开工作流页时退出草稿画布预览（防幽灵预览跨页残留）。
+onUnmounted(() => {
+  store.exitDraftPreview()
 })
 
 watch(activeTab, (tab) => {
@@ -33,6 +39,7 @@ watch(activeTab, (tab) => {
 
       <div class="workflow-content">
         <WorkflowList v-if="activeTab === 'list'" />
+        <WorkflowAgentGen v-else-if="activeTab === 'agentGen'" />
         <WorkflowCanvas v-else-if="activeTab === 'canvas'" />
         <WorkflowHistory v-else-if="activeTab === 'history'" />
         <WorkflowYaml v-else-if="activeTab === 'yaml'" />

@@ -32,6 +32,9 @@ tokio-util = { version = "0.7", features = ["rt"] }
 async-trait = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
+# 对话生成（2026-09-22）：workflow_edit 命名会话渲染当前定义 YAML（与
+# nemesis-workflow 落盘序列化同源，draft/定义字节一致）。
+serde_yaml = { workspace = true }
 tracing = { workspace = true }
 thiserror = { workspace = true }
 chrono = { workspace = true }

@@ -573,6 +573,13 @@ pub fn build_agent_loop(
     // 绑定全局急停状态（每次重建都重新绑到 SharedResources 上的同一个 Arc，
     // 所以急停状态在 agent stop/start 后自动保持）。
     agent_loop.set_estop(shared.estop.clone());
+    // 对话生成（2026-09-22）：工作流引擎引用——workflow_edit 命名会话渲染
+    // 当前定义块用（workflow_create/capabilities 工具经 SharedToolConfig
+    // 各自持有引擎 Arc，此处只服务 loop 的 section 渲染）。
+    #[cfg(feature = "workflow")]
+    if let Some(ref wf_engine) = shared.workflow_engine {
+        agent_loop.set_workflow_engine(wf_engine.clone());
+    }
     // N2 (devtool-upgrade 阶段 4): `agents.small_model` 小模型杂务通道——
     // 手动 /compact 的摘要走小模型省 token（自动压缩维持主模型，质量敏感）。
     // 模型缺失/解析失败 = warn + 跳过（loop 侧诚实回退主模型），绝不阻断

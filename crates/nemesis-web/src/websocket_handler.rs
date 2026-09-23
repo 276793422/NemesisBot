@@ -604,6 +604,13 @@ fn handle_chat_send(
         /// 单点，JSON 序列化进 metadata["open_files"] 全链路透传到 agent loop。
         #[serde(default)]
         open_files: Option<Vec<String>>,
+        /// 对话生成（2026-09-22）：工作流编辑注入目标。`{workflow_name: "x"}`
+        /// = 编辑已注册工作流；`{}` 或 `{"workflow_name": null}` = 新建
+        /// （_new 引导会话）。缺省 = 普通对话。序列化进
+        /// metadata["workflow_edit"]，AgentLoop 每轮经
+        /// workflow_edit_from_metadata 单点解析后渲染上下文 section。
+        #[serde(default)]
+        workflow_edit: Option<nemesis_types::channel::WorkflowEditTarget>,
     }
     let data: ChatData = msg.decode_data()?;
     // BUG-1（2026-09-03 二次回归）：纯图片消息合法——前端支持只传 media 不带
@@ -658,6 +665,13 @@ fn handle_chat_send(
                 serde_json::to_string(&cleaned).unwrap_or_default(),
             );
         }
+    }
+    // 对话生成：workflow_edit 目标进 metadata（缺省 = 不写键，普通对话零影响）。
+    if let Some(target) = data.workflow_edit {
+        metadata.insert(
+            "workflow_edit".to_string(),
+            nemesis_types::channel::workflow_edit_to_metadata(&target),
+        );
     }
 
     Ok(Some(IncomingMessage {

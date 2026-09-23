@@ -604,6 +604,11 @@ pub fn tier_allowed_tools(tier: ModelTier) -> &'static [&'static str] {
             // F7（2026-09-06）：结构化提问。Mini 不给——向用户发选项卡并
             // 阻塞等答是高信任交互，小模型容易在琐碎选择上滥用。
             "question",
+            // 对话生成（2026-09-22）：工作流草稿两件套。Mini 不给——完整
+            // DAG 定义生成是长结构输出，小模型 schema 错误率高，且草稿写入
+            // 是写文件语义（与 write_file 同档考虑）。
+            "workflow_create",
+            "workflow_capabilities",
         ],
         ModelTier::Big | ModelTier::Auto => &[],
     }

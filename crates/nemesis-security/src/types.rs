@@ -337,6 +337,10 @@ pub fn tool_to_operation(tool_name: &str) -> Option<OperationType> {
         // todo_*.json），归 FileWrite 走同类审查（空 target 不匹配任何
         // ABAC 规则 → default action 兜底，默认配置放行）。
         "todowrite" => Some(OperationType::FileWrite),
+        // 对话生成（2026-09-22）：workflow_create 落草稿 YAML 到 workspace
+        // workflow/drafts/（写文件语义）；workflow_capabilities 是纯静态表
+        // 查询，不映射（未知名放行分支，与 cli_reference 同类）。
+        "workflow_create" => Some(OperationType::FileWrite),
         _ => None,
     }
 }

@@ -1415,6 +1415,19 @@ pub struct AgentLoop {
     /// （空 = 无 section，字节稳定）；digest 内容随既有 InjectionRecord 台账
     /// 落账 → 字节级回放免费一致。只存路径不读内容（annotation 语义）。
     pending_open_files: parking_lot::RwLock<Vec<String>>,
+    /// 对话生成（2026-09-22）：当前轮 workflow_edit 注入目标（WSAPI
+    /// `chat.send` data.workflow_edit → metadata["workflow_edit"]，解析走
+    /// nemesis-types::channel::workflow_edit_from_metadata 单点）。与
+    /// pending_open_files 同款 per-turn ephemeral 生命周期：process_admitted
+    /// set、出轮 clear。Some → build_messages 渲染能力表/当前定义 section。
+    /// 引擎引用只服务「已注册工作流」的当前定义读取；no-workflow 编译下
+    /// 整个字段消失。
+    pending_workflow_edit: parking_lot::RwLock<Option<nemesis_types::channel::WorkflowEditTarget>>,
+    /// 对话生成：工作流引擎引用（渲染 workflow_edit 命名会话的当前定义块 +
+    /// agent_factory 装配；None = 引擎未装配，命名会话诚实注明）。
+    #[cfg(feature = "workflow")]
+    workflow_engine:
+        parking_lot::RwLock<Option<std::sync::Arc<nemesis_workflow::engine::WorkflowEngine>>>,
     /// Y1 (Phase4-a): per-tool description embedding cache (tool name →
     /// (description bytes, vector)) for semantic doc folding. Entries
     /// re-embed only when a tool's description text changes, so after the
@@ -1613,6 +1626,9 @@ impl AgentLoop {
             snapshot_role: parking_lot::RwLock::new("user".to_string()),
             interactive_approval: parking_lot::RwLock::new(false),
             pending_open_files: parking_lot::RwLock::new(Vec::new()),
+            pending_workflow_edit: parking_lot::RwLock::new(None),
+            #[cfg(feature = "workflow")]
+            workflow_engine: parking_lot::RwLock::new(None),
             tool_vec_cache: parking_lot::RwLock::new(std::collections::HashMap::new()),
             config_mtime: parking_lot::RwLock::new(None),
             estop: parking_lot::RwLock::new(None),
@@ -1621,6 +1637,17 @@ impl AgentLoop {
             question_responder: parking_lot::RwLock::new(None),
             question_asker: parking_lot::RwLock::new(None),
         }
+    }
+
+    /// 对话生成（2026-09-22）：装配工作流引擎引用。工厂在 loop 构造后从
+    /// SharedResources.workflow_engine 调用（feature-gated：no-workflow
+    /// 编译不存在此方法）。
+    #[cfg(feature = "workflow")]
+    pub fn set_workflow_engine(
+        &self,
+        engine: std::sync::Arc<nemesis_workflow::engine::WorkflowEngine>,
+    ) {
+        *self.workflow_engine.write() = Some(engine);
     }
 
     /// Attach a checkpoint store for the edit safety net. When set, every writer
@@ -2230,6 +2257,9 @@ impl AgentLoop {
             snapshot_role: parking_lot::RwLock::new("user".to_string()),
             interactive_approval: parking_lot::RwLock::new(false),
             pending_open_files: parking_lot::RwLock::new(Vec::new()),
+            pending_workflow_edit: parking_lot::RwLock::new(None),
+            #[cfg(feature = "workflow")]
+            workflow_engine: parking_lot::RwLock::new(None),
             tool_vec_cache: parking_lot::RwLock::new(std::collections::HashMap::new()),
             config_mtime: parking_lot::RwLock::new(None),
             estop: parking_lot::RwLock::new(None),
@@ -3837,6 +3867,10 @@ impl AgentLoop {
         // heartbeat/continuation 等非 process_admitted 路径天然读不到）。
         *self.pending_open_files.write() =
             nemesis_types::channel::open_files_from_metadata(&msg.metadata);
+        // 对话生成：workflow_edit 注入目标同款 per-turn 生命周期（出轮 clear
+        // 与上方配对）。
+        *self.pending_workflow_edit.write() =
+            nemesis_types::channel::workflow_edit_from_metadata(&msg.metadata);
         let result = self
             .run_agent_loop_internal(
                 &session_key,
@@ -3857,6 +3891,8 @@ impl AgentLoop {
         self.release_session(&session_key);
         // I5：轮结束清打开文件状态（与上方 set 词法配对，防跨轮陈旧泄漏）。
         self.pending_open_files.write().clear();
+        // 对话生成：轮结束清 workflow_edit 目标（同款配对）。
+        *self.pending_workflow_edit.write() = None;
 
         // I1 (U7) post-turn inbox handling:
         //   - Unconsumed next-step (steer) messages ALWAYS transfer back to
@@ -9887,6 +9923,65 @@ impl AgentLoop {
             .0
     }
 
+    /// 对话生成（2026-09-22）：渲染 workflow_edit 会话的 merged-digest section。
+    ///
+    /// - `_new`（workflow_name=None）：能力表 + 两阶段引导（先查
+    ///   workflow_capabilities，产出走 workflow_create 草稿，人工在 UI 应用）。
+    /// - 命名会话：先给当前定义 YAML（引擎未装配或工作流不存在时诚实注明，
+    ///   不编造），再给同款引导。
+    ///
+    /// 无时钟输入（定义来自引擎 DashMap 快照，能力表是编译期静态数据）→
+    /// 同状态同字节，与 merged snapshot 的确定性约定一致。
+    fn render_workflow_edit_section(
+        &self,
+        target: &nemesis_types::channel::WorkflowEditTarget,
+    ) -> String {
+        // 命名会话的「当前定义」块。
+        #[cfg(feature = "workflow")]
+        let current_definition = target.workflow_name.as_ref().map(|name| {
+            let engine_guard = self.workflow_engine.read().clone();
+            match engine_guard.as_ref().and_then(|e| e.get_workflow(name)) {
+                Some(wf) => match serde_yaml::to_string(&wf) {
+                    Ok(yaml) => format!("```yaml\n{yaml}```"),
+                    Err(e) => format!("(当前定义序列化失败: {e})"),
+                },
+                None => format!(
+                    "(工作流 {name:?} 当前不存在——可能是新名字，或已被删除。\
+                     把这当作全新创建处理。)"
+                ),
+            }
+        });
+        #[cfg(not(feature = "workflow"))]
+        let current_definition: Option<String> = None;
+
+        let mut out = String::from("# Workflow Editor Session (对话生成)\n\n");
+        out.push_str(
+            "这是工作流编辑/生成会话。目标：帮助用户创建或修改一个 NemesisBot 工作流定义。\n\n",
+        );
+        match (&target.workflow_name, &current_definition) {
+            (Some(name), Some(def)) => {
+                out.push_str(&format!("## 当前工作流：{name}\n\n{def}\n\n"));
+            }
+            (Some(name), None) => {
+                out.push_str(&format!(
+                    "## 当前工作流：{name}\n\n(工作流引擎未装配，无法读取当前定义。)\n\n"
+                ));
+            }
+            (None, _) => {
+                out.push_str("## 目标：新建工作流\n\n先用 workflow_capabilities 工具查看可用的节点类型、config 字段与结构规则，再动手写定义。\n\n");
+            }
+        }
+        out.push_str(
+            "## 产出流程（两阶段，必须遵守）\n\n\
+             1. 用 workflow_capabilities 查看节点/触发器能力表（每次会话至少一次）。\n\
+             2. 把完整定义交给 workflow_create 工具——它只落**草稿**，不会影响任何已注册工作流。\n\
+             3. 草稿保存后把结果告诉用户：用户需要在「工作流页 → 对话生成 → 草稿面板」点「应用」草稿才真正生效。\n\
+             4. 响应里 validation_errors 非空时，修正定义并用同名重新保存。\n\n\
+             (本 section 每轮由系统注入；修改工作流不在此处直接执行——执行仍走安全策略。)",
+        );
+        out
+    }
+
     /// T8 (U9 ②) companion: [`build_messages_with_memory`] plus a
     /// [`crate::replay::BuildAnnotation`] recording everything a later
     /// byte-exact replay needs that is NOT derivable from the final session
@@ -10073,6 +10168,14 @@ impl AgentLoop {
                 sections.push(format!(
                     "# Open Files (client-reported)\n{body}\n\n(以上是客户端上报的当前打开文件路径，顺序=上报顺序，仅供参考——读取文件仍受安全策略约束。)"
                 ));
+            }
+            // 对话生成（2026-09-22）：workflow_edit 会话上下文。命名会话渲染
+            // 当前定义 YAML（引擎未装配/未找到时诚实注明）；_new 会话渲染
+            // 能力表引导块。空目标 = 无 section（字节稳定）。内容随既有
+            // InjectionRecord 台账落账 → 回放免费一致（同 I5 机制）。
+            let wf_edit_target = self.pending_workflow_edit.read().clone();
+            if let Some(target) = wf_edit_target {
+                sections.push(self.render_workflow_edit_section(&target));
             }
             // X2 (U8 refinement): runtime policy facts as the LAST section.
             // All three inputs are plain state rendered without clocks —

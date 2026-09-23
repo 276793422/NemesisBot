@@ -22,6 +22,9 @@ import type {
   Checkpoint,
   WorkflowDef,
 } from '../types/workflow'
+import type { DraftSummary, DraftDetail, GeneratorCapabilities } from './wfEditSessions'
+
+export type { DraftSummary, DraftDetail, GeneratorCapabilities }
 
 export function useWorkflowApi() {
   const { request } = useWSAPI()
@@ -126,5 +129,34 @@ export function useWorkflowApi() {
         execution_id: executionId,
         checkpoint_id: checkpointId,
       }),
+
+    // -------------------------------------------------------------------
+    // 对话生成（2026-09-22）：能力表 + 草稿面板。
+    // -------------------------------------------------------------------
+
+    /** 静态能力表（节点类型/触发器/结构规则），与 Rust 注册表经测试钉死。 */
+    capabilities: async (): Promise<GeneratorCapabilities> =>
+      await request('workflow', 'capabilities'),
+
+    /** 列出全部待应用草稿（mtime 降序）。 */
+    draftList: async (): Promise<{ drafts: DraftSummary[] }> =>
+      await request('workflow', 'draft_list'),
+
+    /** 读取一份草稿的完整定义。 */
+    draftGet: async (name: string): Promise<DraftDetail> =>
+      await request('workflow', 'draft_get', { name }),
+
+    /** 应用草稿（唯一转正入口；替换旧定义时自动备份到 .history/）。 */
+    draftApply: async (
+      name: string,
+    ): Promise<{
+      name: string
+      replaced_existing: boolean
+      backup_file?: string
+    }> => await request('workflow', 'draft_apply', { name }),
+
+    /** 丢弃草稿（幂等）。 */
+    draftDiscard: async (name: string): Promise<{ name: string; discarded: boolean }> =>
+      await request('workflow', 'draft_discard', { name }),
   }
 }

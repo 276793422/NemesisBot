@@ -7210,7 +7210,8 @@ pub fn register_shared_tools(config: &SharedToolConfig) -> HashMap<String, Box<d
         tools.insert("mcp_list".to_string(), Box::new(McpListTool::new(snapshot)));
     }
 
-    // Workflow tool — lets the agent trigger registered workflows.
+    // Workflow tools — lets the agent trigger registered workflows, and
+    // (对话生成) save AI-generated definitions as drafts / query capabilities.
     #[cfg(feature = "workflow")]
     {
         if let Some(ref engine) = config.workflow_engine {
@@ -7218,7 +7219,15 @@ pub fn register_shared_tools(config: &SharedToolConfig) -> HashMap<String, Box<d
                 "workflow_run".to_string(),
                 Box::new(WorkflowRunTool::new(engine.clone())),
             );
-            info!("[AgentTools] Registered workflow_run tool");
+            tools.insert(
+                "workflow_create".to_string(),
+                Box::new(WorkflowCreateTool::new(engine.clone())),
+            );
+            tools.insert(
+                "workflow_capabilities".to_string(),
+                Box::new(WorkflowCapabilitiesTool),
+            );
+            info!("[AgentTools] Registered workflow_run/workflow_create/workflow_capabilities tools");
         }
     }
 
@@ -7368,6 +7377,143 @@ impl Tool for WorkflowRunTool {
         });
         Ok(serde_json::to_string(&payload)
             .map_err(|e| format!("failed to serialize workflow output: {}", e))?)
+    }
+}
+
+// ===========================================================================
+// WorkflowCreateTool / WorkflowCapabilitiesTool — 对话生成 capability core.
+// Two-phase: this tool only ever writes DRAFTS (zero effect on registered
+// workflows); the human applies them from the workflow page's draft panel.
+// ===========================================================================
+
+/// Agent tool that saves an AI-generated workflow definition as a draft.
+///
+/// The definition is validated (errors reported back for self-correction)
+/// and persisted under `{workspace}/workflow/drafts/<name>.yaml`, but NOT
+/// registered. `drafts::DraftStore::apply` (human-in-the-loop, from the UI)
+/// is the only path that turns a draft into a registered workflow — with an
+/// automatic `.history/` backup when it replaces an existing definition.
+#[cfg(feature = "workflow")]
+pub struct WorkflowCreateTool {
+    engine: Arc<nemesis_workflow::engine::WorkflowEngine>,
+}
+
+#[cfg(feature = "workflow")]
+impl WorkflowCreateTool {
+    pub fn new(engine: Arc<nemesis_workflow::engine::WorkflowEngine>) -> Self {
+        Self { engine }
+    }
+}
+
+#[cfg(feature = "workflow")]
+#[async_trait]
+impl Tool for WorkflowCreateTool {
+    fn description(&self) -> String {
+        "Save a workflow definition as a DRAFT (对话生成). Nothing is registered until the user applies the draft from the workflow page. Before writing a definition, call workflow_capabilities once to learn the exact node types and config fields. If validation_errors is non-empty in the response, fix the definition and re-save with the same name.".to_string()
+    }
+
+    fn parameters(&self) -> serde_json::Value {
+        serde_json::json!({
+            "type": "object",
+            "properties": {
+                "definition": {
+                    "type": "object",
+                    "description": "Full workflow definition object: {name, description, triggers: [{trigger_type, config}], nodes: [{id, node_type, config, depends_on?, is_terminal?}], edges: [{from_node, to_node, condition?}]}. Call workflow_capabilities first for the exact field specs.",
+                    "additionalProperties": true
+                }
+            },
+            "required": ["definition"]
+        })
+    }
+
+    async fn execute(&self, args: &str, _context: &RequestContext) -> Result<String, String> {
+        let args_value: serde_json::Value =
+            serde_json::from_str(args).map_err(|e| format!("invalid JSON args: {}", e))?;
+
+        let definition = args_value
+            .get("definition")
+            .cloned()
+            .ok_or_else(|| "parameter 'definition' (object) is required".to_string())?;
+
+        let workflow: nemesis_workflow::types::Workflow = serde_json::from_value(definition)
+            .map_err(|e| {
+                format!(
+                    "definition object does not match the workflow schema: {} — \
+                     call workflow_capabilities and check field names/types",
+                    e
+                )
+            })?;
+
+        if workflow.name.trim().is_empty() {
+            return Err("definition.name must be a non-empty string".to_string());
+        }
+
+        let store = nemesis_workflow::drafts::DraftStore::from_engine(&self.engine).ok_or_else(
+            || {
+                "workflow definitions directory is not configured — cannot save drafts \
+                 (workflow_defs_dir missing)"
+                    .to_string()
+            },
+        )?;
+
+        let summary = store.save(&workflow).map_err(|e| format!("save draft: {}", e))?;
+        let existing_definition = self.engine.get_workflow(&workflow.name).is_some();
+
+        let mut hints: Vec<String> = Vec::new();
+        if !summary.valid {
+            hints.push(
+                "definition has validation errors — fix them and re-save with the same name"
+                    .to_string(),
+            );
+        } else {
+            hints.push(
+                "draft saved. It does NOT run yet — the user must apply it from the \
+                 workflow page (对话生成 → 草稿面板 → 应用). Tell the user the draft is ready."
+                    .to_string(),
+            );
+        }
+        if existing_definition {
+            hints.push(
+                "a registered workflow with this name already exists — applying the draft \
+                 will replace it (the old definition is backed up to .history/). Confirm \
+                 with the user first.".to_string(),
+            );
+        }
+
+        let payload = serde_json::json!({
+            "status": "draft_saved",
+            "name": summary.name,
+            "valid": summary.valid,
+            "validation_errors": summary.validation_errors,
+            "node_count": summary.node_count,
+            "trigger_types": summary.trigger_types,
+            "existing_definition": existing_definition,
+            "hints": hints,
+        });
+        serde_json::to_string(&payload).map_err(|e| format!("serialize response: {}", e))
+    }
+}
+
+/// Agent tool returning the generator capability table (node types, config
+/// fields, trigger types, structural rules). Rendered from the static table
+/// in `nemesis-workflow::capabilities`, which is pinned to the real executor
+/// registry by anti-drift tests.
+#[cfg(feature = "workflow")]
+pub struct WorkflowCapabilitiesTool;
+
+#[cfg(feature = "workflow")]
+#[async_trait]
+impl Tool for WorkflowCapabilitiesTool {
+    fn description(&self) -> String {
+        "Query the available workflow node types, per-node config fields, trigger types, and structural rules. Call this ONCE before writing any workflow definition.".to_string()
+    }
+
+    fn parameters(&self) -> serde_json::Value {
+        serde_json::json!({ "type": "object", "properties": {} })
+    }
+
+    async fn execute(&self, _args: &str, _context: &RequestContext) -> Result<String, String> {
+        Ok(nemesis_workflow::capabilities::render_for_prompt())
     }
 }
 

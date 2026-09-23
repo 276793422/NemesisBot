@@ -30,6 +30,9 @@ import { on as onSSE, off as offSSE } from '../composables/useSSE'
 // M5 (2026-09-05): 会话用量小字（sessions.list 回填的 tokens/cost）——
 // 格式化与 ChatPanel 常驻条共用同一 helper。
 import { fmtUsageLine as usage } from '../composables/useUsageFormat'
+// 对话生成（AI workflow generator，2026-09-22）：wf_edit 会话只在工作流页
+// 「对话生成」TAB 使用——登记表识别 + 主侧栏三处过滤，不在聊天侧栏出现。
+import { useWfEditSessions } from '../composables/wfEditSessions'
 import ForkSessionModal from './ForkSessionModal.vue'
 import ProjectCreateModal from './ProjectCreateModal.vue'
 import type { SessionEntry } from '../composables/useChatApi'
@@ -37,7 +40,13 @@ import type { SessionEntry } from '../composables/useChatApi'
 const sessionStore = useSessionStore()
 const toast = useToast()
 const router = useRouter()
+const wfEditSessions = useWfEditSessions()
 const { openProjectDir } = useChatApi()
+
+/** 工作流编辑会话（对话生成 TAB 专用）→ 主聊天侧栏隐藏。 */
+function isWfEditSession(id: string): boolean {
+  return wfEditSessions.targetOf(id) !== undefined
+}
 const fileTree = useFileTreePanel()
 
 // ---------------------------------------------------------------------------
@@ -193,11 +202,15 @@ function unpinProjectIfRemoved(key: string) {
 // ——「已移除」灰组，删完全部会话后自然消失）。展示顺序：项目在上、
 // 对话在下、孤儿垫底。
 // ---------------------------------------------------------------------------
-const chatSessions = computed(() => sortSessions(sessionStore.sessions.filter(s => !s.projectId)))
+const chatSessions = computed(() =>
+  sortSessions(sessionStore.sessions.filter(s => !s.projectId && !isWfEditSession(s.id))),
+)
 
 const orphanSessions = computed(() => {
   const known = new Set(sessionStore.projects.map(p => p.id))
-  return sortSessions(sessionStore.sessions.filter(s => s.projectId && !known.has(s.projectId)))
+  return sortSessions(
+    sessionStore.sessions.filter(s => s.projectId && !known.has(s.projectId) && !isWfEditSession(s.id)),
+  )
 })
 
 interface GroupRow {
@@ -214,7 +227,7 @@ const displayGroups = computed<GroupRow[]>(() => {
   const all: GroupRow[] = sessionStore.projects.map(p => ({
     key: p.id,
     header: { name: p.name, available: p.running !== false, orphan: false },
-    items: sortSessions(sessionStore.sessions.filter(s => s.projectId === p.id)),
+    items: sortSessions(sessionStore.sessions.filter(s => s.projectId === p.id && !isWfEditSession(s.id))),
   }))
   const rows = [
     ...all.filter(g => pinnedProjectIds.value.has(g.key)),

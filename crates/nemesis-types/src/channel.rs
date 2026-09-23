@@ -67,6 +67,37 @@ pub fn open_files_from_metadata(
         .unwrap_or_default()
 }
 
+// ---------------------------------------------------------------------------
+// 对话生成（2026-09-22）：workflow_edit 注入目标
+// ---------------------------------------------------------------------------
+
+/// `chat.send` 附带的 workflow_edit 注入目标（照抄 open_files/I5 的
+/// metadata 通道模式：前端序列化为 JSON 字符串塞 metadata，AgentLoop 读取）。
+///
+/// `workflow_name = None` 表示 `_new` 共享引导会话（所有「新建工作流」对话
+/// 共用一条会话；引导块由 loop.rs 渲染，内容含能力表）。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct WorkflowEditTarget {
+    /// `Some(name)` = 针对已注册工作流的编辑会话；`None` = 新建会话。
+    #[serde(default)]
+    pub workflow_name: Option<String>,
+}
+
+/// `workflow_edit` metadata 键写入侧唯一合法封装（web 通道构造用）。
+pub fn workflow_edit_to_metadata(target: &WorkflowEditTarget) -> String {
+    serde_json::to_string(target).unwrap_or_default()
+}
+
+/// 从 [`InboundMessage::metadata`] 解析 `workflow_edit` 键。缺失 / 空 /
+/// 非法 JSON → `None`（诚实丢弃，消息照常按普通对话处理）。
+pub fn workflow_edit_from_metadata(
+    metadata: &std::collections::HashMap<String, String>,
+) -> Option<WorkflowEditTarget> {
+    metadata
+        .get("workflow_edit")
+        .and_then(|raw| serde_json::from_str::<WorkflowEditTarget>(raw).ok())
+}
+
 /// Extensible per-delivery metadata attached to an `OutboundMessage`.
 ///
 /// Holds attributes that are optional/channel-specific (not every channel

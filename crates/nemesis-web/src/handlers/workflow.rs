@@ -909,6 +909,12 @@ impl crate::ws_router::ModuleHandler for WorkflowHandler {
             "set_chat_password",
             "clear_chat_password",
             "verify_chat_password",
+            // 对话生成（2026-09-22）：草稿面板 + 能力表
+            "capabilities",
+            "draft_list",
+            "draft_get",
+            "draft_apply",
+            "draft_discard",
         ]
     }
 
@@ -1353,6 +1359,61 @@ impl crate::ws_router::ModuleHandler for WorkflowHandler {
                     }
                     None => Err(format!("workflow_not_found_for_index: {}", index)),
                 }
+            }
+
+            // -----------------------------------------------------------------
+            // 对话生成（2026-09-22）：能力表 + 草稿面板五命令。
+            // 草稿的写路径只有 workflow_create agent 工具；这里的 draft_apply
+            // 是唯一把草稿转正的入口（人工在 UI 点「应用」）。
+            // -----------------------------------------------------------------
+
+            "capabilities" => Ok(Some(
+                serde_json::to_value(nemesis_workflow::capabilities::capabilities())
+                    .map_err(|e| format!("serialize capabilities: {}", e))?,
+            )),
+
+            "draft_list" => {
+                let store = nemesis_workflow::drafts::DraftStore::from_engine(engine)
+                    .ok_or("workflow definitions directory is not configured")?;
+                Ok(Some(serde_json::json!({
+                    "drafts": store.list(),
+                })))
+            }
+
+            "draft_get" => {
+                let data = data.ok_or("missing data")?;
+                let name = data
+                    .get("name")
+                    .and_then(|v| v.as_str())
+                    .ok_or("missing field: name")?;
+                let store = nemesis_workflow::drafts::DraftStore::from_engine(engine)
+                    .ok_or("workflow definitions directory is not configured")?;
+                let detail = store.get(name).map_err(|e| e)?;
+                Ok(Some(serde_json::to_value(detail).map_err(|e| format!("serialize draft: {}", e))?))
+            }
+
+            "draft_apply" => {
+                let data = data.ok_or("missing data")?;
+                let name = data
+                    .get("name")
+                    .and_then(|v| v.as_str())
+                    .ok_or("missing field: name")?;
+                let store = nemesis_workflow::drafts::DraftStore::from_engine(engine)
+                    .ok_or("workflow definitions directory is not configured")?;
+                let applied = store.apply(engine, name).map_err(|e| e)?;
+                Ok(Some(serde_json::to_value(applied).map_err(|e| format!("serialize result: {}", e))?))
+            }
+
+            "draft_discard" => {
+                let data = data.ok_or("missing data")?;
+                let name = data
+                    .get("name")
+                    .and_then(|v| v.as_str())
+                    .ok_or("missing field: name")?;
+                let store = nemesis_workflow::drafts::DraftStore::from_engine(engine)
+                    .ok_or("workflow definitions directory is not configured")?;
+                store.discard(name).map_err(|e| e)?;
+                Ok(Some(serde_json::json!({ "name": name, "discarded": true })))
             }
 
             _ => Err(format!("unknown command: workflow.{}", cmd)),

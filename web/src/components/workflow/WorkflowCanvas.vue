@@ -21,6 +21,8 @@ import {
   type NodeDef,
   type Edge as WfEdge,
 } from '../../types/workflow'
+import type { DraftDetail } from '../../composables/wfEditSessions'
+import { useToast } from '../../composables/useToast'
 import WorkflowNodeConfig from './WorkflowNodeConfig.vue'
 import type { VariableOption } from './node-configs/useVariablePicker'
 
@@ -29,6 +31,8 @@ interface WfNodeData {
   nodeType: string
   category: NodeCategory
   def: NodeDef
+  /** 草稿预览态：被旧定义移除的幽灵节点（红色虚线渲染，非草稿真实节点）。 */
+  ghost?: boolean
 }
 
 const store = useWorkflowStore()
@@ -39,6 +43,33 @@ const showConfigPanel = ref(false)
 const paletteQuery = ref('')
 const paletteCategory = ref<NodeCategory | 'all'>('all')
 const draggingType = ref<string | null>(null)
+
+// --- 草稿预览态（第三数据模式：对话生成的「画布预览」） ---
+// draftPreview 非 null 时画布只读渲染草稿定义 + diff 高亮：
+// palette 隐藏、节点不可拖/连、Delete 失效；removed 节点以红色虚线
+// 幽灵形态补进画布。离开预览（setActiveTab 闸/exitDraftPreview）后
+// watch 回落 syncFromEditing 恢复正常编辑视图。
+const toast = useToast()
+const draftPreview = computed(() => store.draftPreview)
+const draftPreviewDiff = computed(() => store.draftPreviewDiff)
+const draftMode = computed(() => draftPreview.value !== null)
+
+/** nodeId → diff 类别（added/changed/removed；removed 来自幽灵节点）。 */
+const draftDiffKinds = computed<Record<string, string>>(() => {
+  const m: Record<string, string> = {}
+  const diff = draftPreviewDiff.value
+  if (!diff) return m
+  for (const r of diff.added) m[r.nodeId] = 'added'
+  for (const r of diff.changed) m[r.nodeId] = 'changed'
+  for (const r of diff.removed) m[r.nodeId] = 'removed'
+  return m
+})
+
+const DIFF_BADGE_LABELS: Record<string, string> = {
+  added: '新增',
+  changed: '修改',
+  removed: '移除',
+}
 
 const {
   onConnect,
@@ -184,6 +215,86 @@ function computeGridLayout(nodeDefs: NodeDef[]): Record<string, { x: number; y: 
 
 watch(editing, syncFromEditing, { deep: false, immediate: true })
 
+/** 草稿预览渲染：草稿节点 + diff 的 removed 幽灵节点，全只读。 */
+function syncFromDraftPreview(dp: DraftDetail) {
+  const wf = dp.workflow
+  const removed = draftPreviewDiff.value?.removed ?? []
+  const defs: { def: NodeDef; ghost: boolean }[] = [
+    ...wf.nodes.map(def => ({ def, ghost: false })),
+    ...removed.map(r => ({
+      def: { id: r.nodeId, node_type: (r.oldNodeType ?? 'unknown') as string, config: {} } as NodeDef,
+      ghost: true,
+    })),
+  ]
+  const layout = computeGridLayout(defs.map(d => d.def))
+  nodes.value = defs.map(({ def, ghost }) => {
+    const entry = NODE_CATALOG.find(e => e.type === def.node_type)
+    return {
+      id: def.id,
+      type: 'workflow',
+      position: layout[def.id] ?? { x: 0, y: 0 },
+      data: {
+        label: ghost ? `${def.id}（将被移除）` : nodeLabel(def),
+        nodeType: def.node_type,
+        category: entry?.category ?? 'basic',
+        def,
+        ghost,
+      },
+    }
+  })
+  edges.value = wf.edges.map((e: WfEdge, i: number) => ({
+    id: `e-${e.from_node}-${e.to_node}-${i}`,
+    source: e.from_node,
+    target: e.to_node,
+    label: e.condition || undefined,
+    animated: !!e.condition,
+    markerEnd: MarkerType.ArrowClosed,
+  }))
+  nextTick(() => fitView({ padding: 0.2 }))
+}
+
+// immediate：本组件是 v-else-if 按 TAB 挂载的——从对话生成点「画布预览」时
+// draftPreview 已置位、组件才创建，非 immediate 的 watch 永远不触发，
+// 画布会空着只剩 MiniMap 白框（UI 验证抓到的真 bug）。
+watch(
+  draftPreview,
+  (dp) => {
+    if (dp) {
+      syncFromDraftPreview(dp)
+    } else {
+      // 退出预览 → 恢复正常编辑视图（editing 未变，watch 不会自己触发）
+      syncFromEditing()
+    }
+  },
+  { immediate: true },
+)
+
+/** 预览态退出按钮 → 回对话生成 TAB（setActiveTab 闸顺带清预览态）。 */
+function exitPreview() {
+  store.setActiveTab('agentGen')
+}
+
+/** 预览态直接应用草稿（与面板同款确认；成功后回对话生成 TAB）。 */
+async function applyFromPreview() {
+  const dp = draftPreview.value
+  if (!dp) return
+  if (
+    store.workflowByName[dp.name] &&
+    !window.confirm(
+      `工作流「${dp.name}」已有正式定义。\n\n应用草稿将替换它（旧定义自动备份到 .history/）。\n\n确定应用？`,
+    )
+  ) {
+    return
+  }
+  const res = await store.applyDraft(dp.name)
+  if (res.ok) {
+    toast.success(res.replaced ? `草稿已应用，「${dp.name}」已更新（旧定义已备份）` : `草稿已应用，「${dp.name}」已注册`)
+    store.setActiveTab('agentGen')
+  } else {
+    toast.error(res.error)
+  }
+}
+
 function makeId(prefix: string): string {
   return `${prefix}_${Date.now().toString(36)}_${Math.random().toString(36).substring(2, 6)}`
 }
@@ -264,7 +375,7 @@ function onFlowDrop(event: DragEvent) {
 
 // ----- Connections -----
 onConnect((conn: Connection) => {
-  if (!editing.value) return
+  if (!editing.value || draftMode.value) return
   if (conn.source === conn.target) return
   const edge: WfEdge = {
     from_node: conn.source,
@@ -300,6 +411,7 @@ onNodeDragStop((evt: NodeDragEvent) => {
 
 // ----- Click handlers -----
 function handleNodeDoubleClick(evt: any) {
+  if (draftMode.value) return // 预览态只读：不弹属性面板
   const id = evt?.node?.id
   if (id) {
     selectedNodeId.value = id
@@ -319,6 +431,7 @@ function handleNodeClick(evt: any) {
 
 // ----- Keyboard delete -----
 function onKeydown(ev: KeyboardEvent) {
+  if (draftMode.value) return // 预览态只读：Delete 不删东西
   // Only fire on Delete/Backspace when not focused in an input/textarea.
   const target = ev.target as HTMLElement
   if (target && (target.tagName === 'INPUT' || target.tagName === 'TEXTAREA' || target.isContentEditable)) return
@@ -491,6 +604,7 @@ function exportToYaml() {
 }
 
 const title = computed(() => {
+  if (draftPreview.value) return `草稿预览：${draftPreview.value.name}`
   if (!editing.value) return '画布（空）'
   return editingIsNew.value
     ? `新建工作流：${editing.value.name || '(unnamed)'}`
@@ -513,13 +627,25 @@ const stats = computed(() => {
       <div class="meta-left">
         <h3>{{ title }}</h3>
         <div class="stats">
-          <span class="stat">节点 {{ stats.nodes }}</span>
-          <span class="stat">边 {{ stats.edges }}</span>
-          <span class="stat">触发器 {{ stats.triggers }}</span>
-          <span v-if="editingDirty" class="stat dirty" title="有未保存的修改">● 未保存</span>
+          <template v-if="draftMode">
+            <span class="stat">节点 {{ draftPreview?.workflow.nodes.length ?? 0 }}</span>
+            <span class="stat diff-stat added">新增 {{ draftPreviewDiff?.added.length ?? 0 }}</span>
+            <span class="stat diff-stat changed">修改 {{ draftPreviewDiff?.changed.length ?? 0 }}</span>
+            <span class="stat diff-stat removed">移除 {{ draftPreviewDiff?.removed.length ?? 0 }}</span>
+          </template>
+          <template v-else>
+            <span class="stat">节点 {{ stats.nodes }}</span>
+            <span class="stat">边 {{ stats.edges }}</span>
+            <span class="stat">触发器 {{ stats.triggers }}</span>
+            <span v-if="editingDirty" class="stat dirty" title="有未保存的修改">● 未保存</span>
+          </template>
         </div>
       </div>
-      <div class="meta-right">
+      <div v-if="draftMode" class="meta-right preview-actions">
+        <button class="btn btn-small" @click="exitPreview()" title="返回对话生成">✕ 退出预览</button>
+        <button class="btn btn-small btn-primary" @click="applyFromPreview()" title="应用草稿（转正）">✓ 应用草稿</button>
+      </div>
+      <div v-else class="meta-right">
         <button class="btn btn-small" @click="store.startNewWorkflow()" title="新建空白工作流（保留当前画布）">+ 新建</button>
         <button
           class="btn btn-small"
@@ -541,7 +667,7 @@ const stats = computed(() => {
     </div>
 
     <div class="canvas-body">
-      <div class="palette">
+      <div v-if="!draftMode" class="palette">
         <div class="palette-header">
           <div class="palette-title">节点库</div>
           <div class="palette-hint">点击或拖拽到画布</div>
@@ -603,13 +729,14 @@ const stats = computed(() => {
           :max-zoom="2"
           :default-viewport="{ x: 0, y: 0, zoom: 1 }"
           fit-view-on-init
-          :nodes-draggable="true"
-          :nodes-connectable="true"
-          :elements-selectable="true"
+          :nodes-draggable="!draftMode"
+          :nodes-connectable="!draftMode"
+          :elements-selectable="!draftMode"
           :pan-on-drag="true"
           :zoom-on-scroll="true"
           :zoom-on-pinch="true"
           class="flow"
+          :class="{ 'preview-mode': draftMode }"
           @node-double-click="handleNodeDoubleClick"
           @node-click="handleNodeClick"
           @pane-click="handlePaneClick"
@@ -621,6 +748,10 @@ const stats = computed(() => {
                 `cat-${(props.data as WfNodeData).category}`,
                 selectedNodeId === props.id ? 'selected' : '',
                 runNodeStates[props.id] ? `run-${runNodeStates[props.id].toLowerCase()}` : '',
+                draftMode && (props.data as WfNodeData).ghost ? 'diff-removed ghost' : '',
+                draftMode && !((props.data as WfNodeData).ghost) && draftDiffKinds[props.id]
+                  ? `diff-${draftDiffKinds[props.id]}`
+                  : '',
               ]"
             >
               <div class="wf-node-handle left">
@@ -636,7 +767,10 @@ const stats = computed(() => {
                   <div class="wf-node-type">{{ (props.data as WfNodeData).nodeType }}</div>
                   <div class="wf-node-label">{{ (props.data as WfNodeData).label }}</div>
                 </div>
-                <div v-if="runNodeStates[props.id]" class="wf-node-state">
+                <div v-if="draftMode && draftDiffKinds[props.id]" class="wf-node-state diff-badge" :data-kind="draftDiffKinds[props.id]">
+                  {{ DIFF_BADGE_LABELS[draftDiffKinds[props.id]] ?? draftDiffKinds[props.id] }}
+                </div>
+                <div v-else-if="runNodeStates[props.id]" class="wf-node-state">
                   {{ runNodeStates[props.id] }}
                 </div>
               </div>
@@ -651,7 +785,7 @@ const stats = computed(() => {
           <MiniMap pannable zoomable />
         </VueFlow>
 
-        <div v-if="!editing" class="canvas-empty">
+        <div v-if="!editing && !draftMode" class="canvas-empty">
           <div class="empty-icon">🎯</div>
           <div class="empty-text">画布为空</div>
           <div class="empty-hint">从「工作流列表」选择编辑，或点击「新建」开始</div>
@@ -659,6 +793,10 @@ const stats = computed(() => {
             <button class="btn btn-primary" @click="store.startNewWorkflow()">+ 新建空白工作流</button>
             <button class="btn" @click="store.setActiveTab('list')">查看列表</button>
           </div>
+        </div>
+
+        <div v-else-if="draftMode" class="canvas-hint">
+          草稿预览（只读）：绿框 = 新增 · 黄框 = 修改 · 红色虚线 = 将被移除 · 在右侧应用或返回「对话生成」
         </div>
 
         <div v-else class="canvas-hint">
@@ -985,6 +1123,41 @@ const stats = computed(() => {
   animation: wf-pulse 1.5s infinite;
 }
 .wf-node.run-failed { background: rgba(231, 76, 60, 0.15); }
+
+/* ----- 草稿预览态 diff 高亮（对话生成 → 画布预览） ----- */
+.wf-node.diff-added {
+  border-color: var(--success, #2ecc71);
+  box-shadow: 0 0 0 3px rgba(46, 204, 113, 0.22);
+}
+.wf-node.diff-changed {
+  border-color: var(--warning, #f39c12);
+  box-shadow: 0 0 0 3px rgba(243, 156, 18, 0.22);
+}
+.wf-node.diff-removed.ghost {
+  border: 2px dashed var(--danger, #e74c3c);
+  background: rgba(231, 76, 60, 0.08);
+  opacity: 0.55;
+  cursor: default;
+}
+.wf-node.diff-removed.ghost .wf-node-label {
+  text-decoration: line-through;
+}
+.diff-badge[data-kind='added'] { color: var(--success, #2ecc71); }
+.diff-badge[data-kind='changed'] { color: var(--warning, #f39c12); }
+.diff-badge[data-kind='removed'] { color: var(--danger, #e74c3c); }
+
+.preview-actions {
+  align-items: center;
+}
+
+.diff-stat.added { color: var(--success, #2ecc71); }
+.diff-stat.changed { color: var(--warning, #f39c12); }
+.diff-stat.removed { color: var(--danger, #e74c3c); }
+
+/* 预览态：画布整体弱化编辑意图（鼠标禁用拖拽反馈由 VueFlow props 承担） */
+.flow.preview-mode :deep(.vue-flow__handle) {
+  pointer-events: none;
+}
 
 @keyframes wf-pulse {
   0%, 100% { opacity: 1; }

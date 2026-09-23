@@ -23,6 +23,11 @@ import type {
   CheckpointMeta,
   Checkpoint,
 } from '../types/workflow'
+import type {
+  DraftSummary,
+  DraftDetail,
+  DraftDiff,
+} from '../composables/wfEditSessions'
 
 export const useWorkflowStore = defineStore('workflow', () => {
   const api = useWorkflowApi()
@@ -48,8 +53,27 @@ export const useWorkflowStore = defineStore('workflow', () => {
   const checkpoints = ref<CheckpointMeta[]>([])
   const selectedCheckpoint = ref<Checkpoint | null>(null)
 
+  // === TAB 5: agentGen（对话生成，2026-09-22） ===
+  /** 待应用草稿列表（draft_list 全量，mtime 降序）。 */
+  const drafts = ref<DraftSummary[]>([])
+  const draftsLoading = ref(false)
+  const draftsError = ref<string | null>(null)
+  /** 当前对话指向的目标工作流（进入 agentGen 时锁定；null = 新建）。 */
+  const agentGenTarget = ref<string | null>(null)
+  /**
+   * 画布草稿预览状态：非 null 时画布进入 draft-preview 第三数据态——
+   * 渲染 draftPreview 定义但禁止一切编辑（palette 隐藏、交互禁用、
+   * diff 高亮）。切走 agentGen TAB 时由 WorkflowAgentGen 清空。
+   */
+  const draftPreview = ref<DraftDetail | null>(null)
+  /**
+   * 草稿 ↔ 已注册定义的节点级 diff（进入预览时算好存住；null = 全新
+   * 工作流或未取到旧定义）。画布用它给节点上 added/removed/changed 高亮。
+   */
+  const draftPreviewDiff = ref<DraftDiff | null>(null)
+
   // === Lifecycle ===
-  const activeTab = ref<'list' | 'canvas' | 'history' | 'yaml'>('list')
+  const activeTab = ref<'list' | 'canvas' | 'history' | 'yaml' | 'agentGen'>('list')
 
   // === Computed ===
   const workflowByName = computed(() => {
@@ -257,12 +281,83 @@ export const useWorkflowStore = defineStore('workflow', () => {
     await fetchRunDetail(executionId)
   }
 
+  // === Actions: agentGen（对话生成草稿面板） ===
+
+  /** 拉取全部待应用草稿（进入 TAB / 会话切换 / tool_event 提醒时调用）。 */
+  async function fetchDrafts(force = false) {
+    if (draftsLoading.value) return
+    if (!force && drafts.value.length === 0 && draftsError.value === null && draftsFetchedOnce) {
+      return
+    }
+    draftsLoading.value = true
+    draftsError.value = null
+    try {
+      const resp = await api.draftList()
+      drafts.value = resp.drafts ?? []
+      draftsFetchedOnce = true
+    } catch (e) {
+      draftsError.value = typeof e === 'string' ? e : '加载草稿列表失败'
+    } finally {
+      draftsLoading.value = false
+    }
+  }
+  let draftsFetchedOnce = false
+
+  /** 应用草稿（转正 + 消费），成功后刷新列表与主列表缓存。 */
+  async function applyDraft(name: string): Promise<{ ok: true; replaced: boolean } | { ok: false; error: string }> {
+    try {
+      const resp = await api.draftApply(name)
+      await fetchDrafts(true)
+      clearListCache()
+      return { ok: true, replaced: resp.replaced_existing }
+    } catch (e) {
+      return { ok: false, error: typeof e === 'string' ? e : String(e) }
+    }
+  }
+
+  /** 丢弃草稿（幂等），成功后刷新列表。 */
+  async function discardDraft(name: string): Promise<{ ok: true } | { ok: false; error: string }> {
+    try {
+      await api.draftDiscard(name)
+      await fetchDrafts(true)
+      // 若画布正在预览这份草稿，同步退出预览态
+      if (draftPreview.value?.name === name) {
+        draftPreview.value = null
+        draftPreviewDiff.value = null
+      }
+      return { ok: true }
+    } catch (e) {
+      return { ok: false, error: typeof e === 'string' ? e : String(e) }
+    }
+  }
+
+  /** 进入画布草稿预览（第三数据态）。diff 由调用方算好传入（需旧定义）。 */
+  function enterDraftPreview(detail: DraftDetail, diff: DraftDiff | null = null) {
+    draftPreview.value = detail
+    draftPreviewDiff.value = diff
+    setActiveTab('canvas')
+  }
+
+  /** 退出画布草稿预览。 */
+  function exitDraftPreview() {
+    draftPreview.value = null
+    draftPreviewDiff.value = null
+  }
+
   // === Navigation ===
-  function setActiveTab(tab: 'list' | 'canvas' | 'history' | 'yaml') {
+  function setActiveTab(tab: 'list' | 'canvas' | 'history' | 'yaml' | 'agentGen') {
+    // 草稿预览态绑定 agentGen 视图：从画布切走即退出预览（防「幽灵预览」
+    // 残留到用户手动编辑流程）。画布内部切到 history/yaml 也一样。
+    if (tab !== 'canvas' && draftPreview.value) {
+      draftPreview.value = null
+      draftPreviewDiff.value = null
+    }
     activeTab.value = tab
   }
 
   return {
+    // WSAPI 封装（草稿面板等组件直接取用；store 内 action 也走它）
+    api,
     // list state
     workflows,
     driverStatus,
@@ -299,6 +394,18 @@ export const useWorkflowStore = defineStore('workflow', () => {
     fetchCheckpoint,
     cancelRun,
     resumeRun,
+    // agentGen（对话生成）
+    drafts,
+    draftsLoading,
+    draftsError,
+    agentGenTarget,
+    draftPreview,
+    draftPreviewDiff,
+    fetchDrafts,
+    applyDraft,
+    discardDraft,
+    enterDraftPreview,
+    exitDraftPreview,
     // navigation
     activeTab,
     setActiveTab,

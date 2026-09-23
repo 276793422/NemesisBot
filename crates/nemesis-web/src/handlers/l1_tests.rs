@@ -166,8 +166,15 @@ fn registry_anchor_commands_present() {
     // feature 门控模块锚点
     if cfg!(feature = "workflow") {
         let w = cmds_of(&reg, "workflow");
-        assert_eq!(w.len(), 19);
+        // 19（对话生成前）+ capabilities/draft_list/draft_get/draft_apply/draft_discard
+        assert_eq!(w.len(), 24);
         assert!(w.contains(&"set_chat_password"));
+        // 对话生成（2026-09-22）：能力表 + 草稿面板五命令锚点
+        assert!(w.contains(&"capabilities"));
+        assert!(w.contains(&"draft_list"));
+        assert!(w.contains(&"draft_get"));
+        assert!(w.contains(&"draft_apply"));
+        assert!(w.contains(&"draft_discard"));
     }
     if cfg!(feature = "voice") {
         assert_eq!(cmds_of(&reg, "voice").len(), 39);
