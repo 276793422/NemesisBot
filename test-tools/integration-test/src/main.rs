@@ -573,7 +573,13 @@ async fn main() -> Result<()> {
             }],
             "channels": {
                 "web": {"enabled": true, "host": "127.0.0.1", "port": 49000, "auth_token": "276793422"},
-                "websocket": {"enabled": true}
+                // Standalone websocket channel stays OFF: runtime tests all go
+                // through the web channel's /ws (port 49000, same token). With
+                // `enabled: true` and no host/token here, the channel bound
+                // 0.0.0.0:49001 with NO auth on every run — SEC-001 now
+                // honestly refuses that boot (loopback + real-token or off).
+                // Same rationale as cluster-uat's config fixup.
+                "websocket": {"enabled": false}
             },
             // Health endpoint follows gateway.port (GatewayConfig default is
             // 18790, which has a ghost socket on this dev machine — see
