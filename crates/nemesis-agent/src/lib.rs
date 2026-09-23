@@ -82,10 +82,7 @@ pub use loop_continuation::{
     ContinuationData, ContinuationManager, ContinuationSnapshot, ContinuationStore,
     ContinuationToolResult, handle_cluster_continuation,
 };
-pub use loop_executor::{
-    AgentLoopExecutor, ConcurrentMode, ContextualTool, ExecutorConfig, FallbackCandidate,
-    FallbackExecutor, FallbackResult, Observer, ObserverEvent, SessionPersistence, ToolResult,
-};
+pub use loop_executor::{Observer, ObserverEvent, ObserverUsageInfo, ToolResult};
 pub use loop_tools::ClusterRpcChannelConfig;
 pub use loop_tools::ClusterRpcConfig;
 pub use loop_tools::ClusterRpcTool;
