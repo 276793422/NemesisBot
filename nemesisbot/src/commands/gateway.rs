@@ -43,6 +43,7 @@ use crate::common;
 // + 产物 struct；run() 终态为编排骨架（<600 行），Step 编号注释保留。
 // ---------------------------------------------------------------------------
 
+mod agent_build;
 mod autopilot;
 mod board_dispatch;
 mod bridges;
@@ -55,6 +56,7 @@ mod relay;
 mod shutdown;
 mod web_init;
 
+pub(crate) use self::agent_build::init_agent;
 #[cfg(all(feature = "board", feature = "cluster"))]
 pub(crate) use self::autopilot::fire_board_autopilot;
 #[cfg(all(feature = "board", not(feature = "cluster")))]
@@ -102,7 +104,7 @@ pub(crate) use self::shutdown::SHUTDOWN_REQUESTED;
 pub(crate) use self::shutdown::is_shutdown_requested;
 #[cfg(not(target_os = "android"))]
 pub(crate) use self::shutdown::trigger_global_shutdown;
-pub(crate) use self::web_init::init_web;
+pub(crate) use self::web_init::{WebWiring, init_web};
 
 #[cfg(test)]
 mod tests;
@@ -142,20 +144,14 @@ pub async fn run(local: bool, relay: bool, extra_args: &[String]) -> Result<()> 
     // Clone，以引用重绑（下游仅 .abort()）。
     let home = ctx.home.clone();
     let config_path = ctx.config_path.clone();
-    let config_store = ctx.config_store.clone();
     let cfg = ctx.cfg.clone();
     let resolution = ctx.resolution.clone();
     let model_name = ctx.model_name.clone();
     let bus = ctx.bus.clone();
     let cron_service = ctx.cron_service.clone();
     let conv_router = ctx.conv_router.clone();
-    let estop = ctx.estop.clone();
     let data_store = ctx.data_store.clone();
-    let agent_outbound_tx = ctx.agent_outbound_tx.clone();
     let bridge_outbound_handle = &ctx.bridge_outbound_handle;
-    let mcp_enabled = ctx.mcp_enabled;
-    let skills_loader_arc = ctx.skills_loader_arc.clone();
-    let skills_registry_arc = ctx.skills_registry_arc.clone();
     #[cfg(all(feature = "board", feature = "cluster"))]
     let board_moderator_loop = ctx.board_moderator_loop.clone();
     #[cfg(all(feature = "board", feature = "cluster"))]
@@ -168,12 +164,8 @@ pub async fn run(local: bool, relay: bool, extra_args: &[String]) -> Result<()> 
     let memory_manager_for_web = ctx.memory_manager_for_web.clone();
     #[cfg(feature = "forge")]
     let forge_for_web = ctx.forge_for_web.clone();
-    #[cfg(feature = "forge")]
-    let forge_executor_for_tools = ctx.forge_executor_for_tools.clone();
     #[cfg(feature = "workflow")]
     let workflow_engine = ctx.workflow_engine.clone();
-    #[cfg(feature = "workflow")]
-    let workflow_tool_registry = ctx.workflow_tool_registry.clone();
     #[cfg(feature = "workflow")]
     let chat_secret_store = ctx.chat_secret_store.clone();
     #[cfg(any(feature = "workflow", feature = "security"))]
@@ -191,31 +183,31 @@ pub async fn run(local: bool, relay: bool, extra_args: &[String]) -> Result<()> 
     // 二件（均在 cfg(cluster) 门内消费）。产物 WebWiring 六项供 PB-4–PB-7
     // 消费；C7 mem::forget 挂账随块原样保留（§8）。
     let web_wiring = init_web(&ctx, &cluster_wiring).await?;
-    // wiring 影子重绑：web_server 下游 set_* 链需 &mut（原绑定同款）。
-    let mut web_server = web_wiring.web_server;
-    let enabled_channels = web_wiring.enabled_channels;
-    let web_bind_host = web_wiring.web_bind_host;
-    let web_display_host = web_wiring.web_display_host;
+    // wiring 影子重绑：web_server 移动推迟到 init_agent 之后（B4——其以
+    // &WebWiring 借读整体），其余 clone 保结构完整（B5 起不再借 web）。
+    // enabled_channels 不留影子：唯一消费者 PB-4 已迁入 init_agent（其内
+    // 自行 clone），Step 21 另建同名局部（count_enabled_channels）。
+    let web_bind_host = web_wiring.web_bind_host.clone();
+    let web_display_host = web_wiring.web_display_host.clone();
     let web_port = web_wiring.web_port;
-    let bridge_client_launch = web_wiring.bridge_client_launch;
+    let bridge_client_launch = web_wiring.bridge_client_launch.clone();
 
-    // wiring 影子重绑：下游沿用原局部名（B1 同款，所有权拓扑不变）。
-    let cluster_rpc_call_fn = cluster_wiring.cluster_rpc_call_fn;
-    let cluster_rpc_config = cluster_wiring.cluster_rpc_config;
-    let cluster_peers_fn = cluster_wiring.cluster_peers_fn;
+    // wiring 影子重绑：原局部名沿用；B4 起除 Copy 项外一律 clone——
+    // init_agent 以 &ClusterWiring 借读整体（部分移动后不可再整体借用），
+    // B5 init_post_agent 按值消费 refs 四元组 take + worker inbox take。
     #[cfg(feature = "cluster")]
     let cluster_should_start = cluster_wiring.cluster_should_start;
     #[cfg(feature = "cluster")]
-    let bridge_cluster_slot = cluster_wiring.bridge_cluster_slot;
+    let bridge_cluster_slot = cluster_wiring.bridge_cluster_slot.clone();
     #[cfg(feature = "cluster")]
     #[allow(unused_mut)]
-    let mut board_worker_inbox = cluster_wiring.board_worker_inbox;
+    let mut board_worker_inbox = cluster_wiring.board_worker_inbox.clone();
     #[cfg(all(feature = "board", feature = "cluster"))]
-    let board_estop_parked = cluster_wiring.board_estop_parked;
+    let board_estop_parked = cluster_wiring.board_estop_parked.clone();
     #[cfg(all(feature = "board", feature = "cluster"))]
-    let board_selfcheck_registry = cluster_wiring.board_selfcheck_registry;
+    let board_selfcheck_registry = cluster_wiring.board_selfcheck_registry.clone();
     #[cfg(feature = "cluster")]
-    let mut cluster_adapter_refs = cluster_wiring.cluster_adapter_refs;
+    let mut cluster_adapter_refs = cluster_wiring.cluster_adapter_refs.clone();
 
     // Cluster adapter — manages dynamic start/stop of all cluster components.
     // B2 注记：None 前向声明留守 run()——赋值在 PB-5 ClusterServiceAdapter
@@ -223,208 +215,22 @@ pub async fn run(local: bool, relay: bool, extra_args: &[String]) -> Result<()> 
     #[cfg(feature = "cluster")]
     let mut cluster_adapter: Option<Arc<crate::cluster_service::ClusterServiceAdapter>> = None;
 
-    // Step 9b: Create and inject SecurityPlugin if enabled.
-    // Mirrors Go's SecurityPlugin registered via PluginManager in instance.go.
-    // Keep a reference to the auditor so we can wire up the approval manager later.
-    // K1（devtool-upgrade 阶段 4）：装配逻辑原样迁往 `crate::security_setup`
-    // （layer 开关 + DLP + 规则 + 审计日志 + scanner 链）——headless `run`
-    // 与 gateway 共用同一构造，安全 9 层在无端口形态不降级。
-    let security_plugin = crate::security_setup::build_security_plugin(
-        &home,
-        cfg.security.as_ref().map(|s| s.enabled).unwrap_or(true),
-    )
-    .await;
-
-    // Step 9d: Setup Observer Manager for conversation lifecycle events.
-    // Mirrors Go's bot_service.go Phase 5: observerMgr creation + RequestLogger registration.
-    let observer_manager: Option<Arc<nemesis_observer::Manager>> = {
-        let observer_mgr = Arc::new(nemesis_observer::Manager::new());
-
-        // Register RequestLogger as Observer (if logging.llm.enabled)
-        // （ASM-05：配置→LoggingConfig 映射 + 注册收敛到 agent_factory 单一
-        // 真相源，与 CLI `nemesisbot agent` 共用）。
-        if crate::agent_factory::register_request_logger_observer(&observer_mgr, &cfg, &home) {
-            info!("[Gateway] RequestLoggerObserver registered (logging.llm.enabled = true)");
-        }
-
-        // Check if any observers were registered.
-        let mgr_check = observer_mgr.clone();
-        let has_observers = tokio::task::block_in_place(|| {
-            tokio::runtime::Handle::current().block_on(async { mgr_check.has_observers().await })
-        });
-        if has_observers {
-            info!("[Gateway] Observer manager initialized (injection handled by factory)");
-            Some(observer_mgr)
-        } else {
-            None
-        }
-    };
-
-    // Note: DataStore injection into agent_loop is now handled by the factory function.
-
-    // Note: Forge injection into agent_loop is now handled at creation time above.
-
-    // Build SharedResources and use the factory to create the AgentLoop.
-    // （estop 句柄已在集群装配块前创建——board 评审依赖集共用同一 Arc。）
-    // C5 (2026-09-04): ONE LspManager for the whole gateway — the LspTool
-    // registers with it (via SharedToolConfig.lsp_manager), the web server
-    // holds the same Arc, and Step-24 teardown calls shutdown_all() so
-    // language-server child processes don't outlive the gateway.
-    let lsp_manager = std::sync::Arc::new(nemesis_lsp::LspManager::new(
-        cfg.agents
-            .lsp_tool
-            .timeout_secs
-            .map(std::time::Duration::from_secs),
-        cfg.agents
-            .lsp_tool
-            .idle_secs
-            .map(std::time::Duration::from_secs),
-    ));
-    // C6（devtool-upgrade 阶段 6）：agents.lsp_tool.auto_install=true → 网关
-    // 启动期静默自举缺失的语言服务器（官方安装通道白名单目录，非交互命令
-    // 串行后台执行，结果进日志）。信任级=用户显式配置的 standing consent
-    // （同 A6 formatter / LSP spawn——基础设施装配不走 8 层管线；dashboard
-    // 一键安装按钮那条路才走）。装完需重启 Agent 重新探测注册。
-    if cfg.agents.lsp_tool.auto_install {
-        tokio::spawn(nemesis_lsp::install::auto_install_missing(
-            std::time::Duration::from_secs(600),
-        ));
-    }
-    // M1a (2026-09-05): ONE tool-event broadcast channel for the gateway —
-    // sender side goes into SharedResources (each AgentLoop gets a
-    // ToolEventHook), receiving side goes to the web server (pump routes
-    // events to Dashboard WS push + EventHub).
-    let (agent_event_tx, agent_event_rx) =
-        tokio::sync::broadcast::channel::<nemesis_types::agent::AgentEvent>(256);
-    // B4 (2026-09-05): gateway-level background-process registry singleton —
-    // construction is process-free (children spawn lazily via
-    // background_start); Drop raises kill flags so no spawned job outlives
-    // the gateway.
-    let background_registry = std::sync::Arc::new(nemesis_agent::BackgroundProcessRegistry::new());
-    let shared_resources = crate::agent_factory::SharedResources {
-        home: home.clone(),
-        // K1：gateway 固定 canonical 布局（显式写出，不依赖 fallback）。
-        workspace: home.join("workspace"),
-        bus: bus.clone(),
-        agent_outbound_tx,
-        #[cfg(feature = "forge")]
-        forge: forge_for_web.clone(),
-        #[cfg(not(feature = "forge"))]
-        forge: None,
-        #[cfg(feature = "forge")]
-        forge_executor: forge_executor_for_tools.clone(),
-        #[cfg(not(feature = "forge"))]
-        forge_executor: None,
-        cron_service: cron_service.clone(),
-        security_plugin: security_plugin.clone(),
-        observer_manager: observer_manager.clone(),
-        data_store: data_store.clone(),
-        skills_loader: skills_loader_arc.clone(),
-        skills_registry: skills_registry_arc.clone(),
-        #[cfg(feature = "memory")]
-        memory_manager: memory_manager_for_web.clone(),
-        #[cfg(not(feature = "memory"))]
-        memory_manager: None,
-        enabled_channels: enabled_channels.clone(),
-        #[cfg(feature = "workflow")]
-        workflow_engine: Some(workflow_engine.clone()),
-        #[cfg(not(feature = "workflow"))]
-        workflow_engine: None,
-        cluster_rpc_call_fn,
-        cluster_rpc_config,
-        cluster_peers_fn,
-        cluster_rpc_enabled: parking_lot::RwLock::new(None::<Arc<std::sync::atomic::AtomicBool>>),
-        mcp_config_path: common::mcp_config_path(&home),
-        mcp_enabled,
-        estop,
-        config_store: config_store.clone(),
-        lsp_manager,
-        agent_event_tx: Some(agent_event_tx),
-        background_registry,
-        // 全自动流转 P3/D1：board_issue 工具依赖（注册点在 build_agent_loop
-        // 主 agent；store=None 时工具不注册）。moderator 槽此刻还空，agent
-        // 建成后 :board_moderator_loop.set 填充——工具调用时读槽即得。
-        #[cfg(all(feature = "board", feature = "cluster"))]
-        board_store: board_store.clone(),
-        #[cfg(all(feature = "board", feature = "cluster"))]
-        board_cluster: cluster_adapter_refs.as_ref().map(|(c, _, _, _)| c.clone()),
-        #[cfg(all(feature = "board", feature = "cluster"))]
-        board_moderator_slot: board_moderator_loop.clone(),
-        #[cfg(all(feature = "board", feature = "cluster"))]
-        board_home: home.clone(),
-        #[cfg(all(feature = "board", feature = "cluster"))]
-        board_event_hub: Some(web_server.event_hub().clone()),
-        #[cfg(feature = "security")]
-        approval_slot: std::sync::Arc::new(parking_lot::RwLock::new(
-            None::<Arc<dyn nemesis_security::auditor::ApprovalManager>>,
-        )),
-        #[cfg(not(feature = "security"))]
-        approval_slot: (),
-        // F7（2026-09-06）：question 工具 broker 槽（先建空槽，装配块晚填
-        // WebQuestionBroker；重启重建的 AgentLoop 共享同一槽 Arc）。
-        question_slot: std::sync::Arc::new(parking_lot::RwLock::new(
-            None::<Arc<dyn nemesis_types::agent::QuestionAsker>>,
-        )),
-    };
-
-    let shared_resources = Arc::new(shared_resources);
-    let agent_loop = crate::agent_factory::build_agent_loop(&shared_resources)
-        .map_err(|e| anyhow::anyhow!("Failed to build agent loop: {}", e))?;
-    let initial_tool_count = agent_loop.tool_count();
-    info!(
-        "[Gateway] AgentLoop built via factory ({} tools)",
-        initial_tool_count
-    );
-
-    // Bridge the agent's tools into the workflow engine's tool registry so the
-    // workflow `tool` node can invoke them. The registry was created empty
-    // during workflow init above; here we wrap each agent tool in an
-    // `AgentToolAdapter` (the two `Tool` traits are incompatible) and register
-    // it. Each adapted tool runs the 8-layer security rule pipeline per call —
-    // no interactive approval popup, no guardian LLM judge — so batch
-    // workflows run unattended while still respecting workspace isolation and
-    // the other rule layers.
-    #[cfg(feature = "workflow")]
-    {
-        let tools_guard = agent_loop.tools();
-        let mut bridged = 0usize;
-        for (name, tool) in tools_guard.iter() {
-            #[cfg(feature = "security")]
-            let adapted = nemesis_agent::tool_adapter::AgentToolAdapter::new(
-                name.clone(),
-                Arc::clone(tool),
-                security_plugin.clone(),
-            );
-            #[cfg(not(feature = "security"))]
-            let adapted =
-                nemesis_agent::tool_adapter::AgentToolAdapter::new(name.clone(), Arc::clone(tool));
-            workflow_tool_registry.register(adapted);
-            bridged += 1;
-        }
-        info!(
-            "[Gateway] Bridged {} agent tools into the workflow tool registry",
-            bridged
-        );
-    }
-
-    // Wire up `agent` workflow nodes (milestone 1b-D2). Each workflow run
-    // that hits an `agent` node will route through this runner, which
-    // namespaces session keys under `workflow:{agent_id}` so workflow
-    // sessions don't collide with human user sessions.
-    #[cfg(feature = "workflow")]
-    {
-        workflow_engine
-            .register_agent_runner(Arc::new(GatewayAgentRunner::new(agent_loop.clone())));
-        info!("[Gateway] Workflow agent runner registered");
-
-        // Wire DataStore into workflow engine so llm/question_classifier/parameter_extractor
-        // node executors record a RequestLog per LLM call. Agent nodes are already
-        // tracked via the agent_loop's own data_store wiring.
-        if let Some(ref ds) = data_store {
-            workflow_engine.set_usage_store(ds.clone());
-            info!("[Gateway] Workflow usage store wired");
-        }
-    }
+    // Phase B4（计划 §4.2）：PB-4 Agent 构建（Step 9b/9d + LSP/事件通道/
+    // 后台注册表 + SharedResources + AgentLoop + workflow 桥）提取为
+    // init_agent（gateway/agent_build.rs）——全引用签名（&ctx/&web/&cluster：
+    // wiring 结构体须完整存活到 B5 按值消费），产物 AgentWiring 五项。
+    let agent_wiring = init_agent(&ctx, &web_wiring, &cluster_wiring).await?;
+    // AgentWiring 影子重绑：原局部名沿用；security_plugin 下游仅两处
+    // cfg(security) 消费（审批装配 + scanner 停机），影子随门收放。
+    let shared_resources = agent_wiring.shared_resources;
+    let agent_loop = agent_wiring.agent_loop;
+    let agent_event_rx = agent_wiring.agent_event_rx;
+    let initial_tool_count = agent_wiring.initial_tool_count;
+    #[cfg(feature = "security")]
+    let security_plugin = agent_wiring.security_plugin;
+    // web_server &mut 绑定恢复——推迟到本点：init_agent 以 &WebWiring 借读
+    // 整体（board_event_hub），部分移动后不可再整体借用。
+    let mut web_server = web_wiring.web_server;
 
     // --- Swarm M3: 主持人裁决桥填装（nb_bus 注册早于 agent_loop 构建）---
     #[cfg(all(feature = "board", feature = "cluster"))]
