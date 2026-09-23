@@ -19,7 +19,7 @@ impl AgentLoop {
     /// 绑定全局急停状态。工厂每次重建 loop 都调一次，所以急停状态在 agent
     /// 重启后自动保持（状态本体在 `SharedResources` 上，不在 loop 上）。
     pub fn set_estop(&self, estop: Arc<crate::estop::EstopState>) {
-        *self.estop.write() = Some(estop);
+        *self.security.estop.write() = Some(estop);
     }
 
     /// M7：装配审批响应端（gateway 把 WebApprovalManager 挂上来；重复调用
@@ -28,12 +28,12 @@ impl AgentLoop {
         &self,
         responder: Arc<dyn nemesis_types::agent::ApprovalResponder>,
     ) {
-        *self.approval_responder.write() = Some(responder);
+        *self.security.approval_responder.write() = Some(responder);
     }
 
     /// M7：取审批响应端（未装配 = `None`——handler 诚实报「未装配」）。
     pub fn approval_responder(&self) -> Option<Arc<dyn nemesis_types::agent::ApprovalResponder>> {
-        self.approval_responder.read().clone()
+        self.security.approval_responder.read().clone()
     }
 
     /// F7：挂结构化提问响应端（gateway 装配 WebQuestionBroker 后调用）。
@@ -41,24 +41,24 @@ impl AgentLoop {
         &self,
         responder: Arc<dyn nemesis_types::agent::QuestionResponder>,
     ) {
-        *self.question_responder.write() = Some(responder);
+        *self.security.question_responder.write() = Some(responder);
     }
 
     /// F7：取提问响应端（未装配 = `None`——handler 诚实报「未装配」）。
     pub fn question_responder(&self) -> Option<Arc<dyn nemesis_types::agent::QuestionResponder>> {
-        self.question_responder.read().clone()
+        self.security.question_responder.read().clone()
     }
 
     /// J5：装配 doom-loop 审批提问端（gateway 与 F7 responder 注入同一
     /// WebQuestionBroker Arc——同一 broker 的两个 trait 各挂一槽）。
     /// 未装配 = escalation 审批化不可用（诚实回退现行为）。
     pub fn set_question_asker(&self, asker: Arc<dyn nemesis_types::agent::QuestionAsker>) {
-        *self.question_asker.write() = Some(asker);
+        *self.security.question_asker.write() = Some(asker);
     }
 
     /// J5：取审批提问端（未装配 = `None`）。
     pub(crate) fn question_asker(&self) -> Option<Arc<dyn nemesis_types::agent::QuestionAsker>> {
-        self.question_asker.read().clone()
+        self.security.question_asker.read().clone()
     }
 
     /// K1a (U14): 注册一个用户工具钩子。pre 在固定 security 闸之后、工具
@@ -206,7 +206,7 @@ impl AgentLoop {
     /// Mirrors Go's SecurityPlugin registered via PluginManager.
     #[cfg(feature = "security")]
     pub fn set_security_plugin(&mut self, plugin: Arc<nemesis_security::pipeline::SecurityPlugin>) {
-        self.security_plugin = Some(plugin);
+        self.security.security_plugin = Some(plugin);
     }
 
     /// Set the session store, replacing the default in-memory store.
@@ -309,13 +309,13 @@ impl AgentLoop {
         // security feature 关闭时无 push，mut 冗余——精确 cfg 门控。
         #[cfg_attr(not(feature = "security"), allow(unused_mut))]
         let mut status = vec![
-            ("estop", self.estop.read().is_some()),
+            ("estop", self.security.estop.read().is_some()),
             ("workspace_root", self.workspace_root.read().is_some()),
             ("config_path", self.config_path.read().is_some()),
             ("pricing_store", self.pricing_store.read().is_some()),
         ];
         #[cfg(feature = "security")]
-        status.push(("security_plugin", self.security_plugin.is_some()));
+        status.push(("security_plugin", self.security.security_plugin.is_some()));
         status
     }
 }

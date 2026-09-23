@@ -139,13 +139,22 @@ impl AgentLoop {
             continuation_manager: None,
             cluster: None,
             observer_manager: None,
-            security_plugin: None,
+            security: SecurityState {
+                #[cfg(feature = "security")]
+                security_plugin: None,
+                #[cfg(not(feature = "security"))]
+                security_plugin: None,
+                checkpoint_store: parking_lot::RwLock::new(None),
+                estop: parking_lot::RwLock::new(None),
+                approval_responder: parking_lot::RwLock::new(None),
+                question_responder: parking_lot::RwLock::new(None),
+                question_asker: parking_lot::RwLock::new(None),
+            },
             mcp_manager: None,
             mcp_tool_snapshot: Arc::new(parking_lot::RwLock::new(Vec::new())),
             data_store: None,
             forge: None,
             cancel_tokens: dashmap::DashMap::new(),
-            checkpoint_store: parking_lot::RwLock::new(None),
             turn_counter: std::sync::atomic::AtomicUsize::new(0),
             turn_file_changes: Arc::new(parking_lot::Mutex::new(HashMap::new())),
             rewind_undo_stacks: parking_lot::Mutex::new(HashMap::new()),
@@ -188,11 +197,7 @@ impl AgentLoop {
             #[cfg(feature = "workflow")]
             workflow_engine: parking_lot::RwLock::new(None),
             config_mtime: parking_lot::RwLock::new(None),
-            estop: parking_lot::RwLock::new(None),
             small_model: parking_lot::RwLock::new(None),
-            approval_responder: parking_lot::RwLock::new(None),
-            question_responder: parking_lot::RwLock::new(None),
-            question_asker: parking_lot::RwLock::new(None),
         }
     }
 

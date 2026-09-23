@@ -238,6 +238,73 @@ pub(crate) struct MemoryState {
         parking_lot::RwLock<std::collections::HashMap<String, (String, Vec<f32>)>>,
 }
 
+/// 安全/应急六槽收拢（P3-3，§5.1 SecurityState）：security_plugin（cfg 门）、
+/// checkpoint_store（编辑安全网快照）、estop（全局急停）、approval/question
+/// responder（M7/F7 响应端）、question_asker（J5 发起端）原字段逐字迁入，
+/// 锁类型不变；访问经 `self.security.<field>`。setter
+/// （`set_security_plugin`/`set_estop`/`set_checkpoint_store`/
+/// `set_approval_responder`/`set_question_responder`/`set_question_asker`）
+/// 留在 `AgentLoop` 上签名不变，体一行委托。
+pub(crate) struct SecurityState {
+    /// Security plugin for pre-execution tool safety checks.
+    /// Mirrors Go's SecurityPlugin registered via PluginManager.
+    #[cfg(feature = "security")]
+    pub(crate) security_plugin: Option<Arc<nemesis_security::pipeline::SecurityPlugin>>,
+    #[cfg(not(feature = "security"))]
+    #[allow(dead_code)]
+    pub(crate) security_plugin: Option<()>,
+    /// Checkpoint store for the edit safety net. When attached, every writer
+    /// tool call snapshots the file's pre-edit content before execution, so a
+    /// rewind can restore it. RwLock so it can be attached from `&self` (the
+    /// gateway sets it after construction).
+    pub(crate) checkpoint_store:
+        parking_lot::RwLock<Option<Arc<crate::checkpoint::CheckpointStore>>>,
+    /// 全局急停状态（kill switch）。触发后，循环在每轮顶部 break、并在工具
+    /// 分发前拒绝调用。`None`（standalone/测试）时永不阻塞 = 零行为变化。
+    /// 以 `Option<Arc<...>>` 形态持有，工厂每次重建 loop 时从
+    /// `SharedResources.estop` 重新绑定到**同一个** Arc——所以急停状态在
+    /// agent 重启后自动保持。
+    pub(crate) estop: parking_lot::RwLock<Option<Arc<crate::estop::EstopState>>>,
+    /// M7 (devtool-upgrade 阶段 4)：审批响应端（`ApprovalResponder`）。
+    /// gateway 装配 WebApprovalManager 后挂在这里，WSAPI `approval.respond` /
+    /// `approval.pending` 经 AppState 的 agent_loop 槽触达（不经 security 依赖）。
+    /// 未装配 = `None`，approval handler 诚实报「未装配」。
+    pub(crate) approval_responder:
+        parking_lot::RwLock<Option<Arc<dyn nemesis_types::agent::ApprovalResponder>>>,
+    /// F7 (devtool-upgrade 阶段 5)：结构化提问响应端（`QuestionResponder`）。
+    /// gateway 装配 WebQuestionBroker 后挂在这里，WSAPI `question.respond` /
+    /// `question.pending` 经 AppState 的 agent_loop 槽触达（同审批先例）。
+    /// 未装配 = `None`，question handler 诚实报「未装配」。
+    pub(crate) question_responder:
+        parking_lot::RwLock<Option<Arc<dyn nemesis_types::agent::QuestionResponder>>>,
+    /// J5 (devtool-upgrade 阶段 6)：doom-loop 审批卡的提问发起端
+    /// （`QuestionAsker`）——gateway 注入与 F7 responder 同源的
+    /// WebQuestionBroker Arc 的另一半 trait。escalation 触发且
+    /// `agents.doom_loop_approval` 开时经此发卡问用户「继续吗？」。
+    /// 未装配 = `None` = 审批通路缺失，escalation 直接走现行为（停轮）。
+    pub(crate) question_asker:
+        parking_lot::RwLock<Option<Arc<dyn nemesis_types::agent::QuestionAsker>>>,
+}
+
+impl SecurityState {
+    /// 顶检 engaged 判定（原 organ 1 顶检 + U5 预计算门 + 批内检查三处
+    /// 内联写法收敛于此）。未接线（None）= false = 永不阻塞。
+    pub(crate) fn is_engaged(&self) -> bool {
+        self.estop
+            .read()
+            .as_ref()
+            .map(|e| e.is_engaged())
+            .unwrap_or(false)
+    }
+
+    /// 订阅急停状态（原 recovery 首呼与 hook 重呼两处内联收敛于此）。
+    /// 返回 owned Receiver（不借用 guard）——拿完即可放锁，等待臂跨
+    /// await 不持锁（P2-6 锁纪律）。
+    pub(crate) fn subscribe(&self) -> Option<tokio::sync::watch::Receiver<bool>> {
+        self.estop.read().as_ref().map(|e| e.subscribe())
+    }
+}
+
 pub struct AgentLoop {
     // --- Standalone fields (always present) ---
     /// LLM provider for generating responses.
@@ -348,13 +415,8 @@ pub struct AgentLoop {
     /// Observer manager for Phase 5 event emission.
     /// Mirrors Go's `AgentLoop.observerMgr`.
     observer_manager: Option<Arc<nemesis_observer::Manager>>,
-    /// Security plugin for pre-execution tool safety checks.
-    /// Mirrors Go's SecurityPlugin registered via PluginManager.
-    #[cfg(feature = "security")]
-    security_plugin: Option<Arc<nemesis_security::pipeline::SecurityPlugin>>,
-    #[cfg(not(feature = "security"))]
-    #[allow(dead_code)]
-    security_plugin: Option<()>,
+    /// 安全/应急六槽（P3-3 收拢 [`SecurityState`]；字段语义见该类型）。
+    security: SecurityState,
     /// MCP Manager for dynamic tool discovery and hot-reload.
     mcp_manager: Option<std::sync::Mutex<nemesis_mcp::manager::McpManager>>,
     /// Snapshot of registered MCP tool names and descriptions.
@@ -372,11 +434,6 @@ pub struct AgentLoop {
     /// the token for the corresponding session is cancelled, causing the
     /// LLM loop to break at the next check point.
     cancel_tokens: dashmap::DashMap<String, tokio_util::sync::CancellationToken>,
-    /// Checkpoint store for the edit safety net. When attached, every writer
-    /// tool call snapshots the file's pre-edit content before execution, so a
-    /// rewind can restore it. RwLock so it can be attached from `&self` (the
-    /// gateway sets it after construction).
-    checkpoint_store: parking_lot::RwLock<Option<Arc<crate::checkpoint::CheckpointStore>>>,
     /// Monotonic turn counter for checkpoints (one per inbound message). Global
     /// across sessions in this MVP — adequate for single-session deployments;
     /// multi-session isolation is a documented follow-up.
@@ -522,36 +579,12 @@ pub struct AgentLoop {
     /// Last-seen mtime of config.json; `check_config_reload` compares against
     /// this each round to detect on-disk changes without re-reading every turn.
     config_mtime: parking_lot::RwLock<Option<std::time::SystemTime>>,
-    /// 全局急停状态（kill switch）。触发后，循环在每轮顶部 break、并在工具
-    /// 分发前拒绝调用。`None`（standalone/测试）时永不阻塞 = 零行为变化。
-    /// 以 `Option<Arc<...>>` 形态持有，工厂每次重建 loop 时从
-    /// `SharedResources.estop` 重新绑定到**同一个** Arc——所以急停状态在
-    /// agent 重启后自动保持。
-    estop: parking_lot::RwLock<Option<Arc<crate::estop::EstopState>>>,
     /// N2 (devtool-upgrade 阶段 4)：小模型专职杂务通道（`agents.small_model`）。
     /// 手动 compact（E6 `/compact`）的摘要调用优先走它（省 token——摘要不需
     /// 要旗舰档智力）；未配置 = `None`，诚实回退主模型。自动压缩（质量敏感）
     /// 刻意不消费本字段，维持主模型。工厂在 loop 构造后从 config 解析装配；
     /// 运行期改配置需重启 Agent（与 lsp_tool 等启动期装配项同一约定）。
     small_model: parking_lot::RwLock<Option<SmallModelSlot>>,
-    /// M7 (devtool-upgrade 阶段 5)：审批响应端（`ApprovalResponder`）。
-    /// gateway 装配 WebApprovalManager 后挂在这里，WSAPI `approval.respond` /
-    /// `approval.pending` 经 AppState 的 agent_loop 槽触达（不经 security 依赖）。
-    /// 未装配 = `None`，approval handler 诚实报「未装配」。
-    approval_responder:
-        parking_lot::RwLock<Option<Arc<dyn nemesis_types::agent::ApprovalResponder>>>,
-    /// F7 (devtool-upgrade 阶段 5)：结构化提问响应端（`QuestionResponder`）。
-    /// gateway 装配 WebQuestionBroker 后挂在这里，WSAPI `question.respond` /
-    /// `question.pending` 经 AppState 的 agent_loop 槽触达（同审批先例）。
-    /// 未装配 = `None`，question handler 诚实报「未装配」。
-    question_responder:
-        parking_lot::RwLock<Option<Arc<dyn nemesis_types::agent::QuestionResponder>>>,
-    /// J5 (devtool-upgrade 阶段 6)：doom-loop 审批卡的提问发起端
-    /// （`QuestionAsker`）——gateway 注入与 F7 responder 同源的
-    /// WebQuestionBroker Arc 的另一半 trait。escalation 触发且
-    /// `agents.doom_loop_approval` 开时经此发卡问用户「继续吗？」。
-    /// 未装配 = `None` = 审批通路缺失，escalation 直接走现行为（停轮）。
-    question_asker: parking_lot::RwLock<Option<Arc<dyn nemesis_types::agent::QuestionAsker>>>,
 }
 
 impl AgentLoop {
@@ -588,13 +621,22 @@ impl AgentLoop {
             continuation_manager: None,
             cluster: None,
             observer_manager: None,
-            security_plugin: None,
+            security: SecurityState {
+                #[cfg(feature = "security")]
+                security_plugin: None,
+                #[cfg(not(feature = "security"))]
+                security_plugin: None,
+                checkpoint_store: parking_lot::RwLock::new(None),
+                estop: parking_lot::RwLock::new(None),
+                approval_responder: parking_lot::RwLock::new(None),
+                question_responder: parking_lot::RwLock::new(None),
+                question_asker: parking_lot::RwLock::new(None),
+            },
             mcp_manager: None,
             mcp_tool_snapshot: Arc::new(parking_lot::RwLock::new(Vec::new())),
             data_store: None,
             forge: None,
             cancel_tokens: dashmap::DashMap::new(),
-            checkpoint_store: parking_lot::RwLock::new(None),
             turn_counter: std::sync::atomic::AtomicUsize::new(0),
             turn_file_changes: Arc::new(parking_lot::Mutex::new(HashMap::new())),
             rewind_undo_stacks: parking_lot::Mutex::new(HashMap::new()),
@@ -637,11 +679,7 @@ impl AgentLoop {
             #[cfg(feature = "workflow")]
             workflow_engine: parking_lot::RwLock::new(None),
             config_mtime: parking_lot::RwLock::new(None),
-            estop: parking_lot::RwLock::new(None),
             small_model: parking_lot::RwLock::new(None),
-            approval_responder: parking_lot::RwLock::new(None),
-            question_responder: parking_lot::RwLock::new(None),
-            question_asker: parking_lot::RwLock::new(None),
         }
     }
 

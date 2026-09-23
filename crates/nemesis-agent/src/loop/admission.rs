@@ -420,7 +420,7 @@ impl AgentLoop {
             .turn_counter
             .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         let attached = {
-            let cp = self.checkpoint_store.read().as_ref().cloned();
+            let cp = self.security.checkpoint_store.read().as_ref().cloned();
             if let Some(cp) = cp {
                 cp.begin(cp_turn, &msg.content);
                 true
@@ -900,7 +900,7 @@ impl AgentLoop {
             &at_base,
             &msg.channel,
             #[cfg(feature = "security")]
-            self.security_plugin.as_deref(),
+            self.security.security_plugin.as_deref(),
             #[cfg(not(feature = "security"))]
             None,
         );
@@ -920,7 +920,10 @@ impl AgentLoop {
             &msg.media,
             &uploads_dir,
             #[cfg(feature = "security")]
-            self.security_plugin.as_deref().and_then(|p| p.ssrf_guard()),
+            self.security
+                .security_plugin
+                .as_deref()
+                .and_then(|p| p.ssrf_guard()),
             #[cfg(not(feature = "security"))]
             None,
         )
@@ -934,7 +937,7 @@ impl AgentLoop {
             downscale_dir.as_deref(),
             &msg.channel,
             #[cfg(feature = "security")]
-            self.security_plugin.as_deref(),
+            self.security.security_plugin.as_deref(),
             #[cfg(not(feature = "security"))]
             None,
         );

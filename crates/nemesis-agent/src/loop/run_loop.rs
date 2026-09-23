@@ -527,12 +527,7 @@ impl AgentLoop {
         }
 
         // 全局急停检查：触发则立刻结束当前轮。未接线（None）时整块跳过。
-        let estop_engaged = self
-            .estop
-            .read()
-            .as_ref()
-            .map(|e| e.is_engaged())
-            .unwrap_or(false);
+        let estop_engaged = self.security.is_engaged();
         if estop_engaged {
             info!(
                 "[AgentLoop] E-stop engaged at top of iteration, turns_used={}",
@@ -635,7 +630,7 @@ impl AgentLoop {
                     &at_base,
                     &m.msg.channel,
                     #[cfg(feature = "security")]
-                    self.security_plugin.as_deref(),
+                    self.security.security_plugin.as_deref(),
                     #[cfg(not(feature = "security"))]
                     None,
                 );
@@ -651,7 +646,10 @@ impl AgentLoop {
                     &m.msg.media,
                     &uploads_dir,
                     #[cfg(feature = "security")]
-                    self.security_plugin.as_deref().and_then(|p| p.ssrf_guard()),
+                    self.security
+                        .security_plugin
+                        .as_deref()
+                        .and_then(|p| p.ssrf_guard()),
                     #[cfg(not(feature = "security"))]
                     None,
                 )
@@ -665,7 +663,7 @@ impl AgentLoop {
                     downscale_dir.as_deref(),
                     &m.msg.channel,
                     #[cfg(feature = "security")]
-                    self.security_plugin.as_deref(),
+                    self.security.security_plugin.as_deref(),
                     #[cfg(not(feature = "security"))]
                     None,
                 );

@@ -31,14 +31,14 @@ impl AgentLoop {
     /// tool call (write_file/edit_file/append_file/delete_file) snapshots the
     /// file's pre-edit content before execution, so a rewind can restore it.
     pub fn set_checkpoint_store(&self, store: Arc<crate::checkpoint::CheckpointStore>) {
-        *self.checkpoint_store.write() = Some(store);
+        *self.security.checkpoint_store.write() = Some(store);
     }
 
     /// L6++（2026-09-08）：checkpoint store 只读口——项目 loop 工厂测试用
     /// 它断言影子库落在主 workspace（`logs/project_checkpoints/{pid}`）而非
     /// 用户项目目录。
     pub fn checkpoint_store(&self) -> Option<Arc<crate::checkpoint::CheckpointStore>> {
-        self.checkpoint_store.read().clone()
+        self.security.checkpoint_store.read().clone()
     }
 
     /// Rewind the workspace to the start of turn `from_turn`: restores every file
@@ -48,6 +48,7 @@ impl AgentLoop {
     /// by the caller — this only restores code.
     pub async fn rewind(&self, from_turn: usize) -> Result<(Vec<String>, Vec<String>), String> {
         let cp = self
+            .security
             .checkpoint_store
             .read()
             .as_ref()
@@ -58,7 +59,7 @@ impl AgentLoop {
 
     /// List checkpoint turns (for a rewind picker UI). Empty if no store attached.
     pub fn checkpoint_list(&self) -> Vec<crate::checkpoint::CheckpointMeta> {
-        match self.checkpoint_store.read().as_ref() {
+        match self.security.checkpoint_store.read().as_ref() {
             Some(cp) => cp.list_meta(),
             None => Vec::new(),
         }
@@ -286,7 +287,7 @@ impl AgentLoop {
     /// E3：checkpoint store 已挂载时克隆出 Arc（`rewind_to_message` /
     /// `redo_rewind` 的共享读法）。
     pub(crate) fn attached_checkpoint(&self) -> Option<Arc<crate::checkpoint::CheckpointStore>> {
-        self.checkpoint_store.read().as_ref().cloned()
+        self.security.checkpoint_store.read().as_ref().cloned()
     }
 
     /// M3（devtool-upgrade 阶段 5）：会话级文件 diff——某文件「最早

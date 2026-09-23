@@ -595,12 +595,7 @@ impl AgentLoop {
         // unchanged).
         let precomputed: Option<Vec<PrecomputedTool>> = if tool_calls.len() >= 2
             && !cancel_token.is_cancelled()
-            && !self
-                .estop
-                .read()
-                .as_ref()
-                .map(|e| e.is_engaged())
-                .unwrap_or(false)
+            && !self.security.is_engaged()
             && tool_calls
                 .iter()
                 .all(|tc| self.tool_is_parallel_safe(&tc.name))
@@ -633,12 +628,7 @@ impl AgentLoop {
             }
 
             // 全局急停检查：触发则拒绝后续工具调用并结束当前轮。
-            let estop_engaged = self
-                .estop
-                .read()
-                .as_ref()
-                .map(|e| e.is_engaged())
-                .unwrap_or(false);
+            let estop_engaged = self.security.is_engaged();
             if estop_engaged {
                 info!(
                     "[AgentLoop] E-stop engaged before tool execution: {}, turns_used={}",

@@ -41,7 +41,7 @@ impl AgentLoop {
         // `None`（未接线）时该 arm 永不 resolve（pending），等价于没这条 arm。
         // 注意：subscribe() 返回的是 owned Receiver（不借用 guard），所以这里
         // 拿完就能放掉 estop 的读锁。
-        let mut estop_rx = self.estop.read().as_ref().map(|e| e.subscribe());
+        let mut estop_rx = self.security.subscribe();
         // Use tokio::select! to allow cancellation / e-stop during the LLM call.
         // P3B 撞墙检测起点：首次调用的失败时长供 transient 重试链比对。
         let first_call_start = std::time::Instant::now();
@@ -661,7 +661,7 @@ impl AgentLoop {
                             api_base: String::new(),
                         })
                         .await;
-                        let mut r_estop_rx = self.estop.read().as_ref().map(|e| e.subscribe());
+                        let mut r_estop_rx = self.security.subscribe();
                         // ②A：hook 重呼同样包超时（cancel/estop 臂不
                         // 变，仍可打断超时等待）。
                         let r = tokio::select! {

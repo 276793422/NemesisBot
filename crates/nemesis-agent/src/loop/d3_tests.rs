@@ -84,7 +84,7 @@ async fn d3_dispatch_collects_without_checkpoint_store() {
     let ctx = RequestContext::new("web", "chat1", "agent", "sess:d3:a");
 
     // 未挂 checkpoint store——收集照常发生。
-    assert!(al.checkpoint_store.read().is_none());
+    assert!(al.security.checkpoint_store.read().is_none());
     let out = al.handle_tool_call(&d3_tc("preview_tool"), &ctx).await;
     assert!(out.contains("edit ok"), "工具执行不回归: {out}");
 

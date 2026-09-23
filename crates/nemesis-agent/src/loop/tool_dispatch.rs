@@ -77,12 +77,7 @@ impl AgentLoop {
 
         // 全局急停：触发时拒绝所有工具分发。这是 handle_tool_call 公开入口级
         // 的防御深度——与 run_llm_loop 里的批次检查点互补，任何调用方都吃到。
-        let estop_engaged = self
-            .estop
-            .read()
-            .as_ref()
-            .map(|e| e.is_engaged())
-            .unwrap_or(false);
+        let estop_engaged = self.security.is_engaged();
         if estop_engaged {
             warn!(
                 "[AgentLoop] E-stop engaged — tool {} refused.",
@@ -150,7 +145,7 @@ impl AgentLoop {
         // Pre-execution security check (mirrors Go's PluginableTool.Execute → PluginManager → SecurityPlugin).
         #[cfg(feature = "security")]
         {
-            if let Some(ref security) = self.security_plugin {
+            if let Some(ref security) = self.security.security_plugin {
                 // P0 vault（D2/D3，2026-09-22 计划 §4）：声明式量化风险限
                 // 制。位置：estop 之后、安全管线之前（限额不是内容安全，
                 // 不付 judge/scanner 成本）。类别由工具声明、规则由
@@ -472,7 +467,8 @@ impl AgentLoop {
         };
         let ctx_arc = std::sync::Arc::new(context.clone());
         let tools_snapshot = std::sync::Arc::new(self.tools.read().clone());
-        let checkpoint_arc = std::sync::Arc::new(self.checkpoint_store.read().as_ref().cloned());
+        let checkpoint_arc =
+            std::sync::Arc::new(self.security.checkpoint_store.read().as_ref().cloned());
         let hooks_arc = std::sync::Arc::new(scoped_hooks.clone());
         // A6：format-on-save 的 config.json 路径快照（每次 dispatch 新鲜读，
         // 同 C3 current_diagnostics_loop 模式——运行中可翻转开关）。

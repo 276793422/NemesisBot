@@ -581,6 +581,7 @@ impl AgentLoop {
             //     next build).
             #[cfg(feature = "security")]
             let guardian_on = self
+                .security
                 .security_plugin
                 .as_ref()
                 .is_some_and(|p| p.judge().is_some());
