@@ -5,9 +5,9 @@ use super::prelude::*;
 use super::*;
 
 /// 一轮（round）的结局（§4.1）：继续下一轮，或携带终局事件结束本 turn。
-/// 模块内私有类型（P2 白名单：不进 pub 面）；P2-5 骨架收敛时成为器官
-/// 管线的统一返回面。
-enum TurnFlow {
+/// crate 内私有（P2 白名单：不进 pub 面）——P2-5 起器官 7（run_loop.rs）
+/// 与器官 8（tool_batch.rs）的统一返回面。
+pub(crate) enum TurnFlow {
     Continue,
     Stop(AgentEvent),
 }
@@ -122,11 +122,11 @@ impl AgentLoop {
             },
         };
 
-        // K1b (U14): labeled so the LLM post-hook retry loop (deep inside,
-        // around the guarded re-call) can abort the turn with `break 'turn`.
-        // Bare `break`s elsewhere keep targeting their nearest loop — this
-        // label only ADDS a way to name the turn loop, changing nothing else.
-        'turn: loop {
+        // K1b (U14) 沿革：此处曾有 `'turn:` 标签，供 LLM post-hook 重呼环
+        // `break 'turn` 直停本 turn；P2 器官化后各出口改经器官返回值
+        // （§4.3 Err/Stop 约定）由骨架统一 push + break，标签闲置遂除
+        // （P2-5）。裸 `break` 仍只跳出最近层循环，语义不变。
+        loop {
             // 器官 1（§4.2）：MCP/config 热重载 + cancel/estop 顶检 +
             // max_turns/grace/cron 预算判定。Some = (终局事件, 终端原因)。
             if let Some((ev, reason)) = self.prepare_round(turn_budget, cancel_token, &mut st) {
@@ -218,393 +218,41 @@ impl AgentLoop {
                 st.repetition_nudge_pending = None;
             }
 
-            if response.tool_calls.is_empty() || response.finished {
-                // No tool calls: candidate final response. ⑦ Check for degenerate
-                // (empty / whitespace-only / reasoning-only) content and nudge
-                // the model to retry before accepting. Skipped for heartbeat —
-                // an empty heartbeat response means "nothing to do", a valid
-                // outcome, not a broken answer.
-                let content = response.content.clone();
-                if context.user == "heartbeat" {
-                    instance.add_assistant_message(
-                        &content,
-                        Vec::new(),
-                        response.reasoning_content.clone(),
-                    );
-                    let formatted = context.format_rpc_message(&content);
-                    events.push(AgentEvent::Done(formatted));
-                    break;
-                }
-                match st.turn_guard.check_final_answer(&content) {
-                    crate::turn_guard::FinalAnswerVerdict::Accept => {
-                        instance.add_assistant_message(
-                            &content,
-                            Vec::new(),
-                            response.reasoning_content.clone(),
-                        );
-                        // I1 (U7) turn escape hatch: the model is about to
-                        // finish, but an unclaimed steer message arrived in
-                        // the last moments — hand it to the model for one
-                        // more round instead of answering past it — pending
-                        // next-step input keeps the turn open. At most once
-                        // per turn
-                        // (steer_escape_used) so `!`-spam cannot loop the
-                        // turn forever.
-                        if !st.steer_escape_used
-                            && self.inbox.has_next_step(&context.session_key)
-                            && self.concurrent_mode == ConcurrentMode::Steer
-                        {
-                            st.steer_escape_used = true;
-                            info!(
-                                "[AgentLoop] escape hatch: pending steer at turn end, one more round"
-                            );
-                            // Loop again — the claim at the top of the next
-                            // iteration injects the steer message(s).
-                            continue;
-                        }
-                        // K2 (U14): turn-end lifecycle hooks (Stop
-                        // dialect event). Runs after the assistant message
-                        // is recorded, before the Done event. `Continue`
-                        // injects the hook feedback as a user message and
-                        // grants one more round, bounded by
-                        // MAX_TURN_END_CONTINUES (exhausted → stop anyway,
-                        // fail-open). Only the normal Accept path fires —
-                        // heartbeat (its own branch above), GiveUp and
-                        // error/stop paths do not.
-                        {
-                            let lifecycle = self.lifecycle_hooks.read().snapshot();
-                            if !lifecycle.is_empty() {
-                                let end = crate::hooks::HookTurnEnd {
-                                    session_key: context.session_key.clone(),
-                                    channel: context.channel.clone(),
-                                    chat_id: context.chat_id.clone(),
-                                    final_content: content.clone(),
-                                    stop_hook_active: st.turn_end_continues > 0,
-                                };
-                                if let crate::hooks::TurnEndDecision::Continue { feedback } =
-                                    crate::hooks::run_turn_end_hooks(&lifecycle, &end).await
-                                {
-                                    if st.turn_end_continues < crate::hooks::MAX_TURN_END_CONTINUES
-                                    {
-                                        st.turn_end_continues += 1;
-                                        info!(
-                                            "[AgentLoop] turn-end hook blocked stopping \
-                                             ({}/{}, session '{}') — one more round",
-                                            st.turn_end_continues,
-                                            crate::hooks::MAX_TURN_END_CONTINUES,
-                                            context.session_key
-                                        );
-                                        instance.add_user_message(&feedback);
-                                        continue 'turn;
-                                    }
-                                    warn!(
-                                        "[AgentLoop] turn-end hook keeps blocking stop after {} \
-                                         continues; stopping anyway (fail-open), session '{}'",
-                                        crate::hooks::MAX_TURN_END_CONTINUES,
-                                        context.session_key
-                                    );
-                                }
-                            }
-                        }
-                        let formatted = context.format_rpc_message(&content);
-                        events.push(AgentEvent::Done(formatted));
-                        break;
-                    }
-                    crate::turn_guard::FinalAnswerVerdict::RetryWithNudge(nudge) => {
-                        warn!(
-                            "[AgentLoop] degenerate final answer (empty/no visible text); nudging retry"
-                        );
-                        // Record the empty attempt in history, then queue the
-                        // nudge for transient re-injection on the next build.
-                        instance.add_assistant_message(
-                            &content,
-                            Vec::new(),
-                            response.reasoning_content.clone(),
-                        );
-                        st.degenerate_nudge_pending = Some(nudge);
-                        continue;
-                    }
-                    crate::turn_guard::FinalAnswerVerdict::GiveUp(notice) => {
-                        warn!(
-                            "[AgentLoop] degenerate final answer retry budget exhausted; giving up"
-                        );
-                        instance.add_assistant_message(&notice, Vec::new(), None);
-                        let formatted = context.format_rpc_message(&notice);
-                        events.push(AgentEvent::Done(formatted));
-                        break;
-                    }
-                }
-            }
-
-            // Model produced tool calls → it is making progress. Clear any
-            // pending degenerate-answer nudge (⑦) so it stops nagging while the
-            // model works — tool work is the opposite of a degenerate empty
-            // final answer.
-            st.degenerate_nudge_pending = None;
-
-            // Record the assistant's response with tool calls.
-            let tool_calls = response.tool_calls.clone();
-            let assistant_content = response.content.clone();
-            instance.add_assistant_message(
-                &assistant_content,
-                tool_calls.clone(),
-                response.reasoning_content.clone(),
-            );
-            // R1（2026-09-21）：中间轮正文非空才发布——模型多步执行时每轮的
-            // 过程叙述（「我先看下 X 再改 Y」）此前只进 history，前端看不见；
-            // 空正文轮（纯工具调用）无可读内容，不发。
-            if !assistant_content.trim().is_empty() {
-                self.emit_round_text(&context.session_key, &context.chat_id, &assistant_content);
-            }
-            events.push(AgentEvent::ToolCall(tool_calls.clone()));
-
-            // Execute each tool call.
-            instance.set_state(crate::types::AgentState::ExecutingTool);
-            let mut hit_async = false;
-            // Outer-scope turn-stop latch. Set inside the tool-call for-loop
-            // (where `break` can only exit the batch, not the outer LLM loop) by
-            // ⑥ escalation OR validation-budget exhaustion. Checked after the
-            // for-loop to actually end the turn. Without this two-step, those
-            // `break`s only stopped the current batch and the model was called
-            // again — escalation fired every round without stopping (observed
-            // 43× in a deployed test), and "validation stopping loop" was a lie.
-            let mut force_stop: Option<AgentEvent> = None;
-            // U5 (sixth batch): precompute execution for an ALL-parallel-safe
-            // batch (≥2 calls, every tool read-only OR explicitly opted in —
-            // G3: spawn). The for-loop then replays the serial guards on the
-            // precomputed results in source order — the audit chain stays
-            // ordered = model source order (roadmap risk 3). cluster_rpc/exec
-            // /writers are never parallel-safe → this stays None for those
-            // batches → the loop below runs byte-identical to pre-U5.
-            // `None` also when a cancel/estop is already engaged at batch
-            // start (the for-loop's per-item check handles that case
-            // unchanged).
-            let precomputed: Option<Vec<PrecomputedTool>> = if tool_calls.len() >= 2
-                && !cancel_token.is_cancelled()
-                && !self
-                    .estop
-                    .read()
-                    .as_ref()
-                    .map(|e| e.is_engaged())
-                    .unwrap_or(false)
-                && tool_calls
-                    .iter()
-                    .all(|tc| self.tool_is_parallel_safe(&tc.name))
+            // 器官 7（§4.2）：终答判定。Some(Continue) = 续轮（steer
+            // escape / turn-end hook / 退化 nudge 三出口归一）；Some(Stop)
+            // = 终局事件（push + break）；None = 非终答落器官 8。
+            match self
+                .judge_final_answer(instance, context, &response, &mut st)
+                .await
             {
-                let pc = self
-                    .precompute_parallel_batch(&tool_calls, context, instance.detached_depth())
-                    .await;
-                Some(pc)
-            } else {
-                None
-            };
-            // U5: in the parallel path, cancel/estop are NOT re-checked per item
-            // — the batch was checkpointed non-cancelled above and runs to
-            // completion (goal §四 documented semantic: a cancel arriving during
-            // the parallel window takes effect on the NEXT turn, not mid-batch).
-            // The serial path (precomputed.is_none()) keeps the per-item checks
-            // byte-identical.
-            let skip_cancel_estop = precomputed.is_some();
-            for (batch_idx, tc) in tool_calls.iter().enumerate() {
-                // Check cancellation before each tool execution.
-                if !skip_cancel_estop && cancel_token.is_cancelled() {
-                    info!(
-                        "[AgentLoop] LLM loop cancelled before tool execution: {}, turns_used={}",
-                        tc.name, st.turns_used
-                    );
-                    events.push(AgentEvent::Done("已取消".to_string()));
-                    break;
-                }
-
-                // 全局急停检查：触发则拒绝后续工具调用并结束当前轮。
-                let estop_engaged = self
-                    .estop
-                    .read()
-                    .as_ref()
-                    .map(|e| e.is_engaged())
-                    .unwrap_or(false);
-                if estop_engaged {
-                    info!(
-                        "[AgentLoop] E-stop engaged before tool execution: {}, turns_used={}",
-                        tc.name, st.turns_used
-                    );
-                    events.push(AgentEvent::Done(
-                        "⛔ 已急停 (E-STOP) — 工具调用已拒绝。发送 `nemesisbot estop --release` 恢复。"
-                            .to_string(),
-                    ));
-                    break;
-                }
-
-                let tool_start = std::time::Instant::now();
-                // Phase 2 (small-model-tool-robustness): validate args against
-                // the tool's schema before dispatch. Catches B-class failures;
-                // auto-fixes high-confidence field-name typos (edit distance ≤2);
-                // otherwise bounces a structured error back to the model so it
-                // can self-correct on the next round.
-                //
-                // U5 (sixth batch): when `precomputed` is Some, the execution
-                // already ran concurrently (above) — replay its result + the
-                // `validation_failures` counter increment here, then fall
-                // through to the SAME serial guards (observer/capture/
-                // turn_guard/spill/escalation). Guards run in source order
-                // because join_all preserves iteration order. `tool_duration`
-                // carries the REAL per-task wall time (measured in the pool),
-                // not this near-zero clone.
-                let (result, tool_duration_ms) = if let Some(ref pc) = precomputed {
-                    let p = &pc[batch_idx];
-                    if p.validation_failed {
-                        st.validation_failures += 1;
-                        self.record_tool_validation_stats(true);
-                    } else {
-                        st.validation_failures = 0;
-                        self.record_tool_validation_stats(false);
-                    }
-                    (p.result.clone(), p.duration_ms)
-                } else {
-                    let r = match self.check_tool_args(tc) {
-                        crate::args_validator::Outcome::Valid => {
-                            st.validation_failures = 0;
-                            self.record_tool_validation_stats(false);
-                            // G2: dispatch at this instance's sub-agent depth so
-                            // depth-aware tools (spawn) enforce max_depth.
-                            self.handle_tool_call_at_depth(tc, context, instance.detached_depth())
-                                .await
-                        }
-                        crate::args_validator::Outcome::Fixed(fixed_args) => {
-                            st.validation_failures = 0;
-                            self.record_tool_validation_stats(false);
-                            info!(
-                                "[AgentLoop] Auto-fixed args for tool '{}' (id={})",
-                                tc.name, tc.id
-                            );
-                            let mut fixed = tc.clone();
-                            fixed.arguments = fixed_args;
-                            self.handle_tool_call_at_depth(
-                                &fixed,
-                                context,
-                                instance.detached_depth(),
-                            )
-                            .await
-                        }
-                        crate::args_validator::Outcome::Invalid { message, class } => {
-                            st.validation_failures += 1;
-                            self.record_tool_validation_stats(true);
-                            warn!(
-                                "[AgentLoop] Arg validation failed for tool '{}' (id={}, class={}): {}",
-                                tc.name, tc.id, class, message
-                            );
-                            format!("Tool error: {}", message)
-                        }
-                    };
-                    (r, tool_start.elapsed().as_millis() as u64)
-                };
-                let tool_duration = std::time::Duration::from_millis(tool_duration_ms);
-                let tool_success =
-                    !result.starts_with("Error:") && !result.starts_with("Tool error:");
-
-                // Emit tool call observer event.
-                self.emit_observer_sync(crate::loop_executor::ObserverEvent::ToolCall {
-                    trace_id: trace_id.to_string(),
-                    tool_name: tc.name.clone(),
-                    success: tool_success,
-                    duration_ms: tool_duration.as_millis() as u64,
-                    round: st.turns_used,
-                    arguments: tc.arguments.clone(),
-                    result: result.clone(),
-                })
-                .await;
-
-                // [capture] Record the full pre-truncation tool result. loop.rs
-                // does NOT truncate tool results before they enter the context,
-                // so this is what catches a bloated output blowing out the
-                // context window (the suspected bug trigger). No-op unless
-                // capture is enabled; flushed only on a later failure signal.
-                if let Some(sink) = crate::capture_sink::CaptureSink::global() {
-                    sink.record_tool(
-                        &context.session_key,
-                        crate::capture_sink::ToolCapture {
-                            tool_name: tc.name.clone(),
-                            arguments: tc.arguments.clone(),
-                            result: result.clone(),
-                            success: tool_success,
-                            duration_ms: tool_duration.as_millis() as u64,
-                            error: if tool_success {
-                                String::new()
-                            } else {
-                                result.clone()
-                            },
-                            llm_round: st.turns_used as usize,
-                            ts: String::new(),
-                        },
-                    );
-                }
-
-                // 器官 8a（§4.2 → tool_batch.rs）：__ASYNC__ 集群续行快照 +
-                // 中间消息；Some = 终局 Done（骨架 push + hit_async + break）。
-                if result.starts_with("__ASYNC__:")
-                    && let Some(ev) = self
-                        .save_async_continuation(instance, context, tc, &result)
-                        .await
-                {
+                Some(TurnFlow::Continue) => continue,
+                Some(TurnFlow::Stop(ev)) => {
                     events.push(ev);
-                    hit_async = true;
                     break;
                 }
-
-                // 器官 8b（§4.2 → tool_batch.rs）：__BG_SPAWN__ 后台子代理
-                // 快照（inline await 语义保持）。
-                if let Some(bg_task_id) = result.strip_prefix("__BG_SPAWN__:") {
-                    let ev = self
-                        .save_bg_spawn_continuation(instance, context, tc, bg_task_id)
-                        .await;
-                    events.push(ev);
-                    hit_async = true;
-                    break;
-                }
-
-                let tool_result = ToolCallResult {
-                    tool_name: tc.name.clone(),
-                    result: result.clone(),
-                    is_error: false,
-                };
-                events.push(AgentEvent::ToolResult(tool_result));
-
-                // 器官 8c（§4.2 → tool_batch.rs）：⑤/⑤′/⑥ 守卫 + C3 诊断
-                // 回灌 + spill/prune 门 + X1 projection + 历史落账；返回
-                // tool_succeeded 供 8d 与边界判定。
-                let tool_succeeded = self
-                    .apply_tool_guards(instance, context, tc, result, &mut st.turn_guard)
-                    .await;
-
-                // 器官 8d：H5/I1/I3 指令链触碰。
-                self.touch_instruction_chain(instance, tc, tool_succeeded);
-
-                // 器官 8e（§4.2 → tool_batch.rs）：两终局判定（Some = 终局
-                // 事件 → terminal_reason + force_stop latch + break 批次；
-                // J5 批准继续 = None 落回批次）。
-                if let Some(ev) = self.check_escalation(&mut st.turn_guard, context).await {
-                    st.terminal_reason = Some("escalation");
-                    force_stop = Some(ev);
-                    break;
-                }
-                if let Some(ev) = self.check_validation_budget(st.validation_failures, &tc.name) {
-                    st.terminal_reason = Some("validation_exhausted");
-                    force_stop = Some(ev);
-                    break;
-                }
+                None => {}
             }
 
-            if hit_async {
-                break;
-            }
-
-            // Outer-scope turn stop latched from inside the tool-call for-loop
-            // (⑥ escalation OR validation-budget exhaustion). A bare `break` in
-            // that for-loop only exits the batch; this actually ends the turn,
-            // emitting a single terminal event.
-            if let Some(ev) = force_stop {
-                events.push(ev);
-                break;
+            // 器官 8（§4.2 → tool_batch.rs）：中间消息落账 + 批次执行。
+            // Continue = 批次毕（或批内 cancel/estop 双发 Done 语义——顶检
+            // 重发，§9①）；Stop = 终局事件 push + break。
+            match self
+                .execute_tool_batch(
+                    instance,
+                    context,
+                    trace_id,
+                    &response,
+                    cancel_token,
+                    &mut st,
+                    &mut events,
+                )
+                .await
+            {
+                TurnFlow::Continue => continue,
+                TurnFlow::Stop(ev) => {
+                    events.push(ev);
+                    break;
+                }
             }
         }
 
@@ -682,6 +330,132 @@ impl AgentLoop {
         }
         // Complete (non-truncated) response — reset the counter.
         st.length_continuations = 0;
+        None
+    }
+
+    /// 器官 7（§4.2）：终答判定——heartbeat 特例 → ⑦ 退化三判 → I1
+    /// steer escape → K2 turn-end hooks → Accept 落地。`Some(Continue)`
+    /// = 续轮（escape/hook/nudge 三 `continue` 出口归一）；`Some(Stop)`
+    /// = 终局事件（heartbeat/Accept/GiveUp 三 push+break 出口归一）；
+    /// `None` = 非终答（有未完工具调用），落器官 8 工具批次。
+    async fn judge_final_answer(
+        &self,
+        instance: &AgentInstance,
+        context: &RequestContext,
+        response: &LlmResponse,
+        st: &mut TurnState,
+    ) -> Option<TurnFlow> {
+        if response.tool_calls.is_empty() || response.finished {
+            // No tool calls: candidate final response. ⑦ Check for degenerate
+            // (empty / whitespace-only / reasoning-only) content and nudge
+            // the model to retry before accepting. Skipped for heartbeat —
+            // an empty heartbeat response means "nothing to do", a valid
+            // outcome, not a broken answer.
+            let content = response.content.clone();
+            if context.user == "heartbeat" {
+                instance.add_assistant_message(
+                    &content,
+                    Vec::new(),
+                    response.reasoning_content.clone(),
+                );
+                let formatted = context.format_rpc_message(&content);
+                return Some(TurnFlow::Stop(AgentEvent::Done(formatted)));
+            }
+            match st.turn_guard.check_final_answer(&content) {
+                crate::turn_guard::FinalAnswerVerdict::Accept => {
+                    instance.add_assistant_message(
+                        &content,
+                        Vec::new(),
+                        response.reasoning_content.clone(),
+                    );
+                    // I1 (U7) turn escape hatch: the model is about to
+                    // finish, but an unclaimed steer message arrived in
+                    // the last moments — hand it to the model for one
+                    // more round instead of answering past it — pending
+                    // next-step input keeps the turn open. At most once
+                    // per turn
+                    // (steer_escape_used) so `!`-spam cannot loop the
+                    // turn forever.
+                    if !st.steer_escape_used
+                        && self.inbox.has_next_step(&context.session_key)
+                        && self.concurrent_mode == ConcurrentMode::Steer
+                    {
+                        st.steer_escape_used = true;
+                        info!(
+                            "[AgentLoop] escape hatch: pending steer at turn end, one more round"
+                        );
+                        // Loop again — the claim at the top of the next
+                        // iteration injects the steer message(s).
+                        return Some(TurnFlow::Continue);
+                    }
+                    // K2 (U14): turn-end lifecycle hooks (Stop
+                    // dialect event). Runs after the assistant message
+                    // is recorded, before the Done event. `Continue`
+                    // injects the hook feedback as a user message and
+                    // grants one more round, bounded by
+                    // MAX_TURN_END_CONTINUES (exhausted → stop anyway,
+                    // fail-open). Only the normal Accept path fires —
+                    // heartbeat (its own branch above), GiveUp and
+                    // error/stop paths do not.
+                    {
+                        let lifecycle = self.lifecycle_hooks.read().snapshot();
+                        if !lifecycle.is_empty() {
+                            let end = crate::hooks::HookTurnEnd {
+                                session_key: context.session_key.clone(),
+                                channel: context.channel.clone(),
+                                chat_id: context.chat_id.clone(),
+                                final_content: content.clone(),
+                                stop_hook_active: st.turn_end_continues > 0,
+                            };
+                            if let crate::hooks::TurnEndDecision::Continue { feedback } =
+                                crate::hooks::run_turn_end_hooks(&lifecycle, &end).await
+                            {
+                                if st.turn_end_continues < crate::hooks::MAX_TURN_END_CONTINUES {
+                                    st.turn_end_continues += 1;
+                                    info!(
+                                        "[AgentLoop] turn-end hook blocked stopping \
+                                             ({}/{}, session '{}') — one more round",
+                                        st.turn_end_continues,
+                                        crate::hooks::MAX_TURN_END_CONTINUES,
+                                        context.session_key
+                                    );
+                                    instance.add_user_message(&feedback);
+                                    return Some(TurnFlow::Continue);
+                                }
+                                warn!(
+                                    "[AgentLoop] turn-end hook keeps blocking stop after {} \
+                                         continues; stopping anyway (fail-open), session '{}'",
+                                    crate::hooks::MAX_TURN_END_CONTINUES,
+                                    context.session_key
+                                );
+                            }
+                        }
+                    }
+                    let formatted = context.format_rpc_message(&content);
+                    return Some(TurnFlow::Stop(AgentEvent::Done(formatted)));
+                }
+                crate::turn_guard::FinalAnswerVerdict::RetryWithNudge(nudge) => {
+                    warn!(
+                        "[AgentLoop] degenerate final answer (empty/no visible text); nudging retry"
+                    );
+                    // Record the empty attempt in history, then queue the
+                    // nudge for transient re-injection on the next build.
+                    instance.add_assistant_message(
+                        &content,
+                        Vec::new(),
+                        response.reasoning_content.clone(),
+                    );
+                    st.degenerate_nudge_pending = Some(nudge);
+                    return Some(TurnFlow::Continue);
+                }
+                crate::turn_guard::FinalAnswerVerdict::GiveUp(notice) => {
+                    warn!("[AgentLoop] degenerate final answer retry budget exhausted; giving up");
+                    instance.add_assistant_message(&notice, Vec::new(), None);
+                    let formatted = context.format_rpc_message(&notice);
+                    return Some(TurnFlow::Stop(AgentEvent::Done(formatted)));
+                }
+            }
+        }
         None
     }
 

@@ -3,13 +3,14 @@
 //! 语义零变化：`__ASYNC__` 集群续行快照（8a）、`__BG_SPAWN__` 后台子代理
 //! 快照（8b，inline await 语义保持）、⑤/⑤′/⑥ 环守卫 + C3 诊断回灌 +
 //! spill/prune 门 + X1 projection（8c）、H5/I1/I3 指令链触碰（8d）、
-//! escalation 与校验预算两终局判定（8e）。批循环骨架（并行预计算 + 批次
-//! for + TurnState 收拢）留 run_loop.rs，P2-4 接管。
+//! escalation 与校验预算两终局判定（8e）。
 //!
 //! 器官出口约定（§4.3 对照表）：8a/8b 命中即 `Some(Done(中间消息))`/`Done`
-//! 返回，骨架统一 `push + hit_async + break`；8e 命中即 `Some(终局事件)`
-//! 返回，骨架置 `terminal_reason + force_stop` latch 后 break 批次——事件
-//! 向量与文案逐字节不变，golden transcript 把关。
+//! 返回，骨架统一 `push + break`；8e 命中即 `Some(终局事件)` 返回，骨架置
+//! `terminal_reason` 后 push + break——事件向量与文案逐字节不变，golden
+//! transcript 把关。P2-5：批循环本体（中间消息落账 + 并行预计算 + 批次
+//! for）亦收编为 [`AgentLoop::execute_tool_batch`]，返回 `TurnFlow`；原
+//! `force_stop`/`hit_async` 两补偿闩随方法化退役。
 use super::prelude::*;
 use super::*;
 
@@ -539,5 +540,266 @@ impl AgentLoop {
             )));
         }
         None
+    }
+    /// 器官 8（§4.2 表行 8）：中间消息落账 + 并行预计算（U5）+ 批次循环，
+    /// 自 run_loop.rs 骨架收编（P2-5，与 8a-8e 同居本文件）。出口归一：
+    /// 批内 cancel/estop = push Done + `Continue`（骨架 continue → 下一
+    /// 轮器官 1 顶检再发一次并停轮——双发 Done 现状语义原样，§9① 不顺手
+    /// 改）；8a/8b 快照与 8e escalation/validation 两终局 = `Stop(ev)`
+    /// （骨架 push + break，terminal_reason 照记）；批次正常完毕 =
+    /// `Continue` 落回下一轮。原 force_stop/hit_async 两补偿闩随方法化
+    /// 退役（闩的存在意义就是批次内 break 出不了外层循环）。
+    pub(crate) async fn execute_tool_batch(
+        &self,
+        instance: &AgentInstance,
+        context: &RequestContext,
+        trace_id: &str,
+        response: &LlmResponse,
+        cancel_token: &tokio_util::sync::CancellationToken,
+        st: &mut TurnState,
+        events: &mut Vec<AgentEvent>,
+    ) -> TurnFlow {
+        // Model produced tool calls → it is making progress. Clear any
+        // pending degenerate-answer nudge (⑦) so it stops nagging while the
+        // model works — tool work is the opposite of a degenerate empty
+        // final answer.
+        st.degenerate_nudge_pending = None;
+
+        // Record the assistant's response with tool calls.
+        let tool_calls = response.tool_calls.clone();
+        let assistant_content = response.content.clone();
+        instance.add_assistant_message(
+            &assistant_content,
+            tool_calls.clone(),
+            response.reasoning_content.clone(),
+        );
+        // R1（2026-09-21）：中间轮正文非空才发布——模型多步执行时每轮的
+        // 过程叙述（「我先看下 X 再改 Y」）此前只进 history，前端看不见；
+        // 空正文轮（纯工具调用）无可读内容，不发。
+        if !assistant_content.trim().is_empty() {
+            self.emit_round_text(&context.session_key, &context.chat_id, &assistant_content);
+        }
+        events.push(AgentEvent::ToolCall(tool_calls.clone()));
+
+        // Execute each tool call.
+        instance.set_state(crate::types::AgentState::ExecutingTool);
+        // U5 (sixth batch): precompute execution for an ALL-parallel-safe
+        // batch (≥2 calls, every tool read-only OR explicitly opted in —
+        // G3: spawn). The for-loop then replays the serial guards on the
+        // precomputed results in source order — the audit chain stays
+        // ordered = model source order (roadmap risk 3). cluster_rpc/exec
+        // /writers are never parallel-safe → this stays None for those
+        // batches → the loop below runs byte-identical to pre-U5.
+        // `None` also when a cancel/estop is already engaged at batch
+        // start (the for-loop's per-item check handles that case
+        // unchanged).
+        let precomputed: Option<Vec<PrecomputedTool>> = if tool_calls.len() >= 2
+            && !cancel_token.is_cancelled()
+            && !self
+                .estop
+                .read()
+                .as_ref()
+                .map(|e| e.is_engaged())
+                .unwrap_or(false)
+            && tool_calls
+                .iter()
+                .all(|tc| self.tool_is_parallel_safe(&tc.name))
+        {
+            let pc = self
+                .precompute_parallel_batch(&tool_calls, context, instance.detached_depth())
+                .await;
+            Some(pc)
+        } else {
+            None
+        };
+        // U5: in the parallel path, cancel/estop are NOT re-checked per item
+        // — the batch was checkpointed non-cancelled above and runs to
+        // completion (goal §四 documented semantic: a cancel arriving during
+        // the parallel window takes effect on the NEXT turn, not mid-batch).
+        // The serial path (precomputed.is_none()) keeps the per-item checks
+        // byte-identical.
+        let skip_cancel_estop = precomputed.is_some();
+        for (batch_idx, tc) in tool_calls.iter().enumerate() {
+            // Check cancellation before each tool execution.
+            if !skip_cancel_estop && cancel_token.is_cancelled() {
+                info!(
+                    "[AgentLoop] LLM loop cancelled before tool execution: {}, turns_used={}",
+                    tc.name, st.turns_used
+                );
+                events.push(AgentEvent::Done("已取消".to_string()));
+                // 双发 Done 语义原样（§9①）：批内已发一次，落回
+                // 骨架 Continue → 下一轮器官 1 顶检再发一次并停轮。
+                return TurnFlow::Continue;
+            }
+
+            // 全局急停检查：触发则拒绝后续工具调用并结束当前轮。
+            let estop_engaged = self
+                .estop
+                .read()
+                .as_ref()
+                .map(|e| e.is_engaged())
+                .unwrap_or(false);
+            if estop_engaged {
+                info!(
+                    "[AgentLoop] E-stop engaged before tool execution: {}, turns_used={}",
+                    tc.name, st.turns_used
+                );
+                events.push(AgentEvent::Done(
+                    "⛔ 已急停 (E-STOP) — 工具调用已拒绝。发送 `nemesisbot estop --release` 恢复。"
+                        .to_string(),
+                ));
+                // 同上：双发 Done 语义原样（§9①）。
+                return TurnFlow::Continue;
+            }
+
+            let tool_start = std::time::Instant::now();
+            // Phase 2 (small-model-tool-robustness): validate args against
+            // the tool's schema before dispatch. Catches B-class failures;
+            // auto-fixes high-confidence field-name typos (edit distance ≤2);
+            // otherwise bounces a structured error back to the model so it
+            // can self-correct on the next round.
+            //
+            // U5 (sixth batch): when `precomputed` is Some, the execution
+            // already ran concurrently (above) — replay its result + the
+            // `validation_failures` counter increment here, then fall
+            // through to the SAME serial guards (observer/capture/
+            // turn_guard/spill/escalation). Guards run in source order
+            // because join_all preserves iteration order. `tool_duration`
+            // carries the REAL per-task wall time (measured in the pool),
+            // not this near-zero clone.
+            let (result, tool_duration_ms) = if let Some(ref pc) = precomputed {
+                let p = &pc[batch_idx];
+                if p.validation_failed {
+                    st.validation_failures += 1;
+                    self.record_tool_validation_stats(true);
+                } else {
+                    st.validation_failures = 0;
+                    self.record_tool_validation_stats(false);
+                }
+                (p.result.clone(), p.duration_ms)
+            } else {
+                let r = match self.check_tool_args(tc) {
+                    crate::args_validator::Outcome::Valid => {
+                        st.validation_failures = 0;
+                        self.record_tool_validation_stats(false);
+                        // G2: dispatch at this instance's sub-agent depth so
+                        // depth-aware tools (spawn) enforce max_depth.
+                        self.handle_tool_call_at_depth(tc, context, instance.detached_depth())
+                            .await
+                    }
+                    crate::args_validator::Outcome::Fixed(fixed_args) => {
+                        st.validation_failures = 0;
+                        self.record_tool_validation_stats(false);
+                        info!(
+                            "[AgentLoop] Auto-fixed args for tool '{}' (id={})",
+                            tc.name, tc.id
+                        );
+                        let mut fixed = tc.clone();
+                        fixed.arguments = fixed_args;
+                        self.handle_tool_call_at_depth(&fixed, context, instance.detached_depth())
+                            .await
+                    }
+                    crate::args_validator::Outcome::Invalid { message, class } => {
+                        st.validation_failures += 1;
+                        self.record_tool_validation_stats(true);
+                        warn!(
+                            "[AgentLoop] Arg validation failed for tool '{}' (id={}, class={}): {}",
+                            tc.name, tc.id, class, message
+                        );
+                        format!("Tool error: {}", message)
+                    }
+                };
+                (r, tool_start.elapsed().as_millis() as u64)
+            };
+            let tool_duration = std::time::Duration::from_millis(tool_duration_ms);
+            let tool_success = !result.starts_with("Error:") && !result.starts_with("Tool error:");
+
+            // Emit tool call observer event.
+            self.emit_observer_sync(crate::loop_executor::ObserverEvent::ToolCall {
+                trace_id: trace_id.to_string(),
+                tool_name: tc.name.clone(),
+                success: tool_success,
+                duration_ms: tool_duration.as_millis() as u64,
+                round: st.turns_used,
+                arguments: tc.arguments.clone(),
+                result: result.clone(),
+            })
+            .await;
+
+            // [capture] Record the full pre-truncation tool result. loop.rs
+            // does NOT truncate tool results before they enter the context,
+            // so this is what catches a bloated output blowing out the
+            // context window (the suspected bug trigger). No-op unless
+            // capture is enabled; flushed only on a later failure signal.
+            if let Some(sink) = crate::capture_sink::CaptureSink::global() {
+                sink.record_tool(
+                    &context.session_key,
+                    crate::capture_sink::ToolCapture {
+                        tool_name: tc.name.clone(),
+                        arguments: tc.arguments.clone(),
+                        result: result.clone(),
+                        success: tool_success,
+                        duration_ms: tool_duration.as_millis() as u64,
+                        error: if tool_success {
+                            String::new()
+                        } else {
+                            result.clone()
+                        },
+                        llm_round: st.turns_used as usize,
+                        ts: String::new(),
+                    },
+                );
+            }
+
+            // 器官 8a（§4.2 → tool_batch.rs）：__ASYNC__ 集群续行快照 +
+            // 中间消息；Some = 终局 Done（return Stop，骨架 push + break）。
+            if result.starts_with("__ASYNC__:")
+                && let Some(ev) = self
+                    .save_async_continuation(instance, context, tc, &result)
+                    .await
+            {
+                return TurnFlow::Stop(ev);
+            }
+
+            // 器官 8b（§4.2 → tool_batch.rs）：__BG_SPAWN__ 后台子代理
+            // 快照（inline await 语义保持）。
+            if let Some(bg_task_id) = result.strip_prefix("__BG_SPAWN__:") {
+                let ev = self
+                    .save_bg_spawn_continuation(instance, context, tc, bg_task_id)
+                    .await;
+                return TurnFlow::Stop(ev);
+            }
+
+            let tool_result = ToolCallResult {
+                tool_name: tc.name.clone(),
+                result: result.clone(),
+                is_error: false,
+            };
+            events.push(AgentEvent::ToolResult(tool_result));
+
+            // 器官 8c（§4.2 → tool_batch.rs）：⑤/⑤′/⑥ 守卫 + C3 诊断
+            // 回灌 + spill/prune 门 + X1 projection + 历史落账；返回
+            // tool_succeeded 供 8d 与边界判定。
+            let tool_succeeded = self
+                .apply_tool_guards(instance, context, tc, result, &mut st.turn_guard)
+                .await;
+
+            // 器官 8d：H5/I1/I3 指令链触碰。
+            self.touch_instruction_chain(instance, tc, tool_succeeded);
+
+            // 器官 8e（§4.2 → tool_batch.rs）：两终局判定（Some = 终局
+            // 事件 → terminal_reason 照记 + return Stop（骨架 push +
+            // break）；J5 批准继续 = None 落回批次）。
+            if let Some(ev) = self.check_escalation(&mut st.turn_guard, context).await {
+                st.terminal_reason = Some("escalation");
+                return TurnFlow::Stop(ev);
+            }
+            if let Some(ev) = self.check_validation_budget(st.validation_failures, &tc.name) {
+                st.terminal_reason = Some("validation_exhausted");
+                return TurnFlow::Stop(ev);
+            }
+        }
+
+        TurnFlow::Continue
     }
 }
