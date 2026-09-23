@@ -65,7 +65,7 @@ impl AgentLoop {
     /// 执行之前运行；post 在执行之后、Forge 记录之前运行（详见
     /// `crate::hooks` 模块文档）。RwLock 注册——运行中随时可挂。
     pub fn add_tool_hook(&self, hook: Arc<dyn crate::hooks::ToolHook>) {
-        self.tool_hooks.write().add(hook);
+        self.hooks.tool_hooks.write().add(hook);
     }
 
     /// K1b (U14): 注册一个 LLM 调用级钩子。pre 在 messages 组装后、
@@ -73,7 +73,7 @@ impl AgentLoop {
     /// post 在响应错误恢复后、LlmResponse observer 事件前运行（可
     /// Allow/Replace/有限 Retry/Block）。详见 `crate::hooks` 模块文档。
     pub fn add_llm_hook(&self, hook: Arc<dyn crate::hooks::LlmHook>) {
-        self.llm_hooks.write().add(hook);
+        self.hooks.llm_hooks.write().add(hook);
     }
 
     /// K2 (U14): 注册一个 prompt/turn 生命周期钩子。on_user_prompt 在
@@ -81,7 +81,7 @@ impl AgentLoop {
     /// 永远看不到该消息）；on_turn_end 在最终答案被接受后、Done 事件前
     /// 运行（可注入 feedback 要求再答一轮，预算封顶 fail-open）。
     pub fn add_lifecycle_hook(&self, hook: Arc<dyn crate::hooks::LifecycleHook>) {
-        self.lifecycle_hooks.write().add(hook);
+        self.hooks.lifecycle_hooks.write().add(hook);
     }
 
     /// Wire the re-injection sender for the queue-drain path (round-5 review

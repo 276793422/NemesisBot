@@ -590,7 +590,7 @@ impl AgentLoop {
         turns_used: u32,
         mut response: LlmResponse,
     ) -> Result<LlmResponse, AgentEvent> {
-        let llm_hooks = self.llm_hooks.read().snapshot();
+        let llm_hooks = self.hooks.llm_hooks.read().snapshot();
         if !llm_hooks.is_empty() {
             let mut hook_retries: u32 = 0;
             loop {

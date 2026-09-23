@@ -434,7 +434,7 @@ impl AgentLoop {
             session_key: context.session_key.clone(),
         };
         {
-            let hooks = self.tool_hooks.read().snapshot();
+            let hooks = self.hooks.tool_hooks.read().snapshot();
             if let Some(reason) = crate::hooks::run_pre_hooks(&hooks, &hook_call).await {
                 warn!(
                     "[AgentLoop] Hook blocked tool {}: {}",
@@ -467,7 +467,7 @@ impl AgentLoop {
         // hooks 逆序包装真实执行，Err 分支走 post_tool_use_failure 变体
         // （PostToolUseFailure 语义挂点）。作用域过滤：主 agent 只接 None。
         let scoped_hooks: Vec<std::sync::Arc<dyn crate::hooks::ToolHook>> = {
-            let hooks = self.tool_hooks.read().snapshot();
+            let hooks = self.hooks.tool_hooks.read().snapshot();
             hooks.into_iter().filter(|h| h.scope().is_none()).collect()
         };
         let ctx_arc = std::sync::Arc::new(context.clone());

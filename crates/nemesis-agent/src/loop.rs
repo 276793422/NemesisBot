@@ -174,6 +174,28 @@ pub(crate) use wiring::*;
 // AgentLoop -- core execution engine
 // ---------------------------------------------------------------------------
 
+/// 钩子三槽收拢（P3-1，§5.1 HooksState）：K1a/K1b/K2 三代钩子管理器原
+/// AgentLoop 三字段逐字迁入，锁类型不变；访问经 `self.hooks.<field>`。
+/// setter（`add_tool_hook`/`add_llm_hook`/`add_lifecycle_hook`）留在
+/// `AgentLoop` 上一行委托，外部 API 零变化。
+pub(crate) struct HooksState {
+    /// K1a (U14): user tool hooks — pre runs after the fixed security gate,
+    /// post runs after execute and before Forge. RwLock so hooks can be
+    /// registered from `&self` post-construction (K2 hooks.json wiring).
+    /// See `crate::hooks` module doc for the full 布点图.
+    pub(crate) tool_hooks: parking_lot::RwLock<crate::hooks::ToolHookManager>,
+    /// K1b (U14): LLM-call-level hooks — pre may append reminder messages
+    /// (visible in request_log), post may allow/replace/retry/block the
+    /// response. See `crate::hooks` module doc（LLM 调用级布点）.
+    pub(crate) llm_hooks: parking_lot::RwLock<crate::hooks::LlmHookManager>,
+    /// K2 (U14): prompt/turn lifecycle hooks — on_user_prompt runs in
+    /// `run_with_trace` BEFORE the message enters history (blocked prompts
+    /// are never seen by the model), on_turn_end runs after the final
+    /// answer is accepted, before the turn ends. Primary consumer: the
+    /// hooks.json dialect bridge (`crate::cc_hooks`).
+    pub(crate) lifecycle_hooks: parking_lot::RwLock<crate::hooks::LifecycleHookManager>,
+}
+
 pub struct AgentLoop {
     // --- Standalone fields (always present) ---
     /// LLM provider for generating responses.
@@ -334,21 +356,8 @@ pub struct AgentLoop {
     /// 最旧。
     rewind_undo_stacks:
         parking_lot::Mutex<HashMap<String, std::collections::VecDeque<RewindUndoEntry>>>,
-    /// K1a (U14): user tool hooks — pre runs after the fixed security gate,
-    /// post runs after execute and before Forge. RwLock so hooks can be
-    /// registered from `&self` post-construction (K2 hooks.json wiring).
-    /// See `crate::hooks` module doc for the full 布点图.
-    tool_hooks: parking_lot::RwLock<crate::hooks::ToolHookManager>,
-    /// K1b (U14): LLM-call-level hooks — pre may append reminder messages
-    /// (visible in request_log), post may allow/replace/retry/block the
-    /// response. See `crate::hooks` module doc（LLM 调用级布点）.
-    llm_hooks: parking_lot::RwLock<crate::hooks::LlmHookManager>,
-    /// K2 (U14): prompt/turn lifecycle hooks — on_user_prompt runs in
-    /// `run_with_trace` BEFORE the message enters history (blocked prompts
-    /// are never seen by the model), on_turn_end runs after the final
-    /// answer is accepted, before the turn ends. Primary consumer: the
-    /// hooks.json dialect bridge (`crate::cc_hooks`).
-    lifecycle_hooks: parking_lot::RwLock<crate::hooks::LifecycleHookManager>,
+    /// K1a/K1b/K2 钩子三槽（P3-1 收拢 [`HooksState`]；字段语义见该类型）。
+    hooks: HooksState,
     /// Memory tool executor reference, so the gateway can attach an approval
     /// gate post-construction (memory_store/forget require interactive approval).
     #[cfg(feature = "memory")]
@@ -577,9 +586,11 @@ impl AgentLoop {
             turn_counter: std::sync::atomic::AtomicUsize::new(0),
             turn_file_changes: Arc::new(parking_lot::Mutex::new(HashMap::new())),
             rewind_undo_stacks: parking_lot::Mutex::new(HashMap::new()),
-            tool_hooks: parking_lot::RwLock::new(crate::hooks::ToolHookManager::new()),
-            llm_hooks: parking_lot::RwLock::new(crate::hooks::LlmHookManager::new()),
-            lifecycle_hooks: parking_lot::RwLock::new(crate::hooks::LifecycleHookManager::new()),
+            hooks: HooksState {
+                tool_hooks: parking_lot::RwLock::new(crate::hooks::ToolHookManager::new()),
+                llm_hooks: parking_lot::RwLock::new(crate::hooks::LlmHookManager::new()),
+                lifecycle_hooks: parking_lot::RwLock::new(crate::hooks::LifecycleHookManager::new()),
+            },
             memory_executor: parking_lot::RwLock::new(None),
             #[cfg(feature = "memory")]
             memory_inject_manager: parking_lot::RwLock::new(None),

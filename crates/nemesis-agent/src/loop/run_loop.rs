@@ -398,7 +398,7 @@ impl AgentLoop {
                     // heartbeat (its own branch above), GiveUp and
                     // error/stop paths do not.
                     {
-                        let lifecycle = self.lifecycle_hooks.read().snapshot();
+                        let lifecycle = self.hooks.lifecycle_hooks.read().snapshot();
                         if !lifecycle.is_empty() {
                             let end = crate::hooks::HookTurnEnd {
                                 session_key: context.session_key.clone(),
@@ -836,7 +836,7 @@ impl AgentLoop {
         // event — appended messages land in request_log and in the T8
         // replay ledger (byte-exact replay keeps holding).
         {
-            let llm_hooks = self.llm_hooks.read().snapshot();
+            let llm_hooks = self.hooks.llm_hooks.read().snapshot();
             if !llm_hooks.is_empty() {
                 let hook_call = crate::hooks::HookLlmCall {
                     model: self.active_model.read().clone(),

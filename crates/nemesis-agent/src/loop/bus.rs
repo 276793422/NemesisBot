@@ -149,9 +149,11 @@ impl AgentLoop {
             turn_counter: std::sync::atomic::AtomicUsize::new(0),
             turn_file_changes: Arc::new(parking_lot::Mutex::new(HashMap::new())),
             rewind_undo_stacks: parking_lot::Mutex::new(HashMap::new()),
-            tool_hooks: parking_lot::RwLock::new(crate::hooks::ToolHookManager::new()),
-            llm_hooks: parking_lot::RwLock::new(crate::hooks::LlmHookManager::new()),
-            lifecycle_hooks: parking_lot::RwLock::new(crate::hooks::LifecycleHookManager::new()),
+            hooks: HooksState {
+                tool_hooks: parking_lot::RwLock::new(crate::hooks::ToolHookManager::new()),
+                llm_hooks: parking_lot::RwLock::new(crate::hooks::LlmHookManager::new()),
+                lifecycle_hooks: parking_lot::RwLock::new(crate::hooks::LifecycleHookManager::new()),
+            },
             memory_executor: parking_lot::RwLock::new(None),
             #[cfg(feature = "memory")]
             memory_inject_manager: parking_lot::RwLock::new(None),

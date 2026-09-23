@@ -480,7 +480,7 @@ impl AgentLoop {
         // it, matching the dialect's block semantics. `resume_execution` does not
         // pass through here (no new user prompt → no event), by design.
         {
-            let lifecycle = self.lifecycle_hooks.read().snapshot();
+            let lifecycle = self.hooks.lifecycle_hooks.read().snapshot();
             if !lifecycle.is_empty() {
                 let prompt = crate::hooks::HookPrompt {
                     session_key: context.session_key.clone(),
