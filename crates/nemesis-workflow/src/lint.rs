@@ -7,6 +7,7 @@
 //!
 //! 新 pitfall 的接入方式：加一条规则函数，无需动任何消费方。
 
+use crate::nodes::placeholder_refs;
 use crate::types::Workflow;
 
 /// 返回人类可读的 warning 列表（中文，面向生成器与用户）。
@@ -33,6 +34,7 @@ pub fn lint(wf: &Workflow) -> Vec<String> {
                 .to_string(),
         );
     }
+    lint_edge_conditions(wf, &mut warnings);
     warnings
 }
 
@@ -139,6 +141,46 @@ fn lint_output_placeholder(node: &crate::types::NodeDef, warnings: &mut Vec<Stri
                  {{{{节点id.text}}}}，整个输出 JSON 用 {{{{节点id}}}}",
                 node.id, node.node_type, field
             ));
+        }
+    }
+}
+
+/// L6：条件边引用了不存在的节点 id，或引用 condition 节点时字段名不是
+/// `condition_result`（E 级复核实测：生成器把 condition 输出字段幻觉成
+/// `passed`，`{{check.passed}}` 运行期解析不到、落「非空即真」兜底，路由
+/// 与数据脱钩）。草稿期点名字段让生成器当轮自纠；运行期调度器把未解析
+/// 条件升级为 Failed（缺陷 15，双保险）。首段不是任何节点 id 的引用
+/// （变量/触发器入参，如 `{{payload.value}}`）静态不可判，交运行期把关。
+fn lint_edge_conditions(wf: &Workflow, warnings: &mut Vec<String>) {
+    let node_types: std::collections::HashMap<&str, &str> = wf
+        .nodes
+        .iter()
+        .map(|n| (n.id.as_str(), n.node_type.as_str()))
+        .collect();
+    for edge in &wf.edges {
+        let Some(cond) = edge.condition.as_deref() else {
+            continue;
+        };
+        for (head, field) in placeholder_refs(cond) {
+            let Some(node_type) = node_types.get(head.as_str()) else {
+                // 引用的首段不是节点 id：变量/触发器入参，运行期把关。
+                continue;
+            };
+            let Some(field) = field else {
+                // `{{节点id}}` 整体输出，合法。
+                continue;
+            };
+            if node_type == &"condition" && field != "condition_result" {
+                // 占位符原文用独立 format 构造，避免 format! 花括号转义错数。
+                let bad = format!("{{{{{}.{}}}}}", head, field);
+                let good = format!("{{{{{}.condition_result}}}}", head);
+                warnings.push(format!(
+                    "条件边 {}→{} 引用了 {}——condition 节点的输出字段是 \
+                     condition_result，不存在字段 {:?}，运行期会因解析不到直接 \
+                     Failed。改用 {}",
+                    edge.from_node, edge.to_node, bad, field, good
+                ));
+            }
         }
     }
 }
@@ -326,6 +368,72 @@ mod tests {
                 config: HashMap::new(),
             }],
         );
+        assert!(lint(&w).is_empty(), "{:?}", lint(&w));
+    }
+
+    /// L6 回归（E 级复核实测）：条件边引用 condition 节点幻觉字段
+    /// `{{check.passed}}`（实际输出字段是 `condition_result`）当轮预警。
+    #[test]
+    fn l6_condition_edge_hallucinated_field_warns() {
+        let mut w = wf(
+            vec![
+                node("check", "condition", serde_json::json!({})),
+                node(
+                    "ok",
+                    "transform",
+                    serde_json::json!({"expression": "identity", "input": "x"}),
+                ),
+            ],
+            vec![TriggerConfig {
+                trigger_type: "cron".into(),
+                config: HashMap::new(),
+            }],
+        );
+        w.edges = vec![crate::types::Edge {
+            from_node: "check".into(),
+            to_node: "ok".into(),
+            condition: Some("!{{check.passed}}".into()),
+        }];
+        let warnings = lint(&w);
+        assert_eq!(warnings.len(), 1, "{warnings:?}");
+        assert!(
+            warnings[0].contains("check→ok")
+                && warnings[0].contains("check.passed")
+                && warnings[0].contains("{{check.condition_result}}"),
+            "{warnings:?}"
+        );
+    }
+
+    /// L6 不误伤：真实字段、取反、非 condition 节点的字段、变量引用。
+    #[test]
+    fn l6_correct_condition_refs_stay_silent() {
+        let mut w = wf(
+            vec![
+                node("check", "condition", serde_json::json!({})),
+                node("fetch", "http", serde_json::json!({"url": "https://x"})),
+            ],
+            vec![TriggerConfig {
+                trigger_type: "cron".into(),
+                config: HashMap::new(),
+            }],
+        );
+        w.edges = vec![
+            crate::types::Edge {
+                from_node: "check".into(),
+                to_node: "fetch".into(),
+                condition: Some("{{check.condition_result}}".into()),
+            },
+            crate::types::Edge {
+                from_node: "fetch".into(),
+                to_node: "check".into(),
+                condition: Some("{{fetch.status_code}} == 200 && !{{skip}}".into()),
+            },
+            crate::types::Edge {
+                from_node: "payload".into(),
+                to_node: "fetch".into(),
+                condition: Some("{{payload.value}}".into()),
+            },
+        ];
         assert!(lint(&w).is_empty(), "{:?}", lint(&w));
     }
 

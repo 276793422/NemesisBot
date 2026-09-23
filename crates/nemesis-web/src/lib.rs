@@ -33,6 +33,7 @@ pub mod relay;
 pub mod sdk_embed;
 pub mod server;
 pub mod session;
+pub mod session_bindings;
 pub mod share;
 pub mod sse_chat;
 pub mod websocket_handler;
@@ -70,6 +71,11 @@ mod llm_bridge_extra_tests;
 // 入站过滤链 history 过滤器（BUG 2026-09-23 项目会话历史加载修复）。
 #[cfg(test)]
 mod history_filter_tests;
+
+// Home 单例测试竞态锁（test_home.rs 头注）：重定向 home 的测试与经单例
+// 读写 chat_log 的测试全 crate 串行化。
+#[cfg(test)]
+mod test_home;
 
 #[cfg(test)]
 mod sse_chat_extra_tests;

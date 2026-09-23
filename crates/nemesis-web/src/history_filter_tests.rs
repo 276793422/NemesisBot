@@ -68,6 +68,7 @@ async fn non_history_message_passes_without_outbound() {
 
 #[tokio::test]
 async fn history_request_intercepted_and_served_from_chat_log() {
+    let _home = crate::test_home::lock_home();
     let fx = BusFixture::new();
     let mut out_rx = fx.bus.subscribe_outbound();
 
@@ -107,6 +108,7 @@ async fn history_request_intercepted_and_served_from_chat_log() {
 
 #[tokio::test]
 async fn garbage_payload_gets_empty_page_response_not_silence() {
+    let _home = crate::test_home::lock_home();
     let fx = BusFixture::new();
     let mut out_rx = fx.bus.subscribe_outbound();
     let filter = fx.filter();
@@ -126,6 +128,7 @@ async fn garbage_payload_gets_empty_page_response_not_silence() {
 
 #[tokio::test]
 async fn empty_session_key_falls_back_to_metadata_derivation() {
+    let _home = crate::test_home::lock_home();
     let fx = BusFixture::new();
     let mut out_rx = fx.bus.subscribe_outbound();
 

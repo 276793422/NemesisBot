@@ -24,6 +24,10 @@ const store = useWorkflowStore()
 const { drafts, draftsLoading, draftsError } = storeToRefs(store)
 const toast = useToast()
 
+// C（2026-09-23）：应用成功回抛宿主——__new__ 引导会话原地重绑到正式
+// 工作流名（WorkflowAgentGen.onDraftApplied）。
+const emit = defineEmits<{ applied: [name: string] }>()
+
 onMounted(() => {
   void store.fetchDrafts(true)
 })
@@ -74,6 +78,7 @@ async function apply(name: string) {
         ? `草稿已应用，工作流「${name}」已更新（旧定义已备份）`
         : `草稿已应用，工作流「${name}」已注册`,
     )
+    emit('applied', name)
   } else {
     toast.error(res.error)
   }

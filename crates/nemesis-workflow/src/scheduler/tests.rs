@@ -82,7 +82,7 @@ fn test_topological_sort_with_edges() {
 fn test_should_run_node_no_conditions() {
     let wf_ctx = WorkflowContext::new(HashMap::new());
     let cond_edges = HashMap::new();
-    assert!(should_run_node("any", &cond_edges, &wf_ctx));
+    assert!(eval_edge_conditions("any", &cond_edges, &wf_ctx).unwrap());
 }
 
 #[test]
@@ -103,7 +103,7 @@ fn test_should_run_node_expression_equality() {
         m.insert("target".to_string(), vec![&edge]);
         m
     };
-    assert!(should_run_node("target", &cond_edges, &wf_ctx));
+    assert!(eval_edge_conditions("target", &cond_edges, &wf_ctx).unwrap());
 }
 
 #[test]
@@ -124,7 +124,115 @@ fn test_should_run_node_expression_inequality() {
         m.insert("target".to_string(), vec![&edge]);
         m
     };
-    assert!(!should_run_node("target", &cond_edges, &wf_ctx));
+    assert!(!eval_edge_conditions("target", &cond_edges, &wf_ctx).unwrap());
+}
+
+/// 缺陷 8 回归（2026-09-23 E2E 实测）：带模板的条件边表达式
+/// `{{fetch.status_code}} == 200` 曾因「resolve 后非空即真」恒放行，
+/// 双分支全跑。钉死：模板在条件表达式中必须真实参与比较。
+#[test]
+fn test_should_run_node_template_expression_routes_by_value() {
+    let cond_of = |code: i64| {
+        let wf_ctx = WorkflowContext::new(HashMap::new());
+        wf_ctx.set_node_result(
+            "fetch",
+            crate::types::NodeResult {
+                node_id: "fetch".to_string(),
+                output: serde_json::json!({"status_code": code, "body": "x"}),
+                error: None,
+                state: crate::types::ExecutionState::Completed,
+                started_at: chrono::Local::now(),
+                ended_at: chrono::Local::now(),
+                metadata: HashMap::new(),
+            },
+        );
+        let edge = Edge {
+            from_node: "fetch".to_string(),
+            to_node: "target".to_string(),
+            condition: Some("{{fetch.status_code}} == 200".to_string()),
+        };
+        let cond_edges: HashMap<String, Vec<&Edge>> = {
+            let mut m = HashMap::new();
+            m.insert("target".to_string(), vec![&edge]);
+            m
+        };
+        eval_edge_conditions("target", &cond_edges, &wf_ctx).unwrap()
+    };
+    assert!(cond_of(200), "200 must satisfy == 200");
+    assert!(!cond_of(404), "404 must not satisfy == 200");
+}
+
+#[test]
+fn test_should_run_node_template_numeric_comparison() {
+    let wf_ctx = WorkflowContext::new(HashMap::new());
+    wf_ctx.set_node_result(
+        "fetch",
+        crate::types::NodeResult {
+            node_id: "fetch".to_string(),
+            output: serde_json::json!({"status_code": 404}),
+            error: None,
+            state: crate::types::ExecutionState::Completed,
+            started_at: chrono::Local::now(),
+            ended_at: chrono::Local::now(),
+            metadata: HashMap::new(),
+        },
+    );
+    let edge = Edge {
+        from_node: "fetch".to_string(),
+        to_node: "degrade".to_string(),
+        condition: Some("{{fetch.status_code}} >= 400".to_string()),
+    };
+    let cond_edges: HashMap<String, Vec<&Edge>> = {
+        let mut m = HashMap::new();
+        m.insert("degrade".to_string(), vec![&edge]);
+        m
+    };
+    assert!(eval_edge_conditions("degrade", &cond_edges, &wf_ctx).unwrap());
+}
+
+/// 缺陷 15 回归（2026-09-23 E 级复核实测）：条件边引用不存在的字段
+/// （生成器把 condition 输出幻觉成 `passed`，实际是 `condition_result`），
+/// 旧路径占位符原样残留落「非空即真」——正向恒放行、取反恒拦截，路由
+/// 与数据脱钩。钉死：必须 Err 且错误点名节点与条件原文；正确字段照常路由。
+#[test]
+fn test_edge_condition_unresolved_placeholder_fails_loud() {
+    let build = |condition: &str| {
+        let wf_ctx = WorkflowContext::new(HashMap::new());
+        wf_ctx.set_node_result(
+            "check",
+            crate::types::NodeResult {
+                node_id: "check".to_string(),
+                output: serde_json::json!({"condition_result": true}),
+                error: None,
+                state: crate::types::ExecutionState::Completed,
+                started_at: chrono::Local::now(),
+                ended_at: chrono::Local::now(),
+                metadata: HashMap::new(),
+            },
+        );
+        let edge = Edge {
+            from_node: "check".to_string(),
+            to_node: "branch".to_string(),
+            condition: Some(condition.to_string()),
+        };
+        let cond_edges: HashMap<String, Vec<&Edge>> = {
+            let mut m = HashMap::new();
+            m.insert("branch".to_string(), vec![&edge]);
+            m
+        };
+        eval_edge_conditions("branch", &cond_edges, &wf_ctx)
+    };
+    // 幻觉字段：正向与取反都必须 Err（旧实现分别是 true / false 静默选边）。
+    for cond in ["{{check.passed}}", "!{{check.passed}}"] {
+        let err = build(cond).unwrap_err();
+        assert!(
+            err.contains("branch") && err.contains("check.passed"),
+            "{err}"
+        );
+    }
+    // 真实字段：照常布尔路由，不误伤。
+    assert!(build("{{check.condition_result}}").unwrap());
+    assert!(!build("!{{check.condition_result}}").unwrap());
 }
 
 #[test]
@@ -142,7 +250,7 @@ fn test_should_run_node_boolean_true() {
         m.insert("target".to_string(), vec![&edge]);
         m
     };
-    assert!(should_run_node("target", &cond_edges, &wf_ctx));
+    assert!(eval_edge_conditions("target", &cond_edges, &wf_ctx).unwrap());
 }
 
 // ============================================================
@@ -260,7 +368,7 @@ fn test_should_run_node_expression_not_equals() {
         m
     };
     // "status != ok" with status="error" should run
-    assert!(should_run_node("target", &cond_edges, &wf_ctx));
+    assert!(eval_edge_conditions("target", &cond_edges, &wf_ctx).unwrap());
 }
 
 #[test]
@@ -281,7 +389,7 @@ fn test_should_run_node_expression_not_equals_same_value() {
         m
     };
     // "status != ok" with status="ok" should NOT run
-    assert!(!should_run_node("target", &cond_edges, &wf_ctx));
+    assert!(!eval_edge_conditions("target", &cond_edges, &wf_ctx).unwrap());
 }
 
 #[test]
@@ -299,7 +407,7 @@ fn test_should_run_node_boolean_false() {
         m.insert("target".to_string(), vec![&edge]);
         m
     };
-    assert!(!should_run_node("target", &cond_edges, &wf_ctx));
+    assert!(!eval_edge_conditions("target", &cond_edges, &wf_ctx).unwrap());
 }
 
 #[test]
@@ -307,7 +415,7 @@ fn test_should_run_node_no_matching_edge() {
     let wf_ctx = WorkflowContext::new(HashMap::new());
     let cond_edges: HashMap<String, Vec<&Edge>> = HashMap::new();
     // No edges for this node - should default to true
-    assert!(should_run_node("unknown_node", &cond_edges, &wf_ctx));
+    assert!(eval_edge_conditions("unknown_node", &cond_edges, &wf_ctx).unwrap());
 }
 
 #[test]
@@ -324,7 +432,7 @@ fn test_should_run_node_edge_without_condition() {
         m
     };
     // Edge without condition should not block
-    assert!(should_run_node("target", &cond_edges, &wf_ctx));
+    assert!(eval_edge_conditions("target", &cond_edges, &wf_ctx).unwrap());
 }
 
 #[test]
@@ -342,7 +450,7 @@ fn test_should_run_node_boolean_zero() {
         m.insert("target".to_string(), vec![&edge]);
         m
     };
-    assert!(!should_run_node("target", &cond_edges, &wf_ctx));
+    assert!(!eval_edge_conditions("target", &cond_edges, &wf_ctx).unwrap());
 }
 
 #[test]
@@ -360,7 +468,7 @@ fn test_should_run_node_boolean_yes() {
         m.insert("target".to_string(), vec![&edge]);
         m
     };
-    assert!(should_run_node("target", &cond_edges, &wf_ctx));
+    assert!(eval_edge_conditions("target", &cond_edges, &wf_ctx).unwrap());
 }
 
 #[test]
@@ -378,7 +486,7 @@ fn test_should_run_node_boolean_no() {
         m.insert("target".to_string(), vec![&edge]);
         m
     };
-    assert!(!should_run_node("target", &cond_edges, &wf_ctx));
+    assert!(!eval_edge_conditions("target", &cond_edges, &wf_ctx).unwrap());
 }
 
 #[test]
@@ -396,7 +504,7 @@ fn test_should_run_node_resolved_empty() {
         m.insert("target".to_string(), vec![&edge]);
         m
     };
-    assert!(!should_run_node("target", &cond_edges, &wf_ctx));
+    assert!(!eval_edge_conditions("target", &cond_edges, &wf_ctx).unwrap());
 }
 
 #[test]
@@ -414,7 +522,7 @@ fn test_should_run_node_resolved_nonempty_truthy() {
         m.insert("target".to_string(), vec![&edge]);
         m
     };
-    assert!(should_run_node("target", &cond_edges, &wf_ctx));
+    assert!(eval_edge_conditions("target", &cond_edges, &wf_ctx).unwrap());
 }
 
 #[test]
@@ -437,7 +545,7 @@ fn test_should_run_node_multiple_conditions_first_false() {
         m.insert("target".to_string(), vec![&edge1, &edge2]);
         m
     };
-    assert!(!should_run_node("target", &cond_edges, &wf_ctx));
+    assert!(!eval_edge_conditions("target", &cond_edges, &wf_ctx).unwrap());
 }
 
 #[test]
@@ -517,6 +625,35 @@ fn test_build_executor_context_includes_input_fields() {
         ctx.get("session_key").unwrap(),
         &serde_json::json!("wf_chat:demo")
     );
+}
+
+/// 缺陷 13 回归（2026-09-23）：对象型 input 条目必须按 `key.field` 平铺一层
+/// （与 node_results 约定一致），否则 webhook 契约的 `{{payload.value}}` 在
+/// 平铺字符串替换的模板解析下恒为空串原样残留。
+#[test]
+fn test_build_executor_context_flattens_object_input() {
+    let mut input = HashMap::new();
+    input.insert(
+        "payload".to_string(),
+        serde_json::json!({"value": "3", "city": "hangzhou"}),
+    );
+    input.insert("source".to_string(), serde_json::json!("cron-e2e"));
+    let wf_ctx = WorkflowContext::new(input);
+
+    let ctx = build_executor_context(&wf_ctx);
+    // 平铺键：模板 `{{payload.value}}` / `{{payload.city}}` 的解析依据。
+    assert_eq!(ctx.get("payload.value").unwrap(), &serde_json::json!("3"));
+    assert_eq!(
+        ctx.get("payload.city").unwrap(),
+        &serde_json::json!("hangzhou")
+    );
+    // 整体键保留：`{{payload}}` 仍解析为整个对象。
+    assert_eq!(
+        ctx.get("payload").unwrap(),
+        &serde_json::json!({"value": "3", "city": "hangzhou"})
+    );
+    // 平铺标量 input 不受影响。
+    assert_eq!(ctx.get("source").unwrap(), &serde_json::json!("cron-e2e"));
 }
 
 /// Variables should override same-named input keys (set_var is an explicit

@@ -4299,9 +4299,12 @@ async fn test_run_bus_owned_sends_outbound() {
 
     agent_loop.run_bus_owned(inbound_rx).await;
 
-    let outbound = outbound_rx.try_recv();
-    assert!(outbound.is_ok());
-    let out = outbound.unwrap();
+    // 统一泵（D 2026-09-23）：turn 作为 tracked task spawn，run_bus_owned
+    // 在 inbound 通道关闭即返回，出站帧异步到达——等待而非同步 try_recv。
+    let out = tokio::time::timeout(std::time::Duration::from_secs(2), outbound_rx.recv())
+        .await
+        .expect("timed out waiting for outbound")
+        .expect("expected an outbound message");
     assert!(out.content.contains("Bus response"));
 }
 
@@ -4352,8 +4355,10 @@ async fn test_assistant_outbound_carries_model_badge() {
 
     // The assistant OutboundMessage carries the resolved display model
     // (provider/name) for the per-message "供应商·模型名" badge.
-    let out = outbound_rx
-        .try_recv()
+    // 统一泵（D 2026-09-23）：出站帧异步到达（见 test_run_bus_owned_sends_outbound）。
+    let out = tokio::time::timeout(std::time::Duration::from_secs(2), outbound_rx.recv())
+        .await
+        .expect("timed out waiting for outbound")
         .expect("expected an assistant outbound");
     assert!(out.content.contains("badge test response"));
     assert_eq!(
@@ -4422,9 +4427,11 @@ async fn test_run_bus_owned_rpc_correlation_prefix() {
 
     agent_loop.run_bus_owned(inbound_rx).await;
 
-    let outbound = outbound_rx.try_recv();
-    assert!(outbound.is_ok());
-    let out = outbound.unwrap();
+    // 统一泵（D 2026-09-23）：出站帧异步到达（见 test_run_bus_owned_sends_outbound）。
+    let out = tokio::time::timeout(std::time::Duration::from_secs(2), outbound_rx.recv())
+        .await
+        .expect("timed out waiting for outbound")
+        .expect("expected an rpc outbound");
     assert!(out.content.starts_with("[rpc:corr-123]"));
 }
 
@@ -5736,20 +5743,262 @@ async fn test_run_bus_owned_multiple_messages() {
         0,
     );
 
-    let msg1 = make_inbound("Message 1", "web", "chat1", "user1", "web:chat1a");
-    let msg2 = make_inbound("Message 2", "web", "chat1", "user1", "web:chat1b");
+    // 统一泵（D 2026-09-23）：new_bus 自带单 agent 路由 resolver，无 peer
+    // 元数据的消息全路由到同一默认会话——旧串行泵下前一条 turn 必已完成
+    // 察觉不到，并发泵下第二条在 gate 被 busy 弹回。用 agent: 前缀会话键
+    // （route_message 对该前缀原样采用）表达两个独立会话——跨会话并发是
+    // 本架构的结构不变量，两条都应得到真实回复。
+    let msg1 = make_inbound(
+        "Message 1",
+        "web",
+        "chat1",
+        "user1",
+        "agent:main:session:t1",
+    );
+    let msg2 = make_inbound(
+        "Message 2",
+        "web",
+        "chat2",
+        "user2",
+        "agent:main:session:t2",
+    );
     inbound_tx.send(msg1).await.unwrap();
     inbound_tx.send(msg2).await.unwrap();
     drop(inbound_tx);
 
     agent_loop.run_bus_owned(inbound_rx).await;
 
-    // Should have 2 outbound messages
-    let mut count = 0;
-    while outbound_rx.try_recv().is_ok() {
-        count += 1;
+    // 统一泵（D 2026-09-23）：两个 turn 都是 spawn 的 tracked task（跨会话
+    // t1 / t2 并发放行），出站帧异步到达且顺序不保证——逐帧等待收满 2 条，
+    // 再确认没有多余帧。
+    for i in 0..2 {
+        let out = tokio::time::timeout(std::time::Duration::from_secs(2), outbound_rx.recv())
+            .await
+            .unwrap_or_else(|_| panic!("timed out waiting for outbound #{i}"))
+            .expect("expected an outbound message");
+        assert!(
+            out.content.contains("Response 1") || out.content.contains("Response 2"),
+            "unexpected outbound content: {}",
+            out.content
+        );
     }
-    assert_eq!(count, 2);
+    assert!(
+        outbound_rx.try_recv().is_err(),
+        "exactly 2 outbound messages expected"
+    );
+}
+
+// --- D-2/D-4（2026-09-23 多会话并行清账）新语义单测 ---
+
+/// Reject 模式下被 busy 弹回的消息必须诚实留痕：chat_log 成对落
+/// user 行 + BUSY_MESSAGE 回实行（D-2 契约——弹回消息此前零落盘，
+/// 前端切会话即「消失」）。
+#[tokio::test]
+async fn test_run_bus_reject_bounce_persists_trace() {
+    let key = format!("agent:main:session:bus-reject-{}", unique_suffix());
+    let _log_lock = CHAT_LOG_INTEGRATION_LOCK.lock().unwrap();
+    cleanup_session_log(&key);
+
+    let (outbound_tx, mut outbound_rx) = tokio::sync::mpsc::channel(16);
+    let (inbound_tx, inbound_rx) = tokio::sync::mpsc::channel(16);
+    let provider = MockLlmProvider::new(vec![]);
+    let agent_loop = AgentLoop::new_bus(
+        Box::new(provider),
+        test_config(),
+        outbound_tx,
+        ConcurrentMode::Reject,
+        8,
+        0,
+    );
+
+    // 模拟该会话已有 turn 在跑（gate 的 busy 判定即 try_acquire_session）。
+    assert!(
+        agent_loop.try_acquire_session(&key),
+        "pre-acquire must succeed"
+    );
+
+    let msg = make_inbound("busy 时来的消息", "web", "chat1", "user1", &key);
+    inbound_tx.send(msg).await.unwrap();
+    drop(inbound_tx);
+
+    agent_loop.run_bus_owned(inbound_rx).await;
+
+    // 弹回回执出站（Immediate outcome，泵内联发布）。
+    let out = tokio::time::timeout(std::time::Duration::from_secs(2), outbound_rx.recv())
+        .await
+        .expect("timed out waiting for bounce receipt")
+        .expect("expected a bounce receipt");
+    assert_eq!(out.content, BUSY_MESSAGE);
+
+    // D-2 留痕：chat_log 尾部恰为成对 user 行 + BUSY_MESSAGE 回实行。
+    let (msgs, _total, _, _) = crate::chat_log::read_chat_log(&key, 50, None);
+    assert!(msgs.len() >= 2, "bounce must persist both rows");
+    let last_user = msgs
+        .iter()
+        .rev()
+        .find(|m| m["role"].as_str() == Some("user"));
+    let last_assistant = msgs
+        .iter()
+        .rev()
+        .find(|m| m["role"].as_str() == Some("assistant"));
+    assert_eq!(
+        last_user.expect("user row missing")["content"].as_str(),
+        Some("busy 时来的消息"),
+        "bounced message content must persist"
+    );
+    assert_eq!(
+        last_assistant.expect("assistant row missing")["content"].as_str(),
+        Some(BUSY_MESSAGE),
+        "busy bounce receipt must persist"
+    );
+
+    // loop 已被 run_bus_owned 按值消费；busy 表随 loop 丢弃，无需手动释放。
+    cleanup_session_log(&key);
+}
+
+/// Queue 模式下 busy 会话：未满消息入队（回执「已排队」），满员消息
+/// 拒收且诚实留痕（D-2 同款——queue-full 此前只有瞬态回执帧）。
+#[tokio::test]
+async fn test_run_bus_queue_full_persists_trace() {
+    let key = format!("agent:main:session:bus-qfull-{}", unique_suffix());
+    let _log_lock = CHAT_LOG_INTEGRATION_LOCK.lock().unwrap();
+    cleanup_session_log(&key);
+
+    let (outbound_tx, mut outbound_rx) = tokio::sync::mpsc::channel(16);
+    let (inbound_tx, inbound_rx) = tokio::sync::mpsc::channel(16);
+    let provider = MockLlmProvider::new(vec![]);
+    // queue_size=1 → Inbox 容量 1（max(1)），第一条占满、第二条必 Rejected。
+    let agent_loop = AgentLoop::new_bus(
+        Box::new(provider),
+        test_config(),
+        outbound_tx,
+        ConcurrentMode::Queue,
+        1,
+        0,
+    );
+    assert!(agent_loop.try_acquire_session(&key));
+
+    let m1 = make_inbound("排队消息一", "web", "chat1", "user1", &key);
+    let m2 = make_inbound("排队消息二", "web", "chat1", "user1", &key);
+    inbound_tx.send(m1).await.unwrap();
+    inbound_tx.send(m2).await.unwrap();
+    drop(inbound_tx);
+
+    agent_loop.run_bus_owned(inbound_rx).await;
+
+    // 两条回执都是 Immediate outcome（入队回执 + 满员拒收回执）。
+    let mut receipts = Vec::new();
+    for _ in 0..2 {
+        receipts.push(
+            tokio::time::timeout(std::time::Duration::from_secs(2), outbound_rx.recv())
+                .await
+                .expect("timed out waiting for queue receipts")
+                .expect("expected a queue receipt")
+                .content,
+        );
+    }
+    assert!(
+        receipts.iter().any(|c| c.contains("已排队")),
+        "first message must get the queued receipt, got: {receipts:?}"
+    );
+    assert!(
+        receipts.iter().any(|c| c.contains("排队已满")),
+        "overflow message must get the queue-full receipt, got: {receipts:?}"
+    );
+
+    // D-2 留痕：只有满员那条落盘（入队那条等 turn 消费，不在此落盘），
+    // user 行 + 「排队已满」回实行成对出现。
+    let (msgs, _total, _, _) = crate::chat_log::read_chat_log(&key, 50, None);
+    let last_user = msgs
+        .iter()
+        .rev()
+        .find(|m| m["role"].as_str() == Some("user"));
+    assert_eq!(
+        last_user.expect("user row missing")["content"].as_str(),
+        Some("排队消息二"),
+        "only the queue-full message must be traced"
+    );
+    let last_assistant = msgs
+        .iter()
+        .rev()
+        .find(|m| m["role"].as_str() == Some("assistant"));
+    assert!(
+        last_assistant.expect("assistant row missing")["content"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("排队已满"),
+        "queue-full receipt must persist"
+    );
+
+    // loop 已被 run_bus_owned 按值消费；busy 表随 loop 丢弃，无需手动释放。
+    cleanup_session_log(&key);
+}
+
+/// D-4：turn_permits 信号量在任务体内获取——上限 N 时并发 turn 的瞬时
+/// 峰值不得超过 N；置 0 回到无上限（permits 槽清空）。
+#[tokio::test]
+async fn test_turn_permits_bound_concurrency() {
+    let (outbound_tx, _outbound_rx) = tokio::sync::mpsc::channel(16);
+    let mut agent_loop = AgentLoop::new_bus(
+        Box::new(MockLlmProvider::new(vec![])),
+        test_config(),
+        outbound_tx,
+        ConcurrentMode::Reject,
+        8,
+        0,
+    );
+
+    // 上限 = 1：四个任务串行执行，瞬时并发峰值恰为 1。
+    agent_loop.set_max_concurrent_turns(1);
+    assert!(
+        agent_loop.turn_permits.is_some(),
+        "limit>0 must install permits"
+    );
+
+    let running = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let peak = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let done = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    for _ in 0..4 {
+        let r = running.clone();
+        let p = peak.clone();
+        let d = done.clone();
+        agent_loop.spawn_turn_task(async move {
+            let cur = r.fetch_add(1, std::sync::atomic::Ordering::SeqCst) + 1;
+            p.fetch_max(cur, std::sync::atomic::Ordering::SeqCst);
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+            r.fetch_sub(1, std::sync::atomic::Ordering::SeqCst);
+            d.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        });
+    }
+    // 用完成计数等全收（running 初值 0 会抢在任务首跑前通过）。
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    while done.load(std::sync::atomic::Ordering::SeqCst) < 4 {
+        assert!(
+            deadline > std::time::Instant::now(),
+            "spawned tasks did not finish"
+        );
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+    }
+    assert_eq!(
+        peak.load(std::sync::atomic::Ordering::SeqCst),
+        1,
+        "turn_permits(1) must serialize spawned turns"
+    );
+
+    // 上限 = 0：unlimited——permits 槽清空，任务体不再等许可。
+    agent_loop.set_max_concurrent_turns(0);
+    assert!(
+        agent_loop.turn_permits.is_none(),
+        "limit=0 must clear permits"
+    );
+}
+
+/// unique_suffix：D-2 留痕测试的会话键尾部（纳秒级，进程内唯一）。
+fn unique_suffix() -> u128 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_nanos()
 }
 
 #[tokio::test]

@@ -9,7 +9,11 @@ import { mount, flushPromises } from '@vue/test-utils'
 
 const requestMock = vi.fn()
 vi.mock('../../../composables/useWSAPI', () => ({
+  // initWSAPI：chat store 引入 session store（D-3 2026-09-23）后引链
+  // auth → useWebSocket，其模块加载回注 sendRaw——mock 缺该导出会让
+  // 本 spec 收集期即炸（同 H2 的 2026-09-05 教训）。
   useWSAPI: () => ({ request: (...args: any[]) => requestMock(...args) }),
+  initWSAPI: vi.fn(),
 }))
 
 import FileTreePanel from '../FileTreePanel.vue'

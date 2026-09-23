@@ -75,7 +75,9 @@ static CLAIMED_CLUSTER_PORTS: StdMutex<Vec<u16>> = StdMutex::new(Vec::new());
 /// tokio Mutex 无毒化语义（某次 live 测试 panic 不连坐后续测试），FIFO 公平。
 static LIVE_GATEWAY_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 
-async fn live_gate() -> tokio::sync::MutexGuard<'static, ()> {
+/// 场景级真机测试（tests_scenario）与 R9 live 组共用同一把互斥闸——
+/// 两组编排都起真 gateway 子进程，同一时刻至多一个在跑（2026-09-03 flaky 教训）。
+pub(crate) async fn live_gate() -> tokio::sync::MutexGuard<'static, ()> {
     LIVE_GATEWAY_LOCK.lock().await
 }
 
@@ -162,7 +164,7 @@ fn plugin_ui_dll_next_to_bin(bin: &Path) -> bool {
 
 /// 基于 CONFIG_DEFAULT 构造一份活动网关配置（模板里 web 默认 0.0.0.0:8080 /
 /// gateway 18790，必须全改写；heartbeat 默认 30 分钟开着会烧 mock 脚本，默认关）。
-fn live_gateway_config(
+pub(crate) fn live_gateway_config(
     workspace_abs: &Path,
     mock_base_url: &str,
     alias: &str,
@@ -203,7 +205,7 @@ fn live_gateway_config(
 }
 
 /// 写 config.json + 最小 workspace 种子（skills/forge 空对象避免告警分支噪声）。
-fn install_home_config(home: &Path, cfg: &Value) {
+pub(crate) fn install_home_config(home: &Path, cfg: &Value) {
     std::fs::create_dir_all(home.join("workspace").join("config")).expect("mkdir ws/config");
     std::fs::write(home.join("config.json"), cfg.to_string()).expect("write config.json");
     std::fs::create_dir_all(home.join("config")).expect("mkdir home/config");
@@ -280,13 +282,13 @@ fn read_cron_store(home: &Path) -> Option<Value> {
 }
 
 /// 启动一个 `--local gateway` 子进程（coverage env 由 ManagedProcess 注入）。
-fn spawn_gateway(name: &'static str, bin: &Path, ws: &TestWorkspace) -> ManagedProcess {
+pub(crate) fn spawn_gateway(name: &'static str, bin: &Path, ws: &TestWorkspace) -> ManagedProcess {
     ManagedProcess::spawn(name, bin, &["--local", "gateway"], ws.path())
         .expect("spawn gateway child")
 }
 
 /// 轮询 {home}/workspace/state/gateway.json 直到 web_port != 0（真实 bind 后写入）。
-async fn wait_for_web_port(home: &Path) -> u16 {
+pub(crate) async fn wait_for_web_port(home: &Path) -> u16 {
     let state = home.join("workspace").join("state").join("gateway.json");
     let deadline = Instant::now() + Duration::from_secs(BOOT_TIMEOUT_SECS);
     loop {

@@ -351,6 +351,7 @@ async fn body_json(resp: axum::response::Response) -> serde_json::Value {
 
 #[tokio::test]
 async fn turns_counts_leading_pre_user_rows_into_kept_messages() {
+    let _home = crate::test_home::lock_home();
     let sid = unique_sid("lead");
     let key = chat_session_key(&sid);
     // A pre-user assistant row → the `leading` counter arm (1099-1101).
@@ -384,6 +385,7 @@ async fn turns_counts_leading_pre_user_rows_into_kept_messages() {
 
 #[tokio::test]
 async fn fork_with_title_writes_session_meta_sidecar() {
+    let _home = crate::test_home::lock_home();
     let sid = unique_sid("titled");
     let key = chat_session_key(&sid);
     nemesis_agent::chat_log::append_chat_log(&key, "user", "第一问");

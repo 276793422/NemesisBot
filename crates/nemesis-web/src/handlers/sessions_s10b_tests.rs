@@ -189,6 +189,7 @@ async fn list_strips_web_prefix_filters_legacy_and_uses_meta_title() {
 
 #[tokio::test]
 async fn clear_truncates_chat_log_with_and_without_live_store() {
+    let _home = crate::test_home::lock_home();
     let sid = unique_sid();
     let key = session_key_for(&sid);
     nemesis_agent::chat_log::append_chat_log(&key, "user", "问题");
@@ -230,6 +231,7 @@ async fn clear_truncates_chat_log_with_and_without_live_store() {
 
 #[tokio::test]
 async fn delete_removes_chat_log_only_through_the_store_arm() {
+    let _home = crate::test_home::lock_home();
     // ⚠ Documented asymmetry (S10b-1 挂账, not fixed here): `clear` truncates
     // the chat_log UNCONDITIONALLY, but `delete` only removes the jsonl via
     // SessionStore::delete_session (which calls delete_chat_log) — with
@@ -283,6 +285,7 @@ async fn delete_removes_chat_log_only_through_the_store_arm() {
 
 #[tokio::test]
 async fn export_returns_seeded_messages() {
+    let _home = crate::test_home::lock_home();
     let sid = unique_sid();
     let key = session_key_for(&sid);
     nemesis_agent::chat_log::append_chat_log(&key, "user", "导出我");

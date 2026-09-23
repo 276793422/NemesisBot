@@ -1672,11 +1672,11 @@ impl WorkflowEngine {
         self.cancel_tokens.remove(&execution.id);
 
         let now = Local::now();
-        execution.ended_at = Some(now);
 
         match schedule_result {
             Ok(ScheduleOutcome::Cancelled) => {
                 execution.state = ExecutionState::Cancelled;
+                execution.ended_at = Some(now);
             }
             Ok(ScheduleOutcome::Completed) => {
                 // Check if any node is in waiting state (human review)
@@ -1687,13 +1687,20 @@ impl WorkflowEngine {
 
                 if all_completed {
                     execution.state = ExecutionState::Completed;
+                    execution.ended_at = Some(now);
                 } else {
+                    // 缺陷 10 修复（2026-09-23）：停在人工审批的执行**没有结束**，
+                    // ended_at 必须保持空——旧实现上方无条件写 Some(now)，Waiting
+                    // 分支不回清，观察方（UI/监控/审批队列）会把它当已完结。
+                    // 与下方 resume 路径（still_waiting → ended_at = None）同款语义。
                     execution.state = ExecutionState::Waiting;
+                    execution.ended_at = None;
                 }
             }
             Err(err) => {
                 execution.state = ExecutionState::Failed;
                 execution.error = Some(err);
+                execution.ended_at = Some(now);
             }
         }
 

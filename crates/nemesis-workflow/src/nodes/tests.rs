@@ -1518,6 +1518,28 @@ fn test_evaluate_condition_truthy_values() {
     assert!(!evaluate_condition("object_empty", &ctx));
 }
 
+/// 缺陷 14 回归（2026-09-23）：前导 `!` 取反。LLM 生成器表达否定分支的
+/// 自然写法 `!{{check.passed}}` 在旧实现里四步全不匹配落到「非空即真」，
+/// "!true" 恒为真——否定分支无条件放行。
+#[test]
+fn test_evaluate_condition_negation_prefix() {
+    let mut ctx = HashMap::new();
+    ctx.insert("flag".to_string(), serde_json::json!(true));
+    ctx.insert("off".to_string(), serde_json::json!(false));
+    ctx.insert("status_code".to_string(), serde_json::json!(404));
+
+    // 字面布尔取反。
+    assert!(!evaluate_condition("!{{flag}}", &ctx));
+    assert!(evaluate_condition("!{{off}}", &ctx));
+    assert!(!evaluate_condition("!true", &ctx));
+    assert!(evaluate_condition("!false", &ctx));
+    // 与比较组合。
+    assert!(!evaluate_condition("!{{status_code}} == 404", &ctx));
+    assert!(evaluate_condition("!{{status_code}} == 200", &ctx));
+    // 双重取反。
+    assert!(evaluate_condition("!!{{flag}}", &ctx));
+}
+
 #[test]
 fn test_evaluate_condition_equality_different_value() {
     let mut ctx = HashMap::new();

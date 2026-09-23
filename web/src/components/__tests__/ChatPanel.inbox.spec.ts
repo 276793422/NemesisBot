@@ -30,6 +30,7 @@ import { send, wsStatus } from '../../composables/useWebSocket'
 import type { InboxStatusData } from '../../composables/useInboxStatus'
 import ChatPanel from '../ChatPanel.vue'
 import { useChatStore } from '../../stores/chat'
+import { useSessionStore } from '../../stores/session'
 
 function status(over: Partial<InboxStatusData>): InboxStatusData {
   return {
@@ -45,6 +46,10 @@ function status(over: Partial<InboxStatusData>): InboxStatusData {
 }
 
 async function mountPanel() {
+  // D-3（2026-09-23 busy 按会话隔离）：`chat.streaming` 现在是「当前选中
+  // 会话」的投影——先锚一个当前会话（与 status() 的 session_key 同域），
+  // 测试的 streaming 写入才有落点；生产里默认聊天页 busy 必然有选中会话。
+  useSessionStore().currentId = 's1'
   const wrapper = mount(ChatPanel)
   await flushPromises()
   return wrapper

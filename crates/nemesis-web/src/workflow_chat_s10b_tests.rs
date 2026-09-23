@@ -128,6 +128,7 @@ async fn history_unknown_index_reports_not_found_without_failing() {
 
 #[tokio::test]
 async fn history_happy_path_reads_chat_log_and_surfaces_broadcast_failure() {
+    let _home = crate::test_home::lock_home();
     let name = unique_wf();
     let engine = registered_engine(&name);
     let index = WorkflowEngine::chat_index(&name);

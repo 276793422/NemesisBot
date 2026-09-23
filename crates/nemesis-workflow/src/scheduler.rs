@@ -109,12 +109,23 @@ pub fn topological_sort(nodes: &[NodeDef], edges: &[Edge]) -> Result<Vec<Vec<Str
 /// `some_node.x`, and a `set_var` call can't be silently overwritten by a
 /// stale input field of the same name. Trigger-time inputs (workflow_chat's
 /// `input`/`content`/`chat_id`/...) are the lowest-priority baseline.
+///
+/// 缺陷 13 修复（2026-09-23）：对象型 input 条目除整体键外还按
+/// `key.field` 平铺一层（与 node_results 的平铺约定一致）。模板解析是
+/// 平铺字符串替换（`{{payload.value}}` 需字面键），webhook 契约把外部
+/// 载荷整体挂在 `input.payload` 对象下，不平铺则 `{{payload.value}}`
+/// 恒解析为空串原样留在输出里（静默错）。
 fn build_executor_context(wf_ctx: &WorkflowContext) -> HashMap<String, serde_json::Value> {
     let mut ctx: HashMap<String, serde_json::Value> = HashMap::new();
 
     // Workflow input (trigger-time fields). Lowest precedence — variables
     // and node results can override.
     for (k, v) in wf_ctx.get_all_input() {
+        if let Some(obj) = v.as_object() {
+            for (field, val) in obj {
+                ctx.insert(format!("{}.{}", k, field), val.clone());
+            }
+        }
         ctx.insert(k, v);
     }
 
@@ -294,11 +305,25 @@ async fn schedule_inner(
         // resume skip set. Skipped nodes (already-completed when resuming
         // from a checkpoint) are dropped here — their outputs were already
         // restored into wf_ctx by the caller.
-        let runnable: Vec<String> = level
-            .into_iter()
-            .filter(|id| !skip.contains(id))
-            .filter(|id| should_run_node(id, &cond_edges, wf_ctx))
-            .collect();
+        //
+        // 缺陷 15 修复（2026-09-23 E 级复核实测）：条件边引用了「已完成节点
+        // 输出里不存在的字段」（生成器把 condition 输出幻觉成 `passed`）时，
+        // 旧路径占位符原样残留落「非空即真」——正向恒放行、取反恒拦截，
+        // 路由与真实数据脱钩。该节点输出已落定、字段存在与否可证 → 升级为
+        // Err：执行 Failed 并点名节点与条件原文。引用未定义变量/未执行节点
+        // 不可证伪（可能是可选入参/被丢弃的分支）→ 整条条件按不成立处理
+        // （跳过分支，保持既有语义），绝不静默选边。
+        let mut runnable: Vec<String> = Vec::new();
+        for id in level {
+            if skip.contains(&id) {
+                continue;
+            }
+            match eval_edge_conditions(&id, &cond_edges, wf_ctx) {
+                Ok(true) => runnable.push(id),
+                Ok(false) => {}
+                Err(e) => return Err(e),
+            }
+        }
 
         if runnable.is_empty() {
             continue;
@@ -439,6 +464,22 @@ async fn schedule_inner(
         if let Some(h) = hook {
             h.on_level_completed(wf_ctx).await;
         }
+
+        // 缺陷 9 修复（2026-09-23）：任一节点停在 Waiting（human_review）时
+        // 必须就此打住——下游不得在审批落地前抢跑。旧实现一路跑完后续层，
+        // 下游带着未解析占位符「完成」，resume 后因已完成被跳过，占位符
+        // 输出被永久固化（静默错，违反诚实失败契约）。engine 在 schedule
+        // 返回后按 node_results 判定 Waiting 并落含 waiting_node 的
+        // checkpoint；resume 以已完成节点为 skip 集重建调度，从 Waiting
+        // 节点的下游继续。deprecated `start_execution` 路径原本就
+        // Waiting 即返回，无需改动。
+        if wf_ctx
+            .get_all_node_results()
+            .values()
+            .any(|r| r.state == ExecutionState::Waiting)
+        {
+            return Ok(ScheduleOutcome::Completed);
+        }
     }
 
     Ok(ScheduleOutcome::Completed)
@@ -446,47 +487,62 @@ async fn schedule_inner(
 
 /// Check if a node should be executed based on conditional edges.
 ///
-/// Evaluates conditions using expression-style matching (e.g., `status == "ok"`,
-/// `count != 0`) via the same `evaluate_condition` function used by the
-/// ConditionNodeExecutor. Falls back to simple boolean matching for literal
-/// conditions.
-fn should_run_node(
+/// Each incoming conditional edge's expression is evaluated via the same
+/// [`crate::nodes::evaluate_condition`] used by the ConditionNodeExecutor —
+/// it resolves `{{var}}` placeholders itself, so the documented
+/// `{{count}} > 5` style works uniformly. All incoming conditional edges
+/// must pass (AND). Any condition evaluating false skips the node.
+///
+/// Unresolved placeholders (a `{{...}}` still present after template
+/// resolution) are split by provability:
+/// - head names a node whose result is **Completed** → its output is fully
+///   known, the referenced field provably doesn't exist → `Err`: the
+///   schedule aborts and the execution surfaces **Failed** naming the node
+///   and the condition (缺陷 15) instead of truthy-ing the leftover literal;
+/// - anything else (undefined variable, node that never ran — e.g. a branch
+///   dropped by its own false condition, optional trigger input) → the whole
+///   condition counts as **false** and the branch is skipped, preserving the
+///   historical drop semantics (s12b 挂账观察项).
+fn eval_edge_conditions(
     node_id: &str,
     cond_edges: &HashMap<String, Vec<&Edge>>,
     wf_ctx: &WorkflowContext,
-) -> bool {
-    if let Some(edges) = cond_edges.get(node_id) {
-        for edge in edges {
-            if let Some(ref cond) = edge.condition {
-                let resolved = wf_ctx.resolve(cond);
-
-                // First, try simple boolean check for resolved value
-                let lower = resolved.to_lowercase();
-                match lower.as_str() {
-                    "true" | "1" | "yes" => continue,
-                    "false" | "0" | "no" => return false,
-                    _ => {}
-                }
-
-                // If the resolved value is unchanged (no template variables
-                // were present), evaluate the condition as an expression
-                // against the workflow context.
-                if resolved == cond.as_str() {
-                    let ctx = build_executor_context(wf_ctx);
-                    if !crate::nodes::evaluate_condition(cond, &ctx) {
-                        return false;
-                    }
-                } else {
-                    // Template was resolved but didn't match a known boolean;
-                    // treat the resolved value itself as truthy/falsy.
-                    if resolved.is_empty() {
-                        return false;
-                    }
-                }
+) -> Result<bool, String> {
+    let Some(edges) = cond_edges.get(node_id) else {
+        return Ok(true);
+    };
+    let ctx = build_executor_context(wf_ctx);
+    for edge in edges {
+        let Some(cond) = &edge.condition else {
+            continue;
+        };
+        let resolved = crate::nodes::resolve_prompt_template(cond, &ctx);
+        if resolved.contains("{{") {
+            let all_results = wf_ctx.get_all_node_results();
+            let completed: std::collections::HashSet<&str> = all_results
+                .iter()
+                .filter(|(_, r)| r.state == ExecutionState::Completed)
+                .map(|(id, _)| id.as_str())
+                .collect();
+            let provable = crate::nodes::placeholder_refs(cond)
+                .into_iter()
+                .any(|(head, _)| completed.contains(head.as_str()));
+            if provable {
+                return Err(format!(
+                    "节点 {:?} 的条件边引用了已完成节点输出中不存在的字段（模板解析后仍残留 \
+                     {{{{…}}}}）：{:?}。请核对上游节点 id 与其输出字段名（condition 节点 \
+                     的输出字段是 condition_result）",
+                    node_id, cond
+                ));
             }
+            // 引用不可证伪：变量未提供/节点未执行 → 整条条件不成立。
+            return Ok(false);
+        }
+        if !crate::nodes::evaluate_condition(cond, &ctx) {
+            return Ok(false);
         }
     }
-    true
+    Ok(true)
 }
 
 // ---------------------------------------------------------------------------
