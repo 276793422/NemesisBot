@@ -4,6 +4,61 @@
 use super::prelude::*;
 use super::*;
 
+/// 一轮（round）的结局（§4.1）：继续下一轮，或携带终局事件结束本 turn。
+/// 模块内私有类型（P2 白名单：不进 pub 面）；P2-5 骨架收敛时成为器官
+/// 管线的统一返回面。
+enum TurnFlow {
+    Continue,
+    Stop(AgentEvent),
+}
+
+/// 本 turn 的可变状态（§4.1：原 run_llm_loop 的 12 个跨轮局部变量收拢；
+/// P2-4）。crate 内私有——器官 4（recovery.rs）签名按 §4.2 终态持
+/// `&TurnState`，故字段需跨模块可见；不进 pub 面。
+///
+/// `force_stop` / `hit_async` **不进** TurnState（P2-5 退役）：它们是
+/// "for 循环 break 出不去外层循环"的补偿机制；工具批次改为方法返回
+/// `TurnFlow` 后即无存在必要。per-round 暂存（replay_injections /
+/// replay_voice / request_had_images）由 [`AgentLoop::build_round_messages`]
+/// 返回、当轮边界落盘即弃，不收拢——混进 TurnState 而忘记每轮清空 =
+/// 台账跨轮累积（重构期典型自坑点，特此钉死）。
+pub(crate) struct TurnState {
+    /// 已消耗的 LLM 轮数（organ 5 观测轮号 / 预算判定 / 日志轮号）。
+    pub(crate) turns_used: u32,
+    /// 每请求连续参数校验失败计数（成功即清零；烧穿 tier 预算停轮，
+    /// 防小模型同一次畸形参数烧穿 max_turns）。
+    pub(crate) validation_failures: u32,
+    /// max_tokens 截断续写预算（organ 6；[`MAX_LENGTH_CONTINUATIONS`] 封顶）。
+    pub(crate) length_continuations: u32,
+    /// ② grace-round 闩：工具轮预算耗尽后的一次终稿机会（organ 1 授予，
+    /// organ 3 注入 [`GRACE_ROUND_NUDGE`]）；二次命中可恢复停轮。
+    pub(crate) grace_round: bool,
+    /// turn 域守卫（⑥ 交替循环 / ⑦ 退化输出 / ⑤ 写环 / ⑤′ 读环）。
+    /// 每请求新建——无状态跨请求。
+    pub(crate) turn_guard: crate::turn_guard::TurnGuard,
+    /// ⑦ 待再注入的退化答案 nudge（瞬时——不进 history / session_log，
+    /// organ 3 每次 build 后重挂，模型给出可见答案或预算耗尽为止）。
+    pub(crate) degenerate_nudge_pending: Option<String>,
+    /// ⑧ 待再注入的跨轮行文重复 nudge（同上瞬时模式）。
+    pub(crate) repetition_nudge_pending: Option<String>,
+    /// I1 (U7)：一次性 escape-hatch 闩（Accept 分支：终答在即但有未认领
+    /// steer——多给一轮，防 `!` 刷屏无限续 turn）。
+    pub(crate) steer_escape_used: bool,
+    /// L2：break 点记录的终端原因（turn_end 边界标记不再靠文案嗅探）。
+    pub(crate) terminal_reason: Option<&'static str>,
+    /// K2 (U14)：turn-end 钩子（Stop 方言）续命预算；耗尽 → 仍停
+    /// （fail-open，与 MAX_LLM_HOOK_RETRIES 同纪律）。
+    pub(crate) turn_end_continues: u32,
+    /// I3 (U9)：turn 边界标记开关（heartbeat/cron/内部通道豁免）。
+    pub(crate) log_boundaries: bool,
+    /// 本 turn 的 LLM 调用选项（max_tokens/temperature/reasoning_effort）。
+    pub(crate) chat_opts: crate::types::ChatOptions,
+}
+
+/// max_tokens 截断续写预算上限（organ 6）——真超限的大文件要给出清晰
+/// 报错，而不是无限续写。
+const MAX_LENGTH_CONTINUATIONS: u32 = 5;
+
 impl AgentLoop {
     /// Core LLM loop shared by `run_with_trace()` and `resume_execution()`.
     ///
@@ -22,17 +77,6 @@ impl AgentLoop {
     ) -> Vec<AgentEvent> {
         let mut events = Vec::new();
 
-        // max_tokens: per-model `max_output_tokens` from config if declared
-        // (each model's real output ceiling, not a blanket 8192 — large files
-        // write in one shot instead of truncating); else 8192. temperature 0.7.
-        let chat_opts = crate::types::ChatOptions {
-            max_tokens: Some(self.current_max_tokens().unwrap_or(8192)),
-            temperature: Some(0.7),
-            // H4 (U16 half): per-model reasoning effort from config.json.
-            reasoning_effort: self.current_reasoning_effort(),
-            ..Default::default()
-        };
-
         // I3 (U9): durable turn boundary markers. Heartbeat sessions are
         // exempt — they run periodically and would grow heartbeat.jsonl
         // without bound (3+ boundary lines per beat, forever).
@@ -50,47 +94,33 @@ impl AgentLoop {
         if log_boundaries {
             crate::chat_log::append_boundary_event(&context.session_key, "turn_start", "");
         }
-        let mut turns_used = 0u32;
-        // Phase 2 (small-model-tool-robustness): per-request consecutive
-        // validation-failure counter. Reset on any successful (valid or
-        // auto-fixed) tool call; incremented on each schema violation. When it
-        // reaches the tier budget the loop stops, preventing a struggling model
-        // from burning max_turns on the same malformed call.
-        let mut validation_failures = 0u32;
-        // Continue-generation budget for max_tokens truncation: when output
-        // hits the token cap it's cut mid-way (often mid tool-call JSON).
-        // Instead of routing the broken call through the validation budget
-        // (which force-stops with a misleading "args invalid" error — Big tier
-        // = 0 retries), append partial content + a "continue" prompt and
-        // re-loop.
-        let mut length_continuations = 0u32;
-        const MAX_LENGTH_CONTINUATIONS: u32 = 5;
-        // ② Grace-round latch. When the tool-call budget is exhausted we grant
-        // one extra round (with GRACE_ROUND_NUDGE injected) so the model can
-        // synthesize a final answer from completed work; a second hit stops
-        // resumably instead of hard-crashing with "Max iterations reached".
-        let mut grace_round = false;
-        // Turn-scoped guards (⑥ alternating loop, ⑦ degenerate output). Fresh
-        // per request — no state crosses requests.
-        let mut turn_guard = crate::turn_guard::TurnGuard::new();
-        // ⑦ Degenerate-answer nudge awaiting re-injection. Transient — kept out
-        // of instance history / session_log; re-applied after each build_messages
-        // until the model gives a visible answer or the retry budget runs out.
-        let mut degenerate_nudge_pending: Option<String> = None;
-        // ⑧ Pending cross-round prose-repetition nudge (same transient pattern:
-        // re-applied after each build_messages, never persisted to history).
-        let mut repetition_nudge_pending: Option<String> = None;
-        // I1 (U7): one-shot escape-hatch latch (see the Accept branch).
-        let mut steer_escape_used = false;
-        // L2 (full review): terminal reason recorded AT the break site
-        // instead of post-hoc string sniffing (a model reply containing
-        // the paused-after wording would have been misclassified).
-        let mut terminal_reason: Option<&'static str> = None;
-        // K2 (U14): turn-end hook (dialect Stop) continue budget. Each
-        // `Continue` demand injects the hook feedback as a user message and
-        // grants one more round; exhausted → stop anyway (fail-open, same
-        // discipline as MAX_LLM_HOOK_RETRIES).
-        let mut turn_end_continues: u32 = 0;
+
+        // 本 turn 可变状态收拢（§4.1 TurnState：12 跨轮局部变量；P2-4）。
+        // 字段语义见类型定义处注释。
+        let mut st = TurnState {
+            turns_used: 0,
+            validation_failures: 0,
+            length_continuations: 0,
+            grace_round: false,
+            turn_guard: crate::turn_guard::TurnGuard::new(),
+            degenerate_nudge_pending: None,
+            repetition_nudge_pending: None,
+            steer_escape_used: false,
+            terminal_reason: None,
+            turn_end_continues: 0,
+            log_boundaries,
+            chat_opts: crate::types::ChatOptions {
+                // max_tokens: per-model `max_output_tokens` from config if
+                // declared (each model's real output ceiling, not a blanket
+                // 8192 — large files write in one shot instead of
+                // truncating); else 8192. temperature 0.7.
+                max_tokens: Some(self.current_max_tokens().unwrap_or(8192)),
+                temperature: Some(0.7),
+                // H4 (U16 half): per-model reasoning effort from config.json.
+                reasoning_effort: self.current_reasoning_effort(),
+                ..Default::default()
+            },
+        };
 
         // K1b (U14): labeled so the LLM post-hook retry loop (deep inside,
         // around the guarded re-call) can abort the turn with `break 'turn`.
@@ -99,11 +129,9 @@ impl AgentLoop {
         'turn: loop {
             // 器官 1（§4.2）：MCP/config 热重载 + cancel/estop 顶检 +
             // max_turns/grace/cron 预算判定。Some = (终局事件, 终端原因)。
-            if let Some((ev, reason)) =
-                self.prepare_round(turns_used, &mut grace_round, turn_budget, cancel_token)
-            {
+            if let Some((ev, reason)) = self.prepare_round(turn_budget, cancel_token, &mut st) {
                 if let Some(r) = reason {
-                    terminal_reason = Some(r);
+                    st.terminal_reason = Some(r);
                 }
                 events.push(ev);
                 break;
@@ -111,24 +139,13 @@ impl AgentLoop {
 
             // 器官 2（§4.2）：inbox claim → @file 展开 → URL 媒体预取 →
             // 附加链 → chat_log 落行。
-            self.claim_steer_messages(instance, context, log_boundaries)
-                .await;
+            self.claim_steer_messages(instance, context, &st).await;
 
             // 器官 3（§4.2）：memory 预取 + annotated build + 瞬时注入族 +
             // LLM pre-hooks + tool_defs + LlmRequest observer + boundary
             // marker/T8 台账。Err = hook 拦截终局。
             let (messages, tool_defs, active_model, request_had_images, round_start) = match self
-                .build_round_messages(
-                    instance,
-                    context,
-                    trace_id,
-                    voice_playback,
-                    turns_used,
-                    grace_round,
-                    &degenerate_nudge_pending,
-                    &repetition_nudge_pending,
-                    log_boundaries,
-                )
+                .build_round_messages(instance, context, trace_id, voice_playback, &st)
                 .await
             {
                 Ok(v) => v,
@@ -149,12 +166,11 @@ impl AgentLoop {
                     messages,
                     tool_defs,
                     &active_model,
-                    &chat_opts,
                     cancel_token,
                     voice_playback,
                     request_had_images,
-                    turns_used,
                     round_start,
+                    &st,
                 )
                 .await
             {
@@ -165,149 +181,41 @@ impl AgentLoop {
                 }
             };
 
-            turns_used += 1;
+            st.turns_used += 1;
 
-            // Emit LLM response observer event.
+            // 器官 5（§4.2 → observer.rs）：LlmResponse observer 事件 +
+            // data store 计价明细。
             let round_duration = round_start.elapsed();
-            let tc_values: Vec<serde_json::Value> = response
-                .tool_calls
-                .iter()
-                .filter_map(|tc| serde_json::to_value(tc).ok())
-                .collect();
-            let tc_count = response.tool_calls.len();
-            self.emit_observer_sync(crate::loop_executor::ObserverEvent::LlmResponse {
-                trace_id: trace_id.to_string(),
-                round: turns_used,
-                duration_ms: round_duration.as_millis() as u64,
-                has_tool_calls: !response.tool_calls.is_empty(),
-                content: response.content.clone(),
-                tool_calls: tc_values,
-                tool_calls_count: tc_count,
-                finish_reason: if response.finished {
-                    Some("stop".to_string())
-                } else {
-                    None
-                },
-                usage: response.usage.clone(),
-                raw_request_body: response.raw_request_body.take(),
-                raw_response_body: response.raw_response_body.take(),
-            })
+            self.record_round_usage(
+                context,
+                trace_id,
+                &mut response,
+                round_duration,
+                st.turns_used,
+            )
             .await;
 
-            // Record usage statistics if data store is available.
-            if let Some(ref ds) = self.data_store
-                && let Some(ref usage) = response.usage
-            {
-                let model_name = self.active_model.read().clone();
-                let cache_creation = usage.cache_creation_tokens.unwrap_or(0);
-                let cache_read = usage.cache_read_tokens.or(usage.cached_tokens).unwrap_or(0);
-                // A3：分项计价 + 实际命中条目名（未命中 → 空名 + 全 0，
-                // 明细行可区分「未命中」与「命中免费条目」）。
-                let breakdown = ds.compute_cost_breakdown(
-                    &model_name,
-                    usage.prompt_tokens,
-                    usage.completion_tokens,
-                    cache_creation,
-                    cache_read,
-                );
-                let empty = nemesis_data::CostBreakdown::default();
-                let bd = breakdown.as_ref().unwrap_or(&empty);
-                let log = nemesis_data::RequestLog {
-                    id: 0,
-                    trace_id: trace_id.to_string(),
-                    model: model_name.clone(),
-                    provider_type: String::new(),
-                    input_tokens: usage.prompt_tokens,
-                    output_tokens: usage.completion_tokens,
-                    cache_creation_tokens: cache_creation,
-                    cache_read_tokens: cache_read,
-                    total_cost_usd: bd.total_cost_usd,
-                    latency_ms: round_duration.as_millis() as i64,
-                    status_code: if response.content.starts_with("Error:") {
-                        500
-                    } else {
-                        200
-                    },
-                    error_message: None,
-                    is_streaming: false,
-                    created_at: chrono::Local::now().timestamp(),
-                    pricing_model: bd.pricing_model.clone(),
-                    input_cost_usd: bd.input_cost_usd,
-                    output_cost_usd: bd.output_cost_usd,
-                    cache_creation_cost_usd: bd.cache_creation_cost_usd,
-                    cache_read_cost_usd: bd.cache_read_cost_usd,
-                    // provider trait 无流式通路，TTFT 无从测量（列留 NULL）。
-                    first_token_ms: None,
-                    session_key: context.session_key.clone(),
-                };
-                if let Err(e) = ds.insert_request_log(&log) {
-                    tracing::warn!("[AgentLoop] Failed to record usage: {e}");
+            // 器官 6（§4.2）：max_tokens 截断续写判定。Some(Continue) =
+            // 截断已追加续写提示（continue 下一轮）；Some(Stop) = 续写
+            // 预算耗尽终局；None = 未截断（计数清零）落回终答判定。
+            match self.handle_length_continuation(instance, context, &response, &mut st) {
+                Some(TurnFlow::Continue) => continue,
+                Some(TurnFlow::Stop(ev)) => {
+                    events.push(ev);
+                    break;
                 }
+                None => {}
             }
-
-            // Continue-generation on max_tokens truncation.
-            // When completion hits the cap, output is cut mid-way —
-            // often mid tool-call JSON, which args_validator would report as
-            // "Arguments are not valid JSON" and burn the validation budget
-            // (Big tier = 0 retries → instant force-stop with a misleading
-            // error). Detect it here: drop the truncated tool calls (executing
-            // them would write a partial file / run half-formed args), keep
-            // partial content, append a "continue" prompt, re-loop. Bounded so
-            // a genuinely too-large file surfaces a clear error, not a loop.
-            // NOTE: detection assumes chat_opts.max_tokens is Some — the agent
-            // always sets Some(8192) when building chat_opts. If that ever
-            // becomes None (provider's own default cap), gate on is_some():
-            // the 8192 fallback could false-positive against a higher cap.
-            let token_cap = chat_opts.max_tokens.unwrap_or(8192) as u64;
-            let hit_cap = response
-                .usage
-                .as_ref()
-                .map(|u| (u.completion_tokens as u64) >= token_cap)
-                .unwrap_or(false);
-            if hit_cap {
-                if length_continuations < MAX_LENGTH_CONTINUATIONS {
-                    length_continuations += 1;
-                    warn!(
-                        "[AgentLoop] response truncated at max_tokens cap ({token_cap}); \
-                         continue-generation {length_continuations}/{MAX_LENGTH_CONTINUATIONS}"
-                    );
-                    instance.add_assistant_message(
-                        &response.content,
-                        Vec::new(),
-                        response.reasoning_content.clone(),
-                    );
-                    instance.add_user_message(
-                        "Output limit reached. Continue exactly where you left off — \
-                         no recap, no apology. If you were writing a large file, \
-                         break it into smaller writes.",
-                    );
-                    continue;
-                }
-                // Budget exhausted: clear, non-misleading error.
-                warn!(
-                    "[AgentLoop] length-continuation budget exhausted; \
-                     output keeps exceeding max_tokens ({token_cap})"
-                );
-                let notice = format!(
-                    "输出反复超过 max_tokens 上限（{token_cap}）被截断，文件可能太大。\
-                     请调大 max_tokens，或让我分段写入。"
-                );
-                instance.add_assistant_message(&notice, Vec::new(), None);
-                events.push(AgentEvent::Error(context.format_rpc_message(&notice)));
-                break;
-            }
-            // Complete (non-truncated) response — reset the counter.
-            length_continuations = 0;
 
             // ⑧ Cross-round prose repetition: if the model's content is
             // near-identical to the previous round's, queue a transient nudge
             // for the next build. Catches "saying the same thing while churning
             // tools" — a loop ⑥ cannot see (it watches tool results, not prose).
-            if let Some(nudge) = turn_guard.check_text_repetition(&response.content) {
+            if let Some(nudge) = st.turn_guard.check_text_repetition(&response.content) {
                 info!("[AgentLoop] loop guard: response content repeating across rounds; nudging");
-                repetition_nudge_pending = Some(nudge);
+                st.repetition_nudge_pending = Some(nudge);
             } else {
-                repetition_nudge_pending = None;
+                st.repetition_nudge_pending = None;
             }
 
             if response.tool_calls.is_empty() || response.finished {
@@ -327,7 +235,7 @@ impl AgentLoop {
                     events.push(AgentEvent::Done(formatted));
                     break;
                 }
-                match turn_guard.check_final_answer(&content) {
+                match st.turn_guard.check_final_answer(&content) {
                     crate::turn_guard::FinalAnswerVerdict::Accept => {
                         instance.add_assistant_message(
                             &content,
@@ -342,11 +250,11 @@ impl AgentLoop {
                         // per turn
                         // (steer_escape_used) so `!`-spam cannot loop the
                         // turn forever.
-                        if !steer_escape_used
+                        if !st.steer_escape_used
                             && self.inbox.has_next_step(&context.session_key)
                             && self.concurrent_mode == ConcurrentMode::Steer
                         {
-                            steer_escape_used = true;
+                            st.steer_escape_used = true;
                             info!(
                                 "[AgentLoop] escape hatch: pending steer at turn end, one more round"
                             );
@@ -371,17 +279,18 @@ impl AgentLoop {
                                     channel: context.channel.clone(),
                                     chat_id: context.chat_id.clone(),
                                     final_content: content.clone(),
-                                    stop_hook_active: turn_end_continues > 0,
+                                    stop_hook_active: st.turn_end_continues > 0,
                                 };
                                 if let crate::hooks::TurnEndDecision::Continue { feedback } =
                                     crate::hooks::run_turn_end_hooks(&lifecycle, &end).await
                                 {
-                                    if turn_end_continues < crate::hooks::MAX_TURN_END_CONTINUES {
-                                        turn_end_continues += 1;
+                                    if st.turn_end_continues < crate::hooks::MAX_TURN_END_CONTINUES
+                                    {
+                                        st.turn_end_continues += 1;
                                         info!(
                                             "[AgentLoop] turn-end hook blocked stopping \
                                              ({}/{}, session '{}') — one more round",
-                                            turn_end_continues,
+                                            st.turn_end_continues,
                                             crate::hooks::MAX_TURN_END_CONTINUES,
                                             context.session_key
                                         );
@@ -412,7 +321,7 @@ impl AgentLoop {
                             Vec::new(),
                             response.reasoning_content.clone(),
                         );
-                        degenerate_nudge_pending = Some(nudge);
+                        st.degenerate_nudge_pending = Some(nudge);
                         continue;
                     }
                     crate::turn_guard::FinalAnswerVerdict::GiveUp(notice) => {
@@ -431,7 +340,7 @@ impl AgentLoop {
             // pending degenerate-answer nudge (⑦) so it stops nagging while the
             // model works — tool work is the opposite of a degenerate empty
             // final answer.
-            degenerate_nudge_pending = None;
+            st.degenerate_nudge_pending = None;
 
             // Record the assistant's response with tool calls.
             let tool_calls = response.tool_calls.clone();
@@ -501,7 +410,7 @@ impl AgentLoop {
                 if !skip_cancel_estop && cancel_token.is_cancelled() {
                     info!(
                         "[AgentLoop] LLM loop cancelled before tool execution: {}, turns_used={}",
-                        tc.name, turns_used
+                        tc.name, st.turns_used
                     );
                     events.push(AgentEvent::Done("已取消".to_string()));
                     break;
@@ -517,7 +426,7 @@ impl AgentLoop {
                 if estop_engaged {
                     info!(
                         "[AgentLoop] E-stop engaged before tool execution: {}, turns_used={}",
-                        tc.name, turns_used
+                        tc.name, st.turns_used
                     );
                     events.push(AgentEvent::Done(
                         "⛔ 已急停 (E-STOP) — 工具调用已拒绝。发送 `nemesisbot estop --release` 恢复。"
@@ -544,17 +453,17 @@ impl AgentLoop {
                 let (result, tool_duration_ms) = if let Some(ref pc) = precomputed {
                     let p = &pc[batch_idx];
                     if p.validation_failed {
-                        validation_failures += 1;
+                        st.validation_failures += 1;
                         self.record_tool_validation_stats(true);
                     } else {
-                        validation_failures = 0;
+                        st.validation_failures = 0;
                         self.record_tool_validation_stats(false);
                     }
                     (p.result.clone(), p.duration_ms)
                 } else {
                     let r = match self.check_tool_args(tc) {
                         crate::args_validator::Outcome::Valid => {
-                            validation_failures = 0;
+                            st.validation_failures = 0;
                             self.record_tool_validation_stats(false);
                             // G2: dispatch at this instance's sub-agent depth so
                             // depth-aware tools (spawn) enforce max_depth.
@@ -562,7 +471,7 @@ impl AgentLoop {
                                 .await
                         }
                         crate::args_validator::Outcome::Fixed(fixed_args) => {
-                            validation_failures = 0;
+                            st.validation_failures = 0;
                             self.record_tool_validation_stats(false);
                             info!(
                                 "[AgentLoop] Auto-fixed args for tool '{}' (id={})",
@@ -578,7 +487,7 @@ impl AgentLoop {
                             .await
                         }
                         crate::args_validator::Outcome::Invalid { message, class } => {
-                            validation_failures += 1;
+                            st.validation_failures += 1;
                             self.record_tool_validation_stats(true);
                             warn!(
                                 "[AgentLoop] Arg validation failed for tool '{}' (id={}, class={}): {}",
@@ -599,7 +508,7 @@ impl AgentLoop {
                     tool_name: tc.name.clone(),
                     success: tool_success,
                     duration_ms: tool_duration.as_millis() as u64,
-                    round: turns_used,
+                    round: st.turns_used,
                     arguments: tc.arguments.clone(),
                     result: result.clone(),
                 })
@@ -624,7 +533,7 @@ impl AgentLoop {
                             } else {
                                 result.clone()
                             },
-                            llm_round: turns_used as usize,
+                            llm_round: st.turns_used as usize,
                             ts: String::new(),
                         },
                     );
@@ -664,7 +573,7 @@ impl AgentLoop {
                 // 回灌 + spill/prune 门 + X1 projection + 历史落账；返回
                 // tool_succeeded 供 8d 与边界判定。
                 let tool_succeeded = self
-                    .apply_tool_guards(instance, context, tc, result, &mut turn_guard)
+                    .apply_tool_guards(instance, context, tc, result, &mut st.turn_guard)
                     .await;
 
                 // 器官 8d：H5/I1/I3 指令链触碰。
@@ -673,13 +582,13 @@ impl AgentLoop {
                 // 器官 8e（§4.2 → tool_batch.rs）：两终局判定（Some = 终局
                 // 事件 → terminal_reason + force_stop latch + break 批次；
                 // J5 批准继续 = None 落回批次）。
-                if let Some(ev) = self.check_escalation(&mut turn_guard, context).await {
-                    terminal_reason = Some("escalation");
+                if let Some(ev) = self.check_escalation(&mut st.turn_guard, context).await {
+                    st.terminal_reason = Some("escalation");
                     force_stop = Some(ev);
                     break;
                 }
-                if let Some(ev) = self.check_validation_budget(validation_failures, &tc.name) {
-                    terminal_reason = Some("validation_exhausted");
+                if let Some(ev) = self.check_validation_budget(st.validation_failures, &tc.name) {
+                    st.terminal_reason = Some("validation_exhausted");
                     force_stop = Some(ev);
                     break;
                 }
@@ -699,6 +608,94 @@ impl AgentLoop {
             }
         }
 
+        // 器官 9（§4.2）：turn 收尾——state Idle + turn_end 边界标记。
+        self.finalize_turn(instance, context, cancel_token, &st);
+
+        events
+    }
+
+    /// 器官 6（§4.2）：max_tokens 截断续写判定。返回 `Option<TurnFlow>`：
+    /// `Some(Continue)` = 命中截断且续写预算未耗尽（已追加续写提示，骨架
+    /// `continue` 下一轮）；`Some(Stop)` = 续写预算耗尽终局（骨架 push +
+    /// break）；`None` = 未截断（计数清零，落回终答判定）。三态塞不进
+    /// 「双臂 TurnFlow / None」出口约定——如实偏离（计划只给两态）。
+    fn handle_length_continuation(
+        &self,
+        instance: &AgentInstance,
+        context: &RequestContext,
+        response: &LlmResponse,
+        st: &mut TurnState,
+    ) -> Option<TurnFlow> {
+        // Continue-generation on max_tokens truncation.
+        // When completion hits the cap, output is cut mid-way —
+        // often mid tool-call JSON, which args_validator would report as
+        // "Arguments are not valid JSON" and burn the validation budget
+        // (Big tier = 0 retries → instant force-stop with a misleading
+        // error). Detect it here: drop the truncated tool calls (executing
+        // them would write a partial file / run half-formed args), keep
+        // partial content, append a "continue" prompt, re-loop. Bounded so
+        // a genuinely too-large file surfaces a clear error, not a loop.
+        // NOTE: detection assumes chat_opts.max_tokens is Some — the agent
+        // always sets Some(8192) when building chat_opts. If that ever
+        // becomes None (provider's own default cap), gate on is_some():
+        // the 8192 fallback could false-positive against a higher cap.
+        let token_cap = st.chat_opts.max_tokens.unwrap_or(8192) as u64;
+        let hit_cap = response
+            .usage
+            .as_ref()
+            .map(|u| (u.completion_tokens as u64) >= token_cap)
+            .unwrap_or(false);
+        if hit_cap {
+            if st.length_continuations < MAX_LENGTH_CONTINUATIONS {
+                st.length_continuations += 1;
+                warn!(
+                    "[AgentLoop] response truncated at max_tokens cap ({}); \
+                     continue-generation {}/{}",
+                    token_cap, st.length_continuations, MAX_LENGTH_CONTINUATIONS
+                );
+                instance.add_assistant_message(
+                    &response.content,
+                    Vec::new(),
+                    response.reasoning_content.clone(),
+                );
+                instance.add_user_message(
+                    "Output limit reached. Continue exactly where you left off — \
+                     no recap, no apology. If you were writing a large file, \
+                     break it into smaller writes.",
+                );
+                return Some(TurnFlow::Continue);
+            }
+            // Budget exhausted: clear, non-misleading error.
+            warn!(
+                "[AgentLoop] length-continuation budget exhausted; \
+                 output keeps exceeding max_tokens ({token_cap})"
+            );
+            let notice = format!(
+                "输出反复超过 max_tokens 上限（{}）被截断，文件可能太大。\
+                 请调大 max_tokens，或让我分段写入。",
+                token_cap
+            );
+            instance.add_assistant_message(&notice, Vec::new(), None);
+            return Some(TurnFlow::Stop(AgentEvent::Error(
+                context.format_rpc_message(&notice),
+            )));
+        }
+        // Complete (non-truncated) response — reset the counter.
+        st.length_continuations = 0;
+        None
+    }
+
+    /// 器官 9（§4.2）：turn 收尾——state Idle + turn_end 边界标记。
+    /// I3 终端原因取 break-site latch（`st.terminal_reason`），不从 Done
+    /// 文案嗅探；`cancel_token` 入参为 cancelled 判定所需（计划签名漏列，
+    /// 如实补上）。
+    fn finalize_turn(
+        &self,
+        instance: &AgentInstance,
+        context: &RequestContext,
+        cancel_token: &tokio_util::sync::CancellationToken,
+        st: &TurnState,
+    ) {
         instance.set_state(crate::types::AgentState::Idle);
 
         // I3 (U9): durable turn_end marker with the terminal reason.
@@ -709,37 +706,37 @@ impl AgentLoop {
         let end_reason = if cancel_token.is_cancelled() {
             "cancelled"
         } else {
-            terminal_reason.unwrap_or("done")
+            st.terminal_reason.unwrap_or("done")
         };
-        if log_boundaries {
+        if st.log_boundaries {
             crate::chat_log::append_boundary_event(&context.session_key, "turn_end", end_reason);
-        } else if terminal_reason == Some("budget_exhausted") {
+        } else if st.terminal_reason == Some("budget_exhausted") {
             // T3 (U12): cron turns are exempt from per-turn boundary events
             // (a recurring job would grow the sidecar unboundedly), but a
             // budget-exhausted stop is a rare, one-shot terminal fact worth
             // exactly one marker — the budget's observability requirement.
             crate::chat_log::append_boundary_event(&context.session_key, "turn_end", end_reason);
         }
-
-        events
     }
 
     // -----------------------------------------------------------------------
-    // Round organs（P2-3：§4.2 器官 1/2/3 自 run_llm_loop 内联块收编为方法，
-    // 均留本文件；TurnState 收拢归 P2-4——暂以显式参数传递）
+    // Round organs（P2-3/P2-4：§4.2 器官 1-9 自 run_llm_loop 内联块收编为
+    // 方法，1-4/6/9 留本文件、5 留 observer.rs、4 系 recovery.rs；跨轮
+    // 可变状态经 `&TurnState`/`&mut TurnState` 传递）
     // -----------------------------------------------------------------------
 
     /// 器官 1：MCP/config 热重载 + cancel/estop 顶检 + ①/② max_turns cap +
     /// grace round + T3 cron 预算判定。`Some((终局事件, 终端原因))` = 结束
-    /// 本 turn（骨架 push + 记 terminal_reason + break）；grace 授予经
-    /// `&mut grace_round` 带出（P2-4 收拢进 TurnState）；其余 = `None` 继续。
+    /// 本 turn（骨架 push + 记 terminal_reason + break）；grace 授予写回
+    /// `st.grace_round`；其余 = `None` 继续。
     fn prepare_round(
         &self,
-        turns_used: u32,
-        grace_round: &mut bool,
         turn_budget: Option<u32>,
         cancel_token: &tokio_util::sync::CancellationToken,
+        st: &mut TurnState,
     ) -> Option<(AgentEvent, Option<&'static str>)> {
+        let turns_used = st.turns_used;
+        let grace_round = &mut st.grace_round;
         // Auto-reload MCP tools if config file changed.
         self.check_mcp_reload();
         // Phase 4a: re-resolve capability tier if config.json changed on
@@ -829,8 +826,9 @@ impl AgentLoop {
         &self,
         instance: &AgentInstance,
         context: &RequestContext,
-        log_boundaries: bool,
+        st: &TurnState,
     ) {
+        let log_boundaries = st.log_boundaries;
         // I1 (U7): inbox claim — before EVERY LLM call of this turn, take
         // all pending steer messages (next-step) into history as real user
         // messages (persisted: they ARE genuine user input). Placement
@@ -939,20 +937,15 @@ impl AgentLoop {
     /// LlmRequest observer + durable llm_request marker + T8 projection
     /// 台账（P2-3 连同 boundary marker 块一并收入——台账消费 organ 内
     /// 产物 replay_injections/replay_voice/build_annotation）。返回
-    /// `(messages, tool_defs, active_model, request_had_images)` 供器官 4；
-    /// `Err` = hook 拦截终局事件（骨架 push + break，§4.3）。
-    #[allow(clippy::too_many_arguments)]
+    /// `(messages, tool_defs, active_model, request_had_images, round_start)`
+    /// 五件套供器官 4；`Err` = hook 拦截终局事件（骨架 push + break，§4.3）。
     async fn build_round_messages(
         &self,
         instance: &AgentInstance,
         context: &RequestContext,
         trace_id: &str,
         voice_playback: bool,
-        turns_used: u32,
-        grace_round: bool,
-        degenerate_nudge_pending: &Option<String>,
-        repetition_nudge_pending: &Option<String>,
-        log_boundaries: bool,
+        st: &TurnState,
     ) -> Result<
         (
             Vec<LlmMessage>,
@@ -963,6 +956,11 @@ impl AgentLoop {
         ),
         AgentEvent,
     > {
+        let turns_used = st.turns_used;
+        let grace_round = st.grace_round;
+        let degenerate_nudge_pending = &st.degenerate_nudge_pending;
+        let repetition_nudge_pending = &st.repetition_nudge_pending;
+        let log_boundaries = st.log_boundaries;
         // P3.1 (sixth batch): auto-inject memory prefetch — async search
         // against the CURRENT (latest) user message, done OUTSIDE
         // build_messages (which is sync; search is async). Per round: the

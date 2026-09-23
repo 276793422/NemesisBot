@@ -25,13 +25,14 @@ impl AgentLoop {
         messages: Vec<LlmMessage>,
         tool_defs: Vec<crate::types::ToolDefinition>,
         active_model: &str,
-        chat_opts: &crate::types::ChatOptions,
         cancel_token: &tokio_util::sync::CancellationToken,
         voice_playback: bool,
         request_had_images: bool,
-        turns_used: u32,
         round_start: std::time::Instant,
+        st: &TurnState,
     ) -> Result<LlmResponse, AgentEvent> {
+        let turns_used = st.turns_used;
+        let chat_opts = &st.chat_opts;
         // Clone provider Arc so RwLock guard is dropped before .await.
         let active_provider = self.provider.read().clone();
 
