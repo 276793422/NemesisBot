@@ -353,15 +353,14 @@ impl VaultStore {
         self.file.entries.keys().cloned().collect()
     }
 
-    /// 原子写盘：写 `<path>.tmp` 后 rename 覆盖。
+    /// 原子写盘 — REL-002（2026-09-23）起委托统一 helper
+    /// `nemesis_utils::write_file_atomic`（唯一临时名 + sync_all + 失败清理；
+    /// 0600 创建即挂，取代本处自制 `.tmp` rename）。
     pub fn save(&self) -> Result<(), VaultError> {
         let json = serde_json::to_vec_pretty(&self.file)
             .map_err(|e| VaultError::Crypto(format!("序列化失败: {e}")))?;
-        let mut tmp: std::ffi::OsString = self.path.as_os_str().to_owned();
-        tmp.push(".tmp");
-        let tmp = PathBuf::from(tmp);
-        fs::write(&tmp, &json)?;
-        fs::rename(&tmp, &self.path)?;
+        nemesis_utils::write_file_atomic(&self.path.to_string_lossy(), &json, 0o600)
+            .map_err(|e| VaultError::Io(std::io::Error::other(e)))?;
         Ok(())
     }
 

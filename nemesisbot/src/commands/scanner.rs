@@ -128,7 +128,9 @@ fn save_scanner_config(path: &std::path::Path, cfg: &ScannerFullConfig) -> Resul
         std::fs::create_dir_all(parent)?;
     }
     let data = serde_json::to_string_pretty(cfg)?;
-    std::fs::write(path, data)?;
+    // REL-002：统一原子写入（config.scanner.json）。
+    nemesis_utils::write_file_atomic(&path.to_string_lossy(), data.as_bytes(), 0o600)
+        .map_err(anyhow::Error::msg)?;
     Ok(())
 }
 

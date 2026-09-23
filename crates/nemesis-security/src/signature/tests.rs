@@ -1302,30 +1302,31 @@ fn test_trust_store_save_parent_is_file_errors() {
 
 #[test]
 fn test_trust_store_save_rename_to_directory_errors() {
-    // 目标 path 是已存在目录 → rename 失败 → "failed to rename trust store"
-    // + 清理 tmp 文件（remove_file 分支）。
-    // 注意：add_key 内部 auto-save 失败时**已经**走了 rename 失败分支并清掉
-    // tmp，所以事后无法断言 tmp 曾存在——由下面 err 文本（rename 已尝试，
-    // 即 tmp 必然写过）间接证明。
+    // 目标 path 是已存在目录 → rename(tmp→目录) 失败 → 诚实报错 + 无 tmp 残留。
+    // REL-002 统一原子写入（2026-09-23）后错误文本走 helper 契约
+    // （"atomic write {path}: rename: …"），旧自制实现的固定
+    // `store_dir.tmp` 名不复存在——残留断言改按唯一临时名前缀 `.tmp-` glob。
     let dir = tempfile::tempdir().unwrap();
     let store_dir = dir.path().join("store_dir");
     std::fs::create_dir_all(&store_dir).unwrap();
-    let tmp = dir.path().join("store_dir.tmp");
     let store = TrustStore::new(Some(&store_dir));
     store.add_key("key-a", "alice", TrustLevel::Verified);
-    assert!(
-        !tmp.exists(),
-        "auto-save failure path must have cleaned tmp"
-    );
     // 再显式调一次观察错误文本
     let err = store.save().unwrap_err();
     assert!(
-        err.contains("failed to rename trust store"),
+        err.contains("atomic write") && err.contains("rename"),
         "unexpected error: {err}"
     );
+    // 成功/失败后都不允许遗留任何唯一临时文件
+    let leftovers: Vec<_> = std::fs::read_dir(dir.path())
+        .unwrap()
+        .filter_map(|e| e.ok())
+        .filter(|e| e.file_name().to_string_lossy().starts_with(".tmp-"))
+        .collect();
     assert!(
-        !tmp.exists(),
-        "tmp file must be cleaned after rename failure"
+        leftovers.is_empty(),
+        "no tmp leftovers allowed, found: {:?}",
+        leftovers.iter().map(|e| e.file_name()).collect::<Vec<_>>()
     );
 }
 

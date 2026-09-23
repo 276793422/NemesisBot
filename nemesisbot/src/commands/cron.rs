@@ -164,10 +164,15 @@ pub fn run(action: CronAction, local: bool) -> Result<()> {
                 vec![]
             };
             jobs.push(job);
-            std::fs::write(
-                &store_path,
-                serde_json::to_string_pretty(&serde_json::Value::Array(jobs)).unwrap_or_default(),
-            )?;
+            // REL-002：统一原子写入（cron 任务存储，半截文件 = 任务清单损坏）。
+            nemesis_utils::write_file_atomic(
+                &store_path.to_string_lossy(),
+                serde_json::to_string_pretty(&serde_json::Value::Array(jobs))
+                    .unwrap_or_default()
+                    .as_bytes(),
+                0o600,
+            )
+            .map_err(anyhow::Error::msg)?;
 
             println!("Added job '{}' ({})", name, id);
         }
@@ -179,11 +184,15 @@ pub fn run(action: CronAction, local: bool) -> Result<()> {
                 let before = jobs.len();
                 jobs.retain(|j| j.get("id").and_then(|v| v.as_str()) != Some(&id));
                 if jobs.len() < before {
-                    std::fs::write(
-                        &store_path,
+                    // REL-002：统一原子写入（同上）。
+                    nemesis_utils::write_file_atomic(
+                        &store_path.to_string_lossy(),
                         serde_json::to_string_pretty(&serde_json::Value::Array(jobs))
-                            .unwrap_or_default(),
-                    )?;
+                            .unwrap_or_default()
+                            .as_bytes(),
+                        0o600,
+                    )
+                    .map_err(anyhow::Error::msg)?;
                     println!("Removed job {}", id);
                 } else {
                     println!("Job {} not found.", id);
@@ -212,10 +221,13 @@ fn toggle_job(store_path: &std::path::Path, id: &str, enabled: bool) {
                 }
             }
             if found {
-                let _ = std::fs::write(
-                    store_path,
+                // REL-002：统一原子写入（同上）。
+                let _ = nemesis_utils::write_file_atomic(
+                    &store_path.to_string_lossy(),
                     serde_json::to_string_pretty(&serde_json::Value::Array(jobs))
-                        .unwrap_or_default(),
+                        .unwrap_or_default()
+                        .as_bytes(),
+                    0o600,
                 );
                 println!(
                     "Job {} {}",

@@ -448,10 +448,15 @@ pub async fn run(
                             );
                         }
                     }
-                    std::fs::write(
-                        &cfg_path,
-                        serde_json::to_string_pretty(&cfg).unwrap_or_default(),
-                    )?;
+                    // REL-002：统一原子写入（主 config.json）。
+                    nemesis_utils::write_file_atomic(
+                        &cfg_path.to_string_lossy(),
+                        serde_json::to_string_pretty(&cfg)
+                            .unwrap_or_default()
+                            .as_bytes(),
+                        0o600,
+                    )
+                    .map_err(anyhow::Error::msg)?;
                 }
                 println!("Default LLM set to: {}", model);
                 println!("Restart agent/gateway to apply changes.");
@@ -487,10 +492,15 @@ pub async fn run(
                             );
                         }
                     }
-                    std::fs::write(
-                        &cfg_path,
-                        serde_json::to_string_pretty(&cfg).unwrap_or_default(),
-                    )?;
+                    // REL-002：统一原子写入（主 config.json）。
+                    nemesis_utils::write_file_atomic(
+                        &cfg_path.to_string_lossy(),
+                        serde_json::to_string_pretty(&cfg)
+                            .unwrap_or_default()
+                            .as_bytes(),
+                        0o600,
+                    )
+                    .map_err(anyhow::Error::msg)?;
                 }
                 if mode == "queue" || mode == "steer" {
                     println!(

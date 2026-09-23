@@ -4178,7 +4178,7 @@ variables: {}
         }
     }
 
-    /// 通用轮询等待器（与 tests_r9_live 的 wait_until 同构；两文件互为独立
+    /// 通用轮询等待器（与 r9_live_tests 的 wait_until 同构；两文件互为独立
     /// 测试模块无法互相导入，就地复制保持各文件的单一真相源自足）。
     #[cfg(windows)] // Windows-form helper (Linux nightly: excluded, 2026-09-02 sweep)
     async fn r10_wait_until(timeout_secs: u64, what: &str, mut cond: impl FnMut() -> bool) {

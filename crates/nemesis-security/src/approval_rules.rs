@@ -186,7 +186,9 @@ pub fn save_rules(path: &Path, rules: &[ApprovalRule]) -> Result<(), String> {
             .map_err(|e| format!("create rules dir {}: {}", parent.display(), e))?;
     }
     let raw = serde_json::to_string_pretty(rules).map_err(|e| format!("serialize rules: {}", e))?;
-    std::fs::write(path, raw).map_err(|e| format!("write rules {}: {}", path.display(), e))
+    // REL-002：统一原子写入（审批规则表是安全配置，半截文件 = 规则集损坏）
+    nemesis_utils::write_file_atomic(&path.to_string_lossy(), raw.as_bytes(), 0o600)
+        .map_err(|e| format!("write rules {}: {e}", path.display()))
 }
 
 #[cfg(test)]

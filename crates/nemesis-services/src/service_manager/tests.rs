@@ -245,9 +245,21 @@ fn test_get_bot_components_empty() {
 }
 
 #[test]
-fn test_restart_bot_when_not_running() {
-    let mgr = ServiceManager::new();
-    // Restart on a bot that hasn't been started should fail
+fn test_restart_bot_fails_when_config_unloadable() {
+    // 原名 test_restart_bot_when_not_running（2026-09-23 根因重钉）：restart()
+    // 契约 = 停（如在跑）+ start()，**冷启动合法**——原断言「未启动则失败」
+    // 与实现不符，历史全绿纯靠环境巧合（解析到的 config_path 恒加载失败）。
+    // 2026-09-23 15:39 用户真 home 出现带 key 的有效模型后，get_config_path()
+    // 的回落臂命中真实有效配置 → load/validate 全过 → start 成功 → Ok 假红；
+    // 且原实现会把用户真实配置在测试进程里真的拉起（违反测试不碰默认 home
+    // 纪律）。修复：with_config 注入不存在路径，钉住真实契约「config 不可
+    // 加载 → restart 诚实失败」，对宿主机环境零依赖。
+    let dir = tempfile::tempdir().unwrap();
+    let mgr = ServiceManager::with_config(BotServiceConfig {
+        config_path: dir.path().join("config.json"), // 刻意不创建——恒不存在
+        workspace: dir.path().to_path_buf(),
+        ..BotServiceConfig::default()
+    });
     let result = mgr.restart_bot();
     assert!(result.is_err());
 }

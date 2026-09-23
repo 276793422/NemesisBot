@@ -217,7 +217,13 @@ fn cmd_remove(workspace: &std::path::Path, name: &str) -> Result<()> {
                     }
                 }
                 let active = serde_json::json!({"name": "default"});
-                std::fs::write(&active_path, serde_json::to_string_pretty(&active)?)?;
+                // REL-002：统一原子写入（人格激活状态）。
+                nemesis_utils::write_file_atomic(
+                    &active_path.to_string_lossy(),
+                    serde_json::to_string_pretty(&active)?.as_bytes(),
+                    0o600,
+                )
+                .map_err(anyhow::Error::msg)?;
             }
         }
     }

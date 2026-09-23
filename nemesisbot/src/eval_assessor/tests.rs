@@ -1868,8 +1868,10 @@ fn validate_rule_rejects_gt_with_non_number_value() {
 #[test]
 fn save_rules_rename_failure_cleans_tmp_and_errs() {
     let tmp = TempDir::new().unwrap();
-    // 目标路径被目录占位 → 同目录 rename file→dir 在 Windows 必失败 →
-    // atomic-replace 错误分支 + best-effort 清理 tmp 残留。
+    // 目标路径被目录占位 → 统一原子写入的 rename 步骤必失败 → 诚实报错。
+    // REL-002 起 tmp 命名/清理/报错标签都由 write_file_atomic 承担：
+    // 断言 helper 契约（错误含 `atomic write ... rename` + 无 .tmp-* 残留），
+    // 不再钉旧自制 `.json.tmp` 固定名（2026-09-23 随统一原子写入迁移改写）。
     let dest = tmp.path().join("eval_rules.json");
     std::fs::create_dir(&dest).unwrap();
     let err = save_rules(
@@ -1879,10 +1881,20 @@ fn save_rules_rename_failure_cleans_tmp_and_errs() {
         },
     )
     .unwrap_err();
-    assert!(err.to_string().contains("atomic-replace"), "err: {err:#}");
+    let msg = err.to_string();
     assert!(
-        !tmp.path().join("eval_rules.json.tmp").exists(),
-        "failed rename must clean the tmp file"
+        msg.contains("atomic write") && msg.contains("rename"),
+        "err: {msg:#}"
+    );
+    let leftovers: Vec<_> = std::fs::read_dir(tmp.path())
+        .unwrap()
+        .filter_map(|e| e.ok())
+        .filter(|e| e.file_name().to_string_lossy().starts_with(".tmp-"))
+        .collect();
+    assert!(
+        leftovers.is_empty(),
+        "failed atomic write must clean its tmp file: {:?}",
+        leftovers.iter().map(|e| e.file_name()).collect::<Vec<_>>()
     );
 }
 

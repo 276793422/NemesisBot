@@ -68,20 +68,20 @@ fn load_or_create_cors(cors_path: &std::path::Path) -> Result<serde_json::Value>
         let dir = cors_path.parent().unwrap();
         let _ = std::fs::create_dir_all(dir);
         let cfg = default_cors_config();
-        std::fs::write(
-            cors_path,
-            serde_json::to_string_pretty(&cfg).unwrap_or_default(),
-        )?;
+        // REL-002：统一原子写入。
+        let body = serde_json::to_string_pretty(&cfg).unwrap_or_default();
+        nemesis_utils::write_file_atomic(&cors_path.to_string_lossy(), body.as_bytes(), 0o600)
+            .map_err(anyhow::Error::msg)?;
         Ok(cfg)
     }
 }
 
 /// Save CORS configuration to disk.
 fn save_cors(cors_path: &std::path::Path, cfg: &serde_json::Value) -> Result<()> {
-    std::fs::write(
-        cors_path,
-        serde_json::to_string_pretty(cfg).unwrap_or_default(),
-    )?;
+    // REL-002：统一原子写入。
+    let body = serde_json::to_string_pretty(cfg).unwrap_or_default();
+    nemesis_utils::write_file_atomic(&cors_path.to_string_lossy(), body.as_bytes(), 0o600)
+        .map_err(anyhow::Error::msg)?;
     Ok(())
 }
 

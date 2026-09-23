@@ -75,7 +75,7 @@ static CLAIMED_CLUSTER_PORTS: StdMutex<Vec<u16>> = StdMutex::new(Vec::new());
 /// tokio Mutex 无毒化语义（某次 live 测试 panic 不连坐后续测试），FIFO 公平。
 static LIVE_GATEWAY_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 
-/// 场景级真机测试（tests_scenario）与 R9 live 组共用同一把互斥闸——
+/// 场景级真机测试（scenario_tests）与 R9 live 组共用同一把互斥闸——
 /// 两组编排都起真 gateway 子进程，同一时刻至多一个在跑（2026-09-03 flaky 教训）。
 pub(crate) async fn live_gate() -> tokio::sync::MutexGuard<'static, ()> {
     LIVE_GATEWAY_LOCK.lock().await

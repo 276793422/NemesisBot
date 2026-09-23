@@ -640,7 +640,9 @@ fn write_voiceprint_config(
     }
     let content = serde_json::to_string_pretty(data)
         .map_err(|e| format!("failed to serialize voiceprint config: {}", e))?;
-    std::fs::write(&path, content).map_err(|e| format!("failed to write voiceprint config: {}", e))
+    // REL-002：统一原子写入（声纹配置）。
+    nemesis_utils::write_file_atomic(&path.to_string_lossy(), content.as_bytes(), 0o600)
+        .map_err(|e| format!("failed to write voiceprint config: {}", e))
 }
 
 /// Push speaker verification rejected notification to frontend.
@@ -1255,7 +1257,8 @@ impl VoiceHandler {
         std::fs::create_dir_all(voice_dir)
             .map_err(|e| format!("failed to create voice dir: {}", e))?;
         let config_path = voice_dir.join("config.toml");
-        std::fs::write(&config_path, content)
+        // REL-002：统一原子写入（voice config.toml）。
+        nemesis_utils::write_file_atomic(&config_path.to_string_lossy(), content.as_bytes(), 0o600)
             .map_err(|e| format!("failed to write config: {}", e))?;
         Ok(Some(serde_json::json!({ "success": true })))
     }
@@ -1313,7 +1316,8 @@ impl VoiceHandler {
 
         let content = serde_json::to_string_pretty(&current)
             .map_err(|e| format!("failed to serialize voice config: {}", e))?;
-        std::fs::write(&path, content)
+        // REL-002：统一原子写入（config.voice.json）。
+        nemesis_utils::write_file_atomic(&path.to_string_lossy(), content.as_bytes(), 0o600)
             .map_err(|e| format!("failed to write voice config: {}", e))?;
 
         Ok(Some(serde_json::json!({ "success": true })))
@@ -1568,7 +1572,8 @@ impl VoiceHandler {
         let path = ensure_chat_config(config_dir);
         let content = serde_json::to_string_pretty(data)
             .map_err(|e| format!("failed to serialize chat config: {}", e))?;
-        std::fs::write(&path, content)
+        // REL-002：统一原子写入（chat config）。
+        nemesis_utils::write_file_atomic(&path.to_string_lossy(), content.as_bytes(), 0o600)
             .map_err(|e| format!("failed to write chat config: {}", e))?;
         Ok(Some(serde_json::json!({ "success": true })))
     }

@@ -257,10 +257,15 @@ fn default_security_config() -> serde_json::Value {
 fn write_rules_config(security_cfg: &std::path::Path, cfg: &serde_json::Value) -> Result<()> {
     let dir = security_cfg.parent().unwrap();
     let _ = std::fs::create_dir_all(dir);
-    std::fs::write(
-        security_cfg,
-        serde_json::to_string_pretty(cfg).unwrap_or_default(),
-    )?;
+    // REL-002：统一原子写入（security 规则配置）。
+    nemesis_utils::write_file_atomic(
+        &security_cfg.to_string_lossy(),
+        serde_json::to_string_pretty(cfg)
+            .unwrap_or_default()
+            .as_bytes(),
+        0o600,
+    )
+    .map_err(anyhow::Error::msg)?;
     Ok(())
 }
 
@@ -389,10 +394,9 @@ fn cmd_approvals_clear(home: &std::path::Path) -> Result<()> {
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent)?;
     }
-    std::fs::write(
-        &path, "[]
-",
-    )?;
+    // REL-002：统一原子写入（approval 规则表清空）。
+    nemesis_utils::write_file_atomic(&path.to_string_lossy(), b"[]\n", 0o600)
+        .map_err(anyhow::Error::msg)?;
     println!("Cleared {} approval rule(s): {}", removed, path.display());
     Ok(())
 }
@@ -725,10 +729,15 @@ fn cmd_approve(security_cfg: &std::path::Path, id: &str) -> Result<()> {
     pending.retain(|p| p.get("id").and_then(|v| v.as_str()) != Some(id));
 
     if pending.len() < before {
-        std::fs::write(
-            &pending_path,
-            serde_json::to_string_pretty(&pending).unwrap_or_default(),
-        )?;
+        // REL-002：统一原子写入（security 待审批清单）。
+        nemesis_utils::write_file_atomic(
+            &pending_path.to_string_lossy(),
+            serde_json::to_string_pretty(&pending)
+                .unwrap_or_default()
+                .as_bytes(),
+            0o600,
+        )
+        .map_err(anyhow::Error::msg)?;
         println!("Operation {} approved.", id);
     } else {
         println!("Operation {} not found.", id);
@@ -757,10 +766,15 @@ fn cmd_deny(security_cfg: &std::path::Path, id: &str, reason: Option<&str>) -> R
     pending.retain(|p| p.get("id").and_then(|v| v.as_str()) != Some(id));
 
     if pending.len() < before {
-        std::fs::write(
-            &pending_path,
-            serde_json::to_string_pretty(&pending).unwrap_or_default(),
-        )?;
+        // REL-002：统一原子写入（security 待审批清单）。
+        nemesis_utils::write_file_atomic(
+            &pending_path.to_string_lossy(),
+            serde_json::to_string_pretty(&pending)
+                .unwrap_or_default()
+                .as_bytes(),
+            0o600,
+        )
+        .map_err(anyhow::Error::msg)?;
         println!(
             "Operation {} denied.{}",
             id,
@@ -1043,10 +1057,15 @@ pub async fn run(action: SecurityAction, local: bool) -> Result<()> {
                             );
                         }
                     }
-                    std::fs::write(
-                        &cfg_path,
-                        serde_json::to_string_pretty(&cfg).unwrap_or_default(),
-                    )?;
+                    // REL-002：统一原子写入（security enable/disable 改主配置）。
+                    nemesis_utils::write_file_atomic(
+                        &cfg_path.to_string_lossy(),
+                        serde_json::to_string_pretty(&cfg)
+                            .unwrap_or_default()
+                            .as_bytes(),
+                        0o600,
+                    )
+                    .map_err(anyhow::Error::msg)?;
                 }
             }
 
@@ -1093,10 +1112,15 @@ pub async fn run(action: SecurityAction, local: bool) -> Result<()> {
                             );
                         }
                     }
-                    std::fs::write(
-                        &cfg_path,
-                        serde_json::to_string_pretty(&cfg).unwrap_or_default(),
-                    )?;
+                    // REL-002：统一原子写入（security enable/disable 改主配置）。
+                    nemesis_utils::write_file_atomic(
+                        &cfg_path.to_string_lossy(),
+                        serde_json::to_string_pretty(&cfg)
+                            .unwrap_or_default()
+                            .as_bytes(),
+                        0o600,
+                    )
+                    .map_err(anyhow::Error::msg)?;
                 }
             }
             println!("🔓 Security module disabled");

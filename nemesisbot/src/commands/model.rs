@@ -307,11 +307,8 @@ pub async fn run(action: ModelAction, local: bool) -> Result<()> {
                     }
                 }
 
-                // 序列化失败必须报错退出，不得 unwrap_or_default() 静默写空文件
-                //（2026-09-03 二次回归 model-4，两处写入点同修）。
-                let body = serde_json::to_string_pretty(&cfg)
-                    .map_err(|e| anyhow::anyhow!("序列化 config 失败: {e}"))?;
-                std::fs::write(&cfg_path, body)?;
+                // REL-002：统一原子写入。
+                write_config_atomic(&cfg_path, &cfg)?;
             }
 
             println!("Model added: {}", model);
@@ -364,11 +361,8 @@ pub async fn run(action: ModelAction, local: bool) -> Result<()> {
                                 );
                             }
                         }
-                        std::fs::write(
-                            &cfg_path,
-                            serde_json::to_string_pretty(&cfg)
-                                .map_err(|e| anyhow::anyhow!("序列化 config 失败: {e}"))?,
-                        )?;
+                        // REL-002：统一原子写入。
+                        write_config_atomic(&cfg_path, &cfg)?;
                     }
                     println!(
                         "Auto-set as default model (only model configured): {}",
@@ -556,11 +550,8 @@ pub async fn run(action: ModelAction, local: bool) -> Result<()> {
             }
 
             if found {
-                std::fs::write(
-                    &cfg_path,
-                    serde_json::to_string_pretty(&cfg)
-                        .map_err(|e| anyhow::anyhow!("序列化 config 失败: {e}"))?,
-                )?;
+                // REL-002：统一原子写入。
+                write_config_atomic(&cfg_path, &cfg)?;
                 println!("Model removed: {}", name);
             } else {
                 anyhow::bail!("Model not found: {}", name);
@@ -602,11 +593,8 @@ pub async fn run(action: ModelAction, local: bool) -> Result<()> {
                 e["model_tier"] = serde_json::Value::String(parsed.to_string());
             });
             if updated {
-                std::fs::write(
-                    &cfg_path,
-                    serde_json::to_string_pretty(&cfg)
-                        .map_err(|e| anyhow::anyhow!("序列化 config 失败: {e}"))?,
-                )?;
+                // REL-002：统一原子写入。
+                write_config_atomic(&cfg_path, &cfg)?;
                 println!("✓ {} → model_tier={}", name, parsed);
                 // tier 热生效：AgentLoop 每轮 LLM 前 check_config_reload()（mtime
                 // 检测）自动重解析，切档无需重启（旧文案"需重启"是错的，二次回归
@@ -644,11 +632,8 @@ pub async fn run(action: ModelAction, local: bool) -> Result<()> {
                 en["reasoning_effort"] = value.clone();
             });
             if updated {
-                std::fs::write(
-                    &cfg_path,
-                    serde_json::to_string_pretty(&cfg)
-                        .map_err(|e| anyhow::anyhow!("序列化 config 失败: {e}"))?,
-                )?;
+                // REL-002：统一原子写入。
+                write_config_atomic(&cfg_path, &cfg)?;
                 if e == "off" {
                     println!("✓ {} → reasoning_effort cleared", name);
                 } else {
@@ -676,11 +661,8 @@ pub async fn run(action: ModelAction, local: bool) -> Result<()> {
                 e["model_size_b"] = serde_json::Value::Number(size_b.into());
             });
             if updated {
-                std::fs::write(
-                    &cfg_path,
-                    serde_json::to_string_pretty(&cfg)
-                        .map_err(|e| anyhow::anyhow!("序列化 config 失败: {e}"))?,
-                )?;
+                // REL-002：统一原子写入。
+                write_config_atomic(&cfg_path, &cfg)?;
                 println!(
                     "✓ {} → model_size_b={} (auto 检测将解析为 tier={})",
                     name, size_b, resolved
@@ -706,11 +688,8 @@ pub async fn run(action: ModelAction, local: bool) -> Result<()> {
             };
             let resolved = nemesis_types::capability::detect_tier(&hint);
             if updated {
-                std::fs::write(
-                    &cfg_path,
-                    serde_json::to_string_pretty(&cfg)
-                        .map_err(|e| anyhow::anyhow!("序列化 config 失败: {e}"))?,
-                )?;
+                // REL-002：统一原子写入。
+                write_config_atomic(&cfg_path, &cfg)?;
                 println!(
                     "✓ {} → real_name=\"{}\" (auto 检测将解析为 tier={})",
                     name, real_name, resolved
@@ -957,6 +936,17 @@ where
     update_model_entry(cfg, name, f)
 }
 
+/// REL-002：model CLI raw RMW 写 config.json 的单一原子入口。
+/// 序列化失败必须报错退出，不得 unwrap_or_default() 静默写空文件
+///（2026-09-03 二次回归 model-4，两处写入点同修）；落盘走
+/// `write_file_atomic`（唯一临时名 + sync_all + 失败清理）。
+fn write_config_atomic(cfg_path: &Path, cfg: &serde_json::Value) -> anyhow::Result<()> {
+    let body = serde_json::to_string_pretty(cfg)
+        .map_err(|e| anyhow::anyhow!("序列化 config 失败: {e}"))?;
+    nemesis_utils::write_file_atomic(&cfg_path.to_string_lossy(), body.as_bytes(), 0o600)
+        .map_err(anyhow::Error::msg)
+}
+
 fn update_model_entry<F>(cfg: &mut serde_json::Value, name: &str, f: F) -> bool
 where
     F: FnOnce(&mut serde_json::Value),
@@ -1030,11 +1020,8 @@ async fn run_probe(
         }
     });
     if wrote {
-        std::fs::write(
-            &cfg_path,
-            serde_json::to_string_pretty(&cfg_val)
-                .map_err(|e| anyhow::anyhow!("序列化 config 失败: {e}"))?,
-        )?;
+        // REL-002：统一原子写入。
+        write_config_atomic(&cfg_path, &cfg_val)?;
     }
     Ok(report)
 }

@@ -1,5 +1,72 @@
 use super::*;
 
+/// REL-002 失败注入助手：唯一临时名升级后，旧「预建固定名 `.tmp` 目录
+/// 阻塞临时文件」的注入面不复存在（正是升级目标之一），改用平台确定的
+/// 「替换失败」注入——
+/// - unix：父目录置只读 → 临时文件创建失败（EACCES）
+/// - Windows：目标文件置只读属性 → rename(REPLACE_EXISTING) 被拒
+///
+/// 前提：`dest` 已存在且可读。返回 Drop guard 自动恢复权限。
+#[cfg(any(unix, windows))]
+struct RestorePermsGuard {
+    #[cfg(unix)]
+    parent: std::path::PathBuf,
+    #[cfg(windows)]
+    dest: std::path::PathBuf,
+}
+
+#[cfg(any(unix, windows))]
+impl Drop for RestorePermsGuard {
+    fn drop(&mut self) {
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let _ = std::fs::set_permissions(&self.parent, std::fs::Permissions::from_mode(0o755));
+        }
+        #[cfg(windows)]
+        {
+            if let Ok(meta) = std::fs::metadata(&self.dest) {
+                let mut perm = meta.permissions();
+                perm.set_readonly(false);
+                let _ = std::fs::set_permissions(&self.dest, perm);
+            }
+        }
+    }
+}
+
+#[cfg(any(unix, windows))]
+fn block_atomic_replace(dest: &std::path::Path) -> RestorePermsGuard {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let parent = dest.parent().unwrap().to_path_buf();
+        let mut perm = std::fs::metadata(&parent).unwrap().permissions();
+        perm.set_mode(0o555);
+        std::fs::set_permissions(&parent, perm).unwrap();
+        RestorePermsGuard { parent }
+    }
+    #[cfg(windows)]
+    {
+        let mut perm = std::fs::metadata(dest).unwrap().permissions();
+        perm.set_readonly(true);
+        std::fs::set_permissions(dest, perm).unwrap();
+        RestorePermsGuard {
+            dest: dest.to_path_buf(),
+        }
+    }
+}
+
+/// 目录内不应残留任何 `.tmp-` 前缀的临时文件（helper 唯一临时名前缀）。
+#[cfg(any(unix, windows))]
+fn assert_no_tmp_leftovers(dir: &std::path::Path, what: &str) {
+    let leftovers: Vec<_> = std::fs::read_dir(dir)
+        .unwrap()
+        .filter_map(|e| e.ok())
+        .filter(|e| e.file_name().to_string_lossy().starts_with(".tmp-"))
+        .collect();
+    assert!(leftovers.is_empty(), "{what}: {leftovers:?}");
+}
+
 #[test]
 fn test_static_config_roundtrip() {
     // StaticConfig only carries [node]; peers are written via append_peer_to_file.
@@ -235,9 +302,9 @@ fn test_atomic_write_cleanup_on_failure() {
     let config = create_static_config("node-clean", "CleanupTest", "0.0.0.0:9000");
     save_static_config(&path, &config).unwrap();
 
-    // After successful save, no .tmp file should remain
-    let tmp_path = path.with_extension("toml.tmp");
-    assert!(!tmp_path.exists(), "temp file should have been renamed");
+    // After successful save, no tmp file should remain（helper 唯一临时名
+    // 前缀 `.tmp-`——固定名 `.toml.tmp` 已随 REL-002 退役）
+    assert_no_tmp_leftovers(dir.path(), "no tmp file should have been left after save");
     assert!(path.exists());
 }
 
@@ -598,10 +665,12 @@ fn test_w3b_ensure_node_id_error_paths() {
     std::fs::create_dir_all(&as_dir).unwrap();
     assert!(ensure_node_id(&as_dir, "id-2").is_err());
 
-    // 3. atomic_write blocked by a directory at the tmp path → Err
+    // 3. REL-002：写失败注入（旧：预建 peers.toml.tmp 目录阻塞固定临时名；
+    //    唯一临时名后改平台注入）。文件带 [node] 但无 id → ensure 走到写路径。
     let dir3 = tempfile::tempdir().unwrap();
     let path = dir3.path().join("peers.toml");
-    std::fs::create_dir_all(dir3.path().join("peers.toml.tmp")).unwrap();
+    std::fs::write(&path, "[node]\nname = \"x\"\n").unwrap();
+    let _guard = block_atomic_replace(&path);
     assert!(ensure_node_id(&path, "id-3").is_err());
 }
 
@@ -629,11 +698,12 @@ fn test_w3b_append_peer_error_paths_and_legacy_peers_array() {
     std::fs::create_dir_all(&as_dir).unwrap();
     assert!(append_peer_to_file(&as_dir, "Node-B", "10.0.0.1:9000", "worker", "dev", 0).is_err());
 
-    // 3. atomic_write blocked at tmp path → Err, existing file untouched
+    // 3. REL-002：写失败注入（平台注入，见 block_atomic_replace）→ Err，
+    //    existing file untouched
     let dir3 = tempfile::tempdir().unwrap();
     let path = dir3.path().join("peers.toml");
     std::fs::write(&path, "[node]\nid = \"keep\"\n").unwrap();
-    std::fs::create_dir_all(dir3.path().join("peers.toml.tmp")).unwrap();
+    let _guard = block_atomic_replace(&path);
     assert!(append_peer_to_file(&path, "Node-B", "10.0.0.1:9000", "worker", "dev", 0).is_err());
     assert_eq!(
         std::fs::read_to_string(&path).unwrap(),
@@ -677,11 +747,11 @@ fn test_w3b_remove_peer_no_peers_table_and_error_paths() {
     std::fs::create_dir_all(&as_dir).unwrap();
     assert!(remove_peer_from_file(&as_dir, "x").is_err());
 
-    // 3. atomic_write blocked at tmp path → Err after successful removal
+    // 3. REL-002：写失败注入（平台注入）→ Err after successful removal
     let dir3 = tempfile::tempdir().unwrap();
     let path3 = dir3.path().join("peers.toml");
     append_peer_to_file(&path3, "victim", "10.0.0.1:9000", "worker", "dev", 0).unwrap();
-    std::fs::create_dir_all(dir3.path().join("peers.toml.tmp")).unwrap();
+    let _guard = block_atomic_replace(&path3);
     assert!(remove_peer_from_file(&path3, "victim").is_err());
 }
 
@@ -697,10 +767,9 @@ fn test_w3b_atomic_write_rename_failure_cleans_tmp() {
     let result = save_static_config(&dest, &config);
     assert!(result.is_err(), "rename onto a directory must fail");
 
-    let tmp = dir.path().join("peers.toml.tmp");
-    assert!(
-        !tmp.exists(),
-        "tmp file must be cleaned up after rename failure"
+    assert_no_tmp_leftovers(
+        dir.path(),
+        "tmp file must be cleaned up after rename failure",
     );
 }
 

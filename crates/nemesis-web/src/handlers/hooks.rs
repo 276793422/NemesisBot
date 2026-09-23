@@ -114,7 +114,9 @@ impl HooksHandler {
             std::fs::create_dir_all(parent)
                 .map_err(|e| format!("failed to create config dir: {e}"))?;
         }
-        std::fs::write(&path, content).map_err(|e| format!("failed to write hooks.json: {e}"))?;
+        // REL-002：统一原子写入（hooks.json）。
+        nemesis_utils::write_file_atomic(&path.to_string_lossy(), content.as_bytes(), 0o600)
+            .map_err(|e| format!("failed to write hooks.json: {e}"))?;
         Ok(Some(serde_json::json!({
             "written": true,
             "summary": events_summary(&events),

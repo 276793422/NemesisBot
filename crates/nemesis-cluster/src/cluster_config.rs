@@ -630,21 +630,12 @@ pub fn ensure_node_id(path: &Path, node_id: &str) -> Result<bool, ConfigError> {
 // Atomic write helper
 // ---------------------------------------------------------------------------
 
-/// Write data to a file atomically: write to a `.tmp` file first, then rename.
+/// Write data to a file atomically — REL-002（2026-09-23）起委托统一 helper
+/// `nemesis_utils::write_file_atomic`（唯一临时名 + sync_all + 失败清理 +
+/// unix 0600 创建即挂），本函数只保留签名兼容（peers.toml 家族 5 个调用点）。
 fn atomic_write(path: &Path, data: &[u8]) -> Result<(), ConfigError> {
-    let tmp_path = path.with_extension("toml.tmp");
-
-    std::fs::write(&tmp_path, data)?;
-
-    // Atomic rename (on Windows, this replaces if destination exists)
-    match std::fs::rename(&tmp_path, path) {
-        Ok(()) => Ok(()),
-        Err(e) => {
-            // Clean up temp file
-            let _ = std::fs::remove_file(&tmp_path);
-            Err(ConfigError::Io(e))
-        }
-    }
+    nemesis_utils::write_file_atomic(&path.to_string_lossy(), data, 0o600)
+        .map_err(|e| ConfigError::Io(std::io::Error::other(e)))
 }
 
 // ---------------------------------------------------------------------------

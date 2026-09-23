@@ -3783,6 +3783,7 @@ version = "0.1.0"
 dependencies = [
  "dirs 6.0.0",
  "nemesis-types",
+ "nemesis-utils",
  "parking_lot",
  "serde",
  "serde_json",
@@ -4142,6 +4143,7 @@ dependencies = [
  "nemesis-config",
  "nemesis-path",
  "nemesis-types",
+ "nemesis-utils",
  "parking_lot",
  "rand 0.8.6",
  "regex",

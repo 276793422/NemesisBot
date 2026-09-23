@@ -332,9 +332,13 @@ pub async fn run(action: ClusterAction, local: bool) -> Result<()> {
                             "broadcast_interval".to_string(),
                             serde_json::Value::Number(broadcast_interval.into()),
                         );
-                        let _ = std::fs::write(
-                            &cfg_path,
-                            serde_json::to_string_pretty(&cfg).unwrap_or_default(),
+                        // REL-002：统一原子写入。
+                        let _ = nemesis_utils::write_file_atomic(
+                            &cfg_path.to_string_lossy(),
+                            serde_json::to_string_pretty(&cfg)
+                                .unwrap_or_default()
+                                .as_bytes(),
+                            0o600,
                         );
                         println!("Configuration updated.");
                     }
@@ -521,9 +525,11 @@ pub async fn run(action: ClusterAction, local: bool) -> Result<()> {
                         };
                         if let Some(key) = target_key {
                             if peers.remove(&key).is_some() {
-                                let _ = std::fs::write(
-                                    &peers_path,
-                                    toml::to_string_pretty(&doc).unwrap_or_default(),
+                                // REL-002：统一原子写入。
+                                let _ = nemesis_utils::write_file_atomic(
+                                    &peers_path.to_string_lossy(),
+                                    toml::to_string_pretty(&doc).unwrap_or_default().as_bytes(),
+                                    0o600,
                                 );
                                 println!("  Peer {} removed.", id);
                             } else {
@@ -544,7 +550,12 @@ pub async fn run(action: ClusterAction, local: bool) -> Result<()> {
                     if let Ok(data) = std::fs::read_to_string(&peers_path) {
                         match enable_peer_in_toml(&data, &id, true) {
                             Ok(new_data) => {
-                                let _ = std::fs::write(&peers_path, &new_data);
+                                // REL-002：统一原子写入。
+                                let _ = nemesis_utils::write_file_atomic(
+                                    &peers_path.to_string_lossy(),
+                                    new_data.as_bytes(),
+                                    0o600,
+                                );
                                 println!("  Peer {} enabled.", id);
                             }
                             Err(msg) => println!("  {}", msg),
@@ -561,7 +572,12 @@ pub async fn run(action: ClusterAction, local: bool) -> Result<()> {
                     if let Ok(data) = std::fs::read_to_string(&peers_path) {
                         match enable_peer_in_toml(&data, &id, false) {
                             Ok(new_data) => {
-                                let _ = std::fs::write(&peers_path, &new_data);
+                                // REL-002：统一原子写入。
+                                let _ = nemesis_utils::write_file_atomic(
+                                    &peers_path.to_string_lossy(),
+                                    new_data.as_bytes(),
+                                    0o600,
+                                );
                                 println!("  Peer {} disabled.", id);
                             }
                             Err(msg) => println!("  {}", msg),
@@ -636,10 +652,15 @@ pub async fn run(action: ClusterAction, local: bool) -> Result<()> {
                                 "token".to_string(),
                                 serde_json::Value::String(token.clone()),
                             );
-                            std::fs::write(
-                                &cfg_path,
-                                serde_json::to_string_pretty(&cfg).unwrap_or_default(),
-                            )?;
+                            // REL-002：统一原子写入（config.cluster.json 含 token）。
+                            nemesis_utils::write_file_atomic(
+                                &cfg_path.to_string_lossy(),
+                                serde_json::to_string_pretty(&cfg)
+                                    .unwrap_or_default()
+                                    .as_bytes(),
+                                0o600,
+                            )
+                            .map_err(anyhow::Error::msg)?;
                             println!("Token saved to cluster config.");
                         }
                     } else {
@@ -705,10 +726,15 @@ pub async fn run(action: ClusterAction, local: bool) -> Result<()> {
                             "token".to_string(),
                             serde_json::Value::String(value.clone()),
                         );
-                        std::fs::write(
-                            &cfg_path,
-                            serde_json::to_string_pretty(&cfg).unwrap_or_default(),
-                        )?;
+                        // REL-002：统一原子写入（config.cluster.json 含 token）。
+                        nemesis_utils::write_file_atomic(
+                            &cfg_path.to_string_lossy(),
+                            serde_json::to_string_pretty(&cfg)
+                                .unwrap_or_default()
+                                .as_bytes(),
+                            0o600,
+                        )
+                        .map_err(anyhow::Error::msg)?;
                         println!("Token set: {}", mask_token(&value));
                     }
                 } else {
@@ -741,10 +767,15 @@ pub async fn run(action: ClusterAction, local: bool) -> Result<()> {
                     let mut cfg: serde_json::Value = serde_json::from_str(&data)?;
                     if let Some(obj) = cfg.as_object_mut() {
                         obj.remove("token");
-                        std::fs::write(
-                            &cfg_path,
-                            serde_json::to_string_pretty(&cfg).unwrap_or_default(),
-                        )?;
+                        // REL-002：统一原子写入（config.cluster.json 含 token）。
+                        nemesis_utils::write_file_atomic(
+                            &cfg_path.to_string_lossy(),
+                            serde_json::to_string_pretty(&cfg)
+                                .unwrap_or_default()
+                                .as_bytes(),
+                            0o600,
+                        )
+                        .map_err(anyhow::Error::msg)?;
                         println!(
                             "Token revoked. Generate a new one with 'nemesisbot cluster token generate'."
                         );
@@ -804,9 +835,13 @@ pub async fn run(action: ClusterAction, local: bool) -> Result<()> {
                     serde_json::Value::String(init_token.clone()),
                 );
             }
-            let _ = std::fs::write(
-                &cfg_path,
-                serde_json::to_string_pretty(&cluster_cfg).unwrap_or_default(),
+            // REL-002：统一原子写入。
+            let _ = nemesis_utils::write_file_atomic(
+                &cfg_path.to_string_lossy(),
+                serde_json::to_string_pretty(&cluster_cfg)
+                    .unwrap_or_default()
+                    .as_bytes(),
+                0o600,
             );
 
             // --- 写 peers.toml [node] 段（完整身份）---
@@ -1008,7 +1043,13 @@ pub async fn run(action: ClusterAction, local: bool) -> Result<()> {
                     } else {
                         // Write template to file
                         let template = crate::CLUSTER_IDENTITY_TEMPLATE;
-                        std::fs::write(&identity_path, template)?;
+                        // REL-002：统一原子写入（节点身份关键文件）。
+                        nemesis_utils::write_file_atomic(
+                            &identity_path.to_string_lossy(),
+                            template.as_bytes(),
+                            0o600,
+                        )
+                        .map_err(anyhow::Error::msg)?;
                         println!("Cluster identity template created at:");
                         println!("  {}", identity_path.display());
                         println!("Edit this file to customize your cluster identity.");
@@ -1024,7 +1065,13 @@ pub async fn run(action: ClusterAction, local: bool) -> Result<()> {
 
                     let _ = std::fs::create_dir_all(&cluster_dir);
                     let default_content = crate::DEFAULT_IDENTITY_CLUSTER;
-                    std::fs::write(&identity_path, default_content)?;
+                    // REL-002：统一原子写入（节点身份关键文件）。
+                    nemesis_utils::write_file_atomic(
+                        &identity_path.to_string_lossy(),
+                        default_content.as_bytes(),
+                        0o600,
+                    )
+                    .map_err(anyhow::Error::msg)?;
                     println!("  Cluster identity reset to default (贾维斯).");
                     println!("  File: {}", identity_path.display());
                     println!();
@@ -1499,10 +1546,15 @@ fn update_cluster_config(
     let mut cfg: serde_json::Value = serde_json::from_str(&data)?;
     if let Some(obj) = cfg.as_object_mut() {
         obj.insert(key.to_string(), value.into());
-        std::fs::write(
-            &cfg_path,
-            serde_json::to_string_pretty(&cfg).unwrap_or_default(),
-        )?;
+        // REL-002：统一原子写入（config.cluster.json 含 token）。
+        nemesis_utils::write_file_atomic(
+            &cfg_path.to_string_lossy(),
+            serde_json::to_string_pretty(&cfg)
+                .unwrap_or_default()
+                .as_bytes(),
+            0o600,
+        )
+        .map_err(anyhow::Error::msg)?;
     }
     Ok(())
 }
@@ -1521,10 +1573,15 @@ fn update_main_config_cluster(home: &std::path::Path, enabled: bool) -> Result<(
             "cluster".to_string(),
             serde_json::json!({ "enabled": enabled }),
         );
-        std::fs::write(
-            &cfg_path,
-            serde_json::to_string_pretty(&cfg).unwrap_or_default(),
-        )?;
+        // REL-002：统一原子写入（config.cluster.json 含 token）。
+        nemesis_utils::write_file_atomic(
+            &cfg_path.to_string_lossy(),
+            serde_json::to_string_pretty(&cfg)
+                .unwrap_or_default()
+                .as_bytes(),
+            0o600,
+        )
+        .map_err(anyhow::Error::msg)?;
     }
     Ok(())
 }

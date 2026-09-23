@@ -19,7 +19,7 @@
 //! gate → turn → assistant receive 帧），更贴近真实用户路径。
 //!
 //! 纪律：与 R9 组共用 `live_gate()` 互斥闸（同一时刻至多一个真 gateway 编排）；
-//! home 隔离走 `--local` + tempdir cwd（tests_r9_live 先例，绝不碰真实 home）；
+//! home 隔离走 `--local` + tempdir cwd（r9_live_tests 先例，绝不碰真实 home）；
 //! web 端口 0（OS 分配）；不占生产禁区端口。
 
 use std::path::PathBuf;
@@ -34,11 +34,11 @@ use test_harness::{
     ws_connect, ws_recv_matching, ws_send_json,
 };
 
-use super::tests_r9_live::{
+use super::r9_live_tests::{
     install_home_config, live_gate, live_gateway_config, spawn_gateway, wait_for_web_port,
 };
 
-/// 优雅停机后等子进程自行退出的预算（对齐 tests_r9_live::EXIT_TIMEOUT_SECS）。
+/// 优雅停机后等子进程自行退出的预算（对齐 r9_live_tests::EXIT_TIMEOUT_SECS）。
 const EXIT_TIMEOUT_SECS: u64 = 40;
 
 /// 场景网关夹具：真 gateway 子进程 + 可控脚本 mock LLM + 隔离 temp home。

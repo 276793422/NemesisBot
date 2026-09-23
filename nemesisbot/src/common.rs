@@ -747,3 +747,84 @@ pub fn resolve_auth_token_or_random(raw: &str, field: &str) -> String {
         }
     }
 }
+
+// ---------------------------------------------------------------------------
+// SEC-001：本机 → 远程可达模式的凭据引导状态机（隐式，无新增持久字段）
+// ---------------------------------------------------------------------------
+
+/// onboard 新装写入的固定初始 web 令牌（`commands/onboard.rs` 同源引用）。
+/// 引导值集合 = { `""`（模板缺省，verify_token 对空期望放行所有人）, 本常量 }。
+pub const BOOTSTRAP_WEB_TOKEN: &str = "276793422";
+
+/// SEC-001 引导态凭据判定：web 控制面凭据仍是「引导值」时返回 true。
+///
+/// 隐式状态机的唯一判定点——判断基于 config 原始值：
+/// - 空 / [`BOOTSTRAP_WEB_TOKEN`] → bootstrap（true）
+/// - `vault:` / `env:` / `yaml:` 引用 → 已初始化的正式凭据（false）
+/// - 其余任何非空值 = 用户已显式设置（false）
+///
+/// 不变量：**引导态凭据只允许守护回环控制面**（消费方见
+/// [`ensure_control_plane_credential`]）。恢复旧配置 / 重复 onboard 后若
+/// 原始值真是引导值，它就该被视为 bootstrap——语义正确而非缺陷；
+/// 「设置新令牌并标记 initialized」由换掉引导值天然达成，无状态与值失步。
+pub fn is_bootstrap_web_credential(raw: &str) -> bool {
+    let v = raw.trim();
+    v.is_empty() || v == BOOTSTRAP_WEB_TOKEN
+}
+
+/// SEC-001：绑定 host 是否只落回环。返回 `None` = 无法判定（主机名解析
+/// 失败或零结果）——调用方放行：绑不上的地址不构成暴露面，让既有 bind
+/// 流程自然报错。`0.0.0.0` / `::`（unspecified，绑所有网卡）按非回环处理。
+pub fn bind_host_is_loopback(host: &str) -> Option<bool> {
+    use std::net::ToSocketAddrs;
+    let h = host.trim();
+    if let Ok(ip) = h.parse::<std::net::IpAddr>() {
+        return Some(ip.is_loopback());
+    }
+    let addrs: Vec<_> = match (h, 0u16).to_socket_addrs() {
+        Ok(a) => a.collect(),
+        Err(_) => return None,
+    };
+    if addrs.is_empty() {
+        return None;
+    }
+    Some(addrs.iter().all(|a| a.ip().is_loopback()))
+}
+
+/// SEC-001 网关启动闸（纯函数便于单测）：引导态凭据只允许守护回环控制面。
+///
+/// - 绑定 host 全回环 → Ok（bootstrap + 回环 = onboard 的合法初始形态）
+/// - 绑定 host 非回环且凭据是引导值 → Err（附三条补救指引）
+/// - 绑定 host 非回环且凭据已初始化 → Ok（集群/远程场景的正道）
+/// - host 解析失败（[`bind_host_is_loopback`] 回 None）→ Ok
+///
+/// 消费点：gateway 正常启动路径对 `web_bind_and_display_hosts` 返回的
+/// **绑定 host** 闸（统一覆盖 0.0.0.0/空/显式 LAN IP 三分支）。web 通道
+/// （/ws）与 web server（/api）共用同一监听与同一原始 token 值，此处一闸
+/// 双护。websocket 通道是独立监听面，单独过同一闸。`--relay` 纯中继豁免：
+/// 不装配 /ws 与 /api/*，控制面闸无对象。
+///
+/// `field`：报错里如实指认来源配置键（如 `channels.web.auth_token` /
+/// `channels.websocket.auth_token`）——两个闸共用本函数，文案不得硬编码
+/// 通道名误导排障（真机验证 2026-09-23：websocket 闸触发时旧文案错指 web）。
+pub fn ensure_control_plane_credential(
+    bind_host: &str,
+    raw_auth_token: &str,
+    field: &str,
+) -> Result<(), String> {
+    if !is_bootstrap_web_credential(raw_auth_token) {
+        return Ok(());
+    }
+    match bind_host_is_loopback(bind_host) {
+        Some(true) => Ok(()),
+        Some(false) => Err(format!(
+            "SEC-001 拒绝启动：{field} 所在控制面将绑定到非回环地址（{bind_host}），但\
+             该 auth_token 仍是引导值（空或默认令牌）——同网段任何设备都能无凭据\
+             操作本机 agent。三选一后重启：\n  \
+             1) nemesisbot channel web auth-set <你的令牌>（web 通道）\n  \
+             2) 手改 config.json 的 {field}\n  \
+             3) 填入 vault:/env: 引用（如 vault:web_token）"
+        )),
+        None => Ok(()), // 解析失败不闸（见 bind_host_is_loopback）
+    }
+}

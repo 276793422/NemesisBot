@@ -176,10 +176,15 @@ fn save_registry_config(
 ) -> Result<()> {
     let dir = skills_cfg.parent().unwrap();
     let _ = std::fs::create_dir_all(dir);
-    std::fs::write(
-        skills_cfg,
-        serde_json::to_string_pretty(config).unwrap_or_default(),
-    )?;
+    // REL-002：统一原子写入（config.skills.json）。
+    nemesis_utils::write_file_atomic(
+        &skills_cfg.to_string_lossy(),
+        serde_json::to_string_pretty(config)
+            .unwrap_or_default()
+            .as_bytes(),
+        0o600,
+    )
+    .map_err(anyhow::Error::msg)?;
     Ok(())
 }
 

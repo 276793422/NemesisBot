@@ -82,8 +82,20 @@ fn test_unc_path_detected() {
     assert_eq!(out.len(), 1);
     assert_eq!(out[0].raw, r"\\server\share\photos\风景.png");
     assert!(out[0].deliberate);
-    // 单机无该共享 → NotFound（deliberate → failure_reason 有内容）
-    assert_eq!(out[0].status, CandidateStatus::NotFound);
+    // 单机无该共享 → 诚实失败（deliberate → failure_reason 有内容）。
+    // 断言只锁「诚实失败」不锁具体分支（2026-09-23 全量回归假红根修）：
+    // UNC 存在性检查走 SMB/MUP 名字解析，`\\server` 不可达时的 OS 错误码
+    // 随网络状态浮动——常态为 ERROR_PATH_NOT_FOUND(3) → NotFound，但高并
+    // 发负载（全量测试 + 集群组件同时在跑）下可返回超时类错误 →
+    // Unreadable。两者都是 verify() 的诚实 deliberate 失败，生产行为正确。
+    assert!(
+        matches!(
+            out[0].status,
+            CandidateStatus::NotFound | CandidateStatus::Unreadable
+        ),
+        "unc path must fail honestly, got {:?}",
+        out[0].status
+    );
     assert!(out[0].failure_reason().is_some());
 }
 

@@ -214,20 +214,118 @@ fn test_write_file_atomic_concurrent() {
     assert!(content.starts_with("thread-"));
 }
 
-/// 空路径的 `Path::parent()` 返回 None → 跳过 mkdir 分支（覆盖 if-let 的
-/// None 臂）。tmp 文件落在当前目录（"."），最终 rename 到 "" 确定性失败。
-/// 测试后清理遗留在 CWD 的 .tmp-* 文件（全测试集中只有本用例往 CWD 写 tmp）。
+/// 空路径的 `Path::parent()` 返回 None → 落到 "." 分支。tmp 文件落在当前
+/// 目录（"."），最终 rename 到 "" 确定性失败；helper 自身清理临时文件
+/// （REL-002 失败清理保证），测试仍兜底清扫 CWD 残留。
 #[test]
 fn test_write_file_atomic_empty_path_skips_parent_creation() {
     let result = write_file_atomic("", b"data", 0o644);
     let err = result.unwrap_err();
-    assert!(err.starts_with("rename"), "unexpected error: {err}");
+    assert!(err.starts_with("atomic write"), "unexpected error: {err}");
+    assert!(err.contains("rename"), "error should carry the step: {err}");
 
-    // 清理本用例落在当前目录的临时文件
+    // 清理本用例落在当前目录的临时文件（正常由 helper 清理，兜底防御）
     for entry in fs::read_dir(".").unwrap().flatten() {
         let name = entry.file_name().to_string_lossy().to_string();
         if name.starts_with(".tmp-") {
             let _ = fs::remove_file(entry.path());
         }
     }
+}
+
+// ============================================================
+// REL-002（2026-09-23）：失败注入 / 并发 / 权限验收
+// ============================================================
+
+/// 替换失败臂：目标是已存在的目录 → rename 失败；原目录原样、无 tmp 残留。
+#[test]
+fn test_write_file_atomic_target_is_directory_fails_clean() {
+    let dir = tempfile::tempdir().unwrap();
+    let target = dir.path().join("target");
+    fs::create_dir(&target).unwrap();
+
+    let result = write_file_atomic(target.to_str().unwrap(), b"data", 0o644);
+    assert!(result.is_err());
+
+    // 原目标（目录）未被动过
+    assert!(target.is_dir(), "original directory must be untouched");
+    // 无临时文件残留
+    let leftovers: Vec<_> = fs::read_dir(dir.path())
+        .unwrap()
+        .flatten()
+        .filter(|e| e.file_name().to_string_lossy().starts_with(".tmp-"))
+        .collect();
+    assert!(
+        leftovers.is_empty(),
+        "temp files must be cleaned up: {:?}",
+        leftovers.iter().map(|e| e.file_name()).collect::<Vec<_>>()
+    );
+}
+
+/// 创建失败臂（unix）：父目录只读 → 临时文件建不出来 → 原文件完好。
+#[cfg(unix)]
+#[test]
+fn test_write_file_atomic_readonly_dir_original_intact() {
+    use std::os::unix::fs::PermissionsExt;
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("keep.txt");
+    fs::write(&path, b"original").unwrap();
+    fs::set_permissions(dir.path(), fs::Permissions::from_mode(0o555)).unwrap();
+
+    let result = write_file_atomic(path.to_str().unwrap(), b"new", 0o644);
+    // 恢复权限让 tempdir 能自清理
+    fs::set_permissions(dir.path(), fs::Permissions::from_mode(0o755)).unwrap();
+
+    assert!(result.is_err(), "write into read-only dir must fail");
+    assert_eq!(
+        fs::read_to_string(&path).unwrap(),
+        "original",
+        "old config must survive a failed write"
+    );
+}
+
+/// unix 权限在临时文件创建时即挂：0600 生效（验收「权限保持预期值」）。
+#[cfg(unix)]
+#[test]
+fn test_write_file_atomic_unix_perm_applied() {
+    use std::os::unix::fs::PermissionsExt;
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("secret.cfg").to_string_lossy().to_string();
+    write_file_atomic(&path, b"k=v", 0o600).unwrap();
+    let mode = fs::metadata(&path).unwrap().permissions().mode();
+    assert_eq!(mode & 0o777, 0o600, "perm must be applied at tmp creation");
+}
+
+/// 并发写同一目标：终态必为某一次写入的完整内容（无交错半截），无 tmp 残留。
+#[test]
+fn test_write_file_atomic_concurrent_no_interleave() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("race.cfg").to_string_lossy().to_string();
+
+    let threads: Vec<_> = (0..8)
+        .map(|i| {
+            let path = path.clone();
+            std::thread::spawn(move || {
+                let payload = format!("payload-{i}-{}", "x".repeat(2048));
+                write_file_atomic(&path, payload.as_bytes(), 0o644)
+            })
+        })
+        .collect();
+    for t in threads {
+        t.join().unwrap().unwrap();
+    }
+
+    let content = fs::read(&path).unwrap();
+    let text = String::from_utf8(content).unwrap();
+    assert!(
+        text.starts_with("payload-") && text.ends_with(&"x".repeat(2048)),
+        "final content must be ONE complete write, not interleaved"
+    );
+
+    let leftovers = fs::read_dir(dir.path())
+        .unwrap()
+        .flatten()
+        .filter(|e| e.file_name().to_string_lossy().starts_with(".tmp-"))
+        .count();
+    assert_eq!(leftovers, 0, "no temp files may survive concurrent writes");
 }

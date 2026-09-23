@@ -370,7 +370,12 @@ impl ClusterTaskList {
         }
         match serde_json::to_string_pretty(conversation) {
             Ok(json) => {
-                if let Err(e) = std::fs::write(&path, json) {
+                // REL-002：统一原子写入。
+                if let Err(e) = nemesis_utils::write_file_atomic(
+                    &path.to_string_lossy(),
+                    json.as_bytes(),
+                    0o600,
+                ) {
                     tracing::warn!(
                         path = %path.display(),
                         error = %e,
@@ -506,7 +511,9 @@ impl ClusterTaskList {
             .map_err(|e| format!("Failed to serialize tasks: {}", e))?;
 
         let path = dir.join("tasks.json");
-        std::fs::write(&path, json).map_err(|e| format!("Failed to write tasks.json: {}", e))?;
+        // REL-002：统一原子写入。
+        nemesis_utils::write_file_atomic(&path.to_string_lossy(), json.as_bytes(), 0o600)
+            .map_err(|e| format!("Failed to write tasks.json: {}", e))?;
 
         tracing::info!(
             count = active_tasks.len(),

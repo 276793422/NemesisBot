@@ -266,7 +266,10 @@ fn set_main_switch(cfg_path: &Path, enabled: bool) -> Result<()> {
     }
 
     let updated = serde_json::to_string_pretty(&cfg).context("serializing config")?;
-    std::fs::write(cfg_path, updated).with_context(|| format!("writing {}", cfg_path.display()))?;
+    // REL-002：统一原子写入。
+    nemesis_utils::write_file_atomic(&cfg_path.to_string_lossy(), updated.as_bytes(), 0o600)
+        .map_err(anyhow::Error::msg)
+        .with_context(|| format!("writing {}", cfg_path.display()))?;
 
     Ok(())
 }

@@ -84,20 +84,13 @@ pub fn load_projects_lenient(path: &Path) -> ProjectsFile {
     }
 }
 
-/// 原子写（同目录 tmp + rename；Windows rename 带 REPLACE_EXISTING，同目录
-/// 保证同卷）。rename 失败时清残留 tmp（best-effort）。
+/// 原子写 — REL-002（2026-09-23）起委托统一 helper
+/// `nemesis_utils::write_file_atomic`（唯一临时名 + sync_all + 失败清理）。
 pub fn save_projects(path: &Path, file: &ProjectsFile) -> Result<()> {
-    if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent)
-            .with_context(|| format!("create config dir {}", parent.display()))?;
-    }
     let content = serde_json::to_string_pretty(file).context("serialize projects")?;
-    let tmp = path.with_extension("json.tmp");
-    std::fs::write(&tmp, &content).with_context(|| format!("write {}", tmp.display()))?;
-    std::fs::rename(&tmp, path).with_context(|| {
-        let _ = std::fs::remove_file(&tmp);
-        format!("rename {} -> {}", tmp.display(), path.display())
-    })?;
+    // helper 自身错误已带 "atomic write {path}: {step}" 前缀，无需再包一层 context。
+    nemesis_utils::write_file_atomic(&path.to_string_lossy(), content.as_bytes(), 0o600)
+        .map_err(anyhow::Error::msg)?;
     Ok(())
 }
 

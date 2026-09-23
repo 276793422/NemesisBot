@@ -254,31 +254,15 @@ impl CORSManager {
         Ok(cfg)
     }
 
-    /// Write config to `path` atomically: write to a `.tmp` file then rename.
+    /// Write config to `path` atomically — REL-002（2026-09-23）起委托统一
+    /// helper `nemesis_utils::write_file_atomic`（唯一临时名 + sync_all +
+    /// 失败清理），替换旧的固定 `.json.tmp` + 失败回退裸写实现（回退会
+    /// 把原子性悄悄降级为 truncate 写，已废弃）。
     fn save_to_file(cfg: &CORSConfig, path: &Path) -> std::io::Result<()> {
-        // Ensure parent directory exists.
-        if let Some(parent) = path.parent() {
-            std::fs::create_dir_all(parent)?;
-        }
-
         let json = serde_json::to_string_pretty(cfg)
             .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
-
-        let tmp_path = path.with_extension("json.tmp");
-        std::fs::write(&tmp_path, &json)?;
-
-        // Atomic rename (best-effort on Windows; may fail across drives).
-        if let Err(e) = std::fs::rename(&tmp_path, path) {
-            // Fallback: just remove the temp file and try a direct write.
-            let _ = std::fs::remove_file(&tmp_path);
-            std::fs::write(path, &json)?;
-            tracing::warn!(
-                error = %e,
-                "[WebServer] Atomic rename failed, fell back to direct write"
-            );
-        }
-
-        Ok(())
+        nemesis_utils::write_file_atomic(&path.to_string_lossy(), json.as_bytes(), 0o600)
+            .map_err(std::io::Error::other)
     }
 }
 

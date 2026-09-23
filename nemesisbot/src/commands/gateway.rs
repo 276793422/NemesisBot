@@ -345,7 +345,7 @@ impl nemesis_security::guardian::LlmJudge for GatewayLlmJudge {
 /// ApprovalManager" 注释处）把 web_mgr 换回
 /// `Arc::new(ApprovalPopupAdapter::new(process_manager.clone()))`；本结构体
 /// 与 `plugin_ui_library_exists` 一并恢复使用。测试（gateway/tests.rs、
-/// tests_r9_live.rs）仍直接构造它，保留编译。
+/// r9_live_tests.rs）仍直接构造它，保留编译。
 #[cfg(all(feature = "desktop", feature = "security"))]
 #[allow(dead_code)]
 struct ApprovalPopupAdapter {
@@ -786,16 +786,16 @@ mod tests;
 
 /// R9 补测批：gateway 活动场景组（live 双节点/心跳/审批/工作流，见模块头注释）。
 /// 整文件 Windows 形态（11/11 live 场景走 Windows CLI 进程边界），随测试一并门控。
-/// `pub(crate)` 仅为姊妹模块 tests_scenario 复用互斥闸与启动夹具。
+/// `pub(crate)` 仅为姊妹模块 scenario_tests 复用互斥闸与启动夹具。
 #[cfg(all(test, windows))]
-pub(crate) mod tests_r9_live;
+pub(crate) mod r9_live_tests;
 
 /// 场景级真机 E2E（2026-09-23 多会话并行清账批）：起真 gateway 子进程 +
 /// 可控延时 mock LLM，经持久 WS 连接逐条复现四联 BUG 的原始场景并断言修复
 /// 生效（跨会话并行 / 同会话排队不丢 / Reject 忙弹回留痕 / 绑定注册表全
 /// 生命周期）。同样 Windows 进程边界形态，与 R9 组同门控。
 #[cfg(all(test, windows))]
-mod tests_scenario;
+mod scenario_tests;
 
 /// E1 二期 token 回传（全自动流转 P5）：把 worker 回调携带的 `usage` 记入
 /// master 用量账本（DataStore request_logs）。记账键 = `cluster_rpc:
@@ -1513,6 +1513,9 @@ async fn run_relay(home: &std::path::Path, cfg: &nemesis_config::Config) -> Resu
     // （桥接入 /bridge + 状态页 /relay + /d/<node_id>/ 转发都在公网侧）——
     // bind_all 传 true：0.0.0.0 如实绑定所有网卡（此前传 false 使 0.0.0.0
     // 被静默回环成 127.0.0.1，VPS 真机验收暴露）。display host 不参与 relay。
+    // SEC-001 豁免：纯中继不装配 /ws 与全量 /api/*（下方 relay_only 注），
+    // 「控制面凭据」启动闸在这里没有对象；公网侧接入鉴权由 bridge.server
+    // .token 独立把关（上方 fail-closed 校验）。
     let web_bind_host = web_bind_and_display_hosts(&cfg.channels.web.host, true).0;
     let web_port = cfg.channels.web.port;
     // relay_only（2026-09-20，用户裁决）：纯中继不暴露 hub 自身 dashboard
@@ -3980,6 +3983,26 @@ pub async fn run(local: bool, relay: bool, extra_args: &[String]) -> Result<()> 
     let web_cluster_starts = false;
     let (web_bind_host, web_display_host) =
         web_bind_and_display_hosts(&cfg.channels.web.host, web_cluster_starts);
+    // SEC-001：引导态凭据（空/默认令牌）只允许守护回环控制面——非回环绑定
+    // + 引导值 = 拒绝启动并指引补凭据（见 common::ensure_control_plane_credential）。
+    // web 通道（/ws）与 web server（/api）共用本监听与同一原始 token 值，
+    // 此处一闸双护。
+    common::ensure_control_plane_credential(
+        &web_bind_host,
+        &cfg.channels.web.auth_token,
+        "channels.web.auth_token",
+    )
+    .map_err(anyhow::Error::msg)?;
+    // SEC-001：websocket 通道是独立监听面（host 原样生效，无 0.0.0.0→回环
+    // 翻译），同机制同闸。
+    if cfg.channels.websocket.enabled {
+        common::ensure_control_plane_credential(
+            &cfg.channels.websocket.host,
+            &cfg.channels.websocket.auth_token,
+            "channels.websocket.auth_token",
+        )
+        .map_err(anyhow::Error::msg)?;
+    }
     let web_port = cfg.channels.web.port;
     let cors_origins = {
         let cors_path = common::cors_config_path(&home);
@@ -6440,7 +6463,12 @@ pub async fn run(local: bool, relay: bool, extra_args: &[String]) -> Result<()> 
                         if let Some(obj) = cfg.get_mut("cluster").and_then(|c| c.as_object_mut()) {
                             obj.insert("enabled".to_string(), serde_json::json!(true));
                             if let Ok(updated) = serde_json::to_string_pretty(&cfg) {
-                                let _ = std::fs::write(&cfg_path, updated);
+                                // REL-002：统一原子写入（cluster enable 开关写主配置）。
+                                let _ = nemesis_utils::write_file_atomic(
+                                    &cfg_path.to_string_lossy(),
+                                    updated.as_bytes(),
+                                    0o600,
+                                );
                             }
                         }
                     }
@@ -6454,7 +6482,12 @@ pub async fn run(local: bool, relay: bool, extra_args: &[String]) -> Result<()> 
                     {
                         obj.insert("enabled".to_string(), serde_json::json!(true));
                         if let Ok(updated) = serde_json::to_string_pretty(&cfg) {
-                            let _ = std::fs::write(&cluster_cfg_path, updated);
+                            // REL-002：统一原子写入（config.cluster.json 含 token）。
+                            let _ = nemesis_utils::write_file_atomic(
+                                &cluster_cfg_path.to_string_lossy(),
+                                updated.as_bytes(),
+                                0o600,
+                            );
                         }
                     }
                     if let Err(e) = ca_start.start() {
@@ -6478,7 +6511,12 @@ pub async fn run(local: bool, relay: bool, extra_args: &[String]) -> Result<()> 
                     {
                         obj.insert("enabled".to_string(), serde_json::json!(false));
                         if let Ok(updated) = serde_json::to_string_pretty(&cfg) {
-                            let _ = std::fs::write(&cluster_cfg_path, updated);
+                            // REL-002：统一原子写入（config.cluster.json 含 token）。
+                            let _ = nemesis_utils::write_file_atomic(
+                                &cluster_cfg_path.to_string_lossy(),
+                                updated.as_bytes(),
+                                0o600,
+                            );
                         }
                     }
                     // Write config.json cluster.enabled = false
@@ -6489,7 +6527,12 @@ pub async fn run(local: bool, relay: bool, extra_args: &[String]) -> Result<()> 
                     {
                         obj.insert("enabled".to_string(), serde_json::json!(false));
                         if let Ok(updated) = serde_json::to_string_pretty(&cfg) {
-                            let _ = std::fs::write(&cfg_path, updated);
+                            // REL-002：统一原子写入。
+                            let _ = nemesis_utils::write_file_atomic(
+                                &cfg_path.to_string_lossy(),
+                                updated.as_bytes(),
+                                0o600,
+                            );
                         }
                     }
                 }));

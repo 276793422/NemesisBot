@@ -1567,7 +1567,8 @@ impl ClusterHandler {
         }
         let json = serde_json::to_string_pretty(data)
             .map_err(|e| format!("failed to serialize: {}", e))?;
-        std::fs::write(&path, &json)
+        // REL-002：统一原子写入（config.cluster.json 含 token）。
+        nemesis_utils::write_file_atomic(&path.to_string_lossy(), json.as_bytes(), 0o600)
             .map_err(|e| format!("failed to write cluster config: {}", e))?;
 
         Ok(Some(serde_json::json!({ "saved": true })))
@@ -1604,8 +1605,13 @@ impl ClusterHandler {
         }
         let updated = serde_json::to_string_pretty(&main_cfg)
             .map_err(|e| format!("failed to serialize config.json: {}", e))?;
-        std::fs::write(&main_cfg_path, updated)
-            .map_err(|e| format!("failed to write config.json: {}", e))?;
+        // REL-002：统一原子写入（config.json 含 API key）
+        nemesis_utils::write_file_atomic(
+            &main_cfg_path.to_string_lossy(),
+            updated.as_bytes(),
+            0o600,
+        )
+        .map_err(|e| format!("failed to write config.json: {e}"))?;
         Ok(Some(
             serde_json::json!({ "updated": true, "enabled": enabled }),
         ))
@@ -1629,7 +1635,8 @@ impl ClusterHandler {
         }
         let json = serde_json::to_string_pretty(&cfg)
             .map_err(|e| format!("failed to serialize: {}", e))?;
-        std::fs::write(&path, json)
+        // REL-002：统一原子写入（config.cluster.json 含 token）。
+        nemesis_utils::write_file_atomic(&path.to_string_lossy(), json.as_bytes(), 0o600)
             .map_err(|e| format!("failed to write cluster config: {}", e))?;
         Ok(())
     }
@@ -1692,7 +1699,9 @@ impl ClusterHandler {
         if let Some(parent) = path.parent() {
             let _ = std::fs::create_dir_all(parent);
         }
-        std::fs::write(&path, content).map_err(|e| format!("failed to write {}: {}", file, e))?;
+        // REL-002：统一原子写入（节点身份关键文件）
+        nemesis_utils::write_file_atomic(&path.to_string_lossy(), content.as_bytes(), 0o600)
+            .map_err(|e| format!("failed to write {}: {e}", file))?;
         tracing::info!(file = %file, "[Cluster] Persona file saved");
         Ok(Some(serde_json::json!({"saved": true, "file": file})))
     }
@@ -1821,7 +1830,9 @@ impl ClusterHandler {
         if let Some(parent) = path.parent() {
             let _ = std::fs::create_dir_all(parent);
         }
-        std::fs::write(&path, content).map_err(|e| format!("写入 cluster/{} 失败: {}", file, e))?;
+        // REL-002：统一原子写入（节点身份关键文件）
+        nemesis_utils::write_file_atomic(&path.to_string_lossy(), content.as_bytes(), 0o600)
+            .map_err(|e| format!("写入 cluster/{file} 失败: {e}"))?;
         Ok(())
     }
 

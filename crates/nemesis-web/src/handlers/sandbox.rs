@@ -119,7 +119,9 @@ fn update_executor<F: FnOnce(&mut nemesis_config::ExecutorSeparationConfig)>(
     );
     let out =
         serde_json::to_string_pretty(&val).map_err(|e| format!("serialize config.json: {e}"))?;
-    std::fs::write(&config_path, out).map_err(|e| format!("write config.json: {e}"))?;
+    // REL-002：统一原子写入（config.json 含 API key）。
+    nemesis_utils::write_file_atomic(&config_path.to_string_lossy(), out.as_bytes(), 0o600)
+        .map_err(|e| format!("write config.json: {e}"))?;
     Ok(())
 }
 

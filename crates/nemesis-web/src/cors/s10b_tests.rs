@@ -1,9 +1,19 @@
 //! S10b (quality-hardening goal 冲刺, web 批次 2): CORSManager error arms the
 //! existing tests skip — invalid JSON load, un-creatable parent directory
-//! (`create_dir_all` failure), the atomic-rename fallback (Windows read-only
-//! target), and the CDN `Url::parse` failure arm in `check_origin`.
+//! (`create_dir_all` failure), the honest rename failure on a read-only
+//! destination, and the CDN `Url::parse` failure arm in `check_origin`.
 
 use super::*;
+
+/// 目录内不应残留任何 `.tmp-` 前缀的临时文件（helper 唯一临时名前缀）。
+fn assert_no_tmp_leftovers(dir: &std::path::Path, what: &str) {
+    let leftovers: Vec<_> = std::fs::read_dir(dir)
+        .unwrap()
+        .filter_map(|e| e.ok())
+        .filter(|e| e.file_name().to_string_lossy().starts_with(".tmp-"))
+        .collect();
+    assert!(leftovers.is_empty(), "{what}: {leftovers:?}");
+}
 
 #[test]
 fn load_invalid_json_reports_invalid_data() {
@@ -21,7 +31,9 @@ fn load_invalid_json_reports_invalid_data() {
 #[test]
 fn new_with_file_as_parent_dir_fails_create_dir_all() {
     // A regular FILE sits where the config's parent directory should be →
-    // `create_dir_all` fails when writing the default config.
+    // the atomic helper's internal `create_dir_all` fails when writing the
+    // default config (REL-002 后错误经 helper 步骤标签包装，kind 归一为
+    // Other，断言改查步骤标签与路径上下文——比裸 kind 更有语义)。
     let dir = tempfile::tempdir().unwrap();
     let blocker = dir.path().join("blocker");
     std::fs::write(&blocker, b"x").unwrap();
@@ -32,23 +44,21 @@ fn new_with_file_as_parent_dir_fails_create_dir_all() {
         Ok(_) => panic!("file-as-parent config path must fail"),
         Err(e) => e,
     };
+    let msg = err.to_string();
     assert!(
-        matches!(
-            err.kind(),
-            std::io::ErrorKind::AlreadyExists | std::io::ErrorKind::NotADirectory
-        ),
-        "create_dir_all on a file parent fails: {:?}",
-        err.kind()
+        msg.contains("atomic write") && msg.contains("mkdir"),
+        "error must carry the helper step label: {msg}"
     );
 }
 
 #[test]
-fn rename_fallback_hits_when_destination_is_readonly() {
+fn rename_fails_honestly_when_destination_is_readonly() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("cors.json");
     // Seed a valid config file, then make it read-only so the atomic
-    // rename (tmp → path) fails and save_to_file falls back to a direct
-    // write (which also fails → add_origin surfaces the error).
+    // rename (tmp → path) fails and save_to_file surfaces the error.
+    // REL-002 注：旧实现此时会回退为裸写（同失败，但回退语义会把原子性
+    // 悄悄降级）；helper 统一后无回退臂，失败即诚实报错。
     std::fs::write(
         &path,
         serde_json::to_string(&CORSConfig::default()).unwrap(),
@@ -68,9 +78,10 @@ fn rename_fallback_hits_when_destination_is_readonly() {
 
     if cfg!(windows) {
         // rename fails (ERROR_ACCESS_DENIED on read-only destination) →
-        // fallback direct write also fails → Err. Note: the in-memory config
-        // was already mutated before the failed persist (push happens under
-        // the write lock first) — only the disk write is refused.
+        // Err directly from the helper（无回退臂）。Note: the in-memory
+        // config was already mutated before the failed persist (push
+        // happens under the write lock first) — only the disk write is
+        // refused.
         assert!(res.is_err(), "read-only destination surfaces write failure");
         assert!(
             mgr.list_origins()
@@ -88,7 +99,7 @@ fn rename_fallback_hits_when_destination_is_readonly() {
             res
         );
     }
-    let _ = std::fs::remove_file(dir.path().join("cors.json.tmp"));
+    assert_no_tmp_leftovers(dir.path(), "failed persist must not leave tmp");
 }
 
 #[test]

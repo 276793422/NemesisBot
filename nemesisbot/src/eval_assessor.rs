@@ -180,8 +180,14 @@ pub fn load_rules(path: &Path) -> Result<RulesFile> {
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent).ok();
         }
-        std::fs::write(path, DEFAULT_RULES_JSON)
-            .with_context(|| format!("seed default rules to {}", path.display()))?;
+        // REL-002：统一原子写入（首次运行自动种子与 save_rules 同源）。
+        nemesis_utils::write_file_atomic(
+            &path.to_string_lossy(),
+            DEFAULT_RULES_JSON.as_bytes(),
+            0o600,
+        )
+        .map_err(anyhow::Error::msg)
+        .with_context(|| format!("seed default rules to {}", path.display()))?;
     }
     let content = std::fs::read_to_string(path)
         .with_context(|| format!("read rules file {}", path.display()))?;
@@ -189,20 +195,13 @@ pub fn load_rules(path: &Path) -> Result<RulesFile> {
 }
 
 /// 保存规则文件（写回唯一真相源；pretty JSON 便于手工编辑）。
-/// X4 修复：**原子写**——先写同目录临时文件再 rename 覆盖（Windows 的
-/// fs::rename 带 REPLACE_EXISTING）。直接 fs::write 在写一半崩溃/断电时
-/// 撕裂文件，下次 load_rules 解析失败 → 评估全判未知 + reset 场景可能
-/// 丢失全部自定义规则。同目录保证同卷（跨卷 rename 会失败）。
+/// X4 起要求原子替换；REL-002 起统一走 `write_file_atomic`（唯一临时名
+/// `.tmp-{pid}-{nanos}` + sync_all + 失败清理，替代此前的自制固定名
+/// `.json.tmp` + rename——旧形态无 sync、并发互踩、失败清理只覆盖 rename 臂）。
 pub fn save_rules(path: &Path, file: &RulesFile) -> Result<()> {
     let content = serde_json::to_string_pretty(file).context("serialize rules")?;
-    let tmp_path = path.with_extension("json.tmp");
-    std::fs::write(&tmp_path, &content)
-        .with_context(|| format!("write rules tmp {}", tmp_path.display()))?;
-    std::fs::rename(&tmp_path, path).with_context(|| {
-        // rename 失败时清掉残留 tmp（best-effort）。
-        let _ = std::fs::remove_file(&tmp_path);
-        format!("atomic-replace rules file {}", path.display())
-    })
+    nemesis_utils::write_file_atomic(&path.to_string_lossy(), content.as_bytes(), 0o600)
+        .map_err(anyhow::Error::msg)
 }
 
 // ---------------------------------------------------------------------------

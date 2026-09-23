@@ -323,12 +323,18 @@ impl ContinuationStore {
     async fn persist_to_disk(&self, snapshot: &ContinuationSnapshot) -> std::io::Result<()> {
         tokio::fs::create_dir_all(&self.cache_dir).await?;
         let final_path = self.snapshot_path(&snapshot.task_id);
-        let tmp_path = final_path.with_extension("json.tmp");
         let json = serde_json::to_string_pretty(snapshot)
             .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e.to_string()))?;
-        // Write to temporary file first, then rename for atomicity.
-        tokio::fs::write(&tmp_path, &json).await?;
-        std::fs::rename(&tmp_path, &final_path)?;
+        // REL-002（2026-09-23）：统一原子写入（sync_all + 唯一临时名 + 失败
+        // 清理），spawn_blocking 包裹避免 async 上下文阻塞——快照写入低频，
+        // 快照损坏会导致续行失败，原子性值得这点开销。
+        let path_str = final_path.to_string_lossy().to_string();
+        tokio::task::spawn_blocking(move || {
+            nemesis_utils::write_file_atomic(&path_str, json.as_bytes(), 0o600)
+        })
+        .await
+        .map_err(|e| std::io::Error::other(e.to_string()))?
+        .map_err(std::io::Error::other)?;
         Ok(())
     }
 

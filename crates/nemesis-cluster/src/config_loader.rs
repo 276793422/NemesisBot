@@ -33,7 +33,9 @@ pub fn save_config(path: &Path, config: &ClusterConfig) -> Result<(), ConfigErro
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent)?;
     }
-    std::fs::write(path, json)?;
+    // REL-002（2026-09-23）：裸写改统一原子写入（config.cluster.json 含 token）。
+    nemesis_utils::write_file_atomic(&path.to_string_lossy(), json.as_bytes(), 0o600)
+        .map_err(|e| ConfigError::Io(std::io::Error::other(e)))?;
     Ok(())
 }
 
@@ -184,7 +186,9 @@ pub fn save_app_config(workspace: &Path, config: &AppConfig) -> Result<(), Confi
     if let Some(parent) = config_path.parent() {
         std::fs::create_dir_all(parent)?;
     }
-    std::fs::write(&config_path, json)?;
+    // REL-002（2026-09-23）：裸写改统一原子写入（含 token）。
+    nemesis_utils::write_file_atomic(&config_path.to_string_lossy(), json.as_bytes(), 0o600)
+        .map_err(|e| ConfigError::Io(std::io::Error::other(e)))?;
     Ok(())
 }
 

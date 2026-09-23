@@ -146,10 +146,15 @@ fn sync_mcp_master_switch(config_json_path: &std::path::Path, enabled: bool) -> 
     }
 
     cfg["mcp"]["enabled"] = serde_json::Value::Bool(enabled);
-    std::fs::write(
-        config_json_path,
-        serde_json::to_string_pretty(&cfg).unwrap_or_default(),
-    )?;
+    // REL-002：统一原子写入（mcp 总开关在主配置）。
+    nemesis_utils::write_file_atomic(
+        &config_json_path.to_string_lossy(),
+        serde_json::to_string_pretty(&cfg)
+            .unwrap_or_default()
+            .as_bytes(),
+        0o600,
+    )
+    .map_err(anyhow::Error::msg)?;
     tracing::info!(
         "[MCP] Synced master switch: config.json mcp.enabled = {}",
         enabled
@@ -292,10 +297,15 @@ fn cmd_add(
         .push(server);
     cfg["enabled"] = serde_json::Value::Bool(true);
 
-    std::fs::write(
-        mcp_cfg_path,
-        serde_json::to_string_pretty(&cfg).unwrap_or_default(),
-    )?;
+    // REL-002：统一原子写入（config.mcp.json）。
+    nemesis_utils::write_file_atomic(
+        &mcp_cfg_path.to_string_lossy(),
+        serde_json::to_string_pretty(&cfg)
+            .unwrap_or_default()
+            .as_bytes(),
+        0o600,
+    )
+    .map_err(anyhow::Error::msg)?;
 
     // Sync master switch in the real home-root config.json: mcp.enabled = true
     sync_mcp_master_switch(config_json_path, true)?;
@@ -320,10 +330,15 @@ fn cmd_remove(mcp_cfg_path: &std::path::Path, name: &str) -> Result<()> {
             found = servers.len() < before;
         }
         if found {
-            std::fs::write(
-                mcp_cfg_path,
-                serde_json::to_string_pretty(&cfg).unwrap_or_default(),
-            )?;
+            // REL-002：统一原子写入（config.mcp.json）。
+            nemesis_utils::write_file_atomic(
+                &mcp_cfg_path.to_string_lossy(),
+                serde_json::to_string_pretty(&cfg)
+                    .unwrap_or_default()
+                    .as_bytes(),
+                0o600,
+            )
+            .map_err(anyhow::Error::msg)?;
             println!("MCP server '{}' removed.", name);
             println!("Restart agent/gateway to apply changes.");
         } else {

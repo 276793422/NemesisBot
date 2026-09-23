@@ -1058,3 +1058,100 @@ fn resolve_auth_token_or_random_fail_closed_on_broken_reference() {
 
     nemesis_config::clear_global_vault_resolver();
 }
+
+// ===========================================================================
+// SEC-001：凭据引导状态机（隐式）——六态判定 + 绑定回环判定 + 启动闸矩阵
+//（清单四类场景映射：新装=bootstrap+回环；升级=已配新令牌；恢复备份=
+// 默认令牌回 bootstrap 态→非回环拒绝；重复 onboard Seed 保留=升级态）
+// ===========================================================================
+
+#[test]
+fn bootstrap_credential_six_states() {
+    // 引导值集合两成员。
+    assert!(is_bootstrap_web_credential(""));
+    assert!(is_bootstrap_web_credential(
+        crate::common::BOOTSTRAP_WEB_TOKEN
+    ));
+    // 前后空白同样按原始值判定（trim）。
+    assert!(is_bootstrap_web_credential("  "));
+
+    // 用户显式设置的新值 = 已初始化。
+    assert!(!is_bootstrap_web_credential("my-secret-token-01"));
+
+    // 三种引用形式 = 正式凭据（无论解析成败，形态上已初始化）。
+    assert!(!is_bootstrap_web_credential("vault:web_token"));
+    assert!(!is_bootstrap_web_credential("env:NEMESISBOT_WEB_TOKEN"));
+    assert!(!is_bootstrap_web_credential("yaml:credentials.web_token"));
+}
+
+#[test]
+fn bind_host_loopback_classification() {
+    // 显式回环（v4/v6）。
+    assert_eq!(bind_host_is_loopback("127.0.0.1"), Some(true));
+    assert_eq!(bind_host_is_loopback("::1"), Some(true));
+    // 主机名解析到回环。
+    assert_eq!(bind_host_is_loopback("localhost"), Some(true));
+    // unspecified = 绑所有网卡 → 非回环。
+    assert_eq!(bind_host_is_loopback("0.0.0.0"), Some(false));
+    assert_eq!(bind_host_is_loopback("::"), Some(false));
+    // 显式 LAN/公网 IP（RFC1918 测试用例地址，纯 parse 不触网）。
+    assert_eq!(bind_host_is_loopback("192.168.1.10"), Some(false));
+    // 解析失败 → None（调用方放行：绑不上的地址不构成暴露面）。
+    assert_eq!(
+        bind_host_is_loopback("sec001-definitely-not-a-host.invalid"),
+        None
+    );
+}
+
+const WEB_FIELD: &str = "channels.web.auth_token";
+const WS_FIELD: &str = "channels.websocket.auth_token";
+
+#[test]
+fn control_plane_gate_matrix_maps_four_checklist_scenarios() {
+    // 场景①新装：bootstrap + 回环 → Ok（合法初始形态）。
+    assert!(ensure_control_plane_credential("127.0.0.1", "", WEB_FIELD).is_ok());
+    assert!(
+        ensure_control_plane_credential("127.0.0.1", crate::common::BOOTSTRAP_WEB_TOKEN, WEB_FIELD)
+            .is_ok()
+    );
+    assert!(ensure_control_plane_credential("localhost", "", WEB_FIELD).is_ok());
+
+    // 场景③恢复备份：默认令牌 + 非回环绑定 → 拒绝（bootstrap 态被正确识别）。
+    for host in ["0.0.0.0", "192.168.1.10"] {
+        let err = ensure_control_plane_credential(host, "", WEB_FIELD)
+            .expect_err("bootstrap must not guard non-loopback");
+        assert!(err.contains("SEC-001"), "error must be identifiable: {err}");
+        assert!(err.contains("auth-set"), "remedies must be present: {err}");
+        let err2 =
+            ensure_control_plane_credential(host, crate::common::BOOTSTRAP_WEB_TOKEN, WEB_FIELD)
+                .expect_err("default token is bootstrap too");
+        assert!(err2.contains("SEC-001"));
+    }
+
+    // 场景②升级 / ④重复 onboard Seed 保留（= 已配新令牌）：任意绑定放行。
+    assert!(ensure_control_plane_credential("0.0.0.0", "my-secret-token-01", WEB_FIELD).is_ok());
+    assert!(
+        ensure_control_plane_credential("192.168.1.10", "my-secret-token-01", WEB_FIELD).is_ok()
+    );
+    // 引用形式 = 正式凭据（不可无人化部署的场景不存在：vault/env 注入即放行）。
+    assert!(ensure_control_plane_credential("0.0.0.0", "env:NB_WEB_TOKEN", WEB_FIELD).is_ok());
+    assert!(ensure_control_plane_credential("0.0.0.0", "vault:web_token", WEB_FIELD).is_ok());
+
+    // host 解析失败 → 放行（bind 流程自然报错，不构成暴露面）。
+    assert!(
+        ensure_control_plane_credential("sec001-definitely-not-a-host.invalid", "", WEB_FIELD)
+            .is_ok()
+    );
+
+    // 字段标签如实入文案（真机验证 2026-09-23：websocket 闸触发不得错指 web）。
+    let ws_err = ensure_control_plane_credential("0.0.0.0", "", WS_FIELD)
+        .expect_err("websocket gate must refuse too");
+    assert!(
+        ws_err.contains(WS_FIELD),
+        "error must name the websocket field: {ws_err}"
+    );
+    assert!(
+        !ws_err.contains(WEB_FIELD),
+        "error must not misname the web field: {ws_err}"
+    );
+}

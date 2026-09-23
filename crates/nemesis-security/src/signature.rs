@@ -262,13 +262,10 @@ impl TrustStore {
             std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
         }
 
-        // Write atomically via a temp file.
-        let tmp = path.with_extension("tmp");
-        std::fs::write(&tmp, &json).map_err(|e| format!("failed to write trust store: {}", e))?;
-        std::fs::rename(&tmp, path).map_err(|e| {
-            let _ = std::fs::remove_file(&tmp);
-            format!("failed to rename trust store: {}", e)
-        })?;
+        // REL-002：统一原子写入（信任库撕裂 = 签名信任面损坏；唯一临时名 +
+        // sync_all + 失败清理由 helper 承担，替换此前的固定 `.tmp` 自制实现）
+        nemesis_utils::write_file_atomic(&path.to_string_lossy(), json.as_bytes(), 0o600)
+            .map_err(|e| format!("failed to write trust store: {e}"))?;
 
         Ok(())
     }

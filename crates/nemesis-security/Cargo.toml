@@ -19,6 +19,7 @@ security = ["dep:zip"]
 nemesis-types = { workspace = true }
 nemesis-path = { workspace = true }
 nemesis-config = { workspace = true }
+nemesis-utils = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 thiserror = { workspace = true }

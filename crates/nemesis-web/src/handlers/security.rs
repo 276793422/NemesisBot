@@ -266,7 +266,8 @@ impl SecurityHandler {
             std::fs::create_dir_all(parent)
                 .map_err(|e| format!("failed to create config dir: {}", e))?;
         }
-        std::fs::write(&path, "[]\n")
+        // REL-002：统一原子写入（approval 规则表清空）。
+        nemesis_utils::write_file_atomic(&path.to_string_lossy(), b"[]\n", 0o600)
             .map_err(|e| format!("failed to write approval rules: {}", e))?;
         Ok(Some(
             serde_json::json!({ "cleared": true, "removed": removed }),

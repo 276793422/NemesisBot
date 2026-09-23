@@ -65,8 +65,9 @@ scan_one() {
     my @lines = <$fh>;
     for (my $i = 0; $i < @lines; $i++) {
       my $ln = $lines[$i];
-      # 形态 B/C：裸测试属性（#[test] / #[tokio::test] / #[::tokio::test] 等）
-      if ($ln =~ /^\s*#\[\s*(::)?(tokio::)?test\s*\]/) {
+      # 形态 B/C：裸测试属性（#[test] / #[tokio::test] / #[tokio::test(flavor=…)]
+      # 等含参形态也计——2026-09-23 加固：带参 tokio::test 此前漏网）
+      if ($ln =~ /^\s*#\[\s*(::)?(tokio::)?test(\([^)]*\))?\s*\]/) {
         print "VIOLATION TESTFN $f:", $i+1, ": ", $ln;
       }
       # 形态 A/D：cfg(test) 系属性后面紧跟「带 body 的 mod」

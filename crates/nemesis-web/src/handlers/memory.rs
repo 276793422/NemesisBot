@@ -305,7 +305,9 @@ fn set_main_switch(home: &str, enabled: bool) -> Result<(), String> {
     }
     let updated = serde_json::to_string_pretty(&cfg)
         .map_err(|e| format!("failed to serialize config: {}", e))?;
-    std::fs::write(&cfg_path, updated).map_err(|e| format!("failed to write config: {}", e))?;
+    // REL-002：统一原子写入（config.json 含 API key）。
+    nemesis_utils::write_file_atomic(&cfg_path.to_string_lossy(), updated.as_bytes(), 0o600)
+        .map_err(|e| format!("failed to write config: {}", e))?;
     Ok(())
 }
 

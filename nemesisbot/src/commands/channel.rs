@@ -171,10 +171,15 @@ pub fn run(action: ChannelAction, local: bool) -> Result<()> {
                 {
                     channels.insert(name.clone(), serde_json::json!({"enabled": true}));
                 }
-                std::fs::write(
-                    &cfg_path,
-                    serde_json::to_string_pretty(&cfg).unwrap_or_default(),
-                )?;
+                // REL-002：统一原子写入（主 config 含 API key，0600）。
+                nemesis_utils::write_file_atomic(
+                    &cfg_path.to_string_lossy(),
+                    serde_json::to_string_pretty(&cfg)
+                        .unwrap_or_default()
+                        .as_bytes(),
+                    0o600,
+                )
+                .map_err(anyhow::Error::msg)?;
             }
             println!("Channel '{}' enabled.", name);
             println!("Restart gateway for changes to take effect.");
@@ -198,10 +203,15 @@ pub fn run(action: ChannelAction, local: bool) -> Result<()> {
                     })?;
                     obj.insert("enabled".to_string(), serde_json::Value::Bool(false));
                 }
-                std::fs::write(
-                    &cfg_path,
-                    serde_json::to_string_pretty(&cfg).unwrap_or_default(),
-                )?;
+                // REL-002：统一原子写入（主 config 含 API key，0600）。
+                nemesis_utils::write_file_atomic(
+                    &cfg_path.to_string_lossy(),
+                    serde_json::to_string_pretty(&cfg)
+                        .unwrap_or_default()
+                        .as_bytes(),
+                    0o600,
+                )
+                .map_err(anyhow::Error::msg)?;
             }
             println!("Channel '{}' disabled.", name);
         }
@@ -595,9 +605,13 @@ pub fn run(action: ChannelAction, local: bool) -> Result<()> {
                         {
                             obj.insert("enabled".to_string(), serde_json::Value::Bool(true));
                         }
-                        let _ = std::fs::write(
-                            &cfg_path,
-                            serde_json::to_string_pretty(&cfg).unwrap_or_default(),
+                        // REL-002：统一原子写入。
+                        let _ = nemesis_utils::write_file_atomic(
+                            &cfg_path.to_string_lossy(),
+                            serde_json::to_string_pretty(&cfg)
+                                .unwrap_or_default()
+                                .as_bytes(),
+                            0o600,
                         );
                     }
 
@@ -766,9 +780,13 @@ pub fn run(action: ChannelAction, local: bool) -> Result<()> {
                         {
                             obj.insert("enabled".to_string(), serde_json::Value::Bool(true));
                         }
-                        let _ = std::fs::write(
-                            &cfg_path,
-                            serde_json::to_string_pretty(&cfg).unwrap_or_default(),
+                        // REL-002：统一原子写入。
+                        let _ = nemesis_utils::write_file_atomic(
+                            &cfg_path.to_string_lossy(),
+                            serde_json::to_string_pretty(&cfg)
+                                .unwrap_or_default()
+                                .as_bytes(),
+                            0o600,
                         );
                     }
 
@@ -969,10 +987,15 @@ fn set_channel_config_value(
         }
     }
 
-    std::fs::write(
-        cfg_path,
-        serde_json::to_string_pretty(&cfg).unwrap_or_default(),
-    )?;
+    // REL-002：统一原子写入（主 config 含 API key，0600）。
+    nemesis_utils::write_file_atomic(
+        &cfg_path.to_string_lossy(),
+        serde_json::to_string_pretty(&cfg)
+            .unwrap_or_default()
+            .as_bytes(),
+        0o600,
+    )
+    .map_err(anyhow::Error::msg)?;
     Ok(())
 }
 
@@ -1017,10 +1040,15 @@ fn remove_channel_config(cfg_path: &std::path::Path, channel: &str, key: &str) -
         obj.remove(key);
     }
 
-    std::fs::write(
-        cfg_path,
-        serde_json::to_string_pretty(&cfg).unwrap_or_default(),
-    )?;
+    // REL-002：统一原子写入（主 config 含 API key，0600）。
+    nemesis_utils::write_file_atomic(
+        &cfg_path.to_string_lossy(),
+        serde_json::to_string_pretty(&cfg)
+            .unwrap_or_default()
+            .as_bytes(),
+        0o600,
+    )
+    .map_err(anyhow::Error::msg)?;
     Ok(())
 }
 

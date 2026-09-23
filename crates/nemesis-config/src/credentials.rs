@@ -187,14 +187,17 @@ pub fn save_credentials_file(path: &Path, file: &CredentialsFile) -> Result<()> 
     let body = serde_yaml::to_string(file).map_err(|e| {
         ConfigError::Validation(format!("failed to serialize credentials.yaml: {}", e))
     })?;
-    std::fs::write(path, body).map_err(|e| {
-        ConfigError::Validation(format!(
-            "cannot write credentials file '{}': {}",
-            path.display(),
-            e
-        ))
-    })?;
-    restrict_permissions(path);
+    // REL-002：统一原子写入；0600 在临时文件创建时即挂（取代写后
+    // restrict_permissions 的先宽后收窗口）。
+    nemesis_utils::write_file_atomic(&path.to_string_lossy(), body.as_bytes(), 0o600).map_err(
+        |e| {
+            ConfigError::Validation(format!(
+                "cannot write credentials file '{}': {}",
+                path.display(),
+                e
+            ))
+        },
+    )?;
     Ok(())
 }
 
@@ -220,26 +223,8 @@ fn warn_if_permissions_loose(path: &Path) {
 #[cfg(not(unix))]
 fn warn_if_permissions_loose(_path: &Path) {}
 
-/// Set owner-only permissions (0600) — Unix only.
-#[cfg(unix)]
-fn restrict_permissions(path: &Path) {
-    use std::os::unix::fs::PermissionsExt;
-    if let Ok(meta) = std::fs::metadata(path) {
-        let mut perms = meta.permissions();
-        perms.set_mode(0o600);
-        if let Err(e) = std::fs::set_permissions(path, perms) {
-            tracing::warn!(
-                "[Credentials] failed to chmod 600 '{}': {}",
-                path.display(),
-                e
-            );
-        }
-    }
-}
-
-/// See the Unix twin above — no-op on Windows.
-#[cfg(not(unix))]
-fn restrict_permissions(_path: &Path) {}
+// （restrict_permissions 已随 REL-002 移除：0600 现由 write_file_atomic 在
+// 临时文件创建时即挂，不再有写后补 chmod 的先宽后收窗口。）
 
 // ----------------------------------------------------------------------------
 // Reference resolution

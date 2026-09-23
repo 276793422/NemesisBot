@@ -138,7 +138,9 @@ fn write_raw_config(home: &str, cfg: &serde_json::Value) -> Result<(), String> {
     let path = config_path(home);
     let out =
         serde_json::to_string_pretty(cfg).map_err(|e| format!("serialize config.json: {e}"))?;
-    std::fs::write(&path, out).map_err(|e| format!("write config.json: {e}"))?;
+    // REL-002：统一原子写入（config.json 含 API key）。
+    nemesis_utils::write_file_atomic(&path.to_string_lossy(), out.as_bytes(), 0o600)
+        .map_err(|e| format!("write config.json: {e}"))?;
     if let Some(store) = nemesis_config::global() {
         store
             .reload()

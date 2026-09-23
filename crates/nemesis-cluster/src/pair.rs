@@ -186,8 +186,14 @@ pub async fn pair_with_peer(
     // -- 写后回读断言（最终防线）-------------------------------------------
     if let Err(detail) = assert_pair_written(peers_path, &peer_id, &udp_address, &name, rpc_port) {
         // 回滚：恢复写前内容；原本无文件则删除半成品。
+        // REL-002：回滚恢复也走原子写入（撕裂的回滚=最需要原子性的场景）。
         let rollback = if let Some(content) = &pre_content {
-            std::fs::write(peers_path, content).is_err()
+            nemesis_utils::write_file_atomic(
+                &peers_path.to_string_lossy(),
+                content.as_bytes(),
+                0o600,
+            )
+            .is_err()
         } else {
             std::fs::remove_file(peers_path).is_err()
         };

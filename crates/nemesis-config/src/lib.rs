@@ -2589,32 +2589,15 @@ pub fn save_config(config_path: &Path, config: &mut Config) -> Result<()> {
         error!("[Config] Failed to serialize config: {}", e);
         e
     })?;
-    // Write with restricted permissions (0600 on Unix) to protect API keys/tokens
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::OpenOptionsExt;
-        let mut f = std::fs::OpenOptions::new()
-            .write(true)
-            .create(true)
-            .truncate(true)
-            .mode(0o600)
-            .open(config_path)
-            .map_err(|e| {
-                error!("[Config] Failed to open config file for writing: {}", e);
-                e
-            })?;
-        std::io::Write::write_all(&mut f, content.as_bytes()).map_err(|e| {
+    // REL-002（2026-09-23）：统一原子写入（tmp+sync+rename，失败清理）。
+    // 0600（unix）保护 API keys/tokens；Windows 权限为 no-op。
+    nemesis_utils::write_file_atomic(&config_path.to_string_lossy(), content.as_bytes(), 0o600)
+        .map_err(|e| {
             error!("[Config] Failed to write config file: {}", e);
-            e
+            // helper 的 String 错误带步骤上下文（create temp/write/rename），
+            // 包回 Io 变体保持错误分类语义。
+            ConfigError::Io(std::io::Error::other(e))
         })?;
-    }
-    #[cfg(not(unix))]
-    {
-        std::fs::write(config_path, content).map_err(|e| {
-            error!("[Config] Failed to write config file: {}", e);
-            e
-        })?;
-    }
     info!("[Config] Config saved successfully");
     Ok(())
 }
@@ -3041,10 +3024,13 @@ pub fn save_mcp_config(path: &Path, cfg: &McpConfig) -> Result<()> {
         error!("[Config] Failed to serialize MCP config: {}", e);
         e
     })?;
-    std::fs::write(path, content).map_err(|e| {
-        error!("[Config] Failed to write MCP config: {}", e);
-        e
-    })?;
+    // REL-002：统一原子写入；0600（unix）——子系统配置同样可能含凭据。
+    nemesis_utils::write_file_atomic(&path.to_string_lossy(), content.as_bytes(), 0o600).map_err(
+        |e| {
+            error!("[Config] Failed to write MCP config: {}", e);
+            ConfigError::Io(std::io::Error::other(e))
+        },
+    )?;
     info!("[Config] MCP config saved successfully");
     Ok(())
 }
@@ -3092,10 +3078,13 @@ pub fn save_security_config(path: &Path, cfg: &SecurityConfig) -> Result<()> {
         error!("[Config] Failed to serialize security config: {}", e);
         e
     })?;
-    std::fs::write(path, content).map_err(|e| {
-        error!("[Config] Failed to write security config: {}", e);
-        e
-    })?;
+    // REL-002：统一原子写入；0600（unix）——含 limits 规则与策略。
+    nemesis_utils::write_file_atomic(&path.to_string_lossy(), content.as_bytes(), 0o600).map_err(
+        |e| {
+            error!("[Config] Failed to write security config: {}", e);
+            ConfigError::Io(std::io::Error::other(e))
+        },
+    )?;
     info!("[Config] Security config saved successfully");
     Ok(())
 }
@@ -3143,10 +3132,13 @@ pub fn save_scanner_config(path: &Path, cfg: &ScannerFullConfig) -> Result<()> {
         error!("[Config] Failed to serialize scanner config: {}", e);
         e
     })?;
-    std::fs::write(path, content).map_err(|e| {
-        error!("[Config] Failed to write scanner config: {}", e);
-        e
-    })?;
+    // REL-002：统一原子写入。
+    nemesis_utils::write_file_atomic(&path.to_string_lossy(), content.as_bytes(), 0o600).map_err(
+        |e| {
+            error!("[Config] Failed to write scanner config: {}", e);
+            ConfigError::Io(std::io::Error::other(e))
+        },
+    )?;
     info!("[Config] Scanner config saved successfully");
     Ok(())
 }
@@ -3194,10 +3186,13 @@ pub fn save_skills_config(path: &Path, cfg: &SkillsFullConfig) -> Result<()> {
         error!("[Config] Failed to serialize skills config: {}", e);
         e
     })?;
-    std::fs::write(path, content).map_err(|e| {
-        error!("[Config] Failed to write skills config: {}", e);
-        e
-    })?;
+    // REL-002：统一原子写入。
+    nemesis_utils::write_file_atomic(&path.to_string_lossy(), content.as_bytes(), 0o600).map_err(
+        |e| {
+            error!("[Config] Failed to write skills config: {}", e);
+            ConfigError::Io(std::io::Error::other(e))
+        },
+    )?;
     info!("[Config] Skills config saved successfully");
     Ok(())
 }
@@ -3399,7 +3394,9 @@ impl ConfigLoader {
             std::fs::create_dir_all(parent)?;
         }
         let content = serde_json::to_string_pretty(config)?;
-        std::fs::write(path, content)?;
+        // REL-002：统一原子写入（与 save_config 同 0600）。
+        nemesis_utils::write_file_atomic(&path.to_string_lossy(), content.as_bytes(), 0o600)
+            .map_err(|e| ConfigError::Io(std::io::Error::other(e)))?;
         Ok(())
     }
 

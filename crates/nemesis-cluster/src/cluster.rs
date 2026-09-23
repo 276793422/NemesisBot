@@ -3824,22 +3824,13 @@ pub(crate) fn name_suffix_from_node_id(node_id: &str) -> String {
     last.chars().take(4).collect()
 }
 
-/// Atomic write helper: write to `{path}.tmp` then rename.
-///
-/// Mirrors the pattern in `cluster_config::atomic_write` (which is private
-/// there). Defined here separately because `merge_real_node_info` needs to
-/// rewrite peers.toml from a `toml::Value` doc that has had the placeholder
-/// subtable removed, before re-adding the real_id entry.
+/// Atomic write helper — REL-002（2026-09-23）起委托统一 helper
+/// `nemesis_utils::write_file_atomic`（唯一临时名 + sync_all + 失败清理 +
+/// unix 0600 创建即挂）。保留签名兼容：`merge_real_node_info` 重写
+/// peers.toml（占位 subtable 移除后回填 real_id）的唯一调用点。
 fn write_atomic(path: &Path, data: &[u8]) -> std::io::Result<()> {
-    let tmp_path = path.with_extension("toml.tmp");
-    std::fs::write(&tmp_path, data)?;
-    match std::fs::rename(&tmp_path, path) {
-        Ok(()) => Ok(()),
-        Err(e) => {
-            let _ = std::fs::remove_file(&tmp_path);
-            Err(e)
-        }
-    }
+    nemesis_utils::write_file_atomic(&path.to_string_lossy(), data, 0o600)
+        .map_err(std::io::Error::other)
 }
 
 /// Real node info obtained from RPC `get_info` or UDP AnnounceMessage.

@@ -55,14 +55,9 @@ pub fn load_commands_config(path: &Path) -> CommandsConfig {
     }
 }
 
-/// 原子-ish 保存（tmp + rename，与 catalog.rs save_cache 同款）。
+/// 保存（REL-002 2026-09-23 起走统一原子 helper，取代本文件自制
+/// tmp+rename——唯一临时名 + sync_all + 失败清理）。
 pub fn save_commands_config(path: &Path, cfg: &CommandsConfig) -> Result<(), String> {
-    if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent).map_err(|e| format!("mkdir: {e}"))?;
-    }
     let body = serde_json::to_string_pretty(cfg).map_err(|e| format!("serialize: {e}"))?;
-    let tmp = path.with_extension("json.tmp");
-    std::fs::write(&tmp, body).map_err(|e| format!("write: {e}"))?;
-    std::fs::rename(&tmp, path).map_err(|e| format!("rename: {e}"))?;
-    Ok(())
+    nemesis_utils::write_file_atomic(&path.to_string_lossy(), body.as_bytes(), 0o600)
 }

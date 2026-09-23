@@ -1,6 +1,74 @@
 use super::*;
 use nemesis_types::cluster::TaskStatus;
 
+/// REL-002 失败注入助手：唯一临时名升级后，旧「预建固定名 `.tmp` 目录
+/// 阻塞临时文件」的注入面不复存在（正是升级目标之一），改用平台确定的
+/// 「替换失败」注入——
+/// - unix：父目录置只读 → 临时文件创建失败（EACCES）
+/// - Windows：目标文件置只读属性 → rename(REPLACE_EXISTING) 被拒
+///
+/// 前提：`dest` 已存在且可读。返回 Drop guard 自动恢复权限（unix 恢复
+/// 父目录权限保证 tempdir 可清理；Windows 恢复目标可写属性）。
+#[cfg(any(unix, windows))]
+struct RestorePermsGuard {
+    #[cfg(unix)]
+    parent: std::path::PathBuf,
+    #[cfg(windows)]
+    dest: std::path::PathBuf,
+}
+
+#[cfg(any(unix, windows))]
+impl Drop for RestorePermsGuard {
+    fn drop(&mut self) {
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let _ = std::fs::set_permissions(&self.parent, std::fs::Permissions::from_mode(0o755));
+        }
+        #[cfg(windows)]
+        {
+            if let Ok(meta) = std::fs::metadata(&self.dest) {
+                let mut perm = meta.permissions();
+                perm.set_readonly(false);
+                let _ = std::fs::set_permissions(&self.dest, perm);
+            }
+        }
+    }
+}
+
+#[cfg(any(unix, windows))]
+fn block_atomic_replace(dest: &std::path::Path) -> RestorePermsGuard {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let parent = dest.parent().unwrap().to_path_buf();
+        let mut perm = std::fs::metadata(&parent).unwrap().permissions();
+        perm.set_mode(0o555);
+        std::fs::set_permissions(&parent, perm).unwrap();
+        RestorePermsGuard { parent }
+    }
+    #[cfg(windows)]
+    {
+        let mut perm = std::fs::metadata(dest).unwrap().permissions();
+        perm.set_readonly(true);
+        std::fs::set_permissions(dest, perm).unwrap();
+        RestorePermsGuard {
+            dest: dest.to_path_buf(),
+        }
+    }
+}
+
+/// 目录内不应残留任何 `.tmp-` 前缀的临时文件（helper 唯一临时名前缀）。
+#[cfg(any(unix, windows))]
+fn assert_no_tmp_leftovers(dir: &std::path::Path, what: &str) {
+    let leftovers: Vec<_> = std::fs::read_dir(dir)
+        .unwrap()
+        .filter_map(|e| e.ok())
+        .filter(|e| e.file_name().to_string_lossy().starts_with(".tmp-"))
+        .collect();
+    assert!(leftovers.is_empty(), "{what}: {leftovers:?}");
+}
+
 /// G4/G5: poll_stale_pending_tasks 第 4/5 参 —— 默认 24h 安全网 + 无总线。
 fn poll_defaults() -> chrono::Duration {
     chrono::Duration::hours(24)
@@ -5425,9 +5493,9 @@ fn test_upgrade_peer_in_peers_toml_write_error_after_removal() {
         "[node]\nid = \"local-node-001\"\n\n[peers.Node-A]\naddress = \"10.0.0.1:9000\"\n",
     )
     .unwrap();
-    // Block the atomic-write tmp path with a directory → write fails after
-    // the placeholder was removed from the in-memory doc.
-    std::fs::create_dir_all(cluster_dir.join("peers.toml.tmp")).unwrap();
+    // REL-002：旧注入（预建 peers.toml.tmp 目录阻塞固定临时名）随唯一临时名
+    // 升级失效——改用平台确定的写失败注入（见 block_atomic_replace）。
+    let _guard = block_atomic_replace(&cluster_dir.join("peers.toml"));
 
     let cluster = Cluster::with_workspace(make_config(), dir.path().to_path_buf());
     cluster.upgrade_peer_in_peers_toml(
@@ -6047,27 +6115,21 @@ fn test_write_atomic_success_and_failures() {
     let dir = tempfile::tempdir().unwrap();
     let dest = dir.path().join("cfg.toml");
 
-    // Success path: tmp write + rename
+    // Success path: tmp write + rename（唯一临时名 `.tmp-{pid}-{nanos}`）
     write_atomic(&dest, b"data").unwrap();
     assert_eq!(std::fs::read(&dest).unwrap(), b"data");
-    assert!(
-        !dir.path().join("cfg.toml.tmp").exists(),
-        "tmp file renamed away"
-    );
-
-    // tmp path blocked by a directory → write fails
-    let dest2 = dir.path().join("blocked.toml");
-    std::fs::create_dir_all(dir.path().join("blocked.toml.tmp")).unwrap();
-    assert!(write_atomic(&dest2, b"x").is_err());
+    assert_no_tmp_leftovers(dir.path(), "no tmp leftovers after success");
 
     // destination is a directory → rename fails, tmp cleaned up
     let dest3 = dir.path().join("asdir.toml");
     std::fs::create_dir_all(&dest3).unwrap();
     assert!(write_atomic(&dest3, b"y").is_err());
-    assert!(
-        !dir.path().join("asdir.toml.tmp").exists(),
-        "tmp cleaned after rename failure"
-    );
+    assert_no_tmp_leftovers(dir.path(), "tmp cleaned after rename failure");
+
+    // REL-002 注：旧实现固定临时名 `.toml.tmp`，可用预建同名目录注入失败；
+    // 唯一临时名升级后该注入面不复存在，替换失败路径由
+    // test_upgrade_peer_in_peers_toml_write_error_after_removal 的平台
+    // 注入 + nemesis-utils helper 专属单测（只读目录/并发交错）覆盖。
 }
 
 // ============================================================

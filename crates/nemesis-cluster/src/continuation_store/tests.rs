@@ -540,20 +540,48 @@ async fn test_w3b_save_warns_and_continues_when_cache_dir_is_file() {
 
 #[tokio::test]
 async fn test_w3b_save_persist_tmp_and_rename_failures() {
-    let dir = tempfile::tempdir().unwrap();
-    let store = ContinuationStore::new(dir.path());
+    // (a) REL-002：tmp 创建失败 → warn，内存照常。旧注入（预建固定名
+    //     `.json.tmp` 目录）随唯一临时名升级失效；Windows 对唯一临时名的
+    //     创建失败无确定性注入面，本臂 unix-only（父目录只读）。
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().unwrap();
+        let store = ContinuationStore::new(dir.path());
+        let mut perm = std::fs::metadata(dir.path()).unwrap().permissions();
+        perm.set_mode(0o555);
+        std::fs::set_permissions(dir.path(), perm).unwrap();
 
-    // (a) tmp path blocked by a directory → tmp write fails → warn, still Ok
-    std::fs::create_dir_all(dir.path().join("w3b-tmpfail.json.tmp")).unwrap();
-    store.save(make_snapshot("w3b-tmpfail")).await.unwrap();
-    assert!(store.contains("w3b-tmpfail"));
+        store.save(make_snapshot("w3b-tmpfail")).await.unwrap();
+        assert!(
+            store.contains("w3b-tmpfail"),
+            "memory must win when tmp create fails"
+        );
 
-    // (b) final path blocked by a directory → rename fails → warn, still Ok
-    std::fs::create_dir_all(dir.path().join("w3b-renfail.json")).unwrap();
-    store.save(make_snapshot("w3b-renfail")).await.unwrap();
-    assert!(store.contains("w3b-renfail"));
-    // The tmp file was written before the rename failed.
-    assert!(dir.path().join("w3b-renfail.json.tmp").exists());
+        // 恢复权限，保证 tempdir 可清理
+        let mut perm = std::fs::metadata(dir.path()).unwrap().permissions();
+        perm.set_mode(0o755);
+        std::fs::set_permissions(dir.path(), perm).unwrap();
+    }
+
+    // (b) final path blocked by a directory → rename fails → warn, still Ok;
+    //     失败路径 helper 必须清掉临时文件（旧实现残留 .json.tmp）
+    {
+        let dir = tempfile::tempdir().unwrap();
+        let store = ContinuationStore::new(dir.path());
+        std::fs::create_dir_all(dir.path().join("w3b-renfail.json")).unwrap();
+        store.save(make_snapshot("w3b-renfail")).await.unwrap();
+        assert!(store.contains("w3b-renfail"));
+        let leftovers: Vec<_> = std::fs::read_dir(dir.path())
+            .unwrap()
+            .filter_map(|e| e.ok())
+            .filter(|e| e.file_name().to_string_lossy().starts_with(".tmp-"))
+            .collect();
+        assert!(
+            leftovers.is_empty(),
+            "tmp must be cleaned after rename failure: {leftovers:?}"
+        );
+    }
 }
 
 #[tokio::test]

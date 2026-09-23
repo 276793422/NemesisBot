@@ -820,8 +820,13 @@ impl PersonaHandler {
         let active = serde_json::json!({"name": "default"});
         let active_str = serde_json::to_string_pretty(&active)
             .map_err(|e| format!("failed to serialize _active.json: {}", e))?;
-        std::fs::write(personas_dir.join("_active.json"), active_str)
-            .map_err(|e| format!("failed to write _active.json: {}", e))?;
+        // REL-002：统一原子写入（人格激活状态）。
+        nemesis_utils::write_file_atomic(
+            &personas_dir.join("_active.json").to_string_lossy(),
+            active_str.as_bytes(),
+            0o600,
+        )
+        .map_err(|e| format!("failed to write _active.json: {}", e))?;
 
         Ok(())
     }
@@ -842,7 +847,9 @@ impl PersonaHandler {
         let path = resolve_path(workspace, "personas/_active.json")?;
         let v = serde_json::json!({"name": name});
         let s = serde_json::to_string_pretty(&v).map_err(|e| format!("serialize error: {}", e))?;
-        std::fs::write(&path, s).map_err(|e| format!("failed to write _active.json: {}", e))
+        // REL-002：统一原子写入（人格激活状态）。
+        nemesis_utils::write_file_atomic(&path.to_string_lossy(), s.as_bytes(), 0o600)
+            .map_err(|e| format!("failed to write _active.json: {}", e))
     }
 
     fn read_persona_json(
