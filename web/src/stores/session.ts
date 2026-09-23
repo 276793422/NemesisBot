@@ -66,23 +66,33 @@ export const useSessionStore = defineStore('session', () => {
     return projects.value.find(p => p.id === projectId)?.name ?? null
   }
 
+  // B（2026-09-23 会话绑定注册表）：在飞拉取共享 Promise——并发调用方
+  // await 同一次拉取而非直接 return。旧「listLoading 时直接 return」让
+  // 后到的强制刷新被静默吞掉（agent-gen 建会话后的刷新撞上前一轮在飞），
+  // 乐观行随在飞响应落盘被整表替换冲掉，下轮判「不在列表」→ 重复新建。
+  let listInflight: Promise<void> | null = null
+
   async function fetchList(force = false) {
-    if (listLoading.value) return
     // Cache for 5s unless forced — saves a round-trip on re-entry.
     if (!force && Date.now() - lastListFetch.value < 5000 && sessions.value.length > 0) {
       return
     }
+    if (listInflight) return listInflight
     listLoading.value = true
     listError.value = null
-    try {
-      const resp = await api.list()
-      sessions.value = resp.sessions ?? []
-      lastListFetch.value = Date.now()
-    } catch (e) {
-      listError.value = typeof e === 'string' ? e : '加载会话列表失败'
-    } finally {
-      listLoading.value = false
-    }
+    listInflight = (async () => {
+      try {
+        const resp = await api.list()
+        sessions.value = resp.sessions ?? []
+        lastListFetch.value = Date.now()
+      } catch (e) {
+        listError.value = typeof e === 'string' ? e : '加载会话列表失败'
+      } finally {
+        listLoading.value = false
+        listInflight = null
+      }
+    })()
+    return listInflight
   }
 
   async function create(title?: string, projectId?: string): Promise<string | null> {

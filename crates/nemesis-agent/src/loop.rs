@@ -565,9 +565,16 @@ pub const BUSY_MESSAGE: &str =
     "\u{23f3} AI is processing a previous request, please try again later";
 
 /// Concurrent request handling mode.
+///
+/// D (2026-09-23 多会话并行清账)：本枚举**只决定忙时会话处置语义**，不再
+/// 决定泵调度——泵已统一为「gate 内联 + turn spawn」（跨会话并发、同会话
+/// 保序，任何模式下成立；`run_bus_impl`）。历史版本里 Reject 曾意味着泵级
+/// 串行（上一条 turn 不结束下一条消息不出队），导致主 loop 上一个长 turn
+/// 堵死所有会话——那个耦合正是本轮清账的根因。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum ConcurrentMode {
-    /// Reject new messages when session is busy (default; legacy behavior).
+    /// Session busy → 立即回执拒绝（诚实留痕：user 行 + busy 回实行均落
+    /// chat_log，见 gate_inbound 忙分支）。
     #[default]
     Reject,
     /// Queue messages when session is busy — processed after the current turn.
@@ -1194,6 +1201,14 @@ pub struct AgentLoop {
     /// Semaphore for limiting concurrent continuation spawns.
     /// `None` when `max_continuation_permits == 0` (inline mode).
     continuation_semaphore: Option<Arc<tokio::sync::Semaphore>>,
+    /// D (2026-09-23 多会话并行清账) D-4：loop 级并发 turn 上限（安全阀）。
+    /// `None`（`max_concurrent_turns == 0`，构造缺省）不设限——独立/测试
+    /// 路径行为不变；>0 时每个 spawned turn 任务在任务体内先取许可再执行
+    /// （泵不被阻塞，超限任务在信号量上 FIFO 排队：诚实等待，不丢失不
+    /// 拒绝）。abort 时许可随 future 丢弃释放，无泄漏；许可不嵌套
+    /// （turn 内的重注入回泵，不直接 spawn），无死锁面。
+    turn_permits: Option<Arc<tokio::sync::Semaphore>>,
+    max_concurrent_turns: usize,
     /// Tracks which sessions are currently being summarized.
     /// Wrapped in `Arc` so the flag can be cleared from a spawned task
     /// after summarization completes (mirrors Go's `defer al.summarizing.Delete()`).
@@ -1578,6 +1593,8 @@ impl AgentLoop {
             queue_size: crate::inbox::DEFAULT_QUEUE_SIZE,
             max_continuation_permits: 0,
             continuation_semaphore: None,
+            turn_permits: None,
+            max_concurrent_turns: 0,
             summarizing: Arc::new(parking_lot::Mutex::new(HashMap::new())),
             compact_state: Arc::new(parking_lot::Mutex::new(HashMap::new())),
             channel_manager_channels: parking_lot::Mutex::new(Vec::new()),
@@ -2209,6 +2226,8 @@ impl AgentLoop {
             queue_size,
             max_continuation_permits,
             continuation_semaphore,
+            turn_permits: None,
+            max_concurrent_turns: 0,
             summarizing: Arc::new(parking_lot::Mutex::new(HashMap::new())),
             compact_state: Arc::new(parking_lot::Mutex::new(HashMap::new())),
             channel_manager_channels: parking_lot::Mutex::new(Vec::new()),
@@ -2848,31 +2867,66 @@ impl AgentLoop {
         }
     }
 
-    /// Spawn a turn task (Queue/Steer modes) and track its abort handle so
-    /// `stop()` can cancel in-flight turns. Finished handles are pruned on
-    /// each insert, keeping the vec bounded by live turns.
+    /// D-4 (2026-09-23 多会话并行清账)：设置 loop 级并发 turn 上限（安全
+    /// 阀）。`0` = 不设限（构造缺省，独立/测试路径不变）；`>0` = 最多 N 个
+    /// turn 并发执行，超限的 spawned 任务在信号量上排队（诚实等待，不丢
+    /// 失）。gateway 装配期调用一次（主 loop / 项目 loop 同款，来自
+    /// `agents.defaults.max_concurrent_turns`）。
+    pub fn set_max_concurrent_turns(&mut self, n: usize) {
+        self.max_concurrent_turns = n;
+        self.turn_permits = (n > 0).then(|| Arc::new(tokio::sync::Semaphore::new(n)));
+        info!(
+            "[AgentLoop] max_concurrent_turns = {}",
+            if n == 0 {
+                "unlimited".to_string()
+            } else {
+                n.to_string()
+            }
+        );
+    }
+
+    /// Spawn a turn task (all modes since the unified pump) and track its
+    /// abort handle so `stop()` can cancel in-flight turns. Finished handles
+    /// are pruned on each insert, keeping the vec bounded by live turns.
+    ///
+    /// D-4：并发上限信号量在**任务体内**获取（泵只 spawn 不等待）——超限
+    /// 任务排队等许可，gate 的回执与出站路径照常即时；turn abort 时许可随
+    /// future 释放。
     fn spawn_turn_task<F>(&self, fut: F)
     where
         F: std::future::Future<Output = ()> + Send + 'static,
     {
-        let handle = tokio::spawn(fut);
+        let permits = self.turn_permits.clone();
+        let handle = tokio::spawn(async move {
+            // acquire_owned 把许可与 Arc 绑定，async 块结束时（含 abort 展开丢弃）释放。
+            let _permit = match permits {
+                Some(p) => Some(p.acquire_owned().await),
+                None => None,
+            };
+            fut.await;
+        });
         let mut handles = self.turn_task_handles.lock();
         handles.retain(|h| !h.is_finished());
         handles.push(handle.abort_handle());
     }
 
-    /// Shared bus pump (V5): mode-dependent dispatch.
+    /// Unified bus pump (V5 gate-in-pump; D 2026-09-23 多会话并行清账后
+    /// **模式无关**).
     ///
-    /// Reject (default): serial — byte-identical to the historical loop;
-    /// each turn completes before the next message is processed.
+    /// 唯一形态：同步 gate（`gate_inbound`）内联在泵里跑（路由 + 忙判定 +
+    /// inbox 停泊 + 回执），每个被放行的 turn 作为 tracked task spawn——
+    /// **跨会话并发、同会话保序**是结构不变量（gate 在 spawn 前获取会话；
+    /// turn 期间会话保持 busy，同会话后续消息在 gate 处按 concurrent_mode
+    /// 处置，绝不可能堵住其他会话）。
     ///
-    /// Queue/Steer: the synchronous gate (`gate_inbound`) runs inline in the
-    /// pump (routing + busy check + inbox parking + receipts), then each
-    /// admitted turn runs as a tracked spawned task so a long turn cannot
-    /// starve the gate — this is what makes the U7 inbox reachable from
-    /// production channels. Same-session ordering holds because the gate
-    /// acquires the session BEFORE spawning; cross-session turns run
-    /// concurrently. Continuations stay inline (serialized with the pump).
+    /// 历史教训（本次清账的根因）：Reject 曾实现为泵级串行——
+    /// `process_inbound_message(&msg).await` 内联在接收循环里，上一条 turn
+    /// 不跑完下一条消息根本不出队，主 loop 上一个数分钟的 agentGen turn
+    /// 堵死所有会话（用户消息堵在不可见队列里零落盘 → 前端切会话即
+    /// 「消失」）。Reject 现在只是 gate 忙分支的处置语义（回执拒绝 + 留
+    /// 痕），与泵调度彻底解耦。
+    ///
+    /// Continuations stay inline (serialized with the pump).
     async fn run_bus_impl(
         self: Arc<Self>,
         mut inbound_rx: tokio::sync::mpsc::Receiver<nemesis_types::channel::InboundMessage>,
@@ -2882,101 +2936,77 @@ impl AgentLoop {
 
         while self.running.load(Ordering::Acquire) {
             match inbound_rx.recv().await {
-                Some(msg) => match self.concurrent_mode {
-                    ConcurrentMode::Reject => {
-                        let (agent_id, response, err) = self.process_inbound_message(&msg).await;
-
-                        // Check for cluster continuation marker.
-                        if agent_id == "__continuation__" {
-                            let task_id = response;
+                Some(msg) => {
+                    match self.gate_inbound(&msg) {
+                        GateOutcome::Continuation(task_id) => {
                             info!(
                                 "[AgentLoop] Handling cluster continuation for task {} (permits={})",
                                 task_id, self.max_continuation_permits
                             );
                             self.dispatch_continuation(task_id, &msg).await;
-                            continue;
                         }
-
-                        self.finish_message(&msg, response, err, true).await;
-                    }
-                    ConcurrentMode::Queue | ConcurrentMode::Steer => {
-                        match self.gate_inbound(&msg) {
-                            GateOutcome::Continuation(task_id) => {
-                                info!(
-                                    "[AgentLoop] Handling cluster continuation for task {} (permits={})",
-                                    task_id, self.max_continuation_permits
-                                );
-                                self.dispatch_continuation(task_id, &msg).await;
-                            }
-                            GateOutcome::Immediate {
-                                agent_id: _,
-                                response,
-                            } => {
-                                // Busy receipt / slash reply — publish inline.
-                                // Never touches sent_in_round (may overlap the
-                                // session's running turn; see finish_message).
-                                self.finish_message(&msg, response, None, false).await;
-                            }
-                            GateOutcome::Maintenance {
-                                kind,
-                                session_key,
-                                receipt,
-                            } => {
-                                // E6: 维护命令 — 会话已在 gate 获取，派独立
-                                // task 执行（LLM 摘要可达分钟级，不得堵泵）；
-                                // task 尾部释放会话。同串行路径：⏳ 先发、✓
-                                // 后发，均不碰 sent_in_round。
-                                let this = self.clone();
-                                let m = msg.clone();
-                                self.spawn_turn_task(async move {
-                                    this.finish_message(&m, receipt, None, false).await;
-                                    let response =
-                                        this.handle_maintenance(kind, &session_key).await;
-                                    this.release_session(&session_key);
-                                    this.finish_message(&m, response, None, false).await;
-                                });
-                            }
-                            GateOutcome::UserDispatch {
-                                task_text,
-                                node_id,
-                                session_key,
-                            } => {
-                                // K4: 用户直发远程编码任务派发 — 会话已在
-                                // gate 获取，派独立 task 执行（RPC ACK 等待
-                                // 可达分钟级，不得堵泵）；task 尾部释放会话
-                                // （process_user_dispatch 内部负责）。
-                                let this = self.clone();
-                                let m = msg.clone();
-                                self.spawn_turn_task(async move {
-                                    this.process_user_dispatch(
-                                        &m,
-                                        &task_text,
-                                        &node_id,
-                                        &session_key,
-                                    )
+                        GateOutcome::Immediate {
+                            agent_id: _,
+                            response,
+                        } => {
+                            // Busy receipt / busy bounce / queue-full / slash
+                            // reply — publish inline. Never touches
+                            // sent_in_round (may overlap the session's
+                            // running turn; see finish_message).
+                            self.finish_message(&msg, response, None, false).await;
+                        }
+                        GateOutcome::Maintenance {
+                            kind,
+                            session_key,
+                            receipt,
+                        } => {
+                            // E6: 维护命令 — 会话已在 gate 获取，派独立
+                            // task 执行（LLM 摘要可达分钟级，不得堵泵）；
+                            // task 尾部释放会话。同串行路径：⏳ 先发、✓
+                            // 后发，均不碰 sent_in_round。
+                            let this = self.clone();
+                            let m = msg.clone();
+                            self.spawn_turn_task(async move {
+                                this.finish_message(&m, receipt, None, false).await;
+                                let response = this.handle_maintenance(kind, &session_key).await;
+                                this.release_session(&session_key);
+                                this.finish_message(&m, response, None, false).await;
+                            });
+                        }
+                        GateOutcome::UserDispatch {
+                            task_text,
+                            node_id,
+                            session_key,
+                        } => {
+                            // K4: 用户直发远程编码任务派发 — 会话已在
+                            // gate 获取，派独立 task 执行（RPC ACK 等待
+                            // 可达分钟级，不得堵泵）；task 尾部释放会话
+                            // （process_user_dispatch 内部负责）。
+                            let this = self.clone();
+                            let m = msg.clone();
+                            self.spawn_turn_task(async move {
+                                this.process_user_dispatch(&m, &task_text, &node_id, &session_key)
                                     .await;
-                                });
-                            }
-                            GateOutcome::Ungated => {
-                                let this = self.clone();
-                                let m = msg.clone();
-                                self.spawn_turn_task(async move {
-                                    let (_, response, err) = this.process_ungated(&m).await;
-                                    this.finish_message(&m, response, err, true).await;
-                                });
-                            }
-                            GateOutcome::Admitted(admission) => {
-                                let this = self.clone();
-                                let m = msg.clone();
-                                self.spawn_turn_task(async move {
-                                    let (_, response, err) =
-                                        this.process_admitted(&m, admission).await;
-                                    this.finish_message(&m, response, err, true).await;
-                                });
-                            }
+                            });
+                        }
+                        GateOutcome::Ungated => {
+                            let this = self.clone();
+                            let m = msg.clone();
+                            self.spawn_turn_task(async move {
+                                let (_, response, err) = this.process_ungated(&m).await;
+                                this.finish_message(&m, response, err, true).await;
+                            });
+                        }
+                        GateOutcome::Admitted(admission) => {
+                            let this = self.clone();
+                            let m = msg.clone();
+                            self.spawn_turn_task(async move {
+                                let (_, response, err) = this.process_admitted(&m, admission).await;
+                                this.finish_message(&m, response, err, true).await;
+                            });
                         }
                     }
-                },
+                }
                 None => {
                     // Channel closed.
                     break;
@@ -3341,9 +3371,10 @@ impl AgentLoop {
         let mut msg = msg.clone();
         self.rewrite_custom_command(&mut msg).await;
         // V5 (2026-08-23): gate first (sync classification + session
-        // acquire), then the matching tail. Reject mode's serial pump and
-        // all direct callers (heartbeat, tests, inline queue-drain fallback)
-        // still enter here — behavior identical to the pre-split monolith.
+        // acquire), then the matching tail. D (2026-09-23)：bus 泵已统一为
+        // gate+spawn（`run_bus_impl`），本入口不再服务泵——仅存量的直调方
+        // （tests、process_admitted 无 reinject 时的 inline 排队回退）继续
+        // 经此进入，行为与 gate 语义一致（含 D-2 忙回绝留痕）。
         match self.gate_inbound(&msg) {
             GateOutcome::Continuation(task_id) => ("__continuation__".to_string(), task_id, None),
             GateOutcome::Immediate { agent_id, response } => (agent_id, response, None),
@@ -3509,6 +3540,57 @@ impl AgentLoop {
     /// 保序：忙时的第二条消息必见 busy → 入队/回执），回合在独立 task
     /// 里并发跑；Reject 模式维持原串行路径（行为零变化）。
     ///
+    /// D-2（2026-09-23 多会话并行清账）：忙时回绝的诚实留痕。被弹回
+    /// （Reject）或因 inbox 满被拒（Queue/Steer）的消息此前零落盘——前端
+    /// 切会话即「消失」，违反诚实失败契约。user 行 + 回绝回实行**成对**
+    /// 落盘（无悬空 user 行，jsonl 轮次完整；重建上下文时模型能看到「这
+    /// 条消息当时收到了、被回绝」）。同 process_admitted 早落盘块的物化
+    /// 语义：首行落盘 = 会话物化 → emit_session_created。gate 是同步
+    /// 分类点，落盘是同步文件写，不引入 async 面。
+    fn persist_busy_refusal(
+        &self,
+        msg: &nemesis_types::channel::InboundMessage,
+        session_key: &str,
+        bounce: &str,
+    ) {
+        let log_existed = Self::session_log_exists_before_append(session_key);
+        let cron_job_id = msg.metadata.get("cron_job_id").map(|s| s.as_str());
+        let cron_job_name = msg.metadata.get("cron_job_name").map(|s| s.as_str());
+        crate::chat_log::append_chat_log_meta(
+            session_key,
+            "user",
+            &msg.content,
+            &crate::chat_log::ChatLogMeta {
+                model: None,
+                cron_job_id,
+                cron_job_name,
+                images: &[],
+                file_changes: &[],
+                checkpoint_turn: None, // 回绝消息不开始 turn，无 checkpoint 标记
+            },
+        );
+        crate::chat_log::append_chat_log_meta(
+            session_key,
+            "assistant",
+            bounce,
+            &crate::chat_log::ChatLogMeta {
+                model: Some(&self.current_display_model()),
+                cron_job_id,
+                cron_job_name,
+                images: &[],
+                file_changes: &[],
+                checkpoint_turn: None,
+            },
+        );
+        if !log_existed {
+            self.emit_session_created(session_key);
+        }
+        if let Some(ref store) = self.session_store {
+            store.add_message(session_key, "user", &msg.content);
+            store.add_message(session_key, "assistant", bounce);
+        }
+    }
+
     /// 闸门只做同步分类 + session 获取；async 处理（system/history/回合
     /// 本体）留给 tail。slash 命令在这里同步执行并短路（原路径在 busy
     /// 检查前同步返回；且命令可能有副作用，tail 不得重跑）。
@@ -3641,7 +3723,10 @@ impl AgentLoop {
         let (agent_id, session_key) = self.route_message(msg);
 
         // Session busy check — I1 (U7) mode-aware:
-        //   Reject (default): legacy BUSY_MESSAGE bounce, byte-identical.
+        //   Reject: session-level busy disposition — immediate BUSY_MESSAGE
+        //   bounce, WITH honest trace (user row + busy bounce row appended
+        //   to chat_log; D-2 2026-09-23 — bounced messages used to vanish
+        //   without any trace). The pump no longer serializes on this mode.
         //   Queue/Steer: park the message in the session inbox instead of
         //   bouncing. The running turn claims it (steer: next LLM call; queue:
         //   turn end starts a new one with the head). Capacity-bounded with a
@@ -3653,6 +3738,9 @@ impl AgentLoop {
                         "[AgentLoop] Session busy, returning busy message: session_key={}, mode={:?}",
                         session_key, self.concurrent_mode
                     );
+                    // D-2（2026-09-23 多会话并行清账）：诚实留痕（见
+                    // persist_busy_refusal）——被弹回的消息此前零落盘。
+                    self.persist_busy_refusal(msg, &session_key, BUSY_MESSAGE);
                     return GateOutcome::Immediate {
                         agent_id,
                         response: BUSY_MESSAGE.to_string(),
@@ -3706,6 +3794,13 @@ impl AgentLoop {
                             warn!(
                                 "[AgentLoop] Session busy and inbox full — message refused: session_key={}",
                                 session_key
+                            );
+                            // D-2 同款诚实留痕：被拒绝的消息也要在历史里可
+                            // 追溯（此前只有瞬态回执帧，切会话即「消失」）。
+                            self.persist_busy_refusal(
+                                msg,
+                                &session_key,
+                                "⏳ 排队已满，消息未能接收。请等当前任务完成后再发。",
                             );
                             return GateOutcome::Immediate {
                                 agent_id,

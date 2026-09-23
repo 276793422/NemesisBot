@@ -1,5 +1,6 @@
 import { defineStore } from 'pinia'
-import { ref } from 'vue'
+import { computed, ref } from 'vue'
+import { useSessionStore } from './session'
 
 export interface ChatMessage {
   role: 'user' | 'assistant' | 'error' | 'system'
@@ -63,7 +64,32 @@ export interface RoundTextEntry {
 export const useChatStore = defineStore('chat', () => {
   const messages = ref<ChatMessage[]>([])
   const input = ref('')
-  const streaming = ref(false)
+  // D-3（2026-09-23 多会话并行清账）：发送占用态**按会话隔离**的 busy 表。
+  // 旧实现是全局布尔 `streaming`——工作流「对话生成」等嵌入面板与主聊天页
+  // 共用一个布尔，异会话 turn 的 busy 泄漏进本视图（发送被静默吞掉、
+  // 占位误渲染）；「保存工作流后对话仍绑【新建工作流】」的跨会话串扰把
+  // 这条放大成日常路径（BUG 2026-09-23_workflow-agentgen-session-crosstalk）。
+  // 真相源 = busyBySid[sid]；`streaming` 是「当前选中会话」的投影（writable
+  // computed，读写都落到表里），存量调用方/测试零改动。
+  const busyBySid = ref<Record<string, boolean>>({})
+
+  function isBusy(sessionId: string | null): boolean {
+    return !!sessionId && busyBySid.value[sessionId] === true
+  }
+
+  function setBusy(sessionId: string | null, v: boolean) {
+    if (!sessionId) return
+    busyBySid.value = { ...busyBySid.value, [sessionId]: v }
+  }
+
+  const streaming = computed({
+    get() {
+      return isBusy(useSessionStore().currentId)
+    },
+    set(v: boolean) {
+      setBusy(useSessionStore().currentId, v)
+    },
+  })
   // H2：当前会话的 todo 清单（TodoPanel 渲染；会话切换时 reset 清空）。
   const todos = ref<TodoItem[]>([])
   // M1b：进行中轮次的工具事件缓冲（响应落地时 flush 挂到 assistant 消息；
@@ -254,7 +280,10 @@ export const useChatStore = defineStore('chat', () => {
   function reset() {
     messages.value = []
     input.value = ''
-    streaming.value = false
+    // D-3：reset **不清 busy 表**——调用点都在 currentId 已切换之后，此时
+    // 清 `streaming` 投影会误清新会话的占用态；busy 的生命周期归各会话自己
+    // 的 assistant/error/断连帧收尾（setBusy(sid,false)），与 inflightTurns
+    // 同一条纪律。
     todos.value = []
     pendingToolEvents.value = []
     pendingRoundTexts.value = []
@@ -291,6 +320,8 @@ export const useChatStore = defineStore('chat', () => {
     markInflightTurn,
     clearInflightTurn,
     inflightTurnOf,
+    isBusy,
+    setBusy,
     appendToolEvent,
     flushPendingToolEvents,
     appendRoundText,

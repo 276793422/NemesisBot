@@ -22,6 +22,8 @@ impl ModuleHandler for SessionsHandler {
         &[
             "list",
             "create",
+            "set_binding",
+            "remove_binding",
             "rename",
             "delete",
             "clear",
@@ -64,7 +66,13 @@ impl ModuleHandler for SessionsHandler {
                 // M5（2026-09-05）：侧栏条目回填 tokens/cost（session_key
                 // 聚合；无记录时缺省，前端不展示）。
                 crate::handlers::logs::backfill_session_usage(ctx, &mut web);
-                Ok(Some(serde_json::json!({ "sessions": web })))
+                // B（2026-09-23 多会话并行清账）：回带绑定表（仅存活绑定，
+                // key → 裸 sid）——前端删掉 localStorage 映射，绑定真相源
+                // 上移服务端。
+                let bindings = crate::session_bindings::live_bindings(workspace);
+                Ok(Some(
+                    serde_json::json!({ "sessions": web, "bindings": bindings }),
+                ))
             }
             "mark_delivered" => {
                 // P2（2026-09-11 真机日志）：前端拉取会话历史后清零未送达
@@ -82,6 +90,44 @@ impl ModuleHandler for SessionsHandler {
                 Ok(Some(serde_json::json!({ "cleared": cleared })))
             }
             "create" => {
+                let workspace = require_workspace(ctx)?;
+                // B（2026-09-23 多会话并行清账）：可选 binding_key —— 原子
+                // get-or-create。key 已绑且会话存活 → 返回既有会话（零新
+                // 建，前端 localStorage 误判重建的复制机器在服务端终结）；
+                // 未绑/陈旧 → 新建并写绑定。与 project_id 互斥设计：绑定
+                // 场景是自由会话（agentGen），带 project_id 的调用方不传
+                // binding_key。
+                if let Some(binding_key) = data
+                    .as_ref()
+                    .and_then(|d| d.get("binding_key"))
+                    .and_then(|v| v.as_str())
+                    .map(|s| s.trim().to_string())
+                    .filter(|s| !s.is_empty())
+                {
+                    // E7 同款 title 解析（显式命名 = manual）。
+                    let explicit_title = data
+                        .as_ref()
+                        .and_then(|d| d.get("title"))
+                        .and_then(|v| v.as_str())
+                        .map(|s| s.trim().to_string())
+                        .filter(|s| {
+                            !s.is_empty() && *s != nemesis_agent::chat_log::DEFAULT_SESSION_TITLE
+                        });
+                    let title = explicit_title.clone().unwrap_or_else(|| {
+                        nemesis_agent::chat_log::DEFAULT_SESSION_TITLE.to_string()
+                    });
+                    let outcome = crate::session_bindings::get_or_create_session(
+                        workspace,
+                        &binding_key,
+                        &title,
+                        explicit_title.is_some(),
+                    )?;
+                    return Ok(Some(serde_json::json!({
+                        "session_id": outcome.session_id,
+                        "title": outcome.title,
+                        "reused": !outcome.created,
+                    })));
+                }
                 // Backend generates the id; the conversation lazily
                 // materializes in session_logs on the first message. Title is
                 // written to a sidecar meta file immediately.
@@ -127,6 +173,44 @@ impl ModuleHandler for SessionsHandler {
                 Ok(Some(
                     serde_json::json!({ "session_id": session_id, "title": title }),
                 ))
+            }
+            // B（2026-09-23 多会话并行清账）：重绑——draft_apply 成功后把
+            // 当前会话绑到新目标（键 upsert，旧持有者让出；目标不存在诚实
+            // 拒绝，孤儿绑定不可能产生）。
+            "set_binding" => {
+                let workspace = require_workspace(ctx)?;
+                let binding_key = data
+                    .as_ref()
+                    .and_then(|d| d.get("binding_key"))
+                    .and_then(|v| v.as_str())
+                    .ok_or_else(|| "missing binding_key".to_string())?;
+                let session_id = data
+                    .as_ref()
+                    .and_then(|d| d.get("session_id"))
+                    .and_then(|v| v.as_str())
+                    .ok_or_else(|| "missing session_id".to_string())?;
+                crate::session_bindings::set_binding(workspace, binding_key, session_id)?;
+                Ok(Some(serde_json::json!({
+                    "ok": true,
+                    "binding_key": binding_key.trim(),
+                    "session_id": session_id,
+                })))
+            }
+            // B（2026-09-23 多会话并行清账）：摘键——draft_apply 后释放
+            // 「__new__」引导键（会话已重绑到正式工作流名）。键不存在幂等。
+            "remove_binding" => {
+                let workspace = require_workspace(ctx)?;
+                let binding_key = data
+                    .as_ref()
+                    .and_then(|d| d.get("binding_key"))
+                    .and_then(|v| v.as_str())
+                    .ok_or_else(|| "missing binding_key".to_string())?;
+                let removed = crate::session_bindings::remove_binding(workspace, binding_key)?;
+                Ok(Some(serde_json::json!({
+                    "ok": true,
+                    "binding_key": binding_key.trim(),
+                    "removed": removed,
+                })))
             }
             "rename" => {
                 let session_id = data
@@ -222,6 +306,20 @@ impl ModuleHandler for SessionsHandler {
                 // bridge 未装配 = 无项目分组语义，跳过。
                 if let Some(bridge) = crate::handlers::projects::projects_bridge() {
                     bridge.forget_session(&session_key);
+                }
+                // B（2026-09-23 多会话并行清账）：绑定注册表级联摘除（指向
+                // 该会话的键全清，不留悬空绑定）。best-effort：workspace 缺
+                // 席（退化 ctx）= 跳过；删除会话后绑定残留会让 get-or-create
+                // 误判「已绑」，产生「保存了却找不到会话」的错觉。
+                if let Some(ws) = ctx.workspace.as_deref() {
+                    let removed = crate::session_bindings::remove_session(ws, &session_id);
+                    if removed > 0 {
+                        tracing::info!(
+                            "[sessions] delete cascade: removed {} binding(s) for {}",
+                            removed,
+                            session_id
+                        );
+                    }
                 }
                 Ok(Some(serde_json::json!({
                     "deleted": session_id,

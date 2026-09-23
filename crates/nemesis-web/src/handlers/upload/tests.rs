@@ -22,9 +22,10 @@ use std::time::Instant;
 use tower::ServiceExt;
 
 /// 模块级共享锁：串行化所有重定向 PathManager 单例的测试。
-fn uploads_state_lock() -> &'static std::sync::Mutex<()> {
-    static LOCK: std::sync::OnceLock<std::sync::Mutex<()>> = std::sync::OnceLock::new();
-    LOCK.get_or_init(|| std::sync::Mutex::new(()))
+/// 2026-09-23：并入全 crate 共享的 `test_home::HOME_RACE_LOCK`——模块内
+/// 私有锁挡不住跨模块 chat_log 单例读写的竞态窗口。
+fn uploads_state_lock() -> parking_lot::ReentrantMutexGuard<'static, ()> {
+    crate::test_home::lock_home()
 }
 
 /// RAII：重定向单例 home，drop 时恢复（panic 展开也恢复）。
@@ -203,7 +204,7 @@ async fn upload_rejects_oversized_body() {
 
 #[tokio::test]
 async fn upload_stores_file_and_refs_resolve() {
-    let _lock = uploads_state_lock().lock().unwrap();
+    let _lock = uploads_state_lock();
     let dir = tempfile::tempdir().unwrap();
     let _guard = RedirectHomeGuard::to(dir.path());
     let uploads_dir = nemesis_path::resolve_uploads_dir_in_workspace(
@@ -245,7 +246,7 @@ async fn upload_stores_file_and_refs_resolve() {
 // content/type 失配。
 #[tokio::test]
 async fn fc_upload_stored_extension_follows_content_not_name() {
-    let _lock = uploads_state_lock().lock().unwrap();
+    let _lock = uploads_state_lock();
     let dir = tempfile::tempdir().unwrap();
     let _guard = RedirectHomeGuard::to(dir.path());
 

@@ -106,7 +106,7 @@ export function useChatApi() {
   }
 
   return {
-    list: async (): Promise<{ sessions: SessionEntry[] }> =>
+    list: async (): Promise<{ sessions: SessionEntry[]; bindings?: Record<string, string> }> =>
       await request('sessions', 'list'),
 
     create: async (
@@ -120,6 +120,28 @@ export function useChatApi() {
       if (projectId) data.project_id = projectId
       return await request('sessions', 'create', Object.keys(data).length ? data : undefined)
     },
+
+    /** B（2026-09-23 会话绑定注册表）：绑定式 get-or-create——binding_key
+     *  已绑且会话存活 → 原样返回既有会话（reused=true，零新建）；未绑/
+     *  陈旧 → 新建并落绑定。替代 localStorage 本地映射（每浏览器各自为政
+     *  + 本地误判即重建 → 同目标空会话复制机）。 */
+    createBound: async (
+      binding_key: string,
+      title?: string,
+    ): Promise<{ session_id: string; title: string; reused: boolean }> =>
+      await request('sessions', 'create', {
+        binding_key,
+        ...(title ? { title } : {}),
+      }),
+
+    /** 重绑：binding_key → 既有会话（draft_apply 后「__new__」目标落到正式
+     *  工作流名时调用；旧会话自动让出键）。 */
+    setBinding: async (binding_key: string, session_id: string): Promise<{ ok: boolean }> =>
+      await request('sessions', 'set_binding', { binding_key, session_id }),
+
+    /** 摘键：释放「__new__」引导键（其会话已重绑到正式工作流名）。 */
+    removeBinding: async (binding_key: string): Promise<{ ok: boolean; removed: boolean }> =>
+      await request('sessions', 'remove_binding', { binding_key }),
 
     rename: async (session_id: string, title: string): Promise<{ session_id: string; title: string }> =>
       await request('sessions', 'rename', { session_id, title }),

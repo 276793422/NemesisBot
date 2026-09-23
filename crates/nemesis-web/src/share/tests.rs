@@ -8,13 +8,13 @@
 //! 存储走独立 tempdir workspace，不碰全局态。
 
 use super::*;
+use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicUsize};
-use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
-// env 测试竞争锁惯例：进程全局一把锁（本模块的存储测试写各自 tempdir，
-// 但 HTTP 测试经全局 chat_log，串行化更稳）。
-static TEST_LOCK: Mutex<()> = Mutex::new(());
+// env 测试竞争锁惯例：2026-09-23 起并入全 crate 共享的
+// `test_home::HOME_RACE_LOCK`（HTTP 测试经全局 chat_log 单例，与重定向
+// home 的模块互相踩会偶发 count 0——模块内私有锁挡不住跨模块窗口）。
 
 fn temp_workspace() -> tempfile::TempDir {
     tempfile::tempdir().unwrap()
@@ -75,7 +75,7 @@ fn make_state(ws: &str) -> Arc<AppState> {
 
 #[test]
 fn test_create_and_resolve_roundtrip() {
-    let _g = TEST_LOCK.lock();
+    let _g = crate::test_home::lock_home();
     let ws = temp_workspace();
     let entry = create_share(ws.path().to_str().unwrap(), "abc123").unwrap();
     assert_eq!(entry.session_id, "abc123");
@@ -90,7 +90,7 @@ fn test_create_and_resolve_roundtrip() {
 
 #[test]
 fn test_create_is_idempotent_per_session() {
-    let _g = TEST_LOCK.lock();
+    let _g = crate::test_home::lock_home();
     let ws = temp_workspace();
     let p = ws.path().to_str().unwrap();
     let a = create_share(p, "s1").unwrap();
@@ -101,7 +101,7 @@ fn test_create_is_idempotent_per_session() {
 
 #[test]
 fn test_revoked_share_not_resolvable_and_not_reused() {
-    let _g = TEST_LOCK.lock();
+    let _g = crate::test_home::lock_home();
     let ws = temp_workspace();
     let p = ws.path().to_str().unwrap();
     let e = create_share(p, "s1").unwrap();
@@ -120,7 +120,7 @@ fn test_create_sanitizes_session_id_no_path_traversal() {
     // 安全回归（2026-09-07）：sid 拼进 read_chat_log 的文件路径
     // （log_path 只替换 `:`），含分隔符的裸 sid 可路径穿越读任意 jsonl。
     // create_share 必须就地消毒（与 sessions export/rewind 臂同源）。
-    let _g = TEST_LOCK.lock();
+    let _g = crate::test_home::lock_home();
     let ws = temp_workspace();
     let p = ws.path().to_str().unwrap();
 
@@ -210,7 +210,7 @@ async fn call_share(
 
 #[tokio::test]
 async fn test_http_share_unknown_token_404() {
-    let _g = TEST_LOCK.lock();
+    let _g = crate::test_home::lock_home();
     let ws = temp_workspace();
     let state = make_state(ws.path().to_str().unwrap());
     let (status, body) = call_share(state, "deadbeef").await.unwrap_err();
@@ -220,7 +220,7 @@ async fn test_http_share_unknown_token_404() {
 
 #[tokio::test]
 async fn test_http_share_session_deleted_404() {
-    let _g = TEST_LOCK.lock();
+    let _g = crate::test_home::lock_home();
     let ws = temp_workspace();
     let p = ws.path().to_str().unwrap();
     let state = make_state(p);
@@ -234,7 +234,7 @@ async fn test_http_share_session_deleted_404() {
 
 #[tokio::test]
 async fn test_http_share_live_view_whitelisted_then_revoke_404() {
-    let _g = TEST_LOCK.lock();
+    let _g = crate::test_home::lock_home();
     let ws = temp_workspace();
     let p = ws.path().to_str().unwrap();
     let sid = nanos_sid();

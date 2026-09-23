@@ -124,6 +124,7 @@ fn make_observer(engine: WorkflowEngine) -> WorkflowChatReplyObserver {
 
 #[tokio::test]
 async fn completed_event_delivers_terminal_reply_to_chat_log() {
+    let _home = crate::test_home::lock_home();
     let dir = tempfile::tempdir().unwrap();
     let wf_name = unique_wf("reply");
     let engine = WorkflowEngine::with_persistence(dir.path().to_path_buf());
@@ -160,6 +161,7 @@ async fn completed_event_delivers_terminal_reply_to_chat_log() {
 
 #[tokio::test]
 async fn failed_and_cancelled_events_deliver_fixed_reply_texts() {
+    let _home = crate::test_home::lock_home();
     let dir = tempfile::tempdir().unwrap();
     let wf_fail = unique_wf("fail");
     let wf_cancel = unique_wf("cancel");
@@ -218,6 +220,7 @@ async fn failed_and_cancelled_events_deliver_fixed_reply_texts() {
 
 #[tokio::test]
 async fn on_event_ignores_unknown_execution_and_non_chat_triggers() {
+    let _home = crate::test_home::lock_home();
     // Unknown id → the "execution not found" warn arm; must not panic.
     let dir = tempfile::tempdir().unwrap();
     let engine = WorkflowEngine::with_persistence(dir.path().to_path_buf());

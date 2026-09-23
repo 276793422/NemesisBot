@@ -495,6 +495,10 @@ pub fn build_agent_loop(
         queue_size,
         max_continuation_permits,
     );
+    // D-4（2026-09-23 多会话并行清账）：loop 级并发 turn 上限（安全阀，
+    // 默认 8；0 = 不设限）。泵统一 gate+spawn 后跨会话天然并发，此值防
+    // 极端场景无界并发。
+    agent_loop.set_max_concurrent_turns(cfg.agents.defaults.max_concurrent_turns.max(0) as usize);
     // Phase 4a: apply the resolved startup tier + remember the config path so
     // runtime model switches and dashboard/CLI config edits re-resolve it live.
     agent_loop.set_tier(resolved_tier);
@@ -1970,6 +1974,9 @@ pub fn build_project_agent_loop(
         queue_size,
         max_continuation_permits,
     );
+    // D-4（2026-09-23 多会话并行清账）：项目 loop 同主 loop——并发 turn
+    // 上限安全阀（同会话仍串行）。
+    agent_loop.set_max_concurrent_turns(cfg.agents.defaults.max_concurrent_turns.max(0) as usize);
     agent_loop.set_tier(resolved_tier);
     agent_loop.set_config_path(config_path.clone());
     agent_loop.set_lsp_manager(shared.lsp_manager.clone());

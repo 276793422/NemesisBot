@@ -129,6 +129,7 @@ async fn test_history_search_rejects_missing_or_empty_query() {
 #[tokio::test]
 async fn test_history_reindex_returns_session_count() {
     let _lock = IDX_LOCK.lock();
+    let _home = crate::test_home::lock_home();
     let dir = tempfile::tempdir().unwrap();
     let ctx = make_ctx(&dir);
     let h = LogsHandler;
@@ -149,6 +150,7 @@ async fn test_history_reindex_returns_session_count() {
 #[tokio::test]
 async fn test_history_search_finds_appended_message_e2e() {
     let _lock = IDX_LOCK.lock();
+    let _home = crate::test_home::lock_home();
     let dir = tempfile::tempdir().unwrap();
     let ctx = make_ctx(&dir);
     let h = LogsHandler;

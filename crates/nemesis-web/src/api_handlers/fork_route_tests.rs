@@ -171,6 +171,7 @@ async fn body_json(resp: axum::response::Response) -> serde_json::Value {
 
 #[tokio::test]
 async fn test_turns_table_counts_jsonl_not_the_divergent_store() {
+    let _home = crate::test_home::lock_home();
     let dir = tempfile::tempdir().unwrap();
     let sid = unique_sid();
     let key = chat_session_key(&sid);
@@ -290,6 +291,7 @@ async fn test_turns_and_fork_require_auth_token() {
 
 #[tokio::test]
 async fn test_fork_copies_jsonl_verbatim_and_mirrors_store() {
+    let _home = crate::test_home::lock_home();
     let dir = tempfile::tempdir().unwrap();
     let sid = unique_sid();
     let key = chat_session_key(&sid);

@@ -64,6 +64,10 @@ const props = defineProps<{
   titleOverride?: string
   /** Override the textarea placeholder. */
   placeholderOverride?: string
+  /** D-3（2026-09-23 多会话并行清账）：嵌入宿主钉死的会话 id（工作流
+   *  「对话生成」等）。传入后本面板的所有收发/轮询/占用态都锚定该会话，
+   *  **绝不跟随也不抢占全局选中**（currentId）；缺省 = 跟随全局（旧行为）。 */
+  sessionId?: string
 }>()
 
 const chatStore = useChatStore()
@@ -75,10 +79,21 @@ const sessionStore = useSessionStore()
 // Multi-session: in the default chat module, attach the active conversation
 // id so the backend routes to `agent:main:session:{sid}` (server.rs/loop.rs).
 const isDefaultChat = computed(() => (props.module ?? 'chat') === 'chat')
+
+// D-3：本面板实际显示的会话 id——全部会话寻址（收发、历史、补拉、占位轮询、
+// inbox/usage 查询、占用表）的唯一入口。旧代码散落 ~40 处直引
+// `sessionStore.currentId`，嵌入面板（agent-gen）因此被迫抢写全局选中——
+// 跨会话串扰的直接根源（BUG 2026-09-23_workflow-agentgen-session-crosstalk）。
+const effectiveSid = computed(() => props.sessionId ?? sessionStore.currentId)
+
+// 本会话的发送占用态：busy 表按会话隔离（chat.busyBySid），旧的全局布尔
+// 曾让异会话 turn 的 busy 泄漏进本视图（发送被静默吞掉 / 假占位）。
+const streaming = computed(() => chatStore.isBusy(effectiveSid.value))
+
 function activeModuleData(): Record<string, unknown> {
   const md: Record<string, unknown> = { ...(props.moduleData ?? {}) }
-  if (isDefaultChat.value && sessionStore.currentId) {
-    md.session_id = sessionStore.currentId
+  if (isDefaultChat.value && effectiveSid.value) {
+    md.session_id = effectiveSid.value
   }
   return md
 }
@@ -86,7 +101,7 @@ function activeModuleData(): Record<string, unknown> {
 // L6++（2026-09-08）：项目 chip——当前会话归属项目时，欢迎语上方显示
 // 「⟦项目名⟧」（注册表联结显示名；已移除/未知 pid 不显示，不误导）。
 const activeProjectName = computed(() => {
-  const pid = sessionStore.sessions.find(s => s.id === sessionStore.currentId)?.projectId
+  const pid = sessionStore.sessions.find(s => s.id === effectiveSid.value)?.projectId
   return pid ? sessionStore.projectNameOf(pid) : null
 })
 
@@ -105,7 +120,7 @@ const {
 /** Re-fetch the inbox mode snapshot (mount / session switch / reconnect). */
 function syncInboxMode() {
   if (!isDefaultChat.value) return
-  void refreshInbox(sessionStore.currentId || '')
+  void refreshInbox(effectiveSid.value || '')
 }
 
 /** busy 时发送是否仍然有效（默认 chat + queue/steer 模式）。 */
@@ -119,11 +134,11 @@ const canQueueWhileBusy = computed(() => isDefaultChat.value && queueEnabled.val
  *  ModeChanged push 对任意 web: 会话兜底刷新）。 */
 function syncAgentMode() {
   if (!isDefaultChat.value) return
-  const sid = sessionStore.currentId
+  const sid = effectiveSid.value
   if (!sid) return
   request('chat', 'get_mode', { session_id: sid })
     .then((data) => {
-      if (sessionStore.currentId !== sid) return
+      if (effectiveSid.value !== sid) return
       if (data?.mode === 'plan' || data?.mode === 'build') chatStore.setAgentMode(data.mode)
     })
     .catch(() => {})
@@ -134,7 +149,7 @@ async function toggleAgentMode() {
   const target = chatStore.agentMode === 'plan' ? 'build' : 'plan'
   try {
     const data = await request('chat', 'set_mode', {
-      session_id: sessionStore.currentId || '',
+      session_id: effectiveSid.value || '',
       mode: target,
     })
     if (data?.mode === 'plan' || data?.mode === 'build') chatStore.setAgentMode(data.mode)
@@ -199,25 +214,25 @@ const sessCost = ref<number | null>(null)
 
 function refreshUsage() {
   if (!isDefaultChat.value) return
-  const sid = sessionStore.currentId
+  const sid = effectiveSid.value
   if (!sid) return
   // 响应可能晚于会话切换——回包时校验还是当前会话（同 TodoPanel 纪律）。
   request('chat', 'context_status', { session_id: sid })
     .then((data) => {
-      if (sessionStore.currentId !== sid) return
+      if (effectiveSid.value !== sid) return
       ctxPct.value = typeof data?.context?.pct === 'number' ? data.context.pct : null
     })
     .catch(() => {})
   request('logs', 'session_usage', { session_id: sid })
     .then((data) => {
-      if (sessionStore.currentId !== sid) return
+      if (effectiveSid.value !== sid) return
       sessCost.value = typeof data?.total_cost_usd === 'number' ? data.total_cost_usd : null
     })
     .catch(() => {})
 }
 
 const unwatchUsage = watch(
-  () => sessionStore.currentId,
+  effectiveSid,
   () => {
     ctxPct.value = null
     sessCost.value = null
@@ -385,9 +400,9 @@ function handleWSMessage(data: any) {
     const ev = data.data
     const p = ev?.data ?? {}
     if (typeof p.session_id === 'string' && p.session_id.length > 0) {
-      if (p.session_id !== sessionStore.currentId) return
+      if (p.session_id !== effectiveSid.value) return
     } else {
-      const expected = sessionStore.currentId ? `web:${sessionStore.currentId}` : null
+      const expected = effectiveSid.value ? `web:${effectiveSid.value}` : null
       if (expected ? p.chat_id !== expected : !String(p.chat_id ?? '').startsWith('web:')) return
     }
     applyToolEventPayload(ev)
@@ -401,11 +416,23 @@ function handleWSMessage(data: any) {
     const activeModule = props.module ?? 'chat'
     if (data.type === 'message' && data.module === activeModule) {
       if (data.cmd === 'receive') {
-        // L6++：帧带 agent 会话 id 时按当前会话过滤——异会话的回复不进当前
+        // L6++：帧带 agent 会话 id 时按本面板会话过滤——异会话的回复不进当前
         // 视图（后端已持久化，切到该会话时从磁盘加载），否则切走后晚到的
         // 回复会串进当前视图。无该字段 = 旧路径帧，保持接受（legacy 兼容）。
         const frameSid = data.data?.session_id
-        if (frameSid && sessionStore.currentId && frameSid !== sessionStore.currentId) return
+        if (frameSid && effectiveSid.value && frameSid !== effectiveSid.value) {
+          // D-3：异会话帧先落账再过滤——busy 表按会话隔离后，异会话回复的
+          // 完成语义必须照常清算（该会话的占用态 + B2 在飞登记），否则嵌入
+          // 面板卸载窗口/无视图归属的会话 busy 永挂。assistant 帧才是完成
+          // 信号（user 回声帧不是——与下方完成语义同口径）。
+          if (data.data.role === 'assistant') {
+            chatStore.setBusy(frameSid, false)
+            chatStore.clearInflightTurn(frameSid)
+          }
+          return
+        }
+        // 无 session_id 帧（旧路径/legacy 广播）或本面板无会话锚
+        // （standalone/未选中）→ 保持接受（legacy 兼容语义）。
         // SB（2026-09-17）兜底：帧的会话不在列表中（session.created 事件
         // 丢失 / B 端路径无事件 / SSE 断窗）→ force 刷新列表（同 sid 3s
         // 节流）。事件丢失时这是列表可见性的第二道闸。
@@ -456,9 +483,9 @@ function handleWSMessage(data: any) {
         // 完成信号——不关 streaming、不清 watchdog（本地发送态保持到
         // assistant 回复到场）；完成语义只属于 assistant 帧。
         if (incomingRole === 'assistant') {
-          chatStore.streaming = false
+          chatStore.setBusy(effectiveSid.value, false)
           // B2：本会话回复到场——在飞登记完成使命。
-          chatStore.clearInflightTurn(sessionStore.currentId)
+          chatStore.clearInflightTurn(effectiveSid.value)
           clearWatchdog()
           // M5：turn 完成（历史已落 store）→ 刷新 context/cost 常驻条。
           refreshUsage()
@@ -486,9 +513,9 @@ function handleWSMessage(data: any) {
           content: data.data.content || data.data,
           timestamp: data.timestamp,
         })
-        chatStore.streaming = false
+        chatStore.setBusy(effectiveSid.value, false)
         // B2：错误帧同样终结在飞轮次（后端拒绝/装配失败等）。
-        chatStore.clearInflightTurn(sessionStore.currentId)
+        chatStore.clearInflightTurn(effectiveSid.value)
         clearWatchdog()
       }
     } else if (data.type === 'system' && data.module === 'error' && data.cmd === 'notify') {
@@ -497,7 +524,7 @@ function handleWSMessage(data: any) {
         content: data.data.content || data.data,
         timestamp: data.timestamp,
       })
-      chatStore.streaming = false
+      chatStore.setBusy(effectiveSid.value, false)
     }
   }
 
@@ -574,7 +601,7 @@ function maybeRefreshSessionsFor(sid: string) {
  * 前提:视图已由 chat_log 历史渲染(user/assistant 文本行);本函数只负责
  * tool 条目→挂载。fire-and-forget,失败静默。 */
 async function replayToolsFromRing() {
-  const sid = sessionStore.currentId
+  const sid = effectiveSid.value
   if (!sid) return
   const res = await request('chat', 'sync', { session_id: sid, after_seq: 0 })
   if (!res?.gap && Array.isArray(res?.events) && res.events.length) {
@@ -630,7 +657,7 @@ async function primeSeqBaseline() {
 
 async function syncMissedChat() {
   if (!isDefaultChat.value) return
-  const sid = sessionStore.currentId
+  const sid = effectiveSid.value
   if (!sid || chatStore.historyLoading) return
   try {
     const res = await request('chat', 'sync', { session_id: sid, after_seq: lastChatSeq })
@@ -737,7 +764,7 @@ let activityDebounce: number | null = null
 let activityLastRefreshAt = 0
 function onChatActivity(payload: any) {
   if (!isDefaultChat.value) return
-  if (payload?.session_id !== sessionStore.currentId) return
+  if (payload?.session_id !== effectiveSid.value) return
   const seq = typeof payload?.seq === 'number' ? payload.seq : 0
   if (seq <= lastChatSeq) return
   activityLagSeq = Math.max(activityLagSeq, seq)
@@ -747,7 +774,7 @@ function onChatActivity(payload: any) {
     activityDebounce = null
     if (activityLagSeq <= lastChatSeq) return // 响应间隙实时帧已追平
     activityLagSeq = 0
-    if (chatStore.streaming) return // 本端发送中：流式态自管理，不打断
+    if (streaming.value) return // 本端发送中：流式态自管理，不打断
     if (Date.now() - activityLastRefreshAt < 5000) return
     activityLastRefreshAt = Date.now()
     // 增量补齐（user/assistant/tool 同通道）；gap → 全量兜底在函数内部。
@@ -813,7 +840,7 @@ function reloadLatest() {
 }
 function onWatchdog() {
   watchdogTimer = null
-  if (!chatStore.streaming) return
+  if (!streaming.value) return
   if (!isDefaultChat.value) return
   // 轮次活跃迹象 → 续期不重灌:审批挂起(全局单例 pendingApprovals,含
   // 其他会话的挂起——多等一个周期无害)或本轮工具事件未 flush(回复未到
@@ -873,7 +900,7 @@ function rewindToastSummary(resp: any) {
 /** 回退到 messageIndex 行之后（行号语义见 rewindActions 各按钮）。 */
 async function doRewind(messageIndex: number) {
   if (rewinding.value || !isDefaultChat.value) return
-  const sid = sessionStore.currentId
+  const sid = effectiveSid.value
   if (!sid) return
   rewinding.value = true
   try {
@@ -892,7 +919,7 @@ async function doRewind(messageIndex: number) {
 /** E3 redo：弹本会话 undo 栈顶反向恢复（栈在网关内存态，空栈后端诚实报错）。 */
 async function doRedo() {
   if (rewinding.value || !isDefaultChat.value) return
-  const sid = sessionStore.currentId
+  const sid = effectiveSid.value
   if (!sid) return
   rewinding.value = true
   try {
@@ -971,9 +998,9 @@ function handleHistoryResponse(data: any) {
     return
   }
   inFlightHistory.delete(data.request_id)
-  // 围栏第二道：会话归属——响应携带 session_id 且与当前选中不符（快速
-  // 切换会话时旧会话响应迟到）→ 丢弃，防串台。
-  if (data?.session_id && sessionStore.currentId && data.session_id !== sessionStore.currentId) {
+  // 围栏第二道：会话归属——响应携带 session_id 且与本面板会话不符（快速
+  // 切换会话时旧会话响应迟到 / 嵌入面板异会话响应）→ 丢弃，防串台。
+  if (data?.session_id && effectiveSid.value && data.session_id !== effectiveSid.value) {
     return
   }
 
@@ -983,11 +1010,11 @@ function handleHistoryResponse(data: any) {
   // P2（2026-09-11）：历史到手 = 未读已见 → 清零未送达徽标（本地立即置 0 +
   // 后端 sidecar 计数清除；无未读时本地短路零开销）。放在所有早退分支之前，
   // resync/watchdog 路径同样视为已读。
-  if (sessionStore.currentId) sessionStore.markDelivered(sessionStore.currentId)
+  if (effectiveSid.value) sessionStore.markDelivered(effectiveSid.value)
   // P4：本响应已通过会话归属围栏 → 视图归属当前会话，钉住（见
   // loadedHistorySid 声明）。resync/watchdog 分支的 replace 与翻页 prepend
   // 同样是完整视图语义，统一在此设置。
-  loadedHistorySid = sessionStore.currentId ?? null
+  loadedHistorySid = effectiveSid.value ?? null
   loadingHistorySid = null
 
   // M6：rewind/redo 后的重同步（无条件 replace + oldest_index 重建行号）。
@@ -1006,7 +1033,7 @@ function handleHistoryResponse(data: any) {
         rowIndex: oldest !== null ? oldest + j : undefined,
       })),
     )
-    chatStore.streaming = false
+    chatStore.setBusy(effectiveSid.value, false)
     clearWatchdog()
     nextTick(() => scrollToBottom())
     return
@@ -1035,7 +1062,7 @@ function handleHistoryResponse(data: any) {
         continue // 更早 user 行(同文重发等),继续向前
       }
     }
-    if (chatStore.streaming && landed) {
+    if (streaming.value && landed) {
       chatStore.replaceMessages(
         rawMsgs.map((m: any) => ({
           role: m.role,
@@ -1046,13 +1073,13 @@ function handleHistoryResponse(data: any) {
           imageCount: Array.isArray(m.images) ? m.images.length : undefined,
         })),
       )
-      chatStore.streaming = false
+      chatStore.setBusy(effectiveSid.value, false)
       clearWatchdog()
       // 重灌只有文本行——从环回放挂回最后一轮工具卡(与 F5/切回的
       // primeSeqBaseline 同语义;重灌丢卡 = P1 修复的同族问题)。
       void replayToolsFromRing().catch(() => {})
       nextTick(() => scrollToBottom())
-    } else if (chatStore.streaming && watchdogAttempts < MAX_WATCHDOG_ATTEMPTS) {
+    } else if (streaming.value && watchdogAttempts < MAX_WATCHDOG_ATTEMPTS) {
       // Response not landed yet (maybe still running) — re-check later.
       armWatchdog()
     } else {
@@ -1060,9 +1087,9 @@ function handleHistoryResponse(data: any) {
       // 旧数据是诚实降级（真相源没有新内容可灌），但 streaming 旗标与
       // B2 在飞登记必须复位，否则输入框永久锁死、B2 占位恢复逻辑永挂。
       // 后到的真实回复帧仍可经 receive 正常入列（streaming=false 不拦）。
-      if (chatStore.streaming) {
-        chatStore.streaming = false
-        chatStore.clearInflightTurn(sessionStore.currentId)
+      if (streaming.value) {
+        chatStore.setBusy(effectiveSid.value, false)
+        chatStore.clearInflightTurn(effectiveSid.value)
       }
       clearWatchdog()
     }
@@ -1198,7 +1225,7 @@ function manualReloadHistory() {
 function loadHistory() {
   if (chatStore.historyLoading) return
   chatStore.historyLoading = true
-  loadingHistorySid = sessionStore.currentId
+  loadingHistorySid = effectiveSid.value
   const requestId = 'hist_' + Date.now()
   inFlightHistory.set(requestId, {
     kind: 'page',
@@ -1275,9 +1302,12 @@ function stopPendingTurnPolling() {
 function detectPendingTurn() {
   const msgs = chatStore.messages
   const last = msgs[msgs.length - 1]
-  const sid = sessionStore.currentId
+  const sid = effectiveSid.value
   // 尾部 assistant = 回复已到场——无论历史渲染还是实时帧，在飞登记清账。
+  // D-3：busy 一并清算——重挂载补偿的 reset 不再清 busy 表（按会话隔离），
+  // 卸载窗口内完成的轮次（完成帧丢失）靠此处收尾，否则输入框永锁。
   if (last && last.role === 'assistant') {
+    chatStore.setBusy(sid, false)
     chatStore.clearInflightTurn(sid)
     stopPendingTurnPolling()
     return
@@ -1289,7 +1319,7 @@ function detectPendingTurn() {
     return
   }
   // 本地发送态（streaming）不接管——占位已由 streaming 渲染。
-  if (chatStore.streaming) {
+  if (streaming.value) {
     stopPendingTurnPolling()
     return
   }
@@ -1306,18 +1336,18 @@ function detectPendingTurn() {
 async function pollPendingTurn() {
   if (!pendingTurn.value) return
   if (Date.now() - pendingTurnStartedAt > PENDING_TURN_MAX_MS) {
-    chatStore.clearInflightTurn(sessionStore.currentId) // B2：硬上限到期清账
+    chatStore.clearInflightTurn(effectiveSid.value) // B2：硬上限到期清账
     stopPendingTurnPolling()
     return
   }
   // busy 快照（查询失败 available:false → busy=false → 走死轮计数，
   // 不会卡死轮询）。
-  await refreshInbox(sessionStore.currentId || '')
+  await refreshInbox(effectiveSid.value || '')
   const busy = inboxStatus.value?.busy === true
   // BUG 2026-09-21 ①：同拍查限流重试态——retrying 时占位区显示进度文案。
   // 查询失败静默（retryStatus 保持旧值/空，不影响停轮判定）。
   try {
-    const rs = await request('agent', 'retry_status', { session_id: sessionStore.currentId || '' })
+    const rs = await request('agent', 'retry_status', { session_id: effectiveSid.value || '' })
     retryStatus.value = rs?.retrying
       ? { retry: rs.retry, max_retries: rs.max_retries, wait_secs: rs.wait_secs, model: rs.model }
       : null
@@ -1334,14 +1364,13 @@ async function pollPendingTurn() {
     if (pendingTurnDeadPolls >= PENDING_TURN_MAX_DEAD_POLLS) {
       // B2：轮次已死（重启/异常）——登记一并清账，悬空 user 行保留展示
       // （诚实停轮，与 steer 悬空形态一致）。
-      chatStore.clearInflightTurn(sessionStore.currentId)
+      chatStore.clearInflightTurn(effectiveSid.value)
       stopPendingTurnPolling()
     }
   } else {
     pendingTurnDeadPolls = 0
   }
 }
-
 // ---------------------------------------------------------------------------
 // T8 多模态（2026-09-03）：图片附件（上传端点 /api/upload/image → chat.send
 // media）。三种入口：📎 选择文件、粘贴（clipboard files）、拖拽到输入区。
@@ -1522,7 +1551,7 @@ function sendMessage() {
     return
   }
   // U7: queue/steer 模式下 busy 发送是合法操作（后端排队/插队）；reject 模式维持原样。
-  if (chatStore.streaming && !canQueueWhileBusy.value) return
+  if (streaming.value && !canQueueWhileBusy.value) return
 
   chatStore.addMessage({
     role: 'user',
@@ -1538,10 +1567,10 @@ function sendMessage() {
   pastedTexts.value = new Map()
   expandedPastes.value = new Set()
   pasteSeq = 0
-  chatStore.streaming = true
+  chatStore.setBusy(effectiveSid.value, true)
   // B2：登记在飞 turn（不被会话切换 reset 清掉）——切走再切回时占位/
   // 轮询凭此恢复；assistant/error/sync 收尾时清除。
-  chatStore.markInflightTurn(sessionStore.currentId, content)
+  chatStore.markInflightTurn(effectiveSid.value, content)
   // 本地发送接管占位——清掉可能残留的切页恢复轮询（streaming 态由
   // watchdog 负责，两套机制不叠加）。
   stopPendingTurnPolling()
@@ -1561,7 +1590,7 @@ function sendMessage() {
 
   // U7: busy 中排队/插队 → 立即拉一次队列快照并轮询，chip 才能出现。
   if (canQueueWhileBusy.value) {
-    startInboxPolling(sessionStore.currentId || '')
+    startInboxPolling(effectiveSid.value || '')
   }
 
   // If dialogue mode is active, reset the accumulation buffer to prevent duplicate send
@@ -1583,9 +1612,9 @@ function stopGeneration() {
   // stop button in that case via `showStopButton`.
   request('agent', 'cancel').then((res) => {
     if (res && res.cancelled > 0) {
-      chatStore.streaming = false
+      chatStore.setBusy(effectiveSid.value, false)
       // B2：主动停止 = 在飞轮次终结。
-      chatStore.clearInflightTurn(sessionStore.currentId)
+      chatStore.clearInflightTurn(effectiveSid.value)
       chatStore.addMessage({
         role: 'system',
         content: '已停止生成',
@@ -1597,11 +1626,11 @@ function stopGeneration() {
       // 的停止意图仍然生效，UI 的 streaming/在飞登记是陈旧态（回复丢失
       // 或早已完成而前端漏了收尾），必须复位，否则停止按钮永远不消失。
       // 不加「已停止生成」系统行——后端确认无在跑轮次，加行是假话。
-      chatStore.streaming = false
-      chatStore.clearInflightTurn(sessionStore.currentId)
+      chatStore.setBusy(effectiveSid.value, false)
+      chatStore.clearInflightTurn(effectiveSid.value)
     }
   }).catch(() => {
-    chatStore.streaming = false
+    chatStore.setBusy(effectiveSid.value, false)
   })
 }
 
@@ -1897,8 +1926,8 @@ const unwatchStatus = watch(wsStatus, (val) => {
       // L2：重连（非首连）→ 断线补拉而非整页重载。
       syncMissedChat()
     }
-    if (val === 'disconnected' && chatStore.streaming) {
-      chatStore.streaming = false
+    if (val === 'disconnected' && streaming.value) {
+      chatStore.setBusy(effectiveSid.value, false)
     }
     return
   }
@@ -1914,8 +1943,8 @@ const unwatchStatus = watch(wsStatus, (val) => {
     syncMissedChat()
   }
   // Reset streaming flag on disconnect to prevent stuck UI
-  if (val === 'disconnected' && chatStore.streaming) {
-    chatStore.streaming = false
+  if (val === 'disconnected' && streaming.value) {
+    chatStore.setBusy(effectiveSid.value, false)
   }
   // 断连期间轮询重拉无意义——停掉；重连后 loadHistory 会重新 detect。
   if (val === 'disconnected' && pendingTurn.value) {
@@ -1929,7 +1958,7 @@ const unwatchStatus = watch(wsStatus, (val) => {
 })
 
 // U7: streaming 结束 → 停轮询并刷新一次（队列里剩余条数清零/被消费）。
-const unwatchStreaming = watch(() => chatStore.streaming, (s) => {
+const unwatchStreaming = watch(streaming, (s) => {
   if (!isDefaultChat.value) return
   if (!s) {
     stopInboxPolling()
@@ -1939,8 +1968,11 @@ const unwatchStreaming = watch(() => chatStore.streaming, (s) => {
 
 // Multi-session: when the active conversation id changes, reset the chat
 // state and reload that conversation's history (backend routes by session_id).
+// D-3：监听 effectiveSid 而非裸 currentId——嵌入宿主（sessionId 钉死）时
+// 全局选中切换不再触发本面板 reset/重拉（视图锚定自己的会话）；props 变化
+// （宿主重绑，如 draft_apply 后落到正式会话）同样走这条切换链。
 const unwatchSession = watch(
-  () => sessionStore.currentId,
+  effectiveSid,
   (newId, oldId) => {
     if (!isDefaultChat.value || newId === oldId) return
     // P4（2026-09-21）：同会话免重拉——已完整载入（newId === loadedHistorySid
@@ -2185,7 +2217,7 @@ onUnmounted(() => {
            多端场景下本端未发起轮次（另一端在跑工具）也能实时看到工具卡，
            否则实时 tool_event 只进 store 不渲染，直到回复落地才闪现。 -->
       <div
-        v-if="chatStore.streaming || pendingTurn || chatStore.pendingToolEvents.length || chatStore.pendingRoundTexts.length"
+        v-if="streaming || pendingTurn || chatStore.pendingToolEvents.length || chatStore.pendingRoundTexts.length"
         class="message assistant"
       >
         <div class="message-avatar">NB</div>
@@ -2220,7 +2252,7 @@ onUnmounted(() => {
               <ToolCallCard v-for="ev in chatStore.pendingToolEvents" :key="ev.callId" :event="ev" />
             </div>
           </template>
-          <div v-if="chatStore.streaming || pendingTurn" class="message-bubble">
+          <div v-if="streaming || pendingTurn" class="message-bubble">
             <!-- BUG 2026-09-21 ①：pendingTurn（切回会话）时限流重试实时态
                  可见——文案与实时帧同口径；无快照（非限流/查询不可用）退化为
                  转圈。streaming（本地发送）不显示——重试进度已有实时帧。 -->
@@ -2343,7 +2375,7 @@ onUnmounted(() => {
     </div>
 
     <!-- U7 inbox visibility: queued/steer chip + steer input hint -->
-    <div v-if="chatStore.streaming && queuedTotal > 0" class="queue-chip" :class="{ full: queueFull }">
+    <div v-if="streaming && queuedTotal > 0" class="queue-chip" :class="{ full: queueFull }">
       ⏳ agent 处理中，已排队 {{ queuedTotal }} 条（其中插队 {{ inboxStatus?.next_step ?? 0 }}）<template v-if="queueFull"> · 队列已满</template>
     </div>
     <!-- F1: 计划模式常驻条（工具栏可折叠，安全相关状态需要始终可见） -->
@@ -2432,7 +2464,7 @@ onUnmounted(() => {
       <button
         class="attach-btn"
         title="附带图片（也可粘贴或拖拽进来）"
-        :disabled="chatStore.streaming && !canQueueWhileBusy"
+        :disabled="streaming && !canQueueWhileBusy"
         @click="pickImages"
       >
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" width="18" height="18">
@@ -2455,14 +2487,14 @@ onUnmounted(() => {
         @keydown="handleKeydown"
         @input="handleInput"
         @paste="onPaste"
-        :disabled="chatStore.streaming && !canQueueWhileBusy"
+        :disabled="streaming && !canQueueWhileBusy"
       ></textarea>
-      <button v-if="chatStore.streaming && showStopButton" class="btn btn-stop" @click="stopGeneration" title="停止生成">
+      <button v-if="streaming && showStopButton" class="btn btn-stop" @click="stopGeneration" title="停止生成">
         <svg viewBox="0 0 24 24" fill="currentColor" width="16" height="16">
           <rect x="6" y="6" width="12" height="12" rx="2"/>
         </svg>
       </button>
-      <button v-if="!chatStore.streaming || canQueueWhileBusy" class="btn btn-primary" @click="sendMessage" :disabled="(!chatStore.input.trim() && !pendingImages.length) || uploadingImages > 0">
+      <button v-if="!streaming || canQueueWhileBusy" class="btn btn-primary" @click="sendMessage" :disabled="(!chatStore.input.trim() && !pendingImages.length) || uploadingImages > 0">
         发送
       </button>
       <span v-else-if="!showStopButton" class="btn btn-primary btn-disabled-workflow" title="工作流执行中，无法中断">
@@ -2493,8 +2525,8 @@ onUnmounted(() => {
     </div>
     <!-- L4 会话分享弹窗 -->
     <ShareModal
-      v-if="showShare && sessionStore.currentId"
-      :session-id="sessionStore.currentId"
+      v-if="showShare && effectiveSid"
+      :session-id="effectiveSid"
       @close="showShare = false"
     />
   </div>

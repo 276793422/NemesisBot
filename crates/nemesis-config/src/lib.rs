@@ -888,6 +888,12 @@ pub struct AgentDefaults {
     pub queue_size: i64,
     #[serde(default)]
     pub max_continuation_permits: i64,
+    /// D-4（2026-09-23 多会话并行清账）：单 loop 并发 turn 上限（安全阀）。
+    /// 泵统一 gate+spawn 后跨会话天然并发，此值防止极端场景无界并发。
+    /// 0 = 不设限。默认 8（每个 AgentLoop——主 loop / 项目 loop 各自独立
+    /// 计数；同会话仍串行，不受此值影响）。
+    #[serde(default = "default_max_concurrent_turns")]
+    pub max_concurrent_turns: i64,
     /// U4: tool-result spill retention (days). Spill files under
     /// `<home>/logs/spill/` older than this are deleted (startup scan +
     /// daily midnight task in agent_factory). 0 = never clean up. Default 7.
@@ -921,6 +927,7 @@ impl Default for AgentDefaults {
             snapshot_role: default_snapshot_role(),
             queue_size: default_queue_size(),
             max_continuation_permits: 0,
+            max_concurrent_turns: default_max_concurrent_turns(),
             spill_retention_days: default_spill_retention_days(),
             diagnostics_loop: DiagnosticsLoopConfig::default(),
             format_on_save: FormatOnSaveConfig::default(),
@@ -2631,6 +2638,11 @@ pub fn apply_env_overrides(config: &mut Config) {
     {
         config.agents.defaults.queue_size = n;
     }
+    if let Ok(v) = std::env::var("NEMESISBOT_AGENTS_DEFAULTS_MAX_CONCURRENT_TURNS")
+        && let Ok(n) = v.parse()
+    {
+        config.agents.defaults.max_concurrent_turns = n;
+    }
 
     // Web channel
     if let Ok(v) = std::env::var("NEMESISBOT_CHANNELS_WEB_ENABLED") {
@@ -3195,6 +3207,13 @@ fn default_snapshot_role() -> String {
     "user".to_string()
 }
 fn default_queue_size() -> i64 {
+    8
+}
+
+/// D-4（2026-09-23 多会话并行清账）：单 loop 并发 turn 上限缺省 8。泵统一
+/// 后跨会话并发是结构不变量，此缺省给极端场景一个有界并发兜底；0 显式
+/// 关闭限制。
+fn default_max_concurrent_turns() -> i64 {
     8
 }
 fn default_spill_retention_days() -> i64 {

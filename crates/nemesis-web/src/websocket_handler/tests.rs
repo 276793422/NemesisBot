@@ -50,14 +50,11 @@ fn test_handle_chat_send_empty_content_with_empty_media_rejected() {
 // 路径（上方 BUG-1 测试只锚定失败臂——注记 + media 空；成功臂必须有测试
 // 钉住，防止解析路径回归成「永远注记」）。
 // 竞态纪律（env-test-race-lock-pattern）：resolve_media_ref 走 PathManager
-// 单例 → 需重定向进程全局 home；持模块级锁串行 + RAII 恢复。
+// 单例 → 需重定向进程全局 home；持全 crate 共享的 test_home 锁串行 +
+// RAII 恢复（模块内私有锁挡不住跨模块竞态，2026-09-23）。
 #[test]
 fn test_handle_chat_send_resolvable_media_id_populates_media() {
-    static LOCK: std::sync::OnceLock<std::sync::Mutex<()>> = std::sync::OnceLock::new();
-    let _guard = LOCK
-        .get_or_init(|| std::sync::Mutex::new(()))
-        .lock()
-        .unwrap();
+    let _guard = crate::test_home::lock_home();
     let dir = tempfile::tempdir().unwrap();
     let old_home = nemesis_path::default_path_manager().home_dir();
     nemesis_path::default_path_manager().set_home_dir(dir.path().to_path_buf());
