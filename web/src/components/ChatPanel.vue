@@ -1050,6 +1050,14 @@ function handleHistoryResponse(data: any) {
       // Response not landed yet (maybe still running) — re-check later.
       armWatchdog()
     } else {
+      // 放弃臂（W5，2026-09-23）：重试耗尽仍未在磁盘看到回复——视图停在
+      // 旧数据是诚实降级（真相源没有新内容可灌），但 streaming 旗标与
+      // B2 在飞登记必须复位，否则输入框永久锁死、B2 占位恢复逻辑永挂。
+      // 后到的真实回复帧仍可经 receive 正常入列（streaming=false 不拦）。
+      if (chatStore.streaming) {
+        chatStore.streaming = false
+        chatStore.clearInflightTurn(sessionStore.currentId)
+      }
       clearWatchdog()
     }
     return
@@ -1577,6 +1585,13 @@ function stopGeneration() {
         timestamp: new Date().toISOString(),
       })
       nextTick(() => scrollToBottom())
+    } else {
+      // W5（2026-09-23）：cancelled=0 = 后端没有在跑的轮次——本地点击
+      // 的停止意图仍然生效，UI 的 streaming/在飞登记是陈旧态（回复丢失
+      // 或早已完成而前端漏了收尾），必须复位，否则停止按钮永远不消失。
+      // 不加「已停止生成」系统行——后端确认无在跑轮次，加行是假话。
+      chatStore.streaming = false
+      chatStore.clearInflightTurn(sessionStore.currentId)
     }
   }).catch(() => {
     chatStore.streaming = false

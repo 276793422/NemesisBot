@@ -1,9 +1,9 @@
 //! capabilities 表的防漂移与良构性测试（从生产文件迁出，遵循内联测试纪律）。
 
 use super::*;
+use crate::WorkflowContext;
 use crate::nodes::NodeExecutor;
 use crate::types::{NodeDef, NodeResult};
-use crate::WorkflowContext;
 use std::collections::HashMap;
 use std::sync::Arc;
 
@@ -26,7 +26,11 @@ impl NodeExecutor for DummyExecutor {
 }
 
 fn table_node_types() -> Vec<String> {
-    let mut v: Vec<String> = capabilities().node_types.into_iter().map(|n| n.node_type).collect();
+    let mut v: Vec<String> = capabilities()
+        .node_types
+        .into_iter()
+        .map(|n| n.node_type)
+        .collect();
     v.sort();
     v
 }
@@ -71,7 +75,11 @@ fn trigger_types_match_parser_and_driver_status() {
 #[test]
 fn table_rows_are_well_formed() {
     for n in capabilities().node_types {
-        assert!(!n.summary.is_empty(), "node {} missing summary", n.node_type);
+        assert!(
+            !n.summary.is_empty(),
+            "node {} missing summary",
+            n.node_type
+        );
         for r in &n.required_config {
             assert!(
                 !n.optional_config.contains(r),

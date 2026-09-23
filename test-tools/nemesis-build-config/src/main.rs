@@ -345,6 +345,8 @@ fn main() -> Result<()> {
 }
 
 #[cfg(test)]
+mod preset_tests;
+#[cfg(test)]
 mod s12b_tests;
 #[cfg(test)]
 mod w5d_tests;

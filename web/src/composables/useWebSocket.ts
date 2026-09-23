@@ -14,6 +14,9 @@ const maxReconnectDelay = 30000
 const messageQueue: string[] = []
 let manualClose = false
 let heartbeatInterval: ReturnType<typeof setInterval> | null = null
+// W2（2026-09-23）：重连定时器句柄——disconnect() 必须能取消已排程的
+// 重连，否则显式断开后定时器仍触发 connect()，连接“死而复生”。
+let reconnectTimer: ReturnType<typeof setTimeout> | null = null
 
 // Extra query params appended to the WS URL on connect (e.g.
 // `workflow_chat=<index>&pwd=<password>` for the standalone
@@ -84,7 +87,12 @@ function notifyStatus(s: WSStatus) {
 function reconnect() {
   if (manualClose) return
   console.log(`[NemesisAPI] Reconnecting in ${reconnectDelay}ms...`)
-  setTimeout(() => {
+  // 重排程前先清掉旧定时器（防 onclose/connect-error 双路径叠定时器）；
+  // 回调内复查 manualClose——排程与触发之间可能发生显式 disconnect()。
+  if (reconnectTimer !== null) clearTimeout(reconnectTimer)
+  reconnectTimer = setTimeout(() => {
+    reconnectTimer = null
+    if (manualClose) return
     reconnectDelay = Math.min(reconnectDelay * 2, maxReconnectDelay)
     connect(null, token)
   }, reconnectDelay)
@@ -229,6 +237,12 @@ export function sendHistoryRequest(
 export function disconnect() {
   manualClose = true
   stopHeartbeat()
+  // W2：取消已排程的重连——manualClose 只拦回调内的老检查点，
+  // 不取消的话定时器到点仍会 connect()（显式断开后连接复活）。
+  if (reconnectTimer !== null) {
+    clearTimeout(reconnectTimer)
+    reconnectTimer = null
+  }
   if (ws) {
     ws.close()
     ws = null

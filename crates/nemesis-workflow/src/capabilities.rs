@@ -246,7 +246,10 @@ pub fn render_for_prompt() -> String {
     }
     out.push_str("\n## 触发器类型\n\n");
     for t in &caps.trigger_types {
-        out.push_str(&format!("- `{}`: {}（{}）\n", t.trigger_type, t.summary, t.config_notes));
+        out.push_str(&format!(
+            "- `{}`: {}（{}）\n",
+            t.trigger_type, t.summary, t.config_notes
+        ));
     }
     out.push_str("\n## 结构规则\n\n");
     for (i, r) in caps.structure_rules.iter().enumerate() {

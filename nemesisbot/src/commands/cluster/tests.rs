@@ -131,6 +131,79 @@ fn test_update_cluster_config_no_file() {
     assert!(result.is_err());
 }
 
+// ---------------------------------------------------------------------------
+// F4（2026-09-23）：read_cluster_token / ensure_cluster_token
+// ---------------------------------------------------------------------------
+
+#[test]
+fn test_read_cluster_token_missing_file_is_empty() {
+    let tmp = TempDir::new().unwrap();
+    let home = make_home(&tmp);
+    assert_eq!(read_cluster_token(&home), "");
+}
+
+#[test]
+fn test_read_cluster_token_missing_key_is_empty() {
+    let tmp = TempDir::new().unwrap();
+    let home = make_home(&tmp);
+    write_cluster_config(&home, &serde_json::json!({"enabled": false}));
+    assert_eq!(read_cluster_token(&home), "");
+}
+
+#[test]
+fn test_read_cluster_token_present_returns_raw_value() {
+    let tmp = TempDir::new().unwrap();
+    let home = make_home(&tmp);
+    // vault: 引用原文照读——本 helper 只判空，引用解析归运行时
+    write_cluster_config(&home, &serde_json::json!({"token": "vault:cluster_rpc"}));
+    assert_eq!(read_cluster_token(&home), "vault:cluster_rpc");
+}
+
+#[test]
+fn test_ensure_cluster_token_generates_when_empty() {
+    let tmp = TempDir::new().unwrap();
+    let home = make_home(&tmp);
+    write_cluster_config(&home, &serde_json::json!({"enabled": false, "token": ""}));
+
+    let token = ensure_cluster_token(&home)
+        .unwrap()
+        .expect("empty token must be replaced");
+
+    // 32 字节 = 44 字符 base64，与 `cluster token generate` 同规格
+    assert_eq!(
+        token.len(),
+        44,
+        "token must be 32-byte base64, got {token:?}"
+    );
+    // 写回磁盘的值与返回值一致
+    assert_eq!(read_cluster_token(&home), token);
+    // 幂等：第二次调用不再改动
+    assert!(ensure_cluster_token(&home).unwrap().is_none());
+    assert_eq!(read_cluster_token(&home), token);
+}
+
+#[test]
+fn test_ensure_cluster_token_noop_when_set() {
+    let tmp = TempDir::new().unwrap();
+    let home = make_home(&tmp);
+    write_cluster_config(&home, &serde_json::json!({"enabled": true, "token": "abc"}));
+
+    assert!(ensure_cluster_token(&home).unwrap().is_none());
+    // 非 token 键不被触碰
+    let data = std::fs::read_to_string(crate::common::cluster_config_path(&home)).unwrap();
+    let cfg: serde_json::Value = serde_json::from_str(&data).unwrap();
+    assert_eq!(cfg["token"], "abc");
+    assert_eq!(cfg["enabled"], true);
+}
+
+#[test]
+fn test_ensure_cluster_token_missing_file_errors() {
+    let tmp = TempDir::new().unwrap();
+    let home = make_home(&tmp);
+    // 未 init 的 home：update_cluster_config 的 "not initialized" 照常上抛
+    assert!(ensure_cluster_token(&home).is_err());
+}
+
 #[test]
 fn test_enable_peer_in_toml_basic() {
     let toml_content = r#"
@@ -3668,6 +3741,130 @@ mod wave_r10 {
         assert!(
             !body.contains("r10node") && !body.contains("10.9.9.9"),
             "removed peer must be gone from disk, got:\n{body}"
+        );
+    }
+
+    /// F4（2026-09-23）：init 必须生成并打印 token + 对端同步提示（打印
+    /// 契约 + 落盘契约：token = 44 字符 base64(32B)，与 token generate 同规格）。
+    #[tokio::test]
+    async fn r10_cluster_init_writes_and_prints_token_via_cli() {
+        let bin = require_bin();
+        let ws = TestWorkspace::new().expect("temp workspace");
+        // 全新工作空间：config 不存在 → 不触发 TTY 确认分支
+        let o = ws
+            .run_cli(
+                &bin,
+                &["cluster", "init", "--name", "tok-bot", "--role", "worker"],
+            )
+            .await;
+        assert!(o.success(), "cluster init: {}", o.stderr);
+
+        let cfg_path = crate::common::cluster_config_path(&ws.home());
+        let cfg: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(&cfg_path).unwrap()).unwrap();
+        let token = cfg["token"].as_str().expect("token key must exist");
+        assert_eq!(
+            token.len(),
+            44,
+            "init must write a 32-byte base64 token, got {token:?}"
+        );
+        assert!(
+            o.stdout_contains("Auth token:") && o.stdout_contains(token),
+            "init must print the token for peer sync:\n{}",
+            o.stdout
+        );
+        assert!(
+            o.stdout_contains("对端"),
+            "init must print the peer-sync hint:\n{}",
+            o.stdout
+        );
+    }
+
+    /// F4（2026-09-23）：enable 遇空 token 自动生成 + 打印（非静默）；
+    /// 幂等早退路径（已启用）不触碰 token。存量已启用部署不重复跑
+    /// enable，因此不会被改配置——这正是把 token 检查放在幂等早退之后
+    /// 的原因（见 enable 臂注释）。
+    #[tokio::test]
+    async fn r10_enable_on_empty_token_generates_and_prints_via_cli() {
+        let bin = require_bin();
+        let ws = TestWorkspace::new().expect("temp workspace");
+        let home = ws.home();
+        let cfg_path = crate::common::cluster_config_path(&home);
+        std::fs::create_dir_all(cfg_path.parent().unwrap()).unwrap();
+        // 存量形态：无 token 键（旧模板/手造/revoke 后）
+        std::fs::write(&cfg_path, r#"{"enabled": false}"#).unwrap();
+        let main_cfg_path = crate::common::config_path(&home);
+        std::fs::create_dir_all(main_cfg_path.parent().unwrap()).unwrap();
+        std::fs::write(&main_cfg_path, r#"{}"#).unwrap();
+
+        let o = ws.run_cli(&bin, &["cluster", "enable"]).await;
+        assert!(o.success(), "enable: {}", o.stderr);
+        assert!(
+            o.stdout_contains("已自动生成") && o.stdout_contains("对端"),
+            "empty-token enable must print generation + peer hint:\n{}",
+            o.stdout
+        );
+        let cfg: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(&cfg_path).unwrap()).unwrap();
+        let token = cfg["token"].as_str().expect("token must be written");
+        assert_eq!(
+            token.len(),
+            44,
+            "token must be 32-byte base64, got {token:?}"
+        );
+        assert!(
+            o.stdout_contains(token),
+            "printed token must match the persisted one:\n{}",
+            o.stdout
+        );
+
+        // 已启用后再 enable → 幂等早退，token 保持不变
+        let before = token.to_string();
+        let o = ws.run_cli(&bin, &["cluster", "enable"]).await;
+        assert!(o.success(), "re-enable: {}", o.stderr);
+        let cfg: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(&cfg_path).unwrap()).unwrap();
+        assert_eq!(
+            cfg["token"].as_str(),
+            Some(before.as_str()),
+            "idempotent enable must not rotate the token"
+        );
+    }
+
+    /// F4 复盘补（2026-09-23）：已启用存量部署 + 空 token → 幂等早退，
+    /// 不自动生成（防拆散存量集群）但必须 WARN 出声（无鉴权状态可感知）。
+    #[cfg(windows)]
+    #[tokio::test]
+    async fn r10_enable_already_enabled_empty_token_warns_without_generating() {
+        let bin = require_bin();
+        let ws = TestWorkspace::new().expect("temp workspace");
+        let home = ws.home();
+        let cfg_path = crate::common::cluster_config_path(&home);
+        std::fs::create_dir_all(cfg_path.parent().unwrap()).unwrap();
+        // 存量形态：已启用 + 无 token 键
+        std::fs::write(&cfg_path, r#"{"enabled": true}"#).unwrap();
+        let main_cfg_path = crate::common::config_path(&home);
+        std::fs::create_dir_all(main_cfg_path.parent().unwrap()).unwrap();
+        std::fs::write(&main_cfg_path, r#"{"cluster": {"enabled": true}}"#).unwrap();
+
+        let o = ws.run_cli(&bin, &["cluster", "enable"]).await;
+        assert!(o.success(), "enable: {}", o.stderr);
+        assert!(
+            o.stdout_contains("already enabled"),
+            "must take the idempotent early-return path:\n{}",
+            o.stdout
+        );
+        assert!(
+            o.stdout_contains("无鉴权") && o.stdout_contains("token set"),
+            "empty-token already-enabled must WARN without generating:\n{}",
+            o.stdout
+        );
+        let cfg: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(&cfg_path).unwrap()).unwrap();
+        assert!(
+            cfg.get("token").is_none(),
+            "early-return must not touch config: {:?}",
+            cfg.get("token")
         );
     }
 } // mod wave_r10

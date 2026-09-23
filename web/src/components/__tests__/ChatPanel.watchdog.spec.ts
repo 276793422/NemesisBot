@@ -317,6 +317,87 @@ describe('修复③：重灌后从环回放挂回工具卡', () => {
   })
 })
 
+describe('W5（2026-09-23）：重试耗尽放弃臂必须复位 streaming + 在飞登记', () => {
+  it('3 次重载均「未落」→ 放弃：streaming=false、inflight 清、视图不重灌、输入解锁', async () => {
+    prepareSession()
+    vi.useFakeTimers()
+    const w = await mountWithHistory()
+    const chat = useChatStore()
+    await sendFromUI(w, 'run echo W5')
+
+    // 3 个 watchdog 周期（MAX_WATCHDOG_ATTEMPTS=3），每次都喂「未落」历史
+    // （尾部是本轮 user、其后无 assistant）。
+    for (let round = 1; round <= 3; round++) {
+      await vi.advanceTimersByTimeAsync(45_000)
+      await flushPromises()
+      expect(lastRequestId().startsWith('watchdog_')).toBe(true)
+      const disk = [
+        { role: 'user', content: 'q1' },
+        { role: 'assistant', content: 'a1' },
+        { role: 'user', content: 'run echo W5' },
+      ]
+      feedHistory(lastRequestId(), disk)
+      await flushPromises()
+      if (round < 3) {
+        expect(chat.streaming, `第 ${round} 轮未耗尽仍在等`).toBe(true)
+      }
+    }
+
+    // 放弃臂（修复前：streaming 永真 + inflight 残留 → 输入框永久锁死）：
+    // 修复后状态收尾，视图保持本地态（磁盘确实没有新回复，不假重灌）。
+    expect(chat.streaming).toBe(false)
+    expect(chat.inflightTurns['s1']).toBeUndefined()
+    expect(chat.messages[chat.messages.length - 1].content).toBe('run echo W5')
+    expect(chat.messages).toHaveLength(3)
+    w.unmount()
+  })
+
+  it('stopGeneration 遇 cancelled=0（后端无在跑轮次）也复位 streaming + inflight，不加系统行', async () => {
+    prepareSession()
+    vi.useFakeTimers()
+    const w = await mountWithHistory()
+    const chat = useChatStore()
+    await sendFromUI(w, 'run echo W5b')
+    expect(chat.streaming).toBe(true)
+
+    // 后端确定性回答「没有可取消的轮次」（修复前：streaming 永真）。
+    requestMock.mockImplementation((_mod: string, cmd: string) => {
+      if (cmd === 'cancel') return Promise.resolve({ cancelled: 0 })
+      if (cmd === 'inbox_status') return Promise.resolve({ available: true, busy: true })
+      return Promise.resolve({})
+    })
+    await w.find('button.btn-stop').trigger('click')
+    await flushPromises()
+
+    expect(chat.streaming).toBe(false)
+    expect(chat.inflightTurns['s1']).toBeUndefined()
+    // cancelled=0 不加「已停止生成」——后端确认无在跑轮次，加行是假话。
+    expect(chat.messages.some((m) => m.content === '已停止生成')).toBe(false)
+    w.unmount()
+  })
+
+  it('stopGeneration 遇 cancelled>0 既有行为不回归（复位 + 系统行）', async () => {
+    prepareSession()
+    vi.useFakeTimers()
+    const w = await mountWithHistory()
+    const chat = useChatStore()
+    await sendFromUI(w, 'run echo W5c')
+
+    requestMock.mockImplementation((_mod: string, cmd: string) => {
+      if (cmd === 'cancel') return Promise.resolve({ cancelled: 1 })
+      if (cmd === 'inbox_status') return Promise.resolve({ available: true, busy: true })
+      return Promise.resolve({})
+    })
+    await w.find('button.btn-stop').trigger('click')
+    await flushPromises()
+
+    expect(chat.streaming).toBe(false)
+    expect(chat.inflightTurns['s1']).toBeUndefined()
+    expect(chat.messages.some((m) => m.content === '已停止生成')).toBe(true)
+    w.unmount()
+  })
+})
+
 /** tool 条目（chat_event_log kind="tool" 形态）。 */
 function toolEvent(seq: number, kind: string, data: any) {
   return { seq, kind: 'tool', role: '', content: '', tool: { kind, data } }

@@ -1366,7 +1366,6 @@ impl crate::ws_router::ModuleHandler for WorkflowHandler {
             // 草稿的写路径只有 workflow_create agent 工具；这里的 draft_apply
             // 是唯一把草稿转正的入口（人工在 UI 点「应用」）。
             // -----------------------------------------------------------------
-
             "capabilities" => Ok(Some(
                 serde_json::to_value(nemesis_workflow::capabilities::capabilities())
                     .map_err(|e| format!("serialize capabilities: {}", e))?,
@@ -1388,8 +1387,10 @@ impl crate::ws_router::ModuleHandler for WorkflowHandler {
                     .ok_or("missing field: name")?;
                 let store = nemesis_workflow::drafts::DraftStore::from_engine(engine)
                     .ok_or("workflow definitions directory is not configured")?;
-                let detail = store.get(name).map_err(|e| e)?;
-                Ok(Some(serde_json::to_value(detail).map_err(|e| format!("serialize draft: {}", e))?))
+                let detail = store.get(name)?;
+                Ok(Some(
+                    serde_json::to_value(detail).map_err(|e| format!("serialize draft: {}", e))?,
+                ))
             }
 
             "draft_apply" => {
@@ -1400,8 +1401,11 @@ impl crate::ws_router::ModuleHandler for WorkflowHandler {
                     .ok_or("missing field: name")?;
                 let store = nemesis_workflow::drafts::DraftStore::from_engine(engine)
                     .ok_or("workflow definitions directory is not configured")?;
-                let applied = store.apply(engine, name).map_err(|e| e)?;
-                Ok(Some(serde_json::to_value(applied).map_err(|e| format!("serialize result: {}", e))?))
+                let applied = store.apply(engine, name)?;
+                Ok(Some(
+                    serde_json::to_value(applied)
+                        .map_err(|e| format!("serialize result: {}", e))?,
+                ))
             }
 
             "draft_discard" => {
@@ -1412,7 +1416,7 @@ impl crate::ws_router::ModuleHandler for WorkflowHandler {
                     .ok_or("missing field: name")?;
                 let store = nemesis_workflow::drafts::DraftStore::from_engine(engine)
                     .ok_or("workflow definitions directory is not configured")?;
-                store.discard(name).map_err(|e| e)?;
+                store.discard(name)?;
                 Ok(Some(serde_json::json!({ "name": name, "discarded": true })))
             }
 

@@ -219,7 +219,9 @@ impl LLMProvider for ClaudeCliProvider {
         _options: &ChatOptions,
     ) -> Result<LLMResponse, FailoverError> {
         let system_prompt = self.build_system_prompt(messages, tools);
-        let _prompt = self.messages_to_prompt(messages);
+        // prompt 走 stdin（2026-09-23 修复：此前 `let _prompt = …` 死绑定
+        // 丢弃、stdin 只 pipe 不写 → claude CLI 等 EOF 挂到超时）。
+        let prompt = self.messages_to_prompt(messages);
 
         let mut args = vec![
             "-p".to_string(),
@@ -260,10 +262,12 @@ impl LLMProvider for ClaudeCliProvider {
             .stderr(std::process::Stdio::piped());
         #[cfg(target_os = "windows")]
         cmd.creation_flags(0x0800_0000); // CREATE_NO_WINDOW
-        let output = cmd.output().await.map_err(|e| FailoverError::Unknown {
-            provider: "claude-cli".to_string(),
-            message: format!("failed to execute claude cli: {}", e),
-        })?;
+        let output = crate::cli_child::run_with_stdin(cmd, &prompt)
+            .await
+            .map_err(|e| FailoverError::Unknown {
+                provider: "claude-cli".to_string(),
+                message: format!("failed to execute claude cli: {}", e),
+            })?;
 
         if !output.status.success() {
             let stderr = String::from_utf8_lossy(&output.stderr);

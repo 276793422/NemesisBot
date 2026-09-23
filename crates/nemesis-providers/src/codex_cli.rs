@@ -260,7 +260,9 @@ impl LLMProvider for CodexCliProvider {
             });
         }
 
-        let _prompt = self.build_prompt(messages, tools);
+        // prompt 走 stdin（2026-09-23 修复：此前 `let _prompt = …` 死绑定
+        // 丢弃、stdin 只 pipe 不写 → codex CLI 等 EOF 挂到超时）。
+        let prompt = self.build_prompt(messages, tools);
 
         let mut args = vec![
             "exec".to_string(),
@@ -295,10 +297,12 @@ impl LLMProvider for CodexCliProvider {
             .stderr(std::process::Stdio::piped());
         #[cfg(target_os = "windows")]
         cmd.creation_flags(0x0800_0000); // CREATE_NO_WINDOW
-        let output = cmd.output().await.map_err(|e| FailoverError::Unknown {
-            provider: "codex-cli".to_string(),
-            message: format!("failed to execute codex cli: {}", e),
-        })?;
+        let output = crate::cli_child::run_with_stdin(cmd, &prompt)
+            .await
+            .map_err(|e| FailoverError::Unknown {
+                provider: "codex-cli".to_string(),
+                message: format!("failed to execute codex cli: {}", e),
+            })?;
 
         let stdout = String::from_utf8_lossy(&output.stdout);
 

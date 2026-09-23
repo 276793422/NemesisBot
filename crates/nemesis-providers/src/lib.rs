@@ -12,6 +12,7 @@ pub mod types;
 
 pub mod anthropic;
 pub mod claude_cli;
+pub mod cli_child;
 pub mod codex;
 pub mod codex_cli;
 pub mod codex_credentials;

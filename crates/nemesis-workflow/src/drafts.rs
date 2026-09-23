@@ -175,7 +175,7 @@ impl DraftStore {
                 }),
             }
         }
-        out.sort_by(|a, b| b.mtime_ms.cmp(&a.mtime_ms));
+        out.sort_by_key(|d| std::cmp::Reverse(d.mtime_ms));
         out
     }
 

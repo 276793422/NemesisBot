@@ -791,14 +791,17 @@ pub async fn run(action: ClusterAction, local: bool) -> Result<()> {
             let default_name = format!("Bot {}", &node_id[..16.min(node_id.len())]);
 
             // --- 写 config.cluster.json（系统参数 + token）---
-            // config.cluster.json 不再含身份字段，只含 5 个系统参数 + token
+            // config.cluster.json 不再含身份字段，只含系统参数 + token。
+            // token 用 generate_token（32 字节 CSPRNG，与 `cluster token generate`
+            // 同源）：空 token = RPC/UDP 发现层双双无鉴权裸奔（审计 F4），init 即生成。
+            let init_token = generate_token(32);
             let mut cluster_cfg =
                 serde_json::from_str::<serde_json::Value>(crate::CONFIG_CLUSTER_DEFAULT)
                     .unwrap_or_else(|_| serde_json::json!({}));
             if let Some(obj) = cluster_cfg.as_object_mut() {
                 obj.insert(
                     "token".to_string(),
-                    serde_json::Value::String(uuid::Uuid::new_v4().to_string()),
+                    serde_json::Value::String(init_token.clone()),
                 );
             }
             let _ = std::fs::write(
@@ -836,6 +839,10 @@ pub async fn run(action: ClusterAction, local: bool) -> Result<()> {
             println!("  System config: {}", cfg_path.display());
             println!("  Node identity: {}", peers_path.display());
             println!("  Node ID:       {}", node_id);
+            println!("  Auth token:    {}", init_token);
+            println!(
+                "  ⚠ 多节点部署：请将相同 token 配置到每个对端（nemesisbot cluster token set <token>），否则节点互不可见。"
+            );
             println!("Enable with: nemesisbot cluster enable");
         }
         ClusterAction::Enable => {
@@ -847,6 +854,14 @@ pub async fn run(action: ClusterAction, local: bool) -> Result<()> {
             let subsystem = cluster_flag(&home, "enabled").unwrap_or(false);
             let main = main_cluster_flag(&home).unwrap_or(false);
             if subsystem && main {
+                // F4：存量已启用部署不自动生成（重跑 enable 静默换 token 会
+                // 拆散已互通的集群）——但空 token 必须至少 WARN 出声，否则
+                // 存量无鉴权状态永远无感知。
+                if read_cluster_token(&home).is_empty() {
+                    println!(
+                        "  ⚠ 集群已启用但 token 为空（RPC/发现层将无鉴权）。请手动配置（nemesisbot cluster token set <token>）；此处不自动生成，以免拆散已互通的存量集群。"
+                    );
+                }
                 println!("Cluster is already enabled.");
                 return Ok(());
             }
@@ -858,6 +873,18 @@ pub async fn run(action: ClusterAction, local: bool) -> Result<()> {
             }
             if subsystem != main {
                 println!("Detected inconsistent enable flags; repaired.");
+            }
+            // F4（2026-09-23）：enable 是集群进入可网络触达状态的时刻——
+            // 空 token = RPC/UDP 发现层无鉴权裸奔，此处自动生成并打印
+            // （非静默，带对端同步提示）。已启用部署的幂等早退路径不经过
+            // 这里（存量配置不被改动）；跨节点 token 失配 = 节点互不可见，
+            // 打印的对端同步提示是唯一修复指引。
+            if let Some(new_token) = ensure_cluster_token(&home)? {
+                println!("  ⚠ 检测到集群 token 为空（RPC/发现层将无鉴权），已自动生成：");
+                println!("    {}", new_token);
+                println!(
+                    "  ⚠ 多节点部署：请将相同 token 配置到每个对端（nemesisbot cluster token set <token>），否则节点互不可见。"
+                );
             }
             println!("Cluster enabled. Restart gateway to apply.");
         }
@@ -1509,6 +1536,31 @@ fn cluster_flag(home: &std::path::Path, key: &str) -> Option<bool> {
     let data = std::fs::read_to_string(&cfg_path).ok()?;
     let cfg: serde_json::Value = serde_json::from_str(&data).ok()?;
     cfg.get(key).and_then(|v| v.as_bool())
+}
+
+/// 读 config.cluster.json 的 token 原文（可能为 vault:/env: 引用，调用方
+/// 只判空不解析）。文件缺失/解析失败/键缺失一律按空串处理——与运行时
+/// `unwrap_or("")` 的空 = 无鉴权语义一致。
+fn read_cluster_token(home: &std::path::Path) -> String {
+    let cfg_path = common::cluster_config_path(home);
+    std::fs::read_to_string(&cfg_path)
+        .ok()
+        .and_then(|data| serde_json::from_str::<serde_json::Value>(&data).ok())
+        .and_then(|cfg| cfg.get("token").and_then(|t| t.as_str()).map(String::from))
+        .unwrap_or_default()
+}
+
+/// F4：token 空则生成 32 字节 CSPRNG token 并写回 config.cluster.json，
+/// 返回 `Some(新 token)`；非空不动配置返回 `None`。文件缺失 = 未 init，
+/// `update_cluster_config` 的 "not initialized" 错误照常上抛。
+fn ensure_cluster_token(home: &std::path::Path) -> Result<Option<String>> {
+    if read_cluster_token(home).is_empty() {
+        let token = generate_token(32);
+        update_cluster_config(home, "token", token.clone())?;
+        Ok(Some(token))
+    } else {
+        Ok(None)
+    }
 }
 
 /// 读主开关（config.json 的 `cluster.enabled`）；文件/键缺失返回 `None`。

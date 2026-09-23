@@ -120,7 +120,9 @@ fn apply_over_existing_backs_up_to_history() {
     engine.set_workflow_defs_dir(defs.clone());
 
     // Seed an existing definition through the normal path.
-    engine.persist_workflow(sample_workflow("existing-flow")).unwrap();
+    engine
+        .persist_workflow(sample_workflow("existing-flow"))
+        .unwrap();
 
     // Draft a modified version (different node count so we can tell them apart).
     let mut wf = sample_workflow("existing-flow");
