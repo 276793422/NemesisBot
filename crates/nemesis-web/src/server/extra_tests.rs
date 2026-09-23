@@ -1523,7 +1523,7 @@ async fn test_process_messages_records_user_row_and_echoes_to_sender() {
     .unwrap();
     drop(tx);
 
-    process_messages_with_router(proc_rx, bus, None, Some(mgr)).await;
+    process_messages_with_router(proc_rx, bus, None, Some(mgr), None).await;
 
     // ① user 行入环（与 chat 行/工具事件同键空间同 seq 序列）。
     let key = format!("agent:main:session:{conv_id}");
@@ -1588,7 +1588,7 @@ async fn test_process_messages_empty_content_skips_record_and_echo() {
     .unwrap();
     drop(tx);
 
-    process_messages_with_router(proc_rx, bus, None, Some(mgr)).await;
+    process_messages_with_router(proc_rx, bus, None, Some(mgr), None).await;
 
     let key = format!("agent:main:session:{conv_id}");
     let (events, gap) = crate::chat_event_log::replay_after(&key, 0);
@@ -1647,7 +1647,7 @@ async fn test_process_messages_history_request_not_recorded_nor_echoed() {
     .unwrap();
     drop(tx);
 
-    process_messages_with_router(proc_rx, bus, None, Some(mgr)).await;
+    process_messages_with_router(proc_rx, bus, None, Some(mgr), None).await;
 
     let key = format!("agent:main:session:{conv_id}");
     let (events, gap) = crate::chat_event_log::replay_after(&key, 0);

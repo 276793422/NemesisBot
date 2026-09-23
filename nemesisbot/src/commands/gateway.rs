@@ -4910,6 +4910,29 @@ pub async fn run(local: bool, relay: bool, extra_args: &[String]) -> Result<()> 
 
     // Step 10: Wire up WebServer (created early for WebChannel injection)
     web_server.set_message_bus(bus.clone());
+    // 入站过滤链（BUG 2026-09-23 项目会话历史修复）：web 咽喉点在
+    // bus.publish_inbound 前过链，链上过滤器可就地拦截应答。首个过滤器
+    // = HistoryFilter（history 只读查询不再依赖任何 agent loop 的存亡/
+    // 忙闲）。未来谁想拦什么，谁构造 FilterChain 往里注册即可（框架见
+    // nemesis-bus filter 模块）。
+    {
+        let inbound_chain: std::sync::Arc<
+            nemesis_bus::FilterChain<nemesis_types::channel::InboundMessage>,
+        > = std::sync::Arc::new(nemesis_bus::FilterChain::new());
+        inbound_chain.attach(std::sync::Arc::new(
+            nemesis_web::history_filter::HistoryFilter::new(bus.clone()),
+        ));
+        tracing::info!(
+            filters = ?inbound_chain
+                .list()
+                .iter()
+                .map(|(n, p)| format!("{n}@{p}"))
+                .collect::<Vec<_>>(),
+            "[Gateway] 入站过滤链已装配（{} 个过滤器）",
+            inbound_chain.list().len()
+        );
+        web_server.set_inbound_filter_chain(inbound_chain);
+    }
     web_server.set_model_info(
         &model_name,
         &resolution.api_base,

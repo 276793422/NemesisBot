@@ -9,6 +9,12 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use tokio::sync::broadcast;
 use tracing::{debug, info, warn};
 
+mod filter;
+#[cfg(test)]
+mod filter_tests;
+
+pub use filter::{Filter, FilterChain, FilterDecision};
+
 /// Message bus for routing messages between channels and agents.
 pub struct MessageBus {
     inbound_tx: broadcast::Sender<InboundMessage>,

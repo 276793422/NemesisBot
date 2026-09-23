@@ -30,6 +30,7 @@ pub mod estop;
 pub mod executor_pipe;
 pub mod formatter;
 pub mod fs_watcher;
+pub mod history;
 pub mod history_search;
 pub mod hooks;
 pub mod image_attach;
@@ -62,6 +63,9 @@ pub mod tool_event_hook;
 pub mod turn_guard;
 pub mod types;
 pub mod workspace_instructions;
+
+#[cfg(test)]
+mod history_tests;
 
 // S9 (quality-hardening goal 冲刺 S9): 测试共享 helper（thread-local tracing
 // subscriber），声明式挂载指向独立文件，无内联测试。

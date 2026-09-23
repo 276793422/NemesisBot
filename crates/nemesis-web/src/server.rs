@@ -293,6 +293,12 @@ pub struct WebServer {
     /// 资源），只保留 /health + 反向桥路由。默认 false，正常模式不变。
     /// `set_relay_only` 打开。
     relay_only: bool,
+    /// 入站过滤链（BUG 2026-09-23 项目会话历史修复）：Dashboard WS 消息
+    /// 唯一咽喉点（`process_messages_with_router`）在 `bus.publish_inbound`
+    /// 之前过链——链上过滤器可就地拦截应答（如 history 只读查询），消息
+    /// 不再进入 bus 扇出，与任何 agent loop 的存亡/忙闲解耦。`set_inbound_filter_chain`
+    /// 注入；None = 直通（legacy 调用方/测试零影响）。
+    inbound_filters: Option<Arc<nemesis_bus::FilterChain<InboundMessage>>>,
 }
 
 impl WebServer {
@@ -339,6 +345,7 @@ impl WebServer {
             agent_event_rx: None,
             relay: None,
             bridge_node_id: None,
+            inbound_filters: None,
         }
     }
 
@@ -352,6 +359,17 @@ impl WebServer {
     /// Set the message bus for inbound message publishing.
     pub fn set_message_bus(&mut self, bus: Arc<MessageBus>) {
         self.message_bus = Some(bus);
+    }
+
+    /// 注入入站过滤链（须在 `start`/`build_router` 前调用）。链在
+    /// `process_messages_with_router` 内、`bus.publish_inbound` 之前执行；
+    /// `Intercepted` = 过滤器已就地应答，消息不进 bus 扇出（continue）。
+    /// 谁想拦什么，谁构造 [`nemesis_bus::FilterChain`] 并往里注册过滤器。
+    pub fn set_inbound_filter_chain(
+        &mut self,
+        chain: Arc<nemesis_bus::FilterChain<InboundMessage>>,
+    ) {
+        self.inbound_filters = Some(chain);
     }
 
     /// Set model info: name, API base URL, and whether a key is configured.
@@ -607,9 +625,16 @@ impl WebServer {
             let bus = bus.clone();
             let conv_router = self.conv_router.clone();
             let session_manager = self.session_manager.clone();
+            let inbound_filters = self.inbound_filters.clone();
             tokio::spawn(async move {
-                process_messages_with_router(inbound_rx, bus, conv_router, Some(session_manager))
-                    .await;
+                process_messages_with_router(
+                    inbound_rx,
+                    bus,
+                    conv_router,
+                    Some(session_manager),
+                    inbound_filters,
+                )
+                .await;
             });
         } else {
             // No bus configured; drain messages to avoid leaking the sender
@@ -1557,7 +1582,7 @@ pub async fn process_messages(
     rx: mpsc::UnboundedReceiver<crate::websocket_handler::IncomingMessage>,
     bus: Arc<MessageBus>,
 ) {
-    process_messages_with_router(rx, bus, None, None).await;
+    process_messages_with_router(rx, bus, None, None, None).await;
 }
 
 /// Same as [`process_messages`] but also records conversation→chat_id
@@ -1565,12 +1590,16 @@ pub async fn process_messages(
 /// replies to the targeted conversation's open tab (Opt 2). `session_manager`
 /// (when provided) enables the P8 user-row echo: the inbound user row is
 /// recorded into the chat_event_log ring and echoed back to the sending
-/// connection (see the record block below).
+/// connection (see the record block below). `inbound_filters` (when
+/// provided) runs the 入站过滤链 against each built InboundMessage before
+/// `bus.publish_inbound` — `Intercepted` messages are answered in-place by
+/// the filter and never fan out on the bus (BUG 2026-09-23 项目会话历史修复).
 pub async fn process_messages_with_router(
     mut rx: mpsc::UnboundedReceiver<crate::websocket_handler::IncomingMessage>,
     bus: Arc<MessageBus>,
     conv_router: Option<crate::conv_router::SharedConvRouter>,
     session_manager: Option<Arc<SessionManager>>,
+    inbound_filters: Option<Arc<nemesis_bus::FilterChain<InboundMessage>>>,
 ) {
     while let Some(msg) = rx.recv().await {
         let session_key = match msg.metadata.get("session_id") {
@@ -1650,6 +1679,35 @@ pub async fn process_messages_with_router(
             metadata: msg.metadata,
             voice_playback: msg.voice_playback,
         };
+
+        // 入站过滤链（BUG 2026-09-23 项目会话历史修复）：在 bus 扇出之前
+        // 过链——`Intercepted` = 过滤器已就地应答（如 history 只读查询经
+        // bus.publish_outbound 回帧），消息不再进入扇出，与任何 agent loop
+        // 的存亡/忙闲解耦；`Rejected` = 策略拒绝，回执拒绝原因后丢弃；
+        // `Pass` = 直通。链为 None（legacy 调用方/未装配）时语义不变。
+        if let Some(ref chain) = inbound_filters {
+            match chain.run(&inbound).await {
+                nemesis_bus::FilterDecision::Intercepted => {
+                    // 拦截方负责应答（可观测性契约：FilterChain::run 已记 info）。
+                    continue;
+                }
+                nemesis_bus::FilterDecision::Rejected(reason) => {
+                    tracing::warn!(
+                        session_id = %msg.session_id,
+                        chat_id = %inbound.chat_id,
+                        reason = %reason,
+                        "[WebServer] Inbound message rejected by filter chain"
+                    );
+                    bus.publish_outbound(nemesis_types::channel::OutboundMessage::new(
+                        "web",
+                        &inbound.chat_id,
+                        &reason,
+                    ));
+                    continue;
+                }
+                nemesis_bus::FilterDecision::Pass => {}
+            }
+        }
 
         bus.publish_inbound(inbound);
 

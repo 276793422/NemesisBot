@@ -48,6 +48,16 @@ pub fn route_decision(msg: &InboundMessage, owner: Option<&str>) -> RouteDecisio
     if msg.channel == "system" {
         return RouteDecision::System;
     }
+    // history 只读查询豁免（BUG 2026-09-23 第二道防线）：历史数据本就全在
+    // 主 workspace `logs/session_logs/`，与项目 loop 的存亡/忙闲无关——即使
+    // 会话带项目归属，history 也必须回主 loop 路径（主 loop 的
+    // handle_history_request 就地读 chat_log 应答），绝不能被项目路由劫持
+    // 成「项目不可用」错误或排进项目 loop 串行队列。web 咽喉点的入站过滤
+    // 链（HistoryFilter）是第一道（消息根本不进 bus）；本臂保证任何绕过
+    // 链到达 bus 的 history（遗留调用方/其他发布方）同样走主 loop。
+    if msg.metadata.get("request_type").map(String::as_str) == Some("history") {
+        return RouteDecision::ToMain;
+    }
     match owner {
         Some(pid) => RouteDecision::ToProject(pid.to_string()),
         None => RouteDecision::ToMain,
