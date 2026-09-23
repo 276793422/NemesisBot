@@ -201,6 +201,43 @@ async fn matrix3_system_messages_only_main_loop_even_when_project_bound() {
 }
 
 // ---------------------------------------------------------------------------
+// 矩阵 ③b：项目会话上的 history 请求 → 主 loop 路径（豁免臂，BUG 2026-09-23）
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn matrix3b_history_request_on_project_session_falls_to_main_loop() {
+    let (bus, mgr, _home) = fixture("m3b");
+    let pid = "p_m3baaaaa";
+    let key = "agent:main:session:projh";
+    mgr.remember_session(key, pid);
+    let (tx, mut rx) = tokio::sync::mpsc::channel(8);
+    mgr.insert_test_channel(pid, tx);
+    mgr.start_routing();
+
+    // history 请求形态：web 咽喉点构建（metadata.request_type=history，
+    // content 是请求 JSON），session_key 是项目绑定会话。
+    let mut m = msg("web", key);
+    m.content = r#"{"request_id":"rq-h1","limit":20}"#.to_string();
+    m.metadata
+        .insert("request_type".to_string(), "history".to_string());
+
+    // 纯函数：豁免臂 → ToMain（即使归属命中）。
+    assert_eq!(
+        route_decision(&m, Some(pid)),
+        RouteDecision::ToMain,
+        "matrix3b: history must exempt from project routing"
+    );
+    // 项目调度：不转发进项目通道（不劫持）。
+    bus.publish_inbound(m.clone());
+    expect_empty(&mut rx, "matrix3b dispatcher").await;
+    // 主桥：不 skip（主 loop 正常消费——Ungated 路径就地应答历史）。
+    assert!(
+        !mgr.bridge_should_skip(&m),
+        "matrix3b: main bridge must consume history requests"
+    );
+}
+
+// ---------------------------------------------------------------------------
 // 矩阵 ④：同一项目并发两会话各自排队不串
 // ---------------------------------------------------------------------------
 

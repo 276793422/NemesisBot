@@ -4118,16 +4118,9 @@ impl AgentLoop {
     /// Handle a history request by reading from session and publishing response.
     /// Mirrors Go's `handleHistoryRequest()`.
     async fn handle_history_request(&self, msg: &nemesis_types::channel::InboundMessage) {
-        #[derive(Deserialize)]
-        struct HistoryRequest {
-            #[serde(default)]
-            request_id: String,
-            #[serde(default)]
-            limit: Option<usize>,
-            before_index: Option<usize>,
-        }
-
-        let req: HistoryRequest = match serde_json::from_str(&msg.content) {
+        // 解析/组装走 crate::history 共享件（BUG 2026-09-23 入站过滤链：
+        // web 咽喉点 HistoryFilter 与本路径共用同一组装逻辑，防漂移）。
+        let req = match crate::history::HistoryRequest::parse(&msg.content) {
             Ok(r) => r,
             Err(e) => {
                 error!("[AgentLoop] Failed to parse history request: {}", e);
@@ -4146,7 +4139,7 @@ impl AgentLoop {
             }
         };
 
-        let limit = req.limit.unwrap_or(20);
+        let limit = req.effective_limit();
         // HD（2026-09-17）：session_id 原样回显——前端收到后与当前选中会话
         // 比对，快速切换会话时迟到响应按归属丢弃（防串台）。
         let req_session_id = msg
@@ -4222,24 +4215,20 @@ impl AgentLoop {
         // 序列化时省略——前端按无 last_seq 走同文兜底）。
         last_seq: u64,
     ) {
-        let mut response_data = serde_json::json!({
-            "request_id": request_id,
-            "messages": messages,
-            "has_more": has_more,
-            "oldest_index": oldest_index,
-            "total_count": total_count,
-            // HD：会话归属回显（空串省略——前端按无归属放行）。
-            "session_id": session_id.unwrap_or(""),
-        });
-        // A1：last_seq 仅在有环数据时下发（0 省略，旧前端/未注入路径零影响）。
-        if last_seq > 0 {
-            response_data["last_seq"] = serde_json::Value::from(last_seq);
-        }
-
-        let content = match serde_json::to_string(&response_data) {
-            Ok(c) => c,
-            Err(e) => {
-                error!("[AgentLoop] Failed to marshal history response: {}", e);
+        // 组装唯一真相源 crate::history::history_response_json（HD 回显 /
+        // A1 last_seq 省略规则只写一处）；本函数只保留 transport。
+        let content = match crate::history::history_response_json(
+            request_id,
+            messages,
+            has_more,
+            oldest_index,
+            total_count,
+            session_id,
+            last_seq,
+        ) {
+            Some(c) => c,
+            None => {
+                error!("[AgentLoop] Failed to marshal history response");
                 return;
             }
         };

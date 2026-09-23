@@ -24,6 +24,10 @@ fn test_auth_exempt_path_truth_table() {
     assert!(auth_exempt_path("/api/board/asset/some-ref"));
     // 豁免：workflow-chat 公共元数据 + 密码校验（per-workflow 密码即凭据）
     assert!(auth_exempt_path("/api/workflow/chat/wf-001"));
+    // 豁免：SDK 公开静态产物下载（外部消费者无 dashboard token；
+    // integration-test ui/p2_sdk_http 钉住公开契约）
+    assert!(auth_exempt_path("/api/sdk/export"));
+    assert!(auth_exempt_path("/api/sdk/pip"));
 
     // 不豁免：控制面 REST
     assert!(!auth_exempt_path("/api/status"));
@@ -40,6 +44,7 @@ fn test_auth_exempt_path_near_miss_prefixes_not_exempt() {
     assert!(!auth_exempt_path("/api/healthz"));
     assert!(!auth_exempt_path("/api/board/assets/ref"));
     assert!(!auth_exempt_path("/api/workflow/chatty"));
+    assert!(!auth_exempt_path("/api/sdkfoo/x"));
     // 精确匹配不认子路径/尾随斜杠变体
     assert!(!auth_exempt_path("/health/"));
 }

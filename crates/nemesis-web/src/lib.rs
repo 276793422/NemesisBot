@@ -22,6 +22,7 @@ pub mod cors;
 pub mod events;
 pub mod handlers;
 pub mod history;
+pub mod history_filter;
 pub mod internal;
 pub mod llm_bridge;
 pub mod pricing_sync;
@@ -66,6 +67,10 @@ pub use ws_router::WsRouter;
 mod api_usage_extra_tests;
 #[cfg(all(test, feature = "forge"))]
 mod llm_bridge_extra_tests;
+// 入站过滤链 history 过滤器（BUG 2026-09-23 项目会话历史加载修复）。
+#[cfg(test)]
+mod history_filter_tests;
+
 #[cfg(test)]
 mod sse_chat_extra_tests;
 #[cfg(all(test, feature = "workflow"))]

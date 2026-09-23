@@ -6,6 +6,8 @@ edition.workspace = true
 
 [dependencies]
 nemesis-types = { workspace = true }
+async-trait = { workspace = true }
+parking_lot = { workspace = true }
 tokio = { workspace = true }
 tracing = { workspace = true }
 thiserror = { workspace = true }

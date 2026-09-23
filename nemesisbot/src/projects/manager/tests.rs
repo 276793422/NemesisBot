@@ -108,6 +108,34 @@ fn route_decision_by_ownership() {
     assert_eq!(route_decision(&im, None), super::RouteDecision::ToMain);
 }
 
+#[test]
+fn route_decision_history_requests_exempt_from_project_routing() {
+    // history 只读查询豁免（BUG 2026-09-23）：数据全在主 workspace，
+    // 与项目 loop 存亡/忙闲无关——带项目归属也必须回主 loop。
+    let mut bound = msg("web", "agent:main:session:projh1");
+    bound.content = r#"{"request_id":"rq-1","limit":20}"#.to_string();
+    bound
+        .metadata
+        .insert("request_type".to_string(), "history".to_string());
+    assert_eq!(
+        route_decision(&bound, Some("p_haaaaaaa")),
+        super::RouteDecision::ToMain,
+        "history + 项目归属 → 主 loop（不得被项目路由劫持）"
+    );
+    assert_eq!(
+        route_decision(&bound, None),
+        super::RouteDecision::ToMain,
+        "history + 无归属 → 主 loop（与普通消息同向）"
+    );
+    // 非 history 的普通消息不受影响（对照：同 session_key 有归属仍进项目）。
+    let plain = msg("web", "agent:main:session:projh1");
+    assert_eq!(
+        route_decision(&plain, Some("p_haaaaaaa")),
+        super::RouteDecision::ToProject("p_haaaaaaa".to_string()),
+        "豁免只对 request_type=history，普通消息矩阵不变"
+    );
+}
+
 // ---------------------------------------------------------------------------
 // session_key_from_stem（与 nemesis-web 扫描端镜像）
 // ---------------------------------------------------------------------------

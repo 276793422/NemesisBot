@@ -3710,7 +3710,9 @@ dependencies = [
 name = "nemesis-bus"
 version = "0.1.0"
 dependencies = [
+ "async-trait",
  "nemesis-types",
+ "parking_lot",
  "thiserror 2.0.18",
  "tokio",
  "tracing",
