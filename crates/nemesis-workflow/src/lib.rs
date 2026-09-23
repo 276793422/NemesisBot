@@ -14,6 +14,7 @@ pub mod driver_status;
 pub mod engine;
 pub mod event_dispatcher;
 pub mod events;
+pub mod lint;
 pub mod nodes;
 pub mod parser;
 pub mod persistence;

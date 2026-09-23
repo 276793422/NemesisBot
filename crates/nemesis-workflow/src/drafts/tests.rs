@@ -182,3 +182,27 @@ fn sanitizer_matches_engine_behavior() {
     // byte-identical to engine.rs's so draft stems == definition stems.
     assert_eq!(sanitize_workflow_filename(".hidden"), "_hidden");
 }
+
+#[test]
+fn save_surfaces_lint_warnings_in_summary() {
+    let root = temp_dir("warnings");
+    let defs = root.join("definitions");
+    std::fs::create_dir_all(&defs).unwrap();
+    let store = DraftStore::new(root.join("drafts"), defs.clone());
+
+    // llm max_tokens 过小 + 无触发器 → L1 + L2 两条 warning
+    let mut wf = sample_workflow("risky");
+    wf.triggers.clear();
+    wf.nodes[0]
+        .config
+        .insert("max_tokens".to_string(), serde_json::json!(200));
+    store.save(&wf).unwrap();
+
+    let summary = &store.list()[0];
+    assert!(summary.valid, "lint 是 warning 通道，不影响 valid");
+    assert_eq!(summary.warnings.len(), 2, "{:?}", summary.warnings);
+    assert!(summary.warnings[0].contains("max_tokens=200"));
+    assert!(summary.warnings[1].contains("run_now"));
+
+    std::fs::remove_dir_all(&root).ok();
+}

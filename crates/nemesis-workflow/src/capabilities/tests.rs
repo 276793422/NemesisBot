@@ -111,3 +111,42 @@ fn prompt_renderer_covers_every_type() {
         );
     }
 }
+
+#[test]
+fn honest_failure_and_credential_contract_text_is_pinned() {
+    // 2026-09-23 计划 A/B/C：契约与凭据引用进能力表，防漂移钉扎——
+    // 这些文案是生成器的第一道防线，删除/改写必须同步本测试。
+    let caps = crate::capabilities::capabilities();
+    let llm = caps
+        .node_types
+        .iter()
+        .find(|n| n.node_type == "llm")
+        .expect("llm capability");
+    assert!(llm.config_notes.contains("env:"), "{:?}", llm.config_notes);
+    assert!(llm.config_notes.contains("2000"), "{:?}", llm.config_notes);
+    assert!(
+        llm.config_notes.contains("档位名"),
+        "{:?}",
+        llm.config_notes
+    );
+    // 数据流字段名必须枚举（生成器臆造 {{节点id.output}} 的根因，缺陷 6）
+    assert!(
+        llm.config_notes.contains("{{节点id.text}}"),
+        "{:?}",
+        llm.config_notes
+    );
+
+    let http = caps
+        .node_types
+        .iter()
+        .find(|n| n.node_type == "http")
+        .expect("http capability");
+    assert!(http.config_notes.contains("fail_on_http_error"));
+    assert!(http.config_notes.contains("vault:"));
+    assert!(http.config_notes.contains("{{节点id.body}}"));
+
+    let rules = caps.structure_rules.join("\n");
+    assert!(rules.contains("诚实失败契约"), "{rules}");
+    assert!(rules.contains("整值引用"), "{rules}");
+    assert!(rules.contains("没有 .output 这个字段"), "{rules}");
+}

@@ -2009,12 +2009,17 @@ impl WorkflowEngine {
                     .node_results
                     .insert(node_id.clone(), result.clone());
 
-                // Merge output into context.
+                // Merge output into context. 双写命名空间键与整对象：
+                // {{节点id.字段}} / {{节点id}}（能力表承诺的传值语法，2026-09-23
+                // 计划类 C 文档-引擎对齐）；平铺键保留，存量工作流不受影响
+                // （同名平铺键后到者覆盖，能力表已引导生成器用命名空间形式）。
                 if let Some(obj) = result.output.as_object() {
                     for (k, v) in obj {
                         context.insert(k.clone(), v.clone());
+                        context.insert(format!("{node_id}.{k}"), v.clone());
                     }
                 }
+                context.insert(node_id.clone(), result.output.clone());
 
                 remaining_vec.retain(|id| id != &node_id);
                 completed.insert(node_id.clone());

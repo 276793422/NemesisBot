@@ -30,6 +30,11 @@ pub struct DraftSummary {
     pub valid: bool,
     /// Validation errors (empty when `valid`).
     pub validation_errors: Vec<String>,
+    /// 语义 lint 结果（warning 通道，不阻断 apply）——「能跑但大概率不合
+    /// 意图」的提示，见 [`crate::lint`]。生成器据 workflow_create 响应的
+    /// hints 当轮自纠。
+    #[serde(default)]
+    pub warnings: Vec<String>,
     pub node_count: usize,
     pub trigger_types: Vec<String>,
 }
@@ -170,6 +175,7 @@ impl DraftStore {
                     mtime_ms: mtime_ms(&path).unwrap_or(0),
                     valid: false,
                     validation_errors: vec![e],
+                    warnings: Vec::new(),
                     node_count: 0,
                     trigger_types: Vec::new(),
                 }),
@@ -273,6 +279,7 @@ impl DraftStore {
             mtime_ms: mtime_ms(&self.draft_path(stem)).unwrap_or(0),
             valid: errors.is_empty(),
             validation_errors: errors,
+            warnings: crate::lint::lint(wf),
             node_count: wf.nodes.len(),
             trigger_types: wf.triggers.iter().map(|t| t.trigger_type.clone()).collect(),
         }

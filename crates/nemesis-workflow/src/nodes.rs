@@ -323,8 +323,12 @@ impl NodeExecutor for RealLLMNodeExecutor {
             }
         };
 
-        // Prompt may reference context variables via {{var}} placeholders.
-        let prompt = resolve_prompt_template(&prompt, context);
+        // Prompt may reference context variables via {{var}} placeholders,
+        // or carry a whole-value credential reference (env:/yaml:/vault:).
+        let prompt = match resolve_runtime_string(&prompt, context, "llm.prompt") {
+            Ok(p) => p,
+            Err(e) => return Ok(failed_node_result(&node.id, started, &e)),
+        };
 
         let model = node
             .config
@@ -336,11 +340,13 @@ impl NodeExecutor for RealLLMNodeExecutor {
         let temperature = node.config.get("temperature").and_then(|v| v.as_f64());
         let max_tokens = node.config.get("max_tokens").and_then(|v| v.as_i64());
 
-        let system_prompt = node
-            .config
-            .get("system_prompt")
-            .and_then(|v| v.as_str())
-            .map(|s| resolve_prompt_template(s, context));
+        let system_prompt = match node.config.get("system_prompt").and_then(|v| v.as_str()) {
+            Some(s) => match resolve_runtime_string(s, context, "llm.system_prompt") {
+                Ok(p) => Some(p),
+                Err(e) => return Ok(failed_node_result(&node.id, started, &e)),
+            },
+            None => None,
+        };
 
         // ---- Build chat request ----
         let mut messages: Vec<Message> = Vec::new();
@@ -380,7 +386,7 @@ impl NodeExecutor for RealLLMNodeExecutor {
                 if let Some(ref u) = resp.usage {
                     record_llm_usage(&self.usage_store, &node.id, &model, u, started);
                 }
-                Ok(success_node_result(&node.id, started, &model, resp))
+                Ok(llm_node_result(&node.id, started, &model, max_tokens, resp))
             }
             Err(err) => Ok(failed_node_result(
                 &node.id,
@@ -391,11 +397,19 @@ impl NodeExecutor for RealLLMNodeExecutor {
     }
 }
 
-/// Build a Completed NodeResult from a successful LLMResponse.
-fn success_node_result(
+/// Build a NodeResult from a successful LLMResponse, honoring the honest
+/// failure contract (2026-09-23 计划 A1).
+///
+/// 空文本 = 节点 Failed（节点唯一产物就是文本）：`finish_reason=length`
+/// 时错误点名 max_tokens 预算被思维链耗尽（推理模型典型病，glm-5.3-flash
+/// 实测复现），output 保留 model/finish_reason/usage/思维链预览供诊断；
+/// 其他 finish_reason 报「返回空文本」。有文本的 length 截断是可用产出，
+/// 维持 Completed。
+fn llm_node_result(
     node_id: &str,
     started: chrono::DateTime<Local>,
     model: &str,
+    max_tokens: Option<i64>,
     resp: LLMResponse,
 ) -> NodeResult {
     let usage_json = resp.usage.as_ref().map(|u| {
@@ -408,6 +422,39 @@ fn success_node_result(
             "cache_read_tokens": u.cache_read_tokens,
         })
     });
+
+    if resp.content.trim().is_empty() {
+        let error = if resp.finish_reason == "length" {
+            let budget = max_tokens
+                .map(|n| n.to_string())
+                .unwrap_or_else(|| "provider 默认".to_string());
+            format!(
+                "LLM 输出预算耗尽：max_tokens={budget} 被思维链全部消耗且无文本输出——\
+                 提高该节点 max_tokens（推理模型建议 ≥2000）或换非推理模型"
+            )
+        } else {
+            format!("LLM 返回空文本 (finish_reason={})", resp.finish_reason)
+        };
+        let reasoning_preview = resp
+            .reasoning_content
+            .as_deref()
+            .map(|s| s.chars().take(200).collect::<String>());
+        return NodeResult {
+            node_id: node_id.to_string(),
+            output: serde_json::json!({
+                "model": model,
+                "finish_reason": resp.finish_reason,
+                "usage": usage_json,
+                "reasoning_preview": reasoning_preview,
+            }),
+            error: Some(error),
+            state: ExecutionState::Failed,
+            started_at: started,
+            ended_at: Local::now(),
+            metadata: HashMap::new(),
+        };
+    }
+
     NodeResult {
         node_id: node_id.to_string(),
         output: serde_json::json!({
@@ -437,6 +484,14 @@ fn failed_node_result(node_id: &str, started: chrono::DateTime<Local>, error: &s
     }
 }
 
+/// HTTP 状态码的标准原因短语（http 节点错误消息用）；未知码返回空串。
+fn resp_status_reason(status_code: u16) -> String {
+    reqwest::StatusCode::from_u16(status_code)
+        .ok()
+        .and_then(|s| s.canonical_reason().map(|r| format!(" {r}")))
+        .unwrap_or_default()
+}
+
 /// Resolve `{{var}}` placeholders against the executor context.
 ///
 /// Supports nested lookups: `{{node_id.field}}` resolves to the field of a
@@ -454,6 +509,31 @@ fn resolve_prompt_template(template: &str, context: &HashMap<String, serde_json:
         out = out.replace(&placeholder, &replacement);
     }
     out
+}
+
+/// Resolve a node-config string: credential reference first, then `{{var}}`
+/// template.
+///
+/// 诚实失败契约的模板层一半（2026-09-23 计划类 B）：
+///
+/// 1. **凭据引用（整值）**：配置**原文**以 `env:` / `yaml:` / `vault:` 开头
+///    → 交给 [`nemesis_config::resolve_secret_field`] 解析（每次现查）。
+///    解析失败返回 Err——调用方必须让节点 Failed 并保留错误上下文，绝不
+///    静默降级为空值。只识别原文：`{{var}}` 替换产生的值不会被二次解释成
+///    凭据（上游数据以 `env:` 开头不会误触发解析）。
+/// 2. **`{{var}}` 模板**：对 executor context 占位符替换，缺失键解析为
+///    空串（文档化行为）；此路径永不失败。
+///
+/// `field_ctx` 仅进错误消息（如 `http.headers.Authorization`）。
+fn resolve_runtime_string(
+    raw: &str,
+    context: &HashMap<String, serde_json::Value>,
+    field_ctx: &str,
+) -> Result<String, String> {
+    if nemesis_config::is_secret_reference(raw) {
+        return nemesis_config::resolve_secret_field(raw, field_ctx).map_err(|e| e.to_string());
+    }
+    Ok(resolve_prompt_template(raw, context))
 }
 
 // ---------------------------------------------------------------------------
@@ -564,7 +644,10 @@ impl NodeExecutor for RealToolNodeExecutor {
             .get("args")
             .cloned()
             .unwrap_or(serde_json::Value::Null);
-        let resolved_args = resolve_template_value(&raw_args, context);
+        let resolved_args = match resolve_template_value(&raw_args, context, "tool.args") {
+            Ok(v) => v,
+            Err(e) => return Ok(failed_node_result(&node.id, started, &e)),
+        };
 
         let tool_result = self.tools.execute(tool_name, &resolved_args).await;
 
@@ -577,31 +660,38 @@ impl NodeExecutor for RealToolNodeExecutor {
     }
 }
 
-/// Resolve `{{var}}` placeholders inside an arbitrary JSON value.
+/// Resolve `{{var}}` placeholders (and whole-value credential references)
+/// inside an arbitrary JSON value.
 ///
-/// Strings get `resolve_prompt_template`; objects and arrays are recursed;
-/// other scalars pass through unchanged.
+/// Strings get [`resolve_runtime_string`]; objects and arrays are recursed
+/// (object keys extend `field_ctx` as `parent.key` for error messages);
+/// other scalars pass through unchanged. Fallible: a credential reference
+/// that fails to resolve aborts with the field path in the error.
 fn resolve_template_value(
     value: &serde_json::Value,
     context: &HashMap<String, serde_json::Value>,
-) -> serde_json::Value {
+    field_ctx: &str,
+) -> Result<serde_json::Value, String> {
     match value {
-        serde_json::Value::String(s) => {
-            serde_json::Value::String(resolve_prompt_template(s, context))
-        }
-        serde_json::Value::Array(arr) => serde_json::Value::Array(
-            arr.iter()
-                .map(|v| resolve_template_value(v, context))
-                .collect(),
-        ),
-        serde_json::Value::Object(obj) => {
-            let resolved: serde_json::Map<String, serde_json::Value> = obj
+        serde_json::Value::String(s) => Ok(serde_json::Value::String(resolve_runtime_string(
+            s, context, field_ctx,
+        )?)),
+        serde_json::Value::Array(arr) => {
+            let resolved = arr
                 .iter()
-                .map(|(k, v)| (k.clone(), resolve_template_value(v, context)))
-                .collect();
-            serde_json::Value::Object(resolved)
+                .map(|v| resolve_template_value(v, context, field_ctx))
+                .collect::<Result<Vec<_>, String>>()?;
+            Ok(serde_json::Value::Array(resolved))
         }
-        other => other.clone(),
+        serde_json::Value::Object(obj) => {
+            let mut resolved = serde_json::Map::new();
+            for (k, v) in obj {
+                let child_ctx = format!("{field_ctx}.{k}");
+                resolved.insert(k.clone(), resolve_template_value(v, context, &child_ctx)?);
+            }
+            Ok(serde_json::Value::Object(resolved))
+        }
+        other => Ok(other.clone()),
     }
 }
 
@@ -621,10 +711,10 @@ fn resolve_items_list(
     context: &HashMap<String, serde_json::Value>,
 ) -> Result<Vec<serde_json::Value>, String> {
     if let Some(arr) = raw.as_array() {
-        return Ok(arr
+        return arr
             .iter()
-            .map(|v| resolve_template_value(v, context))
-            .collect());
+            .map(|v| resolve_template_value(v, context, "foreach.items"))
+            .collect();
     }
     let s = raw
         .as_str()
@@ -650,8 +740,9 @@ fn resolve_items_list(
         // parsing (JSON-array string or newline-separated list).
     }
 
-    // General string: resolve placeholders, then JSON-array parse, else lines.
-    let resolved = resolve_prompt_template(trimmed, context);
+    // General string: resolve placeholders (or a whole-value credential
+    // reference), then JSON-array parse, else lines.
+    let resolved = resolve_runtime_string(trimmed, context, "foreach.items")?;
     if let Ok(serde_json::Value::Array(arr)) = serde_json::from_str::<serde_json::Value>(&resolved)
     {
         return Ok(arr);
@@ -969,8 +1060,12 @@ impl NodeExecutor for TransformNodeExecutor {
             .and_then(|v| v.as_str())
             .unwrap_or("")
             .to_string();
-        // Resolve {{var}} in the input before transforming.
-        let input = resolve_prompt_template(&input_raw, context);
+        // Resolve {{var}} (or a whole-value credential reference) in the
+        // input before transforming.
+        let input = match resolve_runtime_string(&input_raw, context, "transform.input") {
+            Ok(v) => v,
+            Err(e) => return Ok(failed_node_result(&node.id, started, &e)),
+        };
 
         let arg = node
             .config
@@ -1480,15 +1575,20 @@ impl NodeExecutor for SubWorkflowNodeExecutor {
                 if let Some(resolved) = context.get(s) {
                     sub_input.insert(k.clone(), resolved.clone());
                 } else {
-                    sub_input.insert(
-                        k.clone(),
-                        serde_json::Value::String(resolve_prompt_template(s, context)),
-                    );
+                    let resolved = match resolve_runtime_string(s, context, "sub_workflow.input") {
+                        Ok(v) => v,
+                        Err(e) => return Ok(failed_node_result(&node.id, now, &e)),
+                    };
+                    sub_input.insert(k.clone(), serde_json::Value::String(resolved));
                 }
             } else {
                 // Arrays / objects: recurse so {{var}} inside nested values
                 // also resolves.
-                sub_input.insert(k.clone(), resolve_template_value(v, context));
+                let resolved = match resolve_template_value(v, context, "sub_workflow.input") {
+                    Ok(v) => v,
+                    Err(e) => return Ok(failed_node_result(&node.id, now, &e)),
+                };
+                sub_input.insert(k.clone(), resolved);
             }
         }
 
@@ -1564,8 +1664,11 @@ impl NodeExecutor for HTTPNodeExecutor {
             .get("url")
             .and_then(|v| v.as_str())
             .unwrap_or("");
-        // Resolve {{var}} in URL against context.
-        let url = resolve_prompt_template(url_raw, context);
+        // Resolve {{var}} / whole-value credential references in URL.
+        let url = match resolve_runtime_string(url_raw, context, "http.url") {
+            Ok(v) => v,
+            Err(e) => return Ok(failed_node_result(&node.id, now, &e)),
+        };
 
         let method = node
             .config
@@ -1591,8 +1694,11 @@ impl NodeExecutor for HTTPNodeExecutor {
             .get("body")
             .and_then(|v| v.as_str())
             .unwrap_or("");
-        // Resolve {{var}} in body against context.
-        let body = resolve_prompt_template(body_raw, context);
+        // Resolve {{var}} / whole-value credential references in body.
+        let body = match resolve_runtime_string(body_raw, context, "http.body") {
+            Ok(v) => v,
+            Err(e) => return Ok(failed_node_result(&node.id, now, &e)),
+        };
 
         // Build the request
         let client = reqwest::Client::new();
@@ -1624,8 +1730,14 @@ impl NodeExecutor for HTTPNodeExecutor {
             .and_then(|v| v.as_object())
             .cloned()
             .unwrap_or_default();
-        let resolved_headers =
-            resolve_template_value(&serde_json::Value::Object(headers_raw), context);
+        let resolved_headers = match resolve_template_value(
+            &serde_json::Value::Object(headers_raw),
+            context,
+            "http.headers",
+        ) {
+            Ok(v) => v,
+            Err(e) => return Ok(failed_node_result(&node.id, now, &e)),
+        };
 
         let mut req_builder = req_builder;
         if let Some(obj) = resolved_headers.as_object() {
@@ -1664,6 +1776,28 @@ impl NodeExecutor for HTTPNodeExecutor {
             .map_err(|e| format!("failed to read response body: {}", e))?;
         let body_str = String::from_utf8_lossy(&body_bytes).to_string();
 
+        // 诚实失败契约（2026-09-23 计划 A2）：≥400 是应用层失败，默认节点
+        // Failed——全引擎不能只有 http 谎报成功（script 非零退出、tool 错误
+        // 都 Failed）。完整响应保留在 output 供诊断；需要按状态码自行分支
+        // 的工作流显式 `fail_on_http_error: false` 退出。
+        let fail_on_http_error = node
+            .config
+            .get("fail_on_http_error")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(true);
+        let (state, error) = if fail_on_http_error && status_code >= 400 {
+            let reason = resp_status_reason(status_code);
+            (
+                ExecutionState::Failed,
+                Some(format!(
+                    "HTTP {status_code}{reason} — fail_on_http_error 缺省 true，\
+                     需按状态码分支请显式配 false"
+                )),
+            )
+        } else {
+            (ExecutionState::Completed, None)
+        };
+
         Ok(NodeResult {
             node_id: node.id.clone(),
             output: serde_json::json!({
@@ -1671,8 +1805,8 @@ impl NodeExecutor for HTTPNodeExecutor {
                 "headers": serde_json::Value::Object(resp_headers),
                 "body": body_str,
             }),
-            error: None,
-            state: ExecutionState::Completed,
+            error,
+            state,
             started_at: now,
             ended_at: Local::now(),
             metadata: HashMap::new(),
@@ -2088,9 +2222,13 @@ impl NodeExecutor for HumanReviewNodeExecutor {
             .and_then(|v| v.as_str())
             .unwrap_or("Human review required");
         // Form placeholder is `请审核是否发送给客户：{{draft}}` — resolve
-        // {{var}} placeholders against the execution context so reviewers
-        // see the actual content, not literal `{{draft}}`.
-        let message = resolve_prompt_template(raw_message, context);
+        // {{var}} placeholders (or a whole-value credential reference)
+        // against the execution context so reviewers see the actual
+        // content, not literal `{{draft}}`.
+        let message = match resolve_runtime_string(raw_message, context, "human_review.message") {
+            Ok(v) => v,
+            Err(e) => return Ok(failed_node_result(&node.id, now, &e)),
+        };
 
         Ok(NodeResult {
             node_id: node.id.clone(),
@@ -2196,7 +2334,10 @@ impl NodeExecutor for QuestionClassifierNodeExecutor {
                 ));
             }
         };
-        let question = resolve_prompt_template(&question_raw, context);
+        let question = match resolve_runtime_string(&question_raw, context, "classifier.question") {
+            Ok(v) => v,
+            Err(e) => return Ok(failed_node_result(&node.id, started, &e)),
+        };
 
         let classes_value = match node.config.get("classes") {
             Some(v) => v,
@@ -2246,19 +2387,21 @@ impl NodeExecutor for QuestionClassifierNodeExecutor {
             .and_then(|v| v.as_f64())
             .unwrap_or(0.0);
 
-        let system_prompt = node
-            .config
-            .get("system_prompt")
-            .and_then(|v| v.as_str())
-            .map(|s| resolve_prompt_template(s, context))
-            .unwrap_or_else(|| {
-                let classes_block: String = classes
-                    .iter()
-                    .map(|c| format!("- {}: {}", c.id, c.description))
-                    .collect::<Vec<_>>()
-                    .join("\n");
-                CLASSIFIER_SYSTEM_PROMPT.replace("{classes}", &classes_block)
-            });
+        let system_prompt = match node.config.get("system_prompt").and_then(|v| v.as_str()) {
+            Some(s) => match resolve_runtime_string(s, context, "classifier.system_prompt") {
+                Ok(p) => Some(p),
+                Err(e) => return Ok(failed_node_result(&node.id, started, &e)),
+            },
+            None => None,
+        }
+        .unwrap_or_else(|| {
+            let classes_block: String = classes
+                .iter()
+                .map(|c| format!("- {}: {}", c.id, c.description))
+                .collect::<Vec<_>>()
+                .join("\n");
+            CLASSIFIER_SYSTEM_PROMPT.replace("{classes}", &classes_block)
+        });
 
         // ---- Retry loop ----
         let mut last_error: Option<String> = None;
@@ -2484,7 +2627,10 @@ impl NodeExecutor for ParameterExtractorNodeExecutor {
                 ));
             }
         };
-        let text = resolve_prompt_template(&text_raw, context);
+        let text = match resolve_runtime_string(&text_raw, context, "parameter_extractor.text") {
+            Ok(v) => v,
+            Err(e) => return Ok(failed_node_result(&node.id, started, &e)),
+        };
 
         let params_value = match node.config.get("parameters") {
             Some(v) => v,
@@ -2534,22 +2680,26 @@ impl NodeExecutor for ParameterExtractorNodeExecutor {
             .and_then(|v| v.as_f64())
             .unwrap_or(0.0);
 
-        let system_prompt = node
-            .config
-            .get("system_prompt")
-            .and_then(|v| v.as_str())
-            .map(|s| resolve_prompt_template(s, context))
-            .unwrap_or_else(|| {
-                let params_block: String = params
-                    .iter()
-                    .map(|p| {
-                        let req = if p.required { " (required)" } else { "" };
-                        format!("- {} [{}]{}: {}", p.name, p.r#type, req, p.description)
-                    })
-                    .collect::<Vec<_>>()
-                    .join("\n");
-                EXTRACTOR_SYSTEM_PROMPT.replace("{parameters}", &params_block)
-            });
+        let system_prompt = match node.config.get("system_prompt").and_then(|v| v.as_str()) {
+            Some(s) => {
+                match resolve_runtime_string(s, context, "parameter_extractor.system_prompt") {
+                    Ok(p) => Some(p),
+                    Err(e) => return Ok(failed_node_result(&node.id, started, &e)),
+                }
+            }
+            None => None,
+        }
+        .unwrap_or_else(|| {
+            let params_block: String = params
+                .iter()
+                .map(|p| {
+                    let req = if p.required { " (required)" } else { "" };
+                    format!("- {} [{}]{}: {}", p.name, p.r#type, req, p.description)
+                })
+                .collect::<Vec<_>>()
+                .join("\n");
+            EXTRACTOR_SYSTEM_PROMPT.replace("{parameters}", &params_block)
+        });
 
         // ---- Retry loop ----
         let mut last_error: Option<String> = None;
@@ -2841,7 +2991,10 @@ impl NodeExecutor for AgentNodeExecutor {
                 ));
             }
         };
-        let prompt = resolve_prompt_template(&prompt_raw, context);
+        let prompt = match resolve_runtime_string(&prompt_raw, context, "agent.prompt") {
+            Ok(v) => v,
+            Err(e) => return Ok(failed_node_result(&node.id, started, &e)),
+        };
 
         let agent_id = node
             .config
@@ -2870,20 +3023,34 @@ impl NodeExecutor for AgentNodeExecutor {
             .run_direct(&prompt, &agent_id, max_turns, model)
             .await
         {
-            Ok(result) => Ok(NodeResult {
-                node_id: node.id.clone(),
-                output: serde_json::json!({
-                    "response": result.response,
-                    "tools_used": result.tools_used,
-                    "agent_id": agent_id,
-                    "max_turns": max_turns,
-                }),
-                error: None,
-                state: ExecutionState::Completed,
-                started_at: started,
-                ended_at: Local::now(),
-                metadata: HashMap::new(),
-            }),
+            Ok(result) => {
+                // 诚实失败契约（2026-09-23 计划 A3）：空响应 = 无可用产出，
+                // 节点 Failed（max_turns 耗尽或模型无输出）。
+                if result.response.trim().is_empty() {
+                    return Ok(failed_node_result(
+                        &node.id,
+                        started,
+                        &format!(
+                            "agent 返回空响应 (agent_id={agent_id}, max_turns={max_turns})\
+                             —— 提高 max_turns 或检查 agent 配置"
+                        ),
+                    ));
+                }
+                Ok(NodeResult {
+                    node_id: node.id.clone(),
+                    output: serde_json::json!({
+                        "response": result.response,
+                        "tools_used": result.tools_used,
+                        "agent_id": agent_id,
+                        "max_turns": max_turns,
+                    }),
+                    error: None,
+                    state: ExecutionState::Completed,
+                    started_at: started,
+                    ended_at: Local::now(),
+                    metadata: HashMap::new(),
+                })
+            }
             Err(e) => Ok(failed_node_result(
                 &node.id,
                 started,
@@ -3437,6 +3604,9 @@ pub fn evaluate_condition(condition: &str, context: &HashMap<String, serde_json:
 
     // Step 1: Resolve {{var}} placeholders. After this the condition is a
     // literal expression like `5 > 3` or `hello == hello`.
+    // 注意：条件边是表达式不是数据通道，不走 `resolve_runtime_string` 的
+    // 凭据引用识别（`env:` 开头的条件表达式无意义；且本函数无节点语境，
+    // 解析失败无处落 Failed——2026-09-23 计划类 B 范围裁定）。
     let resolved = resolve_prompt_template(condition, context);
     let resolved = resolved.trim();
 

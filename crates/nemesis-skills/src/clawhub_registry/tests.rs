@@ -2116,3 +2116,18 @@ fn test_move_dir_contents_write_fails_when_dest_path_is_directory() {
 //   directory-entry check at 617-619.
 // - 723-729: move_dir_contents read-failure arm — std read of a regular file
 //   cannot be made to fail in-process on Windows (no share-mode handle API).
+
+#[test]
+fn with_urls_backfills_empty_values_with_defaults() {
+    // 2026-09-23 BUG 清账类 D：回填下沉 with_urls 唯一 chokepoint——
+    // registry.rs 直构造路径（serde 缺省空串）不再漏出空 URL。
+    let registry = ClawHubRegistry::with_urls("", "", "");
+    assert_eq!(registry.base_url, "https://clawhub.ai");
+    assert_eq!(registry.convex_url, "https://wry-manatee-359.convex.cloud");
+
+    // 非空值保持原样
+    let custom =
+        ClawHubRegistry::with_urls("https://custom.clawhub.ai", "https://c.convex.cloud", "");
+    assert_eq!(custom.base_url, "https://custom.clawhub.ai");
+    assert_eq!(custom.convex_url, "https://c.convex.cloud");
+}

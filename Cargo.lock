@@ -4404,6 +4404,7 @@ dependencies = [
  "chrono",
  "croner",
  "dashmap",
+ "nemesis-config",
  "nemesis-data",
  "nemesis-providers",
  "nemesis-sandbox",
