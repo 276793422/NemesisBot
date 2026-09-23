@@ -109,12 +109,23 @@ pub fn topological_sort(nodes: &[NodeDef], edges: &[Edge]) -> Result<Vec<Vec<Str
 /// `some_node.x`, and a `set_var` call can't be silently overwritten by a
 /// stale input field of the same name. Trigger-time inputs (workflow_chat's
 /// `input`/`content`/`chat_id`/...) are the lowest-priority baseline.
+///
+/// 缺陷 13 修复（2026-09-23）：对象型 input 条目除整体键外还按
+/// `key.field` 平铺一层（与 node_results 的平铺约定一致）。模板解析是
+/// 平铺字符串替换（`{{payload.value}}` 需字面键），webhook 契约把外部
+/// 载荷整体挂在 `input.payload` 对象下，不平铺则 `{{payload.value}}`
+/// 恒解析为空串原样留在输出里（静默错）。
 fn build_executor_context(wf_ctx: &WorkflowContext) -> HashMap<String, serde_json::Value> {
     let mut ctx: HashMap<String, serde_json::Value> = HashMap::new();
 
     // Workflow input (trigger-time fields). Lowest precedence — variables
     // and node results can override.
     for (k, v) in wf_ctx.get_all_input() {
+        if let Some(obj) = v.as_object() {
+            for (field, val) in obj {
+                ctx.insert(format!("{}.{}", k, field), val.clone());
+            }
+        }
         ctx.insert(k, v);
     }
 
@@ -439,6 +450,22 @@ async fn schedule_inner(
         if let Some(h) = hook {
             h.on_level_completed(wf_ctx).await;
         }
+
+        // 缺陷 9 修复（2026-09-23）：任一节点停在 Waiting（human_review）时
+        // 必须就此打住——下游不得在审批落地前抢跑。旧实现一路跑完后续层，
+        // 下游带着未解析占位符「完成」，resume 后因已完成被跳过，占位符
+        // 输出被永久固化（静默错，违反诚实失败契约）。engine 在 schedule
+        // 返回后按 node_results 判定 Waiting 并落含 waiting_node 的
+        // checkpoint；resume 以已完成节点为 skip 集重建调度，从 Waiting
+        // 节点的下游继续。deprecated `start_execution` 路径原本就
+        // Waiting 即返回，无需改动。
+        if wf_ctx
+            .get_all_node_results()
+            .values()
+            .any(|r| r.state == ExecutionState::Waiting)
+        {
+            return Ok(ScheduleOutcome::Completed);
+        }
     }
 
     Ok(ScheduleOutcome::Completed)
@@ -446,43 +473,30 @@ async fn schedule_inner(
 
 /// Check if a node should be executed based on conditional edges.
 ///
-/// Evaluates conditions using expression-style matching (e.g., `status == "ok"`,
-/// `count != 0`) via the same `evaluate_condition` function used by the
-/// ConditionNodeExecutor. Falls back to simple boolean matching for literal
-/// conditions.
+/// Each incoming conditional edge's expression is evaluated via the same
+/// [`crate::nodes::evaluate_condition`] used by the ConditionNodeExecutor —
+/// it resolves `{{var}}` placeholders itself, so the documented
+/// `{{count}} > 5` style works uniformly. All incoming conditional edges
+/// must pass (AND). An edge evaluation failure of any one condition skips
+/// the node.
+///
+/// 缺陷 8 修复（2026-09-23）：旧实现先 `wf_ctx.resolve` 整串再比对布尔——
+/// 带模板的表达式 resolve 后（如 "200 == 200"）不再等于原文，走进
+/// 「非空即真」分支，表达式**从未被求值**，全部分支恒放行（静默错，
+/// 违反诚实失败契约）。现统一委托 `evaluate_condition`（其 Step 1 自带
+/// 模板解析，Step 2 兜底字面布尔，语义与能力表文档一致）。
 fn should_run_node(
     node_id: &str,
     cond_edges: &HashMap<String, Vec<&Edge>>,
     wf_ctx: &WorkflowContext,
 ) -> bool {
     if let Some(edges) = cond_edges.get(node_id) {
+        let ctx = build_executor_context(wf_ctx);
         for edge in edges {
-            if let Some(ref cond) = edge.condition {
-                let resolved = wf_ctx.resolve(cond);
-
-                // First, try simple boolean check for resolved value
-                let lower = resolved.to_lowercase();
-                match lower.as_str() {
-                    "true" | "1" | "yes" => continue,
-                    "false" | "0" | "no" => return false,
-                    _ => {}
-                }
-
-                // If the resolved value is unchanged (no template variables
-                // were present), evaluate the condition as an expression
-                // against the workflow context.
-                if resolved == cond.as_str() {
-                    let ctx = build_executor_context(wf_ctx);
-                    if !crate::nodes::evaluate_condition(cond, &ctx) {
-                        return false;
-                    }
-                } else {
-                    // Template was resolved but didn't match a known boolean;
-                    // treat the resolved value itself as truthy/falsy.
-                    if resolved.is_empty() {
-                        return false;
-                    }
-                }
+            if let Some(ref cond) = edge.condition
+                && !crate::nodes::evaluate_condition(cond, &ctx)
+            {
+                return false;
             }
         }
     }

@@ -1081,7 +1081,16 @@ impl WebServer {
             .local_addr()
             .map_err(|e| format!("failed to get local addr: {}", e))?;
         tracing::info!("[WebServer] Listening on {}", actual_addr);
-        axum::serve(listener, app).await.map_err(|e| {
+        // 缺陷 12 修复（2026-09-23）：必须以 with_connect_info 形态挂服务——
+        // webhook handler（限流/审计）提取 ConnectInfo<SocketAddr>，裸 Router
+        // 形态下该扩展不存在，POST/GET /api/workflow/webhook/:name 必 500，
+        // webhook 功能整体不可用。
+        axum::serve(
+            listener,
+            app.into_make_service_with_connect_info::<std::net::SocketAddr>(),
+        )
+        .await
+        .map_err(|e| {
             tracing::error!("[WebServer] Server error: {}", e);
             format!("server error: {}", e)
         })?;
@@ -1139,7 +1148,12 @@ impl WebServer {
         tracing::info!("[WebServer] Listening on {}", actual_addr);
 
         tokio::select! {
-            result = axum::serve(listener, app) => {
+            // 缺陷 12 修复（2026-09-23）：同 start()——with_connect_info 挂载，
+            // 否则 webhook handler 的 ConnectInfo 提取必 500。
+            result = axum::serve(
+                listener,
+                app.into_make_service_with_connect_info::<std::net::SocketAddr>(),
+            ) => {
                 result.map_err(|e| format!("server error: {}", e))?;
             }
             _ = shutdown_rx.recv() => {
@@ -2116,6 +2130,11 @@ fn auth_exempt_path(path: &str) -> bool {
         || path.starts_with("/api/share/")
         || path.starts_with("/api/board/asset/")
         || path.starts_with("/api/workflow/chat/")
+        // 缺陷 11 修复（2026-09-23）：webhook 是给**外部服务**（GitHub/Slack
+        // 等无法持有 dashboard token）裸调的回调端点，自有安全层 = 可选 HMAC
+        // 签名（workflow 定义 secret）+ per-IP 限流（60/min）+ 审计日志。统一
+        // 鉴权上线时漏列（与 /api/sdk/ 漏列同类事故），外部回调恒 401。
+        || path.starts_with("/api/workflow/webhook/")
         || path.starts_with("/api/sdk/")
 }
 

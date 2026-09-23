@@ -100,7 +100,7 @@ pub fn capabilities() -> GeneratorCapabilities {
             summary: "条件判断，输出 {condition_result: bool}（ConditionNodeExecutor）".into(),
             required_config: vec![],
             optional_config: vec!["condition".into()],
-            config_notes: "表达式如 \"{{count}} > 5\"，支持 == != > < >= <=；缺省 \"false\"；通常作为出边的 condition 而不是独立节点".into(),
+            config_notes: "表达式如 \"{{count}} > 5\"，支持 == != > < >= <=，支持前导 ! 取反（如 !{{check.passed}}）；缺省 \"false\"；通常作为出边的 condition 而不是独立节点".into(),
         },
         NodeCapability {
             node_type: "delay".into(),
@@ -237,6 +237,10 @@ pub fn capabilities() -> GeneratorCapabilities {
         "凭据引用是模板语言能力：所有节点字符串配置支持 env:/yaml:/vault: 整值引用（运行时现查，失败即节点 Failed）；\
          引用必须整值（不支持内嵌如 Bearer vault:x——把 Bearer 放进被引用的值或用模板变量）；\
          优先用引用而非明文，凭据不落工作流 YAML"
+            .into(),
+        "条件边 condition 是表达式：支持比较（== != > < >= <=，如 {{n.status_code}} == 200）、\
+         前导 ! 取反（如 !{{check.passed}}）、字面布尔（true/false/yes/no/1/0）；\
+         多条入边条件全过才执行（AND 语义）"
             .into(),
     ];
 

@@ -3610,14 +3610,23 @@ pub fn evaluate_condition(condition: &str, context: &HashMap<String, serde_json:
     let resolved = resolve_prompt_template(condition, context);
     let resolved = resolved.trim();
 
+    // Step 1.5: Negation prefix（缺陷 14 修复，2026-09-23）。`!{{flag}}` 是
+    // LLM 生成器表达否定分支的自然写法（能力表已同步收录该语法）；模板解析
+    // 后字面以 `!` 开头 → 对剩余表达式取反。旧实现四步全不匹配落到 Step 4
+    // 「非空即真」，"!true" 恒为真——否定分支无条件放行（静默错，违反诚实
+    // 失败契约）。`!=` 是中缀运算符不会出现在表达式开头，无歧义。
+    if let Some(rest) = resolved.strip_prefix('!') {
+        return !evaluate_condition(rest, context);
+    }
+
     // Step 2: Literal booleans (also covers cases where {{var}} resolved to
     // a boolean JSON value, which `resolve_prompt_template` stringifies as
-    // "true"/"false").
-    if resolved.eq_ignore_ascii_case("true") {
-        return true;
-    }
-    if resolved.eq_ignore_ascii_case("false") {
-        return false;
+    // "true"/"false"). "yes"/"no"/"1"/"0" 是边条件与人工配置的常见布尔拼写，
+    // 统一在此收敛（单一真相源；原 should_run_node 私有表已随缺陷 8 修复并入）。
+    match resolved.to_lowercase().as_str() {
+        "true" | "yes" | "1" => return true,
+        "false" | "no" | "0" => return false,
+        _ => {}
     }
 
     // Step 3: Comparison operators. Try longest-match first so `>=` doesn't

@@ -28,6 +28,10 @@ fn test_auth_exempt_path_truth_table() {
     // integration-test ui/p2_sdk_http 钉住公开契约）
     assert!(auth_exempt_path("/api/sdk/export"));
     assert!(auth_exempt_path("/api/sdk/pip"));
+    // 豁免：webhook 回调（外部服务 GitHub/Slack 等裸调；自有安全层 =
+    // 可选 HMAC + per-IP 限流 + 审计；缺陷 11 修复 2026-09-23）
+    assert!(auth_exempt_path("/api/workflow/webhook/webhook_flow"));
+    assert!(auth_exempt_path("/api/workflow/webhook/a/b"));
 
     // 不豁免：控制面 REST
     assert!(!auth_exempt_path("/api/status"));
@@ -44,6 +48,7 @@ fn test_auth_exempt_path_near_miss_prefixes_not_exempt() {
     assert!(!auth_exempt_path("/api/healthz"));
     assert!(!auth_exempt_path("/api/board/assets/ref"));
     assert!(!auth_exempt_path("/api/workflow/chatty"));
+    assert!(!auth_exempt_path("/api/workflow/webhooks/wf"));
     assert!(!auth_exempt_path("/api/sdkfoo/x"));
     // 精确匹配不认子路径/尾随斜杠变体
     assert!(!auth_exempt_path("/health/"));

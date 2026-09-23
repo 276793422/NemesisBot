@@ -374,6 +374,94 @@ async fn test_resume_runs_downstream_nodes() {
     assert_eq!(review_state, ExecutionState::Completed);
 }
 
+/// 缺陷 9 回归（2026-09-23 E2E 实测）：生产 scheduler 路径上 human_review
+/// 进入 Waiting 后必须暂停调度——下游不得在 resume 前抢跑。旧实现只在
+/// deprecated `start_execution` 路径处理 Waiting（本文件既有测试恰好都走
+/// 那条路径，掩盖了生产路径缺陷）；本测试钉死生产 `run` 路径语义。
+#[tokio::test]
+async fn waiting_pauses_schedule_until_resume_production_path() {
+    let engine = WorkflowEngine::new_arc();
+    let nodes = vec![
+        NodeDef {
+            id: "review".to_string(),
+            node_type: "human_review".to_string(),
+            config: HashMap::from([("message".to_string(), serde_json::json!("Please review"))]),
+            depends_on: vec![],
+            retry_count: 0,
+            timeout: None,
+            is_terminal: false,
+        },
+        NodeDef {
+            id: "after".to_string(),
+            node_type: "transform".to_string(),
+            config: HashMap::from([
+                ("expression".to_string(), serde_json::json!("identity")),
+                (
+                    "input".to_string(),
+                    serde_json::json!("{{review.decision}}:{{review.note}}"),
+                ),
+            ]),
+            depends_on: vec!["review".to_string()],
+            retry_count: 0,
+            timeout: None,
+            is_terminal: false,
+        },
+    ];
+    engine
+        .register_workflow(make_workflow("waiting_pause_prod", nodes))
+        .unwrap();
+
+    let exec_id = engine
+        .run("waiting_pause_prod", HashMap::new(), None)
+        .await
+        .unwrap();
+
+    // 等 execution 落定到 Waiting（生产路径 run_async 在 spawn 中执行）。
+    let mut state = None;
+    for _ in 0..100 {
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        if let Some(e) = engine.get_execution(&exec_id.id).await
+            && matches!(
+                e.state,
+                ExecutionState::Waiting | ExecutionState::Completed | ExecutionState::Failed
+            )
+        {
+            state = Some(e.state);
+            break;
+        }
+    }
+    assert_eq!(state, Some(ExecutionState::Waiting), "must pause at review");
+
+    // Waiting 时下游 `after` 不得已有结果。
+    let pre = engine.get_execution(&exec_id.id).await.unwrap();
+    assert!(
+        !pre.node_results.contains_key("after"),
+        "downstream must not run before resume, got {:?}",
+        pre.node_results.keys().collect::<Vec<_>>()
+    );
+
+    let mut review = HashMap::new();
+    review.insert("decision".to_string(), serde_json::json!("approved"));
+    review.insert("note".to_string(), serde_json::json!("数据完整"));
+    let resumed = engine.resume_execution(&exec_id.id, review).await.unwrap();
+    assert_eq!(resumed.state, ExecutionState::Completed);
+
+    let after = resumed
+        .node_results
+        .get("after")
+        .expect("downstream `after` must run after resume");
+    assert_eq!(after.state, ExecutionState::Completed);
+    let text = after
+        .output
+        .get("text")
+        .and_then(|v| v.as_str())
+        .unwrap_or("");
+    assert_eq!(
+        text, "approved:数据完整",
+        "downstream must see review fields"
+    );
+}
+
 // -----------------------------------------------------------------------
 // list_executions tests
 // -----------------------------------------------------------------------
@@ -3499,6 +3587,11 @@ async fn w4a_resume_scheduler_error_marks_failed() {
 /// resume_execution: a second human_review node pauses the execution again
 /// — state stays Waiting with ended_at=None and the waiting node is
 /// recorded in the checkpoint (engine.rs ~2296-2305 + ~2330-2334).
+///
+/// 缺陷 9 修复后的语义（2026-09-23）：两段审批必须**串行**。首跑调度器在
+/// n1 Waiting 时立即打住，n2 不得抢跑（node_results 无 n2 条目）；第一次
+/// resume 落实 n1 的批复，调度推进到 n2 再次 Waiting；第二次 resume 才
+/// Completed。旧断言「首跑后 n1/n2 同时 Waiting」钉住的正是抢跑缺陷。
 #[tokio::test]
 async fn w4a_resume_second_human_review_stays_waiting() {
     let store = std::sync::Arc::new(InMemoryCheckpointStore::new());
@@ -3520,7 +3613,12 @@ async fn w4a_resume_second_human_review_stays_waiting() {
         .unwrap();
     assert_eq!(exec.state, ExecutionState::Waiting);
     assert_eq!(exec.node_results["n1"].state, ExecutionState::Waiting);
-    assert_eq!(exec.node_results["n2"].state, ExecutionState::Waiting);
+    // 下游不得在首段审批落地前抢跑——n2 尚未执行，无结果条目。
+    assert!(
+        !exec.node_results.contains_key("n2"),
+        "n2 must not run before n1's review lands, got {:?}",
+        exec.node_results.get("n2").map(|r| r.state)
+    );
 
     let resumed = engine
         .resume_execution(
@@ -3529,14 +3627,14 @@ async fn w4a_resume_second_human_review_stays_waiting() {
         )
         .await
         .unwrap();
-    // Exactly one review node re-pauses the execution. Which one depends on
-    // HashMap iteration order inside resume_execution's waiting-node search,
-    // so assert the invariant, not the specific node.
+    // n1 的批复落实后，调度推进到 n2——第二次审批再次暂停。
     assert_eq!(
         resumed.state,
         ExecutionState::Waiting,
         "second review pauses again"
     );
+    assert_eq!(resumed.node_results["n1"].state, ExecutionState::Completed);
+    assert_eq!(resumed.node_results["n2"].state, ExecutionState::Waiting);
     assert!(resumed.ended_at.is_none());
     let waiting: Vec<&String> = resumed
         .node_results
@@ -3559,6 +3657,18 @@ async fn w4a_resume_second_human_review_stays_waiting() {
         .expect("checkpoint saved");
     assert_eq!(cp.waiting_node.as_deref(), Some(waiting[0].as_str()));
     assert!(!cp.terminal);
+
+    // 第二段批复落地：执行走完，终态 Completed。
+    let finished = engine
+        .resume_execution(
+            &exec.id,
+            HashMap::from([("approved".to_string(), serde_json::json!(true))]),
+        )
+        .await
+        .unwrap();
+    assert_eq!(finished.state, ExecutionState::Completed);
+    assert_eq!(finished.node_results["n2"].state, ExecutionState::Completed);
+    assert!(finished.ended_at.is_some());
 }
 
 /// resume_execution: cancelling mid-resume settles the execution Cancelled

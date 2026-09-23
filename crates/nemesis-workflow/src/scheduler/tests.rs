@@ -127,6 +127,69 @@ fn test_should_run_node_expression_inequality() {
     assert!(!should_run_node("target", &cond_edges, &wf_ctx));
 }
 
+/// 缺陷 8 回归（2026-09-23 E2E 实测）：带模板的条件边表达式
+/// `{{fetch.status_code}} == 200` 曾因「resolve 后非空即真」恒放行，
+/// 双分支全跑。钉死：模板在条件表达式中必须真实参与比较。
+#[test]
+fn test_should_run_node_template_expression_routes_by_value() {
+    let cond_of = |code: i64| {
+        let wf_ctx = WorkflowContext::new(HashMap::new());
+        wf_ctx.set_node_result(
+            "fetch",
+            crate::types::NodeResult {
+                node_id: "fetch".to_string(),
+                output: serde_json::json!({"status_code": code, "body": "x"}),
+                error: None,
+                state: crate::types::ExecutionState::Completed,
+                started_at: chrono::Local::now(),
+                ended_at: chrono::Local::now(),
+                metadata: HashMap::new(),
+            },
+        );
+        let edge = Edge {
+            from_node: "fetch".to_string(),
+            to_node: "target".to_string(),
+            condition: Some("{{fetch.status_code}} == 200".to_string()),
+        };
+        let cond_edges: HashMap<String, Vec<&Edge>> = {
+            let mut m = HashMap::new();
+            m.insert("target".to_string(), vec![&edge]);
+            m
+        };
+        should_run_node("target", &cond_edges, &wf_ctx)
+    };
+    assert!(cond_of(200), "200 must satisfy == 200");
+    assert!(!cond_of(404), "404 must not satisfy == 200");
+}
+
+#[test]
+fn test_should_run_node_template_numeric_comparison() {
+    let wf_ctx = WorkflowContext::new(HashMap::new());
+    wf_ctx.set_node_result(
+        "fetch",
+        crate::types::NodeResult {
+            node_id: "fetch".to_string(),
+            output: serde_json::json!({"status_code": 404}),
+            error: None,
+            state: crate::types::ExecutionState::Completed,
+            started_at: chrono::Local::now(),
+            ended_at: chrono::Local::now(),
+            metadata: HashMap::new(),
+        },
+    );
+    let edge = Edge {
+        from_node: "fetch".to_string(),
+        to_node: "degrade".to_string(),
+        condition: Some("{{fetch.status_code}} >= 400".to_string()),
+    };
+    let cond_edges: HashMap<String, Vec<&Edge>> = {
+        let mut m = HashMap::new();
+        m.insert("degrade".to_string(), vec![&edge]);
+        m
+    };
+    assert!(should_run_node("degrade", &cond_edges, &wf_ctx));
+}
+
 #[test]
 fn test_should_run_node_boolean_true() {
     let wf_ctx = WorkflowContext::new(HashMap::new());
@@ -517,6 +580,35 @@ fn test_build_executor_context_includes_input_fields() {
         ctx.get("session_key").unwrap(),
         &serde_json::json!("wf_chat:demo")
     );
+}
+
+/// 缺陷 13 回归（2026-09-23）：对象型 input 条目必须按 `key.field` 平铺一层
+/// （与 node_results 约定一致），否则 webhook 契约的 `{{payload.value}}` 在
+/// 平铺字符串替换的模板解析下恒为空串原样残留。
+#[test]
+fn test_build_executor_context_flattens_object_input() {
+    let mut input = HashMap::new();
+    input.insert(
+        "payload".to_string(),
+        serde_json::json!({"value": "3", "city": "hangzhou"}),
+    );
+    input.insert("source".to_string(), serde_json::json!("cron-e2e"));
+    let wf_ctx = WorkflowContext::new(input);
+
+    let ctx = build_executor_context(&wf_ctx);
+    // 平铺键：模板 `{{payload.value}}` / `{{payload.city}}` 的解析依据。
+    assert_eq!(ctx.get("payload.value").unwrap(), &serde_json::json!("3"));
+    assert_eq!(
+        ctx.get("payload.city").unwrap(),
+        &serde_json::json!("hangzhou")
+    );
+    // 整体键保留：`{{payload}}` 仍解析为整个对象。
+    assert_eq!(
+        ctx.get("payload").unwrap(),
+        &serde_json::json!({"value": "3", "city": "hangzhou"})
+    );
+    // 平铺标量 input 不受影响。
+    assert_eq!(ctx.get("source").unwrap(), &serde_json::json!("cron-e2e"));
 }
 
 /// Variables should override same-named input keys (set_var is an explicit
