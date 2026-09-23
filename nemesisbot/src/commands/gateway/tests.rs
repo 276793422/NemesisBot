@@ -4,6 +4,8 @@
 // 测试域统一豁免（逐处 allow ~200 个不现实）。
 #![allow(clippy::await_holding_lock)]
 
+use std::sync::atomic::Ordering;
+
 use super::*;
 
 // -------------------------------------------------------------------------
