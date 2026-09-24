@@ -41,7 +41,12 @@ export function useInboxStatus() {
 
   /** Fetch a fresh snapshot. `sid` updates the session the queries target. */
   async function refresh(sid?: string) {
-    if (sid !== undefined) sessionId = sid
+    if (sid !== undefined) {
+      // 换目标先清旧快照（2026-09-24，先判断再展示）：旧会话的排队数/
+      // queue 放行态不得短暂带到新会话（mode 兜底 'reject' 保守态）。
+      if (sid !== sessionId) status.value = null
+      sessionId = sid
+    }
     const target = sessionId
     try {
       const s = await request('agent', 'inbox_status', { session_id: target })

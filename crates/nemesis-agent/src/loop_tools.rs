@@ -2649,7 +2649,7 @@ impl TodoWriteTool {
 #[async_trait]
 impl Tool for TodoWriteTool {
     fn description(&self) -> String {
-        "Write the todo list for the current task. FULL REPLACEMENT: each call replaces the entire list. Use for multi-step tasks: create the list up front, keep exactly one item in_progress while working, mark items completed as you go."
+        "Write the todo list for the current task. FULL REPLACEMENT: each call replaces the entire list. Use for multi-step tasks: create the list up front, keep exactly one item in_progress while working, mark items completed as you go. Before delivering your final answer, reconcile the list: mark finished items completed, set items you are not doing this turn back to pending — never end a turn with an item still in_progress."
             .to_string()
     }
 

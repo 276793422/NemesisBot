@@ -12,22 +12,25 @@
  *   json（后端读 sessions/todo_{safe}.json，与 TodoWriteTool 写路径同构）。
  * - 状态列 checkbox 样式：pending ○ / in_progress 高亮旋转 / completed ✓。
  *
- * 挂载面：ChatPanel（默认 chat 模块；workflow_chat 等模块会话路由不同，
- * todo 不适用）。折叠态记忆在 localStorage（每会话维度不持久化，全局开合偏好）。
+ * 挂载面：ChatPanel（默认 chat 模块；workflow_chat 等模块不挂载）。
+ * 会话寻址：锚定宿主传入的 `sessionId`（ChatPanel 的 effectiveSid），
+ * **绝不直引全局 currentId**——2026-09-24 串扰修复：曾直引全局选中，
+ * 工作流「对话生成」嵌入面板（D-3 钉死绑定会话、module 仍是 chat）因此
+ * 把主聊天会话的清单拉来渲染在对话顶上。
+ * 折叠态记忆在 localStorage（每会话维度不持久化，全局开合偏好）。
  */
 import { computed, onUnmounted, ref, watch } from 'vue'
 import { addMessageHandler, removeMessageHandler, wsStatus } from '../../composables/useWebSocket'
 import { useWSAPI } from '../../composables/useWSAPI'
 import { useChatStore, type TodoItem } from '../../stores/chat'
-import { useSessionStore } from '../../stores/session'
 
 const props = defineProps<{
-  /** 是否为默认 chat 模块（非默认模块不拉取不监听）。 */
-  isDefaultChat: boolean
+  /** 宿主面板的 effectiveSid（D-3：嵌入宿主钉死的会话 id；null/undefined =
+   *  尚未就绪，不拉取不监听渲染）。本面板所有取数/过滤的唯一会话域。 */
+  sessionId?: string | null
 }>()
 
 const chatStore = useChatStore()
-const sessionStore = useSessionStore()
 const { request } = useWSAPI()
 
 const collapsed = ref(localStorage.getItem('nb_todo_panel_collapsed') === '1')
@@ -37,27 +40,42 @@ const todos = computed<TodoItem[]>(() => chatStore.todos)
 const completedCount = computed(() => todos.value.filter(t => t.status === 'completed').length)
 const inProgressIdx = computed(() => todos.value.findIndex(t => t.status === 'in_progress'))
 
-// R2（2026-09-21）：全部完成后 3s 自动收起——清单的使命是跟踪进行中的
-// 多步流程，全勾后长期驻留只占屏。留 3s 让用户看到全勾瞬间；新清单
-// 到达（含未完成项）立即恢复。挂载/进会话时 fetchTodos 拉到历史全完成
-// 清单同样走 3s 收起（immediate 覆盖「挂载即全完成」形态）。
-const allDone = computed(() => todos.value.length > 0 && todos.value.every(t => t.status === 'completed'))
+// R2（2026-09-21）全完成自动收起 + 2026-09-24 闪现修复（先判断再展示）：
+// 全完成清单按更新来源分流——
+// - 「实时勾完」（live WS 帧，且此前正显示着未完成清单）：保留 3s 让用户
+//   看到全勾瞬间再收起（R2 原义）；
+// - 「历史拉取」（挂载/进会话/重连的 todo_get 回包）与「重复全完成帧」
+//   （此前无未完成项在显示）：直接收起，一次渲染都不发生——修「打开项目
+//   对话框，历史 4/4 面板闪现 3 秒」（旧逻辑先渲染再定时收起，错误）。
+// - 有未完成项的清单：一律恢复显示。
 const dismissed = ref(false)
 let dismissTimer: ReturnType<typeof setTimeout> | null = null
-watch(allDone, (v) => {
+
+function clearDismissTimer() {
   if (dismissTimer) {
     clearTimeout(dismissTimer)
     dismissTimer = null
   }
-  if (v) {
+}
+
+/** 清单状态更新的唯一入口（fetch 与 WS push 都走这里）。 */
+function applyTodos(next: TodoItem[], live: boolean) {
+  const nextAllDone = next.length > 0 && next.every(t => t.status === 'completed')
+  const prevOpen
+    = chatStore.todos.length > 0 && !chatStore.todos.every(t => t.status === 'completed')
+  chatStore.setTodos(next)
+  clearDismissTimer()
+  if (!nextAllDone) {
+    dismissed.value = false
+  } else if (live && prevOpen) {
     dismissTimer = setTimeout(() => {
       dismissed.value = true
       dismissTimer = null
     }, 3000)
   } else {
-    dismissed.value = false
+    dismissed.value = true
   }
-}, { immediate: true })
+}
 
 function toggleCollapsed() {
   collapsed.value = !collapsed.value
@@ -66,14 +84,13 @@ function toggleCollapsed() {
 
 /** 拉一次当前会话的 todo（进会话 / 重连）。 */
 function fetchTodos() {
-  if (!props.isDefaultChat) return
-  const sessionId = sessionStore.currentId
-  if (!sessionId) return
-  request('chat', 'todo_get', { session_id: sessionId })
+  const sid = props.sessionId
+  if (!sid) return
+  request('chat', 'todo_get', { session_id: sid })
     .then((data) => {
       // 响应可能晚于会话切换——回包时校验还是当前会话。
-      if (data && sessionStore.currentId === sessionId) {
-        chatStore.setTodos(data.todos ?? [])
+      if (data && props.sessionId === sid) {
+        applyTodos(data.todos ?? [], false) // 历史拉取：全完成不闪现
       }
     })
     .catch(() => {
@@ -90,11 +107,11 @@ function onWsMessage(frame: any) {
   // 2026-09-20 BUG-A：优先按 pump 注入的 session_id（会话 id 域）过滤；
   // 旧帧无该字段时回退 chat_id（`web:{连接id}`，连接级）前缀匹配兜底。
   if (typeof payload.session_id === 'string' && payload.session_id.length > 0) {
-    if (payload.session_id !== sessionStore.currentId) return
-  } else if (payload.chat_id !== `web:${sessionStore.currentId}`) {
+    if (payload.session_id !== props.sessionId) return
+  } else if (payload.chat_id !== `web:${props.sessionId}`) {
     return
   }
-  chatStore.setTodos(payload.todos ?? [])
+  applyTodos(payload.todos ?? [], true) // live WS 帧：全完成保留 3s 全勾瞬间
   flashRefreshed()
 }
 
@@ -108,8 +125,8 @@ function flashRefreshed() {
 
 addMessageHandler(onWsMessage)
 
-// 进入会话 / 断线重连拉一次。
-watch(() => sessionStore.currentId, fetchTodos, { immediate: true })
+// 进入会话 / 断线重连拉一次（嵌入宿主换绑会话时随 prop 切换重拉）。
+watch(() => props.sessionId, fetchTodos, { immediate: true })
 watch(wsStatus, (val) => {
   if (val === 'connected') fetchTodos()
 })
