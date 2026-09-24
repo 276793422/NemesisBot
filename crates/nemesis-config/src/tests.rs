@@ -3523,3 +3523,27 @@ fn test_typed_save_roundtrip_preserves_vault_references() {
     assert_eq!(reloaded.model_list[0].api_key, "vault:openai-main");
     assert_eq!(reloaded.channels.web.auth_token, "vault:e2e-web-token");
 }
+
+// 签名验证三态开关（接入计划 §1，2026-09-23）：typed round-trip 回归锁。
+// A-F4 同款缺省语义——空串 = 未配置 = 不落盘（skip_serializing_if），从未
+// 显式配置的部署经 Dashboard 安全设置页保存一次字节不变；显式值原样存活。
+#[test]
+fn test_security_config_signature_verify_roundtrip() {
+    // 缺省：反序列化为空串，序列化不物化键。
+    let cfg2: crate::SecurityConfig = serde_json::from_value(serde_json::json!({})).unwrap();
+    assert_eq!(cfg2.signature_verify, "");
+    let out2 = serde_json::to_value(&cfg2).unwrap();
+    assert!(
+        out2.get("signature_verify").is_none(),
+        "未配置的 signature_verify 经 typed round-trip 不得物化（skip_serializing_if）"
+    );
+
+    // 显式值：三态各自原样存活。
+    for v in ["off", "warn", "enforce"] {
+        let cfg: crate::SecurityConfig =
+            serde_json::from_value(serde_json::json!({ "signature_verify": v })).unwrap();
+        assert_eq!(cfg.signature_verify, v);
+        let out = serde_json::to_value(&cfg).unwrap();
+        assert_eq!(out["signature_verify"], v, "显式值 {v} round-trip 被改写");
+    }
+}

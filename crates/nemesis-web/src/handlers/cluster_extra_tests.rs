@@ -54,6 +54,7 @@ fn make_ctx(dir: &tempfile::TempDir) -> RequestContext {
         webhook_rate_limiter: Arc::new(crate::handlers::workflow::WebhookRateLimiter::new()),
         internal_cmd_tx: None,
         estop: None,
+        signature_verify: None,
         cron: None,
         board: None,
     });
@@ -104,6 +105,7 @@ fn make_ctx_with_log_dir(dir: &tempfile::TempDir) -> RequestContext {
         webhook_rate_limiter: Arc::new(crate::handlers::workflow::WebhookRateLimiter::new()),
         internal_cmd_tx: None,
         estop: None,
+        signature_verify: None,
         cron: None,
         board: None,
     });
@@ -149,6 +151,7 @@ fn make_ctx_no_workspace() -> RequestContext {
         webhook_rate_limiter: Arc::new(crate::handlers::workflow::WebhookRateLimiter::new()),
         internal_cmd_tx: None,
         estop: None,
+        signature_verify: None,
         cron: None,
         board: None,
     });
@@ -196,6 +199,7 @@ fn make_ctx_no_home(dir: &tempfile::TempDir) -> RequestContext {
         webhook_rate_limiter: Arc::new(crate::handlers::workflow::WebhookRateLimiter::new()),
         internal_cmd_tx: None,
         estop: None,
+        signature_verify: None,
         cron: None,
         board: None,
     });

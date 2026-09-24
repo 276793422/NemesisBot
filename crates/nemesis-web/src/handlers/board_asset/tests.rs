@@ -86,6 +86,7 @@ fn make_state(with_asset_cfg: bool) -> AssetFixture {
         webhook_rate_limiter: std::sync::Arc::new(()),
         internal_cmd_tx: None,
         estop: None,
+        signature_verify: None,
         cron: None,
         board: Some(service),
     });

@@ -66,6 +66,7 @@ fn make_ctx(dir: &tempfile::TempDir, data_store: Option<Arc<DataStore>>) -> Requ
         webhook_rate_limiter: Arc::new(()),
         internal_cmd_tx: None,
         estop: None,
+        signature_verify: None,
         cron: None,
         board: None,
     });

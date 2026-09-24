@@ -73,6 +73,7 @@ fn make_state(home: Option<&std::path::Path>) -> Arc<AppState> {
         webhook_rate_limiter: Arc::new(()),
         internal_cmd_tx: None,
         estop: None,
+        signature_verify: None,
         cron: None,
         board: None,
     })
@@ -298,6 +299,7 @@ fn resolve_fork_store_without_home_is_503_and_with_home_is_ok() {
         webhook_rate_limiter: Arc::new(()),
         internal_cmd_tx: None,
         estop: None,
+        signature_verify: None,
         cron: None,
         board: None,
     };

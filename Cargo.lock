@@ -1751,6 +1751,8 @@ dependencies = [
  "anyhow",
  "clap",
  "nemesis-verify",
+ "serde_json",
+ "tempfile",
 ]
 
 [[package]]
@@ -4475,6 +4477,7 @@ dependencies = [
  "nemesis-tools",
  "nemesis-types",
  "nemesis-utils",
+ "nemesis-verify",
  "nemesis-voice",
  "nemesis-web",
  "nemesis-workflow",

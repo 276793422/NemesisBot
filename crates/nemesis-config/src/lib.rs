@@ -2150,6 +2150,14 @@ pub struct SecurityConfig {
     // 见计划 §4）。
     #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
     pub limits: std::collections::BTreeMap<String, RateLimitRule>,
+    // ── 签名验证三态开关（接入计划 §1，2026-09-23）──────────────────
+    // ""（缺省）/ "off" / "warn" / "enforce"；未知值启动时 loud 拒绝。
+    // **只读于启动，改动必须重启**（与 tier 等热载键刻意不同——避免
+    // 「运行中验证策略被改」这个额外可篡改面）。A-F4 同款缺省语义：
+    // 空串 = 用户从未配置 = 落默认 warn，`skip_serializing_if` 不落盘，
+    // Dashboard 保存一次字节不变；用户显式选择后才物化。
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub signature_verify: String,
 }
 
 /// 单类别的滑动窗口限制规则（P0 D1）。
@@ -2187,6 +2195,8 @@ impl Default for SecurityConfig {
             guardian_mode: String::new(),
             // P0 D1：缺省空表 = 限制全关。
             limits: std::collections::BTreeMap::new(),
+            // 签名验证三态开关：空串 = 未配置 = 落默认 warn。
+            signature_verify: String::new(),
         }
     }
 }
