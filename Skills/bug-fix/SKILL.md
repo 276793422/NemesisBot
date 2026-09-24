@@ -1,6 +1,8 @@
 # 改 BUG 纪律 Skill
 
 > ⚠ **纪律要当闸门执行，不是当参考资料**——下面每一条是动手前必须过的关，不是"参考一下"。跳过任何一条 = 这次修复不算数，回去补。区别在于：参考资料可以跳过没人拦；闸门跳不过去（要么 harness/中间件挡住，要么自查清单过不了不许下结论）。
+
+> **闸门已落地（2026-09-24 harness，`agents.discipline.enabled=true` 时强制）**：参与后（任务描述含 `[discipline:bugfix]` marker，或聊天命令 `/discipline on`），未写 `.discipline/declaration.json` 六字段声明（root_cause / truth_source / invariant / impact / single_variable / falsification_cmd，全非空）前，四文件变更工具（write_file / edit_file / append_file / delete_file）被系统拦截——拦截文案即修复指引；`.discipline/**` 本身不受闸。收尾时系统自动执行 `falsification_cmd` 证伪（exit 0 = 假设未被证伪；预算 2 次，耗尽停车升级不静默）。`/discipline off [理由]` 退出，带理由留审计（`waive-audit.jsonl`）。看板任务交付时声明与证伪结果随变更集回流项目目录，作为评审证据注入（声明质量由评审员对照判断——闸门只保证存在性与证伪真跑过）。
 >
 > **改 bug / 修 bug / fix bug / 改既有功能行为**时强制遵循的工程纪律。
 >

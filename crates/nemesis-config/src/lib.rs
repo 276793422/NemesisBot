@@ -646,6 +646,21 @@ pub struct AgentsConfig {
     /// 运行时改键下一轮生效。
     #[serde(default = "default_true")]
     pub image_downscale: bool,
+    /// 件4（2026-09-24 HOOK 三合一收口 §6）：纪律闭环总开关。默认
+    /// **false**（D5 灰度）——关 = 闸/证伪钩子不注册、`/discipline` 提示
+    /// 未启用、任务 marker 不生效。开 = 任务描述含 `[discipline:bugfix]`
+    /// 或 `/discipline on` 的会话进入参与态（声明闸 + 证伪预算，见
+    /// nemesis-agent::discipline）。
+    #[serde(default)]
+    pub discipline: DisciplineConfig,
+}
+
+/// `agents.discipline` 配置节。
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct DisciplineConfig {
+    /// 总开关，默认 false（D5）。
+    #[serde(default)]
+    pub enabled: bool,
 }
 
 /// I1 (devtool-upgrade 阶段 3): `agents.fs_watcher` config section —
@@ -2761,6 +2776,7 @@ pub fn default_config() -> Config {
         .to_string();
     Config {
         agents: AgentsConfig {
+            discipline: DisciplineConfig::default(),
             claude_code_tool: ClaudeCodeToolConfig::default(),
             codex_tool: CodexToolConfig::default(),
             lsp_tool: LspToolConfig::default(),

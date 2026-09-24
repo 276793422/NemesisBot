@@ -26,6 +26,7 @@ pub mod cc_hooks;
 pub mod chat_log;
 pub mod checkpoint;
 pub mod context;
+pub mod discipline;
 pub mod estop;
 pub mod executor_pipe;
 pub mod formatter;

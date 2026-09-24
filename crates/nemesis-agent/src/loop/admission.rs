@@ -698,6 +698,57 @@ impl AgentLoop {
             return GateOutcome::Immediate { agent_id, response };
         }
 
+        // 件4（2026-09-24 三合一收口 §6）：`/discipline on|off [理由]` —
+        // 纪律参与切换。与 /plan /build 同为 gate 同步短路（改 loop 级共享
+        // 态，无 async）；会话键 route_message 现取（D3：交互会话 = 会话键
+        // 态）。off 带理由 → waive 入审计（`.discipline/waive-audit.jsonl`）。
+        // 子系统未启用（总开关 false）→ 诚实提示，不改状态。
+        let trimmed = msg.content.trim();
+        if trimmed == "/discipline" || trimmed.starts_with("/discipline ") {
+            let args = trimmed["/discipline".len()..].trim();
+            let (sub, rest) = match args.split_once(char::is_whitespace) {
+                Some((s, r)) => (s, r.trim()),
+                None => (args, ""),
+            };
+            let (_, session_key) = self.route_message(msg);
+            let Some(state) = self.discipline_state() else {
+                return GateOutcome::Immediate {
+                    agent_id: String::new(),
+                    response: "ℹ️ 纪律模式未启用（config: agents.discipline.enabled=false）。\
+                               打开后可用 `/discipline on` 进入、`/discipline off [理由]` 退出。"
+                        .to_string(),
+                };
+            };
+            let response = match sub {
+                "" | "on" => {
+                    let already = state.set_interactive(&session_key);
+                    if already {
+                        "ℹ️ 本会话已处于纪律模式。".to_string()
+                    } else {
+                        format!(
+                            "✓ 纪律模式已开启（本会话）：文件修改前需先写 {}/{}（六字段声明）；\
+                             收尾时自动跑证伪命令（预算 2 次）。",
+                            crate::discipline::DISCIPLINE_DIR,
+                            crate::discipline::DECLARATION_FILE
+                        )
+                    }
+                }
+                "off" => {
+                    let reason = if rest.is_empty() { None } else { Some(rest) };
+                    state.clear_interactive(&session_key, reason);
+                    match reason {
+                        Some(why) => format!("✓ 纪律模式已退出（本会话）。理由已留痕：{why}"),
+                        None => "✓ 纪律模式已退出（本会话）。".to_string(),
+                    }
+                }
+                other => format!("Usage: /discipline [on|off [理由]]（未知子命令：{other}）"),
+            };
+            return GateOutcome::Immediate {
+                agent_id: String::new(),
+                response,
+            };
+        }
+
         // Slash commands.
         if let Some(response) = self.handle_command_with_context(&msg.content, &msg.channel) {
             return GateOutcome::Immediate {

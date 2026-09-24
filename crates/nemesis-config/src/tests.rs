@@ -630,6 +630,7 @@ fn test_typed_skills_save_roundtrip_preserves_user_keys() {
 fn test_full_config_roundtrip() {
     let config = Config {
         agents: AgentsConfig {
+            discipline: DisciplineConfig::default(),
             claude_code_tool: ClaudeCodeToolConfig::default(),
             codex_tool: CodexToolConfig::default(),
             lsp_tool: LspToolConfig::default(),

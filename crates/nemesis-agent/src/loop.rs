@@ -355,6 +355,12 @@ pub struct AgentLoop {
     /// queue mode is permanently retired.
     #[allow(dead_code)]
     queue_size: usize,
+    /// 件4（2026-09-24 三合一收口）：纪律闭环共享态。None = 未启用
+    /// （`agents.discipline.enabled=false`，D5 灰度默认关）——闸/证伪钩子
+    /// 不注册、`/discipline` 提示未启用。字段本体在根（工厂构造后经
+    /// `set_discipline` 注入，admission gate 与钩子各自借出 Arc）。
+    pub(crate) discipline:
+        parking_lot::RwLock<Option<std::sync::Arc<crate::discipline::DisciplineState>>>,
     /// Maximum concurrent cluster continuation tasks.
     /// 0 = inline execution in the main loop (no spawn, serialized).
     /// >0 = spawn with semaphore-controlled concurrency.
@@ -592,6 +598,7 @@ impl AgentLoop {
             concurrent_mode: ConcurrentMode::Reject,
             reinject_tx: parking_lot::RwLock::new(None),
             queue_size: crate::inbox::DEFAULT_QUEUE_SIZE,
+            discipline: parking_lot::RwLock::new(None),
             max_continuation_permits: 0,
             continuation_semaphore: None,
             turn_permits: None,

@@ -577,6 +577,25 @@ pub fn build_agent_loop(
     // 绑定全局急停状态（每次重建都重新绑到 SharedResources 上的同一个 Arc，
     // 所以急停状态在 agent stop/start 后自动保持）。
     agent_loop.set_estop(shared.estop.clone());
+    // 件4（2026-09-24 三合一收口 §6）：纪律闭环——D5 总开关（默认 false =
+    // 全链路惰性：钩子不注册、/discipline 提示未启用）。开 = 注入共享态 +
+    // 注册闸/证伪钩子；闸在 user pre hooks **首位**（先于方言桥；metrics/
+    // 事件观察者本就不拦）。estop 同点装配（触发 = fail-open 整体停用）。
+    if cfg.agents.discipline.enabled {
+        let discipline_state = nemesis_agent::discipline::DisciplineState::new(
+            true,
+            shared.workspace_dir(),
+            cfg.agents.defaults.restrict_to_workspace,
+        );
+        discipline_state.set_estop(shared.estop.clone());
+        agent_loop.add_tool_hook(Arc::new(
+            nemesis_agent::discipline::DisciplineGateHook::new(discipline_state.clone()),
+        ));
+        agent_loop.add_lifecycle_hook(Arc::new(
+            nemesis_agent::discipline::DisciplineFalsificationHook::new(discipline_state.clone()),
+        ));
+        agent_loop.set_discipline(discipline_state);
+    }
     // 对话生成（2026-09-22）：工作流引擎引用——workflow_edit 命名会话渲染
     // 当前定义块用（workflow_create/capabilities 工具经 SharedToolConfig
     // 各自持有引擎 Arc，此处只服务 loop 的 section 渲染）。
@@ -1454,6 +1473,23 @@ pub fn build_cluster_agent_loop(
     agent_loop.set_cluster(cluster.clone() as Arc<dyn std::any::Any + Send + Sync>);
     // 绑定全局急停状态（集群 agent 同样吃急停——peer_chat 跑完整工具链，不能漏）。
     agent_loop.set_estop(shared.estop.clone());
+    // 件4（2026-09-24 三合一收口 §6）：纪律闭环——集群 worker 免费获得
+    // （同 loop 代码，任务描述带 marker 即参与；workspace 锚本节点根）。
+    if cfg.agents.discipline.enabled {
+        let discipline_state = nemesis_agent::discipline::DisciplineState::new(
+            true,
+            shared.workspace_dir(),
+            cfg.agents.defaults.restrict_to_workspace,
+        );
+        discipline_state.set_estop(shared.estop.clone());
+        agent_loop.add_tool_hook(Arc::new(
+            nemesis_agent::discipline::DisciplineGateHook::new(discipline_state.clone()),
+        ));
+        agent_loop.add_lifecycle_hook(Arc::new(
+            nemesis_agent::discipline::DisciplineFalsificationHook::new(discipline_state.clone()),
+        ));
+        agent_loop.set_discipline(discipline_state);
+    }
 
     // 用量账本（E1 二期 token 回传的生产前提）：worker 侧 cluster agent 的
     // LLM 调用必须落 request_logs，任务结束时 extract_task_usage 才能从
@@ -2096,6 +2132,23 @@ pub fn build_project_agent_loop(
     agent_loop.set_snapshot_role(&cfg.agents.defaults.snapshot_role);
     // 急停：绑同一个 Arc——estop 触发连项目 loop 一起冻结（G2 手验项）。
     agent_loop.set_estop(shared.estop.clone());
+    // 件4（2026-09-24 三合一收口 §6）：纪律闭环——项目 loop 同款（workspace
+    // 锚项目目录：声明/证伪产物随项目变更集，评审可见）。
+    if cfg.agents.discipline.enabled {
+        let discipline_state = nemesis_agent::discipline::DisciplineState::new(
+            true,
+            project_dir.clone(),
+            cfg.agents.defaults.restrict_to_workspace,
+        );
+        discipline_state.set_estop(shared.estop.clone());
+        agent_loop.add_tool_hook(Arc::new(
+            nemesis_agent::discipline::DisciplineGateHook::new(discipline_state.clone()),
+        ));
+        agent_loop.add_lifecycle_hook(Arc::new(
+            nemesis_agent::discipline::DisciplineFalsificationHook::new(discipline_state.clone()),
+        ));
+        agent_loop.set_discipline(discipline_state);
+    }
     // G6（2026-09-08）Class A 根修：安全 8 层管线与 gateway 同源是硬约束
     // （headless/ACP/项目会话都不是安全旁路）。此前项目 loop 漏注入 → 工具
     // dispatch 完全绕过管线（注入检测/ABAC/凭据/DLP/病毒扫描/审计链全跳
