@@ -15,6 +15,7 @@
 //! | `Stop` | [`LifecycleHook::on_turn_end`]（最终答案被接受后、Done 前） | exit 2 → Block stopping：stderr 作 feedback 注入为 user 消息、再答一轮（`MAX_TURN_END_CONTINUES` 封顶 fail-open）；`stop_hook_active` 标志随第二次起置 true |
 //! | `SubagentStart` | [`CcHookBridge::dispatch_subagent_start`]（spawn 闭包内、`run_detached` 前——**仅本地 spawn 的子代理**；内部 LLM 委托如评审/冲突解决不发） | exit 2 / JSON block → **拒绝 spawn**（SpawnFn 返 Err，子代理不启动） |
 //! | `SubagentStop` | [`CcHookBridge::dispatch_subagent_stop`]（spawn 闭包内、detached 轮次返回/后台任务完成处） | 观察型（任务已跑完，exit 2 无阻断语义——响亮 warn 记录） |
+//! | `Notification` | [`CcHookBridge::dispatch_notification`]（审批/提问边界 fire-and-forget）+ [`ObservingQuestionAsker`]（loop 提问端装饰）+ `ObservingApprovalManager`（security 审批 manager 装饰） | **纯观察型**（exit 2 无任何阻断语义——通知已发出，outcome 由真实装配端决定）；覆盖面诚实边界见两包装器文档 |
 //!
 //! LLM 调用级（K1b）无对应方言事件——hooks.json 没有 per-LLM-call hook，不造。
 //!
@@ -184,6 +185,11 @@ pub struct CcEvents {
     /// 无阻断语义。
     #[serde(default)]
     subagent_stop: Vec<CcHookGroup>,
+    /// 审批/提问观察通知（2026-09-24 三合一收口件3）。纯观察型：边界处
+    /// fire-and-forget，exit 2 无任何语义。层：loop 提问端（问题流）/
+    /// auditor 审批 manager（security 三入口 + 管道 RequireApproval）。
+    #[serde(default)]
+    notification: Vec<CcHookGroup>,
 }
 
 impl CcEvents {
@@ -199,8 +205,8 @@ impl CcEvents {
     /// UI 用（P4 Hooks Tab 的 summary）——字段私有，外部 crate 走这里。
     /// 顺序：PreToolUse, PostToolUse, PostToolUseFailure, SessionStart,
     /// UserPromptSubmit, Stop, SessionEnd, PreCompact, PostCompact,
-    /// SubagentStart, SubagentStop。
-    pub fn script_counts(&self) -> [(&'static str, usize); 11] {
+    /// SubagentStart, SubagentStop, Notification。
+    pub fn script_counts(&self) -> [(&'static str, usize); 12] {
         let count = |v: &Vec<CcHookGroup>| v.iter().map(|g| g.hooks.len()).sum::<usize>();
         [
             ("PreToolUse", count(&self.pre_tool_use)),
@@ -214,6 +220,7 @@ impl CcEvents {
             ("PostCompact", count(&self.post_compact)),
             ("SubagentStart", count(&self.subagent_start)),
             ("SubagentStop", count(&self.subagent_stop)),
+            ("Notification", count(&self.notification)),
         ]
     }
 }
@@ -238,6 +245,7 @@ pub fn parse_cc_hooks(json: &str) -> Result<CcEvents, String> {
         &mut events.stop,
         &mut events.subagent_start,
         &mut events.subagent_stop,
+        &mut events.notification,
     ] {
         for g in groups.iter_mut() {
             let before = g.hooks.len();
@@ -342,12 +350,18 @@ pub struct SubagentInfo {
     pub loop_kind: &'static str,
 }
 
-/// payload 里 task 字段的截断上限（字符数）。
+/// payload 里 task 字段的截断上限（字符数）。Notification 的 question/reason
+/// 摘录共用同一上限。
 pub const SUBAGENT_TASK_TRUNCATE: usize = 200;
+
+/// 按字符截断（不切 UTF-8 字节）。
+fn truncate_chars(s: &str, max: usize) -> String {
+    s.chars().take(max).collect()
+}
 
 impl SubagentInfo {
     fn truncated_task(&self) -> String {
-        self.task.chars().take(SUBAGENT_TASK_TRUNCATE).collect()
+        truncate_chars(&self.task, SUBAGENT_TASK_TRUNCATE)
     }
 
     /// Start 事件的 stdin JSON（公共字段之上）。
@@ -383,7 +397,7 @@ impl SubagentInfo {
                 "tools_profile": self.tools_profile,
                 "loop": self.loop_kind,
                 "outcome": outcome,
-                "error": error.map(|e| e.chars().take(SUBAGENT_TASK_TRUNCATE).collect::<String>()),
+                "error": error.map(|e| truncate_chars(e, SUBAGENT_TASK_TRUNCATE)),
             }),
         )
     }
@@ -776,6 +790,84 @@ impl CcHookBridge {
             }
         }
     }
+
+    /// 方言 `Notification`（2026-09-24 三合一收口件3）：审批/提问边界观察
+    /// 事件。**纯观察型**——exit 2 / JSON block 一律只 debug 记录，无任何
+    /// 阻断语义（通知发出时审批/提问还没开始，outcome 尚不存在）。空配置
+    /// 零开销直通。同步入口见 [`spawn_notification`]。
+    pub async fn dispatch_notification(
+        &self,
+        session_key: &str,
+        kind: &str,
+        layer: &str,
+        extra: Value,
+    ) {
+        let events = self.current_events();
+        if events.notification.is_empty() {
+            return;
+        }
+        let payload = notification_payload(session_key, &self.project_dir, kind, layer, extra);
+        for o in self.run_group(&events.notification, None, &payload).await {
+            if o.is_blocking_exit() || o.json_block_reason().is_some() {
+                tracing::debug!(
+                    "[cc-hooks] Notification hook exit 2 ignored (observe-only): {}",
+                    o.block_text()
+                );
+            }
+        }
+    }
+}
+
+/// `Notification` 载荷合成（纯函数，start_payload/stop_payload 同款可单测）：
+/// kind/layer 打头，extra 字段并入，再叠方言公共字段。
+fn notification_payload(
+    session_key: &str,
+    project_dir: &Path,
+    kind: &str,
+    layer: &str,
+    extra: Value,
+) -> String {
+    let mut combined = serde_json::Map::new();
+    combined.insert("kind".to_string(), Value::String(kind.to_string()));
+    combined.insert("layer".to_string(), Value::String(layer.to_string()));
+    if let Some(obj) = extra.as_object() {
+        for (k, v) in obj {
+            combined.insert(k.clone(), v.clone());
+        }
+    }
+    build_event_payload(
+        "Notification",
+        session_key,
+        project_dir,
+        Value::Object(combined),
+    )
+}
+
+/// `Notification` 的同步 fire-and-forget 入口：有 tokio runtime 句柄就
+/// spawn 异步分发（绝不阻塞审批/提问边界）；无句柄（纯同步上下文，如部分
+/// 测试）诚实降级为 debug 日志跳过。
+fn spawn_notification(
+    bridge: &Arc<CcHookBridge>,
+    session_key: String,
+    kind: &str,
+    layer: &str,
+    extra: Value,
+) {
+    match tokio::runtime::Handle::try_current() {
+        Ok(handle) => {
+            let bridge = Arc::clone(bridge);
+            let kind = kind.to_string();
+            let layer = layer.to_string();
+            handle.spawn(async move {
+                bridge
+                    .dispatch_notification(&session_key, &kind, &layer, extra)
+                    .await;
+            });
+        }
+        Err(_) => {
+            tracing::debug!("[cc-hooks] notification ({kind}/{layer}) skipped: no tokio runtime");
+        }
+    }
 }
 
 /// 从 payload 字符串抠 hook_event_name（日志用；解析失败给空串）。
@@ -999,3 +1091,152 @@ mod tests;
 // S9 (quality-hardening goal 冲刺 S9): 独立测试文件挂载（声明式，无内联测试）。
 #[cfg(test)]
 mod s9_tests;
+
+// ---------------------------------------------------------------------------
+// 观察包装器（2026-09-24 三合一收口件3）：审批/提问边界 → Notification
+// ---------------------------------------------------------------------------
+
+/// loop 提问端观察装饰（件3 层1）：J5 doom-loop 审批卡与 F7 结构化提问都
+/// 经 `AgentLoop::question_asker()` 槽（wiring.rs 的 setter 处包装）。ask
+/// 发起前发 `Notification`（kind=question, layer=loop），然后**无条件原样
+/// 委托**——装饰器改不了 outcome（红线靠类型不靠纪律）。
+///
+/// 覆盖面诚实边界：只观察 **ask 方向**；用户作答（responder 方向）是已通
+/// 知过的提问的结局，不重复发事件。无桥（集群/裸构建）时 setter 原样直挂。
+pub struct ObservingQuestionAsker {
+    inner: Arc<dyn nemesis_types::agent::QuestionAsker>,
+    bridge: Arc<CcHookBridge>,
+}
+
+impl ObservingQuestionAsker {
+    pub fn new(
+        inner: Arc<dyn nemesis_types::agent::QuestionAsker>,
+        bridge: Arc<CcHookBridge>,
+    ) -> Self {
+        Self { inner, bridge }
+    }
+}
+
+impl nemesis_types::agent::QuestionAsker for ObservingQuestionAsker {
+    fn ask(
+        &self,
+        request: nemesis_types::agent::QuestionRequest,
+    ) -> Result<nemesis_types::agent::QuestionOutcome, String> {
+        spawn_notification(
+            &self.bridge,
+            request.session_key.clone(),
+            "question",
+            "loop",
+            serde_json::json!({
+                "question_id": request.question_id,
+                "question": truncate_chars(&request.question, SUBAGENT_TASK_TRUNCATE),
+                "options": request.options,
+                "multi": request.multi,
+                "chat_id": request.chat_id,
+            }),
+        );
+        self.inner.ask(request)
+    }
+}
+
+/// security 审批 manager 观察装饰（件3 层2）：包住网关装配的真实 manager，
+/// 审批发起前发 `Notification`（kind=security_ask, layer=auditor），然后
+/// **无条件原样委托**（审批裁决完全由真实 manager 决定）。同步方法里不能
+/// 阻塞等异步分发——[`spawn_notification`] fire-and-forget，脚本慢一拍无碍
+/// （通知先行于审批窗口，窗口本身就是秒级）。
+///
+/// 覆盖面诚实边界（实施时逐点核对 auditor.rs）：auditor 的 manager 槽有
+/// **四个**调用点——guardian_failure 二审（:381）/ rate-limit 升级审批
+/// （:512）/ guardian verdict 二审（:630）/ 管道 RequireApproval 交互审批
+/// （:904）——包装槽即全覆盖。**不覆盖**：skill_manage 写审批与 memory 写
+/// 门（gateway 直接持有裸 manager Arc，不经 auditor 槽）。不宣称全覆盖。
+#[cfg(feature = "security")]
+pub struct ObservingApprovalManager {
+    inner: Arc<dyn nemesis_security::auditor::ApprovalManager>,
+    bridge: Arc<CcHookBridge>,
+}
+
+#[cfg(feature = "security")]
+impl ObservingApprovalManager {
+    pub fn new(
+        inner: Arc<dyn nemesis_security::auditor::ApprovalManager>,
+        bridge: Arc<CcHookBridge>,
+    ) -> Self {
+        Self { inner, bridge }
+    }
+}
+
+#[cfg(feature = "security")]
+impl nemesis_security::auditor::ApprovalManager for ObservingApprovalManager {
+    fn is_running(&self) -> bool {
+        self.inner.is_running()
+    }
+
+    fn request_approval_sync(
+        &self,
+        request_id: &str,
+        operation: &str,
+        target: &str,
+        risk_level: &str,
+        reason: &str,
+        timeout_secs: u64,
+    ) -> Result<nemesis_security::auditor::ApprovalVerdict, String> {
+        spawn_notification(
+            &self.bridge,
+            String::new(),
+            "security_ask",
+            "auditor",
+            serde_json::json!({
+                "request_id": request_id,
+                "operation": operation,
+                "target": truncate_chars(target, SUBAGENT_TASK_TRUNCATE),
+                "risk_level": risk_level,
+                "reason": truncate_chars(reason, SUBAGENT_TASK_TRUNCATE),
+                "timeout_secs": timeout_secs,
+            }),
+        );
+        self.inner.request_approval_sync(
+            request_id,
+            operation,
+            target,
+            risk_level,
+            reason,
+            timeout_secs,
+        )
+    }
+
+    fn request_approval_sync_ctx(
+        &self,
+        request_id: &str,
+        operation: &str,
+        target: &str,
+        risk_level: &str,
+        reason: &str,
+        timeout_secs: u64,
+        ctx: &nemesis_security::auditor::ApprovalContext,
+    ) -> Result<nemesis_security::auditor::ApprovalVerdict, String> {
+        spawn_notification(
+            &self.bridge,
+            String::new(),
+            "security_ask",
+            "auditor",
+            serde_json::json!({
+                "request_id": request_id,
+                "operation": operation,
+                "target": truncate_chars(target, SUBAGENT_TASK_TRUNCATE),
+                "risk_level": risk_level,
+                "reason": truncate_chars(reason, SUBAGENT_TASK_TRUNCATE),
+                "timeout_secs": timeout_secs,
+            }),
+        );
+        self.inner.request_approval_sync_ctx(
+            request_id,
+            operation,
+            target,
+            risk_level,
+            reason,
+            timeout_secs,
+            ctx,
+        )
+    }
+}

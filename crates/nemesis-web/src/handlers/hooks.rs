@@ -3,9 +3,9 @@
 //! copy-once 迁移——见 cc_hooks::migrate_legacy_home_hooks_config。）
 //!
 //! `<workspace>/config/hooks.json` 是 hooks.json 方言（K2，`nemesis_agent::cc_hooks`）：
-//! 七事件 PreToolUse/PostToolUse/SessionStart/UserPromptSubmit/Stop/
-//! SubagentStart/SubagentStop（2026-09-24 三合一收口件2 + 后两事件），每条
-//! hook 是子进程脚本（stdin JSON / env / 退出码拦放行）。
+//! 八事件 PreToolUse/PostToolUse/SessionStart/UserPromptSubmit/Stop/
+//! SubagentStart/SubagentStop/Notification（2026-09-24 三合一收口件2+件3，
+//! 后三事件），每条 hook 是子进程脚本（stdin JSON / env / 退出码拦放行）。
 //!
 //! - `get`：读文件；**不存在 → 返回空模板而非错误**（fresh home 常态）。
 //!   文件存在但解析失败也照样返回原文 + `valid:false` + 错误详情 —— 用户

@@ -1127,3 +1127,97 @@ async fn project_spawn_closure_refuses_on_start_exit_2() {
         .expect_err("project spawn must refuse on exit 2");
     assert!(err.contains("refused-by-hook"), "err={err}");
 }
+
+/// 件3 层2（2026-09-24）：延迟接线——真实 manager **后**挂（复刻 gateway 在
+/// loop 构建之后才 set 的时序），观察任务轮询到即包 wrapper；之后从 auditor
+/// 槽取到的 manager 已是 wrapper（委托 verdict 通过 + Notification 脚本
+/// 真实执行）。Arc::ptr_eq 判「槽位已不是裸 stub」即包装完成。
+#[cfg(feature = "security")]
+#[tokio::test]
+async fn approval_observer_wraps_manager_that_appears_later() {
+    use nemesis_security::auditor::{ApprovalManager, ApprovalVerdict};
+
+    struct StubManager;
+    impl ApprovalManager for StubManager {
+        fn is_running(&self) -> bool {
+            true
+        }
+        fn request_approval_sync(
+            &self,
+            _request_id: &str,
+            _operation: &str,
+            _target: &str,
+            _risk_level: &str,
+            _reason: &str,
+            _timeout_secs: u64,
+        ) -> Result<ApprovalVerdict, String> {
+            Ok(ApprovalVerdict::approved())
+        }
+    }
+
+    // wrapper 委托时应触发的 Notification 脚本（追加 marker、exit 0）。
+    let tmp = tempfile::tempdir().expect("tempdir").keep();
+    let marker = tmp.join("obs.marker");
+    let p = marker.to_string_lossy().to_string();
+    let cmd = if cfg!(windows) {
+        format!("echo N1>>{p}")
+    } else {
+        format!("echo N1 >> {p}")
+    };
+    let doc = serde_json::json!({
+        "hooks": { "Notification": [{ "hooks": [{ "type": "command", "command": cmd }] }] }
+    })
+    .to_string();
+    let bridge = Arc::new(
+        nemesis_agent::cc_hooks::CcHookBridge::from_json(&doc, tmp.clone()).expect("bridge"),
+    );
+
+    let plugin = Arc::new(nemesis_security::pipeline::SecurityPlugin::new(
+        nemesis_security::pipeline::SecurityPluginConfig::default(),
+    ));
+
+    // manager 尚未挂——观察任务进入轮询窗口。
+    super::spawn_approval_observer_once(Arc::clone(&bridge), Arc::clone(&plugin));
+
+    // 200ms 后才挂真实 manager（复刻 runtime 装配时序：loop 构建之后）。
+    let stub: Arc<dyn ApprovalManager> = Arc::new(StubManager);
+    tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+    plugin.auditor().set_approval_manager(Arc::clone(&stub));
+
+    // 轮询等包装完成（槽位 Arc 不再指向裸 stub）。上限 ~5s。
+    let mut wrapped = false;
+    for _ in 0..100 {
+        if let Some(mgr) = plugin.auditor().get_approval_manager()
+            && !std::sync::Arc::ptr_eq(&mgr, &stub)
+        {
+            wrapped = true;
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    }
+    assert!(wrapped, "observer never wrapped the late-arriving manager");
+
+    // 包装后的槽位：调用一次 = 委托 verdict 通过 + Notification 脚本执行。
+    let mgr = plugin
+        .auditor()
+        .get_approval_manager()
+        .expect("wrapped slot");
+    let verdict = mgr
+        .request_approval_sync("r-1", "write_file", "/x", "high", "why", 30)
+        .expect("delegated");
+    assert!(verdict.approved);
+    for _ in 0..100 {
+        if std::fs::read_to_string(&marker)
+            .map(|t| t.lines().filter(|l| !l.trim().is_empty()).count())
+            .unwrap_or(0)
+            >= 1
+        {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    }
+    assert!(
+        marker.exists(),
+        "Notification must fire through the wrapped slot"
+    );
+}

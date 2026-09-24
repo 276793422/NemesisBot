@@ -908,6 +908,7 @@ fn load_from_dir_branches() {
             ("PostCompact", 0),
             ("SubagentStart", 0),
             ("SubagentStop", 0),
+            ("Notification", 0),
         ]
     );
 
@@ -1390,4 +1391,205 @@ async fn subagent_events_noop_without_hooks() {
         .expect("no subagent hooks = passthrough");
     b.dispatch_subagent_stop(&subagent_info(), "completed", None)
         .await;
+}
+
+// ---------------------------------------------------------------------------
+// 件3：Notification（审批/提问观察事件）+ 两个观察包装器
+// ---------------------------------------------------------------------------
+
+/// 载荷合成（纯函数）：kind/layer 打头、extra 并入、方言公共字段齐全。
+#[test]
+fn notification_payload_kind_layer_and_extra() {
+    let tmp = tempdir();
+    let p = super::notification_payload(
+        "sk-1",
+        &tmp,
+        "question",
+        "loop",
+        serde_json::json!({
+            "question_id": "q-1",
+            "question": "继续吗？",
+            "options": ["是", "否"],
+            "multi": false,
+            "chat_id": "web:1",
+        }),
+    );
+    let v: serde_json::Value = serde_json::from_str(&p).unwrap();
+    assert_eq!(v["hook_event_name"], "Notification");
+    assert_eq!(v["kind"], "question");
+    assert_eq!(v["layer"], "loop");
+    assert_eq!(v["question_id"], "q-1");
+    assert_eq!(v["question"], "继续吗？");
+    assert_eq!(v["options"], serde_json::json!(["是", "否"]));
+    assert_eq!(v["multi"], false);
+    assert_eq!(v["chat_id"], "web:1");
+    assert_eq!(v["session_id"], "sk-1");
+}
+
+/// 追加 marker 并 exit 2（纯观察型验证：脚本跑了、退出码被吞、无 Err 通道）。
+fn notify_observe_cmd(path: &std::path::Path, tag: &str) -> String {
+    let p = path.to_string_lossy();
+    if cfg!(windows) {
+        format!("echo {tag}>>{p} & exit 2")
+    } else {
+        format!("echo {tag} >> {p}; exit 2")
+    }
+}
+
+/// Notification 观察型：exit 2 只 debug 记录——分发正常返回，脚本确实跑过。
+#[tokio::test]
+async fn notification_is_observe_only() {
+    let tmp = tempdir();
+    let marker = tmp.join("notify.marker");
+    let b = bridge_with(
+        &hooks_doc(
+            "Notification",
+            None,
+            &notify_observe_cmd(&marker, "N1"),
+            None,
+        ),
+        &tmp,
+    );
+    b.dispatch_notification("sk", "question", "loop", serde_json::json!({}))
+        .await;
+    assert_eq!(marker_lines(&marker), 1, "exit 2 不得吞掉脚本执行本身");
+}
+
+/// 空配置直通：无 Notification 钩子时零脚本执行。
+#[tokio::test]
+async fn notification_noop_without_hooks() {
+    let tmp = tempdir();
+    let b = bridge_with(
+        &hooks_doc("PreToolUse", Some("Edit"), allow_cmd(), None),
+        &tmp,
+    );
+    b.dispatch_notification("sk", "security_ask", "auditor", serde_json::json!({}))
+        .await;
+}
+
+/// 轮询等 fire-and-forget 的 spawn 落盘（spawn_notification 是后台任务）。
+async fn wait_marker(path: &std::path::Path, want: usize) {
+    for _ in 0..200 {
+        if marker_lines(path) >= want {
+            return;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(25)).await;
+    }
+    panic!("marker never reached {want}: {}", marker_lines(path));
+}
+
+/// 层1 装饰器：ask 前发 Notification（kind=question, layer=loop），然后
+/// 无条件委托——outcome 原样透传。
+#[tokio::test]
+async fn observing_question_asks_notifies_then_delegates() {
+    use nemesis_types::agent::{QuestionAsker, QuestionOutcome, QuestionRequest};
+
+    struct RecordingAsker(std::sync::Mutex<Vec<String>>);
+    impl nemesis_types::agent::QuestionAsker for RecordingAsker {
+        fn ask(&self, request: QuestionRequest) -> Result<QuestionOutcome, String> {
+            self.0.lock().unwrap().push(request.question_id);
+            Ok(QuestionOutcome::Answered(vec!["a".to_string()]))
+        }
+    }
+
+    let tmp = tempdir();
+    let marker = tmp.join("notify.marker");
+    let b = bridge_with(
+        &hooks_doc("Notification", None, &append_cmd(&marker, "N1"), None),
+        &tmp,
+    );
+    let asker = super::ObservingQuestionAsker::new(
+        Arc::new(RecordingAsker(std::sync::Mutex::new(Vec::new()))),
+        Arc::new(b),
+    );
+    let outcome = asker
+        .ask(QuestionRequest {
+            question_id: "q-1".to_string(),
+            question: "继续吗？".to_string(),
+            options: vec!["是".to_string(), "否".to_string()],
+            multi: false,
+            chat_id: "web:1".to_string(),
+            session_key: "sk-1".to_string(),
+            timeout_secs: 30,
+        })
+        .expect("delegated");
+    assert_eq!(outcome, QuestionOutcome::Answered(vec!["a".to_string()]));
+    wait_marker(&marker, 1).await;
+}
+
+/// 层2 装饰器（security feature）：审批前发 Notification（kind=security_ask,
+/// layer=auditor），两个请求方法都先通知后原样委托。
+#[cfg(feature = "security")]
+#[tokio::test]
+async fn observing_approval_manager_notifies_then_delegates() {
+    use nemesis_security::auditor::{ApprovalContext, ApprovalManager, ApprovalVerdict};
+
+    struct RecordingManager(std::sync::Mutex<Vec<&'static str>>);
+    impl ApprovalManager for RecordingManager {
+        fn is_running(&self) -> bool {
+            true
+        }
+        fn request_approval_sync(
+            &self,
+            _request_id: &str,
+            _operation: &str,
+            _target: &str,
+            _risk_level: &str,
+            _reason: &str,
+            _timeout_secs: u64,
+        ) -> Result<ApprovalVerdict, String> {
+            self.0.lock().unwrap().push("sync");
+            Ok(ApprovalVerdict::approved())
+        }
+        fn request_approval_sync_ctx(
+            &self,
+            _request_id: &str,
+            _operation: &str,
+            _target: &str,
+            _risk_level: &str,
+            _reason: &str,
+            _timeout_secs: u64,
+            _ctx: &ApprovalContext,
+        ) -> Result<ApprovalVerdict, String> {
+            self.0.lock().unwrap().push("ctx");
+            Ok(ApprovalVerdict::approved())
+        }
+    }
+
+    let tmp = tempdir();
+    let marker = tmp.join("notify.marker");
+    let b = bridge_with(
+        &hooks_doc("Notification", None, &append_cmd(&marker, "N1"), None),
+        &tmp,
+    );
+    let rec = Arc::new(RecordingManager(std::sync::Mutex::new(Vec::new())));
+    let mgr = super::ObservingApprovalManager::new(rec.clone(), Arc::new(b));
+    let verdict = mgr
+        .request_approval_sync("r-1", "write_file", "/etc/passwd", "high", "edit", 30)
+        .expect("delegated");
+    assert!(verdict.approved);
+    wait_marker(&marker, 1).await;
+
+    let verdict = mgr
+        .request_approval_sync_ctx(
+            "r-2",
+            "write_file",
+            "/etc/passwd",
+            "high",
+            "edit",
+            30,
+            &ApprovalContext {
+                channel: "web".to_string(),
+                chat_id: "1".to_string(),
+                sender_id: "u".to_string(),
+            },
+        )
+        .expect("delegated");
+    assert!(verdict.approved);
+    wait_marker(&marker, 2).await;
+    assert_eq!(
+        rec.0.lock().unwrap().as_slice(),
+        ["sync", "ctx"],
+        "两方法都真实委托到 inner"
+    );
 }

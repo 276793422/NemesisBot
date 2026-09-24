@@ -25,6 +25,7 @@ const EVENTS = [
   { id: 'PostCompact', label: 'PostCompact', hint: '上下文压缩后（观察型）' },
   { id: 'SubagentStart', label: 'SubagentStart', hint: '子代理启动前（本地 spawn）——exit 2 可拒绝 spawn' },
   { id: 'SubagentStop', label: 'SubagentStop', hint: '子代理任务完成后（观察型；任务已跑完，无阻断语义）' },
+  { id: 'Notification', label: 'Notification', hint: '审批/提问边界通知（纯观察型：提问发起、安全审批发起）' },
 ] as const
 
 interface HookEntry {

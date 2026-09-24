@@ -658,6 +658,15 @@ pub fn build_agent_loop(
         bridge.register(&agent_loop);
     }
 
+    // 件3 层2（2026-09-24 三合一收口）：hooks 桥 + security 插件同在时，
+    // 一次性延迟接线审批观察 manager。网关在 loop 构建**之后**（runtime
+    // 装配期）才 set_approval_manager——构建时同步 get→wrap→set 会被覆写；
+    // 见 spawn_approval_observer_once。
+    #[cfg(feature = "security")]
+    if let (Some(bridge), Some(plugin)) = (cc_bridge.as_ref(), shared.security_plugin.as_ref()) {
+        spawn_approval_observer_once(std::sync::Arc::clone(bridge), std::sync::Arc::clone(plugin));
+    }
+
     // 5. Session store (disk-persisted — new instance, same directory).
     {
         let sess_dir = common::sessions_dir(&shared.home);
@@ -2238,6 +2247,52 @@ pub fn build_project_agent_loop(
     // ASM-08：装配自检（与主/集群 loop 同一闸，D5=甲）。
     assert_gateway_critical_wiring(&agent_loop, shared, "项目 loop")?;
     Ok(agent_loop)
+}
+
+/// 件3 层2（2026-09-24 三合一收口）：审批 manager 观察接线——一次性延迟
+/// 任务。网关在运行期装配（`runtime` 步骤，loop 构建之后）才把真实审批
+/// manager 挂上 auditor 槽，构建时同步 get→wrap→set 必被覆写；改为后台
+/// 轮询：manager 出现即包 [`nemesis_agent::cc_hooks::ObservingApprovalManager`]
+/// 回写槽位。进程级旗标保证只包一次（loop 重建/agent 重启不重复包；
+/// wrapper 的 inner 是包装时的 manager，此后无人再换槽）。超时 = warn
+/// fail-open（审批照常工作，只是观察不到）。无 runtime（部分测试的同步
+/// 构建路径）诚实跳过。
+#[cfg(feature = "security")]
+fn spawn_approval_observer_once(
+    bridge: std::sync::Arc<nemesis_agent::cc_hooks::CcHookBridge>,
+    plugin: std::sync::Arc<nemesis_security::pipeline::SecurityPlugin>,
+) {
+    static WIRED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+    if WIRED.load(std::sync::atomic::Ordering::Acquire) {
+        return; // 已包过（loop 重建路径）——槽位仍是 wrapper。
+    }
+    let Ok(handle) = tokio::runtime::Handle::try_current() else {
+        tracing::debug!("[AgentFactory] approval observer skipped: no tokio runtime");
+        return;
+    };
+    handle.spawn(async move {
+        // 50ms × 1200 = 60s 封顶。网关装配在启动即挂 manager，60s 绰绰有余。
+        for _ in 0..1200 {
+            if let Some(mgr) = plugin.auditor().get_approval_manager() {
+                if WIRED.swap(true, std::sync::atomic::Ordering::AcqRel) {
+                    return; // 并发重建已包过。
+                }
+                let wrapped =
+                    nemesis_agent::cc_hooks::ObservingApprovalManager::new(mgr, bridge);
+                plugin
+                    .auditor()
+                    .set_approval_manager(std::sync::Arc::new(wrapped));
+                info!(
+                    "[AgentFactory] approval observer wired (Notification: security_ask/auditor)"
+                );
+                return;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        }
+        warn!(
+            "[AgentFactory] approval observer gave up after 60s: no approval manager appeared (approval still works, just unobserved)"
+        );
+    });
 }
 
 /// L6++：项目 loop 的子代理 spawn 闭包——**仅同步路径**（R1：后台续行经

@@ -107,9 +107,9 @@ describe('HookView 总览', () => {
 })
 
 describe('HookView 结构化设置页（方案 B 扁平条目）', () => {
-  it('设置 TAB 渲染 7 个事件区块（2026-09-24 +SubagentStart/SubagentStop）；既有条目回显 matcher/命令/超时', async () => {
+  it('设置 TAB 渲染 8 个事件区块（2026-09-24 +SubagentStart/SubagentStop/Notification）；既有条目回显 matcher/命令/超时', async () => {
     const w = await mountView('设置')
-    for (const label of ['PreToolUse', 'PostToolUse', 'SessionStart', 'UserPromptSubmit', 'Stop', 'SubagentStart', 'SubagentStop']) {
+    for (const label of ['PreToolUse', 'PostToolUse', 'SessionStart', 'UserPromptSubmit', 'Stop', 'SubagentStart', 'SubagentStop', 'Notification']) {
       expect(w.text()).toContain(label)
     }
     // PreToolUse 的既有条目（matcher=Edit|Write，命令 lint）

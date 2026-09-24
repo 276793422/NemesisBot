@@ -52,7 +52,17 @@ impl AgentLoop {
     /// J5：装配 doom-loop 审批提问端（gateway 与 F7 responder 注入同一
     /// WebQuestionBroker Arc——同一 broker 的两个 trait 各挂一槽）。
     /// 未装配 = escalation 审批化不可用（诚实回退现行为）。
+    ///
+    /// 件3 层1（2026-09-24）：loop 挂了 hooks 桥时在 asker 外套
+    /// [`crate::cc_hooks::ObservingQuestionAsker`]——提问发起前发
+    /// `Notification`（kind=question, layer=loop），委托原样透传。网关在
+    /// loop 构建后才调 setter（runtime 装配期），此处包装即最终生效；无桥
+    /// （集群/裸构建）原样直挂零开销。
     pub fn set_question_asker(&self, asker: Arc<dyn nemesis_types::agent::QuestionAsker>) {
+        let asker: Arc<dyn nemesis_types::agent::QuestionAsker> = match self.cc_hooks_bridge() {
+            Some(bridge) => Arc::new(crate::cc_hooks::ObservingQuestionAsker::new(asker, bridge)),
+            None => asker,
+        };
         *self.security.question_asker.write() = Some(asker);
     }
 
