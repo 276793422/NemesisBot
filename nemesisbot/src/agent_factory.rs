@@ -657,6 +657,14 @@ pub fn build_agent_loop(
         agent_loop.set_cc_hooks_bridge(std::sync::Arc::clone(&bridge));
         bridge.register(&agent_loop);
     }
+    // Todo 收尾提醒（2026-09-24）：终答案接受后清单还有未完成项 → 注入
+    // 一次性提醒再答一轮（K2 lifecycle hook；stop_hook_active 自限每 turn
+    // 一次 + MAX_TURN_END_CONTINUES 封顶 fail-open）。注册在用户 hooks 桥
+    // 之后——first Continue wins，用户脚本优先于内建提醒。workspace 与
+    // todowrite 工具同根（shared.workspace_dir()，见 TodoToolConfig 装配）。
+    agent_loop.add_lifecycle_hook(std::sync::Arc::new(nemesis_agent::TodoCloseoutHook::new(
+        shared.workspace_dir(),
+    )));
 
     // 件3 层2（2026-09-24 三合一收口）：hooks 桥 + security 插件同在时，
     // 一次性延迟接线审批观察 manager。网关在 loop 构建**之后**（runtime
@@ -2151,6 +2159,12 @@ pub fn build_project_agent_loop(
         project_cc_bridge = Some(std::sync::Arc::clone(&bridge));
         bridge.register(&agent_loop);
     }
+    // Todo 收尾提醒（2026-09-24）：同主 loop——项目会话正是 todowrite 忘
+    // 收尾的重灾区。workspace 与项目 loop 的 TodoToolConfig 同根
+    // （project_dir）。注册在用户 hooks 桥之后（用户脚本优先）。
+    agent_loop.add_lifecycle_hook(std::sync::Arc::new(nemesis_agent::TodoCloseoutHook::new(
+        project_dir.clone(),
+    )));
 
     // 4. Session store：共享主 loop 的同一 Arc（存储全局集中、会话隔离靠
     //    session_key；清扫任务主 loop 侧唯一持有，这里不重复起）。

@@ -130,6 +130,49 @@ describe('useInboxStatus 快照与派生态', () => {
   })
 })
 
+describe('useInboxStatus 换目标清快照（2026-09-24 先判断再展示）', () => {
+  it('切目标瞬间旧快照即清空——旧会话排队数/queue 放行态不带到新会话', async () => {
+    requestMock.mockResolvedValue(steerStatus({ next_turn: 3 }))
+    const { api, wrapper } = mountHost()
+    await api.refresh('s1')
+    expect(api.queuedTotal.value).toBe(3)
+    expect(api.queueEnabled.value).toBe(true)
+
+    // s2 的快照还在路上：切换瞬间 status 必须已清空（mode 兜底 reject）。
+    let resolveNew!: (v: InboxStatusData) => void
+    requestMock.mockImplementation(
+      () => new Promise<InboxStatusData>(resolve => { resolveNew = resolve }),
+    )
+    const pending = api.refresh('s2')
+    expect(api.status.value).toBeNull()
+    expect(api.queuedTotal.value).toBe(0)
+    expect(api.queueEnabled.value).toBe(false)
+
+    resolveNew(steerStatus({ mode: 'queue', next_turn: 1 }))
+    await pending
+    expect(api.status.value?.next_turn).toBe(1)
+    expect(api.queueEnabled.value).toBe(true)
+    wrapper.unmount()
+  })
+
+  it('同目标重复刷新（轮询形态）不清快照——途中旧值保持显示', async () => {
+    requestMock.mockResolvedValue(steerStatus({ next_turn: 2 }))
+    const { api, wrapper } = mountHost()
+    await api.refresh('s1')
+
+    let resolveAgain!: (v: InboxStatusData) => void
+    requestMock.mockImplementation(
+      () => new Promise<InboxStatusData>(resolve => { resolveAgain = resolve }),
+    )
+    const again = api.refresh('s1')
+    expect(api.status.value?.next_turn).toBe(2)
+    resolveAgain(steerStatus({ next_turn: 5 }))
+    await again
+    expect(api.status.value?.next_turn).toBe(5)
+    wrapper.unmount()
+  })
+})
+
 describe('useInboxStatus 轮询', () => {
   it('startPolling 立即拉一次 + 每 4s 一次；stopPolling 后停；重复 start 不叠加', async () => {
     vi.useFakeTimers()

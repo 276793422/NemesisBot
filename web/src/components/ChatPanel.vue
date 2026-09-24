@@ -604,6 +604,9 @@ async function replayToolsFromRing() {
   const sid = effectiveSid.value
   if (!sid) return
   const res = await request('chat', 'sync', { session_id: sid, after_seq: 0 })
+  // 会话围栏（2026-09-24）：回放在飞期间切走 → 旧会话的工具卡/游标推进
+  // 不得落到新会话视图（同 syncMissedChat 纪律）。
+  if (effectiveSid.value !== sid) return
   if (!res?.gap && Array.isArray(res?.events) && res.events.length) {
     const events = res.events
     const tail = events[events.length - 1]
@@ -661,6 +664,10 @@ async function syncMissedChat() {
   if (!sid || chatStore.historyLoading) return
   try {
     const res = await request('chat', 'sync', { session_id: sid, after_seq: lastChatSeq })
+    // 会话围栏（2026-09-24，与 refreshUsage/syncAgentMode 同纪律）：在飞期间
+    // 切走 → 本响应属于旧会话，整包丢弃。切换链已自行 reset+重拉；不拦的
+    // 话旧会话事件会追加进新会话视图，还会把旧会话 seq 推进补拉游标。
+    if (effectiveSid.value !== sid) return
     if (res?.gap) {
       // 旧在飞登记随 reset 作废——否则其迟到 timeout 误判新请求。
       inFlightHistory.clear()
@@ -2105,8 +2112,10 @@ onUnmounted(() => {
 
 <template>
   <div class="page-chat">
-    <!-- H2: todo 清单面板（默认 chat 模块；todowrite 实时刷新 + 进会话拉取） -->
-    <TodoPanel v-if="isDefaultChat" :is-default-chat="isDefaultChat" />
+    <!-- H2: todo 清单面板（todowrite 实时刷新 + 进会话拉取）。会话锚定本面板
+         effectiveSid（2026-09-24 串扰修复：嵌入面板钉死会话，不得显示全局
+         选中会话的清单——曾因此渲染进工作流「对话生成」）。 -->
+    <TodoPanel v-if="isDefaultChat" :session-id="effectiveSid" />
 
     <!-- Messages -->
     <div ref="chatMessages" class="chat-messages" @click="onChatAreaClick">

@@ -49,7 +49,11 @@ function kindBadge(kind: string): string {
   return '✎'
 }
 
+let diffReqSeq = 0
+
 async function showDiff(path: string) {
+  const sid = props.session
+  const reqId = ++diffReqSeq
   selectedPath.value = path
   diffLoading.value = true
   diffError.value = ''
@@ -57,15 +61,20 @@ async function showDiff(path: string) {
   diffNote.value = ''
   try {
     const res = await request('sessions', 'file_diff', {
-      session_id: props.session,
+      session_id: sid,
       path,
     })
+    // 会话围栏（2026-09-24）：在飞期间切会话/换选中/重发 → 迟到回包不得
+    // 写回（否则渲染出无选中行的孤儿 diff）。
+    if (reqId !== diffReqSeq) return
     diffText.value = res?.diff ?? ''
     diffNote.value = res?.note ?? ''
   } catch (e: any) {
+    if (reqId !== diffReqSeq) return
     diffError.value = String(e?.message ?? e)
   } finally {
-    diffLoading.value = false
+    // 只有最新一次请求有权收 loading 态（迟到的旧请求不得熄掉新 spinner）。
+    if (reqId === diffReqSeq) diffLoading.value = false
   }
 }
 

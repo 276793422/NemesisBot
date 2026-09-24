@@ -57,6 +57,7 @@ pub mod session;
 pub mod session_fork;
 pub mod skills_digest;
 pub mod spill;
+pub mod todo_closeout;
 pub mod tool_adapter;
 pub mod tool_doc_folding;
 pub mod tool_event_hook;
@@ -105,4 +106,5 @@ pub use session::{
 pub use session::{
     estimate_tokens, estimate_tokens_for_turns, force_compress_turns, is_internal_channel,
 };
+pub use todo_closeout::TodoCloseoutHook;
 pub use types::*;
