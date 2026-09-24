@@ -57,6 +57,10 @@ pub mod scanner;
 #[cfg(feature = "security")]
 pub mod security;
 pub mod sessions;
+// 签名验证启动自验状态类型（接入计划 §4，2026-09-23）。刻意不门控——
+// 纯数据透传，AppState 字段在默认 feature 下也必须编译；WSAPI 命令本体
+// 在上方的 security handler。
+pub mod signature_status;
 pub mod skills;
 pub mod system;
 pub mod tasks;

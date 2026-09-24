@@ -267,6 +267,9 @@ pub struct WebServer {
     internal_cmd_tx: Option<tokio::sync::mpsc::Sender<crate::internal::InternalCommand>>,
     /// Global e-stop state for /api/internal estop commands.
     estop: Option<Arc<nemesis_agent::estop::EstopState>>,
+    /// 签名验证启动自验状态（接入计划 §4；gateway 从 verify_policy 快照映射
+    /// 注入，flows into AppState for security.signature_verify_status）。
+    signature_verify: Option<Arc<crate::handlers::signature_status::SignatureVerifyStatus>>,
     /// Runtime cron service (set by gateway; flows into AppState for tasks.cron.*).
     cron: Option<Arc<std::sync::Mutex<nemesis_cron::CronService>>>,
     /// Managed-agent board service (set by gateway when the `board` feature is on;
@@ -347,6 +350,7 @@ impl WebServer {
             webhook_rate_limiter: std::sync::Arc::new(()),
             internal_cmd_tx: None,
             estop: None,
+            signature_verify: None,
             cron: None,
             board: None,
             conv_router: None,
@@ -480,6 +484,15 @@ impl WebServer {
     /// Set the global e-stop state for /api/internal estop commands.
     pub fn set_estop(&mut self, estop: Arc<nemesis_agent::estop::EstopState>) {
         self.estop = Some(estop);
+    }
+
+    /// Set the signature-verify startup self-check status（接入计划 §4；
+    /// 只读快照，进程内不变——无 set 运行时入口）。
+    pub fn set_signature_verify(
+        &mut self,
+        status: Arc<crate::handlers::signature_status::SignatureVerifyStatus>,
+    ) {
+        self.signature_verify = Some(status);
     }
 
     /// Set the runtime cron service for `tasks.cron.*` handlers.
@@ -617,6 +630,7 @@ impl WebServer {
             webhook_rate_limiter: self.webhook_rate_limiter.clone(),
             internal_cmd_tx: self.internal_cmd_tx.clone(),
             estop: self.estop.clone(),
+            signature_verify: self.signature_verify.clone(),
             cron: self.cron.clone(),
             board: self.board.clone(),
         };

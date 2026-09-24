@@ -35,7 +35,7 @@ KEYS="$SPIKE/keys.json"
 rm -f "$KEYS" "$SPIKE"/sample*.exe
 "$EST" keygen --out "$KEYS" > "$SPIKE/keygen.log" 2>&1 || fail "keygen"
 # 显式 --out：Sign 缺省写 {target}.signed 新文件，不原地覆盖
-"$EST" sign --keys "$KEYS" ./target/debug/verify-loader.exe --out "$SPIKE/sample.exe" >> "$SPIKE/keygen.log" 2>&1 || fail "sign sample"
+"$EST" sign --keys "$KEYS" --target ./target/debug/verify-loader.exe --out "$SPIKE/sample.exe" >> "$SPIKE/keygen.log" 2>&1 || fail "sign sample"
 # 根证书（公钥部分）提取——S6-2 装根用
 node -e "const fs=require('fs');const j=JSON.parse(fs.readFileSync(process.argv[1],'utf8'));fs.writeFileSync(process.argv[2],Buffer.from(j.root_cert,'hex'))" \
     "$(cygpath -w "$KEYS")" "$(cygpath -w "$SPIKE/root.der")" || fail "root.der 提取"
@@ -44,7 +44,7 @@ echo "keygen + sign + root.der 提取 OK（详见 $SPIKE/keygen.log）"
 
 echo ""
 echo "### [M5] 自方 verify（未篡改样本，期望 Valid）###"
-M5_OUT=$("$EST" verify --keys "$KEYS" "$SPIKE/sample.exe" 2>&1)
+M5_OUT=$("$EST" verify --keys "$KEYS" --target "$SPIKE/sample.exe" 2>&1)
 M5_RC=$?
 echo "$M5_OUT" | head -1
 [ $M5_RC -eq 0 ] || fail "M5: exe-sign-tool verify 退出码 $M5_RC（期望 0）"
@@ -85,7 +85,7 @@ echo "$M4_MS_NORM" | grep -qi "$HASHMISMATCH_TEXT\|0x80096010" || fail "M4: sign
 M4_PS_OUT=$(powershell -NoProfile -Command "\$s = Get-AuthenticodeSignature -FilePath '$(cygpath -w "$SPIKE/sample_tampered.exe")'; Write-Host ('STATUS=' + \$s.Status)")
 echo "$M4_PS_OUT"
 echo "$M4_PS_OUT" | grep -q "STATUS=HashMismatch" || fail "M4: PS Status 非 HashMismatch"
-M4_SELF_OUT=$("$EST" verify --keys "$KEYS" "$SPIKE/sample_tampered.exe" 2>&1)
+M4_SELF_OUT=$("$EST" verify --keys "$KEYS" --target "$SPIKE/sample_tampered.exe" 2>&1)
 M4_SELF_RC=$?
 echo "$M4_SELF_OUT" | head -1
 [ $M4_SELF_RC -ne 0 ] || fail "M4: 自方 verify 竟然退出码 0"

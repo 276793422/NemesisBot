@@ -146,6 +146,12 @@ pub(crate) async fn init_web(ctx: &GatewayCtx, cluster: &ClusterWiring) -> Resul
     };
     let mut web_server = nemesis_web::server::WebServer::new(web_config);
 
+    // 签名验证启动自验状态注入（接入计划 §4）：verify_policy 快照 → 只读
+    // AppState 字段 → security.signature_verify_status / 前端徽标。
+    if let Some(status) = signature_status_from_start_check() {
+        web_server.set_signature_verify(status);
+    }
+
     // P8（2026-09-21）：chat_event_log 装配 EventHub——record/record_tool 落
     // 环时同步广播 SSE `chat.activity {session_id, seq}`，让**其他**浏览器
     // 标签/端感知到本会话有新帧（本端走 WS 实时 push，天然领先；落后端
@@ -521,4 +527,34 @@ pub(crate) async fn init_web(ctx: &GatewayCtx, cluster: &ClusterWiring) -> Resul
         web_port,
         bridge_client_launch,
     })
+}
+
+/// 签名验证启动自验快照 → nemesis-web 只读状态结构（接入计划 §4）。
+/// None = 本进程没跑过自验（理论上不可能——main 阶段必调；测试装配兜底）。
+fn signature_status_from_start_check()
+-> Option<std::sync::Arc<nemesis_web::handlers::signature_status::SignatureVerifyStatus>> {
+    let sc = crate::verify_policy::start_check()?;
+    let (last_result, key_fp, detail) = match &sc.outcome {
+        Some(o) => (Some(o.state.clone()), o.key_fp.clone(), o.detail.clone()),
+        None if sc.degraded => (
+            None,
+            None,
+            "无信任锚——签名验证降级 off（锁定版部署需先注入编译期锚）".to_string(),
+        ),
+        None => (
+            None,
+            None,
+            "security.signature_verify=off——启动自验已跳过".to_string(),
+        ),
+    };
+    Some(std::sync::Arc::new(
+        nemesis_web::handlers::signature_status::SignatureVerifyStatus {
+            mode: sc.mode.as_str().to_string(),
+            locked: sc.locked,
+            anchor_fp: sc.anchor_fp.map(|s| s.to_string()),
+            last_result,
+            key_fp,
+            detail,
+        },
+    ))
 }

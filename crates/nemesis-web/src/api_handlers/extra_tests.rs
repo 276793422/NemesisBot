@@ -58,6 +58,7 @@ fn make_state(
         webhook_rate_limiter: Arc::new(crate::handlers::workflow::WebhookRateLimiter::new()),
         internal_cmd_tx: None,
         estop: None,
+        signature_verify: None,
         cron: None,
         board: None,
     })
@@ -100,6 +101,7 @@ fn make_state_with_tx(
         webhook_rate_limiter: Arc::new(crate::handlers::workflow::WebhookRateLimiter::new()),
         internal_cmd_tx: tx,
         estop: None,
+        signature_verify: None,
         cron: None,
         board: None,
     })
@@ -412,6 +414,7 @@ async fn test_handle_api_status_includes_model_base() {
         webhook_rate_limiter: Arc::new(crate::handlers::workflow::WebhookRateLimiter::new()),
         internal_cmd_tx: None,
         estop: None,
+        signature_verify: None,
         cron: None,
         board: None,
     });
@@ -813,6 +816,7 @@ async fn test_handle_api_sessions_with_count() {
         webhook_rate_limiter: Arc::new(crate::handlers::workflow::WebhookRateLimiter::new()),
         internal_cmd_tx: None,
         estop: None,
+        signature_verify: None,
         cron: None,
         board: None,
     });
@@ -1212,6 +1216,7 @@ fn test_app_state_clone() {
         webhook_rate_limiter: Arc::new(crate::handlers::workflow::WebhookRateLimiter::new()),
         internal_cmd_tx: None,
         estop: None,
+        signature_verify: None,
         cron: None,
         board: None,
     };

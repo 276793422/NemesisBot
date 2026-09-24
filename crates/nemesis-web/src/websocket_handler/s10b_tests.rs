@@ -66,6 +66,7 @@ fn make_state(inbound_tx: Option<mpsc::UnboundedSender<IncomingMessage>>) -> Arc
         webhook_rate_limiter: Arc::new(crate::handlers::workflow::WebhookRateLimiter::new()),
         internal_cmd_tx: None,
         estop: None,
+        signature_verify: None,
         cron: None,
         board: None,
     })

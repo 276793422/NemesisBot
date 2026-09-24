@@ -112,6 +112,34 @@ fn keys_json_wrong_version_rejected() {
     assert!(KeyHierarchy::from_json(&j).is_err());
 }
 
+/// 分包形态（CI 签名链路）：缺私钥字段的 json 靠 serde default 补空串可解析，
+/// 但全量装载诚实拒绝（不生成占位标量）——分包消费走 bundle 模块。
+#[test]
+fn serde_defaults_allow_missing_fields_but_full_load_rejects() {
+    let kh = generate_at(NOW).unwrap();
+    // 只带 root_cert + issuing 材料（IssuingOnly 形态，ci-sign-artifacts.sh 同款）
+    let j = kh.to_json();
+    let raw = serde_json::json!({
+        "version": j.version,
+        "root_cert": j.root_cert,
+        "issuing_sk": j.issuing_sk,
+        "issuing_cert": j.issuing_cert,
+    });
+    let parsed: KeyHierarchyJson = serde_json::from_value(raw).unwrap();
+    assert!(parsed.root_sk.is_empty());
+    assert!(parsed.leaf_sk.is_empty() && parsed.leaf_cert.is_empty());
+    assert_eq!(
+        parsed.bundle_kind().unwrap(),
+        crate::bundle::BundleKind::IssuingOnly
+    );
+    // 全量装载拒绝分包（每个缺字段都有命名错误）
+    assert!(KeyHierarchy::from_json(&parsed).is_err());
+    // 字段被清空的全量 json 同样拒绝
+    let mut emptied = kh.to_json();
+    emptied.root_sk = String::new();
+    assert!(KeyHierarchy::from_json(&emptied).is_err());
+}
+
 #[test]
 fn generate_smoke_real_clock() {
     let kh = generate().unwrap();

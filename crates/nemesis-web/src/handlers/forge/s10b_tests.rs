@@ -60,6 +60,7 @@ fn build_state(ws: &str, forge: Option<Arc<nemesis_forge::forge::Forge>>) -> App
         webhook_rate_limiter: Arc::new(()),
         internal_cmd_tx: None,
         estop: None,
+        signature_verify: None,
         cron: None,
         board: None,
     }

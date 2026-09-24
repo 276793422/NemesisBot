@@ -1,4 +1,4 @@
-//! Security handler — config.get/config.save/audit/stats.
+//! Security handler — config.get/config.save/audit/stats/signature_verify_status.
 
 use crate::handlers::require_workspace;
 use crate::ws_router::{ModuleHandler, RequestContext};
@@ -34,6 +34,7 @@ impl ModuleHandler for SecurityHandler {
             "stats",
             "approvals.list",
             "approvals.clear",
+            "signature_verify_status",
         ]
     }
 
@@ -69,6 +70,9 @@ impl ModuleHandler for SecurityHandler {
             // 感知 clear）。
             "approvals.list" => self.approvals_list(workspace),
             "approvals.clear" => self.approvals_clear(workspace),
+            // 签名验证状态（只读；无 set 命令——开关只走 config 且只读于
+            // 启动，不开运行时写入口，少一个可篡改面）。
+            "signature_verify_status" => Ok(Some(self.signature_verify_status(ctx))),
             _ => Err(format!("unknown command: security.{}", cmd)),
         }
     }
@@ -130,6 +134,23 @@ pub(crate) fn extract_risk_level(val: &serde_json::Value) -> &str {
 }
 
 impl SecurityHandler {
+    /// 签名验证状态（只读透传；未注入 = 开发/降级形态，返回
+    /// `injected: false` 让前端展示「无数据」而非误判成 off）。
+    fn signature_verify_status(&self, ctx: &RequestContext) -> serde_json::Value {
+        match ctx.state.signature_verify.as_ref() {
+            Some(s) => serde_json::json!({
+                "injected": true,
+                "mode": s.mode,
+                "locked": s.locked,
+                "anchor_fp": s.anchor_fp,
+                "last_result": s.last_result,
+                "key_fp": s.key_fp,
+                "detail": s.detail,
+            }),
+            None => serde_json::json!({ "injected": false }),
+        }
+    }
+
     fn config_get(&self, workspace: &str) -> Result<Option<serde_json::Value>, String> {
         let path = security_config_path(workspace);
         let config = nemesis_config::load_security_config(&path)

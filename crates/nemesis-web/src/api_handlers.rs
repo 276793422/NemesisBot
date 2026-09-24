@@ -134,6 +134,10 @@ pub struct AppState {
     /// `board` feature is enabled and the store opened successfully. Carries
     /// the node role (goal 硬约束①：复用 NodeRole) — worker 节点 board 只读。
     pub board: Option<nemesis_board::BoardService>,
+    /// 签名验证启动自验状态（接入计划 §4，2026-09-23）。gateway 启动时从
+    /// verify_policy 快照映射注入；None = 未注入（`--relay` 纯中继 / 测试
+    /// 装配），`security.signature_verify_status` 回 `injected: false`。
+    pub signature_verify: Option<Arc<crate::handlers::signature_status::SignatureVerifyStatus>>,
 }
 
 impl AppState {

@@ -17,6 +17,7 @@ pub mod elf;
 pub mod hex_util;
 pub mod pe;
 // 批2：v3 核心
+pub mod bundle; // 密钥分包（BundleKind 四形态 + SigningMaterial/IssuingMaterial/RootMaterial 装载即校验 + 铸叶/拆分/锚提取）
 pub mod c_abi; // C ABI 导出（cdylib 产物：nv_* 接口）
 pub mod cert; // 证书 + 链验证（envelope.cert_chain 的解析与链到根验证）
 pub mod crypto; // v4：ECDSA P-256 + SHA-256（RFC 6979 确定式签名）
