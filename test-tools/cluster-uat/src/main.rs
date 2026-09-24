@@ -720,7 +720,14 @@ async fn spawn_plan_ready_listener(
     let (ready_tx, ready_rx) = tokio::sync::oneshot::channel::<()>();
     tokio::spawn(async move {
         let client = reqwest::Client::new(); // 无总超时：SSE 长连接
-        let url = format!("http://127.0.0.1:{}/api/events/stream", port);
+        // F1 统一鉴权（2026-09-22）罩到 REST 全部路由后，SSE 裸连会拿 401
+        // JSON（首字节还恰好触发 ready 信号 → 流随即结束 → 「监听器提前
+        // 退出」四连败，CI extended-tests 2026-09-23 实录）。走中间件文档化
+        // 的 EventSource 兜底：?token= 查询参数（与 ws_connect 同一 token）。
+        let url = format!(
+            "http://127.0.0.1:{}/api/events/stream?token={}",
+            port, AUTH_TOKEN
+        );
         let Ok(resp) = client.get(&url).send().await else {
             return; // 连接失败：接收端 timeout 会如实报失败
         };
