@@ -19,7 +19,9 @@
 //! 未过 → on_turn_end 先跑 `falsification_cmd`（走既有 ExecTool 管线：
 //! 工作区边界/超时/管道收尸全适用）→ 结果落 `.discipline/falsification-{n}.json`
 //! （run/命令/成败/输出节选）并作为 feedback 注入（`TurnEndDecision::Continue`）。
-//! 通过后后续轮次不再续（条件「未跑或上次未过」转假）。
+//! 通过后后续轮次不再续（条件「未跑或上次未过」转假）；重新参与
+//! （marker prompt / `/discipline` off→on）即进度归零——同会话下一轮
+//! 纪律任务拿满新预算，不因上轮残留被静默跳过。
 //!
 //! **预算双帽（诚实注记）**：自有 [`MAX_FALSIFICATION_RUNS`]（D4：耗尽 =
 //! 停车升级不静默——warn + falsification-{n}.json 留盘供看板评审注记；
@@ -165,7 +167,8 @@ pub struct DisciplineState {
     restrict_exec: bool,
     /// 参与会话集（marker 或 `/discipline on` 进入）。
     participating: Mutex<HashSet<String>>,
-    /// 每会话证伪进度（次数 + 上次是否通过）。
+    /// 每会话证伪进度（次数 + 上次是否通过；重新参与——marker prompt 或
+    /// off→on——即清零，见两入口注释）。
     progress: Mutex<HashMap<String, FalsificationProgress>>,
     /// estop 句柄（set_estop 装配；触发 = fail-open 整体停用）。
     estop: RwLock<Option<Arc<crate::estop::EstopState>>>,
@@ -221,24 +224,39 @@ impl DisciplineState {
 
     /// marker 参与检测：prompt 含 marker 即加入（on_user_prompt 收口——
     /// 交互/spawn/detached 全部 prompt 都过 lifecycle on_user_prompt，
-    /// spawn 侧零改动）。
+    /// spawn 侧零改动）。marker prompt 同时是**新一轮纪律任务的起点**：
+    /// 证伪进度归零——同会话连续修两个 bug 时，上轮 last_passed 残留
+    /// 不得让本轮证伪被静默跳过（复核修复）。
     pub fn note_participation_from_prompt(&self, session_key: &str, prompt: &str) {
         if self.enabled && prompt.contains(DISCIPLINE_MARKER) {
             self.participating
                 .lock()
                 .expect("discipline participating lock")
                 .insert(session_key.to_string());
+            self.progress
+                .lock()
+                .expect("discipline progress lock")
+                .remove(session_key);
         }
     }
 
     /// `/discipline on`。返回进入前是否**已**在参与态（幂等；HashSet::insert
-    /// 的 bool 是「新插入」，这里取反成「已存在」语义）。
+    /// 的 bool 是「新插入」，这里取反成「已存在」语义）。新插入（off→on
+    /// 重进）时证伪进度一并归零——预算重新计，人工恢复路径；已参与时重复
+    /// `on` 走 already 分支不动进度（幂等不变）。
     pub fn set_interactive(&self, session_key: &str) -> bool {
-        !self
+        let newly = self
             .participating
             .lock()
             .expect("discipline participating lock")
-            .insert(session_key.to_string())
+            .insert(session_key.to_string());
+        if newly {
+            self.progress
+                .lock()
+                .expect("discipline progress lock")
+                .remove(session_key);
+        }
+        !newly
     }
 
     /// `/discipline off [理由]`。带理由 = waive 入审计（escape hatch 留痕）。

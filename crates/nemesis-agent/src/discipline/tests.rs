@@ -326,6 +326,80 @@ async fn falsification_noop_without_participation_or_declaration() {
     );
 }
 
+/// 复核修复回归：重新参与即证伪进度归零——同会话第二轮纪律任务不被
+/// 上轮 `last_passed` 残留静默跳过（marker prompt = 新任务起点）。
+#[tokio::test]
+async fn marker_reentry_resets_progress_so_next_task_falsifies_again() {
+    let ws = tempdir();
+    let st = DisciplineState::new(true, ws.clone(), false);
+    let f = falsifier(st.clone());
+    let marker_prompt = |text: &str| HookPrompt {
+        session_key: "sk-1".to_string(),
+        channel: "web".to_string(),
+        chat_id: "1".to_string(),
+        prompt: text.to_string(),
+    };
+    // 第一轮：marker 参与 → 通过 → 下轮安静放行（last_passed）。
+    write_declaration(&ws, pass_cmd());
+    f.on_user_prompt(&marker_prompt("[discipline:bugfix] fix a"))
+        .await;
+    match f.on_turn_end(&turn_end()).await {
+        TurnEndDecision::Continue { feedback } => {
+            assert!(feedback.contains("证伪通过"), "{feedback}");
+        }
+        other => panic!("round 1: expected continue, got {other:?}"),
+    }
+    assert_eq!(f.on_turn_end(&turn_end()).await, TurnEndDecision::Stop);
+    // 第二轮：新 marker prompt（新任务）→ 进度归零 → 证伪重跑且重新从
+    // run 1 计（falsification-1.json 被覆写），修复前此处被 last_passed
+    // 残留静默放行。
+    f.on_user_prompt(&marker_prompt("[discipline:bugfix] fix b"))
+        .await;
+    match f.on_turn_end(&turn_end()).await {
+        TurnEndDecision::Continue { feedback } => {
+            assert!(feedback.contains("证伪通过"), "{feedback}");
+        }
+        other => panic!("round 2: expected re-falsify, got {other:?}"),
+    }
+    assert_eq!(falsification_record(&ws, 1)["run"], 1);
+    assert_eq!(falsification_record(&ws, 1)["passed"], true);
+}
+
+/// 复核修复回归（人工恢复路径）：预算耗尽后 `/discipline` off→on 进度
+/// 归零、预算重新计；已参与时重复 `on` 幂等不动进度。
+#[tokio::test]
+async fn discipline_off_on_resets_exhausted_budget() {
+    let ws = tempdir();
+    let st = state(&ws); // set_interactive 参与
+    let f = falsifier(st.clone());
+    // 两轮证伪全败 → 预算耗尽 Stop。
+    write_declaration(&ws, fail_cmd());
+    for run in 1..=MAX_FALSIFICATION_RUNS {
+        assert!(
+            matches!(
+                f.on_turn_end(&turn_end()).await,
+                TurnEndDecision::Continue { .. }
+            ),
+            "exhaust run {run}"
+        );
+    }
+    assert_eq!(f.on_turn_end(&turn_end()).await, TurnEndDecision::Stop);
+    // off→on（新插入 → 归零）→ 证伪重跑且重新从 run 1 计。
+    st.clear_interactive("sk-1", None);
+    st.set_interactive("sk-1");
+    write_declaration(&ws, pass_cmd());
+    match f.on_turn_end(&turn_end()).await {
+        TurnEndDecision::Continue { feedback } => {
+            assert!(feedback.contains("证伪通过"), "{feedback}");
+        }
+        other => panic!("after off→on: expected re-falsify, got {other:?}"),
+    }
+    assert_eq!(falsification_record(&ws, 1)["passed"], true);
+    // 重复 `on`（已参与）：幂等不动进度——再答一轮安静放行（last_passed）。
+    st.set_interactive("sk-1");
+    assert_eq!(f.on_turn_end(&turn_end()).await, TurnEndDecision::Stop);
+}
+
 // ---------------------------------------------------------------------------
 // marker 参与 + estop fail-open + waive 审计
 // ---------------------------------------------------------------------------
