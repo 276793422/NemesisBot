@@ -592,6 +592,36 @@ mod run_arm {
         }
     }
 
+    /// POSIX 侧测试助手：临时把目录设为只读，Drop 恢复原模式。cron 收尾
+    /// 保存走 `write_file_atomic`（同目录 tmp + rename 覆盖），POSIX 语义
+    /// 只看目录写权限——store 文件 0o444 拦不住（2026-09-24 nightly run
+    /// 36001616750 实证假红），拦父目录才是 POSIX 下「保存必失败」的
+    /// 正确构造；Windows 上 readonly 属性本身即拒绝 replace，无需此件。
+    /// 同款先例：commands::cors::tests::wave_a::DenyDirWrite。
+    #[cfg(unix)]
+    struct DenyDirWrite(std::path::PathBuf, std::fs::Permissions);
+
+    #[cfg(unix)]
+    impl DenyDirWrite {
+        fn new(p: &std::path::Path) -> Self {
+            use std::os::unix::fs::PermissionsExt;
+            let perm = std::fs::metadata(p).unwrap().permissions();
+            let mut denied = perm.clone();
+            denied.set_mode(0o555);
+            std::fs::set_permissions(p, denied).unwrap();
+            Self(p.to_path_buf(), perm)
+        }
+    }
+
+    #[cfg(unix)]
+    impl Drop for DenyDirWrite {
+        fn drop(&mut self) {
+            // 恢复必须先于 TempDir 清理：声明序上本 guard 晚于 tmp 创建，
+            // 逆序 drop 保证先还原目录再删树。
+            std::fs::set_permissions(&self.0, self.1.clone()).unwrap();
+        }
+    }
+
     #[test]
     fn add_merges_into_existing_store() {
         with_env_home(|home| {
@@ -651,6 +681,10 @@ mod run_arm {
             write_store(&home, r#"[{"id":"abc","name":"n"}]"#);
             let store = store_of(&home);
             deny_write(&store);
+            // POSIX：rename 型保存只看目录写权限，需父目录一并只读
+            //（Drop 恢复，逆序 drop 先于 TempDir 清理）。
+            #[cfg(unix)]
+            let _dir_deny = DenyDirWrite::new(store.parent().unwrap());
 
             let r = run(CronAction::Remove { id: "abc".into() }, false);
 
