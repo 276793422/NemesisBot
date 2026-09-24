@@ -410,17 +410,26 @@ jobs:
           echo "=== 前端产物 ==="
           ls -la ../crates/nemesis-web/static/
 
+      # Java 前置：sdkmanager 装 NDK 兜底路径需要 java（r30 runner 不预装，
+      # 见下方 Locate 步骤；原位在 Build 之后，兜底安装会因无 java 先炸）。
+      - name: Setup Java 17 (AGP 8.6 要求)
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
       # NDK 版本钉死 + ANDROID_NDK_HOME/ANDROID_NDK_ROOT 双变量同源。
-      # 2026-09-24 实证：ubuntu runner 预装多版本 NDK（27.3 + 29.0），旧写法
-      # `sort -V | tail -1` 只更新 HOME（=29.0）而镜像自带的 ROOT 仍指 27.3，
-      # cargo-ndk 的链接 shim 在不同阶段读不同变量 → 调出无 sysroot 的 clang
-      # → ld.lld 找不到 crtbegin_so.o / -llog（链接 libnemesis_verify.so 时炸）。
-      # 钉 29.0：CARGO_NDK_PLATFORM=36 的 per-API clang wrapper 只有 r29+ 才有
-      # （r27.x 到 35 为止），且当前镜像已预装免下载；镜像未来若移除则走兜底安装。
+      # 2026-09-24 两次实锤：①镜像预装 27.3+29.0 双版本，HOME/ROOT 分裂是
+      # 干扰项（统一后仍炸）；②真根因 = r29 的 sysroot 只带 API 21..35 目录，
+      # 没有 36/（本地 sdkmanager 装 r29 实证 ls 目录列表），clang 收到
+      # --target=aarch64-linux-android36 后在该目录找 crtbegin_so.o/-llog
+      # 全部落空 → ld.lld cannot open。API 36 目录 r30 起才有（本地 r30 ls 实证）。
+      # 钉 30.0.14904198 = 本地全绿组合（r30 + CARGO_NDK_PLATFORM=36）原样上 CI；
+      # runner 不预装 → sdkmanager 兜底安装（故 Java 步骤前移）。
       - name: Locate Android NDK (版本钉死；HOME/ROOT 同源)
         shell: bash
         run: |
-          NDK_VERSION=29.0.14206865
+          NDK_VERSION=30.0.14904198
           if [ ! -d "$ANDROID_HOME/ndk/$NDK_VERSION" ]; then
             echo "runner 未预装 NDK $NDK_VERSION，sdkmanager 安装..."
             yes | "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" --licenses >/dev/null 2>&1 || true
@@ -449,12 +458,6 @@ jobs:
           cp target/target_android/aarch64-linux-android/release/nemesisbot \
              bin/bin_android/arm64-v8a/nemesisbot
           ls -la bin/bin_android/arm64-v8a/
-
-      - name: Setup Java 17 (AGP 8.6 要求)
-        uses: actions/setup-java@v4
-        with:
-          distribution: temurin
-          java-version: '17'
 
       - name: Configure signing (Secrets 正式 keystore，缺省 debug 兜底)
         shell: bash
