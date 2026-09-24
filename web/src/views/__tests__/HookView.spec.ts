@@ -92,6 +92,41 @@ describe('HookView 总览', () => {
     expect(useToast().toasts.some(t => t.type === 'success' && t.message.includes('2 个脚本'))).toBe(true)
   })
 
+  it('冷启动首次保存：无桥形态 → toast 提示需重启一次（复核三修回归）', async () => {
+    // Agent 启动时 hooks.json 缺失（load_from_dir 不建桥）→ 首次保存只
+    // 落盘、无热更载体，提示「重启 Agent 后生效」；对照暖启动默认 mock
+    // （exists:true/total:2）保存提示「下条消息生效」。
+    requestMock.mockImplementation((_m: string, cmd: string) => {
+      if (cmd === 'get') {
+        return Promise.resolve({ content: '{}', exists: false, valid: true, error: null, summary: { total: 0 } })
+      }
+      if (cmd === 'set') return Promise.resolve({ summary: { total: 2 } })
+      return Promise.resolve({})
+    })
+    const w = await mountView()
+    const ta = w.find('textarea')
+    await ta.setValue(VALID_HOOKS)
+    await w.findAll('button').find(b => b.text() === '保存原文')!.trigger('click')
+    await flushPromises()
+    expect(useToast().toasts.some(t => t.type === 'success' && t.message.includes('重启 Agent') && t.message.includes('2 个脚本'))).toBe(true)
+
+    // 暖启动对照：桥在 → 下条消息生效（恢复默认 mock）。
+    useToast().toasts.splice(0)
+    requestMock.mockImplementation((_m: string, cmd: string) => {
+      if (cmd === 'get') {
+        return Promise.resolve({ content: VALID_HOOKS, exists: true, valid: true, summary: { total: 2, PreToolUse: 1, Stop: 1 } })
+      }
+      if (cmd === 'set') return Promise.resolve({ summary: { total: 2 } })
+      return Promise.resolve({})
+    })
+    const w2 = await mountView()
+    const ta2 = w2.find('textarea')
+    await ta2.setValue(VALID_HOOKS)
+    await w2.findAll('button').find(b => b.text() === '保存原文')!.trigger('click')
+    await flushPromises()
+    expect(useToast().toasts.some(t => t.type === 'success' && t.message.includes('下条消息生效') && !t.message.includes('重启'))).toBe(true)
+  })
+
   it('后端语义拒绝 → 错误 toast（文件未写入语义）', async () => {
     requestMock.mockImplementation((_m: string, cmd: string) => {
       if (cmd === 'get') return Promise.resolve({ content: VALID_HOOKS, exists: true, valid: true })
