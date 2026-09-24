@@ -421,6 +421,12 @@ impl LifecycleHook for DisciplineFalsificationHook {
             Err(_) => return TurnEndDecision::Stop,
         };
         let prog = self.state.progress_of(&end.session_key);
+        // 上次已通过 → 条件「未跑或上次未过」转假 → **安静放行**（先于
+        // 预算检查：run=2 才通过的会话此后每次终答不再误报预算耗尽——
+        // 收口当日复核修复，warn 只留给真正耗尽未过的形态）。
+        if prog.last_passed {
+            return TurnEndDecision::Stop;
+        }
         // 预算耗尽（D4 停车升级不静默）：warn + 产物留盘（看板评审注记/
         // 交互反馈逐轮可见），放行收尾——绝不无限续轮。
         if prog.runs >= MAX_FALSIFICATION_RUNS {
@@ -430,10 +436,6 @@ impl LifecycleHook for DisciplineFalsificationHook {
                 prog.last_passed,
                 end.session_key
             );
-            return TurnEndDecision::Stop;
-        }
-        // 上次已通过 → 条件「未跑或上次未过」转假 → 放行。
-        if prog.last_passed {
             return TurnEndDecision::Stop;
         }
 
@@ -485,13 +487,12 @@ impl DisciplineFalsificationHook {
             tool_path_base: None,
         };
         let outcome = exec.execute(&args, &ctx).await;
-        // ExecTool 既定协议（B2）：**非零退出不返回 Err**，而是
-        // `Ok("Exit code: N\nstdout…\nstderr…")`；Err 仅进程无法启动。成败
-        // 信号 = Ok 输出首行是否为 `Exit code:` 前缀（成功路径是裸 stdout
-        // 或 `(no output)`；命令自身打印同形首行的混淆情形理论上存在，证伪
-        // 命令由声明作者掌控，诚实注记不设防）。
+        // 成败判定走 loop_tools 单一真相源 [`crate::loop_tools::exec_output_passed`]
+        // （B2 协议：非零退出 `Ok("Exit code: N…")` 与超时收尸
+        // `Ok("Command timed out …")` 皆失败形态；Err 仅进程无法启动——
+        // 同败。超时误判通过的缺陷收口当日复核修复）。
         let passed = match &outcome {
-            Ok(output) => !output.starts_with("Exit code:"),
+            Ok(output) => crate::loop_tools::exec_output_passed(output),
             Err(_) => false,
         };
         let text = match outcome {

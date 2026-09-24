@@ -264,6 +264,52 @@ async fn falsification_fail_budget_exhaustion_escalates() {
     assert_eq!(f.on_turn_end(&turn_end()).await, TurnEndDecision::Stop);
 }
 
+/// 复核修复回归：**超时也是失败形态**——ExecTool 超时收尸返回
+/// `Ok("Command timed out …")`，无 `Exit code:` 前缀，旧判定误判为通过。
+#[test]
+fn exec_output_passed_treats_timeout_and_nonzero_as_failure() {
+    use crate::loop_tools::exec_output_passed;
+    // 成功形态：裸 stdout / 无输出。
+    assert!(exec_output_passed("(no output)"));
+    assert!(exec_output_passed("test result: ok. 1 passed"));
+    // 失败形态①：非零退出（B2 格式）。
+    assert!(!exec_output_passed("Exit code: 2\nstdout: \nstderr: "));
+    // 失败形态②：超时收尸（B2 格式）——本回归的修复点。
+    assert!(!exec_output_passed(
+        "Command timed out after 120 seconds. Partial output:\n(none)"
+    ));
+}
+
+/// 复核修复回归：失败→末次预算内通过→此后终答**安静**放行（warn 只留
+/// 给真正耗尽未过；日志断言不在测试面，顺序由 last_passed 前置保证）。
+#[tokio::test]
+async fn falsification_fail_then_pass_on_last_run_stops_after() {
+    let ws = tempdir();
+    let f = falsifier(state(&ws));
+    let decl = ws.join(DISCIPLINE_DIR).join("declaration.json");
+    std::fs::create_dir_all(ws.join(DISCIPLINE_DIR)).unwrap();
+    // 第 1 轮：声明写失败命令 → Continue（失败反馈）。
+    std::fs::write(&decl, declaration_doc(fail_cmd())).unwrap();
+    match f.on_turn_end(&turn_end()).await {
+        TurnEndDecision::Continue { feedback } => {
+            assert!(feedback.contains("证伪失败"), "{feedback}");
+        }
+        other => panic!("run 1: expected continue, got {other:?}"),
+    }
+    assert_eq!(falsification_record(&ws, 1)["passed"], false);
+    // 第 2 轮：声明改成功命令 → 末次预算内通过 → Continue（✅）。
+    std::fs::write(&decl, declaration_doc(pass_cmd())).unwrap();
+    match f.on_turn_end(&turn_end()).await {
+        TurnEndDecision::Continue { feedback } => {
+            assert!(feedback.contains("证伪通过"), "{feedback}");
+        }
+        other => panic!("run 2: expected continue, got {other:?}"),
+    }
+    assert_eq!(falsification_record(&ws, 2)["passed"], true);
+    // 第 3 轮起：已通过 → 安静 Stop（修复前误走预算耗尽 warn 分支）。
+    assert_eq!(f.on_turn_end(&turn_end()).await, TurnEndDecision::Stop);
+}
+
 #[tokio::test]
 async fn falsification_noop_without_participation_or_declaration() {
     let ws = tempdir();

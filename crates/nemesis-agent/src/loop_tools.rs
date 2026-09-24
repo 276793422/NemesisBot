@@ -1502,6 +1502,15 @@ fn exec_timeout_secs(v: Option<u64>) -> u64 {
     v.unwrap_or(30).min(600)
 }
 
+/// ExecTool 输出成败判定的**单一真相源**（B2 协议消费者共用）：三种失败
+/// 形态——非零退出 = `Ok("Exit code: N\n…")`；超时收尸 =
+/// `Ok("Command timed out …")`；进程无法启动 = `Err`。成功路径 = 裸
+/// stdout 或 `(no output)`。纪律证伪钩子（discipline）按此判定 pass/fail
+/// ——超时此前被消费方误判为通过（收口当日复核修复），收此函数防漂移。
+pub(crate) fn exec_output_passed(output: &str) -> bool {
+    !output.starts_with("Exit code:") && !output.starts_with("Command timed out")
+}
+
 /// C8（2026-09-06）：平台 shell 形态的单一真相源——ExecTool 与 RunChecksTool
 /// 共用。逐字保留 B2 语义：Windows `cmd /C` + raw_arg（.arg() 的自动加引号
 /// 会搅乱 cmd.exe 自身的引号处理）；stdin null（交互式命令立即 EOF 不挂满
