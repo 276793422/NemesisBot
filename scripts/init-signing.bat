@@ -173,24 +173,21 @@ if errorlevel 1 goto :fail
 echo.
 echo ==^> triggering Daily Nightly Release (workflow_dispatch)
 cd /d "%REPO_ROOT%"
-call gh workflow run daily-release.yml
-if errorlevel 1 goto :fail
-REM run registration on GitHub lags behind the trigger response -- poll
-REM instead of a fixed sleep (8s fixed wait raced the registration once).
-set /a TRIES=0
 set "TMPF=%TEMP%\nmb-rid.tmp"
-:dispatch_poll
-powershell -NoProfile -Command "gh run list --workflow daily-release.yml --limit 1 --json databaseId | ConvertFrom-Json | Select-Object -First 1 -ExpandProperty databaseId" > "%TMPF%" 2>nul
+call gh workflow run daily-release.yml > "%TMPF%" 2>&1
+if errorlevel 1 goto :fail
+type "%TMPF%"
+REM run id comes straight from the trigger output URL -- querying the run
+REM list races GitHub indexing (lost both a fixed 8s sleep and a 60s retry
+REM loop this way; the trigger URL is authoritative and instant).
+REM https://github.com/<owner>/<repo>/actions/runs/<id> -- id = slash token 7.
 set "RID="
-set /p RID=<"%TMPF%"
-if defined RID goto :dispatch_got_rid
-set /a TRIES+=1
-if %TRIES% geq 6 goto :dispatch_no_rid
-echo     run not registered yet, retrying (%TRIES%/6)...
-ping -n 11 127.0.0.1 >nul
-goto :dispatch_poll
-:dispatch_got_rid
+for /f "tokens=7 delims=/" %%n in ('findstr /c:"/actions/runs/" "%TMPF%"') do set "RID=%%n"
 del "%TMPF%" >nul 2>&1
+if defined RID goto :dispatch_got_rid
+echo [ERROR] could not parse the run id from the trigger output -- check the Actions page
+goto :fail
+:dispatch_got_rid
 echo     run id: %RID%
 echo ==^> waiting for the build (nightly builds take roughly 10-30 minutes;
 echo     Ctrl+C here does NOT cancel the build itself)
@@ -198,10 +195,6 @@ call gh run watch %RID% --exit-status
 if errorlevel 1 goto :fail
 echo     build done. Now run the four-case verify: scripts\init-signing.bat verify %RID%
 goto :eof
-:dispatch_no_rid
-del "%TMPF%" >nul 2>&1
-echo [ERROR] could not discover the run id after 6 tries -- check the Actions page
-goto :fail
 
 REM ---------------------------------------------------------------------------
 :stage_verify

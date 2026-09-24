@@ -410,14 +410,27 @@ jobs:
           echo "=== 前端产物 ==="
           ls -la ../crates/nemesis-web/static/
 
-      - name: Locate Android NDK (预装；缺失时 sdkmanager 兜底安装)
+      # NDK 版本钉死 + ANDROID_NDK_HOME/ANDROID_NDK_ROOT 双变量同源。
+      # 2026-09-24 实证：ubuntu runner 预装多版本 NDK（27.3 + 29.0），旧写法
+      # `sort -V | tail -1` 只更新 HOME（=29.0）而镜像自带的 ROOT 仍指 27.3，
+      # cargo-ndk 的链接 shim 在不同阶段读不同变量 → 调出无 sysroot 的 clang
+      # → ld.lld 找不到 crtbegin_so.o / -llog（链接 libnemesis_verify.so 时炸）。
+      # 钉 29.0：CARGO_NDK_PLATFORM=36 的 per-API clang wrapper 只有 r29+ 才有
+      # （r27.x 到 35 为止），且当前镜像已预装免下载；镜像未来若移除则走兜底安装。
+      - name: Locate Android NDK (版本钉死；HOME/ROOT 同源)
+        shell: bash
         run: |
-          if [ -z "$(ls -A "$ANDROID_HOME/ndk" 2>/dev/null)" ]; then
-            echo "runner 未预装 NDK，sdkmanager 安装..."
+          NDK_VERSION=29.0.14206865
+          if [ ! -d "$ANDROID_HOME/ndk/$NDK_VERSION" ]; then
+            echo "runner 未预装 NDK $NDK_VERSION，sdkmanager 安装..."
             yes | "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" --licenses >/dev/null 2>&1 || true
-            "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" --install "ndk;27.2.12479018"
+            "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" --install "ndk;$NDK_VERSION"
           fi
-          echo "ANDROID_NDK_HOME=$(ls -d "$ANDROID_HOME"/ndk/* | sort -V | tail -1)" >> "$GITHUB_ENV"
+          NDK_PATH="$ANDROID_HOME/ndk/$NDK_VERSION"
+          {
+            echo "ANDROID_NDK_HOME=$NDK_PATH"
+            echo "ANDROID_NDK_ROOT=$NDK_PATH"
+          } >> "$GITHUB_ENV"
 
       - name: Build nemesisbot (release, aarch64-linux-android)
         shell: bash
