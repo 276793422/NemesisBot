@@ -975,3 +975,155 @@ async fn asm08_assert_helper_flags_shared_plugin_missing_on_loop() {
         "bail 必须点名 security_plugin: {err:#}"
     );
 }
+
+// =========================================================================
+// 件2（2026-09-24 三合一收口）：spawn 闭包 SubagentStart/SubagentStop 触发点。
+//
+// 不发事件面（诚实边界，代码注记为准）：board_review / conflict_resolver /
+// web board 的 run_detached 是内部 LLM 委托，不挂 spawn 闭包，天然不发。
+// payload 字段全景由 nemesis-agent cc_hooks 单测钉住，这里只钉触发点接线。
+// =========================================================================
+
+fn refuse_cmd() -> String {
+    if cfg!(windows) {
+        "echo refused-by-hook 1>&2 & exit 2".to_string()
+    } else {
+        "echo refused-by-hook >&2; exit 2".to_string()
+    }
+}
+
+fn append_marker_cmd(marker: &std::path::Path) -> String {
+    let m = marker.to_string_lossy();
+    if cfg!(windows) {
+        format!("echo fired>>{m}")
+    } else {
+        format!("echo fired >> {m}")
+    }
+}
+
+fn marker_lines_of(path: &std::path::Path) -> usize {
+    std::fs::read_to_string(path)
+        .map(|t| t.lines().filter(|l| !l.trim().is_empty()).count())
+        .unwrap_or(0)
+}
+
+fn spawn_fixture(
+    doc: &str,
+) -> (
+    Arc<nemesis_agent::r#loop::AgentLoop>,
+    Arc<std::sync::OnceLock<nemesis_agent::loop_tools::SpawnFn>>,
+) {
+    // keep：桥的 project_dir 是脚本 cwd——TempDir 句柄 drop 即删目录，脚本
+    // 启动直接失败（非阻断放行），钩子永远不触发（cc_hooks 测试同款教训）。
+    let tmp = tempfile::tempdir().expect("tempdir").keep();
+    let bridge = Arc::new(
+        nemesis_agent::cc_hooks::CcHookBridge::from_json(doc, tmp.clone()).expect("bridge"),
+    );
+    let loop_arc = Arc::new(fresh_unwired_loop());
+    let slot: Arc<std::sync::OnceLock<nemesis_agent::loop_tools::SpawnFn>> =
+        Arc::new(std::sync::OnceLock::new());
+    let bus = Arc::new(nemesis_bus::MessageBus::new());
+    super::inject_spawn_fn(&loop_arc, &slot, &bus, Some(bridge));
+    (loop_arc, slot)
+}
+
+/// 前台三路径：Start exit 2 = 拒绝（Err 带阻断文案，loop 不动）；Start 放行
+/// + Stop 在 detached 轮次返回后落 marker（stub LLM 失败也发——观察型）。
+#[tokio::test]
+async fn spawn_closure_foreground_refuse_and_stop_fires() {
+    // ① 拒绝路径。
+    let doc = serde_json::json!({
+        "hooks": {
+            "SubagentStart": [{ "hooks": [{ "type": "command", "command": refuse_cmd() }] }]
+        }
+    })
+    .to_string();
+    let (_loop_arc, slot) = spawn_fixture(&doc);
+    let spawn = slot.get().expect("closure injected");
+    let err = spawn("agent-1", "do task", "", "", "", "readonly", 1, false)
+        .await
+        .expect_err("exit 2 must refuse spawn");
+    assert!(err.contains("refused-by-hook"), "err={err}");
+
+    // ② 放行路径：Stop 观察型——detached 轮次失败（stub LLM）也发。
+    let tmp = tempfile::TempDir::new().unwrap();
+    let stop_marker = tmp.path().join("stop.txt");
+    let doc = serde_json::json!({
+        "hooks": {
+            "SubagentStart": [{ "hooks": [{ "type": "command", "command": "exit 0" }] }],
+            "SubagentStop": [{ "hooks": [{ "type": "command", "command": append_marker_cmd(&stop_marker) }] }]
+        }
+    })
+    .to_string();
+    let (loop_arc, slot) = spawn_fixture(&doc);
+    let spawn = slot.get().expect("closure injected");
+    let _keep_alive = loop_arc; // Weak 升级需要 loop 活着
+    let result = spawn("agent-1", "do task", "", "", "", "readonly", 1, false).await;
+    assert!(result.is_err(), "stub provider never chats: {result:?}");
+    assert!(
+        marker_lines_of(&stop_marker) >= 1,
+        "SubagentStop must fire even when the detached turn fails"
+    );
+}
+
+/// 后台路径：Start 在 spawn 前落 marker；本调用立即返回 marker；后台任务
+/// 完成后 Stop 落 marker（cancelled/failed/completed 三态判定见实现注记）。
+#[tokio::test]
+async fn spawn_closure_background_fires_start_then_stop() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    let start_marker = tmp.path().join("start.txt");
+    let stop_marker = tmp.path().join("stop.txt");
+    let doc = serde_json::json!({
+        "hooks": {
+            "SubagentStart": [{ "hooks": [{ "type": "command", "command": append_marker_cmd(&start_marker) }] }],
+            "SubagentStop": [{ "hooks": [{ "type": "command", "command": append_marker_cmd(&stop_marker) }] }]
+        }
+    })
+    .to_string();
+    let (loop_arc, slot) = spawn_fixture(&doc);
+    let spawn = slot.get().expect("closure injected");
+    let _keep_alive = loop_arc;
+    let marker = spawn("agent-1", "bg task", "", "", "", "readonly", 1, true)
+        .await
+        .expect("background spawn returns marker");
+    assert!(marker.starts_with("__BG_SPAWN__:"), "marker={marker}");
+    assert_eq!(
+        marker_lines_of(&start_marker),
+        1,
+        "SubagentStart must fire before the task spawns"
+    );
+    // 后台任务完成是异步的——轮询等 Stop marker（上限 ~5s）。
+    for _ in 0..100 {
+        if marker_lines_of(&stop_marker) >= 1 {
+            return;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    }
+    panic!("SubagentStop marker never appeared after background task completion");
+}
+
+/// 项目 loop 闭包：拒绝路径同主 spawn（loop_kind="project" 的 payload 字段
+/// 由桥级单测覆盖；这里钉接线）。
+#[tokio::test]
+async fn project_spawn_closure_refuses_on_start_exit_2() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    let doc = serde_json::json!({
+        "hooks": {
+            "SubagentStart": [{ "hooks": [{ "type": "command", "command": refuse_cmd() }] }]
+        }
+    })
+    .to_string();
+    let bridge = Arc::new(
+        nemesis_agent::cc_hooks::CcHookBridge::from_json(&doc, tmp.path().to_path_buf())
+            .expect("bridge"),
+    );
+    let loop_arc = Arc::new(fresh_unwired_loop());
+    let slot: Arc<std::sync::OnceLock<nemesis_agent::loop_tools::SpawnFn>> =
+        Arc::new(std::sync::OnceLock::new());
+    super::inject_project_spawn_fn(&loop_arc, &slot, Some(bridge));
+    let spawn = slot.get().expect("closure injected");
+    let err = spawn("agent-1", "do task", "", "", "", "readonly", 1, false)
+        .await
+        .expect_err("project spawn must refuse on exit 2");
+    assert!(err.contains("refused-by-hook"), "err={err}");
+}

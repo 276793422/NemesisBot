@@ -906,6 +906,8 @@ fn load_from_dir_branches() {
             ("SessionEnd", 0),
             ("PreCompact", 0),
             ("PostCompact", 0),
+            ("SubagentStart", 0),
+            ("SubagentStop", 0),
         ]
     );
 
@@ -1256,4 +1258,136 @@ async fn hot_reload_preserves_companion_state() {
 
     let _ = std::fs::remove_dir_all(&cfg);
     let _ = std::fs::remove_dir_all(&proj);
+}
+
+// ---------------------------------------------------------------------------
+// SubagentStart/Stop（2026-09-24 三合一收口件2）
+// ---------------------------------------------------------------------------
+
+fn subagent_info() -> super::SubagentInfo {
+    super::SubagentInfo {
+        agent_id: "main-agent".to_string(),
+        task: "fix the bug in parser".to_string(),
+        depth: 2,
+        background: false,
+        tools_profile: "readonly".to_string(),
+        loop_kind: "main",
+    }
+}
+
+/// Start payload 字段全景：方言公共字段 + 件2 六字段。
+#[test]
+fn subagent_start_payload_fields() {
+    let tmp = tempdir();
+    let p = subagent_info().start_payload(&tmp);
+    let v: serde_json::Value = serde_json::from_str(&p).unwrap();
+    assert_eq!(v["hook_event_name"], "SubagentStart");
+    assert_eq!(v["agent_id"], "main-agent");
+    assert_eq!(v["task"], "fix the bug in parser");
+    assert_eq!(v["depth"], 2);
+    assert_eq!(v["background"], false);
+    assert_eq!(v["tools_profile"], "readonly");
+    assert_eq!(v["loop"], "main");
+    // detached 轮次无 session——诚实空串（transcript_path 同款）。
+    assert_eq!(v["session_id"], "");
+}
+
+/// Stop payload：outcome 必带；error 仅失败时 Some；task 截断到 200 字符。
+#[test]
+fn subagent_stop_payload_outcome_error_and_truncation() {
+    let tmp = tempdir();
+    let mut info = subagent_info();
+    info.background = true;
+    let p = info.stop_payload(&tmp, "failed", Some("boom"));
+    let v: serde_json::Value = serde_json::from_str(&p).unwrap();
+    assert_eq!(v["hook_event_name"], "SubagentStop");
+    assert_eq!(v["outcome"], "failed");
+    assert_eq!(v["error"], "boom");
+    assert_eq!(v["background"], true);
+
+    // 无 error → 字段缺位（null）而非空串。
+    let p = info.stop_payload(&tmp, "completed", None);
+    let v: serde_json::Value = serde_json::from_str(&p).unwrap();
+    assert!(v["error"].is_null());
+
+    // 超长 task 截断（中文按字符截，不切 UTF-8 字节）。
+    let mut long = subagent_info();
+    long.task = "汉".repeat(300);
+    let p = long.start_payload(&tmp);
+    let v: serde_json::Value = serde_json::from_str(&p).unwrap();
+    let task = v["task"].as_str().unwrap();
+    assert_eq!(task.chars().count(), super::SUBAGENT_TASK_TRUNCATE);
+}
+
+/// Start 阻断三态：exit 2 → Err（stderr 作拒绝原因）；JSON block → Err；
+/// exit 0 → Ok。
+#[tokio::test]
+async fn subagent_start_exit_2_refuses_spawn() {
+    let tmp = tempdir();
+    let b = bridge_with(
+        &hooks_doc(
+            "SubagentStart",
+            None,
+            &block_cmd("no subagents today"),
+            None,
+        ),
+        &tmp,
+    );
+    let err = b
+        .dispatch_subagent_start(&subagent_info())
+        .await
+        .expect_err("must refuse");
+    assert!(err.contains("no subagents today"), "err={err}");
+}
+
+#[tokio::test]
+async fn subagent_start_json_block_refuses_and_exit_0_allows() {
+    let tmp = tempdir();
+    let b = bridge_with(
+        &hooks_doc(
+            "SubagentStart",
+            None,
+            &json_block_cmd("denied by policy"),
+            None,
+        ),
+        &tmp,
+    );
+    let err = b
+        .dispatch_subagent_start(&subagent_info())
+        .await
+        .expect_err("must refuse");
+    assert!(err.contains("denied by policy"), "err={err}");
+
+    let b2 = bridge_with(&hooks_doc("SubagentStart", None, allow_cmd(), None), &tmp);
+    b2.dispatch_subagent_start(&subagent_info())
+        .await
+        .expect("exit 0 allows");
+}
+
+/// Stop 观察型：exit 2 / JSON block 都不报错（响亮 warn，任务已跑完）。
+#[tokio::test]
+async fn subagent_stop_is_observe_only() {
+    let tmp = tempdir();
+    let b = bridge_with(
+        &hooks_doc("SubagentStop", None, &block_cmd("too late to matter"), None),
+        &tmp,
+    );
+    b.dispatch_subagent_stop(&subagent_info(), "completed", None)
+        .await;
+    // 走到这里 = 无 panic / 无 Err 通道——观察型语义成立。
+}
+
+/// 空配置直通：无 SubagentStart 钩子时零脚本执行（桥不空跑）。
+#[tokio::test]
+async fn subagent_events_noop_without_hooks() {
+    let tmp = tempdir();
+    let b = bridge_with(
+        &hooks_doc("PreToolUse", Some("Edit"), allow_cmd(), None),
+        &tmp,
+    );
+    b.dispatch_subagent_start(&subagent_info())
+        .await
+        .expect("no subagent hooks = passthrough");
+    b.dispatch_subagent_stop(&subagent_info(), "completed", None)
+        .await;
 }

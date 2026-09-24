@@ -13,6 +13,8 @@
 //! | `PreToolUse` | [`ToolHook::pre_tool_use`]（K1a，security 固定闸之后） | exit 2 / JSON `{"decision":"block"}` → Block（stderr 作 reason 回灌模型） |
 //! | `PostToolUse` | [`ToolHook::post_tool_use`]（K1a，Forge 之前） | exit 2 → 把 stderr 以 `[hook]` 注记**追加**到结果（反馈给模型；不撤销已执行的操作） |
 //! | `Stop` | [`LifecycleHook::on_turn_end`]（最终答案被接受后、Done 前） | exit 2 → Block stopping：stderr 作 feedback 注入为 user 消息、再答一轮（`MAX_TURN_END_CONTINUES` 封顶 fail-open）；`stop_hook_active` 标志随第二次起置 true |
+//! | `SubagentStart` | [`CcHookBridge::dispatch_subagent_start`]（spawn 闭包内、`run_detached` 前——**仅本地 spawn 的子代理**；内部 LLM 委托如评审/冲突解决不发） | exit 2 / JSON block → **拒绝 spawn**（SpawnFn 返 Err，子代理不启动） |
+//! | `SubagentStop` | [`CcHookBridge::dispatch_subagent_stop`]（spawn 闭包内、detached 轮次返回/后台任务完成处） | 观察型（任务已跑完，exit 2 无阻断语义——响亮 warn 记录） |
 //!
 //! LLM 调用级（K1b）无对应方言事件——hooks.json 没有 per-LLM-call hook，不造。
 //!
@@ -174,6 +176,14 @@ pub struct CcEvents {
     pre_compact: Vec<CcHookGroup>,
     #[serde(default)]
     post_compact: Vec<CcHookGroup>,
+    /// 子代理开始（2026-09-24 三合一收口件2）。exit 2 / JSON block = 拒绝
+    /// spawn。仅挂本地 spawn 闭包（内部 LLM 委托不发，见模块头表）。
+    #[serde(default)]
+    subagent_start: Vec<CcHookGroup>,
+    /// 子代理结束（2026-09-24 三合一收口件2）。观察型：任务已跑完，exit 2
+    /// 无阻断语义。
+    #[serde(default)]
+    subagent_stop: Vec<CcHookGroup>,
 }
 
 impl CcEvents {
@@ -188,8 +198,9 @@ impl CcEvents {
     /// Per-event script counts（hooks.json 的 PascalCase 事件名）。诊断/用
     /// UI 用（P4 Hooks Tab 的 summary）——字段私有，外部 crate 走这里。
     /// 顺序：PreToolUse, PostToolUse, PostToolUseFailure, SessionStart,
-    /// UserPromptSubmit, Stop, SessionEnd, PreCompact, PostCompact。
-    pub fn script_counts(&self) -> [(&'static str, usize); 9] {
+    /// UserPromptSubmit, Stop, SessionEnd, PreCompact, PostCompact,
+    /// SubagentStart, SubagentStop。
+    pub fn script_counts(&self) -> [(&'static str, usize); 11] {
         let count = |v: &Vec<CcHookGroup>| v.iter().map(|g| g.hooks.len()).sum::<usize>();
         [
             ("PreToolUse", count(&self.pre_tool_use)),
@@ -201,6 +212,8 @@ impl CcEvents {
             ("SessionEnd", count(&self.session_end)),
             ("PreCompact", count(&self.pre_compact)),
             ("PostCompact", count(&self.post_compact)),
+            ("SubagentStart", count(&self.subagent_start)),
+            ("SubagentStop", count(&self.subagent_stop)),
         ]
     }
 }
@@ -223,6 +236,8 @@ pub fn parse_cc_hooks(json: &str) -> Result<CcEvents, String> {
         &mut events.session_start,
         &mut events.user_prompt_submit,
         &mut events.stop,
+        &mut events.subagent_start,
+        &mut events.subagent_stop,
     ] {
         for g in groups.iter_mut() {
             let before = g.hooks.len();
@@ -306,6 +321,72 @@ pub fn pre_tool_use_payload(call: &HookToolCall, cwd: &Path) -> String {
             "tool_input": enrich_tool_input(&call.arguments),
         }),
     )
+}
+
+/// SubagentStart/Stop 事件的发起方信息（2026-09-24 三合一收口件2）。由
+/// spawn 闭包（`agent_factory.rs`）填写——桥侧只透传进 payload，不解释。
+#[derive(Debug, Clone)]
+pub struct SubagentInfo {
+    /// 发起 spawn 的 agent id（父 loop 的标识）。
+    pub agent_id: String,
+    /// 子代理任务描述。payload 里**截断**到 [`SUBAGENT_TASK_TRUNCATE`] 字符
+    /// （char 边界安全）——任务文本可能整段 prompt，stdin 不该无限膨胀。
+    pub task: String,
+    /// 子代理嵌套深度（G2：父深度 + 1）。
+    pub depth: usize,
+    /// 是否后台路径（G4）。
+    pub background: bool,
+    /// 工具档位（G1：readonly/full/...）。
+    pub tools_profile: String,
+    /// 挂载的 loop 类别：`"main"` | `"project"`（集群不挂钩子，无第三态）。
+    pub loop_kind: &'static str,
+}
+
+/// payload 里 task 字段的截断上限（字符数）。
+pub const SUBAGENT_TASK_TRUNCATE: usize = 200;
+
+impl SubagentInfo {
+    fn truncated_task(&self) -> String {
+        self.task.chars().take(SUBAGENT_TASK_TRUNCATE).collect()
+    }
+
+    /// Start 事件的 stdin JSON（公共字段之上）。
+    fn start_payload(&self, cwd: &Path) -> String {
+        build_event_payload(
+            "SubagentStart",
+            // detached 轮次无 session 可指——诚实空串（transcript_path 同款）。
+            "",
+            cwd,
+            serde_json::json!({
+                "agent_id": self.agent_id,
+                "task": self.truncated_task(),
+                "depth": self.depth,
+                "background": self.background,
+                "tools_profile": self.tools_profile,
+                "loop": self.loop_kind,
+            }),
+        )
+    }
+
+    /// Stop 事件的 stdin JSON。`outcome`：completed | cancelled | failed；
+    /// `error`：失败摘录（仅 failed 时 Some，截到 200 字符）。
+    fn stop_payload(&self, cwd: &Path, outcome: &str, error: Option<&str>) -> String {
+        build_event_payload(
+            "SubagentStop",
+            "",
+            cwd,
+            serde_json::json!({
+                "agent_id": self.agent_id,
+                "task": self.truncated_task(),
+                "depth": self.depth,
+                "background": self.background,
+                "tools_profile": self.tools_profile,
+                "loop": self.loop_kind,
+                "outcome": outcome,
+                "error": error.map(|e| e.chars().take(SUBAGENT_TASK_TRUNCATE).collect::<String>()),
+            }),
+        )
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -648,6 +729,52 @@ impl CcHookBridge {
             .copied()
             .unwrap_or(0)
             > 0
+    }
+
+    /// 方言 `SubagentStart`（2026-09-24 三合一收口件2）：spawn 闭包内、
+    /// `run_detached` 前调。exit 2 / JSON block → **Err（拒绝 spawn）**——
+    /// 阻断文案即拒绝原因，由调用方作为 SpawnFn 的 Err 上抛。无子代理钩子
+    /// 配置时零开销直通。
+    pub async fn dispatch_subagent_start(&self, info: &SubagentInfo) -> Result<(), String> {
+        let events = self.current_events();
+        if events.subagent_start.is_empty() {
+            return Ok(());
+        }
+        let payload = info.start_payload(&self.project_dir);
+        for o in self.run_group(&events.subagent_start, None, &payload).await {
+            if o.is_blocking_exit() {
+                return Err(o.block_text());
+            }
+            if let Some(reason) = o.json_block_reason() {
+                return Err(reason);
+            }
+        }
+        Ok(())
+    }
+
+    /// 方言 `SubagentStop`（观察型）：detached 轮次返回 / 后台任务完成处调。
+    /// 任务已跑完——exit 2 / JSON block 都**无阻断语义**，响亮 warn 记录
+    /// （脚本想说的话只能进日志），绝不影响调用方的结果回传。
+    pub async fn dispatch_subagent_stop(
+        &self,
+        info: &SubagentInfo,
+        outcome: &str,
+        error: Option<&str>,
+    ) {
+        let events = self.current_events();
+        if events.subagent_stop.is_empty() {
+            return;
+        }
+        let payload = info.stop_payload(&self.project_dir, outcome, error);
+        for o in self.run_group(&events.subagent_stop, None, &payload).await {
+            if o.is_blocking_exit() || o.json_block_reason().is_some() {
+                tracing::warn!(
+                    "[cc-hooks] SubagentStop hook tried to block — task already finished, \
+                     observation only: {}",
+                    o.block_text()
+                );
+            }
+        }
     }
 }
 

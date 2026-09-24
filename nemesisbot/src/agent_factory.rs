@@ -889,7 +889,7 @@ pub fn build_agent_loop(
     // G0: Arc 定型后注入 sub-agent spawn 闭包（Weak::downgrade 需要 Arc）。
     // G4: 闭包持有 bus 引用（后台任务完成回灌经 subagent_continuation 发布）。
     let agent_loop = Arc::new(agent_loop);
-    inject_spawn_fn(&agent_loop, &spawn_slot, &shared.bus);
+    inject_spawn_fn(&agent_loop, &spawn_slot, &shared.bus, cc_bridge.clone());
     // I1 (devtool-upgrade 阶段 3)：workspace fs watcher——外部编辑下一轮
     // 以 <external_changes> 注记浮出（指令链文件走 digest 失效锚点）。句柄
     // 活在 AgentLoop 内、随其销毁；启动失败 warn 一次后禁用，不阻断装配。
@@ -1068,6 +1068,8 @@ fn inject_spawn_fn(
     loop_arc: &Arc<nemesis_agent::r#loop::AgentLoop>,
     spawn_slot: &Arc<std::sync::OnceLock<nemesis_agent::loop_tools::SpawnFn>>,
     bus: &Arc<nemesis_bus::MessageBus>,
+    // 件2：SubagentStart/Stop 事件源（None = 无桥，不发事件——集群/裸构建）。
+    cc_bridge: Option<std::sync::Arc<nemesis_agent::cc_hooks::CcHookBridge>>,
 ) {
     use std::sync::atomic::{AtomicU64, Ordering};
     // 后台任务 id 计数器（同毫秒并发 spawn 防撞）。
@@ -1089,28 +1091,46 @@ fn inject_spawn_fn(
             let agent_id = agent_id.to_string();
             let task = task.to_string();
             let tools_profile = tools_profile.to_string();
+            // Fn 闭包不能把捕获 move 进 async 块——每次调用 clone 进去。
+            let cc_bridge = cc_bridge.clone();
+            // 件2：SubagentStart/Stop 的 payload 素材（两路径共用；后台路径
+            // 再 clone 进 spawn 任务）。
+            let info = nemesis_agent::cc_hooks::SubagentInfo {
+                agent_id,
+                task,
+                depth,
+                background,
+                tools_profile,
+                loop_kind: "main",
+            };
             Box::pin(async move {
                 // G1：档位 → 白名单（readonly 缺省；full 不设限）。SpawnTool
                 // 侧已校验过，这里再拦一次（防御纵深，闭包是唯一映射点）。
-                let allowed_tools =
-                    match nemesis_agent::loop_tools::detached_tools_for_profile(&tools_profile) {
-                        Ok(a) => a,
-                        Err(e) => return Err(e),
-                    };
+                let allowed_tools = match nemesis_agent::loop_tools::detached_tools_for_profile(
+                    &info.tools_profile,
+                ) {
+                    Ok(a) => a,
+                    Err(e) => return Err(e),
+                };
                 if !background {
                     let agent_loop = weak
                         .upgrade()
                         .ok_or_else(|| "agent loop is gone (shutdown in progress)".to_string())?;
+                    // 件2：SubagentStart（exit 2 / JSON block = 拒绝 spawn，
+                    // D1 已裁决；`?` 把阻断文案作 SpawnFn 的 Err 上抛）。
+                    if let Some(bridge) = &cc_bridge {
+                        bridge.dispatch_subagent_start(&info).await?;
+                    }
                     tracing::debug!(
-                        agent_id = %agent_id,
-                        task_len = task.len(),
-                        tools_profile = %tools_profile,
+                        agent_id = %info.agent_id,
+                        task_len = info.task.len(),
+                        tools_profile = %info.tools_profile,
                         depth,
                         "[SpawnTool] running detached sub-agent (G0/G1/G2)"
                     );
-                    return agent_loop
+                    let result = agent_loop
                         .run_detached(
-                            &task,
+                            &info.task,
                             nemesis_agent::r#loop::DetachedOpts {
                                 allowed_tools,
                                 // G2: 子代理深度（父深度 + 1，已过 max_depth 检查）
@@ -1120,22 +1140,47 @@ fn inject_spawn_fn(
                             },
                         )
                         .await;
+                    // 件2：SubagentStop（观察型）。前台无独立「取消」内核信号
+                    // （estop 在 spawn 前拦截；upgrade 失败在 Start 前短路），
+                    // Ok=completed / Err=failed 两态，Err 摘录随 payload。
+                    if let Some(bridge) = &cc_bridge {
+                        let outcome = if result.is_ok() {
+                            "completed"
+                        } else {
+                            "failed"
+                        };
+                        bridge
+                            .dispatch_subagent_stop(
+                                &info,
+                                outcome,
+                                result.as_ref().err().map(String::as_str),
+                            )
+                            .await;
+                    }
+                    return result;
                 }
 
                 // G4 后台路径：tokio::spawn 包住 run_detached，本调用立即
                 // 返回 marker。task_id 前缀 = loop_continuation::
                 // BG_SPAWN_TASK_PREFIX（与恢复端 list_bg_spawn_pending_sync
                 // 单一真相源）。
+                // 件2：SubagentStart 在任务真正 spawn 前发（拒绝则不产生
+                // marker / 不 spawn 任务）。
+                if let Some(bridge) = &cc_bridge {
+                    bridge.dispatch_subagent_start(&info).await?;
+                }
                 let task_id = format!(
                     "{}{}_{}",
                     nemesis_agent::loop_continuation::BG_SPAWN_TASK_PREFIX,
                     chrono::Utc::now().timestamp_millis(),
                     BG_SPAWN_COUNTER.fetch_add(1, Ordering::Relaxed),
                 );
-                let bg_agent_id = agent_id.clone();
-                let bg_task = task.clone();
-                let bg_profile = tools_profile.clone();
+                let bg_agent_id = info.agent_id.clone();
+                let bg_task = info.task.clone();
+                let bg_profile = info.tools_profile.clone();
                 let bg_task_id = task_id.clone();
+                let bg_bridge = cc_bridge.clone();
+                let bg_info = info.clone();
                 tokio::spawn(async move {
                     let result = match weak.upgrade() {
                         Some(agent_loop) => {
@@ -1162,6 +1207,23 @@ fn inject_spawn_fn(
                         }
                         None => Err("agent loop is gone (gateway shutting down)".to_string()),
                     };
+                    // 件2：SubagentStop（观察型）——完成后、continuation 回灌
+                    // bus 前。「cancelled」= 任务 spawn 后 loop 已亡（G4 路径
+                    // 唯一取消形态，upgrade 失败）；「failed」= 其余 Err。
+                    if let Some(bridge) = &bg_bridge {
+                        let outcome = match &result {
+                            Ok(_) => "completed",
+                            Err(e) if e.contains("agent loop is gone") => "cancelled",
+                            Err(_) => "failed",
+                        };
+                        bridge
+                            .dispatch_subagent_stop(
+                                &bg_info,
+                                outcome,
+                                result.as_ref().err().map(String::as_str),
+                            )
+                            .await;
+                    }
                     let (content, status, error) = match &result {
                         Ok(text) => (text.clone(), "ok", None),
                         Err(e) => (
@@ -2071,10 +2133,13 @@ pub fn build_project_agent_loop(
     // K2：cc_hooks 与主 loop 同一份 workspace config 目录（用户级 hook 方言
     // 跨项目一致）；相对路径锚项目目录。
     let ws_config_dir = nemesis_path::workspace_config_dir(&shared.workspace_dir());
+    // 件2：桥句柄提升到构建作用域——spawn 闭包发 SubagentStart/Stop 用。
+    let mut project_cc_bridge: Option<std::sync::Arc<nemesis_agent::cc_hooks::CcHookBridge>> = None;
     if let Some(bridge) =
         nemesis_agent::cc_hooks::CcHookBridge::load_from_dir(&ws_config_dir, project_dir.clone())
     {
         agent_loop.set_cc_hooks_bridge(std::sync::Arc::clone(&bridge));
+        project_cc_bridge = Some(std::sync::Arc::clone(&bridge));
         bridge.register(&agent_loop);
     }
 
@@ -2167,7 +2232,7 @@ pub fn build_project_agent_loop(
 
     // Arc 定型后注入子代理 spawn 闭包（Weak 防环，与主 spawn 同理）。
     let agent_loop = Arc::new(agent_loop);
-    inject_project_spawn_fn(&agent_loop, &spawn_slot);
+    inject_project_spawn_fn(&agent_loop, &spawn_slot, project_cc_bridge.clone());
     // fs watcher 锚项目目录（外部编辑注记只看项目内变更）。
     let _ = AgentLoop::start_fs_watcher(&agent_loop, &cfg.agents.fs_watcher);
     // ASM-08：装配自检（与主/集群 loop 同一闸，D5=甲）。
@@ -2183,6 +2248,8 @@ pub fn build_project_agent_loop(
 fn inject_project_spawn_fn(
     loop_arc: &Arc<nemesis_agent::r#loop::AgentLoop>,
     spawn_slot: &Arc<std::sync::OnceLock<nemesis_agent::loop_tools::SpawnFn>>,
+    // 件2：SubagentStart/Stop 事件源（None = 无桥，不发事件）。
+    cc_bridge: Option<std::sync::Arc<nemesis_agent::cc_hooks::CcHookBridge>>,
 ) {
     let weak = Arc::downgrade(loop_arc);
     let _ = spawn_slot.set(Arc::new(
@@ -2199,13 +2266,25 @@ fn inject_project_spawn_fn(
             let agent_id = agent_id.to_string();
             let task = task.to_string();
             let tools_profile = tools_profile.to_string();
+            // Fn 闭包不能把捕获 move 进 async 块——每次调用 clone 进去。
+            let cc_bridge = cc_bridge.clone();
+            // 件2：SubagentStart/Stop 的 payload 素材。
+            let info = nemesis_agent::cc_hooks::SubagentInfo {
+                agent_id,
+                task,
+                depth,
+                background,
+                tools_profile,
+                loop_kind: "project",
+            };
             Box::pin(async move {
                 // 档位 → 白名单（与主 spawn 同一映射点，防御纵深）。
-                let allowed_tools =
-                    match nemesis_agent::loop_tools::detached_tools_for_profile(&tools_profile) {
-                        Ok(a) => a,
-                        Err(e) => return Err(e),
-                    };
+                let allowed_tools = match nemesis_agent::loop_tools::detached_tools_for_profile(
+                    &info.tools_profile,
+                ) {
+                    Ok(a) => a,
+                    Err(e) => return Err(e),
+                };
                 if background {
                     return Err(
                         "项目模式下暂不支持后台子代理（异步续行需跨项目路由，暂未支持）"
@@ -2215,23 +2294,43 @@ fn inject_project_spawn_fn(
                 let agent_loop = weak
                     .upgrade()
                     .ok_or_else(|| "agent loop is gone (shutdown in progress)".to_string())?;
+                // 件2：SubagentStart（exit 2 = 拒绝 spawn，`?` 上抛阻断文案）。
+                if let Some(bridge) = &cc_bridge {
+                    bridge.dispatch_subagent_start(&info).await?;
+                }
                 tracing::debug!(
-                    agent_id = %agent_id,
-                    task_len = task.len(),
-                    tools_profile = %tools_profile,
+                    agent_id = %info.agent_id,
+                    task_len = info.task.len(),
+                    tools_profile = %info.tools_profile,
                     depth,
                     "[SpawnTool] project loop detached sub-agent (sync-only, L6++)"
                 );
-                agent_loop
+                let result = agent_loop
                     .run_detached(
-                        &task,
+                        &info.task,
                         nemesis_agent::r#loop::DetachedOpts {
                             allowed_tools,
                             depth,
                             ..Default::default()
                         },
                     )
-                    .await
+                    .await;
+                // 件2：SubagentStop（观察型；前台两态，理由同主 spawn）。
+                if let Some(bridge) = &cc_bridge {
+                    let outcome = if result.is_ok() {
+                        "completed"
+                    } else {
+                        "failed"
+                    };
+                    bridge
+                        .dispatch_subagent_stop(
+                            &info,
+                            outcome,
+                            result.as_ref().err().map(String::as_str),
+                        )
+                        .await;
+                }
+                result
             })
         },
     ));

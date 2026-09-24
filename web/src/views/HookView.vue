@@ -23,6 +23,8 @@ const EVENTS = [
   { id: 'SessionEnd', label: 'SessionEnd', hint: '会话被清理/删除时（观察型，无阻断语义）' },
   { id: 'PreCompact', label: 'PreCompact', hint: '上下文压缩前（观察型：不阻止压缩）' },
   { id: 'PostCompact', label: 'PostCompact', hint: '上下文压缩后（观察型）' },
+  { id: 'SubagentStart', label: 'SubagentStart', hint: '子代理启动前（本地 spawn）——exit 2 可拒绝 spawn' },
+  { id: 'SubagentStop', label: 'SubagentStop', hint: '子代理任务完成后（观察型；任务已跑完，无阻断语义）' },
 ] as const
 
 interface HookEntry {

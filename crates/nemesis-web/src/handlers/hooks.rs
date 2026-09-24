@@ -3,7 +3,8 @@
 //! copy-once 迁移——见 cc_hooks::migrate_legacy_home_hooks_config。）
 //!
 //! `<workspace>/config/hooks.json` 是 hooks.json 方言（K2，`nemesis_agent::cc_hooks`）：
-//! 五事件 PreToolUse/PostToolUse/SessionStart/UserPromptSubmit/Stop，每条
+//! 七事件 PreToolUse/PostToolUse/SessionStart/UserPromptSubmit/Stop/
+//! SubagentStart/SubagentStop（2026-09-24 三合一收口件2 + 后两事件），每条
 //! hook 是子进程脚本（stdin JSON / env / 退出码拦放行）。
 //!
 //! - `get`：读文件；**不存在 → 返回空模板而非错误**（fresh home 常态）。
@@ -61,6 +62,8 @@ impl ModuleHandler for HooksHandler {
 
 impl HooksHandler {
     /// 空模板：五事件全空（合法方言格式、0 脚本），既是骨架也是事件名速查。
+    /// （SubagentStart/SubagentStop 不入模板——子代理钩子是进阶用法，速查
+    /// 表见设置页事件区块。）
     fn empty_template() -> String {
         serde_json::to_string_pretty(&serde_json::json!({
             "hooks": {
