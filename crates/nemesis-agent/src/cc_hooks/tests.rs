@@ -895,7 +895,7 @@ fn load_from_dir_branches() {
     .unwrap();
     let b = CcHookBridge::load_from_dir(&cfg, proj.clone()).expect("loads");
     assert_eq!(
-        b.events.script_counts(),
+        b.events.read().unwrap().script_counts(),
         [
             ("PreToolUse", 1),
             ("PostToolUse", 0),
@@ -1103,4 +1103,157 @@ fn migrate_is_noop_without_legacy_or_with_existing_target() {
         content.contains("new"),
         "existing target must win: {content}"
     );
+}
+
+// ---------------------------------------------------------------------------
+// 热更五态（2026-09-24 hooks 三合一收口件1）：盘上桥分发入口惰性 mtime 检查
+// ---------------------------------------------------------------------------
+
+/// 覆写 hooks.json 并保证 mtime 前进（文件系统时间戳粒度可能粗于两次写间隔）。
+fn rewrite_hooks(cfg: &std::path::Path, doc: &str) {
+    std::fs::write(cfg.join("hooks.json"), doc).unwrap();
+    std::thread::sleep(std::time::Duration::from_millis(25));
+}
+
+fn block_reason(d: crate::hooks::HookDecision) -> String {
+    match d {
+        crate::hooks::HookDecision::Block { reason } => reason,
+        other => panic!("expected Block, got {other:?}"),
+    }
+}
+
+/// 五态走查（真子进程）：无变化不重载 / 变化换装生效 / 坏文件保旧 /
+/// 清空生效为空 / 文件消失同清空。版本号（v1/v2/v3）用阻断文案区分。
+#[tokio::test]
+async fn hot_reload_five_states() {
+    let cfg = tempdir();
+    let proj = tempdir();
+    rewrite_hooks(
+        &cfg,
+        &hooks_doc("PreToolUse", Some("Edit"), &block_cmd("v1"), None),
+    );
+    let b = CcHookBridge::load_from_dir(&cfg, proj.clone()).expect("loads");
+    let seen = || *b.seen_mtime.lock().unwrap();
+    let file_mtime = || {
+        std::fs::metadata(cfg.join("hooks.json"))
+            .ok()
+            .and_then(|m| m.modified().ok())
+    };
+
+    // ① 无变化不重载：mtime 未动，seen_mtime 与盘上一致（检查直通），
+    //    行为持续 = 旧配置顶住。
+    assert_eq!(seen(), file_mtime());
+    assert!(block_reason(b.pre_tool_use(&edit_call("{}")).await).contains("v1"));
+    assert_eq!(seen(), file_mtime());
+
+    // ② 变化换装生效：改文件 → 新脚本顶替旧脚本，seen_mtime 跟进。
+    rewrite_hooks(
+        &cfg,
+        &hooks_doc("PreToolUse", Some("Edit"), &block_cmd("v2"), None),
+    );
+    assert!(block_reason(b.pre_tool_use(&edit_call("{}")).await).contains("v2"));
+    assert_eq!(seen(), file_mtime());
+
+    // ③ 坏文件保旧：解析失败 → 维持上一版有效配置（fail-open 不炸会话）；
+    //    seen_mtime 照记——同版坏文件只 warn 一次。
+    rewrite_hooks(&cfg, "{not json");
+    assert!(block_reason(b.pre_tool_use(&edit_call("{}")).await).contains("v2"));
+    assert_eq!(seen(), file_mtime());
+    // 改好（mtime 再变）→ 恢复重载。
+    rewrite_hooks(
+        &cfg,
+        &hooks_doc("PreToolUse", Some("Edit"), &block_cmd("v3"), None),
+    );
+    assert!(block_reason(b.pre_tool_use(&edit_call("{}")).await).contains("v3"));
+
+    // ④ 清空生效为空：合法零脚本文档 = 换装为空 = 事实注销（用户清空就是
+    //    想停用；与启动态空文件不注册同语义）。
+    rewrite_hooks(&cfg, "{\"hooks\":{}}");
+    assert_eq!(
+        b.pre_tool_use(&edit_call("{}")).await,
+        crate::hooks::HookDecision::Allow
+    );
+
+    // ⑤ 文件消失同清空：路径没了 = 注销。
+    std::fs::remove_file(cfg.join("hooks.json")).unwrap();
+    std::thread::sleep(std::time::Duration::from_millis(25));
+    assert_eq!(
+        b.pre_tool_use(&edit_call("{}")).await,
+        crate::hooks::HookDecision::Allow
+    );
+
+    let _ = std::fs::remove_dir_all(&cfg);
+    let _ = std::fs::remove_dir_all(&proj);
+}
+
+/// 纯内存桥（from_json）：无盘上路径，热更关闭——机制断言。
+#[test]
+fn in_memory_bridge_has_no_hot_reload() {
+    let tmp = tempdir();
+    let b = bridge_with(
+        &hooks_doc("PreToolUse", Some("Edit"), &block_cmd("mem"), None),
+        &tmp,
+    );
+    assert!(b.hooks_path.is_none());
+    assert!(b.seen_mtime.lock().unwrap().is_none());
+}
+
+/// 伴生态跨热更保留：SessionStart 判重与 Stop 阻断计数不因换装清零。
+#[tokio::test]
+async fn hot_reload_preserves_companion_state() {
+    let cfg = tempdir();
+    let proj = tempdir();
+    let marker = proj.join("ss-marker.txt");
+    let doc = |stop_reason: &str| {
+        serde_json::json!({
+            "hooks": {
+                "SessionStart": [{ "hooks": [{ "command": append_cmd(&marker, "ss") }] }],
+                "Stop": [{ "hooks": [{ "command": block_cmd(stop_reason) }] }]
+            }
+        })
+        .to_string()
+    };
+    rewrite_hooks(&cfg, &doc("keep working"));
+    let b = CcHookBridge::load_from_dir(&cfg, proj.clone()).expect("loads");
+
+    let mk_prompt = || HookPrompt {
+        session_key: "sess-hot".to_string(),
+        channel: "web".to_string(),
+        chat_id: "chat1".to_string(),
+        prompt: "hello".to_string(),
+    };
+    let mk_end = || HookTurnEnd {
+        session_key: "sess-hot".to_string(),
+        channel: "web".to_string(),
+        chat_id: "chat1".to_string(),
+        final_content: "done".to_string(),
+        stop_hook_active: false,
+    };
+    // 首条 prompt：SessionStart 落 marker 1 行；Stop 脚本拒停一次（计数 1）。
+    assert!(matches!(
+        b.on_user_prompt(&mk_prompt()).await,
+        crate::hooks::PromptDecision::Allow
+    ));
+    assert_eq!(marker_lines(&marker), 1);
+    assert!(matches!(
+        b.on_turn_end(&mk_end()).await,
+        crate::hooks::TurnEndDecision::Continue { .. }
+    ));
+    assert!(b.stop_hook_active_for("sess-hot"));
+
+    // 换装（文案变，两事件脚本保留）→ 判重仍在（SessionStart 不重跑）、
+    // Stop 计数不清零。
+    rewrite_hooks(&cfg, &doc("still working"));
+    assert!(matches!(
+        b.on_user_prompt(&mk_prompt()).await,
+        crate::hooks::PromptDecision::Allow
+    ));
+    assert_eq!(marker_lines(&marker), 1, "SessionStart 判重必须跨热更保留");
+    assert!(
+        b.stop_hook_active_for("sess-hot"),
+        "Stop 计数必须跨热更保留"
+    );
+
+    let _ = std::fs::remove_dir_all(&cfg);
+    let _ = std::fs::remove_dir_all(&proj);
 }

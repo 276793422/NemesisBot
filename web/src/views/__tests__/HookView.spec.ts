@@ -4,8 +4,10 @@ import { useToast } from '../../composables/useToast'
 
 // P4 hooks.json 编辑器（2026-08-29 重构为双 TAB：总览 + 结构化设置）——
 // get 回显（含 invalid 形态）、总览原文编辑保存（语法自检/语义拒绝）、
-// 结构化扁平条目序列化（每条各自成组）、切 TAB 从磁盘刷新（最后写入者胜）、
-// 一键重启。后端 hooks handler 行为由 handlers/hooks/tests.rs（7 测试）钉住。
+// 结构化扁平条目序列化（每条各自成组）、切 TAB 从磁盘刷新（最后写入者胜）。
+// （2026-09-24 热更：桥内 mtime 惰性重载，保存后下条消息生效——原「一键重启
+// 」按钮与对应测试随死 UI 移除。）后端 hooks handler 行为由
+// handlers/hooks/tests.rs（7 测试）钉住。
 
 const requestMock = vi.fn()
 vi.mock('../../composables/useWSAPI', () => ({
@@ -186,17 +188,5 @@ describe('HookView 结构化设置页（方案 B 扁平条目）', () => {
     await flushPromises()
     expect(requestMock.mock.calls.filter(c => c[1] === 'get').length).toBeGreaterThanOrEqual(2)
     expect((w.find('textarea').element as HTMLTextAreaElement).value).toBe(VALID_HOOKS)
-  })
-})
-
-describe('HookView 重启', () => {
-  it('一键重启：stop → start', async () => {
-    const w = await mountView()
-    requestMock.mockClear()
-    requestMock.mockResolvedValue({})
-    await w.findAll('button').find(b => b.text().includes('重启 Agent 生效'))!.trigger('click')
-    await vi.advanceTimersByTimeAsync(1500)
-    await flushPromises()
-    expect(requestMock.mock.calls.filter(c => c[0] === 'agent').map(c => c[1])).toEqual(['stop', 'start'])
   })
 })

@@ -60,8 +60,8 @@
 
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, Mutex};
-use std::time::Duration;
+use std::sync::{Arc, Mutex, RwLock};
+use std::time::{Duration, SystemTime};
 
 use async_trait::async_trait;
 use serde::Deserialize;
@@ -453,8 +453,22 @@ impl ScriptOutcome {
 
 /// hooks.json 方言 → 钩子体系桥。实现 [`ToolHook`]（PreToolUse/PostToolUse）与
 /// [`LifecycleHook`]（SessionStart/UserPromptSubmit/Stop）。
+///
+/// **热更（2026-09-24，hooks 三合一收口件1）**：盘上加载的桥（经
+/// [`Self::load_from_dir`]）在每次分发入口惰性检查 hooks.json 的 mtime，
+/// 变化即重新解析并原子换装——保存即下条消息生效，无需重启 Agent。语义：
+/// 解析失败保留旧配置（fail-open 保旧，坏文件不炸会话）；文件清空/消失 =
+/// 换装为空 = 事实注销（与启动态「没有 hooks.json = 没配」同一语义）。纯
+/// 内存桥（[`Self::from_json`]，测试/手工构造）无热更。
 pub struct CcHookBridge {
-    events: CcEvents,
+    /// 当前生效配置（热更换装点）。分发入口取 clone 快照再跑脚本——锁不跨
+    /// await（CcEvents 为 Vec 簇小结构，clone 便宜）。
+    events: RwLock<CcEvents>,
+    /// hooks.json 盘上路径；`None` = 纯内存桥，热更关闭。
+    hooks_path: Option<PathBuf>,
+    /// 上次加载时已见的 mtime。与文件现状比较决定是否重载；**解析失败也
+    /// 记录**——同一版坏文件只 warn 一次，用户改好文件（mtime 再变）后自然重试。
+    seen_mtime: Mutex<Option<SystemTime>>,
     project_dir: PathBuf,
     /// SessionStart 只跑一次的判重（session_key → 已见）。
     seen_sessions: Mutex<HashSet<String>>,
@@ -468,7 +482,9 @@ impl CcHookBridge {
     pub fn from_json(json: &str, project_dir: PathBuf) -> Result<Self, String> {
         let events = parse_cc_hooks(json)?;
         Ok(Self {
-            events,
+            events: RwLock::new(events),
+            hooks_path: None,
+            seen_mtime: Mutex::new(None),
             project_dir,
             seen_sessions: Mutex::new(HashSet::new()),
             stop_blocks: Mutex::new(HashMap::new()),
@@ -484,8 +500,9 @@ impl CcHookBridge {
             Err(_) => return None, // 没有 hooks.json = 没配，正常
         };
         match Self::from_json(&text, project_dir) {
-            Ok(bridge) => {
-                if bridge.events.is_empty() {
+            Ok(mut bridge) => {
+                let events = bridge.events.read().unwrap();
+                if events.is_empty() {
                     tracing::info!(
                         "[cc-hooks] {} loaded but declares no scripts",
                         path.display()
@@ -493,40 +510,18 @@ impl CcHookBridge {
                     return None;
                 }
                 tracing::info!(
-                    "[cc-hooks] loaded {} script(s) from {} (PreToolUse={}, PostToolUse={}, \
-                     SessionStart={}, UserPromptSubmit={}, Stop={})",
-                    bridge.events.total_scripts(),
+                    "[cc-hooks] loaded {} script(s) from {} — {:?}",
+                    events.total_scripts(),
                     path.display(),
-                    bridge
-                        .events
-                        .pre_tool_use
-                        .iter()
-                        .map(|g| g.hooks.len())
-                        .sum::<usize>(),
-                    bridge
-                        .events
-                        .post_tool_use
-                        .iter()
-                        .map(|g| g.hooks.len())
-                        .sum::<usize>(),
-                    bridge
-                        .events
-                        .session_start
-                        .iter()
-                        .map(|g| g.hooks.len())
-                        .sum::<usize>(),
-                    bridge
-                        .events
-                        .user_prompt_submit
-                        .iter()
-                        .map(|g| g.hooks.len())
-                        .sum::<usize>(),
-                    bridge
-                        .events
-                        .stop
-                        .iter()
-                        .map(|g| g.hooks.len())
-                        .sum::<usize>(),
+                    events.script_counts()
+                );
+                drop(events);
+                // 盘上加载：记路径与当前 mtime，热更自此生效。
+                bridge.hooks_path = Some(path.clone());
+                bridge.seen_mtime = Mutex::new(
+                    std::fs::metadata(&path)
+                        .ok()
+                        .and_then(|m| m.modified().ok()),
                 );
                 Some(Arc::new(bridge))
             }
@@ -545,6 +540,61 @@ impl CcHookBridge {
     pub fn register(self: Arc<Self>, agent_loop: &crate::r#loop::AgentLoop) {
         agent_loop.add_tool_hook(self.clone());
         agent_loop.add_lifecycle_hook(self);
+    }
+
+    /// **分发入口**：hooks.json mtime 变化则热更换装，返回当前生效配置的
+    /// clone 快照（锁不跨 await）。纯内存桥直接返回快照。
+    ///
+    /// 换装语义（热更态与启动态的差异全部在此）：
+    /// - mtime 变化 + 解析成功 → 原子换装（info 记脚本计数）。
+    /// - mtime 变化 + 解析失败（含文件存在但读取失败，如编辑器/杀软瞬时
+    ///   锁定）→ warn + **保留旧配置**；mtime 已记录，同版坏文件只 warn 一次。
+    /// - 文件消失（metadata 失败）→ 视同用户清空：换装为空 = 事实注销，
+    ///   与启动态「没有 hooks.json = 没配」同一语义。
+    fn current_events(&self) -> CcEvents {
+        let Some(path) = self.hooks_path.clone() else {
+            return self.events.read().unwrap().clone();
+        };
+        let file_mtime = std::fs::metadata(&path)
+            .ok()
+            .and_then(|m| m.modified().ok());
+        if file_mtime == *self.seen_mtime.lock().unwrap() {
+            return self.events.read().unwrap().clone();
+        }
+        // mtime 变了（或首检）。按文件现状三分支处理。
+        *self.seen_mtime.lock().unwrap() = file_mtime;
+        match file_mtime {
+            None => {
+                tracing::info!(
+                    "[cc-hooks] {} gone — hooks deactivated (hot-reload)",
+                    path.display()
+                );
+                *self.events.write().unwrap() = CcEvents::default();
+            }
+            Some(_) => {
+                match std::fs::read_to_string(&path)
+                    .map_err(|e| e.to_string())
+                    .and_then(|t| parse_cc_hooks(&t))
+                {
+                    Ok(events) => {
+                        tracing::info!(
+                            "[cc-hooks] hot-reloaded {} ({} script(s))",
+                            path.display(),
+                            events.total_scripts()
+                        );
+                        *self.events.write().unwrap() = events;
+                    }
+                    Err(e) => {
+                        tracing::warn!(
+                            "[cc-hooks] hot-reload failed to parse {} — keeping previous config: {}",
+                            path.display(),
+                            e
+                        );
+                    }
+                }
+            }
+        }
+        self.events.read().unwrap().clone()
     }
 
     /// 依次跑一组里所有命中 matcher 的命令。
@@ -620,9 +670,10 @@ impl ToolHook for CcHookBridge {
     }
 
     async fn pre_tool_use(&self, call: &HookToolCall) -> HookDecision {
+        let events = self.current_events();
         let payload = pre_tool_use_payload(call, &self.project_dir);
         for o in self
-            .run_group(&self.events.pre_tool_use, Some(&call.name), &payload)
+            .run_group(&events.pre_tool_use, Some(&call.name), &payload)
             .await
         {
             if o.is_blocking_exit() {
@@ -638,6 +689,7 @@ impl ToolHook for CcHookBridge {
     }
 
     async fn post_tool_use(&self, call: &HookToolCall, result: &str) -> PostHookAction {
+        let events = self.current_events();
         let payload = build_event_payload(
             "PostToolUse",
             &call.session_key,
@@ -650,7 +702,7 @@ impl ToolHook for CcHookBridge {
         );
         let mut notes = String::new();
         for o in self
-            .run_group(&self.events.post_tool_use, Some(&call.name), &payload)
+            .run_group(&events.post_tool_use, Some(&call.name), &payload)
             .await
         {
             if o.is_blocking_exit() {
@@ -670,6 +722,7 @@ impl ToolHook for CcHookBridge {
     /// 方言 `PostToolUseFailure`（2026-08-29 三段化扩展）：工具执行失败后触发。
     /// 观察型——stderr 只记日志（失败已发生，无撤销/改写语义）。
     async fn post_tool_use_failure(&self, call: &HookToolCall, err: &str) -> PostHookAction {
+        let events = self.current_events();
         let payload = build_event_payload(
             "PostToolUseFailure",
             &call.session_key,
@@ -681,11 +734,7 @@ impl ToolHook for CcHookBridge {
             }),
         );
         for o in self
-            .run_group(
-                &self.events.post_tool_use_failure,
-                Some(&call.name),
-                &payload,
-            )
+            .run_group(&events.post_tool_use_failure, Some(&call.name), &payload)
             .await
         {
             if !o.stdout.is_empty() {
@@ -703,6 +752,7 @@ impl LifecycleHook for CcHookBridge {
     }
 
     async fn on_user_prompt(&self, prompt: &HookPrompt) -> PromptDecision {
+        let events = self.current_events();
         // SessionStart：该 session 第一条 prompt 时先跑（source=startup）。
         let first_prompt = !self
             .seen_sessions
@@ -720,8 +770,7 @@ impl LifecycleHook for CcHookBridge {
                 &self.project_dir,
                 serde_json::json!({ "source": "startup" }),
             );
-            self.run_group(&self.events.session_start, None, &payload)
-                .await;
+            self.run_group(&events.session_start, None, &payload).await;
         }
         // UserPromptSubmit：exit 2 = 拦下 prompt（模型看不到）。
         let payload = build_event_payload(
@@ -731,7 +780,7 @@ impl LifecycleHook for CcHookBridge {
             serde_json::json!({ "prompt": prompt.prompt }),
         );
         for o in self
-            .run_group(&self.events.user_prompt_submit, None, &payload)
+            .run_group(&events.user_prompt_submit, None, &payload)
             .await
         {
             if o.is_blocking_exit() {
@@ -747,13 +796,14 @@ impl LifecycleHook for CcHookBridge {
     }
 
     async fn on_turn_end(&self, end: &crate::hooks::HookTurnEnd) -> TurnEndDecision {
+        let events = self.current_events();
         let payload = build_event_payload(
             "Stop",
             &end.session_key,
             &self.project_dir,
             serde_json::json!({ "stop_hook_active": end.stop_hook_active }),
         );
-        for o in self.run_group(&self.events.stop, None, &payload).await {
+        for o in self.run_group(&events.stop, None, &payload).await {
             if o.is_blocking_exit() || o.json_block_reason().is_some() {
                 *self
                     .stop_blocks
@@ -776,14 +826,14 @@ impl CcHookBridge {
     /// 方言 `SessionEnd`（观察型）：会话被清理/删除时触发。exit 2 无阻断语义。
     /// 固有方法而非 trait——唯一实现者是本桥，不建单实现 trait（YAGNI）。
     pub async fn on_session_end(&self, session_key: &str, reason: &str) {
+        let events = self.current_events();
         let payload = build_event_payload(
             "SessionEnd",
             session_key,
             &self.project_dir,
             serde_json::json!({ "reason": reason }),
         );
-        self.run_group(&self.events.session_end, None, &payload)
-            .await;
+        self.run_group(&events.session_end, None, &payload).await;
     }
 }
 
@@ -791,6 +841,7 @@ impl CcHookBridge {
     /// 方言 `PreCompact` / `PostCompact`（观察型）：压缩流水线前后触发。
     /// exit 2 不阻止压缩（稳定性机制，诚实边界）。
     pub async fn run_compact_hooks(&self, trigger: &str, phase: &str) {
+        let events = self.current_events();
         let event = if phase == "pre" {
             "PreCompact"
         } else {
@@ -803,9 +854,9 @@ impl CcHookBridge {
             serde_json::json!({ "trigger": trigger }),
         );
         let groups = if phase == "pre" {
-            &self.events.pre_compact
+            &events.pre_compact
         } else {
-            &self.events.post_compact
+            &events.post_compact
         };
         for o in self.run_group(groups, None, &payload).await {
             if !o.stdout.is_empty() {

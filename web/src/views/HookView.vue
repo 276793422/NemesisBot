@@ -47,7 +47,6 @@ const hooksError = ref<string | null>(null)
 const entries = ref<Record<string, HookEntry[]>>(emptyEntries())
 const rawSaving = ref(false)
 const editorSaving = ref(false)
-const restarting = ref(false)
 
 const totalCount = computed(() =>
   EVENTS.reduce((n, ev) => n + entries.value[ev.id].length, 0),
@@ -123,7 +122,7 @@ async function saveContent(content: string, label: string) {
     hooksExists.value = true
     hooksValid.value = true
     hooksError.value = null
-    toast.success(`已保存（${data?.summary?.total ?? 0} 个脚本）。重启 Agent 后生效`)
+    toast.success(`已保存（${data?.summary?.total ?? 0} 个脚本）。保存后下条消息生效`)
     return true
   } catch (e: any) {
     // 后端语义校验拒绝 —— 错误串就是 parse 详情，文件未动。
@@ -150,20 +149,6 @@ async function saveEditor() {
   editorSaving.value = false
 }
 
-/** hooks.json 只在 Agent 启动时加载（agent_factory），保存后一键重启生效。 */
-async function restartAgentForHooks() {
-  restarting.value = true
-  try {
-    await request('agent', 'stop')
-    await new Promise(r => setTimeout(r, 1000))
-    await request('agent', 'start')
-    toast.success('Agent 已重启，hooks 配置已生效')
-  } catch (e: any) {
-    toast.error('重启 Agent 失败: ' + (e?.message || e))
-  }
-  restarting.value = false
-}
-
 // 切换 TAB 即从磁盘刷新（丢弃另一 TAB 未保存的本地修改——最后写入者胜）。
 watch(activeTab, () => {
   void loadHooks()
@@ -176,9 +161,6 @@ onMounted(loadHooks)
   <div class="page-hooks">
     <div class="page-header" style="display: flex; justify-content: space-between; align-items: center;">
       <h2>Hooks 钩子</h2>
-      <button class="btn btn-sm" :disabled="restarting" @click="restartAgentForHooks">
-        {{ restarting ? '重启中…' : '重启 Agent 生效' }}
-      </button>
     </div>
     <div class="page-body">
       <div class="tabs">
@@ -274,7 +256,7 @@ onMounted(loadHooks)
       <div v-else>
         <p style="font-size: var(--text-sm); color: var(--text-secondary); margin: 0 0 var(--space-3);">
           每条钩子 = 触发工具（可选，留空对全部工具生效）+ 命令 + 超时。保存时后端做方言语义校验，
-          校验失败不落盘；保存后点右上角「重启 Agent 生效」。
+          校验失败不落盘；保存后下条消息自动生效（桥内热更）。
         </p>
         <div v-for="ev in EVENTS" :key="ev.id" class="card" style="margin-bottom: var(--space-4);">
           <div class="card-header" style="justify-content: space-between;">
@@ -298,7 +280,7 @@ onMounted(loadHooks)
         </div>
         <div class="card">
           <div class="card-body" style="display: flex; justify-content: flex-end; gap: var(--space-2); align-items: center;">
-            <span style="color: var(--text-muted); font-size: var(--text-xs);">保存后需重启 Agent 生效</span>
+            <span style="color: var(--text-muted); font-size: var(--text-xs);">保存后下条消息生效</span>
             <button class="btn btn-primary" @click="saveEditor" :disabled="editorSaving">
               {{ editorSaving ? '保存中…' : '保存全部钩子' }}
             </button>
