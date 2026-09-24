@@ -175,13 +175,22 @@ echo ==^> triggering Daily Nightly Release (workflow_dispatch)
 cd /d "%REPO_ROOT%"
 call gh workflow run daily-release.yml
 if errorlevel 1 goto :fail
-ping -n 9 127.0.0.1 >nul
+REM run registration on GitHub lags behind the trigger response -- poll
+REM instead of a fixed sleep (8s fixed wait raced the registration once).
+set /a TRIES=0
 set "TMPF=%TEMP%\nmb-rid.tmp"
+:dispatch_poll
 powershell -NoProfile -Command "gh run list --workflow daily-release.yml --limit 1 --json databaseId | ConvertFrom-Json | Select-Object -First 1 -ExpandProperty databaseId" > "%TMPF%" 2>nul
 set "RID="
 set /p RID=<"%TMPF%"
+if defined RID goto :dispatch_got_rid
+set /a TRIES+=1
+if %TRIES% geq 6 goto :dispatch_no_rid
+echo     run not registered yet, retrying (%TRIES%/6)...
+ping -n 11 127.0.0.1 >nul
+goto :dispatch_poll
+:dispatch_got_rid
 del "%TMPF%" >nul 2>&1
-if not defined RID goto :fail
 echo     run id: %RID%
 echo ==^> waiting for the build (nightly builds take roughly 10-30 minutes;
 echo     Ctrl+C here does NOT cancel the build itself)
@@ -189,6 +198,10 @@ call gh run watch %RID% --exit-status
 if errorlevel 1 goto :fail
 echo     build done. Now run the four-case verify: scripts\init-signing.bat verify %RID%
 goto :eof
+:dispatch_no_rid
+del "%TMPF%" >nul 2>&1
+echo [ERROR] could not discover the run id after 6 tries -- check the Actions page
+goto :fail
 
 REM ---------------------------------------------------------------------------
 :stage_verify

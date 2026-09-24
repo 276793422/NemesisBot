@@ -375,6 +375,14 @@ jobs:
         with:
           targets: aarch64-linux-android
 
+      # rust-toolchain.toml 把全仓 pin 到 1.95.0（rustup 目录 override 压过
+      # 上面 dtolnay 步装的 stable），cargo-ndk 不会代装目标 std——不补这一
+      # 步，android 编译必爆 E0463（can't find crate for core）。
+      # rustup target add 按 active toolchain 解析（目录 override 优先），
+      # std 恰好落进 pin 的 1.95.0。
+      - name: Install Android target for pinned toolchain
+        run: rustup target add aarch64-linux-android
+
       - name: Install cargo-ndk
         uses: taiki-e/install-action@v2
         with:
