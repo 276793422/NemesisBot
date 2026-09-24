@@ -289,6 +289,10 @@ const VISION_PROBE_TRANSPORT_MARKERS: &[&str] = &[
     "rate limit",
     "overloaded",
     "429",
+    // 2026-09-24：500 走 Unknown Display（"status 500: …"），限流/过载
+    // Display 都不含它——瞬态 500 误判 Some(false) 同样会钉死探针
+    // （与 loop 侧 recovery.rs transient 词表同口径，锚定格式防数字误匹配）。
+    "status 500",
 ];
 
 /// T10（多模态 D9）：第 8 题视觉探针——发一条带 1×1 PNG 的最小 user 请求

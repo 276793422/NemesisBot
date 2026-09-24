@@ -95,6 +95,7 @@ fn make_state(
         estop,
         cron: None,
         board: None,
+        signature_verify: None,
     })
 }
 

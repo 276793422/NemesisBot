@@ -126,6 +126,14 @@ impl AgentLoop {
                         "503",
                         "504",
                         "service unavailable",
+                        // 500 落 Unknown Display（"status 500: {body}"）——裸
+                        // "500" 会误匹配 body 数字（5000 tokens 等），用锚定
+                        // 格式。真机实证（2026-09-24 安卓端 glm-5.3-flash）：
+                        // GLM anthropic lane 间歇 500 api_error「网络错误，
+                        // 请稍后重试」，一次终局直接抛给用户；providers 侧
+                        // error_classifier::classify_by_status 早已把 500 归
+                        // Overloaded（可重试），loop 侧词表必须同口径。
+                        "status 500",
                     ]
                     .iter()
                     .any(|k| err_lower.contains(k));

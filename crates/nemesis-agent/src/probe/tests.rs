@@ -403,6 +403,9 @@ fn fg_failover_error_display_forms_are_transport_markers() {
         rate_limited.as_str(),
         overloaded.as_str(),
         "HTTP 429 too many requests",
+        // 500 走 Unknown Display（failover.rs from_status 落表形态）——
+        // 2026-09-24 安卓端 glm-5.3-flash 间歇 500 实证。
+        "unknown error from provider anthropic: status 500: {\"type\":\"error\",\"error\":{\"type\":\"api_error\"}}",
     ] {
         let lower = err.to_lowercase();
         assert!(

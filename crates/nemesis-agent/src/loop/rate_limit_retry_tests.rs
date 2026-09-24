@@ -504,3 +504,107 @@ fn retry_status_snapshot_roundtrip_and_expiry() {
     agent_loop.clear_rate_limit_status(key);
     assert!(agent_loop.retry_status(key).is_none(), "clear 后 = None");
 }
+
+// -- 2026-09-24：上游 500（Unknown Display）落入 transient 环 ----------------
+
+/// 真机同款 500 错误文本（GLM anthropic lane 间歇 api_error，2026-09-24
+/// 安卓端 request body 截 200 字符形态；旧词表只认 502/503/504，500 一次
+/// 终局直接抛给用户）。
+const GLM_500_ERR: &str = "unknown error from provider anthropic: status 500: {\"type\":\"error\",\"error\":{\"type\":\"api_error\",\"code\":\"1234\",\"message\":\"[1234][网络错误，错误id：202609241154091cf269318c4d4e07，请稍后重试]\"}";
+
+/// 500 N 次后成功的 provider——Arc 计数器供测试断言实际调用次数。
+struct Status500ThenSuccess {
+    calls: std::sync::Arc<std::sync::atomic::AtomicUsize>,
+    fail_times: usize,
+}
+
+#[async_trait]
+impl LlmProvider for Status500ThenSuccess {
+    async fn chat(
+        &self,
+        _model: &str,
+        _messages: Vec<LlmMessage>,
+        _options: Option<crate::types::ChatOptions>,
+        _tools: Vec<crate::types::ToolDefinition>,
+    ) -> Result<LlmResponse, String> {
+        let n = self.calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        if n < self.fail_times {
+            Err(GLM_500_ERR.to_string())
+        } else {
+            Ok(LlmResponse {
+                content: "Recovered!".to_string(),
+                tool_calls: Vec::new(),
+                finished: true,
+                reasoning_content: None,
+                usage: None,
+                raw_request_body: None,
+                raw_response_body: None,
+            })
+        }
+    }
+}
+
+#[tokio::test(start_paused = true)]
+async fn upstream_status_500_enters_transient_ring_and_recovers() {
+    let calls = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let agent_loop = AgentLoop::new(
+        Box::new(Status500ThenSuccess {
+            calls: calls.clone(),
+            fail_times: 1,
+        }),
+        test_config(),
+    );
+    let instance = AgentInstance::new(test_config());
+    let context = RequestContext::new("web", "chat1", "user1", "session1");
+
+    let events = agent_loop.run(&instance, "Hello", &context).await;
+
+    assert!(
+        events
+            .iter()
+            .any(|e| matches!(e, AgentEvent::Done(m) if m == "Recovered!")),
+        "500 瞬态错误必须进 transient 环重试恢复: {events:?}"
+    );
+    assert!(
+        !events.iter().any(|e| matches!(e, AgentEvent::Error(_))),
+        "重试恢复后不得再有 Error 终局: {events:?}"
+    );
+    assert_eq!(
+        calls.load(std::sync::atomic::Ordering::SeqCst),
+        2,
+        "1 首败 + 1 重试成功"
+    );
+}
+
+#[tokio::test(start_paused = true)]
+async fn upstream_status_500_exhausts_transient_ring_without_rate_limit_ring() {
+    // 恒 500：1 首败 + MAX_TRANSIENT_RETRIES 次重试全败 → 结构化终局保留
+    // 原始原因；且不得误入限流环（三环互斥不互吞）。
+    let agent_loop = AgentLoop::new(
+        Box::new(Status500ThenSuccess {
+            calls: std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0)),
+            fail_times: usize::MAX,
+        }),
+        test_config(),
+    );
+    let instance = AgentInstance::new(test_config());
+    let context = RequestContext::new("web", "chat1", "user1", "session1");
+
+    let events = agent_loop.run(&instance, "Hello", &context).await;
+
+    let errs: Vec<_> = events
+        .iter()
+        .filter_map(|e| match e {
+            AgentEvent::Error(m) => Some(m.clone()),
+            _ => None,
+        })
+        .collect();
+    assert!(
+        errs.iter().any(|m| m.contains("status 500")),
+        "终局错误保留原始原因: {errs:?}"
+    );
+    assert!(
+        !errs.iter().any(|m| m.contains("上游限流")),
+        "500 不得被误分类进限流环（互斥不互吞）: {errs:?}"
+    );
+}
