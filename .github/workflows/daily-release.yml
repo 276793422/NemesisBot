@@ -555,7 +555,10 @@ jobs:
             echo "⚠️ 锁定 staging 缺席（无锚跳过锁定构建）——跳过 nightly-locked-full.zip"
             exit 0
           fi
-          mkdir -p locked-full/android locked-full/certs
+          # signserver/sign-tools 也要预建：cp -r 不创建中间父目录（2026-09-24
+          # run 35965038440 首跑实证：locked-full/signserver 缺席 → cp 报
+          # cannot create directory，publish job 首次真正执行暴露）
+          mkdir -p locked-full/android locked-full/certs locked-full/signserver locked-full/sign-tools
           # windows/ 与 linux/：各平台锁定 staging 原样（已签锁定二进制 + plugins/
           # + version.txt(Flavor: enforce-locked) + signatures.json + certs/）
           cp -r locked-artifacts/locked-staging-windows locked-full/windows
