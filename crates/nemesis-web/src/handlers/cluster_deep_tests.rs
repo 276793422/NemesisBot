@@ -117,6 +117,7 @@ fn make_deep_ctx(
         webhook_rate_limiter: Arc::new(()),
         internal_cmd_tx: None,
         estop: None,
+        signature_verify: None,
         cron: None,
         board: None,
     });
@@ -1433,6 +1434,7 @@ fn ctx_ws_with_provider(
         webhook_rate_limiter: Arc::new(()),
         internal_cmd_tx: None,
         estop: None,
+        signature_verify: None,
         cron: None,
         board: None,
     };

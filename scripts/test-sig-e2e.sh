@@ -84,8 +84,8 @@ step "11. 固化验证：不传 --keys（期望 Valid，纯编译期固化根锚
 unset NEMESIS_ROOT_ANCHOR
 $VL verify "$DLL" /tmp/sig_signed.bin | head -1
 
-step "12. exe-sign-tool v4 签 + verify（期望 Valid）"
-./target/debug/exe-sign-tool sign --keys "$KEYS" /tmp/sig_target.bin --out /tmp/sig_est.bin >/dev/null
-./target/debug/exe-sign-tool verify --keys "$KEYS" /tmp/sig_est.bin | head -1
+step "12. exe-sign-tool v4 签 + verify（期望 Valid；P0 起 --target 为旗标）"
+./target/debug/exe-sign-tool sign --keys "$KEYS" --target /tmp/sig_target.bin --out /tmp/sig_est.bin >/dev/null
+./target/debug/exe-sign-tool verify --keys "$KEYS" --target /tmp/sig_est.bin | head -1
 
 echo -e "\n### 完成 ###"

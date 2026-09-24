@@ -271,6 +271,18 @@ desc = "Dashboard 交互终端（/ws/pty + xterm.js，config terminal.enabled �
 category = "subsystems"
 default = true
 
+# NOTE: `verify-enforce-lock` 是**锁定版旗标**（签名验证接入计划 §2.1）——空
+# feature，纯编译期 cfg：勾上即把 enforce 策略烧死（config.security.json 的
+# signature_verify 任意值被忽略，启动自验失败 exit 86；无编译期锚直接拒启）。
+# 默认关（消费版三态开关跟随 config）；勾选 + certs/root_cert.der 在仓库 =
+# 锁定版本地可直接构建。CI 锁定包（nightly-locked-full.zip）即此 feature 构建。
+[[feature]]
+id = "verify-enforce-lock"
+label = "锁定版（签名验证强制）"
+desc = "编译期烧死 enforce：启动自验失败即拒启（exit 86），config 不可关（MDM 管控语义）。需先完成密钥仪式（scripts/init-signing.sh）让 certs/root_cert.der 入仓，否则构建出的锁定版无法启动。消费版保持关"
+category = "subsystems"
+default = false
+
 # ── Frontend-only gate (no Rust code; exists in nemesisbot/Cargo.toml [features]
 #    only so `nemesis-config check` passes) ────────────────────────────────
 

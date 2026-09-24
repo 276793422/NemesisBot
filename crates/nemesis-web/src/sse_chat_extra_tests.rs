@@ -293,6 +293,7 @@ fn make_state(
         webhook_rate_limiter: Arc::new(()),
         internal_cmd_tx: None,
         estop: None,
+        signature_verify: None,
         cron: None,
         board: None,
     })

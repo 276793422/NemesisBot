@@ -26,11 +26,11 @@ use p256::ecdsa::{SigningKey, VerifyingKey};
 use serde::{Deserialize, Serialize};
 use std::time::{SystemTime, UNIX_EPOCH};
 
-/// keys.json v2 版本号。
-const KEYS_JSON_VERSION: u32 = 2;
+/// keys.json v2 版本号（bundle 分包模块同用 v2 形态）。
+pub(crate) const KEYS_JSON_VERSION: u32 = 2;
 
 /// 有效期回拨（1h，容时钟偏差）。
-const NOT_BEFORE_BACKDATE_SECS: u64 = 3600;
+pub(crate) const NOT_BEFORE_BACKDATE_SECS: u64 = 3600;
 
 /// D4 默认跨度：根 30y。
 const SPAN_ROOT_SECS: u64 = 30 * 365 * 86400;
@@ -49,14 +49,24 @@ pub const CN_LEAF: &str = "NemesisBot Code Signing";
 pub const ORG: &str = "NemesisBot";
 
 /// JSON 持久化形式（v2：hex 标量 + hex DER 证书）。
+///
+/// 仅 `version` / `root_cert` 恒必填，其余字段 `#[serde(default)]`——支持**分包形态**
+/// （CI sign-only 包缺 root_sk/issuing_sk 等，见 [`crate::bundle`]）。
+/// 全量语义的 [`KeyHierarchy::from_json`] 对空字段诚实拒绝（不生成占位标量）；
+/// 分包消费走 `bundle` 模块的类型化装载器。
 #[derive(Debug, Serialize, Deserialize)]
 pub struct KeyHierarchyJson {
     pub version: u32,
+    #[serde(default)]
     pub root_sk: String,
     pub root_cert: String,
+    #[serde(default)]
     pub issuing_sk: String,
+    #[serde(default)]
     pub issuing_cert: String,
+    #[serde(default)]
     pub leaf_sk: String,
+    #[serde(default)]
     pub leaf_cert: String,
 }
 
@@ -228,21 +238,20 @@ impl KeyHierarchy {
                 j.version
             ));
         }
-        let root_sk = crypto::signing_key_from_hex(&j.root_sk)?;
-        let issuing_sk = crypto::signing_key_from_hex(&j.issuing_sk)?;
-        let leaf_sk = crypto::signing_key_from_hex(&j.leaf_sk)?;
-        let root_cert = Certificate::from_der(
-            &hex_decode_vec(&j.root_cert).map_err(|e| anyhow!("root_cert: {e}"))?,
-        )
-        .map_err(|e| anyhow!("root_cert: {e}"))?;
-        let issuing_cert = Certificate::from_der(
-            &hex_decode_vec(&j.issuing_cert).map_err(|e| anyhow!("issuing_cert: {e}"))?,
-        )
-        .map_err(|e| anyhow!("issuing_cert: {e}"))?;
-        let leaf_cert = Certificate::from_der(
-            &hex_decode_vec(&j.leaf_cert).map_err(|e| anyhow!("leaf_cert: {e}"))?,
-        )
-        .map_err(|e| anyhow!("leaf_cert: {e}"))?;
+        // 分包形态（空字段）在此诚实拒绝——全量装载要求三级俱全，绝不生成占位
+        // 标量（占位私钥若流进需要真实根/中间私钥的场景 = 静默签出废证书）。
+        let root_sk = require_scalar(&j.root_sk, "root_sk")?;
+        let issuing_sk = require_scalar(&j.issuing_sk, "issuing_sk")?;
+        let leaf_sk = require_scalar(&j.leaf_sk, "leaf_sk")?;
+        let root_cert =
+            Certificate::from_der(require_cert_hex(&j.root_cert, "root_cert")?.as_ref())
+                .map_err(|e| anyhow!("root_cert: {e}"))?;
+        let issuing_cert =
+            Certificate::from_der(require_cert_hex(&j.issuing_cert, "issuing_cert")?.as_ref())
+                .map_err(|e| anyhow!("issuing_cert: {e}"))?;
+        let leaf_cert =
+            Certificate::from_der(require_cert_hex(&j.leaf_cert, "leaf_cert")?.as_ref())
+                .map_err(|e| anyhow!("leaf_cert: {e}"))?;
         Ok(KeyHierarchy {
             root_sk,
             root_cert,
@@ -264,6 +273,26 @@ impl KeyHierarchy {
         let j: KeyHierarchyJson = serde_json::from_slice(&data)?;
         Self::from_json(&j)
     }
+}
+
+/// 私钥标量字段装载（空串 = 分包形态，命名诚实拒绝）。
+fn require_scalar(hex: &str, field: &str) -> Result<SigningKey> {
+    if hex.is_empty() {
+        return Err(anyhow!(
+            "{field}: 字段为空——这是分包形态的 keys.json，全量装载要求三级私钥俱全（分包消费走 bundle::SigningMaterial / bundle::IssuingMaterial / bundle::RootMaterial 类型化装载器）"
+        ));
+    }
+    crypto::signing_key_from_hex(hex).map_err(|e| anyhow!("{field}: {e}"))
+}
+
+/// 证书 hex 字段装载（空串同上）。
+fn require_cert_hex(hex: &str, field: &str) -> Result<Vec<u8>> {
+    if hex.is_empty() {
+        return Err(anyhow!(
+            "{field}: 字段为空——分包形态缺证书，全量装载要求三级证书俱全"
+        ));
+    }
+    hex_decode_vec(hex).map_err(|e| anyhow!("{field}: {e}"))
 }
 
 #[cfg(test)]

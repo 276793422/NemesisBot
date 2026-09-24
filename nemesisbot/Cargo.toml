@@ -54,6 +54,11 @@ usage = []
 # L8 PTY 内嵌终端（dashboard 终端 tab；config terminal.enabled 默认关双闸）
 terminal = ["nemesis-web/terminal"]
 
+# 锁定版旗标（签名验证接入计划 §2.1）：空 feature，纯编译期 cfg——verify_policy
+# 据此把 enforce 烧死（config 任意值被忽略）。cargo feature 指纹原生跟踪，
+# 同 target 先消费后锁定无 stale（option_env! 方案的同 target 缓存复用坑）。
+verify-enforce-lock = []
+
 # Channel backends (forwarded to nemesis-channels)
 channels-web = ["nemesis-channels/web"]
 channels-webhook = ["nemesis-channels/webhook"]
@@ -113,6 +118,8 @@ nemesis-utils = { workspace = true }
 nemesis-path = { workspace = true }
 # Swarm M3（§5.4/D-5）：board_asset 工具的 HTTP 拉取走共享连接池。
 nemesis-http-pool = { workspace = true }
+# 签名验证接入（P0）：启动自验走 lib 直接验签（不走 DLL）。
+nemesis-verify = { workspace = true }
 nemesis-sandbox = { workspace = true, optional = true }
 nemesis-injector = { workspace = true, optional = true }
 nemesis-eval-proxy = { workspace = true, optional = true }
@@ -147,6 +154,8 @@ include_dir = "0.7"
 [build-dependencies]
 chrono = { workspace = true }
 winresource = "0.1"
+# 锚注入（build.rs 三级优先级第 2 级：certs/root_cert.der 现算 SHA-256）
+sha2 = { workspace = true }
 
 [dev-dependencies]
 tempfile = "3"

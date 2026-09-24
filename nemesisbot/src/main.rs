@@ -101,6 +101,10 @@ mod security_setup;
 /// "解析器未安装"，明文/env/yaml 链路不受影响）。
 #[cfg(feature = "security")]
 mod vault_runtime;
+/// 签名验证三态裁决（接入计划 §1/§3，2026-09-23）：resolve_mode 单一真相源
+/// + 启动自验单一入口（Cli::parse 后调，enforce 失败 exit 86）+ StartCheck
+/// 快照（gateway 审计链 / WSAPI status / 前端徽标数据源）。
+mod verify_policy;
 /// M7（devtool-upgrade 阶段 5）：Dashboard 审批管理器——auditor 的
 /// require_approval 走 dashboard 审批卡（AgentEvent 广播 + WSAPI respond）。
 /// 门控随消费方：唯一生产调用点在 gateway 的 security cfg 装配块内，
@@ -466,6 +470,12 @@ async fn main() -> Result<()> {
         println!("Local mode enabled: using ./.nemesisbot");
     }
 
+    // 签名验证启动自验（接入计划 §3）：Cli::parse 之后、任何命令装配之前——
+    // gateway / run / acp 及其余子命令同源覆盖。必须在双击直启 respawn 之前：
+    // enforce 拒启要对启动者可见，不能藏进 detached 子进程。
+    // executor / eval-agent 子进程已在上方短路，不重复自验（由已验父进程派生）。
+    verify_policy::self_check_and_enforce(local_mode);
+
     // 双击直启（2026-09-17）：无参/`gateway` 语义且独占新控制台（双击 exe
     // 形态）→ 无窗重生 DETACHED_PROCESS 子进程后本进程退出；子进程带
     // NEMESISBOT_BARE_CHILD 跳过检测继续跑。其他子命令保持控制台输出
@@ -578,6 +588,12 @@ fn main() -> Result<()> {
         cli.local = true;
         println!("Local mode enabled: using ./.nemesisbot");
     }
+
+    // 签名验证启动自验（接入计划 §3）：Cli::parse 之后、任何命令装配之前——
+    // gateway / run / acp 及其余子命令同源覆盖。必须在双击直启 respawn 之前：
+    // enforce 拒启要对启动者可见，不能藏进 detached 子进程。
+    // executor / eval-agent 子进程已在上方短路，不重复自验（由已验父进程派生）。
+    verify_policy::self_check_and_enforce(local_mode);
 
     // R1 真机验收修复（2026-08-28）：与非 mac 入口同构 —— 把解析出的 home
     // 同步进 nemesis-path 进程单例（详见非 mac 入口同位置的注释）。

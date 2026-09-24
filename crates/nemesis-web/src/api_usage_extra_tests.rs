@@ -52,6 +52,7 @@ fn make_state_no_data_store() -> Arc<AppState> {
         webhook_rate_limiter: Arc::new(crate::handlers::workflow::WebhookRateLimiter::new()),
         internal_cmd_tx: None,
         estop: None,
+        signature_verify: None,
         cron: None,
         board: None,
     })
@@ -89,6 +90,7 @@ fn make_state_with_store(ds: Arc<DataStore>) -> Arc<AppState> {
         webhook_rate_limiter: Arc::new(crate::handlers::workflow::WebhookRateLimiter::new()),
         internal_cmd_tx: None,
         estop: None,
+        signature_verify: None,
         cron: None,
         board: None,
     };

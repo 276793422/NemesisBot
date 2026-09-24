@@ -79,6 +79,7 @@ fn make_state(auth_token: &str) -> std::sync::Arc<AppState> {
         webhook_rate_limiter: Arc::new(()),
         internal_cmd_tx: None,
         estop: None,
+        signature_verify: None,
         cron: None,
         board: None,
     })

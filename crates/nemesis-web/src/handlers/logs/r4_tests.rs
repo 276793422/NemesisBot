@@ -60,6 +60,7 @@ fn make_ctx_with_memory(dir: &tempfile::TempDir) -> RequestContext {
         webhook_rate_limiter: Arc::new(()),
         internal_cmd_tx: None,
         estop: None,
+        signature_verify: None,
         cron: None,
         board: None,
     });
@@ -327,6 +328,7 @@ async fn chain_list_prev_hash_break_reports_prev_mismatch() {
             webhook_rate_limiter: Arc::new(()),
             internal_cmd_tx: None,
             estop: None,
+            signature_verify: None,
             cron: None,
             board: None,
         });

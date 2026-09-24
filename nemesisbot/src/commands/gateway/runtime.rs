@@ -90,6 +90,75 @@ pub(crate) async fn run_runtime(
     let health_server = runtime_handoff.health_server;
     #[cfg(feature = "cluster")]
     let mut cluster_adapter = runtime_handoff.cluster_adapter;
+
+    // 签名验证启动自验 → 审计链一条（接入计划 §4；Layer 8 Merkle
+    // append-only——事后改日志藏不住）。warn 失败进程仍活着，此处如实记
+    // denied；enforce 失败活不到这里（main 阶段已 exit 86）。
+    #[cfg(feature = "security")]
+    if let Some(plugin) = security_plugin.as_ref()
+        && let Some(chain) = plugin.audit_chain()
+        && let Some(sc) = crate::verify_policy::start_check()
+    {
+        let (state, detail, key_fp) = match &sc.outcome {
+            Some(o) => (
+                o.state.as_str().to_string(),
+                o.detail.as_str().to_string(),
+                o.key_fp.clone(),
+            ),
+            None => match (sc.degraded, sc.anchor_fp) {
+                (true, _) => (
+                    "NotRun".to_string(),
+                    "无信任锚——验证降级 off".to_string(),
+                    None,
+                ),
+                (false, _) => (
+                    "NotRun".to_string(),
+                    "security.signature_verify=off——验签跳过".to_string(),
+                    None,
+                ),
+            },
+        };
+        let exe = std::env::current_exe()
+            .map(|p| p.to_string_lossy().to_string())
+            .unwrap_or_else(|_| "current_exe".into());
+        let decision = if state == "Valid" {
+            "allowed"
+        } else {
+            "denied"
+        };
+        let reason = format!(
+            "mode={} locked={} anchor={} {}",
+            sc.mode.as_str(),
+            sc.locked,
+            sc.anchor_fp.unwrap_or("none"),
+            detail
+        );
+        if let Err(e) = chain.append(
+            "startup_self_verify",
+            "self_verify",
+            "system",
+            "local",
+            &exe,
+            decision,
+            &reason,
+        ) {
+            warn!("[Gateway] 签名验证审计链记录失败（非致命）: {}", e);
+        }
+        // 正式日志补发：自验发生在 lazy logger 装配前（main 阶段只有
+        // eprintln），这里给 gateway 日志一份带模式的汇总。
+        info!(
+            "[Gateway] 签名验证启动自验: mode={} locked={} anchor={} result={}{}",
+            sc.mode.as_str(),
+            sc.locked,
+            sc.anchor_fp.unwrap_or("none"),
+            state,
+            key_fp
+                .as_deref()
+                .map(|k| format!(" key_fp={k}"))
+                .unwrap_or_default(),
+        );
+    }
+
     // Step 18: Arm cron（原 agent_adapter.start() 位置，BUG #49 调序后）
     // 此时序不变量全部就位：agent 已订阅 bus（Step 14b）+ web 已 bind 且
     // gateway state 已写盘（上方 Step 17 尾部）——armed 后第一个 tick fire

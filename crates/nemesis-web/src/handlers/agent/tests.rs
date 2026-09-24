@@ -77,6 +77,7 @@ fn make_ctx_with_agent(svc: Arc<dyn AgentLoopService>) -> RequestContext {
         webhook_rate_limiter: Arc::new(crate::handlers::workflow::WebhookRateLimiter::new()),
         internal_cmd_tx: None,
         estop: None,
+        signature_verify: None,
         cron: None,
         board: None,
     });
@@ -264,6 +265,7 @@ fn make_ctx_from_loop(al: Arc<AgentLoop>, workspace: Option<String>) -> RequestC
         webhook_rate_limiter: Arc::new(crate::handlers::workflow::WebhookRateLimiter::new()),
         internal_cmd_tx: None,
         estop: None,
+        signature_verify: None,
         cron: None,
         board: None,
     });

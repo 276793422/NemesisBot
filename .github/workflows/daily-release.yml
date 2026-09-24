@@ -64,11 +64,15 @@ jobs:
             binary: nemesisbot          # Linux 产物无后缀
             archive: nightly-linux.tar.gz
             plugins_archive: nightly-linux-plugins.tar.gz
+            signserver_archive: nightly-signserver-linux.tar.gz
+            signtools_archive: nightly-sign-tools-linux.tar.gz
           - os: windows-latest
             platform: windows
             binary: nemesisbot.exe      # Windows 产物带 .exe
             archive: nightly-windows.zip
             plugins_archive: nightly-windows-plugins.zip
+            signserver_archive: nightly-signserver-windows.zip
+            signtools_archive: nightly-sign-tools-windows.zip
     runs-on: ${{ matrix.os }}
     steps:
       - name: Checkout code
@@ -119,6 +123,20 @@ jobs:
           npm run build
           echo "=== 前端产物 ==="
           ls -la ../crates/nemesis-web/static/
+
+      # CI v4 签名集成（P1.2①）：锚注入——消费版与锁定版构建都吃到这个 env。
+      # certs/root_cert.der 是信任根的公开证书（换它 = 换根，git 历史可追溯）。
+      # 不注入 → 消费版 warn 态出生即降级 off（接入计划矩阵），锁定构建同步跳过。
+      - name: Inject root anchor
+        shell: bash
+        run: |
+          if [ -f certs/root_cert.der ]; then
+            ANCHOR=$(sha256sum certs/root_cert.der | cut -d' ' -f1)
+            echo "NEMESIS_BUILD_ROOT_ANCHOR=$ANCHOR" >> "$GITHUB_ENV"
+            echo "root anchor: $ANCHOR"
+          else
+            echo "⚠️ certs/root_cert.der 不存在——产物无编译期锚（消费版签名验证降级 off），锁定版构建将跳过"
+          fi
 
       - name: Build nemesisbot (release)
         shell: bash
@@ -173,6 +191,78 @@ jobs:
           EOF
           cat staging/version.txt
 
+      # CI v4 签名集成（P1.2②）：锁定版构建——feature verify-enforce-lock 编译期
+      # 烧死 enforce 策略（feature 指纹原生跟踪，同 target 先消费后锁定无 stale）。
+      # 前置守卫：锚缺失 → 跳过（绝不产出无锚锁定二进制 = 自 brick 包）。
+      # 顺序关键：必须在 Stage artifacts 之后——locked build 会覆盖 target/release
+      # 里的 nemesisbot，消费版二进制得先拷走。
+      - name: Build locked nemesisbot (release, verify-enforce-lock)
+        shell: bash
+        run: |
+          if [ -z "${NEMESIS_BUILD_ROOT_ANCHOR:-}" ]; then
+            echo "⚠️ 无信任锚——跳过锁定版构建（不产出无法启动的无锚锁定包）"
+            exit 0
+          fi
+          cargo build --release -p nemesisbot --features verify-enforce-lock
+          echo "LOCKED_BUILT=1" >> "$GITHUB_ENV"
+
+      - name: Stage locked artifacts
+        shell: bash
+        if: env.LOCKED_BUILT == '1'
+        run: |
+          mkdir -p staging-locked/plugins
+          cp "target/release/${{ matrix.binary }}" staging-locked/
+          cp staging/plugins/* staging-locked/plugins/ 2>/dev/null || true
+          cp staging/version.txt staging-locked/
+          echo "Flavor    : enforce-locked" >> staging-locked/version.txt
+          echo "=== staging-locked 内容 ==="
+          ls -la staging-locked
+
+      # signserver（owner 运维包主体）+ sign-tools（用户验签工具包主体）
+      - name: Build sign tools (revoke-server + exe-sign-tool)
+        shell: bash
+        run: cargo build --release -p revoke-server -p exe-sign-tool
+
+      - name: Stage signserver
+        shell: bash
+        run: |
+          if [ "${{ matrix.platform }}" = "windows" ]; then EXT=.exe; else EXT=; fi
+          mkdir -p staging-signserver/certs
+          cp "target/release/revoke-server$EXT" staging-signserver/
+          # 包定位是 owner 运维包（零私钥）；root_cert.der 缺席 = 信任根未入仓，诚实留空
+          cp certs/root_cert.der staging-signserver/certs/ 2>/dev/null \
+            || echo "⚠️ certs/root_cert.der 不存在——signserver 包暂不带根证书"
+          cp scripts/signing/README-SIGNSERVER.md staging-signserver/
+          echo "=== staging-signserver 内容 ==="
+          ls -la staging-signserver
+
+      - name: Stage sign-tools
+        shell: bash
+        run: |
+          if [ "${{ matrix.platform }}" = "windows" ]; then EXT=.exe; else EXT=; fi
+          mkdir -p staging-signtools
+          cp "target/release/exe-sign-tool$EXT" staging-signtools/
+          cp scripts/signing/VERIFY.md staging-signtools/
+          echo "=== staging-signtools 内容 ==="
+          ls -la staging-signtools
+
+      # CI v4 签名集成（P1.2③）：各分发 staging 各签一次——锁定包内不允许出现
+      # 未签名的锁定版二进制（接入计划 §2.2）。
+      # Secrets 未配置 → ci-sign-artifacts.sh WARN + exit 0（构建绿，fork 零门槛）；
+      # Secrets 在但签后自检失败 → 脚本 exit 1（构建红，防止静默发坏链产物）。
+      - name: Sign artifacts (v4)
+        shell: bash
+        env:
+          NMB_ISSUING_SK: ${{ secrets.NMB_ISSUING_SK_HEX }}
+          NMB_ISSUING_CERT: ${{ secrets.NMB_ISSUING_CERT_HEX }}
+        run: |
+          bash scripts/ci-sign-artifacts.sh staging
+          if [ "${LOCKED_BUILT:-}" = "1" ]; then
+            bash scripts/ci-sign-artifacts.sh staging-locked
+          fi
+          bash scripts/ci-sign-artifacts.sh staging-signserver
+          bash scripts/ci-sign-artifacts.sh staging-signtools
+
       - name: Package (Linux)
         if: matrix.platform == 'linux'
         run: tar -czf ${{ matrix.archive }} -C staging .
@@ -203,6 +293,23 @@ jobs:
             echo "无 plugin 产物（编译全失败或被跳过），跳过 plugins 包"
           fi
 
+      # ---- CI v4 签名集成（P1.2⑤）：signserver / sign-tools 每平台包 ----
+      - name: Package signserver
+        shell: bash
+        run: |
+          case "${{ matrix.signserver_archive }}" in
+            *.tar.gz) tar -czf "${{ matrix.signserver_archive }}" -C staging-signserver . ;;
+            *.zip)    (cd staging-signserver && 7z a "../${{ matrix.signserver_archive }}" '*') ;;
+          esac
+
+      - name: Package sign-tools
+        shell: bash
+        run: |
+          case "${{ matrix.signtools_archive }}" in
+            *.tar.gz) tar -czf "${{ matrix.signtools_archive }}" -C staging-signtools . ;;
+            *.zip)    (cd staging-signtools && 7z a "../${{ matrix.signtools_archive }}" '*') ;;
+          esac
+
       - name: Upload build artifact
         uses: actions/upload-artifact@v4
         with:
@@ -216,6 +323,30 @@ jobs:
         with:
           name: ${{ matrix.plugins_archive }}
           path: ${{ matrix.plugins_archive }}
+          retention-days: 7
+
+      # 锁定 staging 以目录形态上传（不打包）——release job 组装跨平台
+      # nightly-locked-full.zip 的原料（windows/ 与 linux/ 子目录）。
+      - name: Upload locked staging artifact
+        if: env.LOCKED_BUILT == '1'
+        uses: actions/upload-artifact@v4
+        with:
+          name: locked-staging-${{ matrix.platform }}
+          path: staging-locked/
+          retention-days: 7
+
+      - name: Upload signserver package
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.signserver_archive }}
+          path: ${{ matrix.signserver_archive }}
+          retention-days: 7
+
+      - name: Upload sign-tools package
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.signtools_archive }}
+          path: ${{ matrix.signtools_archive }}
           retention-days: 7
 
   # ============================================================
@@ -378,17 +509,82 @@ jobs:
         with:
           path: artifacts
           merge-multiple: true
+          # locked staging 以目录形态单列下载（下一 step）——平铺会互相覆盖
+          # version.txt / signatures.json（两平台同名文件，内容不同）
+          pattern: '!locked-staging-*'
+
+      - name: Download locked staging artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: locked-artifacts
+          pattern: 'locked-staging-*'
 
       - name: Show artifacts
         run: ls -la artifacts
+
+      # CI v4 签名集成（P1.2⑤）：nightly-locked-full.zip——锁定版只出这一个
+      # 单一大包（用户拍板：不出每平台 locked 包），锁定用户一站式。
+      # 原料缺席（无锚 → 锁定构建被跳过）→ 诚实跳过整包，不产残包。
+      - name: Assemble nightly-locked-full.zip
+        run: |
+          if [ ! -d locked-artifacts/locked-staging-windows ] || [ ! -d locked-artifacts/locked-staging-linux ]; then
+            echo "⚠️ 锁定 staging 缺席（无锚跳过锁定构建）——跳过 nightly-locked-full.zip"
+            exit 0
+          fi
+          mkdir -p locked-full/android locked-full/certs
+          # windows/ 与 linux/：各平台锁定 staging 原样（已签锁定二进制 + plugins/
+          # + version.txt(Flavor: enforce-locked) + signatures.json + certs/）
+          cp -r locked-artifacts/locked-staging-windows locked-full/windows
+          cp -r locked-artifacts/locked-staging-linux locked-full/linux
+          # android/：APK 原样（JKS 平台签名 = Android 的锁定语义，v4 不重复签）
+          cp artifacts/nightly-android.apk locked-full/android/
+          # signserver / sign-tools：按平台子目录合并（各自 signatures.json 不互踩）
+          SS_WIN=$(mktemp -d); SS_LNX=$(mktemp -d); ST_WIN=$(mktemp -d); ST_LNX=$(mktemp -d)
+          unzip -q artifacts/nightly-signserver-windows.zip -d "$SS_WIN"
+          tar xzf artifacts/nightly-signserver-linux.tar.gz -C "$SS_LNX"
+          unzip -q artifacts/nightly-sign-tools-windows.zip -d "$ST_WIN"
+          tar xzf artifacts/nightly-sign-tools-linux.tar.gz -C "$ST_LNX"
+          cp -r "$SS_WIN" locked-full/signserver/windows
+          cp -r "$SS_LNX" locked-full/signserver/linux
+          cp -r "$ST_WIN" locked-full/sign-tools/windows
+          cp -r "$ST_LNX" locked-full/sign-tools/linux
+          cp certs/root_cert.der locked-full/certs/
+          # 包级清单：全部文件 sha256 + 信任锚（各子目录自己的 v4 清单保留原位）
+          python3 - locked-full <<'PYEOF'
+          import hashlib, json, os, sys
+          root = sys.argv[1]
+          anchor = None
+          if os.path.exists('certs/root_cert.der'):
+              anchor = hashlib.sha256(open('certs/root_cert.der', 'rb').read()).hexdigest()
+          files = []
+          for dirpath, _, names in os.walk(root):
+              for n in sorted(names):
+                  if n == 'signatures.json':
+                      continue
+                  p = os.path.join(dirpath, n)
+                  files.append({
+                      'file': os.path.relpath(p, root).replace(os.sep, '/'),
+                      'sha256': hashlib.sha256(open(p, 'rb').read()).hexdigest(),
+                  })
+          json.dump({'schema': 1, 'package': 'nightly-locked-full',
+                     'chain_root_fp': anchor, 'files': files},
+                    open(os.path.join(root, 'signatures.json'), 'w'), indent=2)
+          PYEOF
+          (cd locked-full && zip -qr ../nightly-locked-full.zip .)
+          echo "=== locked-full 内容 ==="
+          find locked-full -maxdepth 2 | sort
 
       # H1：发布包写 manifest（版本/commit/feature/SHA-256）——下载方可自校验
       - name: Generate manifest + SHA-256 checksums
         run: |
           cd artifacts
           sha256sum nightly-linux.tar.gz nightly-windows.zip nightly-android.apk > SHA256SUMS.txt
-          # plugins 包视 plugin 编译情况可能缺席（non-fatal），在才计入校验和
-          for f in nightly-linux-plugins.tar.gz nightly-windows-plugins.zip; do
+          # plugins / signserver / sign-tools / locked-full 包视构建情况可能缺席
+          # （non-fatal 或无锚跳过），在才计入校验和
+          for f in nightly-linux-plugins.tar.gz nightly-windows-plugins.zip \
+                   nightly-signserver-linux.tar.gz nightly-signserver-windows.zip \
+                   nightly-sign-tools-linux.tar.gz nightly-sign-tools-windows.zip \
+                   nightly-locked-full.zip; do
             [ -f "$f" ] && sha256sum "$f" >> SHA256SUMS.txt
           done
           VERSION=$(git describe --tags --always 2>/dev/null || echo "untagged")
@@ -424,6 +620,11 @@ jobs:
             artifacts/nightly-android.apk
             artifacts/nightly-linux-plugins.tar.gz
             artifacts/nightly-windows-plugins.zip
+            artifacts/nightly-signserver-linux.tar.gz
+            artifacts/nightly-signserver-windows.zip
+            artifacts/nightly-sign-tools-linux.tar.gz
+            artifacts/nightly-sign-tools-windows.zip
+            artifacts/nightly-locked-full.zip
             artifacts/MANIFEST.txt
             artifacts/SHA256SUMS.txt
           body: |
@@ -444,6 +645,14 @@ jobs:
             - **Android**: `nightly-android.apk`（arm64-v8a；签名模式见 build-android job 日志——配置了 ANDROID_KEYSTORE_* Secrets 为正式签名（与本地 sign.bat 同源），未配置为 debug 签名兜底（覆盖安装需先卸载））
             - **Windows 插件包**: `nightly-windows-plugins.zip`（包内扁平放插件 .dll：plugin_ui / plugin_onnx / eval_monitor_dll）
             - **Linux 插件包**: `nightly-linux-plugins.tar.gz`（包内扁平放插件 .so）
+            - **锁定版全家桶**: `nightly-locked-full.zip`（签名验证强制（enforce）的锁定版 Windows/Linux 客户端 + Android APK + 全部插件 + signserver + sign-tools 一站式；启动日志/侧栏带 🔒 标识；信任根未配置时本包缺席）
+            - **验签工具**: `nightly-sign-tools-windows.zip` / `nightly-sign-tools-linux.tar.gz`（exe-sign-tool + VERIFY.md——下载后逐文件验证包内二进制，零私钥）
+            - **签发吊销服务**: `nightly-signserver-windows.zip` / `nightly-signserver-linux.tar.gz`（owner 运维包，零私钥，配合离线 keys.json 运行）
+
+            > 签名说明：配置了 `NMB_ISSUING_*` Secrets 时全部本方二进制带 v4 签名
+            > （ECDSA P-256 + X.509 三级链，包内附 `signatures.json` 清单与
+            > `certs/root_cert.der` 根证书）；未配置时产物无签名但构建照常（fork 零门槛）。
+            > 验签：`exe-sign-tool verify --root-cert certs/root_cert.der --target nemesisbot.exe`。
 
             > plugins 包视 plugin 编译情况可能缺席（non-fatal）；主包内的 plugins/ 子目录不变。
 

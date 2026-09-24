@@ -71,6 +71,7 @@ fn make_ctx(main_loop: Option<Arc<AgentLoop>>) -> RequestContext {
         webhook_rate_limiter: std::sync::Arc::new(()),
         internal_cmd_tx: None,
         estop: None,
+        signature_verify: None,
         cron: None,
         board: None,
     });

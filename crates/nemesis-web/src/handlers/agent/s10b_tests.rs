@@ -80,6 +80,7 @@ fn make_ctx_with_optional_loop(al: Option<Arc<AgentLoop>>) -> RequestContext {
         webhook_rate_limiter: Arc::new(()),
         internal_cmd_tx: None,
         estop: None,
+        signature_verify: None,
         cron: None,
         board: None,
     });

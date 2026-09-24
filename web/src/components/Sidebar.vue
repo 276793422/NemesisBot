@@ -52,9 +52,60 @@ async function toggleEstop() {
     estopBusy.value = false
   }
 }
+// 签名验证状态徽标（2026-09-23 接入计划 §4）：只读呈现 gateway 启动自验
+// 快照（进程内不变，取到一次即止）。三色：绿=Valid（锁定版加 🔒）；
+// 红=warn 态 Tampered（二进制被篡改，最危险）；黄=warn 其余失败 + off +
+// 无锚降级。injected:false（测试/降级装配）不显示。
+const sigLoaded = ref(false)
+const sigMode = ref('')
+const sigLocked = ref(false)
+const sigResult = ref<string | null>(null)
+const sigKeyFp = ref<string | null>(null)
+const sigDetail = ref('')
+
+const sigBadge = computed(() => {
+  if (!sigLoaded.value) return null
+  if (sigResult.value === 'Valid') {
+    return { color: 'ok', label: sigLocked.value ? '🔒 签名已验证' : '签名已验证' }
+  }
+  if (sigResult.value === 'Tampered') {
+    return { color: 'bad', label: '签名已被篡改' }
+  }
+  if (sigMode.value === 'off') return { color: 'warn', label: '签名验证 关' }
+  return { color: 'warn', label: '签名验证异常' }
+})
+
+const sigTitle = computed(() => {
+  const parts = [`模式: ${sigMode.value}${sigLocked.value ? '（锁定版，config 不可关）' : ''}`]
+  if (sigResult.value) parts.push(`启动自验: ${sigResult.value}`)
+  if (sigKeyFp.value) parts.push(`签名者: ${sigKeyFp.value}`)
+  if (sigDetail.value) parts.push(sigDetail.value)
+  return parts.join('\n')
+})
+
+async function refreshSigVerify() {
+  if (sigLoaded.value) return
+  try {
+    const resp: any = await request('security', 'signature_verify_status', {}, 5000)
+    if (!resp || !resp.injected) return // 测试/降级装配：不显示，下个轮询周期再试无害
+    sigMode.value = resp.mode ?? ''
+    sigLocked.value = !!resp.locked
+    sigResult.value = resp.last_result ?? null
+    sigKeyFp.value = resp.key_fp ?? null
+    sigDetail.value = resp.detail ?? ''
+    sigLoaded.value = true
+  } catch {
+    // WS 未就绪——保持未加载，下个轮询周期再试。
+  }
+}
+
 onMounted(() => {
   refreshEstop()
-  estopTimer = setInterval(refreshEstop, 10000)
+  refreshSigVerify()
+  estopTimer = setInterval(() => {
+    refreshEstop()
+    refreshSigVerify() // 已加载即 no-op；状态进程内不变，无需独立计时器
+  }, 10000)
 })
 onUnmounted(() => {
   if (estopTimer) clearInterval(estopTimer)
@@ -211,6 +262,18 @@ const navGroups = [
     </nav>
 
     <div class="sidebar-footer">
+      <!-- 签名验证状态徽标（2026-09-23 接入计划 §4）：只读三色，gateway 注入状态后显示 -->
+      <a
+        v-if="sigBadge"
+        class="nav-item sig-badge"
+        :class="sigBadge.color"
+        :title="sigTitle"
+      >
+        <span class="nav-icon">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg>
+        </span>
+        <span class="nav-label">{{ sigBadge.label }}</span>
+      </a>
       <!-- Full Access 激活徽标（2026-09-20）：放行中必须始终可见（急停旁） -->
       <a
         v-if="fullAccess"
@@ -254,6 +317,19 @@ const navGroups = [
 
 <style scoped>
 .editor-badge {
+  color: #e6a23c;
+}
+/* 签名验证徽标三色（2026-09-23 接入计划 §4）：
+   ok=Valid 绿 / bad=Tampered 红（warn 态继续运行，必须刺眼）/ warn=其余+off+降级 黄 */
+.sig-badge.ok {
+  color: #2ecc71;
+}
+.sig-badge.bad {
+  color: #ff4d4d;
+  font-weight: 600;
+  background: rgba(255, 77, 77, 0.14);
+}
+.sig-badge.warn {
   color: #e6a23c;
 }
 .estop-btn {
