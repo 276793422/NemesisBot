@@ -1351,7 +1351,9 @@ async fn test_cmd_source_add_invalid_url_errors_before_network() {
 #[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
 #[test]
 fn test_run_skills_list_dir_missing_and_present() {
-    let _guard = crate::GLOBAL_STATE_LOCK.lock().unwrap();
+    let _guard = crate::GLOBAL_STATE_LOCK
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
     let th = temp_home_env();
     run(SkillsAction::List, false).unwrap();
     // 有 skill 目录（带/不带 SKILL.md、forge 目录）
@@ -1370,7 +1372,9 @@ fn test_run_skills_list_dir_missing_and_present() {
 #[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
 #[test]
 fn test_run_skills_remove_found_and_not_found() {
-    let _guard = crate::GLOBAL_STATE_LOCK.lock().unwrap();
+    let _guard = crate::GLOBAL_STATE_LOCK
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
     let th = temp_home_env();
     let skills = crate::common::workspace_path(&th.home).join("skills");
     std::fs::create_dir_all(skills.join("gone")).unwrap();
@@ -1394,7 +1398,9 @@ fn test_run_skills_remove_found_and_not_found() {
 #[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
 #[test]
 fn test_run_skills_show_variants() {
-    let _guard = crate::GLOBAL_STATE_LOCK.lock().unwrap();
+    let _guard = crate::GLOBAL_STATE_LOCK
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
     let th = temp_home_env();
     let skills = crate::common::workspace_path(&th.home).join("skills");
     // 不存在
@@ -1430,7 +1436,9 @@ fn test_run_skills_show_variants() {
 #[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
 #[test]
 fn test_run_skills_source_list_and_remove() {
-    let _guard = crate::GLOBAL_STATE_LOCK.lock().unwrap();
+    let _guard = crate::GLOBAL_STATE_LOCK
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
     let th = temp_home_env();
     // 配置缺失
     run(
@@ -1488,7 +1496,9 @@ fn test_run_skills_source_list_and_remove() {
 #[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
 #[test]
 fn test_run_skills_add_source_invalid_url() {
-    let _guard = crate::GLOBAL_STATE_LOCK.lock().unwrap();
+    let _guard = crate::GLOBAL_STATE_LOCK
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
     let _th = temp_home_env();
     std::thread::scope(|s| {
         let handle = s.spawn(|| {
@@ -1519,7 +1529,9 @@ fn test_run_skills_add_source_invalid_url() {
 #[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
 #[test]
 fn test_run_skills_validate_variants() {
-    let _guard = crate::GLOBAL_STATE_LOCK.lock().unwrap();
+    let _guard = crate::GLOBAL_STATE_LOCK
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
     let th = temp_home_env();
     // 路径不存在
     run(
@@ -1567,7 +1579,9 @@ fn test_run_skills_validate_variants() {
 #[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
 #[test]
 fn test_run_skills_builtin_install_and_list() {
-    let _guard = crate::GLOBAL_STATE_LOCK.lock().unwrap();
+    let _guard = crate::GLOBAL_STATE_LOCK
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
     let th = temp_home_env();
     run(SkillsAction::ListBuiltin, false).unwrap();
     // 指定名字安装
@@ -1605,7 +1619,9 @@ fn test_run_skills_builtin_install_and_list() {
 #[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn test_run_skills_search_empty_registries_dispatch() {
-    let _guard = crate::GLOBAL_STATE_LOCK.lock().unwrap();
+    let _guard = crate::GLOBAL_STATE_LOCK
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
     let _th = temp_home_env();
     run(
         SkillsAction::Search {
@@ -1629,7 +1645,9 @@ async fn test_run_skills_search_empty_registries_dispatch() {
 #[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn test_run_skills_cache_dispatch() {
-    let _guard = crate::GLOBAL_STATE_LOCK.lock().unwrap();
+    let _guard = crate::GLOBAL_STATE_LOCK
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
     let th = temp_home_env();
     // Stats：disabled 分支
     run(
@@ -1663,7 +1681,9 @@ async fn test_run_skills_cache_dispatch() {
 #[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn test_run_skills_learn_missing_config_dispatch() {
-    let _guard = crate::GLOBAL_STATE_LOCK.lock().unwrap();
+    let _guard = crate::GLOBAL_STATE_LOCK
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
     let _th = temp_home_env();
     let err = run(
         SkillsAction::Learn {
@@ -2068,7 +2088,9 @@ mod wave_b {
     #[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn wave_b_run_skills_install_arm_bridge_dispatch() {
-        let _guard = crate::GLOBAL_STATE_LOCK.lock().unwrap();
+        let _guard = crate::GLOBAL_STATE_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         let home_root = TempDir::new().unwrap();
         std::fs::create_dir_all(home_root.path().join(".nemesisbot")).unwrap();
         let _env = WaveBHomeGuard::set(home_root.path());
@@ -2086,7 +2108,9 @@ mod wave_b {
     #[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn wave_b_run_skills_source_add_arm_bridge_invalid_url() {
-        let _guard = crate::GLOBAL_STATE_LOCK.lock().unwrap();
+        let _guard = crate::GLOBAL_STATE_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         let home_root = TempDir::new().unwrap();
         std::fs::create_dir_all(home_root.path().join(".nemesisbot")).unwrap();
         let _env = WaveBHomeGuard::set(home_root.path());
@@ -2577,7 +2601,9 @@ mod r10_wave {
     #[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
     #[tokio::test]
     async fn r10_skills_source_add_trunk_persists_new_registry_source() {
-        let _lock = crate::GLOBAL_STATE_LOCK.lock().unwrap();
+        let _lock = crate::GLOBAL_STATE_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         let _net = R10OfflineNet::engage();
         let (_tmp, home) = r10_fresh_home();
         let cfg = skills_cfg_of(&home);
@@ -2607,7 +2633,9 @@ mod r10_wave {
     #[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
     #[tokio::test]
     async fn r10_skills_source_add_duplicate_name_rejected_before_second_write() {
-        let _lock = crate::GLOBAL_STATE_LOCK.lock().unwrap();
+        let _lock = crate::GLOBAL_STATE_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         let _net = R10OfflineNet::engage();
         let (_tmp, home) = r10_fresh_home();
 
@@ -2648,7 +2676,9 @@ mod r10_wave {
     #[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn r10_run_add_source_arm_drives_full_trunk_via_bridge() {
-        let _lock = crate::GLOBAL_STATE_LOCK.lock().unwrap();
+        let _lock = crate::GLOBAL_STATE_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         let tmp_root = TempDir::new().unwrap();
         std::fs::create_dir_all(tmp_root.path().join(".nemesisbot")).unwrap();
         let _home = R10HomeGuard::set(tmp_root.path());
@@ -2672,7 +2702,9 @@ mod r10_wave {
     #[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
     #[tokio::test]
     async fn r10_cmd_install_github_download_exhaustion_ends_cleanly() {
-        let _lock = crate::GLOBAL_STATE_LOCK.lock().unwrap();
+        let _lock = crate::GLOBAL_STATE_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         let _net = R10OfflineNet::engage();
         let tmp = TempDir::new().unwrap();
         let skills_dir = tmp.path().join("skills");
@@ -2691,7 +2723,9 @@ mod r10_wave {
     #[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
     #[tokio::test]
     async fn r10_cmd_install_clawhub_unreachable_reports_and_returns_ok() {
-        let _lock = crate::GLOBAL_STATE_LOCK.lock().unwrap();
+        let _lock = crate::GLOBAL_STATE_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         let _net = R10OfflineNet::engage();
         let tmp = TempDir::new().unwrap();
         let skills_dir = tmp.path().join("skills");
@@ -2716,7 +2750,9 @@ mod r10_wave {
     #[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn r10_run_install_clawhub_bridge_dispatches_offline_error_arm() {
-        let _lock = crate::GLOBAL_STATE_LOCK.lock().unwrap();
+        let _lock = crate::GLOBAL_STATE_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         let tmp_root = TempDir::new().unwrap();
         std::fs::create_dir_all(tmp_root.path().join(".nemesisbot")).unwrap();
         let _home = R10HomeGuard::set(tmp_root.path());

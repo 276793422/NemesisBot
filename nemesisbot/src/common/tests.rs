@@ -163,7 +163,9 @@ fn test_should_skip_heartbeat() {
 #[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
 #[test]
 fn test_resolve_home_env_var() {
-    let _guard = crate::GLOBAL_STATE_LOCK.lock().unwrap();
+    let _guard = crate::GLOBAL_STATE_LOCK
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
     let tmp = tempfile::TempDir::new().unwrap();
     let custom_path = tmp.path().to_string_lossy().to_string();
     unsafe {
@@ -422,7 +424,9 @@ fn test_resolve_home_local_returns_cwd_based() {
 #[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
 #[test]
 fn test_resolve_home_env_var_custom_path() {
-    let _guard = crate::GLOBAL_STATE_LOCK.lock().unwrap();
+    let _guard = crate::GLOBAL_STATE_LOCK
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
     let tmp = tempfile::TempDir::new().unwrap();
     let custom_path = tmp.path().to_string_lossy().to_string();
     unsafe {
@@ -696,7 +700,9 @@ fn test_log_flag_constants() {
 #[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
 #[test]
 fn test_ensure_exe_in_path() {
-    let _guard = crate::GLOBAL_STATE_LOCK.lock().unwrap();
+    let _guard = crate::GLOBAL_STATE_LOCK
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
     let exe_dir = std::env::current_exe()
         .unwrap()
         .parent()
@@ -745,7 +751,9 @@ fn test_ensure_exe_in_path() {
 #[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
 #[test]
 fn ensure_exe_in_path_without_path_env_sets_it_from_scratch() {
-    let _guard = crate::GLOBAL_STATE_LOCK.lock().unwrap();
+    let _guard = crate::GLOBAL_STATE_LOCK
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
     let canonical =
         std::fs::canonicalize(std::env::current_exe().unwrap().parent().unwrap()).unwrap();
     let saved = std::env::var("PATH").ok();
@@ -767,7 +775,9 @@ fn ensure_exe_in_path_without_path_env_sets_it_from_scratch() {
 #[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
 #[test]
 fn resolve_home_exe_dir_and_cwd_marker_branches() {
-    let _guard = crate::GLOBAL_STATE_LOCK.lock().unwrap();
+    let _guard = crate::GLOBAL_STATE_LOCK
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
     // 本测试需要 NEMESISBOT_HOME 不在场（保存并清除，测完恢复）。
     let saved_env = std::env::var("NEMESISBOT_HOME").ok();
     unsafe { std::env::remove_var("NEMESISBOT_HOME") };
@@ -1034,7 +1044,9 @@ mod r9_zero {
 fn resolve_auth_token_or_random_fail_closed_on_broken_reference() {
     // 本测试触及全局 vault 解析器槽位（进程单例）——持 crate 根锁，
     // 防 wave_b 等分发测试并发 install 换槽。
-    let _root = crate::GLOBAL_STATE_LOCK.lock().unwrap();
+    let _root = crate::GLOBAL_STATE_LOCK
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
     nemesis_config::set_global_vault_resolver(std::sync::Arc::new(|alias| {
         Err(format!("test resolver: {alias} 不存在"))
     }));

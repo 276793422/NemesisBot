@@ -1202,7 +1202,9 @@ impl Drop for S11bEditorEnv {
 #[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
 #[tokio::test]
 async fn test_s11b_run_status_default_no_files() {
-    let _guard = crate::GLOBAL_STATE_LOCK.lock().unwrap();
+    let _guard = crate::GLOBAL_STATE_LOCK
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
     let th = s11b_temp_home_env();
     // 无 config.json / 无 security cfg → 全默认 + "Scanner: not configured"
     run(SecurityAction::Status, false).await.unwrap();
@@ -1212,7 +1214,9 @@ async fn test_s11b_run_status_default_no_files() {
 #[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
 #[tokio::test]
 async fn test_s11b_run_status_with_configs() {
-    let _guard = crate::GLOBAL_STATE_LOCK.lock().unwrap();
+    let _guard = crate::GLOBAL_STATE_LOCK
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
     let th = s11b_temp_home_env();
     // 主配置：security.enabled=false + restrict_to_workspace=true
     let cfg_path = crate::common::config_path(&th.home);
@@ -1251,7 +1255,9 @@ async fn test_s11b_run_status_with_configs() {
 #[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
 #[tokio::test]
 async fn test_s11b_run_enable_disable_flips() {
-    let _guard = crate::GLOBAL_STATE_LOCK.lock().unwrap();
+    let _guard = crate::GLOBAL_STATE_LOCK
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
     let th = s11b_temp_home_env();
     let cfg_path = crate::common::config_path(&th.home);
     std::fs::write(
@@ -1278,7 +1284,9 @@ async fn test_s11b_run_enable_disable_flips() {
 #[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
 #[tokio::test]
 async fn test_s11b_run_enable_disable_insert_missing_sections() {
-    let _guard = crate::GLOBAL_STATE_LOCK.lock().unwrap();
+    let _guard = crate::GLOBAL_STATE_LOCK
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
     let th = s11b_temp_home_env();
     let cfg_path = crate::common::config_path(&th.home);
     // 实测行为：security 段缺失会补插；agents 段整体缺失时【不】补插
@@ -1311,7 +1319,9 @@ async fn test_s11b_run_enable_disable_insert_missing_sections() {
 #[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
 #[tokio::test]
 async fn test_s11b_run_config_show_missing_and_present() {
-    let _guard = crate::GLOBAL_STATE_LOCK.lock().unwrap();
+    let _guard = crate::GLOBAL_STATE_LOCK
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
     let th = s11b_temp_home_env();
     let sec_cfg = crate::common::security_config_path(&th.home);
     // 无文件：None 与 Show 都走 default 分支
@@ -1343,7 +1353,9 @@ async fn test_s11b_run_config_show_missing_and_present() {
 #[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
 #[tokio::test]
 async fn test_s11b_run_edit_via_editor_env() {
-    let _guard = crate::GLOBAL_STATE_LOCK.lock().unwrap();
+    let _guard = crate::GLOBAL_STATE_LOCK
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
     let _th = s11b_temp_home_env();
 
     // 1) EDITOR=hostname（存在、退出 0）→ Configuration saved 分支；
@@ -1390,7 +1402,9 @@ async fn test_s11b_run_edit_via_editor_env() {
 #[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
 #[tokio::test]
 async fn test_s11b_run_audit_show_export_denied() {
-    let _guard = crate::GLOBAL_STATE_LOCK.lock().unwrap();
+    let _guard = crate::GLOBAL_STATE_LOCK
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
     let th = s11b_temp_home_env();
     let audit_path = crate::common::workspace_path(&th.home).join("audit_chain.jsonl");
     std::fs::create_dir_all(audit_path.parent().unwrap()).unwrap();
@@ -1489,7 +1503,9 @@ async fn test_s11b_run_audit_show_export_denied() {
 #[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn test_s11b_run_security_test_allowed_blocked_invalid_json() {
-    let _guard = crate::GLOBAL_STATE_LOCK.lock().unwrap();
+    let _guard = crate::GLOBAL_STATE_LOCK
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
     let _th = s11b_temp_home_env();
     // ALLOWED：低风险读文件
     run(
@@ -1528,7 +1544,9 @@ async fn test_s11b_run_security_test_allowed_blocked_invalid_json() {
 #[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
 #[tokio::test]
 async fn test_s11b_run_rules_dispatch_arms() {
-    let _guard = crate::GLOBAL_STATE_LOCK.lock().unwrap();
+    let _guard = crate::GLOBAL_STATE_LOCK
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
     let _th = s11b_temp_home_env();
     // List：无类型 + 指定类型（无配置文件 → 默认规则）
     run(
@@ -1592,7 +1610,9 @@ fn s11b_write_dead_pending(home: &std::path::Path, ids: &[&str]) -> std::path::P
 #[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
 #[tokio::test]
 async fn test_s11b_run_approve_deny_pending() {
-    let _guard = crate::GLOBAL_STATE_LOCK.lock().unwrap();
+    let _guard = crate::GLOBAL_STATE_LOCK
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
     let th = s11b_temp_home_env();
     let pending_path = s11b_write_dead_pending(&th.home, &["op-1", "op-2"]);
 
@@ -1645,7 +1665,9 @@ async fn test_s11b_run_approve_deny_pending() {
 #[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
 #[tokio::test]
 async fn test_s11b_run_scanner_delegate_list() {
-    let _guard = crate::GLOBAL_STATE_LOCK.lock().unwrap();
+    let _guard = crate::GLOBAL_STATE_LOCK
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
     let _th = s11b_temp_home_env();
     // security scanner 子命令直接委派给 scanner 模块（无配置 → 空表）
     run(
@@ -1760,7 +1782,9 @@ mod wave_b {
     #[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
     #[tokio::test]
     async fn wave_b_pending_existing_file_with_empty_array_prints_no_ops() {
-        let _guard = crate::GLOBAL_STATE_LOCK.lock().unwrap();
+        let _guard = crate::GLOBAL_STATE_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         let th = s11b_temp_home_env();
         // 双 workspace 解析路径（S11b-1 挂账形状）：pending.json 存在且为 []，
         // 走 exists→读取→空数组提示臂（非不存在早退、也非条目列表）。
@@ -1789,7 +1813,9 @@ mod wave_b {
     #[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
     #[tokio::test]
     async fn wave_b_run_rules_add_dispatch_destructures_and_persists_rule() {
-        let _guard = crate::GLOBAL_STATE_LOCK.lock().unwrap();
+        let _guard = crate::GLOBAL_STATE_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         let th = s11b_temp_home_env();
         let sec_cfg = th
             .home
@@ -1822,7 +1848,9 @@ mod wave_b {
     #[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
     #[tokio::test]
     async fn wave_b_run_rules_remove_dispatch_removes_matched_operation_entry() {
-        let _guard = crate::GLOBAL_STATE_LOCK.lock().unwrap();
+        let _guard = crate::GLOBAL_STATE_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         let th = s11b_temp_home_env();
         let sec_cfg = th
             .home
@@ -1856,7 +1884,9 @@ mod wave_b {
     #[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
     #[tokio::test]
     async fn wave_b_audit_denied_with_only_allowed_entries_prints_no_ops() {
-        let _guard = crate::GLOBAL_STATE_LOCK.lock().unwrap();
+        let _guard = crate::GLOBAL_STATE_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         let th = s11b_temp_home_env();
         let audit_path = crate::common::workspace_path(&th.home).join("audit_chain.jsonl");
         std::fs::create_dir_all(audit_path.parent().unwrap()).unwrap();
@@ -1922,7 +1952,9 @@ mod wave_c {
     #[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
     #[tokio::test]
     async fn wc_run_status_corrupt_security_config_propagates_error() {
-        let _guard = crate::GLOBAL_STATE_LOCK.lock().unwrap();
+        let _guard = crate::GLOBAL_STATE_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         let th = s11b_temp_home_env();
         let sec_cfg = crate::common::security_config_path(&th.home);
         wc_write_raw(&sec_cfg, "{{{ definitely-not-json");
@@ -1933,7 +1965,9 @@ mod wave_c {
     #[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
     #[tokio::test]
     async fn wc_run_status_corrupt_main_config_propagates_error() {
-        let _guard = crate::GLOBAL_STATE_LOCK.lock().unwrap();
+        let _guard = crate::GLOBAL_STATE_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         let th = s11b_temp_home_env();
         std::fs::write(crate::common::config_path(&th.home), "{ broken").unwrap();
         // Status 第一段读主配置处 from_str 失败即上抛
@@ -1943,7 +1977,9 @@ mod wave_c {
     #[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
     #[tokio::test]
     async fn wc_run_enable_corrupt_main_config_fails_before_seeding_security_defaults() {
-        let _guard = crate::GLOBAL_STATE_LOCK.lock().unwrap();
+        let _guard = crate::GLOBAL_STATE_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         let th = s11b_temp_home_env();
         std::fs::write(crate::common::config_path(&th.home), "{ broken-main-cfg").unwrap();
         let sec_cfg = crate::common::security_config_path(&th.home);
@@ -1960,7 +1996,9 @@ mod wave_c {
     #[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
     #[tokio::test]
     async fn wc_run_disable_corrupt_main_config_propagates_error() {
-        let _guard = crate::GLOBAL_STATE_LOCK.lock().unwrap();
+        let _guard = crate::GLOBAL_STATE_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         let th = s11b_temp_home_env();
         std::fs::write(crate::common::config_path(&th.home), r#"{"security": "#).unwrap();
         assert!(run(SecurityAction::Disable, false).await.is_err());
@@ -1969,7 +2007,9 @@ mod wave_c {
     #[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
     #[tokio::test]
     async fn wc_run_enable_non_object_main_config_is_silent_noop_for_main_file() {
-        let _guard = crate::GLOBAL_STATE_LOCK.lock().unwrap();
+        let _guard = crate::GLOBAL_STATE_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         let th = s11b_temp_home_env();
         let cfg_path = crate::common::config_path(&th.home);
         // 合法 JSON 但顶层是数组：as_object_mut() 为 None → security 段插入被
@@ -1990,7 +2030,9 @@ mod wave_c {
     #[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
     #[tokio::test]
     async fn wc_run_rules_add_on_corrupt_policy_errors_and_preserves_garbage() {
-        let _guard = crate::GLOBAL_STATE_LOCK.lock().unwrap();
+        let _guard = crate::GLOBAL_STATE_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         let th = s11b_temp_home_env();
         let sec_cfg = crate::common::security_config_path(&th.home);
         const GARBAGE: &str = r#"{"rules": {"file": ["#;
@@ -2021,7 +2063,9 @@ mod wave_c {
     #[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
     #[tokio::test]
     async fn wc_run_config_show_prints_raw_bytes_without_parsing() {
-        let _guard = crate::GLOBAL_STATE_LOCK.lock().unwrap();
+        let _guard = crate::GLOBAL_STATE_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         let th = s11b_temp_home_env();
         let sec_cfg = crate::common::security_config_path(&th.home);
         // Show 不做任何 JSON 校验，任意字节原样输出且命令成功（宽容行为现状）。
@@ -2039,7 +2083,9 @@ mod wave_c {
     #[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
     #[tokio::test]
     async fn wc_run_config_reset_stdin_eof_aborts_without_touching_file() {
-        let _guard = crate::GLOBAL_STATE_LOCK.lock().unwrap();
+        let _guard = crate::GLOBAL_STATE_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         let th = s11b_temp_home_env();
         let sec_cfg = crate::common::security_config_path(&th.home);
         wc_write_raw(&sec_cfg, r#"{"sentinel": true}"#);
@@ -2063,7 +2109,9 @@ mod wave_c {
     #[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
     #[tokio::test]
     async fn wc_run_edit_editor_exit_zero_reaches_saved_branch() {
-        let _guard = crate::GLOBAL_STATE_LOCK.lock().unwrap();
+        let _guard = crate::GLOBAL_STATE_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         let _th = s11b_temp_home_env();
         let tmp = tempfile::tempdir().unwrap();
         let bat = tmp.path().join("ok0.bat");
@@ -2075,7 +2123,9 @@ mod wave_c {
     #[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
     #[tokio::test]
     async fn wc_run_audit_export_write_failure_propagates_when_output_blocked() {
-        let _guard = crate::GLOBAL_STATE_LOCK.lock().unwrap();
+        let _guard = crate::GLOBAL_STATE_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         let th = s11b_temp_home_env();
         let audit_path = crate::common::workspace_path(&th.home).join("audit_chain.jsonl");
         std::fs::create_dir_all(audit_path.parent().unwrap()).unwrap();
@@ -2163,7 +2213,9 @@ mod r10_arcs {
     #[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
     #[tokio::test]
     async fn r10_nested_config_reset_dispatch_eof_aborts_without_touching_file() {
-        let _guard = crate::GLOBAL_STATE_LOCK.lock().unwrap();
+        let _guard = crate::GLOBAL_STATE_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         let th = s11b_temp_home_env();
         let sec_cfg = crate::common::security_config_path(&th.home);
         std::fs::write(&sec_cfg, r#"{"r10":"untouched"}"#).unwrap();
@@ -2239,7 +2291,9 @@ mod r10_arcs {
     #[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
     #[tokio::test]
     async fn r10_disable_top_level_array_config_skips_edit_without_writes() {
-        let _guard = crate::GLOBAL_STATE_LOCK.lock().unwrap();
+        let _guard = crate::GLOBAL_STATE_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         let th = s11b_temp_home_env();
         let cfg_path = crate::common::config_path(&th.home);
         std::fs::write(&cfg_path, "[1,2]").unwrap();

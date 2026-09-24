@@ -533,7 +533,9 @@ mod run_arm {
 
     #[cfg(windows)] // Windows-form helper (Linux nightly: excluded, 2026-09-02 sweep)
     fn with_env_home(f: impl FnOnce(std::path::PathBuf)) {
-        let _guard = crate::GLOBAL_STATE_LOCK.lock().unwrap();
+        let _guard = crate::GLOBAL_STATE_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         let tmp = tempfile::tempdir().unwrap();
         unsafe {
             std::env::set_var("NEMESISBOT_HOME", tmp.path());
@@ -864,7 +866,9 @@ mod wave_a {
 
     #[cfg(windows)] // Windows-form helper (Linux nightly: excluded, 2026-09-02 sweep)
     fn with_env_home(f: impl FnOnce(std::path::PathBuf)) {
-        let _guard = crate::GLOBAL_STATE_LOCK.lock().unwrap();
+        let _guard = crate::GLOBAL_STATE_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         let tmp = tempfile::tempdir().unwrap();
         unsafe {
             std::env::set_var("NEMESISBOT_HOME", tmp.path());

@@ -110,7 +110,9 @@ fn test_list_embedded_files_no_backslashes() {
 #[allow(deprecated)]
 fn test_resolve_embedded_static_dir_returns_path() {
     // GLOBAL_STATE_LOCK：与 S11d 磁盘覆盖测试（exe 旁瞬时 static/）互斥。
-    let _guard = crate::GLOBAL_STATE_LOCK.lock().unwrap();
+    let _guard = crate::GLOBAL_STATE_LOCK
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
     // Legacy function only returns disk path now
     let result = resolve_embedded_static_dir();
     // Result depends on whether static/ exists next to exe
@@ -121,7 +123,9 @@ fn test_resolve_embedded_static_dir_returns_path() {
 #[test]
 fn test_resolve_static_files_returns_provider() {
     // GLOBAL_STATE_LOCK：与 S11d 磁盘覆盖测试（exe 旁瞬时 static/）互斥。
-    let _guard = crate::GLOBAL_STATE_LOCK.lock().unwrap();
+    let _guard = crate::GLOBAL_STATE_LOCK
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
     let provider = resolve_static_files();
     // Should be able to get index.html from either disk or memory
     let content = provider.get_file("index.html");
@@ -135,7 +139,9 @@ fn test_resolve_static_files_returns_provider() {
 #[test]
 fn test_resolve_static_files_list() {
     // GLOBAL_STATE_LOCK：与 S11d 磁盘覆盖测试（exe 旁瞬时 static/）互斥。
-    let _guard = crate::GLOBAL_STATE_LOCK.lock().unwrap();
+    let _guard = crate::GLOBAL_STATE_LOCK
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
     let provider = resolve_static_files();
     let files = provider.list_files();
     assert!(!files.is_empty());
@@ -261,7 +267,9 @@ fn test_collect_files_returns_all() {
 fn resolve_static_files_prefers_disk_dir_next_to_exe() {
     // exe 旁 static/ 是进程级全局状态（resolver 都看它）——必须持全局锁
     // 与其他 resolver 测试互斥，否则并行测试会读到 marker 内容互踩。
-    let _guard = crate::GLOBAL_STATE_LOCK.lock().unwrap();
+    let _guard = crate::GLOBAL_STATE_LOCK
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
     const MARKER: &str = "<!-- S11D-DISK-OVERRIDE -->";
     let exe_dir = std::env::current_exe()
         .unwrap()

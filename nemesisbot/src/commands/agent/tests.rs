@@ -903,7 +903,9 @@ async fn test_s11b_adapter_provider_error_to_string() {
 
 #[tokio::test]
 async fn test_s11b_run_agent_mode_config_missing_bails() {
-    let _guard = crate::GLOBAL_STATE_LOCK.lock().unwrap();
+    let _guard = crate::GLOBAL_STATE_LOCK
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
     let _th = s11b_agent_home_env();
     // 无 config.json → 在 build/REPL 之前 bail（不会进入交互模式）
     let err = run(
@@ -922,7 +924,9 @@ async fn test_s11b_run_agent_mode_config_missing_bails() {
 
 #[tokio::test]
 async fn test_s11b_run_agent_mode_unresolvable_model_degrades_ok() {
-    let _guard = crate::GLOBAL_STATE_LOCK.lock().unwrap();
+    let _guard = crate::GLOBAL_STATE_LOCK
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
     let th = s11b_agent_home_env();
     // 双击直启语义（2026-09-17）：llm 指向不存在的模型 → 工厂降级装配
     // NullProvider（Ok 不 Err）→ 单消息模式打到 NullProvider → "Agent
@@ -950,7 +954,9 @@ async fn test_s11b_run_agent_mode_unresolvable_model_degrades_ok() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn test_s11b_run_agent_mode_single_message_dead_provider() {
-    let _guard = crate::GLOBAL_STATE_LOCK.lock().unwrap();
+    let _guard = crate::GLOBAL_STATE_LOCK
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
     let th = s11b_agent_home_env();
     s11b_write_agent_config(&th.home, s11b_dead_provider_config());
     // build 成功 + 单消息模式：LLM 调用打到死地址 → process_direct Err →
@@ -973,7 +979,9 @@ async fn test_s11b_run_agent_mode_single_message_dead_provider() {
 
 #[tokio::test]
 async fn test_s11b_build_agent_loop_registers_default_agent() {
-    let _guard = crate::GLOBAL_STATE_LOCK.lock().unwrap();
+    let _guard = crate::GLOBAL_STATE_LOCK
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
     let th = s11b_agent_home_env();
     s11b_write_agent_config(&th.home, s11b_dead_provider_config());
     // ASM-05 迁移：工厂装配（SharedResources 范式，run.rs 同款；config 由
@@ -999,7 +1007,9 @@ async fn test_s11b_build_agent_loop_registers_default_agent() {
 
 #[tokio::test]
 async fn test_s11b_run_set_llm_config_missing_bails() {
-    let _guard = crate::GLOBAL_STATE_LOCK.lock().unwrap();
+    let _guard = crate::GLOBAL_STATE_LOCK
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
     let _th = s11b_agent_home_env();
     let err = run(
         Some(AgentSetCommand::Set {
@@ -1021,7 +1031,9 @@ async fn test_s11b_run_set_llm_config_missing_bails() {
 
 #[tokio::test]
 async fn test_s11b_run_set_llm_resolved_writes_config() {
-    let _guard = crate::GLOBAL_STATE_LOCK.lock().unwrap();
+    let _guard = crate::GLOBAL_STATE_LOCK
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
     let th = s11b_agent_home_env();
     // config 无 agents 段但 model_list 含 "fake"（resolve 成功，不走 y/N 确认）
     // → 写回时补齐 agents.defaults.llm
@@ -1057,7 +1069,9 @@ async fn test_s11b_run_set_llm_resolved_writes_config() {
 
 #[tokio::test]
 async fn test_s11b_run_set_concurrent_mode_invalid_bails() {
-    let _guard = crate::GLOBAL_STATE_LOCK.lock().unwrap();
+    let _guard = crate::GLOBAL_STATE_LOCK
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
     let th = s11b_agent_home_env();
     s11b_write_agent_config(&th.home, serde_json::json!({"agents": {"defaults": {}}}));
     let err = run(
@@ -1081,7 +1095,9 @@ async fn test_s11b_run_set_concurrent_mode_invalid_bails() {
 
 #[tokio::test]
 async fn test_s11b_run_set_concurrent_mode_reject_then_queue() {
-    let _guard = crate::GLOBAL_STATE_LOCK.lock().unwrap();
+    let _guard = crate::GLOBAL_STATE_LOCK
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
     let th = s11b_agent_home_env();
     s11b_write_agent_config(&th.home, serde_json::json!({"agents": {"defaults": {}}}));
 
@@ -1152,7 +1168,9 @@ async fn test_s11b_run_set_concurrent_mode_reject_then_queue() {
 // 模式都解析），CLI 闸门此前漏了它——写盘行为与 queue 同型（含 queue_size）。
 #[tokio::test]
 async fn test_s11b_run_set_concurrent_mode_steer() {
-    let _guard = crate::GLOBAL_STATE_LOCK.lock().unwrap();
+    let _guard = crate::GLOBAL_STATE_LOCK
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
     let th = s11b_agent_home_env();
     s11b_write_agent_config(&th.home, serde_json::json!({"agents": {"defaults": {}}}));
 
@@ -1202,7 +1220,9 @@ async fn test_s11b_run_set_concurrent_mode_steer() {
 
 #[tokio::test]
 async fn test_s11b_run_set_concurrent_mode_no_config_ok() {
-    let _guard = crate::GLOBAL_STATE_LOCK.lock().unwrap();
+    let _guard = crate::GLOBAL_STATE_LOCK
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
     let th = s11b_agent_home_env();
     // 无 config.json → 跳过写盘，仍 Ok
     run(
@@ -1326,7 +1346,9 @@ mod wave_b {
 
     #[tokio::test]
     async fn wave_b_build_loop_loads_skills_when_dir_present() {
-        let _guard = crate::GLOBAL_STATE_LOCK.lock().unwrap();
+        let _guard = crate::GLOBAL_STATE_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         let th = s11b_agent_home_env();
         s11b_write_agent_config(&th.home, s11b_dead_provider_config());
         // workspace/skills 存在 → 工厂 ContextBuilder.load_skills 分支被触发
@@ -1349,7 +1371,9 @@ mod wave_b {
 
     #[tokio::test]
     async fn wave_b_build_loop_zero_max_tool_iterations_maps_unlimited() {
-        let _guard = crate::GLOBAL_STATE_LOCK.lock().unwrap();
+        let _guard = crate::GLOBAL_STATE_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         let th = s11b_agent_home_env();
         // max_tool_iterations=0 → max_turns 映射为 0（unlimited opt-in 分支，
         // ASM-05 迁移后归 loop/factory 消费 config 的既有语义）。
@@ -1375,7 +1399,9 @@ mod wave_b {
 
     #[tokio::test]
     async fn wave_b_build_loop_skills_registry_from_config_skills_json() {
-        let _guard = crate::GLOBAL_STATE_LOCK.lock().unwrap();
+        let _guard = crate::GLOBAL_STATE_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         let th = s11b_agent_home_env();
         s11b_write_agent_config(&th.home, s11b_dead_provider_config());
         // workspace/config/config.skills.json 在场不影响工厂构建（ASM-05 迁移
@@ -1396,7 +1422,9 @@ mod wave_b {
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn wave_b_build_loop_request_logger_truncated_custom_logdir() {
-        let _guard = crate::GLOBAL_STATE_LOCK.lock().unwrap();
+        let _guard = crate::GLOBAL_STATE_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         let th = s11b_agent_home_env();
         // logging.llm{truncated,自定义 log_dir,save_raw} → helper 判定注册
         // （ASM-05 迁移：映射逻辑收敛到 register_request_logger_observer，
@@ -1438,7 +1466,9 @@ mod wave_b {
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn wave_b_build_loop_request_logger_defaults_full_and_default_logdir() {
-        let _guard = crate::GLOBAL_STATE_LOCK.lock().unwrap();
+        let _guard = crate::GLOBAL_STATE_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         let th = s11b_agent_home_env();
         // 只给 enabled → detail_level 兜底 Full + log_dir 空串兜底
         // "logs/request_logs"（两条 `_ =>`/空串 else 分支在 helper 内命中）。
@@ -1473,7 +1503,9 @@ mod wave_b {
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn wave_b_run_flags_debug_quiet_no_console_single_message_dead_provider() {
-        let _guard = crate::GLOBAL_STATE_LOCK.lock().unwrap();
+        let _guard = crate::GLOBAL_STATE_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         let th = s11b_agent_home_env();
         s11b_write_agent_config(&th.home, s11b_dead_provider_config());
         // debug/quiet/no_console 全开：--debug/--quiet/--no-console 注入 +
@@ -1496,7 +1528,9 @@ mod wave_b {
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn wave_b_run_single_message_success_via_loopback_openai_mock() {
-        let _guard = crate::GLOBAL_STATE_LOCK.lock().unwrap();
+        let _guard = crate::GLOBAL_STATE_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         let th = s11b_agent_home_env();
         let (port, hits) = start_openai_mock(
             "{\"id\":\"wb-1\",\"object\":\"chat.completion\",\"created\":1700000000,\"model\":\"mock\",\"choices\":[{\"index\":0,\"message\":{\"role\":\"assistant\",\"content\":\"wb-mock-reply\"},\"finish_reason\":\"stop\"}],\"usage\":{\"prompt_tokens\":5,\"completion_tokens\":2,\"total_tokens\":7}}",
@@ -1534,7 +1568,9 @@ mod wave_b {
 
     #[tokio::test]
     async fn wave_b_run_set_llm_bare_agents_section_inserts_defaults() {
-        let _guard = crate::GLOBAL_STATE_LOCK.lock().unwrap();
+        let _guard = crate::GLOBAL_STATE_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         let th = s11b_agent_home_env();
         // agents 段存在但无 defaults → 命中 `!agents.contains_key("defaults")`
         // 插入分支（与 s11b「整个 agents 缺失」的插入互补）。

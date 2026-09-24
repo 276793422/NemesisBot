@@ -415,7 +415,9 @@ mod run_error_paths {
     #[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
     #[tokio::test]
     async fn run_err_when_workspace_env_missing() {
-        let _lock = crate::GLOBAL_STATE_LOCK.lock().unwrap();
+        let _lock = crate::GLOBAL_STATE_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         // 确保未设置（保存并删除；测完恢复）。
         let saved = std::env::var("NEMESISBOT_EVAL_WORKSPACE").ok();
         unsafe { std::env::remove_var("NEMESISBOT_EVAL_WORKSPACE") };
@@ -443,7 +445,9 @@ mod run_error_paths {
 
         // 锁必须横跨整个 run()：env 是进程级全局，并行测试互踩会让
         // worker_error.txt 写进别人的 workspace（本次失败根因）。
-        let _lock = crate::GLOBAL_STATE_LOCK.lock().unwrap();
+        let _lock = crate::GLOBAL_STATE_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         let _env = EvalEnvGuard::set_workspace(tmp.path());
 
         let err = run().await.expect_err("broken config must fail");
@@ -475,7 +479,9 @@ mod run_error_paths {
 
         // 锁必须横跨整个 run()：env 是进程级全局，并行测试互踩会让
         // worker_error.txt 写进别人的 workspace（本次失败根因）。
-        let _lock = crate::GLOBAL_STATE_LOCK.lock().unwrap();
+        let _lock = crate::GLOBAL_STATE_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         let _env = EvalEnvGuard::set_workspace(tmp.path());
 
         let err = run()
@@ -646,7 +652,9 @@ mod wave_b {
 
         // env 为进程全局：锁横跨整个 run()（与 run_error_paths 同纪律，
         // 并行测试互踩会让报告写进别人的 workspace）。
-        let _lock = crate::GLOBAL_STATE_LOCK.lock().unwrap();
+        let _lock = crate::GLOBAL_STATE_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         let _env = WaveBEvalEnvGuard::set_workspace(ws.path());
 
         // 兜底护栏：单轮 mock 补全应秒级完成；超时=链路挂死直接失败。
@@ -699,7 +707,9 @@ mod wave_b {
         // process_direct Err → :119 map_err 成 "agent loop error: ..."。
         wave_b_write_llm_config(ws.path(), "http://127.0.0.1:1/v1");
 
-        let _lock = crate::GLOBAL_STATE_LOCK.lock().unwrap();
+        let _lock = crate::GLOBAL_STATE_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         let _env = WaveBEvalEnvGuard::set_workspace(ws.path());
 
         let res = tokio::time::timeout(std::time::Duration::from_secs(90), run()).await;

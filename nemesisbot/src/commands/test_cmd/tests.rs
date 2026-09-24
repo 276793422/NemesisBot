@@ -312,7 +312,9 @@ mod run_arm {
     #[cfg(feature = "desktop")]
     #[tokio::test]
     async fn approval_headless_fails_fast_when_handshake_eof_and_cleans_env() {
-        let _guard = crate::GLOBAL_STATE_LOCK.lock().unwrap();
+        let _guard = crate::GLOBAL_STATE_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         unsafe {
             std::env::remove_var("NEMESISBOT_FORCE_HEADLESS");
         }

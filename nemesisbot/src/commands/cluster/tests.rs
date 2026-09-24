@@ -1401,7 +1401,9 @@ fn read_cluster_cfg(home: &std::path::Path) -> serde_json::Value {
 
 #[tokio::test]
 async fn test_run_status_not_initialized() {
-    let _guard = crate::GLOBAL_STATE_LOCK.lock().unwrap();
+    let _guard = crate::GLOBAL_STATE_LOCK
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
     let th = temp_home_env();
     // 无 config.cluster.json → 走 "[not found]" 分支
     run(ClusterAction::Status, false).await.unwrap();
@@ -1410,7 +1412,9 @@ async fn test_run_status_not_initialized() {
 
 #[tokio::test]
 async fn test_run_status_with_config_and_peers() {
-    let _guard = crate::GLOBAL_STATE_LOCK.lock().unwrap();
+    let _guard = crate::GLOBAL_STATE_LOCK
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
     let th = temp_home_env();
     write_cluster_config(
         &th.home,
@@ -1427,7 +1431,9 @@ async fn test_run_status_with_config_and_peers() {
 
 #[tokio::test]
 async fn test_run_status_config_without_peers() {
-    let _guard = crate::GLOBAL_STATE_LOCK.lock().unwrap();
+    let _guard = crate::GLOBAL_STATE_LOCK
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
     let th = temp_home_env();
     write_cluster_config(&th.home, &serde_json::json!({ "enabled": false }));
     run(ClusterAction::Status, false).await.unwrap();
@@ -1435,7 +1441,9 @@ async fn test_run_status_config_without_peers() {
 
 #[tokio::test]
 async fn test_run_config_updates_when_values_differ() {
-    let _guard = crate::GLOBAL_STATE_LOCK.lock().unwrap();
+    let _guard = crate::GLOBAL_STATE_LOCK
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
     let th = temp_home_env();
     write_cluster_config(
         &th.home,
@@ -1459,7 +1467,9 @@ async fn test_run_config_updates_when_values_differ() {
 
 #[tokio::test]
 async fn test_run_config_same_values_no_rewrite() {
-    let _guard = crate::GLOBAL_STATE_LOCK.lock().unwrap();
+    let _guard = crate::GLOBAL_STATE_LOCK
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
     let th = temp_home_env();
     write_cluster_config(
         &th.home,
@@ -1482,7 +1492,9 @@ async fn test_run_config_same_values_no_rewrite() {
 
 #[tokio::test]
 async fn test_run_config_missing_keys_not_backfilled_until_diff() {
-    let _guard = crate::GLOBAL_STATE_LOCK.lock().unwrap();
+    let _guard = crate::GLOBAL_STATE_LOCK
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
     let th = temp_home_env();
     // 配置缺 key → cur 值取 unwrap_or 默认（11949/21949/30）；
     // 传与默认相同的值 → 判定"未变化"→ 不回填缺 key（生产现状）
@@ -1518,7 +1530,9 @@ async fn test_run_config_missing_keys_not_backfilled_until_diff() {
 
 #[tokio::test]
 async fn test_run_config_missing_file() {
-    let _guard = crate::GLOBAL_STATE_LOCK.lock().unwrap();
+    let _guard = crate::GLOBAL_STATE_LOCK
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
     let th = temp_home_env();
     run(
         ClusterAction::Config {
@@ -1535,7 +1549,9 @@ async fn test_run_config_missing_file() {
 
 #[tokio::test]
 async fn test_run_info_updates_fields_and_saves() {
-    let _guard = crate::GLOBAL_STATE_LOCK.lock().unwrap();
+    let _guard = crate::GLOBAL_STATE_LOCK
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
     let th = temp_home_env();
     write_peers_toml(
         &th.home,
@@ -1568,7 +1584,9 @@ async fn test_run_info_updates_fields_and_saves() {
 
 #[tokio::test]
 async fn test_run_info_read_only_no_changes() {
-    let _guard = crate::GLOBAL_STATE_LOCK.lock().unwrap();
+    let _guard = crate::GLOBAL_STATE_LOCK
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
     let th = temp_home_env();
     write_peers_toml(&th.home, "[node]\nid = \"node-a\"\nname = \"Node A\"\n");
     run(
@@ -1587,7 +1605,9 @@ async fn test_run_info_read_only_no_changes() {
 
 #[tokio::test]
 async fn test_run_info_missing_peers_file() {
-    let _guard = crate::GLOBAL_STATE_LOCK.lock().unwrap();
+    let _guard = crate::GLOBAL_STATE_LOCK
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
     let _th = temp_home_env();
     run(
         ClusterAction::Info {
@@ -1605,7 +1625,9 @@ async fn test_run_info_missing_peers_file() {
 
 #[tokio::test]
 async fn test_run_peers_no_subcommand_usage() {
-    let _guard = crate::GLOBAL_STATE_LOCK.lock().unwrap();
+    let _guard = crate::GLOBAL_STATE_LOCK
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
     let _th = temp_home_env();
     run(ClusterAction::Peers { action: None }, false)
         .await
@@ -1614,7 +1636,9 @@ async fn test_run_peers_no_subcommand_usage() {
 
 #[tokio::test]
 async fn test_run_peers_list_with_file() {
-    let _guard = crate::GLOBAL_STATE_LOCK.lock().unwrap();
+    let _guard = crate::GLOBAL_STATE_LOCK
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
     let th = temp_home_env();
     write_peers_toml(&th.home, "[node]\nid = \"node-a\"\n");
     run(
@@ -1629,7 +1653,9 @@ async fn test_run_peers_list_with_file() {
 
 #[tokio::test]
 async fn test_run_peers_list_without_file() {
-    let _guard = crate::GLOBAL_STATE_LOCK.lock().unwrap();
+    let _guard = crate::GLOBAL_STATE_LOCK
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
     let _th = temp_home_env();
     run(
         ClusterAction::Peers {
@@ -1643,7 +1669,9 @@ async fn test_run_peers_list_without_file() {
 
 #[tokio::test]
 async fn test_run_peers_add_creates_entry() {
-    let _guard = crate::GLOBAL_STATE_LOCK.lock().unwrap();
+    let _guard = crate::GLOBAL_STATE_LOCK
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
     let th = temp_home_env();
     run(
         ClusterAction::Peers {
@@ -1671,7 +1699,9 @@ async fn test_run_peers_add_creates_entry() {
 async fn test_run_peers_remove_dash_id_after_add() {
     // (BUG #26, quality-hardening goal 冲刺 S11) 回归：
     // add 写 `[peers.node-a]`（dash 保留），remove --id node-a 必须能删掉
-    let _guard = crate::GLOBAL_STATE_LOCK.lock().unwrap();
+    let _guard = crate::GLOBAL_STATE_LOCK
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
     let th = temp_home_env();
     run(
         ClusterAction::Peers {
@@ -1706,7 +1736,9 @@ async fn test_run_peers_remove_dash_id_after_add() {
 #[tokio::test]
 async fn test_run_peers_remove_by_address_fallback() {
     // (BUG #26, quality-hardening goal 冲刺 S11) 按 address 兜底删除
-    let _guard = crate::GLOBAL_STATE_LOCK.lock().unwrap();
+    let _guard = crate::GLOBAL_STATE_LOCK
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
     let th = temp_home_env();
     write_peers_toml(
         &th.home,
@@ -1729,7 +1761,9 @@ async fn test_run_peers_remove_by_address_fallback() {
 
 #[tokio::test]
 async fn test_run_peers_add_defaults() {
-    let _guard = crate::GLOBAL_STATE_LOCK.lock().unwrap();
+    let _guard = crate::GLOBAL_STATE_LOCK
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
     let th = temp_home_env();
     run(
         ClusterAction::Peers {
@@ -1754,7 +1788,9 @@ async fn test_run_peers_add_defaults() {
 
 #[tokio::test]
 async fn test_run_peers_remove_existing() {
-    let _guard = crate::GLOBAL_STATE_LOCK.lock().unwrap();
+    let _guard = crate::GLOBAL_STATE_LOCK
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
     let th = temp_home_env();
     write_peers_toml(
         &th.home,
@@ -1777,7 +1813,9 @@ async fn test_run_peers_remove_existing() {
 
 #[tokio::test]
 async fn test_run_peers_remove_not_found() {
-    let _guard = crate::GLOBAL_STATE_LOCK.lock().unwrap();
+    let _guard = crate::GLOBAL_STATE_LOCK
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
     let th = temp_home_env();
     write_peers_toml(
         &th.home,
@@ -1799,7 +1837,9 @@ async fn test_run_peers_remove_not_found() {
 
 #[tokio::test]
 async fn test_run_peers_remove_no_file() {
-    let _guard = crate::GLOBAL_STATE_LOCK.lock().unwrap();
+    let _guard = crate::GLOBAL_STATE_LOCK
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
     let _th = temp_home_env();
     run(
         ClusterAction::Peers {
@@ -1813,7 +1853,9 @@ async fn test_run_peers_remove_no_file() {
 
 #[tokio::test]
 async fn test_run_peers_enable_and_disable() {
-    let _guard = crate::GLOBAL_STATE_LOCK.lock().unwrap();
+    let _guard = crate::GLOBAL_STATE_LOCK
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
     let th = temp_home_env();
     write_peers_toml(
         &th.home,
@@ -1852,7 +1894,9 @@ async fn test_run_peers_enable_and_disable() {
 
 #[tokio::test]
 async fn test_run_peers_enable_no_file() {
-    let _guard = crate::GLOBAL_STATE_LOCK.lock().unwrap();
+    let _guard = crate::GLOBAL_STATE_LOCK
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
     let _th = temp_home_env();
     run(
         ClusterAction::Peers {
@@ -1874,7 +1918,9 @@ async fn test_run_peers_enable_no_file() {
 
 #[tokio::test]
 async fn test_run_token_generate_save_persists() {
-    let _guard = crate::GLOBAL_STATE_LOCK.lock().unwrap();
+    let _guard = crate::GLOBAL_STATE_LOCK
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
     let th = temp_home_env();
     write_cluster_config(&th.home, &serde_json::json!({ "enabled": false }));
     run(
@@ -1895,7 +1941,9 @@ async fn test_run_token_generate_save_persists() {
 
 #[tokio::test]
 async fn test_run_token_generate_nosave_and_missing_config() {
-    let _guard = crate::GLOBAL_STATE_LOCK.lock().unwrap();
+    let _guard = crate::GLOBAL_STATE_LOCK
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
     let th = temp_home_env();
     // 无 config 且 --save → 提示后正常返回
     run(
@@ -1927,7 +1975,9 @@ async fn test_run_token_generate_nosave_and_missing_config() {
 
 #[tokio::test]
 async fn test_run_token_generate_bad_length_bails() {
-    let _guard = crate::GLOBAL_STATE_LOCK.lock().unwrap();
+    let _guard = crate::GLOBAL_STATE_LOCK
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
     let _th = temp_home_env();
     let err = run(
         ClusterAction::Token {
@@ -1945,7 +1995,9 @@ async fn test_run_token_generate_bad_length_bails() {
 
 #[tokio::test]
 async fn test_run_token_show_variants() {
-    let _guard = crate::GLOBAL_STATE_LOCK.lock().unwrap();
+    let _guard = crate::GLOBAL_STATE_LOCK
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
     let th = temp_home_env();
     // 有 token：masked + full
     write_cluster_config(
@@ -1982,7 +2034,9 @@ async fn test_run_token_show_variants() {
 
 #[tokio::test]
 async fn test_run_token_show_no_config() {
-    let _guard = crate::GLOBAL_STATE_LOCK.lock().unwrap();
+    let _guard = crate::GLOBAL_STATE_LOCK
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
     let _th = temp_home_env();
     run(
         ClusterAction::Token {
@@ -1996,7 +2050,9 @@ async fn test_run_token_show_no_config() {
 
 #[tokio::test]
 async fn test_run_token_set_value_and_generate() {
-    let _guard = crate::GLOBAL_STATE_LOCK.lock().unwrap();
+    let _guard = crate::GLOBAL_STATE_LOCK
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
     let th = temp_home_env();
     write_cluster_config(&th.home, &serde_json::json!({}));
     // 显式值
@@ -2046,7 +2102,9 @@ async fn test_run_token_set_value_and_generate() {
 
 #[tokio::test]
 async fn test_run_token_set_validation_errors() {
-    let _guard = crate::GLOBAL_STATE_LOCK.lock().unwrap();
+    let _guard = crate::GLOBAL_STATE_LOCK
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
     let _th = temp_home_env();
     // 显式值太短
     let err = run(
@@ -2080,7 +2138,9 @@ async fn test_run_token_set_validation_errors() {
 
 #[tokio::test]
 async fn test_run_token_set_missing_config() {
-    let _guard = crate::GLOBAL_STATE_LOCK.lock().unwrap();
+    let _guard = crate::GLOBAL_STATE_LOCK
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
     let _th = temp_home_env();
     run(
         ClusterAction::Token {
@@ -2098,7 +2158,9 @@ async fn test_run_token_set_missing_config() {
 
 #[tokio::test]
 async fn test_run_token_verify_variants() {
-    let _guard = crate::GLOBAL_STATE_LOCK.lock().unwrap();
+    let _guard = crate::GLOBAL_STATE_LOCK
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
     let th = temp_home_env();
     write_cluster_config(
         &th.home,
@@ -2142,7 +2204,9 @@ async fn test_run_token_verify_variants() {
 
 #[tokio::test]
 async fn test_run_token_verify_no_config() {
-    let _guard = crate::GLOBAL_STATE_LOCK.lock().unwrap();
+    let _guard = crate::GLOBAL_STATE_LOCK
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
     let _th = temp_home_env();
     run(
         ClusterAction::Token {
@@ -2156,7 +2220,9 @@ async fn test_run_token_verify_no_config() {
 
 #[tokio::test]
 async fn test_run_token_revoke_removes_token() {
-    let _guard = crate::GLOBAL_STATE_LOCK.lock().unwrap();
+    let _guard = crate::GLOBAL_STATE_LOCK
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
     let th = temp_home_env();
     write_cluster_config(
         &th.home,
@@ -2177,7 +2243,9 @@ async fn test_run_token_revoke_removes_token() {
 
 #[tokio::test]
 async fn test_run_token_revoke_no_config() {
-    let _guard = crate::GLOBAL_STATE_LOCK.lock().unwrap();
+    let _guard = crate::GLOBAL_STATE_LOCK
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
     let _th = temp_home_env();
     run(
         ClusterAction::Token {
@@ -2191,7 +2259,9 @@ async fn test_run_token_revoke_no_config() {
 
 #[tokio::test]
 async fn test_run_init_fresh_home() {
-    let _guard = crate::GLOBAL_STATE_LOCK.lock().unwrap();
+    let _guard = crate::GLOBAL_STATE_LOCK
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
     let th = temp_home_env();
     run(
         ClusterAction::Init {
@@ -2224,7 +2294,9 @@ async fn test_run_init_fresh_home() {
 
 #[tokio::test]
 async fn test_run_init_defaults_and_reinit_nontty() {
-    let _guard = crate::GLOBAL_STATE_LOCK.lock().unwrap();
+    let _guard = crate::GLOBAL_STATE_LOCK
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
     let th = temp_home_env();
     // 无任何参数 → default_name/node_id 生成
     run(
@@ -2263,7 +2335,9 @@ async fn test_run_init_defaults_and_reinit_nontty() {
 
 #[tokio::test]
 async fn test_run_enable_writes_enabled_true() {
-    let _guard = crate::GLOBAL_STATE_LOCK.lock().unwrap();
+    let _guard = crate::GLOBAL_STATE_LOCK
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
     let th = temp_home_env();
     write_cluster_config(&th.home, &serde_json::json!({ "enabled": false }));
     run(ClusterAction::Enable, false).await.unwrap();
@@ -2273,7 +2347,9 @@ async fn test_run_enable_writes_enabled_true() {
 
 #[tokio::test]
 async fn test_run_enable_already_enabled() {
-    let _guard = crate::GLOBAL_STATE_LOCK.lock().unwrap();
+    let _guard = crate::GLOBAL_STATE_LOCK
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
     let th = temp_home_env();
     write_cluster_config(&th.home, &serde_json::json!({ "enabled": true }));
     run(ClusterAction::Enable, false).await.unwrap();
@@ -2283,7 +2359,9 @@ async fn test_run_enable_already_enabled() {
 
 #[tokio::test]
 async fn test_run_enable_not_initialized_bails() {
-    let _guard = crate::GLOBAL_STATE_LOCK.lock().unwrap();
+    let _guard = crate::GLOBAL_STATE_LOCK
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
     let _th = temp_home_env();
     let err = run(ClusterAction::Enable, false).await.unwrap_err();
     assert!(err.to_string().contains("Cluster not initialized"));
@@ -2291,7 +2369,9 @@ async fn test_run_enable_not_initialized_bails() {
 
 #[tokio::test]
 async fn test_run_enable_with_main_config_writes_cluster_section() {
-    let _guard = crate::GLOBAL_STATE_LOCK.lock().unwrap();
+    let _guard = crate::GLOBAL_STATE_LOCK
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
     let th = temp_home_env();
     write_cluster_config(&th.home, &serde_json::json!({}));
     std::fs::write(
@@ -2309,7 +2389,9 @@ async fn test_run_enable_with_main_config_writes_cluster_section() {
 
 #[tokio::test]
 async fn test_run_disable_writes_enabled_false() {
-    let _guard = crate::GLOBAL_STATE_LOCK.lock().unwrap();
+    let _guard = crate::GLOBAL_STATE_LOCK
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
     let th = temp_home_env();
     write_cluster_config(&th.home, &serde_json::json!({ "enabled": true }));
     // 主 config 存在 → 同步写 cluster.enabled=false
@@ -2330,7 +2412,9 @@ async fn test_run_disable_writes_enabled_false() {
 
 #[tokio::test]
 async fn test_run_disable_already_disabled() {
-    let _guard = crate::GLOBAL_STATE_LOCK.lock().unwrap();
+    let _guard = crate::GLOBAL_STATE_LOCK
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
     let th = temp_home_env();
     write_cluster_config(&th.home, &serde_json::json!({ "enabled": false }));
     run(ClusterAction::Disable, false).await.unwrap();
@@ -2340,7 +2424,9 @@ async fn test_run_disable_already_disabled() {
 
 #[tokio::test]
 async fn test_run_start_stop_aliases() {
-    let _guard = crate::GLOBAL_STATE_LOCK.lock().unwrap();
+    let _guard = crate::GLOBAL_STATE_LOCK
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
     let th = temp_home_env();
     write_cluster_config(&th.home, &serde_json::json!({ "enabled": false }));
     run(ClusterAction::Start, false).await.unwrap();
@@ -2361,7 +2447,9 @@ async fn test_run_start_stop_aliases() {
 
 #[tokio::test]
 async fn test_run_reset_soft_removes_state() {
-    let _guard = crate::GLOBAL_STATE_LOCK.lock().unwrap();
+    let _guard = crate::GLOBAL_STATE_LOCK
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
     let th = temp_home_env();
     let state = crate::common::cluster_dir(&th.home).join("state.toml");
     std::fs::create_dir_all(state.parent().unwrap()).unwrap();
@@ -2378,7 +2466,9 @@ async fn test_run_reset_soft_removes_state() {
 
 #[tokio::test]
 async fn test_run_reset_hard_aborts_without_tty_confirm() {
-    let _guard = crate::GLOBAL_STATE_LOCK.lock().unwrap();
+    let _guard = crate::GLOBAL_STATE_LOCK
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
     let th = temp_home_env();
     write_cluster_config(&th.home, &serde_json::json!({ "enabled": true }));
     write_peers_toml(&th.home, "[node]\nid = \"node-a\"\n");
@@ -2397,7 +2487,9 @@ async fn test_run_reset_hard_aborts_without_tty_confirm() {
 
 #[tokio::test]
 async fn test_run_identity_show_missing_and_present() {
-    let _guard = crate::GLOBAL_STATE_LOCK.lock().unwrap();
+    let _guard = crate::GLOBAL_STATE_LOCK
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
     let th = temp_home_env();
     run(
         ClusterAction::Identity {
@@ -2422,7 +2514,9 @@ async fn test_run_identity_show_missing_and_present() {
 
 #[tokio::test]
 async fn test_run_identity_edit_creates_then_exists() {
-    let _guard = crate::GLOBAL_STATE_LOCK.lock().unwrap();
+    let _guard = crate::GLOBAL_STATE_LOCK
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
     let th = temp_home_env();
     run(
         ClusterAction::Identity {
@@ -2450,7 +2544,9 @@ async fn test_run_identity_edit_creates_then_exists() {
 
 #[tokio::test]
 async fn test_run_identity_reset_writes_default() {
-    let _guard = crate::GLOBAL_STATE_LOCK.lock().unwrap();
+    let _guard = crate::GLOBAL_STATE_LOCK
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
     let th = temp_home_env();
     run(
         ClusterAction::Identity {
@@ -2481,7 +2577,9 @@ async fn test_run_identity_reset_writes_default() {
 
 #[tokio::test]
 async fn test_run_node_not_initialized_bails() {
-    let _guard = crate::GLOBAL_STATE_LOCK.lock().unwrap();
+    let _guard = crate::GLOBAL_STATE_LOCK
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
     let _th = temp_home_env();
     let err = run(
         ClusterAction::Node {
@@ -2609,7 +2707,9 @@ mod wave_b {
     /// 「peers.toml 存在但解析失败」都静默跳过对应段继续输出（不报错）。
     #[tokio::test]
     async fn wave_b_status_survives_corrupt_config_and_corrupt_peers_toml() {
-        let _guard = crate::GLOBAL_STATE_LOCK.lock().unwrap();
+        let _guard = crate::GLOBAL_STATE_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         let th = temp_home_env();
         std::fs::write(crate::common::cluster_config_path(&th.home), "{{{ not json").unwrap();
         write_peers_toml(&th.home, "invalid {{{ toml");
@@ -2619,7 +2719,9 @@ mod wave_b {
     /// 338-339：Config 动作遇到无法解析的 config 文件时静默跳过且绝不改写原文件。
     #[tokio::test]
     async fn wave_b_config_leaves_unparseable_config_byte_identical() {
-        let _guard = crate::GLOBAL_STATE_LOCK.lock().unwrap();
+        let _guard = crate::GLOBAL_STATE_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         let th = temp_home_env();
         let cfg_path = crate::common::cluster_config_path(&th.home);
         let garbage = "[[[ definitely not json";
@@ -2647,7 +2749,9 @@ mod wave_b {
     /// 断言因此只钉 Ok 语义。
     #[tokio::test]
     async fn wave_b_info_save_failure_prints_error_and_continues() {
-        let _guard = crate::GLOBAL_STATE_LOCK.lock().unwrap();
+        let _guard = crate::GLOBAL_STATE_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         let th = temp_home_env();
         let peers = crate::common::cluster_dir(&th.home).join("peers.toml");
         write_peers_toml(&th.home, "[node]\nid = \"wb-ro\"\nname = \"old\"\n");
@@ -2671,7 +2775,9 @@ mod wave_b {
     /// 这些分支 —— 必须显式写空串才能进入（见报告生产可疑点）。
     #[tokio::test]
     async fn wave_b_info_empty_identity_fields_print_not_set_markers() {
-        let _guard = crate::GLOBAL_STATE_LOCK.lock().unwrap();
+        let _guard = crate::GLOBAL_STATE_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         let th = temp_home_env();
         write_peers_toml(
             &th.home,
@@ -2694,7 +2800,9 @@ mod wave_b {
     /// 430-432：peers.toml 存在但解析失败 → 打印 "Failed to parse peers.toml."。
     #[tokio::test]
     async fn wave_b_info_parse_failure_prints_failed_to_parse() {
-        let _guard = crate::GLOBAL_STATE_LOCK.lock().unwrap();
+        let _guard = crate::GLOBAL_STATE_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         let th = temp_home_env();
         write_peers_toml(&th.home, "{ not toml {{{");
         run(
@@ -2716,7 +2824,9 @@ mod wave_b {
     /// 用路径形态混淆确定性触发，不依赖权限。
     #[tokio::test]
     async fn wave_b_peers_add_failure_when_peers_toml_is_directory() {
-        let _guard = crate::GLOBAL_STATE_LOCK.lock().unwrap();
+        let _guard = crate::GLOBAL_STATE_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         let th = temp_home_env();
         let fake = crate::common::cluster_dir(&th.home).join("peers.toml");
         std::fs::create_dir_all(&fake).unwrap();
@@ -2742,7 +2852,9 @@ mod wave_b {
     /// quoted bare-key 表达）→ legacy/canonical 变体都未命中时走原始 id 分支删除。
     #[tokio::test]
     async fn wave_b_peers_remove_hits_raw_id_key_arm() {
-        let _guard = crate::GLOBAL_STATE_LOCK.lock().unwrap();
+        let _guard = crate::GLOBAL_STATE_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         let th = temp_home_env();
         write_peers_toml(
             &th.home,
@@ -2773,7 +2885,9 @@ mod wave_b {
     /// enable_peer_in_toml 报错字符串 → Enable/Disable 都打印消息且不落盘。
     #[tokio::test]
     async fn wave_b_peers_enable_disable_reports_missing_section_and_keeps_file() {
-        let _guard = crate::GLOBAL_STATE_LOCK.lock().unwrap();
+        let _guard = crate::GLOBAL_STATE_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         let th = temp_home_env();
         let original = "[node]\nid = \"solo\"\n";
         write_peers_toml(&th.home, original);
@@ -2807,7 +2921,9 @@ mod wave_b {
     /// root/admin 下只读位可能被无视 → 只断言 Ok。
     #[tokio::test]
     async fn wave_b_init_over_readonly_peers_toml_still_ok() {
-        let _guard = crate::GLOBAL_STATE_LOCK.lock().unwrap();
+        let _guard = crate::GLOBAL_STATE_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         let th = temp_home_env();
         let peers = crate::common::cluster_dir(&th.home).join("peers.toml");
         write_peers_toml(&th.home, "[node]\nid = \"pre-existing\"\n");
@@ -2831,7 +2947,9 @@ mod wave_b {
     /// update_cluster_config 解析同一个坏文件 → 错误向上传播（run 返回 Err）。
     #[tokio::test]
     async fn wave_b_enable_disable_start_stop_propagate_corrupt_config_parse_error() {
-        let _guard = crate::GLOBAL_STATE_LOCK.lock().unwrap();
+        let _guard = crate::GLOBAL_STATE_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         let th = temp_home_env();
         std::fs::write(crate::common::cluster_config_path(&th.home), "{{{ not json").unwrap();
 
@@ -2922,7 +3040,9 @@ mod wave_c {
     /// 内层解析链整体跳过，随后照常走 peers.toml 段并正常返回。
     #[tokio::test]
     async fn wave_c_status_silent_when_config_is_directory() {
-        let _guard = crate::GLOBAL_STATE_LOCK.lock().unwrap();
+        let _guard = crate::GLOBAL_STATE_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         let th = temp_home_env();
         let cfg_path = crate::common::cluster_config_path(&th.home);
         make_path_a_directory(&cfg_path);
@@ -2934,7 +3054,9 @@ mod wave_c {
     /// peers.toml 是目录 → "[found]" 后 load_static_config 失败被静默吞掉。
     #[tokio::test]
     async fn wave_c_status_silent_when_peers_is_directory() {
-        let _guard = crate::GLOBAL_STATE_LOCK.lock().unwrap();
+        let _guard = crate::GLOBAL_STATE_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         let th = temp_home_env();
         write_cluster_config(&th.home, &serde_json::json!({ "enabled": true }));
         let peers = crate::common::cluster_dir(&th.home).join("peers.toml");
@@ -2946,7 +3068,9 @@ mod wave_c {
     /// Config 动作遇到目录形态的配置 → 完全静默跳过且不改写任何东西。
     #[tokio::test]
     async fn wave_c_config_action_silent_when_config_is_directory() {
-        let _guard = crate::GLOBAL_STATE_LOCK.lock().unwrap();
+        let _guard = crate::GLOBAL_STATE_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         let th = temp_home_env();
         let cfg_path = crate::common::cluster_config_path(&th.home);
         make_path_a_directory(&cfg_path);
@@ -2974,7 +3098,9 @@ mod wave_c {
     /// 三者都只静默不落盘、run 正常 Ok。
     #[tokio::test]
     async fn wave_c_remove_silent_skip_arms_for_missing_section_bad_toml_and_directory() {
-        let _guard = crate::GLOBAL_STATE_LOCK.lock().unwrap();
+        let _guard = crate::GLOBAL_STATE_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
 
         // A) 无 [peers] 段
         let th_a = temp_home_env();
@@ -3041,7 +3167,9 @@ mod wave_c {
     /// 都不动那棵目录树。
     #[tokio::test]
     async fn wave_c_enable_disable_silent_when_peers_toml_is_directory() {
-        let _guard = crate::GLOBAL_STATE_LOCK.lock().unwrap();
+        let _guard = crate::GLOBAL_STATE_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         let th = temp_home_env();
         let peers = crate::common::cluster_dir(&th.home).join("peers.toml");
         make_path_a_directory(&peers);
@@ -3076,7 +3204,9 @@ mod wave_c {
     /// run 正常 Ok 且文件字节不变。
     #[tokio::test]
     async fn wave_c_token_revoke_non_object_json_skips_writeback() {
-        let _guard = crate::GLOBAL_STATE_LOCK.lock().unwrap();
+        let _guard = crate::GLOBAL_STATE_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         let th = temp_home_env();
         let cfg_path = crate::common::cluster_config_path(&th.home);
         std::fs::write(&cfg_path, "[]").unwrap();
@@ -3099,7 +3229,9 @@ mod wave_c {
     /// （错误传播边界；root/admin 无视只读位的平台上该断言退化，见注）。
     #[tokio::test]
     async fn wave_c_token_revoke_readonly_config_propagates_write_error() {
-        let _guard = crate::GLOBAL_STATE_LOCK.lock().unwrap();
+        let _guard = crate::GLOBAL_STATE_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         let th = temp_home_env();
         write_cluster_config(
             &th.home,
@@ -3135,7 +3267,9 @@ mod wave_c {
 
     #[tokio::test]
     async fn wave_c_enable_disable_start_stop_null_json_is_noop_success() {
-        let _guard = crate::GLOBAL_STATE_LOCK.lock().unwrap();
+        let _guard = crate::GLOBAL_STATE_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         let th = temp_home_env();
         let cfg_path = crate::common::cluster_config_path(&th.home);
         std::fs::write(&cfg_path, "null").unwrap();

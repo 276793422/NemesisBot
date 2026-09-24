@@ -2645,7 +2645,9 @@ fn temp_home_env() -> TempHomeEnv {
 #[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn full_assembly_starts_and_binds_web_and_health() {
-    let _guard = crate::GLOBAL_STATE_LOCK.lock().unwrap();
+    let _guard = crate::GLOBAL_STATE_LOCK
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
     let th = temp_home_env();
 
     // 编译期默认配置 → 覆盖网络面 + 模型条目。
@@ -4076,7 +4078,9 @@ variables: {}
     #[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn r9_gateway_web_bind_conflict_walks_to_neighbor_port_in_state() {
-        let _guard = crate::GLOBAL_STATE_LOCK.lock().unwrap();
+        let _guard = crate::GLOBAL_STATE_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         let th = temp_home_env();
 
         // 占住目标端口：必须取带外（> WEB_PORT_MAX）端口，走查才是可预测的

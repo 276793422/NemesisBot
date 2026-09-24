@@ -42,7 +42,9 @@ fn seed_vault(home: &Path, alias: &str, secret: &str) -> PathBuf {
 /// 全链路：install 注册全局解析器 → 引用解析出真值。
 #[test]
 fn install_and_resolve_roundtrip() {
-    let _root = crate::GLOBAL_STATE_LOCK.lock().unwrap();
+    let _root = crate::GLOBAL_STATE_LOCK
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
     let _g = GLOBAL_LOCK.lock();
     let tmp = tempfile::tempdir().unwrap();
     seed_vault(tmp.path(), "rt-alias", "rt-secret-value");
@@ -58,7 +60,9 @@ fn install_and_resolve_roundtrip() {
 /// vault 文件缺失：fail loud 带创建指引，绝不降级为空值/字面量。
 #[test]
 fn missing_vault_fails_loud() {
-    let _root = crate::GLOBAL_STATE_LOCK.lock().unwrap();
+    let _root = crate::GLOBAL_STATE_LOCK
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
     let _g = GLOBAL_LOCK.lock();
     let tmp = tempfile::tempdir().unwrap();
     install(tmp.path());
@@ -73,7 +77,9 @@ fn missing_vault_fails_loud() {
 #[cfg(windows)]
 #[test]
 fn alias_added_after_install_visible() {
-    let _root = crate::GLOBAL_STATE_LOCK.lock().unwrap();
+    let _root = crate::GLOBAL_STATE_LOCK
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
     let _g = GLOBAL_LOCK.lock();
     let tmp = tempfile::tempdir().unwrap();
     seed_vault(tmp.path(), "first-alias", "v1");
@@ -103,7 +109,9 @@ fn alias_added_after_install_visible() {
 /// argon2 模式无口令：报锁定而非 panic/空值。
 #[test]
 fn argon2_locked_reports_lock() {
-    let _root = crate::GLOBAL_STATE_LOCK.lock().unwrap();
+    let _root = crate::GLOBAL_STATE_LOCK
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
     let _g = GLOBAL_LOCK.lock();
     if VaultStore::default_mode() == VaultMode::Dpapi {
         // DPAPI 平台没有锁定态，本用例只对 argon2 默认平台有意义。

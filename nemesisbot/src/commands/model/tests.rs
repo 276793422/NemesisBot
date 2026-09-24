@@ -1042,7 +1042,9 @@ fn s11b_read_cfg(home: &std::path::Path) -> serde_json::Value {
 #[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
 #[tokio::test]
 async fn test_s11b_run_add_no_config_bails() {
-    let _guard = crate::GLOBAL_STATE_LOCK.lock().unwrap();
+    let _guard = crate::GLOBAL_STATE_LOCK
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
     let _th = s11b_temp_home_env();
     let err = super::run(
         super::ModelAction::Add {
@@ -1064,7 +1066,9 @@ async fn test_s11b_run_add_no_config_bails() {
 #[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
 #[tokio::test]
 async fn test_s11b_run_add_invalid_format_bails() {
-    let _guard = crate::GLOBAL_STATE_LOCK.lock().unwrap();
+    let _guard = crate::GLOBAL_STATE_LOCK
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
     let th = s11b_temp_home_env();
     s11b_write_cfg(&th.home, serde_json::json!({"model_list": []}));
     let err = super::run(
@@ -1094,7 +1098,9 @@ async fn test_s11b_run_add_invalid_format_bails() {
 #[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
 #[tokio::test]
 async fn test_s11b_run_add_basic_writes_entry() {
-    let _guard = crate::GLOBAL_STATE_LOCK.lock().unwrap();
+    let _guard = crate::GLOBAL_STATE_LOCK
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
     let th = s11b_temp_home_env();
     s11b_write_cfg(&th.home, serde_json::json!({"model_list": []}));
     super::run(
@@ -1125,7 +1131,9 @@ async fn test_s11b_run_add_basic_writes_entry() {
 #[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
 #[tokio::test]
 async fn test_s11b_run_add_full_fields() {
-    let _guard = crate::GLOBAL_STATE_LOCK.lock().unwrap();
+    let _guard = crate::GLOBAL_STATE_LOCK
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
     let th = s11b_temp_home_env();
     s11b_write_cfg(&th.home, serde_json::json!({"model_list": []}));
     super::run(
@@ -1152,7 +1160,9 @@ async fn test_s11b_run_add_full_fields() {
 #[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
 #[tokio::test]
 async fn test_s11b_run_add_default_flag_sets_llm() {
-    let _guard = crate::GLOBAL_STATE_LOCK.lock().unwrap();
+    let _guard = crate::GLOBAL_STATE_LOCK
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
     let th = s11b_temp_home_env();
     // 已有一个别的模型 + 已有默认 → --default 显式覆盖默认
     s11b_write_cfg(
@@ -1187,7 +1197,9 @@ async fn test_s11b_run_add_default_flag_sets_llm() {
 #[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
 #[tokio::test]
 async fn test_s11b_run_add_auto_default_skipped_when_default_exists() {
-    let _guard = crate::GLOBAL_STATE_LOCK.lock().unwrap();
+    let _guard = crate::GLOBAL_STATE_LOCK
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
     let th = s11b_temp_home_env();
     s11b_write_cfg(
         &th.home,
@@ -1217,7 +1229,9 @@ async fn test_s11b_run_add_auto_default_skipped_when_default_exists() {
 #[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
 #[tokio::test]
 async fn test_s11b_run_add_duplicate_replaces() {
-    let _guard = crate::GLOBAL_STATE_LOCK.lock().unwrap();
+    let _guard = crate::GLOBAL_STATE_LOCK
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
     let th = s11b_temp_home_env();
     s11b_write_cfg(&th.home, serde_json::json!({"model_list": []}));
     for key in ["sk-one", "sk-two"] {
@@ -1250,7 +1264,9 @@ async fn test_s11b_run_add_duplicate_replaces() {
 #[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
 #[tokio::test]
 async fn test_fi_readd_preserves_tier_vision_and_probe_assets() {
-    let _guard = crate::GLOBAL_STATE_LOCK.lock().unwrap();
+    let _guard = crate::GLOBAL_STATE_LOCK
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
     let th = s11b_temp_home_env();
     s11b_write_cfg(&th.home, serde_json::json!({"model_list": []}));
     // 首次 add。
@@ -1305,7 +1321,9 @@ async fn test_fi_readd_preserves_tier_vision_and_probe_assets() {
 #[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
 #[tokio::test]
 async fn test_fi_new_add_still_tags_auto_tier() {
-    let _guard = crate::GLOBAL_STATE_LOCK.lock().unwrap();
+    let _guard = crate::GLOBAL_STATE_LOCK
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
     let th = s11b_temp_home_env();
     s11b_write_cfg(&th.home, serde_json::json!({"model_list": []}));
     super::run(
@@ -1331,7 +1349,9 @@ async fn test_fi_new_add_still_tags_auto_tier() {
 async fn test_fi_readd_legacy_entry_without_tier_stays_absent() {
     // 旧版条目（无 model_tier 键）重复 add：既不写 auto 也不回填垃圾——
     // 缺键在 resolve_active_tier 语义里就是 auto，行为不变。
-    let _guard = crate::GLOBAL_STATE_LOCK.lock().unwrap();
+    let _guard = crate::GLOBAL_STATE_LOCK
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
     let th = s11b_temp_home_env();
     s11b_write_cfg(
         &th.home,
@@ -1363,7 +1383,9 @@ async fn test_fi_readd_legacy_entry_without_tier_stays_absent() {
 #[tokio::test]
 async fn test_s11b_run_add_catalog_hit_fills_context_window() {
     use crate::commands::model::catalog::{self, CatalogEntry};
-    let _guard = crate::GLOBAL_STATE_LOCK.lock().unwrap();
+    let _guard = crate::GLOBAL_STATE_LOCK
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
     let th = s11b_temp_home_env();
     s11b_write_cfg(&th.home, serde_json::json!({"model_list": []}));
     catalog::save_cache(
@@ -1400,7 +1422,9 @@ async fn test_s11b_run_add_catalog_hit_fills_context_window() {
 #[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
 #[tokio::test]
 async fn test_s11b_run_list_variants() {
-    let _guard = crate::GLOBAL_STATE_LOCK.lock().unwrap();
+    let _guard = crate::GLOBAL_STATE_LOCK
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
     // 无配置 → 打印提示后 Ok
     {
         let _th = s11b_temp_home_env();
@@ -1449,7 +1473,9 @@ async fn test_s11b_run_list_variants() {
 #[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
 #[tokio::test]
 async fn test_s11b_run_remove_no_config_bails() {
-    let _guard = crate::GLOBAL_STATE_LOCK.lock().unwrap();
+    let _guard = crate::GLOBAL_STATE_LOCK
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
     let _th = s11b_temp_home_env();
     let err = super::run(
         super::ModelAction::Remove {
@@ -1466,7 +1492,9 @@ async fn test_s11b_run_remove_no_config_bails() {
 #[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
 #[tokio::test]
 async fn test_s11b_run_remove_default_protected() {
-    let _guard = crate::GLOBAL_STATE_LOCK.lock().unwrap();
+    let _guard = crate::GLOBAL_STATE_LOCK
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
     let th = s11b_temp_home_env();
     s11b_write_cfg(
         &th.home,
@@ -1507,7 +1535,9 @@ async fn test_s11b_run_remove_default_protected() {
 #[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
 #[tokio::test]
 async fn test_s11b_run_remove_force_full_name_and_alias() {
-    let _guard = crate::GLOBAL_STATE_LOCK.lock().unwrap();
+    let _guard = crate::GLOBAL_STATE_LOCK
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
     let th = s11b_temp_home_env();
     s11b_write_cfg(
         &th.home,
@@ -1549,7 +1579,9 @@ async fn test_s11b_run_remove_force_full_name_and_alias() {
 #[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
 #[tokio::test]
 async fn test_s11b_run_remove_not_found_bails() {
-    let _guard = crate::GLOBAL_STATE_LOCK.lock().unwrap();
+    let _guard = crate::GLOBAL_STATE_LOCK
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
     let th = s11b_temp_home_env();
     s11b_write_cfg(&th.home, serde_json::json!({"model_list": []}));
     let err = super::run(
@@ -1567,7 +1599,9 @@ async fn test_s11b_run_remove_not_found_bails() {
 #[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
 #[tokio::test]
 async fn test_s11b_run_default_arm() {
-    let _guard = crate::GLOBAL_STATE_LOCK.lock().unwrap();
+    let _guard = crate::GLOBAL_STATE_LOCK
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
     // 无配置 → Ok（打印提示）
     {
         let _th = s11b_temp_home_env();
@@ -1607,7 +1641,9 @@ async fn test_s11b_run_default_arm() {
 #[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
 #[tokio::test]
 async fn test_s11b_run_settier_matrix() {
-    let _guard = crate::GLOBAL_STATE_LOCK.lock().unwrap();
+    let _guard = crate::GLOBAL_STATE_LOCK
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
     let th = s11b_temp_home_env();
     s11b_write_cfg(
         &th.home,
@@ -1668,7 +1704,9 @@ async fn test_s11b_run_settier_matrix() {
 #[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
 #[tokio::test]
 async fn test_s11b_run_seteffort_matrix() {
-    let _guard = crate::GLOBAL_STATE_LOCK.lock().unwrap();
+    let _guard = crate::GLOBAL_STATE_LOCK
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
     let th = s11b_temp_home_env();
     s11b_write_cfg(
         &th.home,
@@ -1729,7 +1767,9 @@ async fn test_s11b_run_seteffort_matrix() {
 #[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
 #[tokio::test]
 async fn test_s11b_run_setsize_matrix() {
-    let _guard = crate::GLOBAL_STATE_LOCK.lock().unwrap();
+    let _guard = crate::GLOBAL_STATE_LOCK
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
     let th = s11b_temp_home_env();
     s11b_write_cfg(
         &th.home,
@@ -1784,7 +1824,9 @@ async fn test_s11b_run_setsize_matrix() {
 #[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
 #[tokio::test]
 async fn test_s11b_run_setrealname_matrix() {
-    let _guard = crate::GLOBAL_STATE_LOCK.lock().unwrap();
+    let _guard = crate::GLOBAL_STATE_LOCK
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
     let th = s11b_temp_home_env();
     s11b_write_cfg(
         &th.home,
@@ -1818,7 +1860,9 @@ async fn test_s11b_run_setrealname_matrix() {
 #[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
 #[tokio::test]
 async fn test_s11b_run_probe_no_config_bails() {
-    let _guard = crate::GLOBAL_STATE_LOCK.lock().unwrap();
+    let _guard = crate::GLOBAL_STATE_LOCK
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
     let _th = s11b_temp_home_env();
     // cfg-missing bail 在 block_in_place 之前 → current_thread runtime 可跑。
     // 真 LLM 探针属结构性豁免（7 次真实模型调用）。
@@ -1836,7 +1880,9 @@ async fn test_s11b_run_probe_no_config_bails() {
 #[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
 #[tokio::test]
 async fn test_s11b_run_catalog_update_no_config_bails() {
-    let _guard = crate::GLOBAL_STATE_LOCK.lock().unwrap();
+    let _guard = crate::GLOBAL_STATE_LOCK
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
     let _th = s11b_temp_home_env();
     // cfg-missing bail；真网络拉取 models.dev 属结构性豁免。
     let err = super::run(super::ModelAction::CatalogUpdate, false)
@@ -1943,7 +1989,9 @@ mod wave_b {
     #[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
     #[tokio::test]
     async fn wave_b_run_add_inserts_model_list_key_and_mini_hint() {
-        let _guard = crate::GLOBAL_STATE_LOCK.lock().unwrap();
+        let _guard = crate::GLOBAL_STATE_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         let th = s11b_temp_home_env();
         // 配置存在但没有 model_list 键 ⇒ 走 obj.insert 首插臂（194-196）。
         s11b_write_cfg(&th.home, serde_json::json!({}));
@@ -1975,7 +2023,9 @@ mod wave_b {
     #[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
     #[tokio::test]
     async fn wave_b_run_list_verbose_and_base_url_rows() {
-        let _guard = crate::GLOBAL_STATE_LOCK.lock().unwrap();
+        let _guard = crate::GLOBAL_STATE_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         let th = s11b_temp_home_env();
         s11b_write_cfg(
             &th.home,
@@ -2006,7 +2056,9 @@ mod wave_b {
     #[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
     #[tokio::test]
     async fn wave_b_run_setaffort_setsize_setrealname_bail_no_config() {
-        let _guard = crate::GLOBAL_STATE_LOCK.lock().unwrap();
+        let _guard = crate::GLOBAL_STATE_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         let th = s11b_temp_home_env(); // 故意不写 config.json
 
         let err = run(

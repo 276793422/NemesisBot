@@ -329,7 +329,9 @@ async fn manager_start_all_and_owner_index() {
 #[cfg(windows)] // Windows-form（进程级单例重定向依赖 crate::tests 沙箱 home）
 #[tokio::test]
 async fn bind_and_forget_session_roundtrip_with_sidecar() {
-    let _serial = crate::GLOBAL_STATE_LOCK.lock().unwrap();
+    let _serial = crate::GLOBAL_STATE_LOCK
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
     let home = crate::tests::singleton_test_home();
     let main_ws = home.join("workspace");
     std::fs::create_dir_all(&main_ws).unwrap();

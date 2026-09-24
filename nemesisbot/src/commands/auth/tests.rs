@@ -253,7 +253,9 @@ mod run_arm {
         F: FnOnce(std::path::PathBuf) -> Fut,
         Fut: std::future::Future<Output = ()>,
     {
-        let _guard = crate::GLOBAL_STATE_LOCK.lock().unwrap();
+        let _guard = crate::GLOBAL_STATE_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         let tmp = TempDir::new().unwrap();
         unsafe {
             std::env::set_var("NEMESISBOT_HOME", tmp.path());
@@ -509,7 +511,9 @@ mod r9_zero {
 
     #[tokio::test]
     async fn openai_browser_flow_prebind_falls_back_to_paste_token_and_saves() {
-        let _guard = crate::GLOBAL_STATE_LOCK.lock().unwrap();
+        let _guard = crate::GLOBAL_STATE_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         let _issuer = EnvVarRemoved::take("NEMESISBOT_OAUTH_ISSUER");
 
         let ws = TestWorkspace::new().unwrap();
@@ -570,7 +574,9 @@ mod r9_zero {
 
     #[tokio::test]
     async fn device_code_dead_issuer_then_empty_input_cancels_login() {
-        let _guard = crate::GLOBAL_STATE_LOCK.lock().unwrap();
+        let _guard = crate::GLOBAL_STATE_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
 
         let ws = TestWorkspace::new().unwrap();
         std::fs::create_dir_all(ws.home()).unwrap();
@@ -806,7 +812,9 @@ mod r10_device_code_flow {
 
     #[tokio::test]
     async fn r10_device_code_full_flow_success_saves_credential_via_mock_issuer() {
-        let _guard = crate::GLOBAL_STATE_LOCK.lock().unwrap();
+        let _guard = crate::GLOBAL_STATE_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
 
         let tmp = TempDir::new().unwrap();
         let issuer = MockIssuer::start();

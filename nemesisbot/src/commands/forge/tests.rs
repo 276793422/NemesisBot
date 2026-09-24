@@ -945,7 +945,9 @@ mod r7_cmd_paths {
     #[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
     #[test]
     fn run_status_without_config_prints_disabled() {
-        let _g = crate::GLOBAL_STATE_LOCK.lock().unwrap();
+        let _g = crate::GLOBAL_STATE_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         let (_tmp, home) = env_home();
         let r = run(ForgeAction::Status, false);
         clear_env();
@@ -959,7 +961,9 @@ mod r7_cmd_paths {
     #[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
     #[test]
     fn run_status_enabled_with_registry_prints_type_counts() {
-        let _g = crate::GLOBAL_STATE_LOCK.lock().unwrap();
+        let _g = crate::GLOBAL_STATE_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         let (_tmp, home) = env_home();
         write_config(&home, Some(true));
         let forge_dir = home.join("workspace").join("forge");
@@ -981,7 +985,9 @@ mod r7_cmd_paths {
     #[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
     #[test]
     fn run_enable_creates_dirs_and_config_then_disable_flips_flag() {
-        let _g = crate::GLOBAL_STATE_LOCK.lock().unwrap();
+        let _g = crate::GLOBAL_STATE_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         let (_tmp, home) = env_home();
         // 无 forge 键 → 插入 {"forge":{"enabled":true}} 臂。
         write_config(&home, None);
@@ -1021,7 +1027,9 @@ mod r7_cmd_paths {
     #[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
     #[test]
     fn run_enable_on_existing_forge_object_preserves_fields() {
-        let _g = crate::GLOBAL_STATE_LOCK.lock().unwrap();
+        let _g = crate::GLOBAL_STATE_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         let (_tmp, home) = env_home();
         write_config(&home, Some(false));
         run(ForgeAction::Enable, false).expect("enable with existing forge obj ok");
@@ -1047,7 +1055,9 @@ mod r7_cmd_paths {
     #[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn run_reflect_guard_arms_disabled_and_uninitialized_and_empty() {
-        let _g = crate::GLOBAL_STATE_LOCK.lock().unwrap();
+        let _g = crate::GLOBAL_STATE_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         // 臂 1：config 存在但 forge.enabled=false → 提示先 enable。
         let (_t1, h1) = env_home();
         write_config(&h1, Some(false));
@@ -1076,7 +1086,9 @@ mod r7_cmd_paths {
     #[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn run_reflect_full_path_produces_report() {
-        let _g = crate::GLOBAL_STATE_LOCK.lock().unwrap();
+        let _g = crate::GLOBAL_STATE_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         let (_tmp, home) = env_home();
         write_config(&home, Some(true));
         let forge_dir = home.join("workspace").join("forge");
@@ -1099,7 +1111,9 @@ mod r7_cmd_paths {
     #[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
     #[test]
     fn run_list_registry_filter_and_fallback_scan_arms() {
-        let _g = crate::GLOBAL_STATE_LOCK.lock().unwrap();
+        let _g = crate::GLOBAL_STATE_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         let (_tmp, home) = env_home();
         let forge_dir = home.join("workspace").join("forge");
         seed_registry(&forge_dir);
@@ -1154,7 +1168,9 @@ mod r7_cmd_paths {
     #[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
     #[test]
     fn run_evaluate_found_and_not_found() {
-        let _g = crate::GLOBAL_STATE_LOCK.lock().unwrap();
+        let _g = crate::GLOBAL_STATE_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         let (_tmp, home) = env_home();
         let forge_dir = home.join("workspace").join("forge");
         seed_registry(&forge_dir);
@@ -1168,7 +1184,9 @@ mod r7_cmd_paths {
     #[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn run_export_guard_and_specific_artifact() {
-        let _g = crate::GLOBAL_STATE_LOCK.lock().unwrap();
+        let _g = crate::GLOBAL_STATE_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         // 守卫臂：forge 目录不存在。
         let (_t1, _h1) = env_home();
         let r1 = run(
@@ -1233,7 +1251,9 @@ mod r7_cmd_paths {
     #[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
     #[test]
     fn run_learning_lifecycle_and_history() {
-        let _g = crate::GLOBAL_STATE_LOCK.lock().unwrap();
+        let _g = crate::GLOBAL_STATE_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         let (_tmp, home) = env_home();
         let forge_dir = home.join("workspace").join("forge");
         // status：默认配置（无 config.forge.json）→ typed load 回默认值展示。
@@ -1461,7 +1481,9 @@ mod wave_b {
     #[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
     #[test]
     fn wave_b_learning_enable_fails_when_config_unwritable() {
-        let _g = crate::GLOBAL_STATE_LOCK.lock().unwrap();
+        let _g = crate::GLOBAL_STATE_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         let g = WbEnvGuard::new();
         // runtime config 预建成目录：load 静默回默认，save 的 fs::write 必然失败。
         let cfg_path = runtime_forge_config_path(&g.forge_dir());
@@ -1479,7 +1501,9 @@ mod wave_b {
     #[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
     #[test]
     fn wave_b_disable_inserts_forge_key_when_missing() {
-        let _g = crate::GLOBAL_STATE_LOCK.lock().unwrap();
+        let _g = crate::GLOBAL_STATE_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         let g = WbEnvGuard::new();
         // 存量配置带无关 sibling 字段、没有 forge 键 → Disable 走插入臂。
         std::fs::write(
@@ -1503,7 +1527,9 @@ mod wave_b {
     #[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn wave_b_reflect_without_experiences_subdir_returns_hint() {
-        let _g = crate::GLOBAL_STATE_LOCK.lock().unwrap();
+        let _g = crate::GLOBAL_STATE_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         let g = WbEnvGuard::new();
         wb_write_config(&g.home, true);
         // forge 目录本身存在（过 uninitialized 守卫），但没有 experiences 子目录
@@ -1515,7 +1541,9 @@ mod wave_b {
     #[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn wave_b_reflect_aggregate_read_error_on_jsonl_as_directory() {
-        let _g = crate::GLOBAL_STATE_LOCK.lock().unwrap();
+        let _g = crate::GLOBAL_STATE_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         let g = WbEnvGuard::new();
         wb_write_config(&g.home, true);
         // 月目录下的“数据文件”实际是个目录 → walk 的 read_to_string 失败并
@@ -1534,7 +1562,9 @@ mod wave_b {
     #[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn wave_b_reflect_empty_aggregation_stops_early() {
-        let _g = crate::GLOBAL_STATE_LOCK.lock().unwrap();
+        let _g = crate::GLOBAL_STATE_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         let g = WbEnvGuard::new();
         wb_write_config(&g.home, true);
         // experiences/<month>/ 存在但没有任何 .jsonl → read_aggregated 返回
@@ -1555,7 +1585,9 @@ mod wave_b {
     #[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn wave_b_reflect_reports_low_success_patterns() {
-        let _g = crate::GLOBAL_STATE_LOCK.lock().unwrap();
+        let _g = crate::GLOBAL_STATE_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         let g = WbEnvGuard::new();
         wb_write_config(&g.home, true);
         // 三条独立记录同一工具全败（sr=0.0）：low_success 的 count 口径是
@@ -1585,7 +1617,9 @@ mod wave_b {
     #[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn wave_b_reflect_warns_when_report_target_is_a_file() {
-        let _g = crate::GLOBAL_STATE_LOCK.lock().unwrap();
+        let _g = crate::GLOBAL_STATE_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         let g = WbEnvGuard::new();
         wb_write_config(&g.home, true);
         wb_seed_experience_rows(&g.forge_dir(), &[wb_row("wbh1", "exec", 2, 15, 1.0)]);
@@ -1599,7 +1633,9 @@ mod wave_b {
     #[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn wave_b_export_draft_only_hints_all_flag() {
-        let _g = crate::GLOBAL_STATE_LOCK.lock().unwrap();
+        let _g = crate::GLOBAL_STATE_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         let g = WbEnvGuard::new();
         wb_write_config(&g.home, true);
         wb_write_registry(g.forge_dir().as_path(), &[wb_artifact("wbd1", "Draft")]);
@@ -1627,7 +1663,9 @@ mod wave_b {
     #[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn wave_b_export_active_artifacts_report_count() {
-        let _g = crate::GLOBAL_STATE_LOCK.lock().unwrap();
+        let _g = crate::GLOBAL_STATE_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         let g = WbEnvGuard::new();
         wb_write_config(&g.home, true);
         wb_write_registry(
@@ -1665,7 +1703,9 @@ mod wave_b {
     #[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
     #[test]
     fn wave_b_learning_status_defaults_when_config_empty() {
-        let _g = crate::GLOBAL_STATE_LOCK.lock().unwrap();
+        let _g = crate::GLOBAL_STATE_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         let g = WbEnvGuard::new();
         // CFG-04：config.forge.json 为空对象 `{}` → typed load 全默认，
         // learning 段必有 → 明细恒展示（原「无 learning 键整块跳过」分支
@@ -1686,7 +1726,9 @@ mod wave_b {
     #[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
     #[test]
     fn wave_b_history_blank_cycles_file_prints_no_history() {
-        let _g = crate::GLOBAL_STATE_LOCK.lock().unwrap();
+        let _g = crate::GLOBAL_STATE_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         let g = WbEnvGuard::new();
         // cycles 文件存在但内容全是空白行 → 过滤后 lines 为空 → 内层
         // “No learning history found.” 臂（区别于文件不存在的外层臂）。
@@ -1708,7 +1750,9 @@ mod wave_b {
     #[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
     #[test]
     fn wave_b_history_cycles_as_directory_skips_silently() {
-        let _g = crate::GLOBAL_STATE_LOCK.lock().unwrap();
+        let _g = crate::GLOBAL_STATE_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         let g = WbEnvGuard::new();
         // cycles 路径是目录：exists() 通过、read_to_string 失败 → 外层
         // if-let Ok 静默跳过，函数仍返回 Ok（该容错语义的行为钉死）。

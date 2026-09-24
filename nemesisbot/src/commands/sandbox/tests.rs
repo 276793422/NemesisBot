@@ -204,7 +204,9 @@ fn s11b_fake_start_exe(paths: &nemesis_sandbox::SandboxPaths) -> bool {
 #[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
 #[tokio::test]
 async fn test_s11b_run_status_fresh_home() {
-    let _guard = crate::GLOBAL_STATE_LOCK.lock().unwrap();
+    let _guard = crate::GLOBAL_STATE_LOCK
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
     let th = s11b_temp_home_env();
     run(SandboxCommand::Status, false).await.unwrap();
     // SCM 读取安全（SbieSvc/SbieDrv 未装 → NotFound 打印）
@@ -222,7 +224,9 @@ fn test_s11b_stop_service_if_ours_no_side_effects() {
 #[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
 #[test]
 fn test_s11b_workspace_dir_env_resolution() {
-    let _guard = crate::GLOBAL_STATE_LOCK.lock().unwrap();
+    let _guard = crate::GLOBAL_STATE_LOCK
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
     let th = s11b_temp_home_env();
     assert_eq!(workspace_dir(false), th.home.join("workspace"));
 }
@@ -232,7 +236,9 @@ fn test_s11b_workspace_dir_env_resolution() {
 #[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
 #[tokio::test]
 async fn test_s11b_run_pending_and_commit_paths() {
-    let _guard = crate::GLOBAL_STATE_LOCK.lock().unwrap();
+    let _guard = crate::GLOBAL_STATE_LOCK
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
     let th = s11b_temp_home_env();
     let paths = s11b_paths(&th.home);
 
@@ -314,7 +320,9 @@ async fn test_s11b_run_pending_and_commit_paths() {
 #[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
 #[tokio::test]
 async fn test_s11b_run_clear_force_and_missing_startexe() {
-    let _guard = crate::GLOBAL_STATE_LOCK.lock().unwrap();
+    let _guard = crate::GLOBAL_STATE_LOCK
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
     let th = s11b_temp_home_env();
     let paths = s11b_paths(&th.home);
 
@@ -346,7 +354,9 @@ async fn test_s11b_run_clear_force_and_missing_startexe() {
 #[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
 #[tokio::test]
 async fn test_s11b_kill_all_branches() {
-    let _guard = crate::GLOBAL_STATE_LOCK.lock().unwrap();
+    let _guard = crate::GLOBAL_STATE_LOCK
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
     let th = s11b_temp_home_env();
     let paths = s11b_paths(&th.home);
 
@@ -472,7 +482,9 @@ mod wave_b {
     #[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
     #[tokio::test]
     async fn wave_b_commit_failed_line_when_real_parent_is_regular_file() {
-        let _guard = crate::GLOBAL_STATE_LOCK.lock().unwrap();
+        let _guard = crate::GLOBAL_STATE_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         let th = s11b_temp_home_env();
         let paths = s11b_paths(&th.home);
 
@@ -511,7 +523,9 @@ mod wave_b {
     #[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
     #[tokio::test]
     async fn wave_b_kill_specific_box_present_in_ini_runs_terminate_chain() {
-        let _guard = crate::GLOBAL_STATE_LOCK.lock().unwrap();
+        let _guard = crate::GLOBAL_STATE_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         let th = s11b_temp_home_env();
         let paths = s11b_paths(&th.home);
         assert!(s11b_fake_start_exe(&paths));
@@ -546,7 +560,9 @@ mod wave_b {
     #[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
     #[tokio::test]
     async fn wave_b_kill_all_with_no_eval_sections_returns_early_hint() {
-        let _guard = crate::GLOBAL_STATE_LOCK.lock().unwrap();
+        let _guard = crate::GLOBAL_STATE_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         let th = s11b_temp_home_env();
         let paths = s11b_paths(&th.home);
         assert!(s11b_fake_start_exe(&paths));
@@ -566,7 +582,9 @@ mod wave_b {
     #[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
     #[tokio::test]
     async fn wave_b_kill_with_unspawnable_startexe_reports_no_response_and_skips() {
-        let _guard = crate::GLOBAL_STATE_LOCK.lock().unwrap();
+        let _guard = crate::GLOBAL_STATE_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         let th = s11b_temp_home_env();
         let paths = s11b_paths(&th.home);
 
@@ -597,7 +615,9 @@ mod wave_b {
     #[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
     #[tokio::test]
     async fn wave_b_status_present_arms_when_runtime_ini_startexe_exist() {
-        let _guard = crate::GLOBAL_STATE_LOCK.lock().unwrap();
+        let _guard = crate::GLOBAL_STATE_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         let th = s11b_temp_home_env();
         let paths = s11b_paths(&th.home);
 

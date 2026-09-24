@@ -953,6 +953,13 @@ fn write_fallback_config(cfg_path: &std::path::Path) -> anyhow::Result<()> {
 // (common::tests, commands::migrate::tests). Env is process-global → parallel
 // tests race on set_var/set_current_dir; every env-mutating test acquires this
 // lock so the binary is reliable under default parallel `cargo test`.
+//
+// 获取侧必须 poison-aware（`.lock().unwrap_or_else(|e| e.into_inner())`）：
+// 本锁只做串行化，不承载任何与锁体相关的不变量——某个持锁测试 panic 后，
+// 后续测试拿到的数据与从未 panic 过时完全一致，毒化标记对它们没有语义，
+// `.unwrap()` 只会把 1 个真实失败放大成几十个 PoisonError 假失败（2026-09-24
+// nightly run 35995518326 实证：cors 1 个根因 + 21 个级联）。同约定见
+// nemesis-agent background_registry 的模块级 TEST_LOCK。
 #[cfg(test)]
 static GLOBAL_STATE_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 

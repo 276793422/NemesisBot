@@ -1225,7 +1225,9 @@ fn read_main_cfg(home: &std::path::Path) -> serde_json::Value {
 
 #[test]
 fn test_run_list_with_config() {
-    let _guard = crate::GLOBAL_STATE_LOCK.lock().unwrap();
+    let _guard = crate::GLOBAL_STATE_LOCK
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
     let th = temp_home_env();
     write_main_cfg(
         &th.home,
@@ -1241,7 +1243,9 @@ fn test_run_list_with_config() {
 
 #[test]
 fn test_run_list_without_config() {
-    let _guard = crate::GLOBAL_STATE_LOCK.lock().unwrap();
+    let _guard = crate::GLOBAL_STATE_LOCK
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
     let _th = temp_home_env();
     run(ChannelAction::List, false).unwrap();
 }
@@ -1252,7 +1256,9 @@ fn test_run_list_without_config() {
 
 #[test]
 fn test_run_enable_known_channel_existing_entry() {
-    let _guard = crate::GLOBAL_STATE_LOCK.lock().unwrap();
+    let _guard = crate::GLOBAL_STATE_LOCK
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
     let th = temp_home_env();
     write_main_cfg(
         &th.home,
@@ -1272,7 +1278,9 @@ fn test_run_enable_known_channel_existing_entry() {
 
 #[test]
 fn test_run_enable_known_channel_new_entry() {
-    let _guard = crate::GLOBAL_STATE_LOCK.lock().unwrap();
+    let _guard = crate::GLOBAL_STATE_LOCK
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
     let th = temp_home_env();
     // channels 对象存在但没有该条目 → else 分支插入
     write_main_cfg(&th.home, &serde_json::json!({ "channels": {} }));
@@ -1291,7 +1299,9 @@ fn test_run_enable_known_channel_new_entry() {
 
 #[test]
 fn test_run_enable_unknown_channel() {
-    let _guard = crate::GLOBAL_STATE_LOCK.lock().unwrap();
+    let _guard = crate::GLOBAL_STATE_LOCK
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
     let th = temp_home_env();
     write_main_cfg(&th.home, &serde_json::json!({ "channels": {} }));
     run(
@@ -1306,7 +1316,9 @@ fn test_run_enable_unknown_channel() {
 
 #[test]
 fn test_run_enable_without_config_file() {
-    let _guard = crate::GLOBAL_STATE_LOCK.lock().unwrap();
+    let _guard = crate::GLOBAL_STATE_LOCK
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
     let th = temp_home_env();
     run(ChannelAction::Enable { name: "web".into() }, false).unwrap();
     assert!(!crate::common::config_path(&th.home).exists());
@@ -1314,7 +1326,9 @@ fn test_run_enable_without_config_file() {
 
 #[test]
 fn test_run_disable_known_channel() {
-    let _guard = crate::GLOBAL_STATE_LOCK.lock().unwrap();
+    let _guard = crate::GLOBAL_STATE_LOCK
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
     let th = temp_home_env();
     write_main_cfg(
         &th.home,
@@ -1329,7 +1343,9 @@ fn test_run_disable_known_channel() {
 
 #[test]
 fn test_run_disable_unknown_and_no_config() {
-    let _guard = crate::GLOBAL_STATE_LOCK.lock().unwrap();
+    let _guard = crate::GLOBAL_STATE_LOCK
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
     let th = temp_home_env();
     write_main_cfg(&th.home, &serde_json::json!({ "channels": {} }));
     run(
@@ -1352,7 +1368,9 @@ fn test_run_disable_unknown_and_no_config() {
 
 #[test]
 fn test_run_status_web_with_auth() {
-    let _guard = crate::GLOBAL_STATE_LOCK.lock().unwrap();
+    let _guard = crate::GLOBAL_STATE_LOCK
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
     let th = temp_home_env();
     write_main_cfg(
         &th.home,
@@ -1367,7 +1385,9 @@ fn test_run_status_web_with_auth() {
 
 #[test]
 fn test_run_status_web_without_auth_defaults() {
-    let _guard = crate::GLOBAL_STATE_LOCK.lock().unwrap();
+    let _guard = crate::GLOBAL_STATE_LOCK
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
     let th = temp_home_env();
     // 缺 host/port/auth → unwrap_or 默认值分支
     write_main_cfg(
@@ -1379,7 +1399,9 @@ fn test_run_status_web_without_auth_defaults() {
 
 #[test]
 fn test_run_status_websocket_with_and_without_auth() {
-    let _guard = crate::GLOBAL_STATE_LOCK.lock().unwrap();
+    let _guard = crate::GLOBAL_STATE_LOCK
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
     let th = temp_home_env();
     write_main_cfg(
         &th.home,
@@ -1409,7 +1431,9 @@ fn test_run_status_websocket_with_and_without_auth() {
 
 #[test]
 fn test_run_status_generic_channel_extra_fields() {
-    let _guard = crate::GLOBAL_STATE_LOCK.lock().unwrap();
+    let _guard = crate::GLOBAL_STATE_LOCK
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
     let th = temp_home_env();
     write_main_cfg(
         &th.home,
@@ -1428,7 +1452,9 @@ fn test_run_status_generic_channel_extra_fields() {
 
 #[test]
 fn test_run_status_not_configured_and_no_config() {
-    let _guard = crate::GLOBAL_STATE_LOCK.lock().unwrap();
+    let _guard = crate::GLOBAL_STATE_LOCK
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
     let th = temp_home_env();
     write_main_cfg(&th.home, &serde_json::json!({ "channels": {} }));
     run(
@@ -1449,7 +1475,9 @@ fn test_run_status_not_configured_and_no_config() {
 
 #[test]
 fn test_run_web_auth_interactive_eof_empty_token() {
-    let _guard = crate::GLOBAL_STATE_LOCK.lock().unwrap();
+    let _guard = crate::GLOBAL_STATE_LOCK
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
     let th = temp_home_env();
     write_main_cfg(&th.home, &serde_json::json!({ "channels": { "web": {} } }));
     // stdin EOF → token 空 → 报错提前返回，不写配置
@@ -1469,7 +1497,9 @@ fn test_run_web_auth_interactive_eof_empty_token() {
 
 #[test]
 fn test_run_web_auth_set_normal_token() {
-    let _guard = crate::GLOBAL_STATE_LOCK.lock().unwrap();
+    let _guard = crate::GLOBAL_STATE_LOCK
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
     let th = temp_home_env();
     write_main_cfg(&th.home, &serde_json::json!({ "channels": { "web": {} } }));
     run(
@@ -1489,7 +1519,9 @@ fn test_run_web_auth_set_normal_token() {
 
 #[test]
 fn test_run_web_auth_set_short_and_empty() {
-    let _guard = crate::GLOBAL_STATE_LOCK.lock().unwrap();
+    let _guard = crate::GLOBAL_STATE_LOCK
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
     let th = temp_home_env();
     write_main_cfg(&th.home, &serde_json::json!({ "channels": { "web": {} } }));
     // 短 token → 警告但仍然写入
@@ -1524,7 +1556,9 @@ fn test_run_web_auth_set_short_and_empty() {
 
 #[test]
 fn test_run_web_auth_get_set_and_unset() {
-    let _guard = crate::GLOBAL_STATE_LOCK.lock().unwrap();
+    let _guard = crate::GLOBAL_STATE_LOCK
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
     let th = temp_home_env();
     write_main_cfg(&th.home, &serde_json::json!({ "channels": { "web": {} } }));
     run(
@@ -1554,7 +1588,9 @@ fn test_run_web_auth_get_set_and_unset() {
 
 #[test]
 fn test_run_web_host_and_port() {
-    let _guard = crate::GLOBAL_STATE_LOCK.lock().unwrap();
+    let _guard = crate::GLOBAL_STATE_LOCK
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
     let th = temp_home_env();
     write_main_cfg(&th.home, &serde_json::json!({ "channels": { "web": {} } }));
     run(
@@ -1581,7 +1617,9 @@ fn test_run_web_host_and_port() {
 
 #[test]
 fn test_run_web_status_configured_and_not() {
-    let _guard = crate::GLOBAL_STATE_LOCK.lock().unwrap();
+    let _guard = crate::GLOBAL_STATE_LOCK
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
     let th = temp_home_env();
     write_main_cfg(
         &th.home,
@@ -1621,7 +1659,9 @@ fn test_run_web_status_configured_and_not() {
 
 #[test]
 fn test_run_web_clear_interactive_eof_cancels() {
-    let _guard = crate::GLOBAL_STATE_LOCK.lock().unwrap();
+    let _guard = crate::GLOBAL_STATE_LOCK
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
     let th = temp_home_env();
     write_main_cfg(
         &th.home,
@@ -1643,7 +1683,9 @@ fn test_run_web_clear_interactive_eof_cancels() {
 
 #[test]
 fn test_run_web_config_full_fields_and_missing() {
-    let _guard = crate::GLOBAL_STATE_LOCK.lock().unwrap();
+    let _guard = crate::GLOBAL_STATE_LOCK
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
     let th = temp_home_env();
     // 覆盖 TLS/CORS/max_connections/额外字段打印分支
     write_main_cfg(
@@ -1711,7 +1753,9 @@ fn test_run_web_config_full_fields_and_missing() {
 
 #[test]
 fn test_run_websocket_setup_interactive_eof_defaults() {
-    let _guard = crate::GLOBAL_STATE_LOCK.lock().unwrap();
+    let _guard = crate::GLOBAL_STATE_LOCK
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
     let th = temp_home_env();
     write_main_cfg(
         &th.home,
@@ -1747,7 +1791,9 @@ fn test_run_websocket_setup_interactive_eof_defaults() {
 
 #[test]
 fn test_run_websocket_setup_from_scratch_defaults() {
-    let _guard = crate::GLOBAL_STATE_LOCK.lock().unwrap();
+    let _guard = crate::GLOBAL_STATE_LOCK
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
     let th = temp_home_env();
     // 无已有值 → 默认 127.0.0.1/49001//ws；无 channels 键也能建
     write_main_cfg(&th.home, &serde_json::json!({}));
@@ -1775,7 +1821,9 @@ fn test_run_websocket_setup_from_scratch_defaults() {
 
 #[test]
 fn test_run_websocket_config_variants() {
-    let _guard = crate::GLOBAL_STATE_LOCK.lock().unwrap();
+    let _guard = crate::GLOBAL_STATE_LOCK
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
     let th = temp_home_env();
     write_main_cfg(
         &th.home,
@@ -1813,7 +1861,9 @@ fn test_run_websocket_config_variants() {
 
 #[test]
 fn test_run_websocket_set_validations() {
-    let _guard = crate::GLOBAL_STATE_LOCK.lock().unwrap();
+    let _guard = crate::GLOBAL_STATE_LOCK
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
     let th = temp_home_env();
     write_main_cfg(
         &th.home,
@@ -1888,7 +1938,9 @@ fn test_run_websocket_set_validations() {
 
 #[test]
 fn test_run_websocket_get_set_and_unset() {
-    let _guard = crate::GLOBAL_STATE_LOCK.lock().unwrap();
+    let _guard = crate::GLOBAL_STATE_LOCK
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
     let th = temp_home_env();
     write_main_cfg(
         &th.home,
@@ -1926,7 +1978,9 @@ fn test_run_websocket_get_set_and_unset() {
 
 #[test]
 fn test_run_external_setup_interactive_eof_defaults() {
-    let _guard = crate::GLOBAL_STATE_LOCK.lock().unwrap();
+    let _guard = crate::GLOBAL_STATE_LOCK
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
     let th = temp_home_env();
     write_main_cfg(
         &th.home,
@@ -1952,7 +2006,9 @@ fn test_run_external_setup_interactive_eof_defaults() {
 
 #[test]
 fn test_run_external_setup_from_scratch_removes_empty() {
-    let _guard = crate::GLOBAL_STATE_LOCK.lock().unwrap();
+    let _guard = crate::GLOBAL_STATE_LOCK
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
     let th = temp_home_env();
     // 无已有值 → input/output 空 → remove（本就没有）；chat_id 默认写入
     write_main_cfg(&th.home, &serde_json::json!({ "channels": {} }));
@@ -1971,7 +2027,9 @@ fn test_run_external_setup_from_scratch_removes_empty() {
 
 #[test]
 fn test_run_external_config_variants() {
-    let _guard = crate::GLOBAL_STATE_LOCK.lock().unwrap();
+    let _guard = crate::GLOBAL_STATE_LOCK
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
     let th = temp_home_env();
     write_main_cfg(
         &th.home,
@@ -2005,7 +2063,9 @@ fn test_run_external_config_variants() {
 
 #[test]
 fn test_run_external_test_not_configured() {
-    let _guard = crate::GLOBAL_STATE_LOCK.lock().unwrap();
+    let _guard = crate::GLOBAL_STATE_LOCK
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
     let th = temp_home_env();
     write_main_cfg(&th.home, &serde_json::json!({ "channels": {} }));
     // 两个 exe 都没配 → 提示后提前返回
@@ -2020,7 +2080,9 @@ fn test_run_external_test_not_configured() {
 
 #[test]
 fn test_run_external_test_not_found_and_failed_spawn() {
-    let _guard = crate::GLOBAL_STATE_LOCK.lock().unwrap();
+    let _guard = crate::GLOBAL_STATE_LOCK
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
     let th = temp_home_env();
     // input=不存在的路径 → NOT FOUND；output=存在但是目录 → spawn Err → FAILED
     let dir_as_exe = th.home.join("workspace").to_string_lossy().to_string();
@@ -2046,7 +2108,9 @@ fn test_run_external_test_not_found_and_failed_spawn() {
 
 #[test]
 fn test_run_external_set_and_get() {
-    let _guard = crate::GLOBAL_STATE_LOCK.lock().unwrap();
+    let _guard = crate::GLOBAL_STATE_LOCK
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
     let th = temp_home_env();
     write_main_cfg(
         &th.home,
@@ -2107,7 +2171,9 @@ mod wave_b {
     /// 但文件仍被无害回写（171-194 家族的完整执行）。
     #[test]
     fn wave_b_disable_known_channel_absent_entry_still_rewrites_config() {
-        let _guard = crate::GLOBAL_STATE_LOCK.lock().unwrap();
+        let _guard = crate::GLOBAL_STATE_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         let th = temp_home_env();
         write_main_cfg(&th.home, &serde_json::json!({ "channels": {} }));
         run(
@@ -2129,7 +2195,9 @@ mod wave_b {
     /// 不经 ceil_char_boundary 切片。
     #[test]
     fn wave_b_status_web_short_auth_token_uses_raw_mask_arm() {
-        let _guard = crate::GLOBAL_STATE_LOCK.lock().unwrap();
+        let _guard = crate::GLOBAL_STATE_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         let th = temp_home_env();
         write_main_cfg(
             &th.home,
@@ -2144,7 +2212,9 @@ mod wave_b {
     /// 字段转储循环整体跳过（260 关联区域）。
     #[test]
     fn wave_b_status_non_object_channel_entry_skips_field_dump() {
-        let _guard = crate::GLOBAL_STATE_LOCK.lock().unwrap();
+        let _guard = crate::GLOBAL_STATE_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         let th = temp_home_env();
         write_main_cfg(
             &th.home,
@@ -2163,7 +2233,9 @@ mod wave_b {
     /// (b) web 条目存在但完全无 auth_token → has_auth=false，掩码块整体落穿（381 区）。
     #[test]
     fn wave_b_web_status_short_auth_then_no_auth_entry() {
-        let _guard = crate::GLOBAL_STATE_LOCK.lock().unwrap();
+        let _guard = crate::GLOBAL_STATE_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         let th = temp_home_env();
         write_main_cfg(
             &th.home,
@@ -2200,7 +2272,9 @@ mod wave_b {
     /// (b) web 条目是非对象字符串 → as_object None，额外字段循环跳过（488 区）。
     #[test]
     fn wave_b_web_config_short_auth_then_non_object_entry() {
-        let _guard = crate::GLOBAL_STATE_LOCK.lock().unwrap();
+        let _guard = crate::GLOBAL_STATE_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         let th = temp_home_env();
         write_main_cfg(
             &th.home,
@@ -2234,7 +2308,9 @@ mod wave_b {
     /// 同步到 web 的 token 保留臂（610-612）。session_id 照常生成。
     #[test]
     fn wave_b_websocket_setup_preserves_seeded_token_and_syncs_to_web() {
-        let _guard = crate::GLOBAL_STATE_LOCK.lock().unwrap();
+        let _guard = crate::GLOBAL_STATE_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         let th = temp_home_env();
         write_main_cfg(
             &th.home,
@@ -2286,7 +2362,9 @@ mod wave_b {
     /// 第一个写点即 loud bail，命令返回 Err 且文件一字节不动。
     #[test]
     fn wave_b_websocket_setup_non_object_ws_entry_loud_bails_untouched() {
-        let _guard = crate::GLOBAL_STATE_LOCK.lock().unwrap();
+        let _guard = crate::GLOBAL_STATE_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         let th = temp_home_env();
         let original = serde_json::json!({ "channels": { "websocket": "junk" } });
         write_main_cfg(&th.home, &original);
@@ -2312,7 +2390,9 @@ mod wave_b {
     /// External Setup：external 条目为字符串 → 与 WebSocket 同型的 loud bail。
     #[test]
     fn wave_b_external_setup_non_object_entry_loud_bails_untouched() {
-        let _guard = crate::GLOBAL_STATE_LOCK.lock().unwrap();
+        let _guard = crate::GLOBAL_STATE_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         let th = temp_home_env();
         let original = serde_json::json!({ "channels": { "external": "nope" } });
         write_main_cfg(&th.home, &original);
@@ -2356,7 +2436,9 @@ mod wave_c {
     /// Enable 已知通道、条目为字符串：BUG #42 修复后 loud bail、文件不动。
     #[test]
     fn wc_enable_non_object_entry_loud_bails_untouched() {
-        let _guard = crate::GLOBAL_STATE_LOCK.lock().unwrap();
+        let _guard = crate::GLOBAL_STATE_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         let th = temp_home_env();
         let original = serde_json::json!({ "channels": { "web": "junk-string" } });
         write_main_cfg(&th.home, &original);
@@ -2378,7 +2460,9 @@ mod wave_c {
     /// Disable 同型：条目为数组（非对象）→ loud bail、字节不变。
     #[test]
     fn wc_disable_non_object_entry_loud_bails_untouched() {
-        let _guard = crate::GLOBAL_STATE_LOCK.lock().unwrap();
+        let _guard = crate::GLOBAL_STATE_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         let th = temp_home_env();
         let original = serde_json::json!({ "channels": { "slack": ["not", "an", "object"] } });
         write_main_cfg(&th.home, &original);
@@ -2423,7 +2507,9 @@ mod wave_c {
     /// output 的 NOT FOUND 判定。
     #[test]
     fn wc_external_test_half_configured_reports_input_not_configured() {
-        let _guard = crate::GLOBAL_STATE_LOCK.lock().unwrap();
+        let _guard = crate::GLOBAL_STATE_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         let th = temp_home_env();
         write_main_cfg(
             &th.home,
@@ -2449,7 +2535,9 @@ mod wave_c {
     /// 解析失败则整个用例跳过（环境性豁免，不算失败）。
     #[test]
     fn wc_external_test_existing_program_spawn_ok_for_input_and_output_slots() {
-        let _guard = crate::GLOBAL_STATE_LOCK.lock().unwrap();
+        let _guard = crate::GLOBAL_STATE_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         let th = temp_home_env();
         let Ok(exe) = which::which("hostname") else {
             return; // 无 hostname 的环境：跳过（NOT FOUND 臂由既有测试覆盖）
@@ -2480,7 +2568,9 @@ mod wave_c {
     /// configured" 侧臂（该 else 此前同样从未到过）。
     #[test]
     fn wc_external_test_input_slot_directory_spawn_failed_and_output_unconfigured() {
-        let _guard = crate::GLOBAL_STATE_LOCK.lock().unwrap();
+        let _guard = crate::GLOBAL_STATE_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         let th = temp_home_env();
         write_main_cfg(
             &th.home,
@@ -2504,7 +2594,9 @@ mod wave_c {
     /// 流推进到第二段 spawn 块的 Err 分支）。
     #[test]
     fn wc_external_test_output_slot_directory_spawn_failed_after_input_ok() {
-        let _guard = crate::GLOBAL_STATE_LOCK.lock().unwrap();
+        let _guard = crate::GLOBAL_STATE_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         let th = temp_home_env();
         let Ok(exe) = which::which("hostname") else {
             return; // 无 hostname 的环境：跳过
@@ -2852,7 +2944,9 @@ mod r10_interactive_flows {
     //    以 JSON 数字写入；进程内直调即可覆盖（无 stdin 参与）。────────────────
     #[test]
     fn r10_websocket_set_port_success_saves_json_number_tail() {
-        let _guard = crate::GLOBAL_STATE_LOCK.lock().unwrap();
+        let _guard = crate::GLOBAL_STATE_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         let th = temp_home_env();
         write_main_cfg(
             &th.home,
