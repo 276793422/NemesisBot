@@ -68,10 +68,11 @@ const renderedReadme = computed(() => {
               <span class="about-info-key">运行时</span>
               <span class="about-info-val">Rust</span>
               <span class="about-info-key">协议</span>
-              <span class="about-info-val">MIT License</span>
+              <span class="about-info-val">AGPL-3.0 / 商业双授权</span>
             </div>
             <p style="color: var(--text-muted); margin-top: var(--space-6); font-size: var(--text-sm);">
-              本仓库是 NemesisBot Go 版的 Rust 重写，实现 100% 功能对等。
+              多入口编码 agent · 分布式集群 · 九层安全体系 ·
+              <router-link to="/license">查看许可与使用限制</router-link>
             </p>
           </div>
         </div>
