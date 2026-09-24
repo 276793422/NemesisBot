@@ -139,7 +139,15 @@ fn is_discipline_path_matches_component_anywhere() {
     assert!(is_discipline_path("ws/.discipline/falsification-1.json"));
     assert!(!is_discipline_path("src/main.rs"));
     assert!(!is_discipline_path("src/discipline_notes/x.txt"));
-    // Windows 反斜杠形态
+}
+
+/// Windows 形态路径（反斜杠分隔符）。Linux 上反斜杠是文件名普通字符，
+/// 不匹配才是正确平台行为——按 2026-09-02 标记约定挂 #[cfg(windows)]
+/// （Linux 编译期消失，nightly 不红；2026-09-24 run 35982550210 实证）。
+#[cfg(windows)]
+#[test]
+fn is_discipline_path_matches_windows_backslash_form() {
+    use super::is_discipline_path;
     assert!(is_discipline_path("ws\\.discipline\\falsification-1.json"));
 }
 
