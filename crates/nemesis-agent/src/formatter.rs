@@ -26,9 +26,6 @@ use std::time::Duration;
 
 use nemesis_config::FormatOnSaveConfig;
 
-/// 单次格式化的墙钟预算（超时 kill 子进程，静默放行）。
-const FORMAT_TIMEOUT_SECS: u64 = 3;
-
 /// 一条格式化命令：工具名 + argv 模板（`{file}` 占位符替换为目标路径）。
 #[derive(Debug, Clone, PartialEq)]
 pub struct FormatterSpec {
@@ -131,7 +128,13 @@ pub async fn format_on_save(config_path: Option<PathBuf>, path: &str, result: &s
     let Ok(old) = std::fs::read_to_string(path) else {
         return result.to_string();
     };
-    if !format_file(&spec, path, Duration::from_secs(FORMAT_TIMEOUT_SECS)).await {
+    // 0 视作缺省（防呆：显式写 0 不该变成「立即超时永不格式化」）。
+    let secs = if cfg.timeout_secs == 0 {
+        nemesis_config::default_format_timeout_secs()
+    } else {
+        cfg.timeout_secs
+    };
+    if !format_file(&spec, path, Duration::from_secs(secs)).await {
         return result.to_string();
     }
     let Ok(new) = std::fs::read_to_string(path) else {
