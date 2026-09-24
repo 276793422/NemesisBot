@@ -2861,6 +2861,80 @@ fn artifacts_evidence_skips_large_and_binary_files_from_content_but_lists_them()
     let _ = std::fs::remove_dir_all(&root);
 }
 
+// ---------- render_discipline_evidence（件4 组件5，纪律闭环评审注入）----------
+// 变更集携带 `.discipline/` 时注入声明+证伪证据（抗糊弄二道闸：闸门保证
+// 存在性/证伪真跑过，声明质量交评审员对照判断）；非纪律任务诚实跳过。
+// 数据源 = 合并 commit 内 blob 原文（F-U3-7 同源，非执行者自述）。
+
+#[test]
+fn discipline_evidence_renders_declaration_and_falsification_from_commit() {
+    let root = std::env::temp_dir().join(format!("disc-ev-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&root);
+    std::fs::create_dir_all(root.join(".discipline")).unwrap();
+    std::fs::create_dir_all(root.join("src")).unwrap();
+    std::fs::write(
+        root.join(".discipline/declaration.json"),
+        serde_json::json!({
+            "root_cause": "src/parser.rs:42 未判空",
+            "truth_source": "issue #12 复现栈",
+            "invariant": "既有签名不破坏",
+            "impact": "仅 parser 模块",
+            "single_variable": "只改 parse_expr 判空分支",
+            "falsification_cmd": "cargo test parse_expr",
+        })
+        .to_string(),
+    )
+    .unwrap();
+    std::fs::write(
+        root.join(".discipline/falsification-1.json"),
+        serde_json::json!({
+            "run": 1, "session": "sk-1",
+            "command": "cargo test parse_expr", "passed": false,
+            "output_excerpt": "test parse_expr ... FAILED",
+        })
+        .to_string(),
+    )
+    .unwrap();
+    std::fs::write(
+        root.join(".discipline/falsification-2.json"),
+        serde_json::json!({
+            "run": 2, "session": "sk-1",
+            "command": "cargo test parse_expr", "passed": true,
+            "output_excerpt": "test result: ok. 1 passed",
+        })
+        .to_string(),
+    )
+    .unwrap();
+    std::fs::write(root.join("src/parser.rs"), "fn parse_expr() {}").unwrap();
+    nemesis_board::git_repo::ensure_repo(&root).unwrap();
+    nemesis_board::git_repo::commit_worktree(&root, "fix parser with discipline").unwrap();
+    let oid = nemesis_board::git_repo::head_commit_hex(&root)
+        .expect("head")
+        .expect("commit exists");
+    let files = nemesis_board::git_repo::commit_changed_files(&root, &oid).unwrap();
+
+    let out = super::render_discipline_evidence(&root, &oid, &files)
+        .expect("变更集含 .discipline/ 必须注入");
+    assert!(out.contains("纪律闭环证据"), "标题在场: {out}");
+    assert!(out.contains("src/parser.rs:42"), "声明 root_cause 原文在场");
+    assert!(out.contains("证伪记录 falsification-1.json"), "证伪1在场");
+    assert!(out.contains("证伪记录 falsification-2.json"), "证伪2在场");
+    assert!(out.contains("✅ 通过"), "证伪2通过态: {out}");
+    assert!(out.contains("❌ 未通过"), "证伪1失败态: {out}");
+    assert!(out.contains("cargo test parse_expr"), "证伪命令在场");
+    assert!(out.contains("评审提示"), "抗糊弄二道闸评审提示在场");
+
+    // 变更集不含 .discipline/（非纪律任务）→ None 诚实跳过（不拿陈旧
+    // 产物污染无关任务评审）。
+    let non_disc: Vec<_> = files
+        .iter()
+        .filter(|(p, _)| !p.starts_with(".discipline/"))
+        .cloned()
+        .collect();
+    assert!(super::render_discipline_evidence(&root, &oid, &non_disc).is_none());
+    let _ = std::fs::remove_dir_all(&root);
+}
+
 // ---- S-O2 迟到评审守卫（2026-09-16 showcase 复跑 NB-2 实证）----
 
 #[test]

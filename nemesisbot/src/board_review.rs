@@ -634,6 +634,12 @@ async fn review_issue(
                         "\n## 变更集合并结果（系统客观数据）\n交付变更集已由系统合并进项目工作区（commit {}）。合并实际落盘的文件清单与内容节选：\n{listing}\n以上为系统合并记录的客观证据（清单=落盘证实；内容节选=commit 内 blob 原文，非 worker 自述）。任务验收标准涉及产物内容时，直接对照节选核对，不要因「内容未随报提供」而判证据不足。\n",
                         &commit_oid[..12.min(commit_oid.len())]
                     ));
+                    // 组件5（件4 评审注入，F-U3 同族）：变更集携带
+                    // `.discipline/` 时追加纪律闭环证据段（None=非纪律任务
+                    // 诚实跳过，不拿陈旧产物污染无关任务）。
+                    if let Some(disc) = render_discipline_evidence(&root, &commit_oid, &files) {
+                        prompt.push_str(&disc);
+                    }
                 }
                 Ok(_) => {}
                 Err(e) => {
@@ -1641,6 +1647,107 @@ fn render_project_artifacts_evidence(dir: &std::path::Path) -> String {
         ));
     }
     out
+}
+
+/// 纪律闭环评审注入（2026-09-24 件4 组件5，F-U3-1/F-U3-7 同族）：变更集
+/// 携带 `.discipline/` 纪律产物时，把声明与证伪结果作为系统客观数据注入
+/// 评审 prompt。bug-fix 纪律模式下执行者改文件前必须先落六字段声明、收尾
+/// 由系统自动跑声明中的证伪命令（nemesis-agent discipline 模块）；**抗糊弄
+/// 二道闸就落在这里**——闸门只保证「声明存在、证伪真跑过」，保证不了声明
+/// 质量与实验设计，那由评审员对照本段判断。数据源 = 合并 commit 内 blob
+/// 原文（非执行者自述，与 F-U3-7 同源）。变更集不含 `.discipline/`（非
+/// 纪律任务/产物未随集回流）→ None 诚实跳过（不拿陈旧产物污染无关任务）。
+fn render_discipline_evidence(
+    root: &std::path::Path,
+    commit_oid: &str,
+    files: &[(String, String)],
+) -> Option<String> {
+    const BLOB_READ_MAX_BYTES: usize = 64 * 1024;
+    const DECLARATION_SNIPPET_CHARS: usize = 4000;
+    const EXCERPT_SNIPPET_CHARS: usize = 2000;
+    let disc_paths: Vec<&str> = files
+        .iter()
+        .map(|(p, _)| p.as_str())
+        .filter(|p| p.starts_with(".discipline/"))
+        .collect();
+    if disc_paths.is_empty() {
+        return None;
+    }
+    let read = |path: &str| -> Option<String> {
+        nemesis_board::commit_blob_text(root, commit_oid, path, BLOB_READ_MAX_BYTES)
+            .ok()
+            .flatten()
+    };
+    let mut out = String::from(
+        "\n## 纪律闭环证据（系统客观数据）\n\
+         本任务变更集携带 `.discipline/` 纪律产物：该任务在 bug-fix 纪律模式下执行——\
+         修改文件前必须先落六字段声明（根因/真相源/不变量/影响面/单变量/证伪命令），\
+         收尾时系统自动执行声明中的证伪命令（exit 0 = 假设未被证伪），预算 2 次封顶。\n\
+         以下为合并 commit 内 blob 原文（非执行者自述）：\n",
+    );
+    // 声明本体（评审对照点：六字段是否具体、单变量是否真单变量）。
+    if let Some(text) = read(".discipline/declaration.json") {
+        let snippet = nemesis_utils::truncate(text.trim(), DECLARATION_SNIPPET_CHARS);
+        out.push_str(&format!(
+            "### 声明 declaration.json\n```json\n{snippet}\n```\n"
+        ));
+    } else {
+        out.push_str("### 声明 declaration.json（变更集未携带或读取失败）\n");
+    }
+    // 证伪结果（falsification-{n}.json，结构化呈现；解析失败附原文）。
+    let mut fals: Vec<&str> = disc_paths
+        .iter()
+        .copied()
+        .filter(|p| p.starts_with(".discipline/falsification-") && p.ends_with(".json"))
+        .collect();
+    fals.sort();
+    for path in fals {
+        match read(path) {
+            Some(text) => match serde_json::from_str::<serde_json::Value>(&text) {
+                Ok(v) => {
+                    let run = v.get("run").and_then(|x| x.as_u64()).unwrap_or(0);
+                    let passed = v.get("passed").and_then(|x| x.as_bool()).unwrap_or(false);
+                    let cmd = v.get("command").and_then(|x| x.as_str()).unwrap_or("");
+                    let excerpt = v
+                        .get("output_excerpt")
+                        .and_then(|x| x.as_str())
+                        .unwrap_or("");
+                    out.push_str(&format!(
+                        "### 证伪记录 falsification-{run}.json\n- 结果：{}\n- 命令：`{cmd}`\n- 输出节选：\n```text\n{}\n```\n",
+                        if passed {
+                            "✅ 通过（exit 0）"
+                        } else {
+                            "❌ 未通过（非零退出/执行失败——预算耗尽即停车升级，本记录即留盘注记）"
+                        },
+                        nemesis_utils::truncate(excerpt, EXCERPT_SNIPPET_CHARS),
+                    ));
+                }
+                Err(_) => {
+                    let snippet = nemesis_utils::truncate(text.trim(), EXCERPT_SNIPPET_CHARS);
+                    out.push_str(&format!(
+                        "### {path}（非 JSON，原文）\n```text\n{snippet}\n```\n"
+                    ));
+                }
+            },
+            None => out.push_str(&format!("### {path}（读取失败）\n")),
+        }
+    }
+    // waive 审计（逃生门留痕——带理由中途退出也进评审视野）。
+    if disc_paths.iter().any(|p| p.ends_with("waive-audit.jsonl"))
+        && let Some(text) = read(".discipline/waive-audit.jsonl")
+    {
+        let snippet = nemesis_utils::truncate(text.trim(), EXCERPT_SNIPPET_CHARS);
+        out.push_str(&format!(
+            "### waive 审计 waive-audit.jsonl\n```jsonl\n{snippet}\n```\n"
+        ));
+    }
+    out.push_str(
+        "评审提示：闸门只保证「声明存在、证伪真跑过」，不保证声明质量——请核对：\
+         ①六字段是否具体可查（根因到 file:line、单变量是否真单变量）；\
+         ②证伪命令是否真能检验根因（而非恒过形式命令）；\
+         ③证伪通过不等于验收标准满足，仍需对照验收标准独立判断。\n",
+    );
+    Some(out)
 }
 
 /// 父单收口汇总验收：输入=父单目标/验收标准 + 全部子单状态与最新交付摘要
