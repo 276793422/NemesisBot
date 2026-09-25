@@ -265,3 +265,56 @@ fn eof_last_line_without_terminator_is_replaced_cleanly() {
     assert_eq!(m.level, "line-trimmed");
     assert_eq!(m.content, "a\n\treturn 2;");
 }
+
+// ---------------------------------------------------------------------------
+// wave5 补充：级 2 Dice 空串边界 / 级 3 缩进灵活的空白行与 tab-space 分歧 /
+// new 行缩进不足的原样保留 / 级 5 全空 old 的 NoCandidate。
+// ---------------------------------------------------------------------------
+
+#[test]
+fn char_similarity_empty_and_whitespace_only_edges() {
+    assert_eq!(char_similarity("", ""), 1.0);
+    assert_eq!(char_similarity("a", ""), 0.0);
+    assert_eq!(char_similarity("", "b"), 0.0);
+    // 双方都是纯空白 → 非空白计数全 0 → na+nb == 0 → 1.0。
+    assert_eq!(char_similarity("  \t", "\n\n"), 1.0);
+}
+
+#[test]
+fn indentation_flexible_blank_old_is_no_candidate() {
+    let out = indentation_flexible("x\n", "\n \n", "y\n").unwrap();
+    assert!(matches!(out, LevelOutcome::NoCandidate), "{out:?}");
+}
+
+#[test]
+fn indentation_flexible_tab_vs_space_prefix_conflict_skips_level() {
+    // 文件行 tab 缩进、old 行空格缩进：前导空白互不成前缀 → 该级不适用。
+    let out = indentation_flexible("a\n\tX\nb\n", "  X\n", "  Y\n").unwrap();
+    assert!(matches!(out, LevelOutcome::NoCandidate), "{out:?}");
+}
+
+#[test]
+fn indentation_flexible_blank_pairs_and_blank_new_lines() {
+    // old 中段空白行 vs 文件空白行成对 continue；new 的空白行不参与缩进。
+    let out = indentation_flexible("A\n\nB\n", "A\n\nB\n", "X\n\nY\n").unwrap();
+    let LevelOutcome::Match { content: got } = out else {
+        panic!("应当唯一命中: {out:?}")
+    };
+    assert_eq!(got, "X\n\nY\n");
+}
+
+#[test]
+fn indentation_flexible_strip_keeps_undersized_new_indentation() {
+    // Strip 级：new 行缩进不足 miss 长度 → 原样保留，不越界剥。
+    let out = indentation_flexible("    A\n    B\n", "        A\n        B\n", "  X\nY\n").unwrap();
+    let LevelOutcome::Match { content: got } = out else {
+        panic!("应当唯一命中: {out:?}")
+    };
+    assert_eq!(got, "  X\nY\n");
+}
+
+#[test]
+fn trimmed_boundary_blank_old_is_no_candidate() {
+    let out = trimmed_boundary("x\n", "\n\n", "y\n").unwrap();
+    assert!(matches!(out, LevelOutcome::NoCandidate), "{out:?}");
+}

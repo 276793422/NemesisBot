@@ -665,3 +665,8 @@ impl Tool for BackgroundKillTool {
 
 #[cfg(test)]
 mod tests;
+
+// 覆盖率补充批次：OutputBuffer 钳制 / Drop·Default / 头部丢弃注记 /
+// 工具参数校验错误面 / kill 幂等真停。
+#[cfg(test)]
+mod cov_tests;

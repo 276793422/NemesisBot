@@ -112,3 +112,8 @@ impl ToolsHandler {
 // （name/description/parameters 三字段组装）+ agent not running bail。
 #[cfg(test)]
 mod tests;
+
+// AGT 覆盖率批次（2026-09-25）：list 显式 session_id 契约臂（bridge/loop
+// 双缺 → resolve_session_loop 诚实上抛）。
+#[cfg(test)]
+mod agt_tests;

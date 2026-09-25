@@ -2252,3 +2252,11 @@ mod auth_tests;
 // R4 覆盖率（2026-08-27）：workflow/chat/ 路径前缀静态壳 + bind-failed 错误路径。
 #[cfg(test)]
 mod r4_tests;
+
+// AGT 覆盖率批次（2026-09-24）：签名/LSP 槽位、resolve_static_dir 与
+// DirectoryStaticFiles 越界、start() 成功路径、relay 路由外壳（/d 双变体 +
+// overview/enabled）、SSE 断线补拉双形态、process_messages 过滤链三裁决、
+// pump SessionCreated+Lagged、dispatch_outbound 路由矩阵。结构性豁免见
+// agt_tests 文件头注。
+#[cfg(test)]
+mod agt_tests;

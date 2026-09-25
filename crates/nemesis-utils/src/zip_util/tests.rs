@@ -820,3 +820,59 @@ fn test_s1_create_zip_to_root_drive_parent_none() {
         "unexpected error: {err}"
     );
 }
+
+// ===========================================================================
+// Wave4 覆盖批次：错误臂补齐（extract_zip 目标目录不可建 / create_zip
+// zip 路径是已存在目录）。
+// ===========================================================================
+
+/// extract_zip：dest_dir 的父路径被一个普通文件占住 → create_dir_all 失败，
+/// 报「failed to create destination directory」。
+#[test]
+fn test_extract_zip_uncreatable_dest_dir_fails() {
+    let dir = tempfile::tempdir().unwrap();
+    let source = dir.path().join("src");
+    std::fs::create_dir_all(&source).unwrap();
+    std::fs::write(source.join("a.txt"), b"x").unwrap();
+    let zip_path = dir.path().join("ok.zip");
+    create_zip(
+        source.to_string_lossy().as_ref(),
+        zip_path.to_string_lossy().as_ref(),
+    )
+    .unwrap();
+
+    // blocker 是普通文件 → 它下面建不了目录。
+    let blocker = dir.path().join("blocker");
+    std::fs::write(&blocker, b"not a dir").unwrap();
+    let dest = blocker.join("dest");
+
+    let err = extract_zip(
+        zip_path.to_string_lossy().as_ref(),
+        dest.to_string_lossy().as_ref(),
+    )
+    .unwrap_err();
+    assert!(
+        err.contains("failed to create destination directory"),
+        "{err}"
+    );
+}
+
+/// create_zip：zip 目标路径已存在且是目录 → File::create 失败，
+/// 报「failed to create zip file」（父目录存在性检查拦不住这一形态）。
+#[test]
+fn test_create_zip_target_is_directory_fails() {
+    let dir = tempfile::tempdir().unwrap();
+    let source = dir.path().join("src");
+    std::fs::create_dir_all(&source).unwrap();
+    std::fs::write(source.join("a.txt"), b"x").unwrap();
+
+    let zip_path = dir.path().join("target.zip");
+    std::fs::create_dir_all(&zip_path).unwrap(); // 占位成目录
+
+    let err = create_zip(
+        source.to_string_lossy().as_ref(),
+        zip_path.to_string_lossy().as_ref(),
+    )
+    .unwrap_err();
+    assert!(err.contains("failed to create zip file"), "{err}");
+}

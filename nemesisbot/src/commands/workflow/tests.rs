@@ -631,7 +631,9 @@ fn test_cmd_status_with_input_and_vars() {
 fn test_cmd_template_show_all_defaults() {
     // get_templates() 经 load_templates_from_disk 读 NEMESISBOT_HOME——必须
     // 持全局锁，否则与设置 env 的其他测试（如 template_list_picks_up_*）竞态。
-    let _guard = crate::GLOBAL_STATE_LOCK.lock().unwrap();
+    let _guard = crate::GLOBAL_STATE_LOCK
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
     let templates = get_default_templates();
     for (name, _, _) in &templates {
         cmd_template_show(name).unwrap();
@@ -648,7 +650,9 @@ fn test_cmd_template_create_all_defaults() {
     // 同上：get_templates() 读 NEMESISBOT_HOME（env 测试竞争锁纪律）。
     // 另注：get_templates 语义是"磁盘有任一模板 → 整组替换默认集"（Go 行为，
     // workflow.rs:318-324），本测试必须保证 env home 下无模板目录。
-    let _guard = crate::GLOBAL_STATE_LOCK.lock().unwrap();
+    let _guard = crate::GLOBAL_STATE_LOCK
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
     let templates = get_default_templates();
     for (name, _, _) in &templates {
         let tmp = tempfile::TempDir::new().unwrap();
@@ -1094,7 +1098,9 @@ mod run_arm {
     use super::super::{TemplateAction, WorkflowAction, run};
 
     fn with_env_home(f: impl FnOnce(std::path::PathBuf)) {
-        let _guard = crate::GLOBAL_STATE_LOCK.lock().unwrap();
+        let _guard = crate::GLOBAL_STATE_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         let tmp = tempfile::tempdir().unwrap();
         unsafe {
             std::env::set_var("NEMESISBOT_HOME", tmp.path());
@@ -1220,7 +1226,9 @@ mod run_arm {
     async fn dispatch_run_arm_needs_multithread_runtime() {
         // Run 臂走 tokio::task::block_in_place——current_thread runtime 会
         // panic，必须 multi_thread（这也是给未来读代码的人钉的契约）。
-        let _guard = crate::GLOBAL_STATE_LOCK.lock().unwrap();
+        let _guard = crate::GLOBAL_STATE_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         let tmp = tempfile::tempdir().unwrap();
         unsafe {
             std::env::set_var("NEMESISBOT_HOME", tmp.path());
@@ -1250,7 +1258,9 @@ mod run_arm {
 fn template_list_picks_up_disk_templates_and_warns_on_broken() {
     use super::{TemplateAction, WorkflowAction, run};
 
-    let _guard = crate::GLOBAL_STATE_LOCK.lock().unwrap();
+    let _guard = crate::GLOBAL_STATE_LOCK
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
     let tmp = tempfile::tempdir().unwrap();
     unsafe {
         std::env::set_var("NEMESISBOT_HOME", tmp.path());
@@ -1522,7 +1532,9 @@ mod wave_b {
         // 目标行 177-179（目录 continue）/185-187（扩展名 continue）/
         // 194-196（seen_names 去重 continue —— 同 stem 双扩展名触发）。
         // get_templates 语义是「磁盘非空 ⇒ 整组替换默认」，必须持全局锁隔离。
-        let _guard = crate::GLOBAL_STATE_LOCK.lock().unwrap();
+        let _guard = crate::GLOBAL_STATE_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         let tmp = tempfile::tempdir().unwrap();
         unsafe {
             std::env::set_var("NEMESISBOT_HOME", tmp.path());
@@ -1585,7 +1597,9 @@ mod r10 {
     #[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn r10_run_dispatch_success_path_with_failed_transform_node_prints_error() {
-        let _guard = crate::GLOBAL_STATE_LOCK.lock().unwrap();
+        let _guard = crate::GLOBAL_STATE_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         let tmp = tempfile::tempdir().unwrap();
         unsafe {
             std::env::set_var("NEMESISBOT_HOME", tmp.path());

@@ -506,7 +506,9 @@ mod r9_fetch_seams {
     #[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
     #[test]
     fn seam_success_parses_api_json_entries() {
-        let _guard = crate::GLOBAL_STATE_LOCK.lock().unwrap();
+        let _guard = crate::GLOBAL_STATE_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         let port = serve_once(
             "200 OK",
             r#"{"prov1":{"id":"prov1","models":{"m-1":{"family":"fam-a","limit":{"context":400000,"output":128000}}}}}"#
@@ -528,7 +530,9 @@ mod r9_fetch_seams {
     #[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
     #[test]
     fn seam_bad_body_falls_back_to_mirror_and_reports_all_failed() {
-        let _guard = crate::GLOBAL_STATE_LOCK.lock().unwrap();
+        let _guard = crate::GLOBAL_STATE_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         // 200 但解析不出来 → try 镜像；镜像 https 被死代理瞬杀 → 全失败。
         let port = serve_once("200 OK", "not-json{{{".to_string());
         let _env = EnvRestore::snapshot_and_apply(&[
@@ -551,7 +555,9 @@ mod r9_fetch_seams {
     #[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
     #[test]
     fn seam_http_500_also_falls_back_and_fails_loudly() {
-        let _guard = crate::GLOBAL_STATE_LOCK.lock().unwrap();
+        let _guard = crate::GLOBAL_STATE_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         let port = serve_once("500 Internal Server Error", "{}".to_string());
         let _env = EnvRestore::snapshot_and_apply(&[
             (
@@ -648,7 +654,9 @@ mod r9_offline_cli {
     #[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
     #[tokio::test]
     async fn offline_with_seed_cache_keeps_cache_and_exits_zero() {
-        let _guard = crate::GLOBAL_STATE_LOCK.lock().unwrap();
+        let _guard = crate::GLOBAL_STATE_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         let _kill = ProxyKill::arm();
         let ws = fresh_ws_with_empty_config();
         // 种一版本地缓存（serde 版本化格式）。种子写在 **legacy 位置**（home
@@ -686,7 +694,9 @@ mod r9_offline_cli {
     #[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
     #[tokio::test]
     async fn offline_without_cache_bails_nonzero() {
-        let _guard = crate::GLOBAL_STATE_LOCK.lock().unwrap();
+        let _guard = crate::GLOBAL_STATE_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         let _kill = ProxyKill::arm();
         let ws = fresh_ws_with_empty_config();
 
@@ -717,7 +727,9 @@ mod r10_body_read {
     #[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
     #[test]
     fn r10_truncated_200_body_hits_body_read_err_arm() {
-        let _guard = crate::GLOBAL_STATE_LOCK.lock().unwrap();
+        let _guard = crate::GLOBAL_STATE_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
 
         // 手工快照要动的全部代理/接缝变量，Drop 时按进入前状态恢复。
         struct EnvGuard(Vec<(&'static str, Option<String>)>);

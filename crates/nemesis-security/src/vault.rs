@@ -631,4 +631,6 @@ mod dpapi {
 }
 
 #[cfg(test)]
+mod cov_tests;
+#[cfg(test)]
 mod tests;

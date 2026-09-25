@@ -1882,3 +1882,158 @@ async fn live_store_drives_search_store_forget_vector_paths() {
         "entry {id} survived delete_by_id + forget"
     );
 }
+
+// ---------------------------------------------------------------------------
+// AGT 覆盖率批次（2026-09-24）：search_auto_inject 向量路径（零既有测试）、
+// search 向量路径条目映射（含 type 过滤）、init_vector_store_from_config 无
+// 插件诚实报错、store_entry 的向量后端失败吞噬臂。全部走 ngram/注入 embed，
+// 不依赖 plugin_onnx.dll。
+// ---------------------------------------------------------------------------
+
+/// AGT 夹具：确定性 embed——"match" 前缀 → [1,0]，其余 → [0,1]（正交 → 余弦 0）。
+fn agt_binary_embed() -> crate::vector::EmbeddingFunc {
+    Box::new(|text: &str| {
+        if text.starts_with("match") {
+            Ok(vec![1.0, 0.0])
+        } else {
+            Ok(vec![0.0, 1.0])
+        }
+    })
+}
+
+/// AGT 夹具：ngram 配置的 StoreConfig（embed 由调用方注入，tier 仅作标签）。
+fn agt_vs_config(dir: &tempfile::TempDir) -> StoreConfig {
+    StoreConfig {
+        embedding_tier: "ngram".into(),
+        plugin_path: None,
+        config_dir: None,
+        max_results: 10,
+        similarity_threshold: 0.7,
+        storage_path: dir.path().join("v.jsonl").to_string_lossy().to_string(),
+    }
+}
+
+#[tokio::test]
+async fn agt_search_auto_inject_vector_path_and_empty_degrade() {
+    let dir = tempfile::tempdir().unwrap();
+    let config = Config::new(dir.path());
+    let mgr = MemoryManager::new(&config);
+    mgr.init_vector_store_with_embed(agt_binary_embed(), agt_vs_config(&dir))
+        .unwrap();
+    mgr.set_vector_enabled(true);
+
+    // 词条进向量库（store_entry 同步镜像到向量层）
+    let entry = Entry::new(MemoryType::LongTerm, "match me please".to_string());
+    mgr.store_entry(entry).await.unwrap();
+
+    // 阈值 0.35 的召回契约：cosine 1.0 命中
+    let hits = mgr.search_auto_inject("match anything", 5).await.unwrap();
+    assert_eq!(hits.total, 1, "向量命中 1 条");
+    assert!(hits.entries[0].score > 0.35, "分数 = 向量相似度");
+
+    // 正交向量 → 相似度 0 < 0.35 → 向量路径返回空（不落关键词回退）
+    let none = mgr.search_auto_inject("unrelated", 5).await.unwrap();
+    assert_eq!(none.total, 0, "无注入候选");
+    assert!(none.entries.is_empty());
+}
+
+#[tokio::test]
+async fn agt_search_vector_path_maps_entries_with_type_filter() {
+    let dir = tempfile::tempdir().unwrap();
+    let config = Config::new(dir.path());
+    let mgr = MemoryManager::new(&config);
+    mgr.init_vector_store_with_embed(agt_binary_embed(), agt_vs_config(&dir))
+        .unwrap();
+    mgr.set_vector_enabled(true);
+
+    let hit = Entry::new(MemoryType::LongTerm, "match alpha".to_string());
+    let miss = Entry::new(MemoryType::ShortTerm, "totally orthogonal".to_string());
+    mgr.store_entry(hit).await.unwrap();
+    mgr.store_entry(miss).await.unwrap();
+
+    // 无类型过滤：向量命中 1 条（另一条正交 → 低于 0.7 阈值被滤）
+    let r = mgr.search("match beta", None, 10).await.unwrap();
+    assert_eq!(r.total, 1);
+    assert_eq!(r.entries[0].entry.content, "match alpha");
+    assert!(r.entries[0].score > 0.7, "search 契约 = store 阈值 0.7");
+    assert_eq!(r.entries[0].entry.typ, MemoryType::LongTerm);
+
+    // 类型过滤臂：type_filter 非空走过滤分支（类型匹配 → 仍命中）
+    let typed = mgr
+        .search("match beta", Some(MemoryType::LongTerm), 10)
+        .await
+        .unwrap();
+    assert_eq!(typed.total, 1);
+
+    // 类型不匹配 → 过滤后为空 → 回退关键词路径（无关键词命中 → 空结果）
+    let filtered_out = mgr
+        .search("match beta", Some(MemoryType::Episodic), 10)
+        .await
+        .unwrap();
+    assert_eq!(filtered_out.total, 0);
+}
+
+#[tokio::test]
+async fn agt_init_vector_store_from_config_without_plugin_errors() {
+    let dir = tempfile::tempdir().unwrap();
+    let mgr = MemoryManager::with_backends(
+        std::sync::Arc::new(LocalStore::new()),
+        std::sync::Arc::new(FileEpisodicStore::new(dir.path().join("epi"))),
+        std::sync::Arc::new(InMemoryGraphStore::new()),
+    );
+    // 测试进程旁无 plugin_onnx.dll → 命名诚实报错（不 panic）
+    let err = mgr
+        .init_vector_store_from_config(dir.path())
+        .expect_err("无插件必须报错");
+    assert!(err.contains("plugin_onnx"), "{err}");
+}
+
+#[tokio::test]
+async fn agt_store_entry_swallows_vector_backend_error() {
+    let dir = tempfile::tempdir().unwrap();
+    let config = Config::new(dir.path());
+    let mgr = MemoryManager::new(&config);
+    // embed 恒败 → vs.store_entry Err → debug 日志吞噬，主路径照常 Ok
+    let failing: crate::vector::EmbeddingFunc = Box::new(|_: &str| Err("embed down".into()));
+    mgr.init_vector_store_with_embed(failing, agt_vs_config(&dir))
+        .unwrap();
+    mgr.set_vector_enabled(true);
+
+    let id = mgr
+        .store_entry(Entry::new(MemoryType::LongTerm, "survives".to_string()))
+        .await
+        .expect("向量后端失败不得阻断主存储");
+    assert!(!id.is_empty());
+    // 关键词路径仍可检索该条目（先关向量：embed 恒败时向量查询会传播 Err）
+    mgr.set_vector_enabled(false);
+    let r = mgr.search("survives", None, 10).await.unwrap();
+    assert_eq!(r.total, 1);
+}
+
+#[tokio::test]
+async fn agt_store_entry_swallows_vector_persist_error() {
+    let dir = tempfile::tempdir().unwrap();
+    // 持久化父路径是一个普通文件 → persist_entry_sync 的 create_dir_all 失败
+    let blocker = dir.path().join("not_a_dir");
+    std::fs::write(&blocker, b"x").unwrap();
+    let mut cfg = agt_vs_config(&dir);
+    cfg.storage_path = blocker.join("v.jsonl").to_string_lossy().to_string();
+
+    let config = Config::new(dir.path());
+    let mgr = MemoryManager::new(&config);
+    mgr.init_vector_store_with_embed(agt_binary_embed(), cfg)
+        .unwrap();
+    mgr.set_vector_enabled(true);
+
+    // embed 成功（条目进内存索引）、persist 失败 → 两路失败都被吞噬，主路径 Ok
+    let id = mgr
+        .store_entry(Entry::new(
+            MemoryType::LongTerm,
+            "match persist".to_string(),
+        ))
+        .await
+        .expect("向量持久化失败不得阻断主存储");
+    assert!(!id.is_empty());
+    let r = mgr.search("match", None, 10).await.unwrap();
+    assert_eq!(r.total, 1, "内存索引仍可查");
+}

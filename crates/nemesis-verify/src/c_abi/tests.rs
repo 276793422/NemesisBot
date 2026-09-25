@@ -561,3 +561,80 @@ fn nv_get_signature_detail_with_chain_and_truncation() {
         &long_meta.as_bytes()[..64]
     );
 }
+
+// ---------------------------------------------------------------------------
+// AGT 覆盖率批次（2026-09-24）：C ABI 剩余状态码臂——nv_list_signatures 非
+// UTF-8 路径（-2）；nv_get_signature null 参数（-1）/ 非 UTF-8 路径（-2）/
+// publisher（opus programName）穿透与 128B 截断臂。
+// ---------------------------------------------------------------------------
+
+#[test]
+fn agt_nv_list_signatures_non_utf8_path() {
+    let mut infos: [NvSigInfo; 4] = std::array::from_fn(|_| NvSigInfo::default());
+    let mut count: u32 = 4;
+    // 0xFF 0xFE 是合法 CString 但非 UTF-8 → -2（不解引用、不读文件）
+    let raw = CString::new(vec![0xFFu8, 0xFE]).unwrap();
+    assert_eq!(
+        unsafe { nv_list_signatures(raw.as_ptr(), infos.as_mut_ptr(), &mut count) },
+        -2
+    );
+}
+
+#[test]
+fn agt_nv_get_signature_arg_errors_and_publisher_passthrough() {
+    let h = V4Harness::new();
+    let signed = h.sign_raw_opus(
+        b"detail payload",
+        779,
+        &h.h.leaf_sk,
+        &h.h.chain(),
+        Some("org-publisher"),
+        None,
+    );
+    let p = temp_bytes(&signed);
+    let path = c_path(&p);
+
+    // -1：任一参数 null（不解引用）
+    let mut detail = NvSigDetail::default();
+    assert_eq!(
+        unsafe { nv_get_signature(std::ptr::null(), 0, &mut detail) },
+        -1
+    );
+    assert_eq!(
+        unsafe { nv_get_signature(path.as_ptr(), 0, std::ptr::null_mut()) },
+        -1
+    );
+
+    // -2：路径非 UTF-8
+    let raw = CString::new(vec![0xFFu8, 0xFE]).unwrap();
+    assert_eq!(
+        unsafe { nv_get_signature(raw.as_ptr(), 0, &mut detail) },
+        -2
+    );
+
+    // publisher = CMS opus programName 穿透（Some 臂）
+    let rc = unsafe { nv_get_signature(path.as_ptr(), 0, &mut detail) };
+    let _ = std::fs::remove_file(&p);
+    assert_eq!(rc, 0);
+    assert_eq!(detail.publisher_len, "org-publisher".len() as u32);
+    assert_eq!(&detail.publisher[.."org-publisher".len()], b"org-publisher");
+
+    // 128B 截断臂：超长 publisher 只写前 128 字节（opus programName 是 IA5=ASCII）
+    let long_pub = "pub:".repeat(50);
+    let signed_long = h.sign_raw_opus(
+        b"long publisher",
+        780,
+        &h.h.leaf_sk,
+        &h.h.chain(),
+        Some(long_pub.as_str()),
+        None,
+    );
+    let p2 = temp_bytes(&signed_long);
+    let mut detail2 = NvSigDetail::default();
+    let rc2 = unsafe { nv_get_signature(c_path(&p2).as_ptr(), 0, &mut detail2) };
+    let _ = std::fs::remove_file(&p2);
+    assert_eq!(rc2, 0);
+    assert_eq!(detail2.publisher_len, 128);
+    // 前 128 字节逐字节等于原 ASCII 前缀
+    assert_eq!(&detail2.publisher[..], &long_pub.as_bytes()[..128]);
+}

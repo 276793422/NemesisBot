@@ -1484,6 +1484,16 @@ async fn execute_tool_for_continuation<T: ToolLookup>(
 #[cfg(test)]
 mod tests;
 
+// 覆盖率补充批次：图片重水合 helpers / no-vision 投影 / stale_task_ids /
+// 磁盘快照剥字节 / 内存 map 同步入口 / wait 双检。
+#[cfg(test)]
+mod cov_tests;
+
 // S9 (quality-hardening goal 冲刺 S9): 独立测试文件挂载（声明式，无内联测试）。
 #[cfg(test)]
 mod s9_tests;
+
+// Wave6B 覆盖率收尾批次：no-vision 重复占位跳过 / 磁盘快照逐轮重水合
+// else 臂 / list_bg_spawn_pending_sync 三分支 / 单飞闸认领失败早退。
+#[cfg(test)]
+mod cov2_tests;

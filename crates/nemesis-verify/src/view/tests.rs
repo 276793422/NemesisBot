@@ -307,3 +307,25 @@ fn view_and_verify_agree_on_primary() {
         VerifyOutcome::Valid { .. }
     ));
 }
+
+// ---------------------------------------------------------------------------
+// AGT 覆盖率批次（2026-09-24）：collect_cms_blobs 的 PE 空返回臂——
+// 未签名 PE（证书表 0 条目 → first() None）与证书表读失败（Security 表指向
+// 被截断区）→ 诚实空视图。
+// ---------------------------------------------------------------------------
+
+#[test]
+fn agt_collect_cms_blobs_empty_on_plain_and_broken_pe() {
+    // 未签名 PE：条目 0 → entries.first() None → 空
+    let pe = base_pe();
+    assert!(collect_cms_blobs(&pe).is_empty());
+
+    // 签过名再把文件截进证书表区 → Security 表指向越界 → 读表失败 → 空
+    let h = V4Harness::new();
+    let cms = h.build_cms(&pe, 556, &h.h.leaf_sk, &h.h.chain());
+    let signed = append_certificate_table(&pe, &cms).expect("append table");
+    let va = pe.len().div_ceil(8) * 8;
+    let mut truncated = signed.clone();
+    truncated.truncate(va - 1);
+    assert!(collect_cms_blobs(&truncated).is_empty());
+}

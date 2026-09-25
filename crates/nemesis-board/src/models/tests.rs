@@ -97,3 +97,47 @@ fn test_issue_serde_roundtrip() {
     assert_eq!(back.status, IssueStatus::InProgress);
     assert_eq!(back.origin.as_ref().unwrap().origin_type, "autopilot");
 }
+
+// ---------------------------------------------------------------------------
+// Wave4 覆盖批次（2026-09-25）：is_terminal / allowed_targets 全臂。
+// ---------------------------------------------------------------------------
+
+#[test]
+fn is_terminal_only_done_and_cancelled() {
+    assert!(IssueStatus::Done.is_terminal());
+    assert!(IssueStatus::Cancelled.is_terminal());
+    assert!(!IssueStatus::Backlog.is_terminal());
+    assert!(!IssueStatus::Todo.is_terminal());
+    assert!(!IssueStatus::InProgress.is_terminal());
+    assert!(!IssueStatus::InReview.is_terminal());
+    assert!(!IssueStatus::Blocked.is_terminal());
+}
+
+#[test]
+fn allowed_targets_covers_every_status() {
+    assert_eq!(
+        IssueStatus::Backlog.allowed_targets(),
+        "todo/in_progress/done/blocked/cancelled"
+    );
+    assert_eq!(
+        IssueStatus::Todo.allowed_targets(),
+        "in_progress/done/blocked/cancelled"
+    );
+    assert_eq!(
+        IssueStatus::InProgress.allowed_targets(),
+        "in_review/done/blocked/cancelled"
+    );
+    assert_eq!(
+        IssueStatus::InReview.allowed_targets(),
+        "in_progress/done/blocked/cancelled"
+    );
+    assert_eq!(
+        IssueStatus::Blocked.allowed_targets(),
+        "todo/in_progress/cancelled"
+    );
+    assert_eq!(IssueStatus::Done.allowed_targets(), "（终态）");
+    assert_eq!(
+        IssueStatus::Cancelled.allowed_targets(),
+        "backlog（issue.reopen）"
+    );
+}

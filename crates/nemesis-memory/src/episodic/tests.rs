@@ -555,3 +555,32 @@ async fn list_sessions_fails_when_data_dir_is_file() {
     let err = store.list_sessions().await.unwrap_err();
     assert!(err.contains("Failed to read episodic dir"), "got: {err}");
 }
+
+// ---------------------------------------------------------------------------
+// AGT 覆盖率批次（2026-09-24）：cleanup 的部分清除重写分支（会话内新旧混合
+// ——旧 episode 删除、新 episode 重写回文件）；对照全旧 → 整文件删除已有用例。
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn agt_cleanup_rewrites_session_with_partial_removal() {
+    let dir = tempfile::tempdir().unwrap();
+    let store = FileEpisodicStore::new(dir.path());
+
+    let mut old1 = Episode::new("mix".into(), "user".into(), "old one".into());
+    old1.timestamp = chrono::Local::now() - chrono::Duration::days(30);
+    let mut old2 = Episode::new("mix".into(), "user".into(), "old two".into());
+    old2.timestamp = chrono::Local::now() - chrono::Duration::days(30);
+    let fresh = Episode::new("mix".into(), "user".into(), "fresh".into());
+
+    store.append(old1).await.unwrap();
+    store.append(old2).await.unwrap();
+    store.append(fresh).await.unwrap();
+
+    // 7 天线：2 条 30 天前的被清，新的保留 → 走「重写会话文件」分支
+    let removed = store.cleanup(7).await.unwrap();
+    assert_eq!(removed, 2);
+
+    let remaining = store.get_session("mix").await.unwrap();
+    assert_eq!(remaining.len(), 1);
+    assert_eq!(remaining[0].content, "fresh");
+}

@@ -535,3 +535,6 @@ pub fn root_anchor_from_der_file(path: &str) -> Result<[u8; 32]> {
     let c = Certificate::from_der(&der).map_err(|e| anyhow!("根证书解析失败（{path}）: {e}"))?;
     Ok(c.sha256_fingerprint())
 }
+
+#[cfg(test)]
+mod tests;

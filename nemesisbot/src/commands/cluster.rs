@@ -1743,3 +1743,6 @@ fn enable_peer_in_toml(toml_content: &str, addr: &str, enabled: bool) -> Result<
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+mod cov_tests;

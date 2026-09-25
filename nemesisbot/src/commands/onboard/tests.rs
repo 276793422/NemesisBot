@@ -81,3 +81,34 @@ fn cli_mode_overwrites_persona() {
 fn common_config(home: &std::path::Path) -> std::path::PathBuf {
     crate::common::config_path(home)
 }
+
+// ===========================================================================
+// wave5 round2 batch-2（2026-09-25）：onboard_default 的 local=true 臂——
+// agents.defaults.workspace 改写为相对路径 ".nemesisbot/workspace"
+//（既有 onboard 测试全部 local=false，该分支从未执行）。
+// ===========================================================================
+
+mod w5b2 {
+    use super::super::{OnboardMode, onboard_default};
+
+    /// Cli 模式 + local=true：主 config 的 agents.defaults.workspace 必须
+    /// 被改写为 ".nemesisbot/workspace"（--local 布局语义）。
+    #[test]
+    fn w5_cli_mode_local_true_rewrites_default_workspace() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let home = tmp.path().join("w5-local-home");
+
+        onboard_default(&home, true, OnboardMode::Cli).unwrap();
+
+        let cfg_path = home.join("config.json");
+        assert!(cfg_path.exists(), "Cli onboard 必须写主 config");
+        let cfg: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(&cfg_path).unwrap()).unwrap();
+        assert_eq!(
+            cfg["agents"]["defaults"]["workspace"].as_str(),
+            Some(".nemesisbot/workspace"),
+            "local=true 必须改写 defaults.workspace 为相对路径: {}",
+            cfg
+        );
+    }
+}

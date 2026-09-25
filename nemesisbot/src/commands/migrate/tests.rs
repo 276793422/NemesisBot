@@ -26,7 +26,9 @@ fn test_detect_openclaw_home_no_override_no_env() {
 #[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
 #[test]
 fn test_detect_openclaw_home_env_var() {
-    let _guard = crate::GLOBAL_STATE_LOCK.lock().unwrap();
+    let _guard = crate::GLOBAL_STATE_LOCK
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
     let tmp = TempDir::new().unwrap();
     let path = tmp.path().to_string_lossy().to_string();
     unsafe {
@@ -44,7 +46,9 @@ fn test_detect_openclaw_home_env_var() {
 #[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
 #[test]
 fn test_detect_openclaw_home_env_var_takes_precedence() {
-    let _guard = crate::GLOBAL_STATE_LOCK.lock().unwrap();
+    let _guard = crate::GLOBAL_STATE_LOCK
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
     let tmp = TempDir::new().unwrap();
     let path = tmp.path().to_string_lossy().to_string();
     unsafe {
@@ -168,7 +172,9 @@ fn test_copy_dir_recursive_creates_dst() {
 #[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
 #[test]
 fn test_atty_isnt_with_prompt() {
-    let _guard = crate::GLOBAL_STATE_LOCK.lock().unwrap();
+    let _guard = crate::GLOBAL_STATE_LOCK
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
     unsafe {
         std::env::set_var("PROMPT", "1");
     }
@@ -182,7 +188,9 @@ fn test_atty_isnt_with_prompt() {
 #[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
 #[test]
 fn test_atty_isnt_with_term() {
-    let _guard = crate::GLOBAL_STATE_LOCK.lock().unwrap();
+    let _guard = crate::GLOBAL_STATE_LOCK
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
     unsafe {
         std::env::set_var("TERM", "xterm");
     }
@@ -815,7 +823,9 @@ mod wave_a {
     fn confirm_cancelled_when_stdin_is_non_tty() {
         // 摘除 PROMPT/TERM → atty_isnt()=true → confirm 直接 false →
         // "Migration cancelled" 早退，且任何迁移都没发生。
-        let _guard = crate::GLOBAL_STATE_LOCK.lock().unwrap();
+        let _guard = crate::GLOBAL_STATE_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         let prev_prompt = std::env::var("PROMPT").ok();
         let prev_term = std::env::var("TERM").ok();
         unsafe {
@@ -918,7 +928,9 @@ mod wave_a {
     #[test]
     fn atty_isnt_true_when_both_prompt_and_term_absent() {
         // 与既有的「PROMPT 存在/TERM 存在」用例互补：双缺 → true 臂（139）。
-        let _guard = crate::GLOBAL_STATE_LOCK.lock().unwrap();
+        let _guard = crate::GLOBAL_STATE_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         let prev_prompt = std::env::var("PROMPT").ok();
         let prev_term = std::env::var("TERM").ok();
         unsafe {
@@ -959,7 +971,9 @@ mod wave_c {
     #[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
     #[test]
     fn env_openclaw_home_existing_dir_is_returned_verbatim() {
-        let _guard = crate::GLOBAL_STATE_LOCK.lock().unwrap();
+        let _guard = crate::GLOBAL_STATE_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         let tmp = tempfile::tempdir().unwrap();
         let prev = std::env::var("OPENCLAW_HOME").ok();
         unsafe {
@@ -985,7 +999,9 @@ mod wave_c {
         // 端到端：无 --openclaw-home，源定位纯靠 OPENCLAW_HOME；
         // --force 全量迁移成功且目标落盘正确。nemesisbot_home 双 override
         // 隔离到 tempdir，不触真实 home。
-        let _guard = crate::GLOBAL_STATE_LOCK.lock().unwrap();
+        let _guard = crate::GLOBAL_STATE_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         let tmp = tempfile::tempdir().unwrap();
         let oclaw = tmp.path().join("oclaw");
         std::fs::create_dir_all(oclaw.join("workspace")).unwrap();
@@ -1174,5 +1190,86 @@ mod r10_subprocess {
             "回答 n 后绝不能写目标 config"
         );
         assert!(!dst.join("IDENTITY.md").exists(), "工作区也不得复制");
+    }
+}
+
+// ===========================================================================
+// wave5 round2 batch-2（2026-09-25）：migrate run() 的「OpenClaw 未找到」
+// 提示臂（无 override / 无 env / 无 ~/.openclaw）与「OPENCLAW_HOME env 命中
+// + 最小存量 fixture」迁移主链（config 换转换写盘 + workspace 拷贝 + 汇总
+// 打印）。fixture 极简（config.json = "{}"）：转换器对未知/空结构的宽容臂
+// 与 workspace 缺失跳过臂都在同一链路上。
+// ===========================================================================
+
+#[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
+mod w5b2 {
+    use super::super::{MigrateOptions, run};
+
+    fn w5_opts() -> MigrateOptions {
+        MigrateOptions {
+            dry_run: false,
+            config_only: false,
+            workspace_only: false,
+            force: true,
+            openclaw_home: None,
+            refresh: false,
+            nemesisbot_home: None,
+        }
+    }
+
+    /// 全环境无 OpenClaw：override None + OPENCLAW_HOME 移除 → 未找到提示
+    /// （Checked: ~/.openclaw + Checked: $OPENCLAW_HOME 两个 println 臂）→
+    /// Ok 早退。
+    #[test]
+    fn w5_run_no_openclaw_prints_checked_hints_and_ok() {
+        let _guard = crate::GLOBAL_STATE_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        let orig = std::env::var_os("OPENCLAW_HOME");
+        unsafe {
+            std::env::remove_var("OPENCLAW_HOME");
+        }
+        let r = run(w5_opts(), false);
+        unsafe {
+            match orig {
+                Some(v) => std::env::set_var("OPENCLAW_HOME", v),
+                None => std::env::remove_var("OPENCLAW_HOME"),
+            }
+        }
+        r.expect("未找到 OpenClaw 必须提示后 Ok 早退");
+    }
+
+    /// OPENCLAW_HOME 命中（env 探测臂）+ 最小 fixture：config.json = "{}"
+    ///（转换器宽容臂：无 provider 可迁 → warnings/跳过路径）+ 无 workspace
+    ///（跳过臂）。nemesisbot_home 显式指向 temp，绝不触碰真实 home。
+    #[test]
+    fn w5_run_env_detected_minimal_fixture_migrates() {
+        let _guard = crate::GLOBAL_STATE_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        let src = tempfile::TempDir::new().unwrap();
+        std::fs::write(src.path().join("config.json"), "{}").unwrap();
+
+        let dst = tempfile::TempDir::new().unwrap();
+        let mut opts = w5_opts();
+        opts.nemesisbot_home = Some(dst.path().to_string_lossy().to_string());
+
+        let orig = std::env::var_os("OPENCLAW_HOME");
+        unsafe {
+            std::env::set_var("OPENCLAW_HOME", src.path().to_string_lossy().to_string());
+        }
+        let r = run(opts, false);
+        unsafe {
+            match orig {
+                Some(v) => std::env::set_var("OPENCLAW_HOME", v),
+                None => std::env::remove_var("OPENCLAW_HOME"),
+            }
+        }
+        r.expect("最小存量 fixture 迁移必须 Ok");
+        // config 换转换写盘落点（nemesis_home = dst/.nemesisbot 或 dst 本身
+        // 视 resolve 语义；只断言目标树里出现过 config.json）。
+        let hit = dst.path().join(".nemesisbot").join("config.json").exists()
+            || dst.path().join("config.json").exists();
+        assert!(hit, "迁移必须产出 config.json: {:?}", dst.path());
     }
 }

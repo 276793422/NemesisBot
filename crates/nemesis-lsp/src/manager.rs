@@ -489,9 +489,16 @@ impl LspManager {
         character: u32,
     ) -> Result<Vec<proto::CodeActionInfo>, String> {
         let diagnostics = self.diagnostics_for(path).await;
+        // LSP CodeActionParams 必填 { textDocument, range, context }：单点
+        // 位置 → 零宽 range（LSP 惯例）。此前发 "position" 是 RenameParams/
+        // HoverParams 形态，规范服务器（rust-analyzer 等 serde 严格反序列化）
+        // 每次必回 -32602 missing field `range`，能力完全不可用。
         let params = json!({
             "textDocument": {"uri": proto::path_to_uri(path)},
-            "position": {"line": line, "character": character},
+            "range": {
+                "start": {"line": line, "character": character},
+                "end": {"line": line, "character": character},
+            },
             "context": {
                 "diagnostics": diagnostics
                     .iter()
@@ -919,4 +926,10 @@ pub struct RenameOutcome {
 }
 
 #[cfg(test)]
+mod cov_tests;
+#[cfg(test)]
 mod tests;
+
+// Wave6B 覆盖率收尾：见 cov_wave6b_tests.rs 头注释。
+#[cfg(test)]
+mod cov_wave6b_tests;

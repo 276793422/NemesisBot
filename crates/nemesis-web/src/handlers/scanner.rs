@@ -1019,3 +1019,9 @@ async fn update_db_inner(
 // format_bytes / 进度回调）。真下载与真扫描臂 → 结构性豁免（台账 §9.4）。
 #[cfg(test)]
 mod wweb2_tests;
+
+// AGT 覆盖率批次（2026-09-24）：第二子模块。Default/命令表接口面、
+// cmd_enable 空 state 引擎的 PENDING 注入落盘、update_db_inner 的
+// data_dir 双臂（freshclam.exe 缺失即 Err，无网络）。真下载/真扫描臂仍豁免。
+#[cfg(test)]
+mod agt_tests;

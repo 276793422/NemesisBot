@@ -492,4 +492,6 @@ fn resolve_host_dns(host: &str) -> Result<Vec<IpAddr>, SsrfError> {
 // ---------------------------------------------------------------------------
 
 #[cfg(test)]
+mod cov_tests;
+#[cfg(test)]
 mod tests;

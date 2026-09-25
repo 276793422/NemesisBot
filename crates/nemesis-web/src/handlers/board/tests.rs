@@ -2622,17 +2622,23 @@ async fn test_project_completion_eligible_matrix() {
 #[cfg(feature = "cluster")]
 #[tokio::test]
 async fn test_notify_project_review_guards_and_hook_fire() {
-    use std::sync::Mutex;
-
     let dir = unique_dir("f3-notify");
     let ctx = make_ctx_with_board(&dir);
     let store = store_of(&ctx);
-    let fired: &'static Mutex<Vec<i64>> = Box::leak(Box::new(Mutex::new(Vec::new())));
-    // 进程级 OnceLock：单测二进制内只有本测试注册（守卫用例在 hook get 前
-    // 就早退）；set 失败 = 本用例先前轮次已注册同一 recording 闭包，直接用。
+    // 进程级 OnceLock：装配权可能被 agt_hook_setters 用例抢先（同一共享
+    // 录制器 AGT_PROJECT_REVIEW_FIRED，赢家装配）；set 失败 = 已注册同源
+    // 闭包，直接用。先清空录制器保证断言与本用例自身触发一一对应。
     let _ = set_project_review_hook(std::sync::Arc::new(|pid| {
-        fired.lock().unwrap().push(pid);
+        AGT_PROJECT_REVIEW_FIRED
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .push(pid);
     }));
+    AGT_PROJECT_REVIEW_FIRED
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .clear();
+    let fired = &AGT_PROJECT_REVIEW_FIRED;
 
     // ① 子单 done：非触发面，早退不 fire。
     let pid = f3_project_with_parents(&store, "notify全done", 1, 1);
@@ -4802,4 +4808,2714 @@ fn test_estop_dispatch_frozen_pure_helper() {
     assert!(!super::estop_dispatch_frozen(Some(&estop)), "释放后恢复");
     let err = super::estop_frozen_error();
     assert!(err.contains("estop") && err.contains("release"), "{err}");
+}
+
+// ===========================================================================
+// AGT 覆盖率批次（2026-09-24）：board.rs miss 收口。
+// 纯函数臂 / 钩子装配 / project_progress 环节矩阵 / config.set 全键 /
+// audit 族 / autopilot cron 装配与同步。派发与 plan 链见附录二。
+// ===========================================================================
+
+/// AGT：可注入 cron/cluster/agent_loop 的 ctx 构造器（复制 make_ctx_with_service
+/// 的 AppState 字面并参数化三个槽位；board service 必给）。
+#[cfg(feature = "cluster")]
+fn agt_make_ctx_ex(
+    dir: &std::path::Path,
+    service: nemesis_board::BoardService,
+    cluster: Option<Arc<nemesis_cluster::cluster::Cluster>>,
+    agent_loop: Option<Arc<nemesis_agent::r#loop::AgentLoop>>,
+    cron: Option<Arc<std::sync::Mutex<nemesis_cron::CronService>>>,
+) -> RequestContext {
+    let state = Arc::new(AppState {
+        auth_token: String::new(),
+        session_count: Arc::new(AtomicUsize::new(0)),
+        workspace: Some(dir.to_string_lossy().to_string()),
+        home: Some(dir.to_string_lossy().to_string()),
+        version: "test".to_string(),
+        start_time: Instant::now(),
+        model_name: Arc::new(parking_lot::Mutex::new("test-model".to_string())),
+        model_base: Arc::new(parking_lot::Mutex::new(String::new())),
+        model_has_key: Arc::new(AtomicBool::new(false)),
+        event_hub: Arc::new(EventHub::new()),
+        running: Arc::new(AtomicBool::new(true)),
+        session_manager: Arc::new(SessionManager::with_default_timeout()),
+        inbound_tx: None,
+        streaming_provider: None,
+        ws_router: None,
+        agent_service: None,
+        data_store: None,
+        memory_manager: None,
+        forge: None,
+        agent_loop: Arc::new(parking_lot::RwLock::new(agent_loop)),
+        cluster,
+        cluster_service: None,
+        cluster_log_dir: None,
+        workflow_engine: None,
+        #[cfg(feature = "workflow")]
+        chat_secret_store: std::sync::Arc::new(
+            nemesis_workflow::chat_secrets::ChatSecretStore::in_memory(),
+        ),
+        #[cfg(not(feature = "workflow"))]
+        chat_secret_store: std::sync::Arc::new(()),
+        #[cfg(feature = "workflow")]
+        webhook_rate_limiter: Arc::new(crate::handlers::workflow::WebhookRateLimiter::new()),
+        #[cfg(not(feature = "workflow"))]
+        webhook_rate_limiter: Arc::new(()),
+        internal_cmd_tx: None,
+        estop: None,
+        signature_verify: None,
+        cron,
+        board: Some(service),
+    });
+    RequestContext {
+        session_id: "test-session".to_string(),
+        chat_id: "test-chat".to_string(),
+        workspace: Some(dir.to_string_lossy().to_string()),
+        home: Some(dir.to_string_lossy().to_string()),
+        state,
+        auth_method: crate::session::AuthMethod::default(),
+    }
+}
+
+// --- 附录一：纯函数与校验臂 ---
+
+#[test]
+fn agt_assignee_pairing_sanitize_and_filter_arms() {
+    // (None, Some) 臂：assignee_id 单独出现 → 成对拒绝（59）
+    let err = build_new_issue(
+        &serde_json::json!({ "title": "t", "assignee_id": "w1" }),
+        Actor::admin("s"),
+    )
+    .unwrap_err();
+    assert!(err.contains("必须成对提供"), "{err}");
+
+    // sanitize_filename：控制字符（77）/ 超长（80）/ 目录穿越取基本名
+    assert!(sanitize_filename("bad\u{7}name").is_err());
+    let long = "x".repeat(201);
+    assert!(sanitize_filename(&long).is_err());
+    assert_eq!(sanitize_filename("a/b\\..\\最终.md").unwrap(), "最终.md");
+    assert!(sanitize_filename("..").is_err());
+
+    // build_filter：未知 status（116）/ assignee 过滤（119）/ priority（125）
+    let err = build_filter(&serde_json::json!({ "status": "不存在的状态" })).unwrap_err();
+    assert!(err.contains("未知 status"), "{err}");
+    let f = build_filter(&serde_json::json!({
+        "assignee_type": "worker", "assignee_id": "w9", "priority": 2
+    }))
+    .unwrap();
+    assert!(f.assignee.is_some());
+    assert_eq!(f.priority, Some(2));
+    // include 旗标臂：缺省排除（true）→ 显式放行（false）
+    let f2 = build_filter(&serde_json::json!({})).unwrap();
+    assert!(f2.exclude_archived_projects && f2.exclude_cancelled && f2.exclude_hidden);
+    let f3 = build_filter(
+        &serde_json::json!({ "include_archived_projects": true, "include_cancelled": true }),
+    )
+    .unwrap();
+    assert!(!f3.exclude_archived_projects && !f3.exclude_cancelled);
+
+    // build_new_issue：成对 assignee 落字段（178-179）+ origin（182-185）
+    let ni = build_new_issue(
+        &serde_json::json!({
+            "title": "t", "priority": 1, "assignee_type": "manager_self", "assignee_id": "me",
+            "origin_type": "claw", "origin_id": "origin-7"
+        }),
+        Actor::admin("s"),
+    )
+    .unwrap();
+    assert_eq!(ni.assignee, Some(AssignmentType::ManagerSelf));
+    assert_eq!(ni.assignee_id.as_deref(), Some("me"));
+    assert_eq!(ni.priority, 1);
+    let origin = ni.origin.expect("origin 应落字段");
+    assert_eq!(origin.origin_type, "claw");
+    assert_eq!(origin.origin_id, "origin-7");
+}
+
+#[cfg(feature = "cluster")]
+#[test]
+fn agt_dispatch_prompt_renders_all_optional_sections() {
+    let dir = unique_dir("agt-prompt");
+    let store = store_of(&make_ctx_with_board(&dir));
+    let issue = store
+        .create_issue(nemesis_board::NewIssue {
+            title: "提示词装配单".into(),
+            description: "  ".into(), // 空白背景 → 「（未提供）」臂（225）
+            ..Default::default()
+        })
+        .unwrap();
+    // 验收标准 None → 兜底文案（231-232）；assets/experience/feedback 全 Some（247/252/236-243）
+    let p = build_dispatch_prompt(
+        &issue,
+        Some("## 任务资产\nASSET-SECTION"),
+        Some("上轮差距：缺测试"),
+        Some("## 团队经验\nEXP-SECTION"),
+    );
+    assert!(p.contains("（未提供）"), "{p}");
+    assert!(p.contains("完成判据以背景描述为准"), "{p}");
+    assert!(p.contains("上轮验收意见") && p.contains("缺测试"), "{p}");
+    assert!(p.contains("ASSET-SECTION"), "{p}");
+    assert!(p.contains("EXP-SECTION"), "{p}");
+    assert!(p.contains("汇报格式"), "{p}");
+    // 有验收标准 + 全 None → 走原文臂（231 Some 臂）且无附加段
+    let issue2 = store
+        .create_issue(nemesis_board::NewIssue {
+            title: "带验收".into(),
+            acceptance_criteria: Some("必须包含回归测试".into()),
+            ..Default::default()
+        })
+        .unwrap();
+    let p2 = build_dispatch_prompt(&issue2, None, None, None);
+    assert!(p2.contains("必须包含回归测试"), "{p2}");
+    assert!(!p2.contains("上轮验收意见"), "{p2}");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// project_review 钩子的进程级共享录制器：OnceLock 先装先赢，两个测试
+/// （agt_hook_setters 与 test_notify_project_review_guards_and_hook_fire）
+/// 都可能赢得装配权——闭包统一写这里，双方读同一真相，先后次序无关。
+#[cfg(feature = "cluster")]
+static AGT_PROJECT_REVIEW_FIRED: std::sync::LazyLock<std::sync::Mutex<Vec<i64>>> =
+    std::sync::LazyLock::new(|| std::sync::Mutex::new(Vec::new()));
+
+#[test]
+fn agt_hook_setters_first_ok_second_rejected_and_notify_missing_issue() {
+    let dir = unique_dir("agt-hooks");
+    let store = store_of(&make_ctx_with_board(&dir));
+    // 三个 OnceLock 钩子：本进程内首次装配成功（875-881/890-896/907-913），
+    // 重复装配拒绝。project_review 与 notify 守卫用例共享录制器（赢家装
+    // 配，双方读同一 Vec），避免 OnceLock 次序假失败。
+    assert!(set_parent_review_hook(std::sync::Arc::new(|_pid| {})).is_ok());
+    assert_eq!(
+        set_parent_review_hook(std::sync::Arc::new(|_pid| {})).unwrap_err(),
+        "parent review hook already set"
+    );
+    let _ = set_project_review_hook(std::sync::Arc::new(|pid| {
+        AGT_PROJECT_REVIEW_FIRED
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .push(pid);
+    }));
+    assert_eq!(
+        set_project_review_hook(std::sync::Arc::new(|_pid| {})).unwrap_err(),
+        "project review hook already set"
+    );
+    assert!(set_project_summary_hook(std::sync::Arc::new(|_pid| {})).is_ok());
+    assert_eq!(
+        set_project_summary_hook(std::sync::Arc::new(|_pid| {})).unwrap_err(),
+        "project summary hook already set"
+    );
+    // 触发面对不存在 issue：get_issue Err → 诚实 no-op（946）
+    notify_project_review_on_parent_done(&store, -99999);
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+// --- 附录一：project_progress 环节矩阵（1030-1065 全臂 + 1070）---
+
+#[cfg(feature = "cluster")]
+#[test]
+fn agt_project_progress_stage_matrix_and_priority() {
+    let dir = unique_dir("agt-progress");
+    let ctx = make_ctx_with_board(&dir);
+    let store = store_of(&ctx);
+    let proj = store
+        .create_project("环节矩阵", "", None, "", "", None)
+        .unwrap();
+    let mk = |title: &str| nemesis_board::NewIssue {
+        title: title.to_string(),
+        project_id: Some(proj.id),
+        ..Default::default()
+    };
+    let done = store.create_issue(mk("已完成单")).unwrap();
+    let review = store.create_issue(mk("验收单")).unwrap();
+    let blocked = store.create_issue(mk("受阻单")).unwrap();
+    let parked = store.create_issue(mk("停车单")).unwrap();
+    let _backlog = store.create_issue(mk("待派单")).unwrap();
+    let redo = store.create_issue(mk("重做单")).unwrap();
+    let dispatched = store.create_issue(mk("执行单")).unwrap();
+    let cancelled = store.create_issue(mk("取消单")).unwrap();
+    let actor = Actor::admin("agt");
+    // backlog → 任意非终态：一步到位
+    store
+        .transition_issue(done.id, IssueStatus::Done, &actor)
+        .unwrap();
+    store
+        .transition_issue(review.id, IssueStatus::InProgress, &actor)
+        .unwrap();
+    store
+        .transition_issue(review.id, IssueStatus::InReview, &actor)
+        .unwrap();
+    store
+        .transition_issue(blocked.id, IssueStatus::Blocked, &actor)
+        .unwrap();
+    store
+        .transition_issue(redo.id, IssueStatus::InProgress, &actor)
+        .unwrap();
+    store
+        .transition_issue(dispatched.id, IssueStatus::InProgress, &actor)
+        .unwrap();
+    store
+        .transition_issue(cancelled.id, IssueStatus::Cancelled, &actor)
+        .unwrap();
+    // 停车单：todo + ⏸ 系统评论（与 sweep 同源标记）
+    store
+        .transition_issue(parked.id, IssueStatus::Todo, &actor)
+        .unwrap();
+    store
+        .add_comment(nemesis_board::NewComment {
+            issue_id: parked.id,
+            author: Actor::system("board"),
+            content: format!("⏸ {PARK_NOTICE_MARK}（无可用节点）"),
+            parent_id: None,
+            ctype: CommentType::System,
+        })
+        .unwrap();
+    // 执行单：在途派发（claim）→ 执行中（区别于重做单的「无在途 in_progress」）
+    assert!(
+        store
+            .try_claim_dispatch("agt-task-exec", dispatched.id, "node-x", &actor)
+            .unwrap()
+    );
+
+    let full = super::project_progress(&store, proj.id).unwrap();
+    let counts = &full["counts"];
+    assert_eq!(counts["done"].as_i64(), Some(1));
+    assert_eq!(counts["in_review"].as_i64(), Some(1));
+    assert_eq!(counts["blocked"].as_i64(), Some(1));
+    assert_eq!(counts["parked"].as_i64(), Some(1));
+    assert_eq!(counts["backlog"].as_i64(), Some(1));
+    assert_eq!(
+        counts["in_progress"].as_i64(),
+        Some(1),
+        "无在途 in_progress=待重派"
+    );
+    assert_eq!(
+        counts["dispatched"].as_i64(),
+        Some(1),
+        "有在途 in_progress=执行中"
+    );
+    assert_eq!(counts["cancelled"].as_i64(), Some(1));
+    // 卡点优先级：受阻 > 其余
+    assert_eq!(full["stage"].as_str(), Some("受阻"));
+    // 逐单环节行完整
+    assert_eq!(full["issues"].as_array().unwrap().len(), 8);
+
+    // 各 stage 优先级单独验证：只建对应环节的单 → stage 命中对应臂
+    let stage_of_only = |tag: &str, want: &str| {
+        let p2 = store
+            .create_project(&format!("只含{tag}"), "", None, "", "", None)
+            .unwrap();
+        let i = store
+            .create_issue(nemesis_board::NewIssue {
+                title: tag.to_string(),
+                project_id: Some(p2.id),
+                ..Default::default()
+            })
+            .unwrap();
+        match tag {
+            "review" => {
+                store
+                    .transition_issue(i.id, IssueStatus::InProgress, &actor)
+                    .unwrap();
+                store
+                    .transition_issue(i.id, IssueStatus::InReview, &actor)
+                    .unwrap();
+            }
+            "parked" => {
+                store
+                    .transition_issue(i.id, IssueStatus::Todo, &actor)
+                    .unwrap();
+                store
+                    .add_comment(nemesis_board::NewComment {
+                        issue_id: i.id,
+                        author: Actor::system("board"),
+                        content: PARK_NOTICE_MARK.to_string(),
+                        parent_id: None,
+                        ctype: CommentType::System,
+                    })
+                    .unwrap();
+            }
+            "redo" => {
+                store
+                    .transition_issue(i.id, IssueStatus::InProgress, &actor)
+                    .unwrap();
+            }
+            "dispatched" => {
+                store
+                    .transition_issue(i.id, IssueStatus::InProgress, &actor)
+                    .unwrap();
+                store
+                    .try_claim_dispatch(&format!("agt-task-{}", p2.id), i.id, "node-x", &actor)
+                    .unwrap();
+            }
+            "done" => {
+                store
+                    .transition_issue(i.id, IssueStatus::Done, &actor)
+                    .unwrap();
+            }
+            _ => {}
+        }
+        let out = super::project_progress(&store, p2.id).unwrap();
+        assert_eq!(out["stage"].as_str(), Some(want), "project {want}");
+    };
+    stage_of_only("review", "验收中");
+    stage_of_only("parked", "停车待恢复");
+    stage_of_only("dispatched", "执行中");
+    stage_of_only("redo", "待重派");
+    stage_of_only("plain", "待派发");
+    stage_of_only("done", "已完成");
+    // 空项目 → 未拆解；project_id 不存在 → get_project Err 臂（1070）也走通
+    let empty = store
+        .create_project("空项目", "", None, "", "", None)
+        .unwrap();
+    assert_eq!(
+        super::project_progress(&store, empty.id).unwrap()["stage"].as_str(),
+        Some("未拆解")
+    );
+    assert_eq!(
+        super::project_progress(&store, 424242).unwrap()["archive_integrity"],
+        serde_json::json!(null),
+        "get_project Err → (None, []) 诚实缺省"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+// --- 附录一：config.get / config.set 全键（4259-4479）---
+
+#[tokio::test]
+async fn agt_board_config_get_set_all_keys_and_rejections() {
+    let dir = unique_dir("agt-config");
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(dir.join("config.json"), "{}").unwrap();
+    let ctx = make_ctx_with_board(&dir);
+
+    // config.get：读出 board 段（默认值）
+    let got = dispatch(&ctx, "config.get", serde_json::json!({}))
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(got.is_object());
+
+    // 全键 round-trip：布尔 / 整数 / 字符串 / null
+    for (key, value) in [
+        ("auto_review", serde_json::json!(true)),
+        ("auto_accept", serde_json::json!(true)),
+        ("auto_close_parent", serde_json::json!(true)),
+        ("unlimited_mode", serde_json::json!(false)),
+        ("conflict_auto_resolve", serde_json::json!(true)),
+        ("dispatch_fallback", serde_json::json!(true)),
+        ("worker_max_inflight", serde_json::json!(3)),
+        ("dispatch_fallback_target", serde_json::json!("node-fix")),
+        ("dispatch_fallback_target", serde_json::json!(null)),
+        ("review.selfcheck", serde_json::json!(true)),
+        ("review.auto_close_project", serde_json::json!(true)),
+        ("plan.auto_confirm", serde_json::json!(true)),
+        ("plan.model", serde_json::json!("big-model")),
+        ("plan.model", serde_json::json!(null)),
+        ("max_redispatch", serde_json::json!(7)),
+        ("review.max_turns", serde_json::json!(4)),
+        ("review.checkers", serde_json::json!(3)),
+        ("budget.max_subissues_per_parent", serde_json::json!(9)),
+        ("budget.max_total_redispatch", serde_json::json!(11)),
+        ("budget.wall_clock_budget_secs", serde_json::json!(3600)),
+        ("budget.max_tokens_per_parent", serde_json::json!(123456)),
+        ("dispatch_timeout_secs", serde_json::json!(1800)),
+        ("discussion.retention_days", serde_json::json!(30)),
+        (
+            "discussion.max_agent_turns_per_thread",
+            serde_json::json!(6),
+        ),
+        ("discussion.hourly_budget_per_node", serde_json::json!(20)),
+        ("discussion.rate_limit_per_min", serde_json::json!(10)),
+    ] {
+        let out = dispatch(
+            &ctx,
+            "config.set",
+            serde_json::json!({ "key": key, "value": value }),
+        )
+        .await
+        .unwrap_or_else(|e| panic!("config.set {key} 失败: {e}"))
+        .unwrap();
+        assert_eq!(out["updated"], serde_json::json!(true), "{key}");
+    }
+
+    // 拒绝臂：类型错 / 范围错 / 未知键 / 缺 home
+    for (key, value, why) in [
+        ("worker_max_inflight", serde_json::json!(-1), "非负整数"),
+        ("worker_max_inflight", serde_json::json!("x"), "非负整数"),
+        (
+            "dispatch_fallback_target",
+            serde_json::json!(3),
+            "字符串或 null",
+        ),
+        ("plan.model", serde_json::json!(true), "字符串或 null"),
+        ("max_redispatch", serde_json::json!(-2), "非负整数"),
+        ("review.max_turns", serde_json::json!(1.5), "非负整数"),
+        ("review.checkers", serde_json::json!(9), "1..=5"),
+        (
+            "budget.wall_clock_budget_secs",
+            serde_json::json!(null),
+            "非负整数",
+        ),
+        (
+            "dispatch_timeout_secs",
+            serde_json::json!("soon"),
+            "非负整数",
+        ),
+        ("discussion.retention_days", serde_json::json!(null), "整数"),
+    ] {
+        let err = dispatch(
+            &ctx,
+            "config.set",
+            serde_json::json!({ "key": key, "value": value }),
+        )
+        .await
+        .unwrap_err();
+        assert!(err.contains(why), "{key} = {value}: {err}");
+    }
+    let err = dispatch(
+        &ctx,
+        "config.set",
+        serde_json::json!({ "key": "not.a.key", "value": true }),
+    )
+    .await
+    .unwrap_err();
+    assert!(err.contains("未知或不允许"), "{err}");
+
+    // config.get 无 home → 报错（4260）
+    let mut ctx_nohome = make_ctx_with_board(&dir);
+    ctx_nohome.home = None;
+    assert!(
+        dispatch(&ctx_nohome, "config.get", serde_json::json!({}))
+            .await
+            .is_err()
+    );
+    // config.set 缺 value（4272）
+    assert!(
+        dispatch(
+            &ctx,
+            "config.set",
+            serde_json::json!({ "key": "auto_review" })
+        )
+        .await
+        .is_err()
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+// --- 附录一：audit 族（4208-4256）---
+
+#[tokio::test]
+async fn agt_audit_list_offset_action_rollback_and_retry_merge() {
+    let dir = unique_dir("agt-audit");
+    let ctx = make_ctx_with_board(&dir);
+    let store = store_of(&ctx);
+    let actor = Actor::admin("agt");
+    let issue = store
+        .create_issue(nemesis_board::NewIssue {
+            title: "审计单".into(),
+            ..Default::default()
+        })
+        .unwrap();
+    // done 落定 → 造一条 auto_decide 决策 → rollback 有靶子
+    store
+        .transition_issue(issue.id, IssueStatus::Done, &actor)
+        .unwrap();
+    store
+        .add_activity(
+            issue.id,
+            &actor,
+            "auto_decide",
+            Some("{\"verdict\":\"done\"}"),
+        )
+        .unwrap();
+    let decisions = store
+        .list_recent_activity_paged(50, 0, Some("auto_decide"))
+        .unwrap();
+    assert_eq!(decisions.len(), 1, "前置：恰一条 auto_decide");
+
+    // audit.list：action 过滤 + offset 翻页（4217-4221）
+    let out = dispatch(
+        &ctx,
+        "audit.list",
+        serde_json::json!({ "limit": 5, "offset": 0, "action": "auto_decide" }),
+    )
+    .await
+    .unwrap()
+    .unwrap();
+    assert_eq!(out["decisions"].as_array().unwrap().len(), 1);
+    let out2 = dispatch(
+        &ctx,
+        "audit.list",
+        serde_json::json!({ "offset": 1, "action": "auto_decide" }),
+    )
+    .await
+    .unwrap()
+    .unwrap();
+    assert_eq!(
+        out2["decisions"].as_array().unwrap().len(),
+        0,
+        "offset 跳过"
+    );
+
+    // audit.rollback：activity_id 定位 auto_decide + done 单 → 回 in_review（4224-4237）
+    let act_id = decisions[0].activity.id;
+    let out3 = dispatch(
+        &ctx,
+        "audit.rollback",
+        serde_json::json!({ "activity_id": act_id }),
+    )
+    .await
+    .unwrap()
+    .unwrap();
+    assert_eq!(out3["rolled_back"], serde_json::json!(true));
+    assert_eq!(
+        store.get_issue(issue.id).unwrap().status,
+        IssueStatus::InReview
+    );
+    // 缺 activity_id（4229）
+    assert!(
+        dispatch(&ctx, "audit.rollback", serde_json::json!({}))
+            .await
+            .is_err()
+    );
+
+    // audit.retry_merge：钩子未安装 → 诚实报错（4247-4249）
+    let err = dispatch(
+        &ctx,
+        "audit.retry_merge",
+        serde_json::json!({ "id": issue.id }),
+    )
+    .await
+    .unwrap_err();
+    assert!(err.contains("钩子未安装"), "{err}");
+    // 安装钩子（OnceLock 进程级；本批次唯一安装点）→ 结果透传（4250-4256）
+    set_retry_merge_hook(std::sync::Arc::new(|i| {
+        Ok(serde_json::json!({ "retried": i.id, "tasks": [] }))
+    }));
+    let out4 = dispatch(
+        &ctx,
+        "audit.retry_merge",
+        serde_json::json!({ "id": issue.id }),
+    )
+    .await
+    .unwrap()
+    .unwrap();
+    assert_eq!(out4["retried"], serde_json::json!(issue.id));
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+// --- 附录一：autopilot cron 装配 / 同步 / 摘除（3279-3390）---
+
+#[cfg(feature = "cluster")]
+#[tokio::test]
+async fn agt_autopilot_cron_arm_patch_follow_sync_and_disarm() {
+    let dir = unique_dir("agt-apcron");
+    let cron = std::sync::Arc::new(std::sync::Mutex::new(nemesis_cron::CronService::new(
+        &dir.join("cron.db").to_string_lossy(),
+    )));
+    let svc_store = BoardStore::open(&dir.join("board.db"), "NB").unwrap();
+    let ctx = agt_make_ctx_ex(
+        &dir,
+        nemesis_board::BoardService::new(Arc::new(svc_store), NodeRole::Coordinator),
+        None,
+        None,
+        Some(cron.clone()),
+    );
+    let store = store_of(&ctx);
+
+    // autopilot.create：cron 注入 → 即时登记并回填 job id（arm_autopilot_job 3270-3274）
+    let created = dispatch(
+        &ctx,
+        "autopilot.create",
+        serde_json::json!({
+            "name": "同步规则", "title": "定时活", "cron": "*/5 * * * *",
+            "enabled": true, "description": "d"
+        }),
+    )
+    .await;
+    let created = match created {
+        Ok(v) => v.unwrap(),
+        Err(e) => panic!("autopilot.create 失败: {e}"),
+    };
+    let ap_id = created["autopilot"]["id"].as_i64().unwrap();
+    let job_id = created["autopilot"]["cron_job_id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    assert!(!job_id.is_empty(), "已登记 job id");
+
+    // autopilot.update：cron 变更 → patch 跟随既有 job（patch 臂 3294-3305）
+    let updated = dispatch(
+        &ctx,
+        "autopilot.update",
+        serde_json::json!({ "id": ap_id, "cron": "*/7 * * * *", "enabled": false }),
+    )
+    .await
+    .unwrap()
+    .unwrap();
+    assert_eq!(
+        updated["autopilot"]["cron_job_id"].as_str(),
+        Some(job_id.as_str()),
+        "跟随 patch 不换 job"
+    );
+
+    // sync_autopilot_jobs：孤儿清理 + 缺失补登记 + 既有跟随（3349-3390）
+    {
+        let svc = cron.lock().unwrap();
+        let sched = nemesis_cron::CronSchedule {
+            kind: "cron".into(),
+            at_ms: None,
+            every_ms: None,
+            expr: Some("*/9 * * * *".into()),
+            tz: None,
+        };
+        svc.add_job_ext(
+            "board-ap:ghost",
+            sched,
+            "",
+            false,
+            None,
+            None,
+            None,
+            None,
+            true,
+        )
+        .unwrap();
+    }
+    // 造缺失：另一条规则不登记（cron_job_id 留空）
+    let missing = store
+        .create_autopilot(&nemesis_board::NewAutopilot {
+            name: "缺登记".into(),
+            title: "t".into(),
+            cron: "*/11 * * * *".into(),
+            description: String::new(),
+            priority: nemesis_board::models::priority::MEDIUM,
+            project_id: None,
+            target: String::new(),
+            enabled: true,
+            auto_plan: false,
+            acceptance_criteria: None,
+        })
+        .unwrap();
+    // job 名约定 = board-ap:{autopilot_id}（不是规则名）
+    let missing_job_name = format!("board-ap:{}", missing.id);
+    let rearmed = super::sync_autopilot_jobs(&cron, &store).unwrap();
+    assert!(rearmed >= 1, "至少补登记缺失规则: {rearmed}");
+    {
+        let svc = cron.lock().unwrap();
+        let names: Vec<String> = svc.list_jobs(true).iter().map(|j| j.name.clone()).collect();
+        assert!(
+            !names.iter().any(|n| n == "board-ap:ghost"),
+            "孤儿 job 已清理: {names:?}"
+        );
+        assert!(names.contains(&missing_job_name), "{names:?}");
+    }
+    // disarm：job 不存在 → warn 不炸（3328-3330）
+    let ap = store.get_autopilot(ap_id).unwrap();
+    let mut ghost = ap.clone();
+    ghost.cron_job_id = Some("board-ap:no-such-job".to_string());
+    super::disarm_autopilot_job(&ctx, &ghost);
+    // cron 未注入的 ctx → arm no-op Ok（3270-3272）
+    let bare = make_ctx_with_board(&dir);
+    let _ = dispatch(
+        &bare,
+        "autopilot.create",
+        serde_json::json!({
+            "name": "无cron规则", "title": "t", "cron": "*/13 * * * *"
+        }),
+    )
+    .await
+    .unwrap()
+    .unwrap();
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[tokio::test]
+async fn agt_autopilot_validate_and_issues_listing() {
+    let dir = unique_dir("agt-aplist");
+    let ctx = make_ctx_with_board(&dir);
+    // 非法 cron 表达式 → create 拒绝（validate_schedule 臂）
+    let r = dispatch(
+        &ctx,
+        "autopilot.create",
+        serde_json::json!({ "name": "坏规则", "title": "t", "cron": "不是cron" }),
+    )
+    .await;
+    assert!(r.is_err(), "非法 cron 必须被拒");
+    // autopilot.issues：按 origin 列单（3765-3771）
+    let out = dispatch(
+        &ctx,
+        "autopilot.runs",
+        serde_json::json!({ "id": 1, "limit": 5 }),
+    )
+    .await
+    .unwrap()
+    .unwrap();
+    assert_eq!(out["issues"], serde_json::json!([]));
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+// ===========================================================================
+// AGT 覆盖率批次（2026-09-24）附录二：派发闸 / project.resume / sweep /
+// 重平衡 / 级联取消 / planner / plan 链（全部 cluster-gated）。
+// ===========================================================================
+
+use nemesis_agent::r#loop::{AgentLoop, LlmMessage, LlmProvider, LlmResponse};
+use nemesis_agent::types::AgentConfig;
+
+/// 恒输出非 JSON 文本的 provider（planner 解析三轮全败 / 链失败臂）。
+struct AgtBadPlannerProvider;
+/// 恒输出合法 plan JSON 的 provider。
+struct AgtGoodPlannerProvider;
+/// 恒 Err 的 provider（planner LLM 调用失败臂）。
+struct AgtDownProvider;
+
+const AGT_PLAN_JSON: &str = r#"[{"title":"子任务甲","acceptance_criteria":"存在回归测试"},{"title":"子任务乙","depends_on":[0]}]"#;
+
+#[async_trait::async_trait]
+impl LlmProvider for AgtBadPlannerProvider {
+    async fn chat(
+        &self,
+        _: &str,
+        _: Vec<LlmMessage>,
+        _: Option<nemesis_agent::types::ChatOptions>,
+        _: Vec<nemesis_agent::types::ToolDefinition>,
+    ) -> Result<LlmResponse, String> {
+        Ok(LlmResponse {
+            content: "我建议拆成两步：先写代码再补测试。".to_string(),
+            tool_calls: Vec::new(),
+            finished: true,
+            reasoning_content: None,
+            usage: None,
+            raw_request_body: None,
+            raw_response_body: None,
+        })
+    }
+}
+
+#[async_trait::async_trait]
+impl LlmProvider for AgtGoodPlannerProvider {
+    async fn chat(
+        &self,
+        _: &str,
+        _: Vec<LlmMessage>,
+        _: Option<nemesis_agent::types::ChatOptions>,
+        _: Vec<nemesis_agent::types::ToolDefinition>,
+    ) -> Result<LlmResponse, String> {
+        Ok(LlmResponse {
+            content: AGT_PLAN_JSON.to_string(),
+            tool_calls: Vec::new(),
+            finished: true,
+            reasoning_content: None,
+            usage: None,
+            raw_request_body: None,
+            raw_response_body: None,
+        })
+    }
+}
+
+#[async_trait::async_trait]
+impl LlmProvider for AgtDownProvider {
+    async fn chat(
+        &self,
+        _: &str,
+        _: Vec<LlmMessage>,
+        _: Option<nemesis_agent::types::ChatOptions>,
+        _: Vec<nemesis_agent::types::ToolDefinition>,
+    ) -> Result<LlmResponse, String> {
+        Err("provider down".to_string())
+    }
+}
+
+#[cfg(feature = "cluster")]
+#[tokio::test]
+async fn agt_run_planner_surrender_llm_fail_and_success() {
+    let dir = unique_dir("agt-planner");
+    let ctx = make_ctx_with_board(&dir);
+    let store = store_of(&ctx);
+    let parent = store
+        .create_issue(nemesis_board::NewIssue {
+            title: "拆解父单".into(),
+            ..Default::default()
+        })
+        .unwrap();
+
+    // 解析失败重试 ≤2 → 3 轮后诚实放弃（重试循环全臂）
+    let al = Arc::new(AgentLoop::new(
+        Box::new(AgtBadPlannerProvider),
+        AgentConfig::default(),
+    ));
+    let err = super::run_planner(&al, &parent, Vec::new(), None)
+        .await
+        .unwrap_err();
+    assert!(err.contains("连续 3 轮无法解析"), "{err}");
+
+    // LLM 调用失败：不消耗解析轮，独立归类
+    let al_down = Arc::new(AgentLoop::new(
+        Box::new(AgtDownProvider),
+        AgentConfig::default(),
+    ));
+    let err2 = super::run_planner(&al_down, &parent, Vec::new(), None)
+        .await
+        .unwrap_err();
+    assert!(err2.contains("planner LLM 调用失败"), "{err2}");
+
+    // 合法 JSON → 直接成功返回（Ok 臂）
+    let al_ok = Arc::new(AgentLoop::new(
+        Box::new(AgtGoodPlannerProvider),
+        AgentConfig::default(),
+    ));
+    let subs = super::run_planner(&al_ok, &parent, vec!["过往经验: 先补测试".into()], None)
+        .await
+        .unwrap();
+    assert_eq!(subs.len(), 2);
+    assert_eq!(subs[1].depends_on, vec![0]);
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[cfg(feature = "cluster")]
+#[tokio::test]
+async fn agt_execute_plan_chain_planned_failure_and_auto_confirm() {
+    let dir = unique_dir("agt-chain");
+    std::fs::create_dir_all(&dir).unwrap();
+    let ctx = make_ctx_with_board(&dir);
+    let store = store_of(&ctx);
+    let parent = store
+        .create_issue(nemesis_board::NewIssue {
+            title: "链父单".into(),
+            ..Default::default()
+        })
+        .unwrap();
+    let actor = Actor::admin("agt");
+    let hub = EventHub::new();
+    let al_bad = Arc::new(AgentLoop::new(
+        Box::new(AgtBadPlannerProvider),
+        AgentConfig::default(),
+    ));
+
+    // planner 失败 → 链内发布 plan_failed + Err 透传
+    let err = super::execute_plan_chain(
+        &store,
+        None,
+        al_bad.clone(),
+        parent.clone(),
+        actor.clone(),
+        "agt-plan-fail",
+        None,
+        Some(&hub),
+    )
+    .await
+    .unwrap_err();
+    assert!(err.contains("连续 3 轮无法解析"), "{err}");
+
+    // 成功拆解 + auto_confirm 关（home None → fail-closed 回人工）→ planned
+    let al_ok = Arc::new(AgentLoop::new(
+        Box::new(AgtGoodPlannerProvider),
+        AgentConfig::default(),
+    ));
+    let out = super::execute_plan_chain(
+        &store,
+        None,
+        al_ok.clone(),
+        parent.clone(),
+        actor.clone(),
+        "agt-plan-ok",
+        None,
+        Some(&hub),
+    )
+    .await
+    .unwrap();
+    assert_eq!(out["status"], serde_json::json!("planned"));
+    assert_eq!(out["subs"], serde_json::json!(2));
+    // 预览已入缓存 → 二段确认可消费（confirm_plan 走建单 + 依赖边）
+    let out2 = dispatch(
+        &ctx,
+        "issue.plan",
+        serde_json::json!({ "id": parent.id, "confirm": true, "plan_id": "agt-plan-ok" }),
+    )
+    .await
+    .unwrap()
+    .unwrap();
+    assert_eq!(out2["created"].as_array().unwrap().len(), 2, "子单落库");
+    // 依赖边落库：乙依赖甲
+    let children = store.list_children(parent.id).unwrap();
+    let with_dep = children.iter().find(|c| c.title == "子任务乙").unwrap();
+    assert!(
+        !store.dependencies_of(with_dep.id).unwrap().is_empty(),
+        "depends_on → 依赖边"
+    );
+
+    // auto_confirm 开（home 下 config.json）→ 直接发车 + 系统评论 + 决策审计
+    let home = unique_dir("agt-chain-home");
+    std::fs::create_dir_all(&home).unwrap();
+    std::fs::write(
+        home.join("config.json"),
+        r#"{"board":{"plan":{"auto_confirm":true}}}"#,
+    )
+    .unwrap();
+    let parent2 = store
+        .create_issue(nemesis_board::NewIssue {
+            title: "自动发车父单".into(),
+            ..Default::default()
+        })
+        .unwrap();
+    let out3 = super::execute_plan_chain(
+        &store,
+        None,
+        al_ok,
+        parent2.clone(),
+        actor,
+        "agt-plan-auto",
+        Some(&home),
+        Some(&hub),
+    )
+    .await
+    .unwrap();
+    assert_eq!(out3["status"], serde_json::json!("dispatched"), "{out3}");
+    assert_eq!(
+        store.list_children(parent2.id).unwrap().len(),
+        2,
+        "自动发车已建子单"
+    );
+    let comments = store.list_comments(parent2.id).unwrap();
+    assert!(
+        comments
+            .iter()
+            .any(|c| c.content.contains("auto_confirm 已开启")),
+        "系统评论留痕: {:?}",
+        comments
+    );
+    // 决策审计：auto_decide 已入活动流
+    let acts = store.list_activity(parent2.id).unwrap();
+    assert!(
+        acts.iter().any(|a| a.action == "auto_decide"),
+        "auto_decide 审计: {acts:?}"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+    let _ = std::fs::remove_dir_all(&home);
+}
+
+#[cfg(feature = "cluster")]
+#[tokio::test]
+async fn agt_issue_plan_stage_one_spawns_chain_when_agent_ready() {
+    let dir = unique_dir("agt-plan1");
+    let store = BoardStore::open(&dir.join("board.db"), "NB").unwrap();
+    let al = Arc::new(AgentLoop::new(
+        Box::new(AgtGoodPlannerProvider),
+        AgentConfig::default(),
+    ));
+    let ctx = agt_make_ctx_ex(
+        &dir,
+        nemesis_board::BoardService::new(Arc::new(store), NodeRole::Coordinator),
+        None,
+        Some(al),
+        None,
+    );
+    let issue = store_of(&ctx)
+        .create_issue(nemesis_board::NewIssue {
+            title: "一段拆解单".into(),
+            ..Default::default()
+        })
+        .unwrap();
+    let out = dispatch(&ctx, "issue.plan", serde_json::json!({ "id": issue.id }))
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(out["status"], serde_json::json!("planning"));
+    let plan_id = out["plan_id"].as_str().unwrap().to_string();
+    assert!(plan_id.starts_with("plan-"), "{out}");
+    // 后台链以 GoodPlanner 收尾（预览入缓存）；轮询等它就绪后 confirm 走
+    // 通二段（一段 spawn 全臂）。缓存未就绪时 confirm 报「不存在」且不
+    // 消费——安全重试。
+    let mut out2 = None;
+    for _ in 0..50 {
+        match dispatch(
+            &ctx,
+            "issue.plan",
+            serde_json::json!({ "id": issue.id, "confirm": true, "plan_id": plan_id }),
+        )
+        .await
+        {
+            Ok(Some(v)) => {
+                out2 = Some(v);
+                break;
+            }
+            Ok(None) => break,
+            Err(e) if e.contains("plan_id 不存在") => {
+                tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+            }
+            Err(e) => panic!("unexpected confirm error: {e}"),
+        }
+    }
+    let out2 = out2.expect("后台 plan 链应在轮询窗口内就绪");
+    assert_eq!(out2["created"].as_array().unwrap().len(), 2);
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[cfg(feature = "cluster")]
+#[tokio::test]
+async fn agt_dispatch_gates_matrix() {
+    let dir = unique_dir("agt-dispatch");
+    let store = Arc::new(BoardStore::open(&dir.join("board.db"), "NB").unwrap());
+    let cluster = Arc::new(nemesis_cluster::cluster::Cluster::new(
+        nemesis_cluster::types::ClusterConfig::default(),
+    ));
+    let ctx = agt_make_ctx_ex(
+        &dir,
+        nemesis_board::BoardService::new(store.clone(), NodeRole::Coordinator),
+        Some(cluster),
+        None,
+        None,
+    );
+    let actor = Actor::admin("agt");
+
+    // 状态闸：终态不可派发
+    let done_issue = store
+        .create_issue(nemesis_board::NewIssue {
+            title: "已完成".into(),
+            ..Default::default()
+        })
+        .unwrap();
+    store
+        .transition_issue(done_issue.id, IssueStatus::Done, &actor)
+        .unwrap();
+    let err = dispatch(
+        &ctx,
+        "issue.dispatch",
+        serde_json::json!({ "id": done_issue.id, "target": "node-b" }),
+    )
+    .await
+    .unwrap_err();
+    assert!(err.contains("不可派发"), "{err}");
+
+    // 重复派发闸：已有在途派发
+    let busy = store
+        .create_issue(nemesis_board::NewIssue {
+            title: "在途单".into(),
+            ..Default::default()
+        })
+        .unwrap();
+    store
+        .try_claim_dispatch("agt-task-busy", busy.id, "node-b", &actor)
+        .unwrap();
+    let err = dispatch(
+        &ctx,
+        "issue.dispatch",
+        serde_json::json!({ "id": busy.id, "target": "node-b" }),
+    )
+    .await
+    .unwrap_err();
+    assert!(err.contains("已有进行中的派发"), "{err}");
+
+    // 显式 target 空白 → 拒
+    let blank = store
+        .create_issue(nemesis_board::NewIssue {
+            title: "空白目标".into(),
+            ..Default::default()
+        })
+        .unwrap();
+    let err = dispatch(
+        &ctx,
+        "issue.dispatch",
+        serde_json::json!({ "id": blank.id, "target": "   " }),
+    )
+    .await
+    .unwrap_err();
+    assert!(err.contains("target 不能为空"), "{err}");
+
+    // manager_self 指派 → 本机执行不支持远端
+    let mine = store
+        .create_issue(nemesis_board::NewIssue {
+            title: "本机单".into(),
+            ..Default::default()
+        })
+        .unwrap();
+    store
+        .assign_issue(
+            mine.id,
+            Some(AssignmentType::ManagerSelf),
+            Some("me".into()),
+            &actor,
+        )
+        .unwrap();
+    let err = dispatch(&ctx, "issue.dispatch", serde_json::json!({ "id": mine.id }))
+        .await
+        .unwrap_err();
+    assert!(err.contains("manager_self"), "{err}");
+
+    // 无指派无 target → 缺少派发目标
+    let orphan = store
+        .create_issue(nemesis_board::NewIssue {
+            title: "无目标单".into(),
+            ..Default::default()
+        })
+        .unwrap();
+    let err = dispatch(
+        &ctx,
+        "issue.dispatch",
+        serde_json::json!({ "id": orphan.id }),
+    )
+    .await
+    .unwrap_err();
+    assert!(err.contains("缺少派发目标"), "{err}");
+
+    // worker 指派 → target 解析自 assignee_id → 走完整派发管线到 RPC
+    // client 缺失；途中 backlog → in_progress 派发转移已发生。
+    let resolved = store
+        .create_issue(nemesis_board::NewIssue {
+            title: "指派解析单".into(),
+            ..Default::default()
+        })
+        .unwrap();
+    store
+        .assign_issue(
+            resolved.id,
+            Some(AssignmentType::Worker),
+            Some("node-b".into()),
+            &actor,
+        )
+        .unwrap();
+    let err = dispatch(
+        &ctx,
+        "issue.dispatch",
+        serde_json::json!({ "id": resolved.id }),
+    )
+    .await
+    .unwrap_err();
+    assert!(err.contains("RPC client"), "{err}");
+    assert_eq!(
+        store.get_issue(resolved.id).unwrap().status,
+        IssueStatus::InProgress,
+        "backlog → in_progress 派发转移放行臂"
+    );
+
+    // 已在途单再派 → 重复闸先行（状态闸已放行 in_progress）
+    let err2 = dispatch(
+        &ctx,
+        "issue.dispatch",
+        serde_json::json!({ "id": resolved.id }),
+    )
+    .await
+    .unwrap_err();
+    assert!(err2.contains("已有进行中的派发"), "{err2}");
+
+    // 冲突冻结闸
+    let proj = store
+        .create_project("冻结项目", "", None, "", "", None)
+        .unwrap();
+    let frozen = store
+        .create_issue(nemesis_board::NewIssue {
+            title: "冻结单".into(),
+            project_id: Some(proj.id),
+            ..Default::default()
+        })
+        .unwrap();
+    store.set_project_conflict_frozen(proj.id, true).unwrap();
+    let err = dispatch(
+        &ctx,
+        "issue.dispatch",
+        serde_json::json!({ "id": frozen.id, "target": "node-b" }),
+    )
+    .await
+    .unwrap_err();
+    assert!(err.contains("冲突冻结"), "{err}");
+    store.set_project_conflict_frozen(proj.id, false).unwrap();
+
+    // 拓扑硬闸：远端 target + file: 锚点 = 拒
+    let anchored = store
+        .create_issue(nemesis_board::NewIssue {
+            title: "锚点单".into(),
+            acceptance_criteria: Some("[CHECK] file:src/main.rs exists".into()),
+            ..Default::default()
+        })
+        .unwrap();
+    let err = dispatch(
+        &ctx,
+        "issue.dispatch",
+        serde_json::json!({ "id": anchored.id, "target": "far-node-9" }),
+    )
+    .await
+    .unwrap_err();
+    assert!(err.contains("拒绝派发") && err.contains("file:"), "{err}");
+
+    // project_id 指向不存在项目：两个诚实降级点，命中哪个取决于
+    // BASELINE_PUSHER OnceLock 的装配赢家（基线测试同进程并行）——
+    // 基线装配先跑 = push_dispatch_baseline 的 get_project Err 弃派
+    // （「派发中止」）；未装配先跑 = 联动 link_project_on_dispatch 只
+    // warn，派发照走终至 RPC client 缺失。两臂都是诚实路径。
+    let ghost_proj = store
+        .create_issue(nemesis_board::NewIssue {
+            title: "幽灵项目单".into(),
+            project_id: Some(424242),
+            ..Default::default()
+        })
+        .unwrap();
+    let err = dispatch(
+        &ctx,
+        "issue.dispatch",
+        serde_json::json!({ "id": ghost_proj.id, "target": "node-b" }),
+    )
+    .await
+    .unwrap_err();
+    assert!(
+        err.contains("RPC client") || err.contains("project 424242 not found"),
+        "{err}"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[cfg(feature = "cluster")]
+#[tokio::test]
+async fn agt_project_resume_frozen_replay_refreeze_and_candidate_filter() {
+    let dir = unique_dir("agt-resume");
+    let store = Arc::new(BoardStore::open(&dir.join("board.db"), "NB").unwrap());
+    let cluster = offline_cluster(&dir, "node-a");
+    let actor = Actor::admin("agt");
+    let proj = store
+        .create_project("恢复项目", "", None, "", "", None)
+        .unwrap();
+    let mk = |title: &str| nemesis_board::NewIssue {
+        title: title.to_string(),
+        project_id: Some(proj.id),
+        ..Default::default()
+    };
+    // 候选过滤臂：in_review 跳过 / 有子单的父单跳过 / 在途跳过；候选 =
+    // 两个干净叶子（父单本身因有子单被跳过，其子叶子是合法派发单元）。
+    let review = store.create_issue(mk("验收中")).unwrap();
+    store
+        .transition_issue(review.id, IssueStatus::InProgress, &actor)
+        .unwrap();
+    store
+        .transition_issue(review.id, IssueStatus::InReview, &actor)
+        .unwrap();
+    let parent = store.create_issue(mk("父单")).unwrap();
+    let child = store
+        .create_issue(nemesis_board::NewIssue {
+            title: "叶子".into(),
+            project_id: Some(proj.id),
+            parent_issue_id: Some(parent.id),
+            ..Default::default()
+        })
+        .unwrap();
+    let busy = store.create_issue(mk("在途")).unwrap();
+    store
+        .try_claim_dispatch("agt-task-busy2", busy.id, "node-b", &actor)
+        .unwrap();
+    let leaf = store.create_issue(mk("干净叶子")).unwrap();
+
+    // 回放钩子（OnceLock 进程级唯一安装点）：switch=false → 保留冻结；
+    // switch=true → 解冻并落回放（覆盖 resume 冻结三分支）。
+    let unfreeze = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let hook_store = store.clone();
+    let hook_flag = unfreeze.clone();
+    super::set_resume_replay_hook(Arc::new(move |pid| {
+        if hook_flag.load(std::sync::atomic::Ordering::SeqCst) {
+            hook_store.set_project_conflict_frozen(pid, false).unwrap();
+        }
+        Ok(serde_json::json!({ "unfrozen": true, "manual_commit": 1 }))
+    }));
+
+    // ① 未冻结 + dry_run → 候选预览（三类非候选全过滤；无目标行附
+    //    match_detail 差什么明细）
+    let out = super::project_resume(&store, &cluster, None, proj.id, true, &actor)
+        .await
+        .unwrap();
+    assert_eq!(out["dry_run"], serde_json::json!(true), "{out}");
+    let cands = out["candidates"].as_array().unwrap();
+    assert_eq!(cands.len(), 2, "{out:?}");
+    let ids: Vec<i64> = cands
+        .iter()
+        .map(|c| c["issue_id"].as_i64().unwrap())
+        .collect();
+    assert!(ids.contains(&leaf.id) && ids.contains(&child.id), "{ids:?}");
+    assert!(
+        !ids.contains(&review.id) && !ids.contains(&busy.id) && !ids.contains(&parent.id),
+        "非候选被过滤: {ids:?}"
+    );
+    for c in cands {
+        assert!(
+            c["target"].as_str().unwrap().contains("无匹配"),
+            "离线无目标: {c}"
+        );
+        assert!(c["match_detail"].is_string(), "{c}");
+    }
+
+    // ② 冻结 + dry_run → 预览不落副作用（冻结先行段 dry_run 臂）
+    store.set_project_conflict_frozen(proj.id, true).unwrap();
+    let out2 = super::project_resume(&store, &cluster, None, proj.id, true, &actor)
+        .await
+        .unwrap();
+    assert_eq!(out2["frozen"], serde_json::json!(true), "{out2}");
+    assert!(out2.get("candidates").is_none(), "冻结预览无候选: {out2}");
+
+    // ③ 冻结 + 执行 + 钩子保留冻结 → 补合并再冲突 → 重新冻结回人工
+    let out3 = super::project_resume(&store, &cluster, None, proj.id, false, &actor)
+        .await
+        .unwrap();
+    assert_eq!(out3["resumed"], serde_json::json!(false), "{out3}");
+    assert_eq!(out3["frozen"], serde_json::json!(true));
+    assert_eq!(
+        out3["replay"]["unfrozen"],
+        serde_json::json!(true),
+        "钩子回放摘要随冻结响应披露"
+    );
+
+    // ④ 钩子解冻 → 走完整恢复：候选 1、离线无目标 → failed 行；
+    // conflict_replay 披露。
+    unfreeze.store(true, std::sync::atomic::Ordering::SeqCst);
+    let out4 = super::project_resume(&store, &cluster, None, proj.id, false, &actor)
+        .await
+        .unwrap();
+    assert_eq!(out4["dry_run"], serde_json::json!(false));
+    assert_eq!(out4["dispatched"], serde_json::json!(0));
+    assert_eq!(out4["total_candidates"], serde_json::json!(2));
+    assert_eq!(out4["failed"].as_array().unwrap().len(), 2, "{out4}");
+    assert!(
+        out4["conflict_replay"].is_object(),
+        "回放摘要随响应披露: {out4}"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[cfg(feature = "cluster")]
+#[tokio::test]
+async fn agt_sweep_and_rebalance_offline_arms() {
+    let dir = unique_dir("agt-sweep");
+    let store = Arc::new(BoardStore::open(&dir.join("board.db"), "NB").unwrap());
+    let cluster = offline_cluster(&dir, "node-a");
+    let actor = Actor::admin("agt");
+    // planner 来源叶子（停车场粗筛命中：origin_type=planner）
+    let parked = store
+        .create_issue(nemesis_board::NewIssue {
+            title: "planner 叶子".into(),
+            origin: Some(nemesis_board::TaskOrigin {
+                origin_type: "planner".into(),
+                origin_id: "NB-1".into(),
+            }),
+            ..Default::default()
+        })
+        .unwrap();
+    assert_eq!(
+        store.list_dispatch_park_candidates().unwrap(),
+        vec![parked.id]
+    );
+
+    // sweep：候选 1、无在线节点派不出去（两种 notify 形态都走）
+    let (n, d, _f) =
+        super::sweep_parked_dispatches_with_config(None, &store, &cluster, &actor, true);
+    assert_eq!((n, d), (1, 0), "候选 1、离线派发 0");
+    let (n2, d2, _) =
+        super::sweep_parked_dispatches_with_config(None, &store, &cluster, &actor, false);
+    assert_eq!((n2, d2), (1, 0));
+
+    // 重平衡早退臂：
+    let mut cfg = nemesis_config::BoardFlagConfig::default();
+    // ① cap=0（不限）→ 无意义 → 0
+    cfg.worker_max_inflight = 0;
+    assert_eq!(
+        super::rebalance_queued_to_worker(&store, &cluster, Some(&cfg), "node-a", &actor).await,
+        0
+    );
+    // ② 目标已满载（node-a 在途 1 ≥ cap 1）→ 0
+    cfg.worker_max_inflight = 1;
+    store
+        .try_claim_dispatch("agt-task-a1", parked.id, "node-a", &actor)
+        .unwrap();
+    assert_eq!(
+        super::rebalance_queued_to_worker(&store, &cluster, Some(&cfg), "node-a", &actor).await,
+        0
+    );
+    // ③ 排队队列为空（排除目标自身后）→ 0
+    assert_eq!(
+        super::rebalance_queued_to_worker(&store, &cluster, Some(&cfg), "node-a", &actor).await,
+        0
+    );
+    // ④ 有排队单（node-b 在途）但目标不在在线候选 → 0
+    let moved = store
+        .create_issue(nemesis_board::NewIssue {
+            title: "被偷单".into(),
+            ..Default::default()
+        })
+        .unwrap();
+    store
+        .try_claim_dispatch("agt-task-b1", moved.id, "node-b", &actor)
+        .unwrap();
+    cfg.worker_max_inflight = 2;
+    assert_eq!(
+        super::rebalance_queued_to_worker(&store, &cluster, Some(&cfg), "node-zzz", &actor).await,
+        0,
+        "目标无候选（不在线）"
+    );
+    // ⑤ 目标在线候选存在但 RPC client 缺失（离线集群）→ 0
+    assert_eq!(
+        super::rebalance_queued_to_worker(&store, &cluster, Some(&cfg), "node-a", &actor).await,
+        0,
+        "RPC client 缺失臂"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[cfg(feature = "cluster")]
+#[tokio::test]
+async fn agt_issue_cancel_with_dispatch_cascades_union_edges() {
+    let dir = unique_dir("agt-cancel");
+    let store = Arc::new(BoardStore::open(&dir.join("board.db"), "NB").unwrap());
+    let cluster = offline_cluster(&dir, "node-a");
+    let ctx = agt_make_ctx_ex(
+        &dir,
+        nemesis_board::BoardService::new(store.clone(), NodeRole::Coordinator),
+        Some(cluster),
+        None,
+        None,
+    );
+    let actor = Actor::admin("agt");
+
+    // root（有在途派发）→ child（父子边 + 在途派发）；done2（终态跳过）；
+    // dep（依赖边）
+    let root = store
+        .create_issue(nemesis_board::NewIssue {
+            title: "取消根".into(),
+            ..Default::default()
+        })
+        .unwrap();
+    let child = store
+        .create_issue(nemesis_board::NewIssue {
+            title: "连带子单".into(),
+            parent_issue_id: Some(root.id),
+            ..Default::default()
+        })
+        .unwrap();
+    let done2 = store
+        .create_issue(nemesis_board::NewIssue {
+            title: "已完不连带".into(),
+            parent_issue_id: Some(root.id),
+            ..Default::default()
+        })
+        .unwrap();
+    store
+        .transition_issue(done2.id, IssueStatus::Done, &actor)
+        .unwrap();
+    let dep = store
+        .create_issue(nemesis_board::NewIssue {
+            title: "依赖死链".into(),
+            ..Default::default()
+        })
+        .unwrap();
+    store.set_issue_dependencies(dep.id, &[root.id]).unwrap();
+    // 在途派发：root 与 child 各一
+    store
+        .try_claim_dispatch("agt-task-root", root.id, "node-b", &actor)
+        .unwrap();
+    store
+        .try_claim_dispatch("agt-task-child", child.id, "node-b", &actor)
+        .unwrap();
+
+    let out = dispatch(&ctx, "issue.cancel", serde_json::json!({ "id": root.id }))
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(out["cancelled"], serde_json::json!(true));
+    assert!(
+        out["task_id"].is_string(),
+        "有在途派发的取消披露 task_id: {out}"
+    );
+    // 级联清单：父子边（child）+ 依赖边（dep）；done2 终态不连带
+    let cascaded = out["cascade_cancelled"].as_array().unwrap();
+    assert_eq!(cascaded.len(), 2, "{out}");
+    assert_eq!(
+        store.get_issue(child.id).unwrap().status,
+        IssueStatus::Cancelled
+    );
+    assert_eq!(
+        store.get_issue(dep.id).unwrap().status,
+        IssueStatus::Cancelled
+    );
+    assert_eq!(store.get_issue(done2.id).unwrap().status, IssueStatus::Done);
+    // 在途派发连带取消
+    assert!(store.get_active_dispatch(child.id).unwrap().is_none());
+    assert!(store.get_active_dispatch(root.id).unwrap().is_none());
+    // 级联留痕评论
+    let comments = store.list_comments(child.id).unwrap();
+    assert!(
+        comments.iter().any(|c| c.content.contains("级联取消")),
+        "{comments:?}"
+    );
+    // 重复取消：已 cancelled → 幂等（不走转移，不再级联出新单）
+    let out2 = dispatch(&ctx, "issue.cancel", serde_json::json!({ "id": root.id }))
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(out2["cancelled"], serde_json::json!(true));
+    assert_eq!(
+        out2["cascade_cancelled"].as_array().unwrap().len(),
+        0,
+        "全终态后无新连带"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+// ===========================================================================
+// AGT 覆盖率批次（2026-09-24）附录三：基线下发（BASELINE_PUSHER 通路）。
+// push_dispatch_baseline 五Outcome × 传输四形态；OnceLock 进程级唯一安装，
+// transport 行为由 AtomicU8 现场切换（安装一次，段内变轨）。
+// block_in_place 要求 multi_thread runtime。
+// ===========================================================================
+
+/// 传输 mock：mode 0=dedup（对端已有同档） 1=no handler 错误 2=普通错误
+/// 3=over_limit 状态回复。
+struct AgtPushTransport {
+    mode: Arc<std::sync::atomic::AtomicU8>,
+}
+
+#[async_trait::async_trait]
+impl nemesis_cluster::outbox::TransferTransport for AgtPushTransport {
+    async fn call(
+        &self,
+        _peer: &str,
+        _action: &str,
+        _payload: serde_json::Value,
+        _timeout: std::time::Duration,
+    ) -> Result<serde_json::Value, String> {
+        match self.mode.load(std::sync::atomic::Ordering::SeqCst) {
+            1 => Err("no handler for transfer.begin".to_string()),
+            2 => Err("boom".to_string()),
+            3 => Ok(serde_json::json!({ "status": "over_limit" })),
+            _ => Ok(serde_json::json!({ "status": "dedup" })),
+        }
+    }
+}
+
+#[cfg(feature = "cluster")]
+#[tokio::test(flavor = "multi_thread")]
+async fn agt_push_dispatch_baseline_paths() {
+    let dir = unique_dir("agt-baseline");
+    let store = Arc::new(BoardStore::open(&dir.join("board.db"), "NB").unwrap());
+    let actor = Actor::admin("agt");
+
+    // 未冻结项目 + 带文件的目录（init commit 收进树 → staging 非空）
+    let proj_dir = dir.join("repo");
+    std::fs::create_dir_all(&proj_dir).unwrap();
+    std::fs::write(proj_dir.join("README.md"), "baseline v1\n").unwrap();
+    let proj = store
+        .create_project(
+            "基线项目",
+            "",
+            None,
+            "",
+            "",
+            Some(proj_dir.to_str().unwrap()),
+        )
+        .unwrap();
+    let mk = |title: &str, pid: Option<i64>| nemesis_board::NewIssue {
+        title: title.to_string(),
+        project_id: pid,
+        ..Default::default()
+    };
+    let with_proj = store.create_issue(mk("带项目", Some(proj.id))).unwrap();
+    let no_proj = store.create_issue(mk("无项目", None)).unwrap();
+    let ghost_proj = store.create_issue(mk("幽灵项目", Some(424242))).unwrap();
+
+    // ① pusher 未安装（OnceLock 先装先赢——本测试必须在安装前覆盖此臂）
+    let out = super::push_dispatch_baseline(&store, &with_proj, "agt-baseline-0", "node-b");
+    assert_eq!(out.unwrap(), None, "未安装 pusher = 直通");
+
+    // 安装（mode 0=dedup；护栏 0=不限，AtomicU64 现场切换）
+    let mode = Arc::new(std::sync::atomic::AtomicU8::new(0));
+    let limit = Arc::new(std::sync::atomic::AtomicU64::new(0));
+    let installed = super::install_baseline_pusher(Arc::new(super::BaselinePusher {
+        transport: Arc::new(AgtPushTransport { mode: mode.clone() }),
+        source_node_id: "node-a".to_string(),
+        max_bytes: Box::new({
+            let limit = limit.clone();
+            move || limit.load(std::sync::atomic::Ordering::SeqCst)
+        }),
+    }));
+    assert!(installed, "本测试是进程内唯一安装点");
+
+    // ② 无 project_id → 直通
+    let out = super::push_dispatch_baseline(&store, &no_proj, "agt-baseline-1", "node-b");
+    assert_eq!(out.unwrap(), None);
+
+    // ③ project_id 指向不存在项目 → get_project Err 中止派发
+    let out = super::push_dispatch_baseline(&store, &ghost_proj, "agt-baseline-2", "node-b");
+    assert!(out.is_err(), "幽灵项目必须中止: {out:?}");
+
+    // ④ 项目无 directory → 直通
+    let plain_proj = store
+        .create_project("无目录项目", "", None, "", "", None)
+        .unwrap();
+    let plain_issue = store
+        .create_issue(mk("无目录", Some(plain_proj.id)))
+        .unwrap();
+    let out = super::push_dispatch_baseline(&store, &plain_issue, "agt-baseline-3", "node-b");
+    assert_eq!(out.unwrap(), None);
+
+    // ⑤ dedup → Delivered → 基线落账（40 位 HEAD commit）
+    let out = super::push_dispatch_baseline(&store, &with_proj, "agt-baseline-5", "node-b");
+    let commit = out.unwrap().expect("dedup 应返回基线 commit");
+    assert_eq!(commit.len(), 40, "{commit}");
+
+    // ⑥ 本地护栏（max_bytes=1 < 文件字节）→ 不出网直接 Overlimit
+    limit.store(1, std::sync::atomic::Ordering::SeqCst);
+    let out = super::push_dispatch_baseline(&store, &with_proj, "agt-baseline-6", "node-b");
+    let err = out.unwrap_err();
+    assert!(err.contains("超护栏"), "{err}");
+    limit.store(0, std::sync::atomic::Ordering::SeqCst);
+
+    // ⑦ 对端 over_limit 状态 → 诚实弃派
+    mode.store(3, std::sync::atomic::Ordering::SeqCst);
+    let out = super::push_dispatch_baseline(&store, &with_proj, "agt-baseline-7", "node-b");
+    assert!(out.unwrap_err().contains("超护栏"));
+
+    // ⑧ 传输 Err 含 no handler → 版本升级提示
+    mode.store(1, std::sync::atomic::Ordering::SeqCst);
+    let out = super::push_dispatch_baseline(&store, &with_proj, "agt-baseline-8", "node-b");
+    let err = out.unwrap_err();
+    assert!(
+        err.contains("no handler") && err.contains("版本过旧"),
+        "{err}"
+    );
+
+    // ⑨ 传输普通 Err → 原样透传（无升级提示）
+    mode.store(2, std::sync::atomic::Ordering::SeqCst);
+    let out = super::push_dispatch_baseline(&store, &with_proj, "agt-baseline-9", "node-b");
+    let err = out.unwrap_err();
+    assert!(err.contains("boom") && !err.contains("版本过旧"), "{err}");
+
+    // ⑩ 完整派发管线带基线：dedup 模式恢复 → 基线成功后照走到 RPC client
+    //    缺失（基线不是派发终点，也不吞后续错误）；途中 claim + 状态推进
+    //    已落定。
+    let cluster = offline_cluster(&dir, "node-a");
+    mode.store(0, std::sync::atomic::Ordering::SeqCst);
+    let err =
+        super::dispatch_issue_core(&store, Some(&cluster), with_proj.id, "node-b", &actor, None)
+            .unwrap_err();
+    assert!(err.contains("RPC client"), "{err}");
+    assert!(
+        store.get_active_dispatch(with_proj.id).unwrap().is_some(),
+        "基线成功后 claim 已落定"
+    );
+    assert_eq!(
+        store.get_issue(with_proj.id).unwrap().status,
+        IssueStatus::InProgress
+    );
+
+    // ⑪ 已是 in_progress 的单再派 → 状态推进 else 臂（跳过转移）+ 基线
+    //    重推幂等（dedup 覆盖同 task 行）。
+    let second = store.create_issue(mk("第二条", Some(proj.id))).unwrap();
+    store
+        .transition_issue(second.id, IssueStatus::InProgress, &actor)
+        .unwrap();
+    let err = super::dispatch_issue_core(&store, Some(&cluster), second.id, "node-b", &actor, None)
+        .unwrap_err();
+    assert!(err.contains("RPC client"), "{err}");
+    assert_eq!(
+        store.get_issue(second.id).unwrap().status,
+        IssueStatus::InProgress,
+        "已是 in_progress 不重复转移"
+    );
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+// ===========================================================================
+// W5 覆盖率补批（2026-09-25）：board.rs 末批 miss 收口。
+// 纯函数臂 / 派发正路径（离线 cluster + 注入 RPC client）/ 重平衡搬运环 /
+// sweep 失败计数 / spawned plan 链 / handler 杂项臂。失败注入臂（基线下发
+// Err、claim 竞态、状态转移回滚、estop 全局 engaged 装配）保持不测，与
+// 既有纪律一致。
+// ===========================================================================
+
+/// 给离线 cluster 注入空 RPC client（对端不可达的 connect 失败在 spawn
+/// 体内终结，不影响同步断言；同 sweep_redispatches 先例）。
+#[cfg(feature = "cluster")]
+fn w5_inject_rpc(cluster: &nemesis_cluster::cluster::Cluster) {
+    cluster.set_rpc_client(Arc::new(nemesis_cluster::rpc::client::RpcClient::new()));
+}
+
+/// 让一个 worker 节点上线（生产路径 = merge_real_node_info；tags/caps
+/// 可空，供渲染「—」/空 caps 分支）。
+#[cfg(feature = "cluster")]
+fn w5_online_peer(
+    cluster: &nemesis_cluster::cluster::Cluster,
+    id: &str,
+    tags: &[&str],
+    caps: &[&str],
+) {
+    cluster.merge_real_node_info(&nemesis_cluster::cluster::RealNodeInfo {
+        id: id.to_string(),
+        name: format!("{id}-name"),
+        address: "127.0.0.1:19999".to_string(),
+        rpc_port: 0,
+        addresses: Vec::new(),
+        role: NodeRole::Worker,
+        category: "development".to_string(),
+        capabilities: caps.iter().map(|s| (*s).to_string()).collect(),
+        tags: tags.iter().map(|s| (*s).to_string()).collect(),
+        node_type: "agent".to_string(),
+    });
+}
+
+/// BOARD_ESTOP 槽装配（467-469）：未 engaged 态装配 = 行为中立（纯判定
+/// 函数已钉 released 不冻结）；重复装配被 OnceLock 诚实拒绝。附带钉
+/// build_dispatch_prompt 的非空描述段（225）。
+#[cfg(feature = "cluster")]
+#[test]
+fn w5_estop_slot_install_and_prompt_description_arm() {
+    // 槽可能被先跑的并行测试占掉（OnceLock）——两次装配至多一次 true，
+    // 重复装配必须被诚实拒绝。
+    let first = super::install_board_estop(Arc::new(nemesis_agent::estop::EstopState::new()));
+    let second = super::install_board_estop(Arc::new(nemesis_agent::estop::EstopState::new()));
+    assert!(
+        !(first && second),
+        "OnceLock 装配：第二次必须失败（两者皆未 engaged，行为中立）"
+    );
+
+    // 派发 prompt：非空 description 走「## 描述」正文段（225）。
+    let mut issue = bare_issue(None, &[]);
+    issue.description = "先跑回归再改实现".to_string();
+    let prompt = super::build_dispatch_prompt(
+        &issue,
+        None,
+        Some("评审意见：补边界用例"),
+        Some("经验：先写测试"),
+    );
+    assert!(
+        prompt.contains("## 背景") && prompt.contains("先跑回归再改实现"),
+        "{prompt}"
+    );
+    assert!(
+        prompt.contains("上轮验收意见") && prompt.contains("评审意见：补边界用例"),
+        "{prompt}"
+    );
+    assert!(prompt.contains("经验：先写测试"), "{prompt}");
+}
+
+/// run_planner 重试轮带集群画像（1355-1361）：解析连续失败 3 轮，第 2/3
+/// 轮 prompt 追加 cluster_profile 段——放弃文案与无画像路径一致。
+#[cfg(feature = "cluster")]
+#[tokio::test]
+async fn w5_run_planner_retry_appends_cluster_profile() {
+    let dir = unique_dir("w5-planner-profile");
+    let ctx = make_ctx_with_board(&dir);
+    let store = store_of(&ctx);
+    let parent = store
+        .create_issue(nemesis_board::NewIssue {
+            title: "画像父单".into(),
+            ..Default::default()
+        })
+        .unwrap();
+    let al = Arc::new(AgentLoop::new(
+        Box::new(AgtBadPlannerProvider),
+        AgentConfig::default(),
+    ));
+    let err = super::run_planner(
+        &al,
+        &parent,
+        Vec::new(),
+        Some("- PyWorker [role=worker tags=python]".to_string()),
+    )
+    .await
+    .unwrap_err();
+    assert!(err.contains("连续 3 轮无法解析"), "{err}");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// confirm_plan（1665-1742）：空标题子单（绕过 parse_plan 直构）→ 落库
+/// `?` 诚实失败（1693）；合法子单 + 匹配 peer 在线 → 派发波 Ok(Some)
+/// 计入 dispatched（1718），依赖未满足的子单 deferred、父单 in_progress。
+#[cfg(feature = "cluster")]
+#[tokio::test]
+async fn w5_confirm_plan_empty_title_err_and_dispatch_wave() {
+    let dir = unique_dir("w5-confirm");
+    let ctx = make_ctx_with_board(&dir);
+    let store = store_of(&ctx);
+    let actor = Actor::admin("w5");
+    let parent = store
+        .create_issue(nemesis_board::NewIssue {
+            title: "确认父单".into(),
+            ..Default::default()
+        })
+        .unwrap();
+
+    let bad = nemesis_board::PlannedSubIssue {
+        title: "   ".into(),
+        description: String::new(),
+        required_role: String::new(),
+        required_tags: Vec::new(),
+        acceptance_criteria: String::new(),
+        depends_on: Vec::new(),
+    };
+    let err = super::confirm_plan(&store, None, &parent, vec![bad], &actor).unwrap_err();
+    assert!(err.contains("title must not be empty"), "{err}");
+
+    let cluster = offline_cluster(&dir, "w5-coord");
+    w5_inject_rpc(&cluster);
+    w5_online_peer(&cluster, "node-py", &["python"], &[]);
+    let out = super::confirm_plan(
+        &store,
+        Some(&cluster),
+        &parent,
+        vec![sub("子甲", vec![]), sub("子乙", vec![0])],
+        &actor,
+    )
+    .unwrap();
+    assert_eq!(out["dispatched"], serde_json::json!(1), "{out}");
+    assert_eq!(out["deferred"].as_array().unwrap().len(), 1);
+    assert_eq!(
+        store.get_issue(parent.id).unwrap().status,
+        IssueStatus::InProgress,
+        "首派 → 父单联动 in_progress"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// 闸臂集：在途派发重复派发暂缓（1847-1849）；兄弟有在途 → 父单不转
+/// 受阻（2043-2049）；无子单 sync 幂等（2538-2540）；级联取消根缺失早退
+/// （2736-2739）。
+#[cfg(feature = "cluster")]
+#[tokio::test]
+async fn w5_gates_active_dispatch_stalled_parent_childless_cascade() {
+    let dir = unique_dir("w5-gates");
+    let ctx = make_ctx_with_board(&dir);
+    let store = store_of(&ctx);
+    let actor = Actor::admin("w5");
+    let parent = store
+        .create_issue(nemesis_board::NewIssue {
+            title: "闸父单".into(),
+            ..Default::default()
+        })
+        .unwrap();
+    let a = planner_child(&store, parent.id, "子A", vec![]);
+    let b = planner_child(&store, parent.id, "子B", vec![]);
+
+    // 已有在途派发 → Ok(None)（1847-1849）。
+    store
+        .insert_dispatch("w5-t-a", a.id, "node-x", &actor)
+        .unwrap();
+    assert_eq!(
+        super::dispatch_subissue_auto_with_config(None, &store, None, a.id, &actor, false).unwrap(),
+        None
+    );
+
+    // 兄弟有在途 → all_unstarted=false → 父单保持 backlog（2047-2049）。
+    super::mark_parent_blocked_if_stalled(&store, &b, &actor);
+    assert_eq!(
+        store.get_issue(parent.id).unwrap().status,
+        IssueStatus::Backlog,
+        "链上还有在途单，父单不得转受阻"
+    );
+
+    // 无子单 sync：Ok 幂等（子树空早退）。
+    super::sync_parent_status(&store, b.id, &actor).unwrap();
+
+    // 级联取消：根单不存在 → 空列表早退。
+    assert!(super::cascade_cancel_dependents(&store, None, 999_999, &actor).is_empty());
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// 匹配器臂（2317-2325 / 2480-2481）：词表外角色（qa）转标签语义参与
+/// 匹配——qa 标签节点上线即命中；空 tags 候选的失败明细显示「—」。
+#[cfg(feature = "cluster")]
+#[test]
+fn w5_rank_out_of_vocab_role_and_empty_tags_detail() {
+    let dir = unique_dir("w5-rank");
+    let ctx = make_ctx_with_board(&dir);
+    let store = store_of(&ctx);
+    let cluster = offline_cluster(&dir, "w5-rank-c");
+
+    // 无候选：角色归一照常返回空。
+    assert!(
+        super::rank_dispatch_candidates(&store, &cluster, &bare_issue(Some("qa"), &[])).is_empty()
+    );
+
+    // qa 标签节点上线 → 转标签后命中。
+    w5_inject_rpc(&cluster);
+    w5_online_peer(&cluster, "node-qa", &["qa"], &[]);
+    let ranked = super::rank_dispatch_candidates(&store, &cluster, &bare_issue(Some("qa"), &[]));
+    assert_eq!(ranked, vec!["node-qa".to_string()], "{ranked:?}");
+
+    // 明细：候选无 tags → 段位显示「—」。
+    let detail = super::match_failure_detail(
+        &bare_issue(Some("qa"), &[]),
+        &[cand("node-empty", "worker", &[])],
+    );
+    assert!(detail.contains("—"), "{detail}");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// 自动派发内核（2914-2943）：assignee=Worker 但 assignee_id 缺失 →
+/// false（2918-2920）；正常指派 + peer 在线 + RPC client → 派出返回
+/// true（2921-2927）。
+#[cfg(feature = "cluster")]
+#[tokio::test]
+async fn w5_auto_dispatch_without_id_false_then_ok_true() {
+    let dir = unique_dir("w5-autodisp");
+    let ctx = make_ctx_with_board(&dir);
+    let store = store_of(&ctx);
+    let actor = Actor::admin("w5");
+    let cluster = offline_cluster(&dir, "w5-ad-c");
+    let cfg = nemesis_config::BoardFlagConfig {
+        auto_dispatch: true,
+        ..Default::default()
+    };
+
+    // assignee_id 缺失（store 层拒绝该形态，直构 issue 绕过）。
+    let mut ghost = bare_issue(None, &[]);
+    ghost.assignee = Some(AssignmentType::Worker);
+    assert!(!super::auto_dispatch_with_config(
+        Some(&cfg),
+        &store,
+        Some(&cluster),
+        &ghost,
+        &actor
+    ));
+
+    // 正常：worker 指派 + peer 在线 → 派出。
+    w5_inject_rpc(&cluster);
+    w5_online_peer(&cluster, "node-py", &[], &[]);
+    let issue = store
+        .create_issue(nemesis_board::NewIssue {
+            title: "自动派发单".into(),
+            assignee: Some(AssignmentType::Worker),
+            assignee_id: Some("node-py".into()),
+            ..Default::default()
+        })
+        .unwrap();
+    assert!(super::auto_dispatch_with_config(
+        Some(&cfg),
+        &store,
+        Some(&cluster),
+        &issue,
+        &actor
+    ));
+    assert_eq!(
+        store.get_issue(issue.id).unwrap().status,
+        IssueStatus::InProgress
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// autopilot（2991-2995 / 3053-3060）：target 非空模板预指派 worker；
+/// 触发时集群缺 RPC client → 建单后派发失败诚实 map_err 透出（3058-3059）。
+#[cfg(feature = "cluster")]
+#[tokio::test]
+async fn w5_autopilot_target_assignee_and_fire_dispatch_fail() {
+    let dir = unique_dir("w5-ap-target");
+    let ctx = make_ctx_with_board(&dir);
+    let store = store_of(&ctx);
+    let actor = Actor::admin("w5");
+    let ap = store
+        .create_autopilot(&nemesis_board::NewAutopilot {
+            name: "带目标".to_string(),
+            cron: "0 9 * * *".to_string(),
+            title: "周期任务 {date}".to_string(),
+            description: "w5".to_string(),
+            priority: priority::MEDIUM,
+            project_id: None,
+            target: "node-ghost".to_string(),
+            enabled: true,
+            auto_plan: false,
+            acceptance_criteria: None,
+        })
+        .unwrap();
+
+    let ni = super::autopilot_new_issue(&ap, &actor);
+    assert_eq!(ni.assignee, Some(AssignmentType::Worker));
+    assert_eq!(ni.assignee_id.as_deref(), Some("node-ghost"));
+
+    // 集群在（无 RPC client、无 peer）→ 派发核心失败 → map_err 文案。
+    let cluster = offline_cluster(&dir, "w5-ap-c");
+    let err = super::fire_autopilot(&store, Some(&cluster), &ap, &actor, None).unwrap_err();
+    assert!(err.contains("已创建但派发失败"), "{err}");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// disarm（3324-3336）：job_id 指向幽灵 job → remove_job false WARN 臂；
+/// cron 锁被毒化 → poisoned WARN 臂。摘除是 best-effort，两臂都不 panic。
+#[cfg(feature = "cluster")]
+#[test]
+fn w5_disarm_ghost_job_and_poisoned_lock() {
+    let dir = unique_dir("w5-disarm");
+    let cron = Arc::new(std::sync::Mutex::new(nemesis_cron::CronService::new(
+        &dir.join("cron.db").to_string_lossy(),
+    )));
+    let svc_store = Arc::new(BoardStore::open(&dir.join("board.db"), "NB").unwrap());
+    let ctx = agt_make_ctx_ex(
+        &dir,
+        nemesis_board::BoardService::new(svc_store.clone(), NodeRole::Coordinator),
+        None,
+        None,
+        Some(cron.clone()),
+    );
+    let store = store_of(&ctx);
+
+    // 幽灵 job：登记 id 在 cron 里不存在 → remove_job false。
+    let mut ap = p3_ap(&store, "w5-disarm", false);
+    ap.cron_job_id = Some("ghost-job".to_string());
+    super::disarm_autopilot_job(&ctx, &ap);
+
+    // 毒化：子线程持锁 panic → Mutex 中毒；disarm 走 Err WARN 臂。
+    let poison = cron.clone();
+    let _ = std::thread::spawn(move || {
+        let _g = poison.lock().unwrap();
+        panic!("poison cron lock");
+    })
+    .join();
+    let mut ap2 = p3_ap(&store, "w5-disarm-2", false);
+    ap2.cron_job_id = Some("ghost-job-2".to_string());
+    super::disarm_autopilot_job(&ctx, &ap2);
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// issue.dispatch 正路径（316-322）：显式 target + peer 在线 + RPC
+/// client → Ok(Some) 响应带 task_id、单转 in_progress、指派回填（762-771）；
+/// RPC spawn 体对不可达对端诚实终结（⛔ 派发失败评论 + FAILED）。
+#[cfg(feature = "cluster")]
+#[tokio::test]
+async fn w5_issue_dispatch_success_via_handler() {
+    let dir = unique_dir("w5-dispatch-ok");
+    let cluster = offline_cluster(&dir, "w5-d-c");
+    w5_inject_rpc(&cluster);
+    w5_online_peer(&cluster, "node-py", &[], &[]);
+    let store = Arc::new(BoardStore::open(&dir.join("board.db"), "NB").unwrap());
+    let ctx = agt_make_ctx_ex(
+        &dir,
+        nemesis_board::BoardService::new(store.clone(), NodeRole::Coordinator),
+        Some(cluster),
+        None,
+        None,
+    );
+    let issue = store
+        .create_issue(nemesis_board::NewIssue {
+            title: "派发正路径".into(),
+            ..Default::default()
+        })
+        .unwrap();
+    let out = dispatch(
+        &ctx,
+        "issue.dispatch",
+        serde_json::json!({ "id": issue.id, "target": "node-py" }),
+    )
+    .await
+    .unwrap()
+    .unwrap();
+    assert_eq!(out["dispatched"], serde_json::json!(true), "{out}");
+    assert!(!out["task_id"].as_str().unwrap().is_empty());
+    assert_eq!(
+        store.get_issue(issue.id).unwrap().status,
+        IssueStatus::InProgress
+    );
+    // 派发即指派回填。
+    assert_eq!(
+        store.get_issue(issue.id).unwrap().assignee_id.as_deref(),
+        Some("node-py")
+    );
+
+    // RPC spawn 体：对端不可达 → finish_dispatch FAILED + ⛔ 评论（有界
+    // 轮询等它落定）。
+    let mut saw_fail = false;
+    for _ in 0..60 {
+        if store
+            .list_comments(issue.id)
+            .unwrap()
+            .iter()
+            .any(|c| c.content.contains("⛔ 派发失败"))
+        {
+            saw_fail = true;
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    }
+    assert!(saw_fail, "RPC spawn 体失败终结应落 ⛔ 评论");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// D0b 重平衡（2153-2268）：空队列早退（2175-2176）→ 非超载源跳过
+/// （2196-2198）→ 超载源（在途 2 > cap 1）队首搬给空闲目标：旧排队单
+/// cancel + 重派成功 + ↳ 评论（2191-2266）。
+#[cfg(feature = "cluster")]
+#[tokio::test]
+async fn w5_rebalance_moves_queued_from_overloaded_worker() {
+    let dir = unique_dir("w5-rebalance");
+    let store = Arc::new(BoardStore::open(&dir.join("board.db"), "NB").unwrap());
+    let actor = Actor::admin("w5");
+    let cluster = offline_cluster(&dir, "w5-rb-c");
+    w5_inject_rpc(&cluster);
+    w5_online_peer(&cluster, "node-tgt", &[], &[]);
+    let cfg = nemesis_config::BoardFlagConfig {
+        worker_max_inflight: 1,
+        ..Default::default()
+    };
+
+    // 空队列：无处可挪（2175-2176）。
+    assert_eq!(
+        super::rebalance_queued_to_worker(&store, &cluster, Some(&cfg), "node-tgt", &actor).await,
+        0
+    );
+
+    let mk = |t: &str| {
+        store
+            .create_issue(nemesis_board::NewIssue {
+                title: t.into(),
+                ..Default::default()
+            })
+            .unwrap()
+    };
+    let x = mk("重平衡甲");
+    let y = mk("重平衡乙");
+    store
+        .insert_dispatch("w5-rb-x", x.id, "node-src", &actor)
+        .unwrap();
+
+    // 源在途 1 = cap → 非超载，排队单不动（2196-2198）。
+    assert_eq!(
+        super::rebalance_queued_to_worker(&store, &cluster, Some(&cfg), "node-tgt", &actor).await,
+        0
+    );
+
+    // 源在途 2 > cap → 队首搬给 node-tgt（free=1 只搬一单）。
+    store
+        .insert_dispatch("w5-rb-y", y.id, "node-src", &actor)
+        .unwrap();
+    let moved =
+        super::rebalance_queued_to_worker(&store, &cluster, Some(&cfg), "node-tgt", &actor).await;
+    assert_eq!(moved, 1, "free=1 只搬一单");
+    let comments = store.list_comments(x.id).unwrap();
+    assert!(
+        comments.iter().any(|c| c.content.contains("重平衡")),
+        "{comments:?}"
+    );
+    // 甲已重派在途（新 task 挂 node-tgt），乙排队单保留原状。
+    assert!(store.has_active_dispatch(x.id).unwrap());
+    assert!(store.has_active_dispatch(y.id).unwrap());
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// sweep 失败计数（2134-2140）：匹配 peer 上线但集群缺 RPC client →
+/// 候选派发核心失败 → failed=1（诚实计数，不静默吞）。
+#[cfg(feature = "cluster")]
+#[tokio::test]
+async fn w5_sweep_counts_failed_candidate_dispatch() {
+    let dir = unique_dir("w5-sweep-fail");
+    let ctx = make_ctx_with_board(&dir);
+    let store = store_of(&ctx);
+    let actor = Actor::admin("w5");
+    let cluster = offline_cluster(&dir, "w5-sf-c");
+    let parent = store
+        .create_issue(nemesis_board::NewIssue {
+            title: "sweep 失败父单".into(),
+            ..Default::default()
+        })
+        .unwrap();
+    let a = planner_child(&store, parent.id, "子A", vec!["python".to_string()]);
+
+    // 先停车（无节点）→ 候选集有它。
+    super::dispatch_subissue_auto(&store, Some(&cluster), a.id, &actor, true).unwrap();
+    // 匹配节点上线但**不注入** RPC client → sweep 重试走派发核心 → 失败。
+    w5_online_peer(&cluster, "node-py", &["python"], &[]);
+    let (cands, dispatched, failed) = super::sweep_parked_dispatches(&store, &cluster, &actor);
+    assert_eq!((cands, dispatched), (1, 0));
+    assert_eq!(failed, 1, "缺 RPC client 的派发失败必须入 failed 计数");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// issue.cancel 带在途派发 + RPC client → spawn_task_cancel 走 spawn 下行
+/// 路径（2677-2691）；channel.post 带 reply_to/kind_tag（4185-4196）。
+#[cfg(feature = "cluster")]
+#[tokio::test]
+async fn w5_cancel_active_dispatch_spawns_rpc_and_channel_post_reply_to() {
+    // --- cancel：在途单 + RPC client → task_cancel spawn ---
+    let dir = unique_dir("w5-cancel-rpc");
+    let cluster = offline_cluster(&dir, "w5-cc-c");
+    w5_inject_rpc(&cluster);
+    let store = Arc::new(BoardStore::open(&dir.join("board.db"), "NB").unwrap());
+    let ctx = agt_make_ctx_ex(
+        &dir,
+        nemesis_board::BoardService::new(store.clone(), NodeRole::Coordinator),
+        Some(cluster),
+        None,
+        None,
+    );
+    let actor = Actor::admin("w5");
+    let issue = store
+        .create_issue(nemesis_board::NewIssue {
+            title: "在途取消RPC".into(),
+            ..Default::default()
+        })
+        .unwrap();
+    store
+        .insert_dispatch("w5-task-cc", issue.id, "node-b", &actor)
+        .unwrap();
+    let out = dispatch(&ctx, "issue.cancel", serde_json::json!({ "id": issue.id }))
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(out["cancelled"], serde_json::json!(true), "{out}");
+    assert_eq!(out["task_id"], serde_json::json!("w5-task-cc"));
+    assert_eq!(
+        store.get_issue(issue.id).unwrap().status,
+        IssueStatus::Cancelled
+    );
+    // 放出调度权让 cancel spawn 体出闸（终结结果不 assert——对端不可达）。
+    for _ in 0..20 {
+        tokio::task::yield_now().await;
+    }
+    let _ = std::fs::remove_dir_all(&dir);
+
+    // --- channel.post：reply_to + kind_tag 经桥转发 ---
+    let dir2 = unique_dir("w5-channel-reply");
+    let store2 = Arc::new(BoardStore::open(&dir2.join("board.db"), "NB").unwrap());
+    store2.ensure_default_channels().unwrap();
+    let fake = Arc::new(FakeIngress(std::sync::Mutex::new(Vec::new())));
+    let ctx2 = make_ctx_with_service(
+        &dir2,
+        nemesis_board::BoardService::new(store2.clone(), NodeRole::Coordinator)
+            .with_discussion(fake.clone()),
+    );
+    let cid = ctx2
+        .state
+        .board
+        .as_ref()
+        .unwrap()
+        .store()
+        .list_channels()
+        .unwrap()[0]
+        .id;
+    let out = dispatch(
+        &ctx2,
+        "channel.post",
+        serde_json::json!({
+            "channel_id": cid,
+            "content": "带引用的发言",
+            "reply_to": 7,
+            "kind_tag": "question",
+        }),
+    )
+    .await
+    .unwrap()
+    .unwrap();
+    assert_eq!(out["posted"]["message_id"], serde_json::json!(42));
+    {
+        let calls = fake.0.lock().unwrap();
+        assert_eq!(calls.len(), 1, "{calls:?}");
+        assert_eq!(calls[0].2, cid);
+        assert_eq!(calls[0].3, "带引用的发言");
+    }
+    let _ = std::fs::remove_dir_all(&dir2);
+}
+
+/// handler 杂项臂合集：bulk_archive 非数组 ids / autopilot.create+update
+/// 全字段 / comment.add parent_id / project.progress 单项目 / project.resume
+/// 缺参+dry_run / estop 拒 resume / project.open_dir 缺参 / attachment 读
+/// 失败 / config.get 坏 config.json。
+#[cfg(feature = "cluster")]
+#[tokio::test]
+async fn w5_handler_misc_arms() {
+    let dir = unique_dir("w5-misc");
+    let ctx = make_ctx_with_board(&dir);
+    let store = store_of(&ctx);
+
+    // bulk_archive：ids 非数组 → 解析拒绝（3613-3615）。
+    let err = dispatch(
+        &ctx,
+        "issue.bulk_archive",
+        serde_json::json!({ "ids": "nope" }),
+    )
+    .await
+    .unwrap_err();
+    assert!(err.contains("ids 应为数字数组"), "{err}");
+
+    // autopilot.create 全字段（3639-3658）。
+    let proj = store
+        .create_project(
+            "w5 项目",
+            "desc",
+            None,
+            "",
+            "",
+            Some(&dir.join("bp-w5").to_string_lossy()),
+        )
+        .unwrap();
+    let created = dispatch(
+        &ctx,
+        "autopilot.create",
+        serde_json::json!({
+            "name": "全字段", "cron": "0 9 * * *", "title": "标题 {date}",
+            "description": "描述", "priority": 1, "project_id": proj.id,
+            "target": "", "enabled": true, "auto_plan": true,
+            "acceptance_criteria": "报告含验收项",
+        }),
+    )
+    .await
+    .unwrap()
+    .unwrap();
+    assert_eq!(created["autopilot"]["priority"], serde_json::json!(1));
+    assert_eq!(
+        created["autopilot"]["project_id"],
+        serde_json::json!(proj.id)
+    );
+    assert_eq!(created["autopilot"]["auto_plan"], serde_json::json!(true));
+    assert_eq!(
+        created["autopilot"]["acceptance_criteria"],
+        serde_json::json!("报告含验收项")
+    );
+    let ap_id = created["autopilot"]["id"].as_i64().unwrap();
+
+    // autopilot.update 全字段（3684-3691）。
+    let updated = dispatch(
+        &ctx,
+        "autopilot.update",
+        serde_json::json!({
+            "id": ap_id, "priority": 2, "target": "node-ghost",
+            "auto_plan": false, "acceptance_criteria": "",
+        }),
+    )
+    .await
+    .unwrap()
+    .unwrap();
+    assert_eq!(updated["autopilot"]["priority"], serde_json::json!(2));
+    assert_eq!(updated["autopilot"]["auto_plan"], serde_json::json!(false));
+    assert_eq!(
+        updated["autopilot"]["target"],
+        serde_json::json!("node-ghost")
+    );
+
+    // comment.add 带 parent_id（3787）。
+    let issue = store
+        .create_issue(nemesis_board::NewIssue {
+            title: "评论父单".into(),
+            ..Default::default()
+        })
+        .unwrap();
+    let root = dispatch(
+        &ctx,
+        "comment.add",
+        serde_json::json!({ "issue_id": issue.id, "content": "根评论" }),
+    )
+    .await
+    .unwrap()
+    .unwrap();
+    let root_id = root["comment"]["id"].as_i64().unwrap();
+    let reply = dispatch(
+        &ctx,
+        "comment.add",
+        serde_json::json!({ "issue_id": issue.id, "content": "子评论", "parent_id": root_id }),
+    )
+    .await
+    .unwrap()
+    .unwrap();
+    assert_eq!(reply["comment"]["parent_id"], serde_json::json!(root_id));
+
+    // project.progress 带 project_id → 单项目聚合（3852-3857）。
+    let prog = dispatch(
+        &ctx,
+        "project.progress",
+        serde_json::json!({ "project_id": proj.id }),
+    )
+    .await
+    .unwrap()
+    .unwrap();
+    assert!(prog.is_object(), "{prog}");
+
+    // project.resume：缺 project_id（3864-3868）；dry_run 解析臂（3869-3872）
+    // → 无集群拒绝。
+    let err = dispatch(&ctx, "project.resume", serde_json::json!({}))
+        .await
+        .unwrap_err();
+    assert!(err.contains("missing field: project_id"), "{err}");
+    let err = dispatch(
+        &ctx,
+        "project.resume",
+        serde_json::json!({ "project_id": proj.id, "dry_run": true }),
+    )
+    .await
+    .unwrap_err();
+    assert!(err.contains("集群未运行"), "{err}");
+
+    // estop 生效 → resume 护栏拒绝（3874-3881）。
+    let estop = Arc::new(nemesis_agent::estop::EstopState::new());
+    estop.trigger();
+    let mut estopped = (*ctx.state).clone();
+    estopped.estop = Some(estop);
+    let ctx_e = RequestContext {
+        session_id: ctx.session_id.clone(),
+        chat_id: ctx.chat_id.clone(),
+        workspace: ctx.workspace.clone(),
+        home: ctx.home.clone(),
+        state: Arc::new(estopped),
+        auth_method: ctx.auth_method,
+    };
+    let err = dispatch(
+        &ctx_e,
+        "project.resume",
+        serde_json::json!({ "project_id": proj.id }),
+    )
+    .await
+    .unwrap_err();
+    assert!(err.contains("急停（E-STOP）"), "{err}");
+
+    // project.open_dir：缺 project_id（4026-4029）。
+    let err = dispatch(&ctx, "project.open_dir", serde_json::json!({}))
+        .await
+        .unwrap_err();
+    assert!(err.contains("missing field: project_id"), "{err}");
+
+    // attachment：add 后删文件 → get 读文件失败（4090-4093）。
+    let added = dispatch(
+        &ctx,
+        "attachment.add",
+        serde_json::json!({ "issue_id": issue.id, "filename": "note.txt", "content": "aGVsbG8=" }),
+    )
+    .await
+    .unwrap()
+    .unwrap();
+    let att_id = added["attachment"]["id"].as_i64().unwrap();
+    std::fs::remove_dir_all(dir.join("board").join("files")).unwrap();
+    let err = dispatch(&ctx, "attachment.get", serde_json::json!({ "id": att_id }))
+        .await
+        .unwrap_err();
+    assert!(err.contains("读取附件文件失败"), "{err}");
+
+    // config.get：home 下坏 config.json → 读取失败透传（4260-4263）。
+    std::fs::write(dir.join("config.json"), "{invalid").unwrap();
+    let err = dispatch(&ctx, "config.get", serde_json::json!({}))
+        .await
+        .unwrap_err();
+    assert!(err.contains("config.json 读取失败"), "{err}");
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// execute_plan_chain 集群画像注入（1414-1434）：有在线节点 → planner
+/// prompt 带节点画像（tags「—」/空 caps 与非空两态都渲染）→ planned +
+/// planner done 收尾（1461-1465）。
+#[cfg(feature = "cluster")]
+#[tokio::test]
+async fn w5_plan_chain_renders_cluster_profile() {
+    let dir = unique_dir("w5-chain-profile");
+    let ctx = make_ctx_with_board(&dir);
+    let store = store_of(&ctx);
+    let actor = Actor::admin("w5");
+    let hub = EventHub::new();
+    let cluster = offline_cluster(&dir, "w5-cp-c");
+    w5_inject_rpc(&cluster);
+    w5_online_peer(&cluster, "node-py", &["python"], &["cpu"]);
+    w5_online_peer(&cluster, "node-bare", &[], &[]);
+    let parent = store
+        .create_issue(nemesis_board::NewIssue {
+            title: "画像链父单".into(),
+            ..Default::default()
+        })
+        .unwrap();
+    let al = Arc::new(AgentLoop::new(
+        Box::new(AgtGoodPlannerProvider),
+        AgentConfig::default(),
+    ));
+    let out = super::execute_plan_chain(
+        &store,
+        Some(cluster),
+        al,
+        parent.clone(),
+        actor,
+        "w5-chain-cp",
+        None,
+        Some(&hub),
+    )
+    .await
+    .unwrap();
+    assert_eq!(out["status"], serde_json::json!("planned"), "{out}");
+    assert_eq!(out["subs"], serde_json::json!(2));
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// 一段拆解 spawn 链失败（1622-1637）：BadProvider → 后台链三连败 →
+/// board.plan_failed 事件 + 链内收尾 warn（1636）。事件订阅做确定性观察。
+#[cfg(feature = "cluster")]
+#[tokio::test]
+async fn w5_spawned_plan_chain_failure_publishes_event() {
+    let dir = unique_dir("w5-plan1-fail");
+    let store = Arc::new(BoardStore::open(&dir.join("board.db"), "NB").unwrap());
+    let al = Arc::new(AgentLoop::new(
+        Box::new(AgtBadPlannerProvider),
+        AgentConfig::default(),
+    ));
+    let ctx = agt_make_ctx_ex(
+        &dir,
+        nemesis_board::BoardService::new(store.clone(), NodeRole::Coordinator),
+        None,
+        Some(al),
+        None,
+    );
+    let issue = store
+        .create_issue(nemesis_board::NewIssue {
+            title: "失败链单".into(),
+            ..Default::default()
+        })
+        .unwrap();
+    let mut rx = ctx.state.event_hub.subscribe();
+    let out = dispatch(&ctx, "issue.plan", serde_json::json!({ "id": issue.id }))
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(out["status"], serde_json::json!("planning"));
+    let mut got = false;
+    for _ in 0..100 {
+        match tokio::time::timeout(std::time::Duration::from_millis(100), rx.recv()).await {
+            Ok(Ok(ev)) if ev.event_type == "board.plan_failed" => {
+                got = true;
+                break;
+            }
+            Ok(Ok(_)) => continue,
+            _ => continue,
+        }
+    }
+    assert!(got, "后台链失败必须发布 board.plan_failed");
+    // 收尾 warn 在事件发布之后落——再放几拍调度权（无断言）。
+    for _ in 0..20 {
+        tokio::task::yield_now().await;
+    }
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// 项目自动开工（3084-3148）：agent 在 → 建父单 + spawn 链跑完（预览按
+/// issue 入缓存，3123-3147）；空项目名 → create_issue `?` 诚实失败
+///（3093-3104）。
+#[cfg(feature = "cluster")]
+#[tokio::test]
+async fn w5_project_auto_start_with_agent_and_empty_name() {
+    let dir = unique_dir("w5-autostart");
+    let store = Arc::new(BoardStore::open(&dir.join("board.db"), "NB").unwrap());
+    let al = Arc::new(AgentLoop::new(
+        Box::new(AgtGoodPlannerProvider),
+        AgentConfig::default(),
+    ));
+    let ctx = agt_make_ctx_ex(
+        &dir,
+        nemesis_board::BoardService::new(store.clone(), NodeRole::Coordinator),
+        None,
+        Some(al),
+        None,
+    );
+    let actor = Actor::admin("w5");
+    let proj = store
+        .create_project(
+            "w5 开工项目",
+            "desc",
+            None,
+            "",
+            "",
+            Some(&dir.join("bp-w5-start").to_string_lossy()),
+        )
+        .unwrap();
+
+    // 空名 → create_issue 失败透传。
+    let err =
+        super::spawn_project_auto_start(&store, &ctx, &actor, "", "d", None, proj.id).unwrap_err();
+    assert!(err.contains("title must not be empty"), "{err}");
+
+    // 正常：父单建出 + 后台链写预览（按 issue_id 定位，不受并行测试的
+    // 全局 PLAN_CACHE 污染）。
+    let issue = super::spawn_project_auto_start(
+        &store,
+        &ctx,
+        &actor,
+        "w5 开工项目",
+        "desc",
+        Some("有回归".to_string()),
+        proj.id,
+    )
+    .unwrap();
+    assert_eq!(issue.project_id, Some(proj.id));
+    let mut chained = false;
+    for _ in 0..100 {
+        if super::PLAN_CACHE
+            .lock()
+            .values()
+            .any(|p| p.issue_id == issue.id)
+        {
+            chained = true;
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    }
+    assert!(chained, "后台链应把预览写进缓存 issue={}", issue.id);
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// D2 auto_plan 有 moderator 槽（3184-3214）：同步段装配 spawn 返回
+/// planning + plan_id；后台链 GoodPlanner → 预览按 plan_id 入缓存。
+#[cfg(feature = "cluster")]
+#[tokio::test]
+async fn w5_fire_autopilot_plan_chain_filled_slot() {
+    let dir = unique_dir("w5-ap-slot");
+    let ctx = make_ctx_with_board(&dir);
+    let store = store_of(&ctx);
+    let actor = Actor::admin("w5");
+    let ap = p3_ap(&store, "w5-slot", true);
+    let slot = Arc::new(std::sync::OnceLock::new());
+    assert!(
+        slot.set(Arc::new(AgentLoop::new(
+            Box::new(AgtGoodPlannerProvider),
+            AgentConfig::default(),
+        )))
+        .is_ok(),
+        "槽应空，装配一次即成功"
+    );
+    let ap_ctx = super::AutoPlanContext {
+        moderator_slot: slot,
+        home: dir.clone(),
+        hub: Some(Arc::new(EventHub::new())),
+        cluster: None,
+    };
+    let out = super::fire_autopilot(&store, None, &ap, &actor, Some(&ap_ctx)).unwrap();
+    assert_eq!(out["ran"], serde_json::json!(true), "{out}");
+    assert_eq!(
+        out["auto_plan"]["status"],
+        serde_json::json!("planning"),
+        "{out}"
+    );
+    let plan_id = out["auto_plan"]["plan_id"].as_str().unwrap().to_string();
+    let mut chained = false;
+    for _ in 0..100 {
+        if super::PLAN_CACHE.lock().contains_key(&plan_id) {
+            chained = true;
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    }
+    assert!(chained, "后台链应把预览写进缓存 plan_id={plan_id}");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// 任务资产段（328-341）：签发上下文未注入 → None 早退；注入后（无资产）
+/// 渲染入口执行并诚实降级 Ok(None)——335-340 全臂执行。
+#[cfg(feature = "cluster")]
+#[test]
+fn w5_render_assets_section_with_signing_context() {
+    let dir = unique_dir("w5-assets");
+    let ctx = make_ctx_with_board(&dir);
+    let store = store_of(&ctx);
+    let issue = store
+        .create_issue(nemesis_board::NewIssue {
+            title: "资产单".into(),
+            ..Default::default()
+        })
+        .unwrap();
+    assert_eq!(
+        super::render_dispatch_assets_section(&store, issue.id).unwrap(),
+        None,
+        "未注入 → None 早退"
+    );
+    store.set_asset_signing(nemesis_board::asset_token::AssetSignContext {
+        secret: vec![1, 2, 3],
+        node_url: Default::default(),
+        node_id: "w5-node".to_string(),
+    });
+    assert_eq!(
+        super::render_dispatch_assets_section(&store, issue.id).unwrap(),
+        None,
+        "注入后无资产 → Ok(None)"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
 }

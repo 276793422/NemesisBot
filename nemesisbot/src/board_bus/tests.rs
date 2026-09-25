@@ -732,3 +732,1469 @@ fn test_task_started_marks_dispatch_running() {
     let (ok3, _, _) = parse_reply(handle_nb_bus(&deps, payload3));
     assert!(!ok3, "来源与派发 worker 不匹配应被拒");
 }
+
+// ===========================================================================
+// Coverage 追加（2026-09-24）：master handler 入口/校验臂、delivery.files
+// 全链（校验矩阵 + 落盘 + INTERNAL 臂）、额度拒绝映射、wake 计划投影与
+// 投递臂、主持人裁决（脚本化 LLM 直调 process_direct）、wake 信封组装、
+// worker 路由臂、持久化失败、sync 前置臂。
+// 主持人裁决测试触达真实 AgentLoop::process_direct → chat_log 单例按
+// home env 解析（进程全局态）→ 持 GLOBAL_STATE_LOCK + EnvHomeGuard 隔离
+// （#[cfg(windows)]，同 commands/session::tests 先例）。
+// ===========================================================================
+
+use nemesis_cluster::rpc::client::RpcClient;
+use nemesis_cluster::types::{ExtendedNodeInfo, NodeStatus};
+use nemesis_types::cluster::{NodeInfo, NodeRole};
+
+/// 注册一个内存节点到集群注册表（wake 计划投影 / sync 目标的数据源）。
+/// 地址固定 127.0.0.1:1（保留端口，连接必被拒——投递失败臂不依赖网络）。
+fn register_node(cluster: &Cluster, id: &str, role: NodeRole, category: &str, online: bool) {
+    cluster.register_node(ExtendedNodeInfo {
+        base: NodeInfo {
+            id: id.to_string(),
+            name: id.to_string(),
+            role,
+            address: "127.0.0.1:1".to_string(),
+            category: category.to_string(),
+            last_seen: String::new(),
+        },
+        status: if online {
+            NodeStatus::Online
+        } else {
+            NodeStatus::Offline
+        },
+        capabilities: vec![],
+        tags: vec![],
+        addresses: vec![],
+        node_type: "agent".to_string(),
+    });
+}
+
+/// 自定 sender 的 comment.post 上行（post_payload 固定 node-b，投影测试
+/// 需要 sender ≠ assignee）。
+fn comment_payload(
+    client_msg_id: &str,
+    sender: &str,
+    thread_kind: &str,
+    thread_id: i64,
+    content: &str,
+) -> serde_json::Value {
+    serde_json::json!({
+        "v": 1, "ns": "board", "op": "comment.post", "corr_id": "c-x",
+        "body": {
+            "client_msg_id": client_msg_id,
+            "thread": {"kind": thread_kind, "id": thread_id},
+            "sender": {"type": "agent", "id": sender},
+            "content": content,
+            "reply_to": null,
+            "kind_tag": "text",
+        }
+    })
+}
+
+/// delivery.files 上行（task_id None → body 缺字段臂）。
+fn delivery_payload(
+    task_id: Option<&str>,
+    from: &str,
+    files: serde_json::Value,
+) -> serde_json::Value {
+    serde_json::json!({
+        "v": 1, "ns": "task", "op": "delivery.files", "corr_id": "d-1",
+        "_rpc": {"from": from},
+        "body": {"task_id": task_id, "files": files}
+    })
+}
+
+/// 手搓 MasterBusDeps（make_deps 的 workspace 固定共享目录；落盘测试要
+/// 独立 workspace）。
+fn deps_with_workspace(
+    store: Arc<nemesis_board::BoardStore>,
+    workspace: std::path::PathBuf,
+    q: Arc<QuotaLedger>,
+) -> MasterBusDeps {
+    let cluster = Cluster::new(ClusterConfig {
+        node_id: "node-master".to_string(),
+        bind_address: "127.0.0.1:0".to_string(),
+        peers: vec![],
+        node_name: String::new(),
+    });
+    MasterBusDeps {
+        store,
+        workspace,
+        quota: q,
+        cluster: Arc::new(cluster),
+        moderator_loop: Arc::new(OnceLock::new()),
+    }
+}
+
+/// 脚本化主持人 LLM：按序弹出回复，耗尽后回落 `fallback`（形态同
+/// board_review::tests::ScriptedLlm）。
+struct ScriptedModeratorLlm {
+    script: std::sync::Mutex<std::collections::VecDeque<String>>,
+    fallback: String,
+}
+
+#[async_trait::async_trait]
+impl nemesis_agent::r#loop::LlmProvider for ScriptedModeratorLlm {
+    async fn chat(
+        &self,
+        _model: &str,
+        _messages: Vec<nemesis_agent::r#loop::LlmMessage>,
+        _options: Option<nemesis_agent::types::ChatOptions>,
+        _tools: Vec<nemesis_agent::types::ToolDefinition>,
+    ) -> Result<nemesis_agent::r#loop::LlmResponse, String> {
+        let raw = self
+            .script
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .pop_front()
+            .unwrap_or_else(|| self.fallback.clone());
+        Ok(nemesis_agent::r#loop::LlmResponse {
+            content: raw,
+            tool_calls: Vec::new(),
+            finished: true,
+            reasoning_content: None,
+            usage: None,
+            raw_request_body: None,
+            raw_response_body: None,
+        })
+    }
+}
+
+/// 把脚本化 provider 装进主持人后置装配桥。
+#[cfg(windows)] // Windows-form helper (Linux nightly: excluded, 2026-09-02 sweep)
+fn attach_scripted_moderator(deps: &MasterBusDeps, replies: &[&str], fallback: &str) {
+    let llm = ScriptedModeratorLlm {
+        script: std::sync::Mutex::new(replies.iter().map(|s| s.to_string()).collect()),
+        fallback: fallback.to_string(),
+    };
+    let _ = deps
+        .moderator_loop
+        .set(Arc::new(nemesis_agent::r#loop::AgentLoop::new(
+            Box::new(llm),
+            nemesis_agent::types::AgentConfig::default(),
+        )));
+}
+
+/// 主持人裁决测试的隔离前置（在每个 windows-gated async 测试体内联展开）：
+/// `let _lock = crate::GLOBAL_STATE_LOCK.lock().unwrap_or_else(|e| e.into_inner());` + TempDir home +
+/// `crate::tests::EnvHomeGuard::point_at(&home)`——三个守卫绑定到测试函数
+/// 作用域，跨 await 存活（spawn 的裁决任务在锁内被 current_thread 轮询，
+/// board_review::tests 同款纪律）。
+
+#[test]
+fn sweep_master_handler_entry_and_task_started_validation_arms() {
+    let (store, dir) = temp_store("handler-entry");
+    let _ = tracing_subscriber::fmt::try_init();
+
+    // 入口转发（Box::new 闭包）+ ns=task 未知 op。
+    let handler = build_master_nb_bus_handler(make_deps(store.clone(), quota(8)));
+    let (ok, code, _) = parse_reply(handler(
+        serde_json::json!({"v": 1, "ns": "task", "op": "nope"}),
+    ));
+    assert!(!ok);
+    assert_eq!(
+        code.as_deref(),
+        Some(nemesis_cluster::envelope::error_code::UNKNOWN_OP)
+    );
+
+    // ns=bogus → UNKNOWN_NS（task 分支之外）。
+    let deps = make_deps(store.clone(), quota(8));
+    let (ok, code, _) = parse_reply(handle_nb_bus(
+        &deps,
+        serde_json::json!({"v": 1, "ns": "bogus", "op": "x"}),
+    ));
+    assert!(!ok);
+    assert_eq!(
+        code.as_deref(),
+        Some(nemesis_cluster::envelope::error_code::UNKNOWN_NS)
+    );
+
+    // task.started 缺 task_id → VALIDATION。
+    let (ok, code, _) = parse_reply(handle_nb_bus(
+        &deps,
+        serde_json::json!({"v": 1, "ns": "task", "op": "started", "_rpc": {"from": "node-b"}, "body": {}}),
+    ));
+    assert!(!ok);
+    assert_eq!(
+        code.as_deref(),
+        Some(nemesis_cluster::envelope::error_code::VALIDATION)
+    );
+
+    // 有 task_id 缺 _rpc.from → VALIDATION（伪造不了的发送者身份）。
+    let (ok, code, _) = parse_reply(handle_nb_bus(
+        &deps,
+        serde_json::json!({"v": 1, "ns": "task", "op": "started", "body": {"task_id": "tk-9"}}),
+    ));
+    assert!(!ok);
+    assert_eq!(
+        code.as_deref(),
+        Some(nemesis_cluster::envelope::error_code::VALIDATION)
+    );
+
+    // happy（tracing subscriber 已装 → debug! 格式参数行真实执行）。
+    let actor = Actor::admin("test");
+    let issue = store
+        .create_issue(nemesis_board::NewIssue {
+            title: "t".into(),
+            ..Default::default()
+        })
+        .unwrap();
+    store
+        .insert_dispatch("tk-h", issue.id, "node-b", &actor)
+        .unwrap();
+    let (ok, _, body) = parse_reply(handle_nb_bus(
+        &deps,
+        serde_json::json!({"v": 1, "ns": "task", "op": "started", "_rpc": {"from": "node-b"}, "body": {"task_id": "tk-h"}}),
+    ));
+    assert!(ok, "在途派发 + 来源匹配应成功");
+    assert_eq!(
+        body.pointer("/body/running"),
+        Some(&serde_json::json!(true))
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn sweep_delivery_files_validation_matrix_and_happy_path() {
+    use base64::Engine as _;
+    let (store, dir) = temp_store("delivery");
+    let ws = std::env::temp_dir().join(format!("nemesis-board-dl-ws-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&ws);
+    let deps = deps_with_workspace(store.clone(), ws.clone(), quota(8));
+
+    let issue = store
+        .create_issue(nemesis_board::NewIssue {
+            title: "交付".into(),
+            ..Default::default()
+        })
+        .unwrap();
+    store
+        .insert_dispatch("df-1", issue.id, "node-b", &Actor::admin("test"))
+        .unwrap();
+
+    // 缺 task_id → VALIDATION。
+    let (ok, code, _) = parse_reply(handle_nb_bus(
+        &deps,
+        delivery_payload(None, "node-b", serde_json::json!([])),
+    ));
+    assert!(!ok);
+    assert_eq!(
+        code.as_deref(),
+        Some(nemesis_cluster::envelope::error_code::VALIDATION)
+    );
+
+    // 来源 worker 不匹配 / 无在途派发 → 同一 VALIDATION 臂。
+    for (from, task) in [("node-evil", "df-1"), ("node-b", "df-ghost")] {
+        let (ok, code, _) = parse_reply(handle_nb_bus(
+            &deps,
+            delivery_payload(
+                Some(task),
+                from,
+                serde_json::json!([{"name": "a.txt", "content_b64": "aGk="}]),
+            ),
+        ));
+        assert!(!ok, "{from}/{task} 应被拒");
+        assert_eq!(
+            code.as_deref(),
+            Some(nemesis_cluster::envelope::error_code::VALIDATION)
+        );
+    }
+
+    // files 空 / 超上限（21 个）。
+    let (ok, _, _) = parse_reply(handle_nb_bus(
+        &deps,
+        delivery_payload(Some("df-1"), "node-b", serde_json::json!([])),
+    ));
+    assert!(!ok);
+    let many: Vec<_> = (0..21)
+        .map(|i| serde_json::json!({"name": format!("f{i}.txt"), "content_b64": "aGk="}))
+        .collect();
+    let (ok, _, _) = parse_reply(handle_nb_bus(
+        &deps,
+        delivery_payload(Some("df-1"), "node-b", serde_json::json!(many)),
+    ));
+    assert!(!ok, "21 个文件应超上限");
+
+    // base64 解码失败。
+    let (ok, _, _) = parse_reply(handle_nb_bus(
+        &deps,
+        delivery_payload(
+            Some("df-1"),
+            "node-b",
+            serde_json::json!([{"name": "a.txt", "content_b64": "!!!不是b64"}]),
+        ),
+    ));
+    assert!(!ok);
+
+    // 单文件超 8MB。
+    let big = base64::engine::general_purpose::STANDARD.encode(vec![0u8; 8 * 1024 * 1024 + 1]);
+    let (ok, _, _) = parse_reply(handle_nb_bus(
+        &deps,
+        delivery_payload(
+            Some("df-1"),
+            "node-b",
+            serde_json::json!([{"name": "big.bin", "content_b64": big}]),
+        ),
+    ));
+    assert!(!ok);
+
+    // 非法文件名（basename 以点开头 / 空名）。
+    for name in [".env", "dir/", "dir\\"] {
+        let (ok, _, _) = parse_reply(handle_nb_bus(
+            &deps,
+            delivery_payload(
+                Some("df-1"),
+                "node-b",
+                serde_json::json!([{"name": name, "content_b64": "aGk="}]),
+            ),
+        ));
+        assert!(!ok, "非法文件名 {name:?} 应被拒");
+    }
+
+    // happy：两个文件（含子路径 → basename），落盘 + 登记 + 系统评论留痕。
+    let before = store.list_comments(issue.id).unwrap().len();
+    let (ok, _, v) = parse_reply(handle_nb_bus(
+        &deps,
+        delivery_payload(
+            Some("df-1"),
+            "node-b",
+            serde_json::json!([
+                {"name": "report.txt", "content_b64": base64::engine::general_purpose::STANDARD.encode(b"hello report")},
+                {"name": "sub/data.json", "content_b64": base64::engine::general_purpose::STANDARD.encode(b"{}")},
+            ]),
+        ),
+    ));
+    assert!(ok, "合法交付应成功");
+    assert_eq!(v.pointer("/body/stored"), Some(&serde_json::json!(2)));
+    let files_dir = ws
+        .join("board")
+        .join("files")
+        .join(format!("issue_{}", issue.id));
+    let written: Vec<_> = std::fs::read_dir(&files_dir).unwrap().collect();
+    assert_eq!(written.len(), 2, "应落盘两个文件");
+    let comments = store.list_comments(issue.id).unwrap();
+    assert_eq!(comments.len(), before + 1, "应追加一条系统评论");
+    assert!(
+        comments
+            .last()
+            .unwrap()
+            .content
+            .contains("交付回传 2 个文件")
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+    let _ = std::fs::remove_dir_all(&ws);
+}
+
+#[test]
+fn sweep_delivery_files_internal_dir_create_failure() {
+    use base64::Engine as _;
+    let (store, dir) = temp_store("delivery-internal");
+    // workspace 指向一个普通文件 → create_dir_all 必败 → INTERNAL 落盘失败。
+    let ws_file =
+        std::env::temp_dir().join(format!("nemesis-board-wsfile-{}.txt", std::process::id()));
+    std::fs::write(&ws_file, "not a dir").unwrap();
+    let deps = deps_with_workspace(store.clone(), ws_file.clone(), quota(8));
+
+    let issue = store
+        .create_issue(nemesis_board::NewIssue {
+            title: "t".into(),
+            ..Default::default()
+        })
+        .unwrap();
+    store
+        .insert_dispatch("df-2", issue.id, "node-b", &Actor::admin("test"))
+        .unwrap();
+    let (ok, code, _) = parse_reply(handle_nb_bus(
+        &deps,
+        delivery_payload(
+            Some("df-2"),
+            "node-b",
+            serde_json::json!([{"name": "a.txt", "content_b64": base64::engine::general_purpose::STANDARD.encode(b"x")}]),
+        ),
+    ));
+    assert!(!ok);
+    assert_eq!(
+        code.as_deref(),
+        Some(nemesis_cluster::envelope::error_code::INTERNAL)
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+    let _ = std::fs::remove_file(&ws_file);
+}
+
+#[tokio::test]
+async fn sweep_comment_post_missing_thread_id_and_rate_limit_denied() {
+    let _ = tracing_subscriber::fmt::try_init();
+    let (store, dir) = temp_store("rate-limit");
+    let rate = Arc::new(QuotaLedger::new(QuotaConfig {
+        max_agent_turns_per_thread: 8,
+        hourly_budget_per_node: 0,
+        rate_limit_per_min: 1,
+    }));
+    let deps = make_deps(store.clone(), rate);
+    let channel_id = store.list_channels().unwrap()[0].id;
+
+    // thread.kind 有、thread.id 缺 → missing thread.id。
+    let (ok, code, _) = parse_reply(handle_nb_bus(
+        &deps,
+        serde_json::json!({"v": 1, "ns": "board", "op": "comment.post", "corr_id": "q-0",
+            "body": {"client_msg_id": "q0", "thread": {"kind": "channel"},
+                "sender": {"type": "agent", "id": "node-b"}, "content": "x"}}),
+    ));
+    assert!(!ok);
+    assert_eq!(
+        code.as_deref(),
+        Some(nemesis_cluster::envelope::error_code::VALIDATION)
+    );
+
+    // 第一条过闸；1/min 限速下第二条拒绝（rate_limited）。
+    let (ok1, _, _) = parse_reply(handle_nb_bus(
+        &deps,
+        post_payload("q1", "channel", channel_id, "第一条"),
+    ));
+    assert!(ok1, "第一条应过闸");
+    let (ok2, code2, _) = parse_reply(handle_nb_bus(
+        &deps,
+        post_payload("q2", "channel", channel_id, "第二条"),
+    ));
+    assert!(!ok2, "限速第二条应被拒");
+    assert_eq!(
+        code2.as_deref(),
+        Some(nemesis_cluster::envelope::error_code::RATE_LIMITED)
+    );
+    // 拒绝不落库。
+    assert_eq!(
+        store
+            .list_channel_messages(channel_id, 0, i64::MAX)
+            .unwrap()
+            .len(),
+        1
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[tokio::test]
+async fn sweep_issue_assignee_wake_projection_and_no_rpc_skip() {
+    let (store, dir) = temp_store("wake-proj");
+    let deps = make_deps(store.clone(), quota(8));
+    register_node(&deps.cluster, "node-b", NodeRole::Worker, "qa", true);
+    register_node(&deps.cluster, "node-c", NodeRole::Worker, "qa", false);
+
+    let issue = store
+        .create_issue(nemesis_board::NewIssue {
+            title: "指派".into(),
+            ..Default::default()
+        })
+        .unwrap();
+    store
+        .assign_issue(
+            issue.id,
+            Some(nemesis_board::AssignmentType::Worker),
+            Some("node-b".to_string()),
+            &Actor::agent("node-master"),
+        )
+        .unwrap();
+
+    // 无 @ + issue 指派 → 定点 assignee（在线者），不推主持人。
+    let (ok, _, v) = parse_reply(handle_nb_bus(
+        &deps,
+        comment_payload("w1", "node-x", "issue", issue.id, "进度如何？"),
+    ));
+    assert!(ok);
+    assert_eq!(
+        v.pointer("/body/wake/woke"),
+        Some(&serde_json::json!(["node-b"]))
+    );
+    assert_eq!(
+        v.pointer("/body/wake/to_moderator"),
+        Some(&serde_json::json!(false))
+    );
+
+    // 投递任务跑在 rpc client 缺席臂（warn + return，无副作用）。
+    tokio::time::sleep(std::time::Duration::from_millis(150)).await;
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[tokio::test]
+async fn sweep_thread_quota_exhausted_suppresses_delivery() {
+    let (store, dir) = temp_store("quota-exhaust");
+    // 线程额度 1：首帖过闸用掉唯一一档 → 投递任务撞 turns_left==0 提前返回。
+    let deps = make_deps(store.clone(), quota(1));
+    let channel_id = store.list_channels().unwrap()[0].id;
+    let (ok, _, v) = parse_reply(handle_nb_bus(
+        &deps,
+        post_payload("e1", "channel", channel_id, "占用额度"),
+    ));
+    assert!(ok, "首帖应过闸");
+    assert_eq!(
+        v.pointer("/body/wake/to_moderator"),
+        Some(&serde_json::json!(true))
+    );
+    tokio::time::sleep(std::time::Duration::from_millis(150)).await;
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[tokio::test]
+async fn sweep_wake_delivery_rpc_failure_is_warn_not_fatal() {
+    let (store, dir) = temp_store("wake-rpc");
+    let deps = make_deps(store.clone(), quota(8));
+    deps.cluster.set_rpc_client(Arc::new(RpcClient::new()));
+    register_node(&deps.cluster, "node-b", NodeRole::Worker, "qa", true);
+
+    // 600 字描述 → wake 信封 prd_summary 截断臂。
+    let long_desc = "长".repeat(600);
+    let issue = store
+        .create_issue(nemesis_board::NewIssue {
+            title: "RPC失败".into(),
+            description: long_desc,
+            ..Default::default()
+        })
+        .unwrap();
+    store
+        .assign_issue(
+            issue.id,
+            Some(nemesis_board::AssignmentType::Worker),
+            Some("node-b".to_string()),
+            &Actor::agent("node-master"),
+        )
+        .unwrap();
+
+    let (ok, _, v) = parse_reply(handle_nb_bus(
+        &deps,
+        comment_payload("r1", "node-x", "issue", issue.id, "看一下"),
+    ));
+    assert!(ok);
+    assert_eq!(
+        v.pointer("/body/wake/woke"),
+        Some(&serde_json::json!(["node-b"]))
+    );
+    // 投递任务：wake 信封组装（issue 分支 + 截断）→ rpc.call 被拒 → warn。
+    tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn sweep_build_wake_envelope_issue_and_channel_branches() {
+    let (store, dir) = temp_store("wake-envelope");
+    let channel_id = store.list_channels().unwrap()[0].id;
+
+    // issue 分支：title + prd_summary（300 字描述 → 截断到 500 不触发省略号）。
+    let issue = store
+        .create_issue(nemesis_board::NewIssue {
+            title: "信封".into(),
+            description: "描".repeat(300),
+            ..Default::default()
+        })
+        .unwrap();
+    // 线程上下文需要至少一条评论。
+    store
+        .add_comment(nemesis_board::NewComment {
+            issue_id: issue.id,
+            author: Actor::new("agent", "node-x"),
+            content: "你好".to_string(),
+            parent_id: None,
+            ctype: nemesis_board::CommentType::Discussion,
+        })
+        .unwrap();
+    let ctx_issue = make_wake_ctx("issue", issue.id);
+    let env = build_wake_envelope(&store, &ctx_issue, 5, "assignee_comment").unwrap();
+    assert_eq!(env["ok"], serde_json::json!(true));
+    assert_eq!(env["op"], serde_json::json!("wake.post"));
+    assert_eq!(env["body"]["event"], serde_json::json!("assignee_comment"));
+    assert_eq!(env["body"]["thread"]["title"], serde_json::json!("信封"));
+    assert!(
+        env["body"]["thread"]["prd_summary"]
+            .as_str()
+            .unwrap()
+            .chars()
+            .count()
+            == 300
+    );
+    assert_eq!(
+        env["body"]["new_message"]["sender"],
+        serde_json::json!("node-x")
+    );
+    assert_eq!(
+        env["body"]["reply_hint"]["max_turns_left"],
+        serde_json::json!(5)
+    );
+    assert_eq!(env["body"]["seq"], serde_json::json!(9));
+
+    // issue 不存在 → title/prd_summary 空串诚实降级。
+    let ctx_ghost = make_wake_ctx("issue", 999_999);
+    let env = build_wake_envelope(&store, &ctx_ghost, 1, "mention").unwrap();
+    assert_eq!(env["body"]["thread"]["title"], serde_json::json!(""));
+
+    // channel 分支：title = 频道名（#前缀），prd_summary 恒空。
+    let ctx_channel = make_wake_ctx("channel", channel_id);
+    let env = build_wake_envelope(&store, &ctx_channel, 7, "moderator_call").unwrap();
+    let want = format!("#{}", store.list_channels().unwrap()[0].name);
+    assert_eq!(env["body"]["thread"]["title"], serde_json::json!(want));
+    assert_eq!(env["body"]["thread"]["prd_summary"], serde_json::json!(""));
+
+    // 线程上下文：主持人纯文本形态（标题行 + 消息行）。
+    let text = build_thread_context_text(&store, &ctx_issue).unwrap();
+    assert!(text.starts_with("# Thread (issue "), "got: {text}");
+    assert!(text.contains("- node-x: 你好"));
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// 测试侧 WakeContext 构造（生产结构未实现 Clone，不能动生产代码）。
+#[allow(dead_code)] // 多分支各用一处；统一构造器防字段漂移
+fn make_wake_ctx(thread_kind: &str, thread_id: i64) -> WakeContext {
+    WakeContext {
+        thread_kind: thread_kind.to_string(),
+        thread_id,
+        sender: Actor::new("agent", "node-x"),
+        content: "你好".to_string(),
+        reply_to: Some(3),
+        seq: 9,
+        at: 42,
+    }
+}
+
+#[test]
+fn sweep_truncate_chars_passthrough_boundary_and_ellipsis() {
+    assert_eq!(truncate_chars("短文本", 10), "短文本");
+    assert_eq!(truncate_chars("", 5), "");
+    let long = "abcdef";
+    assert_eq!(truncate_chars(long, 3), "abc…");
+    // 多字节 char boundary 安全（中文逐字截断 + 省略号）。
+    let cn = "甲乙丙丁";
+    assert_eq!(truncate_chars(cn, 2), "甲乙…");
+    assert_eq!(truncate_chars(cn, 4), cn);
+}
+
+#[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
+#[tokio::test]
+#[allow(clippy::await_holding_lock)]
+async fn sweep_channel_post_moderator_silent_adds_no_comment() {
+    let _lock = crate::GLOBAL_STATE_LOCK
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
+    let tmp = tempfile::TempDir::new().unwrap();
+    let home = tmp.path().join(".nemesisbot");
+    std::fs::create_dir_all(&home).unwrap();
+    let _env = crate::tests::EnvHomeGuard::point_at(&home);
+    let (store, dir) = temp_store("mod-silent");
+    let deps = make_deps(store.clone(), quota(8));
+    attach_scripted_moderator(&deps, &[], "[SILENT]");
+    let channel_id = store.list_channels().unwrap()[0].id;
+
+    let (ok, _, v) = parse_reply(handle_nb_bus(
+        &deps,
+        comment_payload("m1", "node-x", "channel", channel_id, "大家好"),
+    ));
+    assert!(ok);
+    assert_eq!(
+        v.pointer("/body/wake/to_moderator"),
+        Some(&serde_json::json!(true))
+    );
+
+    // spawn 的裁决任务：process_direct 回 [SILENT] → 静默不落评论。
+    for _ in 0..40 {
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    }
+    let msgs = store
+        .list_channel_messages(channel_id, 0, i64::MAX)
+        .unwrap();
+    assert_eq!(msgs.len(), 1, "[SILENT] 不得落评论");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
+#[tokio::test]
+#[allow(clippy::await_holding_lock)]
+async fn sweep_moderator_reply_posts_comment_and_wakes_mentioned_node() {
+    let _lock = crate::GLOBAL_STATE_LOCK
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
+    let tmp = tempfile::TempDir::new().unwrap();
+    let home = tmp.path().join(".nemesisbot");
+    std::fs::create_dir_all(&home).unwrap();
+    let _env = crate::tests::EnvHomeGuard::point_at(&home);
+    let (store, dir) = temp_store("mod-reply");
+    let deps = make_deps(store.clone(), quota(8));
+    deps.cluster.set_rpc_client(Arc::new(RpcClient::new()));
+    register_node(&deps.cluster, "node-b", NodeRole::Worker, "qa", true);
+    attach_scripted_moderator(&deps, &[], "@node-b 请复述这条消息");
+    let channel_id = store.list_channels().unwrap()[0].id;
+
+    let (ok, _, _) = parse_reply(handle_nb_bus(
+        &deps,
+        comment_payload("m1", "node-x", "channel", channel_id, "谁是负责人？"),
+    ));
+    assert!(ok);
+
+    // 等主持人回复落库（rpc 下行必被拒端口拒绝 → 只 warn）。
+    let mut reply_seen = false;
+    for _ in 0..60 {
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        if store
+            .list_channel_messages(channel_id, 0, i64::MAX)
+            .unwrap()
+            .len()
+            >= 2
+        {
+            reply_seen = true;
+            break;
+        }
+    }
+    assert!(reply_seen, "主持人回复应落库");
+    let msgs = store
+        .list_channel_messages(channel_id, 0, i64::MAX)
+        .unwrap();
+    assert_eq!(msgs[1].sender.id, "node-master", "回复 origin=主持人节点");
+    assert!(msgs[1].content.contains("@node-b"));
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
+#[tokio::test]
+#[allow(clippy::await_holding_lock)]
+async fn sweep_moderator_reply_without_mentions_posts_and_stops() {
+    let _lock = crate::GLOBAL_STATE_LOCK
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
+    let tmp = tempfile::TempDir::new().unwrap();
+    let home = tmp.path().join(".nemesisbot");
+    std::fs::create_dir_all(&home).unwrap();
+    let _env = crate::tests::EnvHomeGuard::point_at(&home);
+    let (store, dir) = temp_store("mod-nomention");
+    let deps = make_deps(store.clone(), quota(8));
+    attach_scripted_moderator(&deps, &[], "已阅，无需行动。");
+    let channel_id = store.list_channels().unwrap()[0].id;
+
+    let (ok, _, _) = parse_reply(handle_nb_bus(
+        &deps,
+        comment_payload("m1", "node-x", "channel", channel_id, "例行同步"),
+    ));
+    assert!(ok);
+
+    let mut posted = false;
+    for _ in 0..60 {
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        if store
+            .list_channel_messages(channel_id, 0, i64::MAX)
+            .unwrap()
+            .len()
+            >= 2
+        {
+            posted = true;
+            break;
+        }
+    }
+    assert!(posted, "无 @ 回复也应落库");
+    // 无点名 → plan 空 → 不再往下走（不碰 rpc）。
+    tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+    assert_eq!(
+        store
+            .list_channel_messages(channel_id, 0, i64::MAX)
+            .unwrap()
+            .len(),
+        2
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
+#[tokio::test]
+#[allow(clippy::await_holding_lock)]
+async fn sweep_mention_of_master_routes_to_local_adjudication() {
+    let _lock = crate::GLOBAL_STATE_LOCK
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
+    let tmp = tempfile::TempDir::new().unwrap();
+    let home = tmp.path().join(".nemesisbot");
+    std::fs::create_dir_all(&home).unwrap();
+    let _env = crate::tests::EnvHomeGuard::point_at(&home);
+    let (store, dir) = temp_store("mod-self");
+    let deps = make_deps(store.clone(), quota(8));
+    deps.cluster.set_rpc_client(Arc::new(RpcClient::new()));
+    // 注册与 master 同 id 的内存节点（@ 点名主持人自己 → 本地裁决）。
+    register_node(
+        &deps.cluster,
+        "node-master",
+        NodeRole::Coordinator,
+        "dev",
+        true,
+    );
+    attach_scripted_moderator(&deps, &[], "[SILENT]");
+    let channel_id = store.list_channels().unwrap()[0].id;
+
+    let (ok, _, v) = parse_reply(handle_nb_bus(
+        &deps,
+        comment_payload("m1", "node-x", "channel", channel_id, "@node-master 请裁决"),
+    ));
+    assert!(ok);
+    assert_eq!(
+        v.pointer("/body/wake/woke"),
+        Some(&serde_json::json!(["node-master"]))
+    );
+    assert_eq!(
+        v.pointer("/body/wake/to_moderator"),
+        Some(&serde_json::json!(false))
+    );
+
+    // 投递任务：target == self → need_moderator（不发 wake.post 给自己）→ 静默。
+    for _ in 0..40 {
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    }
+    let msgs = store
+        .list_channel_messages(channel_id, 0, i64::MAX)
+        .unwrap();
+    assert_eq!(msgs.len(), 1, "主持人静默不得落评论");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn sweep_worker_bad_envelope_unknown_routes_and_wake_validation() {
+    let (wdeps, _inbox) = make_worker_deps("node-b");
+
+    // 缺 ns → bad_envelope（fallback 回带空 ns / 原 op）。
+    let (ok, code, v) = parse_reply(handle_worker_nb_bus(
+        &wdeps,
+        serde_json::json!({"v": 1, "op": "wake.post"}),
+    ));
+    assert!(!ok);
+    assert_eq!(
+        code.as_deref(),
+        Some(nemesis_cluster::envelope::error_code::BAD_ENVELOPE)
+    );
+    assert_eq!(
+        v["ns"],
+        serde_json::json!(""),
+        "fallback 应尽力回带路由字段"
+    );
+
+    // ns=file → UNKNOWN_NS；board + 未知 op → UNKNOWN_OP。
+    let (ok, code, _) = parse_reply(handle_worker_nb_bus(
+        &wdeps,
+        serde_json::json!({"v": 1, "ns": "file", "op": "read"}),
+    ));
+    assert!(!ok);
+    assert_eq!(
+        code.as_deref(),
+        Some(nemesis_cluster::envelope::error_code::UNKNOWN_NS)
+    );
+    let (ok, code, _) = parse_reply(handle_worker_nb_bus(
+        &wdeps,
+        serde_json::json!({"v": 1, "ns": "board", "op": "flush"}),
+    ));
+    assert!(!ok);
+    assert_eq!(
+        code.as_deref(),
+        Some(nemesis_cluster::envelope::error_code::UNKNOWN_OP)
+    );
+
+    // wake.post 缺 thread.id → VALIDATION。
+    let (ok, _, _) = parse_reply(handle_worker_nb_bus(
+        &wdeps,
+        serde_json::json!({"v": 1, "ns": "board", "op": "wake.post", "corr_id": "w",
+            "_rpc": {"from": "node-master"},
+            "body": {"seq": 1, "thread": {"kind": "issue"},
+                "new_message": {"sender": "node-master", "content": "x"}}}),
+    ));
+    assert!(!ok, "缺 thread.id 应被拒");
+
+    // 缺 new_message.content → VALIDATION。
+    let (ok, _, _) = parse_reply(handle_worker_nb_bus(
+        &wdeps,
+        serde_json::json!({"v": 1, "ns": "board", "op": "wake.post", "corr_id": "w2",
+            "_rpc": {"from": "node-master"},
+            "body": {"seq": 2, "thread": {"kind": "issue", "id": 1},
+                "new_message": {"sender": "node-master"}}}),
+    ));
+    assert!(!ok, "缺 new_message.content 应被拒");
+}
+
+#[test]
+fn sweep_wake_state_persist_failure_continues_in_memory() {
+    let dir = std::env::temp_dir().join(format!(
+        "nemesis-wakestate-persistfail-{}",
+        std::process::id()
+    ));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    // 快照路径的父级是普通文件 → create_dir_all 失败 → warn 不上抛。
+    let blocked = dir.join("blocked.txt");
+    std::fs::write(&blocked, "not a dir").unwrap();
+
+    let state = WorkerWakeState::load_or_create(blocked.join("state.json"));
+    state.commit("t1", 7); // persist 失败只 warn；内存账照常推进。
+    assert!(!state.peek("t1", 7), "commit 后同 seq 幂等");
+    state.advance_watermark(9);
+    assert_eq!(state.watermark(), 9);
+    assert!(state.is_participated("t1"));
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[tokio::test]
+async fn sweep_worker_sync_once_requires_coordinator_then_rpc() {
+    let _ = tracing_subscriber::fmt::try_init();
+    let (wdeps, _inbox) = make_worker_deps("node-b");
+    let cluster = Cluster::new(ClusterConfig {
+        node_id: "node-b".to_string(),
+        bind_address: "127.0.0.1:0".to_string(),
+        peers: vec![],
+        node_name: String::new(),
+    });
+
+    // 无任何节点 → 找不到在线 coordinator。
+    let err = worker_sync_once(&wdeps, &cluster).await.unwrap_err();
+    assert!(err.contains("no online coordinator"), "got: {err}");
+
+    // 只有自己是 coordinator → 防御性跳过（master 形态误装 worker 通道）。
+    register_node(&cluster, "node-b", NodeRole::Coordinator, "dev", true);
+    let err = worker_sync_once(&wdeps, &cluster).await.unwrap_err();
+    assert!(err.contains("no online coordinator"), "got: {err}");
+
+    // 有在线 coordinator 但无 rpc client → rpc unavailable。
+    register_node(&cluster, "node-master", NodeRole::Coordinator, "dev", true);
+    let err = worker_sync_once(&wdeps, &cluster).await.unwrap_err();
+    assert!(err.contains("rpc client unavailable"), "got: {err}");
+
+    // load_or_create 的 tracing 行（subscriber 已装 → 格式参数真实执行）。
+    let dir =
+        std::env::temp_dir().join(format!("nemesis-wakestate-tracing-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let state = WorkerWakeState::load_or_create(dir.join("state.json"));
+    state.commit("issue:1", 4);
+    assert!(!state.peek("issue:1", 4));
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+// ===========================================================================
+// wave4 追加（coverage）：worker_sync_once 成功路径（此前只有前置错误臂）
+// + spawn_worker_sync_loop 常驻任务 + run_moderator 残余臂（loop 未就绪 /
+// 额度归零静默收敛 / 无 rpc client）。
+//
+// RPC 真回环：本机 mock master（4 字节大端长度前缀 + WireMessage JSON，
+// 与 nemesis-cluster 帧协议同构；client_extra_tests::spawn_response_server
+// 同款手法）——worker_sync_once 的 rpc.call 走真实 TCP 往返，响应载荷 =
+// EnvelopeResponse::to_json 形态（{ok:true, body:{latest_seq, messages}}）。
+// RpcClient::with_timeout(10s) 兜底（默认 60min 超时不可进测试）。
+// ===========================================================================
+
+/// 固定地址解析器：对端恒在线、恒指 mock master（dial 地址与端口测试自定）。
+struct FixedPeerResolver {
+    addr: String,
+    port: u16,
+}
+
+impl nemesis_cluster::rpc::client::PeerResolver for FixedPeerResolver {
+    fn get_peer_info(&self, _peer: &str) -> Option<(Vec<String>, u16, bool)> {
+        Some((vec![self.addr.clone()], self.port, true))
+    }
+    fn get_local_interfaces(&self) -> Vec<nemesis_cluster::rpc::client::LocalNetworkInterface> {
+        vec![]
+    }
+    fn get_node_id(&self) -> String {
+        "node-b".into()
+    }
+}
+
+/// mock master：accept 一条连接 → 读请求帧 → 回 sync 成功信封（id 回显——
+/// 客户端按 id 关联响应，错 id 会挂到超时）。返回监听端口。
+async fn spawn_sync_mock_server(latest_seq: i64, messages: serde_json::Value) -> u16 {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("bind");
+    let port = listener.local_addr().unwrap().port();
+    tokio::spawn(async move {
+        let Ok((mut sock, _)) = listener.accept().await else {
+            return;
+        };
+        let mut len_buf = [0u8; 4];
+        if sock.read_exact(&mut len_buf).await.is_err() {
+            return;
+        }
+        let len = u32::from_be_bytes(len_buf) as usize;
+        let mut buf = vec![0u8; len];
+        if sock.read_exact(&mut buf).await.is_err() {
+            return;
+        }
+        // 回显请求 id（关联锚点）。
+        let req_id = serde_json::from_slice::<serde_json::Value>(&buf)
+            .ok()
+            .and_then(|v| v.get("id").and_then(|i| i.as_str()).map(String::from))
+            .unwrap_or_default();
+        let wire = nemesis_cluster::transport::conn::WireMessage {
+            version: "1.0".into(),
+            id: req_id,
+            msg_type: "response".into(),
+            from: "node-master".into(),
+            to: "node-b".into(),
+            action: "nb_bus".into(),
+            payload: serde_json::json!({
+                "v": 1, "ok": true, "ns": "board", "op": "sync", "corr_id": "mock",
+                "body": {"latest_seq": latest_seq, "messages": messages}
+            }),
+            timestamp: chrono::Local::now().timestamp(),
+            error: String::new(),
+        };
+        let json = serde_json::to_vec(&wire).unwrap();
+        let total = (json.len() as u32).to_be_bytes();
+        let _ = sock.write_all(&total).await;
+        let _ = sock.write_all(&json).await;
+        let _ = sock.flush().await;
+        // 连接随即关闭（单次调用语义；连接池复用失败会重连，不在路径上）。
+    });
+    port
+}
+
+/// 组装带 mock master 的 worker 侧环境：集群注册表登记在线 coordinator +
+/// 带固定解析器的 RPC client（10s 超时兜底）。返回 (deps, inbox, rx)。
+async fn worker_sync_env(
+    port: u16,
+) -> (
+    WorkerBusDeps,
+    Arc<nemesis_cluster::cluster::Cluster>,
+    Arc<crate::cluster_agent::DiscussionInbox>,
+    tokio::sync::mpsc::UnboundedReceiver<nemesis_types::cluster::DiscussionEvent>,
+) {
+    use nemesis_cluster::types::{ExtendedNodeInfo, NodeStatus};
+    use nemesis_types::cluster::NodeInfo;
+    let cluster = Arc::new(Cluster::new(ClusterConfig {
+        node_id: "node-b".to_string(),
+        bind_address: "127.0.0.1:0".to_string(),
+        peers: vec![],
+        node_name: "Node-Alpha".to_string(),
+    }));
+    cluster.register_node(ExtendedNodeInfo {
+        base: NodeInfo {
+            id: "node-master".to_string(),
+            name: "node-master".to_string(),
+            role: NodeRole::Coordinator,
+            address: format!("127.0.0.1:{port}"),
+            category: "dev".to_string(),
+            last_seen: String::new(),
+        },
+        status: NodeStatus::Online,
+        capabilities: vec![],
+        tags: vec![],
+        addresses: vec![],
+        node_type: "agent".to_string(),
+    });
+    let client = Arc::new(RpcClient::with_resolver(Arc::new(FixedPeerResolver {
+        addr: "127.0.0.1".to_string(),
+        port,
+    })));
+    cluster.set_rpc_client(client);
+
+    let inbox = Arc::new(crate::cluster_agent::DiscussionInbox::new());
+    let deps = WorkerBusDeps {
+        self_node_id: "node-b".to_string(),
+        node_name: "Node-Alpha".to_string(),
+        node_role: "worker".to_string(),
+        node_category: "dev".to_string(),
+        inbox: inbox.clone(),
+        wake_state: Arc::new(WorkerWakeState::new()),
+    };
+    let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
+    inbox.set_sender(tx);
+    (deps, cluster, inbox, rx)
+}
+
+/// sync 台账条目（worker_sync_once 消费的 master 形态）。
+fn sync_entry(seq: i64, kind: &str, tid: i64, sender: &str, content: &str) -> serde_json::Value {
+    serde_json::json!({
+        "seq": seq, "thread_kind": kind, "thread_id": tid,
+        "sender_id": sender, "content": content, "created_at": 111
+    })
+}
+
+/// 成功路径全链：@ 提名入队（commit + 水位推进到 latest）、无提名过滤、
+/// 自己的发言过滤。断言事件字段（sync_backfill 最小信息形态）与幂等水位。
+#[tokio::test]
+async fn sweep_worker_sync_once_happy_path_enqueues_and_advances() {
+    let _ = tracing_subscriber::fmt::try_init();
+    let port = spawn_sync_mock_server(
+        5,
+        serde_json::json!([
+            sync_entry(3, "issue", 7, "node-master", "@node-b 请处理"),
+            sync_entry(4, "channel", 2, "node-master", "普通闲聊"),
+            sync_entry(5, "channel", 9, "node-b", "我自己的话")
+        ]),
+    )
+    .await;
+    let (wdeps, cluster, _inbox, mut rx) = worker_sync_env(port).await;
+
+    let enqueued = tokio::time::timeout(
+        std::time::Duration::from_secs(15),
+        worker_sync_once(&wdeps, &cluster),
+    )
+    .await
+    .expect("sync 往返必须在 15s 内完成（mock 卡死快速失败）")
+    .expect("sync 应成功");
+    assert_eq!(
+        enqueued, 1,
+        "只有 @node-b 一条入队（闲聊过滤 + 自己的发言过滤）"
+    );
+
+    let ev = rx.try_recv().expect("补拉事件应已入箱");
+    assert_eq!(ev.event, "sync_backfill");
+    assert_eq!(ev.seq, 3);
+    assert_eq!(ev.thread_kind, "issue");
+    assert_eq!(ev.thread_id, 7);
+    assert_eq!(ev.new_sender, "node-master");
+    assert!(ev.new_content.contains("@node-b"));
+    assert_eq!(ev.from_node, "node-master");
+    assert_eq!(ev.max_turns_left, u32::MAX, "补拉事件不设轮次上限");
+    assert!(ev.thread_title.is_empty(), "补拉不带线程历史");
+    assert!(rx.try_recv().is_err(), "其余两条被过滤，不得入箱");
+
+    // 水位推进到 master latest；已处理 seq 幂等。
+    assert_eq!(wdeps.wake_state.watermark(), 5);
+    assert!(
+        !wdeps.wake_state.peek("issue:7", 3),
+        "已 commit 的 seq 不得重跑"
+    );
+    assert!(wdeps.wake_state.peek("issue:7", 4), "更大的 seq 仍要处理");
+}
+
+/// 投递失败（inbox 无接收端）→ 游标只推进到失败条目之前（T26 根因修复：
+/// 补拉机制不得自己吞掉 wake 事件）。
+#[tokio::test]
+async fn sweep_worker_sync_undelivered_holds_watermark() {
+    let _ = tracing_subscriber::fmt::try_init();
+    let port = spawn_sync_mock_server(
+        9,
+        serde_json::json!([
+            sync_entry(3, "issue", 7, "node-master", "@node-b 甲"),
+            sync_entry(4, "channel", 2, "node-master", "@node-b 乙")
+        ]),
+    )
+    .await;
+    let (wdeps, cluster, _inbox, rx) = worker_sync_env(port).await;
+    // 接收端已关闭（cluster agent loop 刚退出）→ inbox.send 全数失败。
+    drop(rx);
+
+    let enqueued = tokio::time::timeout(
+        std::time::Duration::from_secs(15),
+        worker_sync_once(&wdeps, &cluster),
+    )
+    .await
+    .expect("sync 往返必须在 15s 内完成")
+    .expect("sync 应成功");
+    assert_eq!(enqueued, 0);
+    // 两条都失败：first_undelivered=3 → advance = min(3-1, 9) = 2。
+    assert_eq!(
+        wdeps.wake_state.watermark(),
+        2,
+        "游标必须停在失败条目之前，下一拍重拉重试"
+    );
+    assert!(
+        wdeps.wake_state.peek("issue:7", 3),
+        "失败条目未 commit，可重拉"
+    );
+}
+
+/// 常驻补拉任务：首拍立即执行（interval 首 tick 即时）→ 经 mock master
+/// 补投 @ 提名事件进 inbox。
+#[tokio::test]
+async fn sweep_spawn_worker_sync_loop_first_tick_backfills() {
+    let _ = tracing_subscriber::fmt::try_init();
+    let port = spawn_sync_mock_server(
+        3,
+        serde_json::json!([sync_entry(3, "issue", 7, "node-master", "@node-b 走起")]),
+    )
+    .await;
+    let (wdeps, cluster, _inbox, mut rx) = worker_sync_env(port).await;
+
+    spawn_worker_sync_loop(wdeps.clone(), cluster.clone());
+    // 首拍即时；轮询等事件落箱（上限 3s）。
+    let mut got = None;
+    for _ in 0..60 {
+        if let Ok(ev) = rx.try_recv() {
+            got = Some(ev);
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    }
+    let ev = got.expect("常驻补拉任务首拍必须把 @ 提名事件补进 inbox");
+    assert_eq!(ev.event, "sync_backfill");
+    assert_eq!(ev.seq, 3);
+    assert_eq!(wdeps.wake_state.watermark(), 3);
+}
+
+/// run_moderator 残余臂：① agent loop 未就绪 → 静默跳过；② 回复落库后
+/// 线程额度归零 → 静默收敛（不再投递）；③ 有提名但 rpc client 缺席 →
+/// 诚实收敛。进程内全离线。
+#[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
+#[tokio::test]
+#[allow(clippy::await_holding_lock)]
+async fn sweep_run_moderator_not_ready_quota_zero_and_no_rpc() {
+    use nemesis_board::arbitrator::NodeCandidate;
+    let _lock = crate::GLOBAL_STATE_LOCK
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
+    let tmp = tempfile::TempDir::new().unwrap();
+    let home = tmp.path().join(".nemesisbot");
+    std::fs::create_dir_all(&home).unwrap();
+    let _env = crate::tests::EnvHomeGuard::point_at(&home);
+
+    let nodes = vec![NodeCandidate {
+        id: "node-b".to_string(),
+        name: "node-b".to_string(),
+        role: "worker".to_string(),
+        category: "qa".to_string(),
+        online: true,
+    }];
+    let ctx = || WakeContext {
+        thread_kind: "channel".to_string(),
+        thread_id: 0, // 由调用方按 store 实际频道替换
+        sender: Actor::new("agent", "node-x"),
+        content: "问题".to_string(),
+        reply_to: None,
+        seq: 1,
+        at: 42,
+    };
+
+    // ① loop 未就绪 → Ok + 不落任何消息。
+    let (store, dir) = temp_store("mod-notready");
+    let deps = deps_with_workspace(store.clone(), dir.join("ws"), quota(8));
+    let ch0 = store.list_channels().unwrap()[0].id;
+    let d = DepsForTask {
+        store: store.clone(),
+        quota: quota(8),
+        cluster: deps.cluster.clone(),
+        moderator_loop: deps.moderator_loop.clone(),
+    };
+    let mut c = ctx();
+    c.thread_id = ch0;
+    let r = run_moderator(d, c, &nodes, "node-master").await;
+    assert!(r.is_ok(), "loop 未就绪必须静默 Ok：{r:?}");
+    assert_eq!(
+        store.list_channel_messages(ch0, 0, i64::MAX).unwrap().len(),
+        0,
+        "未就绪不得落消息"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+
+    // ② 回复带 @ 提名但线程额度归零 → 落库后静默收敛（不再投递）。
+    let (store, dir) = temp_store("mod-quota0");
+    let deps = deps_with_workspace(store.clone(), dir.join("ws"), quota(0));
+    attach_scripted_moderator(&deps, &[], "@node-b 已收到");
+    let ch0 = store.list_channels().unwrap()[0].id;
+    let d = DepsForTask {
+        store: store.clone(),
+        quota: quota(0),
+        cluster: deps.cluster.clone(),
+        moderator_loop: deps.moderator_loop.clone(),
+    };
+    let mut c = ctx();
+    c.thread_id = ch0;
+    let r = run_moderator(d, c, &nodes, "node-master").await;
+    assert!(r.is_ok(), "额度归零必须静默 Ok：{r:?}");
+    let msgs = store.list_channel_messages(ch0, 0, i64::MAX).unwrap();
+    assert_eq!(msgs.len(), 1, "主持人回复已落库");
+    assert_eq!(msgs[0].sender.id, "node-master");
+    assert!(msgs[0].content.contains("@node-b"));
+    let _ = std::fs::remove_dir_all(&dir);
+
+    // ③ 回复带 @ 提名、额度充足、但 rpc client 缺席 → 诚实收敛不炸。
+    let (store, dir) = temp_store("mod-norpc");
+    let deps = deps_with_workspace(store.clone(), dir.join("ws"), quota(8));
+    attach_scripted_moderator(&deps, &[], "@node-b 请继续");
+    let ch0 = store.list_channels().unwrap()[0].id;
+    let d = DepsForTask {
+        store: store.clone(),
+        quota: quota(8),
+        cluster: deps.cluster.clone(),
+        moderator_loop: deps.moderator_loop.clone(),
+    };
+    let mut c = ctx();
+    c.thread_id = ch0;
+    let r = run_moderator(d, c, &nodes, "node-master").await;
+    assert!(r.is_ok(), "rpc 缺席必须静默 Ok：{r:?}");
+    assert_eq!(
+        store.list_channel_messages(ch0, 0, i64::MAX).unwrap().len(),
+        1
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+// ===========================================================================
+// wave5 round2（2026-09-25）：delivery.files 落盘写失败臂（目录只读 →
+// fs::write 失败 → INTERNAL「写入失败」）、post_discussion_locally 的
+// Store Err 映射臂（空白 content 穿过核心直达 store 校验）、
+// build_thread_context_text 纯函数（issue 评论线程 / channel 消息线程 /
+// 标题回退三形态）、WorkerWakeState::load_or_create 盘上快照恢复 + commit
+// 持久化（生产 worker 形态；测试此前只用纯内存 new()）。
+// ===========================================================================
+
+mod w5r2 {
+    use super::*;
+
+    /// delivery.files：目录已存在但目标名被同名**目录**占用 →
+    /// create_dir_all Ok、fs::write 必败 → INTERNAL「写入失败」（区别于
+    /// 目录自建失败臂）。stored_name = `{Utc 毫秒}_a.txt`——写入发生在
+    /// 布阵**之后**，漂移单向为正：单侧深窗 [t0-100, t0+8000] 覆盖
+    /// 「布阵耗时 ≤8s」的全部落点（±300ms 双侧窗会被布阵自身耗时漂出，
+    /// 已实测偶发漏接）。
+    #[test]
+    fn w5_delivery_files_write_fail_readonly_dir() {
+        use base64::Engine as _;
+        let (store, dir) = temp_store("w5-dl-readonly");
+        let ws = tempfile::tempdir().unwrap();
+        let deps = deps_with_workspace(store.clone(), ws.path().to_path_buf(), quota(8));
+
+        let issue = store
+            .create_issue(nemesis_board::NewIssue {
+                title: "撞名交付".into(),
+                ..Default::default()
+            })
+            .unwrap();
+        store
+            .insert_dispatch("w5-dl-1", issue.id, "node-b", &Actor::admin("test"))
+            .unwrap();
+
+        // 预建落盘目录 + 目标名同名目录阵（时间戳碰撞注入，单侧深窗）。
+        let files_dir = ws
+            .path()
+            .join("board")
+            .join("files")
+            .join(format!("issue_{}", issue.id));
+        std::fs::create_dir_all(&files_dir).unwrap();
+        let t0 = chrono::Utc::now().timestamp_millis();
+        for ms in t0 - 100..=t0 + 8000 {
+            std::fs::create_dir(files_dir.join(format!("{ms}_a.txt"))).unwrap();
+        }
+
+        let (ok, code, _) = parse_reply(handle_nb_bus(
+            &deps,
+            delivery_payload(
+                Some("w5-dl-1"),
+                "node-b",
+                serde_json::json!([{"name": "a.txt", "content_b64": base64::engine::general_purpose::STANDARD.encode(b"x")}]),
+            ),
+        ));
+        assert!(!ok, "同名目录占用写入路径必须失败");
+        assert_eq!(
+            code.as_deref(),
+            Some(nemesis_cluster::envelope::error_code::INTERNAL)
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// post_discussion_locally：空白 content 穿过核心（幂等预检/额度后）
+    /// 直达 store 校验 Err → PostError::Store → 人读 Err 映射臂。
+    #[test]
+    fn w5_post_locally_store_err_arm() {
+        let (store, dir) = temp_store("w5-post-store-err");
+        let deps = make_deps(store.clone(), quota(8));
+        let err = post_discussion_locally(
+            &deps,
+            &Actor::agent("node-b"),
+            "issue",
+            1,
+            "w5-blank-1",
+            "   ",
+            None,
+            "text",
+        )
+        .expect_err("空白 content 必须 Store Err");
+        assert!(err.contains("content"), "错误应来自 store 校验: {err}");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// build_thread_context_text：issue 线程（评论投影 + 标题行）与
+    /// channel 线程（消息投影）两形态 + 超 20 条截尾语义。
+    #[test]
+    fn w5_build_thread_context_text_issue_and_channel() {
+        let (store, dir) = temp_store("w5-ctx-text");
+        let issue = store
+            .create_issue(nemesis_board::NewIssue {
+                title: "上下文标题甲".into(),
+                ..Default::default()
+            })
+            .unwrap();
+        for i in 0..25 {
+            store
+                .add_comment(nemesis_board::NewComment {
+                    issue_id: issue.id,
+                    author: Actor::agent(&format!("node-{i}")),
+                    content: format!("评论{i}"),
+                    parent_id: None,
+                    ctype: nemesis_board::CommentType::Comment,
+                })
+                .unwrap();
+        }
+        let ctx_issue = WakeContext {
+            thread_kind: "issue".to_string(),
+            thread_id: issue.id,
+            sender: Actor::agent("node-b"),
+            content: "触发词".to_string(),
+            reply_to: None,
+            seq: 1,
+            at: 0,
+        };
+        let text = build_thread_context_text(&store, &ctx_issue).unwrap();
+        assert!(
+            text.contains("上下文标题甲"),
+            "issue 线程必须带标题: {text}"
+        );
+        assert!(text.contains("评论24"), "截尾必须保留最新评论");
+        assert!(!text.contains("评论0\n"), "最旧评论应被截掉");
+
+        // channel 线程形态。
+        let ch = store.get_channel_by_name("#dev").unwrap().unwrap();
+        store
+            .append_channel_message(nemesis_board::NewChannelMessage {
+                channel_id: ch.id,
+                sender: Actor::agent("node-b"),
+                content: "频道消息一".to_string(),
+                parent_id: None,
+                mtype: String::new(),
+            })
+            .unwrap();
+        let ctx_ch = WakeContext {
+            thread_kind: "channel".to_string(),
+            thread_id: ch.id,
+            sender: Actor::agent("node-b"),
+            content: "频道触发".to_string(),
+            reply_to: None,
+            seq: 1,
+            at: 0,
+        };
+        let text2 = build_thread_context_text(&store, &ctx_ch).unwrap();
+        assert!(
+            text2.contains("频道消息一"),
+            "channel 投影必须可见: {text2}"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// WorkerWakeState::load_or_create：盘上合法快照恢复（水位 + 参与集）
+    /// → peek/commit/advance_watermark → 快照文件回写。
+    #[test]
+    fn w5_wake_state_snapshot_restore_and_persist() {
+        let tmp = tempfile::tempdir().unwrap();
+        let snap = tmp.path().join("wake-snap.json");
+        std::fs::write(
+            &snap,
+            r#"{"threads": {"issue:7": 5, "channel:2": 9}, "watermark": 42}"#,
+        )
+        .unwrap();
+
+        let state = WorkerWakeState::load_or_create(snap.clone());
+        assert_eq!(state.watermark(), 42, "全局游标必须从盘上恢复");
+        assert!(!state.peek("issue:7", 5), "已处理 seq 不得重放");
+        assert!(state.peek("issue:7", 6), "新 seq 必须放行");
+        assert!(state.is_participated("channel:2"), "参与集必须恢复");
+
+        // commit → 线程水位推进 + 快照回写（盘上可见新水位）。
+        state.commit("issue:7", 6);
+        let reloaded = WorkerWakeState::load_or_create(snap.clone());
+        assert!(
+            !reloaded.peek("issue:7", 6),
+            "commit 后新 seq 必须入账（持久化）"
+        );
+        state.advance_watermark(50);
+        assert_eq!(state.watermark(), 50);
+    }
+}

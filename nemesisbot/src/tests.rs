@@ -776,7 +776,7 @@ fn temp_home_env() -> TempHomeEnv {
 #[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
 #[tokio::test]
 async fn run_command_onboard_default_writes_full_home() {
-    let _guard = GLOBAL_STATE_LOCK.lock().unwrap();
+    let _guard = GLOBAL_STATE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let th = temp_home_env();
 
     let cli = Cli {
@@ -840,7 +840,7 @@ async fn run_command_onboard_default_writes_full_home() {
 #[tokio::test]
 async fn run_command_onboard_via_args_variant_also_defaults() {
     // `onboard` 不带 --default 但 args 里含 "default" → 同样走默认装配分支。
-    let _guard = GLOBAL_STATE_LOCK.lock().unwrap();
+    let _guard = GLOBAL_STATE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let th = temp_home_env();
 
     let cli = Cli {
@@ -861,7 +861,7 @@ async fn run_command_onboard_via_args_variant_also_defaults() {
 async fn run_command_onboard_existing_config_keeps_main_config() {
     // 已有 config.json + cargo test 的 stdin 是管道 EOF（read_line 空串）→
     // 覆盖确认走「保留既有配置」分支：旧内容不被改写，其余配置仍生成。
-    let _guard = GLOBAL_STATE_LOCK.lock().unwrap();
+    let _guard = GLOBAL_STATE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let th = temp_home_env();
     std::fs::write(
         th.home.join("config.json"),
@@ -900,7 +900,7 @@ async fn run_command_onboard_existing_config_keeps_main_config() {
 #[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
 #[tokio::test]
 async fn run_command_version_arm_is_safe_no_op() {
-    let _guard = GLOBAL_STATE_LOCK.lock().unwrap();
+    let _guard = GLOBAL_STATE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let _th = temp_home_env();
     let cli = Cli {
         local: false,
@@ -1006,7 +1006,7 @@ mod wave_b {
     #[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
     #[tokio::test]
     async fn wave_b_onboard_interactive_branch_prints_setup_banner() {
-        let _guard = GLOBAL_STATE_LOCK.lock().unwrap();
+        let _guard = GLOBAL_STATE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let th = temp_home_env();
 
         let cli = wb_cli(Commands::Onboard {
@@ -1027,7 +1027,7 @@ mod wave_b {
     #[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn wave_b_agent_dispatch_single_message_dead_provider_ok() {
-        let _guard = GLOBAL_STATE_LOCK.lock().unwrap();
+        let _guard = GLOBAL_STATE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let th = temp_home_env();
         std::fs::write(
             th.home.join("config.json"),
@@ -1059,7 +1059,7 @@ mod wave_b {
     #[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
     #[tokio::test]
     async fn wave_b_status_arm_is_offline_safe() {
-        let _guard = GLOBAL_STATE_LOCK.lock().unwrap();
+        let _guard = GLOBAL_STATE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let _th = temp_home_env();
         run_command(wb_cli(Commands::Status))
             .await
@@ -1069,7 +1069,7 @@ mod wave_b {
     #[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
     #[tokio::test]
     async fn wave_b_cors_list_missing_config_prints_and_ok() {
-        let _guard = GLOBAL_STATE_LOCK.lock().unwrap();
+        let _guard = GLOBAL_STATE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let _th = temp_home_env();
         let cli = wb_cli(Commands::Cors {
             action: commands::cors::CorsAction::List,
@@ -1082,7 +1082,7 @@ mod wave_b {
     #[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
     #[tokio::test]
     async fn wave_b_model_list_verbose_with_one_entry() {
-        let _guard = GLOBAL_STATE_LOCK.lock().unwrap();
+        let _guard = GLOBAL_STATE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let th = temp_home_env();
         // 手写一条模型条目 → List 穿过逐条打印循环（含 verbose 明细分支）。
         std::fs::write(
@@ -1111,7 +1111,7 @@ mod wave_b {
     #[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
     #[tokio::test]
     async fn wave_b_cron_list_without_store_is_ok() {
-        let _guard = GLOBAL_STATE_LOCK.lock().unwrap();
+        let _guard = GLOBAL_STATE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let _th = temp_home_env();
         let cli = wb_cli(Commands::Cron {
             action: commands::cron::CronAction::List,
@@ -1124,7 +1124,7 @@ mod wave_b {
     #[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
     #[tokio::test]
     async fn wave_b_mcp_list_without_config_is_ok() {
-        let _guard = GLOBAL_STATE_LOCK.lock().unwrap();
+        let _guard = GLOBAL_STATE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let _th = temp_home_env();
         let cli = wb_cli(Commands::Mcp {
             action: commands::mcp::McpAction::List,
@@ -1137,7 +1137,7 @@ mod wave_b {
     #[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
     #[tokio::test]
     async fn wave_b_persona_current_without_active_persona_is_ok() {
-        let _guard = GLOBAL_STATE_LOCK.lock().unwrap();
+        let _guard = GLOBAL_STATE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let _th = temp_home_env();
         let cli = wb_cli(Commands::Persona {
             action: commands::persona::PersonaAction::Current,
@@ -1150,7 +1150,7 @@ mod wave_b {
     #[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
     #[tokio::test]
     async fn wave_b_shutdown_without_gateway_writes_signal_file_only() {
-        let _guard = GLOBAL_STATE_LOCK.lock().unwrap();
+        let _guard = GLOBAL_STATE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let th = temp_home_env();
         // 无 gateway.pid / 无 config.json：PID 臂跳过 → 写 legacy signal 文件
         // → HTTP 臂因 config 缺失跳过 → 收尾提示，全程仅本地文件 IO。
@@ -1278,7 +1278,7 @@ mod r9_process_boundary {
     #[cfg(feature = "eval")]
     #[test]
     fn r9_eval_agent_role_short_circuit_fails_fast_rc1() {
-        let _guard = GLOBAL_STATE_LOCK.lock().unwrap();
+        let _guard = GLOBAL_STATE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let bin = r9_bin();
         let o = spawn_env_direct(
             &bin,
@@ -1308,7 +1308,7 @@ mod r9_process_boundary {
     #[cfg(feature = "desktop")]
     #[test]
     fn r9_multiple_child_mode_missing_handshake_args_exits_1() {
-        let _guard = GLOBAL_STATE_LOCK.lock().unwrap();
+        let _guard = GLOBAL_STATE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let bin = r9_bin();
         let o = spawn_env_direct(&bin, &["--multiple"], &[], &["NEMESISBOT_HOME"], 120);
         assert_eq!(
@@ -1651,7 +1651,7 @@ mod r10_main {
     #[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
     #[test]
     fn r10_executor_role_short_circuit_clean_rc0() {
-        let _guard = GLOBAL_STATE_LOCK.lock().unwrap();
+        let _guard = GLOBAL_STATE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let bin = r10_bin();
         let ws = tempfile::TempDir::new().unwrap();
         // NEMESISBOT_ROLE=executor 在 Cli::parse 前短路进 exec_worker；
@@ -1685,7 +1685,7 @@ mod r10_main {
     #[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
     #[tokio::test]
     async fn r10_gateway_flag_pushes_invalid_config_clean_err() {
-        let _guard = GLOBAL_STATE_LOCK.lock().unwrap();
+        let _guard = GLOBAL_STATE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let bin = r10_bin();
         let ws = TestWorkspace::new().expect("temp workspace");
         let home = ws.home();
@@ -1720,7 +1720,7 @@ mod r10_main {
     #[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
     #[tokio::test]
     async fn r10_history_search_dispatch_arm_offline_rc0() {
-        let _guard = GLOBAL_STATE_LOCK.lock().unwrap();
+        let _guard = GLOBAL_STATE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let bin = r10_bin();
         let ws = TestWorkspace::new().expect("temp workspace");
         let up = ws
@@ -1796,7 +1796,7 @@ mod r10_main {
     #[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn r10_estop_trio_status_engage_release_live_gateway() {
-        let _guard = GLOBAL_STATE_LOCK.lock().unwrap();
+        let _guard = GLOBAL_STATE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let bin = r10_bin();
         let (ws, mut gw) = r10_boot_gateway_on_free_ports().await;
 
@@ -1867,7 +1867,7 @@ mod r10_main {
     #[cfg(feature = "desktop")]
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn r10_test_hidden_approval_headless_arm() {
-        let _guard = GLOBAL_STATE_LOCK.lock().unwrap();
+        let _guard = GLOBAL_STATE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let bin = r10_bin();
         let ws = TestWorkspace::new().expect("temp workspace");
         let up = ws

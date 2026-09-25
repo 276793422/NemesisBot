@@ -641,7 +641,9 @@ mod r10_lead_in {
     #[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn r10_persona_search_lead_in_errors_at_dead_upstream() {
-        let _lock = crate::GLOBAL_STATE_LOCK.lock().unwrap();
+        let _lock = crate::GLOBAL_STATE_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         let _net = NetDead::engage();
         let ws = tempfile::tempdir().unwrap();
 
@@ -656,7 +658,9 @@ mod r10_lead_in {
     #[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn r10_persona_install_uninstalled_id_bails_after_network_leg_one() {
-        let _lock = crate::GLOBAL_STATE_LOCK.lock().unwrap();
+        let _lock = crate::GLOBAL_STATE_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         let _net = NetDead::engage();
         let ws = tempfile::tempdir().unwrap();
         let id = "r10-absent-persona";
@@ -674,7 +678,9 @@ mod r10_lead_in {
     #[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn r10_persona_run_dispatch_reaches_search_and_install_arms() {
-        let _lock = crate::GLOBAL_STATE_LOCK.lock().unwrap();
+        let _lock = crate::GLOBAL_STATE_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         let _net = NetDead::engage();
         let ws = tempfile::tempdir().unwrap();
         let ws_str = ws.path().to_string_lossy().to_string();

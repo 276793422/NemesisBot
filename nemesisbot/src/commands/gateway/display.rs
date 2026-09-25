@@ -355,3 +355,6 @@ pub(crate) fn print_agent_startup_info(home: &std::path::Path, total_tools: usiz
         total_tools, skill_count
     );
 }
+
+#[cfg(test)]
+mod tests;

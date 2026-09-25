@@ -981,3 +981,9 @@ pub fn register_transfer_handlers(
 
 #[cfg(test)]
 mod tests;
+
+// 覆盖率补充批次：死信列举/重放失败面 / request_pull·sweep 失败形态 /
+// 死信 age 闸 / 空载荷即删 / list_entries·find_task_dir 磁盘形态 /
+// push_transfer_dir begin 三态 + 部分续传 + end 未确认。
+#[cfg(test)]
+mod cov_tests;

@@ -108,7 +108,9 @@ mod r7_run_via_singleton_redirect {
     #[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
     #[tokio::test]
     async fn run_reindex_reports_file_count_in_sandbox() {
-        let _g = crate::GLOBAL_STATE_LOCK.lock().unwrap();
+        let _g = crate::GLOBAL_STATE_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         let home = singleton_test_home();
         let _env = EnvHomeGuard::point_at(&home);
         // 独有 key：数量断言只针对本测试播种的文件 + 沙箱里已有的都 >= 0。
@@ -126,7 +128,9 @@ mod r7_run_via_singleton_redirect {
     #[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
     #[tokio::test]
     async fn run_search_finds_seeded_unique_keyword() {
-        let _g = crate::GLOBAL_STATE_LOCK.lock().unwrap();
+        let _g = crate::GLOBAL_STATE_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         let home = singleton_test_home();
         let _env = EnvHomeGuard::point_at(&home);
         // 独一无二的关键词：只有本测试播种的行可能命中。
@@ -151,7 +155,9 @@ mod r7_run_via_singleton_redirect {
     #[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
     #[tokio::test]
     async fn run_search_no_match_prints_empty_message() {
-        let _g = crate::GLOBAL_STATE_LOCK.lock().unwrap();
+        let _g = crate::GLOBAL_STATE_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         let home = singleton_test_home();
         let _env = EnvHomeGuard::point_at(&home);
         run(

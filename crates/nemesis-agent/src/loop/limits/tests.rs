@@ -156,3 +156,38 @@ fn ruleless_categories_are_not_recorded() {
     );
     assert_eq!(COUNTERS.lock().get("test_cat").map(|q| q.len()), Some(1));
 }
+
+// ---------------------------------------------------------------------------
+// wave5 补充：check_limit 独立路径（无规则 continue / 窗口淘汰 / None 兜底）。
+// ---------------------------------------------------------------------------
+
+/// check_limit 对无规则类别走 continue 臂后整体返回 None（71/89/91）。
+#[test]
+fn check_limit_ruleless_category_returns_none() {
+    let _g = LIMITS_LOCK.lock();
+    clear_all();
+    set_rules(rule(3, 3600));
+    // 混合：首个无规则（continue），次个有规则但在限内 → None 兜底。
+    let cats = vec!["never_configured".to_string(), "test_cat".to_string()];
+    assert!(check_limit(&cats).is_none());
+    assert!(
+        !COUNTERS.lock().contains_key("never_configured"),
+        "无规则类别不得入账"
+    );
+}
+
+/// check_limit 自己的窗口淘汰臂：出窗项被清掉后不再超限（77-78）。
+#[test]
+fn check_limit_evicts_expired_entries() {
+    let _g = LIMITS_LOCK.lock();
+    clear_all();
+    set_rules(rule(1, 0)); // window 0 → 任何已有条目立即出窗
+    let cats = vec!["test_cat".to_string()];
+    assert!(check_limit(&cats).is_none(), "空队列不超限");
+    record(&cats); // 记一笔
+    std::thread::sleep(std::time::Duration::from_millis(20));
+    assert!(
+        check_limit(&cats).is_none(),
+        "出窗后 check_limit 应恢复配额"
+    );
+}

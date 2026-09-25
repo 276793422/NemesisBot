@@ -156,6 +156,17 @@ version = \"0.1.0\"
 edition = \"2021\"
 ";
 
+// 故意失败的 fixture 用**不同包名**：测量线束（cargo llvm-cov）会向测试
+// 进程注入共享 CARGO_TARGET_DIR/RUSTFLAGS，两个 e2e fixture 同名包并发
+// 构建时共享产物目录，坏 fixture 可能被误判 fresh（实测一次 exit 0 漂移）。
+// 包名不同 → 包 ID 不同 → 产物/指纹完全隔离。
+const BAD_CARGO_TOML: &str = "\
+[package]
+name = \"nb_c8_fixture_bad\"
+version = \"0.1.0\"
+edition = \"2021\"
+";
+
 const BAD_MAIN_RS: &str = "fn main() { let x: i32 = \"not a number\"; }";
 
 fn write_ok_fixture(ws: &std::path::Path) {
@@ -198,7 +209,7 @@ async fn e2e_build_success_focused_reply_with_archive() {
 async fn e2e_deliberate_compile_failure_focus_and_stats() {
     // 验收：故意编译失败的 fixture 仓 → 回灌含 error 聚焦 + 失败提示 + 存档。
     let ws = temp_ws("bad");
-    std::fs::write(ws.join("Cargo.toml"), OK_CARGO_TOML).unwrap();
+    std::fs::write(ws.join("Cargo.toml"), BAD_CARGO_TOML).unwrap();
     std::fs::create_dir_all(ws.join("src")).unwrap();
     std::fs::write(ws.join("src/main.rs"), BAD_MAIN_RS).unwrap();
     let out = tool_for(&ws)

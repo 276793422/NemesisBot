@@ -694,3 +694,11 @@ pub fn encode_or_none(frame: &BridgeFrame) -> Option<String> {
         }
     }
 }
+
+// AGT 覆盖率批次（2026-09-25）：cluster_frame_sink 槽、authenticate 三前置
+// 臂（门未配置 / 开关关闭 / 空 name 回落 node_id）、send_to_device 队列满/
+// 通道关闭、access_check 投递失败 + 5s 超时、maintenance 超龄 conn 清理、
+// 控制面数据帧防御吞掉 + decode 失败臂。声明为 server 子模块以便直读私有
+// conns 表做时间拨旧（同 backdate 家族语义）。豁免见 server_agt_tests 头注。
+#[cfg(test)]
+mod server_agt_tests;

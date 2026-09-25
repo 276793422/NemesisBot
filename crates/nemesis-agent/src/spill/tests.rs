@@ -437,3 +437,75 @@ fn test_status_counts_files_bytes_and_oldest() {
     assert!(oldest < cutoff, "oldest should be the 5-day-old file");
     let _ = std::fs::remove_dir_all(&root);
 }
+
+// ---------------------------------------------------------------------------
+// wave5 补充：retention 清扫（cleanup_expired）——过期文件/目录摘除/散文件
+// 三臂 + Windows 独占锁下的 warn 容错臂。
+// ---------------------------------------------------------------------------
+
+/// 把文件 mtime 拨回 days_ago 天前（std FileTimes，1.75+）。
+fn set_mtime_old(p: &Path, days_ago: u64) {
+    use std::fs::OpenOptions;
+    let f = OpenOptions::new().write(true).open(p).unwrap();
+    let old = std::time::SystemTime::now() - std::time::Duration::from_secs(days_ago * 86400);
+    f.set_times(std::fs::FileTimes::new().set_modified(old))
+        .unwrap();
+}
+
+#[test]
+fn retention_sweeps_expired_files_dirs_and_strays() {
+    let root = temp_root("sweep");
+    std::fs::create_dir_all(&root).unwrap();
+    let sess = root.join("sessA");
+    std::fs::create_dir_all(&sess).unwrap();
+    let old_file = sess.join("call1.txt");
+    std::fs::write(&old_file, b"old").unwrap();
+    set_mtime_old(&old_file, 8);
+    let fresh = sess.join("fresh.txt");
+    std::fs::write(&fresh, b"new").unwrap();
+    // 散文件：直接躺在根下（非常规产物，同一规则清扫）。
+    let stray = root.join("stray.txt");
+    std::fs::write(&stray, b"old").unwrap();
+    set_mtime_old(&stray, 8);
+
+    let deleted = cleanup_expired(&root, 7);
+    assert_eq!(deleted, 2, "过期会话文件 + 散文件各一: {deleted}");
+    assert!(!old_file.exists());
+    assert!(!stray.exists());
+    assert!(fresh.exists(), "新鲜文件保留");
+    assert!(sess.exists(), "目录里还有新鲜文件，不能摘除");
+}
+
+#[cfg(windows)]
+#[test]
+fn retention_sweep_warns_and_continues_on_locked_files() {
+    let root = temp_root("sweep-locked");
+    std::fs::create_dir_all(&root).unwrap();
+    let sess = root.join("sessB");
+    std::fs::create_dir_all(&sess).unwrap();
+    let locked = sess.join("locked.txt");
+    std::fs::write(&locked, b"old").unwrap();
+    set_mtime_old(&locked, 8);
+    // share_mode(0) 独占打开 → remove 失败 → warn 臂，清扫不得中止。
+    let hold = std::os::windows::fs::OpenOptionsExt::share_mode(
+        std::fs::OpenOptions::new().write(true),
+        0,
+    )
+    .open(&locked)
+    .unwrap();
+    let stray = root.join("stray-locked.txt");
+    std::fs::write(&stray, b"old").unwrap();
+    set_mtime_old(&stray, 8);
+    let hold2 = std::os::windows::fs::OpenOptionsExt::share_mode(
+        std::fs::OpenOptions::new().write(true),
+        0,
+    )
+    .open(&stray)
+    .unwrap();
+
+    let deleted = cleanup_expired(&root, 7);
+    assert_eq!(deleted, 0, "锁住的文件一个也删不掉");
+    assert!(locked.exists() && stray.exists(), "独占锁住的文件必须存活");
+    drop(hold);
+    drop(hold2);
+}

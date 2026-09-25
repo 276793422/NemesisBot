@@ -19,7 +19,9 @@ use super::*;
 #[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
 #[test]
 fn run_local_missing_home_bails_without_creating() {
-    let _guard = crate::GLOBAL_STATE_LOCK.lock().unwrap();
+    let _guard = crate::GLOBAL_STATE_LOCK
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
     let tmp = tempfile::TempDir::new().unwrap();
     let orig = std::env::current_dir().unwrap();
     std::env::set_current_dir(tmp.path()).unwrap();
@@ -193,7 +195,9 @@ mod r7_success_paths {
     #[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
     #[test]
     fn run_list_via_env_home_ok_empty() {
-        let _g = crate::GLOBAL_STATE_LOCK.lock().unwrap();
+        let _g = crate::GLOBAL_STATE_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         let home = singleton_test_home();
         let _env = EnvHomeGuard::point_at(&home);
         run(SessionAction::List, false).expect("guard passes, list ok");
@@ -203,7 +207,9 @@ mod r7_success_paths {
     #[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
     #[test]
     fn run_show_prints_turn_table_ok() {
-        let _g = crate::GLOBAL_STATE_LOCK.lock().unwrap();
+        let _g = crate::GLOBAL_STATE_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         let home = singleton_test_home();
         let _env = EnvHomeGuard::point_at(&home);
         let key = "agent:main:session:r7show1";
@@ -221,7 +227,9 @@ mod r7_success_paths {
     #[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
     #[test]
     fn run_fork_full_flow_copies_jsonl_and_creates_store() {
-        let _g = crate::GLOBAL_STATE_LOCK.lock().unwrap();
+        let _g = crate::GLOBAL_STATE_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         let home = singleton_test_home();
         let _env = EnvHomeGuard::point_at(&home);
         let key = "agent:main:session:r7fork1";
@@ -252,7 +260,9 @@ mod r7_success_paths {
     #[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
     #[test]
     fn run_fork_at_turn_1_keeps_prefix_only() {
-        let _g = crate::GLOBAL_STATE_LOCK.lock().unwrap();
+        let _g = crate::GLOBAL_STATE_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         let home = singleton_test_home();
         let _env = EnvHomeGuard::point_at(&home);
         let key = "agent:main:session:r7fork2";
@@ -280,7 +290,9 @@ mod r7_success_paths {
     #[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
     #[test]
     fn run_fork_missing_source_errors() {
-        let _g = crate::GLOBAL_STATE_LOCK.lock().unwrap();
+        let _g = crate::GLOBAL_STATE_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         let home = singleton_test_home();
         let _env = EnvHomeGuard::point_at(&home);
         let err = run(
@@ -299,7 +311,9 @@ mod r7_success_paths {
     #[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
     #[test]
     fn run_fork_source_without_user_turns_errors() {
-        let _g = crate::GLOBAL_STATE_LOCK.lock().unwrap();
+        let _g = crate::GLOBAL_STATE_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         let home = singleton_test_home();
         let _env = EnvHomeGuard::point_at(&home);
         let key = "agent:main:session:r7fork3";
@@ -328,7 +342,9 @@ mod r7_success_paths {
     #[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
     #[test]
     fn run_show_missing_session_dispatches_to_error() {
-        let _g = crate::GLOBAL_STATE_LOCK.lock().unwrap();
+        let _g = crate::GLOBAL_STATE_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         let home = singleton_test_home();
         let _env = EnvHomeGuard::point_at(&home);
         let err = run(
@@ -349,7 +365,9 @@ mod r7_success_paths {
     #[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
     #[test]
     fn run_show_zero_user_turns_errors_from_cli_bail() {
-        let _g = crate::GLOBAL_STATE_LOCK.lock().unwrap();
+        let _g = crate::GLOBAL_STATE_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         let home = singleton_test_home();
         let _env = EnvHomeGuard::point_at(&home);
         let key = "agent:main:session:r7show-zero";

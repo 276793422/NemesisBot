@@ -481,3 +481,63 @@ mod linux_live {
         );
     }
 }
+
+// ===========================================================================
+// Wave4 覆盖批次：read_executor_allow_network 决策表（backend.rs 唯一
+// 无测试的 pub fn——三消费臂：读失败/解析失败/字段缺失或类型不对，
+// 全部诚实回 false，与 Sandboxie ini 的 AllowNetworkAccess=n 默认一致）。
+// ===========================================================================
+
+#[test]
+fn read_executor_allow_network_decision_table() {
+    let dir = tempfile::tempdir().unwrap();
+    let home = dir.path();
+
+    // 1) config.json 不存在 → false（读失败臂）。
+    assert!(!read_executor_allow_network(home));
+
+    // 2) config.json 非 JSON → false（解析失败臂）。
+    std::fs::write(home.join("config.json"), "{not json").unwrap();
+    assert!(!read_executor_allow_network(home));
+
+    // 3) 合法 JSON 但无 executor 段 → false。
+    std::fs::write(home.join("config.json"), r#"{"agents":{}}"#).unwrap();
+    assert!(!read_executor_allow_network(home));
+
+    // 4) executor 段存在但无 allow_network 字段 → false（None unwrap_or 臂）。
+    std::fs::write(home.join("config.json"), r#"{"executor":{"strict":true}}"#).unwrap();
+    assert!(!read_executor_allow_network(home));
+
+    // 5) allow_network=true → true（唯一放行形态）。
+    std::fs::write(
+        home.join("config.json"),
+        r#"{"executor":{"allow_network":true}}"#,
+    )
+    .unwrap();
+    assert!(read_executor_allow_network(home));
+
+    // 6) allow_network 是字符串（类型不对，as_bool None）→ false。
+    std::fs::write(
+        home.join("config.json"),
+        r#"{"executor":{"allow_network":"true"}}"#,
+    )
+    .unwrap();
+    assert!(!read_executor_allow_network(home));
+
+    // 7) allow_network=false 显式 → false。
+    std::fs::write(
+        home.join("config.json"),
+        r#"{"executor":{"allow_network":false}}"#,
+    )
+    .unwrap();
+    assert!(!read_executor_allow_network(home));
+
+    // 与 read_executor_strict 互不串扰：strict 读取不受 allow_network 改动影响。
+    std::fs::write(
+        home.join("config.json"),
+        r#"{"executor":{"allow_network":true,"strict":false}}"#,
+    )
+    .unwrap();
+    assert!(!read_executor_strict(home));
+    assert!(read_executor_allow_network(home));
+}

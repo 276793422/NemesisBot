@@ -240,3 +240,7 @@ mod tests;
 // persistence-seeded engine + missing-def reply fallback.
 #[cfg(test)]
 mod s10b_tests;
+
+// AGT 覆盖率批次（2026-09-25）：Observer 名牌臂（name() 契约）。
+#[cfg(test)]
+mod agt_tests;

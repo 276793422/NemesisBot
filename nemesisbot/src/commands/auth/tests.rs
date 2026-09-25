@@ -253,7 +253,9 @@ mod run_arm {
         F: FnOnce(std::path::PathBuf) -> Fut,
         Fut: std::future::Future<Output = ()>,
     {
-        let _guard = crate::GLOBAL_STATE_LOCK.lock().unwrap();
+        let _guard = crate::GLOBAL_STATE_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         let tmp = TempDir::new().unwrap();
         unsafe {
             std::env::set_var("NEMESISBOT_HOME", tmp.path());
@@ -509,7 +511,9 @@ mod r9_zero {
 
     #[tokio::test]
     async fn openai_browser_flow_prebind_falls_back_to_paste_token_and_saves() {
-        let _guard = crate::GLOBAL_STATE_LOCK.lock().unwrap();
+        let _guard = crate::GLOBAL_STATE_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         let _issuer = EnvVarRemoved::take("NEMESISBOT_OAUTH_ISSUER");
 
         let ws = TestWorkspace::new().unwrap();
@@ -570,7 +574,9 @@ mod r9_zero {
 
     #[tokio::test]
     async fn device_code_dead_issuer_then_empty_input_cancels_login() {
-        let _guard = crate::GLOBAL_STATE_LOCK.lock().unwrap();
+        let _guard = crate::GLOBAL_STATE_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
 
         let ws = TestWorkspace::new().unwrap();
         std::fs::create_dir_all(ws.home()).unwrap();
@@ -806,7 +812,9 @@ mod r10_device_code_flow {
 
     #[tokio::test]
     async fn r10_device_code_full_flow_success_saves_credential_via_mock_issuer() {
-        let _guard = crate::GLOBAL_STATE_LOCK.lock().unwrap();
+        let _guard = crate::GLOBAL_STATE_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
 
         let tmp = TempDir::new().unwrap();
         let issuer = MockIssuer::start();
@@ -845,5 +853,74 @@ mod r10_device_code_flow {
             cred.get("auth_method").and_then(|t| t.as_str()),
             Some("oauth")
         );
+    }
+}
+
+// ===========================================================================
+// wave5 round2 batch-2（2026-09-25）：auth run() 的 paste-token EOF 弃权臂
+//（非 openai provider 跳过 OAuth → 提示输入 → cargo test stdin 管道 EOF →
+// 空输入 → Login cancelled）与 Status 的完整凭据明细臂（account_id +
+// expires_at 两行注记）。
+// ===========================================================================
+
+#[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
+mod w5b2 {
+    use super::super::{AuthAction, run};
+    use crate::tests::EnvHomeGuard;
+
+    /// 非 openai provider 的 Login：无 OAuth 环节 → paste-token 提示 →
+    /// stdin EOF → 空 token →「Login cancelled」Ok 臂（不落盘）。
+    #[tokio::test]
+    async fn w5_login_non_openai_eof_cancel() {
+        let _guard = crate::GLOBAL_STATE_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        let tmp = tempfile::TempDir::new().unwrap();
+        let home = tmp.path().join(".nemesisbot");
+        std::fs::create_dir_all(&home).unwrap();
+        let _env = EnvHomeGuard::point_at(&home);
+
+        run(
+            AuthAction::Login {
+                provider: "zhipu".into(),
+                device_code: false,
+            },
+            false,
+        )
+        .await
+        .expect("EOF 弃权臂必须 Ok 早退");
+        assert!(!home.join("auth.json").exists(), "取消臂不得写凭据文件");
+    }
+
+    /// Status：存量凭据带 account_id + expires_at → 明细两行注记臂
+    ///（Account / Expires），整体 Ok。
+    #[tokio::test]
+    async fn w5_status_prints_account_and_expiry_details() {
+        let _guard = crate::GLOBAL_STATE_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        let tmp = tempfile::TempDir::new().unwrap();
+        let home = tmp.path().join(".nemesisbot");
+        std::fs::create_dir_all(&home).unwrap();
+        let _env = EnvHomeGuard::point_at(&home);
+
+        let store = nemesis_auth::AuthStore::new(&home.join("auth.json").to_string_lossy());
+        store
+            .save(
+                "zhipu",
+                nemesis_auth::AuthCredential {
+                    access_token: "at-w5b2".into(),
+                    refresh_token: None,
+                    expires_at: Some(chrono::Local::now() + chrono::Duration::hours(24)),
+                    provider: "zhipu".into(),
+                    auth_method: "token".into(),
+                    account_id: Some("acct-w5b2".into()),
+                },
+            )
+            .expect("seed 凭据必须入库");
+
+        run(AuthAction::Status, false)
+            .await
+            .expect("Status 全明细必须成功");
     }
 }

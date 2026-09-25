@@ -24,7 +24,9 @@ use tokio_tungstenite::tungstenite::Message as WsMessage;
 /// PTY manager 串行锁。tokio Mutex——async 测试
 /// 持锁跨 await（roundtrip 全程串行化），std Mutex 会触发
 /// await_holding_lock（跨 await 锁一律 tokio Mutex 的家规）。
-static TEST_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+/// pub(super)：agt_tests 的会话级测试共用同一把锁（PTY_MANAGER 全局
+/// 注册表 + estop kill-all 会误伤并发会话，必须全局串行）。
+pub(super) static TEST_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 
 // ---------------------------------------------------------------------------
 // 夹具

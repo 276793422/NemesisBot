@@ -385,3 +385,7 @@ pub(crate) fn write_sidecar(dir: &Path, sidecar: &BaselineSidecar) -> Result<(),
 
 #[cfg(test)]
 mod tests;
+
+// 覆盖率补充批次：receive 失败臂 / trait 委托 / sweep 跳过与失败形态。
+#[cfg(test)]
+mod cov_tests;

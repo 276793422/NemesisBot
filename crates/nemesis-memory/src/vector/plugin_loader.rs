@@ -312,4 +312,4 @@ pub fn load_plugin(path: &str) -> Result<Box<dyn EmbeddingPlugin>, PluginError> 
 // ---------------------------------------------------------------------------
 
 #[cfg(test)]
-mod tests;
+pub(crate) mod tests;

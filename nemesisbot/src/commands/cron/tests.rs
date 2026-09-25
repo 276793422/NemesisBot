@@ -387,7 +387,9 @@ mod run_arm {
     use super::super::{CronAction, run};
 
     fn with_env_home(f: impl FnOnce(std::path::PathBuf)) {
-        let _guard = crate::GLOBAL_STATE_LOCK.lock().unwrap();
+        let _guard = crate::GLOBAL_STATE_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         let tmp = tempfile::tempdir().unwrap();
         unsafe {
             std::env::set_var("NEMESISBOT_HOME", tmp.path());
@@ -675,7 +677,9 @@ mod wave_b {
     use super::super::{CronAction, run};
 
     fn with_env_home(f: impl FnOnce(std::path::PathBuf)) {
-        let _guard = crate::GLOBAL_STATE_LOCK.lock().unwrap();
+        let _guard = crate::GLOBAL_STATE_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         let tmp = tempfile::tempdir().unwrap();
         unsafe {
             std::env::set_var("NEMESISBOT_HOME", tmp.path());

@@ -185,3 +185,26 @@ fn make_snippet_centers_on_first_hit() {
         "snippet must be built around the first term hit, got: {out}"
     );
 }
+
+// ---------------------------------------------------------------------------
+// AGT 覆盖率批次（2026-09-24）：make_snippet 无命中臂——terms 都不在文本里
+// → hit 保持 None → 从文本头部开窗（unwrap_or(0) 臂）。
+// ---------------------------------------------------------------------------
+
+#[test]
+fn agt_make_snippet_no_hit_starts_at_beginning() {
+    let words: Vec<String> = (0..40).map(|i| format!("w{i:02}")).collect();
+    let text = words.join(" ");
+    let snippet = make_snippet(&text, &["absent-term".to_string()], 30);
+    // 无命中 → 窗口从开头起
+    assert!(snippet.starts_with("w00"), "got: {snippet}");
+    assert!(snippet.chars().count() <= 30 + "...".len());
+}
+
+#[test]
+fn agt_make_snippet_single_char_latin_terms_skipped() {
+    // 单字符非 CJK term 被跳过（continue 臂）——不会把窗口拉到任意单字母处
+    let text = "a big whale swims";
+    let snippet = make_snippet(text, &["a".to_string(), "big".to_string()], 100);
+    assert_eq!(snippet, text);
+}

@@ -267,3 +267,6 @@ pub fn run(action: IssueAction, local: bool) -> Result<()> {
     }
     Ok(())
 }
+
+#[cfg(test)]
+mod issue_tests;

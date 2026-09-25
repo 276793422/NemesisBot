@@ -241,3 +241,9 @@ pub fn live_bindings(workspace: &str) -> BTreeMap<String, String> {
 
 #[cfg(test)]
 mod tests;
+
+// AGT 覆盖率批次（2026-09-25）：get_or_create_session 的 manual_title 臂
+// （title_manual 旗标落 sidecar）+ 存活工件种子后的幂等命中。豁免（收括号
+// lcov 伪零 + 锁毒化臂）见 agt_tests 头注。
+#[cfg(test)]
+mod agt_tests;

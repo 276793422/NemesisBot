@@ -663,7 +663,9 @@ mod run_arm {
     use serde_json::json;
 
     fn with_env_home(f: impl FnOnce(std::path::PathBuf)) {
-        let _guard = crate::GLOBAL_STATE_LOCK.lock().unwrap();
+        let _guard = crate::GLOBAL_STATE_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         let tmp = tempfile::tempdir().unwrap();
         unsafe {
             std::env::set_var("NEMESISBOT_HOME", tmp.path());
@@ -1041,7 +1043,9 @@ mod wave_a {
     use super::super::{CorsAction, load_or_create_cors, run};
 
     fn with_env_home(f: impl FnOnce(std::path::PathBuf)) {
-        let _guard = crate::GLOBAL_STATE_LOCK.lock().unwrap();
+        let _guard = crate::GLOBAL_STATE_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         let tmp = tempfile::tempdir().unwrap();
         unsafe {
             std::env::set_var("NEMESISBOT_HOME", tmp.path());
@@ -1207,7 +1211,9 @@ mod wave_a {
     fn load_or_create_write_failure_when_parent_is_regular_file_bubbles() {
         // 父路径是普通文件：create_dir_all 失败被 `let _` 吞掉，
         // 随后的 fs::write 打不开路径 → 74 行 `?` 把 Err 冒给调用方。
-        let _guard = crate::GLOBAL_STATE_LOCK.lock().unwrap();
+        let _guard = crate::GLOBAL_STATE_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         let tmp = tempfile::tempdir().unwrap();
         std::fs::write(tmp.path().join("config"), "not a dir").unwrap();
         let path = tmp.path().join("config").join("cors.json");
@@ -1221,7 +1227,9 @@ mod wave_a {
     fn run_add_save_failure_propagates_when_existing_config_is_readonly() {
         // 只读 cors.json：exists → 读入正常，push 后 save_cors 写失败 → 84 行 `?`。
         // Windows readonly 属性 / unix 0o444 都会拒绝写打开，语义一致。
-        let _guard = crate::GLOBAL_STATE_LOCK.lock().unwrap();
+        let _guard = crate::GLOBAL_STATE_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         let tmp = tempfile::tempdir().unwrap();
         unsafe {
             std::env::set_var("NEMESISBOT_HOME", tmp.path());
@@ -1260,7 +1268,9 @@ mod r10_validate {
     use super::super::{CorsAction, run};
 
     fn with_env_home(f: impl FnOnce(&std::path::Path)) {
-        let _guard = crate::GLOBAL_STATE_LOCK.lock().unwrap();
+        let _guard = crate::GLOBAL_STATE_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         let tmp = tempfile::tempdir().unwrap();
         unsafe {
             std::env::set_var("NEMESISBOT_HOME", tmp.path());

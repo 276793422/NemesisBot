@@ -4,6 +4,11 @@
 //! 让协议层不需要真实 agent 装配即可全流程验证：握手 / -32700 / -32601 /
 //! 事件流顺序 / 取消 / permission 往返。AcpApprovalManager 的阻塞桥用
 //! multi_thread flavor（block_in_place 在 current_thread runtime 会 panic）。
+//!
+//! 生产装配用例（RealSessionFactory / LoopDriver）持 GLOBAL_STATE_LOCK 跨
+//! await（credentials 全局路径 / vault 解析器 / path manager 单例）——
+//! 同 nemesisbot/src/tests.rs 顶部先例，tests 域统一豁免该 lint。
+#![allow(clippy::await_holding_lock)]
 
 use super::*;
 use tokio::io::{BufReader, Lines};
@@ -234,6 +239,17 @@ impl TestClient {
 
     async fn recv(&mut self) -> Value {
         let line = tokio::time::timeout(Duration::from_secs(5), self.lines.next_line())
+            .await
+            .expect("timeout waiting for frame")
+            .expect("server side closed unexpectedly")
+            .expect("read line failed");
+        serde_json::from_str(&line).expect("frame not JSON")
+    }
+
+    /// 宽预算版 recv：LLM 恢复环重试含退避（秒级），prompt 结局帧会晚于
+    /// 默认 5s 到达（LoopDriver 生产装配用例用）。
+    async fn recv_within(&mut self, budget: Duration) -> Value {
+        let line = tokio::time::timeout(budget, self.lines.next_line())
             .await
             .expect("timeout waiting for frame")
             .expect("server side closed unexpectedly")
@@ -589,4 +605,349 @@ async fn pending_resolve_unknown_id_is_honest_false() {
         "p-1",
         Some(&json!({"outcome": {"outcome": "selected", "optionId": "allow_once"}}))
     ));
+}
+
+// ---------------------------------------------------------------------------
+// Coverage 追加（2026-09-24）：版本协商失配 / mcpServers 忽略 / 工厂失败 /
+// prompt 缺参与空块 / cancel 静默 / 空行跳过 / EOF 收尾 / 生产装配
+// （RealSessionFactory + LoopDriver）。
+// ---------------------------------------------------------------------------
+
+/// permission 响应载荷再兜一层：outcome 存在但不是对象 / 内层 outcome 缺失
+/// （`_ => None` 兜底臂——调用方语义：不可解析 = 失败关闭按拒绝）。
+#[test]
+fn permission_outcome_non_object_and_missing_inner_are_none() {
+    assert_eq!(parse_permission_outcome(&json!({"outcome": 42})), None);
+    assert_eq!(parse_permission_outcome(&json!({"outcome": {}})), None);
+}
+
+/// 版本协商：client 报不支持的版本 → 回我们最新（PROTOCOL_VERSION），
+/// 客户端不支持则自行断开（spec 语义）。
+#[tokio::test]
+async fn initialize_version_mismatch_negotiates_server_latest() {
+    let (mut c, _, _) = start_server(vec![]).await;
+    c.send(&json!({"jsonrpc": "2.0", "id": 3, "method": "initialize",
+                   "params": {"protocolVersion": 99}}))
+        .await;
+    let frame = c.recv().await;
+    assert_eq!(frame["id"], 3);
+    assert_eq!(
+        frame["result"]["protocolVersion"], PROTOCOL_VERSION,
+        "client 99 ≠ ours → negotiated 回我们最新"
+    );
+}
+
+/// initialize 作通知（无 id）发送：静默不回包（643-645 else 臂）——
+/// 下一帧必须是后续请求的响应，若通知被回包会插队。
+#[tokio::test]
+async fn initialize_notification_without_id_is_silent() {
+    let (mut c, _, _) = start_server(vec![]).await;
+    c.send(&json!({"jsonrpc": "2.0", "method": "initialize",
+                   "params": {"protocolVersion": 1}}))
+        .await;
+    c.send(&init_request(5)).await;
+    let frame = c.recv().await;
+    assert_eq!(frame["id"], 5, "initialize 通知不得产生任何帧");
+}
+
+/// session/new 带 mcpServers：v1 诚实边界——忽略 + stderr warn，
+/// session 照常创建（不因参数不支持而失败）。
+#[tokio::test]
+async fn session_new_ignores_mcp_servers_with_warning() {
+    let (mut c, created, _) = start_server(vec![]).await;
+    c.send(&init_request(0)).await;
+    let _ = c.recv().await;
+    let dir = tempfile::tempdir().unwrap();
+    c.send(&json!({"jsonrpc": "2.0", "id": 1, "method": "session/new",
+                   "params": {"cwd": dir.path().to_string_lossy(),
+                              "mcpServers": [{"command": "a"}, {"command": "b"}]}}))
+        .await;
+    let frame = c.recv().await;
+    let sid = frame["result"]["sessionId"].as_str().unwrap().to_string();
+    assert!(!sid.is_empty());
+    assert_eq!(created.lock().unwrap().len(), 1, "session 照常装配");
+}
+
+/// 恒败工厂：session 装配失败 → -32603（internal error），错误文本透传。
+struct ErrFactory;
+
+impl SessionFactory for ErrFactory {
+    fn create<'a>(
+        &'a self,
+        _cwd: PathBuf,
+        _session_id: String,
+        _gate: Arc<PermissionGate>,
+    ) -> Pin<Box<dyn Future<Output = Result<Box<dyn PromptDriver>, String>> + Send + 'a>> {
+        Box::pin(async { Err("boom".to_string()) })
+    }
+}
+
+/// 自定义工厂版 start_server（ErrFactory / RealSessionFactory 用）。
+async fn start_with_factory(factory: Arc<dyn SessionFactory>) -> TestClient {
+    let (client_side, server_side) = tokio::io::duplex(64 * 1024);
+    let (sr, sw) = tokio::io::split(server_side);
+    tokio::spawn(serve(sr, sw, factory, "test-1.0".to_string()));
+    TestClient::new(client_side)
+}
+
+#[tokio::test]
+async fn session_new_factory_failure_maps_to_minus_32603() {
+    let mut c = start_with_factory(Arc::new(ErrFactory)).await;
+    c.send(&init_request(0)).await;
+    let _ = c.recv().await;
+    let dir = tempfile::tempdir().unwrap();
+    c.send(&json!({"jsonrpc": "2.0", "id": 1, "method": "session/new",
+                   "params": {"cwd": dir.path().to_string_lossy()}}))
+        .await;
+    let frame = c.recv().await;
+    assert_eq!(frame["error"]["code"], -32603);
+    assert!(
+        frame["error"]["message"].as_str().unwrap().contains("boom"),
+        "工厂错误文本必须透传: {}",
+        frame["error"]["message"]
+    );
+}
+
+/// prompt 缺 sessionId → -32602 "missing sessionId"（531-534 else 臂）。
+#[tokio::test]
+async fn prompt_without_session_id_is_minus_32602() {
+    let (mut c, _, _) = start_server(vec![]).await;
+    c.send(&init_request(0)).await;
+    let _ = c.recv().await;
+    c.send(
+        &json!({"jsonrpc": "2.0", "id": 4, "method": "session/prompt",
+                   "params": {"prompt": [{"type": "text", "text": "x"}]}}),
+    )
+    .await;
+    let frame = c.recv().await;
+    assert_eq!(frame["error"]["code"], -32602);
+    assert!(
+        frame["error"]["message"]
+            .as_str()
+            .unwrap()
+            .contains("missing sessionId")
+    );
+}
+
+/// prompt 空块数组：session 有效但内容为空 → -32602 "empty prompt"
+/// （content_blocks_to_text Err 臂 → 553-556 透传）。
+#[tokio::test]
+async fn prompt_with_empty_blocks_is_minus_32602() {
+    let (mut c, _, _) = start_server(vec![]).await;
+    c.send(&init_request(0)).await;
+    let _ = c.recv().await;
+    let dir = tempfile::tempdir().unwrap();
+    c.send(&json!({"jsonrpc": "2.0", "id": 1, "method": "session/new",
+                   "params": {"cwd": dir.path().to_string_lossy()}}))
+        .await;
+    let sid = c.recv().await["result"]["sessionId"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    c.send(
+        &json!({"jsonrpc": "2.0", "id": 2, "method": "session/prompt",
+                   "params": {"sessionId": sid, "prompt": []}}),
+    )
+    .await;
+    let frame = c.recv().await;
+    assert_eq!(frame["error"]["code"], -32602);
+    assert_eq!(frame["error"]["message"], "empty prompt");
+}
+
+/// session/cancel 缺 sessionId / 未知会话：双双静默（606-618 早退臂）——
+/// 下一帧必须是后续请求的响应。
+#[tokio::test]
+async fn cancel_without_or_unknown_session_is_silent() {
+    let (mut c, _, _) = start_server(vec![]).await;
+    c.send(&json!({"jsonrpc": "2.0", "method": "session/cancel", "params": {}}))
+        .await;
+    c.send(&json!({"jsonrpc": "2.0", "method": "session/cancel",
+                   "params": {"sessionId": "ghost"}}))
+        .await;
+    c.send(&init_request(6)).await;
+    let frame = c.recv().await;
+    assert_eq!(frame["id"], 6, "cancel 缺参/未知会话都必须静默");
+}
+
+/// 空白行跳过（687-689）：不回 -32700、不断流，后续帧照常处理。
+#[tokio::test]
+async fn blank_lines_are_skipped() {
+    let (mut c, _, _) = start_server(vec![]).await;
+    c.write.write_all(b"\n   \n\t\n").await.unwrap();
+    c.write.flush().await.unwrap();
+    c.send(&init_request(8)).await;
+    let frame = c.recv().await;
+    assert_eq!(frame["id"], 8, "空行必须跳过（不得回 -32700 或断流）");
+}
+
+/// EOF 收尾（697-699 + 711-738）：客户端断开 → 读循环 EOF → serve 排干
+/// 出站缓冲、writer task 退出 → 返回 Ok（协议层干净关闭，无错误上抛）。
+#[tokio::test]
+async fn eof_ends_server_cleanly_after_draining_output() {
+    let (client_side, server_side) = tokio::io::duplex(64 * 1024);
+    let (sr, sw) = tokio::io::split(server_side);
+    let factory = Arc::new(FakeFactory {
+        script: vec![],
+        created: Arc::new(Mutex::new(Vec::new())),
+        perm_log: Arc::new(Mutex::new(Vec::new())),
+    });
+    let handle = tokio::spawn(serve(sr, sw, factory, "test-1.0".to_string()));
+    let mut c = TestClient::new(client_side);
+    c.send(&init_request(1)).await;
+    let frame = c.recv().await;
+    assert_eq!(frame["id"], 1);
+    // 客户端整体 drop → duplex 关闭 → serve 应自然收尾。
+    drop(c);
+    let r = tokio::time::timeout(Duration::from_secs(5), handle)
+        .await
+        .expect("serve must end after EOF")
+        .expect("serve task panicked");
+    assert!(r.is_ok(), "serve must return Ok on clean EOF: {r:?}");
+}
+
+/// M1a hook 事件 → update 载荷映射（830-846）：ToolStarted/ToolFinished
+/// 映射为 tool_call / tool_call_update，其余变体（ModeChanged 等未宣告
+/// 形态）诚实跳过返回 None。
+#[test]
+fn map_hook_event_maps_tool_events_and_skips_rest() {
+    let started = nemesis_types::agent::AgentEvent::ToolStarted {
+        session_key: "acp:s1".into(),
+        chat_id: "c1".into(),
+        call_id: "call-9".into(),
+        tool: "grep".into(),
+        args_preview: "{}".into(),
+    };
+    let u = map_hook_event(&started).expect("ToolStarted 必须映射");
+    assert_eq!(u["sessionUpdate"], "tool_call");
+    assert_eq!(u["toolCallId"], "call-9");
+    assert_eq!(u["kind"], "read", "grep → read");
+
+    let finished = nemesis_types::agent::AgentEvent::ToolFinished {
+        session_key: "acp:s1".into(),
+        chat_id: "c1".into(),
+        call_id: "call-9".into(),
+        tool: "grep".into(),
+        duration_ms: 12,
+        ok: false,
+        result_preview: "Tool error: x".into(),
+    };
+    let u2 = map_hook_event(&finished).expect("ToolFinished 必须映射");
+    assert_eq!(u2["sessionUpdate"], "tool_call_update");
+    assert_eq!(u2["status"], "failed");
+
+    // 未宣告形态：TodoUpdated/ModeChanged/RoundText v1 不透。
+    assert!(
+        map_hook_event(&nemesis_types::agent::AgentEvent::ModeChanged {
+            session_key: "s".into(),
+            chat_id: "c".into(),
+            mode: "plan".into(),
+        })
+        .is_none()
+    );
+}
+
+/// 审批桥 is_running：gate 恒在线（编辑器即审批面）。
+#[cfg(feature = "security")]
+#[test]
+fn approval_manager_is_running_reports_true() {
+    use nemesis_security::auditor::ApprovalManager;
+    let (tx, _rx) = mpsc::channel::<Value>(4);
+    let gate = Arc::new(PermissionGate::new(
+        "s1".to_string(),
+        tx,
+        Arc::new(PendingPermissions::new()),
+    ));
+    let mgr = AcpApprovalManager { gate };
+    assert!(mgr.is_running());
+}
+
+/// RealSessionFactory：配置缺席 → fail loud（headless 不隐式 onboard，
+/// 与 run.rs 同纪律）。纯路径检查，不触进程全局，无需锁。
+#[tokio::test]
+async fn real_factory_without_config_fails_loud() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    let factory = RealSessionFactory {
+        home: tmp.path().join("nohome"),
+    };
+    let (tx, _rx) = mpsc::channel::<Value>(4);
+    let gate = Arc::new(PermissionGate::new(
+        "s0".to_string(),
+        tx,
+        Arc::new(PendingPermissions::new()),
+    ));
+    let err = match factory
+        .create(tmp.path().to_path_buf(), "sid".into(), gate)
+        .await
+    {
+        Err(e) => e,
+        Ok(_) => panic!("配置缺席必须 Err（headless 不隐式 onboard）"),
+    };
+    assert!(err.contains("Configuration not found"), "got: {err}");
+    assert!(err.contains("onboard"), "报错必须带补救指引: {err}");
+}
+
+/// 生产装配全流程（K1 同源）：config.json 在（同 agent_factory::tests 先例，
+/// api_base 指向 127.0.0.1:9 连接拒绝、离线装配不发请求）→ session/new
+/// 装配成功 → prompt 打到不可达 LLM → Error 结局映射 stopReason=refusal
+/// （失败诚实呈现）。进程全局注入（credentials 路径 / vault 解析器 /
+/// NEMESISBOT_HOME）→ 持 GLOBAL_STATE_LOCK 串行 + EnvHomeGuard 隔离。
+#[cfg(windows)] // Windows-form test (EnvHomeGuard + process globals; Linux nightly excluded)
+#[tokio::test]
+async fn real_factory_assembles_session_and_unreachable_llm_maps_to_refusal() {
+    let _lock = crate::GLOBAL_STATE_LOCK
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
+    let tmp = tempfile::TempDir::new().unwrap();
+    let home = tmp.path().join(".nemesisbot");
+    std::fs::create_dir_all(&home).unwrap();
+    let cfg = serde_json::json!({
+        "agents": { "defaults": { "llm": "acp-model" } },
+        "model_list": [{
+            "model_name": "acp-model",
+            "model": "testai/acp-model",
+            "api_key": "test-key",
+            "api_base": "http://127.0.0.1:9",
+            "model_tier": "mini"
+        }]
+    });
+    std::fs::write(home.join("config.json"), cfg.to_string()).unwrap();
+    let _env = crate::tests::EnvHomeGuard::point_at(&home);
+
+    let factory = Arc::new(RealSessionFactory { home: home.clone() });
+    let mut c = start_with_factory(factory).await;
+    c.send(&init_request(0)).await;
+    let _ = c.recv().await;
+    c.send(&json!({"jsonrpc": "2.0", "id": 1, "method": "session/new",
+                   "params": {"cwd": tmp.path().to_string_lossy()}}))
+        .await;
+    let frame = c.recv().await;
+    let sid = frame["result"]["sessionId"]
+        .as_str()
+        .expect("K1 装配必须离线成功（provider 构造不发请求）")
+        .to_string();
+
+    // prompt → LLM 不可达（127.0.0.1:9 连接拒绝）→ loop 侧恢复环重试耗尽
+    // （含退避，实测 ~15s）→ Error 事件 → refusal + 错误文本收尾 chunk。
+    c.send(
+        &json!({"jsonrpc": "2.0", "id": 2, "method": "session/prompt",
+                   "params": {"sessionId": sid, "prompt": [{"type": "text", "text": "hi"}]}}),
+    )
+    .await;
+    let frame = loop {
+        let f = c.recv_within(Duration::from_secs(115)).await;
+        if f.get("id").is_some() {
+            break f; // prompt 响应（此前可能有收尾 chunk 通知）
+        }
+        // update 通知：错误结局的收尾 chunk 必须先于响应到达。
+        assert_eq!(f["method"], "session/update");
+        assert_eq!(
+            f["params"]["update"]["sessionUpdate"], "agent_message_chunk",
+            "失败结局的收尾文本: {f}"
+        );
+    };
+    assert_eq!(frame["id"], 2);
+    assert_eq!(
+        frame["result"]["stopReason"], "refusal",
+        "LLM 失败必须诚实映射 refusal"
+    );
 }

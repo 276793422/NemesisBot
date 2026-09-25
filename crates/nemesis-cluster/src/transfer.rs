@@ -850,3 +850,8 @@ fn load_dedup(inbox_root: &Path) -> HashMap<String, DedupEntry> {
 
 #[cfg(test)]
 mod tests;
+
+// 覆盖率补充批次：围栏剩余面 / begin staging 失败臂 / end 幂等重放 +
+// 块长·SHA 不符 + 落地替换失败 / validate_manifest 三态 / collect 排除。
+#[cfg(test)]
+mod cov_tests;

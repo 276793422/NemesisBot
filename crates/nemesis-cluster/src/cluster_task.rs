@@ -525,4 +525,6 @@ impl ClusterTaskList {
 }
 
 #[cfg(test)]
+mod cov_tests;
+#[cfg(test)]
 mod tests;

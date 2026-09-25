@@ -290,4 +290,6 @@ fn get_credential_patterns() -> &'static CredentialPatterns {
 }
 
 #[cfg(test)]
+mod cov_tests;
+#[cfg(test)]
 mod tests;

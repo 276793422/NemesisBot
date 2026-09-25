@@ -183,3 +183,8 @@ pub(crate) fn read_session_todos(
         Err(_) => Vec::new(),
     }
 }
+
+// AGT 覆盖率批次（2026-09-25）：todo_get 的两个确定性 bail 臂（缺
+// session_id / workspace 未配置）。
+#[cfg(test)]
+mod agt_tests;

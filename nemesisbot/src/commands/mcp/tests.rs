@@ -878,7 +878,9 @@ fn s11b_temp_home_env() -> S11bTempHomeEnv {
 #[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
 #[test]
 fn test_s11b_run_sync_arms() {
-    let _guard = crate::GLOBAL_STATE_LOCK.lock().unwrap();
+    let _guard = crate::GLOBAL_STATE_LOCK
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
     let th = s11b_temp_home_env();
     let mcp_cfg = crate::common::mcp_config_path(&th.home);
 
@@ -909,7 +911,9 @@ fn test_s11b_run_sync_arms() {
 #[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn test_s11b_run_async_dispatch_arms() {
-    let _guard = crate::GLOBAL_STATE_LOCK.lock().unwrap();
+    let _guard = crate::GLOBAL_STATE_LOCK
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
     let th = s11b_temp_home_env();
     let _ = &th.home;
     // block_in_place 分发 arm 用「服务器不存在」的快路径逐个覆盖：

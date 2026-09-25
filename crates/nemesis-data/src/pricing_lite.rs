@@ -73,3 +73,7 @@ pub fn parse_litellm_json(raw: &str) -> Result<Vec<ModelPricing>, String> {
 
 #[cfg(test)]
 mod tests;
+
+// 覆盖率补充测试（非有限价格过滤）。
+#[cfg(test)]
+mod cov_tests;

@@ -208,3 +208,11 @@ impl Default for MessageBus {
 
 #[cfg(test)]
 mod tests;
+
+// 覆盖率补充测试（Default/Debug/Rejected 日志路径）。
+#[cfg(test)]
+mod filter_cov_tests;
+
+// 覆盖率补充测试（发送失败 / dropped 计数分支）。
+#[cfg(test)]
+mod bus_cov_tests;

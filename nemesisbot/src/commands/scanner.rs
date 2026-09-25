@@ -1299,3 +1299,6 @@ async fn cmd_clamav_test(security_cfg: &std::path::Path, file_path: &str) -> Res
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+mod cov_tests;

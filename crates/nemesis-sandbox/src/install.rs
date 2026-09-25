@@ -245,3 +245,10 @@ pub fn ensure_installed(paths: &SandboxPaths) -> Result<()> {
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+mod cov_tests;
+
+// Wave6B 覆盖率收尾：ensure_installed 归属门 foreign bail 分支。
+#[cfg(test)]
+mod cov_wave6b_tests;

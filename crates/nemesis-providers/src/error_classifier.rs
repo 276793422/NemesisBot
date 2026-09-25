@@ -243,4 +243,6 @@ pub fn classify_reason(error_msg: &str) -> Option<FailoverReason> {
 }
 
 #[cfg(test)]
+mod cov_tests;
+#[cfg(test)]
 mod tests;

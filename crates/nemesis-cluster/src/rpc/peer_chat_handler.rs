@@ -769,3 +769,6 @@ pub async fn send_callback(
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+mod cov_tests;

@@ -83,6 +83,13 @@ mod sessions_extra_tests;
 #[cfg(test)]
 mod sessions_s10b_tests;
 
+// AGT 覆盖率批次（2026-09-25）：mark_delivered / create 的 binding_key
+// get-or-create 全链与 plain 标题臂 / set·remove_binding / rename 带 title
+// happy path（test_home::lock_home() 重定向单例 home）/ rewind_to_message
+// 与 redo 的缺参 bail。
+#[cfg(test)]
+mod sessions_agt_tests;
+
 // L4 会话分享（2026-09-07）：share_create/share_list/share_revoke 三命令
 // 的 handler 层测试（存储语义在 crate::share 单元测试里）。
 #[cfg(test)]
@@ -434,6 +441,12 @@ mod chat_todo_tests;
 // F1 (2026-09-05): chat.set_mode / chat.get_mode（plan/build 双模式）测试。
 #[cfg(test)]
 mod chat_mode_tests;
+
+// AGT 覆盖率批次（2026-09-25）：workspace 文件三件套的确定性失败臂
+// （read 缺文件 / write 建目录失败）+ 原子写成功回读 + 绝对路径拒绝。
+#[cfg(test)]
+mod agt_tests;
+
 #[cfg(all(test, feature = "cluster"))]
 mod cluster_deep_tests;
 #[cfg(all(test, feature = "forge"))]

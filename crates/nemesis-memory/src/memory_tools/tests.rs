@@ -2437,3 +2437,107 @@ async fn list_status_reports_fresh_manager_counts() {
         .await;
     assert!(result.success, "status listing must succeed");
 }
+
+// ---------------------------------------------------------------------------
+// AGT 覆盖率批次（2026-09-24）：execute_search 结果格式化循环（既有测试的
+// mock store 全部返回空结果，循环从未执行——正分与零分双臂一起钉）；
+// memory_list/graph_query 后端 Err → "query failed" 透传臂。
+// ---------------------------------------------------------------------------
+
+/// AGT mock：query 返回固定两条目（0.75 / 0.0 分），其余操作走 Err 占位。
+use crate::types::{Entry, ScoredEntry};
+
+struct AgtScoreStore;
+
+#[async_trait::async_trait]
+impl MemoryStore for AgtScoreStore {
+    async fn store(&self, _entry: Entry) -> Result<String, String> {
+        Ok("agt-id".into())
+    }
+    async fn query(
+        &self,
+        _query: &str,
+        _memory_type: Option<MemoryType>,
+        _limit: usize,
+    ) -> Result<SearchResult, String> {
+        let mk = |id: &str, content: &str, score: f64| ScoredEntry {
+            entry: Entry {
+                id: id.to_string(),
+                typ: MemoryType::LongTerm,
+                content: content.to_string(),
+                metadata: Default::default(),
+                tags: Vec::new(),
+                score: Some(score),
+                created_at: chrono::Local::now(),
+                updated_at: chrono::Local::now(),
+            },
+            score,
+        };
+        Ok(SearchResult {
+            entries: vec![
+                mk("id-hi", "high relevance doc", 0.75),
+                mk("id-zero", "zero score doc", 0.0),
+            ],
+            total: 2,
+        })
+    }
+    async fn get(&self, _id: &str) -> Result<Option<Entry>, String> {
+        Ok(None)
+    }
+    async fn delete(&self, _id: &str) -> Result<bool, String> {
+        Ok(false)
+    }
+    async fn list(
+        &self,
+        _memory_type: Option<MemoryType>,
+        _limit: usize,
+        _offset: usize,
+    ) -> Result<Vec<Entry>, String> {
+        Ok(Vec::new())
+    }
+    async fn close(&self) -> Result<(), String> {
+        Ok(())
+    }
+}
+
+#[tokio::test]
+async fn agt_search_output_formats_positive_and_zero_scores() {
+    let mgr = MemoryManager::with_backends(
+        std::sync::Arc::new(AgtScoreStore),
+        std::sync::Arc::new(ConfigurableEpisodic {
+            err: false,
+            delete_by_id_result: Ok(false),
+        }),
+        std::sync::Arc::new(ConfigurableGraph { err: false }),
+    );
+    let executor = MemoryToolExecutor::new(std::sync::Arc::new(mgr));
+    let result = executor
+        .execute("memory_search", &serde_json::json!({"query": "doc"}))
+        .await;
+    assert!(result.success);
+    // 正分条目 → "[75%]" 后缀（score > 0.0 臂）
+    assert!(result.content.contains("[75%]"), "got: {}", result.content);
+    // 零分条目 → 无百分号后缀（else 臂）
+    assert!(result.content.contains("[ID: id-zero] zero score doc"));
+}
+
+#[tokio::test]
+async fn agt_list_graph_query_backend_error_reports_query_failed() {
+    let (store, epi, _g) = ok_backends();
+    let mgr = manager_with_backends(store, epi, ConfigurableGraph { err: true });
+    let executor = MemoryToolExecutor::new(mgr);
+    let result = executor
+        .execute(
+            "memory_list",
+            &serde_json::json!({"list_type": "graph_query", "subject": "rust"}),
+        )
+        .await;
+    assert!(!result.success);
+    assert!(
+        result
+            .content
+            .contains("query failed: graph query_triples boom"),
+        "got: {}",
+        result.content
+    );
+}

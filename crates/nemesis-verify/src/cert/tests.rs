@@ -171,3 +171,324 @@ fn wrong_root_anchor_detected() {
         Err(ChainError::Malformed(_))
     ));
 }
+
+// ---------------------------------------------------------------------------
+// AGT 覆盖率批次（2026-09-24）：ChainError Display 全变体 / subject_public_key
+// 三个失败臂 / SKI・AKI 剥除形态 / 签名算法不收 / KU 八组合 / chain blob
+// 往返与全部错误臂 / 无 AKI leaf 过链。
+// TBS 级变异积木：build_tbs → mutate → seal_certificate（签名在变异之后盖，
+// 证书自洽）。
+// ---------------------------------------------------------------------------
+
+/// 独立密钥（seed 派生，确定性）。
+fn agt_sk(seed: u8) -> SigningKey {
+    SigningKey::from_bytes(&[seed; 32].into()).expect("seed is a valid scalar")
+}
+
+/// craft 一个 TBS 被任意变异后的证书（签名在变异后盖上 → 结构自洽）。
+fn agt_craft(
+    subject_vk: &VerifyingKey,
+    signer_sk: &SigningKey,
+    issuer_ski: &[u8],
+    eku: bool,
+    mutate: impl FnOnce(&mut TbsCertificate),
+) -> Certificate {
+    let input = TbsInput {
+        subject_cn: "AGT Crafted",
+        subject_org: Some("NB Test"),
+        issuer_cn: "AGT Issuer",
+        issuer_org: Some("NB Test"),
+        is_ca: false,
+        path_len: None,
+        ku_digital_signature: true,
+        ku_key_cert_sign: false,
+        ku_crl_sign: false,
+        eku_code_signing: eku,
+        not_before_unix: NOW,
+        not_after_unix: FAR,
+    };
+    let mut tbs = build_tbs(subject_vk, issuer_ski, &random_serial(), &input).unwrap();
+    mutate(&mut tbs);
+    seal_certificate(tbs, signer_sk).unwrap()
+}
+
+fn agt_ca_input(cn: &'static str, issuer_cn: &'static str) -> TbsInput<'static> {
+    TbsInput {
+        subject_cn: cn,
+        subject_org: Some("NB Test"),
+        issuer_cn,
+        issuer_org: Some("NB Test"),
+        is_ca: true,
+        path_len: None,
+        ku_digital_signature: true,
+        ku_key_cert_sign: true,
+        ku_crl_sign: true,
+        eku_code_signing: false,
+        not_before_unix: NOW,
+        not_after_unix: FAR,
+    }
+}
+
+#[test]
+fn chain_error_display_covers_all_variants() {
+    assert!(
+        ChainError::Malformed("boom".into())
+            .to_string()
+            .contains("boom")
+    );
+    assert_eq!(ChainError::Empty.to_string(), "empty certificate chain");
+    assert_eq!(
+        ChainError::UnsupportedAlgorithm.to_string(),
+        "unsupported signature algorithm"
+    );
+    assert_eq!(ChainError::InvalidKey.to_string(), "invalid public key");
+    assert_eq!(
+        ChainError::BrokenChain.to_string(),
+        "broken certificate chain"
+    );
+    assert_eq!(
+        ChainError::NoRootForIssuer.to_string(),
+        "no trusted root for issuer"
+    );
+    assert_eq!(ChainError::Expired.to_string(), "certificate expired");
+    assert_eq!(
+        ChainError::BadSignature.to_string(),
+        "bad certificate signature"
+    );
+    assert_eq!(
+        ChainError::MissingCodeSigningEku.to_string(),
+        "missing codeSigning EKU"
+    );
+}
+
+#[test]
+fn subject_public_key_rejects_non_ec_missing_and_foreign_curve_params() {
+    let root_sk = agt_sk(0x71);
+    let leaf_sk = agt_sk(0x72);
+    let root_vk = *root_sk.verifying_key();
+    let leaf_vk = *leaf_sk.verifying_key();
+    let root_ski = ski_value(&root_vk).unwrap();
+
+    // SPKI 算法 OID 非 id-ecPublicKey → InvalidKey
+    let bad_alg = agt_craft(&leaf_vk, &root_sk, &root_ski, true, |tbs| {
+        tbs.subject_public_key_info.algorithm.oid = OID_ECDSA_WITH_SHA256;
+    });
+    assert!(matches!(
+        bad_alg.subject_public_key(),
+        Err(ChainError::InvalidKey)
+    ));
+
+    // parameters 缺失 → InvalidKey
+    let no_params = agt_craft(&leaf_vk, &root_sk, &root_ski, true, |tbs| {
+        tbs.subject_public_key_info.algorithm.parameters = None;
+    });
+    assert!(matches!(
+        no_params.subject_public_key(),
+        Err(ChainError::InvalidKey)
+    ));
+
+    // curve 参数非 P-256（P-384 OID）→ InvalidKey
+    let p384_der = ObjectIdentifier::new_unwrap("1.3.132.0.34")
+        .to_der()
+        .unwrap();
+    let foreign_curve = agt_craft(&leaf_vk, &root_sk, &root_ski, true, |tbs| {
+        tbs.subject_public_key_info.algorithm.parameters = Some(Any::from_der(&p384_der).unwrap());
+    });
+    assert!(matches!(
+        foreign_curve.subject_public_key(),
+        Err(ChainError::InvalidKey)
+    ));
+}
+
+#[test]
+fn ski_and_aki_none_when_extensions_stripped() {
+    let root_sk = agt_sk(0x73);
+    let root_vk = *root_sk.verifying_key();
+    let root_ski = ski_value(&root_vk).unwrap();
+
+    // 剥 SKI → ski() == Ok(None)
+    let no_ski = agt_craft(&root_vk, &root_sk, &root_ski, false, |tbs| {
+        if let Some(exts) = tbs.extensions.as_mut() {
+            exts.retain(|e| e.extn_id != OID_CE_SUBJECT_KEY_IDENTIFIER);
+        }
+    });
+    assert_eq!(no_ski.ski().unwrap(), None);
+
+    // 剥 AKI → aki() == Ok(None)；is_self_signed 走 (None, Some(_)) => true 臂
+    //（AKI 缺省 = 自签惯例形态；签名照验通过）
+    let no_aki = agt_craft(&root_vk, &root_sk, &root_ski, false, |tbs| {
+        if let Some(exts) = tbs.extensions.as_mut() {
+            exts.retain(|e| e.extn_id != OID_CE_AUTHORITY_KEY_IDENTIFIER);
+        }
+    });
+    assert_eq!(no_aki.aki().unwrap(), None);
+    assert!(matches!(no_aki.is_self_signed(), Ok(true)));
+
+    // 两者皆缺 → `_ => false`（不可判定，不认）
+    let no_both = agt_craft(&root_vk, &root_sk, &root_ski, false, |tbs| {
+        if let Some(exts) = tbs.extensions.as_mut() {
+            exts.retain(|e| {
+                e.extn_id != OID_CE_SUBJECT_KEY_IDENTIFIER
+                    && e.extn_id != OID_CE_AUTHORITY_KEY_IDENTIFIER
+            });
+        }
+    });
+    assert!(matches!(no_both.is_self_signed(), Ok(false)));
+}
+
+#[test]
+fn verify_signature_by_rejects_unsupported_signature_algorithm() {
+    let root_sk = agt_sk(0x74);
+    let root_vk = *root_sk.verifying_key();
+    let root = issue_x509(
+        &root_vk,
+        &root_sk,
+        &ski_value(&root_vk).unwrap(),
+        agt_ca_input("R", "R"),
+    )
+    .unwrap();
+    assert!(root.signature_algorithm_ok());
+
+    // signature_algorithm 在 TBS 外——改 OID 后重编码，证书结构仍可解析、
+    // 签名字节不动，但算法不收 → UnsupportedAlgorithm
+    let mut x = X509Certificate::from_der(root.to_der()).unwrap();
+    x.signature_algorithm.oid = ObjectIdentifier::new_unwrap("1.2.840.113549.1.1.11");
+    let bad = Certificate::from_der(&x.to_der().unwrap()).unwrap();
+    assert!(!bad.signature_algorithm_ok());
+    let vk = bad.subject_public_key().unwrap();
+    assert!(matches!(
+        bad.verify_signature_by(&vk),
+        Err(ChainError::UnsupportedAlgorithm)
+    ));
+}
+
+#[test]
+fn subject_cn_some_and_none() {
+    let (chain, _, _, _) = fixture(NOW, FAR, true);
+    assert!(chain[0].subject_cn().unwrap().is_some());
+
+    // subject 只挂 O RDN（无 CN ATV）→ Ok(None)
+    let root_sk = agt_sk(0x75);
+    let leaf_sk = agt_sk(0x76);
+    let root_vk = *root_sk.verifying_key();
+    let leaf_vk = *leaf_sk.verifying_key();
+    let o_only = agt_craft(
+        &leaf_vk,
+        &root_sk,
+        &ski_value(&root_vk).unwrap(),
+        true,
+        |tbs| {
+            tbs.subject = RdnSequence(vec![rd(OID_AT_O, "Org Only").unwrap()]);
+        },
+    );
+    assert_eq!(o_only.subject_cn().unwrap(), None);
+}
+
+#[test]
+fn ku_flagset_all_eight_combos() {
+    let input = |ds: bool, kcs: bool, crl: bool| TbsInput {
+        subject_cn: "KU",
+        subject_org: None,
+        issuer_cn: "KU",
+        issuer_org: None,
+        is_ca: false,
+        path_len: None,
+        ku_digital_signature: ds,
+        ku_key_cert_sign: kcs,
+        ku_crl_sign: crl,
+        eku_code_signing: false,
+        not_before_unix: NOW,
+        not_after_unix: FAR,
+    };
+    for (ds, kcs, crl) in [
+        (true, true, true),
+        (true, true, false),
+        (true, false, true),
+        (true, false, false),
+        (false, true, true),
+        (false, true, false),
+        (false, false, true),
+    ] {
+        assert!(
+            ku_flagset(&input(ds, kcs, crl)).is_ok(),
+            "ds={ds} kcs={kcs} crl={crl} 必须合法"
+        );
+    }
+    // 全空 → profile 非法
+    assert!(matches!(
+        ku_flagset(&input(false, false, false)),
+        Err(ChainError::Malformed(_))
+    ));
+}
+
+#[test]
+fn parse_serialize_chain_blob_roundtrip_and_all_error_arms() {
+    let (chain, _, _, _) = fixture(NOW, FAR, true);
+
+    // parse_chain：ok + 坏 DER 传播
+    let ders: Vec<Vec<u8>> = chain.iter().map(|c| c.to_der().to_vec()).collect();
+    assert_eq!(parse_chain(&ders).unwrap().len(), 3);
+    assert!(parse_chain(&[b"junk".to_vec()]).is_err());
+
+    // serialize_chain：空链只有计数头
+    let empty = serialize_chain(&[]);
+    assert_eq!(empty.len(), 2);
+    assert_eq!(&empty[..2], &0u16.to_le_bytes());
+
+    // 往返
+    let blob = serialize_chain(&chain);
+    assert_eq!(parse_chain_blob(&blob).unwrap().len(), 3);
+
+    // too short / 缺 len header / cert span 越界 / 末张坏 DER
+    assert!(matches!(
+        parse_chain_blob(&[0u8]),
+        Err(ChainError::Malformed(_))
+    ));
+    assert!(parse_chain_blob(&[1, 0]).is_err());
+    let mut bad_span = vec![1u8, 0];
+    bad_span.extend_from_slice(&999u32.to_le_bytes());
+    assert!(parse_chain_blob(&bad_span).is_err());
+    let mut bad_der = vec![1u8, 0];
+    bad_der.extend_from_slice(&4u32.to_le_bytes());
+    bad_der.extend_from_slice(b"junk");
+    assert!(parse_chain_blob(&bad_der).is_err());
+}
+
+#[test]
+fn verify_chain_tolerates_leaf_without_aki() {
+    // RFC 5280：AKI 可省略。leaf 无 AKI → 匹配跳过、签名照验 → 链 Valid
+    let root_sk = agt_sk(0x77);
+    let issuing_sk = agt_sk(0x78);
+    let leaf_sk = agt_sk(0x79);
+    let root_vk = *root_sk.verifying_key();
+    let issuing_vk = *issuing_sk.verifying_key();
+    let leaf_vk = *leaf_sk.verifying_key();
+    let root = issue_x509(
+        &root_vk,
+        &root_sk,
+        &ski_value(&root_vk).unwrap(),
+        agt_ca_input("R", "R"),
+    )
+    .unwrap();
+    let issuing = issue_x509(
+        &issuing_vk,
+        &root_sk,
+        &ski_value(&root_vk).unwrap(),
+        agt_ca_input("I", "R"),
+    )
+    .unwrap();
+    let leaf = agt_craft(
+        &leaf_vk,
+        &issuing_sk,
+        &ski_value(&issuing_vk).unwrap(),
+        true,
+        |tbs| {
+            if let Some(exts) = tbs.extensions.as_mut() {
+                exts.retain(|e| e.extn_id != OID_CE_AUTHORITY_KEY_IDENTIFIER);
+            }
+        },
+    );
+    let chain = vec![leaf, issuing, root];
+    let anchor = chain[2].sha256_fingerprint();
+    assert!(verify_chain(&chain, &anchor, NOW).is_ok());
+}

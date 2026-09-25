@@ -997,3 +997,11 @@ fn read_learning_cycles(dir: &PathBuf) -> Vec<serde_json::Value> {
 // reached by forge_extra_tests.rs — offline only.
 #[cfg(test)]
 mod s10b_tests;
+
+// AGT 覆盖率批次（2026-09-25）：config.save 运行时 start/stop 联动（真
+// Forge + is_running 翻转）、learning.toggle 运行时旗标 + 非 object 配置
+// 跳过臂、experiences 统计的空行/非法行/全非法三态、深目录读取器的目录型
+// 文件兜底与 learning/reflections 深路径。豁免（live 全局 store 命中臂）
+// 见 agt_tests 文件头注。
+#[cfg(test)]
+mod agt_tests;

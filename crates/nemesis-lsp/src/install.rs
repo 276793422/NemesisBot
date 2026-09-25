@@ -247,4 +247,6 @@ pub async fn auto_install_missing(timeout: Duration) -> Vec<(Lang, Result<String
 }
 
 #[cfg(test)]
+mod cov_tests;
+#[cfg(test)]
 mod tests;

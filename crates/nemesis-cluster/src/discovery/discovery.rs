@@ -787,6 +787,8 @@ fn send_announce_with(
 // ===========================================================================
 
 #[cfg(test)]
+mod cov_tests;
+#[cfg(test)]
 mod tests;
 
 #[cfg(test)]

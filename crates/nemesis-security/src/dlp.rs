@@ -649,4 +649,6 @@ fn get_dlp_rules() -> &'static DlpRules {
 }
 
 #[cfg(test)]
+mod cov_tests;
+#[cfg(test)]
 mod tests;

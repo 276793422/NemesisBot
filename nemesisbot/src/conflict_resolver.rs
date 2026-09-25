@@ -716,3 +716,6 @@ pub(crate) fn parse_resolutions(
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+mod cov_tests;

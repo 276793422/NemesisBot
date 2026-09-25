@@ -1126,4 +1126,6 @@ pub struct SkillVerification {
 // ---------------------------------------------------------------------------
 
 #[cfg(test)]
+mod cov_tests;
+#[cfg(test)]
 mod tests;

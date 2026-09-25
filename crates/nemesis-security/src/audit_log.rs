@@ -224,4 +224,6 @@ pub fn sanitize_csv(s: &str) -> String {
 }
 
 #[cfg(test)]
+mod cov_tests;
+#[cfg(test)]
 mod tests;

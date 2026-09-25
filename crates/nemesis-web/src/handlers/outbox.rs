@@ -73,3 +73,9 @@ impl ModuleHandler for OutboxHandler {
         }
     }
 }
+
+// AGT 覆盖率批次（2026-09-25）：dead_list 只列 dead 态 + 字段透传、
+// dead_replay 全链（翻态落盘 + 清零 + 未知 id 报错）、缺参/未知命令/
+// workspace 未配置 bail。
+#[cfg(test)]
+mod agt_tests;

@@ -1640,7 +1640,9 @@ fn s11b_serve(file: &str, status: u16, body: Vec<u8>, hits: usize) -> String {
 #[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
 #[tokio::test]
 async fn test_s11b_run_dispatch_arms() {
-    let _guard = crate::GLOBAL_STATE_LOCK.lock().unwrap();
+    let _guard = crate::GLOBAL_STATE_LOCK
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
     let th = s11b_temp_home_env();
 
     run(ScannerAction::List, false).await.unwrap(); // 无配置
@@ -1691,7 +1693,9 @@ async fn test_s11b_run_dispatch_arms() {
 #[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
 #[tokio::test]
 async fn test_s11b_run_clamav_subcommand_arms() {
-    let _guard = crate::GLOBAL_STATE_LOCK.lock().unwrap();
+    let _guard = crate::GLOBAL_STATE_LOCK
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
     let th = s11b_temp_home_env();
     let cfg_path = crate::common::scanner_config_path(&th.home);
 
@@ -1833,7 +1837,9 @@ fn test_s11b_cmd_check_installed_failed_disabled_and_url_truncate() {
 #[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
 #[test]
 fn test_s11b_cmd_check_pending_and_recommendations() {
-    let _guard = crate::GLOBAL_STATE_LOCK.lock().unwrap();
+    let _guard = crate::GLOBAL_STATE_LOCK
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
     let tmp = tempfile::tempdir().unwrap();
     let cfg_path = tmp.path().join("config").join("config.scanner.json");
     let ok_exe = tmp.path().join("ok_av");
@@ -1953,7 +1959,9 @@ async fn test_s11b_download_engine_tar_gz_extracts_and_detects_exe_dir() {
 #[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
 #[tokio::test]
 async fn test_s11b_cmd_install_empty_and_stub_and_delegate() {
-    let _guard = crate::GLOBAL_STATE_LOCK.lock().unwrap();
+    let _guard = crate::GLOBAL_STATE_LOCK
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
     let tmp = tempfile::tempdir().unwrap();
     let cfg_path = tmp.path().join("config").join("config.scanner.json");
 
@@ -2125,7 +2133,9 @@ async fn test_s11b_clamav_install_inner_download_branches() {
 #[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
 #[tokio::test]
 async fn test_s11b_cmd_clamav_enable_disable_update_info() {
-    let _guard = crate::GLOBAL_STATE_LOCK.lock().unwrap();
+    let _guard = crate::GLOBAL_STATE_LOCK
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
     let tmp = tempfile::tempdir().unwrap();
     let cfg_path = tmp.path().join("config").join("config.scanner.json");
 
@@ -2201,7 +2211,9 @@ async fn test_s11b_cmd_clamav_enable_disable_update_info() {
 #[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
 #[test]
 fn test_s11b_lookup_system_clamav_none_with_minimal_path() {
-    let _guard = crate::GLOBAL_STATE_LOCK.lock().unwrap();
+    let _guard = crate::GLOBAL_STATE_LOCK
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
     let _path_guard = S11bMinimalPathEnv::new();
     assert!(lookup_system_clamav().is_none());
 }
@@ -2307,7 +2319,9 @@ mod wave_b {
     #[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
     #[test]
     fn wave_b_lookup_system_clamav_hits_fake_exe_in_narrow_path() {
-        let _guard = crate::GLOBAL_STATE_LOCK.lock().unwrap();
+        let _guard = crate::GLOBAL_STATE_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         let env = WbPathEnv::new(true);
         let hit = lookup_system_clamav().expect("fake clamd.exe must be discovered");
         assert_eq!(
@@ -2320,7 +2334,9 @@ mod wave_b {
     #[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
     #[test]
     fn wave_b_check_disabled_dash_row_and_weird_state_fallback_arm() {
-        let _guard = crate::GLOBAL_STATE_LOCK.lock().unwrap();
+        let _guard = crate::GLOBAL_STATE_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         let tmp = tempfile::tempdir().unwrap();
         let cfg_path = tmp.path().join("config.scanner.json");
 
@@ -2361,7 +2377,9 @@ mod wave_b {
     #[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
     #[test]
     fn wave_b_check_system_path_discovery_persists_and_truncates_url() {
-        let _guard = crate::GLOBAL_STATE_LOCK.lock().unwrap();
+        let _guard = crate::GLOBAL_STATE_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         let tmp = tempfile::tempdir().unwrap();
         let cfg_path = tmp.path().join("config.scanner.json");
         // 长 URL（54 字节 ASCII）触发 >40 截断臂（floor 边界内纯 ASCII，
@@ -2396,7 +2414,9 @@ mod wave_b {
     #[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
     #[tokio::test]
     async fn wave_b_install_discovers_system_path_and_generates_confs() {
-        let _guard = crate::GLOBAL_STATE_LOCK.lock().unwrap();
+        let _guard = crate::GLOBAL_STATE_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         let tmp = tempfile::tempdir().unwrap();
         let cfg_path = tmp.path().join("config.scanner.json");
         s11b_write_cfg(
@@ -2429,7 +2449,9 @@ mod wave_b {
     #[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
     #[tokio::test]
     async fn wave_b_install_reports_conf_generation_failures_but_continues() {
-        let _guard = crate::GLOBAL_STATE_LOCK.lock().unwrap();
+        let _guard = crate::GLOBAL_STATE_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         let tmp = tempfile::tempdir().unwrap();
         let cfg_path = tmp.path().join("config.scanner.json");
 
@@ -2464,7 +2486,9 @@ mod wave_b {
     #[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
     #[tokio::test]
     async fn wave_b_update_resolves_path_via_system_lookup_when_unconfigured() {
-        let _guard = crate::GLOBAL_STATE_LOCK.lock().unwrap();
+        let _guard = crate::GLOBAL_STATE_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         let tmp = tempfile::tempdir().unwrap();
         let cfg_path = tmp.path().join("config.scanner.json");
         // clamav_path 与 data_dir 都为空 ⇒ 路径靠系统 PATH 发现、data_dir 走
@@ -2804,7 +2828,9 @@ mod r10_process_boundary {
     #[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
     #[test]
     fn r10_lookup_system_clamav_hits_via_clamscan_only() {
-        let _guard = crate::GLOBAL_STATE_LOCK.lock().unwrap();
+        let _guard = crate::GLOBAL_STATE_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         let env = R10NarrowPath::new(&["clamscan.exe"]);
         let hit = lookup_system_clamav().expect("clamscan.exe 必须 which 命中");
         assert_eq!(
@@ -2819,7 +2845,9 @@ mod r10_process_boundary {
     #[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
     #[test]
     fn r10_cmd_check_skips_save_when_enabled_name_absent_from_engines_map() {
-        let _guard = crate::GLOBAL_STATE_LOCK.lock().unwrap();
+        let _guard = crate::GLOBAL_STATE_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         let tmp = tempfile::tempdir().unwrap();
         let cfg_path = tmp.path().join("config.scanner.json");
 
@@ -3595,5 +3623,46 @@ mod r10_process_boundary {
             "got:\n{}",
             o.stderr
         );
+    }
+}
+
+// ---------------------------------------------------------------------------
+// wave_a（2026-09-25）：is_valid_engine / url_display_truncated /
+// lookup_system_clamav 三个小纯函数（此前无直测）。
+// ---------------------------------------------------------------------------
+
+mod wave_a {
+    use super::*;
+
+    #[test]
+    fn is_valid_engine_matches_available_list() {
+        // clamav 在 available_engines 里；空名/编造名不在。
+        assert!(is_valid_engine("clamav"));
+        assert!(!is_valid_engine(""));
+        assert!(!is_valid_engine("definitely-not-an-engine"));
+        // 大小写敏感（引擎名是注册表键）。
+        assert!(!is_valid_engine("ClamAV"));
+    }
+
+    #[test]
+    fn url_display_truncates_over_40_chars_on_boundary() {
+        assert_eq!(url_display_truncated("short-url"), "short-url");
+        let long = "a".repeat(50);
+        let shown = url_display_truncated(&long);
+        assert!(shown.ends_with("..."));
+        assert!(shown.len() < long.len(), "截断后必须更短：{shown}");
+        // 40 字符整 = 不截断。
+        let exactly40 = "b".repeat(40);
+        assert_eq!(url_display_truncated(&exactly40), exactly40);
+    }
+
+    #[test]
+    fn lookup_system_clamav_returns_none_or_a_path() {
+        // PATH 上有没有 clamav 都不算失败——契约只保证不 panic 且返回值
+        // 一致（Some(可执行路径) 或 None）。
+        let r = lookup_system_clamav();
+        if let Some(p) = r {
+            assert!(!p.is_empty());
+        }
     }
 }

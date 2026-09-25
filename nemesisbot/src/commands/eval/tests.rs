@@ -763,7 +763,9 @@ fn write_real_config(home: &Path, body: &str) {
 
 #[tokio::test]
 async fn test_run_prompt_no_text_no_file_bails() {
-    let _guard = crate::GLOBAL_STATE_LOCK.lock().unwrap();
+    let _guard = crate::GLOBAL_STATE_LOCK
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
     let _tmp = temp_home_env();
     let err = run(
         EvalAction::Prompt {
@@ -783,7 +785,9 @@ async fn test_run_prompt_no_text_no_file_bails() {
 
 #[tokio::test]
 async fn test_run_prompt_missing_file_bails() {
-    let _guard = crate::GLOBAL_STATE_LOCK.lock().unwrap();
+    let _guard = crate::GLOBAL_STATE_LOCK
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
     let _tmp = temp_home_env();
     let err = run(
         EvalAction::Prompt {
@@ -804,7 +808,9 @@ async fn test_run_prompt_missing_file_bails() {
 
 #[tokio::test]
 async fn test_run_prompt_corrupted_config_bails() {
-    let _guard = crate::GLOBAL_STATE_LOCK.lock().unwrap();
+    let _guard = crate::GLOBAL_STATE_LOCK
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
     let tmp = temp_home_env();
     write_real_config(&home_of(&tmp), "definitely not json {{{");
     let err = run(
@@ -822,7 +828,9 @@ async fn test_run_prompt_corrupted_config_bails() {
 
 #[tokio::test]
 async fn test_run_prompt_unresolvable_model_bails() {
-    let _guard = crate::GLOBAL_STATE_LOCK.lock().unwrap();
+    let _guard = crate::GLOBAL_STATE_LOCK
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
     let tmp = temp_home_env();
     write_real_config(
         &home_of(&tmp),
@@ -847,7 +855,9 @@ async fn test_run_prompt_unresolvable_model_bails() {
 
 #[tokio::test]
 async fn test_run_prompt_sandbox_not_ready_bails() {
-    let _guard = crate::GLOBAL_STATE_LOCK.lock().unwrap();
+    let _guard = crate::GLOBAL_STATE_LOCK
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
     let tmp = temp_home_env();
     // 模型可解析（claude 关键词 → anthropic 推断，无需 key/网络），
     // 但临时 home 下没有 Sandboxie runtime → 6e readiness 确定性 fail
@@ -876,7 +886,9 @@ async fn test_run_prompt_sandbox_not_ready_bails() {
 
 #[tokio::test]
 async fn test_run_skill_not_found_bails() {
-    let _guard = crate::GLOBAL_STATE_LOCK.lock().unwrap();
+    let _guard = crate::GLOBAL_STATE_LOCK
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
     let _tmp = temp_home_env();
     let err = run(
         EvalAction::Skill {
@@ -895,7 +907,9 @@ async fn test_run_skill_not_found_bails() {
 
 #[tokio::test]
 async fn test_run_skill_found_reaches_config_bail() {
-    let _guard = crate::GLOBAL_STATE_LOCK.lock().unwrap();
+    let _guard = crate::GLOBAL_STATE_LOCK
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
     let tmp = temp_home_env();
     let home = home_of(&tmp);
     // workspace skill 可解析 → subject/prompt_text 构造 → run_eval 6b 配置损坏 bail
@@ -921,7 +935,9 @@ async fn test_run_skill_found_reaches_config_bail() {
 
 #[tokio::test]
 async fn test_run_rules_delegates_to_eval_rules() {
-    let _guard = crate::GLOBAL_STATE_LOCK.lock().unwrap();
+    let _guard = crate::GLOBAL_STATE_LOCK
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
     let _tmp = temp_home_env();
     // List 是只读分支（writes=false），临时 home 下无规则文件也能 Ok
     run(
@@ -940,7 +956,9 @@ async fn test_run_rules_delegates_to_eval_rules() {
 
 #[test]
 fn test_skills_loader_resolves_workspace_skill() {
-    let _guard = crate::GLOBAL_STATE_LOCK.lock().unwrap();
+    let _guard = crate::GLOBAL_STATE_LOCK
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
     let tmp = temp_home_env();
     let home = home_of(&tmp);
     // 无 skill → load_skill None
@@ -1217,7 +1235,9 @@ mod wave_b {
 
     #[tokio::test]
     async fn wave_b_run_prompt_empty_provider_name_uses_bare_model_ref() {
-        let _guard = crate::GLOBAL_STATE_LOCK.lock().unwrap();
+        let _guard = crate::GLOBAL_STATE_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         let tmp = temp_home_env();
         write_real_config(&home_of(&tmp), &wave_b_single_model_config("waveb-mystery"));
         let err = run(
@@ -1239,7 +1259,9 @@ mod wave_b {
 
     #[tokio::test]
     async fn wave_b_run_skill_kind_copies_skill_into_temp_workspace() {
-        let _guard = crate::GLOBAL_STATE_LOCK.lock().unwrap();
+        let _guard = crate::GLOBAL_STATE_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         let tmp = temp_home_env();
         let home = home_of(&tmp);
         let skill_dir = home.join("workspace").join("skills").join("wavebskill");

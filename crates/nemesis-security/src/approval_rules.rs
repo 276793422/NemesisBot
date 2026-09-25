@@ -192,4 +192,6 @@ pub fn save_rules(path: &Path, rules: &[ApprovalRule]) -> Result<(), String> {
 }
 
 #[cfg(test)]
+mod cov_tests;
+#[cfg(test)]
 mod tests;

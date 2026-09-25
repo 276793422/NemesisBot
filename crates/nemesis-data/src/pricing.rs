@@ -205,3 +205,11 @@ pub fn lookup_pricing(model: &str) -> Option<&'static ModelPricing> {
 
 #[cfg(test)]
 mod tests;
+
+// 覆盖率补充测试（bare-suffix alias 第 4 级匹配）。
+#[cfg(test)]
+mod cov_tests;
+
+// Wave6B 覆盖率收尾：见 cov_wave6b_tests.rs 头注释。
+#[cfg(test)]
+mod cov_wave6b_tests;

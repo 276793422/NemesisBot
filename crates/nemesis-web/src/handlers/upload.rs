@@ -242,3 +242,9 @@ pub fn spawn_uploads_sweeper() {
 
 #[cfg(test)]
 mod tests;
+
+// AGT 覆盖率批次（2026-09-25）：uploads 目录创建失败 500、成功落盘的
+// 日志字段求值（最小 INFO subscriber）、sweep 的目录项跳过 + removed 日志。
+// 豁免（写盘失败竞态 dest + 6h 周期臂）见 agt_tests 文件头注。
+#[cfg(test)]
+mod agt_tests;

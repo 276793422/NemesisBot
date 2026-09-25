@@ -26,6 +26,13 @@ use nemesis_types::cluster::DiscussionEvent;
 
 use crate::cluster_request_logger_observer::ClusterRequestLoggerObserver;
 
+/// turn_guard 退化三判 GiveUp 的兜底告知文案（`turn_guard::check_final_answer`
+/// 在空答复重试耗尽时构造、以 Done 终局）。nemesis-agent 不导出该常量（crate
+/// 边界），此处按值对齐；单真相源仍为 turn_guard——改文案须同步此处，否则
+/// 空交付改判臂失配（wave_d 空交付测试会红，即回归锚）。
+const DEGENERATE_GIVEUP_NOTICE: &str =
+    "（模型多次未给出有效答复，已停止重试。请重试或换一种问法。）";
+
 // ---------------------------------------------------------------------------
 // DiscussionInbox — 讨论事件入站箱（worker 生产者 → cluster agent loop）
 // ---------------------------------------------------------------------------
@@ -428,7 +435,14 @@ async fn execute_new_task(
         return Ok(());
     }
 
-    let result = extract_final_message(&events);
+    let mut result = extract_final_message(&events);
+    // P1 同族（2026-09-25）：turn_guard 退化三判 GiveUp 的兜底告知不是工作
+    // 交付——置空后走下方 (None, true) 空交付改判臂（error「worker 返回空
+    // 结果…」），否则放弃告知会被当 success 交付给 A 端（同 P2A 升级硬停
+    // 的改判理由）。文案对齐见 DEGENERATE_GIVEUP_NOTICE。
+    if result.trim() == DEGENERATE_GIVEUP_NOTICE {
+        result.clear();
+    }
     // Persist the full instance history + cache to SessionStore before sending
     // the callback. Async-path tasks skip this; they'll be persisted by
     // resume_task when the callback comes back and the task actually completes.
@@ -606,7 +620,12 @@ async fn resume_task(
         return Ok(());
     }
 
-    let result = extract_final_message(&events);
+    let mut result = extract_final_message(&events);
+    // P1 同族（2026-09-25）：续行轮同样把 turn_guard GiveUp 兜底告知按空交付
+    // 处理（与 execute_new_task 同一段注释，此处走「续行正常结束」文案臂）。
+    if result.trim() == DEGENERATE_GIVEUP_NOTICE {
+        result.clear();
+    }
     // Persist the full instance history + cache. The original user request and
     // the resumed turn's tool result / final response are all in the instance
     // history already, so no separate content args are needed.

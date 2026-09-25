@@ -515,3 +515,6 @@ impl Drop for Pool {
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+mod cov_tests;

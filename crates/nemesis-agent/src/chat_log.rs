@@ -1057,3 +1057,12 @@ mod d3_tests;
 // 原位截断（消息级回退的落盘原语）测试。
 #[cfg(test)]
 mod e3_tests;
+
+// 覆盖率补充测试（全字段 meta / 行写截断原语 / sidecar meta 分支）。
+#[cfg(test)]
+mod cov_tests;
+
+// Wave6B 覆盖率收尾批次（读/截断/复制 IO 错误分支 + whole-log 滑窗 +
+// sidecar 写失败 + 平化迁移各分支）。
+#[cfg(test)]
+mod cov2_tests;

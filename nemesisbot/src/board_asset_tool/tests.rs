@@ -578,3 +578,333 @@ fn connection_level_error_classification() {
     assert!(!is_connection_level_error("read body: channel closed"));
     assert!(!is_connection_level_error("write: Access is denied"));
 }
+
+// ===========================================================================
+// wave4 追加（coverage）：Tool 元数据面（description/parameters 之前从未被
+// 断言）、SSRF 闸拦截臂、publish 残余守卫（源缺失/目录源/非法 ref 名/空
+// node url/workspace 内绝对路径 + node_id 透传）、RPC 兜底残余臂（meta 调用
+// 本身失败→组合错误、meta 非 JSON/缺 size、chunk 非 JSON/缺 data/坏 b64/
+// 传输不完整/传输后整包 sha 不符）。
+// ===========================================================================
+
+/// 自由 mock 集群：meta/chunk 行为由闭包全权决定（真实 handler 语义之外的
+/// 错误形态都要从工具侧钉住）。
+fn mock_cluster_fn(
+    f: impl Fn(&str, &str, &serde_json::Value) -> Result<Vec<u8>, String> + Send + Sync + 'static,
+) -> StdArc<Cluster> {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let config = nemesis_cluster::types::ClusterConfig {
+        node_id: String::new(),
+        bind_address: "0.0.0.0:0".to_string(),
+        peers: vec![],
+        node_name: "MockPeer".to_string(),
+    };
+    let cluster = StdArc::new(Cluster::with_workspace(config, tmp.path().to_path_buf()));
+    cluster.set_call_with_context_fn(Box::new(move |peer, action, payload| {
+        f(peer, action, &payload)
+    }));
+    cluster
+}
+
+/// chunk 异常矩阵的公共 mock：meta 恒给（sha=expected, size），chunk 恒回
+/// 同一份原始字节。
+fn chunk_mock(size: u64, expected_sha: &str, chunk_bytes: Vec<u8>) -> StdArc<Cluster> {
+    let sha = expected_sha.to_string();
+    mock_cluster_fn(move |_p, action, _payload| match action {
+        "asset.meta" => Ok(serde_json::json!({ "sha256": sha, "size": size })
+            .to_string()
+            .into_bytes()),
+        "asset.chunk" => Ok(chunk_bytes.clone()),
+        other => Err(format!("unexpected {other}")),
+    })
+}
+
+/// Tool 元数据面：description 双动作语义齐全；parameters 字段集完整、
+/// required 只锁 action、action 枚举恰为 fetch/publish（args_validator 的
+/// schema 源头，漂移即工具选型面变化）。
+#[test]
+fn tool_metadata_describes_both_actions_and_full_parameter_schema() {
+    let (_guard, ws) = temp_workspace();
+    let tool = BoardAssetTool::new(ws);
+
+    let desc = tool.description();
+    assert!(desc.contains("fetch"), "desc: {desc}");
+    assert!(desc.contains("publish"), "desc: {desc}");
+    assert!(desc.contains("sha256"), "desc: {desc}");
+    assert!(desc.contains("RPC"), "desc: {desc}");
+
+    let params = tool.parameters();
+    assert_eq!(params["type"], "object");
+    let required = params["required"].as_array().expect("required array");
+    assert_eq!(required.len(), 1, "只有 action 必填");
+    assert_eq!(required[0], "action");
+    let props = params["properties"].as_object().expect("properties obj");
+    for key in [
+        "action",
+        "node_url",
+        "asset_ref",
+        "asset_token",
+        "expires_at",
+        "sha256",
+        "node_id",
+        "path",
+        "ref_name",
+    ] {
+        assert!(props.contains_key(key), "缺字段 {key}");
+    }
+    let action_enum = props["action"]["enum"].as_array().expect("enum arr");
+    assert_eq!(action_enum.len(), 2);
+    assert_eq!(action_enum[0], "fetch");
+    assert_eq!(action_enum[1], "publish");
+}
+
+/// SSRF 闸拦截臂：cloud metadata 端点即使放行了内网/回环也照拦——参数
+/// 全合法也在下载前被拒（拦在连接之前，无网络副作用）。
+#[cfg(feature = "security")]
+#[tokio::test]
+async fn fetch_metadata_endpoint_is_blocked_by_ssrf_guard() {
+    let (_guard, ws) = temp_workspace();
+    let tool = BoardAssetTool::new(ws);
+    let args = serde_json::json!({
+        "action": "fetch",
+        "node_url": "http://169.254.169.254:80",
+        "asset_ref": "spec.md",
+        "asset_token": "cafebabe",
+        "expires_at": chrono::Utc::now().timestamp() + 600,
+        "sha256": "a".repeat(64),
+    })
+    .to_string();
+    let err = tool.execute(&args, &ctx()).await.expect_err("must block");
+    assert!(err.contains("url blocked by ssrf guard"), "got: {err}");
+}
+
+/// publish 残余守卫：workspace 内源文件不存在 / 源是目录 / 自定义 ref 名
+/// 白名单外——三种都在拷贝副作用之前诚实拒绝。
+#[tokio::test]
+async fn publish_rejects_missing_source_directory_source_and_bad_ref() {
+    let (_guard, ws) = temp_workspace();
+    let tool = BoardAssetTool::new(ws.clone());
+
+    // 源不存在。
+    let err = tool
+        .execute(
+            &serde_json::json!({"action": "publish", "path": "ghost.md"}).to_string(),
+            &ctx(),
+        )
+        .await
+        .expect_err("missing source must fail");
+    assert!(err.contains("source"), "got: {err}");
+
+    // 源是目录。
+    std::fs::create_dir_all(ws.join("adir")).expect("mkdir");
+    let err = tool
+        .execute(
+            &serde_json::json!({"action": "publish", "path": "adir"}).to_string(),
+            &ctx(),
+        )
+        .await
+        .expect_err("directory source must fail");
+    assert!(err.contains("is not a regular file"), "got: {err}");
+
+    // 自定义 ref 名含 '/'（白名单外）→ sanitize 拒绝。
+    std::fs::write(ws.join("ok.md"), b"ok").expect("write");
+    let err = tool
+        .execute(
+            &serde_json::json!({"action": "publish", "path": "ok.md", "ref_name": "a/b"})
+                .to_string(),
+            &ctx(),
+        )
+        .await
+        .expect_err("bad ref must fail");
+    assert!(err.contains("asset ref may only contain"), "got: {err}");
+}
+
+/// workspace 内绝对路径受理（resolve_workspace_path 的 is_absolute 臂，
+/// canonicalize 后仍在界内）；gateway 落盘的 asset_node_id 文件随 bundle
+/// 透传（read_asset_node_id 成功读臂，值被 trim）。
+#[tokio::test]
+async fn publish_accepts_absolute_path_inside_workspace_and_carries_node_id() {
+    let (_guard, ws) = temp_workspace();
+    let src = ws.join("abs-report.md");
+    std::fs::write(&src, b"absolute ok").expect("write");
+
+    let url_path = nemesis_path::resolve_asset_node_url_path_in_workspace(&ws);
+    std::fs::create_dir_all(url_path.parent().unwrap()).expect("mkdir config");
+    std::fs::write(&url_path, "http://10.1.1.1:49000").expect("write url");
+    let id_path = nemesis_path::resolve_asset_node_id_path_in_workspace(&ws);
+    std::fs::write(&id_path, " node-a1 \n").expect("write node id");
+
+    let tool = BoardAssetTool::new(ws.clone());
+    let out = tool
+        .execute(
+            &serde_json::json!({
+                "action": "publish",
+                "path": src.display().to_string(),
+            })
+            .to_string(),
+            &ctx(),
+        )
+        .await
+        .expect("absolute publish ok");
+    let bundle_line = out
+        .lines()
+        .find(|l| l.trim_start().starts_with('{'))
+        .expect("bundle line");
+    let bundle: serde_json::Value = serde_json::from_str(bundle_line.trim()).expect("json");
+    assert_eq!(bundle["node_id"], "node-a1", "trim 后的 node id 随束透传");
+    assert!(
+        ws.join("board")
+            .join("assets")
+            .join("abs-report.md")
+            .exists()
+    );
+}
+
+/// node url 文件存在但全空白 → 「is empty」诚实错（与「文件不存在」是
+/// 两条不同的错误臂，分开钉住）。
+#[tokio::test]
+async fn publish_reports_empty_node_url_file() {
+    let (_guard, ws) = temp_workspace();
+    std::fs::write(ws.join("f.md"), b"x").expect("write");
+    let url_path = nemesis_path::resolve_asset_node_url_path_in_workspace(&ws);
+    std::fs::create_dir_all(url_path.parent().unwrap()).expect("mkdir config");
+    std::fs::write(&url_path, "   \n").expect("write blank url");
+
+    let tool = BoardAssetTool::new(ws.clone());
+    let err = tool
+        .execute(
+            &serde_json::json!({"action": "publish", "path": "f.md"}).to_string(),
+            &ctx(),
+        )
+        .await
+        .expect_err("blank url must fail");
+    assert!(err.contains("is empty"), "got: {err}");
+}
+
+/// meta RPC 本身失败（提供方离线等传输层错误）→ 错误如实并入组合错误
+/// （原始 HTTP 错 + 兜底也失败的说明），part 文件不留残骸。
+#[tokio::test]
+async fn rpc_meta_failure_composes_into_combined_error() {
+    let cluster = mock_cluster_fn(|_p, _a, _payload| Err("mock meta transport down".to_string()));
+    let (_guard, ws) = temp_workspace();
+    let tool = BoardAssetTool::new(ws.clone()).with_cluster(cluster);
+    let args = fetch_args_with_node_id(&dead_http_base(), &"a".repeat(64), "node-provider");
+    let err = tool.execute(&args, &ctx()).await.expect_err("must fail");
+    assert!(err.contains("download failed"), "got: {err}");
+    assert!(err.contains("cluster RPC fallback"), "got: {err}");
+    assert!(err.contains("also failed"), "got: {err}");
+    assert!(err.contains("mock meta transport down"), "got: {err}");
+    assert!(
+        !ws.join("board")
+            .join("assets")
+            .join("spec.md.part")
+            .exists(),
+        "兜底也失败必须清 part"
+    );
+}
+
+/// asset.meta 响应体异常双形态：非 JSON（malformed）与有 sha 无 size
+/// （missing size）——都在进入分块循环之前诚实拒绝。
+#[tokio::test]
+async fn rpc_meta_malformed_and_missing_size_rejected() {
+    let (_guard, ws) = temp_workspace();
+    let args = fetch_args_with_node_id(&dead_http_base(), &"a".repeat(64), "node-provider");
+
+    // ① 非 JSON。
+    let cluster = mock_cluster_fn(|_p, action, _payload| match action {
+        "asset.meta" => Ok(b"{ not json".to_vec()),
+        other => Err(format!("unexpected {other}")),
+    });
+    let tool = BoardAssetTool::new(ws.clone()).with_cluster(cluster);
+    let err = tool.execute(&args, &ctx()).await.expect_err("malformed");
+    assert!(err.contains("asset.meta response malformed"), "got: {err}");
+    assert!(err.contains("also failed"), "组合错误必须如实，got: {err}");
+
+    // ② 有 sha 无 size。
+    let cluster = mock_cluster_fn(|_p, action, _payload| match action {
+        "asset.meta" => Ok(serde_json::json!({ "sha256": "a".repeat(64) })
+            .to_string()
+            .into_bytes()),
+        other => Err(format!("unexpected {other}")),
+    });
+    let tool = BoardAssetTool::new(ws.clone()).with_cluster(cluster);
+    let err = tool.execute(&args, &ctx()).await.expect_err("missing size");
+    assert!(
+        err.contains("asset.meta response missing size"),
+        "got: {err}"
+    );
+}
+
+/// asset.chunk 响应异常矩阵：非 JSON / 缺 data 字段 / data 非 base64 /
+/// 全空块（传输不完整）/ 内容与登记 sha 不符（传输后整包校验拦下）——
+/// 五种全走组合错误臂，各自带可定位的根因文案。
+#[tokio::test]
+async fn rpc_chunk_failure_matrix() {
+    let expected = "a".repeat(64);
+    let (_guard, ws) = temp_workspace();
+    let args = fetch_args_with_node_id(&dead_http_base(), &expected, "node-provider");
+
+    // ① 非 JSON。
+    let cluster = chunk_mock(4, &expected, b"[not json".to_vec());
+    let tool = BoardAssetTool::new(ws.clone()).with_cluster(cluster);
+    let err = tool.execute(&args, &ctx()).await.expect_err("malformed");
+    assert!(err.contains("asset.chunk response malformed"), "got: {err}");
+
+    // ② 缺 data 字段。
+    let cluster = chunk_mock(
+        4,
+        &expected,
+        serde_json::json!({"nope": 1}).to_string().into_bytes(),
+    );
+    let tool = BoardAssetTool::new(ws.clone()).with_cluster(cluster);
+    let err = tool.execute(&args, &ctx()).await.expect_err("no data");
+    assert!(
+        err.contains("asset.chunk response missing data"),
+        "got: {err}"
+    );
+
+    // ③ data 非 base64。
+    let cluster = chunk_mock(
+        4,
+        &expected,
+        serde_json::json!({"data": "!!!not-b64!!!"})
+            .to_string()
+            .into_bytes(),
+    );
+    let tool = BoardAssetTool::new(ws.clone()).with_cluster(cluster);
+    let err = tool.execute(&args, &ctx()).await.expect_err("bad b64");
+    assert!(
+        err.contains("also failed"),
+        "b64 错误经组合错误上抛，got: {err}"
+    );
+
+    // ④ 全空块：offset 正常步进但 buf 空 → 传输不完整。
+    let cluster = chunk_mock(
+        10,
+        &expected,
+        serde_json::json!({"data": ""}).to_string().into_bytes(),
+    );
+    let tool = BoardAssetTool::new(ws.clone()).with_cluster(cluster);
+    let err = tool.execute(&args, &ctx()).await.expect_err("incomplete");
+    assert!(err.contains("RPC transfer incomplete"), "got: {err}");
+    assert!(err.contains("expected 10 bytes, got 0"), "got: {err}");
+
+    // ⑤ 内容与登记 sha 不符（meta 对得上、块内容是别的字节）→ 整包校验。
+    let cluster = chunk_mock(
+        4,
+        &expected,
+        serde_json::json!({"data": nemesis_cluster::transfer::b64_encode(b"BBBB")})
+            .to_string()
+            .into_bytes(),
+    );
+    let tool = BoardAssetTool::new(ws.clone()).with_cluster(cluster);
+    let err = tool.execute(&args, &ctx()).await.expect_err("sha drift");
+    assert!(
+        err.contains("sha256 mismatch after RPC transfer"),
+        "got: {err}"
+    );
+    assert!(
+        !ws.join("board").join("assets").join("spec.md").exists(),
+        "校验不过不得落定"
+    );
+}

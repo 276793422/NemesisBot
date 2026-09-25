@@ -243,3 +243,73 @@ mod layer0_and_live_probe {
         assert!(err.contains("no box attached"), "err: {err}");
     }
 }
+
+// ===========================================================================
+// wave5 round2（2026-09-25）：stdio 回退路径的 strict 提示尾注两臂——
+// warn! 参数里的 load_live()（NEMESISBOT_HOME → config.json executor.strict）
+// 真 ON / 假 OFF 两形态。env 变更持 GLOBAL_STATE_LOCK + EnvHomeGuard 隔离
+//（crate::tests 纪律同源）。沙盒通道真挂载臂（will_attach=true）在无沙盒
+// 测试环境结构性不可达，不在本轮范围。
+// ===========================================================================
+
+#[cfg(all(feature = "sandbox", windows))]
+mod w5r2 {
+    use crate::exec_world::build_executor_channel;
+    use crate::tests::EnvHomeGuard;
+
+    async fn build_with_home_strict(strict: bool) {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let flag = if strict { "true" } else { "false" };
+        std::fs::write(
+            dir.path().join("config.json"),
+            format!(
+                r#"{{ "executor": {{ "enabled": true, "sandbox": true, "strict": {flag} }} }}"#
+            ),
+        )
+        .expect("seed home config.json");
+
+        let channel = build_executor_channel(dir.path(), dir.path(), {
+            let store = nemesis_config::ConfigStore::load(&dir.path().join("config.json"))
+                .expect("load config store");
+            store.handle()
+        })
+        .expect("build_executor_channel")
+        .expect("enabled=true → Some(channel)");
+        let _ = channel; // stdio 回退装配成功即达靶（warn 尾注两形态）。
+    }
+
+    /// strict=ON → warn 尾注「sandboxed tool calls will be REFUSED」形态
+    ///（load_live 读到 true）。
+    #[tokio::test]
+    #[allow(clippy::await_holding_lock)] // GLOBAL_STATE_LOCK 纪律：有意跨 await 持有
+    async fn w5_stdio_fallback_warn_suffix_strict_on() {
+        let _guard = crate::GLOBAL_STATE_LOCK
+            .lock()
+            .unwrap_or_else(|p| p.into_inner());
+        let home = tempfile::tempdir().expect("home tmp");
+        std::fs::write(
+            home.path().join("config.json"),
+            r#"{ "executor": { "enabled": true, "sandbox": true, "strict": true } }"#,
+        )
+        .unwrap();
+        let _env = EnvHomeGuard::point_at(home.path());
+        build_with_home_strict(true).await;
+    }
+
+    /// strict=OFF → warn 尾注空串形态（load_live 读到 false）。
+    #[tokio::test]
+    #[allow(clippy::await_holding_lock)] // GLOBAL_STATE_LOCK 纪律：有意跨 await 持有
+    async fn w5_stdio_fallback_warn_suffix_strict_off() {
+        let _guard = crate::GLOBAL_STATE_LOCK
+            .lock()
+            .unwrap_or_else(|p| p.into_inner());
+        let home = tempfile::tempdir().expect("home tmp");
+        std::fs::write(
+            home.path().join("config.json"),
+            r#"{ "executor": { "enabled": true, "sandbox": true, "strict": false } }"#,
+        )
+        .unwrap();
+        let _env = EnvHomeGuard::point_at(home.path());
+        build_with_home_strict(false).await;
+    }
+}

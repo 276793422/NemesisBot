@@ -267,7 +267,9 @@ mod dispatch_protocol {
 #[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
 #[tokio::test]
 async fn run_requires_workspace_env() {
-    let _guard = crate::GLOBAL_STATE_LOCK.lock().unwrap();
+    let _guard = crate::GLOBAL_STATE_LOCK
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
     unsafe {
         std::env::remove_var("NEMESISBOT_EXECUTOR_WORKSPACE");
     }
@@ -349,7 +351,9 @@ mod executor_main_glue {
     #[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
     #[tokio::test]
     async fn run_stdio_transport_registers_tools_and_exits_on_eof() {
-        let _guard = crate::GLOBAL_STATE_LOCK.lock().unwrap();
+        let _guard = crate::GLOBAL_STATE_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         let tmp = tempfile::tempdir().unwrap();
         let _env = ExecEnvGuard::set(tmp.path());
 
@@ -362,7 +366,9 @@ mod executor_main_glue {
     #[cfg(all(feature = "sandbox", windows))]
     #[tokio::test]
     async fn run_with_sandbox_marker_fail_open_continues_to_stdio() {
-        let _guard = crate::GLOBAL_STATE_LOCK.lock().unwrap();
+        let _guard = crate::GLOBAL_STATE_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         let tmp = tempfile::tempdir().unwrap();
         let home = config_with(false);
         let mut env = ExecEnvGuard::set(tmp.path());
@@ -377,7 +383,9 @@ mod executor_main_glue {
     #[cfg(all(feature = "sandbox", windows))]
     #[tokio::test]
     async fn run_with_sandbox_marker_strict_emits_error_line_and_exits_ok() {
-        let _guard = crate::GLOBAL_STATE_LOCK.lock().unwrap();
+        let _guard = crate::GLOBAL_STATE_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         let tmp = tempfile::tempdir().unwrap();
         let home = config_with(true);
         let mut env = ExecEnvGuard::set(tmp.path());
@@ -400,7 +408,9 @@ mod pipe_transport_via_run {
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn run_over_named_pipe_round_trip_then_clean_eof_exit() {
-        let _guard = crate::GLOBAL_STATE_LOCK.lock().unwrap();
+        let _guard = crate::GLOBAL_STATE_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         let tmp = tempfile::tempdir().unwrap();
         let name = pipe_name(&unique_pipe_id());
         let mut server = create_server(&name).expect("create pipe server");
@@ -470,7 +480,9 @@ mod wave_b {
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn wave_b_pipe_read_invalid_utf8_line_surfaces_error() {
-        let _guard = crate::GLOBAL_STATE_LOCK.lock().unwrap();
+        let _guard = crate::GLOBAL_STATE_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         let tmp = tempfile::tempdir().unwrap();
         let name = pipe_name(&unique_pipe_id());
         let mut server = create_server(&name).expect("create pipe server");

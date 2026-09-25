@@ -365,3 +365,8 @@ fn gate_and_write(
 
 #[cfg(test)]
 mod tests;
+
+// 覆盖率补充批次：execute 参数校验决策表 / registration_plan /
+// gate_and_write 无闸直写。
+#[cfg(test)]
+mod cov_tests;

@@ -144,4 +144,6 @@ impl LLMProvider for GitHubCopilotProvider {
 }
 
 #[cfg(test)]
+mod cov_tests;
+#[cfg(test)]
 mod tests;

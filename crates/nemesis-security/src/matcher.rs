@@ -258,4 +258,6 @@ pub fn match_domain_pattern(pattern: &str, domain: &str) -> bool {
 }
 
 #[cfg(test)]
+mod cov_tests;
+#[cfg(test)]
 mod tests;

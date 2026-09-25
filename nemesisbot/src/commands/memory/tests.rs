@@ -391,7 +391,9 @@ async fn test_cmd_enable_bails_without_plugin_and_writes_no_config() {
     // 串行化（模块头注释的契约）——否则并行调度撞进哑 DLL 存活窗口，本测试
     // 的「插件必不在场」前提被击穿 → cmd_enable 返回 Ok → expect_err 假红
     // （2026-09-02 本地全量实测一次，solo 恒绿）。
-    let _guard = crate::GLOBAL_STATE_LOCK.lock().unwrap();
+    let _guard = crate::GLOBAL_STATE_LOCK
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
     let (_tmp, home) = setup_home(&serde_json::json!({"memory": {"enabled": false}}));
     let err = cmd_enable(&home).await.expect_err("无插件 → bail");
     assert!(err.to_string().contains("Plugin"), "got: {err:#}");
@@ -420,7 +422,9 @@ where
     F: FnOnce(std::path::PathBuf) -> Fut,
     Fut: std::future::Future<Output = ()>,
 {
-    let _guard = crate::GLOBAL_STATE_LOCK.lock().unwrap();
+    let _guard = crate::GLOBAL_STATE_LOCK
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
     let tmp = tempfile::tempdir().unwrap();
     unsafe {
         std::env::set_var("NEMESISBOT_HOME", tmp.path());
@@ -547,7 +551,9 @@ mod r7_enable_success_chain {
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn run_enable_full_success_chain_flips_both_switches() {
         // 锁与守卫同生命周期：DLL 写入期间其它内存测试不得并发探测 exe 目录。
-        let _guard = crate::GLOBAL_STATE_LOCK.lock().unwrap();
+        let _guard = crate::GLOBAL_STATE_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         let _dll = DummyPluginGuard::install();
         let tmp = tempfile::tempdir().unwrap();
         unsafe {
@@ -585,7 +591,9 @@ mod r7_enable_success_chain {
     #[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn run_status_overall_ready_branch_with_all_ingredients() {
-        let _guard = crate::GLOBAL_STATE_LOCK.lock().unwrap();
+        let _guard = crate::GLOBAL_STATE_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         let _dll = DummyPluginGuard::install();
         let tmp = tempfile::tempdir().unwrap();
         unsafe {
@@ -621,7 +629,9 @@ mod r7_enable_success_chain {
     #[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn run_enable_plugin_ok_but_model_missing_maps_install_hint() {
-        let _guard = crate::GLOBAL_STATE_LOCK.lock().unwrap();
+        let _guard = crate::GLOBAL_STATE_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         let _dll = DummyPluginGuard::install();
         let tmp = tempfile::tempdir().unwrap();
         unsafe {
@@ -652,7 +662,9 @@ mod r7_enable_success_chain {
     #[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn run_enable_blocked_when_workspace_is_regular_file() {
-        let _guard = crate::GLOBAL_STATE_LOCK.lock().unwrap();
+        let _guard = crate::GLOBAL_STATE_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         let tmp = tempfile::tempdir().unwrap();
         unsafe {
             std::env::set_var("NEMESISBOT_HOME", tmp.path());
@@ -679,7 +691,9 @@ mod r7_enable_success_chain {
     #[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
     #[test]
     fn has_onnx_files_false_arms_on_empty_missing_and_non_onnx() {
-        let _guard = crate::GLOBAL_STATE_LOCK.lock().unwrap();
+        let _guard = crate::GLOBAL_STATE_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         let tmp = tempfile::tempdir().unwrap();
 
         // 目录不存在 → read_dir Err → false。

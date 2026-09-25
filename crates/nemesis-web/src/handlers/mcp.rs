@@ -276,3 +276,7 @@ impl McpHandler {
 // server.update 全可选字段 patch 臂（旧清单只盖 url/args/env/timeout）。
 #[cfg(test)]
 mod tests;
+
+// AGT 覆盖率批次（2026-09-25）：Default 转发体（本文件唯一缺失面）。
+#[cfg(test)]
+mod agt_tests;

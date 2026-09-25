@@ -550,3 +550,233 @@ mod r10 {
         let _keep_resident = occupied;
     }
 }
+
+// =========================================================================
+// wave4b 追加（coverage）：AgentLoopServiceAdapter 两块此前未触达的装配
+// 逻辑——① L6++ 主桥 skip 谓词（set_skip_predicate + 桥内命中 continue /
+// 未命中放行，用计数 LLM provider 做真断言）；② G4 重启遗留后台 subagent
+// 丢失回执注入（stale bg_ 快照 → start() 注入 system 消息 → 续行 LLM →
+// 快照自清）。
+// =========================================================================
+
+mod wave4b {
+    use super::*;
+    use std::sync::atomic::AtomicUsize;
+
+    /// 计数 mock provider：每次 chat 调用 +1（skip 谓词与注入链路的
+    /// 可观测锚点——消息真到了 loop 才会有 LLM 调用）。
+    struct CountingLlmProvider {
+        calls: std::sync::Arc<AtomicUsize>,
+    }
+
+    #[async_trait::async_trait]
+    impl nemesis_agent::r#loop::LlmProvider for CountingLlmProvider {
+        async fn chat(
+            &self,
+            _model: &str,
+            _messages: Vec<nemesis_agent::r#loop::LlmMessage>,
+            _options: Option<nemesis_agent::types::ChatOptions>,
+            _tools: Vec<nemesis_agent::types::ToolDefinition>,
+        ) -> Result<nemesis_agent::r#loop::LlmResponse, String> {
+            self.calls.fetch_add(1, Ordering::SeqCst);
+            Ok(nemesis_agent::r#loop::LlmResponse {
+                content: "mock".to_string(),
+                tool_calls: Vec::new(),
+                finished: true,
+                reasoning_content: None,
+                usage: None,
+                raw_request_body: None,
+                raw_response_body: None,
+            })
+        }
+    }
+
+    fn make_counting_agent_loop(
+        calls: std::sync::Arc<AtomicUsize>,
+    ) -> nemesis_agent::r#loop::AgentLoop {
+        let (outbound_tx, _outbound_rx) = tokio::sync::mpsc::channel(16);
+        nemesis_agent::r#loop::AgentLoop::new_bus(
+            Box::new(CountingLlmProvider { calls }),
+            nemesis_agent::types::AgentConfig {
+                model: "test-model".to_string(),
+                system_prompt: Some("test".to_string()),
+                max_turns: 1,
+                tools: vec![],
+                ..Default::default()
+            },
+            outbound_tx,
+            nemesis_agent::r#loop::ConcurrentMode::Reject,
+            8,
+            0,
+        )
+    }
+
+    fn inbound_msg(content: &str) -> nemesis_types::channel::InboundMessage {
+        nemesis_types::channel::InboundMessage {
+            channel: "web".to_string(),
+            sender_id: "wave4b-user".to_string(),
+            chat_id: "wave4b-chat".to_string(),
+            content: content.to_string(),
+            media: vec![],
+            session_key: String::new(),
+            correlation_id: String::new(),
+            metadata: std::collections::HashMap::new(),
+            voice_playback: None,
+        }
+    }
+
+    /// 轮询直到闭包为真（上限 ms），返回是否及时达成。
+    async fn wait_until(mut ms: u64, step: u64, pred: impl Fn() -> bool) -> bool {
+        while ms > 0 {
+            if pred() {
+                return true;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(step)).await;
+            ms = ms.saturating_sub(step);
+        }
+        pred()
+    }
+
+    /// L6++ 主桥 skip 谓词：装配期 set 一次 → 命中谓词的消息不进主 loop
+    ///（桥 continue 丢给项目调度器），未命中的照常进 loop 触发 LLM。
+    #[tokio::test]
+    async fn skip_predicate_blocks_matched_messages_from_main_loop() {
+        let calls = std::sync::Arc::new(AtomicUsize::new(0));
+        let bus = Arc::new(nemesis_bus::MessageBus::new());
+        let shared = make_test_shared(&bus);
+        let agent_loop = make_counting_agent_loop(calls.clone());
+        let agent_loop_ref: Arc<
+            parking_lot::RwLock<Option<Arc<nemesis_agent::r#loop::AgentLoop>>>,
+        > = Arc::new(parking_lot::RwLock::new(None));
+        let adapter =
+            AgentLoopServiceAdapter::new(Arc::new(agent_loop), shared, bus.clone(), agent_loop_ref);
+
+        // 装配期设置（OnceLock：重复设置取首个）。
+        let skip_calls = std::sync::Arc::new(AtomicUsize::new(0));
+        let sc = skip_calls.clone();
+        adapter.set_skip_predicate(Arc::new(
+            move |msg: &nemesis_types::channel::InboundMessage| {
+                sc.fetch_add(1, Ordering::SeqCst);
+                msg.content.contains("SKIP-ME")
+            },
+        ));
+
+        LifecycleService::start(&adapter).expect("start");
+        assert!(LifecycleService::is_running(&adapter));
+
+        // 未命中：正常进 loop → provider 恰被调一次。
+        bus.publish_inbound(inbound_msg("wave4b normal hello"));
+        assert!(
+            tokio::time::timeout(std::time::Duration::from_secs(10), async {
+                loop {
+                    if calls.load(Ordering::SeqCst) >= 1 {
+                        return;
+                    }
+                    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+                }
+            })
+            .await
+            .is_ok(),
+            "未命中谓词的消息必须进主 loop（LLM 被调）"
+        );
+
+        // 命中：桥内 continue，消息不进 loop → provider 计数不变。
+        bus.publish_inbound(inbound_msg("SKIP-ME should be diverted"));
+        for _ in 0..300 {
+            tokio::task::yield_now().await;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(150)).await;
+        assert_eq!(
+            calls.load(Ordering::SeqCst),
+            1,
+            "命中谓词的消息不得进主 loop"
+        );
+        assert!(
+            skip_calls.load(Ordering::SeqCst) >= 1,
+            "谓词必须真的被桥调用过"
+        );
+
+        adapter.stop().expect("stop");
+        assert!(!LifecycleService::is_running(&adapter));
+    }
+
+    /// G4 重启恢复：盘上遗留 bg_ 前缀续行快照 → start() 注入诚实丢失回执
+    ///（system 消息）→ loop 走续行路径以 error 结果续行 LLM → 完成后快照
+    /// 自清。全链 in-process mock，无外部依赖。
+    #[tokio::test]
+    async fn stale_bg_spawn_snapshot_injects_loss_note_and_resume_cleans_it() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let ws = tmp.path().to_path_buf();
+        // 种一个 bg_ 前缀快照（空 session_key：续行收尾跳过持久化副作用）。
+        let snapshot = nemesis_agent::ContinuationSnapshot {
+            task_id: "bg_stale1".to_string(),
+            messages: "[]".to_string(),
+            tool_call_id: "tc-bg-1".to_string(),
+            channel: "telegram".to_string(),
+            chat_id: "chat-9".to_string(),
+            session_key: String::new(),
+            peer_id: String::new(),
+            image_refs: vec![],
+            image_refs_by_user_turn: vec![],
+            created_at: "2026-09-25T00:00:00Z".to_string(),
+            final_persisted: false,
+        };
+        nemesis_agent::ContinuationStore::new(&ws)
+            .save(&snapshot)
+            .expect("seed snapshot");
+
+        let manager = Arc::new(nemesis_agent::ContinuationManager::with_disk_store(&ws));
+        let seeded = manager.list_bg_spawn_pending_sync();
+        assert!(
+            seeded.iter().any(|id| id == "bg_stale1"),
+            "磁盘快照必须被 manager 恢复，got {seeded:?}"
+        );
+
+        let calls = std::sync::Arc::new(AtomicUsize::new(0));
+        let bus = Arc::new(nemesis_bus::MessageBus::new());
+        let shared = make_test_shared(&bus);
+        let mut agent_loop = make_counting_agent_loop(calls.clone());
+        agent_loop.set_continuation_manager(manager.clone());
+        let agent_loop_ref: Arc<
+            parking_lot::RwLock<Option<Arc<nemesis_agent::r#loop::AgentLoop>>>,
+        > = Arc::new(parking_lot::RwLock::new(None));
+        let adapter =
+            AgentLoopServiceAdapter::new(Arc::new(agent_loop), shared, bus, agent_loop_ref);
+
+        // start 前：adapter 持有的 loop 能列出遗留任务（wiring 可观测）。
+        let listed = adapter
+            .current()
+            .expect("prebuilt loop present")
+            .list_stale_bg_spawn_task_ids();
+        assert!(
+            listed.iter().any(|id| id == "bg_stale1"),
+            "adapter 侧 list_stale 必须可见，got {listed:?}"
+        );
+
+        LifecycleService::start(&adapter).expect("start");
+        assert!(LifecycleService::is_running(&adapter));
+
+        // 注入的丢失回执走续行路径 → 以 error 结果续行 LLM → 快照自清。
+        assert!(
+            tokio::time::timeout(std::time::Duration::from_secs(15), async {
+                loop {
+                    if calls.load(Ordering::SeqCst) >= 1 {
+                        return;
+                    }
+                    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+                }
+            })
+            .await
+            .is_ok(),
+            "丢失回执必须触发续行 LLM 调用"
+        );
+        assert!(
+            wait_until(5000, 50, || manager.list_bg_spawn_pending_sync().is_empty()).await,
+            "续行完成后快照必须自清，剩余 {:?}",
+            manager.list_bg_spawn_pending_sync()
+        );
+
+        adapter.stop().expect("stop");
+        assert!(!LifecycleService::is_running(&adapter));
+    }
+}

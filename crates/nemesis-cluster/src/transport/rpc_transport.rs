@@ -158,3 +158,6 @@ impl Default for RpcTransport {
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+mod cov_tests;

@@ -170,3 +170,6 @@ pub struct TrendPoint {
     pub request_count: i64,
     pub total_cost_usd: f64,
 }
+
+#[cfg(test)]
+mod tests;

@@ -312,7 +312,9 @@ mod run_arm {
     #[cfg(feature = "desktop")]
     #[tokio::test]
     async fn approval_headless_fails_fast_when_handshake_eof_and_cleans_env() {
-        let _guard = crate::GLOBAL_STATE_LOCK.lock().unwrap();
+        let _guard = crate::GLOBAL_STATE_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         unsafe {
             std::env::remove_var("NEMESISBOT_FORCE_HEADLESS");
         }
@@ -361,5 +363,31 @@ mod run_arm {
     async fn ws_test_full_local_roundtrip() {
         // 全本地回路：WS server（127.0.0.1:0）+ 客户端连入 + 通知往返。
         run(TestAction::Ws).await.expect("WS ping-pong 回路应通过");
+    }
+}
+
+// ---------------------------------------------------------------------------
+// wave_a（2026-09-25）：check_plugin_library_exists 的 not-found 分支。
+// 测试进程 exe 目录是 target/debug/deps（无 plugins/ 子目录）→ 走 Err 臂；
+// Ok 臂依赖真实 exe 布局，不在单测面内。
+// ---------------------------------------------------------------------------
+
+#[test]
+fn check_plugin_library_missing_next_to_test_exe_is_err() {
+    let res = check_plugin_library_exists();
+    match res {
+        Ok(p) => {
+            // 仅当开发机把 plugins/ 布进了 deps 目录才可能发生——此时断言
+            // 该路径至少是 plugin_ui 库，防止假绿。
+            assert!(
+                p.to_string_lossy().contains("plugin"),
+                "意外找到的库路径：{p:?}"
+            );
+        }
+        Err(e) => {
+            let msg = e.to_string();
+            assert!(msg.contains("not found"), "实际：{msg}");
+            assert!(msg.contains("plugin-ui"), "错误文案含标签：{msg}");
+        }
     }
 }

@@ -26,3 +26,6 @@ pub(crate) fn find_executable(clamav_path: &str, name: &str) -> String {
         .to_string_lossy()
         .to_string()
 }
+
+#[cfg(test)]
+mod cov_tests;

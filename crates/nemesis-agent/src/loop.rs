@@ -857,5 +857,33 @@ mod round_text_tests;
 // characterization + golden transcript harness（基线在 loop/testdata/golden/）。
 #[cfg(test)]
 mod characterization_tests;
+// messages.rs 覆盖率补充（K3 shell 注入失败面 / I3 note_read 早退 /
+// P3.1 prefetch 门槛链 / workflow_edit section 三形态）。
+#[cfg(test)]
+mod messages_cov_tests;
+// maintenance.rs 覆盖率补充（handle_maintenance 错误臂 / user 直派发
+// 无集群同步错误路径）。
+#[cfg(test)]
+mod maintenance_cov_tests;
+// tool_dispatch.rs 覆盖率补充（lsp 写特判 / plan 写放行 / 工作副本路径
+// 重写决策表 / dispatch 终态三臂）。
+#[cfg(test)]
+mod tool_dispatch_cov_tests;
+// bus.rs 覆盖率补充（统一泵 gate 分臂 / spawn_turn_task 维护·派发路径 /
+// finish_message sent_in_round 跳过 / 续行无管理器存活）。
+#[cfg(test)]
+mod bus_cov_tests;
+// tools_trait.rs 覆盖率补充（enable_mcp_reload 两臂 / check_mcp_reload
+// 热重载 / record_tool_validation_stats 落账）。
 #[cfg(test)]
 mod tests;
+#[cfg(test)]
+mod tools_trait_cov_tests;
+// llm_types.rs 覆盖率补充（observer 图片 base64 发射源脱敏 / 零超时直通 /
+// estop 翻转唤醒）。
+#[cfg(test)]
+mod llm_types_cov_tests;
+// tool_dispatch.rs 安全管线后续层覆盖（limits 审批直通车三分支 /
+// guardian 升级与故障姿态矩阵）。
+#[cfg(test)]
+mod tool_dispatch_sec_cov_tests;

@@ -338,7 +338,9 @@ fn cmd_add_rejects_empty_rules_file() {
 async fn bb4_local_missing_write_rejected_readonly_degrades() {
     // BB4 防静默建家回归：--local home 不存在时——写命令 bail（且不创建
     // .nemesisbot）；只读命令降级展示内置默认集（零落盘）。
-    let _guard = crate::GLOBAL_STATE_LOCK.lock().unwrap();
+    let _guard = crate::GLOBAL_STATE_LOCK
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
     let tmp = tempfile::TempDir::new().unwrap();
     let orig = std::env::current_dir().unwrap();
     std::env::set_current_dir(tmp.path()).unwrap();
@@ -406,7 +408,9 @@ fn cmd_new_eof_stdin_cancels_with_path_empty_error() {
 #[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
 #[tokio::test]
 async fn run_dispatch_list_toggle_and_remove_via_env_home() {
-    let _guard = crate::GLOBAL_STATE_LOCK.lock().unwrap();
+    let _guard = crate::GLOBAL_STATE_LOCK
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
     let tmp = tempfile::tempdir().unwrap();
     unsafe {
         std::env::set_var("NEMESISBOT_HOME", tmp.path());
@@ -564,7 +568,9 @@ mod wave_b {
     #[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
     #[tokio::test]
     async fn wave_b_run_new_wizard_eof_stdin_cancels() {
-        let _guard = crate::GLOBAL_STATE_LOCK.lock().unwrap();
+        let _guard = crate::GLOBAL_STATE_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         let tmp = tempfile::tempdir().unwrap();
         let home = tmp.path().join(".nemesisbot");
         std::fs::create_dir_all(&home).unwrap();
@@ -585,7 +591,9 @@ mod wave_b {
     #[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
     #[tokio::test]
     async fn wave_b_run_edit_then_add_dispatch_persist_effects() {
-        let _guard = crate::GLOBAL_STATE_LOCK.lock().unwrap();
+        let _guard = crate::GLOBAL_STATE_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         let (tmp, path, id0) = wave_b_seeded_home();
         let _env = WaveBHomeGuard::set(tmp.path());
 
@@ -645,7 +653,9 @@ mod wave_b {
     #[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
     #[tokio::test]
     async fn wave_b_run_reset_force_dispatch_restores_defaults() {
-        let _guard = crate::GLOBAL_STATE_LOCK.lock().unwrap();
+        let _guard = crate::GLOBAL_STATE_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         let (tmp, path, _id0) = wave_b_seeded_home();
         let _env = WaveBHomeGuard::set(tmp.path());
 

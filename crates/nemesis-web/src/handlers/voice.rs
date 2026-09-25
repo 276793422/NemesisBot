@@ -3429,3 +3429,17 @@ mod wweb2_tests;
 // voice_state_lock() 串行化（wweb2_tests::voice_shutdown_idle_is_safe 也持有同一把锁）。
 #[cfg(all(test, target_os = "windows"))]
 mod s10_tests;
+
+// AGT 覆盖率批次（2026-09-24）：第三子模块。setup/install_runtime/install_aec/
+// install_model 的 create_dir 失败与锁/config 门、tts 与 tts_playback 纯校验段、
+// init_engines_from_config fail-fast、注入 SpeakerManager 的 remove/status/shutdown
+// 臂。同样持有 s10_tests::voice_state_lock 串行化全局状态。
+#[cfg(all(test, target_os = "windows"))]
+mod agt_tests;
+
+// Wave4 覆盖率批次（2026-09-25）：第四子模块。config_get/set、voice_config
+// 全字段合并、chat_config 回环、speakers 表投影、engine_stop 三模型空态、
+// pipeline/dictation/dialogue/speaker_test/register stop 的空状态诚实报错、
+// tts_playback_stop 与 register_cancel 幂等成功、engine_status 空态投影。
+#[cfg(all(test, target_os = "windows"))]
+mod w4_tests;

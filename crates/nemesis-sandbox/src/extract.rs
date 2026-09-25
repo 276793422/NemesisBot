@@ -201,3 +201,11 @@ pub async fn extract_release(installer: &Path, runtime_dir: &Path) -> Result<()>
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+mod cov_tests;
+
+// Wave6B 覆盖率收尾：seven_zip_status 无缓存探测（system/none 两态）+
+// find_system_7z 候选目录全链。
+#[cfg(test)]
+mod cov_wave6b_tests;

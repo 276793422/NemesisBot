@@ -368,3 +368,26 @@ fn test_escalation_message_carries_stable_marker_prefix() {
     assert!(msg.contains("exec"));
     assert!(msg.contains("6"));
 }
+
+// ---------------------------------------------------------------------------
+// wave5 补充：⑧ 文本重复连续第二次 nudge（升级臂 290）+ similarity 短串
+// 空 shingle 集边界（401）。
+// ---------------------------------------------------------------------------
+
+#[test]
+fn text_repetition_third_consecutive_still_nudges() {
+    let mut g = TurnGuard::new();
+    let base = "我已经检查了文件，发现问题是依赖配置不对，需要修改 Cargo.toml。";
+    assert!(g.check_text_repetition(base).is_none());
+    let a2 = "我已经检查了文件，发现问题是依赖配置不对，需要修改 Cargo.toml 哦。";
+    assert!(g.check_text_repetition(a2).is_some());
+    // 第三轮仍近似 → repeat_text_count >= 1 的升级文案臂。
+    let a3 = "我已经检查了文件，发现问题是依赖配置不对，需要修改 Cargo.toml 呀。";
+    assert!(g.check_text_repetition(a3).is_some());
+}
+
+#[test]
+fn similarity_short_strings_have_empty_shingle_sets() {
+    // 两个都短于 n-gram 窗口 → shingle 集全空 → 并集 0 → 0.0。
+    assert_eq!(similarity("ab", "cd"), 0.0);
+}

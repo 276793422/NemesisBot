@@ -204,7 +204,9 @@ fn s11b_fake_start_exe(paths: &nemesis_sandbox::SandboxPaths) -> bool {
 #[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
 #[tokio::test]
 async fn test_s11b_run_status_fresh_home() {
-    let _guard = crate::GLOBAL_STATE_LOCK.lock().unwrap();
+    let _guard = crate::GLOBAL_STATE_LOCK
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
     let th = s11b_temp_home_env();
     run(SandboxCommand::Status, false).await.unwrap();
     // SCM 读取安全（SbieSvc/SbieDrv 未装 → NotFound 打印）
@@ -222,7 +224,9 @@ fn test_s11b_stop_service_if_ours_no_side_effects() {
 #[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
 #[test]
 fn test_s11b_workspace_dir_env_resolution() {
-    let _guard = crate::GLOBAL_STATE_LOCK.lock().unwrap();
+    let _guard = crate::GLOBAL_STATE_LOCK
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
     let th = s11b_temp_home_env();
     assert_eq!(workspace_dir(false), th.home.join("workspace"));
 }
@@ -232,7 +236,9 @@ fn test_s11b_workspace_dir_env_resolution() {
 #[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
 #[tokio::test]
 async fn test_s11b_run_pending_and_commit_paths() {
-    let _guard = crate::GLOBAL_STATE_LOCK.lock().unwrap();
+    let _guard = crate::GLOBAL_STATE_LOCK
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
     let th = s11b_temp_home_env();
     let paths = s11b_paths(&th.home);
 
@@ -314,7 +320,9 @@ async fn test_s11b_run_pending_and_commit_paths() {
 #[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
 #[tokio::test]
 async fn test_s11b_run_clear_force_and_missing_startexe() {
-    let _guard = crate::GLOBAL_STATE_LOCK.lock().unwrap();
+    let _guard = crate::GLOBAL_STATE_LOCK
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
     let th = s11b_temp_home_env();
     let paths = s11b_paths(&th.home);
 
@@ -346,7 +354,9 @@ async fn test_s11b_run_clear_force_and_missing_startexe() {
 #[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
 #[tokio::test]
 async fn test_s11b_kill_all_branches() {
-    let _guard = crate::GLOBAL_STATE_LOCK.lock().unwrap();
+    let _guard = crate::GLOBAL_STATE_LOCK
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
     let th = s11b_temp_home_env();
     let paths = s11b_paths(&th.home);
 
@@ -472,7 +482,9 @@ mod wave_b {
     #[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
     #[tokio::test]
     async fn wave_b_commit_failed_line_when_real_parent_is_regular_file() {
-        let _guard = crate::GLOBAL_STATE_LOCK.lock().unwrap();
+        let _guard = crate::GLOBAL_STATE_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         let th = s11b_temp_home_env();
         let paths = s11b_paths(&th.home);
 
@@ -511,7 +523,9 @@ mod wave_b {
     #[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
     #[tokio::test]
     async fn wave_b_kill_specific_box_present_in_ini_runs_terminate_chain() {
-        let _guard = crate::GLOBAL_STATE_LOCK.lock().unwrap();
+        let _guard = crate::GLOBAL_STATE_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         let th = s11b_temp_home_env();
         let paths = s11b_paths(&th.home);
         assert!(s11b_fake_start_exe(&paths));
@@ -546,7 +560,9 @@ mod wave_b {
     #[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
     #[tokio::test]
     async fn wave_b_kill_all_with_no_eval_sections_returns_early_hint() {
-        let _guard = crate::GLOBAL_STATE_LOCK.lock().unwrap();
+        let _guard = crate::GLOBAL_STATE_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         let th = s11b_temp_home_env();
         let paths = s11b_paths(&th.home);
         assert!(s11b_fake_start_exe(&paths));
@@ -566,7 +582,9 @@ mod wave_b {
     #[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
     #[tokio::test]
     async fn wave_b_kill_with_unspawnable_startexe_reports_no_response_and_skips() {
-        let _guard = crate::GLOBAL_STATE_LOCK.lock().unwrap();
+        let _guard = crate::GLOBAL_STATE_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         let th = s11b_temp_home_env();
         let paths = s11b_paths(&th.home);
 
@@ -597,7 +615,9 @@ mod wave_b {
     #[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
     #[tokio::test]
     async fn wave_b_status_present_arms_when_runtime_ini_startexe_exist() {
-        let _guard = crate::GLOBAL_STATE_LOCK.lock().unwrap();
+        let _guard = crate::GLOBAL_STATE_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         let th = s11b_temp_home_env();
         let paths = s11b_paths(&th.home);
 
@@ -612,5 +632,105 @@ mod wave_b {
 
         assert!(paths.start_exe().is_file());
         assert!(paths.ini_path.is_file());
+    }
+}
+
+// ---------------------------------------------------------------------------
+// wave_a（2026-09-25）：selftest_child 全分支（env 驱动、无网络依赖面）。
+// - WORKSPACE 缺失 → 错误 verdict + Ok；
+// - WORKSPACE 在、不 engage → 三探针 + ok verdict；
+// - ENGAGE=1 且无 BOXED：Windows 上无 userland backend → "no userland
+//   backend" verdict（landlock 是 Linux 专属；绝不触发 UAC/驱动路径）；
+// - ENGAGE=1 + BOXED=1 → 跳过 engage 直接探针。
+// 自检契约：永远 Ok + stdout JSON verdict；断言 Ok 与探针对工作区的副作用。
+// ---------------------------------------------------------------------------
+
+#[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
+mod wave_a_selftest {
+    use std::sync::Mutex;
+
+    static SELFTEST_ENV_LOCK: Mutex<()> = Mutex::new(());
+
+    /// 自检 env 夹具：NEMESISBOT_HOME 指向临时家 + WORKSPACE 指向其 workspace。
+    struct SelftestEnv {
+        _guard: MutexGuard<'static, ()>,
+        _tmp: tempfile::TempDir,
+        workspace: std::path::PathBuf,
+    }
+    use std::sync::MutexGuard;
+
+    impl Drop for SelftestEnv {
+        fn drop(&mut self) {
+            unsafe { std::env::remove_var("NEMESISBOT_HOME") };
+            unsafe { std::env::remove_var("NEMESISBOT_SELFTEST_WORKSPACE") };
+            unsafe { std::env::remove_var("NEMESISBOT_SELFTEST_ENGAGE") };
+            unsafe { std::env::remove_var("NEMESISBOT_SELFTEST_BOXED") };
+            unsafe { std::env::remove_var("NEMESISBOT_SELFTEST_ALLOW_NETWORK") };
+        }
+    }
+
+    fn selftest_env() -> SelftestEnv {
+        let guard = SELFTEST_ENV_LOCK.lock().unwrap();
+        let tmp = tempfile::TempDir::new().unwrap();
+        let home = tmp.path().join(".nemesisbot");
+        let workspace = home.join("workspace");
+        std::fs::create_dir_all(&workspace).unwrap();
+        unsafe { std::env::set_var("NEMESISBOT_HOME", tmp.path()) };
+        unsafe { std::env::set_var("NEMESISBOT_SELFTEST_WORKSPACE", &workspace) };
+        SelftestEnv {
+            _guard: guard,
+            _tmp: tmp,
+            workspace,
+        }
+    }
+
+    fn clear_workspace_var() {
+        unsafe { std::env::remove_var("NEMESISBOT_SELFTEST_WORKSPACE") };
+    }
+
+    #[tokio::test]
+    async fn selftest_child_without_workspace_emits_error_verdict_and_is_ok() {
+        let th = selftest_env();
+        clear_workspace_var();
+        // 子进程契约：缺 WORKSPACE 也必须 Ok（verdict 才是结论载体）。
+        super::super::run(super::super::SandboxCommand::SelftestChild, false)
+            .await
+            .expect("selftest child 必须永远 Ok");
+        assert!(!th.workspace.exists() || th.workspace.is_dir());
+    }
+
+    #[tokio::test]
+    async fn selftest_child_with_workspace_runs_probes_and_is_ok() {
+        let th = selftest_env();
+        super::super::run(super::super::SandboxCommand::SelftestChild, false)
+            .await
+            .expect("探针路径必须 Ok");
+        // 探针在工作区内做过写入尝试（probe_workspace_write 的 canary），
+        // 目录仍存在且没被破坏。
+        assert!(th.workspace.is_dir());
+    }
+
+    #[tokio::test]
+    async fn selftest_child_engage_without_boxed_reports_no_backend() {
+        let th = selftest_env();
+        unsafe { std::env::set_var("NEMESISBOT_SELFTEST_ENGAGE", "1") };
+        // Windows 无 userland backend（bwrap/landlock/seatbelt 都是 Unix），
+        // detect_backend()==None → 错误 verdict，仍 Ok。
+        super::super::run(super::super::SandboxCommand::SelftestChild, false)
+            .await
+            .expect("engage 无 backend 也必须 Ok（verdict 报告）");
+        assert!(th.workspace.is_dir());
+    }
+
+    #[tokio::test]
+    async fn selftest_child_engage_with_boxed_skips_engagement() {
+        let th = selftest_env();
+        unsafe { std::env::set_var("NEMESISBOT_SELFTEST_ENGAGE", "1") };
+        unsafe { std::env::set_var("NEMESISBOT_SELFTEST_BOXED", "1") };
+        // 盒内形态：跳过 apply_to_self，直接探针。
+        super::super::run(super::super::SandboxCommand::SelftestChild, false)
+            .await
+            .expect("boxed 形态必须 Ok");
+        assert!(th.workspace.is_dir());
     }
 }

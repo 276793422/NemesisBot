@@ -221,7 +221,9 @@ async fn get_json_failure_is_error() {
 #[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
 #[tokio::test]
 async fn run_missing_config_errors_cleanly() {
-    let _guard = crate::GLOBAL_STATE_LOCK.lock().unwrap();
+    let _guard = crate::GLOBAL_STATE_LOCK
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
     let tmp = tempfile::tempdir().unwrap();
     unsafe {
         std::env::set_var("NEMESISBOT_HOME", tmp.path());
@@ -247,7 +249,9 @@ async fn run_missing_config_errors_cleanly() {
 async fn run_success_when_mock_gateway_already_running() {
     // 网关"已在跑"：health 200 + internal 200 → run 全链路 Ok，绝不 spawn。
     let port = start_mock_gateway("200 OK", r#"{"ok":true}"#);
-    let _guard = crate::GLOBAL_STATE_LOCK.lock().unwrap();
+    let _guard = crate::GLOBAL_STATE_LOCK
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
     let tmp = tempfile::tempdir().unwrap();
     unsafe {
         std::env::set_var("NEMESISBOT_HOME", tmp.path());
@@ -292,7 +296,9 @@ mod r9_spawn_fail {
     #[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
     #[tokio::test]
     async fn start_and_wait_times_out_when_spawned_gateway_dies_on_bad_config() {
-        let _guard = crate::GLOBAL_STATE_LOCK.lock().unwrap();
+        let _guard = crate::GLOBAL_STATE_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         let ws = TestWorkspace::new().unwrap();
 
         std::fs::create_dir_all(ws.workspace().join("state")).unwrap();

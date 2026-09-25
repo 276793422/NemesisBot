@@ -129,4 +129,6 @@ pub fn find_matching_brace(text: &str, pos: usize) -> Option<usize> {
 }
 
 #[cfg(test)]
+mod cov_tests;
+#[cfg(test)]
 mod tests;

@@ -488,4 +488,6 @@ fn set_version(conn: &Connection, version: i32) -> Result<(), String> {
 }
 
 #[cfg(test)]
+mod cov_tests;
+#[cfg(test)]
 mod tests;
