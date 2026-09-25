@@ -15,6 +15,7 @@ fn cfg_enabled(formatters: BTreeMap<String, Vec<String>>) -> FormatOnSaveConfig 
     FormatOnSaveConfig {
         enabled: true,
         formatters,
+        timeout_secs: nemesis_config::default_format_timeout_secs(),
     }
 }
 
@@ -38,6 +39,12 @@ fn config_json(format_on_save: serde_json::Value, executor: Option<bool>) -> ser
 
 fn enabled_json() -> serde_json::Value {
     serde_json::json!({ "enabled": true })
+}
+
+/// 显式超时预算（真 spawn 用例用：CI 冷机上 rustup shim 链可能超默认 3s，
+/// run 35978715970 实证 flake——测语义不测竞速）。
+fn enabled_json_with_timeout(secs: u64) -> serde_json::Value {
+    serde_json::json!({ "enabled": true, "timeout_secs": secs })
 }
 
 // ---------------------------------------------------------------------------
@@ -139,7 +146,7 @@ async fn rustfmt_reformats_bad_rs_file_and_annotates_result() {
     let file = dir.path().join("ugly.rs");
     std::fs::write(&file, "fn a(){let x=1;}\n").unwrap();
 
-    let config_path = write_config(dir.path(), config_json(enabled_json(), None));
+    let config_path = write_config(dir.path(), config_json(enabled_json_with_timeout(60), None));
     let out = format_on_save(Some(config_path), &file.to_string_lossy(), "wrote file").await;
 
     assert!(

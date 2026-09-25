@@ -1,3 +1,11 @@
+// Windows 基线专用（2026-09-24 nightly 实证）：golden 基线把 K3 环境
+// 快照段的 Windows 平台块（platform: windows / default_shell: cmd /
+// time_cmd: date /t…）整段钉死（归一化清单规则 4 只归一时间行，且头部
+// 「平台路径分隔符不出现在任何录制面」的假设不覆盖该段平台行变化），
+// Linux 重放必漂移。按 2026-09-02 Windows 形态测试标记约定整套挂
+// #[cfg(windows)]：Linux 编译期消失（非运行期跳过），nightly 不再红。
+// 要放开 Linux 录制：先给归一化清单补环境块参数化规则（新规则）再重录。
+#![cfg(windows)]
 // P2-0 characterization + golden transcript harness
 // (docs/PLAN/2026-09-23_agentloop-god-object-decomposition.md §7 T1/T2)。
 //

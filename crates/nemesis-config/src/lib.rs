@@ -861,7 +861,7 @@ pub struct ClaudeCodeToolConfig {
 /// 执行点在 PostToolUse hooks 之前（用户自定义 hook 看到格式化后文件）、
 /// C3 诊断带之前（诊断看到格式化后文件）；`executor.enabled=true` 时诚实
 /// 停用（写落子进程/盒内，gateway 侧后格式化会读到陈旧内容甚至绕盒写）。
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct FormatOnSaveConfig {
     /// Enable format-on-save (default false — opt-in).
     #[serde(default)]
@@ -871,6 +871,25 @@ pub struct FormatOnSaveConfig {
     /// ext 用配置 argv，未命中的 ext 回落内置表。空表 = 全内置。
     #[serde(default)]
     pub formatters: std::collections::BTreeMap<String, Vec<String>>,
+    /// 单次格式化墙钟预算（秒；超时 kill 子进程，静默放行）。默认 3——冷环境
+    /// （CI / 慢盘 / rustup shim 链冷启）可能超 3s，可调大。0 视作缺省。
+    #[serde(default = "default_format_timeout_secs")]
+    pub timeout_secs: u64,
+}
+
+/// 格式化超时缺省秒数（单一真相源：serde 缺省 / Default / 0 防呆共用）。
+pub fn default_format_timeout_secs() -> u64 {
+    3
+}
+
+impl Default for FormatOnSaveConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            formatters: std::collections::BTreeMap::new(),
+            timeout_secs: default_format_timeout_secs(),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

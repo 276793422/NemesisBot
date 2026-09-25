@@ -1101,6 +1101,35 @@ mod wave_a {
         std::fs::set_permissions(p, perm).unwrap();
     }
 
+    /// POSIX 侧测试助手：临时把目录设为只读，Drop 恢复原模式。
+    /// rename 型原子保存（tmp 建在同目录 + rename 覆盖目标）按 POSIX 语义
+    /// 只看目录写权限——目标文件 0o444 拦不住（这也是本文件旧版只读测试
+    /// 在 Linux 上保存成功、断言假红的根因）。要构造「保存必失败」，POSIX
+    /// 下必须拦目录；Windows 上 readonly 属性本身即拒绝 replace，无需此件。
+    #[cfg(unix)]
+    struct DenyDirWrite(std::path::PathBuf, std::fs::Permissions);
+
+    #[cfg(unix)]
+    impl DenyDirWrite {
+        fn new(p: &std::path::Path) -> Self {
+            use std::os::unix::fs::PermissionsExt;
+            let perm = std::fs::metadata(p).unwrap().permissions();
+            let mut denied = perm.clone();
+            denied.set_mode(0o555);
+            std::fs::set_permissions(p, denied).unwrap();
+            Self(p.to_path_buf(), perm)
+        }
+    }
+
+    #[cfg(unix)]
+    impl Drop for DenyDirWrite {
+        fn drop(&mut self) {
+            // 恢复必须先于 TempDir 清理：声明序上本 guard 晚于 tmp 创建，
+            // 逆序 drop 保证先还原目录再删树。
+            std::fs::set_permissions(&self.0, self.1.clone()).unwrap();
+        }
+    }
+
     #[test]
     fn add_duplicate_cdn_origin_reports_cdn_label() {
         with_env_home(|home| {
@@ -1226,7 +1255,8 @@ mod wave_a {
     #[test]
     fn run_add_save_failure_propagates_when_existing_config_is_readonly() {
         // 只读 cors.json：exists → 读入正常，push 后 save_cors 写失败 → 84 行 `?`。
-        // Windows readonly 属性 / unix 0o444 都会拒绝写打开，语义一致。
+        // Windows：readonly 属性拒绝 replace。POSIX：rename 型原子保存只看
+        // 目录写权限（文件 0o444 拦不住），需 DenyDirWrite 把父目录一并只读。
         let _guard = crate::GLOBAL_STATE_LOCK
             .lock()
             .unwrap_or_else(|e| e.into_inner());
@@ -1240,6 +1270,9 @@ mod wave_a {
         std::fs::write(&p, r#"{"allowed_origins":["https://a.test"]}"#).unwrap();
 
         deny_write(&p);
+        // POSIX：目录也只读（Drop 恢复，逆序 drop 先于 TempDir 清理）。
+        #[cfg(unix)]
+        let _dir_deny = DenyDirWrite::new(p.parent().unwrap());
         let res = run(
             CorsAction::Add {
                 origin: "https://b.test".into(),

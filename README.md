@@ -12,9 +12,6 @@
 [![Rust Version](https://img.shields.io/badge/Rust-1.85+-000000?logo=rust)](https://www.rust-lang.org/)
 [![Platform](https://img.shields.io/badge/platform-Windows%20%7C%20Linux%20%7C%20macOS%20%7C%20Android-lightgrey)](https://github.com/276793422/NemesisBot)
 
-
-本仓库是 [NemesisBot Go 版](https://github.com/276793422/NemesisBot) 的 Rust 重写，实现 100% 功能对等。原仓库不再更新，本仓库继续。
-
 </div>
 
 ---
@@ -624,13 +621,13 @@ NemesisBot_Rust/
 │   ├── nemesis-devices/             # 设备管理
 │   ├── nemesis-eval-proxy/          # eval 沙盒本地 LLM 代理（沙盒内调真实云端模型）
 │   ├── nemesis-injector/            # 挂起启动 + EP 注入（沙盒支撑件）
-│   ├── nemesis-verify/              # 签名验证核心（v3：DLL 验证模块 + 公钥随签名走 + 证书链，与 Authenticode 同构；独立子系统，待接入主程序）
+│   ├── nemesis-verify/              # 签名验证核心（v4：ECDSA P-256 + X.509 三级证书链 + CMS，Windows Authenticode 格式对齐；独立子系统，待接入主程序）
 │   └── nemesis-ui/                  # UI 组件
 ├── plugins/                         # 插件
 │   ├── plugin-ui/                   # WebView2 窗口 DLL + Linux 系统托盘（GTK + libayatana-appindicator3）
 │   └── plugin-onnx/                 # ONNX 嵌入模型（本地记忆处理）
 ├── nemesisbot/                      # 主程序入口
-│   └── src/commands/                # CLI 命令（34 个命令模块 / 35 个 clap 子命令）
+│   └── src/commands/                # CLI 命令（36 个命令模块 / 36 个 clap 子命令）
 │       ├── gateway.rs               # 网关（核心启动入口）
 │       ├── run.rs                   # headless 单任务（无端口跑完即退）
 │       ├── acp.rs                   # ACP server（编辑器接入）
@@ -656,8 +653,8 @@ NemesisBot_Rust/
 │   ├── memory-test/                 # 内存系统集成测试
 │   ├── approval-test/               # 安全审批流程测试
 │   ├── nemesis-build-config/        # 构建配置器 TUI（menuconfig 风格功能裁剪）
-│   ├── exe-sign-tool/               # 可执行文件签名/验签 CLI（v3，依赖 nemesis-verify）
-│   ├── revoke-server/               # 云端签发 + 吊销服务端（v3，axum + rusqlite）
+│   ├── exe-sign-tool/               # 可执行文件签名/验签 CLI（v4，依赖 nemesis-verify）
+│   ├── revoke-server/               # 云端签发 + 吊销服务端（v4，axum + rusqlite）
 │   ├── verify-loader/               # 加载 nemesis_verify.dll 的签名验证测试工具
 │   └── ...                          # mcp / http-test-server / websocket-client / ws-send / ws-api-send 等
 ├── docs/                            # 文档目录
@@ -681,16 +678,16 @@ NemesisBot_Rust/
 
 ## 技术特点
 
-- **1200+ Rust 源文件** - 清晰的 workspace crate 架构（持续增长）
+- **1400+ Rust 源文件** - 清晰的 workspace crate 架构（持续增长）
 - **41 个核心 crate** - 模块化设计，职责清晰
-- **22,000+ 单元测试** - 全部通过，覆盖率超过 Go 版本
+- **20,000+ 单元测试** - 全部通过（Linux / Windows / 三构建配置矩阵常态跑）
 - **多平台支持** - Windows / Linux / macOS / Android（交叉编译）
 - **纯 Rust TLS** - 使用 rustls 替代 OpenSSL，Android 无需额外 C 库
 - **ABAC 安全引擎** - 8 层安全体系（注入→命令→ABAC→凭据→DLP→SSRF→病毒扫描→审计链）
 - **病毒扫描** - 内置 ClamAV 引擎，文件操作自动扫描
 - **执行体隔离** - LLM 高危操作（exec/文件/grep/git）剥离到 per-call 子进程，安全层仍在 gateway 执行前跑（config: `executor.enabled`）
 - **Sandboxie 沙盒（安全第 9 层）** - 最终防御红线：子进程套进 Sandboxie 盒（断网+降权+全隔离），前 8 层放行的操作在盒里也动不了真盘，工作区写入手动审阅提交（config: `executor.sandbox`，Windows）
-- **可执行文件签名验证（v3，独立子系统）** - PE/ELF/Raw 文件 Ed25519 签名 + 证书链 + 云端吊销（CRL），架构为「DLL 验证模块 + 公钥随签名走 + 根锚」的证书链信任模型。`nemesis-verify` crate（产物 `nemesis_verify.dll` 导出 C ABI `nv_*`）+ `revoke-server`（云端签发/吊销）+ `exe-sign-tool`/`verify-loader`（签发与验签 CLI）。核心已完成、端到端跑通，**尚未接入主程序**（防篡改/防替换，抬高攻击成本；诚实边界：纯软件自检，D3 防绕过有物理上限）
+- **可执行文件签名验证（v4，独立子系统）** - 「借微软的格式，不借微软的信任」：ECDSA P-256 + SHA-256 + X.509 三级证书链 + CMS/PKCS#7，Windows Authenticode 格式对齐（微软工具可解析自产签名）。`nemesis-verify` crate（产物 `nemesis_verify.dll` 导出 C ABI `nv_*`）+ `revoke-server`（云端签发/吊销）+ `exe-sign-tool`/`verify-loader`（签发与验签 CLI）。核心已完成、端到端跑通，**尚未接入主程序**（防篡改/防替换，抬高攻击成本；诚实边界：纯软件自检，防绕过有物理上限）
 - **分布式集群** - 多节点协同，异步 RPC + 续行快照 + Dashboard 6-Tab 管理
 - **集群请求日志** - 按对端设备 ID + 任务 ID 分目录隔离（`cluster_logs/{device}/{ts}_{task_id}/`），双向视角查看
 - **集群 Session Key 隔离** - 复合键 `{node_id}/{chat_id}` 避免跨节点会话串扰
@@ -752,85 +749,6 @@ nemesisbot agent            # Agent 管理
 
 ---
 
-## 与 Go 版本的对比
-
-> **NemesisBot Rust 版本是 Go 版本的 1:1 功能替代品**
-
-在当前版本实现了完全的功能对等 —— 所有 21 个通道、42+ 工具、8 层安全体系、分布式集群、Forge 自学习、SSE 流式传输、系统托盘、桌面 GUI 窗口等功能全部一一对应，可直接作为生产替代品使用。
-
-参照 Golang 的版本是：8524282c14e86f92883933f44345ca941fd90252
-
-**最新状态**：已实现 100% 功能对等，所有 21 个通道、42+ 工具、8 层安全体系、分布式集群、Forge 自学习、SSE 流式传输、系统托盘、桌面 GUI 窗口等功能全部一一对应；并在此基础上扩展出 Go 版没有的编码代理能力（headless run / ACP / plan-build / 审批卡 / checkpoint-undo / PTY 终端）。Linux 系统托盘技术选型已完成，选择继续使用 libayatana-appindicator3 + GTK 以保证桌面面板兼容性（详见 `docs/INFO/2026-06-10_ksni-tray-migration.md`）。
-
-| 指标 | Go 版本 | Rust 版本 |
-|------|---------|----------|
-| 通道类型 | 21 | 21 |
-| CLI 命令 | 21 个顶级 | 35 个顶级（含 dashboard、persona、sandbox、estop、issue、autopilot、eval、run、acp） |
-| 工具 | 20+ | 42+（含 mcp_discover、cli_reference、cluster_rpc、background_*、lsp、claude_code/codex_delegate 等） |
-| Forge 组件 | 24 文件 | 26 文件 |
-| Web API 端点 | 7 | 17（含 SSE /api/chat/stream） |
-| SSE 流式传输 | 内置流式实现 | HttpProvider.chat_stream + /api/chat/stream |
-| 系统托盘 | fyne.io/systray | tray-icon + winit（Windows/macOS）；plugin-ui.so + GTK + libayatana-appindicator3（Linux） |
-| 桌面窗口 | Wails (WebView2) | plugin-ui DLL (wry + tao) |
-| 审批弹窗 | 有 | 有（含 DLL 缺失安全降级 + pattern 记忆 + 编辑器桥接） |
-| 沙盒执行 | 无 | 有（Sandboxie 集成：执行体隔离 Layer 1 + 沙盒 Layer 2） |
-| 编码代理入口 | 无 | 有（headless run + ACP + plan/build + checkpoint/undo/redo + PTY 终端） |
-| 单元测试 | ~6,500 | ~22,000 |
-| 人格系统 | 无 | 有（agency-agents 仓库 + 运行时切换） |
-| Logs Dashboard | 无 | 有（SSE 实时流 + 会话/审计/审计链） |
-| 集群请求日志 | 单文件 | 按设备+任务分目录（双向视角） |
-
-### Rust 版本额外功能
-
-**编码代理（devtool-upgrade，2026-09）**：
-- `run` 命令 — headless 单任务（无端口跑完即退；plan 只读模式；NDJSON 事件流；退出码可脚本化）
-- `acp` 命令 — ACP server（Zed 等编辑器接入；审批桥接编辑器 permission 请求）
-- plan/build 双模式 — Dashboard/斜杠/WSAPI/headless 四路切换，写类工具 dispatch 闸拦截
-- 审批卡 + question 工具 — Dashboard/IM 通道人工审批 + "总是允许" pattern 记忆 + 结构化提问
-- checkpoint/undo/redo/diff — turn 边界影子库快照（零拷贝）、消息级 rewind/redo、会话文件 diff
-- PTY 内嵌终端 — xterm.js + ConPTY（`terminal.enabled` 默认关，双闸不暴露探测面）
-- LSP 工具 — 只读语义查询（definition/references/implementation/hover）+ 诊断回灌（`agents.lsp_tool` 默认关）
-- 后台进程注册表 — background_start/output/kill（增量输出/分页/树杀）
-- 会话分叉（Z1）+ 只读分享（share）+ 自动标题（small_model 通道）+ AGENTS.md 兼容
-
-**命令/CLI**：
-- `dashboard` 命令 — 一键打开 Dashboard UI（自动启动网关）
-- `persona` 命令 — 人格管理（list/search/install/activate/remove/current/restore）
-- `model default` 命令 — 设置默认模型
-- `mcp discover` 命令 — 发现 MCP 服务器能力（支持 stdio + HTTP 模式）
-- `mcp inspect/tools/resources/prompts` — 更多 MCP 子命令
-- `skills validate/cache/install-builtin` — 更多技能管理
-- `workflow validate/template show/create` — 更完整工作流命令
-- `log set-level/enable-file/disable-file` — 更细粒度日志控制
-
-**LLM/Agent 内核**：
-- MCP HTTP/SSE 传输 — 支持 Streamable HTTP 协议的 MCP 服务器
-- MCP Server — Rust 有本地 MCP 服务器
-- `cli_reference` 工具 — LLM 可按需查询 CLI 命令用法
-- `mcp_discover` / `mcp_list` 工具 — LLM 可发现和列出 MCP 工具
-- `cluster_rpc` 工具 — 异步集群 RPC + 续行快照 + session_log 持久化
-- ToolExecutor — 独立批处理执行器
-- Prompt Cache 优化 — 时间等动态字段在 `build_messages` 中实时注入，system prompt 保持稳定
-- 人格系统 — 从 GitHub `agency-agents` 仓库搜索/安装/激活 AI 人格，运行时热切换
-
-**集群**：
-- ClusterRequestLogger — 按对端设备 ID + 任务 ID 分目录隔离的 LLM 请求日志（`cluster_logs/{device}/{ts}_{task_id}/`）
-- 复合 session_key（`{node_id}/{chat_id}`）— 跨节点会话不串扰
-- 远端节点 ID 合并 — 自动合并真实节点信息到占位符
-- 续行回复持久化 — `handle_cluster_continuation` 通过 `chat_log::append_chat_log` + `SessionStore::save` 把最终回复写入 session_log
-
-**Web/Dashboard**：
-- 9 个额外 Web API 端点 — /api/version, /models, /sessions, /events, /api/chat/stream 等
-- Logs Dashboard — SSE 实时日志流 + 会话浏览器 + 安全审计 + 审计链可视化
-- Cluster Dashboard 6-Tab — 概览/拓扑/身份/任务/日志/设置
-- Cluster Diagnostics — Ping/系统信息/远端命令面板
-
-**安全/审批**：
-- 审批 DLL 安全降级 — plugin-ui.dll 缺失时自动拒绝，不放行
-- 执行体隔离 + Sandboxie 沙盒 — LLM 高危本地操作（exec/文件/grep/git）可剥离到 per-call 子进程（Layer 1），进一步套进 Sandboxie 盒全隔离（Layer 2，Windows）（Go 版无）
-
----
-
 ## 重要技术决策
 
 ### Linux 系统托盘技术选型
@@ -871,16 +789,16 @@ NemesisBot 采用 **双授权（dual-license）** 模式：同一份代码，两
 - 详见 [COMMERCIAL_LICENSE.md](COMMERCIAL_LICENSE.md)（商业授权模板）。
 - 适合：闭源商用、企业内部部署、SaaS 集成。
 
+### 使用限制（附加条款）
+
+**本人所有项目均禁止 联想(北京)有限公司 下 "Shrek Ding" 所属部门使用。**
+
+本限制为版权持有人依 AGPL-3.0 第 7 条附加的补充条款，同时收录于 [LICENSE](LICENSE) 尾部「附加条款」节与 [COMMERCIAL_LICENSE.md](COMMERCIAL_LICENSE.md) 第 3 节，对两种授权路径均生效。
+
 ### 其他
 
 - **第三方组件**：见 [THIRDPARTY.md](THIRDPARTY.md)，全树无 GPL/AGPL/LGPL 强 copyleft 依赖（ClamAV 走网络协议，不打包、不传染）。
 - **贡献者**：外部 PR 须接受 [CLA.md](CLA.md)，以维持双授权能力。
-
----
-
-## 致谢
-
-本项目是 [NemesisBot Go 版](https://github.com/276793422/NemesisBot) 的 Rust 重写。
 
 ---
 
