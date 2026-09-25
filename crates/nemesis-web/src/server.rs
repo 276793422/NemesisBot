@@ -311,6 +311,13 @@ pub struct WebServer {
     /// 不再进入 bus 扇出，与任何 agent loop 的存亡/忙闲解耦。`set_inbound_filter_chain`
     /// 注入；None = 直通（legacy 调用方/测试零影响）。
     inbound_filters: Option<Arc<nemesis_bus::FilterChain<InboundMessage>>>,
+    /// 皮肤包目录（exe 同级 `skins/`；None = 未注入/exe 路径不可定位，
+    /// `/skins/*` 路由不挂载）。`set_skins` 注入（不进 WebServerConfig——
+    /// 该结构有 40+ 处测试字面量装配，加字段即 E0063 面扩大）。
+    skins_dir: Option<String>,
+    /// 激活皮肤 id（config `ui.skin`；"default"/空 = 内置皮肤，
+    /// `/skins/active.css` 404）。`set_skins` 注入。
+    skin_id: String,
 }
 
 impl WebServer {
@@ -359,7 +366,17 @@ impl WebServer {
             relay: None,
             bridge_node_id: None,
             inbound_filters: None,
+            skins_dir: None,
+            skin_id: "default".to_string(),
         }
+    }
+
+    /// 注入皮肤装配（须在 `build_router` 前调用）：exe 同级 `skins/`
+    /// 目录 + 激活 id（config `ui.skin`）。未注入 = `/skins/*` 路由不挂载
+    /// （fail-closed，同 relay 路由装配哲学）。
+    pub fn set_skins(&mut self, skins_dir: Option<String>, skin_id: String) {
+        self.skins_dir = skins_dir;
+        self.skin_id = skin_id;
     }
 
     /// 注入本机桥身份（goal 批次二）：子路径中间件据此识别
@@ -1033,6 +1050,17 @@ impl WebServer {
                     "[WebServer] Static directory not found or not a directory, skipping static file serving"
                 );
             }
+        }
+
+        // 皮肤包路由（`.nbskin` 分发；挂鉴权层之外——CSS 只是主题变量，
+        // 无敏感面，与 index.html 等静态资源同信任级）。`--relay` 纯中继
+        // 不挂（dashboard 面整体不存在）；`set_skins` 未注入也不挂。
+        // 解析/注入在前端，服务端只做包内 CSS 分发。
+        if !self.relay_only
+            && let Some(skins) =
+                crate::skins::skin_router(self.skins_dir.clone(), self.skin_id.clone())
+        {
+            router = router.merge(skins);
         }
 
         // 桥子路径外壳（goal 批次二）：`/d/<自身 node_id>/` 前缀剥离 +

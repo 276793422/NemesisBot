@@ -38,6 +38,12 @@
   --accent-hover: #FF7A2E;
   --accent-muted: rgba(255, 92, 0, 0.15);
 
+  /* Primary button（皮肤契约槽：默认态取 accent，皮肤可整体改写。
+     WorkBuddy 系皮肤用黑白反转按钮，见 skins/openlikebuddy） */
+  --btn-primary-bg: var(--accent);
+  --btn-primary-hover: var(--accent-hover);
+  --btn-primary-fg: #FFFFFF;
+
   /* Backgrounds */
   --bg: #080706;
   --bg-primary: #0F0E0E;
@@ -141,6 +147,10 @@
   --text-inverse: #FFFFFF;
 
   --accent-muted: rgba(255, 92, 0, 0.08);
+
+  --btn-primary-bg: var(--accent);
+  --btn-primary-hover: var(--accent-hover);
+  --btn-primary-fg: #FFFFFF;
 
   --success-bg: rgba(74, 222, 128, 0.15);
   --error-bg: rgba(239, 68, 68, 0.1);

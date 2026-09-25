@@ -55,6 +55,9 @@ async-stream = { workspace = true }
 dashmap = { workspace = true }
 http = "1"
 url = "2"
+# 皮肤包（.nbskin = 单文件 ZIP）运行时解析（skins.rs）；与 build/dev 侧
+# 同一 crate 同一 feature 集（deflate-only）。
+zip = { version = "2", default-features = false, features = ["deflate"] }
 async-trait = { workspace = true }
 tokio-util = { version = "0.7", features = ["rt", "io"] }
 base64 = { workspace = true }

@@ -172,6 +172,17 @@ async fn init_web_branch_matrix_via_assemble() {
     drop(w);
     ctx.cfg.bridge = None;
 
+    // 变体 K：皮肤 id 裁剪（trim + 空 → default 臂）。
+    ctx.cfg.ui = Some(nemesis_config::UiConfig {
+        skin: "  navy  ".into(),
+    });
+    let w = init_web(&ctx, &cluster).await.unwrap();
+    drop(w);
+    ctx.cfg.ui.as_mut().unwrap().skin = "   ".into();
+    let w = init_web(&ctx, &cluster).await.unwrap();
+    drop(w);
+    ctx.cfg.ui = None;
+
     // 注：不再断言 `signature_status_from_start_check().is_none()`——该查询读
     // 进程级 OnceLock 快照，全量套件中其他 lane 的签名类测试可能先行装配
     // （单测进程内其值不可隔离），两种返回值都合法，进程内不可断言。

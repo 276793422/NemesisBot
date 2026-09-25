@@ -37,13 +37,13 @@
 }
 
 .btn-primary {
-  background: var(--accent);
-  border-color: var(--accent);
-  color: #FFFFFF;
+  background: var(--btn-primary-bg, var(--accent));
+  border-color: var(--btn-primary-bg, var(--accent));
+  color: var(--btn-primary-fg, #FFFFFF);
 }
 .btn-primary:hover {
-  background: var(--accent-hover);
-  border-color: var(--accent-hover);
+  background: var(--btn-primary-hover, var(--accent-hover));
+  border-color: var(--btn-primary-hover, var(--accent-hover));
 }
 
 .btn-success {

@@ -18,6 +18,9 @@ progress.txt
 # 测试污染（id="test-node"/"wc-flagless"）提交入库。运行时自生成，防御性忽略。
 /nemesisbot/cluster/
 /crates/nemesis-web/static
+# 皮肤 clean-room 开发的本地参考材料（观感规格提取），第三方派生物：只留本地，
+# 永不入库（skins 仓库铁律同理——仓库内不出现任何三方产品痕迹）。
+/.wb-ref/
 
 *.profraw
 **/target

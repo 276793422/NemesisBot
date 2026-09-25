@@ -588,6 +588,32 @@ async fn agt_dispatch_outbound_routes_web_and_skips_others() {
     task.abort();
 }
 
+// ============================================================
+// Wave5 批次：其余槽位 setter（set_skins / set_inbound_filter_chain /
+// set_board / set_agent_event_rx）+ start_agent_event_pump 两臂。
+// ============================================================
+
+#[test]
+fn agt_skins_filter_chain_board_event_rx_slots() {
+    let mut server = WebServer::new(WebServerConfig::default());
+
+    // set_skins（此前无调用点）：注入 skins 目录 + 激活 id。
+    server.set_skins(Some(".".to_string()), "dark".to_string());
+
+    // set_inbound_filter_chain（此前无调用点）：空链即可（纯存储槽位）。
+    let chain: FilterChain<InboundMessage> = FilterChain::new();
+    server.set_inbound_filter_chain(Arc::new(chain));
+
+    // set_board：真实 BoardService（临时库），Gateway 注入形态。
+    let dir = tempfile::tempdir().unwrap();
+    let store =
+        nemesis_board::BoardStore::open(&dir.path().join("board.db"), "NB").expect("open store");
+    server.set_board(nemesis_board::BoardService::new(
+        Arc::new(store),
+        nemesis_types::cluster::NodeRole::Coordinator,
+    ));
+}
+
 #[tokio::test]
 async fn agt_agent_event_pump_none_and_some_arms() {
     let mut server = WebServer::new(WebServerConfig::default());

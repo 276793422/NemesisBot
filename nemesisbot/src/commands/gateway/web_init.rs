@@ -145,6 +145,21 @@ pub(crate) async fn init_web(ctx: &GatewayCtx, cluster: &ClusterWiring) -> Resul
         index_file: "index.html".to_string(),
     };
     let mut web_server = nemesis_web::server::WebServer::new(web_config);
+    // 皮肤包（.nbskin）装配：目录 = exe 同级 `skins/`（与 static/ 同策略，
+    // 不落 home）；激活 id = config `ui.skin`（"default"/空 = 内置皮肤）。
+    // setter 注入而非 WebServerConfig 字段——后者有大量测试字面量装配，
+    // 加字段即 E0063 面扩大（79b49a25 教训）。
+    let skins_dir = std::env::current_exe().ok().and_then(|exe| {
+        exe.parent()
+            .map(|dir| dir.join("skins").to_string_lossy().to_string())
+    });
+    let skin_id = cfg
+        .ui
+        .as_ref()
+        .map(|u| u.skin.trim().to_string())
+        .filter(|s| !s.is_empty())
+        .unwrap_or_else(|| "default".to_string());
+    web_server.set_skins(skins_dir, skin_id);
 
     // 签名验证启动自验状态注入（接入计划 §4）：verify_policy 快照 → 只读
     // AppState 字段 → security.signature_verify_status / 前端徽标。

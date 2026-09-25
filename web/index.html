@@ -5,6 +5,30 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <link rel="icon" type="image/png" href="/favicon.png">
   <title>NemesisBot</title>
+  <script>
+    // 皮肤冷启动同步注入（防 FOUC，WorkBuddy applyCachedCssSync 同款）：
+    // ?skin= 查询参数临时覆盖（写入缓存），否则用 localStorage 缓存的
+    // 激活 id + CSS。异步校准在 main.ts 的 applySkinBoot()。
+    (function () {
+      try {
+        var q = new URLSearchParams(location.search).get('skin');
+        if (q && q !== 'default') { localStorage.setItem('nemesisbot_skin', q); }
+        var id = q || localStorage.getItem('nemesisbot_skin') || '';
+        if (id && id !== 'default') {
+          document.documentElement.setAttribute('data-skin', id);
+          if (!q) {
+            var css = localStorage.getItem('nemesisbot_skin_css');
+            if (css) {
+              var sheet = document.createElement('style');
+              sheet.setAttribute('data-skin-sheet', '');
+              sheet.textContent = css;
+              document.head.appendChild(sheet);
+            }
+          }
+        }
+      } catch (e) { /* localStorage 不可用（隐私模式等）→ 内置皮肤 */ }
+    })();
+  </script>
 </head>
 <body>
   <div id="app"></div>

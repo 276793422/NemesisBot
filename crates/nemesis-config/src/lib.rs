@@ -184,6 +184,28 @@ pub struct Config {
     /// 反向桥配置（None = 全默认——服务端接入门不开放、客户端不连接）。
     #[serde(default)]
     pub bridge: Option<BridgeConfig>,
+    /// Dashboard 前端表现（皮肤等；None = 全默认——内置 static 皮肤）。
+    #[serde(default)]
+    pub ui: Option<UiConfig>,
+}
+
+/// Dashboard 前端表现配置（`config.json` 的 `ui` 段）。
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct UiConfig {
+    /// 激活皮肤 id。`"default"`（默认）/ 空 = 不启用任何 `.nbskin`（内置
+    /// static 皮肤原样）；其余值 = 服务端从 exe 同级 `skins/<id>.nbskin`
+    /// 加载并在 `/skins/active.css` 提供 CSS（前端注入后打
+    /// `<html data-skin="<id>">`）。未来 Dashboard 换肤入口写回此处。
+    #[serde(default)]
+    pub skin: String,
+}
+
+impl Default for UiConfig {
+    fn default() -> Self {
+        Self {
+            skin: "default".to_string(),
+        }
+    }
 }
 
 /// 反向桥配置（`config.json` 的 `bridge` 段；`#[serde(default)]` 每字段全可省）。
@@ -2937,6 +2959,7 @@ pub fn default_config() -> Config {
         terminal: None,
         projects: None,
         bridge: None,
+        ui: None,
     }
 }
 
