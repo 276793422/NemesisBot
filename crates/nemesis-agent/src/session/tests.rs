@@ -2116,6 +2116,47 @@ fn test_in_memory_store_never_rebuilds_from_chat_log() {
     crate::chat_log::delete_chat_log(key); // cleanup
 }
 
+/// B1×self-heal 交互修复回归锁（agent-bench context_integrity 实证，
+/// 2026-09-25）：process_admitted 的物化顺序契约——`get_or_create` 必须先于
+/// 本轮 user 行落盘。物化先行 ⇒ 内存命中短路 ⇒ 重建分支不可达 ⇒ 本轮 user
+/// 行不被回放进模型上下文（run_with_trace 只 add 一次）。不物化则重建把它
+/// 回放 + 再 add = 首轮请求用户消息重复（生产 bug 形态）。
+#[test]
+fn test_materialize_before_user_row_write_prevents_inflight_replay() {
+    let key = "test:rebuild:materialize-first";
+    crate::chat_log::delete_chat_log(key);
+    let dir = tempfile::tempdir().unwrap();
+    let store = SessionStore::new_with_storage(dir.path());
+
+    // ① 物化先行（process_admitted 修复后的顺序）：store 条目先进内存。
+    let materialized = store.get_or_create(key);
+    assert!(materialized.messages.is_empty());
+    // 空条目只进内存，不落盘（与 fresh-key 行为一致）
+    assert!(!store.file_exists(key));
+
+    // ② B1 早落盘：本轮 user 行进 chat_log。
+    crate::chat_log::append_chat_log(key, "user", "本轮用户消息");
+
+    // ③ get_or_create_instance 同款调用：内存命中 → 不得触发重建回放。
+    let session = store.get_or_create(key);
+    assert!(
+        session.messages.is_empty(),
+        "物化后本轮 user 行不得经重建回放进模型上下文（否则 run_with_trace 再 add 一次 = 首轮重复）"
+    );
+
+    // 对照组：不物化的 store 撞同一 jsonl → 重建回放发生（旧行为，即 bug 形态）。
+    let store2 = SessionStore::new_with_storage(dir.path());
+    let replayed = store2.get_or_create(key);
+    assert_eq!(
+        replayed.messages.len(),
+        1,
+        "对照组必须复现回放，否则回归锁失效"
+    );
+    assert_eq!(replayed.messages[0].content, "本轮用户消息");
+
+    crate::chat_log::delete_chat_log(key); // cleanup
+}
+
 /// 超长 jsonl 只重放最新 MAX_STORED_MESSAGES 行（与 store 自身的截断上限
 /// 同源）——重建恢复的是模型的工作尾部，不是无界档案。
 #[test]

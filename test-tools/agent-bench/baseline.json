@@ -1,0 +1,97 @@
+{
+  "bench_wall_secs": 12,
+  "gateway_version": "C:\\AI\\NemesisBot_Rust\\target/release/nemesisbot.exe",
+  "scenarios": [
+    {
+      "failed": 0,
+      "failure_notes": [],
+      "latency_ms": {
+        "max": 57,
+        "p50": 25,
+        "p95": 57
+      },
+      "model": "testai-1.1",
+      "name": "basic_chat",
+      "pass_rate": 1.0,
+      "passed": 5,
+      "runs": 5
+    },
+    {
+      "failed": 0,
+      "failure_notes": [],
+      "latency_ms": {
+        "max": 75,
+        "p50": 71,
+        "p95": 75
+      },
+      "model": "testai-9.3",
+      "name": "context_integrity",
+      "pass_rate": 1.0,
+      "passed": 3,
+      "runs": 3
+    },
+    {
+      "failed": 0,
+      "failure_notes": [],
+      "latency_ms": {
+        "max": 6080,
+        "p50": 6080,
+        "p95": 6080
+      },
+      "model": "testai-2.1",
+      "name": "tool_parallel_batch",
+      "pass_rate": 1.0,
+      "passed": 2,
+      "runs": 2
+    },
+    {
+      "failed": 0,
+      "failure_notes": [],
+      "latency_ms": {
+        "max": 55,
+        "p50": 50,
+        "p95": 55
+      },
+      "model": "testai-5.0",
+      "name": "security_boundary_block",
+      "pass_rate": 1.0,
+      "passed": 3,
+      "runs": 3
+    },
+    {
+      "failed": 0,
+      "failure_notes": [],
+      "latency_ms": {
+        "max": 58,
+        "p50": 58,
+        "p95": 58
+      },
+      "model": "testai-1.1",
+      "name": "concurrent_sessions",
+      "pass_rate": 1.0,
+      "passed": 1,
+      "runs": 1
+    },
+    {
+      "failed": 0,
+      "failure_notes": [],
+      "latency_ms": {
+        "max": 30,
+        "p50": 30,
+        "p95": 30
+      },
+      "model": "testai-vision-1.0",
+      "name": "vision_roundtrip",
+      "pass_rate": 1.0,
+      "passed": 1,
+      "runs": 1
+    }
+  ],
+  "schema": "agent-bench/v1",
+  "started_at": "2026-09-25T20:37:36.377399800+08:00",
+  "totals": {
+    "pass_rate": 1.0,
+    "passed": 15,
+    "runs": 15
+  }
+}

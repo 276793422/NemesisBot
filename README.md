@@ -182,11 +182,12 @@ cargo run -p cluster-test
 #### 质量基准（可复现）
 
 质量证据清单（每项附复现命令）见 **[docs/INFO/2026-09-24_公开基准.md](docs/INFO/2026-09-24_公开基准.md)**。
-摘要：agent 单 crate lib 测试 2359、CLI 集成 492 断言/22 命令、集群 UAT
+摘要：agent 单 crate lib 测试 2359、CLI 集成 589 断言/22 命令、集群 UAT
 T1-T37 双节点端到端、全 workspace 行覆盖 87.85%（cargo-llvm-cov 实测，
 CI `--fail-under-lines` 硬门槛防倒退）、测试/生产代码行数比 164%、架构依赖
 矩阵 7 规则 CI 强制、内联测试纪律门禁 1537 文件 0 违规、模型能力评估 8 题
-探针 + 12 题 × 3 档 battery。
+探针 + 12 题 × 3 档 battery、自建任务基准 agent-bench 6 场景 × 15 轮
+100% 通过（真实 gateway 链路 + 确定性模型 oracle，baseline 防倒退门禁）。
 
 ### 初始化
 
@@ -655,7 +656,7 @@ NemesisBot_Rust/
 ├── test-tools/                      # 测试工具（26 个项目：17 workspace member + 独立项目）
 │   ├── TestAIServer/                # AI 服务器模拟器（Go，20 个测试模型 + 别名表 + /slow 端点）
 │   ├── test-harness/                # 共享测试辅助库（进程生命周期/WS/断言）
-│   ├── integration-test/            # CLI 集成测试（22 命令，492 断言；纯 bin runner 用 cargo run）
+│   ├── integration-test/            # CLI 集成测试（22 命令，589 断言；纯 bin runner 用 cargo run）
 │   ├── cluster-test/                # P2P 集群测试（12+6）
 │   ├── cluster-uat/                 # 集群 UAT（T1-T18 端到端）
 │   ├── e2e-tests/                   # 端到端 AI 管线测试

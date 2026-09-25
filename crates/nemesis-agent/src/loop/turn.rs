@@ -240,8 +240,12 @@ impl AgentLoop {
         // 早切回空视图），process_system_message 落 [System: ...] 行（内容
         // 与时点保持原样）。本函数不再写 user 行；assistant 行仍在函数末尾
         // 落盘，HD「一轮 = jsonl 恰好 +2 行」不变量由两处合计维持。
-        // 取舍（沿袭）：session store 不提前——它是 turn 末以 instance 全量
-        // set_history 的单一真相源，提前 add_message 会被全量覆盖，无收益。
+        // 取舍（2026-09-25 修订）：store 条目由 process_admitted 在本函数之前
+        // 物化（get_or_create 先于 user 行落盘）——物化先行是硬契约：否则新
+        // 会话双缺失时 get_or_create_instance 走 rebuild_from_chat_log，把
+        // B1 已落盘的本轮 user 行回放进模型上下文，下方 add_user_message
+        // 再加一次 → 首轮请求用户消息重复（agent-bench context_integrity
+        // 实证）。turn 末 store 仍以 instance 全量 set_history 为单一真相源。
 
         // Emit conversation_start observer event.
         self.emit_observer_sync(crate::loop_executor::ObserverEvent::ConversationStart {

@@ -265,6 +265,155 @@ pub fn is_sensitive_field(field_name: &str) -> bool {
     )
 }
 
+/// Value-side mask core produced by [`mask_sensitive`] / [`mask_secret_entry`].
+const MASK_CORE: &str = "****";
+
+fn contains_mask(s: &str) -> bool {
+    s.contains(MASK_CORE)
+}
+
+/// Recursively mask known sensitive field names in a JSON value.
+pub(crate) fn mask_sensitive_fields(value: serde_json::Value) -> serde_json::Value {
+    match value {
+        serde_json::Value::Object(map) => {
+            let new_map: serde_json::Map<String, serde_json::Value> = map
+                .into_iter()
+                .map(|(k, v)| {
+                    if is_sensitive_field(&k)
+                        && let Some(s) = v.as_str()
+                        && !s.is_empty()
+                    {
+                        return (k, serde_json::Value::String(mask_sensitive(s)));
+                    }
+                    (k, mask_sensitive_fields(v))
+                })
+                .collect();
+            serde_json::Value::Object(new_map)
+        }
+        serde_json::Value::Array(arr) => {
+            serde_json::Value::Array(arr.into_iter().map(mask_sensitive_fields).collect())
+        }
+        other => other,
+    }
+}
+
+/// Extract the key part of a `"Key: value"` / `"KEY=value"` entry.
+fn entry_key(s: &str) -> &str {
+    match s.find([':', '=']) {
+        Some(i) => &s[..i],
+        None => s,
+    }
+}
+
+/// Whether an entry key (header/env name) looks credential-bearing.
+fn is_sensitive_entry_key(key: &str) -> bool {
+    let k = key.trim().to_lowercase();
+    [
+        "authorization",
+        "token",
+        "key",
+        "secret",
+        "password",
+        "cookie",
+        "credential",
+    ]
+    .iter()
+    .any(|pat| k.contains(pat))
+}
+
+/// Mask the value part of a `"Key: value"` / `"KEY=value"` entry (key kept);
+/// entries without a separator are masked whole. Non-sensitive keys pass
+/// through untouched (e.g. `Content-Type`, `HOME`).
+pub(crate) fn mask_secret_entry(s: &str) -> String {
+    match s.find([':', '=']) {
+        Some(i) => {
+            let (key, rest) = s.split_at(i + 1);
+            let value = rest.trim_start();
+            if !is_sensitive_entry_key(key) || value.trim().is_empty() {
+                return s.to_string();
+            }
+            let lead = &rest[..rest.len() - value.len()];
+            format!("{key}{lead}{}", mask_sensitive(value.trim_end()))
+        }
+        None => {
+            if is_sensitive_entry_key(s) && !s.is_empty() {
+                mask_sensitive(s)
+            } else {
+                s.to_string()
+            }
+        }
+    }
+}
+
+/// Restore masked entries (`"Key: ****"` form) in `incoming` from `existing`
+/// by matching the key part. Unmatched masked entries are a loud error —
+/// the caller must not persist a mask as a real value.
+pub(crate) fn restore_masked_entries(
+    incoming: &mut [String],
+    existing: &[String],
+) -> Result<(), String> {
+    for entry in incoming.iter_mut() {
+        if !contains_mask(entry) {
+            continue;
+        }
+        let key = entry_key(entry);
+        match existing
+            .iter()
+            .find(|e| entry_key(e) == key && !contains_mask(e))
+        {
+            Some(orig) => *entry = orig.clone(),
+            None => {
+                return Err(format!(
+                    "条目 '{key}' 是掩码值且找不到原值可还原，请重新输入完整值"
+                ));
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Restore masked values in sensitive-named fields of `incoming` from the
+/// matching field in `existing` (recursive over objects/arrays). A masked
+/// value with no unmasked counterpart is a loud error — never persist a mask.
+pub(crate) fn restore_masked_named_fields(
+    incoming: &mut serde_json::Value,
+    existing: &serde_json::Value,
+) -> Result<(), String> {
+    const NULL: serde_json::Value = serde_json::Value::Null;
+    match incoming {
+        serde_json::Value::Object(map) => {
+            for (k, v) in map.iter_mut() {
+                match v {
+                    serde_json::Value::String(s) if is_sensitive_field(k) && contains_mask(s) => {
+                        match existing.get(k).and_then(|e| e.as_str()) {
+                            Some(o) if !contains_mask(o) => *s = o.to_string(),
+                            _ => {
+                                return Err(format!(
+                                    "字段 '{k}' 是掩码值且无原值可还原，请重新输入完整值"
+                                ));
+                            }
+                        }
+                    }
+                    serde_json::Value::Object(_) | serde_json::Value::Array(_) => {
+                        let ex = existing.get(k).unwrap_or(&NULL);
+                        restore_masked_named_fields(v, ex)?;
+                    }
+                    _ => {}
+                }
+            }
+            Ok(())
+        }
+        serde_json::Value::Array(arr) => {
+            for (i, v) in arr.iter_mut().enumerate() {
+                let ex = existing.get(i).unwrap_or(&NULL);
+                restore_masked_named_fields(v, ex)?;
+            }
+            Ok(())
+        }
+        _ => Ok(()),
+    }
+}
+
 /// Resolve a path relative to the workspace, preventing path traversal.
 pub fn resolve_path(workspace: &str, relative: &str) -> Result<PathBuf, String> {
     // Reject paths that look absolute (drive letter or leading slash)
@@ -454,3 +603,7 @@ mod skills_extra_tests;
 mod skills_more_tests;
 #[cfg(all(test, feature = "voice"))]
 mod voice_extra_tests;
+// 凭据回显脱敏批次（2026-09-25；vault 方案 0.4.7 遗留收尾）：WSAPI 回显面
+// 脱敏 + 保存路径防掩码回写（mcp servers/config、cluster token、channels）。
+#[cfg(test)]
+mod mask_roundtrip_tests;

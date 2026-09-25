@@ -917,6 +917,16 @@ impl AgentLoop {
         // user 行时点提前。cron 元数据在 gate 前已随 metadata 到位，照读。
         let cron_job_id = msg.metadata.get("cron_job_id").map(|s| s.as_str());
         let cron_job_name = msg.metadata.get("cron_job_name").map(|s| s.as_str());
+        // B1×self-heal 交互修复（agent-bench context_integrity 实证，2026-09-25）：
+        // 先物化 store 条目、再落 chat_log user 行。新会话若 store 内存+盘双缺失，
+        // get_or_create_instance 会走 rebuild_from_chat_log 自愈重建——而 chat_log
+        // 此刻已含本轮 user 行（下面的 B1 早落盘），重建把它回放进模型上下文，
+        // run_with_trace 随后再 add 一次 → 首轮请求里用户消息出现两次，且随
+        // turn 末 store 全量保存固化为整会话 off-by-one。get_or_create 内存命中
+        // 即短路：先行物化 = 重建分支不可达；空条目只进内存不落盘（无垃圾文件）。
+        if let Some(ref store) = self.session_store {
+            let _ = store.get_or_create(&session_key);
+        }
         {
             let log_existed = Self::session_log_exists_before_append(&session_key);
             crate::chat_log::append_chat_log_meta(

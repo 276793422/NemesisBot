@@ -130,7 +130,8 @@ async fn server_update_patches_all_optional_fields_and_persists() {
         .unwrap();
     assert_eq!(out["updated"], true);
 
-    // 落盘回读（config.get）验证全部字段持久化。
+    // 落盘回读（config.get）验证全部字段持久化。headers 是敏感键：
+    // config.get 回显为脱敏形态（凭据回显脱敏批次），原始值只落盘不回显。
     let cfg = h
         .handle_cmd("config.get", None, &ctx)
         .await
@@ -140,8 +141,31 @@ async fn server_update_patches_all_optional_fields_and_persists() {
     assert_eq!(s["transport_type"], "http");
     assert_eq!(s["url"], "http://old", "未 patch 的字段必须保持原值");
     assert_eq!(s["description"], "patched desc");
-    assert_eq!(s["headers"], serde_json::json!(["Authorization: b"]));
+    assert_eq!(
+        s["headers"],
+        serde_json::json!(["Authorization: ****"]),
+        "config.get 回显必须脱敏"
+    );
     assert_eq!(s["provider_name"], "prov");
     assert_eq!(s["provider_url"], "https://prov.example");
     assert_eq!(s["tags"], serde_json::json!(["a", "b"]));
+
+    // 回程：UI 把脱敏形态原样存回 → server.update 按键还原存量原值，
+    // 落盘仍是完整原值（绝不能把掩码当真值写进配置）。
+    h.handle_cmd(
+        "server.update",
+        Some(serde_json::json!({
+            "name": "s1",
+            "headers": ["Authorization: ****"],
+        })),
+        &ctx,
+    )
+    .await
+    .unwrap()
+    .unwrap();
+    let raw = std::fs::read_to_string(dir.path().join("config/config.mcp.json")).unwrap();
+    assert!(
+        raw.contains("Authorization: b"),
+        "掩码回存必须还原为存量原值: {raw}"
+    );
 }

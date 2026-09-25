@@ -1,6 +1,6 @@
 //! MCP handler — status/servers/server.add/server.update/server.delete/config.get/config.save.
 
-use crate::handlers::require_workspace;
+use crate::handlers::{mask_secret_entry, require_workspace, restore_masked_entries};
 use crate::ws_router::{ModuleHandler, RequestContext};
 use std::path::{Path, PathBuf};
 
@@ -87,6 +87,20 @@ fn save_mcp_config(workspace: &str, config: &nemesis_config::McpConfig) -> Resul
         .map_err(|e| format!("failed to save MCP config: {}", e))
 }
 
+/// headers/env 是 `"Key: value"` / `"KEY=value"` 字符串列表——回显前逐条
+/// 值部脱敏（凭据回显脱敏批次，2026-09-25；vault 方案 0.4.7 遗留）。
+fn mask_string_list(list: &[String]) -> Vec<String> {
+    list.iter().map(|s| mask_secret_entry(s)).collect()
+}
+
+/// 反序列化 headers/env 入参（宽容形态同 serde flexible_string_list），
+/// 失败返回 None 走"字段未提供"语义。
+fn parse_string_list(data: &serde_json::Value, key: &str) -> Option<Vec<String>> {
+    data.get(key)
+        .cloned()
+        .and_then(|v| serde_json::from_value::<Vec<String>>(v).ok())
+}
+
 impl McpHandler {
     fn status(&self, workspace: &str) -> Result<Option<serde_json::Value>, String> {
         let config = load_mcp_config(workspace)?;
@@ -114,9 +128,9 @@ impl McpHandler {
                     "transport_type": transport_type,
                     "url": url,
                     "description": s.description,
-                    "headers": s.headers,
+                    "headers": mask_string_list(&s.headers),
                     "args": s.args,
-                    "env": s.env,
+                    "env": mask_string_list(&s.env),
                     // 线上键名保持 timeout（UI 契约）；值来自规范字段 timeout_secs
                     "timeout": s.timeout_secs,
                     "provider_name": s.provider_name,
@@ -146,30 +160,24 @@ impl McpHandler {
                 .unwrap_or_else(|| "stdio".to_string()),
             url: crate::handlers::get_opt_str(data, "url").unwrap_or_default(),
             description: crate::handlers::get_opt_str(data, "description").unwrap_or_default(),
-            headers: data
-                .get("headers")
-                .and_then(|v| serde_json::from_value(v.clone()).ok())
-                .unwrap_or_default(),
-            args: data
-                .get("args")
-                .and_then(|v| serde_json::from_value(v.clone()).ok())
-                .unwrap_or_default(),
-            env: data
-                .get("env")
-                .and_then(|v| serde_json::from_value(v.clone()).ok())
-                .unwrap_or_default(),
+            headers: parse_string_list(data, "headers").unwrap_or_default(),
+            args: parse_string_list(data, "args").unwrap_or_default(),
+            env: parse_string_list(data, "env").unwrap_or_default(),
             // 线上键名 timeout；缺省 30（与 serde default 一致；旧值 0 会被
             // discover 的 >0 判断回落 30，直接落 30 语义更直白）
             timeout_secs: data.get("timeout").and_then(|v| v.as_u64()).unwrap_or(30),
             provider_name: crate::handlers::get_opt_str(data, "provider_name").unwrap_or_default(),
             provider_url: crate::handlers::get_opt_str(data, "provider_url").unwrap_or_default(),
-            tags: data
-                .get("tags")
-                .and_then(|v| serde_json::from_value(v.clone()).ok())
-                .unwrap_or_default(),
+            tags: parse_string_list(data, "tags").unwrap_or_default(),
             command: String::new(),
             extra: std::collections::BTreeMap::new(),
         };
+        // 新建无存量可还原：掩码值一律 loud 拒绝，绝不把掩码当真值落盘。
+        for (label, list) in [("headers", &server.headers), ("env", &server.env)] {
+            if list.iter().any(|e| e.contains("****")) {
+                return Err(format!("{label} 含掩码值（****），新建时请输入完整值"));
+            }
+        }
         // Legacy compat: if url empty but command provided, use command as url
         server.normalize();
         config.servers.push(server);
@@ -200,20 +208,17 @@ impl McpHandler {
         if let Some(v) = data.get("description").and_then(|v| v.as_str()) {
             server.description = v.to_string();
         }
-        if let Some(v) = data.get("headers").cloned()
-            && let Ok(parsed) = serde_json::from_value::<Vec<String>>(v)
-        {
-            server.headers = parsed;
+        if let Some(mut v) = parse_string_list(data, "headers") {
+            // 回显是脱敏形态：掩码条目按键还原存量原值，找不到 = loud 拒绝。
+            restore_masked_entries(&mut v, &server.headers)?;
+            server.headers = v;
         }
-        if let Some(v) = data.get("args").cloned()
-            && let Ok(parsed) = serde_json::from_value::<Vec<String>>(v)
-        {
-            server.args = parsed;
+        if let Some(v) = parse_string_list(data, "args") {
+            server.args = v;
         }
-        if let Some(v) = data.get("env").cloned()
-            && let Ok(parsed) = serde_json::from_value::<Vec<String>>(v)
-        {
-            server.env = parsed;
+        if let Some(mut v) = parse_string_list(data, "env") {
+            restore_masked_entries(&mut v, &server.env)?;
+            server.env = v;
         }
         if let Some(v) = data
             .get("timeout")
@@ -255,8 +260,22 @@ impl McpHandler {
 
     fn config_get(&self, workspace: &str) -> Result<Option<serde_json::Value>, String> {
         let config = load_mcp_config(workspace)?;
-        let json =
+        let mut json =
             serde_json::to_value(&config).map_err(|e| format!("failed to serialize: {}", e))?;
+        // servers[].headers/env 逐条值部脱敏（凭据回显脱敏批次）。
+        if let Some(servers) = json.get_mut("servers").and_then(|v| v.as_array_mut()) {
+            for s in servers.iter_mut() {
+                for key in ["headers", "env"] {
+                    if let Some(serde_json::Value::Array(arr)) = s.get_mut(key) {
+                        for entry in arr.iter_mut() {
+                            if let serde_json::Value::String(es) = entry {
+                                *es = mask_secret_entry(es);
+                            }
+                        }
+                    }
+                }
+            }
+        }
         Ok(Some(json))
     }
 
@@ -265,8 +284,19 @@ impl McpHandler {
         workspace: &str,
         data: &serde_json::Value,
     ) -> Result<Option<serde_json::Value>, String> {
-        let config: nemesis_config::McpConfig = serde_json::from_value(data.clone())
+        let mut config: nemesis_config::McpConfig = serde_json::from_value(data.clone())
             .map_err(|e| format!("invalid MCP config: {}", e))?;
+        // 整包回存同源还原：掩码条目按同名存量 server 还原；无存量 loud 拒绝。
+        let existing = load_mcp_config(workspace)?;
+        for server in config.servers.iter_mut() {
+            if let Some(old) = existing.servers.iter().find(|s| s.name == server.name) {
+                restore_masked_entries(&mut server.headers, &old.headers)?;
+                restore_masked_entries(&mut server.env, &old.env)?;
+            } else {
+                restore_masked_entries(&mut server.headers, &[])?;
+                restore_masked_entries(&mut server.env, &[])?;
+            }
+        }
         save_mcp_config(workspace, &config)?;
         Ok(Some(serde_json::json!({ "saved": true })))
     }

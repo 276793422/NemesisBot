@@ -1,6 +1,6 @@
 //! Channels handler — list/get/update/test channel configurations.
 
-use crate::handlers::{mask_sensitive, require_home};
+use crate::handlers::{mask_sensitive_fields, require_home};
 use crate::ws_router::{ModuleHandler, RequestContext};
 use std::path::PathBuf;
 
@@ -121,7 +121,7 @@ impl ChannelsHandler {
         name: &str,
         data: &serde_json::Value,
     ) -> Result<Option<serde_json::Value>, String> {
-        let channel_config = data.get("config").ok_or("missing config field")?.clone();
+        let mut channel_config = data.get("config").ok_or("missing config field")?.clone();
         let mut config = load_config(home)?;
 
         // Serialize channels to a mutable JSON object, update the channel, then re-parse
@@ -130,6 +130,12 @@ impl ChannelsHandler {
         if channels_json.get(name).is_none() {
             return Err(format!("channel '{}' not found", name));
         }
+        // get 响应是脱敏形态：UI 回存时掩码值还原为存量原值，绝不落盘掩码。
+        let existing = channels_json
+            .get(name)
+            .cloned()
+            .unwrap_or(serde_json::Value::Null);
+        crate::handlers::restore_masked_named_fields(&mut channel_config, &existing)?;
         channels_json[name] = channel_config;
         config.channels = serde_json::from_value(channels_json)
             .map_err(|e| format!("failed to parse updated channels: {}", e))?;
@@ -147,33 +153,9 @@ impl ChannelsHandler {
     }
 }
 
-/// Recursively mask known sensitive field names in a JSON value.
-fn mask_sensitive_fields(value: serde_json::Value) -> serde_json::Value {
-    match value {
-        serde_json::Value::Object(map) => {
-            let new_map: serde_json::Map<String, serde_json::Value> = map
-                .into_iter()
-                .map(|(k, v)| {
-                    if crate::handlers::is_sensitive_field(&k)
-                        && let Some(s) = v.as_str()
-                        && !s.is_empty()
-                    {
-                        return (k, serde_json::Value::String(mask_sensitive(s)));
-                    }
-                    (k, mask_sensitive_fields(v))
-                })
-                .collect();
-            serde_json::Value::Object(new_map)
-        }
-        serde_json::Value::Array(arr) => {
-            serde_json::Value::Array(arr.into_iter().map(mask_sensitive_fields).collect())
-        }
-        other => other,
-    }
-}
-
 // S10b (2026-08-26, quality-hardening goal 冲刺 web 批次 2): error arms
 // (missing config file / update payload validation) + sensitive-field
-// masking recursion.
+// masking recursion（mask_sensitive_fields 已上移 handlers/mod.rs 共享，
+// 2026-09-25 凭据回显脱敏批次）.
 #[cfg(test)]
 mod s10b_tests;

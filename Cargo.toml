@@ -44,6 +44,7 @@ members = [
     "crates/nemesis-board",
     "nemesisbot",
     "test-tools/integration-test",
+    "test-tools/agent-bench",
     "test-tools/cluster-test",
     "test-tools/cluster-uat",
     "test-tools/test-harness",

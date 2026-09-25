@@ -1461,13 +1461,18 @@ impl ClusterHandler {
     fn config_get(&self, ctx: &RequestContext) -> Result<Option<serde_json::Value>, String> {
         let workspace = require_workspace(ctx)?;
         let path = cluster_config_path(workspace);
-        let mut config: serde_json::Value = if path.exists() {
+        // token（UDP 发现层凭据）不回显明文——读入即脱敏（凭据回显脱敏批次，
+        // 2026-09-25；vault 方案 0.4.7 遗留），计算字段随后叠加不受影响。
+        let masked: serde_json::Value = if path.exists() {
             let content = std::fs::read_to_string(&path)
                 .map_err(|e| format!("failed to read cluster config: {}", e))?;
-            serde_json::from_str(&content).map_err(|e| format!("invalid cluster config: {}", e))?
+            let parsed: serde_json::Value = serde_json::from_str(&content)
+                .map_err(|e| format!("invalid cluster config: {}", e))?;
+            crate::handlers::mask_sensitive_fields(parsed)
         } else {
             serde_json::json!({})
         };
+        let mut config = masked;
         // Also return the master switch status from config.json
         if let Ok(home) = require_home(ctx) {
             let main_cfg_path = PathBuf::from(home).join("config.json");
@@ -1561,11 +1566,24 @@ impl ClusterHandler {
         }
 
         let path = cluster_config_path(workspace);
+        // get 响应是脱敏形态：UI 回存时掩码值还原为存量原值（无原值 loud
+        // 拒绝），绝不把掩码当真值写进 config.cluster.json。
+        let mut data = data.clone();
+        if path.exists() {
+            let content = std::fs::read_to_string(&path)
+                .map_err(|e| format!("failed to read cluster config: {}", e))?;
+            let existing: serde_json::Value = serde_json::from_str(&content)
+                .map_err(|e| format!("invalid cluster config: {}", e))?;
+            crate::handlers::restore_masked_named_fields(&mut data, &existing)?;
+        } else {
+            let empty = serde_json::json!({});
+            crate::handlers::restore_masked_named_fields(&mut data, &empty)?;
+        }
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent)
                 .map_err(|e| format!("failed to create config dir: {}", e))?;
         }
-        let json = serde_json::to_string_pretty(data)
+        let json = serde_json::to_string_pretty(&data)
             .map_err(|e| format!("failed to serialize: {}", e))?;
         // REL-002：统一原子写入（config.cluster.json 含 token）。
         nemesis_utils::write_file_atomic(&path.to_string_lossy(), json.as_bytes(), 0o600)

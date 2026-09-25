@@ -20,6 +20,7 @@ mod security_tests;
 mod subsystem_tests;
 mod tool_tests;
 mod ui_batch_series;
+mod wsapi;
 
 use std::path::PathBuf;
 use std::time::Duration;
@@ -562,15 +563,51 @@ async fn main() -> Result<()> {
         let config = serde_json::json!({
             "version": "1.0",
             "default_model": "test/testai-1.1",
-            "model_list": [{
-                "model": "test/testai-1.1",
-                "name": "test/testai-1.1",
-                "model_name": "testai-1.1",
-                "base_url": format!("http://127.0.0.1:{}/v1", ai_server_port()),
-                "api_key": "test-key",
-                "provider": "test",
-                "enabled": true
-            }],
+            // ⚠ typed 字段名是 api_base——写作 base_url 会被 ModelConfig 的
+            // serde(flatten) extra 静默吞掉 → provider base_url 空 → Phase-2
+            // 全部 LLM 调用瞬时失败（2026-09-25 base_url 专项根修；此前
+            // Phase-2 的软断言把错误回复吃成了「Response received」）。
+            // testai-2.0（echo）/ 2.1（PARALLEL 并行批）/ 5.0（FILE_OP 工具
+            // 驱动）为 tool/security 套件的确定性驱动模型，套件用
+            // models.set_default 热切、用毕恢复 testai-1.1。
+            "model_list": [
+                {
+                    "model": "test/testai-1.1",
+                    "name": "test/testai-1.1",
+                    "model_name": "testai-1.1",
+                    "api_base": format!("http://127.0.0.1:{}/v1", ai_server_port()),
+                    "api_key": "test-key",
+                    "provider": "test",
+                    "enabled": true
+                },
+                {
+                    "model": "test/testai-2.0",
+                    "name": "test/testai-2.0",
+                    "model_name": "testai-2.0",
+                    "api_base": format!("http://127.0.0.1:{}/v1", ai_server_port()),
+                    "api_key": "test-key",
+                    "provider": "test",
+                    "enabled": true
+                },
+                {
+                    "model": "test/testai-2.1",
+                    "name": "test/testai-2.1",
+                    "model_name": "testai-2.1",
+                    "api_base": format!("http://127.0.0.1:{}/v1", ai_server_port()),
+                    "api_key": "test-key",
+                    "provider": "test",
+                    "enabled": true
+                },
+                {
+                    "model": "test/testai-5.0",
+                    "name": "test/testai-5.0",
+                    "model_name": "testai-5.0",
+                    "api_base": format!("http://127.0.0.1:{}/v1", ai_server_port()),
+                    "api_key": "test-key",
+                    "provider": "test",
+                    "enabled": true
+                }
+            ],
             "channels": {
                 "web": {"enabled": true, "host": "127.0.0.1", "port": 49000, "auth_token": "276793422"},
                 // Standalone websocket channel stays OFF: runtime tests all go
@@ -589,12 +626,19 @@ async fn main() -> Result<()> {
             "agents": {
                 "defaults": {
                     "workspace": "",
-                    "restrict_to_workspace": false,
+                    // 工作区围栏开（生产推荐默认）：tool/workspace_restriction
+                    // 的出界写拦截断言依赖它；FILE_OP 套件全部用工作区内
+                    // 相对路径，不受影响。
+                    "restrict_to_workspace": true,
                     "llm": "test/testai-1.1",
                     "max_tokens": 8192,
                     "temperature": 0.7,
                     "max_tool_iterations": 20,
-                    "concurrent_request_mode": "reject",
+                    // 生产默认 queue（reject 会把同会话并发消息确定性弹回——
+                    // 旧 concurrent 测试 5 个连接全发同一默认 session，3 个被
+                    // 「⏳ AI is processing」弹回；现测试改独立 session +
+                    // queue 双保险，语义与生产对齐）。
+                    "concurrent_request_mode": "queue",
                     "queue_size": 8
                 }
             },
@@ -606,6 +650,63 @@ async fn main() -> Result<()> {
         let _ = std::fs::write(
             ws.config_path(),
             serde_json::to_string_pretty(&config).unwrap_or_default(),
+        );
+
+        // ---- config.security.json 补丁（2026-09-25 triage 定案）----
+        // 模板（config.security.windows.json 的 onboard 副本）对 IT 不适用的
+        // 两处，读入-改写-回写保留其余规则语义：
+        // ① file_rules.delete / dir_rules.delete 模板是 `* → ask`（全部删除
+        //    类进审批，approval_timeout 300s）——IT 无审批应答者，delete 套件
+        //    60s 轮次超时先死（假红）。审批流有自己的覆盖面（approval-test
+        //    工具 + security crate 单测）；IT 测的是删除工具链路本身，改
+        //    allow-all。
+        // ② layers.injection.extra.threshold → 0.2：默认 0.7 下注入层
+        //    数学上不可达（score = 0.65×r/(r+1) + 0.35×classifier，纯
+        //    pattern 分量恒 < 0.65，单 pattern 载荷封顶 ~0.64）——security
+        //    crate 自己的管线测试也用 0.2（"Lower threshold to work with
+        //    65/35 pattern+classifier scoring"）。0.2 下单 pattern 载荷
+        //    （0.8 权重 → pattern 分量 0.289）确定性拦停，干净 args 不误伤。
+        let sec_path = ws.security_config_path();
+        let mut sec = match std::fs::read_to_string(&sec_path)
+            .ok()
+            .and_then(|d| serde_json::from_str::<serde_json::Value>(&d).ok())
+        {
+            Some(v) => v,
+            None => serde_json::json!({
+                "default_action": "allow",
+                "exec_unknown_policy": "allow",
+                "guardian_mode": "off",
+                "layers": {},
+                "file_rules": {},
+                "dir_rules": {},
+                "process_rules": {}
+            }),
+        };
+        if let Some(obj) = sec.as_object_mut() {
+            if let Some(fr) = obj.get_mut("file_rules").and_then(|v| v.as_object_mut()) {
+                fr.insert(
+                    "delete".to_string(),
+                    serde_json::json!([{"pattern": "*", "action": "allow"}]),
+                );
+            }
+            if let Some(dr) = obj.get_mut("dir_rules").and_then(|v| v.as_object_mut()) {
+                dr.insert(
+                    "delete".to_string(),
+                    serde_json::json!([{"pattern": "*", "action": "allow"}]),
+                );
+            }
+            let layers = obj.entry("layers").or_insert_with(|| serde_json::json!({}));
+            if let Some(inj) = layers.as_object_mut().and_then(|l| {
+                l.entry("injection")
+                    .or_insert_with(|| serde_json::json!({}))
+                    .as_object_mut()
+            }) {
+                inj.insert("extra".to_string(), serde_json::json!({"threshold": 0.2}));
+            }
+        }
+        let _ = std::fs::write(
+            &sec_path,
+            serde_json::to_string_pretty(&sec).unwrap_or_default(),
         );
     }
 
@@ -691,21 +792,20 @@ async fn main() -> Result<()> {
     // Legacy: tool definitions
     all_results.extend(test_tool_definitions(&ws).await);
 
-    // Phase 3: Tool execution
+    // Phase 3: Tool execution（FILE_OP 驱动，testai-5.0 确定性工具调用；
+    // sleep/message 工具无确定性驱动模型，已移除——单测覆盖仍在）
     all_results.extend(tool_tests::test_tool_read_file(&ws).await);
     all_results.extend(tool_tests::test_tool_write_file(&ws).await);
-    all_results.extend(tool_tests::test_tool_edit_file(&ws).await);
+    all_results.extend(tool_tests::test_tool_append_file(&ws).await);
     all_results.extend(tool_tests::test_tool_list_dir(&ws).await);
     all_results.extend(tool_tests::test_tool_create_delete_dir(&ws).await);
     all_results.extend(tool_tests::test_tool_delete_file(&ws).await);
-    all_results.extend(tool_tests::test_tool_sleep().await);
-    all_results.extend(tool_tests::test_tool_message().await);
     all_results.extend(tool_tests::test_tool_multi_step(&ws).await);
     all_results.extend(tool_tests::test_tool_error_recovery().await);
-    all_results.extend(tool_tests::test_tool_workspace_restriction().await);
+    all_results.extend(tool_tests::test_tool_workspace_restriction(&ws).await);
 
     // Phase 4: Security runtime tests
-    all_results.extend(security_tests::test_security_injection_sql().await);
+    all_results.extend(security_tests::test_security_injection_sql(&ws).await);
     all_results.extend(security_tests::test_security_injection_command().await);
     all_results.extend(security_tests::test_security_credential_leak().await);
     all_results.extend(security_tests::test_security_process_exec_blocked().await);

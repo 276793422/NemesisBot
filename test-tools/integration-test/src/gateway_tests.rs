@@ -8,6 +8,8 @@ use std::time::Duration;
 
 use test_harness::*;
 
+use crate::wsapi;
+
 // ---------------------------------------------------------------------------
 // Test: Gateway full lifecycle (onboard → model add → start → health → stop)
 // ---------------------------------------------------------------------------
@@ -223,15 +225,22 @@ pub async fn test_gateway_ws_send_message() -> Vec<TestResult> {
         }
     };
 
+    // testai-1.1 固定回复「好的，我知道了」——内容断言（此前「收到非空即
+    // 过」把 provider 配置错误的报错回复也吃成了通过，base_url 专项根修）。
+    const REPLY_MARKER: &str = "好的，我知道了";
+
     match ws_send_and_recv(&mut stream, "hello gateway test", 30).await {
         Ok(content) => {
-            if !content.is_empty() {
+            if content.contains(REPLY_MARKER) {
                 results.push(pass(
                     &format!("{}/response", suite),
-                    format!("Response received ({} bytes)", content.len()),
+                    format!("回复含确定性 marker（{} bytes）", content.len()),
                 ));
             } else {
-                results.push(fail(&format!("{}/response", suite), "Empty response"));
+                results.push(fail(
+                    &format!("{}/response", suite),
+                    format!("回复无 marker（期望「{REPLY_MARKER}」）: {content}"),
+                ));
             }
         }
         Err(e) => {
@@ -265,10 +274,19 @@ pub async fn test_gateway_ws_multiturn() -> Vec<TestResult> {
     for i in 0..3 {
         match ws_send_and_recv(&mut stream, &format!("turn {} message", i + 1), 30).await {
             Ok(content) => {
-                results.push(pass(
-                    &format!("{}/turn{}", suite, i + 1),
-                    format!("Response received ({} bytes)", content.len()),
-                ));
+                // 每轮内容断言：testai-1.1 固定回复 marker（确定性 oracle）
+                if content.contains("好的，我知道了") {
+                    results.push(pass(
+                        &format!("{}/turn{}", suite, i + 1),
+                        format!("回复含确定性 marker（{} bytes）", content.len()),
+                    ));
+                } else {
+                    results.push(fail(
+                        &format!("{}/turn{}", suite, i + 1),
+                        format!("回复无 marker: {content}"),
+                    ));
+                    break;
+                }
             }
             Err(e) => {
                 results.push(fail(
@@ -292,14 +310,24 @@ pub async fn test_gateway_concurrent_sessions() -> Vec<TestResult> {
     let mut results = Vec::new();
     print_suite_header(suite);
 
+    // 真·并发会话：每个任务独立 WS 连接 + 独立 session_id（wsapi 每轮
+    // 生成新会话）。此前 5 个连接全发同一默认 session——busy 检查按
+    // session_key 判定，后到的 3 个被「⏳ AI is processing」确定性弹回
+    // （reject 模式如实工作，是测试设计错位，2026-09-25 triage 根修）。
+    // 配置侧 concurrent_request_mode 已对齐生产默认 queue。
     let num_sessions = 5;
     let mut handles = Vec::new();
 
     for i in 0..num_sessions {
+        let msg = format!("concurrent test message {}", i);
         handles.push(tokio::spawn(async move {
-            let mut stream = ws_connect(WS_PORT, AUTH_TOKEN).await?;
-            let msg = format!("concurrent test message {}", i);
-            ws_send_and_recv(&mut stream, &msg, 30).await
+            let (content, _events) = wsapi::chat_round_collect_tools(&msg, 30).await?;
+            // 每会话内容断言：固定回复 marker（并发下回复不得串台/丢失）
+            if content.contains("好的，我知道了") {
+                Ok(content)
+            } else {
+                Err(anyhow::anyhow!("回复无 marker: {content}"))
+            }
         }));
     }
 
@@ -403,6 +431,10 @@ pub async fn test_gateway_tool_execution() -> Vec<TestResult> {
     };
 
     // Send a message that should trigger a tool call (AI server will call first tool)
+    // ⚠ 诚实边界（2026-09-25 注）：testai-1.1 固定回复、从不发起工具调用，
+    // 本测试实际只验证「一轮聊天往返」，不构成工具执行断言——工具链路的
+    // 真实覆盖在 tool_tests（testai-5.0 FILE_OP 驱动）。本测试 #[allow(dead_code)]
+    // 未挂进主流程。
     match ws_send_and_recv(&mut stream, "list files in current directory", 30).await {
         Ok(content) => {
             // The mock AI server will call the first registered tool,
