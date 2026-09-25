@@ -387,7 +387,6 @@ fn exec_request(id: &str, target: &str) -> OperationRequest {
 }
 
 fn auditor_asking() -> SecurityAuditor {
-    
     SecurityAuditor::new(AuditorConfig {
         enabled: true,
         default_action: "ask".into(),
