@@ -109,6 +109,77 @@ jobs:
       - name: Linux cross-platform smoke tests
         run: cargo test -p nemesis-types -p nemesis-config -p nemesis-bus
 
+      # 架构依赖矩阵门禁（扩展计划 T3/D7：分层规则 R1-R7 违规即红，
+      # 防依赖倒流/越层直依赖——纯 cargo metadata 读图，秒级）
+      - name: Architecture dependency gate
+        run: cargo test -p arch-gate
+
+  coverage:
+    name: Line coverage floor (cargo-llvm-cov)
+    runs-on: ubuntu-latest
+    timeout-minutes: 75
+    env:
+      # 扩展计划 T7a/D6（docs/INFO/2026-09-24_公开基准.md §5）：行覆盖硬地板，
+      # 防倒退不追高。基线口径：全 workspace lib（nemesis-config 除外——
+      # llvm-cov 独立 target-dir 环境特定失败；test-harness / nemesis-build-config
+      # 为测试基建 lib 非产品代码，一并排除），见 docs/INFO/2026-06-27_coverage-baseline.md。
+      # Windows 本机 2026-09-25 实测 87.85%。当前种子 84 吸收 Linux/Windows
+      # 平台差（Linux 缺 Windows 形态测试）；CI 首跑实测后按「实测-2」上调
+      # 固定，此后只升不降——上调须附同口径实测数字，防止「改基线凑门槛」。
+      COVERAGE_FLOOR_LINES: "84"
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v5
+
+      - name: Install Rust toolchain + llvm-tools (coverage 采集前置)
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: llvm-tools-preview
+
+      - name: Cache cargo build
+        uses: Swatinem/rust-cache@v2
+
+      - name: Install cargo-llvm-cov
+        run: cargo install cargo-llvm-cov --locked
+
+      - name: Setup Node.js (Vue 前端构建，include_dir! 前置)
+        uses: actions/setup-node@v5
+        with:
+          node-version: '22'
+          cache: 'npm'
+          cache-dependency-path: web/package-lock.json
+
+      - name: Install Linux system deps (GTK / webkit2gtk / appindicator)
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libgtk-3-dev \
+            libwebkit2gtk-4.1-dev \
+            libayatana-appindicator3-dev \
+            librsvg2-dev \
+            pkg-config
+
+      - name: Build Vue frontend
+        shell: bash
+        run: |
+          cd web
+          npm ci
+          rm -rf ../crates/nemesis-web/static/assets
+          npm run build
+
+      # --fail-under-lines：行覆盖低于地板即红（防倒退）。首次合入时以此
+      # CI 平台实测为准校准 env 数字（Windows 本机实测会略高——Windows
+      # 形态测试在 Linux 不跑）。
+      - name: Measure coverage and enforce floor
+        run: cargo llvm-cov --workspace --lib --exclude nemesis-config --exclude test-harness --exclude nemesis-build-config --summary-only --fail-under-lines "$COVERAGE_FLOOR_LINES"
+
+      # T7b（扩展计划 D6）：生产/测试行数比——CI 汇总打印，数值随仓库
+      # 演进浮动，不设门槛（叙事指标非门禁）。
+      - name: Test-to-production line ratio summary
+        run: |
+          bash scripts/test-ratio.sh --quiet
+          cat target/test-ratio.txt
+
   rust-test:
     name: Rust full workspace tests (Windows)
     runs-on: windows-latest

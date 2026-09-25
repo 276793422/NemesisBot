@@ -1,10 +1,12 @@
 //! FallbackProvider with provider chain and auto-retry.
 //!
-//! ⚠ 装配状态（2026-09-17 BUG 文档裁决）：**故障转移未启用（预留）**——
-//! 本链（含 cooldown.rs 的 J1 冷却机制）生产装配零引用，单模型配置下不
-//! 产生任何行为；429 限流重试由 nemesis-agent loop.rs 的独立重试环承担，
-//! 不经过本链。接线启用需另立 goal（多模型 failover 链装配 + Dashboard
-//! 声明），本文档声明用于消除「配了就有」的错觉。
+//! 装配状态（扩展计划 T2b 接线后更新，取代 2026-09-17「预留未装配」声明）：
+//! 链已进入生产装配——启动路径（nemesisbot `agent_factory::wrap_fallback_chain`）
+//! 与运行期热切路径（nemesis-web models handler `apply_runtime_swap`）共用
+//! [`assemble_fallback_chain`] 单点：active 模型条目的 per-model extra 键
+//! `fallback_to: ["alias-b", ...]` 逐级构造。`fallback_to` 缺失/全不可用 =
+//! 单模型装配（无本链，行为与单模型配置一致）。429 限流重试仍由
+//! nemesis-agent loop 的独立重试环承担，不经过本链（本链只做跨模型故障转移）。
 
 use crate::cooldown::CooldownTracker;
 use crate::error_classifier::classify_error;
@@ -80,6 +82,76 @@ pub struct FallbackProvider {
     chain: Vec<FallbackEntry>,
     cooldown: Arc<CooldownTracker>,
     name: String,
+}
+
+/// 一级 fallback 的装配输入（扩展计划 T2b）：config 无关——调用方（启动
+/// 装配 / 运行期热切）把模型条目解析成本类型后交给装配单点。
+pub struct FallbackLevel {
+    /// config 里的模型别名（自引用跳过判定 + 日志定位用）。
+    pub alias: String,
+    /// 该级实际请求的模型名（resolve 后的去前缀名）。
+    pub model: String,
+    /// 该级 provider 构造参数。
+    pub factory: crate::factory::FactoryConfig,
+}
+
+/// 装配 fallback 链（启动装配与运行期热切共用的**单一装配点**）。
+///
+/// 语义：`alias == primary_model` 的自引用级跳过（链里出现自己只会空转
+/// 冷却）；单级 provider 构造失败 warn 跳过（诚实降级不阻断）；链只有
+/// 主级（级别为空/全不可用）= 原样返回 `primary`（与无 fallback 声明的
+/// 行为字节一致）；否则 [`FallbackProvider`] 包住（J1 冷却/重试语义沿用
+/// 既有实现，不重写）。
+pub fn assemble_fallback_chain(
+    primary_model: &str,
+    primary: Arc<dyn LLMProvider>,
+    levels: Vec<FallbackLevel>,
+) -> Arc<dyn LLMProvider> {
+    if levels.is_empty() {
+        return primary;
+    }
+    let mut chain = vec![FallbackEntry {
+        provider: primary,
+        model: primary_model.to_string(),
+    }];
+    for level in levels {
+        if level.alias == primary_model {
+            tracing::debug!(
+                "[Provider] fallback level '{}' is the primary itself — skipped",
+                level.alias
+            );
+            continue;
+        }
+        match crate::factory::create_provider_or_null(&level.factory) {
+            (p, None) => {
+                tracing::info!(
+                    "[Provider] fallback level '{}' ({}) resolved",
+                    level.alias,
+                    level.model
+                );
+                chain.push(FallbackEntry {
+                    provider: p,
+                    model: level.model,
+                });
+            }
+            (_, Some(w)) => {
+                tracing::warn!(
+                    "[Provider] fallback '{}' provider create failed: {} — 跳过该级",
+                    level.alias,
+                    w
+                );
+            }
+        }
+    }
+    if chain.len() > 1 {
+        Arc::new(FallbackProvider::new(
+            &format!("auto:{primary_model}"),
+            chain,
+        ))
+    } else {
+        tracing::warn!("[Provider] fallback levels configured but none usable — 单模型装配");
+        chain.remove(0).provider
+    }
 }
 
 impl FallbackProvider {

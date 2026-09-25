@@ -179,6 +179,15 @@ cargo run -p integration-test
 cargo run -p cluster-test
 ```
 
+#### 质量基准（可复现）
+
+质量证据清单（每项附复现命令）见 **[docs/INFO/2026-09-24_公开基准.md](docs/INFO/2026-09-24_公开基准.md)**。
+摘要：agent 单 crate lib 测试 2359、CLI 集成 492 断言/22 命令、集群 UAT
+T1-T37 双节点端到端、全 workspace 行覆盖 87.85%（cargo-llvm-cov 实测，
+CI `--fail-under-lines` 硬门槛防倒退）、测试/生产代码行数比 164%、架构依赖
+矩阵 7 规则 CI 强制、内联测试纪律门禁 1537 文件 0 违规、模型能力评估 8 题
+探针 + 12 题 × 3 档 battery。
+
 ### 初始化
 
 ```bash

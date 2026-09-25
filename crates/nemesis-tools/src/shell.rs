@@ -615,6 +615,13 @@ impl Tool for ShellTool {
         let mut cmd = tokio::process::Command::new(shell);
         cmd.arg(flag).arg(&command).current_dir(&cwd);
 
+        // T4（扩展计划 D2a）：先剥继承环境中的凭据类变量，再叠加模型显式
+        // env（显式 env 走工具 args，已被安全管线审计，属声明意图）。
+        let stripped = nemesis_utils::env_sanitize::sanitize_tokio_command(&mut cmd);
+        if stripped > 0 {
+            tracing::debug!("[Shell] env sanitized: {stripped} vars stripped");
+        }
+
         if let Some(env_obj) = args["env"].as_object() {
             for (key, value) in env_obj {
                 if let Some(val_str) = value.as_str() {

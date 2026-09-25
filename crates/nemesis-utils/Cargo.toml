@@ -12,6 +12,8 @@ tracing = { workspace = true }
 chrono = { workspace = true }
 reqwest = { workspace = true }
 parking_lot = { workspace = true }
+# llm_error_class（T2a 下沉）：错误文本分类的正则模式（与 providers 侧同源 workspace 版本）。
+regex = { workspace = true }
 zip = "2"
 
 [dev-dependencies]

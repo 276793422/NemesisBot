@@ -28,6 +28,7 @@ pub mod checkpoint;
 pub mod context;
 pub mod discipline;
 pub mod estop;
+pub mod event_ledger;
 pub mod executor_pipe;
 pub mod formatter;
 pub mod fs_watcher;
@@ -62,6 +63,8 @@ pub mod todo_closeout;
 pub mod tool_adapter;
 pub mod tool_doc_folding;
 pub mod tool_event_hook;
+/// T1（扩展计划 D3）：工具收据——防幻觉执行证明（HMAC-SHA256）。
+pub mod tool_receipts;
 pub mod turn_guard;
 pub mod types;
 pub mod workspace_instructions;

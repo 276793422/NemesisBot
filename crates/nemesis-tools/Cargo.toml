@@ -21,6 +21,8 @@ futures = { workspace = true }
 regex = { workspace = true }
 parking_lot = { workspace = true }
 nemesis-path = { workspace = true }
+# exec env 清洗（T4/D2a）：spawn 前剥凭据类继承变量（黑白名单单点在此 crate）。
+nemesis-utils = { workspace = true }
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["test-util", "macros"] }

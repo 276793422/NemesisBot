@@ -23,6 +23,10 @@ use crate::common;
 #[cfg(test)]
 mod tests;
 
+// T2b（扩展计划 D4）fallback 链装配测试（无 cluster 门——纯装配逻辑）。
+#[cfg(test)]
+mod fallback_chain_tests;
+
 // L6++（2026-09-08）项目 loop 工厂测试（非 cluster 门控——与 tests.rs 的
 // #![cfg(feature = "cluster")] 顶部门不同，本模块默认构建必跑；模块名含
 // "projects" 对齐 goal 门命令 `cargo test -p nemesisbot projects` 的过滤词）。
@@ -359,6 +363,71 @@ pub(crate) fn register_request_logger_observer(
     true
 }
 
+/// T2b（扩展计划 D4）：fallback 链装配（启动路径）——active 模型条目的
+/// per-model extra 键 `fallback_to: ["alias-b", ...]`（BTreeMap flatten
+/// 透传，无需 typed 字段）。本函数只做 config → [`FallbackLevel`] 解析；
+/// 装配语义（自引用跳过/单级构造失败 warn 跳过/FallbackProvider 包装或
+/// 原样返回主 provider）单点在
+/// `nemesis_providers::fallback_provider::assemble_fallback_chain`——运行
+/// 期热切路径（nemesis-web models handler）同源消费，两条路径不漂移。
+/// `fallback_to` 缺失/全不可用 → 原样返回主 provider（行为与现状字节一致）。
+fn wrap_fallback_chain(
+    cfg: &nemesis_config::Config,
+    model_name: &str,
+    workspace: &std::path::Path,
+    primary: Arc<dyn nemesis_providers::router::LLMProvider>,
+) -> Arc<dyn nemesis_providers::router::LLMProvider> {
+    let fallback_aliases: Vec<String> = cfg
+        .model_list
+        .iter()
+        .find(|m| m.model_name == model_name)
+        .and_then(|m| m.extra.get("fallback_to"))
+        .and_then(|v| v.as_array())
+        .map(|arr| {
+            arr.iter()
+                .filter_map(|x| x.as_str().map(String::from))
+                .collect()
+        })
+        .unwrap_or_default();
+    if fallback_aliases.is_empty() {
+        return primary;
+    }
+
+    let mut levels = Vec::new();
+    for alias in &fallback_aliases {
+        // 防自引用/重复主条目——链里出现自己只会空转冷却（装配单点另有
+        // 同款闸，这里提前跳过免做无谓 resolve）。
+        if alias == model_name {
+            continue;
+        }
+        match nemesis_config::resolve_model_config(cfg, alias) {
+            Ok(fr) => levels.push(nemesis_providers::fallback_provider::FallbackLevel {
+                alias: alias.clone(),
+                model: fr.model_name.clone(),
+                factory: nemesis_providers::factory::FactoryConfig {
+                    proxy: fr.proxy.clone(),
+                    llm_ref: format!("{}/{}", fr.provider_name, fr.model_name),
+                    api_key: fr.api_key.clone(),
+                    api_base: fr.api_base.clone(),
+                    workspace: workspace.to_string_lossy().to_string(),
+                    connect_mode: fr.connect_mode,
+                    protocol: fr.protocol.clone(),
+                    timeout_secs: fr.timeout_secs,
+                    account_id: String::new(),
+                    headers: HashMap::new(),
+                },
+            }),
+            Err(e) => {
+                warn!(
+                    "[AgentFactory] fallback '{}' resolve failed: {} — 跳过该级",
+                    alias, e
+                );
+            }
+        }
+    }
+    nemesis_providers::fallback_provider::assemble_fallback_chain(model_name, primary, levels)
+}
+
 /// Build a fresh AgentLoop from disk config.
 ///
 /// Re-reads `config.json`, workspace files, creates new provider,
@@ -416,7 +485,13 @@ pub fn build_agent_loop(
             w
         );
     }
-    let provider_arc: Arc<dyn nemesis_providers::router::LLMProvider> = provider;
+    // T2b（扩展计划 D4）：fallback 链装配——active 模型条目的 per-model
+    // extra 键 `fallback_to: ["alias-b", ...]` 逐级 resolve + create，
+    // FallbackProvider 包住主 provider（J1 冷却语义沿用既有实现，不重写）。
+    // 链空/全部不可用 = 单模型，行为与现状字节一致；单级解析/创建失败
+    // warn 跳过（诚实降级），不阻断装配。
+    let provider_arc: Arc<dyn nemesis_providers::router::LLMProvider> =
+        wrap_fallback_chain(&cfg, &model_name, &shared.workspace_dir(), provider);
     info!("[AgentFactory] Provider created for {}", model_name);
 
     // 3. Build system prompt from workspace files (IDENTITY.md, SOUL.md, etc.)

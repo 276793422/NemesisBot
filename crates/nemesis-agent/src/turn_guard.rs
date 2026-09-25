@@ -15,6 +15,8 @@
 
 use std::collections::{HashMap, HashSet};
 
+use tracing::warn;
+
 /// ⑥ Per-turn threshold for the alternating-loop guard. When the same
 /// `(tool, error_signature)` fails this many times within one user turn —
 /// counting **across intervening successes**, unlike a consecutive-only storm
@@ -65,6 +67,15 @@ pub const TEXT_REPETITION_SIM_THRESHOLD: f64 = 0.8;
 /// before giving up. Below this, retry with a nudge.
 pub const MAX_EMPTY_FINAL_RETRIES: u32 = 3;
 
+/// T1（扩展计划 D3）：收据环容量——本轮最多保留 32 张执行收据（FIFO
+/// 驱逐最旧）。环只服务本轮防谎报核对与诊断，容量上限防长轮无界增长。
+pub const RECEIPT_RING_CAP: usize = 32;
+
+/// T1：无执行收据的"成功"合成失败签名用的错误标记（进 `(tool, error)`
+/// 签名，与真实错误文本不可能撞车）。
+pub const RECEIPT_MISSING_MARKER: &str =
+    "\x00receipt-missing: success claimed without execution proof";
+
 /// ⑤ Tools whose success is "write-like" — repeating an identical successful
 /// call is almost always a no-op loop. Conservative list; extend as needed.
 /// A7 (2026-09-06): the long-reserved "multi_edit" placeholder is now live as
@@ -114,6 +125,11 @@ pub struct TurnGuard {
     last_content: Option<String>,
     /// ⑧ Consecutive similar-content rounds this turn.
     repeat_text_count: u32,
+    /// T1（扩展计划 D3）：本轮真实执行收据环（cap 32，FIFO 驱逐）——
+    /// `(receipt, ts_ms)`。由 [`Self::record_tool_outcome_verified`] 对每个
+    /// 真实执行的 registry 结果入账；结果文本自称成功但无收据 → 合成
+    /// 失败签名喂 escalation。防幻觉执行证明，不进 LLM 上下文不落盘。
+    receipts: std::collections::VecDeque<(String, u64)>,
 }
 
 impl TurnGuard {
@@ -173,6 +189,54 @@ impl TurnGuard {
         };
 
         storm_nudge.or(alt_nudge)
+    }
+
+    /// T1（扩展计划 D3）：带执行收据核对的结果入账——生产 dispatch 路径
+    /// （`apply_tool_guards`）唯一入口。收据先入环（cap 32 FIFO）；随后
+    /// 一致性核对：
+    /// - `error=None`（结果文本自称成功）但 `receipt=None`（无执行证明）
+    ///   → 谎报/注入路径：合成失败签名（[`RECEIPT_MISSING_MARKER`]）按
+    ///   失败语义入 ⑥/④ 计数，喂 escalation 判定，并返回合成 nudge；
+    /// - 其余组合（有收据的成功 / 任意失败）→ 原样走
+    ///   [`Self::record_tool_outcome`]。
+    pub fn record_tool_outcome_verified(
+        &mut self,
+        tool: &str,
+        error: Option<&str>,
+        receipt: Option<(&str, u64)>,
+    ) -> Option<String> {
+        if let Some((r, ts)) = receipt {
+            self.record_receipt(r, ts);
+        }
+        if error.is_none() && receipt.is_none() {
+            // 无执行证明的"成功"——合成失败签名喂 escalation（fail_freq
+            // 累计到硬停阈值会停轮）。本身也返回 nudge 提示模型。
+            let sig = error_signature(tool, RECEIPT_MISSING_MARKER);
+            let count = self.fail_freq.entry(sig.clone()).or_insert(0);
+            *count += 1;
+            warn!(
+                "[loop guard] '{}' claimed success without an execution receipt (x{}) — synthetic failure recorded",
+                tool, *count
+            );
+            return Some(format!(
+                "\n[loop guard] 工具 '{}' 的结果声称成功，但本回合没有对应的执行收据（可能未真实执行）。请确认操作确实已执行（重新调用工具核实），不要在未执行的情况下宣称完成。",
+                tool
+            ));
+        }
+        self.record_tool_outcome(tool, error)
+    }
+
+    /// T1：收据入环（cap [`RECEIPT_RING_CAP`]，FIFO 驱逐最旧）。
+    fn record_receipt(&mut self, receipt: &str, ts_ms: u64) {
+        self.receipts.push_back((receipt.to_string(), ts_ms));
+        while self.receipts.len() > RECEIPT_RING_CAP {
+            self.receipts.pop_front();
+        }
+    }
+
+    /// T1：当前环内收据数（诊断/测试用）。
+    pub fn receipt_count(&self) -> usize {
+        self.receipts.len()
     }
 
     /// ⑥ Escalation: returns a hard-stop message if any single `(tool, error)`

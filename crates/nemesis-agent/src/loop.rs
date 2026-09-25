@@ -361,6 +361,10 @@ pub struct AgentLoop {
     /// `set_discipline` 注入，admission gate 与钩子各自借出 Arc）。
     pub(crate) discipline:
         parking_lot::RwLock<Option<std::sync::Arc<crate::discipline::DisciplineState>>>,
+    /// T1（扩展计划 D3）：工具收据签名密钥——每实例随机（OsRng），不进
+    /// LLM 上下文不落盘。`apply_tool_guards` 对每个真实执行的 registry
+    /// 结果生成执行证明入 TurnGuard 收据环。
+    receipt_key: crate::tool_receipts::ReceiptKey,
     /// Maximum concurrent cluster continuation tasks.
     /// 0 = inline execution in the main loop (no spawn, serialized).
     /// >0 = spawn with semaphore-controlled concurrency.
@@ -599,6 +603,7 @@ impl AgentLoop {
             reinject_tx: parking_lot::RwLock::new(None),
             queue_size: crate::inbox::DEFAULT_QUEUE_SIZE,
             discipline: parking_lot::RwLock::new(None),
+            receipt_key: crate::tool_receipts::ReceiptKey::generate(),
             max_continuation_permits: 0,
             continuation_semaphore: None,
             turn_permits: None,
@@ -849,6 +854,10 @@ mod k4_user_dispatch_tests;
 mod chat_log_timing_tests;
 #[cfg(test)]
 mod rate_limit_retry_tests;
+// T2a（扩展计划 D4-2a）：错误分类器分派测试（Auth/Billing 零重试终局 +
+// "invalid api key" 不误入压缩环回归 + 词表盲区配额/deadline 文案进对应环）。
+#[cfg(test)]
+mod recovery_classifier_tests;
 // R1 (2026-09-21)：中间轮正文事件（RoundText）发布语义测试（带叙述的
 // 中间轮逐条发布 + 观察者通道与 chat 事件 Vec 隔离 + 空正文轮不发）。
 #[cfg(test)]

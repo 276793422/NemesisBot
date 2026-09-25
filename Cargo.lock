@@ -238,6 +238,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "arch-gate"
+version = "0.1.0"
+dependencies = [
+ "toml 0.8.2",
+]
+
+[[package]]
 name = "arg_enum_proc_macro"
 version = "0.3.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3617,6 +3624,7 @@ dependencies = [
  "dashmap",
  "futures",
  "git2",
+ "hmac",
  "html2text",
  "image",
  "mockall",
@@ -3641,6 +3649,7 @@ dependencies = [
  "nemesis-workflow",
  "notify",
  "parking_lot",
+ "rand 0.8.6",
  "regex",
  "reqwest",
  "rusqlite",
@@ -4086,6 +4095,7 @@ dependencies = [
  "futures",
  "mockall",
  "nemesis-types",
+ "nemesis-utils",
  "parking_lot",
  "regex",
  "reqwest",
@@ -4252,6 +4262,7 @@ dependencies = [
  "nemesis-path",
  "nemesis-skills",
  "nemesis-types",
+ "nemesis-utils",
  "parking_lot",
  "regex",
  "reqwest",
@@ -4291,6 +4302,7 @@ version = "0.1.0"
 dependencies = [
  "chrono",
  "parking_lot",
+ "regex",
  "reqwest",
  "serde",
  "serde_json",

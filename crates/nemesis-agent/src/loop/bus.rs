@@ -127,6 +127,7 @@ impl AgentLoop {
             reinject_tx: parking_lot::RwLock::new(None),
             queue_size,
             discipline: parking_lot::RwLock::new(None),
+            receipt_key: crate::tool_receipts::ReceiptKey::generate(),
             max_continuation_permits,
             continuation_semaphore,
             turn_permits: None,

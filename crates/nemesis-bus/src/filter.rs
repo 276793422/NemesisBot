@@ -1,6 +1,6 @@
 //! 入站过滤链框架（InboundFilterChain）。
 //!
-//! 框架级消息拦截点（参照 Windows 设备栈过滤驱动 / minifilter 契约）：
+//! 框架级消息拦截点（同构 Windows 设备栈过滤驱动 / minifilter 契约）：
 //! 挂载点在消息进入扇出**之前**（如 web 入站桥 → `bus.publish_inbound`
 //! 之前的咽喉位），过滤器可对消息类做「就地消费（Intercepted）」或
 //! 「放行（Pass）」。首个非 Pass 决策终止链。

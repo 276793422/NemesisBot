@@ -23,7 +23,7 @@ use nemesis_path::paths::canonicalize_for_compare;
 use async_trait::async_trait;
 use tokio::sync::Mutex;
 use tokio::time::sleep;
-use tracing::info;
+use tracing::{debug, info};
 
 use crate::background_registry::{
     BackgroundKillTool, BackgroundOutputTool, BackgroundProcessRegistry, BackgroundStartTool,
@@ -1515,6 +1515,10 @@ pub(crate) fn exec_output_passed(output: &str) -> bool {
 /// 共用。逐字保留 B2 语义：Windows `cmd /C` + raw_arg（.arg() 的自动加引号
 /// 会搅乱 cmd.exe 自身的引号处理）；stdin null（交互式命令立即 EOF 不挂满
 /// 超时）；stdout/stderr piped；kill_on_drop（挂死命令不留孤儿）。
+/// T4（扩展计划 D2a）：spawn 前剥继承环境中的凭据类变量（*KEY*/TOKEN/
+/// SECRET/PASSWORD/CREDENTIAL/NEMESISBOT_*）——`exec` 里 echo 环境变量
+/// 即可读出 agent 进程凭据的缺口在此封堵；`security.sanitize_child_env`
+/// 可关（默认开）。ExecTool 与 run_checks 共用本函数 = 单一泄漏闸。
 fn make_piped_shell_command(command: &str) -> tokio::process::Command {
     #[cfg(target_os = "windows")]
     {
@@ -1526,6 +1530,10 @@ fn make_piped_shell_command(command: &str) -> tokio::process::Command {
         c.stdout(std::process::Stdio::piped());
         c.stderr(std::process::Stdio::piped());
         c.kill_on_drop(true);
+        let stripped = nemesis_utils::env_sanitize::sanitize_tokio_command(&mut c);
+        if stripped > 0 {
+            debug!("[Tools] env sanitized: {stripped} vars stripped");
+        }
         c
     }
     #[cfg(not(target_os = "windows"))]
@@ -1536,6 +1544,10 @@ fn make_piped_shell_command(command: &str) -> tokio::process::Command {
         c.stdout(std::process::Stdio::piped());
         c.stderr(std::process::Stdio::piped());
         c.kill_on_drop(true);
+        let stripped = nemesis_utils::env_sanitize::sanitize_tokio_command(&mut c);
+        if stripped > 0 {
+            debug!("[Tools] env sanitized: {stripped} vars stripped");
+        }
         c
     }
 }

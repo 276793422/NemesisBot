@@ -3,8 +3,10 @@
 //! Common utilities: string helpers, media detection, file operations,
 //! message splitting, HTTP retry, skill parsing, zip handling.
 
+pub mod env_sanitize;
 pub mod file;
 pub mod http_retry;
+pub mod llm_error_class;
 pub mod media;
 pub mod message;
 pub mod platform;

@@ -103,6 +103,11 @@ pub(crate) async fn init_agent(
     )
     .await;
 
+    // T5（扩展计划 D2b）：回填出站 DLP 闸槽——Step 9 出站桥创建早于本块，
+    // 桥内逐消息查槽；装配前槽空 = 直通（此窗口不可能有出站流量）。
+    #[cfg(feature = "security")]
+    let _ = ctx.outbound_dlp_slot.set(security_plugin.clone());
+
     // Step 9d: Setup Observer Manager for conversation lifecycle events.
     // Mirrors Go's bot_service.go Phase 5: observerMgr creation + RequestLogger registration.
     let observer_manager: Option<Arc<nemesis_observer::Manager>> = {

@@ -6,6 +6,8 @@ edition.workspace = true
 
 [dependencies]
 nemesis-types = { workspace = true }
+# error_classifier（T2a 下沉）：模式表单点在 utils，本 crate 只做 FailoverError 富化。
+nemesis-utils = { workspace = true }
 tokio = { workspace = true }
 async-trait = { workspace = true }
 serde = { workspace = true }

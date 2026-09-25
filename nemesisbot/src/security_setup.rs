@@ -147,6 +147,18 @@ pub(crate) async fn build_security_plugin(
         security_config.log_all_operations = b;
         info!("[Security] log_all_operations: {}", b);
     }
+    // T4（扩展计划 D2a）：子进程环境凭据清洗开关（默认开）。进程级静态，
+    // 三处 spawn 点（agent loop exec/run_checks 闸 + nemesis-tools
+    // shell/async_shell）统一查询；缺键 = 开（旧行为的唯偏离点是多剥
+    // 凭据变量，属默认加固）。
+    if let Some(b) = sec_json
+        .as_ref()
+        .and_then(|v| v.get("sanitize_child_env"))
+        .and_then(|x| x.as_bool())
+    {
+        nemesis_utils::env_sanitize::set_child_env_sanitize_enabled(b);
+        info!("[Security] sanitize_child_env: {}", b);
+    }
     let plugin = Arc::new(nemesis_security::pipeline::SecurityPlugin::new(
         security_config,
     ));

@@ -81,6 +81,53 @@ impl AgentLoop {
                 // 首次调用从发起到失败的时长（Err 臂入口即失败点）。
                 let first_call_failed_after = first_call_start.elapsed();
                 let err_lower = err.to_lowercase();
+
+                // T2a（扩展计划 D4-2a）：provider 侧错误分类器先行。分派语义：
+                //   Auth/Billing → 不进任何重试环直接终局（旧词表形态
+                //     "invalid api key" 含 "invalid" 会误入 context 压缩环
+                //     白烧 2 次重试；401/402 重试天然无意义），用户文案换
+                //     可行动提示，原始错误继续走 history/observer/capture
+                //     （诊断保真，T10 同纪律）。
+                //   RateLimit/Timeout/Overloaded → 并集进对应恢复环（分类器
+                //     覆盖词表盲区：Gemini 配额 "exceeded your current quota"、
+                //     gRPC "deadline exceeded" 等旧词表不认即终局的文案）。
+                //   Format/None → 不借分类器分流（Format 终局与词表时代同
+                //     宿），走既有词表路径原样兜底。
+                // 分类器单点在 nemesis_utils::llm_error_class（providers 侧
+                // classify_error 同源委托；nemesis-agent 生产代码看不见
+                // providers——后者只是 dev-dependency）。
+                let classified = nemesis_utils::llm_error_class::classify_llm_error(&err);
+                match &classified {
+                    Some(nemesis_utils::llm_error_class::LlmErrorClass::Auth) => {
+                        return Err(self
+                            .finish_llm_error_no_retry(
+                                instance,
+                                context,
+                                trace_id,
+                                turns_used,
+                                round_start,
+                                err,
+                                "认证失败（401/403）：请检查该模型的 API key 或凭据配置，已停止重试",
+                                request_had_images,
+                            )
+                            .await);
+                    }
+                    Some(nemesis_utils::llm_error_class::LlmErrorClass::Billing) => {
+                        return Err(self
+                            .finish_llm_error_no_retry(
+                                instance,
+                                context,
+                                trace_id,
+                                turns_used,
+                                round_start,
+                                err,
+                                "计费失败（402）：请检查该模型账户余额或订阅状态，已停止重试",
+                                request_had_images,
+                            )
+                            .await);
+                    }
+                    _ => {}
+                }
                 let is_context_error = ["token", "context", "length", "invalid"]
                     .iter()
                     .any(|keyword| err_lower.contains(keyword));
@@ -146,7 +193,23 @@ impl AgentLoop {
                         .iter()
                         .any(|k| err_lower.contains(k));
 
-                    let (maybe_resp, last_err) = if is_rate_limit_error {
+                    // T2a：分类器命中与词表判定取并集（RateLimit 优先序
+                    // 不变；Overloaded 按 llm_error_class 既有口径：
+                    // 状态码 5xx 形态 → transient 环，纯文案形态 →
+                    // RateLimit 环——两形态与词表时代归宿一致）。
+                    let classified_rate_limit = matches!(
+                        &classified,
+                        Some(nemesis_utils::llm_error_class::LlmErrorClass::RateLimit)
+                    );
+                    let classified_transient = matches!(
+                        &classified,
+                        Some(
+                            nemesis_utils::llm_error_class::LlmErrorClass::Timeout
+                                | nemesis_utils::llm_error_class::LlmErrorClass::Overloaded
+                        )
+                    );
+
+                    let (maybe_resp, last_err) = if is_rate_limit_error || classified_rate_limit {
                         self.retry_rate_limited(
                             context,
                             instance,
@@ -156,7 +219,7 @@ impl AgentLoop {
                             err,
                         )
                         .await
-                    } else if is_transient_error {
+                    } else if is_transient_error || classified_transient {
                         self.retry_transient(
                             instance,
                             &active_provider,
@@ -361,6 +424,58 @@ impl AgentLoop {
                 Err(AgentEvent::Error(formatted))
             }
         }
+    }
+
+    /// T2a：不可重试类（认证/计费）终局收尾——observer 错误事件 + history
+    /// 落账 + capture flush 保留原始错误全文（诊断保真），用户可见文案换
+    /// 可行动提示。终局仪式与 [`Self::call_llm_with_recovery`] 词表终局
+    /// 块同构（capture 事件名同为 "llm_call_failed"）。
+    // allow 理由（clippy too_many_arguments）：9 参签名与既有词表终局块
+    // 同构（observer 事件/history/capture 各需独立实参），聚合 struct 反而
+    // 偏离同源形态、增加阅读跳转。
+    #[allow(clippy::too_many_arguments)]
+    async fn finish_llm_error_no_retry(
+        &self,
+        instance: &AgentInstance,
+        context: &RequestContext,
+        trace_id: &str,
+        turns_used: u32,
+        round_start: std::time::Instant,
+        err: String,
+        hint: &str,
+        request_had_images: bool,
+    ) -> AgentEvent {
+        warn!("[AgentLoop] LLM call failed (no-retry class): {}", err);
+        let error_round = turns_used + 1;
+        let error_duration = round_start.elapsed();
+        self.emit_observer_sync(crate::loop_executor::ObserverEvent::LlmResponse {
+            trace_id: trace_id.to_string(),
+            round: error_round,
+            duration_ms: error_duration.as_millis() as u64,
+            has_tool_calls: false,
+            content: format!("Error: {}", err),
+            tool_calls: vec![],
+            tool_calls_count: 0,
+            finish_reason: Some("error".to_string()),
+            usage: None,
+            raw_request_body: None,
+            raw_response_body: None,
+        })
+        .await;
+        instance.add_assistant_message(&format!("Error: {}", err), Vec::new(), None);
+        if let Some(sink) = crate::capture_sink::CaptureSink::global() {
+            sink.flush(
+                &context.session_key,
+                "llm_call_failed",
+                Some(trace_id),
+                Some(err.as_str()),
+            );
+        }
+        let formatted = context.format_rpc_message(&append_vision_fallback_hint(
+            format!("Error: {}（原始错误：{}）", hint, err),
+            request_had_images,
+        ));
+        AgentEvent::Error(formatted)
     }
 
     /// 器官 4b：429 限流预算环（原 is_rate_limit_error 臂整体搬入）。梯子 +

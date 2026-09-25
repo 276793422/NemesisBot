@@ -247,6 +247,14 @@ fn write_chat_entry(
         tracing::warn!("[chat_log] Failed to write to {}: {}", path.display(), e);
         return;
     }
+    // T6（扩展计划 D5）：append 记账——旁路事件账本，sha-only（chat_log
+    // 本体是正文真相源，账本职责是完整性证据）。best-effort，失败不阻断。
+    crate::event_ledger::ledger_record(
+        session_key,
+        crate::event_ledger::LedgerOp::Append,
+        "chat_log",
+        vec![crate::event_ledger::LedgerRow::from_chat_row(&entry, false)],
+    );
     // U20 (sixth batch): lazy FTS index hook — best-effort, failures inside
     // are swallowed (the next full reindex repairs). Timestamp mirrors the
     // entry written above.
@@ -416,6 +424,7 @@ pub fn write_chat_log_rows(new_key: &str, rows: &[Value]) -> usize {
         let _ = fs::create_dir_all(parent);
     }
     let mut written = 0usize;
+    let mut written_rows: Vec<&Value> = Vec::new();
     if let Ok(mut f) = OpenOptions::new().create(true).append(true).open(&target) {
         for v in rows {
             let Ok(line) = serde_json::to_string(v) else {
@@ -423,8 +432,23 @@ pub fn write_chat_log_rows(new_key: &str, rows: &[Value]) -> usize {
             };
             if writeln!(f, "{}", line).is_ok() {
                 written += 1;
+                written_rows.push(v);
             }
         }
+    }
+    // T6（扩展计划 D5）：fork 记账（落新会话账本，sha-only——复制的行在
+    // 源会话仍完整存在，正文不入账）。只记真正写出的行（序列化 + writeln
+    // 双成功——账本是完整性证据，不许多记）。
+    if written > 0 {
+        crate::event_ledger::ledger_record(
+            new_key,
+            crate::event_ledger::LedgerOp::Fork,
+            "chat_log",
+            written_rows
+                .iter()
+                .map(|v| crate::event_ledger::LedgerRow::from_chat_row(v, false))
+                .collect(),
+        );
     }
     written
 }
@@ -444,6 +468,20 @@ pub fn truncate_chat_log_rows(session_key: &str, kept: &[Value]) -> usize {
     if let Some(parent) = path.parent() {
         let _ = fs::create_dir_all(parent);
     }
+    // T6（扩展计划 D5）：改写前先取原文件原始行——rename 成功后按
+    // 「原行 vs kept 前缀」差集把**被删行全文**入账（永不丢已提交数据）。
+    let raw_lines: Vec<String> = fs::File::open(&path)
+        .map(|f| {
+            std::io::BufReader::new(f)
+                .lines()
+                .map_while(Result::ok)
+                .collect()
+        })
+        .unwrap_or_default();
+    let kept_lines: Vec<String> = kept
+        .iter()
+        .filter_map(|v| serde_json::to_string(v).ok())
+        .collect();
     let tmp = path.with_extension("jsonl.rewinding");
     let mut written = 0usize;
     {
@@ -479,7 +517,42 @@ pub fn truncate_chat_log_rows(session_key: &str, kept: &[Value]) -> usize {
         let _ = fs::remove_file(&tmp);
         return 0;
     }
+    // T6：rename 生效后才记账（截断真正发生）。原行按序与 kept 序列化串
+    // 前缀匹配；未匹配上的 = 被删行，全文（含解析不出 JSON 的裸行）入账。
+    // 序列化两侧同走 serde_json::to_string(Value)（同 key 排序/转义），字节
+    // 可比。差集记账是保守方向：匹配错位只会多记「被删」，不会漏记。
+    ledger_truncate_diff(session_key, &raw_lines, &kept_lines);
     written
+}
+
+/// T6（扩展计划 D5）：把 raw_lines 相对 kept_lines 的差集（=被删行）全文
+/// 入账（truncate op）。truncate_chat_log_rows 与 clear_chat_log 共用。
+fn ledger_truncate_diff(session_key: &str, raw_lines: &[String], kept_lines: &[String]) {
+    let mut deleted_rows = Vec::new();
+    let mut ptr = 0usize;
+    for line in raw_lines {
+        if ptr < kept_lines.len() && line == &kept_lines[ptr] {
+            ptr += 1;
+            continue;
+        }
+        let role = serde_json::from_str::<Value>(line)
+            .ok()
+            .and_then(|v| v.get("role").and_then(|r| r.as_str()).map(String::from))
+            .unwrap_or_default();
+        deleted_rows.push(crate::event_ledger::LedgerRow {
+            role,
+            content_sha256: crate::event_ledger::sha256_hex(line.as_bytes()),
+            content: Some(line.clone()),
+        });
+    }
+    if !deleted_rows.is_empty() {
+        crate::event_ledger::ledger_record(
+            session_key,
+            crate::event_ledger::LedgerOp::Truncate,
+            "chat_log",
+            deleted_rows,
+        );
+    }
 }
 
 /// Z1 (Phase4-d): copy the first `at_turn` COMPLETE user turns of
@@ -658,9 +731,21 @@ pub fn delete_chat_log(session_key: &str) {
 /// Also truncates the boundary-events sidecar (same lifecycle).
 pub fn clear_chat_log(session_key: &str) {
     let path = log_path(session_key);
+    // T6（扩展计划 D5）：清空即全删——清空前取原始行，成功后全额按
+    // truncate 语义入账（被清内容全文可从账本找回，与 rewind 同一保障）。
+    let raw_lines: Vec<String> = fs::File::open(&path)
+        .map(|f| {
+            std::io::BufReader::new(f)
+                .lines()
+                .map_while(Result::ok)
+                .collect()
+        })
+        .unwrap_or_default();
     if let Err(e) = fs::write(&path, "") {
         tracing::warn!("[chat_log] Failed to clear {}: {}", path.display(), e);
+        return;
     }
+    ledger_truncate_diff(session_key, &raw_lines, &[]);
     let bpath = boundary_path(session_key);
     if bpath.exists()
         && let Err(e) = fs::write(&bpath, "")
@@ -1057,3 +1142,8 @@ mod d3_tests;
 // 原位截断（消息级回退的落盘原语）测试。
 #[cfg(test)]
 mod e3_tests;
+
+// T6（扩展计划 D5，2026-09-24）：append/truncate/fork 三写路径的事件账本
+// 记账集成测试。
+#[cfg(test)]
+mod t6_tests;

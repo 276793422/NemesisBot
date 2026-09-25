@@ -30,6 +30,49 @@ use super::fire_board_autopilot;
 use super::migrate_legacy_workflow_dir;
 use super::run_relay;
 
+/// T5（扩展计划 D2b）：出站单消息 DLP 脱敏——agent outbound → bus 桥内
+/// 逐消息调用（agent 产出的唯一漏斗，channels manager 不重复过滤）。
+/// 槽空（init_agent 装配前，此窗口不可能有出站流量）= 直通；
+/// `Some(None)`（安全关闭）或无 DLP 引擎 = 直通；
+/// 命中规则 → 内容替换为脱敏文本 + 审计链留痕（operation=
+/// `dlp_outbound_redact`，reason=命中摘要，不落原始内容）。
+#[cfg(feature = "security")]
+fn apply_outbound_dlp(
+    slot: &std::sync::OnceLock<Option<Arc<nemesis_security::pipeline::SecurityPlugin>>>,
+    msg: &mut nemesis_types::channel::OutboundMessage,
+) {
+    let Some(Some(plugin)) = slot.get() else {
+        return;
+    };
+    let Some(dlp) = plugin.dlp_engine() else {
+        return;
+    };
+    let redacted = dlp.redact_content(&msg.content);
+    if redacted == msg.content {
+        return;
+    }
+    let summary = dlp.scan_text(&msg.content).summary;
+    if let Some(chain) = plugin.audit_chain() {
+        let _ = chain.append(
+            "dlp_outbound_redact",
+            "",
+            "agent",
+            "gateway_outbound_bridge",
+            &format!("{}/{}", msg.channel, msg.chat_id),
+            "redacted",
+            &summary,
+        );
+    }
+    info!(
+        "[Gateway] outbound DLP redacted ({} -> {} bytes) for {}/{}",
+        msg.content.len(),
+        redacted.len(),
+        msg.channel,
+        msg.chat_id
+    );
+    msg.content = redacted;
+}
+
 /// 跨相位状态容器（§4.1）。字段名与原 run() 局部名逐字一致——下游以影子
 /// 重绑（owned clone）沿用原名，所有权拓扑与原单绑定等价。晚绑定槽按 §0
 /// 原则 6 只收编不改模式；feature 门字段沿用原局部声明门，逐字段保留。
@@ -88,6 +131,14 @@ pub(crate) struct GatewayCtx {
     /// Swarm M3 master 侧讨论额度台账（PB-2 讨论桥 + PB-5 board service）。
     #[cfg(all(feature = "board", feature = "cluster"))]
     pub board_quota: Arc<nemesis_board::quota::QuotaLedger>,
+    /// T5（扩展计划 D2b）：出站 DLP 脱敏闸槽——Step 9 出站桥先于 Step 9b
+    /// security_plugin 装配创建，init_agent 装配后回填。桥内逐消息查槽：
+    /// 槽空 = 直通（装配前不可能有出站流量——agent loop 尚未创建）；
+    /// `Some(None)` = 安全关闭直通；`Some(Some(plugin))` = 有 DLP 引擎才
+    /// 逐消息脱敏（单一漏斗原则：channels manager 不重复过滤）。
+    #[cfg(feature = "security")]
+    pub outbound_dlp_slot:
+        Arc<std::sync::OnceLock<Option<Arc<nemesis_security::pipeline::SecurityPlugin>>>>,
     /// 默认跟随 wrapper 快照（workflow 引擎 / PB-8 guardian judge 消费）。
     #[cfg(any(feature = "workflow", feature = "security"))]
     pub llm_provider: Arc<dyn nemesis_providers::router::LLMProvider>,
@@ -462,10 +513,25 @@ impl GatewayCtx {
         let (agent_outbound_tx, mut agent_outbound_rx) =
             tokio::sync::mpsc::channel::<nemesis_types::channel::OutboundMessage>(1024);
 
+        // T5（扩展计划 D2b）：出站 DLP 闸槽本体。init_agent（Step 9b 之后）
+        // 回填装配好的 security_plugin（含 None=安全关闭）；桥闭包 clone 引用。
+        #[cfg(feature = "security")]
+        let outbound_dlp_slot = std::sync::Arc::new(std::sync::OnceLock::<
+            Option<Arc<nemesis_security::pipeline::SecurityPlugin>>,
+        >::new());
+
         // Bridge: agent outbound mpsc → bus outbound broadcast
         let bus_out = bus.clone();
+        // T5（扩展计划 D2b）：出站 DLP 脱敏闸（槽由 init_agent 回填；
+        // feature 裁剪 = 直通）。agent 产出的唯一漏斗——publish 前脱敏 +
+        // 审计链留痕（operation=dlp_outbound_redact，reason=DLP 命中摘要，
+        // 不落原始内容）。判定逻辑抽为 apply_outbound_dlp（可单测）。
+        #[cfg(feature = "security")]
+        let dlp_gate_slot = outbound_dlp_slot.clone();
         let bridge_outbound_handle = tokio::spawn(async move {
-            while let Some(msg) = agent_outbound_rx.recv().await {
+            while let Some(mut msg) = agent_outbound_rx.recv().await {
+                #[cfg(feature = "security")]
+                apply_outbound_dlp(&dlp_gate_slot, &mut msg);
                 bus_out.publish_outbound(msg);
             }
         });
@@ -1040,6 +1106,8 @@ impl GatewayCtx {
             #[cfg(feature = "workflow")]
             chat_secret_store,
             // 晚绑定槽
+            #[cfg(feature = "security")]
+            outbound_dlp_slot,
             #[cfg(all(feature = "board", feature = "cluster"))]
             board_moderator_loop,
             #[cfg(all(feature = "board", feature = "cluster"))]
@@ -1053,3 +1121,8 @@ impl GatewayCtx {
         }))
     }
 }
+
+/// T5（扩展计划 D2b）：出站 DLP 脱敏闸单测（apply_outbound_dlp 判定逻辑 +
+/// 装配前后槽语义）。security feature 门内——与被测函数同门。
+#[cfg(all(test, feature = "security"))]
+mod dlp_gate_tests;

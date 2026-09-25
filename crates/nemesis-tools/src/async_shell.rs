@@ -257,11 +257,15 @@ impl Tool for AsyncExecTool {
             ("sh", "-c")
         };
 
-        let launch_result = tokio::process::Command::new(shell)
-            .arg(flag)
-            .arg(command)
-            .current_dir(&cwd)
-            .spawn();
+        // T4（扩展计划 D2a）：spawn 前剥继承环境中的凭据类变量
+        // （security.sanitize_child_env 可关，默认开）。
+        let mut spawn_cmd = tokio::process::Command::new(shell);
+        spawn_cmd.arg(flag).arg(command).current_dir(&cwd);
+        let stripped = nemesis_utils::env_sanitize::sanitize_tokio_command(&mut spawn_cmd);
+        if stripped > 0 {
+            tracing::debug!("[AsyncShell] env sanitized: {stripped} vars stripped");
+        }
+        let launch_result = spawn_cmd.spawn();
 
         let mut child = match launch_result {
             Ok(c) => c,

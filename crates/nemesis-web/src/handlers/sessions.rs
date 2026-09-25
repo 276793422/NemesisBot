@@ -31,6 +31,7 @@ impl ModuleHandler for SessionsHandler {
             "rewind_to_message",
             "redo",
             "file_diff",
+            "ledger_verify",
             "share_create",
             "share_list",
             "share_revoke",
@@ -457,6 +458,35 @@ impl ModuleHandler for SessionsHandler {
                 let mut out = al.session_file_diff(&session_key, &path).await?;
                 out["session_id"] = serde_json::Value::String(session_id);
                 Ok(Some(out))
+            }
+            // T6（扩展计划 D5）：会话事件账本全链重算验证。链断裂/篡改 =
+            // Err（消息即失败原因），成功返回统计。
+            "ledger_verify" => {
+                let session_id = data
+                    .as_ref()
+                    .and_then(|d| d.get("session_id"))
+                    .and_then(|v| v.as_str())
+                    .ok_or_else(|| "missing session_id".to_string())?
+                    .to_string();
+                let session_key = format!(
+                    "agent:main:session:{}",
+                    nemesis_agent::session::SessionStore::sanitize_session_id(&session_id)
+                );
+                let path = nemesis_agent::event_ledger::ledger_path(&session_key);
+                if !path.exists() {
+                    return Err(format!(
+                        "会话 {session_id} 无事件账本（会话从未写入或账本文件缺失）"
+                    ));
+                }
+                let stats = nemesis_agent::event_ledger::ledger_verify(&path)?;
+                Ok(Some(serde_json::json!({
+                    "session_id": session_id,
+                    "events": stats.events,
+                    "appends": stats.appends,
+                    "truncates": stats.truncates,
+                    "forks": stats.forks,
+                    "rows_total": stats.rows_total,
+                })))
             }
             // L4（devtool-upgrade 阶段 7）：会话分享——创建/列出/撤销只读
             // 分享 token（存储 + 白名单投影 + 公开 GET 端点都在 crate::share）。

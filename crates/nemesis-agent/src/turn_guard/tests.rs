@@ -368,3 +368,71 @@ fn test_escalation_message_carries_stable_marker_prefix() {
     assert!(msg.contains("exec"));
     assert!(msg.contains("6"));
 }
+
+/// T1（扩展计划 D3）：带收据的成功 = 正常路径（无 nudge、收据入环、
+/// escalation 不触发）。
+#[test]
+fn verified_success_is_normal() {
+    let mut g = TurnGuard::new();
+    for i in 0..ALTERNATING_LOOP_HARD_STOP {
+        assert!(
+            g.record_tool_outcome_verified("exec", None, Some(("nmb-receipt-1-abc", i as u64)))
+                .is_none()
+        );
+    }
+    assert!(g.escalation_check().is_none());
+    assert_eq!(g.receipt_count(), 6);
+}
+
+/// T1：无收据的"成功"（谎报/绕过执行点注入）= 合成失败签名——每次
+/// 返回 nudge，累计到硬停阈值触发 escalation。
+#[test]
+fn unverified_success_synthesizes_failure_and_escalates() {
+    let mut g = TurnGuard::new();
+    for i in 1..ALTERNATING_LOOP_HARD_STOP {
+        let nudge = g.record_tool_outcome_verified("exec", None, None);
+        assert!(nudge.is_some(), "synthetic nudge at call {i}");
+        assert!(
+            g.escalation_check().is_none(),
+            "no escalation before hard-stop (call {i})"
+        );
+    }
+    // 第 6 次：escalation 触发，签名指向该工具 + 收据缺失标记。
+    assert!(g.record_tool_outcome_verified("exec", None, None).is_some());
+    let (sig, count) = g.escalating_signature().expect("escalation at hard-stop");
+    assert_eq!(count, ALTERNATING_LOOP_HARD_STOP);
+    assert!(sig.contains("exec"));
+    assert!(sig.contains(RECEIPT_MISSING_MARKER));
+}
+
+/// T1：收据环 cap 32 FIFO 驱逐——入 37 张只留最新 32 张。
+#[test]
+fn receipt_ring_cap_evicts_oldest() {
+    let mut g = TurnGuard::new();
+    for i in 0..RECEIPT_RING_CAP + 5 {
+        g.record_tool_outcome_verified(
+            "exec",
+            None,
+            Some((format!("nmb-receipt-{i}-sig").as_str(), i as u64)),
+        );
+    }
+    assert_eq!(g.receipt_count(), RECEIPT_RING_CAP);
+}
+
+/// T1：失败结果照旧入账（收据存在不影响失败语义），混合路径不串扰。
+#[test]
+fn verified_failure_uses_existing_semantics() {
+    let mut g = TurnGuard::new();
+    let err = "Error: boom";
+    assert!(
+        g.record_tool_outcome_verified("exec", Some(err), Some(("nmb-receipt-1-x", 1)))
+            .is_none()
+    );
+    assert!(
+        g.record_tool_outcome_verified("exec", Some(err), None)
+            .is_none()
+    );
+    // 失败不要求收据，也不入环。
+    assert_eq!(g.receipt_count(), 1);
+    assert!(g.escalating_signature().is_none());
+}

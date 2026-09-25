@@ -229,6 +229,10 @@ impl ModelsHandler {
                     "model_size_b": raw.get("model_size_b").cloned().unwrap_or(serde_json::Value::Null),
                     "real_name": raw.get("real_name").cloned().unwrap_or(serde_json::Value::Null),
                     "context_window": raw.get("context_window").cloned().unwrap_or(serde_json::Value::Null),
+                    // T2b（扩展计划 D4）：fallback 链声明（字符串数组，回显
+                    // only——编辑走 config.json / attr 编辑器；装配点
+                    // agent_factory::wrap_fallback_chain）。
+                    "fallback_to": raw.get("fallback_to").cloned().unwrap_or(serde_json::Value::Null),
                     "catalog_match": catalog_match,
                 })
             })
@@ -532,6 +536,12 @@ impl ModelsHandler {
         };
         match nemesis_providers::factory::create_provider(&factory_cfg) {
             Ok(provider) => {
+                // T2b（扩展计划 D4）：热切与启动同源——被切模型的
+                // `fallback_to` 链在热切路径同样装配（否则启动有链、热切
+                // 后链静默消失直至重启）。装配语义单点
+                // providers::assemble_fallback_chain，级别解析同
+                // canonical_swap_params 的 typed 口径。
+                let provider = Self::swap_with_fallback_chain(cfg, name, provider);
                 // 统一默认槽（方案A 核心）：与主 loop 同一 provider Arc，
                 // 槽消费者（default_following wrapper）经此自动跟随热切，
                 // 不再需要逐消费者手写联动。
@@ -560,6 +570,67 @@ impl ModelsHandler {
             }
         }
         Ok(())
+    }
+
+    /// T2b：热切路径的 fallback 链装配——解析被切模型条目的
+    /// `fallback_to` 别名并交由 `providers::assemble_fallback_chain`
+    /// 装配（启动路径 agent_factory::wrap_fallback_chain 同源单点）。
+    /// config 不是合法 typed 形态 / 键缺失 / 级别为空 = 原样返回 primary
+    ///（热切行为不变）。级别 workspace 传空——与本 lane 主 provider 构造
+    /// 口径一致（CLI 型 provider 在热切 lane 本就不完整，既有行为不动）。
+    fn swap_with_fallback_chain(
+        raw_cfg: &serde_json::Value,
+        name: &str,
+        primary: Arc<dyn nemesis_providers::router::LLMProvider>,
+    ) -> Arc<dyn nemesis_providers::router::LLMProvider> {
+        use nemesis_providers::fallback_provider::FallbackLevel;
+        let Ok(typed) = serde_json::from_value::<nemesis_config::Config>(raw_cfg.clone()) else {
+            return primary;
+        };
+        let aliases: Vec<String> = typed
+            .model_list
+            .iter()
+            .find(|m| m.model_name == name)
+            .and_then(|m| m.extra.get("fallback_to"))
+            .and_then(|v| v.as_array())
+            .map(|arr| {
+                arr.iter()
+                    .filter_map(|x| x.as_str().map(String::from))
+                    .collect()
+            })
+            .unwrap_or_default();
+        if aliases.is_empty() {
+            return primary;
+        }
+        let mut levels = Vec::new();
+        for alias in &aliases {
+            // 防自引用空转（装配单点另有同款闸，这里提前跳过免无谓 resolve）。
+            if alias == name {
+                continue;
+            }
+            match nemesis_config::resolve_model_config(&typed, alias) {
+                Ok(fr) => levels.push(FallbackLevel {
+                    alias: alias.clone(),
+                    model: fr.model_name.clone(),
+                    factory: nemesis_providers::factory::FactoryConfig {
+                        proxy: fr.proxy.clone(),
+                        llm_ref: format!("{}/{}", fr.provider_name, fr.model_name),
+                        api_key: fr.api_key.clone(),
+                        api_base: fr.api_base.clone(),
+                        workspace: String::new(),
+                        connect_mode: fr.connect_mode,
+                        protocol: fr.protocol.clone(),
+                        timeout_secs: fr.timeout_secs,
+                        account_id: String::new(),
+                        headers: std::collections::HashMap::new(),
+                    },
+                }),
+                Err(e) => {
+                    tracing::warn!("[Models] fallback '{alias}' resolve failed: {e} — 跳过该级");
+                }
+            }
+        }
+        nemesis_providers::fallback_provider::assemble_fallback_chain(name, primary, levels)
     }
 
     /// Resolve the runtime-swap parameters for a model entry the same way the

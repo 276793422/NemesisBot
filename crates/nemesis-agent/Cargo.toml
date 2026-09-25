@@ -55,6 +55,10 @@ notify = "8"
 git2 = { workspace = true }
 sha2 = { workspace = true }
 base64 = { workspace = true }
+# T1（扩展计划 D3）：工具收据 HMAC-SHA256——防幻觉执行证明。
+hmac = { workspace = true }
+# T1：ReceiptKey 随机生成（OsRng OS 熵源）。
+rand = { workspace = true }
 # J6（devtool-upgrade 阶段 6）：图片超限自动降采样（与 nemesis-desktop /
 # plugin-ui 同版本，cargo 自动统一编译单元）。
 image = "0.25"

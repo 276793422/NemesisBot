@@ -60,6 +60,7 @@ members = [
     "test-tools/exe-sign-tool",
     "test-tools/revoke-server",
     "test-tools/verify-loader",
+    "test-tools/arch-gate",
 ]
 
 [workspace.package]

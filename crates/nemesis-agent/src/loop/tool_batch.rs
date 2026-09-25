@@ -375,8 +375,21 @@ impl AgentLoop {
         } else {
             Some(&gate_text)
         };
+        // T1（扩展计划 D3）：真实执行收据——本方法的 result 参数是
+        // registry 真实产物（dispatch 闸后的唯一成功面入口），对每个结果
+        // 以实例密钥生成执行证明（绑定 tool+args+result+ts）入本轮收据
+        // 环。结果自称成功但无收据（绕过执行点注入）会被
+        // record_tool_outcome_verified 以合成失败签名喂 escalation。
+        let receipt_ts = crate::tool_receipts::now_ms();
+        let receipt = crate::tool_receipts::generate_receipt(
+            &self.receipt_key,
+            &tc.name,
+            &tc.arguments,
+            &original_result,
+            receipt_ts,
+        );
         let nudge6 = turn_guard
-                    .record_tool_outcome(&tc.name, error_for_guard)
+                    .record_tool_outcome_verified(&tc.name, error_for_guard, Some((receipt.as_str(), receipt_ts)))
                     .inspect(|_nudge| {
                         info!(
                             "[AgentLoop] loop guard: '{}' repeating the same failure within this turn; nudging",
