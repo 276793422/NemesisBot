@@ -2971,3 +2971,37 @@ mod r10_interactive_flows {
         assert!(port.is_u64(), "类型契约：as_u64 读侧可见，got: {}", port);
     }
 }
+
+// ---------------------------------------------------------------------------
+// cov 补测（2026-09-25）：`read_port_flex` 四臂（数字 / 数字字符串 /
+// 非数字字符串回退默认 / 缺失或他型回退默认）。此前只有 list/websocket
+// 成功路径间接命中两臂，函数本体无直测。
+// ---------------------------------------------------------------------------
+mod port_flex_cov {
+    use super::super::read_port_flex;
+
+    #[test]
+    fn numeric_value_reads_as_u64() {
+        let v = serde_json::json!(49000);
+        assert_eq!(read_port_flex(Some(&v), 8080), 49000);
+    }
+
+    #[test]
+    fn numeric_string_parses_and_trims() {
+        let v = serde_json::json!(" 49152 ");
+        assert_eq!(read_port_flex(Some(&v), 8080), 49152);
+    }
+
+    #[test]
+    fn non_numeric_string_falls_back_to_default() {
+        let v = serde_json::json!("not-a-port");
+        assert_eq!(read_port_flex(Some(&v), 8080), 8080);
+    }
+
+    #[test]
+    fn missing_or_other_type_falls_back_to_default() {
+        assert_eq!(read_port_flex(None, 49001), 49001);
+        let v = serde_json::json!(true);
+        assert_eq!(read_port_flex(Some(&v), 49001), 49001);
+    }
+}

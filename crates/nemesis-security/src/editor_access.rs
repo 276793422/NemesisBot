@@ -220,4 +220,6 @@ fn is_absolute_normalized(s: &str) -> bool {
 }
 
 #[cfg(test)]
+mod cov_tests;
+#[cfg(test)]
 mod tests;

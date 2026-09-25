@@ -329,3 +329,161 @@ async fn project_loop_critical_wiring_matrix() {
         "项目 loop 的围栏根必须是项目目录"
     );
 }
+
+// ===========================================================================
+// Coverage 追加（2026-09-24）：项目工厂装配旋钮臂——discipline 总开关 /
+// small_model 通道（可解析 + 不可解析）/ 无 LLM 降级（ghost 模型 →
+// NullProvider）/ 价目表打开失败降级。
+// ===========================================================================
+
+/// mini 档模型 config + 顶层/agents 段扩展（两层浅合并，同 tests.rs 手法）。
+fn write_mini_model_config_extra(home: &Path, extra: serde_json::Value) {
+    let mut cfg = serde_json::json!({
+        "agents": { "defaults": { "llm": "mini-model", "max_tool_iterations": 5 } },
+        "model_list": [ {
+            "model_name": "mini-model",
+            "model": "testai/mini-model",
+            "api_key": "test-key",
+            "api_base": "http://127.0.0.1:9",
+            "model_tier": "mini"
+        } ]
+    });
+    if let (Some(base), Some(over)) = (cfg.as_object_mut(), extra.as_object()) {
+        for (k, v) in over {
+            if k == "agents" {
+                if let (Some(dst), Some(src)) = (
+                    base.get_mut("agents").and_then(|a| a.as_object_mut()),
+                    v.as_object(),
+                ) {
+                    for (dk, dv) in src {
+                        if dk == "defaults" {
+                            if let (Some(ddst), Some(dsrc)) = (
+                                dst.get_mut("defaults").and_then(|d| d.as_object_mut()),
+                                dv.as_object(),
+                            ) {
+                                for (k2, v2) in dsrc {
+                                    ddst.insert(k2.clone(), v2.clone());
+                                }
+                            }
+                        } else {
+                            dst.insert(dk.clone(), dv.clone());
+                        }
+                    }
+                }
+            } else {
+                base.insert(k.clone(), v.clone());
+            }
+        }
+    }
+    std::fs::write(
+        home.join("config.json"),
+        serde_json::to_string_pretty(&cfg).unwrap(),
+    )
+    .unwrap();
+}
+
+/// 项目工厂旋钮矩阵：discipline 开 + small_model 可解析 + event_tx 在场 →
+/// 装配臂全命中，构建照常成功。
+#[tokio::test]
+async fn project_factory_wires_discipline_small_model_and_event_observers() {
+    let home = unique_home("knobs");
+    write_mini_model_config_extra(
+        &home,
+        serde_json::json!({
+            "agents": {
+                "defaults": { "spill_retention_days": 3, "restrict_to_workspace": true },
+                "discipline": { "enabled": true },
+                "small_model": "mini-model"
+            }
+        }),
+    );
+    let project_dir = home.join("proj");
+    std::fs::create_dir_all(&project_dir).unwrap();
+    let shared = shared_for(&home);
+
+    let main_loop = build_agent_loop(&shared).expect("main loop builds");
+    let session_store = main_loop
+        .session_store()
+        .cloned()
+        .expect("main loop carries session store");
+
+    let project_loop = build_project_agent_loop(
+        &shared,
+        &entry_for("p_knobs01", &project_dir),
+        session_store,
+    )
+    .expect("project loop builds with knobs on");
+    assert!(project_loop.tool_count() > 0);
+    assert!(matches!(
+        project_loop.tier(),
+        nemesis_types::capability::ModelTier::Mini
+    ));
+}
+
+/// 项目工厂无 LLM 降级：llm 指向不存在条目 → resolve 失败 → NullProvider
+/// 装配（Ok 不 Err，双击直启语义）。
+#[tokio::test]
+async fn project_factory_degrades_to_null_provider_on_unresolvable_model() {
+    let home = unique_home("ghost");
+    std::fs::write(
+        home.join("config.json"),
+        serde_json::json!({
+            "agents": { "defaults": { "llm": "ghost-model" } },
+            "model_list": []
+        })
+        .to_string(),
+    )
+    .unwrap();
+    let project_dir = home.join("proj");
+    std::fs::create_dir_all(&project_dir).unwrap();
+    let shared = shared_for(&home);
+
+    let main_loop = build_agent_loop(&shared).expect("main loop builds (degraded too)");
+    let session_store = main_loop.session_store().cloned().unwrap();
+    let project_loop = build_project_agent_loop(
+        &shared,
+        &entry_for("p_ghost01", &project_dir),
+        session_store,
+    )
+    .expect("unresolvable model must degrade to NullProvider assembly, not fail");
+    assert!(project_loop.tool_count() > 0);
+}
+
+/// small_model 指向不存在条目 → warn + 跳过（不阻断构建）。
+#[tokio::test]
+async fn project_factory_small_model_unresolvable_degrades_quietly() {
+    let home = unique_home("smallghost");
+    write_mini_model_config_extra(
+        &home,
+        serde_json::json!({ "agents": { "small_model": "ghost-small" } }),
+    );
+    let project_dir = home.join("proj");
+    std::fs::create_dir_all(&project_dir).unwrap();
+    let shared = shared_for(&home);
+
+    let main_loop = build_agent_loop(&shared).expect("main loop builds");
+    let session_store = main_loop.session_store().cloned().unwrap();
+    let project_loop =
+        build_project_agent_loop(&shared, &entry_for("p_sg0001", &project_dir), session_store)
+            .expect("unresolvable small model must not block project build");
+    assert!(project_loop.tool_count() > 0);
+}
+
+/// 价目表打开失败（workspace/data 是文件）→ warn 降级，构建照常。
+#[tokio::test]
+async fn project_factory_pricing_store_open_failure_degrades() {
+    let home = unique_home("pricing");
+    write_mini_model_config(&home);
+    std::fs::create_dir_all(home.join("workspace")).unwrap();
+    std::fs::write(home.join("workspace").join("data"), b"not a dir").unwrap();
+    let project_dir = home.join("proj");
+    std::fs::create_dir_all(&project_dir).unwrap();
+    let shared = shared_for(&home);
+
+    let main_loop = build_agent_loop(&shared).expect("main loop builds");
+    let session_store = main_loop.session_store().cloned().unwrap();
+    let project_loop =
+        build_project_agent_loop(&shared, &entry_for("p_price1", &project_dir), session_store)
+            .expect("pricing store open failure must degrade, not abort build");
+    assert!(project_loop.tool_count() > 0);
+}

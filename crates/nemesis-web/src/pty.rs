@@ -502,3 +502,10 @@ async fn handle_pty_socket(
 
 #[cfg(all(test, feature = "terminal"))]
 mod tests;
+
+// AGT 覆盖率批次（2026-09-25）：AuditWriter 三臂（workspace 往返 / 审计
+// 目录创建失败 / 无 workspace）、连接时刻已处急停的 503 升级闸、会话内
+// control 帧（resize / ping→pong / 未知忽略 / WS Pong）与 shell 退出收尾。
+// 结构性豁免见 agt_tests 文件头注。
+#[cfg(all(test, feature = "terminal"))]
+mod agt_tests;

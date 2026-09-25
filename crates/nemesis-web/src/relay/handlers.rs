@@ -1361,3 +1361,9 @@ setInterval(refresh, 5000);
         dashboard_entry = dashboard_entry,
     )
 }
+
+// AGT 覆盖率批次（2026-09-24）：直调错误梯子（门关/过大/坏 JSON/坏哈希/
+// 设备不在表）+ in-process 设备的隧道 EOF 臂 + /bridge 上行帧梯子与重连
+// 顶替（真 socket）。超时臂/竞态臂/防御 encode 失败臂豁免（见报告）。
+#[cfg(test)]
+mod agt_tests;

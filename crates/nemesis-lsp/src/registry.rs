@@ -130,4 +130,6 @@ pub fn probe_available() -> Vec<Lang> {
 }
 
 #[cfg(test)]
+mod cov_tests;
+#[cfg(test)]
 mod tests;

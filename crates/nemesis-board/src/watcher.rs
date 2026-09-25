@@ -38,4 +38,6 @@ pub fn data_version(conn: &Connection) -> Result<i64, String> {
 }
 
 #[cfg(test)]
+mod cov_tests;
+#[cfg(test)]
 mod tests;

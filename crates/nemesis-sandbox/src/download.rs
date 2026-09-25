@@ -106,3 +106,10 @@ pub async fn download_release(
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+mod cov_tests;
+
+// Wave6B 覆盖率收尾：见 cov_wave6b_tests.rs 头注释。
+#[cfg(test)]
+mod cov_wave6b_tests;

@@ -1684,3 +1684,8 @@ mod tests;
 // S9 (quality-hardening goal 冲刺 S9): 独立测试文件挂载（声明式，无内联测试）。
 #[cfg(test)]
 mod s9_tests;
+
+// 覆盖率补充批次：自愈重建 / legacy 迁移双 store / cleanup 失败面 /
+// delete·clear 删除失败 warn / capture sink 记账 / force_compress 两形态。
+#[cfg(test)]
+mod cov_tests;

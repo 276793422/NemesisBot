@@ -640,4 +640,10 @@ pub fn parse_publish_diagnostics(params: &Value) -> Option<(String, Vec<Diagnost
 }
 
 #[cfg(test)]
+mod cov_tests;
+#[cfg(test)]
 mod tests;
+
+// Wave6B 覆盖率收尾：见 cov_wave6b_tests.rs 头注释。
+#[cfg(test)]
+mod cov_wave6b_tests;

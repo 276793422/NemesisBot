@@ -279,4 +279,6 @@ pub fn append_timeline(
 }
 
 #[cfg(test)]
+mod cov_tests;
+#[cfg(test)]
 mod tests;

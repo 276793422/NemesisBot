@@ -658,3 +658,6 @@ pub(crate) async fn init_services(
         internal_cmd_rx,
     })
 }
+
+#[cfg(test)]
+mod cov_tests;

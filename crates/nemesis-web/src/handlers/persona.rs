@@ -1324,3 +1324,8 @@ pub(crate) mod tests;
 // arms.
 #[cfg(test)]
 mod s10b_tests;
+
+// AGT 覆盖率批次（2026-09-25）：Default impl；其余零区为网络绑定
+// （GITHUB_API 硬编码 https 无注入缝）或防御臂，定性见 agt_tests 文件头注。
+#[cfg(test)]
+mod agt_tests;

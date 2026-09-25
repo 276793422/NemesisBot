@@ -562,3 +562,10 @@ fn row_to_log(row: &rusqlite::Row<'_>) -> rusqlite::Result<RequestLog> {
         session_key: row.get(20)?,
     })
 }
+
+#[cfg(test)]
+mod tests;
+
+// Wave6B 覆盖率收尾：见 cov_wave6b_tests.rs 头注释。
+#[cfg(test)]
+mod cov_wave6b_tests;

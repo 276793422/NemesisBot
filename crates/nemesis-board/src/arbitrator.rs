@@ -240,4 +240,6 @@ fn push_target_or_skip(plan: &mut WakePlan, node: &NodeCandidate, sender_id: &st
 }
 
 #[cfg(test)]
+mod cov_tests;
+#[cfg(test)]
 mod tests;

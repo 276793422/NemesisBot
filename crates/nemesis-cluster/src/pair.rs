@@ -365,3 +365,8 @@ async fn probe_get_info(addr: &str, token: Option<&str>) -> Result<serde_json::V
 
 #[cfg(test)]
 mod tests;
+
+// 覆盖率补充批次：假对端网络路径（成功探测双形态 / 密文往返 / 身份缺失 /
+// 远端错误 / 垃圾响应 / 静默超时）+ Display 五形态 + 断言失败面。
+#[cfg(test)]
+mod cov_tests;

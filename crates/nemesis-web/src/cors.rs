@@ -342,3 +342,9 @@ mod tests;
 // CDN Url::parse failure.
 #[cfg(test)]
 mod s10b_tests;
+
+// AGT 覆盖率批次（2026-09-25）：CORSManager::new 的 tracing::info! 字段
+// 求值（无 subscriber 时宏短路）。豁免（收括号 lcov 伪零）见 agt_tests
+// 头注。
+#[cfg(test)]
+mod agt_tests;

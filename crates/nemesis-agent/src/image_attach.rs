@@ -724,3 +724,12 @@ pub fn hydrate_image_refs(refs: &[String]) -> (Vec<LlmImage>, Vec<String>) {
 
 #[cfg(test)]
 mod tests;
+
+// 覆盖率补充测试（URL 预取失败面 / 钉死 client / 降采样接入）。
+#[cfg(test)]
+mod cov_tests;
+
+// Wave6B 覆盖率收尾批次（SSRF Guard 三态接入 / pick_url_ext 决策表 /
+// 降采样错误注记 / media 闸拒绝与不可读）。
+#[cfg(test)]
+mod cov2_tests;

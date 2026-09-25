@@ -522,3 +522,6 @@ mod tests;
 // S9 (quality-hardening goal 冲刺 S9): 独立测试文件挂载（声明式，无内联测试）。
 #[cfg(test)]
 mod s9_tests;
+// 覆盖率补充批次：stdio 成功回路 + stderr drain / userland 标记 / 超时 / 无响应退出。
+#[cfg(test)]
+mod cov_tests;

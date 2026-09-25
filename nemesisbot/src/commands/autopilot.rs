@@ -280,3 +280,6 @@ pub fn run(action: AutopilotAction, local: bool) -> Result<()> {
     }
     Ok(())
 }
+
+#[cfg(test)]
+mod autopilot_tests;

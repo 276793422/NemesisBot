@@ -179,3 +179,11 @@ fn serde_kind_tag_and_chat_id_accessor() {
     assert_eq!(done.kind(), "TodoUpdated");
     assert_eq!(done.chat_id(), "web:s2");
 }
+
+// wave5：ToolHook::name 恒等（57-59）。
+#[tokio::test]
+async fn hook_name_is_tool_event() {
+    let (tx, _rx) = tokio::sync::broadcast::channel(4);
+    let hook = ToolEventHook::new(tx);
+    assert_eq!(ToolHook::name(&hook), "tool-event");
+}

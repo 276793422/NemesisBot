@@ -1896,3 +1896,141 @@ async fn tasks_detail_reports_running_status() {
         .unwrap();
     assert_eq!(out["status"], "running");
 }
+
+// -----------------------------------------------------------------------
+// Wave-5 覆盖率补 batch
+// -----------------------------------------------------------------------
+
+/// nodes.refresh：get_info 自报含 tags → 解析（814-821）并经 merge 落注册表
+/// （A1：看板派发匹配器的标签数据源）。
+#[tokio::test]
+async fn nodes_refresh_merges_self_reported_tags() {
+    let handler = cluster::ClusterHandler::new();
+    let dir = tempfile::tempdir().unwrap();
+    let cluster = test_cluster(&dir);
+    cluster.register_node(node(
+        "ph",
+        "placeholder",
+        NodeRole::Worker,
+        false,
+        "10.3.4.5:9000",
+    ));
+    cluster.set_call_with_context_fn(Box::new(|_peer, action, _payload| {
+        assert_eq!(action, "get_info");
+        Ok(serde_json::to_vec(&serde_json::json!({
+            "node_id": "tagged-1",
+            "name": "Tagged",
+            "addresses": ["10.3.4.5"],
+            "rpc_port": 9000,
+            "role": "worker",
+            "category": "edge",
+            "capabilities": ["tools"],
+            "tags": ["gpu", "night"],
+            "node_type": "agent",
+        }))
+        .unwrap())
+    }));
+    let ctx = ctx_ws(&dir, Some(cluster.clone()), None, None);
+
+    let result = handler
+        .handle_cmd(
+            "nodes.refresh",
+            Some(serde_json::json!({"node_id":"ph"})),
+            &ctx,
+        )
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(result["refreshed"], true);
+    assert_eq!(result["canonical_id"], "tagged-1");
+
+    // 自报 tags 原样进注册表条目
+    let real = cluster.get_peer("tagged-1").unwrap();
+    assert_eq!(real.tags, vec!["gpu".to_string(), "night".to_string()]);
+}
+
+/// tasks.submit peer_chat：注入无 resolver 的 RpcClient 后，后台 spawn 真正
+/// 被调度（sleep 让渡）→ call_with_timeout 对未知 peer 毫秒级 Err（"peer not
+/// found"）→ 只 warn 不 panic、任务表不受影响。
+#[tokio::test]
+async fn tasks_submit_peer_chat_spawn_failure_is_swallowed() {
+    let handler = cluster::ClusterHandler::new();
+    let dir = tempfile::tempdir().unwrap();
+    let cluster = test_cluster(&dir);
+    cluster.set_rpc_client(Arc::new(RpcClient::new()));
+    let ctx = ctx_ws(&dir, Some(cluster.clone()), None, None);
+
+    let result = handler
+        .handle_cmd(
+            "tasks.submit",
+            Some(serde_json::json!({"content": "hi", "target_node_id": "ghost-node"})),
+            &ctx,
+        )
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(result["submitted"], true);
+
+    // 让后台 spawn 得到调度机会（失败路径毫秒级完成，200ms 兜底）
+    tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+    // 本地任务记录照常建立，RPC 失败只落日志
+    assert_eq!(cluster.list_tasks().len(), 1);
+}
+
+/// node.update_identity：无 workspace ctx → require_workspace Err → 整个
+/// peers.toml 持久化块被跳过（运行时身份仍更新并返回 current_*）。
+#[tokio::test]
+async fn node_update_identity_without_workspace_skips_persist() {
+    let handler = cluster::ClusterHandler::new();
+    let dir = tempfile::tempdir().unwrap();
+    let cluster = test_cluster(&dir);
+    let ctx = make_deep_ctx(None, Some(cluster.clone()), None, None);
+
+    let result = handler
+        .handle_cmd(
+            "node.update_identity",
+            Some(serde_json::json!({"name": "WsLess", "tags": ["solo"]})),
+            &ctx,
+        )
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(result["name"], "WsLess");
+    assert_eq!(result["current_name"], "WsLess");
+    assert_eq!(result["current_tags"], serde_json::json!(["solo"]));
+}
+
+/// snapshots.list：rpc_cache 目录不存在（从无续行快照）→ 直接空列表，不是错误。
+#[tokio::test]
+async fn snapshots_list_without_cache_dir_returns_empty() {
+    let handler = cluster::ClusterHandler::new();
+    let dir = tempfile::tempdir().unwrap();
+    let ctx = ctx_ws(&dir, Some(test_cluster(&dir)), None, None);
+
+    let result = handler
+        .handle_cmd("snapshots.list", None, &ctx)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(result["snapshots"].as_array().unwrap().len(), 0);
+}
+
+/// config.get：Cluster 运行时在场 → 身份字段取自运行时（而非 peers.toml
+/// 静态回退），home 无 config.json 时 master_enabled=false。
+#[tokio::test]
+async fn config_get_with_runtime_cluster_prefers_identity() {
+    let handler = cluster::ClusterHandler::new();
+    let dir = tempfile::tempdir().unwrap();
+    let cluster = test_cluster(&dir);
+    cluster.set_node_name("RuntimeName");
+    let ctx = ctx_ws(&dir, Some(cluster.clone()), None, None);
+
+    let result = handler
+        .handle_cmd("config.get", None, &ctx)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(result["node_id"], serde_json::json!(cluster.node_id()));
+    assert_eq!(result["name"], "RuntimeName");
+    assert_eq!(result["master_enabled"], false);
+}

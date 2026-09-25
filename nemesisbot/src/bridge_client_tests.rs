@@ -302,7 +302,11 @@ async fn spawn_echo_server() -> u16 {
 }
 
 #[tokio::test]
+#[allow(clippy::await_holding_lock)] // BRIDGE_IT_SER 序列化闸有意跨 await 持有
 async fn test_conn_pump_roundtrip() {
+    let _ser = BRIDGE_IT_SER.lock();
+    drain_kick_permit().await;
+
     let web_port = spawn_echo_server().await;
     let (relay_port, relay_accept) = spawn_mock_relay().await;
     let client = spawn_client(test_params("tok1", web_port), relay_port);
@@ -488,7 +492,11 @@ async fn spawn_keepalive_server() -> u16 {
 }
 
 #[tokio::test]
+#[allow(clippy::await_holding_lock)] // BRIDGE_IT_SER 序列化闸有意跨 await 持有
 async fn test_fin_true_does_not_shutdown_write_half() {
+    let _ser = BRIDGE_IT_SER.lock();
+    drain_kick_permit().await;
+
     // 2026-09-19 修复回归：fin=true 请求收口**不得**半关闭写半——真实
     // hyper 服务端在写半 EOF 时于处理请求前断连（零字节响应）。keep-alive
     // 形态：本机回响应后不关连接 → 客户端不得误发 EOF（空 fin）帧。
@@ -602,7 +610,11 @@ async fn spawn_mock_relay_on_same_port(
 }
 
 #[tokio::test]
+#[allow(clippy::await_holding_lock)] // BRIDGE_IT_SER 序列化闸有意跨 await 持有
 async fn test_dial_failure_sends_conn_close() {
+    let _ser = BRIDGE_IT_SER.lock();
+    drain_kick_permit().await;
+
     // 拿一个端口立刻释放——确保无人监听
     let l = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let dead_port = l.local_addr().unwrap().port();
@@ -647,7 +659,11 @@ async fn test_dial_failure_sends_conn_close() {
 }
 
 #[tokio::test]
+#[allow(clippy::await_holding_lock)] // BRIDGE_IT_SER 序列化闸有意跨 await 持有
 async fn test_access_check_roundtrip() {
+    let _ser = BRIDGE_IT_SER.lock();
+    drain_kick_permit().await;
+
     use sha2::{Digest, Sha256};
     let l = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let dead_port = l.local_addr().unwrap().port();
@@ -717,7 +733,11 @@ async fn test_access_check_roundtrip() {
 }
 
 #[tokio::test]
+#[allow(clippy::await_holding_lock)] // BRIDGE_IT_SER 序列化闸有意跨 await 持有
 async fn test_welcome_rejected_then_retry() {
+    let _ser = BRIDGE_IT_SER.lock();
+    drain_kick_permit().await;
+
     let l = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let dead_port = l.local_addr().unwrap().port();
     drop(l);
@@ -752,7 +772,11 @@ async fn test_welcome_rejected_then_retry() {
 }
 
 #[tokio::test]
+#[allow(clippy::await_holding_lock)] // BRIDGE_IT_SER 序列化闸有意跨 await 持有
 async fn test_dead_server_detection_and_reconnect() {
+    let _ser = BRIDGE_IT_SER.lock();
+    drain_kick_permit().await;
+
     let l = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let dead_port = l.local_addr().unwrap().port();
     drop(l);
@@ -789,7 +813,11 @@ async fn test_dead_server_detection_and_reconnect() {
 }
 
 #[tokio::test]
+#[allow(clippy::await_holding_lock)] // BRIDGE_IT_SER 序列化闸有意跨 await 持有
 async fn test_heartbeat_pong_keeps_session_alive() {
+    let _ser = BRIDGE_IT_SER.lock();
+    drain_kick_permit().await;
+
     let l = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let dead_port = l.local_addr().unwrap().port();
     drop(l);
@@ -874,4 +902,757 @@ async fn test_minimal_ws_exchange() {
         .expect("client 超时")
         .expect("client panic");
     assert_eq!(got, Message::Text("pong".into()));
+}
+
+// ===========================================================================
+// wave4 追加（coverage）：bridge_client.rs 残余臂。
+// 既有用例已钉纯函数 + happy path（hello/welcome/conn 泵/access_check/
+// 假死/退避）；本批补：hostname 回退链、cluster_identity 进 hello、
+// welcome 超时、握手期畸形首帧（Binary/先行关闭/非 welcome 文本）、
+// 下行噪音帧免疫（坏 JSON/Binary/反向帧/未装配 cluster_rpc+member_sync）、
+// 下行坏 base64 / 未登记 conn / 服务端 ConnClose、下行背压实测收口、
+// kick_reconnect 两臂（会话内踢断 + 退避等待跳过）、连失败退避重试、
+// bridge_rpc 装配形态（cluster feature：attach/downstream/member_sync/
+// detach 全链 + 非空 hub_node_id welcome 臂）。
+// 全部走 127.0.0.1:0 临时端口；web_port 用死端口（ dial 失败即诚实回执）。
+// ===========================================================================
+
+/// 拿一个已释放的端口（dial 必失败 / relay 占位用）。
+fn dead_web_port() -> u16 {
+    let l = std::net::TcpListener::bind("127.0.0.1:0").expect("bind dead port");
+    let p = l.local_addr().unwrap().port();
+    drop(l);
+    p
+}
+
+/// 集成用例全域串行（reconnect_notify 是**进程级** Notify：kick permit 会
+/// 命中任何在跑的桥客户端——并行下其他用例的客户端会被误踢断连。全部
+/// spawn 客户端的用例持同一把锁 + 起手清残留 permit，互不干扰）。
+static BRIDGE_IT_SER: parking_lot::Mutex<()> = parking_lot::Mutex::new(());
+
+/// 吃掉可能残留的 kick permit（notify_one 无 waiter 时存一个 permit；
+/// 下一个客户端的主循环 select 会立即消费 → 误踢。测试起手排干）。
+async fn drain_kick_permit() {
+    let _ = tokio::time::timeout(
+        Duration::from_millis(2),
+        nemesis_web::relay::reconnect_notify().notified(),
+    )
+    .await;
+}
+
+/// hostname 链回退臂：摘除 COMPUTERNAME → 落 HOSTNAME（都缺 = unknown）。
+/// GLOBAL_STATE_LOCK 串行化环境变量操作（与 EnvHomeGuard 同纪律）。
+#[test]
+fn test_hostname_fallback_chain() {
+    let _guard = crate::GLOBAL_STATE_LOCK
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
+    let orig = std::env::var_os("COMPUTERNAME");
+    let expected = std::env::var("HOSTNAME").unwrap_or_else(|_| "unknown".to_string());
+    unsafe {
+        std::env::remove_var("COMPUTERNAME");
+    }
+    let got = crate::bridge_client::hostname();
+    // 先恢复再断言（断言失败也不留污染）。
+    unsafe {
+        match orig {
+            Some(v) => std::env::set_var("COMPUTERNAME", v),
+            None => std::env::remove_var("COMPUTERNAME"),
+        }
+    }
+    assert_eq!(
+        got, expected,
+        "COMPUTERNAME 缺席时必须落 HOSTNAME/unknown 回退链"
+    );
+}
+
+/// 二期身份快照：cluster_identity Some → hello 帧携带全部集群字段
+/// （服务端据此注册进集群 registry 同权组网）。
+#[tokio::test]
+#[allow(clippy::await_holding_lock)] // BRIDGE_IT_SER 序列化闸有意跨 await 持有
+async fn test_cluster_identity_carried_in_hello() {
+    let _ser = BRIDGE_IT_SER.lock();
+    drain_kick_permit().await;
+
+    let (relay_port, relay_accept) = spawn_mock_relay().await;
+    let mut params = test_params("tok-ci", dead_web_port());
+    params.cluster_identity = Some(nemesis_web::relay::BridgeClusterIdentity {
+        node_id: "node-cov-1".to_string(),
+        name: "CovNode".to_string(),
+        role: "worker".to_string(),
+        category: "development".to_string(),
+        tags: vec!["t1".to_string()],
+        capabilities: vec!["exec".to_string()],
+        node_type: "agent".to_string(),
+        rpc_port: 12345,
+        addresses: vec!["192.168.1.10".to_string()],
+    });
+    let client = spawn_client(params, relay_port);
+    let mut ws = relay_ws_of(relay_accept).await;
+    match recv_frame(&mut ws).await {
+        BridgeFrame::BridgeHello {
+            cluster_node_id,
+            cluster_name,
+            role,
+            category,
+            tags,
+            rpc_port,
+            addresses,
+            ..
+        } => {
+            assert_eq!(cluster_node_id.as_deref(), Some("node-cov-1"));
+            assert_eq!(cluster_name.as_deref(), Some("CovNode"));
+            assert_eq!(role.as_deref(), Some("worker"));
+            assert_eq!(category.as_deref(), Some("development"));
+            assert_eq!(tags, Some(vec!["t1".to_string()]));
+            assert_eq!(rpc_port, Some(12345));
+            assert_eq!(addresses, Some(vec!["192.168.1.10".to_string()]));
+        }
+        other => panic!("首帧应为 BridgeHello，实际 {other:?}"),
+    }
+    client.abort();
+}
+
+/// welcome 超时：hello 发出后服务端沉默 → welcome_timeout 内无回执 →
+/// 诚实断开（welcomed=false）→ 退避重连重发 hello。
+#[tokio::test]
+#[allow(clippy::await_holding_lock)] // BRIDGE_IT_SER 序列化闸有意跨 await 持有
+async fn test_welcome_timeout_reconnects() {
+    let _ser = BRIDGE_IT_SER.lock();
+    drain_kick_permit().await;
+
+    let l = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let relay_port = l.local_addr().unwrap().port();
+    drop(l);
+    let timing = LoopTiming {
+        welcome_timeout: Duration::from_millis(150),
+        ..fast_timing()
+    };
+    let client = spawn_client_with(test_params("tok-wt", dead_web_port()), relay_port, timing);
+
+    // 第一次连接：读 hello 后装聋（不回 welcome）。
+    let mut ws = relay_ws_of(spawn_mock_relay_on_same_port(relay_port).await).await;
+    let _ = recv_frame(&mut ws).await;
+    drop(ws); // 顺手关——客户端此刻多半已超时
+
+    // 超时断开后必须重连并重发 hello。
+    let mut ws2 = relay_ws_of(spawn_mock_relay_on_same_port(relay_port).await).await;
+    let hello2 = recv_frame(&mut ws2).await;
+    assert!(
+        matches!(hello2, BridgeFrame::BridgeHello { .. }),
+        "welcome 超时后必须重连重发 hello，实际 {hello2:?}"
+    );
+    client.abort();
+}
+
+/// 握手期畸形首帧三连：Binary（非 Text）/ 先行关闭（流尽）/ 合法 JSON 但
+/// 非 welcome 帧——各自诚实断开并重连，循环健在。
+#[tokio::test]
+#[allow(clippy::await_holding_lock)] // BRIDGE_IT_SER 序列化闸有意跨 await 持有
+async fn test_handshake_malformed_first_frames_reconnect() {
+    let _ser = BRIDGE_IT_SER.lock();
+    drain_kick_permit().await;
+
+    let l = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let relay_port = l.local_addr().unwrap().port();
+    drop(l);
+    let client = spawn_client(test_params("tok-mf", dead_web_port()), relay_port);
+
+    // A：首帧 Binary → 协议错乱断开
+    let mut ws = relay_ws_of(spawn_mock_relay_on_same_port(relay_port).await).await;
+    let _ = recv_frame(&mut ws).await;
+    ws.send(Message::Binary(vec![0u8, 1].into())).await.unwrap();
+    drop(ws);
+
+    // B：welcome 未到先关流（ws_read None）
+    let mut ws = relay_ws_of(spawn_mock_relay_on_same_port(relay_port).await).await;
+    let _ = recv_frame(&mut ws).await;
+    let _ = ws.close(None).await;
+    drop(ws);
+
+    // C：首帧是合法桥帧但不是 welcome（Heartbeat）
+    let mut ws = relay_ws_of(spawn_mock_relay_on_same_port(relay_port).await).await;
+    let _ = recv_frame(&mut ws).await;
+    send_frame(&mut ws, BridgeFrame::Heartbeat).await;
+    drop(ws);
+
+    // D：三连错后循环仍健在——第四次 hello 到来即证明。
+    let mut ws = relay_ws_of(spawn_mock_relay_on_same_port(relay_port).await).await;
+    let hello = recv_frame(&mut ws).await;
+    assert!(
+        matches!(hello, BridgeFrame::BridgeHello { .. }),
+        "畸形首帧三连后必须仍重连，实际 {hello:?}"
+    );
+    client.abort();
+}
+
+/// 下行噪音免疫：坏 JSON 文本 / Binary / 反向帧（设备→服务端方向的
+/// AccessResult 被服务端发来）/ 未装配枢纽的 cluster_rpc / member_sync
+/// ——全部忽略不崩，会话照常心跳 + access_check 照常应答。
+#[tokio::test]
+#[allow(clippy::await_holding_lock)] // BRIDGE_IT_SER 序列化闸有意跨 await 持有
+async fn test_downstream_noise_frames_ignored_and_session_survives() {
+    let _ser = BRIDGE_IT_SER.lock();
+    drain_kick_permit().await;
+
+    use sha2::{Digest, Sha256};
+    let (relay_port, relay_accept) = spawn_mock_relay().await;
+    let client = spawn_client(test_params("tok-nz", dead_web_port()), relay_port);
+    let mut ws = relay_ws_of(relay_accept).await;
+
+    let _ = recv_frame(&mut ws).await; // hello
+    send_frame(
+        &mut ws,
+        BridgeFrame::BridgeWelcome {
+            ok: true,
+            reason: String::new(),
+            hub_node_id: String::new(),
+        },
+    )
+    .await;
+    let _ = recv_frame_matching(&mut ws, |f| matches!(f, BridgeFrame::Heartbeat)).await;
+
+    // 五种噪音各一发。
+    ws.send(Message::Text("!!not-json!!".into())).await.unwrap();
+    ws.send(Message::Binary(vec![1, 2, 3].into()))
+        .await
+        .unwrap();
+    send_frame(
+        &mut ws,
+        BridgeFrame::AccessResult {
+            request_id: "wrong-direction".to_string(),
+            ok: true,
+        },
+    )
+    .await;
+    send_frame(
+        &mut ws,
+        BridgeFrame::ClusterRpc {
+            payload: serde_json::json!({}),
+        },
+    )
+    .await;
+    send_frame(
+        &mut ws,
+        BridgeFrame::MemberSync {
+            payload: serde_json::json!({}),
+        },
+    )
+    .await;
+
+    // 会话必须仍健在：后续心跳照常。
+    let _ = recv_frame_matching(&mut ws, |f| matches!(f, BridgeFrame::Heartbeat)).await;
+    // access_check 照常应答（功能未受损）。
+    let good = format!("{:x}", Sha256::digest(b"secret"));
+    send_frame(
+        &mut ws,
+        BridgeFrame::AccessCheck {
+            request_id: "nz".to_string(),
+            node_id: "bridge-testnode".to_string(),
+            hash_hex: good,
+        },
+    )
+    .await;
+    match recv_frame_matching(&mut ws, |f| matches!(f, BridgeFrame::AccessResult { .. })).await {
+        BridgeFrame::AccessResult { request_id, ok } => {
+            assert_eq!(request_id, "nz");
+            assert!(ok);
+        }
+        _ => unreachable!(),
+    }
+    client.abort();
+}
+
+/// 下行 ConnData 三防御臂：坏 base64（收口 + 回执）/ 合法 base64 但 conn
+/// 未登记（停发通知）/ 服务端主动 ConnClose（静默清理）——会话不受损。
+#[tokio::test]
+#[allow(clippy::await_holding_lock)] // BRIDGE_IT_SER 序列化闸有意跨 await 持有
+async fn test_conn_data_bad_base64_unknown_conn_and_server_close() {
+    let _ser = BRIDGE_IT_SER.lock();
+    drain_kick_permit().await;
+
+    use base64::Engine as _;
+    let (relay_port, relay_accept) = spawn_mock_relay().await;
+    let client = spawn_client(test_params("tok-b64", dead_web_port()), relay_port);
+    let mut ws = relay_ws_of(relay_accept).await;
+
+    let _ = recv_frame(&mut ws).await; // hello
+    send_frame(
+        &mut ws,
+        BridgeFrame::BridgeWelcome {
+            ok: true,
+            reason: String::new(),
+            hub_node_id: String::new(),
+        },
+    )
+    .await;
+    let _ = recv_frame_matching(&mut ws, |f| matches!(f, BridgeFrame::Heartbeat)).await;
+
+    // ① 坏 base64 → ConnClose("bad base64")
+    send_frame(
+        &mut ws,
+        BridgeFrame::ConnData {
+            conn_id: 11,
+            seq: 0,
+            data_b64: "%%%not-base64%%%".to_string(),
+            fin: false,
+        },
+    )
+    .await;
+    match recv_frame_matching(&mut ws, |f| matches!(f, BridgeFrame::ConnClose { .. })).await {
+        BridgeFrame::ConnClose { conn_id, reason } => {
+            assert_eq!(conn_id, 11);
+            assert!(reason.contains("bad base64"), "reason={reason}");
+        }
+        _ => unreachable!(),
+    }
+
+    // ② 合法 base64 但 conn 未登记 → ConnClose("conn not found")
+    send_frame(
+        &mut ws,
+        BridgeFrame::ConnData {
+            conn_id: 11,
+            seq: 1,
+            data_b64: base64::engine::general_purpose::STANDARD.encode(b"x"),
+            fin: false,
+        },
+    )
+    .await;
+    match recv_frame_matching(&mut ws, |f| matches!(f, BridgeFrame::ConnClose { .. })).await {
+        BridgeFrame::ConnClose { conn_id, reason } => {
+            assert_eq!(conn_id, 11);
+            assert!(reason.contains("conn not found"), "reason={reason}");
+        }
+        _ => unreachable!(),
+    }
+
+    // ③ 服务端主动 ConnClose → 静默清理（无回帧、不崩）。
+    send_frame(
+        &mut ws,
+        BridgeFrame::ConnClose {
+            conn_id: 11,
+            reason: "browser gone".to_string(),
+        },
+    )
+    .await;
+
+    // 存活证明：心跳照常。
+    let _ = recv_frame_matching(&mut ws, |f| matches!(f, BridgeFrame::Heartbeat)).await;
+    client.abort();
+}
+
+/// 黑洞本机服务：accept 后只持不读（写泵 write_all 卡死 → 下行写队列
+/// 16 深度灌满 → try_send 失败 → 背压实测收口）。
+async fn spawn_blackhole_server() -> u16 {
+    let listener = TcpListener::bind("127.0.0.1:0").await.expect("bind");
+    let port = listener.local_addr().unwrap().port();
+    tokio::spawn(async move {
+        loop {
+            let Ok((sock, _)) = listener.accept().await else {
+                break;
+            };
+            // 持有 socket 不读不写（30s 后随任务回收）。
+            tokio::spawn(async move {
+                tokio::time::sleep(Duration::from_secs(30)).await;
+                drop(sock);
+            });
+        }
+    });
+    port
+}
+
+/// 下行背压：32 帧 × 64KB 灌黑洞 conn（内核缓冲 + 16 深度队列必然溢出）
+/// → 诚实 ConnClose("backpressure") 收口整条 conn。
+#[tokio::test]
+#[allow(clippy::await_holding_lock)] // BRIDGE_IT_SER 序列化闸有意跨 await 持有
+async fn test_downstream_backpressure_closes_conn() {
+    let _ser = BRIDGE_IT_SER.lock();
+    drain_kick_permit().await;
+
+    use base64::Engine as _;
+    let web_port = spawn_blackhole_server().await;
+    let (relay_port, relay_accept) = spawn_mock_relay().await;
+    let client = spawn_client(test_params("tok-bp", web_port), relay_port);
+    let mut ws = relay_ws_of(relay_accept).await;
+
+    let _ = recv_frame(&mut ws).await; // hello
+    send_frame(
+        &mut ws,
+        BridgeFrame::BridgeWelcome {
+            ok: true,
+            reason: String::new(),
+            hub_node_id: String::new(),
+        },
+    )
+    .await;
+    let _ = recv_frame_matching(&mut ws, |f| matches!(f, BridgeFrame::Heartbeat)).await;
+
+    send_frame(
+        &mut ws,
+        BridgeFrame::ConnOpen {
+            conn_id: 21,
+            target: "local".to_string(),
+        },
+    )
+    .await;
+    let chunk = base64::engine::general_purpose::STANDARD.encode(vec![0u8; 64 * 1024]);
+    for i in 0..32 {
+        send_frame(
+            &mut ws,
+            BridgeFrame::ConnData {
+                conn_id: 21,
+                seq: i,
+                data_b64: chunk.clone(),
+                fin: false,
+            },
+        )
+        .await;
+    }
+    match recv_frame_matching(&mut ws, |f| {
+        matches!(f, BridgeFrame::ConnClose { conn_id: 21, .. })
+    })
+    .await
+    {
+        BridgeFrame::ConnClose { reason, .. } => {
+            assert!(reason.contains("backpressure"), "reason={reason}");
+        }
+        _ => unreachable!(),
+    }
+    client.abort();
+}
+
+/// 手动重连（会话内）：主循环里被 kick → Kicked 臂 → 立即重连（跳过退避）。
+#[tokio::test]
+#[allow(clippy::await_holding_lock)] // BRIDGE_IT_SER 序列化闸有意跨 await 持有
+async fn test_kick_reconnect_during_session() {
+    let _ser = BRIDGE_IT_SER.lock();
+    drain_kick_permit().await;
+    let l = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let relay_port = l.local_addr().unwrap().port();
+    drop(l);
+    // 大退避：若 kick 未生效，重连要等 30s——测试窗口内必超时。
+    let timing = LoopTiming {
+        backoff_min: Duration::from_secs(30),
+        backoff_max: Duration::from_secs(30),
+        ..fast_timing()
+    };
+    let client = spawn_client_with(test_params("tok-k1", dead_web_port()), relay_port, timing);
+
+    let mut ws = relay_ws_of(spawn_mock_relay_on_same_port(relay_port).await).await;
+    let _ = recv_frame(&mut ws).await; // hello
+    send_frame(
+        &mut ws,
+        BridgeFrame::BridgeWelcome {
+            ok: true,
+            reason: String::new(),
+            hub_node_id: String::new(),
+        },
+    )
+    .await;
+    // 等首个心跳 = 已进主循环（session select 的 notified() 臂在岗）。
+    let _ = recv_frame_matching(&mut ws, |f| matches!(f, BridgeFrame::Heartbeat)).await;
+    drop(ws);
+
+    // 重绑端口 + 后台反复 kick（permit 合并；任何一次被消费即生效）。
+    let listener2 = TcpListener::bind(("127.0.0.1", relay_port))
+        .await
+        .expect("rebind");
+    let kicker = tokio::spawn(async {
+        for _ in 0..20 {
+            nemesis_web::relay::kick_reconnect();
+            tokio::time::sleep(Duration::from_millis(200)).await;
+        }
+    });
+    let (stream, _) = tokio::time::timeout(Duration::from_secs(6), listener2.accept())
+        .await
+        .expect("kick 后必须立即重连（而非等 30s 退避）")
+        .expect("accept#2");
+    let mut ws2 = tokio::time::timeout(Duration::from_secs(5), accept_async(stream))
+        .await
+        .expect("hs 超时")
+        .expect("hs err");
+    let hello2 = recv_frame(&mut ws2).await;
+    assert!(
+        matches!(hello2, BridgeFrame::BridgeHello { .. }),
+        "kick 后应立即重连并重发 hello，实际 {hello2:?}"
+    );
+    kicker.abort();
+    client.abort();
+}
+
+/// 手动重连（退避等待中）：会话断开后落在 30s 退避 select 上 → kick 跳过
+/// 剩余等待立即重连。
+#[tokio::test]
+#[allow(clippy::await_holding_lock)] // BRIDGE_IT_SER 序列化闸有意跨 await 持有
+async fn test_kick_reconnect_skips_backoff_wait() {
+    let _ser = BRIDGE_IT_SER.lock();
+    drain_kick_permit().await;
+    let l = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let relay_port = l.local_addr().unwrap().port();
+    drop(l);
+    let timing = LoopTiming {
+        backoff_min: Duration::from_secs(30),
+        backoff_max: Duration::from_secs(30),
+        ..fast_timing()
+    };
+    let client = spawn_client_with(test_params("tok-k2", dead_web_port()), relay_port, timing);
+
+    let mut ws = relay_ws_of(spawn_mock_relay_on_same_port(relay_port).await).await;
+    let _ = recv_frame(&mut ws).await; // hello
+    send_frame(
+        &mut ws,
+        BridgeFrame::BridgeWelcome {
+            ok: true,
+            reason: String::new(),
+            hub_node_id: String::new(),
+        },
+    )
+    .await;
+    // welcome 后立刻关 → session Disconnected{welcomed:true} → 30s 退避。
+    let _ = ws.close(None).await;
+    drop(ws);
+
+    // 退避 select 的 notified() 臂被 kick 命中 → 立即重连。
+    let listener2 = TcpListener::bind(("127.0.0.1", relay_port))
+        .await
+        .expect("rebind");
+    let kicker = tokio::spawn(async {
+        for _ in 0..20 {
+            nemesis_web::relay::kick_reconnect();
+            tokio::time::sleep(Duration::from_millis(200)).await;
+        }
+    });
+    let (stream, _) = tokio::time::timeout(Duration::from_secs(6), listener2.accept())
+        .await
+        .expect("kick 必须跳过 30s 退避立即重连")
+        .expect("accept#2");
+    let mut ws2 = tokio::time::timeout(Duration::from_secs(5), accept_async(stream))
+        .await
+        .expect("hs 超时")
+        .expect("hs err");
+    let hello2 = recv_frame(&mut ws2).await;
+    assert!(
+        matches!(hello2, BridgeFrame::BridgeHello { .. }),
+        "{hello2:?}"
+    );
+    kicker.abort();
+    client.abort();
+}
+
+/// 连失败退避重试：中继端口先空置（connect Err 反复上报）→ 迟绑 listener
+/// → 客户端必须爬出失败循环连上并重发 hello。
+#[tokio::test]
+#[allow(clippy::await_holding_lock)] // BRIDGE_IT_SER 序列化闸有意跨 await 持有
+async fn test_connect_failure_then_late_listener_reconnects() {
+    let _ser = BRIDGE_IT_SER.lock();
+    drain_kick_permit().await;
+
+    let l = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let relay_port = l.local_addr().unwrap().port();
+    drop(l);
+    let client = spawn_client(test_params("tok-cf", dead_web_port()), relay_port);
+
+    // 这 300ms 里客户端在连失败 + 10-50ms 退避重试。
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    let mut ws = relay_ws_of(spawn_mock_relay_on_same_port(relay_port).await).await;
+    let hello = recv_frame(&mut ws).await;
+    assert!(
+        matches!(hello, BridgeFrame::BridgeHello { .. }),
+        "连失败退避后必须重试成功，实际 {hello:?}"
+    );
+    client.abort();
+}
+
+/// bridge_rpc 装配形态（cluster 构建）：attach / 下行 member_sync 合并 /
+/// 下行 cluster_rpc 请求喂本地 RPC 链回上行 / 非本机目标诚实 error /
+/// 会话收尾 detach 清成员表；顺带钉非空 hub_node_id welcome 臂。
+#[cfg(feature = "cluster")]
+#[tokio::test]
+#[allow(clippy::await_holding_lock)] // BRIDGE_IT_SER 序列化闸有意跨 await 持有
+async fn test_bridge_rpc_downstream_and_member_sync_via_hub() {
+    let _ser = BRIDGE_IT_SER.lock();
+    drain_kick_permit().await;
+
+    use nemesis_cluster::rpc::client::BridgeSend;
+    use nemesis_cluster::rpc::server::{RpcServer, RpcServerConfig};
+
+    let rpc = std::sync::Arc::new(RpcServer::new(RpcServerConfig::default()));
+    let bridge = std::sync::Arc::new(crate::bridge_rpc::DeviceBridgeRpc::new(
+        rpc,
+        "cov-node-self".to_string(),
+        None,
+    ));
+
+    let (relay_port, relay_accept) = spawn_mock_relay().await;
+    let mut params = test_params("tok-br", dead_web_port());
+    params.bridge_rpc = Some(bridge.clone());
+    let client = spawn_client(params, relay_port);
+    let mut ws = relay_ws_of(relay_accept).await;
+
+    let _ = recv_frame(&mut ws).await; // hello
+    // 非空 hub_node_id welcome（hub 为集群节点的形态）。
+    send_frame(
+        &mut ws,
+        BridgeFrame::BridgeWelcome {
+            ok: true,
+            reason: String::new(),
+            hub_node_id: "cov-hub-node".to_string(),
+        },
+    )
+    .await;
+    let _ = recv_frame_matching(&mut ws, |f| matches!(f, BridgeFrame::Heartbeat)).await;
+
+    // member_sync 前：桥成员表为空 = 全员不可达。
+    assert!(!bridge.bridge_online("other-node"));
+    // 下行 member_sync：online 成员入表（自身跳过、离线不洗白）。
+    send_frame(
+        &mut ws,
+        BridgeFrame::MemberSync {
+            payload: serde_json::json!({
+                "members": [
+                    {"node_id": "cov-node-self", "online": true},
+                    {"node_id": "other-node", "online": true},
+                    {"node_id": "offline-node", "online": false}
+                ]
+            }),
+        },
+    )
+    .await;
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    assert!(bridge.bridge_online("other-node"), "online 成员必须入表");
+    assert!(!bridge.bridge_online("offline-node"), "离线成员不洗白");
+    assert!(!bridge.bridge_online("cov-node-self"), "自身条目跳过");
+
+    // 下行 cluster_rpc 请求（目标=本机）→ 喂本地 RPC 链 → 上行回帧。
+    send_frame(
+        &mut ws,
+        BridgeFrame::ClusterRpc {
+            payload: serde_json::json!({
+                "version": "1.0",
+                "id": "cov-req-1",
+                "type": "request",
+                "from": "cov-hub-node",
+                "to": "cov-node-self",
+                "action": "ping",
+                "payload": {},
+                "timestamp": 1
+            }),
+        },
+    )
+    .await;
+    match recv_frame_matching(&mut ws, |f| matches!(f, BridgeFrame::ClusterRpc { .. })).await {
+        BridgeFrame::ClusterRpc { payload } => {
+            assert_eq!(payload["id"], "cov-req-1", "回帧必须保留关联 id");
+            let t = payload["type"].as_str().unwrap_or_default();
+            assert!(
+                t == "response" || t == "error",
+                "回帧必须是 response/error，实际 {t}"
+            );
+        }
+        _ => unreachable!(),
+    }
+
+    // 非本机目标 → 诚实 error（不发往本地链）。
+    send_frame(
+        &mut ws,
+        BridgeFrame::ClusterRpc {
+            payload: serde_json::json!({
+                "version": "1.0",
+                "id": "cov-req-2",
+                "type": "request",
+                "from": "cov-hub-node",
+                "to": "someone-else",
+                "action": "ping",
+                "payload": {},
+                "timestamp": 1
+            }),
+        },
+    )
+    .await;
+    match recv_frame_matching(&mut ws, |f| matches!(f, BridgeFrame::ClusterRpc { .. })).await {
+        BridgeFrame::ClusterRpc { payload } => {
+            assert_eq!(payload["id"], "cov-req-2");
+            assert!(
+                payload["error"]
+                    .as_str()
+                    .unwrap_or_default()
+                    .contains("not on this device"),
+                "payload={payload}"
+            );
+        }
+        _ => unreachable!(),
+    }
+
+    // 会话收尾：服务端关 → detach（成员表清空 = 全员回落不可达）。
+    let _ = ws.close(None).await;
+    drop(ws);
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    assert!(
+        !bridge.bridge_online("other-node"),
+        "detach 后成员表必须清空"
+    );
+    client.abort();
+}
+
+// ---------------------------------------------------------------------------
+// wave5 round2（2026-09-25）：生产入口三臂——LoopTiming::default() 常量表、
+// spawn() 组装句柄、run_loop 对不可解析 relay_url 的启动即返（桥客户端未
+// 启动 error 臂）与连接失败首臂（Disconnected 状态上报 + 退避）。
+// ---------------------------------------------------------------------------
+
+mod w5r2 {
+    use super::*;
+    use crate::bridge_client::spawn;
+
+    /// default() 时序常量表执行 + spawn() 生产入口真被调用（死端口 →
+    /// 客户端在退避循环里转，abort 收尸，无窗口无残留）。
+    #[allow(clippy::await_holding_lock)] // BRIDGE_IT_SER 序列化闸有意跨 await 持有
+    #[tokio::test]
+    async fn w5_loop_timing_default_and_spawn_entry() {
+        // spawn 类用例全域串行（reconnect_notify 进程级 Notify 纪律）。
+        let _ser = BRIDGE_IT_SER.lock();
+        drain_kick_permit().await;
+
+        let t = LoopTiming::default();
+        assert!(!t.heartbeat.is_zero());
+        assert!(!t.dead_after.is_zero());
+        assert!(!t.welcome_timeout.is_zero());
+        assert!(!t.backoff_min.is_zero());
+        assert!(!t.backoff_max.is_zero());
+        assert!(t.backoff_min < t.backoff_max, "退避下限必须小于上限");
+
+        let port = dead_web_port();
+        let handle = spawn(test_params("w5b-spawn", port));
+        tokio::time::sleep(Duration::from_millis(250)).await;
+        handle.abort();
+        let _ = handle.await; // aborted 收尸
+    }
+
+    /// relay_url 不可解析 → run_loop 启动即返（error + return，不进循环）。
+    #[tokio::test]
+    async fn w5_run_loop_unparseable_relay_url_returns_without_loop() {
+        let mut p = test_params("w5b-badurl", dead_web_port());
+        p.relay_url = ":: not a url ::".to_string();
+        // 有界等待：正常应立即返回；挂死即测试超时暴露。
+        tokio::time::timeout(Duration::from_secs(5), run_loop(p, fast_timing()))
+            .await
+            .expect("不可解析 relay_url 必须启动即返，不得进入重试循环");
+    }
+
+    /// 中继连接失败（无人监听的死端口）→ Disconnected 状态上报 + 退避重试。
+    #[allow(clippy::await_holding_lock)] // BRIDGE_IT_SER 序列化闸有意跨 await 持有
+    #[tokio::test]
+    async fn w5_run_loop_dial_failure_reports_disconnected_then_backoff() {
+        let _ser = BRIDGE_IT_SER.lock();
+        drain_kick_permit().await;
+
+        let port = dead_web_port();
+        let mut p = test_params("w5b-dead", port);
+        p.relay_url = format!("ws://127.0.0.1:{port}");
+        let handle = tokio::spawn(run_loop(p, fast_timing()));
+        // 留足时间走完「连接失败 → 上报 → 退避 → 再失败」若干轮。
+        tokio::time::sleep(Duration::from_millis(300)).await;
+        handle.abort();
+        let _ = handle.await;
+    }
 }

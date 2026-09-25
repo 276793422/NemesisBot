@@ -156,3 +156,6 @@ pub fn emit(out: &SelftestChildOut) {
 
 #[cfg(test)]
 mod selftest_tests;
+
+#[cfg(test)]
+mod cov_tests;

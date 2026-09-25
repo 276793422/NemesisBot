@@ -263,4 +263,6 @@ fn collect_params(body: &str, param_re: &Regex) -> String {
 }
 
 #[cfg(test)]
+mod cov_tests;
+#[cfg(test)]
 mod tests;

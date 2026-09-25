@@ -253,4 +253,6 @@ impl HasStatusCode for RetryableResponse {
 }
 
 #[cfg(test)]
+mod cov_tests;
+#[cfg(test)]
 mod tests;

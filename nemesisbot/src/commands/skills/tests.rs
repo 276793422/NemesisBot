@@ -2769,3 +2769,23 @@ mod r10_wave {
         .expect("分发桥驱动下载失败臂后收在 Ok");
     }
 }
+
+// ---------------------------------------------------------------------------
+// wave6（2026-09-25）：cmd_show 的「目录存在但既无 SKILL.md 也无任何文件」
+// 空目录区（read_dir Ok + files 空 → files.is_empty() 分支收口）。
+// ---------------------------------------------------------------------------
+mod wave6 {
+    use super::*;
+
+    #[test]
+    fn w6_cmd_show_empty_skill_dir_hits_empty_files_branch() {
+        let tmp = TempDir::new().unwrap();
+        let skills_dir = tmp.path().join("skills");
+        let skill_dir = skills_dir.join("w6-empty");
+        std::fs::create_dir_all(&skill_dir).unwrap();
+
+        // 目录在场（不走 "not found" 早退）、无 SKILL.md（走 else 区）、
+        // read_dir Ok 但零条目（files.is_empty() → 不打印 Files:）。
+        cmd_show(&skills_dir, "w6-empty").expect("空目录展示不报错");
+    }
+}

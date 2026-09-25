@@ -546,4 +546,6 @@ impl LLMProvider for FallbackProvider {
 }
 
 #[cfg(test)]
+mod cov_tests;
+#[cfg(test)]
 mod tests;

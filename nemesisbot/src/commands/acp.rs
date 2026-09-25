@@ -27,3 +27,6 @@ pub async fn run(home: &Path) -> anyhow::Result<()> {
         .await
         .map_err(anyhow::Error::msg)
 }
+
+#[cfg(test)]
+mod tests;

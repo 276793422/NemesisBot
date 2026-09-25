@@ -331,3 +331,14 @@ fn test_security_allow_inlines() {
     assert!(out.contains("<file_ref path=\"ok.txt\">"));
     assert!(out.contains("OKAY"));
 }
+
+// wave5：目录形态的 @引用 → read 管线诚实失败注记（File::open 目录 =
+// PermissionDenied，非 NotFound 臂）。
+#[test]
+fn expand_at_files_directory_ref_reports_honest_failure() {
+    let tmp = TempDir::new().unwrap();
+    std::fs::create_dir_all(tmp.path().join("sub")).unwrap();
+    let out = expand("@sub/", tmp.path());
+    assert!(out.contains("文件引用失败"), "{out}");
+    assert!(out.contains("sub"), "{out}");
+}

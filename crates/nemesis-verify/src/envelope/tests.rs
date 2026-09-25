@@ -778,3 +778,304 @@ fn carrier_honest_failures() {
     let err = extract_carrier_v4(&garbage).unwrap_err();
     assert!(format!("{err:#}").contains("content_len"), "{err:#}");
 }
+
+// ---------------------------------------------------------------------------
+// AGT 覆盖率批次（2026-09-24）：opus None 臂 / spc_string・spc_link 解码臂 /
+// append_nested_signature 诚实失败臂（host 非 signedData / signerInfos≠1 /
+// 已含嵌套 / 既有 unsigned_attrs 插入臂）/ enumerate 深度上限与坏 contentType /
+// parse_signed_data 剩余结构臂（SPC 摘要算法・长度 / 非 Certificate 证书项 /
+// sid 非 IssuerAndSerial / SignerInfo 双算法接受集 / contentType・messageDigest
+// 属性校验）。
+// ---------------------------------------------------------------------------
+
+use cms::cert::{CertificateChoices, OtherCertificateFormat};
+use cms::signed_data::{CertificateSet, SignerInfo};
+use x509_cert::attr::Attribute;
+use x509_cert::ext::pkix::SubjectKeyIdentifier;
+
+/// AGT 夹具：独立 CMS（每调用一把新 keygen 层级；tag 改 payload 保证确定性差异）。
+fn agt_cms(tag: u8) -> Vec<u8> {
+    let h = crate::keygen::generate().expect("keygen");
+    let content = vec![tag; 64];
+    let digest: [u8; 32] = sha2::Sha256::digest(&content).into();
+    build_signed_data(
+        &digest,
+        &h.leaf_sk,
+        1_700_000_000 + u64::from(tag),
+        &h.chain(),
+        None,
+        None,
+    )
+    .expect("build_signed_data")
+}
+
+/// AGT 夹具：替换主 SignerInfo（结构层突变通用路径）。
+fn agt_mutate_signer(der: &[u8], f: impl FnOnce(&mut SignerInfo)) -> Vec<u8> {
+    let mut sd = cms_parse(der);
+    let mut si = sd.signer_infos.0.as_slice()[0].clone();
+    f(&mut si);
+    sd.signer_infos = SignerInfos::try_from(vec![si]).unwrap();
+    reencode_sd(&sd)
+}
+
+/// AGT 夹具：attr 集合内按 OID 替换属性值（重建 SetOfVec；突变只破坏 CMS 签名
+/// 本身，parse_signed_data 不做密码学验签，正好隔离）。
+fn agt_replace_attr_value(
+    der: &[u8],
+    attr_oid: der::asn1::ObjectIdentifier,
+    value_any: der::Any,
+) -> Vec<u8> {
+    agt_mutate_signer(der, |si| {
+        let attrs = si.signed_attrs.as_ref().expect("signed attrs").clone();
+        let mut rebuilt: Vec<Attribute> = Vec::new();
+        for a in attrs.iter() {
+            if a.oid == attr_oid {
+                let mut values = SetOfVec::new();
+                values.insert(value_any.clone()).unwrap();
+                rebuilt.push(Attribute { oid: a.oid, values });
+            } else {
+                rebuilt.push(a.clone());
+            }
+        }
+        si.signed_attrs = Some(SetOfVec::try_from(rebuilt).unwrap());
+    })
+}
+
+#[test]
+fn agt_opus_more_info_only_covers_none_arms() {
+    // program_name=None + more_info=Some → opus 构造的两个 match 各走一臂
+    let h = crate::keygen::generate().expect("keygen");
+    let der = build_signed_data(
+        &cms_test_digest(),
+        &h.leaf_sk,
+        1_700_000_000,
+        &h.chain(),
+        None,
+        Some("https://only-more.example"),
+    )
+    .expect("build_signed_data");
+    let p = parse_signed_data(&der).expect("parse");
+    assert_eq!(p.program_name, None);
+    assert_eq!(p.more_info.as_deref(), Some("https://only-more.example"));
+}
+
+#[test]
+fn agt_spc_string_unicode_and_link_file_decode() {
+    // Unicode（BMP UTF-16BE 解码）臂 + File（剥一层 SpcString）臂
+    let u = spc_string_to_string(SpcString::Unicode(
+        BmpString::from_utf8("测试NB").expect("bmp"),
+    ));
+    assert_eq!(u, "测试NB");
+    let f = spc_link_to_string(SpcLink::File(SpcString::Ascii(
+        Ia5String::new("tools/x.exe").expect("ia5"),
+    )));
+    assert_eq!(f.as_deref(), Some("tools/x.exe"));
+    // 对照：Url 臂直取
+    let url = spc_link_to_string(SpcLink::Url(
+        Ia5String::new("https://a.example").expect("ia5"),
+    ));
+    assert_eq!(url.as_deref(), Some("https://a.example"));
+}
+
+#[test]
+fn agt_append_nested_rejects_non_signed_data_host() {
+    let nested = agt_cms(0x01);
+    let bad_host = ContentInfo {
+        content_type: OID_SPC_PE_IMAGE_DATA,
+        content: der::Any::new(der::Tag::Null, Vec::new()).unwrap(),
+    };
+    let err = append_nested_signature(&bad_host.to_der().unwrap(), &nested).unwrap_err();
+    let msg = format!("{err:#}");
+    assert!(msg.contains("host contentType 非 signedData"), "{msg}");
+}
+
+#[test]
+fn agt_append_nested_rejects_multiple_signer_infos() {
+    let host_base = agt_cms(0x02);
+    let mut sd = cms_parse(&host_base);
+    let si = sd.signer_infos.0.as_slice()[0].clone();
+    sd.signer_infos = SignerInfos::try_from(vec![si.clone(), si]).unwrap();
+    let host = reencode_sd(&sd);
+    let err = append_nested_signature(&host, &agt_cms(0x03)).unwrap_err();
+    let msg = format!("{err:#}");
+    assert!(msg.contains("signerInfos = 2"), "{msg}");
+}
+
+#[test]
+fn agt_append_nested_rejects_second_nested() {
+    let host = agt_cms(0x04);
+    let once = append_nested_signature(&host, &agt_cms(0x05)).unwrap();
+    let err = append_nested_signature(&once, &agt_cms(0x06)).unwrap_err();
+    let msg = format!("{err:#}");
+    assert!(msg.contains("SPC_NESTED_SIGNATURE"), "{msg}");
+}
+
+#[test]
+fn agt_append_nested_into_existing_unsigned_attrs_and_enumerate() {
+    // host 已有 unsigned_attrs（非嵌套 dummy 属性）→ 走 attrs.insert 臂；
+    // enumerate 先序展开出 2 个签名（主 + 嵌套），盖 values 循环与递归臂。
+    let host_base = agt_cms(0x07);
+    let host = agt_mutate_signer(&host_base, |si| {
+        let dummy_oid = der::asn1::ObjectIdentifier::new_unwrap("1.2.3.4");
+        let mut values = SetOfVec::new();
+        values
+            .insert(der::Any::new(der::Tag::Null, Vec::new()).unwrap())
+            .unwrap();
+        si.unsigned_attrs = Some(
+            SetOfVec::try_from(vec![Attribute {
+                oid: dummy_oid,
+                values,
+            }])
+            .unwrap(),
+        );
+    });
+    let out = append_nested_signature(&host, &agt_cms(0x08)).unwrap();
+    let sigs = enumerate_signatures(&out).expect("enumerate");
+    assert_eq!(sigs.len(), 2, "主签名 + 1 层嵌套");
+}
+
+#[test]
+fn agt_enumerate_single_signature_and_rejects_bad_content_type() {
+    // 无嵌套单签名 CMS → [cms]（unsigned_attrs None 的 continue 臂）
+    let plain = agt_cms(0x09);
+    assert_eq!(enumerate_signatures(&plain).unwrap().len(), 1);
+
+    // contentType 非 signedData → 无嵌套可展开，诚实报错
+    let bad = ContentInfo {
+        content_type: OID_SPC_PE_IMAGE_DATA,
+        content: der::Any::new(der::Tag::Null, Vec::new()).unwrap(),
+    };
+    let err = enumerate_signatures(&bad.to_der().unwrap()).unwrap_err();
+    let msg = format!("{err:#}");
+    assert!(msg.contains("contentType 非 signedData"), "{msg}");
+}
+
+#[test]
+fn agt_enumerate_depth_cap_bails() {
+    // 由深到浅内向外搭 10 节点链（host + 9 层嵌套）→ depth 9 > MAX 8 → bail
+    let mut chain = agt_cms(0x20);
+    for tag in 0x21..0x2Au8 {
+        let host = agt_cms(tag);
+        chain = append_nested_signature(&host, &chain).expect("append level");
+    }
+    let err = enumerate_signatures(&chain).unwrap_err();
+    let msg = format!("{err:#}");
+    assert!(msg.contains("深度超上限"), "{msg}");
+}
+
+#[test]
+fn agt_parse_rejects_spc_digest_algorithm_not_sha256() {
+    let (der, _) = cms_test_build();
+    let mut sd = cms_parse(&der);
+    let spc_bad = agt_spc_with_digest(
+        AlgorithmIdentifierOwned {
+            oid: crate::cert::OID_ECDSA_WITH_SHA256,
+            parameters: None,
+        },
+        &[0u8; 32],
+    );
+    sd.encap_content_info.econtent =
+        Some(der::Any::from_der(spc_bad.to_der().unwrap().as_slice()).unwrap());
+    assert_unsupported(&reencode_sd(&sd), "内容摘要算法非 SHA-256");
+}
+
+#[test]
+fn agt_parse_rejects_spc_digest_length_not_32() {
+    let (der, _) = cms_test_build();
+    let mut sd = cms_parse(&der);
+    let spc_bad = agt_spc_with_digest(sha256_algorithm().unwrap(), &[0u8; 31]);
+    sd.encap_content_info.econtent =
+        Some(der::Any::from_der(spc_bad.to_der().unwrap().as_slice()).unwrap());
+    assert_malformed(&reencode_sd(&sd), "内容摘要长度非 32B");
+}
+
+/// AGT 夹具：指定算法标识 + 摘要字节的 SpcIndirectDataContent（data 域空值——
+/// parse 不校验 data.value，只读 type_ 与 message_digest）。
+fn agt_spc_with_digest<'a>(
+    alg: AlgorithmIdentifierOwned,
+    digest_bytes: &'a [u8],
+) -> SpcIndirectDataContent<'a> {
+    SpcIndirectDataContent {
+        data: SpcAttributeTypeAndOptionalValue {
+            type_: OID_SPC_PE_IMAGE_DATA,
+            value: der::Any::new(der::Tag::Null, Vec::new()).unwrap(),
+        },
+        message_digest: DigestInfo {
+            digest_algorithm: alg,
+            digest: OctetStringRef::new(digest_bytes).expect("octets"),
+        },
+    }
+}
+
+#[test]
+fn agt_parse_rejects_non_certificate_choice() {
+    let (der, _) = cms_test_build();
+    let mut sd = cms_parse(&der);
+    let other = OtherCertificateFormat {
+        other_cert_format: OID_SPC_PE_IMAGE_DATA,
+        other_cert: der::Any::new(der::Tag::Null, Vec::new()).unwrap(),
+    };
+    sd.certificates = Some(CertificateSet(
+        SetOfVec::try_from(vec![CertificateChoices::Other(other)]).unwrap(),
+    ));
+    assert_malformed(&reencode_sd(&sd), "非 Certificate 类型");
+}
+
+#[test]
+fn agt_parse_rejects_sid_subject_key_identifier() {
+    let (der, _) = cms_test_build();
+    let out = agt_mutate_signer(&der, |si| {
+        si.sid = SignerIdentifier::SubjectKeyIdentifier(SubjectKeyIdentifier(
+            der::asn1::OctetString::new(vec![0xAAu8, 0xBB, 0xCC]).unwrap(),
+        ));
+    });
+    assert_malformed(&out, "sid 非 IssuerAndSerialNumber");
+}
+
+#[test]
+fn agt_parse_rejects_signer_digest_alg_not_sha256() {
+    let (der, _) = cms_test_build();
+    let out = agt_mutate_signer(&der, |si| {
+        si.digest_alg.oid = crate::cert::OID_ECDSA_WITH_SHA256;
+    });
+    assert_unsupported(&out, "SignerInfo 摘要算法非 SHA-256");
+}
+
+#[test]
+fn agt_parse_rejects_signature_suite_outside_accept_set() {
+    let (der, _) = cms_test_build();
+    // 双算法接受集 = ecdsa-with-SHA256 / id-ecPublicKey；换成纯哈希 OID → 不收
+    let out = agt_mutate_signer(&der, |si| {
+        si.signature_algorithm.oid = OID_SHA256;
+    });
+    assert_unsupported(&out, "签名套件非");
+}
+
+#[test]
+fn agt_parse_rejects_content_type_attr_mismatch() {
+    let (der, _) = cms_test_build();
+    let out = agt_replace_attr_value(
+        &der,
+        OID_ATTR_CONTENT_TYPE,
+        der::Any::from_der(OID_SHA256.to_der().unwrap().as_slice()).unwrap(),
+    );
+    assert_malformed(&out, "contentType 属性与 eContentType 不一致");
+}
+
+#[test]
+fn agt_parse_rejects_message_digest_attr_bad_length() {
+    let (der, _) = cms_test_build();
+    let out = agt_replace_attr_value(
+        &der,
+        OID_ATTR_MESSAGE_DIGEST,
+        der::Any::from_der(
+            der::asn1::OctetString::new(vec![0u8; 31])
+                .unwrap()
+                .to_der()
+                .unwrap()
+                .as_slice(),
+        )
+        .unwrap(),
+    );
+    assert_malformed(&out, "messageDigest 属性长度非 32B");
+}

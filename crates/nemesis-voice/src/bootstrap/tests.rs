@@ -332,3 +332,396 @@ fn download_aec_lib_existing_dll_returns_early_without_network() {
     // 内容原样（没被重下覆盖）
     assert_eq!(std::fs::read(&existing).unwrap(), b"already-there");
 }
+
+// ===========================================================================
+// Wave4 覆盖批次（2026-09-25）：下载路径真覆盖。
+//
+// 上一版把 download_runtime_libs / try_download_and_extract / try_download_aec
+// / download_to 全列结构性豁免（URL 硬编码真网络）。但这些函数的 URL 都是
+// **参数**或可被 proxy 打偏——用两条确定性通路即可真覆盖，不碰真网络：
+// 1. wiremock 本地假源（127.0.0.1 随机端口）：喂真 tar/bz2 字节 → 全成功臂。
+// 2. 不可达代理 http://127.0.0.1:9（连接拒绝，立即失败）：覆盖失败臂 + bail。
+//
+// tar 归档在测试里用 PATH 上的 tar 现场打包（生产解压同样依赖 PATH 上的
+// tar——对称：创建能行解压就能行）。bz2 打包失败的环境（无 bz2 支持）跳过
+// 成功臂测试（SKIP 约定：eprintln + return），失败臂测试不受影响。
+// ===========================================================================
+
+#[cfg(all(target_os = "windows", feature = "download"))]
+mod download_paths {
+    use super::*;
+    use wiremock::matchers::method;
+    use wiremock::{Mock, MockServer, ResponseTemplate};
+
+    /// 共享临时下载目录（%TEMP%/nemesis-voice-setup、nemesis-voice-aec-setup）
+    /// 是全局路径——并行测试互相踩，必须串行 + 前后清理。
+    static DOWNLOAD_TMP_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    fn voice_setup_tmp() -> std::path::PathBuf {
+        std::env::temp_dir().join("nemesis-voice-setup")
+    }
+
+    fn aec_setup_tmp() -> std::path::PathBuf {
+        std::env::temp_dir().join("nemesis-voice-aec-setup")
+    }
+
+    fn clean_all_setup_tmps() {
+        let _ = std::fs::remove_dir_all(voice_setup_tmp());
+        let _ = std::fs::remove_dir_all(aec_setup_tmp());
+    }
+
+    /// current_thread runtime 上 block_on（wiremock server 与被测 async fn
+    /// 同一驱动——照抄 model/tests.rs 的工程约束）。
+    fn block_on<F: std::future::Future>(fut: F) -> F::Output {
+        tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap()
+            .block_on(fut)
+    }
+
+    /// 用 PATH 上的 tar 现场打归档（生产 `try_download_*` 解压用的就是同一个
+    /// tar）。返回 false = 该环境打不出归档（如无 bz2 支持）→ 调用方 SKIP。
+    fn make_tar(dst: &Path, src_dir: &Path, entries: &[&str], bz2: bool) -> bool {
+        let _ = std::fs::remove_file(dst);
+        let mut cmd = std::process::Command::new("tar");
+        cmd.arg(if bz2 { "-cjf" } else { "-cf" })
+            .arg(dst)
+            .arg("-C")
+            .arg(src_dir);
+        for e in entries {
+            cmd.arg(e);
+        }
+        #[cfg(target_os = "windows")]
+        {
+            use std::os::windows::process::CommandExt;
+            const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+            cmd.creation_flags(CREATE_NO_WINDOW);
+        }
+        matches!(
+            cmd.output(),
+            Ok(out)
+                if out.status.success()
+                    && dst.exists()
+                    && std::fs::metadata(dst).map(|m| m.len() > 0).unwrap_or(false)
+        )
+    }
+
+    // -------------------------------------------------------------------
+    // download_runtime_libs —— 不可达代理 → 双 URL 全失败 → bail
+    // -------------------------------------------------------------------
+
+    #[test]
+    fn download_runtime_libs_unreachable_proxy_bails_with_sources_failed() {
+        let tmp = tempfile::tempdir().unwrap();
+        // 127.0.0.1:9（discard 端口，连接拒绝，立即失败不超时）
+        let err = format!(
+            "{:#}",
+            download_runtime_libs(tmp.path(), "http://127.0.0.1:9").unwrap_err()
+        );
+        assert!(err.contains("All download sources failed"), "{err}");
+        // 提示文案带必需库清单
+        assert!(err.contains(REQUIRED_LIBS[0]), "{err}");
+        assert!(err.contains("manually"), "{err}");
+    }
+
+    // -------------------------------------------------------------------
+    // download_aec_lib —— 不可达代理 → bail（带手动安装提示）
+    // -------------------------------------------------------------------
+
+    #[test]
+    fn download_aec_lib_unreachable_proxy_bails_with_hint() {
+        let _g = DOWNLOAD_TMP_LOCK.lock().unwrap();
+        clean_all_setup_tmps();
+        let tmp = tempfile::tempdir().unwrap();
+        let err = format!(
+            "{:#}",
+            download_aec_lib(tmp.path(), "http://127.0.0.1:9").unwrap_err()
+        );
+        assert!(err.contains("[aec] All download sources failed"), "{err}");
+        assert!(err.contains(AEC_WIN_ARTIFACT), "{err}");
+        assert!(err.contains(AEC_LIB_FILENAME), "{err}");
+    }
+
+    // -------------------------------------------------------------------
+    // try_download_aec —— wiremock 全成功臂（下载 → .part 改名 → tar 解压
+    // → find_file → 拷贝 aec.dll）
+    // -------------------------------------------------------------------
+
+    #[test]
+    fn try_download_aec_full_success_installs_dll() {
+        let _g = DOWNLOAD_TMP_LOCK.lock().unwrap();
+        clean_all_setup_tmps();
+
+        // 现场打包：libaec-win-x86-64/aec.dll
+        let src = tempfile::tempdir().unwrap();
+        let pkg = src.path().join("libaec-win-x86-64");
+        std::fs::create_dir_all(&pkg).unwrap();
+        std::fs::write(pkg.join("aec.dll"), b"dummy-aec-bytes").unwrap();
+
+        let aec_tmp = aec_setup_tmp();
+        std::fs::create_dir_all(&aec_tmp).unwrap();
+        let archive = aec_tmp.join(AEC_WIN_ARTIFACT);
+        if !make_tar(&archive, src.path(), &["libaec-win-x86-64"], false) {
+            eprintln!("SKIP: tar 不可用（本环境打不出归档）");
+            return;
+        }
+        let serve_bytes = std::fs::read(&archive).unwrap();
+
+        let dst = tempfile::tempdir().unwrap();
+        block_on(async {
+            let server = MockServer::start().await;
+            Mock::given(method("GET"))
+                .respond_with(
+                    ResponseTemplate::new(200)
+                        .set_body_raw(serve_bytes, "application/octet-stream"),
+                )
+                .mount(&server)
+                .await;
+            let url = format!("{}/{}", server.uri(), AEC_WIN_ARTIFACT);
+
+            let got = try_download_aec(&url, dst.path(), "").await.unwrap();
+            assert_eq!(got, dst.path().join(AEC_LIB_FILENAME));
+            assert_eq!(std::fs::read(&got).unwrap(), b"dummy-aec-bytes");
+        });
+
+        clean_all_setup_tmps();
+    }
+
+    // -------------------------------------------------------------------
+    // try_download_aec —— 缓存命中臂（归档已在 → 不下载，直接解压）
+    // -------------------------------------------------------------------
+
+    #[test]
+    fn try_download_aec_cached_archive_skips_download() {
+        let _g = DOWNLOAD_TMP_LOCK.lock().unwrap();
+        clean_all_setup_tmps();
+
+        let src = tempfile::tempdir().unwrap();
+        let pkg = src.path().join("libaec-win-x86-64");
+        std::fs::create_dir_all(&pkg).unwrap();
+        std::fs::write(pkg.join("aec.dll"), b"cached-aec-bytes").unwrap();
+
+        let aec_tmp = aec_setup_tmp();
+        std::fs::create_dir_all(&aec_tmp).unwrap();
+        let archive = aec_tmp.join(AEC_WIN_ARTIFACT);
+        if !make_tar(&archive, src.path(), &["libaec-win-x86-64"], false) {
+            eprintln!("SKIP: tar 不可用（本环境打不出归档）");
+            return;
+        }
+
+        let dst = tempfile::tempdir().unwrap();
+        block_on(async {
+            // URL 指向不存在的服务器也没关系——走缓存臂根本不会发请求
+            let got = try_download_aec("http://127.0.0.1:9/x.zip", dst.path(), "")
+                .await
+                .unwrap();
+            assert_eq!(got, dst.path().join(AEC_LIB_FILENAME));
+            assert_eq!(std::fs::read(&got).unwrap(), b"cached-aec-bytes");
+        });
+
+        clean_all_setup_tmps();
+    }
+
+    // -------------------------------------------------------------------
+    // try_download_aec —— HTTP 错误臂（404 → bail，.part 不残留改名）
+    // -------------------------------------------------------------------
+
+    #[test]
+    fn try_download_aec_http_404_bails() {
+        let _g = DOWNLOAD_TMP_LOCK.lock().unwrap();
+        clean_all_setup_tmps();
+
+        let dst = tempfile::tempdir().unwrap();
+        block_on(async {
+            let server = MockServer::start().await;
+            Mock::given(method("GET"))
+                .respond_with(ResponseTemplate::new(404))
+                .mount(&server)
+                .await;
+            let url = format!("{}/{}.zip", server.uri(), AEC_WIN_ARTIFACT);
+            let err = format!(
+                "{:#}",
+                try_download_aec(&url, dst.path(), "").await.unwrap_err()
+            );
+            assert!(err.contains("HTTP 404"), "{err}");
+            // 失败后归档不该被改名成最终名（还在 .part 或不存在）
+            assert!(!aec_tmp_guard().join(AEC_WIN_ARTIFACT).exists());
+        });
+
+        clean_all_setup_tmps();
+    }
+
+    /// 测试内访问共享临时目录（只在 cfg(test) 下载臂测试里用）。
+    fn aec_tmp_guard() -> std::path::PathBuf {
+        aec_setup_tmp()
+    }
+
+    // -------------------------------------------------------------------
+    // try_download_and_extract —— wiremock 全成功臂（sherpa 布局）
+    // 下载 → .part 改名 → tar -xjf → find_lib_dir → copy_libs_from
+    // -------------------------------------------------------------------
+
+    #[test]
+    fn try_download_and_extract_full_success_installs_runtime_libs() {
+        let _g = DOWNLOAD_TMP_LOCK.lock().unwrap();
+        clean_all_setup_tmps();
+
+        // 现场 bz2 打包：{SHERPA_RELEASE_NAME}/lib/{3 DLL}
+        let src = tempfile::tempdir().unwrap();
+        let lib = src.path().join(SHERPA_RELEASE_NAME).join("lib");
+        std::fs::create_dir_all(&lib).unwrap();
+        std::fs::write(lib.join(REQUIRED_LIBS[0]), b"dummy-c-api").unwrap();
+        std::fs::write(lib.join(REQUIRED_LIBS[1]), b"dummy-onnxrt").unwrap();
+        std::fs::write(lib.join(REQUIRED_LIBS[2]), b"dummy-providers").unwrap();
+
+        let setup_tmp = voice_setup_tmp();
+        std::fs::create_dir_all(&setup_tmp).unwrap();
+        let archive = setup_tmp.join(format!("{}.tar.bz2", SHERPA_RELEASE_NAME));
+        if !make_tar(
+            &archive,
+            src.path(),
+            &[&format!("{}/lib", SHERPA_RELEASE_NAME)],
+            true,
+        ) {
+            eprintln!("SKIP: tar 无 bz2 支持（本环境打不出 bz2 归档）");
+            return;
+        }
+        let serve_bytes = std::fs::read(&archive).unwrap();
+        // 走下载臂：先清掉预置归档（wiremock 会重新喂）
+        std::fs::remove_file(&archive).unwrap();
+
+        let exe_dir = tempfile::tempdir().unwrap();
+        block_on(async {
+            let server = MockServer::start().await;
+            Mock::given(method("GET"))
+                .respond_with(
+                    ResponseTemplate::new(200)
+                        .set_body_raw(serve_bytes, "application/octet-stream"),
+                )
+                .mount(&server)
+                .await;
+            let url = format!("{}/{}.tar.bz2", server.uri(), SHERPA_RELEASE_NAME);
+
+            try_download_and_extract(&url, exe_dir.path(), "")
+                .await
+                .unwrap();
+            for lib in REQUIRED_LIBS {
+                let p = exe_dir.path().join(lib);
+                assert!(p.exists(), "{lib} must be installed to exe dir");
+            }
+        });
+
+        clean_all_setup_tmps();
+    }
+
+    // -------------------------------------------------------------------
+    // try_download_and_extract —— 缓存命中臂（归档已在 → 跳过下载）
+    // -------------------------------------------------------------------
+
+    #[test]
+    fn try_download_and_extract_cached_archive_skips_download() {
+        let _g = DOWNLOAD_TMP_LOCK.lock().unwrap();
+        clean_all_setup_tmps();
+
+        let src = tempfile::tempdir().unwrap();
+        let lib = src.path().join(SHERPA_RELEASE_NAME).join("lib");
+        std::fs::create_dir_all(&lib).unwrap();
+        std::fs::write(lib.join(REQUIRED_LIBS[0]), b"cached-c-api").unwrap();
+        std::fs::write(lib.join(REQUIRED_LIBS[1]), b"cached-onnxrt").unwrap();
+        std::fs::write(lib.join(REQUIRED_LIBS[2]), b"cached-providers").unwrap();
+
+        let setup_tmp = voice_setup_tmp();
+        std::fs::create_dir_all(&setup_tmp).unwrap();
+        let archive = setup_tmp.join(format!("{}.tar.bz2", SHERPA_RELEASE_NAME));
+        if !make_tar(
+            &archive,
+            src.path(),
+            &[&format!("{}/lib", SHERPA_RELEASE_NAME)],
+            true,
+        ) {
+            eprintln!("SKIP: tar 无 bz2 支持（本环境打不出 bz2 归档）");
+            return;
+        }
+
+        let exe_dir = tempfile::tempdir().unwrap();
+        // URL 指向不可达端口——走缓存臂不会发请求
+        block_on(async {
+            try_download_and_extract("http://127.0.0.1:9/x.tar.bz2", exe_dir.path(), "")
+                .await
+                .unwrap();
+            assert!(exe_dir.path().join(REQUIRED_LIBS[0]).exists());
+        });
+
+        clean_all_setup_tmps();
+    }
+
+    // -------------------------------------------------------------------
+    // try_download_and_extract —— 坏归档臂（下载成功但 tar 解压失败 →
+    // 清理归档 + bail "tar extraction failed"）
+    // -------------------------------------------------------------------
+
+    #[test]
+    fn try_download_and_extract_bad_archive_bails_and_cleans_up() {
+        let _g = DOWNLOAD_TMP_LOCK.lock().unwrap();
+        clean_all_setup_tmps();
+
+        let exe_dir = tempfile::tempdir().unwrap();
+        block_on(async {
+            let server = MockServer::start().await;
+            Mock::given(method("GET"))
+                .respond_with(
+                    ResponseTemplate::new(200)
+                        .set_body_raw(b"not-a-tar-at-all", "application/octet-stream"),
+                )
+                .mount(&server)
+                .await;
+            let url = format!("{}/{}.tar.bz2", server.uri(), SHERPA_RELEASE_NAME);
+            let err = format!(
+                "{:#}",
+                try_download_and_extract(&url, exe_dir.path(), "")
+                    .await
+                    .unwrap_err()
+            );
+            assert!(err.contains("tar extraction failed"), "{err}");
+            // bail 前删了归档 + .part
+            let archive = voice_setup_tmp().join(format!("{}.tar.bz2", SHERPA_RELEASE_NAME));
+            assert!(
+                !archive.exists(),
+                "bad archive must be removed after failure"
+            );
+        });
+
+        clean_all_setup_tmps();
+    }
+
+    // -------------------------------------------------------------------
+    // try_download_and_extract —— HTTP 错误臂（500 → bail，不进解压）
+    // -------------------------------------------------------------------
+
+    #[test]
+    fn try_download_and_extract_http_500_bails() {
+        let _g = DOWNLOAD_TMP_LOCK.lock().unwrap();
+        clean_all_setup_tmps();
+
+        let exe_dir = tempfile::tempdir().unwrap();
+        block_on(async {
+            let server = MockServer::start().await;
+            Mock::given(method("GET"))
+                .respond_with(ResponseTemplate::new(500))
+                .mount(&server)
+                .await;
+            let url = format!("{}/{}.tar.bz2", server.uri(), SHERPA_RELEASE_NAME);
+            let err = format!(
+                "{:#}",
+                try_download_and_extract(&url, exe_dir.path(), "")
+                    .await
+                    .unwrap_err()
+            );
+            assert!(err.contains("HTTP 500"), "{err}");
+            assert!(!exe_dir.path().join(REQUIRED_LIBS[0]).exists());
+        });
+
+        clean_all_setup_tmps();
+    }
+}

@@ -1167,3 +1167,81 @@ fn control_plane_gate_matrix_maps_four_checklist_scenarios() {
         "error must not misname the web field: {ws_err}"
     );
 }
+
+// ===========================================================================
+// Coverage 追加（2026-09-24）：SEC-001 凭据引导状态机 + vault 引用解析
+// helper 的失败分支 + 回环判定。
+// try_respawn_detached（真实 spawn 分离子进程）与 ensure_exe_in_path 的
+// current_exe 失败臂（进程内不可达）豁免，见交付报告。
+// ===========================================================================
+
+/// resolve_secret_or_empty：env 引用未设置 → error! + 空串（fail-closed
+/// 出站语义——消费方按凭据缺失响亮失败）。
+#[test]
+fn resolve_secret_or_empty_unset_env_ref_yields_empty() {
+    let probe = format!("NB_UNSET_SECRET_PROBE_{}", std::process::id());
+    let v = resolve_secret_or_empty(&format!("env:{probe}"), "test.outbound_key");
+    assert!(v.is_empty(), "解析失败必须回空串，got {v:?}");
+}
+
+/// resolve_secret_or_empty：字面量原样通过（向后兼容语义）。
+#[test]
+fn resolve_secret_or_empty_literal_passthrough() {
+    assert_eq!(resolve_secret_or_empty("plain-key", "test.k"), "plain-key");
+}
+
+/// resolve_auth_token_or_random：env 引用未设置 → 一次性随机 token
+/// （fail-closed：鉴权保持开启但无人能匹配），绝不回空串。
+#[test]
+fn resolve_auth_token_or_random_unset_env_ref_yields_random() {
+    let probe = format!("NB_UNSET_SECRET_PROBE_{}", std::process::id());
+    let v = resolve_auth_token_or_random(&format!("env:{probe}"), "channels.web.auth_token");
+    assert!(!v.is_empty(), "失败必须回随机 token 而非空串");
+    assert_ne!(v, format!("env:{probe}"), "引用串本身绝不能当值用");
+    // UUID v4 形态：36 字符 4 连字符。
+    assert_eq!(v.len(), 36);
+    assert_eq!(v.matches('-').count(), 4);
+}
+
+/// resolve_auth_token_or_random：字面量原样通过。
+#[test]
+fn resolve_auth_token_or_random_literal_passthrough() {
+    assert_eq!(
+        resolve_auth_token_or_random("tok-123", "channels.web.auth_token"),
+        "tok-123"
+    );
+}
+
+/// is_bootstrap_web_credential：空 / 引导值 → true；引用与显式值 → false。
+#[test]
+fn bootstrap_web_credential_matrix() {
+    assert!(is_bootstrap_web_credential(""));
+    assert!(is_bootstrap_web_credential("   "));
+    assert!(is_bootstrap_web_credential(BOOTSTRAP_WEB_TOKEN));
+    assert!(is_bootstrap_web_credential(&format!(
+        " {}",
+        BOOTSTRAP_WEB_TOKEN
+    )));
+    assert!(!is_bootstrap_web_credential("vault://prod/web-token"));
+    assert!(!is_bootstrap_web_credential("env:WEB_TOKEN"));
+    assert!(!is_bootstrap_web_credential("my-own-secret"));
+}
+
+/// bind_host_is_loopback：IP 直判 + 主机名解析 + 不可解析 → None。
+#[test]
+fn bind_host_loopback_matrix() {
+    assert_eq!(bind_host_is_loopback("127.0.0.1"), Some(true));
+    assert_eq!(bind_host_is_loopback("  ::1  "), Some(true));
+    assert_eq!(bind_host_is_loopback("0.0.0.0"), Some(false));
+    assert_eq!(bind_host_is_loopback("192.168.1.9"), Some(false));
+    // 不可解析 → None（调用方放行，让 bind 流程自然报错）。
+    assert_eq!(bind_host_is_loopback("nonexistent.invalid"), None);
+}
+
+/// console_is_solo_fresh：进程内可调不炸；返回值随运行环境（有/无控制台、
+/// 父 shell 在场与否）变化，只钉类型契约不断言真值。
+#[cfg(target_os = "windows")] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
+#[test]
+fn console_is_solo_fresh_returns_bool_without_panicking() {
+    let _solo = console_is_solo_fresh();
+}

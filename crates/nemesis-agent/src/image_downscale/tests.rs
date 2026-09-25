@@ -217,3 +217,45 @@ fn flatten_alpha_onto_white() {
         px
     );
 }
+
+// ---------------------------------------------------------------------------
+// wave5 补充：阶梯里"图小于目标级"的 clone 臂 + 全阶梯耗尽的诚实 Err。
+// ---------------------------------------------------------------------------
+
+#[test]
+fn downscale_small_image_takes_clone_branch() {
+    let dir = TempDir::new("smallclone");
+    let img = solid_rgb(32, 24, [10, 120, 200]);
+    let bytes = encode_jpeg(&img, 85);
+    let src = dir.0.join("in.jpg");
+    std::fs::write(&src, &bytes).unwrap();
+    // 大阈值：图小于每个阶梯目标 → 不缩放，纯重编码即达标。
+    let limits = Limits {
+        entry_bytes: 10 * 1024 * 1024,
+        entry_dimension: 8000,
+        out_bytes: 200 * 1024,
+    };
+    let v = downscale_gate_with(&src, &dir.0, &limits).unwrap();
+    assert!(
+        matches!(v, GateVerdict::Replaced { .. } | GateVerdict::Keep),
+        "{v:?}"
+    );
+}
+
+#[test]
+fn downscale_reports_honest_err_when_ladder_exhausted() {
+    let dir = TempDir::new("exhaust");
+    let img = noise_rgb(64, 64);
+    let bytes = encode_jpeg(&img, 85);
+    let src = dir.0.join("in.jpg");
+    std::fs::write(&src, &bytes).unwrap();
+    // entry_bytes=1 让闸启动降采样；out_bytes=1：任何 JPEG 编码产物都
+    // 超限 → 阶梯走完 → 诚实 Err。
+    let limits = Limits {
+        entry_bytes: 1,
+        entry_dimension: 8000,
+        out_bytes: 1,
+    };
+    let err = downscale_gate_with(&src, &dir.0, &limits).unwrap_err();
+    assert!(err.contains("仍超过"), "{err}");
+}

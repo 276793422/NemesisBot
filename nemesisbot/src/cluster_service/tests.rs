@@ -688,3 +688,186 @@ fn cd4_rebuild_skips_unresolvable_worker_and_none_store() {
     assert!(cluster.task_manager().get_task("task-cd4-ghost").is_none());
     let _ = std::fs::remove_dir_all(tmp.path());
 }
+
+// =========================================================================
+// wave4 追加（coverage）：G5 续行快照重登记四形态、discussion_inbox Some
+// 臂（sender 换入）、CD4 超安全网行 + 空库短路。
+// =========================================================================
+
+/// G5（A 侧重启恢复链路）：first_start 把磁盘续行快照重登记进 TaskManager。
+/// 四形态一次钉全：正常快照（Pending + peer/channel/chat 随行）、已登记
+/// 防重复、旧格式无 peer_id 跳过、损坏 JSON 跳过。损坏 config 让 agent
+/// 构建失败（确定性、不 spawn loop）——G5 块在构建之前已跑完，不影响。
+#[tokio::test]
+async fn g5_first_start_reregisters_pending_continuations_from_disk() {
+    let tmp = tempfile::tempdir().unwrap();
+    let ws = tmp.path().join("ws");
+    std::fs::create_dir_all(&ws).unwrap();
+    let cluster = Arc::new(nemesis_cluster::cluster::Cluster::with_workspace(
+        ClusterConfig {
+            node_id: "test-node".to_string(),
+            bind_address: "127.0.0.1:0".to_string(),
+            peers: Vec::new(),
+            node_name: String::new(),
+        },
+        ws.clone(),
+    ));
+
+    let snap = |tid: &str, peer: &str| nemesis_agent::ContinuationSnapshot {
+        task_id: tid.to_string(),
+        messages: "[]".to_string(),
+        tool_call_id: "tc-1".to_string(),
+        channel: "telegram".to_string(),
+        chat_id: "chat-1".to_string(),
+        session_key: String::new(),
+        peer_id: peer.to_string(),
+        image_refs: vec![],
+        image_refs_by_user_turn: vec![],
+        created_at: "2026-09-25T00:00:00Z".to_string(),
+        final_persisted: false,
+    };
+    let cont = nemesis_agent::ContinuationStore::new(&ws);
+    cont.save(&snap("g5-ok", "node-b"))
+        .expect("seed ok snapshot");
+    cont.save(&snap("g5-oldfmt", ""))
+        .expect("seed oldfmt snapshot");
+    let cache_dir = nemesis_path::resolve_cluster_rpc_cache_dir_in_workspace(&ws);
+    std::fs::write(cache_dir.join("g5-corrupt.json"), "{ not json").expect("seed corrupt");
+    // 防重复提交臂：同 id 先手工登记（peer 不同 → 若重提交会被断言抓到）。
+    cluster
+        .task_manager()
+        .submit(nemesis_types::cluster::Task {
+            id: "g5-dup".to_string(),
+            status: nemesis_types::cluster::TaskStatus::Pending,
+            action: "peer_chat".to_string(),
+            peer_id: "node-c".to_string(),
+            payload: serde_json::json!({}),
+            result: None,
+            original_channel: String::new(),
+            original_chat_id: String::new(),
+            created_at: String::new(),
+            completed_at: None,
+        })
+        .expect("pre-register dup");
+    cont.save(&snap("g5-dup", "node-c"))
+        .expect("seed dup snapshot");
+
+    let home = tmp.path().join("home");
+    write_corrupt_config(&home);
+    let shared = make_shared_with_flag(&home);
+    let adapter = ClusterServiceAdapter::new(
+        cluster.clone(),
+        shared,
+        tokio::runtime::Handle::current(),
+        home,
+        Arc::new(ClusterTaskList::new(tmp.path().join("tasks"))),
+        Arc::new(ClusterWorkQueue::new(8)),
+        test_persister(),
+        None,
+    );
+    adapter.first_start().expect("first_start");
+
+    // 成功臂：Pending 重登记 + 快照字段随行。
+    let t = cluster
+        .task_manager()
+        .get_task("g5-ok")
+        .expect("正常快照必须重登记");
+    assert_eq!(t.status, nemesis_types::cluster::TaskStatus::Pending);
+    assert_eq!(t.peer_id, "node-b");
+    assert_eq!(t.original_channel, "telegram");
+    assert_eq!(t.original_chat_id, "chat-1");
+    // 防重复臂：已登记的保持原样。
+    assert_eq!(
+        cluster.task_manager().get_task("g5-dup").unwrap().peer_id,
+        "node-c",
+        "已登记任务不得被快照覆盖重提交"
+    );
+    // 跳过臂：旧格式（无 peer_id）与损坏 JSON 都不登记。
+    assert!(cluster.task_manager().get_task("g5-oldfmt").is_none());
+    assert!(cluster.task_manager().get_task("g5-corrupt").is_none());
+}
+
+/// discussion_inbox Some 臂：start 前 send 无门（Err），first_start 换入
+/// 新 sender 后 send 有门（Ok，rx 由常驻 agent loop 持有）。
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn first_start_with_discussion_inbox_wires_sender() {
+    let tmp = tempfile::tempdir().unwrap();
+    let home = tmp.path().join("home");
+    write_cluster_model_config(&home);
+    let cluster = Arc::new(nemesis_cluster::cluster::Cluster::new(ClusterConfig {
+        node_id: "test-node".to_string(),
+        bind_address: "127.0.0.1:0".to_string(),
+        peers: Vec::new(),
+        node_name: String::new(),
+    }));
+    let shared = make_shared_with_flag(&home);
+    let inbox = Arc::new(crate::cluster_agent::DiscussionInbox::new());
+    let adapter = ClusterServiceAdapter::new(
+        cluster,
+        shared,
+        tokio::runtime::Handle::current(),
+        home,
+        Arc::new(ClusterTaskList::new(tmp.path().join("tasks"))),
+        Arc::new(ClusterWorkQueue::new(8)),
+        test_persister(),
+        Some(inbox.clone()),
+    );
+
+    // start 前：sender 未设 → 诚实 Err。
+    let ev = nemesis_types::cluster::DiscussionEvent {
+        thread_kind: "channel".to_string(),
+        thread_id: 1,
+        seq: 3,
+        ..Default::default()
+    };
+    assert!(
+        inbox.send(ev.clone()).is_err(),
+        "start 前 sender 未设必须 Err"
+    );
+
+    adapter.first_start().expect("first_start");
+    // Some 臂：每次 start 造新管道换入 inbox → send 有门（rx 在常驻 loop 手里）。
+    assert!(inbox.send(ev).is_ok(), "start 后必须换入新 sender");
+}
+
+/// CD4 残余臂：空库短路（无在途派发行 → 0）+ 超安全网行不登记
+/// （安全网压到 0 → 任何 age 都超期，留给派发超时 sweep 收口）。
+#[cfg(all(feature = "board", feature = "cluster"))]
+#[test]
+fn cd4_rebuild_skips_expired_and_empty_store() {
+    let tmp = tempfile::tempdir().unwrap();
+    let cluster = cd4_cluster();
+
+    // 空库（无在途派发行）→ 0。
+    let store_empty = Arc::new(
+        nemesis_board::BoardStore::open(&tmp.path().join("b-empty.db"), "NB").expect("open"),
+    );
+    assert_eq!(
+        super::rebuild_pending_from_board_dispatches(&cluster, &(Some(store_empty) as _)),
+        0,
+        "空库短路"
+    );
+
+    // 超安全网行：安全网压到 0 → age 恒超期。
+    cluster
+        .task_manager()
+        .set_pending_timeout(chrono::Duration::zero());
+    let store = Arc::new(
+        nemesis_board::BoardStore::open(&tmp.path().join("b-exp.db"), "NB").expect("open"),
+    );
+    let actor = nemesis_board::Actor::system("test");
+    let issue = store
+        .create_issue(nemesis_board::models::NewIssue {
+            title: "cd4-exp".into(),
+            ..Default::default()
+        })
+        .unwrap();
+    store
+        .insert_dispatch("task-cd4-exp", issue.id, "remote-001", &actor)
+        .unwrap();
+
+    let rebuilt = super::rebuild_pending_from_board_dispatches(&cluster, &(Some(store) as _));
+    assert_eq!(rebuilt, 0, "超安全网的行不得登记（恢复轮询首 tick 判死）");
+    assert!(cluster.task_manager().get_task("task-cd4-exp").is_none());
+    let _ = std::fs::remove_dir_all(tmp.path());
+}

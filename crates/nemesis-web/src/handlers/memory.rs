@@ -1342,3 +1342,10 @@ mod tests;
 // arms + offline model-install success + helper edge cases.
 #[cfg(all(test, feature = "memory"))]
 mod s10b_tests;
+
+// AGT 覆盖率批次（2026-09-24）：team_memory 命令组（board 注入）、
+// legacy 向量库一次性迁移拷贝、entries.get/delete 的 store 缺失与空行臂、
+// test-fixture 嵌入注入的语义 search/get/delete 全链。结构性豁免见
+// agt_tests 文件头注。
+#[cfg(all(test, feature = "memory"))]
+mod agt_tests;

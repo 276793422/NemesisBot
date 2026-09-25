@@ -2673,3 +2673,9 @@ fn add_platform_firewall_rules(
 
 #[cfg(test)]
 mod tests;
+
+// AGT 覆盖率批次（2026-09-24）：接口面 / persist_peers_identity 全新臂 /
+// estop 冻结门 / firewall 结构与端口校验 / config.save 目录占位失败 /
+// tasks.list 空聚合与 duration Null / tasks.detail 终态标签 / pair 拒连快败。
+#[cfg(test)]
+mod agt_tests;

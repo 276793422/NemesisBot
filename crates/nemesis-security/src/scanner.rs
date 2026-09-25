@@ -1966,4 +1966,6 @@ pub fn shared_scan_chain() -> SharedScanChain {
 // ---------------------------------------------------------------------------
 
 #[cfg(test)]
+mod cov_tests;
+#[cfg(test)]
 mod tests;

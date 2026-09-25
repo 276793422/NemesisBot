@@ -341,4 +341,6 @@ impl LLMProvider for CodexCliProvider {
 }
 
 #[cfg(test)]
+mod cov_tests;
+#[cfg(test)]
 mod tests;

@@ -1092,6 +1092,11 @@ mod tests;
 #[cfg(test)]
 mod s9_tests;
 
+// 覆盖率补充批次：legacy 迁移 / 方言解析 / run_hook_script 失败面 /
+// ScriptOutcome 方言语义 / load_from_dir fail-open。
+#[cfg(test)]
+mod cov_tests;
+
 // ---------------------------------------------------------------------------
 // 观察包装器（2026-09-24 三合一收口件3）：审批/提问边界 → Notification
 // ---------------------------------------------------------------------------
@@ -1240,3 +1245,9 @@ impl nemesis_security::auditor::ApprovalManager for ObservingApprovalManager {
         )
     }
 }
+
+// Wave6B 覆盖率收尾批次：观察型事件 exit-2 日志臂（SubagentStop warn /
+// Notification debug / compact stdout info）/ notification_payload extra
+// 并入 / legacy 迁移 copy 失败 warn / ObservingApprovalManager is_running。
+#[cfg(test)]
+mod cov2_tests;

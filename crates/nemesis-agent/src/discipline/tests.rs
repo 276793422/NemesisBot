@@ -545,3 +545,54 @@ fn gate_inbound_discipline_arm_toggles_and_reports_disabled() {
     assert!(response.contains("用户收工"), "response={response}");
     assert_eq!(st.participating_len(), 0);
 }
+
+// ---------------------------------------------------------------------------
+// wave5 补充：waive 审计/证伪记录的落盘失败臂（warn 不上抛）+ 空 reason
+// 跳过审计 + 两个 hook 的 name() 恒等。
+// ---------------------------------------------------------------------------
+
+#[test]
+fn clear_interactive_blank_reason_skips_audit() {
+    let ws = tempfile::tempdir().unwrap();
+    let state = DisciplineState::new(false, ws.path().to_path_buf(), false);
+    state.clear_interactive("sess-blank", Some("   "));
+    // 空 reason = 无审计落盘（目录都不建）。
+    assert!(
+        !ws.path().join(DISCIPLINE_DIR).exists(),
+        "空 reason 不得触发 waive 审计"
+    );
+}
+
+#[test]
+fn waive_audit_write_failure_is_swallowed() {
+    let ws = tempfile::tempdir().unwrap();
+    let state = DisciplineState::new(false, ws.path().to_path_buf(), false);
+    // 审计文件路径上放一个目录 → open 失败 → warn 臂，不 panic。
+    let audit = ws.path().join(DISCIPLINE_DIR).join("waive-audit.jsonl");
+    std::fs::create_dir_all(&audit).unwrap();
+    state.clear_interactive("sess-audit-fail", Some("正常理由"));
+}
+
+#[test]
+fn falsification_record_failures_are_swallowed() {
+    // 形态一：.discipline 是文件 → create_dir_all 失败。
+    let ws = tempfile::tempdir().unwrap();
+    let state = DisciplineState::new(false, ws.path().to_path_buf(), false);
+    std::fs::write(ws.path().join(DISCIPLINE_DIR), b"x").unwrap();
+    state.write_falsification_record("s1", 1, "cmd", true, "out");
+    // 形态二：目录可建但记录文件路径是目录 → write 失败。
+    let ws2 = tempfile::tempdir().unwrap();
+    let state2 = DisciplineState::new(false, ws2.path().to_path_buf(), false);
+    std::fs::create_dir_all(ws2.path().join(DISCIPLINE_DIR).join("falsification-1.json")).unwrap();
+    state2.write_falsification_record("s2", 1, "cmd", true, "out");
+}
+
+#[test]
+fn discipline_hook_names() {
+    let ws = tempfile::tempdir().unwrap();
+    let state = DisciplineState::new(false, ws.path().to_path_buf(), false);
+    let gate = DisciplineGateHook::new(state.clone());
+    let fals = DisciplineFalsificationHook::new(state);
+    assert_eq!(ToolHook::name(&gate), "discipline-gate");
+    assert_eq!(LifecycleHook::name(&fals), "discipline-falsification");
+}

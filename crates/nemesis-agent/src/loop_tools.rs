@@ -7659,3 +7659,14 @@ mod multiedit_tests;
 // 文本路径字节不变。
 #[cfg(test)]
 mod read_binary_tests;
+
+// Wave4 覆盖率补充批次：exec 判定原语 / magic 分派 / run_one_stage /
+// run_checks 解析助手 / WebSearch 无 key 早退（零网络）。
+#[cfg(test)]
+mod cov_more_tests;
+
+// Wave6B 覆盖率收尾批次：checks_commands 全生态 / Default 实现 / 空 ctx 回退
+// / 级联两臂 / 文件锁错误注入 / SkillManage 审批 Err+JoinError / 工作流创建
+// 决策表 / register_shared_tools 各注册臂。
+#[cfg(test)]
+mod cov_wave6_tests;

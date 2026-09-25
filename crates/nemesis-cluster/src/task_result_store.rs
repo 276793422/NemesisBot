@@ -803,4 +803,6 @@ impl GoTaskResultStore {
 // ===========================================================================
 
 #[cfg(test)]
+mod cov_tests;
+#[cfg(test)]
 mod tests;

@@ -2436,3 +2436,14 @@ mod e4_lineage_tests;
 // security/memory。
 #[cfg(test)]
 mod project_binding_tests;
+
+// AGT 覆盖率批次（2026-09-24）：dispatch 层参数提取兜底臂、parse_cluster_dir_name
+// None 与 sorted_files 缺目录、scan_session_logs 空文件/undelivered 回填、审计链
+// 段收集（根无 parent/段目录不可读/空行）与 prev_hash mismatch、request/cluster
+// entry 坏 JSON 与无头 md 落穿、parse_request_iterations stub 迭代 + Local.md 挂接、
+// read_round_envelope/envelope_matches_round 拒绝臂、replay 显式目录缺轮 →
+// no_recording 与空记录键 → DegradedSubsequence、parse_local_tool_results 空名
+// flush/栅栏/坏 Duration、build_iteration_json 不可读 Local.md。结构性豁免见
+// agt_tests 文件头注。
+#[cfg(test)]
+mod agt_tests;

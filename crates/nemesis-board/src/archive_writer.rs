@@ -332,4 +332,6 @@ pub fn sync_project_manifest(store: &BoardStore, project_id: i64) {
 }
 
 #[cfg(test)]
+mod cov_tests;
+#[cfg(test)]
 mod tests;

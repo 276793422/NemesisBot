@@ -252,4 +252,6 @@ pub async fn download_file_simple(url: &str, filename: &str) -> String {
 }
 
 #[cfg(test)]
+mod cov_tests;
+#[cfg(test)]
 mod tests;

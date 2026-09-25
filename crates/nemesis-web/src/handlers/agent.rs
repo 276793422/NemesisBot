@@ -356,3 +356,10 @@ mod tests;
 // arms (cancel/checkpoints/rewind Some-loop + turn guards).
 #[cfg(test)]
 mod s10b_tests;
+
+// AGT 覆盖率批次（2026-09-25）：retry_status 全函数（unavailable / ok 无
+// 重试）、cancel/rewind/checkpoints 的 session_id 归属解析分派臂、start 的
+// bridge 热切联动（reload_provider_all）+ update_model_info 的 config 缺失
+// 落空臂。结构性豁免见 agt_tests 文件头注。
+#[cfg(test)]
+mod agt_tests;

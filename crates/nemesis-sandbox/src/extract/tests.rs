@@ -219,3 +219,65 @@ async fn resolve_seven_zip_uses_system_7z_when_no_cache() {
     );
     assert!(p.exists(), "系统 7z 路径必须真实存在: {}", p.display());
 }
+
+// ---------------------------------------------------------------------------
+// AGT 覆盖率批次（2026-09-24）：find_system_7z 的 `where` 命中臂 +
+// resolve/status 的 system 分支。PATH 前插一个含假 7z.exe 的目录确定性
+// 触发（where 按当前目录 + PATH 顺序搜索，前插必命中），绝不进网络下载
+// 分支。前插只是超集、不破坏并行测试的工具解析；退出前恢复原 PATH。
+// ---------------------------------------------------------------------------
+
+#[cfg(windows)]
+#[test]
+fn resolve_and_status_hit_system_branch_via_path_probe() {
+    // PATH 注入与 cov_wave6b_tests 的另两个 PATH 用例共用一把锁串行——
+    // 进程全局环境无法隔离，只能靠互斥消除用例间竞态。
+    // 锁必须横跨 resolve_seven_zip 的 await，而 clippy 禁止 async 内持
+    // std 锁跨 await——故用同步测试 + 自建 runtime block_on。
+    let _path_guard = super::cov_tests::PATH_LOCK
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
+    let tmp = tempfile::tempdir().unwrap();
+    let fake_dir = tmp.path().join("fakebin");
+    std::fs::create_dir_all(&fake_dir).unwrap();
+    let fake_7z = fake_dir.join("7z.exe");
+    std::fs::write(&fake_7z, b"not-a-pe").unwrap();
+
+    let old = std::env::var("PATH").unwrap_or_default();
+    // edition 2024：set_var 是 unsafe（进程全局副作用）。
+    // SAFETY: 测试进程内临时前插 PATH；恢复在下方，且泄漏也只是超集。
+    unsafe {
+        std::env::set_var("PATH", format!("{};{}", fake_dir.display(), old));
+    }
+
+    // seven_zip_status：无缓存目录 → find_system_7z 命中 system 分支
+    let no_cache = tmp.path().join("no_cache_dir");
+    assert_eq!(
+        seven_zip_status(&no_cache),
+        (true, "system"),
+        "PATH 前插假 7z.exe 必报 system"
+    );
+
+    // resolve_seven_zip：无缓存 → system 臂（info! + 返回），不触发下载
+    let rt = tmp.path().join("rt");
+    std::fs::create_dir_all(&rt).unwrap();
+    let got = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap()
+        .block_on(resolve_seven_zip(&rt))
+        .unwrap();
+    // 断言走 canonicalize_for_compare：tempfile 在 8.3 短名启用的卷上给
+    // 短名（LOCALA~1），where.exe 输出长名（localadmin）——语义同路径，
+    // 文字比较会机器相关假红（远端 zoo 用户名无 8.3 缩短所以不显）。
+    assert_eq!(
+        nemesis_path::paths::canonicalize_for_compare(&got),
+        nemesis_path::paths::canonicalize_for_compare(&fake_7z),
+        "必须返回 where 找到的假 system 7z"
+    );
+
+    // SAFETY: 恢复原 PATH。
+    unsafe {
+        std::env::set_var("PATH", old);
+    }
+}

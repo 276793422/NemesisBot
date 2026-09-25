@@ -77,4 +77,6 @@ fn extract_http_status(msg: &str) -> Option<u16> {
 }
 
 #[cfg(test)]
+mod cov_tests;
+#[cfg(test)]
 mod tests;

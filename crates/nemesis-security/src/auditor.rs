@@ -1905,4 +1905,6 @@ pub fn get_audit_log(auditor: &SecurityAuditor, filter: &AuditFilter) -> Vec<Aud
 }
 
 #[cfg(test)]
+mod cov_tests;
+#[cfg(test)]
 mod tests;

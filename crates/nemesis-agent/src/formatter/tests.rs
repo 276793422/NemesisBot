@@ -296,3 +296,15 @@ async fn formatter_success_but_unchanged_no_annotation() {
     assert_eq!(out, "wrote", "success-but-unchanged must not annotate");
     assert_eq!(std::fs::read_to_string(&file).unwrap(), "fn a(){}\n");
 }
+
+// wave5：config 读失败 → 全缺省 → disabled 早退（107 臂）。
+#[tokio::test]
+async fn format_on_save_missing_config_is_noop() {
+    let out = format_on_save(
+        Some(PathBuf::from("Z:/definitely/not/here/config.json")),
+        "fixture.rs",
+        "unchanged body",
+    )
+    .await;
+    assert_eq!(out, "unchanged body");
+}

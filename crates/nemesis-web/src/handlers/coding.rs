@@ -237,3 +237,9 @@ fn load_config(home: &str) -> Result<nemesis_config::Config, String> {
 
 #[cfg(test)]
 mod tests;
+
+// AGT 覆盖率批次（2026-09-25）：lsp_install 的交互型命令诚实拒绝臂
+// （平台条件化）、Plan 模式预检拒绝臂、dispatch 全身（裸 loop 的
+// Unknown tool 短路，不执行安装命令）。豁免见 agt_tests 文件头注。
+#[cfg(test)]
+mod agt_tests;

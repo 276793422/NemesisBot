@@ -278,3 +278,10 @@ impl ModuleHandler for ProjectsHandler {
         }
     }
 }
+
+// AGT 覆盖率批次（2026-09-25）：ProjectsBridge 两个默认方法体（display_label
+// pid 兜底 + reload_provider_all no-op）——既有 MockBridge 覆写了 display_label，
+// 默认体从未执行；本批用不覆写的最小桩直调。豁免（open_in_file_manager 弹窗
+// 纪律）见 agt_tests 头注。
+#[cfg(test)]
+mod agt_tests;

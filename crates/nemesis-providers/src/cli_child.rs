@@ -30,4 +30,6 @@ pub async fn run_with_stdin(
 }
 
 #[cfg(test)]
+mod cov_tests;
+#[cfg(test)]
 mod tests;

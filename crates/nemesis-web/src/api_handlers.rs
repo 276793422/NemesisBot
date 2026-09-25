@@ -1293,3 +1293,11 @@ mod fork_route_tests;
 // fork_route_tests).
 #[cfg(test)]
 mod s10b_tests;
+
+// AGT 覆盖率批次（2026-09-25）：find_latest 顶层非目录 continue 臂、
+// read_log_entries 非法 UTF-8 读失败兜底、/api/internal shutdown 通道发送
+// 失败 500、resolve_fork_store 活 agent 店分支、fork 对「零 user 轮次」
+// 日志的 500 诚实上抛。豁免（收括号 lcov 伪零 + seek 防御臂）见 agt_tests
+// 头注。No feature gate（同 fork_route_tests 形状）。
+#[cfg(test)]
+mod agt_tests;

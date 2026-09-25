@@ -426,4 +426,6 @@ fn format_timestamp(ts: i64) -> String {
 // ===========================================================================
 
 #[cfg(test)]
+mod cov_tests;
+#[cfg(test)]
 mod tests;

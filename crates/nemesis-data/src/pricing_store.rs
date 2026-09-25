@@ -301,3 +301,11 @@ fn write_json_atomic<T: Serialize>(path: &Path, value: &T) -> Result<(), String>
 
 #[cfg(test)]
 mod tests;
+
+// 覆盖率补充测试（分层 alias 索引 / 损坏降级 / 下载层装载）。
+#[cfg(test)]
+mod cov_tests;
+
+// Wave6B 覆盖率收尾：见 cov_wave6b_tests.rs 头注释。
+#[cfg(test)]
+mod cov_wave6b_tests;

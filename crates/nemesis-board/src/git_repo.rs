@@ -618,4 +618,6 @@ pub fn commit_resolution(
 }
 
 #[cfg(test)]
+mod cov_tests;
+#[cfg(test)]
 mod tests;

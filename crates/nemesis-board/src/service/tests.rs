@@ -74,3 +74,79 @@ fn test_asset_secret_injection_and_default_none() {
     assert_eq!(cloned.asset_secret(), svc2.asset_secret());
     cleanup(&dir2);
 }
+
+// ---------------------------------------------------------------------------
+// Wave4 覆盖批次（2026-09-25）：资产目录/讨论桥注入面与就绪判定。
+// ---------------------------------------------------------------------------
+
+use std::sync::Arc as StdArc;
+
+/// 最小 DiscussionIngress 桩：记录调用并返回固定 JSON。
+struct RecordingIngress {
+    hit: std::sync::atomic::AtomicUsize,
+}
+
+impl crate::service::DiscussionIngress for RecordingIngress {
+    fn post(
+        &self,
+        _sender: &crate::assignment::Actor,
+        _thread_kind: &str,
+        _thread_id: i64,
+        _client_msg_id: &str,
+        _content: &str,
+        _reply_to: Option<i64>,
+        _kind_tag: &str,
+    ) -> Result<serde_json::Value, String> {
+        self.hit.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        Ok(serde_json::json!({ "comment_id": 1 }))
+    }
+}
+
+#[test]
+fn asset_serving_requires_both_secret_and_dir() {
+    let (svc, dir) = temp_service("asset-ready", NodeRole::Worker);
+    assert!(!svc.asset_serving_ready(), "裸服务未就绪");
+    assert!(svc.assets_dir().is_none());
+    assert!(svc.asset_secret().is_none());
+
+    let svc = svc.with_asset_secret(vec![1, 2, 3]);
+    assert!(!svc.asset_serving_ready(), "只有密钥仍不就绪");
+    assert_eq!(svc.asset_secret(), Some(&[1u8, 2, 3][..]));
+
+    let assets = dir.join("assets");
+    std::fs::create_dir_all(&assets).unwrap();
+    let svc = svc.with_assets_dir(assets.clone());
+    assert!(svc.asset_serving_ready(), "密钥+目录齐备即就绪");
+    assert_eq!(svc.assets_dir(), Some(assets.as_path()));
+    cleanup(&dir);
+}
+
+#[test]
+fn discussion_bridge_injection_and_dispatch() {
+    let (svc, dir) = temp_service("discuss", NodeRole::Coordinator);
+    assert!(svc.discussion().is_none(), "未注入 = None");
+
+    let rec = StdArc::new(RecordingIngress {
+        hit: std::sync::atomic::AtomicUsize::new(0),
+    });
+    let svc = svc.with_discussion(rec.clone());
+    let bridge = svc.discussion().expect("注入后可取回");
+    let out = bridge
+        .post(
+            &crate::assignment::Actor::admin("admin"),
+            crate::models::thread_kind::CHANNEL,
+            1,
+            "client-1",
+            "大家好",
+            None,
+            "discussion",
+        )
+        .unwrap();
+    assert_eq!(out["comment_id"], 1);
+    assert_eq!(
+        rec.hit.load(std::sync::atomic::Ordering::SeqCst),
+        1,
+        "桩被真实调用一次"
+    );
+    cleanup(&dir);
+}

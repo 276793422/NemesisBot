@@ -268,4 +268,6 @@ pub async fn resolve_host(host: &str) -> Result<Vec<IpAddr>, ResolverError> {
 }
 
 #[cfg(test)]
+mod cov_tests;
+#[cfg(test)]
 mod tests;

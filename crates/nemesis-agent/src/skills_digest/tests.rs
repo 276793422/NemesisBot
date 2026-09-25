@@ -244,3 +244,18 @@ fn test_skills_digest_empty_no_injection() {
         "no skills → no digest message"
     );
 }
+
+// wave5：DigestState::default 转发 new（80-82）。单元结构体直呼
+// Default::default() 会触发 clippy::default_constructed_unit_structs，
+// 经泛型间接调用既保 lint 干净又真正执行 trait 转发。
+#[test]
+fn digest_state_default_delegates_to_new() {
+    fn via_default<H: Default>() -> H {
+        H::default()
+    }
+    let state: DigestState = via_default();
+    assert_eq!(
+        state.should_inject("s1", "rendered"),
+        Some("rendered".to_string())
+    );
+}

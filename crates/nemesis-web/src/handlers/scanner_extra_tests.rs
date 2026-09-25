@@ -1235,3 +1235,109 @@ async fn test_status_sorts_engines_alphabetically() {
         .collect();
     assert_eq!(names, vec!["alpha", "clamav", "zeta"]);
 }
+
+// -----------------------------------------------------------------------
+// Wave-5 覆盖率补：非对象引擎 raw（null）走遍 as_object()/as_object_mut()
+// 的 None 跳过臂——真实配置都是对象，此前只有对象分支被覆盖。
+// -----------------------------------------------------------------------
+
+/// status：引擎 raw 是 null → build_engine_response 只回 name/enabled 基础
+/// 字段（as_object() None，无字段可并入），不 panic。
+#[tokio::test]
+async fn test_status_with_null_engine_raw() {
+    let handler = scanner::ScannerHandler::new();
+    let dir = tempfile::tempdir().unwrap();
+    let mut cfg = nemesis_config::ScannerFullConfig::default();
+    cfg.engines
+        .insert("weird".to_string(), serde_json::Value::Null);
+    write_scanner_config(dir.path(), &cfg);
+    let ctx = make_ctx(&dir);
+
+    let result = handler
+        .handle_cmd("status", None, &ctx)
+        .await
+        .unwrap()
+        .unwrap();
+    let engines = result["engines"].as_array().unwrap();
+    assert_eq!(engines.len(), 1);
+    assert_eq!(engines[0]["name"], "weird");
+    assert_eq!(engines[0]["enabled"], false);
+    // 非对象 raw → 没有任何键可并入
+    assert!(engines[0].get("url").is_none(), "{:?}", engines[0]);
+    assert!(engines[0].get("state").is_none(), "{:?}", engines[0]);
+}
+
+/// enable：引擎 raw 是 null → install_status 为空触发 PENDING 注入路径，
+/// 但 as_object_mut() None → state 无法并入，raw 原样写回（不 panic）。
+#[tokio::test]
+async fn test_enable_with_null_engine_raw() {
+    let handler = scanner::ScannerHandler::new();
+    let dir = tempfile::tempdir().unwrap();
+    let mut cfg = nemesis_config::ScannerFullConfig::default();
+    cfg.engines
+        .insert("weird".to_string(), serde_json::Value::Null);
+    write_scanner_config(dir.path(), &cfg);
+    let ctx = make_ctx(&dir);
+
+    let result = handler
+        .handle_cmd("enable", Some(serde_json::json!({"name": "weird"})), &ctx)
+        .await
+        .unwrap()
+        .unwrap();
+    let engines = result["engines"].as_array().unwrap();
+    let entry = engines.iter().find(|e| e["name"] == "weird").unwrap();
+    assert_eq!(entry["enabled"], true);
+    // raw 仍是非对象 → 无 state 键
+    assert!(entry.get("state").is_none(), "{:?}", entry);
+}
+
+/// install：引擎 raw 是 null → 无 URL 快速失败（不触网不下载）；失败标记里
+/// as_object_mut() None 跳过 state 并入。用 cancel 探针轮询后台任务结束
+/// （cancel 本身不启动任何东西：Ok=仍在跑，Err=已结束）。
+#[tokio::test]
+async fn test_install_null_engine_raw_fails_without_network() {
+    let handler = scanner::ScannerHandler::new();
+    let dir = tempfile::tempdir().unwrap();
+    let mut cfg = nemesis_config::ScannerFullConfig::default();
+    cfg.engines
+        .insert("ghost-eng".to_string(), serde_json::Value::Null);
+    write_scanner_config(dir.path(), &cfg);
+    let ctx = make_ctx(&dir);
+
+    let started = handler
+        .handle_cmd(
+            "install",
+            Some(serde_json::json!({"name": "ghost-eng"})),
+            &ctx,
+        )
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(started["started"], true);
+
+    // 轮询至后台任务结束（快速失败毫秒级；上限 2s 兜底）
+    for _ in 0..200 {
+        if handler
+            .handle_cmd(
+                "cancel",
+                Some(serde_json::json!({"name": "ghost-eng"})),
+                &ctx,
+            )
+            .await
+            .is_err()
+        {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+    }
+
+    // 失败标记：raw 非对象 → state 无法并入，配置保持原样
+    let result = handler
+        .handle_cmd("status", None, &ctx)
+        .await
+        .unwrap()
+        .unwrap();
+    let engines = result["engines"].as_array().unwrap();
+    let entry = engines.iter().find(|e| e["name"] == "ghost-eng").unwrap();
+    assert!(entry.get("state").is_none(), "{:?}", entry);
+}

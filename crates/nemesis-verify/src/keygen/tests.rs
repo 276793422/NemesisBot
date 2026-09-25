@@ -172,3 +172,51 @@ fn dump_chain_for_external_inspection() {
         println!("{}", p.display());
     }
 }
+
+// ---------------------------------------------------------------------------
+// AGT 覆盖率批次（2026-09-24）：from_json 分包形态拒绝——证书 hex 字段空串
+//（require_cert_hex 空串臂）+ 坏 hex 解码臂 + 版本不符臂。
+// ---------------------------------------------------------------------------
+
+/// AGT 助手：取出 Err 的展示串（KeyHierarchy 无 Debug，不能用 unwrap_err）。
+fn agt_err_of<T>(r: Result<T, anyhow::Error>) -> String {
+    match r {
+        Ok(_) => panic!("期望 Err，实得 Ok"),
+        Err(e) => format!("{e:#}"),
+    }
+}
+
+#[test]
+fn agt_from_json_rejects_empty_and_bad_cert_fields() {
+    let kh = generate_at(NOW).unwrap();
+    let mut j = kh.to_json();
+    assert_eq!(j.version, KEYS_JSON_VERSION);
+
+    // 任一证书字段空串（分包形态）→ 命名字段诚实拒绝
+    for field in ["root_cert", "issuing_cert", "leaf_cert"] {
+        let mut probe = kh.to_json();
+        match field {
+            "root_cert" => probe.root_cert = String::new(),
+            "issuing_cert" => probe.issuing_cert = String::new(),
+            "leaf_cert" => probe.leaf_cert = String::new(),
+            _ => unreachable!(),
+        }
+        let msg = agt_err_of(KeyHierarchy::from_json(&probe));
+        assert!(msg.contains(field) && msg.contains("字段为空"), "{msg}");
+    }
+
+    // 证书字段坏 hex → 解码错误带字段名
+    j.leaf_cert = "zz-not-hex".into();
+    assert!(
+        agt_err_of(KeyHierarchy::from_json(&j)).contains("leaf_cert"),
+        "坏 hex 应带字段名"
+    );
+
+    // 版本不符 → 旧版诚实拒绝
+    let mut old = kh.to_json();
+    old.version = KEYS_JSON_VERSION + 1;
+    assert!(
+        agt_err_of(KeyHierarchy::from_json(&old)).contains("版本不支持"),
+        "版本不符应诚实拒绝"
+    );
+}

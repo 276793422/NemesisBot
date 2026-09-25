@@ -607,3 +607,111 @@ fn test_split_message_reopens_fence_when_unclosed_idx_small() {
     assert!(result[0].ends_with("```"));
     assert!(result[0].contains("```"));
 }
+
+// ---------------------------------------------------------------------------
+// BUG-3 回归：CJK/多字节字符边界 panic（2026-09-26 修复）
+// 根因两类：① effective_limit/inner_limit/max_len-5 等算术字节上限直接切片；
+// ② find_last_unclosed_code_block/find_next_closing_code_block 用 char 索引
+//    当字节偏移返回（纯 ASCII 下巧合相等）。以下用例在修复前全部 panic。
+// ---------------------------------------------------------------------------
+
+#[test]
+fn test_split_message_cjk_no_panic_byte_boundary() {
+    // 修复前：effective_limit=50 落在"字"(3字节)中间 → content[..50] panic
+    let text = "字".repeat(250);
+    let result = split_message(&text, 100);
+    assert!(result.len() > 1);
+    for chunk in &result {
+        assert!(chunk.chars().all(|c| c == '字'), "chunk 内混入残字符");
+        assert!(chunk.len() <= 100, "chunk 超限: {}", chunk.len());
+        // 切点必须落在完整字符边界（能逐 char 迭代即无残字节）
+        assert_eq!(chunk.chars().count() * 3, chunk.len());
+    }
+    // 无损：CJK 无空白，trim 不咬人，拼回应等于原文
+    assert_eq!(result.concat(), text);
+}
+
+#[test]
+fn test_split_message_mixed_multibyte_no_panic() {
+    // 中/英/日/emoji 混排 + 尾部围栏，各算术上限（effective_limit/inner_limit/
+    // max_len-5）都可能落在多字节中间
+    let text = format!(
+        "hello {} こんにちは {} 你好世界\n```python\nprint('{}')\n```",
+        "世".repeat(80),
+        "🦀".repeat(10),
+        "界".repeat(60),
+    );
+    let result = split_message(&text, 100);
+    assert!(result.len() > 1);
+    for chunk in &result {
+        assert!(!chunk.is_empty());
+    }
+}
+
+#[test]
+fn test_split_message_cjk_with_unclosed_code_block_no_panic() {
+    // 围栏扫描字节化之前的路径：unclosed_idx 在 CJK 文本中必须仍是合法
+    // 字节偏移，content[unclosed_idx..] 不 panic 且指到 ``` 上
+    let text = format!(
+        "{}\n```python\n{}\n{}",
+        "前".repeat(60),
+        "代码行".repeat(100),
+        "尾".repeat(50),
+    );
+    let result = split_message(&text, 100);
+    assert!(result.len() > 1);
+}
+
+#[test]
+fn test_format_message_cjk_no_panic_byte_boundary() {
+    // 修复前：content[..5] panic（"字"占 3 字节）
+    let text = "字".repeat(10);
+    let result = format_message(&text, 5);
+    assert!(result.contains("truncated"));
+    assert!(result.contains("30 chars total"));
+    assert!(result.starts_with("字"));
+}
+
+#[test]
+fn test_format_message_emoji_no_panic_byte_boundary() {
+    // 4 字节 emoji，max_len=6 落在第二个 emoji 的续字节中间 → 回退到 4
+    //（一个完整 emoji），不得 panic 也不得切出残字节
+    let text = "🦀".repeat(5);
+    let result = format_message(&text, 6);
+    assert_eq!(result, format!("🦀... (truncated, 20 chars total)"));
+}
+
+#[test]
+fn test_find_last_unclosed_code_block_returns_byte_offset_with_cjk() {
+    // 修复前返回 char 索引：中文前缀下 "```" 的 char 索引 ≠ 字节偏移，
+    // 调用方按字节切片 → panic 或错位。修复后必须能直接按字节切出 ```
+    let text = "中文说明\n```python\n代码";
+    let pos = find_last_unclosed_code_block(text);
+    assert!(pos > 0);
+    assert_eq!(&text[pos..pos + 3], "```");
+}
+
+#[test]
+fn test_find_next_closing_code_block_returns_byte_offset_with_cjk() {
+    let text = "```python\n代码\n```\n之后";
+    let pos = find_next_closing_code_block(text, 0);
+    assert!(pos > 0);
+    // 返回值是闭合 ``` 之后的位置
+    assert_eq!(&text[pos - 3..pos], "```");
+}
+
+#[test]
+fn test_split_message_zero_max_len_terminates() {
+    // 修复前 max_len=0 时 effective_limit=0、切出空段且 trim 不前进 → 死循环；
+    // usable_cut 的恒前进保证使循环终止
+    let result = split_message("ab", 0);
+    assert_eq!(result, vec!["a".to_string(), "b".to_string()]);
+}
+
+#[test]
+fn test_split_message_tiny_max_len_cjk_terminates() {
+    // 首字符(3字节)比上限还大：usable_cut 取整字符前进，不得死循环
+    let result = split_message(&"字".repeat(10), 2);
+    assert_eq!(result.len(), 10);
+    assert!(result.iter().all(|c| c == "字"));
+}

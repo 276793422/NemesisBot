@@ -958,3 +958,8 @@ fn detect_skill_structure(owner: &str, repo: &str) -> Result<(String, String, St
 // wiremock 假 ClawHub 网络臂（quality-hardening goal 冲刺 S10a）。
 #[cfg(test)]
 mod tests;
+
+// AGT 覆盖率批次（2026-09-24）：Default impl + parse_github_url 条件假
+// 延续臂。探测/浏览网络臂豁免（见文件头注）。
+#[cfg(test)]
+mod agt_tests;

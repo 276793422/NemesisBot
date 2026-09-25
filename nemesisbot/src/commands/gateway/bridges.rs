@@ -506,3 +506,6 @@ impl nemesis_workflow::nodes::AgentRunner for GatewayAgentRunner {
         })
     }
 }
+
+#[cfg(test)]
+mod cov_tests;

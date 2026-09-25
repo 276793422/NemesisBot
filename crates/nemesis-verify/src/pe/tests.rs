@@ -1181,3 +1181,101 @@ fn s33_coexist_with_third_party_reference_and_write_sample() {
          每条报 CERT_E_UNTRUSTEDROOT 0x800B0109（D7 默认不信任，Number of errors: 2）"
     );
 }
+
+// ---------------------------------------------------------------------------
+// AGT 覆盖率批次（2026-09-24）：read_certificate_entries 的 PKCS 非 DER /
+// TLV 畸形臂、表尾短条目 break、replace_certificate_table 三个诚实失败臂。
+// append_certificate_table 不校验 DER——用「合法 hex 位形」直接塞畸形 blob
+// 即可精确触发解析层各失败分支。
+// ---------------------------------------------------------------------------
+
+/// 塞一个自定义 blob 的证书表（绕开 append 对 CMS 的「非空即可」假设）。
+fn agt_signed_with(blob: &[u8]) -> Vec<u8> {
+    let base = s33_base();
+    append_certificate_table(&base, blob).unwrap()
+}
+
+/// 读条目并取错误文本（WinCertEntry 无 Debug，unwrap_err 不可用）。
+fn agt_read_entries_err(signed: &[u8]) -> String {
+    match crate::pe::read_certificate_entries(signed) {
+        Err(e) => format!("{e:#}"),
+        Ok(v) => panic!("expected Err, got {} entries", v.len()),
+    }
+}
+
+#[test]
+fn read_entries_pkcs_non_der_tlv_forms_bail() {
+    // 注：bCertificate blob = dwLength-8 字节（含 8 对齐 pad），恒 ≥ 8 字节，
+    // der_tlv_len 的 len<2 臂经本入口不可达（防御臂，报告豁免）。
+    // 0x80 不定长（不支持）→ None
+    let signed = agt_signed_with(&[0x30u8, 0x80, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00]);
+    let msg = agt_read_entries_err(&signed);
+    assert!(msg.contains("DER 长度头损坏"), "{msg}");
+
+    // 长式字节数 > 4 → None
+    let signed = agt_signed_with(&[0x30u8, 0x85, 0x01, 0x02, 0x03, 0x04, 0x00, 0x00]);
+    let msg = agt_read_entries_err(&signed);
+    assert!(msg.contains("DER 长度头损坏"), "{msg}");
+
+    // TLV 合法但声称长度超出条目（诚实失败：截不出完整 DER）
+    let signed = agt_signed_with(&[0x30u8, 0x82, 0xFF, 0xFF, 0x00, 0x00, 0x00, 0x00]);
+    let msg = agt_read_entries_err(&signed);
+    assert!(msg.contains("超出条目"), "{msg}");
+
+    // 非 PKCS 类型条目原样保留 blob（不进 DER 裁剪分支）。类型字段在**外层**
+    // WIN_CERTIFICATE 头（append 恒写 PKCS）——append 后改头字节触发。
+    let base = s33_base();
+    let marker = b"RAW-BLOB-1234567"; // 16B：round8 后 blob 与 marker 等长
+    let signed = append_certificate_table(&base, marker).unwrap();
+    let va = base.len().div_ceil(8) * 8;
+    let mut patched = signed;
+    patched[va + 6..va + 8].copy_from_slice(&0x0001u16.to_le_bytes());
+    let entries = crate::pe::read_certificate_entries(&patched).unwrap();
+    assert_eq!(entries.len(), 1);
+    assert_eq!(entries[0].cert_type, 0x0001);
+    assert_eq!(entries[0].certificate, marker, "非 PKCS 条目 blob 原样保留");
+}
+
+#[test]
+fn read_entries_stops_on_short_trailing_entry() {
+    // 表尾 8 字节 dwlen=0 假条目 → 与 Windows 加载器同款「停步不报错」
+    let base = s33_base();
+    let digest = crate::pe::authenticode_digest(&base).unwrap();
+    let h = crate::keygen::generate().unwrap();
+    let cms = s33_cms(&h, &digest, 1_800_000_000);
+    let mut signed = append_certificate_table(&base, &cms).unwrap();
+    signed.extend_from_slice(&0u32.to_le_bytes());
+    signed.extend_from_slice(&[0u8; 4]);
+    // Security Size 表项 +8 覆盖新尾巴（PE32+：dd_start = P+136，Size 在 +36）
+    let size_pos = P + 136 + 36;
+    let old = u32::from_le_bytes(signed[size_pos..size_pos + 4].try_into().unwrap());
+    signed[size_pos..size_pos + 4].copy_from_slice(&(old + 8).to_le_bytes());
+    let entries = crate::pe::read_certificate_entries(&signed).unwrap();
+    assert_eq!(entries.len(), 1, "短条目视作尾部 padding：停在首条目后");
+}
+
+#[test]
+fn replace_certificate_table_rejects_unsigned_trailing_and_empty() {
+    let base = s33_base();
+    let digest = crate::pe::authenticode_digest(&base).unwrap();
+    let h = crate::keygen::generate().unwrap();
+    let cms = s33_cms(&h, &digest, 1_800_000_000);
+
+    // 未签名（Security 表项零值 → 无表）→ 首签走 append
+    let e = crate::pe::replace_certificate_table(&base, &cms).unwrap_err();
+    let msg = format!("{e:#}");
+    assert!(msg.contains("无证书表"), "{msg}");
+
+    // 表后存在数据 → truncate 会吞数据，拒绝
+    let signed = append_certificate_table(&base, &cms).unwrap();
+    let mut trailing = signed.clone();
+    trailing.push(0xAB);
+    let e = crate::pe::replace_certificate_table(&trailing, &cms).unwrap_err();
+    let msg = format!("{e:#}");
+    assert!(msg.contains("证书表后存在 1 字节"), "{msg}");
+
+    // 空 CMS DER → Malformed
+    let e = crate::pe::replace_certificate_table(&signed, b"").unwrap_err();
+    let msg = format!("{e:#}");
+    assert!(msg.contains("CMS DER 为空"), "{msg}");
+}

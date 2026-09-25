@@ -194,3 +194,7 @@ pub fn save_app_config(workspace: &Path, config: &AppConfig) -> Result<(), Confi
 
 #[cfg(test)]
 mod tests;
+
+// 覆盖率补充批次：WARN 宽容臂 + round-trip。
+#[cfg(test)]
+mod cov_tests;

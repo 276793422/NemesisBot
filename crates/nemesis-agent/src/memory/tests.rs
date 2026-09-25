@@ -409,3 +409,40 @@ fn search_case_insensitive() {
     let hits = memory.search("rust");
     assert_eq!(hits.len(), 2);
 }
+
+// ---------------------------------------------------------------------------
+// wave5 补充：长期记忆写读回环（read/write_long_term，208-222）+ 今日笔记
+// 创建与追加两形态（append_today，235-258）+ MemoryConfig::default 值。
+// ---------------------------------------------------------------------------
+
+#[test]
+fn long_term_write_read_roundtrip() {
+    let tmp = tempfile::tempdir().unwrap();
+    let store = MemoryStore::new(tmp.path().to_str().unwrap());
+    assert_eq!(store.read_long_term(), "", "初始为空");
+    store.write_long_term("长期记忆 v1").unwrap();
+    assert_eq!(store.read_long_term(), "长期记忆 v1");
+}
+
+#[test]
+fn append_today_creates_then_appends() {
+    let tmp = tempfile::tempdir().unwrap();
+    let store = MemoryStore::new(tmp.path().to_str().unwrap());
+    assert_eq!(store.read_today(), "", "当日笔记初始为空");
+    store.append_today("第一条").unwrap();
+    let first = store.read_today();
+    assert!(first.contains("第一条"), "{first}");
+    store.append_today("第二条").unwrap();
+    let both = store.read_today();
+    assert!(
+        both.contains("第一条") && both.contains("第二条"),
+        "追加必须保留既有内容: {both}"
+    );
+}
+
+#[test]
+fn memory_config_default_values() {
+    let c = MemoryConfig::default();
+    assert_eq!(c.max_tokens, 32000);
+    assert_eq!(c.keep_tokens, 16000);
+}

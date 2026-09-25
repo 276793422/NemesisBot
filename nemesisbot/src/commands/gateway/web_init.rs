@@ -529,6 +529,9 @@ pub(crate) async fn init_web(ctx: &GatewayCtx, cluster: &ClusterWiring) -> Resul
     })
 }
 
+#[cfg(test)]
+mod cov_tests;
+
 /// 签名验证启动自验快照 → nemesis-web 只读状态结构（接入计划 §4）。
 /// None = 本进程没跑过自验（理论上不可能——main 阶段必调；测试装配兜底）。
 fn signature_status_from_start_check()

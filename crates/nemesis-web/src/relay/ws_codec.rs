@@ -140,3 +140,9 @@ fn rand_mask_key() -> [u8; 4] {
     let mixed = nanos ^ ((addr as u64).rotate_left(17)) ^ (std::process::id() as u64) << 32;
     mixed.to_le_bytes()[..4].try_into().unwrap_or([0; 4])
 }
+
+// AGT 覆盖率批次（2026-09-25）：encode 的 Binary 臂 + 126 编码臂、parse 的
+// 16 位长度截断/完整、64 位截断、FIN=0 占位、text 非法 UTF-8 兜底、Pong、
+// 保留 opcode 兜底。豁免（build_frame server_role 死臂）见 agt_tests 头注。
+#[cfg(test)]
+mod agt_tests;

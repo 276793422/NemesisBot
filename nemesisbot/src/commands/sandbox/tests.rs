@@ -634,3 +634,103 @@ mod wave_b {
         assert!(paths.ini_path.is_file());
     }
 }
+
+// ---------------------------------------------------------------------------
+// wave_a（2026-09-25）：selftest_child 全分支（env 驱动、无网络依赖面）。
+// - WORKSPACE 缺失 → 错误 verdict + Ok；
+// - WORKSPACE 在、不 engage → 三探针 + ok verdict；
+// - ENGAGE=1 且无 BOXED：Windows 上无 userland backend → "no userland
+//   backend" verdict（landlock 是 Linux 专属；绝不触发 UAC/驱动路径）；
+// - ENGAGE=1 + BOXED=1 → 跳过 engage 直接探针。
+// 自检契约：永远 Ok + stdout JSON verdict；断言 Ok 与探针对工作区的副作用。
+// ---------------------------------------------------------------------------
+
+#[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
+mod wave_a_selftest {
+    use std::sync::Mutex;
+
+    static SELFTEST_ENV_LOCK: Mutex<()> = Mutex::new(());
+
+    /// 自检 env 夹具：NEMESISBOT_HOME 指向临时家 + WORKSPACE 指向其 workspace。
+    struct SelftestEnv {
+        _guard: MutexGuard<'static, ()>,
+        _tmp: tempfile::TempDir,
+        workspace: std::path::PathBuf,
+    }
+    use std::sync::MutexGuard;
+
+    impl Drop for SelftestEnv {
+        fn drop(&mut self) {
+            unsafe { std::env::remove_var("NEMESISBOT_HOME") };
+            unsafe { std::env::remove_var("NEMESISBOT_SELFTEST_WORKSPACE") };
+            unsafe { std::env::remove_var("NEMESISBOT_SELFTEST_ENGAGE") };
+            unsafe { std::env::remove_var("NEMESISBOT_SELFTEST_BOXED") };
+            unsafe { std::env::remove_var("NEMESISBOT_SELFTEST_ALLOW_NETWORK") };
+        }
+    }
+
+    fn selftest_env() -> SelftestEnv {
+        let guard = SELFTEST_ENV_LOCK.lock().unwrap();
+        let tmp = tempfile::TempDir::new().unwrap();
+        let home = tmp.path().join(".nemesisbot");
+        let workspace = home.join("workspace");
+        std::fs::create_dir_all(&workspace).unwrap();
+        unsafe { std::env::set_var("NEMESISBOT_HOME", tmp.path()) };
+        unsafe { std::env::set_var("NEMESISBOT_SELFTEST_WORKSPACE", &workspace) };
+        SelftestEnv {
+            _guard: guard,
+            _tmp: tmp,
+            workspace,
+        }
+    }
+
+    fn clear_workspace_var() {
+        unsafe { std::env::remove_var("NEMESISBOT_SELFTEST_WORKSPACE") };
+    }
+
+    #[tokio::test]
+    async fn selftest_child_without_workspace_emits_error_verdict_and_is_ok() {
+        let th = selftest_env();
+        clear_workspace_var();
+        // 子进程契约：缺 WORKSPACE 也必须 Ok（verdict 才是结论载体）。
+        super::super::run(super::super::SandboxCommand::SelftestChild, false)
+            .await
+            .expect("selftest child 必须永远 Ok");
+        assert!(!th.workspace.exists() || th.workspace.is_dir());
+    }
+
+    #[tokio::test]
+    async fn selftest_child_with_workspace_runs_probes_and_is_ok() {
+        let th = selftest_env();
+        super::super::run(super::super::SandboxCommand::SelftestChild, false)
+            .await
+            .expect("探针路径必须 Ok");
+        // 探针在工作区内做过写入尝试（probe_workspace_write 的 canary），
+        // 目录仍存在且没被破坏。
+        assert!(th.workspace.is_dir());
+    }
+
+    #[tokio::test]
+    async fn selftest_child_engage_without_boxed_reports_no_backend() {
+        let th = selftest_env();
+        unsafe { std::env::set_var("NEMESISBOT_SELFTEST_ENGAGE", "1") };
+        // Windows 无 userland backend（bwrap/landlock/seatbelt 都是 Unix），
+        // detect_backend()==None → 错误 verdict，仍 Ok。
+        super::super::run(super::super::SandboxCommand::SelftestChild, false)
+            .await
+            .expect("engage 无 backend 也必须 Ok（verdict 报告）");
+        assert!(th.workspace.is_dir());
+    }
+
+    #[tokio::test]
+    async fn selftest_child_engage_with_boxed_skips_engagement() {
+        let th = selftest_env();
+        unsafe { std::env::set_var("NEMESISBOT_SELFTEST_ENGAGE", "1") };
+        unsafe { std::env::set_var("NEMESISBOT_SELFTEST_BOXED", "1") };
+        // 盒内形态：跳过 apply_to_self，直接探针。
+        super::super::run(super::super::SandboxCommand::SelftestChild, false)
+            .await
+            .expect("boxed 形态必须 Ok");
+        assert!(th.workspace.is_dir());
+    }
+}

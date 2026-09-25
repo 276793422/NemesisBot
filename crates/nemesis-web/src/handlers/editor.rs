@@ -131,3 +131,8 @@ impl ModuleHandler for EditorHandler {
 
 #[cfg(test)]
 mod tests;
+
+// AGT 覆盖率批次（2026-09-25）：refresh_roots 的 bridge 循环体（项目根
+// 注入 + ABAC 侧验证）。双测试锁串行见 agt_tests 头注。
+#[cfg(test)]
+mod agt_tests;

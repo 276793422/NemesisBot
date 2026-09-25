@@ -898,3 +898,171 @@ async fn test_memory_model_install_missing_tier_field() {
     assert!(result.is_err());
     assert_eq!(result.unwrap_err(), "missing field: tier");
 }
+
+// -----------------------------------------------------------------------
+// Wave5 批次：legacy 向量库迁移两臂、entries.store→search 关键词命中闭环、
+// stats 的嵌套目录 / episodic 子目录 / 平铺文件计数臂。
+// -----------------------------------------------------------------------
+
+/// 迁移：legacy `<ws>/memory/vector/vector_store.jsonl` 存在且目标不存在 →
+/// 拷贝到 `<ws>/memory_vector/vector/vector_store.jsonl`（267-271 成功臂）；
+/// 再跑一次 → 目标已存在早退（253-254 幂等臂）。
+#[tokio::test]
+async fn w5_legacy_vector_store_migrates_then_is_noop() {
+    let dir = tempfile::tempdir().unwrap();
+    let ctx = make_ctx(&dir);
+    let legacy = dir.path().join("memory").join("vector");
+    std::fs::create_dir_all(&legacy).unwrap();
+    std::fs::write(
+        legacy.join("vector_store.jsonl"),
+        "{\"content\":\"legacy entry\"}\n",
+    )
+    .unwrap();
+
+    // 任意触碰向量库的命令都会先触发 migrate——用 entries.list。
+    let out = MemoryHandler
+        .handle_cmd("entries.list", None, &ctx)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(out["total"], 1, "{out}");
+    assert_eq!(out["entries"][0]["content"], "legacy entry");
+
+    // 目标已在 → 第二次 migrate 是 no-op（不重复拷贝、不报错）。
+    let out = MemoryHandler
+        .handle_cmd("entries.list", None, &ctx)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(out["total"], 1, "{out}");
+}
+
+/// entries.store 落盘（create_dir_all + append）→ entries.search 关键词
+/// 命中（892）与未命中、坏行跳过（885 continue）。
+#[tokio::test]
+async fn w5_entries_store_then_keyword_search_hits_and_misses() {
+    let dir = tempfile::tempdir().unwrap();
+    let ctx = make_ctx(&dir);
+
+    MemoryHandler
+        .handle_cmd(
+            "entries.store",
+            Some(serde_json::json!({ "content": "the deploy pipeline fails on tuesdays" })),
+            &ctx,
+        )
+        .await
+        .unwrap()
+        .unwrap();
+
+    let hit = MemoryHandler
+        .handle_cmd(
+            "entries.search",
+            Some(serde_json::json!({ "query": "PIPELINE" })),
+            &ctx,
+        )
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(hit["total"], 1, "{hit}");
+    assert_eq!(hit["search_type"], "keyword");
+
+    let miss = MemoryHandler
+        .handle_cmd(
+            "entries.search",
+            Some(serde_json::json!({ "query": "kubernetes" })),
+            &ctx,
+        )
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(miss["total"], 0, "{miss}");
+
+    // 坏 JSON 行被跳过、空行被 trim 掉（885 continue 臂）。
+    let jsonl = dir
+        .path()
+        .join("memory_vector")
+        .join("vector")
+        .join("vector_store.jsonl");
+    let mut raw = std::fs::read_to_string(&jsonl).unwrap();
+    raw.push_str("\nnot-json-at-all\n");
+    std::fs::write(&jsonl, raw).unwrap();
+    let ok = MemoryHandler
+        .handle_cmd(
+            "entries.search",
+            Some(serde_json::json!({ "query": "deploy" })),
+            &ctx,
+        )
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(ok["total"], 1, "{ok}");
+}
+
+/// stats：嵌套 memory 子目录递归计数（1264）、episodic 会话目录内文件
+/// （1327）与平铺文件双计（1334）、graph/vector JSONL 计数。
+#[tokio::test]
+async fn w5_stats_counts_nested_dirs_episodic_and_flat_files() {
+    let dir = tempfile::tempdir().unwrap();
+    let ctx = make_ctx(&dir);
+    let ws = dir.path();
+
+    // memory/ 嵌套树：3 个文件（含子目录递归臂）。
+    std::fs::create_dir_all(ws.join("memory").join("deep").join("deeper")).unwrap();
+    std::fs::write(ws.join("memory").join("MEMORY.md"), "x").unwrap();
+    std::fs::write(ws.join("memory").join("deep").join("a.md"), "x").unwrap();
+    std::fs::write(
+        ws.join("memory").join("deep").join("deeper").join("b.md"),
+        "x",
+    )
+    .unwrap();
+
+    // episodic/：一个会话目录（内含 2 个文件）+ 一个平铺文件。
+    std::fs::create_dir_all(ws.join("memory_vector").join("episodic").join("s1")).unwrap();
+    std::fs::write(
+        ws.join("memory_vector")
+            .join("episodic")
+            .join("s1")
+            .join("r1.jsonl"),
+        "x",
+    )
+    .unwrap();
+    std::fs::write(
+        ws.join("memory_vector")
+            .join("episodic")
+            .join("s1")
+            .join("r2.jsonl"),
+        "x",
+    )
+    .unwrap();
+    std::fs::write(
+        ws.join("memory_vector").join("episodic").join("flat.jsonl"),
+        "x",
+    )
+    .unwrap();
+
+    // graph/：entities 2 行、triples 1 行 + 空行。
+    std::fs::create_dir_all(ws.join("memory_vector").join("graph")).unwrap();
+    std::fs::write(
+        ws.join("memory_vector")
+            .join("graph")
+            .join("entities.jsonl"),
+        "{\"e\":1}\n{\"e\":2}\n",
+    )
+    .unwrap();
+    std::fs::write(
+        ws.join("memory_vector").join("graph").join("triples.jsonl"),
+        "{\"t\":1}\n\n",
+    )
+    .unwrap();
+
+    let out = MemoryHandler
+        .handle_cmd("stats", None, &ctx)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(out["memory_entries"], 3, "{out}");
+    assert_eq!(out["episodic_sessions"], 2, "{out}");
+    assert_eq!(out["episodic_episodes"], 3, "{out}");
+    assert_eq!(out["graph_entities"], 2, "{out}");
+    assert_eq!(out["graph_triples"], 1, "{out}");
+}

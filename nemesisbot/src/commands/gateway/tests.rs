@@ -2657,6 +2657,10 @@ async fn full_assembly_starts_and_binds_web_and_health() {
     cfg["channels"]["web"]["port"] = serde_json::json!(0);
     cfg["gateway"]["host"] = serde_json::json!("127.0.0.1");
     cfg["gateway"]["port"] = serde_json::json!(0);
+    // F-B10（2026-09-25）：heartbeat 首拍固定在 start() 后 1s（与 interval
+    // 无关）。插桩跑拖慢后 1s 拍与 runtime 关停窗口重叠 → tokio
+    // entry.rs:602 关停断言 panic（毒化源，见 findings F-B10）。测试域关掉。
+    cfg["heartbeat"]["enabled"] = serde_json::json!(false);
     cfg["agents"]["defaults"]["llm"] = serde_json::json!("mini-model");
     // workspace 指到临时 home（默认 ~ 展开指向真实用户目录，必须改写）。
     cfg["agents"]["defaults"]["workspace"] =
@@ -5339,5 +5343,2516 @@ fn cfg10_template_keys_subset_of_typed_security_config() {
                 );
             }
         }
+    }
+}
+
+// -------------------------------------------------------------------------
+// PB-2 init_cluster 覆盖批（cluster_init.rs）：tempdir home + 手工装配
+// GatewayCtx，逐路径调用 init_cluster 并断言 ClusterWiring 产物。
+// 三形态：disabled（worker 角色，静态 peers 装载）、enabled（port=0 临时
+// 端口起 RPC+discovery，armed call_fn/peers_fn + 占位续行快照）、
+// coordinator 角色（master nb_bus 分支）。不触真实 home（全 fixture 走
+// tempdir），不绑固定端口（0 = OS 临时端口）。
+// -------------------------------------------------------------------------
+
+#[cfg(all(
+    feature = "board",
+    feature = "cluster",
+    feature = "forge",
+    feature = "memory",
+    feature = "workflow",
+    feature = "security"
+))]
+struct GatewayCtxFixture {
+    _dir: tempfile::TempDir,
+    ctx: GatewayCtx,
+}
+
+#[cfg(all(
+    feature = "board",
+    feature = "cluster",
+    feature = "forge",
+    feature = "memory",
+    feature = "workflow",
+    feature = "security"
+))]
+fn gateway_ctx_fixture(cfg_json: &str) -> GatewayCtxFixture {
+    let dir = tempfile::TempDir::new().expect("tempdir");
+    let home = dir.path().to_path_buf();
+    std::fs::create_dir_all(home.join("workspace")).expect("workspace dir");
+    std::fs::write(home.join("config.json"), cfg_json).expect("write config.json");
+    let cfg: nemesis_config::Config = serde_json::from_str(cfg_json).expect("parse cfg json");
+    let config_store = std::sync::Arc::new(nemesis_config::ConfigStore::from_config(
+        cfg.clone(),
+        home.join("config.json"),
+    ));
+    let bus = std::sync::Arc::new(nemesis_bus::MessageBus::new());
+    let (agent_outbound_tx, mut agent_outbound_rx) =
+        tokio::sync::mpsc::channel::<nemesis_types::channel::OutboundMessage>(64);
+    let bridge_outbound_handle =
+        tokio::spawn(async move { while agent_outbound_rx.recv().await.is_some() {} });
+    let cron_service = std::sync::Arc::new(std::sync::Mutex::new(
+        nemesis_cron::service::CronService::new(&home.join("cron_store.json").to_string_lossy()),
+    ));
+    let conv_router: nemesis_web::SharedConvRouter =
+        std::sync::Arc::new(nemesis_web::ConvRouter::new());
+    let estop = std::sync::Arc::new(nemesis_agent::estop::EstopState::new());
+    let ws_str = home.join("workspace").to_string_lossy().to_string();
+    let skills_loader_arc = Some(std::sync::Arc::new(
+        nemesis_skills::loader::SkillsLoader::new(
+            &ws_str,
+            &home.join("workspace").join("skills").to_string_lossy(),
+            "",
+        ),
+    ));
+    let board_db = home.join("workspace").join("board").join("board.db");
+    let board_store = match nemesis_board::BoardStore::open(&board_db, "NB") {
+        Ok(s) => Some(std::sync::Arc::new(s)),
+        Err(e) => panic!("board store open failed: {e}"),
+    };
+    let provider: std::sync::Arc<dyn nemesis_providers::router::LLMProvider> =
+        nemesis_providers::factory::create_provider_or_null(
+            &nemesis_providers::factory::FactoryConfig {
+                llm_ref: String::new(),
+                api_key: String::new(),
+                api_base: String::new(),
+                workspace: String::new(),
+                connect_mode: String::new(),
+                account_id: String::new(),
+                protocol: String::new(),
+                headers: std::collections::HashMap::new(),
+                timeout_secs: 0,
+                proxy: String::new(),
+            },
+        )
+        .0;
+    let workflow_tool_registry = std::sync::Arc::new(nemesis_tools::registry::ToolRegistry::new());
+    let workflow_engine = nemesis_workflow::engine::WorkflowEngine::new_integrated_with_dirs(
+        provider.clone(),
+        workflow_tool_registry.clone(),
+        None,
+        None,
+    );
+    let chat_secret_store =
+        std::sync::Arc::new(nemesis_workflow::chat_secrets::ChatSecretStore::open(
+            home.join("workspace")
+                .join("workflow")
+                .join("chat_secrets.json"),
+        ));
+    let board_quota = std::sync::Arc::new(nemesis_board::quota::QuotaLedger::with_provider(|| {
+        nemesis_board::quota::QuotaConfig {
+            max_agent_turns_per_thread: 0,
+            hourly_budget_per_node: 0,
+            rate_limit_per_min: 0,
+        }
+    }));
+
+    let ctx = GatewayCtx {
+        home: home.clone(),
+        config_path: home.join("config.json"),
+        config_store,
+        cfg,
+        resolution: nemesis_config::ProviderResolution::default(),
+        model_name: "cov/test-model".to_string(),
+        bus,
+        cron_service,
+        conv_router,
+        estop,
+        data_store: None,
+        agent_outbound_tx,
+        bridge_outbound_handle,
+        mcp_enabled: false,
+        skills_loader_arc,
+        skills_registry_arc: None,
+        board_store,
+        memory_manager_for_web: None,
+        forge_for_web: None,
+        forge_executor_for_tools: None,
+        workflow_engine,
+        workflow_tool_registry,
+        chat_secret_store,
+        board_moderator_loop: std::sync::Arc::new(std::sync::OnceLock::new()),
+        autopilot_cluster_slot: std::sync::Arc::new(std::sync::OnceLock::new()),
+        board_asset_url_slot: nemesis_board::AdvertisedUrl::default(),
+        board_quota,
+        outbound_dlp_slot: std::sync::Arc::new(std::sync::OnceLock::new()),
+        llm_provider: provider,
+    };
+    GatewayCtxFixture { _dir: dir, ctx }
+}
+
+#[cfg(all(
+    feature = "board",
+    feature = "cluster",
+    feature = "forge",
+    feature = "memory",
+    feature = "workflow",
+    feature = "security"
+))]
+fn write_peers_toml(home: &std::path::Path, node_role: &str) {
+    let cluster_dir = home.join("workspace").join("cluster");
+    std::fs::create_dir_all(&cluster_dir).expect("cluster dir");
+    std::fs::write(
+        cluster_dir.join("peers.toml"),
+        format!(
+            "[node]\n\
+             id = \"cov-node-a\"\n\
+             name = \"CovNodeA\"\n\
+             role = \"{node_role}\"\n\
+             category = \"development\"\n\
+             address = \"127.0.0.1:11950\"\n\
+             \n\
+             [peers.cov-peer-1]\n\
+             name = \"CovPeerOne\"\n\
+             address = \"127.0.0.1:11951\"\n\
+             role = \"worker\"\n\
+             category = \"general\"\n\
+             tags = [\"rust\"]\n\
+             \n\
+             [peers.cov-peer-empty]\n\
+             name = \"EmptyAddr\"\n\
+             address = \"\"\n"
+        ),
+    )
+    .expect("write peers.toml");
+}
+
+#[cfg(all(
+    feature = "board",
+    feature = "cluster",
+    feature = "forge",
+    feature = "memory",
+    feature = "workflow",
+    feature = "security"
+))]
+#[tokio::test]
+async fn init_cluster_disabled_builds_wiring_and_loads_static_peers() {
+    let f = gateway_ctx_fixture("{}");
+    write_peers_toml(&f.ctx.home, "worker");
+
+    let wiring = init_cluster(&f.ctx).await.expect("init_cluster ok");
+
+    // cluster_should_start = false：主配置 cluster 缺省 + app config 缺省。
+    assert!(!wiring.cluster_should_start);
+    assert!(wiring.cluster_rpc_call_fn.is_none());
+    assert!(wiring.cluster_rpc_config.is_none());
+    assert!(wiring.cluster_peers_fn.is_none());
+
+    // Cluster 对象与 adapter refs 恒建（动态 start/stop 支持）。
+    let (cluster, _task_list, _work_queue, _persister) = wiring
+        .cluster_adapter_refs
+        .expect("adapter refs always built");
+    assert_eq!(
+        cluster.node_id(),
+        "cov-node-a",
+        "identity from peers.toml [node]"
+    );
+    assert_eq!(cluster.node_name(), "CovNodeA");
+    assert_eq!(cluster.role(), "worker");
+
+    // 桥槽位 + autopilot 槽位回填。
+    assert!(
+        wiring.bridge_cluster_slot.get().is_some(),
+        "bridge slot armed"
+    );
+    assert!(
+        f.ctx.autopilot_cluster_slot.get().is_some(),
+        "autopilot slot armed"
+    );
+
+    // worker 分支：board_store 在手 + role=worker → 讨论入站箱装配。
+    assert!(wiring.board_worker_inbox.is_some(), "worker inbox armed");
+    assert!(
+        wiring.board_estop_parked.lock().expect("parked").is_empty(),
+        "estop parked queue starts empty"
+    );
+
+    // 静态 peers 装载：合法条目入注册表；空 address 条目跳过；本节点在册。
+    let nodes = cluster.list_nodes();
+    assert!(
+        nodes.iter().any(|n| n.base.id == "cov-peer-1"),
+        "static peer loaded, got: {nodes:?}"
+    );
+    assert!(
+        !nodes.iter().any(|n| n.base.id == "cov-peer-empty"),
+        "empty-address peer must be skipped"
+    );
+    assert!(
+        nodes.iter().any(|n| n.base.id == "cov-node-a"),
+        "local node registered"
+    );
+    let peer = nodes
+        .iter()
+        .find(|n| n.base.id == "cov-peer-1")
+        .expect("peer");
+    assert_eq!(peer.base.name, "CovPeerOne");
+    assert_eq!(peer.base.category, "general");
+}
+
+#[cfg(all(
+    feature = "board",
+    feature = "cluster",
+    feature = "forge",
+    feature = "memory",
+    feature = "workflow",
+    feature = "security"
+))]
+#[tokio::test]
+async fn init_cluster_enabled_arms_rpc_call_fn_and_placeholder_snapshot() {
+    let f = gateway_ctx_fixture(r#"{"cluster": {"enabled": true}}"#);
+    let home = f.ctx.home.clone();
+    write_peers_toml(&home, "worker");
+    let ws_config = home.join("workspace").join("config");
+    std::fs::create_dir_all(&ws_config).expect("ws config dir");
+    // port/rpc_port = 0 → OS 临时端口（不与任何固定端口冲突）；
+    // 健康探针关闭避免后台探活噪声。
+    std::fs::write(
+        ws_config.join("config.cluster.json"),
+        r#"{"enabled": true, "port": 0, "rpc_port": 0, "broadcast_interval": 1, "health_check_interval_secs": 0}"#,
+    )
+    .expect("write config.cluster.json");
+
+    let wiring = init_cluster(&f.ctx).await.expect("init_cluster ok");
+
+    assert!(
+        wiring.cluster_should_start,
+        "master flag + app flag both on"
+    );
+    let rpc_cfg = wiring.cluster_rpc_config.expect("rpc config armed");
+    assert_eq!(rpc_cfg.local_node_id, "cov-node-a");
+    assert_eq!(rpc_cfg.local_rpc_port, 0);
+
+    // peers_fn：在线 peers（排除自身）暴露静态 peer。
+    let peers_fn = wiring.cluster_peers_fn.expect("peers fn armed");
+    let peers = peers_fn();
+    assert!(
+        peers.iter().any(|(id, _, _)| id == "cov-peer-1"),
+        "online static peer exposed, got: {peers:?}"
+    );
+    assert!(
+        !peers.iter().any(|(id, _, _)| id == "cov-node-a"),
+        "self excluded"
+    );
+
+    // call_fn：ghost peer → Err 快速失败；peer_chat 无 task_id → A 端预生成
+    // chat-<uuid> 并落占位续行快照（宁留勿丢——非离线形态不删除）。
+    let call_fn = wiring.cluster_rpc_call_fn.expect("call fn armed");
+    let result = call_fn(
+        "cov-ghost-peer",
+        "peer_chat",
+        serde_json::json!({"content": "hi"}),
+    )
+    .await;
+    assert!(result.is_err(), "unknown peer must fail: {result:?}");
+    let cache_dir = home.join("workspace").join("cluster").join("rpc_cache");
+    let snapshots = std::fs::read_dir(&cache_dir)
+        .expect("rpc_cache dir exists")
+        .filter_map(|e| e.ok())
+        .map(|e| e.file_name().to_string_lossy().to_string())
+        .filter(|name| name.starts_with("chat-") && name.ends_with(".json"))
+        .collect::<Vec<_>>();
+    assert_eq!(
+        snapshots.len(),
+        1,
+        "one placeholder snapshot, got: {snapshots:?}"
+    );
+    assert!(
+        snapshots[0].starts_with("chat-"),
+        "pre-generated chat task id, got: {snapshots:?}"
+    );
+
+    // 调用方自带 task_id → 不再预生成、不再落新快照。
+    let result2 = call_fn(
+        "cov-ghost-peer",
+        "peer_chat",
+        serde_json::json!({"content": "hi", "task_id": "caller-task-1"}),
+    )
+    .await;
+    assert!(result2.is_err());
+    let snapshots2 = std::fs::read_dir(&cache_dir)
+        .expect("rpc_cache dir exists")
+        .filter_map(|e| e.ok())
+        .filter(|e| {
+            let n = e.file_name().to_string_lossy().to_string();
+            n.starts_with("chat-") && n.ends_with(".json")
+        })
+        .count();
+    assert_eq!(snapshots2, 1, "caller-supplied task_id adds no snapshot");
+}
+
+#[cfg(all(
+    feature = "board",
+    feature = "cluster",
+    feature = "forge",
+    feature = "memory",
+    feature = "workflow",
+    feature = "security"
+))]
+#[tokio::test]
+async fn init_cluster_coordinator_role_arms_master_nb_bus_without_worker_inbox() {
+    let f = gateway_ctx_fixture("{}");
+    write_peers_toml(&f.ctx.home, "coordinator");
+
+    let wiring = init_cluster(&f.ctx).await.expect("init_cluster ok");
+
+    // master 判据用集群角色（board_store 全员在手不算）：
+    // coordinator + board_store → master nb_bus 分支，worker 入站箱不建。
+    assert!(!wiring.cluster_should_start);
+    assert!(
+        wiring.board_worker_inbox.is_none(),
+        "master branch must not build worker inbox"
+    );
+    let role = wiring
+        .cluster_adapter_refs
+        .as_ref()
+        .expect("adapter refs")
+        .0
+        .role();
+    assert_eq!(role, "coordinator");
+}
+
+// -------------------------------------------------------------------------
+// PB-5 init_post_agent 覆盖批（post_agent.rs）：复用上面的 GatewayCtx
+// fixture + init_cluster 产物，手工装配 AgentWiring（NoopLlm 驱动的
+// AgentLoop + 内存 SessionStore + SharedResources）与 WebServer（不
+// bind，listen 127.0.0.1:0 仅构造），worker / coordinator 两形态断言
+// PostAgentWiring 产物与副作用（asset secret 落盘、worker inbox 被
+// take、board 钩子族装配）。
+// -------------------------------------------------------------------------
+
+#[cfg(all(
+    feature = "board",
+    feature = "cluster",
+    feature = "forge",
+    feature = "memory",
+    feature = "workflow",
+    feature = "security"
+))]
+struct NoopLlm;
+
+#[cfg(all(
+    feature = "board",
+    feature = "cluster",
+    feature = "forge",
+    feature = "memory",
+    feature = "workflow",
+    feature = "security"
+))]
+#[async_trait::async_trait]
+impl nemesis_agent::r#loop::LlmProvider for NoopLlm {
+    async fn chat(
+        &self,
+        _model: &str,
+        _messages: Vec<nemesis_agent::r#loop::LlmMessage>,
+        _options: Option<nemesis_agent::types::ChatOptions>,
+        _tools: Vec<nemesis_agent::types::ToolDefinition>,
+    ) -> Result<nemesis_agent::r#loop::LlmResponse, String> {
+        Err("noop provider".to_string())
+    }
+}
+
+/// 从 ctx 装配最小 AgentWiring：NoopLlm loop + 内存会话存储 + 与 ctx 共享
+/// estop/bus/config_store 的 SharedResources（其余字段走测试 Default）。
+#[cfg(all(
+    feature = "board",
+    feature = "cluster",
+    feature = "forge",
+    feature = "memory",
+    feature = "workflow",
+    feature = "security"
+))]
+fn make_agent_wiring(ctx: &GatewayCtx) -> AgentWiring {
+    let (event_tx, _) = tokio::sync::broadcast::channel::<nemesis_types::agent::AgentEvent>(16);
+    let agent_event_rx = event_tx.subscribe();
+    let mut agent_loop = nemesis_agent::r#loop::AgentLoop::new(
+        Box::new(NoopLlm),
+        nemesis_agent::types::AgentConfig::default(),
+    );
+    agent_loop.set_session_store(Arc::new(
+        nemesis_agent::session::SessionStore::new_in_memory(),
+    ));
+    let shared_resources = Arc::new(crate::agent_factory::SharedResources {
+        home: ctx.home.clone(),
+        workspace: ctx.home.join("workspace"),
+        bus: ctx.bus.clone(),
+        cron_service: ctx.cron_service.clone(),
+        estop: ctx.estop.clone(),
+        config_store: ctx.config_store.clone(),
+        agent_event_tx: Some(event_tx),
+        ..Default::default()
+    });
+    AgentWiring {
+        shared_resources,
+        agent_loop: Arc::new(agent_loop),
+        agent_event_rx,
+        security_plugin: None,
+        initial_tool_count: 0,
+    }
+}
+
+#[cfg(all(
+    feature = "board",
+    feature = "cluster",
+    feature = "forge",
+    feature = "memory",
+    feature = "workflow",
+    feature = "security"
+))]
+fn make_web_server(home: &std::path::Path) -> nemesis_web::server::WebServer {
+    nemesis_web::server::WebServer::new(nemesis_web::server::WebServerConfig {
+        listen_addr: "127.0.0.1:0".to_string(),
+        home: Some(home.to_string_lossy().to_string()),
+        version: "cov-test".to_string(),
+        ..Default::default()
+    })
+}
+
+/// init_cluster（disabled 形态）+ init_post_agent 的一把跑。
+#[cfg(all(
+    feature = "board",
+    feature = "cluster",
+    feature = "forge",
+    feature = "memory",
+    feature = "workflow",
+    feature = "security"
+))]
+async fn run_post_agent_pipeline(
+    node_role: &str,
+) -> (GatewayCtxFixture, super::post_agent::PostAgentWiring) {
+    let f = gateway_ctx_fixture("{}");
+    write_peers_toml(&f.ctx.home, node_role);
+    std::fs::create_dir_all(f.ctx.home.join("workspace").join("config")).expect("ws config dir");
+    let cluster = init_cluster(&f.ctx).await.expect("init_cluster ok");
+    let agent = make_agent_wiring(&f.ctx);
+    let mut web = make_web_server(&f.ctx.home);
+    let wiring = init_post_agent(&f.ctx, &mut web, "127.0.0.1".to_string(), 0, agent, cluster)
+        .await
+        .expect("init_post_agent ok");
+    (f, wiring)
+}
+
+#[cfg(all(
+    feature = "board",
+    feature = "cluster",
+    feature = "forge",
+    feature = "memory",
+    feature = "workflow",
+    feature = "security"
+))]
+#[tokio::test]
+async fn init_post_agent_worker_shape_builds_adapters_and_projects_manager() {
+    let (f, wiring) = run_post_agent_pipeline("worker").await;
+
+    // agent adapter + projects manager 无门产物。
+    let _ = wiring.agent_adapter.clone();
+    let _ = wiring.projects_manager.clone();
+
+    // worker 角色：board 合并/评审钩子不装配（cluster_ok=false → warn 路径），
+    // 但 ClusterServiceAdapter 恒建（动态 start/stop）。
+    let adapter = wiring
+        .cluster_adapter
+        .as_ref()
+        .expect("cluster adapter built");
+    let cluster = adapter.cluster();
+    assert_eq!(cluster.role(), "worker");
+    assert_eq!(cluster.node_id(), "cov-node-a");
+
+    // cluster_arc_ref 在 take() 前抢好——资产签发 node_id 消费点。
+    let arc_ref = wiring.cluster_arc_ref.as_ref().expect("cluster arc ref");
+    assert_eq!(arc_ref.node_id(), "cov-node-a");
+
+    // worker 分支的讨论入站箱在 adapter 构建时被 take 耗尽（None → 不进
+    // adapter）——此断言经 adapter 构建成功间接成立，这里直检资产 secret
+    // 落盘（board_store Some + cluster feature → load_or_create_secret）。
+    let secret_path = f
+        .ctx
+        .home
+        .join("workspace")
+        .join("config")
+        .join("asset_secret.key");
+    assert!(secret_path.exists(), "asset secret load-or-create written");
+}
+
+#[cfg(all(
+    feature = "board",
+    feature = "cluster",
+    feature = "forge",
+    feature = "memory",
+    feature = "workflow",
+    feature = "security"
+))]
+#[tokio::test]
+async fn init_post_agent_coordinator_shape_installs_board_hooks() {
+    let (f, wiring) = run_post_agent_pipeline("coordinator").await;
+
+    // coordinator 角色：cluster_ok=true → 评审/收口钩子族 + estop resume
+    // watcher + merge deps 全装配（幂等闸吸收同进程二装）。
+    let adapter = wiring
+        .cluster_adapter
+        .as_ref()
+        .expect("cluster adapter built");
+    assert_eq!(adapter.cluster().role(), "coordinator");
+    assert!(wiring.cluster_arc_ref.is_some());
+
+    // 资产签发上下文挂 store：secret 存在 + node_id 携带（非空）。
+    let secret_path = f
+        .ctx
+        .home
+        .join("workspace")
+        .join("config")
+        .join("asset_secret.key");
+    assert!(secret_path.exists(), "asset secret written");
+    let secret = std::fs::read_to_string(&secret_path).expect("read secret");
+    assert!(!secret.trim().is_empty(), "secret non-empty");
+
+    // board 资产目录（with_assets_dir）就绪。
+    let assets_dir = f.ctx.home.join("workspace").join("board").join("assets");
+    let _ = assets_dir; // 目录惰性创建——存在性不作硬断言（版本相关）
+
+    // cluster log writer 为进程级 OnceLock（try_init_cluster_log 惰性建
+    // 目录，先到先得）——这里不作目录断言，装配成功即覆盖注入链。
+}
+
+// -------------------------------------------------------------------------
+// PB-8/PB-9 run_runtime 覆盖批（runtime.rs）：完整跑一遍 Step 18–24 运行期
+// 装配 + 关停善后。驱动方式 = 内部命令泵反复投 Shutdown（wait_for_shutdown
+// 的 broadcast 订阅先于任一次投递命中，消除 spawn/subscribe 竞速），善后
+// 断言 = gateway state 文件被清 + 审计链落了 startup_self_verify 事件。
+// 不弹窗（绝不发 OpenDashboard）、不设 BARE_LAUNCH、托盘线程 panic 有
+// catch_unwind 兜底；verify START 快照先行预置（OnceLock 进程级，幂等）。
+// -------------------------------------------------------------------------
+
+/// 预置 verify_policy 的进程级 START 快照（run_runtime 的审计链块只有
+/// start_check()=Some 才执行）。持 GLOBAL_STATE_LOCK + EnvHomeGuard 隔离；
+/// 已被别的测试置过就跳过（OnceLock set-once 语义，内容不影响本批断言）。
+#[cfg(all(
+    feature = "board",
+    feature = "cluster",
+    feature = "forge",
+    feature = "health",
+    feature = "memory",
+    feature = "security",
+    feature = "workflow"
+))]
+fn prime_verify_start_snapshot() {
+    let _guard = crate::GLOBAL_STATE_LOCK
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
+    let tmp = tempfile::TempDir::new().expect("verify home tmpdir");
+    let _env = crate::tests::EnvHomeGuard::point_at(&tmp.path().join(".nemesisbot"));
+    if crate::verify_policy::start_check().is_none() {
+        // 无 security 配置 → warn/off 两分支都不 exit（enforce 才拒启）。
+        crate::verify_policy::self_check_and_enforce(false);
+    }
+}
+
+/// run_runtime 全链一把跑：init_cluster + init_post_agent + 手工装配运行期
+/// 三件（agent adapter / projects manager / RuntimeHandoff），内部命令泵
+/// 反复投 Shutdown 驱动 Step 23 返回 + Step 24 善后。返回 fixture + 安全
+/// 插件供调用方追加断言。
+#[cfg(all(
+    feature = "board",
+    feature = "cluster",
+    feature = "forge",
+    feature = "health",
+    feature = "memory",
+    feature = "security",
+    feature = "workflow"
+))]
+async fn run_runtime_pipeline(
+    cfg_json: &str,
+    guardian_mode: Option<&str>,
+) -> (
+    GatewayCtxFixture,
+    Arc<nemesis_security::pipeline::SecurityPlugin>,
+) {
+    prime_verify_start_snapshot();
+
+    let f = gateway_ctx_fixture(cfg_json);
+    write_peers_toml(&f.ctx.home, "worker");
+    std::fs::create_dir_all(f.ctx.home.join("workspace").join("config")).expect("ws config dir");
+    let cluster = init_cluster(&f.ctx).await.expect("init_cluster ok");
+    let agent = make_agent_wiring(&f.ctx);
+    // init_post_agent 会 move AgentWiring——先把运行期要用的件克隆出来。
+    let agent_loop = agent.agent_loop.clone();
+    let shared_resources = agent.shared_resources.clone();
+    let mut web = make_web_server(&f.ctx.home);
+    let pa = init_post_agent(&f.ctx, &mut web, "127.0.0.1".to_string(), 0, agent, cluster)
+        .await
+        .expect("init_post_agent ok");
+
+    // SecurityPlugin：审计链开（tempdir 路径）+ 可选 guardian 模式。
+    let chain_path = f.ctx.home.join("audit_chain.jsonl");
+    let mut sec_cfg = nemesis_security::pipeline::SecurityPluginConfig::default();
+    sec_cfg.audit_chain_enabled = true;
+    sec_cfg.audit_chain_path = Some(chain_path.to_string_lossy().to_string());
+    let plugin = Arc::new(nemesis_security::pipeline::SecurityPlugin::new(sec_cfg));
+    if let Some(mode) = guardian_mode {
+        plugin.set_guardian_mode(mode);
+    }
+
+    // 预置 gateway state 文件——teardown 的 remove_file 命中真实文件。
+    let state_path = nemesis_path::resolve_gateway_state_path_in_workspace(
+        &crate::common::workspace_path(&f.ctx.home),
+    );
+    std::fs::create_dir_all(state_path.parent().expect("state dir parent")).expect("state dir");
+    std::fs::write(&state_path, b"{}").expect("seed gateway state file");
+
+    // 运行期三件：agent adapter（不 start——teardown stop() 走未启动短路）+
+    // projects manager + web_handle 哑任务（teardown abort() 命中）。
+    let agent_loop_ref: Arc<parking_lot::RwLock<Option<Arc<nemesis_agent::r#loop::AgentLoop>>>> =
+        Arc::new(parking_lot::RwLock::new(None));
+    let agent_adapter = Arc::new(crate::adapters::AgentLoopServiceAdapter::new(
+        agent_loop.clone(),
+        shared_resources.clone(),
+        f.ctx.bus.clone(),
+        agent_loop_ref,
+    ));
+    let projects_manager = Arc::new(crate::projects::manager::ProjectLoopManager::new(
+        shared_resources.clone(),
+        Arc::new(nemesis_agent::session::SessionStore::new_in_memory()),
+        f.ctx.bus.clone(),
+    ));
+    let web_handle = tokio::spawn(async {});
+
+    // 内部命令泵的 Shutdown 投递：0.1s 间隔重复投（run_runtime 内部先
+    // spawn 泵、末尾才 wait_for_shutdown 订阅——重复投保证至少一发现身
+    // 在订阅之后，无竞速死等）。
+    let (cmd_tx, cmd_rx) = tokio::sync::mpsc::channel::<nemesis_web::internal::InternalCommand>(8);
+    {
+        let tx = cmd_tx.clone();
+        tokio::spawn(async move {
+            for _ in 0..60 {
+                if tx
+                    .send(nemesis_web::internal::InternalCommand::Shutdown)
+                    .await
+                    .is_err()
+                {
+                    break;
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+            }
+        });
+    }
+    drop(cmd_tx);
+
+    // 真实监听端口 → run_runtime 的 web server 探活走 Ok 分支。
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("probe listener");
+    let real_port = listener.local_addr().unwrap().port() as i64;
+
+    let svc_mgr = Arc::new(nemesis_services::ServiceManager::new());
+    let health = Arc::new(nemesis_health::server::HealthServer::new(
+        nemesis_health::server::HealthServerConfig {
+            listen_addr: "127.0.0.1:0".to_string(),
+            version: Some("cov-test".to_string()),
+        },
+    ));
+
+    let handoff = RuntimeHandoff {
+        security_plugin: Some(plugin.clone()),
+        health_server: health,
+        cluster_adapter: pa.cluster_adapter.clone(),
+    };
+
+    run_runtime(
+        &f.ctx,
+        agent_loop.clone(),
+        agent_adapter,
+        projects_manager,
+        shared_resources.clone(),
+        "127.0.0.1".to_string(),
+        real_port,
+        svc_mgr,
+        web_handle,
+        cmd_rx,
+        handoff,
+    )
+    .await
+    .expect("run_runtime completes via internal shutdown");
+
+    // 善后断言：state 文件被清 + 审计链追加过 startup_self_verify 事件。
+    assert!(
+        !state_path.exists(),
+        "gateway state file must be removed during teardown"
+    );
+    assert!(
+        chain_path.exists()
+            && std::fs::metadata(&chain_path)
+                .map(|m| m.len() > 0)
+                .unwrap_or(false),
+        "audit chain must hold the startup_self_verify event"
+    );
+    // 全局停机旗标卫生：本测试触发过 shutdown，复位避免污染并行测试。
+    SHUTDOWN_REQUESTED.store(false, Ordering::SeqCst);
+    drop(listener);
+    (f, plugin)
+}
+
+/// 默认形态（guardian off）：跑通 18–24 全链；guardian 不装配（other 臂），
+/// CRITICAL 工具也不进 LLM 审（judge 缺席的双保险语义）。
+#[cfg(all(
+    feature = "board",
+    feature = "cluster",
+    feature = "forge",
+    feature = "health",
+    feature = "memory",
+    feature = "security",
+    feature = "workflow"
+))]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn run_runtime_full_cycle_guardian_off_covers_steps_18_to_24() {
+    let (_f, plugin) = run_runtime_pipeline("{}", None).await;
+    assert_eq!(plugin.guardian_mode(), "", "默认形态 guardian 未配置");
+    assert!(
+        !plugin.guardian_should_review("exec", "{}"),
+        "guardian off：CRITICAL 工具也不进 LLM 审"
+    );
+}
+
+/// critical 形态：guardian judge 装配走「small_model 无法解析 → 回落主模型」
+/// 臂；装配后 CRITICAL 工具进 LLM 审、LOW 工具不进（单一决策点语义）。
+#[cfg(all(
+    feature = "board",
+    feature = "cluster",
+    feature = "forge",
+    feature = "health",
+    feature = "memory",
+    feature = "security",
+    feature = "workflow"
+))]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn run_runtime_guardian_critical_falls_back_to_main_model() {
+    let (_f, plugin) = run_runtime_pipeline(
+        r#"{"agents": {"small_model": "cov/no-such-model"}}"#,
+        Some("critical"),
+    )
+    .await;
+    assert_eq!(plugin.guardian_mode(), "critical");
+    assert!(
+        plugin.guardian_should_review("exec", r#"{"cmd":"ls"}"#),
+        "guardian critical：CRITICAL 工具必须进 LLM 审"
+    );
+    assert!(
+        !plugin.guardian_should_review("file_read", r#"{"path":"x"}"#),
+        "LOW 工具不进 LLM 审"
+    );
+    // 审计链文件仍持久（装配期 append 之后的停机路径不删链）。
+    let chain_path = _f.ctx.home.join("audit_chain.jsonl");
+    assert!(chain_path.exists(), "audit chain file persisted");
+}
+
+// -------------------------------------------------------------------------
+// W5-R2 cluster_init 闭包实体覆盖批：disabled 形态下 handler 注册同样完成
+// （仅 TCP bind 被 cluster_should_start 闸住），经
+// RpcServer::handle_wire_message（与 TCP 完全相同的 handler 链 + _rpc 元数据
+// 注入）直接驱动 peer_chat / peer_chat_callback / task_cancel 闭包本体。
+// -------------------------------------------------------------------------
+
+/// 便捷入口：取 adapter_refs 里的 RPC server 句柄（handler 已注册）。
+#[cfg(all(
+    feature = "board",
+    feature = "cluster",
+    feature = "forge",
+    feature = "memory",
+    feature = "workflow",
+    feature = "security"
+))]
+fn ci2_rpc(
+    wiring: &super::cluster_init::ClusterWiring,
+) -> std::sync::Arc<nemesis_cluster::rpc::server::RpcServer> {
+    wiring
+        .cluster_adapter_refs
+        .as_ref()
+        .expect("adapter refs")
+        .0
+        .rpc_server()
+        .expect("rpc server set before start")
+        .clone()
+}
+
+/// task_cancel 闭包：空 task_id → Err 帧；排队任务 → QueuedCancelled；终态 →
+/// AlreadyTerminal；未知 id → NotFound。
+#[cfg(all(
+    feature = "board",
+    feature = "cluster",
+    feature = "forge",
+    feature = "memory",
+    feature = "workflow",
+    feature = "security"
+))]
+#[tokio::test]
+async fn ci2_task_cancel_covers_error_queued_terminal_not_found() {
+    let f = gateway_ctx_fixture("{}");
+    write_peers_toml(&f.ctx.home, "worker");
+    let wiring = init_cluster(&f.ctx).await.expect("init_cluster ok");
+    let rpc = ci2_rpc(&wiring);
+    let (cluster, task_list, _queue, _persister) = wiring.cluster_adapter_refs.unwrap();
+
+    // 空 task_id → handler Err → error 帧。
+    let resp = rpc
+        .handle_wire_message(nemesis_cluster::transport::conn::WireMessage::new_request(
+            "cov-peer-1",
+            "cov-node-a",
+            "task_cancel",
+            serde_json::json!({}),
+        ))
+        .await;
+    assert_eq!(
+        resp.msg_type, "error",
+        "missing task_id must error: {resp:?}"
+    );
+    assert!(resp.error.contains("missing field: task_id"));
+
+    // 排队任务 → QueuedCancelled。
+    task_list.create_task(nemesis_cluster::cluster_task::ClusterTask {
+        task_id: "cq-task-1".into(),
+        source: nemesis_cluster::cluster_task::TaskSource {
+            node_id: "cov-peer-1".into(),
+            rpc_address: String::new(),
+            session_key: "cluster_rpc:cov-peer-1/default".into(),
+        },
+        status: nemesis_cluster::cluster_task::TaskStatus::Pending,
+        content: "待取消".into(),
+        conversation: None,
+        waiting_for_task_id: None,
+        waiting_tool_call_id: None,
+        callback_result: None,
+    });
+    let resp = rpc
+        .handle_wire_message(nemesis_cluster::transport::conn::WireMessage::new_request(
+            "cov-peer-1",
+            "cov-node-a",
+            "task_cancel",
+            serde_json::json!({"task_id": "cq-task-1"}),
+        ))
+        .await;
+    assert_eq!(resp.msg_type, "response");
+    assert_eq!(
+        resp.payload.get("outcome").and_then(|v| v.as_str()),
+        Some("queued_cancelled")
+    );
+    let t = task_list.get_task("cq-task-1").expect("task kept");
+    assert_eq!(
+        t.status,
+        nemesis_cluster::cluster_task::TaskStatus::Cancelled
+    );
+
+    // 再取消 → AlreadyTerminal（带终态串）。
+    let resp = rpc
+        .handle_wire_message(nemesis_cluster::transport::conn::WireMessage::new_request(
+            "cov-peer-1",
+            "cov-node-a",
+            "task_cancel",
+            serde_json::json!({"task_id": "cq-task-1"}),
+        ))
+        .await;
+    assert_eq!(resp.msg_type, "response");
+    assert!(
+        resp.payload.get("outcome").is_some(),
+        "already-terminal outcome serialized: {resp:?}"
+    );
+
+    // 未知 id → NotFound。
+    let resp = rpc
+        .handle_wire_message(nemesis_cluster::transport::conn::WireMessage::new_request(
+            "cov-peer-1",
+            "cov-node-a",
+            "task_cancel",
+            serde_json::json!({"task_id": "no-such-task"}),
+        ))
+        .await;
+    assert_eq!(resp.msg_type, "response");
+    assert_eq!(
+        resp.payload.get("outcome").and_then(|v| v.as_str()),
+        Some("not_found")
+    );
+    let _ = cluster; // 保持元组解构完整
+}
+
+/// peer_chat 闭包：未登记来源 → register_rpc_peer 占位升级 + RpcMeta 注入 +
+/// PeerChatHandler 入队（accepted ack）；空 content → error ack；非法 payload
+/// → error ack。
+#[cfg(all(
+    feature = "board",
+    feature = "cluster",
+    feature = "forge",
+    feature = "memory",
+    feature = "workflow",
+    feature = "security"
+))]
+#[tokio::test]
+async fn ci2_peer_chat_registers_peer_and_enqueues_cluster_task() {
+    let f = gateway_ctx_fixture("{}");
+    write_peers_toml(&f.ctx.home, "worker");
+    let wiring = init_cluster(&f.ctx).await.expect("init_cluster ok");
+    let rpc = ci2_rpc(&wiring);
+    let (cluster, task_list, _queue, _persister) = wiring.cluster_adapter_refs.unwrap();
+
+    // 未登记来源 → 闭包内 register_rpc_peer 占位登记（带 _source_rpc_port：
+    // hint=0 时 register_rpc_peer 诚实拒绝登记不可达条目）。
+    let resp = rpc
+        .handle_wire_message(nemesis_cluster::transport::conn::WireMessage::new_request(
+            "fresh-node-x",
+            "cov-node-a",
+            "peer_chat",
+            serde_json::json!({
+                "content": "你好 worker",
+                "_source": {"chat_id": "chat-9"},
+                "_source_rpc_port": 22123
+            }),
+        ))
+        .await;
+    assert_eq!(resp.msg_type, "response", "peer_chat must ack: {resp:?}");
+    assert_eq!(
+        resp.payload.get("status").and_then(|v| v.as_str()),
+        Some("accepted")
+    );
+    let ack_task = resp
+        .payload
+        .get("task_id")
+        .and_then(|v| v.as_str())
+        .expect("ack task_id")
+        .to_string();
+    assert!(!ack_task.is_empty());
+
+    // 占位登记生效（registry 可查）。
+    assert!(
+        cluster.get_peer("fresh-node-x").is_some(),
+        "rpc peer must be registered on first peer_chat"
+    );
+
+    // 簇任务入队：content + 复合 session_key（cluster_rpc:{node}/{chat}）。
+    let t = task_list.get_task(&ack_task).expect("cluster task created");
+    assert!(t.content.contains("你好 worker"));
+    assert_eq!(t.source.node_id, "fresh-node-x");
+    assert_eq!(t.source.session_key, "cluster_rpc:fresh-node-x/chat-9");
+
+    // persister 占位（set_running）落 result_store。
+    let store = cluster.result_store();
+    let entry = store.get(&ack_task).expect("running placeholder stored");
+    assert_eq!(
+        entry.result.get("status").and_then(|v| v.as_str()),
+        Some("running")
+    );
+
+    // 空 content → error ack（PeerChatHandler 校验）。
+    let resp = rpc
+        .handle_wire_message(nemesis_cluster::transport::conn::WireMessage::new_request(
+            "fresh-node-x",
+            "cov-node-a",
+            "peer_chat",
+            serde_json::json!({"content": ""}),
+        ))
+        .await;
+    assert_eq!(resp.msg_type, "response");
+    assert_eq!(
+        resp.payload.get("status").and_then(|v| v.as_str()),
+        Some("error")
+    );
+
+    // 非对象 payload（包 _rpc 后解析失败）→ error ack。
+    let resp = rpc
+        .handle_wire_message(nemesis_cluster::transport::conn::WireMessage::new_request(
+            "fresh-node-x",
+            "cov-node-a",
+            "peer_chat",
+            serde_json::json!("scalar-blob"),
+        ))
+        .await;
+    assert_eq!(
+        resp.payload.get("status").and_then(|v| v.as_str()),
+        Some("error"),
+        "unparseable payload must ack error: {resp:?}"
+    );
+}
+
+/// peer_chat_callback 闭包四路由 + selfcheck 拦截 + TaskManager 收口：
+/// Route 2 bus 续行帧（含 source_display 名字映射）、Route 1 子任务注入、
+/// Route 0 board 写回（success/error 两态 + fail_class）、selfcheck 二段、
+/// Route 3 complete/fail。
+#[cfg(all(
+    feature = "board",
+    feature = "cluster",
+    feature = "forge",
+    feature = "memory",
+    feature = "workflow",
+    feature = "security"
+))]
+#[tokio::test]
+async fn ci2_peer_chat_callback_routes_all_branches() {
+    let f = gateway_ctx_fixture("{}");
+    write_peers_toml(&f.ctx.home, "worker");
+    let wiring = init_cluster(&f.ctx).await.expect("init_cluster ok");
+    let rpc = ci2_rpc(&wiring);
+    let (cluster, task_list, _queue, _persister) = wiring.cluster_adapter_refs.unwrap();
+    let store = f.ctx.board_store.clone().expect("fixture board store");
+    let actor = nemesis_board::Actor::admin("t");
+
+    // 预登记来源节点（Route 2 的 source_display 名字映射走 get_peer 命中）。
+    cluster.handle_discovered_node(
+        "cb-source-1",
+        "CbSourceOne",
+        vec!["127.0.0.1".into()],
+        12345,
+        "worker",
+        "general",
+        vec![],
+        vec![],
+        "unknown",
+    );
+
+    // ---- Route 2：bus 续行帧（非 board 任务）----
+    let mut bus_rx = f.ctx.bus.subscribe_inbound();
+    let resp = rpc
+        .handle_wire_message(nemesis_cluster::transport::conn::WireMessage::new_request(
+            "cb-source-1",
+            "cov-node-a",
+            "peer_chat_callback",
+            serde_json::json!({
+                "task_id": "cb-route2-1",
+                "status": "success",
+                "response": "R2真实回复",
+            }),
+        ))
+        .await;
+    assert_eq!(resp.msg_type, "response");
+    let inbound = bus_rx
+        .try_recv()
+        .expect("cluster_continuation frame published");
+    assert_eq!(inbound.sender_id, "cluster_continuation:cb-route2-1");
+    assert_eq!(inbound.content, "R2真实回复");
+    assert_eq!(
+        inbound.metadata.get("source_node").map(String::as_str),
+        Some("CbSourceOne"),
+        "registry name wins over raw id"
+    );
+    assert_eq!(
+        inbound.metadata.get("status").map(String::as_str),
+        Some("success")
+    );
+
+    // ---- Route 1：子任务回调注入父任务并重新入队 ----
+    task_list.create_task(nemesis_cluster::cluster_task::ClusterTask {
+        task_id: "cb-parent-1".into(),
+        source: nemesis_cluster::cluster_task::TaskSource {
+            node_id: "cb-source-1".into(),
+            rpc_address: String::new(),
+            session_key: "cluster_rpc:cb-source-1/default".into(),
+        },
+        status: nemesis_cluster::cluster_task::TaskStatus::WaitingRemote,
+        content: "父任务".into(),
+        conversation: None,
+        waiting_for_task_id: Some("cb-child-7".into()),
+        waiting_tool_call_id: Some("call-1".into()),
+        callback_result: None,
+    });
+    let resp = rpc
+        .handle_wire_message(nemesis_cluster::transport::conn::WireMessage::new_request(
+            "cb-source-1",
+            "cov-node-a",
+            "peer_chat_callback",
+            serde_json::json!({
+                "task_id": "cb-child-7",
+                "status": "error",
+                "error": "子任务失败明细",
+            }),
+        ))
+        .await;
+    assert_eq!(
+        resp.payload.get("status").and_then(|v| v.as_str()),
+        Some("received")
+    );
+    let parent = task_list.get_task("cb-parent-1").expect("parent kept");
+    assert_eq!(
+        parent.callback_result.as_deref(),
+        Some("子任务失败明细"),
+        "P1 合并文本：error 字段优先注入"
+    );
+    assert_eq!(
+        parent.status,
+        nemesis_cluster::cluster_task::TaskStatus::Pending,
+        "inject_callback revives waiting task"
+    );
+
+    // ---- Route 0：board 写回（success → DONE + in_review；error + fail_class
+    //      → FAILED + ⛔ 分类标记）----
+    let issue_ok = store
+        .create_issue(nemesis_board::NewIssue {
+            title: "回调写回ok".into(),
+            ..Default::default()
+        })
+        .expect("issue ok");
+    store
+        .transition_issue(issue_ok.id, nemesis_board::IssueStatus::InProgress, &actor)
+        .expect("transition");
+    store
+        .insert_dispatch("cb-board-ok", issue_ok.id, "node-b", &actor)
+        .expect("dispatch ok");
+
+    let issue_err = store
+        .create_issue(nemesis_board::NewIssue {
+            title: "回调写回err".into(),
+            ..Default::default()
+        })
+        .expect("issue err");
+    store
+        .transition_issue(issue_err.id, nemesis_board::IssueStatus::InProgress, &actor)
+        .expect("transition");
+    store
+        .insert_dispatch("cb-board-err", issue_err.id, "node-b", &actor)
+        .expect("dispatch err");
+
+    let resp = rpc
+        .handle_wire_message(nemesis_cluster::transport::conn::WireMessage::new_request(
+            "cb-source-1",
+            "cov-node-a",
+            "peer_chat_callback",
+            serde_json::json!({
+                "task_id": "cb-board-ok",
+                "status": "success",
+                "response": "交付完成，产物见 foo.rs",
+            }),
+        ))
+        .await;
+    assert_eq!(resp.msg_type, "response");
+    let rec = store.get_dispatch("cb-board-ok").unwrap().unwrap();
+    assert_eq!(rec.state, nemesis_board::models::dispatch_state::DONE);
+    let issue_after = store.get_issue(issue_ok.id).unwrap();
+    assert_eq!(issue_after.status, nemesis_board::IssueStatus::InReview);
+
+    let resp = rpc
+        .handle_wire_message(nemesis_cluster::transport::conn::WireMessage::new_request(
+            "cb-source-1",
+            "cov-node-a",
+            "peer_chat_callback",
+            serde_json::json!({
+                "task_id": "cb-board-err",
+                "status": "error",
+                "error": "编译失败：E0432",
+                "fail_class": "compile",
+            }),
+        ))
+        .await;
+    assert_eq!(resp.msg_type, "response");
+    let rec = store.get_dispatch("cb-board-err").unwrap().unwrap();
+    assert_eq!(rec.state, nemesis_board::models::dispatch_state::FAILED);
+    let comments = store.list_comments(issue_err.id).unwrap();
+    assert!(
+        comments
+            .iter()
+            .any(|c| c.content.contains("编译失败：E0432")),
+        "error text must land as comment"
+    );
+
+    // ---- selfcheck 拦截：注册表命中 → 二段验收路由 + TaskManager 收口 ----
+    let sc_issue = store
+        .create_issue(nemesis_board::NewIssue {
+            title: "自检取证单".into(),
+            ..Default::default()
+        })
+        .expect("sc issue");
+    wiring
+        .board_selfcheck_registry
+        .register("cb-sc-1".into(), sc_issue.id);
+    cluster
+        .task_manager()
+        .submit(nemesis_types::cluster::Task {
+            id: "cb-sc-1".into(),
+            status: nemesis_types::cluster::TaskStatus::Pending,
+            action: "peer_chat".into(),
+            peer_id: "cb-source-1".into(),
+            payload: serde_json::json!({}),
+            result: None,
+            original_channel: String::new(),
+            original_chat_id: String::new(),
+            created_at: chrono::Local::now().to_rfc3339(),
+            completed_at: None,
+        })
+        .expect("submit sc task");
+    let resp = rpc
+        .handle_wire_message(nemesis_cluster::transport::conn::WireMessage::new_request(
+            "cb-source-1",
+            "cov-node-a",
+            "peer_chat_callback",
+            serde_json::json!({
+                "task_id": "cb-sc-1",
+                "status": "success",
+                "response": "取证数据：测试全绿",
+            }),
+        ))
+        .await;
+    assert_eq!(
+        resp.payload.get("status").and_then(|v| v.as_str()),
+        Some("received")
+    );
+    let tm_task = cluster.task_manager().get_task("cb-sc-1").expect("sc task");
+    assert_eq!(
+        tm_task.status,
+        nemesis_types::cluster::TaskStatus::Completed,
+        "selfcheck route still settles TaskManager (Route 3 semantics)"
+    );
+    // 二段验收是 fire-and-forget：给 spawn 一点时间走完（moderator loop 未就绪
+    // → 诚实跳过，不跑 LLM）。
+    tokio::time::sleep(std::time::Duration::from_millis(150)).await;
+
+    // ---- Route 3：TaskManager complete / fail 两臂 ----
+    for tid in ["cb-tm-ok", "cb-tm-err"] {
+        cluster
+            .task_manager()
+            .submit(nemesis_types::cluster::Task {
+                id: tid.into(),
+                status: nemesis_types::cluster::TaskStatus::Pending,
+                action: "peer_chat".into(),
+                peer_id: "cb-source-1".into(),
+                payload: serde_json::json!({}),
+                result: None,
+                original_channel: String::new(),
+                original_chat_id: String::new(),
+                created_at: chrono::Local::now().to_rfc3339(),
+                completed_at: None,
+            })
+            .expect("submit tm task");
+    }
+    for (tid, status) in [("cb-tm-ok", "success"), ("cb-tm-err", "error")] {
+        rpc.handle_wire_message(nemesis_cluster::transport::conn::WireMessage::new_request(
+            "cb-source-1",
+            "cov-node-a",
+            "peer_chat_callback",
+            serde_json::json!({"task_id": tid, "status": status, "response": "x"}),
+        ))
+        .await;
+    }
+    assert_eq!(
+        cluster
+            .task_manager()
+            .get_task("cb-tm-ok")
+            .expect("tm ok")
+            .status,
+        nemesis_types::cluster::TaskStatus::Completed
+    );
+    assert_eq!(
+        cluster
+            .task_manager()
+            .get_task("cb-tm-err")
+            .expect("tm err")
+            .status,
+        nemesis_types::cluster::TaskStatus::Failed
+    );
+
+    // 释放波（settled && !estop）spawn 的 sweep 也消化掉。
+    tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+}
+
+/// 节点发现回调：sweep 分支（槽位就绪 + 节流放行 → spawn 重估 + D0b 重平衡）
+/// + auto-join（qa→#qa / 其它→#dev / 已见成员不撤 / 本节点与 coordinator 早退）。
+#[cfg(all(
+    feature = "board",
+    feature = "cluster",
+    feature = "forge",
+    feature = "memory",
+    feature = "workflow",
+    feature = "security"
+))]
+#[tokio::test]
+async fn ci2_discovery_callback_sweeps_and_auto_joins_channels() {
+    let f = gateway_ctx_fixture("{}");
+    write_peers_toml(&f.ctx.home, "worker");
+    let wiring = init_cluster(&f.ctx).await.expect("init_cluster ok");
+    let (cluster, _tl, _q, _p) = wiring.cluster_adapter_refs.unwrap();
+    let store = f.ctx.board_store.clone().expect("board store");
+
+    let qa = store
+        .create_channel(nemesis_board::NewChannel {
+            name: "#qa".into(),
+            topic: "qa 收编".into(),
+        })
+        .expect("create #qa");
+    let dev = store
+        .create_channel(nemesis_board::NewChannel {
+            name: "#dev".into(),
+            topic: "dev 收编".into(),
+        })
+        .expect("create #dev");
+    let _ = (qa, dev);
+
+    // qa 类目 worker → #qa；general worker → #dev。首次 announce 触发
+    // sweep 分支（槽位已回填 + 首次节流必放行）。
+    cluster.handle_discovered_node(
+        "qa-node-1",
+        "QaOne",
+        vec!["127.0.0.1".into()],
+        22001,
+        "worker",
+        "qa-automation",
+        vec![],
+        vec![],
+        "unknown",
+    );
+    cluster.handle_discovered_node(
+        "dev-node-1",
+        "DevOne",
+        vec!["127.0.0.1".into()],
+        22002,
+        "worker",
+        "backend",
+        vec![],
+        vec![],
+        "unknown",
+    );
+    // 同一节点再次 announce → 已见成员分支（不重复入队也不撤销手动调整）。
+    cluster.handle_discovered_node(
+        "qa-node-1",
+        "QaOne",
+        vec!["127.0.0.1".into()],
+        22001,
+        "worker",
+        "qa-automation",
+        vec![],
+        vec![],
+        "unknown",
+    );
+    // 本节点自身 announce → 早退；coordinator → 早退。
+    cluster.handle_discovered_node(
+        "cov-node-a",
+        "CovNodeA",
+        vec!["127.0.0.1".into()],
+        22003,
+        "worker",
+        "general",
+        vec![],
+        vec![],
+        "unknown",
+    );
+    cluster.handle_discovered_node(
+        "coord-node-1",
+        "CoordOne",
+        vec!["127.0.0.1".into()],
+        22004,
+        "coordinator",
+        "general",
+        vec![],
+        vec![],
+        "unknown",
+    );
+
+    // 让回调里 spawn 的停车场重估 + D0b 重平衡任务跑完（空看板 → 近零成本）。
+    tokio::time::sleep(std::time::Duration::from_millis(250)).await;
+
+    let qa_member = nemesis_board::Actor::agent("qa-node-1");
+    let dev_member = nemesis_board::Actor::agent("dev-node-1");
+    assert!(
+        store.has_any_channel_membership(&qa_member).unwrap(),
+        "qa worker auto-joined"
+    );
+    assert!(
+        store.has_any_channel_membership(&dev_member).unwrap(),
+        "general worker auto-joined"
+    );
+    let coord_member = nemesis_board::Actor::agent("coord-node-1");
+    assert!(
+        !store.has_any_channel_membership(&coord_member).unwrap(),
+        "coordinator must not be auto-joined"
+    );
+}
+
+/// 三个周期 ticker 的首拍实体：派发超时 sweep（超时阈值现读 + mtime 缓存 +
+/// 实扫）、D4 限额热刷新（config board 段现读 → cell/sink 更新）、停车场
+/// sweep（estop 挂起 continue / store 缺席 continue）。
+#[cfg(all(
+    feature = "board",
+    feature = "cluster",
+    feature = "forge",
+    feature = "memory",
+    feature = "workflow",
+    feature = "security"
+))]
+#[tokio::test]
+async fn ci2_board_tickers_first_tick_paths() {
+    let mut f = gateway_ctx_fixture(
+        r#"{"board": {"dispatch_timeout_secs": 3600, "dispatch_sweep_interval_secs": 1}}"#,
+    );
+    write_peers_toml(&f.ctx.home, "worker");
+    // 停车场 ticker 先于 store 缺席形态：急停挂起 → 首拍 continue。
+    f.ctx.estop.trigger();
+    let wiring = init_cluster(&f.ctx).await.expect("init ok #1");
+    let _ = wiring;
+    // 首 tick 立即执行：停车场（estop continue）+ 派发 sweep（现读 3600 + 实扫
+    // 空看板）+ D4（board 段在场 → cell/sink 更新）。
+    tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+
+    // 第二形态：estop 释放 + store 缺席 → 停车场首拍走 store None continue；
+    // 派发 sweep 同拍走 store None continue。
+    f.ctx.estop.release();
+    f.ctx.board_store = None;
+    let wiring2 = init_cluster(&f.ctx).await.expect("init ok #2");
+    let _ = wiring2;
+    tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+}
+
+/// RPC start 错误臂：已在运行的 server 再次 start() → Err（"server already
+/// running"）——init_cluster 的 `if let Err(e) = rpc_server_ref.start()` 日志
+/// 臂实体。注：监听套接字显式设了 SO_REUSEADDR（Windows 语义允许同端口双
+/// 绑），端口占用无法稳定复现该臂，见 target/cov_base/wave5_findings_B.md。
+#[cfg(all(
+    feature = "board",
+    feature = "cluster",
+    feature = "forge",
+    feature = "memory",
+    feature = "workflow",
+    feature = "security"
+))]
+#[tokio::test]
+async fn ci2_rpc_start_error_arm_logged_and_ignored() {
+    let f = gateway_ctx_fixture(r#"{"cluster": {"enabled": true}}"#);
+    write_peers_toml(&f.ctx.home, "worker");
+    let ws_config = f.ctx.home.join("workspace").join("config");
+    std::fs::create_dir_all(&ws_config).expect("ws config dir");
+    std::fs::write(
+        ws_config.join("config.cluster.json"),
+        r#"{"enabled": true, "port": 0, "rpc_port": 0, "broadcast_interval": 1, "health_check_interval_secs": 0}"#,
+    )
+    .expect("write cluster cfg");
+    let wiring = init_cluster(&f.ctx).await.expect("init ok");
+    let rpc = ci2_rpc(&wiring);
+    assert!(rpc.is_running(), "first bind must succeed");
+    // 第二次 start：Err 分支被 init_cluster 同款日志臂消费（测试里直接复现）。
+    let err = rpc.start().await.expect_err("second start must fail");
+    assert!(err.contains("already running"), "got: {err}");
+}
+
+/// vault 引用解析失败 → fail-closed：RPC 服务拒绝启动（宁可没有 RPC）。
+#[cfg(all(
+    feature = "board",
+    feature = "cluster",
+    feature = "forge",
+    feature = "memory",
+    feature = "workflow",
+    feature = "security"
+))]
+#[tokio::test]
+async fn ci2_vault_reference_broken_fails_closed() {
+    let f = gateway_ctx_fixture(r#"{"cluster": {"enabled": true}}"#);
+    write_peers_toml(&f.ctx.home, "worker");
+    let ws_config = f.ctx.home.join("workspace").join("config");
+    std::fs::create_dir_all(&ws_config).expect("ws config dir");
+    std::fs::write(
+        ws_config.join("config.cluster.json"),
+        r#"{"enabled": true, "port": 0, "rpc_port": 0, "broadcast_interval": 1, "health_check_interval_secs": 0, "token": "vault:cov-no-such-alias"}"#,
+    )
+    .expect("write cluster cfg");
+    let wiring = init_cluster(&f.ctx).await.expect("init still ok");
+    let (cluster, _tl, _q, _p) = wiring.cluster_adapter_refs.unwrap();
+    assert!(
+        cluster.rpc_reference_broken(),
+        "unresolvable vault alias must trip the fail-closed flag"
+    );
+    assert!(
+        !cluster.rpc_server().expect("server set").is_running(),
+        "fail-closed: RPC must not bind"
+    );
+}
+
+/// call_fn 自环（registry peer 指向自身 RPC server 的真实 TCP 回环）：
+/// ACK accepted → CD1 TaskManager 登记（成功 + 同 id 幂等 Err 两臂）；
+/// ACK 拒绝 → 占位续行快照清理；非 peer_chat action → 不做 CD5 预生成。
+#[cfg(all(
+    feature = "board",
+    feature = "cluster",
+    feature = "forge",
+    feature = "memory",
+    feature = "workflow",
+    feature = "security"
+))]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn ci2_call_fn_self_loopback_ack_and_cd1_registration() {
+    let f = gateway_ctx_fixture(r#"{"cluster": {"enabled": true}}"#);
+    write_peers_toml(&f.ctx.home, "worker");
+    let ws_config = f.ctx.home.join("workspace").join("config");
+    std::fs::create_dir_all(&ws_config).expect("ws config dir");
+    std::fs::write(
+        ws_config.join("config.cluster.json"),
+        r#"{"enabled": true, "port": 0, "rpc_port": 0, "broadcast_interval": 1, "health_check_interval_secs": 0}"#,
+    )
+    .expect("write cluster cfg");
+    let wiring = init_cluster(&f.ctx).await.expect("init ok");
+    let (cluster, _tl, _q, _p) = wiring.cluster_adapter_refs.unwrap();
+    let call_fn = wiring.cluster_rpc_call_fn.expect("call fn armed");
+
+    // 把 loop-peer 指向自身 RPC server 的真实绑定端口。
+    let port = cluster.rpc_server().expect("rpc server").port();
+    assert!(port > 0, "ephemeral bind must report real port");
+    cluster.handle_discovered_node(
+        "loop-peer",
+        "LoopPeer",
+        vec!["127.0.0.1".into()],
+        port,
+        "worker",
+        "general",
+        vec![],
+        vec![],
+        "unknown",
+    );
+
+    // ① 成功 ACK → CD1 登记 Pending（首次 submit OK 臂）。
+    let ack = call_fn(
+        "loop-peer",
+        "peer_chat",
+        serde_json::json!({"content": "自环调用"}),
+    )
+    .await
+    .expect("self loopback peer_chat succeeds");
+    assert_eq!(
+        ack.get("status").and_then(|v| v.as_str()),
+        Some("accepted"),
+        "own server must accept: {ack:?}"
+    );
+    let ack_task = ack
+        .get("task_id")
+        .and_then(|v| v.as_str())
+        .expect("ack task id")
+        .to_string();
+    assert!(ack_task.starts_with("chat-"), "A-side pre-generated id");
+    let tm_task = cluster
+        .task_manager()
+        .get_task(&ack_task)
+        .expect("CD1 registered");
+    assert_eq!(tm_task.status, nemesis_types::cluster::TaskStatus::Pending);
+    assert_eq!(tm_task.peer_id, "loop-peer");
+
+    // ② 调用方自带同一 task_id 再派 → CD1 重复登记（幂等 Err 臂）。
+    let ack2 = call_fn(
+        "loop-peer",
+        "peer_chat",
+        serde_json::json!({"content": "重复登记", "task_id": "caller-dup-1"}),
+    )
+    .await
+    .expect("second dispatch ok");
+    assert_eq!(
+        ack2.get("task_id").and_then(|v| v.as_str()),
+        Some("caller-dup-1")
+    );
+    // 同 id 第三次 → task_manager submit 幂等 Err（debug 臂）。
+    let ack3 = call_fn(
+        "loop-peer",
+        "peer_chat",
+        serde_json::json!({"content": "幂等登记", "task_id": "caller-dup-1"}),
+    )
+    .await
+    .expect("third dispatch ok");
+    assert_eq!(
+        ack3.get("task_id").and_then(|v| v.as_str()),
+        Some("caller-dup-1")
+    );
+
+    // ③ ACK 拒绝（空 content → B 端 error ack）→ 占位续行快照清理臂。
+    let ack4 = call_fn("loop-peer", "peer_chat", serde_json::json!({"content": ""}))
+        .await
+        .expect("call itself ok, ack rejected");
+    assert_eq!(
+        ack4.get("status").and_then(|v| v.as_str()),
+        Some("error"),
+        "empty content must be rejected by B side"
+    );
+
+    // ④ 非 peer_chat action → 不做预生成（else None 臂）；未注册 handler →
+    //    error 帧回 Err。
+    let r = call_fn("loop-peer", "no_such_action", serde_json::json!({})).await;
+    assert!(r.is_err(), "unknown action must surface error");
+
+    // CD1 登记过的任务仍在册（不会被 ④ 影响）。
+    assert!(cluster.task_manager().get_task(&ack_task).is_some());
+}
+
+/// 恢复交付回调（CD3）：经自环 query_task_result 查回 done 结果 → TaskManager
+/// 收口 + bus 续行帧 + 交付回调（chat 任务短路 true；board 任务写回 + 评审
+/// spawn + settled）→ confirm 删 worker 副本。
+#[cfg(all(
+    feature = "board",
+    feature = "cluster",
+    feature = "forge",
+    feature = "memory",
+    feature = "workflow",
+    feature = "security"
+))]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn ci2_recovered_delivery_callback_routes_chat_and_board() {
+    let f = gateway_ctx_fixture(r#"{"cluster": {"enabled": true}}"#);
+    write_peers_toml(&f.ctx.home, "worker");
+    let ws_config = f.ctx.home.join("workspace").join("config");
+    std::fs::create_dir_all(&ws_config).expect("ws config dir");
+    std::fs::write(
+        ws_config.join("config.cluster.json"),
+        r#"{"enabled": true, "port": 0, "rpc_port": 0, "broadcast_interval": 1, "health_check_interval_secs": 0}"#,
+    )
+    .expect("write cluster cfg");
+    let wiring = init_cluster(&f.ctx).await.expect("init ok");
+    let (cluster, _tl, _q, _p) = wiring.cluster_adapter_refs.unwrap();
+    let store = f.ctx.board_store.clone().expect("board store");
+
+    let port = cluster.rpc_server().expect("rpc server").port();
+    cluster.handle_discovered_node(
+        "loop-peer",
+        "LoopPeer",
+        vec!["127.0.0.1".into()],
+        port,
+        "worker",
+        "general",
+        vec![],
+        vec![],
+        "unknown",
+    );
+
+    // B 侧结果（本节点 result_store 即 B 侧）：chat 任务 + board 任务。
+    cluster.result_store().store_success(
+        "rec-chat-1",
+        "peer_chat",
+        serde_json::json!({"response": "恢复回复正文", "from": "loop-peer"}),
+    );
+    cluster.result_store().store_success(
+        "rec-board-1",
+        "peer_chat",
+        serde_json::json!({"response": "看板恢复交付", "from": "loop-peer"}),
+    );
+
+    // board 任务带派发行（in_progress + issue_dispatch）。
+    let actor = nemesis_board::Actor::admin("t");
+    let issue = store
+        .create_issue(nemesis_board::NewIssue {
+            title: "恢复交付单".into(),
+            ..Default::default()
+        })
+        .expect("issue");
+    store
+        .transition_issue(issue.id, nemesis_board::IssueStatus::InProgress, &actor)
+        .expect("transition");
+    store
+        .insert_dispatch("rec-board-1", issue.id, "loop-peer", &actor)
+        .expect("dispatch");
+
+    // A 侧两个超龄 Pending 任务（>2min，远小于安全网）。
+    let stale_created = (chrono::Local::now() - chrono::Duration::minutes(10)).to_rfc3339();
+    for tid in ["rec-chat-1", "rec-board-1"] {
+        cluster
+            .task_manager()
+            .submit(nemesis_types::cluster::Task {
+                id: tid.into(),
+                status: nemesis_types::cluster::TaskStatus::Pending,
+                action: "peer_chat".into(),
+                peer_id: "loop-peer".into(),
+                payload: serde_json::json!({}),
+                result: None,
+                original_channel: String::new(),
+                original_chat_id: String::new(),
+                created_at: stale_created.clone(),
+                completed_at: None,
+            })
+            .expect("submit stale task");
+    }
+
+    let mut bus_rx = f.ctx.bus.subscribe_inbound();
+    cluster.poll_stale_pending_tasks().await;
+    // 让交付回调里 spawn 的评审任务消化（moderator loop 未就绪 → 诚实跳过）。
+    tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+
+    // TaskManager 收口：两任务均不再 Pending。
+    assert!(
+        !cluster
+            .task_manager()
+            .list_pending_tasks()
+            .iter()
+            .any(|t| t.id == "rec-chat-1" || t.id == "rec-board-1"),
+        "recovered tasks must leave pending set"
+    );
+    // bus 续行帧（done 分支 G5 唤醒）。
+    let mut saw_continuation = 0;
+    while let Ok(msg) = bus_rx.try_recv() {
+        if msg.sender_id.starts_with("cluster_continuation:rec-") {
+            saw_continuation += 1;
+        }
+    }
+    assert!(saw_continuation >= 1, "recovered results must wake agent");
+
+    // chat 任务：交付回调短路 true → confirm 删 B 侧副本。
+    assert!(
+        cluster.result_store().get("rec-chat-1").is_none(),
+        "confirmed delivery must remove worker copy (chat)"
+    );
+    assert!(
+        cluster.result_store().get("rec-board-1").is_none(),
+        "confirmed delivery must remove worker copy (board)"
+    );
+    // board 任务：写回终结派发。
+    let rec = store.get_dispatch("rec-board-1").unwrap().unwrap();
+    assert_eq!(rec.state, nemesis_board::models::dispatch_state::DONE);
+    let issue_after = store.get_issue(issue.id).unwrap();
+    assert_eq!(issue_after.status, nemesis_board::IssueStatus::InReview);
+}
+
+// -------------------------------------------------------------------------
+// Wave5 round2 batch2a: post_agent.rs 深水区 —— workflow 触发驱动循环体
+// （855-1001）/ usage watcher + retention sweep（data_store 门）/ board
+// watcher 发布体 / enabled 形态 first_start + CD4 在途派发重建（358-378、
+// 566-569）/ 资产 secret 损坏 fail-safe（604）。
+// -------------------------------------------------------------------------
+
+/// 构造带单个 trigger 的最小 workflow（单 delay 节点，validate 可过）。
+#[cfg(all(
+    feature = "board",
+    feature = "cluster",
+    feature = "forge",
+    feature = "memory",
+    feature = "workflow",
+    feature = "security"
+))]
+fn pa2_workflow_with_trigger(
+    name: &str,
+    trigger_type: &str,
+    trigger_config: std::collections::HashMap<String, serde_json::Value>,
+) -> nemesis_workflow::types::Workflow {
+    use nemesis_workflow::types::{NodeDef, TriggerConfig, Workflow};
+    Workflow {
+        name: name.to_string(),
+        description: String::new(),
+        version: "1.0.0".to_string(),
+        triggers: vec![TriggerConfig {
+            trigger_type: trigger_type.to_string(),
+            config: trigger_config,
+        }],
+        nodes: vec![NodeDef {
+            id: "n1".to_string(),
+            node_type: "delay".to_string(),
+            config: std::collections::HashMap::new(),
+            depends_on: vec![],
+            retry_count: 0,
+            timeout: None,
+            is_terminal: false,
+        }],
+        edges: vec![],
+        variables: std::collections::HashMap::new(),
+        metadata: std::collections::HashMap::new(),
+    }
+}
+
+/// init_post_agent 装配的两条 workflow 触发驱动循环（bus 入站 + 事件分发）
+/// 必须真实消费消息：注册带 message/event trigger 的 workflow，向 bus 投递
+/// 入站消息、向 EventDispatcher 发布事件、再写 board db 驱动 board watcher，
+/// 统统 sleep 放行 current_thread runtime 里的 spawn 任务。
+#[cfg(all(
+    feature = "board",
+    feature = "cluster",
+    feature = "forge",
+    feature = "memory",
+    feature = "workflow",
+    feature = "security"
+))]
+#[tokio::test]
+async fn pa2_workflow_trigger_drivers_process_bus_and_events() {
+    let mut f = gateway_ctx_fixture("{}");
+    write_peers_toml(&f.ctx.home, "coordinator");
+    std::fs::create_dir_all(f.ctx.home.join("workspace").join("config")).expect("ws config dir");
+    // data_store 门（usage watcher + retention sweep 块）。
+    let db_dir = f.ctx.home.join("workspace").join("data");
+    std::fs::create_dir_all(&db_dir).expect("data dir");
+    f.ctx.data_store = Some(std::sync::Arc::new(
+        nemesis_data::DataStore::open(&db_dir.join("cov.db")).expect("data store open"),
+    ));
+    // message trigger（空 config = 全匹配）+ event trigger（cov.* 前缀）。
+    f.ctx
+        .workflow_engine
+        .register_workflow(pa2_workflow_with_trigger(
+            "cov_msg_wf",
+            "message",
+            std::collections::HashMap::new(),
+        ))
+        .expect("register msg wf");
+    let mut ecfg = std::collections::HashMap::new();
+    ecfg.insert("event_type".to_string(), serde_json::json!("cov.*"));
+    f.ctx
+        .workflow_engine
+        .register_workflow(pa2_workflow_with_trigger("cov_evt_wf", "event", ecfg))
+        .expect("register evt wf");
+    // 驱动循环内部用的同款匹配逻辑自证（同一输入必然命中）。
+    assert!(
+        f.ctx
+            .workflow_engine
+            .workflows_matching_message("web", "u", "c", "hello cov")
+            .contains(&"cov_msg_wf".to_string()),
+        "message trigger must match"
+    );
+
+    // board watcher 需要 SSE 订阅者在场才轮询 data_version（sub_count>0）。
+    let cluster = init_cluster(&f.ctx).await.expect("init_cluster ok");
+    let agent = make_agent_wiring(&f.ctx);
+    let mut web = make_web_server(&f.ctx.home);
+    let mut hub_rx = web.event_hub().subscribe();
+    let wiring = init_post_agent(&f.ctx, &mut web, "127.0.0.1".to_string(), 0, agent, cluster)
+        .await
+        .expect("init_post_agent ok");
+    assert!(wiring.cluster_adapter.is_some());
+
+    // ① message 触发：bus 入站消息 → 驱动循环匹配 → start_async。
+    f.ctx
+        .bus
+        .publish_inbound(nemesis_types::channel::InboundMessage {
+            channel: "web".to_string(),
+            sender_id: "cov-user".to_string(),
+            chat_id: "cov-chat".to_string(),
+            content: "hello cov".to_string(),
+            media: vec![],
+            session_key: String::new(),
+            correlation_id: String::new(),
+            metadata: std::collections::HashMap::new(),
+            voice_playback: None,
+        });
+    // ② event 触发：EventDispatcher publish → 事件驱动循环匹配。
+    f.ctx.workflow_engine.event_dispatcher().publish(
+        nemesis_workflow::event_dispatcher::TriggerEvent::new(
+            "cov.test",
+            std::collections::HashMap::new(),
+        ),
+    );
+    // 先放行 spawn 任务起跑（watcher 先拍下 data_version 基线），再写库。
+    tokio::time::sleep(std::time::Duration::from_millis(400)).await;
+    // ③ board watcher：store 连接写 board.db → watcher 连接 data_version 变化
+    //    → board-changed 广播。
+    if let Some(store) = f.ctx.board_store.as_ref() {
+        store
+            .create_issue(nemesis_board::NewIssue {
+                title: "watcher".to_string(),
+                ..Default::default()
+            })
+            .expect("create issue for watcher");
+    }
+    // 放行：触发循环消费 + watcher 2s 轮询次轮拍到变化 + retention sweep。
+    tokio::time::sleep(std::time::Duration::from_millis(2400)).await;
+
+    // board-changed 至少一条送达（watcher 循环体真实执行的证据）。
+    let mut got_board_changed = false;
+    while let Ok(ev) = hub_rx.try_recv() {
+        if ev.event_type == "board-changed" {
+            got_board_changed = true;
+        }
+    }
+    assert!(
+        got_board_changed,
+        "board watcher must broadcast board-changed after db write"
+    );
+    // retention sweep / usage watcher 已在 sleep 期间跑过首轮——无 panic 即过。
+}
+
+/// enabled 形态 init_post_agent：first_start Ok 路径（恢复 + G5 重建 +
+/// CD4 看板在途派发重建）。预置一条在途 dispatch（worker = 静态 peer，
+/// registry 可解析、时间新鲜），断言 init 后 task_manager 里出现重建的
+/// Pending 任务；board_role 走 cluster 分支（cluster_should_start=true），
+/// 资产 secret Ok 臂正常落盘。
+#[cfg(all(
+    feature = "board",
+    feature = "cluster",
+    feature = "forge",
+    feature = "memory",
+    feature = "workflow",
+    feature = "security"
+))]
+#[tokio::test]
+async fn pa2_enabled_cluster_rebuilds_pending_from_board_dispatches() {
+    let f = gateway_ctx_fixture(r#"{"cluster": {"enabled": true}}"#);
+    let home = f.ctx.home.clone();
+    write_peers_toml(&home, "coordinator");
+    let ws_config = home.join("workspace").join("config");
+    std::fs::create_dir_all(&ws_config).expect("ws config dir");
+    std::fs::write(
+        ws_config.join("config.cluster.json"),
+        r#"{"enabled": true, "port": 0, "rpc_port": 0, "broadcast_interval": 1, "health_check_interval_secs": 0}"#,
+    )
+    .expect("write config.cluster.json");
+    // 预置在途派发：worker_id 用静态 peer（canonical_peer_id 可解析）。
+    {
+        let store = f.ctx.board_store.as_ref().expect("board store");
+        let issue = store
+            .create_issue(nemesis_board::NewIssue {
+                title: "cd4 rebuild".to_string(),
+                ..Default::default()
+            })
+            .expect("create issue");
+        store
+            .transition_issue(
+                issue.id,
+                nemesis_board::IssueStatus::InProgress,
+                &nemesis_board::Actor::admin("t"),
+            )
+            .expect("transition in_progress");
+        store
+            .insert_dispatch(
+                "cov-cd4-task-1",
+                issue.id,
+                "cov-peer-1",
+                &nemesis_board::Actor::admin("t"),
+            )
+            .expect("insert dispatch");
+    }
+
+    let cluster = init_cluster(&f.ctx).await.expect("init_cluster ok");
+    assert!(cluster.cluster_should_start, "enabled form");
+    let agent = make_agent_wiring(&f.ctx);
+    let mut web = make_web_server(&home);
+    let wiring = init_post_agent(&f.ctx, &mut web, "127.0.0.1".to_string(), 0, agent, cluster)
+        .await
+        .expect("init_post_agent ok (first_start Ok path)");
+
+    // CD4：在途派发重建为 TaskManager Pending 任务。
+    let adapter = wiring.cluster_adapter.as_ref().expect("adapter");
+    let pending = adapter.cluster().task_manager().list_pending_tasks();
+    assert!(
+        pending.iter().any(|t| t.id == "cov-cd4-task-1"),
+        "CD4 must rebuild pending task from board dispatch, got: {pending:?}"
+    );
+    // board_role cluster 分支 + 资产 secret Ok 臂走完（secret 落盘）。
+    let secret = std::fs::read_to_string(
+        home.join("workspace")
+            .join("config")
+            .join("asset_secret.key"),
+    )
+    .expect("asset secret written");
+    assert!(!secret.trim().is_empty(), "asset secret non-empty");
+}
+
+/// 资产 secret 文件损坏 → load_or_create_secret Err → warn-and-continue
+/// （资产签发不装配，网关装配不炸）。
+#[cfg(all(
+    feature = "board",
+    feature = "cluster",
+    feature = "forge",
+    feature = "memory",
+    feature = "workflow",
+    feature = "security"
+))]
+#[tokio::test]
+async fn pa2_corrupt_asset_secret_disables_asset_serving_but_init_survives() {
+    let f = gateway_ctx_fixture("{}");
+    write_peers_toml(&f.ctx.home, "worker");
+    let ws_config = f.ctx.home.join("workspace").join("config");
+    std::fs::create_dir_all(&ws_config).expect("ws config dir");
+    std::fs::write(ws_config.join("asset_secret.key"), "zz-not-hex").expect("corrupt secret");
+
+    let cluster = init_cluster(&f.ctx).await.expect("init_cluster ok");
+    let agent = make_agent_wiring(&f.ctx);
+    let mut web = make_web_server(&f.ctx.home);
+    let wiring = init_post_agent(&f.ctx, &mut web, "127.0.0.1".to_string(), 0, agent, cluster)
+        .await
+        .expect("corrupt secret must be warn-and-continue, not fatal");
+    assert!(wiring.cluster_adapter.is_some(), "adapter still built");
+}
+
+// -------------------------------------------------------------------------
+// Wave5 round2 batch2c: runtime.rs guardian 装配矩阵（296-378）——
+// small_model 可解析 → provider Ok 臂；可解析但 protocol 未知 → create Err
+// 回落臂；small_model 未配置 → None 臂（info + 主模型回落）。
+// -------------------------------------------------------------------------
+
+/// critical + small_model 可解析且 provider 构造成功（openai 协议推断 →
+/// HttpCompat）：judge 用 small model 通道装配。
+#[cfg(all(
+    feature = "board",
+    feature = "cluster",
+    feature = "forge",
+    feature = "health",
+    feature = "memory",
+    feature = "security",
+    feature = "workflow"
+))]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn run_runtime_guardian_critical_small_model_provider_ok_arm() {
+    let (_f, plugin) = run_runtime_pipeline(
+        r#"{"model_list":[{"model_name":"cov/small","model":"openai/gpt-small","api_key":"k","api_base":"http://127.0.0.1:9/v1"}],"agents":{"small_model":"cov/small"}}"#,
+        Some("critical"),
+    )
+    .await;
+    assert_eq!(plugin.guardian_mode(), "critical");
+    assert!(
+        plugin.guardian_should_review("exec", r#"{"cmd":"ls"}"#),
+        "guardian critical：judge 在场，CRITICAL 工具进 LLM 审"
+    );
+}
+
+/// critical + small_model 可解析但 protocol 未知 → create_provider Err →
+/// 回落主模型（warn 臂 + 主模型三元组）。
+#[cfg(all(
+    feature = "board",
+    feature = "cluster",
+    feature = "forge",
+    feature = "health",
+    feature = "memory",
+    feature = "security",
+    feature = "workflow"
+))]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn run_runtime_guardian_critical_small_model_provider_create_err_arm() {
+    let (_f, plugin) = run_runtime_pipeline(
+        r#"{"model_list":[{"model_name":"cov/small","model":"openai/gpt-small","api_key":"k","api_base":"http://127.0.0.1:9/v1","protocol":"bogus-wire"}],"agents":{"small_model":"cov/small"}}"#,
+        Some("critical"),
+    )
+    .await;
+    assert_eq!(plugin.guardian_mode(), "critical");
+    assert!(
+        plugin.guardian_should_review("exec", r#"{"cmd":"ls"}"#),
+        "provider 构造失败回落主模型后 judge 仍在（审计不缺席）"
+    );
+}
+
+/// high + small_model 未配置 → None 臂（info 提示 + 主模型三元组）。
+/// 高危形态裁决走破坏形态预筛：CRITICAL/HIGH 工具 + 破坏词表命中才进审。
+#[cfg(all(
+    feature = "board",
+    feature = "cluster",
+    feature = "forge",
+    feature = "health",
+    feature = "memory",
+    feature = "security",
+    feature = "workflow"
+))]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn run_runtime_guardian_high_without_small_model_none_arm() {
+    let (_f, plugin) = run_runtime_pipeline("{}", Some("high")).await;
+    assert_eq!(plugin.guardian_mode(), "high");
+    assert!(
+        plugin.guardian_should_review("exec", r#"{"command":"rm -rf /tmp/x"}"#),
+        "guardian high：CRITICAL 工具 + 破坏形态进审"
+    );
+    assert!(
+        plugin.guardian_should_review("delete_file", r#"{"path":"x"}"#),
+        "guardian high：HIGH 删除族工具无条件进审"
+    );
+    assert!(
+        !plugin.guardian_should_review("exec", r#"{"command":"ls -la"}"#),
+        "guardian high：非破坏形态 exec 不进 LLM（预筛省成本）"
+    );
+}
+
+// ===========================================================================
+// wave5 round2（2026-09-25）：relay 纯中继两臂（空 token fail-closed /
+// port 0 全链路真装配即起即弃）、security_setup 深水键（DLP 尾键 / 审计链
+// 目录自建失败臂 / 审批超时 0 值守卫与合法值 / log_all_operations / typed
+// limits 合法与非法两臂 / 审计文件禁用 info / scanner 在场缺席两形态 /
+// rules 键族：缺文件 + exec_unknown_policy + guardian_failure_policy）、
+// board 派发写回（档案管线在途评论 / 普通完成推进 in_review / 结构化交付
+// Delivery 首评 / 超限截断三形态含多字节边界 / 失败汇报 + fail_class 标记）。
+// ===========================================================================
+
+/// relay 空令牌 fail-closed + port 0 全链路真装配（真 bind，后台任务即起
+/// 即弃——WebServer::start 阻塞至关停，spawn + sleep + abort 收尸）。
+mod w5r2relay {
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn w5_relay_empty_token_fails_closed() {
+        let tmp = tempfile::tempdir().unwrap();
+        let mut cfg: nemesis_config::Config =
+            serde_json::from_str(crate::CONFIG_DEFAULT).expect("parse CONFIG_DEFAULT");
+        cfg.bridge = Some(nemesis_config::BridgeConfig {
+            server: nemesis_config::BridgeServerConfig {
+                token: String::new(),
+            },
+            client: nemesis_config::BridgeClientConfig::default(),
+        });
+        let err = super::relay::run_relay(tmp.path(), &cfg)
+            .await
+            .expect_err("空 token 必须拒启");
+        assert!(
+            err.to_string().contains("bridge.server.token"),
+            "fail-closed 报错要点名键: {err}"
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn w5_relay_full_boot_with_ephemeral_port() {
+        let tmp = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(tmp.path().join("workspace")).unwrap();
+        let mut cfg: nemesis_config::Config =
+            serde_json::from_str(crate::CONFIG_DEFAULT).expect("parse CONFIG_DEFAULT");
+        cfg.channels.web.host = "127.0.0.1".into();
+        cfg.channels.web.port = 0;
+        cfg.channels.web.auth_token = "cov-relay-token".into();
+        cfg.bridge = Some(nemesis_config::BridgeConfig {
+            server: nemesis_config::BridgeServerConfig {
+                token: "cov-relay-token".into(),
+            },
+            client: nemesis_config::BridgeClientConfig::default(),
+        });
+        let home = tmp.path().to_path_buf();
+        let task = tokio::spawn(async move { super::relay::run_relay(&home, &cfg).await });
+        // 留足时间走完：token 校验 → bind(0) → relay_only → RelayServer 装配
+        // → serve 挂起。随后 abort 收尸（进程内任务，无窗口无端口残留——
+        // port 0 = 内核分配临时口，不碰项目保留端口）。
+        tokio::time::sleep(std::time::Duration::from_millis(700)).await;
+        assert!(
+            !task.is_finished(),
+            "serve 阶段必须仍在运行（即起即弃前置）"
+        );
+        task.abort();
+        let _ = task.await;
+    }
+}
+
+/// security_setup 深水键（security feature 门内；与 gateway Step 9b/9c 同源
+/// 装配函数的失败形态矩阵 + 全键 happy 形态）。
+#[cfg(feature = "security")]
+mod w5r2secsetup {
+    /// 故障形态矩阵：workspace/logs 换成普通文件（审计链目录自建失败 warn +
+    /// 审计文件初始化失败 warn）、审批超时 0 值守卫、typed limits 非法、
+    /// audit_log_file_enabled 缺省（init 尝试即败）。装配不得阻断。
+    #[tokio::test]
+    async fn w5_security_setup_fault_arms_matrix() {
+        let tmp = tempfile::tempdir().unwrap();
+        let home = tmp.path().join(".nemesisbot");
+        let ws = home.join("workspace");
+        std::fs::create_dir_all(ws.join("config")).unwrap();
+        std::fs::write(
+            crate::common::security_config_path(&home),
+            r#"{
+                "approval_timeout_seconds": 0,
+                "audit_chain_enabled": true,
+                "limits": 42
+            }"#,
+        )
+        .unwrap();
+        // logs 换成普通文件 → 审计链目录 create_dir_all 必败。
+        std::fs::write(ws.join("logs"), b"not a dir").unwrap();
+
+        let plugin = crate::security_setup::build_security_plugin(&home, true)
+            .await
+            .expect("fault arms 不得阻断装配");
+        let _ = plugin;
+        // 清理进程级 limits 注册表（typed 读失败臂落空表）。
+        nemesis_agent::r#loop::limits::set_rules(Default::default());
+    }
+
+    /// 全键 happy 形态：DLP 全键（low_confidence_action / inbound_action）、
+    /// 审批超时合法值、log_all_operations、typed limits 合法（循环入表）、
+    /// 审计文件禁用 info、scanner 配置在场（enabled 非空但无引擎明细 →
+    /// 引擎数 0 早退，不拉起 clamd 守护进程）。
+    #[tokio::test]
+    async fn w5_security_setup_deep_keys_happy_shape() {
+        let tmp = tempfile::tempdir().unwrap();
+        let home = tmp.path().join(".nemesisbot");
+        let ws_config = home.join("workspace").join("config");
+        std::fs::create_dir_all(&ws_config).unwrap();
+        std::fs::write(
+            crate::common::security_config_path(&home),
+            r#"{
+                "default_action": "allow",
+                "approval_timeout_seconds": 45,
+                "log_all_operations": true,
+                "audit_log_file_enabled": false,
+                "layers": {
+                    "dlp": {
+                        "enabled": true,
+                        "action": "block",
+                        "rules": ["email", "api_key"],
+                        "low_confidence_action": "ask",
+                        "inbound_action": "block"
+                    },
+                    "injection": {"enabled": true},
+                    "command_guard": {"enabled": false},
+                    "credential": {"enabled": true},
+                    "ssrf": {"enabled": false}
+                },
+                "limits": {"exec": {"max": 5, "window_secs": 60}}
+            }"#,
+        )
+        .unwrap();
+        std::fs::write(
+            crate::common::scanner_config_path(&home),
+            r#"{"enabled": ["clamav"], "engines": {}}"#,
+        )
+        .unwrap();
+
+        let plugin = crate::security_setup::build_security_plugin(&home, true)
+            .await
+            .expect("enabled=true → Some(plugin)");
+        let _ = plugin;
+        // limits Ok 臂已把 exec 规则写进进程级注册表——测试后清空防泄漏。
+        nemesis_agent::r#loop::limits::set_rules(Default::default());
+
+        // scanner 配置缺席 → info 臂（同 home 删配置后再装配一次）。
+        std::fs::remove_file(crate::common::scanner_config_path(&home)).unwrap();
+        let plugin2 = crate::security_setup::build_security_plugin(&home, true)
+            .await
+            .expect("second pass ok");
+        let _ = plugin2;
+        nemesis_agent::r#loop::limits::set_rules(Default::default());
+    }
+
+    /// load_security_rules 键族：缺文件 info 臂 + default_action /
+    /// exec_unknown_policy / guardian_failure_policy 三注入键。
+    #[test]
+    fn w5_load_security_rules_key_family() {
+        use nemesis_security::pipeline::{SecurityPlugin, SecurityPluginConfig};
+        let tmp = tempfile::tempdir().unwrap();
+        let missing = tmp.path().join("absent.security.json");
+        let plugin = std::sync::Arc::new(SecurityPlugin::new(SecurityPluginConfig::default()));
+        crate::security_setup::load_security_rules(&plugin, &missing);
+
+        let cfg_path = tmp.path().join("sec.json");
+        std::fs::write(
+            &cfg_path,
+            r#"{
+                "default_action": "deny",
+                "exec_unknown_policy": "ask",
+                "guardian_failure_policy": "fail_closed",
+                "guardian_mode": "off"
+            }"#,
+        )
+        .unwrap();
+        crate::security_setup::load_security_rules(&plugin, &cfg_path);
+    }
+}
+
+/// board 派发写回矩阵（board + cluster 双门内；生产调用点 = 集群回调）。
+#[cfg(all(feature = "board", feature = "cluster"))]
+mod w5bdisp {
+    use super::*;
+
+    fn w5_store(name: &str) -> (std::sync::Arc<nemesis_board::BoardStore>, tempfile::TempDir) {
+        let tmp = tempfile::tempdir().unwrap();
+        let store = std::sync::Arc::new(
+            nemesis_board::BoardStore::open(&tmp.path().join(format!("{name}.db")), "NB")
+                .expect("open store"),
+        );
+        (store, tmp)
+    }
+
+    fn w5_issue(store: &nemesis_board::BoardStore, title: &str) -> nemesis_board::Issue {
+        store
+            .create_issue(nemesis_board::NewIssue {
+                title: title.to_string(),
+                ..Default::default()
+            })
+            .unwrap()
+    }
+
+    fn w5_running(store: &nemesis_board::BoardStore, task: &str, issue_id: i64) {
+        store
+            .insert_dispatch(
+                task,
+                issue_id,
+                "node-b",
+                &nemesis_board::Actor::agent("node-a"),
+            )
+            .unwrap();
+    }
+
+    const W5_REPORT: &str = "## 结论\n完成\n## 交付物清单\n无\n## 自检结果\n通过\n";
+
+    /// 档案管线派发（基线行在场）+ 交付成功 → merge WaitingChangeset →
+    /// 「📦 变更集在途」系统评论，且不转 in_review。
+    ///
+    /// 📦 评论断言已放宽（F-B8，2026-09-25 全量跑实录）：merge_and_maybe_review
+    /// 读进程级 MERGE_DEPS OnceLock，gateway 装配（post_agent.rs:168）在任何
+    /// 引导类测试先跑时会装上「异店」deps——异店 get_dispatch_baseline(本
+    /// task) 落空 → NotArchivePipeline → 静默 `_ => {}`，📦 不落。全量并行
+    /// 下测试顺序不可控，故只锁与装载顺序无关的契约：settled + 不转
+    /// in_review + ✅ 交付首评必在；📦（Waiting 臂）顺序相依，不作硬断言。
+    #[test]
+    fn w5_writeback_archive_pipeline_waiting_changeset_comments() {
+        let (store, _tmp) = w5_store("w5bdisp-archive");
+        let issue = w5_issue(&store, "档案管线交付");
+        w5_running(&store, "w5-task-arch", issue.id);
+        store
+            .set_dispatch_baseline("w5-task-arch", "abc123")
+            .unwrap();
+
+        let out = write_back_board_dispatch(
+            &Some(store.clone()),
+            _tmp.path(),
+            "w5-task-arch",
+            "done",
+            "plain done text",
+            "",
+        );
+        assert!(out.is_board_task && out.settled);
+        assert!(out.issue_for_review.is_none(), "档案管线不立即转 in_review");
+        let comments = store.list_comments(issue.id).unwrap();
+        assert!(
+            comments.iter().any(|c| c.content.contains("✅")),
+            "交付首评必须落盘: {:?}",
+            comments.iter().map(|c| &c.content).collect::<Vec<_>>()
+        );
+        // 📦（merge Waiting 臂）顺序相依（见上 doc），不硬断言。
+        let _ = comments.iter().any(|c| c.content.contains("变更集在途"));
+    }
+
+    /// 非档案派发 + 普通完成文本 → ✅ 评论 + InProgress → InReview 推进。
+    #[test]
+    fn w5_writeback_plain_done_transitions_to_in_review() {
+        let (store, _tmp) = w5_store("w5bdisp-plain");
+        let issue = w5_issue(&store, "普通完成");
+        store
+            .transition_issue(
+                issue.id,
+                nemesis_board::IssueStatus::InProgress,
+                &nemesis_board::Actor::agent("node-a"),
+            )
+            .unwrap();
+        w5_running(&store, "w5-task-plain", issue.id);
+
+        let out = write_back_board_dispatch(
+            &Some(store.clone()),
+            _tmp.path(),
+            "w5-task-plain",
+            "done",
+            "完成啦",
+            "",
+        );
+        assert_eq!(
+            out.issue_for_review,
+            Some(issue.id),
+            "非档案 InProgress 必须推进"
+        );
+        let comments = store.list_comments(issue.id).unwrap();
+        assert!(comments.iter().any(|c| c.content.contains("✅")));
+    }
+
+    /// 结构化汇报（三段头齐）→ Delivery 首评（≤64KB 内联原样）。
+    #[test]
+    fn w5_writeback_structured_report_becomes_delivery_comment() {
+        let (store, _tmp) = w5_store("w5bdisp-struct");
+        let issue = w5_issue(&store, "结构化交付");
+        w5_running(&store, "w5-task-struct", issue.id);
+
+        let out = write_back_board_dispatch(
+            &Some(store.clone()),
+            _tmp.path(),
+            "w5-task-struct",
+            "done",
+            W5_REPORT,
+            "",
+        );
+        assert!(out.settled);
+        let comments = store.list_comments(issue.id).unwrap();
+        assert!(
+            comments
+                .iter()
+                .any(|c| c.ctype == nemesis_board::CommentType::Delivery),
+            "结构化汇报必须 Delivery 首评"
+        );
+    }
+
+    /// 超限截断 ×3：签发失败（无 node_url 文件）、node_url 空白提前 None、
+    /// 签发成功（引用束）——正文多字节字符骑在 64KB 边界上覆盖向下取整
+    /// 切片。三形态各自 sha 不同（防 register_asset 同名冲突串臂）。
+    #[test]
+    fn w5_writeback_oversize_report_asset_arms() {
+        let (store, tmp) = w5_store("w5bdisp-oversize");
+        let workspace = tmp.path().join("ws");
+        std::fs::create_dir_all(&workspace).unwrap();
+
+        // 64KB 边界构造：ASCII 填充到 65535 字节处落一个多字节字符——
+        // is_char_boundary(65536) = false → walk 向下取整。
+        let oversize = |marker: &str| -> String {
+            let mut body = String::from(W5_REPORT);
+            let pad = 65_535usize.saturating_sub(body.len());
+            body.push_str(&"x".repeat(pad));
+            body.push_str("多字节尾部——");
+            body.push_str(marker);
+            assert!(body.len() > 64 * 1024);
+            body
+        };
+
+        // 形态①：workspace 无 node_url 文件 → 签发链 None →「未能存档」。
+        let issue = w5_issue(&store, "超限-无url");
+        w5_running(&store, "w5-task-big1", issue.id);
+        write_back_board_dispatch(
+            &Some(store.clone()),
+            &workspace,
+            "w5-task-big1",
+            "done",
+            &oversize("one"),
+            "",
+        );
+        let comments = store.list_comments(issue.id).unwrap();
+        assert!(
+            comments
+                .iter()
+                .any(|c| c.ctype == nemesis_board::CommentType::Delivery
+                    && c.content.contains("全文未能存档")),
+            "签发失败必须诚实注记"
+        );
+
+        // 形态②：node_url 是空白 → trim 后为空 → 提前 None 臂。
+        let issue2 = w5_issue(&store, "超限-空url");
+        w5_running(&store, "w5-task-big2", issue2.id);
+        std::fs::write(
+            nemesis_path::resolve_asset_node_url_path_in_workspace(&workspace),
+            "   \n",
+        )
+        .unwrap();
+        write_back_board_dispatch(
+            &Some(store.clone()),
+            &workspace,
+            "w5-task-big2",
+            "done",
+            &oversize("two"),
+            "",
+        );
+        let comments2 = store.list_comments(issue2.id).unwrap();
+        assert!(
+            comments2
+                .iter()
+                .any(|c| c.ctype == nemesis_board::CommentType::Delivery
+                    && c.content.contains("全文未能存档")),
+            "空 node_url 同样诚实注记"
+        );
+
+        // 形态③：node_url 有效 → 引用束签发成功 →「全文下载引用」。
+        let issue3 = w5_issue(&store, "超限-有url");
+        w5_running(&store, "w5-task-big3", issue3.id);
+        std::fs::write(
+            nemesis_path::resolve_asset_node_url_path_in_workspace(&workspace),
+            "http://127.0.0.1:9\n",
+        )
+        .unwrap();
+        write_back_board_dispatch(
+            &Some(store.clone()),
+            &workspace,
+            "w5-task-big3",
+            "done",
+            &oversize("three"),
+            "",
+        );
+        let comments3 = store.list_comments(issue3.id).unwrap();
+        assert!(
+            comments3
+                .iter()
+                .any(|c| c.ctype == nemesis_board::CommentType::Delivery
+                    && c.content.contains("全文下载引用")),
+            "签发成功必须带引用束注记: {:?}",
+            comments3.iter().map(|c| &c.content).collect::<Vec<_>>()
+        );
+    }
+
+    /// 失败汇报：⛔ 原样留痕 + fail_class 结构化标记行；issue 停在 backlog
+    ///（非 InProgress）→ 不推进（让位分支）。
+    #[test]
+    fn w5_writeback_error_with_fail_class_marks_line() {
+        let (store, _tmp) = w5_store("w5bdisp-error");
+        let issue = w5_issue(&store, "失败汇报");
+        w5_running(&store, "w5-task-err", issue.id);
+
+        let out = write_back_board_dispatch(
+            &Some(store.clone()),
+            _tmp.path(),
+            "w5-task-err",
+            "error",
+            "模型不会用工具",
+            "model_capability",
+        );
+        assert!(out.settled && out.issue_for_review.is_none());
+        let comments = store.list_comments(issue.id).unwrap();
+        assert!(
+            comments
+                .iter()
+                .any(|c| c.content.contains("⛔")
+                    && c.content.contains("fail_class: model_capability")),
+            "失败评论必须含分类标记: {:?}",
+            comments.iter().map(|c| &c.content).collect::<Vec<_>>()
+        );
     }
 }

@@ -3898,5 +3898,13 @@ fn addr_eq(cand: &str, needle: &str) -> bool {
 #[cfg(test)]
 mod tests;
 
+// 覆盖率补充批次：start 配置臂 / 占位升级 / handler 注册 / 安全网超时。
+#[cfg(test)]
+mod cov_tests;
+
+// 覆盖率补充批次：RPC 全栈往返（假对端 Frame 协议）。
+#[cfg(test)]
+mod cov_net_tests;
+
 #[cfg(test)]
 mod node_name_tests;

@@ -201,3 +201,7 @@ fn read_changeset_inner(
 
 #[cfg(test)]
 mod tests;
+
+// 覆盖率补充批次：写入/读取失败臂（版本、条数、父目录、指纹）。
+#[cfg(test)]
+mod cov_tests;

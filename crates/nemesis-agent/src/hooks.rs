@@ -629,6 +629,11 @@ pub async fn run_turn_end_hooks(
 #[cfg(test)]
 mod tests;
 
+// 覆盖率补充批次：post-failure 管道 / LLM 钩子决策臂 / lifecycle 臂 /
+// MetricsPipelinePlugin 计时包装。
+#[cfg(test)]
+mod cov_tests;
+
 // S9 (quality-hardening goal 冲刺 S9): 独立测试文件挂载（声明式，无内联测试）。
 #[cfg(test)]
 mod s9_tests;

@@ -159,3 +159,6 @@ pub(crate) fn sweep_dispatch_timeouts(
         }
     }
 }
+
+#[cfg(test)]
+mod cov_tests;

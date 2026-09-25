@@ -822,4 +822,6 @@ fn get_blocklist_metadata() -> &'static Vec<BlockEntry> {
 }
 
 #[cfg(test)]
+mod cov_tests;
+#[cfg(test)]
 mod tests;

@@ -2563,3 +2563,658 @@ mod r10_subprocess {
         );
     }
 }
+
+// ===========================================================================
+// wave_a（2026-09-25）：`model prices` 四条离线臂（List/Add/Remove/Import——
+// Update 与 CatalogUpdate 是真网络臂，不测）+ `model add --protocol` 校验/
+// 归一臂（run() 210-214）。prices 不读 config.json，但 run() 入口先
+// resolve_home —— 沿用 s11b TempHomeEnv + GLOBAL_STATE_LOCK 纪律。
+// ===========================================================================
+#[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
+mod wave_a {
+    use super::super::PricesAction;
+    use super::s11b_temp_home_env;
+
+    fn db_path(home: &std::path::Path) -> std::path::PathBuf {
+        nemesis_path::workspace_data_dir(home).join("nemesisbot_data.db")
+    }
+
+    fn reopen_custom(home: &std::path::Path) -> Vec<nemesis_data::ModelPricing> {
+        let ds = nemesis_data::DataStore::open(&db_path(home)).unwrap();
+        ds.pricing().list_custom()
+    }
+
+    #[tokio::test]
+    async fn prices_list_on_fresh_store_ok() {
+        let _guard = crate::GLOBAL_STATE_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        let th = s11b_temp_home_env();
+        // 空库：打印分层概况（自定义 0 / 下载未下载 / 内置 N 条），不报错。
+        super::super::run_prices(PricesAction::List, &th.home)
+            .await
+            .expect("空库 List 必须成功");
+    }
+
+    #[tokio::test]
+    async fn prices_add_writes_custom_entry_then_list_prints_it() {
+        let _guard = crate::GLOBAL_STATE_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        let th = s11b_temp_home_env();
+        super::super::run_prices(
+            PricesAction::Add {
+                model: "acme/tiny".into(),
+                input: 1.5,
+                output: 3.0,
+                cache_read: 0.1,
+                cache_creation: 0.2,
+                display: Some("Acme Tiny".into()),
+            },
+            &th.home,
+        )
+        .await
+        .expect("Add 合法条目必须成功");
+        // 落盘校验（绕过 stdout，直接重开 DataStore 断言状态）。
+        let custom = reopen_custom(&th.home);
+        assert_eq!(custom.len(), 1);
+        assert_eq!(custom[0].model_id, "acme/tiny");
+        assert_eq!(custom[0].display_name, "Acme Tiny");
+        assert!((custom[0].input_cost_per_million - 1.5).abs() < 1e-9);
+        assert!((custom[0].output_cost_per_million - 3.0).abs() < 1e-9);
+        assert!((custom[0].cache_read_cost_per_million - 0.1).abs() < 1e-9);
+        assert!((custom[0].cache_creation_cost_per_million - 0.2).abs() < 1e-9);
+        // 有自定义条目的 List：走 custom 打印循环分支。
+        super::super::run_prices(PricesAction::List, &th.home)
+            .await
+            .expect("有自定义条目 List 必须成功");
+    }
+
+    #[tokio::test]
+    async fn prices_add_blank_model_bails() {
+        let _guard = crate::GLOBAL_STATE_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        let th = s11b_temp_home_env();
+        let err = super::super::run_prices(
+            PricesAction::Add {
+                model: "   ".into(),
+                input: 1.0,
+                output: 2.0,
+                cache_read: 0.0,
+                cache_creation: 0.0,
+                display: None,
+            },
+            &th.home,
+        )
+        .await
+        .unwrap_err();
+        assert!(err.to_string().contains("模型名不能为空"));
+        assert!(reopen_custom(&th.home).is_empty(), "失败路径不得落条目");
+    }
+
+    #[tokio::test]
+    async fn prices_remove_missing_bails_and_existing_ok() {
+        let _guard = crate::GLOBAL_STATE_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        let th = s11b_temp_home_env();
+        // 先删不存在的：bail。
+        let err = super::super::run_prices(
+            PricesAction::Remove {
+                model: "nope/model".into(),
+            },
+            &th.home,
+        )
+        .await
+        .unwrap_err();
+        assert!(err.to_string().contains("自定义条目不存在"));
+        // Add → Remove 成功，条目消失。
+        super::super::run_prices(
+            PricesAction::Add {
+                model: "gone/model".into(),
+                input: 1.0,
+                output: 1.0,
+                cache_read: 0.0,
+                cache_creation: 0.0,
+                display: None,
+            },
+            &th.home,
+        )
+        .await
+        .unwrap();
+        super::super::run_prices(
+            PricesAction::Remove {
+                model: "gone/model".into(),
+            },
+            &th.home,
+        )
+        .await
+        .expect("删除已存在条目必须成功");
+        assert!(reopen_custom(&th.home).is_empty());
+    }
+
+    #[tokio::test]
+    async fn prices_import_converts_per_token_to_per_million() {
+        let _guard = crate::GLOBAL_STATE_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        let th = s11b_temp_home_env();
+        // 1 条 chat（收）+ 1 条 embedding（跳）+ 1 条缺 output 价（跳）。
+        let raw = serde_json::json!({
+            "import/chat-model": {
+                "mode": "chat",
+                "input_cost_per_token": 0.000001,
+                "output_cost_per_token": 0.000002,
+                "cache_read_input_token_cost": 0.0000001,
+                "max_input_tokens": 8192
+            },
+            "import/embed": {"mode": "embedding", "input_cost_per_token": 0.000001},
+            "import/nocost": {"mode": "chat", "input_cost_per_token": 0.000001}
+        });
+        let file = th.home.join("litellm.json");
+        std::fs::write(&file, raw.to_string()).unwrap();
+        super::super::run_prices(
+            PricesAction::Import {
+                file: file.to_string_lossy().to_string(),
+            },
+            &th.home,
+        )
+        .await
+        .expect("合法 LiteLLM 导入必须成功");
+        // 下载层状态：恰 1 条（embedding/缺价跳过），per-token → per-million ×1e6。
+        let ds = nemesis_data::DataStore::open(&db_path(&th.home)).unwrap();
+        let downloaded = ds.pricing().list_downloaded().expect("导入必须建下载层");
+        assert_eq!(downloaded.len(), 1, "只收 chat 且双价齐全的条目");
+        assert_eq!(downloaded[0].model_id, "import/chat-model");
+        assert!((downloaded[0].input_cost_per_million - 1.0).abs() < 1e-9);
+        assert!((downloaded[0].output_cost_per_million - 2.0).abs() < 1e-9);
+        let meta = ds.pricing().meta();
+        assert_eq!(
+            meta.source_url.as_deref(),
+            Some(format!("manual-import:{}", file.display()).as_str())
+        );
+    }
+
+    #[tokio::test]
+    async fn prices_import_missing_file_and_bad_json_bail() {
+        let _guard = crate::GLOBAL_STATE_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        let th = s11b_temp_home_env();
+        // 缺文件。
+        let err = super::super::run_prices(
+            PricesAction::Import {
+                file: th.home.join("absent.json").to_string_lossy().to_string(),
+            },
+            &th.home,
+        )
+        .await
+        .unwrap_err();
+        assert!(err.to_string().contains("读取"), "实际：{err}");
+        // 坏 JSON（顶层是数组，不是 map）。
+        let bad = th.home.join("bad.json");
+        std::fs::write(&bad, "[1,2,3]").unwrap();
+        let err = super::super::run_prices(
+            PricesAction::Import {
+                file: bad.to_string_lossy().to_string(),
+            },
+            &th.home,
+        )
+        .await
+        .unwrap_err();
+        assert!(
+            err.to_string().contains("解析失败"),
+            "坏表必须解析报错，实际：{err}"
+        );
+    }
+
+    #[tokio::test]
+    async fn run_add_protocol_alias_normalized_and_written() {
+        let _guard = crate::GLOBAL_STATE_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        let th = s11b_temp_home_env();
+        super::s11b_write_cfg(
+            &th.home,
+            serde_json::json!({"model_list": [{"model": "a/first", "model_name": "first"}]}),
+        );
+        super::super::run(
+            super::super::ModelAction::Add {
+                model: "anthropic/claude-sonnet-4".into(),
+                key: None,
+                base: None,
+                proxy: None,
+                auth: None,
+                protocol: Some("claude".into()), // 别名 → anthropic
+                default: false,
+            },
+            false,
+        )
+        .await
+        .expect("合法协议别名必须成功");
+        let cfg = super::s11b_read_cfg(&th.home);
+        let entry = cfg["model_list"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|m| m["model"] == "anthropic/claude-sonnet-4")
+            .expect("新条目必须在");
+        assert_eq!(entry["protocol"], "anthropic");
+    }
+
+    #[tokio::test]
+    async fn run_add_unknown_protocol_bails_before_write() {
+        let _guard = crate::GLOBAL_STATE_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        let th = s11b_temp_home_env();
+        super::s11b_write_cfg(&th.home, serde_json::json!({"model_list": []}));
+        let err = super::super::run(
+            super::super::ModelAction::Add {
+                model: "zhipu/glm-4.7".into(),
+                key: None,
+                base: None,
+                proxy: None,
+                auth: None,
+                protocol: Some("bogus".into()),
+                default: false,
+            },
+            false,
+        )
+        .await
+        .unwrap_err();
+        assert!(
+            err.to_string().contains("unknown protocol 'bogus'"),
+            "实际：{err}"
+        );
+        // loud 报错退出：不得落任何条目。
+        assert!(
+            super::s11b_read_cfg(&th.home)["model_list"]
+                .as_array()
+                .unwrap()
+                .is_empty()
+        );
+    }
+}
+
+// ---------------------------------------------------------------------------
+// cov 补测（2026-09-25）：`write_config_atomic`（此前零直测——所有写入点
+// 都间接经过；序列化失败臂与父目录缺失臂无处触发）。
+// ---------------------------------------------------------------------------
+#[test]
+fn write_config_atomic_roundtrip_pretty_json() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    let path = tmp.path().join("config.json");
+    let cfg = serde_json::json!({
+        "model_list": [{"model_name": "a", "model": "openai/b"}],
+        "default_model": "a"
+    });
+    super::write_config_atomic(&path, &cfg).expect("正常路径必须 Ok");
+    let back: serde_json::Value =
+        serde_json::from_str(&fs::read_to_string(&path).unwrap()).unwrap();
+    assert_eq!(back, cfg, "回读必须与写入值一致");
+    // pretty 格式（带缩进换行）——人类可读的落盘契约。
+    let raw = fs::read_to_string(&path).unwrap();
+    assert!(raw.contains("\n  \""), "应为 pretty 序列化：{raw}");
+}
+
+#[test]
+fn write_config_atomic_unwritable_location_errors_loud() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    // 用「父路径组件是普通文件」挡住 create_dir_all：原子写必须诚实报错，
+    // 绝不静默成功或写空文件（model-4 回归纪律）。
+    let blocker = tmp.path().join("blocking_file");
+    fs::write(&blocker, b"not a dir").unwrap();
+    let path = blocker.join("config.json");
+    let cfg = serde_json::json!({"model_list": []});
+    super::write_config_atomic(&path, &cfg).expect_err("父路径被文件占据必须 Err");
+    assert!(!path.exists(), "失败后不得留下半成品文件");
+}
+
+// ===========================================================================
+// wave5 round2 batch-2（2026-09-25）：commands::model::run() 入口分派层——
+// 此前 run_prices / run_probe 的内部实现已被 wave_a（直调 run_prices）与
+// r9/r10（子进程探针，走未插桩 release bin）覆盖，但 run() 自身的 Prices /
+// Probe / CatalogUpdate 分派臂、Add 去重臂与 default 写入臂、Remove 的
+// 默认模型守卫与 EOF 确认弃权臂全部缺失。本 mod 全部走**进程内** run()
+//（插桩生效），探针用 test-harness 的进程内 MockAiServer（127.0.0.1:0 临时
+// 端口，Drop 即停，无窗口无残留）。env 变更持 GLOBAL_STATE_LOCK（同文件
+// 既有纪律），探针需 multi_thread runtime（block_in_place 限制）。
+// ===========================================================================
+
+#[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
+mod w5b2 {
+    use super::super::{ModelAction, PricesAction};
+    use super::s11b_temp_home_env;
+    use test_harness::mock_ai::{MockAiReply, MockAiServer};
+
+    /// 探针 7 题全对脚本（同 r9_subprocess::perfect_probe_script：每题的
+    /// tool_call arguments 满足其 required 字段）。
+    fn w5_perfect_probe_script() -> Vec<MockAiReply> {
+        vec![
+            MockAiReply::ToolCall {
+                name: "exec".into(),
+                arguments: r#"{"command":"date"}"#.into(),
+            },
+            MockAiReply::ToolCall {
+                name: "read_file".into(),
+                arguments: r#"{"path":"README.md"}"#.into(),
+            },
+            MockAiReply::ToolCall {
+                name: "create_dir".into(),
+                arguments: r#"{"path":"test"}"#.into(),
+            },
+            MockAiReply::ToolCall {
+                name: "grep".into(),
+                arguments: r#"{"pattern":"TODO"}"#.into(),
+            },
+            MockAiReply::ToolCall {
+                name: "write_file".into(),
+                arguments: r#"{"path":"note.md","content":"hi"}"#.into(),
+            },
+            MockAiReply::ToolCall {
+                name: "edit_file".into(),
+                arguments: r#"{"path":"note.md","old_text":"hi","new_text":"yo"}"#.into(),
+            },
+            MockAiReply::ToolCall {
+                name: "cluster_rpc".into(),
+                arguments: r#"{"target_node":"node-b","message":"你好"}"#.into(),
+            },
+        ]
+    }
+
+    /// Add（default 写入臂 + 带 vendor/ 别名拆分）→ 重复 Add（去重 retain
+    /// 更新臂）→ Probe（run() 分派 + run_probe 全链：解析/工厂/adapter/
+    /// 探针 8 调用/tier 落盘 → format_probe_report + context window 行）
+    /// → List verbose（逐条 + N1 context window 注记）→ Remove 默认守卫
+    ///（Cannot remove default 臂）。一链到底共享同一 temp home。
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn w5_run_add_dedup_probe_list_remove_default_guard_chain() {
+        let _guard = crate::GLOBAL_STATE_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        let th = s11b_temp_home_env();
+        super::s11b_write_cfg(&th.home, serde_json::json!({}));
+
+        // mock AI server 先起（Add 只登记 base，不发请求）。
+        let mock = MockAiServer::start(w5_perfect_probe_script()).expect("mock ai server");
+        let base = format!("{}/v1", mock.base_url());
+
+        // ① Add + --default：走 alias 拆分（2 => parts[1]）+ defaults.llm
+        //    写入臂 + 原子写。
+        super::super::run(
+            ModelAction::Add {
+                model: "w5b2/probe-m".into(),
+                key: Some("sk-w5b2".into()),
+                base: Some(base.clone()),
+                proxy: None,
+                auth: None,
+                protocol: None,
+                default: true,
+            },
+            false,
+        )
+        .await
+        .expect("首次 Add 必须成功");
+        let cfg = super::s11b_read_cfg(&th.home);
+        assert_eq!(
+            cfg["agents"]["defaults"]["llm"].as_str(),
+            Some("probe-m"),
+            "--default 必须写 alias 到 agents.defaults.llm"
+        );
+
+        // ② 重复 Add（同 model 不同 key）：走「查重 → retain + push」更新臂。
+        super::super::run(
+            ModelAction::Add {
+                model: "w5b2/probe-m".into(),
+                key: Some("sk-w5b2-v2".into()),
+                base: Some(base.clone()),
+                proxy: None,
+                auth: None,
+                protocol: None,
+                default: false,
+            },
+            false,
+        )
+        .await
+        .expect("重复 Add（更新语义）必须成功");
+        let cfg = super::s11b_read_cfg(&th.home);
+        let arr = cfg["model_list"].as_array().expect("model_list 在场");
+        assert_eq!(arr.len(), 1, "重复 Add 必须去重为 1 条");
+        assert_eq!(arr[0]["api_key"].as_str(), Some("sk-w5b2-v2"));
+
+        // ③ Probe：run() 分派 → block_in_place + run_probe 全链（进程内，
+        //    插桩生效）→ tier=big 落盘 → 报告打印 + context window 行。
+        super::super::run(
+            ModelAction::Probe {
+                name: "w5b2/probe-m".into(),
+            },
+            false,
+        )
+        .await
+        .expect("mock 全对脚本下 Probe 必须成功");
+        let cfg = super::s11b_read_cfg(&th.home);
+        assert_eq!(
+            cfg["model_list"][0]["model_tier"].as_str(),
+            Some("big"),
+            "7/7 全对探针必须写回 tier=big"
+        );
+
+        // ④ List --verbose：逐条明细行 + 生效 context window 注记。
+        super::super::run(ModelAction::List { verbose: true }, false)
+            .await
+            .expect("List 必须成功");
+
+        // ⑤ Remove 默认守卫：目标是当前默认 → Cannot remove + 提前 Ok。
+        super::super::run(
+            ModelAction::Remove {
+                name: "probe-m".into(),
+                force: true,
+            },
+            false,
+        )
+        .await
+        .expect("默认模型守卫臂按 Ok 早退");
+        let cfg = super::s11b_read_cfg(&th.home);
+        assert_eq!(
+            cfg["model_list"].as_array().map(|a| a.len()),
+            Some(1),
+            "守卫臂不得删掉默认模型"
+        );
+    }
+
+    /// Remove 非 default 模型 + force=false：确认提示读到 EOF（cargo test
+    /// stdin 管道）→「Aborted.」弃权臂，模型保留。
+    #[tokio::test]
+    async fn w5_run_remove_confirm_eof_aborts() {
+        let _guard = crate::GLOBAL_STATE_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        let th = s11b_temp_home_env();
+        super::s11b_write_cfg(
+            &th.home,
+            serde_json::json!({
+                "model_list": [{"model": "prov/other", "model_name": "other", "api_key": "k"}],
+                "agents": {"defaults": {"llm": "zzz-none"}}
+            }),
+        );
+        super::super::run(
+            ModelAction::Remove {
+                name: "other".into(),
+                force: false,
+            },
+            false,
+        )
+        .await
+        .expect("EOF 弃权臂按 Ok 早退");
+        let cfg = super::s11b_read_cfg(&th.home);
+        assert_eq!(
+            cfg["model_list"].as_array().map(|a| a.len()),
+            Some(1),
+            "弃权后模型必须保留"
+        );
+    }
+
+    /// run() → run_prices 分派臂：Import（合法 LiteLLM 文件）+ List（下载层
+    /// 在场 → fetched_at/source/etag 明细行 + 自定义层循环）。run_prices
+    /// 内部已被 wave_a 直调覆盖，这里补的是 ModelAction::Prices 入口臂。
+    #[tokio::test]
+    async fn w5_run_prices_dispatch_import_then_list() {
+        let _guard = crate::GLOBAL_STATE_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        let th = s11b_temp_home_env();
+
+        let raw = serde_json::json!({
+            "w5b2/chat": {
+                "mode": "chat",
+                "input_cost_per_token": 0.000001,
+                "output_cost_per_token": 0.000002
+            }
+        });
+        let file = th.home.join("w5b2-litellm.json");
+        std::fs::write(&file, raw.to_string()).unwrap();
+        super::super::run(
+            ModelAction::Prices {
+                action: PricesAction::Import {
+                    file: file.to_string_lossy().to_string(),
+                },
+            },
+            false,
+        )
+        .await
+        .expect("run(Prices::Import) 必须成功");
+
+        // 加一条自定义层（List 的自定义循环体）再 List：下载层 Some 臂。
+        super::super::run(
+            ModelAction::Prices {
+                action: PricesAction::Add {
+                    model: "w5b2/custom".into(),
+                    input: 1.0,
+                    output: 2.0,
+                    cache_read: 0.1,
+                    cache_creation: 0.2,
+                    display: None,
+                },
+            },
+            false,
+        )
+        .await
+        .expect("run(Prices::Add) 必须成功");
+        super::super::run(
+            ModelAction::Prices {
+                action: PricesAction::List,
+            },
+            false,
+        )
+        .await
+        .expect("run(Prices::List) 必须成功");
+    }
+
+    /// run() → CatalogUpdate：在线成功则缓存落盘（Ok 臂）；离线/内网则
+    /// 走「保留缓存/无缓存 bail」Err 臂。网络状态不确定，两臂行号互补，
+    /// 断言只锁定「不 panic、返回 Result」。
+    #[tokio::test]
+    async fn w5_run_catalog_update_online_or_offline_ok() {
+        let _guard = crate::GLOBAL_STATE_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        let th = s11b_temp_home_env();
+        super::s11b_write_cfg(&th.home, serde_json::json!({}));
+        let _ = super::super::run(ModelAction::CatalogUpdate, false).await;
+    }
+}
+
+// ---------------------------------------------------------------------------
+// wave6（2026-09-25）：离线网络面（HTTPS_PROXY 钉死拒绝端口）下的
+// `model catalog update` 双臂（有缓存保留 / 无缓存诚实 bail）与
+// `model prices update` 离线 bail。
+// ---------------------------------------------------------------------------
+mod wave6 {
+    use super::super::{ModelAction, PricesAction};
+    use super::s11b_temp_home_env;
+
+    struct W6OfflineNet {
+        prev: Option<std::ffi::OsString>,
+    }
+    impl W6OfflineNet {
+        fn engage() -> Self {
+            let prev = std::env::var_os("HTTPS_PROXY");
+            unsafe { std::env::set_var("HTTPS_PROXY", "http://127.0.0.1:9") };
+            Self { prev }
+        }
+    }
+    impl Drop for W6OfflineNet {
+        fn drop(&mut self) {
+            match self.prev.take() {
+                Some(v) => unsafe { std::env::set_var("HTTPS_PROXY", v) },
+                None => unsafe { std::env::remove_var("HTTPS_PROXY") },
+            }
+        }
+    }
+
+    /// 有本地缓存：拉取失败 → 打印「保留现有缓存」后 Ok（缓存不动）。
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn w6_catalog_update_offline_keeps_seeded_cache() {
+        let _guard = crate::GLOBAL_STATE_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        let th = s11b_temp_home_env();
+        super::s11b_write_cfg(&th.home, serde_json::json!({}));
+        // 与 run() 同源：cfg_path = <home>/config.json → parent = <home>。
+        let cache_path = nemesis_path::models_catalog_cache_path(&th.home);
+        std::fs::create_dir_all(cache_path.parent().unwrap()).unwrap();
+        std::fs::write(
+            &cache_path,
+            r#"{"version":1,"fetched_at":"2026-09-25T00:00:00+08:00","entries":[]}"#,
+        )
+        .unwrap();
+        let _net = W6OfflineNet::engage();
+
+        super::super::run(ModelAction::CatalogUpdate, false)
+            .await
+            .expect("有缓存 → 保留后 Ok");
+        assert!(cache_path.exists(), "既有缓存必须原样保留");
+    }
+
+    /// 无本地缓存：拉取失败 → 诚实 bail（内网拷贝指引）。
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn w6_catalog_update_offline_without_cache_bails() {
+        let _guard = crate::GLOBAL_STATE_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        let th = s11b_temp_home_env();
+        super::s11b_write_cfg(&th.home, serde_json::json!({}));
+        let _net = W6OfflineNet::engage();
+
+        let err = super::super::run(ModelAction::CatalogUpdate, false)
+            .await
+            .unwrap_err();
+        assert!(
+            err.to_string().contains("拉取失败且无本地缓存"),
+            "err: {err}"
+        );
+    }
+
+    /// `model prices update`（缺省镜像链）：离线 → fetch_and_replace
+    /// Err → 诚实 bail（退码非 0 契约）。
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn w6_prices_update_offline_bails() {
+        let _guard = crate::GLOBAL_STATE_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        let _th = s11b_temp_home_env();
+        let _net = W6OfflineNet::engage();
+
+        let err = super::super::run(
+            ModelAction::Prices {
+                action: PricesAction::Update { url: None },
+            },
+            false,
+        )
+        .await
+        .unwrap_err();
+        assert!(!err.to_string().is_empty(), "离线必须 Err");
+    }
+}

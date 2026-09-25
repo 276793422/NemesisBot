@@ -734,3 +734,9 @@ mod tests;
 // allow_network arm. All offline — no Sandboxie/UAC/downloads.
 #[cfg(test)]
 mod s10b_tests;
+
+// AGT 覆盖率批次（2026-09-24）：Default+命令表面、pending 的 box_root 为
+// 文件时 enumerate 错误臂、set_network 的 ini 重写失败臂与 Start.exe 缺失
+// spawn 失败臂。run_cli_subcmd/真下载/真开窗臂豁免（见 agt_tests 文件头注）。
+#[cfg(test)]
+mod agt_tests;

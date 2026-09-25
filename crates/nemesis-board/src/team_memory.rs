@@ -110,4 +110,6 @@ fn category_label(e: &TeamMemoryEntry) -> &'static str {
 }
 
 #[cfg(test)]
+mod cov_tests;
+#[cfg(test)]
 mod tests;

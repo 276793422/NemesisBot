@@ -769,3 +769,6 @@ impl std::fmt::Debug for TcpConn {
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+mod cov_tests;

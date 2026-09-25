@@ -1941,3 +1941,746 @@ fn test_classify_empty_result_and_fallback() {
         "success 回调不携带 fail_class"
     );
 }
+
+// =========================================================================
+// wave_d：剩余缺口收口。覆盖 DiscussionInbox 失联臂、讨论通道关闭禁用臂、
+// 出队取消、执行中取消（新任务 + 续行）、升级硬停与空交付（新任务 + 续行）、
+// notify_task_started、deliver_files_back、用量提取、llm_rate_limit 分类。
+//
+// rpc 一律 RpcClient::new()：无 resolver → dispatch 首步「peer not found」
+// 快速 Err——无网络、无端口、无悬挂，fire-and-forget 分支用真客户端走到。
+// =========================================================================
+
+mod wave_d {
+    use super::*;
+    use nemesis_agent::r#loop::{LlmMessage, LlmProvider, LlmResponse, Tool};
+    use nemesis_agent::types::{ChatOptions, ToolDefinition};
+    use nemesis_cluster::cluster_task::CancelOutcome;
+    use nemesis_cluster::rpc::client::RpcClient;
+    use nemesis_cluster::rpc::peer_chat_handler::TaskResultPersister;
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+
+    // -- 脚手架 --------------------------------------------------------------
+
+    fn d_config() -> AgentConfig {
+        AgentConfig {
+            model: "test-model".to_string(),
+            system_prompt: Some("cluster wave-d".to_string()),
+            max_turns: 4,
+            tools: vec!["cluster_rpc".to_string()],
+            ..Default::default()
+        }
+    }
+
+    fn d_make_task(task_id: &str) -> ClusterTask {
+        ClusterTask {
+            task_id: task_id.to_string(),
+            source: TaskSource {
+                node_id: "node-b".to_string(),
+                rpc_address: "127.0.0.1:9".to_string(),
+                session_key: format!("sess-{task_id}"),
+            },
+            status: TaskStatus::Pending,
+            content: "wave-d task".to_string(),
+            conversation: None,
+            waiting_for_task_id: None,
+            waiting_tool_call_id: None,
+            callback_result: None,
+        }
+    }
+
+    fn d_make_event(seq: i64) -> nemesis_types::cluster::DiscussionEvent {
+        nemesis_types::cluster::DiscussionEvent {
+            thread_kind: "issue".to_string(),
+            thread_id: 7,
+            thread_title: "wave-d thread".to_string(),
+            messages: Vec::new(),
+            event: "mention".to_string(),
+            from_node: "node-master".to_string(),
+            new_sender: "node-master".to_string(),
+            new_content: "@node-a ping".to_string(),
+            new_at: 2,
+            reply_to: Some(seq),
+            max_turns_left: 3,
+            seq,
+        }
+    }
+
+    /// 放行闸：provider 进入等待前置 entered（供测试确定性等待「已挂起」），
+    /// 测试置 release 放行。
+    struct DGate {
+        entered: AtomicBool,
+        release: AtomicBool,
+        /// 从第几次 chat 调用开始生效（0=新任务首轮；1=resume 轮，首轮放行）。
+        gate_from: usize,
+    }
+
+    impl DGate {
+        fn new(gate_from: usize) -> Arc<Self> {
+            Arc::new(Self {
+                entered: AtomicBool::new(false),
+                release: AtomicBool::new(false),
+                gate_from,
+            })
+        }
+    }
+
+    /// 可脚本化 provider：第 1 次调用返回 cluster_rpc tool_call（若有），
+    /// 之后返回固定文本；gate 从 gate_from 次调用起挂起等放行。
+    struct DScriptedProvider {
+        first_tool_call: Option<ToolCallInfo>,
+        final_text: String,
+        calls: AtomicUsize,
+        gate: Option<Arc<DGate>>,
+    }
+
+    #[async_trait::async_trait]
+    impl LlmProvider for DScriptedProvider {
+        async fn chat(
+            &self,
+            _model: &str,
+            _messages: Vec<LlmMessage>,
+            _options: Option<ChatOptions>,
+            _tools: Vec<ToolDefinition>,
+        ) -> Result<LlmResponse, String> {
+            let n = self.calls.fetch_add(1, Ordering::SeqCst);
+            if let Some(gate) = &self.gate
+                && n >= gate.gate_from
+            {
+                gate.entered.store(true, Ordering::SeqCst);
+                let deadline = std::time::Instant::now() + std::time::Duration::from_secs(15);
+                while !gate.release.load(Ordering::SeqCst) {
+                    assert!(
+                        std::time::Instant::now() < deadline,
+                        "gate not released within 15s"
+                    );
+                    tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+                }
+            }
+            if n == 0 && self.first_tool_call.is_some() {
+                return Ok(LlmResponse {
+                    content: String::new(),
+                    tool_calls: vec![self.first_tool_call.clone().unwrap()],
+                    finished: false,
+                    reasoning_content: None,
+                    usage: None,
+                    raw_request_body: None,
+                    raw_response_body: None,
+                });
+            }
+            Ok(LlmResponse {
+                content: self.final_text.clone(),
+                tool_calls: Vec::new(),
+                finished: true,
+                reasoning_content: None,
+                usage: None,
+                raw_request_body: None,
+                raw_response_body: None,
+            })
+        }
+    }
+
+    /// 假 cluster_rpc 工具：返回 __CLUSTER_ASYNC__ 标记驱动异步挂起。
+    struct DAsyncRpcTool;
+
+    #[async_trait::async_trait]
+    impl Tool for DAsyncRpcTool {
+        async fn execute(
+            &self,
+            _args: &str,
+            _context: &nemesis_agent::context::RequestContext,
+        ) -> Result<String, String> {
+            Ok("__CLUSTER_ASYNC__{\"task_id\":\"d-child\"}".to_string())
+        }
+    }
+
+    /// 录制型 persister（wave_d 自持）。
+    struct DPersister {
+        set_result_calls: std::sync::Mutex<Vec<(String, String, String, String)>>,
+    }
+
+    impl DPersister {
+        fn new() -> Arc<Self> {
+            Arc::new(Self {
+                set_result_calls: std::sync::Mutex::new(Vec::new()),
+            })
+        }
+    }
+
+    impl TaskResultPersister for DPersister {
+        fn set_running(&self, _task_id: &str, _source_node: &str) {}
+        fn set_result(
+            &self,
+            task_id: &str,
+            status: &str,
+            response: &str,
+            error: &str,
+            _source_node: &str,
+        ) -> Result<(), String> {
+            self.set_result_calls.lock().unwrap().push((
+                task_id.to_string(),
+                status.to_string(),
+                response.to_string(),
+                error.to_string(),
+            ));
+            Ok(())
+        }
+        fn delete(&self, _task_id: &str) -> Result<(), String> {
+            Ok(())
+        }
+    }
+
+    struct DRig {
+        task_list: Arc<ClusterTaskList>,
+        work_queue: Arc<ClusterWorkQueue>,
+        shutdown_tx: tokio::sync::broadcast::Sender<()>,
+        handle: tokio::task::JoinHandle<()>,
+    }
+
+    impl DRig {
+        async fn stop(self) {
+            let _ = self.shutdown_tx.send(());
+            let _ = self.handle.await;
+        }
+    }
+
+    fn d_spawn_rig(
+        agent_loop: AgentLoop,
+        config: AgentConfig,
+        data_dir: &std::path::Path,
+        persister: Option<Arc<dyn TaskResultPersister>>,
+        rpc_client: Option<Arc<RpcClient>>,
+        discussion_rx: Option<
+            tokio::sync::mpsc::UnboundedReceiver<nemesis_types::cluster::DiscussionEvent>,
+        >,
+    ) -> DRig {
+        let task_list = Arc::new(ClusterTaskList::new(data_dir));
+        let work_queue = Arc::new(ClusterWorkQueue::new(8));
+        let (shutdown_tx, shutdown_rx) = tokio::sync::broadcast::channel(1);
+        let handle = tokio::spawn(cluster_agent_loop(
+            Arc::new(agent_loop),
+            config,
+            work_queue.clone(),
+            task_list.clone(),
+            rpc_client,
+            None,
+            persister,
+            discussion_rx,
+            "test-node".to_string(),
+            shutdown_rx,
+        ));
+        DRig {
+            task_list,
+            work_queue,
+            shutdown_tx,
+            handle,
+        }
+    }
+
+    async fn d_wait_until(deadline_ms: u64, f: impl Fn() -> bool) {
+        let deadline = std::time::Instant::now() + std::time::Duration::from_millis(deadline_ms);
+        while !f() {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "condition not met within {deadline_ms}ms"
+            );
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        }
+    }
+
+    fn plain_provider(final_text: &str) -> DScriptedProvider {
+        DScriptedProvider {
+            first_tool_call: None,
+            final_text: final_text.to_string(),
+            calls: AtomicUsize::new(0),
+            gate: None,
+        }
+    }
+
+    // -- DiscussionInbox（模块头 Default / send 失联臂） ---------------------
+
+    /// default() = new()：无活跃 loop → send 诚实报「cluster stopped」。
+    #[test]
+    fn inbox_without_sender_reports_cluster_stopped() {
+        let inbox = crate::cluster_agent::DiscussionInbox::default();
+        let err = inbox.send(d_make_event(1)).unwrap_err();
+        assert!(err.contains("no active cluster agent loop"), "err={err}");
+    }
+
+    /// 接收端 dropped（loop 刚退出）→ send 诚实报「channel closed」，
+    /// 不缓存不过期。
+    #[test]
+    fn inbox_send_after_receiver_dropped_reports_channel_closed() {
+        let inbox = crate::cluster_agent::DiscussionInbox::new();
+        let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
+        inbox.set_sender(tx);
+        drop(rx);
+        let err = inbox.send(d_make_event(2)).unwrap_err();
+        assert!(err.contains("discussion channel closed"), "err={err}");
+    }
+
+    // -- 讨论通道关闭 → 禁用第三臂，loop 存活 --------------------------------
+
+    /// stop/start 周期：旧通道关闭 → recv None → 臂禁用（置 None 防自旋），
+    /// 后续任务仍被正常消费。
+    #[tokio::test]
+    async fn discussion_channel_closed_disables_arm_and_loop_survives() {
+        let tmp = tempfile::tempdir().unwrap();
+        let (_tx, rx) = tokio::sync::mpsc::unbounded_channel();
+        let rig = d_spawn_rig(
+            AgentLoop::new(Box::new(plain_provider("done")), d_config()),
+            d_config(),
+            tmp.path(),
+            None,
+            None,
+            Some(rx),
+        );
+        // 关闭通道：loop 下一次 select 轮 recv None → 禁用该臂。
+        drop(_tx);
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+
+        rig.task_list.create_task(d_make_task("t-d-disc-close"));
+        rig.work_queue.submit("t-d-disc-close".to_string()).unwrap();
+        d_wait_until(10_000, || {
+            rig.task_list.get_task("t-d-disc-close").is_none()
+        })
+        .await;
+        rig.stop().await;
+    }
+
+    // -- 出队取消（排队期间 task_cancel 下行） -------------------------------
+
+    /// Cancelled 任务出队 → 不执行，直接 error("cancelled") 回调回收。
+    #[tokio::test]
+    async fn cancelled_task_dequeued_is_dropped_with_error_callback() {
+        let tmp = tempfile::tempdir().unwrap();
+        let persister = DPersister::new();
+        let rig = d_spawn_rig(
+            AgentLoop::new(Box::new(plain_provider("unused")), d_config()),
+            d_config(),
+            tmp.path(),
+            Some(persister.clone()),
+            None,
+            None,
+        );
+
+        let mut task = d_make_task("t-d-deq-cancel");
+        task.status = TaskStatus::Cancelled;
+        rig.task_list.create_task(task);
+        rig.work_queue.submit("t-d-deq-cancel".to_string()).unwrap();
+
+        d_wait_until(10_000, || {
+            rig.task_list.get_task("t-d-deq-cancel").is_none()
+        })
+        .await;
+        rig.stop().await;
+
+        let calls = persister.set_result_calls.lock().unwrap();
+        assert_eq!(calls.len(), 1, "calls={calls:?}");
+        assert_eq!(calls[0].0, "t-d-deq-cancel");
+        assert_eq!(calls[0].1, "error");
+        assert_eq!(calls[0].2, "");
+        assert_eq!(calls[0].3, "cancelled");
+    }
+
+    // -- 执行中取消（W2 P4 per-task cancel token） ---------------------------
+
+    /// 新任务执行窗口内 cancel_task → token 打断 → error("cancelled") 回调，
+    /// 不走成功交付路径。
+    #[tokio::test]
+    async fn task_cancelled_mid_execution_reports_cancelled_error() {
+        let tmp = tempfile::tempdir().unwrap();
+        let gate = DGate::new(0);
+        let provider = DScriptedProvider {
+            first_tool_call: None,
+            final_text: "late".to_string(),
+            calls: AtomicUsize::new(0),
+            gate: Some(gate.clone()),
+        };
+        let persister = DPersister::new();
+        let rig = d_spawn_rig(
+            AgentLoop::new(Box::new(provider), d_config()),
+            d_config(),
+            tmp.path(),
+            Some(persister.clone()),
+            None,
+            None,
+        );
+
+        rig.task_list.create_task(d_make_task("t-d-mid-cancel"));
+        rig.work_queue.submit("t-d-mid-cancel".to_string()).unwrap();
+        // 等 LLM 调用真正挂起（cancel token 已注册）再取消——防「注册前取消」
+        // 竞态把用例变成普通成功路径。
+        d_wait_until(10_000, || gate.entered.load(Ordering::SeqCst)).await;
+        assert!(matches!(
+            rig.task_list.cancel_task("t-d-mid-cancel"),
+            CancelOutcome::RunningCancelled
+        ));
+        gate.release.store(true, Ordering::SeqCst);
+
+        d_wait_until(10_000, || {
+            rig.task_list.get_task("t-d-mid-cancel").is_none()
+        })
+        .await;
+        rig.stop().await;
+
+        let calls = persister.set_result_calls.lock().unwrap();
+        assert_eq!(calls.len(), 1, "calls={calls:?}");
+        assert_eq!(calls[0].1, "error");
+        assert_eq!(calls[0].2, "");
+        assert_eq!(calls[0].3, "cancelled");
+    }
+
+    /// 续行执行窗口内 cancel_task → 同款 error("cancelled") 回调（560-578）。
+    #[tokio::test]
+    async fn resumed_task_cancelled_mid_execution_reports_cancelled_error() {
+        let tmp = tempfile::tempdir().unwrap();
+        // 首轮两击放行（n=0 返回 cluster_rpc tool_call、工具执行后 n=1 返回
+        // 续答文本收尾 → is_async_done 异步挂起——首轮共消耗两次 provider
+        // 调用，resume_escalation 同款流程可证），resume 轮（n=2）挂起。
+        let gate = DGate::new(2);
+        let provider = DScriptedProvider {
+            first_tool_call: Some(ToolCallInfo {
+                id: "tc-d-rc".to_string(),
+                name: "cluster_rpc".to_string(),
+                arguments: "{}".to_string(),
+            }),
+            final_text: "late-resume".to_string(),
+            calls: AtomicUsize::new(0),
+            gate: Some(gate.clone()),
+        };
+        let mut agent_loop = AgentLoop::new(Box::new(provider), d_config());
+        agent_loop.register_tool("cluster_rpc".to_string(), Box::new(DAsyncRpcTool));
+        let persister = DPersister::new();
+        let rig = d_spawn_rig(
+            agent_loop,
+            d_config(),
+            tmp.path(),
+            Some(persister.clone()),
+            None,
+            None,
+        );
+
+        rig.task_list.create_task(d_make_task("t-d-res-cancel"));
+        rig.work_queue.submit("t-d-res-cancel".to_string()).unwrap();
+        // 第一段：exec 异步挂起。
+        d_wait_until(10_000, || {
+            matches!(
+                rig.task_list.get_task("t-d-res-cancel").map(|t| t.status),
+                Some(TaskStatus::WaitingRemote)
+            )
+        })
+        .await;
+        // 注入回调 → 重新入队 → resume 轮 LLM 挂起。
+        rig.task_list
+            .inject_callback("t-d-res-cancel", "remote answer");
+        rig.work_queue.submit("t-d-res-cancel".to_string()).unwrap();
+        d_wait_until(10_000, || gate.entered.load(Ordering::SeqCst)).await;
+        assert!(matches!(
+            rig.task_list.cancel_task("t-d-res-cancel"),
+            CancelOutcome::RunningCancelled
+        ));
+        gate.release.store(true, Ordering::SeqCst);
+
+        d_wait_until(10_000, || {
+            rig.task_list.get_task("t-d-res-cancel").is_none()
+        })
+        .await;
+        rig.stop().await;
+
+        let calls = persister.set_result_calls.lock().unwrap();
+        assert_eq!(calls.len(), 1, "calls={calls:?}");
+        assert_eq!(calls[0].1, "error");
+        assert_eq!(calls[0].2, "");
+        assert_eq!(calls[0].3, "cancelled");
+    }
+
+    // -- 升级硬停 / 空交付（P1/P2A 终态改判） --------------------------------
+
+    /// 新任务 Done 终止但文本带 ESCALATION_MARKER → error 回调（交付=完整
+    /// 停止告知文本），A 端据此转人工。
+    #[tokio::test]
+    async fn escalation_done_text_is_reported_as_error() {
+        let tmp = tempfile::tempdir().unwrap();
+        let marker_text = format!("{ESCALATION_MARKER}反复出现同一失败");
+        let persister = DPersister::new();
+        let rig = d_spawn_rig(
+            AgentLoop::new(Box::new(plain_provider(&marker_text)), d_config()),
+            d_config(),
+            tmp.path(),
+            Some(persister.clone()),
+            None,
+            None,
+        );
+
+        rig.task_list.create_task(d_make_task("t-d-esc"));
+        rig.work_queue.submit("t-d-esc".to_string()).unwrap();
+        d_wait_until(10_000, || rig.task_list.get_task("t-d-esc").is_none()).await;
+        rig.stop().await;
+
+        let calls = persister.set_result_calls.lock().unwrap();
+        assert_eq!(calls.len(), 1, "calls={calls:?}");
+        assert_eq!(calls[0].1, "error");
+        assert_eq!(calls[0].2, marker_text, "交付=完整停止告知文本");
+        assert_eq!(calls[0].3, marker_text);
+    }
+
+    /// 新任务 turn 正常结束但无交付文本 → error（empty_result 文案）。
+    #[tokio::test]
+    async fn empty_final_text_is_reported_as_empty_result_error() {
+        let tmp = tempfile::tempdir().unwrap();
+        let persister = DPersister::new();
+        let rig = d_spawn_rig(
+            AgentLoop::new(Box::new(plain_provider("  \n")), d_config()),
+            d_config(),
+            tmp.path(),
+            Some(persister.clone()),
+            None,
+            None,
+        );
+
+        rig.task_list.create_task(d_make_task("t-d-empty"));
+        rig.work_queue.submit("t-d-empty".to_string()).unwrap();
+        d_wait_until(10_000, || rig.task_list.get_task("t-d-empty").is_none()).await;
+        rig.stop().await;
+
+        let calls = persister.set_result_calls.lock().unwrap();
+        assert_eq!(calls.len(), 1, "calls={calls:?}");
+        assert_eq!(calls[0].1, "error");
+        assert_eq!(calls[0].2, "");
+        assert!(
+            calls[0].3.starts_with("worker 返回空结果") && calls[0].3.contains("turn 正常结束"),
+            "err={}",
+            calls[0].3
+        );
+    }
+
+    /// 续行轮升级硬停 → 同款 error 改判（618-628）。
+    #[tokio::test]
+    async fn resume_escalation_text_is_reported_as_error() {
+        let tmp = tempfile::tempdir().unwrap();
+        let marker_text = format!("{ESCALATION_MARKER}resume-loop");
+        let provider = DScriptedProvider {
+            first_tool_call: Some(ToolCallInfo {
+                id: "tc-d-re".to_string(),
+                name: "cluster_rpc".to_string(),
+                arguments: "{}".to_string(),
+            }),
+            final_text: marker_text.clone(),
+            calls: AtomicUsize::new(0),
+            gate: None,
+        };
+        let mut agent_loop = AgentLoop::new(Box::new(provider), d_config());
+        agent_loop.register_tool("cluster_rpc".to_string(), Box::new(DAsyncRpcTool));
+        let persister = DPersister::new();
+        let rig = d_spawn_rig(
+            agent_loop,
+            d_config(),
+            tmp.path(),
+            Some(persister.clone()),
+            None,
+            None,
+        );
+
+        rig.task_list.create_task(d_make_task("t-d-res-esc"));
+        rig.work_queue.submit("t-d-res-esc".to_string()).unwrap();
+        d_wait_until(10_000, || {
+            matches!(
+                rig.task_list.get_task("t-d-res-esc").map(|t| t.status),
+                Some(TaskStatus::WaitingRemote)
+            )
+        })
+        .await;
+        rig.task_list.inject_callback("t-d-res-esc", "answer");
+        rig.work_queue.submit("t-d-res-esc".to_string()).unwrap();
+        d_wait_until(10_000, || rig.task_list.get_task("t-d-res-esc").is_none()).await;
+        rig.stop().await;
+
+        let calls = persister.set_result_calls.lock().unwrap();
+        assert_eq!(calls.len(), 1, "calls={calls:?}");
+        assert_eq!(calls[0].1, "error");
+        assert_eq!(calls[0].2, marker_text);
+    }
+
+    /// 续行轮空交付 → error（续行版 empty_result 文案）。
+    #[tokio::test]
+    async fn resume_empty_final_text_is_reported_as_empty_result_error() {
+        let tmp = tempfile::tempdir().unwrap();
+        let provider = DScriptedProvider {
+            first_tool_call: Some(ToolCallInfo {
+                id: "tc-d-rz".to_string(),
+                name: "cluster_rpc".to_string(),
+                arguments: "{}".to_string(),
+            }),
+            final_text: "  ".to_string(),
+            calls: AtomicUsize::new(0),
+            gate: None,
+        };
+        let mut agent_loop = AgentLoop::new(Box::new(provider), d_config());
+        agent_loop.register_tool("cluster_rpc".to_string(), Box::new(DAsyncRpcTool));
+        let persister = DPersister::new();
+        let rig = d_spawn_rig(
+            agent_loop,
+            d_config(),
+            tmp.path(),
+            Some(persister.clone()),
+            None,
+            None,
+        );
+
+        rig.task_list.create_task(d_make_task("t-d-res-empty"));
+        rig.work_queue.submit("t-d-res-empty".to_string()).unwrap();
+        d_wait_until(10_000, || {
+            matches!(
+                rig.task_list.get_task("t-d-res-empty").map(|t| t.status),
+                Some(TaskStatus::WaitingRemote)
+            )
+        })
+        .await;
+        rig.task_list.inject_callback("t-d-res-empty", "answer");
+        rig.work_queue.submit("t-d-res-empty".to_string()).unwrap();
+        d_wait_until(10_000, || rig.task_list.get_task("t-d-res-empty").is_none()).await;
+        rig.stop().await;
+
+        let calls = persister.set_result_calls.lock().unwrap();
+        assert_eq!(calls.len(), 1, "calls={calls:?}");
+        assert_eq!(calls[0].1, "error");
+        assert_eq!(calls[0].2, "");
+        assert!(
+            calls[0].3.starts_with("worker 返回空结果") && calls[0].3.contains("续行"),
+            "err={}",
+            calls[0].3
+        );
+    }
+
+    // -- D0b 出队开跑上报 ----------------------------------------------------
+
+    /// notify_task_started fire-and-forget：无 resolver 客户端 call 快速 Err
+    /// → debug 跳过；None 客户端直接返回。不炸不悬挂。
+    #[tokio::test]
+    async fn notify_task_started_tolerates_rpc_failure() {
+        let rpc = Arc::new(RpcClient::new());
+        let task = d_make_task("t-d-notify");
+        notify_task_started(Some(rpc.as_ref()), &task, "test-node").await;
+        notify_task_started(None, &task, "test-node").await;
+    }
+
+    // -- deliver_files_back（成功交付文件回传） ------------------------------
+
+    /// 反引号路径解析：存在文件收（base64 组包）、不存在/目录跳过、重复去重；
+    /// RPC Err 诚实降级（debug 日志 + 内联源码兜底）。rpc=None 解析后跳过。
+    #[tokio::test]
+    async fn deliver_files_parses_paths_and_degrades_on_rpc_error() {
+        let tmp = tempfile::tempdir().unwrap();
+        let file_a = tmp.path().join("fix_a.txt");
+        std::fs::write(&file_a, b"patch").unwrap();
+        let dir_b = tmp.path().join("sub");
+        std::fs::create_dir_all(&dir_b).unwrap();
+
+        let text = format!(
+            "改动文件：\n- `{a}`\n- `{missing}`\n- `{dir}`\n- `{a}`\n",
+            a = file_a.display(),
+            missing = tmp.path().join("missing.bin").display(),
+            dir = dir_b.display(),
+        );
+
+        // rpc=None：解析后诚实跳过（无客户端臂）。
+        let task = d_make_task("t-d-df-none");
+        deliver_files_back(None, &task, "test-node", &text).await;
+
+        // rpc 有（无 resolver → call 快速 Err）→ 组包 + Err 降级臂。
+        let rpc = Arc::new(RpcClient::new());
+        let task = d_make_task("t-d-df-err");
+        deliver_files_back(Some(rpc.as_ref()), &task, "test-node", &text).await;
+    }
+
+    /// 交付文本无路径形态片段 → 解析为空提前返回，不触 RPC。
+    #[tokio::test]
+    async fn deliver_files_without_paths_returns_early() {
+        let rpc = Arc::new(RpcClient::new());
+        let task = d_make_task("t-d-df-empty");
+        deliver_files_back(
+            Some(rpc.as_ref()),
+            &task,
+            "test-node",
+            "纯文本交付：没有可解析的路径片段",
+        )
+        .await;
+    }
+
+    // -- E1 二期用量提取 -----------------------------------------------------
+
+    /// 装配 data_store → 差值提取 Some（空库全零）；未装配 → 诚实 None。
+    #[tokio::test]
+    async fn task_usage_extracted_from_data_store_delta() {
+        let tmp = tempfile::tempdir().unwrap();
+        let db = tmp.path().join("usage.db");
+        let ds = Arc::new(nemesis_data::DataStore::open(&db).unwrap());
+        let mut agent_loop = AgentLoop::new(Box::new(plain_provider("u")), d_config());
+        agent_loop.set_data_store(ds);
+
+        let before = snapshot_session_usage(&agent_loop, "sess-u1");
+        assert_eq!(before.requests, 0);
+        let usage =
+            extract_task_usage(&agent_loop, "sess-u1", &before).expect("data_store 已装配 → Some");
+        assert_eq!(usage["requests"], serde_json::json!(0));
+        assert_eq!(usage["input_tokens"], serde_json::json!(0));
+        assert_eq!(usage["output_tokens"], serde_json::json!(0));
+        assert_eq!(usage["cost_usd"], serde_json::json!(0.0));
+
+        let bare = AgentLoop::new(Box::new(plain_provider("u")), d_config());
+        assert!(extract_task_usage(&bare, "sess-u1", &before).is_none());
+    }
+
+    // -- 讨论 post / send_nb_bus RPC 失败臂 ----------------------------------
+
+    /// 空回复：post 前被丢弃，不触 RPC、不炸。
+    #[tokio::test]
+    async fn discussion_empty_reply_dropped_before_post() {
+        let agent_loop = AgentLoop::new(Box::new(plain_provider("  \n")), d_config());
+        let event = d_make_event(1);
+        handle_discussion(&agent_loop, &d_config(), None, None, "node-a", &event).await;
+    }
+
+    /// 正文回复 + RPC 失败（无 resolver 快速 Err）→ post Err 臂诚实 warn、
+    /// 单次尝试不重试；send_nb_bus 错误映射「nb_bus rpc to {target}: …」。
+    #[tokio::test]
+    async fn discussion_reply_delivery_failure_is_honest_no_retry() {
+        let agent_loop =
+            AgentLoop::new(Box::new(plain_provider("我的结论：先看日志。")), d_config());
+        let event = d_make_event(2);
+        let rpc = Arc::new(RpcClient::new());
+        handle_discussion(
+            &agent_loop,
+            &d_config(),
+            Some(rpc.as_ref()),
+            None,
+            "node-a",
+            &event,
+        )
+        .await;
+
+        // send_nb_bus 直测：Err 映射带目标节点名。
+        let payload = build_comment_post_envelope("node-a", &event, "x");
+        let err = send_nb_bus(rpc.as_ref(), "node-a", "node-master", payload)
+            .await
+            .unwrap_err();
+        assert!(err.contains("nb_bus rpc to node-master"), "err={err}");
+    }
+
+    // -- 终态失败分类补漏（llm_rate_limit 限流形态单列） ----------------------
+
+    /// 「rate limited」/「429」→ llm_rate_limit（2026-09-17 BUG 文档裁决⑤）。
+    #[test]
+    fn test_classify_llm_rate_limit_variants() {
+        assert_eq!(
+            super::classify_terminal_failure("error", "", "Error: upstream rate limited"),
+            Some("llm_rate_limit")
+        );
+        assert_eq!(
+            super::classify_terminal_failure("error", "", "Error: HTTP 429 Too Many Requests"),
+            Some("llm_rate_limit")
+        );
+    }
+}

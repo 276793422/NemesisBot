@@ -2223,3 +2223,27 @@ fn test_extract_account_id_nested_auth_without_usable_key_falls_through() {
     let jwt = format!("{}.{}.sig", header, payload);
     assert!(extract_account_id_impl(&jwt).is_none());
 }
+
+// ===========================================================================
+// Wave4 覆盖批次：open_browser 错误臂（进程 spawn 失败路径）。成功臂会
+// 真开浏览器（红线，结构性不测）；错误臂用「URL 含内嵌 NUL」确定性触发
+// ——std 在 CreateProcess 之前就拒绝含 NUL 的命令行（InvalidInput），
+// 无窗口、无副作用，错误如实映射为 "opening browser: ..."。
+// ===========================================================================
+
+#[test]
+fn open_browser_with_nul_byte_fails_without_spawning() {
+    let err = open_browser("https://auth.example\0evil").unwrap_err();
+    assert!(
+        err.starts_with("opening browser:"),
+        "错误前缀如实透传：{err}"
+    );
+    // 正常 URL 不得在此断言（会真开浏览器）——只测失败映射。
+}
+
+#[cfg(not(any(target_os = "windows", target_os = "macos", target_os = "linux")))]
+#[test]
+fn open_browser_unsupported_platform_is_err() {
+    let err = open_browser("https://auth.example").unwrap_err();
+    assert!(err.contains("unsupported platform"), "{err}");
+}

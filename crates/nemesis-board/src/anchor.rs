@@ -389,4 +389,6 @@ pub fn render_anchor_failures(results: &[AnchorResult]) -> String {
 }
 
 #[cfg(test)]
+mod cov_tests;
+#[cfg(test)]
 mod tests;

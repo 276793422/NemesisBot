@@ -304,6 +304,8 @@ pub fn build_retry_prompt(prev_output: &str, error: &PlanParseError) -> String {
 }
 
 #[cfg(test)]
+mod cov_tests;
+#[cfg(test)]
 mod tests;
 
 /// R-9（goal P4）：解析 acceptance_criteria 里的 `[TOUCH] <路径>` 行——

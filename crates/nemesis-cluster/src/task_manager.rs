@@ -549,3 +549,6 @@ fn cleanup_completed(
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+mod cov_tests;

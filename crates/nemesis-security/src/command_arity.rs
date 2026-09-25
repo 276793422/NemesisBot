@@ -162,4 +162,6 @@ pub fn reduce_command(cmd: &str) -> String {
 }
 
 #[cfg(test)]
+mod cov_tests;
+#[cfg(test)]
 mod tests;

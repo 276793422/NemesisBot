@@ -159,3 +159,20 @@ async fn download_logs_under_subscriber_macro_args_evaluated() {
     download_and_verify(&url2, None, &dest2).await.unwrap();
     assert_eq!(std::fs::read(&dest2).unwrap(), b"no-hash-body");
 }
+
+// ---------------------------------------------------------------------------
+// AGT 覆盖率批次（2026-09-24）：create_dir_all 失败臂——dest 父目录被
+// 一个**文件**占位 → 建目录必败 → with_context 的参数行确定性求值。
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn download_and_verify_uncreatable_parent_bails_with_context() {
+    let dir = tempfile::tempdir().unwrap();
+    let blocker = dir.path().join("blocker");
+    std::fs::write(&blocker, b"x").unwrap();
+    let dest = blocker.join("inst.exe"); // 父目录是文件 → create_dir_all 失败
+    let url = serve("body", "200 OK").await;
+    let err = download_and_verify(&url, None, &dest).await.unwrap_err();
+    let msg = format!("{err:#}");
+    assert!(msg.contains("create dir"), "{msg}");
+}

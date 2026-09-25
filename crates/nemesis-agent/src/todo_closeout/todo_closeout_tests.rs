@@ -178,3 +178,10 @@ async fn writer_reader_parity_different_session_keys() {
         }
     }
 }
+
+// wave5：LifecycleHook::name 恒等（53-55）。
+#[test]
+fn hook_name_is_todo_closeout_reminder() {
+    let hook = TodoCloseoutHook::new(std::env::temp_dir());
+    assert_eq!(LifecycleHook::name(&hook), "todo-closeout-reminder");
+}

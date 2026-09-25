@@ -154,3 +154,8 @@ impl ModuleHandler for PluginsHandler {
 
 #[cfg(test)]
 mod tests;
+
+// AGT 覆盖率批次（2026-09-25）：Default 转发体。豁免（exe 旁 plugins/
+// 探测目录劫持并行断言）见 agt_tests 头注。
+#[cfg(test)]
+mod agt_tests;

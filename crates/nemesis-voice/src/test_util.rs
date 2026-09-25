@@ -44,3 +44,6 @@ pub fn catch_panic_msg<F: FnOnce() -> R, R>(f: F) -> String {
         "<non-string panic payload>".to_string()
     }
 }
+
+#[cfg(test)]
+mod cov_tests;

@@ -3625,3 +3625,44 @@ mod r10_process_boundary {
         );
     }
 }
+
+// ---------------------------------------------------------------------------
+// wave_a（2026-09-25）：is_valid_engine / url_display_truncated /
+// lookup_system_clamav 三个小纯函数（此前无直测）。
+// ---------------------------------------------------------------------------
+
+mod wave_a {
+    use super::*;
+
+    #[test]
+    fn is_valid_engine_matches_available_list() {
+        // clamav 在 available_engines 里；空名/编造名不在。
+        assert!(is_valid_engine("clamav"));
+        assert!(!is_valid_engine(""));
+        assert!(!is_valid_engine("definitely-not-an-engine"));
+        // 大小写敏感（引擎名是注册表键）。
+        assert!(!is_valid_engine("ClamAV"));
+    }
+
+    #[test]
+    fn url_display_truncates_over_40_chars_on_boundary() {
+        assert_eq!(url_display_truncated("short-url"), "short-url");
+        let long = "a".repeat(50);
+        let shown = url_display_truncated(&long);
+        assert!(shown.ends_with("..."));
+        assert!(shown.len() < long.len(), "截断后必须更短：{shown}");
+        // 40 字符整 = 不截断。
+        let exactly40 = "b".repeat(40);
+        assert_eq!(url_display_truncated(&exactly40), exactly40);
+    }
+
+    #[test]
+    fn lookup_system_clamav_returns_none_or_a_path() {
+        // PATH 上有没有 clamav 都不算失败——契约只保证不 panic 且返回值
+        // 一致（Some(可执行路径) 或 None）。
+        let r = lookup_system_clamav();
+        if let Some(p) = r {
+            assert!(!p.is_empty());
+        }
+    }
+}

@@ -95,6 +95,10 @@ wiremock = "0.6"
 # P2-2: sdk_embed tests open the embedded bytes as a real archive (structural
 # round-trip — the guarantee that unzip/pip install work, not just non-empty).
 zip = { version = "2", default-features = false, features = ["deflate"] }
+# memory handler agt_tests 用共享 ONNX fixture 喂真实 MemoryManager——
+# `init_vector_store_with_embed` 门在 nemesis-memory 的 `test-fixture` feature
+# 后（与 nemesis-agent dev-deps 同款模式；仅测试用，不进生产依赖图）。
+nemesis-memory = { workspace = true, features = ["test-fixture"] }
 
 [lints]
 workspace = true

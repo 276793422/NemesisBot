@@ -149,3 +149,6 @@ pub fn log_error(component: &str, error: &str, context: &str) {
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+mod cov_tests;

@@ -857,3 +857,11 @@ mod extra_tests;
 // on ephemeral ports.
 #[cfg(all(test, feature = "workflow"))]
 mod s10b_tests;
+
+// AGT 覆盖率批次（2026-09-25）：run_send_writer 的 lo 关闭收尾臂 + hi 批量
+// 捎带臂（假 sink 直驱私有 fn）、chat.send 无效 media 注记（content 非空
+// 补换行）+ workflow_edit metadata 写键、broadcast_to_session debug 字段
+// 求值（with_default 确定性装载）。豁免（收括号伪零 + 读流 None 臂可达性
+// 论证）见 agt_tests 头注。No feature gate（不触 workflow 型 AppState 字段）。
+#[cfg(test)]
+mod agt_tests;

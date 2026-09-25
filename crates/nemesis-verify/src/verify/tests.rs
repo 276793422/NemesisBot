@@ -421,3 +421,285 @@ fn legacy_v3_envelope_yields_no_signature() {
         "v3 NMBSIG envelope 在 v4 管线 = 无主签名（goal 破坏性声明）"
     );
 }
+
+// ---------------------------------------------------------------------------
+// AGT 覆盖率批次（2026-09-24）：verify_bytes 的支线臂补测——
+// - PE 首条目非 PKCS → locate_primary Malformed（146-149）
+// - sid 指向的签名者证书不在证书集 → Malformed（244）
+// - leaf 缺 codeSigning EKU → 链验 Untrusted（258）
+// - leaf 签名字节破坏 → BadSignature 落 catch-all Untrusted（264）
+// - order_chain_from：AKI↔SKI 成环 → None（213）
+// - 签名者/签发者 SPKI 损坏 → 链序前置拒绝 Untrusted（2026-09-26 补测修正：
+//   原计划的「第⑤步签名者公钥」「InvalidKey→证书链」两臂经 verify_bytes
+//   不可达——is_self_signed 无条件解析 SPKI，坏 SPKI 证书在 order_chain_from
+//   即被拒，两臂为防御性死臂，见覆盖率报告墙类 9）
+// 均在第③/⑤步内出结果，不触吊销 env，无需 GLOBAL_STATE_LOCK。
+// ---------------------------------------------------------------------------
+
+/// TBS 级变异积木：build_tbs → mutate → seal（签名在变异后盖，证书自洽）。
+/// 独立命名（agt_ 前缀）避免与 S4-1 段夹具混淆。
+fn agt_mutated_cert(
+    subject_vk: &p256::ecdsa::VerifyingKey,
+    signer_sk: &p256::ecdsa::SigningKey,
+    issuer_ski: &[u8],
+    mutate: impl FnOnce(&mut x509_cert::certificate::TbsCertificate),
+) -> crate::cert::Certificate {
+    use crate::cert::{TbsInput, build_tbs, seal_certificate};
+    let now = now_secs();
+    let input = TbsInput {
+        subject_cn: "AGT Crafted",
+        subject_org: Some("NB Test"),
+        issuer_cn: "AGT Issuer",
+        issuer_org: Some("NB Test"),
+        is_ca: false,
+        path_len: None,
+        ku_digital_signature: true,
+        ku_key_cert_sign: false,
+        ku_crl_sign: false,
+        eku_code_signing: true,
+        not_before_unix: now.saturating_sub(3600),
+        not_after_unix: now.saturating_add(365 * 86400),
+    };
+    let mut tbs = build_tbs(
+        subject_vk,
+        issuer_ski,
+        &crate::cert::random_serial(),
+        &input,
+    )
+    .unwrap();
+    mutate(&mut tbs);
+    seal_certificate(tbs, signer_sk).unwrap()
+}
+
+#[test]
+fn agt_pe_first_entry_non_pkcs_yields_malformed() {
+    let h = V4Harness::new();
+    let pe = base_pe();
+    let digest = crate::pe::authenticode_digest(&pe).expect("digest");
+    let cms = crate::envelope::build_signed_data(
+        &digest,
+        &h.h.leaf_sk,
+        1_800_000_000,
+        &h.h.chain(),
+        None,
+        None,
+    )
+    .unwrap();
+    let mut signed = append_certificate_table(&pe, &cms).unwrap();
+    // 首条目 wCertificateType 改成 0x0001（非 PKCS_SIGNED_DATA）
+    let va = pe.len().div_ceil(8) * 8;
+    signed[va + 6..va + 8].copy_from_slice(&1u16.to_le_bytes());
+    match verify_bytes(&signed, &h.anchor_fps(), now_secs()) {
+        VerifyOutcome::Malformed(m) => assert!(m.contains("非 PKCS_SIGNED_DATA"), "{m}"),
+        o => panic!("expected Malformed, got {o:?}"),
+    }
+}
+
+#[test]
+fn agt_sid_signer_missing_from_cert_set_is_malformed() {
+    use cms::cert::IssuerAndSerialNumber;
+    use cms::content_info::ContentInfo;
+    use cms::signed_data::{SignedData, SignerIdentifier};
+    use der::{Decode, Encode};
+    use x509_cert::serial_number::SerialNumber;
+
+    let h = V4Harness::new();
+    let content = b"sid missing payload".to_vec();
+    let cms = h.build_cms(&content, 1_800_000_000, &h.h.leaf_sk, &h.h.chain());
+    // sid 不在 build_signed_data 的签名覆盖面（签名只盖 signedAttrs）——
+    // parse → 换 serial → re-encode 不破签名，但 sid 从此对不上证书集任何成员
+    let mut ci = ContentInfo::from_der(cms.as_slice()).unwrap();
+    let mut sd = SignedData::from_der(ci.content.to_der().unwrap().as_slice()).unwrap();
+    let mut si = sd.signer_infos.0.iter().next().unwrap().clone();
+    match &mut si.sid {
+        SignerIdentifier::IssuerAndSerialNumber(IssuerAndSerialNumber {
+            serial_number, ..
+        }) => {
+            *serial_number = SerialNumber::new(&[0xDE, 0xAD, 0xBE, 0xEF]).unwrap();
+        }
+        _ => panic!("expected IssuerAndSerialNumber sid"),
+    }
+    sd.signer_infos =
+        cms::signed_data::SignerInfos(der::asn1::SetOfVec::try_from(vec![si]).unwrap());
+    ci.content = der::Any::from_der(sd.to_der().unwrap().as_slice()).unwrap();
+    let signed = crate::envelope::attach_v4(
+        &content,
+        &ci.to_der().unwrap(),
+        crate::envelope::FORMAT_TAG_RAW,
+        content.len(),
+    );
+    match verify_bytes(&signed, &h.anchor_fps(), now_secs()) {
+        VerifyOutcome::Malformed(m) => assert!(m.contains("sid"), "{m}"),
+        o => panic!("expected Malformed, got {o:?}"),
+    }
+}
+
+#[test]
+fn agt_leaf_without_code_signing_eku_is_untrusted() {
+    use crate::cert::{TbsInput, ski_value};
+    let h = V4Harness::new();
+    let now = now_secs();
+    let no_eku_leaf = crate::keygen::issue_x509(
+        h.h.leaf_sk.verifying_key(),
+        &h.h.issuing_sk,
+        &ski_value(h.h.issuing_sk.verifying_key()).unwrap(),
+        TbsInput {
+            subject_cn: "No EKU Leaf",
+            subject_org: Some("NB Test"),
+            issuer_cn: "Issuing",
+            issuer_org: Some("NB Test"),
+            is_ca: false,
+            path_len: None,
+            ku_digital_signature: true,
+            ku_key_cert_sign: false,
+            ku_crl_sign: false,
+            eku_code_signing: false,
+            not_before_unix: now.saturating_sub(3600),
+            not_after_unix: now.saturating_add(365 * 86400),
+        },
+    )
+    .unwrap();
+    let certs = vec![no_eku_leaf, h.h.issuing_cert.clone(), h.h.root_cert.clone()];
+    let signed = h.sign_raw_with(b"no eku payload", 1_800_000_000, &h.h.leaf_sk, &certs);
+    assert!(
+        matches!(
+            verify_bytes(&signed, &h.anchor_fps(), now_secs()),
+            VerifyOutcome::Untrusted
+        ),
+        "leaf 缺 codeSigning EKU → Untrusted"
+    );
+}
+
+#[test]
+fn agt_leaf_signature_algorithm_foreign_is_malformed_chain_error() {
+    // leaf 的 signature_algorithm 在 TBS 外——换成 sha256WithRSAEncryption 后
+    // 结构/链序/有效期/EKU 全好（order_chain_from 放行），verify_chain 在
+    // verify_signature_by 的算法闸处 UnsupportedAlgorithm → Malformed「证书链」
+    use der::{Decode, Encode};
+    let h = V4Harness::new();
+    let mut x = x509_cert::certificate::Certificate::from_der(h.h.leaf_cert.to_der()).unwrap();
+    x.signature_algorithm.oid = der::asn1::ObjectIdentifier::new_unwrap("1.2.840.113549.1.1.11");
+    let leaf_bad = crate::cert::Certificate::from_der(&x.to_der().unwrap()).unwrap();
+    let certs = vec![leaf_bad, h.h.issuing_cert.clone(), h.h.root_cert.clone()];
+    let signed = h.sign_raw_with(b"sig alg payload", 1_800_000_000, &h.h.leaf_sk, &certs);
+    match verify_bytes(&signed, &h.anchor_fps(), now_secs()) {
+        VerifyOutcome::Malformed(m) => assert!(m.contains("证书链"), "{m}"),
+        o => panic!("expected Malformed, got {o:?}"),
+    }
+}
+
+#[test]
+fn agt_broken_leaf_signature_falls_into_catch_all_untrusted() {
+    let h = V4Harness::new();
+    // leaf 签名字节翻一位（TBS 外——AKI/SKI/有效期/EKU/结构全好）：
+    // verify_chain → BadSignature → catch-all `_ => Untrusted`
+    use der::{Decode, Encode};
+    let mut x = x509_cert::certificate::Certificate::from_der(h.h.leaf_cert.to_der()).unwrap();
+    let mut sig = x.signature.raw_bytes().to_vec();
+    let n = sig.len();
+    sig[n - 1] ^= 0xFF;
+    x.signature = der::asn1::BitString::new(0, sig).unwrap();
+    let leaf_bad = crate::cert::Certificate::from_der(&x.to_der().unwrap()).unwrap();
+    let certs = vec![leaf_bad, h.h.issuing_cert.clone(), h.h.root_cert.clone()];
+    let signed = h.sign_raw_with(b"broken sig payload", 1_800_000_000, &h.h.leaf_sk, &certs);
+    assert!(
+        matches!(
+            verify_bytes(&signed, &h.anchor_fps(), now_secs()),
+            VerifyOutcome::Untrusted
+        ),
+        "BadSignature 落 catch-all 臂 → Untrusted"
+    );
+}
+
+#[test]
+fn agt_signer_spki_corrupted_rejected_by_chain_order_untrusted() {
+    // 签名者（leaf）SPKI 损坏（TBS 变异后重盖签名，证书自洽、SKI/AKI 完好）：
+    // 链序上溯的第一步 is_self_signed 需解析主体 SPKI → InvalidKey →
+    // order_chain_from None → Untrusted。原目标「第⑤步 Malformed『签名者
+    // 公钥』」经 verify_bytes 不可达（链序前置拦截，防御性死臂——见覆盖率
+    // 报告墙类 9），本测试钉死真实行为 = 诚实拒绝。
+    use crate::cert::ski_value;
+    let h = V4Harness::new();
+    let leaf_bad = agt_mutated_cert(
+        h.h.leaf_sk.verifying_key(),
+        &h.h.issuing_sk,
+        &ski_value(h.h.issuing_sk.verifying_key()).unwrap(),
+        |tbs| {
+            // 33 字节垃圾 = 压缩 SEC1 点长度，但不是合法 P-256 点
+            tbs.subject_public_key_info.subject_public_key =
+                der::asn1::BitString::new(0, vec![0xFF; 33]).unwrap();
+        },
+    );
+    let certs = vec![leaf_bad, h.h.issuing_cert.clone(), h.h.root_cert.clone()];
+    let signed = h.sign_raw_with(b"signer spki payload", 1_800_000_000, &h.h.leaf_sk, &certs);
+    assert!(
+        matches!(
+            verify_bytes(&signed, &h.anchor_fps(), now_secs()),
+            VerifyOutcome::Untrusted
+        ),
+        "坏 SPKI 签名者证书 → 链序拒绝 → Untrusted"
+    );
+}
+
+#[test]
+fn agt_issuer_spki_corrupted_rejected_by_chain_order_untrusted() {
+    // 发行锚（issuing）SPKI 损坏：leaf 的 AKI 命中其 SKI 完成上溯，但下一轮
+    // is_self_signed 解析坏 SPKI 失败 → 链序 None → Untrusted。verify_chain
+    // 的 InvalidKey → Malformed「证书链」臂同样被链序前置拦截（防御性死臂）。
+    use crate::cert::ski_value;
+    let h = V4Harness::new();
+    let issuing_bad = agt_mutated_cert(
+        h.h.issuing_sk.verifying_key(),
+        &h.h.root_sk,
+        &ski_value(h.h.root_sk.verifying_key()).unwrap(),
+        |tbs| {
+            tbs.subject_public_key_info.subject_public_key =
+                der::asn1::BitString::new(0, vec![0xFF; 33]).unwrap();
+        },
+    );
+    let certs = vec![h.h.leaf_cert.clone(), issuing_bad, h.h.root_cert.clone()];
+    let signed = h.sign_raw_with(b"issuer spki payload", 1_800_000_000, &h.h.leaf_sk, &certs);
+    assert!(
+        matches!(
+            verify_bytes(&signed, &h.anchor_fps(), now_secs()),
+            VerifyOutcome::Untrusted
+        ),
+        "坏 SPKI 签发者证书 → 链序拒绝 → Untrusted"
+    );
+}
+
+#[test]
+fn agt_order_chain_from_detects_cycle() {
+    use crate::cert::{TbsInput, ski_value};
+    use p256::ecdsa::SigningKey;
+
+    let leaf_sk = SigningKey::from_bytes(&[0xA1u8; 32].into()).unwrap();
+    let a_sk = SigningKey::from_bytes(&[0xA2u8; 32].into()).unwrap();
+    let leaf_vk = *leaf_sk.verifying_key();
+    let a_vk = *a_sk.verifying_key();
+    let now = now_secs();
+    let prof = |cn: &'static str| TbsInput {
+        subject_cn: cn,
+        subject_org: None,
+        issuer_cn: "X",
+        issuer_org: None,
+        is_ca: false,
+        path_len: None,
+        ku_digital_signature: true,
+        ku_key_cert_sign: false,
+        ku_crl_sign: false,
+        eku_code_signing: false,
+        not_before_unix: now.saturating_sub(3600),
+        not_after_unix: now.saturating_add(365 * 86400),
+    };
+    // leaf.AKI = A 的 SKI（A 签 leaf）；A.AKI = leaf 的 SKI（leaf 签 A）→ 环
+    let leaf = crate::keygen::issue_x509(&leaf_vk, &a_sk, &ski_value(&a_vk).unwrap(), prof("Leaf"))
+        .unwrap();
+    let a = crate::keygen::issue_x509(&a_vk, &leaf_sk, &ski_value(&leaf_vk).unwrap(), prof("A"))
+        .unwrap();
+    let pool = vec![leaf.clone(), a];
+    assert!(
+        order_chain_from(&leaf, &pool).is_none(),
+        "AKI↔SKI 互指成环必须返回 None"
+    );
+}

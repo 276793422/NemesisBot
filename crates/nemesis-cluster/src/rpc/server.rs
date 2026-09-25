@@ -621,4 +621,7 @@ mod tests;
 
 #[cfg(test)]
 mod server_extra_tests;
+
+#[cfg(test)]
+mod cov_tests;
 // trailing newline prevents the auto-formatter from collapsing the two mods

@@ -871,3 +871,9 @@ mod e3_tests;
 // diff 查看器的基线原语）测试。
 #[cfg(test)]
 mod m3_tests;
+
+// 覆盖率补充批次：影子库失败回落 / alternates 降级 / restore_to_tree 坏
+// hex / checkout·删除失败面 / read_file_from_tree 错误面 / hybrid 失败 /
+// 影子库外力消失降级。
+#[cfg(test)]
+mod cov_tests;

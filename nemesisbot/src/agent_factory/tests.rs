@@ -1221,3 +1221,563 @@ async fn approval_observer_wraps_manager_that_appears_later() {
         "Notification must fire through the wrapped slot"
     );
 }
+
+// ===========================================================================
+// Coverage 追加（2026-09-24）：装配旋钮臂——discipline 总开关 / small_model
+// 通道 / spill retention 启动清扫 / agent_event_tx 观察钩 / pricing store
+// 打开失败降级 / cluster_rpc + peers_fn 注册（集群 loop）。
+// ===========================================================================
+
+/// 带 event_tx 的 shared（观察钩 + ModeChanged 通道注入臂）：make_shared 的
+/// 值形态（struct-update 语法要从 Arc 里拆字段做不到——Arc 不能 move out）。
+fn base_shared(home: &std::path::Path) -> SharedResources {
+    let (outbound_tx, _rx) = tokio::sync::mpsc::channel(16);
+    let config_store = match nemesis_config::ConfigStore::load(&home.join("config.json")) {
+        Ok(store) => Arc::new(store),
+        Err(_) => Arc::new(nemesis_config::ConfigStore::from_config(
+            nemesis_config::Config::default(),
+            home.join("config.json"),
+        )),
+    };
+    SharedResources {
+        home: home.to_path_buf(),
+        agent_outbound_tx: outbound_tx,
+        cron_service: Arc::new(std::sync::Mutex::new(
+            nemesis_cron::service::CronService::new(""),
+        )),
+        mcp_config_path: home.join("nonexistent-mcp.json"),
+        config_store,
+        ..Default::default()
+    }
+}
+
+/// 主工厂旋钮矩阵：discipline 开 + small_model 可解析 + retention>0 +
+/// event_tx 在场 → 全部装配臂命中，构建照常成功。
+#[tokio::test]
+async fn main_factory_wires_discipline_small_model_and_event_observers() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    let home = tmp.path().to_path_buf();
+    write_model_config(
+        &home,
+        serde_json::json!({
+            "agents": {
+                "defaults": { "spill_retention_days": 3, "restrict_to_workspace": true },
+                "discipline": { "enabled": true },
+                "small_model": "mini-model"
+            }
+        }),
+    );
+
+    let (event_tx, _rx) = tokio::sync::broadcast::channel::<nemesis_types::agent::AgentEvent>(16);
+    let shared = Arc::new(SharedResources {
+        home: home.clone(),
+        agent_event_tx: Some(event_tx),
+        skills_loader: Some(Arc::new(nemesis_skills::loader::SkillsLoader::new(
+            home.to_string_lossy().as_ref(),
+            home.join("global-skills").to_string_lossy().as_ref(),
+            home.join("builtin-skills").to_string_lossy().as_ref(),
+        ))),
+        ..base_shared(&home)
+    });
+
+    let built = build_agent_loop(&shared).expect("knob-matrix config must build");
+    assert!(built.tool_count() > 0);
+    assert!(matches!(
+        built.tier(),
+        nemesis_types::capability::ModelTier::Mini
+    ));
+}
+
+/// small_model 指向不存在条目 → warn + 跳过（不阻断构建，诚实回落主模型）。
+#[tokio::test]
+async fn main_factory_small_model_unresolvable_degrades_quietly() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    let home = tmp.path().to_path_buf();
+    write_model_config(
+        &home,
+        serde_json::json!({ "agents": { "small_model": "ghost-small" } }),
+    );
+    let built = build_agent_loop(&make_shared(&home))
+        .expect("unresolvable small model must not block build");
+    assert!(built.tool_count() > 0);
+}
+
+/// 价目表打开失败（workspace/data 是文件）→ warn 降级，构建照常。
+#[tokio::test]
+async fn main_factory_pricing_store_open_failure_degrades() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    let home = tmp.path().to_path_buf();
+    write_model_config(&home, serde_json::json!({}));
+    std::fs::create_dir_all(home.join("workspace")).unwrap();
+    std::fs::write(home.join("workspace").join("data"), b"not a dir").unwrap();
+    let built = build_agent_loop(&make_shared(&home))
+        .expect("pricing store open failure must degrade, not abort build");
+    assert!(built.tool_count() > 0);
+}
+
+/// 集群工厂旋钮矩阵：discipline 开 + retention>0 + event_tx 观察钩 +
+/// cluster_rpc 配置/闭包 + peers_fn → 注册臂全命中。
+#[tokio::test]
+async fn cluster_factory_wires_discipline_event_tx_rpc_and_peers() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    let home = tmp.path().to_path_buf();
+    write_model_config(
+        &home,
+        serde_json::json!({
+            "agents": {
+                "defaults": { "spill_retention_days": 2, "restrict_to_workspace": true },
+                "discipline": { "enabled": true }
+            }
+        }),
+    );
+
+    let (event_tx, _rx) = tokio::sync::broadcast::channel::<nemesis_types::agent::AgentEvent>(16);
+    let shared = Arc::new(SharedResources {
+        home: home.clone(),
+        agent_event_tx: Some(event_tx),
+        cluster_rpc_config: Some(nemesis_agent::loop_tools::ClusterRpcConfig {
+            local_node_id: "test-node".to_string(),
+            timeout_secs: 60,
+            local_rpc_port: 0,
+        }),
+        cluster_rpc_call_fn: Some(Arc::new(
+            |_node: &str, _method: &str, _payload: serde_json::Value| {
+                Box::pin(async {
+                    Err::<serde_json::Value, String>("offline test fixture".to_string())
+                        as Result<serde_json::Value, String>
+                })
+                    as std::pin::Pin<
+                        Box<
+                            dyn std::future::Future<Output = Result<serde_json::Value, String>>
+                                + Send,
+                        >,
+                    >
+            },
+        )
+            as Arc<
+                dyn Fn(
+                        &str,
+                        &str,
+                        serde_json::Value,
+                    ) -> std::pin::Pin<
+                        Box<
+                            dyn std::future::Future<Output = Result<serde_json::Value, String>>
+                                + Send,
+                        >,
+                    > + Send
+                    + Sync,
+            >),
+        cluster_peers_fn: Some(Arc::new(|| {
+            Vec::new() as Vec<(String, String, Vec<String>)>
+        })),
+        ..base_shared(&home)
+    });
+
+    let cluster = Arc::new(nemesis_cluster::cluster::Cluster::new(ClusterConfig {
+        node_id: "test-node".to_string(),
+        bind_address: "127.0.0.1:0".to_string(),
+        peers: Vec::new(),
+        node_name: String::new(),
+    }));
+    let (built, _config, observer) =
+        build_cluster_agent_loop(&shared, cluster).expect("knob-matrix cluster build must succeed");
+    assert!(built.tool_count() > 0);
+    assert!(observer.is_some(), "cluster request logger observer 常开");
+}
+
+// ===========================================================================
+// wave4 追加（coverage）：项目 loop 工厂 build_project_agent_loop 全家桶。
+// 此前 tests 只钉了主工厂/集群工厂；项目工厂（L6++ M2，~350 行）零覆盖。
+// 与主工厂同源手法：tempdir home + 迷你模型 config，全部离线（provider
+// 构造不出网），断言走 Ok/Err 面 + 公开 getter（tool_count/tier/
+// workspace_root/session_store）。
+// ===========================================================================
+
+use crate::projects::registry::ProjectEntry;
+
+/// 合法项目条目：tempdir 下的真实目录（工厂只做存在性防御）。
+fn project_entry(dir: &std::path::Path) -> ProjectEntry {
+    ProjectEntry {
+        id: "proj-cov-1".to_string(),
+        name: "CovProject".to_string(),
+        path: dir.to_path_buf(),
+        created_at: "2026-09-25T00:00:00Z".to_string(),
+    }
+}
+
+/// checkpoint 影子库目录派生：{main_ws}/logs/project_checkpoints/{pid}
+/// （resolve_checkpoints_dir 的兄弟目录，R7 不污染用户项目目录）。
+#[test]
+fn project_checkpoint_dir_derives_logs_sibling() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    let main_ws = tmp.path().join("main-ws");
+    let dir = project_checkpoint_dir(&main_ws, "proj-cov-1");
+    assert!(
+        dir.starts_with(&main_ws),
+        "checkpoint dir must stay under main workspace: {dir:?}"
+    );
+    let lossy = dir.to_string_lossy().replace("\\", "/");
+    assert!(
+        lossy.contains("logs/project_checkpoints/proj-cov-1"),
+        "checkpoint dir must be the logs sibling: {dir:?}"
+    );
+}
+
+/// 项目工厂 happy path：discipline 开 + small_model 可解析 + event_tx 在场
+/// + restrict 围栏强制 true → 构建成功，tier/workspace_root/会话存储就位。
+#[tokio::test]
+async fn project_factory_happy_path_wires_discipline_small_model_and_boundary() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    let home = tmp.path().join("home");
+    write_model_config(
+        &home,
+        serde_json::json!({
+            "agents": {
+                "defaults": { "restrict_to_workspace": true },
+                "discipline": { "enabled": true },
+                "small_model": "mini-model"
+            }
+        }),
+    );
+    let project_dir = tmp.path().join("user-project");
+    std::fs::create_dir_all(&project_dir).unwrap();
+
+    let (event_tx, _rx) = tokio::sync::broadcast::channel::<nemesis_types::agent::AgentEvent>(16);
+    let shared = Arc::new(SharedResources {
+        home: home.clone(),
+        agent_event_tx: Some(event_tx),
+        ..base_shared(&home)
+    });
+
+    let session_store = Arc::new(nemesis_agent::session::SessionStore::new_in_memory());
+    let built = build_project_agent_loop(&shared, &project_entry(&project_dir), session_store)
+        .expect("project factory must build offline");
+
+    assert!(built.tool_count() > 0, "tools must be registered");
+    assert!(matches!(
+        built.tier(),
+        nemesis_types::capability::ModelTier::Mini
+    ));
+    assert_eq!(
+        built.workspace_root().as_deref(),
+        Some(project_dir.as_path()),
+        "指令链/spill 围栏根必须锚项目目录"
+    );
+    assert!(
+        built.session_store().is_some(),
+        "session store must be attached"
+    );
+}
+
+/// 项目目录消失 → 诚实 bail（manager 侧 warn + skip 的上游信号）。
+#[tokio::test]
+async fn project_factory_bails_when_project_dir_missing() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    let home = tmp.path().join("home");
+    write_model_config(&home, serde_json::json!({}));
+    let shared = Arc::new(SharedResources {
+        home: home.clone(),
+        ..base_shared(&home)
+    });
+    let ghost_dir = tmp.path().join("no-such-project");
+    let err = match build_project_agent_loop(
+        &shared,
+        &project_entry(&ghost_dir),
+        Arc::new(nemesis_agent::session::SessionStore::new_in_memory()),
+    ) {
+        Err(e) => e,
+        Ok(_) => panic!("missing project dir must bail"),
+    };
+    assert!(err.to_string().contains("项目目录不存在"), "err: {err}");
+}
+
+/// 主 config.json 损坏 → bail（与主工厂的 NullProvider 降级不同：项目工厂
+/// 对 load_config Err 是硬失败——项目 loop 无配置无处落锚）。
+#[tokio::test]
+async fn project_factory_bails_when_config_unloadable() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    let home = tmp.path().join("home");
+    std::fs::create_dir_all(&home).unwrap();
+    std::fs::write(home.join("config.json"), "{ not valid json").unwrap();
+    let shared = Arc::new(SharedResources {
+        home: home.clone(),
+        ..base_shared(&home)
+    });
+    let project_dir = tmp.path().join("user-project");
+    std::fs::create_dir_all(&project_dir).unwrap();
+    let err = match build_project_agent_loop(
+        &shared,
+        &project_entry(&project_dir),
+        Arc::new(nemesis_agent::session::SessionStore::new_in_memory()),
+    ) {
+        Err(e) => e,
+        Ok(_) => panic!("corrupt config must bail"),
+    };
+    assert!(
+        err.to_string().contains("Failed to load config"),
+        "err: {err}"
+    );
+}
+
+/// small_model 指向不存在条目 → warn + 跳过（构建照常成功）。
+#[tokio::test]
+async fn project_factory_small_model_unresolvable_degrades_quietly() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    let home = tmp.path().join("home");
+    write_model_config(
+        &home,
+        serde_json::json!({ "agents": { "small_model": "ghost-small" } }),
+    );
+    let project_dir = tmp.path().join("user-project");
+    std::fs::create_dir_all(&project_dir).unwrap();
+    let shared = Arc::new(SharedResources {
+        home: home.clone(),
+        ..base_shared(&home)
+    });
+    let built = build_project_agent_loop(
+        &shared,
+        &project_entry(&project_dir),
+        Arc::new(nemesis_agent::session::SessionStore::new_in_memory()),
+    )
+    .expect("unresolvable small model must not block project build");
+    assert!(built.tool_count() > 0);
+}
+
+// -------------------------------------------------------------------------
+// Wave5 round2 batch3: agent_factory 深水区 —— 项目 spawn 闭包矩阵
+// （未知档位 / background 诚实拒绝 / 前台全链）、G4 后台路径 bus 回灌
+// （error 完成 + cancelled 升级失败）、集群工厂降级臂（模型解析失败 /
+// provider 构造失败 warn / approval_slot 缺席 warn）。
+// -------------------------------------------------------------------------
+
+/// 项目 spawn 夹具：同 spawn_fixture 但注入 inject_project_spawn_fn。
+fn project_spawn_fixture(
+    doc: &str,
+) -> (
+    Arc<nemesis_agent::r#loop::AgentLoop>,
+    Arc<std::sync::OnceLock<nemesis_agent::loop_tools::SpawnFn>>,
+) {
+    let tmp = tempfile::tempdir().expect("tempdir").keep();
+    let bridge =
+        Arc::new(nemesis_agent::cc_hooks::CcHookBridge::from_json(doc, tmp).expect("bridge"));
+    let loop_arc = Arc::new(fresh_unwired_loop());
+    let slot: Arc<std::sync::OnceLock<nemesis_agent::loop_tools::SpawnFn>> =
+        Arc::new(std::sync::OnceLock::new());
+    super::inject_project_spawn_fn(&loop_arc, &slot, Some(bridge));
+    (loop_arc, slot)
+}
+
+/// 项目 spawn 闭包矩阵①：未知档位诚实 Err（防御纵深臂，先于 Start 钩子）；
+/// ②background=true 诚实 Err（项目模式禁异步续行，R1）。
+#[tokio::test]
+async fn project_spawn_closure_rejects_unknown_profile_and_background() {
+    let doc = serde_json::json!({ "hooks": {} }).to_string();
+    let (_loop_arc, slot) = project_spawn_fixture(&doc);
+    let spawn = slot.get().expect("closure injected");
+    let err = spawn("p-agent", "task", "", "", "", "bogus-profile", 1, false)
+        .await
+        .expect_err("unknown profile must be refused");
+    assert!(err.contains("Unknown tools profile"), "err={err}");
+    let err2 = spawn("p-agent", "task", "", "", "", "readonly", 1, true)
+        .await
+        .expect_err("background must be refused in project mode");
+    assert!(err2.contains("后台"), "err2={err2}");
+}
+
+/// 项目 spawn 前台全链：Start 放行 → run_detached（stub LLM 失败）→
+/// Stop 观察型落 marker（failed 态）→ 原 Err 上抛。
+#[tokio::test]
+async fn project_spawn_closure_foreground_runs_and_fires_stop() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    let start_marker = tmp.path().join("p_start.txt");
+    let stop_marker = tmp.path().join("p_stop.txt");
+    let doc = serde_json::json!({
+        "hooks": {
+            "SubagentStart": [{ "hooks": [{ "type": "command", "command": append_marker_cmd(&start_marker) }] }],
+            "SubagentStop": [{ "hooks": [{ "type": "command", "command": append_marker_cmd(&stop_marker) }] }]
+        }
+    })
+    .to_string();
+    let (loop_arc, slot) = project_spawn_fixture(&doc);
+    let _keep_alive = loop_arc;
+    let spawn = slot.get().expect("closure injected");
+    let result = spawn("p-agent", "task", "", "", "", "readonly", 1, false).await;
+    assert!(result.is_err(), "stub provider never chats: {result:?}");
+    assert_eq!(
+        marker_lines_of(&start_marker),
+        1,
+        "SubagentStart must fire before the detached run"
+    );
+    assert!(
+        marker_lines_of(&stop_marker) >= 1,
+        "SubagentStop must fire after the detached run (failed 态)"
+    );
+}
+
+/// 带 bus 的主 spawn 夹具（后台回灌断言需要订阅 bus）。
+fn bg_spawn_fixture(
+    doc: &str,
+) -> (
+    Arc<nemesis_agent::r#loop::AgentLoop>,
+    Arc<std::sync::OnceLock<nemesis_agent::loop_tools::SpawnFn>>,
+    Arc<nemesis_bus::MessageBus>,
+) {
+    let tmp = tempfile::tempdir().expect("tempdir").keep();
+    let bridge =
+        Arc::new(nemesis_agent::cc_hooks::CcHookBridge::from_json(doc, tmp).expect("bridge"));
+    let loop_arc = Arc::new(fresh_unwired_loop());
+    let slot: Arc<std::sync::OnceLock<nemesis_agent::loop_tools::SpawnFn>> =
+        Arc::new(std::sync::OnceLock::new());
+    let bus = Arc::new(nemesis_bus::MessageBus::new());
+    super::inject_spawn_fn(&loop_arc, &slot, &bus, Some(bridge));
+    (loop_arc, slot, bus)
+}
+
+/// G4 后台路径完成回灌①：后台任务跑完（stub LLM 失败）→ bus 出现
+/// `subagent_continuation:{task_id}` system 消息，metadata.status=error。
+#[tokio::test]
+async fn background_spawn_publishes_error_continuation_to_bus() {
+    let doc = serde_json::json!({
+        "hooks": {
+            "SubagentStart": [{ "hooks": [{ "type": "command", "command": "exit 0" }] }]
+        }
+    })
+    .to_string();
+    let (loop_arc, slot, bus) = bg_spawn_fixture(&doc);
+    let mut rx = bus.subscribe_inbound();
+    let _keep_alive = loop_arc.clone();
+    let spawn = slot.get().expect("closure injected");
+    let marker = spawn("b-agent", "bg task", "", "", "", "readonly", 1, true)
+        .await
+        .expect("background spawn returns marker");
+    assert!(marker.starts_with("__BG_SPAWN__:"), "marker={marker}");
+    let msg = tokio::time::timeout(std::time::Duration::from_secs(10), rx.recv())
+        .await
+        .expect("continuation message must arrive")
+        .expect("bus deliver");
+    assert!(
+        msg.sender_id
+            .starts_with(nemesis_types::constants::SUBAGENT_CONTINUATION_PREFIX),
+        "sender_id={}",
+        msg.sender_id
+    );
+    assert_eq!(msg.channel, "system");
+    assert_eq!(
+        msg.metadata.get("status").map(String::as_str),
+        Some("error"),
+        "stub LLM 失败 → status=error"
+    );
+}
+
+/// G4 后台路径完成回灌②：spawn 后 loop 已亡（drop 强引用）→ upgrade 失败
+/// 「cancelled」形态，metadata.error 带 loop-is-gone 文案（回灌照发——恢复端
+/// 诚实知道任务没跑成）。
+#[tokio::test]
+async fn background_spawn_publishes_cancelled_when_loop_dropped() {
+    let doc = serde_json::json!({
+        "hooks": {
+            "SubagentStart": [{ "hooks": [{ "type": "command", "command": "exit 0" }] }]
+        }
+    })
+    .to_string();
+    let (loop_arc, slot, bus) = bg_spawn_fixture(&doc);
+    let mut rx = bus.subscribe_inbound();
+    let spawn = slot.get().expect("closure injected");
+    let marker = spawn("c-agent", "bg task", "", "", "", "readonly", 1, true)
+        .await
+        .expect("background spawn returns marker");
+    assert!(marker.starts_with("__BG_SPAWN__:"), "marker={marker}");
+    drop(loop_arc); // Weak 升级必败 → cancelled 路径
+    let msg = tokio::time::timeout(std::time::Duration::from_secs(10), rx.recv())
+        .await
+        .expect("continuation message must arrive even when cancelled")
+        .expect("bus deliver");
+    assert_eq!(
+        msg.metadata.get("status").map(String::as_str),
+        Some("error")
+    );
+    let err_text = msg.metadata.get("error").map(String::as_str).unwrap_or("");
+    assert!(
+        err_text.contains("agent loop is gone"),
+        "cancelled 形态必须带 loop-is-gone 文案，err={err_text}"
+    );
+}
+
+/// 集群工厂降级臂：config 指向不存在模型 → 解析 Err 降级（NullProvider
+/// 形态）→ 工厂照常建成（worker 无模型不掉线）。
+#[tokio::test]
+async fn cluster_factory_degrades_when_model_unresolvable() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    let home = tmp.path().to_path_buf();
+    let cfg = serde_json::json!({
+        "agents": { "defaults": { "llm": "ghost-model" } },
+        "model_list": []
+    });
+    std::fs::write(home.join("config.json"), cfg.to_string()).unwrap();
+
+    let shared = Arc::new(base_shared(&home));
+    let cluster = Arc::new(nemesis_cluster::cluster::Cluster::new(ClusterConfig {
+        node_id: "test-node".to_string(),
+        bind_address: "127.0.0.1:0".to_string(),
+        peers: Vec::new(),
+        node_name: String::new(),
+    }));
+    let (_loop, config, _observer) =
+        build_cluster_agent_loop(&shared, cluster).expect("降级装配必须成功（NullProvider）");
+    assert_eq!(config.model, "ghost-model", "降级保留 llm_ref 名");
+}
+
+/// approval_slot 预填用的最小桩管理器（is_running=false = 永不真弹窗）。
+struct SlotStubMgr;
+
+impl nemesis_security::auditor::ApprovalManager for SlotStubMgr {
+    fn is_running(&self) -> bool {
+        false
+    }
+    fn request_approval_sync(
+        &self,
+        _request_id: &str,
+        _operation: &str,
+        _target: &str,
+        _risk_level: &str,
+        _reason: &str,
+        _timeout_secs: u64,
+    ) -> Result<nemesis_security::auditor::ApprovalVerdict, String> {
+        Err("stub never approves".to_string())
+    }
+}
+
+/// 集群工厂 provider 构造失败 warn 臂 + approval_slot 在场接线臂：
+/// model 条目 protocol 未知 → create Err → or_null 降级 warn；approval_slot
+/// 预填 → set_memory_approval_gate 接线走 Some 臂。
+#[cfg(all(feature = "desktop", feature = "memory", feature = "security"))]
+#[tokio::test]
+async fn cluster_factory_provider_create_warn_and_approval_gate_wired() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    let home = tmp.path().to_path_buf();
+    let cfg = serde_json::json!({
+        "agents": { "defaults": { "llm": "mini-model" } },
+        "model_list": [{
+            "model_name": "mini-model",
+            "model": "openai/gpt-fake",
+            "api_key": "k",
+            "api_base": "http://127.0.0.1:9",
+            "protocol": "bogus-wire"
+        }]
+    });
+    std::fs::write(home.join("config.json"), cfg.to_string()).unwrap();
+
+    let shared = Arc::new(base_shared(&home));
+    // approval_slot 预填（先建槽后填的生产形态）。
+    let mgr: Arc<dyn nemesis_security::auditor::ApprovalManager> = Arc::new(SlotStubMgr);
+    *shared.approval_slot.write() = Some(mgr);
+
+    let cluster = Arc::new(nemesis_cluster::cluster::Cluster::new(ClusterConfig {
+        node_id: "test-node".to_string(),
+        bind_address: "127.0.0.1:0".to_string(),
+        peers: Vec::new(),
+        node_name: String::new(),
+    }));
+    let (_loop, _config, _observer) =
+        build_cluster_agent_loop(&shared, cluster).expect("bogus protocol → NullProvider 降级装配");
+}

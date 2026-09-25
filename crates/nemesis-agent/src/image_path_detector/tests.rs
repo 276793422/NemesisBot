@@ -484,3 +484,90 @@ fn test_unquoted_space_path_not_candidate() {
         out
     );
 }
+
+// ---------------------------------------------------------------------------
+// wave5 补充：failure_reason 全臂（直接构造候选）+ verify 打不开目录的
+// Unreadable 臂 + media 白名单 + 非图片扩展跳过。
+// ---------------------------------------------------------------------------
+
+#[test]
+fn failure_reason_covers_all_arms() {
+    let mk = |deliberate: bool, status: CandidateStatus| ImagePathCandidate {
+        raw: "x".to_string(),
+        resolved: std::path::Path::new("x").to_path_buf(),
+        deliberate,
+        status,
+    };
+    // Ok → None（诚实失败原因对成功候选沉默）。
+    assert_eq!(
+        mk(true, CandidateStatus::Ok { size: 1 }).failure_reason(),
+        None
+    );
+    // 相对候选 NotFound → None（行文，静默）。
+    assert_eq!(mk(false, CandidateStatus::NotFound).failure_reason(), None);
+    // 明确点名的 NotFound → 诚实注明。
+    let fr = mk(true, CandidateStatus::NotFound)
+        .failure_reason()
+        .unwrap();
+    assert!(fr.contains("文件不存在") && fr.contains("x"), "{fr}");
+    // 超限。
+    let fr = mk(true, CandidateStatus::TooLarge { size: 99 })
+        .failure_reason()
+        .unwrap();
+    assert!(fr.contains("25MB") && fr.contains("99"), "{fr}");
+    // 不可读。
+    let fr = mk(true, CandidateStatus::Unreadable)
+        .failure_reason()
+        .unwrap();
+    assert!(fr.contains("无法读取"), "{fr}");
+}
+
+#[cfg(windows)]
+#[test]
+fn verify_locked_file_reports_unreadable() {
+    let tmp = temp_dir("verify-locked");
+    let f = tmp.join("locked.png");
+    // PNG magic + 少量数据（open 失败发生在读 magic 之前，内容只为 realism）。
+    std::fs::write(
+        &f,
+        [0x89u8, b'P', b'N', b'G', 0x0D, 0x0A, 0x1A, 0x0A, 1, 2, 3, 4],
+    )
+    .unwrap();
+    // share_mode(0) 独占 → metadata 成功但 File::open 共享冲突 → Unreadable。
+    let hold = std::os::windows::fs::OpenOptionsExt::share_mode(
+        std::fs::OpenOptions::new().write(true),
+        0,
+    )
+    .open(&f)
+    .unwrap();
+    assert_eq!(verify(&f), CandidateStatus::Unreadable);
+    drop(hold);
+}
+
+#[test]
+fn media_type_whitelist_maps_common_image_extensions() {
+    assert_eq!(
+        media_type_for_path(std::path::Path::new("a.jpg")),
+        Some("image/jpeg")
+    );
+    assert_eq!(
+        media_type_for_path(std::path::Path::new("a.JPG")),
+        Some("image/jpeg")
+    );
+    assert_eq!(
+        media_type_for_path(std::path::Path::new("a.webp")),
+        Some("image/webp")
+    );
+    assert_eq!(
+        media_type_for_path(std::path::Path::new("a.gif")),
+        Some("image/gif")
+    );
+    assert_eq!(media_type_for_path(std::path::Path::new("a.txt")), None);
+    assert_eq!(media_type_for_path(std::path::Path::new("noext")), None);
+}
+
+#[test]
+fn detect_skips_paths_without_image_extension() {
+    let out = detect_image_paths("看这个 /tmp/build/out.txt 文件", None);
+    assert!(out.is_empty(), "非图片扩展必须整体跳过: {out:?}");
+}

@@ -1429,3 +1429,7 @@ pub fn resolve_route(input: &RouteInput) -> RouteOutput {
         matched_by: route.matched_by,
     }
 }
+
+// 覆盖率补充批次：审批卡回执语法 / 会话闸队列账目 / inbox_status 模式。
+#[cfg(test)]
+mod cov_tests;

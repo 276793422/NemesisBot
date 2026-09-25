@@ -305,3 +305,9 @@ mod s10b_tests;
 // 规则表管理命令。
 #[cfg(test)]
 mod f3_tests;
+
+// AGT 覆盖率批次（2026-09-25）：Default 转发、signature_verify_status 双槽
+// （未注入降级 / 注入六字段透传）、audit·stats 非 jsonl 项跳过臂、
+// approvals.clear 无文件 removed=0 + config 目录创建失败上抛。
+#[cfg(test)]
+mod agt_tests;

@@ -990,3 +990,9 @@ mod tests;
 // typed-save helper's behavior (see its doc comment above).
 #[cfg(test)]
 mod s10b_tests;
+
+// AGT 覆盖率批次（2026-09-24）：Default+命令表、proxy_overview 全身、
+// update_field 的 proxy 非法前缀拒绝臂与默认判定的 model 串/别名命中臂。
+// 结构性豁免见 agt_tests 文件头注。
+#[cfg(test)]
+mod agt_tests;

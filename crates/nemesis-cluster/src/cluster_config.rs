@@ -644,3 +644,7 @@ fn atomic_write(path: &Path, data: &[u8]) -> Result<(), ConfigError> {
 
 #[cfg(test)]
 mod tests;
+
+// 覆盖率补充批次：root 非表三失败臂 / 坏 TOML 空回退 / 字面+legacy 双清。
+#[cfg(test)]
+mod cov_tests;

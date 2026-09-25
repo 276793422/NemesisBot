@@ -1427,3 +1427,9 @@ impl crate::ws_router::ModuleHandler for WorkflowHandler {
 
 #[cfg(test)]
 mod tests;
+
+// AGT 覆盖率批次（2026-09-25）：WebhookRateLimiter 窗口过期弹出臂（私有
+// hits 种旧时间戳）、clear_chat_password 持久化失败上抛臂、draft_* 缺参/
+// 错型 bail。豁免（vanish 竞争窗 + serde 防御臂）见 agt_tests 文件头注。
+#[cfg(test)]
+mod agt_tests;
