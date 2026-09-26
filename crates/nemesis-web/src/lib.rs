@@ -35,6 +35,7 @@ pub mod server;
 pub mod session;
 pub mod session_bindings;
 pub mod share;
+#[cfg(feature = "skins")]
 pub mod skins;
 pub mod sse_chat;
 pub mod websocket_handler;

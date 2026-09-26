@@ -597,7 +597,10 @@ async fn agt_dispatch_outbound_routes_web_and_skips_others() {
 fn agt_skins_filter_chain_board_event_rx_slots() {
     let mut server = WebServer::new(WebServerConfig::default());
 
-    // set_skins（此前无调用点）：注入 skins 目录 + 激活 id。
+    // set_skins（此前无调用点）：注入 skins 目录 + 激活 id。skins 是
+    // 可裁剪 feature（默认经 nemesisbot 传导开启；nemesis-web 单测裸跑
+    // 时不带），调用点随 feature 条件编译。
+    #[cfg(feature = "skins")]
     server.set_skins(Some(".".to_string()), "dark".to_string());
 
     // set_inbound_filter_chain（此前无调用点）：空链即可（纯存储槽位）。

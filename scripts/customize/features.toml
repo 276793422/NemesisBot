@@ -293,6 +293,13 @@ desc = "Dashboard 使用统计页（UsageView），引入 echarts(~558KB)。IoT/
 category = "subsystems"
 default = true
 
+[[feature]]
+id = "skins"
+label = "皮肤包系统"
+desc = ".nbskin 皮肤包加载/签名验证/设置页「皮肤」tab（/skins/* 分发 + WSAPI skins.* + 前端热切）。裁后路由+管理面+前端 tab 整体消失（nemesis-verify 依赖随 skins 进出）"
+category = "subsystems"
+default = true
+
 # ── Build profile (cargo profile, not a feature) ───────────────────────────
 
 [[feature]]

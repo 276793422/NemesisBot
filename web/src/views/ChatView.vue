@@ -4,6 +4,7 @@ import ChatPanel from '../components/ChatPanel.vue'
 import SessionSidebar from '../components/SessionSidebar.vue'
 import FileTreePanel from '../components/chat/FileTreePanel.vue'
 import { useSessionStore } from '../stores/session'
+import { skinState } from '../composables/useSkin'
 
 const sessionStore = useSessionStore()
 
@@ -33,7 +34,8 @@ onMounted(async () => {
   <div class="chat-page-layout">
     <!-- M4: 工作区文件树（默认折叠成左缘细条；点击文件 @引用进输入框） -->
     <FileTreePanel />
-    <SessionSidebar v-if="sessionStore.showSidebar" />
+    <!-- 皮肤激活时会话列表由 SkinSidebar（AppLayout 层）承担，避免双侧栏 -->
+    <SessionSidebar v-if="sessionStore.showSidebar && !skinState.id" />
     <ChatPanel />
   </div>
 </template>

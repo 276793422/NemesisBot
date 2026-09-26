@@ -19,7 +19,7 @@ default = [
     "channels-web", "channels-webhook", "channels-rpc",
     "migrate", "devices", "desktop", "health", "heartbeat", "auth", "voice", "cluster",
     "forge", "memory", "workflow", "security", "sandbox", "eval", "usage", "board",
-    "terminal",
+    "terminal", "skins",
 ]
 
 # Optional subsystems (on by default = current full build; drop with --no-default-features)
@@ -53,6 +53,11 @@ usage = []
 
 # L8 PTY 内嵌终端（dashboard 终端 tab；config terminal.enabled 默认关双闸）
 terminal = ["nemesis-web/terminal"]
+
+# 皮肤包（.nbskin）加载/签名验证/设置页管理面（ skins.rs 分发路由 +
+# handlers/skins.rs WSAPI；nemesis-verify 依赖随 skins 进出）。关 =
+# `/skins/*` 路由、WSAPI skins 模块、前端皮肤 tab 整体消失。
+skins = ["nemesis-web/skins"]
 
 # 锁定版旗标（签名验证接入计划 §2.1）：空 feature，纯编译期 cfg——verify_policy
 # 据此把 enforce 烧死（config 任意值被忽略）。cargo feature 指纹原生跟踪，

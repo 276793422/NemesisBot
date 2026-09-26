@@ -189,21 +189,45 @@ pub struct Config {
     pub ui: Option<UiConfig>,
 }
 
+/// 皮肤子系统策略（`config.json` 的 `ui.skins` 段；`#[serde(default)]`
+/// 每字段全可省——老 config.json 零迁移）。
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(default)]
+pub struct SkinsPolicy {
+    /// true = 「设为默认观感」（WSAPI `skins.set_active`）拒绝非 verified
+    /// 皮肤包。闸在**信任决策点**——数据面（active.css / app 分发）不拦，
+    /// 签名仍是徽标而非加载闸（D1 定案），这里只约束「把哪个包设为默认」
+    /// 这一个动作。默认 false（未签名皮肤照常可用）。
+    pub require_signed: bool,
+}
+
+impl Default for SkinsPolicy {
+    fn default() -> Self {
+        Self {
+            require_signed: false,
+        }
+    }
+}
+
 /// Dashboard 前端表现配置（`config.json` 的 `ui` 段）。
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct UiConfig {
     /// 激活皮肤 id。`"default"`（默认）/ 空 = 不启用任何 `.nbskin`（内置
     /// static 皮肤原样）；其余值 = 服务端从 exe 同级 `skins/<id>.nbskin`
     /// 加载并在 `/skins/active.css` 提供 CSS（前端注入后打
-    /// `<html data-skin="<id>">`）。未来 Dashboard 换肤入口写回此处。
+    /// `<html data-skin="<id>">`）。Dashboard 设置页「皮肤」tab 写回此处。
     #[serde(default)]
     pub skin: String,
+    /// 皮肤子系统策略段（require_signed 后手开关等）。
+    #[serde(default)]
+    pub skins: SkinsPolicy,
 }
 
 impl Default for UiConfig {
     fn default() -> Self {
         Self {
             skin: "default".to_string(),
+            skins: SkinsPolicy::default(),
         }
     }
 }

@@ -1,8 +1,15 @@
 <script setup lang="ts">
-import { ref, onMounted } from 'vue'
+import { ref, onMounted, defineAsyncComponent } from 'vue'
 import { useWSAPI } from '../composables/useWSAPI'
 import { useToast } from '../composables/useToast'
 import { useEditorMode } from '../composables/useEditorMode'
+
+// 皮肤管理面板（skins feature / VITE_FEATURE_SKINS 门控）：`!== 'false'`
+// = 默认开（与 router 门控同一约定）；env 为 'false' 时 Vite 把死分支
+// tree-shake 掉，面板代码不进 bundle（IoT 裁剪面）。
+const SkinsPanel = import.meta.env.VITE_FEATURE_SKINS !== 'false'
+  ? defineAsyncComponent(() => import('../components/settings/SkinsPanel.vue'))
+  : null
 
 const { request } = useWSAPI()
 const toast = useToast()
@@ -26,6 +33,8 @@ const tabs = [
   { id: 'editor', label: '编辑器' },
   { id: 'logging', label: '日志' },
   { id: 'cors', label: 'CORS' },
+  // 皮肤 tab（skins feature 门控；skins 关 = tab 不出现）
+  ...(import.meta.env.VITE_FEATURE_SKINS !== 'false' ? [{ id: 'skins', label: '皮肤' }] : []),
   { id: 'raw', label: '原始 JSON' },
 ]
 
@@ -316,6 +325,9 @@ onMounted(async () => {
             </div>
           </div>
         </div>
+
+        <!-- 皮肤（skins feature 门控；异步组件，关 = 死分支被 tree-shake） -->
+        <component :is="SkinsPanel" v-if="activeTab === 'skins' && SkinsPanel" />
 
         <!-- Raw JSON -->
         <div v-if="activeTab === 'raw'">

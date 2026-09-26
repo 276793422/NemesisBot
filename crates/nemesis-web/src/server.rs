@@ -314,10 +314,14 @@ pub struct WebServer {
     /// 皮肤包目录（exe 同级 `skins/`；None = 未注入/exe 路径不可定位，
     /// `/skins/*` 路由不挂载）。`set_skins` 注入（不进 WebServerConfig——
     /// 该结构有 40+ 处测试字面量装配，加字段即 E0063 面扩大）。
+    #[cfg(feature = "skins")]
     skins_dir: Option<String>,
     /// 激活皮肤 id（config `ui.skin`；"default"/空 = 内置皮肤，
-    /// `/skins/active.css` 404）。`set_skins` 注入。
-    skin_id: String,
+    /// `/skins/active.css` 404）。共享锁句柄：`set_skins` 注入，
+    /// `skin_id_handle()` 交给 WSAPI skins handler，`set_active` 免重启
+    /// 热翻。`skin_id()` 读快照。
+    #[cfg(feature = "skins")]
+    skin_id: Arc<parking_lot::RwLock<String>>,
 }
 
 impl WebServer {
@@ -366,17 +370,34 @@ impl WebServer {
             relay: None,
             bridge_node_id: None,
             inbound_filters: None,
+            #[cfg(feature = "skins")]
             skins_dir: None,
-            skin_id: "default".to_string(),
+            #[cfg(feature = "skins")]
+            skin_id: Arc::new(parking_lot::RwLock::new("default".to_string())),
         }
     }
 
     /// 注入皮肤装配（须在 `build_router` 前调用）：exe 同级 `skins/`
     /// 目录 + 激活 id（config `ui.skin`）。未注入 = `/skins/*` 路由不挂载
-    /// （fail-closed，同 relay 路由装配哲学）。
+    /// （fail-closed，同 relay 路由装配哲学）。激活 id 被包进共享锁，
+    /// WSAPI skins handler 经 `skin_id_handle()` 拿同一把锁。
+    #[cfg(feature = "skins")]
     pub fn set_skins(&mut self, skins_dir: Option<String>, skin_id: String) {
         self.skins_dir = skins_dir;
-        self.skin_id = skin_id;
+        *self.skin_id.write() = skin_id;
+    }
+
+    /// skins 目录路径快照（WSAPI skins handler 装配用；None = 未装配）。
+    #[cfg(feature = "skins")]
+    pub fn skins_dir(&self) -> Option<String> {
+        self.skins_dir.clone()
+    }
+
+    /// 激活皮肤 id 共享锁句柄——`skins.set_active` 免重启热翻的同一把锁
+    ///（router 内 SkinHost 与此同源）。
+    #[cfg(feature = "skins")]
+    pub fn skin_id_handle(&self) -> Arc<parking_lot::RwLock<String>> {
+        Arc::clone(&self.skin_id)
     }
 
     /// 注入本机桥身份（goal 批次二）：子路径中间件据此识别
@@ -1055,10 +1076,12 @@ impl WebServer {
         // 皮肤包路由（`.nbskin` 分发；挂鉴权层之外——CSS 只是主题变量，
         // 无敏感面，与 index.html 等静态资源同信任级）。`--relay` 纯中继
         // 不挂（dashboard 面整体不存在）；`set_skins` 未注入也不挂。
-        // 解析/注入在前端，服务端只做包内 CSS 分发。
+        // 解析/注入在前端，服务端只做包内 CSS 分发。`skins` feature 关
+        // 时整段不编译（IoT 裁剪面）。
+        #[cfg(feature = "skins")]
         if !self.relay_only
             && let Some(skins) =
-                crate::skins::skin_router(self.skins_dir.clone(), self.skin_id.clone())
+                crate::skins::skin_router(self.skins_dir.clone(), self.skin_id_handle())
         {
             router = router.merge(skins);
         }

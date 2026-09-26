@@ -321,6 +321,49 @@ for %%e in (ai-server.exe cluster-test.exe integration-test.exe mcp-server.exe) 
 echo   OK Copied !COPIED! file^(s^) to bin\bin_windows\
 echo.
 
+REM Optional: build skins (.nbskin) — skins\ 子模块在场且 Node 可用才构建。
+REM 本地构建只打包不签名（.nbskin 无签名照常可用，管理面标 ⚪ unsigned）；
+REM 签名分发走 daily-release CI 统一铸叶签署。
+if exist "skins" (
+    where node >nul 2>&1
+    if errorlevel 1 (
+        echo   WARN Node.js not found in PATH — skipping .nbskin skin packaging
+    ) else (
+        echo   Building skins ^(.nbskin^)...
+        if not exist "bin\bin_windows\skins" mkdir "bin\bin_windows\skins"
+        set SKIN_COUNT=0
+        for /d %%d in (skins\*) do (
+            if exist "%%d\dev\pack.mjs" (
+                echo     skin: %%~nxd
+                pushd %%d
+                if exist "ui-src\package.json" if not exist "ui-src\node_modules" (
+                    call npm install --no-fund --no-audit >nul 2>&1
+                )
+                if exist "ui-src\package.json" (
+                    call npm run build >nul 2>&1
+                )
+                call node dev\pack.mjs
+                if errorlevel 1 (
+                    popd
+                    echo     WARN skin %%~nxd package failed ^(non-fatal, continuing^)
+                ) else (
+                    popd
+                    copy /y "%%d\dist\*.nbskin" "bin\bin_windows\skins\" >nul 2>&1
+                    set /a SKIN_COUNT+=1
+                )
+            )
+        )
+        if "!SKIN_COUNT!"=="0" (
+            echo   SKIP no skins\*\dev\pack.mjs found
+        ) else (
+            echo   OK !SKIN_COUNT! skin package^(s^) copied to bin\bin_windows\skins\
+        )
+    )
+) else (
+    echo   SKIP skins\ not found — no .nbskin packaging
+)
+echo.
+
 REM ============================================
 REM Summary
 REM ============================================

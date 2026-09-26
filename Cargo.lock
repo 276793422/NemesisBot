@@ -4406,6 +4406,7 @@ dependencies = [
  "nemesis-tools",
  "nemesis-types",
  "nemesis-utils",
+ "nemesis-verify",
  "nemesis-voice",
  "nemesis-workflow",
  "parking_lot",

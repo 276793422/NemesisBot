@@ -28,6 +28,12 @@ export const useSessionStore = defineStore('session', () => {
   const projects = ref<ProjectInfo[]>([])
   const lastProjectsFetch = ref(0)
 
+  // 刚由 create() 建立的会话 id（消费即清）。ChatPanel 的会话切换 watch
+  // 据此跳过 reset+loadHistory——launcher/未选中态发送时先建会话再发，
+  // 本地已回显首条用户消息，重拉空会话历史既多余还会毁掉回显
+  // （2026-09-26「发送后右侧无反应」BUG 的修复件）。
+  const justCreatedSid = ref<string | null>(null)
+
   async function fetchProjects(force = false) {
     if (!force && Date.now() - lastProjectsFetch.value < 5000 && projects.value.length > 0) {
       return
@@ -95,7 +101,18 @@ export const useSessionStore = defineStore('session', () => {
     return listInflight
   }
 
-  async function create(title?: string, projectId?: string): Promise<string | null> {
+  /**
+   * 新建会话。`opts.markJustCreated` 仅限「建完立即原地发送」的调用方
+   * （ChatPanel 发送链）：置 justCreatedSid 让 ChatPanel 的会话切换 watch
+   * 跳过 reset+loadHistory——视图已回显首条用户消息且服务端历史必为空。
+   * 新建对话按钮等其它调用方不置标记，维持「清空视图进新会话」的既有行为
+   * （2026-09-26「发送后右侧无反应」BUG 的修复件）。
+   */
+  async function create(
+    title?: string,
+    projectId?: string,
+    opts?: { markJustCreated?: boolean },
+  ): Promise<string | null> {
     try {
       const resp = await api.create(title, projectId)
       const sid = resp.session_id
@@ -113,6 +130,7 @@ export const useSessionStore = defineStore('session', () => {
         ...(projectId ? { projectId } : {}),
       })
       switchTo(sid)
+      if (opts?.markJustCreated) justCreatedSid.value = sid
       return sid
     } catch {
       return null
@@ -196,5 +214,5 @@ export const useSessionStore = defineStore('session', () => {
     showSidebar.value = !showSidebar.value
   }
 
-  return { sessions, currentId, listLoading, listError, showSidebar, projects, fetchList, fetchProjects, create, createProject, removeProject, renameProject, projectNameOf, rename, clear, exportSession, markDelivered, remove, switchTo, toggleSidebar }
+  return { sessions, currentId, listLoading, listError, showSidebar, projects, justCreatedSid, fetchList, fetchProjects, create, createProject, removeProject, renameProject, projectNameOf, rename, clear, exportSession, markDelivered, remove, switchTo, toggleSidebar }
 })

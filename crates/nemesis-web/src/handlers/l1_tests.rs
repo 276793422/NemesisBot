@@ -124,6 +124,7 @@ fn registry_all_modules_nonempty_no_dupes() {
         cfg!(feature = "security"), // 同时带 scanner，两个模块
         cfg!(feature = "sandbox"),
         cfg!(feature = "forge"),
+        cfg!(feature = "skins"),
     ];
     let expected_floor = UNCONDITIONAL_MODULES.len()
         + gated_on.iter().filter(|b| **b).count()

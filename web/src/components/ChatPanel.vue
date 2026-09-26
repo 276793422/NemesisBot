@@ -14,6 +14,8 @@ import { uploadImage, validateImageFile, type UploadedImage } from '../composabl
 import { useToast } from '../composables/useToast'
 import { useApprovals } from '../composables/useApprovals'
 import { useEditorMode } from '../composables/useEditorMode'
+// 皮肤骨架槽位（主页启动器）：skinState.id 非空才渲染
+import { skinState } from '../composables/useSkin'
 // H2 (2026-09-05): todo 清单面板（todowrite 工具的实时渲染）。
 import TodoPanel from './chat/TodoPanel.vue'
 
@@ -79,6 +81,23 @@ const sessionStore = useSessionStore()
 // Multi-session: in the default chat module, attach the active conversation
 // id so the backend routes to `agent:main:session:{sid}` (server.rs/loop.rs).
 const isDefaultChat = computed(() => (props.module ?? 'chat') === 'chat')
+
+// 皮肤骨架槽位 3/3：主页启动器（空会话时品牌 + 场景标签）。皮肤未激活
+// （skinState.id 空）或非默认聊天模块时零渲染——默认观感零变化。
+const launcherMode = computed(
+  () =>
+    !!skinState.id &&
+    isDefaultChat.value &&
+    chatStore.messages.length === 0 &&
+    !chatStore.historyLoading &&
+    !historyLoadFailed.value
+)
+
+/** 场景标签点击 → 预填输入（场景名前缀，用户补全具体诉求）并聚焦。 */
+function applyScene(scene: string) {
+  chatStore.input = `${scene}：`
+  nextTick(() => chatInput.value?.focus())
+}
 
 // D-3：本面板实际显示的会话 id——全部会话寻址（收发、历史、补拉、占位轮询、
 // inbox/usage 查询、占用表）的唯一入口。旧代码散落 ~40 处直引
@@ -400,7 +419,11 @@ function handleWSMessage(data: any) {
     const ev = data.data
     const p = ev?.data ?? {}
     if (typeof p.session_id === 'string' && p.session_id.length > 0) {
-      if (p.session_id !== effectiveSid.value) return
+      // 无会话锚（effectiveSid 空 = standalone/未选中/降级 legacy 路径）时
+      // 保持接受——与下方 receive 分支的 legacy 语义对齐；否则新建会话的
+      // 实时工具帧会因「空锚恒不等」全量丢弃（2026-09-26 BUG 第二形态，
+      // 与 2026-09-20 BUG-A 的 chat_id 域不等同构）。
+      if (effectiveSid.value && p.session_id !== effectiveSid.value) return
     } else {
       const expected = effectiveSid.value ? `web:${effectiveSid.value}` : null
       if (expected ? p.chat_id !== expected : !String(p.chat_id ?? '').startsWith('web:')) return
@@ -1560,6 +1583,15 @@ function sendMessage() {
   // U7: queue/steer 模式下 busy 发送是合法操作（后端排队/插队）；reject 模式维持原样。
   if (streaming.value && !canQueueWhileBusy.value) return
 
+  sendValidated(content, media)
+}
+
+/** 输入校验通过后的实际发送（sendMessage 的 async 续体；2026-09-26 起
+ *  无会话锚时先建会话——见 sendValidated 内注释）。 */
+async function sendValidated(content: string, media: { id: string }[]) {
+  // 先本地回显用户消息（即时反馈），再做会话锚定——顺序不可倒：watch 是
+  // flush:'pre' 微任务，create() 内 switchTo 排队的 watcher 触发早于本
+  // 函数 await 续体，此刻回显若未发生，切换链会先把视图 reset 掉。
   chatStore.addMessage({
     role: 'user',
     // 纯图无文字时回显占位（发送内容保持原样，不污染提示词）。
@@ -1567,6 +1599,17 @@ function sendMessage() {
     timestamp: new Date().toISOString(),
     imageCount: media.length || undefined,
   })
+
+  // 皮肤 launcher / 首用未选中态发送（2026-09-26 用户实测 BUG 根修）：
+  // 此前 chat.send 不带 session_id → 后端自动落连接级会话 → 回复帧的
+  // session_id 与本地空锚恒不等 → tool_event 实时帧全被「异会话」过滤
+  // 丢弃、回复落地也无进行中指示，用户体验为「右侧啥都没有，过一会突然
+  // 蹦一句话，点会话才看到工具记录」。先建会话锚定，全链帧同域。standalone
+  // 面板不建（无 session store 语义，保持 legacy 接受路径）；create 失败
+  // 同样退 legacy 无锚发送（tool_event 过滤对无锚态豁免）。
+  if (!effectiveSid.value && !props.standalone && (props.module ?? 'chat') === 'chat') {
+    await sessionStore.create(undefined, undefined, { markJustCreated: true })
+  }
 
   chatStore.clearInput()
   pendingImages.value = []
@@ -1989,8 +2032,14 @@ const unwatchSession = watch(
     if (
       newId &&
       ((newId === loadedHistorySid && chatStore.historyLoaded) ||
-        newId === loadingHistorySid)
+        newId === loadingHistorySid ||
+        // 刚由本面板发送链 create() 的会话（launcher/未选中态发送即锚定，
+        // 2026-09-26）：服务端历史在首条消息落盘前必为空，reset 会毁掉
+        // 尚未落盘的本地回显，loadHistory 纯多余——无条件跳过。消费即清，
+        // 防陈旧标记误杀日后对该会话的正常重拉。
+        newId === sessionStore.justCreatedSid)
     ) {
+      if (newId === sessionStore.justCreatedSid) sessionStore.justCreatedSid = null
       syncInboxMode()
       syncAgentMode()
       return
@@ -2040,6 +2089,11 @@ onMounted(() => {
       connect(null, token)
     }
   }
+  // justCreatedSid 只服务于「挂载中面板」发送链的 create→watcher 交接；
+  // 若会话是在面板卸载窗口内经侧栏新建的，重挂载时本函数的初始加载会正常
+  // 拉历史——陈旧标记必须在此消费掉，否则日后切走再切回该会话会被
+  // watcher 误判为「刚建空会话」而跳过重拉（2026-09-26 修复件）。
+  sessionStore.justCreatedSid = null
   // F-B：历史首拉对两种模式一致——standalone 的 connect 由 auth store 在
   // 登录时完成，挂载时可能已 connected（watcher 不回放旧值，这里直接查）。
   if (wsStatus.value === 'connected' && !chatStore.historyLoaded && !chatStore.historyLoading) {
@@ -2111,7 +2165,7 @@ onUnmounted(() => {
 </script>
 
 <template>
-  <div class="page-chat">
+  <div class="page-chat" :class="{ 'nb-launcher-mode': launcherMode }">
     <!-- H2: todo 清单面板（todowrite 实时刷新 + 进会话拉取）。会话锚定本面板
          effectiveSid（2026-09-24 串扰修复：嵌入面板钉死会话，不得显示全局
          选中会话的清单——曾因此渲染进工作流「对话生成」）。 -->
@@ -2123,6 +2177,23 @@ onUnmounted(() => {
       <div v-if="chatStore.historyLoading" class="history-loading" style="text-align: center; padding: 8px; color: var(--text-muted); font-size: var(--text-xs);">
         <span class="spinner" style="width:14px;height:14px;border-width:2px;vertical-align:middle;"></span>
         <span style="vertical-align:middle;"> 加载历史消息...</span>
+      </div>
+
+      <!-- 皮肤骨架槽位：主页启动器（空会话时品牌 + 场景标签；WB home 形态） -->
+      <div v-if="launcherMode" class="nb-launcher">
+        <div class="nb-launcher-brand">
+          <i class="nb-brand-mark nb-brand-mark-lg" aria-hidden="true"></i>
+          <span>{{ skinState.meta?.brand || skinState.id }}</span>
+        </div>
+        <div v-if="skinState.meta?.scenes?.length" class="nb-launcher-scenes">
+          <button
+            v-for="s in skinState.meta.scenes"
+            :key="s"
+            class="nb-scene-chip"
+            type="button"
+            @click="applyScene(s)"
+          >{{ s }}</button>
+        </div>
       </div>
 
       <!-- Welcome message -->
@@ -2138,7 +2209,7 @@ onUnmounted(() => {
           </div>
         </div>
       </div>
-      <div v-else-if="chatStore.messages.length === 0" class="message assistant">
+      <div v-else-if="chatStore.messages.length === 0 && !launcherMode" class="message assistant">
         <div class="message-avatar">NB</div>
         <div class="message-content">
           <div class="message-bubble">
@@ -2276,8 +2347,10 @@ onUnmounted(() => {
       </div>
     </div>
 
-    <!-- Toolbar -->
-    <div v-if="!toolbarCollapsed" class="voice-toolbar">
+    <!-- Toolbar（launcher 启动器模式不渲染——首屏只留品牌 + 输入盒；
+         归模板管而非皮肤 CSS display:none：scoped display:flex 与 :where 基线
+         同特异性且后加载会赢回，2026-09-26 实录） -->
+    <div v-if="!toolbarCollapsed && !launcherMode" class="voice-toolbar">
       <button
         v-if="isDefaultChat"
         class="voice-btn mode-btn"
@@ -2509,7 +2582,9 @@ onUnmounted(() => {
       <span v-else-if="!showStopButton" class="btn btn-primary btn-disabled-workflow" title="工作流执行中，无法中断">
         执行中...
       </span>
+      <!-- 皮肤激活时会话列表常驻 SkinSidebar，此开关无意义 -->
       <button
+        v-if="!skinState.id"
         class="toolbar-toggle"
         :class="{ active: sessionStore.showSidebar }"
         @click="sessionStore.toggleSidebar()"

@@ -56,7 +56,10 @@ pub mod sandbox;
 pub mod scanner;
 #[cfg(feature = "security")]
 pub mod security;
+// 皮肤包管理面（设置页「皮肤」tab；list/reload/detail/set_active）。
 pub mod sessions;
+#[cfg(feature = "skins")]
+pub mod skins;
 // 签名验证启动自验状态类型（接入计划 §4，2026-09-23）。刻意不门控——
 // 纯数据透传，AppState 字段在默认 feature 下也必须编译；WSAPI 命令本体
 // 在上方的 security handler。
@@ -224,6 +227,11 @@ pub fn register_all(router: &mut crate::ws_router::WsRouter) {
     }
     router.register(Arc::new(persona::PersonaHandler::new()));
     router.register(Arc::new(sessions::SessionsHandler));
+    // 皮肤包管理面（设置页「皮肤」tab；`skins` feature 门控，IoT 裁剪面）。
+    #[cfg(feature = "skins")]
+    {
+        router.register(Arc::new(skins::SkinsHandler::new()));
+    }
     // CD6（2026-09-17）：发件箱死信面（列表 + 手动重放）。
     #[cfg(feature = "cluster")]
     router.register(Arc::new(outbox::OutboxHandler));

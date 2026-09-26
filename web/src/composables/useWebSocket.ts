@@ -104,7 +104,12 @@ export function connect(
   extraParams?: Record<string, string> | null,
 ) {
   // Skip if already open or connecting (prevents orphaned WebSocket connections)
-  if (ws && ws.readyState < WebSocket.CLOSING) return
+  if (ws && ws.readyState < WebSocket.CLOSING) {
+    // 不重复开连接，但要记下最新 token——否则登录 connect 撞上在途重连
+    // 时 token 赋值被跳过，重连循环永远不带 token（401 死循环）。
+    if (authToken) token = authToken
+    return
+  }
 
   if (authToken) token = authToken
   if (extraParams) extraQueryParams = { ...extraParams }

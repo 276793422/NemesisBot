@@ -87,7 +87,7 @@ TARGETS=()
 for f in "$STAGING"/*; do
     [ -f "$f" ] || continue
     case "$(basename "$f")" in
-        nemesisbot | nemesisbot.exe | revoke-server | revoke-server.exe | exe-sign-tool | exe-sign-tool.exe)
+        nemesisbot | nemesisbot.exe | revoke-server | revoke-server.exe | exe-sign-tool | exe-sign-tool.exe | *.nbskin)
             TARGETS+=("$f") ;;
     esac
 done
