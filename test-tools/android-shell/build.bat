@@ -52,7 +52,7 @@ if errorlevel 1 (
     echo ERROR: Failed to copy binary.
     exit /b 1
 )
-for %%A in ("%JNI_DIR%\libnemesisbot.so") do echo   Copied: %%~zA bytes -> %JNI_DIR%\libnemesisbot.so
+for %%A in ("%JNI_DIR%\libnemesisbot.so") do echo   Copied: %%~zA bytes -^> %JNI_DIR%\libnemesisbot.so
 echo   Done.
 goto :eof
 
@@ -91,7 +91,7 @@ for %%A in ("%APP_DIR%\build\outputs\apk\debug\app-debug.apk") do echo   APK: %%
 echo   %APP_DIR%\build\outputs\apk\debug\app-debug.apk
 echo.
 echo   Install: adb install -r app\build\outputs\apk\debug\app-debug.apk
-echo   Reinstall: adb uninstall com.nemesisbot.android && adb install app\build\outputs\apk\debug\app-debug.apk
+echo   Reinstall: adb uninstall com.nemesisbot.android ^&^& adb install app\build\outputs\apk\debug\app-debug.apk
 echo   Launch:  adb shell am start -n com.nemesisbot.android/.MainActivity
 echo.
 goto :eof

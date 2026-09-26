@@ -280,6 +280,49 @@ echo "  OK Copied ${#COPIED[@]} file(s) to $BIN_DIR/"
 echo ""
 
 # ============================================
+# Optional: build skins (.nbskin) — skins/ 子模块在场且 Node 可用才构建。
+# 本地构建只打包不签名（.nbskin 无签名照常可用，管理面标 ⚪ unsigned）；
+# 签名分发走 daily-release CI 统一铸叶签署。
+# ============================================
+if [ -d "skins" ]; then
+    if command -v node >/dev/null 2>&1; then
+        echo "  Building skins (.nbskin)..."
+        mkdir -p "$BIN_DIR/skins"
+        SKIN_COUNT=0
+        for skin_dir in skins/*/; do
+            [ -f "${skin_dir}dev/pack.mjs" ] || continue
+            echo "    skin: $(basename "$skin_dir")"
+            (
+                cd "$skin_dir"
+                if [ -f "ui-src/package.json" ] && [ ! -d "ui-src/node_modules" ]; then
+                    npm install --no-fund --no-audit >/dev/null 2>&1
+                fi
+                if [ -f "ui-src/package.json" ]; then
+                    npm run build >/dev/null 2>&1
+                fi
+                node dev/pack.mjs
+            ) || {
+                echo "    WARN skin $(basename "$skin_dir") package failed (non-fatal, continuing)"
+                continue
+            }
+            if cp "${skin_dir}dist/"*.nbskin "$BIN_DIR/skins/" 2>/dev/null; then
+                SKIN_COUNT=$((SKIN_COUNT+1))
+            fi
+        done
+        if [ "$SKIN_COUNT" -eq 0 ]; then
+            echo "  SKIP no skins/*/dev/pack.mjs found"
+        else
+            echo "  OK $SKIN_COUNT skin package(s) copied to $BIN_DIR/skins/"
+        fi
+    else
+        echo "  WARN Node.js not found in PATH — skipping .nbskin skin packaging"
+    fi
+else
+    echo "  SKIP skins/ not found — no .nbskin packaging"
+fi
+echo ""
+
+# ============================================
 # Summary
 # ============================================
 echo "============================================"

@@ -175,6 +175,7 @@ async fn init_web_branch_matrix_via_assemble() {
     // 变体 K：皮肤 id 裁剪（trim + 空 → default 臂）。
     ctx.cfg.ui = Some(nemesis_config::UiConfig {
         skin: "  navy  ".into(),
+        ..Default::default()
     });
     let w = init_web(&ctx, &cluster).await.unwrap();
     drop(w);

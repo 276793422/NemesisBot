@@ -78,3 +78,4 @@ __pycache__/
 /test-tools/android-shell/sign.json
 /test-tools/android-shell/keystore.properties
 /test-tools/android-shell/*.jks
+/web/.cdp-profile

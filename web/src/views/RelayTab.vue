@@ -15,6 +15,7 @@
 import { ref, computed, onMounted, onUnmounted } from 'vue'
 import { httpGet } from '../composables/useWebSocket'
 import { apiUrl } from '../lib/appBase'
+import { authedFetch } from '../lib/authFetch'
 import { useWSAPI } from '../composables/useWSAPI'
 import { useToast } from '../composables/useToast'
 import { uuidv4 } from '../lib/uuid'
@@ -62,7 +63,7 @@ const toggling = ref(false)
 async function toggleServer(on: boolean) {
   toggling.value = true
   try {
-    const res = await fetch(apiUrl('/api/relay/enabled'), {
+    const res = await authedFetch('/api/relay/enabled', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ on }),
@@ -194,7 +195,7 @@ const reconnecting = ref(false)
 async function manualReconnect() {
   reconnecting.value = true
   try {
-    const res = await fetch(apiUrl('/api/relay/client/reconnect'), { method: 'POST' })
+    const res = await authedFetch('/api/relay/client/reconnect', { method: 'POST' })
     if (!res.ok) throw new Error('HTTP ' + res.status)
     toast.success('已通知重连')
     // 状态翻转需要一拍，立即刷一次

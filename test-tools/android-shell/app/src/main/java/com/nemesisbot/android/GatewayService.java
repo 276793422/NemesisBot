@@ -79,7 +79,10 @@ public class GatewayService extends Service {
         startForeground(NOTIFICATION_ID, notification);
 
         startGateway();
-        return START_NOT_STICKY;
+        // START_STICKY: system restarts the service after a low-memory kill
+        // so the bot survives in background (null intent on restart —
+        // startGateway() runs regardless of intent contents).
+        return START_STICKY;
     }
 
     @Override

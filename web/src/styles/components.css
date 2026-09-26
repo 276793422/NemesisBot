@@ -1129,3 +1129,384 @@
 [data-theme="light"] .hljs-number,
 [data-theme="light"] .hljs-literal { color: #0550ae; }
 [data-theme="light"] .hljs-function .hljs-title { color: #8250df; }
+
+/* ===== 皮肤骨架槽位（html[data-skin] 门控：无皮肤 = 整段不命中，默认观感零变化）=====
+ * 槽位 DOM 由 AppLayout（顶栏/状态栏）与 ChatPanel（主页启动器）在皮肤激活时
+ * 渲染；这里给全部皮肤通用的基线样式（chrome 条 + 启动器布局），皮肤包 CSS
+ * 用同选择器覆盖成自己的观感（Buddy 皮肤在 .nbskin 内做品牌化微调）。 */
+:where(html[data-skin]) .app-layout {
+  position: relative;
+  padding-top: 38px;
+  padding-bottom: 22px;
+}
+
+/* 顶栏 38px：品牌（左）+ 连接状态（右）；纯装饰不挡点击 */
+:where(html[data-skin]) .nb-titlebar {
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  height: 38px;
+  z-index: calc(var(--z-sidebar, 100) + 10);
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0 16px;
+  background: var(--bg-primary);
+  border-bottom: 1px solid var(--border-light);
+  pointer-events: none;
+  user-select: none;
+}
+:where(html[data-skin]) .nb-titlebar-brand {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text);
+}
+:where(html[data-skin]) .nb-titlebar-status {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  color: var(--text-secondary);
+}
+
+/* 品牌方 mark（accent 着色，跟随明暗） */
+:where(html[data-skin]) .nb-brand-mark {
+  display: inline-block;
+  width: 16px;
+  height: 16px;
+  border-radius: 4.5px;
+  background: var(--accent);
+  flex-shrink: 0;
+}
+:where(html[data-skin]) .nb-brand-mark-lg {
+  width: 28px;
+  height: 28px;
+  border-radius: 8px;
+}
+
+/* 连接状态圆点 */
+:where(html[data-skin]) .nb-status-dot {
+  display: inline-block;
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--success);
+  flex-shrink: 0;
+}
+:where(html[data-skin]) .nb-status-dot.off {
+  background: var(--error);
+}
+
+/* 状态栏 22px：连接 + 版本 + 模型（左）+ 就绪态（右） */
+:where(html[data-skin]) .nb-statusbar {
+  position: absolute;
+  bottom: 0;
+  left: 0;
+  right: 0;
+  height: 22px;
+  z-index: calc(var(--z-sidebar, 100) + 10);
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0 12px;
+  font-size: 11px;
+  color: var(--text-secondary);
+  background: var(--bg-primary);
+  border-top: 1px solid var(--border-light);
+  pointer-events: none;
+  user-select: none;
+}
+:where(html[data-skin]) .nb-statusbar-left,
+:where(html[data-skin]) .nb-statusbar-right {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  white-space: nowrap;
+  overflow: hidden;
+}
+
+/* 主页启动器：空会话时居中品牌 + 场景标签（输入盒由 launcher-mode 聚拢） */
+:where(html[data-skin]) .nb-launcher-mode .chat-messages {
+  justify-content: center;
+}
+:where(html[data-skin]) .nb-launcher {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 24px;
+  margin: auto 0;
+  user-select: none;
+}
+:where(html[data-skin]) .nb-launcher-brand {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  font-size: 28px;
+  font-weight: 700;
+  color: var(--text);
+}
+:where(html[data-skin]) .nb-launcher-scenes {
+  display: flex;
+  gap: 12px;
+  flex-wrap: wrap;
+  justify-content: center;
+}
+:where(html[data-skin]) .nb-scene-chip {
+  height: 32px;
+  padding: 0 16px;
+  border-radius: 16px;
+  border: 1px solid var(--border);
+  background: var(--surface);
+  color: var(--text-secondary);
+  font-size: 13px;
+  cursor: pointer;
+  transition: border-color var(--duration-fast, 0.15s) var(--ease-out, ease),
+    color var(--duration-fast, 0.15s) var(--ease-out, ease);
+}
+:where(html[data-skin]) .nb-scene-chip:hover {
+  border-color: var(--accent);
+  color: var(--text);
+}
+/* 启动器模式下输入盒聚拢为居中启动框（WB composer 形态） */
+:where(html[data-skin]) .nb-launcher-mode .chat-input-area {
+  max-width: min(560px, 80%);
+  margin-inline: auto;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  margin-bottom: 16px;
+}
+
+/* 移动端：骨架条撤场（保持原移动布局） */
+@media (max-width: 768px) {
+  :where(html[data-skin]) .app-layout {
+    padding-top: 0;
+    padding-bottom: 0;
+  }
+  :where(html[data-skin]) .nb-titlebar,
+  :where(html[data-skin]) .nb-statusbar {
+    display: none;
+  }
+}
+
+/* ---- 左侧栏槽位（SkinSidebar，WB 形态）----
+ * 根元素复用全局 .sidebar 定位壳（flex 布局 + --sidebar-width + 主题
+ * token）；内部结构用 .nb-sb-* 基线（此处），皮肤包 CSS 同选择器品牌化。
+ * （启动器形态下工具条退场由 ChatPanel 模板 v-if 承担——CSS display:none
+ * 会被 scoped display:flex 同特异性后加载压回，见 2026-09-26 实录。） */
+:where(html[data-skin]) .nb-sb {
+  padding: 12px 10px;
+  gap: 4px;
+  overflow: hidden;
+}
+:where(html[data-skin]) .nb-sb-newtask {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  width: 100%;
+  height: 36px;
+  border-radius: 8px;
+  border: none;
+  background: var(--accent);
+  color: var(--bg-primary);
+  font-size: 13px;
+  font-weight: 500;
+  cursor: pointer;
+  margin-bottom: 12px;
+}
+:where(html[data-skin]) .nb-sb-nav {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+:where(html[data-skin]) .nb-sb-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  height: 28px;
+  padding: 0 8px;
+  border-radius: 6px;
+  border: none;
+  background: transparent;
+  color: var(--text-secondary);
+  font-size: 13px;
+  cursor: pointer;
+  text-align: left;
+}
+:where(html[data-skin]) .nb-sb-item:hover {
+  background: var(--bg-secondary);
+  color: var(--text);
+}
+:where(html[data-skin]) .nb-sb-item--active {
+  background: var(--bg-secondary);
+  color: var(--text);
+  font-weight: 500;
+}
+:where(html[data-skin]) .nb-sb-more-wrap {
+  position: relative;
+}
+:where(html[data-skin]) .nb-sb-flyout {
+  position: absolute;
+  left: 0;
+  top: 32px;
+  z-index: calc(var(--z-sidebar, 100) + 20);
+  min-width: 140px;
+  max-height: 320px;
+  overflow-y: auto;
+  padding: 4px;
+  border-radius: 8px;
+  border: 1px solid var(--border-light);
+  background: var(--bg-primary);
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.16);
+}
+:where(html[data-skin]) .nb-sb-flyout-item {
+  display: block;
+  width: 100%;
+  padding: 0 10px;
+  height: 28px;
+  border: none;
+  border-radius: 4px;
+  background: transparent;
+  color: var(--text-secondary);
+  font-size: 13px;
+  text-align: left;
+  cursor: pointer;
+}
+:where(html[data-skin]) .nb-sb-flyout-item:hover {
+  background: var(--bg-secondary);
+  color: var(--text);
+}
+:where(html[data-skin]) .nb-sb-scroll {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  margin-top: 8px;
+}
+:where(html[data-skin]) .nb-sb-group {
+  margin-bottom: 4px;
+}
+:where(html[data-skin]) .nb-sb-section {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  height: 24px;
+  padding: 0 4px;
+  color: var(--text-tertiary, var(--text-secondary));
+  font-size: 12px;
+  user-select: none;
+}
+:where(html[data-skin]) .nb-sb-section--space {
+  margin-top: 16px;
+}
+:where(html[data-skin]) .nb-sb-caret {
+  display: inline-flex;
+  color: var(--text-tertiary, var(--text-secondary));
+}
+:where(html[data-skin]) .nb-sb-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  height: 28px;
+  padding: 0 8px 0 22px;
+  border-radius: 6px;
+  cursor: pointer;
+  color: var(--text-secondary);
+}
+:where(html[data-skin]) .nb-sb-row:hover {
+  background: var(--bg-secondary);
+  color: var(--text);
+}
+:where(html[data-skin]) .nb-sb-row--active {
+  background: var(--bg-secondary);
+  color: var(--text);
+}
+:where(html[data-skin]) .nb-sb-row-title {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 13px;
+}
+:where(html[data-skin]) .nb-sb-row-time {
+  flex-shrink: 0;
+  font-size: 11px;
+  color: var(--text-tertiary, var(--text-secondary));
+}
+:where(html[data-skin]) .nb-sb-row-del {
+  display: none;
+  flex-shrink: 0;
+  color: var(--text-tertiary, var(--text-secondary));
+  cursor: pointer;
+}
+:where(html[data-skin]) .nb-sb-row:hover .nb-sb-row-del {
+  display: inline-flex;
+}
+:where(html[data-skin]) .nb-sb-row-del:hover {
+  color: var(--error, #e5484d);
+}
+:where(html[data-skin]) .nb-sb-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--accent);
+  flex-shrink: 0;
+}
+:where(html[data-skin]) .nb-sb-empty {
+  padding: 8px;
+  color: var(--text-tertiary, var(--text-secondary));
+  font-size: 12px;
+}
+:where(html[data-skin]) .nb-sb-footer {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 4px 2px;
+  border-top: 1px solid var(--border-light);
+}
+:where(html[data-skin]) .nb-sb-avatar {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 26px;
+  height: 26px;
+  border-radius: 50%;
+  border: 1px solid var(--border);
+  color: var(--text-secondary);
+  flex-shrink: 0;
+}
+:where(html[data-skin]) .nb-sb-user {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  line-height: 1.3;
+}
+:where(html[data-skin]) .nb-sb-user-name {
+  font-size: 12px;
+  color: var(--text);
+}
+:where(html[data-skin]) .nb-sb-user-sub {
+  font-size: 11px;
+  color: var(--text-tertiary, var(--text-secondary));
+}
+:where(html[data-skin]) .nb-sb-gear {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 26px;
+  height: 26px;
+  border: none;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--text-secondary);
+  cursor: pointer;
+}
+:where(html[data-skin]) .nb-sb-gear:hover {
+  background: var(--bg-secondary);
+  color: var(--text);
+}

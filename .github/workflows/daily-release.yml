@@ -79,6 +79,7 @@ jobs:
         uses: actions/checkout@v5
         with:
           fetch-depth: 0          # 完整历史，commit id 可用
+          submodules: recursive   # skins/ 子模块（.nbskin 皮肤构建）
 
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
@@ -123,6 +124,39 @@ jobs:
           npm run build
           echo "=== 前端产物 ==="
           ls -la ../crates/nemesis-web/static/
+
+      # 皮肤包（.nbskin）构建：遍历 skins/<name>/dev/pack.mjs 存在者，ui-src
+      # 有 package-lock.json 则 npm ci + build（可复现构建），pack.mjs 出
+      # dist/<name>.nbskin（零依赖 Node 手写 ZIP）。缺打包工程的皮肤
+      #（openanybuddy 现状）自动跳过——不写死皮肤名单。产物进 staging-skins/
+      # 供签名 + nightly-skins.zip。只在 Linux 出包：.nbskin 是平台无关
+      # 资产，单份即可（两平台各出一份会撞 upload-artifact 同名）。
+      - name: Build skins (.nbskin)
+        if: matrix.platform == 'linux'
+        shell: bash
+        run: |
+          mkdir -p staging-skins
+          if [ ! -d skins ]; then
+            echo "⚠️ skins/ 子模块缺席，跳过皮肤构建"
+            exit 0
+          fi
+          for d in skins/*/dev/pack.mjs; do
+            [ -f "$d" ] || continue
+            name=$(basename "$(dirname "$(dirname "$d")")")
+            echo "=== build skin: $name ==="
+            if [ -f "skins/$name/ui-src/package-lock.json" ]; then
+              (cd "skins/$name/ui-src" && npm ci && npm run build) \
+                || { echo "❌ $name ui-src 构建失败"; exit 1; }
+            elif [ -d "skins/$name/ui-src" ]; then
+              (cd "skins/$name/ui-src" && npm install && npm run build) \
+                || { echo "❌ $name ui-src 构建失败"; exit 1; }
+            fi
+            (cd "skins/$name" && node dev/pack.mjs) \
+              || { echo "❌ $name 打包失败"; exit 1; }
+          done
+          find skins -name '*.nbskin' -path '*/dist/*' -exec cp {} staging-skins/ \;
+          echo "=== staging-skins 内容 ==="
+          ls -la staging-skins/
 
       # CI v4 签名集成（P1.2①）：锚注入——消费版与锁定版构建都吃到这个 env。
       # certs/root_cert.der 是信任根的公开证书（换它 = 换根，git 历史可追溯）。
@@ -262,6 +296,14 @@ jobs:
           fi
           bash scripts/ci-sign-artifacts.sh staging-signserver
           bash scripts/ci-sign-artifacts.sh staging-signtools
+          # 皮肤包签名（raw 载荷 = ZIP 字节 + v4 footer 附尾）：签后自检
+          # 走同一 fail-the-build；staging-skins 不存在（android job/未来
+          # 裁剪）时诚实跳过。
+          if [ -d staging-skins ] && compgen -G "staging-skins/*.nbskin" > /dev/null; then
+            bash scripts/ci-sign-artifacts.sh staging-skins
+          else
+            echo "staging-skins 无 .nbskin——跳过皮肤签名"
+          fi
 
       - name: Package (Linux)
         if: matrix.platform == 'linux'
@@ -310,6 +352,20 @@ jobs:
             *.zip)    (cd staging-signtools && 7z a "../${{ matrix.signtools_archive }}" '*') ;;
           esac
 
+      # 皮肤包 zip（扁平 .nbskin + signatures.json + certs/）：平台无关，
+      # 只 Linux 出包。无产物（皮肤构建全跳过）→ 诚实跳过不产空包。
+      - name: Package skins
+        if: matrix.platform == 'linux'
+        shell: bash
+        run: |
+          if compgen -G "staging-skins/*.nbskin" > /dev/null; then
+            (cd staging-skins && zip -qr ../nightly-skins.zip .)
+            echo "=== nightly-skins.zip ==="
+            unzip -l nightly-skins.zip
+          else
+            echo "无 .nbskin 产物，跳过 nightly-skins.zip"
+          fi
+
       - name: Upload build artifact
         uses: actions/upload-artifact@v4
         with:
@@ -349,6 +405,14 @@ jobs:
           path: ${{ matrix.signtools_archive }}
           retention-days: 7
 
+      - name: Upload skins package
+        if: matrix.platform == 'linux' && hashFiles('nightly-skins.zip') != ''
+        uses: actions/upload-artifact@v4
+        with:
+          name: nightly-skins.zip
+          path: nightly-skins.zip
+          retention-days: 7
+
   # ============================================================
   # Job 1b: Android APK（Rust aarch64 交叉编译 + Gradle 壳打包 + 签名）
   # ============================================================
@@ -369,6 +433,7 @@ jobs:
         uses: actions/checkout@v5
         with:
           fetch-depth: 0          # 完整历史，git describe 版本提取可用
+          submodules: recursive   # skins/ 子模块（与 build job 对齐）
 
       - name: Install Rust toolchain (Android target)
         uses: dtolnay/rust-toolchain@stable
@@ -606,12 +671,12 @@ jobs:
         run: |
           cd artifacts
           sha256sum nightly-linux.tar.gz nightly-windows.zip nightly-android.apk > SHA256SUMS.txt
-          # plugins / signserver / sign-tools / locked-full 包视构建情况可能缺席
-          # （non-fatal 或无锚跳过），在才计入校验和
+          # plugins / signserver / sign-tools / locked-full / skins 包视构建
+          # 情况可能缺席（non-fatal 或无锚/无产物跳过），在才计入校验和
           for f in nightly-linux-plugins.tar.gz nightly-windows-plugins.zip \
                    nightly-signserver-linux.tar.gz nightly-signserver-windows.zip \
                    nightly-sign-tools-linux.tar.gz nightly-sign-tools-windows.zip \
-                   nightly-locked-full.zip; do
+                   nightly-locked-full.zip nightly-skins.zip; do
             [ -f "$f" ] && sha256sum "$f" >> SHA256SUMS.txt
           done
           VERSION=$(git describe --tags --always 2>/dev/null || echo "untagged")
@@ -652,6 +717,7 @@ jobs:
             artifacts/nightly-sign-tools-linux.tar.gz
             artifacts/nightly-sign-tools-windows.zip
             artifacts/nightly-locked-full.zip
+            artifacts/nightly-skins.zip
             artifacts/MANIFEST.txt
             artifacts/SHA256SUMS.txt
           body: |
@@ -673,6 +739,7 @@ jobs:
             - **Windows 插件包**: `nightly-windows-plugins.zip`（包内扁平放插件 .dll：plugin_ui / plugin_onnx / eval_monitor_dll）
             - **Linux 插件包**: `nightly-linux-plugins.tar.gz`（包内扁平放插件 .so）
             - **锁定版全家桶**: `nightly-locked-full.zip`（签名验证强制（enforce）的锁定版 Windows/Linux 客户端 + Android APK + 全部插件 + signserver + sign-tools 一站式；启动日志/侧栏带 🔒 标识；信任根未配置时本包缺席）
+            - **皮肤包**: `nightly-skins.zip`（全部 `.nbskin` 皮肤 + v4 签名（与主程序同一信任根）+ `signatures.json` 清单 + `certs/root_cert.der`；解压后把 `.nbskin` 放到 exe 同级 `skins/` 目录即可，Dashboard 设置页「皮肤」tab 管理与热切换；未配置 `NMB_ISSUING_*` Secrets 时包内皮肤无签名但照常可用）
             - **验签工具**: `nightly-sign-tools-windows.zip` / `nightly-sign-tools-linux.tar.gz`（exe-sign-tool + VERIFY.md——下载后逐文件验证包内二进制，零私钥）
             - **签发吊销服务**: `nightly-signserver-windows.zip` / `nightly-signserver-linux.tar.gz`（owner 运维包，零私钥，配合离线 keys.json 运行）
 

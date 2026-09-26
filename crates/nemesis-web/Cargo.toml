@@ -56,8 +56,12 @@ dashmap = { workspace = true }
 http = "1"
 url = "2"
 # 皮肤包（.nbskin = 单文件 ZIP）运行时解析（skins.rs）；与 build/dev 侧
-# 同一 crate 同一 feature 集（deflate-only）。
-zip = { version = "2", default-features = false, features = ["deflate"] }
+# 同一 crate 同一 feature 集（deflate-only）。`skins` feature 门控——关掉
+# 后 zip + nemesis-verify 整体退出依赖图（verify 是本功能的实现依赖，
+# 随 skins 进出，见计划 §3.7）。
+zip = { version = "2", default-features = false, features = ["deflate"], optional = true }
+# v4 签名验证（.nbskin 来源徽标；管理面按需验签，见 skins.rs）。
+nemesis-verify = { workspace = true, optional = true }
 async-trait = { workspace = true }
 tokio-util = { version = "0.7", features = ["rt", "io"] }
 base64 = { workspace = true }
@@ -75,6 +79,9 @@ workflow = ["dep:nemesis-workflow"]
 security = ["dep:nemesis-security", "nemesis-security/security"]
 sandbox = ["dep:nemesis-sandbox"]
 terminal = ["dep:portable-pty"]
+# 皮肤包加载/签名验证/WSAPI 管理面（skins.rs + handlers/skins.rs + 路由
+# 挂载点）。zip 与 nemesis-verify 是本功能的实现依赖，随 skins 进出。
+skins = ["dep:zip", "dep:nemesis-verify"]
 
 [dev-dependencies]
 tempfile = "3"

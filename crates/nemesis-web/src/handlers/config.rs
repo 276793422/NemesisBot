@@ -84,11 +84,13 @@ impl ModuleHandler for ConfigHandler {
     }
 }
 
-fn config_path(home: &str) -> PathBuf {
+/// config.json 路径（home 下）。pub(crate)：skins handler 的 set_active
+/// 写 `ui.skin` 复用同一装配（live 优先语义单一真相源）。
+pub(crate) fn config_path(home: &str) -> PathBuf {
     PathBuf::from(home).join("config.json")
 }
 
-fn load_config(home: &str) -> Result<nemesis_config::Config, String> {
+pub(crate) fn load_config(home: &str) -> Result<nemesis_config::Config, String> {
     if let Some(cfg) = nemesis_config::load_live() {
         return Ok(cfg);
     }
@@ -96,7 +98,10 @@ fn load_config(home: &str) -> Result<nemesis_config::Config, String> {
         .map_err(|e| format!("failed to load config: {}", e))
 }
 
-fn save_config_to_disk(home: &str, config: &mut nemesis_config::Config) -> Result<(), String> {
+pub(crate) fn save_config_to_disk(
+    home: &str,
+    config: &mut nemesis_config::Config,
+) -> Result<(), String> {
     if let Some(r) = nemesis_config::save_live(config.clone()) {
         return r.map_err(|e| format!("failed to save config: {}", e));
     }

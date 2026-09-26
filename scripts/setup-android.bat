@@ -448,7 +448,7 @@ if !ISSUES!==0 (
     if not "%SDK_FOUND%"=="1" (
         echo  Quick start:
         echo    1. Install Android Studio: https://developer.android.com/studio
-        echo    2. Open Android Studio -> SDK Manager -> install NDK
+        echo    2. Open Android Studio -^> SDK Manager -^> install NDK
         echo    3. Re-run this script to verify
     )
 )

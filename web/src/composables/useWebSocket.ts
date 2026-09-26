@@ -104,7 +104,12 @@ export function connect(
   extraParams?: Record<string, string> | null,
 ) {
   // Skip if already open or connecting (prevents orphaned WebSocket connections)
-  if (ws && ws.readyState < WebSocket.CLOSING) return
+  if (ws && ws.readyState < WebSocket.CLOSING) {
+    // 不重复开连接，但要记下最新 token——否则登录 connect 撞上在途重连
+    // 时 token 赋值被跳过，重连循环永远不带 token（401 死循环）。
+    if (authToken) token = authToken
+    return
+  }
 
   if (authToken) token = authToken
   if (extraParams) extraQueryParams = { ...extraParams }
@@ -278,7 +283,12 @@ export function testConnection(testToken: string): Promise<boolean> {
 }
 
 export function httpGet<T = any>(path: string): Promise<T> {
-  return fetch(apiUrl(path)).then(res => {
+  // X-Auth-Token 统一鉴权（lib/authFetch.ts）：本模块因循环依赖
+  // （auth store → 本模块）不能引 store，但 connect() 已把同一 token
+  // 存进模块级变量——单一来源，直接复用。
+  return fetch(apiUrl(path), {
+    headers: token ? { 'X-Auth-Token': token } : {},
+  }).then(res => {
     if (!res.ok) throw new Error('HTTP ' + res.status)
     return res.json()
   })

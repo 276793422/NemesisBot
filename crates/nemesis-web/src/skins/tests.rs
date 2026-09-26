@@ -28,7 +28,11 @@ fn write_skin(dir: &std::path::Path, id: &str, entry: &str) {
 }
 
 fn app(dir: Option<&str>, active: &str) -> axum::Router {
-    super::skin_router(dir.map(str::to_string), active.to_string()).unwrap()
+    super::skin_router(
+        dir.map(str::to_string),
+        std::sync::Arc::new(parking_lot::RwLock::new(active.to_string())),
+    )
+    .unwrap()
 }
 
 #[tokio::test]
@@ -138,108 +142,33 @@ async fn path_traversal_and_bad_ids_rejected() {
 
 #[tokio::test]
 async fn no_dir_no_routes() {
-    assert!(super::skin_router(None, "openlikebuddy".into()).is_none());
+    assert!(
+        super::skin_router(
+            None,
+            std::sync::Arc::new(parking_lot::RwLock::new("openlikebuddy".into()))
+        )
+        .is_none()
+    );
 }
 
-/// 建一个 app 形态皮肤包（manifest + app/index.html + app/assets/app.js）。
-fn write_app_skin(dir: &std::path::Path, id: &str) {
-    use std::io::Write;
-    let path = dir.join(format!("{id}.nbskin"));
-    let file = std::fs::File::create(path).unwrap();
-    let mut zip = zip::ZipWriter::new(file);
-    zip.start_file("manifest.json", zip::write::SimpleFileOptions::default())
-        .unwrap();
-    write!(
-        zip,
-        r#"{{"id":"{id}","version":"1.0.0","type":"app","entry":"app/index.html"}}"#
-    )
-    .unwrap();
-    zip.start_file("app/index.html", zip::write::SimpleFileOptions::default())
-        .unwrap();
-    write!(zip, "<!doctype html><html><body>app-{id}</body></html>").unwrap();
-    zip.start_file(
-        "app/assets/app.js",
-        zip::write::SimpleFileOptions::default(),
-    )
-    .unwrap();
-    write!(zip, "console.log(1)").unwrap();
-    zip.finish().unwrap();
-}
-
+/// app 形态已整体移除（皮肤语义裁定：皮肤只给当前应用换观感，不存在
+/// 「打开一个独立应用」的形态）——`/skins/{id}/app[/…]` 必须全部 404。
 #[tokio::test]
-async fn app_index_and_asset_served_with_mime() {
+async fn app_form_routes_are_gone() {
     let tmp = tempdir();
-    write_app_skin(tmp.path(), "buddy");
+    write_skin(tmp.path(), "buddy", "skin/x.css");
     let a = app(Some(tmp.path().to_str().unwrap()), "buddy");
-
-    // 入口页：无尾斜杠 = 重定向到带尾斜杠形态（`<base href="./">` 以文档
-    // 目录为基，无尾斜杠会丢最后一段 → 必须重定向归一；axum Redirect::to = 303）
-    let res = a
-        .clone()
-        .oneshot(
-            Request::builder()
-                .uri("/skins/buddy/app")
-                .body(Body::empty())
-                .unwrap(),
-        )
-        .await
-        .unwrap();
-    assert_eq!(res.status(), 303);
-    assert_eq!(
-        res.headers().get(header::LOCATION).unwrap(),
-        "/skins/buddy/app/"
-    );
-
-    // 入口页（带尾斜杠）
-    let res = a
-        .clone()
-        .oneshot(
-            Request::builder()
-                .uri("/skins/buddy/app/")
-                .body(Body::empty())
-                .unwrap(),
-        )
-        .await
-        .unwrap();
-    assert_eq!(res.status(), 200);
-    assert_eq!(
-        res.headers().get(header::CONTENT_TYPE).unwrap(),
-        "text/html; charset=utf-8"
-    );
-
-    // 静态资产按扩展名给 Content-Type
-    let res = a
-        .oneshot(
-            Request::builder()
-                .uri("/skins/buddy/app/assets/app.js")
-                .body(Body::empty())
-                .unwrap(),
-        )
-        .await
-        .unwrap();
-    assert_eq!(res.status(), 200);
-    assert_eq!(
-        res.headers().get(header::CONTENT_TYPE).unwrap(),
-        "text/javascript; charset=utf-8"
-    );
-}
-
-#[tokio::test]
-async fn app_traversal_and_missing_rejected() {
-    let tmp = tempdir();
-    write_app_skin(tmp.path(), "buddy");
-    let a = app(Some(tmp.path().to_str().unwrap()), "buddy");
-    for bad in [
-        "/skins/buddy/app/..%2F..%2Fmanifest.json",
-        "/skins/buddy/app/nope.js",
-        "/skins/ghost/app/", // 幽灵 id（带尾斜杠直打入口页形态）
+    for gone in [
+        "/skins/buddy/app",
+        "/skins/buddy/app/",
+        "/skins/buddy/app/assets/app.js",
     ] {
         let res = a
             .clone()
-            .oneshot(Request::builder().uri(bad).body(Body::empty()).unwrap())
+            .oneshot(Request::builder().uri(gone).body(Body::empty()).unwrap())
             .await
             .unwrap();
-        assert_eq!(res.status(), 404, "must 404: {bad}");
+        assert_eq!(res.status(), 404, "app route must be gone: {gone}");
     }
 }
 
