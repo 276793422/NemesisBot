@@ -15,12 +15,18 @@ use std::time::Instant;
 /// 与 tests.rs / agt_tests.rs 同款 AppState 脚手架（本文件自包含——兄弟测试
 /// 模块的 fn 不互见，照抄最小化模板）。
 fn denials_ctx(dir: &tempfile::TempDir) -> RequestContext {
-    let ws = dir.path().to_string_lossy().to_string();
+    // F9 契约对齐（2026-09-26 复查）：denials.list 读 ctx.workspace（gateway
+    // 注入的真实工作区，台账在其 logs/ 下）。脚手架此前把 workspace 字段也
+    // 填 tmp 根、台账却种在 <tmp>/workspace/logs/——镜像的是修复前硬编码
+    // `home/workspace` 的旧语义，契约翻转后查询落空。现按生产布局拆开：
+    // home = tmp 根，workspace = <tmp>/workspace（与 seed_ledger 落点一致）。
+    let home = dir.path().to_string_lossy().to_string();
+    let ws = dir.path().join("workspace").to_string_lossy().to_string();
     let state = Arc::new(AppState {
         auth_token: String::new(),
         session_count: Arc::new(AtomicUsize::new(0)),
         workspace: Some(ws.clone()),
-        home: Some(ws.clone()),
+        home: Some(home.clone()),
         version: "test".to_string(),
         start_time: Instant::now(),
         model_name: Arc::new(parking_lot::Mutex::new("test-model".to_string())),
@@ -59,8 +65,8 @@ fn denials_ctx(dir: &tempfile::TempDir) -> RequestContext {
     RequestContext {
         session_id: "denials".to_string(),
         chat_id: "denials".to_string(),
-        workspace: Some(ws.clone()),
-        home: Some(ws),
+        workspace: Some(ws),
+        home: Some(home),
         state,
         auth_method: crate::session::AuthMethod::default(),
     }

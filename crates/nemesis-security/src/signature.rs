@@ -1074,10 +1074,57 @@ impl SignatureVerifier {
         expected == signature
     }
 
+    /// Verify a signature against raw bytes and a public key.
+    ///
+    /// 字节串变体（skills 目录签名用——文件原始字节不保证 UTF-8）；判定
+    /// 顺序与 [`Self::verify_signature`] 一致：信任检查 → Ed25519 → 哈希
+    /// fallback（同一 SHA-256 公式，content 以字节进入）。
+    pub fn verify_signature_bytes(&self, content: &[u8], signature: &str, public_key: &str) -> bool {
+        // Step 1: key must be trusted.
+        if !self.trust_store.is_trusted(public_key).1 {
+            return false;
+        }
+
+        // Step 2: try Ed25519 verification.
+        if verify_signature_ed25519(content, signature, public_key) {
+            return true;
+        }
+
+        // Fallback: hash-based signature check (for backward compatibility).
+        let mut hasher = Sha256::new();
+        hasher.update(content);
+        hasher.update(public_key.as_bytes());
+        hex_encode(&hasher.finalize()) == signature
+    }
+
     /// Convenience: add a trusted key through the verifier.
     pub fn add_trusted_key(&self, public_key: &str, label: &str) {
         self.trust_store
             .add_key(public_key, label, TrustLevel::Verified);
+    }
+
+    /// Verify a skill payload given as raw bytes.
+    pub fn verify_skill_bytes(
+        &self,
+        content: &[u8],
+        signature_hex: &str,
+        public_key_hex: &str,
+    ) -> SkillVerification {
+        let (_, trusted) = self.trust_store.is_trusted(public_key_hex);
+        let trust_level = self.trust_store.trust_level(public_key_hex);
+        let valid = self.verify_signature_bytes(content, signature_hex, public_key_hex);
+
+        SkillVerification {
+            valid,
+            trusted,
+            trust_level,
+            public_key: public_key_hex.to_string(),
+            error: if !valid {
+                "signature verification failed".to_string()
+            } else {
+                String::new()
+            },
+        }
     }
 
     /// Verify a skill file.

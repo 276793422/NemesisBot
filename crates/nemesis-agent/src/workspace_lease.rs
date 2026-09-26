@@ -27,7 +27,13 @@
 //!   命令面，拦不到效果面——诚实不做假拦截）；
 //! - 开关 `agents.lease_enabled`（默认 true）在**装配期**消费
 //!   （agent_factory 构造 `SharedToolConfig.workspace_lease`）——改配置
-//!   需重启生效（与 executor 段同语义）。
+//!   需重启生效（与 executor 段同语义）；
+//! - **F8 豁免（诚实边界）**：rewind/redo 的文件恢复（checkpoint
+//!   `git_restore` / `hybrid_restore`，checkout+删除直达工作区）**不走租
+//!   约**——它是用户显式发起的独占操作，前置已有 busy 闸（目标会话不在
+//!   执行中）+ P20 冲突预检 + force 审计留痕；且「恢复」的本职就是覆盖
+//!   工作区现状，包进租约会与其他执行体的写意图对峙排队，语义打架。
+//!   并发写互斥的担保范围 = 写类**工具**调用，不含恢复类运维动作。
 
 use std::io;
 use std::path::PathBuf;
@@ -230,11 +236,20 @@ impl WorkspaceLease {
             .map(|p| p.join(format!("{LOCK_FILE_NAME}.holder.json")));
         let mut held = false;
         let mut note = String::new();
-        if let Some(parent) = lock_path.parent() {
-            let _ = std::fs::create_dir_all(parent);
+        // F7（2026-09-26 复查）：探针只读化——锁文件不存在 = 从未有租约，
+        // 直接诚实汇报返回，不创建 logs/ 与锁载体文件（状态查询不得有副
+        // 作用；此前 create(true) 让首次探测凭空造出锁文件）。
+        if !lock_path.exists() {
+            return serde_json::json!({
+                "supported": true,
+                "held": false,
+                "holder": serde_json::Value::Null,
+                "acquired_at": serde_json::Value::Null,
+                "lock_path": lock_path.display().to_string(),
+                "note": "尚无锁文件（此工作区从未有租约记录）",
+            });
         }
         match std::fs::OpenOptions::new()
-            .create(true)
             .read(true)
             .write(true)
             .open(&lock_path)

@@ -130,7 +130,7 @@ fn acl_partial() -> Availability {
     Availability::Partial(vec!["experimental gaps".to_string()])
 }
 
-/// auto + Sandboxie 就绪 → Sandboxie（就绪优先，ACL 只是回落）。
+/// auto + Sandboxie 就绪 → Sandboxie（就绪优先，不看 acl 侧可用性）。
 #[test]
 fn windows_auto_prefers_sandboxie_when_ready() {
     assert_eq!(
@@ -144,17 +144,18 @@ fn windows_auto_prefers_sandboxie_when_ready() {
     );
 }
 
-/// auto + Sandboxie 未就绪 + acl 可用 → acl（Full 与 Partial 都算可用，
-/// 与 Linux 表同判据）。
+/// auto + 盒缺位 → None（**不回落 ACL**——P24 契约：auto 回落实验档会让
+/// 既有 executor 子进程的「无盒 warn」静默变成「真实装围栏」、strict 语义
+/// 被改写；显式钉 acl 才启用。此前本用例断言回落，已随契约对齐翻转）。
 #[test]
-fn windows_auto_falls_back_to_acl() {
+fn windows_auto_never_falls_back_to_acl() {
     assert_eq!(
         select_windows_backend(&ExecutorBackendChoice::Auto, false, &acl_full()),
-        Some(WindowsBackendKind::Acl)
+        None
     );
     assert_eq!(
         select_windows_backend(&ExecutorBackendChoice::Auto, false, &acl_partial()),
-        Some(WindowsBackendKind::Acl)
+        None
     );
 }
 

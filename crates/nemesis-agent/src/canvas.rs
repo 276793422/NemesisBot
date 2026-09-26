@@ -557,12 +557,26 @@ pub fn check_js_syntax(js: &str) -> Vec<JsSyntaxIssue> {
             }
         }
 
-        i += advance;
-        if c == '\n' {
-            line += 1;
-            col = 0;
-        } else {
-            col += advance;
+        // 前进并计行：advance=2 的转义窗口可能吞进换行（字符串/模板里的
+        // `\<newline>` 行续行——此时 c 是反斜杠，只看 c 会漏计行号，后续
+        // 全部问题行号错位）。列号取最后一个换行之后的剩余宽度。
+        let win_start = i;
+        let win_end = (i + advance).min(chars.len());
+        i = win_end;
+        let mut nl_count = 0usize;
+        let mut last_nl = None;
+        for (off, wc) in chars[win_start..win_end].iter().enumerate() {
+            if *wc == '\n' {
+                nl_count += 1;
+                last_nl = Some(off);
+            }
+        }
+        match last_nl {
+            Some(off) => {
+                line += nl_count;
+                col = win_end - (win_start + off) - 1;
+            }
+            None => col += advance,
         }
     }
 

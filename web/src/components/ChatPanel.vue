@@ -245,7 +245,10 @@ function applySendMode(text: string): string {
     return /^[!！]/.test(text.trimStart()) ? text : '! ' + text
   }
   if (sendMode.value === 'queue') {
-    return text.replace(/^[!！]\s*/, '')
+    // 剥除与检测同口径（后端 is_steer_message 容许行首空白）——否则
+    // 「 ！ xx」检测说有前缀、剥除剥不掉，显式排队出列后仍被后端
+    // 路由成插队。
+    return text.replace(/^\s*[!！]\s*/, '')
   }
   return text
 }

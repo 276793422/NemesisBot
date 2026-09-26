@@ -136,6 +136,36 @@ desc = "MQTT 3.1.1 客户端通道（rumqttc，topic 订阅→inbound / outbound
 category = "channels"
 default = false
 
+# Wave 3 能力扩展新四通道（2026-09-26 复查补漏：Cargo.toml 已有 feature，
+# 此前清单漏登记——TUI 配置器勾不到这四个通道）。
+[[feature]]
+id = "channels-wecom"
+label = "企业微信"
+desc = "企业微信通道（webhook 出站 + 回调 AES 加解密）"
+category = "channels"
+default = false
+
+[[feature]]
+id = "channels-mattermost"
+label = "Mattermost"
+desc = "Mattermost 通道（WS 鉴权重连 + REST 出站）"
+category = "channels"
+default = false
+
+[[feature]]
+id = "channels-nostr"
+label = "Nostr"
+desc = "Nostr 通道（NIP-04 加密 DM + relay 退避重连）"
+category = "channels"
+default = false
+
+[[feature]]
+id = "channels-wechat"
+label = "微信"
+desc = "微信通道（鉴权三方案可插拔）"
+category = "channels"
+default = false
+
 # ── Subsystems (Class A leaves; on by default = current full build) ─────────
 
 [[feature]]

@@ -19,8 +19,10 @@
 //! owns the default path). P24（2026-09-25 能力扩展 WS1）adds an **opt-in
 //! experimental Windows userland ACL backend** ([`backend::AclBackend`],
 //! feature `acl`): mandatory-integrity-label No-Write-Up fence, half-tier
-//! isolation, always `Partial` — selection via `executor.backend` config +
-//! `backend::select_windows_backend`, engagement wiring (exec_worker) pending.
+//! isolation, always `Partial` — engaged via `executor.backend` **explicit
+//! `acl` only** (auto never falls back to it, P24 contract), on the
+//! box-missing stdio channel; wired in exec_worker engage + gateway
+//! selection hook (2026-09-26 contract alignment).
 
 use std::path::{Path, PathBuf};
 

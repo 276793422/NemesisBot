@@ -546,6 +546,7 @@ async fn cmd_search(skills_cfg: &std::path::Path, query: &str, limit: usize) -> 
 async fn cmd_install(
     skills_dir: &std::path::Path,
     skills_cfg: &std::path::Path,
+    main_cfg: &std::path::Path,
     skill_ref: &str,
     yes: bool,
 ) -> Result<()> {
@@ -559,9 +560,12 @@ async fn cmd_install(
     let mut installer =
         nemesis_skills::installer::SkillInstaller::new(&workspace.to_string_lossy());
 
-    // P11/P16 主配置消费：{home}/config.json 的 skills 段。读不到按默认
-    // （allow_unsigned=true、龄闸关）。
-    if let Ok(cfg) = nemesis_config::load_config(&workspace.join("config.json")) {
+    // P11/P16 主配置消费：主配置 config.json（home 根，common::config_path）
+    // 的 skills 段。读不到按默认（allow_unsigned=true、龄闸关）。
+    // 2026-09-26 复查修复：此前读 workspace.join("config.json")——主配置
+    // 现行布局在 home 根，CLI 装技能永远读不到用户 skills 安全策略，静默
+    // 回落默认放行。
+    if let Ok(cfg) = nemesis_config::load_config(main_cfg) {
         if let Some(skills) = cfg.skills {
             installer.set_allow_unsigned(skills.allow_unsigned);
             installer.set_age_policy(skills.min_age_days, &skills.min_age_policy);
@@ -1301,6 +1305,7 @@ pub fn run(action: SkillsAction, local: bool) -> Result<()> {
                 tokio::runtime::Handle::current().block_on(cmd_install(
                     &skills_dir,
                     &skills_cfg,
+                    &common::config_path(&home),
                     &skill,
                     yes,
                 ))

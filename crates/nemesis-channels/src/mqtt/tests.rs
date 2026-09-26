@@ -390,10 +390,11 @@ async fn contract_mock_broker_roundtrip() {
             assert_eq!(qos, 1, "出站应为 QoS 1");
             assert_eq!(topic, "home/cmd", "应发到入站信封学习到的 reply_topic");
             let text = String::from_utf8_lossy(&payload).to_string();
-            assert!(
-                text.contains("bot reply content"),
-                "payload 应包含回复内容: {text}"
-            );
+            // 出站恒带防回环信封（from="nemesisbot"），入站 Skip 兜底才真正生效
+            let envelope: serde_json::Value =
+                serde_json::from_str(&text).expect("出站 payload 必须是 JSON 信封");
+            assert_eq!(envelope["from"], json!("nemesisbot"), "防回环标记缺失: {text}");
+            assert_eq!(envelope["content"], json!("bot reply content"));
         }
         other => panic!("期望出站 PUBLISH，收到 {other:?}"),
     }

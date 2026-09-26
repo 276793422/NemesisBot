@@ -1264,21 +1264,19 @@ pub async fn handle_api_chat_session_fork(
         nemesis_agent::chat_log::write_session_fork_reason(&info.new_key, r);
     }
     // WS9/P18：遗弃后缀 ≥3 轮 → 后台生成分支摘要写入**新会话** meta（新
-    // 分支首轮 build_messages 注入 Branch Context 节）。重读源日志取遗弃
-    // 行（fork 是一次性管理操作，二次全量读可接受）；主 loop 未运行或
+    // 分支首轮 build_messages 注入 Branch Context 节）。遗弃行直取 ForkInfo
+    // 的 fork 时刻快照（F4 修复：此前重读源日志，活会话在 fork 与重读之
+    // 间落盘的新行会混进摘要；也不再二次全量读）。主 loop 未运行或
     // small_model 未配置 = prepare 诚实跳过，绝不阻塞 fork 本体。项目
     // 会话也走主 loop 的 small_model 槽位（该槽位读同一份 config/模型
     // 表，实例间等价——诚实边界记入实施报告）。
     if info.dropped_user_turns >= nemesis_agent::r#loop::BRANCH_SUMMARY_MIN_TURNS
         && let Some(agent_loop) = state.agent_loop.read().clone()
     {
-        let (rows, _t, _, _) =
-            nemesis_agent::chat_log::read_chat_log(&info.source_key, usize::MAX, None);
-        let cut = info.kept_messages;
         if let Some(prepared) = nemesis_agent::r#loop::prepare_branch_summary(
             &agent_loop,
             &info.new_key,
-            &rows[cut.min(rows.len())..],
+            &info.dropped_rows,
             info.dropped_user_turns,
         ) {
             prepared.spawn_write();

@@ -601,7 +601,16 @@ impl ModuleHandler for SandboxHandler {
                     .and_then(|v| v.as_u64())
                     .unwrap_or(50)
                     .clamp(1, 500) as usize;
-                let workspace = home.join("workspace");
+                // F9（2026-09-26 复查）：工作区取 ctx.workspace（gateway 装配
+                // 时注入的真实工作区——executor 子进程的台账也写在那份工作区
+                // 的 logs/ 下），仅在其缺省时回落 `home/workspace` 约定（旧
+                // 形态/未装配 ctx）。此前硬编码 join 使 NEMESISBOT_HOME 指向
+                // 非默认布局时台账永远查空。
+                let workspace = ctx
+                    .workspace
+                    .clone()
+                    .map(PathBuf::from)
+                    .unwrap_or_else(|| home.join("workspace"));
                 let mut denials: Vec<serde_json::Value> =
                     nemesis_sandbox::denial::read_denials(&workspace, limit)
                         .into_iter()

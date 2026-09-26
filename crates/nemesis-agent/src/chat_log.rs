@@ -893,7 +893,15 @@ pub fn write_session_branch_summary(session_key: &str, summary: &str) {
 }
 
 /// Shared read-modify-write for the sidecar meta (single fs read + write).
+///
+/// 进程级互斥（2026-09-26 复查 F3）：read-modify-write 期间持锁——并发
+/// upsert（如 outbound 路径 `mark_undelivered_reply` × 标题写入）各自读到
+/// 同一基线会互相覆盖丢更新。临界区 = 单个小文件读写，阻塞锁可接受；
+/// 跨进程一致性不在此担保（sidecar 是单 gateway 进程私有）。
+static META_LOCK: parking_lot::Mutex<()> = parking_lot::Mutex::new(());
+
 fn upsert_meta(session_key: &str, f: impl FnOnce(&mut SessionMeta)) {
+    let _guard = META_LOCK.lock();
     let path = meta_path(session_key);
     if let Some(parent) = path.parent() {
         let _ = fs::create_dir_all(parent);
@@ -925,6 +933,9 @@ pub fn write_session_project(session_key: &str, project_id: &str, project_path: 
 ///
 /// 返回是否实际摘除了归属。
 pub fn clear_session_project(session_key: &str) -> bool {
+    // 与 upsert_meta 同锁（check-then-write 原子性：并发写入不得插在
+    // 判定与落盘之间）。
+    let _guard = META_LOCK.lock();
     let Some(mut meta) = read_meta_full(session_key) else {
         return false;
     };
@@ -961,6 +972,8 @@ pub fn mark_undelivered_reply(session_key: &str) {
 
 /// P2：前端拉取会话历史后清零未读标记。返回是否确实清掉了非零计数。
 pub fn clear_undelivered_replies(session_key: &str) -> bool {
+    // 与 upsert_meta 同锁（同 clear_session_project 的原子性理由）。
+    let _guard = META_LOCK.lock();
     let Some(mut meta) = read_meta_full(session_key) else {
         return false;
     };

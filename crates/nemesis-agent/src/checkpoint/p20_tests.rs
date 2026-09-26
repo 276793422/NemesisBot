@@ -205,6 +205,83 @@ async fn p20_begin_fallback_seals_previous_turn() {
 }
 
 // ---------------------------------------------------------------------------
+// conflict_scan：git 全树 diff 补充覆盖（2026-09-26 复查 F6）
+// ---------------------------------------------------------------------------
+
+/// 最新 begin 之后外部创建的未声明文件（shell 副作用形态）→ 树 diff 补进
+/// unchecked_paths（restore 会删它，预检必须可见；不冒充冲突）。
+#[tokio::test]
+async fn p20_conflict_scan_tree_diff_undeclared_side_effect_unchecked() {
+    let (_d, root) = p20_git_root();
+    std::fs::write(root.join("code.txt"), "v1").unwrap();
+    let store = CheckpointStore::new(None, root.clone());
+
+    store.begin(1, "t1"); // T1 = {code.txt: v1}
+    std::fs::write(root.join("code.txt"), "v2").unwrap();
+    store.snapshot(&modify("code.txt")).await;
+    store.seal_turn(1);
+    store.begin(2, "t2"); // T2 = {code.txt: v2}（最新 begin tree = 参照物）
+    std::fs::write(root.join("side_effect.txt"), "shell noise").unwrap(); // begin 后外部产生
+
+    let report = store.conflict_scan(1);
+    assert!(report.conflicts.is_empty(), "{:?}", report.conflicts);
+    assert_eq!(
+        report.unchecked_paths,
+        vec!["side_effect.txt".to_string()],
+        "begin 后出现的未声明文件必须可见（restore 将删除它）: {:?}",
+        report.unchecked_paths
+    );
+}
+
+/// 被回退区间**内**（begin(1)..begin(2) 之间）产生的未声明文件 = agent 自
+/// 己的副作用，回退本意如此 → 不进 unchecked、零冲突。
+#[tokio::test]
+async fn p20_conflict_scan_tree_diff_agent_span_change_not_unchecked() {
+    let (_d, root) = p20_git_root();
+    std::fs::write(root.join("code.txt"), "v1").unwrap();
+    let store = CheckpointStore::new(None, root.clone());
+
+    store.begin(1, "t1"); // T1 = {code.txt: v1}
+    std::fs::write(root.join("code.txt"), "v2").unwrap();
+    std::fs::write(root.join("side_effect.txt"), "agent made this").unwrap(); // turn 内副作用
+    store.snapshot(&modify("code.txt")).await;
+    store.seal_turn(1);
+    store.begin(2, "t2"); // T2 = {code.txt: v2, side_effect.txt}
+
+    let report = store.conflict_scan(1);
+    assert!(report.conflicts.is_empty(), "{:?}", report.conflicts);
+    assert!(
+        report.unchecked_paths.is_empty(),
+        "回退区间内 agent 副作用不算 unchecked: {:?}",
+        report.unchecked_paths
+    );
+}
+
+/// 声明路径已报冲突（外部删除形态）时，树 diff 面不得把同一路径再塞进
+/// unchecked_paths（一份路径一个判定，消费面不重复计数）。
+#[tokio::test]
+async fn p20_conflict_scan_tree_diff_does_not_duplicate_declared_conflict() {
+    let (_d, root) = p20_git_root();
+    std::fs::write(root.join("keep.txt"), "precious").unwrap();
+    let store = CheckpointStore::new(None, root.clone());
+
+    store.begin(1, "t1");
+    store.snapshot(&modify("keep.txt")).await;
+    store.seal_turn(1);
+    store.begin(2, "t2");
+    std::fs::remove_file(root.join("keep.txt")).unwrap(); // 外部删除
+
+    let report = store.conflict_scan(1);
+    assert_eq!(report.conflicts.len(), 1);
+    assert_eq!(report.conflicts[0].path, "keep.txt");
+    assert!(
+        report.unchecked_paths.is_empty(),
+        "已报冲突的声明路径不得重复进 unchecked: {:?}",
+        report.unchecked_paths
+    );
+}
+
+// ---------------------------------------------------------------------------
 // heal_shadow_repo：清扫 + 幂等
 // ---------------------------------------------------------------------------
 

@@ -77,8 +77,8 @@ impl SkillSigner {
         // Build manifest content (same method used by verify_skill).
         let manifest = self.build_manifest(skill_dir)?;
 
-        // Sign the manifest content using Ed25519.
-        let signature_bytes = signing_key.sign(manifest.content.as_bytes());
+        // Sign the manifest content using Ed25519（原始字节载荷）.
+        let signature_bytes = signing_key.sign(&manifest.content);
         let signature_hex = hex_encode(signature_bytes.to_bytes().as_ref());
 
         // Write .signature file.
@@ -133,7 +133,7 @@ impl SkillSigner {
 
         Ok(self
             .verifier
-            .verify_skill(&manifest.content, &signature, &public_key))
+            .verify_skill_bytes(&manifest.content, &signature, &public_key))
     }
 
     /// Generate a new Ed25519 key pair and save to output directory.
@@ -184,15 +184,37 @@ impl SkillSigner {
 
     /// Build a deterministic manifest of all files in a skill directory.
     ///
-    /// Walks the directory, collects relative file paths and their SHA-256 hashes,
-    /// and produces a combined content string for signing.
+    /// 先递归收集文件清单并按规范化相对路径排序（分隔符统一 `/`），再逐个
+    /// 读**原始字节**参与拼接与哈希——签名载荷与 read_dir 枚举顺序、平台
+    /// 分隔符、UTF-8 有效性全部解耦（2026-09-26 复查修复：此前拼接跟随
+    /// 枚举顺序、Windows `\` 分隔符直接进载荷（跨平台签验必失败）、非
+    /// UTF-8 文件令整个签名/验证报错）。
     fn build_manifest(&self, skill_dir: &Path) -> std::result::Result<SkillManifest, NemesisError> {
-        let mut files = Vec::new();
-        let mut combined = String::new();
+        use sha2::{Digest, Sha256};
 
-        Self::walk_dir(skill_dir, skill_dir, &mut files, &mut combined)?;
+        let mut paths = Vec::new();
+        Self::collect_files(skill_dir, skill_dir, &mut paths)?;
+        paths.sort_by(|a, b| a.0.cmp(&b.0));
 
-        files.sort_by(|a, b| a.path.cmp(&b.path));
+        let mut files = Vec::with_capacity(paths.len());
+        let mut combined = Vec::new();
+        for (relative, abs) in &paths {
+            let content = std::fs::read(abs).map_err(NemesisError::Io)?;
+
+            let mut hasher = Sha256::new();
+            hasher.update(&content);
+            let hash = format!("{:x}", hasher.finalize());
+
+            combined.extend_from_slice(relative.as_bytes());
+            combined.push(b'\n');
+            combined.extend_from_slice(&content);
+            combined.push(b'\n');
+
+            files.push(FileEntry {
+                path: relative.clone(),
+                hash,
+            });
+        }
 
         Ok(SkillManifest {
             content: combined,
@@ -201,13 +223,12 @@ impl SkillSigner {
         })
     }
 
-    fn walk_dir(
+    /// 递归收集（规范化相对路径, 绝对路径）清单；跳过隐藏文件与 `.signature`。
+    fn collect_files(
         base: &Path,
         current: &Path,
-        files: &mut Vec<FileEntry>,
-        combined: &mut String,
+        out: &mut Vec<(String, std::path::PathBuf)>,
     ) -> std::result::Result<(), NemesisError> {
-        use sha2::{Digest, Sha256};
         let entries = std::fs::read_dir(current).map_err(NemesisError::Io)?;
         for entry in entries {
             let entry = entry.map_err(NemesisError::Io)?;
@@ -220,28 +241,18 @@ impl SkillSigner {
             }
 
             if path.is_dir() {
-                Self::walk_dir(base, &path, files, combined)?;
+                Self::collect_files(base, &path, out)?;
             } else {
-                let content = std::fs::read_to_string(&path).map_err(NemesisError::Io)?;
+                // 相对路径规范化：组件以 `/` 连接（Windows `\` 不进载荷，
+                // 签名跨平台可验）。
                 let relative = path
                     .strip_prefix(base)
                     .unwrap_or(&path)
-                    .to_string_lossy()
-                    .to_string();
-
-                let mut hasher = Sha256::new();
-                hasher.update(content.as_bytes());
-                let hash = format!("{:x}", hasher.finalize());
-
-                combined.push_str(&relative);
-                combined.push('\n');
-                combined.push_str(&content);
-                combined.push('\n');
-
-                files.push(FileEntry {
-                    path: relative,
-                    hash,
-                });
+                    .components()
+                    .map(|c| c.as_os_str().to_string_lossy().to_string())
+                    .collect::<Vec<_>>()
+                    .join("/");
+                out.push((relative, path));
             }
         }
         Ok(())
@@ -263,7 +274,8 @@ struct FileEntry {
 
 /// The combined manifest of a skill directory.
 struct SkillManifest {
-    content: String,
+    /// 签名载荷（原始字节——文件内容不保证 UTF-8）。
+    content: Vec<u8>,
     files: Vec<FileEntry>,
     #[allow(dead_code)]
     public_key_hint: String,

@@ -553,8 +553,11 @@ pub(crate) async fn init_web(ctx: &GatewayCtx, cluster: &ClusterWiring) -> Resul
             mattermost: if cfg.channels.mattermost.enabled {
                 Some(nemesis_channels::mattermost::MattermostConfig {
                     base_url: cfg.channels.mattermost.base_url.clone(),
-                    // bot_token 用于 WS 网关 authentication_challenge 鉴权（鉴权验证类）
-                    bot_token: crate::common::resolve_auth_token_or_random(
+                    // bot_token 是出站凭据（REST Bearer 头 + WS authentication_challenge
+                    // 自鉴权首帧——把 token 发给服务器，从不用于验证入站请求），走
+                    // empty 兜底让通道侧的空 token 响亮校验拦截带病启动（2026-09-26 复查：
+                    // 此前误用 random 兜底，凭据引用失效时随机串击穿校验、通道带病启动）。
+                    bot_token: crate::common::resolve_secret_or_empty(
                         &cfg.channels.mattermost.bot_token,
                         "channels.mattermost.bot_token",
                     ),
@@ -628,7 +631,24 @@ pub(crate) async fn init_web(ctx: &GatewayCtx, cluster: &ClusterWiring) -> Resul
                         &cfg.channels.wecom.webhook_url,
                         "channels.wecom.webhook_url",
                     ),
-                    webhooks: cfg.channels.wecom.webhooks.clone(),
+                    // webhooks map：值同为出站目标 URL（内嵌 key），逐值走
+                    // 出站凭据解析（2026-09-26 复查补漏：此前整 map 原样
+                    // clone，vault:/env: 引用不解析原样上线路径）。
+                    webhooks: cfg
+                        .channels
+                        .wecom
+                        .webhooks
+                        .iter()
+                        .map(|(k, v)| {
+                            (
+                                k.clone(),
+                                crate::common::resolve_secret_or_empty(
+                                    v,
+                                    "channels.wecom.webhooks",
+                                ),
+                            )
+                        })
+                        .collect(),
                     // token：回调验签（鉴权验证类）
                     token: crate::common::resolve_auth_token_or_random(
                         &cfg.channels.wecom.token,
@@ -796,8 +816,9 @@ pub(crate) async fn init_web(ctx: &GatewayCtx, cluster: &ClusterWiring) -> Resul
                         "channels.nostr.private_key",
                     ),
                     allow_from: cfg.channels.nostr.allow_from.clone(),
-                    // 通道侧 0 视作缺省（默认 5s）
-                    reconnect_secs: cfg.channels.nostr.reconnect_secs as u64,
+                    // 通道侧 0 视作缺省（默认 5s）；负值钳 0（as 直接转译
+                    // 会回绕成天文数字——名义上永不重连）
+                    reconnect_secs: cfg.channels.nostr.reconnect_secs.max(0) as u64,
                 })
             } else {
                 None
@@ -838,9 +859,12 @@ pub(crate) async fn init_web(ctx: &GatewayCtx, cluster: &ClusterWiring) -> Resul
                         &cfg.channels.mqtt.password,
                         "channels.mqtt.password",
                     ),
-                    keep_alive_secs: cfg.channels.mqtt.keep_alive_secs as u64,
+                    // i64 → u64 钳负值为 0（as 转译负数会回绕；keep_alive 0
+                    // = 关闭保活、reconnect 0 由通道侧抬到 1s）。qos 越界
+                    // （负/超 2）不钳——MqttChannel::new 构造期响亮拒绝。
+                    keep_alive_secs: cfg.channels.mqtt.keep_alive_secs.max(0) as u64,
                     clean_session: cfg.channels.mqtt.clean_session,
-                    reconnect_delay_secs: cfg.channels.mqtt.reconnect_delay_secs as u64,
+                    reconnect_delay_secs: cfg.channels.mqtt.reconnect_delay_secs.max(0) as u64,
                     qos: cfg.channels.mqtt.qos as u8,
                     topics: cfg
                         .channels

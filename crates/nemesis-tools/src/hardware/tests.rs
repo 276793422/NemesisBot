@@ -600,6 +600,43 @@ fn test_i2c_parse_address_invalid() {
     );
 }
 
+/// 字符串地址形态统一解析（2026-09-26 复查修复的回归锁）：桩路径此前对
+/// 字符串形态静默跳过白名单校验（fail-open），真实实现则诚实报错——两路
+/// 现共用 parse_i2c_address，数字/十六进制/十进制字符串全形态同源。
+#[test]
+fn test_i2c_parse_address_string_forms() {
+    assert_eq!(
+        parse_i2c_address(&serde_json::json!({"address": "0x38"})),
+        Ok(0x38)
+    );
+    assert_eq!(
+        parse_i2c_address(&serde_json::json!({"address": "0X08"})),
+        Ok(0x08)
+    );
+    assert_eq!(
+        parse_i2c_address(&serde_json::json!({"address": "56"})),
+        Ok(56)
+    );
+    assert_eq!(
+        parse_i2c_address(&serde_json::json!({"address": 0x77})),
+        Ok(0x77)
+    );
+    // 越界/垃圾形态：fail-closed，统一可自纠文案
+    assert!(parse_i2c_address(&serde_json::json!({"address": "0xFF"})).is_err());
+    assert!(parse_i2c_address(&serde_json::json!({"address": "0xzz"})).is_err());
+    assert!(parse_i2c_address(&serde_json::json!({"address": "xyz"})).is_err());
+    assert!(parse_i2c_address(&serde_json::json!({"address": ""})).is_err());
+    assert!(parse_i2c_address(&serde_json::json!({})).is_err());
+    assert!(parse_i2c_address(&serde_json::json!({"address": 0x80})).is_err());
+    assert!(parse_i2c_address(&serde_json::json!({"address": -1})).is_err());
+    // 字符串形态同样衔接白名单（保留段拒绝）
+    let tool = I2CTool::new();
+    let err = tool
+        .parse_address(&serde_json::json!({"address": "0x05"}))
+        .unwrap_err();
+    assert!(err.for_llm.contains("rejected"), "{err:?}");
+}
+
 #[test]
 fn test_spi_parse_device_valid() {
     let tool = SPITool::new();
@@ -1501,11 +1538,16 @@ fn test_i2c_parse_address_float_rejected() {
 }
 
 #[test]
-fn test_i2c_parse_address_string_rejected() {
-    // A string (even numeric-looking) is not accepted by as_u64().
+fn test_i2c_parse_address_string_form_whitelisted_and_fail_closed() {
+    // 2026-09-26 复查修复后的契约（旧断言「字符串恒拒」编码的正是被修的
+    // fail-open 桩行为，已随契约翻转）：字符串形态经 parse_i2c_address
+    // 统一解析后同样过白名单——白名单内放行，保留段被拒（而非旧桩的
+    // 「跳过校验」）。
     let tool = I2CTool::new();
     let result = tool.parse_address(&serde_json::json!({"address": "0x38"}));
-    assert!(result.is_err());
+    assert!(result.is_ok(), "白名单内字符串地址应放行: {result:?}");
+    let reserved = tool.parse_address(&serde_json::json!({"address": "0x03"}));
+    assert!(reserved.is_err(), "保留段字符串地址必须被白名单拒收");
 }
 
 #[test]

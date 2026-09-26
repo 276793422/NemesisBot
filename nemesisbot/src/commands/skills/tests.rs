@@ -2038,6 +2038,7 @@ mod wave_b {
         let err = cmd_install(
             &skills_dir,
             &skills_cfg_of(&home),
+            &crate::common::config_path(&home),
             "clawhub/bad slug",
             false,
         )
@@ -2061,6 +2062,7 @@ mod wave_b {
         let err = cmd_install(
             &skills_dir,
             &skills_cfg_of(&home),
+            &crate::common::config_path(&home),
             "zz-noslash-anywhere",
             false,
         )
@@ -2093,7 +2095,13 @@ mod wave_b {
         // convex 走死端口：identifier 校验放行空格 slug 后，第一步 convex 调用即败
         wave_b_write_clawhub_cfg(&home, &_mock.base_url(), "http://127.0.0.1:9");
 
-        let err = cmd_install(&skills_dir, &skills_cfg_of(&home), "poison-demo", false)
+        let err = cmd_install(
+            &skills_dir,
+            &skills_cfg_of(&home),
+            &crate::common::config_path(&home),
+            "poison-demo",
+            false,
+        )
             .await
             .expect_err("install 失败 → 毒化回退终结");
         assert!(
@@ -2516,6 +2524,7 @@ mod wave_c {
         cmd_install(
             &skills_dir,
             &skills_cfg_of(&home),
+            &crate::common::config_path(&home),
             "clawhub/wavec-zip-skill",
             true,
         )
@@ -2739,6 +2748,7 @@ mod r10_wave {
         let err = cmd_install(
             &skills_dir,
             &skills_cfg_of(&tmp.path().join(".nemesisbot")),
+            &crate::common::config_path(&tmp.path().join(".nemesisbot")),
             R10_URL,
             true,
         )

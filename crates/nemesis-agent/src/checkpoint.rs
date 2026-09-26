@@ -692,11 +692,22 @@ impl CheckpointStore {
     /// 判定细则：现盘 hash 与封印 hash 不一致 = 冲突（含「封印时刻在盘、
     /// 现已不在」——外部删除也算修改，force 可过）；一致 / 封印即不在盘
     /// （None vs None）= 干净。
+    ///
+    /// git 形态补充覆盖（2026-09-26 复查 F6）：restore_code 实际做
+    /// target..现状**全树 diff**——shell 副作用等未声明文件同样被恢复/删
+    /// 除，预检若只看声明路径就对这部分失明。增量判定（与声明路径同语义
+    /// 粒度，参照物 = 最新 begin tree）：候选路径在 target 与 reference 间
+    /// 无差异 = 偏离发生在最后一个 begin 之后（trailing turn 进行中/外部
+    /// 修改，无法区分）→ 诚实入 unchecked_paths（可见、不冒充冲突）；
+    /// target..reference 间已偏离 = 被回退区间内 agent 自己的变更，回退本
+    /// 意如此，不算冲突。
     pub fn conflict_scan(&self, from_turn: usize) -> CheckpointConflictReport {
         let mut report = CheckpointConflictReport::default();
         // 锁内收集 (path, sealed, sealed_hash) 快照，放锁后读盘比对
         // （锁纪律：不带着 inner 锁做文件 IO）。
         let mut last_declared: Vec<(String, bool, Option<String>)> = Vec::new();
+        // restore 同款守卫：from_turn 后无 checkpoint → no-op（锁内一次性赋值）。
+        let has_post;
         {
             let guard = self.inner.lock();
             let mut all: Vec<&Checkpoint> = guard.done.iter().collect();
@@ -704,6 +715,7 @@ impl CheckpointStore {
                 all.push(cur);
             }
             all.sort_by_key(|c| c.turn);
+            has_post = all.iter().any(|c| c.turn >= from_turn);
             for c in all.iter().filter(|c| c.turn >= from_turn) {
                 let paths: Vec<String> = if c.paths.is_empty() {
                     c.files.iter().map(|f| f.path.clone()).collect()
@@ -725,6 +737,8 @@ impl CheckpointStore {
                 }
             }
         }
+        let declared: std::collections::HashSet<String> =
+            last_declared.iter().map(|(p, _, _)| p.clone()).collect();
         for (path, sealed, sealed_hash) in last_declared {
             if !sealed {
                 report.unchecked_paths.push(path);
@@ -747,7 +761,82 @@ impl CheckpointStore {
                 }
             }
         }
+        // git 形态：全树 diff 的未声明路径补进 unchecked（见 fn 文档）。排
+        // 除集 = 声明路径 ∪ 已报冲突路径（后者已有精确封印判定，不得再以
+        // unchecked 身份重复出现）；补进时对既有 unchecked 去重。
+        // from_turn 后无 checkpoint（restore no-op）或无 target tree（hybrid
+        // 兜底路径）时 restore 不做 tree 恢复，这里同样不报。
+        if has_post
+            && let Some(gb) = self.git.as_ref()
+            && let (Some(target_hex), Some(reference_hex)) =
+                (self.tree_hex_at_or_before(from_turn), self.latest_tree_hex())
+        {
+            let mut excluded = declared;
+            for c in &report.conflicts {
+                excluded.insert(c.path.clone());
+            }
+            let mut repo = gb.repo.lock();
+            let extra =
+                Self::tree_diff_unchecked(&mut repo, &target_hex, &reference_hex, &excluded);
+            drop(repo);
+            for p in extra {
+                if !report.unchecked_paths.contains(&p) {
+                    report.unchecked_paths.push(p);
+                }
+            }
+        }
         report
+    }
+
+    /// F6：target..现状 全树 diff 中「偏离发生在最新 begin 之后」的未声明
+    /// 路径集。参照判定：路径在 target 与 reference（最新 begin tree）里
+    /// 状态一致 = 偏离在 begin 后产生（trailing/外部，不可区分）；已偏离
+    /// = 回退区间内变更（agent 本意）。任何失败 = 空集（预检降级，不误
+    /// 报）。libgit2 借用规则同 git_restore：先可变（write_current_tree）
+    /// 再拿 immutable Tree 句柄。
+    fn tree_diff_unchecked(
+        repo: &mut git2::Repository,
+        target_hex: &str,
+        reference_hex: &str,
+        declared: &std::collections::HashSet<String>,
+    ) -> Vec<String> {
+        let cur_hex = match Self::write_current_tree(repo) {
+            Ok(h) => h,
+            Err(_) => return Vec::new(),
+        };
+        let (Ok(target_oid), Ok(reference_oid), Ok(cur_oid)) = (
+            git2::Oid::from_str(target_hex),
+            git2::Oid::from_str(reference_hex),
+            git2::Oid::from_str(&cur_hex),
+        ) else {
+            return Vec::new();
+        };
+        let (Ok(target_tree), Ok(reference_tree), Ok(cur_tree)) = (
+            repo.find_tree(target_oid),
+            repo.find_tree(reference_oid),
+            repo.find_tree(cur_oid),
+        ) else {
+            return Vec::new();
+        };
+        let Ok(diff) = repo.diff_tree_to_tree(Some(&target_tree), Some(&cur_tree), None) else {
+            return Vec::new();
+        };
+        let mut out = Vec::new();
+        for delta in diff.deltas() {
+            let Some(p) = delta.new_file().path().or_else(|| delta.old_file().path()) else {
+                continue;
+            };
+            let rel = p.to_string_lossy().to_string();
+            if rel.split(['/', '\\']).any(|seg| seg == "..") || declared.contains(&rel) {
+                continue;
+            }
+            let t_state = target_tree.get_path(p).map(|e| e.id()).ok();
+            let r_state = reference_tree.get_path(p).map(|e| e.id()).ok();
+            if t_state == r_state {
+                out.push(rel);
+            }
+        }
+        out
     }
 
     /// 声明路径是否落在工作区内（git 影子树的覆盖范围）。相对路径恒在内；

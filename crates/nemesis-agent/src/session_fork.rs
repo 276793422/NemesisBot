@@ -63,6 +63,11 @@ pub struct ForkInfo {
     /// WS9/P18：被排除内容中的完整 user 轮数（`dropped_messages` 行换算
     /// 成轮）——分支摘要触发阈值（≥3 轮）的判定输入。
     pub dropped_user_turns: usize,
+    /// F4（2026-09-26 复查）：被排除行的 **fork 时刻快照**（本次调用自己
+    /// 读到的 rows[cut..]）。消费方（分支摘要生成）必须用它而不是回头重
+    /// 读源日志——fork 与重读之间源会话若有新行落盘（活会话异步回复），
+    /// kept_messages 计数切片到新日志会把 fork 之后的内容混进「遗弃转写」。
+    pub dropped_rows: Vec<Value>,
     /// Always `false` under the jsonl-truth rule (round 3): the fork store
     /// is rebuilt from jsonl rows, which carry no summary. Kept for API
     /// shape compatibility.
@@ -240,6 +245,8 @@ pub fn fork_session(
         dropped_messages: total - cut,
         // WS9/P18：丢弃行的完整 user 轮数（分支摘要阈值判定输入）。
         dropped_user_turns: row_user_turn_count(&rows[cut..]),
+        // F4：遗弃行快照随 ForkInfo 带出（见字段 doc）。
+        dropped_rows: rows[cut..].to_vec(),
         at_turn: at,
         source_key: source_key.to_string(),
         new_key,

@@ -152,6 +152,22 @@ fn escaped_quote_inside_string_is_fine() {
 }
 
 #[test]
+fn backslash_newline_continuation_keeps_line_numbers() {
+    // 字符串行续行（'\<newline>'）：转义 advance=2 的窗口吞进换行——行计数
+    // 必须认账，否则后续所有问题行号整体错位一位。
+    // JS 源码三行：const s = 'a⏎bc'; ⏎ return (1;
+    let js = "const s = 'a\\\nbc';\nreturn (1;";
+    let issues = check_js_syntax(js);
+    assert_eq!(issues.len(), 1, "{issues:?}");
+    assert!(issues[0].message.contains("括号未闭合"), "{issues:?}");
+    assert_eq!(
+        issues[0].line, 3,
+        "行续行不得让后续行号错位: {:?}",
+        issues[0]
+    );
+}
+
+#[test]
 fn stray_closer_reported() {
     let js = "const a = 1;\n}";
     let issues = check_js_syntax(js);

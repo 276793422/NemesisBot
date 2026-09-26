@@ -150,6 +150,11 @@ pub fn build_executor_channel(
     // Sandboxie Layer-2 attach decision (feature-gated; computed on every
     // platform that compiles the feature — on non-Windows Start.exe never
     // exists under home, so it falls through to the stdio path).
+    // F2（2026-09-26 复查，契约注记）：**显式 `executor.backend="acl"` 不抢
+    // 盒**——盒就绪时盒照常上岗，本判定不看 backend；ACL 档只走下面的
+    // userland_fallback 钩子（盒缺位的 stdio 通道才咨询，见 P24 契约与
+    // nemesis-sandbox backend 模块决策表）。读代码者勿把「显式 acl 被盒
+    // 压制」当 bug——降级选型语义本就如此。
     #[cfg(feature = "sandbox")]
     let (start_exe, sbiesvc_running, engine_owned_now): (std::path::PathBuf, bool, bool) = {
         let paths = nemesis_sandbox::SandboxPaths::new(home);

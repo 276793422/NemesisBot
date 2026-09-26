@@ -312,11 +312,19 @@ impl MattermostChannel {
                     }
                 };
 
-                backoff = INITIAL_BACKOFF;
+                let session_started = std::time::Instant::now();
                 let need_reconnect = MattermostChannel::ws_session(ws_stream, ctx.clone()).await;
 
                 if !need_reconnect || !*running.read() {
                     break;
+                }
+
+                // 会话持续超过阈值 = 鉴权通过且健康运行后正常断开 → 重置退避
+                // 快速重连；短命会话（连接成功但鉴权 FAIL 即返）保持指数退避——
+                // 否则 token 失效时「连接成功即复位」会形成 1 次/秒的永久重试
+                // 循环，MAX_BACKOFF 永远不生效（2026-09-26 复查修复）。
+                if session_started.elapsed() > std::time::Duration::from_secs(60) {
+                    backoff = INITIAL_BACKOFF;
                 }
 
                 warn!("[MattermostChannel] 连接断开，{backoff:?} 后重连");
@@ -614,10 +622,14 @@ impl Channel for MattermostChannel {
             }
         }
 
+        // 先置位再 spawn：tokio 多线程 runtime 下 spawn 的任务可能先于父任务
+        // 之后的写执行——循环首行 `if !*running.read() { break; }` 会看到 false
+        // 直接永久退出（2026-09-26 复查修复的启动竞态，slack 存量同款未动）。
+        *self.running.write() = true;
+
         // 启动 WebSocket 接收循环
         self.start_ws_loop();
 
-        *self.running.write() = true;
         self.base.set_enabled(true);
         info!("[MattermostChannel] started");
         Ok(())

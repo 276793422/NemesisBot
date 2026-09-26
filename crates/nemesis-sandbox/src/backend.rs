@@ -52,23 +52,25 @@
 //! config `executor.backend`（`auto|sandboxie|acl`，缺省 auto；解析见
 //! [`parse_executor_backend`] / [`read_executor_backend`]）：
 //!
-//! | choice | Sandboxie 就绪 | acl 可用 | 选择 |
+//! | choice | 盒（Sandboxie）通道 | acl 可用 | 选择 |
 //! |---|---|---|---|
-//! | auto | ✅ | 任意 | **Sandboxie**（就绪优先，ACL 只是回落） |
-//! | auto | ❌ | ✅（Full/Partial） | **Acl** |
-//! | auto | ❌ | ❌ | None（调用方 warn + 无盒降级） |
-//! | sandboxie | ✅ | 任意 | **Sandboxie** |
-//! | sandboxie | ❌ | 任意 | None（显式钉死就诚实失败，**不悄悄改道**） |
-//! | acl | 任意 | ✅（Full/Partial） | **Acl** |
-//! | acl | 任意 | ❌ | None |
+//! | auto | 盒在场 | 任意 | **Sandboxie**（盒在场盒赢，选型表不参与） |
+//! | auto | 盒缺位 | 任意 | None（**auto 不回落 ACL**——P24 契约，见下） |
+//! | sandboxie | 盒缺位 | 任意 | None（显式钉死就诚实失败，**不悄悄改道**） |
+//! | acl | 盒缺位 | ✅（Full/Partial） | **Acl** |
+//! | acl | 盒缺位 | ❌ | None |
 //! | 其他/未知值 | 任意 | 任意 | None（诚实拒绝，调用方 warn） |
 //!
-//! **接线状态（诚实记录）**：`detect_backend` 在 Windows **仍返回 None**——
-//! 它的签名没有 config 上下文，而 ACL 档只应在 `executor.backend` 选型
-//! 指向它时上岗（见决策表）；接线点 = exec_worker engage 读取
-//! [`read_executor_backend`] + [`select_windows_backend`] 后构造
-//! [`AclBackend`]（本轮交付至本 crate 公共 API 为止，exec_worker 接线是
-//! 后续波次，见实施报告的偏差记录）。
+//! **选型时机（P24 契约，2026-09-26 对齐）**：本表只在**盒缺位的 stdio 通
+//! 道**被消费（盒在场时盒照常上岗，`executor.backend` 不抢盒）。此前表里
+//! 的「auto + 盒缺位 + acl 可用 → Acl」回落臂已删——auto 回落实验档会让
+//! 既有 executor 子进程测试的「无盒 warn」静默变成「真实装围栏」、strict
+//! 语义被改写（2026-09-26 全量回归实证），**显式钉 `acl` 才启用**。
+//!
+//! **接线状态**：exec_worker engage 已接线（读取 [`read_executor_backend`]，
+//! 显式 Acl + 本机可用 → 构造 [`AclBackend`] 自装）；gateway 侧选型钩子同
+//! 判据（nemesisbot exec_world 的 userland_fallback）。`detect_backend` 在
+//! Windows 仍返回 None（它无 config 上下文，不参与本表）。
 //!
 //! ## 诚实边界
 //!
@@ -372,7 +374,8 @@ pub fn parse_executor_backend(s: Option<&str>) -> ExecutorBackendChoice {
 /// [`AclBackend::availability`] 的探测结果（Partial 算可用，与 Linux 表
 /// 同判据；Unavailable 才算不可用）。语义（逐行单测在 selection_tests）：
 ///
-/// - auto：Sandboxie 就绪 → Sandboxie；否则 acl 可用 → Acl；都不可 → None。
+/// - auto：Sandboxie 就绪 → Sandboxie；否则 **None（不回落 ACL——显式钉
+///   acl 才启用，P24 契约）**。
 /// - 显式 sandboxie/acl：各自一条路，不可用 = None（诚实失败，不改道）。
 /// - 未知值：None（调用方 warn——不静默猜测用户意图）。
 pub fn select_windows_backend(
@@ -383,13 +386,9 @@ pub fn select_windows_backend(
     let acl_ok = !matches!(acl, Availability::Unavailable(_));
     match choice {
         ExecutorBackendChoice::Auto => {
-            if sandboxie_ready {
-                Some(WindowsBackendKind::Sandboxie)
-            } else if acl_ok {
-                Some(WindowsBackendKind::Acl)
-            } else {
-                None
-            }
+            // P24 契约（2026-09-26 对齐）：auto 只认就绪的盒，不回落 ACL
+            // 实验档（回落臂已删——见模块文档决策表的契约注记）。
+            sandboxie_ready.then_some(WindowsBackendKind::Sandboxie)
         }
         ExecutorBackendChoice::Sandboxie => {
             sandboxie_ready.then_some(WindowsBackendKind::Sandboxie)

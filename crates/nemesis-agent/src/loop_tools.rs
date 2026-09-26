@@ -5644,7 +5644,9 @@ impl Tool for I2CTool {
     }
 
     fn parameters(&self) -> serde_json::Value {
-        serde_json::json!({"type":"object","properties":{"action":{"type":"string","description":"Action: detect, scan, read, write"},"bus":{"type":"integer","description":"I2C bus number"},"address":{"type":"string","description":"Device address (hex, default allowed: 0x08-0x77; reserved segments rejected)"}}})
+        // schema 与 nemesis-tools::hardware 真实实现同文案（bus=字符串数字、
+        // address=7 位整数；解析器另兼容 "0x38" 形态字符串，fail-closed）。
+        serde_json::json!({"type":"object","properties":{"action":{"type":"string","description":"Action: detect, scan, read, write"},"bus":{"type":"string","description":"I2C bus number (e.g. \"1\")"},"address":{"type":"integer","description":"7-bit device address (default allowed: 0x08-0x77; reserved segments rejected)"}}})
     }
 
     async fn execute(&self, args: &str, _context: &RequestContext) -> Result<String, String> {
@@ -5657,16 +5659,15 @@ impl Tool for I2CTool {
         let val: serde_json::Value =
             serde_json::from_str(args).map_err(|_| "Invalid JSON arguments".to_string())?;
         let action = val["action"].as_str().unwrap_or("");
-        // P8：携带地址的读/写动作先过地址白名单（保留段/黑名单拒绝，
-        // 理由面向模型可自纠——与真实实现同文案同源策略）。
+        // P8：读/写动作的地址必填且先过策略校验（保留段/黑名单拒绝，理由
+        // 面向模型可自纠——与真实实现共用 parse_i2c_address + HardwarePolicy
+        // 同源校验，fail-closed）。2026-09-26 复查修复：此前地址只在
+        // as_u64() 命中时才校验——schema 自己推荐的 hex 字符串形态（"0x38"）
+        // 会整个跳过白名单，回显成功。
         if matches!(action, "read" | "write") {
-            if let Some(a) = val["address"].as_u64() {
-                if a > 0x7f {
-                    return Err("address is required (7-bit, e.g. 0x38, max 0x7f)".to_string());
-                }
-                if let Err(reason) = self.policy.validate_i2c_address(a as u8) {
-                    return Err(reason);
-                }
+            let addr = nemesis_tools::hardware::parse_i2c_address(&val)?;
+            if let Err(reason) = self.policy.validate_i2c_address(addr) {
+                return Err(reason);
             }
         }
         match action {
@@ -5676,14 +5677,14 @@ impl Tool for I2CTool {
                 val["bus"].as_str().unwrap_or("?")
             )),
             "read" => Ok(format!(
-                "[I2C] Read from device at address {}",
-                val["address"].as_u64().unwrap_or(0)
+                "[I2C] Read from device at address 0x{:02x}",
+                nemesis_tools::hardware::parse_i2c_address(&val).unwrap_or(0)
             )),
             "write" => {
                 if val["confirm"].as_bool().unwrap_or(false) {
                     Ok(format!(
-                        "[I2C] Write to device at address {}",
-                        val["address"].as_u64().unwrap_or(0)
+                        "[I2C] Write to device at address 0x{:02x}",
+                        nemesis_tools::hardware::parse_i2c_address(&val).unwrap_or(0)
                     ))
                 } else {
                     Err("confirm must be true for write operations (safety guard)".to_string())

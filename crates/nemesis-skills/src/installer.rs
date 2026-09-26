@@ -703,8 +703,13 @@ impl SkillInstaller {
         }
 
         // P11：验签（security_check 前置；无 .signature 时由 allow_unsigned 裁决）。
+        // L1（2026-09-26 复查）：拒绝时先清 staging 再上抛——审批未过的内容
+        // 不得残留（plan_github_install 同场景本就有清理，此处对齐）。
         let outcome = self.verify_signature_state(&staging);
-        self.enforce_trust(&outcome)?;
+        if let Err(e) = self.enforce_trust(&outcome) {
+            let _ = std::fs::remove_dir_all(&staging);
+            return Err(e);
+        }
 
         // P15：SKILL.md 安全检查（缺 SKILL.md = 跳过检查、不记录——历史契约）。
         let mut security_result = SecurityCheckResult {

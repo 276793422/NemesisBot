@@ -82,6 +82,46 @@ impl HardwarePolicy {
     }
 }
 
+/// I2C 地址参数解析（桩与真实实现的单一真相源，两路径同源校验的前提）。
+///
+/// 接受数字（≤0x7f）或字符串（`"0x38"` 十六进制带前缀 / `"56"` 十进制）；
+/// 其余形态返回面向模型可自纠的错误。此前两处各自内联 `as_u64()`：真实
+/// 实现对字符串形态诚实报错（fail-closed），而回显桩对字符串形态**静默
+/// 跳过白名单校验**（fail-open）——桩自己的 schema 还写着 hex 字符串，
+/// 正是放行保留段的洞（2026-09-26 复查修复）。
+pub fn parse_i2c_address(args: &serde_json::Value) -> Result<u8, String> {
+    let raw = &args["address"];
+    let num = match raw {
+        serde_json::Value::Number(n) => n.as_u64(),
+        serde_json::Value::String(s) => {
+            let t = s.trim();
+            let parsed = if let Some(hex) = t
+                .strip_prefix("0x")
+                .or_else(|| t.strip_prefix("0X"))
+            {
+                u64::from_str_radix(hex, 16).ok()
+            } else {
+                t.parse::<u64>().ok()
+            };
+            // 数字字符串走解析结果；解析失败落到下方统一报错
+            if parsed.is_some() {
+                parsed
+            } else {
+                return Err(I2C_ADDRESS_ERR.to_string());
+            }
+        }
+        _ => return Err(I2C_ADDRESS_ERR.to_string()),
+    };
+    match num {
+        Some(a) if a <= 0x7f => Ok(a as u8),
+        _ => Err(I2C_ADDRESS_ERR.to_string()),
+    }
+}
+
+/// 地址错误统一文案（7-bit 上限 + 可自纠示例）。
+const I2C_ADDRESS_ERR: &str =
+    "address is required (7-bit, e.g. 56 or \"0x38\", max 0x7f)";
+
 /// I2C 规范保留段用途说明（None = 非保留地址）。
 ///
 /// 分段依据 NXP UM10204（I2C-bus specification）：
@@ -260,9 +300,9 @@ impl I2CTool {
             _ => return ToolResult::error("bus is required"),
         };
 
-        let addr = match args["address"].as_u64() {
-            Some(a) if a <= 0x7f => a as u8,
-            _ => return ToolResult::error("address is required (7-bit, e.g. 0x38, max 0x7f)"),
+        let addr = match parse_i2c_address(args) {
+            Ok(a) => a,
+            Err(reason) => return ToolResult::error(&reason),
         };
         // P8 GPIO 白名单：I/O 前过地址策略（保留段/黑名单拒绝，理由可自纠）。
         if let Err(reason) = self.policy.validate_i2c_address(addr) {
@@ -305,9 +345,9 @@ impl I2CTool {
             _ => return ToolResult::error("bus is required"),
         };
 
-        let addr = match args["address"].as_u64() {
-            Some(a) if a <= 0x7f => a as u8,
-            _ => return ToolResult::error("address is required (7-bit, e.g. 0x38, max 0x7f)"),
+        let addr = match parse_i2c_address(args) {
+            Ok(a) => a,
+            Err(reason) => return ToolResult::error(&reason),
         };
         // P8 GPIO 白名单：写操作破坏力最大，同样过地址策略。
         if let Err(reason) = self.policy.validate_i2c_address(addr) {
@@ -383,15 +423,17 @@ impl I2CTool {
 
     #[allow(dead_code)]
     fn parse_address(&self, args: &serde_json::Value) -> Result<(), ToolResult> {
-        match args["address"].as_u64() {
-            Some(addr) if addr <= 0x7f => {
-                if let Err(reason) = self.policy.validate_i2c_address(addr as u8) {
+        // 单一真相源：数字/十六进制字符串统一解析（字符串形态此前被静默
+        // 放过——parse 失败即整个跳过校验的 fail-open 洞，已堵）。
+        match parse_i2c_address(args) {
+            Ok(addr) => {
+                if let Err(reason) = self.policy.validate_i2c_address(addr) {
                     Err(ToolResult::error(&reason))
                 } else {
                     Ok(())
                 }
             }
-            _ => Err(ToolResult::error("address is required (e.g. 0x38)")),
+            Err(reason) => Err(ToolResult::error(&reason)),
         }
     }
 }

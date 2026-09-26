@@ -14,8 +14,9 @@
 //!   在后续 poll 时自动重连（`network=None` 分支），broker 后起不影响常驻进程
 //!   （IoT 场景刚需）；每次收到 ConnAck（含重连成功）都重新订阅——clean_session
 //!   =true 时 broker 不保留订阅关系；
-//! - **防回环**：部署纪律上回包 topic 必须与订阅 filter 不同；兜底——入站 JSON
-//!   信封带 `"from": "nemesisbot"` 标记的消息直接跳过；
+//! - **防回环**：部署纪律上回包 topic 必须与订阅 filter 不同；兜底——出站恒包
+//!   JSON 信封（`{"from":"nemesisbot","content":...}`），入站侧遇到带该标记的
+//!   信封直接跳过（订阅 filter 覆盖到回包 topic / 双 bot 共享 broker 时不自对话）；
 //! - **凭据纪律**：username/password 只进 config 结构体，绝不硬编码；装配层
 //!   （gateway，B3 先例）可对字段做 vault:/env:/yaml: 引用解析；
 //! - **凭据为空 = 匿名连接**（LAN broker 常态），不隐式填充。
@@ -522,8 +523,17 @@ impl Channel for MqttChannel {
         };
         let client = { self.client.lock().clone() }
             .ok_or_else(|| NemesisError::Channel("mqtt channel not running".to_string()))?;
+        // 防回环信封：出站带 from="nemesisbot" 标记，让入站侧的 Skip 兜底真正
+        // 生效（订阅 filter 覆盖到回包 topic / 双 bot 共享 broker 时，自己发的
+        // 消息会被自己当纯文本入站 → 自对话放大循环）。2026-09-26 复查修复：
+        // 此前出站发裸 content，入站 Skip 分支永不触发。
+        let envelope = serde_json::json!({
+            "from": "nemesisbot",
+            "content": msg.content,
+        })
+        .to_string();
         client
-            .publish(&topic, self.config.qos(), false, msg.content.clone())
+            .publish(&topic, self.config.qos(), false, envelope)
             .await
             .map_err(|e| NemesisError::Channel(format!("mqtt publish 失败: {e}")))?;
         self.base.record_sent();
