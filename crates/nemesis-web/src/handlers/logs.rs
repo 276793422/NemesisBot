@@ -351,7 +351,70 @@ pub fn scan_session_logs(workspace: &str) -> Vec<serde_json::Value> {
         if undelivered > 0 {
             entry["undelivered"] = serde_json::Value::from(undelivered);
         }
+        // WS9/P17：谱系扩展字段（sidecar meta 一次读全取）。分叉缘由
+        // （fork 端点 reason 入参）、最近一次回退记录、分支摘要预览（~160
+        // chars 截断——列表行不扛全文，注入全文在 agent 侧 meta 真相源）。
+        // 无字段不加 = 老会话/无谱系事实零增量。
+        let (fork_reason, last_rewind, branch_summary) = read_meta_lineage_ext(&path);
+        if let Some(r) = fork_reason {
+            entry["forkReason"] = serde_json::Value::String(r);
+        }
+        if let Some(lr) = last_rewind {
+            entry["lastRewind"] = lr;
+        }
+        if let Some(bs) = branch_summary {
+            let preview: String = bs.chars().take(160).collect();
+            entry["branchSummaryPreview"] = serde_json::Value::String(preview);
+        }
         sessions.push(entry);
+    }
+    // WS9/P17：祖先链补全（一次后处理遍历）。把带 `parent` 的条目升格成
+    // 完整 lineage 组合视图：{parent_session_id, fork_point_seq, reason,
+    // ancestors: [{id, title}...]}——真相源仍是 meta 的平面字段（parent/
+    // forked_at_turn/fork_reason），此处只投影不落盘（无嵌套重复记账）。
+    // 链上游沿 parent 逐级上溯：stem id → (title, parent) 的 owned 快照
+    // 建索引（避免借用冲突），seen 集防环，深度帽 8 防病态长链。跨列表
+    // 边界（父会话已被删除）时链在上游断掉——诚实截断， ancestors 就近
+    // 收尾。
+    let nodes: std::collections::HashMap<String, (String, Option<String>)> = sessions
+        .iter()
+        .map(|s| {
+            (
+                s["id"].as_str().unwrap_or("").to_string(),
+                (
+                    s["title"].as_str().unwrap_or("").to_string(),
+                    s["parent"].as_str().map(String::from),
+                ),
+            )
+        })
+        .collect();
+    for entry in sessions.iter_mut() {
+        let Some(parent_key) = entry["parent"].as_str().map(String::from) else {
+            continue;
+        };
+        let mut ancestors: Vec<serde_json::Value> = Vec::new();
+        let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
+        seen.insert(entry["id"].as_str().unwrap_or("").to_string());
+        let mut cur = sanitize_session_key(&parent_key);
+        while !cur.is_empty() && ancestors.len() < 8 && seen.insert(cur.clone()) {
+            let Some((title, next_parent)) = nodes.get(&cur) else {
+                break;
+            };
+            ancestors.push(serde_json::json!({ "id": cur, "title": title }));
+            match next_parent.clone() {
+                Some(p) => cur = sanitize_session_key(&p),
+                None => break,
+            }
+        }
+        entry["lineage"] = serde_json::json!({
+            "parent_session_id": parent_key,
+            "fork_point_seq": entry["forkedAtTurn"],
+            "reason": entry
+                .get("forkReason")
+                .and_then(|r| r.as_str())
+                .unwrap_or("fork"),
+            "ancestors": ancestors,
+        });
     }
     sessions
 }
@@ -418,6 +481,31 @@ fn read_meta_undelivered(jsonl_path: &Path) -> u32 {
         .and_then(|v| v.get("undelivered").and_then(|u| u.as_u64()))
         .map(|u| u as u32)
         .unwrap_or(0)
+}
+
+/// WS9/P17：谱系扩展三字段一次 meta 读全取——`(fork_reason, last_rewind,
+/// branch_summary)`。缺席 sidecar / 旧形态文件 = 三 `None`（调用方逐项
+/// 判空，条目零增量）。`last_rewind` 以原样 JSON 对象透传（结构真相源在
+/// agent 侧 `RewindLineage`，这里只搬运不复制 schema）。
+fn read_meta_lineage_ext(
+    jsonl_path: &Path,
+) -> (Option<String>, Option<serde_json::Value>, Option<String>) {
+    let meta = jsonl_path.with_extension("meta.json");
+    let v = std::fs::read_to_string(&meta)
+        .ok()
+        .and_then(|d| serde_json::from_str::<serde_json::Value>(&d).ok());
+    match v {
+        Some(v) => (
+            v.get("fork_reason")
+                .and_then(|p| p.as_str())
+                .map(String::from),
+            v.get("last_rewind").cloned().filter(|x| x.is_object()),
+            v.get("branch_summary")
+                .and_then(|p| p.as_str())
+                .map(String::from),
+        ),
+        None => (None, None, None),
+    }
 }
 
 /// M5: 会话 id → `RequestLog.session_key`。接受 sid（`s1`，Dashboard

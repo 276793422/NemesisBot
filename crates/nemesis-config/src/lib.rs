@@ -380,6 +380,12 @@ pub struct BoardFlagConfig {
     /// 重派循环套既有预算保险丝打满转人工。开关只控制冲突处置策略，不改
     /// 变影响域（冻结始终限本项目，不株连其他项目）。
     pub conflict_auto_resolve: bool,
+    /// 重派决策量化（能力扩展 P34；默认 false = D3 换节点重派维持匹配器
+    /// 决策表现状行为字节等价）。true：换节点候选在匹配器排序之上叠加
+    /// worker × 任务类型历史成功率指纹三档权重（prefer 提前 / avoid 靠后，
+    /// 非绝对排除；样本 <3 一律 neutral），重派换节点评论带档位留痕。
+    /// 记账与开关解耦（评审定案照常入账，灰度期攒数据，开闸即有历史）。
+    pub fingerprint_weighting: bool,
 }
 
 impl Default for BoardFlagConfig {
@@ -403,6 +409,7 @@ impl Default for BoardFlagConfig {
             budget: BoardBudgetConfig::default(),
             archive: BoardArchiveConfig::default(),
             conflict_auto_resolve: false,
+            fingerprint_weighting: false,
         }
     }
 }
@@ -576,6 +583,26 @@ pub struct ExecutorSeparationConfig {
     pub allow_network: bool,
     #[serde(default)]
     pub strict: bool,
+    /// P24（2026-09-25 能力扩展 WS1）：沙盒后端选择（`executor.backend`，
+    /// 缺省 `"auto"`）。值域：`auto`（默认——Windows 上 Sandboxie 就绪则
+    /// sandboxie，否则退 Windows 用户态 ACL 轻量档）/ `sandboxie`（显式钉
+    /// Sandboxie）/ `acl`（显式钉 ACL 档）。未知值诚实拒绝（选型返回 None
+    /// + warn，不静默改道）。非 Windows 平台无消费方（landlock/bwrap/
+    /// Seatbelt 选型不读此键）。
+    ///
+    /// ⚠ 实验性标注：acl 档是**半档隔离**（强制完整性标签 No-Write-Up 围栏
+    /// + DACL 原语），禁不了网、写围栏依赖令牌降级——详见
+    /// `crates/nemesis-sandbox/src/backend.rs` 的 P24 模块文档与诚实边界。
+    /// 兼容性：`#[serde(default)]`——老 config.json 缺键 = `"auto"`，行为与
+    /// 升级前完全一致（typed save 会把缺省值显式写回，语义不变）。
+    #[serde(default = "default_executor_backend")]
+    pub backend: String,
+}
+
+/// `executor.backend` 的 serde 缺省值（`"auto"`）。独立函数而非 `String::default`
+/// ——空字符串不是合法选择（选型按未知值诚实拒绝），缺键必须落成 `"auto"`。
+fn default_executor_backend() -> String {
+    "auto".to_string()
 }
 
 // ============================================================================
@@ -669,6 +696,13 @@ pub struct AgentsConfig {
     /// 运行时改键下一轮生效。
     #[serde(default = "default_true")]
     pub image_downscale: bool,
+    /// WS9/P22：workspace 写租约开关。默认**开**——主 loop / 项目 loop /
+    /// executor 子进程的写类工具经 workspace 级文件锁互斥（宽限 30s 超时
+    /// 诚实拒绝；持有进程死亡 OS 自动释放）。**装配期消费**（gateway/
+    /// exec_worker 启动时按本键构造租约并包装写类工具）——改键需重启
+    /// 生效（与 executor 段同语义，非 loop 侧 fresh-read）。
+    #[serde(default = "default_true")]
+    pub lease_enabled: bool,
     /// 件4（2026-09-24 HOOK 三合一收口 §6）：纪律闭环总开关。默认
     /// **false**（D5 灰度）——关 = 闸/证伪钩子不注册、`/discipline` 提示
     /// 未启用、任务 marker 不生效。开 = 任务描述含 `[discipline:bugfix]`
@@ -2920,6 +2954,7 @@ pub fn default_config() -> Config {
             small_model: None,
             doom_loop_approval: false,
             image_downscale: true,
+            lease_enabled: true,
             defaults: AgentDefaults {
                 workspace: ws,
                 restrict_to_workspace: true,

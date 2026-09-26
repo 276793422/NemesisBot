@@ -14,7 +14,63 @@
 use super::prelude::*;
 use super::*;
 
+/// P19（能力扩展 WS8）：批内 steer 跳批时给未执行调用合成的 tool 结果文本。
+/// 计划钦定文案（原样，不翻译）：模型据此知道调用被用户插队让路，而非
+/// 执行失败或结果未知。
+pub(crate) const STEER_SKIP_TOOL_RESULT: &str = "Skipped due to queued user message.";
+
 impl AgentLoop {
+    /// 器官 8 间隙检查（P19，能力扩展 WS8）：批内每个工具执行前的间隙做
+    /// **非阻塞 peek**（`has_next_step`，不认领）——peek 命中 steer（`!`
+    /// 插队消息在 next_step 队列）→ 本调用起剩余全部未执行调用合成
+    /// [`STEER_SKIP_TOOL_RESULT`] tool 结果（assistant tool_call / tool
+    /// 结果消息对在落账时即完整合法；`repair_tool_message_pairs` 在每次
+    /// build 的 `project_history_for_request` 里继续兜底）→ 终止当前批。
+    /// 返回 `TurnFlow::Continue`：下一轮器官 1 顶检 → 器官 2
+    /// `claim_steer_messages` 认领 steer（@file 展开 / 媒体附加 / chat_log
+    /// 落行同源，此处不重复）→ steer 文本自然进下一轮 build_messages。
+    ///
+    /// 边界说明：
+    /// - **串行路径专属**：U5 并行预计算批（`skip_cancel_estop=true`）在
+    ///   本检查可及之前已全部执行完，结果已存在——无可跳也不该跳（跳掉
+    ///   已完成的工作只会制造未应答 tool_call）。并行窗口内到达的 steer
+    ///   由下一轮器官 2 正常认领，语义不丢。
+    /// - **认领归器官 2**：这里只 peek 裁决「是否让路」。peek 与认领之间
+    ///   无第三方消费者（next_step 只被器官 2 claim 与 abort 转移），无
+    ///   TOCTOU 风险；abort 转移意味着 turn 已终止，二者不竞争。
+    /// - **队列模式天然惰性**：Queue 模式（steer_enabled=false）下
+    ///   next_step 永远为空，检查恒不命中。
+    /// - **守卫面诚实**：被跳调用不 emit observer ToolCall 事件、不记
+    ///   turn_guard 结果、不生成执行收据（T1）——它们确实没执行；事件流
+    ///   仅推 `AgentEvent::ToolResult`（前端卡片可见跳过原因）。
+    pub(crate) fn check_steer_skip_batch(
+        &self,
+        instance: &AgentInstance,
+        context: &RequestContext,
+        tool_calls: &[crate::types::ToolCallInfo],
+        batch_idx: usize,
+        skip_cancel_estop: bool,
+        events: &mut Vec<AgentEvent>,
+    ) -> bool {
+        if skip_cancel_estop || !self.inbox.has_next_step(&context.session_key) {
+            return false;
+        }
+        let skipped = tool_calls.len() - batch_idx;
+        info!(
+            "[AgentLoop] steer pending mid-batch: skipping {} tool call(s) from '{}' (idx {})",
+            skipped, tool_calls[batch_idx].name, batch_idx
+        );
+        for skip_tc in tool_calls.iter().skip(batch_idx) {
+            instance.add_tool_result(&skip_tc.id, STEER_SKIP_TOOL_RESULT);
+            events.push(AgentEvent::ToolResult(ToolCallResult {
+                tool_name: skip_tc.name.clone(),
+                result: STEER_SKIP_TOOL_RESULT.to_string(),
+                is_error: false,
+            }));
+        }
+        true
+    }
+
     /// 器官 8a：`__ASYNC__:{task_id}:{target_id}[:{target_name}]` 集群续行
     /// Check for async cluster_rpc result — save continuation snapshot.
     ///
@@ -662,6 +718,21 @@ impl AgentLoop {
                 return TurnFlow::Continue;
             }
 
+            // 器官 8 间隙检查（P19 能力扩展 WS8）：批内间隙 peek steer 队列
+            // ——有插队消息待注入 → 当前调用起剩余全部合成 Skipped tool
+            // 结果并终止本批（Continue → 下一轮器官 2 认领 steer 进
+            // build_messages）。串行路径专属，详见方法注释。
+            if self.check_steer_skip_batch(
+                instance,
+                context,
+                &tool_calls,
+                batch_idx,
+                skip_cancel_estop,
+                events,
+            ) {
+                return TurnFlow::Continue;
+            }
+
             let tool_start = std::time::Instant::now();
             // Phase 2 (small-model-tool-robustness): validate args against
             // the tool's schema before dispatch. Catches B-class failures;
@@ -813,3 +884,7 @@ impl AgentLoop {
         TurnFlow::Continue
     }
 }
+
+// P19（能力扩展 WS8）：批内 steer 跳批测试（声明 + 独立文件，无内联测试）。
+#[cfg(test)]
+mod p19_steer_skip_tests;

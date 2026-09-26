@@ -29,5 +29,25 @@ tracing-subscriber = { workspace = true }
 [target.'cfg(target_os = "linux")'.dependencies]
 landlock = "0.4"
 
+# P24（2026-09-25 能力扩展 WS1）：Windows ACL 用户态轻量档。windows-sys 比
+# windows 轻，只用 needed features（与本仓 nemesis-security / nemesisbot 的
+# 0.59 版本对齐，不新增依赖家族）。⚠ cargo 不支持 target cfg 里放 feature
+# 判据——依赖挂 Windows target 上；`acl` feature 关掉时 acl_impl 不编译，
+# 此依赖只挂名不参与代码路径。
+[features]
+default = ["acl"]
+## P24：Windows ACL 沙盒后端（完整性标签 + DACL 原语）。关掉后 Windows 上
+## 也编译 stub（availability=Unavailable），给定制构建留裁剪位。实验性档位。
+acl = []
+
+[target.'cfg(target_os = "windows")'.dependencies]
+windows-sys = { version = "0.59", features = [
+    "Win32_Foundation",
+    "Win32_Security",
+    "Win32_Security_Authorization",
+    "Win32_System_Memory",
+    "Win32_System_Threading",
+] }
+
 [lints]
 workspace = true

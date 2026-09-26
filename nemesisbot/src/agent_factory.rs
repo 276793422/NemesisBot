@@ -1159,6 +1159,20 @@ fn build_shared_tool_config(
             i2c_allow_ranges: cfg.tools.hardware.i2c_allow_ranges.clone(),
             i2c_deny_ranges: cfg.tools.hardware.i2c_deny_ranges.clone(),
         })),
+        // WS9/P22：workspace 写租约（`agents.lease_enabled` 默认开）——
+        // 装配期消费：Some = register_shared_tools 把写类工具换成租约守
+        // 卫包装（跨主 loop / 项目 loop / executor 子进程互斥写）。持
+        // 有者名带进程 PID，前端 system.lease_status 展示。
+        workspace_lease: if cfg.agents.lease_enabled {
+            Some(Arc::new(
+                nemesis_agent::workspace_lease::WorkspaceLease::new(
+                    &shared.workspace_dir(),
+                    &format!("gateway:pid:{}", std::process::id()),
+                ),
+            ))
+        } else {
+            None
+        },
     };
     (config, spawn_slot)
 }

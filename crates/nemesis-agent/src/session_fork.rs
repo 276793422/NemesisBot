@@ -60,6 +60,9 @@ pub struct ForkInfo {
     pub kept_messages: usize,
     /// chat_log rows excluded from the fork (source keeps them).
     pub dropped_messages: usize,
+    /// WS9/P18：被排除内容中的完整 user 轮数（`dropped_messages` 行换算
+    /// 成轮）——分支摘要触发阈值（≥3 轮）的判定输入。
+    pub dropped_user_turns: usize,
     /// Always `false` under the jsonl-truth rule (round 3): the fork store
     /// is rebuilt from jsonl rows, which carry no summary. Kept for API
     /// shape compatibility.
@@ -235,6 +238,8 @@ pub fn fork_session(
     Ok(ForkInfo {
         kept_messages: cut,
         dropped_messages: total - cut,
+        // WS9/P18：丢弃行的完整 user 轮数（分支摘要阈值判定输入）。
+        dropped_user_turns: row_user_turn_count(&rows[cut..]),
         at_turn: at,
         source_key: source_key.to_string(),
         new_key,
@@ -245,3 +250,8 @@ pub fn fork_session(
 
 #[cfg(test)]
 mod tests;
+
+// WS9/P17+P18：fork 侧谱系扩展测试（dropped_user_turns / fork_reason /
+// 链式祖先 / 分支摘要写入钳制）——独立测试文件（禁内联测试门禁）。
+#[cfg(test)]
+mod lineage_tests;

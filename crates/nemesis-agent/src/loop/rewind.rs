@@ -214,6 +214,27 @@ impl AgentLoop {
             store.clear_session(session_key);
         }
 
+        // WS9/P17：回退谱系落盘（last_rewind）——截断成功后记录本会话丢
+        // 掉了哪些行/轮（meta sidecar upsert；no-op 回退无谱系事实，不写）。
+        // WS9/P18：遗弃后缀 ≥3 轮且 small_model 已配置 → 后台生成分支
+        // 摘要写回**本会话** sidecar meta（回退后继续用的就是本会话；未
+        // 达阈值/small_model 缺席 = 诚实跳过，不阻塞回退本体）。两步都在
+        // 压 undo 栈前做——`removed` 下方要被 move 进栈条目。
+        if !removed.is_empty() {
+            let dropped_turns = crate::session_fork::row_user_turn_count(&removed);
+            crate::chat_log::write_session_rewind(
+                session_key,
+                message_index,
+                rows.len() - cut,
+                dropped_turns,
+            );
+            if let Some(prepared) =
+                super::prepare_branch_summary(self, session_key, &removed, dropped_turns)
+            {
+                prepared.spawn_write();
+            }
+        }
+
         // 4) 压 undo 栈（截断成功后才压——失败路径不留脏条目）。
         let redoable = !removed.is_empty();
         if redoable {

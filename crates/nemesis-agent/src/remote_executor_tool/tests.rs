@@ -389,3 +389,39 @@ async fn remote_tool_execute_wraps_channel_error() {
     assert!(err.starts_with("executor unavailable:"), "err: {err}");
     assert!(err.contains("failed to spawn"), "err: {err}");
 }
+
+// P24（2026-09-26）：Windows 盒缺位时的用户态 ACL 降级通道判定。
+#[cfg(windows)]
+#[test]
+fn p24_userland_fallback_channel_selection() {
+    // 未注入 fallback → 恒管道（现状字节不变）。
+    let bare = ExecutorChannel::new(
+        PathBuf::from("/x/nemesisbot.exe"),
+        "/ws".into(),
+        Arc::new(|| false),
+    );
+    assert!(!bare.picks_stdio_userland_fallback());
+
+    // fallback 判定 false（如选型指向 sandboxie / ACL 不可用）→ 管道。
+    let declined = ExecutorChannel::new(
+        PathBuf::from("/x/nemesisbot.exe"),
+        "/ws".into(),
+        Arc::new(|| false),
+    )
+    .with_userland_fallback(Arc::new(|| false));
+    assert!(!declined.picks_stdio_userland_fallback());
+
+    // 无盒 wrap + fallback 判定 true → stdio + 用户态标记（子进程自装 ACL）。
+    let mut engaged = ExecutorChannel::new(
+        PathBuf::from("/x/nemesisbot.exe"),
+        "/ws".into(),
+        Arc::new(|| false),
+    )
+    .with_userland_fallback(Arc::new(|| true));
+    assert!(engaged.picks_stdio_userland_fallback());
+
+    // 盒 wrap 在场时判定短路（Start.exe 通道不降级）——手动置 start_exe
+    // 模拟 L2.2 构造（with_start_exe 是 dead_code 标注的既有 builder）。
+    engaged.start_exe = Some(PathBuf::from("/x/Start.exe"));
+    assert!(!engaged.picks_stdio_userland_fallback());
+}

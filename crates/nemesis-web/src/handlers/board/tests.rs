@@ -5206,6 +5206,7 @@ async fn agt_board_config_get_set_all_keys_and_rejections() {
         ("unlimited_mode", serde_json::json!(false)),
         ("conflict_auto_resolve", serde_json::json!(true)),
         ("dispatch_fallback", serde_json::json!(true)),
+        ("fingerprint_weighting", serde_json::json!(true)),
         ("worker_max_inflight", serde_json::json!(3)),
         ("dispatch_fallback_target", serde_json::json!("node-fix")),
         ("dispatch_fallback_target", serde_json::json!(null)),

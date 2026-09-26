@@ -1223,6 +1223,11 @@ pub async fn handle_api_chat_session_fork(
         .get("title")
         .and_then(|v| v.as_str())
         .map(|s| s.to_string());
+    // WS9/P17：分叉缘由（可选）——落新会话 sidecar meta 的 fork_reason。
+    let reason = body
+        .get("reason")
+        .and_then(|v| v.as_str())
+        .map(|s| s.to_string());
 
     let store = resolve_fork_store(&state)?;
     let key = chat_session_key(&session_id);
@@ -1253,6 +1258,32 @@ pub async fn handle_api_chat_session_fork(
     if let Some(t) = title {
         nemesis_agent::chat_log::write_session_meta(&info.new_key, &t);
     }
+    // WS9/P17：分叉缘由落盘（请求缺省/空白不写——谱系视图回退显示通用
+    // 「fork」；write_session_fork_reason 内部同样 trim+空跳过）。
+    if let Some(r) = reason.as_deref() {
+        nemesis_agent::chat_log::write_session_fork_reason(&info.new_key, r);
+    }
+    // WS9/P18：遗弃后缀 ≥3 轮 → 后台生成分支摘要写入**新会话** meta（新
+    // 分支首轮 build_messages 注入 Branch Context 节）。重读源日志取遗弃
+    // 行（fork 是一次性管理操作，二次全量读可接受）；主 loop 未运行或
+    // small_model 未配置 = prepare 诚实跳过，绝不阻塞 fork 本体。项目
+    // 会话也走主 loop 的 small_model 槽位（该槽位读同一份 config/模型
+    // 表，实例间等价——诚实边界记入实施报告）。
+    if info.dropped_user_turns >= nemesis_agent::r#loop::BRANCH_SUMMARY_MIN_TURNS
+        && let Some(agent_loop) = state.agent_loop.read().clone()
+    {
+        let (rows, _t, _, _) =
+            nemesis_agent::chat_log::read_chat_log(&info.source_key, usize::MAX, None);
+        let cut = info.kept_messages;
+        if let Some(prepared) = nemesis_agent::r#loop::prepare_branch_summary(
+            &agent_loop,
+            &info.new_key,
+            &rows[cut.min(rows.len())..],
+            info.dropped_user_turns,
+        ) {
+            prepared.spawn_write();
+        }
+    }
 
     Ok(Json(serde_json::json!({
         "forked": true,
@@ -1263,6 +1294,7 @@ pub async fn handle_api_chat_session_fork(
         "at_turn": info.at_turn,
         "kept_messages": info.kept_messages,
         "dropped_messages": info.dropped_messages,
+        "dropped_user_turns": info.dropped_user_turns,
         "summary_kept": info.summary_kept,
         "chat_log_lines": info.chat_log_lines,
     })))

@@ -90,9 +90,12 @@ pub fn build_executor_channel(
     // Live sandbox probe: read the ConfigStore on EVERY tool call so toggling
     // executor.sandbox (dashboard stop/start, config edit) takes effect WITHOUT
     // a gateway restart.
+    // ⚠ 闭包必须用 clone 出来的句柄（strict/lease/net 四个探针同款）——直接
+    // move `config_handle` 本体会让后文的 `.clone()` 全部 E0382。
+    let sandbox_handle = config_handle.clone();
     let strict_handle = config_handle.clone();
     let sandbox_probe: Arc<dyn Fn() -> bool + Send + Sync> = Arc::new(move || {
-        config_handle
+        sandbox_handle
             .read()
             .executor
             .as_ref()
@@ -107,6 +110,42 @@ pub fn build_executor_channel(
             .as_ref()
             .is_some_and(|ec| ec.strict)
     });
+    // WS9/P22：租约透传探针——子进程不读用户 config，`agents.lease_enabled`
+    // 的装配语义由父进程在 spawn 时经 `NEMESISBOT_LEASE=1` 钉死。live 读与
+    // 严格闸门同款（租约实际是装配期字段，重启才变；这里 live 读保持家族
+    // 一致，无额外代价）。
+    let lease_handle = config_handle.clone();
+    let lease_child_now: Arc<dyn Fn() -> bool + Send + Sync> =
+        Arc::new(move || lease_handle.read().agents.lease_enabled);
+
+    // P24（2026-09-26）：Windows 盒缺位时的用户态 ACL 降级选型——**显式
+    // `executor.backend = "acl"`** 且 AclBackend 本机可用才可顶（子进程
+    // engage 同判据 opt-in 自装）。auto/未知值/不可用 → false 维持现状裸
+    // spawn（auto 不回落实验档——默认行为字节不变）。仅 fail-open 增强：
+    // strict 闸门（上面）仍只认 Sandboxie 引擎——ACL 是 Partial 实验档，
+    // 不算 strict 合格沙盒。
+    #[cfg(all(feature = "sandbox", windows))]
+    let userland_fallback: nemesis_agent::UserlandFallback = {
+        let fallback_handle = config_handle.clone();
+        Arc::new(move || {
+            use nemesis_sandbox::backend::{Availability, SandboxBackend};
+            let choice = fallback_handle
+                .read()
+                .executor
+                .as_ref()
+                .map(|ec| ec.backend.clone());
+            if !matches!(
+                nemesis_sandbox::backend::parse_executor_backend(choice.as_deref()),
+                nemesis_sandbox::backend::ExecutorBackendChoice::Acl
+            ) {
+                return false;
+            }
+            !matches!(
+                nemesis_sandbox::backend::AclBackend::new().availability(),
+                Availability::Unavailable(_)
+            )
+        })
+    };
 
     // Sandboxie Layer-2 attach decision (feature-gated; computed on every
     // platform that compiles the feature — on non-Windows Start.exe never
@@ -227,7 +266,8 @@ pub fn build_executor_channel(
                 nemesis_agent::ExecutorChannel::new(exe_path, workspace, sandbox_probe)
                     .with_start_exe(start_exe)
                     .with_home(home.to_path_buf())
-                    .with_strict_gate(strict_gate),
+                    .with_strict_gate(strict_gate)
+                    .with_lease_child((lease_child_now)()),
             )));
         }
         tracing::warn!(
@@ -264,7 +304,20 @@ pub fn build_executor_channel(
     Ok(Some(Arc::new(
         nemesis_agent::ExecutorChannel::new(exe_path, workspace, sandbox_probe)
             .with_home(home.to_path_buf())
-            .with_strict_gate(strict_gate),
+            .with_strict_gate(strict_gate)
+            .with_lease_child((lease_child_now)())
+            // P24：Windows 盒缺位时的 ACL 降级选型钩子（其余平台不注入，
+            // 判定面不存在 → 现状不变）。
+            .with_userland_fallback({
+                #[cfg(all(feature = "sandbox", windows))]
+                {
+                    userland_fallback
+                }
+                #[cfg(not(all(feature = "sandbox", windows)))]
+                {
+                    Arc::new(|| false)
+                }
+            }),
     )))
 }
 

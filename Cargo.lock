@@ -3638,6 +3638,7 @@ dependencies = [
  "base64",
  "chrono",
  "dashmap",
+ "fd-lock",
  "futures",
  "git2",
  "hmac",
@@ -4154,6 +4155,7 @@ dependencies = [
  "tokio",
  "tracing",
  "tracing-subscriber",
+ "windows-sys 0.59.0",
  "zip",
 ]
 

@@ -385,6 +385,29 @@ impl AgentLoop {
         instance: &AgentInstance,
         memory_hits: Option<&[String]>,
     ) -> (Vec<LlmMessage>, crate::replay::BuildAnnotation) {
+        self.build_messages_inner(instance, memory_hits, None)
+    }
+
+    /// WS9/P18：session_key 感知变体——生产路径（`run_loop.rs` 的
+    /// `build_round_messages`）传 `Some(&context.session_key)` 以注入分支
+    /// 前情提要节；测试/replay 兼容路径继续走无 key 的旧签名（其余字节
+    /// 路径完全一致）。
+    pub fn build_messages_with_memory_annotated_for(
+        &self,
+        instance: &AgentInstance,
+        memory_hits: Option<&[String]>,
+        session_key: Option<&str>,
+    ) -> (Vec<LlmMessage>, crate::replay::BuildAnnotation) {
+        self.build_messages_inner(instance, memory_hits, session_key)
+    }
+
+    /// 构建本体（旧签名与 `_for` 变体的共享实现）。
+    fn build_messages_inner(
+        &self,
+        instance: &AgentInstance,
+        memory_hits: Option<&[String]>,
+        session_key: Option<&str>,
+    ) -> (Vec<LlmMessage>, crate::replay::BuildAnnotation) {
         let history = instance.get_history();
 
         // Inline-summary pipeline. When a summary cache is active, its `text`
@@ -566,6 +589,22 @@ impl AgentLoop {
             let wf_edit_target = self.pending_workflow_edit.read().clone();
             if let Some(target) = wf_edit_target {
                 sections.push(self.render_workflow_edit_section(&target));
+            }
+            // WS9/P18：分支前情提要（Branch Context）。fork/rewind 遗弃
+            // 后缀 ≥3 轮时由 small_model 生成的六节结构化摘要，落盘在会话
+            // sidecar meta 的 branch_summary 字段；这里每次构建重读注入
+            // （内容写定后不变 ⇒ 字节稳定；meta 无摘要/摘要为空 = 无
+            // section，与既有节的字节稳定纪律同形）。session_key=None
+            // （旧签名兼容路径）不注入。内容随既有 InjectionRecord 台账
+            // 落账 → replay 一致（同 I5/workflow_edit 机制）。
+            if let Some(sk) = session_key
+                && let Some(meta) = crate::chat_log::read_session_meta_full(sk)
+                && let Some(summary) = meta.branch_summary
+                && !summary.trim().is_empty()
+            {
+                sections.push(format!(
+                    "# Branch Context（分支前情提要）\n{summary}\n\n(以上是本会话建立时被遗弃部分的结构化前情提要——那些内容不在本会话上下文里，供理解背景用；其中未完成事项与结论供参考，勿当作已确认事实。)"
+                ));
             }
             // X2 (U8 refinement): runtime policy facts as the LAST section.
             // All three inputs are plain state rendered without clocks —

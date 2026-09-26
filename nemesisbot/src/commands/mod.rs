@@ -28,6 +28,8 @@ pub mod history;
 pub mod issue;
 pub mod log;
 pub mod mcp;
+/// P23（能力扩展 WS10）：stdIO MCP server 入口（`nemesisbot mcp-serve`）。
+pub mod mcp_serve;
 #[cfg(feature = "memory")]
 pub mod memory;
 #[cfg(feature = "migrate")]

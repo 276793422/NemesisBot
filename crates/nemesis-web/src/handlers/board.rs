@@ -4309,6 +4309,9 @@ fn board_config_set(
         "unlimited_mode" => board.unlimited_mode = need_bool(value)?,
         // P5/F1 冲突漏斗全局开关（false=human 档：冻结转人工）。
         "conflict_auto_resolve" => board.conflict_auto_resolve = need_bool(value)?,
+        // P34 重派决策量化（灰度默认关；true = D3 换节点重派叠加
+        // worker × 任务类型成功率指纹三档权重）。
+        "fingerprint_weighting" => board.fingerprint_weighting = need_bool(value)?,
         "dispatch_fallback" => board.dispatch_fallback = need_bool(value)?,
         // D0（goal P2）派发准入：单 worker 在途派发上限（非负整数；0=不限）。
         "worker_max_inflight" => {
@@ -4426,7 +4429,7 @@ fn board_config_set(
             return Err(format!(
                 "未知或不允许的 board 配置键：{key}（允许：auto_review / auto_accept / \
                  auto_close_parent / unlimited_mode / conflict_auto_resolve / dispatch_fallback / \
-                 dispatch_fallback_target / \
+                 dispatch_fallback_target / fingerprint_weighting / \
                  max_redispatch / dispatch_timeout_secs / worker_max_inflight / \
                  plan.auto_confirm / plan.model / review.max_turns / review.selfcheck / \
                  review.auto_close_project / review.checkers / budget.max_subissues_per_parent / \

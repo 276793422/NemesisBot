@@ -118,3 +118,117 @@ fn detect_backend_seatbelt_unaffected_by_network_mode() {
     let b = detect_backend(true).map(|b| b.name().to_string());
     assert_eq!(a, b, "macOS 选型不随 allow_network 翻转");
 }
+
+// ---------------------------------------------------------------------------
+// P24（2026-09-25）：Windows 用户态轻量档选型决策表（executor.backend）
+// ---------------------------------------------------------------------------
+
+fn acl_full() -> Availability {
+    Availability::Full
+}
+fn acl_partial() -> Availability {
+    Availability::Partial(vec!["experimental gaps".to_string()])
+}
+
+/// auto + Sandboxie 就绪 → Sandboxie（就绪优先，ACL 只是回落）。
+#[test]
+fn windows_auto_prefers_sandboxie_when_ready() {
+    assert_eq!(
+        select_windows_backend(&ExecutorBackendChoice::Auto, true, &acl_full()),
+        Some(WindowsBackendKind::Sandboxie)
+    );
+    // 就绪优先不看 acl 侧可用性（Partial/Unavailable 均然）。
+    assert_eq!(
+        select_windows_backend(&ExecutorBackendChoice::Auto, true, &unavail()),
+        Some(WindowsBackendKind::Sandboxie)
+    );
+}
+
+/// auto + Sandboxie 未就绪 + acl 可用 → acl（Full 与 Partial 都算可用，
+/// 与 Linux 表同判据）。
+#[test]
+fn windows_auto_falls_back_to_acl() {
+    assert_eq!(
+        select_windows_backend(&ExecutorBackendChoice::Auto, false, &acl_full()),
+        Some(WindowsBackendKind::Acl)
+    );
+    assert_eq!(
+        select_windows_backend(&ExecutorBackendChoice::Auto, false, &acl_partial()),
+        Some(WindowsBackendKind::Acl)
+    );
+}
+
+/// auto + 两皆不可用 → None（调用方 warn + 无盒降级）。
+#[test]
+fn windows_auto_none_when_both_unavailable() {
+    assert_eq!(
+        select_windows_backend(&ExecutorBackendChoice::Auto, false, &unavail()),
+        None
+    );
+}
+
+/// 显式 sandboxie：就绪 → Sandboxie；未就绪 → None（诚实失败，**不悄悄
+/// 改道 acl**——显式选择是用户意图）。
+#[test]
+fn windows_explicit_sandboxie_never_rewrites_to_acl() {
+    assert_eq!(
+        select_windows_backend(&ExecutorBackendChoice::Sandboxie, true, &acl_full()),
+        Some(WindowsBackendKind::Sandboxie)
+    );
+    assert_eq!(
+        select_windows_backend(&ExecutorBackendChoice::Sandboxie, false, &acl_full()),
+        None
+    );
+}
+
+/// 显式 acl：可用 → Acl；不可用 → None（同理不改道 Sandboxie）。
+#[test]
+fn windows_explicit_acl_never_rewrites_to_sandboxie() {
+    assert_eq!(
+        select_windows_backend(&ExecutorBackendChoice::Acl, true, &acl_full()),
+        Some(WindowsBackendKind::Acl)
+    );
+    assert_eq!(
+        select_windows_backend(&ExecutorBackendChoice::Acl, false, &unavail()),
+        None
+    );
+}
+
+/// 未知值 → 恒 None（诚实拒绝，不静默猜测；原文保留供调用方 warn）。
+#[test]
+fn windows_unknown_choice_is_none() {
+    let other = ExecutorBackendChoice::Other("docker".to_string());
+    assert_eq!(select_windows_backend(&other, true, &acl_full()), None);
+    assert_eq!(select_windows_backend(&other, false, &unavail()), None);
+}
+
+/// parse_executor_backend 值域表：None/空/auto（大小写不敏感）→ Auto；
+/// 显式两值；未知 → Other(小写原文)。
+#[test]
+fn parse_executor_backend_value_domain() {
+    assert_eq!(parse_executor_backend(None), ExecutorBackendChoice::Auto);
+    assert_eq!(
+        parse_executor_backend(Some("")),
+        ExecutorBackendChoice::Auto
+    );
+    assert_eq!(
+        parse_executor_backend(Some("auto")),
+        ExecutorBackendChoice::Auto
+    );
+    assert_eq!(
+        parse_executor_backend(Some("  AUTO ")),
+        ExecutorBackendChoice::Auto
+    );
+    assert_eq!(
+        parse_executor_backend(Some("sandboxie")),
+        ExecutorBackendChoice::Sandboxie
+    );
+    assert_eq!(
+        parse_executor_backend(Some("ACL")),
+        ExecutorBackendChoice::Acl
+    );
+    assert_eq!(
+        parse_executor_backend(Some("Docker")),
+        ExecutorBackendChoice::Other("docker".to_string())
+    );
+}

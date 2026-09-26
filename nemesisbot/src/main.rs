@@ -84,6 +84,10 @@ mod exec_worker;
 /// U10 统一执行世界：executor 通道装配单一真相源 + workflow 引擎的
 /// ExecutionWorld 桥（world 部分 `sandbox` feature 门控）。
 mod exec_world;
+/// P23（能力扩展 WS10）：stdio MCP server——NemesisBot 能力经 MCP 协议
+/// 暴露给 Claude Code / Cursor 等客户端；K1 式装配与 gateway 同源
+/// （安全 8 层全量生效，MCP 出口不是安全旁路）。
+mod mcp_serve;
 /// L6++（2026-09-08）：项目注册表（config/projects.json）+ 项目常驻
 /// AgentLoop 管理（对话/项目双分组；注册不拥有——删项目只解除分组）。
 /// M1 中间态：registry API 尚无二进制消费方（M2 manager / G4 WSAPI 接线），
@@ -223,6 +227,9 @@ enum Commands {
     },
     /// Run the ACP agent server over stdio (ACP editors/clients; L7)
     Acp,
+    /// Expose NemesisBot capabilities as a stdio MCP server (P23; Claude
+    /// Code / Cursor etc. connect with zero changes; K1 same-source security)
+    McpServe,
     /// Interact with the agent directly
     Agent {
         #[command(subcommand)]
@@ -906,6 +913,14 @@ async fn run_command(cli: Cli) -> Result<()> {
             common::ensure_default_logger();
             let home = common::resolve_home(cli.local);
             if let Err(e) = commands::acp::run(&home).await {
+                eprintln!("Error: {}", e);
+                std::process::exit(1);
+            }
+        }
+        Commands::McpServe => {
+            common::ensure_default_logger();
+            let home = common::resolve_home(cli.local);
+            if let Err(e) = commands::mcp_serve::run(&home).await {
                 eprintln!("Error: {}", e);
                 std::process::exit(1);
             }

@@ -35,6 +35,7 @@ impl ModuleHandler for ChatHandler {
             "set_mode",
             "get_mode",
             "sync",
+            "queue_status",
         ]
     }
 
@@ -143,6 +144,24 @@ impl ModuleHandler for ChatHandler {
                 "mode": mode.as_str(),
             })));
         }
+        // P4（能力扩展 WS8）：steer/followUp 队列可观测——`chat.queue_status`
+        // 返回两条队列各几条（steer = next_step 插队，followUp = next_turn
+        // 排队），前端徽标数据源。只读快照，与 `agent.inbox_status` 同源
+        // 同口径（`InboxStatus` 单一真相源），字段名按 P19 契约语义命名；
+        // loop 归属解析失败由 resolve 的 Err 传播（与 compact/clear 同姿态）。
+        if cmd == "queue_status" {
+            let s = agent_loop.inbox_status(&session_key);
+            return Ok(Some(serde_json::json!({
+                "available": true,
+                "session_id": session_id,
+                "session_key": session_key,
+                "steer": s.next_step,
+                "followUp": s.next_turn,
+                "capacity": s.capacity,
+                "busy": s.busy,
+                "mode": s.mode,
+            })));
+        }
         let receipt = match cmd {
             "compact" => agent_loop.compact_session(&session_key).await?,
             "clear" => agent_loop.clear_session(&session_key).await?,
@@ -188,3 +207,7 @@ pub(crate) fn read_session_todos(
 // session_id / workspace 未配置）。
 #[cfg(test)]
 mod agt_tests;
+
+// P4（能力扩展 WS8）：chat.queue_status 契约测试（steer/followUp 计数面）。
+#[cfg(test)]
+mod queue_status_tests;

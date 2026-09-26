@@ -11,7 +11,7 @@ impl ModuleHandler for SystemHandler {
     }
 
     fn commands(&self) -> &'static [&'static str] {
-        &["version", "status", "commands"]
+        &["version", "status", "commands", "lease_status"]
     }
 
     async fn handle_cmd(
@@ -23,6 +23,11 @@ impl ModuleHandler for SystemHandler {
         match cmd {
             "version" => self.version(ctx),
             "status" => self.status(ctx),
+            // WS9/P22：workspace 写租约现状探针（无副作用——试取锁立即释
+            // 放 + 读持有者 sidecar）。设置页网关卡片展示当前持有者。
+            "lease_status" => Ok(Some(nemesis_agent::workspace_lease::WorkspaceLease::probe(
+                ctx.workspace.as_deref(),
+            ))),
             // L1（devtool-upgrade 阶段 6）：全量 WSAPI 命令注册表——
             // register_all 发布的 OnceLock 快照（module → 静态清单）。
             "commands" => {

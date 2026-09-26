@@ -170,6 +170,19 @@ async fn run_loop(workspace: &str) -> Result<()> {
                 restrict: true,
             },
         )),
+        // WS9/P22：executor 侧租约——gateway 在 spawn 前经
+        // `NEMESISBOT_LEASE=1` 透传「主进程开了租约」（executor 子进程不
+        // 读用户 config，装配语义由父进程钉死）。持有者名带本子进程 PID。
+        workspace_lease: if std::env::var("NEMESISBOT_LEASE").as_deref() == Ok("1") {
+            Some(std::sync::Arc::new(
+                nemesis_agent::workspace_lease::WorkspaceLease::new(
+                    std::path::Path::new(workspace),
+                    &format!("executor:pid:{}", std::process::id()),
+                ),
+            ))
+        } else {
+            None
+        },
         ..Default::default()
     };
     let tools: HashMap<String, Box<dyn Tool>> = register_shared_tools(&cfg);
@@ -252,6 +265,28 @@ mod userland {
             .map(backend::read_executor_allow_network)
             .unwrap_or(false);
         let detected = backend::detect_backend(allow_network);
+        // P24（2026-09-26）：Windows 无平台默认后端（Sandboxie 盒路径不经
+        // userland engage）——**显式 `executor.backend = "acl"`** 且本机可用
+        // 时 AclBackend（用户态完整性围栏，恒 Partial）opt-in 上岗。auto/
+        // sandboxie/未知一律维持 None：auto 档不回落用户态实验档（默认行为
+        // 字节不变——2026-09-26 全量回归实证 auto 回落会让既有 executor
+        // 子进程测试的「无盒 warn」静默变成「真实装围栏」，strict 语义也被
+        // 改写），显式钉 acl 才启用。
+        #[cfg(all(target_os = "windows", feature = "sandbox"))]
+        let detected = detected.or_else(|| {
+            let choice = home
+                .as_deref()
+                .map(backend::read_executor_backend)
+                .unwrap_or(backend::ExecutorBackendChoice::Auto);
+            if !matches!(choice, backend::ExecutorBackendChoice::Acl) {
+                return None;
+            }
+            let acl = backend::AclBackend::new();
+            match acl.availability() {
+                backend::Availability::Unavailable(_) => None,
+                _ => Some(Arc::new(acl) as Arc<dyn SandboxBackend>),
+            }
+        });
         let form = detected
             .as_ref()
             .map(|b: &Arc<dyn SandboxBackend>| b.form());

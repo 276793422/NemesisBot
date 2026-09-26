@@ -641,6 +641,8 @@ fn test_full_config_roundtrip() {
             small_model: None,
             doom_loop_approval: false,
             image_downscale: true,
+            // WS9/P22 写租约开关（serde 缺省 true）——全字段初始化器补齐。
+            lease_enabled: true,
             defaults: AgentDefaults {
                 max_tokens: 256000,
                 temperature: 0.5,

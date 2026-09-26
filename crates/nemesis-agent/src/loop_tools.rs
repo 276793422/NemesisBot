@@ -6791,6 +6791,11 @@ pub struct SharedToolConfig {
     /// （可自由寻址空间 0x08-0x77）。loop_tools 桩与 nemesis-tools 真实
     /// 实现共用同一 `HardwarePolicy` 单一真相源。
     pub hardware_policy: Option<Arc<nemesis_tools::hardware::HardwarePolicy>>,
+    /// WS9/P22：workspace 级写租约（`agents.lease_enabled` 默认开，
+    /// agent_factory 构造）。Some 时 register_shared_tools 尾部把
+    /// LEASE_WRITE_TOOLS 换成 LeaseGuardTool 委派包装（acquire → 执行 →
+    /// release；宽限 30s 超时诚实拒绝）。None = 基线/测试形态不包装。
+    pub workspace_lease: Option<Arc<crate::workspace_lease::WorkspaceLease>>,
 }
 
 /// H1（2026-09-05）：`todowrite` 工具的接线配置。
@@ -6846,6 +6851,10 @@ impl std::fmt::Debug for SharedToolConfig {
             .field(
                 "hardware_policy",
                 &self.hardware_policy.as_ref().map(|_| "HardwarePolicy"),
+            )
+            .field(
+                "workspace_lease",
+                &self.workspace_lease.as_ref().map(|_| "WorkspaceLease"),
             )
             .field(
                 "security",
@@ -7309,6 +7318,30 @@ pub fn register_shared_tools(config: &SharedToolConfig) -> HashMap<String, Box<d
         }
     }
 
+    // WS9/P22：workspace 写租约——`workspace_lease` 配置时把写类工具换成
+    // LeaseGuardTool 委派包装（协议面/预览面全量透传 inner，模型 schema
+    // 与 checkpoint 安全网不变；执行面 acquire → inner.execute → drop 释
+    // 放，宽限 30s 超时诚实拒绝）。**包装层接线**：不动 dispatch 流；插
+    // 在边界块之后——inner 是带界的生产形态（租约是协调机制不是安全闸，
+    // 边界/安全 8 层照常在 inner 生效）。exec 不包（v1 诚实边界：命令面
+    // 包装拦不到 exec 的效果面写）。
+    if let Some(ref lease) = config.workspace_lease {
+        let mut wrapped = 0usize;
+        for name in crate::workspace_lease::LEASE_WRITE_TOOLS {
+            if let Some(inner) = tools.remove(name) {
+                tools.insert(
+                    (*name).to_string(),
+                    Box::new(crate::workspace_lease::LeaseGuardTool::new(
+                        Arc::from(inner),
+                        lease.clone(),
+                    )),
+                );
+                wrapped += 1;
+            }
+        }
+        info!("[AgentTools] lease guard wrapped {wrapped} write-class tools");
+    }
+
     info!(
         "[AgentTools] Registered {} shared tools (web={}, cluster={}, spawn={}, workflow={})",
         tools.len(),
@@ -7645,6 +7678,7 @@ pub fn register_extended_tools(
         background_registry: None,
         question_broker: None,
         hardware_policy: None,
+        workspace_lease: None,
     };
     register_shared_tools(&shared_config)
 }

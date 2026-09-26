@@ -63,6 +63,11 @@ mod bus;
 pub use bus::*;
 #[allow(unused_imports)]
 pub(crate) use bus::*;
+mod branch_summary;
+#[allow(unused_imports)]
+pub use branch_summary::*;
+#[allow(unused_imports)]
+pub(crate) use branch_summary::*;
 mod commands;
 #[allow(unused_imports)]
 pub use commands::*;
@@ -912,3 +917,8 @@ mod tool_dispatch_sec_cov_tests;
 // 过 + redo 往返）编排测试。
 #[cfg(test)]
 mod p20_tests;
+
+// WS9（能力扩展 P17+P18）：rewind 谱系落盘（last_rewind）+ 分支摘要生成
+// （small_model 通道 / 无小模型诚实跳过 / build_messages 注入）编排测试。
+#[cfg(test)]
+mod ws9_lineage_tests;

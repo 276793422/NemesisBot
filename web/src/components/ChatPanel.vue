@@ -8,6 +8,8 @@ import { useWSAPI } from '../composables/useWSAPI'
 // L2（devtool-upgrade 阶段 6）：SSE resync 提示 → 会话全量刷新兜底。
 import { on as onSSE, off as offSSE } from '../composables/useSSE'
 import { useInboxStatus } from '../composables/useInboxStatus'
+// P4（能力扩展 WS8）：chat.queue_status 徽标（steer/followUp 分队列计数）。
+import { useQueueStatus } from '../composables/useQueueStatus'
 import { useSlashCommands, filterSlashCommands, type SlashCommand } from '../composables/useSlashCommands'
 import { useSessionStore } from '../stores/session'
 import { uploadImage, validateImageFile, type UploadedImage } from '../composables/useImageUpload'
@@ -117,10 +119,22 @@ const {
   queueFull,
 } = useInboxStatus()
 
+// P4（能力扩展 WS8）：chat.queue_status 徽标——steer/followUp 分队列计数。
+// 生命周期与 inbox 轮询同进退（syncInboxMode / busy 发送 / streaming 收尾）。
+const {
+  refresh: refreshQueueStatus,
+  startPolling: startQueuePolling,
+  stopPolling: stopQueuePolling,
+  steerCount,
+  followUpCount,
+  hasQueued,
+} = useQueueStatus()
+
 /** Re-fetch the inbox mode snapshot (mount / session switch / reconnect). */
 function syncInboxMode() {
   if (!isDefaultChat.value) return
   void refreshInbox(effectiveSid.value || '')
+  void refreshQueueStatus(effectiveSid.value || '')
 }
 
 /** busy 时发送是否仍然有效（默认 chat + queue/steer 模式）。 */
@@ -189,6 +203,32 @@ function prefixSteer() {
     chatStore.input = '! ' + chatStore.input
   }
   chatInput.value?.focus()
+}
+
+// --- P4（能力扩展 WS8）：发送三态选择器 ------------------------------
+// 立即发送（默认）/ ⚡插队（steer，`!` 前缀语义）/ ⏭排队（followUp，
+// 现有队列机制）。纯发送侧路由变换，不改后端协议。
+
+/** 本次发送的投递方式；跨会话保持（用户偏好，粘滞到手动切换）。 */
+const sendMode = ref<'now' | 'steer' | 'queue'>('now')
+
+/** 插队选项仅在 steer 模式下有意义（queue 模式下 `!` 会被后端当普通
+ *  消息排队——前端不提供假插队）。 */
+const steerOptionAvailable = computed(() => isDefaultChat.value && steerEnabled.value)
+
+/** 按三态归约上行文本：
+ *  - steer：确保 `! ` 前缀（已带 `!`/`！` 不重复加）。
+ *  - queue：剥掉行首 `!`/`！` 标记——显式选择「排队」压过文本里的
+ *    路由标记（否则用户选了排队仍会被后端路由成插队）。
+ *  - now：原样。 */
+function applySendMode(text: string): string {
+  if (sendMode.value === 'steer') {
+    return /^[!！]/.test(text.trimStart()) ? text : '! ' + text
+  }
+  if (sendMode.value === 'queue') {
+    return text.replace(/^[!！]\s*/, '')
+  }
+  return text
 }
 
 // --- M1b: 工具卡片「已运行 N 个工具」折叠状态 ---
@@ -1560,10 +1600,15 @@ function sendMessage() {
   // U7: queue/steer 模式下 busy 发送是合法操作（后端排队/插队）；reject 模式维持原样。
   if (streaming.value && !canQueueWhileBusy.value) return
 
+  // P4（能力扩展 WS8）：三态路由归约（插队补 `!` 前缀 / 排队剥 `!` 标记）。
+  // 归约后可能为空（输入恰好只有 `!` 且选了排队）→ 无内容无图诚实不发。
+  const routed = applySendMode(content)
+  if (!routed && media.length === 0) return
+
   chatStore.addMessage({
     role: 'user',
     // 纯图无文字时回显占位（发送内容保持原样，不污染提示词）。
-    content: content || (media.length ? '[图片]' : ''),
+    content: routed || (media.length ? '[图片]' : ''),
     timestamp: new Date().toISOString(),
     imageCount: media.length || undefined,
   })
@@ -1577,19 +1622,19 @@ function sendMessage() {
   chatStore.setBusy(effectiveSid.value, true)
   // B2：登记在飞 turn（不被会话切换 reset 清掉）——切走再切回时占位/
   // 轮询凭此恢复；assistant/error/sync 收尾时清除。
-  chatStore.markInflightTurn(effectiveSid.value, content)
+  chatStore.markInflightTurn(effectiveSid.value, routed)
   // 本地发送接管占位——清掉可能残留的切页恢复轮询（streaming 态由
   // watchdog 负责，两套机制不叠加）。
   stopPendingTurnPolling()
   // 传入本轮文本:watchdog 恢复判定「回复已落」的语义锚(见响应处理
   // 分支 pendingWatchdogReload 的 landed 判定)。
-  startWatchdog(content)
+  startWatchdog(routed)
 
   // Reset textarea height
   if (chatInput.value) chatInput.value.style.height = 'auto'
 
   // Send with voice_playback flag if playback is enabled
-  send(content, voicePlayback.value, {
+  send(routed, voicePlayback.value, {
     module: props.module,
     moduleData: activeModuleData(),
     media,
@@ -1598,6 +1643,8 @@ function sendMessage() {
   // U7: busy 中排队/插队 → 立即拉一次队列快照并轮询，chip 才能出现。
   if (canQueueWhileBusy.value) {
     startInboxPolling(effectiveSid.value || '')
+    // P4（能力扩展 WS8）：queue_status 徽标同节奏轮询。
+    startQueuePolling(effectiveSid.value || '')
   }
 
   // If dialogue mode is active, reset the accumulation buffer to prevent duplicate send
@@ -1969,6 +2016,7 @@ const unwatchStreaming = watch(streaming, (s) => {
   if (!isDefaultChat.value) return
   if (!s) {
     stopInboxPolling()
+    stopQueuePolling()
     syncInboxMode()
   }
 })
@@ -2387,6 +2435,12 @@ onUnmounted(() => {
     <div v-if="streaming && queuedTotal > 0" class="queue-chip" :class="{ full: queueFull }">
       ⏳ agent 处理中，已排队 {{ queuedTotal }} 条（其中插队 {{ inboxStatus?.next_step ?? 0 }}）<template v-if="queueFull"> · 队列已满</template>
     </div>
+    <!-- P4（能力扩展 WS8）：queue_status 徽标——steer/followUp 分队列计数
+         （数据源 chat.queue_status；任一队列非空且 agent 处理中时显示）。 -->
+    <div v-if="streaming && hasQueued" class="queue-badge">
+      <span v-if="steerCount > 0" class="qb-steer" title="插队（steer）队列条数——下一轮 LLM 调用前注入当前轮">⚡插队 {{ steerCount }}</span>
+      <span v-if="followUpCount > 0" class="qb-followup" title="排队（followUp）队列条数——当前轮结束后依次处理">⏭排队 {{ followUpCount }}</span>
+    </div>
     <!-- F1: 计划模式常驻条（工具栏可折叠，安全相关状态需要始终可见） -->
     <div v-if="isDefaultChat && chatStore.agentMode === 'plan'" class="plan-strip">
       📋 计划模式：文件修改类工具已停用（plans/ 目录写入放行）— 点击上方徽标或发送 /build 切回
@@ -2498,6 +2552,38 @@ onUnmounted(() => {
         @paste="onPaste"
         :disabled="streaming && !canQueueWhileBusy"
       ></textarea>
+      <!-- P4（能力扩展 WS8）：发送三态选择器（默认立即）。queue/steer 模式
+           才有意义（reject 模式 busy 发送直接被拒）；插队选项仅 steer 模式
+           放出（queue 模式下 `!` 会被后端当普通消息排队，不提供假插队）。 -->
+      <div
+        v-if="isDefaultChat && queueEnabled"
+        class="send-mode-sel"
+        role="radiogroup"
+        aria-label="发送方式"
+      >
+        <button
+          class="sm-opt"
+          :class="{ active: sendMode === 'now' }"
+          type="button"
+          title="立即发送（默认）：agent 忙碌时按后端模式排队或插队"
+          @click="sendMode = 'now'"
+        >立即</button>
+        <button
+          v-if="steerOptionAvailable"
+          class="sm-opt sm-steer"
+          :class="{ active: sendMode === 'steer' }"
+          type="button"
+          title="插队（steer）：发送时自动加 ! 前缀，agent 处理中时立即送达当前轮（工具间隙即中断剩余工具）"
+          @click="sendMode = 'steer'"
+        >⚡插队</button>
+        <button
+          class="sm-opt sm-queue"
+          :class="{ active: sendMode === 'queue' }"
+          type="button"
+          title="排队（followUp）：发送时剥掉 ! 标记，agent 处理中时在本轮结束后处理"
+          @click="sendMode = 'queue'"
+        >⏭排队</button>
+      </div>
       <button v-if="streaming && showStopButton" class="btn btn-stop" @click="stopGeneration" title="停止生成">
         <svg viewBox="0 0 24 24" fill="currentColor" width="16" height="16">
           <rect x="6" y="6" width="12" height="12" rx="2"/>
@@ -2566,6 +2652,60 @@ onUnmounted(() => {
 }
 .queue-chip.full {
   color: #dc3545;
+}
+/* P4（能力扩展 WS8）：发送区三态选择器（立即 / ⚡插队 / ⏭排队）——
+   attach-btn/voice-btn 同款词汇：细边框胶囊 + xs 字号 + active 反色。 */
+.send-mode-sel {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  align-self: flex-end;
+  padding: 2px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  background: var(--bg-primary);
+}
+.sm-opt {
+  padding: 8px 10px;
+  font-size: var(--text-xs);
+  border: none;
+  border-radius: calc(var(--radius-md) - 2px);
+  background: transparent;
+  color: var(--text-secondary);
+  cursor: pointer;
+  transition: all 0.15s;
+  white-space: nowrap;
+  line-height: 1;
+}
+.sm-opt:hover:not(.active):not(:disabled) {
+  color: var(--accent);
+}
+.sm-opt.active {
+  background: var(--accent);
+  color: #fff;
+}
+.sm-opt:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+/* P4：queue_status 徽标——queue-chip 同款条形布局，双队列分段着色
+   （steer 用 accent 与 steer-btn 呼应，followUp 用次级文本色）。 */
+.queue-badge {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 4px 12px;
+  font-size: var(--text-xs);
+  background: var(--surface);
+  border-top: 1px solid var(--border);
+  white-space: nowrap;
+  overflow: hidden;
+}
+.queue-badge .qb-steer {
+  color: var(--accent);
+}
+.queue-badge .qb-followup {
+  color: var(--text-secondary);
 }
 /* F1: plan/build 模式徽标 + 计划模式常驻条 */
 .mode-btn.mode-plan {

@@ -818,6 +818,177 @@ async fn d3_switch_skips_historically_used_workers() {
     assert_eq!(choice, RedispatchTargetChoice::Switch("node-c".to_string()));
 }
 
+// ---------- P34：重派决策量化（worker × 任务类型指纹三档）----------
+//
+// 纯逻辑（分桶/三档边界/稳定分区）与记账幂等在 nemesis-board
+// `fingerprint` 模块单测；此处钉决策表接入的行为面：成功率改变换节点
+// 人选 / 评论带档位可审计 / 开关默认关行为与现状字节一致 / 样本不足
+// neutral 不插队。双节点真流挂账 cluster-uat（主会话跑）。
+
+/// P34 夹具：node-c 连败 2 轮（锚点短路 FAIL 标准形态）+ 在线候选
+/// node-b/node-d（字典序 b 在前 = 无加权时必选 b）；指纹按同款
+/// task_type_of 算出（无标签 → 标题分桶，与评审侧记账同一真相源）。
+fn p34_deps(name: &str, title: &str) -> (BoardReviewDeps, nemesis_board::Issue, String) {
+    let (deps, _ws) = review_deps(name);
+    for (id, port) in [("node-b", 19012u16), ("node-d", 19014u16)] {
+        deps.cluster.handle_discovered_node(
+            id,
+            id,
+            vec!["127.0.0.1".to_string()],
+            port,
+            "worker",
+            "development",
+            vec![],
+            vec![],
+            "standard",
+        );
+    }
+    let issue = issue_in_review(&deps.store, title, W5_FAIL_AC, W5_FAIL_DELIVERY);
+    seed_dispatch(&deps.store, &format!("t-{name}-1"), issue.id, "node-c");
+    seed_dispatch(&deps.store, &format!("t-{name}-2"), issue.id, "node-c");
+    let task_type = nemesis_board::task_type_of(title, &[]);
+    (deps, issue, task_type)
+}
+
+#[tokio::test]
+async fn p34_fingerprint_prefers_higher_success_rate_and_audits_tier() {
+    let (deps, issue, task_type) = p34_deps("p34-prefer", "p34 量化选人标题甲");
+    // node-d prefer（3/3）、node-b avoid（0/3）——无加权时字典序 b 在前必选 b。
+    for (i, t) in ["a", "b", "c"].iter().enumerate() {
+        deps.store
+            .record_fingerprint_outcome("node-d", &task_type, &format!("t-p34-pd-{i}-{t}"), true)
+            .unwrap();
+    }
+    for (i, t) in ["a", "b", "c"].iter().enumerate() {
+        deps.store
+            .record_fingerprint_outcome("node-b", &task_type, &format!("t-p34-pb-{i}-{t}"), false)
+            .unwrap();
+    }
+    write_board_cfg(
+        &deps.home,
+        serde_json::json!({ "fingerprint_weighting": true, "max_redispatch": 5 }),
+    );
+
+    let reviewed = review_issue(&deps, issue.id, ReviewCtx::first_stage())
+        .await
+        .expect("加权换节点闭环");
+    assert!(reviewed);
+
+    let comments = deps.store.list_comments(issue.id).unwrap();
+    let sw = comments
+        .iter()
+        .find(|c| c.content.contains("换节点执行"))
+        .expect("🔁 换节点评论在场");
+    assert!(
+        sw.content.contains("→ node-d"),
+        "prefer 者被优先选中（非字典序首位 b）: {}",
+        sw.content
+    );
+    assert!(
+        sw.content.contains("档位 prefer，成功率 3/3"),
+        "决策评论带档位留痕: {}",
+        sw.content
+    );
+    // 发车记账落到新 worker（第 3 条派发 = node-d）。
+    let dispatches = deps.store.list_dispatches(issue.id).unwrap();
+    assert_eq!(dispatches.len(), 3);
+    assert_eq!(dispatches.last().unwrap().worker_id, "node-d");
+    // 本轮评审的 FAIL 也按同一 task_type 记到本轮执行者 node-c 头上
+    // （记账写点 = 评审定案，与决策消费同源）。
+    assert_eq!(
+        deps.store.worker_fingerprint("node-c", &task_type).unwrap(),
+        Some((0, 1)),
+        "评审 FAIL 记账落到本轮执行 worker"
+    );
+}
+
+#[tokio::test]
+async fn p34_flag_off_keeps_legacy_pick_and_comment() {
+    let (deps, issue, task_type) = p34_deps("p34-off", "p34 开关关标题乙");
+    // 明明 node-b 全败、node-d 全成——开关关时不看指纹，匹配器字典序优先。
+    for (i, t) in ["a", "b", "c"].iter().enumerate() {
+        deps.store
+            .record_fingerprint_outcome("node-b", &task_type, &format!("t-p34-ob-{i}-{t}"), false)
+            .unwrap();
+    }
+    for (i, t) in ["a", "b", "c"].iter().enumerate() {
+        deps.store
+            .record_fingerprint_outcome("node-d", &task_type, &format!("t-p34-od-{i}-{t}"), true)
+            .unwrap();
+    }
+    // 不写 fingerprint_weighting（serde 默认 false）。
+    write_board_cfg(&deps.home, serde_json::json!({ "max_redispatch": 5 }));
+
+    let reviewed = review_issue(&deps, issue.id, ReviewCtx::first_stage())
+        .await
+        .expect("开关关闭环");
+    assert!(reviewed);
+
+    let comments = deps.store.list_comments(issue.id).unwrap();
+    let sw = comments
+        .iter()
+        .find(|c| c.content.contains("换节点执行"))
+        .expect("🔁 换节点评论在场");
+    assert!(
+        sw.content.contains("→ node-b") && !sw.content.contains("node-d"),
+        "开关关 = 匹配器原始序（现状行为字节一致）: {}",
+        sw.content
+    );
+    assert!(
+        !sw.content.contains("档位"),
+        "开关关不带档位注记: {}",
+        sw.content
+    );
+}
+
+#[tokio::test]
+async fn p34_sample_starved_high_rate_stays_neutral() {
+    let (deps, issue, task_type) = p34_deps("p34-neutral", "p34 样本不足标题丙");
+    // node-d 2/2（成功率 1.0 但样本 <3 = neutral）——若样本闸失效它会被
+    // 当 prefer 插队到 node-b 前；neutral 下保持匹配器原序选 node-b。
+    deps.store
+        .record_fingerprint_outcome("node-d", &task_type, "t-p34-nd-1", true)
+        .unwrap();
+    deps.store
+        .record_fingerprint_outcome("node-d", &task_type, "t-p34-nd-2", true)
+        .unwrap();
+    write_board_cfg(
+        &deps.home,
+        serde_json::json!({ "fingerprint_weighting": true, "max_redispatch": 5 }),
+    );
+
+    let reviewed = review_issue(&deps, issue.id, ReviewCtx::first_stage())
+        .await
+        .expect("样本不足闭环");
+    assert!(reviewed);
+
+    let comments = deps.store.list_comments(issue.id).unwrap();
+    let sw = comments
+        .iter()
+        .find(|c| c.content.contains("换节点执行"))
+        .expect("🔁 换节点评论在场");
+    assert!(
+        sw.content.contains("→ node-b"),
+        "样本 <3 = neutral 不插队: {}",
+        sw.content
+    );
+    // node-b 无任何指纹记录 → 注记诚实注明无历史样本（不虚构 0/0）。
+    assert!(
+        sw.content.contains("（档位 neutral（无历史样本））"),
+        "无样本注记诚实: {}",
+        sw.content
+    );
+    assert_eq!(
+        deps.store
+            .list_dispatches(issue.id)
+            .unwrap()
+            .last()
+            .unwrap()
+            .worker_id,
+        "node-b"
+    );
+}
+
 // ---------- E1：budget_breach 三维矩阵 ----------
 
 #[tokio::test]

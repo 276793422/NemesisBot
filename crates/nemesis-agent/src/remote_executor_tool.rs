@@ -109,6 +109,12 @@ struct ExecutorResponse {
 /// `spawn_and_call` readable).
 pub type StrictGate = Arc<dyn Fn() -> Result<(), String> + Send + Sync>;
 
+/// P24：Windows 盒 wrap 缺位时「用户态 ACL 档可否顶上」的选型钩子（gateway
+/// 注入；nemesis-agent 刻意不依赖 nemesis-sandbox，决策以闭包传入——与
+/// `sandbox_probe` 同款模式）。true = 降级改走 stdio + 用户态标记，子进程
+/// engage 按 `executor.backend` 选型自装 ACL 围栏。
+pub type UserlandFallback = Arc<dyn Fn() -> bool + Send + Sync>;
+
 /// Spawn configuration for executor children. Holds no mutable state, so a
 /// single `Arc<ExecutorChannel>` is shared by every `RemoteExecutorTool`.
 pub struct ExecutorChannel {
@@ -142,6 +148,14 @@ pub struct ExecutorChannel {
     /// `<home>/config.json` 的 `executor.allow_network`（用户态沙盒禁网
     /// 开关；`None` = 测试/裸构造，子进程按默认 false 处理）。
     pub home: Option<PathBuf>,
+    /// WS9/P22：gateway 侧租约开关透传——true 时 build_command 给子进程
+    /// 设 `NEMESISBOT_LEASE=1`，executor 侧据此构造同根租约（写类工具互
+    /// 斥跨进程）。子进程不读用户 config，装配语义由父进程钉死。
+    pub lease_child: bool,
+    /// P24：Windows 盒 wrap 缺位时「用户态 ACL 档可顶」选型钩子（gateway
+    /// 注入，见 [`UserlandFallback`]）。`None` = 未注入（测试/裸构造）=
+    /// 现状（无盒直接 spawn）字节不变。
+    pub userland_fallback: Option<UserlandFallback>,
     /// Per-call hard timeout (the child must respond within this).
     pub timeout: Duration,
 }
@@ -167,6 +181,8 @@ impl ExecutorChannel {
             start_exe: None,
             box_name: "NemesisBox".to_string(),
             home: None,
+            lease_child: false,
+            userland_fallback: None,
             timeout: Duration::from_secs(24 * 3600),
         }
     }
@@ -200,6 +216,29 @@ impl ExecutorChannel {
         self
     }
 
+    /// WS9/P22：透传租约开关给 executor 子进程（见 [`Self::lease_child`]）。
+    /// gateway 装配侧（exec_world）按 `agents.lease_enabled` 注入；测试/裸
+    /// 构造默认 false（现状不变）。
+    pub fn with_lease_child(mut self, lease: bool) -> Self {
+        self.lease_child = lease;
+        self
+    }
+
+    /// P24：注入 Windows 盒缺位时的用户态 ACL 选型钩子（仅 stdio 通道——
+    /// 即无 `with_start_exe` 的构造——有意义；盒 wrap 在场时判定短路）。
+    pub fn with_userland_fallback(mut self, fallback: UserlandFallback) -> Self {
+        self.userland_fallback = Some(fallback);
+        self
+    }
+
+    /// P24：Windows dispatch 通道判定（纯函数，单测可达）——盒 wrap 缺位
+    /// 且用户态 fallback 判定可顶 → stdio + 用户态标记（子进程自装 ACL）；
+    /// 其余（盒在场 / 未注入 / 判定 false）→ 管道（现状）。
+    #[cfg(windows)]
+    pub(crate) fn picks_stdio_userland_fallback(&self) -> bool {
+        self.start_exe.is_none() && self.userland_fallback.as_ref().is_some_and(|f| f())
+    }
+
     /// Build the spawn command. The wrap is controlled by `start_exe`:
     /// - `Some` → `Start.exe /box:<box> nemesisbot.exe` (L2.2 real box).
     /// - `None` → `nemesisbot.exe` directly (Layer 1 / L2.1 transport-only).
@@ -218,6 +257,10 @@ impl ExecutorChannel {
         };
         cmd.env("NEMESISBOT_ROLE", "executor")
             .env("NEMESISBOT_EXECUTOR_WORKSPACE", &self.workspace);
+        // WS9/P22：租约透传（true 时才设——省 env 不含语义，子进程缺省 false）。
+        if self.lease_child {
+            cmd.env("NEMESISBOT_LEASE", "1");
+        }
         if let Some(home) = &self.home {
             cmd.env("NEMESISBOT_EXECUTOR_HOME", home);
         }
@@ -259,6 +302,15 @@ impl ExecutorChannel {
             }
             #[cfg(windows)]
             {
+                // P24（2026-09-26）：盒 wrap 缺位且 gateway 选型判定「用户态
+                // ACL 档可顶」→ 降级不走裸 spawn（L2.1 无盒），改走 stdio +
+                // 用户态标记——子进程 engage 按 executor.backend 选型自装
+                // ACL 完整性围栏（恒 Partial，实验档）。未注入/false = 现状
+                // 字节不变。注意 strict 闸门在上面已跑过且仍只认 Sandboxie
+                // 引擎（ACL 不算 strict 合格沙盒）。
+                if self.picks_stdio_userland_fallback() {
+                    return self.spawn_and_call_stdio(tool, &request_line, true).await;
+                }
                 return self.spawn_and_call_pipe(tool, &request_line).await;
             }
             #[cfg(not(windows))]

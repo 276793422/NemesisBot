@@ -208,6 +208,8 @@ mod layer0_and_live_probe {
                     sandbox: true,
                     allow_network: false,
                     strict: false,
+                    // P24 新字段；本用例与 backend 选型无关，取缺省语义。
+                    backend: "auto".to_string(),
                 })
             })
             .expect("update store");

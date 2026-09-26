@@ -15,7 +15,12 @@
 //!
 //! U11 userland backends (Linux landlock/bwrap, macOS Seatbelt) live in
 //! [`backend`] — cross-platform trait layer with cfg'd platform impls; Windows
-//! registers no userland backend by design (Sandboxie owns it).
+//! registers no userland backend in `detect_backend` by design (Sandboxie
+//! owns the default path). P24（2026-09-25 能力扩展 WS1）adds an **opt-in
+//! experimental Windows userland ACL backend** ([`backend::AclBackend`],
+//! feature `acl`): mandatory-integrity-label No-Write-Up fence, half-tier
+//! isolation, always `Partial` — selection via `executor.backend` config +
+//! `backend::select_windows_backend`, engagement wiring (exec_worker) pending.
 
 use std::path::{Path, PathBuf};
 

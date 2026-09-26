@@ -32,6 +32,7 @@ fn run_local_missing_home_bails_without_creating() {
             session_key: "agent:main:session:x".into(),
             at: None,
             new_key: None,
+            reason: None,
         },
         true,
     );
@@ -240,6 +241,7 @@ mod r7_success_paths {
                 session_key: key.into(),
                 at: None,
                 new_key: Some("agent:main:session:r7fork1__child".into()),
+                reason: None,
             },
             false,
         )
@@ -272,6 +274,7 @@ mod r7_success_paths {
                 session_key: key.into(),
                 at: Some(1),
                 new_key: Some("agent:main:session:r7fork2__at1".into()),
+                reason: None,
             },
             false,
         )
@@ -300,6 +303,7 @@ mod r7_success_paths {
                 session_key: "agent:main:session:r7-missing-source".into(),
                 at: Some(1),
                 new_key: None,
+                reason: None,
             },
             false,
         )
@@ -330,6 +334,7 @@ mod r7_success_paths {
                 session_key: key.into(),
                 at: None,
                 new_key: None,
+                reason: None,
             },
             false,
         )

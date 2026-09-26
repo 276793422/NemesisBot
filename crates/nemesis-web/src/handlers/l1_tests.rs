@@ -160,6 +160,8 @@ fn registry_anchor_commands_present() {
     let reg = build_registry();
     assert!(cmds_of(&reg, "system").contains(&"commands"));
     assert!(cmds_of(&reg, "system").contains(&"version"));
+    // WS9/P22：租约状态探针（无副作用命令，安全子集 dispatch 冒烟覆盖）。
+    assert!(cmds_of(&reg, "system").contains(&"lease_status"));
     assert!(cmds_of(&reg, "estop").contains(&"trigger"));
     assert!(cmds_of(&reg, "sessions").contains(&"rewind_to_message"));
     assert!(cmds_of(&reg, "sessions").contains(&"redo"));
@@ -259,7 +261,7 @@ docs_generation_writes_wsapi_commands_md` 从 `ModuleHandler::commands()` \
     let path = docs.join("wsapi-commands.md");
     std::fs::write(&path, &md).unwrap();
     let written = std::fs::read_to_string(&path).unwrap();
-    assert!(written.contains("| system | version, status, commands |"));
+    assert!(written.contains("| system | version, status, commands, lease_status |"));
     assert!(written.contains(&format!("{} 条命令", total)));
 }
 
@@ -285,6 +287,9 @@ async fn dispatch_safe_readonly_subset_ok() {
     ok_cmd!(super::system::SystemHandler, "version");
     ok_cmd!(super::system::SystemHandler, "status");
     ok_cmd!(super::system::SystemHandler, "commands");
+    // WS9/P22：租约探针（make_ctx 的 workspace=临时目录 → supported=true，
+    // 无持有者 → held=false）。
+    ok_cmd!(super::system::SystemHandler, "lease_status");
     ok_cmd!(super::estop::EstopHandler, "status");
     ok_cmd!(super::channels::ChannelsHandler::new(), "list");
     ok_cmd!(super::models::ModelsHandler::new(), "list");

@@ -47,6 +47,10 @@ pub enum SessionAction {
         /// _2/_3/... when taken).
         #[arg(long)]
         new_key: Option<String>,
+        /// WS9/P17：分叉缘由（写入新会话 sidecar meta 的 fork_reason，
+        /// 谱系视图展示用；缺省不写）。
+        #[arg(long)]
+        reason: Option<String>,
     },
 }
 
@@ -77,6 +81,7 @@ pub fn run(action: SessionAction, local: bool) -> Result<()> {
             session_key,
             at,
             new_key,
+            reason,
         } => {
             let at = match at {
                 Some(n) => Some(n),
@@ -84,6 +89,11 @@ pub fn run(action: SessionAction, local: bool) -> Result<()> {
             };
             let info = fork_session(&store, &session_key, new_key, at)
                 .map_err(|e| anyhow::anyhow!("{}", e))?;
+            // WS9/P17：分叉缘由落盘（空白不写——write_session_fork_reason
+            // 内部 trim+空跳过）。
+            if let Some(r) = reason.as_deref() {
+                nemesis_agent::chat_log::write_session_fork_reason(&info.new_key, r);
+            }
             println!("✅ 会话分支完成：");
             println!("  源会话   : {}（未改动）", info.source_key);
             println!("  新会话   : {}", info.new_key);

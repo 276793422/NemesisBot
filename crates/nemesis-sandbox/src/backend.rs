@@ -37,6 +37,39 @@
 //! 修复的洞：旧探测链恒 landlock 优先，`allow_network=false` 时该档位
 //! FS-only、形同不禁网——现在禁网需求下 bwrap 优先上岗。
 //!
+//! ## P24 Windows 用户态 ACL 轻量档（2026-09-25 能力扩展 WS1，实验性）
+//!
+//! Windows 此前只有 Sandboxie（内核态盒）一条路，用户态无轻量隔离。本波
+//! 新增 [`AclBackend`]（`#[cfg(windows)]` + `acl` feature；其余平台/裁剪
+//! 构建编译为诚实 stub）：工作区打 **Low 强制完整性标签** + executor 令牌
+//! 降到 Low → No-Write-Up 让 Low 令牌写不了工作区外的 Medium+ 对象——
+//! 零安装、零 UAC 的半档写围栏。机制细节、三件套落地程度（完整性标签 ✅ /
+//! DACL deny 原语 ✅ 定向接线 ✗ / capability SID ✗）与诚实边界见
+//! `acl_impl` 模块文档；**enforcement 恒 `Partial`**（禁不了网等结构性
+//! 缺口如实入列 gaps，参照 landlock 的 Partial/gaps 诚实标注模式）。
+//!
+//! 选型决策表（[`select_windows_backend`]，纯函数、单测钉死），消费
+//! config `executor.backend`（`auto|sandboxie|acl`，缺省 auto；解析见
+//! [`parse_executor_backend`] / [`read_executor_backend`]）：
+//!
+//! | choice | Sandboxie 就绪 | acl 可用 | 选择 |
+//! |---|---|---|---|
+//! | auto | ✅ | 任意 | **Sandboxie**（就绪优先，ACL 只是回落） |
+//! | auto | ❌ | ✅（Full/Partial） | **Acl** |
+//! | auto | ❌ | ❌ | None（调用方 warn + 无盒降级） |
+//! | sandboxie | ✅ | 任意 | **Sandboxie** |
+//! | sandboxie | ❌ | 任意 | None（显式钉死就诚实失败，**不悄悄改道**） |
+//! | acl | 任意 | ✅（Full/Partial） | **Acl** |
+//! | acl | 任意 | ❌ | None |
+//! | 其他/未知值 | 任意 | 任意 | None（诚实拒绝，调用方 warn） |
+//!
+//! **接线状态（诚实记录）**：`detect_backend` 在 Windows **仍返回 None**——
+//! 它的签名没有 config 上下文，而 ACL 档只应在 `executor.backend` 选型
+//! 指向它时上岗（见决策表）；接线点 = exec_worker engage 读取
+//! [`read_executor_backend`] + [`select_windows_backend`] 后构造
+//! [`AclBackend`]（本轮交付至本 crate 公共 API 为止，exec_worker 接线是
+//! 后续波次，见实施报告的偏差记录）。
+//!
 //! ## 诚实边界
 //!
 //! - landlock 是**文件系统** LSM：读/写/执行粒度，不管 socket/net（ABI 4+
@@ -49,6 +82,7 @@
 //!   诚实标注，B7 的 mac 半边保留欠账**（goal 拍板 2026-08-23）。
 //! - bwrap 需要发行版安装（Ubuntu 24.04 自带）；缺二进制 = Unavailable，
 //!   链条降级终止（warn + 无盒），不阻断执行。
+//! - AclBackend（Windows）：半档隔离 + 实验性，见 `acl_impl` 文档与上节。
 
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -203,6 +237,26 @@ mod landlock_impl;
 #[cfg(target_os = "macos")]
 mod seatbelt_impl;
 
+// P24（2026-09-25）：Windows ACL 用户态轻量档——真实现（Windows + `acl`
+// feature）或诚实 stub（其余平台 / 裁剪构建）。两形态公共 API 面完全一致。
+#[cfg(all(target_os = "windows", feature = "acl"))]
+mod acl_impl;
+#[cfg(not(all(target_os = "windows", feature = "acl")))]
+mod acl_stub;
+
+#[cfg(all(target_os = "windows", feature = "acl"))]
+pub use acl_impl::{
+    AclBackend, IntegrityLevel, add_deny_write_ace, current_process_integrity, get_integrity_label,
+    label_tree, lower_current_process_integrity, remove_integrity_label, revoke_ace,
+    set_integrity_label,
+};
+#[cfg(not(all(target_os = "windows", feature = "acl")))]
+pub use acl_stub::{
+    AclBackend, IntegrityLevel, add_deny_write_ace, current_process_integrity, get_integrity_label,
+    label_tree, lower_current_process_integrity, remove_integrity_label, revoke_ace,
+    set_integrity_label,
+};
+
 #[cfg(target_os = "linux")]
 fn detect_platform_backend(allow_network: bool) -> Option<std::sync::Arc<dyn SandboxBackend>> {
     let landlock = super::backend::landlock_impl::LandlockBackend::new();
@@ -264,9 +318,104 @@ fn detect_platform_backend(allow_network: bool) -> Option<std::sync::Arc<dyn San
 
 #[cfg(not(any(target_os = "linux", target_os = "macos")))]
 fn detect_platform_backend(_allow_network: bool) -> Option<std::sync::Arc<dyn SandboxBackend>> {
-    // Windows: Sandboxie owns sandboxing (kernel driver + box); no userland
-    // backend registered here by design (U11: Windows 不动).
+    // Windows：默认仍不注册用户态后端——Sandboxie（内核态盒）承担首选档。
+    // P24 起本 crate 有了用户态轻量档（[`AclBackend`]），但它只在
+    // `executor.backend` 选型指向它时上岗（决策表见模块文档），接线点 =
+    // exec_worker engage（读 read_executor_backend + select_windows_backend
+    // 后构造）；本函数签名没有 config 上下文，维持 Windows → None 契约不变
+    //（exec_worker 的 Sandboxie 管道路径字节不受影响）。
     None
+}
+
+// ---------------------------------------------------------------------------
+// P24：Windows 用户态轻量档选型（纯函数，跨平台可单测）
+// ---------------------------------------------------------------------------
+
+/// Windows 沙盒档选型结果。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum WindowsBackendKind {
+    /// Sandboxie 盒（内核态驱动；Layer 2 既有路径）。
+    Sandboxie,
+    /// Windows 用户态 ACL 轻量档（[`AclBackend`]；完整性标签 No-Write-Up
+    /// 围栏，实验性、恒 Partial）。
+    Acl,
+}
+
+/// config `executor.backend` 的解析结果（[`parse_executor_backend`]）。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ExecutorBackendChoice {
+    /// 缺省/空/`auto`：Sandboxie 就绪优先，否则 acl 回落（决策表见模块文档）。
+    Auto,
+    /// 显式钉 Sandboxie；未就绪 = 诚实 None，不悄悄改道。
+    Sandboxie,
+    /// 显式钉 ACL 档；不可用 = 诚实 None。
+    Acl,
+    /// 未知值：选型恒 None（诚实拒绝），原文保留供调用方 warn。
+    Other(String),
+}
+
+/// `executor.backend` 值域解析（大小写不敏感、trim；None/空 = auto）。
+/// 单一真相源——config 读取器（[`read_executor_backend`]）与 Dashboard/
+/// CLI 的校验文案都应走这里。
+pub fn parse_executor_backend(s: Option<&str>) -> ExecutorBackendChoice {
+    let v = s.map(str::trim).map(|x| x.to_ascii_lowercase());
+    match v.as_deref() {
+        None | Some("") | Some("auto") => ExecutorBackendChoice::Auto,
+        Some("sandboxie") => ExecutorBackendChoice::Sandboxie,
+        Some("acl") => ExecutorBackendChoice::Acl,
+        Some(other) => ExecutorBackendChoice::Other(other.to_string()),
+    }
+}
+
+/// Windows 档选型决策表（纯函数）。`sandboxie_ready` 由调用方探测
+/// （Start.exe + SbieSvc 就绪态，crate `status` 模块语义）；`acl` 是
+/// [`AclBackend::availability`] 的探测结果（Partial 算可用，与 Linux 表
+/// 同判据；Unavailable 才算不可用）。语义（逐行单测在 selection_tests）：
+///
+/// - auto：Sandboxie 就绪 → Sandboxie；否则 acl 可用 → Acl；都不可 → None。
+/// - 显式 sandboxie/acl：各自一条路，不可用 = None（诚实失败，不改道）。
+/// - 未知值：None（调用方 warn——不静默猜测用户意图）。
+pub fn select_windows_backend(
+    choice: &ExecutorBackendChoice,
+    sandboxie_ready: bool,
+    acl: &Availability,
+) -> Option<WindowsBackendKind> {
+    let acl_ok = !matches!(acl, Availability::Unavailable(_));
+    match choice {
+        ExecutorBackendChoice::Auto => {
+            if sandboxie_ready {
+                Some(WindowsBackendKind::Sandboxie)
+            } else if acl_ok {
+                Some(WindowsBackendKind::Acl)
+            } else {
+                None
+            }
+        }
+        ExecutorBackendChoice::Sandboxie => {
+            sandboxie_ready.then_some(WindowsBackendKind::Sandboxie)
+        }
+        ExecutorBackendChoice::Acl => acl_ok.then_some(WindowsBackendKind::Acl),
+        ExecutorBackendChoice::Other(_) => None,
+    }
+}
+
+/// 读 `<home>/config.json` 的 `executor.backend`（缺失/空 = Auto；未知值 =
+/// `Other(原文)`——调用方据此 warn，与 [`read_executor_strict`] 同款
+/// 原始 JSON 读取模式：nemesis-sandbox 不依赖 nemesis-config）。
+pub fn read_executor_backend(home: &Path) -> ExecutorBackendChoice {
+    let raw = match std::fs::read_to_string(home.join("config.json")) {
+        Ok(s) => s,
+        Err(_) => return ExecutorBackendChoice::Auto,
+    };
+    let val: serde_json::Value = match serde_json::from_str(&raw) {
+        Ok(v) => v,
+        Err(_) => return ExecutorBackendChoice::Auto,
+    };
+    parse_executor_backend(
+        val.get("executor")
+            .and_then(|e| e.get("backend"))
+            .and_then(|v| v.as_str()),
+    )
 }
 
 // ---------------------------------------------------------------------------
@@ -330,8 +479,9 @@ pub struct UserlandBackendProbe {
     pub availability: Availability,
 }
 
-/// 逐个探测本机**全部**用户态后端（不排序、不选择）。Windows 返回空 vec
-/// （设计上 Sandboxie 承担沙盒，见 [`detect_platform_backend`] 的 Windows 注释）。
+/// 逐个探测本机**全部**用户态后端（不排序、不选择）。P24 起 Windows 也列
+/// acl 档（feature 裁掉时其 availability 如实报 Unavailable；Sandboxie 是
+/// 内核态盒、不属 userland 探测面——就绪态看 crate `status` 模块）。
 pub fn probe_userland_backends() -> Vec<UserlandBackendProbe> {
     probe_platform_userland_backends()
 }
@@ -366,7 +516,16 @@ fn probe_platform_userland_backends() -> Vec<UserlandBackendProbe> {
 
 #[cfg(not(any(target_os = "linux", target_os = "macos")))]
 fn probe_platform_userland_backends() -> Vec<UserlandBackendProbe> {
-    Vec::new()
+    // P24（2026-09-25）：Windows 用户态轻量档（acl）进入并列探测面——
+    // 状态页要能「Sandboxie 之外还有什么」。detect_backend 的 Windows 契约
+    // 维持 None 不变（选型与接线见模块文档 P24 小节）。feature 裁掉时
+    // acl_stub 的 availability = Unavailable，探测面如实展示。
+    let acl = AclBackend::new();
+    vec![UserlandBackendProbe {
+        name: acl.name().to_string(),
+        form: acl.form(),
+        availability: acl.availability(),
+    }]
 }
 
 /// bubblewrap 参数构造（纯函数）。写 = `--bind`（读写挂载），读+执行 =
@@ -441,3 +600,8 @@ mod tests;
 // P1（2026-09-25）：网络选型决策表测试（独立测试文件，跨平台纯函数）。
 #[cfg(test)]
 mod selection_tests;
+
+// P24（2026-09-25）：Windows ACL 沙盒档测试（独立测试文件，全平台编译；
+// Windows 形态用例逐个挂 #[cfg(windows)]，stub 契约用例全平台跑）。
+#[cfg(test)]
+mod acl_tests;

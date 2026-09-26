@@ -15,6 +15,13 @@
 //!   一程，防取证-评审乒乓）。
 //! - **D3 换节点重派**：同一 worker 连续 ≥2 次派发仍 FAIL → 换历史
 //!   未用过的次优匹配节点。
+//! - **P34 重派决策量化**（能力扩展 WS11，nanobot 指纹晋升思想移植）：
+//!   worker × 任务类型历史成功率指纹三档（prefer/avoid/neutral，纯逻辑
+//!   在 `nemesis_board::fingerprint`，记账落 board.db v16 两表、task_id
+//!   幂等）。`board.fingerprint_weighting=true`（默认 false = 决策表现状
+//!   行为字节等价）时换节点候选在匹配器序之上稳定加权；换节点评论带档
+//!   位留痕（「（档位 prefer，成功率 5/6）」）。记账与开关解耦——评审
+//!   定案（PASS/FAIL）照常入账，灰度期攒数据，开闸即有历史。
 //! - **E1 预算保险丝**：`board.budget` 三维（子单数/累计派发/墙钟）任一
 //!   超限即停自动重派转人工；unlimited_mode 下降级为 WARN 继续。
 //! - **F3 项目收口**：`board.review.auto_close_project=true` 时项目下全部
@@ -182,6 +189,9 @@ impl RedispatchTargetChoice {
 /// - 连续 ≥2 次派发同一 worker（同 worker 反复 FAIL/无法定案）→ 向
 ///   匹配器要全量在线排序，取历史未用过的次优节点；无候选 → 回落同
 ///   worker（WARN 留痕，不阻塞流程）。
+/// - P34：`board.fingerprint_weighting=true` 时匹配器排序先过指纹稳定
+///   加权（[`fingerprint_weighted_ranked`]：prefer 提前 / avoid 靠后，
+///   非排除），再取历史未用者——成功率先行，匹配器名次是基础序。
 pub(crate) fn pick_redispatch_target(
     deps: &BoardReviewDeps,
     issue: &nemesis_board::Issue,
@@ -203,6 +213,7 @@ pub(crate) fn pick_redispatch_target(
         dispatches.iter().map(|d| d.worker_id.as_str()).collect();
     let ranked =
         nemesis_web::handlers::board::rank_dispatch_candidates(&deps.store, &deps.cluster, issue);
+    let ranked = fingerprint_weighted_ranked(deps, issue, ranked);
     match ranked
         .into_iter()
         .find(|w| !historical.contains(w.as_str()))
@@ -222,6 +233,103 @@ pub(crate) fn pick_redispatch_target(
             Ok(RedispatchTargetChoice::Same(last))
         }
     }
+}
+
+/// P34 指纹稳定加权（`pick_redispatch_target` 的次级重排）：`board.
+/// fingerprint_weighting=true` 时按 (worker, 任务类型) 历史成功率把候选
+/// 分 prefer → neutral → avoid 三段（段内保匹配器序）。旗标 off / 配置
+/// 读失败 / 指纹读取失败 / 候选不足 2 / 无指纹数据 → 原序返回（默认态
+/// 与现状行为字节等价；读失败不炸决策——加权是启发式不是正确性不变量）。
+fn fingerprint_weighted_ranked(
+    deps: &BoardReviewDeps,
+    issue: &nemesis_board::Issue,
+    ranked: Vec<String>,
+) -> Vec<String> {
+    let weighting = load_board_flags(&deps.home)
+        .map(|c| c.fingerprint_weighting)
+        .unwrap_or(false);
+    if !weighting || ranked.len() < 2 {
+        return ranked;
+    }
+    let task_type = nemesis_board::task_type_of(&issue.title, &issue.required_tags);
+    let fps = match deps.store.worker_fingerprints(&task_type) {
+        Ok(fps) if !fps.is_empty() => fps,
+        Ok(_) => return ranked, // 无任何指纹数据：无可加权面
+        Err(e) => {
+            warn!(
+                "[BoardReview] issue {} 指纹读取失败（原序继续）：{e}",
+                issue.id
+            );
+            return ranked;
+        }
+    };
+    let ordered = nemesis_board::apply_fingerprint_weights(ranked, &fps);
+    info!(
+        "[BoardReview] issue {} 指纹加权生效（task_type={task_type}）：候选序 → {:?}",
+        issue.id, ordered
+    );
+    ordered
+}
+
+/// P34 指纹记账（评审定案唯一写点，见模块头注释）：PASS=成功 / FAIL=
+/// 失败记入 (worker, 任务类型) 计数；UNSURE 不记（没定案不配记成败）。
+/// 无派发历史（人工转入 in_review）无从记账。幂等键 = task_id（一派发
+/// 轮一条：评审重放 / estop 复评同轮重评不重复计数）。记账与
+/// fingerprint_weighting 开关解耦（灰度期照常攒数据）；失败只 warn——
+/// 增值动作，不炸验收流程。
+fn record_fingerprint_outcome(
+    deps: &BoardReviewDeps,
+    issue: &nemesis_board::Issue,
+    dispatches: &[nemesis_board::models::DispatchRecord],
+    verdict: nemesis_board::ReviewVerdict,
+) {
+    let success = match verdict {
+        nemesis_board::ReviewVerdict::Pass => true,
+        nemesis_board::ReviewVerdict::Fail => false,
+        nemesis_board::ReviewVerdict::Unsure => return,
+    };
+    let Some(last) = dispatches.last() else {
+        return;
+    };
+    let task_type = nemesis_board::task_type_of(&issue.title, &issue.required_tags);
+    match deps
+        .store
+        .record_fingerprint_outcome(&last.worker_id, &task_type, &last.task_id, success)
+    {
+        Ok(true) => debug!(
+            "[BoardReview] issue {} 指纹记账：worker={} task_type={task_type} → {}",
+            issue.id,
+            last.worker_id,
+            if success { "成功" } else { "失败" }
+        ),
+        Ok(false) => debug!(
+            "[BoardReview] issue {} 指纹记账幂等跳过（task {} 已记过）",
+            issue.id, last.task_id
+        ),
+        Err(e) => warn!("[BoardReview] issue {} 指纹记账失败（忽略）：{e}", issue.id),
+    }
+}
+
+/// P34：重派换节点评论的档位注记（可审计：「档位 prefer，成功率 5/6」
+/// 形态，调用方包括号）。开关关 / 配置读失败 → None（评论与现状字节
+/// 一致）；开关开 → 有样本给档位+成功率，无样本诚实注明（不虚构 0/0）。
+fn fingerprint_note_text(
+    deps: &BoardReviewDeps,
+    issue: &nemesis_board::Issue,
+    target: &str,
+) -> Option<String> {
+    let weighting = load_board_flags(&deps.home)
+        .map(|c| c.fingerprint_weighting)
+        .unwrap_or(false);
+    if !weighting {
+        return None;
+    }
+    let task_type = nemesis_board::task_type_of(&issue.title, &issue.required_tags);
+    let (success, total) = match deps.store.worker_fingerprint(target, &task_type) {
+        Ok(Some(pair)) => pair,
+        Ok(None) | Err(_) => (0, 0),
+    };
+    Some(nemesis_board::tier_note(success, total))
 }
 
 /// E1 预算保险丝检查（`board.budget` 四维：子单数/累计派发/墙钟/token；
@@ -877,6 +985,11 @@ async fn review_issue(
         &output.experience,
     );
 
+    // P34 指纹记账：评审已定案（迟到守卫 / 取证挂起 / estop 冻结都在更
+    // 早的分支分流了），按 verdict 给本轮执行的 worker（最新派发）记成败。
+    // task_id 幂等，评审重放 / estop 复评不重复计数；开关无关（见 fn 注释）。
+    record_fingerprint_outcome(deps, &issue, &dispatches, output.verdict);
+
     let unlimited = cfg.unlimited_mode;
     match decide_review_action(
         output.verdict,
@@ -1061,11 +1174,16 @@ async fn review_issue(
                     let switched = c.is_switch();
                     let target = c.into_target();
                     if switched {
+                        // P34：开关开时评论带档位注记（「（档位 prefer，
+                        // 成功率 5/6）」）——重派决策可审计；关时与现状字节一致。
+                        let note = fingerprint_note_text(deps, &issue, &target)
+                            .map(|n| format!("（{n}）"))
+                            .unwrap_or_default();
                         let _ = post_review_comment(
                             store,
                             issue_id,
                             &deps.cluster,
-                            &format!("🔁 连续多轮未通过，本次重派换节点执行 → {target}"),
+                            &format!("🔁 连续多轮未通过，本次重派换节点执行 → {target}{note}"),
                         );
                     }
                     target

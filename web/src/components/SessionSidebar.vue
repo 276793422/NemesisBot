@@ -36,6 +36,9 @@ import { useWfEditSessions } from '../composables/wfEditSessions'
 import ForkSessionModal from './ForkSessionModal.vue'
 import ProjectCreateModal from './ProjectCreateModal.vue'
 import type { SessionEntry } from '../composables/useChatApi'
+// WS9/P17（2026-09-26）：谱系树重排（组内子会话紧跟父会话 + 缩进深度）
+// 与弹窗「谱系」节祖先链行——纯视图工具，真相源在后端 meta。
+import { arrangeLineage, lineageChainLines } from '../utils/sessionLineage'
 
 const sessionStore = useSessionStore()
 const toast = useToast()
@@ -202,13 +205,35 @@ function unpinProjectIfRemoved(key: string) {
 // ——「已移除」灰组，删完全部会话后自然消失）。展示顺序：项目在上、
 // 对话在下、孤儿垫底。
 // ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
+// WS9/P17（2026-09-26）：组内展示行 = sortSessions（pin 优先 + 排序键）→
+// 谱系树重排（arrangeLineage：子会话紧跟父会话之后、兄弟保持排序键序）
+// + 缩进深度（lineageDepth，模板按深度加左内边距形成树形缩进）。pin 行
+// 不参与树排（置顶是更强的用户意愿，深度恒 0）；父不在本组（已删/跨组）
+// = 本组根，诚实降级。v1 只做「同组内按谱系树缩进排序」，不做整棵 DAG
+// 树视图（计划钦定边界）。
+// ---------------------------------------------------------------------------
+type LineageRow = SessionEntry & { lineageDepth: number }
+
+function groupItems(list: SessionEntry[]): LineageRow[] {
+  const sorted = sortSessions(list)
+  const pinned = sorted
+    .filter(s => pinnedIds.value.has(s.id))
+    .map(s => ({ ...s, lineageDepth: 0 }))
+  const arranged = arrangeLineage(sorted.filter(s => !pinnedIds.value.has(s.id)))
+  return [
+    ...pinned,
+    ...arranged.ordered.map(s => ({ ...s, lineageDepth: arranged.depthOf(s.id) })),
+  ]
+}
+
 const chatSessions = computed(() =>
-  sortSessions(sessionStore.sessions.filter(s => !s.projectId && !isWfEditSession(s.id))),
+  groupItems(sessionStore.sessions.filter(s => !s.projectId && !isWfEditSession(s.id))),
 )
 
 const orphanSessions = computed(() => {
   const known = new Set(sessionStore.projects.map(p => p.id))
-  return sortSessions(
+  return groupItems(
     sessionStore.sessions.filter(s => s.projectId && !known.has(s.projectId) && !isWfEditSession(s.id)),
   )
 })
@@ -217,7 +242,7 @@ interface GroupRow {
   /** 折叠持久化与菜单/重命名寻址键。 */
   key: string
   header: { name: string; available: boolean; orphan: boolean } | null
-  items: SessionEntry[]
+  items: LineageRow[]
 }
 
 /** 展示顺序：置顶项目组（组内保持注册序）→ 未置顶项目组（注册序）→
@@ -227,7 +252,7 @@ const displayGroups = computed<GroupRow[]>(() => {
   const all: GroupRow[] = sessionStore.projects.map(p => ({
     key: p.id,
     header: { name: p.name, available: p.running !== false, orphan: false },
-    items: sortSessions(sessionStore.sessions.filter(s => s.projectId === p.id && !isWfEditSession(s.id))),
+    items: groupItems(sessionStore.sessions.filter(s => s.projectId === p.id && !isWfEditSession(s.id))),
   }))
   const rows = [
     ...all.filter(g => pinnedProjectIds.value.has(g.key)),
@@ -296,7 +321,7 @@ function toggleExpanded(key: string) {
 }
 
 /** 组内可见行：未展开时截前 SHOW_MORE_CAP 条（计数用 grp.items 全量）。 */
-function visibleItems(grp: GroupRow): SessionEntry[] {
+function visibleItems(grp: GroupRow): LineageRow[] {
   return isExpanded(grp.key) ? grp.items : grp.items.slice(0, SHOW_MORE_CAP)
 }
 
@@ -622,6 +647,7 @@ function relTime(ts: string): string {
             :key="s.id"
             class="session-item"
             :class="{ active: s.id === currentId, orphaned: grp.header?.orphan }"
+            :style="s.lineageDepth > 0 ? { paddingLeft: `${10 + s.lineageDepth * 14}px` } : undefined"
             @click="select(s.id)"
           >
             <div class="session-title">
@@ -690,7 +716,29 @@ function relTime(ts: string): string {
           <span class="info-k">模型</span><span class="info-v">{{ infoSession.model || '—' }}</span>
           <template v-if="infoSession.parent">
             <span class="info-k">父分支</span>
-            <span class="info-v">{{ infoSession.parentTitle || parentSid(infoSession) }}<template v-if="infoSession.forkedAtTurn"> · 第 {{ infoSession.forkedAtTurn }} 轮</template></span>
+            <span class="info-v">{{ infoSession.parentTitle || parentSid(infoSession) }}<template v-if="infoSession.forkedAtTurn"> · 第 {{ infoSession.forkedAtTurn }} 轮</template><template v-if="infoSession.forkReason"> · 缘由：{{ infoSession.forkReason }}</template></span>
+          </template>
+          <!-- WS9/P17：谱系祖先链（根 → 父 ↳ 缩进，末行 · 当前会话）。
+               无祖先（非 fork/父已删且链断）不渲染——零增量。 -->
+          <template v-if="infoSession.lineage && infoSession.lineage.ancestors.length > 0">
+            <span class="info-k">谱系</span>
+            <span class="info-v lineage-chain">
+              <span
+                v-for="(ln, i) in lineageChainLines(infoSession.lineage.ancestors, title(infoSession))"
+                :key="i"
+                class="lineage-line"
+              >{{ ln }}</span>
+            </span>
+          </template>
+          <!-- WS9/P17：最近一次回退记录（meta.last_rewind；no-op 不写）。 -->
+          <template v-if="infoSession.lastRewind">
+            <span class="info-k">分支回退</span>
+            <span class="info-v">第 {{ infoSession.lastRewind.at_index }} 行起截断 · 弃 {{ infoSession.lastRewind.dropped_turns }} 轮 / {{ infoSession.lastRewind.dropped_rows }} 行<template v-if="infoSession.lastRewind.ts"> · {{ fmtTime(infoSession.lastRewind.ts) }}</template></span>
+          </template>
+          <!-- WS9/P18：分支摘要预览（160 字符截断；全文注入走 agent 侧）。 -->
+          <template v-if="infoSession.branchSummaryPreview">
+            <span class="info-k">分支摘要</span>
+            <span class="info-v lineage-summary">{{ infoSession.branchSummaryPreview }}</span>
           </template>
         </div>
         <div class="info-actions">
@@ -1096,6 +1144,24 @@ function relTime(ts: string): string {
 }
 .info-v {
   word-break: break-all;
+}
+/* WS9/P17：谱系祖先链（↳ 缩进行）——pre-wrap 保住行首缩进空格。 */
+.lineage-chain {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.lineage-line {
+  white-space: pre-wrap;
+  word-break: break-all;
+}
+/* WS9/P18：分支摘要预览（弱化色 + 限高，全文真相源在会话 meta）。 */
+.lineage-summary {
+  color: var(--text-muted);
+  display: block;
+  max-height: 96px;
+  overflow-y: auto;
+  white-space: pre-wrap;
 }
 .info-actions {
   margin-top: 14px;

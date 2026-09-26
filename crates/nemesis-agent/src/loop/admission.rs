@@ -1253,6 +1253,14 @@ impl AgentLoop {
         }
     }
 
+    /// P4（能力扩展 WS8）测试支撑：共享 inbox 句柄——跨 crate（nemesis-web）
+    /// 测试播种队列条目用（crate 内测试直引私有字段即可，无需此访问器）。
+    /// doc-hidden：非公开 API 承诺，仅供测试生态使用，运行时路径不得依赖。
+    #[doc(hidden)]
+    pub fn inbox_handle(&self) -> crate::inbox::SharedInbox {
+        self.inbox.clone()
+    }
+
     // -----------------------------------------------------------------------
     // Session cancellation
     // -----------------------------------------------------------------------
