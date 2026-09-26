@@ -10,6 +10,7 @@
 // - 打开面板：在线 window.open /d/<node_id>/，离线禁用
 import { mount, flushPromises } from '@vue/test-utils'
 import { describe, it, expect, vi, beforeEach } from 'vitest'
+import { setActivePinia, createPinia } from 'pinia'
 
 const requestMock = vi.fn()
 vi.mock('../../composables/useWSAPI', () => ({
@@ -57,6 +58,7 @@ function overviewData(over: Record<string, any> = {}) {
 
 beforeEach(() => {
   vi.clearAllMocks()
+  setActivePinia(createPinia()) // authedFetch 读 auth store（token 头），需 active Pinia
   vi.stubGlobal('fetch', fetchMock)
   fetchMock.mockResolvedValue(new Response(JSON.stringify({ ok: true }), { status: 200 }))
   // config.get 默认返回：bridge 段带遮蔽值（后端 sanitize 行为）

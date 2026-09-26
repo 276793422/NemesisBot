@@ -1,5 +1,6 @@
 import { mount, flushPromises } from '@vue/test-utils'
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
+import { setActivePinia, createPinia } from 'pinia'
 
 // A3 请求明细（2026-08-31）：使用统计页「请求明细」tab ——
 // 惰性加载、表格渲染（时间/模型/状态/tokens/成本/延迟）、
@@ -72,6 +73,7 @@ function route(url: string) {
 import UsageView from '../UsageView.vue'
 
 beforeEach(() => {
+  setActivePinia(createPinia()) // authedFetch 读 auth store（token 头），需 active Pinia
   fetchMock.mockReset()
   fetchMock.mockImplementation((url: string) => Promise.resolve(route(url)))
   vi.stubGlobal('fetch', fetchMock)

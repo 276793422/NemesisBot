@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { ref, computed, onMounted, onUnmounted } from 'vue'
-import { apiUrl } from '../../lib/appBase'
+import { authedFetch } from '../../lib/authFetch'
 import { formatTime, SOURCE_META, type LogEntry, type LogSource, type LogLevel } from './mockData'
 import {
   on as sseOn,
@@ -185,7 +185,7 @@ function onLogEvent(data: any) {
 // ---------------------------------------------------------------------------
 async function loadHistory() {
   try {
-    const resp = await fetch(apiUrl('/api/logs?source=general&n=500'))
+    const resp = await authedFetch('/api/logs?source=general&n=500')
     if (resp.ok) {
       const payload = await resp.json()
       const events: any[] = Array.isArray(payload.entries) ? payload.entries : []

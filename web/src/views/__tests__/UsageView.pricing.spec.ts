@@ -1,5 +1,6 @@
 import { mount, flushPromises } from '@vue/test-utils'
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
+import { setActivePinia, createPinia } from 'pinia'
 
 // A⑥/A⑦（usage-pricing goal，2026-08-31）：使用统计页「价格」tab ——
 // 嵌入式价目表渲染、当前模型高亮（alias / provider 前缀匹配）、
@@ -71,6 +72,7 @@ function route(url: string) {
 import UsageView from '../UsageView.vue'
 
 beforeEach(() => {
+  setActivePinia(createPinia()) // authedFetch 读 auth store（token 头），需 active Pinia
   fetchMock.mockReset()
   fetchMock.mockImplementation((url: string) => Promise.resolve(route(url)))
   vi.stubGlobal('fetch', fetchMock)

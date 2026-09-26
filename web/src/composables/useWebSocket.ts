@@ -278,7 +278,12 @@ export function testConnection(testToken: string): Promise<boolean> {
 }
 
 export function httpGet<T = any>(path: string): Promise<T> {
-  return fetch(apiUrl(path)).then(res => {
+  // X-Auth-Token 统一鉴权（lib/authFetch.ts）：本模块因循环依赖
+  // （auth store → 本模块）不能引 store，但 connect() 已把同一 token
+  // 存进模块级变量——单一来源，直接复用。
+  return fetch(apiUrl(path), {
+    headers: token ? { 'X-Auth-Token': token } : {},
+  }).then(res => {
     if (!res.ok) throw new Error('HTTP ' + res.status)
     return res.json()
   })
