@@ -20,6 +20,23 @@
 //! 在 `gaps: Vec<String>` 供日志/报告——「降级不崩」验收的语义载体。
 //! 完全装不上 = `Err`（调用方 warn + 无盒继续，见 exec_worker 装配点）。
 //!
+//! ## P1 网络选型判据（2026-09-25 能力扩展 WS1）
+//!
+//! [`detect_backend`] 带 `allow_network` 入参（选型上下文，不是配置读取——
+//! 配置消费方先把 `executor.allow_network` 读出来再传进来）。Linux 决策表
+//! （[`select_linux_backend`]，纯函数、单测钉死）：
+//!
+//! | landlock 可用 | bwrap 可用 | 要求禁网 | 选择 |
+//! |---|---|---|---|
+//! | ✅ | ✅ | 否 | **landlock**（允许网络场景，进程内自装优先） |
+//! | ✅ | ✅ | 是 | **bwrap**（`--unshare-net` 是唯一真禁网面） |
+//! | ✅ | ❌ | 任意 | **landlock**（禁网时 = 降级，gaps 诚实标注网络缺口） |
+//! | ❌ | ✅ | 任意 | **bwrap** |
+//! | ❌ | ❌ | 任意 | None（调用方 warn + 无盒降级） |
+//!
+//! 修复的洞：旧探测链恒 landlock 优先，`allow_network=false` 时该档位
+//! FS-only、形同不禁网——现在禁网需求下 bwrap 优先上岗。
+//!
 //! ## 诚实边界
 //!
 //! - landlock 是**文件系统** LSM：读/写/执行粒度，不管 socket/net（ABI 4+
@@ -125,11 +142,52 @@ pub trait SandboxBackend: Send + Sync {
     }
 }
 
-/// 探测并返回本机最优后端（U11 链条：Linux landlock 优先 → bwrap 次之；
-/// macOS Seatbelt；Windows None——Sandboxie 承担）。无可用后端 = None
-/// （调用方 warn + 无盒降级，不崩）。
-pub fn detect_backend() -> Option<std::sync::Arc<dyn SandboxBackend>> {
-    detect_platform_backend()
+/// P1（2026-09-25）：Linux 用户态后端选型结果。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LinuxBackendKind {
+    /// landlock 自装（FS-only；禁网不可强制 → gaps 标注）。
+    Landlock,
+    /// bubblewrap 包装（`--unshare-net` 可真禁网）。
+    Bwrap,
+}
+
+/// P1 网络选型决策表（纯函数，跨平台可单测）。见模块文档的决策表——
+/// 核心判据：**要求禁网且 bwrap 可用 → 恒选 bwrap**（landlock FS-only 强制
+/// 不了网络）；landlock 仅在「允许网络」或「无 bwrap 降级」时上岗。
+///
+/// `Availability::Partial` 算可用（有缺口但规则装得上）；`Unavailable` 才
+/// 算不可用。
+pub fn select_linux_backend(
+    landlock: &Availability,
+    bwrap: &Availability,
+    allow_network: bool,
+) -> Option<LinuxBackendKind> {
+    let landlock_ok = !matches!(landlock, Availability::Unavailable(_));
+    let bwrap_ok = !matches!(bwrap, Availability::Unavailable(_));
+    if !allow_network && bwrap_ok {
+        // 禁网需求：bwrap --unshare-net 是本链条唯一真禁网面，优先上岗。
+        return Some(LinuxBackendKind::Bwrap);
+    }
+    if landlock_ok {
+        // 允许网络场景（landlock 足够）或无 bwrap 的降级（gaps 诚实标注）。
+        return Some(LinuxBackendKind::Landlock);
+    }
+    if bwrap_ok {
+        // landlock 内核不可用 → bwrap 兜底（旧行为保留）。
+        return Some(LinuxBackendKind::Bwrap);
+    }
+    None
+}
+
+/// 探测并返回本机最优后端（P1 起带 `allow_network` 选型上下文：Linux 禁网
+/// + bwrap 可用 → bwrap `--unshare-net`；macOS Seatbelt 的 profile 本身就
+/// 含 `(deny network*)`、两态都能强制，入参仅保持签名统一；Windows None
+/// ——Sandboxie 承担）。无可用后端 = None（调用方 warn + 无盒降级，不崩）。
+///
+/// `allow_network` 由调用方从 config 读取（如
+/// [`read_executor_allow_network`]），本函数不做 IO 读配置。
+pub fn detect_backend(allow_network: bool) -> Option<std::sync::Arc<dyn SandboxBackend>> {
+    detect_platform_backend(allow_network)
 }
 
 // ---------------------------------------------------------------------------
@@ -146,33 +204,52 @@ mod landlock_impl;
 mod seatbelt_impl;
 
 #[cfg(target_os = "linux")]
-fn detect_platform_backend() -> Option<std::sync::Arc<dyn SandboxBackend>> {
+fn detect_platform_backend(allow_network: bool) -> Option<std::sync::Arc<dyn SandboxBackend>> {
     let landlock = super::backend::landlock_impl::LandlockBackend::new();
-    match landlock.availability() {
-        Availability::Unavailable(_) => {
-            tracing::warn!(
-                "[UserlandSandbox] landlock unavailable on this kernel — falling back to \
-                 bubblewrap (install bwrap for a stronger chain)"
-            );
-            let bwrap = super::backend::bwrap_impl::BwrapBackend::new();
-            match bwrap.availability() {
-                Availability::Unavailable(reason) => {
-                    tracing::warn!(
-                        "[UserlandSandbox] no userland sandbox backend (landlock + bwrap both \
-                         unavailable: {reason}) — executor runs unsandboxed (config \
-                         executor.sandbox stays honoured for Windows Sandboxie)"
-                    );
-                    None
-                }
-                _ => Some(std::sync::Arc::new(bwrap)),
+    let bwrap = super::backend::bwrap_impl::BwrapBackend::new();
+    match select_linux_backend(
+        &landlock.availability(),
+        &bwrap.availability(),
+        allow_network,
+    ) {
+        Some(LinuxBackendKind::Landlock) => {
+            if !allow_network {
+                // P1 降级路径：要禁网但 bwrap 缺席 → landlock 顶上，缺口诚实
+                //（apply_to_self 会把 network 缺口记进 gaps，这里再补一条
+                // 选型层 warn 供装配日志检索）。
+                tracing::warn!(
+                    "[UserlandSandbox] network denial requested but bwrap is unavailable — \
+                     degrading to landlock (filesystem-only; network is NOT enforced)"
+                );
             }
+            Some(std::sync::Arc::new(landlock))
         }
-        _ => Some(std::sync::Arc::new(landlock)),
+        Some(LinuxBackendKind::Bwrap) => {
+            if allow_network {
+                // 旧行为保留：landlock 不可用 → bwrap 兜底。
+                tracing::warn!(
+                    "[UserlandSandbox] landlock unavailable on this kernel — falling back to \
+                     bubblewrap (install bwrap for a stronger chain)"
+                );
+            }
+            Some(std::sync::Arc::new(bwrap))
+        }
+        None => {
+            tracing::warn!(
+                "[UserlandSandbox] no userland sandbox backend (landlock + bwrap both \
+                 unavailable) — executor runs unsandboxed (config executor.sandbox stays \
+                 honoured for Windows Sandboxie)"
+            );
+            None
+        }
     }
 }
 
 #[cfg(target_os = "macos")]
-fn detect_platform_backend() -> Option<std::sync::Arc<dyn SandboxBackend>> {
+fn detect_platform_backend(allow_network: bool) -> Option<std::sync::Arc<dyn SandboxBackend>> {
+    // Seatbelt 的 SBPL profile 按 allow_network 生成 `(deny network*)`——
+    // 禁网在其上是真强制，无需 bwrap 式换挡；入参仅保持签名统一。
+    let _ = allow_network;
     let seatbelt = super::backend::seatbelt_impl::SeatbeltBackend::new();
     match seatbelt.availability() {
         Availability::Unavailable(reason) => {
@@ -186,7 +263,7 @@ fn detect_platform_backend() -> Option<std::sync::Arc<dyn SandboxBackend>> {
 }
 
 #[cfg(not(any(target_os = "linux", target_os = "macos")))]
-fn detect_platform_backend() -> Option<std::sync::Arc<dyn SandboxBackend>> {
+fn detect_platform_backend(_allow_network: bool) -> Option<std::sync::Arc<dyn SandboxBackend>> {
     // Windows: Sandboxie owns sandboxing (kernel driver + box); no userland
     // backend registered here by design (U11: Windows 不动).
     None
@@ -360,3 +437,7 @@ pub fn seatbelt_profile(conf: &SandboxConf) -> String {
 
 #[cfg(test)]
 mod tests;
+
+// P1（2026-09-25）：网络选型决策表测试（独立测试文件，跨平台纯函数）。
+#[cfg(test)]
+mod selection_tests;

@@ -199,6 +199,10 @@ mod userland {
     use anyhow::{Context, Result};
     use nemesis_sandbox::backend::{self, BackendForm, Enforcement, SandboxBackend, SandboxConf};
 
+    // P21（2026-09-25）：拒绝台账钩子是 exec_worker 顶层的兄弟模块，这里
+    // 引入后在 engage / reexec 各失败臂直接记账。
+    use crate::exec_worker::sandbox_denial;
+
     /// engage() 的结果。`Debug`：测试里 `expect_err` 需要 Ok 侧 Debug。
     #[derive(Debug)]
     pub enum Outcome {
@@ -241,17 +245,32 @@ mod userland {
     ///    照旧 warn + 状态页如实展示。
     pub fn engage(workspace: &str, home: Option<&Path>) -> Result<Outcome> {
         let strict = home.map(backend::read_executor_strict).unwrap_or(false);
-        let detected = backend::detect_backend();
+        // P1（2026-09-25）：先读网络要求再选后端——禁网 + bwrap 可用 → 选
+        // bwrap（--unshare-net 真禁网）；landlock 仅在允许网络或无 bwrap 时
+        // 上岗（降级时 apply_to_self 的 gaps 仍诚实标注网络缺口）。
+        let allow_network = home
+            .map(backend::read_executor_allow_network)
+            .unwrap_or(false);
+        let detected = backend::detect_backend(allow_network);
         let form = detected
             .as_ref()
             .map(|b: &Arc<dyn SandboxBackend>| b.form());
         match plan(true, false, form) {
             Plan::Plain => {
                 if strict {
+                    let reason = "no userland sandbox backend is available on this system";
+                    sandbox_denial::record(
+                        "none",
+                        "sandbox_engage_refused",
+                        workspace,
+                        reason,
+                        true,
+                        workspace,
+                    );
                     anyhow::bail!(
-                        "strict mode (fail-closed): executor.sandbox is on but no \
-                         userland sandbox backend is available on this system — \
-                         refusing to run unsandboxed"
+                        "strict mode (fail-closed): executor.sandbox is on but {} — \
+                         refusing to run unsandboxed",
+                        reason
                     );
                 }
                 tracing::warn!(
@@ -262,22 +281,36 @@ mod userland {
             }
             Plan::SelfApply => {
                 let backend = detected.expect("form Some implies backend Some");
-                let allow_network = home.map(backend::read_executor_allow_network);
-                let conf =
-                    SandboxConf::for_executor(Path::new(workspace), allow_network.unwrap_or(false));
+                let conf = SandboxConf::for_executor(Path::new(workspace), allow_network);
                 match backend.apply_to_self(&conf) {
-                    Ok(Enforcement::Full) => tracing::info!(
-                        "[executor] userland sandbox '{}' fully enforced (writable: {})",
-                        backend.name(),
-                        workspace
-                    ),
-                    Ok(Enforcement::Partial(gaps)) => tracing::warn!(
-                        "[executor] userland sandbox '{}' PARTIAL (rules applied with \
-                         gaps): {gaps:?}",
-                        backend.name()
-                    ),
+                    Ok(Enforcement::Full) => {
+                        sandbox_denial::mark_backend_engaged(backend.name());
+                        tracing::info!(
+                            "[executor] userland sandbox '{}' fully enforced (writable: {})",
+                            backend.name(),
+                            workspace
+                        )
+                    }
+                    Ok(Enforcement::Partial(gaps)) => {
+                        // Partial = 规则已装上（缺口如禁网不可强制）——沙盒
+                        // engaged，dispatch 侧拒绝分类照常记台账。
+                        sandbox_denial::mark_backend_engaged(backend.name());
+                        tracing::warn!(
+                            "[executor] userland sandbox '{}' PARTIAL (rules applied with \
+                             gaps): {gaps:?}",
+                            backend.name()
+                        )
+                    }
                     Err(err) => {
                         if strict {
+                            sandbox_denial::record(
+                                backend.name(),
+                                "sandbox_engage_refused",
+                                workspace,
+                                &err,
+                                true,
+                                workspace,
+                            );
                             anyhow::bail!(
                                 "strict mode (fail-closed): userland sandbox '{}' apply \
                                  failed: {err} — refusing to run unsandboxed",
@@ -295,22 +328,26 @@ mod userland {
             }
             Plan::WrapReexec => {
                 let backend = detected.expect("form Some implies backend Some");
-                let allow_network = home.map(backend::read_executor_allow_network);
-                let conf =
-                    SandboxConf::for_executor(Path::new(workspace), allow_network.unwrap_or(false));
-                reexec_wrapped(backend, conf)
+                let conf = SandboxConf::for_executor(Path::new(workspace), allow_network);
+                reexec_wrapped(backend, conf, workspace)
             }
         }
     }
 
     /// re-exec 自身进盒（bwrap / sandbox-exec）：外层进程退化为 stdio 代理，
     /// 工具全在盒内实例里跑。gateway 的 stdio 协议原样透传。
-    fn reexec_wrapped(backend: Arc<dyn SandboxBackend>, conf: SandboxConf) -> Result<Outcome> {
+    fn reexec_wrapped(
+        backend: Arc<dyn SandboxBackend>,
+        conf: SandboxConf,
+        workspace: &str,
+    ) -> Result<Outcome> {
         let exe = std::env::current_exe().context("resolve current exe for re-exec")?;
         let mut inner = std::process::Command::new(&exe);
         // env 继承自本进程（gateway 给的 ROLE/WORKSPACE/SANDBOX 都在）；
-        // REEXEC 防环（盒内实例见到它就跳过沙盒介入）。
+        // REEXEC 防环（盒内实例见到它就跳过沙盒介入）。P21：盒内实例的
+        // dispatch 靠这个键知道「自己在哪个后端里」（台账 backend 字段）。
         inner.env("NEMESISBOT_EXECUTOR_REEXEC", "1");
+        inner.env("NEMESISBOT_SANDBOX_BACKEND", backend.name());
         let mut wrapped = backend
             .wrap_command(&conf, &inner)
             .map_err(|e| anyhow::anyhow!("wrap executor with {}: {e}", backend.name()))?;
@@ -339,7 +376,82 @@ mod userland {
         let _ = t_in.join();
         let status = child.wait().context("wait wrapped executor")?;
         let _ = t_out.join();
+        if !status.success() {
+            // P21：盒内实例非零退出（bwrap 包装层拒绝/失败）记台账。此时本
+            // 进程只是 stdio 代理、无法把结构化错误回注 gateway → 模型不可见。
+            sandbox_denial::record(
+                backend.name(),
+                "executor_reexec_failed",
+                workspace,
+                &format!("wrapped executor exit: {status}"),
+                false,
+                workspace,
+            );
+        }
         Ok(Outcome::ReexecDone(status))
+    }
+}
+
+// ---------------------------------------------------------------------------
+// P21（2026-09-25）：沙盒拒绝台账钩子（sandbox feature 门控——trim 构建无
+// 沙盒 → 无台账面）。核心语义见 nemesis_sandbox::denial 模块文档。
+// ---------------------------------------------------------------------------
+#[cfg(feature = "sandbox")]
+mod sandbox_denial {
+    use nemesis_sandbox::denial;
+
+    /// engage 成功装上后端时标记（SelfApply 同进程路径专用；WrapReexec 走
+    /// env 传给盒内实例，Sandboxie 走 PIPE env——见 [`active_backend_label`]）。
+    static ENGAGED_BACKEND: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+
+    pub(super) fn mark_backend_engaged(name: &str) {
+        let _ = ENGAGED_BACKEND.set(name.to_string());
+    }
+
+    /// 当前沙盒后端标签（engaged 才有）：Windows 盒内 PIPE 传输 = sandboxie；
+    /// landlock 自装 = engage 标记；bwrap 盒内实例 = env（reexec 时注入）。
+    /// None = 无沙盒 → 工具错误与沙盒无关，不记台账不改写文案。
+    pub(crate) fn active_backend_label() -> Option<String> {
+        if std::env::var_os("NEMESISBOT_EXECUTOR_PIPE").is_some() {
+            return Some("sandboxie".to_string());
+        }
+        if let Some(b) = ENGAGED_BACKEND.get() {
+            return Some(b.clone());
+        }
+        std::env::var("NEMESISBOT_SANDBOX_BACKEND")
+            .ok()
+            .filter(|s| !s.is_empty() && s != "none")
+    }
+
+    /// 记一条到台账（append 失败 = warn 放行，永不阻断工具执行/退出路径）。
+    pub(super) fn record(
+        backend: &str,
+        op: &str,
+        target: &str,
+        reason: &str,
+        model_visible: bool,
+        workspace: &str,
+    ) {
+        let rec = denial::new_record(backend, op, target, reason, model_visible);
+        if let Err(e) = denial::append_denial(std::path::Path::new(workspace), &rec) {
+            tracing::warn!("[executor] sandbox denial ledger append failed (ignored): {e}");
+        }
+    }
+
+    /// 工具错误出口（dispatch Err 臂调用）：沙盒 engaged 且错误长得像沙盒
+    /// 拒绝 → 记台账 + 改写为面向模型的可自纠文案；否则原样返回（普通
+    /// 工具错误不记台账、不换文案）。
+    pub(crate) fn on_tool_error(tool: &str, args: &str, error: &str) -> String {
+        let Some(backend) = active_backend_label() else {
+            return error.to_string();
+        };
+        if !denial::looks_like_denial(error) {
+            return error.to_string();
+        }
+        let workspace = std::env::var("NEMESISBOT_EXECUTOR_WORKSPACE").unwrap_or_default();
+        let target = denial::preview_target(args);
+        record(&backend, tool, &target, error, true, &workspace);
+        denial::model_facing_text(&backend, tool, &target, error, &workspace)
     }
 }
 
@@ -433,11 +545,18 @@ async fn dispatch(tools: &HashMap<String, Box<dyn Tool>>, line: &str) -> Executo
             result,
             error: String::new(),
         },
-        Err(error) => ExecutorResponse {
-            ok: false,
-            result: String::new(),
-            error,
-        },
+        Err(error) => {
+            // P21（2026-09-25）：沙盒 engaged 且错误长得像沙盒拒绝 → 记台账 +
+            // 改写为面向模型的可自纠文案；普通错误原样透传（trim 构建无沙盒
+            // → 无台账面，feature 门控）。
+            #[cfg(feature = "sandbox")]
+            let error = sandbox_denial::on_tool_error(&req.tool, &req.args, &error);
+            ExecutorResponse {
+                ok: false,
+                result: String::new(),
+                error,
+            }
+        }
     }
 }
 

@@ -4,15 +4,121 @@ use crate::registry::Tool;
 use crate::types::ToolResult;
 use async_trait::async_trait;
 
+// ---------------------------------------------------------------------------
+// P8 GPIO 白名单：I2C 地址访问策略（单一真相源）。
+//
+// 真实 ioctl 路径（本文件 I2CTool）与 agent loop 注册的生产工具路径
+// （nemesis-agent loop_tools.rs）共用同一份策略，杜绝两处漂移。
+// 三层：①内置编译期白名单（I2C 规范可寻址空间，排除保留段）；
+// ②config tools.hardware 显式 allow/deny 覆盖（deny 优先）；
+// ③拒绝理由面向模型可自纠（说明段用途 + 放行办法）。
+// ---------------------------------------------------------------------------
+
+/// I2C 地址访问策略。
+///
+/// `i2c_allow_ranges` 为空 = 用内置默认（0x08-0x77，I2C 规范可自由寻址
+/// 空间）；非空 = 完全替换内置默认。`i2c_deny_ranges` 在 allow 之上再
+/// 排除（deny 优先，用于屏蔽已知有风险的设备地址）。
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct HardwarePolicy {
+    /// 允许的 7 位地址段（闭区间 [lo, hi]）；空 = 内置默认 0x08-0x77。
+    pub i2c_allow_ranges: Vec<(u8, u8)>,
+    /// 拒绝的地址段（在 allow 之上再排除）。
+    pub i2c_deny_ranges: Vec<(u8, u8)>,
+}
+
+impl HardwarePolicy {
+    /// 内置默认策略：只放行 I2C 规范可寻址空间 0x08-0x77。
+    ///
+    /// 旧的 `(0x03..=0x77)` 校验会放行保留段 0x03-0x07（通用呼叫/CBUS
+    /// 等保留用途），向这些地址写数据可能干扰总线上的其他设备——白名单
+    /// 一并把这个洞堵上。
+    pub fn builtin() -> Self {
+        Self {
+            i2c_allow_ranges: vec![(0x08, 0x77)],
+            i2c_deny_ranges: Vec::new(),
+        }
+    }
+
+    /// 校验一个 7 位 I2C 地址；拒绝时返回面向模型可自纠的理由。
+    pub fn validate_i2c_address(&self, addr: u8) -> Result<(), String> {
+        // deny 优先：显式黑名单无条件拒绝（哪怕落在 allow 里）。
+        for (lo, hi) in &self.i2c_deny_ranges {
+            if addr >= *lo && addr <= *hi {
+                return Err(format!(
+                    "address 0x{addr:02x} rejected: 位于 config 显式黑名单段 \
+                     0x{lo:02x}-0x{hi:02x}（deny 优先于 allow）。如需操作该地址，\
+                     请先从 config.json tools.hardware.i2c_deny_ranges 移除该段"
+                ));
+            }
+        }
+
+        let allow = if self.i2c_allow_ranges.is_empty() {
+            &[(0x08, 0x77)][..]
+        } else {
+            &self.i2c_allow_ranges[..]
+        };
+        for (lo, hi) in allow {
+            if addr >= *lo && addr <= *hi {
+                return Ok(());
+            }
+        }
+
+        // 不在 allow 里：区分「保留段」与「普通越界」，给模型可行动的
+        // 理由（段用途 + 放行办法），而不是一句干巴巴的 invalid。
+        if let Some(reason) = i2c_reserved_reason(addr) {
+            return Err(format!(
+                "address 0x{addr:02x} rejected: {reason}。默认允许范围 \
+                 0x08-0x77；如确有需要，可在 config.json \
+                 tools.hardware.i2c_allow_ranges 显式放行（格式 [[lo, hi], ...]，\
+                 7 位地址），但请先与用户确认"
+            ));
+        }
+        Err(format!(
+            "address 0x{addr:02x} rejected: 不在允许范围。默认允许 \
+             0x08-0x77；可用 config.json tools.hardware.i2c_allow_ranges \
+             配置其他允许段（格式 [[lo, hi], ...]，7 位地址）"
+        ))
+    }
+}
+
+/// I2C 规范保留段用途说明（None = 非保留地址）。
+///
+/// 分段依据 NXP UM10204（I2C-bus specification）：
+/// - 0x00-0x07：通用呼叫 / START byte / CBUS 等保留
+/// - 0x78-0x7B：高速模式主机码保留
+/// - 0x7C-0x7F：10 位寻址前缀保留
+pub fn i2c_reserved_reason(addr: u8) -> Option<&'static str> {
+    match addr {
+        0x00..=0x07 => Some(
+            "位于 I2C 保留段 0x00-0x07（通用呼叫/START byte/CBUS 等保留用途，\
+             访问可能干扰总线）",
+        ),
+        0x78..=0x7B => Some("位于 I2C 保留段 0x78-0x7B（高速模式主机码保留）"),
+        0x7C..=0x7F => Some("位于 I2C 保留段 0x7C-0x7F（10 位寻址前缀保留）"),
+        _ => None,
+    }
+}
+
 // --------------- I2C Tool ---------------
 
 /// I2C tool - interacts with I2C bus devices (Linux only).
-pub struct I2CTool;
+pub struct I2CTool {
+    /// 地址访问策略（构造时注入；`new()` = 内置默认）。真实 I/O 前校验。
+    policy: HardwarePolicy,
+}
 
 impl I2CTool {
-    /// Create a new I2C tool.
+    /// Create a new I2C tool (内置默认白名单).
     pub fn new() -> Self {
-        Self
+        Self {
+            policy: HardwarePolicy::builtin(),
+        }
+    }
+
+    /// Create a new I2C tool with a custom address policy.
+    pub fn with_policy(policy: HardwarePolicy) -> Self {
+        Self { policy }
     }
 }
 
@@ -42,7 +148,7 @@ impl Tool for I2CTool {
                     "description": "Action to perform"
                 },
                 "bus": {"type": "string", "description": "I2C bus number (e.g. \"1\")"},
-                "address": {"type": "integer", "description": "7-bit device address (0x03-0x77)"},
+                "address": {"type": "integer", "description": "7-bit device address (default allowed: 0x08-0x77; reserved segments rejected)"},
                 "register": {"type": "integer", "description": "Register address"},
                 "data": {"type": "array", "items": {"type": "integer"}, "description": "Bytes to write (0-255)"},
                 "length": {"type": "integer", "description": "Number of bytes to read (1-256)"},
@@ -131,7 +237,7 @@ impl I2CTool {
 
         #[cfg(target_os = "linux")]
         {
-            match linux_i2c_scan(&device_path) {
+            match linux_i2c_scan(&device_path, &self.policy) {
                 Ok(result) => result,
                 Err(e) => ToolResult::error(&e),
             }
@@ -155,9 +261,13 @@ impl I2CTool {
         };
 
         let addr = match args["address"].as_u64() {
-            Some(a) if (0x03..=0x77).contains(&a) => a as u8,
-            _ => return ToolResult::error("address is required (e.g. 0x38, range 0x03-0x77)"),
+            Some(a) if a <= 0x7f => a as u8,
+            _ => return ToolResult::error("address is required (7-bit, e.g. 0x38, max 0x7f)"),
         };
+        // P8 GPIO 白名单：I/O 前过地址策略（保留段/黑名单拒绝，理由可自纠）。
+        if let Err(reason) = self.policy.validate_i2c_address(addr) {
+            return ToolResult::error(&reason);
+        }
 
         let length = args["length"].as_u64().unwrap_or(1).clamp(1, 256) as usize;
 
@@ -196,9 +306,13 @@ impl I2CTool {
         };
 
         let addr = match args["address"].as_u64() {
-            Some(a) if (0x03..=0x77).contains(&a) => a as u8,
-            _ => return ToolResult::error("address is required (e.g. 0x38, range 0x03-0x77)"),
+            Some(a) if a <= 0x7f => a as u8,
+            _ => return ToolResult::error("address is required (7-bit, e.g. 0x38, max 0x7f)"),
         };
+        // P8 GPIO 白名单：写操作破坏力最大，同样过地址策略。
+        if let Err(reason) = self.policy.validate_i2c_address(addr) {
+            return ToolResult::error(&reason);
+        }
 
         let data_array = match args["data"].as_array() {
             Some(d) if !d.is_empty() => d,
@@ -270,16 +384,14 @@ impl I2CTool {
     #[allow(dead_code)]
     fn parse_address(&self, args: &serde_json::Value) -> Result<(), ToolResult> {
         match args["address"].as_u64() {
-            Some(addr) => {
-                if !(0x03..=0x77).contains(&addr) {
-                    Err(ToolResult::error(
-                        "address must be in valid 7-bit range (0x03-0x77)",
-                    ))
+            Some(addr) if addr <= 0x7f => {
+                if let Err(reason) = self.policy.validate_i2c_address(addr as u8) {
+                    Err(ToolResult::error(&reason))
                 } else {
                     Ok(())
                 }
             }
-            None => Err(ToolResult::error("address is required (e.g. 0x38)")),
+            _ => Err(ToolResult::error("address is required (e.g. 0x38)")),
         }
     }
 }
@@ -665,7 +777,10 @@ mod linux_impl {
     }
 
     /// I2C bus scan using ioctl SMBus probes.
-    pub fn linux_i2c_scan(dev_path: &str) -> Result<ToolResult, String> {
+    ///
+    /// `policy` 决定扫描范围（allow 段减去 deny 段），与 read/write 的
+    /// 地址校验同源——白名单外的地址既不能操作也不会被探测。
+    pub fn linux_i2c_scan(dev_path: &str, policy: &HardwarePolicy) -> Result<ToolResult, String> {
         let fd = open_i2c(dev_path)?;
 
         // Query adapter capabilities
@@ -694,10 +809,15 @@ mod linux_impl {
             ));
         }
 
+        let allowed = |addr: u8| policy.validate_i2c_address(addr).is_ok();
+
         let mut found: Vec<serde_json::Value> = Vec::new();
 
-        // Scan 0x08-0x77, skipping I2C reserved addresses 0x00-0x07
-        for addr in 0x08..=0x77u16 {
+        // 7-bit 全空间扫描，逐地址过白名单（保留段/黑名单地址不探测）。
+        for addr in 0x00..=0x7fu16 {
+            if !allowed(addr as u8) {
+                continue;
+            }
             // Set slave address
             let ret = unsafe { libc::ioctl(fd.as_raw_fd(), I2C_SLAVE as _, addr as usize) };
             if ret < 0 {

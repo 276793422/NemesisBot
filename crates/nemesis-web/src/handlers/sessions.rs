@@ -386,6 +386,10 @@ impl ModuleHandler for SessionsHandler {
             // `export`（= logs.session_detail 的行序，同一 jsonl）里
             // messages 数组下标。编排在 AgentLoop（checkpoint/undo 栈都住
             // 那边），这里只做参数解析与 agent_loop 装配检查。
+            // P20（2026-09-25 能力扩展）：可选 `force`（bool，默认 false）——
+            // 冲突预检检出「文件在 checkpoint 后被外部修改」时默认零副作用
+            // 拒绝（blocked:true + 结构化冲突清单），force=true 强过（回执
+            // 与日志留痕）。
             "rewind_to_message" => {
                 let session_id = data
                     .as_ref()
@@ -399,6 +403,11 @@ impl ModuleHandler for SessionsHandler {
                     .and_then(|v| v.as_u64())
                     .ok_or_else(|| "missing message_index".to_string())?
                     as usize;
+                let force = data
+                    .as_ref()
+                    .and_then(|d| d.get("force"))
+                    .and_then(|v| v.as_bool())
+                    .unwrap_or(false);
                 let session_key = format!(
                     "agent:main:session:{}",
                     nemesis_agent::session::SessionStore::sanitize_session_id(&session_id)
@@ -408,7 +417,9 @@ impl ModuleHandler for SessionsHandler {
                 // 槽，项目会话回退拿到主 loop 的空 checkpoint 索引，文件恢
                 // 复静默 no-op 只截对话）。无归属/bridge 未装配回主槽不变。
                 let al = crate::handlers::projects::resolve_session_loop(ctx, &session_key)?;
-                let mut out = al.rewind_to_message(&session_key, message_index).await?;
+                let mut out = al
+                    .rewind_to_message(&session_key, message_index, force)
+                    .await?;
                 // 回执带上调用方的裸 session_id（前端用它回显）。
                 out["session_id"] = serde_json::Value::String(session_id);
                 Ok(Some(out))

@@ -154,10 +154,13 @@ fn trait_default_methods_reject_unsupported_forms() {
 }
 
 /// Windows 设计契约：不注册任何用户态后端（Sandboxie 承担，U11「Windows 不动」）。
+/// P1 后 detect_backend 带 allow_network 入参；Windows 两态都 None（选型决策
+/// 表的全平台断言在 selection_tests.rs）。
 #[cfg(target_os = "windows")]
 #[test]
 fn detect_backend_none_on_windows() {
-    assert!(detect_backend().is_none());
+    assert!(detect_backend(false).is_none());
+    assert!(detect_backend(true).is_none());
 }
 
 // ---------------------------------------------------------------------------

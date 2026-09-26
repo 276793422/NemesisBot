@@ -5608,7 +5608,34 @@ fn grep_recursive(
 // ===========================================================================
 
 /// I2C bus tool - interacts with I2C devices (Linux only).
-pub struct I2CTool;
+///
+/// P8（2026-09-25 三批合并）GPIO 白名单：地址访问过 `HardwarePolicy`
+/// 校验——与 nemesis-tools::hardware 的真实实现共用同一策略单一真相源
+/// （本结构当前是回显桩，真实 I/O 在 nemesis-tools；两路径同源校验，
+/// 杜绝桩路径放行保留段/黑名单地址）。
+pub struct I2CTool {
+    policy: nemesis_tools::hardware::HardwarePolicy,
+}
+
+impl I2CTool {
+    /// 内置默认策略（可自由寻址空间 0x08-0x77）。
+    pub fn new() -> Self {
+        Self {
+            policy: nemesis_tools::hardware::HardwarePolicy::builtin(),
+        }
+    }
+
+    /// 注入 config 侧策略（`tools.hardware` 段）。
+    pub fn with_policy(policy: nemesis_tools::hardware::HardwarePolicy) -> Self {
+        Self { policy }
+    }
+}
+
+impl Default for I2CTool {
+    fn default() -> Self {
+        Self::new()
+    }
+}
 
 #[async_trait]
 impl Tool for I2CTool {
@@ -5617,7 +5644,7 @@ impl Tool for I2CTool {
     }
 
     fn parameters(&self) -> serde_json::Value {
-        serde_json::json!({"type":"object","properties":{"action":{"type":"string","description":"Action: detect, scan, read, write"},"bus":{"type":"integer","description":"I2C bus number"},"address":{"type":"string","description":"Device address (hex)"}}})
+        serde_json::json!({"type":"object","properties":{"action":{"type":"string","description":"Action: detect, scan, read, write"},"bus":{"type":"integer","description":"I2C bus number"},"address":{"type":"string","description":"Device address (hex, default allowed: 0x08-0x77; reserved segments rejected)"}}})
     }
 
     async fn execute(&self, args: &str, _context: &RequestContext) -> Result<String, String> {
@@ -5630,6 +5657,18 @@ impl Tool for I2CTool {
         let val: serde_json::Value =
             serde_json::from_str(args).map_err(|_| "Invalid JSON arguments".to_string())?;
         let action = val["action"].as_str().unwrap_or("");
+        // P8：携带地址的读/写动作先过地址白名单（保留段/黑名单拒绝，
+        // 理由面向模型可自纠——与真实实现同文案同源策略）。
+        if matches!(action, "read" | "write") {
+            if let Some(a) = val["address"].as_u64() {
+                if a > 0x7f {
+                    return Err("address is required (7-bit, e.g. 0x38, max 0x7f)".to_string());
+                }
+                if let Err(reason) = self.policy.validate_i2c_address(a as u8) {
+                    return Err(reason);
+                }
+            }
+        }
         match action {
             "detect" => Ok("[I2C] Detect: scanning for I2C buses...".to_string()),
             "scan" => Ok(format!(
@@ -6747,6 +6786,11 @@ pub struct SharedToolConfig {
     /// `WebQuestionBroker`）。None = 不注册该工具（headless / exec_worker /
     /// register_default_tools 基线形态——模型看不到一个只会失败的调用）。
     pub question_broker: Option<QuestionBrokerSlot>,
+    /// P8（2026-09-25 三批合并）：GPIO/I2C 地址访问策略（`tools.hardware`
+    /// 段，agent_factory 从 config 构造）。None = 内置默认白名单
+    /// （可自由寻址空间 0x08-0x77）。loop_tools 桩与 nemesis-tools 真实
+    /// 实现共用同一 `HardwarePolicy` 单一真相源。
+    pub hardware_policy: Option<Arc<nemesis_tools::hardware::HardwarePolicy>>,
 }
 
 /// H1（2026-09-05）：`todowrite` 工具的接线配置。
@@ -6798,6 +6842,10 @@ impl std::fmt::Debug for SharedToolConfig {
             .field(
                 "question_broker",
                 &self.question_broker.as_ref().map(|_| "QuestionBrokerSlot"),
+            )
+            .field(
+                "hardware_policy",
+                &self.hardware_policy.as_ref().map(|_| "HardwarePolicy"),
             )
             .field(
                 "security",
@@ -7012,7 +7060,14 @@ pub fn register_shared_tools(config: &SharedToolConfig) -> HashMap<String, Box<d
     }
 
     // Hardware tools (I2C / SPI - Linux only, no-op on other platforms).
-    tools.insert("i2c".to_string(), Box::new(I2CTool));
+    // P8：I2C 带地址策略（config `tools.hardware` 段；None = 内置默认
+    // 白名单 0x08-0x77——Default 形态同样拒绝保留段，不因未配置而裸奔）。
+    let hw_policy = config
+        .hardware_policy
+        .clone()
+        .map(|p| (*p).clone())
+        .unwrap_or_else(nemesis_tools::hardware::HardwarePolicy::builtin);
+    tools.insert("i2c".to_string(), Box::new(I2CTool::with_policy(hw_policy)));
     tools.insert("spi".to_string(), Box::new(SPITool));
 
     // Exec tool + Async exec tool (mirrors Go's ExecTool + AsyncExecTool).
@@ -7589,6 +7644,7 @@ pub fn register_extended_tools(
         todo: None,
         background_registry: None,
         question_broker: None,
+        hardware_policy: None,
     };
     register_shared_tools(&shared_config)
 }

@@ -194,6 +194,24 @@ pub async fn run(local: bool, relay: bool, extra_args: &[String]) -> Result<()> 
     // 整体（board_event_hub），部分移动后不可再整体借用。
     let mut web_server = web_wiring.web_server;
 
+    // WS4（P13）：技能装前审批门注入。security 门内装配——无 security
+    // feature 的构建无审批面，AppState 槽保持 None（= AlwaysAllow 语义）。
+    // `skills.install_approval`（默认 true）= false 时跳过注入（用户显式关
+    // 卡）。真身 WebApprovalManager 尚未存在（run_runtime 审批块才建），这里
+    // 放 OnceLock 晚绑槽（LateWebSkillsGate），槽 Arc 经 RuntimeHandoff 交给
+    // run_runtime 审批块 bind。
+    #[cfg(feature = "security")]
+    let skills_install_gate = if ctx.cfg.skills.as_ref().is_none_or(|s| s.install_approval) {
+        let gate = std::sync::Arc::new(crate::web_approval::LateWebSkillsGate::new(300));
+        web_server.set_skills_install_gate(gate.clone());
+        Some(gate)
+    } else {
+        tracing::info!(
+            "[Gateway] skills install approval disabled (skills.install_approval=false)"
+        );
+        None
+    };
+
     // Phase B5（计划 §4.2）：PB-5 Agent→Web 注入族（Swarm M3 主持人桥/能力
     // 注入/ClusterServiceAdapter 构建/AgentLoopServiceAdapter/项目常驻 loop/
     // set_* 注入链/board 服务/cluster 服务）提取为 init_post_agent
@@ -279,6 +297,11 @@ pub async fn run(local: bool, relay: bool, extra_args: &[String]) -> Result<()> 
     let security_slot = security_plugin;
     #[cfg(not(feature = "security"))]
     let security_slot = None;
+    // WS4（P13）：技能装前审批门槽移交（注入本体见上方 `set_skills_install_gate`）。
+    #[cfg(feature = "security")]
+    let skills_gate_slot = skills_install_gate;
+    #[cfg(not(feature = "security"))]
+    let skills_gate_slot = ();
     #[cfg(feature = "health")]
     let health_slot = health_server;
     #[cfg(not(feature = "health"))]
@@ -291,6 +314,7 @@ pub async fn run(local: bool, relay: bool, extra_args: &[String]) -> Result<()> 
         security_plugin: security_slot,
         health_server: health_slot,
         cluster_adapter: cluster_slot,
+        skills_install_gate: skills_gate_slot,
     };
     run_runtime(
         &ctx,

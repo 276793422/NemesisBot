@@ -64,6 +64,7 @@ fn make_ctx_with_service(
         internal_cmd_tx: None,
         estop: None,
         signature_verify: None,
+        skills_install_gate: None,
         cron: None,
         board: Some(service),
     });
@@ -4864,6 +4865,7 @@ fn agt_make_ctx_ex(
         internal_cmd_tx: None,
         estop: None,
         signature_verify: None,
+        skills_install_gate: None,
         cron,
         board: Some(service),
     });

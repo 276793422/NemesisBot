@@ -150,7 +150,7 @@ fn selftest_child() -> Result<()> {
             allow_network,
             label: "selftest".to_string(),
         };
-        match detect_backend() {
+        match detect_backend(allow_network) {
             Some(backend) => {
                 // Full/Partial both fine — the probes tell the truth either way.
                 if let Err(e) = backend.apply_to_self(&conf) {

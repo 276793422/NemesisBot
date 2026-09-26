@@ -30,9 +30,10 @@ pub use store::{ConfigHandle, ConfigStore, global, load_live, save_live, set_glo
 
 // Re-export provider_resolver types and functions for backward compatibility
 pub use provider_resolver::{
-    ModelResolution, ProviderResolution, ProviderResolver, find_model_by_name,
-    get_default_api_base, get_effective_llm, get_model_by_name, infer_default_model,
-    infer_provider_from_model, resolve_model_config, resolve_model_resolution,
+    ModelResolution, PROVIDER_PRESETS, ProviderPreset, ProviderResolution, ProviderResolver,
+    find_model_by_name, find_provider_preset, get_default_api_base, get_effective_llm,
+    get_model_by_name, infer_default_model, infer_provider_from_model, provider_preset_ids,
+    resolve_model_config, resolve_model_resolution,
 };
 
 #[derive(Error, Debug)]
@@ -808,15 +809,20 @@ pub struct LspToolConfig {
 }
 
 /// C4 (2026-09-04 devtool-upgrade 阶段 1): `agents.diagnostics_loop` config
-/// section. 编辑→诊断回灌闭环（阶段 2 C1-C3 消费）的独立开关——config 键先行，
-/// dashboard 可在闭环落地前先配置。**与 `agents.lsp_tool.enabled` 解耦**：
-/// 诊断闭环开而 lsp 工具关是合法组合（闭环自身按需起服务器）。
+/// section. 编辑→诊断回灌闭环（阶段 2 C1-C3 消费）的独立开关。**与
+/// `agents.lsp_tool.enabled` 解耦**：诊断闭环开而 lsp 工具关是合法组合
+/// （闭环自身按需起服务器）。
+///
+/// P2（2026-09-25 能力扩展 WS3）：`enabled` 默认翻转为 **true**（对齐
+/// 业界通行的「内置无条件开启」）——缺键/缺段按开处理；用户显式写
+/// `false` 的配置不受影响（serde 显式值优先于 default fn）。
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DiagnosticsLoopConfig {
-    /// Enable the edit→diagnostics feedback loop (default false).
-    #[serde(default)]
+    /// Enable the edit→diagnostics feedback loop (default true since P2).
+    #[serde(default = "default_diagnostics_enabled")]
     pub enabled: bool,
-    /// Max diagnostics fed back per edit (default 20).
+    /// Max diagnostics fed back per edit round (default 20; P3 起为跨文件
+    /// 聚合后的总量上限).
     #[serde(default = "default_diagnostics_max_errors")]
     pub max_errors: usize,
     /// Max wall-clock wait for diagnostics after an edit, in ms (default 2000).
@@ -824,18 +830,24 @@ pub struct DiagnosticsLoopConfig {
     pub wait_max_ms: u64,
 }
 
-// 手写 Default（不 derive）：字段级 `#[serde(default)]` 在 **整个
+// 手写 Default（不 derive）：字段级 serde default fn 在 **整个
 // `diagnostics_loop` 键缺席**时用的是类型的 Default impl（derive 会给零值
 // 20/2000 的本意就落空了——首测抓出）。手写保证「全键缺席」与「部分键
 // 缺席」（内部字段的 serde default fn 管）两条路都落在同一组默认值上。
 impl Default for DiagnosticsLoopConfig {
     fn default() -> Self {
         Self {
-            enabled: false,
+            enabled: default_diagnostics_enabled(),
             max_errors: default_diagnostics_max_errors(),
             wait_max_ms: default_diagnostics_wait_max_ms(),
         }
     }
+}
+
+/// P2（能力扩展 WS3）：诊断回灌默认开（同源供 serde 缺键路径与手写
+/// Default impl 消费——两路必须落同一值）。
+fn default_diagnostics_enabled() -> bool {
+    true
 }
 
 fn default_diagnostics_max_errors() -> usize {
@@ -966,6 +978,14 @@ pub struct AgentDefaults {
     /// max(上游要求, 阶梯值)。0 = 关闭重试（一次失败即终局，旧行为）。
     #[serde(default = "default_rate_limit_retries")]
     pub rate_limit_retries: i64,
+    /// P5（能力扩展 WS2 compaction）：自动压缩的逐字尾巴 token 预算
+    /// （默认 20000，对齐 业界 keepRecentTokens）。压缩边界从「保留近
+    /// K_TARGET=6 条」改为「保留近 N token」（MODEL-FACING 投影估算），
+    /// 预算边界再经 tool_safe_boundary 回退，保证永不切在 tool_call/result
+    /// 对中间。**0 = 回退旧按条数行为**。loop 侧 fresh-read（每轮现读
+    /// config.json），运行中改键下一轮生效。
+    #[serde(default = "default_compact_keep_recent_tokens")]
+    pub compact_keep_recent_tokens: i64,
 }
 
 impl Default for AgentDefaults {
@@ -988,6 +1008,7 @@ impl Default for AgentDefaults {
             diagnostics_loop: DiagnosticsLoopConfig::default(),
             format_on_save: FormatOnSaveConfig::default(),
             rate_limit_retries: default_rate_limit_retries(),
+            compact_keep_recent_tokens: default_compact_keep_recent_tokens(),
         }
     }
 }
@@ -1541,6 +1562,20 @@ pub struct ToolsConfig {
     pub cron: CronToolsConfig,
     #[serde(default)]
     pub exec: ExecConfig,
+    #[serde(default)]
+    pub hardware: HardwareToolsConfig,
+}
+
+/// P8 GPIO 白名单：I2C 地址访问策略（`tools.hardware` 段）。
+/// 空段列表 = 内置默认（可自由寻址空间 0x08-0x77）；deny 优先于 allow。
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct HardwareToolsConfig {
+    /// 允许的 7 位地址段 `[[lo, hi], ...]`（闭区间）；空 = 内置默认 0x08-0x77。
+    #[serde(default)]
+    pub i2c_allow_ranges: Vec<(u8, u8)>,
+    /// 拒绝的地址段（在 allow 之上再排除，用于屏蔽已知有风险的设备地址）。
+    #[serde(default)]
+    pub i2c_deny_ranges: Vec<(u8, u8)>,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -1665,13 +1700,52 @@ pub struct MemoryFlagConfig {
     pub enabled: bool,
 }
 
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SkillsConfig {
     #[serde(default)]
     pub enabled: bool,
     /// Whether `skill_manage` writes require interactive approval (default false).
     #[serde(default)]
     pub manage_approval: bool,
+    /// P11 验签：无签名技能是否放行（默认 true 兼容存量；false = strict，拒绝无签名）。
+    #[serde(default = "default_skills_allow_unsigned")]
+    pub allow_unsigned: bool,
+    /// P13 装前审批：安装走审批卡（默认 true；CLI 可 --yes 跳过，WSAPI 走审批基建）。
+    #[serde(default = "default_skills_install_approval")]
+    pub install_approval: bool,
+    /// P16 版本龄下限（天；默认 0 = 关）。
+    #[serde(default)]
+    pub min_age_days: i64,
+    /// P16 版本龄策略："warn"（默认）| "block"。
+    #[serde(default = "default_skills_min_age_policy")]
+    pub min_age_policy: String,
+}
+
+// Default 手工实现与 serde 缺省函数同源（derive 会把 allow_unsigned 落成
+// false，与「默认 true 兼容存量」语义相反）。
+impl Default for SkillsConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            manage_approval: false,
+            allow_unsigned: default_skills_allow_unsigned(),
+            install_approval: default_skills_install_approval(),
+            min_age_days: 0,
+            min_age_policy: default_skills_min_age_policy(),
+        }
+    }
+}
+
+fn default_skills_allow_unsigned() -> bool {
+    true
+}
+
+fn default_skills_install_approval() -> bool {
+    true
+}
+
+fn default_skills_min_age_policy() -> String {
+    "warn".to_string()
 }
 
 /// MCP 主配置（config.mcp.json 顶层）。**单一真相源**（2026-08-31 收敛）：
@@ -2907,6 +2981,7 @@ pub fn default_config() -> Config {
             port: 18790,
         },
         tools: ToolsConfig {
+            hardware: HardwareToolsConfig::default(),
             web: WebToolsConfig {
                 duckduckgo: DuckDuckGoConfig {
                     enabled: true,
@@ -3349,6 +3424,33 @@ fn default_spill_retention_days() -> i64 {
 fn default_rate_limit_retries() -> i64 {
     10
 }
+
+/// P5（能力扩展 WS2 compaction）：逐字尾巴 token 预算缺省值（单一真相源：
+/// serde 缺省 / raw-JSON 解析 / Default impl 三方共用）。对齐 业界的
+/// keepRecentTokens=20000 口径。
+pub const DEFAULT_COMPACT_KEEP_RECENT_TOKENS: i64 = 20_000;
+
+/// [`DEFAULT_COMPACT_KEEP_RECENT_TOKENS`] 的 serde 缺省函数形态。
+fn default_compact_keep_recent_tokens() -> i64 {
+    DEFAULT_COMPACT_KEEP_RECENT_TOKENS
+}
+
+/// P5：raw config JSON 读取 `agents.defaults.compact_keep_recent_tokens`。
+///
+/// AgentLoop 的 compact 域走 fresh-read raw JSON（同 `current_max_tokens`
+/// 模式，运行中改键下一轮生效），不经过 typed `Config`——键路径与缺省值
+/// 必须和 typed 字段单源，这里就是那个单源。缺键/非数 → 缺省 20000；
+/// 负数视为 0（回退旧按条数路径，语义见 compact 域）。
+pub fn resolve_compact_keep_recent_tokens(cfg: Option<&serde_json::Value>) -> usize {
+    cfg.and_then(|v| {
+        v.get("agents")?
+            .get("defaults")?
+            .get("compact_keep_recent_tokens")?
+            .as_i64()
+    })
+    .map(|n| n.max(0) as usize)
+    .unwrap_or(DEFAULT_COMPACT_KEEP_RECENT_TOKENS as usize)
+}
 fn default_gateway_host() -> String {
     "0.0.0.0".to_string()
 }
@@ -3546,6 +3648,11 @@ mod extra_tests;
 
 #[cfg(test)]
 mod mcp_serde_tests;
+
+// P5（能力扩展 WS2）：compact_keep_recent_tokens 配置面（serde 缺省 /
+// roundtrip / raw-JSON 解析）测试。
+#[cfg(test)]
+mod ws2_compact_config_tests;
 
 // Single shared process-global-state lock for ALL tests in this crate that touch
 // `std::env::set_var` / `set_current_dir` / load config (which reads env). These

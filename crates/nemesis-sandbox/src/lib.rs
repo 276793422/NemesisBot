@@ -20,6 +20,7 @@
 use std::path::{Path, PathBuf};
 
 pub mod backend;
+pub mod denial;
 pub mod download;
 pub mod elevation;
 pub mod exec_world;
@@ -138,6 +139,10 @@ impl SandboxPaths {
 
 #[cfg(test)]
 mod tests;
+
+// P21（2026-09-25）：沙盒拒绝台账测试（独立测试文件，全平台编译）。
+#[cfg(test)]
+mod denial_tests;
 
 #[cfg(test)]
 pub(crate) mod test_util;

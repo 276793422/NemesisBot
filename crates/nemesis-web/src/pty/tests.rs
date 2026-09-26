@@ -98,6 +98,7 @@ fn make_state(
         cron: None,
         board: None,
         signature_verify: None,
+        skills_install_gate: None,
     })
 }
 

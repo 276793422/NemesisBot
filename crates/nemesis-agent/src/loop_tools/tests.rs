@@ -2184,7 +2184,7 @@ fn test_setup_cluster_rpc_channel_with_continuation() {
 
 #[tokio::test]
 async fn test_i2c_tool_non_linux() {
-    let tool = I2CTool;
+    let tool = I2CTool::default();
     let ctx = RequestContext::new("web", "chat1", "user1", "sess1");
     let result = tool.execute(r#"{"action":"detect"}"#, &ctx).await;
     if cfg!(target_os = "linux") {
@@ -2197,7 +2197,7 @@ async fn test_i2c_tool_non_linux() {
 
 #[tokio::test]
 async fn test_i2c_tool_invalid_json() {
-    let tool = I2CTool;
+    let tool = I2CTool::default();
     let ctx = RequestContext::new("web", "chat1", "user1", "sess1");
     let result = tool.execute("not json", &ctx).await;
     assert!(result.is_err());

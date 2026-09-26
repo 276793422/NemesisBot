@@ -487,6 +487,11 @@ pub struct AgentLoop {
     /// 闭环）用它同步文档 + 等诊断。`None`（未注入 / standalone）→ 反馈
     /// 静默跳过。Set via `set_lsp_manager` by the agent factory.
     lsp_manager: parking_lot::RwLock<Option<Arc<nemesis_lsp::LspManager>>>,
+    /// P3（能力扩展 WS3）：会话级诊断采集登记（跨文件聚合 + stale 过滤
+    /// 状态面）。语义与生命周期见 `config_watch::DiagnosticsTouchRegistry`
+    /// ——仅声明/初始化挂靠于此（结构体字段），逻辑全在 config_watch.rs
+    /// （计划 §冲突面登记：诊断域改动不进 loop.rs 主体）。
+    diagnostics_touched: parking_lot::Mutex<config_watch::DiagnosticsTouchRegistry>,
     /// 自定义 slash 命令表路径（`config.commands.json`；主 agent 专用，集群
     /// agent 不接——命令不该跨节点复制，同 hooks 挂账决策）。
     /// 自定义命令表热重载器（HotReloader 统一收编，2026-08-29：原
@@ -657,6 +662,9 @@ impl AgentLoop {
             config_path: parking_lot::RwLock::new(None),
             pricing_store: parking_lot::RwLock::new(None),
             lsp_manager: parking_lot::RwLock::new(None),
+            diagnostics_touched: parking_lot::Mutex::new(
+                config_watch::DiagnosticsTouchRegistry::default(),
+            ),
             commands_hot: parking_lot::RwLock::new(None),
             cc_bridge: parking_lot::RwLock::new(None),
             spill_root: parking_lot::RwLock::new(None),
@@ -800,6 +808,9 @@ mod e6_maintenance_tests;
 // C3 (devtool-upgrade 阶段 2)：编辑后诊断回灌测试（fake LSP server）。
 #[cfg(test)]
 mod diagnostics_feedback_tests;
+// P2/P3 (能力扩展 WS3)：诊断回灌触发臂扩展 + 跨文件聚合 + stale 过滤测试。
+#[cfg(test)]
+mod diagnostics_session_tests;
 // G0 (devtool-upgrade 阶段 3)：SpawnTool 生产化 + run_detached 测试。
 #[cfg(test)]
 mod spawn_detached_tests;
@@ -896,3 +907,8 @@ mod llm_types_cov_tests;
 // guardian 升级与故障姿态矩阵）。
 #[cfg(test)]
 mod tool_dispatch_sec_cov_tests;
+
+// P20 (2026-09-25 能力扩展 WS7): rewind 冲突预检（外部修改拒绝 + force 强
+// 过 + redo 往返）编排测试。
+#[cfg(test)]
+mod p20_tests;

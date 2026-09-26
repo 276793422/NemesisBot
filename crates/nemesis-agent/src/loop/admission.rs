@@ -1044,6 +1044,17 @@ impl AgentLoop {
         // Clean up cancellation token and release session.
         self.remove_cancel_token(&session_key);
         self.release_session(&session_key);
+        // P20（2026-09-25 能力扩展）：turn 收尾封印——本 turn 声明过的每个
+        // 变更路径读现盘内容哈希，作为「变更后指纹」记进该 turn 的
+        // checkpoint（rewind 冲突预检的比对基线）。无 store / 无 turn
+        // （cp_turn None）= no-op；幂等。放 release 之后：封印只读盘 + 写
+        // 自己的 JSON 索引，不参与会话 busy 语义。bus 泵与 inline 两条路径
+        // 都经 process_admitted，一处封印全覆盖。
+        if let Some(turn) = cp_turn
+            && let Some(cp) = self.security.checkpoint_store.read().as_ref()
+        {
+            cp.seal_turn(turn);
+        }
         // I5：轮结束清打开文件状态（与上方 set 词法配对，防跨轮陈旧泄漏）。
         self.pending_open_files.write().clear();
         // 对话生成：轮结束清 workflow_edit 目标（同款配对）。

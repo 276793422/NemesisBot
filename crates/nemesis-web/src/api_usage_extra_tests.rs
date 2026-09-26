@@ -53,6 +53,7 @@ fn make_state_no_data_store() -> Arc<AppState> {
         internal_cmd_tx: None,
         estop: None,
         signature_verify: None,
+        skills_install_gate: None,
         cron: None,
         board: None,
     })
@@ -91,6 +92,7 @@ fn make_state_with_store(ds: Arc<DataStore>) -> Arc<AppState> {
         internal_cmd_tx: None,
         estop: None,
         signature_verify: None,
+        skills_install_gate: None,
         cron: None,
         board: None,
     };

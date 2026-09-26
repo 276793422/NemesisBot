@@ -52,6 +52,7 @@ async fn agt_tools_with_session_id_resolves_loop_and_bails_without_one() {
         internal_cmd_tx: None,
         estop: None,
         signature_verify: None,
+        skills_install_gate: None,
         cron: None,
         board: None,
     });

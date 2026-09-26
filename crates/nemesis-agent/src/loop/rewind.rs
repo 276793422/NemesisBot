@@ -76,11 +76,19 @@ impl AgentLoop {
     /// 标记（本 turn begin 序号随 admission 穿针写入）；无标记的旧行退化为
     /// 「只截断对话不回滚文件」。
     ///
-    /// 返回回执 JSON（kept/removed 计数 + 恢复文件清单 + redoable）。
+    /// P20（2026-09-25 能力扩展）冲突预检：文件恢复锚存在时，先对各 turn
+    /// 封印的「变更后指纹」与现盘内容比对——有冲突且 `force == false` 时
+    /// **零副作用拒绝**（返回 `blocked: true` + 结构化冲突清单 path/期望
+    /// 指纹/当前指纹，前端可展示）；`force == true` 强过，回执与日志留痕
+    /// （`forced: true`）。
+    ///
+    /// 返回回执 JSON（kept/removed 计数 + 恢复文件清单 + redoable；被拒时
+    /// 为 blocked 结构）。
     pub async fn rewind_to_message(
         &self,
         session_key: &str,
         message_index: usize,
+        force: bool,
     ) -> Result<serde_json::Value, String> {
         if self.is_session_busy(session_key) {
             return Err("会话正在处理消息，请等当前回合完成后再回退".to_string());
@@ -114,6 +122,38 @@ impl AgentLoop {
                 .map(|v| v as usize)
         });
         let removed: Vec<serde_json::Value> = rows[cut..].to_vec();
+
+        // P20（2026-09-25 能力扩展）：冲突预检——restore 锚之后各 turn 封印
+        // 的「变更后指纹」vs 现盘内容。只读不突变（零副作用），冲突且未
+        // force = 拒绝并列结构化清单；force = 强过（审计留痕）。
+        let mut report = crate::checkpoint::CheckpointConflictReport::default();
+        if let Some(t) = restore_turn
+            && let Some(cp) = self.attached_checkpoint()
+        {
+            report = cp.conflict_scan(t);
+            if !report.conflicts.is_empty() && !force {
+                warn!(
+                    "[AgentLoop] rewind 冲突预检拒绝：session={session_key} turn>={t} 检出 {} 个文件在 checkpoint 后被外部修改（force 可强过）",
+                    report.conflicts.len()
+                );
+                return Ok(serde_json::json!({
+                    "blocked": true,
+                    "reason": "conflict",
+                    "session_key": session_key,
+                    "message_index": message_index,
+                    "restore_turn": t,
+                    "conflicts": report.conflicts,
+                    "unchecked_paths": report.unchecked_paths,
+                }));
+            }
+        }
+        let forced = force && !report.conflicts.is_empty();
+        if forced {
+            warn!(
+                "[AgentLoop] rewind 冲突被 force 强过（审计留痕）：session={session_key} restore_turn={restore_turn:?} 覆盖 {} 个外部修改冲突",
+                report.conflicts.len()
+            );
+        }
 
         // undo 依据在任何突变前采集（truncate_from 会清掉 turn ≥ restore 的
         // 索引，tree 值要趁索引还在时读）。
@@ -201,6 +241,8 @@ impl AgentLoop {
             "file_restore_note": file_note,
             "restored_files": { "written": written, "deleted": deleted },
             "redoable": redoable,
+            "forced": forced,
+            "unchecked_paths": report.unchecked_paths,
         }))
     }
 

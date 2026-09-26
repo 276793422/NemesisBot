@@ -52,6 +52,13 @@ pub(crate) struct RuntimeHandoff {
     pub cluster_adapter: Option<Arc<crate::cluster_service::ClusterServiceAdapter>>,
     #[cfg(not(feature = "cluster"))]
     pub cluster_adapter: (),
+    /// WS4（P13）：技能装前审批门（LateWebSkillsGate 槽；run_runtime 审批块
+    /// bind 真身 WebApprovalManager）。@not(security) 臂空桩——无 security
+    /// 构建无审批面，AppState 槽保持 None（= AlwaysAllow 语义）。
+    #[cfg(feature = "security")]
+    pub skills_install_gate: Option<Arc<crate::web_approval::LateWebSkillsGate>>,
+    #[cfg(not(feature = "security"))]
+    pub skills_install_gate: (),
 }
 
 /// Step 18–24 运行期与关停（计划 §4.2 B7）。
@@ -86,6 +93,8 @@ pub(crate) async fn run_runtime(
     // 门控三件解包影子：名与原局部一致（体逐字），门随消费点。
     #[cfg(feature = "security")]
     let security_plugin = runtime_handoff.security_plugin;
+    #[cfg(feature = "security")]
+    let skills_install_gate = runtime_handoff.skills_install_gate;
     #[cfg(feature = "health")]
     let health_server = runtime_handoff.health_server;
     #[cfg(feature = "cluster")]
@@ -278,6 +287,13 @@ pub(crate) async fn run_runtime(
             // M7: dashboard 审批卡的响应端点经 AgentLoop 的 responder 槽触达
             // （nemesis-web approval handler 读 agent_loop.approval_responder()）。
             agent_loop.set_approval_responder(responder);
+            // WS4（P13）：技能装前审批门 bind 真身——web_server AppState 里的
+            // LateWebSkillsGate（gateway.rs set_skills_install_gate 注入）经此
+            // 挂上同一 web_mgr，技能安装卡与 auditor 审批共用 respond 通路。
+            if let Some(gate) = skills_install_gate.as_ref() {
+                gate.bind(web_mgr.clone());
+                info!("[Gateway] skills install approval gate bound (WS4 P13)");
+            }
             // X2 (U8 refinement): reflect interactive-approval reachability
             // in the merged context snapshot's `# Runtime Policy` section.
             agent_loop.set_interactive_approval(true);

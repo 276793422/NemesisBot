@@ -3,11 +3,12 @@
 //! Performs a comprehensive security scan on skill content before installation.
 //! Blocking rules:
 //! - Lint score < 0.3 (30/100): Blocked (severe dangerous patterns)
-//! - Any critical severity issue: Blocked
+//! - Any critical severity issue: Blocked（P15 扩面：任何分类的 Critical 都拦，
+//!   不再只看 Destructive 分类——凭证窃取/下载执行链/按键记录等同级致命）
 //! - Lint score < 0.6 (60/100): Warning only (not blocked)
 //! - Quality score is informational only (never blocks)
 
-use crate::lint::{LintCategory, SkillLinter};
+use crate::lint::{LintSeverity, SkillLinter};
 use crate::quality::QualityScorer;
 use crate::types::SecurityCheckResult;
 
@@ -15,7 +16,7 @@ use crate::types::SecurityCheckResult;
 ///
 /// This performs lint analysis and quality scoring. The blocking rules are:
 /// - Lint score < 0.3 -> Blocked (severe dangerous patterns detected)
-/// - Any destructive-category warning -> Blocked
+/// - Any Critical severity warning (any category) -> Blocked
 /// - Lint score < 0.6 -> Warning (not blocked, but concerning)
 /// - Quality score is informational only (never blocks)
 ///
@@ -42,21 +43,16 @@ pub fn check_skill_security(
         return result;
     }
 
-    // Check blocking conditions: destructive category = critical severity.
-    let has_critical = lint_result
+    // Check blocking conditions: any Critical severity issue（P15 扩面，
+    // 不再单一 Destructive 开关；分类计数随 warnings 可由调用方汇总）.
+    let critical = lint_result
         .warnings
         .iter()
-        .any(|w| w.category == LintCategory::Destructive);
+        .find(|w| w.severity == LintSeverity::Critical);
 
-    if has_critical {
+    if let Some(w) = critical {
         result.blocked = true;
-        let msg = lint_result
-            .warnings
-            .iter()
-            .find(|w| w.category == LintCategory::Destructive)
-            .map(|w| w.message.clone())
-            .unwrap_or_default();
-        result.block_reason = format!("critical severity issue detected: {}", msg);
+        result.block_reason = format!("critical severity issue detected: {}", w.message);
         return result;
     }
 

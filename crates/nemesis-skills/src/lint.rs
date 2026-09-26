@@ -6,20 +6,81 @@
 
 use regex::Regex;
 use serde::{Deserialize, Serialize};
+use tracing::warn;
 
 /// Category of a lint warning.
-#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+///
+/// 12 categories aligned with legacy scanner (P15 供应链扩面)：
+/// 既有 5 类语义并入（Destructive=危险执行 / Exfiltration=数据外传 /
+/// Privilege=提权 / Obfuscation=混淆编码 / Recon=网络扫描），新增 7 类
+/// 规则来自嵌入 JSON 规则表（`security_rules.json`，便于热更）。
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 pub enum LintCategory {
-    /// Destructive operations (rm -rf, format, drop, etc.).
+    /// Dangerous execution (rm -rf, format, shutdown, etc.) - 危险执行.
     Destructive,
-    /// Data exfiltration (curl to external, wget, scp, etc.).
+    /// Data exfiltration (curl to external, wget, scp, etc.) - 数据外传.
     Exfiltration,
-    /// Privilege escalation (sudo, su, chmod 777, etc.).
+    /// Privilege escalation (sudo, su, chmod 777, etc.) - 提权.
     Privilege,
-    /// Obfuscation techniques (base64 decode, eval, hidden files, etc.).
+    /// Obfuscation techniques (base64 decode, eval, hidden files, etc.) - 混淆编码.
     Obfuscation,
-    /// Reconnaissance (nmap, whoami, /etc/passwd, env vars, etc.).
+    /// Reconnaissance / network scanning (nmap, whoami, env vars, etc.) - 网络扫描.
     Recon,
+    /// Credential theft (SSH keys, cloud credentials, keychain dump) - 凭证窃取.
+    CredentialTheft,
+    /// Persistence mechanisms (cron, startup, service install) - 持久化.
+    Persistence,
+    /// Download-then-execute chains (curl | sh, certutil urlcache) - 下载执行链.
+    DownloadExecuteChain,
+    /// Sensitive path access (sudoers, SAM, browser cookies) - 敏感路径触达.
+    SensitivePathAccess,
+    /// Environment variable probing of secrets (env sniffing) - 环境变量嗅探.
+    EnvironmentProbing,
+    /// Dynamically constructed execution (echo|sh, new Function, python -c) - 动态构造执行.
+    DynamicConstructionExec,
+    /// Supply-chain traces (install scripts, git config hijack) - 供应链痕迹.
+    SupplyChainTrace,
+}
+
+impl LintCategory {
+    /// Parse a category from its snake_case JSON name (rule-table loader).
+    ///
+    /// Unknown names return `None` so bad rule entries can be skipped loudly.
+    pub fn from_rule_name(name: &str) -> Option<Self> {
+        Some(match name {
+            "destructive" | "dangerous_execution" => Self::Destructive,
+            "exfiltration" | "data_exfiltration" => Self::Exfiltration,
+            "privilege" | "privilege_escalation" => Self::Privilege,
+            "obfuscation" => Self::Obfuscation,
+            "recon" | "network_scanning" => Self::Recon,
+            "credential_theft" => Self::CredentialTheft,
+            "persistence" => Self::Persistence,
+            "download_execute_chain" => Self::DownloadExecuteChain,
+            "sensitive_path_access" => Self::SensitivePathAccess,
+            "environment_probing" => Self::EnvironmentProbing,
+            "dynamic_construction_exec" => Self::DynamicConstructionExec,
+            "supply_chain_trace" => Self::SupplyChainTrace,
+            _ => return None,
+        })
+    }
+
+    /// Per-warning score penalty weight for this category.
+    pub fn score_weight(&self) -> f64 {
+        match self {
+            Self::Destructive => 0.20,
+            Self::Exfiltration => 0.15,
+            Self::Privilege => 0.12,
+            Self::Obfuscation => 0.10,
+            Self::Recon => 0.05,
+            Self::CredentialTheft => 0.20,
+            Self::Persistence => 0.15,
+            Self::DownloadExecuteChain => 0.15,
+            Self::SensitivePathAccess => 0.10,
+            Self::EnvironmentProbing => 0.08,
+            Self::DynamicConstructionExec => 0.10,
+            Self::SupplyChainTrace => 0.08,
+        }
+    }
 }
 
 impl std::fmt::Display for LintCategory {
@@ -30,6 +91,13 @@ impl std::fmt::Display for LintCategory {
             LintCategory::Privilege => write!(f, "privilege"),
             LintCategory::Obfuscation => write!(f, "obfuscation"),
             LintCategory::Recon => write!(f, "recon"),
+            LintCategory::CredentialTheft => write!(f, "credential-theft"),
+            LintCategory::Persistence => write!(f, "persistence"),
+            LintCategory::DownloadExecuteChain => write!(f, "download-execute-chain"),
+            LintCategory::SensitivePathAccess => write!(f, "sensitive-path-access"),
+            LintCategory::EnvironmentProbing => write!(f, "environment-probing"),
+            LintCategory::DynamicConstructionExec => write!(f, "dynamic-construction-exec"),
+            LintCategory::SupplyChainTrace => write!(f, "supply-chain-trace"),
         }
     }
 }
@@ -98,6 +166,17 @@ pub struct LintResult {
     pub warnings: Vec<LintWarning>,
 }
 
+impl LintResult {
+    /// Count warnings per category (P15 分类计数，供审批卡摘要与评分展示).
+    pub fn category_counts(&self) -> std::collections::BTreeMap<LintCategory, usize> {
+        let mut counts = std::collections::BTreeMap::new();
+        for w in &self.warnings {
+            *counts.entry(w.category.clone()).or_insert(0) += 1;
+        }
+        counts
+    }
+}
+
 /// Internal representation of a compiled pattern with metadata.
 struct PatternEntry {
     category: LintCategory,
@@ -121,12 +200,18 @@ impl SkillLinter {
 
     /// Build the complete list of dangerous patterns.
     ///
-    /// Returns 27 patterns across 5 categories, matching the Go implementation:
+    /// 27 hardcoded legacy patterns across 5 categories (matching the Go
+    /// implementation), plus the embedded JSON rule table
+    /// (`security_rules.json`) covering the 7 extended categories:
     /// - Destructive (DEST-001..DEST-006): file deletion, disk wipe, shutdown, etc.
     /// - Exfiltration (EXFL-001..EXFL-006): upload, base64 exfil, DNS tunnel, etc.
     /// - Privilege (PRIV-001..PRIV-005): sudo, permission change, user creation, etc.
     /// - Obfuscation (OBFS-001..OBFS-005): base64 decode exec, eval, compressed payload, etc.
     /// - Recon (RECN-001..RECN-005): network scan, process list, file search, etc.
+    /// - CredentialTheft (CRED-xxx) / Persistence (PERS-xxx) /
+    ///   DownloadExecuteChain (DNXL-xxx) / SensitivePathAccess (SNST-xxx) /
+    ///   EnvironmentProbing (ENVP-xxx) / DynamicConstructionExec (DYNE-xxx) /
+    ///   SupplyChainTrace (SUPC-xxx): from the embedded JSON table.
     fn build_patterns() -> Vec<PatternEntry> {
         let raw: Vec<(LintCategory, &str, &str, &str, LintSeverity)> = vec![
             // ---- Destructive (6) ----
@@ -325,7 +410,8 @@ impl SkillLinter {
             ),
         ];
 
-        raw.into_iter()
+        let mut patterns: Vec<PatternEntry> = raw
+            .into_iter()
             .filter_map(|(category, pat, description, id, severity)| {
                 Regex::new(pat).ok().map(|regex| PatternEntry {
                     category,
@@ -335,7 +421,39 @@ impl SkillLinter {
                     severity,
                 })
             })
-            .collect()
+            .collect();
+
+        // P15: append the embedded JSON rule table (7 extended categories).
+        // Invalid regexes / unknown categories are skipped with a warn so a
+        // bad rule entry can never break installation entirely.
+        for rule in crate::security_rules::embedded_rule_file().rules() {
+            let category = match LintCategory::from_rule_name(&rule.category) {
+                Some(c) => c,
+                None => {
+                    warn!(
+                        "lint rule {}: unknown category '{}'",
+                        rule.id, rule.category
+                    );
+                    continue;
+                }
+            };
+            let regex = match Regex::new(&rule.pattern) {
+                Ok(r) => r,
+                Err(e) => {
+                    warn!("lint rule {}: invalid regex: {}", rule.id, e);
+                    continue;
+                }
+            };
+            patterns.push(PatternEntry {
+                category,
+                regex,
+                description: rule.message.clone(),
+                id: rule.id.clone(),
+                severity: rule.severity(),
+            });
+        }
+
+        patterns
     }
 
     /// Lint the given content and return a result with score and warnings.
@@ -394,26 +512,12 @@ impl SkillLinter {
 
     /// Calculate safety score based on warnings.
     ///
-    /// Score calculation:
-    /// - Start at 1.0 (perfectly safe)
-    /// - Destructive: -0.20 each
-    /// - Exfiltration: -0.15 each
-    /// - Privilege: -0.12 each
-    /// - Obfuscation: -0.10 each
-    /// - Recon: -0.05 each
-    ///
-    /// Score is clamped to [0.0, 1.0].
+    /// Score calculation: start at 1.0, subtract each warning's per-category
+    /// weight (see `LintCategory::score_weight`). Weights are flat per-warning
+    /// (no cap): 9 recon warnings cost 0.45, matching the LINT_FAIL fixture
+    /// expectation (score 0.55). Clamped to [0.0, 1.0].
     fn calculate_score(warnings: &[LintWarning]) -> f64 {
-        let penalty: f64 = warnings
-            .iter()
-            .map(|w| match w.category {
-                LintCategory::Destructive => 0.20,
-                LintCategory::Exfiltration => 0.15,
-                LintCategory::Privilege => 0.12,
-                LintCategory::Obfuscation => 0.10,
-                LintCategory::Recon => 0.05,
-            })
-            .sum();
+        let penalty: f64 = warnings.iter().map(|w| w.category.score_weight()).sum();
 
         // penalty is a sum of finite constants (never NaN), so clamp is equivalent.
         (1.0 - penalty).clamp(0.0, 1.0)

@@ -182,7 +182,8 @@ fn test_cmd_remove_nonexistent_skill() {
     std::fs::create_dir_all(&skills_dir).unwrap();
 
     // Should succeed even if skill doesn't exist
-    cmd_remove(&skills_dir, "nonexistent").unwrap();
+    // WS4：cmd_remove 收 workspace（installer 在 workspace/skills/<name> 落位）。
+    cmd_remove(tmp.path(), "nonexistent").unwrap();
 }
 
 #[test]
@@ -193,7 +194,8 @@ fn test_cmd_remove_existing_skill() {
     std::fs::create_dir_all(&skill_path).unwrap();
     std::fs::write(skill_path.join("SKILL.md"), "# Test Skill").unwrap();
 
-    cmd_remove(&skills_dir, "test-skill").unwrap();
+    // WS4：cmd_remove 收 workspace（installer 在 workspace/skills/<name> 落位）。
+    cmd_remove(tmp.path(), "test-skill").unwrap();
     assert!(!skill_path.exists());
 }
 
@@ -1035,7 +1037,8 @@ fn test_cmd_remove_removes_directory() {
     std::fs::create_dir_all(&skill_path).unwrap();
     std::fs::write(skill_path.join("SKILL.md"), "content").unwrap();
 
-    cmd_remove(&skills_dir, "to-remove").unwrap();
+    // WS4：cmd_remove 收 workspace（installer 在 workspace/skills/<name> 落位）。
+    cmd_remove(tmp.path(), "to-remove").unwrap();
     assert!(!skill_path.exists());
 }
 
@@ -2032,10 +2035,18 @@ mod wave_b {
         std::fs::create_dir_all(home.join("workspace")).unwrap();
         let skills_dir = crate::common::workspace_path(&home).join("skills");
 
-        let err = cmd_install(&skills_dir, &skills_cfg_of(&home), "clawhub/bad slug")
-            .await
-            .expect_err("registry 未注册 → install 失败 → 毒化回退必以 Invalid GitHub URL 终结");
-        assert!(err.to_string().contains("Invalid GitHub URL"), "err: {err}");
+        let err = cmd_install(
+            &skills_dir,
+            &skills_cfg_of(&home),
+            "clawhub/bad slug",
+            false,
+        )
+        .await
+        .expect_err("registry 未注册 → install 失败 → 毒化回退必以 Invalid GitHub URL 终结");
+        assert!(
+            err.to_string().contains("invalid github repo"),
+            "err: {err}"
+        );
     }
 
     /// 无斜杠 skill_ref：搜遍空 registry 不中 → "Trying GitHub fallback"
@@ -2047,10 +2058,18 @@ mod wave_b {
         std::fs::create_dir_all(home.join("workspace")).unwrap();
         let skills_dir = crate::common::workspace_path(&home).join("skills");
 
-        let err = cmd_install(&skills_dir, &skills_cfg_of(&home), "zz-noslash-anywhere")
-            .await
-            .expect_err("裸名找不到 → fallback parse 必失败");
-        assert!(err.to_string().contains("Invalid GitHub URL"), "err: {err}");
+        let err = cmd_install(
+            &skills_dir,
+            &skills_cfg_of(&home),
+            "zz-noslash-anywhere",
+            false,
+        )
+        .await
+        .expect_err("裸名找不到 → fallback parse 必失败");
+        assert!(
+            err.to_string().contains("invalid github repo"),
+            "err: {err}"
+        );
     }
 
     /// 无斜杠 + mock 搜索命中（slug 故意含空格）→ Found 分支（540-544 拿到
@@ -2074,10 +2093,13 @@ mod wave_b {
         // convex 走死端口：identifier 校验放行空格 slug 后，第一步 convex 调用即败
         wave_b_write_clawhub_cfg(&home, &_mock.base_url(), "http://127.0.0.1:9");
 
-        let err = cmd_install(&skills_dir, &skills_cfg_of(&home), "poison-demo")
+        let err = cmd_install(&skills_dir, &skills_cfg_of(&home), "poison-demo", false)
             .await
             .expect_err("install 失败 → 毒化回退终结");
-        assert!(err.to_string().contains("Invalid GitHub URL"), "err: {err}");
+        assert!(
+            err.to_string().contains("invalid github repo"),
+            "err: {err}"
+        );
     }
 
     // -----------------------------------------------------------------------
@@ -2097,11 +2119,15 @@ mod wave_b {
         let err = run(
             SkillsAction::Install {
                 skill: "zz-noslash-anywhere".into(),
+                yes: false,
             },
             false,
         )
         .unwrap_err();
-        assert!(err.to_string().contains("Invalid GitHub URL"), "err: {err}");
+        assert!(
+            err.to_string().contains("invalid github repo"),
+            "err: {err}"
+        );
     }
 
     /// Source::Add 子臂（1168-1172）：非法 URL 在任何网络语句之前被 parse 拒绝。
@@ -2491,6 +2517,7 @@ mod wave_c {
             &skills_dir,
             &skills_cfg_of(&home),
             "clawhub/wavec-zip-skill",
+            true,
         )
         .await
         .expect("ClawHub ZIP 成功链必须 Ok（✅ Installed 臂 + 收尾 Ok）");
@@ -2696,9 +2723,9 @@ mod r10_wave {
         assert!(cfg.exists(), "run() 链路同样必须落盘配置");
     }
 
-    /// cmd_install_github 的下载穷尽终局：owner/repo 合法解析后 4 路径 × 2
-    /// 分支共 8 次 raw 请求全部失败（离线被拒 / 在线 404 / 限流），落在
-    /// "Failed to download skill from GitHub" 打印后干净收尾。
+    /// WS4 漏斗后的 GitHub 离线终局：owner/repo 合法解析但离线（R10OfflineNet）
+    /// → resolve_commit 网络失败 → install_github Err（不再是旧裸下载器的
+    /// 「打印+Ok」），且不创建任何安装目录。
     #[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
     #[tokio::test]
     async fn r10_cmd_install_github_download_exhaustion_ends_cleanly() {
@@ -2709,11 +2736,17 @@ mod r10_wave {
         let tmp = TempDir::new().unwrap();
         let skills_dir = tmp.path().join("skills");
 
-        cmd_install_github(&skills_dir, R10_URL)
-            .await
-            .expect("8 连 miss 必须以 Ok 收尾而非报错");
+        let err = cmd_install(
+            &skills_dir,
+            &skills_cfg_of(&tmp.path().join(".nemesisbot")),
+            R10_URL,
+            true,
+        )
+        .await
+        .expect_err("离线（网络被拒）必须报错而非静默 Ok");
 
-        // 失败穷尽路径不创建任何安装目录（只有下载成功的写入分支才建目录）。
+        assert!(err.to_string().contains("安装失败"), "err: {err}");
+        // 失败路径不创建任何安装目录（只有 commit_install 落位才建目录）。
         assert!(!skills_dir.join("Hello-World").exists());
     }
 

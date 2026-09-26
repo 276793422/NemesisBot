@@ -138,6 +138,11 @@ pub struct AppState {
     /// verify_policy 快照映射注入；None = 未注入（`--relay` 纯中继 / 测试
     /// 装配），`security.signature_verify_status` 回 `injected: false`。
     pub signature_verify: Option<Arc<crate::handlers::signature_status::SignatureVerifyStatus>>,
+    /// WS4 技能装前审批门（P13）。gateway 注入 WebApprovalManager 适配器
+    /// （复用 dashboard 审批卡基建）；None = 无审批面（`skills.install` 按
+    /// AlwaysAllow 语义直装——headless/测试装配），`install_approval` 的
+    /// 消费点在 gateway 注入侧。
+    pub skills_install_gate: Option<nemesis_skills::install_gate::SharedInstallGate>,
 }
 
 impl AppState {

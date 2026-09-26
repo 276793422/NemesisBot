@@ -27,6 +27,9 @@ const probe = computed(() => overview.value?.backend_probe ?? null)
 const pending = ref<any[]>([])
 const busy = ref<string | null>(null)
 const selected = ref<Set<string>>(new Set())
+// P21（2026-09-25 能力扩展 WS1）：沙盒拒绝台账（sandbox.denials.list，最新在前）
+const denials = ref<any[]>([])
+const denialsLedger = ref('')
 
 const platform = computed(() => overview.value?.platform ?? null)
 const isWindows = computed(() => platform.value === 'windows')
@@ -68,9 +71,24 @@ async function refreshAll() {
       const pend = await request('sandbox', 'pending').catch(() => [])
       pending.value = Array.isArray(pend) ? pend : (pend?.files ?? [])
     }
+    // P21：拒绝台账独立加载（overview 失败也不阻断——台账是只读附属面）
+    await loadDenials()
   } finally {
     loading.value = false
   }
+}
+
+// P21：拒绝台账查询（limit 上限 500 由后端钳制；空/异常响应诚实归空列表）
+async function loadDenials() {
+  const r = await request('sandbox', 'denials.list', { limit: 50 }).catch(() => null)
+  denials.value = Array.isArray(r?.denials) ? r.denials : []
+  denialsLedger.value = typeof r?.ledger === 'string' ? r.ledger : ''
+}
+
+// RFC3339 → 本地时间展示；解析失败原样回显（台账 ts 由后端 chrono 生成，恒可解析）
+function formatTs(ts: string): string {
+  const d = new Date(ts)
+  return isNaN(d.getTime()) ? ts : d.toLocaleString()
 }
 
 // --- P5：executor 开关逐字段变更（Linux 联动 / 全平台 strict / Linux 联网） ---
@@ -343,6 +361,38 @@ onMounted(async () => {
         </div>
       </div>
 
+      <!-- ════════ P21：沙盒拒绝台账（executor 沙盒拦截事件，最新在前） ════════ -->
+      <div class="card" data-test="denials-card">
+        <div class="card-header" style="display: flex; justify-content: space-between; align-items: center;">
+          <h3 style="margin: 0;">拒绝台账 <span style="font-size: var(--text-sm); font-weight: 400; color: var(--text-secondary);">最近 {{ denials.length }} 条</span></h3>
+          <button class="btn btn-sm" data-test="denials-refresh" @click="loadDenials" :disabled="loading">刷新台账</button>
+        </div>
+        <div class="card-body">
+          <div v-if="denials.length === 0" style="color: var(--text-secondary); font-size: var(--text-sm);">
+            暂无沙盒拒绝记录。executor 沙盒（landlock / bwrap / Sandboxie）拦截工具操作时会记到
+            <code>workspace/logs/sandbox_denials.jsonl</code>，并同时回灌给模型引导自纠。
+          </div>
+          <div v-else style="display: flex; flex-direction: column; font-size: var(--text-sm);">
+            <div
+              v-for="(d, i) in denials"
+              :key="i"
+              data-test="denials-row"
+              style="display: flex; align-items: baseline; gap: var(--space-2); padding: var(--space-1) 0; border-bottom: 1px solid var(--border);"
+            >
+              <span style="flex-shrink: 0; color: var(--text-secondary); font-family: var(--font-mono); font-size: var(--text-xs);">{{ formatTs(d.ts) }}</span>
+              <span class="denial-backend">{{ d.backend }}</span>
+              <code style="flex-shrink: 0;">{{ d.op }}</code>
+              <span style="flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-family: var(--font-mono); font-size: var(--text-xs);" :title="d.target">{{ d.target }}</span>
+              <span style="flex-shrink: 0; max-width: 35%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--text-secondary); font-size: var(--text-xs);" :title="d.reason">{{ d.reason }}</span>
+              <span v-if="!d.model_visible" class="denial-hidden">未回灌</span>
+            </div>
+            <div v-if="denialsLedger" style="margin-top: var(--space-2); font-size: var(--text-xs); color: var(--text-secondary); overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">
+              台账文件：<code>{{ denialsLedger }}</code>
+            </div>
+          </div>
+        </div>
+      </div>
+
       <!-- ════════ Windows 布局：3 Tab Sandboxie 专属语义（保持原样）+ 严格模式卡 ════════ -->
       <template v-if="isWindows">
       <!-- Tabs -->
@@ -573,5 +623,22 @@ code { background: var(--bg-secondary, rgba(0,0,0,0.05)); padding: 1px 4px; bord
   border-radius: 999px;
   padding: 2px 10px;
   margin-left: var(--space-3);
+}
+.denial-backend {
+  flex-shrink: 0;
+  font-size: var(--text-xs);
+  font-family: var(--font-mono);
+  color: var(--warning, #d97706);
+  border: 1px solid currentColor;
+  border-radius: 999px;
+  padding: 0 8px;
+}
+.denial-hidden {
+  flex-shrink: 0;
+  font-size: var(--text-xs);
+  color: var(--text-secondary);
+  border: 1px dashed var(--border);
+  border-radius: 999px;
+  padding: 0 8px;
 }
 </style>

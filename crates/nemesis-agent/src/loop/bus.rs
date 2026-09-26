@@ -181,6 +181,9 @@ impl AgentLoop {
             config_path: parking_lot::RwLock::new(None),
             pricing_store: parking_lot::RwLock::new(None),
             lsp_manager: parking_lot::RwLock::new(None),
+            diagnostics_touched: parking_lot::Mutex::new(
+                config_watch::DiagnosticsTouchRegistry::default(),
+            ),
             commands_hot: parking_lot::RwLock::new(None),
             cc_bridge: parking_lot::RwLock::new(None),
             spill_root: parking_lot::RwLock::new(None),

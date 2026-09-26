@@ -225,6 +225,7 @@ impl ModuleHandler for SandboxHandler {
             "set_network",
             "set_config",
             "self_test",
+            "denials.list",
         ]
     }
 
@@ -332,8 +333,12 @@ impl ModuleHandler for SandboxHandler {
                             })
                         })
                         .collect();
+                    // P1（2026-09-25）：selected 按 config 的 allow_network
+                    // 选型（禁网 + bwrap 可用 → bwrap；与 exec_worker::engage
+                    // 同一张决策表）。
                     let selected =
-                        nemesis_sandbox::backend::detect_backend().map(|b| b.name().to_string());
+                        nemesis_sandbox::backend::detect_backend(current_allow_network(&home))
+                            .map(|b| b.name().to_string());
                     (
                         serde_json::json!({
                             "kind": "userland",
@@ -585,6 +590,41 @@ impl ModuleHandler for SandboxHandler {
             // G7 (D2)：用户态沙盒自检（一次性子进程探针；Windows / 无后端
             // → supported:false，不 spawn）。
             "self_test" => self.self_test(&home).await,
+            // P21（2026-09-25）：沙盒拒绝台账查询。台账是沙盒层自有观测面
+            // （<workspace>/logs/sandbox_denials.jsonl，executor 子进程侧经
+            // nemesis_sandbox::denial 写入），这里只读：limit 缺省 50、上限
+            // 500（防一次拖全量），最新在前。不接安全审计链（Merkle 链照旧）。
+            "denials.list" => {
+                let limit = data
+                    .as_ref()
+                    .and_then(|d| d.get("limit"))
+                    .and_then(|v| v.as_u64())
+                    .unwrap_or(50)
+                    .clamp(1, 500) as usize;
+                let workspace = home.join("workspace");
+                let mut denials: Vec<serde_json::Value> =
+                    nemesis_sandbox::denial::read_denials(&workspace, limit)
+                        .into_iter()
+                        .map(|r| {
+                            serde_json::json!({
+                                "ts": r.ts,
+                                "backend": r.backend,
+                                "op": r.op,
+                                "target": r.target,
+                                "reason": r.reason,
+                                "model_visible": r.model_visible,
+                            })
+                        })
+                        .collect();
+                // 文件序 = 时间序 → 反转为「最新在前」展示。
+                denials.reverse();
+                Ok(Some(serde_json::json!({
+                    "denials": denials,
+                    "count": denials.len(),
+                    "limit": limit,
+                    "ledger": nemesis_sandbox::denial::ledger_path(&workspace).to_string_lossy(),
+                })))
+            }
             other => Err(format!("unknown sandbox command: {other}")),
         }
     }
@@ -609,7 +649,10 @@ impl SandboxHandler {
         std::fs::create_dir_all(&workspace)
             .map_err(|e| format!("create workspace for selftest: {e}"))?;
 
-        let Some(backend) = detect_backend() else {
+        // P1（2026-09-25）：先读网络要求再选后端（禁网 + bwrap 可用 → 自检
+        // 走 bwrap，测的才是真实强制链）。
+        let allow_network = current_allow_network(home);
+        let Some(backend) = detect_backend(allow_network) else {
             return Ok(Some(serde_json::json!({
                 "supported": false,
                 "backend": serde_json::Value::Null,
@@ -622,7 +665,6 @@ impl SandboxHandler {
             })));
         };
 
-        let allow_network = current_allow_network(home);
         let exe = std::env::current_exe().map_err(|e| format!("current_exe: {e}"))?;
         let mut cmd = std::process::Command::new(&exe);
         cmd.arg("sandbox").arg("selftest-child");
@@ -740,3 +782,8 @@ mod s10b_tests;
 // spawn 失败臂。run_cli_subcmd/真下载/真开窗臂豁免（见 agt_tests 文件头注）。
 #[cfg(test)]
 mod agt_tests;
+
+// P21（2026-09-25）：sandbox.denials.list 查询面（空账 / 种子账 / limit 截断
+// 与上限 / 最新在前）。
+#[cfg(test)]
+mod denials_tests;

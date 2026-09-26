@@ -2,6 +2,7 @@
 import { ref, computed, onMounted } from 'vue'
 import { useWSAPI } from '../composables/useWSAPI'
 import { useToast } from '../composables/useToast'
+import { groupModelsByFamily } from '../utils/providerFamilies'
 
 const { request } = useWSAPI()
 const toast = useToast()
@@ -105,6 +106,21 @@ async function loadModels() {
     toast.error('加载模型失败: ' + e)
   }
   loading.value = false
+}
+
+// P10（能力扩展 WS5）：模型列表按 provider 家族分组展示 + 家族筛选。
+// 家族推断/分组逻辑在 utils/providerFamilies.ts（镜像 P9 预设表）。
+const familyFilter = ref('') // '' = 全部家族
+const collapsedGroups = ref<Set<string>>(new Set())
+const familyGroups = computed(() => groupModelsByFamily(models.value, (m) => m.model))
+const visibleGroups = computed(() =>
+  familyFilter.value ? familyGroups.value.filter((g) => g.id === familyFilter.value) : familyGroups.value,
+)
+function toggleGroup(id: string) {
+  const s = new Set(collapsedGroups.value)
+  if (s.has(id)) s.delete(id)
+  else s.add(id)
+  collapsedGroups.value = s
 }
 
 // G4 (U15)：key 来源徽标（env 绿 / yaml 蓝 / inline 黄「⚠ 明文」/ none 灰）。
@@ -342,6 +358,11 @@ onMounted(() => {
           <span v-if="catalogUpdating" class="spinner" style="width:14px;height:14px;"></span>
           {{ catalogUpdating ? '拉取中…' : '更新模型目录' }}
         </button>
+        <!-- P10: 家族筛选下拉（家族分组推断自 P9 预设表镜像） -->
+        <select v-if="models.length > 0" v-model="familyFilter" class="form-input family-filter" title="按 provider 家族筛选">
+          <option value="">全部家族</option>
+          <option v-for="g in familyGroups" :key="g.id" :value="g.id">{{ g.label }}（{{ g.items.length }}）</option>
+        </select>
         <button class="btn btn-primary" @click="showAdd = !showAdd">{{ showAdd ? '取消' : '+ 添加模型' }}</button>
       </div>
     </div>
@@ -413,10 +434,18 @@ onMounted(() => {
         <p>点击上方"添加模型"按钮配置第一个 AI 模型</p>
       </div>
 
-      <!-- Model list -->
-      <div v-if="!loading && models.length > 0" style="display: grid; grid-template-columns: repeat(auto-fill, minmax(340px, 1fr)); gap: var(--space-4);">
+      <!-- Model list（P10：provider 家族分组 + 折叠 + 筛选；模型卡片内容不变） -->
+      <div v-if="!loading && models.length > 0">
+        <template v-if="visibleGroups.length > 0">
+          <section v-for="g in visibleGroups" :key="g.id || 'unknown'" class="family-group">
+            <button type="button" class="family-header" @click="toggleGroup(g.id)">
+              <span class="family-chevron" :class="{ 'family-chevron--open': !collapsedGroups.has(g.id) }">&#9656;</span>
+              <span class="family-name">{{ g.label }}</span>
+              <span class="family-count">{{ g.items.length }}</span>
+            </button>
+            <div v-show="!collapsedGroups.has(g.id)" class="family-grid">
         <div
-          v-for="m in models"
+          v-for="m in g.items"
           :key="m.model_name"
           class="card model-card"
           :class="{ 'model-card--default': m.is_default, 'model-card--switching': switching === m.model_name }"
@@ -546,12 +575,74 @@ onMounted(() => {
             <button class="btn btn-sm btn-danger" @click="deleteModel(m.model_name)" :disabled="switching !== null">删除</button>
           </div>
         </div>
+            </div>
+          </section>
+        </template>
+        <div v-else class="empty-state">
+          <h3>该家族暂无模型</h3>
+          <p>当前筛选下没有匹配的模型</p>
+        </div>
       </div>
     </div>
   </div>
 </template>
 
 <style scoped>
+/* P10: provider 家族分组（折叠组头 + 组内卡片网格） */
+.family-group {
+  margin-bottom: var(--space-4);
+}
+
+.family-header {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2);
+  padding: 4px 8px;
+  margin-bottom: var(--space-2);
+  border: none;
+  background: transparent;
+  color: var(--text-primary);
+  font-size: var(--text-sm);
+  font-weight: 600;
+  cursor: pointer;
+  border-radius: var(--radius-sm);
+}
+
+.family-header:hover {
+  background: var(--bg-tertiary);
+}
+
+.family-chevron {
+  display: inline-block;
+  transition: transform 0.15s;
+  color: var(--text-muted);
+}
+
+.family-chevron--open {
+  transform: rotate(90deg);
+}
+
+.family-count {
+  font-size: var(--text-xs);
+  font-weight: 500;
+  color: var(--text-muted);
+  background: var(--bg-tertiary);
+  border-radius: 999px;
+  padding: 0 8px;
+  line-height: 18px;
+}
+
+.family-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(340px, 1fr));
+  gap: var(--space-4);
+}
+
+.family-filter {
+  width: auto;
+  min-width: 160px;
+}
+
 .model-card {
   transition: border-color 0.25s, box-shadow 0.25s, background-color 0.25s;
 }

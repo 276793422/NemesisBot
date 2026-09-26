@@ -1048,7 +1048,8 @@ async fn test_s11b_run_add_no_config_bails() {
     let _th = s11b_temp_home_env();
     let err = super::run(
         super::ModelAction::Add {
-            model: "zhipu/glm-4.7".into(),
+            model: Some("zhipu/glm-4.7".into()),
+            provider: None,
             key: None,
             base: None,
             proxy: None,
@@ -1073,7 +1074,8 @@ async fn test_s11b_run_add_invalid_format_bails() {
     s11b_write_cfg(&th.home, serde_json::json!({"model_list": []}));
     let err = super::run(
         super::ModelAction::Add {
-            model: "glm-4.7".into(), // 无 vendor 前缀
+            model: Some("glm-4.7".into()), // 无 vendor 前缀
+            provider: None,
             key: None,
             base: None,
             proxy: None,
@@ -1105,7 +1107,8 @@ async fn test_s11b_run_add_basic_writes_entry() {
     s11b_write_cfg(&th.home, serde_json::json!({"model_list": []}));
     super::run(
         super::ModelAction::Add {
-            model: "zhipu/glm-4.7".into(),
+            model: Some("zhipu/glm-4.7".into()),
+            provider: None,
             key: Some("sk-test".into()),
             base: None,
             proxy: None,
@@ -1138,7 +1141,8 @@ async fn test_s11b_run_add_full_fields() {
     s11b_write_cfg(&th.home, serde_json::json!({"model_list": []}));
     super::run(
         super::ModelAction::Add {
-            model: "openai/gpt-4o".into(),
+            model: Some("openai/gpt-4o".into()),
+            provider: None,
             key: Some("k1".into()),
             base: Some("http://127.0.0.1:1/v1".into()),
             proxy: Some("http://127.0.0.1:1".into()),
@@ -1174,7 +1178,8 @@ async fn test_s11b_run_add_default_flag_sets_llm() {
     );
     super::run(
         super::ModelAction::Add {
-            model: "openai/gpt-4o".into(),
+            model: Some("openai/gpt-4o".into()),
+            provider: None,
             key: None,
             base: None,
             proxy: None,
@@ -1210,7 +1215,8 @@ async fn test_s11b_run_add_auto_default_skipped_when_default_exists() {
     );
     super::run(
         super::ModelAction::Add {
-            model: "openai/gpt-4o".into(),
+            model: Some("openai/gpt-4o".into()),
+            provider: None,
             key: None,
             base: None,
             proxy: None,
@@ -1237,7 +1243,8 @@ async fn test_s11b_run_add_duplicate_replaces() {
     for key in ["sk-one", "sk-two"] {
         super::run(
             super::ModelAction::Add {
-                model: "zhipu/glm-4.7".into(),
+                model: Some("zhipu/glm-4.7".into()),
+                provider: None,
                 key: Some(key.into()),
                 base: None,
                 proxy: None,
@@ -1272,7 +1279,8 @@ async fn test_fi_readd_preserves_tier_vision_and_probe_assets() {
     // 首次 add。
     super::run(
         super::ModelAction::Add {
-            model: "qwen/qwen3-30b-a3b".into(),
+            model: Some("qwen/qwen3-30b-a3b".into()),
+            provider: None,
             key: Some("sk-one".into()),
             base: None,
             proxy: None,
@@ -1296,7 +1304,8 @@ async fn test_fi_readd_preserves_tier_vision_and_probe_assets() {
     // 重复 add（换 key）。
     super::run(
         super::ModelAction::Add {
-            model: "qwen/qwen3-30b-a3b".into(),
+            model: Some("qwen/qwen3-30b-a3b".into()),
+            provider: None,
             key: Some("sk-two".into()),
             base: None,
             proxy: None,
@@ -1328,7 +1337,8 @@ async fn test_fi_new_add_still_tags_auto_tier() {
     s11b_write_cfg(&th.home, serde_json::json!({"model_list": []}));
     super::run(
         super::ModelAction::Add {
-            model: "zhipu/glm-4.7".into(),
+            model: Some("zhipu/glm-4.7".into()),
+            provider: None,
             key: Some("sk".into()),
             base: None,
             proxy: None,
@@ -1359,7 +1369,8 @@ async fn test_fi_readd_legacy_entry_without_tier_stays_absent() {
     );
     super::run(
         super::ModelAction::Add {
-            model: "zhipu/glm-4.7".into(),
+            model: Some("zhipu/glm-4.7".into()),
+            provider: None,
             key: Some("sk".into()),
             base: None,
             proxy: None,
@@ -1400,7 +1411,8 @@ async fn test_s11b_run_add_catalog_hit_fills_context_window() {
     .unwrap();
     super::run(
         super::ModelAction::Add {
-            model: "testorg/coolmodel".into(),
+            model: Some("testorg/coolmodel".into()),
+            provider: None,
             key: None,
             base: None,
             proxy: None,
@@ -2000,7 +2012,8 @@ mod wave_b {
             ModelAction::Add {
                 // tinyllama 在 capability small_markers 里 ⇒ detect_tier=Mini
                 // ⇒ 提示打印走 else 臂（236-238），而非 big 建议。
-                model: "tinyllama/local-1".into(),
+                model: Some("tinyllama/local-1".into()),
+                provider: None,
                 key: Some("k".into()),
                 base: None,
                 proxy: None,
@@ -2781,7 +2794,8 @@ mod wave_a {
         );
         super::super::run(
             super::super::ModelAction::Add {
-                model: "anthropic/claude-sonnet-4".into(),
+                model: Some("anthropic/claude-sonnet-4".into()),
+                provider: None,
                 key: None,
                 base: None,
                 proxy: None,
@@ -2812,7 +2826,8 @@ mod wave_a {
         super::s11b_write_cfg(&th.home, serde_json::json!({"model_list": []}));
         let err = super::super::run(
             super::super::ModelAction::Add {
-                model: "zhipu/glm-4.7".into(),
+                model: Some("zhipu/glm-4.7".into()),
+                provider: None,
                 key: None,
                 base: None,
                 proxy: None,
@@ -2945,7 +2960,8 @@ mod w5b2 {
         //    写入臂 + 原子写。
         super::super::run(
             ModelAction::Add {
-                model: "w5b2/probe-m".into(),
+                model: Some("w5b2/probe-m".into()),
+                provider: None,
                 key: Some("sk-w5b2".into()),
                 base: Some(base.clone()),
                 proxy: None,
@@ -2967,7 +2983,8 @@ mod w5b2 {
         // ② 重复 Add（同 model 不同 key）：走「查重 → retain + push」更新臂。
         super::super::run(
             ModelAction::Add {
-                model: "w5b2/probe-m".into(),
+                model: Some("w5b2/probe-m".into()),
+                provider: None,
                 key: Some("sk-w5b2-v2".into()),
                 base: Some(base.clone()),
                 proxy: None,
@@ -3217,4 +3234,234 @@ mod wave6 {
         .unwrap_err();
         assert!(!err.to_string().is_empty(), "离线必须 Err");
     }
+}
+
+// =========================================================================
+// WS5（P9，能力扩展）：`model add --provider` 家族预设
+// —— Windows 形态 CLI 测试（真 env + 真 config.json，GLOBAL_STATE_LOCK 串行）。
+// 家族数据本身（URL/协议/别名唯一性）的完整性测试在
+// nemesis-config/src/provider_resolver/tests.rs，这里只测 CLI 装配语义。
+// =========================================================================
+
+#[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
+#[tokio::test]
+async fn test_ws5_provider_add_autofills_preset() {
+    let _guard = crate::GLOBAL_STATE_LOCK
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
+    let th = s11b_temp_home_env();
+    s11b_write_cfg(&th.home, serde_json::json!({"model_list": []}));
+
+    super::run(
+        super::ModelAction::Add {
+            model: None,
+            provider: Some("deepseek".into()),
+            key: Some("sk-ws5".into()),
+            base: None,
+            proxy: None,
+            auth: None,
+            protocol: None,
+            default: false,
+        },
+        false,
+    )
+    .await
+    .expect("--provider 纯预设添加必须成功");
+
+    let cfg = s11b_read_cfg(&th.home);
+    let entry = &cfg["model_list"][0];
+    assert_eq!(
+        entry["model"].as_str(),
+        Some("deepseek/deepseek-chat"),
+        "缺省 --model 时必须按预设自动拼 vendor/default_model"
+    );
+    assert_eq!(entry["model_name"].as_str(), Some("deepseek-chat"));
+    assert_eq!(
+        entry["api_base"].as_str(),
+        Some("https://api.deepseek.com/v1"),
+        "预设 api_base 必须自动落盘"
+    );
+    assert_eq!(
+        entry["protocol"].as_str(),
+        Some("openai"),
+        "预设 protocol 必须自动落盘"
+    );
+    assert_eq!(
+        entry["model_tier"].as_str(),
+        Some("auto"),
+        "预设路径同款 auto tier"
+    );
+}
+
+#[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
+#[tokio::test]
+async fn test_ws5_provider_add_alias_and_case_insensitive() {
+    let _guard = crate::GLOBAL_STATE_LOCK
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
+    let th = s11b_temp_home_env();
+    s11b_write_cfg(&th.home, serde_json::json!({"model_list": []}));
+
+    // 别名 kimi + 大小写混写都要命中同一家族（moonshot）。
+    super::run(
+        super::ModelAction::Add {
+            model: None,
+            provider: Some(" Kimi ".into()),
+            key: Some("sk-ws5".into()),
+            base: None,
+            proxy: None,
+            auth: None,
+            protocol: None,
+            default: false,
+        },
+        false,
+    )
+    .await
+    .expect("别名 + 去空白 + 大小写不敏感必须命中");
+
+    let cfg = s11b_read_cfg(&th.home);
+    let entry = &cfg["model_list"][0];
+    assert_eq!(entry["model"].as_str(), Some("moonshot/moonshot-v1-8k"));
+    assert_eq!(
+        entry["api_base"].as_str(),
+        Some("https://api.moonshot.cn/v1")
+    );
+}
+
+#[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
+#[tokio::test]
+async fn test_ws5_provider_add_explicit_flags_win() {
+    let _guard = crate::GLOBAL_STATE_LOCK
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
+    let th = s11b_temp_home_env();
+    s11b_write_cfg(&th.home, serde_json::json!({"model_list": []}));
+
+    // 显式 --model/--base/--protocol 恒优先于预设值。
+    super::run(
+        super::ModelAction::Add {
+            model: Some("groq/custom-finetune".into()),
+            provider: Some("groq".into()),
+            key: Some("sk-ws5".into()),
+            base: Some("https://self-hosted.example/v1".into()),
+            proxy: None,
+            auth: None,
+            protocol: Some("anthropic".into()),
+            default: false,
+        },
+        false,
+    )
+    .await
+    .expect("显式 flag 覆盖预设必须成功");
+
+    let cfg = s11b_read_cfg(&th.home);
+    let entry = &cfg["model_list"][0];
+    assert_eq!(entry["model"].as_str(), Some("groq/custom-finetune"));
+    assert_eq!(
+        entry["api_base"].as_str(),
+        Some("https://self-hosted.example/v1"),
+        "--base 必须压过预设端点"
+    );
+    assert_eq!(
+        entry["protocol"].as_str(),
+        Some("anthropic"),
+        "--protocol 必须压过预设协议"
+    );
+}
+
+#[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
+#[tokio::test]
+async fn test_ws5_provider_add_unknown_family_bails_with_families() {
+    let _guard = crate::GLOBAL_STATE_LOCK
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
+    let th = s11b_temp_home_env();
+    s11b_write_cfg(&th.home, serde_json::json!({"model_list": []}));
+
+    let err = super::run(
+        super::ModelAction::Add {
+            model: None,
+            provider: Some("no-such-cloud".into()),
+            key: Some("k".into()),
+            base: None,
+            proxy: None,
+            auth: None,
+            protocol: None,
+            default: false,
+        },
+        false,
+    )
+    .await
+    .unwrap_err();
+
+    let msg = err.to_string();
+    assert!(msg.contains("Unknown provider family 'no-such-cloud'"));
+    // 错误文案必须列出可用家族（面向用户/模型可自纠）。
+    assert!(msg.contains("deepseek"), "家族清单缺 deepseek: {msg}");
+    assert!(msg.contains("zhipu"), "家族清单缺 zhipu: {msg}");
+}
+
+#[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
+#[tokio::test]
+async fn test_ws5_provider_add_requires_model_or_provider() {
+    let _guard = crate::GLOBAL_STATE_LOCK
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
+    let th = s11b_temp_home_env();
+    s11b_write_cfg(&th.home, serde_json::json!({"model_list": []}));
+
+    let err = super::run(
+        super::ModelAction::Add {
+            model: None,
+            provider: None,
+            key: Some("k".into()),
+            base: None,
+            proxy: None,
+            auth: None,
+            protocol: None,
+            default: false,
+        },
+        false,
+    )
+    .await
+    .unwrap_err();
+
+    let msg = err.to_string();
+    assert!(
+        msg.contains("--model or --provider is required"),
+        "两者皆缺必须 loud 指路: {msg}"
+    );
+    assert!(msg.contains("Families:"), "缺参报错同样要列家族清单: {msg}");
+}
+
+#[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
+#[tokio::test]
+async fn test_ws5_provider_add_empty_default_model_bails() {
+    let _guard = crate::GLOBAL_STATE_LOCK
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
+    let th = s11b_temp_home_env();
+    s11b_write_cfg(&th.home, serde_json::json!({"model_list": []}));
+
+    // shengsuanyun：无公开固定默认型号的家族，缺 --model 必须诚实拒绝。
+    let err = super::run(
+        super::ModelAction::Add {
+            model: None,
+            provider: Some("shengsuanyun".into()),
+            key: Some("k".into()),
+            base: None,
+            proxy: None,
+            auth: None,
+            protocol: None,
+            default: false,
+        },
+        false,
+    )
+    .await
+    .unwrap_err();
+
+    assert!(
+        err.to_string().contains("no built-in default model"),
+        "空 default_model 家族必须拒绝并指路 --model: {err}"
+    );
 }

@@ -3,8 +3,11 @@
 //! 用 planted fake gopls（Python stdio LSP server，沿 nemesis-lsp
 //! `manager/tests.rs` 的确定性形态）驱动 [`AgentLoop::apply_diagnostics_feedback`]
 //! 全决策表：ERROR 追加（格式/行号 1-based）、WARN-only 静默、开关关、
-//! 非 write|edit 工具、无 manager、未注册语言、touch 失败、max_errors 截断。
+//! 非触发写工具、无 manager、未注册语言、touch 失败、max_errors 截断。
 //! 全部失败路径都断言**原样返回**——诊断永不改写工具结果语义。
+//! P2（能力扩展 WS3）：默认值翻转为 true（显式 false 用例改显式构造）；
+//! fake server / PATH 辅助 `pub(super)` 供 `diagnostics_session_tests`
+//! 复用（PATH 是进程全局态，跨模块必须共一把 env 锁，否则并行互踩）。
 
 use std::sync::Mutex;
 use std::time::Duration;
@@ -13,10 +16,11 @@ use super::AgentLoop;
 use nemesis_config::DiagnosticsLoopConfig;
 
 /// Process-global env writers must share one lock（env-test-race-lock-pattern）。
-static FAKE_ENV_LOCK: Mutex<()> = Mutex::new(());
+/// pub(super)：diagnostics_session_tests 同挂 PATH，必须共用同一把锁。
+pub(super) static FAKE_ENV_LOCK: Mutex<()> = Mutex::new(());
 
 /// Holds the env lock and restores PATH on drop（即使断言失败也恢复）。
-struct PathRestore {
+pub(super) struct PathRestore {
     _lock: std::sync::MutexGuard<'static, ()>,
     orig: String,
 }
@@ -33,6 +37,7 @@ impl Drop for PathRestore {
 /// - `error`：1 条 severity 1（L2:C4 0-based → 显示 L3:5），source=fake
 /// - `warn`：1 条 severity 2（不该被回灌）
 /// - `multi`：3 条 severity 1（max_errors 截断测试）
+/// - `flood`：25 条 severity 1（P3 跨文件聚合 cap 测试）
 const FAKE_GOPLS_PY: &str = r#"
 import sys, json
 
@@ -88,6 +93,8 @@ while True:
         elif MODE == "multi":
             push(uri, [diag(1, 0, "err one"), diag(2, 0, "err two"),
                        diag(3, 0, "err three")])
+        elif MODE == "flood":
+            push(uri, [diag(i, 0, "err %02d" % i) for i in range(25)])
     elif mid is not None:
         send({"jsonrpc": "2.0", "id": mid, "result": None})
 "#;
@@ -95,7 +102,8 @@ while True:
 /// Plant fake_lsp_server.py + `gopls` shim（mode 烧进 shim）到临时目录并
 /// 前插 PATH。go.mod marker 把 find_root 钉在该目录。同 nemesis-lsp 测试
 /// 的前提：本机无真 gopls；纵然有，前插目录赢得解析序。
-fn plant_fake_gopls(mode: &str) -> (tempfile::TempDir, PathRestore) {
+/// pub(super)：diagnostics_session_tests 复用（同锁前提见模块注释）。
+pub(super) fn plant_fake_gopls(mode: &str) -> (tempfile::TempDir, PathRestore) {
     let lock = FAKE_ENV_LOCK.lock().unwrap();
     let dir = tempfile::tempdir().unwrap();
     let py_path = dir.path().join("fake_gopls.py");
@@ -141,7 +149,8 @@ fn plant_fake_gopls(mode: &str) -> (tempfile::TempDir, PathRestore) {
     (dir, PathRestore { _lock: lock, orig })
 }
 
-fn cfg_enabled() -> DiagnosticsLoopConfig {
+/// 全开配置（20 条 / 5000ms 等待）。pub(super)：session 测试复用同口径。
+pub(super) fn cfg_enabled() -> DiagnosticsLoopConfig {
     DiagnosticsLoopConfig {
         enabled: true,
         max_errors: 20,
@@ -160,10 +169,12 @@ async fn error_diag_appended_with_one_based_position() {
         Some(&mgr),
         cfg_enabled(),
         "edit_file",
-        &go.to_string_lossy(),
+        &[go.to_str().unwrap()],
+        &[],
         "edit applied",
     )
-    .await;
+    .await
+    .0;
 
     assert!(out.starts_with("edit applied"), "原文必须保留: {out}");
     assert!(
@@ -188,10 +199,12 @@ async fn warning_only_leaves_result_unchanged() {
         Some(&mgr),
         cfg_enabled(),
         "write_file",
-        &go.to_string_lossy(),
+        &[go.to_str().unwrap()],
+        &[],
         "written ok",
     )
-    .await;
+    .await
+    .0;
 
     assert_eq!(out, "written ok");
     let _ = mgr.shutdown_all().await;
@@ -213,10 +226,12 @@ async fn max_errors_caps_listed_diagnostics() {
         Some(&mgr),
         cfg,
         "edit_file",
-        &go.to_string_lossy(),
+        &[go.to_str().unwrap()],
+        &[],
         "r",
     )
-    .await;
+    .await
+    .0;
 
     assert!(
         out.contains("[LSP] 2 error(s) detected in"),
@@ -237,12 +252,19 @@ async fn disabled_returns_unchanged() {
 
     let out = AgentLoop::apply_diagnostics_feedback(
         Some(&mgr),
-        DiagnosticsLoopConfig::default(), // enabled=false
+        // P2（能力扩展 WS3）默认值翻转为 true；本用例测显式关，须显式构造。
+        DiagnosticsLoopConfig {
+            enabled: false,
+            max_errors: 20,
+            wait_max_ms: 5000,
+        },
         "edit_file",
-        &go.to_string_lossy(),
+        &[go.to_str().unwrap()],
+        &[],
         "untouched",
     )
-    .await;
+    .await
+    .0;
 
     assert_eq!(out, "untouched");
     assert_eq!(
@@ -252,7 +274,7 @@ async fn disabled_returns_unchanged() {
     );
 }
 
-/// 非 write_file/edit_file 工具 → 原样返回（read 等不触发诊断等待）。
+/// 非触发写工具 → 原样返回（read 等不触发诊断等待）。
 #[tokio::test]
 async fn non_edit_tool_returns_unchanged() {
     let (dir, _path) = plant_fake_gopls("error");
@@ -263,10 +285,12 @@ async fn non_edit_tool_returns_unchanged() {
         Some(&mgr),
         cfg_enabled(),
         "read_file",
-        &go.to_string_lossy(),
+        &[go.to_str().unwrap()],
+        &[],
         "read ok",
     )
-    .await;
+    .await
+    .0;
 
     assert_eq!(out, "read ok");
     assert_eq!(mgr.session_count().await, 0);
@@ -275,15 +299,17 @@ async fn non_edit_tool_returns_unchanged() {
 /// 无 manager（standalone / 未注入）→ 原样返回。
 #[tokio::test]
 async fn no_manager_returns_unchanged() {
-    let out = AgentLoop::apply_diagnostics_feedback(
+    let (out, anchors) = AgentLoop::apply_diagnostics_feedback(
         None,
         cfg_enabled(),
         "edit_file",
-        "C:\\does\\not\\matter.go",
+        &["C:\\does\\not\\matter.go"],
+        &[],
         "still ok",
     )
     .await;
     assert_eq!(out, "still ok");
+    assert!(anchors.is_empty(), "无 manager 不得产生采集锚点");
 }
 
 /// 未注册语言（.txt）→ 原样返回。
@@ -296,10 +322,12 @@ async fn unsupported_lang_returns_unchanged() {
         Some(&mgr),
         cfg_enabled(),
         "write_file",
-        &dir.path().join("note.txt").to_string_lossy(),
+        &[dir.path().join("note.txt").to_str().unwrap()],
+        &[],
         "txt ok",
     )
-    .await;
+    .await
+    .0;
 
     assert_eq!(out, "txt ok");
     assert_eq!(mgr.session_count().await, 0);
@@ -315,10 +343,12 @@ async fn touch_failure_returns_unchanged() {
         Some(&mgr),
         cfg_enabled(),
         "edit_file",
-        &dir.path().join("missing.go").to_string_lossy(),
+        &[dir.path().join("missing.go").to_str().unwrap()],
+        &[],
         "still fine",
     )
-    .await;
+    .await
+    .0;
 
     assert_eq!(out, "still fine");
     let _ = mgr.shutdown_all().await;
@@ -357,10 +387,12 @@ async fn no_server_on_path_returns_unchanged() {
         Some(&mgr),
         cfg_enabled(),
         "edit_file",
-        &dir.path().join("main.go").to_string_lossy(),
+        &[dir.path().join("main.go").to_str().unwrap()],
+        &[],
         "plain",
     )
-    .await;
+    .await
+    .0;
 
     assert_eq!(out, "plain");
     assert_eq!(mgr.session_count().await, 0, "无服务器时不得 spawn 会话");
@@ -405,10 +437,12 @@ async fn real_rust_analyzer_closed_loop_gates() {
         Some(&mgr),
         cfg,
         "edit_file",
-        &main_rs.to_string_lossy(),
+        &[main_rs.to_str().unwrap()],
+        &[],
         "edited",
     )
-    .await;
+    .await
+    .0;
     eprintln!("real-chain feedback:\n{out}");
 
     assert!(

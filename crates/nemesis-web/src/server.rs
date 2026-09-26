@@ -270,6 +270,8 @@ pub struct WebServer {
     /// 签名验证启动自验状态（接入计划 §4；gateway 从 verify_policy 快照映射
     /// 注入，flows into AppState for security.signature_verify_status）。
     signature_verify: Option<Arc<crate::handlers::signature_status::SignatureVerifyStatus>>,
+    /// WS4 技能装前审批门（P13；gateway 注入，flows into AppState）。
+    skills_install_gate: Option<nemesis_skills::install_gate::SharedInstallGate>,
     /// Runtime cron service (set by gateway; flows into AppState for tasks.cron.*).
     cron: Option<Arc<std::sync::Mutex<nemesis_cron::CronService>>>,
     /// Managed-agent board service (set by gateway when the `board` feature is on;
@@ -358,6 +360,7 @@ impl WebServer {
             internal_cmd_tx: None,
             estop: None,
             signature_verify: None,
+            skills_install_gate: None,
             cron: None,
             board: None,
             conv_router: None,
@@ -512,6 +515,15 @@ impl WebServer {
         self.signature_verify = Some(status);
     }
 
+    /// Set the skills install approval gate (WS4 P13；gateway 注入
+    /// WebApprovalManager 适配器，`skills.install` 经它出审批卡)。
+    pub fn set_skills_install_gate(
+        &mut self,
+        gate: nemesis_skills::install_gate::SharedInstallGate,
+    ) {
+        self.skills_install_gate = Some(gate);
+    }
+
     /// Set the runtime cron service for `tasks.cron.*` handlers.
     pub fn set_cron(&mut self, cron: Arc<std::sync::Mutex<nemesis_cron::CronService>>) {
         self.cron = Some(cron);
@@ -648,6 +660,7 @@ impl WebServer {
             internal_cmd_tx: self.internal_cmd_tx.clone(),
             estop: self.estop.clone(),
             signature_verify: self.signature_verify.clone(),
+            skills_install_gate: self.skills_install_gate.clone(),
             cron: self.cron.clone(),
             board: self.board.clone(),
         };

@@ -614,6 +614,10 @@ mod scanner_more_tests;
 mod skills_extra_tests;
 #[cfg(all(test, feature = "workflow"))]
 mod skills_more_tests;
+// WS4 供应链工作流（2026-09-25）：skills.install 漏斗记账/gate 拒绝/
+// uninstall 联动/verify 漂移检测的 WSAPI 面。
+#[cfg(all(test, feature = "workflow"))]
+mod skills_ws4_tests;
 #[cfg(all(test, feature = "voice"))]
 mod voice_extra_tests;
 // 凭据回显脱敏批次（2026-09-25；vault 方案 0.4.7 遗留收尾）：WSAPI 回显面

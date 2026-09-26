@@ -64,6 +64,7 @@ fn make_ctx(dir: &tempfile::TempDir) -> RequestContext {
         internal_cmd_tx: None,
         estop: None,
         signature_verify: None,
+        skills_install_gate: None,
         cron: None,
         board: None,
     });
@@ -116,6 +117,7 @@ fn make_ctx_no_workspace() -> RequestContext {
         internal_cmd_tx: None,
         estop: None,
         signature_verify: None,
+        skills_install_gate: None,
         cron: None,
         board: None,
     });

@@ -115,6 +115,7 @@ fn test_get_skill_meta_found() {
             registry_name: "test".to_string(),
             author: String::new(),
             downloads: 0,
+            published_at: None,
         },
     );
 
@@ -154,6 +155,7 @@ fn test_download_and_install_malware_blocked() {
             registry_name: "test".to_string(),
             author: String::new(),
             downloads: 0,
+            published_at: None,
         },
     );
 
@@ -259,6 +261,7 @@ fn test_download_and_install_not_malware_meta() {
             registry_name: "test".to_string(),
             author: String::new(),
             downloads: 0,
+            published_at: None,
         },
     );
 

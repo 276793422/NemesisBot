@@ -173,20 +173,33 @@ pub fn build_executor_channel(
         })
     };
     #[cfg(all(feature = "sandbox", not(windows)))]
-    let strict_gate: nemesis_agent::StrictGate = Arc::new(move || {
-        if !strict_now() {
-            return Ok(());
-        }
-        match nemesis_sandbox::backend::detect_backend() {
-            // 只关心存在性（detect 不返回 Unavailable 后端）；名字留给日志层。
-            Some(_) => Ok(()),
-            None => Err(
-                "no userland sandbox backend available (landlock + bwrap both unavailable) \
-                 — install bubblewrap (or run on a landlock kernel) to use strict mode"
-                    .to_string(),
-            ),
-        }
-    });
+    let strict_gate: nemesis_agent::StrictGate = {
+        // P1（2026-09-25）：选型上下文与 exec_worker::engage 同源——live 读
+        // executor.allow_network 再选后端（禁网 + bwrap 可用 → bwrap；这里
+        // 只关心存在性，detect 不返回 Unavailable 后端）。
+        let net_handle = config_handle.clone();
+        let allow_network_now = move || {
+            net_handle
+                .read()
+                .executor
+                .as_ref()
+                .is_some_and(|e| e.allow_network)
+        };
+        Arc::new(move || {
+            if !strict_now() {
+                return Ok(());
+            }
+            match nemesis_sandbox::backend::detect_backend(allow_network_now()) {
+                // 只关心存在性（detect 不返回 Unavailable 后端）；名字留给日志层。
+                Some(_) => Ok(()),
+                None => Err(
+                    "no userland sandbox backend available (landlock + bwrap both unavailable) \
+                     — install bubblewrap (or run on a landlock kernel) to use strict mode"
+                        .to_string(),
+                ),
+            }
+        })
+    };
     #[cfg(not(feature = "sandbox"))]
     let strict_gate: nemesis_agent::StrictGate = Arc::new(move || {
         if !strict_now() {

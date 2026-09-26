@@ -40,6 +40,7 @@ pub mod image_downscale;
 pub mod image_path_detector;
 pub mod inbox;
 pub mod instance;
+pub mod interrupt_replay;
 pub mod r#loop;
 pub mod loop_continuation;
 pub mod loop_executor;

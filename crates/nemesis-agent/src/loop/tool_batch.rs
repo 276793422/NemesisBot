@@ -270,21 +270,28 @@ impl AgentLoop {
             result
         };
 
-        // C3 (devtool-upgrade 阶段 2) 编辑后诊断回灌：write_file /
-        // edit_file 成功后，若该路径语言有已安装 LSP 且
-        // `agents.defaults.diagnostics_loop.enabled`，同步文档 →
-        // 等 ERROR → 把 ≤max_errors 条追加到工具结果尾部（"please
-        // fix"），让模型同轮自纠——修复闭环。插在 ⑤′ 与 spill/gate
-        // 之间：反馈与工具结果同走一条模型可见管线（gate/spill/
-        // projection 都作用于装饰后的文本）。失败路径全部静默
-        // （开关关 / 非 write|edit / 无 manager / 无服务器 /
-        // 同步失败 / 无 ERROR）——永不拖垮工具调用。
+        // C3 (devtool-upgrade 阶段 2) 编辑后诊断回灌：写工具成功后，若
+        // `agents.defaults.diagnostics_loop.enabled` 且该路径语言有已安装
+        // LSP，同步文档 → 等 ERROR → 把诊断追加到工具结果尾部（"please
+        // fix"），让模型同轮自纠——修复闭环。插在 ⑤′ 与 spill/gate 之间：
+        // 反馈与工具结果同走一条模型可见管线（gate/spill/projection 都作
+        // 用于装饰后的文本）。失败路径全部静默（开关关 / 非触发写工具 /
+        // 无 manager / 无服务器 / 同步失败 / 无 ERROR）——永不拖垮工具调用。
+        // P2（能力扩展 WS3）：触发臂扩到 append_file/multiedit（枚举表
+        // DIAGNOSTICS_WRITE_TOOLS 单一真相源）；路径提取按 args 形态分派
+        // （multiedit = edits[].path）。P3：跨文件聚合 + stale 过滤（状态
+        // 按 session_key 隔离在 diagnostics_touched）。
         let result = if tool_succeeded
-            && matches!(tc.name.as_str(), "write_file" | "edit_file")
+            && Self::DIAGNOSTICS_WRITE_TOOLS.contains(&tc.name.as_str())
             && let Ok(args_val) = serde_json::from_str::<serde_json::Value>(&tc.arguments)
-            && let Some(path_str) = args_val.get("path").and_then(|v| v.as_str())
         {
-            self.diagnostics_feedback(&tc.name, path_str, &result).await
+            let paths = extract_diag_feedback_paths(&tc.name, &args_val);
+            if paths.is_empty() {
+                result
+            } else {
+                self.diagnostics_feedback(&context.session_key, &tc.name, &paths, &result)
+                    .await
+            }
         } else {
             result
         };

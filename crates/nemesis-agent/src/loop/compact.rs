@@ -98,11 +98,35 @@ pub fn resolve_context_window_tiered(
 /// pause auto-summarization and warn.
 const COMPACT_STUCK_LIMIT: u32 = 2;
 
-/// Target number of trailing messages kept verbatim (not summarized) when the
-/// summary cache advances. The tail `history[C..]` is held at ~`K_TARGET`
-/// messages by `maybe_update_summary` (C = len - K_TARGET). Small enough that
-/// the LLM always sees recent context verbatim, large enough to ride out a
-/// few tool-call rounds between summarizations.
+/// P5：token 预算尾巴边界。从尾部按 MODEL-FACING 投影逐条回退累积，
+/// 返回最小的 `start` 使 `history[start..]` 的估算 token ≤ budget——
+/// 即逐字尾巴最多吃掉 `budget_tokens`。整段最后一条单独超预算时仍保留
+/// 该条（尾巴至少含最近一条，与 pi keepRecentTokens 的语义一致）。
+/// 纯 user/assistant 前缀下保证 ≤ 预算；随后的 tool_safe_boundary 回退
+/// （永不切在 tool 对中间）可再轻微超出——那是正确性换预算的既定取舍。
+pub(crate) fn token_budget_boundary(
+    history: &[crate::types::ConversationTurn],
+    budget_tokens: usize,
+) -> usize {
+    let mut acc = 0usize;
+    let mut start = history.len();
+    while start > 0 {
+        let t = estimate_tokens_for_turns_projected(&history[start - 1..start]);
+        // 首条（最后一条消息）无条件保留：`start < history.len()` 才 break。
+        if acc + t > budget_tokens && start < history.len() {
+            break;
+        }
+        acc += t;
+        start -= 1;
+    }
+    start
+}
+
+/// P5 前的旧尾巴语义，现降级为回退路径：`compact_keep_recent_tokens = 0`
+/// （显式配置）时 `maybe_update_summary` 的逐字尾巴仍按「保留近
+/// [`K_TARGET`] 条」计算。默认路径（非 0）按 token 预算
+/// （[`AgentLoop::current_compact_keep_recent_tokens`]）定界，见
+/// [`token_budget_boundary`]。
 pub(crate) const K_TARGET: usize = 6;
 
 /// Aggressive verbatim-tail size used by `force_compression` (the last-resort
@@ -225,11 +249,16 @@ impl AgentLoop {
     /// summary cache covers `history[..covers_up_to]`; `build_messages` sends
     /// `history[covers_up_to..]` verbatim. Token pressure is therefore on the
     /// *tail* (what the LLM actually receives), so the threshold is evaluated
-    /// against the tail, not the full history. When the tail exceeds the
-    /// threshold and is longer than `K_TARGET`, the cache advances to
-    /// `covers_up_to = len - K_TARGET` and the newly-covered prefix is folded
-    /// into the summary. History is never mutated (append-only); bounding is
-    /// the session store's job.
+    /// against the tail, not the full history.
+    ///
+    /// P5（能力扩展 WS2）：尾巴边界从「条数 K_TARGET=6」改为「token 预算」
+    /// （`agents.defaults.compact_keep_recent_tokens`，默认 20000；0 = 旧按
+    /// 条数回退路径）。预算内从尾部逐条回退定界（[`token_budget_boundary`]），
+    /// 再经 [`tool_safe_boundary`] 回退保证永不切在 tool_call/result 对中间。
+    /// 压缩条件 = 尾巴超阈值 **且** `new_c > c`——后者保证摘要永远前进、
+    /// 绝不重摘同一段（旧 `tail_len > K_TARGET` 的等价改写，并顺带封住
+    /// tool 回退把边界顶回 c 之内的理论倒退）。History is never mutated
+    /// (append-only); bounding is the session store's job.
     ///
     /// Persistence: this updates the in-memory cache on the instance. The save
     /// path persists the cache alongside the full history (see S3.3).
@@ -269,14 +298,24 @@ impl AgentLoop {
         // size gates moved to build_messages, so the raw estimate would count
         // a 70KB original the provider only ever sees as a bounded locator.
         let tail_tokens = estimate_tokens_for_turns_projected(&history[c..]);
-        let tail_len = history.len().saturating_sub(c);
         let soft = context_window * COMPACT_SOFT_RATIO / 100;
         let threshold = context_window * COMPACT_SUMMARIZE_RATIO / 100;
-        // Summarize runs only when the tail is over threshold AND long enough to
-        // shrink (more than K_TARGET messages past C). A short tail that is huge
-        // in tokens (a large system prompt or an early oversized tool result)
-        // can't be helped by advancing C — leave it to force_compression.
-        let will_summarize = tail_tokens >= threshold && tail_len > K_TARGET;
+
+        // P5: new boundary — token budget (default) or legacy count fallback
+        // (0), then back off any tool_call/result pair straddling it.
+        // Summarize runs only when the tail is over threshold AND the new
+        // boundary actually advances past C. A short tail that is huge in
+        // tokens (a large system prompt or an early oversized tool result that
+        // still fits the budget) can't be helped by advancing C — leave it to
+        // force_compression.
+        let keep_tokens = self.current_compact_keep_recent_tokens();
+        let raw_new_c = if keep_tokens > 0 {
+            token_budget_boundary(&history, keep_tokens)
+        } else {
+            history.len().saturating_sub(K_TARGET)
+        };
+        let new_c = tool_safe_boundary(&history, raw_new_c);
+        let will_summarize = tail_tokens >= threshold && new_c > c;
 
         // ⑩ Graded tiers (soft / summarize) + stuck self-check on the tail.
         // Soft is info-log-only. The stuck counter only ticks when summarize
@@ -347,12 +386,12 @@ impl AgentLoop {
             map.insert(summarize_key.clone(), true);
         }
 
-        // New boundary: cover everything except the last K_TARGET messages
-        // (the verbatim tail kept for continuity). new_C > c is guaranteed by
-        // the tail_len > K_TARGET check above, so we always advance and never
-        // re-summarize the same prefix. Adjust so the tail doesn't start mid
-        // tool_call/result pair (keeps the pair verbatim, not dropped by repair).
-        let new_c = tool_safe_boundary(&history, history.len() - K_TARGET);
+        // New boundary already computed above (P5 token budget, or the
+        // legacy K_TARGET count fallback): cover everything except the
+        // budgeted verbatim tail kept for continuity. new_c > c is guaranteed
+        // by the will_summarize check above, so we always advance and never
+        // re-summarize the same prefix; tool_safe_boundary already backed the
+        // boundary off any mid tool_call/result pair.
 
         let provider = self.provider.read().clone();
         let model = self.active_model.read().clone();
@@ -391,10 +430,14 @@ impl AgentLoop {
         // existing summary (which already covers history[..c]). summarize the
         // FULL prefix from source each time (no "keep last N" — that would
         // leave a gap between the summary and the verbatim tail).
+        // P6：existing_summary 非空时走 UPDATE 迭代修订指令（见
+        // build_summary_instruction）；P7：文件操作台账由 summarize_prefix_owned
+        // 内部从同一前缀聚合注入。
         let prefix_refs: Vec<&crate::types::ConversationTurn> = history[..new_c].iter().collect();
         let summary = summarize_prefix_owned(
             &prefix_refs,
             existing_summary,
+            new_c.saturating_sub(c),
             context_window,
             self.current_summarizer_prefix_reuse(),
             provider.as_ref(),
@@ -427,6 +470,23 @@ impl AgentLoop {
             let mut map = summarizing_flag.lock();
             map.remove(&clear_key);
         }
+    }
+
+    /// P5（能力扩展 WS2）：`agents.defaults.compact_keep_recent_tokens`
+    /// （默认 20000，对齐 pi keepRecentTokens；**0 = 回退旧按条数
+    /// K_TARGET 路径**）。fresh-read（同 `current_summarizer_prefix_reuse`
+    /// 模式——config.json 唯一真相源，运行中改键下一轮生效）；standalone
+    /// （无 config_path）→ 默认值。键路径与缺省值的单一真相源在
+    /// `nemesis_config::resolve_compact_keep_recent_tokens`（typed
+    /// `AgentDefaults` 字段同源）。
+    pub(crate) fn current_compact_keep_recent_tokens(&self) -> usize {
+        let cfg = self
+            .config_path
+            .read()
+            .clone()
+            .and_then(|p| std::fs::read_to_string(&p).ok())
+            .and_then(|s| serde_json::from_str::<serde_json::Value>(&s).ok());
+        nemesis_config::resolve_compact_keep_recent_tokens(cfg.as_ref())
     }
 
     /// Force-compress by aggressively advancing the summary cache.
@@ -479,10 +539,12 @@ impl AgentLoop {
 
         // Fold the prefix history[..new_c] into the summary, merged with the
         // existing summary (which covers history[..current_c]).
+        // P6/P7：同自动路径——UPDATE 迭代指令 + 文件操作台账注入。
         let prefix_refs: Vec<&crate::types::ConversationTurn> = history[..new_c].iter().collect();
         let summary = summarize_prefix_owned(
             &prefix_refs,
             existing_summary,
+            new_c.saturating_sub(current_c),
             // U16: per-model context_window when declared (same preference
             // order as the threshold computation above).
             self.current_context_window()
@@ -640,10 +702,235 @@ impl AgentLoop {
 // 自由函数归位（P1-c 自 loop.rs 根搬迁；仅增 pub(crate) 可见性标注）
 // ---------------------------------------------------------------------------
 
-/// The trailing instruction for a G1 prefix-reuse summary request. Kept in one
-/// place so the batch and multipart paths emit the identical instruction.
-const SUMMARIZE_INSTRUCTION: &str =
-    "请对以上对话片段做一份简明摘要，保留核心上下文与关键要点，供后续对话作为前情提要使用。";
+/// P6（能力扩展 WS2）：结构化摘要六节 schema（pi 对齐：Goal / Constraints /
+/// Progress / Decisions / Files / Next Steps）。标题即协议——
+/// [`parse_structured_summary`] 按行首 Markdown 标题精确匹配这六个词，
+/// 任一缺失即视为 schema 解析失败（调用方回退自由文本，绝不炸）。
+pub(crate) const SUMMARY_SCHEMA_SECTIONS: [&str; 6] = [
+    "Goal",
+    "Constraints",
+    "Progress",
+    "Decisions",
+    "Files",
+    "Next Steps",
+];
+
+/// P7（能力扩展 WS2）：文件操作台账节标题。摘要注入与重复守卫共用
+/// （finalize 只在摘要未含该标题时宿主追加，模型照抄 prompt 不致重复）。
+pub(crate) const FILE_LEDGER_HEADING: &str = "## 本会话已修改文件";
+
+/// P7：台账条目上限。长会话的文件操作无界膨胀会反噬摘要本身；超限保
+/// 首次出现顺序截断，并聚合一行诚实注记。
+pub(crate) const FILE_LEDGER_MAX_ENTRIES: usize = 50;
+
+/// P7：文件操作台账条目（宿主从覆盖段 assistant tool_calls 聚合，见
+/// [`collect_file_ops_ledger`]）。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct FileOp {
+    pub path: String,
+    /// "write" | "edit" | "delete"（按工具名映射；目录工具不进账）。
+    pub kind: &'static str,
+}
+
+/// P6：一次摘要请求的迭代上下文。
+///
+/// - `existing` 为空 = 首次全量摘要；非空 = UPDATE 迭代修订（指令层告知
+///   模型「在旧摘要基础上修订」而非全量重生成）。注意：请求消息体保持
+///   G1 前缀形状不变（system + 原样覆盖段 + 尾部指令），UPDATE 只改尾部
+///   指令文本——指令是最后一条消息、不在 warm 前缀内，前缀字节不变
+///   纪律不破（这是 P6 的硬约束，见总控 §WS2）。
+/// - `new_segment_turns`：旧摘要覆盖点之后的新增消息轮数（new_c - c），
+///   UPDATE 指令据此告知模型「前缀末尾约 N 条是新增内容」。
+/// - `ledger`：P7 宿主文件操作台账（空 = 覆盖段无文件操作）。
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct SummaryUpdate<'a> {
+    pub existing: &'a str,
+    pub new_segment_turns: usize,
+    pub ledger: &'a [FileOp],
+}
+
+/// P6：构建摘要请求的尾部指令（batch / bare-concat / multipart 合并共用
+/// 的单一真相源——三种请求形态的摘要语义必须一致）。
+pub(crate) fn build_summary_instruction(update: &SummaryUpdate<'_>) -> String {
+    let mut ins = String::new();
+    if update.existing.is_empty() {
+        ins.push_str(
+            "请对以上对话生成结构化简明摘要，保留核心上下文与关键要点，供后续对话作为前情提要使用。",
+        );
+    } else {
+        ins.push_str(&format!(
+            "这是一次迭代式摘要更新（UPDATE）：以上对话前缀末尾约 {} 条消息（含工具往返）是上一版摘要尚未覆盖的新增内容。请在下方上一版摘要的基础上修订产出新版简明摘要——合并新增进展、更新已变化的状态、删除已失效条目，保留仍然有效的旧信息；不要从零重写，不要丢失仍然有效的上下文。\n\n上一版摘要：\n{}",
+            update.new_segment_turns, update.existing
+        ));
+    }
+    if !update.ledger.is_empty() {
+        // 台账块直接以 FILE_LEDGER_HEADING 开头：模型可原样照抄该节结构；
+        // finalize 的「摘要已含标题则不重复追加」守卫与之配套（照抄了就不
+        // 再宿主追加，没照抄才兜底）。
+        ins.push_str(&format!(
+            "\n\n{}（宿主记录的客观台账，Files 节必须如实包含以下文件操作）：",
+            FILE_LEDGER_HEADING
+        ));
+        for op in update.ledger {
+            ins.push_str(&format!("\n- [{}] {}", op.kind, op.path));
+        }
+    }
+    ins.push_str("\n\n输出格式：严格按以下六节 Markdown schema 输出（标题原样保留，内容简明扼要；某节无内容写「（无）」）：");
+    for s in SUMMARY_SCHEMA_SECTIONS {
+        ins.push_str(&format!("\n## {s}"));
+    }
+    ins
+}
+
+/// P6：schema 解析。六节标题齐 → `Some(归一化文本)`（从首个 schema 节
+/// 标题行起截，剥掉模型客套前导）；任一缺失 → `None`（调用方回退自由
+/// 文本原样使用——解析失败绝不允许丢摘要或报错）。
+pub(crate) fn parse_structured_summary(reply: &str) -> Option<String> {
+    let headings: Vec<&str> = reply.lines().filter_map(line_heading).collect();
+    let all_present = SUMMARY_SCHEMA_SECTIONS
+        .iter()
+        .all(|s| headings.iter().any(|h| h == s));
+    if !all_present {
+        return None;
+    }
+    let start = reply
+        .lines()
+        .position(|l| line_heading(l).is_some_and(|h| SUMMARY_SCHEMA_SECTIONS.contains(&h)))
+        .unwrap_or(0);
+    let cut = reply.lines().skip(start).collect::<Vec<_>>().join("\n");
+    let cut = cut.trim_end();
+    (!cut.is_empty()).then(|| cut.to_string())
+}
+
+/// 单行 Markdown 标题词（`#`/`##`/`###` 前缀，剥后去空白；空标题 → None）。
+fn line_heading(line: &str) -> Option<&str> {
+    let t = line.trim();
+    let rest = t
+        .strip_prefix("###")
+        .or_else(|| t.strip_prefix("##"))
+        .or_else(|| t.strip_prefix("#"))?;
+    let rest = rest.trim();
+    (!rest.is_empty()).then_some(rest)
+}
+
+/// P7：从覆盖段 assistant tool_calls 聚合文件操作台账。
+///
+/// 纯历史驱动：D3 的 turn_file_changes 收集桶在 assistant 回复落盘时已
+/// drain（写 chat_log jsonl），压缩时不可用；这里从 assistant 轮的
+/// tool_calls args 直接解析——与 D3 preview_all 同信息源（声明式文件
+/// 工具的 path 参数），但无需工具注册表/文件系统，compact 域内自洽可单测。
+/// exec 等非声明式写盘不在账（诚实边界：与 D3 消息级映射同口径）。
+///
+/// 累积性：每次压缩都对完整前缀 history[..new_c] 重算，旧摘要已覆盖段
+/// 的操作天然包含 → 台账随迭代更新单调累积。同 path 后声明 kind 覆盖、
+/// 首次出现顺序保留（镜像 `chat_log::dedup_file_changes` 投影语义）。
+pub(crate) fn collect_file_ops_ledger(messages: &[&crate::types::ConversationTurn]) -> Vec<FileOp> {
+    fn push(
+        out: &mut Vec<FileOp>,
+        index: &mut std::collections::HashMap<String, usize>,
+        path: String,
+        kind: &'static str,
+    ) {
+        if path.is_empty() {
+            return;
+        }
+        match index.get(&path) {
+            Some(&i) => out[i].kind = kind,
+            None => {
+                index.insert(path.clone(), out.len());
+                out.push(FileOp { path, kind });
+            }
+        }
+    }
+    fn arg_path(args: &serde_json::Value) -> Option<String> {
+        args.get("path").and_then(|v| v.as_str()).map(String::from)
+    }
+
+    let mut out: Vec<FileOp> = Vec::new();
+    let mut index: std::collections::HashMap<String, usize> = std::collections::HashMap::new();
+    for m in messages {
+        if m.role != "assistant" {
+            continue;
+        }
+        for tc in &m.tool_calls {
+            let Ok(args) = serde_json::from_str::<serde_json::Value>(&tc.arguments) else {
+                continue;
+            };
+            match tc.name.as_str() {
+                "write_file" => {
+                    if let Some(p) = arg_path(&args) {
+                        push(&mut out, &mut index, p, "write");
+                    }
+                }
+                "edit_file" | "append_file" => {
+                    if let Some(p) = arg_path(&args) {
+                        push(&mut out, &mut index, p, "edit");
+                    }
+                }
+                "delete_file" => {
+                    if let Some(p) = arg_path(&args) {
+                        push(&mut out, &mut index, p, "delete");
+                    }
+                }
+                "multiedit" => {
+                    if let Some(edits) = args.get("edits").and_then(|v| v.as_array()) {
+                        for e in edits {
+                            if let Some(p) = arg_path(e) {
+                                push(&mut out, &mut index, p, "edit");
+                            }
+                        }
+                    }
+                }
+                // 其余工具（read/exec/git/...）不进台账。
+                _ => {}
+            }
+        }
+    }
+    out
+}
+
+/// P7：台账节渲染。空台账 → None；超 [`FILE_LEDGER_MAX_ENTRIES`] 截断 +
+/// 注记。
+pub(crate) fn format_file_ledger_section(ledger: &[FileOp]) -> Option<String> {
+    if ledger.is_empty() {
+        return None;
+    }
+    let mut out = String::from(FILE_LEDGER_HEADING);
+    out.push('\n');
+    let shown = ledger.len().min(FILE_LEDGER_MAX_ENTRIES);
+    for op in &ledger[..shown] {
+        out.push_str(&format!("- [{}] {}\n", op.kind, op.path));
+    }
+    if ledger.len() > FILE_LEDGER_MAX_ENTRIES {
+        out.push_str(&format!(
+            "- （另有 {} 个文件操作未逐一列出）\n",
+            ledger.len() - FILE_LEDGER_MAX_ENTRIES
+        ));
+    }
+    Some(out.trim_end().to_string())
+}
+
+/// P6+P7 收尾：schema 解析（失败回退自由文本原样，绝不炸）+ 超宽消息
+/// 省略注记 + 台账节宿主确定性追加（「压缩后摘要含台账节」不依赖模型
+/// 自觉；摘要已含该标题则不重复）。空回复原样返回空——调用方的
+/// `filter(|s| !s.is_empty())` 仍把它折叠回 None（2026-08-25 契约不变）。
+pub(crate) fn finalize_summary_text(reply: &str, ledger: &[FileOp], omitted: bool) -> String {
+    let mut text = parse_structured_summary(reply).unwrap_or_else(|| reply.trim().to_string());
+    if omitted && !text.is_empty() {
+        text.push_str(
+            "\n[Note: Some oversized messages were omitted from this summary for efficiency.]",
+        );
+    }
+    if !ledger.is_empty() && !text.contains(FILE_LEDGER_HEADING) {
+        if let Some(section) = format_file_ledger_section(ledger) {
+            if !text.is_empty() {
+                text.push_str("\n\n");
+            }
+            text.push_str(&section);
+        }
+    }
+    text
+}
 
 /// T4 (U1): pre-G1 summary shape, restored as the per-model fallback
 /// (`summarizer_prefix_reuse: false`).
@@ -665,22 +952,18 @@ const SUMMARIZE_INSTRUCTION: &str =
 /// summary; see the 2026-08-25 fix note on `summarize_prefix_owned`).
 pub(crate) async fn summarize_bare_concat_owned(
     messages: &[&crate::types::ConversationTurn],
-    existing_summary: &str,
+    update: &SummaryUpdate<'_>,
     provider: &dyn LlmProvider,
     model: &str,
     observer_manager: Option<Arc<nemesis_observer::Manager>>,
 ) -> Option<String> {
     let mut content = String::new();
-    if !existing_summary.is_empty() {
-        content.push_str(&format!(
-            "Existing context (summary of the earlier conversation, merge with the new summary): {}\n\n",
-            existing_summary
-        ));
-    }
     for m in messages {
         content.push_str(&format!("{}: {}\n", m.role, m.content));
     }
-    content.push_str(SUMMARIZE_INSTRUCTION);
+    // P6：结构化 schema 指令（UPDATE 语义/旧摘要/台账都在指令里——旧摘要
+    // 不再前置拼接，单源 [`build_summary_instruction`]）。
+    content.push_str(&build_summary_instruction(update));
 
     let llm_messages = vec![LlmMessage {
         role: "user".to_string(),
@@ -729,7 +1012,7 @@ pub(crate) async fn summarize_bare_concat_owned(
 pub(crate) async fn summarize_multipart_owned(
     system_msg: Option<&LlmMessage>,
     messages: &[&crate::types::ConversationTurn],
-    existing_summary: &str,
+    update: &SummaryUpdate<'_>,
     provider: &dyn LlmProvider,
     model: &str,
     observer_manager: Option<Arc<nemesis_observer::Manager>>,
@@ -738,10 +1021,24 @@ pub(crate) async fn summarize_multipart_owned(
     let part1 = &messages[..mid];
     let part2 = &messages[mid..];
 
+    // P6 UPDATE 语义挂在 part2（较新的一半——新增段尾部必在其中，指令里
+    // 的「末尾约 N 条」按 part2 长度钳位）；part1 保持 fresh 常规摘要。
+    // 台账两半都注入：Files 台账必须出现在最终合并结果里，不依赖分片运气。
+    // （旧摘要在 part2 已折叠进其摘要文本，merge 只需合并两段。）
+    let part1_update = SummaryUpdate {
+        existing: "",
+        new_segment_turns: 0,
+        ledger: update.ledger,
+    };
+    let part2_update = SummaryUpdate {
+        existing: update.existing,
+        new_segment_turns: update.new_segment_turns.min(part2.len()),
+        ledger: update.ledger,
+    };
     let s1 = summarize_batch_owned(
         system_msg,
         part1,
-        existing_summary,
+        &part1_update,
         provider,
         model,
         observer_manager.clone(),
@@ -750,7 +1047,7 @@ pub(crate) async fn summarize_multipart_owned(
     let s2 = summarize_batch_owned(
         system_msg,
         part2,
-        "",
+        &part2_update,
         provider,
         model,
         observer_manager.clone(),
@@ -768,10 +1065,18 @@ pub(crate) async fn summarize_multipart_owned(
         }
     };
 
-    // Merge via LLM.
+    // Merge via LLM. P6：合并指令同样要求六节 schema 输出（合并的是两段
+    // 结构化摘要，产出必须仍是结构化的）。
     let merge_prompt = format!(
         "Merge these two conversation summaries into one cohesive summary:\n\n1: {}\n\n2: {}",
         s1, s2
+    );
+    let merge_prompt = format!(
+        "{merge_prompt}\n\n输出格式：严格按以下六节 Markdown schema 输出（标题原样保留；某节无内容写「（无）」）：{}",
+        SUMMARY_SCHEMA_SECTIONS
+            .iter()
+            .map(|s| format!("\n## {s}"))
+            .collect::<String>()
     );
 
     let llm_messages = vec![LlmMessage {
@@ -823,7 +1128,7 @@ pub(crate) async fn summarize_multipart_owned(
 pub(crate) async fn summarize_batch_owned(
     system_msg: Option<&LlmMessage>,
     batch: &[&crate::types::ConversationTurn],
-    existing_summary: &str,
+    update: &SummaryUpdate<'_>,
     provider: &dyn LlmProvider,
     model: &str,
     observer_manager: Option<Arc<nemesis_observer::Manager>>,
@@ -835,19 +1140,12 @@ pub(crate) async fn summarize_batch_owned(
     for m in batch {
         messages.push(conversation_turn_to_llm_message(m));
     }
-    // Trailing instruction (merged with any existing-summary context so the
-    // fold still carries prior coverage).
-    let mut instruction = String::new();
-    if !existing_summary.is_empty() {
-        instruction.push_str(&format!(
-            "Existing context (summary of the earlier conversation, merge with the new summary): {}\n\n",
-            existing_summary
-        ));
-    }
-    instruction.push_str(SUMMARIZE_INSTRUCTION);
+    // Trailing instruction（P6：结构化 schema + UPDATE/台账上下文，单源
+    // build_summary_instruction——prefix 字节不变纪律只覆盖前面的覆盖段，
+    // 尾部指令文本可随迭代语义演进）。
     messages.push(LlmMessage {
         role: "user".to_string(),
-        content: instruction,
+        content: build_summary_instruction(update),
         tool_calls: None,
         tool_call_id: None,
         reasoning_content: None,
@@ -992,7 +1290,7 @@ where
 ///
 /// The summary still covers `history[..returned_new_c]` and the tail is
 /// `history[returned_new_c..]` — the gap-free invariant holds; the tail just
-/// grows slightly past `K_TARGET` when a pair straddles the boundary.
+/// grows slightly past the budget boundary when a pair straddles the boundary.
 pub(crate) fn tool_safe_boundary(
     history: &[crate::types::ConversationTurn],
     mut new_c: usize,
@@ -1007,7 +1305,8 @@ pub(crate) fn tool_safe_boundary(
 /// summary.
 ///
 /// Summarizes **all** of `messages` (no internal "keep last N" step) — the
-/// caller has already chosen the verbatim tail boundary (`K_TARGET`), so every
+/// caller has already chosen the verbatim tail boundary (P5 token budget,
+/// legacy K_TARGET count fallback), so every
 /// message passed in is meant to be folded into the summary. Keeping a "last N"
 /// here would leave a gap between the summary and the verbatim tail. Reuses the
 /// multipart/batch machinery; merges `existing_summary` (which covers messages
@@ -1037,12 +1336,22 @@ pub(crate) fn tool_safe_boundary(
 pub(crate) async fn summarize_prefix_owned(
     messages: &[&crate::types::ConversationTurn],
     existing_summary: &str,
+    new_segment_turns: usize,
     context_window: usize,
     prefix_reuse: bool,
     provider: &dyn LlmProvider,
     model: &str,
     observer_manager: Option<Arc<nemesis_observer::Manager>>,
 ) -> Option<String> {
+    // P7：文件操作台账——对传入的完整前缀聚合（调用方传的是
+    // history[..new_c]，旧摘要已覆盖段天然在内 → 台账随迭代累积）。
+    let ledger = collect_file_ops_ledger(messages);
+    let update = SummaryUpdate {
+        existing: existing_summary,
+        new_segment_turns,
+        ledger: &ledger,
+    };
+
     // Oversized message guard.
     let max_msg_tokens = context_window / 2;
     let mut valid_messages: Vec<&crate::types::ConversationTurn> = Vec::new();
@@ -1066,14 +1375,8 @@ pub(crate) async fn summarize_prefix_owned(
 
     let final_summary = if !prefix_reuse {
         // T4 (U1): old shape — single bare user message, no structure.
-        summarize_bare_concat_owned(
-            &valid_messages,
-            existing_summary,
-            provider,
-            model,
-            observer_manager,
-        )
-        .await
+        summarize_bare_concat_owned(&valid_messages, &update, provider, model, observer_manager)
+            .await
     } else {
         // G1: the system prompt anchoring the prefix. `messages` is
         // history[..new_c]; history[0] is the system turn — include it verbatim
@@ -1088,7 +1391,7 @@ pub(crate) async fn summarize_prefix_owned(
             summarize_multipart_owned(
                 system_msg.as_ref(),
                 &valid_messages,
-                existing_summary,
+                &update,
                 provider,
                 model,
                 observer_manager,
@@ -1098,7 +1401,7 @@ pub(crate) async fn summarize_prefix_owned(
             summarize_batch_owned(
                 system_msg.as_ref(),
                 &valid_messages,
-                existing_summary,
+                &update,
                 provider,
                 model,
                 observer_manager,
@@ -1107,13 +1410,16 @@ pub(crate) async fn summarize_prefix_owned(
         }
     };
 
-    let final_summary = match final_summary {
-        Some(s) if omitted && !s.is_empty() => Some(format!(
-            "{}\n[Note: Some oversized messages were omitted from this summary for efficiency.]",
-            s
-        )),
-        other => other,
-    };
-
-    final_summary.filter(|s| !s.is_empty())
+    // P6+P7 收尾：schema 解析/回退 + 省略注记 + 台账节（单点，batch 与
+    // multipart 两条路径共用同一收尾，不会漂移）。
+    final_summary
+        .map(|s| finalize_summary_text(&s, &ledger, omitted))
+        .filter(|s| !s.is_empty())
 }
+
+// ---------------------------------------------------------------------------
+// WS2（能力扩展 P5/P6/P7）：token 预算尾巴 / 结构化摘要 schema / 文件操作
+// 台账测试。独立测试文件（生产文件只保留声明行，仓库纪律）。
+// ---------------------------------------------------------------------------
+#[cfg(test)]
+mod ws2_compact_tests;

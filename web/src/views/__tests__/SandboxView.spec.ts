@@ -128,10 +128,11 @@ describe('SandboxView 平台自适应加载', () => {
     w.unmount()
   })
 
-  it('Linux：只拉 overview（不发 status/pending），渲染后端探测表', async () => {
+  it('Linux：只拉 overview + 拒绝台账（不发 status/pending），渲染后端探测表', async () => {
     const w = await mountView(linuxOverview())
     const cmds = requestMock.mock.calls.map(c => c[1])
-    expect(cmds).toEqual(['overview'])
+    // P21（2026-09-25）：挂载追加 denials.list（拒绝台账只读附属面，全平台）
+    expect(cmds).toEqual(['overview', 'denials.list'])
 
     // 两种门控形态都必须：用户态面板不触发 status/pending（平台真相源 behavior 不变）
     if (GATE_ON) {

@@ -151,6 +151,8 @@ impl ClawHubRegistry {
             registry_name: "clawhub".to_string(),
             author: detail.owner.handle,
             downloads: detail.skill.stats.downloads as i64,
+            // clawhub convex 元数据无发布时间字段（P16 诚实边界：unknown）。
+            published_at: None,
         })
     }
 

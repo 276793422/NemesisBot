@@ -169,7 +169,7 @@ fn test_spi_validate_params() {
 
 #[test]
 fn test_i2c_tool_default() {
-    let tool = I2CTool;
+    let tool = I2CTool::default();
     assert_eq!(tool.name(), "i2c");
 }
 
@@ -560,8 +560,9 @@ fn test_i2c_parse_bus_invalid() {
 #[test]
 fn test_i2c_parse_address_valid() {
     let tool = I2CTool::new();
+    // P8 白名单收紧后可自由寻址空间起点是 0x08（0x03-0x07 属保留段）。
     assert!(
-        tool.parse_address(&serde_json::json!({"address": 0x03}))
+        tool.parse_address(&serde_json::json!({"address": 0x08}))
             .is_ok()
     );
     assert!(
@@ -1062,9 +1063,10 @@ fn test_i2c_parse_bus_whitespace() {
 #[test]
 fn test_i2c_parse_address_boundary_exact() {
     let tool = I2CTool::new();
-    // Exact lower boundary (0x03) is valid
+    // P8 白名单收紧后可自由寻址空间起点是 0x08（0x03-0x07 属保留段）。
+    // Exact lower boundary (0x08) is valid
     assert!(
-        tool.parse_address(&serde_json::json!({"address": 0x03}))
+        tool.parse_address(&serde_json::json!({"address": 0x08}))
             .is_ok()
     );
     // Exact upper boundary (0x77) is valid
@@ -1072,9 +1074,9 @@ fn test_i2c_parse_address_boundary_exact() {
         tool.parse_address(&serde_json::json!({"address": 0x77}))
             .is_ok()
     );
-    // One below lower boundary (0x02)
+    // Reserved segment tail (0x07)
     assert!(
-        tool.parse_address(&serde_json::json!({"address": 0x02}))
+        tool.parse_address(&serde_json::json!({"address": 0x07}))
             .is_err()
     );
     // One above upper boundary (0x78)
@@ -1677,7 +1679,7 @@ async fn w4a_i2c_read_validation_and_platform_arm() {
         .read_device(&serde_json::json!({"bus": "1", "address": 0x02}))
         .await;
     assert!(r.is_error);
-    assert!(r.for_llm.contains("0x03-0x77"), "got: {}", r.for_llm);
+    assert!(r.for_llm.contains("0x08-0x77"), "got: {}", r.for_llm);
     // address above range
     let r = tool
         .read_device(&serde_json::json!({"bus": "1", "address": 0x78}))
@@ -1993,6 +1995,139 @@ async fn s2_spi_read_device_invalid_speed_errors_in_validation() {
     assert!(r.is_error);
     assert!(
         r.for_llm.contains("speed must be between"),
+        "got: {}",
+        r.for_llm
+    );
+}
+
+// ===========================================================================
+// P8 GPIO 白名单（2026-09-25 三批合并）：HardwarePolicy 单一真相源。
+// 内置默认 = I2C 规范可自由寻址空间 0x08-0x77（旧 (0x03..=0x77) 放行
+// 保留段 0x03-0x07 的洞一并堵上）；deny 优先于 allow；拒绝理由面向
+// 模型可自纠（段用途 + 放行办法）。
+// ===========================================================================
+
+#[test]
+fn p8_policy_builtin_allows_free_addressing_space() {
+    let policy = HardwarePolicy::builtin();
+    // 可自由寻址空间三采样点全放行
+    for addr in [0x08, 0x38, 0x77] {
+        assert!(
+            policy.validate_i2c_address(addr).is_ok(),
+            "0x{addr:02x} should be allowed by builtin policy"
+        );
+    }
+}
+
+#[test]
+fn p8_policy_builtin_rejects_all_reserved_segments_with_reason() {
+    let policy = HardwarePolicy::builtin();
+    // 0x00-0x07 通用呼叫/START byte/CBUS
+    for addr in [0x00, 0x03, 0x07] {
+        let err = policy.validate_i2c_address(addr).unwrap_err();
+        assert!(err.contains("保留段 0x00-0x07"), "0x{addr:02x}: {err}");
+        assert!(err.contains("0x08-0x77"), "理由应给出合法范围: {err}");
+    }
+    // 0x78-0x7B 高速模式主机码
+    for addr in [0x78, 0x7B] {
+        let err = policy.validate_i2c_address(addr).unwrap_err();
+        assert!(err.contains("高速模式主机码"), "0x{addr:02x}: {err}");
+    }
+    // 0x7C-0x7F 10 位寻址前缀
+    for addr in [0x7C, 0x7F] {
+        let err = policy.validate_i2c_address(addr).unwrap_err();
+        assert!(err.contains("10 位寻址前缀"), "0x{addr:02x}: {err}");
+    }
+}
+
+#[test]
+fn p8_policy_out_of_range_rejects_with_actionable_reason() {
+    let policy = HardwarePolicy::builtin();
+    // 0x80 是 8 位写地址误用（不是保留段）——普通越界文案，给放行办法
+    let e1 = policy.validate_i2c_address(0x80).unwrap_err();
+    assert!(e1.contains("不在允许范围"), "got: {e1}");
+    assert!(e1.contains("i2c_allow_ranges"), "应指向 config 放行办法: {e1}");
+}
+
+#[test]
+fn p8_policy_deny_overrides_allow() {
+    let mut policy = HardwarePolicy::builtin();
+    policy.i2c_deny_ranges = vec![(0x38, 0x40)];
+    // deny 段内：即使落在内置 allow 0x08-0x77 也拒绝，理由指明黑名单段
+    let err = policy.validate_i2c_address(0x38).unwrap_err();
+    assert!(err.contains("黑名单段 0x38-0x40"), "got: {err}");
+    assert!(err.contains("deny 优先于 allow"), "got: {err}");
+    assert!(err.contains("i2c_deny_ranges"), "应给出解除办法: {err}");
+    // deny 段外照常放行
+    assert!(policy.validate_i2c_address(0x41).is_ok());
+    assert!(policy.validate_i2c_address(0x37).is_ok());
+}
+
+#[test]
+fn p8_policy_custom_allow_ranges_replace_builtin() {
+    let mut policy = HardwarePolicy::default();
+    policy.i2c_allow_ranges = vec![(0x30, 0x3F)];
+    // 自定义段内放行
+    assert!(policy.validate_i2c_address(0x38).is_ok());
+    // 内置默认的 0x08 不在自定义 allow 里 → 拒绝（非空 = 完全替换）
+    let err = policy.validate_i2c_address(0x08).unwrap_err();
+    assert!(err.contains("不在允许范围"), "got: {err}");
+    // 保留段拒绝理由不受 allow 表影响（先查保留段语义）
+    let err = policy.validate_i2c_address(0x00).unwrap_err();
+    assert!(err.contains("保留段"), "got: {err}");
+}
+
+#[test]
+fn p8_reserved_reason_non_reserved_is_none() {
+    assert!(i2c_reserved_reason(0x08).is_none());
+    assert!(i2c_reserved_reason(0x38).is_none());
+    assert!(i2c_reserved_reason(0x77).is_none());
+}
+
+#[tokio::test]
+async fn p8_i2c_tool_with_policy_end_to_end() {
+    // 自定义 allow 只放 0x30-0x3F：0x20 拒绝（带可自纠理由），
+    // 0x38 放行 → 落到平台桩（Windows）/ 真实 IO（Linux）。
+    let mut policy = HardwarePolicy::default();
+    policy.i2c_allow_ranges = vec![(0x30, 0x3F)];
+    let tool = I2CTool::with_policy(policy);
+
+    let r = tool
+        .read_device(&serde_json::json!({"bus": "1", "address": 0x20}))
+        .await;
+    assert!(r.is_error);
+    assert!(r.for_llm.contains("不在允许范围"), "got: {}", r.for_llm);
+
+    // write 同源校验（confirm 先过，地址后校验——两个都给足）
+    let r = tool
+        .write_device(&serde_json::json!({
+            "bus": "1", "address": 0x20, "confirm": true, "data": [1]
+        }))
+        .await;
+    assert!(r.is_error);
+    assert!(r.for_llm.contains("不在允许范围"), "got: {}", r.for_llm);
+
+    // 放行地址落到平台桩（非 Linux 且无设备时是 silent 非-error 结果）
+    #[cfg(not(target_os = "linux"))]
+    {
+        let r = tool
+            .read_device(&serde_json::json!({"bus": "1", "address": 0x38}))
+            .await;
+        assert!(!r.is_error, "got: {}", r.for_llm);
+    }
+}
+
+#[tokio::test]
+async fn p8_i2c_builtin_blocks_reserved_on_real_read_path() {
+    // 生产路径（read_device 内联校验）对保留段 0x00 拒绝——
+    // 旧实现 (0x03..=0x77) 在非 Linux 上 0x03 会静默走到平台桩。
+    let tool = I2CTool::new();
+    let r = tool
+        .read_device(&serde_json::json!({"bus": "1", "address": 0x00}))
+        .await;
+    assert!(r.is_error);
+    assert!(
+        r.for_llm.contains("保留段 0x00-0x07"),
         "got: {}",
         r.for_llm
     );

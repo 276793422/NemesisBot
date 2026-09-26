@@ -1112,7 +1112,7 @@ fn test_setup_cluster_rpc_channel_setup_carries_continuation_manager() {
 
 #[test]
 fn test_i2c_tool_parameters_schema() {
-    let t = I2CTool;
+    let t = I2CTool::default();
     let p = t.parameters();
     assert!(p["properties"]["action"].is_object());
     assert!(p["properties"]["bus"].is_object());
@@ -1317,11 +1317,12 @@ async fn test_async_exec_tool_no_command_returns_err() {
 
 #[tokio::test]
 async fn test_i2c_tool_with_confirm_write() {
-    let t = I2CTool;
+    let t = I2CTool::default();
     let ctx = RequestContext::new("web", "c1", "u1", "s1");
+    // 地址用白名单内的 0x38（P8 白名单后 5=0x05 属保留段会被策略拒绝）
     let r = t
         .execute(
-            r#"{"action": "write", "address": 5, "confirm": true}"#,
+            r#"{"action": "write", "address": 56, "confirm": true}"#,
             &ctx,
         )
         .await;
@@ -1353,7 +1354,7 @@ async fn test_spi_tool_with_confirm_transfer() {
 
 #[tokio::test]
 async fn test_i2c_tool_unknown_action_on_linux() {
-    let t = I2CTool;
+    let t = I2CTool::default();
     let ctx = RequestContext::new("web", "c1", "u1", "s1");
     let r = t.execute(r#"{"action": "bogus"}"#, &ctx).await;
     if cfg!(target_os = "linux") {
@@ -1379,10 +1380,11 @@ async fn test_spi_tool_unknown_action_on_linux() {
 
 #[tokio::test]
 async fn test_i2c_tool_write_without_confirm() {
-    let t = I2CTool;
+    let t = I2CTool::default();
     let ctx = RequestContext::new("web", "c1", "u1", "s1");
+    // 地址用白名单内的 0x38（同上：5=0x05 属保留段，P8 后会被策略先拒）
     let r = t
-        .execute(r#"{"action": "write", "address": 5}"#, &ctx)
+        .execute(r#"{"action": "write", "address": 56}"#, &ctx)
         .await;
     if cfg!(target_os = "linux") {
         assert!(r.is_err());

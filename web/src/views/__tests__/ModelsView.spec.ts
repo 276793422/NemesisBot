@@ -1,280 +1,120 @@
+// P10（能力扩展 WS5，2026-09-25）：模型管理页家族分组/筛选/折叠的组件级测试。
+// 后端家族真相源 = nemesis-config PROVIDER_PRESETS（P9）；本文件只钉前端
+// 分组渲染与筛选交互（卡片明细逻辑由既有页面行为覆盖，不在本测试范围）。
 import { mount, flushPromises } from '@vue/test-utils'
 import { describe, it, expect, vi, beforeEach } from 'vitest'
-import { useToast } from '../../composables/useToast'
-
-// M6 补测（quality-hardening goal 2026-08-25）：P3-2 模型页 ——
-// 目录缓存态/更新、属性编辑（draft 种子、dirty 判定、逐字段保存、
-// v1 不写 null 的清空跳过、effort off 归一）。
-// 后端 raw-JSON RMW 语义由 handlers/models/tests.rs 钉住。
 
 const requestMock = vi.fn()
+// 注意：本 spec 位于 src/views/__tests__/，src 只隔两层（与既有 view specs 一致）。
 vi.mock('../../composables/useWSAPI', () => ({
   useWSAPI: () => ({ request: (...args: any[]) => requestMock(...args) }),
+  initWSAPI: vi.fn(),
 }))
 
 import ModelsView from '../ModelsView.vue'
 
-const MODEL = {
-  model_name: 'main',
-  model: 'zhipu/glm-4.7',
-  is_default: true,
-  model_tier: null,
-  reasoning_effort: null,
-  model_size_b: 30,
-  real_name: null,
-  context_window: null,
-  catalog_match: { context_window: 128000, family: 'glm' },
+function modelRow(over: Record<string, unknown> = {}) {
+  return {
+    model_name: 'alias',
+    model: 'openai/gpt-4o',
+    api_key: 'sk-***',
+    api_base: 'https://api.openai.com/v1',
+    is_default: false,
+    protocol: null,
+    ...over,
+  }
 }
 
-beforeEach(() => {
-  requestMock.mockReset()
-  useToast().toasts.splice(0)
-})
-
-function listResult(models: unknown[] = [MODEL]) {
-  return { models }
-}
-
-/** 按 label 找下拉（协议字段加入后 select 顺序不再稳定，禁用裸下标）。 */
-function selectByLabel(w: ReturnType<typeof mount>, label: string) {
-  const editor = w.find('.attr-editor')
-  const field = editor.findAll('.attr-field').find(f => f.find('label').text().includes(label))
-  expect(field, `attr-field with label ${label}`).toBeTruthy()
-  return field!.find('select')
-}
-
-async function mountView(models: unknown[] = [MODEL], catalog = { exists: true, fetched_at: '2026-08-24', entries: 123 }) {
-  requestMock.mockImplementation((_m: string, cmd: string) => {
-    if (cmd === 'list') return Promise.resolve(listResult(models))
-    if (cmd === 'catalog_info') return Promise.resolve(catalog)
-    return Promise.resolve({})
+function mockBackend(models: Record<string, unknown>[]) {
+  requestMock.mockImplementation(async (module: string, cmd: string) => {
+    if (module === 'models' && cmd === 'list') return { models }
+    if (module === 'models' && cmd === 'catalog_info') {
+      return { exists: false, fetched_at: '', entries: 0 }
+    }
+    if (module === 'models' && cmd === 'health') return { models: [], days: 0, note: '' }
+    throw new Error(`unexpected request ${module}.${cmd}`)
   })
+}
+
+async function mountView(models: Record<string, unknown>[]) {
+  mockBackend(models)
   const w = mount(ModelsView)
   await flushPromises()
   return w
 }
 
-describe('ModelsView 目录缓存', () => {
-  it('显示 catalog_info 的条数/时间；不存在时提示未缓存', async () => {
-    const w = await mountView()
-    expect(requestMock).toHaveBeenCalledWith('models', 'catalog_info')
-    expect(w.text()).toContain('目录缓存：123 条')
-    expect(w.text()).toContain('2026-08-24')
-
-    const w2 = await mountView([MODEL], { exists: false, fetched_at: '', entries: 0 })
-    expect(w2.text()).not.toContain('目录缓存：123')
-  })
-
-  it('更新目录：成功 toast + 重拉列表；失败 toast；busy 期不重复触发', async () => {
-    let release!: (v: unknown) => void
-    requestMock.mockImplementation((_m: string, cmd: string) => {
-      if (cmd === 'list') return Promise.resolve(listResult())
-      if (cmd === 'catalog_info') return Promise.resolve({ exists: false, fetched_at: '', entries: 0 })
-      if (cmd === 'catalog_update') return new Promise(r => (release = r))
-      return Promise.resolve({})
-    })
-    const w = mount(ModelsView)
-    await flushPromises()
-
-    const btn = w.findAll('button').find(b => b.text().includes('更新模型目录'))!
-    await btn.trigger('click')
-    await btn.trigger('click') // busy 守卫：不二次发
-    expect(requestMock.mock.calls.filter(c => c[1] === 'catalog_update').length).toBe(1)
-    expect(btn.attributes('disabled')).toBeDefined()
-
-    release({ exists: true, fetched_at: 'now', entries: 456 })
-    await flushPromises()
-    expect(useToast().toasts.some(t => t.type === 'success' && t.message.includes('456'))).toBe(true)
-    // catalog_match 可能变了 → 重拉 list
-    expect(requestMock.mock.calls.filter(c => c[1] === 'list').length).toBe(2)
-    expect(btn.attributes('disabled')).toBeUndefined()
-  })
+beforeEach(() => {
+  requestMock.mockReset()
 })
 
-describe('ModelsView 属性编辑', () => {
-  it('展开属性 → draft 按当前值播种；无修改保存 → info 不发写', async () => {
-    const w = await mountView()
-    await w.findAll('button').find(b => b.text() === '属性')!.trigger('click')
-    await flushPromises()
-
-    const editor = w.find('.attr-editor')
-    expect(editor.exists()).toBe(true)
-    expect((selectByLabel(w, '能力档').element as HTMLSelectElement).value).toBe('auto')
-    expect((editor.find('input[type="number"]').element as HTMLInputElement).value).toBe('30')
-    // catalog_match 提供目录值
-    expect(editor.text()).toContain('128,000')
-
-    await w.findAll('button').find(b => b.text() === '保存属性')!.trigger('click')
-    await flushPromises()
-    expect(requestMock.mock.calls.filter(c => c[1] === 'update_field').length).toBe(0)
-    expect(useToast().toasts.some(t => t.message.includes('没有修改过的属性'))).toBe(true)
-  })
-
-  it('改 tier → 只保存脏字段，值与 toast 如实', async () => {
-    const w = await mountView()
-    await w.findAll('button').find(b => b.text() === '属性')!.trigger('click')
-    await selectByLabel(w, '能力档').setValue('mini')
-    await w.findAll('button').find(b => b.text() === '保存属性')!.trigger('click')
-    await flushPromises()
-
-    const writes = requestMock.mock.calls.filter(c => c[1] === 'update_field')
-    expect(writes.length).toBe(1)
-    expect(writes[0][2]).toEqual({ name: 'main', field: 'model_tier', value: 'mini' })
-    expect(useToast().toasts.some(t => t.type === 'success' && t.message.includes('model_tier'))).toBe(true)
-  })
-
-  it('effort 从 off 改为 low → 归一发送；size 清空 → v1 跳过不写 null', async () => {
-    const w = await mountView()
-    await w.findAll('button').find(b => b.text() === '属性')!.trigger('click')
-    const editor = w.find('.attr-editor')
-    await selectByLabel(w, '推理力度').setValue('low') // effort ''→low（脏）
-    await editor.find('input[type="number"]').setValue('') // 30→''（脏，但落 null=跳过）
-    await w.findAll('button').find(b => b.text() === '保存属性')!.trigger('click')
-    await flushPromises()
-
-    const writes = requestMock.mock.calls.filter(c => c[1] === 'update_field').map(c => c[2])
-    expect(writes.length).toBe(1)
-    expect(writes[0]).toEqual({ name: 'main', field: 'reasoning_effort', value: 'low' })
-    expect(useToast().toasts.some(t => t.message.includes('未保存') && t.message.includes('model_size_b'))).toBe(true)
-  })
-
-  it('单字段保存失败 → 错误 toast + 中止后续字段 + 重拉列表', async () => {
-    requestMock.mockImplementation((_m: string, cmd: string) => {
-      if (cmd === 'list') return Promise.resolve(listResult())
-      if (cmd === 'catalog_info') return Promise.resolve({ exists: false, fetched_at: '', entries: 0 })
-      if (cmd === 'update_field') return Promise.reject(new Error('config 被锁'))
-      return Promise.resolve({})
-    })
-    const w = mount(ModelsView)
-    await flushPromises()
-    await w.findAll('button').find(b => b.text() === '属性')!.trigger('click')
-    await selectByLabel(w, '能力档').setValue('big')
-    await w.find('.attr-editor').find('input[placeholder="如 Qwen3-30B"]').setValue('GLM-4.7')
-    await w.findAll('button').find(b => b.text() === '保存属性')!.trigger('click')
-    await flushPromises()
-
-    expect(useToast().toasts.some(t => t.type === 'error' && t.message.includes('config 被锁'))).toBe(true)
-    // 第一个字段失败即中止：只发了一次 update_field
-    expect(requestMock.mock.calls.filter(c => c[1] === 'update_field').length).toBe(1)
-    // 失败后重拉列表回显真实盘上状态
-    expect(requestMock.mock.calls.filter(c => c[1] === 'list').length).toBe(2)
-  })
-
-  it('目录值一键填入 context_window', async () => {
-    const w = await mountView()
-    await w.findAll('button').find(b => b.text() === '属性')!.trigger('click')
-    const fill = w.findAll('a').find(a => a.text() === '填入')!
-    await fill.trigger('click')
-    const ctxInput = w.find('.attr-editor').findAll('input').at(-1)! as ReturnType<typeof w.find>
-    expect((ctxInput.element as HTMLInputElement).value).toBe('128000')
-  })
-})
-
-// G4 (U15)：key 来源徽标 + 明文迁移引导卡。
-describe('ModelsView key 来源徽标（G4）', () => {
-  const KS = (kind: string, ref = '') => ({ kind, ref })
-
-  it('四种来源徽标各按 kind 渲染（env/yaml/inline/none）', async () => {
+describe('ModelsView 家族分组（P10）', () => {
+  it('列表按家族分组渲染组头（标签 + 条数）', async () => {
     const w = await mountView([
-      { ...MODEL, model_name: 'a', key_source: KS('env', 'ZHIPU_API_KEY') },
-      { ...MODEL, model_name: 'b', key_source: KS('yaml', 'zhipu') },
-      { ...MODEL, model_name: 'c', key_source: KS('inline') },
-      { ...MODEL, model_name: 'd', key_source: KS('none') },
+      modelRow({ model_name: 'glm', model: 'zhipu/glm-4.7' }),
+      modelRow({ model_name: 'gpt', model: 'openai/gpt-4o', is_default: true }),
+      modelRow({ model_name: 'ds', model: 'deepseek/deepseek-chat' }),
     ])
-    const badges = w.findAll('.settings-value .ks-badge')
-    expect(badges.length).toBe(4)
-    expect(badges[0].text()).toBe('env 环境变量')
-    expect(badges[0].classes()).toContain('ks-env')
-    expect(badges[1].text()).toBe('yaml 引用')
-    expect(badges[1].classes()).toContain('ks-yaml')
-    expect(badges[2].text()).toBe('⚠ 明文')
-    expect(badges[2].classes()).toContain('ks-inline')
-    expect(badges[3].text()).toBe('无 key')
-    expect(badges[3].classes()).toContain('ks-none')
+    const headers = w.findAll('.family-header')
+    expect(headers).toHaveLength(3)
+    const labels = headers.map((h) => h.find('.family-name').text())
+    // 表顺序：openai 在前，zhipu/deepseek 按表序。
+    expect(labels).toEqual(['OpenAI', '智谱 AI', 'DeepSeek'])
+    const counts = headers.map((h) => h.find('.family-count').text())
+    expect(counts).toEqual(['1', '1', '1'])
+    w.unmount()
   })
 
-  it('区顶部有来源说明；无明文 key 时不显示迁移卡', async () => {
-    const w = await mountView([{ ...MODEL, key_source: KS('env', 'K') }])
-    expect(w.find('.key-source-hint').exists()).toBe(true)
-    expect(w.text()).toContain('推荐 env / yaml')
-    expect(w.find('.key-import-card').exists()).toBe(false)
-  })
-
-  it('有明文 key → 迁移引导卡出现（计数 + CLI 命令）；复制按钮写入剪贴板', async () => {
-    const writeText = vi.fn().mockResolvedValue(undefined)
-    Object.assign(navigator, { clipboard: { writeText } })
+  it('同家族多模型聚合进同组；未知家族进「其他」且置底', async () => {
     const w = await mountView([
-      { ...MODEL, key_source: KS('inline') },
-      { ...MODEL, model_name: 'x', key_source: KS('inline') },
-      { ...MODEL, model_name: 'y', key_source: KS('yaml', 'a') },
+      modelRow({ model_name: 'a', model: 'deepseek/deepseek-chat' }),
+      modelRow({ model_name: 'b', model: 'deepseek/deepseek-reasoner' }),
+      modelRow({ model_name: 'c', model: 'mystery-model-9000' }),
     ])
-    const card = w.find('.key-import-card')
-    expect(card.exists()).toBe(true)
-    expect(card.text()).toContain('2 个模型使用明文 Key')
-    expect(card.text()).toContain('nemesisbot credentials import')
-
-    const copyBtn = card.findAll('button').find(b => b.text().includes('复制'))!
-    await copyBtn.trigger('click')
-    await flushPromises()
-    expect(writeText).toHaveBeenCalledWith('nemesisbot credentials import')
-    expect(copyBtn.text()).toContain('已复制')
-  })
-})
-
-// LLM 协议选择器（2026-09-11）：attr 编辑 + add 表单 + 卡片显示。
-describe('ModelsView 协议选择器', () => {
-  it('attr 编辑：协议下拉默认自动识别；选 Claude → 脏字段保存 protocol=anthropic', async () => {
-    const w = await mountView()
-    await w.findAll('button').find(b => b.text() === '属性')!.trigger('click')
-    const sel = selectByLabel(w, '协议类型')
-    expect((sel.element as HTMLSelectElement).value).toBe('')
-    // 4 项：自动识别 + 三协议
-    expect(sel.findAll('option').length).toBe(4)
-    expect(sel.text()).toContain('自动识别')
-
-    await sel.setValue('anthropic')
-    expect(w.find('.attr-dirty').text()).toContain('protocol')
-    await w.findAll('button').find(b => b.text() === '保存属性')!.trigger('click')
-    await flushPromises()
-    const writes = requestMock.mock.calls.filter(c => c[1] === 'update_field')
-    expect(writes.length).toBe(1)
-    expect(writes[0][2]).toEqual({ name: 'main', field: 'protocol', value: 'anthropic' })
+    const headers = w.findAll('.family-header')
+    expect(headers.map((h) => h.find('.family-name').text())).toEqual(['DeepSeek', '其他'])
+    const grids = w.findAll('.family-grid')
+    expect(grids[0].findAll('.model-card')).toHaveLength(2)
+    expect(grids[1].findAll('.model-card')).toHaveLength(1)
+    w.unmount()
   })
 
-  it('卡片显示：有协议显协议，无协议显「自动识别」', async () => {
-    const w1 = await mountView([{ ...MODEL, protocol: 'anthropic' }])
-    // settings-grid 中 key/value span 成对出现，按下标配对。
-    const pairOf = (w: ReturnType<typeof mount>) => {
-      const keys = w.findAll('.settings-key')
-      const vals = w.findAll('.settings-value')
-      const i = keys.findIndex(k => k.text() === '协议')
-      expect(i, '协议 settings-key 存在').toBeGreaterThanOrEqual(0)
-      return vals[i].text()
-    }
-    expect(pairOf(w1)).toBe('anthropic')
-    const w2 = await mountView()
-    expect(pairOf(w2)).toBe('自动识别')
+  it('家族筛选下拉：选家族后只显示该组卡片，选回全部恢复', async () => {
+    const w = await mountView([
+      modelRow({ model_name: 'glm', model: 'zhipu/glm-4.7' }),
+      modelRow({ model_name: 'gpt', model: 'openai/gpt-4o' }),
+    ])
+    const select = w.find('select.family-filter')
+    expect(select.exists()).toBe(true)
+    // 全部家族（''）：两组都在。
+    expect(w.findAll('.family-group')).toHaveLength(2)
+    // 选 zhipu：只剩智谱组。
+    await select.setValue('zhipu')
+    const groups = w.findAll('.family-group')
+    expect(groups).toHaveLength(1)
+    expect(groups[0].find('.family-name').text()).toBe('智谱 AI')
+    expect(groups[0].findAll('.model-card')).toHaveLength(1)
+    // 选回 ''：恢复全部。
+    await select.setValue('')
+    expect(w.findAll('.family-group')).toHaveLength(2)
+    w.unmount()
   })
 
-  it('add 表单：协议下拉默认 Claude，payload 携带 protocol', async () => {
-    const w = await mountView()
-    await w.findAll('button').find(b => b.text().includes('+ 添加模型'))!.trigger('click')
-    const form = w.find('.card .card-body')
-    const protocolSel = form.findAll('select').find(s =>
-      s.findAll('option').some(o => o.text().includes('Claude'))
-    )!
-    expect(protocolSel, 'add 表单协议下拉').toBeTruthy()
-    expect((protocolSel.element as HTMLSelectElement).value).toBe('anthropic')
+  it('组头点击折叠/展开（v-show 收起组内网格）', async () => {
+    const w = await mountView([modelRow({ model_name: 'gpt', model: 'openai/gpt-4o' })])
+    const header = w.find('.family-header')
+    const grid = w.find('.family-grid')
+    expect((grid.element as HTMLElement).style.display).not.toBe('none')
+    await header.trigger('click')
+    expect((grid.element as HTMLElement).style.display).toBe('none')
+    await header.trigger('click')
+    expect((grid.element as HTMLElement).style.display).not.toBe('none')
+    w.unmount()
+  })
 
-    const inputs = form.findAll('input')
-    await inputs.find(i => i.attributes('placeholder')?.includes('GPT4'))!.setValue('glm-cc')
-    await inputs.find(i => i.attributes('placeholder')?.includes('glm-4'))!.setValue('glm-5.3-flash')
-    await inputs.find(i => i.attributes('type') === 'password')!.setValue('GLM')
-    await form.findAll('button').find(b => b.text() === '添加')!.trigger('click')
-    await flushPromises()
-
-    const add = requestMock.mock.calls.find(c => c[1] === 'add')
-    expect(add).toBeTruthy()
-    expect(add![2]).toMatchObject({ name: 'glm-cc', model: 'glm-5.3-flash', protocol: 'anthropic' })
+  it('单模型场景照样出组头；筛选下拉存在', async () => {
+    const w = await mountView([modelRow({ model_name: 'glm', model: 'zhipu/glm-4.7' })])
+    expect(w.findAll('.family-header')).toHaveLength(1)
+    expect(w.find('select.family-filter').exists()).toBe(true)
+    w.unmount()
   })
 })

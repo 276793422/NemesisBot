@@ -41,6 +41,7 @@ use std::path::{Path, PathBuf};
 
 use parking_lot::Mutex;
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 use tracing::warn;
 
 use crate::r#loop::{FileChange, FileChangeKind};
@@ -57,11 +58,42 @@ pub struct FileSnap {
     pub content: Option<String>,
 }
 
+/// P20（2026-09-25 能力扩展 WS7）：单路径「变更后指纹」——turn 收尾封印
+/// （`seal_turn`）时该路径的**现盘**内容 sha256 hex。`hash == None` = 封印
+/// 时刻文件已不在盘上（删除语义）。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct FileFingerprint {
+    pub path: String,
+    pub hash: Option<String>,
+}
+
+/// P20：单条冲突——rewind 目标之后声明过该路径的 checkpoint 封印指纹与
+/// 当前盘上内容不一致（文件在 checkpoint 之后被外部修改）。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CheckpointConflict {
+    pub path: String,
+    pub expected_hash: String,
+    pub current_hash: String,
+}
+
+/// P20：冲突预检报告。`unchecked_paths` = 最后声明该路径的 turn 尚未封印
+/// （trailing turn 进行中 / 崩溃未走到封印点）——诚实跳过不比对，绝不回退
+/// 到更旧的 seal（旧 seal 是更早状态，会把 agent 自己的后续变更误报成
+/// 外部修改）。
+#[derive(Debug, Clone, Default)]
+pub struct CheckpointConflictReport {
+    pub conflicts: Vec<CheckpointConflict>,
+    pub unchecked_paths: Vec<String>,
+}
+
 /// Anchors the pre-edit state of every distinct file touched during one user turn.
 ///
 /// `paths`（D2 新增，serde default 兼容老 JSON）：本 turn 工具声明的变更路径
 /// （preview_all 集合），供 picker/meta 展示。`tree`（D2 新增）：git 模式下
 /// `begin` 时刻的影子库 tree hex；JSON 模式恒 None。
+///
+/// `after` / `sealed`（P20 新增，serde default 兼容老 JSON）：turn 收尾封印
+/// 的「变更后指纹」集与封印标记——rewind 冲突预检的比对基线。
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Checkpoint {
     pub turn: usize,
@@ -72,6 +104,10 @@ pub struct Checkpoint {
     pub paths: Vec<String>,
     #[serde(default)]
     pub tree: Option<String>,
+    #[serde(default)]
+    pub after: Vec<FileFingerprint>,
+    #[serde(default)]
+    pub sealed: bool,
 }
 
 /// Picker-facing summary of a checkpoint (no file contents).
@@ -191,6 +227,12 @@ impl CheckpointStore {
         };
         match result {
             Ok(repo) => {
+                // P20（2026-09-25 能力扩展）：启动自愈——清扫崩溃残留的
+                // temp 对象 / 半成品锁文件（幂等，无残留 = 0 清扫不吭声）。
+                let healed = Self::heal_shadow_repo(shadow);
+                if healed > 0 {
+                    warn!("[checkpoint] 影子库自愈：清扫崩溃残留文件 {healed} 个");
+                }
                 if let Err(e) = Self::ensure_alternates(shadow, root) {
                     warn!("[checkpoint] alternates 写失败（blob 复用降级，不影响正确性）: {e}");
                 }
@@ -255,6 +297,36 @@ impl CheckpointStore {
         }
         std::fs::create_dir_all(&info_dir)?;
         std::fs::write(&file, format!("{want}\n"))
+    }
+
+    /// P20（2026-09-25 能力扩展）：影子库自愈——清扫上次进程崩溃残留的
+    /// temp 对象 / 半成品锁文件（git 对象写入走 tmp→rename 原子替换，残留
+    /// 形态 = `tmp_obj_*` / `tmp_pack_*` / 各类 `*.lock`）。幂等：重复启动
+    /// 或无残留都安全（返回清扫条数）。只删已知安全形态，绝不触碰
+    /// refs / objects 本体 / packed-refs / alternates。
+    pub fn heal_shadow_repo(shadow: &Path) -> usize {
+        let mut removed = 0usize;
+        let mut stack = vec![shadow.to_path_buf()];
+        while let Some(dir) = stack.pop() {
+            let Ok(entries) = std::fs::read_dir(&dir) else {
+                continue;
+            };
+            for ent in entries.flatten() {
+                let p = ent.path();
+                if p.is_dir() {
+                    stack.push(p);
+                    continue;
+                }
+                let name = ent.file_name().to_string_lossy().to_string();
+                let stale = name.starts_with("tmp_obj_")
+                    || name.starts_with("tmp_pack_")
+                    || name.ends_with(".lock");
+                if stale && std::fs::remove_file(&p).is_ok() {
+                    removed += 1;
+                }
+            }
+        }
+        removed
     }
 
     // ------------------------------------------------------------------
@@ -425,6 +497,16 @@ impl CheckpointStore {
     /// 也被快照的关键），tree 与上一 turn 不同才落盘 JSON（翻页空 turn 不
     /// 留壳，落盘纪律同 JSON 模式）。
     pub fn begin(&self, turn: usize, prompt: impl Into<String>) {
+        // P20 兜底封印：上一 turn 若因崩溃未走到 process_admitted 的收尾
+        // 封印点，在开启新 turn 前补封（幂等——已封印的 turn 直接跳过）。
+        let fallback_seal = {
+            let guard = self.inner.lock();
+            guard.cur.as_ref().filter(|c| !c.sealed).map(|c| c.turn)
+        };
+        if let Some(t) = fallback_seal {
+            self.seal_turn(t);
+        }
+
         let prompt = prompt.into();
 
         // git track 先行（repo 锁独立短区间，不与 inner 锁嵌套）。
@@ -451,6 +533,8 @@ impl CheckpointStore {
             files: Vec::new(),
             paths: Vec::new(),
             tree: tree_hex,
+            after: Vec::new(),
+            sealed: false,
         };
 
         let mut guard = self.inner.lock();
@@ -516,6 +600,154 @@ impl CheckpointStore {
         let cp = cur.clone();
         drop(guard);
         self.persist(&cp);
+    }
+
+    // ------------------------------------------------------------------
+    // P20（2026-09-25 能力扩展 WS7）：turn 收尾封印 + rewind 冲突预检
+    // ------------------------------------------------------------------
+
+    /// turn 收尾封印——对本 turn 声明过的每个变更路径读**现盘**内容
+    /// sha256，作为「变更后指纹」记进该 turn 的 checkpoint（rewind 冲突
+    /// 预检的比对基线）。幂等（已封印直接返回）；turn 不在索引中 = no-op。
+    ///
+    /// 两段锁纪律：锁内取路径集与幂等判定 → 放锁逐路径哈希 → 锁内复核
+    /// 回填 + persist。哈希期间的窗口诚实边界：封印与工具执行非原子，极
+    /// 端并发下封的是「封印时刻」盘面——冲突预检本就是防外部修改的护栏，
+    /// 不是强一致锁。调用点：process_admitted 收尾（admission.rs）+ begin
+    /// 顶部崩溃兜底。
+    pub fn seal_turn(&self, turn: usize) {
+        // 段一：定位 checkpoint + 收集待封印路径（幂等检查）。
+        let (paths, is_cur) = {
+            let guard = self.inner.lock();
+            let found = guard
+                .done
+                .iter()
+                .find(|c| c.turn == turn)
+                .or_else(|| guard.cur.as_ref().filter(|c| c.turn == turn));
+            let Some(cp) = found else { return };
+            if cp.sealed {
+                return; // 幂等
+            }
+            let paths: Vec<String> = if cp.paths.is_empty() {
+                cp.files.iter().map(|f| f.path.clone()).collect()
+            } else {
+                cp.paths.clone()
+            };
+            (paths, guard.cur.as_ref().is_some_and(|c| c.turn == turn))
+        };
+
+        // 段二（锁外）：逐路径读现盘哈希。
+        let hashed: Vec<FileFingerprint> = paths
+            .into_iter()
+            .map(|p| FileFingerprint {
+                hash: self.hash_on_disk(&p),
+                path: p,
+            })
+            .collect();
+
+        // 段三：锁内回填 + 落盘（重写 turn-N.json，崩溃后重载仍带指纹）。
+        // 落盘纪律保留（2026-08-30「空 turn 不留壳」）：无声明路径且本就没
+        // 落过盘的空 turn 只改内存态（sealed 标记），不凭封印凭空造出
+        // turn-N.json——无指纹可失，冲突预检也不需要它。
+        let (snap, should_persist) = {
+            let mut guard = self.inner.lock();
+            let target = if is_cur {
+                guard.cur.as_mut()
+            } else {
+                guard.done.iter_mut().find(|c| c.turn == turn)
+            };
+            let Some(cp) = target else { return };
+            cp.after = hashed;
+            cp.sealed = true;
+            let snap = cp.clone();
+            let already_on_disk = self
+                .dir
+                .as_ref()
+                .map(|d| d.join(format!("turn-{}.json", snap.turn)).exists())
+                .unwrap_or(false);
+            let has_paths = !snap.paths.is_empty();
+            (snap, already_on_disk || has_paths)
+        };
+        if should_persist {
+            self.persist(&snap);
+        }
+    }
+
+    /// P20：路径的现盘内容 sha256 hex（safe_path 语义解析，拒 `..` 逃逸）。
+    /// 文件不存在 / 读取失败 → None（=「封印时刻不在盘上」语义，与指纹
+    /// None 对齐比较）。
+    fn hash_on_disk(&self, path: &str) -> Option<String> {
+        let abs = self.safe_path(path)?;
+        let bytes = std::fs::read(abs).ok()?;
+        let mut h = Sha256::new();
+        h.update(&bytes);
+        Some(h.finalize().iter().map(|b| format!("{b:02x}")).collect())
+    }
+
+    /// P20：rewind 冲突预检——每路径只认「turn >= from_turn 里**最后声明
+    /// 它**的 checkpoint」的封印指纹与现盘内容比对（防假阳性：更旧的 seal
+    /// 是更早状态，会把 agent 自己的后续变更误报成外部修改）。最后声明
+    /// turn 未封印（trailing turn 进行中）→ unchecked 诚实跳过。
+    ///
+    /// 判定细则：现盘 hash 与封印 hash 不一致 = 冲突（含「封印时刻在盘、
+    /// 现已不在」——外部删除也算修改，force 可过）；一致 / 封印即不在盘
+    /// （None vs None）= 干净。
+    pub fn conflict_scan(&self, from_turn: usize) -> CheckpointConflictReport {
+        let mut report = CheckpointConflictReport::default();
+        // 锁内收集 (path, sealed, sealed_hash) 快照，放锁后读盘比对
+        // （锁纪律：不带着 inner 锁做文件 IO）。
+        let mut last_declared: Vec<(String, bool, Option<String>)> = Vec::new();
+        {
+            let guard = self.inner.lock();
+            let mut all: Vec<&Checkpoint> = guard.done.iter().collect();
+            if let Some(cur) = guard.cur.as_ref() {
+                all.push(cur);
+            }
+            all.sort_by_key(|c| c.turn);
+            for c in all.iter().filter(|c| c.turn >= from_turn) {
+                let paths: Vec<String> = if c.paths.is_empty() {
+                    c.files.iter().map(|f| f.path.clone()).collect()
+                } else {
+                    c.paths.clone()
+                };
+                for p in paths {
+                    let fp = c
+                        .after
+                        .iter()
+                        .find(|f| f.path == p)
+                        .and_then(|f| f.hash.clone());
+                    if let Some(slot) = last_declared.iter_mut().find(|(lp, _, _)| lp == &p) {
+                        slot.1 = c.sealed;
+                        slot.2 = fp;
+                    } else {
+                        last_declared.push((p, c.sealed, fp));
+                    }
+                }
+            }
+        }
+        for (path, sealed, sealed_hash) in last_declared {
+            if !sealed {
+                report.unchecked_paths.push(path);
+                continue;
+            }
+            let Some(expected) = sealed_hash else {
+                // 已封印但该路径无指纹（防御性：seal 遍历 paths 全集，正常
+                // 不会发生）——诚实跳过不误报。
+                report.unchecked_paths.push(path);
+                continue;
+            };
+            match self.hash_on_disk(&path) {
+                Some(cur_hash) if cur_hash == expected => {} // 干净
+                cur => {
+                    report.conflicts.push(CheckpointConflict {
+                        path,
+                        expected_hash: expected,
+                        current_hash: cur.unwrap_or_default(), // 空 = 已不在盘
+                    });
+                }
+            }
+        }
+        report
     }
 
     /// 声明路径是否落在工作区内（git 影子树的覆盖范围）。相对路径恒在内；
@@ -877,3 +1109,8 @@ mod m3_tests;
 // 影子库外力消失降级。
 #[cfg(test)]
 mod cov_tests;
+
+// P20 (2026-09-25 能力扩展 WS7): turn 收尾封印（after 指纹）+ 冲突预检
+// （last-declared 规则）+ 影子库自愈（幂等清扫）测试。
+#[cfg(test)]
+mod p20_tests;

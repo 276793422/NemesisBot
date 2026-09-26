@@ -3263,9 +3263,10 @@ fn test_l7_mcp_extra_serialization_deterministic() {
 
 #[test]
 fn test_diagnostics_loop_missing_key_defaults() {
-    // 缺键不炸（#[serde(default)] 全覆盖）：诊断闭环默认关、20 条、2000ms。
+    // 缺键不炸（serde default fn 全覆盖）：诊断闭环默认**开**（P2 能力扩展
+    // WS3 翻转，对齐业界 内置无条件开启）、20 条、2000ms。
     let parsed: crate::AgentDefaults = serde_json::from_str("{}").unwrap();
-    assert!(!parsed.diagnostics_loop.enabled);
+    assert!(parsed.diagnostics_loop.enabled);
     assert_eq!(parsed.diagnostics_loop.max_errors, 20);
     assert_eq!(parsed.diagnostics_loop.wait_max_ms, 2000);
 
@@ -3278,7 +3279,15 @@ fn test_diagnostics_loop_missing_key_defaults() {
 
     // 类型 Default impl 与 serde 缺键路径一致（手写 Default 的锚点）。
     let d = crate::DiagnosticsLoopConfig::default();
-    assert_eq!((d.enabled, d.max_errors, d.wait_max_ms), (false, 20, 2000));
+    assert_eq!((d.enabled, d.max_errors, d.wait_max_ms), (true, 20, 2000));
+
+    // P2：显式 false 不受默认翻转影响（serde 显式值优先）——存量用户
+    // 配置语义保持。
+    let off: crate::DiagnosticsLoopConfig = serde_json::from_str(r#"{"enabled": false}"#).unwrap();
+    assert!(!off.enabled);
+    let off_full: crate::AgentDefaults =
+        serde_json::from_str(r#"{"diagnostics_loop": {"enabled": false}}"#).unwrap();
+    assert!(!off_full.diagnostics_loop.enabled);
 }
 
 #[test]
@@ -3546,4 +3555,37 @@ fn test_security_config_signature_verify_roundtrip() {
         let out = serde_json::to_value(&cfg).unwrap();
         assert_eq!(out["signature_verify"], v, "显式值 {v} round-trip 被改写");
     }
+}
+
+#[test]
+fn test_skills_config_ws4_keys_defaults_and_roundtrip() {
+    // 缺省（老 config.json 无这些键）：allow_unsigned=true 兼容存量、
+    // install_approval=true、min_age_days=0=关、min_age_policy=warn。
+    let cfg: crate::SkillsConfig = serde_json::from_value(serde_json::json!({})).unwrap();
+    assert!(cfg.allow_unsigned);
+    assert!(cfg.install_approval);
+    assert_eq!(cfg.min_age_days, 0);
+    assert_eq!(cfg.min_age_policy, "warn");
+
+    // Default 手工实现与 serde 缺省同源（防 derive 把 allow_unsigned 落成 false）。
+    let d = crate::SkillsConfig::default();
+    assert!(d.allow_unsigned);
+    assert!(d.install_approval);
+    assert_eq!(d.min_age_policy, "warn");
+
+    // 显式值 round-trip。
+    let cfg2: crate::SkillsConfig = serde_json::from_value(serde_json::json!({
+        "allow_unsigned": false,
+        "install_approval": false,
+        "min_age_days": 30,
+        "min_age_policy": "block"
+    }))
+    .unwrap();
+    assert!(!cfg2.allow_unsigned);
+    assert!(!cfg2.install_approval);
+    assert_eq!(cfg2.min_age_days, 30);
+    assert_eq!(cfg2.min_age_policy, "block");
+    let out = serde_json::to_value(&cfg2).unwrap();
+    assert_eq!(out["allow_unsigned"], false);
+    assert_eq!(out["min_age_policy"], "block");
 }

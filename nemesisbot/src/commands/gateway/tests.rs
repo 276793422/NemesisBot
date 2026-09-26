@@ -6052,6 +6052,7 @@ async fn run_runtime_pipeline(
         security_plugin: Some(plugin.clone()),
         health_server: health,
         cluster_adapter: pa.cluster_adapter.clone(),
+        skills_install_gate: None,
     };
 
     run_runtime(
