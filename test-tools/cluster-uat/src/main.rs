@@ -450,6 +450,28 @@ async fn setup_node(ws: &TestWorkspace, bin: &Path, node: &NodeConfig) -> Result
         bail!("{}: cluster config failed: {}", name, out.stderr);
     }
 
+    // 5b. Fast health probes, uniform for every node in every run mode
+    // (2026-09-26 T-MRG-5 flake root fix). The default probe cadence
+    // (interval=60s × threshold=3) can take up to ~180s to mark a killed
+    // peer Offline, while the board's conflict_switch_worker picks a new
+    // target from the registry's Online set after ~120s of contact rounds —
+    // a race the dead peer can win (same-score rank falls back to id
+    // lexicographic order, i.e. a coin flip). Writing interval=2/threshold=2
+    // into config.cluster.json at assembly time makes dead-peer detection
+    // (~4-6s) always beat the switch decision. T20's runtime injection of
+    // the same values stays as an idempotent no-op.
+    let cluster_cfg = ws.home().join("workspace").join("config").join("config.cluster.json");
+    let raw = std::fs::read_to_string(&cluster_cfg)
+        .with_context(|| format!("{}: read config.cluster.json failed", name))?;
+    let mut cfg: Value = serde_json::from_str(&raw)
+        .with_context(|| format!("{}: parse config.cluster.json failed", name))?;
+    if let Some(obj) = cfg.as_object_mut() {
+        obj.insert("health_check_interval_secs".into(), json!(2));
+        obj.insert("health_check_failure_threshold".into(), json!(2));
+    }
+    std::fs::write(&cluster_cfg, serde_json::to_string_pretty(&cfg).unwrap())
+        .with_context(|| format!("{}: write config.cluster.json failed", name))?;
+
     // 6. Add the other three nodes as static peers.
     // gateway.rs convention: the `address` field holds the UDP host:port,
     // and the RPC port is derived as `udp_port + 10000` (e.g., 11950→21950).
@@ -3293,7 +3315,8 @@ async fn main() {
     // goal）。A 注入 test-speed 探针配置（2s 间隔 / 阈值 2）并重启；kill B →
     // 2 次探针失败（~4-8s）翻转 Offline（被动过期要 120s+，主动探针是本次
     // 验证点）；重启 B → announce upsert Online / 探针成功自愈。
-    // 本测试最后跑：A 的探针配置会保留到 run 结束。
+    // setup_node 5b（2026-09-26）起全节点装配期就带同值探针配置，本注入为
+    // 幂等同值重写；重启保留（验证配置加载路径本身）。
     all_results.push(
         run_test("T20: 主动健康探针翻转（G2）", || async {
             // 0. A 注入探针配置（AppConfig 读 workspace/config/config.cluster.json
@@ -7971,6 +7994,19 @@ async fn main() {
     all_results.push(
         run_test("T-MRG-1: common.h 三方合并 e2e（双 worker 并行改不同区域→双方保留+git log）", || async {
             let outcome: Result<String, anyhow::Error> = async {
+                // 0a. A 切 conflict-solver 组合桩（硬解 + 评审委托双职能）+ 重启
+                //     ——验收评审走 A 的默认模型，套件必须自持该状态、不得依赖
+                //     T28/T30 先行（2026-09-26 --filter T-MRG 单跑实证：A 停在
+                //     setup 基座模型上评审 3 轮解析不出 JSON → 全部转人工卡死）。
+                //     全量跑下与 T-MRG-3 的同值切换幂等。
+                b_switch_model(&ws_a, &gateway_bin, "test/testai-conflict-solver-1.0")
+                    .await
+                    .map_err(anyhow::Error::msg)?;
+                gw_a.kill().await;
+                gw_a = start_gateway_and_wait("Gateway-A", &gateway_bin, ws_a.path(), &NODES[0])
+                    .await
+                    .map_err(anyhow::Error::msg)?;
+
                 // 0. B/C 切编辑桩 + 重启（A 保持组合桩负责 review PASS）。
                 b_switch_model(&ws_b, &gateway_bin, "test/testai-board-edit-1.0")
                     .await

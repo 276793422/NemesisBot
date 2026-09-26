@@ -76,3 +76,28 @@ func TestBoardEditTwoStepRespectsRedispatchAnchor2(t *testing.T) {
 		t.Fatalf("重派两步轮2 应用 ANCHOR2（version=4→9），实际 name=%s args=%s", name, args)
 	}
 }
+
+func TestBoardEditTwoStepInReusedSession(t *testing.T) {
+	m := NewTestAIBoardEdit()
+	// B 端 peer-chat 会话跨任务复用（同 master→worker 派发共享会话）：
+	// 历史里早前任务的 "File edited" 不得污染当前两步任务的「锚点编辑
+	// 尚未发生」判定（UAT 实证回归：全历史扫描被污染 → 第二步被跳过 →
+	// 变更集缺文件 → 冲突集少一个文件）。工具结果串用真实 bot 形态。
+	history := []Message{
+		{Role: "system", Content: "# 集群身份档案"},
+		// 早前任务（纯锚点单步）：edit → "File edited" → 收尾。
+		{Role: "user", Content: "## Working Directory\n位于：\n`C:\\exec\\old`\n<EDIT_FILE>common.h</EDIT_FILE><EDIT_ANCHOR>MODE 0|||MODE 1</EDIT_ANCHOR>"},
+		{Role: "assistant", Content: ""},
+		{Role: "tool", Content: "File edited: common.h"},
+		{Role: "assistant", Content: "FILE_EDIT_DONE 已按任务要求完成文件编辑，交付完成。"},
+		// 当前任务（BIN+锚点两步）：轮 1 已写 logo.bin。
+		{Role: "user", Content: binTask("BIN_EDIT", "")},
+		{Role: "assistant", Content: ""},
+		{Role: "tool", Content: "Successfully wrote 12 bytes to C:\\exec\\t6\\assets\\logo.bin"},
+	}
+	r := m.Process(history)
+	name, args := mustToolCall(t, r)
+	if name != "edit_file" || !strings.Contains(args, "Cargo.lock") || !strings.Contains(args, "version = 4") {
+		t.Fatalf("复用会话下两步第二步仍应发锚点编辑，实际 name=%s args=%s", name, args)
+	}
+}

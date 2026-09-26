@@ -74,17 +74,24 @@ func (m *TestAIBoardEdit) Process(messages []Message) string {
 		}
 		return m.editCallFor(last.Content, execDir)
 	case "tool":
-		// 两步形态第二步：历史里同时有 BIN_EDIT(+V2) 与锚点、logo.bin 写入
-		// 已成功（"wrote "）且锚点编辑尚未发生（无 "File edited"）→ 发锚点
-		// 编辑（T-mrg-6：单 issue 同时改文本文件 + 写二进制）。
-		all := concatMessageContent(messages)
+		// 两步形态第二步：当前任务同时有 BIN_EDIT(+V2) 与锚点、logo.bin 写入
+		// 已成功（"wrote "）且锚点编辑尚未发生（当前任务轮次内无 "File
+		// edited"）→ 发锚点编辑（T-mrg-6：单 issue 同时改文本文件 + 写二进制）。
+		//
+		// 全部判定锚定**当前任务**（最后一条 user 消息及其后的工具轮次），
+		// 不扫全历史——B 端 peer-chat 会话跨任务复用（同 master→worker 的
+		// 派发共享会话），早前任务的 "File edited"/标记留在历史里会污染
+		// 全量扫描（UAT 实证：第二步守卫被历史污染 → 锚点编辑被跳过 →
+		// 变更集缺文件 → 冲突集少一个文件）。
+		task := lastUserContent(messages)
+		turns := contentAfterLastUser(messages)
 		if strings.Contains(last.Content, "wrote ") &&
-			!strings.Contains(all, "File edited") &&
-			(strings.Contains(all, "<BIN_EDIT>") || strings.Contains(all, "<BIN_EDIT_V2>")) &&
-			(strings.Contains(all, "<EDIT_ANCHOR>") || (strings.Contains(all, "<EDIT_ANCHOR2>"))) {
-			execDir := extractWorkdirPath(all)
+			!strings.Contains(turns, "File edited") &&
+			(strings.Contains(task, "<BIN_EDIT>") || strings.Contains(task, "<BIN_EDIT_V2>")) &&
+			(strings.Contains(task, "<EDIT_ANCHOR>") || strings.Contains(task, "<EDIT_ANCHOR2>")) {
+			execDir := extractWorkdirPath(task)
 			if execDir != "" {
-				return m.editCallFor(all, execDir)
+				return m.editCallFor(task, execDir)
 			}
 		}
 		// edit_file 成功锚「File edited」/ write_file 成功锚「wrote N bytes」。
@@ -131,6 +138,29 @@ func concatMessageContent(messages []Message) string {
 		buf.WriteString("\n")
 	}
 	return buf.String()
+}
+
+// lastUserContent 返回最后一条 user 消息的内容（即当前任务文本——B 端
+// 会话跨任务复用下，最后一条 user 恒为本次派发；找不到返回空串）。
+func lastUserContent(messages []Message) string {
+	for i := len(messages) - 1; i >= 0; i-- {
+		if messages[i].Role == "user" {
+			return messages[i].Content
+		}
+	}
+	return ""
+}
+
+// contentAfterLastUser 拼接最后一条 user 消息之后的全部消息内容（当前
+// 任务的工具轮次）——「锚点编辑是否已发生」只看这段，历史里早前任务的
+// "File edited" 不算数。
+func contentAfterLastUser(messages []Message) string {
+	for i := len(messages) - 1; i >= 0; i-- {
+		if messages[i].Role == "user" {
+			return concatMessageContent(messages[i+1:])
+		}
+	}
+	return concatMessageContent(messages)
 }
 
 func (m *TestAIBoardEdit) Delay() time.Duration { return 0 }
