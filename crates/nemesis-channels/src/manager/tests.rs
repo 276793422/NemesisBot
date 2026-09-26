@@ -1748,6 +1748,13 @@ fn w4c_valid_init_config() -> ChannelInitConfig {
             allow_from: vec![],
         });
     }
+    #[cfg(feature = "wechat")]
+    {
+        cfg.wechat = Some(crate::wechat::WeChatConfig {
+            token: "wx-token".to_string(),
+            ..Default::default()
+        });
+    }
     #[cfg(feature = "tencent")]
     {
         cfg.qq = Some(crate::qq::QQConfig {
@@ -1870,6 +1877,8 @@ async fn test_w4c_init_channels_valid_configs_register_all() {
         "feishu",
         #[cfg(feature = "dingtalk")]
         "dingtalk",
+        #[cfg(feature = "wechat")]
+        "wechat",
         #[cfg(feature = "tencent")]
         "qq",
         #[cfg(feature = "email")]
@@ -1919,6 +1928,13 @@ async fn test_w4c_init_channels_invalid_configs_skip_registration() {
             app_token: String::new(),
             allow_from: vec![],
         }),
+        #[cfg(feature = "mattermost")]
+        mattermost: Some(crate::mattermost::MattermostConfig {
+            base_url: String::new(),
+            bot_token: String::new(),
+            allow_from: vec![],
+            channels: vec![],
+        }),
         #[cfg(feature = "whatsapp")]
         whatsapp: Some(crate::whatsapp::WhatsAppConfig {
             bridge_url: String::new(),
@@ -1938,6 +1954,14 @@ async fn test_w4c_init_channels_invalid_configs_skip_registration() {
             client_id: String::new(),
             client_secret: String::new(),
             allow_from: vec![],
+        }),
+        // P25 wecom：全空配置 → new() Err 臂（webhook_url 与 encoding_aes_key 均缺）
+        #[cfg(feature = "wecom")]
+        wecom: Some(crate::wecom::WeComConfig::default()),
+        #[cfg(feature = "wechat")]
+        wechat: Some(crate::wechat::WeChatConfig {
+            token: String::new(),
+            ..Default::default()
         }),
         #[cfg(feature = "tencent")]
         qq: Some(crate::qq::QQConfig::default()),
@@ -1974,6 +1998,14 @@ async fn test_w4c_init_channels_invalid_configs_skip_registration() {
             poll_interval: 0,
             allow_from: vec![],
         }),
+        // P27 nostr：空 relays + 空私钥 → Err 臂（记日志、不注册）。
+        #[cfg(feature = "nostr")]
+        nostr: Some(crate::nostr::NostrConfig {
+            relays: vec![],
+            private_key: String::new(),
+            allow_from: vec![],
+            reconnect_secs: 0,
+        }),
         #[cfg(feature = "onebot")]
         onebot: Some(crate::onebot::OneBotConfig {
             ws_url: String::new(),
@@ -2005,6 +2037,9 @@ async fn test_w4c_init_channels_invalid_configs_skip_registration() {
         web: Some(crate::web::WebChannelConfig::default()),
         websocket: Some(crate::websocket::WebSocketChannelConfig::default()),
         web_server_ops: None,
+        // P28 mqtt：default() 的 broker_host 为空 → Err 臂（记日志不注册，计数不变）
+        #[cfg(feature = "mqtt")]
+        mqtt: Some(crate::mqtt::MqttChannelConfig::default()),
     };
 
     let result = mgr.init_channels(&cfg, bus).await;
@@ -2024,6 +2059,8 @@ async fn test_w4c_init_channels_invalid_configs_skip_registration() {
     assert!(mgr.get("qq").await.is_none());
     assert!(mgr.get("line").await.is_none());
     assert!(mgr.get("external").await.is_none());
+    #[cfg(feature = "mqtt")]
+    assert!(mgr.get("mqtt").await.is_none());
 }
 
 #[tokio::test]

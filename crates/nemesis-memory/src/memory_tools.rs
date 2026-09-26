@@ -210,7 +210,17 @@ impl MemoryToolExecutor {
 
         // Semantic / keyword search over general store (includes vector store)
         if memory_type == "all" {
-            match self.manager.search(&query, None, limit).await {
+            // P31 ① 召回记账：agent 主动 memory_search 命中的条目做幂等 touch。
+            // 工具层拿不到会话上下文，session_key 以空串 + 每次执行独立 turn
+            // token 接线（同一次执行的多个命中共享一个 token = 同轮只计一次）；
+            // loop 侧 auto-inject 拿得到会话上下文，未来应切 search_with_recall
+            // 带 session_key（挂账）。
+            let recall_turn = uuid::Uuid::new_v4().to_string();
+            match self
+                .manager
+                .search_with_recall(&query, None, limit, "", &recall_turn)
+                .await
+            {
                 Ok(results) => {
                     if results.entries.is_empty() {
                         output.push_str("No semantic memories found.\n");

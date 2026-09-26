@@ -357,6 +357,49 @@ pub(crate) async fn init_web(ctx: &GatewayCtx, cluster: &ClusterWiring) -> Resul
     if cfg.channels.external.enabled {
         enabled_channels.push("external".to_string());
     }
+    // Wave 3（WS12 集成面）：feature-gated 通道报告臂。cfg 门控用 nemesisbot
+    // 侧 feature 名（channels- 前缀）；此列表同时是 ChannelManager 的
+    // allowed-channels 出站过滤白名单——缺名 = 该通道出站被静默丢弃。
+    #[cfg(feature = "channels-matrix")]
+    if cfg.channels.matrix.enabled {
+        enabled_channels.push("matrix".to_string());
+    }
+    #[cfg(feature = "channels-irc")]
+    if cfg.channels.irc.enabled {
+        enabled_channels.push("irc".to_string());
+    }
+    #[cfg(feature = "channels-signal")]
+    if cfg.channels.signal.enabled {
+        enabled_channels.push("signal".to_string());
+    }
+    #[cfg(feature = "channels-mastodon")]
+    if cfg.channels.mastodon.enabled {
+        enabled_channels.push("mastodon".to_string());
+    }
+    #[cfg(feature = "channels-bluesky")]
+    if cfg.channels.bluesky.enabled {
+        enabled_channels.push("bluesky".to_string());
+    }
+    #[cfg(feature = "channels-wecom")]
+    if cfg.channels.wecom.enabled {
+        enabled_channels.push("wecom".to_string());
+    }
+    #[cfg(feature = "channels-mattermost")]
+    if cfg.channels.mattermost.enabled {
+        enabled_channels.push("mattermost".to_string());
+    }
+    #[cfg(feature = "channels-nostr")]
+    if cfg.channels.nostr.enabled {
+        enabled_channels.push("nostr".to_string());
+    }
+    #[cfg(feature = "channels-mqtt")]
+    if cfg.channels.mqtt.enabled {
+        enabled_channels.push("mqtt".to_string());
+    }
+    #[cfg(feature = "channels-wechat")]
+    if cfg.channels.wechat.enabled {
+        enabled_channels.push("wechat".to_string());
+    }
 
     {
         let channel_manager = Arc::new(
@@ -444,9 +487,379 @@ pub(crate) async fn init_web(ctx: &GatewayCtx, cluster: &ClusterWiring) -> Resul
             } else {
                 None
             },
-            // Feature-gated channels (telegram/discord/feishu/slack/etc.) are mapped
-            // when the corresponding feature is enabled in nemesisbot's Cargo.toml:
-            //   nemesis-channels = { workspace = true, features = ["telegram"] }
+            // Feature-gated channel init 臂（Wave 3 WS12 集成面）：每臂把
+            // nemesis-config 的通道配置逐字段转换到 nemesis-channels 侧 Config
+            //（真相源 = 各通道 mod 顶部 `pub struct XConfig`）。cfg 门控用
+            // nemesisbot 侧 feature 名（`channels-` 前缀），经 nemesisbot
+            // Cargo.toml 转发到 nemesis-channels 侧同名 feature（无前缀）。
+            // 凭据解析纪律（P0 vault B3 先例）：
+            //   鉴权验证类（验证入站请求的 secret）→ resolve_auth_token_or_random
+            //   （解析失败回一次性随机 token，fail-closed）；
+            //   出站调用凭据（access_token 类）→ resolve_secret_or_empty
+            //   （空 = 通道侧响亮失败，天然 fail-closed）。
+            #[cfg(feature = "channels-telegram")] // nemesis-channels 侧 feature 名：telegram
+            telegram: if cfg.channels.telegram.enabled {
+                Some(nemesis_channels::telegram::TelegramConfig {
+                    // bot token：出站 API 调用凭据（getUpdates/sendMessage 共用）
+                    token: crate::common::resolve_secret_or_empty(
+                        &cfg.channels.telegram.token,
+                        "channels.telegram.token",
+                    ),
+                    proxy: if cfg.channels.telegram.proxy.is_empty() {
+                        None
+                    } else {
+                        Some(cfg.channels.telegram.proxy.clone())
+                    },
+                    allow_from: cfg.channels.telegram.allow_from.clone(),
+                    // api_base 不在 config 侧（v1 不暴露）——通道侧 Default（官方 API 地址）
+                    ..nemesis_channels::telegram::TelegramConfig::default()
+                })
+            } else {
+                None
+            },
+            #[cfg(feature = "channels-discord")] // nemesis-channels 侧 feature 名：discord
+            discord: if cfg.channels.discord.enabled {
+                Some(nemesis_channels::discord::DiscordConfig {
+                    // bot token：出站 API/网关连接凭据
+                    token: crate::common::resolve_secret_or_empty(
+                        &cfg.channels.discord.token,
+                        "channels.discord.token",
+                    ),
+                    allow_from: cfg.channels.discord.allow_from.clone(),
+                    // api_base / intents 不在 config 侧——通道侧 Default（官方 API + 默认订阅位）
+                    ..nemesis_channels::discord::DiscordConfig::default()
+                })
+            } else {
+                None
+            },
+            #[cfg(feature = "channels-slack")] // nemesis-channels 侧 feature 名：slack
+            slack: if cfg.channels.slack.enabled {
+                Some(nemesis_channels::slack::SlackConfig {
+                    // bot_token（Web API）与 app_token（Socket Mode 连接）均出站凭据
+                    bot_token: crate::common::resolve_secret_or_empty(
+                        &cfg.channels.slack.bot_token,
+                        "channels.slack.bot_token",
+                    ),
+                    app_token: crate::common::resolve_secret_or_empty(
+                        &cfg.channels.slack.app_token,
+                        "channels.slack.app_token",
+                    ),
+                    allow_from: cfg.channels.slack.allow_from.clone(),
+                })
+            } else {
+                None
+            },
+            #[cfg(feature = "channels-mattermost")] // nemesis-channels 侧 feature 名：mattermost
+            mattermost: if cfg.channels.mattermost.enabled {
+                Some(nemesis_channels::mattermost::MattermostConfig {
+                    base_url: cfg.channels.mattermost.base_url.clone(),
+                    // bot_token 用于 WS 网关 authentication_challenge 鉴权（鉴权验证类）
+                    bot_token: crate::common::resolve_auth_token_or_random(
+                        &cfg.channels.mattermost.bot_token,
+                        "channels.mattermost.bot_token",
+                    ),
+                    allow_from: cfg.channels.mattermost.allow_from.clone(),
+                    channels: cfg.channels.mattermost.channels.clone(),
+                })
+            } else {
+                None
+            },
+            #[cfg(feature = "channels-whatsapp")] // nemesis-channels 侧 feature 名：whatsapp
+            whatsapp: if cfg.channels.whatsapp.enabled {
+                Some(nemesis_channels::whatsapp::WhatsAppConfig {
+                    bridge_url: cfg.channels.whatsapp.bridge_url.clone(),
+                    api_key: if cfg.channels.whatsapp.api_key.is_empty() {
+                        None
+                    } else {
+                        // 桥 API key：出站鉴权凭据（config 侧字段为本次 WS12 补齐）
+                        Some(crate::common::resolve_secret_or_empty(
+                            &cfg.channels.whatsapp.api_key,
+                            "channels.whatsapp.api_key",
+                        ))
+                    },
+                    allow_from: cfg.channels.whatsapp.allow_from.clone(),
+                })
+            } else {
+                None
+            },
+            #[cfg(feature = "channels-feishu")] // nemesis-channels 侧 feature 名：feishu
+            feishu: if cfg.channels.feishu.enabled {
+                Some(nemesis_channels::feishu::FeishuConfig {
+                    app_id: cfg.channels.feishu.app_id.clone(),
+                    // app_secret：出站换 tenant_access_token 凭据
+                    app_secret: crate::common::resolve_secret_or_empty(
+                        &cfg.channels.feishu.app_secret,
+                        "channels.feishu.app_secret",
+                    ),
+                    // verification_token：验入站事件回调（鉴权验证类）
+                    verification_token: crate::common::resolve_auth_token_or_random(
+                        &cfg.channels.feishu.verification_token,
+                        "channels.feishu.verification_token",
+                    ),
+                    // encrypt_key：解密入站加密事件（鉴权验证类）
+                    encrypt_key: crate::common::resolve_auth_token_or_random(
+                        &cfg.channels.feishu.encrypt_key,
+                        "channels.feishu.encrypt_key",
+                    ),
+                    allow_from: cfg.channels.feishu.allow_from.clone(),
+                })
+            } else {
+                None
+            },
+            #[cfg(feature = "channels-dingtalk")] // nemesis-channels 侧 feature 名：dingtalk
+            dingtalk: if cfg.channels.dingtalk.enabled {
+                Some(nemesis_channels::dingtalk::DingTalkConfig {
+                    client_id: cfg.channels.dingtalk.client_id.clone(),
+                    // client_secret：出站换 access_token 凭据
+                    client_secret: crate::common::resolve_secret_or_empty(
+                        &cfg.channels.dingtalk.client_secret,
+                        "channels.dingtalk.client_secret",
+                    ),
+                    allow_from: cfg.channels.dingtalk.allow_from.clone(),
+                })
+            } else {
+                None
+            },
+            #[cfg(feature = "channels-wecom")] // nemesis-channels 侧 feature 名：wecom
+            wecom: if cfg.channels.wecom.enabled {
+                Some(nemesis_channels::wecom::WeComConfig {
+                    // webhook_url：出站目标（URL 内嵌 key，按出站凭据解析）
+                    webhook_url: crate::common::resolve_secret_or_empty(
+                        &cfg.channels.wecom.webhook_url,
+                        "channels.wecom.webhook_url",
+                    ),
+                    webhooks: cfg.channels.wecom.webhooks.clone(),
+                    // token：回调验签（鉴权验证类）
+                    token: crate::common::resolve_auth_token_or_random(
+                        &cfg.channels.wecom.token,
+                        "channels.wecom.token",
+                    ),
+                    // encoding_aes_key：回调消息解密（鉴权验证类）
+                    encoding_aes_key: crate::common::resolve_auth_token_or_random(
+                        &cfg.channels.wecom.encoding_aes_key,
+                        "channels.wecom.encoding_aes_key",
+                    ),
+                    corp_id: cfg.channels.wecom.corp_id.clone(),
+                    // listen_addr / callback_path 空值由通道侧归一为协议默认
+                    listen_addr: cfg.channels.wecom.listen_addr.clone(),
+                    callback_path: cfg.channels.wecom.callback_path.clone(),
+                    allow_from: cfg.channels.wecom.allow_from.clone(),
+                })
+            } else {
+                None
+            },
+            #[cfg(feature = "channels-wechat")] // nemesis-channels 侧 feature 名：wechat
+            wechat: if cfg.channels.wechat.enabled {
+                Some(nemesis_channels::wechat::WeChatConfig {
+                    // base_url / send_path 显式空值回落通道侧默认常量（iLink 协议
+                    // 形态为实现假设，真机校准只需调 config）
+                    base_url: if cfg.channels.wechat.base_url.is_empty() {
+                        nemesis_channels::wechat::DEFAULT_BASE_URL.to_string()
+                    } else {
+                        cfg.channels.wechat.base_url.clone()
+                    },
+                    // token：回调验签（鉴权验证类）
+                    token: crate::common::resolve_auth_token_or_random(
+                        &cfg.channels.wechat.token,
+                        "channels.wechat.token",
+                    ),
+                    send_path: if cfg.channels.wechat.send_path.is_empty() {
+                        nemesis_channels::wechat::DEFAULT_SEND_PATH.to_string()
+                    } else {
+                        cfg.channels.wechat.send_path.clone()
+                    },
+                    // 回调监听/路径空值由通道侧 *_resolved() 归一
+                    callback_listen_addr: cfg.channels.wechat.callback_listen_addr.clone(),
+                    callback_path: cfg.channels.wechat.callback_path.clone(),
+                    // 空值 = 通道侧 SignatureScheme::parse 默认 hmac-sha256
+                    signature_scheme: cfg.channels.wechat.signature_scheme.clone(),
+                    allow_from: cfg.channels.wechat.allow_from.clone(),
+                    contacts: cfg.channels.wechat.contacts.clone(),
+                })
+            } else {
+                None
+            },
+            #[cfg(feature = "channels-tencent")] // nemesis-channels 侧 feature 名：tencent（QQ 通道）
+            qq: if cfg.channels.qq.enabled {
+                Some(nemesis_channels::qq::QQConfig {
+                    app_id: cfg.channels.qq.app_id.clone(),
+                    // app_secret：出站换 access_token 凭据
+                    app_secret: crate::common::resolve_secret_or_empty(
+                        &cfg.channels.qq.app_secret,
+                        "channels.qq.app_secret",
+                    ),
+                    allow_from: cfg.channels.qq.allow_from.clone(),
+                    // api_base 不在 config 侧——通道侧 Default（官方 API 地址）
+                    ..nemesis_channels::qq::QQConfig::default()
+                })
+            } else {
+                None
+            },
+            #[cfg(feature = "channels-matrix")] // nemesis-channels 侧 feature 名：matrix
+            matrix: if cfg.channels.matrix.enabled {
+                Some(nemesis_channels::matrix::MatrixConfig {
+                    homeserver: cfg.channels.matrix.homeserver.clone(),
+                    user_id: cfg.channels.matrix.user_id.clone(),
+                    // access_token：出站 API 凭据
+                    access_token: crate::common::resolve_secret_or_empty(
+                        &cfg.channels.matrix.access_token,
+                        "channels.matrix.access_token",
+                    ),
+                    // config 侧空串 = 未设（通道侧 room_id: Option<String>）
+                    room_id: if cfg.channels.matrix.room_id.is_empty() {
+                        None
+                    } else {
+                        Some(cfg.channels.matrix.room_id.clone())
+                    },
+                    allow_from: cfg.channels.matrix.allow_from.clone(),
+                })
+            } else {
+                None
+            },
+            #[cfg(feature = "channels-irc")] // nemesis-channels 侧 feature 名：irc
+            irc: if cfg.channels.irc.enabled {
+                Some(nemesis_channels::irc::IRCConfig {
+                    server: cfg.channels.irc.server.clone(),
+                    use_tls: cfg.channels.irc.use_tls,
+                    nick: cfg.channels.irc.nick.clone(),
+                    // password：服务器鉴权凭据（空 = 无，通道侧 Option<String>）
+                    password: if cfg.channels.irc.password.is_empty() {
+                        None
+                    } else {
+                        Some(crate::common::resolve_secret_or_empty(
+                            &cfg.channels.irc.password,
+                            "channels.irc.password",
+                        ))
+                    },
+                    channel: cfg.channels.irc.channel.clone(),
+                    allow_from: cfg.channels.irc.allow_from.clone(),
+                    reconnect_backoff_secs: cfg.channels.irc.reconnect_backoff_secs as u64,
+                    max_reconnect_backoff_secs: cfg.channels.irc.max_reconnect_backoff_secs as u64,
+                })
+            } else {
+                None
+            },
+            #[cfg(feature = "channels-signal")] // nemesis-channels 侧 feature 名：signal
+            signal: if cfg.channels.signal.enabled {
+                Some(nemesis_channels::signal::SignalConfig {
+                    api_url: cfg.channels.signal.api_url.clone(),
+                    phone_number: cfg.channels.signal.phone_number.clone(),
+                    allow_from: cfg.channels.signal.allow_from.clone(),
+                })
+            } else {
+                None
+            },
+            #[cfg(feature = "channels-mastodon")] // nemesis-channels 侧 feature 名：mastodon
+            mastodon: if cfg.channels.mastodon.enabled {
+                Some(nemesis_channels::mastodon::MastodonConfig {
+                    server: cfg.channels.mastodon.server.clone(),
+                    // access_token：出站 OAuth 凭据
+                    access_token: crate::common::resolve_secret_or_empty(
+                        &cfg.channels.mastodon.access_token,
+                        "channels.mastodon.access_token",
+                    ),
+                    allow_from: cfg.channels.mastodon.allow_from.clone(),
+                })
+            } else {
+                None
+            },
+            #[cfg(feature = "channels-bluesky")] // nemesis-channels 侧 feature 名：bluesky
+            bluesky: if cfg.channels.bluesky.enabled {
+                Some(nemesis_channels::bluesky::BlueskyConfig {
+                    server: cfg.channels.bluesky.server.clone(),
+                    handle: cfg.channels.bluesky.handle.clone(),
+                    // password：App password（出站登录凭据）
+                    password: crate::common::resolve_secret_or_empty(
+                        &cfg.channels.bluesky.password,
+                        "channels.bluesky.password",
+                    ),
+                    // config 侧空串 = 未设（通道侧自动解析 DID）
+                    did: if cfg.channels.bluesky.did.is_empty() {
+                        None
+                    } else {
+                        Some(cfg.channels.bluesky.did.clone())
+                    },
+                    poll_interval: cfg.channels.bluesky.poll_interval as u64,
+                    allow_from: cfg.channels.bluesky.allow_from.clone(),
+                })
+            } else {
+                None
+            },
+            #[cfg(feature = "channels-nostr")] // nemesis-channels 侧 feature 名：nostr
+            nostr: if cfg.channels.nostr.enabled {
+                Some(nemesis_channels::nostr::NostrConfig {
+                    relays: cfg.channels.nostr.relays.clone(),
+                    // private_key：nostr.rs 模块头"密钥管理"约定——config 只存
+                    // 引用，装配点解析成明文再传入（未解析引用通道侧响亮拒绝）
+                    private_key: crate::common::resolve_secret_or_empty(
+                        &cfg.channels.nostr.private_key,
+                        "channels.nostr.private_key",
+                    ),
+                    allow_from: cfg.channels.nostr.allow_from.clone(),
+                    // 通道侧 0 视作缺省（默认 5s）
+                    reconnect_secs: cfg.channels.nostr.reconnect_secs as u64,
+                })
+            } else {
+                None
+            },
+            #[cfg(feature = "channels-onebot")] // nemesis-channels 侧 feature 名：onebot
+            onebot: if cfg.channels.onebot.enabled {
+                Some(nemesis_channels::onebot::OneBotConfig {
+                    ws_url: cfg.channels.onebot.ws_url.clone(),
+                    // access_token：WS 鉴权头出站凭据（空 = 不带鉴权）
+                    access_token: if cfg.channels.onebot.access_token.is_empty() {
+                        None
+                    } else {
+                        Some(crate::common::resolve_secret_or_empty(
+                            &cfg.channels.onebot.access_token,
+                            "channels.onebot.access_token",
+                        ))
+                    },
+                    reconnect_interval: cfg.channels.onebot.reconnect_interval as u64,
+                    group_trigger_prefix: cfg.channels.onebot.group_trigger_prefix.clone(),
+                    allow_from: cfg.channels.onebot.allow_from.clone(),
+                })
+            } else {
+                None
+            },
+            #[cfg(feature = "channels-mqtt")] // nemesis-channels 侧 feature 名：mqtt
+            mqtt: if cfg.channels.mqtt.enabled {
+                Some(nemesis_channels::mqtt::MqttChannelConfig {
+                    broker_host: cfg.channels.mqtt.broker_host.clone(),
+                    broker_port: cfg.channels.mqtt.broker_port as u16,
+                    client_id: cfg.channels.mqtt.client_id.clone(),
+                    // username / password：broker 鉴权出站凭据（空 = 匿名连接，
+                    // 通道侧不隐式填充）
+                    username: crate::common::resolve_secret_or_empty(
+                        &cfg.channels.mqtt.username,
+                        "channels.mqtt.username",
+                    ),
+                    password: crate::common::resolve_secret_or_empty(
+                        &cfg.channels.mqtt.password,
+                        "channels.mqtt.password",
+                    ),
+                    keep_alive_secs: cfg.channels.mqtt.keep_alive_secs as u64,
+                    clean_session: cfg.channels.mqtt.clean_session,
+                    reconnect_delay_secs: cfg.channels.mqtt.reconnect_delay_secs as u64,
+                    qos: cfg.channels.mqtt.qos as u8,
+                    topics: cfg
+                        .channels
+                        .mqtt
+                        .topics
+                        .iter()
+                        .map(|t| nemesis_channels::mqtt::MqttTopicMapping {
+                            topic: t.topic.clone(),
+                            reply_topic: t.reply_topic.clone(),
+                        })
+                        .collect(),
+                    default_reply_topic: cfg.channels.mqtt.default_reply_topic.clone(),
+                    allow_from: cfg.channels.mqtt.allow_from.clone(),
+                })
+            } else {
+                None
+            },
+            // 其余 feature-gated 通道（如 email/webhook_inbound）v1 无 config
+            // 段，维持 Default（None）——装配面按需扩展。
             ..Default::default()
         };
 
@@ -487,6 +900,18 @@ pub(crate) async fn init_web(ctx: &GatewayCtx, cluster: &ClusterWiring) -> Resul
             add_sync!(cfg.channels.line, "line");
             add_sync!(cfg.channels.maixcam, "maixcam");
             add_sync!(cfg.channels.onebot, "onebot");
+            // Wave 3（WS12 集成面）：feature-gated 通道 sync_to 接线（config
+            // 段无 cfg 门控，字段恒存在；enabled 关闭时宏内自判跳过）。
+            add_sync!(cfg.channels.matrix, "matrix");
+            add_sync!(cfg.channels.irc, "irc");
+            add_sync!(cfg.channels.signal, "signal");
+            add_sync!(cfg.channels.mastodon, "mastodon");
+            add_sync!(cfg.channels.bluesky, "bluesky");
+            add_sync!(cfg.channels.wecom, "wecom");
+            add_sync!(cfg.channels.mattermost, "mattermost");
+            add_sync!(cfg.channels.nostr, "nostr");
+            add_sync!(cfg.channels.mqtt, "mqtt");
+            add_sync!(cfg.channels.wechat, "wechat");
             let sync_config = nemesis_channels::manager::ChannelSyncConfig { targets: sync_map };
             channel_manager.setup_sync_targets(&sync_config).await;
         }

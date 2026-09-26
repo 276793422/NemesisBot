@@ -409,3 +409,63 @@ async fn question_resolved_sse_payload_flattened() {
 
     pump.abort();
 }
+
+// -------------------------------------------------------------------------
+// P30（WS14）：CanvasOpen → SSE `canvas.open`（内层 data 展平 + session_id
+// 注入）；不走 tool_event 通道、不发 WS push（HTML 载荷大，面板状态在前端）。
+// -------------------------------------------------------------------------
+
+#[tokio::test]
+async fn canvas_open_sse_payload_flattened_and_no_ws_push() {
+    let manager = SessionManager::with_default_timeout();
+    let session = manager.create_session();
+    let mut queue_rx = attach_fake_queue(&manager, &session.id);
+
+    let event_hub = Arc::new(EventHub::new());
+    // 订阅先于发事件（broadcast 无订阅者即丢）。
+    let mut hub_rx = event_hub.subscribe();
+
+    let (tx, rx) = tokio::sync::broadcast::channel::<AgentEvent>(16);
+    let pump = tokio::spawn(pump_agent_events(rx, Arc::new(manager), event_hub.clone()));
+
+    tx.send(AgentEvent::CanvasOpen {
+        session_key: format!("agent:main:session:{}", session.id),
+        chat_id: format!("web:{}", session.id),
+        html: "<html><body><p>demo</p></body></html>".into(),
+        index: 0,
+    })
+    .unwrap();
+
+    // SSE 侧：event_type = canvas.open，载荷展平（html/index 顶层）+
+    // session_id 注入（session_key 末段），无 kind/data 包装。
+    let ev = tokio::time::timeout(std::time::Duration::from_secs(5), hub_rx.recv())
+        .await
+        .expect("timed out waiting for hub event")
+        .expect("hub closed");
+    assert_eq!(ev.event_type, "canvas.open", "ev: {}", ev.data);
+    assert_eq!(
+        ev.data["session_id"],
+        session.id.as_str(),
+        "payload: {}",
+        ev.data
+    );
+    assert_eq!(
+        ev.data["html"], "<html><body><p>demo</p></body></html>",
+        "HTML 载荷完整不截断"
+    );
+    assert_eq!(ev.data["index"], 0);
+    assert!(
+        ev.data.get("kind").is_none(),
+        "payload must be flattened: {}",
+        ev.data
+    );
+
+    // WS push 侧：canvas 不走 tool_event——会话队列不得收到任何帧。
+    tokio::time::sleep(std::time::Duration::from_millis(150)).await;
+    assert!(
+        queue_rx.try_recv().is_err(),
+        "canvas.open must not produce a WS push frame"
+    );
+
+    pump.abort();
+}

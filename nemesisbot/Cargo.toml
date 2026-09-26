@@ -82,6 +82,12 @@ channels-signal = ["nemesis-channels/signal"]
 channels-mastodon = ["nemesis-channels/mastodon"]
 channels-bluesky = ["nemesis-channels/bluesky"]
 channels-whatsapp = ["nemesis-channels/whatsapp"]
+# Wave 3（P25-P29）：五新通道，默认关。
+channels-wecom = ["nemesis-channels/wecom"]
+channels-mattermost = ["nemesis-channels/mattermost"]
+channels-nostr = ["nemesis-channels/nostr"]
+channels-mqtt = ["nemesis-channels/mqtt"]
+channels-wechat = ["nemesis-channels/wechat"]
 
 [dependencies]
 nemesis-types = { workspace = true }

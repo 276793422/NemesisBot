@@ -25,6 +25,8 @@ pub mod config;
 // editor.get/set。security 闸：EditorAccessState 在 nemesis-security。
 #[cfg(feature = "security")]
 pub mod editor;
+// P30（WS14）：canvas.close 关闭回执（打开是 SSE 单向推送，无 WSAPI 开命令）。
+pub mod canvas;
 pub mod estop;
 #[cfg(feature = "forge")]
 pub mod forge;
@@ -159,6 +161,8 @@ pub fn commands_registry() -> &'static [(String, Vec<&'static str>)] {
 pub fn register_all(router: &mut crate::ws_router::WsRouter) {
     router.register(Arc::new(system::SystemHandler));
     router.register(Arc::new(estop::EstopHandler));
+    // P30（WS14）：canvas 关闭回执。
+    router.register(Arc::new(canvas::CanvasHandler));
     // M7：审批响应端点（dashboard 审批卡 → WebApprovalManager）。
     router.register(Arc::new(approval::ApprovalHandler));
     // F7：提问响应端点（dashboard 提问卡 → WebQuestionBroker）。

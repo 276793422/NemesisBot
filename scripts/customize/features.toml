@@ -126,6 +126,16 @@ desc = "WhatsApp 通道（需 bridge）"
 category = "channels"
 default = false
 
+# P28（Wave 3 能力扩展）：MQTT 是 IoT 传感器接入的标准通道（topic 订阅→inbound /
+# outbound→publish，QoS 1）。默认关（桌面/全量构建不付 rumqttc 编译成本）；
+# minimal-iot 预设默认开（IoT 构建的存在的意义之一就是接传感器）。
+[[feature]]
+id = "channels-mqtt"
+label = "MQTT"
+desc = "MQTT 3.1.1 客户端通道（rumqttc，topic 订阅→inbound / outbound→publish，QoS 1，断线自动重连）。IoT/传感器场景首选；minimal-iot 预设默认开"
+category = "channels"
+default = false
+
 # ── Subsystems (Class A leaves; on by default = current full build) ─────────
 
 [[feature]]

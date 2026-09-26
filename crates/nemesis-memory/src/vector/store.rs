@@ -284,6 +284,41 @@ impl VectorStore {
         found
     }
 
+    /// 字段级 patch（P31 记忆 dreaming / 召回记账）：按 id 原位更新
+    /// metadata/tags/type/updated_at，不触碰 content 与 embedding——调用方
+    /// 契约是 content 不变（touch/promote/expire 都不改正文；merge 是新建
+    /// 条目）。返回是否命中；命中时重写持久化文件（全量重写语义与
+    /// delete_entry 一致，避免 append 日志出现同 id 双行）。
+    pub fn patch_entry_fields(
+        &self,
+        id: &str,
+        metadata: &HashMap<String, String>,
+        tags: &[String],
+        entry_type: Option<&str>,
+        updated_at: Option<&str>,
+    ) -> bool {
+        let mut docs = self.docs.write();
+        let mut found = false;
+        for doc in docs.iter_mut() {
+            if doc.entry.id != id {
+                continue;
+            }
+            found = true;
+            doc.entry.metadata = metadata.clone();
+            doc.entry.tags = tags.to_vec();
+            if let Some(t) = entry_type {
+                doc.entry.entry_type = t.to_string();
+            }
+            if let Some(ts) = updated_at {
+                doc.entry.updated_at = ts.to_string();
+            }
+        }
+        if found {
+            self.rewrite_persist_file(&docs);
+        }
+        found
+    }
+
     /// Rewrite the entire JSONL persist file from the current docs.
     fn rewrite_persist_file(&self, docs: &[IndexedDoc]) {
         use std::io::Write;

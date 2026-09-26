@@ -204,6 +204,14 @@ impl MemoryStore for TfIdfLocalStore {
         Ok(self.entries.read().get(id).cloned())
     }
 
+    // 必须覆盖默认实现（delete + store）：delete 的 archive-on-forget sidecar
+    // 是「遗忘」语义，update 是「原地维护」语义——touch 记账若走默认路径会把
+    // 活跃条目误写进归档文件。
+    async fn update(&self, entry: Entry) -> Result<(), String> {
+        self.entries.write().insert(entry.id.clone(), entry);
+        self.flush().await
+    }
+
     async fn delete(&self, id: &str) -> Result<bool, String> {
         let removed = self.entries.write().remove(id);
         if let Some(entry) = removed {

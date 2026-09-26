@@ -25,6 +25,8 @@ pub mod capture_sink;
 pub mod cc_hooks;
 pub mod chat_log;
 pub mod checkpoint;
+// P30（WS14）Canvas widget：```canvas 块检出 + JS 语法预检（终答判定处消费）。
+pub mod canvas;
 pub mod context;
 pub mod discipline;
 pub mod estop;

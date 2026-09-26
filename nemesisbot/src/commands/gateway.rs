@@ -49,6 +49,8 @@ mod cluster_init;
 mod cluster_support;
 mod ctx;
 mod display;
+#[cfg(feature = "memory")]
+mod dreaming_job;
 mod migrate;
 mod post_agent;
 mod relay;

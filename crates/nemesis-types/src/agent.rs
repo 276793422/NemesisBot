@@ -211,6 +211,20 @@ pub enum AgentEvent {
         /// 完整会话键（web 层判别命名空间用）。
         session_key: String,
     },
+    /// P30（WS14）Canvas widget 打开事件。agent 终答里检出**全部合法**的
+    /// ```canvas fenced 块后逐块发布（同一回复多块时 `index` 递增）；web
+    /// pump 转 SSE `canvas.open`（内层 data 展平 + session_id 注入），
+    /// 前端 CanvasPanel 以 iframe `sandbox="allow-scripts"` + 严格 CSP 的
+    /// srcdoc 渲染（v1 完全无网络）。`html` 载荷完整不截断；语法预检不过
+    /// 的块不发布（错误回灌模型自纠，见 nemesis-agent canvas 模块）。
+    CanvasOpen {
+        session_key: String,
+        chat_id: String,
+        /// canvas 块内容原文（HTML 文档或片段，前端经 iframe srcdoc 注入）。
+        html: String,
+        /// 同一回复内的块序号（0 起）——前端按 (session_id, index) 幂等 upsert。
+        index: usize,
+    },
 }
 
 /// H1（devtool-upgrade 阶段 2）：单条 todo（todowrite 全量提交语义）。
@@ -242,6 +256,8 @@ impl AgentEvent {
             | AgentEvent::ApprovalRequested { chat_id, .. }
             // F7: 提问有会话上下文（工具从 RequestContext 取），随事件透传。
             | AgentEvent::QuestionAsked { chat_id, .. } => chat_id,
+            // P30：canvas 事件带发起会话的 chat_id。
+            AgentEvent::CanvasOpen { chat_id, .. } => chat_id,
             // 审批不属单一会话（auditor 无 session 上下文，同 ApprovalRequested）。
             // 提问了结事件同理只带 id（全局广播）。
             AgentEvent::ApprovalResolved { .. }
@@ -265,7 +281,8 @@ impl AgentEvent {
             | AgentEvent::RoundText { session_key, .. }
             | AgentEvent::ApprovalRequested { session_key, .. }
             | AgentEvent::QuestionAsked { session_key, .. }
-            | AgentEvent::SessionCreated { session_key, .. } => Some(session_key),
+            | AgentEvent::SessionCreated { session_key, .. }
+            | AgentEvent::CanvasOpen { session_key, .. } => Some(session_key),
             AgentEvent::ApprovalResolved { .. } | AgentEvent::QuestionResolved { .. } => None,
         }
     }
@@ -283,6 +300,7 @@ impl AgentEvent {
             AgentEvent::QuestionAsked { .. } => "QuestionAsked",
             AgentEvent::QuestionResolved { .. } => "QuestionResolved",
             AgentEvent::SessionCreated { .. } => "SessionCreated",
+            AgentEvent::CanvasOpen { .. } => "CanvasOpen",
         }
     }
 }

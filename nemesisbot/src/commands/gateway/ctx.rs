@@ -682,6 +682,15 @@ impl GatewayCtx {
             std::sync::OnceLock<Arc<nemesis_cluster::cluster::Cluster>>,
         > = Arc::new(std::sync::OnceLock::new());
 
+        // P31 记忆 dreaming 的 memory manager 槽位。on_job 闭包在 memory
+        // manager 创建之前装配（同 autopilot_cluster_slot 的 OnceLock 模式），
+        // manager 建成后 set；memory.enabled=false 时保持 None（触发时诚实
+        // 跳过）。
+        #[cfg(feature = "memory")]
+        let dreaming_memory_slot: Arc<
+            std::sync::OnceLock<Arc<nemesis_memory::manager::MemoryManager>>,
+        > = Arc::new(std::sync::OnceLock::new());
+
         // C3: Wire CronService — set_on_job handler + start.
         // Mirrors Go's bot_service.go:392-399, 571-579.
         {
@@ -702,6 +711,13 @@ impl GatewayCtx {
             // 同一面；释放后下个周期自然恢复）。
             #[cfg(feature = "board")]
             let estop_for_ap = estop.clone();
+            // P31 记忆 dreaming 分支捕获（槽位 + home + 急停；同 board-ap 模式）。
+            #[cfg(feature = "memory")]
+            let slot_for_dream = dreaming_memory_slot.clone();
+            #[cfg(feature = "memory")]
+            let home_for_dream = home.clone();
+            #[cfg(feature = "memory")]
+            let estop_for_dream = estop.clone();
             cron_service
                 .lock()
                 .unwrap()
@@ -739,6 +755,29 @@ impl GatewayCtx {
                         }
                         #[cfg(not(feature = "cluster"))]
                         return fire_board_autopilot(&job.name, store_for_ap.as_ref());
+                    }
+                    // P31: 记忆 dreaming sweep job（名 `memory-dreaming:sweep`）→
+                    // 全量条目 6 信号打分 + LLM 决策 + 宿主产出，不走消息总线。
+                    // 必须放在 message 判空前——dreaming job 的 message 恒为空
+                    //（同 board-ap 的拦截次序）。
+                    #[cfg(feature = "memory")]
+                    if job.name.starts_with("memory-dreaming:") {
+                        // 急停中定时触发诚实跳过（与 autopilot 同语义；释放后
+                        // 下个周期自然恢复）。
+                        if estop_for_dream.is_engaged() {
+                            return Ok(
+                                "⛔ 急停（E-STOP）生效中，记忆 dreaming 跳过本次触发（释放后自动恢复）"
+                                    .to_string(),
+                            );
+                        }
+                        let Some(mgr) = slot_for_dream.get() else {
+                            return Ok("记忆 dreaming 跳过：memory manager 未就绪（memory.enabled=false？）"
+                                .to_string());
+                        };
+                        return super::dreaming_job::fire_dreaming_sweep(
+                            mgr.clone(),
+                            home_for_dream.clone(),
+                        );
                     }
                     if !job.payload.message.is_empty() {
                         let channel = job
@@ -1020,6 +1059,8 @@ impl GatewayCtx {
                     "[Gateway] Memory manager created (data_dir={})",
                     memory_data_dir.display()
                 );
+                // P31：dreaming cron 闭包的槽位在这里补齐（闭包装配早于本处）。
+                let _ = dreaming_memory_slot.set(mgr.clone());
                 memory_manager_for_web = Some(mgr);
             } else {
                 info!("[Gateway] Enhanced memory disabled (config.json: memory.enabled = false)");

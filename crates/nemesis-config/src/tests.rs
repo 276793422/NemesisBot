@@ -631,6 +631,9 @@ fn test_full_config_roundtrip() {
     let config = Config {
         agents: AgentsConfig {
             discipline: DisciplineConfig::default(),
+            // P32 cache_warmer 配置节（serde 缺省关 + $0.05）——全字段
+            // 初始化器补齐。
+            cache_warmer: crate::CacheWarmerConfig::default(),
             claude_code_tool: ClaudeCodeToolConfig::default(),
             codex_tool: CodexToolConfig::default(),
             lsp_tool: LspToolConfig::default(),

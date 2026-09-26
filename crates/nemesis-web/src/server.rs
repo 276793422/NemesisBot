@@ -2013,6 +2013,26 @@ pub async fn pump_agent_events(
                     );
                     continue;
                 }
+                // P30（WS14）：canvas 打开 → SSE `canvas.open`（内层 data 展平
+                // + session_id 注入，approval/session.created 同款单发形态）。
+                // 刻意不走默认 tool_event 路径：HTML 载荷大（整个 canvas 文档），
+                // 不入 chat_event_log 环（重连/切页不重发——面板状态在前端本地
+                // 单例，断线窗口内的 canvas 只能靠终答正文里的原代码块回看，
+                // v1 诚实边界）；也不发 WS push（SSE 单通道即达）。
+                if let nemesis_types::agent::AgentEvent::CanvasOpen {
+                    session_key,
+                    html,
+                    index,
+                    ..
+                } = &event
+                {
+                    let mut payload = serde_json::json!({ "html": html, "index": index });
+                    if let Some(sid) = session_key.rsplit(':').next() {
+                        payload["session_id"] = serde_json::Value::String(sid.to_string());
+                    }
+                    event_hub.publish("canvas.open", payload);
+                    continue;
+                }
                 // BUG-A（2026-09-20）：帧内层注入 web 会话 id。chat_id 是
                 // 连接级（`web:{连接id}`，session.rs create_session_with_method
                 // 派生），与前端会话 id（sessionStore.currentId，create/list

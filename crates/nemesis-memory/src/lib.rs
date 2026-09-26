@@ -7,6 +7,7 @@
 //! - **VectorStore**: Semantic vector search with local n-gram hash embeddings
 //! - **MemoryManager**: Unified facade combining all stores
 
+pub mod dreaming;
 pub mod episodic;
 pub mod graph;
 pub mod local_store;
@@ -16,6 +17,9 @@ pub mod retrieval;
 pub mod store;
 pub mod types;
 pub mod vector;
+
+#[cfg(test)]
+mod dreaming_tests;
 
 #[cfg(any(test, feature = "test-fixture"))]
 #[doc(hidden)]

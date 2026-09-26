@@ -100,12 +100,12 @@ fn cmds_of<'a>(reg: &'a [(String, Vec<&'static str>)], module: &str) -> &'a [&'s
         .unwrap_or(&[])
 }
 
-/// 无 feature 闸的 24 个模块（register_all 的无条件注册段；L6++ G4 起
-/// 含 projects）。
+/// 无 feature 闸的 25 个模块（register_all 的无条件注册段；L6++ G4 起
+/// 含 projects，P30（WS14）起含 canvas）。
 const UNCONDITIONAL_MODULES: &[&str] = &[
     "system", "estop", "approval", "question", "chat", "config", "models", "channels", "identity",
     "tools", "skills", "mcp", "tasks", "coding", "hooks", "commands", "fs", "plugins", "board",
-    "logs", "agent", "persona", "sessions", "projects",
+    "logs", "agent", "persona", "sessions", "projects", "canvas",
 ];
 
 // ---------------------------------------------------------------------------
@@ -164,6 +164,8 @@ fn registry_anchor_commands_present() {
     // WS9/P22：租约状态探针（无副作用命令，安全子集 dispatch 冒烟覆盖）。
     assert!(cmds_of(&reg, "system").contains(&"lease_status"));
     assert!(cmds_of(&reg, "estop").contains(&"trigger"));
+    // P30（WS14）：canvas 关闭回执锚点。
+    assert!(cmds_of(&reg, "canvas").contains(&"close"));
     assert!(cmds_of(&reg, "sessions").contains(&"rewind_to_message"));
     assert!(cmds_of(&reg, "sessions").contains(&"redo"));
     assert!(cmds_of(&reg, "logs").contains(&"history_search"));

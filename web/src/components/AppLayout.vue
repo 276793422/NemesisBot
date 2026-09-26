@@ -6,8 +6,10 @@ import SkinSidebar from './SkinSidebar.vue'
 import ToastContainer from './ToastContainer.vue'
 import ApprovalCard from './ApprovalCard.vue'
 import QuestionCard from './QuestionCard.vue'
+import CanvasPanel from './CanvasPanel.vue'
 import { useApprovals } from '../composables/useApprovals'
 import { useQuestions } from '../composables/useQuestions'
+import { useCanvas } from '../composables/useCanvas'
 import { useEditorMode } from '../composables/useEditorMode'
 // 皮肤骨架槽位（顶栏/状态栏）：skinState.id 非空才渲染，默认观感零变化
 import { skinState, ensureSkinMeta } from '../composables/useSkin'
@@ -19,6 +21,8 @@ const appStore = useAppStore()
 const { initApprovals } = useApprovals()
 // F7：提问卡单例订阅（SSE question-asked + pending 补拉）。
 const { initQuestions } = useQuestions()
+// P30（WS14）：Canvas 面板单例订阅（SSE canvas.open）。
+const { initCanvas } = useCanvas()
 // Full Access 放行开关单例订阅（SSE editor-mode + editor.get seed 对齐）。
 const { initEditorMode } = useEditorMode()
 
@@ -33,6 +37,7 @@ const statusbar = ref<StatusbarStatus>({})
 onMounted(() => {
   initApprovals()
   initQuestions()
+  initCanvas()
   initEditorMode()
   if (skinState.id) {
     ensureSkinMeta()
@@ -106,5 +111,7 @@ function shortModel(m?: string): string {
     <ApprovalCard />
     <!-- F7：结构化提问卡（模态，任意页面可见） -->
     <QuestionCard />
+    <!-- P30（WS14）：Canvas 面板（浮窗，任意页面可见；无画布时不渲染） -->
+    <CanvasPanel />
   </div>
 </template>
