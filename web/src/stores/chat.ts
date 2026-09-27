@@ -64,6 +64,9 @@ export interface RoundTextEntry {
 export const useChatStore = defineStore('chat', () => {
   const messages = ref<ChatMessage[]>([])
   const input = ref('')
+  // 皮肤结构引擎 fill-input 动作的聚焦信号（v2）：场景 chip 预填后
+  // ChatPanel watch 此 nonce 聚焦输入框（皮肤包无 JS，聚焦只能宿主驱动）。
+  const focusInputNonce = ref(0)
   // D-3（2026-09-23 多会话并行清账）：发送占用态**按会话隔离**的 busy 表。
   // 旧实现是全局布尔 `streaming`——工作流「对话生成」等嵌入面板与主聊天页
   // 共用一个布尔，异会话 turn 的 busy 泄漏进本视图（发送被静默吞掉、
@@ -301,6 +304,7 @@ export const useChatStore = defineStore('chat', () => {
   return {
     messages,
     input,
+    focusInputNonce,
     streaming,
     historyLoading,
     hasMoreHistory,

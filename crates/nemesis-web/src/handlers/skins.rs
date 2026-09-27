@@ -126,8 +126,10 @@ impl SkinsHandler {
                 let reason = entry.status_detail.unwrap_or_else(|| "未知原因".into());
                 return Err(format!("皮肤包损坏，无法启用（{reason}）"));
             }
-            if entry.manifest.entry.is_none() {
-                return Err("该皮肤包无主题载荷（skin/ CSS），无法设为默认观感".to_string());
+            // v2 双载荷闸：entry（CSS 换色）∥ structure（结构骨架）任一
+            // 在场即可激活；双无 = 无任何可服务载荷，拒绝。
+            if entry.manifest.entry.is_none() && entry.manifest.structure.is_none() {
+                return Err("该皮肤包无任何载荷（skin/ CSS 或 structure 结构），无法设为默认观感".to_string());
             }
             // require_signed 后手开关（默认 false；闸在信任决策点，数据面不拦）。
             let require_signed = cfg

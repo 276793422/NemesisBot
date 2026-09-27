@@ -9,6 +9,8 @@
     // 皮肤冷启动同步注入（防 FOUC，WorkBuddy applyCachedCssSync 同款）：
     // ?skin= 查询参数临时覆盖（写入缓存），否则用 localStorage 缓存的
     // 激活 id + CSS。异步校准在 main.ts 的 applySkinBoot()。
+    // v2 结构皮肤：结构缓存（清洗后 HTML）一并回放为 inert template
+    // （不进活 DOM），SkinSlot 首挂时同步消费——皮肤骨架随首帧渲染。
     (function () {
       try {
         var q = new URLSearchParams(location.search).get('skin');
@@ -23,6 +25,14 @@
               sheet.setAttribute('data-skin-sheet', '');
               sheet.textContent = css;
               document.head.appendChild(sheet);
+            }
+            // 结构缓存只在 id 与 CSS 缓存一致时回放（T3 校准兜底过期内容）
+            var struct = localStorage.getItem('nemesisbot_skin_structure');
+            if (struct && struct.indexOf('data-nb-slot') >= 0) {
+              var t = document.createElement('template');
+              t.setAttribute('data-nb-structure-cache', '');
+              t.innerHTML = struct;
+              document.head.appendChild(t);
             }
           }
         }

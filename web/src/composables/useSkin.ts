@@ -1,33 +1,35 @@
 /**
- * 皮肤装载（.nbskin → /skins/*.css → `<style data-skin-sheet>` 注入）。
+ * 皮肤装载（.nbskin → CSS 端点 + structure 端点 → 注入）。
  *
- * 冷启动同步注入在 index.html 内联脚本（防 FOUC，WorkBuddy
- * applyCachedCssSync 同款：localStorage 缓存的 CSS 先行，等 bundle 就绪）；
- * 本模块负责**异步校准**——服务端 active.css 是真相源：
- *   - 拿到 CSS → 以 `X-Skin-Id` 响应头为准更新 `data-skin` 属性与缓存
- *     （缓存里的 id 可能过期：config 改了皮肤而浏览器缓存未清）；
- *   - 404 / 空（未配置皮肤、包缺失、`?skin=default`）→ 摘属性清缓存，
- *     回落内置皮肤。
+ * 冷启动同步注入在 index.html 内联脚本（防 FOUC）：localStorage 缓存的
+ * CSS 先行 + 结构缓存回放为 inert `<template data-nb-structure-cache>`
+ * （不进活 DOM，等 SkinSlot 消费）；本模块负责**异步校准**——服务端是
+ * 真相源：
+ *   - CSS：`/skins/active.css`（或预览 `/skins/<id>`）→ `X-Skin-Id` 头
+ *     校准 `data-skin` 属性与缓存；
+ *   - 结构：同 id 的 `/skins/active/structure`（或 `/skins/<id>/structure`）
+ *     → 清洗 → 与已挂内容比对 → 变化才原子重建（structRev++）；404 /
+ *     版本不符 / 清洗掏空 → 摘结构回落原生布局（CSS 照常 = 纯换色包）；
+ *   - 全部失败 → 摘属性清缓存，回落内置观感。
  *
- * `?skin=<id>` 查询参数 = 临时预览覆盖（不依赖 config，直接取
- * `/skins/<id>`），适合看新皮肤效果；`?skin=default` 强制回落内置。
+ * `?skin=<id>` 查询参数 = 临时预览覆盖；`?skin=default` 强制回落内置
+ * （CSS 与结构缓存一并清）。`applySkinRefresh()` = 运行中重应用（设置页
+ * 皮肤 tab 热切用），免刷新换肤。
  *
- * `applySkinRefresh()` = 运行中重应用（设置页「皮肤」tab 的 set_active
- * 成功后调用）——同链路但无 `?skin` 预览分支，直接取 active.css；服务端
- * 404（= 皮肤已关）走同一回落链。免刷新换肤，v1 不做跨 tab push（其他
- * tab 下次刷新自然跟上）。
- *
- * 骨架槽位状态（`skinState`）：皮肤激活时 AppLayout 顶栏/状态栏、
- * ChatPanel 主页启动器按它条件渲染（`skinState.id` 非空 = 槽位在场）；
- * `skinState.meta` 来自 WSAPI `skins.detail` 的 manifest 子集（品牌名/
- * 场景标签），拉取失败（feature 裁剪 / skins 未装配 / WS 未就绪）时
- * 置空，槽位回落 id 兜底显示。
+ * 结构引擎（v2）：`getSkinEngine()` 模块单例；`skinState.slots` 记录当前
+ * 包提供的槽位名，`skinHasSlot(name)` 是挂载点条件的唯一判据——CSS-only
+ * 包 slots 为空 = 全部槽位回落原生组件；`structRev` 驱动 SkinSlot 原子
+ * 重建。`consumeStructureCache()` 同步消费 T0 缓存（SkinSlot 首挂时调用，
+ * 幂等——命中时皮肤骨架随首帧渲染，无原生闪）。
  */
 
 import { reactive } from 'vue'
 import { wsStatus } from './useWebSocket'
+import { useWSAPI } from './useWSAPI'
+import { parseSkinStructure } from '../skins/sanitize'
+import { SkinStructureEngine } from '../skins/engine'
 
-/** 皮肤 manifest 元数据子集（骨架槽位渲染用）。 */
+/** 皮肤 manifest 元数据子集（投影 brand/version/scenes 来源）。 */
 export interface SkinMeta {
   /** 品牌 display 名（manifest.brand，空回落 name/id） */
   brand: string
@@ -37,11 +39,89 @@ export interface SkinMeta {
   version: string
 }
 
-/** 骨架槽位响应式状态（模块级单例；applySkin* 系列读写）。 */
-export const skinState = reactive<{ id: string; meta: SkinMeta | null }>({
+const STRUCTURE_CACHE_KEY = 'nemesisbot_skin_structure'
+
+/** 皮肤装载响应式状态（模块级单例；applySkin* 系列读写）。
+ * slots = 当前包提供的槽位名；structRev 递增驱动 SkinSlot 原子重建。 */
+export const skinState = reactive<{ id: string; meta: SkinMeta | null; slots: string[]; structRev: number }>({
   id: '',
   meta: null,
+  slots: [],
+  structRev: 0,
 })
+
+// ---- 结构引擎单例 ----
+
+let engine: SkinStructureEngine | null = null
+
+/** 结构引擎单例（projection 装配投影/动作；SkinSlot 执行挂载）。 */
+export function getSkinEngine(): SkinStructureEngine {
+  if (!engine) engine = new SkinStructureEngine()
+  return engine
+}
+
+/** 槽位在场判定（挂载点条件唯一判据；CSS-only 包恒 false = 原生组件）。 */
+export function skinHasSlot(name: string): boolean {
+  return skinState.slots.includes(name)
+}
+
+/** 清洗后槽位序列化（localStorage 结构缓存格式 = template 拼接）。 */
+function serializeSlots(slots: Map<string, DocumentFragment>): string {
+  const box = document.createElement('div')
+  return [...slots.entries()]
+    .sort(([a], [b]) => a.localeCompare(b))
+    .map(([n, f]) => {
+      box.textContent = ''
+      box.appendChild(f.cloneNode(true))
+      return `<template data-nb-slot="${n}">${box.innerHTML}</template>`
+    })
+    .join('')
+}
+
+/** 已挂载结构的签名（T3 校准比较用：内容一致不重建）。 */
+let lastStructureSig = ''
+
+/**
+ * 采纳结构 HTML：清洗 → 拒载判定（版本协商失败/掏空 = null）→ 内容
+ * 变化才 engine.load + structRev++（原子重建）。返回清洗后序列化
+ * （缓存写用），拒载返回 null。
+ */
+function adoptStructure(html: string): string | null {
+  const parsed = parseSkinStructure(html)
+  if (!parsed || parsed.slots.size === 0) return null
+  const serialized = serializeSlots(parsed.slots)
+  if (serialized !== lastStructureSig) {
+    getSkinEngine().load(parsed.slots)
+    skinState.slots = [...parsed.slots.keys()]
+    skinState.structRev++
+    lastStructureSig = serialized
+  }
+  return serialized
+}
+
+/** 摘结构回落原生布局（404/拒载/皮肤关闭共用；CSS 不受影响）。 */
+export function clearSkinStructure(): void {
+  localStorage.removeItem(STRUCTURE_CACHE_KEY)
+  lastStructureSig = ''
+  getSkinEngine().load(new Map())
+  skinState.slots = []
+  skinState.structRev++
+}
+
+/**
+ * 同步消费 T0 冷启动结构缓存（index.html 注入的 inert template；id 一致
+ * 性已在写入侧保证）。天然幂等：消费即摘除，无 template = no-op。命中且
+ * 清洗通过 → 皮肤骨架随首帧渲染；拒载 → 静默回落（T3 校准会再纠正）。
+ */
+export function consumeStructureCache(): void {
+  const t = document.head.querySelector('template[data-nb-structure-cache]')
+  if (!t) return
+  const html = t.innerHTML
+  t.remove()
+  adoptStructure(html)
+}
+
+// ---- 元数据 ----
 
 /** 元数据补拉（皮肤在场上但 meta 未就绪时调用；幂等）。 */
 export async function ensureSkinMeta(): Promise<void> {
@@ -66,7 +146,6 @@ async function refreshSkinMeta(id: string): Promise<void> {
   // 只会排队并触发无 token 的重连（服务端 401 循环）。等就绪再取。
   if (!(await waitWsReady(id))) return
   try {
-    const { useWSAPI } = await import('./useWSAPI')
     const { request } = useWSAPI()
     const detail = (await request('skins', 'detail', { id })) as {
       skin?: { manifest?: Record<string, unknown> }
@@ -83,7 +162,25 @@ async function refreshSkinMeta(id: string): Promise<void> {
     }
   } catch {
     // skins 模块不可用（feature 裁剪 / 未装配 / 请求失败）→ meta 保持空，
-    // 槽位以 id 兜底；AppLayout 挂载后会再 ensureSkinMeta() 补拉一次。
+    // 投影以 id 兜底；AppLayout 挂载后会再 ensureSkinMeta() 补拉一次。
+  }
+}
+
+// ---- 装载链 ----
+
+/** 结构载荷并行拉取（CSS 成功后启动；404 = 纯 CSS 换色包 → 原生布局）。 */
+async function loadStructureFor(id: string, cssUrl: string): Promise<void> {
+  const structureUrl = `${cssUrl.replace(/\.css$/, '')}/structure`
+  try {
+    const res = await fetch(structureUrl, { cache: 'no-store' })
+    if (!res.ok) throw new Error(`HTTP ${res.status}`)
+    const html = await res.text()
+    if (skinState.id !== id) return // 拉取期间皮肤已切走
+    const serialized = adoptStructure(html)
+    if (!serialized) throw new Error('structure rejected')
+    localStorage.setItem(STRUCTURE_CACHE_KEY, serialized)
+  } catch {
+    if (skinState.id === id) clearSkinStructure()
   }
 }
 
@@ -119,12 +216,15 @@ async function applyFromUrl(url: string, forcedId: string): Promise<void> {
 
     skinState.id = id
     void refreshSkinMeta(id)
+    // 结构链与 CSS 校准并行（CSS-only 包 → 404 → 原生布局回落）
+    void loadStructureFor(id, url)
   } catch {
     // 服务端无皮肤可用（未配置 / 包缺失 / 404）→ 回落内置皮肤
     root.removeAttribute('data-skin')
     localStorage.removeItem('nemesisbot_skin')
     localStorage.removeItem('nemesisbot_skin_css')
     document.head.querySelector('style[data-skin-sheet]')?.remove()
+    clearSkinStructure()
     skinState.id = ''
     skinState.meta = null
   }
@@ -133,13 +233,14 @@ async function applyFromUrl(url: string, forcedId: string): Promise<void> {
 export async function applySkinBoot(): Promise<void> {
   const q = new URLSearchParams(location.search).get('skin')
 
-  // 显式退出皮肤：摘属性清缓存，不再请求
+  // 显式退出皮肤：摘属性清缓存（含结构），不再请求
   if (q === 'default') {
     const root = document.documentElement
     root.removeAttribute('data-skin')
     localStorage.removeItem('nemesisbot_skin')
     localStorage.removeItem('nemesisbot_skin_css')
     document.head.querySelector('style[data-skin-sheet]')?.remove()
+    clearSkinStructure()
     return
   }
 

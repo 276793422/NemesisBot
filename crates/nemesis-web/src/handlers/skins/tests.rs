@@ -131,8 +131,8 @@ fn write_theme_skin(dir: &std::path::Path, file_stem: &str, manifest_id: &str) {
     zip.finish().unwrap();
 }
 
-/// 写一个无主题载荷的 .nbskin（manifest 有 type=app 字样但无 entry——
-/// 皮肤语义裁定后统一按「无观感载荷」拒绝，不再区分形态类型学）。
+/// 写一个双无载荷的 .nbskin（manifest 无 entry 也无 structure——v2 双
+/// 载荷闸下「无任何可服务载荷」，set_active 拒绝；形态类型学不作裁决依据）。
 fn write_app_skin(dir: &std::path::Path, file_stem: &str) {
     let path = dir.join(format!("{file_stem}.nbskin"));
     let file = std::fs::File::create(path).unwrap();
@@ -147,6 +147,30 @@ fn write_app_skin(dir: &std::path::Path, file_stem: &str) {
     zip.start_file("app/index.html", zip::write::SimpleFileOptions::default())
         .unwrap();
     write!(zip, "<!doctype html><html></html>").unwrap();
+    zip.finish().unwrap();
+}
+
+/// 写一个 structure-only 包（v2：无 entry、有 structure——双载荷闸下
+/// 可激活，前端结构引擎接管骨架，CSS 走原生基线）。
+fn write_structure_skin(dir: &std::path::Path, file_stem: &str) {
+    use std::io::Write;
+    let path = dir.join(format!("{file_stem}.nbskin"));
+    let file = std::fs::File::create(path).unwrap();
+    let mut zip = zip::ZipWriter::new(file);
+    zip.start_file("manifest.json", zip::write::SimpleFileOptions::default())
+        .unwrap();
+    write!(
+        zip,
+        r#"{{"id":"{file_stem}","version":"1.0.0","type":"theme","structure":"skin/structure.html"}}"#
+    )
+    .unwrap();
+    zip.start_file("skin/structure.html", zip::write::SimpleFileOptions::default())
+        .unwrap();
+    write!(
+        zip,
+        "<template data-nb-slot=\"titlebar\" data-nb-engine=\"1\"><b data-nb-bind=\"brand\"></b></template>"
+    )
+    .unwrap();
     zip.finish().unwrap();
 }
 
@@ -288,6 +312,30 @@ fn set_active_default_turns_off_without_scan() {
 }
 
 #[test]
+fn set_active_accepts_structure_only_package() {
+    let _guard = SLOT_LOCK.lock();
+    let tmp = tempfile::tempdir().unwrap();
+    let skins = tmp.path().join("skins");
+    std::fs::create_dir(&skins).unwrap();
+    write_structure_skin(&skins, "structonly");
+    seed_config(tmp.path(), false);
+    let active = Arc::new(parking_lot::RwLock::new("default".to_string()));
+    set_handle(
+        Some(skins.to_string_lossy().to_string()),
+        Arc::clone(&active),
+    );
+    let ctx = make_ctx(tmp.path());
+
+    let res = SkinsHandler::new()
+        .set_active(Some(json!({ "id": "structonly" })), &ctx)
+        .expect("structure-only 可激活")
+        .expect("payload");
+    assert_eq!(res["active"], json!("structonly"));
+    assert_eq!(*active.read(), "structonly");
+    assert_eq!(read_config_skin(tmp.path()), "structonly");
+}
+
+#[test]
 fn set_active_rejects_no_payload_broken_and_missing() {
     let _guard = SLOT_LOCK.lock();
     let tmp = tempfile::tempdir().unwrap();
@@ -307,7 +355,7 @@ fn set_active_rejects_no_payload_broken_and_missing() {
     let app_err = h
         .set_active(Some(json!({ "id": "apponly" })), &ctx)
         .unwrap_err();
-    assert!(app_err.contains("无主题载荷"), "{app_err}");
+    assert!(app_err.contains("无任何载荷"), "{app_err}");
     assert_eq!(*active.read(), "default", "拒绝路径不得翻锁");
 
     let broken_err = h

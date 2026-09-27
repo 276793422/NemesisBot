@@ -22,6 +22,8 @@ interface SkinManifest {
   type: string
   variants: string[]
   entry?: string | null
+  /** 结构载荷（v2 声明式结构引擎；在场 = 结构皮肤） */
+  structure?: string | null
 }
 interface SkinEntry {
   id: string
@@ -69,8 +71,9 @@ function sigBadge(e: SkinEntry) {
   return { ...b, title }
 }
 
-function isTheme(e: SkinEntry): boolean {
-  return e.status === 'ok' && !!e.manifest.entry
+/** 可激活 = 包体健康且至少带一种载荷（CSS 换色 ∥ structure 结构）。 */
+function canActivate(e: SkinEntry): boolean {
+  return e.status === 'ok' && (!!e.manifest.entry || !!e.manifest.structure)
 }
 
 function applyList(data: ListResp | null) {
@@ -178,6 +181,11 @@ onMounted(load)
           <span v-if="s.manifest.version">v{{ s.manifest.version }}</span>
           <span v-if="s.manifest.author">{{ s.manifest.author }}</span>
           <span
+            v-if="s.manifest.structure"
+            class="skin-variant"
+            title="自带声明式 UI 结构（结构皮肤）：换骨架 + 换色"
+          >结构</span>
+          <span
             v-for="v in s.manifest.variants || []"
             :key="v"
             class="skin-variant"
@@ -190,7 +198,7 @@ onMounted(load)
         </p>
         <div class="skin-foot">
           <button
-            v-if="isTheme(s)"
+            v-if="canActivate(s)"
             class="btn btn-primary"
             :disabled="busy || activeId === s.id"
             @click="setActive(s.id)"
@@ -204,6 +212,8 @@ onMounted(load)
     <p class="skins-note">
       未签名 / 签名无效的皮肤包同样可加载使用（签名只是来源徽标）；「设为默认观感」
       是信任决策，受 <code>ui.skins.require_signed</code> 策略约束（默认关）。
+      带「结构」标的皮肤自带声明式 UI 结构（包内不执行任何代码，宿主引擎
+      清洗后渲染）= 换骨架 + 换色；纯 CSS 皮肤 = 原生布局换色。
     </p>
   </div>
 </template>

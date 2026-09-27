@@ -4,24 +4,29 @@
 //! v4 footer（`NMBSIG\x04\x00` magic，摘要覆盖 `[0, L)`，zip crate 按 spec
 //! 从文件尾反向扫 EOCD，尾部附加数据天然容忍）。
 //!
-//! **皮肤只有一种形态：theme（纯 CSS 换肤）**——载荷 `skin/*.css`，经
-//! `/skins/active.css` 与 `/skins/{id}` 分发，前端注入当前页 `<style>`。
-//! 皮肤的语义 = **给当前应用（Dashboard）换观感**：同一 URL、同一应用，
-//! 原地变装，不打开任何新页面。（早期设计曾有 app 形态——皮肤包自带完整
-//! 独立应用单独伺服——已裁定违背皮肤语义，整体移除。）
+//! **载荷两形态（v2 起，声明式结构引擎）**：
+//! - CSS 载荷（manifest `entry`）——换色，经 `/skins/active.css` 与
+//!   `/skins/{id}` 分发，前端注入当前页 `<style>`；
+//! - 结构载荷（manifest `structure`）——换骨架，皮肤包自带 UI 结构
+//!   （`skin/structure.html`，声明式 `data-nb-*` 原语标注），经
+//!   `/skins/active/structure` 与 `/skins/{id}/structure` 分发，前端
+//!   结构引擎清洗后渲染。**包内绝不执行任意代码**（清洗/白名单全在
+//!   前端引擎，服务端只管原样分发）。
 //!
-//! 皮肤包部署在 **exe 同级 `skins/` 目录**（与 `static/` 同策略，不落
-//! home），格式定案见 `docs/PLAN/2026-09-14_openanybuddy-ide-skin-goal.md`
-//! §3.3.3/Q16；签名/管理面设计见 `docs/REPORT/2026-09-26_skin-signing-and-management-goal.md`。
+//! 皮肤的语义 = **给当前应用（Dashboard）原地换观感**：CSS 皮肤 = 换色
+//! （原生 Vue 布局），结构皮肤 = 换骨架 + 换色；同一 URL、同一应用，
+//! 不打开任何新页面。内置官方包 `skins/bot/` 与第三方包走同一引擎。
+//! （早期 app 形态已裁定违背皮肤语义，整体移除。）
 //!
 //! 服务端职责：**分发 + 管理面来源验证**（`scan_skins`，list/reload/
-//! set_active 时现扫现验）。数据面（active.css）**不验签**——签名是来源
-//! 徽标而非加载闸（D1 定案：目录内所有 .nbskin 一律可加载可用，目标用户
-//! 的皮肤可能就是没签名的）。解析/注入/主题属性全在前端。
+//! set_active 时现扫现验）。数据面（CSS/structure）**不验签**——签名是
+//! 来源徽标而非加载闸（D1 定案：目录内所有 .nbskin 一律可加载可用，
+//! 目标用户的皮肤可能就是没签名的）。解析/清洗/注入全在前端。
 //!
 //! 激活 id 来自 `config.json` 的 `ui.skin`（`"default"`/空 = 无皮肤，
-//! active.css 404，前端回落内置皮肤并清缓存）。激活 id 存共享锁
-//!（`Arc<RwLock<String>>`），WSAPI `skins.set_active` 免重启热翻。
+//! active.css 与 active/structure 都 404，前端回落原生 UI 并清缓存）。
+//! 激活 id 存共享锁（`Arc<RwLock<String>>`），WSAPI `skins.set_active`
+//! 免重启热翻。
 
 use axum::Router;
 use axum::extract::{Path, State};
@@ -59,34 +64,58 @@ fn valid_id(id: &str) -> bool {
 }
 
 impl SkinHost {
-    /// 从 `.nbskin` 包读取皮肤 CSS。任何失败（文件缺失/ZIP 损坏/manifest
-    /// 缺 entry）一律 `None` → 上层 404，前端回落内置皮肤。
-    fn load_css(&self, id: &str) -> Option<String> {
+    /// 打开 `.nbskin` 包 ZIP（load_css / load_structure 共用件）。任何
+    /// 失败（id 非法/文件缺失/ZIP 损坏）一律 `None` → 上层 404。
+    fn open_zip(
+        &self,
+        id: &str,
+    ) -> Option<zip::ZipArchive<std::io::BufReader<std::fs::File>>> {
         if !valid_id(id) {
             return None;
         }
         let path = self.dir.as_ref()?.join(format!("{id}.nbskin"));
         let file = std::fs::File::open(path).ok()?;
-        let mut zip = zip::ZipArchive::new(std::io::BufReader::new(file)).ok()?;
+        zip::ZipArchive::new(std::io::BufReader::new(file)).ok()
+    }
 
-        // manifest.json → entry（CSS 载荷路径）
+    /// 读 manifest.json 的字符串字段（拒 `..` 穿越）。
+    fn manifest_str(
+        zip: &mut zip::ZipArchive<std::io::BufReader<std::fs::File>>,
+        field: &str,
+    ) -> Option<String> {
         let mut manifest = String::new();
         zip.by_name("manifest.json")
             .ok()?
             .read_to_string(&mut manifest)
             .ok()?;
-        let entry = serde_json::from_str::<serde_json::Value>(&manifest)
+        let value = serde_json::from_str::<serde_json::Value>(&manifest)
             .ok()?
-            .get("entry")?
+            .get(field)?
             .as_str()?
             .to_string();
-        if entry.contains("..") {
+        if value.contains("..") {
             return None;
         }
+        Some(value)
+    }
 
+    /// 从包读取皮肤 CSS（换色载荷）。缺 structure 的旧包照常可用。
+    fn load_css(&self, id: &str) -> Option<String> {
+        let mut zip = self.open_zip(id)?;
+        let entry = Self::manifest_str(&mut zip, "entry")?;
         let mut css = String::new();
         zip.by_name(&entry).ok()?.read_to_string(&mut css).ok()?;
         Some(css)
+    }
+
+    /// 从包读取结构载荷（声明式结构引擎消费；v2）。缺 structure 字段 =
+    /// 纯 CSS 换色包 → `None` → 上层 404（前端回落原生 UI 布局）。
+    fn load_structure(&self, id: &str) -> Option<String> {
+        let mut zip = self.open_zip(id)?;
+        let entry = Self::manifest_str(&mut zip, "structure")?;
+        let mut html = String::new();
+        zip.by_name(&entry).ok()?.read_to_string(&mut html).ok()?;
+        Some(html)
     }
 }
 
@@ -102,6 +131,48 @@ fn css_response(css: Option<String>) -> impl IntoResponse {
             css,
         )
             .into_response(),
+        None => StatusCode::NOT_FOUND.into_response(),
+    }
+}
+
+/// 统一响应：200 + text/html，或 404。
+fn structure_response(html: Option<String>) -> impl IntoResponse {
+    match html {
+        Some(html) => (
+            StatusCode::OK,
+            [
+                (header::CONTENT_TYPE, "text/html; charset=utf-8"),
+                (header::CACHE_CONTROL, "no-cache"),
+            ],
+            html,
+        )
+            .into_response(),
+        None => StatusCode::NOT_FOUND.into_response(),
+    }
+}
+
+/// `GET /skins/active/structure` — 激活皮肤的结构载荷（v2 结构引擎）。
+/// 响应头 `X-Skin-Id` 回传激活 id（前端结构缓存校准真相源，同
+/// active.css）。锁快照一次：load 与响应头用同一 id（热翻竞态下不会
+/// 头/体分裂）。
+async fn handle_active_structure(State(host): State<SkinHost>) -> impl IntoResponse {
+    let active_id = host.active_id.read().clone();
+    match host.load_structure(&active_id) {
+        Some(html) => {
+            let mut headers = header::HeaderMap::new();
+            headers.insert(
+                header::CONTENT_TYPE,
+                header::HeaderValue::from_static("text/html; charset=utf-8"),
+            );
+            headers.insert(
+                header::CACHE_CONTROL,
+                header::HeaderValue::from_static("no-cache"),
+            );
+            if let Ok(v) = header::HeaderValue::from_str(&active_id) {
+                headers.insert(header::HeaderName::from_static("x-skin-id"), v);
+            }
+            (StatusCode::OK, headers, html).into_response()
+        }
         None => StatusCode::NOT_FOUND.into_response(),
     }
 }
@@ -143,6 +214,15 @@ async fn handle_skin_css(
     css_response(host.load_css(id))
 }
 
+/// `GET /skins/{id}/structure` — 显式 id 的结构载荷（前端 `?skin=` 预览
+/// 路径）。缺 structure 字段（纯 CSS 包）= 404。
+async fn handle_skin_structure(
+    State(host): State<SkinHost>,
+    Path(id): Path<String>,
+) -> impl IntoResponse {
+    structure_response(host.load_structure(&id))
+}
+
 /// 构建皮肤路由（挂在主 router 之外、鉴权层之外）。`dir = None`（exe
 /// 路径不可定位）→ 不挂任何路由。`active_id` 是共享锁句柄（与 WSAPI
 /// `skins.set_active` 同一把锁，热切语义的地基）。
@@ -155,7 +235,9 @@ pub fn skin_router(dir: Option<String>, active_id: Arc<RwLock<String>>) -> Optio
     Some(
         Router::new()
             .route("/skins/active.css", get(handle_active_css))
+            .route("/skins/active/structure", get(handle_active_structure))
             .route("/skins/{id}", get(handle_skin_css))
+            .route("/skins/{id}/structure", get(handle_skin_structure))
             .with_state(host),
     )
 }
@@ -223,6 +305,10 @@ pub struct ManifestInfo {
     /// CSS 载荷路径（必需语义；无 = 无观感载荷，set_active 拒绝）
     #[serde(default)]
     pub entry: Option<String>,
+    /// 结构载荷路径（v2 声明式结构引擎；缺省 = 纯 CSS 换色包，前端回落
+    /// 原生 UI 布局）。set_active 裁决 = entry ∥ structure 任一在场。
+    #[serde(default)]
+    pub structure: Option<String>,
     /// 格式版本（缺省 = v1 隐含；在场且 ≠1 → broken）
     #[serde(default)]
     pub format_version: Option<u32>,

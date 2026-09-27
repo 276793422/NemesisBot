@@ -16,8 +16,12 @@ import { uploadImage, validateImageFile, type UploadedImage } from '../composabl
 import { useToast } from '../composables/useToast'
 import { useApprovals } from '../composables/useApprovals'
 import { useEditorMode } from '../composables/useEditorMode'
-// 皮肤骨架槽位（主页启动器）：skinState.id 非空才渲染
-import { skinState } from '../composables/useSkin'
+// 皮肤结构挂载点（主页启动器槽）：skinHasSlot('launcher') 才渲染
+import { skinHasSlot } from '../composables/useSkin'
+import SkinSlot from './SkinSlot.vue'
+// v3 chat 槽：真实发送/停止管线注册进委托桥（皮肤 chat-send/chat-stop 动作
+// 经桥调用，零管线复制；卸载注销——桥空时动作诚实 no-op）
+import { registerChatBridge, unregisterChatBridge } from '../skins/chatBridge'
 // H2 (2026-09-05): todo 清单面板（todowrite 工具的实时渲染）。
 import TodoPanel from './chat/TodoPanel.vue'
 
@@ -84,22 +88,24 @@ const sessionStore = useSessionStore()
 // id so the backend routes to `agent:main:session:{sid}` (server.rs/loop.rs).
 const isDefaultChat = computed(() => (props.module ?? 'chat') === 'chat')
 
-// 皮肤骨架槽位 3/3：主页启动器（空会话时品牌 + 场景标签）。皮肤未激活
-// （skinState.id 空）或非默认聊天模块时零渲染——默认观感零变化。
+// 皮肤槽位：主页启动器（空会话时品牌 + 场景标签，结构引擎渲染）。
+// 皮肤未提供 launcher 槽（CSS-only 包 / 无皮肤）或非默认聊天模块时
+// 零渲染——默认观感零变化。
 const launcherMode = computed(
   () =>
-    !!skinState.id &&
+    skinHasSlot('launcher') &&
     isDefaultChat.value &&
     chatStore.messages.length === 0 &&
     !chatStore.historyLoading &&
     !historyLoadFailed.value
 )
 
-/** 场景标签点击 → 预填输入（场景名前缀，用户补全具体诉求）并聚焦。 */
-function applyScene(scene: string) {
-  chatStore.input = `${scene}：`
-  nextTick(() => chatInput.value?.focus())
-}
+// fill-input 动作（场景 chip 预填）落 chatStore.input 后聚焦信号 → 聚焦
+// 输入框（皮肤包无 JS，聚焦只能宿主驱动）。
+watch(
+  () => chatStore.focusInputNonce,
+  () => nextTick(() => chatInput.value?.focus())
+)
 
 // D-3：本面板实际显示的会话 id——全部会话寻址（收发、历史、补拉、占位轮询、
 // inbox/usage 查询、占用表）的唯一入口。旧代码散落 ~40 处直引
@@ -2119,6 +2125,13 @@ onMounted(() => {
   // P8：多端同会话感知信号 → 落后端防抖全量刷新（见 onChatActivity）。
   onSSE('chat.activity', onChatActivity)
 
+  // v3 chat 槽委托桥：真实管线入口（sendMessage/stopGeneration）供皮肤
+  // chat-send / chat-stop 动作调用。仅默认聊天模块注册（嵌入面板不抢桥，
+  // 后注册覆盖语义会把主聊天页的皮肤动作路由进工作流会话）。
+  if (isDefaultChat.value) {
+    registerChatBridge({ send: sendMessage, stop: stopGeneration })
+  }
+
   // Non-default module (e.g., workflow_chat) must NOT share conversation
   // state with a prior chat session in the same tab — reset before binding.
   const activeModule = props.module ?? 'chat'
@@ -2185,6 +2198,10 @@ onUnmounted(() => {
   removeMessageHandler(handleWSMessage)
   offSSE('resync', onSSEResync)
   offSSE('chat.activity', onChatActivity)
+  // v3 chat 槽委托桥注销（与注册同门控——嵌入面板卸载不得清主面板注册）。
+  if (isDefaultChat.value) {
+    unregisterChatBridge()
+  }
   // BUG 2026-09-21 ③：卸载清自动重试定时器（残留会在下个实例外开火）。
   clearHistoryRetryTimer()
   if (activityDebounce !== null) {
@@ -2222,6 +2239,11 @@ onUnmounted(() => {
          选中会话的清单——曾因此渲染进工作流「对话生成」）。 -->
     <TodoPanel v-if="isDefaultChat" :session-id="effectiveSid" />
 
+    <!-- v3 chat 槽：皮肤声明 chat 槽时整区替换消息流+输入区（发送/停止经
+         委托桥走 ChatPanel 真实管线）；仅默认聊天模块生效（workflow_chat
+         等嵌入面板不被皮肤接管、不抢委托桥）；无槽 = 内置渲染原样。 -->
+    <SkinSlot v-if="isDefaultChat && skinHasSlot('chat')" name="chat" />
+    <template v-else>
     <!-- Messages -->
     <div ref="chatMessages" class="chat-messages" @click="onChatAreaClick">
       <!-- History loading indicator -->
@@ -2230,22 +2252,8 @@ onUnmounted(() => {
         <span style="vertical-align:middle;"> 加载历史消息...</span>
       </div>
 
-      <!-- 皮肤骨架槽位：主页启动器（空会话时品牌 + 场景标签；WB home 形态） -->
-      <div v-if="launcherMode" class="nb-launcher">
-        <div class="nb-launcher-brand">
-          <i class="nb-brand-mark nb-brand-mark-lg" aria-hidden="true"></i>
-          <span>{{ skinState.meta?.brand || skinState.id }}</span>
-        </div>
-        <div v-if="skinState.meta?.scenes?.length" class="nb-launcher-scenes">
-          <button
-            v-for="s in skinState.meta.scenes"
-            :key="s"
-            class="nb-scene-chip"
-            type="button"
-            @click="applyScene(s)"
-          >{{ s }}</button>
-        </div>
-      </div>
+      <!-- 皮肤槽位：主页启动器（空会话时品牌 + 场景标签；结构引擎渲染） -->
+      <SkinSlot v-if="launcherMode" name="launcher" />
 
       <!-- Welcome message -->
       <!-- BUG 2026-09-21 ③：历史加载失败态优先于欢迎语——空视图与「会话本
@@ -2671,9 +2679,10 @@ onUnmounted(() => {
       <span v-else-if="!showStopButton" class="btn btn-primary btn-disabled-workflow" title="工作流执行中，无法中断">
         执行中...
       </span>
-      <!-- 皮肤激活时会话列表常驻 SkinSidebar，此开关无意义 -->
+      <!-- 皮肤 sidebar 槽自带会话历史（结构皮肤），此开关无意义；
+           CSS-only 包 / 无皮肤时正常显示 -->
       <button
-        v-if="!skinState.id"
+        v-if="!skinHasSlot('sidebar')"
         class="toolbar-toggle"
         :class="{ active: sessionStore.showSidebar }"
         @click="sessionStore.toggleSidebar()"
@@ -2696,6 +2705,7 @@ onUnmounted(() => {
         </svg>
       </button>
     </div>
+    </template>
     <!-- L4 会话分享弹窗 -->
     <ShareModal
       v-if="showShare && effectiveSid"
