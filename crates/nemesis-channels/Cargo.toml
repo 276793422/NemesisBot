@@ -31,7 +31,7 @@ mattermost = []
 # 依赖随 feature 门控（默认构建零新增编译单元，选型评估见 nostr.rs 模块头）。
 nostr = ["dep:k256", "dep:aes", "dep:cbc"]
 # P28 mqtt：rumqttc 走 optional dep——feature 关闭时依赖整体不参与编译（IoT 裁剪纪律）
-mqtt = ["dep:rumqttc"]
+mqtt = ["dep:rumqttc", "dep:rustls", "dep:rustls-pemfile"]
 wechat = []
 
 [dependencies]
@@ -74,9 +74,11 @@ cbc = { version = "0.1", features = ["alloc"], optional = true }
 axum = { workspace = true, optional = true }
 
 # P28 mqtt（optional，随 mqtt feature 启用）：MQTT 3.1.1 客户端。
-# default-features=false = 纯 TCP（不引 use-rustls 默认链的 aws-lc-rs——Windows/CI
-# 构建依赖重，workspace 现网 rustls 走 ring）；TLS 传输挂账（见 mqtt.rs 模块头）。
-rumqttc = { version = "0.25", default-features = false, optional = true }
+# use-rustls-no-provider = TLS 支持但 CryptoProvider 由本 crate 自装（rustls
+# ring——与 workspace 现网一致，不引 use-rustls 默认链的 aws-lc-rs）。
+rumqttc = { version = "0.25", default-features = false, features = ["use-rustls-no-provider"], optional = true }
+rustls = { version = "0.23", default-features = false, features = ["ring", "std", "logging", "tls12"], optional = true }
+rustls-pemfile = { version = "2", optional = true }
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["test-util", "macros"] }

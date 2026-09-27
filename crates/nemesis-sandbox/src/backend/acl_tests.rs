@@ -291,8 +291,9 @@ fn acl_no_write_up_fence_end_to_end() {
     assert_child_ok(&out, "完整性围栏子进程断言");
 }
 
-/// 子进程：走 `AclBackend::apply_to_self` 完整装配链（标签 + TMP 重定向 +
-/// 令牌降级 + Partial/gaps 语义），再做围栏双向断言。
+/// 子进程：走 `AclBackend::apply_to_self` 完整装配链（标签 + label_tree
+/// 存量重标 + TMP 重定向 + 令牌降级 + Partial/gaps 语义），再做围栏双向
+/// 断言 + 工作区存量文件可写断言。
 #[cfg(all(target_os = "windows", feature = "acl"))]
 #[test]
 fn acl_child_engage_impl() {
@@ -305,10 +306,11 @@ fn acl_child_engage_impl() {
     use std::io::ErrorKind::PermissionDenied;
     let ws = std::env::var("NEMESIS_P24_WS").expect("ws env");
     let denied = std::env::var("NEMESIS_P24_DENIED").expect("denied env");
+    let preexisting = std::env::var("NEMESIS_P24_PREEXISTING").expect("preexisting env");
 
     let backend = AclBackend::new();
     let conf = SandboxConf::for_executor(std::path::Path::new(&ws), false);
-    match backend.apply_to_self(&conf) {
+    let gaps = match backend.apply_to_self(&conf) {
         Err(e) => {
             eprintln!("engage 失败: {e}");
             std::process::exit(2);
@@ -321,7 +323,13 @@ fn acl_child_engage_impl() {
             eprintln!("Partial 但 gaps 为空——诚实标注缺失");
             std::process::exit(3);
         }
-        Ok(Enforcement::Partial(_)) => {}
+        Ok(Enforcement::Partial(gaps)) => gaps,
+    };
+    // label_tree 接线契约：小工作区远小于预算，存量重标应完成——
+    // existing-files 缺口不得在场。
+    if let Some(g) = gaps.iter().find(|g| g.starts_with("existing-files")) {
+        eprintln!("预算充足时不应出现 existing-files 缺口: {g}");
+        std::process::exit(9);
     }
     match current_process_integrity() {
         Ok(4096) => {}
@@ -346,11 +354,21 @@ fn acl_child_engage_impl() {
         eprintln!("工作区新建写失败: {e}");
         std::process::exit(6);
     }
-    // 存量 Medium 文件（engage 前父进程建的）→ 写被拒——这是文档化的
-    // 「existing-files」缺口（需 label_tree 补救），钉死为已知行为。
-    match std::fs::OpenOptions::new().append(true).open(&denied) {
+    // 工作区存量文件（engage 前父进程建的）→ label_tree 重标后可写——
+    // 这是本接线修复的核心契约（修复前 Medium IL 写被拒）。
+    if let Err(e) = std::fs::OpenOptions::new()
+        .append(true)
+        .open(&preexisting)
+    {
+        eprintln!("存量文件重标后应可写（label_tree 接线失效？）: {e}");
+        std::process::exit(9);
+    }
+    // 工作区外的写仍被拒（围栏主语义：denied 在工作区外目录，Medium IL
+    // 对象对 Low 令牌 No-Write-Up）。
+    let outside = std::path::Path::new(&denied);
+    match std::fs::OpenOptions::new().append(true).open(outside) {
         Ok(_) => {
-            eprintln!("存量 Medium 文件应不可写（existing-files 缺口语义变了？）");
+            eprintln!("工作区外 Medium 文件应不可写（No-Write-Up 围栏失守）");
             std::process::exit(7);
         }
         Err(e) if e.kind() == PermissionDenied => {}
@@ -359,12 +377,12 @@ fn acl_child_engage_impl() {
             std::process::exit(7);
         }
     }
-    // 工作区外的写仍被拒（围栏主语义）。
-    let outside = std::path::Path::new(&denied)
+    // 工作区外新建文件同样被拒。
+    let outside_new = outside
         .parent()
         .expect("denied parent")
         .join("from_child.txt");
-    if std::fs::write(&outside, b"escape").is_ok() {
+    if std::fs::write(&outside_new, b"escape").is_ok() {
         eprintln!("围栏失守：Low 令牌写穿了工作区外目录");
         std::process::exit(8);
     }
@@ -380,13 +398,31 @@ fn acl_engage_apply_to_self_end_to_end() {
     let dir_ws = tempfile::tempdir().expect("workspace tempdir");
     let denied = dir_protected.path().join("existing.txt");
     std::fs::write(&denied, b"existing outside file").expect("seed denied");
+    // 工作区存量文件：engage 前创建（Medium IL），验证 label_tree 接线。
+    let preexisting = dir_ws.path().join("existing_inside.txt");
+    std::fs::write(&preexisting, b"pre-existing inside ws").expect("seed preexisting");
 
     let out = spawn_self_child(
         &[
             ("NEMESIS_P24_WS", dir_ws.path().to_str().expect("ws utf-8")),
             ("NEMESIS_P24_DENIED", denied.to_str().expect("denied utf-8")),
+            (
+                "NEMESIS_P24_PREEXISTING",
+                preexisting.to_str().expect("preexisting utf-8"),
+            ),
         ],
         concat!(module_path!(), "::", "acl_child_engage_impl"),
     );
     assert_child_ok(&out, "engage 子进程断言");
+}
+
+/// existing-files gap 文案形态（label_tree 接线的降级路径——预算/IO 失败时
+/// 缺口文本要带原因与补救指引，不是裸错误）。
+#[cfg(all(target_os = "windows", feature = "acl"))]
+#[test]
+fn acl_existing_files_gap_message_shape() {
+    let g = super::acl_impl::existing_files_gap("label_tree: 预算耗尽（已重标 3 > 上限 2）");
+    assert!(g.starts_with("existing-files:"), "前缀契约: {g}");
+    assert!(g.contains("预算耗尽"), "原因入列: {g}");
+    assert!(g.contains("Medium IL"), "后果说明: {g}");
 }

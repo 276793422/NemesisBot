@@ -132,4 +132,23 @@ describe('injectCanvasCsp', () => {
     expect(out).toContain('<head><meta http-equiv="Content-Security-Policy"')
     expect(out.endsWith('<p>x</p></body></html>')).toBe(true)
   })
+
+  it('伪 <head> 字样（前导注释内）不误导注入位（DOMParser 锚定）', () => {
+    // 旧正则实现按「全文首个 <head> 形态匹配」注入——这段 HTML 会被插进
+    // 注释里，CSP 对整篇失效（2026-09-26 挂账高优 Canvas-#1 的绕过机理）。
+    const tricky =
+      '<!-- <head> fake -->\n<html><head><script>alert(1)</script></head><body></body></html>'
+    const out = injectCanvasCsp(tricky)
+    const metaPos = out.indexOf('Content-Security-Policy')
+    expect(metaPos).toBeGreaterThan(-1)
+    expect(out.indexOf('<script>')).toBeGreaterThan(metaPos, 'meta 必须先于模型脚本')
+    expect(out).toContain(CANVAS_CSP)
+  })
+
+  it('无 head 无 html 的裸片段 → 照常包骨架（DOMParser 主路径）', () => {
+    const out = injectCanvasCsp('<div>x</div>')
+    expect(out.startsWith('<!DOCTYPE html>')).toBe(true)
+    expect(out).toContain(CANVAS_CSP)
+    expect(out).toContain('<div>x</div>')
+  })
 })

@@ -254,6 +254,59 @@ fn test_verify_event_detects_tamper() {
 }
 
 // ---------------------------------------------------------------------------
+// 跨实现一致性（nostr-tools 参考实现，node → Rust 方向）
+// ---------------------------------------------------------------------------
+
+/// 跨实现测试钥（`01..20` 递增序列，TEST-ONLY 一次性值，非真实密钥）。
+const CROSS_SK: &str = "0102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f20";
+/// 同钥推导的 x-only 公钥（nostr-tools 侧一致）。
+const CROSS_PUB: &str = "84bf7562262bbd6940085748f3be6afa52ae317155181ece31b66351ccffa4b0";
+const CROSS_PLAINTEXT: &str = "hello cross-implementation 一致性验证";
+/// nostr-tools `nip04.encrypt` 输出（随机 IV，NIP-04 载荷形态）。
+const CROSS_NODE_ENCRYPTED: &str =
+    "vcCMcNOnGuu0jzJj3seoguOUQleRj14I5DaaqDrNgCxEBuvE6pjaG5RjkpxRAY79?iv=IxU0koRarKFfy5RsM/nwKw==";
+/// nostr-tools `finalizeEvent` 签署的 kind-4 加密 DM 事件。
+const CROSS_NODE_EVENT_JSON: &str = r#"{"kind":4,"created_at":1735689600,"tags":[["p","84bf7562262bbd6940085748f3be6afa52ae317155181ece31b66351ccffa4b0"]],"content":"vcCMcNOnGuu0jzJj3seoguOUQleRj14I5DaaqDrNgCxEBuvE6pjaG5RjkpxRAY79?iv=IxU0koRarKFfy5RsM/nwKw==","pubkey":"84bf7562262bbd6940085748f3be6afa52ae317155181ece31b66351ccffa4b0","id":"1d66d1650979958a1cf7d9310604fa3a2afe36cf7925af87baa1d745b025702d","sig":"290d3f14436939ea5e4f57d0ac945937e7bf05a3060a1fb5365e63907045456bca5fd8e4c4240d4071b39b2cdabc0e5fc91d8909011a6e8fc39d0088689c15d3"}"#;
+
+/// 「自洽 ≠ 互操作」的互操作半边：参考实现（nostr-tools 2.25.2）加密的
+/// 载荷本方必须能解，参考实现签署的事件本方必须验得过。
+#[test]
+fn test_nip04_cross_impl_nostr_tools_node_to_rust() {
+    // 密钥推导与参考实现一致。
+    let keys = NostrKeys::from_hex_secret(CROSS_SK).unwrap();
+    assert_eq!(keys.x_only_public_key(), CROSS_PUB, "ECDH 公钥推导须与 nostr-tools 一致");
+
+    // 参考实现加密的载荷 → 本方解密出同一明文。
+    let decrypted = decrypt_dm(&keys, CROSS_PUB, CROSS_NODE_ENCRYPTED).unwrap();
+    assert_eq!(decrypted, CROSS_PLAINTEXT);
+
+    // 参考实现签署的事件 → id 重算一致 + Schnorr 验签通过。
+    let event: NostrEvent = serde_json::from_str(CROSS_NODE_EVENT_JSON).unwrap();
+    assert_eq!(
+        event.id,
+        event_id(&event.pubkey, event.created_at, event.kind, &event.tags, &event.content),
+        "canonical 序列化须与 nostr-tools 的 id 计算一致"
+    );
+    assert!(verify_event(&event), "nostr-tools 签署的事件必须通过本方 Schnorr 校验");
+}
+
+/// bech32 形态（nip19 `nsec1…`/`npub1…`，nostr-tools 对同一测试钥的真实
+/// 编码）响亮拒绝——本通道密钥契约是 64-hex 裸值，绝不静默接受 bech32。
+#[test]
+fn test_bech32_secret_form_loudly_rejected() {
+    let nsec = "nsec1qypqxpq9qcrsszg2pvxq6rs0zqg3yyc5z5tpwxqergd3c8g7rusqpqcc2y";
+    let npub = "npub1sjlh2c3x9w7kjsqg2ay080n2lff2uvt325vpan33ke34rn8l5jcqawh57m";
+    assert!(
+        NostrKeys::from_hex_secret(nsec).is_err(),
+        "nsec1 bech32 私钥形态必须拒绝"
+    );
+    assert!(
+        NostrKeys::from_hex_secret(npub).is_err(),
+        "npub1 bech32 形态当私钥必须拒绝"
+    );
+}
+
+// ---------------------------------------------------------------------------
 // relay 帧形态
 // ---------------------------------------------------------------------------
 

@@ -9,7 +9,12 @@ import { useSessionStore } from '../stores/session'
  * - `sandbox="allow-scripts"`（刻意**不带** allow-same-origin：canvas
  *   内容触达不了父页 DOM/localStorage，逃逸面收敛到 srcdoc 自身）；
  * - srcdoc 注入严格 CSP meta（default-src 'none'）——v1 完全无网络，
- *   图片/外链一律拦截；数据必须内联（application/json 数据岛原样保留）。
+ *   图片/外链一律拦截；数据必须内联（application/json 数据岛原样保留）；
+ * - 自导航兜底（2026-09-26 复检挂账高优 Canvas-#1）：sandbox 不带
+ *   allow-top-navigation 只挡导航父级、不挡 iframe 导航它自己——
+ *   `location.href='http://…'` 跳出后新文档脱离我们的 CSP。srcdoc 文档
+ *   的每次额外 load 事件 = 发生过一次面板内导航：计数告警 + 以 reset
+ *   nonce 强制重灌 srcdoc 拉回初始文档。启发式兜底而非硬闸。
  */
 const props = defineProps<{ sessionId?: string }>()
 
@@ -42,8 +47,46 @@ watch(
 )
 
 const active = computed(() => canvases.value.find(c => c.index === activeIndex.value) ?? canvases.value[0] ?? null)
-/** srcdoc 原文 = 注入 CSP meta 后的块内容（iframe 沙盒内唯一文档）。 */
-const preparedHtml = computed(() => (active.value ? injectCanvasCsp(active.value.html) : ''))
+
+// ---- 自导航兜底状态机 ----
+const navBlocked = ref(0)
+const resetNonce = ref(0)
+/** srcdoc 文档就绪后的 load 次数；>1 = 面板内发生过导航。 */
+let settledLoads = 0
+/** 重灌 srcdoc 引起的 load 不计入（一次性消费标志）。 */
+let resetting = false
+let prevNonce = 0
+
+/** srcdoc 原文 = 注入 CSP meta 后的块内容；reset nonce 变化时追加注释
+ * 强制字符串变化 → iframe 重灌回我们的初始文档。 */
+const preparedHtml = computed(() => {
+  const base = active.value ? injectCanvasCsp(active.value.html) : ''
+  return base ? `${base}\n<!-- nav-reset:${resetNonce.value} -->` : ''
+})
+
+watch(preparedHtml, () => {
+  if (resetNonce.value === prevNonce) {
+    // 内容变化（切块/数据重灌）→ 会有一次新 load，重数计数。
+    settledLoads = 0
+  } else {
+    prevNonce = resetNonce.value
+  }
+})
+
+function onFrameLoad() {
+  if (resetting) {
+    resetting = false
+    return
+  }
+  settledLoads += 1
+  if (settledLoads > 1) {
+    navBlocked.value += 1
+    settledLoads = 1
+    resetting = true
+    resetNonce.value += 1
+    console.warn('[canvas] 检测到面板内导航，已重灌初始文档（第 %d 次）', navBlocked.value)
+  }
+}
 
 function onClose() {
   if (!active.value) return
@@ -57,6 +100,12 @@ defineExpose({ initCanvas })
   <div v-if="active" class="canvas-panel" data-testid="canvas-panel">
     <div class="canvas-panel-header">
       <span class="canvas-panel-title">Canvas</span>
+      <span
+        v-if="navBlocked > 0"
+        class="canvas-nav-warn"
+        data-testid="canvas-nav-warn"
+        title="画布内容试图导航到外部页面，已被拦截并重置"
+      >⚠ 导航已拦截 ×{{ navBlocked }}</span>
       <div v-if="canvases.length > 1" class="canvas-tabs">
         <button
           v-for="c in canvases"
@@ -76,6 +125,7 @@ defineExpose({ initCanvas })
       data-testid="canvas-frame"
       sandbox="allow-scripts"
       :srcdoc="preparedHtml"
+      @load="onFrameLoad"
     ></iframe>
   </div>
 </template>
@@ -108,6 +158,12 @@ defineExpose({ initCanvas })
 .canvas-panel-title {
   font-weight: 600;
   font-size: 13px;
+}
+
+.canvas-nav-warn {
+  color: var(--warning, #eab308);
+  font-size: 11px;
+  white-space: nowrap;
 }
 
 .canvas-tabs {

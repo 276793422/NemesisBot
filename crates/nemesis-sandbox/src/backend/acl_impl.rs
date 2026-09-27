@@ -34,12 +34,16 @@
 //! ## `apply_to_self` 装配顺序（失败可降级、不假装隔离成功）
 //!
 //! 1. 快照 writable_roots 当前标签；
-//! 2. 逐根打 Low 标签——失败 → **Err 且不动令牌**（先降令牌后失败会让
-//!    executor 连工作区都写不了，坏过没盒）；
+//! 2. 逐根打 Low 标签 + [`label_tree`] 递归重标**存量文件**（预算
+//!    [`LABEL_TREE_BUDGET`]；超预算/IO 失败 → 已标部分保持生效，缺口如实
+//!    入 gaps 继续装配——围栏本体不因此缺席）——根标签设置失败 →
+//!    **Err 且不动令牌**（先降令牌后失败会让 executor 连工作区都写不了，
+//!    坏过没盒）；
 //! 3. 工作区内建低完整性临时目录并重定向 `TMP`/`TEMP`（编译类工具的临时
 //!    文件落点）——失败 → **gap 继续**（围栏照装，代价如实入列）；
-//! 4. 自身令牌降 Low——失败 → **回滚步骤 2 的标签快照**（尽力而为，回滚
-//!    失败明细并入 Err 文本）→ Err；
+//! 4. 自身令牌降 Low——失败 → **回滚步骤 2 的标签快照**（尽力而为，仅根级
+//!    ——label_tree 的逐文件重标无差量记录不回滚，回滚失败明细并入 Err
+//!    文本）→ Err；
 //! 5. 返回 [`Enforcement::Partial`]（gaps 必非空：ACL 档禁不了网）。
 //!
 //! ## 诚实边界（gaps 之外的已知代价）
@@ -48,10 +52,9 @@
 //!   （`AllowNetworkAccess=n`）或 bwrap `--unshare-net`。
 //! - **未启用 No-Read-Up**：Low 令牌仍可**读**全盘（读围栏不做——工具链
 //!   需要读编译器/依赖，全盘禁读会让 executor 不可用）。
-//! - **存量 Medium 文件**：打标前已存在的文件是 Medium IL，Low 令牌写不了
-//!   ——装配点必须一次性调 [`label_tree`]（成本 O(文件数)，不适合挂在
-//!   per-call engage 上）。[`AclBackend::apply_to_self`] 只做目录级标签 +
-//!   gap 如实标注。
+//! - **存量 Medium 文件**：装配点已接线 [`label_tree`] 一次性递归重标
+//!   （预算 [`LABEL_TREE_BUDGET`]，超限诚实报 Err → 转为 gaps 明细继续）。
+//!   未覆盖到的存量文件（超预算/IO 错误）仍是 Medium IL，Low 令牌写不了。
 //! - **COM/RPC 断链**：Low IL 进程与 Medium COM 服务器的交互受限，个别
 //!   工具可能失能——实验性档位的已知代价。
 //! - **整树打标的成本**：[`label_tree`] 有 `max_files` 预算，超限诚实报
@@ -643,12 +646,24 @@ fn change_dacl(path: &Path, sid: &str, mode: i32) -> Result<(), String> {
 // SandboxBackend 接线
 // ---------------------------------------------------------------------------
 
+/// 装配点 `label_tree` 一次性重标存量文件的默认预算（对象数，含目录）。
+/// 超预算 = 重标未完成 → existing-files gap 如实入列（见 apply_to_self）。
+pub const LABEL_TREE_BUDGET: usize = 20_000;
+
+/// label_tree 未完成时 existing-files gap 的明细文本（纯函数，单测钉形态）。
+pub(super) fn existing_files_gap(reason: &str) -> String {
+    format!(
+        "existing-files: 存量文件递归重标未完成（{reason}）——未重标到的存量文件仍是 \
+         Medium IL，Low 令牌写不了；收窄工作区或调大预算后重跑装配可补齐"
+    )
+}
+
 /// P24 Windows 用户态 ACL 轻量档（SelfApply 形态——与 landlock 同款：
 /// executor 子进程启动时对自身装配，后代全继承）。
 ///
-/// **实验性档位**：半档隔离（禁不了网、读不设防、存量文件需显式
-/// [`label_tree`]）。选型入口见 [`super::select_windows_backend`] 决策表；
-/// config 键 = `executor.backend`。
+/// **实验性档位**：半档隔离（禁不了网、读不设防；存量文件打标已接线，
+/// 见 [`LABEL_TREE_BUDGET`]）。选型入口见 [`super::select_windows_backend`]
+/// 决策表；config 键 = `executor.backend`。
 pub struct AclBackend;
 
 impl AclBackend {
@@ -688,7 +703,7 @@ impl SandboxBackend for AclBackend {
             LocalFree(sid as _);
         }
         Availability::Partial(vec![
-            "experimental: ACL 档为半档隔离（禁不了网；存量文件需 label_tree 一次性重标）"
+            "experimental: ACL 档为半档隔离（禁不了网；存量文件打标已接线，超预算/失败进 gaps）"
                 .to_string(),
         ])
     }
@@ -702,7 +717,12 @@ impl SandboxBackend for AclBackend {
             let prev = get_integrity_label(root)?;
             snapshot.push((root.clone(), prev));
         }
-        // 2) 工作区打 Low 标签。失败 → Err 且不动令牌（见模块文档顺序说明）。
+        // 2) 工作区打 Low 标签 + label_tree 递归重标存量文件（打标后新建
+        //    对象靠 OICI 继承，存量 Medium 文件必须显式重标 Low 令牌才写得
+        //    了）。根标签设置失败 → Err 且不动令牌（围栏本体缺席，见模块
+        //    文档顺序说明）；递归重标未完成（超预算/子项 IO 错误）→ 已标
+        //    部分保持生效，缺口如实入 gaps **继续装配**——围栏不因此缺席。
+        let mut gaps: Vec<String> = Vec::new();
         for root in &conf.writable_roots {
             set_integrity_label(root, IntegrityLevel::Low).map_err(|e| {
                 format!(
@@ -711,11 +731,20 @@ impl SandboxBackend for AclBackend {
                     root.display()
                 )
             })?;
+            // label_tree 会重设根标签（幂等）再递归——预算耗尽/子项失败
+            // 返回 Err，但已标部分保持生效。
+            match label_tree(root, IntegrityLevel::Low, LABEL_TREE_BUDGET) {
+                Ok(count) => eprintln!(
+                    "[acl-backend] 存量文件重标完成：{} 个对象（{}）",
+                    count,
+                    root.display()
+                ),
+                Err(e) => gaps.push(existing_files_gap(&e)),
+            }
         }
         // 3) 低完整性临时目录 + TMP/TEMP 重定向（编译类工具的临时文件落点
         //    ——否则 Low 令牌写不了 Medium 的 %TEMP%，构建全炸）。失败 →
         //    gap 继续（围栏照装，代价如实入列）。
-        let mut gaps: Vec<String> = Vec::new();
         if let Some(first_root) = conf.writable_roots.first() {
             let tmp = first_root.join(".sandbox-lowil-tmp");
             let prepared = std::fs::create_dir_all(&tmp)
@@ -768,11 +797,6 @@ impl SandboxBackend for AclBackend {
         gaps.push(
             "read: 未启用 No-Read-Up——Low 令牌仍可读全盘（工具链需要读编译器/依赖，\
              全盘禁读会让执行体不可用）"
-                .to_string(),
-        );
-        gaps.push(
-            "existing-files: 打标前已存在的文件仍是 Medium IL——Low 令牌写不了；\
-             装配点需一次性 label_tree(root, Low, budget) 重标存量文件"
                 .to_string(),
         );
         gaps.push(

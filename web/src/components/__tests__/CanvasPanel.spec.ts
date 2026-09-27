@@ -122,4 +122,47 @@ describe('CanvasPanel', () => {
     expect(srcdoc).not.toContain('second')
     w.unmount()
   })
+
+  it('自导航兜底：额外 load 计数告警 + reset nonce 重灌 srcdoc', async () => {
+    const w = await mounted()
+    fireCanvas({ session_id: 's1', html: '<p>x</p>', index: 0 })
+    await nextTick()
+    const frame = w.find('[data-testid="canvas-frame"]')
+    const srcdocBefore = frame.attributes('srcdoc') ?? ''
+    expect(w.find('[data-testid="canvas-nav-warn"]').exists()).toBe(false)
+
+    // 首个 load = srcdoc 文档就绪（jsdom 不自动触发，手动派发）。
+    await frame.trigger('load')
+    expect(w.find('[data-testid="canvas-nav-warn"]').exists()).toBe(false)
+
+    // 第二个 load = 面板内发生过导航（iframe 自己 location.href 跳出）。
+    await frame.trigger('load')
+    expect(w.find('[data-testid="canvas-nav-warn"]').exists()).toBe(true)
+    expect(w.find('[data-testid="canvas-nav-warn"]').text()).toContain('×1')
+    // reset nonce 追加注释 → srcdoc 字符串变化 → 浏览器重灌回初始文档。
+    const srcdocAfter = frame.attributes('srcdoc') ?? ''
+    expect(srcdocAfter).toContain('nav-reset:1')
+    expect(srcdocAfter).not.toBe(srcdocBefore)
+
+    // 重灌引发的 load 一次性消费，不再计数；再下一次 load 又算一次导航。
+    await frame.trigger('load')
+    expect(w.find('[data-testid="canvas-nav-warn"]').text()).toContain('×1')
+    await frame.trigger('load')
+    expect(w.find('[data-testid="canvas-nav-warn"]').text()).toContain('×2')
+    w.unmount()
+  })
+
+  it('切块/内容更新重数 load 计数（不误报为导航）', async () => {
+    const w = await mounted()
+    fireCanvas({ session_id: 's1', html: '<p>first</p>', index: 0 })
+    await nextTick()
+    const frame = w.find('[data-testid="canvas-frame"]')
+    await frame.trigger('load') // 第一块文档就绪
+
+    fireCanvas({ session_id: 's1', html: '<p>second</p>', index: 1 }) // 新块 = 内容变化
+    await nextTick()
+    await frame.trigger('load') // 新文档就绪
+    expect(w.find('[data-testid="canvas-nav-warn"]').exists()).toBe(false, '内容变化后的 load 不是导航')
+    w.unmount()
+  })
 })

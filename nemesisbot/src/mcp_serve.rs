@@ -99,6 +99,11 @@ pub async fn assemble(home: &Path) -> Result<McpServeAssembly, String> {
         cfg.clone(),
         config_path,
     ));
+    // 急停态：进程级共享 EstopState（estop_follower::shared_estop——
+    // gateway 的急停经 estop_follower 轮询镜像到它。此前 Default::default()
+    // 内建孤立 EstopState——gateway 急停对本进程不可达，「MCP 出口不是
+    // 安全旁路」对 estop 一项不成立）。
+    let estop = crate::estop_follower::shared_estop();
     let shared = Arc::new(crate::agent_factory::SharedResources {
         home: home.to_path_buf(),
         workspace: workspace.clone(),
@@ -108,6 +113,7 @@ pub async fn assemble(home: &Path) -> Result<McpServeAssembly, String> {
         mcp_config_path: crate::common::mcp_config_path(home),
         // v1 不透工具事件（无流式契约）；需要时挂 broadcast + 通知即可。
         agent_event_tx: None,
+        estop,
         ..Default::default()
     });
     let agent_loop = crate::agent_factory::build_agent_loop(&shared)
@@ -596,6 +602,11 @@ pub async fn run_server(home: std::path::PathBuf) -> Result<(), String> {
         asm.workspace.display(),
         asm.security_active
     );
+
+    // 急停跟随：gateway 急停 → 本进程共享 EstopState 镜像（轮询
+    // /api/internal，gateway 不在跑时安静等待重新发现；幂等，重复调用
+    // 不重复 spawn）。没有这一步，「MCP 出口不是安全旁路」对 estop 一项不成立。
+    crate::estop_follower::ensure_spawned(home.clone());
 
     let mut server = McpServer::new(SERVER_NAME, crate::common::format_version());
     for def in tool_definitions() {

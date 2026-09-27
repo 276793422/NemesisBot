@@ -20,6 +20,7 @@ use tokio::sync::broadcast;
 use super::*;
 use crate::base::Channel;
 use nemesis_types::channel::OutboundMessage;
+use serde_json::json;
 
 // ---------------------------------------------------------------------------
 // MQTT 3.1.1 最小帧编解码（mock broker 专用）
@@ -671,5 +672,75 @@ async fn send_before_start_errors() {
     assert!(
         err.to_string().contains("not running"),
         "未启动出站应诚实报错: {err}"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// TLS 配置层（use_tls 装配契约）
+// ---------------------------------------------------------------------------
+
+/// use_tls=true 无 CA → 构造期响亮拒绝（TLS 需显式信任根，绝不静默回落
+/// 纯 TCP / 平台信任库）。
+#[tokio::test]
+async fn tls_without_ca_rejected_at_construction() {
+    let mut cfg = mock_channel_config(1883, vec![]);
+    cfg.use_tls = true;
+    let (tx, _rx) = tokio::sync::broadcast::channel(16);
+    let err = MqttChannel::new(cfg, tx).expect_err("缺 CA 应拒绝");
+    assert!(
+        err.to_string().contains("ca_cert_path"),
+        "错误应点名 ca_cert_path: {err}"
+    );
+}
+
+/// mTLS 半配置（只有证书没有私钥）→ 构造期响亮拒绝。
+#[tokio::test]
+async fn mtls_half_config_rejected_at_construction() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let ca = tmp.path().join("ca.pem");
+    std::fs::write(&ca, b"placeholder").unwrap();
+    let mut cfg = mock_channel_config(1883, vec![]);
+    cfg.use_tls = true;
+    cfg.ca_cert_path = ca.to_string_lossy().into_owned();
+    cfg.client_cert_path = "/tmp/cert.pem".to_string();
+    // client_key_path 缺失 → 成对校验拒绝
+    let (tx, _rx) = tokio::sync::broadcast::channel(16);
+    let err = MqttChannel::new(cfg, tx).expect_err("mTLS 半配置应拒绝");
+    assert!(
+        err.to_string().contains("成对"),
+        "错误应说明成对要求: {err}"
+    );
+}
+
+/// CA 文件缺失 → build_tls_transport 诚实 Err（装配点，非静默）。
+#[tokio::test]
+async fn tls_missing_ca_file_fails_at_start() {
+    let mut cfg = mock_channel_config(1883, vec![]);
+    cfg.use_tls = true;
+    cfg.ca_cert_path = "/nonexistent/ca.pem".to_string();
+    let (tx, _rx) = tokio::sync::broadcast::channel(16);
+    let ch = MqttChannel::new(cfg, tx).expect("构造通过（CA 路径在）");
+    let err = ch.start().await.expect_err("CA 文件缺失应 start 失败");
+    assert!(
+        err.to_string().contains("CA 证书读取失败"),
+        "错误应点名 CA 读取: {err}"
+    );
+}
+
+/// 垃圾 CA 内容 → rustls PEM 解析诚实 Err（不 panic、不静默）。
+#[tokio::test]
+async fn tls_garbage_ca_fails_pem_parse() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let ca = tmp.path().join("ca.pem");
+    std::fs::write(&ca, b"not a pem at all").unwrap();
+    let mut cfg = mock_channel_config(1883, vec![]);
+    cfg.use_tls = true;
+    cfg.ca_cert_path = ca.to_string_lossy().into_owned();
+    let (tx, _rx) = tokio::sync::broadcast::channel(16);
+    let ch = MqttChannel::new(cfg, tx).expect("构造通过");
+    let err = ch.start().await.expect_err("垃圾 CA 应 start 失败");
+    assert!(
+        err.to_string().contains("不含有效 PEM") || err.to_string().contains("解析失败"),
+        "错误应指向 PEM 解析: {err}"
     );
 }

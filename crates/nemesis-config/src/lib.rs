@@ -1847,6 +1847,18 @@ pub struct MqttConfig {
     pub default_reply_topic: String,
     #[serde(default, deserialize_with = "deserialize_flexible_string_vec")]
     pub allow_from: Vec<String>,
+    /// 启用 TLS（默认 false = 纯 TCP）。true 时通道侧走 rustls（ring provider）。
+    #[serde(default)]
+    pub use_tls: bool,
+    /// CA 证书 PEM 路径（use_tls=true 必填；自签/私有 PKI 场景）。
+    #[serde(default)]
+    pub ca_cert_path: String,
+    /// 客户端证书 PEM 路径（mTLS；与 client_key_path 成对出现）。
+    #[serde(default)]
+    pub client_cert_path: String,
+    /// 客户端私钥 PEM 路径（mTLS；与 client_cert_path 成对出现）。
+    #[serde(default)]
+    pub client_key_path: String,
     #[serde(default)]
     pub sync_to: Vec<String>,
 }
@@ -1867,6 +1879,10 @@ impl Default for MqttConfig {
             topics: vec![],
             default_reply_topic: String::new(),
             allow_from: vec![],
+            use_tls: false,
+            ca_cert_path: String::new(),
+            client_cert_path: String::new(),
+            client_key_path: String::new(),
             sync_to: vec![],
         }
     }

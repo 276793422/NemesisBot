@@ -878,6 +878,12 @@ pub(crate) async fn init_web(ctx: &GatewayCtx, cluster: &ClusterWiring) -> Resul
                         .collect(),
                     default_reply_topic: cfg.channels.mqtt.default_reply_topic.clone(),
                     allow_from: cfg.channels.mqtt.allow_from.clone(),
+                    // TLS 四字段直透（use_tls=false 时其余三项被通道侧忽略；
+                    // 校验在 MqttChannel::new 构造期）
+                    use_tls: cfg.channels.mqtt.use_tls,
+                    ca_cert_path: cfg.channels.mqtt.ca_cert_path.clone(),
+                    client_cert_path: cfg.channels.mqtt.client_cert_path.clone(),
+                    client_key_path: cfg.channels.mqtt.client_key_path.clone(),
                 })
             } else {
                 None

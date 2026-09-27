@@ -30,21 +30,39 @@ export const CANVAS_CSP = "default-src 'none'; script-src 'unsafe-inline'; style
 const CSP_META = `<meta http-equiv="Content-Security-Policy" content="${CANVAS_CSP}">`
 
 /**
- * 把 CSP meta 注入 canvas HTML：
- * - 完整文档（有 `<head>`）→ meta 插在 head 开头（先于任何脚本解析，
- *   保证 CSP 全程生效）；
- * - 有 `<html>` 无 head → 补一个 head 装 meta；
- * - 片段 → 包一层完整文档骨架。
- * 内容自身若已带 CSP meta，两条会按浏览器语义取交集（更严者胜），不冲突。
+ * 把 CSP meta 注入 canvas HTML。
+ *
+ * 主路径走 DOMParser 级锚定注入（2026-09-26 复检挂账高优 Canvas-#1 小加固）：
+ * 此前是正则级（全文首个 `<head>` 形态匹配）——模型 HTML 里若在真 head 之前
+ * 出现形如 `<head>` 的字符串（注释/属性/伪元素内），meta 会插错位，CSP 对
+ * 整篇失效。DOMParser 按 HTML 语义定位 head，我们的 meta 恒为 head 首子节点
+ * （先于任何模型脚本/meta 解析，保证 CSP 全程生效）。内容自身若已带 CSP
+ * meta，两条按浏览器语义取交集（更严者胜），不冲突。
+ *
+ * DOMParser 不可用时（防御分支）退回正则级三形态注入（弱保证，语义同旧版）。
  */
 export function injectCanvasCsp(html: string): string {
-  if (/<head[^>]*>/i.test(html)) {
-    return html.replace(/<head[^>]*>/i, (m) => `${m}${CSP_META}`)
+  try {
+    const doc = new DOMParser().parseFromString(html, 'text/html')
+    const head = doc.head ?? doc.createElement('head')
+    if (!head.parentNode && doc.documentElement) {
+      doc.documentElement.insertBefore(head, doc.documentElement.firstChild)
+    }
+    const meta = doc.createElement('meta')
+    meta.setAttribute('http-equiv', 'Content-Security-Policy')
+    meta.setAttribute('content', CANVAS_CSP)
+    head.insertBefore(meta, head.firstChild)
+    return `<!DOCTYPE html>\n${doc.documentElement.outerHTML}`
+  } catch {
+    // 退化路径：正则级三形态（完整文档 / 有 html 无 head / 片段）。
+    if (/<head[^>]*>/i.test(html)) {
+      return html.replace(/<head[^>]*>/i, (m) => `${m}${CSP_META}`)
+    }
+    if (/<html[^>]*>/i.test(html)) {
+      return html.replace(/<html[^>]*>/i, (m) => `${m}<head>${CSP_META}</head>`)
+    }
+    return `<!DOCTYPE html><html><head>${CSP_META}</head><body>${html}</body></html>`
   }
-  if (/<html[^>]*>/i.test(html)) {
-    return html.replace(/<html[^>]*>/i, (m) => `${m}<head>${CSP_META}</head>`)
-  }
-  return `<!DOCTYPE html><html><head>${CSP_META}</head><body>${html}</body></html>`
 }
 
 /** 每会话保留的画布上限（多块回复的极端场景护栏，超出丢最旧）。 */

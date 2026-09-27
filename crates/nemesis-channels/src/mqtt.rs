@@ -22,9 +22,11 @@
 //! - **凭据为空 = 匿名连接**（LAN broker 常态），不隐式填充。
 //!
 //! 已知边界（诚实声明）：
-//! - v1 仅纯 TCP 传输：rumqttc 以 `default-features = false` 接入，避免其
-//!   `use-rustls` 默认链引入 aws-lc-rs（Windows/CI 构建依赖重，workspace 现网
-//!   rustls 走 ring）；TLS 挂账；
+//! - TLS 传输已接（2026-09-26 真机验证批）：`use_tls=true` 走 rustls（ring
+//!   provider，本 crate 自装 CryptoProvider——rumqttc 以
+//!   `use-rustls-no-provider` 接入，不引其默认链的 aws-lc-rs）。CA 证书
+//!   PEM 必填（自签/私有 PKI 场景），可选 mTLS 客户端证书对；服务器身份
+//!   校验名 = broker_host（broker 为 IP 时证书需含对应 IP SAN）。
 //! - 入站 QoS 1 ACK 由 rumqttc 自动完成（manual_acks=false）＝「收到即 ACK」，
 //!   agent 处理失败不重投（传输层 at-least-once，处理层 at-most-once）；
 //! - 停止走取消信号 + 任务退出即断 TCP（clean_session 下不追求优雅 DISCONNECT）；
@@ -81,6 +83,14 @@ pub struct MqttChannelConfig {
     pub default_reply_topic: String,
     /// sender 白名单（入站信封 sender_id 或固定 "mqtt"）；空 = 全放行。
     pub allow_from: Vec<String>,
+    /// 启用 TLS（默认 false = 纯 TCP）。true 时走 rustls（ring provider）。
+    pub use_tls: bool,
+    /// CA 证书 PEM 路径（use_tls=true 必填；自签/私有 PKI 场景）。
+    pub ca_cert_path: String,
+    /// 客户端证书 PEM 路径（mTLS；与 client_key_path 成对出现）。
+    pub client_cert_path: String,
+    /// 客户端私钥 PEM 路径（mTLS；与 client_cert_path 成对出现）。
+    pub client_key_path: String,
 }
 
 /// 订阅 topic filter → 回包 topic 映射（topic 映射表条目）。
@@ -253,6 +263,19 @@ impl MqttChannel {
                 ));
             }
         }
+        if config.use_tls && config.ca_cert_path.trim().is_empty() {
+            return Err(NemesisError::Channel(
+                "mqtt use_tls=true 时 ca_cert_path 必填（TLS 需显式信任根）".to_string(),
+            ));
+        }
+        let has_cert = !config.client_cert_path.is_empty();
+        let has_key = !config.client_key_path.is_empty();
+        if has_cert != has_key {
+            return Err(NemesisError::Channel(
+                "mqtt mTLS 配置不完整：client_cert_path 与 client_key_path 必须成对出现"
+                    .to_string(),
+            ));
+        }
         Ok(Self {
             base: Arc::new(BaseChannel::with_allow_list(
                 "mqtt",
@@ -265,6 +288,93 @@ impl MqttChannel {
             event_task: parking_lot::Mutex::new(None),
             cancel_tx: parking_lot::Mutex::new(None),
         })
+    }
+
+    /// 装配 rustls TLS transport（ring provider 自装）。纯装配函数独立成
+    /// fn——PEM 解析失败/文件缺失诚实 Err，调用方（start）不再回落纯 TCP。
+    fn build_tls_transport(config: &MqttChannelConfig) -> Result<rumqttc::Transport> {
+        let ca = std::fs::read(&config.ca_cert_path).map_err(|e| {
+            NemesisError::Channel(format!(
+                "mqtt CA 证书读取失败（{}）: {e}",
+                config.ca_cert_path
+            ))
+        })?;
+        let client_auth = if config.client_cert_path.is_empty() {
+            None
+        } else {
+            let cert = std::fs::read(&config.client_cert_path).map_err(|e| {
+                NemesisError::Channel(format!(
+                    "mqtt 客户端证书读取失败（{}）: {e}",
+                    config.client_cert_path
+                ))
+            })?;
+            let key = std::fs::read(&config.client_key_path).map_err(|e| {
+                NemesisError::Channel(format!(
+                    "mqtt 客户端私钥读取失败（{}）: {e}",
+                    config.client_key_path
+                ))
+            })?;
+            Some((cert, key))
+        };
+        let tls_config = Self::tls_client_config(&ca, client_auth.as_ref().map(|(c, k)| (c.as_slice(), k.as_slice())))?;
+        Ok(rumqttc::Transport::tls_with_config(
+            rumqttc::TlsConfiguration::Rustls(std::sync::Arc::new(tls_config)),
+        ))
+    }
+
+    /// rustls ClientConfig 装配（ring provider；CA 必填信任根 + 可选 mTLS）。
+    fn tls_client_config(
+        ca_pem: &[u8],
+        client_auth: Option<(&[u8], &[u8])>,
+    ) -> Result<rustls::ClientConfig> {
+        use rustls::pki_types::CertificateDer;
+        use rustls::RootCertStore;
+
+        let mut roots = RootCertStore::empty();
+        let ca_certs: Vec<CertificateDer> = rustls_pemfile::certs(&mut std::io::BufReader::new(ca_pem))
+            .collect::<std::result::Result<_, _>>()
+            .map_err(|e| {
+                NemesisError::Channel(format!("mqtt CA 证书 PEM 解析失败: {e}"))
+            })?;
+        if ca_certs.is_empty() {
+            return Err(NemesisError::Channel(
+                "mqtt CA 证书文件不含有效 PEM 证书".to_string(),
+            ));
+        }
+        for cert in ca_certs {
+            roots.add(cert).map_err(|e| {
+                NemesisError::Channel(format!("mqtt CA 证书加入信任库失败: {e}"))
+            })?;
+        }
+
+        let provider = rustls::crypto::ring::default_provider();
+        let builder = rustls::ClientConfig::builder_with_provider(provider.into())
+            .with_safe_default_protocol_versions()
+            .map_err(|e| NemesisError::Channel(format!("mqtt TLS 协议版本装配失败: {e}")))?
+            .with_root_certificates(roots);
+        if let Some((cert_pem, key_pem)) = client_auth {
+            let certs: Vec<CertificateDer> =
+                rustls_pemfile::certs(&mut std::io::BufReader::new(cert_pem))
+                    .collect::<std::result::Result<_, _>>()
+                    .map_err(|e| {
+                        NemesisError::Channel(format!("mqtt 客户端证书 PEM 解析失败: {e}"))
+                    })?;
+            if certs.is_empty() {
+                return Err(NemesisError::Channel(
+                    "mqtt 客户端证书文件不含有效 PEM 证书".to_string(),
+                ));
+            }
+            let key = rustls_pemfile::private_key(&mut std::io::BufReader::new(key_pem))
+                .map_err(|e| NemesisError::Channel(format!("mqtt 客户端私钥解析失败: {e}")))?
+                .ok_or_else(|| {
+                    NemesisError::Channel("mqtt 客户端私钥文件不含有效私钥".to_string())
+                })?;
+            builder
+                .with_client_auth_cert(certs, key)
+                .map_err(|e| NemesisError::Channel(format!("mqtt mTLS 客户端证书装配失败: {e}")))
+        } else {
+            Ok(builder.with_no_client_auth())
+        }
     }
 
     /// 回包 topic 解析（优先级：学习条目 > 映射表 > 默认回包；None = 无处可发）。
@@ -439,6 +549,12 @@ impl Channel for MqttChannel {
         // 凭据只来自 config 结构（装配层可注入 vault/env 解析结果），空 = 匿名
         if !self.config.username.is_empty() {
             opts.set_credentials(self.config.username.clone(), self.config.password.clone());
+        }
+
+        // TLS transport（rustls ring；CA/mTLS PEM 文件在装配点读取——
+        // 失败诚实 Err，绝不静默回落纯 TCP）
+        if self.config.use_tls {
+            opts.set_transport(Self::build_tls_transport(&self.config)?);
         }
 
         // rumqttc：请求通道容量 64（出站瞬时排队上限；QoS1 断线期间由
