@@ -100,12 +100,13 @@ impl SkinHost {
     }
 
     /// 从包读取皮肤 CSS（换色载荷）。缺 structure 的旧包照常可用。
+    /// 出口经 [`sanitize_css_urls`]（外链 url() 零请求策略，见函数文档）。
     fn load_css(&self, id: &str) -> Option<String> {
         let mut zip = self.open_zip(id)?;
         let entry = Self::manifest_str(&mut zip, "entry")?;
         let mut css = String::new();
         zip.by_name(&entry).ok()?.read_to_string(&mut css).ok()?;
-        Some(css)
+        Some(sanitize_css_urls(&css))
     }
 
     /// 从包读取结构载荷（声明式结构引擎消费；v2）。缺 structure 字段 =
@@ -254,7 +255,7 @@ pub fn skin_router(dir: Option<String>, active_id: Arc<RwLock<String>>) -> Optio
 //   文件小 + ECDSA 毫秒级，stateless scan-per-call，无缓存失效 bug 面。
 //
 
-/// 签名徽标四态。
+/// 签名徽标五态（P3 起 +🚫）。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "lowercase")]
 pub enum SkinSignature {
@@ -267,6 +268,9 @@ pub enum SkinSignature {
     Invalid,
     /// 锚不在场（本地源码构建），物理上无法验证——❔
     Unverified,
+    /// 吊销命中（CRL 快照四维任一 / 网络验签 Revoked outcome）——🚫，
+    /// 命中维度与原因见 `sig_detail`
+    Revoked,
 }
 
 /// 包体状态（与签名**正交**）：物理可服务性。
@@ -374,7 +378,7 @@ pub(crate) fn classify_signature(outcome: VerifyOutcome) -> (SkinSignature, Opti
         VerifyOutcome::Revoked {
             dim, value, reason, ..
         } => (
-            SkinSignature::Invalid,
+            SkinSignature::Revoked,
             Some(format!("Revoked({dim:?}={value}:{reason})")),
         ),
         VerifyOutcome::Expired(s) => (SkinSignature::Invalid, Some(format!("Expired({s})"))),
@@ -484,9 +488,296 @@ pub fn scan_skins(dir: &str) -> Vec<SkinEntry> {
             id_mismatch,
         });
     }
+    // P3 吊销第五态：CRL 快照在场（且可验）时，对 Verified 包做四维复核
+    //（offline）。
+    apply_crl_revocations(dir, &anchors, &mut entries);
     entries.sort_by(|a, b| a.id.cmp(&b.id));
     entries
 }
 
+/// CRL 快照吊销复核（P3 第五态；pub(crate) 供测试锚直传）：donor = 首枚
+/// Verified 包（吊销只对签名有意义——目录里无 verified 包时快照自然无从
+/// 生效）。命中 → Revoked 🚫，注明维度。快照不在场/验不过/过期 = 维持
+/// 原态（离线诚实，不猜）。
+pub(crate) fn apply_crl_revocations(dir: &str, anchors: &[[u8; 32]], entries: &mut [SkinEntry]) {
+    let Some(donor) = entries
+        .iter()
+        .find(|e| e.signature == SkinSignature::Verified)
+        .cloned()
+    else {
+        return;
+    };
+    let Ok(donor_bytes) = std::fs::read(std::path::Path::new(dir).join(&donor.file)) else {
+        return;
+    };
+    let (crl, _info) = load_crl_snapshot_state(dir, anchors, Some(&donor_bytes));
+    let Some(crl) = crl else {
+        return;
+    };
+    for e in entries.iter_mut() {
+        if e.signature != SkinSignature::Verified {
+            continue;
+        }
+        let Ok(bytes) = std::fs::read(std::path::Path::new(dir).join(&e.file)) else {
+            continue;
+        };
+        let meta = nemesis_verify::revocation::revocation_meta(&bytes);
+        if let Some(hit) = nemesis_verify::revocation::crl_match_meta(&crl, &meta) {
+            e.signature = SkinSignature::Revoked;
+            e.sig_detail =
+                Some(format!("Revoked({:?}={}): {}", hit.dim, hit.value, hit.reason));
+        }
+    }
+}
+
+//
+// 渠道安装（P2 verify-before-install）与 CRL 快照（P3 吊销第五态）
+//
+// 语义（2026-09-27 用户四裁决，Q4 修订版）：
+// - **物理闸在落盘前**：仅物理不可用（broken ZIP / 非 ZIP / 超限）拒收——
+//   「这不是皮肤包」，与信任无关；
+// - **信任闸单点在 set_active**：渠道验签只产出徽标，✅⚪🔴🚫❔ 全部落盘
+//   （「获取自由、徽标诚实、启用单点把关」）；
+// - **CRL 快照无网络**：`{skins_dir}/crl.pem`（`GET /v1/crl` 原样 JSON）由
+//   运维手动放置，扫描时本地验签（根公钥 = verified 包链根，锚定校验）。
+//
+
+/// .nbskin 单包大小上限（25MB，对齐图片上传面）。
+pub const SKIN_PACKAGE_MAX_BYTES: usize = 25 * 1024 * 1024;
+
+/// 渠道安装单包结论（WSAPI `skins.install` / 导入端点返回体）。
+#[derive(Debug, Clone, Serialize)]
+pub struct InstallOutcome {
+    pub id: String,
+    pub file: String,
+    pub signature: SkinSignature,
+    pub sig_detail: Option<String>,
+    pub manifest: ManifestInfo,
+    pub sha256: String,
+    pub overwritten: bool,
+}
+
+/// 渠道安装管线（三入口——官方 Release / 任意 https URL / 本地导入——共用
+/// 同一条验签落盘管道，来源只决定字节从哪来）：
+///
+/// 1. **物理闸**：超限 / ZIP 损坏 / manifest 缺失或不可解析 → 拒收；
+/// 2. **id 裁决**：落盘名 = `manifest.id`（渠道安装要求包内自声明 id，
+///    缺失/非法 = 拒——产出物必须可被路由寻址）；
+/// 3. **验签**：与 [`scan_skins`] 同源（锚解析 + `verify_bytes`）→ 徽标；
+/// 4. **重名闸**：目标已存在且无 `overwrite` → 拒（显式覆盖才动已装包）；
+/// 5. **原子落盘**：临时文件 + rename（Windows rename 不覆盖 → 先删旧）。
+pub fn install_bytes(dir: &str, bytes: &[u8], overwrite: bool) -> Result<InstallOutcome, String> {
+    if bytes.len() > SKIN_PACKAGE_MAX_BYTES {
+        return Err(format!(
+            "包体 {} 字节超过 {}MB 上限，已拒收",
+            bytes.len(),
+            SKIN_PACKAGE_MAX_BYTES / (1024 * 1024)
+        ));
+    }
+    let (status, status_detail, manifest) = inspect_package(bytes);
+    if status != SkinStatus::Ok {
+        return Err(format!(
+            "包体物理不可服务，已拒收：{}",
+            status_detail.unwrap_or_else(|| "未知原因".into())
+        ));
+    }
+    let manifest = manifest.unwrap_or_default();
+    let id = manifest.id.trim();
+    if !valid_id(id) {
+        return Err(format!(
+            "manifest.id（{id:?}）缺失或非法（仅限字母/数字/-/_，不可为 default），已拒收"
+        ));
+    }
+    let anchors = resolve_anchors();
+    let (signature, sig_detail) = if anchors.is_empty() {
+        (SkinSignature::Unverified, None)
+    } else {
+        classify_signature(nemesis_verify::verify::verify_bytes(bytes, &anchors, now_unix()))
+    };
+    let dir_path = std::path::Path::new(dir);
+    let path = dir_path.join(format!("{id}.nbskin"));
+    let overwritten = path.exists();
+    if overwritten && !overwrite {
+        return Err(format!("皮肤 {id} 已存在（确认覆盖请带 overwrite=true）"));
+    }
+    std::fs::create_dir_all(dir_path).map_err(|e| format!("创建皮肤目录失败: {e}"))?;
+    let tmp = dir_path.join(format!(".{id}.nbskin.tmp{}", std::process::id()));
+    std::fs::write(&tmp, bytes).map_err(|e| format!("写入临时文件失败: {e}"))?;
+    if overwritten
+        && let Err(e) = std::fs::remove_file(&path)
+    {
+        let _ = std::fs::remove_file(&tmp);
+        return Err(format!("移除旧包失败: {e}"));
+    }
+    if let Err(e) = std::fs::rename(&tmp, &path) {
+        let _ = std::fs::remove_file(&tmp);
+        return Err(format!("落盘失败: {e}"));
+    }
+    Ok(InstallOutcome {
+        id: id.to_string(),
+        file: format!("{id}.nbskin"),
+        signature,
+        sig_detail,
+        manifest,
+        sha256: sha256_hex(bytes),
+        overwritten,
+    })
+}
+
+/// CRL 快照管理面状态（诚实呈现装载各态；不在场 = 全默认）。
+#[derive(Debug, Clone, Default, Serialize)]
+pub struct CrlSnapshotInfo {
+    pub present: bool,
+    /// 根签验签通过（present 且验签/锚定/过期全过才算应用）
+    pub verified: bool,
+    pub expired: bool,
+    pub version: u64,
+    pub valid_until: u64,
+    pub entries: usize,
+    /// 未应用原因（验签失败 / 过期 / 无 donor 等）
+    pub note: Option<String>,
+}
+
+/// CRL 快照装载（单一真相源）：读 `{dir}/crl.pem` → 根公钥取自
+/// `root_bytes`（一枚 verified 包，`anchors` 锚定校验；None = 无 donor）→
+/// 根签验签 → 过期检查。`crl = None` = 未应用（原因见 info.note）。
+pub fn load_crl_snapshot_state(
+    dir: &str,
+    anchors: &[[u8; 32]],
+    root_bytes: Option<&[u8]>,
+) -> (Option<nemesis_verify::Crl>, CrlSnapshotInfo) {
+    let mut info = CrlSnapshotInfo::default();
+    let Ok(raw) = std::fs::read(std::path::Path::new(dir).join("crl.pem")) else {
+        return (None, info); // 不在场 = 维持四态（离线诚实，不猜）
+    };
+    info.present = true;
+    let Some(root_bytes) = root_bytes else {
+        info.note = Some("快照在场但目录内无可信签名包提供根公钥，吊销检查未启用".into());
+        return (None, info);
+    };
+    let root_vk = if anchors.is_empty() {
+        None
+    } else {
+        nemesis_verify::revocation::root_pubkey_from_anchored(root_bytes, anchors).ok()
+    };
+    let Some(root_vk) = root_vk else {
+        info.note = Some("无法从 verified 包提取锚定根公钥（无锚/链异常），吊销检查未启用".into());
+        return (None, info);
+    };
+    let Ok(json) = String::from_utf8(raw) else {
+        info.note = Some("快照不是 UTF-8 JSON".into());
+        return (None, info);
+    };
+    match nemesis_verify::revocation::load_crl_snapshot(&json, &root_vk) {
+        Ok(crl) => {
+            info.verified = true;
+            info.version = crl.version;
+            info.valid_until = crl.valid_until;
+            info.entries = crl.entries.len();
+            let now = now_unix();
+            if crl.valid_until < now {
+                info.expired = true;
+                info.note = Some(format!(
+                    "快照已过期（valid_until 落后 now {} 秒），吊销检查未启用——请更新快照",
+                    now - crl.valid_until
+                ));
+                return (None, info);
+            }
+            (Some(crl), info)
+        }
+        Err(e) => {
+            info.note = Some(format!("快照验签失败（{e}），吊销检查未启用"));
+            (None, info)
+        }
+    }
+}
+
+/// 管理面 CRL 快照状态（handler list 呈现用）：donor = `skins` 里首枚
+/// verified 包。
+pub fn crl_snapshot_info(dir: &str, anchors: &[[u8; 32]], skins: &[SkinEntry]) -> CrlSnapshotInfo {
+    if !std::path::Path::new(dir).join("crl.pem").is_file() {
+        return CrlSnapshotInfo::default();
+    }
+    let root_bytes = skins
+        .iter()
+        .find(|e| e.signature == SkinSignature::Verified)
+        .and_then(|e| std::fs::read(std::path::Path::new(dir).join(&e.file)).ok());
+    load_crl_snapshot_state(dir, anchors, root_bytes.as_deref()).1
+}
+
+/// CSS `url()` 外链策略（2026-09-27 拍板落地）：皮肤 CSS 内
+/// `url(<http(s)/…>)` 是渲染即发起的外链请求面（跟踪像素信标，CDP 实测
+/// 证实）——改写为 `about:blank`（声明保留、零请求）。放行：相对/绝对
+/// 路径（无 scheme）与栅格图片 data:（与 structure 消毒器同一张 MIME
+/// 白名单语义；SVG 等 data: 不放行）。
+pub(crate) fn sanitize_css_urls(css: &str) -> String {
+    let lower = css.to_ascii_lowercase();
+    let b = lower.as_bytes();
+    let mut out = String::with_capacity(css.len());
+    let mut off = 0usize;
+    while let Some(rel) = lower[off..].find("url(") {
+        let pos = off + rel;
+        let mut j = pos + 4;
+        while j < b.len() && b[j].is_ascii_whitespace() {
+            j += 1;
+        }
+        let quote = if j < b.len() && (b[j] == b'"' || b[j] == b'\'') {
+            Some(b[j])
+        } else {
+            None
+        };
+        let tok_start = if quote.is_some() { j + 1 } else { j };
+        let mut k = tok_start;
+        let closed = loop {
+            if k >= b.len() {
+                break false;
+            }
+            match quote {
+                Some(q) if b[k] == q => break true,
+                None if b[k] == b')' => break true,
+                _ => k += 1,
+            }
+        };
+        if !closed {
+            break; // 畸形（token 未闭合）：剩余原样照抄
+        }
+        let close = if quote.is_some() {
+            let mut m = k + 1;
+            while m < b.len() && b[m] != b')' {
+                m += 1;
+            }
+            if m >= b.len() {
+                break; // 畸形（右括号缺失）：剩余原样照抄
+            }
+            m
+        } else {
+            k
+        };
+        let tok = &lower[tok_start..k];
+        let external =
+            tok.starts_with("https://") || tok.starts_with("http://") || tok.starts_with("//");
+        let data_bad = tok.starts_with("data:") && !is_raster_data_uri(&tok[5..]);
+        out.push_str(&css[off..tok_start]); // "url(" + 前导空白 + 开引号（原样）
+        if external || data_bad {
+            out.push_str("about:blank");
+        } else {
+            out.push_str(&css[tok_start..k]);
+        }
+        out.push_str(&css[k..=close]); // 收引号/收括号 + 后续到 ")"（原样）
+        off = close + 1;
+    }
+    out.push_str(&css[off.min(css.len())..]);
+    out
+}
+
+/// 栅格图片 MIME 白名单（structure 消毒器同表语义；入参 = data: 后段）。
+fn is_raster_data_uri(rest: &str) -> bool {
+    let mime = rest.split(';').next().unwrap_or("").trim();
+    matches!(
+        mime,
+        "image/png" | "image/jpeg" | "image/jpg" | "image/gif" | "image/webp"
+    )
+}
+
 #[cfg(test)]
-mod tests;
+pub(crate) mod tests;

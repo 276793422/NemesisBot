@@ -113,6 +113,7 @@ struct Inner {
 
 /// SSRF guard providing full URL / IP validation with CIDR matching and
 /// host whitelisting. Thread-safe via internal `RwLock`.
+#[derive(Clone)]
 pub struct Guard {
     config: SsrfConfig,
     inner: Arc<RwLock<Inner>>,

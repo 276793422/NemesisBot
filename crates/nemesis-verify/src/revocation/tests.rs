@@ -503,3 +503,140 @@ fn verify_bytes_strict_ocsp_fallback_revoked() {
     }
     clear_revocation_env();
 }
+
+// ===== 本地 CRL 快照四件套（皮肤管理面 P3：revocation_meta / crl_match_meta /
+// root_pubkey_from_anchored / load_crl_snapshot）=====
+
+use crate::fixtures::{V4Harness, now_secs as fx_now};
+
+/// 签名文件的四维元数据齐全且口径正确（raw 载体：content_hash = 签发时刻
+/// 内容摘要 = sha256(content)；key_fp = leaf 公钥指纹）。
+#[test]
+fn snapshot_meta_signed_raw() {
+    let h = V4Harness::new();
+    let content = b"nbskin-fixture-v1";
+    let signed = h.sign_raw(content, fx_now());
+    let meta = revocation_meta(&signed);
+    assert!(meta.key_fp.is_some(), "signed file must expose key_fp");
+    let leaf_fp = crate::crypto::key_fp(&crate::crypto::public_key_bytes(
+        &h.h.leaf_sk.verifying_key(),
+    ));
+    assert_eq!(meta.key_fp.as_deref(), Some(hex_encode(&leaf_fp).as_str()));
+    assert!(meta.sig_hash.is_some());
+    let want_content: [u8; 32] = sha2::Sha256::digest(content).into();
+    assert_eq!(
+        meta.content_hash.as_deref(),
+        Some(hex_encode(&want_content).as_str())
+    );
+    assert_eq!(meta.publisher.as_deref(), Some(crate::keygen::CN_LEAF));
+}
+
+/// opus programName → Publisher 维度。
+#[test]
+fn snapshot_meta_publisher_from_opus() {
+    let h = V4Harness::new();
+    let signed = h.sign_raw_opus(b"pkg", fx_now(), &h.h.leaf_sk, &h.h.chain(), Some("Acme"), None);
+    let meta = revocation_meta(&signed);
+    // Publisher 维度口径 = 签名者证书 subject CN（verify_bytes 记账同源），
+    // opus programName 只是 view 展示——不进吊销维度。
+    assert_eq!(meta.publisher.as_deref(), Some(crate::keygen::CN_LEAF));
+}
+
+/// 未签文件：签名维诚实缺省，content_hash 回落 v4_content_digest（全文件）。
+#[test]
+fn snapshot_meta_unsigned_fallback() {
+    let content = b"unsigned-package-bytes";
+    let meta = revocation_meta(content);
+    assert_eq!(meta.key_fp, None);
+    assert_eq!(meta.sig_hash, None);
+    assert_eq!(meta.publisher, None);
+    let want = crate::verify::v4_content_digest(content).unwrap();
+    assert_eq!(meta.content_hash.as_deref(), Some(hex_encode(&want).as_str()));
+}
+
+/// crl_match_meta 四维各自可命中（与 check_revocation 同序，逐维独立构造）。
+#[test]
+fn snapshot_match_four_dims() {
+    let h = V4Harness::new();
+    let signed = h.sign_raw(b"dims", fx_now());
+    let meta = revocation_meta(&signed);
+    let mk = |dim: RevDim, value: String| Crl {
+        version: 1,
+        valid_until: u64::MAX,
+        entries: vec![CrlEntry { dim, value, revoked_at: 1, reason: "t".into() }],
+    };
+    let key_fp = meta.key_fp.clone().unwrap();
+    let sig_hash = meta.sig_hash.clone().unwrap();
+    let content_hash = meta.content_hash.clone().unwrap();
+    assert_eq!(
+        crl_match_meta(&mk(RevDim::KeyFp, key_fp), &meta).unwrap().dim,
+        RevDim::KeyFp
+    );
+    assert_eq!(
+        crl_match_meta(&mk(RevDim::SigHash, sig_hash), &meta).unwrap().dim,
+        RevDim::SigHash
+    );
+    assert_eq!(
+        crl_match_meta(&mk(RevDim::FileHash, content_hash), &meta).unwrap().dim,
+        RevDim::FileHash
+    );
+    // Publisher：换 opus 签名取 CN
+    let signed2 = h.sign_raw_opus(b"dims2", fx_now(), &h.h.leaf_sk, &h.h.chain(), Some("Acme"), None);
+    let meta2 = revocation_meta(&signed2);
+    assert_eq!(
+        crl_match_meta(&mk(RevDim::Publisher, crate::keygen::CN_LEAF.into()), &meta2)
+            .unwrap()
+            .dim,
+        RevDim::Publisher
+    );
+    // 无关条目 = 未命中
+    assert!(crl_match_meta(&mk(RevDim::KeyFp, "deadbeef".into()), &meta).is_none());
+}
+
+/// 锚定根公钥：链根在锚集内 → Ok（且能验根签的 CRL）；锚集为空 → Err。
+#[test]
+fn snapshot_root_pubkey_anchored() {
+    let h = V4Harness::new();
+    let signed = h.sign_raw(b"anchor-me", fx_now());
+    let vk = root_pubkey_from_anchored(&signed, &h.anchor_fps()).expect("anchored root");
+    // 根公钥确实能验根签的数据（roundtrip 由下一测试覆盖），这里验锚拒：
+    assert!(root_pubkey_from_anchored(&signed, &[]).is_err());
+    let _ = vk;
+}
+
+/// 快照 roundtrip：根签 CRL → JSON → load_crl_snapshot（锚定根公钥验签）→
+/// 原样 Crl；换假根公钥 / 篡改 payload → 拒。
+#[test]
+fn snapshot_load_roundtrip_and_reject() {
+    let h = V4Harness::new();
+    let signed = h.sign_raw(b"crl-host", fx_now());
+    let root_vk = root_pubkey_from_anchored(&signed, &h.anchor_fps()).unwrap();
+    let crl = Crl {
+        version: 7,
+        valid_until: u64::MAX,
+        entries: vec![CrlEntry {
+            dim: RevDim::KeyFp,
+            value: "ab".repeat(32),
+            revoked_at: 42,
+            reason: "leak".into(),
+        }],
+    };
+    let resp = sign_response(&crl, &h.h.root_sk).unwrap();
+    let json = serde_json::to_string(&resp).unwrap();
+    let loaded = load_crl_snapshot(&json, &root_vk).unwrap();
+    assert_eq!(loaded.version, 7);
+    assert_eq!(loaded.entries.len(), 1);
+    assert_eq!(loaded.entries[0].reason, "leak");
+
+    // 篡改 payload（version++）→ 验签拒
+    let mut bad: SignedResponse<Crl> = serde_json::from_str(&json).unwrap();
+    bad.payload.version += 1;
+    let bad_json = serde_json::to_string(&bad).unwrap();
+    assert!(load_crl_snapshot(&bad_json, &root_vk).is_err());
+
+    // 换无关公钥（非根）→ 验签拒
+    let stranger_vk = *p256::ecdsa::SigningKey::from_bytes(&[9u8; 32].into())
+        .unwrap()
+        .verifying_key();
+    assert!(load_crl_snapshot(&json, &stranger_vk).is_err());
+}
