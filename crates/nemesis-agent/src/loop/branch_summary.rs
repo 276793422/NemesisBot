@@ -52,9 +52,6 @@ pub fn prepare_branch_summary(
     dropped_rows: &[Value],
     dropped_turns: usize,
 ) -> Option<PreparedBranchSummary> {
-    if dropped_turns < BRANCH_SUMMARY_MIN_TURNS {
-        return None;
-    }
     // 杂务槽位（small_model）：None = 诚实跳过，不回退主模型。
     let Some((provider, model)) = run_loop.small_model_slot() else {
         tracing::info!(
@@ -62,6 +59,24 @@ pub fn prepare_branch_summary(
         );
         return None;
     };
+    prepare_branch_summary_with(provider, model, session_key, dropped_rows, dropped_turns)
+}
+
+/// F5（2026-09-27）：CLI 形态的摘要 prepared 构造——调用方**自带**
+/// small_model 槽位（provider+model），无 AgentLoop 依赖。CLI `session
+/// fork` 用它与 WSAPI fork 对齐（同一生成通道：阈值/转写/空行三闸与
+/// prompt 构造都在本函数，单一真相源；`prepare_branch_summary` 只是
+/// AgentLoop 槽位提取 + 委托本函数）。
+pub fn prepare_branch_summary_with(
+    provider: std::sync::Arc<dyn LlmProvider>,
+    model: String,
+    session_key: &str,
+    dropped_rows: &[Value],
+    dropped_turns: usize,
+) -> Option<PreparedBranchSummary> {
+    if dropped_turns < BRANCH_SUMMARY_MIN_TURNS {
+        return None;
+    }
     let transcript = build_transcript(dropped_rows);
     if transcript.is_empty() {
         return None;

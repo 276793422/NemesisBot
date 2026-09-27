@@ -9,9 +9,11 @@
 //!   POSIX `flock`）——锁按**文件句柄**生效：同进程双句柄与跨进程语义
 //!   一致；持有进程崩溃/被杀，OS 自动释放（无死锁遗留）；
 //! - `<workspace>/logs/workspace_lease.lock` 是锁载体；旁边的
-//!   `workspace_lease.lock.holder.json` 记 `{holder, acquired_at}`——锁
-//!   本身不可读名字，sidecar 专供人/前端展示（`probe` 读取；进程死亡后
-//!   sidecar 残留 = 陈旧记录，probe 诚实标注）。
+//!   `workspace_lease.lock.holder.json` 记 `{holder, acquired_at, acq_id}`
+//!   ——锁本身不可读名字，sidecar 专供人/前端展示（`probe` 读取；进程死
+//!   亡后 sidecar 残留 = 陈旧记录，probe 诚实标注）。`acq_id` 是
+//!   per-acquire 唯一 id（F6，2026-09-27）：清理侧只删自己那份，防同
+//!   holder 名相邻持有的时序竞态误删他人 sidecar。
 //!
 //! 持锁形态（架构要点）：**guard 不出借**——`fd-lock` 的
 //! `RwLockWriteGuard<'lock, File>` 借用 `RwLock` 本体，「自持锁 + 自持
@@ -110,12 +112,19 @@ impl WorkspaceLease {
     pub async fn acquire(self: &Arc<Self>) -> io::Result<LeaseAcquisition> {
         let (ready_tx, ready_rx) = std::sync::mpsc::channel::<io::Result<()>>();
         let (release_tx, release_rx) = std::sync::mpsc::channel::<()>();
+        // F6（2026-09-27）：per-acquire 唯一 id——sidecar 的清理比对键从
+        // holder 名换成它。同 holder 名的相邻持有（同二进制先后两次获取）
+        // 在「A 落 guard → B 抢到锁写 sidecar → A 才执行清理」的时序下，
+        // 按名比对会误删 B 的 sidecar（B 持锁却查无此人）；uuid 比对下 A
+        // 只认自己的那份，时序竞态无害化。
+        let acq_id = uuid::Uuid::new_v4().to_string();
         let lease = Arc::clone(self);
+        let acq_id_thread = acq_id.clone();
         std::thread::Builder::new()
             .name(format!("ws-lease:{}", lease.holder))
             .spawn(move || {
                 // Err 在这里补发 ready（成功路径由 hold_lease 自己发 Ok）。
-                if let Err(e) = lease.hold_lease(&release_rx, &ready_tx) {
+                if let Err(e) = lease.hold_lease(&release_rx, &ready_tx, &acq_id_thread) {
                     let _ = ready_tx.send(Err(e));
                 }
             })
@@ -137,6 +146,7 @@ impl WorkspaceLease {
                 release_tx: Some(release_tx),
                 holder_path: self.holder_path.clone(),
                 holder: self.holder.clone(),
+                acq_id,
             }),
             Ok(Err(e)) => {
                 let _ = release_tx.send(());
@@ -156,6 +166,7 @@ impl WorkspaceLease {
         &self,
         release_rx: &std::sync::mpsc::Receiver<()>,
         ready_tx: &std::sync::mpsc::Sender<io::Result<()>>,
+        acq_id: &str,
     ) -> io::Result<()> {
         let file = self.open_lock_file()?;
         let mut lock = RwLock::new(file);
@@ -180,12 +191,12 @@ impl WorkspaceLease {
                 Err(e) => return Err(e),
             }
         };
-        self.write_holder();
+        self.write_holder(acq_id);
         let _ = ready_tx.send(Ok(()));
         // 持有至释放信号（LeaseAcquisition::Drop 触发；进程死亡 = OS 释放）。
         let _ = release_rx.recv();
         drop(guard);
-        remove_own_holder(&self.holder_path, &self.holder);
+        remove_own_holder(&self.holder_path, acq_id);
         Ok(())
     }
 
@@ -202,10 +213,12 @@ impl WorkspaceLease {
     }
 
     /// 持有者 sidecar 落盘（best-effort；sidecar 失败不影响锁的互斥性）。
-    fn write_holder(&self) {
+    /// `acq_id` 是 per-acquire 唯一键（F6），清理侧只认它。
+    fn write_holder(&self, acq_id: &str) {
         let v = serde_json::json!({
             "holder": self.holder,
             "acquired_at": chrono::Local::now().to_rfc3339(),
+            "acq_id": acq_id,
         });
         if let Err(e) = std::fs::write(&self.holder_path, v.to_string()) {
             tracing::warn!(
@@ -296,16 +309,19 @@ fn read_holder_json(holder_path: &std::path::Path) -> Option<serde_json::Value> 
     serde_json::from_str(&data).ok()
 }
 
-/// 清**自己的** sidecar（读-比对-删，防误删后继持有者的记录——理论上锁
-/// 先行传递的时序不容许，但诚实防御）。
-fn remove_own_holder(holder_path: &std::path::Path, holder: &str) {
+/// 清**自己的** sidecar（F6：按 per-acquire 唯一 `acq_id` 比对——只删
+/// **本次获取**写下的那份。旧实现按 holder 名比对，同 holder 名的相邻
+/// 持有在「A 落 guard → B 抢锁写 sidecar → A 才清理」的时序下会误删 B
+/// 的记录；id 比对下时序竞态无害。旧格式 sidecar（无 acq_id）不删——
+/// 残留由 probe 诚实标注为陈旧记录，宁留勿误删）。
+fn remove_own_holder(holder_path: &std::path::Path, acq_id: &str) {
     let Ok(data) = std::fs::read_to_string(holder_path) else {
         return;
     };
     let Ok(v) = serde_json::from_str::<serde_json::Value>(&data) else {
         return;
     };
-    if v.get("holder").and_then(|h| h.as_str()) == Some(holder) {
+    if v.get("acq_id").and_then(|h| h.as_str()) == Some(acq_id) {
         let _ = std::fs::remove_file(holder_path);
     }
 }
@@ -320,6 +336,9 @@ pub struct LeaseAcquisition {
     holder_path: PathBuf,
     #[allow(dead_code)]
     holder: String,
+    /// F6：本次获取的唯一 id（与 sidecar 里的 `acq_id` 同源，诊断用）。
+    #[allow(dead_code)]
+    acq_id: String,
 }
 
 impl Drop for LeaseAcquisition {

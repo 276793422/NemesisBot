@@ -1071,6 +1071,27 @@ impl SecurityPlugin {
         self.audit_chain.as_ref()
     }
 
+    /// F8（2026-09-27）：非工具管线的直接审计记账入口——rewind force 等
+    /// 强恢复动作不经 `execute()` 八层管线（没有 ToolInvocation），但需要
+    /// 落审计链台账（Merkle append-only，不可篡改；tracing 日志轮转即失，
+    /// 不算「留痕」）。返回 `None` = 审计链未启用（默认）/已关闭，调用方
+    /// 保留 tracing warn 作为兜底可见性。
+    pub fn append_direct_audit_event(
+        &self,
+        operation: &str,
+        tool_name: &str,
+        user: &str,
+        source: &str,
+        target: &str,
+        decision: &str,
+        reason: &str,
+    ) -> Option<crate::integrity::AuditEvent> {
+        self.audit_chain
+            .as_ref()?
+            .append(operation, tool_name, user, source, target, decision, reason)
+            .ok()
+    }
+
     /// Get the shared scan chain.
     pub fn scan_chain(&self) -> SharedScanChain {
         Arc::clone(&self.scan_chain)

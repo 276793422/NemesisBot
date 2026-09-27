@@ -1722,3 +1722,54 @@ async fn cfg06_injection_threshold_consumed_by_detector() {
     let (allowed, _) = plugin.execute(&inv);
     assert!(allowed, "threshold=1.0 下注入样本不得拦截");
 }
+
+// ---------------------------------------------------------------------------
+// F8（2026-09-27）：非工具管线的直接审计记账入口（rewind force 等强恢复
+// 动作落 Merkle append-only 审计链；tracing 日志不算留痕——轮转即失）
+// ---------------------------------------------------------------------------
+
+#[test]
+fn test_append_direct_audit_event_records_into_chain() {
+    let dir = tempfile::tempdir().unwrap();
+    let plugin = SecurityPlugin::new(SecurityPluginConfig {
+        enabled: true,
+        audit_chain_enabled: true,
+        audit_chain_path: Some(dir.path().join("audit_chain.jsonl").to_string_lossy().to_string()),
+        default_action: "allow".to_string(),
+        ..Default::default()
+    });
+
+    let ev = plugin
+        .append_direct_audit_event(
+            "session.rewind",
+            "rewind_to_message",
+            "user",
+            "wsapi",
+            "agent:main:session:x#idx=3",
+            "forced",
+            "rewind force 覆盖 1 个外部修改冲突",
+        )
+        .expect("审计链启用时直接记账必须成功");
+    assert_eq!(ev.operation, "session.rewind");
+    assert_eq!(ev.tool_name, "rewind_to_message");
+    assert_eq!(ev.decision, "forced");
+    assert_eq!(ev.target, "agent:main:session:x#idx=3");
+
+    // 落盘可回读（get_event 从 segment 文件读）且链校验通过。
+    let chain = plugin.audit_chain().unwrap();
+    let stored = chain.get_event(0).expect("事件应落盘可回读");
+    assert_eq!(stored.id, ev.id);
+    assert!(chain.verify_range(0, 0).unwrap(), "单事件链校验");
+}
+
+#[test]
+fn test_append_direct_audit_event_none_when_chain_disabled() {
+    // 默认配置 audit_chain_enabled=false → None（调用方 warn 兜底）。
+    let plugin = make_plugin();
+    assert!(
+        plugin
+            .append_direct_audit_event("op", "tool", "user", "src", "target", "forced", "why")
+            .is_none(),
+        "审计链未启用必须诚实返回 None"
+    );
+}

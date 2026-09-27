@@ -10,7 +10,9 @@ pub use discovery::{
     AnnounceWarnGate, ClusterCallbacks, DRIFT_WARN_THRESHOLD_SECS, DiscoveryConfig, DiscoveryError,
     DiscoveryService,
 };
-pub use listener::{DiscoveryAction, UdpListener, handle_discovery_message};
+pub use listener::{
+    DecryptDropSource, DecryptDropSummary, DiscoveryAction, UdpListener, handle_discovery_message,
+};
 pub use message::{
     DEFAULT_EXPIRY_THRESHOLD_SECS, DiscoveryMessage, DiscoveryMessageType, MessageValidationError,
 };

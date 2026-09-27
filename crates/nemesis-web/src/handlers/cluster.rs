@@ -397,6 +397,9 @@ impl ClusterHandler {
                 "success_rate": success_rate,
                 "avg_duration": avg_duration,
                 "recent_events": recent_events,
+                // L2（2026-09-27）：token 失配丢弃账本（异 token 来源互不发现是
+                // 预期安全行为，诊断按需查询；null = discovery 未启动）。
+                "discovery_drops": cluster.discovery_decrypt_drops(),
             })));
         }
 

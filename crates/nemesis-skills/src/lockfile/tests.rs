@@ -30,6 +30,50 @@ fn test_corrupt_file_warns_and_continues() {
     assert!(lock.skills.is_empty());
 }
 
+/// M4（2026-09-27）：损坏文件降级为空表前先备份 .bak（save 会整写覆盖，
+/// 不备份就丢排查证据）。
+#[test]
+fn test_corrupt_file_backed_up_before_fallback() {
+    let tmp = tempfile::tempdir().unwrap();
+    let path = SkillsLockfile::path_for(tmp.path());
+    std::fs::write(&path, "{ not json").unwrap();
+
+    let lock = SkillsLockfile::load(tmp.path());
+    assert!(lock.skills.is_empty());
+
+    let bak = path.with_extension("json.bak");
+    assert!(bak.exists(), "损坏文件必须先备份为 {:?} 再降级", bak);
+    assert_eq!(
+        std::fs::read_to_string(&bak).unwrap(),
+        "{ not json",
+        ".bak 内容必须是损坏现场原样"
+    );
+}
+
+#[test]
+fn test_intact_file_not_backed_up() {
+    let tmp = tempfile::tempdir().unwrap();
+    let mut lock = SkillsLockfile::new();
+    lock.record(LockedSkill {
+        slug: "ok".to_string(),
+        source: "s".to_string(),
+        commit: String::new(),
+        files: BTreeMap::new(),
+        installed_at: 1,
+        verified_state: "trusted".to_string(),
+    });
+    lock.save(tmp.path()).unwrap();
+
+    let loaded = SkillsLockfile::load(tmp.path());
+    assert_eq!(loaded.get("ok").unwrap().slug, "ok");
+    assert!(
+        !SkillsLockfile::path_for(tmp.path())
+            .with_extension("json.bak")
+            .exists(),
+        "完好文件不得产生 .bak"
+    );
+}
+
 #[test]
 fn test_record_save_load_roundtrip() {
     let tmp = tempfile::tempdir().unwrap();

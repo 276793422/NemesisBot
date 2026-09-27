@@ -47,10 +47,15 @@ pub fn is_steer_message(content: &str) -> bool {
 /// Strip the steer marker from a message's content (round-5 fix).
 ///
 /// The `!`/`！` prefix is a ROUTING signal, never content — the same user
-/// message must reach the model marker-free whether it was injected in-turn
-/// (steer claim) or replayed post-turn (transfer to next-turn). This is the
-/// SINGLE owner of the strip rule: `is_steer_message` and this fn share the
-/// marker set, so classification and stripping cannot drift apart.
+/// message must reach the model marker-free on ALL three arrival timings:
+/// injected in-turn (steer claim, run_loop.rs), replayed post-turn
+/// (transfer to next-turn, inbox.rs), and admitted while idle
+/// (`process_admitted` pre-persist strip, F2 2026-09-27 — Steer mode only;
+/// in Queue/Reject modes the prefix has never been a signal, busy or idle,
+/// so it stays literal there). This is the SINGLE owner of the strip rule:
+/// `is_steer_message` and this fn share the marker set, so classification
+/// and stripping cannot drift apart. Stripping exactly one marker doubles
+/// as the escape hatch: `!!x` → `!x` (literal `!`, shell convention).
 /// Returns the content unchanged for non-steer messages.
 pub fn strip_steer_marker(content: &str) -> &str {
     let t = content.trim_start();

@@ -213,3 +213,65 @@ async fn p20_rewind_passes_through_when_seals_match_disk() {
 
     delete_chat_log(&key);
 }
+
+// ---------------------------------------------------------------------------
+// F8（2026-09-27）：force 强过的强恢复动作落审计链台账（Merkle
+// append-only；此前只有 tracing warn——轮转即失，不算诚实留痕）。
+// ---------------------------------------------------------------------------
+
+/// force rewind 覆盖外部修改冲突 → 审计链落一条 session.rewind/forced 事件
+/// （operation/tool/decision/target 可回读，链校验通过）；无冲突直通的
+/// rewind 不产生假账（链保持空）。
+#[cfg(feature = "security")]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn p20_rewind_force_records_audit_chain_event() {
+    let (al, key, dir) = stage_sealed_two_turns("audit").await;
+    let file = dir.path().join("ws").join("code.txt");
+
+    // 挂真实 SecurityPlugin（审计链启用，指向 tempdir）。
+    let chain_path = dir.path().join("audit_chain.jsonl");
+    let plugin = std::sync::Arc::new(nemesis_security::pipeline::SecurityPlugin::new(
+        nemesis_security::pipeline::SecurityPluginConfig {
+            enabled: true,
+            audit_chain_enabled: true,
+            audit_chain_path: Some(chain_path.to_string_lossy().to_string()),
+            default_action: "allow".to_string(),
+            ..Default::default()
+        },
+    ));
+    let mut al_mut = al;
+    al_mut.set_security_plugin(plugin.clone());
+    let al = al_mut;
+    let chain = plugin.audit_chain().unwrap();
+
+    // 冲突 + force → 台账一条 forced 事件。
+    std::fs::write(&file, "v4-external").unwrap();
+    let out = al.rewind_to_message(&key, 0, true).await.unwrap();
+    assert_eq!(out["forced"], true, "{out}");
+
+    let ev = chain
+        .get_event(0)
+        .expect("force rewind 必须在审计链落一条事件");
+    assert_eq!(ev.operation, "session.rewind");
+    assert_eq!(ev.tool_name, "rewind_to_message");
+    assert_eq!(ev.decision, "forced");
+    assert_eq!(ev.user, "user");
+    assert!(
+        ev.target.contains(&key) && ev.target.contains("idx=0"),
+        "target 应含会话键与消息下标: {}",
+        ev.target
+    );
+    assert!(
+        ev.reason.contains("1 个外部修改冲突"),
+        "reason 应含冲突计数: {}",
+        ev.reason
+    );
+    assert!(chain.verify_range(0, 0).unwrap(), "链校验");
+
+    // 无冲突直通的 rewind 不产生假账（链仍只有 1 条）。
+    let out = al.rewind_to_message(&key, 0, true).await.unwrap();
+    assert_eq!(out["forced"], false, "{out}");
+    assert_eq!(chain.total_event_count(), 1, "无冲突不得记账");
+
+    delete_chat_log(&key);
+}

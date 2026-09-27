@@ -58,6 +58,10 @@ impl SkillsLockfile {
     }
 
     /// 从 workspace 读取；文件缺失/损坏按空表处理（损坏时 warn，不炸安装流）。
+    ///
+    /// 损坏时先把原文件备份为 `skills.lock.json.bak` 再降级（M4，2026-09-27）：
+    /// 后续 `save()` 会整写覆盖，不备份就丢了排查证据（固定 .bak 名，幂等
+    /// 覆盖——两次损坏之间夹着的正常保存本就会重写原件，保留最新损坏现场即可）。
     pub fn load(workspace: &Path) -> Self {
         let path = Self::path_for(workspace);
         if !path.exists() {
@@ -67,7 +71,22 @@ impl SkillsLockfile {
             Ok(data) => match serde_json::from_str::<SkillsLockfile>(&data) {
                 Ok(file) => file,
                 Err(e) => {
-                    warn!("skills.lock.json 解析失败，按空表继续: {}", e);
+                    let bak = path.with_extension("json.bak");
+                    match std::fs::copy(&path, &bak) {
+                        Ok(_) => {
+                            warn!(
+                                "skills.lock.json 解析失败，已备份为 {} 后按空表继续: {}",
+                                bak.display(),
+                                e
+                            );
+                        }
+                        Err(be) => {
+                            warn!(
+                                "skills.lock.json 解析失败，备份也失败（{}），按空表继续: {}",
+                                be, e
+                            );
+                        }
+                    }
                     Self::new()
                 }
             },

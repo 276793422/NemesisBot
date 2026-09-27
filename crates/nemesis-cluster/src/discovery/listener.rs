@@ -4,17 +4,136 @@
 //! Announce/Bye messages. Also provides the `UdpListener` struct for
 //! actual UDP socket I/O (bind, receive loop, broadcast).
 
+use std::collections::HashMap;
 use std::io;
 use std::net::{Ipv4Addr, SocketAddrV4, UdpSocket};
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::time::Duration;
+use std::time::Instant;
 
 use crate::discovery::crypto::{decrypt_data, encrypt_data};
 use crate::discovery::message::{DiscoveryMessage, DiscoveryMessageType};
 use crate::registry::PeerRegistry;
 use crate::types::{ExtendedNodeInfo, NodeStatus};
 use nemesis_types::cluster::{NodeInfo, NodeRole};
+
+// ---------------------------------------------------------------------------
+// 解密失败来源追踪（L2，2026-09-27 修订）
+// ---------------------------------------------------------------------------
+//
+// token 失配 = 安全边界在正常工作，不是错误——局域网内多个集群各配各的
+// token 时互相丢弃是**预期行为**，不应以 WARN 级别周期性刷日志（旧实现
+// 按 1/100 计数限频 WARN，多源 × 30s 广播节奏下仍是持续噪音）。
+//
+// 诊断能力放在两处（日常运行零日志输出）：
+// 1. 每个来源**首见**丢弃时一条 DEBUG（翻转沿去重：同源后续失败静默，
+//    上界 = 不同来源数，与时间无关）；
+// 2. [`DecryptDropSummary`] 供 `cluster.status` WSAPI 按需查询——
+//    "为什么互相看不见"变成跑一条命令就能看到"有几个异 token 来源"。
+
+/// 单个解密失败来源的摘要条目（时间以"距现在多少秒"表达，便于直接序列化）。
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct DecryptDropSource {
+    /// 来源地址 `ip:port`（announce 的广播源端口每次可能不同，见
+    /// [`DecryptDropTracker::record`] 的按 IP 归并说明）。
+    pub addr: String,
+    /// 距首次见到该来源多少秒。
+    pub first_seen_secs_ago: u64,
+    /// 距最近一次丢弃多少秒。
+    pub last_seen_secs_ago: u64,
+    /// 该来源累计丢弃帧数。
+    pub drops: u64,
+}
+
+/// 解密失败丢弃摘要（`cluster.status` WSAPI `discovery_drops` 字段）。
+#[derive(Debug, Clone, Default, serde::Serialize)]
+pub struct DecryptDropSummary {
+    /// 全部来源累计丢弃帧数。
+    pub total_drops: u64,
+    /// 已知异 token 来源列表（按首见时间升序，环形保留最近 [`DecryptDropTracker::MAX_SOURCES`] 个）。
+    pub sources: Vec<DecryptDropSource>,
+}
+
+/// 解密失败来源账本（进程内共享：receive 线程写，status 查询读）。
+#[derive(Default)]
+pub(crate) struct DecryptDropTracker {
+    /// IP → 条目。按 **IP** 归并而非完整 addr：广播源的源端口是随机的
+    /// （对端每个 announce 换一个临时端口），按 addr 归并会导致同一节点
+    /// 永远"首见"。
+    sources: parking_lot::Mutex<HashMap<Ipv4Addr, SourceEntry>>,
+    total_drops: AtomicU64,
+}
+
+#[derive(Clone, Copy)]
+struct SourceEntry {
+    first_seen: Instant,
+    last_seen: Instant,
+    drops: u64,
+}
+
+impl DecryptDropTracker {
+    /// 环形保留的来源上限。超过后淘汰最旧的——极端场景（>16 个异 token
+    /// 源）下被淘汰的来源若再次出现会再记一条首见 DEBUG，量级仍可控。
+    const MAX_SOURCES: usize = 16;
+
+    /// 记录一次解密失败。已知来源静默累积；新来源记一条首见 DEBUG。
+    fn record(&self, addr: Ipv4Addr) {
+        self.total_drops.fetch_add(1, Ordering::Relaxed);
+        let mut map = self.sources.lock();
+        let now = Instant::now();
+        match map.get_mut(&addr) {
+            Some(entry) => {
+                entry.last_seen = now;
+                entry.drops += 1;
+            }
+            None => {
+                if map.len() >= Self::MAX_SOURCES {
+                    if let Some(oldest) = map
+                        .iter()
+                        .min_by_key(|(_, e)| e.first_seen)
+                        .map(|(k, _)| *k)
+                    {
+                        map.remove(&oldest);
+                    }
+                }
+                map.insert(
+                    addr,
+                    SourceEntry {
+                        first_seen: now,
+                        last_seen: now,
+                        drops: 1,
+                    },
+                );
+                tracing::debug!(
+                    peer = %addr,
+                    "[Discovery] 解密失败首见（异 token 来源？互不发现是预期安全行为）\
+                     —— 同源后续失败不再记录；按需查看：cluster.status 的 discovery_drops"
+                );
+            }
+        }
+    }
+
+    /// 供 status 查询的摘要快照（sources 按首见时间升序）。
+    pub fn summary(&self) -> DecryptDropSummary {
+        let map = self.sources.lock();
+        let now = Instant::now();
+        let mut sources: Vec<DecryptDropSource> = map
+            .iter()
+            .map(|(ip, e)| DecryptDropSource {
+                addr: ip.to_string(),
+                first_seen_secs_ago: now.duration_since(e.first_seen).as_secs(),
+                last_seen_secs_ago: now.duration_since(e.last_seen).as_secs(),
+                drops: e.drops,
+            })
+            .collect();
+        sources.sort_by_key(|s| std::cmp::Reverse(s.first_seen_secs_ago));
+        DecryptDropSummary {
+            total_drops: self.total_drops.load(Ordering::Relaxed),
+            sources,
+        }
+    }
+}
 
 // ---------------------------------------------------------------------------
 // UdpListener - async-friendly UDP listener with broadcast
@@ -38,6 +157,8 @@ pub struct UdpListener {
     running: Arc<AtomicBool>,
     handler: Arc<parking_lot::RwLock<Option<MessageHandler>>>,
     receive_thread: parking_lot::Mutex<Option<std::thread::JoinHandle<()>>>,
+    /// 解密失败来源账本（receive 线程写，`decrypt_drop_summary` 读）。
+    drops: Arc<DecryptDropTracker>,
 }
 
 impl UdpListener {
@@ -71,6 +192,7 @@ impl UdpListener {
             running: Arc::new(AtomicBool::new(false)),
             handler: Arc::new(parking_lot::RwLock::new(None)),
             receive_thread: parking_lot::Mutex::new(None),
+            drops: Arc::new(DecryptDropTracker::default()),
         })
     }
 
@@ -93,17 +215,12 @@ impl UdpListener {
         let running = Arc::clone(&self.running);
         let handler = Arc::clone(&self.handler);
         let enc_key = self.enc_key;
+        let drops = Arc::clone(&self.drops);
 
         let handle = std::thread::Builder::new()
             .name("discovery-udp-listen".into())
             .spawn(move || {
                 let mut buf = [0u8; 4096];
-                // Token-mismatch visibility (2026-09-22): each onboard generates
-                // a random discovery token, so independently-onboarded nodes
-                // silently drop each other's announces here forever. Warn on the
-                // first drop and periodically after so the root cause is
-                // diagnosable from logs instead of being a silent dead end.
-                let mut decrypt_drops: u64 = 0;
                 while running.load(Ordering::SeqCst) {
                     match socket.recv_from(&mut buf) {
                         Ok((n, addr)) => {
@@ -113,18 +230,12 @@ impl UdpListener {
                             let msg_data = if let Some(key) = enc_key {
                                 match decrypt_data(&key, raw_data) {
                                     Ok(decrypted) => decrypted,
+                                    // Token 失配 = 安全边界正常工作（多集群共存互不
+                                    // 发现是预期行为），不刷 WARN；首见记一条 DEBUG，
+                                    // 累计账走 tracker 供 status 摘要查询。
                                     Err(_) => {
-                                        decrypt_drops += 1;
-                                        if decrypt_drops == 1 || decrypt_drops.is_multiple_of(100) {
-                                            tracing::warn!(
-                                                peer = %addr,
-                                                count = decrypt_drops,
-                                                "[Discovery] Announce failed decryption — \
-                                                 cluster token mismatch? Both nodes must share \
-                                                 the same token (config.cluster.json `token`; \
-                                                 CLI: nemesisbot cluster token set). \
-                                                 Discarding subsequent failures silently."
-                                            );
+                                        if let std::net::IpAddr::V4(v4) = addr.ip() {
+                                            drops.record(v4);
                                         }
                                         continue;
                                     }
@@ -202,6 +313,11 @@ impl UdpListener {
         self.port
     }
 
+    /// 解密失败丢弃摘要（token 失配来源账本快照，供 status 按需查询）。
+    pub fn decrypt_drop_summary(&self) -> DecryptDropSummary {
+        self.drops.summary()
+    }
+
     /// Broadcast a discovery message to all local subnet broadcast addresses.
     ///
     /// Mirrors Go's `UDPListener.Broadcast()`.
@@ -261,6 +377,18 @@ impl UdpListener {
 ///
 /// **Note**: On Windows this uses `GetAdaptersAddresses` via `std::net` and
 /// falls back gracefully if the local interface list is unavailable.
+///
+/// # 部署假设注记（L4/L5，2026-09-27）
+///
+/// UDP 广播发现依赖**物理层可达**：
+/// - **L4（AP 隔离）**：无线 AP 开启客户端隔离（AP isolation / guest 网络）
+///   时，同网段客户端之间二层互不可达——广播发出去了但对端收不到，发现层
+///   无感知也无解。排查路径：确认两端在同一网段且 AP 未开隔离；仍不通时用
+///   `peer_udp_endpoints` 配置定向单播（走已知 host:port，不依赖广播）。
+/// - **L5（255.255.255.255 出广域）**：受限网络（部分蜂窝/企业网）会把
+///   255.255.255.255 定向到 WAN 或直接吞掉；缓解=子网定向广播（`ip|!mask`，
+///   本函数第二类条目）通常仍在本网段内可达。多宿主/异端口拓扑同理，兜底
+///   都是一致的：显式配置 `peer_udp_endpoints` 定向单播。
 pub fn get_broadcast_addresses() -> Vec<Ipv4Addr> {
     let mut addrs = vec![Ipv4Addr::BROADCAST]; // 255.255.255.255
 

@@ -393,6 +393,97 @@ mod r7_success_paths {
         .expect_err("rows exist but zero user turns → CLI bail");
         assert!(err.to_string().contains("没有完整 user 轮次"), "got: {err}");
     }
+
+    /// F5（2026-09-27）：fork 全流程过分支摘要通道——6 轮源 --at 2 → 遗弃
+    /// 4 轮（≥3 阈值，通道真正走到 config/small_model 解析）。singleton
+    /// home 无 config.json → 内嵌默认不含 small_model → 诚实跳过注记打印；
+    /// fork 本体不受影响照常成功（保留前缀 4 行 verbatim）。钉的是「通道
+    /// 进得去、出得来、不 panic、不阻断分叉」。
+    #[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
+    #[test]
+    fn run_fork_with_dropped_turns_exercises_summary_channel_and_succeeds() {
+        let _g = crate::GLOBAL_STATE_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        let home = singleton_test_home();
+        let _env = EnvHomeGuard::point_at(&home);
+        let key = "agent:main:session:r7fork5";
+        write_jsonl(key, &rows_fixture(6));
+
+        run(
+            SessionAction::Fork {
+                session_key: key.into(),
+                at: Some(2),
+                new_key: Some("agent:main:session:r7fork5__child".into()),
+                reason: None,
+            },
+            false,
+        )
+        .expect("fork with ≥3 dropped turns must succeed (summary is best-effort)");
+
+        let copied = singleton_test_home()
+            .join("workspace/logs/session_logs/agent_main_session_r7fork5__child.jsonl");
+        assert_eq!(
+            std::fs::read_to_string(&copied).unwrap().lines().count(),
+            4,
+            "kept prefix = turns 1..2 (user+assistant × 2, verbatim)"
+        );
+    }
+}
+
+// ===========================================================================
+// F5（2026-09-27）：CLI 分支摘要生成（generate_branch_summary_cli）——纯
+// 函数面：home 显式传参、无进程级状态依赖，闸门注记文案逐字钉死。LLM 执
+// 行路径不在本文件触网（prepare_branch_summary_with 的 provider 侧由
+// nemesis-agent ws9_lineage_tests 的 fake provider 覆盖；这里只到「不触网
+// 的全部闸门 + 诚实注记」为止）。
+// ===========================================================================
+
+fn fork_info_fixture(dropped_user_turns: usize) -> nemesis_agent::session_fork::ForkInfo {
+    nemesis_agent::session_fork::ForkInfo {
+        source_key: "agent:main:session:f5src".into(),
+        new_key: "agent:main:session:f5src__child".into(),
+        at_turn: 1,
+        kept_messages: 2,
+        dropped_messages: dropped_user_turns * 2,
+        dropped_user_turns,
+        dropped_rows: vec![serde_json::json!({
+            "role": "user",
+            "content": "f5 遗弃内容",
+            "timestamp": "2026-09-27T00:00:00+08:00",
+        })],
+        summary_kept: false,
+        chat_log_lines: 2,
+    }
+}
+
+/// 遗弃 <3 轮：阈值闸先于 config 读取——「无需生成」注记，home 零副作用
+/// （不创建 config.json，不读盘）。
+#[test]
+fn branch_summary_cli_below_threshold_notes_no_need() {
+    let tmp = tempfile::tempdir().unwrap();
+    let line = generate_branch_summary_cli(tmp.path(), &fork_info_fixture(2));
+    assert!(
+        line.contains("分支摘要") && line.contains("无需生成") && line.contains("2 轮"),
+        "got: {line}"
+    );
+    assert!(
+        !tmp.path().join("config.json").exists(),
+        "阈值闸必须先于 config 读取（home 无副作用）"
+    );
+}
+
+/// 遗弃 ≥3 轮 + small_model 未配置：home 无 config.json → load_config 走
+/// 内嵌默认（config.default.json 无 small_model 键，无 env 覆盖面）→
+/// 诚实跳过注记。确定性：不触网、不 panic、不阻塞调用方。
+#[test]
+fn branch_summary_cli_small_model_unconfigured_notes_skip() {
+    let tmp = tempfile::tempdir().unwrap();
+    let line = generate_branch_summary_cli(tmp.path(), &fork_info_fixture(3));
+    assert!(
+        line.contains("分支摘要") && line.contains("跳过") && line.contains("agents.small_model"),
+        "got: {line}"
+    );
 }
 
 // ===========================================================================

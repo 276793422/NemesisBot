@@ -275,3 +275,56 @@ async fn lease_disabled_passthrough_unwrapped() {
     assert!(!out.contains("工作区正被"));
     assert!(std::path::Path::new(&target).exists(), "文件应落盘");
 }
+
+/// F6（2026-09-27）：sidecar 清理按 per-acquire 唯一 id 比对——同 holder
+/// 名的**他人**记录不得被本次释放误删，旧格式（无 acq_id）同样不删。
+/// 竞态窗口用改写 sidecar 确定性模拟（A 落 guard 后、清理执行前 B 已写
+/// 自己那份的中间态），不靠真竞速。
+#[tokio::test]
+async fn release_removes_only_own_acq_sidecar() {
+    let dir = tempfile::tempdir().unwrap();
+    let sidecar = dir
+        .path()
+        .join("logs")
+        .join("workspace_lease.lock.holder.json");
+    let lease = Arc::new(WorkspaceLease::new(dir.path(), "same-holder"));
+
+    let acq = lease.acquire().await.expect("获取");
+    // 模拟同 holder 名「上一任」的中间态：持锁者已换人，sidecar 还是
+    // 上一任的（旧实现按 holder 名比对 → 本次释放会把这份误删）。
+    std::fs::write(
+        &sidecar,
+        r#"{"holder":"same-holder","acquired_at":"2026-09-26T00:00:00+08:00","acq_id":"prev-acq"}"#,
+    )
+    .unwrap();
+
+    drop(acq);
+    // 给清理线程充分的（错误）删除窗口，再断言幸存。
+    tokio::time::sleep(Duration::from_millis(500)).await;
+    let data = std::fs::read_to_string(&sidecar).expect("异 acq_id 的 sidecar 不得被删");
+    assert!(data.contains("prev-acq"), "保留的应是上一任记录: {data}");
+
+    // 正常路径：重新获取覆盖 sidecar → 释放 → 自己的（id 自洽）被清。
+    let acq2 = lease.acquire().await.expect("再获取");
+    drop(acq2);
+    assert!(
+        wait_until(|| !sidecar.exists(), Duration::from_secs(3)).await,
+        "自己的 sidecar 释放时应被清理"
+    );
+
+    // 旧格式 sidecar（无 acq_id，升级窗口内旧版本进程写的）不删——
+    // 宁留勿误删，残留由 probe 诚实标注为陈旧记录。
+    let acq3 = lease.acquire().await.expect("三获取");
+    std::fs::write(
+        &sidecar,
+        r#"{"holder":"same-holder","acquired_at":"2026-09-26T00:00:00+08:00"}"#,
+    )
+    .unwrap();
+    drop(acq3);
+    tokio::time::sleep(Duration::from_millis(500)).await;
+    assert!(
+        sidecar.exists(),
+        "旧格式 sidecar 不得被删（宁留勿误删）: {:?}",
+        std::fs::read_to_string(&sidecar)
+    );
+}

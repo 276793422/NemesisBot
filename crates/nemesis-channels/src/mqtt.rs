@@ -22,6 +22,13 @@
 //! - **凭据为空 = 匿名连接**（LAN broker 常态），不隐式填充。
 //!
 //! 已知边界（诚实声明）：
+//! - **部署假设（通道 #10，2026-09-27 注记）**：入站 sender 身份是**自报值**——
+//!   JSON 信封的 `sender` 字段 / 无信封时兜底的 `mqtt` 常量，channel 侧无从
+//!   校验。`allow_from` 名单的真实语义 =「信任 broker 转发的这个自报身份」，
+//!   **前提是 broker 本身可信**（接入控制 + TLS；公网匿名 broker 上任何人
+//!   都可伪造信封冒充名单内 sender）。agent 侧安全 8 层照常全跑（身份层
+//!   之上仍有命令/文件等拦截），但「allow_from 限制谁在跟 bot 说话」这层
+//!   只在可信 broker 下成立。
 //! - TLS 传输已接（2026-09-26 真机验证批）：`use_tls=true` 走 rustls（ring
 //!   provider，本 crate 自装 CryptoProvider——rumqttc 以
 //!   `use-rustls-no-provider` 接入，不引其默认链的 aws-lc-rs）。CA 证书
@@ -30,8 +37,11 @@
 //! - 入站 QoS 1 ACK 由 rumqttc 自动完成（manual_acks=false）＝「收到即 ACK」，
 //!   agent 处理失败不重投（传输层 at-least-once，处理层 at-most-once）；
 //! - 停止走取消信号 + 任务退出即断 TCP（clean_session 下不追求优雅 DISCONNECT）；
-//! - 真实 broker 端到端手测挂账（无凭证）；契约测试用 tokio TCP mock 最小
-//!   broker（rumqttc 无内建 mock 模式），见 `mqtt/tests.rs`。
+//! - 真实 broker 端到端已真机验证（2026-09-27：mosquitto 2.0.22 双监听 +
+//!   rustls TLS + 防回环实测 PASS，见
+//!   `docs/REPORT/2026-09-27_四高挂账修复与三通道真机验证报告.md`）；契约
+//!   测试用 tokio TCP mock 最小 broker（rumqttc 无内建 mock 模式），见
+//!   `mqtt/tests.rs`。
 
 use std::collections::HashMap;
 use std::sync::Arc;

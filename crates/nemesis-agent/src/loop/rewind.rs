@@ -208,6 +208,32 @@ impl AgentLoop {
             return Err("会话日志写回失败，回退未生效（原会话完好）".to_string());
         }
 
+        // F8（2026-09-27）：force 强过的强恢复动作落审计链台账——跳过冲突
+        // 预检覆盖外部修改是高影响操作，warn! 日志轮转即失，Merkle
+        // append-only 审计链才是「留痕」的诚实形态。截断成功后记账（文件
+        // 恢复 + 截断都已生效，不为未发生的恢复记账）；审计链未启用（默认
+        // 关）= None，保留上方 warn 兜底可见性。
+        if forced {
+            #[cfg(feature = "security")]
+            if let Some(plugin) = self.security.security_plugin.as_ref() {
+                let recorded = plugin.append_direct_audit_event(
+                    "session.rewind",
+                    "rewind_to_message",
+                    "user",
+                    "wsapi",
+                    &format!("{session_key}#idx={message_index}"),
+                    "forced",
+                    &format!(
+                        "rewind force 覆盖 {} 个外部修改冲突（restore_turn={restore_turn:?}）",
+                        report.conflicts.len()
+                    ),
+                );
+                if recorded.is_none() {
+                    warn!("[AgentLoop] rewind force 审计链未启用，仅日志留痕");
+                }
+            }
+        }
+
         // 3) SessionStore 丢缓存（jsonl 是单一真相源，下次 get_or_create
         // 从截断后的 jsonl 自愈重建——sessions.delete/clear 同款纪律）。
         if let Some(store) = self.session_store() {

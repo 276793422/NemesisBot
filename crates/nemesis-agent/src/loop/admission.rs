@@ -20,7 +20,10 @@ pub enum ConcurrentMode {
     /// Queue messages when session is busy — processed after the current turn.
     Queue,
     /// Queue + steer: `!`-prefixed messages are injected into the RUNNING
-    /// turn before its next LLM call (I1 / U7).
+    /// turn before its next LLM call (I1 / U7). The prefix is a routing
+    /// signal on every timing: busy → claim/transfer strips it; idle →
+    /// `process_admitted` strips it pre-persist (F2). `!!` escapes to a
+    /// literal `!` (single-strip rule, shell convention).
     Steer,
 }
 
@@ -901,6 +904,27 @@ impl AgentLoop {
             cancel_token,
             cp_turn,
         } = admission;
+
+        // F2（2026-09-27）：空闲态 steer 信号剥除——`!`/`！` 前缀是路由信
+        // 号不是内容，busy 态的两条消费路径（回合内 claim / 迟到 transfer）
+        // 都已剥标记，唯独空闲直进 turn 的第三条时序把 `!` 字面量随内容送
+        // 进模型：同一条消息因到达时机不同模型看到两个形态。这里 mode-aware
+        // 补齐（仅 Steer 模式——Queue/Reject 下 `!` 从来不是信号，busy 时
+        // 同样不剥，两边一致保持字面量）；剥除走单一真相源
+        // strip_steer_marker（剥一位：`!!x` → `!x` 即字面 `!` 转义，与
+        // shell 惯例同构）。剥除在 B1 早落盘之前：jsonl user 行与模型所见
+        // 同为无标记形态，不产生「历史带 `!`、上下文没有」的漂移。
+        let raw = msg;
+        let msg: std::borrow::Cow<'_, nemesis_types::channel::InboundMessage>;
+        if self.concurrent_mode == ConcurrentMode::Steer
+            && crate::inbox::is_steer_message(&raw.content)
+        {
+            let mut stripped = raw.clone();
+            stripped.content = crate::inbox::strip_steer_marker(&stripped.content).to_string();
+            msg = std::borrow::Cow::Owned(stripped);
+        } else {
+            msg = std::borrow::Cow::Borrowed(raw);
+        }
 
         let voice_playback = msg.voice_playback.unwrap_or(false);
 

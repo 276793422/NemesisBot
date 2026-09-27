@@ -94,6 +94,13 @@ pub fn run(action: SessionAction, local: bool) -> Result<()> {
             if let Some(r) = reason.as_deref() {
                 nemesis_agent::chat_log::write_session_fork_reason(&info.new_key, r);
             }
+            // F5（2026-09-27）：分支摘要与 WSAPI fork 对齐——同一生成通道
+            // （P18：遗弃 ≥3 轮 × small_model 槽位 × 六节 schema）。CLI 进程
+            // 无 AgentLoop，槽位直接从 config 解析（与 agent_factory 装配
+            // 同一原语：resolve_model_config + create_provider +
+            // ProviderAdapter）；同步执行（进程即跑即退，无后台可 spawn），
+            // 失败/未配置诚实注记，不阻塞分叉本体。
+            let summary_line = generate_branch_summary_cli(&home, &info);
             println!("✅ 会话分支完成：");
             println!("  源会话   : {}（未改动）", info.source_key);
             println!("  新会话   : {}", info.new_key);
@@ -103,7 +110,7 @@ pub fn run(action: SessionAction, local: bool) -> Result<()> {
                 info.kept_messages,
                 info.kept_messages + info.dropped_messages
             );
-            println!("  摘要缓存 : 未携带（分叉上下文以聊天记录行为准）");
+            println!("  {}", summary_line);
             println!(
                 "  聊天记录 : 逐行原样复制 {} 行（时间戳等原字段保真）",
                 info.chat_log_lines
@@ -176,6 +183,81 @@ fn list_sessions(home: &Path) -> Result<()> {
         home.display()
     );
     Ok(())
+}
+
+/// F5（2026-09-27）：CLI 形态的分支摘要生成（与 WSAPI fork 的 P18 通道
+/// 对齐）——解析 small_model 槽位 → `prepare_branch_summary_with` → 同步
+/// run + 写新会话 meta。返回面向用户的输出行（各闸门的诚实注记，含跳过
+/// 原因）。绝不 panic、绝不阻塞分叉本体（任何失败都折算成注记文案）。
+fn generate_branch_summary_cli(home: &Path, info: &nemesis_agent::session_fork::ForkInfo) -> String {
+    use nemesis_agent::r#loop::{prepare_branch_summary_with, BRANCH_SUMMARY_MIN_TURNS};
+
+    if info.dropped_user_turns < BRANCH_SUMMARY_MIN_TURNS {
+        return format!(
+            "分支摘要 : 遗弃 {} 轮（< {BRANCH_SUMMARY_MIN_TURNS}，无需生成）",
+            info.dropped_user_turns
+        );
+    }
+    let cfg_path = crate::common::config_path(home);
+    let Ok(cfg) = nemesis_config::load_config(&cfg_path) else {
+        return "分支摘要 : 跳过（config 加载失败）".to_string();
+    };
+    let Some(small_ref) = cfg
+        .agents
+        .small_model
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+    else {
+        return format!(
+            "分支摘要 : 跳过（agents.small_model 未配置；遗弃 {} 轮）",
+            info.dropped_user_turns
+        );
+    };
+    let Ok(resolution) = nemesis_config::resolve_model_config(&cfg, small_ref) else {
+        return format!("分支摘要 : 跳过（small_model '{small_ref}' 解析失败）");
+    };
+    let factory_cfg = nemesis_providers::factory::FactoryConfig {
+        proxy: resolution.proxy.clone(),
+        llm_ref: format!("{}/{}", resolution.provider_name, resolution.model_name),
+        api_key: resolution.api_key.clone(),
+        api_base: resolution.api_base.clone(),
+        workspace: home.to_string_lossy().to_string(),
+        connect_mode: resolution.connect_mode.clone(),
+        protocol: resolution.protocol.clone(),
+        timeout_secs: resolution.timeout_secs,
+        account_id: String::new(),
+        headers: std::collections::HashMap::new(),
+    };
+    let Ok(provider) = nemesis_providers::factory::create_provider(&factory_cfg) else {
+        return format!("分支摘要 : 跳过（small_model '{small_ref}' provider 构造失败）");
+    };
+    let adapter = nemesis_web::ProviderAdapter::new(provider, resolution.model_name.clone());
+    let Some(prepared) = prepare_branch_summary_with(
+        std::sync::Arc::new(adapter),
+        resolution.model_name.clone(),
+        &info.new_key,
+        &info.dropped_rows,
+        info.dropped_user_turns,
+    ) else {
+        return "分支摘要 : 跳过（遗弃内容为空）".to_string();
+    };
+    // 同步执行：CLI 进程即跑即退，无后台可 spawn（WSAPI 形态走
+    // spawn_write 后台落盘，这里 block_on 等待完成再报告结果）。
+    let rt = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build();
+    let Ok(rt) = rt else {
+        return "分支摘要 : 跳过（本地 runtime 构建失败）".to_string();
+    };
+    match rt.block_on(prepared.run()) {
+        Some(summary) => {
+            let chars = summary.chars().count();
+            nemesis_agent::chat_log::write_session_branch_summary(&info.new_key, &summary);
+            format!("分支摘要 : 已生成写入新会话（{chars} 字）")
+        }
+        None => "分支摘要 : 生成失败/为空（诚实跳过，不影响分叉本体）".to_string(),
+    }
 }
 
 /// `session show`：轮次边界表 — 每个完整 user 轮一行（轮号 / 边界含义 /
