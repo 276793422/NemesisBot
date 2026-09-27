@@ -9,6 +9,7 @@ pub mod manager;
 pub mod rpc_channel;
 pub mod web;
 pub mod webhook_inbound;
+#[cfg(feature = "websocket")]
 pub mod websocket;
 
 // Platform channels (optional, enabled via Cargo features)
@@ -56,7 +57,11 @@ pub mod bluesky;
 #[cfg(feature = "onebot")]
 pub mod onebot;
 
+#[cfg(feature = "external")]
 pub mod external;
+
+#[cfg(feature = "maixcam")]
 pub mod maixcam;
 
+#[cfg(feature = "line")]
 pub mod line;

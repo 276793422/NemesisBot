@@ -233,10 +233,10 @@ mod auditor_extra {
 }
 
 // ---------------------------------------------------------------------------
-// scanner.rs supplementary tests
+// scanner.rs supplementary tests（scanner feature 关 = 整组裁掉）
 // ---------------------------------------------------------------------------
 
-#[cfg(test)]
+#[cfg(feature = "scanner")]
 mod scanner_extra {
     use nemesis_security::scanner::*;
 

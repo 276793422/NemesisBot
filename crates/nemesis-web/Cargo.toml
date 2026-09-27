@@ -72,11 +72,17 @@ hmac = { workspace = true }
 # Optional subsystems (not in default — enabled via feature passthrough from
 # the `nemesisbot` binary so a trimmed build can drop them).
 voice = ["dep:nemesis-voice"]
+# voice-capture：设备 IO 面板/实时采集/回声消除（穿透 nemesis-voice/voice-capture）。
+# voice（STT/TTS/云转写）不隐含本 feature——IoT 可只留转写不带设备 IO。
+voice-capture = ["voice", "nemesis-voice/voice-capture"]
 cluster = ["dep:nemesis-cluster"]
 forge = ["dep:nemesis-forge"]
 memory = ["dep:nemesis-memory"]
 workflow = ["dep:nemesis-workflow"]
 security = ["dep:nemesis-security", "nemesis-security/security"]
+# scanner：病毒扫描管理面（WSAPI scanner.* + Dashboard ScannerView 后端）。
+# implies security（第 7 层在 pipeline 内），并穿透 nemesis-security/scanner。
+scanner = ["security", "nemesis-security/scanner"]
 sandbox = ["dep:nemesis-sandbox"]
 terminal = ["dep:portable-pty"]
 # 皮肤包加载/签名验证/WSAPI 管理面（skins.rs + handlers/skins.rs + 路由

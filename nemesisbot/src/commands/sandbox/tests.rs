@@ -647,10 +647,6 @@ mod wave_b {
 
 #[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
 mod wave_a_selftest {
-    use std::sync::Mutex;
-
-    static SELFTEST_ENV_LOCK: Mutex<()> = Mutex::new(());
-
     /// 自检 env 夹具：NEMESISBOT_HOME 指向临时家 + WORKSPACE 指向其 workspace。
     struct SelftestEnv {
         _guard: MutexGuard<'static, ()>,
@@ -670,7 +666,13 @@ mod wave_a_selftest {
     }
 
     fn selftest_env() -> SelftestEnv {
-        let guard = SELFTEST_ENV_LOCK.lock().unwrap();
+        // set_var/remove_var 是进程级操作，Drop 也会污染并发测试 → 必须持
+        // crate::GLOBAL_STATE_LOCK（2026-09-28：原私有 SELFTEST_ENV_LOCK 与
+        // GLOBAL_STATE_LOCK 不互斥，wave_a 的 env 改动与 wave_b 的 env 夹具
+        // 并发交错，造成 wave_b_commit_failed... 假红）。
+        let guard = crate::GLOBAL_STATE_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         let tmp = tempfile::TempDir::new().unwrap();
         let home = tmp.path().join(".nemesisbot");
         let workspace = home.join("workspace");

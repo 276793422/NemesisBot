@@ -550,16 +550,20 @@ pub struct ChannelInitConfig {
     #[cfg(feature = "onebot")]
     pub onebot: Option<crate::onebot::OneBotConfig>,
     /// LINE channel configuration.
+    #[cfg(feature = "line")]
     pub line: Option<crate::line::LineConfig>,
     /// External channel configuration.
+    #[cfg(feature = "external")]
     pub external: Option<crate::external::ExternalConfig>,
     /// MaixCam channel configuration.
+    #[cfg(feature = "maixcam")]
     pub maixcam: Option<crate::maixcam::MaixCamConfig>,
     /// Web channel configuration.
     pub web: Option<crate::web::WebChannelConfig>,
     /// WebServerOps for injecting into the WebChannel (outbound delivery).
     pub web_server_ops: Option<std::sync::Arc<dyn crate::web::WebServerOps>>,
     /// WebSocket channel configuration.
+    #[cfg(feature = "websocket")]
     pub websocket: Option<crate::websocket::WebSocketChannelConfig>,
 }
 
@@ -591,6 +595,10 @@ impl ChannelManager {
         bus_sender: broadcast::Sender<InboundMessage>,
     ) -> Result<()> {
         info!("[ChannelManager] initializing channel manager");
+
+        // bus_sender 的全部消费者都在 feature 门控的装配块里；通道全关时无消费者
+        //（default = web/webhook/rpc 三通道均不收 bus_sender），抑制 unused 告警。
+        let _ = &bus_sender;
 
         // Telegram
         #[cfg(feature = "telegram")]
@@ -831,6 +839,7 @@ impl ChannelManager {
         }
 
         // LINE
+        #[cfg(feature = "line")]
         {
             if let Some(ref cfg) = config.line {
                 info!("[ChannelManager] attempting to initialize LINE channel");
@@ -847,6 +856,7 @@ impl ChannelManager {
         }
 
         // External
+        #[cfg(feature = "external")]
         {
             if let Some(ref cfg) = config.external {
                 info!("[ChannelManager] attempting to initialize External channel");
@@ -863,6 +873,7 @@ impl ChannelManager {
         }
 
         // MaixCam
+        #[cfg(feature = "maixcam")]
         {
             if let Some(ref cfg) = config.maixcam {
                 info!("[ChannelManager] attempting to initialize MaixCam channel");
@@ -892,6 +903,7 @@ impl ChannelManager {
         }
 
         // WebSocket
+        #[cfg(feature = "websocket")]
         {
             if let Some(ref cfg) = config.websocket {
                 info!("[ChannelManager] attempting to initialize WebSocket channel");

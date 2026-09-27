@@ -26,6 +26,8 @@ pub enum SecurityAction {
         action: Option<AuditAction>,
     },
     /// Manage security scanner
+    // scanner feature 拆分后该子命令随 scanner 进出（implies security）
+    #[cfg(feature = "scanner")]
     Scanner {
         #[command(subcommand)]
         action: ScannerAction,
@@ -98,6 +100,7 @@ pub enum AuditAction {
 }
 
 /// Re-export ScannerAction from the standalone scanner module to avoid duplication.
+#[cfg(feature = "scanner")]
 pub use super::scanner::ScannerAction;
 
 #[derive(clap::Subcommand)]
@@ -1228,8 +1231,9 @@ pub async fn run(action: SecurityAction, local: bool) -> Result<()> {
                 }
             }
         },
+        // Delegate to the standalone scanner module
+        #[cfg(feature = "scanner")]
         SecurityAction::Scanner { action } => {
-            // Delegate to the standalone scanner module
             super::scanner::run(action, local).await?;
         }
         SecurityAction::Test { tool, args } => {

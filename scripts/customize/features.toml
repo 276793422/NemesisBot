@@ -126,6 +126,34 @@ desc = "WhatsApp 通道（需 bridge）"
 category = "channels"
 default = false
 
+[[feature]]
+id = "channels-websocket"
+label = "WebSocket 通道"
+desc = "独立 WebSocket 入站通道（独立监听面，SDK 式接入）"
+category = "channels"
+default = true
+
+[[feature]]
+id = "channels-external"
+label = "External 通道"
+desc = "外部进程 stdin/stdout 通道（input/output exe，本地 SDK 集成）"
+category = "channels"
+default = true
+
+[[feature]]
+id = "channels-maixcam"
+label = "MaixCam 通道"
+desc = "MaixCam 视觉模组通道（嵌入式硬件对接）"
+category = "channels"
+default = true
+
+[[feature]]
+id = "channels-line"
+label = "LINE"
+desc = "LINE Messaging API 通道"
+category = "channels"
+default = true
+
 # ── Subsystems (Class A leaves; on by default = current full build) ─────────
 
 [[feature]]
@@ -173,7 +201,17 @@ default = true
 [[feature]]
 id = "voice"
 label = "语音管线"
-desc = "本地 STT/TTS/VAD（`nemesisbot voice` 命令 + Web 语音端点）"
+desc = "本地 STT/TTS/VAD + 云转写（`nemesisbot voice` 命令 + Web 语音端点）。文件/缓冲区驱动，不含设备 IO"
+category = "subsystems"
+default = true
+
+# NOTE: `voice-capture` 从 voice 拆出的设备 IO 面（麦克风采集/扬声器播放/回声消除
+# /loopback，cpal+wasapi 依赖随它进出）。TTS 落文件、文件转写、VAD 缓冲不依赖它；
+# 关闭后设备枚举/实时对话/AEC 路径在运行期诚实报「未编译」。依赖 voice（自动带入）。
+[[feature]]
+id = "voice-capture"
+label = "语音设备 IO（采集/播放/AEC）"
+desc = "麦克风采集 + 扬声器播放 + 回声消除（实时对话/设备枚举）。纯转写/IoT 无音频硬件建议关"
 category = "subsystems"
 default = true
 
@@ -220,13 +258,22 @@ default = true
 
 # NOTE: `security` 可裁剪（feature 穿透 nemesisbot → nemesis-agent/security + nemesis-web/security + nemesis-security/security + nemesis-skills/security）。
 # Class C 内核裁剪。关闭后整个安全中间件（8 层 pipeline：注入/命令/ABAC/凭据/DLP/SSRF/病毒扫描/审计链）
-# + 审批 + guardian LLM judge + ClamAV scanner + skill 签名（signer）整包不编译，**nemesis-security crate 完全排除**（cargo tree = 0）。
-# **警告**：裁掉后 Bot 无安全防护（无工具调用拦截、无审批、无病毒扫描、无 skill 签名）——仅适合可信隔离环境/IoT。
-# scanner 子 feature（security 开 + scanner 关）当前未拆分，scanner 与 security 绑定（未来可增强）。
+# + 审批 + guardian LLM judge + skill 签名（signer）整包不编译，**nemesis-security crate 完全排除**（cargo tree = 0）。
+# **警告**：裁掉后 Bot 无安全防护（无工具调用拦截、无审批、无审计链）——仅适合可信隔离环境/IoT。
 [[feature]]
 id = "security"
-label = "安全中间件 + 病毒扫描"
-desc = "8 层安全 pipeline + ABAC + 审批弹窗 + guardian LLM judge + ClamAV scanner + skill 签名（`nemesisbot security`/`scanner` + Security/Scanner Dashboard）。裁后无安全防护且 nemesis-security 整包不编译，仅适合可信/IoT"
+label = "安全中间件"
+desc = "8 层安全 pipeline + ABAC + 审批弹窗 + guardian LLM judge + skill 签名（`nemesisbot security` + Security Dashboard）。裁后无安全防护且 nemesis-security 整包不编译，仅适合可信/IoT"
+category = "subsystems"
+default = true
+
+# NOTE: `scanner` 已从 security 拆出（2026-09-28）：病毒扫描 = 第 7 层（ClamAV + zip 依赖）。
+# implies security（第 7 层执行臂在 pipeline 内）。关闭后第 7 层诚实短路（构造时 WARN 注记，
+# 非静默），第 8 层审计链照常；`nemesisbot scanner` CLI + Scanner Dashboard 页随之消失。
+[[feature]]
+id = "scanner"
+label = "病毒扫描（ClamAV）"
+desc = "病毒扫描引擎（第 7 层，`nemesisbot scanner` + Scanner Dashboard + ClamAV 集成）。IoT/无文件扫描需求建议关；关后第 7 层诚实短路、其余 7 层安全照常"
 category = "subsystems"
 default = true
 

@@ -66,7 +66,13 @@ fn presets_cover_every_bool_feature() {
 }
 
 /// `desktop` is the full-featured preset: every default-on bool feature must
-/// be not just listed but enabled (S1: sandbox/eval/board/terminal/usage).
+/// be not just listed but enabled (S1: sandbox/eval/board/terminal/usage) —
+/// **except** the pinned deliberate-off list below. Off-listing a default-on
+/// feature requires revisiting this exception set (that's the point of the
+/// guard). 2026-09-28 细粒度化：desktop 刻意关 maixcam（嵌入式视觉模组，
+/// 桌面无此硬件）/ line（长尾 IM 通道）——批次一拍板，非漏配。
+const DESKTOP_DELIBERATE_OFF: &[&str] = &["channels-maixcam", "channels-line"];
+
 #[test]
 fn desktop_preset_enables_every_default_on_feature() {
     let manifest = load_manifest();
@@ -80,9 +86,11 @@ fn desktop_preset_enables_every_default_on_feature() {
         .filter(|f| f.default.as_bool() == Some(true))
         .map(|f| f.id.as_str())
         .filter(|id| cfg.get_bool(id) != Some(true))
+        .filter(|id| !DESKTOP_DELIBERATE_OFF.contains(id))
         .collect();
     assert!(
         missing.is_empty(),
-        "desktop preset must enable every default-on feature; missing/off: {missing:?}"
+        "desktop preset must enable every default-on feature (except the \
+         pinned DESKTOP_DELIBERATE_OFF exceptions); missing/off: {missing:?}"
     );
 }
