@@ -99,7 +99,10 @@ async fn probe_reports_hold_state_and_stale_sidecar() {
     assert_eq!(p["held"], false, "无人持锁");
     // F7（2026-09-26 复查）：探针无副作用——首次探测不得创建锁载体文件。
     assert!(
-        !dir.path().join("logs").join("workspace_lease.lock").exists(),
+        !dir.path()
+            .join("logs")
+            .join("workspace_lease.lock")
+            .exists(),
         "probe 不得创建锁文件"
     );
 

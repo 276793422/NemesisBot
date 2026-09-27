@@ -91,7 +91,12 @@ fn executor_main() -> Result<()> {
     if sandbox_marker && !already_boxed {
         #[cfg(feature = "sandbox")]
         {
-            match userland::engage(&workspace, home.as_deref()) {
+            // D4（三轮复查根修）：workspace-dacl 受限令牌 spawn 时 fence 已由
+            // 内核强制——engage 的 Plain 臂不再因「无用户态后端」触发 strict
+            // 拒绝或「unsandboxed」warn（engage 内见 spawn_fenced 注释）。
+            let spawn_fenced =
+                std::env::var("NEMESISBOT_SANDBOX_BACKEND").as_deref() == Ok("workspace-dacl");
+            match userland::engage(&workspace, home.as_deref(), spawn_fenced) {
                 Ok(userland::Outcome::Continue) => {}
                 // 盒内实例已完成整个会话（本进程只是 stdio 代理）：按其退出码收尾。
                 Ok(userland::Outcome::ReexecDone(status)) => {
@@ -121,6 +126,25 @@ fn executor_main() -> Result<()> {
                  into this build — running unsandboxed"
             );
         }
+    }
+
+    // D4（DACL 定向档，2026-09-27）：受限令牌树下 console 分配面治理。
+    // gateway 经 workspace-dacl hook 注入的 env 标记在本进程可见 → 先尽力
+    // **附着**父进程 console（附着=打开既有 condrv 非写类，白名单下放行；
+    // 新分配才会死，见 nemesis-sandbox token.rs 实证）。附着成功 = 本树内
+    // 默认 flags spawn 继承 console，第三方链式工具链（cargo→rustc 类）可
+    // 用；失败（gateway console-less，服务化启动）= 全链 DETACHED 降级。
+    // 结果钉进进程 env（NEMESISBOT_CONSOLE=1/0）供 exec 工具选 creation
+    // flags——本线程此刻在 tokio runtime 构建前，进程内无并发 env 读者。
+    #[cfg(all(target_os = "windows", feature = "sandbox"))]
+    if std::env::var("NEMESISBOT_SANDBOX_BACKEND").as_deref() == Ok("workspace-dacl") {
+        let attached = nemesis_sandbox::backend::attach_parent_console();
+        // SAFETY: 单一 executor 线程、runtime 未建、主线程阻塞在 join——
+        // 进程内无并发 env 访问者。
+        unsafe {
+            std::env::set_var("NEMESISBOT_CONSOLE", if attached { "1" } else { "0" });
+        }
+        tracing::info!("[executor] workspace-dacl console attach: {attached}");
     }
 
     let rt = tokio::runtime::Builder::new_current_thread()
@@ -256,7 +280,20 @@ mod userland {
     ///    注意 **Partial 强制不算失败**（规则已装、有能力缺口如 landlock 不
     ///    覆盖网络）——严格模式保证「有盒」，不保证「盒无能力缺口」，缺口
     ///    照旧 warn + 状态页如实展示。
-    pub fn engage(workspace: &str, home: Option<&Path>) -> Result<Outcome> {
+    ///
+    /// `spawn_fenced`（三轮复查根修）：`NEMESISBOT_SANDBOX_BACKEND=workspace-
+    /// dacl` 时为 true——gateway 已以 write-restricted 受限令牌 spawn 本进程，
+    /// 内核写围栏在 spawn 时即成立（nemesis-sandbox token.rs）。此时
+    /// Plan::Plain（无用户态后端可选，auto 不回落实验档）**不再触发 strict
+    /// 拒绝也不报「unsandboxed」**：strict 要的是「不在无盒状态跑命令」，
+    /// 该实质已满足；否则 dacl+strict 组合会被「无用户态后端」虚假全拒
+    /// （用户视角围栏明明活着）。backend="acl" 显式选装的叠加层（SelfApply）
+    /// 不受影响——那是另一条 arm，其 strict fail-closed 语义保留。
+    pub fn engage(
+        workspace: &str,
+        home: Option<&Path>,
+        spawn_fenced: bool,
+    ) -> Result<Outcome> {
         let strict = home.map(backend::read_executor_strict).unwrap_or(false);
         // P1（2026-09-25）：先读网络要求再选后端——禁网 + bwrap 可用 → 选
         // bwrap（--unshare-net 真禁网）；landlock 仅在允许网络或无 bwrap 时
@@ -292,6 +329,18 @@ mod userland {
             .map(|b: &Arc<dyn SandboxBackend>| b.form());
         match plan(true, false, form) {
             Plan::Plain => {
+                if spawn_fenced {
+                    // workspace-dacl：write-restricted 令牌在 spawn 时已把内核
+                    // 写围栏装上（gateway 铸造 + CreateProcessAsUserW，本进程
+                    // 无法自证但 env 标签由可信父进程注入）——不是
+                    // 「unsandboxed」。用户态层未选装不构成 strict 拒绝理由，
+                    // 也不再打「running unsandboxed」误导 warn。
+                    tracing::info!(
+                        "[executor] spawn-time workspace-dacl fence active (write-restricted \
+                         token); no userland layer selected — continuing"
+                    );
+                    return Ok(Outcome::Continue);
+                }
                 if strict {
                     let reason = "no userland sandbox backend is available on this system";
                     sandbox_denial::record(

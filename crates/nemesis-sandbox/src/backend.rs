@@ -220,7 +220,7 @@ pub fn select_linux_backend(
 }
 
 /// 探测并返回本机最优后端（P1 起带 `allow_network` 选型上下文：Linux 禁网
-/// + bwrap 可用 → bwrap `--unshare-net`；macOS Seatbelt 的 profile 本身就
+/// 时 bwrap 可用 → bwrap `--unshare-net`；macOS Seatbelt 的 profile 本身就
 /// 含 `(deny network*)`、两态都能强制，入参仅保持签名统一；Windows None
 /// ——Sandboxie 承担）。无可用后端 = None（调用方 warn + 无盒降级，不崩）。
 ///
@@ -250,19 +250,42 @@ mod acl_impl;
 #[cfg(not(all(target_os = "windows", feature = "acl")))]
 mod acl_stub;
 
+// DACL 定向档 D1（2026-09-27）：workspace SID 确定性派生——纯逻辑，全平台
+// 编译（消费方 acl_impl/token.rs 是 Windows + `acl` feature；供跨平台单测
+// 钉纯函数行为）。设计：docs/PLAN/2026-09-27_windows-acl-targeted-deny-design.md。
+mod sid;
+
+#[cfg(all(target_os = "windows", feature = "acl"))]
+pub use sid::derive_workspace_sid;
+
+// DACL 定向档 D3（2026-09-27）：write-restricted 受限令牌 + CreateProcessAsUserW
+// spawn 事务。独立 spawn 原语库——**不是 SandboxBackend trait 第三形态**：
+// 受限令牌必须父进程施加，apply_to_self/wrap_command 均不适用（token.rs
+// 模块文档有完整论证；与字面 BackendForm::SpawnToken 枚举的偏离写进报告）。
+#[cfg(all(target_os = "windows", feature = "acl"))]
+mod token;
+
 #[cfg(all(target_os = "windows", feature = "acl"))]
 pub use acl_impl::{
-    AclBackend, IntegrityLevel, add_deny_write_ace, current_process_integrity, get_integrity_label,
-    label_tree, lower_current_process_integrity, remove_integrity_label, revoke_ace,
+    AclBackend, GRANT_MASK, IntegrityLevel, add_deny_write_ace,
+    current_process_integrity, ensure_grant_ace_tree, get_integrity_label, label_tree,
+    lower_current_process_integrity, remove_integrity_label, revoke_ace, root_standing_ace_state,
     set_integrity_label,
 };
 #[cfg(not(all(target_os = "windows", feature = "acl")))]
 pub use acl_stub::{
-    AclBackend, IntegrityLevel, add_deny_write_ace, current_process_integrity, get_integrity_label,
-    label_tree, lower_current_process_integrity, remove_integrity_label, revoke_ace,
+    AclBackend, GRANT_MASK, IntegrityLevel, add_deny_write_ace,
+    current_process_integrity, ensure_grant_ace_tree, get_integrity_label, label_tree,
+    lower_current_process_integrity, remove_integrity_label, revoke_ace, root_standing_ace_state,
     set_integrity_label,
 };
-
+// DACL 定向档 spawn 原语（真实现在 Windows + `acl` feature；availability 以
+// dacl_availability 别名导出——D4 状态面/选型消费）。
+#[cfg(all(target_os = "windows", feature = "acl"))]
+pub use token::{
+    TxnOutcome, WriteRestrictedToken, attach_parent_console, create_write_restricted_token,
+    dacl_availability, stdio_txn_raw,
+};
 #[cfg(target_os = "linux")]
 fn detect_platform_backend(allow_network: bool) -> Option<std::sync::Arc<dyn SandboxBackend>> {
     let landlock = super::backend::landlock_impl::LandlockBackend::new();
@@ -608,3 +631,14 @@ mod selection_tests;
 // Windows 形态用例逐个挂 #[cfg(windows)]，stub 契约用例全平台跑）。
 #[cfg(test)]
 mod acl_tests;
+
+// DACL 定向档 D1（2026-09-27）：workspace SID 派生测试（纯函数面全平台跑；
+// Windows 的 canonicalize 收敛与 ConvertStringSidToSidW 往返挂 #[cfg(windows)]）。
+#[cfg(test)]
+mod sid_tests;
+
+// DACL 定向档 D3（2026-09-27）：write-restricted 令牌 + spawn 事务测试。
+// 令牌铸造/restricting SIDs 查证/spawn 真进程都在 Windows 才有意义——整文件
+// 挂 Windows + `acl` feature（与 token.rs 同门控，跨平台构建不编译）。
+#[cfg(all(test, target_os = "windows", feature = "acl"))]
+mod token_tests;

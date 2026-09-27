@@ -268,9 +268,7 @@ async fn f2_run_and_observe(
 async fn f2_steer_mode_idle_admission_strips_marker() {
     let seen: std::sync::Arc<parking_lot::Mutex<Vec<String>>> = Default::default();
     let mut al = AgentLoop::new(
-        Box::new(F2CapturingProvider {
-            seen: seen.clone(),
-        }),
+        Box::new(F2CapturingProvider { seen: seen.clone() }),
         test_config(),
     );
     al.concurrent_mode = ConcurrentMode::Steer;
@@ -297,9 +295,7 @@ async fn f2_steer_mode_idle_admission_strips_marker() {
 async fn f2_steer_mode_idle_double_bang_escapes_to_literal() {
     let seen: std::sync::Arc<parking_lot::Mutex<Vec<String>>> = Default::default();
     let mut al = AgentLoop::new(
-        Box::new(F2CapturingProvider {
-            seen: seen.clone(),
-        }),
+        Box::new(F2CapturingProvider { seen: seen.clone() }),
         test_config(),
     );
     al.concurrent_mode = ConcurrentMode::Steer;
@@ -320,9 +316,7 @@ async fn f2_steer_mode_idle_double_bang_escapes_to_literal() {
 async fn f2_queue_mode_idle_keeps_marker_literal() {
     let seen: std::sync::Arc<parking_lot::Mutex<Vec<String>>> = Default::default();
     let mut al = AgentLoop::new(
-        Box::new(F2CapturingProvider {
-            seen: seen.clone(),
-        }),
+        Box::new(F2CapturingProvider { seen: seen.clone() }),
         test_config(),
     );
     al.concurrent_mode = ConcurrentMode::Queue;

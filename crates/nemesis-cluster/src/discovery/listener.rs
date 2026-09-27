@@ -63,6 +63,10 @@ pub(crate) struct DecryptDropTracker {
     /// 永远"首见"。
     sources: parking_lot::Mutex<HashMap<Ipv4Addr, SourceEntry>>,
     total_drops: AtomicU64,
+    /// 首见序号分配器（summary 排序的确定性 tie-break——`first_seen_secs_
+    /// ago` 只有秒级粒度，同秒内多来源若只按它排会退回 HashMap 迭代序
+    /// （随机），summary 顺序不稳定，2026-09-28 cov_tests 抖动实证）。
+    next_seq: AtomicU64,
 }
 
 #[derive(Clone, Copy)]
@@ -70,6 +74,8 @@ struct SourceEntry {
     first_seen: Instant,
     last_seen: Instant,
     drops: u64,
+    /// 首见单调序号（tracker 内唯一，淘汰后不复用）。
+    seq: u64,
 }
 
 impl DecryptDropTracker {
@@ -89,9 +95,11 @@ impl DecryptDropTracker {
             }
             None => {
                 if map.len() >= Self::MAX_SOURCES {
+                    // 淘汰键带 seq tie-break（与 summary 排序同理由：
+                    // Instant 并列时 min_by_key 退回 HashMap 迭代序）。
                     if let Some(oldest) = map
                         .iter()
-                        .min_by_key(|(_, e)| e.first_seen)
+                        .min_by_key(|(_, e)| (e.first_seen, e.seq))
                         .map(|(k, _)| *k)
                     {
                         map.remove(&oldest);
@@ -103,6 +111,7 @@ impl DecryptDropTracker {
                         first_seen: now,
                         last_seen: now,
                         drops: 1,
+                        seq: self.next_seq.fetch_add(1, Ordering::Relaxed),
                     },
                 );
                 tracing::debug!(
@@ -118,16 +127,24 @@ impl DecryptDropTracker {
     pub fn summary(&self) -> DecryptDropSummary {
         let map = self.sources.lock();
         let now = Instant::now();
-        let mut sources: Vec<DecryptDropSource> = map
+        // 排序：首见降序（secs_ago 大者在前）+ 同秒内按首见序号升序——
+        // 秒级粒度的 ties 若不引入 seq 会退回 HashMap 迭代序（随机）。
+        let mut sources: Vec<(u64, DecryptDropSource)> = map
             .iter()
-            .map(|(ip, e)| DecryptDropSource {
-                addr: ip.to_string(),
-                first_seen_secs_ago: now.duration_since(e.first_seen).as_secs(),
-                last_seen_secs_ago: now.duration_since(e.last_seen).as_secs(),
-                drops: e.drops,
+            .map(|(ip, e)| {
+                (
+                    e.seq,
+                    DecryptDropSource {
+                        addr: ip.to_string(),
+                        first_seen_secs_ago: now.duration_since(e.first_seen).as_secs(),
+                        last_seen_secs_ago: now.duration_since(e.last_seen).as_secs(),
+                        drops: e.drops,
+                    },
+                )
             })
             .collect();
-        sources.sort_by_key(|s| std::cmp::Reverse(s.first_seen_secs_ago));
+        sources.sort_by_key(|(seq, s)| (std::cmp::Reverse(s.first_seen_secs_ago), *seq));
+        let sources = sources.into_iter().map(|(_, s)| s).collect();
         DecryptDropSummary {
             total_drops: self.total_drops.load(Ordering::Relaxed),
             sources,

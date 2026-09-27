@@ -10,7 +10,9 @@ use std::path::PathBuf;
 /// `temp/nemesis_selftest_probe_{pid}.txt` —— 同一测试进程内所有测试线程
 /// 共享同一 PID（同一文件名）。占位目录测试存在期间，并发断言「外部写
 /// 允许」的测试会撞上目录 → os error 5 → 假失败。串行化兜底。
-static AGT_SELFTEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+/// `pub(super)`：cov_tests 的 probe 测试也写同一共享路径，必须拿同一把锁
+/// （2026-09-27 实证：解锁的 cov_tests 与占位目录测试并发 → 假红漂移）。
+pub(super) static AGT_SELFTEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
 #[test]
 fn probes_unsandboxed_report_allowed_not_blocked() {

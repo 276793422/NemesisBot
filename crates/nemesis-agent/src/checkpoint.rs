@@ -768,8 +768,10 @@ impl CheckpointStore {
         // 兜底路径）时 restore 不做 tree 恢复，这里同样不报。
         if has_post
             && let Some(gb) = self.git.as_ref()
-            && let (Some(target_hex), Some(reference_hex)) =
-                (self.tree_hex_at_or_before(from_turn), self.latest_tree_hex())
+            && let (Some(target_hex), Some(reference_hex)) = (
+                self.tree_hex_at_or_before(from_turn),
+                self.latest_tree_hex(),
+            )
         {
             let mut excluded = declared;
             for c in &report.conflicts {

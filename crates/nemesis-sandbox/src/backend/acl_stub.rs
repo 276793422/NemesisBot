@@ -86,6 +86,29 @@ pub fn revoke_ace(_path: &Path, _sid: &str) -> Result<(), String> {
     Err(stub_err())
 }
 
+/// standing GRANT ACE 权限位（与 acl_impl 同值：FILE_GENERIC_ALL &
+/// !(WRITE_DAC|WRITE_OWNER)，DELETE 保含——rename/git/cargo 基线能力）
+/// ——仅为 API 面一致而存在。
+pub const GRANT_MASK: u32 = 0x001F_01FF & !(0x0004_0000 | 0x0008_0000);
+
+/// DACL 定向档树遍历（stub = 诚实失败，契约同其余自由函数）。
+pub fn ensure_grant_ace_tree(
+    _root: &Path,
+    _workspace_sid: &str,
+    _max_files: usize,
+) -> Result<usize, String> {
+    Err(stub_err())
+}
+
+/// DACL 定向档状态面只读探针（stub = 诚实失败——状态面据此显示不可用，
+/// 不假造达标态）。
+pub fn root_standing_ace_state(
+    _root: &Path,
+    _workspace_sid: &str,
+) -> Result<(bool, bool, bool), String> {
+    Err(stub_err())
+}
+
 /// stub 后端：探测诚实报 Unavailable（选型决策表据此把它排除）。
 pub struct AclBackend;
 

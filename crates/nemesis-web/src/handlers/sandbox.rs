@@ -348,6 +348,47 @@ impl ModuleHandler for SandboxHandler {
                         selected.is_some(),
                     )
                 };
+                // D4 状态面（DACL 定向档 2026-09-27）：Windows + `acl` feature
+                // 下附 DACL 探针；其余平台/形态 = null（前端据型判空隐藏）。
+                // engaged 是**代理语义**：dacl 配置开 && 探针可用 ⇒ 下一次
+                // executor spawn 走 workspace-dacl 受限令牌路径（与 exec_world
+                // 装配点 hook 的 Ok(Some) 判据同源——不窥探 channel 内部令牌
+                // 缓存；铸令牌失败那次会按 strict 降级，属于瞬时态）。
+                // root_ace 是 standing 树铺设状态的**只读**观测（根达标 =
+                // 至少完整铺过一次；状态查询绝不触发打标——零副作用）。
+                #[cfg(target_os = "windows")]
+                let dacl_probe: serde_json::Value = {
+                    use nemesis_sandbox::backend::Availability;
+                    let executor_ws = home.join("workspace");
+                    let (availability, reason) = match nemesis_sandbox::backend::dacl_availability()
+                    {
+                        Availability::Full => ("full", None),
+                        Availability::Partial(gaps) => ("partial", Some(gaps.join("; "))),
+                        Availability::Unavailable(r) => ("unavailable", Some(r)),
+                    };
+                    let sid = nemesis_sandbox::backend::derive_workspace_sid(&executor_ws).ok();
+                    let root_ace = sid.as_deref().and_then(|s| {
+                        nemesis_sandbox::backend::root_standing_ace_state(&executor_ws, s)
+                            .ok()
+                            .map(|(grant, deny_child, is_dir)| {
+                                serde_json::json!({
+                                    "grant": grant,
+                                    "deny_child": deny_child,
+                                    "is_dir": is_dir,
+                                })
+                            })
+                    });
+                    serde_json::json!({
+                        "engaged": executor.acl.dacl && availability != "unavailable",
+                        "availability": availability,
+                        "availability_reason": reason,
+                        "workspace": executor_ws.to_string_lossy(),
+                        "workspace_sid": sid,
+                        "root_ace": root_ace,
+                    })
+                };
+                #[cfg(not(target_os = "windows"))]
+                let dacl_probe: serde_json::Value = serde_json::Value::Null;
                 Ok(Some(serde_json::json!({
                     "platform": platform,
                     "executor": {
@@ -355,7 +396,13 @@ impl ModuleHandler for SandboxHandler {
                         "sandbox": executor.sandbox,
                         "allow_network": executor.allow_network,
                         "strict": executor.strict,
+                        "acl": {
+                            "dacl": executor.acl.dacl,
+                            "strict": executor.acl.strict,
+                            "max_files": executor.acl.max_files,
+                        },
                     },
+                    "dacl": dacl_probe,
                     "backend_probe": backend_probe,
                     "ready": ready,
                 })))
@@ -581,10 +628,16 @@ impl ModuleHandler for SandboxHandler {
                         "sandbox": now.sandbox,
                         "allow_network": now.allow_network,
                         "strict": now.strict,
+                        "acl": {
+                            "dacl": now.acl.dacl,
+                            "strict": now.acl.strict,
+                            "max_files": now.acl.max_files,
+                        },
                     },
                     // enabled 决定装配期是否建通道（agent 重启才生效）；sandbox
-                    // /strict 是 live probe，下一次工具调用即生效。
-                    "restart_hint": "executor.enabled 变更需重启 Agent；sandbox/strict 对后续工具调用实时生效",
+                    // /strict 是 live probe，下一次工具调用即生效。acl.dacl 同为
+                    // live（hook 每次调用时读 config）。
+                    "restart_hint": "executor.enabled 变更需重启 Agent；sandbox/strict/acl.dacl 对后续工具调用实时生效",
                 })))
             }
             // G7 (D2)：用户态沙盒自检（一次性子进程探针；Windows / 无后端

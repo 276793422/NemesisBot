@@ -1419,6 +1419,13 @@ impl Tool for ExecTool {
         // C8：平台 shell 形态抽到 `make_piped_shell_command`（与 run_checks
         // 共用单一真相源）。
         let mut cmd = make_piped_shell_command(command);
+        // D4（2026-09-28）：workspace-dacl 受限模式下 piped→文件重定向
+        // （std 匿名管道创建在受限令牌下必死，见 ShellOutputCapture 注释）。
+        let mut capture = ShellOutputCapture::current()
+            .map_err(|e| format!("Failed to prepare executor output capture: {e}"))?;
+        if let Some(c) = capture.as_mut() {
+            c.apply_to(&mut cmd);
+        }
 
         let mut child = cmd
             .current_dir(cwd)
@@ -1430,7 +1437,8 @@ impl Tool for ExecTool {
         //    上永不退出，正常长输出路径会整体退化成超时；
         // ② 不能把管道移进被 timeout 包住的 future：超时取消时管道随 future
         //    一起 drop，残余输出照样丢。任务持管道所有权，与 wait 竞争无关；
-        //    进程死后管道 EOF，任务自然收尾。
+        //    进程死后管道 EOF，任务自然收尾。（受限文件形态下 take 出 None，
+        //    任务立即空返回；输出统一走 read_shell_output 出口。）
         let out_task = tokio::spawn(drain_pipe(child.stdout.take()));
         let err_task = tokio::spawn(drain_pipe(child.stderr.take()));
 
@@ -1439,8 +1447,7 @@ impl Tool for ExecTool {
 
         match output {
             Ok(Ok(status)) => {
-                let stdout = String::from_utf8_lossy(&join_pipe_task(out_task).await).to_string();
-                let stderr = String::from_utf8_lossy(&join_pipe_task(err_task).await).to_string();
+                let (stdout, stderr) = read_shell_output(capture, out_task, err_task).await;
                 if status.success() {
                     Ok(if stdout.is_empty() {
                         "(no output)".to_string()
@@ -1465,8 +1472,7 @@ impl Tool for ExecTool {
                 // 的空残余（旧实现同场景连收尸都没有，此处严格更优）。
                 let _ = child.start_kill();
                 let _ = child.wait().await;
-                let stdout = String::from_utf8_lossy(&join_pipe_task(out_task).await).to_string();
-                let stderr = String::from_utf8_lossy(&join_pipe_task(err_task).await).to_string();
+                let (stdout, stderr) = read_shell_output(capture, out_task, err_task).await;
 
                 let mut partial = String::new();
                 if !stdout.trim().is_empty() {
@@ -1511,6 +1517,162 @@ pub(crate) fn exec_output_passed(output: &str) -> bool {
     !output.starts_with("Exit code:") && !output.starts_with("Command timed out")
 }
 
+/// D4（2026-09-28）：workspace-dacl 受限令牌下的 shell 输出捕获形态。
+///
+/// **为什么存在**：std 匿名管道在 Windows 上是命名管道实现（
+/// NtCreateNamedPipeFile）——受限令牌下创建 = 对 `\Device\NamedPipe` 目录
+/// 的写类访问，workspace SID 在该目录无 GRANT ACE → restricting 侧拒绝
+/// （os error 5）。`nemesis-sandbox` token_tests 的 execsim 八臂矩阵实证：
+/// piped 全死 / inherit 与**文件重定向**两形态活。executor 协议自身的三通
+/// 管道由 gateway（普通令牌）预建、句柄继承不重评，不受影响——死的是
+/// executor 子进程内部再 spawn 时 std 现建管道的四个捕获点（exec /
+/// run_checks / run_script / async_shell）。
+///
+/// 受限模式下输出落工作区 `.exec_out/`（GRANT ACE 放行创建与写，句柄经
+/// bInheritHandles 给孙进程不重评），wait 后读回。普通模式 None = 维持 B2
+/// piped 形态零变化。残留边界（2026-09-28 F9 证伪后收窄）：基线 mask 保含
+/// DELETE，受限侧读回后自删通常成功；属主异常等失败场景留 gateway 侧清扫
+/// （DaclSpawnFn spawn 前清超龄文件）兜底。
+struct ShellOutputCapture {
+    out_file: Option<std::fs::File>,
+    err_file: Option<std::fs::File>,
+    out_path: PathBuf,
+    err_path: PathBuf,
+}
+
+impl ShellOutputCapture {
+    /// workspace-dacl 受限模式判定（executor 子进程内 gateway 注入的
+    /// 台账标签 env；普通进程恒 false → 全部走 piped 现状）。
+    fn is_restricted() -> bool {
+        std::env::var("NEMESISBOT_SANDBOX_BACKEND").as_deref() == Ok("workspace-dacl")
+    }
+
+    /// 受限模式：在工作区 `.exec_out/` 建本调用的 stdout/stderr 捕获文件。
+    /// fail-closed：文件建不了 = 受限树写不了（ACE 树没铺好/损坏），Err
+    /// 诚实传播而非降级 piped（piped 在受限下必然 spawn 死，降级是假善意）。
+    fn current() -> Result<Option<Self>, String> {
+        if !Self::is_restricted() {
+            return Ok(None);
+        }
+        let ws = std::env::var("NEMESISBOT_EXECUTOR_WORKSPACE")
+            .map_err(|_| "workspace-dacl 模式缺 NEMESISBOT_EXECUTOR_WORKSPACE".to_string())?;
+        let dir = Path::new(&ws).join(".exec_out");
+        std::fs::create_dir_all(&dir)
+            .map_err(|e| format!("受限输出目录 {} 创建失败: {e}", dir.display()))?;
+        let name = format!(
+            "{}_{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_millis()
+        );
+        let out_path = dir.join(format!("{name}.out"));
+        let err_path = dir.join(format!("{name}.err"));
+        let out_file = std::fs::File::create(&out_path)
+            .map_err(|e| format!("受限输出文件 {} 创建失败: {e}", out_path.display()))?;
+        let err_file = std::fs::File::create(&err_path)
+            .map_err(|e| format!("受限输出文件 {} 创建失败: {e}", err_path.display()))?;
+        Ok(Some(Self {
+            out_file: Some(out_file),
+            err_file: Some(err_file),
+            out_path,
+            err_path,
+        }))
+    }
+
+    /// 把捕获文件接上命令的 stdout/stderr（覆盖 make_piped_shell_command
+    /// 设置的 piped——setter 链最后一次设置生效）。
+    fn apply_to(&mut self, cmd: &mut tokio::process::Command) {
+        if let Some(f) = self.out_file.take() {
+            cmd.stdout(std::process::Stdio::from(f));
+        }
+        if let Some(f) = self.err_file.take() {
+            cmd.stderr(std::process::Stdio::from(f));
+        }
+    }
+
+    /// [`apply_to`] 的 `std::process::Command` 形态（GitTool 等同步 spawn
+    /// 点用）——同一捕获文件、同一读回路径，形态差异只在 Command 类型。
+    fn apply_to_std(&mut self, cmd: &mut std::process::Command) {
+        if let Some(f) = self.out_file.take() {
+            cmd.stdout(std::process::Stdio::from(f));
+        }
+        if let Some(f) = self.err_file.take() {
+            cmd.stderr(std::process::Stdio::from(f));
+        }
+    }
+
+    /// wait 后读回 (stdout, stderr)；受限侧删除尽力而为（失败=残留，见结构
+    /// 注释——DELETE 不在 write-restricted 写类评估集合，基线 mask 保含
+    /// DELETE 自删通常成功，属主异常等场景失败由 gateway 超龄清扫兜底）。
+    /// stdout 读失败按空串 + stderr 注记（读不回
+    /// 不该让整次已成功执行的命令变 Err）。
+    fn read_back(self) -> (String, String) {
+        let out = std::fs::read(&self.out_path);
+        let err = std::fs::read(&self.err_path);
+        let mut stdout = match &out {
+            Ok(b) => String::from_utf8_lossy(b).to_string(),
+            Err(_) => String::new(),
+        };
+        let stderr = match &err {
+            Ok(b) => String::from_utf8_lossy(b).to_string(),
+            Err(_) => String::new(),
+        };
+        if out.is_err() {
+            stdout.push_str("\n[受限输出文件读回失败（stdout 已丢弃）]");
+        }
+        for p in [&self.out_path, &self.err_path] {
+            if let Err(e) = std::fs::remove_file(p) {
+                debug!(
+                    "[Tools] 受限输出文件 {} 清理失败（残留由 gateway 超龄清扫兜底）: {e}",
+                    p.display()
+                );
+            }
+        }
+        (stdout, stderr)
+    }
+}
+
+/// D4（2026-09-28）：workspace-dacl 受限模式下 console 类子进程的 creation
+/// flags 决策——**exec / run_checks / run_script / git 四处共用的单一真相
+/// 源**。受限令牌树下**新** console 分配必死 0xC0000142（nemesis-sandbox
+/// token.rs 实证；`CREATE_NO_WINDOW` 的隐藏 console 同样算新分配），且
+/// console-less 下默认 flags 也触分配面，故：
+/// - exec_worker 附着成功（`NEMESISBOT_CONSOLE=1`）→ `None`：不加 flags，
+///   子进程继承附着 console（无新分配），第三方链式工具链一路继承可用；
+/// - 未附着/未设 → `Some(DETACHED_PROCESS)`：无 console 无分配，命令本体
+///   可跑（深层第三方默认 flags spawn 是诚实边界）。
+///
+/// 非 workspace-dacl 进程恒 `None`（调用方维持各自既有 flags 形态）。
+#[cfg(target_os = "windows")]
+fn restricted_console_flags() -> Option<u32> {
+    const DETACHED_PROCESS: u32 = 0x0000_0008;
+    if std::env::var("NEMESISBOT_SANDBOX_BACKEND").as_deref() == Ok("workspace-dacl")
+        && std::env::var("NEMESISBOT_CONSOLE").as_deref() != Ok("1")
+    {
+        Some(DETACHED_PROCESS)
+    } else {
+        None
+    }
+}
+
+/// B2 输出读取的统一出口：piped 形态走并发排水任务，受限文件形态走读回。
+async fn read_shell_output(
+    capture: Option<ShellOutputCapture>,
+    out_task: tokio::task::JoinHandle<Vec<u8>>,
+    err_task: tokio::task::JoinHandle<Vec<u8>>,
+) -> (String, String) {
+    match capture {
+        Some(c) => c.read_back(),
+        None => {
+            let stdout = String::from_utf8_lossy(&join_pipe_task(out_task).await).to_string();
+            let stderr = String::from_utf8_lossy(&join_pipe_task(err_task).await).to_string();
+            (stdout, stderr)
+        }
+    }
+}
+
 /// C8（2026-09-06）：平台 shell 形态的单一真相源——ExecTool 与 RunChecksTool
 /// 共用。逐字保留 B2 语义：Windows `cmd /C` + raw_arg（.arg() 的自动加引号
 /// 会搅乱 cmd.exe 自身的引号处理）；stdin null（交互式命令立即 EOF 不挂满
@@ -1530,6 +1692,13 @@ fn make_piped_shell_command(command: &str) -> tokio::process::Command {
         c.stdout(std::process::Stdio::piped());
         c.stderr(std::process::Stdio::piped());
         c.kill_on_drop(true);
+        // D4（DACL 定向档，2026-09-27）：受限令牌树下**新** console 分配必死
+        // 0xC0000142（nemesis-sandbox token.rs 实证）。flags 决策单一真相源
+        // 在 `restricted_console_flags`（exec/run_checks/run_script/git 四处
+        // 共用；附着成功=继承，未附着=DETACHED）。
+        if let Some(f) = restricted_console_flags() {
+            c.creation_flags(f);
+        }
         let stripped = nemesis_utils::env_sanitize::sanitize_tokio_command(&mut c);
         if stripped > 0 {
             debug!("[Tools] env sanitized: {stripped} vars stripped");
@@ -1978,6 +2147,21 @@ pub(crate) async fn run_one_stage(
     if let Some(d) = cwd {
         cmd.current_dir(d);
     }
+    // D4（2026-09-28）：workspace-dacl 受限模式下 piped→文件重定向（同 exec）。
+    let mut capture = match ShellOutputCapture::current() {
+        Ok(c) => c,
+        Err(e) => {
+            return (
+                None,
+                String::new(),
+                format!("output capture setup failed: {e}"),
+                false,
+            );
+        }
+    };
+    if let Some(c) = capture.as_mut() {
+        c.apply_to(&mut cmd);
+    }
     let mut child = match cmd.spawn() {
         Ok(c) => c,
         Err(e) => {
@@ -1990,18 +2174,16 @@ pub(crate) async fn run_one_stage(
         tokio::time::timeout(std::time::Duration::from_secs(timeout_secs), child.wait()).await;
     match waited {
         Ok(Ok(status)) => {
-            let stdout = String::from_utf8_lossy(&join_pipe_task(out_task).await).to_string();
-            let stderr = String::from_utf8_lossy(&join_pipe_task(err_task).await).to_string();
+            let (stdout, stderr) = read_shell_output(capture, out_task, err_task).await;
             (status.code(), stdout, stderr, false)
         }
         Ok(Err(e)) => (None, String::new(), format!("wait failed: {e}"), false),
         Err(_) => {
             // 超时：先收尸再读残余输出（B2 同款——管道任务持所有权不受
-            // 取消影响，kill 后 EOF 收尾）。
+            // 取消影响，kill 后 EOF 收尾；文件形态读回被杀前已写内容）。
             let _ = child.start_kill();
             let _ = child.wait().await;
-            let stdout = String::from_utf8_lossy(&join_pipe_task(out_task).await).to_string();
-            let stderr = String::from_utf8_lossy(&join_pipe_task(err_task).await).to_string();
+            let (stdout, stderr) = read_shell_output(capture, out_task, err_task).await;
             (None, stdout, stderr, true)
         }
     }
@@ -2130,11 +2312,56 @@ impl Tool for RunScriptTool {
         cmd.arg(script)
             .stdin(std::process::Stdio::null())
             .kill_on_drop(true);
-        // 脚本解释器（bash/python 等）是 console 程序；gateway 托盘/无控制
-        // 台运行（release windows 子系统，2026-09-21）时压掉弹窗（输出经
-        // .output() 收集，不受影响）。
+        // 脚本解释器（bash/python 等）是 console 程序。普通模式压 CREATE_NO_
+        // WINDOW（gateway 托盘/无控制台运行（release windows 子系统，
+        // 2026-09-21）时不弹窗；输出经读回收集，不受影响）。D4（2026-09-28
+        // 复查根修）：workspace-dacl 受限模式下 **CREATE_NO_WINDOW 的隐藏
+        // console 也是新分配**（\Device\ConDrv 写类访问）必死 0xC0000142
+        // （token_tests grandchild 臂 b 实证）→ 走 restricted_console_flags
+        // 单一真相源（附着成功=继承，未附着=DETACHED）。
         #[cfg(target_os = "windows")]
-        cmd.creation_flags(0x0800_0000); // CREATE_NO_WINDOW
+        {
+            if ShellOutputCapture::is_restricted() {
+                if let Some(f) = restricted_console_flags() {
+                    cmd.creation_flags(f);
+                }
+            } else {
+                cmd.creation_flags(0x0800_0000); // CREATE_NO_WINDOW
+            }
+        }
+
+        // D4（2026-09-28）：workspace-dacl 受限模式下 output() 的隐式 piped
+        // 必死（std 匿名管道创建受限令牌下被拒）→ spawn+wait+文件读回形态，
+        // 结果契约（{stdout, stderr, exit_code} JSON）不变。
+        let mut capture = ShellOutputCapture::current()
+            .map_err(|e| format!("Failed to prepare executor output capture: {e}"))?;
+        if let Some(c) = capture.as_mut() {
+            c.apply_to(&mut cmd);
+            let waited =
+                tokio::time::timeout(std::time::Duration::from_secs(timeout_secs), async {
+                    let mut child = cmd.current_dir(cwd).spawn()?;
+                    let status = child.wait().await?;
+                    Ok::<_, std::io::Error>(status)
+                })
+                .await;
+            return match waited {
+                Ok(Ok(status)) => {
+                    let (stdout, stderr) = capture.unwrap().read_back();
+                    Ok(serde_json::json!({
+                        "stdout": stdout,
+                        "stderr": stderr,
+                        "exit_code": status.code().unwrap_or(-1),
+                    })
+                    .to_string())
+                }
+                Ok(Err(e)) => Err(format!("Failed to execute script: {}", e)),
+                Err(_) => Err(format!(
+                    "Script timed out after {} seconds (interpreter: {}). It may be \
+                 waiting for input (e.g. an interactive prompt).",
+                    timeout_secs, interpreter
+                )),
+            };
+        }
 
         let output = tokio::time::timeout(
             std::time::Duration::from_secs(timeout_secs),
@@ -2249,12 +2476,29 @@ impl Tool for AsyncExecTool {
                 c.arg("-c").arg(command);
                 c
             };
-            c.current_dir(cwd)
-                .stdin(std::process::Stdio::null())
-                .stdout(std::process::Stdio::piped())
-                .stderr(std::process::Stdio::piped())
-                .spawn()
-                .map_err(|e| format!("Failed to start command: {}", e))?
+            // D4（2026-09-28）：workspace-dacl 受限模式下 std piped 必死
+            //（ShellOutputCapture 注释）；本工具本就不读输出 → 直接 null。
+            c.current_dir(cwd);
+            // console 治理与四工具同源（本工具不在 MOVE_TOOLS、gateway 从不
+            // 把 exec_async 路由进受限 executor——此臂纯防御：未来移入时
+            // cmd.exe 默认 flags 的新 console 分配在受限树下必死）。
+            #[cfg(target_os = "windows")]
+            {
+                if let Some(f) = restricted_console_flags() {
+                    c.creation_flags(f);
+                }
+            }
+            if ShellOutputCapture::is_restricted() {
+                c.stdin(std::process::Stdio::null())
+                    .stdout(std::process::Stdio::null())
+                    .stderr(std::process::Stdio::null())
+            } else {
+                c.stdin(std::process::Stdio::null())
+                    .stdout(std::process::Stdio::piped())
+                    .stderr(std::process::Stdio::piped())
+            }
+            .spawn()
+            .map_err(|e| format!("Failed to start command: {}", e))?
         };
 
         // Wait briefly to confirm startup
@@ -5300,6 +5544,14 @@ impl Tool for GrepTool {
     }
 }
 
+/// git 单次执行的归一输出（普通 piped / 受限文件重定向两形态同构，
+/// [`GitTool::run_git`] 产物、三态判定与 commit 专用路径共用）。
+struct GitOutput {
+    success: bool,
+    stdout: String,
+    stderr: String,
+}
+
 /// Git tool — read queries (status/diff/log/show/branch) plus the daily-safe
 /// write actions (add/commit/branch_create/checkout/restore/stash) in the
 /// workspace. D1 (2026-09-04): the write surface is enum-whitelisted — push,
@@ -5316,24 +5568,61 @@ impl GitTool {
         Self { workspace }
     }
 
+    /// D4（2026-09-28 复查接线）：git 子进程执行的单一入口。普通模式 =
+    /// `output()`（隐式 piped，现状零变化）；workspace-dacl 受限模式 =
+    /// 工作区 `.exec_out/` 文件重定向 + `status()` + 读回（std 匿名管道
+    /// 创建在受限令牌下必死——ShellOutputCapture 注释）+ console flags
+    /// 单一真相源（git.exe 是 console 程序，新分配在受限树下必死）。
+    /// GitTool 在 MOVE_TOOLS 里（exec_worker 内运行），三处旧 `.output()`
+    /// 调用在受限形态下全部 os error 5——本 helper 是它们的共同根修。
+    fn run_git(&self, args: &[&str]) -> Result<GitOutput, String> {
+        let mut c = std::process::Command::new("git");
+        c.current_dir(&self.workspace).args(args);
+        #[cfg(target_os = "windows")]
+        {
+            if let Some(f) = restricted_console_flags() {
+                use std::os::windows::process::CommandExt;
+                c.creation_flags(f);
+            }
+        }
+        let mut capture = ShellOutputCapture::current()
+            .map_err(|e| format!("failed to run git: output capture setup failed: {e}"))?;
+        if let Some(cap) = capture.as_mut() {
+            cap.apply_to_std(&mut c);
+        }
+        match capture {
+            Some(cap) => {
+                let status = c.status().map_err(|e| format!("failed to run git: {e}"))?;
+                let (stdout, stderr) = cap.read_back();
+                Ok(GitOutput {
+                    success: status.success(),
+                    stdout,
+                    stderr,
+                })
+            }
+            None => {
+                let out = c.output().map_err(|e| format!("failed to run git: {e}"))?;
+                Ok(GitOutput {
+                    success: out.status.success(),
+                    stdout: String::from_utf8_lossy(&out.stdout).to_string(),
+                    stderr: String::from_utf8_lossy(&out.stderr).to_string(),
+                })
+            }
+        }
+    }
+
     /// Run git with `args` in the workspace and format the output using the
     /// three-state convention shared by all read actions:
     /// fail with empty stdout → Err(stderr) / empty output → no-changes note /
     /// otherwise → stdout. (D1: write actions reuse the same three states.)
     fn run_three_state(&self, args: &[&str], action: &str) -> Result<String, String> {
-        let out = std::process::Command::new("git")
-            .current_dir(&self.workspace)
-            .args(args)
-            .output()
-            .map_err(|e| format!("failed to run git: {}", e))?;
-        let stdout = String::from_utf8_lossy(&out.stdout).to_string();
-        let stderr = String::from_utf8_lossy(&out.stderr).to_string();
-        if !out.status.success() && stdout.trim().is_empty() {
-            Err(format!("git {} failed: {}", action, stderr.trim()))
-        } else if stdout.trim().is_empty() {
-            Ok(format!("(no changes / empty)\n{}", stderr.trim()))
+        let out = self.run_git(args)?;
+        if !out.success && out.stdout.trim().is_empty() {
+            Err(format!("git {} failed: {}", action, out.stderr.trim()))
+        } else if out.stdout.trim().is_empty() {
+            Ok(format!("(no changes / empty)\n{}", out.stderr.trim()))
         } else {
-            Ok(stdout)
+            Ok(out.stdout)
         }
     }
 
@@ -5421,14 +5710,10 @@ impl Tool for GitTool {
                 // code 1, which the shared three-state would surface as Ok —
                 // a failed commit must be an honest Err. Success text goes to
                 // stdout as usual.
-                let out = std::process::Command::new("git")
-                    .current_dir(&self.workspace)
-                    .args(["commit", "-m", message])
-                    .output()
-                    .map_err(|e| format!("failed to run git: {}", e))?;
-                let stdout = String::from_utf8_lossy(&out.stdout).to_string();
-                let stderr = String::from_utf8_lossy(&out.stderr).to_string();
-                if !out.status.success() {
+                let out = self.run_git(&["commit", "-m", message])?;
+                let stdout = out.stdout;
+                let stderr = out.stderr;
+                if !out.success {
                     let detail = if stderr.trim().is_empty() {
                         stdout.trim()
                     } else {
@@ -5439,12 +5724,8 @@ impl Tool for GitTool {
                 // Best-effort: show the new commit (hash + subject) so the
                 // model immediately sees the result of the write.
                 let mut result = stdout;
-                if let Ok(o) = std::process::Command::new("git")
-                    .current_dir(&self.workspace)
-                    .args(["log", "--oneline", "-1"])
-                    .output()
-                {
-                    let line = String::from_utf8_lossy(&o.stdout);
+                if let Ok(o) = self.run_git(&["log", "--oneline", "-1"]) {
+                    let line = o.stdout;
                     if !line.trim().is_empty() {
                         result.push_str(&format!("\nLast commit: {}", line.trim()));
                     }

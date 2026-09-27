@@ -401,10 +401,7 @@ fn acl_child_engage_impl() {
     }
     // 工作区存量文件（engage 前父进程建的）→ label_tree 重标后可写——
     // 这是本接线修复的核心契约（修复前 Medium IL 写被拒）。
-    if let Err(e) = std::fs::OpenOptions::new()
-        .append(true)
-        .open(&preexisting)
-    {
+    if let Err(e) = std::fs::OpenOptions::new().append(true).open(&preexisting) {
         eprintln!("存量文件重标后应可写（label_tree 接线失效？）: {e}");
         std::process::exit(9);
     }
@@ -470,4 +467,349 @@ fn acl_existing_files_gap_message_shape() {
     assert!(g.starts_with("existing-files:"), "前缀契约: {g}");
     assert!(g.contains("预算耗尽"), "原因入列: {g}");
     assert!(g.contains("Medium IL"), "后果说明: {g}");
+}
+
+// ---------------------------------------------------------------------------
+// DACL 定向档 D2（2026-09-27）：standing GRANT ACE 树
+// ---------------------------------------------------------------------------
+
+/// 测试辅助：读对象 DACL，返回**目标 SID** 名下的 (mode, mask) 列表
+/// （GRANT_ACCESS=2 / DENY_ACCESS=3，与 windows-sys 常量同值）。
+#[cfg(all(target_os = "windows", feature = "acl"))]
+fn dacl_aces_for_sid(path: &std::path::Path, sid_str: &str) -> Vec<(i32, u32)> {
+    use std::ffi::c_void;
+
+    use windows_sys::Win32::Foundation::LocalFree;
+    use windows_sys::Win32::Security::Authorization::{
+        ConvertStringSidToSidW, GetNamedSecurityInfoW, SE_FILE_OBJECT,
+    };
+    use windows_sys::Win32::Security::{
+        ACCESS_ALLOWED_ACE, ACCESS_DENIED_ACE, ACE_HEADER, ACL, DACL_SECURITY_INFORMATION,
+        EqualSid, GetAce, PSECURITY_DESCRIPTOR, PSID,
+    };
+
+    let path_w: Vec<u16> = path
+        .as_os_str()
+        .to_string_lossy()
+        .encode_utf16()
+        .chain(std::iter::once(0))
+        .collect();
+    let sid_w: Vec<u16> = sid_str.encode_utf16().chain(std::iter::once(0)).collect();
+    unsafe {
+        let mut psd: PSECURITY_DESCRIPTOR = std::ptr::null_mut();
+        let mut dacl: *mut ACL = std::ptr::null_mut();
+        let hr = GetNamedSecurityInfoW(
+            path_w.as_ptr(),
+            SE_FILE_OBJECT,
+            DACL_SECURITY_INFORMATION,
+            std::ptr::null_mut(),
+            std::ptr::null_mut(),
+            &mut dacl,
+            std::ptr::null_mut(),
+            &mut psd,
+        );
+        assert_eq!(hr, 0, "GetNamedSecurityInfoW 失败: {hr}");
+        let mut sid: PSID = std::ptr::null_mut();
+        assert_ne!(
+            ConvertStringSidToSidW(sid_w.as_ptr(), &mut sid),
+            0,
+            "ConvertStringSidToSidW 失败"
+        );
+        let mut out = Vec::new();
+        if !dacl.is_null() {
+            for i in 0..(*dacl).AceCount {
+                let mut pace: *mut c_void = std::ptr::null_mut();
+                if GetAce(dacl, i as u32, &mut pace) == 0 || pace.is_null() {
+                    continue;
+                }
+                let hdr = pace as *const ACE_HEADER;
+                let (mode, mask, ace_sid) = match (*hdr).AceType {
+                    0 => {
+                        let a = pace as *const ACCESS_ALLOWED_ACE;
+                        (2i32, (*a).Mask, &(*a).SidStart as *const u32 as PSID)
+                    }
+                    1 => {
+                        let a = pace as *const ACCESS_DENIED_ACE;
+                        (3i32, (*a).Mask, &(*a).SidStart as *const u32 as PSID)
+                    }
+                    _ => continue,
+                };
+                if EqualSid(ace_sid, sid) != 0 {
+                    out.push((mode, mask));
+                }
+            }
+        }
+        LocalFree(sid as _);
+        LocalFree(psd as _);
+        out
+    }
+}
+
+/// 端到端（基线形态，2026-09-28 F9 证伪后的唯一形态）：树遍历后目录/文件
+/// 都有 workspace SID 的 GRANT（mask 全覆盖，**含 DELETE**——rename/git/
+/// cargo 基线能力；「掐 DELETE 断 rename」的 F9 推演已被真进程证伪）；目录
+/// **无** DENY FILE_DELETE_CHILD；幂等重跑稳定；预算超限诚实 Err。旧形态
+/// 残留滤除见 [`ensure_grant_ace_tree_filters_stale_ace_shapes`]。
+#[cfg(all(target_os = "windows", feature = "acl"))]
+#[test]
+fn ensure_grant_ace_tree_idempotent_shape_and_budget() {
+    use super::sid::derive_workspace_sid;
+
+    let dir = tempfile::tempdir().expect("tempdir");
+    let sub = dir.path().join("sub");
+    std::fs::create_dir(&sub).expect("mkdir");
+    let f1 = dir.path().join("f1.txt");
+    let f2 = sub.join("f2.txt");
+    std::fs::write(&f1, b"1").expect("seed f1");
+    std::fs::write(&f2, b"2").expect("seed f2");
+
+    let ws_sid = derive_workspace_sid(dir.path()).expect("derive sid");
+
+    // 首遍：根 + sub + f1 + f2 = 4。
+    let n = ensure_grant_ace_tree(dir.path(), &ws_sid, 100).expect("ensure first pass");
+    assert_eq!(n, 4, "首遍处理对象数: {n}");
+
+    // 形态读回：目录 = grant（全量 mask 覆盖）且**无 deny**（生产从不打
+    // deny——rename/delete 基线能力的 ACE 面）；文件 = grant（无继承要求）。
+    for d in [dir.path(), &sub] {
+        let aces = dacl_aces_for_sid(d, &ws_sid);
+        assert!(
+            aces.iter()
+                .any(|&(m, mask)| m == 2 && mask & GRANT_MASK == GRANT_MASK),
+            "目录 {d:?} 应有全量 grant（含 DELETE）: {aces:?}"
+        );
+        assert!(
+            !aces.iter().any(|&(m, _)| m == 3),
+            "目录不应有 deny ACE: {aces:?}"
+        );
+        assert!(
+            aces.iter()
+                .any(|&(m, mask)| m == 2 && mask & 0x0001_0000 != 0),
+            "grant 必须保含 DELETE 位（F9 证伪锚）: {aces:?}"
+        );
+    }
+    for f in [&f1, &f2] {
+        let aces = dacl_aces_for_sid(f, &ws_sid);
+        assert!(
+            aces.iter()
+                .any(|&(m, mask)| m == 2 && mask & GRANT_MASK == GRANT_MASK),
+            "文件 {f:?} 应有全量 grant: {aces:?}"
+        );
+        assert!(
+            !aces.iter().any(|&(m, _)| m == 3),
+            "文件不应有 deny 子项面 ACE: {aces:?}"
+        );
+    }
+
+    // 幂等：二遍全部达标跳过，返回值一致、形态不变。
+    let n2 = ensure_grant_ace_tree(dir.path(), &ws_sid, 100).expect("ensure second pass");
+    assert_eq!(n2, 4, "二遍对象数一致（standing ACE 复用路径）: {n2}");
+    // 三遍后 grant 恰好一条、无 deny（无重复叠加——幂等的直接证据）。
+    let aces = dacl_aces_for_sid(dir.path(), &ws_sid);
+    assert_eq!(
+        aces.iter().filter(|&&(m, _)| m == 2).count(),
+        1,
+        "grant 恰一条: {aces:?}"
+    );
+    assert_eq!(
+        aces.iter().filter(|&&(m, _)| m == 3).count(),
+        0,
+        "deny 零条: {aces:?}"
+    );
+
+    // 预算：1 < 4 → Err（诚实截断，已打部分保持生效）。
+    let r = ensure_grant_ace_tree(dir.path(), &ws_sid, 1);
+    assert!(r.is_err(), "预算超限应 Err: {r:?}");
+
+    // 清理：撤销整树 ACE（tempdir 删除不受残留 ACE 影响——grant/deny 只对
+    // workspace SID 生效，tempdir 清理走用户令牌）。
+    super::revoke_ace(dir.path(), &ws_sid).expect("revoke root");
+    super::revoke_ace(&sub, &ws_sid).expect("revoke sub");
+    super::revoke_ace(&f1, &ws_sid).expect("revoke f1");
+    super::revoke_ace(&f2, &ws_sid).expect("revoke f2");
+}
+
+/// 旧形态残留滤除（stale_ws_ace 语义钉）：目标 SID 的现存 deny 项（只可能
+/// 来自外部篡改或已证伪的旧加固档残留）在 ensure 遍历中被当作 stale 强制
+/// 重建——deny 滤除、grant 重写为含 DELETE 全量形态。
+#[cfg(all(target_os = "windows", feature = "acl"))]
+#[test]
+fn ensure_grant_ace_tree_filters_stale_ace_shapes() {
+    use super::sid::derive_workspace_sid;
+
+    const FILE_DELETE_CHILD: u32 = 0x40;
+    const DELETE: u32 = 0x0001_0000;
+
+    let dir = tempfile::tempdir().expect("tempdir");
+    let f1 = dir.path().join("f1.txt");
+    std::fs::write(&f1, b"1").expect("seed f1");
+    let ws_sid = derive_workspace_sid(dir.path()).expect("derive sid");
+
+    // ① 铺 deny 残留（外部篡改/旧加固档等价形态）。
+    super::add_deny_write_ace(&f1, &ws_sid).expect("seed stale deny");
+
+    // ② ensure 遍历：deny 残留 → stale → 确定性重建（deny 滤除 + 全量
+    //    grant 落位）。
+    ensure_grant_ace_tree(dir.path(), &ws_sid, 100).expect("ensure");
+    let aces = dacl_aces_for_sid(&f1, &ws_sid);
+    assert!(
+        !aces.iter().any(|&(m, _)| m == 3),
+        "deny 残留必须滤除: {aces:?}"
+    );
+    assert!(
+        aces.iter().any(|&(m, mask)| m == 2 && mask & DELETE != 0),
+        "重建 grant 必须含 DELETE（基线全量形态）: {aces:?}"
+    );
+    assert!(
+        aces.iter()
+            .any(|&(m, mask)| m == 2 && mask & GRANT_MASK == GRANT_MASK),
+        "重建 grant 覆盖全量 mask: {aces:?}"
+    );
+    // deny 面 FILE_DELETE_CHILD 形态（加固档目录专属）在生产 ensure 下
+    // 不应存在（单文件对象无从打起，顺带钉死）。
+    assert!(
+        !aces.iter().any(|&(m, mask)| m == 3 && mask & FILE_DELETE_CHILD != 0),
+        "不得有任何 deny 残留: {aces:?}"
+    );
+
+    // 清理。
+    super::revoke_ace(dir.path(), &ws_sid).expect("revoke root");
+    super::revoke_ace(&f1, &ws_sid).expect("revoke f1");
+}
+
+/// junction DACL 跟随性**第一件事实证**（设计文档 §3.2 要求实现期首做）：
+/// 给 junction 打 DACL ACE 只作用于 reparse point 自身、**不跟随**目标目录
+/// （与完整性标签侧 `acl_label_on_junction_does_not_follow_to_target` 同向
+/// 的行为记录）。产品实现（ensure_grant_ace_tree）对链接项保守跳过——本测
+/// 试钉的是 Win32 层事实：即使有人改成全 entry 打点，junction 也不会把
+/// workspace SID 的 ACE 泄漏到树外目标。
+#[cfg(all(target_os = "windows", feature = "acl"))]
+#[test]
+fn acl_dacl_ace_on_junction_does_not_follow_to_target() {
+    let base = tempfile::tempdir().expect("tempdir");
+    let real = base.path().join("real");
+    let junc = base.path().join("junc");
+    std::fs::create_dir_all(&real).expect("mkdir real");
+    let out = std::process::Command::new("cmd")
+        .args(["/C", "mklink", "/J"])
+        .arg(&junc)
+        .arg(&real)
+        .output()
+        .expect("run mklink");
+    assert!(
+        out.status.success(),
+        "mklink /J failed: {}",
+        String::from_utf8_lossy(&out.stdout)
+    );
+
+    let probe_sid = "S-1-5-21-424242-424242-424242"; // 假 workspace SID（无消费方）
+    add_deny_write_ace(&junc, probe_sid).expect("deny ACE 打到 junction 自身");
+    assert!(
+        dacl_aces_for_sid(&real, probe_sid).is_empty(),
+        "junction 打 ACE 不得跟随到目标目录"
+    );
+    assert!(
+        !dacl_aces_for_sid(&junc, probe_sid).is_empty(),
+        "junction 自身 SD 应带 ACE"
+    );
+    revoke_ace(&junc, probe_sid).expect("清理 junction ACE");
+    assert!(
+        dacl_aces_for_sid(&junc, probe_sid).is_empty(),
+        "revoke 后 junction 无残留"
+    );
+}
+
+/// 树内 junction：ensure 遍历跳过链接项（不 Err、不跟随），树内其余对象照常
+/// 落位——jump 指向树内已有 ACE 的目录也不重打（幂等）。
+#[cfg(all(target_os = "windows", feature = "acl"))]
+#[test]
+fn ensure_grant_ace_tree_skips_junction_entries() {
+    use super::sid::derive_workspace_sid;
+
+    let dir = tempfile::tempdir().expect("tempdir");
+    let real = dir.path().join("real");
+    let junc = dir.path().join("junc");
+    std::fs::create_dir_all(&real).expect("mkdir real");
+    let out = std::process::Command::new("cmd")
+        .args(["/C", "mklink", "/J"])
+        .arg(&junc)
+        .arg(&real)
+        .output()
+        .expect("run mklink");
+    assert!(out.status.success(), "mklink /J failed");
+
+    let ws_sid = derive_workspace_sid(dir.path()).expect("derive sid");
+    // 根 + real + junc（跳过不计）= 2。
+    let n = ensure_grant_ace_tree(dir.path(), &ws_sid, 100).expect("ensure");
+    assert_eq!(n, 2, "junction 项不入计数: {n}");
+    let aces = dacl_aces_for_sid(&real, &ws_sid);
+    assert!(
+        aces.iter()
+            .any(|&(m, mask)| m == 2 && mask & GRANT_MASK == GRANT_MASK),
+        "树内真实子目录应有 grant: {aces:?}"
+    );
+
+    super::revoke_ace(dir.path(), &ws_sid).expect("revoke root");
+    super::revoke_ace(&real, &ws_sid).expect("revoke real");
+}
+
+/// D4 状态面（2026-09-27；2026-09-28 基线单口径）：只读根 ACE 探针三态——
+/// 未打标 (false,false,true) / 打标 (true,false,true)（grant 覆盖
+/// [`GRANT_MASK`] 含 DELETE、无 deny 面）/ 撤销后全 false。grant 判定与
+/// 铺设幂等同判据；deny 面纯观测（生产从不打，现存即外部篡改痕迹）。
+/// 同时钉「零副作用」契约：探针调用前后 DACL 形态不变（不打标不写回）。
+#[cfg(all(target_os = "windows", feature = "acl"))]
+#[test]
+fn root_standing_ace_state_readonly_probe_states() {
+    use super::sid::derive_workspace_sid;
+
+    let dir = tempfile::tempdir().expect("tempdir");
+    let ws_sid = derive_workspace_sid(dir.path()).expect("derive sid");
+
+    // 未打标：grant/deny 都 false；目录 = true。
+    let before = super::root_standing_ace_state(dir.path(), &ws_sid).expect("probe before");
+    assert_eq!(before, (false, false, true), "未打标探针读数: {before:?}");
+
+    // 打标根目录：grant 达标（含 DELETE）、无 deny 面。
+    let n = ensure_grant_ace_tree(dir.path(), &ws_sid, 100).expect("ensure");
+    assert!(n >= 1);
+    let stamped =
+        super::root_standing_ace_state(dir.path(), &ws_sid).expect("probe stamped");
+    assert_eq!(stamped, (true, false, true), "打标后探针读数: {stamped:?}");
+
+    // 零副作用：探针不改变 DACL（grant 恰一条、无 deny）。
+    let aces_after_probe = dacl_aces_for_sid(dir.path(), &ws_sid);
+    assert_eq!(
+        aces_after_probe.iter().filter(|&&(m, _)| m == 2).count(),
+        1,
+        "grant 恰一条: {aces_after_probe:?}"
+    );
+    assert!(
+        !aces_after_probe.iter().any(|&(m, _)| m == 3),
+        "无 deny: {aces_after_probe:?}"
+    );
+
+    // grant 必须含 DELETE（基线全量形态的探针面证据——F9 证伪锚）。
+    assert!(
+        aces_after_probe
+            .iter()
+            .any(|&(m, mask)| m == 2 && mask & 0x0001_0000 != 0),
+        "打标 grant 应含 DELETE 位: {aces_after_probe:?}"
+    );
+
+    // 单撤整面（revoke_ace 撤全部该 SID 项——验证「探针反映真实 DACL」
+    // 而非缓存：撤掉后 grant 读 false）。
+    super::revoke_ace(dir.path(), &ws_sid).expect("revoke root");
+    let revoked = super::root_standing_ace_state(dir.path(), &ws_sid).expect("probe revoked");
+    assert_eq!(revoked, (false, false, true), "撤销后探针读数: {revoked:?}");
+
+    // 文件对象：is_dir=false（文件无 deny 子项面，探针恒 false）。
+    let f = dir.path().join("f.txt");
+    std::fs::write(&f, b"x").expect("seed f");
+    ensure_grant_ace_tree(&f, &ws_sid, 100).expect_err("单文件根不是目录 → Err");
+    let (grant, deny_child, is_dir) =
+        super::root_standing_ace_state(&f, &ws_sid).expect("probe file");
+    assert!(!is_dir, "文件对象 is_dir=false");
+    assert!(!grant, "未打标文件 grant=false");
+    assert!(!deny_child, "文件对象 deny_child 恒 false（无子项面）");
 }

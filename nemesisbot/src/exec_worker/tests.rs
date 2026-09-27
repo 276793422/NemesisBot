@@ -87,7 +87,7 @@ mod engage_strict {
     #[test]
     fn strict_refuses_when_no_backend() {
         let home = seed_home(Some(true));
-        let err = engage("/ws", Some(home.path())).expect_err("strict must refuse");
+        let err = engage("/ws", Some(home.path()), false).expect_err("strict must refuse");
         assert!(err.to_string().contains("strict mode"), "err: {err}");
         assert!(
             err.to_string().contains("refusing to run unsandboxed"),
@@ -100,7 +100,7 @@ mod engage_strict {
         // 缺 strict 键（= 默认 false）：无后端 → warn + Continue（现状字节不变）
         let home = seed_home(None);
         assert!(matches!(
-            engage("/ws", Some(home.path())),
+            engage("/ws", Some(home.path()), false),
             Ok(Outcome::Continue)
         ));
     }
@@ -109,7 +109,7 @@ mod engage_strict {
     fn strict_false_keeps_fail_open() {
         let home = seed_home(Some(false));
         assert!(matches!(
-            engage("/ws", Some(home.path())),
+            engage("/ws", Some(home.path()), false),
             Ok(Outcome::Continue)
         ));
     }
@@ -117,7 +117,20 @@ mod engage_strict {
     #[test]
     fn no_home_defaults_fail_open() {
         // home=None（测试/裸构造）→ strict 读不到 → false → fail-open
-        assert!(matches!(engage("/ws", None), Ok(Outcome::Continue)));
+        assert!(matches!(engage("/ws", None, false), Ok(Outcome::Continue)));
+    }
+
+    #[test]
+    fn spawn_fenced_satisfies_strict_even_without_userland_backend() {
+        // 三轮复查根修回归钉：workspace-dacl 受限令牌在 spawn 时已把内核写
+        // 围栏装上——Plain 臂（无用户态后端可选）不得再触发 strict 拒绝。
+        // 此前 dacl+strict+sandbox=false 组合会被「no userland sandbox
+        // backend」虚假全拒（围栏明明活着）。
+        let home = seed_home(Some(true));
+        assert!(matches!(
+            engage("/ws", Some(home.path()), true),
+            Ok(Outcome::Continue)
+        ));
     }
 }
 

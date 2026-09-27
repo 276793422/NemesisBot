@@ -597,7 +597,7 @@ impl Default for BoardBackupConfig {
 ///   有能力缺口，如 landlock 不覆盖网络）**不算不可用**——严格模式放行并
 ///   在日志/状态里如实标注缺口。默认 false = 现状字节不变。开关经
 ///   ConfigStore 翻转后对后续工具调用实时生效（与 `sandbox` 同链路）。
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ExecutorSeparationConfig {
     #[serde(default)]
     pub enabled: bool,
@@ -621,12 +621,71 @@ pub struct ExecutorSeparationConfig {
     /// 升级前完全一致（typed save 会把缺省值显式写回，语义不变）。
     #[serde(default = "default_executor_backend")]
     pub backend: String,
+    /// D4（2026-09-27）：DACL 定向档开关组（`executor.acl` 段，缺省全关
+    /// = 现状字节不变）。见 [`ExecutorAclConfig`]。
+    #[serde(default)]
+    pub acl: ExecutorAclConfig,
+}
+
+/// `executor.acl` 段：DACL 定向档（write-restricted 受限令牌 + workspace
+/// SID GRANT ACE 树，D1-D3 原语）的细粒度开关。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ExecutorAclConfig {
+    /// DACL 定向档总开关（默认 false = opt-in；开 = executor 子进程经
+    /// `CreateProcessAsUserW` + 受限令牌 spawn——内核强制写围栏，与子进程
+    /// 自装完整性标签两层叠加）。关/装配失败（宽松模式）→ 回退现状路径。
+    #[serde(default)]
+    pub dacl: bool,
+    /// 本档自己的 fail-closed 闸（与全局 `executor.strict` 独立——那条只认
+    /// Sandboxie）：true 时 DACL 装配失败 = **拒绝执行**（不降级）。
+    #[serde(default)]
+    pub strict: bool,
+    /// 树遍历预算（GRANT ACE 打标的文件数上限，同 `label_tree` 既有语义）。
+    #[serde(default = "default_acl_max_files")]
+    pub max_files: u32,
+}
+
+impl Default for ExecutorAclConfig {
+    /// 手写而非 derive（serde 双路径陷阱，hook_flips 真进程测试抓出）：
+    /// executor 段**无 acl 键**时 serde 走**结构体级** `Default::default()`
+    /// ——字段级 `#[serde(default = "...")]` 不经过，derive 的 `u32` 默认
+    /// 是 0，会让 hook 的铺树预算直接耗尽（写操作全死）。手写让两条构造
+    /// 路径收敛到同一组默认值。
+    fn default() -> Self {
+        Self {
+            dacl: false,
+            strict: false,
+            max_files: default_acl_max_files(),
+        }
+    }
+}
+
+/// `executor.acl.max_files` 缺省值（设计稿 §3.4：20000）。
+fn default_acl_max_files() -> u32 {
+    20_000
 }
 
 /// `executor.backend` 的 serde 缺省值（`"auto"`）。独立函数而非 `String::default`
 /// ——空字符串不是合法选择（选型按未知值诚实拒绝），缺键必须落成 `"auto"`。
 fn default_executor_backend() -> String {
     "auto".to_string()
+}
+
+impl Default for ExecutorSeparationConfig {
+    /// 手写而非 derive（与 [`ExecutorAclConfig`] 同款 serde 双路径陷阱）：
+    /// `backend` 的 derive 默认是空串，而空串不是合法选型值（诚实拒绝）——
+    /// `unwrap_or_default()`（sandbox handler 对缺失 executor 段的补齐路径）
+    /// 必须落成 `"auto"` 而不是 `""`。
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            sandbox: false,
+            allow_network: false,
+            strict: false,
+            backend: default_executor_backend(),
+            acl: ExecutorAclConfig::default(),
+        }
+    }
 }
 
 // ============================================================================

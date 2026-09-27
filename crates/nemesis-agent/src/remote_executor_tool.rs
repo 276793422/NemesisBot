@@ -115,6 +115,44 @@ pub type StrictGate = Arc<dyn Fn() -> Result<(), String> + Send + Sync>;
 /// engage 按 `executor.backend` 选型自装 ACL 围栏。
 pub type UserlandFallback = Arc<dyn Fn() -> bool + Send + Sync>;
 
+// ---------------------------------------------------------------------------
+// DACL 定向档（D3，2026-09-27）——受限令牌 spawn 事务的闭包 hook
+// ---------------------------------------------------------------------------
+
+/// DACL 定向档 spawn 请求（nemesis-agent 本地类型——刻意不依赖
+/// nemesis-sandbox；gateway 注入的闭包把它转译成 `CreateProcessAsUserW`
+/// + write-restricted 令牌的同步事务）。
+pub struct DaclSpawnRequest {
+    pub exe: PathBuf,
+    /// executor 子进程无 CLI args（`NEMESISBOT_ROLE` env 检测路由）。
+    pub args: Vec<String>,
+    pub env_extra: Vec<(String, String)>,
+    /// 单行 JSON 请求（与 stdio 路径同一协议行）。
+    pub request_line: String,
+    /// 事务内 `WaitForSingleObject` 超时窗（与 [`ExecutorChannel::timeout`] 同源）。
+    pub timeout: Duration,
+}
+
+/// DACL 定向档 spawn 结果（与 nemesis-sandbox `TxnOutcome` 字段同构——
+/// agent 侧类型本地定义，gateway 闭包负责逐字段转译）。
+pub struct DaclSpawnOutcome {
+    /// stdout 首行（executor 协议响应行；`None` = 无响应退出）。
+    pub response: Option<String>,
+    pub exit_code: Option<u32>,
+    pub stderr_tail: String,
+}
+
+/// 一次 DACL spawn 事务（同步阻塞 FFI——调用方 `spawn_blocking` 包住）。
+pub type DaclSpawnFn =
+    Arc<dyn Fn(DaclSpawnRequest) -> Result<DaclSpawnOutcome, String> + Send + Sync>;
+
+/// 每次工具调用询问 gateway：DACL 定向档现在在场吗？（live 读
+/// `executor.acl.dacl`，热生效语义与 `sandbox_probe` 一致。）
+/// - `Ok(Some(fn))` = 在场（令牌已备）→ 走 DACL spawn 事务；
+/// - `Ok(None)` = 未启用，或宽松模式下装配失败已降级 → 走现状路径；
+/// - `Err(reason)` = `acl.strict` fail-closed → 拒绝执行（不静默降级）。
+pub type DaclSpawnHook = Arc<dyn Fn() -> Result<Option<DaclSpawnFn>, String> + Send + Sync>;
+
 /// Spawn configuration for executor children. Holds no mutable state, so a
 /// single `Arc<ExecutorChannel>` is shared by every `RemoteExecutorTool`.
 pub struct ExecutorChannel {
@@ -156,6 +194,10 @@ pub struct ExecutorChannel {
     /// 注入，见 [`UserlandFallback`]）。`None` = 未注入（测试/裸构造）=
     /// 现状（无盒直接 spawn）字节不变。
     pub userland_fallback: Option<UserlandFallback>,
+    /// D3：DACL 定向档 spawn hook（gateway 注入，见 [`DaclSpawnHook`]）。
+    /// `None` = 未注入（测试/裸构造/trim 构建）= 现状字节不变。盒 wrap
+    /// （`start_exe`）在场时本 hook 不抢（Sandboxie 更强，结构性防线）。
+    pub dacl_spawn: Option<DaclSpawnHook>,
     /// Per-call hard timeout (the child must respond within this).
     pub timeout: Duration,
 }
@@ -183,6 +225,7 @@ impl ExecutorChannel {
             home: None,
             lease_child: false,
             userland_fallback: None,
+            dacl_spawn: None,
             timeout: Duration::from_secs(24 * 3600),
         }
     }
@@ -231,12 +274,43 @@ impl ExecutorChannel {
         self
     }
 
+    /// D3：注入 DACL 定向档 spawn hook（仅 Windows + gateway 装配侧；见
+    /// [`ExecutorChannel::dacl_spawn`]）。盒 wrap 在场时 hook 不抢。
+    pub fn with_dacl_spawn(mut self, hook: DaclSpawnHook) -> Self {
+        self.dacl_spawn = Some(hook);
+        self
+    }
+
     /// P24：Windows dispatch 通道判定（纯函数，单测可达）——盒 wrap 缺位
     /// 且用户态 fallback 判定可顶 → stdio + 用户态标记（子进程自装 ACL）；
     /// 其余（盒在场 / 未注入 / 判定 false）→ 管道（现状）。
     #[cfg(windows)]
     pub(crate) fn picks_stdio_userland_fallback(&self) -> bool {
         self.start_exe.is_none() && self.userland_fallback.as_ref().is_some_and(|f| f())
+    }
+
+    /// 子进程 env 注入（stdio / 管道 / DACL 三条 spawn 路径同源——单一真
+    /// 相源；DACL 路径在此基础上再叠 userland 标记与台账标签，见
+    /// [`Self::spawn_and_call_dacl`]）。
+    fn env_pairs(&self) -> Vec<(String, String)> {
+        let mut env = vec![
+            ("NEMESISBOT_ROLE".to_string(), "executor".to_string()),
+            (
+                "NEMESISBOT_EXECUTOR_WORKSPACE".to_string(),
+                self.workspace.clone(),
+            ),
+        ];
+        // WS9/P22：租约透传（true 时才设——省 env 不含语义，子进程缺省 false）。
+        if self.lease_child {
+            env.push(("NEMESISBOT_LEASE".to_string(), "1".to_string()));
+        }
+        if let Some(home) = &self.home {
+            env.push((
+                "NEMESISBOT_EXECUTOR_HOME".to_string(),
+                home.to_string_lossy().into_owned(),
+            ));
+        }
+        env
     }
 
     /// Build the spawn command. The wrap is controlled by `start_exe`:
@@ -255,15 +329,7 @@ impl ExecutorChannel {
         } else {
             Command::new(&self.exe_path)
         };
-        cmd.env("NEMESISBOT_ROLE", "executor")
-            .env("NEMESISBOT_EXECUTOR_WORKSPACE", &self.workspace);
-        // WS9/P22：租约透传（true 时才设——省 env 不含语义，子进程缺省 false）。
-        if self.lease_child {
-            cmd.env("NEMESISBOT_LEASE", "1");
-        }
-        if let Some(home) = &self.home {
-            cmd.env("NEMESISBOT_EXECUTOR_HOME", home);
-        }
+        cmd.envs(self.env_pairs());
         // Prevent a console window from flashing on each per-call spawn (every
         // tool call spawns a fresh child; without this, Windows pops a black
         // console window that disappears when the child exits).
@@ -283,6 +349,30 @@ impl ExecutorChannel {
         ctx: &RequestContext,
     ) -> Result<String, String> {
         let request_line = self.build_request_line(tool, args, ctx)?;
+        // D3：DACL 定向档 hook 最先询问（kernel 强制写围栏 > 子进程自装完
+        // 整性档）。盒 wrap（start_exe）在场时不抢——Sandboxie 是更强档，
+        // 这里是结构性防线，选型归 gateway 闭包语义管辖。
+        // Ok(None) = 未启用/宽松降级 → 走现状分支（字节不变）；Err =
+        // `acl.strict` fail-closed 拒绝。
+        if self.start_exe.is_none()
+            && let Some(hook) = &self.dacl_spawn
+        {
+            match hook() {
+                Ok(Some(spawn_fn)) => {
+                    return self
+                        .spawn_and_call_dacl(spawn_fn, &request_line, tool)
+                        .await;
+                }
+                Ok(None) => {}
+                Err(reason) => {
+                    tracing::warn!("[Executor] acl.strict refusing '{tool}': {reason}");
+                    return Err(format!(
+                        "executor.acl strict (fail-closed): {reason} — refusing to \
+                         run '{tool}' without the workspace-dacl fence"
+                    ));
+                }
+            }
+        }
         if (self.sandbox_probe)() {
             // P5-2 严格模式（fail-closed）：本次调用要求沙盒（sandbox_probe
             // 为 true），先过严格闸门——不过则拒绝执行，绝不静默降级成无盒。
@@ -427,6 +517,51 @@ impl ExecutorChannel {
 
         let _ = child.wait().await;
         Self::parse_response(&resp_line)
+    }
+
+    /// DACL 定向档 spawn 事务（D3）：gateway 注入的 [`DaclSpawnFn`] 内部
+    /// 完成 write-restricted 令牌铸造 + `CreateProcessAsUserW` + stdio 往返
+    /// （同步 FFI——这里 `spawn_blocking` 包住，不占 async 线程）。请求行与
+    /// env 走 [`Self::env_pairs`] 同源，额外注入：
+    /// - `NEMESISBOT_EXECUTOR_SANDBOX=1`：两层叠加（推荐档，设计 §3.4）——
+    ///   子进程照常自装完整性标签，父进程再罩受限令牌写围栏；
+    /// - `NEMESISBOT_SANDBOX_BACKEND=workspace-dacl`：拒绝台账 backend 标签
+    ///   证据化（与 Start.exe wrap 注入 "sandboxie" 同一约定）。
+    ///
+    /// spawn 形态为 `DETACHED_PROCESS`（闭包层职责）：受限令牌下**新**
+    /// console 分配必死 0xC0000142（nemesis-sandbox token.rs 模块文档实证），
+    /// executor 协议 stdio 全管道无需 console。
+    async fn spawn_and_call_dacl(
+        &self,
+        spawn_fn: DaclSpawnFn,
+        request_line: &str,
+        tool: &str,
+    ) -> Result<String, String> {
+        let mut env_extra = self.env_pairs();
+        env_extra.push(("NEMESISBOT_EXECUTOR_SANDBOX".to_string(), "1".to_string()));
+        env_extra.push((
+            "NEMESISBOT_SANDBOX_BACKEND".to_string(),
+            "workspace-dacl".to_string(),
+        ));
+        let req = DaclSpawnRequest {
+            exe: self.exe_path.clone(),
+            args: Vec::new(),
+            env_extra,
+            request_line: request_line.to_string(),
+            timeout: self.timeout,
+        };
+        let outcome = tokio::task::spawn_blocking(move || spawn_fn(req))
+            .await
+            .map_err(|e| format!("dacl spawn task join error (tool={tool}): {e}"))?
+            .map_err(|e| format!("dacl spawn transaction failed (tool={tool}): {e}"))?;
+        match outcome.response {
+            Some(line) => Self::parse_response(&line),
+            None => Err(format!(
+                "executor (workspace-dacl) exited without a response \
+                 (exit={:?}, tool={tool}); stderr: {}",
+                outcome.exit_code, outcome.stderr_tail
+            )),
+        }
     }
 
     /// Named-pipe transport (sandbox=true). L2.1: works with or without the box

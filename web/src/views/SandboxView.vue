@@ -42,6 +42,10 @@ const allowNetworkCfg = computed(() => !!executorCfg.value?.allow_network)
 const sandboxReady = computed(() => !!overview.value?.ready)
 const backends = computed<any[]>(() => overview.value?.backend_probe?.backends ?? [])
 const selectedBackend = computed(() => overview.value?.backend_probe?.selected ?? null)
+// D4 状态面（DACL 定向档 2026-09-27）：overview.dacl（Windows + acl feature
+// 才非 null；engaged/availability/workspace_sid/root_ace 只读观测——后端
+// 状态查询零副作用，不打标）。
+const daclCfg = computed<any>(() => overview.value?.dacl ?? null)
 const strictHint = computed(() => {
   if (isWindows.value) {
     return sandboxReady.value
@@ -536,6 +540,18 @@ onMounted(async () => {
               <div>
                 <span :style="{ color: overview?.ready ? 'var(--success)' : 'var(--text-secondary)' }">{{ overview?.ready ? '●' : '○' }}</span>
                 <span style="margin-left: var(--space-2);">沙盒就绪：{{ overview?.ready ? '是' : '否' }}</span>
+              </div>
+              <!-- D4 状态面：DACL 定向档一行（engaged / workspace SID / 根 ACE 观测 / 缺口明细） -->
+              <div v-if="daclCfg">
+                <span :style="{ color: daclCfg.engaged ? 'var(--success)' : 'var(--text-secondary)' }">{{ daclCfg.engaged ? '●' : '○' }}</span>
+                <span style="margin-left: var(--space-2);">
+                  DACL 定向档：{{ daclCfg.engaged ? '已生效（下次 executor spawn 走受限令牌）' : '未生效' }}
+                  <template v-if="daclCfg.workspace_sid"> · SID <code>{{ daclCfg.workspace_sid }}</code></template>
+                  <template v-if="daclCfg.root_ace"> · 根 ACE grant={{ daclCfg.root_ace.grant ? '✓' : '✗' }} deny_child={{ daclCfg.root_ace.deny_child ? '✓' : '✗' }}</template>
+                  <template v-if="daclCfg.availability && daclCfg.availability !== 'full'">
+                    · 可用性 {{ daclCfg.availability }}{{ daclCfg.availability_reason ? `（${daclCfg.availability_reason}）` : '' }}
+                  </template>
+                </span>
               </div>
               <div style="margin-top: var(--space-3); padding-top: var(--space-3); border-top: 1px solid var(--border); display: flex; justify-content: space-between; align-items: center;">
                 <div style="font-size: var(--text-sm); overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">

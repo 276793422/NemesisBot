@@ -20,12 +20,15 @@
 //!   `lower_current_process_integrity`（令牌侧）+ `label_tree`（存量文件
 //!   一次性递归重标——新建对象靠 OICI 继承，存量 Medium 文件必须显式重标，
 //!   Low 令牌才写得了）。
-//! - **DACL 显式 deny ACE（尽力，做了一半）**：`add_deny_write_ace` /
-//!   `revoke_ace` 原语已实现并单测（deny Everyone → 进程内写被拒 → 撤销
-//!   恢复）。但**未接线成「对 agent 运行身份的定向拒绝」**：用户态无法给
-//!   agent 子进程铸造独占 SID（加 SID 进令牌需要 LSASS/登录会话语义），
-//!   而对既有身份（如 Everyone）的 deny ACE 会连用户自己一起拦——因此
-//!   只交付原语，定向接线诚实记为未做（选型 gaps 里有条目）。
+//! - **DACL 定向拒绝（已接线，独立档，D1-D3 2026-09-27）**：定向档已由
+//!   workspace-dacl 路线落地——`derive_workspace_sid`（workspace SID 确定性
+//!   派生，sid.rs）+ `ensure_grant_ace_tree`（幂等 standing GRANT ACE 树，
+//!   本文件）+ 受限令牌（`create_write_restricted_token`：白名单
+//!   restricting SID ∪ logon SID ∪ ws_sid + `WRITE_RESTRICTED`，token.rs）
+//!   经 `executor.acl.dacl`（opt-in，默认 false）在 executor 通道装配点接线
+//!   ——spawn 走受限令牌，工作区外写被内核双合取检查拒绝。**完整性标签档
+//!   自身仍不消费 deny ACE**：`add_deny_write_ace` / `revoke_ace` 原语独立
+//!   存在（对 Everyone 的 deny 会连用户自己一起拦，定向语义归受限令牌档）。
 //! - **capability SID（可选，未做）**：capability SID（S-1-15-3-…）只在
 //!   AppContainer/LPAC 语境有意义；AppContainer 是完整得多的隔离形态
 //!   （但破坏面也大得多：任意构建工具在 AppContainer 里大量失能），不在
@@ -75,6 +78,7 @@ use windows_sys::Win32::Security::Authorization::{
     SE_FILE_OBJECT, SetEntriesInAclW, SetNamedSecurityInfoW, TRUSTEE_IS_SID, TRUSTEE_IS_UNKNOWN,
     TRUSTEE_W,
 };
+// FILE_ACCESS_RIGHTS 系列常量在 Storage::FileSystem（0.59 模块划分）。
 use windows_sys::Win32::Security::{
     ACCESS_ALLOWED_ACE, ACCESS_DENIED_ACE, ACE_HEADER, ACL, CONTAINER_INHERIT_ACE,
     DACL_SECURITY_INFORMATION, EqualSid, GetAce, GetSecurityDescriptorSacl, GetSidSubAuthority,
@@ -83,6 +87,9 @@ use windows_sys::Win32::Security::{
     SUB_CONTAINERS_AND_OBJECTS_INHERIT, SYSTEM_MANDATORY_LABEL_ACE, SetTokenInformation,
     TOKEN_ADJUST_DEFAULT, TOKEN_MANDATORY_LABEL, TOKEN_QUERY, TokenIntegrityLevel,
 };
+// FILE_DELETE_CHILD 仅状态面 deny 观测消费；DELETE 无生产消费者——基线 mask
+// 保含 DELETE 且不做「掐 DELETE」分拣（2026-09-28 证伪，见 GRANT_MASK 文档）。
+use windows_sys::Win32::Storage::FileSystem::{FILE_DELETE_CHILD, WRITE_DAC, WRITE_OWNER};
 use windows_sys::Win32::System::Threading::{GetCurrentProcess, OpenProcessToken};
 
 /// winnt.h 的 `SYSTEM_MANDATORY_LABEL_ACE_TYPE`（0x11）——windows-sys 把它放
@@ -480,10 +487,10 @@ pub fn revoke_ace(path: &Path, sid: &str) -> Result<(), String> {
             if ConvertStringSidToSidW(sid_w.as_ptr(), &mut sid_ptr) == 0 {
                 return Err(last_err("ConvertStringSidToSidW"));
             }
-            const INHERIT_MASK: u32 = (OBJECT_INHERIT_ACE
+            const INHERIT_MASK: u32 = OBJECT_INHERIT_ACE
                 | CONTAINER_INHERIT_ACE
                 | NO_PROPAGATE_INHERIT_ACE
-                | INHERIT_ONLY_ACE) as u32;
+                | INHERIT_ONLY_ACE;
             let mut eas: Vec<EXPLICIT_ACCESS_W> = Vec::new();
             if !old_dacl.is_null() {
                 let count = (*old_dacl).AceCount;
@@ -800,10 +807,367 @@ impl SandboxBackend for AclBackend {
                 .to_string(),
         );
         gaps.push(
-            "dacl: 未接线 per-agent 身份定向拒绝（用户态无法铸造 agent 独占 SID；\
-             deny ACE 原语见 add_deny_write_ace，波及面由调用方权衡）"
+            "dacl: 本档（完整性标签）自身不含 per-agent 身份定向拒绝——定向能力\
+             由 workspace-dacl 受限令牌档提供（executor.acl.dacl，opt-in；\
+             deny ACE 原语 add_deny_write_ace 仍在，波及面由调用方权衡）"
                 .to_string(),
         );
         Ok(Enforcement::Partial(gaps))
+    }
+}
+
+// ---------------------------------------------------------------------------
+// DACL 定向档 D2（2026-09-27）：workspace SID standing GRANT ACE 树
+// ---------------------------------------------------------------------------
+
+/// winnt.h 的 `FILE_GENERIC_ALL`（0x1F01FF）——windows-sys 0.59 未导出该组合
+/// 常量（FILE_ACCESS_RIGHTS 单项在 Storage::FileSystem，组合值缺位），本地
+/// 定义（同 ML_ACE_TYPE 先例：本地常量免拖依赖面）。
+const FILE_GENERIC_ALL: u32 = 0x001F_01FF;
+
+/// standing GRANT ACE 的权限位：`FILE_GENERIC_ALL & !(WRITE_DAC | WRITE_OWNER)`
+/// ——保工作区**基线全功能**（含 DELETE——且真进程实证 DELETE 本就不在
+/// write-restricted 的写类评估集合，见下），掐掉的只有**越狱面**：改 ACL /
+/// 改属主——WRITE_DAC 在手可给树外路径翻 DACL，翻转 restricting 侧的合取
+/// 评估放行树外写，这是唯一必须掐的理由。
+///
+/// **为什么没有「掐 DELETE」的加固档**（2026-09-28 真进程证伪， Fence
+/// 证据见 ACL 定向档报告 §3.9）：write-restricted 的 restricting 侧评估
+/// **只覆盖写类访问权，DELETE 不在其中**——子进程对树外对象（无任何
+/// ws_sid GRANT）请求 DELETE 照样成功（token fence 实测），所以 restricting
+/// 侧 mask 掐 DELETE / deny `FILE_DELETE_CHILD`（trustee=ws_sid 只影响
+/// restricting 侧）对删除/改名**零拦截力**，普通令牌侧用户的 DELETE 直通；
+/// 同时 rename 的 DELETE 通路也从不经 restricting 评估——v1 掐 DELETE 形态
+/// 下树内 rename 实测照常成功（该形态与本文件证伪前的加固档 mask 等价）。
+/// 结论：「内核强制树内不许删」在用户态 write-restricted 机制内不存在
+/// 可行通路（trustee=Everyone 的 deny 会伤及用户自己的进程，违反定向承诺；
+/// minifilter/Sandboxie 级别才做得到），树内删除/改名治理归 8 层策略层与
+/// 审批——见 ACL 定向档报告 §5 已知边界。
+pub const GRANT_MASK: u32 = FILE_GENERIC_ALL & !(WRITE_DAC | WRITE_OWNER);
+
+/// 递归给整棵树打 workspace SID 的 standing GRANT ACE（DACL 定向档 D2）。
+/// 返回处理的对象数（含根；达标跳过的也计入——语义同 [`label_tree`]）。
+///
+/// 每个对象的目标 DACL 形态：
+/// - GRANT workspace SID，mask = [`GRANT_MASK`]，目录带 `OI|CI` 继承（新建
+///   子对象自动获得；存量走本遍历逐个补打——ACE 继承只对新对象生效）；
+/// - 不打 deny ACE（「掐 DELETE + 目录 DENY FILE_DELETE_CHILD」的加固形态
+///   已被真进程证伪为零拦截力——见 [`GRANT_MASK`] 文档；旧形态残留的
+///   deny/含-DELETE-grant 由幂等分拣当作 stale 滤除重建）。
+///
+/// **幂等**：读旧 DACL 逐 ACE 分拣——目标 SID 的 grant 覆盖 [`GRANT_MASK`]
+/// = 已达标，不写回（standing ACE 跨会话复用的关键路径：第二次遍历只有读
+/// IO）。目标 SID 的**任何不达标形态**（deny 项、含-DELETE 的超集 grant
+/// ——只可能来自外部篡改或旧加固档残留）标 stale 强制重建，走 revoke_ace
+/// 验证过的**确定性重建**（其他 SID 项原样保留 + 目标形态重写，空底表
+/// `SetEntriesInAclW` → 非保护 `SetNamedSecurityInfoW`——父目录可继承 ACE
+/// 由系统自动重流入）。
+///
+/// **junction/symlink 跳过**：`symlink_metadata` 判定，链接项不打不跟随
+/// （写入面 restricted 检查按最终解析路径评估，链接自身有没有 ACE 无关
+/// 语义；万一 DACL 打点跟随目标还会把 ACE 泄到树外——保守跳过）。根为
+/// symlink → Err（工作区根必须是真实目录）。
+///
+/// `max_files` 预算同 [`label_tree`]：超限 **Err**（已打部分保持生效）。
+pub fn ensure_grant_ace_tree(
+    root: &Path,
+    workspace_sid: &str,
+    max_files: usize,
+) -> Result<usize, String> {
+    let sid_w = wide(workspace_sid);
+    unsafe {
+        let mut sid_ptr: PSID = std::ptr::null_mut();
+        if ConvertStringSidToSidW(sid_w.as_ptr(), &mut sid_ptr) == 0 {
+            return Err(last_err("ConvertStringSidToSidW"));
+        }
+        let r = ensure_grant_ace_tree_inner(root, sid_ptr, max_files);
+        LocalFree(sid_ptr as _);
+        r
+    }
+}
+
+fn ensure_grant_ace_tree_inner(
+    root: &Path,
+    sid_ptr: PSID,
+    max_files: usize,
+) -> Result<usize, String> {
+    let meta = std::fs::symlink_metadata(root)
+        .map_err(|e| format!("ensure_grant_ace_tree: 元数据 {} 失败: {e}", root.display()))?;
+    if meta.is_symlink() {
+        return Err(
+            "ensure_grant_ace_tree: 根是 symlink/junction——工作区根必须是真实目录".to_string(),
+        );
+    }
+    if !meta.is_dir() {
+        return Err(format!(
+            "ensure_grant_ace_tree: 根 {} 不是目录",
+            root.display()
+        ));
+    }
+    ensure_grant_ace_single(root, sid_ptr, true)?;
+    let mut count: usize = 1;
+    let mut stack: Vec<std::path::PathBuf> = vec![root.to_path_buf()];
+    while let Some(dir) = stack.pop() {
+        let entries = std::fs::read_dir(&dir)
+            .map_err(|e| format!("ensure_grant_ace_tree: 读目录 {} 失败: {e}", dir.display()))?;
+        for entry in entries {
+            let entry = entry.map_err(|e| format!("ensure_grant_ace_tree: 目录项读取失败: {e}"))?;
+            let p = entry.path();
+            let meta = std::fs::symlink_metadata(&p)
+                .map_err(|e| format!("ensure_grant_ace_tree: 元数据 {} 失败: {e}", p.display()))?;
+            // 链接项跳过（不跟随理由见函数文档）——不压栈不打不计数。
+            if meta.is_symlink() {
+                continue;
+            }
+            ensure_grant_ace_single(&p, sid_ptr, meta.is_dir())?;
+            if meta.is_dir() {
+                stack.push(p.clone());
+            }
+            count += 1;
+            if count > max_files {
+                return Err(format!(
+                    "ensure_grant_ace_tree: 预算耗尽（已处理 {count} > 上限 {max_files}）\
+                     ——已打部分保持生效，请调大 max_files 或收窄工作区后重跑"
+                ));
+            }
+        }
+    }
+    Ok(count)
+}
+
+/// 单对象 standing ACE 幂等落位（`is_dir` 决定继承位）。已达标 = 不写回
+/// （false）；否则确定性重建写回（目标 SID 的旧形态残留——deny 项、含
+/// DELETE 的超集 grant——一并滤除）。句柄全部 LocalFree。
+fn ensure_grant_ace_single(path: &Path, ws_sid: PSID, is_dir: bool) -> Result<(), String> {
+    let path_w = wide(&path.as_os_str().to_string_lossy());
+    unsafe {
+        let mut psd: PSECURITY_DESCRIPTOR = std::ptr::null_mut();
+        let mut old_dacl: *mut ACL = std::ptr::null_mut();
+        let hr = GetNamedSecurityInfoW(
+            path_w.as_ptr(),
+            SE_FILE_OBJECT,
+            DACL_SECURITY_INFORMATION,
+            std::ptr::null_mut(),
+            std::ptr::null_mut(),
+            &mut old_dacl,
+            std::ptr::null_mut(),
+            &mut psd,
+        );
+        if hr != 0 {
+            return Err(win32_err("GetNamedSecurityInfoW(DACL)", hr));
+        }
+        let mut new_dacl: *mut ACL = std::ptr::null_mut();
+        let r = (|| {
+            const INHERIT_MASK: u32 = OBJECT_INHERIT_ACE
+                | CONTAINER_INHERIT_ACE
+                | NO_PROPAGATE_INHERIT_ACE
+                | INHERIT_ONLY_ACE;
+            let mut eas: Vec<EXPLICIT_ACCESS_W> = Vec::new();
+            let mut grant_ok = false;
+            // 任一目标 SID 的**不达标形态**现存项 → 强制重建（satisfied 短路
+            // 禁用）——deny 项（证伪的加固档残留）、含 DELETE 的超集 grant
+            // （防未来误掐）都只可能来自外部篡改或旧档残留，一律滤除收敛到
+            // 单形态（grant 覆盖 GRANT_MASK、无 deny）。
+            let mut stale_ws_ace = false;
+            if !old_dacl.is_null() {
+                for i in 0..(*old_dacl).AceCount {
+                    let mut pace: *mut c_void = std::ptr::null_mut();
+                    if GetAce(old_dacl, i as u32, &mut pace) == 0 || pace.is_null() {
+                        return Err(last_err("GetAce"));
+                    }
+                    let hdr = pace as *const ACE_HEADER;
+                    let (mode, mask, ace_sid) = match (*hdr).AceType {
+                        0 => {
+                            let a = pace as *const ACCESS_ALLOWED_ACE;
+                            (
+                                GRANT_ACCESS,
+                                (*a).Mask,
+                                &(*a).SidStart as *const u32 as PSID,
+                            )
+                        }
+                        1 => {
+                            let a = pace as *const ACCESS_DENIED_ACE;
+                            (DENY_ACCESS, (*a).Mask, &(*a).SidStart as *const u32 as PSID)
+                        }
+                        t => {
+                            // 同 revoke_ace：未知 ACE 类型拒绝静默丢弃。
+                            return Err(format!(
+                                "ensure_grant_ace: 第 {i} 条 ACE 类型 {t} 未支持，拒绝静默丢弃"
+                            ));
+                        }
+                    };
+                    if EqualSid(ace_sid, ws_sid) != 0 {
+                        // 目标 SID 的现存项：grant 覆盖 GRANT_MASK = 达标形态
+                        // （重建时以目标形态重写）；其余形态标 stale（滤除）。
+                        match mode {
+                            GRANT_ACCESS => {
+                                if mask & GRANT_MASK == GRANT_MASK {
+                                    grant_ok = true;
+                                } else {
+                                    stale_ws_ace = true;
+                                }
+                            }
+                            _ => stale_ws_ace = true,
+                        }
+                        continue;
+                    }
+                    // 其他 SID 的项原样保留（继承位保真，INHERITED_ACE 位丢弃
+                    // 由非保护写回触发系统重继承——revoke_ace 已验证的模式）。
+                    eas.push(EXPLICIT_ACCESS_W {
+                        grfAccessPermissions: mask,
+                        grfAccessMode: mode,
+                        grfInheritance: (*hdr).AceFlags as u32 & INHERIT_MASK,
+                        Trustee: TRUSTEE_W {
+                            pMultipleTrustee: std::ptr::null_mut(),
+                            MultipleTrusteeOperation: NO_MULTIPLE_TRUSTEE,
+                            TrusteeForm: TRUSTEE_IS_SID,
+                            TrusteeType: TRUSTEE_IS_UNKNOWN,
+                            ptstrName: ace_sid as *mut u16,
+                        },
+                    });
+                }
+            }
+            let satisfied = grant_ok && !stale_ws_ace;
+            if satisfied {
+                return Ok(()); // 已达标——standing ACE 复用路径，不写回。
+            }
+            // 目标形态追加：GRANT（目录 OI|CI）。被滤除的旧形态项在此一并
+            // 重写/清除。
+            eas.push(EXPLICIT_ACCESS_W {
+                grfAccessPermissions: GRANT_MASK,
+                grfAccessMode: GRANT_ACCESS,
+                grfInheritance: if is_dir {
+                    OBJECT_INHERIT_ACE | CONTAINER_INHERIT_ACE
+                } else {
+                    0
+                },
+                Trustee: TRUSTEE_W {
+                    pMultipleTrustee: std::ptr::null_mut(),
+                    MultipleTrusteeOperation: NO_MULTIPLE_TRUSTEE,
+                    TrusteeForm: TRUSTEE_IS_SID,
+                    TrusteeType: TRUSTEE_IS_UNKNOWN,
+                    ptstrName: ws_sid as *mut u16,
+                },
+            });
+            let hr2 = SetEntriesInAclW(
+                eas.len() as u32,
+                eas.as_ptr(),
+                std::ptr::null(), // 空底表：eas 已是全量分拣结果。
+                &mut new_dacl,
+            );
+            if hr2 != 0 {
+                return Err(win32_err("SetEntriesInAclW", hr2));
+            }
+            let hr3 = SetNamedSecurityInfoW(
+                path_w.as_ptr(),
+                SE_FILE_OBJECT,
+                DACL_SECURITY_INFORMATION,
+                std::ptr::null_mut(),
+                std::ptr::null_mut(),
+                new_dacl,
+                std::ptr::null(), // 非保护 DACL：父目录继承自动重流入。
+            );
+            if hr3 != 0 {
+                return Err(win32_err("SetNamedSecurityInfoW(DACL)", hr3));
+            }
+            Ok(())
+        })();
+        if !new_dacl.is_null() {
+            LocalFree(new_dacl as _);
+        }
+        if !psd.is_null() {
+            LocalFree(psd as _);
+        }
+        r
+    }
+}
+
+/// DACL 定向档 D4 状态面（2026-09-27）：只读查根对象的 standing ACE 达标态
+/// ——**不打标、不写回、零副作用**（与 [`ensure_grant_ace_tree`] 的幂等写
+/// 路径区分：状态查询绝不能触发打标）。返回
+/// `(grant 达标, deny 现存, 是否目录)`；grant 达标按 [`GRANT_MASK`] 覆盖判
+/// （与铺设幂等判定同判据）；deny 面是**纯观测**——生产从不打 deny，现存
+/// 即外部篡改/旧残留痕迹，如实反映不处置。链接根 → Err（与
+/// [`ensure_grant_ace_tree`] 同判据）；对象不存在 / 读 DACL 失败 → Err。
+pub fn root_standing_ace_state(
+    root: &Path,
+    workspace_sid: &str,
+) -> Result<(bool, bool, bool), String> {
+    let meta = std::fs::symlink_metadata(root).map_err(|e| {
+        format!(
+            "root_standing_ace_state: 元数据 {} 失败: {e}",
+            root.display()
+        )
+    })?;
+    if meta.is_symlink() {
+        return Err("root_standing_ace_state: 根是 symlink/junction".to_string());
+    }
+    let is_dir = meta.is_dir();
+    let sid_w = wide(workspace_sid);
+    let path_w = wide(&root.as_os_str().to_string_lossy());
+    unsafe {
+        let mut sid_ptr: PSID = std::ptr::null_mut();
+        if ConvertStringSidToSidW(sid_w.as_ptr(), &mut sid_ptr) == 0 {
+            return Err(last_err("ConvertStringSidToSidW"));
+        }
+        let mut psd: PSECURITY_DESCRIPTOR = std::ptr::null_mut();
+        let mut dacl: *mut ACL = std::ptr::null_mut();
+        let hr = GetNamedSecurityInfoW(
+            path_w.as_ptr(),
+            SE_FILE_OBJECT,
+            DACL_SECURITY_INFORMATION,
+            std::ptr::null_mut(),
+            std::ptr::null_mut(),
+            &mut dacl,
+            std::ptr::null_mut(),
+            &mut psd,
+        );
+        let r = (|| -> Result<(bool, bool), String> {
+            if hr != 0 {
+                return Err(win32_err("GetNamedSecurityInfoW(DACL)", hr));
+            }
+            let mut grant_ok = false;
+            let mut deny_ok = false;
+            if !dacl.is_null() {
+                for i in 0..(*dacl).AceCount {
+                    let mut pace: *mut c_void = std::ptr::null_mut();
+                    if GetAce(dacl, i as u32, &mut pace) == 0 || pace.is_null() {
+                        return Err(last_err("GetAce"));
+                    }
+                    let hdr = pace as *const ACE_HEADER;
+                    let (mode, mask, ace_sid) = match (*hdr).AceType {
+                        0 => {
+                            let a = pace as *const ACCESS_ALLOWED_ACE;
+                            (
+                                GRANT_ACCESS,
+                                (*a).Mask,
+                                &(*a).SidStart as *const u32 as PSID,
+                            )
+                        }
+                        1 => {
+                            let a = pace as *const ACCESS_DENIED_ACE;
+                            (DENY_ACCESS, (*a).Mask, &(*a).SidStart as *const u32 as PSID)
+                        }
+                        // 状态面只读：审计类 ACE（ML/system audit 等）与本探针
+                        // 无关语义，跳过（写路径里是拒绝静默丢弃——语义不同，
+                        // 写路径改 ACL 会丢信息，读路径不会）。
+                        _ => continue,
+                    };
+                    if EqualSid(ace_sid, sid_ptr) != 0 {
+                        match mode {
+                            GRANT_ACCESS => grant_ok |= mask & GRANT_MASK == GRANT_MASK,
+                            _ => deny_ok |= mask & FILE_DELETE_CHILD != 0,
+                        }
+                    }
+                }
+            }
+            Ok((grant_ok, deny_ok))
+        })();
+        if !psd.is_null() {
+            LocalFree(psd as _);
+        }
+        LocalFree(sid_ptr as _);
+        let (grant_ok, deny_ok) = r?;
+        Ok((grant_ok, deny_ok, is_dir))
     }
 }

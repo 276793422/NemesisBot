@@ -93,7 +93,7 @@ pub async fn run(action: SandboxCommand, local: bool) -> Result<()> {
     match action {
         SandboxCommand::Install => install(&paths).await,
         SandboxCommand::Stop { internal, purge } => stop(&paths, local, internal, purge),
-        SandboxCommand::Status => status(&paths),
+        SandboxCommand::Status => status(&paths, &home),
         SandboxCommand::Pending => pending(&paths, local),
         SandboxCommand::Commit { all, files } => commit(&paths, local, all, files),
         SandboxCommand::Clear { force } => clear(&paths, local, force),
@@ -853,7 +853,7 @@ pub fn stop_service_if_ours(home: &std::path::Path) {
     }
 }
 
-fn status(paths: &nemesis_sandbox::SandboxPaths) -> Result<()> {
+fn status(paths: &nemesis_sandbox::SandboxPaths, home: &std::path::Path) -> Result<()> {
     let sbiesvc = nemesis_sandbox::status::service_state(nemesis_sandbox::USERMODE_SERVICE);
     let sbiedrv = nemesis_sandbox::status::service_state(nemesis_sandbox::DRIVER_SERVICE);
     let start_exe = paths.start_exe();
@@ -890,6 +890,51 @@ fn status(paths: &nemesis_sandbox::SandboxPaths) -> Result<()> {
         }
     );
     println!("  sandbox ready:     {ready}");
+
+    // D4 状态面（DACL 定向档，2026-09-27）：config executor.acl 读数 +
+    // 可用性探针 + workspace SID + standing 根 ACE 只读观测（**零副作用**
+    // ——状态查询不打标；根达标 = 至少完整铺过一次，非全树计数）。CLI 进程
+    // 不装配 executor 通道，这里只是配置面 + 探针的诚实呈现。
+    let acl = std::fs::read_to_string(home.join("config.json"))
+        .ok()
+        .and_then(|raw| serde_json::from_str::<serde_json::Value>(&raw).ok())
+        .and_then(|v| v.get("executor").cloned())
+        .and_then(|e| serde_json::from_value::<nemesis_config::ExecutorSeparationConfig>(e).ok())
+        .unwrap_or_default();
+    println!(
+        "  executor.acl:      dacl={} strict={} max_files={}",
+        acl.acl.dacl, acl.acl.strict, acl.acl.max_files
+    );
+    #[cfg(target_os = "windows")]
+    {
+        use nemesis_sandbox::backend::Availability;
+        let (avail, reason) = match nemesis_sandbox::backend::dacl_availability() {
+            Availability::Full => ("full".to_string(), String::new()),
+            Availability::Partial(gaps) => ("partial".to_string(), gaps.join("; ")),
+            Availability::Unavailable(r) => ("unavailable".to_string(), r),
+        };
+        println!(
+            "  dacl 可用性:       {avail}{}",
+            if reason.is_empty() {
+                String::new()
+            } else {
+                format!("（{reason}）")
+            }
+        );
+        let ws = home.join("workspace");
+        match nemesis_sandbox::backend::derive_workspace_sid(&ws) {
+            Ok(sid) => {
+                println!("  workspace SID:     {sid}");
+                match nemesis_sandbox::backend::root_standing_ace_state(&ws, &sid) {
+                    Ok((grant, deny_child, is_dir)) => println!(
+                        "  根 standing ACE:   grant={grant} deny_child={deny_child}（目录={is_dir}）"
+                    ),
+                    Err(e) => println!("  根 standing ACE:   读取失败（{e}）"),
+                }
+            }
+            Err(e) => println!("  workspace SID:     派生失败（{e}）"),
+        }
+    }
     Ok(())
 }
 
