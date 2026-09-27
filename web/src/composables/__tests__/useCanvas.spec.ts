@@ -75,7 +75,7 @@ describe('useCanvas upsert', () => {
     }
     const list = canvasesBySession['s1']
     expect(list.length).toBe(MAX_CANVASES_PER_SESSION)
-    expect(list[0].index).toBe(2, '最旧两块被挤掉')
+    expect(list[0].index, '最旧两块被挤掉').toBe(2)
     expect(list[list.length - 1].index).toBe(MAX_CANVASES_PER_SESSION + 1)
   })
 
@@ -116,7 +116,7 @@ describe('injectCanvasCsp', () => {
     const out = injectCanvasCsp('<html><head><title>t</title></head><body></body></html>')
     const cspAt = out.indexOf('Content-Security-Policy')
     expect(cspAt).toBeGreaterThan(-1)
-    expect(out.indexOf('<title>')).toBeGreaterThan(cspAt, 'meta 在既有 head 内容之前')
+    expect(out.indexOf('<title>'), 'meta 在既有 head 内容之前').toBeGreaterThan(cspAt)
     expect(out).toContain(CANVAS_CSP)
   })
 
@@ -141,7 +141,7 @@ describe('injectCanvasCsp', () => {
     const out = injectCanvasCsp(tricky)
     const metaPos = out.indexOf('Content-Security-Policy')
     expect(metaPos).toBeGreaterThan(-1)
-    expect(out.indexOf('<script>')).toBeGreaterThan(metaPos, 'meta 必须先于模型脚本')
+    expect(out.indexOf('<script>'), 'meta 必须先于模型脚本').toBeGreaterThan(metaPos)
     expect(out).toContain(CANVAS_CSP)
   })
 

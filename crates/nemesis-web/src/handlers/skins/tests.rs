@@ -108,7 +108,6 @@ fn make_state(home: &std::path::Path, auth_token: &str) -> Arc<AppState> {
         signature_verify: None,
         cron: None,
         board: None,
-        board: None,
         skills_install_gate: None,
     })
 }

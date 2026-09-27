@@ -114,7 +114,7 @@ describe('CanvasPanel', () => {
     const tabs = w.findAll('[data-testid="canvas-tab"]')
     expect(tabs.length).toBe(2)
     let srcdoc = w.find('[data-testid="canvas-frame"]').attributes('srcdoc') ?? ''
-    expect(srcdoc).toContain('second', '新块到达自动切到最新')
+    expect(srcdoc, '新块到达自动切到最新').toContain('second')
     // 切回第一块。
     await tabs[0].trigger('click')
     srcdoc = w.find('[data-testid="canvas-frame"]').attributes('srcdoc') ?? ''
@@ -162,7 +162,7 @@ describe('CanvasPanel', () => {
     fireCanvas({ session_id: 's1', html: '<p>second</p>', index: 1 }) // 新块 = 内容变化
     await nextTick()
     await frame.trigger('load') // 新文档就绪
-    expect(w.find('[data-testid="canvas-nav-warn"]').exists()).toBe(false, '内容变化后的 load 不是导航')
+    expect(w.find('[data-testid="canvas-nav-warn"]').exists(), '内容变化后的 load 不是导航').toBe(false)
     w.unmount()
   })
 })
