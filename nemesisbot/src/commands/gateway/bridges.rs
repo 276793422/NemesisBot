@@ -98,7 +98,7 @@ impl nemesis_security::guardian::LlmJudge for GatewayLlmJudge {
         // 工具名 + 管线危级是命令的元数据（非任务上下文），帮助 judge 理解
         // 它在审什么形态（delete_file 的 args 是路径，exec 的 args 是命令）。
         let user = format!(
-            "Tool: {}\nPipeline danger class: {}\n\n<command>\n{}\n</command>\n\nAudit the command. Output the JSON verdict now.",
+            "工具：{}\n管线危险级别：{}\n\n<command>\n{}\n</command>\n\n请审计上述命令，立即输出 JSON 结论。",
             req.action, req.risk_level, req.command
         );
         let messages = vec![

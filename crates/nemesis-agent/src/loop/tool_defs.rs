@@ -107,6 +107,19 @@ impl AgentLoop {
         futures::future::join_all(futs).await
     }
 
+    /// prompt-pack pro（M3）：工具描述分档取值单点。Pro 体系查
+    /// [`crate::prompt::tool_description`] 档位表（mini→lean、normal/big→
+    /// full 优先否则 lean，未命中回落注册表原文）；Classic 体系恒回落
+    /// 原文（字节不变）。`build_tool_defs` 与 `rebuild_full_tool_defs`
+    /// （三处恢复环共用）都走这里。
+    pub(crate) fn description_for(&self, name: &str, tool: &dyn Tool) -> String {
+        if *self.prompt_system.read() != crate::prompt::PromptSystem::Pro {
+            return tool.description();
+        }
+        let fallback = tool.description();
+        crate::prompt::tool_description(name, &fallback, *self.tier.read()).to_string()
+    }
+
     /// Build the LLM-visible tool definitions from the registry.
     ///
     /// Extracted verbatim from `run_llm_loop` (K1b, U14) so the post-LLM
@@ -150,7 +163,7 @@ impl AgentLoop {
                 tool_type: "function".to_string(),
                 function: crate::types::ToolFunctionDef {
                     name: name.clone(),
-                    description: tool.description(),
+                    description: self.description_for(name, tool.as_ref()),
                     parameters: tool.parameters(),
                 },
             })
@@ -353,7 +366,7 @@ impl AgentLoop {
                 tool_type: "function".to_string(),
                 function: crate::types::ToolFunctionDef {
                     name: name.clone(),
-                    description: tool.description(),
+                    description: self.description_for(name, tool.as_ref()),
                     parameters: tool.parameters(),
                 },
             })

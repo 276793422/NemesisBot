@@ -631,6 +631,7 @@ fn test_full_config_roundtrip() {
     let config = Config {
         agents: AgentsConfig {
             discipline: DisciplineConfig::default(),
+            prompt_system: "pro".to_string(),
             claude_code_tool: ClaudeCodeToolConfig::default(),
             codex_tool: CodexToolConfig::default(),
             lsp_tool: LspToolConfig::default(),
@@ -861,6 +862,34 @@ fn test_small_model_config() {
     // null（Dashboard「清空」写 null）→ None，恢复未配置语义。
     let unset: AgentsConfig = serde_json::from_str(r#"{"small_model": null}"#).unwrap();
     assert!(unset.small_model.is_none(), "null = 未配置");
+}
+
+/// prompt-pack pro（2026-09-27）：`agents.prompt_system` — 缺省键 = "pro"
+/// （serde default），空串保留原样（agent 侧按未配置 = pro 解析），显式
+/// classic 透传，round-trip 不丢键（typed 保存路径不得静默抹掉）。
+#[test]
+fn test_prompt_system_config() {
+    // Old JSON (pre prompt-pack) — no agents.prompt_system key.
+    let old: AgentsConfig = serde_json::from_str(r#"{"list": []}"#).unwrap();
+    assert_eq!(old.prompt_system, "pro", "缺省键 = pro（新体系默认开）");
+
+    // Explicit classic passes through verbatim.
+    let cfg: AgentsConfig = serde_json::from_str(r#"{"prompt_system": "classic"}"#).unwrap();
+    assert_eq!(cfg.prompt_system, "classic");
+
+    // Empty string stays present (agent-side parse treats it as unset = pro).
+    let blank: AgentsConfig = serde_json::from_str(r#"{"prompt_system": ""}"#).unwrap();
+    assert_eq!(blank.prompt_system, "");
+
+    // Round-trip keeps the value.
+    let rt: AgentsConfig = serde_json::from_str(&serde_json::to_string(&cfg).unwrap()).unwrap();
+    assert_eq!(
+        rt.prompt_system, "classic",
+        "round-trip 不得丢 prompt_system"
+    );
+
+    // Fully populated default_config carries the key explicitly.
+    assert_eq!(default_config().agents.prompt_system, "pro");
 }
 
 /// T5 (U13): delegation permission-tier config — new fields parse, absent

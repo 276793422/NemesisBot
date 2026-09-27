@@ -3197,7 +3197,7 @@ mod wave_b {
         // 数据块（无上下文宪法——零任务信息零历史）。
         let seen = seen_user_content.lock().unwrap().clone();
         assert!(
-            seen.iter().any(|c| c.contains("safety gate auditing")),
+            seen.iter().any(|c| c.contains("安全闸")),
             "GUARDIAN_PROMPT 必须作为 system 消息下发，seen={seen:?}"
         );
         assert!(

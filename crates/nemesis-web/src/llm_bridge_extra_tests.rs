@@ -432,7 +432,8 @@ async fn forge_bridge_empty_content_and_no_tools_is_error() {
     let bridge = ForgeProviderBridge::new(mock, "m".to_string());
 
     let err = bridge.chat("s", "u", None).await.unwrap_err();
-    assert_eq!(err, "LLM returned no content");
+    // 杂务旁路护栏（bypass_llm）统一空输出语义：错误消息带 bypass 标签。
+    assert_eq!(err, "[bypass:forge-llm] 空输出，按失败处理");
 }
 
 #[tokio::test]
@@ -473,15 +474,16 @@ async fn forge_bridge_content_with_tools_returns_content() {
 }
 
 #[tokio::test]
-async fn forge_bridge_empty_content_with_tools_returns_empty_string() {
-    // tool_calls present but content empty — impl returns Ok(content) since
-    // the check is `content.is_empty() && tool_calls.is_empty()`.
+async fn forge_bridge_empty_content_with_tools_is_error() {
+    // prompt-pack pro（M4）：空输出一律按失败处理——即使 tool_calls 非空，
+    // 空文本也不再当成功结果透传（下游本就把空串当无效；bypass_llm 单一
+    // 真相源，不因 tool_calls 分叉）。
     let mock = Arc::new(MockProvider::new("m", "p"));
     mock.set_response(tool_call_response()); // content empty, tools non-empty
     let bridge = ForgeProviderBridge::new(mock, "m".to_string());
 
-    let out = bridge.chat("s", "u", None).await.unwrap();
-    assert_eq!(out, "");
+    let err = bridge.chat("s", "u", None).await.unwrap_err();
+    assert_eq!(err, "[bypass:forge-llm] 空输出，按失败处理");
 }
 
 // ---------------------------------------------------------------------------

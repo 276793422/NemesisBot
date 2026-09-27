@@ -33,6 +33,9 @@ nemesis-path = { workspace = true }
 nemesis-agent = { workspace = true }
 nemesis-workflow = { workspace = true, optional = true }
 nemesis-utils = { workspace = true }
+# 提示词资产单一真相源（M7）：cluster_persona_gen（人格生成三阶段）消费；
+# 零依赖纯静态文本，直接非 optional。
+nemesis-prompts = { workspace = true }
 # P2-1 (2026-08-24 UI entry gap): coding.lsp_status probes the language-server
 # registry table (SERVERS / server_available). Unconditional, mirroring
 # nemesis-agent's own non-optional dependency on nemesis-lsp.

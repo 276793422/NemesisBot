@@ -48,6 +48,7 @@ pub mod mcp_bridge;
 pub mod memory;
 pub mod message_preprocess;
 pub mod probe;
+pub mod prompt;
 pub mod prune;
 pub mod registry;
 pub mod remote_executor_tool;

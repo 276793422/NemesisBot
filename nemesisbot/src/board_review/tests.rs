@@ -3687,6 +3687,7 @@ async fn sweep_run_review_llm_call_failure_fails_immediately() {
         deps.moderator_loop.get().unwrap(),
         &mut prompt,
         ReviewToolMode::NoTools,
+        nemesis_prompts::board::ReviewTier::Thorough,
     )
     .await
     .expect_err("调用失败必须报错");
@@ -3716,6 +3717,7 @@ async fn sweep_run_review_llm_exhausts_three_parse_rounds() {
         deps.moderator_loop.get().unwrap(),
         &mut prompt,
         ReviewToolMode::NoTools,
+        nemesis_prompts::board::ReviewTier::Thorough,
     )
     .await
     .expect_err("3 轮解析全败必须报错");
@@ -3745,6 +3747,7 @@ async fn sweep_run_review_llm_retries_then_succeeds_and_readonly_mode() {
         deps.moderator_loop.get().unwrap(),
         &mut prompt,
         ReviewToolMode::ReadOnly { max_turns: 3 },
+        nemesis_prompts::board::ReviewTier::Thorough,
     )
     .await
     .expect("重试后必须成功");
@@ -3771,6 +3774,7 @@ async fn sweep_run_review_panel_single_delegates_and_multi_aggregates() {
         "评审一下",
         ReviewToolMode::NoTools,
         1,
+        nemesis_prompts::board::ReviewTier::Thorough,
     )
     .await
     .expect("单路必须成功");
@@ -3795,6 +3799,7 @@ async fn sweep_run_review_panel_single_delegates_and_multi_aggregates() {
         "评审一下",
         ReviewToolMode::NoTools,
         3,
+        nemesis_prompts::board::ReviewTier::Thorough,
     )
     .await
     .expect("多数票聚合必须成功");
@@ -3815,6 +3820,7 @@ async fn sweep_run_review_panel_single_delegates_and_multi_aggregates() {
         "评审一下",
         ReviewToolMode::NoTools,
         2,
+        nemesis_prompts::board::ReviewTier::Thorough,
     )
     .await
     .expect_err("全路解析失败必须报错");

@@ -733,7 +733,39 @@ async fn review_issue(
             deps.cluster.node_id(),
             cfg.review.max_turns,
         );
-        match run_review_panel(agent_loop, &prompt, tool_mode, cfg.review.checkers).await {
+        // 评审分层（gap ②）：config `board.review.tier` → 档位（无法识别
+        // 安全回落 Thorough）。先例注入只走 Thorough——fast 档追求精简，
+        // 参考性历史数据不进 prompt。
+        let review_tier = nemesis_prompts::board::parse_review_tier(&cfg.review.tier);
+        if review_tier == nemesis_prompts::board::ReviewTier::Thorough {
+            // 判例沉淀（gap ②）：历史「自动决策被人工回滚」记录作**参考
+            // 数据**注入（渲染块自带数据非指令护栏）。空记录/查询失败 =
+            // 诚实跳过，不注入空节。
+            match store.list_rollback_precedents(5) {
+                Ok(precedents) if !precedents.is_empty() => {
+                    let entries: Vec<nemesis_prompts::board::PrecedentEntry> = precedents
+                        .iter()
+                        .map(|p| nemesis_prompts::board::PrecedentEntry {
+                            issue_ref: format!("{} {}", p.issue_number, p.issue_title),
+                            decision: p.decision.clone(),
+                            rollback_reason: p.rollback_reason.clone(),
+                        })
+                        .collect();
+                    prompt.push_str(&nemesis_prompts::board::render_precedents_block(&entries));
+                }
+                Ok(_) => {}
+                Err(e) => debug!("[BoardReview] issue {issue_id} 先例查询失败（跳过注入）：{e}"),
+            }
+        }
+        match run_review_panel(
+            agent_loop,
+            &prompt,
+            tool_mode,
+            cfg.review.checkers,
+            review_tier,
+        )
+        .await
+        {
             Ok(ok) => ok,
             Err(last_err) => {
                 // S-O2 迟到评审守卫（评审自身失败路径）：评审期间单据已被
@@ -1156,19 +1188,23 @@ async fn run_review_llm(
     agent_loop: &Arc<nemesis_agent::r#loop::AgentLoop>,
     prompt: &mut String,
     mode: ReviewToolMode,
+    tier: nemesis_prompts::board::ReviewTier,
 ) -> Result<nemesis_board::ReviewOutput, String> {
+    // 评审分层（gap ②）：Thorough = 历史 REVIEW_SYSTEM_PROMPT 字节一致；
+    // Fast = 精简档（保留注入防线与三态 JSON 契约，关取证/经验）。
+    let system_prompt = nemesis_prompts::board::render_review_system_prompt(tier);
     let mut last_err = String::new();
     for _ in 0..=2 {
         let opts = match mode {
             ReviewToolMode::NoTools => nemesis_agent::r#loop::DetachedOpts {
-                system_prompt: Some(nemesis_board::REVIEW_SYSTEM_PROMPT),
+                system_prompt: Some(system_prompt),
                 no_tools: true,
                 max_turns: 1,
                 label: Some("board-review"),
                 ..Default::default()
             },
             ReviewToolMode::ReadOnly { max_turns } => nemesis_agent::r#loop::DetachedOpts {
-                system_prompt: Some(nemesis_board::REVIEW_SYSTEM_PROMPT),
+                system_prompt: Some(system_prompt),
                 no_tools: false,
                 allowed_tools: Some(READONLY_REVIEW_TOOLS),
                 max_turns,
@@ -1208,11 +1244,12 @@ async fn run_review_panel(
     base_prompt: &str,
     mode: ReviewToolMode,
     checkers: u32,
+    tier: nemesis_prompts::board::ReviewTier,
 ) -> Result<nemesis_board::ReviewOutput, String> {
     let checkers = checkers.clamp(1, MAX_REVIEW_CHECKERS) as usize;
     if checkers == 1 {
         let mut prompt = base_prompt.to_string();
-        return run_review_llm(agent_loop, &mut prompt, mode).await;
+        return run_review_llm(agent_loop, &mut prompt, mode, tier).await;
     }
     let sem = Arc::new(tokio::sync::Semaphore::new(PANEL_CONCURRENCY));
     let mut futs = Vec::with_capacity(checkers);
@@ -1225,7 +1262,7 @@ async fn run_review_panel(
         let agent_loop = Arc::clone(agent_loop);
         futs.push(async move {
             let _permit = sem.acquire_owned().await;
-            run_review_llm(&agent_loop, &mut prompt, mode).await
+            run_review_llm(&agent_loop, &mut prompt, mode, tier).await
         });
     }
     let results = futures::future::join_all(futs).await;
@@ -1902,6 +1939,7 @@ async fn review_parent_issue(deps: &BoardReviewDeps, parent_id: i64) -> Result<b
             &prompt,
             ReviewToolMode::NoTools,
             cfg.review.checkers,
+            nemesis_prompts::board::parse_review_tier(&cfg.review.tier),
         )
         .await
         {
@@ -2321,6 +2359,7 @@ async fn review_project_completion(
             &prompt,
             ReviewToolMode::NoTools,
             cfg.review.checkers,
+            nemesis_prompts::board::parse_review_tier(&cfg.review.tier),
         )
         .await
         {
@@ -2818,13 +2857,8 @@ fn post_review_comment(
 
 /// 收口总结系统提示词（自由 Markdown，不走评审 verdict JSON——与评审
 /// 通道共用的是 LLM 调用通道本身，不是输出格式）。
-const PROJECT_SUMMARY_SYSTEM_PROMPT: &str = "\
-你是 NemesisBot 看板的项目档案管理员。项目刚刚收口（completed），请依据下方事实清单写一份收口回顾总结，Markdown 输出。
-
-硬性要求：
-1. 恰好三个小节：「## 各任务做法」「## 决策流摘要」「## 最终结构」。
-2. 严格依据事实清单，不虚构清单之外的文件/决策/结论；总长不超过 600 字。
-3. 只输出 Markdown 正文，不要代码围栏，不要任何额外说明。";
+/// 文本单一真相源在 `nemesis-prompts`（M7 集中化）。
+use nemesis_prompts::board::PROJECT_SUMMARY_SYSTEM_PROMPT;
 
 /// F9 触发入口：项目收口（自动 PASS / 人工 project.update → completed）
 /// 两条路径都汇到这里。异步不阻塞调用方；内部自守门（estop/tier/档案

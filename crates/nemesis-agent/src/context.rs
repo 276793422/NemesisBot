@@ -189,6 +189,12 @@ pub struct ContextBuilder {
     /// Tool definitions from a tools registry (for dynamic tool summary generation).
     /// Mirrors Go's `ContextBuilder.tools *tools.ToolRegistry`.
     tool_definitions: Vec<serde_json::Value>,
+    /// 提示词体系（prompt-pack）：缺省 classic——classic 字节不变是第一
+    /// 原则，factory 显式选择后才走段落池组装。
+    prompt_system: crate::prompt::PromptSystem,
+    /// 入口形态变体（pro 体系专属）：缺省 Interactive——gateway 主链路
+    /// 渲染字节与历史一致（golden 不变）；headless/ACP 由各自入口显式设置。
+    entrance: crate::prompt::Entrance,
 }
 
 /// Information about a loaded skill.
@@ -211,7 +217,26 @@ impl ContextBuilder {
             skills_info: Vec::new(),
             memory_context: None,
             tool_definitions: Vec::new(),
+            prompt_system: crate::prompt::PromptSystem::Classic,
+            entrance: crate::prompt::Entrance::Interactive,
         }
+    }
+
+    /// 选择提示词体系（prompt-pack pro）。
+    ///
+    /// 缺省 classic（`build_system_prompt` 原路径原字节）；显式选择 pro 后
+    /// 组装顺序变为：Pre 段（`crate::prompt` 段落池）→ 人格文件 → 行为段池
+    /// → 环境段。
+    pub fn set_prompt_system(&mut self, system: crate::prompt::PromptSystem) -> &mut Self {
+        self.prompt_system = system;
+        self
+    }
+
+    /// 设置入口形态变体（仅 pro 体系消费；classic 忽略）。缺省 Interactive
+    /// 不改任何字节。
+    pub fn set_entrance(&mut self, entrance: crate::prompt::Entrance) -> &mut Self {
+        self.entrance = entrance;
+        self
     }
 
     /// Set tool summaries for inclusion in the system prompt.
@@ -313,7 +338,13 @@ impl ContextBuilder {
     /// 3. Skills section — stable
     /// 4. Memory context — may change
     /// 5. Core identity section (time, environment, workspace) — dynamic, at end for caching
+    ///
+    /// prompt-pack pro（`set_prompt_system`）改走 [`Self::build_system_prompt_pro`]；
+    /// classic 原路径原字节，不动。
     pub fn build_system_prompt(&self, skip_bootstrap: bool) -> String {
+        if self.prompt_system == crate::prompt::PromptSystem::Pro {
+            return self.build_system_prompt_pro(skip_bootstrap);
+        }
         info!(
             "[ContextBuilder] Building system prompt from workspace: {:?}",
             self.workspace
@@ -357,6 +388,70 @@ impl ContextBuilder {
         result
     }
 
+    /// pro 模式组装（prompt-pack）：Pre 段 → 人格文件 → tools → skills →
+    /// memory → Post 段 → 环境段。
+    ///
+    /// 段落来源 `crate::prompt` 段落池（静态全中文，编译期嵌入）；各段之间
+    /// 维持 classic 的 "---" 分隔约定；启动构建后随会话冻结，prompt cache
+    /// 语义不变。组装完成后过长度软预算（超限告警不截断）。
+    fn build_system_prompt_pro(&self, skip_bootstrap: bool) -> String {
+        info!(
+            "[ContextBuilder] Building system prompt (pro) from workspace: {:?}",
+            self.workspace
+        );
+        let mut parts = Vec::new();
+
+        // Pre 层：身份与安全基座（先于用户自定义人格）+ 入口形态补充段
+        // （Interactive 恒空 = 字节不变）。
+        let pre = crate::prompt::render_layer_for(crate::prompt::Layer::Pre, self.entrance);
+        if !pre.is_empty() {
+            parts.push(pre);
+        }
+
+        // 人格文件（AGENT/IDENTITY/SOUL/...）——用户自定义层，两种体系同源。
+        let bootstrap_content = self.load_bootstrap_files(skip_bootstrap);
+        if !bootstrap_content.is_empty() {
+            parts.push(bootstrap_content);
+        }
+
+        // Tools section
+        let tools_section = self.build_tools_section();
+        if !tools_section.is_empty() {
+            parts.push(tools_section);
+        }
+
+        // Skills section
+        let skills_section = self.build_skills_section();
+        if !skills_section.is_empty() {
+            parts.push(skills_section);
+        }
+
+        // Memory context section
+        if let Some(ref memory) = self.memory_context
+            && !memory.is_empty()
+        {
+            parts.push(format!("## Memory Context\n\n{}", memory));
+        }
+
+        // Post 层：行为准则段池（用户人格之后，可被人格细化但不越安全基线）。
+        let post = crate::prompt::render_layer(crate::prompt::Layer::Post);
+        if !post.is_empty() {
+            parts.push(post);
+        }
+
+        // 环境段（pro 版尾巴：Environment + Workspace，无 Important Rules——
+        // 行为规则职能移交段落池）。
+        parts.push(self.build_identity_pro());
+
+        let result = parts.join("\n\n---\n\n");
+        crate::prompt::check_budget(result.len());
+        debug!(
+            "[ContextBuilder] System prompt (pro) built, total length={}",
+            result.len()
+        );
+        result
+    }
+
     /// Build the core identity section with environment and workspace info.
     ///
     /// Time is intentionally NOT included here — the system prompt is built once
@@ -365,6 +460,24 @@ impl ContextBuilder {
     /// inserted before the latest user message, which preserves prompt cache
     /// hits on the historical prefix.
     fn build_identity(&self) -> String {
+        format!(
+            "{}\n\n\
+             ## Important Rules\n\n\
+             1. **Always use tools** - When you need to perform an action, you must call the appropriate tool.\n\
+             2. **Be helpful and accurate** - When using tools, briefly explain what you are doing.\n\
+             3. **Memory** - When you need to remember something, write it to the memory file.",
+            self.build_environment_workspace()
+        )
+    }
+
+    /// pro 版尾巴：Environment + Workspace，无 Important Rules——行为规则
+    /// 职能移交 `crate::prompt` 段落池（Post 层扩表后覆盖全部三条语义）。
+    fn build_identity_pro(&self) -> String {
+        self.build_environment_workspace()
+    }
+
+    /// Environment + Workspace 两小节（classic/pro 尾巴共享的数据源）。
+    fn build_environment_workspace(&self) -> String {
         let workspace_display = self.workspace.display();
         let memory_path = self.workspace.join("memory");
         let memory_display = if memory_path.exists() {
@@ -386,11 +499,7 @@ impl ContextBuilder {
              - **Memory Path**: {}\n\
              - **Skills Path**: {}\n\n\
              ## Workspace\n\
-             Your workspace is located at: {}\n\n\
-             ## Important Rules\n\n\
-             1. **Always use tools** - When you need to perform an action, you must call the appropriate tool.\n\
-             2. **Be helpful and accurate** - When using tools, briefly explain what you are doing.\n\
-             3. **Memory** - When you need to remember something, write it to the memory file.",
+             Your workspace is located at: {}",
             workspace_display, memory_display, skills_display, workspace_display
         )
     }

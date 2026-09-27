@@ -536,19 +536,8 @@ fn override_content(
 // ---------------------------------------------------------------------------
 
 /// 硬解 system prompt（范围钉死：只允许改冲突文件；以当前仓库内容为主）。
-pub(crate) const CONFLICT_RESOLVER_SYSTEM_PROMPT: &str = r#"你是看板项目的合并冲突解决专家。两个改动在同一文件上冲突，你要产出确定性的合并结果。
-
-铁律：
-1. 以当前仓库内容为主干，把对方改动尽量并入；不发明双方都没有的内容，不删改无关代码。
-2. 只允许处置列出的冲突文件，禁止提及任何其他文件。
-3. 二进制文件（图片/编译产物等）只能择边（"ours" 或 "theirs"），绝不发明内容。
-4. 锁文件（package-lock.json / Cargo.lock 等）无法安全手工缝合——任何处置的理由里必须包含「建议重新生成」。
-5. 无法安全缝合时，宁可择边（保留一方完整内容），不要产出猜测的混合体。
-
-只输出一个 JSON 对象（可包在 ```json 代码块里），不要任何其他文字：
-{"resolutions": [{"path": "<冲突文件路径>", "action": "merge|ours|theirs", "content": "<action=merge 时的完整新文件内容>", "reason": "<一句话理由>"}]}
-
-要求：每个冲突文件恰有一条；action=merge 时 content 必须是文件完整新内容（不是 diff、不是片段）；reason 必填。"#;
+/// 文本单一真相源在 `nemesis-prompts`（M7 集中化）。
+use nemesis_prompts::board::CONFLICT_RESOLVER_SYSTEM_PROMPT;
 
 /// 组装硬解 user prompt（任务意图 + 冲突三阶段内容）。
 fn build_user_prompt(issue: &Issue, task_id: &str, conflicts: &[ConflictFile]) -> String {

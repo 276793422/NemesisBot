@@ -6,6 +6,7 @@ edition.workspace = true
 
 [dependencies]
 nemesis-types = { workspace = true }
+nemesis-prompts = { workspace = true }
 nemesis-skills = { workspace = true }
 tokio = { workspace = true }
 async-trait = { workspace = true }

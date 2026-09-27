@@ -749,8 +749,11 @@ impl AgentLoop {
         // form this round's projection ledger — everything a later
         // byte-exact replay needs beyond the session store (the
         // transient injections are never persisted). See `crate::replay`.
-        let (mut messages, build_annotation) =
-            self.build_messages_with_memory_annotated(instance, memory_hits.as_deref());
+        let (mut messages, build_annotation) = self.build_messages_with_memory_annotated(
+            instance,
+            memory_hits.as_deref(),
+            Some(&context.channel),
+        );
         let mut replay_injections: Vec<crate::replay::InjectionRecord> = Vec::new();
         if let Some(idx) = build_annotation.digest_index {
             replay_injections.push(crate::replay::InjectionRecord {

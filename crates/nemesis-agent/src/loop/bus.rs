@@ -179,6 +179,7 @@ impl AgentLoop {
             mode: parking_lot::RwLock::new(crate::types::AgentMode::Build),
             agent_event_tx: parking_lot::RwLock::new(None),
             config_path: parking_lot::RwLock::new(None),
+            prompt_system: parking_lot::RwLock::new(crate::prompt::PromptSystem::Classic),
             pricing_store: parking_lot::RwLock::new(None),
             lsp_manager: parking_lot::RwLock::new(None),
             commands_hot: parking_lot::RwLock::new(None),

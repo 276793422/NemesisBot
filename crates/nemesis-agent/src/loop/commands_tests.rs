@@ -1,6 +1,7 @@
 //! 自定义 slash 命令改写：`rewrite_custom_command` 的决策表测试——
 //! 展开/占位替换/无占位追加/内置跳过/未命中不动/非 slash 不动，以及
-//! K3（devtool-upgrade 阶段 4）新增的 `` !`cmd` `` 注入与技能回落。
+//! K3（devtool-upgrade 阶段 4）新增的 `` !`cmd` `` 注入与技能回落，
+//! 与五差距补齐（2026-09-28）新增的内置深度模板层（四段解析链第 3 段）。
 //! 命令表写进临时目录的 `config.commands.json`，经 `set_commands_path` 走
 //! 与生产一致的加载路径。K3 起 rewrite 是 async（模板注入要跑命令）。
 
@@ -304,6 +305,60 @@ fn builtin_list_matches_shared_truth_source() {
     for name in ["compact", "clear", "plan", "build"] {
         assert!(AgentLoop::BUILTIN_SLASH_COMMANDS.contains(&name));
     }
+}
+
+// ---------------------------------------------------------------------------
+// 内置深度模板层（四段解析链第 3 段）：自定义 > 内置模板 > 技能
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn builtin_template_resolves_when_table_misses() {
+    let dir = tempfile::tempdir().unwrap();
+    write_table(dir.path(), TABLE);
+    let al = loop_with_commands_table(dir.path());
+
+    // security-review 不在命令表/技能里 → 内置模板兜底，$ARGUMENTS 被替换。
+    let out = msg_content_after(&al, "/security-review crates/nemesis-agent").await;
+    assert!(out.contains("crates/nemesis-agent"));
+    assert!(!out.contains("$ARGUMENTS"));
+    // 展开产物是模板正文（深度模板，非原样回显）。
+    assert_ne!(out, "/security-review crates/nemesis-agent");
+}
+
+#[tokio::test]
+async fn custom_command_shadows_builtin_template() {
+    let dir = tempfile::tempdir().unwrap();
+    // 命令表里造一个与内置模板同名的条目 → 用户配置恒可覆盖内置默认。
+    write_table(
+        dir.path(),
+        r#"{ "commands": [ { "name": "security-review",
+            "prompt": "自定义版：$ARGUMENTS" } ] }"#,
+    );
+    let al = loop_with_commands_table(dir.path());
+
+    let out = msg_content_after(&al, "/security-review X").await;
+    assert_eq!(out, "自定义版：X");
+}
+
+#[tokio::test]
+async fn builtin_template_shadows_skill() {
+    let dir = tempfile::tempdir().unwrap();
+    // 安装一个与内置模板同名的技能（"debug"）→ 内置模板优先于技能回落。
+    let al = loop_with_skill(dir.path(), "debug");
+
+    let out = msg_content_after(&al, "/debug 空指针").await;
+    assert!(out.contains("空指针"));
+    assert_ne!(out, "Use the debug skill to handle: 空指针");
+}
+
+#[tokio::test]
+async fn builtin_template_unknown_name_still_skill_fallback() {
+    let dir = tempfile::tempdir().unwrap();
+    let al = loop_with_skill(dir.path(), "weather");
+
+    // 既不在命令表也不是内置模板 → 技能回落照常（第 3 段未命中不挡第 4 段）。
+    let out = msg_content_after(&al, "/weather 下雨吗").await;
+    assert_eq!(out, "Use the weather skill to handle: 下雨吗");
 }
 
 #[tokio::test]

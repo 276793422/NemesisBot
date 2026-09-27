@@ -240,7 +240,7 @@ impl Factory {
             .take(5)
             .map(|e| {
                 format!(
-                    "- Tool: {}, Input: {}, Success: {}, Output: {}",
+                    "- 工具：{}，输入：{}，成功：{}，输出：{}",
                     e.experience.tool_name,
                     e.experience.input_summary,
                     e.experience.success,
@@ -250,24 +250,21 @@ impl Factory {
             .collect::<Vec<_>>()
             .join("\n");
 
-        let system_prompt = "You are a skill author for an AI agent system. \
-            Generate a well-structured SKILL.md document that describes a reusable skill. \
-            The document should include YAML frontmatter (--- delimited), a description, \
-            usage instructions, examples, and notes. Respond with ONLY the skill content, \
-            no additional commentary.";
+        // 文本单一真相源在 `nemesis-prompts`（M7 集中化）。
+        let system_prompt = nemesis_prompts::forge::SKILL_AUTHOR_SYSTEM_PROMPT;
 
         let user_prompt = format!(
-            "Create a skill named '{}' based on {} tool call experiences ({} successful).\n\n\
-            ## Tools Used\n{}\n\n\
-            ## Sample Experiences\n{}\n\n\
-            Generate a complete SKILL.md document with:\n\
-            1. YAML frontmatter with name and description\n\
-            2. Description of what this skill does\n\
-            3. When to use this skill\n\
-            4. Step-by-step usage instructions\n\
-            5. Example invocation\n\
-            6. Notes and caveats",
-            name, total, success_count, tools_summary, experience_summary
+            "基于 {} 次工具调用经验（其中 {} 次成功），创建名为「{}」的技能。\n\n\
+            ## 使用的工具\n{}\n\n\
+            ## 经验样本\n{}\n\n\
+            生成完整的 SKILL.md 文档，包含：\n\
+            1. YAML frontmatter（含 name 与 description 字段）\n\
+            2. 技能功能描述\n\
+            3. 适用场景\n\
+            4. 分步使用说明\n\
+            5. 调用示例\n\
+            6. 注意事项与限制",
+            total, success_count, name, tools_summary, experience_summary
         );
 
         caller.chat(system_prompt, &user_prompt, Some(2000)).await
@@ -288,28 +285,26 @@ impl Factory {
             .take(5)
             .map(|e| {
                 format!(
-                    "- Tool: {}, Input: {}, Output: {}",
+                    "- 工具：{}，输入：{}，输出：{}",
                     e.experience.tool_name, e.experience.input_summary, e.experience.output_summary
                 )
             })
             .collect::<Vec<_>>()
             .join("\n");
 
-        let system_prompt = "You are a script developer for an AI agent system. \
-            Generate a well-structured bash script that automates a common task. \
-            The script should be safe, well-commented, and follow best practices. \
-            Respond with ONLY the script content, no additional commentary.";
+        // 文本单一真相源在 `nemesis-prompts`（M7 集中化）。
+        let system_prompt = nemesis_prompts::forge::SCRIPT_AUTHOR_SYSTEM_PROMPT;
 
         let user_prompt = format!(
-            "Create a bash script named '{}' based on tool usage patterns.\n\n\
-            ## Tools Referenced\n{}\n\n\
-            ## Sample Experiences\n{}\n\n\
-            Generate a complete bash script that:\n\
-            1. Has proper shebang line and error handling (set -euo pipefail)\n\
-            2. Includes helpful comments explaining each step\n\
-            3. Implements the common workflow observed in the experiences\n\
-            4. Has proper argument handling\n\
-            5. Returns meaningful exit codes",
+            "基于工具使用模式，创建名为「{}」的 bash 脚本。\n\n\
+            ## 涉及的工具\n{}\n\n\
+            ## 经验样本\n{}\n\n\
+            生成完整的 bash 脚本，要求：\n\
+            1. 有正确的 shebang 行与错误处理（set -euo pipefail）\n\
+            2. 每个步骤都有清晰的注释说明\n\
+            3. 实现经验样本中观察到的通用工作流\n\
+            4. 有规范的参数处理\n\
+            5. 返回有意义的退出码",
             name, tools_summary, experience_summary
         );
 

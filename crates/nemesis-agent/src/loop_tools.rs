@@ -3969,7 +3969,18 @@ pub fn detached_tools_for_profile(
     }
 }
 
-/// Spawn 闭包类型：`(agent_id, task, model, channel, chat_id, tools, depth) -> Future<Result<String, String>>`。
+/// prompt-pack pro（M4）：spawn `tools` 档位 → 子代理角色。readonly 档
+/// （只读白名单）的子任务天然是调查/汇报型，映射侦察员角色模板；full 档
+/// 不指定（None = 继承主人格，行为不变）。与 [`detached_tools_for_profile`]
+/// 同为闭包侧唯一映射点。
+pub fn detached_role_for_profile(profile: &str) -> Option<crate::prompt::SubagentRole> {
+    match profile {
+        "readonly" => Some(crate::prompt::SubagentRole::Explorer),
+        _ => None,
+    }
+}
+
+/// Spawn 闭包类型：`(agent_id, task, model, channel, chat_id, tools, depth, background, role) -> Future<Result<String, String>>`。
 /// G0 (devtool-upgrade 阶段 3)：生产接线 = agent_factory 组装 AgentLoop 后向
 /// spawn_slot 注入的闭包（持 `Weak<AgentLoop>` 调 `run_detached`）。
 /// G1：第 6 参 `tools` = 工具档位（"readonly"|"full"，SpawnTool 侧已校验，
@@ -3980,6 +3991,9 @@ pub fn detached_tools_for_profile(
 /// run_detached，立即返回 `__BG_SPAWN__:{task_id}` marker；任务完成经
 /// `subagent_continuation:{task_id}` bus 消息回灌续行）。深度限制沿用第
 /// 7 参（后台任务不另计深度——派生前已过 max_depth 检查）。
+/// P3（角色显式化）：第 9 参 `role` = 子代理角色 slug（`""` = 自动：沿用
+/// 工具档位推导的既有行为；非空 = 已过 `SubagentRole::from_slug` 校验的
+/// 显式角色，闭包侧覆盖 `DetachedOpts.role`）。
 pub type SpawnFn = Arc<
     dyn Fn(
             &str,
@@ -3990,6 +4004,7 @@ pub type SpawnFn = Arc<
             &str,
             usize,
             bool,
+            &str,
         )
             -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<String, String>> + Send>>
         + Send
@@ -4083,6 +4098,13 @@ impl Tool for SpawnTool {
     }
 
     fn parameters(&self) -> serde_json::Value {
+        // 角色 enum 从目录生成（单一真相源：新增角色只改 catalog，schema
+        // 自动跟上）。"" 不进 enum——缺省 = 键缺省，模型显式传 "" 反而是
+        // 混淆面。
+        let role_slugs: Vec<&str> = crate::prompt::SubagentRole::catalog()
+            .iter()
+            .map(|(slug, _)| *slug)
+            .collect();
         serde_json::json!({
             "type": "object",
             "properties": {
@@ -4093,6 +4115,11 @@ impl Tool for SpawnTool {
                     "type": "string",
                     "enum": ["readonly", "full"],
                     "description": "Tool profile for the sub-agent. \"readonly\" (default) limits it to read-only tools (read_file/list_dir/grep/git/web_fetch/lsp/cli_reference); \"full\" inherits the parent's tier-filtered tool set. Use readonly for research/exploration tasks, full only when the sub-agent must write."
+                },
+                "role": {
+                    "type": "string",
+                    "enum": role_slugs,
+                    "description": "Specialist role template for the sub-agent (optional). Each role overlays a discipline prompt on the sub-agent's persona: explorer=调查汇报, planner=方案规划, reviewer=评审把关, worker=受权执行, observer=过程观察, generic=通用, debugger=排障定位, security_reviewer=安全评审, test_engineer=测试工程, documenter=文档撰写. Omit to auto-derive from the tools profile (readonly→explorer)."
                 },
                 "background": {
                     "type": "boolean",
@@ -4155,6 +4182,21 @@ impl Tool for SpawnTool {
             .get("background")
             .and_then(|v| v.as_bool())
             .unwrap_or(false);
+
+        // P3：显式角色（缺省 "" = 自动，沿用工具档位推导）。未知 slug 在
+        // spawn 前诚实拒绝，错误文案带合法值清单供模型自纠。
+        let role = val.get("role").and_then(|v| v.as_str()).unwrap_or("");
+        if !role.is_empty() && crate::prompt::SubagentRole::from_slug(role).is_none() {
+            let valid: Vec<&str> = crate::prompt::SubagentRole::catalog()
+                .iter()
+                .map(|(s, _)| *s)
+                .collect();
+            return Err(format!(
+                "Unknown sub-agent role '{}'. Valid roles: {} (or omit to auto-derive from tools profile).",
+                role,
+                valid.join(", ")
+            ));
+        }
 
         // Check allowlist.
         if let Some(ref checker) = self.allowlist_checker
@@ -4227,6 +4269,7 @@ impl Tool for SpawnTool {
             tools_profile,
             child_depth,
             background,
+            role,
         )
         .await
     }

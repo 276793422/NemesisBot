@@ -254,28 +254,16 @@ impl QualityEvaluator {
         version: &str,
         content: &str,
     ) -> QualityValidationResult {
-        let prompt = format!(
-            r#"Evaluate the following Forge artifact for quality.
-
-Type: {:?}
-Name: {}
-Version: {}
-
-Content:
-{}
-
-Score each dimension from 0-100:
-- correctness: Does the content correctly implement its stated purpose? (weight 40%%)
-- quality: Code/text quality, clarity, documentation (weight 20%%)
-- security: Security considerations, no dangerous patterns (weight 20%%)
-- reusability: Can this be reused in other contexts? (weight 20%%)
-
-Respond with ONLY a JSON object:
-{{"correctness": N, "quality": N, "security": N, "reusability": N, "notes": "brief explanation"}}"#,
-            kind, name, version, content
+        // 评审提示走 forge 内单一真相源（与 evaluator/pipeline 共用）；
+        // kind 沿用 Debug 形态作为类型标识（代码标识不翻译）。
+        let prompt = super::reflector_llm::quality_review_prompt(
+            &format!("{:?}", kind),
+            name,
+            Some(version),
+            content,
         );
 
-        let system_prompt = "You are a code quality evaluator. Respond only with valid JSON.";
+        let system_prompt = super::reflector_llm::QUALITY_REVIEWER_SYSTEM_PROMPT;
 
         let mut result = QualityValidationResult {
             stage: ValidationStage {

@@ -451,6 +451,11 @@ pub struct BoardReviewConfig {
     /// 投票聚合（平票/无多数 → Unsure 转人工，fail-safe 不偏向自动收货）；
     /// 消费侧收敛上限 5，并发上限 4。
     pub checkers: u32,
+    /// 评审档位（gap ②：评审分层；"thorough" | "fast"）。thorough（默认）
+    /// = 全量纪律 + 取证 + 经验蒸馏（渲染字节与历史一致）；fast = 精简档
+    /// （保留注入防线与三态 JSON 契约，关闭取证/经验）。无法识别的值安全
+    /// 回落 thorough（宁可全量也不放水）。
+    pub tier: String,
 }
 
 impl Default for BoardReviewConfig {
@@ -460,6 +465,7 @@ impl Default for BoardReviewConfig {
             selfcheck: false,
             auto_close_project: false,
             checkers: 1,
+            tier: "thorough".to_string(),
         }
     }
 }
@@ -699,6 +705,15 @@ pub struct AgentsConfig {
     /// nemesis-agent::discipline）。
     #[serde(default)]
     pub discipline: DisciplineConfig,
+    /// 提示词包体系选择（2026-09-27 prompt-pack pro）。`pro` = 全中文分层
+    /// 提示词体系（前置段 → 人格文件 → 行为段池 → 环境段，段落池确定性
+    /// 组装，工具描述按模型能力档位两档供给）；`classic` = 既有装配路径
+    /// （人格文件拼接 + 固定尾巴，字节级不变）。启动装配型：system prompt
+    /// 在启动时构建后随会话冻结，运行时改键需重启（或重建实例）生效。
+    /// 空串按未配置 = `pro`；未知非空值按 `classic` 处理并 warn
+    /// （fail-safe 到已知旧行为）。解析在 nemesis-agent::prompt。
+    #[serde(default = "default_prompt_system")]
+    pub prompt_system: String,
 }
 
 /// `agents.discipline` 配置节。
@@ -2860,6 +2875,7 @@ pub fn default_config() -> Config {
     Config {
         agents: AgentsConfig {
             discipline: DisciplineConfig::default(),
+            prompt_system: default_prompt_system(),
             claude_code_tool: ClaudeCodeToolConfig::default(),
             codex_tool: CodexToolConfig::default(),
             lsp_tool: LspToolConfig::default(),
@@ -3333,6 +3349,10 @@ fn default_search_limit() -> i64 {
 
 fn default_true() -> bool {
     true
+}
+/// `agents.prompt_system` 缺省值 = pro（段落池组装的新体系）。
+fn default_prompt_system() -> String {
+    "pro".to_string()
 }
 fn default_max_tokens() -> i64 {
     8192

@@ -902,3 +902,105 @@ fn empty_bootstrap_files_inject_no_headers() {
     assert!(prompt.contains("## SOUL.md"));
     assert!(prompt.contains("soul content."));
 }
+
+// --- prompt-pack pro（段落池组装）tests ---
+
+#[test]
+fn pro_mode_default_off_classic_bytes_unchanged() {
+    // 缺省（不 set_prompt_system）= classic 原路径：与显式 classic 字节一致，
+    // 且保留 Important Rules 尾巴（pro 移除它）。
+    let tmp = TempDir::new().unwrap();
+    std::fs::write(tmp.path().join("IDENTITY.md"), "我是测试人格。").unwrap();
+
+    let default_builder = ContextBuilder::new(tmp.path());
+    let explicit_classic = ContextBuilder::new(tmp.path())
+        .set_prompt_system(crate::prompt::PromptSystem::Classic)
+        .build_system_prompt(false);
+
+    assert_eq!(
+        default_builder.build_system_prompt(false),
+        explicit_classic,
+        "缺省路径必须与显式 classic 字节一致"
+    );
+    let classic = explicit_classic;
+    assert!(classic.contains("## Important Rules"));
+    assert!(classic.contains("我是测试人格。"));
+    assert!(!classic.contains("安全基线"), "classic 不含段落池内容");
+}
+
+#[test]
+fn pro_mode_layers_segments_person_then_tail() {
+    let tmp = TempDir::new().unwrap();
+    std::fs::write(tmp.path().join("IDENTITY.md"), "我是测试人格。").unwrap();
+
+    let prompt = ContextBuilder::new(tmp.path())
+        .set_prompt_system(crate::prompt::PromptSystem::Pro)
+        .build_system_prompt(false);
+
+    // 组装顺序：Pre 段 → 人格文件 → 环境段。
+    let pre_pos = prompt
+        .find("交互式智能代理")
+        .expect("Pre 段（identity_base）应在场");
+    let safety_pos = prompt
+        .find("安全基线")
+        .expect("Pre 段（safety_policy）应在场");
+    let persona_pos = prompt.find("## IDENTITY.md").expect("人格文件应在场");
+    let tail_pos = prompt.find("## Environment").expect("环境段应在场");
+    assert!(pre_pos < safety_pos);
+    assert!(safety_pos < persona_pos, "Pre 段先于人格文件");
+    assert!(persona_pos < tail_pos);
+
+    // pro 尾巴无 Important Rules（行为规则职能移交段落池）。
+    assert!(!prompt.contains("## Important Rules"));
+    assert!(prompt.contains("## Workspace"));
+}
+
+#[test]
+fn pro_mode_empty_workspace_still_renders() {
+    let tmp = TempDir::new().unwrap();
+    let prompt = ContextBuilder::new(tmp.path())
+        .set_prompt_system(crate::prompt::PromptSystem::Pro)
+        .build_system_prompt(false);
+
+    assert!(
+        prompt.starts_with("你是运行在用户本机设备上的交互式智能代理"),
+        "空工作区时 pro 提示词以身份段开头"
+    );
+    assert!(prompt.contains("安全基线"));
+    assert!(prompt.contains("## Environment"));
+}
+
+#[test]
+fn pro_mode_is_deterministic() {
+    // 同工作区两次构建字节级一致（prompt cache 前缀稳定的根基）。
+    let tmp = TempDir::new().unwrap();
+    std::fs::write(tmp.path().join("SOUL.md"), "灵魂内容。").unwrap();
+    let build = || {
+        ContextBuilder::new(tmp.path())
+            .set_prompt_system(crate::prompt::PromptSystem::Pro)
+            .build_system_prompt(false)
+    };
+    assert_eq!(build(), build());
+}
+
+#[test]
+fn pro_mode_heartbeat_skip_bootstrap_keeps_segments() {
+    // skip_bootstrap（heartbeat）跳过的是 BOOTSTRAP.md 初始化模式，人格
+    // 文件照常装载；pro 组装在此路径下分层不变。
+    let tmp = TempDir::new().unwrap();
+    std::fs::write(tmp.path().join("IDENTITY.md"), "心跳人格。").unwrap();
+    std::fs::write(tmp.path().join("BOOTSTRAP.md"), "首次启动话术。").unwrap();
+    let prompt = ContextBuilder::new(tmp.path())
+        .set_prompt_system(crate::prompt::PromptSystem::Pro)
+        .build_system_prompt(true);
+
+    assert!(prompt.contains("交互式智能代理"), "Pre 段照常");
+    assert!(
+        prompt.contains("心跳人格。"),
+        "heartbeat 路径人格文件照常装载"
+    );
+    assert!(
+        !prompt.contains("Initialization Bootstrap Mode"),
+        "skip_bootstrap 不进 BOOTSTRAP 初始化模式"
+    );
+}

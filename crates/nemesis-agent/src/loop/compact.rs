@@ -642,8 +642,11 @@ impl AgentLoop {
 
 /// The trailing instruction for a G1 prefix-reuse summary request. Kept in one
 /// place so the batch and multipart paths emit the identical instruction.
-const SUMMARIZE_INSTRUCTION: &str =
-    "请对以上对话片段做一份简明摘要，保留核心上下文与关键要点，供后续对话作为前情提要使用。";
+/// prompt-pack pro（M4）：九段式结构化前情摘要，文本单一真相源在
+/// [`crate::prompt::COMPACT_INSTRUCTION`]。
+use crate::prompt::{
+    COMPACT_INSTRUCTION as SUMMARIZE_INSTRUCTION, EXISTING_SUMMARY_PREFIX, render_compact_merge,
+};
 
 /// T4 (U1): pre-G1 summary shape, restored as the per-model fallback
 /// (`summarizer_prefix_reuse: false`).
@@ -673,8 +676,8 @@ pub(crate) async fn summarize_bare_concat_owned(
     let mut content = String::new();
     if !existing_summary.is_empty() {
         content.push_str(&format!(
-            "Existing context (summary of the earlier conversation, merge with the new summary): {}\n\n",
-            existing_summary
+            "{}{}\n\n",
+            EXISTING_SUMMARY_PREFIX, existing_summary
         ));
     }
     for m in messages {
@@ -695,7 +698,12 @@ pub(crate) async fn summarize_bare_concat_owned(
         observer_manager.as_ref(),
         "summarize-bare-concat",
         model,
-        provider.chat(model, llm_messages, None, vec![]),
+        provider.chat(
+            model,
+            llm_messages,
+            Some(aux_chat_options(AUX_SUMMARY_MAX_TOKENS)),
+            vec![],
+        ),
     )
     .await;
 
@@ -768,11 +776,8 @@ pub(crate) async fn summarize_multipart_owned(
         }
     };
 
-    // Merge via LLM.
-    let merge_prompt = format!(
-        "Merge these two conversation summaries into one cohesive summary:\n\n1: {}\n\n2: {}",
-        s1, s2
-    );
+    // Merge via LLM（模板单一真相源：`prompt::COMPACT_MERGE_TEMPLATE`）。
+    let merge_prompt = render_compact_merge(&s1, &s2);
 
     let llm_messages = vec![LlmMessage {
         role: "user".to_string(),
@@ -787,7 +792,12 @@ pub(crate) async fn summarize_multipart_owned(
         observer_manager.as_ref(),
         "summarize-multipart-merge",
         model,
-        provider.chat(model, llm_messages, None, vec![]),
+        provider.chat(
+            model,
+            llm_messages,
+            Some(aux_chat_options(AUX_SUMMARY_MAX_TOKENS)),
+            vec![],
+        ),
     )
     .await;
 
@@ -840,8 +850,8 @@ pub(crate) async fn summarize_batch_owned(
     let mut instruction = String::new();
     if !existing_summary.is_empty() {
         instruction.push_str(&format!(
-            "Existing context (summary of the earlier conversation, merge with the new summary): {}\n\n",
-            existing_summary
+            "{}{}\n\n",
+            EXISTING_SUMMARY_PREFIX, existing_summary
         ));
     }
     instruction.push_str(SUMMARIZE_INSTRUCTION);
@@ -858,7 +868,12 @@ pub(crate) async fn summarize_batch_owned(
         observer_manager.as_ref(),
         "summarize-batch",
         model,
-        provider.chat(model, messages, None, vec![]),
+        provider.chat(
+            model,
+            messages,
+            Some(aux_chat_options(AUX_SUMMARY_MAX_TOKENS)),
+            vec![],
+        ),
     )
     .await;
 
@@ -925,9 +940,18 @@ where
         mgr.emit(request_event.to_conversation_event()).await;
     }
 
-    // Execute the LLM call (async, no block_on).
+    // Execute the LLM call (async, no block_on). 墙钟上限走杂务旁路护栏
+    // （bypass_llm::AUX_SUMMARY_TIMEOUT）——慢模型/挂死连接不拖住压缩任务；
+    // 超时折叠为 Err，走既有失败语义（摘要不产出、历史保持不折叠）。
     let start = std::time::Instant::now();
-    let mut response = llm_call.await;
+    let mut response = tokio::time::timeout(AUX_SUMMARY_TIMEOUT, llm_call)
+        .await
+        .unwrap_or_else(|_| {
+            Err(format!(
+                "[summarize] 摘要 LLM 调用超时（上限 {}s）",
+                AUX_SUMMARY_TIMEOUT.as_secs()
+            ))
+        });
     let duration_ms = start.elapsed().as_millis() as u64;
 
     let (response_content, raw_req, raw_resp) = match &mut response {
@@ -1109,7 +1133,7 @@ pub(crate) async fn summarize_prefix_owned(
 
     let final_summary = match final_summary {
         Some(s) if omitted && !s.is_empty() => Some(format!(
-            "{}\n[Note: Some oversized messages were omitted from this summary for efficiency.]",
+            "{}\n\n[注：部分超长消息未纳入本次摘要输入，摘要未覆盖其内容。]",
             s
         )),
         other => other,

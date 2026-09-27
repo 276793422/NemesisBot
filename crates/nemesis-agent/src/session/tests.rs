@@ -2723,7 +2723,7 @@ fn test_summarize_session_appends_omission_note_for_oversized() {
     let result = summarizer.summarize_session("omit:key", &history);
     assert!(result.starts_with("summary"), "{result}");
     assert!(
-        result.contains("oversized messages were omitted"),
+        result.contains("超长消息未纳入"),
         "omission note missing: {result}"
     );
 }

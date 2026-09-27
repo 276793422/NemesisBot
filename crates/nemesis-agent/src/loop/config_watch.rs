@@ -16,34 +16,36 @@ pub(crate) const E7_TITLE_INPUT_MAX_CHARS: usize = 500;
 /// E7: 自动标题的长度上限（计划原文 ≤24 字）。
 pub(crate) const E7_TITLE_MAX_CHARS: usize = 24;
 
-/// E7: 一次性 LLM 标题生成（无工具、非流式）。失败/空输出 → None（调用
-/// 方诚实跳过，下轮回复再试）。
+/// E7: 一次性 LLM 标题生成（无工具、非流式）。失败/超时/空输出 → None（
+/// 调用方诚实跳过，下轮回复再试）。提示文本单一真相源：
+/// `prompt::render_title_prompt`（格式约束 + 双向删减规则 + 数据非指令
+/// 防护）；清洗兜底仍由 [`sanitize_generated_title`] 负责。调用走杂务
+/// 旁路护栏（`bypass_llm`：限 token + 超时 + 空输出校验）。
 pub(crate) async fn generate_title_from_first_message(
     provider: &dyn LlmProvider,
     model: &str,
     first_user: &str,
 ) -> Option<String> {
-    let prompt = format!(
-        "根据以下用户请求，生成一个不超过{}字的会话标题。直接输出标题本身：不要引号、不要解释、不要换行。\n\n用户请求：{}",
-        E7_TITLE_MAX_CHARS, first_user
+    let prompt = crate::prompt::render_title_prompt(first_user, E7_TITLE_MAX_CHARS);
+    let call = provider.chat(
+        model,
+        vec![LlmMessage {
+            role: "user".to_string(),
+            content: prompt,
+            tool_calls: None,
+            tool_call_id: None,
+            reasoning_content: None,
+            images: Vec::new(),
+        }],
+        Some(aux_chat_options(AUX_TITLE_MAX_TOKENS)),
+        Vec::new(),
     );
-    let resp = provider
-        .chat(
-            model,
-            vec![LlmMessage {
-                role: "user".to_string(),
-                content: prompt,
-                tool_calls: None,
-                tool_call_id: None,
-                reasoning_content: None,
-                images: Vec::new(),
-            }],
-            None,
-            Vec::new(),
-        )
-        .await
-        .ok()?;
-    sanitize_generated_title(&resp.content)
+    let content = guarded_llm_call("auto-title", AUX_TITLE_TIMEOUT, async {
+        call.await.map(|r| r.content)
+    })
+    .await
+    .ok()?;
+    sanitize_generated_title(&content)
 }
 
 /// E7: 标题清洗——取首行、剥首尾引号/反引号/空白、截到 [`E7_TITLE_MAX_CHARS`]
@@ -326,6 +328,13 @@ impl AgentLoop {
     /// sync. Called by `agent_factory` at gateway startup.
     pub fn set_config_path(&self, path: std::path::PathBuf) {
         *self.config_path.write() = Some(path);
+    }
+
+    /// prompt-pack pro（2026-09-27）：注入提示词体系。启动装配型（system
+    /// prompt 与描述档位随实例冻结，运行时改 `agents.prompt_system` 需重启
+    /// 生效）。Classic（缺省）= 工具描述恒回落注册表原文。
+    pub fn set_prompt_system(&self, system: crate::prompt::PromptSystem) {
+        *self.prompt_system.write() = system;
     }
 
     /// N1 (devtool-upgrade 阶段 1): inject the shared layered pricing store

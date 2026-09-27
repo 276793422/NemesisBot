@@ -106,6 +106,12 @@ pub struct DetachedOpts<'a> {
     /// Swarm M1：会话标签，注入 session_key（`subagent:{label}:{uuid}`）与
     /// trace_id，供日志检索与可观测（G13）。None = 维持 `subagent:{uuid}`。
     pub label: Option<&'a str>,
+    /// prompt-pack pro（M4）：子代理角色模板。None = 继承主人格（默认，
+    /// 兼容现状）；Some(role) = 主人格 + 角色段叠加（角色定位 / 硬边界 /
+    /// 输出契约 / 内容边界，见 [`crate::prompt::SubagentRole`]）。与
+    /// `system_prompt` 的关系：显式 `system_prompt` 优先（裸提示词模式照旧
+    /// 替换人格），`role` 只在没有显式覆盖时叠加。
+    pub role: Option<crate::prompt::SubagentRole>,
 }
 
 impl AgentLoop {
@@ -570,9 +576,13 @@ impl AgentLoop {
     pub async fn run_detached_events(&self, task: &str, opts: DetachedOpts<'_>) -> Vec<AgentEvent> {
         // Swarm M1（裸提示词模式）：system_prompt 覆盖须在 AgentInstance::new
         // 之前——构造函数把它注入为 history 首轮 system turn。
+        // prompt-pack pro（M4）：显式 `system_prompt` 优先（裸提示词替换）；
+        // 否则 `role` 存在时把角色模板叠加到主人格之后（None = 纯继承）。
         let mut cfg = self.config.clone();
         if let Some(sp) = opts.system_prompt {
             cfg.system_prompt = Some(sp.to_string());
+        } else if let Some(role) = opts.role {
+            cfg.system_prompt = Some(role.render_system_prompt(cfg.system_prompt.as_deref()));
         }
         let session_key = Self::detached_session_key(opts.label);
         let instance = AgentInstance::new(cfg);

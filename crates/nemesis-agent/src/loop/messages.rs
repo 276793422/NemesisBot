@@ -309,7 +309,7 @@ impl AgentLoop {
         instance: &AgentInstance,
         memory_hits: Option<&[String]>,
     ) -> Vec<LlmMessage> {
-        self.build_messages_with_memory_annotated(instance, memory_hits)
+        self.build_messages_with_memory_annotated(instance, memory_hits, None)
             .0
     }
 
@@ -380,10 +380,15 @@ impl AgentLoop {
     /// file's final summary may have advanced later in the same turn).
     /// Byte-identical output to the unannotated build; the annotation rides
     /// alongside and never feeds the provider.
+    ///
+    /// prompt-pack pro（M4）：`channel` = 本回合来源通道（RequestContext
+    /// 传入；None = 未知/调用方不提供）。Pro 体系下非 web 的外部通道触发
+    /// 来源降权节；Classic 体系无论传什么都字节不变。
     pub fn build_messages_with_memory_annotated(
         &self,
         instance: &AgentInstance,
         memory_hits: Option<&[String]>,
+        channel: Option<&str>,
     ) -> (Vec<LlmMessage>, crate::replay::BuildAnnotation) {
         let history = instance.get_history();
 
@@ -611,6 +616,19 @@ impl AgentLoop {
                 tier_now,
                 mode_line,
             ));
+            // prompt-pack pro（M4）：输入数据声明 + 外部来源降权，只在 Pro
+            // 体系渲染（Classic 体系字节不变承诺——golden 特征测试钉住
+            // messages 全文）。两节内容纯状态派生（channel 一轮内不变）→
+            // 字节稳定纪律成立；随 InjectionRecord 台账回放一致。
+            if *self.prompt_system.read() == crate::prompt::PromptSystem::Pro {
+                sections.push(crate::prompt::render_paste_data_section());
+                if let Some(ch) = channel
+                    && ch != "web"
+                    && !crate::session::is_internal_channel(ch)
+                {
+                    sections.push(crate::prompt::render_external_channel_section(ch));
+                }
+            }
             if sections.is_empty() {
                 None
             } else {

@@ -3654,6 +3654,7 @@ dependencies = [
  "nemesis-memory",
  "nemesis-observer",
  "nemesis-path",
+ "nemesis-prompts",
  "nemesis-providers",
  "nemesis-routing",
  "nemesis-security",
@@ -3710,6 +3711,7 @@ dependencies = [
  "git2",
  "hmac",
  "nemesis-path",
+ "nemesis-prompts",
  "nemesis-types",
  "regex",
  "rusqlite",
@@ -3913,6 +3915,7 @@ dependencies = [
  "mockall",
  "nemesis-path",
  "nemesis-plugin",
+ "nemesis-prompts",
  "nemesis-types",
  "parking_lot",
  "regex",
@@ -4101,6 +4104,10 @@ dependencies = [
 ]
 
 [[package]]
+name = "nemesis-prompts"
+version = "0.1.0"
+
+[[package]]
 name = "nemesis-providers"
 version = "0.1.0"
 dependencies = [
@@ -4170,6 +4177,7 @@ dependencies = [
  "ipnet",
  "nemesis-config",
  "nemesis-path",
+ "nemesis-prompts",
  "nemesis-types",
  "nemesis-utils",
  "parking_lot",
@@ -4276,6 +4284,7 @@ dependencies = [
  "libc",
  "mockall",
  "nemesis-path",
+ "nemesis-prompts",
  "nemesis-skills",
  "nemesis-types",
  "nemesis-utils",
@@ -4398,6 +4407,7 @@ dependencies = [
  "nemesis-lsp",
  "nemesis-memory",
  "nemesis-path",
+ "nemesis-prompts",
  "nemesis-providers",
  "nemesis-sandbox",
  "nemesis-security",
@@ -4439,6 +4449,7 @@ dependencies = [
  "dashmap",
  "nemesis-config",
  "nemesis-data",
+ "nemesis-prompts",
  "nemesis-providers",
  "nemesis-sandbox",
  "nemesis-tools",
@@ -4497,6 +4508,7 @@ dependencies = [
  "nemesis-migrate",
  "nemesis-observer",
  "nemesis-path",
+ "nemesis-prompts",
  "nemesis-providers",
  "nemesis-sandbox",
  "nemesis-security",

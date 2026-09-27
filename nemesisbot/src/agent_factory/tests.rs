@@ -1040,7 +1040,7 @@ async fn spawn_closure_foreground_refuse_and_stop_fires() {
     .to_string();
     let (_loop_arc, slot) = spawn_fixture(&doc);
     let spawn = slot.get().expect("closure injected");
-    let err = spawn("agent-1", "do task", "", "", "", "readonly", 1, false)
+    let err = spawn("agent-1", "do task", "", "", "", "readonly", 1, false, "")
         .await
         .expect_err("exit 2 must refuse spawn");
     assert!(err.contains("refused-by-hook"), "err={err}");
@@ -1058,7 +1058,7 @@ async fn spawn_closure_foreground_refuse_and_stop_fires() {
     let (loop_arc, slot) = spawn_fixture(&doc);
     let spawn = slot.get().expect("closure injected");
     let _keep_alive = loop_arc; // Weak 升级需要 loop 活着
-    let result = spawn("agent-1", "do task", "", "", "", "readonly", 1, false).await;
+    let result = spawn("agent-1", "do task", "", "", "", "readonly", 1, false, "").await;
     assert!(result.is_err(), "stub provider never chats: {result:?}");
     assert!(
         marker_lines_of(&stop_marker) >= 1,
@@ -1083,7 +1083,7 @@ async fn spawn_closure_background_fires_start_then_stop() {
     let (loop_arc, slot) = spawn_fixture(&doc);
     let spawn = slot.get().expect("closure injected");
     let _keep_alive = loop_arc;
-    let marker = spawn("agent-1", "bg task", "", "", "", "readonly", 1, true)
+    let marker = spawn("agent-1", "bg task", "", "", "", "readonly", 1, true, "")
         .await
         .expect("background spawn returns marker");
     assert!(marker.starts_with("__BG_SPAWN__:"), "marker={marker}");
@@ -1122,7 +1122,7 @@ async fn project_spawn_closure_refuses_on_start_exit_2() {
         Arc::new(std::sync::OnceLock::new());
     super::inject_project_spawn_fn(&loop_arc, &slot, Some(bridge));
     let spawn = slot.get().expect("closure injected");
-    let err = spawn("agent-1", "do task", "", "", "", "readonly", 1, false)
+    let err = spawn("agent-1", "do task", "", "", "", "readonly", 1, false, "")
         .await
         .expect_err("project spawn must refuse on exit 2");
     assert!(err.contains("refused-by-hook"), "err={err}");
@@ -1574,11 +1574,11 @@ async fn project_spawn_closure_rejects_unknown_profile_and_background() {
     let doc = serde_json::json!({ "hooks": {} }).to_string();
     let (_loop_arc, slot) = project_spawn_fixture(&doc);
     let spawn = slot.get().expect("closure injected");
-    let err = spawn("p-agent", "task", "", "", "", "bogus-profile", 1, false)
+    let err = spawn("p-agent", "task", "", "", "", "bogus-profile", 1, false, "")
         .await
         .expect_err("unknown profile must be refused");
     assert!(err.contains("Unknown tools profile"), "err={err}");
-    let err2 = spawn("p-agent", "task", "", "", "", "readonly", 1, true)
+    let err2 = spawn("p-agent", "task", "", "", "", "readonly", 1, true, "")
         .await
         .expect_err("background must be refused in project mode");
     assert!(err2.contains("后台"), "err2={err2}");
@@ -1601,7 +1601,7 @@ async fn project_spawn_closure_foreground_runs_and_fires_stop() {
     let (loop_arc, slot) = project_spawn_fixture(&doc);
     let _keep_alive = loop_arc;
     let spawn = slot.get().expect("closure injected");
-    let result = spawn("p-agent", "task", "", "", "", "readonly", 1, false).await;
+    let result = spawn("p-agent", "task", "", "", "", "readonly", 1, false, "").await;
     assert!(result.is_err(), "stub provider never chats: {result:?}");
     assert_eq!(
         marker_lines_of(&start_marker),
@@ -1647,7 +1647,7 @@ async fn background_spawn_publishes_error_continuation_to_bus() {
     let mut rx = bus.subscribe_inbound();
     let _keep_alive = loop_arc.clone();
     let spawn = slot.get().expect("closure injected");
-    let marker = spawn("b-agent", "bg task", "", "", "", "readonly", 1, true)
+    let marker = spawn("b-agent", "bg task", "", "", "", "readonly", 1, true, "")
         .await
         .expect("background spawn returns marker");
     assert!(marker.starts_with("__BG_SPAWN__:"), "marker={marker}");
@@ -1683,7 +1683,7 @@ async fn background_spawn_publishes_cancelled_when_loop_dropped() {
     let (loop_arc, slot, bus) = bg_spawn_fixture(&doc);
     let mut rx = bus.subscribe_inbound();
     let spawn = slot.get().expect("closure injected");
-    let marker = spawn("c-agent", "bg task", "", "", "", "readonly", 1, true)
+    let marker = spawn("c-agent", "bg task", "", "", "", "readonly", 1, true, "")
         .await
         .expect("background spawn returns marker");
     assert!(marker.starts_with("__BG_SPAWN__:"), "marker={marker}");

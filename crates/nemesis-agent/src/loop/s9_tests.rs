@@ -315,8 +315,11 @@ async fn build_messages_with_memory_annotation_merges_sections() {
     instance.set_history(hist);
 
     let agent_loop = AgentLoop::new(Box::new(MockLlmProvider::new(vec![])), test_config());
-    let (messages, _annot) = agent_loop
-        .build_messages_with_memory_annotated(&instance, Some(&["memory hit one".to_string()]));
+    let (messages, _annot) = agent_loop.build_messages_with_memory_annotated(
+        &instance,
+        Some(&["memory hit one".to_string()]),
+        None,
+    );
     assert!(!messages.is_empty());
     // 摘要折进首条 system 消息。
     assert!(messages[0].content.contains("covered prefix summary"));

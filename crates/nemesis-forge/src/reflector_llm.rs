@@ -26,15 +26,12 @@ pub trait LLMCaller: Send + Sync {
 /// Build an LLM prompt from reflection statistics for semantic analysis.
 pub fn build_analysis_prompt(stats: &ExperienceStats, total_tools: usize) -> String {
     let mut sb = String::new();
-    sb.push_str("Analyze the following tool usage data from an AI agent system:\n\n");
+    sb.push_str("分析以下来自智能代理系统的工具使用数据：\n\n");
 
+    sb.push_str(&format!("- 工具调用总数：{}\n", stats.total_count));
+    sb.push_str(&format!("- 独立模式数：{}\n", total_tools));
     sb.push_str(&format!(
-        "- Total tool invocations: {}\n",
-        stats.total_count
-    ));
-    sb.push_str(&format!("- Unique patterns: {}\n", total_tools));
-    sb.push_str(&format!(
-        "- Average success rate: {:.1}%\n\n",
+        "- 平均成功率：{:.1}%\n\n",
         if stats.total_count > 0 {
             stats.success_count as f64 / stats.total_count as f64 * 100.0
         } else {
@@ -42,15 +39,15 @@ pub fn build_analysis_prompt(stats: &ExperienceStats, total_tools: usize) -> Str
         }
     ));
 
-    sb.push_str("## Tool Frequency\n");
+    sb.push_str("## 工具频次\n");
     for (tool, ts) in &stats.tool_counts {
-        sb.push_str(&format!("- {}: {} uses\n", tool, ts.count));
+        sb.push_str(&format!("- {}: {} 次\n", tool, ts.count));
     }
 
-    sb.push_str("\nPlease provide:\n");
-    sb.push_str("1. Key patterns that could become reusable Skills\n");
-    sb.push_str("2. Areas for improvement\n");
-    sb.push_str("3. Optimization suggestions\n");
+    sb.push_str("\n请给出：\n");
+    sb.push_str("1. 可沉淀为可复用技能的关键模式\n");
+    sb.push_str("2. 有待改进之处\n");
+    sb.push_str("3. 优化建议\n");
 
     sb
 }
@@ -70,36 +67,31 @@ pub fn build_full_analysis_prompt(
     cycle: Option<&nemesis_types::forge::LearningCycle>,
 ) -> String {
     let mut sb = String::new();
-    sb.push_str(
-        "Analyze the following tool usage data from an AI agent system and provide insights:\n\n",
-    );
+    sb.push_str("分析以下来自智能代理系统的工具使用数据，并给出洞察：\n\n");
 
     // Statistical Summary
-    sb.push_str("## Statistical Summary\n");
+    sb.push_str("## 统计概览\n");
+    sb.push_str(&format!("- 工具调用总数：{}\n", stats.total_records));
+    sb.push_str(&format!("- 独立模式数：{}\n", stats.unique_patterns));
     sb.push_str(&format!(
-        "- Total tool invocations: {}\n",
-        stats.total_records
-    ));
-    sb.push_str(&format!("- Unique patterns: {}\n", stats.unique_patterns));
-    sb.push_str(&format!(
-        "- Average success rate: {:.1}%\n\n",
+        "- 平均成功率：{:.1}%\n\n",
         stats.avg_success_rate * 100.0
     ));
 
     // Tool Frequency
-    sb.push_str("## Tool Frequency\n");
+    sb.push_str("## 工具频次\n");
     for (tool, count) in &stats.tool_frequency {
-        sb.push_str(&format!("- {}: {} uses\n", tool, count));
+        sb.push_str(&format!("- {}: {} 次\n", tool, count));
     }
 
     // High-Frequency Patterns
-    sb.push_str("\n## High-Frequency Patterns\n");
+    sb.push_str("\n## 高频模式\n");
     for (i, p) in stats.top_patterns.iter().enumerate() {
         if i >= 5 {
             break;
         }
         sb.push_str(&format!(
-            "- {}: {} uses, {:.0}% success, avg {}ms\n",
+            "- {}: {} 次，成功率 {:.0}%，平均 {}ms\n",
             p.tool_name,
             p.count,
             p.success_rate * 100.0,
@@ -109,10 +101,10 @@ pub fn build_full_analysis_prompt(
 
     // Low Success Patterns
     if !stats.low_success.is_empty() {
-        sb.push_str("\n## Low Success Patterns\n");
+        sb.push_str("\n## 低成功率模式\n");
         for p in &stats.low_success {
             sb.push_str(&format!(
-                "- {}: {} uses, {:.0}% success\n",
+                "- {}: {} 次，成功率 {:.0}%\n",
                 p.tool_name,
                 p.count,
                 p.success_rate * 100.0
@@ -121,32 +113,29 @@ pub fn build_full_analysis_prompt(
     }
 
     // Existing Artifacts
-    sb.push_str("\n## Existing Forge Artifacts\n");
+    sb.push_str("\n## 现有 Forge 产物\n");
     for a in artifacts {
         sb.push_str(&format!(
-            "- [{:?}] {} v{} ({:?}, {} uses)\n",
+            "- [{:?}] {} v{}（{:?}，{} 次使用）\n",
             a.kind, a.name, a.version, a.status, a.usage_count
         ));
     }
 
     // Phase 5: Conversation-level trace insights
     if let Some(ts) = trace_stats {
-        sb.push_str("\n## Conversation-Level Trace Insights\n");
-        sb.push_str(&format!("- Total conversations: {}\n", ts.total_traces));
+        sb.push_str("\n## 会话级轨迹洞察\n");
+        sb.push_str(&format!("- 会话总数：{}\n", ts.total_traces));
+        sb.push_str(&format!("- 平均每会话 LLM 轮数：{:.1}\n", ts.avg_rounds));
         sb.push_str(&format!(
-            "- Average LLM rounds per conversation: {:.1}\n",
-            ts.avg_rounds
-        ));
-        sb.push_str(&format!(
-            "- Efficiency score: {:.2} (tool steps per round)\n",
+            "- 效率得分：{:.2}（每轮工具步数）\n",
             ts.efficiency_score
         ));
 
         if !ts.tool_chain_patterns.is_empty() {
-            sb.push_str("\n### Top Tool Chains\n");
+            sb.push_str("\n### 高频工具链\n");
             for p in &ts.tool_chain_patterns {
                 sb.push_str(&format!(
-                    "- {}: {} uses, {:.1} avg rounds, {:.0}% success\n",
+                    "- {}: {} 次，平均 {:.1} 轮，成功率 {:.0}%\n",
                     p.chain,
                     p.count,
                     p.avg_rounds,
@@ -156,10 +145,10 @@ pub fn build_full_analysis_prompt(
         }
 
         if !ts.retry_patterns.is_empty() {
-            sb.push_str("\n### Retry Patterns\n");
+            sb.push_str("\n### 重试模式\n");
             for p in &ts.retry_patterns {
                 sb.push_str(&format!(
-                    "- {}: {} calls, {:.0}% success rate\n",
+                    "- {}: {} 次重试，成功率 {:.0}%\n",
                     p.tool_name,
                     p.retry_count,
                     p.success_rate * 100.0
@@ -168,24 +157,24 @@ pub fn build_full_analysis_prompt(
         }
 
         if !ts.signal_summary.is_empty() {
-            sb.push_str("\n### Session Signals\n");
+            sb.push_str("\n### 会话信号\n");
             for (sig_type, count) in &ts.signal_summary {
-                sb.push_str(&format!("- {}: {} occurrences\n", sig_type, count));
+                sb.push_str(&format!("- {}：{} 次\n", sig_type, count));
             }
         }
     }
 
     // Phase 6: Closed-loop learning state
     if let Some(cycle) = cycle {
-        sb.push_str("\n## Closed-Loop Learning State (Phase 6)\n");
-        sb.push_str(&format!("- Patterns detected: {}\n", cycle.patterns_found));
-        sb.push_str(&format!("- Actions taken: {}\n", cycle.actions_taken));
+        sb.push_str("\n## 闭环学习状态（第六阶段）\n");
+        sb.push_str(&format!("- 发现模式数：{}\n", cycle.patterns_found));
+        sb.push_str(&format!("- 已执行动作数：{}\n", cycle.actions_taken));
     }
 
-    sb.push_str("\nPlease provide:\n");
-    sb.push_str("1. Key patterns that could become reusable Skills or scripts\n");
-    sb.push_str("2. Areas for improvement in the agent's tool usage\n");
-    sb.push_str("3. Suggestions for optimizing high-frequency operations\n");
+    sb.push_str("\n请给出：\n");
+    sb.push_str("1. 可沉淀为可复用技能或脚本的关键模式\n");
+    sb.push_str("2. 工具使用有待改进之处\n");
+    sb.push_str("3. 高频操作的优化建议\n");
 
     sb
 }
@@ -204,12 +193,30 @@ pub async fn semantic_analysis(
 ) -> Result<String, String> {
     let user_prompt = build_full_analysis_prompt(stats, artifacts, trace_stats, cycle);
 
-    let system_prompt = "You are an AI system analyst. Analyze tool usage data and provide concise, actionable insights. \
-        Focus on identifying patterns that could be automated, improved, or turned into reusable components. \
-        Keep your response under 500 words.";
+    // 提示词单一真相源在 nemesis-prompts（M7 集中化）。
+    let system_prompt = nemesis_prompts::forge::SEMANTIC_ANALYSIS_SYSTEM_PROMPT;
 
     caller.chat(system_prompt, &user_prompt, max_tokens).await
 }
+
+/// Forge 产物质量评审 user prompt 构造（LLM-as-Judge 单一真相源）：
+/// evaluator / validator / pipeline 三个调用点共用同一份中文计分卡与 JSON
+/// schema（`version` 传 `None` 时省略版本行，兼容不带版本号的调用面）。
+/// JSON 键与权重是解析契约（消费端按 `correctness`/`quality`/`security`/
+/// `reusability` 取数加权），任何一侧都不得单方面改动。
+pub fn quality_review_prompt(
+    kind: &str,
+    name: &str,
+    version: Option<&str>,
+    content: &str,
+) -> String {
+    // 文本单一真相源在 nemesis-prompts（M7 集中化）；此处保留原签名作
+    // forge 内便捷入口（evaluator/validator/pipeline 调用点不动）。
+    nemesis_prompts::forge::quality_review_prompt(kind, name, version, content)
+}
+
+/// 产物质量评审员 system prompt（三个评审调用点共用）。
+pub use nemesis_prompts::forge::QUALITY_REVIEWER_SYSTEM_PROMPT;
 
 /// Parse bullet-point insights from an LLM response.
 pub fn parse_insights(response: &str) -> Vec<String> {

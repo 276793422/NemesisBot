@@ -169,7 +169,8 @@ fn test_rebuild_byte_exact_with_ledger_and_later_history() {
         turn("user", "second question"),
     ]);
 
-    let (messages, annotation) = agent_loop.build_messages_with_memory_annotated(&instance, None);
+    let (messages, annotation) =
+        agent_loop.build_messages_with_memory_annotated(&instance, None, None);
     // Preconditions the test depends on: system at [0] + a trailing user
     // message ⇒ the merged context digest IS injected mid-vec.
     let digest_index = annotation
@@ -243,7 +244,8 @@ fn test_verify_locates_injection_diff() {
         turn("user", "hello"),
     ]);
 
-    let (messages, annotation) = agent_loop.build_messages_with_memory_annotated(&instance, None);
+    let (messages, annotation) =
+        agent_loop.build_messages_with_memory_annotated(&instance, None, None);
     let digest_index = annotation.digest_index.expect("digest injected");
 
     let recorded: Vec<serde_json::Value> = messages
@@ -1118,7 +1120,8 @@ fn test_rebuild_reapplies_vision_projection() {
     let instance = AgentInstance::new(test_config());
     instance.set_history(history.clone());
 
-    let (messages, annotation) = agent_loop.build_messages_with_memory_annotated(&instance, None);
+    let (messages, annotation) =
+        agent_loop.build_messages_with_memory_annotated(&instance, None, None);
     assert!(annotation.vision_projected, "vision=no 构建必须置投影标志");
     assert!(
         messages.iter().all(|m| m.images.is_empty()),
@@ -1216,7 +1219,8 @@ fn test_rebuild_vision_projection_truncates_before_projecting() {
     let instance = AgentInstance::new(test_config());
     instance.set_history(history.clone());
 
-    let (messages, annotation) = agent_loop.build_messages_with_memory_annotated(&instance, None);
+    let (messages, annotation) =
+        agent_loop.build_messages_with_memory_annotated(&instance, None, None);
     assert!(annotation.vision_projected);
     let recorded: Vec<serde_json::Value> = messages
         .iter()

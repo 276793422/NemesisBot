@@ -178,6 +178,8 @@ pub(crate) async fn init_agent(
         home: home.clone(),
         // K1：gateway 固定 canonical 布局（显式写出，不依赖 fallback）。
         workspace: home.join("workspace"),
+        // 入口形态（gap ⑤）：gateway = 交互常驻（缺省，渲染字节不变）。
+        entrance: nemesis_agent::prompt::Entrance::Interactive,
         bus: bus.clone(),
         agent_outbound_tx,
         #[cfg(feature = "forge")]

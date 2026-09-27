@@ -1262,7 +1262,7 @@ impl Summarizer {
         // Add omission note if needed.
         let final_summary = if omitted && !final_summary.is_empty() {
             format!(
-                "{}\n[Note: Some oversized messages were omitted from this summary for efficiency.]",
+                "{}\n\n[注：部分超长消息未纳入本次摘要输入，摘要未覆盖其内容。]",
                 final_summary
             )
         } else {
@@ -1308,11 +1308,8 @@ impl Summarizer {
         let s1 = self.summarize_batch(part1, "");
         let s2 = self.summarize_batch(part2, "");
 
-        // Merge the two summaries via LLM.
-        let merge_prompt = format!(
-            "Merge these two conversation summaries into one cohesive summary:\n\n1: {}\n\n2: {}",
-            s1, s2
-        );
+        // Merge the two summaries via LLM（模板单一真相源：`prompt` 模块）。
+        let merge_prompt = crate::prompt::render_compact_merge(&s1, &s2);
 
         let messages = vec![LlmMessage {
             role: "user".to_string(),
@@ -1404,11 +1401,16 @@ impl Summarizer {
     ///
     /// Mirrors Go's `summarizeBatch`.
     fn summarize_batch(&self, batch: &[&ConversationTurn], existing_summary: &str) -> String {
-        let mut prompt = String::from(
-            "Provide a concise summary of this conversation segment, preserving core context and key points.\n",
-        );
+        // prompt-pack pro（M4）：与 compact 路径共用同一份九段式指令与已有
+        // 摘要前缀（`prompt` 模块单一真相源）。本形态指令在前、对话在后
+        // （`CONVERSATION:` 分隔），指令首句为位置中性指代，两形态通用。
+        let mut prompt = String::from(crate::prompt::COMPACT_INSTRUCTION);
         if !existing_summary.is_empty() {
-            prompt.push_str(&format!("Existing context: {}\n", existing_summary));
+            prompt.push_str(&format!(
+                "{}{}\n",
+                crate::prompt::EXISTING_SUMMARY_PREFIX,
+                existing_summary
+            ));
         }
         prompt.push_str("\nCONVERSATION:\n");
         for m in batch {

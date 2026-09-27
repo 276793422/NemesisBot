@@ -2,6 +2,7 @@
 resolver = "2"
 members = [
     "crates/nemesis-types",
+    "crates/nemesis-prompts",
     "crates/nemesis-bus",
     "crates/nemesis-config",
     "crates/nemesis-data",
@@ -178,6 +179,7 @@ url = "2.5"
 
 # Internal crates
 nemesis-types = { path = "crates/nemesis-types" }
+nemesis-prompts = { path = "crates/nemesis-prompts" }
 nemesis-bus = { path = "crates/nemesis-bus" }
 nemesis-config = { path = "crates/nemesis-config" }
 nemesis-data = { path = "crates/nemesis-data" }

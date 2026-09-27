@@ -241,6 +241,24 @@ pub struct AuditDecisionRow {
     pub issue_title: String,
 }
 
+/// 回滚先例行（判例沉淀）：一条「自动决策被人工回滚」的活动记录 + 关联
+/// 单据编号/标题 + 原决策内容。数据面产物，供评审提示词参考注入
+/// （渲染侧带数据非指令护栏，见 nemesis-prompts `board::render_precedents_block`）。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RollbackPrecedent {
+    /// 回滚活动 id（activity_log.id）。
+    pub rollback_activity_id: i64,
+    /// 关联单据编号（如 NB-12）。
+    pub issue_number: String,
+    /// 单据标题。
+    pub issue_title: String,
+    /// 原自动决策内容（audit_rollback → 原 auto_decide details JSON；
+    /// done_rollback → 「done（自动收货）」占位——终态回滚无独立决策记录可考）。
+    pub decision: String,
+    /// 回滚原因（done_rollback 内嵌 reason；audit_rollback 无 → 空）。
+    pub rollback_reason: String,
+}
+
 /// 订阅者（表 `issue_subscriber`；通知投递 P4 接通道）。
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Subscriber {

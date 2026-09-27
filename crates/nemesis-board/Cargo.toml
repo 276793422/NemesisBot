@@ -17,6 +17,7 @@ git2 = { workspace = true }
 regex = { workspace = true }
 nemesis-path = { workspace = true }
 nemesis-types = { workspace = true }
+nemesis-prompts = { workspace = true }
 
 [lints]
 workspace = true

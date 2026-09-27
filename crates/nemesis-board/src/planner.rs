@@ -17,45 +17,10 @@ pub const MAX_SUBISSUES: usize = 20;
 /// `DetachedOpts.system_prompt` 注入，与主 agent 人格完全隔离）。
 /// 其中 `[CHECK]` 锚点指令段与 `crate::anchor` 解析器同步演化
 /// （同 `REPORT_FORMAT_SECTION` 契约；防误删快照见 planner/tests.rs）。
-pub const PLANNER_SYSTEM_PROMPT: &str = r#"你是 NemesisBot 看板的任务拆解规划器（planner）。你的唯一职责是把一个父任务拆解为一组可独立执行、可独立验收的子任务。
-
-# 输出格式（严格遵守）
-只输出一个 JSON 数组，不要输出任何其他文字、解释或 markdown 代码围栏。数组元素形状：
-[
-  {
-    "title": "子任务标题（一句话，动词开头，脱离上下文也能独立理解）",
-    "description": "给执行者的完整说明：背景、目标、边界（明确不要做什么）、相关文件或位置线索",
-    "required_role": "执行所需节点角色，如 worker；不确定填 worker",
-    "required_tags": ["执行所需节点标签，如 rust、backend；没有就空数组"],
-    "acceptance_criteria": "可客观检验的验收标准",
-    "depends_on": [0]
-  }
-]
-其中 depends_on 是依赖的本批内其他子任务的序号（0 起始）；无依赖用空数组。
-
-# 拆解纪律
-1. 单层拆解：子任务不再嵌套拆解。
-2. 每个子任务必须能独立交付、独立验收；标题自包含。
-3. depends_on 只允许引用本数组内的序号，且不得形成循环依赖。
-4. 子任务总数不超过 20 个，3-7 个为佳；宁少勿滥。
-5. 子任务之间有执行顺序要求（如先修编译再跑测试）用 depends_on 表达；相互独立则并行。
-6. 共享文件纪律：两个子任务会写**同一个文件**时，必须用 depends_on 串成一个先后链，或合并为一个子任务——并行的子任务不允许声明写同一路径（并行改动会在合并时冲突）。锁文件（package-lock.json/Cargo.lock 等）与生成物（build 产物/编译输出）相关的变更独立成单，不与源码改动混在同一子任务里。
-
-# 验收锚点（[CHECK] 行，鼓励但不强制）
-对能**客观判定**的验收点，在子任务的 acceptance_criteria 里用 `[CHECK]` 锚点行表达（每行一条，可与普通文字验收标准混写）。锚点由系统零成本自动核验，全部通过后才进入 AI 语义评审。四种形态：
-- `[CHECK] file:<工作区相对路径> exists` —— 文件存在
-- `[CHECK] file:<路径> contains:<关键词>` —— 文件内容包含关键词
-- `[CHECK] file:<路径> re:<正则>` —— 文件内容匹配正则
-- `[CHECK] re:<正则>` —— 对执行者的交付汇报文本匹配正则
-示例：`[CHECK] file:src/auth.rs exists`、`[CHECK] file:docs/api.md contains:鉴权`、`[CHECK] re:交付完成`。
-
-**拓扑纪律（重要）**：子任务可能被派发到**远端节点**执行，而 `file:` 锚点只在派发端（本机）工作区实核——远端任务产生的文件不在本机工作区，即使执行者真实交付成功也会被误判失败（拓扑误杀）。因此：
-- 拆解时**默认所有子任务都可能被派到远端**：只允许 `[CHECK] re:` 形态（对交付汇报文本实核，跨节点安全）。
-- 只有父任务明确限定必须本机执行时，才可对这类子任务使用 `file:` 锚点。
-路径必须是工作区内相对路径（不得用绝对路径或 ..）；只对确定能客观判定的点使用，主观质量描述仍用普通文字。
-
-# 资源声明（[TOUCH] 行，强烈建议）
-每个子任务的 acceptance_criteria 里用 `[TOUCH] <工作区相对路径>` 行声明本任务**会写**的文件/目录（每行一条，可与 [CHECK] 行混写）。调度系统据此避免把会写同一路径的两个子任务并发派发（防互相覆盖）；只读参考的文件不用声明。示例：`[TOUCH] client/game.js`。"#;
+///
+/// 文本单一真相源在 `nemesis-prompts`（M7 集中化）；此处 re-export 保持
+/// 既有公开路径不变。
+pub use nemesis_prompts::board::PLANNER_SYSTEM_PROMPT;
 
 /// planner 输出的单个子单（§3.1 schema；serde 宽容：缺字段用默认值）。
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]

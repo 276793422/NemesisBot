@@ -868,25 +868,26 @@ impl LearningEngine {
     ) -> Result<String, String> {
         let draft_name = action.draft_name.as_deref().unwrap_or("unknown-skill");
         let prompt = format!(
-            "Generate a complete SKILL.md for a Forge self-learning Skill with the following specification:\n\n\
-             Name: {}\n\
-             Description: {}\n\
-             Rationale: {}\n\n\
-             The SKILL.md must have YAML frontmatter between --- markers with these fields:\n\
-             - name: skill name\n\
-             - description: what the skill does\n\
-             - version: \"1.0\"\n\n\
-             Then provide the skill instructions in Markdown. The skill should define clear steps that an AI agent can follow.\n\
-             Focus on the tool usage pattern identified. Keep it concise and actionable.",
+            "请为 Forge 自学习技能生成完整的 SKILL.md，规格如下：\n\n\
+             名称：{}\n\
+             描述：{}\n\
+             缘由：{}\n\n\
+             SKILL.md 必须包含以 --- 定界的 YAML frontmatter，字段：\n\
+             - name：技能名\n\
+             - description：技能功能\n\
+             - version：\"1.0\"\n\n\
+             随后用 Markdown 给出技能指令，定义智能代理可遵循的清晰步骤。\n\
+             聚焦已识别的工具使用模式，保持简明、可执行。",
             draft_name,
             action.description,
-            action.rationale.as_deref().unwrap_or("N/A")
+            action.rationale.as_deref().unwrap_or("无")
         );
 
         let budget = 500u32; // default LLM budget
         Self::call_llm_sync(
             provider,
-            "You are a Skill definition generator. Generate valid SKILL.md content with YAML frontmatter.",
+            // 文本单一真相源在 `nemesis-prompts`（M7 集中化）。
+            nemesis_prompts::forge::SKILL_GENERATOR_SYSTEM_PROMPT,
             &prompt,
             budget,
         )
@@ -902,19 +903,21 @@ impl LearningEngine {
     ) -> Result<String, String> {
         let draft_name = action.draft_name.as_deref().unwrap_or("unknown-skill");
         let prompt = format!(
-            "The following Skill draft failed validation. Please fix it based on the diagnosis.\n\n\
-             Skill Name: {}\n\
-             Original Description: {}\n\n\
-             Previous Content:\n{}\n\n\
-             Validation Diagnosis:\n{}\n\n\
-             Please generate a corrected, complete SKILL.md with YAML frontmatter (--- markers). Fix ALL issues identified in the diagnosis.",
+            "以下技能草稿未通过校验。请根据诊断意见修复。\n\n\
+             技能名称：{}\n\
+             原始描述：{}\n\n\
+             先前内容：\n{}\n\n\
+             校验诊断：\n{}\n\n\
+             请生成修正后的完整 SKILL.md（含以 --- 定界的 YAML frontmatter），\
+             修复诊断中指出的全部问题。",
             draft_name, action.description, previous_content, diagnosis
         );
 
         let budget = 500u32;
         Self::call_llm_sync(
             provider,
-            "You are a Skill definition generator. Fix the failing Skill and return a complete corrected SKILL.md.",
+            // 文本单一真相源在 `nemesis-prompts`（M7 集中化）。
+            nemesis_prompts::forge::SKILL_FIXER_SYSTEM_PROMPT,
             &prompt,
             budget,
         )

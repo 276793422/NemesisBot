@@ -157,6 +157,11 @@ pub struct SharedResources {
     /// 经 SharedToolConfig 注入三件套工具（background_start/output/kill）。
     pub background_registry: Arc<nemesis_agent::BackgroundProcessRegistry>,
 
+    /// 入口形态变体（gap ⑤）：gateway/eval 等既有装配点用缺省 Interactive
+    /// （pro system prompt 渲染字节不变）；headless `run` 显式 Headless、
+    /// ACP 显式 Acp——各自入口的语境说明段随身份基座注入。
+    pub entrance: nemesis_agent::prompt::Entrance,
+
     // ---------------- 全自动流转 P3/D1：board_issue 工具依赖 ----------------
     // gateway 装配期注入；store=None（run/acp/测试等 headless 路径）= 工具
     // 不注册，零影响。注册在主 agent——「对 master 说一句话建单」的入口；
@@ -223,6 +228,7 @@ impl Default for SharedResources {
             lsp_manager: Arc::new(nemesis_lsp::LspManager::new(None, None)),
             agent_event_tx: None,
             background_registry: Arc::new(nemesis_agent::BackgroundProcessRegistry::new()),
+            entrance: nemesis_agent::prompt::Entrance::Interactive,
             #[cfg(all(feature = "board", feature = "cluster"))]
             board_store: None,
             #[cfg(all(feature = "board", feature = "cluster"))]
@@ -496,8 +502,16 @@ pub fn build_agent_loop(
 
     // 3. Build system prompt from workspace files (IDENTITY.md, SOUL.md, etc.)
     let workspace_dir = shared.workspace_dir();
+    // prompt-pack pro：agents.prompt_system 选体系——pro 走段落池组装
+    // （Pre 段 → 人格文件 → 行为段池 → 环境段），classic 原路径字节不变。
+    // 启动装配型：system prompt 随实例冻结，改键重启生效。
+    let prompt_system = nemesis_agent::prompt::PromptSystem::from_config(&cfg.agents);
     let system_prompt = {
         let mut context_builder = nemesis_agent::context::ContextBuilder::new(&workspace_dir);
+        context_builder.set_prompt_system(prompt_system);
+        // 入口形态变体（gap ⑤）：Interactive 恒空（gateway 字节不变）；
+        // headless/ACP 由各自入口在 SharedResources 上显式设置。
+        context_builder.set_entrance(shared.entrance);
         let skills_dir = workspace_dir.join("skills");
         if skills_dir.exists() {
             context_builder.load_skills(&skills_dir);
@@ -505,8 +519,9 @@ pub fn build_agent_loop(
         context_builder.build_system_prompt(false)
     };
     info!(
-        "[AgentFactory] System prompt built ({} chars)",
-        system_prompt.len()
+        "[AgentFactory] System prompt built ({} chars, prompt_system={:?})",
+        system_prompt.len(),
+        prompt_system
     );
 
     // 4. Create ProviderAdapter + AgentConfig + AgentLoop.
@@ -578,6 +593,8 @@ pub fn build_agent_loop(
     // runtime model switches and dashboard/CLI config edits re-resolve it live.
     agent_loop.set_tier(resolved_tier);
     agent_loop.set_config_path(shared.home.join("config.json"));
+    // prompt-pack pro：描述档位与 system prompt 同一开关（启动装配型）。
+    agent_loop.set_prompt_system(prompt_system);
     // C3 (devtool-upgrade 阶段 2)：共享 LspManager 注入——编辑后诊断回灌
     // （write_file/edit_file → touch → 等 ERROR → "please fix"）与 LspTool
     // 共用同一实例（server 进程不翻倍）。standalone（None）路径反馈静默跳过。
@@ -1195,13 +1212,18 @@ fn inject_spawn_fn(
               _chat_id: &str,
               tools_profile: &str,
               depth: usize,
-              background: bool| {
+              background: bool,
+              role: &str| {
             let weak = weak.clone();
             let bus = bus.clone();
             // SpawnFn 的 Future 是 'static——&str 参数先拷贝成 owned。
             let agent_id = agent_id.to_string();
             let task = task.to_string();
             let tools_profile = tools_profile.to_string();
+            // P3：显式角色覆盖（"" = 自动 → 沿用档位推导；非空 = 已过
+            // from_slug 校验的 slug，直接转角色）。解析在闭包内做（&str
+            // 参数不可跨 'static 边界）。
+            let explicit_role = nemesis_agent::prompt::SubagentRole::from_slug(role);
             // Fn 闭包不能把捕获 move 进 async 块——每次调用 clone 进去。
             let cc_bridge = cc_bridge.clone();
             // 件2：SubagentStart/Stop 的 payload 素材（两路径共用；后台路径
@@ -1247,6 +1269,13 @@ fn inject_spawn_fn(
                                 // G2: 子代理深度（父深度 + 1，已过 max_depth 检查）
                                 // 写到子 instance，供其 dispatch 再触发深度检查。
                                 depth,
+                                // prompt-pack pro（M4）：readonly 档 → 侦察员角色。
+                                // P3：显式角色优先，缺省回落档位推导。
+                                role: explicit_role.or_else(|| {
+                                    nemesis_agent::loop_tools::detached_role_for_profile(
+                                        &info.tools_profile,
+                                    )
+                                }),
                                 ..Default::default()
                             },
                         )
@@ -1311,13 +1340,20 @@ fn inject_spawn_fn(
                                         //（G2 语义：后台化不另计深度）。
                                         allowed_tools,
                                         depth,
-                                        ..Default::default()
-                                    },
-                                )
-                                .await
-                        }
-                        None => Err("agent loop is gone (gateway shutting down)".to_string()),
-                    };
+                                        // prompt-pack pro（M4）：readonly 档 → 侦察员角色。
+                                // P3：显式角色优先，缺省回落档位推导。
+                                role: explicit_role.or_else(|| {
+                                    nemesis_agent::loop_tools::detached_role_for_profile(
+                                        &info.tools_profile,
+                                    )
+                                }),
+                                ..Default::default()
+                            },
+                        )
+                        .await
+                }
+                None => Err("agent loop is gone (gateway shutting down)".to_string()),
+            };
                     // 件2：SubagentStop（观察型）——完成后、continuation 回灌
                     // bus 前。「cancelled」= 任务 spawn 后 loop 已亡（G4 路径
                     // 唯一取消形态，upgrade 失败）；「failed」= 其余 Err。
@@ -2114,12 +2150,18 @@ pub fn build_project_agent_loop(
 
     // 2. 轻量基线 system prompt：项目目录自身的 IDENTITY/SOUL（若用户放置），
     //    不 load_skills（skills 是主 workspace 资产，G2 边界不进项目 loop）。
-    let system_prompt =
-        nemesis_agent::context::ContextBuilder::new(&project_dir).build_system_prompt(false);
+    //    prompt 体系与主 loop 同一开关（agents.prompt_system）。
+    let prompt_system = nemesis_agent::prompt::PromptSystem::from_config(&cfg.agents);
+    let system_prompt = {
+        let mut context_builder = nemesis_agent::context::ContextBuilder::new(&project_dir);
+        context_builder.set_prompt_system(prompt_system);
+        context_builder.build_system_prompt(false)
+    };
     info!(
         project = %project.name,
-        "[AgentFactory] project system prompt built ({} chars)",
-        system_prompt.len()
+        "[AgentFactory] project system prompt built ({} chars, prompt_system={:?})",
+        system_prompt.len(),
+        prompt_system
     );
 
     // 3. AgentConfig + tier（与主 loop 同一解析链）。
@@ -2169,6 +2211,8 @@ pub fn build_project_agent_loop(
     agent_loop.set_max_concurrent_turns(cfg.agents.defaults.max_concurrent_turns.max(0) as usize);
     agent_loop.set_tier(resolved_tier);
     agent_loop.set_config_path(config_path.clone());
+    // prompt-pack pro：项目 loop 与主 loop 同一开关、同一描述档位链。
+    agent_loop.set_prompt_system(prompt_system);
     agent_loop.set_lsp_manager(shared.lsp_manager.clone());
     // A1（2026-09-22 聊天切会话竞态）：项目 loop 同样注入环尾 seq 查询——
     // 项目会话在 Dashboard 侧切换/轮询的竞态面与主会话完全同构。
@@ -2457,12 +2501,15 @@ fn inject_project_spawn_fn(
               _chat_id: &str,
               tools_profile: &str,
               depth: usize,
-              background: bool| {
+              background: bool,
+              role: &str| {
             let weak = weak.clone();
             // SpawnFn 的 Future 是 'static——&str 参数先拷贝成 owned。
             let agent_id = agent_id.to_string();
             let task = task.to_string();
             let tools_profile = tools_profile.to_string();
+            // P3：显式角色覆盖（语义与主 spawn 同源）。
+            let explicit_role = nemesis_agent::prompt::SubagentRole::from_slug(role);
             // Fn 闭包不能把捕获 move 进 async 块——每次调用 clone 进去。
             let cc_bridge = cc_bridge.clone();
             // 件2：SubagentStart/Stop 的 payload 素材。
@@ -2508,6 +2555,13 @@ fn inject_project_spawn_fn(
                         nemesis_agent::r#loop::DetachedOpts {
                             allowed_tools,
                             depth,
+                            // prompt-pack pro（M4）：readonly 档 → 侦察员角色。
+                            // P3：显式角色优先，缺省回落档位推导。
+                            role: explicit_role.or_else(|| {
+                                nemesis_agent::loop_tools::detached_role_for_profile(
+                                    &info.tools_profile,
+                                )
+                            }),
                             ..Default::default()
                         },
                     )

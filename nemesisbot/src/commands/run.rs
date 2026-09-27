@@ -286,6 +286,9 @@ pub async fn run(
         mcp_enabled: cfg.mcp.as_ref().map(|m| m.enabled).unwrap_or(false),
         mcp_config_path: common::mcp_config_path(home),
         agent_event_tx,
+        // 入口形态（gap ⑤）：headless 单任务——无交互界面、跑完即退的
+        // 语境说明随身份基座注入（pro 体系；classic 忽略）。
+        entrance: nemesis_agent::prompt::Entrance::Headless,
         ..Default::default()
     });
     let agent_loop = crate::agent_factory::build_agent_loop(&shared)

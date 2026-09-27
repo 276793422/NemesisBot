@@ -462,7 +462,7 @@ async fn runtime_policy_snapshot_carries_mode_line() {
     ]);
 
     // Build 默认：mode: build。
-    let (msgs, _) = al.build_messages_with_memory_annotated(&instance, None);
+    let (msgs, _) = al.build_messages_with_memory_annotated(&instance, None, None);
     let joined = msgs.iter().map(|m| m.content.as_str()).collect::<String>();
     assert!(
         joined.contains("mode: build"),
@@ -471,7 +471,7 @@ async fn runtime_policy_snapshot_carries_mode_line() {
 
     // Plan：mode 行换成 plan + 英文硬提醒（模型当轮可读）。
     al.set_mode_with_event(crate::types::AgentMode::Plan, "s", "c");
-    let (msgs, _) = al.build_messages_with_memory_annotated(&instance, None);
+    let (msgs, _) = al.build_messages_with_memory_annotated(&instance, None, None);
     let joined = msgs.iter().map(|m| m.content.as_str()).collect::<String>();
     assert!(
         joined.contains("mode: plan（PLAN mode: do not modify files"),

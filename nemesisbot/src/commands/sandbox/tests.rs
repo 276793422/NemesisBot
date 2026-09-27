@@ -647,10 +647,6 @@ mod wave_b {
 
 #[cfg(windows)] // Windows-form CLI test (Linux nightly: excluded, 2026-09-02 sweep)
 mod wave_a_selftest {
-    use std::sync::Mutex;
-
-    static SELFTEST_ENV_LOCK: Mutex<()> = Mutex::new(());
-
     /// 自检 env 夹具：NEMESISBOT_HOME 指向临时家 + WORKSPACE 指向其 workspace。
     struct SelftestEnv {
         _guard: MutexGuard<'static, ()>,
@@ -659,6 +655,11 @@ mod wave_a_selftest {
     }
     use std::sync::MutexGuard;
 
+    // 环境互斥用 crate::GLOBAL_STATE_LOCK（与 S11b/wave_b 系同锁）：本夹具
+    // 与它们一样做进程级 set_var/remove_var(NEMESISBOT_HOME)，曾经用模块
+    // 私有锁导致两组测试并行时 env 被互相拆除——wave_b commit 的 run() 读
+    // 到已移除的 home → pending 扫描落空 → "No pending" 假红（2026-09-27
+    // workspace 全量并行实绩）。动同一环境变量的测试必须同一把锁。
     impl Drop for SelftestEnv {
         fn drop(&mut self) {
             unsafe { std::env::remove_var("NEMESISBOT_HOME") };
@@ -670,7 +671,9 @@ mod wave_a_selftest {
     }
 
     fn selftest_env() -> SelftestEnv {
-        let guard = SELFTEST_ENV_LOCK.lock().unwrap();
+        let guard = crate::GLOBAL_STATE_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         let tmp = tempfile::TempDir::new().unwrap();
         let home = tmp.path().join(".nemesisbot");
         let workspace = home.join("workspace");

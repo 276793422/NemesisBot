@@ -140,7 +140,7 @@ fn test_build_full_analysis_prompt_basic() {
     assert!(prompt.contains("85.0%"));
     assert!(prompt.contains("file_read"));
     assert!(prompt.contains("flaky_tool"));
-    assert!(prompt.contains("Low Success Patterns"));
+    assert!(prompt.contains("低成功率模式"));
 }
 
 #[test]
@@ -172,12 +172,12 @@ fn test_build_full_analysis_prompt_with_trace_stats() {
     let stats = make_reflection_stats();
     let trace = make_trace_stats();
     let prompt = build_full_analysis_prompt(&stats, &[], Some(&trace), None);
-    assert!(prompt.contains("Conversation-Level Trace Insights"));
+    assert!(prompt.contains("会话级轨迹洞察"));
     assert!(prompt.contains("50"));
     assert!(prompt.contains("3.5"));
     assert!(prompt.contains("read->edit->exec"));
-    assert!(prompt.contains("Retry Patterns"));
-    assert!(prompt.contains("Session Signals"));
+    assert!(prompt.contains("重试模式"));
+    assert!(prompt.contains("会话信号"));
     assert!(prompt.contains("retry"));
 }
 
@@ -193,7 +193,7 @@ fn test_build_full_analysis_prompt_with_learning_cycle() {
         status: nemesis_types::forge::CycleStatus::Completed,
     };
     let prompt = build_full_analysis_prompt(&stats, &[], None, Some(&cycle));
-    assert!(prompt.contains("Closed-Loop Learning State"));
+    assert!(prompt.contains("闭环学习状态"));
     assert!(prompt.contains("5"));
     assert!(prompt.contains("3"));
 }
@@ -369,7 +369,7 @@ fn test_build_analysis_prompt_multiple_tools() {
 fn test_build_full_analysis_prompt_empty_artifacts() {
     let stats = make_reflection_stats();
     let prompt = build_full_analysis_prompt(&stats, &[], None, None);
-    assert!(prompt.contains("Existing Forge Artifacts"));
+    assert!(prompt.contains("现有 Forge 产物"));
 }
 
 #[test]

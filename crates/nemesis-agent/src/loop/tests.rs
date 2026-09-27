@@ -5213,7 +5213,7 @@ async fn test_summarize_prefix_reuse_true_keeps_g1_shape() {
     assert_eq!(msgs[2].role, "assistant");
     // ...trailing instruction as the final user message.
     assert_eq!(msgs.last().unwrap().role, "user");
-    assert!(msgs.last().unwrap().content.contains("简明摘要"));
+    assert!(msgs.last().unwrap().content.contains("用户消息全录"));
 }
 
 /// prefix_reuse=false → OLD shape: exactly ONE bare user message whose
@@ -5253,7 +5253,7 @@ async fn test_summarize_prefix_reuse_false_uses_bare_shape() {
     assert!(c.contains("prior coverage"), "existing summary merged");
     assert!(c.contains("user: question one"), "flattened role lines");
     assert!(c.contains("assistant: answer one"), "flattened role lines");
-    assert!(c.contains("简明摘要"), "instruction present");
+    assert!(c.contains("用户消息全录"), "instruction present");
     // No system message in the old shape.
     assert!(!msgs.iter().any(|m| m.role == "system"));
 }
@@ -8179,7 +8179,7 @@ async fn test_summarize_multipart_batch_is_prefix_subset() {
     let merge = &requests[2];
     assert_eq!(merge.len(), 1);
     assert_eq!(merge[0].role, "user");
-    assert!(merge[0].content.contains("Merge these two"));
+    assert!(merge[0].content.contains("摘要一"));
     // No bare-concatenation form anywhere.
     for req in requests.iter() {
         for m in req.iter() {
@@ -9266,13 +9266,15 @@ fn t10_build_annotation_flag_follows_vision() {
     let agent_loop = t10_no_vision_loop(&dir);
     let instance =
         t10_instance_with_two_image_turns(&img1.to_string_lossy(), &img1.to_string_lossy());
-    let (messages, annotation) = agent_loop.build_messages_with_memory_annotated(&instance, None);
+    let (messages, annotation) =
+        agent_loop.build_messages_with_memory_annotated(&instance, None, None);
     assert!(annotation.vision_projected, "vision=no 必须置台账标志");
     assert!(messages.iter().all(|m| m.images.is_empty()));
 
     // supported（无 config_path → 默认放行）→ false，请求带字节。
     let standalone = AgentLoop::new(Box::new(MockLlmProvider::new(vec![])), test_config());
-    let (messages2, annotation2) = standalone.build_messages_with_memory_annotated(&instance, None);
+    let (messages2, annotation2) =
+        standalone.build_messages_with_memory_annotated(&instance, None, None);
     assert!(!annotation2.vision_projected, "supported 不得置投影标志");
     assert_eq!(
         messages2.iter().filter(|m| !m.images.is_empty()).count(),

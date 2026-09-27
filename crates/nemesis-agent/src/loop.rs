@@ -63,6 +63,11 @@ mod bus;
 pub use bus::*;
 #[allow(unused_imports)]
 pub(crate) use bus::*;
+mod bypass_llm;
+#[allow(unused_imports)]
+pub use bypass_llm::*;
+#[allow(unused_imports)]
+pub(crate) use bypass_llm::*;
 mod commands;
 #[allow(unused_imports)]
 pub use commands::*;
@@ -477,6 +482,11 @@ pub struct AgentLoop {
     /// so dashboard-added models and CLI `model set-tier` are picked up live,
     /// with no stale snapshot.
     config_path: parking_lot::RwLock<Option<std::path::PathBuf>>,
+    /// prompt-pack pro（2026-09-27）：提示词体系选择。启动装配型——工厂按
+    /// `agents.prompt_system` 注入；Pro 时工具描述走
+    /// [`crate::prompt::tool_description`] 档位表（按 tier 取档），Classic
+    /// 恒回落注册表原文（字节不变）。缺省 Classic。
+    prompt_system: parking_lot::RwLock<crate::prompt::PromptSystem>,
     /// N1（devtool-upgrade 阶段 1）：分层价目表（workspace/data）。三级
     /// context_window 解析链的第 L2 级——config 未显式配置 `context_window`
     /// 时按价目表 `max_input_tokens` 猜。`None`（未注入/打开失败）→ 直接落到
@@ -655,6 +665,7 @@ impl AgentLoop {
             mode: parking_lot::RwLock::new(crate::types::AgentMode::Build),
             agent_event_tx: parking_lot::RwLock::new(None),
             config_path: parking_lot::RwLock::new(None),
+            prompt_system: parking_lot::RwLock::new(crate::prompt::PromptSystem::Classic),
             pricing_store: parking_lot::RwLock::new(None),
             lsp_manager: parking_lot::RwLock::new(None),
             commands_hot: parking_lot::RwLock::new(None),
@@ -824,6 +835,10 @@ mod mcp_reload_tests;
 // （摘要路由小模型 / 主模型零调用 / 自动压缩路径不受影响）。
 #[cfg(test)]
 mod n2_small_model_tests;
+// prompt-pack pro（M3）：`prompt_system` 双体系闸门测试（Classic 字节不变 /
+// Pro 分档取值 / 表外回落 / 运行时切回）。
+#[cfg(test)]
+mod prompt_system_tests;
 // D3 (devtool-upgrade 阶段 5)：消息↔文件变更映射的 agent 侧测试
 // （dispatch 瀑布收集独立于 checkpoint 挂载 / drain 即清 + 去重）。
 #[cfg(test)]

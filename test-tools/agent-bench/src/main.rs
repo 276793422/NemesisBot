@@ -37,6 +37,9 @@ struct BenchConfig {
     save_baseline: Option<PathBuf>,
     compare_baseline: Option<PathBuf>,
     out_dir: PathBuf,
+    /// 提示词体系（`agents.prompt_system`）：pro（默认）/ classic。
+    /// 双基线对比用——同一场景集在两种体系下各存一份 baseline。
+    prompt_system: String,
 }
 
 impl BenchConfig {
@@ -48,6 +51,7 @@ impl BenchConfig {
         let mut save_baseline = None;
         let mut compare_baseline = None;
         let mut out_dir = None;
+        let mut prompt_system = "pro".to_string();
         let mut i = 1;
         while i < args.len() {
             match args[i].as_str() {
@@ -75,6 +79,14 @@ impl BenchConfig {
                 "--out" => {
                     i += 1;
                     out_dir = Some(PathBuf::from(&args[i]));
+                }
+                "--prompt-system" => {
+                    i += 1;
+                    let v = args[i].as_str();
+                    if v != "pro" && v != "classic" {
+                        bail!("--prompt-system 只接受 pro|classic，得到: {v}");
+                    }
+                    prompt_system = v.to_string();
                 }
                 other => bail!("未知参数: {other}"),
             }
@@ -106,6 +118,7 @@ impl BenchConfig {
             save_baseline,
             compare_baseline,
             out_dir,
+            prompt_system,
         })
     }
 }
@@ -176,7 +189,7 @@ impl WsApi {
 
 /// 基准专用 config.json：4 个确定性模型 + restrict_to_workspace（安全场景
 /// 依赖边界硬围栏）。onboard 先行提取 workspace 模板，再整体覆写 config。
-fn write_bench_config(ws: &TestWorkspace) -> Result<()> {
+fn write_bench_config(ws: &TestWorkspace, prompt_system: &str) -> Result<()> {
     let ai = ai_server_port();
     let model = |alias: &str| {
         json!({
@@ -210,6 +223,7 @@ fn write_bench_config(ws: &TestWorkspace) -> Result<()> {
         // health 端口钉死 harness 常量（18790 本机 ghost socket，见 HEALTH_PORT 注）。
         "gateway": {"host": "127.0.0.1", "port": HEALTH_PORT as i64},
         "agents": {
+            "prompt_system": prompt_system,
             "defaults": {
                 "workspace": "",
                 "restrict_to_workspace": true,
@@ -327,8 +341,11 @@ async fn main() -> Result<()> {
         );
     }
 
-    println!("[2/4] 写基准 config（4+1 模型 + 边界围栏）+ 关 SSRF 层...");
-    write_bench_config(&ws)?;
+    println!(
+        "[2/4] 写基准 config（4+1 模型 + 边界围栏，prompt_system={}）+ 关 SSRF 层...",
+        cfg.prompt_system
+    );
+    write_bench_config(&ws, &cfg.prompt_system)?;
     disable_ssrf_layer(&ws)?;
 
     println!("[3/4] 启动 AI Server（端口 {}）...", ai_server_port());

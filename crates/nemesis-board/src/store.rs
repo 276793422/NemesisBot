@@ -962,6 +962,81 @@ impl BoardStore {
             .map_err(|e| e.to_string())
     }
 
+    /// 回滚先例查询（判例沉淀）：从活动账本捞「自动决策被人工回滚」的
+    /// 历史记录（`audit_rollback:` / `done_rollback:` 标记行），JOIN 单据
+    /// 补编号/标题；audit_rollback 进一步回查原 `auto_decide` 决策详情。
+    /// 产出是**历史事实数据**——调用方渲染进评审提示词时必须带数据非指令
+    /// 护栏（`nemesis_prompts::board::render_precedents_block`）。
+    pub fn list_rollback_precedents(
+        &self,
+        limit: u32,
+    ) -> Result<Vec<crate::models::RollbackPrecedent>, String> {
+        let conn = self.conn.lock().map_err(|e| e.to_string())?;
+        let mut stmt = conn
+            .prepare(
+                "SELECT a.*, i.number AS issue_number, i.title AS issue_title
+                 FROM activity_log a JOIN issue i ON i.id = a.issue_id
+                 WHERE a.action = 'status_changed'
+                   AND (a.details LIKE 'audit_rollback:%' OR a.details LIKE 'done_rollback:%')
+                 ORDER BY a.id DESC LIMIT ?1",
+            )
+            .map_err(|e| e.to_string())?;
+        let rows = stmt
+            .query_map(params![limit], |row| {
+                Ok((
+                    row_to_activity(row)?,
+                    row.get::<_, String>("issue_number")?,
+                    row.get::<_, String>("issue_title")?,
+                ))
+            })
+            .map_err(|e| e.to_string())?;
+        let mut out = Vec::new();
+        for row in rows {
+            let (activity, issue_number, issue_title) = row.map_err(|e| e.to_string())?;
+            let details = activity.details.as_deref().unwrap_or("");
+            let (decision, rollback_reason) = if let Some(rest) =
+                details.strip_prefix("audit_rollback:")
+            {
+                // 回查原 auto_decide 决策详情（activity_id={id}）；原活动
+                // 已不存在/不是决策类 → 空串（渲染侧自然略过摘录）。
+                let orig_id = rest
+                    .strip_prefix("activity_id=")
+                    .and_then(|s| s.parse::<i64>().ok());
+                let orig_details = match orig_id {
+                    Some(id) => {
+                        let orig: Option<ActivityLog> = conn
+                            .query_row(
+                                "SELECT * FROM activity_log WHERE id = ?1 AND action = 'auto_decide'",
+                                params![id],
+                                row_to_activity,
+                            )
+                            .optional()
+                            .map_err(|e| e.to_string())?;
+                        orig.and_then(|a| a.details).unwrap_or_default()
+                    }
+                    None => String::new(),
+                };
+                (orig_details, String::new())
+            } else {
+                // done_rollback:done→in_review:{reason}——终态回滚，原因
+                // 内嵌在标记行里，无独立决策记录。
+                let reason = details
+                    .strip_prefix("done_rollback:done→in_review:")
+                    .unwrap_or("")
+                    .to_string();
+                ("done（自动收货）".to_string(), reason)
+            };
+            out.push(crate::models::RollbackPrecedent {
+                rollback_activity_id: activity.id,
+                issue_number,
+                issue_title,
+                decision,
+                rollback_reason,
+            });
+        }
+        Ok(out)
+    }
+
     /// 审计回滚（P5/E2 方案②）：把一条 `auto_decide` 决策对应的单据从
     /// done 退回 in_review，绕过状态机（done 是终态——回滚是人工纠错
     /// 特权，不进 can_transition 词表），同时落 System 评论 + status_change

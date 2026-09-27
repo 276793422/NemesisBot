@@ -103,28 +103,10 @@ impl QualityEvaluator {
                     .map(|c| c.validation.llm_max_tokens as i64)
                     .unwrap_or(2000);
 
-                let prompt = format!(
-                    "Evaluate the following Forge artifact for quality.\n\n\
-                    Type: {}\n\
-                    Name: {}\n\
-                    Version: {}\n\
-                    \n\
-                    Content:\n\
-                    {}\n\
-                    \n\
-                    Score each dimension from 0-100:\n\
-                    - correctness: Does the content correctly implement its stated purpose? (weight 40%%)\n\
-                    - quality: Code/text quality, clarity, documentation (weight 20%%)\n\
-                    - security: Security considerations, no dangerous patterns (weight 20%%)\n\
-                    - reusability: Can this be reused in other contexts? (weight 20%%)\n\
-                    \n\
-                    Respond with ONLY a JSON object:\n\
-                    {{\"correctness\": N, \"quality\": N, \"security\": N, \"reusability\": N, \"notes\": \"brief explanation\"}}",
-                    kind, name, version, content
-                );
-
-                let system_prompt =
-                    "You are a code quality evaluator. Respond only with valid JSON.";
+                // 评审提示走 forge 内单一真相源（与 validator/pipeline 共用）。
+                let prompt =
+                    crate::reflector_llm::quality_review_prompt(kind, name, Some(version), content);
+                let system_prompt = crate::reflector_llm::QUALITY_REVIEWER_SYSTEM_PROMPT;
 
                 match provider
                     .chat(system_prompt, &prompt, Some(max_tokens))

@@ -6,6 +6,7 @@ edition.workspace = true
 
 [dependencies]
 nemesis-types = { workspace = true }
+nemesis-prompts = { workspace = true }
 nemesis-providers = { workspace = true }
 nemesis-tools = { workspace = true }
 nemesis-data = { workspace = true }

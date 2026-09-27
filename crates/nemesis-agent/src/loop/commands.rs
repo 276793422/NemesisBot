@@ -285,7 +285,7 @@ impl AgentLoop {
     }
 
     /// 自定义 slash 命令改写（改写型，区别于内置命令的短路型）。K3 补齐后
-    /// 三段解析链（每段只在上一段未命中时生效）：
+    /// 四段解析链（每段只在上一段未命中时生效）：
     ///
     /// 1. **自定义命令**：`/name args` → 命令表模板中的 `$ARGUMENTS` 替换为
     ///    `args`（模板无占位符且带参数 → 追加为独立段）。
@@ -296,10 +296,15 @@ impl AgentLoop {
     ///    信任边界（诚实声明）：这是用户自己配置的模板/参数 = 用户本机终端
     ///    同级信任，**不**过 9 层安全管线（管线管的是 LLM 工具调用）；且只在
     ///    命令模板路径生效——普通消息不做注入（不放大攻击面）。
-    /// 3. **技能回落**：`/name` 未命中命令表时查已装 skills（workspace →
+    /// 3. **内置深度模板**：命令表未命中时查产品内置模板库（评审/排障/
+    ///    修复纪律，`crate::prompt::slash`）→ 整段展开改写。用户配置恒可
+    ///    覆盖内置默认（不在 [`Self::BUILTIN_SLASH_COMMANDS`] 内置短路名单，
+    ///    自定义同名命令优先）；内置路径**不做** shell 注入展开（模板是
+    ///    编译期产品文本，`$ARGUMENTS` 纯文本替换，不放大攻击面）。
+    /// 4. **技能回落**：`/name` 均未命中时查已装 skills（workspace →
     ///    global → builtin），命中则改写为 `Use the {name} skill to handle:
     ///    {args}`（无参数则 `Use the {name} skill.`）——技能斜杠化；
-    ///    内置名/自定义命令优先级恒高于技能名。
+    ///    内置名/自定义命令/内置模板优先级恒高于技能名。
     ///
     /// 未命中/内置名/非 slash 一律不动。每消息做一次 mtime 检查（一次 stat，
     /// 可忽略）。async 的原因只有 `` !`cmd` `` 执行；调用点 `process_inbound_
@@ -324,11 +329,17 @@ impl AgentLoop {
         let expanded = {
             let hot_guard = self.commands_hot.read();
             let Some(hot) = hot_guard.as_ref() else {
+                if self.rewrite_builtin_template(&name, &args, msg) {
+                    return;
+                }
                 return self.rewrite_skill_fallback(&name, &args, msg);
             };
             hot.check();
             let commands = hot.get();
             let Some(cmd) = commands.commands.iter().find(|c| c.name == name) else {
+                if self.rewrite_builtin_template(&name, &args, msg) {
+                    return;
+                }
                 return self.rewrite_skill_fallback(&name, &args, msg);
             };
             // $ARGUMENTS 占位替换；模板无占位符且带参数 → 追加为独立段（对
@@ -349,6 +360,23 @@ impl AgentLoop {
             expanded.len()
         );
         msg.content = expanded;
+    }
+
+    /// 内置深度模板层（四段解析链第 3 段）：命令表未命中后、技能回落前。
+    /// 命中产品内置模板（评审/排障/修复）→ 展开改写并返回 true。
+    /// 优先级：自定义命令 > 内置模板 > 技能（用户配置恒可覆盖内置默认）。
+    fn rewrite_builtin_template(
+        &self,
+        name: &str,
+        args: &str,
+        msg: &mut nemesis_types::channel::InboundMessage,
+    ) -> bool {
+        let Some(template) = crate::prompt::slash::lookup(name) else {
+            return false;
+        };
+        msg.content = crate::prompt::slash::expand(template, args);
+        info!("[AgentLoop] /{name} resolved to builtin template ({} chars)", msg.content.len());
+        true
     }
 
     /// K3：技能回落（只在命令表未命中时被 [`Self::rewrite_custom_command`]

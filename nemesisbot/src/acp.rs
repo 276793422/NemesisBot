@@ -789,6 +789,9 @@ impl SessionFactory for RealSessionFactory {
                 mcp_enabled: cfg.mcp.as_ref().map(|m| m.enabled).unwrap_or(false),
                 mcp_config_path: crate::common::mcp_config_path(&self.home),
                 agent_event_tx: Some(event_tx),
+                // 入口形态（gap ⑤）：ACP 编辑器接入——面向编辑器协作的
+                // 语境说明随身份基座注入（pro 体系；classic 忽略）。
+                entrance: nemesis_agent::prompt::Entrance::Acp,
                 ..Default::default()
             });
             let agent_loop = crate::agent_factory::build_agent_loop(&shared)

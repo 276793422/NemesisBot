@@ -364,27 +364,11 @@ impl Pipeline {
                     ArtifactKind::Mcp => "mcp",
                 };
 
-                let system_prompt =
-                    "You are a code quality evaluator. Respond only with valid JSON.";
+                // 评审提示走 forge 内单一真相源（与 evaluator/validator 共用）。
+                let system_prompt = crate::reflector_llm::QUALITY_REVIEWER_SYSTEM_PROMPT;
 
-                let user_prompt = format!(
-                    "Evaluate the following Forge artifact for quality.\n\n\
-                    Type: {}\n\
-                    Name: {}\n\
-                    \n\
-                    Content:\n\
-                    {}\n\
-                    \n\
-                    Score each dimension from 0-100:\n\
-                    - correctness: Does the content correctly implement its stated purpose? (weight 40%%)\n\
-                    - quality: Code/text quality, clarity, documentation (weight 20%%)\n\
-                    - security: Security considerations, no dangerous patterns (weight 20%%)\n\
-                    - reusability: Can this be reused in other contexts? (weight 20%%)\n\
-                    \n\
-                    Respond with ONLY a JSON object:\n\
-                    {{\"correctness\": N, \"quality\": N, \"security\": N, \"reusability\": N, \"notes\": \"brief explanation\"}}",
-                    kind_str, name, content
-                );
+                let user_prompt =
+                    crate::reflector_llm::quality_review_prompt(kind_str, name, None, content);
 
                 match caller.chat(system_prompt, &user_prompt, Some(2000)).await {
                     Ok(response) => {

@@ -271,16 +271,19 @@ impl nemesis_forge::reflector_llm::LLMCaller for ForgeProviderBridge {
             extra: HashMap::new(),
         };
 
-        let response = self
-            .provider
-            .chat(&messages, &[], &self.model, &options)
-            .await
-            .map_err(|e| format!("{:?}", e))?;
-
-        if response.content.is_empty() && response.tool_calls.is_empty() {
-            Err("LLM returned no content".to_string())
-        } else {
-            Ok(response.content)
-        }
+        // 杂务旁路护栏（nemesis_agent::loop::bypass_llm）：墙钟超时 + 空输出
+        // 校验——Forge 评审/反思/草稿是千 token 级短输出，挂死连接不拖住
+        // 后台学习循环；空文本不再当成功结果透传（下游本就把空串当无效）。
+        let call = self.provider.chat(&messages, &[], &self.model, &options);
+        nemesis_agent::r#loop::guarded_llm_call(
+            "forge-llm",
+            nemesis_agent::r#loop::AUX_FORGE_TIMEOUT,
+            async move {
+                call.await
+                    .map_err(|e| format!("{:?}", e))
+                    .map(|r| r.content)
+            },
+        )
+        .await
     }
 }

@@ -19,9 +19,8 @@ use std::sync::Arc;
 use tokio::sync::Mutex;
 
 /// System prompt injected into every subagent conversation.
-const SUBAGENT_SYSTEM_PROMPT: &str = "You are a subagent. Complete the given task independently and report the result.\n\
-     You have access to tools - use them as needed to complete your task.\n\
-     After completing the task, provide a clear summary of what was done.";
+/// 文本单一真相源在 `nemesis-prompts`（M7 集中化，字节保留历史文案）。
+use nemesis_prompts::spawn::SPAWN_SUBAGENT_SYSTEM_PROMPT as SUBAGENT_SYSTEM_PROMPT;
 
 /// Subagent task state.
 #[derive(Debug, Clone)]

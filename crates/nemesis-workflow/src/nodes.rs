@@ -2334,12 +2334,10 @@ struct ClassDef {
 /// Default system prompt: forces the LLM to output only the class id and
 /// nothing else. We wrap the list of classes inline so the model can't
 /// hallucinate ids outside the configured set.
-const CLASSIFIER_SYSTEM_PROMPT: &str = "\
-You are a strict text classifier. Pick exactly ONE class id from the list below \
-that best matches the input question. Output ONLY the class id as a single \
-word, no explanation, no quotes, no punctuation.\n\n\
-Available classes:\n{classes}\n\n\
-Respond with just the class id.";
+/// 分类器 system prompt：从给定类 id 集合中挑且只挑一个。类清单经
+/// `{classes}` 占位内联注入，模型无法幻觉出集合外的 id。
+/// 文本单一真相源在 `nemesis-prompts`（M7 集中化）。
+use nemesis_prompts::workflow::CLASSIFIER_SYSTEM_PROMPT;
 
 #[async_trait]
 impl NodeExecutor for QuestionClassifierNodeExecutor {
@@ -2622,17 +2620,10 @@ struct ParamDef {
 /// Default system prompt. We embed the parameter schema inline so the
 /// model has a clear contract, and we ask for a single JSON object (no
 /// markdown fences, no commentary) to keep parsing trivial.
-const EXTRACTOR_SYSTEM_PROMPT: &str = "\
-You are a strict information extractor. Read the user text and pull out the \
-fields listed below. Output ONLY a single JSON object — no markdown fences, \
-no commentary, no surrounding prose.\n\n\
-Rules:\n\
-- Every listed field must appear as a key in the JSON object.\n\
-- If the value is not present in the text, use null.\n\
-- Strings should be unquoted JSON strings; numbers as JSON numbers; booleans \
-as true/false; arrays as JSON arrays.\n\n\
-Fields to extract:\n{parameters}\n\n\
-Respond with just the JSON object.";
+/// 抽取器 system prompt：按字段清单抽信息、输出单一 JSON 对象。
+/// 字段清单经 `{parameters}` 占位注入。文本单一真相源在
+/// `nemesis-prompts`（M7 集中化）。
+use nemesis_prompts::workflow::EXTRACTOR_SYSTEM_PROMPT;
 
 #[async_trait]
 impl NodeExecutor for ParameterExtractorNodeExecutor {
