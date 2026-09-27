@@ -722,8 +722,9 @@ pub(crate) async fn run_runtime(
 
     // Stop scanner chain — kills clamd so it doesn't orphan (holds port 3310,
     // breaks next gateway start). SecurityService trait has no stop hook, so we
-    // call SecurityPlugin.stop_scanner directly here.
-    #[cfg(feature = "security")]
+    // call SecurityPlugin.stop_scanner directly here. scanner feature 关 = 无
+    // scan chain（第 7 层诚实短路），无需停。
+    #[cfg(feature = "scanner")]
     {
         if let Some(ref plugin) = security_plugin {
             plugin.stop_scanner().await;

@@ -256,19 +256,27 @@ pub(crate) async fn build_security_plugin(
 
     // Step 9c: Initialize scanner chain from config.scanner.json
     // Mirrors Go's initScannerChain() which calls LoadFromConfig() + chain.Start()
-    let scanner_config_path = common::scanner_config_path(home);
-    if scanner_config_path.exists() {
-        if let Some(full_config) = load_scanner_full_config(&scanner_config_path)
-            && !full_config.enabled.is_empty()
-        {
-            info!("[Security] Initializing scanner chain from config...");
-            plugin.init_scanner_from_config(&full_config).await;
+    // scanner feature 关 = 第 7 层已在 pipeline 内诚实短路（构造时 WARN），此处只记注记。
+    #[cfg(feature = "scanner")]
+    {
+        let scanner_config_path = common::scanner_config_path(home);
+        if scanner_config_path.exists() {
+            if let Some(full_config) = load_scanner_full_config(&scanner_config_path)
+                && !full_config.enabled.is_empty()
+            {
+                info!("[Security] Initializing scanner chain from config...");
+                plugin.init_scanner_from_config(&full_config).await;
+            }
+        } else {
+            info!(
+                "[Security] Scanner config file not found: {}, scanner chain not initialized",
+                scanner_config_path.display()
+            );
         }
-    } else {
-        info!(
-            "[Security] Scanner config file not found: {}, scanner chain not initialized",
-            scanner_config_path.display()
-        );
+    }
+    #[cfg(not(feature = "scanner"))]
+    {
+        info!("[Security] scanner feature not compiled: virus scanning chain not initialized (layer 7 passes through)");
     }
 
     Some(plugin)
@@ -541,7 +549,7 @@ pub(crate) fn load_security_rules(
 /// Load scanner full config from `config.scanner.json`.
 ///
 /// Returns None if the file doesn't exist or can't be parsed.
-#[cfg(feature = "security")]
+#[cfg(feature = "scanner")]
 pub(crate) fn load_scanner_full_config(
     config_path: &std::path::Path,
 ) -> Option<nemesis_security::scanner::ScannerFullConfig> {

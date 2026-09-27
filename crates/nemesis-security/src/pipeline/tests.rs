@@ -447,6 +447,7 @@ fn test_plugin_file_rules_deny() {
 }
 
 #[test]
+#[cfg(feature = "scanner")]
 fn test_plugin_init_scanner_chain() {
     let plugin = make_plugin();
     plugin.init_scanner_chain(true);
@@ -454,6 +455,7 @@ fn test_plugin_init_scanner_chain() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[cfg(feature = "scanner")]
 async fn test_plugin_scan_invocation_clean() {
     let plugin = make_plugin();
     let args = r#"{"path": "/tmp/test.txt", "content": "normal"}"#;
@@ -462,6 +464,7 @@ async fn test_plugin_scan_invocation_clean() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[cfg(feature = "scanner")]
 async fn test_plugin_scan_invocation_invalid_json() {
     let plugin = make_plugin();
     let args = "not valid json";
@@ -936,6 +939,7 @@ fn test_plugin_auditor_accessor() {
 }
 
 #[test]
+#[cfg(feature = "scanner")]
 fn test_plugin_scan_chain_accessor() {
     let plugin = make_plugin();
     let chain = plugin.scan_chain();
@@ -977,6 +981,7 @@ fn test_plugin_dangerous_command_with_safe_default() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[cfg(feature = "scanner")]
 async fn test_plugin_scan_invocation_with_args() {
     let plugin = make_plugin();
     let args = r#"{"path": "/tmp/clean.txt"}"#;
@@ -1150,9 +1155,12 @@ fn guardian_mode_high_requires_danger_and_wordlist_hit() {
 }
 
 // ---- 感染型 Mock 引擎：Layer 7 拦截 / stop_scanner / scan_invocation ----
+// （scanner feature 关 = 第 7 层整块裁掉，本组用例一并消失）
 
+#[cfg(feature = "scanner")]
 struct MockVirus(bool /* infected */);
 
+#[cfg(feature = "scanner")]
 #[async_trait::async_trait]
 impl crate::scanner::VirusScanner for MockVirus {
     fn name(&self) -> &str {
@@ -1204,6 +1212,7 @@ impl crate::scanner::VirusScanner for MockVirus {
     }
 }
 
+#[cfg(feature = "scanner")]
 async fn install_infected_chain(plugin: &SecurityPlugin) {
     let mut chain = crate::scanner::ScanChain::with_defaults();
     chain.add_engine(Box::new(MockVirus(true)));
@@ -1214,8 +1223,10 @@ async fn install_infected_chain(plugin: &SecurityPlugin) {
 /// 只在 content 臂报感染、file 臂干净的引擎：隔离 Layer 7 的 content-scan
 /// 分支（MockVirus 全拦时 file 臂先挡，消息带 path 而非 content_key，
 /// 测不到 content 臂的消息格式）。
+#[cfg(feature = "scanner")]
 struct MockVirusContentOnly;
 
+#[cfg(feature = "scanner")]
 #[async_trait::async_trait]
 impl crate::scanner::VirusScanner for MockVirusContentOnly {
     fn name(&self) -> &str {
@@ -1259,6 +1270,7 @@ impl crate::scanner::VirusScanner for MockVirusContentOnly {
     }
 }
 
+#[cfg(feature = "scanner")]
 async fn install_content_only_infected_chain(plugin: &SecurityPlugin) {
     let mut chain = crate::scanner::ScanChain::with_defaults();
     chain.add_engine(Box::new(MockVirusContentOnly));
@@ -1267,6 +1279,7 @@ async fn install_content_only_infected_chain(plugin: &SecurityPlugin) {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[cfg(feature = "scanner")]
 async fn test_plugin_execute_layer7_blocks_infected_content() {
     // write_file content → chain.scan_content 感染 → 拦截。
     // 用 content-only 引擎：MockVirus 全拦时 file 臂（扫 target path）先挡，
@@ -1289,6 +1302,7 @@ async fn test_plugin_execute_layer7_blocks_infected_content() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[cfg(feature = "scanner")]
 async fn test_plugin_execute_layer7_blocks_infected_path() {
     // download save_path → chain.scan_file 感染 → 拦截。
     let plugin = make_plugin();
@@ -1309,6 +1323,7 @@ async fn test_plugin_execute_layer7_blocks_infected_path() {
 }
 
 #[tokio::test]
+#[cfg(feature = "scanner")]
 async fn test_plugin_scan_invocation_detects_threat() {
     // scan_invocation 的 true 分支（威胁检出）。
     let plugin = make_plugin();
@@ -1318,6 +1333,7 @@ async fn test_plugin_scan_invocation_detects_threat() {
 }
 
 #[tokio::test]
+#[cfg(feature = "scanner")]
 async fn test_plugin_stop_scanner_stops_engines() {
     let plugin = make_plugin();
     install_infected_chain(&plugin).await;
@@ -1328,6 +1344,7 @@ async fn test_plugin_stop_scanner_stops_engines() {
 }
 
 #[tokio::test]
+#[cfg(feature = "scanner")]
 async fn test_plugin_init_scanner_from_config_no_engines() {
     // 空 enabled → warn + return（chain 保持 disabled）。
     let plugin = make_plugin();
@@ -1340,6 +1357,7 @@ async fn test_plugin_init_scanner_from_config_no_engines() {
 }
 
 #[tokio::test]
+#[cfg(feature = "scanner")]
 async fn test_plugin_init_scanner_from_config_with_stub() {
     let mut full = crate::scanner::ScannerFullConfig::default();
     full.enabled.push("stub".to_string());
@@ -1584,6 +1602,7 @@ fn test_deny_info_layer_ssrf() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[cfg(feature = "scanner")]
 async fn test_deny_info_layer_virus() {
     let plugin = make_plugin();
     install_content_only_infected_chain(&plugin).await;

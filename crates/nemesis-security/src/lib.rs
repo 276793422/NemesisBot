@@ -25,7 +25,7 @@ pub mod approval_rules;
 pub mod audit_log;
 #[cfg(feature = "security")]
 pub mod auditor;
-#[cfg(feature = "security")]
+#[cfg(feature = "scanner")]
 pub mod clamav;
 #[cfg(feature = "security")]
 pub mod classifier;
@@ -55,7 +55,7 @@ pub mod middleware;
 pub mod pipeline;
 #[cfg(feature = "security")]
 pub mod resolver;
-#[cfg(feature = "security")]
+#[cfg(feature = "scanner")]
 pub mod scanner;
 pub mod signature;
 #[cfg(feature = "security")]
@@ -94,7 +94,7 @@ pub use middleware::{
 };
 #[cfg(feature = "security")]
 pub use pipeline::SecurityPlugin;
-#[cfg(feature = "security")]
+#[cfg(feature = "scanner")]
 pub use scanner::{
     DB_STATUS_MISSING, DB_STATUS_READY, DB_STATUS_STALE, DatabaseStatus, EngineInfo,
     ExtensionRules, INSTALL_STATUS_FAILED, INSTALL_STATUS_INSTALLED, INSTALL_STATUS_PENDING,

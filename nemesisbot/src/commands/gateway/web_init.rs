@@ -431,6 +431,7 @@ pub(crate) async fn init_web(ctx: &GatewayCtx, cluster: &ClusterWiring) -> Resul
                 None
             },
             web_server_ops: Some(web_server_ops),
+            #[cfg(feature = "channels-external")]
             external: if cfg.channels.external.enabled {
                 Some(nemesis_channels::external::ExternalConfig {
                     input_exe: cfg.channels.external.input_exe.clone(),
@@ -442,6 +443,7 @@ pub(crate) async fn init_web(ctx: &GatewayCtx, cluster: &ClusterWiring) -> Resul
             } else {
                 None
             },
+            #[cfg(feature = "channels-maixcam")]
             maixcam: if cfg.channels.maixcam.enabled {
                 Some(nemesis_channels::maixcam::MaixCamConfig {
                     host: cfg.channels.maixcam.host.clone(),
@@ -451,6 +453,7 @@ pub(crate) async fn init_web(ctx: &GatewayCtx, cluster: &ClusterWiring) -> Resul
             } else {
                 None
             },
+            #[cfg(feature = "channels-line")]
             line: if cfg.channels.line.enabled {
                 Some(nemesis_channels::line::LineConfig {
                     // P0 vault（B3）：两个字段均支持 vault:/env:/yaml: 引用。
@@ -470,6 +473,7 @@ pub(crate) async fn init_web(ctx: &GatewayCtx, cluster: &ClusterWiring) -> Resul
             } else {
                 None
             },
+            #[cfg(feature = "channels-websocket")]
             websocket: if cfg.channels.websocket.enabled {
                 Some(nemesis_channels::websocket::WebSocketChannelConfig {
                     host: cfg.channels.websocket.host.clone(),

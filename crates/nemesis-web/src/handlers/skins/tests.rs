@@ -7,6 +7,11 @@
 //!
 //! 装配槽 SKINS_SLOT 是进程级单例：全部用例持 SLOT_LOCK 串行（与
 //! background_registry TEST_LOCK 同款纪律）。
+//
+// 刻意设计：每个 #[tokio::test] 是独立 current_thread runtime，持 std
+// Mutex guard 跨 await 不会死锁（无第二个任务可抢锁）；测试域统一豁免
+// 该 lint（upload/tests.rs 同款）。
+#![allow(clippy::await_holding_lock)]
 
 use super::*;
 use crate::api_handlers::AppState;
@@ -24,13 +29,16 @@ use std::time::Instant;
 
 static SLOT_LOCK: parking_lot::Mutex<()> = parking_lot::Mutex::new(());
 
-/// L1 注册表契约：module 名 + commands() 四命令单一真相源。
+/// L1 注册表契约：module 名 + commands() 五命令单一真相源。
 #[test]
 fn commands_registry_shape() {
     use crate::ws_router::ModuleHandler as _;
     let h = SkinsHandler::new();
     assert_eq!(h.module_name(), "skins");
-    assert_eq!(h.commands(), &["list", "detail", "reload", "set_active"]);
+    assert_eq!(
+        h.commands(),
+        &["list", "detail", "reload", "set_active", "install"]
+    );
 }
 
 /// 路由级 dispatch 契约：ws_router 把 msg.cmd 原样递给 handle_cmd（不拼
@@ -56,11 +64,12 @@ async fn handle_cmd_dispatches_bare_names_as_router_sends_them() {
     assert_eq!(err, "unknown command: skins.nonexistent");
 }
 
-/// 构造最小 RequestContext（home 指向临时目录；state 字段全 None 桩）。
-fn make_ctx(home: &std::path::Path) -> RequestContext {
+/// 构造最小 AppState（home 指向临时目录；state 字段全 None 桩）。可指定
+/// auth_token（import 端点鉴权用例需要非空 token 才能测 401）。
+fn make_state(home: &std::path::Path, auth_token: &str) -> Arc<AppState> {
     let ws = home.to_string_lossy().to_string();
-    let state = Arc::new(AppState {
-        auth_token: String::new(),
+    Arc::new(AppState {
+        auth_token: auth_token.to_string(),
         session_count: Arc::new(AtomicUsize::new(0)),
         workspace: Some(ws.clone()),
         home: Some(ws.clone()),
@@ -99,14 +108,20 @@ fn make_ctx(home: &std::path::Path) -> RequestContext {
         signature_verify: None,
         cron: None,
         board: None,
+        board: None,
         skills_install_gate: None,
-    });
+    })
+}
+
+/// 构造最小 RequestContext（home 指向临时目录；state 字段全 None 桩）。
+fn make_ctx(home: &std::path::Path) -> RequestContext {
+    let ws = home.to_string_lossy().to_string();
     RequestContext {
         session_id: "s".to_string(),
         chat_id: "c".to_string(),
         workspace: Some(ws.clone()),
         home: Some(ws),
-        state,
+        state: make_state(home, ""),
         auth_method: crate::session::AuthMethod::default(),
     }
 }
@@ -588,4 +603,143 @@ fn hot_flip_lock_reflected_in_router() {
             .unwrap();
         assert_eq!(res.headers().get("x-skin-id").unwrap(), "beta");
     });
+}
+
+// ===== P2 渠道（2026-09-27）：install 参数面 + /api/skins/import 契约 =====
+
+/// `skins.install` 参数校验（不触网的部分）：缺 url/source / 未知 source /
+/// 非 https URL 直拒。完整下载管线（SSRF 闸/重定向/解包）依赖网络与环境，
+/// 由 install_bytes 单测 + DoD 实测覆盖。
+#[tokio::test]
+async fn install_validates_args_before_any_network() {
+    let _guard = SLOT_LOCK.lock();
+    let tmp = tempfile::tempdir().unwrap();
+    set_handle(
+        Some(tmp.path().join("skins").to_string_lossy().to_string()),
+        Arc::new(parking_lot::RwLock::new("default".into())),
+    );
+    let h = SkinsHandler::new();
+
+    let err = h.install(None).await.unwrap_err();
+    assert!(err.contains("缺少 url 或 source"), "{err}");
+
+    let err = h
+        .install(Some(json!({ "source": "bogus" })))
+        .await
+        .unwrap_err();
+    assert!(err.contains("未知 source"), "{err}");
+
+    let err = h
+        .install(Some(json!({ "url": "http://example.com/x.nbskin" })))
+        .await
+        .unwrap_err();
+    assert!(err.contains("https"), "{err}");
+}
+
+/// import 端点 raw body 契约：401（无/错 token）/ 422（物理拒收）/
+/// 200（合法包落盘 + InstallOutcome 形态）/ 重名 422 → overwrite=true 200。
+#[tokio::test]
+async fn import_endpoint_contract() {
+    use axum::body::Body;
+    use axum::http::Request;
+    use tower::ServiceExt;
+
+    let _guard = SLOT_LOCK.lock();
+    let tmp = tempfile::tempdir().unwrap();
+    let skins = tmp.path().join("skins");
+    std::fs::create_dir(&skins).unwrap();
+    set_handle(
+        Some(skins.to_string_lossy().to_string()),
+        Arc::new(parking_lot::RwLock::new("default".into())),
+    );
+    let app = axum::Router::new()
+        .route(
+            "/api/skins/import",
+            axum::routing::post(handle_import_skin),
+        )
+        .with_state(make_state(tmp.path(), "secret-token"));
+    let pkg = crate::skins::tests::theme_zip_bytes("imported");
+
+    async fn send(
+        app: axum::Router,
+        uri: &str,
+        token: Option<&str>,
+        body: Vec<u8>,
+    ) -> axum::http::Response<axum::body::Body> {
+        let mut b = Request::builder()
+            .method("POST")
+            .uri(uri)
+            .header("content-type", "application/octet-stream");
+        if let Some(t) = token {
+            b = b.header("X-Auth-Token", t);
+        }
+        app.oneshot(b.body(Body::from(body)).unwrap())
+            .await
+            .unwrap()
+    }
+
+    // ① 无 token → 401
+    let res = send(app.clone(), "/api/skins/import", None, pkg.clone()).await;
+    assert_eq!(res.status(), 401);
+    // 错 token → 401
+    let res = send(
+        app.clone(),
+        "/api/skins/import",
+        Some("wrong"),
+        pkg.clone(),
+    )
+    .await;
+    assert_eq!(res.status(), 401);
+
+    // ② 垃圾 body（非 ZIP）→ 422 物理拒收（不是 200 落盘灰卡——渠道语义：
+    //    物理不可服务的包没有落盘价值）
+    let res = send(
+        app.clone(),
+        "/api/skins/import",
+        Some("secret-token"),
+        b"not a zip at all".to_vec(),
+    )
+    .await;
+    assert_eq!(res.status(), 422);
+
+    // ③ 合法包 → 200 + InstallOutcome + 落盘
+    let res = send(
+        app.clone(),
+        "/api/skins/import",
+        Some("secret-token"),
+        pkg.clone(),
+    )
+    .await;
+    assert_eq!(res.status(), 200);
+    let bytes = axum::body::to_bytes(res.into_body(), 1 << 20).await.unwrap();
+    let out: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+    assert_eq!(out["id"], json!("imported"));
+    assert_eq!(out["file"], json!("imported.nbskin"));
+    assert!(out["sha256"].as_str().unwrap().len() == 64);
+    assert_eq!(out["overwritten"], json!(false));
+    assert!(skins.join("imported.nbskin").is_file(), "落盘");
+    let entries = scan_skins(skins.to_str().unwrap());
+    assert_eq!(entries.len(), 1);
+    assert_eq!(entries[0].id, "imported");
+
+    // ④ 重名默认拒 → 422；显式 overwrite → 200 + overwritten=true
+    let res = send(
+        app.clone(),
+        "/api/skins/import",
+        Some("secret-token"),
+        pkg.clone(),
+    )
+    .await;
+    assert_eq!(res.status(), 422);
+    let res = send(
+        app,
+        "/api/skins/import?overwrite=true",
+        Some("secret-token"),
+        pkg,
+    )
+    .await;
+    assert_eq!(res.status(), 200);
+    let bytes = axum::body::to_bytes(res.into_body(), 1 << 20).await.unwrap();
+    let out: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+    assert_eq!(out["overwritten"], json!(true));
 }

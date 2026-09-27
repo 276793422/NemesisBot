@@ -2,16 +2,20 @@
 /**
  * 设置页「皮肤」tab 面板（skins feature / VITE_FEATURE_SKINS 门控）。
  *
- * 卡片列表（含 broken 灰卡——D6 灰卡展示而非隐藏）+ 签名徽标四态 +
- * 设为默认观感（WSAPI skins.set_active → useSkin.applySkinRefresh 免刷新
- * 换肤）+ 重新加载 + 下载 stub。管理面按需现扫（stateless
- * scan-per-call），reload = 语义锚点命令。皮肤只有一种语义：给当前应用
- * 换观感（无任何「打开独立应用」入口——app 形态已裁定移除）。
+ * 卡片列表（含 broken 灰卡——D6 灰卡展示而非隐藏）+ 签名徽标五态（P3 起
+ * +🚫 revoked）+ 设为默认观感（WSAPI skins.set_active → useSkin
+ * .applySkinRefresh 免刷新换肤）+ 重新加载 + 下载皮肤（P2 verify-before-
+ * install 三入口：官方 Release / 任意 https URL / 本地文件导入，共用
+ * 「验签 → 徽标 → 落盘」管线——所有信任结论都落盘，仅物理损坏拒收）+
+ * CRL 快照状态行（P3 吊销第五态的管理面诚实呈现）。管理面按需现扫
+ *（stateless scan-per-call），reload = 语义锚点命令。皮肤只有一种语义：
+ * 给当前应用换观感（无任何「打开独立应用」入口——app 形态已裁定移除）。
  */
 import { ref, onMounted } from 'vue'
 import { useWSAPI } from '../../composables/useWSAPI'
 import { useToast } from '../../composables/useToast'
 import { applySkinRefresh } from '../../composables/useSkin'
+import { authedFetch } from '../../lib/authFetch'
 
 interface SkinManifest {
   id: string
@@ -30,16 +34,38 @@ interface SkinEntry {
   file: string
   status: 'ok' | 'broken'
   status_detail?: string | null
-  signature: 'verified' | 'unsigned' | 'invalid' | 'unverified'
+  signature: 'verified' | 'unsigned' | 'invalid' | 'unverified' | 'revoked'
   sig_detail?: string | null
   manifest: SkinManifest
   sha256: string
   id_mismatch: boolean
 }
+/** CRL 快照管理面状态（P3；不在场 = 全默认，面板不渲染该行） */
+interface CrlInfo {
+  present: boolean
+  verified: boolean
+  expired: boolean
+  version: number
+  valid_until: number
+  entries: number
+  note?: string | null
+}
 interface ListResp {
   dir: string | null
   dir_exists: boolean
   skins: SkinEntry[]
+  crl?: CrlInfo | null
+}
+/** 渠道安装单包结论（WSAPI skins.install / 导入端点返回体） */
+interface InstallOutcome {
+  id: string
+  file: string
+  signature: SkinEntry['signature']
+  sig_detail?: string | null
+  manifest?: Partial<SkinManifest> | null
+  sha256: string
+  overwritten: boolean
+  source_file?: string
 }
 
 const { request } = useWSAPI()
@@ -48,6 +74,7 @@ const toast = useToast()
 const skins = ref<SkinEntry[]>([])
 const dir = ref<string | null>(null)
 const dirExists = ref(true)
+const crl = ref<CrlInfo | null>(null)
 const loading = ref(true)
 const busy = ref(false)
 const activeId = ref('default')
@@ -56,6 +83,11 @@ const SIG_BADGES: Record<string, { label: string; cls: string; title: string }> 
   verified: { label: '✅ 已验证', cls: 'sig-verified', title: '签名验证通过（官方根锚）' },
   unsigned: { label: '⚪ 未签名', cls: 'sig-unsigned', title: '无签名——来源未知，可正常使用' },
   invalid: { label: '🔴 签名无效', cls: 'sig-invalid', title: '' },
+  revoked: {
+    label: '🚫 已吊销',
+    cls: 'sig-revoked',
+    title: '签名被吊销（CRL 快照命中）——建议停用并移除该包',
+  },
   unverified: {
     label: '❔ 无法验证',
     cls: 'sig-unverified',
@@ -63,12 +95,17 @@ const SIG_BADGES: Record<string, { label: string; cls: string; title: string }> 
   },
 }
 
-function sigBadge(e: SkinEntry) {
-  const b = SIG_BADGES[e.signature] || SIG_BADGES.unverified
-  const title = e.signature === 'invalid' && e.sig_detail
-    ? `签名验证失败：${e.sig_detail}`
-    : b.title
+function sigBadgeInfo(sig: string, detail?: string | null) {
+  const b = SIG_BADGES[sig] || SIG_BADGES.unverified
+  const title =
+    (sig === 'invalid' || sig === 'revoked') && detail
+      ? `签名验证失败：${detail}`
+      : b.title
   return { ...b, title }
+}
+
+function sigBadge(e: SkinEntry) {
+  return sigBadgeInfo(e.signature, e.sig_detail)
 }
 
 /** 可激活 = 包体健康且至少带一种载荷（CSS 换色 ∥ structure 结构）。 */
@@ -80,6 +117,7 @@ function applyList(data: ListResp | null) {
   skins.value = data?.skins || []
   dir.value = data?.dir ?? null
   dirExists.value = data?.dir_exists ?? false
+  crl.value = data?.crl ?? null
   activeId.value = localStorage.getItem('nemesisbot_skin') || 'default'
 }
 
@@ -127,6 +165,74 @@ function shortSha(sha: string): string {
   return sha ? sha.slice(0, 12) : ''
 }
 
+// ---------------------------------------------------------------------------
+// 下载皮肤（P2 verify-before-install 三入口）
+// ---------------------------------------------------------------------------
+
+const dlOpen = ref(false)
+const dlBusy = ref(false)
+const dlUrl = ref('')
+const dlOverwrite = ref(false)
+const lastResult = ref<{ entries: InstallOutcome[]; errors: string[] } | null>(null)
+
+/** 单包 InstallOutcome / release 多包 {installed, errors} 统一成结果卡形态 */
+function normalizeInstall(resp: any): { entries: InstallOutcome[]; errors: string[] } {
+  if (resp && Array.isArray(resp.installed)) {
+    const errors = (resp.errors || []).map((e: any) =>
+      e?.error ? `${e.file || '包'}：${e.error}` : String(e),
+    )
+    return { entries: resp.installed as InstallOutcome[], errors }
+  }
+  return { entries: resp ? [resp as InstallOutcome] : [], errors: [] }
+}
+
+async function runInstall(fn: () => Promise<any>) {
+  if (dlBusy.value) return
+  dlBusy.value = true
+  lastResult.value = null
+  try {
+    lastResult.value = normalizeInstall(await fn())
+    if (lastResult.value.entries.length) {
+      toast.success(`已安装 ${lastResult.value.entries.length} 个皮肤包`)
+    }
+    await load()
+  } catch (e: any) {
+    toast.error('安装失败: ' + e)
+  }
+  dlBusy.value = false
+}
+
+function installOfficial() {
+  return runInstall(() =>
+    request('skins', 'install', { source: 'release', overwrite: dlOverwrite.value }),
+  )
+}
+
+function installUrl() {
+  const url = dlUrl.value.trim()
+  if (!url) return
+  return runInstall(() => request('skins', 'install', { url, overwrite: dlOverwrite.value }))
+}
+
+async function onFilePicked(ev: Event) {
+  const input = ev.target as HTMLInputElement
+  const f = input.files?.[0]
+  input.value = '' // 允许重选同一文件
+  if (!f) return
+  return runInstall(async () => {
+    const res = await authedFetch(`/api/skins/import${dlOverwrite.value ? '?overwrite=true' : ''}`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/octet-stream' },
+      body: f,
+    })
+    if (!res.ok) {
+      const j = await res.json().catch(() => null)
+      throw new Error(j?.message || `HTTP ${res.status}`)
+    }
+    return res.json()
+  })
+}
+
 onMounted(load)
 </script>
 
@@ -138,9 +244,75 @@ onMounted(load)
         <span v-if="dir && !dirExists" class="dir-missing">（目录不存在）</span>
       </div>
       <div class="skins-actions">
-        <button class="btn" :disabled="busy || loading" @click="reload">🔄 重新加载</button>
-        <button class="btn" disabled title="皮肤下载即将上线（未来接 Release 分发）">⬇ 下载皮肤</button>
+        <button class="btn" :disabled="busy || loading || dlBusy" @click="reload">🔄 重新加载</button>
+        <button
+          class="btn"
+          :class="{ 'btn-primary': dlOpen }"
+          :disabled="loading"
+          data-test="dl-toggle"
+          @click="dlOpen = !dlOpen"
+        >⬇ 下载皮肤</button>
       </div>
+    </div>
+
+    <!-- CRL 快照状态（P3：在场才渲染，诚实呈现装载各态） -->
+    <div v-if="crl?.present" class="crl-line" :title="crl.note || ''">
+      🛡 吊销快照：v{{ crl.version }} · {{ crl.entries }} 条
+      <template v-if="crl.verified && !crl.expired">· 已验签生效</template>
+      <template v-else-if="crl.expired">· 已过期未应用</template>
+      <template v-else>· 验签失败未应用</template>
+    </div>
+
+    <!-- 下载面板：三入口共用一条验签落盘管线 -->
+    <div v-if="dlOpen" class="card dl-panel" data-test="dl-panel">
+      <div class="dl-row">
+        <button class="btn btn-primary" :disabled="dlBusy" data-test="dl-official" @click="installOfficial">
+          🏛 从官方 Release 安装
+        </button>
+        <span class="dl-hint">拉取最新 Release 的 nightly-skins.zip，逐包验签安装</span>
+      </div>
+      <div class="dl-row">
+        <input
+          v-model="dlUrl"
+          class="dl-input"
+          type="url"
+          placeholder="https://…/skin.nbskin"
+          :disabled="dlBusy"
+          data-test="dl-url"
+          @keyup.enter="installUrl"
+        />
+        <button class="btn" :disabled="dlBusy || !dlUrl.trim()" data-test="dl-url-go" @click="installUrl">从 URL 安装</button>
+      </div>
+      <div class="dl-row">
+        <input type="file" accept=".nbskin" :disabled="dlBusy" data-test="dl-file" @change="onFilePicked" />
+        <label class="dl-check">
+          <input v-model="dlOverwrite" type="checkbox" :disabled="dlBusy" data-test="dl-overwrite" />
+          同名覆盖
+        </label>
+      </div>
+      <p class="dl-note">
+        三入口共用同一条管线：验签 → 徽标 → 落盘（所有信任结论都会落盘，
+        仅物理损坏的包被拒收）；能否「设为默认观感」由
+        <code>ui.skins.require_signed</code> 在启用时把关。
+      </p>
+    </div>
+
+    <!-- 安装结果卡（复用五态徽标语言） -->
+    <div v-if="lastResult" class="card dl-result" data-test="dl-result">
+      <div class="dl-result-head">
+        <b>安装结果</b>
+        <button class="btn btn-sm" data-test="dl-result-close" @click="lastResult = null">✕</button>
+      </div>
+      <div v-for="(e, i) in lastResult.entries" :key="i" class="dl-result-row">
+        <span :class="['sig-badge', sigBadgeInfo(e.signature, e.sig_detail).cls]" :title="sigBadgeInfo(e.signature, e.sig_detail).title">
+          {{ sigBadgeInfo(e.signature, e.sig_detail).label }}
+        </span>
+        <span class="dl-result-id">{{ e.id }}</span>
+        <span v-if="e.manifest?.name" class="dl-hint">{{ e.manifest.name }}</span>
+        <span v-if="e.manifest?.version" class="dl-hint">v{{ e.manifest.version }}</span>
+        <span v-if="e.overwritten" class="dl-hint">（覆盖旧包）</span>
+      </div>
+      <p v-for="(err, i) in lastResult.errors" :key="'e' + i" class="skin-warn">⚠ {{ err }}</p>
     </div>
 
     <div v-if="loading" class="skins-empty">加载中…</div>
@@ -246,10 +418,73 @@ onMounted(load)
   gap: var(--space-2);
   flex-shrink: 0;
 }
+.crl-line {
+  font-size: var(--text-xs);
+  color: var(--text-muted);
+  margin-bottom: var(--space-3);
+}
 .skins-empty {
   color: var(--text-muted);
   padding: var(--space-6) 0;
   text-align: center;
+}
+/* 下载面板（P2 三入口） */
+.dl-panel {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+  padding: var(--space-4);
+  margin-bottom: var(--space-4);
+}
+.dl-row {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  flex-wrap: wrap;
+}
+.dl-input {
+  flex: 1;
+  min-width: 220px;
+}
+.dl-check {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  font-size: var(--text-sm);
+  color: var(--text-secondary);
+  user-select: none;
+}
+.dl-hint {
+  font-size: var(--text-xs);
+  color: var(--text-muted);
+}
+.dl-note {
+  margin: 0;
+  font-size: var(--text-xs);
+  color: var(--text-muted);
+}
+/* 安装结果卡 */
+.dl-result {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  padding: var(--space-4);
+  margin-bottom: var(--space-4);
+}
+.dl-result-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+.dl-result-row {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  flex-wrap: wrap;
+  font-size: var(--text-sm);
+}
+.dl-result-id {
+  font-weight: 600;
 }
 .skins-grid {
   display: grid;
@@ -304,6 +539,11 @@ onMounted(load)
 .sig-invalid {
   color: var(--error);
   background: var(--error-bg);
+}
+.sig-revoked {
+  color: var(--error);
+  background: var(--error-bg);
+  border: 1px solid var(--error);
 }
 .sig-unverified {
   color: var(--text-muted);

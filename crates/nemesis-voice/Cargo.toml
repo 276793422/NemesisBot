@@ -7,6 +7,10 @@ edition.workspace = true
 [features]
 default = ["download"]
 download = []
+# 设备 IO（麦克风采集/扬声器播放/回声消除/loopback 远端参考）：cpal+wasapi 依赖随此
+# feature 进出。voice 本体（STT/TTS/VAD/标点/声纹/云转写，缓冲区与文件驱动）不需要它；
+# 关闭后设备 IO 路径由 audio_stub/aec_stub/loopback_stub 诚实报「未编译」。
+voice-capture = ["dep:cpal", "dep:wasapi"]
 
 [dependencies]
 serde = { workspace = true }
@@ -20,10 +24,10 @@ futures = { workspace = true }
 nemesis-channels = { workspace = true }
 
 [target.'cfg(target_os = "windows")'.dependencies]
-cpal = "0.15"
 libc = "0.2"
 libloading = { workspace = true }
-wasapi = "0.17"
+cpal = { version = "0.15", optional = true }
+wasapi = { version = "0.17", optional = true }
 
 [dev-dependencies]
 tempfile = "3"

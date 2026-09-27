@@ -54,7 +54,8 @@ pub mod projects;
 pub mod question;
 #[cfg(feature = "sandbox")]
 pub mod sandbox;
-#[cfg(feature = "security")]
+// 病毒扫描管理面（scanner feature 从 security 拆出；implies security）。
+#[cfg(feature = "scanner")]
 pub mod scanner;
 #[cfg(feature = "security")]
 pub mod security;
@@ -173,7 +174,7 @@ pub fn register_all(router: &mut crate::ws_router::WsRouter) {
     router.register(Arc::new(channels::ChannelsHandler::new()));
     router.register(Arc::new(identity::IdentityHandler));
     router.register(Arc::new(tools::ToolsHandler));
-    #[cfg(feature = "security")]
+    #[cfg(feature = "scanner")]
     {
         router.register(Arc::new(scanner::ScannerHandler::new()));
     }
@@ -618,9 +619,9 @@ mod memory_extra_tests;
 mod persona_extra_tests;
 #[cfg(all(test, feature = "workflow"))]
 mod persona_more_tests;
-#[cfg(all(test, feature = "security"))]
+#[cfg(all(test, feature = "scanner"))]
 mod scanner_extra_tests;
-#[cfg(all(test, feature = "security"))]
+#[cfg(all(test, feature = "scanner"))]
 mod scanner_more_tests;
 #[cfg(all(test, feature = "workflow"))]
 mod skills_extra_tests;

@@ -227,7 +227,8 @@ fn begin_cleanup_failure_is_honest_error() {
     assert_eq!(reply.status, "error", "清不掉旧 staging 必须诚实报错");
     assert!(reply.error.unwrap().contains("清理旧 staging 失败"));
 
-    drop(held);
+    #[cfg(windows)]
+    drop(held); // held 仅 cfg(windows) 定义（共享锁句柄），unix 分支无此绑定
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
@@ -361,7 +362,8 @@ fn end_landed_replace_failure_is_honest_error() {
     let err = sink.end(&b2.transfer_id).unwrap_err();
     assert!(err.contains("清理旧收件目录失败"), "{err}");
 
-    drop(held);
+    #[cfg(windows)]
+    drop(held); // held 仅 cfg(windows) 定义（共享锁句柄），unix 分支无此绑定
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;

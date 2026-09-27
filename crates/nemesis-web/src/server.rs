@@ -808,6 +808,22 @@ impl WebServer {
                 get(crate::handlers::board_asset::handle_board_asset_download),
             );
 
+        // 皮肤本地导入（P2 第三入口；raw body，落盘走 install_bytes 同一
+        // 管线——WSAPI skins.install 覆盖不到浏览器文件选择的形态）。
+        #[cfg(feature = "skins")]
+        let router = if self.relay_only {
+            router
+        } else {
+            router.route(
+                "/api/skins/import",
+                axum::routing::post(crate::handlers::skins::handle_import_skin).layer(
+                    axum::extract::DefaultBodyLimit::max(
+                        crate::handlers::skins::SKIN_IMPORT_BODY_LIMIT_BYTES,
+                    ),
+                ),
+            )
+        };
+
         // `--relay` 纯中继形态（set_relay_only）：丢弃上面构建的 dashboard
         // 全量路由（/ws、全量 /api/*），只保留 /health——/api/* 的信任边界
         // 是「本机/内网」，而纯中继绑 0.0.0.0 公网（FIX-1 绑定语义），暴露

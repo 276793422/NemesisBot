@@ -11,9 +11,18 @@ pub mod transcriber;
 pub mod config;
 
 // --- Local voice pipeline (Windows only) ---
-#[cfg(target_os = "windows")]
+// 设备 IO 三件套（audio/aec/loopback）随 `voice-capture` feature 进出：开启 =
+// cpal/wasapi 真实现；关闭 = 同名 stub 模块（`#[path]` 重映射保持消费方路径
+// `nemesis_voice::audio::…` 不变），运行期对设备 IO 诚实报「未编译」。
+#[cfg(all(target_os = "windows", feature = "voice-capture"))]
 pub mod aec;
-#[cfg(target_os = "windows")]
+#[cfg(not(all(target_os = "windows", feature = "voice-capture")))]
+#[path = "aec_stub.rs"]
+pub mod aec;
+#[cfg(all(target_os = "windows", feature = "voice-capture"))]
+pub mod audio;
+#[cfg(not(all(target_os = "windows", feature = "voice-capture")))]
+#[path = "audio_stub.rs"]
 pub mod audio;
 #[cfg(target_os = "windows")]
 pub mod bootstrap;
@@ -21,7 +30,10 @@ pub mod bootstrap;
 pub mod channel_bridge;
 #[cfg(target_os = "windows")]
 pub mod lang_restriction;
-#[cfg(target_os = "windows")]
+#[cfg(all(target_os = "windows", feature = "voice-capture"))]
+pub mod loopback;
+#[cfg(not(all(target_os = "windows", feature = "voice-capture")))]
+#[path = "loopback_stub.rs"]
 pub mod loopback;
 #[cfg(target_os = "windows")]
 pub mod model;

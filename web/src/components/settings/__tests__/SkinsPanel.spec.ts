@@ -22,6 +22,11 @@ vi.mock('../../../composables/useToast', () => ({
   useToast: () => toastMock,
 }))
 
+const authedFetchMock = vi.fn()
+vi.mock('../../../lib/authFetch', () => ({
+  authedFetch: (...args: any[]) => authedFetchMock(...args),
+}))
+
 import SkinsPanel from '../SkinsPanel.vue'
 
 function skin(over: Record<string, unknown> = {}) {
@@ -59,6 +64,7 @@ function mountPanel() {
 beforeEach(() => {
   requestMock.mockReset()
   refreshMock.mockReset()
+  authedFetchMock.mockReset()
   toastMock.success.mockClear()
   toastMock.error.mockClear()
   localStorage.clear()
@@ -182,5 +188,134 @@ describe('SkinsPanel', () => {
 
     expect(w.text()).toContain('皮肤系统未装配')
     w.unmount()
+  })
+
+  // ===== P2 下载三入口 + P3 五态/CRL（2026-09-27）=====
+
+  it('official release install dispatches skins.install and shows result card with badge', async () => {
+    requestMock.mockImplementation((_m: string, cmd: string, data?: any) => {
+      if (cmd === 'list') return Promise.resolve(listResp([]))
+      if (cmd === 'install') {
+        expect(data).toEqual({ source: 'release', overwrite: false })
+        return Promise.resolve({
+          id: 'bot', file: 'bot.nbskin', signature: 'verified', sig_detail: null,
+          manifest: { name: 'Bot', version: '1.0.0' }, sha256: 'ab'.repeat(32), overwritten: false,
+        })
+      }
+      return Promise.reject(new Error(`unexpected ${cmd}`))
+    })
+    const w = mountPanel()
+    await flushPromises()
+
+    await w.find('[data-test="dl-toggle"]').trigger('click')
+    expect(w.find('[data-test="dl-panel"]').exists()).toBe(true)
+    await w.find('[data-test="dl-official"]').trigger('click')
+    await flushPromises()
+
+    const result = w.find('[data-test="dl-result"]')
+    expect(result.exists()).toBe(true)
+    expect(result.text()).toContain('✅ 已验证')
+    expect(result.text()).toContain('bot')
+    expect(toastMock.success).toHaveBeenCalledWith('已安装 1 个皮肤包')
+    // 安装成功后列表被重拉
+    expect(requestMock).toHaveBeenCalledWith('skins', 'list')
+    w.unmount()
+  })
+
+  it('URL install dispatches {url} payload', async () => {
+    requestMock.mockImplementation((_m: string, cmd: string) => {
+      if (cmd === 'list') return Promise.resolve(listResp([]))
+      if (cmd === 'install') return Promise.resolve({ id: 'x', file: 'x.nbskin', signature: 'unsigned', sha256: 'ab'.repeat(32), overwritten: false, manifest: null })
+      return Promise.reject(new Error(`unexpected ${cmd}`))
+    })
+    const w = mountPanel()
+    await flushPromises()
+
+    await w.find('[data-test="dl-toggle"]').trigger('click')
+    await w.find('[data-test="dl-url"]').setValue('https://example.com/x.nbskin')
+    await w.find('[data-test="dl-url-go"]').trigger('click')
+    await flushPromises()
+
+    expect(requestMock).toHaveBeenCalledWith('skins', 'install', {
+      url: 'https://example.com/x.nbskin',
+      overwrite: false,
+    })
+    w.unmount()
+  })
+
+  it('local file import posts raw body via authedFetch and lands result card', async () => {
+    requestMock.mockResolvedValue(listResp([]))
+    authedFetchMock.mockResolvedValue({
+      ok: true,
+      json: () => Promise.resolve({ id: 'imp', file: 'imp.nbskin', signature: 'unsigned', sha256: 'cd'.repeat(32), overwritten: false, manifest: null }),
+    })
+    const w = mountPanel()
+    await flushPromises()
+
+    await w.find('[data-test="dl-toggle"]').trigger('click')
+    const input = w.find('input[type="file"]')
+    const file = new File(['PK'], 'a.nbskin')
+    Object.defineProperty(input.element, 'files', { value: [file] })
+    await input.trigger('change')
+    await flushPromises()
+
+    expect(authedFetchMock).toHaveBeenCalledWith(
+      '/api/skins/import',
+      expect.objectContaining({ method: 'POST', body: file }),
+    )
+    expect(w.find('[data-test="dl-result"]').text()).toContain('imp')
+    w.unmount()
+  })
+
+  it('import physical rejection surfaces error toast (no silent swallow)', async () => {
+    requestMock.mockResolvedValue(listResp([]))
+    authedFetchMock.mockResolvedValue({
+      ok: false,
+      status: 422,
+      json: () => Promise.resolve({ error: 'rejected', message: '包体物理不可服务，已拒收' }),
+    })
+    const w = mountPanel()
+    await flushPromises()
+
+    await w.find('[data-test="dl-toggle"]').trigger('click')
+    const input = w.find('input[type="file"]')
+    Object.defineProperty(input.element, 'files', { value: [new File(['junk'], 'a.nbskin')] })
+    await input.trigger('change')
+    await flushPromises()
+
+    expect(toastMock.error).toHaveBeenCalledWith(expect.stringContaining('物理不可服务'))
+    w.unmount()
+  })
+
+  it('revoked signature renders 🚫 badge with detail title', async () => {
+    requestMock.mockResolvedValue(listResp([
+      skin({ signature: 'revoked', sig_detail: 'Revoked(KeyFp=aa..): key_leak' }),
+    ]))
+    const w = mountPanel()
+    await flushPromises()
+
+    const card = w.findAll('.skin-card')[1]
+    expect(card.text()).toContain('🚫 已吊销')
+    expect(card.find('.sig-badge').attributes('title')).toContain('Revoked(KeyFp')
+    w.unmount()
+  })
+
+  it('crl snapshot line renders present/absent honestly', async () => {
+    requestMock.mockResolvedValue(listResp([], {
+      crl: { present: true, verified: true, expired: false, version: 3, valid_until: 0, entries: 2, note: null },
+    }))
+    const w = mountPanel()
+    await flushPromises()
+    expect(w.find('.crl-line').exists()).toBe(true)
+    expect(w.find('.crl-line').text()).toContain('已验签生效')
+    expect(w.find('.crl-line').text()).toContain('2 条')
+    w.unmount()
+
+    // 不在场 → 不渲染（离线诚实，全默认）
+    requestMock.mockResolvedValue(listResp([]))
+    const w2 = mountPanel()
+    await flushPromises()
+    expect(w2.find('.crl-line').exists()).toBe(false)
+    w2.unmount()
   })
 })

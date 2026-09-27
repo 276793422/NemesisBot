@@ -356,7 +356,7 @@ enum Commands {
         action: commands::workflow::WorkflowAction,
     },
     /// Manage virus scanner
-    #[cfg(feature = "security")]
+    #[cfg(feature = "scanner")]
     Scanner {
         #[command(subcommand)]
         action: commands::scanner::ScannerAction,
@@ -832,7 +832,7 @@ async fn run_command(cli: Cli) -> Result<()> {
             common::ensure_default_logger();
             commands::workflow::run(action, cli.local)?;
         }
-        #[cfg(feature = "security")]
+        #[cfg(feature = "scanner")]
         Commands::Scanner { action } => {
             common::ensure_default_logger();
             commands::scanner::run(action, cli.local).await?;

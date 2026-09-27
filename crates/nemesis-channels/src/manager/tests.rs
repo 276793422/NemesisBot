@@ -1255,6 +1255,7 @@ async fn test_init_channels_with_web() {
     assert_eq!(mgr.channel_count().await, 1);
 }
 
+#[cfg(feature = "websocket")]
 #[tokio::test]
 async fn test_init_channels_with_websocket() {
     let mgr = ChannelManager::new();
@@ -1289,16 +1290,24 @@ async fn test_init_channels_web_and_websocket() {
 
     let mut config = ChannelInitConfig::default();
     config.web = Some(crate::web::WebChannelConfig::default());
-    config.websocket = Some(crate::websocket::WebSocketChannelConfig {
-        host: "127.0.0.1".to_string(),
-        port: 0,
-        ..Default::default()
-    });
+    #[cfg(feature = "websocket")]
+    {
+        config.websocket = Some(crate::websocket::WebSocketChannelConfig {
+            host: "127.0.0.1".to_string(),
+            port: 0,
+            ..Default::default()
+        });
+    }
 
     mgr.init_channels(&config, tx).await.unwrap();
     assert!(mgr.get("web").await.is_some());
-    assert!(mgr.get("websocket").await.is_some());
-    assert_eq!(mgr.channel_count().await, 2);
+    #[cfg(feature = "websocket")]
+    {
+        assert!(mgr.get("websocket").await.is_some());
+        assert_eq!(mgr.channel_count().await, 2);
+    }
+    #[cfg(not(feature = "websocket"))]
+    assert_eq!(mgr.channel_count().await, 1);
 }
 
 // === ChannelSyncConfig edge cases ===
@@ -1830,27 +1839,39 @@ fn w4c_valid_init_config() -> ChannelInitConfig {
         });
     }
 
-    // 无 feature 闸的通道（default 编译就有）
-    cfg.line = Some(crate::line::LineConfig {
-        channel_access_token: "lt".to_string(),
-        channel_secret: "ls".to_string(),
-        webhook_port: 0,
-        allow_from: vec![],
-    });
-    cfg.external = Some(crate::external::ExternalConfig {
-        input_exe: "nonexistent-input.exe".to_string(),
-        output_exe: "nonexistent-output.exe".to_string(),
-        chat_id: "external".to_string(),
-        sync_to: vec![],
-        allow_from: vec![],
-    });
-    cfg.maixcam = Some(crate::maixcam::MaixCamConfig {
-        host: "127.0.0.1".to_string(),
-        port: 0,
-        allow_from: vec![],
-    });
+    // 平台通道（feature 门控）
+    #[cfg(feature = "line")]
+    {
+        cfg.line = Some(crate::line::LineConfig {
+            channel_access_token: "lt".to_string(),
+            channel_secret: "ls".to_string(),
+            webhook_port: 0,
+            allow_from: vec![],
+        });
+    }
+    #[cfg(feature = "external")]
+    {
+        cfg.external = Some(crate::external::ExternalConfig {
+            input_exe: "nonexistent-input.exe".to_string(),
+            output_exe: "nonexistent-output.exe".to_string(),
+            chat_id: "external".to_string(),
+            sync_to: vec![],
+            allow_from: vec![],
+        });
+    }
+    #[cfg(feature = "maixcam")]
+    {
+        cfg.maixcam = Some(crate::maixcam::MaixCamConfig {
+            host: "127.0.0.1".to_string(),
+            port: 0,
+            allow_from: vec![],
+        });
+    }
     cfg.web = Some(crate::web::WebChannelConfig::default());
-    cfg.websocket = Some(crate::websocket::WebSocketChannelConfig::default());
+    #[cfg(feature = "websocket")]
+    {
+        cfg.websocket = Some(crate::websocket::WebSocketChannelConfig::default());
+    }
 
     cfg
 }
@@ -1895,10 +1916,14 @@ async fn test_w4c_init_channels_valid_configs_register_all() {
         "bluesky",
         #[cfg(feature = "onebot")]
         "onebot",
+        #[cfg(feature = "line")]
         "line",
+        #[cfg(feature = "external")]
         "external",
+        #[cfg(feature = "maixcam")]
         "maixcam",
         "web",
+        #[cfg(feature = "websocket")]
         "websocket",
     ];
 
@@ -2015,12 +2040,14 @@ async fn test_w4c_init_channels_invalid_configs_skip_registration() {
             allow_from: vec![],
         }),
         // line 空 token → Err；external 空 exe → Err；maixcam/web/websocket 无 Err 臂
+        #[cfg(feature = "line")]
         line: Some(crate::line::LineConfig {
             channel_access_token: String::new(),
             channel_secret: String::new(),
             webhook_port: 0,
             allow_from: vec![],
         }),
+        #[cfg(feature = "external")]
         external: Some(crate::external::ExternalConfig {
             input_exe: String::new(),
             output_exe: String::new(),
@@ -2029,12 +2056,14 @@ async fn test_w4c_init_channels_invalid_configs_skip_registration() {
             allow_from: vec![],
         }),
         // maixcam/web/websocket 构造无校验 → 必注册（各 1 个）
+        #[cfg(feature = "maixcam")]
         maixcam: Some(crate::maixcam::MaixCamConfig {
             host: "127.0.0.1".to_string(),
             port: 0,
             allow_from: vec![],
         }),
         web: Some(crate::web::WebChannelConfig::default()),
+        #[cfg(feature = "websocket")]
         websocket: Some(crate::websocket::WebSocketChannelConfig::default()),
         web_server_ops: None,
         // P28 mqtt：default() 的 broker_host 为空 → Err 臂（记日志不注册，计数不变）
@@ -2045,10 +2074,14 @@ async fn test_w4c_init_channels_invalid_configs_skip_registration() {
     let result = mgr.init_channels(&cfg, bus).await;
     assert!(result.is_ok(), "init_channels must not fail on bad configs");
 
-    // 只有三个无校验构造的通道注册成功
-    assert_eq!(mgr.channel_count().await, 3);
+    // 无校验构造的通道（maixcam/web/websocket）必注册；line/external 因校验失败被跳过
+    let expected_count =
+        1 + cfg!(feature = "maixcam") as usize + cfg!(feature = "websocket") as usize;
+    assert_eq!(mgr.channel_count().await, expected_count);
+    #[cfg(feature = "maixcam")]
     assert!(mgr.get("maixcam").await.is_some());
     assert!(mgr.get("web").await.is_some());
+    #[cfg(feature = "websocket")]
     assert!(mgr.get("websocket").await.is_some());
     // 其余全部因校验失败被跳过
     #[cfg(feature = "telegram")]
@@ -2057,7 +2090,9 @@ async fn test_w4c_init_channels_invalid_configs_skip_registration() {
     assert!(mgr.get("discord").await.is_none());
     #[cfg(feature = "tencent")]
     assert!(mgr.get("qq").await.is_none());
+    #[cfg(feature = "line")]
     assert!(mgr.get("line").await.is_none());
+    #[cfg(feature = "external")]
     assert!(mgr.get("external").await.is_none());
     #[cfg(feature = "mqtt")]
     assert!(mgr.get("mqtt").await.is_none());

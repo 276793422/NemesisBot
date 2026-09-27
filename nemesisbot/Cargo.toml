@@ -17,8 +17,9 @@ path = "src/main.rs"
 [features]
 default = [
     "channels-web", "channels-webhook", "channels-rpc",
-    "migrate", "devices", "desktop", "health", "heartbeat", "auth", "voice", "cluster",
-    "forge", "memory", "workflow", "security", "sandbox", "eval", "usage", "board",
+    "channels-websocket", "channels-external", "channels-maixcam", "channels-line",
+    "migrate", "devices", "desktop", "health", "heartbeat", "auth", "voice", "voice-capture", "cluster",
+    "forge", "memory", "workflow", "security", "scanner", "sandbox", "eval", "usage", "board",
     "terminal", "skins",
 ]
 
@@ -29,12 +30,19 @@ desktop = ["dep:nemesis-desktop"]
 health = ["dep:nemesis-health"]
 heartbeat = ["dep:nemesis-heartbeat"]
 auth = ["dep:nemesis-auth"]
+# voice = 语音本体（STT/TTS/VAD/标点/声纹/云转写，缓冲区与文件驱动）；
+# voice-capture = 设备 IO（麦克风采集/扬声器播放/AEC/loopback，cpal+wasapi）。
+# capture 不隐含在 voice 里——IoT 可只留转写不带设备 IO；全量构建两者都开。
 voice = ["dep:nemesis-voice", "nemesis-web/voice"]
+voice-capture = ["voice", "nemesis-voice/voice-capture", "nemesis-web/voice-capture"]
 cluster = ["dep:nemesis-cluster", "nemesis-web/cluster"]
 forge = ["dep:nemesis-forge", "nemesis-agent/forge", "nemesis-web/forge"]
 memory = ["dep:nemesis-memory", "nemesis-agent/memory", "nemesis-web/memory"]
 workflow = ["dep:nemesis-workflow", "nemesis-agent/workflow", "nemesis-web/workflow"]
 security = ["dep:nemesis-security", "nemesis-security/security", "nemesis-agent/security", "nemesis-web/security"]
+# scanner：病毒扫描（第 7 层 + `nemesisbot scanner` CLI + Dashboard Scanner 页）。
+# implies security（管线里第 7 层臂 + clamav + zip 随它进出）；关 = 第 7 层诚实短路。
+scanner = ["security", "nemesis-security/scanner", "nemesis-web/scanner"]
 
 # Sandboxie integration (executor.sandbox=true + `nemesisbot sandbox` install/use/uninstall).
 # Optional — off in minimal-iot/IoT (Sandboxie is Windows-driver-based, not used on IoT).
@@ -88,6 +96,10 @@ channels-mattermost = ["nemesis-channels/mattermost"]
 channels-nostr = ["nemesis-channels/nostr"]
 channels-mqtt = ["nemesis-channels/mqtt"]
 channels-wechat = ["nemesis-channels/wechat"]
+channels-websocket = ["nemesis-channels/websocket"]
+channels-external = ["nemesis-channels/external"]
+channels-maixcam = ["nemesis-channels/maixcam"]
+channels-line = ["nemesis-channels/line"]
 
 [dependencies]
 nemesis-types = { workspace = true }
