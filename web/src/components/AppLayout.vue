@@ -1,18 +1,19 @@
 <script setup lang="ts">
-import { onMounted, ref } from 'vue'
+import { computed, onMounted } from 'vue'
+import { useRouter } from 'vue-router'
 import { useAppStore } from '../stores/app'
 import Sidebar from './Sidebar.vue'
-import SkinSidebar from './SkinSidebar.vue'
+import SkinSlot from './SkinSlot.vue'
 import ToastContainer from './ToastContainer.vue'
 import ApprovalCard from './ApprovalCard.vue'
 import QuestionCard from './QuestionCard.vue'
 import { useApprovals } from '../composables/useApprovals'
 import { useQuestions } from '../composables/useQuestions'
 import { useEditorMode } from '../composables/useEditorMode'
-// 皮肤骨架槽位（顶栏/状态栏）：skinState.id 非空才渲染，默认观感零变化
-import { skinState, ensureSkinMeta } from '../composables/useSkin'
-import { httpGet } from '../composables/useWebSocket'
-import { apiUrl } from '../lib/appBase'
+// 皮肤结构皮肤（v2）：槽位由引擎渲染（skinHasSlot 判定在场，CSS-only
+// 包全部回落原生）；投影 + 动作白名单在此装配一次（模块单例）。
+import { skinHasSlot, ensureSkinMeta } from '../composables/useSkin'
+import { setupSkinProjection } from '../skins/projection'
 
 const appStore = useAppStore()
 // M7：审批卡单例订阅（SSE approval-requested + pending 补拉）。
@@ -22,60 +23,32 @@ const { initQuestions } = useQuestions()
 // Full Access 放行开关单例订阅（SSE editor-mode + editor.get seed 对齐）。
 const { initEditorMode } = useEditorMode()
 
-// 状态栏数据（OverviewView 同源：GET /api/status；只在皮肤激活时拉，
-// 版本/活跃模型）。拉取失败静默——状态栏少两段展示，不炸。
-interface StatusbarStatus {
-  version?: string
-  model?: string
-}
-const statusbar = ref<StatusbarStatus>({})
+// 皮肤数据投影 + 动作白名单装配（幂等单例；router 须从 setup 传）。
+const router = useRouter()
+setupSkinProjection(router)
+
+// v3 page 槽名随路由（page:/models 等）；皮肤未声明该槽 = 内置视图。
+const pageSlotName = computed(() => 'page:' + router.currentRoute.value.path)
 
 onMounted(() => {
   initApprovals()
   initQuestions()
   initEditorMode()
-  if (skinState.id) {
-    ensureSkinMeta()
-    fetchStatusbar()
-  }
+  if (skinHasSlot('sidebar') || skinHasSlot('statusbar')) ensureSkinMeta()
 })
-
-/** 状态栏取数：/api/status 在 REST 鉴权闸内，按 useSSE 同款惯例附 ?token=。 */
-function fetchStatusbar(): void {
-  const stored = localStorage.getItem('nemesisbot_auth_token')
-  const url = stored ? `${apiUrl('/api/status')}?token=${encodeURIComponent(stored)}` : apiUrl('/api/status')
-  httpGet<StatusbarStatus>(url)
-    .then((s) => (statusbar.value = s))
-    .catch(() => {})
-}
-
-/** 活跃模型展示名（provider/name → name；OverviewView 同款口径）。 */
-function shortModel(m?: string): string {
-  if (!m) return ''
-  const i = m.indexOf('/')
-  return i >= 0 ? m.slice(i + 1) : m
-}
 </script>
 
 <template>
   <div class="app-layout" :class="{ 'focus-mode': appStore.focusMode }">
-    <!-- 皮肤骨架槽位 1/3：顶栏（品牌 + 连接状态；仅皮肤激活时在场） -->
-    <header v-if="skinState.id" class="nb-titlebar">
-      <span class="nb-titlebar-brand">
-        <i class="nb-brand-mark" aria-hidden="true"></i>
-        <span class="nb-titlebar-name">{{ skinState.meta?.brand || skinState.id }}</span>
-      </span>
-      <span class="nb-titlebar-status">
-        <i class="nb-status-dot" :class="{ off: !appStore.connected }" aria-hidden="true"></i>
-        {{ appStore.connected ? '已连接' : '未连接' }}
-      </span>
-    </header>
+    <!-- 皮肤槽位：顶栏（品牌 + 连接状态；结构皮肤才在场） -->
+    <SkinSlot v-if="skinHasSlot('titlebar')" name="titlebar" />
 
     <!-- Mobile Overlay -->
     <div class="mobile-overlay" :class="{ show: appStore.showMobileSidebar }" @click="appStore.toggleMobileSidebar()"></div>
 
-    <!-- 皮肤骨架槽位 4：左侧栏（WB 形态：新建对话+导航+会话历史），皮肤激活时替换主导航 -->
-    <SkinSidebar v-if="skinState.id" />
+    <!-- 皮肤槽位：左侧栏（新建对话+导航+会话历史+E-Stop），结构皮肤时
+         替换主导航；CSS-only 包 / 无皮肤回落原生 Sidebar -->
+    <SkinSlot v-if="skinHasSlot('sidebar')" name="sidebar" />
     <Sidebar v-else />
 
     <main class="main-content">
@@ -87,19 +60,14 @@ function shortModel(m?: string): string {
         <span style="font-weight:600;">NemesisBot</span>
       </div>
 
-      <router-view />
+      <!-- v3 page 槽：皮肤声明 page:<path> 槽（如 page:/models）时该路由
+           整页替换（数据由投影 pages 切片自装载）；无槽 = 内置视图 -->
+      <SkinSlot v-if="skinHasSlot(pageSlotName)" :name="pageSlotName" />
+      <router-view v-else />
     </main>
 
-    <!-- 皮肤骨架槽位 2/3：状态栏（连接 + 版本 + 模型 + 就绪态；仅皮肤激活时在场） -->
-    <footer v-if="skinState.id" class="nb-statusbar">
-      <span class="nb-statusbar-left">
-        <i class="nb-status-dot" :class="{ off: !appStore.connected }" aria-hidden="true"></i>
-        {{ appStore.connected ? '已连接' : '未连接' }}
-        <template v-if="statusbar.version">&nbsp;·&nbsp;v{{ statusbar.version }}</template>
-        <template v-if="shortModel(statusbar.model)">&nbsp;·&nbsp;{{ shortModel(statusbar.model) }}</template>
-      </span>
-      <span class="nb-statusbar-right">{{ appStore.connected ? '就绪' : '离线' }}</span>
-    </footer>
+    <!-- 皮肤槽位：状态栏（连接 + 版本 + 模型 + 就绪态） -->
+    <SkinSlot v-if="skinHasSlot('statusbar')" name="statusbar" />
 
     <ToastContainer />
     <!-- M7：安全审批卡（模态，任意页面可见） -->
