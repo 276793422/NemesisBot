@@ -338,23 +338,29 @@ async fn read_capped(resp: reqwest::Response) -> Result<Vec<u8>, String> {
     Ok(out)
 }
 
-/// 官方发布源 latest Release 的 nightly-skins.zip 附件名与仓库 API 址——
-/// CI 打包链的固定产物（plan §2 P0）。
+/// 官方发布源 Release 的 nightly-skins.zip 附件名与仓库 API 址——
+/// CI 打包链的固定产物（plan §2 P0）。枚举用列表 API 而非
+/// `releases/latest`：nightly-build 是 prerelease，latest 语义不认
+/// prerelease（实测 HTTP 404），列表第一条才是真实的最新发布。
 const RELEASE_ZIP_NAME: &str = "nightly-skins.zip";
-const RELEASE_LATEST_API: &str =
-    "https://api.github.com/repos/276793422/NemesisBot_Rust/releases/latest";
+const RELEASE_LIST_API: &str =
+    "https://api.github.com/repos/276793422/NemesisBot_Rust/releases?per_page=10";
 
-/// 官方 Release 安装：GitHub API latest → nightly-skins.zip 资产 → 内存解包
-/// → 逐 `.nbskin` 走同一条 [`install_bytes`] 管线（signatures.json / certs/
-/// 目录条目跳过）。单包失败不拦其余（errors 逐条回报，语义 = 每包独立徽标）。
+/// 官方 Release 安装：GitHub API 近期 Release 列表 → 首个含 nightly-skins.zip
+/// 资产的 Release → 内存解包 → 逐 `.nbskin` 走同一条 [`install_bytes`] 管线
+///（signatures.json / certs/ 目录条目跳过）。单包失败不拦其余（errors 逐条
+/// 回报，语义 = 每包独立徽标）。
 async fn install_from_release(dir: &str, overwrite: bool) -> Result<Option<Value>, String> {
-    let api_bytes = fetch_skin_bytes(RELEASE_LATEST_API).await?;
+    let api_bytes = fetch_skin_bytes(RELEASE_LIST_API).await?;
     let api: Value = serde_json::from_slice(&api_bytes)
         .map_err(|e| format!("Release API 响应不是合法 JSON：{e}"))?;
-    let zip_url = api
-        .get("assets")
-        .and_then(|v| v.as_array())
-        .and_then(|assets| {
+    let releases = api
+        .as_array()
+        .ok_or_else(|| "Release API 响应不是列表（仓库不存在或 API 限流）".to_string())?;
+    let zip_url = releases
+        .iter()
+        .filter_map(|r| r.get("assets").and_then(|v| v.as_array()))
+        .find_map(|assets| {
             assets.iter().find_map(|a| {
                 let name = a.get("name").and_then(|v| v.as_str())?;
                 (name == RELEASE_ZIP_NAME)
@@ -363,7 +369,7 @@ async fn install_from_release(dir: &str, overwrite: bool) -> Result<Option<Value
             })
         })
         .ok_or_else(|| {
-            format!("latest Release 未找到 {RELEASE_ZIP_NAME} 附件（CI 尚未产出皮肤包）")
+            format!("近期 Release 均未找到 {RELEASE_ZIP_NAME} 附件（CI 尚未产出皮肤包）")
         })?
         .to_string();
     let zip_bytes = fetch_skin_bytes(&zip_url).await?;
