@@ -705,69 +705,219 @@ pub fn crl_snapshot_info(dir: &str, anchors: &[[u8; 32]], skins: &[SkinEntry]) -
     load_crl_snapshot_state(dir, anchors, root_bytes.as_deref()).1
 }
 
-/// CSS `url()` 外链策略（2026-09-27 拍板落地）：皮肤 CSS 内
-/// `url(<http(s)/…>)` 是渲染即发起的外链请求面（跟踪像素信标，CDP 实测
-/// 证实）——改写为 `about:blank`（声明保留、零请求）。放行：相对/绝对
-/// 路径（无 scheme）与栅格图片 data:（与 structure 消毒器同一张 MIME
-/// 白名单语义；SVG 等 data: 不放行）。
+/// CSS 外链零请求消毒（2026-09-27 拍板落地；2026-09-28 加固）：皮肤 CSS 内
+/// 渲染即发起的外链请求面（跟踪像素信标，CDP 实测证实）——目标改写为
+/// `about:blank`（声明保留、零请求）。放行：相对/绝对路径（无 scheme）与
+/// 栅格图片 data:（与 structure 消毒器同一张 MIME 白名单语义；SVG 等
+/// data: 不放行）。覆盖三族形态：
+/// - `url(…)` 引号/裸 token（大小写不敏感）；
+/// - `@import "…"` 字符串形态（`@import url(…)` 由上一条覆盖）——字符串
+///   目标外链时内容改写、引号保留（导入静默失败，零请求）；
+/// - **CSS 转义**：先按 CSS Syntax L3 解码（`\75rl(`、`\68 ttp://` 现形）
+///   再扫描；解码输出中的字面 `\` 再转义为 `\\`，保证「浏览器解析输出 ≡
+///   浏览器解析原文」——否则 `\5c 75rl(http://…)` 会被浏览器对输出二次
+///   解码成 url( 走私。含转义的合法 CSS（`content: "\201C"`）解码后语义
+///   等价，字节形态变化不改变渲染。与前端 `web/src/skins/sanitize.ts`
+///   的 `sanitizeCssUrls` 同规则（structure 路径的 `<style>`/style 属性
+///   出口），corpus 两边对齐。
 pub(crate) fn sanitize_css_urls(css: &str) -> String {
-    let lower = css.to_ascii_lowercase();
+    let decoded = decode_css_escapes(css);
+    let lower = decoded.to_ascii_lowercase();
     let b = lower.as_bytes();
-    let mut out = String::with_capacity(css.len());
+    let mut out = String::with_capacity(decoded.len());
     let mut off = 0usize;
-    while let Some(rel) = lower[off..].find("url(") {
-        let pos = off + rel;
-        let mut j = pos + 4;
-        while j < b.len() && b[j].is_ascii_whitespace() {
-            j += 1;
-        }
-        let quote = if j < b.len() && (b[j] == b'"' || b[j] == b'\'') {
-            Some(b[j])
+    let mut i = 0usize;
+    while i < b.len() {
+        if b[i..].starts_with(b"url(") {
+            i = emit_url_target(lower.as_bytes(), &decoded, i + 4, &mut out, &mut off);
+        } else if b[i..].starts_with(b"@import") && import_boundary(b, i + 7) {
+            i = emit_import_string(lower.as_bytes(), &decoded, i + 7, &mut out, &mut off);
         } else {
-            None
-        };
-        let tok_start = if quote.is_some() { j + 1 } else { j };
-        let mut k = tok_start;
-        let closed = loop {
-            if k >= b.len() {
-                break false;
-            }
-            match quote {
-                Some(q) if b[k] == q => break true,
-                None if b[k] == b')' => break true,
-                _ => k += 1,
-            }
-        };
-        if !closed {
-            break; // 畸形（token 未闭合）：剩余原样照抄
+            i += 1;
         }
-        let close = if quote.is_some() {
-            let mut m = k + 1;
-            while m < b.len() && b[m] != b')' {
-                m += 1;
-            }
-            if m >= b.len() {
-                break; // 畸形（右括号缺失）：剩余原样照抄
-            }
-            m
-        } else {
-            k
-        };
-        let tok = &lower[tok_start..k];
-        let external =
-            tok.starts_with("https://") || tok.starts_with("http://") || tok.starts_with("//");
-        let data_bad = tok.starts_with("data:") && !is_raster_data_uri(&tok[5..]);
-        out.push_str(&css[off..tok_start]); // "url(" + 前导空白 + 开引号（原样）
-        if external || data_bad {
-            out.push_str("about:blank");
-        } else {
-            out.push_str(&css[tok_start..k]);
-        }
-        out.push_str(&css[k..=close]); // 收引号/收括号 + 后续到 ")"（原样）
-        off = close + 1;
     }
-    out.push_str(&css[off.min(css.len())..]);
+    out.push_str(&decoded[off.min(decoded.len())..]);
     out
+}
+
+/// CSS 转义解码（CSS Syntax Level 3「consume escaped code point」）：
+/// `\` + 1-6 位 hex + 至多一个空白终结符 → 码点（NUL/代理区/越界 →
+/// U+FFFD）；`\` + 换行 → 续行（双消）；`\` + 其他 → 该字符。输出中的
+/// 字面 `\`（来自 `\\`）再转义为 `\\`——防浏览器对输出二次解码（
+/// `\5c 75rl(` 形态走私，见 [`sanitize_css_urls`] 文档）。
+fn decode_css_escapes(css: &str) -> String {
+    let mut out = String::with_capacity(css.len());
+    let mut chars = css.chars().peekable();
+    while let Some(c) = chars.next() {
+        if c != '\\' {
+            out.push(c);
+            continue;
+        }
+        let mut hex = String::new();
+        while let Some(&h) = chars.peek() {
+            if !h.is_ascii_hexdigit() || hex.len() >= 6 {
+                break;
+            }
+            hex.push(h);
+            chars.next();
+        }
+        if !hex.is_empty() {
+            let cp = u32::from_str_radix(&hex, 16).unwrap_or(0x1100_0000);
+            out.push(if cp == 0 {
+                '\u{FFFD}'
+            } else {
+                char::from_u32(cp).unwrap_or('\u{FFFD}')
+            });
+            if let Some(&w) = chars.peek()
+                && w.is_ascii_whitespace()
+            {
+                chars.next(); // 至多一个空白终结符
+            }
+            continue;
+        }
+        match chars.peek() {
+            Some('\n') => {
+                chars.next(); // \LF 续行：双消
+            }
+            Some('\r') => {
+                chars.next();
+                if chars.peek() == Some(&'\n') {
+                    chars.next();
+                }
+            }
+            Some(&q) => {
+                out.push(q);
+                chars.next();
+            }
+            None => {} // 尾部孤立 `\`：丢弃（浏览器同语义）
+        }
+    }
+    out.replace('\\', "\\\\")
+}
+
+/// 外链/非白名单 data: 判据（url( 目标与 @import 字符串目标共用）。
+fn target_blocked(tok: &str) -> bool {
+    tok.starts_with("https://")
+        || tok.starts_with("http://")
+        || tok.starts_with("//")
+        || (tok.starts_with("data:") && !is_raster_data_uri(&tok[5..]))
+}
+
+/// `@import` 关键字后一位是否合法目标起点边界：EOF / 空白 / 引号
+/// （`@import"x"` 无空白合法）；`@importer` 等普通标识符不误命中。
+fn import_boundary(b: &[u8], i: usize) -> bool {
+    match b.get(i) {
+        None => true,
+        Some(c) => c.is_ascii_whitespace() || *c == b'"' || *c == b'\'',
+    }
+}
+
+/// `url(` 已匹配、`p` = `(` 后一位：扫描目标 token（引号/裸），外链/坏
+/// data: → 内容改写 `about:blank`（引号结构保留）。未闭合畸形 → 剩余
+/// 原样照抄并终止扫描。返回扫描继续位置；字面前缀经 out/off 落地。
+fn emit_url_target(
+    lower: &[u8],
+    decoded: &str,
+    p: usize,
+    out: &mut String,
+    off: &mut usize,
+) -> usize {
+    let b = lower;
+    let mut j = p;
+    while j < b.len() && b[j].is_ascii_whitespace() {
+        j += 1;
+    }
+    let quote = if j < b.len() && (b[j] == b'"' || b[j] == b'\'') {
+        Some(b[j])
+    } else {
+        None
+    };
+    let tok_start = if quote.is_some() { j + 1 } else { j };
+    let mut k = tok_start;
+    let closed = loop {
+        if k >= b.len() {
+            break false;
+        }
+        match quote {
+            Some(q) if b[k] == q => break true,
+            None if b[k] == b')' => break true,
+            _ => k += 1,
+        }
+    };
+    let close = if !closed {
+        out.push_str(&decoded[*off..]);
+        *off = decoded.len();
+        return b.len();
+    } else if quote.is_some() {
+        let mut m = k + 1;
+        while m < b.len() && b[m] != b')' {
+            m += 1;
+        }
+        if m >= b.len() {
+            out.push_str(&decoded[*off..]);
+            *off = decoded.len();
+            return b.len();
+        }
+        m
+    } else {
+        k
+    };
+    out.push_str(&decoded[*off..tok_start]); // "url(" + 前导空白 + 开引号
+    // 判据用小写副本（解码保原样，大小写不敏感拦截在此收口）；切片两端
+    // 均为 ASCII 定界（空白/引号/括号），必是合法 char 边界。
+    let tok_lower = std::str::from_utf8(&lower[tok_start..k]).unwrap_or("");
+    if target_blocked(tok_lower) {
+        out.push_str("about:blank");
+    } else {
+        out.push_str(&decoded[tok_start..k]);
+    }
+    out.push_str(&decoded[k..=close]); // 收引号/收括号 + 后续到 ")"
+    *off = close + 1;
+    close + 1
+}
+
+/// `@import` 已匹配、`p` = 关键字后一位：字符串形态（`@import "…"`）目标
+/// 外链/坏 data: → 内容改写 `about:blank`、引号保留；url( 形态/其他 →
+/// 原样放行给主循环的 url( 分支。
+fn emit_import_string(
+    lower: &[u8],
+    decoded: &str,
+    p: usize,
+    out: &mut String,
+    off: &mut usize,
+) -> usize {
+    let b = lower;
+    let mut j = p;
+    while j < b.len() && b[j].is_ascii_whitespace() {
+        j += 1;
+    }
+    let Some(&q) = b.get(j) else {
+        return p; // EOF：主循环自然收尾
+    };
+    if q != b'"' && q != b'\'' {
+        return p; // url( 形态等：主循环在目标处接手
+    }
+    let tok_start = j + 1;
+    let mut k = tok_start;
+    while k < b.len() && b[k] != q {
+        k += 1;
+    }
+    if k >= b.len() {
+        out.push_str(&decoded[*off..]); // 未闭合：剩余原样照抄，终止
+        *off = decoded.len();
+        return b.len();
+    }
+    // 判据用小写副本（同 emit_url_target；两端 ASCII 引号定界）
+    let tok_lower = std::str::from_utf8(&lower[tok_start..k]).unwrap_or("");
+    if target_blocked(tok_lower) {
+        out.push_str(&decoded[*off..tok_start]);
+        out.push_str("about:blank");
+        out.push_str(&decoded[k..=k]); // 收引号
+        *off = k + 1;
+        k + 1
+    } else {
+        tok_start // 合法目标：前缀未落，主循环从内容处继续（宁严勿漏）
+    }
 }
 
 /// 栅格图片 MIME 白名单（structure 消毒器同表语义；入参 = data: 后段）。

@@ -781,3 +781,67 @@ fn sanitize_css_urls_neuters_external_and_keeps_safe() {
     assert_eq!(sanitize_css_urls(""), "");
     assert_eq!(sanitize_css_urls("html{--x:1}"), "html{--x:1}");
 }
+
+/// 2026-09-28 加固 corpus：`@import` 字符串形态 + CSS 转义两大绕过族。
+/// `@import "https://…"` 不含 `url(` 子串、`\75rl(` 解码后才是 url(——
+/// 字面扫描均漏（BUG 2026-09-28），解码后扫描 + import 串处理补齐。
+#[test]
+fn sanitize_css_urls_import_and_escape_bypasses_neutered() {
+    // @import 字符串形态（单/双引号、大小写、协议相对）
+    assert_eq!(
+        sanitize_css_urls(r#"@import "https://evil.com/x.css";"#),
+        r#"@import "about:blank";"#
+    );
+    assert_eq!(
+        sanitize_css_urls("@import 'http://evil.com/x.css';"),
+        "@import 'about:blank';"
+    );
+    assert_eq!(
+        sanitize_css_urls(r#"@IMPORT "https://evil.com/x.css";"#),
+        r#"@IMPORT "about:blank";"#
+    );
+    assert_eq!(
+        sanitize_css_urls(r#"@import "//evil.com/x.css";"#),
+        r#"@import "about:blank";"#
+    );
+    // @import 合法本地目标放行；url( 形态由 url( 分支处理
+    assert!(sanitize_css_urls(r#"@import "skin/base.css";"#).contains("skin/base.css"));
+    assert_eq!(
+        sanitize_css_urls("@import url(https://evil.com/x.css);"),
+        "@import url(about:blank);"
+    );
+    // @importer 等普通标识符不误命中
+    assert_eq!(
+        sanitize_css_urls("a{--x:@importer}"),
+        "a{--x:@importer}"
+    );
+
+    // CSS 转义 function 名：\75rl( 解码后 = url( → 拦
+    assert_eq!(
+        sanitize_css_urls(r"a{background:\75rl(http://evil.com/x.png)}"),
+        "a{background:url(about:blank)}"
+    );
+    // 转义带空白终结符：u\72 l( → url(
+    assert_eq!(
+        sanitize_css_urls(r"a{background:u\72 l(http://evil.com/x.png)}"),
+        "a{background:url(about:blank)}"
+    );
+    // 转义藏在目标串里：\68 ttp:// → http:// → 拦
+    assert_eq!(
+        sanitize_css_urls(r"a{background:url(\68 ttp://evil.com/x.png)}"),
+        "a{background:url(about:blank)}"
+    );
+
+    // 双重解码走私防线：\5c 75rl( 解码一轮 = \75rl(（非 url(，不拦），
+    // 但输出必须把字面 \ 再转义成 \\，浏览器对输出解码后仍非 url(
+    assert_eq!(
+        sanitize_css_urls(r"a{background:\5c 75rl(http://evil.com/x.png)}"),
+        r"a{background:\\75rl(http://evil.com/x.png)}"
+    );
+
+    // 合法转义 CSS 语义等价透传（解码形态字节变化不改变渲染）
+    assert_eq!(
+        sanitize_css_urls(r#"a{content:"\201C"}"#),
+        "a{content:\"\u{201C}\"}"
+    );
+}
