@@ -3,28 +3,32 @@
 //! `relaunch_elevated` 的**成功臂**结构性不可测：真实调用会弹 UAC 对话框
 //! （红线，见 SandboxPaths 红线清单），且 fire-and-forget 无法在测试里观测
 //! 副作用。**失败臂**可用「不存在的 exe」确定性触发（SE_ERR_FNF，不弹
-//! UAC），R5 批次（2026-08-27）已测（见文件末尾）。`is_elevated` 走只读
-//! `net session`，可测——断言它与独立执行的 `net session` 退出码一致
-//! （同一底层信号，钉住映射不漂移）。
+//! UAC），R5 批次（2026-08-27）已测（见文件末尾）。`is_elevated` 走
+//! `GetTokenInformation(TokenElevation)` 只读直查（不再依赖 net.exe PATH 与
+//! LanmanServer 服务状态），测试钉「net session 成功 ⇒ 必须判定提权」的单向
+//! 蕴含——反向不蕴含（服务停转/net.exe 缺失时提权进程也会失败，正是弃用
+//! net session 探测的原因）。
 
 use super::*;
 
 #[cfg(windows)]
 #[test]
-fn is_elevated_matches_net_session_exit_code() {
+fn net_session_success_implies_elevated() {
     let status = std::process::Command::new("net")
         .arg("session")
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::null())
         .status();
-    match status {
-        Ok(s) => assert_eq!(
-            is_elevated(),
-            s.success(),
-            "is_elevated == net session 成功位"
-        ),
-        // net.exe 不可用时 is_elevated 内部同样 Err → false；两边一致性仍成立
-        Err(_) => assert!(!is_elevated()),
+    // 单向蕴含：net session 成功 = 提权的充分证据；失败方向不做断言
+    // （LanmanServer 停转 / net.exe 不可用的窗口里，TokenElevation 直查
+    // 比旧 net session 探测更诚实——宁可多弹一次 UAC，不误判非管理员）。
+    if let Ok(s) = status {
+        if s.success() {
+            assert!(
+                is_elevated(),
+                "net session 成功（提权充分证据）⇒ TokenElevation 必须为 true"
+            );
+        }
     }
 }
 

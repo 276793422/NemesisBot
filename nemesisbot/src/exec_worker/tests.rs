@@ -530,7 +530,7 @@ mod wave_b {
 
 // =========================================================================
 // P21（2026-09-25）：沙盒拒绝台账钩子（sandbox_denial 模块）。
-// - active_backend_label：无沙盒 None / PIPE→sandboxie / env→后端名
+// - active_backend_label：无沙盒 None / PIPE 单独存在不算标签 / env→后端名
 // - on_tool_error：无沙盒不改写不记账；非拒绝错误透传；拒绝错误 → 可自纠
 //   文案 + 台账一行合法 JSON（workspace 取自 env）
 // 全程零子进程；env 操作走进程级 GLOBAL_STATE_LOCK 串行。
@@ -600,18 +600,24 @@ mod sandbox_denial_hooks {
     }
 
     #[test]
-    fn label_reads_pipe_then_backend_env() {
+    fn label_reads_backend_env_pipe_alone_is_not_a_label() {
         with_lock(|| {
             if oncelock_already_engaged() {
                 eprintln!("skip: ENGAGED_BACKEND OnceLock occupied by earlier test");
                 return;
             }
             let _env = DenialEnvGuard::fresh();
+            // PIPE 单独存在 = 无沙盒（冒标修复：PIPE 只是传输通道，无盒
+            // PIPE 传输不得推断出 "sandboxie"——真盒由 gateway 注入 backend
+            // env 才算 engaged）。
             unsafe { std::env::set_var("NEMESISBOT_EXECUTOR_PIPE", r"\\.\pipe\NemesisBox_1") };
+            assert!(sandbox_denial::active_backend_label().is_none());
+            // 真盒（gateway wrap 注入 backend env）→ sandboxie 标签生效。
+            unsafe { std::env::set_var("NEMESISBOT_SANDBOX_BACKEND", "sandboxie") };
             assert_eq!(
                 sandbox_denial::active_backend_label().as_deref(),
                 Some("sandboxie"),
-                "Windows 盒内 PIPE 传输 = sandboxie"
+                "env 注入的后端名（真盒 wrap / bwrap 盒内实例路径）"
             );
             unsafe { std::env::remove_var("NEMESISBOT_EXECUTOR_PIPE") };
             unsafe { std::env::set_var("NEMESISBOT_SANDBOX_BACKEND", "landlock") };

@@ -6,6 +6,7 @@
 
 use regex::Regex;
 use serde::{Deserialize, Serialize};
+use std::path::{Path, PathBuf};
 use tracing::warn;
 
 /// Category of a lint warning.
@@ -145,6 +146,10 @@ pub struct LintWarning {
     /// Severity level of the warning.
     #[serde(default = "default_severity")]
     pub severity: LintSeverity,
+    /// 所属文件（相对技能目录根，`/` 分隔）。单文件 lint 恒 `None`
+    /// （JSON 不出键，与现网形态一致）；目录 lint（M5）按文件归属填充。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub file: Option<String>,
 }
 
 fn default_severity() -> LintSeverity {
@@ -485,6 +490,7 @@ impl SkillLinter {
                         line: Some(line_num),
                         matched_text: mat.as_str().to_string(),
                         severity: entry.severity.clone(),
+                        file: None,
                     });
                 }
             }
@@ -527,6 +533,134 @@ impl SkillLinter {
 impl Default for SkillLinter {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+// ---------------------------------------------------------------------------
+// M5 供应链扩面：技能目录内的可执行面清单（装前 lint 的扫描范围单一真相源）。
+//
+// 盲区背景：装前安全检查此前只吃 SKILL.md 内容，staging 里同包分发的
+// scripts/*.sh、hooks/*.ps1、references/*.md 等只进 sha256 清单、内容从不
+// 被扫描——恶意载荷藏在辅助脚本里即可绕过审批卡上的 lint 结论。
+// ---------------------------------------------------------------------------
+
+/// 可执行面文件扩展名清单（小写比对）。
+///
+/// 三类形态：
+/// - `.md`：指令文本——SKILL.md 与 references/ 等辅助 markdown 都是 agent
+///   会读的指令面，prompt 注入型载荷写在任何 .md 里同样危险；
+/// - 脚本：POSIX shell / Windows 批处理与 PowerShell；
+/// - 解释型语言源码：装包自带的 `.py`/`.js` 等在技能工作流里常被直接执行。
+pub const SURFACE_FILE_EXTENSIONS: &[&str] = &[
+    "md",
+    "sh",
+    "bash",
+    "zsh",
+    "fish",
+    "bat",
+    "cmd",
+    "ps1",
+    "psm1",
+    "psd1",
+    "py",
+    "rb",
+    "pl",
+    "lua",
+    "php",
+    "js",
+    "mjs",
+    "cjs",
+];
+
+/// 单个可执行面文件的扫描大小上限。超过按数据转储对待，跳过并记 warn
+/// （尺寸本身不是安全问题，不计分——诚实边界：超大文本文件的规则匹配
+/// 成本不设上限会让装前扫描可被 DoS）。
+pub const MAX_SURFACE_FILE_BYTES: u64 = 1024 * 1024;
+
+/// 判断相对路径是否属于可执行面（按扩展名，大小写不敏感）。
+pub fn is_surface_file(rel_path: &Path) -> bool {
+    let Some(ext) = rel_path.extension().and_then(|e| e.to_str()) else {
+        return false;
+    };
+    SURFACE_FILE_EXTENSIONS.contains(&ext.to_ascii_lowercase().as_str())
+}
+
+/// 递归收集技能目录内可执行面文件的相对路径（确定性顺序由调用方排序）。
+///
+/// - 不跟随符号链接（技能包内 symlink 可指向安装主机任意文件，读取即越界
+///   ——不扫也不跟进）；
+/// - 点开头的文件/目录跳过（编辑器残留与 VCS 元数据不是技能面）；
+/// - 非常规文件（fifo 等）天然被 `is_file()` 过滤。
+fn collect_surface_files(root: &Path, dir: &Path, out: &mut Vec<PathBuf>) {
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let Ok(ft) = entry.file_type() else {
+            continue;
+        };
+        if entry.file_name().to_string_lossy().starts_with('.') {
+            continue;
+        }
+        let path = entry.path();
+        if ft.is_dir() {
+            collect_surface_files(root, &path, out);
+        } else if ft.is_file() {
+            let Ok(rel) = path.strip_prefix(root) else {
+                continue;
+            };
+            if is_surface_file(rel) {
+                out.push(rel.to_path_buf());
+            }
+        }
+    }
+}
+
+impl SkillLinter {
+    /// 对技能目录的可执行面整体 lint（M5）。
+    ///
+    /// 扫描范围 = [`SURFACE_FILE_EXTENSIONS`] 命中的全部文件（含 SKILL.md
+    /// 自身——目录形态下一次聚合，不重复计分）；评分与 passed 判定规则和
+    /// 单文件 [`SkillLinter::lint`] 完全一致，warnings 按文件排序后聚合，
+    /// 每条带 `file` 归属（相对路径，`/` 分隔）。目录不存在/为空 = 无警告
+    /// 满分（调用方各自对「目录缺失」另有契约，此处不做二次裁决）。
+    pub fn lint_dir(&self, dir: &Path, skill_name: &str) -> LintResult {
+        let mut files = Vec::new();
+        collect_surface_files(dir, dir, &mut files);
+        files.sort();
+
+        let mut warnings = Vec::new();
+        for rel in files {
+            let abs = dir.join(&rel);
+            if let Ok(meta) = std::fs::metadata(&abs)
+                && meta.len() > MAX_SURFACE_FILE_BYTES
+            {
+                warn!(
+                    "lint: skipping oversize surface file {} ({} bytes > {MAX_SURFACE_FILE_BYTES})",
+                    rel.display(),
+                    meta.len()
+                );
+                continue;
+            }
+            let Ok(content) = std::fs::read_to_string(&abs) else {
+                warn!("lint: skipping non-UTF-8 surface file {}", rel.display());
+                continue;
+            };
+            let file = rel.to_string_lossy().replace('\\', "/");
+            for mut w in self.lint(&content).warnings {
+                w.file = Some(file.clone());
+                warnings.push(w);
+            }
+        }
+
+        let score = Self::calculate_score(&warnings);
+        let passed = score >= 0.6 && !Self::has_critical_or_high(&warnings);
+        LintResult {
+            skill_name: skill_name.to_string(),
+            passed,
+            score,
+            warnings,
+        }
     }
 }
 

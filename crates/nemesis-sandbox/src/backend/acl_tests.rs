@@ -173,6 +173,51 @@ fn acl_label_tree_relabels_existing_entries_and_honors_budget() {
     );
 }
 
+/// junction 穿透行为锁定（P24 复检候选 2a 实证固化）：对 junction 打标
+/// **不跟随**到目标目录（reparse point 自有 SD）——目标目录与经 junction
+/// 新建的子文件都保持无显式标签。若未来 Win32 层行为变化（跟随目标），
+/// 此测试先红，防止 label_tree 把工作区内的链接目标（可能指向树外）静默
+/// 重标、给树外新建文件开 No-Write-Up 缺口。
+#[cfg(all(target_os = "windows", feature = "acl"))]
+#[test]
+fn acl_label_on_junction_does_not_follow_to_target() {
+    let base = tempfile::tempdir().expect("tempdir");
+    let real = base.path().join("real");
+    let junc = base.path().join("junc");
+    std::fs::create_dir_all(&real).expect("mkdir real");
+    let out = std::process::Command::new("cmd")
+        .args(["/C", "mklink", "/J"])
+        .arg(&junc)
+        .arg(&real)
+        .output()
+        .expect("run mklink");
+    assert!(
+        out.status.success(),
+        "mklink /J failed: {}",
+        String::from_utf8_lossy(&out.stdout)
+    );
+
+    set_integrity_label(&junc, IntegrityLevel::Low).expect("label junction");
+    assert_eq!(
+        get_integrity_label(&junc).expect("query junction"),
+        Some(4096),
+        "junction 自身 SD 打上 Low（SE_FILE_OBJECT 读写都作用于 reparse point 自身）"
+    );
+    assert_eq!(
+        get_integrity_label(&real).expect("query target dir"),
+        None,
+        "junction 打标不得跟随到目标目录"
+    );
+    // 经 junction 新建的文件继承**目标目录**的标签（无标签）→ 不被 Low 波及。
+    let via_junc = junc.join("newfile.txt");
+    std::fs::write(&via_junc, b"x").expect("write via junction");
+    assert_eq!(
+        get_integrity_label(&real.join("newfile.txt")).expect("query new file"),
+        None,
+        "经 junction 新建文件继承目标目录（无标签），未被 junction 的 Low 继承位波及"
+    );
+}
+
 // ---------------------------------------------------------------------------
 // 子进程 harness：完整性围栏的真进程验证
 // ---------------------------------------------------------------------------

@@ -37,6 +37,10 @@
 //! 修复的洞：旧探测链恒 landlock 优先，`allow_network=false` 时该档位
 //! FS-only、形同不禁网——现在禁网需求下 bwrap 优先上岗。
 //!
+//! 组合语义全文（选型期/强制期两阶段、「探测≠强制」的两个不对称、
+//! 禁网=硬需求语义、失败出口三形态、裁决记录）：
+//! docs/INFO/2026-09-27_linux-userland-sandbox-composition-semantics.md（F4）。
+//!
 //! ## P24 Windows 用户态 ACL 轻量档（2026-09-25 能力扩展 WS1，实验性）
 //!
 //! Windows 此前只有 Sandboxie（内核态盒）一条路，用户态无轻量隔离。本波

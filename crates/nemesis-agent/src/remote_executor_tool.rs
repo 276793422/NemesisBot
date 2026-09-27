@@ -451,6 +451,13 @@ impl ExecutorChannel {
             .stdin(Stdio::null())
             .stdout(Stdio::null())
             .stderr(Stdio::piped());
+        // 台账标签证据化：PIPE 传输 ≠ 盒内。只有真盒（Start.exe wrap）才注入
+        // sandboxie 后端名，exec_worker 据此记拒绝台账——无盒 PIPE 传输
+        // （transport test / 降级装配）不冒标（标签与 `NEMESISBOT_SANDBOX_
+        // BACKEND` 既有语义同源：bwrap reexec 盒内实例同样用 env 注入后端名）。
+        if self.start_exe.is_some() {
+            cmd.env("NEMESISBOT_SANDBOX_BACKEND", "sandboxie");
+        }
         let mut child = cmd
             .spawn()
             .map_err(|e| format!("failed to spawn executor child: {e}"))?;

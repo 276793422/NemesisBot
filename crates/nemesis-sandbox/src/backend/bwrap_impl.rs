@@ -6,8 +6,11 @@
 //!
 //! ⚠️ bwrap 的 mount-namespace 隔离需要用户命名空间支持（Ubuntu 24.04 默认
 //! 开；受限容器里可能被 sysctl `kernel.unprivileged_userns_clone=0` 关掉）——
-//! `wrap_command` 只是组参数，真正失败会出现在 spawn 时（ENOENT/EPERM），
-//! 调用方按降级路径处理。
+//! `wrap_command` 只是组参数，真正失败会出现在 spawn 时（ENOENT/EPERM）。
+//! 注意 spawn 失败走的是**诚实失败**出口（engage Err → 协议错误回 gateway，
+//! 非 strict 也失败——禁网承诺不静默丢失），不是「降级 warn + 无盒继续」
+//! 路径；完整组合语义见
+//! docs/INFO/2026-09-27_linux-userland-sandbox-composition-semantics.md。
 
 use std::path::PathBuf;
 use std::process::Command;

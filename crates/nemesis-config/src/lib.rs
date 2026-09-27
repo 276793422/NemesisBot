@@ -1756,7 +1756,9 @@ pub struct MattermostConfig {
     /// 服务器基地址（如 `https://mattermost.example.com`，http/https）。
     #[serde(default)]
     pub base_url: String,
-    /// Bot token（WS 网关鉴权用；鉴权验证类，支持 vault/env/yaml 引用）。
+    /// Bot token（WS 网关鉴权 + REST 出站鉴权共用；vault/env/yaml 解析走
+    /// 出站凭据语义 `resolve_secret_or_empty`——缺失不阻断启动，鉴权失败在
+    /// users/me / WS challenge 处暴露）。
     #[serde(default)]
     pub bot_token: String,
     #[serde(default, deserialize_with = "deserialize_flexible_string_vec")]

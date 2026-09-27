@@ -291,8 +291,8 @@ impl Channel for WeComChannel {
         if inbound_enabled {
             self.spawn_callback_server().await?;
         } else {
-            info!(
-                "[WeComChannel] 未配置 token/encoding_aes_key，仅出站 webhook 模式（不监听回调端口）"
+            warn!(
+                "[WeComChannel] 未配置 token/encoding_aes_key（二者需齐备），降级为仅出站 webhook 模式（不监听回调端口，入站能力关闭）"
             );
         }
 
@@ -326,7 +326,18 @@ impl Channel for WeComChannel {
         let webhook = self.resolve_webhook(&msg)?;
         debug!(chat_id = %msg.chat_id, "[WeComChannel] sending message via webhook");
         self.base.record_sent();
-        self.send_webhook(&webhook, &msg).await
+        self.send_webhook(&webhook, &msg).await?;
+        // 出站同步镜像（mqtt/websocket 先例：镜像到 web 等同步目标）
+        self.base.sync_to_targets(&msg.content).await;
+        Ok(())
+    }
+
+    fn add_sync_target(&self, name: &str, channel: Arc<dyn Channel>) -> Result<()> {
+        self.base.add_sync_target(name, channel)
+    }
+
+    fn remove_sync_target(&self, name: &str) {
+        self.base.remove_sync_target(name);
     }
 }
 

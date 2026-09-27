@@ -138,6 +138,9 @@ pub fn read_denials(workspace: &Path, limit: usize) -> Vec<DenialRecord> {
 /// Access-denied 文案都盖到）。**只在沙盒 engaged 时调用**（调用方约束，
 /// 见模块文档诚实边界）。
 pub fn looks_like_denial(err: &str) -> bool {
+    // 「sandbox」裸子串曾是本表一员——误伤面太大（"sandbox backend
+    // unavailable" / "failed to create sandbox pipe" 等沙盒**自身故障**文案
+    // 全被误判成拒绝记账）。收窄为具体后端名/专针后，裸单词形态不再命中。
     const NEEDLES: [&str; 10] = [
         "os error 13",             // EACCES 数字形态（Rust io::Error Display）
         "permission denied",       // strerror(EACCES)
@@ -147,7 +150,7 @@ pub fn looks_like_denial(err: &str) -> bool {
         "os error 5",              // ERROR_ACCESS_DENIED 数字形态
         "operation not permitted", // strerror(EPERM)
         "denied by sandbox",       // 本仓沙盒层自产文案
-        "sandbox",                 // 后端名/包装器名（sandboxie/bwrap 包装错误）
+        "sandboxie",               // Sandboxie 后端名/包装器错误前缀
         "bwrap",                   // bwrap 非零退出前缀（bubblewrap 自报失败）
     ];
     let lower = err.to_lowercase();

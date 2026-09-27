@@ -1149,10 +1149,19 @@ fn cmd_validate(path: &str) -> Result<()> {
             println!("  Has description: {}", has_description);
             println!("  Has steps: {}", has_steps);
 
-            // Run security check
+            // Run security check（M5：path 为目录时 lint 整个可执行面，
+            // 辅助 .md / 脚本里的危险载荷也进诊断结论）
             let skill_name = skill_path.file_name().unwrap_or_default().to_string_lossy();
-            let check =
-                nemesis_skills::security_check::check_skill_security(&content, &skill_name, "");
+            let check = if skill_path.is_dir() {
+                nemesis_skills::security_check::check_skill_security_dir(
+                    skill_path,
+                    &content,
+                    &skill_name,
+                    "",
+                )
+            } else {
+                nemesis_skills::security_check::check_skill_security(&content, &skill_name, "")
+            };
             if check.blocked {
                 println!("  Security: BLOCKED ({})", check.block_reason);
             } else if !check.lint_result.warnings.is_empty() {

@@ -435,21 +435,23 @@ mod userland {
 mod sandbox_denial {
     use nemesis_sandbox::denial;
 
-    /// engage 成功装上后端时标记（SelfApply 同进程路径专用；WrapReexec 走
-    /// env 传给盒内实例，Sandboxie 走 PIPE env——见 [`active_backend_label`]）。
+    /// engage 成功装上后端时标记（SelfApply 同进程路径专用；盒内实例一律走
+    /// env 注入后端名——bwrap reexec / Windows 真盒都是，见
+    /// [`active_backend_label`]）。
     static ENGAGED_BACKEND: std::sync::OnceLock<String> = std::sync::OnceLock::new();
 
     pub(super) fn mark_backend_engaged(name: &str) {
         let _ = ENGAGED_BACKEND.set(name.to_string());
     }
 
-    /// 当前沙盒后端标签（engaged 才有）：Windows 盒内 PIPE 传输 = sandboxie；
-    /// landlock 自装 = engage 标记；bwrap 盒内实例 = env（reexec 时注入）。
+    /// 当前沙盒后端标签（engaged 才有）：landlock 自装 = engage 标记；盒内
+    /// 实例 = env 注入的后端名（bwrap reexec / Windows 真盒 Start.exe wrap
+    /// 时由 gateway 注入 `sandboxie`——标签证据化，见 remote_executor_tool
+    /// 的 spawn_and_call_pipe）。**不再从 `NEMESISBOT_EXECUTOR_PIPE` 推断**：
+    /// PIPE 只是传输通道选择，无盒 PIPE 传输（transport test / 降级装配）下
+    /// 推断出的 "sandboxie" 是冒标——会把普通错误误记进沙盒拒绝台账。
     /// None = 无沙盒 → 工具错误与沙盒无关，不记台账不改写文案。
     pub(crate) fn active_backend_label() -> Option<String> {
-        if std::env::var_os("NEMESISBOT_EXECUTOR_PIPE").is_some() {
-            return Some("sandboxie".to_string());
-        }
         if let Some(b) = ENGAGED_BACKEND.get() {
             return Some(b.clone());
         }
@@ -493,29 +495,29 @@ mod sandbox_denial {
 /// Named-pipe transport loop (sandbox mode).
 #[cfg(windows)]
 async fn pipe_loop(
-    mut stream: nemesis_agent::executor_pipe::NamedPipeClient,
+    stream: nemesis_agent::executor_pipe::NamedPipeClient,
     tools: &HashMap<String, Box<dyn Tool>>,
 ) -> Result<()> {
+    // BufReader 必须活过整个循环：内部缓冲跨请求保留（每请求新建 reader 会
+    // 把缓冲里已收到的后续请求字节随旧 reader 一起丢弃——多行一次到达时
+    // 请求被吞）。读走 read_line（AsyncBufReadExt，共享同一缓冲），写经
+    // get_mut 穿透借用同一 stream。
+    let mut reader = BufReader::new(stream);
     loop {
-        // Read one request line (block scopes the BufReader borrow so the write
-        // below can borrow `stream` after).
-        let line = {
-            let mut reader = BufReader::new(&mut stream).lines();
-            match reader.next_line().await {
-                Ok(Some(l)) => l,
-                Ok(None) => return Ok(()), // gateway closed → exit cleanly
-                Err(e) => return Err(anyhow::anyhow!("pipe read: {e}")),
-            }
+        let mut line = String::new();
+        match reader.read_line(&mut line).await {
+            Ok(0) => return Ok(()), // gateway closed → exit cleanly
+            Ok(_) => {}
+            Err(e) => return Err(anyhow::anyhow!("pipe read: {e}")),
         };
-        let resp = dispatch(tools, &line).await;
+        let line = line.trim_end_matches(['\n', '\r']);
+        let resp = dispatch(tools, line).await;
         let mut out = serde_json::to_string(&resp).unwrap_or_else(|_| {
             r#"{"ok":false,"result":"","error":"response serialize failed"}"#.to_string()
         });
         out.push('\n');
-        stream
-            .write_all(out.as_bytes())
-            .await
-            .context("pipe write")?;
+        let stream = reader.get_mut();
+        stream.write_all(out.as_bytes()).await.context("pipe write")?;
         stream.flush().await.context("pipe flush")?;
     }
 }

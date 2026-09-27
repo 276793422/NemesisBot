@@ -152,7 +152,7 @@ fn looks_like_denial_decision_table() {
         "EPERM: Operation not permitted",
         "bwrap: creating new namespace failed",
         "operation blocked: denied by sandbox NemesisBox",
-        "sandbox exec failed",
+        "sandboxie: cannot create box process",
     ] {
         assert!(looks_like_denial(positive), "must classify: {positive}");
     }
@@ -162,6 +162,10 @@ fn looks_like_denial_decision_table() {
         "tool timed out after 30s",
         "boom",
         "",
+        // 裸 "sandbox" 单词形态不再命中（后端自身故障 ≠ 沙盒拒绝——
+        // 误记账会污染台账并把普通错误改写成拦截文案）
+        "sandbox exec failed",
+        "sandbox backend unavailable, falling back",
     ] {
         assert!(
             !looks_like_denial(negative),

@@ -81,8 +81,10 @@ pub(crate) fn warm_due(anchor: std::time::Instant, ttl_secs: u64, now: std::time
 }
 
 /// 纯函数：解析某模型条目的 prompt cache TTL（秒）。只认条目上显式声明的
-/// `cache_ttl_secs`（正整数）；条目缺失 / 键缺失 / 非法（0、负数、字符串
-/// 数字等）→ `None`——**未知 TTL 不 warm**（诚实降级，见模块注释）。
+/// `cache_ttl_secs`（正整数）；条目缺失 / 键缺失 → `None`——**未知 TTL 不
+/// warm**（诚实降级，见模块注释）。键**存在但形态非法**（`300.0`/`"300"`/0/
+/// 负数）同样返回 `None`，但 loud warn——这是「enabled=true 却永不 warm」
+/// 的静默坑，配置错误必须可见。
 ///
 /// 条目匹配语义与 `resolve_context_window_tiered` 同源：`model_list` 里
 /// `model_name == alias` 或 `model == alias`。
@@ -93,8 +95,18 @@ pub(crate) fn resolve_cache_ttl_secs(cfg: Option<&serde_json::Value>, alias: &st
         let full = m.get("model").and_then(|v| v.as_str()).unwrap_or("");
         name == alias || full == alias
     })?;
-    let ttl = entry.get("cache_ttl_secs")?.as_u64()?;
-    (ttl > 0).then_some(ttl)
+    let Some(ttl_val) = entry.get("cache_ttl_secs") else {
+        return None; // 未声明 = 不 warm，正常路径不告警
+    };
+    match ttl_val.as_u64() {
+        Some(ttl) if ttl > 0 => Some(ttl),
+        _ => {
+            tracing::warn!(
+                "model '{alias}' 的 cache_ttl_secs={ttl_val} 形态非法（需正整数秒），cache-warmer 对该模型不生效"
+            );
+            None
+        }
+    }
 }
 
 /// 纯函数：经济闸判定。估算值 `None`（价目表未命中）= 保守跳过 → false；

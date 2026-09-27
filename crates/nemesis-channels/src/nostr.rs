@@ -515,9 +515,13 @@ impl NostrChannel {
     }
 
     /// 单条 relay 连接任务：连接 → REQ 订阅 → 双向泵 → 断线退避重连。
+    ///
+    /// REQ 的 `since` 按**每次重连时刻**重建（而非 start() 冻结值）——relay
+    /// 重连会重放 since 以来的窗口事件，冻结值在长期运行后让重放窗口无界
+    /// 增长，陈旧 DM 在去重表淘汰后被当新消息回灌。
     async fn relay_task(
         relay_url: String,
-        req_frame: String,
+        x_only_pub: String,
         running: Arc<parking_lot::RwLock<bool>>,
         sinks: Arc<parking_lot::Mutex<HashMap<u64, mpsc::Sender<String>>>>,
         next_conn_id: Arc<AtomicU64>,
@@ -545,6 +549,10 @@ impl NostrChannel {
             backoff = std::time::Duration::from_secs(1);
             info!(relay = %relay_url, "[NostrChannel] relay 已连接");
 
+            // 订阅帧按本次连接时刻重建（since = 现在）。
+            let req_frame =
+                build_req_frame(&x_only_pub, chrono::Utc::now().timestamp());
+
             let (mut sink, mut stream) = ws.split();
             let (out_tx, mut out_rx) = mpsc::channel::<String>(64);
             let conn_id = next_conn_id.fetch_add(1, Ordering::Relaxed);
@@ -559,6 +567,11 @@ impl NostrChannel {
             {
                 warn!(relay = %relay_url, error = %e, "[NostrChannel] REQ 订阅发送失败");
                 sinks.lock().remove(&conn_id);
+                // REQ 失败与连接失败同罚：无间隔 continue 会以「连接+REQ」
+                // 为单位紧循环（半开 relay 形态），且下轮连接成功路径会把
+                // backoff 复位——退避永远长不起来。
+                tokio::time::sleep(backoff).await;
+                backoff = (backoff * 2).min(max_backoff);
                 continue;
             }
 
@@ -649,7 +662,7 @@ impl Channel for NostrChannel {
         let sinks = self.sinks.clone();
         let next_conn_id = Arc::new(AtomicU64::new(1));
         let reconnect_secs = self.config.reconnect_secs;
-        let req_frame = build_req_frame(&self.keys.x_only_pub, chrono::Utc::now().timestamp());
+        let x_only_pub = self.keys.x_only_pub.clone();
 
         // relay 任务解析出的事件经队列交给处理者（与 WS 泵解耦）。
         let (event_tx, mut event_rx) = mpsc::channel::<NostrEvent>(256);
@@ -664,11 +677,11 @@ impl Channel for NostrChannel {
             let running = running.clone();
             let sinks = sinks.clone();
             let next_conn_id = next_conn_id.clone();
-            let req = req_frame.clone();
+            let x_only_pub = x_only_pub.clone();
             let event_tx = event_tx.clone();
             tokio::spawn(Self::relay_task(
                 relay,
-                req,
+                x_only_pub,
                 running,
                 sinks,
                 next_conn_id,
@@ -715,8 +728,18 @@ impl Channel for NostrChannel {
         let frame = build_event_frame(&event);
         self.publish_frame(&frame)?;
         self.base.record_sent();
+        // 出站同步镜像（mqtt/websocket 先例：镜像到 web 等同步目标）
+        self.base.sync_to_targets(&msg.content).await;
         debug!(recipient = %msg.chat_id, event_id = %event.id, "[NostrChannel] DM 已发布");
         Ok(())
+    }
+
+    fn add_sync_target(&self, name: &str, channel: Arc<dyn Channel>) -> Result<()> {
+        self.base.add_sync_target(name, channel)
+    }
+
+    fn remove_sync_target(&self, name: &str) {
+        self.base.remove_sync_target(name);
     }
 }
 
@@ -745,6 +768,20 @@ impl NostrEventProcessor {
 
         // 自环（自己发出的事件经 relay 重放回来）跳过。
         if event.pubkey == self.x_only_pub {
+            return;
+        }
+
+        // 新鲜度上限：relay 重连会重放窗口内事件，去重表有界淘汰后从未见过
+        // 的陈旧 DM 可能被当新消息回灌——超窗丢弃（时钟偏差容忍：只查过期，
+        // 不拒未来时间戳）。
+        const MAX_EVENT_AGE_SECS: i64 = 600;
+        let age_secs = chrono::Utc::now().timestamp() - event.created_at;
+        if age_secs > MAX_EVENT_AGE_SECS {
+            debug!(
+                event_id = %event.id,
+                age_secs,
+                "[NostrChannel] 事件超新鲜度窗口（{MAX_EVENT_AGE_SECS}s），丢弃"
+            );
             return;
         }
 

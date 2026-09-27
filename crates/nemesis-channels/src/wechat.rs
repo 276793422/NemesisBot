@@ -26,6 +26,9 @@
 //!   连接到来后才释放（accept 阻塞语义）；测试用随机端口规避占用。
 //! - 单次 read 上限 64KB：超长请求体截断 → 400（文本消息场景足够）。
 //! - 注入检测/凭据扫描等安全层在 gateway 侧 8 层管线，通道层不重复判断。
+//! - HMAC 签名是**防伪造**而非防重放：timestamp/nonce 参与摘要但无时效窗、
+//!   无 nonce 去重——截获的合法回调可无限重放（上公网前必须补齐时效窗/
+//!   nonce 缓存，或由前置网关层防重放；见 [`SignatureScheme`] 文档）。
 
 #![allow(dead_code)] // 通道 API client——schema 为实现假设，字段留白待真机校准
 
@@ -66,7 +69,10 @@ pub const DEFAULT_BASE_URL: &str = "https://ilink.bot.weixin.qq.com";
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum SignatureScheme {
     /// HMAC-SHA256(key=token, msg=`{timestamp}\n{nonce}\n{body}`) hex 小写
-    /// （默认假设——现代 webhook 常见形态，带 timestamp/nonce 防重放）。
+    /// （默认假设——现代 webhook 常见形态，防**伪造**）。⚠️ 当前实现只校验
+    /// 签名本身（timestamp/nonce 参与摘要但不做时效窗/去重）——截获的合法
+    /// 回调可被原样重放（签名恒有效）。重放防护（时效窗 + nonce LRU）挂账
+    /// 待做；上公网前必须补齐或由网关层防重放。
     #[default]
     HmacSha256,
     /// 微信经典形态：`hex_sha1(sort([token, timestamp, nonce]).join(""))`。
@@ -704,21 +710,24 @@ impl WeChatChannel {
     }
 
     /// 自持回调 HTTP server（accept 循环，line.rs 同款停机语义）。
-    fn spawn_callback_server(&self) {
+    ///
+    /// bind 在 spawn **之前**完成并把失败传播给调用方（wecom 同款）——
+    /// 此前 bind 失败只在后台任务里 warn，start() 照常报成功，入站能力
+    /// 归零而状态面显示运行中。
+    async fn spawn_callback_server(&self) -> Result<()> {
         let bus_sender = self.bus_sender.clone();
         let config = self.config.clone();
         let base = self.base.clone();
         let running = self.running.clone();
         let listen_addr = self.config.callback_listen_addr_resolved();
 
+        let listener = tokio::net::TcpListener::bind(&listen_addr).await.map_err(|e| {
+            NemesisError::Channel(format!(
+                "[WeChatChannel] 回调监听绑定失败 {listen_addr}: {e}"
+            ))
+        })?;
+
         tokio::spawn(async move {
-            let listener = match tokio::net::TcpListener::bind(&listen_addr).await {
-                Ok(l) => l,
-                Err(e) => {
-                    warn!("[WeChatChannel] 回调监听绑定失败 {listen_addr}: {e}");
-                    return;
-                }
-            };
             info!("[WeChatChannel] callback server listening on {listen_addr}");
 
             loop {
@@ -746,6 +755,7 @@ impl WeChatChannel {
 
             info!("[WeChatChannel] callback server stopped");
         });
+        Ok(())
     }
 
     /// 出站：`POST {base_url}{send_path}`，Bearer token 鉴权，JSON 体
@@ -806,8 +816,9 @@ impl Channel for WeChatChannel {
 
         *self.running.write() = true;
         self.base.set_enabled(true);
+        self.base.set_running(true);
 
-        self.spawn_callback_server();
+        self.spawn_callback_server().await?;
 
         info!("[WeChatChannel] channel started");
         Ok(())
@@ -817,6 +828,7 @@ impl Channel for WeChatChannel {
         info!("[WeChatChannel] stopping wechat channel");
         *self.running.write() = false;
         self.base.set_enabled(false);
+        self.base.set_running(false);
         // 监听 socket 停机语义同 line.rs：accept 阻塞，下一个连接到来后退出
         info!("[WeChatChannel] channel stopped");
         Ok(())
@@ -835,7 +847,18 @@ impl Channel for WeChatChannel {
 
         self.base.record_sent();
         debug!(chat_id = %msg.chat_id, "[WeChatChannel] sending message");
-        self.send_text(&msg.chat_id, &msg.content).await
+        self.send_text(&msg.chat_id, &msg.content).await?;
+        // 出站同步镜像（mqtt/websocket 先例：镜像到 web 等同步目标）
+        self.base.sync_to_targets(&msg.content).await;
+        Ok(())
+    }
+
+    fn add_sync_target(&self, name: &str, channel: Arc<dyn Channel>) -> Result<()> {
+        self.base.add_sync_target(name, channel)
+    }
+
+    fn remove_sync_target(&self, name: &str) {
+        self.base.remove_sync_target(name);
     }
 }
 

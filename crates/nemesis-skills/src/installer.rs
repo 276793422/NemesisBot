@@ -20,7 +20,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::install_gate::{InstallDecision, InstallPlan, PlanFile, SharedInstallGate};
 use crate::lockfile::{LockedSkill, SkillsLockfile};
-use crate::security_check::check_skill_security;
+use crate::security_check::{check_skill_security, check_skill_security_dir};
 use crate::trust::{TrustState, VerificationOutcome};
 use crate::types::{AvailableSkill, InstallResult, SecurityCheckResult, SkillOrigin};
 
@@ -391,6 +391,8 @@ impl SkillInstaller {
         }
 
         // P15：SKILL.md 安全扫描（GitHub 路径缺 SKILL.md = 诚实报错，不是静默装空壳）。
+        // M5：lint 面扩展到 staging 整目录可执行面（SKILL.md + 辅助 .md +
+        // 脚本形态）——藏在 scripts/ 里的恶意载荷不再绕过检查。
         let skill_md_path = staging.join("SKILL.md");
         if !skill_md_path.exists() {
             let _ = std::fs::remove_dir_all(&staging);
@@ -403,7 +405,7 @@ impl SkillInstaller {
             let _ = std::fs::remove_dir_all(&staging);
             NemesisError::Io(e)
         })?;
-        let security = check_skill_security(&content, &slug, "");
+        let security = check_skill_security_dir(&staging, &content, &slug, "");
         self.set_last_security_check(security.clone());
         if security.blocked {
             let _ = std::fs::remove_dir_all(&staging);
@@ -712,6 +714,7 @@ impl SkillInstaller {
         }
 
         // P15：SKILL.md 安全检查（缺 SKILL.md = 跳过检查、不记录——历史契约）。
+        // M5：lint 面扩展到 staging 整目录可执行面（同 plan_github_install）。
         let mut security_result = SecurityCheckResult {
             lint_result: crate::lint::LintResult {
                 skill_name: String::new(),
@@ -727,7 +730,7 @@ impl SkillInstaller {
         if skill_md_path.exists()
             && let Ok(content) = std::fs::read_to_string(&skill_md_path)
         {
-            let check_result = check_skill_security(&content, slug, "");
+            let check_result = check_skill_security_dir(&staging, &content, slug, "");
             security_result = check_result.clone();
             {
                 let mut last = self.last_security_check.lock().unwrap();

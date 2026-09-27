@@ -190,8 +190,35 @@ async fn run_and_report(mgr: Arc<MemoryManager>, home: PathBuf) -> Result<SweepR
     let path = dir.join(format!("sweep_{ts}.json"));
     let json = serde_json::to_string_pretty(&report).map_err(|e| e.to_string())?;
     std::fs::write(&path, json).map_err(|e| format!("报告写入失败: {e}"))?;
+    prune_old_reports(&dir, KEEP_REPORTS);
     info!("[Dreaming] 报告已写入 {}", path.display());
     Ok(report)
+}
+
+/// 报告保留份数上限：每日一份小 JSON 无限累积没有消费面，写时兜底轮转。
+const KEEP_REPORTS: usize = 30;
+
+/// 报告目录轮转：按文件名（`sweep_<ts>.json` 定宽格式，字典序=时间序）保留
+/// 最近 `keep` 份，其余删除。清扫失败不致命（warn 不影响 sweep 结果）。
+fn prune_old_reports(dir: &std::path::Path, keep: usize) {
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return;
+    };
+    let mut reports: Vec<std::path::PathBuf> = entries
+        .flatten()
+        .map(|e| e.path())
+        .filter(|p| p.extension().and_then(|e| e.to_str()) == Some("json"))
+        .collect();
+    if reports.len() <= keep {
+        return;
+    }
+    reports.sort();
+    let excess = reports.len() - keep;
+    for p in reports.into_iter().take(excess) {
+        if let Err(e) = std::fs::remove_file(&p) {
+            tracing::warn!("[Dreaming] 报告清理失败 {}: {e}", p.display());
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -303,3 +330,6 @@ fn weights_from_config(w: &nemesis_config::DreamingWeightsConfig) -> DreamingWei
         source: w.source.unwrap_or(d.source),
     }
 }
+
+#[cfg(test)]
+mod tests;

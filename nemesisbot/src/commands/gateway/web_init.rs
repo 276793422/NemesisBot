@@ -845,46 +845,57 @@ pub(crate) async fn init_web(ctx: &GatewayCtx, cluster: &ClusterWiring) -> Resul
             },
             #[cfg(feature = "channels-mqtt")] // nemesis-channels 侧 feature 名：mqtt
             mqtt: if cfg.channels.mqtt.enabled {
-                Some(nemesis_channels::mqtt::MqttChannelConfig {
-                    broker_host: cfg.channels.mqtt.broker_host.clone(),
-                    broker_port: cfg.channels.mqtt.broker_port as u16,
-                    client_id: cfg.channels.mqtt.client_id.clone(),
-                    // username / password：broker 鉴权出站凭据（空 = 匿名连接，
-                    // 通道侧不隐式填充）
-                    username: crate::common::resolve_secret_or_empty(
-                        &cfg.channels.mqtt.username,
-                        "channels.mqtt.username",
-                    ),
-                    password: crate::common::resolve_secret_or_empty(
-                        &cfg.channels.mqtt.password,
-                        "channels.mqtt.password",
-                    ),
-                    // i64 → u64 钳负值为 0（as 转译负数会回绕；keep_alive 0
-                    // = 关闭保活、reconnect 0 由通道侧抬到 1s）。qos 越界
-                    // （负/超 2）不钳——MqttChannel::new 构造期响亮拒绝。
-                    keep_alive_secs: cfg.channels.mqtt.keep_alive_secs.max(0) as u64,
-                    clean_session: cfg.channels.mqtt.clean_session,
-                    reconnect_delay_secs: cfg.channels.mqtt.reconnect_delay_secs.max(0) as u64,
-                    qos: cfg.channels.mqtt.qos as u8,
-                    topics: cfg
-                        .channels
-                        .mqtt
-                        .topics
-                        .iter()
-                        .map(|t| nemesis_channels::mqtt::MqttTopicMapping {
-                            topic: t.topic.clone(),
-                            reply_topic: t.reply_topic.clone(),
-                        })
-                        .collect(),
-                    default_reply_topic: cfg.channels.mqtt.default_reply_topic.clone(),
-                    allow_from: cfg.channels.mqtt.allow_from.clone(),
-                    // TLS 四字段直透（use_tls=false 时其余三项被通道侧忽略；
-                    // 校验在 MqttChannel::new 构造期）
-                    use_tls: cfg.channels.mqtt.use_tls,
-                    ca_cert_path: cfg.channels.mqtt.ca_cert_path.clone(),
-                    client_cert_path: cfg.channels.mqtt.client_cert_path.clone(),
-                    client_key_path: cfg.channels.mqtt.client_key_path.clone(),
-                })
+                // broker_port i64 → u16：越界（<1 / >65535）不静默回绕（65536→0、
+                // -1→65535 会变成连错误端口的无尽重连循环），越界即拒绝启用该
+                // 通道并 loud error——对齐 qos 越界构造期响亮拒绝的风格。
+                let mqtt_port = cfg.channels.mqtt.broker_port;
+                if !(1..=65535).contains(&mqtt_port) {
+                    tracing::error!(
+                        "[Gateway] channels.mqtt.broker_port={mqtt_port} 越界（有效范围 1..=65535），mqtt 通道不启用"
+                    );
+                    None
+                } else {
+                    Some(nemesis_channels::mqtt::MqttChannelConfig {
+                        broker_host: cfg.channels.mqtt.broker_host.clone(),
+                        broker_port: mqtt_port as u16,
+                        client_id: cfg.channels.mqtt.client_id.clone(),
+                        // username / password：broker 鉴权出站凭据（空 = 匿名连接，
+                        // 通道侧不隐式填充）
+                        username: crate::common::resolve_secret_or_empty(
+                            &cfg.channels.mqtt.username,
+                            "channels.mqtt.username",
+                        ),
+                        password: crate::common::resolve_secret_or_empty(
+                            &cfg.channels.mqtt.password,
+                            "channels.mqtt.password",
+                        ),
+                        // i64 → u64 钳负值为 0（as 转译负数会回绕；keep_alive 0
+                        // = 关闭保活、reconnect 0 由通道侧抬到 1s）。qos 越界
+                        // （负/超 2）不钳——MqttChannel::new 构造期响亮拒绝。
+                        keep_alive_secs: cfg.channels.mqtt.keep_alive_secs.max(0) as u64,
+                        clean_session: cfg.channels.mqtt.clean_session,
+                        reconnect_delay_secs: cfg.channels.mqtt.reconnect_delay_secs.max(0) as u64,
+                        qos: cfg.channels.mqtt.qos as u8,
+                        topics: cfg
+                            .channels
+                            .mqtt
+                            .topics
+                            .iter()
+                            .map(|t| nemesis_channels::mqtt::MqttTopicMapping {
+                                topic: t.topic.clone(),
+                                reply_topic: t.reply_topic.clone(),
+                            })
+                            .collect(),
+                        default_reply_topic: cfg.channels.mqtt.default_reply_topic.clone(),
+                        allow_from: cfg.channels.mqtt.allow_from.clone(),
+                        // TLS 四字段直透（use_tls=false 时其余三项被通道侧忽略；
+                        // 校验在 MqttChannel::new 构造期）
+                        use_tls: cfg.channels.mqtt.use_tls,
+                        ca_cert_path: cfg.channels.mqtt.ca_cert_path.clone(),
+                        client_cert_path: cfg.channels.mqtt.client_cert_path.clone(),
+                        client_key_path: cfg.channels.mqtt.client_key_path.clone(),
+                    })
+                }
             } else {
                 None
             },

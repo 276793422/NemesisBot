@@ -71,6 +71,10 @@ struct WsCtx {
     allow_from: Vec<String>,
     listen_channels: Vec<String>,
     bus_sender: broadcast::Sender<InboundMessage>,
+    /// 通道 running 标志（与 start_ws_loop 共享）：事件循环按粒度轮询，
+    /// stop() 能即时打断存活中的 WS 会话——否则旧会话继续收发直到连接
+    /// 自然断开，随后的 start() 再起第二条会话 → 双会话重复入站。
+    running: Arc<parking_lot::RwLock<bool>>,
 }
 
 // ---------------------------------------------------------------------------
@@ -287,6 +291,7 @@ impl MattermostChannel {
             allow_from: self.config.allow_from.clone(),
             listen_channels: self.config.channels.clone(),
             bus_sender: self.bus_sender.clone(),
+            running: self.running.clone(),
         };
         let base_url = self.config.base_url.clone();
         let running = self.running.clone();
@@ -399,20 +404,33 @@ impl MattermostChannel {
 
         // —— 事件消费主循环
         loop {
-            let text = match ws_rx.next().await {
-                Some(Ok(Message::Text(t))) => t.to_string(),
-                Some(Ok(Message::Close(_))) => {
-                    info!("[MattermostChannel] WebSocket 被服务端关闭");
-                    return true;
+            let text = tokio::select! {
+                // running 粒度轮询（200ms tick）：空闲长连接（无消息时
+                // ws_rx.next() 可挂很久）下 stop() 也能即时打断会话——否则
+                // 旧会话继续收发直到连接自然断开，随后的 start() 再起第二条
+                // 会话 → 双会话重复入站、旧会话重连循环永久化（nostr 同款）。
+                _ = tokio::time::sleep(std::time::Duration::from_millis(200)) => {
+                    if !*ctx.running.read() {
+                        info!("[MattermostChannel] stop() 置位，事件循环退出");
+                        return false;
+                    }
+                    continue;
                 }
-                Some(Ok(_)) => continue,
-                Some(Err(e)) => {
-                    warn!("[MattermostChannel] WebSocket 错误: {e}");
-                    return true;
-                }
-                None => {
-                    info!("[MattermostChannel] WebSocket 连接关闭");
-                    return true;
+                msg = ws_rx.next() => match msg {
+                    Some(Ok(Message::Text(t))) => t.to_string(),
+                    Some(Ok(Message::Close(_))) => {
+                        info!("[MattermostChannel] WebSocket 被服务端关闭");
+                        return true;
+                    }
+                    Some(Ok(_)) => continue,
+                    Some(Err(e)) => {
+                        warn!("[MattermostChannel] WebSocket 错误: {e}");
+                        return true;
+                    }
+                    None => {
+                        info!("[MattermostChannel] WebSocket 连接关闭");
+                        return true;
+                    }
                 }
             };
 
@@ -430,6 +448,16 @@ impl MattermostChannel {
                 }
 
                 "posted" => {
+                    // users/me 校验失败时 bot 身份未知：WS 回声无法过滤，
+                    // 放行会形成自问自答放大回路（allow_from 为空全放行时
+                    // 尤甚）——fail-closed 丢弃，身份已知后自动恢复。
+                    if ctx.bot_user_id.read().is_empty() {
+                        warn!(
+                            "[MattermostChannel] bot 身份未知（users/me 未通过），\
+                             posted 事件丢弃以防自回声回路"
+                        );
+                        continue;
+                    }
                     let inbound = MattermostChannel::parse_posted_event(
                         &payload,
                         &ctx.bot_user_id.read().clone(),
@@ -626,6 +654,7 @@ impl Channel for MattermostChannel {
         // 之后的写执行——循环首行 `if !*running.read() { break; }` 会看到 false
         // 直接永久退出（2026-09-26 复查修复的启动竞态，slack 存量同款未动）。
         *self.running.write() = true;
+        self.base.set_running(true);
 
         // 启动 WebSocket 接收循环
         self.start_ws_loop();
@@ -638,6 +667,7 @@ impl Channel for MattermostChannel {
     async fn stop(&self) -> Result<()> {
         info!("[MattermostChannel] stopping");
         *self.running.write() = false;
+        self.base.set_running(false);
         self.base.set_enabled(false);
         Ok(())
     }
@@ -661,7 +691,18 @@ impl Channel for MattermostChannel {
 
         // 出站格式映射：bot 内部 markdown → Mattermost markdown
         let content = Self::to_mattermost_markdown(&msg.content);
-        self.post_message(channel_id, &content, root_id).await
+        self.post_message(channel_id, &content, root_id).await?;
+        // 出站同步镜像（mqtt/websocket 先例：镜像到 web 等同步目标）
+        self.base.sync_to_targets(&msg.content).await;
+        Ok(())
+    }
+
+    fn add_sync_target(&self, name: &str, channel: Arc<dyn Channel>) -> Result<()> {
+        self.base.add_sync_target(name, channel)
+    }
+
+    fn remove_sync_target(&self, name: &str) {
+        self.base.remove_sync_target(name);
     }
 }
 
