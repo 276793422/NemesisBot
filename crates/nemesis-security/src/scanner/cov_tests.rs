@@ -11,6 +11,9 @@
 
 use super::*;
 use async_trait::async_trait;
+// Arc（进度回调）唯一使用者是 Windows 形态的 download 成功臂——
+// 不门控则 Linux 上 unused import 撞 clippy -D warnings。
+#[cfg(windows)]
 use std::sync::Arc;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 // 注意：本文件同时用了 tokio::io::AsyncWriteExt 与 std::io::Write——

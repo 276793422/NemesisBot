@@ -4,6 +4,9 @@
 
 use super::*;
 use crate::types::{ChatOptions, Message, ToolDefinition};
+// PathBuf 唯一使用者是 Windows 形态的 .cmd 批处理夹具——不门控则
+// Linux 上 unused import 撞 clippy -D warnings。
+#[cfg(windows)]
 use std::path::PathBuf;
 
 fn provider_with(command: &str) -> ClaudeCliProvider {
