@@ -453,7 +453,9 @@ impl ExecutorChannel {
     /// 启动失败）时 stdout 直接 EOF，此前 stdio 路径的 no-response 错误不带
     /// 任何 stderr 上下文，Linux CI 上无从定位——与 DACL 路径的 stderr_tail
     /// 同款诊断面。返回的句柄只在失败臂消费；行仍照旧 debug! 全量落日志。
-    fn drain_stderr(child: &mut tokio::process::Child) -> std::sync::Arc<std::sync::Mutex<std::collections::VecDeque<String>>> {
+    fn drain_stderr(
+        child: &mut tokio::process::Child,
+    ) -> std::sync::Arc<std::sync::Mutex<std::collections::VecDeque<String>>> {
         let tail: std::sync::Arc<std::sync::Mutex<std::collections::VecDeque<String>>> =
             std::sync::Arc::default();
         if let Some(stderr) = child.stderr.take() {
